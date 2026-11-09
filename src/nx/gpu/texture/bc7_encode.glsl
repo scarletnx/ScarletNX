@@ -21,7 +21,7 @@
    Each texel takes the best of the three weights around its projection. Integer arithmetic only, so the tests run
    this file on the CPU (tests/glsl/glsl.hpp) and get the GPU's bytes.
 
-   Written for the code the GPU runs (docs/ASTC.md): a partition is read from its table once a shape (SetShape), and
+   Written for the code the GPU runs (docs/layers/gpu/astc.md): a partition is read from its table once a shape (SetShape), and
    each body is called from one place, in a loop (the jobs of Encode, the lines of FitSubset), as glslang inlines
    every call and the copies came to 1.2 MB of NVIDIA machine code. SNX_BC7_FAST 1 builds the encoder for large levels
    (vk/astc.c), which keeps mode 6 where it is close and tries the other modes only where it is not, and 2 mode 6

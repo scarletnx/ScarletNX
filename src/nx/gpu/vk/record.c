@@ -135,7 +135,8 @@ static void publish(void) {
 static void* rec_push(RecFn fn, u64 size) {
     u64 need = (sizeof(RecHdr) + size + 15) & ~15ull, at = g_pending & (REC_CAP - 1);
     /* one that could never fit would wait for room forever, with vk_lock held and every thread that takes it behind */
-    if (need > REC_CAP / 2) fatal("vulkan: a command of %llu bytes, past what the recording ring takes", (unsigned long long)need);
+    if (need > REC_CAP / 2)
+        fatal("vulkan: a command of %llu bytes, past what the recording ring takes", (unsigned long long)need);
     if (at + need > REC_CAP) { /* the packet doesn't fit before the end: the rest is skipped */
         u64 skip = REC_CAP - at;
         while (g_pending + skip - __atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) > REC_CAP) {
@@ -1208,13 +1209,14 @@ static void rec_CmdCopyBuffer_raw(VkCommandBuffer cb, VkBuffer src, VkBuffer dst
 void rec_CmdCopyBuffer(VkCommandBuffer cb, VkBuffer src, VkBuffer dst, u32 n, const VkBufferCopy* r) {
     /* timed for vk_gpu_profile by where it was recorded */
     int timed = vk_gpuprof_profiled(cb) &&
-                vk_gpuprof_op_begin(cb, VK_OP_COPY, (u64)((const u8*)__builtin_return_address(0) - (const u8*)vk_gpuprof_base()),
+                vk_gpuprof_op_begin(cb, VK_OP_COPY,
+                                    (u64)((const u8*)__builtin_return_address(0) - (const u8*)vk_gpuprof_base()),
                                     copy_bytes(n, r));
     rec_CmdCopyBuffer_raw(cb, src, dst, n, r);
     if (timed) vk_gpuprof_op_end(cb);
 }
-static void rec_CmdCopyImage_raw(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
-                      const VkImageCopy* r) {
+static void rec_CmdCopyImage_raw(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl,
+                                 u32 n, const VkImageCopy* r) {
     if (!rec_on(cb)) {
         vkCmdCopyImage(cb, src, sl, dst, dl, n, r);
         return;
@@ -1226,8 +1228,8 @@ void rec_CmdCopyImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage
                       const VkImageCopy* r) {
     /* timed for vk_gpu_profile by where it was recorded */
     int timed = vk_gpuprof_profiled(cb) &&
-                vk_gpuprof_op_begin(cb, VK_OP_IMAGE, (u64)((const u8*)__builtin_return_address(0) - (const u8*)vk_gpuprof_base()),
-                                    0);
+                vk_gpuprof_op_begin(cb, VK_OP_IMAGE,
+                                    (u64)((const u8*)__builtin_return_address(0) - (const u8*)vk_gpuprof_base()), 0);
     rec_CmdCopyImage_raw(cb, src, sl, dst, dl, n, r);
     if (timed) vk_gpuprof_op_end(cb);
 }
@@ -1250,7 +1252,7 @@ void rec_CmdResolveImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkIm
     rec_commit();
 }
 static void rec_CmdCopyBufferToImage_raw(VkCommandBuffer cb, VkBuffer src, VkImage dst, VkImageLayout dl, u32 n,
-                              const VkBufferImageCopy* r) {
+                                         const VkBufferImageCopy* r) {
     if (!rec_on(cb)) {
         vkCmdCopyBufferToImage(cb, src, dst, dl, n, r);
         return;
@@ -1262,13 +1264,13 @@ void rec_CmdCopyBufferToImage(VkCommandBuffer cb, VkBuffer src, VkImage dst, VkI
                               const VkBufferImageCopy* r) {
     /* timed for vk_gpu_profile by where it was recorded */
     int timed = vk_gpuprof_profiled(cb) &&
-                vk_gpuprof_op_begin(cb, VK_OP_TO_IMAGE, (u64)((const u8*)__builtin_return_address(0) - (const u8*)vk_gpuprof_base()),
-                                    0);
+                vk_gpuprof_op_begin(cb, VK_OP_TO_IMAGE,
+                                    (u64)((const u8*)__builtin_return_address(0) - (const u8*)vk_gpuprof_base()), 0);
     rec_CmdCopyBufferToImage_raw(cb, src, dst, dl, n, r);
     if (timed) vk_gpuprof_op_end(cb);
 }
 static void rec_CmdCopyImageToBuffer_raw(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkBuffer dst, u32 n,
-                              const VkBufferImageCopy* r) {
+                                         const VkBufferImageCopy* r) {
     if (!rec_on(cb)) {
         vkCmdCopyImageToBuffer(cb, src, sl, dst, n, r);
         return;
@@ -1280,8 +1282,8 @@ void rec_CmdCopyImageToBuffer(VkCommandBuffer cb, VkImage src, VkImageLayout sl,
                               const VkBufferImageCopy* r) {
     /* timed for vk_gpu_profile by where it was recorded */
     int timed = vk_gpuprof_profiled(cb) &&
-                vk_gpuprof_op_begin(cb, VK_OP_TO_BUFFER, (u64)((const u8*)__builtin_return_address(0) - (const u8*)vk_gpuprof_base()),
-                                    0);
+                vk_gpuprof_op_begin(cb, VK_OP_TO_BUFFER,
+                                    (u64)((const u8*)__builtin_return_address(0) - (const u8*)vk_gpuprof_base()), 0);
     rec_CmdCopyImageToBuffer_raw(cb, src, sl, dst, n, r);
     if (timed) vk_gpuprof_op_end(cb);
 }

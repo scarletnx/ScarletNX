@@ -925,7 +925,7 @@ void nvn_CommandBufferSetGeometryProcessingMode(CPU* c, u64 cb, i32 mode) {
     (void)cb;
     if (mode) LOG_LIMIT(1, "nvn: geometry processing mode %d\n", mode);
 }
-/* The Ounce's mesh draws (OP_DRAW_MESH). cost: the bytes of the driver's macro call (docs/OUNCE.md) */
+/* The Ounce's mesh draws (OP_DRAW_MESH). cost: the bytes of the driver's macro call (docs/platforms/nx/ounce.md) */
 static void draw_mesh(CPU* c, u64 cb, i32 first, i32 count, u32 cost) {
     NvnPDrawMesh d = {0};
     d.first = first;
@@ -1707,7 +1707,8 @@ void nvn_CommandBufferWaitSync(CPU* c, u64 cb, u64 sync) {
 /* ============================================================ binds */
 /* the program's stages as they are now: the game may set new shaders in it before it submits */
 void nvn_CommandBufferBindProgram(CPU* c, u64 cb, u64 program, i32 stages) {
-    /* an Ounce game's record ends with its task and mesh stages. Another's stops before them, in the 128 bytes the driver writes, so that its records stay in the game's command memory */
+    /* an Ounce game's record ends with its task and mesh stages. Another's stops before them, in the 128 bytes the
+       driver writes, so that its records stay in the game's command memory */
     const int ounce = g_nvn.loader.api >= 231u << 16;
     NvnPBindProgram* r = (NvnPBindProgram*)(void*)GP(
         rec(c, cb, OP_BIND_PROGRAM, ounce ? sizeof(NvnPBindProgram) : NVN_PBIND_SWITCH_BYTES, 128));

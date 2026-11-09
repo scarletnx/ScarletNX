@@ -29,8 +29,6 @@ static int load(const Image* m, u64 a, u32 size, u32* v) {
         *v = m->mem[a];
     return 1;
 }
-static i64 sext(u64 v, unsigned bits) { return (i64)(v << (64 - bits)) >> (64 - bits); }
-
 /* a logical immediate's value, 0 for a reserved encoding */
 static u64 bitmask_imm(u32 n, u32 immr, u32 imms, unsigned bits) {
     u32 combined = n << 6 | (~imms & 0x3f);
@@ -108,10 +106,11 @@ static int find_switch(const Image* m, u64 start, Switch* s) {
         if (!load(m, pc, 4, &x)) return 0;
         rn = (x >> 5) & 31;
         if ((x & 0x9f000000) == 0x90000000) { /* adrp */
-            addr[x & 31] = (pc & ~0xfffull) + (u64)(sext(((x >> 29) & 3) | (((x >> 5) & 0x7ffff) << 2), 21) << 12);
+            addr[x & 31] =
+                (pc & ~0xfffull) + ((u64)snx_sext64(((x >> 29) & 3) | (((x >> 5) & 0x7ffff) << 2), 21) << 12);
             known |= 1u << (x & 31);
         } else if ((x & 0x9f000000) == 0x10000000) { /* adr */
-            addr[x & 31] = pc + (u64)sext(((x >> 29) & 3) | (((x >> 5) & 0x7ffff) << 2), 21);
+            addr[x & 31] = pc + (u64)snx_sext64(((x >> 29) & 3) | (((x >> 5) & 0x7ffff) << 2), 21);
             known |= 1u << (x & 31);
         } else if ((x & 0xff800000) == 0x91000000 && (known >> rn & 1)) { /* add xd, xn, #imm after an ADRP */
             addr[x & 31] = addr[rn] + ((x >> 10) & 0xfff);
@@ -144,7 +143,7 @@ static int returns(u32 x) { return (x & 0xfffffc1f) == 0xd65f0000 || x == 0xd65f
 static int case_target(const Image* m, const Switch* s, u32 index, u64* target) {
     u32 entry;
     if (index > s->bound || !load(m, s->table + (u64)index * s->size, s->size, &entry)) return 0;
-    *target = s->size == 4 ? s->table + (u64)sext(entry, 32) : s->base + (u64)entry * 4;
+    *target = s->size == 4 ? s->table + (u64)snx_sext64(entry, 32) : s->base + (u64)entry * 4;
     return 1;
 }
 static int case_value(const Image* m, const Switch* s, u32 item, i32* out) {
@@ -184,7 +183,7 @@ static int helper_value(const Image* m, u64 func, u32 item, i32* out) {
     u32 j, x, rd, bias = 0, reg = 32;
     for (j = 0; j < 16 && !helper; j++) {
         if (!load(m, func + 4 * (u64)j, 4, &x)) return 0;
-        if ((x & 0xfc000000) == 0x94000000) helper = func + 4 * (u64)j + (u64)(sext(x & 0x3ffffff, 26) * 4);
+        if ((x & 0xfc000000) == 0x94000000) helper = func + 4 * (u64)j + (u64)(snx_sext64(x & 0x3ffffff, 26) * 4);
     }
     if (!helper || !find_switch(m, helper, &s)) return 0;
     for (j = 0; j < 16; j++) {
@@ -325,7 +324,7 @@ static int case_value32(const Image* m, const Switch32* s, u32 item, i32* out) {
             *out = (i32)r0;
             return 1;
         } else if ((x & 0xff000000) == 0xea000000 && follows++ < 2) { /* b: the shared return */
-            target = target + 8 + (u64)(sext(x & 0xffffff, 24) * 4);
+            target = target + 8 + (u64)(snx_sext64(x & 0xffffff, 24) * 4);
             continue;
         } else if (!a32_keeps_r0(x)) {
             return 0;
@@ -347,7 +346,7 @@ int nvn_driver_info32(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* ou
         u32 x;
         if (!load(&m, func + 4 * (u64)j, 4, &x)) return 0;
         if ((x & 0x0f000000) == 0x0b000000 && x >> 28 == 0xe) {
-            starts[n++] = func + 4 * (u64)j + 8 + (u64)(sext(x & 0xffffff, 24) * 4);
+            starts[n++] = func + 4 * (u64)j + 8 + (u64)(snx_sext64(x & 0xffffff, 24) * 4);
             break;
         }
     }
@@ -406,7 +405,7 @@ int nvn_driver_info(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* out)
         u32 x;
         if (!load(&m, func + 4 * (u64)j, 4, &x)) return 0;
         if ((x & 0xfc000000) == 0x94000000) {
-            starts[n++] = func + 4 * (u64)j + (u64)(sext(x & 0x3ffffff, 26) * 4);
+            starts[n++] = func + 4 * (u64)j + (u64)(snx_sext64(x & 0x3ffffff, 26) * 4);
             break;
         }
     }

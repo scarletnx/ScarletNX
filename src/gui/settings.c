@@ -3,6 +3,7 @@
 #include "gui/settings.h"
 #include "3ds/runtime/main.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/ini_lines.h"
 #include "gui/i18n.h"
 #include "snx_settings.h"
@@ -304,7 +305,7 @@ int gui_settings_save(const GuiSettings* s, const char* path) {
     }
     free(old);
     /* staged beside it, then put in place: a crash mid-write leaves the old picks */
-    failed = !text || snx_mkdirs(folder) || snx_write_file(staged, text, at) || snx_replace(staged, path);
+    failed = !text || snx_mkdirs(folder) || snx_write_file(staged, text, at) || plat_replace_file(staged, path);
     if (failed) remove(staged);
     free(staged);
     free(folder);

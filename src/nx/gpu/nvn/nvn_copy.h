@@ -5,7 +5,7 @@
 #ifndef SNX_NVN_COPY_H
 #define SNX_NVN_COPY_H
 #include "common/cpu/aarch64/cpu.h"
-#include "common/filesystem/host.h"
+#include "common/platform/thread.h"
 
 /* the columns and rows a texture blit's tables hold: NVN's largest texture's (16384 texels a side) */
 #define NVN_BLIT_MAX 16384

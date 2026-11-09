@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Guest memory the GPU holds (own.c, docs/GPU_OWNERSHIP.md): what a GPU engine wrote stays in its GPU copy, and the
+/* Guest memory the GPU holds (own.c, docs/layers/gpu/ownership.md): what a GPU engine wrote stays in its GPU copy, and the
    guest's own pages under it are trapped, so a CPU access lands the copy first */
 #ifndef SNX_MEMORY_OWN_H
 #define SNX_MEMORY_OWN_H

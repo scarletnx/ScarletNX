@@ -438,7 +438,7 @@ static void renderer_failed(const char* what) {
     if (why && why[0]) fatal("%s: %s.", what, why);
     fatal("%s (see the log). ScarletNX needs a GPU and driver with Vulkan 1.3.", what);
 }
-/* The Vulkan driver this run picked (the game's vulkan_driver, docs/APPLE.md): on a Mac the library SDL loads, and for
+/* The Vulkan driver this run picked (the game's vulkan_driver, docs/hosts/apple.md): on a Mac the library SDL loads, and for
    KosmicKrisp the ICD the Vulkan loader takes; elsewhere the system's, which moltenvk and kosmickrisp also take, said.
    Once a run, before SDL opens the window or the headless renderer its loader */
 static const SnxVulkanDriver* vulkan_driver(void) {
@@ -483,7 +483,7 @@ static const SnxVulkanDriver* vulkan_driver(void) {
 
 void video_init(const char* title, const char* addons) {
     /* MoltenVK's library or the KosmicKrisp loader, before SDL opens the window and loads one of its own, or the
-       headless renderer one (docs/APPLE.md); and the setting checked on every system */
+       headless renderer one (docs/hosts/apple.md); and the setting checked on every system */
     vulkan_driver();
     if (g_opt_headless) {
         /* No SDL video subsystem: this also works without DISPLAY, WAYLAND_DISPLAY or a seat. */
@@ -638,7 +638,7 @@ static void set_fullscreen(int on) {
     else
         LOG("video: fullscreen %s failed: %s\n", on ? "on" : "off", SDL_GetError());
 }
-/* ---- a fatal error's box (plat.c's fatal): the game's menu panel (overlay.c) with the error, what it means and what
+/* ---- a fatal error's box (log.c's fatal): the game's menu panel (overlay.c) with the error, what it means and what
    to do, until the player closes it. The game's renderer lets go of the window first (its device may be what was
    lost), and an SDL renderer of its own draws the panel's quads from the same atlas ---- */
 static char* g_fatal_left; /* an error another thread left for the main thread to show */
@@ -796,7 +796,7 @@ static int fatal_screen(const char* msg) {
     panel.msg = msg;
     panel.how = what;
     panel.focus = SNX_OVERLAY_ERROR_CLOSE;
-    /* the log plat.c writes, in the state folder. Beside the game that is argv[0]'s folder, which may be relative (./
+    /* the log log.c writes, in the state folder. Beside the game that is argv[0]'s folder, which may be relative (./
        for ./MyGame): Share Log and a file URI need an absolute path */
     snprintf(log_path, sizeof log_path, "%s%s.log", g_statedir, g_exename);
     full = snx_absolute(log_path);
@@ -805,7 +805,7 @@ static int fatal_screen(const char* msg) {
 #ifdef __ANDROID__
     snprintf(what, sizeof what, "%s", how);
 #else
-    /* a link only to a log that is there: plat.c makes it once the game's code has loaded, so an error before that has
+    /* a link only to a log that is there: log.c makes it once the game's code has loaded, so an error before that has
        none, and the path stays plain text */
     if (snx_is_file(log_path) && fatal_log_url(log_path, log_url, sizeof log_url)) {
         snprintf(what, sizeof what, "%s", how);
@@ -920,12 +920,12 @@ static int fatal_screen(const char* msg) {
     SDL_DestroyRenderer(r);
     return 1;
 }
-/* plat.c's fatal error: the screen above on the main thread, which owns the window; SDL's box when it can't be drawn.
+/* log.c's fatal error: the screen above on the main thread, which owns the window; SDL's box when it can't be drawn.
    From another thread, the main thread's loop (video_poll) shows it, and this thread waits for the exit; when the main
    thread doesn't come (held up elsewhere), Windows' own box (it takes any thread) and none on Linux: the error is in
    the log and on stderr. Nothing for an unattended run, where nobody would close it */
 void win_fatal_box(const char* msg) {
-    /* beside the launcher's log (docs/USAGE.md#folders), whose Share Log sends it, for a game of a data folder: in that
+    /* beside the launcher's log (docs/user/usage.md#folders), whose Share Log sends it, for a game of a data folder: in that
        folder's state folder; another folder's game beside its own log, or before it has one in its folder; on iOS in
        the app's Documents' logs/, which the Files app shows, since a phone shows no stderr */
     {
@@ -1014,6 +1014,7 @@ static int key_action(const SDL_KeyboardEvent* k) {
 }
 /* a runtime key's action, which the game's menu's F1 page lists (overlay.c's keys_row) with the game's buttons of
    keymap: a binding changed here changes there. The menu's is menu_event's */
+static void mouse_let_go(void);
 static void hotkey(int action) {
     switch (action) {
         case HOTKEY_HELP: /* the game's menu on its page of keys, over the game as the menu is, fullscreen or not */
@@ -1022,6 +1023,7 @@ static void hotkey(int action) {
             {
                 char debugger[SNX_DEBUGGER_NAME];
                 overlay_keys_extra(g_renderer->capture(0), snx_debugger(debugger, sizeof debugger) ? debugger : "");
+                overlay_keys_mouse(hid_mouse_mode());
             }
             overlay_keys();
             ui_unlock();
@@ -1081,6 +1083,7 @@ static void hotkey(int action) {
             title_paused(game_paused());
             break;
         case HOTKEY_CAPTURE: g_renderer->capture(1); break;
+        case HOTKEY_MOUSE: mouse_let_go(); break;
         case HOTKEY_QUIT: g_quit = 1; break;
         default: break;
     }
@@ -1285,8 +1288,15 @@ static void touch_finger(const SDL_Event* e) {
               finger_id(&e->tfinger), picture, px, py);
 }
 /* The mouse is held for the game while it plays with it: a Joy-Con on a table has no window's edge to stop at. The menu
-   takes it back, and Ctrl+G lets it go until the game's mouse mode ends or Ctrl+G again (Esc closes the game) */
+   takes it back, and hotkey_mouse (Ctrl+G) lets it go until the game's mouse mode ends or the key again */
 static int g_mouse_let_go, g_mouse_held;
+/* hotkey_mouse: the mouse let go, or held again; what it held comes up with it */
+static void mouse_let_go(void) {
+    g_mouse_let_go = !g_mouse_let_go;
+    pm_lock(&g_host.hid.input_lock);
+    g_hle.hid.mouse.buttons = 0;
+    pm_unlock(&g_host.hid.input_lock);
+}
 static void mouse_hold_update(void) {
     int mode = g_win && hid_mouse_mode();
     if (!mode) g_mouse_let_go = 0;
@@ -1295,8 +1305,10 @@ static void mouse_hold_update(void) {
     g_mouse_held = want;
     if (!SDL_SetWindowRelativeMouseMode(g_win, want))
         LOG("input: the mouse couldn't be %s: %s\n", want ? "held" : "let go", SDL_GetError());
+    else if (!want)
+        LOG("input: the mouse is let go\n");
     else
-        LOG("input: the mouse is %s\n", want ? "held for the game (Ctrl+G lets it go)" : "let go");
+        LOG("input: the mouse is held for the game, and hotkey_mouse=%s lets it go\n", hotkey_text(HOTKEY_MOUSE));
 }
 /* the mouse as an Ounce game's Joy-Con in mouse mode (hid_mouse_update): what it moved, under input_lock */
 static void game_mouse(const SDL_Event* e) {
@@ -1575,18 +1587,12 @@ void video_poll(void) {
                 /* a runtime key is no button of the game's. A repeat does neither: a key held as the menu closed (which
                    cleared keys_held) stays from the game until it is let go, and the Esc that closed the menu doesn't
                    quit. A key with modifiers the setting doesn't name is no runtime key (Alt+F4 also arrives as F4 on
-                   Windows). Ctrl+G, where no runtime key is set to it, lets the game's mouse go or takes it again */
+                   Windows) */
                 if (e.key.repeat) break;
-                if (action >= 0) {
+                if (action >= 0)
                     hotkey(action);
-                } else if (e.key.key == SDLK_G && (e.key.mod & SDL_KMOD_CTRL)) {
-                    g_mouse_let_go = !g_mouse_let_go;
-                    pm_lock(&g_host.hid.input_lock);
-                    g_hle.hid.mouse.buttons = 0; /* what it held comes up with it */
-                    pm_unlock(&g_host.hid.input_lock);
-                } else {
+                else
                     keys_held |= keymap(e.key.scancode);
-                }
                 break;
             case SDL_EVENT_KEY_UP: keys_held &= ~keymap(e.key.scancode); break;
             case SDL_EVENT_WINDOW_FOCUS_LOST:
@@ -1743,7 +1749,7 @@ void video_poll(void) {
     vpad_showcase_input(b, st); /* what the game takes, a replay's included */
     ui_unlock();
     pm_unlock(&g_host.hid.input_lock);
-    gamepad_console(pb >> 10 & 1, SDL_GetTicksNS()); /* out of the input's lock: a pause stops the game's threads */
+    gamepad_console(pb >> 10 & 1, plat_ns()); /* out of the input's lock: a pause stops the game's threads */
     keyboard_sync();
 }
 
@@ -1781,7 +1787,7 @@ void frontend_frame(void) {
     int full = log_full_take();
     g_press.listening = 0; /* the game's first thread runs: its presses are its own */
     g_press.kind = PRESS_NONE;
-    if (full) { /* the log's first cut (plat.c), said over the game once */
+    if (full) { /* the log's first cut (log.c), said over the game once */
         snprintf(p, sizeof p, "Log full at %d MiB: older lines cut (Debug > Log size limit)", full);
         ui_lock();
         overlay_toast(p, plat_ns());

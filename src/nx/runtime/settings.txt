@@ -236,15 +236,6 @@ setting Vulkan Video decode
     help 1 = H.264 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver
     help have an H.264 decode queue. Experimental and untested. 0 = FFmpeg decodes them on the CPU. VP9 movies always
     help decode on the CPU
-setting Mesh draws
-    key mesh_draws
-    label Mesh shader draws (experimental)
-    int 0 1
-    default 0
-    startup
-    words Off|On
-    help 1 = an Ounce game's mesh draws (DrawMeshTasks) draw with VK_EXT_mesh_shader, where the GPU has it.
-    help Experimental: on one NVIDIA GPU most runs with them ended in a GPU fault. 0 = they are skipped
 setting Vulkan driver
     key vulkan_driver
     label Vulkan driver
@@ -258,6 +249,15 @@ setting Vulkan driver
     help which driver runs and why. On every other system the game runs on the system's driver whatever the value (on
     help Android, gpu_driver's), and the log says so for moltenvk and kosmickrisp. Any other value stops the game,
     help saying so
+setting Mesh draws
+    key mesh_draws
+    label Mesh shader draws (experimental)
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = an Ounce game's mesh draws (DrawMeshTasks) draw with VK_EXT_mesh_shader, where the GPU has it.
+    help Experimental: on one NVIDIA GPU most runs with them ended in a GPU fault. 0 = they are skipped
 setting Vertex input dynamic state
     key vertex_input_dynamic_state
     text 16
@@ -283,16 +283,27 @@ setting Vulkan ban ignore
 setting ASTC mode
     label ASTC textures
     key astc_mode
-    int 0 2
+    int 0 3
     default 0
     startup
-    words Auto|Exact|BC7
-    help How a GPU that samples BCn but not ASTC (most desktop ones) holds ASTC textures. Auto = Exact where the GPU's
-    help memory budget is 8 GB or more as the game starts, else BC7. Exact = decoded to RGBA8, exactly as the game's
+    words Auto|Exact|BC7|BC7 at load
+    help How a GPU that samples BCn but not ASTC (most desktop ones) holds ASTC textures. Auto = BC7 at load for an Ounce
+    help game, as feat/ounce holds them; for any other, Exact where the GPU's memory budget is 8 GB or more as the game
+    help starts, else BC7. Exact = decoded to RGBA8, exactly as the game's
     help blocks decode, in four times the memory. BC7 = shown at once decoded to RGBA8, then encoded again as BC7 between
     help frames, a few at a time, into a quarter of RGBA8's memory, close to what the blocks decode to but not always the
-    help same. A later run loads them from the BC7 cache. Where the GPU samples ASTC it does nothing. It takes the place
-    help of astc_bc, whose 1 is Auto
+    help same. A later run loads them from the BC7 cache. BC7 at load = encoded as BC7 as each texture loads, with no
+    help RGBA8 image before it, as feat/ounce does (temporary, to compare). Where the GPU samples ASTC it does
+    help nothing. It takes the place of astc_bc, whose 1 is Auto
+setting BC7 queue
+    key bc7_queue
+    int 0 16384
+    default 0
+    startup
+    words Auto|#
+    help The thousands of blocks the BC7 encoder may have queued on the GPU before an upload waits for it to do them.
+    help 0 = by the GPU's own memory: 256 for every 2 GB of it, from 256 to 4096, and 256 on a GPU that shares the
+    help computer's memory (a GT 1030, 2 GB, lost the device with more queued). 1 to 16384 = that many thousand
 
 table g_performance_ini
 setting FPS limit
@@ -320,7 +331,7 @@ setting Memory fit mode
     help Auto = the game sees no more of Memory (GB) than the device can still give it, measured as it starts, less
     help what the rest of ScarletNX takes: a device with less than the console's is not run out of memory, and one that
     help can give it all shows the game all of it. Off = all of it, whatever the device can give. It takes the place of
-    help memory_fit, whose 0 was Off (docs/DEPRECATIONS.md)
+    help memory_fit, whose 0 was Off (docs/user/deprecations.md)
 setting Heap limit (MB)
     key heap_max_mb
     text 32
@@ -768,6 +779,14 @@ setting RenderDoc capture shortcut
     set hotkey_set
     help The key that captures the next frame with RenderDoc while RenderDoc is in the game (renderdoc), as
     help hotkey_help's
+setting Mouse shortcut
+    key hotkey_mouse
+    text 64
+    default Ctrl+G
+    label Let the mouse go
+    set hotkey_set
+    help The key that lets the mouse go from a game that holds it (an Ounce game's Joy-Con mouse mode), and holds it
+    help again, as hotkey_help's
 setting Quit shortcut
     key hotkey_quit
     text 64
@@ -873,6 +892,17 @@ setting Vulkan pipeline cache
     words Off|On
     help 1 = the GPU driver's compiled pipelines are kept between runs (shader_cache/vk_pipelines.bin). 0 = they are
     help neither read nor written: every pipeline is compiled again, as in a first run, to measure that
+setting GPU mirror past limit
+    key vk_mirror_past_limit
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = the GPU mirror of guest memory, where an Ounce game's programs read and write their storage, is made even
+    help where it is bigger than the device's maxBufferSize, as feat/ounce makes it: RADV (4 GiB) makes and runs it,
+    help though the validation layer calls it invalid. 0 = only where it fits; elsewhere the storage results land
+    help through the CPU, several times slower in one game. With vk_validation on it is made only where it fits,
+    help as the layer would report it. Temporary, to compare
 setting Vulkan API
     label Vulkan version
     key vk_api
@@ -1006,7 +1036,7 @@ setting Write tracking
     default 0
     startup
     words Auto|Protection|Off
-    help How the runtime finds the guest pages written since the caches last looked (docs/ARCHITECTURE.md). 0 = the
+    help How the runtime finds the guest pages written since the caches last looked (docs/dev/architecture.md). 0 = the
     help host's own: userfaultfd's write protection on Linux 6.7 and later, the reservation's write watch on Windows,
     help page protection on the other hosts. 1 = page protection and the fault handler, as macOS, FreeBSD, Android
     help and older Linux track (not on Windows, which says so at start). 2 = none: the caches compare guest memory's
@@ -1028,11 +1058,11 @@ setting Memory traps
     default 0
     startup
     words Auto|Protection|Off
-    help How the runtime traps guest memory the GPU owns until the CPU touches it (docs/GPU_OWNERSHIP.md). 0 =
-    help userfaultfd's minor faults where Linux has them, else page protection; none yet on Windows, macOS and
-    help FreeBSD. 1 = page protection and the fault handler, as Android and Linux before 5.13 trap (Linux and Android
-    help only: elsewhere it says so at start). 2 = none: a GPU result lands in guest memory at its fence, to measure
-    help and test that path
+    help How the runtime traps guest memory the GPU owns until the CPU touches it (docs/layers/gpu/ownership.md). 0 =
+    help userfaultfd's minor faults where Linux has them, else page protection, which Windows uses with an exception
+    help handler; none yet on macOS and FreeBSD. 1 = page protection and the fault handler, as Android, Linux before
+    help 5.13 and Windows trap (Linux, Android and Windows only: elsewhere it says so at start). 2 = none: a GPU result
+    help lands in guest memory at its fence, to measure and test that path
 setting Host page size
     key host_page
     int 0 1048576
@@ -1040,7 +1070,7 @@ setting Host page size
     startup
     help The page size the runtime works in, in bytes: a power of two larger than the host's own, up to 1 MiB.
     help 16384 or 65536 run as a host with 16 or 64 KiB pages does (views copy, a host page holds several guest
-    help pages: docs/PPC64.md). 0 = the host's own. Any other value runs with the host's own, said at start
+    help pages: docs/hosts/ppc64.md). 0 = the host's own. Any other value runs with the host's own, said at start
 setting NCE foreign scan
     label NCE address scan
     key nce_foreign_scan
@@ -1058,9 +1088,10 @@ setting GPU page check
     default 0
     startup
     words Off|On
-    help 1 = the GPU's written pages (gpu/writes.c) and the renderer's pending results (gpu/vk/pending_pages.c), which
-    help the runtime counts by GPU page, are also counted by guest address, and each lookup translates its range
-    help through the GMMU too: the log warns of each write or result only that finds. Slow: for checking those tables
+    help 1 = the GPU's written pages (gpu/maxwell/write_pages.c) and the renderer's pending results
+    help (gpu/vk/pending_pages.c), which the runtime counts by GPU page, are also counted by guest address, and each
+    help lookup translates its range through the GMMU too: the log warns of each write or result only that finds. Slow:
+    help for checking those tables
 setting Draw state check
     key draw_state_check
     int 0 1
@@ -1100,7 +1131,7 @@ setting Hook families verified
     startup
     help The families of hooks whose pure hooks (hle/hook/hooks.hook's pure, such as libc's memcpy) are checked on
     help every call: the function's own code runs on copies of the memory it writes, then the handler on the game's,
-    help and the log names each call whose result, registers or bytes differ (docs/HOOKS.md). Slow: for checking a
+    help and the log names each call whose result, registers or bytes differ (docs/platforms/nx/hooks.md). Slow: for checking a
     help hook, never for playing. Empty: none
 setting Shader corpus
     key shader_corpus
@@ -1146,12 +1177,12 @@ setting Guest memory
     startup
     words Auto|Copy|UMA
     help How the GPU reads and writes guest buffers (vertices, indices, storage, the engines' results;
-    help docs/GPU_OWNERSHIP.md). 1 = copied into the renderer's buffers when they change, and back. 2 = read and written
+    help docs/layers/gpu/ownership.md). 1 = copied into the renderer's buffers when they change, and back. 2 = read and written
     help where they are in guest memory (VK_EXT_external_memory_host; on Android without it, guest memory moves into
     help AHardwareBuffers), as the console's GPU does: for a GPU that shares system memory. On a discrete GPU it goes
     help across the bus, which is slow, but it shows that the path is correct. 0 = 2 on a GPU that shares system memory,
     help but never the moves into AHardwareBuffers, else 1. A 3DS game takes it too, for the board's RAM: 1 = the GPU
-    help works on a copy of it in its own memory, 2 = on the RAM in place (docs/3DS.md)
+    help works on a copy of it in its own memory, 2 = on the RAM in place (docs/platforms/3ds/README.md)
 setting Buffer copy stats
     key vk_buffer_stats
     int 0 1
@@ -1490,7 +1521,7 @@ setting Vita lockstep
     default -1
     words Off|#
     help From this import call on (0 = the first), every instruction group of the Vita game also runs in Unicorn, and
-    help the first difference in registers, flags or written memory stops the run with both states (docs/VITA.md).
+    help the first difference in registers, flags or written memory stops the run with both states (docs/platforms/vita/README.md).
     help Only in a build configured with -DSNX_VITA_LOCKSTEP=ON: another build says so at start. -1 = off
 setting Vita lockstep steps
     key vita_lockstep_steps

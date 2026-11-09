@@ -697,8 +697,8 @@ static void test_ounce_program_records(void) {
     nvn_program_c0(0, c0);
     check(!memcmp(c0, (u8[NVN_C0_RECORD]){0}, sizeof c0), "a serial without a record has none");
 
-    /* a task program and a mesh program after it (docs/OUNCE.md's sections): their fields by the program's serial,
-       and nothing past its object. BindProgram of every stage and DrawMeshTasks record a mesh draw of them */
+    /* a task program and a mesh program after it (docs/platforms/nx/ounce.md's sections): their fields by the program's
+       serial, and nothing past its object. BindProgram of every stage and DrawMeshTasks record a mesh draw of them */
     const u64 task = 0xa400;
     const u32 task_words[] = {(u32)NVN_SHADER_STAGE_TASK << 16, 0x5800020};
     const u32 mesh_words[] = {(u32)NVN_SHADER_STAGE_MESH << 16, 0x5800008, 0x3010000, 0x100020, 0xd00, 0x80};

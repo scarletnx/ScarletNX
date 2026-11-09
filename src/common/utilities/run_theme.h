@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The launcher's look for a loading screen, as the runtime draws one of its own (the shaders it prepares before the
    game starts, nx/runtime/platform/prepare_screen.c): the [run] part of the theme the launcher's Settings > App picked
-   (src/gui/theme.c fills it, docs/GUI.md describes the keys) */
+   (src/gui/theme.c fills it, docs/user/gui.md describes the keys) */
 #ifndef SNX_RUN_THEME_H
 #define SNX_RUN_THEME_H
 #include <stdint.h>

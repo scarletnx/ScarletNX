@@ -43,7 +43,7 @@ static int gsv_camera_none(SvcObj* self, IpcCtx* c) {
         memcpy(&word, c->raw + i, c->raw_size - i < 8 ? c->raw_size - i : 8);
         LOG_LIMIT(16, "gsv:   raw +%#x = %#llx\n", i, (unsigned long long)word);
     }
-    R_THROW(SNX_RC_GSV_NO_CAMERA);
+    R_THROW(SNX_RC_CAMERA_NOT_AVAILABLE);
 }
 #include "hle/services/gsv.swipc.inc"
 #include "hle/services/nvdrv.swipc.h"
@@ -85,7 +85,7 @@ static int nn_gsv_UserSession_CreateCameraContext(SvcObj* self) {
 static int nn_gsv_UserSession_InitializeCameraContext(SvcObj* self, u64 version, u32* session) {
     (void)self, (void)version;
     *session = session_new(nn_gsv_CameraSession_new());
-    R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES);
+    R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES); /* OutOfHandles */
     R_SUCCEED();
 }
 static int nn_gsv_UserSession_DestroyCameraContext(SvcObj* self) {
@@ -95,7 +95,7 @@ static int nn_gsv_UserSession_DestroyCameraContext(SvcObj* self) {
 static int nn_gsv_UserSession_OpenGraphicsFrameSession(SvcObj* self, u32* session) {
     (void)self;
     *session = session_new(nn_gsv_GraphicsFrameSession_new());
-    R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES);
+    R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES); /* OutOfHandles */
     R_SUCCEED();
 }
 static int nn_gsv_GraphicsFrameSession_Ping(SvcObj* self, u64 token, u64* echo) {
@@ -116,7 +116,7 @@ static int nn_gsv_UserSession_CreateChatContext(SvcObj* self) {
 static int nn_gsv_UserSession_InitializeChatContext(SvcObj* self, u32* session) {
     (void)self;
     *session = session_new(nn_gsv_ChatSession_new());
-    R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES);
+    R_UNLESS(*session, SNX_RC_SVC_OUT_OF_HANDLES); /* OutOfHandles */
     R_SUCCEED();
 }
 static int nn_gsv_UserSession_DestroyChatContext(SvcObj* self) {
@@ -190,11 +190,11 @@ static int nn_gsv_UserSession_InitializeSyncptContext(SvcObj* self, u32* session
 /* the syncpoint cache: the game's request page (RW) and the value page (RO) it polls, bound by command 204 */
 static u64 gsv_sync_rw, gsv_sync_ro;
 static u32 gsv_sync_request_event, gsv_sync_completed_event;
-/* The SDK finds a syncpoint short of a threshold in the value page (TryWaitSyncPoint) and asks for it again: it makes the
-   syncpoint's bit in the request page differ from the acknowledge page, the word's bit in their summaries likewise,
-   signals the request event and waits for the completed event until the two agree. The value page is kept as
-   syncpoints change (gsv_syncpt_changed), so answering is acknowledging. Without an answer the first fence it polled
-   that hadn't passed failed: the end this service gave it was not one it could signal. 1 when event is that event */
+/* The SDK finds a syncpoint short of a threshold in the value page (TryWaitSyncPoint) and asks for it again: it makes
+   the syncpoint's bit in the request page differ from the acknowledge page, the word's bit in their summaries likewise,
+   signals the request event and waits for the completed event until the two agree. The value page is kept as syncpoints
+   change (gsv_syncpt_changed), so answering is acknowledging. Without an answer the first fence it polled that hadn't
+   passed failed: the end this service gave it was not one it could signal. 1 when event is that event */
 int gsv_syncpoint_request(u32 event) {
     u32 i;
     if (!event || event != gsv_sync_request_event) return 0;
@@ -561,7 +561,6 @@ static int nn_gsv_KUserWorkerSession_ExecuteSparseMapRequests(SvcObj* self, cons
    is the first two words, and later fields follow at their word offsets (Eden's packet[k] = raw word k - 2). */
 #define VI2_DEFAULT_DISPLAY 0x00746c7561666564ull /* "default" */
 #define VI2_CLIENTS 16
-#define VI2_NOT_FOUND SNX_RC_VI2_NOT_FOUND
 
 typedef struct {
     u64 token;
@@ -579,8 +578,8 @@ static u32 vi2_group_vsync[8];   /* 1 while a group is registered for the displa
 static Vi2Client vi2_clients[VI2_CLIENTS];
 static u32 vi2_client_slots;
 
-/* The displays a game can name: the console's, and the three for GameShare's guests, which the SDK opens when a game asks
-   for individual displays (nn::streamplay::CreateIndividualDisplays), whether anyone ever joins or not */
+/* The displays a game can name: the console's, and the three for GameShare's guests, which the SDK opens when a game
+   asks for individual displays (nn::streamplay::CreateIndividualDisplays), whether anyone ever joins or not */
 static const u64 vi2_display_names[] = {
     VI2_DEFAULT_DISPLAY,
     0x0031726579616c70ull, /* "player1" */
@@ -666,7 +665,7 @@ static int nn_vi2_IVi2Session_GetNotifications(SvcObj* self, IpcBuf out) {
 static int nn_vi2_IVi2Session_CreateRequestGroupEvent(SvcObj* self, const u8* request, u32* event) {
     u32 group = snx_ld_le32(request);
     (void)self;
-    R_UNLESS(group < 8, SNX_RC_VI2_INVALID_VALUE);
+    R_UNLESS(group < 8, SNX_RC_VI2_OUT_OF_RESOURCE);
     if (!vi2_group_events[group]) vi2_group_events[group] = owned_event("vi2:request group");
     *event = ev_handle(vi2_group_events[group]);
     R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
@@ -675,7 +674,7 @@ static int nn_vi2_IVi2Session_CreateRequestGroupEvent(SvcObj* self, const u8* re
 static int nn_vi2_IVi2Session_DuplicateRequestGroupEvent(SvcObj* self, const u8* request, u32 copied, u32* event) {
     u32 group = snx_ld_le32(request);
     (void)self, (void)copied;
-    R_UNLESS(group < 8 && vi2_group_events[group], VI2_NOT_FOUND);
+    R_UNLESS(group < 8 && vi2_group_events[group], SNX_RC_VI2_NOT_FOUND);
     *event = ev_handle(vi2_group_events[group]);
     R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
@@ -690,21 +689,21 @@ static int nn_vi2_IVi2Session_OpenDisplay(SvcObj* self, const u8* request) {
     Vi2Display* d = vi2_display(name);
     (void)self;
     /* the SDK asks with flags 1 for the console's display and 4 for a guest's */
-    R_UNLESS(d && (name != VI2_DEFAULT_DISPLAY || flags == 1), VI2_NOT_FOUND);
+    R_UNLESS(d && (name != VI2_DEFAULT_DISPLAY || flags == 1), SNX_RC_VI2_NOT_FOUND);
     d->refs++;
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_CloseDisplay(SvcObj* self, const u8* request) {
     Vi2Display* d = vi2_display(snx_ld_le64(request));
     (void)self;
-    R_UNLESS(d && d->refs, VI2_NOT_FOUND);
+    R_UNLESS(d && d->refs, SNX_RC_VI2_NOT_FOUND);
     d->refs--;
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_GetHdrStatus(SvcObj* self, const u8* request, u64* format, u32* reserved) {
     u64 name = snx_ld_le64(request);
     (void)self;
-    R_UNLESS(vi2_display(name), VI2_NOT_FOUND);
+    R_UNLESS(vi2_display(name), SNX_RC_VI2_NOT_FOUND);
     *format = 1; /* SDR only */
     *reserved = 0;
     R_SUCCEED();
@@ -717,7 +716,7 @@ static int nn_vi2_IVi2Session_GetDisplayState105(SvcObj* self, const u8* request
 static int nn_vi2_IVi2Session_GetBufferMaxResolution(SvcObj* self, const u8* request, u64* resolution) {
     u64 name = snx_ld_le64(request);
     (void)self;
-    R_UNLESS(vi2_display(name), VI2_NOT_FOUND);
+    R_UNLESS(vi2_display(name), SNX_RC_VI2_NOT_FOUND);
     *resolution = 1; /* 1280x720 */
     R_SUCCEED();
 }
@@ -734,7 +733,7 @@ static int nn_vi2_IVi2Session_OpenEndpoint(SvcObj* self, const u8* request) {
     u64 endpoint = snx_ld_le64(request + 8);
     u64 token = snx_ld_le64(request + 16);
     (void)self;
-    R_UNLESS(endpoint == VI2_DEFAULT_DISPLAY && d && vi2_client(token) && !d->endpoint, VI2_NOT_FOUND);
+    R_UNLESS(endpoint == VI2_DEFAULT_DISPLAY && d && vi2_client(token) && !d->endpoint, SNX_RC_VI2_NOT_FOUND);
     d->endpoint = (u32)token;
     R_SUCCEED();
 }
@@ -742,7 +741,7 @@ static int nn_vi2_IVi2Session_CloseEndpoint(SvcObj* self, const u8* request) {
     Vi2Display* d = vi2_display(snx_ld_le64(request));
     u64 endpoint = snx_ld_le64(request + 8);
     (void)self;
-    R_UNLESS(endpoint == VI2_DEFAULT_DISPLAY && d && d->endpoint, VI2_NOT_FOUND);
+    R_UNLESS(endpoint == VI2_DEFAULT_DISPLAY && d && d->endpoint, SNX_RC_VI2_NOT_FOUND);
     d->endpoint = 0;
     R_SUCCEED();
 }
@@ -752,9 +751,9 @@ static int nn_vi2_IVi2Session_RegisterClientState(SvcObj* self, const u8* reques
     u32 second = snx_ld_le32(request + 12);
     u32 slots, i;
     (void)self;
-    R_UNLESS(token && first < 32 && second < 32 && first != second && !vi2_client(token), SNX_RC_VI2_INVALID_CLIENT);
+    R_UNLESS(token && first < 32 && second < 32 && first != second && !vi2_client(token), SNX_RC_VI2_INVALID_ARGUMENT);
     slots = (1u << first) | (1u << second);
-    R_UNLESS(!(vi2_client_slots & slots), SNX_RC_VI2_INVALID_VALUE);
+    R_UNLESS(!(vi2_client_slots & slots), SNX_RC_VI2_OUT_OF_RESOURCE);
     for (i = 0; i < VI2_CLIENTS; i++) {
         if (!vi2_clients[i].token) {
             vi2_clients[i].token = token;
@@ -766,14 +765,14 @@ static int nn_vi2_IVi2Session_RegisterClientState(SvcObj* self, const u8* reques
             return 0;
         }
     }
-    R_THROW(SNX_RC_VI2_INVALID_VALUE);
+    R_THROW(SNX_RC_VI2_OUT_OF_RESOURCE);
 }
 static int nn_vi2_IVi2Session_UnregisterClientState(SvcObj* self, const u8* request) {
     u64 token = snx_ld_le64(request);
     Vi2Client* c = vi2_client(token);
     u32 i;
     (void)self;
-    R_UNLESS(token && c, VI2_NOT_FOUND);
+    R_UNLESS(token && c, SNX_RC_VI2_NOT_FOUND);
     vi2_client_slots &= ~c->slots;
     for (i = 0; i < VI2_DISPLAYS; i++)
         if (vi2_displays[i].endpoint == token) vi2_displays[i].endpoint = 0;
@@ -784,7 +783,7 @@ static int nn_vi2_IVi2Session_GetClientAvailability(SvcObj* self, const u8* requ
     u64 token = snx_ld_le64(request);
     Vi2Client* c = vi2_client(token);
     (void)self;
-    R_UNLESS(token && c, VI2_NOT_FOUND);
+    R_UNLESS(token && c, SNX_RC_VI2_NOT_FOUND);
     *available = c->available;
     R_SUCCEED();
 }
@@ -793,7 +792,7 @@ static int nn_vi2_IVi2Session_CancelClientBuffer(SvcObj* self, const u8* request
     u32 slot = snx_ld_le32(request + 8) & 0xff;
     Vi2Client* c = vi2_client(token);
     (void)self;
-    R_UNLESS(token && c && slot < 15, VI2_NOT_FOUND);
+    R_UNLESS(token && c && slot < 15, SNX_RC_VI2_NOT_FOUND);
     c->available |= 1ull << slot;
     *available = c->available;
     *reserved = 0;
@@ -813,19 +812,19 @@ static int nn_vi2_IVi2Session_PresentClientBuffer(SvcObj* self, const u8* reques
     (void)self;
     *available = 0;
     *reserved = 0;
-    R_UNLESS(token && c && slot < 15, VI2_NOT_FOUND);
-    R_UNLESS(image && image < next_native_image_handle, VI2_NOT_FOUND);
+    R_UNLESS(token && c && slot < 15, SNX_RC_VI2_NOT_FOUND);
+    R_UNLESS(image && image < next_native_image_handle, SNX_RC_VI2_NOT_FOUND);
     img = &native_images[image];
-    R_UNLESS(img->memory_handle && native_memory_cpu[img->memory_handle], VI2_NOT_FOUND);
+    R_UNLESS(img->memory_handle && native_memory_cpu[img->memory_handle], SNX_RC_VI2_NOT_FOUND);
     w = (dims & 0xffffu) + 1;
     h = (dims >> 16) + 1;
-    R_UNLESS(w && h, VI2_NOT_FOUND);
+    R_UNLESS(w && h, SNX_RC_VI2_NOT_FOUND);
     c->available &= ~(1ull << slot); /* in use until the fence is reached */
     *available = c->available;
     p = (Vi2Present*)malloc(sizeof *p);
     if (!p) {
         c->available |= 1ull << slot;
-        R_THROW(SNX_RC_VI2_INVALID_VALUE);
+        R_THROW(SNX_RC_VI2_OUT_OF_RESOURCE);
     }
     p->cpu = native_memory_cpu[img->memory_handle];
     p->w = w;
@@ -843,7 +842,7 @@ static int nn_vi2_IVi2Session_BindClientDisplay(SvcObj* self, const u8* request)
     Vi2Client* c = vi2_client(token);
     Vi2Display* d = vi2_display(name);
     (void)self;
-    R_UNLESS(token && c && d && d->refs, VI2_NOT_FOUND);
+    R_UNLESS(token && c && d && d->refs, SNX_RC_VI2_NOT_FOUND);
     c->display = name;
     R_SUCCEED();
 }
@@ -851,7 +850,7 @@ static int nn_vi2_IVi2Session_UnbindClientDisplay(SvcObj* self, const u8* reques
     u64 token = snx_ld_le64(request);
     Vi2Client* c = vi2_client(token);
     (void)self;
-    R_UNLESS(token && c, VI2_NOT_FOUND);
+    R_UNLESS(token && c, SNX_RC_VI2_NOT_FOUND);
     c->display = 0;
     R_SUCCEED();
 }
@@ -861,7 +860,7 @@ static int nn_vi2_IVi2Session_UnbindClientDisplay(SvcObj* self, const u8* reques
 static int vi2_register_monitor(const u8* request, int kind) {
     u64 name = snx_ld_le64(request);
     u32 group = snx_ld_le32(request + 8);
-    R_UNLESS(group < 8 && vi2_display(name) && vi2_group_events[group], VI2_NOT_FOUND);
+    R_UNLESS(group < 8 && vi2_display(name) && vi2_group_events[group], SNX_RC_VI2_NOT_FOUND);
     if (kind == 0)
         vi2_group_vsync[group] = 1;
     else
@@ -871,7 +870,7 @@ static int vi2_register_monitor(const u8* request, int kind) {
 static int vi2_unregister_monitor(const u8* request) {
     u64 name = snx_ld_le64(request);
     u32 group = snx_ld_le32(request + 8);
-    R_UNLESS(group < 8 && vi2_display(name), VI2_NOT_FOUND);
+    R_UNLESS(group < 8 && vi2_display(name), SNX_RC_VI2_NOT_FOUND);
     vi2_group_vsync[group] = 0;
     R_SUCCEED();
 }
@@ -936,19 +935,19 @@ static int nn_vi2_IVi2Session_SetDisplayParameter301(SvcObj* self, const u8* req
 static int nn_vi2_IVi2Session_SetClientOutputEncoding(SvcObj* self, const u8* request) {
     u64 token = snx_ld_le64(request);
     (void)self;
-    R_UNLESS(token && vi2_client(token), VI2_NOT_FOUND);
+    R_UNLESS(token && vi2_client(token), SNX_RC_VI2_NOT_FOUND);
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_SetClientOutputLevels(SvcObj* self, const u8* request) {
     u64 token = snx_ld_le64(request);
     (void)self;
-    R_UNLESS(token && vi2_client(token), VI2_NOT_FOUND);
+    R_UNLESS(token && vi2_client(token), SNX_RC_VI2_NOT_FOUND);
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_GetDisplayState354(SvcObj* self, const u8* request, u64* value) {
     u64 name = snx_ld_le64(request);
     (void)self;
-    R_UNLESS(vi2_display(name), VI2_NOT_FOUND);
+    R_UNLESS(vi2_display(name), SNX_RC_VI2_NOT_FOUND);
     *value = 1;
     R_SUCCEED();
 }

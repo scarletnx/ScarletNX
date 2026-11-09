@@ -9,6 +9,7 @@
    wait */
 #include "gnuabi/network/network.h"
 #include "gnuabi/filesystem/internal.h"
+#include "common/utilities/endian.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -25,12 +26,6 @@ enum {
 #define EPOLLONESHOT (1u << 30)
 /* EPOLLET (1u << 31) needs nothing: see above */
 
-static uint16_t get16(const unsigned char* p) { return (uint16_t)(p[0] | p[1] << 8); }
-static uint32_t get32(const unsigned char* p) {
-    return (uint32_t)(p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24);
-}
-static uint64_t get64(const unsigned char* p) { return get32(p) | (uint64_t)get32(p + 4) << 32; }
-
 /* a timespec {s64 sec, s64 nsec} as milliseconds, rounded up; -1 for none */
 static int timespec_ms(GnuMemory* m, uint64_t a, int* ms) {
     *ms = -1;
@@ -38,7 +33,7 @@ static int timespec_ms(GnuMemory* m, uint64_t a, int* ms) {
     unsigned char t[16];
     int e = gnu_memory_read(m, a, t, 16);
     if (e) return e;
-    int64_t sec = (int64_t)get64(t), nsec = (int64_t)get64(t + 8);
+    int64_t sec = (int64_t)snx_ld_le64(t), nsec = (int64_t)snx_ld_le64(t + 8);
     if (sec < 0 || nsec < 0 || nsec >= 1000000000) return -GNU_EINVAL;
     int64_t total = sec > 0x7FFFFFFF / 1000 ? 0x7FFFFFFF : sec * 1000 + (nsec + 999999) / 1000000;
     *ms = total > 0x7FFFFFFF ? 0x7FFFFFFF : (int)total;
@@ -120,8 +115,8 @@ int64_t gnu_net_ppoll(GnuProcess* p, const uint64_t a[6]) {
     Wait* w = calloc(n ? (size_t)n : 1, sizeof *w);
     if (!w) return -GNU_ENOMEM;
     for (uint64_t i = 0; i < n; i++) { /* pollfd {s32 fd, s16 events, s16 revents} */
-        w[i].fd = (int32_t)get32(fds + i * 8);
-        w[i].events = gnu_net_poll_in(get16(fds + i * 8 + 4));
+        w[i].fd = (int32_t)snx_ld_le32(fds + i * 8);
+        w[i].events = gnu_net_poll_in(snx_ld_le16(fds + i * 8 + 4));
     }
     int64_t r = wait_fds(p, w, (size_t)n, ms, 1);
     for (uint64_t i = 0; r >= 0 && i < n; i++) {
@@ -276,8 +271,8 @@ static int64_t epoll_ctl_locked(GnuProcess* p, Epoll* ep, const uint64_t a[6]) {
             /* fallthrough */
         case EPOLL_CTL_MOD:
             if (!it) return -GNU_ENOENT;
-            it->events = get32(ev);
-            it->data = get64(ev + 8);
+            it->events = snx_ld_le32(ev);
+            it->data = snx_ld_le64(ev + 8);
             it->disarmed = 0;
             return 0;
         case EPOLL_CTL_DEL:
@@ -342,8 +337,8 @@ static int64_t epoll_pwait_held(GnuProcess* p, Epoll* ep, const uint64_t a[6], i
         if (gnu_vfs_fd_info(&p->vfs, it->fd, &now) || now.identity != it->identity) continue;
         unsigned char* e = out + count++ * EPOLL_EVENT_SIZE;
         memset(e, 0, EPOLL_EVENT_SIZE);
-        gnu_vfs_put32(e, gnu_net_poll_out(rev));
-        gnu_vfs_put64(e + 8, it->data);
+        snx_st_le32(e, gnu_net_poll_out(rev));
+        snx_st_le64(e + 8, it->data);
         if (it->events & EPOLLONESHOT) it->disarmed = 1;
     }
     gnu_mutex_unlock(&ep->lock);

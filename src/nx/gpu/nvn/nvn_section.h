@@ -3,7 +3,7 @@
 /* An Ounce control section (version 0xc9 at 0x04, formats 7 and 11): the fields of its program's stage and of a
    mesh or task program, from the bytes of the section (0xd8 of them). One game's sections show them:
    - 0x56 (halfword): the program's NVN stage. 6 is a task program and 7 a mesh program, in the order of the
-     mesh programs' code areas, their sizes and the header after a mesh program's code (docs/OUNCE.md).
+     mesh programs' code areas, their sizes and the header after a mesh program's code (docs/platforms/nx/ounce.md).
    - 0x58 (halfword): the invocations of the workgroup. 0x5a (halfword): the task payload's bytes, in whole 128-byte
      lines. A mesh program gives the payload of its task program, or 0x80 when it has none.
    - 0x5e (byte): 1 when a task program launches the mesh program. 0x5f (byte): the vertices of a primitive (3).

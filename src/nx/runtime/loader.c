@@ -11,6 +11,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "common/utilities/endian.h"
 #include <lz4.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +21,6 @@ u64 g_code_lo, g_code_hi;
 
 #define PAGE 0x1000ull
 
-static u32 rd32(const u8* p) { return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24; }
 static u64 page_up(u64 v) { return (v + PAGE - 1) & ~(PAGE - 1); }
 static u64 page_down(u64 v) { return v & ~(PAGE - 1); }
 static int inside(u64 offset, u64 length, u64 total) { return offset <= total && length <= total - offset; }
@@ -42,15 +42,15 @@ static int open_module(const SnxModInfo* mi, PFileMap* map) {
 static int check_nro(const SnxModInfo* mi, const PFileMap* map) {
     const u8* f = map->data;
     u32 image, text_off, text_size, ro_off, ro_size, data_off, data_size, bss;
-    if (map->size < 0x80 || memcmp(f + 0x10, "NRO0", 4) || (rd32(f + 0x1c) & 2)) goto invalid;
-    image = rd32(f + 0x18);
-    text_off = rd32(f + 0x20);
-    text_size = rd32(f + 0x24);
-    ro_off = rd32(f + 0x28);
-    ro_size = rd32(f + 0x2c);
-    data_off = rd32(f + 0x30);
-    data_size = rd32(f + 0x34);
-    bss = rd32(f + 0x38);
+    if (map->size < 0x80 || memcmp(f + 0x10, "NRO0", 4) || (snx_ld_le32(f + 0x1c) & 2)) goto invalid;
+    image = snx_ld_le32(f + 0x18);
+    text_off = snx_ld_le32(f + 0x20);
+    text_size = snx_ld_le32(f + 0x24);
+    ro_off = snx_ld_le32(f + 0x28);
+    ro_size = snx_ld_le32(f + 0x2c);
+    data_off = snx_ld_le32(f + 0x30);
+    data_size = snx_ld_le32(f + 0x34);
+    bss = snx_ld_le32(f + 0x38);
     if (image < 0x80 || image > map->size || image > mi->size || (u64)bss > mi->size - image) goto invalid;
     if (text_off || text_size < 0x80 || ro_off != text_size || (u64)ro_off + ro_size != data_off ||
         (u64)data_off + data_size != image)
@@ -75,18 +75,20 @@ static int check_nso(const SnxModInfo* mi, const PFileMap* map) {
         WARN("%s is not an NSO\n", mi->name);
         return -1;
     }
-    flags = rd32(f + 0x0c);
+    flags = snx_ld_le32(f + 0x0c);
     for (i = 0; i < 3; i++) {
-        u32 file_off = rd32(f + 0x10 + i * 0x10), mem_off = rd32(f + 0x14 + i * 0x10), size = rd32(f + 0x18 + i * 0x10);
-        u32 stored = flags & (1u << i) ? rd32(f + 0x60 + i * 4) : size;
+        u32 file_off = snx_ld_le32(f + 0x10 + i * 0x10), mem_off = snx_ld_le32(f + 0x14 + i * 0x10),
+            size = snx_ld_le32(f + 0x18 + i * 0x10);
+        u32 stored = flags & (1u << i) ? snx_ld_le32(f + 0x60 + i * 4) : size;
         if (!inside(file_off, stored, map->size) || !inside(mem_off, size, mi->size)) {
             WARN("%s: segment %u lies outside the file or the module\n", mi->name, (unsigned)i);
             return -1;
         }
     }
-    if (memcmp(f + 0x40, mi->build_id, 32) || rd32(f + 0x14) != mi->text_off || rd32(f + 0x18) != mi->text_size ||
-        rd32(f + 0x24) != mi->ro_off || rd32(f + 0x28) != mi->ro_size || rd32(f + 0x34) != mi->data_off ||
-        rd32(f + 0x38) != mi->data_size) {
+    if (memcmp(f + 0x40, mi->build_id, 32) || snx_ld_le32(f + 0x14) != mi->text_off ||
+        snx_ld_le32(f + 0x18) != mi->text_size || snx_ld_le32(f + 0x24) != mi->ro_off ||
+        snx_ld_le32(f + 0x28) != mi->ro_size || snx_ld_le32(f + 0x34) != mi->data_off ||
+        snx_ld_le32(f + 0x38) != mi->data_size) {
         WARN("%s is not the NSO that was recompiled: recompile the game\n", mi->name);
         return -2;
     }
@@ -96,16 +98,17 @@ static int check_nso(const SnxModInfo* mi, const PFileMap* map) {
 /* The NSO's segments, decompressed where they go. The mapping is already zeroed */
 static int copy_nso(const SnxModInfo* mi, const PFileMap* map) {
     const u8* f = map->data;
-    u32 flags = rd32(f + 0x0c), i;
+    u32 flags = snx_ld_le32(f + 0x0c), i;
     for (i = 0; i < 3; i++) {
-        u32 file_off = rd32(f + 0x10 + i * 0x10), mem_off = rd32(f + 0x14 + i * 0x10), size = rd32(f + 0x18 + i * 0x10);
+        u32 file_off = snx_ld_le32(f + 0x10 + i * 0x10), mem_off = snx_ld_le32(f + 0x14 + i * 0x10),
+            size = snx_ld_le32(f + 0x18 + i * 0x10);
         u8* out = GP(mi->base + mem_off);
         if (!(flags & (1u << i))) {
             memcpy(out, f + file_off, size);
             continue;
         }
         if (!size) continue;
-        u32 stored = rd32(f + 0x60 + i * 4);
+        u32 stored = snx_ld_le32(f + 0x60 + i * 4);
         if (snx_zbic_is(f + file_off, stored)) {
             if (snx_zbic_decompress(out, size, f + file_off, stored) != (long)size) {
                 WARN("ZBIC failed in %s\n", mi->name);
@@ -174,7 +177,7 @@ static int load_module(const SnxModInfo* mi) {
     if (!rc) {
         memset(GP(mi->base), 0, (size_t)mi->size);
         if (mi->is_nro)
-            memcpy(GP(mi->base), map.data, rd32(map.data + 0x18));
+            memcpy(GP(mi->base), map.data, snx_ld_le32(map.data + 0x18));
         else if (!(rc = copy_nso(mi, &map)))
             rc = patch_nso(mi);
     }

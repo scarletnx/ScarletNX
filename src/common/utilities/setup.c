@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/setup.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/users.h"
 #include "common/utilities/ascii.h"
@@ -137,12 +138,12 @@ int snx_setup_read(const char* path, SnxSetup* setup, char* why, size_t why_size
 }
 int snx_setup_done(const char* path, const SnxSetup* setup, char* why, size_t why_size) {
     char *dir = snx_dirname(path), *staged = snx_format("%s.new", path), *text;
-    text = snx_format("; ScarletNX's setup (docs/USAGE.md#setup): the version of the steps it asked and the notices it "
+    text = snx_format("; ScarletNX's setup (docs/user/usage.md#setup): the version of the steps it asked and the notices it "
                       "showed.\n; Delete this file, or run scarletnx --setup, to go through it again\n"
                       "[setup]\nversion = %d\nnotices = %d\n",
                       setup->version > SNX_SETUP_VERSION ? setup->version : SNX_SETUP_VERSION,
                       setup->notices > SNX_NOTICES ? setup->notices : SNX_NOTICES);
-    int failed = !dir || snx_mkdirs(dir) || snx_write_file(staged, text, strlen(text)) || snx_replace(staged, path);
+    int failed = !dir || snx_mkdirs(dir) || snx_write_file(staged, text, strlen(text)) || plat_replace_file(staged, path);
     if (failed) {
         remove(staged);
         snprintf(why, why_size, "%s could not be written", path);
@@ -347,7 +348,7 @@ int snx_keys_put(const char* path, const void* data, size_t size, char* why, siz
 #ifndef _WIN32
     if (!failed) failed = chmod(staged, 0600) != 0;
 #endif
-    if (!failed) failed = snx_replace(staged, path);
+    if (!failed) failed = plat_replace_file(staged, path);
     if (failed) snx_os_error(why, why_size); /* before the cleanup's calls set another */
     if (temporary) snx_remove_tree(temporary);
     free(staged);
@@ -462,7 +463,7 @@ static int ini_line(const char* line, size_t n, char* section, size_t section_si
 /* text written at path through a file beside it: 0, else -1 with why */
 static int put_text(const char* path, const char* text, size_t size, char* why, size_t why_size) {
     char *dir = snx_dirname(path), *staged = snx_format("%s.new", path);
-    int failed = !dir || snx_mkdirs(dir) || snx_write_file(staged, text, size) || snx_replace(staged, path);
+    int failed = !dir || snx_mkdirs(dir) || snx_write_file(staged, text, size) || plat_replace_file(staged, path);
     if (failed) {
         remove(staged);
         snprintf(why, why_size, "%s could not be written", path);

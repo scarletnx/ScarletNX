@@ -80,6 +80,22 @@ static inline u32 sm86_field(const Sm86Insn* in, unsigned lo, unsigned n) {
     return (u32)(v & ((1ull << n) - 1));
 }
 
+/* A BRA's or an EXIT's predicate operand, bits 87-89 with 90 its negation (PT when it has none), which the assembler
+   writes after the mnemonic: @P0 EXIT P1, @!P1 BRA !P2, target. The instruction takes effect only where its guard and
+   this predicate both hold. The compiler exits the lanes a KILL took so: P1 = a < e && P0, @P1 KILL, then P1 = a < e
+   and @P0 EXIT P1 before the outputs' MOVs */
+static inline int sm86_has_cond(const Sm86Insn* in) { return in->op == SM86_BRA || in->op == SM86_EXIT; }
+/* whether the instruction runs in every lane: its guard PT, and a BRA's or an EXIT's operand PT too */
+static inline int sm86_always(const Sm86Insn* in) {
+    return in->pred == SM86_PT && !in->pred_not &&
+           (!sm86_has_cond(in) || (sm86_field(in, 87, 3) == SM86_PT && !sm86_field(in, 90, 1)));
+}
+/* whether it runs in none: its guard !PT, or a BRA's or an EXIT's operand !PT */
+static inline int sm86_never(const Sm86Insn* in) {
+    return (in->pred == SM86_PT && in->pred_not) ||
+           (sm86_has_cond(in) && sm86_field(in, 87, 3) == SM86_PT && sm86_field(in, 90, 1));
+}
+
 /* Decodes the instruction lo, hi into *out: 1 when the opcode is known, 0 when it is not (out->op is SM86_NONE, the
    rest is filled as far as the common fields go) */
 int sm86_decode(u64 lo, u64 hi, Sm86Insn* out);
@@ -119,13 +135,8 @@ int sm86_find_programs(const u8* data, u32 size, Sm86Program* out, int max);
    textures, global buffers, attributes. Returns malloc'd words, their count in *word_count, or NULL with
    si->unsupported and si->first_unsupported set */
 u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count);
-/* sm86_to_spirv, with the device's FP32 flush to zero (can_flush, SH_FTZ_* of shader.h) as shader_to_spirv takes it:
-   the DenormFlushToZero execution mode where every FADD, FMUL and FFMA flushes and the device has the mode, nothing on
-   a device that flushes by itself, else a flush of each such operand and result. sm86_to_spirv is SH_FTZ_EMULATE */
-u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count,
-                       int can_flush);
-/* Task and mesh programs (docs/OUNCE.md, "Mesh shaders") translate to the TaskEXT and MeshEXT execution models of
-   VK_EXT_mesh_shader. The caller gives the stage, ST_TS or ST_MS, from the program's NVN control section
+/* Task and mesh programs (docs/platforms/nx/ounce.md, "Mesh shaders") translate to the TaskEXT and MeshEXT execution
+   models of VK_EXT_mesh_shader. The caller gives the stage, ST_TS or ST_MS, from the program's NVN control section
    (nvn_section_stage), as the SPH cannot tell it: sph is the SPH of a vertex program, or of a tessellation evaluation
    program for a mesh program after a task program. The interface of such a module:
    - si->mesh: the key, from the section (nvn_section_mesh) and the code area: threads, payload, has_task,
@@ -170,6 +181,11 @@ static inline u64 sm86_mesh_output_bytes(const u32* sph, const ShMesh* mesh, u32
     u64 primitives = snx_align_up(mesh->max_primitives, primitive_granule ? primitive_granule : 1);
     return 16u * (vertex * vertices + primitive * primitives);
 }
+/* sm86_to_spirv, with the device's FP32 flush to zero (can_flush, SH_FTZ_* of shader.h) as shader_to_spirv takes it:
+   the DenormFlushToZero execution mode where every FADD, FMUL and FFMA flushes and the device has the mode, nothing on
+   a device that flushes by itself, else a flush of each such operand and result. sm86_to_spirv is SH_FTZ_EMULATE */
+u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count,
+                       int can_flush);
 /* Debug: with g_shader_sm86_dump (the sm86_dump setting) naming a folder, the bytes (and the 32 SPH words, NULL for
    none) go to DIR/sm86_<kind>_<hash>.bin (and .sph), and why to DIR/sm86_<kind>_<hash>.txt. sm86_to_spirv writes each
    program it refuses, sm86_find_programs each block without a complete program. The files are game data: keep

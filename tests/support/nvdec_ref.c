@@ -2,13 +2,13 @@
    Copyright 2026 the ScarletNX contributors */
 /* An NVDEC picture written into its surfaces in guest memory on the CPU: the reference the tests hold the renderer's
    nvdec_write to (tests/nvdec_packets.c, tests/nvdec_vp9_vectors.c, tests/vulkan_headless.c). The runtime lays every
-   picture out on the GPU (vk/nvdec.c, docs/GPU_OWNERSHIP.md), so this file isn't built into it */
+   picture out on the GPU (vk/nvdec.c, docs/layers/gpu/ownership.md), so this file isn't built into it */
 #include <string.h>
 #include "nvdec_ref.h"
 #include "nx/memory/mem.h"
 
-/* NV12 planes, block linear (or pitch linear). The layout's offset is separable, offset(x, y) = offset(x, 0) + offset(0, y), so the
-   columns of 16-byte runs are walked once and each row once */
+/* NV12 planes, block linear (or pitch linear). The layout's offset is separable, offset(x, y) = offset(x, 0) +
+   offset(0, y), so the columns of 16-byte runs are walked once and each row once */
 void nvdec_write_ref(const NvdecPic* p) {
     u64 col[4096 / 16];
     u8 line[4096 + 2], *py = GP(p->luma), *pc = GP(p->chroma);

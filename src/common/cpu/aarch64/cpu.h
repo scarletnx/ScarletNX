@@ -33,7 +33,7 @@ typedef double f64;
 /* The version of the contract between a game module and the runtime: this header (the CPU layout, the SNX_FP_*
    numbers), the helpers in cpu_helpers.c, RtAPI and the module descriptor. The recompiler writes it into each
    module and the runtime refuses any other. Bump it for any change of layout or of a helper's results:
-   docs/ARCHITECTURE.md's Module ABI says what changes it, and tests/module_contract.c fails when the layout moves
+   docs/dev/architecture.md's Module ABI says what changes it, and tests/module_contract.c fails when the layout moves
    while it stays.
    7: CPU.poll and RtAPI.poll, read on the backward branches of generated code.
    8: the FP/SIMD emitters and discovery changes.
@@ -550,7 +550,7 @@ SNX_INLINE void dc_zva(u8* M, u64 a) { memset(MP(a & ~(u64)63), 0, 64); }
    stores stay plain host ones, on x86-64, AArch64 and PowerPC64 hosts alike.
    The monitor is value based: a store-exclusive succeeds when the monitor is armed for the same address and size
    and a compare-and-swap from the value the load read succeeds. It is cleared after each store-exclusive. Status
-   0 is success. Unlike hardware it sees no ABA and ordinary stores don't clear it (docs/DIVERGENCES.md). */
+   0 is success. Unlike hardware it sees no ABA and ordinary stores don't clear it (docs/history/divergences.md). */
 /* Guest memory holds whatever the guest stored last, at any width: the helpers' typed accesses to it go through
    these, which may alias every other access as a char's would, so none is assumed apart from another of a different
    type once the helpers are inlined into each other */

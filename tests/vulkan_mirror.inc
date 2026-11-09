@@ -63,8 +63,9 @@ static int mirror_write(u64 cpu, u32 n, u8 value, int logged) {
 
 /* A dispatch's write log into the mirror's mask (vk_mirror_fold): two buffers of one dispatch, the first at a byte
    that is not the first of a mask word, the second over it. Only the windows flagged are taken, the bits past a
-   buffer's length go, and the bits of the two buffers meet in the mask */
-static int check_mirror_fold(u64 cpu, u64 gva) {
+   buffer's length go, and the bits of the two buffers meet in the mask. With gpu, the log in the GPU's memory, as a
+   dispatch in the mirror takes it (vk_wlog_get_gpu), cleared on the GPU after the fold (vk_wlog_clear) */
+static int check_mirror_fold(u64 cpu, u64 gva, int gpu) {
     const u64 a = cpu + 0x1005, b = a + 8; /* a: bit 5 of its mask word */
     const u32 alen = 0x1800, blen = 0x1ff0; /* b inside the 3 pages mapped */
     static u8 want[0x2100]; /* a byte for each guest byte from cpu + 0x1000 */
@@ -91,15 +92,16 @@ static int check_mirror_fold(u64 cpu, u64 gva) {
             if (runs[r].flag && x < len) want[at - (cpu + 0x1000)] = 1;
         }
     }
-    VkWriteLog* log = vk_wlog_get(2);
-    CHECK(log && vk_wlog_size(log) == sizeof words);
+    VkWriteLog* log = gpu ? vk_wlog_get_gpu(2) : vk_wlog_get(2);
+    CHECK(log && vk_wlog_size(log) == sizeof words && vk_wlog_on_gpu(log) == gpu);
     VkBuffer src;
     u64 at;
     u8* p = vk_stage_upload(sizeof words, 16, &src, &at);
     CHECK(p);
     memcpy(p, words, sizeof words);
-    vk_finish(); /* the mask clear of what came before */
+    vk_finish(); /* the mask clear of what came before, and a new log's */
     vk_render_end();
+    vk_all_barrier(vk_cmd());
     VkBufferCopy copy = {at, 0, sizeof words};
     rec_CmdCopyBuffer(vk_cmd(), src, vk_wlog_buffer(log), 1, &copy);
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -121,6 +123,17 @@ static int check_mirror_fold(u64 cpu, u64 gva) {
                     mask[i / 32] >> (i % 32) & 1, want[i]);
             return 1;
         }
+    if (gpu) { /* every word of the log zero again, for the next dispatch that takes it */
+        static u32 after[2 * SH_WLOG_PART];
+        vk_wlog_clear(vk_cmd(), log);
+        CHECK(!buffer_read(vk_wlog_buffer(log), 0, sizeof after, (u8*)after));
+        for (u32 i = 0; i < 2 * SH_WLOG_PART; i++)
+            if (after[i]) {
+                fprintf(stderr, "vulkan_headless: mirror fold: word %#x of the GPU's log is %#x after its clear\n", i,
+                        after[i]);
+                return 1;
+            }
+    }
     vk_wlog_unref(log);
     /* the mirror's bytes there are guest memory's: landing the bits changes nothing */
     vk_mirror_publish();
@@ -276,7 +289,8 @@ static int check_mirror(void) {
         CHECK(!buffer_read(buf, off, 20, u));
         CHECK(!mirror_expect(u, guest, 20, 4, 8, 0x3c));
     }
-    CHECK(!check_mirror_fold(cpu, gva));
+    CHECK(!check_mirror_fold(cpu, gva, 0));
+    CHECK(!check_mirror_fold(cpu, gva, 1));
     CHECK(g_vk_validation_messages == validation);
     vk_unlock();
     puts("The GPU mirror takes the bytes the CPU changed and keeps those the GPU wrote; the bytes its programs logged "

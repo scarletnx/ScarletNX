@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
    Ported from Vita3K's shader recompiler (GPL-2.0-or-later, Copyright (C) 2026 Vita3K team) at Vita3K/Vita3K f68b6ee:
-   shader/src/usse_translator_entry.cpp (the instructions' bit patterns), usse_decode_helpers.cpp (operand banks,
-   register numbers, swizzle tables, write masks), usse_utilities.cpp (operand loads and stores, packing),
+   shader/src/usse_translator_entry.cpp (the instructions' bit patterns, which usse.decode holds),
+   usse_decode_helpers.cpp (operand banks, register numbers, swizzle tables, write masks), usse_utilities.cpp (operand
+   loads and stores, packing),
    translator/data.cpp (VMOV, VPCK, VLDST, LIMM), translator/alu.cpp (VMAD, VMAD2, VDP, VNMAD, VCOMP, SOP2, SOP2M),
    translator/ialu.cpp (VBW, I16MAD, I32MAD, I32MAD2), translator/branch_cond.cpp (VTST, VTSTMSK),
    translator/special.cpp (KILL, DEPTHF, SMBO), translator/texture.cpp (texture reads, SMP), usse_program_analyzer.cpp
@@ -30,6 +31,7 @@
 #define USSE_NAN     NAN
 #define USSE_NEG_NAN (-NAN)
 #include "vita/gpu/usse_constants.inc"
+#include "common/utilities/bits.h"
 
 /* ---- the operand model (usse_types.h) ---- */
 typedef enum {
@@ -100,7 +102,22 @@ typedef struct {
     int literal_register;
     uint32_t literal_base;
     uint32_t literals, literal_words; /* the literal buffer as a Private array, for reads at a register's offset */
+    /* the decode of the instruction: its pattern's name, whether it is translated, and the end of its predicate's if
+       (0 for none). A survey (usse_survey) only names the instructions */
+    const char* name;
+    bool known, survey;
+    uint32_t merge;
 } T;
+
+/* the decoder that tools/decodetree makes from usse.decode: decode_usse(t, word) calls the trans_ function of the
+   word's pattern with its fields (arg_<pattern>), and answers false for a word that matches no pattern */
+typedef T DisasContext;
+#include "common/utilities/decodetree.h"
+/* the generated extractors take a context that they leave unused, as QEMU's do */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#include "decode-usse.inc"
+#pragma GCC diagnostic pop
 
 static bool fail(T* t, const char* format, ...) {
     if (!t->failed) {
@@ -475,47 +492,43 @@ static void reset_repeats(T* t) {
 /* operands' indices into repeat_increase: src0, src1, src2, dest */
 enum { O_SRC0, O_SRC1, O_SRC2, O_DEST };
 
-/* ---- the instructions (fields in order of their letters in the bit patterns) ---- */
-typedef bool (*Handler)(T* t, const uint32_t* f);
+/* ---- the instructions: each a handler of its pattern's fields (usse.decode, arg_<pattern>) ---- */
 static unsigned popcount4(unsigned m) { return (m & 1) + ((m >> 1) & 1) + ((m >> 2) & 1) + ((m >> 3) & 1); }
 
-/* VMOV: p s t r y d e c b m a n o i w k l f g h j q u v (data.cpp) */
-static bool vmov(T* t, const uint32_t* f) {
-    unsigned test2 = f[2], comp_sel = f[3], dest_ext = f[5], src0_ext = f[6], src1_ext = f[7], src2_ext = f[8];
-    unsigned move_type = f[9], repeat_count = f[10], test1 = f[13], src0_swiz = f[14], src0_bank = f[15];
-    unsigned dest_bank = f[16], src1_bank = f[17], src2_bank = f[18], mask = f[19], dest_n = f[20], src0_n = f[21];
-    unsigned src1_n = f[22], src2_n = f[23];
-    Type type = (Type)f[12];
-    if (move_type == 3) return fail(t, "VMOV move type 3");
-    bool doubled = type == T_C10 || type == T_F16 || type == T_F32, conditional = move_type != 0;
+/* VMOV (data.cpp) */
+static bool vmov(T* t, const arg_VMOV* arg) {
+    unsigned mask = arg->mask;
+    Type type = (Type)arg->data_type;
+    if (arg->move_type == 3) return fail(t, "VMOV move type 3");
+    bool doubled = type == T_C10 || type == T_F16 || type == T_F32, conditional = arg->move_type != 0;
     unsigned bits = doubled ? 7 : 6;
-    Operand dest = decode_dest(t, dest_n, dest_bank, dest_ext, doubled, bits);
-    Operand src1 = decode_src12(t, src1_n, src1_bank, src1_ext, doubled, bits);
+    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, doubled, bits);
+    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, doubled, bits);
     if (type == T_F16 || type == T_F32)
         mask = decode_write_mask(dest.bank, mask, type == T_F16);
     else if (!doubled)
         mask = 1;
     if (doubled)
-        vec34_swizzle(src1.swizzle, src0_swiz, false, 2);
+        vec34_swizzle(src1.swizzle, arg->src0_swiz, false, 2);
     else
         memcpy(src1.swizzle, default_swizzle, 4);
     src1.type = dest.type = type;
     Operand src0 = {0}, src2 = {0};
-    Type test_type = move_type == 2 ? T_U8 : type;
-    unsigned compare = (test2 << 1) | test1; /* 0 == 0, 1 != 0, 2 < 0, 3 <= 0 */
+    Type test_type = arg->move_type == 2 ? T_U8 : type;
+    unsigned compare = (arg->test2 << 1) | arg->test1; /* 0 == 0, 1 != 0, 2 < 0, 3 <= 0 */
     if (conditional) {
-        src0 = decode_src0(t, src0_n, src0_bank, src0_ext, doubled, bits);
+        src0 = decode_src0(t, arg->src0_n, arg->src0_bank, arg->src0_ext, doubled, bits);
         src0.type = test_type;
-        src2 = decode_src12(t, src2_n, src2_bank, src2_ext, doubled, bits);
+        src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, doubled, bits);
         src2.type = type;
-        if (comp_sel) memcpy(src0.swizzle, src1.swizzle, 4);
+        if (arg->comp_sel) memcpy(src0.swizzle, src1.swizzle, 4);
         memcpy(src2.swizzle, src1.swizzle, 4);
     }
     if (doubled && (type == T_F16 || type == T_F32))
         set_multiplier(t, 2, 2, 2, 2);
     else
         set_multiplier(t, 1, 1, 1, 1);
-    for (unsigned r = 0; r <= repeat_count && !t->failed; ++r) {
+    for (int r = 0; r <= arg->repeat_count && !t->failed; ++r) {
         Value a = load(t, src1, mask, repeat_offset(t, &src1, r, O_SRC1, R_SLMSI)), result = a;
         if (conditional) {
             Value test = load(t, src0, mask, repeat_offset(t, &src0, r, O_SRC0, R_SLMSI));
@@ -541,58 +554,48 @@ static bool vmov(T* t, const uint32_t* f) {
     return !t->failed;
 }
 
-/* VMAD (vec3/vec4 multiply-add with the GPI registers): p s g o d e r a i t n w c b f h z k j l m q u v x y A B */
-static bool vmad(T* t, const uint32_t* f) {
-    unsigned gpi1_swiz_ext = f[2], opcode2 = f[3], dest_ext = f[4], src1_ext = f[6], repeat_mode = f[7];
-    unsigned gpi0_abs = f[8], repeat_count = f[9], mask = f[11], src1_neg = f[12], src1_abs = f[13];
-    unsigned gpi1_neg = f[14], gpi1_abs = f[15], gpi0_swiz_ext = f[16], dest_bank = f[17], src1_bank = f[18];
-    unsigned gpi0_n = f[19], dest_n = f[20], gpi0_swiz = f[21], gpi1_swiz = f[22], gpi1_n = f[23], gpi0_neg = f[24];
-    unsigned src1_swiz_ext = f[25], src1_swiz = f[26], src1_n = f[27];
-    int type = opcode2 ? 2 : 1;
-    Operand src1 = decode_src12(t, src1_n, src1_bank, src1_ext, true, 7);
-    Operand dest = decode_dest(t, dest_n, dest_bank, dest_ext, true, 7);
-    Operand src0 = {gpi0_n, B_INTERNAL, F_GPI, {0}, T_F32}, src2 = {gpi1_n, B_INTERNAL, F_GPI, {0}, T_F32};
-    vec34_swizzle(src1.swizzle, src1_swiz, src1_swiz_ext, type);
-    vec34_swizzle(src0.swizzle, gpi0_swiz, gpi0_swiz_ext, type);
-    vec34_swizzle(src2.swizzle, gpi1_swiz, gpi1_swiz_ext, type);
-    src1.flags |= (src1_abs ? F_ABS : 0) | (src1_neg ? F_NEG : 0);
-    src0.flags |= (gpi0_abs ? F_ABS : 0) | (gpi0_neg ? F_NEG : 0);
-    src2.flags |= (gpi1_abs ? F_ABS : 0) | (gpi1_neg ? F_NEG : 0);
+/* VMAD (vec3/vec4 multiply-add with the GPI registers) */
+static bool vmad(T* t, const arg_VMAD* arg) {
+    int type = arg->opcode2 ? 2 : 1;
+    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, true, 7);
+    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, true, 7);
+    Operand src0 = {arg->gpi0_n, B_INTERNAL, F_GPI, {0}, T_F32}, src2 = {arg->gpi1_n, B_INTERNAL, F_GPI, {0}, T_F32};
+    vec34_swizzle(src1.swizzle, arg->src1_swiz, arg->src1_swiz_ext, type);
+    vec34_swizzle(src0.swizzle, arg->gpi0_swiz, arg->gpi0_swiz_ext, type);
+    vec34_swizzle(src2.swizzle, arg->gpi1_swiz, arg->gpi1_swiz_ext, type);
+    src1.flags |= (arg->src1_abs ? F_ABS : 0) | (arg->src1_neg ? F_NEG : 0);
+    src0.flags |= (arg->gpi0_abs ? F_ABS : 0) | (arg->gpi0_neg ? F_NEG : 0);
+    src2.flags |= (arg->gpi1_abs ? F_ABS : 0) | (arg->gpi1_neg ? F_NEG : 0);
     set_multiplier(t, 2, 2, 2, 4);
-    for (unsigned r = 0; r <= repeat_count && !t->failed; ++r) {
-        Value a = load(t, src0, mask, repeat_offset(t, &src0, r, O_SRC0, (int)repeat_mode));
-        Value b = load(t, src1, mask, repeat_offset(t, &src1, r, O_SRC1, (int)repeat_mode));
-        Value c = load(t, src2, mask, repeat_offset(t, &src2, r, O_SRC2, (int)repeat_mode));
+    for (int r = 0; r <= arg->repeat_count && !t->failed; ++r) {
+        Value a = load(t, src0, arg->mask, repeat_offset(t, &src0, r, O_SRC0, (int)arg->repeat_mode));
+        Value b = load(t, src1, arg->mask, repeat_offset(t, &src1, r, O_SRC1, (int)arg->repeat_mode));
+        Value c = load(t, src2, arg->mask, repeat_offset(t, &src2, r, O_SRC2, (int)arg->repeat_mode));
         Value result = {{0}, a.n, K_FLOAT};
         for (unsigned i = 0; i < a.n; ++i) result.c[i] = ext3(t, t->t_f32, SPV_GLSL_FMA, a.c[i], b.c[i], c.c[i]);
-        store(t, dest, result, mask, repeat_offset(t, &dest, r, O_DEST, (int)repeat_mode));
+        store(t, dest, result, arg->mask, repeat_offset(t, &dest, r, O_DEST, (int)arg->repeat_mode));
     }
     reset_repeat_multiplier(t);
     return !t->failed;
 }
 
-/* V32NMAD and V16NMAD: p s r y d c b a w n e m o i t k l f z g h j (alu.cpp: v32nmad, do_alu_op) */
-static bool vnmad(T* t, const uint32_t* f) {
-    unsigned swiz_10_11 = f[2], dest_ext = f[4], swiz_9 = f[5], src1_ext = f[6], src2_ext = f[7], src2_swiz = f[8];
-    unsigned mask = f[10], src1_mod = f[11], src2_mod = f[12], swiz_7_8 = f[13], dest_bank = f[14];
-    unsigned src1_bank = f[15], src2_bank = f[16], dest_n = f[17], swiz_0_6 = f[18], alu = f[19], src1_n = f[20];
-    unsigned src2_n = f[21];
-    bool f32 = (t->instr >> 59) & 1;
+/* V32NMAD and V16NMAD (alu.cpp: v32nmad, do_alu_op) */
+static bool vnmad(T* t, const arg_nmad* arg, bool f32) {
     Type type = f32 ? T_F32 : T_F16;
-    Operand dest = decode_dest(t, dest_n, dest_bank, dest_ext, true, 7);
-    Operand src1 = decode_src12(t, src1_n, src1_bank, src1_ext, true, 7);
-    Operand src2 = decode_src12(t, src2_n, src2_bank, src2_ext, true, 7);
-    src1.flags = decode_modifier(src1_mod);
-    if (src2_mod == 1) src2.flags = F_ABS;
+    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, true, 7);
+    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, true, 7);
+    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, true, 7);
+    src1.flags = decode_modifier(arg->src1_mod);
+    if (arg->src2_mod == 1) src2.flags = F_ABS;
     dest.type = src1.type = src2.type = type;
-    swizzle4(src1.swizzle, swiz_0_6 | swiz_7_8 << 7 | swiz_9 << 9 | swiz_10_11 << 10);
-    vec34_swizzle(src2.swizzle, src2_swiz, false, 2);
-    unsigned source_mask = alu == 7 ? 15 : mask; /* a dot product reads all four */
+    swizzle4(src1.swizzle, arg->src1_swiz);
+    vec34_swizzle(src2.swizzle, arg->src2_swiz, false, 2);
+    unsigned source_mask = arg->alu == 7 ? 15 : arg->mask; /* a dot product reads all four */
     Value a = load(t, src1, source_mask, 0), b = load(t, src2, source_mask, 0);
     if (t->failed) return false;
     Value r = {{0}, a.n, K_FLOAT};
     for (unsigned i = 0; i < a.n; ++i) {
-        switch (alu) {
+        switch (arg->alu) {
             case 0: r.c[i] = op2(t, SPV_OP_F_MUL, t->t_f32, a.c[i], b.c[i]); break;
             case 1: r.c[i] = op2(t, SPV_OP_F_ADD, t->t_f32, a.c[i], b.c[i]); break;
             case 2: /* FRC: a - floor(b) */
@@ -605,44 +608,42 @@ static bool vnmad(T* t, const uint32_t* f) {
             default: break;
         }
     }
-    if (alu == 7) { /* DP: the sum of the products, in each masked component */
+    if (arg->alu == 7) { /* DP: the sum of the products, in each masked component */
         uint32_t sum = op2(t, SPV_OP_F_MUL, t->t_f32, a.c[0], b.c[0]);
         for (unsigned i = 1; i < a.n; ++i)
             sum = ext3(t, t->t_f32, SPV_GLSL_FMA, a.c[i], b.c[i], sum);
-        r.n = popcount4(mask);
+        r.n = popcount4(arg->mask);
         for (unsigned i = 0; i < r.n; ++i) r.c[i] = sum;
     }
-    store(t, dest, r, mask, 0);
+    store(t, dest, r, arg->mask, 0);
     return !t->failed;
 }
 
-/* VPCK: p s n u y d e r c a f t m b k l g o h i j q v w x (data.cpp) */
-static bool vpck(T* t, const uint32_t* f) {
-    unsigned dest_ext = f[5], src1_ext = f[7], src2_ext = f[8], repeat_count = f[9], src_fmt = f[10];
-    unsigned dest_fmt = f[11], mask = f[12], dest_bank = f[13], src1_bank = f[14], src2_bank = f[15], dest_n = f[16];
-    unsigned sel3 = f[17], scale = f[18], sel1 = f[19], sel2 = f[20], src1_n = f[21], sel0_bit1 = f[22], src2_n = f[23];
-    unsigned sel0_bit0 = f[24];
+/* VPCK (data.cpp) */
+static bool vpck(T* t, const arg_VPCK* arg) {
+    unsigned src1_n = arg->src1_n;
     static const Type types[8] = {T_U8, T_I8, T_O8, T_U16, T_I16, T_F16, T_F32, T_C10};
-    Type dest_type = types[dest_fmt], src_type = types[src_fmt];
-    Operand dest = decode_dest(t, dest_n, dest_bank, dest_ext, false, 7);
+    Type dest_type = types[arg->dest_fmt], src_type = types[arg->src_fmt];
+    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, false, 7);
     dest.type = dest_type;
     bool src1_doubled = true;
     if (!is_float_type(src_type)) {
-        src1_n = sel0_bit1 | (src1_n << 1);
+        src1_n = arg->sel0_bit1 | (src1_n << 1);
         src1_doubled = false;
     }
-    Operand src1 = decode_src12(t, src1_n, src1_bank, src1_ext, src1_doubled, 7);
-    Operand src2 = decode_src12(t, src2_n, src2_bank, src2_ext, true, 7);
+    Operand src1 = decode_src12(t, src1_n, arg->src1_bank, arg->src1_ext, src1_doubled, 7);
+    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, true, 7);
     src1.type = src_type;
-    unsigned sel0 = sel0_bit0 | ((src_type == T_F32 ? sel0_bit1 & 1 : src2_n & 1) << 1);
-    uint8_t swizzle[4] = {(uint8_t)sel0, (uint8_t)sel1, (uint8_t)sel2, (uint8_t)sel3};
+    unsigned sel0 = arg->sel0_bit0 | ((src_type == T_F32 ? arg->sel0_bit1 & 1 : arg->src2_n & 1) << 1);
+    uint8_t swizzle[4] = {(uint8_t)sel0, (uint8_t)arg->sel1, (uint8_t)arg->sel2, (uint8_t)arg->sel3};
     memcpy(src1.swizzle, swizzle, 4);
-    bool no_cycle = (is_float_type(src_type) && is_float_type(dest_type)) || (scale && (src_type == T_U8 || dest_type == T_U8));
+    bool no_cycle = (is_float_type(src_type) && is_float_type(dest_type)) ||
+                    (arg->scale && (src_type == T_U8 || dest_type == T_U8));
     bool use_src2 = false;
     if (src_type == T_F32 && src2.bank != B_IMM) {
         bool same = src1.num == src2.num && src1.bank == src2.bank;
-        bool contiguous = mask == 1 || mask == 3 || mask == 7 || mask == 15, defaulted = true;
-        unsigned n = popcount4(mask);
+        bool contiguous = arg->mask == 1 || arg->mask == 3 || arg->mask == 7 || arg->mask == 15, defaulted = true;
+        unsigned n = popcount4(arg->mask);
         for (unsigned i = 0; i < n; ++i) defaulted = defaulted && src1.swizzle[i] == i;
         use_src2 = !defaulted || !same || !contiguous;
     }
@@ -652,10 +653,10 @@ static bool vpck(T* t, const uint32_t* f) {
         bool two = src_type == T_U8 || dest_type == T_U8;
         unsigned next = 0;
         for (unsigned i = 0; i < 4; ++i)
-            if (mask & (1u << i)) src1.swizzle[i] = two && mask == 15 ? taken[i % 2] : taken[next++];
+            if (arg->mask & (1u << i)) src1.swizzle[i] = two && arg->mask == 15 ? taken[i % 2] : taken[next++];
     }
     set_multiplier(t, 1, is_float_type(src_type) ? 2 : 1, is_float_type(src_type) ? 2 : 1, 1);
-    for (unsigned r = 0; r <= repeat_count && !t->failed; ++r) {
+    for (int r = 0; r <= arg->repeat_count && !t->failed; ++r) {
         int o1 = repeat_offset(t, &src1, r, O_SRC1, R_SLMSI), o2 = repeat_offset(t, &src2, r, O_SRC2, R_SLMSI);
         Value v;
         if (use_src2) {
@@ -667,30 +668,27 @@ static bool vpck(T* t, const uint32_t* f) {
             uint32_t all[4] = {lo.c[0], lo.c[1], hi.c[0], hi.c[1]};
             v = (Value){{0}, 0, K_FLOAT};
             for (unsigned i = 0; i < 4; ++i)
-                if (mask & (1u << i)) {
+                if (arg->mask & (1u << i)) {
                     unsigned ch = src1.swizzle[i];
                     v.c[v.n++] = ch <= SW_W ? all[ch] : swizzle_constant(t, ch, K_FLOAT);
                 }
         } else
-            v = load(t, src1, mask, o1);
-        if (is_float_type(dest_type) && !is_float_type(src_type)) v = to_float(t, v, src_type, scale);
-        if (!is_float_type(dest_type) && is_float_type(src_type)) v = to_int(t, v, dest_type, scale);
+            v = load(t, src1, arg->mask, o1);
+        if (is_float_type(dest_type) && !is_float_type(src_type)) v = to_float(t, v, src_type, arg->scale);
+        if (!is_float_type(dest_type) && is_float_type(src_type)) v = to_int(t, v, dest_type, arg->scale);
         if (!is_float_type(dest_type) && !is_float_type(src_type) && is_signed_type(dest_type) != is_signed_type(src_type))
             for (unsigned i = 0; i < v.n; ++i)
                 v.c[i] = bitcast(t, is_signed_type(dest_type) ? t->t_i32 : t->t_u32, v.c[i]),
                 v.kind = is_signed_type(dest_type) ? K_INT : K_UINT;
-        store(t, dest, v, mask, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
+        store(t, dest, v, arg->mask, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
     }
     reset_repeat_multiplier(t);
     return !t->failed;
 }
-static bool nothing(T* t, const uint32_t* f) {
-    (void)t, (void)f;
-    return true;
-}
-/* SMLSI: the repeat increments (special.cpp): n t p s d r c i e a b f */
-static bool smlsi(T* t, const uint32_t* f) {
-    unsigned modes[4] = {f[5], f[6], f[7], f[4]}, values[4] = {f[9], f[10], f[11], f[8]};
+/* SMLSI: the repeat increments (special.cpp) */
+static bool smlsi(T* t, const arg_SMLSI* arg) {
+    unsigned modes[4] = {arg->src0_mode, arg->src1_mode, arg->src2_mode, arg->dest_mode};
+    unsigned values[4] = {arg->src0_inc, arg->src1_inc, arg->src2_inc, arg->dest_inc};
     for (unsigned k = 0; k < 4; ++k) {
         if (modes[k])
             for (int i = 0; i < 4; ++i) t->repeat_increase[k][i] = (int)((values[k] >> (2 * i)) & 3);
@@ -715,12 +713,8 @@ static void store_predicate(T* t, unsigned n, uint32_t cond) {
 }
 static Value one_value(uint32_t c, int kind) { return (Value){{c}, 1, kind}; }
 
-/* VMAD2: d p s r y c b a w i n e m o k t f g h z j l q u */
-static bool vmad2(T* t, const uint32_t* f) {
-    unsigned dat_fmt = f[0], src0_swiz2 = f[3], src0_abs = f[5], src1_ext = f[6], src2_ext = f[7], src2_swiz = f[8];
-    unsigned src1_swiz2 = f[9], mask = f[11], src1_mod = f[12], src2_mod = f[13], src0_bank = f[14], dest_bank = f[15];
-    unsigned src1_bank = f[16], src2_bank = f[17], dest_n = f[18], src1_swiz01 = f[19], src0_swiz01 = f[20];
-    unsigned src0_n = f[21], src1_n = f[22], src2_n = f[23];
+static bool vmad2(T* t, const arg_VMAD2* arg) {
+    unsigned mask = arg->mask;
     static const uint8_t swizzles[3][8][4] = {
         {S4(X, X, X, X), S4(Y, Y, Y, Y), S4(Z, Z, Z, Z), S4(W, W, W, W), S4(X, Y, Z, W), S4(Y, Z, X, W), S4(X, Y, W, W),
          S4(Z, W, X, Y)},
@@ -728,18 +722,18 @@ static bool vmad2(T* t, const uint32_t* f) {
          S4(W, Y, Z, W)},
         {S4(X, X, X, X), S4(Y, Y, Y, Y), S4(Z, Z, Z, Z), S4(W, W, W, W), S4(X, Y, Z, W), S4(X, Z, W, W), S4(X, X, Y, Z),
          S4(X, Y, Z, Z)}};
-    Type type = dat_fmt ? T_F16 : T_F32;
-    Operand dest = decode_dest(t, dest_n, dest_bank, false, true, 7);
-    Operand src0 = decode_src0(t, src0_n, src0_bank, false, true, 7);
-    Operand src1 = decode_src12(t, src1_n, src1_bank, src1_ext, true, 7);
-    Operand src2 = decode_src12(t, src2_n, src2_bank, src2_ext, true, 7);
-    mask = decode_write_mask(dest.bank, mask, dat_fmt);
+    Type type = arg->dat_fmt ? T_F16 : T_F32;
+    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, false, true, 7);
+    Operand src0 = decode_src0(t, arg->src0_n, arg->src0_bank, false, true, 7);
+    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, true, 7);
+    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, true, 7);
+    mask = decode_write_mask(dest.bank, mask, arg->dat_fmt);
     dest.type = src0.type = src1.type = src2.type = type;
-    memcpy(src0.swizzle, swizzles[0][src0_swiz01 | src0_swiz2 << 2], 4);
-    memcpy(src1.swizzle, swizzles[1][src1_swiz01 | src1_swiz2 << 2], 4);
-    memcpy(src2.swizzle, swizzles[2][src2_swiz], 4);
-    if (src0_abs) src0.flags |= F_ABS;
-    src1.flags = decode_modifier(src1_mod), src2.flags = decode_modifier(src2_mod);
+    memcpy(src0.swizzle, swizzles[0][arg->src0_swiz01 | arg->src0_swiz2 << 2], 4);
+    memcpy(src1.swizzle, swizzles[1][arg->src1_swiz01 | arg->src1_swiz2 << 2], 4);
+    memcpy(src2.swizzle, swizzles[2][arg->src2_swiz], 4);
+    if (arg->src0_abs) src0.flags |= F_ABS;
+    src1.flags = decode_modifier(arg->src1_mod), src2.flags = decode_modifier(arg->src2_mod);
     Value a = load(t, src0, mask, 0), b = load(t, src1, mask, 0), c = load(t, src2, mask, 0);
     if (t->failed) return false;
     Value r = {{0}, a.n, K_FLOAT};
@@ -748,25 +742,23 @@ static bool vmad2(T* t, const uint32_t* f) {
     return !t->failed;
 }
 
-/* VDP (a dot product with a GPI register): p s c o d e r a g t n w b f l k h i j z m q y x u. The destination stays,
-   the write mask turns one component a repeat */
-static bool vdp(T* t, const uint32_t* f) {
-    unsigned opcode2 = f[3], dest_ext = f[4], src1_ext = f[6], repeat_mode = f[7], gpi0_abs = f[8];
-    unsigned repeat_count = f[9], mask = f[11], src1_neg = f[12], src1_abs = f[13], dest_bank = f[15], src1_bank = f[16];
-    unsigned gpi0_n = f[17], dest_n = f[18], gpi0_swiz = f[19], src1_n = f[24];
+/* VDP (a dot product with a GPI register). The destination stays, the write mask turns one component a repeat */
+static bool vdp(T* t, const arg_VDP* arg) {
+    unsigned mask = arg->mask;
     static const uint8_t channels[8] = {SW_X, SW_Y, SW_Z, SW_W, SW_0, SW_1, SW_2, SW_H};
-    int type = opcode2 ? 2 : 1;
-    unsigned source_mask = opcode2 ? 15 : 7;
-    Operand src1 = decode_src12(t, src1_n, src1_bank, src1_ext, true, 7);
-    Operand dest = decode_dest(t, dest_n, dest_bank, dest_ext, true, 7);
-    Operand src2 = {gpi0_n, B_INTERNAL, F_GPI, {0}, T_F32};
-    vec34_swizzle(src2.swizzle, gpi0_swiz, false, type);
-    for (unsigned i = 0; i < 4; ++i) src1.swizzle[i] = channels[f[23 - i]]; /* x, y, z, w */
-    src1.flags |= (src1_neg ? F_NEG : 0) | (src1_abs ? F_ABS : 0);
-    if (gpi0_abs) src2.flags |= F_ABS;
-    for (unsigned r = 0; r <= repeat_count && !t->failed; ++r) {
-        Value a = load(t, src1, source_mask, repeat_offset(t, &src1, r, O_SRC1, (int)repeat_mode));
-        Value b = load(t, src2, source_mask, repeat_offset(t, &src2, r, O_SRC2, (int)repeat_mode));
+    int type = arg->opcode2 ? 2 : 1;
+    unsigned source_mask = arg->opcode2 ? 15 : 7;
+    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, true, 7);
+    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, true, 7);
+    Operand src2 = {arg->gpi0_n, B_INTERNAL, F_GPI, {0}, T_F32};
+    vec34_swizzle(src2.swizzle, arg->gpi0_swiz, false, type);
+    const int swizzle[4] = {arg->src1_swiz_x, arg->src1_swiz_y, arg->src1_swiz_z, arg->src1_swiz_w};
+    for (unsigned i = 0; i < 4; ++i) src1.swizzle[i] = channels[swizzle[i]];
+    src1.flags |= (arg->src1_neg ? F_NEG : 0) | (arg->src1_abs ? F_ABS : 0);
+    if (arg->gpi0_abs) src2.flags |= F_ABS;
+    for (int r = 0; r <= arg->repeat_count && !t->failed; ++r) {
+        Value a = load(t, src1, source_mask, repeat_offset(t, &src1, r, O_SRC1, (int)arg->repeat_mode));
+        Value b = load(t, src2, source_mask, repeat_offset(t, &src2, r, O_SRC2, (int)arg->repeat_mode));
         if (t->failed) break;
         uint32_t sum = op2(t, SPV_OP_F_MUL, t->t_f32, a.c[0], b.c[0]);
         for (unsigned i = 1; i < a.n; ++i) sum = ext3(t, t->t_f32, SPV_GLSL_FMA, a.c[i], b.c[i], sum);
@@ -856,30 +848,34 @@ static bool dual_op2_layout(unsigned first_count, unsigned count, unsigned confi
     return false;
 }
 
-static Operand dual_source(T* t, unsigned id, unsigned first_count, const uint32_t* f, Type type,
-                           bool vector_load) {
+static Operand dual_source(T* t, unsigned id, unsigned first_count, const arg_VDUAL* arg,
+                           Type type, bool vector_load) {
     unsigned swizzle, number;
     Operand op = {0, B_INTERNAL, 0, {SW_X, SW_Y, SW_Z, SW_W}, type};
     switch (id) {
         case DUAL_UNIFIED:
-            op = decode_src12(t, f[25], f[15], false, vector_load, vector_load ? 8 : 7);
-            dual_swizzle(op.swizzle, f[7], first_count < 2 && f[20], f[0]);
-            if (first_count < 2 && f[21]) op.flags |= F_ABS;
-            if (f[8]) op.flags |= F_NEG;
+            op = decode_src12(t, arg->unified_store_slot_num, arg->unified_store_slot_bank, false, vector_load,
+                              vector_load ? 8 : 7);
+            dual_swizzle(op.swizzle, arg->unified_store_swiz, first_count < 2 && arg->gpi2_slot_num_bit_1,
+                         arg->comp_count_type);
+            if (first_count < 2 && arg->gpi2_slot_num_bit_0_or_unified_store_abs) op.flags |= F_ABS;
+            if (arg->unified_store_neg) op.flags |= F_NEG;
             break;
         case DUAL_INTERNAL0:
-            number = f[23], swizzle = f[12];
+            number = arg->gpi0_slot_num, swizzle = arg->gpi0_swiz;
             op.num = number;
-            dual_swizzle(op.swizzle, swizzle, false, f[0]);
+            dual_swizzle(op.swizzle, swizzle, false, arg->comp_count_type);
             break;
         case DUAL_INTERNAL1:
-            number = f[22], swizzle = f[13];
+            number = arg->gpi1_slot_num, swizzle = arg->gpi1_swiz;
             op.num = number;
-            dual_swizzle(op.swizzle, swizzle, f[6], f[0]);
-            if (f[1]) op.flags |= F_NEG;
+            dual_swizzle(op.swizzle, swizzle, arg->gpi1_swiz_ext, arg->comp_count_type);
+            if (arg->gpi1_neg) op.flags |= F_NEG;
             break;
         case DUAL_INTERNAL2:
-            op.num = first_count >= 2 ? ((f[20] << 1) | f[21]) : 2;
+            op.num = first_count >= 2
+                         ? ((arg->gpi2_slot_num_bit_1 << 1) | arg->gpi2_slot_num_bit_0_or_unified_store_abs)
+                         : 2;
             break;
         default:
             fail(t, "VDUAL source layout");
@@ -945,43 +941,45 @@ static Value dual_alu(T* t, unsigned code, Operand src[3], unsigned source_count
 }
 
 /* The paired vector/scalar operations share their register reads and commit both destinations after evaluating them. */
-static bool vdual(T* t, const uint32_t* f) {
-    unsigned op1_code = ((!f[0] && f[4]) << 3) | f[9], op2_code = (f[10] << 3) | f[18];
+static bool vdual(T* t, const arg_VDUAL* arg) {
+    unsigned op1_code = ((!arg->comp_count_type && arg->op1_ext_vec3_or_has_w_vec4) << 3) | arg->op1;
+    unsigned op2_code = (arg->op2_ext << 3) | arg->op2;
     if (op1_code >= 14 || !op2_code || op2_code >= 14) return fail(t, "VDUAL opcode");
     const DualInfo op1_info = dual_info[op1_code], op2_info = dual_info[op2_code];
     unsigned first_count = op1_info.sources;
-    bool unified_vector = (f[11] && op1_info.vector_store) || (!f[11] && op2_info.vector_store);
-    Type type = f[5] ? T_F16 : T_F32;
+    bool unified_vector = (arg->prim_ustore && op1_info.vector_store) || (!arg->prim_ustore && op2_info.vector_store);
+    Type type = arg->type_f16 ? T_F16 : T_F32;
 
-    Operand internal_dest = {f[16], B_INTERNAL, 0, {SW_X, SW_Y, SW_Z, SW_W}, type};
-    Operand unified_dest = decode_dest(t, f[17], f[14], false, unified_vector, unified_vector ? 8 : 7);
+    Operand internal_dest = {arg->prim_dest_num_gpi, B_INTERNAL, 0, {SW_X, SW_Y, SW_Z, SW_W}, type};
+    Operand unified_dest =
+        decode_dest(t, arg->prim_dest_num, arg->prim_dest_bank, false, unified_vector, unified_vector ? 8 : 7);
     unified_dest.type = type;
-    Operand op1_dest = f[11] ? unified_dest : internal_dest;
-    Operand op2_dest = f[11] ? internal_dest : unified_dest;
+    Operand op1_dest = arg->prim_ustore ? unified_dest : internal_dest;
+    Operand op2_dest = arg->prim_ustore ? internal_dest : unified_dest;
 
     uint8_t layout1[3], layout2[3];
-    if (!dual_op1_layout(op1_info.sources, f[19], layout1) ||
-        !dual_op2_layout(op1_info.sources, op2_info.sources, f[19], layout2))
+    if (!dual_op1_layout(op1_info.sources, arg->src_config, layout1) ||
+        !dual_op2_layout(op1_info.sources, op2_info.sources, arg->src_config, layout2))
         return fail(t, "VDUAL source layout");
 
-    unsigned fixed_mask = f[24] | ((f[0] && f[4]) << 3);
-    unsigned op1_mask = f[11] ? (op1_dest.bank == B_INTERNAL ? (f[0] ? 15 : 7)
-                                                              : op1_info.vector_store ? (f[5] ? 15 : 3)
-                                                                                      : (f[5] ? 3 : 1))
+    unsigned fixed_mask = arg->write_mask_non_gpi | ((arg->comp_count_type && arg->op1_ext_vec3_or_has_w_vec4) << 3);
+    unsigned op1_mask = arg->prim_ustore ? (op1_dest.bank == B_INTERNAL ? (arg->comp_count_type ? 15 : 7)
+                                                              : op1_info.vector_store ? (arg->type_f16 ? 15 : 3)
+                                                                                      : (arg->type_f16 ? 3 : 1))
                               : fixed_mask;
-    unsigned op2_mask = f[11] ? fixed_mask
-                              : (op2_dest.bank == B_INTERNAL ? (f[0] ? 15 : 7)
-                                                             : op2_info.vector_store ? (f[5] ? 15 : 3)
-                                                                                     : (f[5] ? 3 : 1));
+    unsigned op2_mask = arg->prim_ustore ? fixed_mask
+                              : (op2_dest.bank == B_INTERNAL ? (arg->comp_count_type ? 15 : 7)
+                                                             : op2_info.vector_store ? (arg->type_f16 ? 15 : 3)
+                                                                                     : (arg->type_f16 ? 3 : 1));
     Operand src1[3], src2[3];
     for (unsigned i = 0; i < op1_info.sources; ++i)
-        src1[i] = dual_source(t, layout1[i], first_count, f, type, op1_info.vector_load);
+        src1[i] = dual_source(t, layout1[i], first_count, arg, type, op1_info.vector_load);
     for (unsigned i = 0; i < op2_info.sources; ++i)
-        src2[i] = dual_source(t, layout2[i], first_count, f, type, op2_info.vector_load);
+        src2[i] = dual_source(t, layout2[i], first_count, arg, type, op2_info.vector_load);
     if (t->failed) return false;
 
-    Value result1 = dual_alu(t, op1_code, src1, op1_info.sources, op1_mask, f[0]);
-    Value result2 = dual_alu(t, op2_code, src2, op2_info.sources, op2_mask, f[0]);
+    Value result1 = dual_alu(t, op1_code, src1, op1_info.sources, op1_mask, arg->comp_count_type);
+    Value result2 = dual_alu(t, op2_code, src2, op2_info.sources, op2_mask, arg->comp_count_type);
     if (t->failed) return false;
     store(t, op1_dest, result1, op1_mask, 0);
     store(t, op2_dest, result2, op2_mask, 0);
@@ -990,21 +988,18 @@ static bool vdual(T* t, const uint32_t* f) {
 
 /* VCOMP (the complex unit: one component's reciprocal, reciprocal square root, base 2 logarithm or exponential,
    in each masked one): p s d y e n r a o b c m f t k g h w */
-static bool vcomp(T* t, const uint32_t* f) {
-    unsigned dest_type = f[2], dest_ext = f[4], src1_ext = f[6], repeat_count = f[7], op = f[9], src_type = f[10];
-    unsigned src1_mod = f[11], src_comp = f[12], dest_bank = f[13], src1_bank = f[14], dest_n = f[15], src1_n = f[16];
-    unsigned mask = f[17];
+static bool vcomp(T* t, const arg_VCOMP* arg) {
     static const Type types[4] = {T_F32, T_F16, T_C10, T_UNK};
-    if (types[dest_type] == T_UNK || types[src_type] == T_UNK) return fail(t, "VCOMP with type 3");
-    Operand dest = decode_dest(t, dest_n, dest_bank, dest_ext, true, 8);
-    Operand src1 = decode_src12(t, src1_n, src1_bank, src1_ext, true, 8);
-    src1.flags = decode_modifier(src1_mod);
-    src1.type = types[src_type], dest.type = types[dest_type];
-    for (unsigned r = 0; r <= repeat_count && !t->failed; ++r) {
-        Value v = load(t, src1, 1u << src_comp, repeat_offset(t, &src1, r, O_SRC1, R_SLMSI));
+    if (types[arg->dest_type] == T_UNK || types[arg->src_type] == T_UNK) return fail(t, "VCOMP with type 3");
+    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, true, 8);
+    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, true, 8);
+    src1.flags = decode_modifier(arg->src1_mod);
+    src1.type = types[arg->src_type], dest.type = types[arg->dest_type];
+    for (int r = 0; r <= arg->repeat_count && !t->failed; ++r) {
+        Value v = load(t, src1, 1u << arg->src_comp, repeat_offset(t, &src1, r, O_SRC1, R_SLMSI));
         if (t->failed) break;
         uint32_t x = v.c[0];
-        switch (op) {
+        switch (arg->op) {
             case 0: x = op2(t, SPV_OP_F_DIV, t->t_f32, cf(t, 1), x); break;
             case 1: x = ext1(t, t->t_f32, SPV_GLSL_INVERSE_SQRT, x); break;
             case 2: x = ext1(t, t->t_f32, SPV_GLSL_LOG2, x); break;
@@ -1013,7 +1008,7 @@ static bool vcomp(T* t, const uint32_t* f) {
                         ext1(t, t->t_f32, SPV_GLSL_EXP2, x));
                 break;
         }
-        store(t, dest, one_value(x, K_FLOAT), mask, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
+        store(t, dest, one_value(x, K_FLOAT), arg->mask, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
     }
     return !t->failed;
 }
@@ -1027,38 +1022,35 @@ static uint32_t rotate_left(T* t, uint32_t x, uint32_t n, unsigned bits) {
                      op2(t, SPV_OP_BITWISE_OR, t->t_u32, left, right));
     return bits == 16 ? op2(t, SPV_OP_BITWISE_AND, t->t_u32, r, cu(t, 0xffff)) : r;
 }
-/* VBW (bitwise: and, or, xor, shifts, rotate): o p s n r y d e c x a i t h b w k f g j l m q */
-static bool vbw(T* t, const uint32_t* f) {
-    unsigned op_1 = f[0], dest_ext = f[6], src1_ext = f[8], src2_ext = f[9], repeat_count = f[10], invert = f[11];
-    unsigned rot = f[12], exth = f[13], op_2 = f[14], partial = f[15], dest_bank = f[16], src1_bank = f[17];
-    unsigned src2_bank = f[18], dest_n = f[19], src2_sel = f[20], src1_n = f[21], src2_n = f[22];
+/* VBW (bitwise: and, or, xor, shifts, rotate) */
+static bool vbw(T* t, const arg_VBW* arg) {
     enum { AND, OR, XOR, SHL, ROL, SHR, ASR } op;
-    switch (op_1) {
-        case 2: op = op_2 ? OR : AND; break;
+    switch (arg->op_1) {
+        case 2: op = arg->op_2 ? OR : AND; break;
         case 3: op = XOR; break;
-        case 4: op = op_2 ? ROL : SHL; break;
-        case 5: op = op_2 ? ASR : SHR; break;
-        default: return fail(t, "VBW operation %u", op_1);
+        case 4: op = arg->op_2 ? ROL : SHL; break;
+        case 5: op = arg->op_2 ? ASR : SHR; break;
+        default: return fail(t, "VBW operation %u", arg->op_1);
     }
-    Operand src1 = decode_src12(t, src1_n, src1_bank, src1_ext, false, 7);
-    Operand src2 = decode_src12(t, src2_n, src2_bank, src2_ext, false, 7);
-    Operand dest = decode_dest(t, dest_n, dest_bank, dest_ext, false, 7);
-    unsigned bits = partial ? 16 : 32;
-    src1.type = src2.type = dest.type = partial ? T_U16 : T_U32;
+    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, false, 7);
+    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, false, 7);
+    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, false, 7);
+    unsigned bits = arg->partial ? 16 : 32;
+    src1.type = src2.type = dest.type = arg->partial ? T_U16 : T_U32;
     set_multiplier(t, 1, 1, 1, 1);
-    for (unsigned r = 0; r <= repeat_count && !t->failed; ++r) {
+    for (int r = 0; r <= arg->repeat_count && !t->failed; ++r) {
         uint32_t b;
-        if (src2_ext && src2.bank == B_IMM) { /* the immediate, rotated and inverted as encoded */
-            uint32_t value = src2_n | src2_sel << 7 | exth << 14, n = rot & (bits - 1);
+        if (arg->src2_ext && src2.bank == B_IMM) { /* the immediate, rotated and inverted as encoded */
+            uint32_t value = arg->src2_n | arg->src2_sel << 7 | arg->exth << 14, n = arg->rot & (bits - 1);
             if (n) value = bits == 16 ? ((value << n) | ((value & 0xffff) >> (16 - n))) & 0xffff
                                       : (value << n) | (value >> (32 - n));
-            if (invert) value = ~value;
+            if (arg->invert) value = ~value;
             if (bits == 16) value &= 0xffff;
             b = cu(t, value);
         } else {
             b = load(t, src2, 1, repeat_offset(t, &src2, r, O_SRC2, R_SLMSI)).c[0];
-            if (rot) b = rotate_left(t, b, cu(t, rot), bits);
-            if (invert) {
+            if (arg->rot) b = rotate_left(t, b, cu(t, arg->rot), bits);
+            if (arg->invert) {
                 b = op1(t, SPV_OP_NOT, t->t_u32, b);
                 if (bits == 16) b = op2(t, SPV_OP_BITWISE_AND, t->t_u32, b, cu(t, 0xffff));
             }
@@ -1164,53 +1156,46 @@ static unsigned test(T* t, TestOp op, Operand src1, Operand src2, unsigned zero_
     return r.n;
 }
 /* the sources of a test: 64-bit registers for the vector ALU, src2 one component for all when src2_vscomp */
-static void test_sources(T* t, const uint32_t* f, unsigned alu_sel, Type type, bool vscomp, Operand* src1,
-                         Operand* src2, unsigned src1_n, unsigned src1_bank, unsigned src1_ext, unsigned src2_n,
-                         unsigned src2_bank, unsigned src2_ext) {
-    (void)f;
+static void test_sources(T* t, unsigned alu_sel, Type type, bool vscomp, Operand* src1, Operand* src2,
+                         unsigned src1_n, unsigned src1_bank, unsigned src1_ext, unsigned src2_n, unsigned src2_bank,
+                         unsigned src2_ext) {
     bool doubled = alu_sel == 0;
     *src1 = decode_src12(t, src1_n, src1_bank, src1_ext, doubled, doubled ? 8 : 7);
     *src2 = decode_src12(t, src2_n, src2_bank, src2_ext, doubled, doubled ? 8 : 7);
     src1->type = src2->type = type;
     if (vscomp && doubled) memset(src2->swizzle, SW_X, 4);
 }
-/* VTST (a test into a predicate register): p s o y d r c e a v t i z m h n b k f g w l u j q */
-static bool vtst(T* t, const uint32_t* f) {
-    unsigned src1_neg = f[5], src1_ext = f[6], src2_ext = f[7], prec = f[8], vscomp = f[9], sign_test = f[11];
-    unsigned zero_test = f[12], chan = f[14], pdst_n = f[15], src1_bank = f[17], src2_bank = f[18], alu_sel = f[21];
-    unsigned alu_op = f[22], src1_n = f[23], src2_n = f[24];
+/* VTST (a test into a predicate register) */
+static bool vtst(T* t, const arg_VTST* arg) {
     Type type;
-    TestOp op = test_op(alu_sel, alu_op, prec, &type);
-    if (op == TO_INVALID || type == T_UNK) return fail(t, "VTST of ALU %u operation %u", alu_sel, alu_op);
-    if (chan >= 4) return fail(t, "VTST of channel %u", chan);
+    TestOp op = test_op(arg->alu_sel, arg->alu_op, arg->prec, &type);
+    if (op == TO_INVALID || type == T_UNK) return fail(t, "VTST of ALU %u operation %u", arg->alu_sel, arg->alu_op);
+    if (arg->chan >= 4) return fail(t, "VTST of channel %u", arg->chan);
     Operand src1, src2;
-    test_sources(t, f, alu_sel, type, vscomp, &src1, &src2, src1_n, src1_bank, src1_ext, src2_n, src2_bank, src2_ext);
-    if (src1_neg) src1.flags |= F_NEG;
+    test_sources(t, arg->alu_sel, type, arg->vscomp, &src1, &src2, arg->src1_n, arg->src1_bank, arg->src1_ext,
+                 arg->src2_n, arg->src2_bank, arg->src2_ext);
+    if (arg->src1_neg) src1.flags |= F_NEG;
     uint32_t result[4];
-    if (!test(t, op, src1, src2, zero_test, sign_test, 1u << chan, result)) return false;
-    store_predicate(t, pdst_n, result[0]);
+    if (!test(t, op, src1, src2, arg->zero_test, arg->sign_test, 1u << arg->chan, result)) return false;
+    store_predicate(t, arg->pdst_n, result[0]);
     return true;
 }
-/* VTSTMSK (a test's result as a mask into a register: all ones or zero): p s o y d t r c e v u i z m a b n k f w l g
-   h j */
-static bool vtstmsk(T* t, const uint32_t* f) {
-    unsigned dest_ext = f[4], src1_neg = f[5], src1_ext = f[6], src2_ext = f[7], prec = f[8], vscomp = f[9];
-    unsigned sign_test = f[11], zero_test = f[12], mask_type = f[14], dest_bank = f[15], src1_bank = f[16];
-    unsigned src2_bank = f[17], dest_n = f[18], wben = f[19], alu_sel = f[20], alu_op = f[21], src1_n = f[22];
-    unsigned src2_n = f[23];
+/* VTSTMSK (a test's result as a mask into a register: all ones or zero) */
+static bool vtstmsk(T* t, const arg_VTSTMSK* arg) {
     Type type;
-    TestOp op = test_op(alu_sel, alu_op, prec, &type);
-    if (op == TO_INVALID || type == T_UNK) return fail(t, "VTSTMSK of ALU %u operation %u", alu_sel, alu_op);
-    if (mask_type == 3) return fail(t, "VTSTMSK of mask type 3");
-    if (!wben) return fail(t, "VTSTMSK without its write");
+    TestOp op = test_op(arg->alu_sel, arg->alu_op, arg->prec, &type);
+    if (op == TO_INVALID || type == T_UNK) return fail(t, "VTSTMSK of ALU %u operation %u", arg->alu_sel, arg->alu_op);
+    if (arg->mask_type == 3) return fail(t, "VTSTMSK of mask type 3");
+    if (!arg->wben) return fail(t, "VTSTMSK without its write");
     Operand src1, src2;
-    test_sources(t, f, alu_sel, type, vscomp, &src1, &src2, src1_n, src1_bank, src1_ext, src2_n, src2_bank, src2_ext);
-    if (src1_neg) src1.flags |= F_NEG;
-    bool doubled = alu_sel == 0, four = doubled && mask_type == 2;
-    Operand dest = decode_dest(t, dest_n, dest_bank, dest_ext, doubled, doubled ? 8 : 7);
+    test_sources(t, arg->alu_sel, type, arg->vscomp, &src1, &src2, arg->src1_n, arg->src1_bank, arg->src1_ext,
+                 arg->src2_n, arg->src2_bank, arg->src2_ext);
+    if (arg->src1_neg) src1.flags |= F_NEG;
+    bool doubled = arg->alu_sel == 0, four = doubled && arg->mask_type == 2;
+    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, doubled, doubled ? 8 : 7);
     dest.type = type;
     uint32_t result[4];
-    unsigned n = test(t, op, src1, src2, zero_test, sign_test, op == TO_DP || four ? 15 : 1, result);
+    unsigned n = test(t, op, src1, src2, arg->zero_test, arg->sign_test, op == TO_DP || four ? 15 : 1, result);
     if (!n) return false;
     int kind = type_kind(type);
     uint32_t ones, zero = zero_of(t, kind);
@@ -1241,54 +1226,48 @@ static uint32_t sop_apply(T* t, unsigned op, uint32_t a, uint32_t b) {
 static uint32_t complement(T* t, uint32_t x, unsigned enable) {
     return enable ? op2(t, SPV_OP_F_SUB, t->t_f32, cf(t, 1), x) : x;
 }
-/* SOP2 (alu.cpp): p c s n a d e r b m o f l g h i t k j q u v w x y z A. Each source's color (xyz) and alpha (w) as
-   unsigned bytes, scaled by a factor each selects, then added, subtracted or the min or max */
-static bool sop2(T* t, const uint32_t* f) {
-    unsigned cmod1 = f[1], asel1 = f[4], dest_ext = f[5], src1_ext = f[7], src2_ext = f[8], cmod2 = f[9];
-    unsigned count = f[10], amod1 = f[11], asel2 = f[12], csel1 = f[13], csel2 = f[14], amod2 = f[15];
-    unsigned dest_bank = f[16], src1_bank = f[17], src2_bank = f[18], dest_n = f[19], src1_mod = f[20], cop = f[21];
-    unsigned aop = f[22], src1_n = f[25], src2_n = f[26];
-    if (csel1 > 4 || csel2 > 4 || asel1 > 2 || asel2 > 2)
-        return fail(t, "SOP2 selectors %u %u %u %u", csel1, csel2, asel1, asel2);
-    Operand src1 = decode_src12(t, src1_n, src1_bank, src1_ext, false, 7);
-    Operand src2 = decode_src12(t, src2_n, src2_bank, src2_ext, false, 7);
-    Operand dest = decode_dest(t, dest_n, dest_bank, dest_ext, false, 7);
+/* SOP2 (alu.cpp). Each source's color (xyz) and alpha (w) as unsigned bytes, scaled by a factor each selects, then
+   added, subtracted or the min or max */
+static bool sop2(T* t, const arg_SOP2* arg) {
+    if (arg->csel1 > 4 || arg->csel2 > 4 || arg->asel1 > 2 || arg->asel2 > 2)
+        return fail(t, "SOP2 selectors %u %u %u %u", arg->csel1, arg->csel2, arg->asel1, arg->asel2);
+    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, false, 7);
+    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, false, 7);
+    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, false, 7);
     src1.type = src2.type = dest.type = T_U8;
-    for (unsigned r = 0; r <= count && !t->failed; ++r) {
+    for (int r = 0; r <= arg->count && !t->failed; ++r) {
         int o1 = repeat_offset(t, &src1, r, O_SRC1, R_SLMSI), o2 = repeat_offset(t, &src2, r, O_SRC2, R_SLMSI);
         Value c1 = to_float(t, load(t, src1, 7, o1), T_U8, true), c2 = to_float(t, load(t, src2, 7, o2), T_U8, true);
         Value a1 = to_float(t, load(t, src1, 8, o1), T_U8, true), a2 = to_float(t, load(t, src2, 8, o2), T_U8, true);
         if (t->failed) break;
-        for (unsigned i = 0; i < 3; ++i) c1.c[i] = complement(t, c1.c[i], src1_mod);
-        a1.c[0] = complement(t, a1.c[0], src1_mod);
+        for (unsigned i = 0; i < 3; ++i) c1.c[i] = complement(t, c1.c[i], arg->src1_mod);
+        a1.c[0] = complement(t, a1.c[0], arg->src1_mod);
         Value color = {{0}, 3, K_FLOAT};
         for (unsigned i = 0; i < 3; ++i) {
             uint32_t pick[5] = {cf(t, 0), c1.c[i], c2.c[i], a1.c[0], a2.c[0]};
-            uint32_t lhs = op2(t, SPV_OP_F_MUL, t->t_f32, complement(t, pick[csel1], cmod1), c1.c[i]);
-            uint32_t rhs = op2(t, SPV_OP_F_MUL, t->t_f32, complement(t, pick[csel2], cmod2), c2.c[i]);
-            color.c[i] = sop_apply(t, cop, lhs, rhs);
+            uint32_t lhs = op2(t, SPV_OP_F_MUL, t->t_f32, complement(t, pick[arg->csel1], arg->cmod1), c1.c[i]);
+            uint32_t rhs = op2(t, SPV_OP_F_MUL, t->t_f32, complement(t, pick[arg->csel2], arg->cmod2), c2.c[i]);
+            color.c[i] = sop_apply(t, arg->cop, lhs, rhs);
         }
         uint32_t apick[3] = {cf(t, 0), a1.c[0], a2.c[0]};
-        uint32_t lhs = op2(t, SPV_OP_F_MUL, t->t_f32, complement(t, apick[asel1], amod1), a1.c[0]);
-        uint32_t rhs = op2(t, SPV_OP_F_MUL, t->t_f32, complement(t, apick[asel2], amod2), a2.c[0]);
-        Value alpha = one_value(sop_apply(t, aop, lhs, rhs), K_FLOAT);
+        uint32_t lhs = op2(t, SPV_OP_F_MUL, t->t_f32, complement(t, apick[arg->asel1], arg->amod1), a1.c[0]);
+        uint32_t rhs = op2(t, SPV_OP_F_MUL, t->t_f32, complement(t, apick[arg->asel2], arg->amod2), a2.c[0]);
+        Value alpha = one_value(sop_apply(t, arg->aop, lhs, rhs), K_FLOAT);
         int od = repeat_offset(t, &dest, r, O_DEST, R_SLMSI);
         store(t, dest, to_int(t, color, T_U8, true), 7, od);
         store(t, dest, to_int(t, alpha, T_U8, true), 8, od);
     }
     return !t->failed;
 }
-/* SOP2M (with a write mask, alpha its first bit): p m s n c d e r b o w a l f t k g u h i */
-static bool sop2m(T* t, const uint32_t* f) {
-    unsigned mod1 = f[1], cop = f[4], dest_ext = f[5], src1_ext = f[7], src2_ext = f[8], mod2 = f[9], wmask = f[10];
-    unsigned aop = f[11], sel1 = f[12], sel2 = f[13], dest_bank = f[14], src1_bank = f[15], src2_bank = f[16];
-    unsigned dest_n = f[17], src1_n = f[18], src2_n = f[19];
+/* SOP2M (with a write mask, alpha its first bit) */
+static bool sop2m(T* t, const arg_SOP2M* arg) {
+    unsigned wmask = arg->wmask;
     /* zero, -, src1, src1's alpha, -, -, src2, src2's alpha */
-    if (sel1 == 1 || sel1 == 4 || sel1 == 5 || sel2 == 1 || sel2 == 4 || sel2 == 5)
-        return fail(t, "SOP2M selectors %u %u", sel1, sel2);
-    Operand src1 = decode_src12(t, src1_n, src1_bank, src1_ext, false, 7);
-    Operand src2 = decode_src12(t, src2_n, src2_bank, src2_ext, false, 7);
-    Operand dest = decode_dest(t, dest_n, dest_bank, dest_ext, false, 7);
+    if (arg->sel1 == 1 || arg->sel1 == 4 || arg->sel1 == 5 || arg->sel2 == 1 || arg->sel2 == 4 || arg->sel2 == 5)
+        return fail(t, "SOP2M selectors %u %u", arg->sel1, arg->sel2);
+    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, false, 7);
+    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, false, 7);
+    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, false, 7);
     src1.type = src2.type = dest.type = T_U8;
     Value a = to_float(t, load(t, src1, 15, 0), T_U8, true), b = to_float(t, load(t, src2, 15, 0), T_U8, true);
     if (t->failed) return false;
@@ -1297,9 +1276,9 @@ static bool sop2m(T* t, const uint32_t* f) {
     for (unsigned i = 0; i < 4; ++i) {
         if (!(wmask & (1u << i))) continue;
         uint32_t s1[8] = {cf(t, 0), 0, a.c[i], a.c[3], 0, 0, b.c[i], b.c[3]};
-        uint32_t x = op2(t, SPV_OP_F_MUL, t->t_f32, complement(t, s1[sel1], mod1), a.c[i]);
-        uint32_t y = op2(t, SPV_OP_F_MUL, t->t_f32, complement(t, s1[sel2], mod2), b.c[i]);
-        r.c[r.n++] = sop_apply(t, i == 3 ? aop : cop, x, y);
+        uint32_t x = op2(t, SPV_OP_F_MUL, t->t_f32, complement(t, s1[arg->sel1], arg->mod1), a.c[i]);
+        uint32_t y = op2(t, SPV_OP_F_MUL, t->t_f32, complement(t, s1[arg->sel2], arg->mod2), b.c[i]);
+        r.c[r.n++] = sop_apply(t, i == 3 ? arg->aop : arg->cop, x, y);
     }
     store(t, dest, to_int(t, r, T_U8, true), wmask, 0);
     return !t->failed;
@@ -1312,20 +1291,18 @@ static Value imad(T* t, Value a, Value b, Value c) {
     if (c.kind != a.kind) c.c[0] = bitcast(t, type, c.c[0]);
     return one_value(op2(t, SPV_OP_I_ADD, type, op2(t, SPV_OP_I_MUL, type, a.c[0], b.c[0]), c.c[0]), a.kind);
 }
-/* I32MAD (16-bit sources, a 32-bit result): p s n r c d e b a t i f y k g h j l m o q */
-static bool i32mad(T* t, const uint32_t* f) {
-    unsigned src0_high = f[1], src1_high = f[3], src2_high = f[4], dest_ext = f[5], src1_ext = f[7], src2_ext = f[8];
-    unsigned repeat_count = f[9], is_signed = f[10], src2_type = f[12], src0_bank = f[13], dest_bank = f[14];
-    unsigned src1_bank = f[15], src2_bank = f[16], dest_n = f[17], src0_n = f[18], src1_n = f[19], src2_n = f[20];
-    Operand dest = decode_dest(t, dest_n, dest_bank, dest_ext, false, 7);
-    Operand src0 = decode_src0(t, src0_n, src0_bank, false, false, 7);
-    Operand src1 = decode_src12(t, src1_n, src1_bank, src1_ext, false, 7);
-    Operand src2 = decode_src12(t, src2_n, src2_bank, src2_ext, false, 7);
-    Type wide = is_signed ? T_I32 : T_U32, narrow = is_signed ? T_I16 : T_U16;
-    dest.type = wide, src0.type = src1.type = narrow, src2.type = src2_type == 2 ? wide : narrow;
-    unsigned m0 = src0_high ? 2 : 1, m1 = src1_high ? 2 : 1, m2 = src2_type != 2 && src2_high ? 2 : 1;
+/* I32MAD (16-bit sources, a 32-bit result) */
+static bool i32mad(T* t, const arg_I32MAD* arg) {
+    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, false, 7);
+    Operand src0 = decode_src0(t, arg->src0_n, arg->src0_bank, false, false, 7);
+    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, false, 7);
+    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, false, 7);
+    Type wide = arg->is_signed ? T_I32 : T_U32, narrow = arg->is_signed ? T_I16 : T_U16;
+    dest.type = wide, src0.type = src1.type = narrow, src2.type = arg->src2_type == 2 ? wide : narrow;
+    unsigned m0 = arg->src0_high ? 2 : 1, m1 = arg->src1_high ? 2 : 1;
+    unsigned m2 = arg->src2_type != 2 && arg->src2_high ? 2 : 1;
     set_multiplier(t, 1, 1, 1, 1);
-    for (unsigned r = 0; r <= repeat_count && !t->failed; ++r) {
+    for (int r = 0; r <= arg->repeat_count && !t->failed; ++r) {
         Value a = load(t, src0, m0, repeat_offset(t, &src0, r, O_SRC0, R_SLMSI));
         Value b = load(t, src1, m1, repeat_offset(t, &src1, r, O_SRC1, R_SLMSI));
         Value c = load(t, src2, m2, repeat_offset(t, &src2, r, O_SRC2, R_SLMSI));
@@ -1335,23 +1312,19 @@ static bool i32mad(T* t, const uint32_t* f) {
     reset_repeat_multiplier(t);
     return !t->failed;
 }
-/* I16MAD: p a s n r e d b c k t m f o l h g i j q u v w x */
-static bool i16mad(T* t, const uint32_t* f) {
-    unsigned sel1h = f[5], dest_ext = f[6], src1_ext = f[8], src2_ext = f[9], repeat_count = f[10], mode = f[11];
-    unsigned src2_format = f[12], src1_format = f[13], sel2h = f[14], src0_bank = f[16], dest_bank = f[17];
-    unsigned src1_bank = f[18], src2_bank = f[19], dest_n = f[20], src0_n = f[21], src1_n = f[22], src2_n = f[23];
-    bool is_signed = mode >= 2;
+static bool i16mad(T* t, const arg_I16MAD* arg) {
+    bool is_signed = arg->mode >= 2;
     Type type = is_signed ? T_I16 : T_U16, bytes = is_signed ? T_I8 : T_U8;
-    Operand dest = decode_dest(t, dest_n, dest_bank, dest_ext, false, 7);
-    Operand src0 = decode_src0(t, src0_n, src0_bank, false, false, 7);
-    Operand src1 = decode_src12(t, src1_n, src1_bank, src1_ext, false, 7);
-    Operand src2 = decode_src12(t, src2_n, src2_bank, src2_ext, false, 7);
+    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, false, 7);
+    Operand src0 = decode_src0(t, arg->src0_n, arg->src0_bank, false, false, 7);
+    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, false, 7);
+    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, false, 7);
     dest.type = src0.type = src1.type = src2.type = type;
     unsigned m1 = 1, m2 = 1;
-    if (src1_format > 1 || src2_format > 1) return fail(t, "I16MAD of sign-extended bytes");
-    if (src1_format) src1.type = bytes, m1 = sel1h ? 2 : 1;
-    if (src2_format) src2.type = bytes, m2 = sel2h ? 2 : 1;
-    for (unsigned r = 0; r <= repeat_count && !t->failed; ++r) {
+    if (arg->src1_format > 1 || arg->src2_format > 1) return fail(t, "I16MAD of sign-extended bytes");
+    if (arg->src1_format) src1.type = bytes, m1 = arg->sel1h ? 2 : 1;
+    if (arg->src2_format) src2.type = bytes, m2 = arg->sel2h ? 2 : 1;
+    for (int r = 0; r <= arg->repeat_count && !t->failed; ++r) {
         Value a = load(t, src0, 1, repeat_offset(t, &src0, r, O_SRC0, R_SLMSI));
         Value b = load(t, src1, m1, repeat_offset(t, &src1, r, O_SRC1, R_SLMSI));
         Value c = load(t, src2, m2, repeat_offset(t, &src2, r, O_SRC2, R_SLMSI));
@@ -1360,50 +1333,44 @@ static bool i16mad(T* t, const uint32_t* f) {
     }
     return !t->failed;
 }
-/* I32MAD2 (32-bit sources): p n s d e r c b o i g a k t f h j l m q */
-static bool i32mad2(T* t, const uint32_t* f) {
-    unsigned sn = f[2], dest_ext = f[3], src1_ext = f[5], src2_ext = f[6], src0_ext = f[7], count = f[8];
-    unsigned is_signed = f[9], neg1 = f[10], neg2 = f[11], src0_bank = f[12], dest_bank = f[13], src1_bank = f[14];
-    unsigned src2_bank = f[15], dest_n = f[16], src0_n = f[17], src1_n = f[18], src2_n = f[19];
-    Operand dest = decode_dest(t, dest_n, dest_bank, dest_ext, false, 7);
-    Operand src0 = decode_src0(t, src0_n, src0_bank, src0_ext, false, 7);
-    Operand src1 = decode_src12(t, src1_n, src1_bank, src1_ext, false, 7);
-    Operand src2 = decode_src12(t, src2_n, src2_bank, src2_ext, false, 7);
-    dest.type = src0.type = src1.type = src2.type = is_signed ? T_I32 : T_U32;
-    if (neg1) src1.flags |= F_NEG;
-    if (neg2) src2.flags |= F_NEG;
+/* I32MAD2 (32-bit sources) */
+static bool i32mad2(T* t, const arg_I32MAD2* arg) {
+    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, false, 7);
+    Operand src0 = decode_src0(t, arg->src0_n, arg->src0_bank, arg->src0_ext, false, 7);
+    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, false, 7);
+    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, false, 7);
+    dest.type = src0.type = src1.type = src2.type = arg->is_signed ? T_I32 : T_U32;
+    if (arg->neg1) src1.flags |= F_NEG;
+    if (arg->neg2) src2.flags |= F_NEG;
     set_multiplier(t, 1, 1, 1, 1);
-    for (unsigned r = 0; r <= count && !t->failed; ++r) {
+    for (int r = 0; r <= arg->count && !t->failed; ++r) {
         Value a = load(t, src0, 1, repeat_offset(t, &src0, r, O_SRC0, R_SLMSI));
         Value b = load(t, src1, 1, repeat_offset(t, &src1, r, O_SRC1, R_SLMSI));
         Value c = load(t, src2, 1, repeat_offset(t, &src2, r, O_SRC2, R_SLMSI));
         if (t->failed) break;
-        /* sn 1 passes src2 through (Vita3K's hardware tests) */
-        store(t, dest, sn ? c : imad(t, a, b, c), 1, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
+        /* arg->sn 1 passes src2 through (Vita3K's hardware tests) */
+        store(t, dest, arg->sn ? c : imad(t, a, b, c), 1, repeat_offset(t, &dest, r, O_DEST, R_SLMSI));
     }
     reset_repeat_multiplier(t);
     return !t->failed;
 }
 
 /* ---- loads (data.cpp) ---- */
-/* VLDST: o p s n m y c r b a k d e t g f i h j l q u v w x z. A load of 32-bit words from a uniform buffer read from
-   memory, at src0 + src1 (+ 4 without moe expansion) + src2 bytes, src0 a register the program's uniform buffer
-   table filled; one from the literal buffer, constants from the program */
-static bool vldst(T* t, const uint32_t* f) {
-    unsigned op = f[0], moe_expand = f[4], src0_ext = f[7], src1_ext = f[8], src2_ext = f[9], mask_count = f[10];
-    unsigned primattr = f[13], data_type = f[15], src0_bank = f[17], src1_bank = f[20], src2_bank = f[21];
-    unsigned dest_n = f[22], src0_n = f[23], src1_n = f[24], src2_n = f[25];
-    if (op != 1) return fail(t, op == 2 ? "VLDST stores" : "VLDST operation %u", op);
-    if (data_type > 2) return fail(t, "VLDST of data type %u", data_type);
-    unsigned size = data_type == 0 ? 4 : data_type == 1 ? 2 : 1, bytes = size * (mask_count + 1);
-    Operand src0 = decode_src0(t, src0_n, src0_bank, src0_ext, false, 7);
-    Operand src1 = decode_src12(t, src1_n, src1_bank, src1_ext, false, 7);
-    Operand src2 = decode_src12(t, src2_n, src2_bank, src2_ext, false, 7);
+/* VLDST: a load of 32-bit words from a uniform buffer read from memory, at src0 + src1 (+ 4 without moe expansion) +
+   src2 bytes, src0 a register the program's uniform buffer table filled; one from the literal buffer, constants from
+   the program */
+static bool vldst(T* t, const arg_VLDST* arg) {
+    if (arg->op != 1) return fail(t, arg->op == 2 ? "VLDST stores" : "VLDST operation %u", arg->op);
+    if (arg->data_type > 2) return fail(t, "VLDST of data type %u", arg->data_type);
+    unsigned size = arg->data_type == 0 ? 4 : arg->data_type == 1 ? 2 : 1, bytes = size * (arg->mask_count + 1);
+    Operand src0 = decode_src0(t, arg->src0_n, arg->src0_bank, arg->src0_ext, false, 7);
+    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, false, 7);
+    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, false, 7);
     src0.type = src1.type = src2.type = T_I32;
-    Bank bank = t->secondary ? B_SA : primattr ? B_PA : B_TEMP;
+    Bank bank = t->secondary ? B_SA : arg->primattr ? B_PA : B_TEMP;
     if (src1.bank == B_IMM) src1.num *= size;
     if (src0.bank == B_SA && (int)src0.num == t->literal_register) {
-        if (mask_count || src1.bank != B_IMM || src2.bank != B_IMM) { /* at a register's offset: from the array */
+        if (arg->mask_count || src1.bank != B_IMM || src2.bank != B_IMM) { /* at a register's offset: from the array */
             if (!t->literals) return fail(t, "a literal buffer read past the program");
             uint32_t b1 = load(t, src1, 1, 0).c[0], b2 = load(t, src2, 1, 0).c[0];
             if (t->failed) return false;
@@ -1414,7 +1381,7 @@ static bool vldst(T* t, const uint32_t* f) {
             for (unsigned i = 0; i < bytes / 4; ++i) {
                 uint32_t at = ext2(t, t->t_u32, SPV_GLSL_U_MIN, op2(t, SPV_OP_I_ADD, t->t_u32, first, cu(t, i)),
                                    cu(t, t->literal_words - 1));
-                store_word(t, bank, dest_n + i, SPV(&t->e, SPV_OP_LOAD, t->t_u32,
+                store_word(t, bank, arg->dest_n + i, SPV(&t->e, SPV_OP_LOAD, t->t_u32,
                                                     SPV(&t->e, SPV_OP_ACCESS_CHAIN, pointer, t->literals, at)));
             }
             return !t->failed;
@@ -1422,30 +1389,29 @@ static bool vldst(T* t, const uint32_t* f) {
         uint32_t offset = t->literal_base + src1.num + src2.num;
         const unsigned char* data = gxp_at(t->gxp, GXP_LITERAL_DATA);
         if ((size_t)(data - t->gxp) + offset + 4 > t->size) return fail(t, "a literal past the program");
-        store_word(t, bank, dest_n, cu(t, snx_ld_le32(data + offset)));
+        store_word(t, bank, arg->dest_n, cu(t, snx_ld_le32(data + offset)));
         return !t->failed;
     }
     if (!t->buffer) return fail(t, "a VLDST with no uniform buffer");
     uint32_t a0 = load(t, src0, 1, 0).c[0], a1 = load(t, src1, 1, 0).c[0], a2 = load(t, src2, 1, 0).c[0];
     if (t->failed) return false;
     if (src1.bank != B_IMM) a1 = op2(t, SPV_OP_I_SUB, t->t_i32, a1, ci(t, 0x10000));
-    if (!moe_expand) a1 = op2(t, SPV_OP_I_ADD, t->t_i32, a1, ci(t, 4));
+    if (!arg->moe_expand) a1 = op2(t, SPV_OP_I_ADD, t->t_i32, a1, ci(t, 4));
     uint32_t address = bitcast(t, t->t_u32, op2(t, SPV_OP_I_ADD, t->t_i32, a0, op2(t, SPV_OP_I_ADD, t->t_i32, a1, a2)));
     uint32_t index = op2(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t->t_u32, address, cu(t, 2));
     uint32_t pointer = spv_emit_type_pointer(&t->e, SPV_STORAGE_STORAGE_BUFFER, t->t_u32);
     for (unsigned i = 0; i < bytes / 4; ++i) {
         uint32_t at = op2(t, SPV_OP_I_ADD, t->t_u32, index, cu(t, i));
         uint32_t w = SPV(&t->e, SPV_OP_LOAD, t->t_u32, SPV(&t->e, SPV_OP_ACCESS_CHAIN, pointer, t->buffer, cu(t, 0), at));
-        store_word(t, bank, dest_n + i, w);
+        store_word(t, bank, arg->dest_n + i, w);
     }
     return !t->failed;
 }
-/* LIMM (a 32-bit immediate into a register): s n d e i p m t u v */
-static bool limm(T* t, const uint32_t* f) {
-    uint32_t value = f[9] | f[6] << 21 | f[4] << 26;
-    Operand dest = decode_dest(t, f[8], f[7], f[2], false, 7);
+/* LIMM (a 32-bit immediate into a register) */
+static bool limm(T* t, const arg_LIMM* arg) {
+    Operand dest = decode_dest(t, arg->dest_n, arg->dest_bank, arg->dest_ext, false, 7);
     dest.type = T_U32;
-    store(t, dest, one_value(cu(t, value), K_UINT), 1, 0);
+    store(t, dest, one_value(cu(t, arg->imm), K_UINT), 1, 0);
     return !t->failed;
 }
 
@@ -1486,23 +1452,21 @@ static bool gather(T* t, uint32_t sampler, uint32_t coord, uint32_t format, Type
     store_input(t, bank, dest, T_F16, weights);
     return !t->failed;
 }
-/* SMP: p s n y m r c e f a d l t b g k h i j o q u v. The texture is the dependent sampler src1 names, read at src0
-   (one, two, or three components), its LOD from src2 when lod_mode says */
-static bool smp(T* t, const uint32_t* f) {
-    unsigned src0_ext = f[5], src1_ext = f[6], src2_ext = f[7], fconv = f[8], dim = f[10] + 1, lod_mode = f[11];
-    unsigned use_pa = f[12], sb_mode = f[13], src0_type = f[14], src0_bank = f[15], src1_bank = f[17];
-    unsigned src2_bank = f[18], dest_n = f[19], src0_n = f[20], src1_n = f[21], src2_n = f[22];
-    Operand src0 = decode_src0(t, src0_n, src0_bank, src0_ext, true, 8);
-    Operand src1 = decode_src12(t, src1_n, src1_bank, src1_ext, true, 8);
-    src0.type = src0_type == 0 ? T_F32 : src0_type == 1 ? T_F16 : T_C10;
+/* SMP: the texture is the dependent sampler src1 names, read at src0 (one, two, or three components), its LOD from
+   src2 when lod_mode says */
+static bool smp(T* t, const arg_SMP* arg) {
+    unsigned dim = arg->dim + 1;
+    Operand src0 = decode_src0(t, arg->src0_n, arg->src0_bank, arg->src0_ext, true, 8);
+    Operand src1 = decode_src12(t, arg->src1_n, arg->src1_bank, arg->src1_ext, true, 8);
+    src0.type = arg->src0_type == 0 ? T_F32 : arg->src0_type == 1 ? T_F16 : T_C10;
     if (src1.bank != B_SA || src1.num >= BANK_WORDS || !t->dependent[src1.num])
         return fail(t, "an SMP whose sampler isn't a dependent one");
-    if (sb_mode == 2) return fail(t, "SMP queries");
+    if (arg->sb_mode == 2) return fail(t, "SMP queries");
     if (dim > 3) return fail(t, "SMP dimension %u", dim);
     unsigned resource = t->dependent[src1.num] - 1u;
     if (resource >= USSE_TEXTURES) return fail(t, "SMP sampler %u", resource);
     uint32_t format = t->hints->texture_formats[resource];
-    Type type = fconv == 2 ? T_F16 : fconv == 3 ? T_F32 : texture_component_type(format);
+    Type type = arg->fconv == 2 ? T_F16 : arg->fconv == 3 ? T_F32 : texture_component_type(format);
     Value c = load(t, src0, dim == 1 ? 1 : dim == 2 ? 3 : 7, 0);
     if (t->failed) return false;
     if (c.kind != K_FLOAT) c = to_float(t, c, src0.type, true);
@@ -1510,14 +1474,14 @@ static bool smp(T* t, const uint32_t* f) {
                               : SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, c.c[0], dim == 1 ? cf(t, 0) : c.c[1]);
     unsigned sampler_dim = dim == 3 ? SPV_DIM_CUBE : SPV_DIM_2D;
     uint32_t sampler = sampler_of(t, resource, sampler_dim), sampled;
-    Bank bank = use_pa ? (t->secondary ? B_SA : B_PA) : B_TEMP;
-    if (sb_mode == 3 && dim == 3) return fail(t, "SMP cube gather with UV coefficients");
-    if (sb_mode) /* the four texels' components: each component of the four, then the next component's */
-        return gather(t, sampler, coord, format, type, bank, dest_n, sb_mode == 3);
-    Operand src2 = decode_src12(t, src2_n, src2_bank, src2_ext, true, 8);
+    Bank bank = arg->use_pa ? (t->secondary ? B_SA : B_PA) : B_TEMP;
+    if (arg->sb_mode == 3 && dim == 3) return fail(t, "SMP cube gather with UV coefficients");
+    if (arg->sb_mode) /* the four texels' components: each component of the four, then the next component's */
+        return gather(t, sampler, coord, format, type, bank, arg->dest_n, arg->sb_mode == 3);
+    Operand src2 = decode_src12(t, arg->src2_n, arg->src2_bank, arg->src2_ext, true, 8);
     src2.type = src0.type;
-    bool implicit = t->fragment && (lod_mode == 0 || lod_mode == 1);
-    if (lod_mode == 3) { /* gradients */
+    bool implicit = t->fragment && (arg->lod_mode == 0 || arg->lod_mode == 1);
+    if (arg->lod_mode == 3) { /* gradients */
         Value dx = dim == 3 ? load(t, src2, 7, 0) : load(t, src2, 3, 0);
         Value dy = dim == 3 ? load(t, src2, 7, 1) : load(t, src2, 12, 0);
         if (t->failed) return false;
@@ -1526,121 +1490,44 @@ static bool smp(T* t, const uint32_t* f) {
         uint32_t gy = dim == 3 ? SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v3f, dy.c[0], dy.c[1], dy.c[2])
                                : SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v2f, dy.c[0], dy.c[1]);
         sampled = SPV(&t->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t->t_v4f, sampler, coord, 4u /* Grad */, gx, gy);
-    } else if (lod_mode) {
+    } else if (arg->lod_mode) {
         uint32_t lod = load(t, src2, 1, 0).c[0];
         if (t->failed) return false;
         sampled = implicit ? SPV(&t->e, SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, t->t_v4f, sampler, coord, 1u /* Bias */, lod)
                            : SPV(&t->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t->t_v4f, sampler, coord, 2u /* Lod */,
-                                 lod_mode == 1 ? cf(t, 0) : lod);
+                                 arg->lod_mode == 1 ? cf(t, 0) : lod);
     } else
         sampled = implicit ? SPV(&t->e, SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, t->t_v4f, sampler, coord)
                            : SPV(&t->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t->t_v4f, sampler, coord, 2u, cf(t, 0));
-    store_input(t, bank, dest_n, type, vector_value(t, sampled, texture_components(format), K_FLOAT));
+    store_input(t, bank, arg->dest_n, type, vector_value(t, sampled, texture_components(format), K_FLOAT));
     return !t->failed;
 }
 
 /* ---- the special instructions (special.cpp) ---- */
 /* KILL: the fragment is discarded (predicated, the program's if around it) */
-static bool kill(T* t, const uint32_t* f) {
-    (void)f;
+static bool kill(T* t) {
     if (!t->fragment) return fail(t, "KILL in a vertex program");
     spv_emit_void_op(&t->e, SPV_OP_KILL, NULL, 0);
     t->terminated = 1;
     return true;
 }
-/* DEPTHF: s r e c b n p t f a k d g h i j. src0 is the fragment's depth */
-static bool depthf(T* t, const uint32_t* f) {
-    Operand src0 = decode_src0(t, f[13], f[9], f[1], true, 7);
+/* DEPTHF: src0 is the fragment's depth */
+static bool depthf(T* t, const arg_DEPTHF* arg) {
+    Operand src0 = decode_src0(t, arg->src0_n, arg->src0_bank, arg->src0_ext, true, 7);
     src0.type = T_F32;
     if (!t->frag_depth) return fail(t, "DEPTHF in a program that doesn't say it writes depth");
     uint32_t depth = load(t, src0, 1, 0).c[0];
     if (!t->failed) SPV_VOID(&t->e, SPV_OP_STORE, t->frag_depth, depth);
     return !t->failed;
 }
-/* SMBO: the repeats' base offsets: n d s r c */
-static bool smbo(T* t, const uint32_t* f) {
-    unsigned offsets[4] = {f[2], f[3], f[4], f[1]};
+/* SMBO: the repeats' base offsets */
+static bool smbo(T* t, const arg_SMBO* arg) {
+    unsigned offsets[4] = {arg->src0_offset, arg->src1_offset, arg->src2_offset, arg->dest_offset};
     for (unsigned k = 0; k < 4; ++k)
         for (int i = 0; i < 17; ++i) t->repeat_increase[k][i] = i + (int)offsets[k];
     return true;
 }
 
-/* the instructions' bit patterns (usse_translator_entry.cpp), in its order: the first match is the instruction */
-typedef struct {
-    const char* name;
-    const char* bits;
-    Handler handler;
-    uint64_t mask, value;
-    unsigned fields;
-    uint8_t shift[32], width[32];
-} Pattern;
-static Pattern patterns[] = {
-    {.name = "VMAD2", .bits = "00000dpps-ry-cbawwwineeeemmookttffgghhhhhhzzjjllllllqqqqqquuuuuu", .handler = vmad2},
-    {.name = "V32NMAD", .bits = "00001pppsrrydcbawwwwneeeemmoiittkkllffffffzzzzzzzggghhhhhhjjjjjj", .handler = vnmad},
-    {.name = "V16NMAD", .bits = "00010pppsrrydcbawwwwneeeemmoiittkkllffffffzzzzzzzggghhhhhhjjjjjj", .handler = vnmad},
-    {.name = "VMAD", .bits = "00011pppsg1oderaaittnwwwwcbfhzkkjjllmmmmmmqqqquuuuvvxyAAAABBBBBB", .handler = vmad},
-    {.name = "VDP", .bits = "00011pppsc0oderaagttnwwwwbflllkkhhiijjjjjjzzzzmmmqqqyyyxxxuuuuuu", .handler = vdp},
-    {.name = "VDUAL", .bits = "0010cgsskdtpuuuunaaalriiiiwwwwmmffeebbbbbbbooohhjqvvxxyyyzzzzzzz", .handler = vdual},
-    {.name = "VCOMP", .bits = "00110pppsddyenr-aaaaobbccmmff-ttkk--ggggggg-------hhhhhhh---wwww", .handler = vcomp},
-    {.name = "VMOV", .bits = "00111pppstrydecbmmaanoooiwwwwkllffgghhhhjjjjjjqqqqqquuuuuuvvvvvv", .handler = vmov},
-    {.name = "VPCK", .bits = "01000pppsnuydercaaaaffftttmmmmbbkkllgggggggoohiijjqqqqqqvwwwwwwx", .handler = vpck},
-    {.name = "VTST", .bits = "01001ppps-oydrceavttiizzmhhhnnbbkkffgggggggwlluuuujjjjjjjqqqqqqq", .handler = vtst},
-    {.name = "VTSTMSK", .bits = "01111ppps-oydtrcevuuiizzm-aa--bbnnkkfffffffwllgggghhhhhhhjjjjjjj", .handler = vtstmsk},
-    {.name = "VBW", .bits = "01ooopppsnrydecxaaaaittttthhbwkkffggjjjjjjjlllllllmmmmmmmqqqqqqq", .handler = vbw},
-    {.name = "SOP2", .bits = "10000ppcsnaaderbmooofllggghhhittkkjjqqqqqqquvvwwxyzzzzzzzAAAAAAA", .handler = sop2},
-    {.name = "SOP2M", .bits = "10010ppmsnccderbowwwwaalllfff-ttkkgguuuuuuu-------hhhhhhhiiiiiii", .handler = sop2m},
-    {.name = "SOP3", .bits = "10001ppcsnooderbmallfgghhhiiikttjjqquuuuuuuvvvvvvvwwwwwwwxxxxxxx", .handler = NULL},
-    {.name = "I8MAD", .bits = "10011ppcsneedarbmtttuolfghijkqvvwwxxyyyyyyyzzzzzzzAAAAAAABBBBBBB", .handler = NULL},
-    {.name = "I16MAD", .bits = "10100ppasnredbck-tttmmffoolhhgiijjqquuuuuuuvvvvvvvwwwwwwwxxxxxxx", .handler = i16mad},
-    {.name = "I32MAD", .bits = "10101pps-nrcdeba0tttif00yy000kgghhjjlllllllmmmmmmmoooooooqqqqqqq", .handler = i32mad},
-    {.name = "ILLEGAL22", .bits = "10110-----------------------------------------------------------", .handler = NULL},
-    {.name = "ILLEGAL23", .bits = "10111-----------------------------------------------------------", .handler = NULL},
-    {.name = "ILLEGAL24", .bits = "11000-----------------------------------------------------------", .handler = NULL},
-    {.name = "I8MAD2", .bits = "11001-----------------------------------------------------------", .handler = NULL},
-    {.name = "I32MAD2", .bits = "11010ppp-nssdercbooo00iga0000kttffhhjjjjjjjlllllllmmmmmmmqqqqqqq", .handler = i32mad2},
-    {.name = "ILLEGAL27", .bits = "11011-----------------------------------------------------------", .handler = NULL},
-    {.name = "SMP", .bits = "11100pppsn-ymrceffaaddlltbbggkhhiijjoooooooqqqqqqquuuuuuuvvvvvvv", .handler = smp},
-    {.name = "PHAS", .bits = "11111010s100eirc--matwwwppppppppbbnn--------xxxxxxoooooooddddddd", .handler = nothing},
-    {.name = "NOP", .bits = "11111----000-----------101--------------------------------------", .handler = nothing},
-    {.name = "BR", .bits = "11111ppps000e-----wynba00r----------------iloooooooooooooooooooo", .handler = nothing},
-    {.name = "SMLSI", .bits = "11111010--01-n--ttttppppssssdrcieeeeeeeeaaaaaaaabbbbbbbbffffffff", .handler = smlsi},
-    {.name = "SMBO", .bits = "11111011--01-n--ddddddddddddssssssssssssrrrrrrrrrrrrcccccccccccc", .handler = smbo},
-    {.name = "KILL", .bits = "11111001--11000000000pp0000001101111----------------------------", .handler = kill},
-    {.name = "LIMM", .bits = "11111100sn10deiiiiiipppmmmmm--tt----uuuuuuuvvvvvvvvvvvvvvvvvvvvv", .handler = limm},
-    {.name = "DEPTHF", .bits = "11111011s-11recb----npp---tffa--kkddggggggghhhhhhhiiiiiiijjjjjjj", .handler = depthf},
-    {.name = "SPEC", .bits = "11111----scc----------------------------------------------------", .handler = nothing},
-    {.name = "VLDST", .bits = "111oopppsnmycrbakkkkddeetgffihjlqquuvvvvvvvwwwwwwwxxxxxxxzzzzzzz", .handler = vldst},
-};
-static void patterns_init(void) {
-    static bool ready;
-    if (ready) return;
-    for (size_t p = 0; p < sizeof patterns / sizeof *patterns; ++p) {
-        Pattern* x = &patterns[p];
-        char last = 0;
-        for (unsigned i = 0; i < 64; ++i) {
-            char c = x->bits[i];
-            unsigned bit = 63 - i;
-            if (c == '0' || c == '1') {
-                x->mask |= 1ull << bit;
-                if (c == '1') x->value |= 1ull << bit;
-            }
-            if (c == '0' || c == '1' || c == '-') {
-                last = 0;
-                continue;
-            }
-            if (c != last) x->fields++;
-            last = c;
-            x->shift[x->fields - 1] = (uint8_t)bit; /* the field's lowest bit so far */
-            x->width[x->fields - 1]++;
-        }
-    }
-    ready = true;
-}
-static const Pattern* match(uint64_t w) {
-    for (size_t p = 0; p < sizeof patterns / sizeof *patterns; ++p)
-        if ((w & patterns[p].mask) == patterns[p].value) return &patterns[p];
-    return NULL;
-}
 /* the predicate of an instruction (usse_program_analyzer.cpp: get_predicate): 0 none, else ExtPredicate's
    P0 to P3 (1 to 4), NEGP0 and NEGP1 (5, 6), PN (7); 8 for one this translator doesn't know */
 static unsigned predicate(uint64_t inst) {
@@ -1679,30 +1566,93 @@ static uint32_t predicate_value(T* t, unsigned pred) {
     uint32_t v = SPV(&t->e, SPV_OP_LOAD, t->t_bool, SPV(&t->e, SPV_OP_ACCESS_CHAIN, pointer, t->bank[B_PRED], cu(t, n)));
     return negate ? op1(t, SPV_OP_LOGICAL_NOT, t->t_bool, v) : v;
 }
-/* one instruction: its handler, in an if when it is predicated. False when the program can't be translated */
-static bool translate_one(T* t, uint64_t w, unsigned pc) {
-    t->instr = w, t->pc = pc, t->terminated = 0;
-    const Pattern* p = match(w);
-    if (!p) return fail(t, "instruction %016llx (at %u) matches no pattern", (unsigned long long)w, pc);
-    if (!p->handler) return fail(t, "%s (%016llx at %u) is not translated yet", p->name, (unsigned long long)w, pc);
-    uint32_t fields[32];
-    for (unsigned i = 0; i < p->fields; ++i) fields[i] = (uint32_t)((w >> p->shift[i]) & ((1ull << p->width[i]) - 1));
-    unsigned pred = p->handler != nothing && p->handler != smlsi ? predicate(w) : 0;
-    if (pred == 7) return fail(t, "the PN predicate (%s at %u)", p->name, pc);
-    if (pred == 8) return fail(t, "the NEGP2 predicate (%s at %u)", p->name, pc);
-    if (!pred) {
-        p->handler(t, fields);
-        if (t->terminated) spv_emit_label(&t->e, spv_emit_id(&t->e)); /* what follows is unreachable */
-        return !t->failed;
-    }
+/* one instruction's predicate, before its handler: an if around what the handler emits when the instruction is
+   predicated. False when there is nothing to translate (a survey only names the instruction) or the predicate can't
+   be translated */
+static bool instruction_begin(T* t, const char* name, bool predicated) {
+    t->name = name, t->known = true, t->merge = 0;
+    if (t->survey) return false;
+    unsigned pred = predicated ? predicate(t->instr) : 0;
+    if (pred == 7) return fail(t, "the PN predicate (%s at %u)", name, t->pc);
+    if (pred == 8) return fail(t, "the NEGP2 predicate (%s at %u)", name, t->pc);
+    if (!pred) return true;
     uint32_t yes = spv_emit_id(&t->e), merge = spv_emit_id(&t->e);
     uint32_t cond = predicate_value(t, pred);
     SPV_VOID(&t->e, SPV_OP_SELECTION_MERGE, merge, 0);
     SPV_VOID(&t->e, SPV_OP_BRANCH_CONDITIONAL, cond, yes, merge);
     spv_emit_label(&t->e, yes);
-    p->handler(t, fields);
-    if (!t->terminated) SPV_VOID(&t->e, SPV_OP_BRANCH, merge);
-    spv_emit_label(&t->e, merge);
+    t->merge = merge;
+    return true;
+}
+/* after the handler: the predicate's if closed, or a new block after an instruction that ended its own */
+static void instruction_end(T* t) {
+    if (t->merge) {
+        if (!t->terminated) SPV_VOID(&t->e, SPV_OP_BRANCH, t->merge);
+        spv_emit_label(&t->e, t->merge);
+    } else if (t->terminated)
+        spv_emit_label(&t->e, spv_emit_id(&t->e)); /* what follows is unreachable */
+}
+/* an instruction this translator doesn't have: the program fails */
+static bool untranslated(T* t, const char* name) {
+    t->name = name, t->known = false;
+    if (!t->survey) fail(t, "%s (%016llx at %u) is not translated yet", name, (unsigned long long)t->instr, t->pc);
+    return true;
+}
+
+/* the trans_ function of each pattern of usse.decode, which decode_usse calls: the handler of the instruction, inside
+   its predicate (PREDICATED: whether the instruction has one). Each answers true, so a { } group of usse.decode never
+   tries a later pattern for a word that an earlier one matched, as Vita3K's first match */
+#define TRANS(NAME, PREDICATED, CALL)                                                                                  \
+    static bool trans_##NAME(T* t, arg_##NAME* arg) {                                                                  \
+        (void)arg;                                                                                                     \
+        if (instruction_begin(t, #NAME, PREDICATED)) {                                                                 \
+            CALL;                                                                                                      \
+            instruction_end(t);                                                                                        \
+        }                                                                                                              \
+        return true;                                                                                                   \
+    }
+#define UNTRANSLATED(NAME)                                                                                             \
+    static bool trans_##NAME(T* t, arg_##NAME* arg) { return (void)arg, untranslated(t, #NAME); }
+TRANS(VMAD2, true, vmad2(t, arg))
+TRANS(V32NMAD, true, vnmad(t, arg, true))
+TRANS(V16NMAD, true, vnmad(t, arg, false))
+TRANS(VMAD, true, vmad(t, arg))
+TRANS(VDP, true, vdp(t, arg))
+TRANS(VDUAL, true, vdual(t, arg))
+TRANS(VCOMP, true, vcomp(t, arg))
+TRANS(VMOV, true, vmov(t, arg))
+TRANS(VPCK, true, vpck(t, arg))
+TRANS(VTST, true, vtst(t, arg))
+TRANS(VTSTMSK, true, vtstmsk(t, arg))
+TRANS(VBW, true, vbw(t, arg))
+TRANS(SOP2, true, sop2(t, arg))
+TRANS(SOP2M, true, sop2m(t, arg))
+UNTRANSLATED(SOP3)
+UNTRANSLATED(I8MAD)
+TRANS(I16MAD, true, i16mad(t, arg))
+TRANS(I32MAD, true, i32mad(t, arg))
+UNTRANSLATED(ILLEGAL22)
+UNTRANSLATED(ILLEGAL23)
+UNTRANSLATED(ILLEGAL24)
+UNTRANSLATED(I8MAD2)
+TRANS(I32MAD2, true, i32mad2(t, arg))
+UNTRANSLATED(ILLEGAL27)
+TRANS(SMP, true, smp(t, arg))
+TRANS(PHAS, false, (void)0)
+TRANS(NOP, false, (void)0)
+TRANS(BR, false, (void)0) /* translate_code makes the branches of the program's blocks */
+TRANS(SMLSI, false, smlsi(t, arg))
+TRANS(SMBO, true, smbo(t, arg))
+TRANS(KILL, true, kill(t))
+TRANS(LIMM, true, limm(t, arg))
+TRANS(DEPTHF, true, depthf(t, arg))
+TRANS(SPEC, false, (void)0)
+TRANS(VLDST, true, vldst(t, arg))
+
+/* one instruction: its handler, in an if when it is predicated. False when the program can't be translated */
+static bool translate_one(T* t, uint64_t w, unsigned pc) {
+    t->instr = w, t->pc = pc, t->terminated = 0;
+    if (!decode_usse(t, w)) return fail(t, "instruction %016llx (at %u) matches no pattern", (unsigned long long)w, pc);
     return !t->failed;
 }
 static uint64_t instruction(const unsigned char* code, uint32_t pc) {
@@ -2285,7 +2235,6 @@ bool usse_translate(const unsigned char* gxp, size_t size, const UsseHints* hint
         snprintf(error, error_size, "not a GXP program");
         return false;
     }
-    patterns_init();
     T* t = calloc(1, sizeof *t);
     if (!t) {
         snprintf(error, error_size, "out of memory");
@@ -2397,11 +2346,7 @@ void usse_shader_free(UsseShader* shader) {
 /* ---- the shader corpus ---- */
 static const char corpus_magic[8] = "SNXGXP1";
 bool usse_corpus_write(const char* folder, const unsigned char* program, size_t size, const UsseHints* hints) {
-    uint64_t h = 0xcbf29ce484222325ull;
-    const unsigned char* parts[2] = {(const unsigned char*)hints, program};
-    size_t sizes[2] = {sizeof *hints, size};
-    for (unsigned k = 0; k < 2; ++k)
-        for (size_t i = 0; i < sizes[k]; ++i) h = (h ^ parts[k][i]) * 0x100000001b3ull;
+    uint64_t h = snx_fnv1a(snx_fnv1a(SNX_FNV_BASIS, hints, sizeof *hints), program, size);
     char path[1200];
     snprintf(path, sizeof path, "%s/%016llx.gxp", folder, (unsigned long long)h);
     snx_path_native(path);
@@ -2436,16 +2381,17 @@ bool usse_corpus_read(const char* path, unsigned char** program, size_t* size, U
     return true;
 }
 static void survey_code(const unsigned char* code, uint32_t count, void (*each)(void*, const char*, bool), void* c) {
+    T t = {0};
+    t.survey = true;
     for (uint32_t pc = 0; pc < count; ++pc) {
-        uint64_t w = (uint64_t)snx_ld_le32(code + pc * 8) | (uint64_t)snx_ld_le32(code + pc * 8 + 4) << 32;
-        const Pattern* p = match(w);
-        each(c, p ? p->name : NULL, p && p->handler);
+        t.name = NULL, t.known = false;
+        decode_usse(&t, (uint64_t)snx_ld_le32(code + pc * 8) | (uint64_t)snx_ld_le32(code + pc * 8 + 4) << 32);
+        each(c, t.name, t.known);
     }
 }
 void usse_survey(const unsigned char* gxp, size_t size, void (*each)(void* context, const char* name, bool known),
                  void* context) {
     if (size < 160 || snx_ld_le32(gxp) != GXP_MAGIC) return;
-    patterns_init();
     const unsigned char *start = gxp_at(gxp, GXP_SECONDARY), *end = gxp_at(gxp, GXP_SECONDARY_END);
     if (end > start && (size_t)(end - gxp) <= size) survey_code(start, (uint32_t)((end - start) / 8), each, context);
     uint32_t primary = snx_ld_le32(gxp + GXP_PRIMARY_COUNT);

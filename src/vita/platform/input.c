@@ -2,12 +2,15 @@
    Copyright 2026 the ScarletNX contributors */
 /* The player's input for the Vita game, as the 3DS driver's (3ds/input/input.c) by where the buttons are: Z or Space
    Cross (south), X Circle (east), V Square (west), C Triangle (north), Q L, E R, Enter Start, Backspace Select, the
-   arrows the D-pad, WASD the left stick and IJKL the right. The window's mouse is the touch screen: the left button
-   touches the front panel, the right the rear one. A gamepad's buttons go by where they are; gamepad_swap_ab swaps
-   Cross and Circle. The script (vita_script) is ms:hex presses, each held for vita_press_len ms, its bits 24 to 27 the
-   left stick pushed right, left, up or down */
+   arrows the D-pad, WASD the left stick and IJKL the right (pad_sdl.h's keys of a Switch game, Space added). The
+   window's mouse is the touch screen: the left button touches the front panel, the right the rear one. A gamepad's
+   controls are a Switch game's pad's, as on the 3DS: each sends the button where it is, gamepad_map over that, then
+   gamepad_swap_ab swapping Cross and Circle; its sticks are the Vita's, each past gamepad_deadzone. The script
+   (vita_script) is ms:hex presses, each held for vita_press_len ms, its bits 24 to 27 the left stick pushed right,
+   left, up or down */
 #include "vita/platform/input.h"
 #include "common/utilities/common.h"
+#include "common/utilities/pad_sdl.h"
 #include "common/utilities/script.h"
 #include "snx_settings.h"
 #include <SDL3/SDL.h>
@@ -17,6 +20,27 @@
 #include <string.h>
 
 #define INPUT_PADS 4
+#define UNSET4     SNX_PAD_UNSET, SNX_PAD_UNSET, SNX_PAD_UNSET, SNX_PAD_UNSET
+typedef char input_map_controls[SNX_PAD_CONTROLS == 16 ? 1 : -1]; /* the four UNSET4 of g_input.map */
+/* the Vita's bit for each of the Switch's buttons (pad_map.h's) by where it sits, 0 where the Vita has none */
+static const unsigned VITA_BITS[SNX_PAD_BUTTONS] = {
+    VITA_CTRL_CIRCLE,   /* A, east */
+    VITA_CTRL_CROSS,    /* B, south */
+    VITA_CTRL_TRIANGLE, /* X, north */
+    VITA_CTRL_SQUARE,   /* Y, west */
+    0,                  /* L3 */
+    0,                  /* R3 */
+    VITA_CTRL_LTRIGGER, /* L */
+    VITA_CTRL_RTRIGGER, /* R */
+    0,                  /* ZL */
+    0,                  /* ZR */
+    VITA_CTRL_START,    /* Plus */
+    VITA_CTRL_SELECT,   /* Minus */
+    VITA_CTRL_LEFT,     /* Left */
+    VITA_CTRL_UP,       /* Up */
+    VITA_CTRL_RIGHT,    /* Right */
+    VITA_CTRL_DOWN,     /* Down */
+};
 
 static struct {
     SDL_Gamepad* pads[INPUT_PADS];
@@ -24,7 +48,10 @@ static struct {
     size_t presses;
     double start;
     bool gamepads;
-} g_input;
+    SnxPadMap map; /* gamepad_map's: the controls it names, the others SNX_PAD_UNSET */
+} g_input = {.map = {{UNSET4, UNSET4, UNSET4, UNSET4}}};
+
+void vita_input_map(const char* text) { snx_pad_map_setting(&g_input.map, text, VITA_BITS, "Vita"); }
 
 #define SCRIPT_BUTTONS     0x00ffffffu
 #define SCRIPT_STICK_RIGHT 0x01000000u
@@ -40,63 +67,25 @@ void vita_input_init(void) {
                                        &g_input.script);
     g_input.gamepads = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
 }
-void vita_input_event(const union SDL_Event* event) {
-    if (event->type == SDL_EVENT_GAMEPAD_ADDED) {
-        for (unsigned i = 0; i < INPUT_PADS; ++i)
-            if (g_input.pads[i] && SDL_GetGamepadID(g_input.pads[i]) == event->gdevice.which) return;
-        for (unsigned i = 0; i < INPUT_PADS; ++i)
-            if (!g_input.pads[i]) {
-                g_input.pads[i] = SDL_OpenGamepad(event->gdevice.which);
-                break;
-            }
-    } else if (event->type == SDL_EVENT_GAMEPAD_REMOVED)
-        for (unsigned i = 0; i < INPUT_PADS; ++i)
-            if (g_input.pads[i] && SDL_GetGamepadID(g_input.pads[i]) == event->gdevice.which) {
-                SDL_CloseGamepad(g_input.pads[i]);
-                g_input.pads[i] = NULL;
-            }
-}
+void vita_input_event(const union SDL_Event* event) { snx_pads_event(g_input.pads, INPUT_PADS, event, NULL); }
 /* an axis, -1 to 1, to the stick's 0 to 255 */
 static uint8_t stick(float v) {
     if (v < -1) v = -1;
     if (v > 1) v = 1;
     return (uint8_t)lrintf(127.5f + v * 127.5f);
 }
-static float axis(SDL_Gamepad* pad, SDL_GamepadAxis which) { return SDL_GetGamepadAxis(pad, which) / 32767.0f; }
 void vita_input_read(VitaInput* input) {
-    static const struct {
-        SDL_Scancode key;
-        uint32_t bit;
-    } keys[] = {
-        {SDL_SCANCODE_Z, VITA_CTRL_CROSS},       {SDL_SCANCODE_SPACE, VITA_CTRL_CROSS},
-        {SDL_SCANCODE_X, VITA_CTRL_CIRCLE},      {SDL_SCANCODE_V, VITA_CTRL_SQUARE},
-        {SDL_SCANCODE_C, VITA_CTRL_TRIANGLE},    {SDL_SCANCODE_Q, VITA_CTRL_LTRIGGER},
-        {SDL_SCANCODE_E, VITA_CTRL_RTRIGGER},    {SDL_SCANCODE_RETURN, VITA_CTRL_START},
-        {SDL_SCANCODE_BACKSPACE, VITA_CTRL_SELECT}, {SDL_SCANCODE_LEFT, VITA_CTRL_LEFT},
-        {SDL_SCANCODE_UP, VITA_CTRL_UP},         {SDL_SCANCODE_RIGHT, VITA_CTRL_RIGHT},
-        {SDL_SCANCODE_DOWN, VITA_CTRL_DOWN},
-    };
-    static const struct {
-        SDL_GamepadButton button;
-        uint32_t bit;
-    } buttons[] = {
-        {SDL_GAMEPAD_BUTTON_SOUTH, VITA_CTRL_CROSS},          {SDL_GAMEPAD_BUTTON_EAST, VITA_CTRL_CIRCLE},
-        {SDL_GAMEPAD_BUTTON_WEST, VITA_CTRL_SQUARE},          {SDL_GAMEPAD_BUTTON_NORTH, VITA_CTRL_TRIANGLE},
-        {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, VITA_CTRL_LTRIGGER}, {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, VITA_CTRL_RTRIGGER},
-        {SDL_GAMEPAD_BUTTON_START, VITA_CTRL_START},          {SDL_GAMEPAD_BUTTON_BACK, VITA_CTRL_SELECT},
-        {SDL_GAMEPAD_BUTTON_DPAD_LEFT, VITA_CTRL_LEFT},       {SDL_GAMEPAD_BUTTON_DPAD_UP, VITA_CTRL_UP},
-        {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, VITA_CTRL_RIGHT},     {SDL_GAMEPAD_BUTTON_DPAD_DOWN, VITA_CTRL_DOWN},
-    };
     float sticks[4] = {0, 0, 0, 0}; /* left x, y, right x, y; y down as the Vita has it */
     *input = (VitaInput){0};
     const bool* held = SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
     if (held) {
-        for (size_t i = 0; i < sizeof keys / sizeof *keys; ++i)
-            if (held[keys[i].key]) input->buttons |= keys[i].bit;
-        sticks[0] = (float)(held[SDL_SCANCODE_D] - held[SDL_SCANCODE_A]);
-        sticks[1] = (float)(held[SDL_SCANCODE_S] - held[SDL_SCANCODE_W]);
-        sticks[2] = (float)(held[SDL_SCANCODE_L] - held[SDL_SCANCODE_J]);
-        sticks[3] = (float)(held[SDL_SCANCODE_K] - held[SDL_SCANCODE_I]);
+        unsigned keys = snx_pad_keys(held);
+        for (int b = 0; b < SNX_PAD_BUTTONS; ++b)
+            if (keys & 1u << b) input->buttons |= VITA_BITS[b];
+        if (held[SDL_SCANCODE_SPACE]) input->buttons |= VITA_CTRL_CROSS;
+        float left[2], right[2];
+        snx_pad_key_sticks(held, left, right);
+        sticks[0] = left[0], sticks[1] = -left[1], sticks[2] = right[0], sticks[3] = -right[1];
         /* the mouse over the window: its place scaled to the panel's */
         float x, y;
         SDL_MouseButtonFlags mouse = SDL_GetMouseState(&x, &y);
@@ -114,30 +103,26 @@ void vita_input_read(VitaInput* input) {
             }
         }
     }
-    float dead = (float)g_settings.stick_dead_zone / 100.0f;
+    double dead = g_settings.stick_dead_zone / 100.0;
+    SnxPadMap map;
+    snx_pad_map_sent(&map, &g_input.map, g_settings.swap_a_b);
     for (unsigned p = 0; p < INPUT_PADS; ++p) {
         SDL_Gamepad* pad = g_input.pads[p];
         if (!pad) continue;
-        for (size_t i = 0; i < sizeof buttons / sizeof *buttons; ++i)
-            if (SDL_GetGamepadButton(pad, buttons[i].button)) {
-                uint32_t bit = buttons[i].bit;
-                if (g_settings.swap_a_b && (bit == VITA_CTRL_CROSS || bit == VITA_CTRL_CIRCLE))
-                    bit ^= VITA_CTRL_CROSS | VITA_CTRL_CIRCLE;
-                input->buttons |= bit;
-            }
+        for (int c = 0; c < SNX_PAD_CONTROLS; ++c)
+            if (map.bit[c] >= 0 && snx_pad_held(pad, c)) input->buttons |= VITA_BITS[map.bit[c]];
         SDL_GamepadAxis axes[4] = {SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, SDL_GAMEPAD_AXIS_RIGHTX,
                                    SDL_GAMEPAD_AXIS_RIGHTY};
         for (unsigned s = 0; s < 2; ++s) {
-            float x = axis(pad, axes[s * 2]), y = axis(pad, axes[s * 2 + 1]), length = sqrtf(x * x + y * y);
-            if (length <= dead) continue;
-            float scale = (fminf(length, 1) - dead) / (1 - dead) / length;
-            sticks[s * 2] = x * scale, sticks[s * 2 + 1] = y * scale;
+            double x = snx_pad_axis(pad, axes[s * 2]), y = snx_pad_axis(pad, axes[s * 2 + 1]);
+            if (snx_pad_dead_zone(&x, &y, dead, 1)) sticks[s * 2] = (float)x, sticks[s * 2 + 1] = (float)y;
         }
     }
     /* the script's presses: buttons, and the left stick pushed all the way by bits 24 to 27 (right, left, up, down) */
     if (g_input.presses) {
         double ms = (snx_seconds() - g_input.start) * 1000.0;
-        uint32_t mask = snx_script_held(g_input.script, g_input.presses, ms, (uint32_t)g_settings.vita_press_length);
+        uint32_t mask =
+            (uint32_t)snx_script_held(g_input.script, g_input.presses, ms, (uint32_t)g_settings.vita_press_length);
         input->buttons |= mask & SCRIPT_BUTTONS;
         if (mask & SCRIPT_STICK_RIGHT) sticks[0] = 1;
         if (mask & SCRIPT_STICK_LEFT) sticks[0] = -1;
@@ -148,9 +133,10 @@ void vita_input_read(VitaInput* input) {
     input->rx = stick(sticks[2]), input->ry = stick(sticks[3]);
 }
 void vita_input_free(void) {
-    for (unsigned i = 0; i < INPUT_PADS; ++i)
-        if (g_input.pads[i]) SDL_CloseGamepad(g_input.pads[i]);
+    snx_pads_close(g_input.pads, INPUT_PADS);
     if (g_input.gamepads) SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
     free(g_input.script);
+    SnxPadMap map = g_input.map; /* a setting, not the run's: it stays */
     memset(&g_input, 0, sizeof g_input);
+    g_input.map = map;
 }

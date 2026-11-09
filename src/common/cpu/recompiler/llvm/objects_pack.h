@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* A module's relocatable objects in one file, for the host that loads them with the JIT loader (code_loader.h) instead
    of linking them: "snx-objs", their count, then each one's size and bytes, sizes and count as 8-byte little-endian
-   numbers. The recompile of a game for iOS writes one (docs/APPLE.md), and the app loads it */
+   numbers. The recompile of a game for iOS writes one (docs/hosts/apple.md), and the app loads it */
 #ifndef SNX_RECOMPILER_LLVM_OBJECTS_PACK_H
 #define SNX_RECOMPILER_LLVM_OBJECTS_PACK_H
 #include "common/cpu/recompiler/llvm/link.h"

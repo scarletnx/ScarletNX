@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The opcodes and formats are nihstro's (include/nihstro/shader_bytecode.h, BSD-3-Clause, Copyright 2014 Tony
+# Wasserka), as Azahar's shader interpreter reads them.
+#
+# The PICA200's shader instructions, 32 bits each, which the vertex and geometry shader units run. tools/decodetree
+# makes decode-pica.inc from this file (src/3ds/CMakeLists.txt). The interpreter (shader.c) and the SPIR-V decompiler
+# (vk/vsgen.c) each define a trans_ function for each pattern. The top six bits are the opcode (five for CMP, three
+# for MAD and MADI). A word that matches no pattern is an opcode with no instruction.
+
+# the operands of an arithmetic instruction: the destination register, the address register (0 none, 1 a0.x, 2 a0.y,
+# 3 aL) that offsets the uniform source, the sources, and the operand descriptor (a swizzle pattern's index)
+&arith      dest addr src1 src2 desc
+&cmp        cmpx cmpy addr src1 src2 desc
+&mad        dest addr src1 src2 src3 desc
+# flow control: the target (dest) and the instruction count (num), and the condition: the condition codes against
+# refx and refy (cond: 0 either, 1 both, 2 x only, 3 y only), or the bool uniform id
+&jump       dest num
+&cond       refx refy cond dest num
+&uniform    id dest num
+
+# format 1: src1 takes the address register. 1i (the I forms): src2 takes it
+@arith      ...... dest:5 addr:2 src1:7 src2:5 desc:7                &arith
+@arith_i    ...... dest:5 addr:2 src1:5 src2:7 desc:7                &arith
+# format 1c: CMP's comparisons of x and y (0 ==, 1 !=, 2 <, 3 <=, 4 >, 5 >=)
+@cmp        ..... cmpx:3 cmpy:3 addr:2 src1:7 src2:5 desc:7          &cmp
+# format 5: MAD, src2 takes the address register. 5i: MADI, src3 takes it
+@mad        ... dest:5 addr:2 src1:5 src2:7 src3:5 desc:5            &mad
+@mad_i      ... dest:5 addr:2 src1:5 src2:5 src3:7 desc:5            &mad
+# formats 2 and 3: flow control
+@jump       ...... ---- dest:12 -- num:8                             &jump
+@cond       ...... refx:1 refy:1 cond:2 dest:12 -- num:8             &cond
+@uniform    ...... id:4 dest:12 -- num:8                             &uniform
+
+ADD         000000 .......................... @arith
+DP3         000001 .......................... @arith
+DP4         000010 .......................... @arith
+DPH         000011 .......................... @arith
+DST         000100 .......................... @arith
+EX2         000101 .......................... @arith
+LG2         000110 .......................... @arith
+LITP        000111 .......................... @arith
+MUL         001000 .......................... @arith
+SGE         001001 .......................... @arith
+SLT         001010 .......................... @arith
+FLR         001011 .......................... @arith
+MAX         001100 .......................... @arith
+MIN         001101 .......................... @arith
+RCP         001110 .......................... @arith
+RSQ         001111 .......................... @arith
+MOVA        010010 .......................... @arith
+MOV         010011 .......................... @arith
+DPHI        011000 .......................... @arith_i
+DSTI        011001 .......................... @arith_i
+SGEI        011010 .......................... @arith_i
+SLTI        011011 .......................... @arith_i
+BREAK       100000 --------------------------
+NOP         100001 --------------------------
+END         100010 --------------------------
+BREAKC      100011 .......................... @cond
+CALL        100100 .......................... @jump
+CALLC       100101 .......................... @cond
+CALLU       100110 .......................... @uniform
+IFU         100111 .......................... @uniform
+IFC         101000 .......................... @cond
+# aL = i[id].y, then the body (up to dest) runs i[id].x + 1 times, aL += i[id].z after each
+LOOP        101001 -- id:2 dest:12 ----------
+EMIT        101010 --------------------------
+# the geometry emitter's next vertex (0-2), whether it ends a primitive, and its winding
+SETEMIT     101011 vertex:2 prim:1 winding:1 ----------------------
+JMPC        101100 .......................... @cond
+# JMPU: the jump is taken when the bool uniform differs from num's bit 0
+JMPU        101101 .......................... @uniform
+CMP         10111 ........................... @cmp
+MADI        110 ............................. @mad_i
+MAD         111 ............................. @mad

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""Every result the runtime answers comes from src/nx/hle/result_codes.inc (docs/IPC.md, "Results").
+"""Every result the runtime answers comes from src/nx/hle/result_codes.inc (docs/platforms/nx/ipc.md, "Results").
 
 Refused in the tracked sources' text, comments and string literals left out:
 - RC(...) anywhere in src/ but src/nx/hle/result.h, which makes the table's constants with it: a result a file

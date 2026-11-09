@@ -32,6 +32,10 @@ public class Environment {
     @Deprecated public static String getStorageState(File path) { return getExternalStorageState(path); }
     public static boolean isExternalStorageRemovable() { return false; }
     public static boolean isExternalStorageEmulated() { return true; }
-    public static boolean isExternalStorageManager() { return false; }
+    /** "All files access", which an app that asks for MANAGE_EXTERNAL_STORAGE has, as each permission it asks for here */
+    public static boolean isExternalStorageManager() {
+        return snx.android.app.Package.get().permissions.contains("android.permission.MANAGE_EXTERNAL_STORAGE");
+    }
+    public static boolean isExternalStorageManager(File path) { return isExternalStorageManager(); }
     public static boolean isExternalStorageLegacy() { return false; }
 }

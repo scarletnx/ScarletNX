@@ -13,7 +13,7 @@
    barrier. Each input word a pixel needs is loaded once, by the invocation that needs it, straight from the plane
    (the neighbors' loads of the same cache lines coalesce).
 
-   Written for what the machine runs, not for reading (docs/VIC.md):
+   Written for what the machine runs, not for reading (docs/layers/media/vic.md):
    - The winner first, then the work. The last enabled slot covering a pixel composes it. The slots are walked from
      the last down, each claims the pixels still unclaimed (a 4 bit mask per row from two shifts), and the walk ends
      when none are left: one slot over the picture costs one pass, where composing every covering slot in turn and

@@ -14,7 +14,7 @@
 void ini_override(const char* k, const char* v);
 const char* ini_overridden(const char* k); /* k's value for this run, NULL when nothing gave one */
 /* deprecated_env.c: the environment variables an older version read for settings the .ini has now
-   (docs/DEPRECATIONS.md). ini_open makes each one set this run's value for its setting as ini_override does, unless
+   (docs/user/deprecations.md). ini_open makes each one set this run's value for its setting as ini_override does, unless
    the command line or a variable before it gives that key; then says each, with the value in effect */
 void options_old_environment(void);
 void options_old_environment_say(void);

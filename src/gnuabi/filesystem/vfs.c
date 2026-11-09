@@ -4,6 +4,7 @@
    (gnu_vfs_set_root) the host's files through it (hostfs/hostfs.c). Without one, paths never reach host
    open/stat/unlink APIs. ABI constants/layout follow Linux asm-generic UAPI; host errors are translated. */
 #include "gnuabi/filesystem/internal.h"
+#include "common/utilities/endian.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -21,20 +22,6 @@
 #define host_write write
 #endif
 
-void gnu_vfs_put16(unsigned char* p, uint16_t v) {
-    for (unsigned i = 0; i < 2; ++i) p[i] = (unsigned char)(v >> (i * 8));
-}
-void gnu_vfs_put32(unsigned char* p, uint32_t v) {
-    for (unsigned i = 0; i < 4; ++i) p[i] = (unsigned char)(v >> (i * 8));
-}
-void gnu_vfs_put64(unsigned char* p, uint64_t v) {
-    for (unsigned i = 0; i < 8; ++i) p[i] = (unsigned char)(v >> (i * 8));
-}
-static uint64_t get64(const unsigned char* p) {
-    uint64_t v = 0;
-    for (unsigned i = 0; i < 8; ++i) v |= (uint64_t)p[i] << (i * 8);
-    return v;
-}
 static char* copy_string(const char* source) {
     size_t size = strlen(source) + 1;
     char* copy = (char*)malloc(size);
@@ -575,7 +562,7 @@ static int64_t vectored_io(GnuVfsState* s, GnuMemory* memory, int fd, uint64_t v
     if (error) return error;
     uint64_t total_length = 0;
     for (uint64_t i = 0; i < count; ++i) {
-        uint64_t n = get64(entries + (size_t)i * 16 + 8);
+        uint64_t n = snx_ld_le64(entries + (size_t)i * 16 + 8);
         if (n > INT64_MAX - total_length) return -GNU_EINVAL;
         total_length += n;
     }
@@ -587,7 +574,8 @@ static int64_t vectored_io(GnuVfsState* s, GnuMemory* memory, int fd, uint64_t v
         if (!bounce) return -GNU_ENOMEM;
         size_t used = 0;
         for (uint64_t i = 0; write && i < count && used < total_length; ++i) {
-            uint64_t address = get64(entries + (size_t)i * 16), length = get64(entries + (size_t)i * 16 + 8);
+            uint64_t address = snx_ld_le64(entries + (size_t)i * 16),
+                     length = snx_ld_le64(entries + (size_t)i * 16 + 8);
             if (length > total_length - used) length = total_length - used;
             if (length && (error = gnu_memory_read(memory, address, bounce + used, (size_t)length))) {
                 free(bounce);
@@ -601,7 +589,8 @@ static int64_t vectored_io(GnuVfsState* s, GnuMemory* memory, int fd, uint64_t v
         block_end(s, file, held);
         size_t left = result > 0 && !write ? (size_t)result : 0, at = 0;
         for (uint64_t i = 0; i < count && left; ++i) {
-            uint64_t address = get64(entries + (size_t)i * 16), length = get64(entries + (size_t)i * 16 + 8);
+            uint64_t address = snx_ld_le64(entries + (size_t)i * 16),
+                     length = snx_ld_le64(entries + (size_t)i * 16 + 8);
             if (length > left) length = left;
             if (length && (error = gnu_memory_write(memory, address, bounce + at, (size_t)length))) {
                 free(bounce);
@@ -615,7 +604,7 @@ static int64_t vectored_io(GnuVfsState* s, GnuMemory* memory, int fd, uint64_t v
     }
     int64_t total = 0;
     for (uint64_t i = 0; i < count; ++i) {
-        uint64_t address = get64(entries + (size_t)i * 16), length = get64(entries + (size_t)i * 16 + 8);
+        uint64_t address = snx_ld_le64(entries + (size_t)i * 16), length = snx_ld_le64(entries + (size_t)i * 16 + 8);
         int64_t result = io(s, memory, fd, address, length, write, 0, 0);
         if (result < 0) return total ? total : result;
         total += result;
@@ -656,25 +645,25 @@ int gnu_stat_put(GnuMemory* memory, uint64_t address, const GnuStat* st) {
 /* struct statx: every basic field is there (STATX_BASIC_STATS), the birth time is not */
 int gnu_statx_put(GnuMemory* memory, uint64_t address, const GnuStat* st) {
     unsigned char bytes[256] = {0};
-    gnu_vfs_put32(bytes, 0x7ffu);
-    gnu_vfs_put32(bytes + 4, st->blksize);
-    gnu_vfs_put32(bytes + 16, st->nlink);
-    gnu_vfs_put32(bytes + 20, st->uid);
-    gnu_vfs_put32(bytes + 24, st->gid);
-    gnu_vfs_put16(bytes + 28, (uint16_t)st->mode);
-    gnu_vfs_put64(bytes + 32, st->inode);
-    gnu_vfs_put64(bytes + 40, st->size);
-    gnu_vfs_put64(bytes + 48, st->blocks);
-    gnu_vfs_put64(bytes + 64, (uint64_t)st->atime);
-    gnu_vfs_put32(bytes + 72, st->atime_ns);
-    gnu_vfs_put64(bytes + 96, (uint64_t)st->ctime);
-    gnu_vfs_put32(bytes + 104, st->ctime_ns);
-    gnu_vfs_put64(bytes + 112, (uint64_t)st->mtime);
-    gnu_vfs_put32(bytes + 120, st->mtime_ns);
-    gnu_vfs_put32(bytes + 128, (uint32_t)(st->rdev >> 8) & 0xfff);
-    gnu_vfs_put32(bytes + 132, (uint32_t)(st->rdev & 0xff) | (uint32_t)(st->rdev >> 12 & 0xfff00));
-    gnu_vfs_put32(bytes + 136, (uint32_t)(st->dev >> 8) & 0xfff);
-    gnu_vfs_put32(bytes + 140, (uint32_t)(st->dev & 0xff) | (uint32_t)(st->dev >> 12 & 0xfff00));
+    snx_st_le32(bytes, 0x7ffu);
+    snx_st_le32(bytes + 4, st->blksize);
+    snx_st_le32(bytes + 16, st->nlink);
+    snx_st_le32(bytes + 20, st->uid);
+    snx_st_le32(bytes + 24, st->gid);
+    snx_st_le16(bytes + 28, (uint16_t)st->mode);
+    snx_st_le64(bytes + 32, st->inode);
+    snx_st_le64(bytes + 40, st->size);
+    snx_st_le64(bytes + 48, st->blocks);
+    snx_st_le64(bytes + 64, (uint64_t)st->atime);
+    snx_st_le32(bytes + 72, st->atime_ns);
+    snx_st_le64(bytes + 96, (uint64_t)st->ctime);
+    snx_st_le32(bytes + 104, st->ctime_ns);
+    snx_st_le64(bytes + 112, (uint64_t)st->mtime);
+    snx_st_le32(bytes + 120, st->mtime_ns);
+    snx_st_le32(bytes + 128, (uint32_t)(st->rdev >> 8) & 0xfff);
+    snx_st_le32(bytes + 132, (uint32_t)(st->rdev & 0xff) | (uint32_t)(st->rdev >> 12 & 0xfff00));
+    snx_st_le32(bytes + 136, (uint32_t)(st->dev >> 8) & 0xfff);
+    snx_st_le32(bytes + 140, (uint32_t)(st->dev & 0xff) | (uint32_t)(st->dev >> 12 & 0xfff00));
     return gnu_memory_write(memory, address, bytes, sizeof bytes);
 }
 static int node_stat(GnuVfsState* s, GnuNode* node, int fdlink, GnuStat* st) {
@@ -833,9 +822,9 @@ static int64_t directory_entries(GnuVfsState* s, GnuMemory* memory, int fd, uint
         }
         unsigned char* record = destination + used;
         memset(record, 0, length);
-        gnu_vfs_put64(record, node->inode);
-        gnu_vfs_put64(record + 8, ordinal);
-        gnu_vfs_put16(record + 16, (uint16_t)length);
+        snx_st_le64(record, node->inode);
+        snx_st_le64(record + 8, ordinal);
+        snx_st_le16(record + 16, (uint16_t)length);
         unsigned type = is_link ? 0120000 : node_type(node);
         record[18] = (unsigned char)(type >> 12);
         strcpy((char*)record + 19, name);
@@ -891,7 +880,7 @@ static int64_t ioctl_file(GnuVfsState* s, GnuMemory* memory, int fd, uint32_t re
                 return gnu_hostfs_ioctl(f, memory, request, argument);
             else
                 return -GNU_ENOTTY;
-            gnu_vfs_put32(word, (uint32_t)bytes);
+            snx_st_le32(word, (uint32_t)bytes);
             return gnu_memory_write(memory, argument, word, 4);
         }
     }
@@ -900,13 +889,13 @@ static int64_t ioctl_file(GnuVfsState* s, GnuMemory* memory, int fd, uint32_t re
 }
 static int object_stat(GnuMemory* memory, const GnuOpen* f, uint64_t address) {
     unsigned char bytes[128] = {0};
-    gnu_vfs_put64(bytes, 8); /* sockfs and anon_inodefs live on devices of their own */
-    gnu_vfs_put64(bytes + 8, f->inode);
-    gnu_vfs_put32(bytes + 16, f->ops->file_type | (f->ops->file_type ? 0777 : 0600));
-    gnu_vfs_put32(bytes + 20, 1);
-    gnu_vfs_put32(bytes + 24, 1000);
-    gnu_vfs_put32(bytes + 28, 1000);
-    gnu_vfs_put32(bytes + 56, 4096);
+    snx_st_le64(bytes, 8); /* sockfs and anon_inodefs live on devices of their own */
+    snx_st_le64(bytes + 8, f->inode);
+    snx_st_le32(bytes + 16, f->ops->file_type | (f->ops->file_type ? 0777 : 0600));
+    snx_st_le32(bytes + 20, 1);
+    snx_st_le32(bytes + 24, 1000);
+    snx_st_le32(bytes + 28, 1000);
+    snx_st_le32(bytes + 56, 4096);
     return gnu_memory_write(memory, address, bytes, sizeof bytes);
 }
 static int install_object_locked(GnuVfs* vfs, const GnuObjectOps* ops, void* object, unsigned flags, int cloexec) {

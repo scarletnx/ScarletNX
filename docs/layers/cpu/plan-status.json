@@ -1,0 +1,252 @@
+{
+  "SPDX-License-Identifier": "GPL-3.0-or-later",
+  "copyright": "2026 the ScarletNX contributors",
+  "schema": 1,
+  "reviewed_base": "34c0be36",
+  "items": {
+    "A1": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "A2": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "A3": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "A4": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "A5": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "L1": {
+      "status": "retired",
+      "evidence": []
+    },
+    "L2": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "L3": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "L4": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "J1": {
+      "status": "deferred",
+      "evidence": []
+    },
+    "J2": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "J3": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "J4": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I1": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I2": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I3": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I4": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I5": {
+      "status": "research",
+      "evidence": []
+    },
+    "I6": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I7": {
+      "status": "implemented",
+      "evidence": [
+        "src/common/cpu/recompiler/llvm/ir_vec_fp.c",
+        "tests/llvm_fp_helper_effects.c"
+      ],
+      "note": "Audited raw-bit lane helpers are classified at first declaration. The fixture keeps X4 live across one batched vector helper call with zero reloads and checks static synchronization counts. O0 does not use register promotion."
+    },
+    "I15": {
+      "status": "implemented",
+      "evidence": [
+        "src/common/cpu/recompiler/llvm/ir_vec_fp.c",
+        "tests/llvm_vfp_residual.c",
+        "tests/llvm_recpe.c",
+        "tests/llvm_estimates.c",
+        "tests/llvm_unsigned_estimates.c",
+        "tests/llvm_round.c",
+        "tests/llvm_half.c",
+        "tests/llvm_fma_residual.c",
+        "tests/llvm_perf/recpe_candidates.json",
+        "tests/llvm_vfp_compare.c",
+        "tools/profile_cpu.py",
+        "tests/llvm_vfp_batch.c",
+        "tests/llvm_perf/half_widen_math.py",
+        "tests/llvm_vfp_minmax.c",
+        "tests/llvm_perf/half_order_math.py",
+        "tests/llvm_perf/half_round_math.py",
+        "tests/llvm_fp_pointer_chain.c",
+        "tests/llvm_fp_helper_effects.c",
+        "tests/llvm_promote_edges.c",
+        "tests/llvm_fp_cold.c",
+        "docs/history/cpu-translator-progress.md"
+      ],
+      "note": "The tested I15 scope is complete on 2026-11-05. Exact vector comparisons, half conversions and estimates, min-max fixups and rounding preserve CPU results and FPSR. Wide exceptional fixups share internal value-only vector functions. O0 and short x86 forms retain original fallbacks where candidates regressed. Batched arithmetic and pure conversion helpers remain wherever no faster exact replacement passed the fixed gate. Source 9485ad5b passes 53 local CPU/tool/document checks and native Linux x86-64, AArch64 and Windows CI, with full suites of 694, 696 and 606 entries and 5, 6 and 11 skipped entries respectively. Baseline-x86 QEMU passes the sharing fixture, 30,112,768 min-max cases and 19,970,048 rounding cases. The final two-warmup/five-pair game comparison passes the unchanged 2-percent CPU-time and FPS non-regression bounds. All twelve runs render without crashes. FPS improvement is unproven, and the full module grows 5.65 percent. Earlier failed gates and rejected candidates remain documented. This does not make all AdvSIMD paths helper-free or establish weak-host performance. macOS CI never acquired a runner. The subsequent upstream integration through b0b0ea5c changes no CPU emitters, passes all 86 selected integration checks including the QEMU sweep and fuzzer, and renders two additional 100-second scene checks without crashes. Those last two runs establish integration, not a new performance comparison."
+    },
+    "I8": {
+      "status": "implemented",
+      "evidence": [
+        "src/common/cpu/recompiler/llvm/ir_vec_fp.c",
+        "tests/llvm_recpe.c",
+        "tests/llvm_recpx.c",
+        "tests/llvm_rsqrte.c",
+        "tests/llvm_estimates.c",
+        "tests/llvm_unsigned_estimates.c",
+        "tests/llvm_perf/recpe_candidates.json"
+      ],
+      "note": "Exact scalar/vector FRECPE and FRSQRTE cover little-endian x86, including baseline hosts without AVX2, and AArch64 emitter paths. Ordinary reciprocal inputs without AVX2 retain the faster division sequence, while exceptional inputs and square-root estimates use exact table fixups. FRECPX uses integer exponent operations, and half estimates use exact little-endian integer paths. Unsigned AVX2 estimates remain unchanged. Other unproven host lowerings retain exact helpers. Native Linux AArch64 CI at 3b9ffab5 passed the full QEMU sweep and all estimate tests. The local x86-64 sweep and 40,225,792 estimate cases under qemu64 passed. The hybrid passed its fixed synthetic regression gate. No physical old-x86 or native AArch64 performance claim is made."
+    },
+    "I9": {
+      "status": "implemented",
+      "evidence": [
+        "src/common/cpu/recompiler/llvm/ir_vec.c",
+        "tests/llvm_simd_shift.c"
+      ],
+      "note": "Bounded whole-vector rounding/saturating shifts now cover x86 and AArch64 IR. x86 without AVX2 uses constant-stage barrel shifts. All signed-byte counts, widths, aliases and loaders pass the exact tests on x86-64. Native AArch64 and weak-host performance remain unmeasured."
+    },
+    "I10": {
+      "status": "implemented",
+      "evidence": [
+        "src/common/cpu/recompiler/llvm/ir.c",
+        "tests/llvm_fp_env.c"
+      ],
+      "note": "Selectively imports the audited FP-environment leaf from embedded runtime bitcode only in functions with host FP operations. Larger arithmetic and callback helpers remain out of line. The selective import passed 19 paired rounds over six FP kernels with about a 13-percent geometric gain. The checked integer-shift object remains byte-identical. The environment fixture passed native Linux x86-64 and AArch64 CI at 72deb357. A broader import failed its performance gate and was removed. Object cache version 5 invalidates the old pipeline, while ABI 17 remains compatible."
+    },
+    "I11": {
+      "status": "implemented",
+      "evidence": [
+        "src/common/cpu/recompiler/llvm/ir_fp.h",
+        "src/common/cpu/recompiler/llvm/ir_fpu.c",
+        "src/common/cpu/recompiler/llvm/ir_vec_fp.c",
+        "tests/llvm_round.c",
+        "tests/llvm_half.c",
+        "tests/llvm_fma_residual.c"
+      ],
+      "note": "Guarded scalar/dynamic rounding, F16C half conversions and exact FMA residuals preserve values and FPSR. Scalar O0 FMA retains the original sequence because its candidate failed the regression gate. Vector O0/O2 and scalar O2 residuals passed that gate. Native Linux AArch64 CI at 9a7cfd0d passed the full QEMU sweep plus rounding, half conversions and scalar/vector residual tests. Linux x86-64 passed the local full sweep. The I15 continuation completed its separate whole-vector conversion integration checks on 2026-11-05."
+    },
+    "I12": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I13": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I14": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "M1": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "M2": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "M3": {
+      "status": "research",
+      "evidence": []
+    },
+    "S1": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "R1": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "R2": {
+      "status": "research",
+      "evidence": []
+    },
+    "D1": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "T1": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "T2": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "T3": {
+      "status": "implemented",
+      "evidence": [
+        "src/common/cpu/recompiler/llvm/ir.h",
+        "src/common/cpu/recompiler/llvm/ir_promote.c",
+        "src/common/cpu/recompiler/llvm/ir_emit.c",
+        "src/common/cpu/recompiler/llvm/ir_codegen.c",
+        "src/common/cpu/recompiler/llvm/ir_state.c",
+        "src/nx/loader/module_llvm.c",
+        "tests/llvm_fp_helper_effects.c",
+        "tests/llvm_module.c"
+      ],
+      "note": "The CLI emits per-unit counts and one-function dumps. Two integer-only whole-module fixtures check all 19 counter fields against hand counts, both in one unit and split at function boundaries. The CLI test verifies leaders, flag origins, promoted registers and IR before and after promotion. Directed helper fixtures separately check FP/vector/guest/indirect call classification. These checks passed in native Linux x86-64 and AArch64 CI at 72deb357."
+    },
+    "T4": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "T5": {
+      "status": "implemented",
+      "evidence": [
+        "tests/llvm_block_fuzz.c",
+        "tests/CMakeLists.txt",
+        "tests/llvm_block_fuzz_matrix.py"
+      ],
+      "note": "The generated-decoder-row grammar covers 81 safe integer/SIMD/FP families with varied branches, bounded loops, direct/indirect/tail calls, memory order and aligned exclusive retries. O0/O2, AOT/JIT, portable, hooks and volatile configurations compare complete states against QEMU. Two planted flag-origin and exclusive-update defects are detected. The four-seed matrix checks 10,240 states in 20 configurations. All these tests passed in native Linux x86-64 and AArch64 CI at 72deb357. The grammar is bounded and is not exhaustive sequence coverage."
+    },
+    "T6": {
+      "status": "implemented",
+      "evidence": [
+        "docs/dev/architecture.md",
+        "docs/history/divergences.md",
+        "docs/dev/roadmap.md",
+        "docs/hosts/riscv-loongarch.md",
+        "docs/platforms/nx/nro.md",
+        "docs/platforms/nx/nro.md",
+        "docs/user/aot-packs.md",
+        "src/common/cpu/recompiler/llvm/rtlib.c",
+        "src/common/cpu/recompiler/llvm/jit_cache.h",
+        "src/common/cpu/recompiler/llvm/ir_profile.c",
+        "src/common/cpu/recompiler/llvm/ir_ldst.c"
+      ],
+      "note": "The listed documentation claims were checked against current source. No runtime semantics changed by these documentation corrections."
+    }
+  }
+}

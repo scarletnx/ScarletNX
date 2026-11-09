@@ -24,7 +24,7 @@ import java.util.zip.Deflater;
 
 /**
  * A PDF document of display lists, the HLE of Skia's PDF backend (SkPDF), which Android's PdfDocument draws through.
- * Each page's operations (docs/android/HWUI.md) become PDF's own: paths filled and stroked with the paint's color and
+ * Each page's operations (docs/platforms/android-apps/hwui.md) become PDF's own: paths filled and stroked with the paint's color and
  * alpha, clips, transforms, images of the bitmaps' pixels, and glyphs in their font, which the file carries (only the
  * glyphs the pages use) with a map back to the text. A page draws as the renderer draws it: gradients and bitmap
  * shaders are their colors' average, a clip of difference does not clip, and a layer multiplies its alpha into what it
@@ -371,7 +371,7 @@ public final class Pdf {
         }
     }
 
-    /** The paint of an operation (docs/android/HWUI.md), as the PDF draws it */
+    /** The paint of an operation (docs/platforms/android-apps/hwui.md), as the PDF draws it */
     private static final class Paint {
         int color, style, cap, join, blend, filter, filterColor, filterBlend;
         float width, miter, phase;

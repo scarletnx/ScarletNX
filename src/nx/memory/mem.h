@@ -218,8 +218,9 @@ int mem_unmap_pool(u64 addr, u64 off, u64 size, u32 state);
 u64 mem_pool_used(void); /* bytes of the pool handed out */
 /* [a, a + size), whole pages, made pool pages mapped there only, ready to be trapped (memory/own.c): the parts that
    aren't pool pages moved there, each part frozen meanwhile. 0 with the range's runs of pool pages in runs (*n of
-   them, at most max), or -1 (no pool, unmapped or code memory, pages mapped elsewhere too, or more runs than max).
-   The caller holds the renderer's lock */
+   them, at most max), or -1 (unmapped or code memory, pages mapped elsewhere too, or more runs than max). Without the
+   pool (Windows, whose traps land in place) the range stays the reservation's own pages, which nothing else maps
+   there: one run, whose pool offset is its address. The caller holds the renderer's lock */
 typedef struct {
     u64 addr, size, pool; /* guest pages [addr, addr + size) are pool pages from pool on */
 } MemPoolRun;
@@ -271,7 +272,7 @@ extern u64 g_code_memory, g_main_stack_size;
 
 /* Guest memory is byte-addressed and little-endian whatever the host's order (common/utilities/endian.h), so these
    go through memcpy and convert: a value read from or written to guest memory as a number goes through them or
-   endian.h's snx_ld_le32 and kin, never a plain load or a cast pointer (docs/PPC64.md#big-endian-hosts) */
+   endian.h's snx_ld_le32 and kin, never a plain load or a cast pointer (docs/hosts/ppc64.md#big-endian-hosts) */
 static inline u16 gr16(u64 a) { return snx_ld_le16(GP(a)); }
 static inline u32 gr32(u64 a) { return snx_ld_le32(GP(a)); }
 static inline u64 gr64(u64 a) { return snx_ld_le64(GP(a)); }

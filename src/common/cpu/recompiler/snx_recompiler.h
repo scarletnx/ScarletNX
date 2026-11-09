@@ -70,7 +70,7 @@ SNX_RECOMPILER_API int snx_recompiler_set_optimization(struct snx_recompiler* r,
 /* The A64 features of the guest's CPU (FEAT_* of the Arm ARM): an encoding that needs one the target lacks raises an
    undefined instruction, as on a CPU without it. SNX_RECOMPILER_A64_SWITCH, the default, is the Switch's Cortex-A57
    (Armv8.0 with CRC32 and the Cryptographic Extension); SNX_RECOMPILER_A64_MAX has every feature the decoder knows,
-   though an instruction the backend has no code for yet still raises an undefined instruction (docs/LIBRARY.md).
+   though an instruction the backend has no code for yet still raises an undefined instruction (docs/dev/library.md).
    Modules made afterwards take it. 0, or -1 for an unknown target */
 #define SNX_RECOMPILER_A64_SWITCH  0
 #define SNX_RECOMPILER_A64_MAX     1

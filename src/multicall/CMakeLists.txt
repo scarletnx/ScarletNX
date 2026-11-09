@@ -68,17 +68,17 @@ if(WIN32)
     # bundled by CI. user32 provides message boxes and advapi32 the registry (the log's system line); winmm is loaded at
     # run time, and the static SDL3 brings the libraries it needs
     target_link_libraries(scarletnx PRIVATE user32 advapi32)
-    # The application manifest (src/common/platform/runtime.manifest): UTF-8 as the process's code page, long paths,
-    # and the icon
+    # The application manifest (src/common/platform/windows/runtime.manifest): UTF-8 as the process's code page, long
+    # paths, and the icon
     if(CMAKE_C_SIMULATE_ID STREQUAL "MSVC")
         target_link_options(scarletnx PRIVATE
-                            "LINKER:/MANIFESTINPUT:${PROJECT_SOURCE_DIR}/src/common/platform/runtime.manifest")
+                            "LINKER:/MANIFESTINPUT:${PROJECT_SOURCE_DIR}/src/common/platform/windows/runtime.manifest")
     else()
         enable_language(RC)
-        target_sources(scarletnx PRIVATE "${PROJECT_SOURCE_DIR}/src/common/platform/runtime.rc")
+        target_sources(scarletnx PRIVATE "${PROJECT_SOURCE_DIR}/src/common/platform/windows/runtime.rc")
         # where the resource compiler finds the manifest and the icon; C includes from src/ alone
         target_include_directories(scarletnx PRIVATE
-                                   "$<$<COMPILE_LANGUAGE:RC>:${PROJECT_SOURCE_DIR}/src/common/platform>")
+                                   "$<$<COMPILE_LANGUAGE:RC>:${PROJECT_SOURCE_DIR}/src/common/platform/windows>")
     endif()
     if(NOT SNX_TOOLS_ONLY)
         target_link_options(scarletnx PRIVATE -static -mwindows)

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* ldr:ro / ro:1, IRoInterface. Behavioral reference: Eden's service/ro/ro.cpp and
-   cmif_serialization.h (see docs/LDR_RO.md). The guest nn::ro linker, not this service, resolves symbols,
+   cmif_serialization.h (see docs/platforms/nx/nro.md). The guest nn::ro linker, not this service, resolves symbols,
    applies relocations and calls constructors. NRO code is the runtime JIT's (runtime/guest_jit.c: its text joins the
    JIT's images while it is mapped), and the interpreter's without a JIT; fixed-address AOT functions cannot safely be
    rebased by changing their dispatch entries. */
@@ -11,11 +11,10 @@
 #include "nx/runtime/guest_jit.h"
 #include <openssl/evp.h>
 #include "nx/runtime/nce/nce.h"
+#include "common/utilities/endian.h"
 
 /* each session's RoState, the lock and the session that initialized: g_hle.ldr (services_int.h) */
 
-static u32 ro_u32(const u8* p) { return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24; }
-static u64 ro_u64(const u8* p) { return ro_u32(p) | (u64)ro_u32(p + 4) << 32; }
 static int ro_range(u64 a, u64 size, int nonzero) {
     R_UNLESS(!(a & 0xFFF), SNX_RC_RO_INVALID_ADDRESS);
     if ((nonzero && !size) || (size & 0xFFF) || size > ~a) R_THROW(SNX_RC_RO_INVALID_SIZE);
@@ -54,9 +53,9 @@ static int ro_register_nrr(RoState* s, u64 a, u64 size, int kind) {
     R_UNLESS(size >= header_size && size <= 0xFFFFFFFFull && ro_readable(a, size), SNX_RC_RO_INVALID_NRR_IMAGE);
     u8 header[0x350 + 0x180];
     memcpy(header, GP(a), header_size);
-    u32 off = ro_u32(header + 0x340 + shift), count = ro_u32(header + 0x344 + shift);
-    if (memcmp(header, "NRR0", 4) || ro_u32(header + 0x338 + shift) != size ||
-        ro_u64(header + 0x330 + shift) != g_hle.kernel.title_id || off < header_size || off > size ||
+    u32 off = snx_ld_le32(header + 0x340 + shift), count = snx_ld_le32(header + 0x344 + shift);
+    if (memcmp(header, "NRR0", 4) || snx_ld_le32(header + 0x338 + shift) != size ||
+        snx_ld_le64(header + 0x330 + shift) != g_hle.kernel.title_id || off < header_size || off > size ||
         count > (size - off) / 32)
         R_THROW(SNX_RC_RO_INVALID_NRR_IMAGE);
     R_UNLESS(header[0x33c + shift] == kind, SNX_RC_RO_INVALID_NRR_KIND);
@@ -80,12 +79,13 @@ static int ro_unregister_nrr(RoState* s, u64 a) {
 }
 static int ro_validate_nro(RoState* s, const MemCodeMap* m, u32* text, u32* ro, u32* data) {
     const u8* h = GP(m->base);
-    *text = ro_u32(h + 0x24);
-    *ro = ro_u32(h + 0x2c);
-    *data = ro_u32(h + 0x34);
-    if (memcmp(h + 0x10, "NRO0", 4) || (ro_u32(h + 0x1c) & 2) || ro_u32(h + 0x18) != m->size ||
-        ro_u32(h + 0x38) != m->bss_size || ((*text | *ro | *data) & 0xFFF) || *text < 0x1000 || ro_u32(h + 0x20) ||
-        ro_u32(h + 0x28) != *text || ro_u32(h + 0x30) != (u64)*text + *ro || (u64)*text + *ro + *data != m->size)
+    *text = snx_ld_le32(h + 0x24);
+    *ro = snx_ld_le32(h + 0x2c);
+    *data = snx_ld_le32(h + 0x34);
+    if (memcmp(h + 0x10, "NRO0", 4) || (snx_ld_le32(h + 0x1c) & 2) || snx_ld_le32(h + 0x18) != m->size ||
+        snx_ld_le32(h + 0x38) != m->bss_size || ((*text | *ro | *data) & 0xFFF) || *text < 0x1000 ||
+        snx_ld_le32(h + 0x20) || snx_ld_le32(h + 0x28) != *text || snx_ld_le32(h + 0x30) != (u64)*text + *ro ||
+        (u64)*text + *ro + *data != m->size)
         R_THROW(SNX_RC_RO_INVALID_NRO_IMAGE);
     u8 hash[32];
     if (!EVP_Digest(h, (size_t)m->size, hash, NULL, EVP_sha256(), NULL)) fatal("ldr: SHA-256 failed (out of memory)\n");

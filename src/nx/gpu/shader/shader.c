@@ -8,6 +8,7 @@
 /* Maxwell program structure: length and hash, branch targets and jump tables, the CRS stack resolved statically,
    and VertexA + VertexB merged into one program. */
 #include "nx/gpu/shader/translator.h"
+#include "common/utilities/bits.h"
 
 /* Instruction words are 64-bit. Words 0-9 hold the 80-byte SPH, word 10 is the first scheduling word, and every
    fourth word after it is another one (IDX_OK). */
@@ -43,10 +44,6 @@ int shader_vk_set(int stage) {
     }
 }
 
-static i32 sext(u32 value, int bits) {
-    return (i32)(value & ((1u << (bits - 1)) - 1)) - (i32)(value & (1u << (bits - 1)));
-}
-
 /* the code word after i */
 static u32 next_code(u32 i) {
     i++;
@@ -57,7 +54,7 @@ static u32 next_code(u32 i) {
 /* a relative branch: a signed 24-bit byte offset from the next instruction. A target on a scheduling word means the
    instruction after it, as the hardware fetches bundles */
 u32 bra_target(u64 w, u32 idx) {
-    i32 t = (i32)idx + 1 + sext(B(w, 20, 24), 24) / 8;
+    i32 t = (i32)idx + 1 + snx_sext32(B(w, 20, 24), 24) / 8;
     if (t >= 10 && (t - 10) % 4 == 0) t++;
     return (u32)t;
 }
@@ -289,8 +286,8 @@ int shader_brx_targets(const u64* words, u32 index, u32 count, u32* targets, int
     if (exact > max_targets) return -1;
     limit = exact ? exact : max_targets < 64 ? max_targets : 64;
     bank = B(load, 36, 5);
-    offset = sext(B(load, 20, 16), 16);
-    imm = sext(B(brx, 20, 24), 24);
+    offset = snx_sext32(B(load, 20, 16), 16);
+    imm = snx_sext32(B(brx, 20, 24), 24);
     for (k = 0; k < limit; k++) {
         long long addr = (long long)offset + 4LL * k, rel;
         u32 value;

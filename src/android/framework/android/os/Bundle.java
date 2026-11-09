@@ -51,12 +51,22 @@ public final class Bundle extends BaseBundle implements Cloneable, Parcelable {
     public <T extends Parcelable> T getParcelable(String key) { return (T) typed(key, Parcelable.class); }
     public <T> T getParcelable(String key, Class<T> clazz) { return typed(key, clazz); }
     public Parcelable[] getParcelableArray(String key) { return typed(key, Parcelable[].class); }
+    public <T> T[] getParcelableArray(String key, Class<T> clazz) {
+        Parcelable[] a = getParcelableArray(key);
+        if (a == null) return null;
+        @SuppressWarnings("unchecked")
+        T[] out = (T[]) java.lang.reflect.Array.newInstance(clazz, a.length);
+        for (int i = 0; i < a.length; ++i) out[i] = clazz.cast(a[i]);
+        return out;
+    }
     @SuppressWarnings("unchecked")
     public <T extends Parcelable> ArrayList<T> getParcelableArrayList(String key) { return typed(key, ArrayList.class); }
     @SuppressWarnings("unchecked")
     public <T> ArrayList<T> getParcelableArrayList(String key, Class<? extends T> clazz) { return typed(key, ArrayList.class); }
     @SuppressWarnings("unchecked")
     public <T extends Parcelable> SparseArray<T> getSparseParcelableArray(String key) { return typed(key, SparseArray.class); }
+    @SuppressWarnings("unchecked")
+    public <T> SparseArray<T> getSparseParcelableArray(String key, Class<? extends T> clazz) { return typed(key, SparseArray.class); }
     public Size getSize(String key) { return typed(key, Size.class); }
     public SizeF getSizeF(String key) { return typed(key, SizeF.class); }
     public byte[] getByteArray(String key) { return typed(key, byte[].class); }

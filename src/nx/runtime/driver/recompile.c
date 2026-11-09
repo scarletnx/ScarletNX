@@ -24,6 +24,7 @@
 #include "common/utilities/build_info.h"
 #include "common/utilities/mods.h"
 #include "common/utilities/patches.h"
+#include "common/platform/file.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -54,7 +55,7 @@ static void usage(void) {
            "                         unit_instructions\n",
            g_settings.unit_size);
     puts("  --target auto|linux|win64  The host only: modules are built for the machine that builds them\n"
-         "  --target ios           A pack of objects for the iOS app, which loads them into JIT memory (docs/APPLE.md)\n"
+         "  --target ios           A pack of objects for the iOS app, which loads them into JIT memory (docs/hosts/apple.md)\n"
          "  --no-build             Stage data/INI only, generate no code\n"
          "  --tmpfs                Leave the RomFS in the extraction (in tmpfs), which the game reads it from");
     puts("  --jit-only             Generate no code: the runtime JIT compiles all of it\n"
@@ -69,7 +70,7 @@ static void usage(void) {
          "code and data folder, run on the game's runtime with its settings and saves.\n"
          "Hints: <outdir>/<NAME>/<NAME>.hints (hex PCs, one per line).");
 }
-/* SNX_LLVM_BRANCH_PROFILE, which an older version read (docs/DEPRECATIONS.md): for this version still the value of
+/* SNX_LLVM_BRANCH_PROFILE, which an older version read (docs/user/deprecations.md): for this version still the value of
    ir_branch_profile when the recompile is given none, and said either way. Removed with tests/architecture.py's
    ENV_DEPRECATED row */
 static void old_branch_profile(void) {
@@ -77,16 +78,16 @@ static void old_branch_profile(void) {
     if (!old) return;
     if (g_settings.ir_branch_profile[0])
         snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated, and the recompile gives ir_branch_profile first: "
-                  "ir_branch_profile=%s (docs/DEPRECATIONS.md)",
+                  "ir_branch_profile=%s (docs/user/deprecations.md)",
                   old, g_settings.ir_branch_profile);
     else if (strlen(old) < sizeof g_settings.ir_branch_profile) {
         memcpy(g_settings.ir_branch_profile, old, strlen(old) + 1);
         snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated: this recompile reads it as --ir_branch_profile=%s "
-                  "(docs/DEPRECATIONS.md)",
+                  "(docs/user/deprecations.md)",
                   old, old);
     } else
         snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated, and longer than ir_branch_profile's %u bytes: "
-                  "ir_branch_profile is empty, no branch weights (docs/DEPRECATIONS.md)",
+                  "ir_branch_profile is empty, no branch weights (docs/user/deprecations.md)",
                   old, (unsigned)sizeof g_settings.ir_branch_profile - 1);
 }
 static unsigned number(const char* text, unsigned max) {
@@ -156,7 +157,7 @@ int snx_deploy_runtime(const char* run, const char* exe) {
 #endif
 #if defined(__APPLE__) && !defined(SNX_IOS)
     /* MoltenVK, the Vulkan driver the app carries in its Frameworks: a game's copy of the runtime plays outside the
-       bundle, where SDL finds neither the app's Frameworks nor a system loader (docs/APPLE.md). A copy the disk refuses
+       bundle, where SDL finds neither the app's Frameworks nor a system loader (docs/hosts/apple.md). A copy the disk refuses
        (a game folder on a read-only image) is said, and no reason to refuse the run: the system's loader may serve it */
     if (folder) snx_deploy_vulkan_driver(run, folder);
 #endif
@@ -166,9 +167,9 @@ int snx_deploy_runtime(const char* run, const char* exe) {
 #ifdef __ANDROID__
     /* the shared storage runs nothing (the game runs on the app's own runtime), and before Android 11 it refuses a
        mode change: there the copy only marks the recompile done */
-    rc = snx_copy_file(run, tmp) || snx_replace(tmp, exe);
+    rc = snx_copy_file(run, tmp) || plat_replace_file(tmp, exe);
 #else
-    rc = snx_copy_file(run, tmp) || snx_make_executable(tmp) || snx_replace(tmp, exe);
+    rc = snx_copy_file(run, tmp) || snx_make_executable(tmp) || plat_replace_file(tmp, exe);
 #endif
     if (rc) {
         snx_error("cannot deploy the runtime %s to %s", run, exe);
@@ -188,7 +189,7 @@ static char* settings_path(const char* out, const char* title) {
         free(base);
         if (snx_left_behind(old, path))
             fprintf(stderr,
-                    "scarletnx: %s was left by an older version: this one keeps it in %s (docs/DEPRECATIONS.md)\n", old,
+                    "scarletnx: %s was left by an older version: this one keeps it in %s (docs/user/deprecations.md)\n", old,
                     path);
         free(old);
     }
@@ -365,7 +366,7 @@ static int copy_data(const SnxProgram* p, const char* dir, int quiet, int tmpfs)
                 if (!quiet) puts("Copying RomFS...");
                 rc = ((snx_is_dir(pending) || snx_is_file(pending) || snx_is_link(pending)) &&
                       snx_remove_tree(pending)) ||
-                     snx_copy_tree(p->romfs_path, pending) || snx_replace(pending, dst);
+                     snx_copy_tree(p->romfs_path, pending) || plat_replace_file(pending, dst);
                 free(pending);
             }
             free(dst);
@@ -549,7 +550,7 @@ static int make_program(const MakeArgs* a, int index) {
         folder = snx_path_join(out, game);
     if (snx_is_link(folder) || (snx_path_exists(folder) && !snx_is_dir(folder))) {
         snx_error("%s is a file where this game's folder goes: a game an older version made there, named %s; move "
-                  "its files as docs/DEPRECATIONS.md says",
+                  "its files as docs/user/deprecations.md says",
                   folder, game);
         goto done;
     }
@@ -851,7 +852,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
             gen.hook_direct_calls = 1;
         else if (!strcmp(arg, "--keep-ir") || !strcmp(arg, "--keep-c")) {
             if (!strcmp(arg, "--keep-c"))
-                fprintf(stderr, "scarletnx: --keep-c is deprecated: use --keep-ir (docs/DEPRECATIONS.md)\n");
+                fprintf(stderr, "scarletnx: --keep-c is deprecated: use --keep-ir (docs/user/deprecations.md)\n");
             keep_c = 1;
         } else if (!strcmp(arg, "--quiet") || !strcmp(arg, "-q"))
             compile.quiet = gen.quiet = 1;

@@ -267,8 +267,8 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
         }
         default:
             if (!nvn_draw_record(&q->d, op, payload, size) && !nvn_copy_record(op, payload, size, q->stride) &&
-                !(g_nvn.replay.unknown[op / 64 % 2] >> op % 64 & 1)) {
-                g_nvn.replay.unknown[op / 64 % 2] |= 1ull << op % 64; /* each once */
+                op < 128 && !(g_nvn.replay.unknown[op / 64] >> op % 64 & 1)) {
+                g_nvn.replay.unknown[op / 64] |= 1ull << op % 64; /* each once */
                 LOG("nvn: records of op %u aren't replayed yet\n", op);
             }
             break;

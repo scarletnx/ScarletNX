@@ -11,6 +11,10 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <sched.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 #include <time.h>
 
 u8* g_mem;
@@ -86,6 +90,13 @@ int mem_map(u64 addr, u64 size, u32 state, u32 perm) {
 u64 mem_total(void) { return 0; }
 u64 used_memory(void) { return 0; }
 void plat_exit_now(int code) { exit(code); }
+/* the thread's id, as common/platform/thread.c gives it: here, so the test doesn't link that file's mutexes over
+   its own */
+#if defined(__linux__)
+uint32_t plat_tid(void) { return (uint32_t)syscall(SYS_gettid); }
+#else
+uint32_t plat_tid(void) { return (uint32_t)(uintptr_t)pthread_self(); }
+#endif
 /* the system's name for a thread (common.c), which this test does not link */
 void snx_thread_name(const char* name) { (void)name; }
 /* a guest thread's host thread, never run here: the stack it was asked with; thread_fails makes the system refuse
@@ -186,7 +197,7 @@ int plat_cpus(int* ids, int max) {
     memcpy(ids, snx_kct_host, sizeof *ids * (size_t)n);
     return n;
 }
-void plat_thread_cpus(const int* ids, int n) {
+int plat_thread_cpus(const int* ids, int n) {
     int len = 0;
     pthread_mutex_lock(&snx_kct_lk);
     snx_kct_moved[0] = 0;
@@ -195,6 +206,7 @@ void plat_thread_cpus(const int* ids, int n) {
     strcpy(snx_kct_moved_by[snx_kct_who], snx_kct_moved);
     snx_kct_moves++;
     pthread_mutex_unlock(&snx_kct_lk);
+    return 0;
 }
 /* the threads are the pool's first slots, where the cores' lists find them (kt_at) */
 #define snx_kct_thread (g_hle.thread.threads)

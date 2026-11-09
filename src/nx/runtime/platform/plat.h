@@ -1,13 +1,16 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The operating system under the runtime. plat_sdl.c implements what SDL does the same way everywhere (the clocks,
-   sleeping, libraries, path queries and the host's power state), and one of plat_posix.c and plat_win32.c the rest
-   (threads, condition variables, the guest's address space, file maps, the crash handler); profiler_win32.c samples
+/* The operating system under the runtime. plat_sdl.c implements what SDL does the same way everywhere (libraries,
+   path queries and the host's power state); common/platform has the clocks and sleeping, and one of plat_posix.c and plat_win32.c the rest
+   (threads, condition variables, the guest's address space, the crash handler); profiler_win32.c samples
    threads on Windows, and the host audio output lives in the window backend. Paths are UTF-8 everywhere. */
 #ifndef SNX_PLAT_H
 #define SNX_PLAT_H
 #include "common/cpu/aarch64/cpu.h"
-#include "common/filesystem/host.h" /* PMutex and the pm_* calls */
+#include "common/platform/dl.h"     /* shared libraries */
+#include "common/platform/file.h"   /* reads, maps and the replace of files */
+#include "common/platform/thread.h" /* PMutex, PCond, waits on a word, plat_tid */
+#include "common/platform/time.h"   /* plat_ns, plat_sleep_ns, the wall clock */
 #include "common/utilities/common.h" /* snx_cpu_count */
 #include <stddef.h>
 #include <stdio.h>
@@ -22,47 +25,16 @@
 #include <windows.h>
 #endif
 
-/* ---- condition variables, used with a PMutex */
-typedef struct {
-#if defined(_WIN32)
-    CONDITION_VARIABLE c;
-#else
-    pthread_cond_t c;
-#endif
-} PCond;
-void pc_init(PCond* c);
-void pc_signal(PCond* c);
-void pc_broadcast(PCond* c);
-/* m held. timeout_ns < 0 waits without limit. Returns 1 when the time ran out, 0 when woken (or spuriously) */
-int pc_wait(PCond* c, PMutex* m, i64 timeout_ns);
-
-/* ---- waiting on a word, with no lock (a futex on Linux): plat_wait_word blocks while *w holds v, for at most
-   timeout_ns (negative: no limit), and may also return early for no reason; plat_wake_word wakes every thread waiting
-   on w. The waker changes *w before it wakes them */
-void plat_wait_word(u32* w, u32 v, i64 timeout_ns);
-void plat_wake_word(u32* w);
-
-/* ---- threads */
-typedef void (*PThreadFn)(void* arg);
-/* A detached thread running fn(arg) on a stack of that many bytes (0: the system's default). 0, or -1 when it
-   could not be started */
-int plat_thread(PThreadFn fn, void* arg, size_t stack);
-void plat_thread_exit(void); /* ends the calling thread (one plat_thread started) */
-/* the host CPUs the process may run on, at most max of them, into ids; 0 where the runtime doesn't choose them */
-int plat_cpus(int* ids, int max);
+/* ---- threads: plat_thread and plat_cpus are common/platform/thread.h's */
 /* how many host CPUs the process may run on, for workers that run on any of them: plat_cpus's where it lists them
    (desktop Linux, whose affinity a taskset narrows), else the system's every one (snx_cpu_count). At least 1 */
 static inline int plat_cpu_count(void) {
     int ids[1024], n = plat_cpus(ids, 1024);
     return n > 0 ? n : (int)snx_cpu_count();
 }
-/* the calling thread runs only on the n host CPUs in ids */
-void plat_thread_cpus(const int* ids, int n);
 /* the host for the log's header, so a report needn't describe it: "<OS and version>, <CPU>, <n> threads, <n> GB RAM",
    the CPU left out where the host doesn't name it. Nothing that names the machine or its user */
 void plat_system_info(char* out, size_t cap);
-void plat_yield(void);
-void plat_sleep_ns(i64 ns); /* 0 or less yields */
 /* C11's _Noreturn, which C99 code (it includes this) has not */
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 #define SNX_NORETURN _Noreturn
@@ -72,14 +44,6 @@ void plat_sleep_ns(i64 ns); /* 0 or less yields */
 /* Ends the process with code at once: stdio is flushed, but atexit handlers don't run and other threads are left
    where they are */
 SNX_NORETURN void plat_exit_now(int code);
-
-/* ---- time */
-u64 plat_ns(void);        /* a monotonic clock in nanoseconds */
-/* the system's CLOCK_MONOTONIC in nanoseconds (Vulkan's VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR), which plat_ns isn't:
-   0 where there is none (Windows) */
-u64 plat_monotonic_ns(void);
-i64 plat_unix_time(void); /* seconds since 1970 UTC */
-i64 plat_tz_offset(void); /* local time minus UTC, in seconds */
 
 /* ---- power */
 /* Whether the host runs from its charger: 1 plugged in, 0 on its battery, -1 when that cannot be read. Call it on the
@@ -144,7 +108,8 @@ void plat_gpu_buffer_free(int fd, void* handle, u64 size);
    owner reads as the guest's. It reads with read(2) into a buffer of its own, so a crash handler may call it */
 int plat_vm_foreign(u64 lo, u64 hi, int (*own)(u64 a, u64 b), char* out, size_t size);
 /* Calls cb for each run of pages in [p, p + size) written since they were last scanned, and watches them again.
-   -1 when the host can't tell (the caller then compares contents). Linux 6.7 and later use userfaultfd's asynchronous
+   -1 when the host can't tell (the caller then compares contents). A page a trap holds is not reported: its consumers
+   look the ownership up, and it reads as written once let go. Linux 6.7 and later use userfaultfd's asynchronous
    write protection with PAGEMAP_SCAN, Windows the write watch of the reservation. The other POSIX hosts (macOS,
    FreeBSD, Android, older Linux) protect what a scan reported and take the first write to it in the fault handler;
    write_tracking=1 takes that path on any Linux, and write_tracking=2 turns all of them off */
@@ -193,20 +158,34 @@ void plat_alias_host_free(u8* p, u64 size);
    through before the trapped pages open (memory/own.c). NULL without a pool */
 u8* plat_alias_mirror(void);
 
-/* Traps on pool pages of the reservation (memory/own.c, docs/GPU_OWNERSHIP.md): an access to an armed page, by any
+/* Traps on pool pages of the reservation (memory/own.c, docs/layers/gpu/ownership.md): an access to an armed page, by any
    thread, waits while fault (on a thread of the trap's own, never in a signal handler) gets the page's contents into
    the pool and lets it go on with plat_trap_continue. Linux 5.13 and later use userfaultfd's minor faults on shared
    memory. Other hosts with the pool (older Linux, Android, or memory_traps=1 on any Linux) make the pages
    inaccessible, and the faulting thread waits in the signal handler while the trap's thread lands them. Without the
-   pool plat_trap_init says -1. An access from the kernel (a system call given a pointer into an armed
-   page) fails with EFAULT instead of waiting, so the runtime opens a range before it hands it to the kernel. tid is
-   the faulting thread's plat_tid */
+   pool plat_trap_init says -1, but where traps land in place (SNX_PLAT_TRAPS_IN_PLACE). An access from the kernel (a
+   system call given a pointer into an armed page) fails with EFAULT (Windows: ERROR_NOACCESS) instead of waiting, so
+   the runtime opens a range before it hands it to the kernel. tid is the faulting thread's plat_tid */
 int plat_trap_init(void (*fault)(u8* p, int write, u32 tid));
+/* Windows traps the reservation's own pages, as it has no pool and so no mirror (memory_traps 0 and 1 alike):
+   VirtualProtect makes them inaccessible, a vectored exception handler waits on the faulting thread while the trap's
+   thread lands them, and the landing writes the GPU's bytes in place (plat_trap_fill) before the pages let go */
+#if defined(_WIN32)
+#define SNX_PLAT_TRAPS_IN_PLACE 1
+#else
+#define SNX_PLAT_TRAPS_IN_PLACE 0
+#endif
+/* size bytes from src written at p, into armed pages that stay armed (their waiters wait on): each run of pages opened
+   just before its bytes go in. An in-place landing's (SNX_PLAT_TRAPS_IN_PLACE): 0, or -1, and always -1 elsewhere */
+int plat_trap_fill(u8* p, const void* src, u64 size);
+/* size bytes of the reservation at p copied to dst without faulting: 0, or -1 when some of them can't be read now (a
+   trap holds them, or they were given back). Windows, for an in-place landing's pages (gpu/vk/buffer.c); -1
+   elsewhere, whose landings are read through the mirror */
+int plat_vm_read(const void* p, void* dst, u64 size);
 /* waiting(tid) as soon as the traps learn that thread tid waits in a fault, before the fault callback of its page
    runs: a landing may wait for the GPU for seconds, and the faults that come meanwhile wait behind it. The kernel
    lets the thread's emulated core go there (kthread_fault_lend). Set at startup, before plat_trap_init. Optional */
 void plat_trap_waiting(void (*waiting)(u32 tid));
-u32 plat_tid(void); /* the calling thread's id, as the system numbers threads */
 /* whether this process's thread tid (plat_tid's) is waiting in a trap now: 1, 0, or -1 when that can't be told */
 int plat_thread_in_fault(u32 tid);
 /* for a report: what thread tid (plat_tid's) does, as the system sees it, such as "R" (on a CPU) or "S futex_wait"
@@ -225,33 +204,8 @@ void plat_trap_disarm(u8* p, u64 size);
 void plat_freeze(u8* p, u64 size);
 void plat_thaw(void);
 
-/* ---- shared libraries */
-void* plat_dl_open(const char* path);
-void* plat_dl_sym(void* h, const char* name);
-const char* plat_dl_error(void); /* the reason the last plat_dl_open or plat_dl_sym returned NULL */
-/* the library of that name when the process has it loaded already (RenderDoc's program puts its own in the game it
-   starts), NULL when it hasn't: never loads it */
-void* plat_dl_loaded(const char* name);
+/* ---- the environment */
 int plat_setenv(const char* name, const char* value); /* for this process and what it loads; 0 on success */
-
-/* ---- files */
-int plat_is_dir(const char* path);
-/* Reads size bytes at off without moving f's position. The count read, short only at the end of the file, or -1 */
-i64 plat_pread(FILE* f, void* buf, u64 size, u64 off);
-typedef struct {
-    const u8* data; /* NULL for an empty file */
-    u64 size;
-    int borrowed; /* set by fs_map_file for a view kept for the whole run: plat_file_unmap then only clears this */
-    int heap;     /* set by fs_map_file for a file read out of the game's dump into memory: plat_file_unmap frees it */
-} PFileMap;
-/* the whole file mapped read-only. 0 (an empty file too), or -1 */
-int plat_file_map(PFileMap* m, const char* path);
-/* the same for a file whose length is already known from an index: size is trusted, the host isn't asked */
-int plat_file_map_sized(PFileMap* m, const char* path, u64 size);
-void plat_file_unmap(PFileMap* m);
-/* Moves tmp over dst atomically, so dst is always either the old or the new file. On failure dst is untouched and
-   tmp deleted: 0, or -1 */
-int plat_replace_file(const char* tmp, const char* dst);
 
 /* Host audio output of interleaved signed 16-bit samples, little-endian as the guest's are, implemented by the window
    backend. plat_audio_open gives a paused stream, or NULL when there is no device (always when headless).

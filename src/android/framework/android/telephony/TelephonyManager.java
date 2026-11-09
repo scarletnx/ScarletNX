@@ -5,7 +5,7 @@ package android.telephony;
 import java.util.concurrent.Executor;
 
 /**
- * The phone: a device without one (Off in docs/android/INTERFACES.md), as a tablet without a modem reports it. The
+ * The phone: a device without one (Off in docs/platforms/android-apps/interfaces.md), as a tablet without a modem reports it. The
  * device identifiers need a privileged permission since Android 10, so they throw for an app as there.
  */
 public class TelephonyManager {

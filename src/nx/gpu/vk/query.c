@@ -353,19 +353,8 @@ static int pred_init(void) {
                                      .pushConstantRangeCount = 1,
                                      .pPushConstantRanges = &push};
     if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_playout_pred))) return 0;
-    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                   .codeSize = query_predicate_spv_size,
-                                   .pCode = query_predicate_spv};
-    VkShaderModule m;
-    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &m))) return 0;
-    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                .module = m,
-                                                .pName = "main"},
-                                      .layout = g_playout_pred};
-    int ok = VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_ppipe));
-    vkDestroyShaderModule(g_vk.dev, m, NULL);
+    int ok = VK_OK(snx_vk_compute_pipeline(g_vk.dev, vk_pipeline_cache(), g_playout_pred, query_predicate_spv,
+                                           query_predicate_spv_size, &g_ppipe));
     if (!ok) {
         g_ppipe = VK_NULL_HANDLE;
         return 0;
@@ -525,6 +514,7 @@ int vk_query_pred_flush(void) {
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_ppipe);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_playout_pred, 0, 1, &set, 0, NULL);
     rec_CmdPushConstants(cb, g_playout_pred, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof n, &n);
+    vk_gpuprof_tag(VK_PROF_QUERY_PREDICATE);
     rec_CmdDispatch(cb, (n + 63) / 64, 1, 1);
     /* the predicates for the draws, and the shader's reads of the counts before a copy reuses their slots */
     VkMemoryBarrier2 after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -565,19 +555,8 @@ static int compare_init(void) {
                                      .pushConstantRangeCount = 1,
                                      .pPushConstantRanges = &push};
     if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_clayout))) return 0;
-    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                   .codeSize = query_compare_spv_size,
-                                   .pCode = query_compare_spv};
-    VkShaderModule m;
-    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &m))) return 0;
-    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                .module = m,
-                                                .pName = "main"},
-                                      .layout = g_clayout};
-    int ok = VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_cpipe));
-    vkDestroyShaderModule(g_vk.dev, m, NULL);
+    int ok = VK_OK(snx_vk_compute_pipeline(g_vk.dev, vk_pipeline_cache(), g_clayout, query_compare_spv,
+                                           query_compare_spv_size, &g_cpipe));
     if (!ok) {
         g_cpipe = VK_NULL_HANDLE;
         return 0;
@@ -631,6 +610,7 @@ int vk_query_pred_compare(u64 a, u32* slot) {
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_cpipe);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_clayout, 0, 1, &set, 0, NULL);
     rec_CmdPushConstants(cb, g_clayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+    vk_gpuprof_tag(VK_PROF_QUERY_COMPARE);
     rec_CmdDispatch(cb, 1, 1, 1);
     d.pMemoryBarriers = &after;
     rec_CmdPipelineBarrier2(cb, &d);
@@ -671,19 +651,8 @@ static int count_init(void) {
                                      .pushConstantRangeCount = 1,
                                      .pPushConstantRanges = &push};
     if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_klayout))) return 0;
-    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                   .codeSize = query_count_spv_size,
-                                   .pCode = query_count_spv};
-    VkShaderModule m;
-    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &m))) return 0;
-    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                .module = m,
-                                                .pName = "main"},
-                                      .layout = g_klayout};
-    int ok = VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_kpipe));
-    vkDestroyShaderModule(g_vk.dev, m, NULL);
+    int ok = VK_OK(snx_vk_compute_pipeline(g_vk.dev, vk_pipeline_cache(), g_klayout, query_count_spv,
+                                           query_count_spv_size, &g_kpipe));
     if (!ok) {
         g_kpipe = VK_NULL_HANDLE;
         return 0;
@@ -769,6 +738,7 @@ int vk_query_counts(VkBuffer buf, u64 off, const SamplesCount* counts, u32 n) {
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_kpipe);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_klayout, 0, 1, &set, 0, NULL);
     rec_CmdPushConstants(cb, g_klayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof n, &n);
+    vk_gpuprof_tag(VK_PROF_QUERY_COUNT);
     rec_CmdDispatch(cb, (n + 63) / 64, 1, 1);
     d.pMemoryBarriers = &after;
     rec_CmdPipelineBarrier2(cb, &d);

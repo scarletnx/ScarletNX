@@ -5,7 +5,7 @@
 #ifndef SNX_NVN_CMD_H
 #define SNX_NVN_CMD_H
 #include "common/cpu/aarch64/cpu.h"
-#include "common/filesystem/host.h"
+#include "common/platform/thread.h"
 
 /* A segment of the runtime's own memory for the records the game's command memory has no room for (nvn_cmd.c's
    spill): pieces are cut from it one after another, each for one recording. A segment whose pieces all came back is

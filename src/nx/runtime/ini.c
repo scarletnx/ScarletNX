@@ -12,6 +12,13 @@ const IniOpt* ini_find(const IniOpt* table, const char* key) {
         if (!strcmp(table->key, key)) return table;
     return NULL;
 }
+const char* ini_arg(const char* arg, char* key, size_t size) {
+    const char* eq = strchr(arg, '=');
+    if (strncmp(arg, "--", 2) || !eq || (size_t)(eq - arg - 2) >= size) return NULL;
+    memcpy(key, arg + 2, (size_t)(eq - arg - 2));
+    key[eq - arg - 2] = 0;
+    return eq + 1;
+}
 
 static void (*g_say)(const char* line);
 void ini_set_say(void (*say)(const char* line)) { g_say = say; }
@@ -300,7 +307,7 @@ const char* ini_renamed(const char* k) {
 }
 void ini_deprecated_head(FILE* f) {
     fprintf(f,
-            "\n[Deprecated]\n; keys an older version used, which do nothing now (docs/DEPRECATIONS.md): delete them, "
+            "\n[Deprecated]\n; keys an older version used, which do nothing now (docs/user/deprecations.md): delete them, "
             "or use Settings > App >\n;   Clean Old Settings in the launcher\n");
 }
 void ini_deprecated_key(FILE* f, const char* key, const char* value) {

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Guest memory the GPU holds: the renderer's side of memory/own.c (docs/GPU_OWNERSHIP.md). A resource is a
+/* Guest memory the GPU holds: the renderer's side of memory/own.c (docs/layers/gpu/ownership.md). A resource is a
    device-local buffer holding guest bytes in their own layout; an engine that wrote it publishes it over those bytes,
    and the trap lands it when the CPU touches them: copied by the GPU into host-cached memory, waited for (that
    submission only), and copied into the pool's mirror. On a host without traps a publish lands at once. Landing runs
@@ -261,7 +261,8 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
         VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                             .waitSemaphoreInfoCount = (apart || finished) && writer ? 1u : 0u,
                             .pWaitSemaphoreInfos = &wi,
-                            .commandBufferInfoCount = 1, .pCommandBufferInfos = &ci};
+                            .commandBufferInfoCount = 1,
+                            .pCommandBufferInfos = &ci};
         if (!VK_OK(vkEndCommandBuffer(cb)) || !VK_OK(vkResetFences(g_vk.dev, 1, &g_owned.fence)))
             fatal("vulkan: could not submit ownership readback");
         if (apart || finished) {
@@ -285,9 +286,10 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
 }
 
 static u32 lock_owner(void) { return vk_lock_owner(); }
-/* own.c's, before a landing takes vk_lock: the wait for the largest of its entries' own_writer. The thread holds no vk_lock here but while it hands the commands being
-   recorded to the GPU, when the writes may be among them, as own_land would. A thread that holds vk_lock already (the
-   GPU thread reading guest memory) lands under it as before */
+/* own.c's, before a landing takes vk_lock: the wait for the largest of its entries' own_writer. The thread holds no
+   vk_lock here but while it hands the commands being recorded to the GPU, when the writes may be among them, as
+   own_land would. A thread that holds vk_lock already (the GPU thread reading guest memory) lands under it as
+   before */
 static void own_wait(u64 writer) {
     u64 submitted = 0, done = 0;
     if (vk_lock_held()) return;
@@ -300,7 +302,8 @@ static void own_wait(u64 writer) {
     }
     if (writer > done) vk_wait_submit(writer); /* handed to the recording thread: it submits it */
 }
-/* a landing's bytes: the write tracking takes them as they were left, and the GPU mirror lets go of its copy's shadow */
+/* a landing's bytes: the write tracking takes them as they were left, and the GPU mirror lets go of its copy's
+   shadow */
 static void own_landed(u64 addr, u64 size, const u8* bytes) {
     vk_ww_landed(addr, size, bytes);
     vk_mirror_landed(addr, size);
@@ -332,8 +335,10 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
     OwnRange o;
     u8* d;
     if (!size) return;
-    if (in_place >= 0) vk_own_res_wrote(r); /* every producer records its writes before it publishes them */
-    else __atomic_store_n(&r->serial, __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
+    if (in_place >= 0)
+        vk_own_res_wrote(r); /* every producer records its writes before it publishes them */
+    else
+        __atomic_store_n(&r->serial, __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
     in_place = in_place > 0;
     vk_rt_before_write_cpu(cpu, size);
     gpu_mem_written_cpu(cpu, size); /* what is built from the bytes (textures, buffers) takes the new ones */

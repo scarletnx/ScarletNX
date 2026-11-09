@@ -3,6 +3,7 @@
 #include "common/utilities/zip.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
+#include "common/platform/file.h"
 #include <libdeflate.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,21 +30,10 @@ struct SnxZip {
     char* names;      /* each name, zero-terminated */
 };
 
-/* a seek and a read as one, under the stream's lock: threads read members of one zip at once (an app's resources
-   on one, its assets on another) */
+/* a read at an offset that leaves the stream's position alone (plat_pread): threads read members of one zip at once
+   (an app's resources on one, its assets on another) */
 static bool read_at(FILE* f, uint64_t offset, void* out, size_t size) {
-#ifdef _WIN32
-    _lock_file(f);
-#else
-    flockfile(f);
-#endif
-    bool ok = !snx_seek(f, offset) && fread(out, 1, size, f) == size;
-#ifdef _WIN32
-    _unlock_file(f);
-#else
-    funlockfile(f);
-#endif
-    return ok;
+    return plat_pread(f, out, size, offset) == (int64_t)size;
 }
 void snx_zip_close(SnxZip* zip) {
     if (!zip) return;

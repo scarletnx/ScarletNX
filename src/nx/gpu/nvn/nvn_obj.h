@@ -538,11 +538,11 @@ enum {
     OP_DEPTH_RANGES,
     OP_PATCH_SIZE,
     OP_SET_STATE,
-    OP_PUSH_CONSTANTS,
-    OP_DRAW_MESH,
     OP_WAIT_EVENT,
     OP_SUBROUTINES,
     OP_DISCARD,
+    OP_PUSH_CONSTANTS,
+    OP_DRAW_MESH,
     OP_COUNT_
 };
 typedef char NvnOpcodeMaskFits[(OP_COUNT_ <= 128) ? 1 : -1]; /* nvn_replay.h's unknown[2] */
@@ -682,8 +682,8 @@ typedef struct {
 /* OP_DRAW_MESH, an Ounce's mesh draw: count workgroups from first (DrawMeshTasks, and DrawMeshTasks3D's x y z, which
    the hardware draws as that many in a row from 0). An indirect one (ind not 0) has its records at ind, which the GPU
    reads, mdi_max of them mdi_stride bytes apart, as many as the 32-bit count at mdi_count says when that isn't 0:
-   x, y and z with NVN_MESH_3D, else two words, as the driver gives the GPU (docs/OUNCE.md). A direct one stops
-   before ind */
+   x, y and z with NVN_MESH_3D, else two words, as the driver gives the GPU (docs/platforms/nx/ounce.md). A direct one
+   stops before ind */
 #define NVN_MESH_3D 1u
 typedef struct {
     i32 first, count;

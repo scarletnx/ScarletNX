@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
    APT GetLockHandle facts: Azahar service/apt/{apt,applet_manager}.cpp,
-   GPL-2.0-or-later, revision recorded in docs/3DS.md. The parameter queue and the library applet's start, as an
+   GPL-2.0-or-later, revision recorded in docs/platforms/3ds/README.md. The parameter queue and the library applet's start, as an
    application drives them for the software keyboard and the Mii selector, and the capture block each answers the
    application's Request with (each HLE applet's ReceiveParameterImpl): the same files at ac4a97e. */
 #include "3ds/runtime/internal.h"

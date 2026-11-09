@@ -229,7 +229,7 @@ u64 gmem_read_code_cpu(u64 gva, void* dst, u64 size) {
 int gmem_code_cut(u64 len, u64 cpu, u64 size) { return cpu < size && cpu < len + 16; }
 
 /* ------------------------------------------------------------ block linear layout (Eden's decoders.cpp) */
-/* A byte's offset in the layout (texture/blocklinear.h, docs/BLOCKLINEAR.md) is the sum of an x part and a (y, z)
+/* A byte's offset in the layout (texture/blocklinear.h, docs/layers/gpu/blocklinear.md) is the sum of an x part and a (y, z)
    part, as in Eden's SwizzleImpl (offset_x + offset_y + offset_z), so a row's base and a column's offset can be
    computed apart. The x part: the block column x falls in (x / 64, blocks are 2^(9 + bh + bd) bytes) and the byte's
    place in its GOB's row */

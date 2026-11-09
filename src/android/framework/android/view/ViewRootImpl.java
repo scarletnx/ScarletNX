@@ -42,18 +42,31 @@ public final class ViewRootImpl implements ViewParent {
         attachInfo.rootView = view;
         attachInfo.hasWindowFocus = true;
         android.util.DisplayMetrics m = snx.android.Device.metrics();
+        if (offscreen()) {
+            android.graphics.Point size = new android.graphics.Point();
+            display.getSize(size);
+            m = new android.util.DisplayMetrics();
+            m.widthPixels = size.x;
+            m.heightPixels = size.y;
+        }
         width = attrs != null && attrs.width > 0 ? attrs.width : m.widthPixels;
         height = attrs != null && attrs.height > 0 ? attrs.height : m.heightPixels;
         view.mParent = this;
-        Host.attach(this);
+        if (!offscreen()) Host.attach(this);
         requestLayout();
     }
+
+    /* the display the window is on: one other than the host window's (a virtual display) lays its views out and draws
+       nothing anywhere, as what such a display shows goes to no screen */
+    private Display display = Display.DEFAULT;
+    public void setDisplay(Display display) { this.display = display != null ? display : Display.DEFAULT; }
+    boolean offscreen() { return display.getDisplayId() != Display.DEFAULT_DISPLAY; }
 
     public View getView() { return view; }
     public void die() {
         dead = true;
         if (view != null && view.mAttachInfo != null) view.dispatchDetachedFromWindow();
-        Host.detach(this);
+        if (!offscreen()) Host.detach(this);
     }
     /* the window's place in the display: its root view is laid out there, so that it draws there; events come
        into the window's own coordinates */
@@ -162,7 +175,7 @@ public final class ViewRootImpl implements ViewParent {
         attachInfo.drawingTime = SystemClock.uptimeMillis();
         RenderNode root = view.updateDisplayListIfDirty();
         attachInfo.treeObserver.dispatchOnDraw();
-        Host.draw(this, root);
+        if (!offscreen()) Host.draw(this, root);
     }
 
     // ---- input ----

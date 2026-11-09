@@ -4,7 +4,7 @@
    Windows x64, written from each system's documented API (Linux's man-pages, FreeBSD's manual, Apple's
    documentation of the Mach and BSD calls, Microsoft's Win32 documentation) */
 #if defined(__linux__)
-#define _GNU_SOURCE /* MAP_FIXED_NOREPLACE, process_vm_readv, gettid */
+#define _GNU_SOURCE /* process_vm_readv */
 #endif
 #include "android/bridge/host.h"
 #include <errno.h>
@@ -33,10 +33,6 @@
 #elif defined(__FreeBSD__) || defined(__APPLE__)
 #include <sys/event.h>
 #include <sys/time.h>
-#endif
-#if defined(__FreeBSD__)
-#include <pthread_np.h>
-#include <sys/thr.h>
 #endif
 #if defined(__APPLE__)
 #include <mach/mach.h>
@@ -95,97 +91,11 @@ static struct {
 
 /* ---- ids ---- */
 
-uint32_t host_tid(void) {
-#if defined(__linux__)
-    return (uint32_t)gettid();
-#elif defined(__FreeBSD__)
-    return (uint32_t)pthread_getthreadid_np();
-#elif defined(__APPLE__)
-    uint64_t id = 0;
-    pthread_threadid_np(NULL, &id);
-    return (uint32_t)id; /* a 64-bit id, unique in the system, whose low half is the guest's tid */
-#elif defined(_WIN32)
-    return (uint32_t)GetCurrentThreadId();
-#endif
-}
-
 uint32_t host_pid(void) {
 #ifdef _WIN32
     return (uint32_t)GetCurrentProcessId();
 #else
     return (uint32_t)getpid();
-#endif
-}
-
-/* ---- address space ---- */
-
-void* host_reserve(uint64_t address, size_t size, bool exact) {
-    void* want = (void*)(uintptr_t)address;
-#ifdef _WIN32
-    void* p = VirtualAlloc(want, size, MEM_RESERVE, PAGE_NOACCESS);
-    if (!p && !exact && want) p = VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_NOACCESS);
-    return p;
-#else
-    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
-#ifdef MAP_NORESERVE
-    flags |= MAP_NORESERVE;
-#endif
-#if defined(__linux__) && defined(MAP_FIXED_NOREPLACE)
-    if (exact) flags |= MAP_FIXED_NOREPLACE;
-#elif defined(__FreeBSD__)
-    /* MAP_GUARD: addresses alone, which a later MAP_FIXED map fills. MAP_EXCL: fail where the range is mapped */
-    flags = MAP_GUARD;
-    if (exact) flags |= MAP_FIXED | MAP_EXCL;
-#endif
-    void* p = mmap(want, size, PROT_NONE, flags, -1, 0);
-    if (p == MAP_FAILED) return NULL;
-    /* a Linux older than 4.17 and macOS take the address as a hint */
-    if (exact && p != want) {
-        munmap(p, size);
-        return NULL;
-    }
-    return p;
-#endif
-}
-
-bool host_commit(void* address, size_t size) {
-#ifdef _WIN32
-    return VirtualAlloc(address, size, MEM_COMMIT, PAGE_READWRITE) == address;
-#else
-    return mmap(address, size, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) == address;
-#endif
-}
-
-void* host_lazy(size_t size) {
-#ifdef _WIN32
-    /* committed whole: Windows charges the commit at once, and gives the pages at their first touch */
-    return VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-#else
-    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
-#ifdef MAP_NORESERVE
-    flags |= MAP_NORESERVE;
-#endif
-    void* p = mmap(NULL, size, PROT_READ | PROT_WRITE, flags, -1, 0);
-    return p == MAP_FAILED ? NULL : p;
-#endif
-}
-
-void host_unmap(void* address, size_t size) {
-#ifdef _WIN32
-    (void)size;
-    VirtualFree(address, 0, MEM_RELEASE);
-#else
-    munmap(address, size);
-#endif
-}
-
-bool host_protect(void* address, size_t size, int access) {
-#ifdef _WIN32
-    DWORD old, mode = access & HOST_WRITE ? PAGE_READWRITE : access & HOST_READ ? PAGE_READONLY : PAGE_NOACCESS;
-    return VirtualProtect(address, size, mode, &old) != 0;
-#else
-    int prot = (access & HOST_READ ? PROT_READ : 0) | (access & HOST_WRITE ? PROT_WRITE : 0);
-    return mprotect(address, size, prot) == 0;
 #endif
 }
 
@@ -237,43 +147,6 @@ bool host_copy_checked(void* to, const void* from, size_t size) {
 }
 
 /* ---- descriptors ---- */
-
-int64_t host_pread(int fd, void* buffer, size_t size, uint64_t offset) {
-#ifdef _WIN32
-    HANDLE h = (HANDLE)_get_osfhandle(fd);
-    if (h == INVALID_HANDLE_VALUE) {
-        errno = EBADF;
-        return -1;
-    }
-    /* ReadFile of 4 GiB at most at a time, at the OVERLAPPED's offset */
-    size_t done = 0;
-    while (done < size) {
-        OVERLAPPED at = {0};
-        uint64_t where = offset + done;
-        at.Offset = (DWORD)where;
-        at.OffsetHigh = (DWORD)(where >> 32);
-        DWORD want = size - done > 0x40000000u ? 0x40000000u : (DWORD)(size - done), got = 0;
-        if (!ReadFile(h, (char*)buffer + done, want, &got, &at)) {
-            if (GetLastError() == ERROR_HANDLE_EOF) break;
-            errno = EIO;
-            return -1;
-        }
-        if (!got) break;
-        done += got;
-    }
-    return (int64_t)done;
-#else
-    size_t done = 0;
-    while (done < size) {
-        ssize_t n = pread(fd, (char*)buffer + done, size - done, (off_t)(offset + done));
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0) return -1;
-        if (!n) break;
-        done += (size_t)n;
-    }
-    return (int64_t)done;
-#endif
-}
 
 bool host_is_socket(int fd) {
 #ifdef _WIN32

@@ -109,6 +109,48 @@ public abstract class DocumentsProvider extends ContentProvider {
             return null;
         }
     }
+    /** the document calls of DocumentsContract (create, rename, delete, remove, copy, move), as Android's provider answers them */
+    @Override public Bundle call(String method, String arg, Bundle extras) {
+        if (method == null || !method.startsWith("android:")) return super.call(method, arg, extras);
+        try {
+            Uri uri = extras != null ? (Uri) extras.getParcelable(DocumentsContract.EXTRA_URI) : null;
+            String id = uri != null ? documentOf(uri) : null;
+            Bundle out = new Bundle();
+            switch (method) {
+                case DocumentsContract.METHOD_CREATE_DOCUMENT -> {
+                    String made = createDocument(id, extras.getString(DocumentsContract.Document.COLUMN_MIME_TYPE),
+                        extras.getString(DocumentsContract.Document.COLUMN_DISPLAY_NAME));
+                    if (made == null) return null;
+                    out.putParcelable(DocumentsContract.EXTRA_URI, DocumentsContract.buildDocumentUriMaybeUsingTree(uri, made));
+                }
+                case DocumentsContract.METHOD_RENAME_DOCUMENT -> {
+                    String renamed = renameDocument(id, extras.getString(DocumentsContract.Document.COLUMN_DISPLAY_NAME));
+                    if (renamed != null) out.putParcelable(DocumentsContract.EXTRA_URI, DocumentsContract.buildDocumentUriMaybeUsingTree(uri, renamed));
+                }
+                case DocumentsContract.METHOD_DELETE_DOCUMENT -> deleteDocument(id);
+                case DocumentsContract.METHOD_REMOVE_DOCUMENT -> {
+                    Uri parent = (Uri) extras.getParcelable(DocumentsContract.EXTRA_PARENT_URI);
+                    removeDocument(id, documentOf(parent));
+                }
+                case DocumentsContract.METHOD_COPY_DOCUMENT -> {
+                    Uri target = (Uri) extras.getParcelable(DocumentsContract.EXTRA_TARGET_URI);
+                    String copied = copyDocument(id, documentOf(target));
+                    if (copied != null) out.putParcelable(DocumentsContract.EXTRA_URI, DocumentsContract.buildDocumentUriMaybeUsingTree(target, copied));
+                }
+                case DocumentsContract.METHOD_MOVE_DOCUMENT -> {
+                    Uri parent = (Uri) extras.getParcelable(DocumentsContract.EXTRA_PARENT_URI);
+                    Uri target = (Uri) extras.getParcelable(DocumentsContract.EXTRA_TARGET_URI);
+                    String moved = moveDocument(id, documentOf(parent), documentOf(target));
+                    if (moved != null) out.putParcelable(DocumentsContract.EXTRA_URI, DocumentsContract.buildDocumentUriMaybeUsingTree(target, moved));
+                }
+                default -> throw new UnsupportedOperationException("Method not supported " + method);
+            }
+            return out;
+        } catch (FileNotFoundException e) {
+            throw new IllegalStateException("Failed call " + method, e);
+        }
+    }
+
     @Override public final Uri insert(Uri uri, ContentValues values) { throw new UnsupportedOperationException("Insert not supported"); }
     @Override public final int delete(Uri uri, String selection, String[] selectionArgs) { throw new UnsupportedOperationException("Delete not supported"); }
     @Override public final int update(Uri uri, ContentValues values, String selection, String[] selectionArgs) {

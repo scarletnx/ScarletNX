@@ -10,6 +10,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "nx/runtime/driver/mcp_int.h"
 #include "common/utilities/common.h"
+#include "common/utilities/endian.h"
 #include <yyjson.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -643,15 +644,6 @@ static int read_memory(SnxU64 address, size_t size, unsigned char* out, Text* er
 }
 
 /* guest memory, which is little endian whatever the host is */
-static SnxU64 get64(const unsigned char* p) {
-    SnxU64 v = 0;
-    int i;
-    for (i = 7; i >= 0; i--) v = v << 8 | p[i];
-    return v;
-}
-static SnxU32 get32(const unsigned char* p) {
-    return (SnxU32)p[0] | (SnxU32)p[1] << 8 | (SnxU32)p[2] << 16 | (SnxU32)p[3] << 24;
-}
 /* the guest's memory map, for this call: DONE, or REFUSED (not mapped yet) or LOST */
 static int guest_map(Guest* g, Text* err) {
     int rc;
@@ -1248,11 +1240,11 @@ static void put_kname(Text* t, const Guest* g, const unsigned char* k, int wide)
     long off = k_off(K_NAME, 0, 32);
     int found = 0;
     if (g && tls && !guest_read(g, tls + (wide ? 0x1F8 : 0x1FC), wide ? 8 : 4, b, &ignored)) {
-        type = wide ? get64(b) : get32(b);
+        type = wide ? snx_ld_le64(b) : snx_ld_le32(b);
         if (type && (!arg || type == arg) && !guest_read(g, type + (wide ? 0x46 : 0x26), 2, b, &ignored)) {
             unsigned version = (unsigned)b[0] | (unsigned)b[1] << 8;
             SnxU64 at = type + (wide ? (version == 1 ? 0x1A0 : 0x1A8) : (version == 1 ? 0xE4 : 0xE8));
-            if (!guest_read(g, at, wide ? 8 : 4, b, &ignored)) ptr = wide ? get64(b) : get32(b);
+            if (!guest_read(g, at, wide ? 8 : 4, b, &ignored)) ptr = wide ? snx_ld_le64(b) : snx_ld_le32(b);
         }
     }
     if (ptr) {
@@ -1468,8 +1460,8 @@ char* mcp_gdb_guest(long thread, int frames, McpNamer name, const void* ctx, Tex
             clear(err);
             break;
         }
-        next = wide ? get64(record) : get32(record);
-        lr = wide ? get64(record + 8) : get32(record + 4);
+        next = wide ? snx_ld_le64(record) : snx_ld_le32(record);
+        lr = wide ? snx_ld_le64(record + 8) : snx_ld_le32(record + 4);
         if (!lr) break;
         mcp_put(&t, "  #");
         mcp_put_num(&t, (unsigned long)++n);

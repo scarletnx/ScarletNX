@@ -13,18 +13,13 @@
 #define NVN_CONTROL  0x98761234u /* a stage's control section (gpu/nvn/nvn_object.c's stage_of) */
 #define SPH_BYTES    0x50u
 
-static u32 le32(const u8* p) { return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24; }
-static u32 be32(const u8* p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | (u32)p[3]; }
-static u16 le16(const u8* p) { return (u16)(p[0] | p[1] << 8); }
-static u64 le64(const u8* p) { return (u64)le32(p) | (u64)le32(p + 4) << 32; }
-
 int shipped_kind(const u8* head, size_t n) {
     if (n < 4) return SHIPPED_SKIP;
     if (!memcmp(head, "Yaz0", 4)) return SHIPPED_YAZ0;
-    if (le32(head) == 0xFD2FB528u) return SHIPPED_ZSTD; /* a zstd frame's magic */
+    if (snx_ld_le32(head) == 0xFD2FB528u) return SHIPPED_ZSTD; /* a zstd frame's magic */
     /* BNSH, BFSHA, agl's SHARCB, SARC, a program's own wrapper or a bare NVN file */
     if (!memcmp(head, "BNSH", 4) || !memcmp(head, "FSHA", 4) || !memcmp(head, "BAHS", 4) || !memcmp(head, "SARC", 4) ||
-        le32(head) == NVN_WRAP || le32(head) == NVN_FILE)
+        snx_ld_le32(head) == NVN_WRAP || snx_ld_le32(head) == NVN_FILE)
         return SHIPPED_SCAN;
     return SHIPPED_SKIP;
 }
@@ -52,7 +47,7 @@ int shipped_name_ounce(const char* name) {
     return ends_with(name, ".bin") && strstr(last ? last : name, "shader") ? 2 : 0;
 }
 size_t shipped_yaz0_size(const u8* in, size_t n) {
-    return n >= 16 && !memcmp(in, "Yaz0", 4) ? (size_t)be32(in + 4) : 0;
+    return n >= 16 && !memcmp(in, "Yaz0", 4) ? (size_t)snx_ld_be32(in + 4) : 0;
 }
 /* Yaz0's stream: groups of a flag byte and eight items, its bits from the top: 1 a byte as it is, 0 a copy of bytes
    already made, two bytes (the count's nibble and the distance's twelve bits) or three (a count from 18) */
@@ -85,18 +80,20 @@ size_t shipped_yaz0(const u8* in, size_t n, u8* out, size_t want) {
 /* SARC's header (0x14 bytes), SFAT's (0xC) and its nodes (0x10 each), then SFNT's header (8) and the names. The
    Switch's are little-endian, which the byte order mark says */
 static int sarc_tables(const u8* d, size_t n, u32* count, size_t* nodes, size_t* names, size_t* data) {
-    if (n < 0x20 || memcmp(d, "SARC", 4) || le16(d + 6) != 0xFEFFu) return -1;
-    size_t sfat = le16(d + 4);
+    if (n < 0x20 || memcmp(d, "SARC", 4) || snx_ld_le16(d + 6) != 0xFEFFu) return -1;
+    size_t sfat = snx_ld_le16(d + 4);
     if (sfat > n - 0xC || memcmp(d + sfat, "SFAT", 4)) return -1;
-    *count = le16(d + sfat + 6);
-    *nodes = sfat + le16(d + sfat + 4);
+    *count = snx_ld_le16(d + sfat + 6);
+    *nodes = sfat + snx_ld_le16(d + sfat + 4);
     size_t sfnt = *nodes + (size_t)*count * 16;
     if (sfnt > n - 8 || memcmp(d + sfnt, "SFNT", 4)) return -1;
-    *names = sfnt + le16(d + sfnt + 4);
-    *data = le32(d + 0xC);
+    *names = sfnt + snx_ld_le16(d + sfnt + 4);
+    *data = snx_ld_le32(d + 0xC);
     return *data <= n ? 0 : -1;
 }
-size_t shipped_sarc_head(const u8* d, size_t n) { return n >= 0x10 && !memcmp(d, "SARC", 4) ? le32(d + 0xC) : 0; }
+size_t shipped_sarc_head(const u8* d, size_t n) {
+    return n >= 0x10 && !memcmp(d, "SARC", 4) ? snx_ld_le32(d + 0xC) : 0;
+}
 int shipped_sarc_count(const u8* d, size_t n) {
     u32 count;
     size_t nodes, names, data;
@@ -108,9 +105,9 @@ static int sarc_node(const u8* d, size_t n, int i, u32* begin, u32* end, const c
     size_t nodes, names, data;
     if (sarc_tables(d, n, &count, &nodes, &names, &data) || i < 0 || (u32)i >= count) return -1;
     const u8* node = d + nodes + (size_t)i * 16;
-    u32 attr = le32(node + 4);
-    *begin = le32(node + 8);
-    *end = le32(node + 12);
+    u32 attr = snx_ld_le32(node + 4);
+    *begin = snx_ld_le32(node + 8);
+    *end = snx_ld_le32(node + 12);
     *name = "";
     /* named when its top byte isn't 0 (it counts the names before it that hash alike): the name at a multiple of 4 in
        SFNT's, ending before the data */
@@ -162,7 +159,7 @@ const char* shipped_stage_name(int stage) {
 }
 /* an SPH's stage, of the version given */
 static int sph_stage(const u8* sph, u32 want) {
-    u32 w = le32(sph), type = w & 0x1Fu, version = w >> 5 & 0x1Fu, shader = w >> 10 & 0xFu;
+    u32 w = snx_ld_le32(sph), type = w & 0x1Fu, version = w >> 5 & 0x1Fu, shader = w >> 10 & 0xFu;
     if (version != want) return -1;
     if (type == 2) return shader == 5 ? ST_FS : -1;
     if (type != 1) return -1;
@@ -231,7 +228,7 @@ int shipped_ounce_stage(const u8* sph) {
 }
 u32 shipped_programs(const u8* d, size_t n, ShippedEach each, void* ctx) {
     u32 handed = 0;
-    if (n >= NVN_FILE_SPH + SPH_BYTES && le32(d) == NVN_FILE) { /* one program, after its control section */
+    if (n >= NVN_FILE_SPH + SPH_BYTES && snx_ld_le32(d) == NVN_FILE) { /* one program, after its control section */
         int stage = shipped_sph_stage(d + NVN_FILE_SPH);
         if (stage != -1 && !each(ctx, d + NVN_FILE_SPH, n - NVN_FILE_SPH, stage, NULL, 0)) handed++;
         return handed;
@@ -243,7 +240,7 @@ u32 shipped_programs(const u8* d, size_t n, ShippedEach each, void* ctx) {
        its pool: every word is looked at */
     for (size_t at = 0; n >= 0x30 + SPH_BYTES && at <= n - 0x30 - SPH_BYTES; at += 4) {
         int stage;
-        if (le32(d + at) != NVN_WRAP || (stage = shipped_sph_stage(d + at + 0x30)) == -1) continue;
+        if (snx_ld_le32(d + at) != NVN_WRAP || (stage = shipped_sph_stage(d + at + 0x30)) == -1) continue;
         while (k < nconsts && consts[k].code < at) k++; /* both go up through d */
         const Consts* c = k < nconsts && consts[k].code == at ? &consts[k] : NULL;
         if (each(ctx, d + at + 0x30, n - at - 0x30, stage, c ? d + c->at : NULL, c ? (size_t)(c->end - c->at) : 0))
@@ -258,14 +255,14 @@ u32 shipped_programs(const u8* d, size_t n, ShippedEach each, void* ctx) {
    reuse, of which every instruction sets some) not all zero and its top bits clear. The SPH's last 48 bytes, zeros,
    are none, so the walk back stops at the end of the header */
 static int insn_like(const u8* p) {
-    u64 hi = le64(p + 8);
+    u64 hi = snx_ld_le64(p + 8);
     return hi >> 61 == 0 && hi >> 41 != 0;
 }
 u32 shipped_ounce_programs(const u8* d, size_t n, ShippedEach each, void* ctx) {
     u32 handed = 0;
     const u8* last = NULL;
     for (size_t at = 0; n >= 16 && at <= n - 16; at += 8) {
-        u64 lo = le64(d + at);
+        u64 lo = snx_ld_le64(d + at);
         /* BRA to itself (-16, opcode 0x947), which ends every program after its EXIT */
         if ((lo & 0xFFFu) != 0x947u || lo >> 32 != 0xFFFFFFF0u || !insn_like(d + at)) continue;
         size_t s = at;
@@ -285,7 +282,7 @@ u32 shipped_ounce_programs(const u8* d, size_t n, ShippedEach each, void* ctx) {
            all the bytes up to 64 KiB are handed, and a draw takes the translation only where the words it read
            hold (vk_cb_reads_hold) */
         size_t end = at + 16;
-        while (end <= n - 16 && (le64(d + end) & 0xFFFu) == 0x918u && insn_like(d + end)) end += 16;
+        while (end <= n - 16 && (snx_ld_le64(d + end) & 0xFFFu) == 0x918u && insn_like(d + end)) end += 16;
         size_t cb = (size_t)(sph - d) + ((end - (size_t)(sph - d) + 0xFF) & ~(size_t)0xFF);
         const u8* consts = cb < n ? d + cb : NULL;
         size_t nconsts = consts ? (n - cb < 0x10000 ? n - cb : 0x10000) : 0;

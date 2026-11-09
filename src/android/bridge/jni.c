@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* JNI between the JVM and the guest's libraries (docs/android/NATIVE.md, "JNI"). The guest's JNIEnv and JavaVM are
+/* JNI between the JVM and the guest's libraries (docs/platforms/android-apps/native.md, "JNI"). The guest's JNIEnv and JavaVM are
    tables of export addresses: each calls the host JVM's own function with the thread's host JNIEnv, and references
    and IDs pass as they are, a guest pointer being a host pointer. The calls with variable arguments read them by the
    method's signature, which GetMethodID recorded. Java calls the guest through NativeBridge.invoke*, which the

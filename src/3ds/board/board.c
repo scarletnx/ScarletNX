@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/board/board.h"
 
-/* Layout follows Azahar src/core/memory.h; see docs/3DS.md for provenance.
+/* Layout follows Azahar src/core/memory.h; see docs/platforms/3ds/README.md for provenance.
    No Azahar interpreter/JIT or privileged ARM9 firmware is embedded here. */
 #define COMMON_REGIONS                                                                                                 \
     {"IO", 0x10100000u, 0x00400000u, SNX_CTR_MMIO}, {"MPCore", 0x17e00000u, 0x00002000u, SNX_CTR_MMIO}, {              \

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/present.h"
+#include "common/utilities/common.h"
 #include "vita/gpu/render.h"
 #include "vita/gpu/vk.h"
 #include "vita/platform/input.h"
@@ -53,12 +54,8 @@ static void shot_write(VitaProcess* p, const char* suffix) {
     sprintf(path, "%s%s.ppm", g_present.shot, suffix);
     FILE* f = fopen(path, "wb");
     if (f) {
-        fprintf(f, "P6\n%u %u\n255\n", (unsigned)p->display.width, (unsigned)p->display.height);
-        for (uint32_t y = 0; y < p->display.height; ++y)
-            for (uint32_t x = 0; x < p->display.width; ++x) {
-                const unsigned char* px = vita_ptr(p, p->display.base + (y * p->display.pitch + x) * 4);
-                fwrite(px, 1, 3, f);
-            }
+        (void)snx_ppm_write(f, p->display.width, p->display.height, vita_ptr(p, p->display.base), 4,
+                            (ptrdiff_t)p->display.pitch * 4, SNX_PPM_RGBA);
         fclose(f);
         printf("Screenshot: %s\n", path);
     }

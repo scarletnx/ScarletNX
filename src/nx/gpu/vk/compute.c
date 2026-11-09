@@ -10,7 +10,7 @@
    stores while it runs and a later CPU write wins.
 
    A queue of its own only waits for compute, so holding signals until results land costs a dispatch's run time,
-   not the rendering backlog's (which made that ordering too slow under the old OpenGL renderer, ROADMAP.md Phase 2).
+   not the rendering backlog's (which made that ordering too slow under the old OpenGL renderer, an old roadmap phase).
    Dispatches that read textures run on the graphics queue, after everything recorded before them. */
 #include <stdlib.h>
 #include <string.h>
@@ -96,6 +96,16 @@ static u32 g_phead, g_ptail; /* batches put aside, landed */
 static VkWriteLog** g_logs;
 static u32 g_nlogs, g_caplogs;
 static VkWriteLog* g_cs_spare; /* a log taken for a dispatch whose setup was abandoned: the next dispatch reuses it */
+/* the spare made a log of parts parts, in the GPU's memory (gpu) or in host memory: NULL when none can be made */
+static VkWriteLog* cs_log(u32 parts, int gpu) {
+    if (g_cs_spare &&
+        (vk_wlog_size(g_cs_spare) != (u64)parts * SH_WLOG_PART * 4 || vk_wlog_on_gpu(g_cs_spare) != !!gpu)) {
+        vk_wlog_put(g_cs_spare);
+        g_cs_spare = NULL;
+    }
+    if (!g_cs_spare) g_cs_spare = gpu ? vk_wlog_get_gpu(parts) : vk_wlog_get(parts);
+    return g_cs_spare;
+}
 static void logs_unref(VkWriteLog** logs, u32* n) {
     for (u32 i = 0; i < *n; i++) vk_wlog_unref(logs[i]);
     *n = 0;
@@ -810,30 +820,13 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
         p->failed = 1;
         return p;
     }
-    VkShaderModuleCreateInfo mi = {
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = nw * 4, .pCode = spv};
-    VkShaderModule m;
-    int ok = VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &m));
+    /* subgroups of 32 for one that reads other lanes (cs_reads_lanes), whole where the block's x is whole subgroups (as
+       Vulkan asks of the flag) */
     int warp = g_vk.has_cs_warp32 && cs_reads_lanes(spv, nw);
-    free(spv);
-    if (!ok) {
+    if (!VK_OK(snx_vk_compute_pipeline_subgroups(g_vk.dev, vk_pipeline_cache(), g_vk.cs_playout, spv, (size_t)nw * 4,
+                                                 warp ? 32 : 0, warp && lx % 32 == 0, &p->p)))
         p->failed = 1;
-        return p;
-    }
-    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo warp32 = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO, .requiredSubgroupSize = 32};
-    VkComputePipelineCreateInfo ci = {
-        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-        .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                  .pNext = warp ? &warp32 : NULL,
-                  /* whole, where the block's x is whole subgroups (as Vulkan asks of the flag) */
-                  .flags = warp && lx % 32 == 0 ? VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT : 0,
-                  .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                  .module = m,
-                  .pName = "main"},
-        .layout = g_vk.cs_playout};
-    if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &p->p))) p->failed = 1;
-    vkDestroyShaderModule(g_vk.dev, m, NULL);
+    free(spv);
     if (!p->failed)
         LOG_LIMIT(12, "vulkan: compute %016llx ready: block %ux%ux%u, %d global buffers, %d textures, %d images\n",
                   (unsigned long long)key, lx, ly, lz, p->si.ngbuf, p->si.ntex, p->si.nimg);
@@ -1004,7 +997,7 @@ static u32 cs_read_code(u64 pa, u32 bytes, u8* dst, u32* used) {
     u8 header[8];
     if (pa >= 0x100 && gmem_read_code_cpu(pa - 0x100, header, 8) == 8) {
         u32 magic = snx_ld_le32(header), declared = snx_ld_le32(header + 4);
-        if (magic == 0x12345679 && declared >= 0x80 && declared <= 0x10000 && !(declared & 7) &&
+        if (magic == 0x12345679 && declared >= 0x80 && declared <= CS_CODE && !(declared & 7) &&
             gmem_host(pa, declared))
             code_size = declared;
     }
@@ -1024,7 +1017,7 @@ static u32 cs_read_code(u64 pa, u32 bytes, u8* dst, u32* used) {
 
 /* Storage buffers kept on the GPU (the model of Citron Neo's buffer cache, buffer_cache.h's
    BindHostComputeStorageBuffers and MarkWrittenBuffer, Copyright 2022 yuzu Emulator Project and 2025 citron Emulator
-   Project, GPL-3.0-or-later), on the ownership ScarletNX's engines already use (docs/GPU_OWNERSHIP.md), so that the
+   Project, GPL-3.0-or-later), on the ownership ScarletNX's engines already use (docs/layers/gpu/ownership.md), so that the
    guest's own pages are trapped and land only when the CPU touches them, not at a sync point. A range one resource
    holds whole is bound where it is. Any other is copied, the CPU's bytes by the CPU and the GPU's by the GPU
    (vk_guest_read_device): into staging when it is only read, into a resource of its own when it is written, which then
@@ -1305,21 +1298,21 @@ void vk_dispatch(const DispatchState* d) {
         g_cs_skips[CS_SKIP_FEATURE]++;
         return;
     }
-    /* storage buffers: {address, size} in constant buffer 0 */
+    /* storage buffers: {address, size} in constant buffer 0, or a bare address in the constant buffer the key names
+       (SH_GBUF_*) */
     u64 sa[16];
     u32 ss[16];
     int ng = p->si.ngbuf > 16 ? 16 : p->si.ngbuf;
     u64 need = 0;
     for (int i = 0; i < ng; i++) {
-        u32 v[3] = {0, 0, 0};
-        cs_cb_read(0, p->si.gbuf_cbuf_off[i], &v[0]);
-        cs_cb_read(0, p->si.gbuf_cbuf_off[i] + 4, &v[1]);
-        cs_cb_read(0, p->si.gbuf_cbuf_off[i] + 8, &v[2]);
+        u32 v[3] = {0, 0, 0}, bank = SH_GBUF_BANK(p->si.gbuf_cbuf_off[i]), off = SH_GBUF_OFFSET(p->si.gbuf_cbuf_off[i]);
+        for (u32 w = 0; w < (bank ? 2u : 3u); w++) cs_cb_read(bank, off + 4 * w, &v[w]);
         ss[i] = vk_gbuf_desc(ST_CS, p->si.gbuf_cbuf_off[i], v, &sa[i]);
         need += ss[i] + vk_stage_align();
     }
     for (int i = 0; i < 8; i++)
         if (p->si.cbuf_mask & (1u << i)) need += g_cbn[i] + vk_stage_align();
+    if (p->si.root_max) need += SH_ROOT_BYTES + vk_stage_align();
     /* buffer images: their headers from the compute engine's texture pool, handles from its texture bank */
     for (i = 0; i < p->si.nimg && i < 8; i++) {
         u64 tic_base;
@@ -1499,21 +1492,39 @@ rebind:
                                            .pBufferInfo = &bi[nw]};
             nw++;
         }
+    if (p->si.root_max) { /* an Ounce program's root tables, the bytes it reads (SNX_VKB_ROOT) */
+        u32 range = (p->si.root_max + 15u) & ~15u;
+        VkBuffer rbuf = g_ar;
+        u64 o;
+        u8* dst;
+        if (deferred) {
+            dst = vk_stage(range, vk_stage_align(), &rbuf, &o);
+            if (!dst) {
+                g_cs_skips[CS_SKIP_RESOURCES]++;
+                return;
+            }
+        } else {
+            o = arena_alloc(range);
+            dst = g_ar_ptr + o;
+        }
+        memcpy(dst, d->root, range);
+        bi[nw] = (VkDescriptorBufferInfo){rbuf, o, range};
+        w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = SNX_VKB_ROOT,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                       .pBufferInfo = &bi[nw]};
+        nw++;
+    }
     /* the program's write log (ShaderInfo.gbuf_mark): a deferred dispatch's written buffers land only the bytes the
        log gives, and every dispatch that marks must bind it, or the stores' atomic OR reads an unwritten descriptor
-       (Xid 13). Part p is SH_WLOG_PART words, its flags first, at the program's own place in the log */
+       (Xid 13). Part p is SH_WLOG_PART words, its flags first, at the program's own place in the log. In the mirror
+       only the GPU reads it (vk_mirror_fold): in the GPU's memory (writelog.c) */
     VkWriteLog* log = NULL;
-    if (p->si.nmarks) {
-        if (g_cs_spare && vk_wlog_size(g_cs_spare) != (u64)p->si.nmarks * SH_WLOG_PART * 4) {
-            vk_wlog_put(g_cs_spare);
-            g_cs_spare = NULL;
-        }
-        if (!g_cs_spare) g_cs_spare = vk_wlog_get(p->si.nmarks);
-        if (!g_cs_spare) {
-            g_cs_skips[CS_SKIP_RESOURCES]++;
-            return;
-        }
-        log = g_cs_spare;
+    if (p->si.nmarks && !(log = cs_log(p->si.nmarks, mir))) {
+        g_cs_skips[CS_SKIP_RESOURCES]++;
+        return;
     }
     u32 wseen = vk_ww_now(); /* before the inputs are read */
     /* in the mirror, brought up to date: what other work has pending there lands first. Where it can't be (no memory
@@ -1525,6 +1536,11 @@ rebind:
             if (sa[i]) mirror_need_others(sa[i], ss[i]);
         for (int i = 0; i < ng && mir; i++)
             if (sa[i]) mir = vk_mirror_slice(sa[i], ss[i], &mbuf[i], &moff[i]);
+        /* the copies' path reads the log on the CPU (land_logged): one in host memory */
+        if (!mir && log && !(log = cs_log(p->si.nmarks, 0))) {
+            g_cs_skips[CS_SKIP_RESOURCES]++;
+            return;
+        }
     }
     u64 so[16];
     VkBuffer bi_buf[16];
@@ -1564,8 +1580,8 @@ rebind:
                                ? vk_buf_copy_writable_logged(sa[i], ss[i], &sbuf, &o, 1, log, p->si.gbuf_mark[i] - 1u,
                                                              !((p->si.gbuf_rmask >> i) & 1))
                                : vk_buf_copy_writable(sa[i], ss[i], &sbuf, &o, 1)
-                     : sa[i]                     ? vk_buf_get_strict(sa[i], ss[i], &sbuf, &o)
-                                                 : vk_buf_copy(0, ss[i], &sbuf, &o);
+                     : sa[i] ? vk_buf_get_strict(sa[i], ss[i], &sbuf, &o)
+                             : vk_buf_copy(0, ss[i], &sbuf, &o);
             if (!ok) {
                 vk_buf_writable_abort();
                 g_cs_skips[CS_SKIP_STORAGE_BUFFER]++;
@@ -1943,6 +1959,7 @@ rebind:
         for (int i = 0; i < ng; i++)
             if (p->si.gbuf_mark[i] && sa[i]) f[nf++] = (VkMirFold){mcpu[i], ss[i], p->si.gbuf_mark[i] - 1u};
         vk_mirror_fold(cb, vk_wlog_buffer(log), vk_wlog_size(log), f, nf);
+        vk_wlog_clear(cb, log); /* in the GPU's memory (cs_log): the folds were its only readers */
     }
     if (log) { /* recorded: the dispatch's reference goes with the work that writes the log */
         g_cs_spare = NULL;
@@ -2011,8 +2028,8 @@ rebind:
         vk_finish();
         vmaInvalidateAllocation(g_vk.vma, g_ar_mem, 0, VK_WHOLE_SIZE);
         g_landing = 1;
-        for (int i = 0; i < g_nout; i++)
-            vk_write_changed(g_out[i].addr, g_ar_ptr + g_out[i].off, g_org + g_out[i].off, g_out[i].size);
+        cs_write_back(g_ar_mem, g_ar_ptr, g_org, g_out, g_nout); /* a logged result has no original bytes in g_org */
+        logs_unref(g_logs, &g_nlogs);
         outs_pages(g_out, g_nout, -1);
         for (i = 0; i < p->si.nimg && i < 8; i++)
             if (bufimg_view[i]) vkDestroyBufferView(g_vk.dev, bufimg_view[i], NULL);

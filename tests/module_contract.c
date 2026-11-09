@@ -3,7 +3,7 @@
 /* The layout of the contract between a game module and the runtime as it was when SNX_ABI last rose: cpu.h's CPU and
    its SNX_FP_* numbers, interface.h's RtAPI and SNX_SVC_COUNT, module_abi.h's descriptor. A module of SNX_ABI reads its
    fields where they are, so a change to any of them fails here until SNX_ABI rises and the table below is recorded
-   again (docs/ARCHITECTURE.md, "Module ABI"); the failure prints the table to record. Not seen: a helper's results
+   again (docs/dev/architecture.md, "Module ABI"); the failure prints the table to record. Not seen: a helper's results
    (cpu_helpers.c), and a field added into a struct's tail padding, which moves nothing; those stay a rule */
 #include "common/cpu/aarch64/cpu.h"
 #include "common/runtime/interface.h"
@@ -234,7 +234,7 @@ int main(void) {
     if (moved)
         fprintf(stderr,
                 "The module contract moved: a module of SNX_ABI %d reads it as above. Raise SNX_ABI past %d (cpu.h, "
-                "docs/ARCHITECTURE.md's Module ABI), then record this table here (tests/module_contract.c) with "
+                "docs/dev/architecture.md's Module ABI), then record this table here (tests/module_contract.c) with "
                 "RECORDED_ABI the new SNX_ABI:\n",
                 SNX_ABI, SNX_ABI);
     else

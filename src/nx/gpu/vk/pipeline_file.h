@@ -2,11 +2,12 @@
    Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_VK_PIPELINE_FILE_H
 #define SNX_VK_PIPELINE_FILE_H
-/* Not in vk.h: the lock below brings host.h, which includes <windows.h> on Windows, whose macros (far, near) break
+/* Not in vk.h: the lock below brings thread.h, which includes <windows.h> on Windows, whose macros (far, near) break
    the renderer's other files */
 #include "common/cpu/aarch64/cpu.h"
-#include "common/filesystem/host.h"   /* PMutex */
-#include "nx/runtime/platform/plat.h" /* PFileMap */
+#include "common/platform/file.h"     /* PFileMap */
+#include "common/platform/thread.h"   /* PMutex */
+#include "nx/runtime/platform/plat.h"
 #include "nx/gpu/shader/shader.h"
 #include <stdio.h>
 

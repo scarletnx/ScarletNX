@@ -24,13 +24,14 @@
 #include "common/cpu/recompiler/llvm/objects_pack.h"
 #include "common/cpu/recompiler/workers.h"
 #include "common/utilities/endian.h"
+#include "common/platform/time.h"
+#include "common/platform/file.h"
 #include <llvm-c/Support.h>
 #include <llvm-c/TargetMachine.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -261,17 +262,10 @@ int snx_recompiler_set_cache(struct snx_recompiler* r, const char* folder) {
 
 /* ---- RtAPI defaults ---- */
 
+/* the 19.2 MHz counter of the host's plat_ns */
 static uint64_t default_ticks(void) {
-#ifdef _WIN32
-    LARGE_INTEGER frequency, now;
-    QueryPerformanceFrequency(&frequency);
-    QueryPerformanceCounter(&now);
-    return (uint64_t)((double)now.QuadPart * 19200000.0 / (double)frequency.QuadPart);
-#else
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts)) return 0;
-    return (uint64_t)ts.tv_sec * 19200000u + (uint64_t)ts.tv_nsec * 192 / 10000;
-#endif
+    uint64_t ns = plat_ns();
+    return ns / 1000000000u * 19200000u + ns % 1000000000u * 192 / 10000;
 }
 static void default_note_hint(uint64_t pc) { (void)pc; }
 static void default_fpcr_changed(CPU* c) { (void)c; }
@@ -741,11 +735,8 @@ typedef struct {
     uint64_t a, b;
 } CacheKey;
 static void key_bytes(CacheKey* k, const void* data, size_t size) {
-    const unsigned char* p = (const unsigned char*)data;
-    for (size_t i = 0; i < size; ++i) {
-        k->a = (k->a ^ p[i]) * 0x100000001b3ull;
-        k->b = (k->b ^ p[i]) * 0x100000001b3ull;
-    }
+    k->a = snx_fnv1a(k->a, data, size);
+    k->b = snx_fnv1a(k->b, data, size);
 }
 static void key_u64(CacheKey* k, uint64_t v) {
     unsigned char bytes[8];
@@ -879,7 +870,7 @@ static int load_cached(struct snx_recompiler* r, struct snx_recompiled* m, const
 static void save_cached(const char* path, const unsigned char* data, size_t size) {
     static unsigned long serial;
     char* temporary = snx_format("%s.%lu.%lu.tmp", path, (unsigned long)(snx_seconds() * 1000000.0), ++serial);
-    if (!snx_write_file(temporary, data, size) && !snx_replace(temporary, path)) {
+    if (!snx_write_file(temporary, data, size) && !plat_replace_file(temporary, path)) {
         free(temporary);
         return;
     }

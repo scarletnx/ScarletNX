@@ -1357,6 +1357,7 @@ int state_load(const char* path, char* why, size_t whysize) {
     drop_host();
     if (load_memory(r, &plan, why, whysize)) fatal("The save state's guest memory couldn't be loaded: %s", why);
     install_hle((Hle*)hle.p, &plan);
+    kernel_waiters_rebuild(); /* from the threads' waits: the state holds those, not the mask */
     for (i = 0; i < KSHMEM_MAX; i++) /* the running game's shared memories the state has no use for */
         if (cur_host[i] && cur_host[i] != plan.host[i]) mem_pool_host_free(cur_host[i], cur_off[i], cur_size[i]);
     fs_state_install(fss);

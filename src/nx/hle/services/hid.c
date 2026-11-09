@@ -542,7 +542,7 @@ static int hid_mouse_memory(u32 handle, u64 size, u64 need, u32* object, u64* gu
         WARN("hid: %s's memory has %llu bytes, %llu are written\n", what, (unsigned long long)t->size,
              (unsigned long long)need);
         kobj_unref(&t->o);
-        R_THROW(SNX_RC_HID_TRANSFER_MEMORY_TOO_SMALL);
+        R_THROW(SNX_RC_HID_MEMORY_TOO_SMALL);
     }
     memset(GP(t->addr), 0, need);
     *object = kobj_id(&t->o);

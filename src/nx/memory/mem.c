@@ -152,15 +152,17 @@ void mem_layout36(void) {
 
 void mem_layout_large_heap(void) {
     u64 extra = 4 * GIB;
+    /* The console's regions (layout_for, from AS_MAX up, the reservation ending past them) place the kernel region
+       right after the stack, so it moves too. Smaller layouts keep it at the high end of the reservation, with free
+       space between them for this extension where there is room. */
+    int kern_follows = g_layout.kern == g_layout.stack + g_layout.stack_size;
     if (g_as_size < 32 * GIB || g_layout.heap_size != 8 * GIB ||
-        (g_as_size >= AS_MAX ? g_layout.kern_end + extra > g_layout.end
-                             : g_layout.stack + g_layout.stack_size + extra > g_layout.kern))
+        (kern_follows ? g_layout.kern_end + extra > g_layout.end
+                      : g_layout.stack + g_layout.stack_size + extra > g_layout.kern))
         return;
     g_layout.heap_size += extra;
     g_layout.stack += extra;
-    /* The full-size layout places the kernel region immediately after the stack. Smaller layouts keep it at the
-       high end of the reservation, with enough free space between them for this extension. */
-    if (g_as_size >= AS_MAX) {
+    if (kern_follows) {
         g_layout.kern += extra;
         g_layout.kern_end += extra;
     }
@@ -1359,6 +1361,7 @@ int mem_alias_unmap(u64 dst, u64 size, u64 back) {
     /* what the GPU holds of back lands before the copy writes it (an alias that is a copy leaves back mapped alone,
        so an engine may own it), with the producer's lock held but not mem.c's */
     if (back) own_acquire(back, size);
+    if (back && !g_pool_on) own_acquire(dst, size); /* a copy's bytes, read below: the view may be owned too */
     mem_lock();
     if (back && !any_pool_nl(dst, size) && !placed_nl(dst, size)) memcpy(GP(back), GP(dst), size); /* a copy's */
     unmap_nl(dst, size);
@@ -1414,7 +1417,22 @@ int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
     u32 i;
     int r = -1;
     *n = 0;
-    if (!g_pool_on || (a | size) & (PAGE - 1) || !size || a < AS_BASE || end > AS_END) return -1;
+    if ((a | size) & (PAGE - 1) || !size || a < AS_BASE || end > AS_END) return -1;
+    /* No pool (Windows, whose traps land in place: memory/own.c): the reservation's own pages of guest data, which no
+       other address maps, as views are copies here. One run, its "pool offset" the address itself */
+    if (!g_pool_on) {
+        if (!max) return -1;
+        mem_lock();
+        if (movable_nl(a, size) && !ext_meets_nl(a, end)) {
+            runs[0].addr = a;
+            runs[0].size = size;
+            runs[0].pool = a;
+            *n = 1;
+            r = 0;
+        }
+        mem_unlock();
+        return r;
+    }
     mem_lock();
     if (placed_nl(a, size)) goto out; /* the renderer's GPU memory isn't trapped: what it gets lands at once */
     for (i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
@@ -1826,6 +1844,10 @@ int mem_map_code(MemCodeMap* m) {
         (m->bss_size && (m->bss & (PAGE - 1))))
         return MEM_BADSTATE;
     mapping_begin(0, ~0ull, 0);
+    if (!g_pool_on) { /* copied below under the memory lock, where a trap can't be answered: what the GPU holds lands */
+        own_acquire(m->source, m->size);
+        if (m->bss_size) own_acquire(m->bss, m->bss_size);
+    }
     mem_lock();
     if (!code_source_nl(m->source, m->size) ||
         (m->bss_size && (!code_source_nl(m->bss, m->bss_size) ||
@@ -1858,6 +1880,11 @@ int mem_unmap_code(const MemCodeMap* m) {
     int r = 0;
     if (!m->base || m->base >= AS_END || total > AS_END - m->base) return MEM_BADSTATE;
     mapping_begin(0, ~0ull, 0);
+    if (!g_pool_on) { /* the copy goes back under the memory lock: what the GPU holds of either side lands first */
+        own_acquire(m->base, total);
+        own_acquire(m->source, m->size);
+        if (m->bss_size) own_acquire(m->bss, m->bss_size);
+    }
     mem_lock();
     for (i = blk_index_nl(m->base); i < g_nblk && g_blk[i].addr < end; i++)
         if (g_blk[i].state != MS_ALIASCODE && g_blk[i].state != MS_ALIASCODEDATA) r = MEM_BADSTATE;

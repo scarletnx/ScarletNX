@@ -6,7 +6,7 @@
    from astc.comp and blocklinear.comp. No game assets. Run with
    VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation and
    VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
-   to check synchronization too (docs/ASTC.md). --vk_max_allocation_mb=N lowers
+   to check synchronization too (docs/layers/gpu/astc.md). --vk_max_allocation_mb=N lowers
    the allocation cap, so images in pieces are tested at small sizes; --large
    decodes a 2D and a 3D texture of 512 MiB each. --upload-wait checks a BC7 upload across an internal submission.
    --upload-retire checks that completed uploads do not accumulate toward the encoder's wait threshold. */
@@ -125,7 +125,9 @@ void vk_gpuprof_tag(u64 key) { (void)key; }
 int vk_gpuprof_dispatch_begin(VkCommandBuffer cb) { return (void)cb, 0; }
 void vk_gpuprof_dispatch_end(VkCommandBuffer cb) { (void)cb; }
 int vk_gpuprof_profiled(VkCommandBuffer cb) { return (void)cb, 0; }
-int vk_gpuprof_op_begin(VkCommandBuffer cb, u32 kind, u64 key, u64 bytes) { return (void)cb, (void)kind, (void)key, (void)bytes, 0; }
+int vk_gpuprof_op_begin(VkCommandBuffer cb, u32 kind, u64 key, u64 bytes) {
+    return (void)cb, (void)kind, (void)key, (void)bytes, 0;
+}
 void vk_gpuprof_op_end(VkCommandBuffer cb) { (void)cb; }
 const void* vk_gpuprof_base(void) { return NULL; }
 /* record.c's presents tell display.c they were made, which isn't here (nor are presents) */
@@ -556,11 +558,12 @@ static int upload_wait_rows(void* ctx, VkCommandBuffer* pcb, u32 z, u32 nz, u32 
     source->calls++;
     return level_rows(&source->level, pcb, z, nz, y, n, buf, off);
 }
-/* 262656 BC7 blocks: one strip reaches the real 256Ki-block threshold with the default 16MiB scratch, then
+/* 262656 BC7 blocks: one strip reaches a 256Ki-block threshold (bc7_queue=256) with the default 16MiB scratch, then
    another strip must record into a new command buffer. Constant blocks keep the GPU encoder's first fit exact;
    the final block row has a different color, so a missing continuation cannot pass the output comparison. */
 static int upload_wait_case(int retire) {
     const u32 w = retire ? 1024 : 2048, h = retire ? 1024 : 2052, nx = w / 4, ny = h / 4;
+    g_settings.bc7_queue = 256; /* the threshold this case crosses, whatever Auto gives this GPU */
     VkImageFormatProperties props;
     if (!g_vk.feat.textureCompressionBC ||
         vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, VK_FORMAT_BC7_UNORM_BLOCK, VK_IMAGE_TYPE_2D,

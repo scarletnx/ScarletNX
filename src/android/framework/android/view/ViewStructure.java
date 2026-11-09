@@ -60,4 +60,13 @@ public abstract class ViewStructure {
     public void setHtmlInfo(Object htmlInfo) {}
     public CharSequence getText() { return null; }
     public CharSequence getHint() { return null; }
+    /** a web page's element, as a page's structure describes it */
+    public abstract static class HtmlInfo {
+        public abstract String getTag();
+        public abstract java.util.List<android.util.Pair<String, String>> getAttributes();
+        public abstract static class Builder {
+            public abstract Builder addAttribute(String name, String value);
+            public abstract HtmlInfo build();
+        }
+    }
 }

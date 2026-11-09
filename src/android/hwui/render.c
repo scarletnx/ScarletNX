@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The libhwui HLE's renderer: a frame's display list (docs/android/HWUI.md) drawn with Vulkan into the SDL window,
+/* The libhwui HLE's renderer: a frame's display list (docs/platforms/android-apps/hwui.md) drawn with Vulkan into the SDL window,
    or into an image of its own without one. The CPU reads the list, keeps the transform and clip stack, and makes
    each shape into triangles in device pixels (path.c). The GPU rasterizes them with 4x MSAA. A convex shape is a fan
    drawn directly. A path, a stroke and glyphs are drawn by stencil then cover: their triangles count the winding
@@ -8,8 +8,9 @@
 
    Once an app's own Vulkan takes the window (render_yield), the frames go into the layer instead: a ring of images,
    cleared to transparent, that the app's device imports and blends over each of its presents (hle_vulkan.c,
-   docs/android/HWUI.md "Over an app's own Vulkan") */
+   docs/platforms/android-apps/hwui.md "Over an app's own Vulkan") */
 #include "android/hwui/render.h"
+#include "common/utilities/common.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_vulkan.h"
 #include "android/hwui/draw_frag_spv.h"
@@ -555,8 +556,15 @@ static Point shape[SHAPE_MAX];
 static void draw_rrect(float l, float t, float rr, float b, float rx, float ry, const Paint* p) {
     if (rr < l) { float s = l; l = rr; rr = s; }
     if (b < t) { float s = t; t = b; b = s; }
-    rx = fminf(fmaxf(rx, 0), (rr - l) / 2);
-    ry = fminf(fmaxf(ry, 0), (b - t) / 2);
+    /* radii too big for the sides are scaled down together, as Skia's SkRRect does: a pill of a huge radius stays a
+       pill instead of becoming an ellipse */
+    rx = fmaxf(rx, 0);
+    ry = fmaxf(ry, 0);
+    float scale = 1;
+    if (2 * rx > rr - l) scale = (rr - l) / (2 * rx);
+    if (2 * ry > b - t) scale = fminf(scale, (b - t) / (2 * ry));
+    rx *= scale;
+    ry *= scale;
     if (rx <= 0 || ry <= 0) {
         Point q[4] = {{l, t}, {rr, t}, {rr, b}, {l, b}};
         draw_shape(q, 4, p);
@@ -1518,13 +1526,8 @@ static void screenshot(VkImage image) {
         VkMappedMemoryRange range = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = memory,
                                      .size = VK_WHOLE_SIZE};
         vkInvalidateMappedMemoryRanges(r.device, 1, &range);
-        fprintf(f, "P6\n%u %u\n255\n", r.extent.width, r.extent.height);
-        const unsigned char* px = data;
-        bool bgra = r.color_format == VK_FORMAT_B8G8R8A8_UNORM;
-        for (size_t i = 0; i < size; i += 4) {
-            unsigned char rgb[3] = {px[i + (bgra ? 2 : 0)], px[i + 1], px[i + (bgra ? 0 : 2)]};
-            fwrite(rgb, 1, 3, f);
-        }
+        int order = r.color_format == VK_FORMAT_B8G8R8A8_UNORM ? SNX_PPM_BGRA : SNX_PPM_RGBA;
+        (void)snx_ppm_write(f, r.extent.width, r.extent.height, data, 4, (ptrdiff_t)r.extent.width * 4, order);
         vkUnmapMemory(r.device, memory);
         fprintf(stderr, "scarletnx-android: frame %ld saved as %s\n", r.frames, path);
     }

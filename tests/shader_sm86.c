@@ -328,25 +328,19 @@ static u32 fragment_program(u8* code) {
     return n + 1;
 }
 
-static int validate(const char* spirv_val, const char* dir, const char* name, const u32* words, size_t count) {
-    if (!spirv_val) return 1;
-    char path[1024], command[2600];
+/* a module in dir as sm86_<name>.spv, which shader_sm86_test.py hands to spirv-val */
+static int keep_module(const char* dir, const char* name, const u32* words, size_t count) {
+    char path[1024];
     snprintf(path, sizeof path, "%s/sm86_%s.spv", dir, name);
     FILE* f = fopen(path, "wb");
     if (!f) return 0;
     int ok = fwrite(words, 4, count, f) == count;
     ok &= !fclose(f);
-#ifdef _WIN32 /* cmd.exe drops the first and the last quote of a command that starts with one */
-    snprintf(command, sizeof command, "\"\"%s\" --target-env vulkan1.3 \"%s\"\"", spirv_val, path);
-#else
-    snprintf(command, sizeof command, "\"%s\" --target-env vulkan1.3 \"%s\"", spirv_val, path);
-#endif
-    ok &= system(command) == 0;
-    if (!ok) fprintf(stderr, "spirv-val fails on %s\n", path);
+    if (!ok) fprintf(stderr, "sm86: %s could not be written\n", path);
     return ok;
 }
 
-static void test_programs(const char* spirv_val, const char* dir) {
+static void test_programs(const char* dir) {
     u8* mem = calloc(1, 0x1000);
     if (!mem) abort();
     /* a block of shader memory: the compute program, NOP padding to 128 bytes, then the vertex program with its
@@ -375,14 +369,14 @@ static void test_programs(const char* spirv_val, const char* dir) {
     CHECK(si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x20 && si.gbuf_wmask == 1 && (si.cbuf_mask & 1));
     /* its store logs its bytes, in the write log's first part (SNX_VKB_WPAGES, shader.h's SH_WLOG_*) */
     CHECK(si.gbuf_marks == 1 && si.nmarks == 1 && si.gbuf_mark[0] == 1);
-    if (spv) CHECK(validate(spirv_val, dir, "cs", spv, count));
+    if (spv) CHECK(keep_module(dir, "cs", spv, count));
     free(spv);
     si = (ShaderInfo){0};
     spv = sm86_to_spirv(mem + at + SM86_SPH_BYTES, vs * 16, ST_VS, sph, &si, &count);
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "vertex: %s\n", si.first_unsupported);
     CHECK(si.in_mask == 1);
-    if (spv) CHECK(validate(spirv_val, dir, "vs", spv, count));
+    if (spv) CHECK(keep_module(dir, "vs", spv, count));
     free(spv);
     /* the fragment program: its SPH enables render target 0 (word 18) and imaps input 0 x as perspective */
     u8* fs = calloc(1, 0x400);
@@ -396,7 +390,7 @@ static void test_programs(const char* spirv_val, const char* dir) {
     spv = sm86_to_spirv(fs, n * 16, ST_FS, fsph, &si, &count);
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "fragment: %s\n", si.first_unsupported);
-    if (spv) CHECK(validate(spirv_val, dir, "fs", spv, count));
+    if (spv) CHECK(keep_module(dir, "fs", spv, count));
     free(spv);
     /* an unknown opcode refuses with its code */
     put(fs, 0, fix(0xfff));
@@ -410,7 +404,7 @@ static void test_programs(const char* spirv_val, const char* dir) {
 
 /* the forms the game's programs added: TLD, TXQ, IPA of the point sprite's T, UMOV, ULDC indexed by a uniform
    register, IMAD.X, F2I.S16, AST of the shading rate (0x5c), and a program that ends in a loop */
-static void test_game_forms(const char* spirv_val, const char* dir) {
+static void test_game_forms(const char* dir) {
     u8* fs = calloc(1, 0x400);
     if (!fs) abort();
     u32 n = 0;
@@ -483,7 +477,7 @@ static void test_game_forms(const char* spirv_val, const char* dir) {
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "game forms: %s\n", si.first_unsupported);
     CHECK(si.ntex == 1 && si.tex[0].bl_cbuf == 2 && si.tex[0].cbuf_off == 0x10 && (si.cbuf_mask & 2));
-    if (spv) CHECK(validate(spirv_val, dir, "fs_game", spv, count));
+    if (spv) CHECK(keep_module(dir, "fs_game", spv, count));
     free(spv);
     /* a vertex program that stores the shading rate and the position */
     n = 0;
@@ -506,7 +500,7 @@ static void test_game_forms(const char* spirv_val, const char* dir) {
     spv = sm86_to_spirv(fs, n * 16, ST_VS, vsph, &si, &count);
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "shading rate: %s\n", si.first_unsupported);
-    if (spv) CHECK(validate(spirv_val, dir, "vs_rate", spv, count));
+    if (spv) CHECK(keep_module(dir, "vs_rate", spv, count));
     free(spv);
     /* a program that ends in a loop: @P0 BRA back, then the BRA to itself, with no EXIT before it */
     memset(fs, 0, 0x400);
@@ -560,7 +554,7 @@ static void test_game_forms(const char* spirv_val, const char* dir) {
     spv = sm86_to_spirv(fs, n * 16, ST_FS, fsph, &si, &count);
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "call: %s\n", si.first_unsupported);
-    if (spv) CHECK(validate(spirv_val, dir, "fs_call", spv, count));
+    if (spv) CHECK(keep_module(dir, "fs_call", spv, count));
     free(spv);
     free(fs);
 }
@@ -608,7 +602,7 @@ static int table_read(u32 idx, u32 off, u32* out) {
 static u32 spv_find(const u32* words, size_t count, u32 op, u32* at, u32 max);
 static Word mov_imm(u32 dst, u32 value);
 /* LDC R2, c[1][R1 + 0x10]; BRX R2, -(the next instruction's address); two cases that write R0 and exit */
-static void test_brx(const char* spirv_val, const char* dir) {
+static void test_brx(const char* dir) {
     u8 code[16 * 8] = {0};
     Word x = fix(0xb82);
     set(&x, 16, 8, 2);
@@ -640,7 +634,7 @@ static void test_brx(const char* spirv_val, const char* dir) {
     g_shader_cb_read = NULL;
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "brx: %s\n", si.first_unsupported);
-    if (spv) CHECK(validate(spirv_val, dir, "fs_brx", spv, count));
+    if (spv) CHECK(keep_module(dir, "fs_brx", spv, count));
     /* the switch's cases are the instructions the table's bytes name, 2 and 4 */
     if (spv) {
         u32 at[4];
@@ -661,7 +655,7 @@ static int table2_read(u32 idx, u32 off, u32* out) {
 /* ptxas's bounded switch: IMNMX.U32 R1, R0, 1 (index 0 or 1); IMAD R2, R1, 4, RZ; LDC R2, c[1][R2 + 0x10]; BRX R2,
    -(the next instruction's address). The table is its two entries, not up to the first word that names no
    instruction: the third would go back to the program's start */
-static void test_brx_bounded(const char* spirv_val, const char* dir) {
+static void test_brx_bounded(const char* dir) {
     u8 code[16 * 10] = {0};
     Word x = alu(0x017, 4, 1, 0);
     set(&x, 32, 32, 1);
@@ -704,13 +698,13 @@ static void test_brx_bounded(const char* spirv_val, const char* dir) {
         const u32* sw = spv + at[0];
         CHECK((sw[0] >> 16) == 7 && ((sw[3] == 5 && sw[5] == 7) || (sw[3] == 7 && sw[5] == 5)));
         CHECK(spv_find(spv, count, 246 /* OpLoopMerge */, at, 4) == 0);
-        CHECK(validate(spirv_val, dir, "fs_brx_bounded", spv, count));
+        CHECK(keep_module(dir, "fs_brx_bounded", spv, count));
     }
     free(spv);
 }
 
 /* the uniform ALU group and the other forms of the second game run, translated and validated */
-static void test_alu_group(const char* spirv_val, const char* dir) {
+static void test_alu_group(const char* dir) {
     u8 code[16 * 16] = {0};
     u32 n = 0;
     Word x = alu(0x099, 4, 4, 5); /* USHF.L.U32 UR4, UR5, 3, URZ */
@@ -782,13 +776,13 @@ static void test_alu_group(const char* spirv_val, const char* dir) {
     u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "alu group: %s\n", si.first_unsupported);
-    if (spv) CHECK(validate(spirv_val, dir, "fs_alu", spv, count));
+    if (spv) CHECK(keep_module(dir, "fs_alu", spv, count));
     free(spv);
 }
 
 /* the forms of the fourth game run in a compute program: SHFL.BFLY in a segment of 4 (c 0x1c1f), SHFL.IDX with
    the lane in a register, S2R of LTMASK (0x39), MEMBAR, HADD2.F32 and PLOP3 with a uniform predicate */
-static void test_compute_forms(const char* spirv_val, const char* dir) {
+static void test_compute_forms(const char* dir) {
     u8 code[16 * 12] = {0};
     u32 n = 0;
     Word x = fix(0xf89); /* SHFL.BFLY PT, R1, R2, 0x1, 0x1c1f */
@@ -839,14 +833,15 @@ static void test_compute_forms(const char* spirv_val, const char* dir) {
     u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "compute forms: %s\n", si.first_unsupported);
-    if (spv) CHECK(validate(spirv_val, dir, "cs_forms", spv, count));
+    if (spv) CHECK(keep_module(dir, "cs_forms", spv, count));
     free(spv);
 }
 
 /* SUST.P to a 2D image with its handle in c[0][0x30], and SULD.P from it, by the kind of the renderer's key: the
-   bindless rule of spirv_translate.c gives 2 (unsigned) without bit 8 of rt_int_mask, 0 (float) with it, and 3
-   (signed) with bit 8 of rt_sint_mask. ShaderInfo.img[].type is the dimension code, 3 for 2D */
-static void test_image_kinds(const char* spirv_val, const char* dir) {
+   bindless rule of spirv_translate.c gives 2 (unsigned) without bit 0 of img_int_mask, 0 (float) with it, and 3
+   (signed) with bit 0 of img_sint_mask, the masks compute.c and pipeline.c key a program by. rt_int_mask's bit 8,
+   where the key was before, changes nothing. ShaderInfo.img[].type is the dimension code, 3 for 2D */
+static void test_image_kinds(const char* dir) {
     u8 code[16 * 4] = {0};
     Word x = fix(0xb9b); /* SUST.P.2D.RGBA [R0], R4, c[0][0x30] */
     set(&x, 24, 8, 0);
@@ -870,21 +865,45 @@ static void test_image_kinds(const char* spirv_val, const char* dir) {
     for (u32 k = 0; k < 3; k++) {
         ShaderInfo si = {0};
         si.cs_local[0] = si.cs_local[1] = si.cs_local[2] = 1;
-        if (k == 1) si.rt_sint_mask = 1u << 8;
-        if (k == 2) si.rt_int_mask = 1u << 8;
+        si.rt_int_mask = si.rt_sint_mask = 1u << 8;
+        if (k == 1) si.img_sint_mask = 1;
+        if (k == 2) si.img_int_mask = 1;
         size_t count = 0;
         u32* spv = sm86_to_spirv(code, 4 * 16, ST_CS, NULL, &si, &count);
         CHECK(spv != NULL);
         if (!spv) fprintf(stderr, "image kind: %s\n", si.first_unsupported);
         CHECK(si.nimg == 1 && si.img[0].kind == kinds[k] && si.img[0].type == 3 && si.img[0].cbuf_off == 0x30 / 4);
-        if (spv) CHECK(validate(spirv_val, dir, names[k], spv, count));
+        if (spv) CHECK(keep_module(dir, names[k], spv, count));
+        free(spv);
+    }
+}
+
+/* A fragment program's KILL says so in has_discard, which the renderer reads before it tests depth ahead of the
+   program; one without a KILL leaves it 0 */
+static void test_kill_discard(void) {
+    for (u32 k = 0; k < 2; k++) {
+        u8 code[16 * 4] = {0};
+        u32 n = 0, fsph[32] = {0};
+        Word x = fix(0x95b); /* KILL */
+        set(&x, 87, 3, 7);
+        if (k) put(code, n++, x);
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        fsph[0] = sph0(2, 5);
+        fsph[18] = 0xf;
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+        CHECK(spv != NULL && si.has_discard == (int)k);
+        if (!spv || si.has_discard != (int)k) fprintf(stderr, "kill discard %u: has_discard %d\n", k, si.has_discard);
         free(spv);
     }
 }
 
 /* the root tables, banks 24 to 31, as one uniform buffer: R0 = TID.X; UR4:UR5 = c[0][0x20];
    R2 = c[25][0x10]; [R0 + UR4] = R2. Table 1's word 4 is byte 0x110 of the buffer */
-static void test_root_tables(const char* spirv_val, const char* dir) {
+static void test_root_tables(const char* dir) {
     u8 code[16 * 8] = {0};
     u32 n = 0;
     Word x = fix(0x919); /* S2R R0, TID.X */
@@ -917,7 +936,7 @@ static void test_root_tables(const char* spirv_val, const char* dir) {
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "root tables: %s\n", si.first_unsupported);
     CHECK(si.root_max == SH_ROOT_TABLE + 0x14 && !(si.cbuf_mask & ~1u));
-    if (spv) CHECK(validate(spirv_val, dir, "root", spv, count));
+    if (spv) CHECK(keep_module(dir, "root", spv, count));
     free(spv);
 }
 
@@ -991,7 +1010,7 @@ static u32* translate_fs(const u8* code, u32 n, ShaderInfo* si, size_t* count) {
 /* TEX, TLD and TLD4 with texel offsets: a register every path sets to one immediate is ConstOffset, as the program
    packs it (four bits a component); a register two paths set apart moves the coordinates instead. TLD adds its
    offset to the coordinates, and TLD4's offset for each texel takes four gathers */
-static void test_texel_offsets(const char* spirv_val, const char* dir) {
+static void test_texel_offsets(const char* dir) {
     u8 code[16 * 16];
     ShaderInfo si;
     size_t count = 0;
@@ -1011,7 +1030,7 @@ static void test_texel_offsets(const char* spirv_val, const char* dir) {
     CHECK(spv != NULL);
     if (spv) {
         CHECK(sample_const_offset(spv, count, &ox, &oy) == 1 && ox == 1 && oy == -1);
-        CHECK(validate(spirv_val, dir, "tex_offset", spv, count));
+        CHECK(keep_module(dir, "tex_offset", spv, count));
     }
     free(spv);
 
@@ -1028,7 +1047,7 @@ static void test_texel_offsets(const char* spirv_val, const char* dir) {
     CHECK(spv != NULL);
     if (spv) {
         CHECK(sample_const_offset(spv, count, &ox, &oy) == 1 && ox == 0 && oy == 1);
-        CHECK(validate(spirv_val, dir, "tex_offset_paths", spv, count));
+        CHECK(keep_module(dir, "tex_offset_paths", spv, count));
     }
     free(spv);
 
@@ -1040,7 +1059,7 @@ static void test_texel_offsets(const char* spirv_val, const char* dir) {
         u32 at[4];
         CHECK(sample_const_offset(spv, count, &ox, &oy) == 0);
         CHECK(spv_find(spv, count, 103 /* OpImageQuerySizeLod */, at, 4) == 1);
-        CHECK(validate(spirv_val, dir, "tex_offset_apart", spv, count));
+        CHECK(keep_module(dir, "tex_offset_apart", spv, count));
     }
     free(spv);
 
@@ -1087,7 +1106,7 @@ static void test_texel_offsets(const char* spirv_val, const char* dir) {
         u32 gathers = spv_find(spv, count, 96 /* OpImageGather */, at, 8), with = 0;
         for (u32 k = 0; k < gathers; k++) with += (spv[at[k]] >> 16) == 8 && spv[at[k] + 6] == 16;
         CHECK(gathers == 4 && with == 4);
-        CHECK(validate(spirv_val, dir, "tld4_offsets", spv, count));
+        CHECK(keep_module(dir, "tld4_offsets", spv, count));
     }
     free(spv);
 
@@ -1117,7 +1136,7 @@ static void test_texel_offsets(const char* spirv_val, const char* dir) {
     if (spv) {
         u32 at[4];
         CHECK(spv_find(spv, count, 95 /* OpImageFetch */, at, 4) == 1 && !(spv[at[0] + 5] & 0x18));
-        CHECK(validate(spirv_val, dir, "tld_offset", spv, count));
+        CHECK(keep_module(dir, "tld_offset", spv, count));
     }
     free(spv);
 }
@@ -1133,7 +1152,7 @@ static Word uldc64(u32 off) {
 /* An address's base along the flow: UR4 is c[0][0x20] where @P0 BRA jumps to the LDG, and c[0][0x40] on the path
    that exits before it. The LDG's buffer is the first; in program order it was the second. With both paths reaching
    the LDG, they disagree, and the program is refused */
-static void test_global_flow(const char* spirv_val, const char* dir) {
+static void test_global_flow(const char* dir) {
     u8 code[16 * 8];
     memset(code, 0, sizeof code);
     put(code, 0, uldc64(0x20));
@@ -1159,7 +1178,7 @@ static void test_global_flow(const char* spirv_val, const char* dir) {
     CHECK(spv != NULL);
     if (!spv) fprintf(stderr, "global flow: %s\n", si.first_unsupported);
     CHECK(si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x20);
-    if (spv) CHECK(validate(spirv_val, dir, "global_flow", spv, count));
+    if (spv) CHECK(keep_module(dir, "global_flow", spv, count));
     free(spv);
     put(code, 3, mov_imm(5, 1)); /* the second path goes on to the LDG */
     si = (ShaderInfo){0};
@@ -1170,7 +1189,7 @@ static void test_global_flow(const char* spirv_val, const char* dir) {
 
 /* FSWZADD R0, R1, R2 with swizzle 0x1b: lane 0 (the swizzle's top two bits) adds, lane 1 does b - a, lane 2 a - b
    and lane 3 gives b, as Maxwell's (nouveau's QUADOP). R1 = 1.5, R2 = 4 */
-static void test_fswzadd(const char* spirv_val, const char* dir) {
+static void test_fswzadd(const char* dir) {
     u8 code[16 * 5] = {0};
     put(code, 0, mov_imm(1, f2u(1.5f)));
     put(code, 1, mov_imm(2, f2u(4.0f)));
@@ -1202,13 +1221,13 @@ static void test_fswzadd(const char* spirv_val, const char* dir) {
     put(code, 2, x);
     si = (ShaderInfo){0};
     u32* spv = sm86_to_spirv(code, 5 * 16, ST_FS, fsph, &si, &count);
-    CHECK(spv && validate(spirv_val, dir, "fs_fswzadd", spv, count));
+    CHECK(spv && keep_module(dir, "fs_fswzadd", spv, count));
     free(spv);
 }
 
 /* S2R R0, SR_LTMASK in a fragment program: the lanes below the invocation's, as in a compute program. A fragment
    program's warp-wide atomics read it with a VOTE ballot */
-static void test_lane_masks(const char* spirv_val, const char* dir) {
+static void test_lane_masks(const char* dir) {
     u8 code[16 * 3] = {0};
     Word x = fix(0x919);
     set(&x, 16, 8, 0);
@@ -1227,7 +1246,7 @@ static void test_lane_masks(const char* spirv_val, const char* dir) {
     ShaderInfo si = {0};
     size_t count = 0;
     CHECK(!sm86_to_spirv(code, 3 * 16, ST_FS, fsph, &si, &count));
-    (void)spirv_val, (void)dir;
+    (void)dir;
 }
 
 /* LDC c[bank][R + offset] of NAK's MemType U8 (0), I8 (1), U16 (2) and I16 (3): the byte or halfword at the
@@ -1240,7 +1259,7 @@ static Word ldc(u32 dst, u32 index, u32 bank, u32 off, u32 type) {
     set(&x, 73, 3, type);
     return x;
 }
-static void test_ldc_small(const char* spirv_val, const char* dir) {
+static void test_ldc_small(const char* dir) {
     u8 code[16 * 7] = {0};
     put(code, 0, mov_imm(4, 1));
     put(code, 1, ldc(0, 4, 1, 0x4, 0));   /* the byte at 5 */
@@ -1255,11 +1274,11 @@ static void test_ldc_small(const char* spirv_val, const char* dir) {
     CHECK(out[0] == 0x85u && out[1] == 0xffffff87u && out[2] == 0x8899u && out[3] == 0xffff8706u);
     if (out[0] != 0x85u || out[1] != 0xffffff87u || out[2] != 0x8899u || out[3] != 0xffff8706u)
         fprintf(stderr, "ldc small: %08x %08x %08x %08x\n", out[0], out[1], out[2], out[3]);
-    (void)spirv_val, (void)dir;
+    (void)dir;
 }
 
 /* BSSY B0, 2; BREAK B0; BSYNC B0; MOV R0, 1.0: BREAK takes the lanes out of the barrier and goes on */
-static void test_break(const char* spirv_val, const char* dir) {
+static void test_break(const char* dir) {
     u8 code[16 * 6] = {0};
     Word x = fix(0x945);
     set(&x, 16, 4, 0);
@@ -1279,7 +1298,7 @@ static void test_break(const char* spirv_val, const char* dir) {
     put(code, 5, bra(5, 5, 7, 0));
     u32 out[4];
     CHECK(run_fs_at(code, 6, 0, NULL, 0, out) && out[0] == f2u(1.0f));
-    (void)spirv_val, (void)dir;
+    (void)dir;
 }
 
 /* LDL and STL: the address register at 24, the signed offset at 40-63, NAK's MemType at 73, STL's data at 32 */
@@ -1292,7 +1311,7 @@ static Word local_op(u32 opcode, u32 reg, u32 addr, u32 off, u32 type) {
     return x;
 }
 /* STL.64 of R1:R2 at 8, a byte at 0xd, and LDL back: the words and the byte, sign extended */
-static void test_local_memory(const char* spirv_val, const char* dir) {
+static void test_local_memory(const char* dir) {
     u8 code[16 * 11] = {0};
     put(code, 0, mov_imm(1, 0x11111111u));
     put(code, 1, mov_imm(2, 0x22222222u));
@@ -1317,13 +1336,13 @@ static void test_local_memory(const char* spirv_val, const char* dir) {
     ShaderInfo si = {0};
     size_t count = 0;
     u32* spv = sm86_to_spirv(code, 11 * 16, ST_FS, fsph, &si, &count);
-    CHECK(spv && validate(spirv_val, dir, "fs_local", spv, count));
+    CHECK(spv && keep_module(dir, "fs_local", spv, count));
     free(spv);
 }
 
 /* LDS takes a uniform register with bit 91 alone: UR0 is 0x40, and LDS R2, [RZ + 0x10] without the bit reads the
    word STS stored at 0x10 */
-static void test_shared_no_uniform(const char* spirv_val, const char* dir) {
+static void test_shared_no_uniform(const char* dir) {
     u8 code[16 * 7] = {0};
     Word x = alu(0x082, 4, 0, 0); /* UMOV UR0, 0x40 */
     set(&x, 32, 32, 0x40);
@@ -1361,7 +1380,7 @@ static void test_shared_no_uniform(const char* spirv_val, const char* dir) {
     const char* why = spv_eval(spv, count, &env);
     if (why) fprintf(stderr, "shared: the evaluator stops at %s\n", why);
     CHECK(!why && env.shared_words >= 9 && env.shared[8] == 7);
-    CHECK(validate(spirv_val, dir, "cs_shared", spv, count));
+    CHECK(keep_module(dir, "cs_shared", spv, count));
     free(spv);
 }
 
@@ -1386,7 +1405,7 @@ static Word predicated(Word x, u32 pred) {
 
 /* HSETP2 compares the halves pair by pair: R1 is (low 2.0, high 1.0). Form 2, GT against two halves of 1.5: P0 the
    low pair's, true, and P1 the high pair's, false. Form 3, LT of R1.H0_H0 against c[1][0].H1_H1 (3.0): P2 true */
-static void test_hsetp2(const char* spirv_val, const char* dir) {
+static void test_hsetp2(const char* dir) {
     u8 code[16 * 8] = {0};
     put(code, 0, mov_imm(1, 0x3c004000u));
     Word x = alu(0x034, 2, 0, 1);
@@ -1416,11 +1435,11 @@ static void test_hsetp2(const char* spirv_val, const char* dir) {
     CHECK(out[0] == f2u(1.0f) && out[2] == f2u(1.0f) && out[3] == 0);
     if (out[0] != f2u(1.0f) || out[2] != f2u(1.0f) || out[3] != 0)
         fprintf(stderr, "hsetp2: %08x %08x %08x\n", out[0], out[2], out[3]);
-    (void)spirv_val, (void)dir;
+    (void)dir;
 }
 
 /* BMOV.32.CLEAR RZ, B0 changes nothing the program computes; into a register it is refused */
-static void test_bmov(const char* spirv_val, const char* dir) {
+static void test_bmov(const char* dir) {
     u8 code[16 * 4] = {0};
     Word x = fix(0x355);
     set(&x, 16, 8, 255);
@@ -1439,14 +1458,14 @@ static void test_bmov(const char* spirv_val, const char* dir) {
     ShaderInfo si = {0};
     size_t count = 0;
     CHECK(!sm86_to_spirv(code, 4 * 16, ST_FS, fsph, &si, &count));
-    (void)spirv_val, (void)dir;
+    (void)dir;
 }
 
 /* The prologue of the debug variants of the driver's programs: BMOV.32 B0, 0xffffffff, BMOV.32.CLEAR B1, B0 and
    BMOV.32 B15, 0x0 write only convergence barriers, which change nothing the program computes. HFMA2.MMA R0, -RZ,
    RZ, imm, imm loads its two halves: R0 is (-2.0, 1.0) as its immediate 0x3c00c000, and R1 with +RZ (+0 + -0) is
    +0 in its low half. A BMOV into a state register is refused */
-static void test_debug_prologue(const char* spirv_val, const char* dir) {
+static void test_debug_prologue(const char* dir) {
     u8 code[16 * 9] = {0};
     Word bi = fix(0x956);
     set(&bi, 32, 32, 0xffffffffu);
@@ -1488,13 +1507,13 @@ static void test_debug_prologue(const char* spirv_val, const char* dir) {
     set(&bl, 16, 8, 0x1a);
     put(code, 1, bl);
     CHECK(!sm86_to_spirv(code, 9 * 16, ST_FS, fsph, &si, &count));
-    (void)spirv_val, (void)dir;
+    (void)dir;
 }
 
 /* The first texture coordinate (0x300-0x30f) moves to generic 22 (17 + its group, 5) in both stages: AST a[0x304]
    writes output 22's y, and IPA a[0x300] reads input 22's x, with the interpolation the header's texture coordinate
    map gives it (word 15, constant), not the FragCoord.w that a perspective input takes */
-static void test_legacy_varyings(const char* spirv_val, const char* dir) {
+static void test_legacy_varyings(const char* dir) {
     u8 code[16 * 4] = {0};
     put(code, 0, mov_imm(1, 0x12345678u));
     Word x = fix(0x322);
@@ -1535,7 +1554,7 @@ static void test_legacy_varyings(const char* spirv_val, const char* dir) {
     ShaderInfo si = {0};
     size_t count = 0;
     CHECK(!sm86_to_spirv(code, 4 * 16, ST_FS, fsph, &si, &count));
-    (void)spirv_val, (void)dir;
+    (void)dir;
 }
 
 /* BRXU UR3 with the table that ULDC.IDX reads at c[1][UR3 + 0x10], its index bounded on the uniform datapath:
@@ -1554,7 +1573,7 @@ static int table3_read(u32 idx, u32 off, u32* out) {
     *out = table[(off - 0x10) / 4];
     return 1;
 }
-static void test_brxu(const char* spirv_val, const char* dir) {
+static void test_brxu(const char* dir) {
     u8 code[16 * 12] = {0};
     put(code, 0, ualu(0x082, 1, 0, 1)); /* UMOV UR1, 1 */
     Word x = ualu(0x08c, 0, 1, 1);      /* UISETP.LT.U32.AND UP0, PT, UR1, 1, PT */
@@ -1602,13 +1621,13 @@ static void test_brxu(const char* spirv_val, const char* dir) {
         u32 at[4];
         CHECK(spv_find(spv, count, 251 /* OpSwitch */, at, 4) == 1);
         CHECK((spv[at[0]] >> 16) == 7); /* two cases: the bound's */
-        CHECK(validate(spirv_val, dir, "fs_brxu", spv, count));
+        CHECK(keep_module(dir, "fs_brxu", spv, count));
     }
     free(spv);
 }
 
 /* IPA R0, a[UR4 + 0x80] with UR4 = 0x10: input 1's x. The header reads inputs 0 and 1 (constant) */
-static void test_ipa_uniform(const char* spirv_val, const char* dir) {
+static void test_ipa_uniform(const char* dir) {
     u8 code[16 * 4] = {0};
     put(code, 0, ualu(0x082, 4, 0, 0x10)); /* UMOV UR4, 0x10 */
     Word x = fix(0x526);
@@ -1628,13 +1647,13 @@ static void test_ipa_uniform(const char* spirv_val, const char* dir) {
     env.in[0][0] = f2u(7.0f);
     env.in[1][0] = f2u(5.0f);
     CHECK(run_stage(ST_FS, code, 4, fsph, &env) && env.out[0][0] == f2u(5.0f));
-    (void)spirv_val, (void)dir;
+    (void)dir;
 }
 
 /* TXQ R4, R5 of the handle c[2][0x20] before TLD.LZ.MS R0-R3, R4, R5, sample R9 of it, as a game's resolve programs
    do: one multisampled 2D slot (ShTex.flags bit 1) for both, the sample fetched with the Sample operand from R9, and
    the size queried without a level, as a multisampled image has none */
-static void test_tld_multisample(const char* spirv_val, const char* dir) {
+static void test_tld_multisample(const char* dir) {
     u8 code[16 * 5] = {0};
     Word x = fix(0xb6f);
     set(&x, 16, 8, 4);
@@ -1692,7 +1711,7 @@ static void test_tld_multisample(const char* spirv_val, const char* dir) {
                     if (spv[loads[l] + 2] == spv[casts[j] + 3] && spv[loads[l] + 3] == r9) sample_r9 = 1;
     }
     CHECK(sample_r9);
-    CHECK(validate(spirv_val, dir, "fs_tld_ms", spv, count));
+    CHECK(keep_module(dir, "fs_tld_ms", spv, count));
     free(spv);
 }
 
@@ -1732,11 +1751,11 @@ static void spv_ftz_counts(const u32* w, size_t n, int* mode, int* tests) {
         u32 count = w[i] >> 16, op = w[i] & 0xffffu;
         if (!count) break;
         if (op == 16 && count >= 3 && w[i + 2] == 4460) *mode = 1; /* OpExecutionMode DenormFlushToZero */
-        if (op == 184) (*tests)++;                                   /* OpFOrdLessThan */
+        if (op == 184) (*tests)++;                                 /* OpFOrdLessThan */
         i += count;
     }
 }
-static void test_ftz_modes(const char* spirv_val, const char* dir) {
+static void test_ftz_modes(const char* dir) {
     u8* code = calloc(1, 0x1000);
     if (!code) abort();
     u32 n = compute_program(code), fmul = n;
@@ -1745,8 +1764,11 @@ static void test_ftz_modes(const char* spirv_val, const char* dir) {
     CHECK(fmul < n);
     static const struct {
         int ftz, can_flush, mode, tests;
-    } cases[] = {{1, SH_FTZ_MODE, 1, 0}, {1, SH_FTZ_EMULATE, 0, 1}, {1, SH_FTZ_NATIVE, 0, 0},
-                 {0, SH_FTZ_MODE, 0, 0}, {0, SH_FTZ_EMULATE, 0, 0}};
+    } cases[] = {{1, SH_FTZ_MODE, 1, 0},
+                 {1, SH_FTZ_EMULATE, 0, 1},
+                 {1, SH_FTZ_NATIVE, 0, 0},
+                 {0, SH_FTZ_MODE, 0, 0},
+                 {0, SH_FTZ_EMULATE, 0, 0}};
     for (u32 k = 0; k < sizeof cases / sizeof cases[0] && fmul < n; k++) {
         if (cases[k].ftz)
             code[16 * fmul + 10] |= 1; /* bit 80 */
@@ -1764,7 +1786,7 @@ static void test_ftz_modes(const char* spirv_val, const char* dir) {
             fprintf(stderr, "ftz %d, can_flush %d: mode %d, %d tests\n", cases[k].ftz, cases[k].can_flush, mode, tests);
         char name[32];
         snprintf(name, sizeof name, "ftz%u", k);
-        CHECK(validate(spirv_val, dir, name, spv, count));
+        CHECK(keep_module(dir, name, spv, count));
         free(spv);
     }
     /* mixed: the FMUL with FTZ, and a copy of it without before the EXIT. The copy keeps subnormals, so the module
@@ -1786,13 +1808,13 @@ static void test_ftz_modes(const char* spirv_val, const char* dir) {
         if (spv) {
             spv_ftz_counts(spv, count, &mode, &tests);
             CHECK(!mode && tests > 0);
-            CHECK(validate(spirv_val, dir, "ftz_mixed", spv, count));
+            CHECK(keep_module(dir, "ftz_mixed", spv, count));
         }
         free(spv);
     }
     free(code);
 }
-static void test_tex_f16(const char* spirv_val, const char* dir) {
+static void test_tex_f16(const char* dir) {
     u8 code[16 * 8] = {0};
     put(code, 0, tex_f16(4, 255, 0x8));
     put(code, 1, tex_f16(8, 10, 0xf));
@@ -1824,7 +1846,7 @@ static void test_tex_f16(const char* spirv_val, const char* dir) {
              o[3] == f2u(0.625f);
     CHECK(ok);
     if (!ok) fprintf(stderr, "tex f16: %08x %08x %08x %08x\n", o[0], o[1], o[2], o[3]);
-    CHECK(validate(spirv_val, dir, "fs_tex_f16", spv, count));
+    CHECK(keep_module(dir, "fs_tex_f16", spv, count));
     free(spv);
 }
 
@@ -1840,7 +1862,7 @@ static Word ast(u32 addr, u32 data, u32 count) {
     set(&x, 74, 2, count - 1);
     return x;
 }
-static void test_output_defaults(const char* spirv_val, const char* dir) {
+static void test_output_defaults(const char* dir) {
     u8 code[16 * 6] = {0};
     put(code, 0, mov_imm(1, f2u(0.5f)));
     put(code, 1, mov_imm(2, f2u(0.25f)));
@@ -1859,13 +1881,13 @@ static void test_output_defaults(const char* spirv_val, const char* dir) {
     if (!ok)
         fprintf(stderr, "output defaults: position %08x %08x %08x %08x, generic 0 %08x %08x %08x %08x\n", p[0], p[1],
                 p[2], p[3], g[0], g[1], g[2], g[3]);
-    (void)spirv_val, (void)dir;
+    (void)dir;
 }
 
 /* A fragment program's depth is in the register after the sample mask's, whether it writes a sample mask or not:
    R1 with no colour (a program that turns a material number into the depth that its lighting passes test EQUAL
    against), R5 after colour 0, and R5 with the sample mask in R4 */
-static void test_fragment_depth(const char* spirv_val, const char* dir) {
+static void test_fragment_depth(const char* dir) {
     static const struct {
         u32 targets, outputs, depth_reg;
     } cases[3] = {{0, 2, 1}, {0xf, 2, 5}, {0xf, 3, 5}};
@@ -1888,7 +1910,65 @@ static void test_fragment_depth(const char* spirv_val, const char* dir) {
             fprintf(stderr, "fragment depth, targets %#x, outputs %u: %08x, R%u's %08x expected\n", cases[i].targets,
                     cases[i].outputs, env.frag_depth, cases[i].depth_reg, want);
     }
-    (void)spirv_val, (void)dir;
+    (void)dir;
+}
+
+/* ISETP.GE.U32.AND Pd, PT, RZ, imm, PT: Pd true for imm 0, false for 1 */
+static Word setp_const(u32 pd, u32 imm) {
+    Word x = alu(0x00c, 4, 255, 255);
+    set(&x, 32, 32, imm);
+    set(&x, 76, 3, 6);
+    set(&x, 81, 3, pd);
+    set(&x, 84, 3, 7);
+    set(&x, 87, 3, 7);
+    return x;
+}
+/* A BRA's or an EXIT's predicate operand (bits 87-89, 90 negates it) holds with the guard: the instruction takes effect
+   only where both do. One game's interface programs end @P0 EXIT P1, P0 their KILL's switch and P1 its test, before
+   the MOVs to the colour's registers: with the operand left out every lane with P0 exited with R0-R3 unwritten, and
+   the title screen drew nothing. Colour 0 is R0-R3, 0.25 before the instruction and 0.75 after it when it falls
+   through. Cases: the guard (P0, true), the operand (P1, 7 for none), its negation, P1's value, and whether it's a BRA
+   over the MOVs instead of an EXIT */
+static void test_flow_operand(const char* dir) {
+    static const struct {
+        u32 guard, operand, negate, p1, bra, exits;
+    } cases[] = {
+        {0, 1, 0, 0, 0, 0}, /* @P0 EXIT P1, P1 false: no exit */
+        {0, 1, 0, 1, 0, 1}, /* @P0 EXIT P1, P1 true */
+        {0, 1, 1, 0, 0, 1}, /* @P0 EXIT !P1, P1 false */
+        {7, 1, 0, 0, 0, 0}, /* EXIT P1, P1 false: the block goes on */
+        {7, 1, 0, 1, 0, 1}, /* EXIT P1, P1 true */
+        {0, 7, 0, 0, 0, 1}, /* @P0 EXIT */
+        {0, 1, 0, 0, 1, 0}, /* @P0 BRA P1, P1 false: not taken */
+        {0, 1, 0, 1, 1, 1}, /* @P0 BRA P1, P1 true */
+        {7, 1, 1, 1, 1, 0}, /* BRA !P1, P1 true: not taken */
+    };
+    for (u32 i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        u8 code[16 * 16] = {0};
+        u32 n = 0;
+        for (u32 r = 0; r < 4; r++) put(code, n++, mov_imm(r, f2u(0.25f)));
+        put(code, n++, setp_const(0, 0));
+        put(code, n++, setp_const(1, cases[i].p1 ? 0 : 1));
+        Word x = cases[i].bra ? bra(n, n + 5, cases[i].guard, 0) : exit_insn();
+        set(&x, 12, 3, cases[i].guard);
+        set(&x, 87, 3, cases[i].operand);
+        set(&x, 90, 1, cases[i].negate);
+        put(code, n++, x);
+        for (u32 r = 0; r < 4; r++) put(code, n++, mov_imm(r, f2u(0.75f)));
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        u32 fsph[32] = {0};
+        fsph[0] = sph0(2, 5);
+        fsph[18] = 0xf;
+        SpvEvalEnv env = {0};
+        int ran = run_stage(ST_FS, code, n, fsph, &env);
+        u32 want = f2u(cases[i].exits ? 0.25f : 0.75f);
+        CHECK(ran && env.out[0][0] == want && env.out[0][3] == want);
+        if (!ran || env.out[0][0] != want)
+            fprintf(stderr, "flow operand, case %u: colour %08x, %08x expected\n", i, env.out[0][0], want);
+    }
+    (void)dir;
 }
 
 /* LDG.E (no uniform) of type 4 (32 bits) or 5 (64 bits) into dst from [addr + imm], and STG.E of data */
@@ -1914,7 +1994,7 @@ static Word stg_nou(u32 addr, u32 imm, u32 data) {
    holds (0x1_0000_1000), whose words 0-5 are three pointers. The first, base + 0x40, is inside it: the STG through
    it writes word 0x12 and the LDG reads word 0x10. The second, below the base, and the third, base + 0x1_0000_0040
    (the same low word of the difference), are in no buffer: the STG is dropped and the LDG reads 0 */
-static void test_global_pointer(const char* spirv_val, const char* dir) {
+static void test_global_pointer(const char* dir) {
     u8 code[16 * 16] = {0};
     Word m = alu(0x002, 5, 2, 255);
     cbuf(&m, 0, 0x110);
@@ -1964,7 +2044,7 @@ static void test_global_pointer(const char* spirv_val, const char* dir) {
     size_t count = 0;
     u32* spv = sm86_to_spirv(code, 15 * 16, ST_VS, vsph, &si, &count);
     CHECK(spv && si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x110 && (si.gbuf_wmask & 1));
-    if (spv) CHECK(validate(spirv_val, dir, "global_pointer", spv, count));
+    if (spv) CHECK(keep_module(dir, "global_pointer", spv, count));
     free(spv);
 }
 
@@ -2053,7 +2133,7 @@ static ShaderInfo mesh_info(u32 sph[32]) {
     si.mesh.prim_sph[13] = 1u << 16;
     return si;
 }
-static void test_mesh(const char* spirv_val, const char* dir) {
+static void test_mesh(const char* dir) {
     u8 code[16 * 40] = {0};
     u32 n = mesh_program(code), sph[32] = {0};
     for (int fix_depth = 0; fix_depth < 2; fix_depth++) {
@@ -2067,7 +2147,7 @@ static void test_mesh(const char* spirv_val, const char* dir) {
         }
         CHECK(si.out_mask == 3 && si.prim_mask == 1 && sm86_mesh_primitive_mask(&si.mesh) == 1);
         CHECK(spv_declares(spv, count, 5283 /* MeshShadingEXT */) && spv_decorates(spv, count, 5271));
-        if (!fix_depth) CHECK(validate(spirv_val, dir, "ms", spv, count));
+        if (!fix_depth) CHECK(keep_module(dir, "ms", spv, count));
         static u32 position[40 * 4], generic1[40 * 4], generic0[2 * 4], indices[2 * 3];
         memset(position, 0xee, sizeof position);
         SpvEvalEnv env = {0};
@@ -2100,7 +2180,7 @@ static void test_mesh(const char* spirv_val, const char* dir) {
 
 /* A task program, one invocation and a payload of 0x20 bytes: R0 the workgroup index, into the payload at 0x10; then
    an EXIT when R0 >= 5, and else 3 mesh groups to launch. The count starts at 0, whatever the payload held */
-static void test_task(const char* spirv_val, const char* dir) {
+static void test_task(const char* dir) {
     u8 code[16 * 8] = {0};
     u32 n = 0;
     put(code, n++, isbe_insn(0, 0, 255, 0, ISBE_B32, ISBE_ATTR, 1, 0));
@@ -2125,7 +2205,7 @@ static void test_task(const char* spirv_val, const char* dir) {
             fprintf(stderr, "task: %s\n", si.first_unsupported);
             return;
         }
-        if (!first) CHECK(validate(spirv_val, dir, "ts", spv, count));
+        if (!first) CHECK(keep_module(dir, "ts", spv, count));
         SpvEvalEnv env = {0};
         env.builtin[26][0] = 2;
         env.push[0] = first;
@@ -2144,7 +2224,7 @@ static void test_task(const char* spirv_val, const char* dir) {
 /* A mesh program after a task program: its workgroup index is ISBERD.ATTR [RZ+0x0] without the draw's first group,
    and it reads the task's payload from 0x10 on: its one vertex's position.x from payload byte 0x14, its generic 0.x
    the index. Its count of 9 primitives is more than its most (1), which the outputs keep to */
-static void test_mesh_after_task(const char* spirv_val, const char* dir) {
+static void test_mesh_after_task(const char* dir) {
     u8 code[16 * 10] = {0};
     u32 n = 0;
     put(code, n++, isbe_insn(0, 0, 255, 0, ISBE_B32, ISBE_ATTR, 0, 0));
@@ -2168,7 +2248,7 @@ static void test_mesh_after_task(const char* spirv_val, const char* dir) {
         fprintf(stderr, "mesh after a task: %s\n", si.first_unsupported);
         return;
     }
-    CHECK(validate(spirv_val, dir, "ms_task", spv, count));
+    CHECK(keep_module(dir, "ms_task", spv, count));
     static u32 position[4], generic0[4];
     SpvEvalEnv env = {0};
     env.builtin[26][0] = 2;
@@ -2271,7 +2351,7 @@ static void test_mesh_refused(void) {
 
 /* A fragment program's inputs that its draw's mesh program writes per primitive (ShaderInfo.prim_mask) are
    PerPrimitiveEXT, and the others are not */
-static void test_fragment_per_primitive(const char* spirv_val, const char* dir) {
+static void test_fragment_per_primitive(const char* dir) {
     u8 code[16 * 8] = {0};
     u32 n = fragment_program(code), fsph[32] = {0};
     fsph[0] = sph0(2, 5);
@@ -2285,7 +2365,7 @@ static void test_fragment_per_primitive(const char* spirv_val, const char* dir) 
         CHECK(spv != NULL);
         if (!spv) return;
         CHECK(spv_decorates(spv, count, 5271) == (mask != 0) && spv_declares(spv, count, 5283) == (mask != 0));
-        if (mask) CHECK(validate(spirv_val, dir, "fs_per_primitive", spv, count));
+        if (mask) CHECK(keep_module(dir, "fs_per_primitive", spv, count));
         free(spv);
     }
 }
@@ -2295,7 +2375,7 @@ static void test_fragment_per_primitive(const char* spirv_val, const char* dir) 
    (VUID-RuntimeSpirv-OpEntryPoint-08743: one game's mesh programs write fewer generics than their fragment programs
    read). An IPA at the centroid of such an input decorates nothing: the decoration named id 0 before, a module that
    spirv-val and the validation layer refuse */
-static void test_fragment_unfed(const char* spirv_val, const char* dir) {
+static void test_fragment_unfed(const char* dir) {
     u8 code[16 * 8] = {0};
     u32 n = fragment_program(code), fsph[32] = {0};
     fsph[0] = sph0(2, 5);
@@ -2313,7 +2393,7 @@ static void test_fragment_unfed(const char* spirv_val, const char* dir) {
         u32 at[64], found = spv_find(spv, count, 71 /* OpDecorate */, at, 64), zero = 0;
         for (u32 k = 0; k < found; k++) zero += spv[at[k] + 1] == 0;
         CHECK(found < 64 && zero == 0);
-        CHECK(validate(spirv_val, dir, centroid ? "fs_unfed_centroid" : "fs_unfed_default", spv, count));
+        CHECK(keep_module(dir, centroid ? "fs_unfed_centroid" : "fs_unfed_default", spv, count));
         free(spv);
     }
     code[9] &= (u8)~0x30u;
@@ -2328,7 +2408,7 @@ static void test_fragment_unfed(const char* spirv_val, const char* dir) {
         for (u32 k = 0; k < found; k++) inputs += spv[at[k] + 3] == 1 /* Input */;
         inputs_of[unfed] = inputs;
         CHECK(si.in_mask == 1);
-        if (unfed) CHECK(validate(spirv_val, dir, "fs_unfed", spv, count));
+        if (unfed) CHECK(keep_module(dir, "fs_unfed", spv, count));
         SpvEvalEnv env = {0};
         env.in[0][0] = f2u(0.75f);
         env.builtin[15][3] = f2u(1.0f); /* FragCoord.w, which IPA's perspective divides by */
@@ -2381,7 +2461,7 @@ static int spv_has_builtin(const u32* words, size_t count, u32 builtin) {
    product: A's 48 reads are quad broadcasts or shuffles, B's 48, LDSM's 4 and MOVM's 2 stay shuffles, and each pair
    of products is an OpFDot2MixAcc32VALVE (96) or an OpDot. B's registers are OR'd with hmma_zero's zero, which
    compares NumWorkgroups.x with 0 */
-static void test_warp_matrix(const char* spirv_val, const char* dir) {
+static void test_warp_matrix(const char* dir) {
     u8 code[16 * 8] = {0};
     static const u32 hmma[4][4] = {{16, 14, 0x08}, {20, 24, 0x18}, {28, 255, 0x00}, {32, 36, 0x10}};
     u32 n = 0;
@@ -2424,12 +2504,13 @@ static void test_warp_matrix(const char* spirv_val, const char* dir) {
             CHECK(mixes == (mixed ? 96u : 0u) && dots == (mixed ? 0u : 96u));
             CHECK(spv_has_builtin(spv, count, 24) && spv_count(spv, count, 170 /* OpIEqual */) >= 1);
             if (quads != (quad ? 48u : 0u) || mixes != (mixed ? 96u : 0u))
-                fprintf(stderr, "warp matrix, quad %d, mixed %d: %u quad broadcasts, %u shuffles, %u mixed dots, %u "
-                                "dots\n",
+                fprintf(stderr,
+                        "warp matrix, quad %d, mixed %d: %u quad broadcasts, %u shuffles, %u mixed dots, %u "
+                        "dots\n",
                         quad, mixed, quads, shuffles, mixes, dots);
             char name[32];
             snprintf(name, sizeof name, "warp_matrix%d%d", quad, mixed);
-            CHECK(validate(spirv_val, dir, name, spv, count));
+            CHECK(keep_module(dir, name, spv, count));
             free(spv);
         }
     g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was;
@@ -2460,7 +2541,7 @@ static u32 spv_decorations(const u32* words, size_t count, u32 decoration) {
    4 shuffles and MOVM's 2 stay), in a module of the Vulkan memory model, whose global buffer is not Coherent but read
    and written by atomics. With the flag off, or a block of 16 lanes, too little shared memory left for the slots, no
    shaderFloat16, the program is hmma's as before; and a program without HMMA stays GLSL450's with the flag on */
-static void test_warp_matrix_coop(const char* spirv_val, const char* dir) {
+static void test_warp_matrix_coop(const char* dir) {
     u8 code[16 * 20] = {0};
     u32 n = 0;
     Word x = fix(0x919); /* S2R R0, TID.X */
@@ -2560,12 +2641,13 @@ static void test_warp_matrix_coop(const char* spirv_val, const char* dir) {
                     CHECK(products == 0 && loads == 0 && dots == 96 && model == 1 && coherent == 1 && atomic_rw == 0);
                 }
                 if (coop ? products != 4 || model != 3 || coherent || atomic_rw != 2 : products || model != 1)
-                    fprintf(stderr, "warp matrix coop %d, quad %d, mixed %d: %u products, %u loads, %u stores, %u "
-                                    "dots, %u shuffles, memory model %u, %u Coherent, %u atomic loads and stores\n",
+                    fprintf(stderr,
+                            "warp matrix coop %d, quad %d, mixed %d: %u products, %u loads, %u stores, %u "
+                            "dots, %u shuffles, memory model %u, %u Coherent, %u atomic loads and stores\n",
                             coop, quad, mixed, products, loads, stores, dots, shuffles, model, coherent, atomic_rw);
                 char name[32];
                 snprintf(name, sizeof name, "warp_matrix_coop%d%d%d", coop, quad, mixed);
-                CHECK(validate(spirv_val, dir, name, spv, count));
+                CHECK(keep_module(dir, name, spv, count));
                 free(spv);
             }
     /* where the cooperative matrices don't fit: a block of 16 lanes, 64 KiB of shared memory but 1 KiB, which the
@@ -2597,7 +2679,6 @@ static void test_warp_matrix_coop(const char* spirv_val, const char* dir) {
 }
 
 int main(int argc, char** argv) {
-    const char* spirv_val = argc > 2 ? argv[2] : NULL;
     const char* dir = argc > 1 ? argv[1] : ".";
     test_alu_forms();
     test_common_fields();
@@ -2605,44 +2686,46 @@ int main(int argc, char** argv) {
     test_table();
     test_sph();
     test_tcs_empty();
-    test_programs(spirv_val, dir);
-    test_game_forms(spirv_val, dir);
-    test_brx(spirv_val, dir);
-    test_brx_bounded(spirv_val, dir);
-    test_alu_group(spirv_val, dir);
-    test_compute_forms(spirv_val, dir);
-    test_image_kinds(spirv_val, dir);
-    test_root_tables(spirv_val, dir);
-    test_texel_offsets(spirv_val, dir);
-    test_global_flow(spirv_val, dir);
-    test_fswzadd(spirv_val, dir);
-    test_lane_masks(spirv_val, dir);
-    test_ldc_small(spirv_val, dir);
-    test_break(spirv_val, dir);
-    test_local_memory(spirv_val, dir);
-    test_shared_no_uniform(spirv_val, dir);
-    test_hsetp2(spirv_val, dir);
-    test_bmov(spirv_val, dir);
-    test_debug_prologue(spirv_val, dir);
-    test_legacy_varyings(spirv_val, dir);
-    test_brxu(spirv_val, dir);
-    test_ipa_uniform(spirv_val, dir);
-    test_tld_multisample(spirv_val, dir);
-    test_tex_f16(spirv_val, dir);
-    test_output_defaults(spirv_val, dir);
-    test_fragment_depth(spirv_val, dir);
-    test_global_pointer(spirv_val, dir);
-    test_mesh(spirv_val, dir);
-    test_task(spirv_val, dir);
-    test_mesh_after_task(spirv_val, dir);
+    test_programs(dir);
+    test_game_forms(dir);
+    test_brx(dir);
+    test_brx_bounded(dir);
+    test_alu_group(dir);
+    test_compute_forms(dir);
+    test_image_kinds(dir);
+    test_kill_discard();
+    test_root_tables(dir);
+    test_texel_offsets(dir);
+    test_global_flow(dir);
+    test_fswzadd(dir);
+    test_lane_masks(dir);
+    test_ldc_small(dir);
+    test_break(dir);
+    test_local_memory(dir);
+    test_shared_no_uniform(dir);
+    test_hsetp2(dir);
+    test_bmov(dir);
+    test_debug_prologue(dir);
+    test_legacy_varyings(dir);
+    test_brxu(dir);
+    test_ipa_uniform(dir);
+    test_tld_multisample(dir);
+    test_tex_f16(dir);
+    test_output_defaults(dir);
+    test_fragment_depth(dir);
+    test_flow_operand(dir);
+    test_global_pointer(dir);
+    test_mesh(dir);
+    test_task(dir);
+    test_mesh_after_task(dir);
     test_mesh_output_bytes();
     test_mesh_refused();
-    test_fragment_per_primitive(spirv_val, dir);
-    test_fragment_unfed(spirv_val, dir);
+    test_fragment_per_primitive(dir);
+    test_fragment_unfed(dir);
     test_uses_isbe();
-    test_ftz_modes(spirv_val, dir);
-    test_warp_matrix(spirv_val, dir);
-    test_warp_matrix_coop(spirv_val, dir);
+    test_warp_matrix(dir);
+    test_warp_matrix_coop(dir);
+    test_ftz_modes(dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

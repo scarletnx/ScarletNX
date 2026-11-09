@@ -11,10 +11,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* the bindings a module may read buffers at: past SNX_VKB_END (gpu/shader/shader.h), SNX_VKB_SMAP among them */
+#define SPV_EVAL_BINDINGS 128
 typedef struct {
     uint32_t builtin[64][4]; /* the value of each BuiltIn input, by its number (41 SubgroupLocalInvocationId) */
-    uint32_t* ubo[128];      /* uniform and storage buffers by binding (any set): their words, up to SNX_VKB_SMAP and past */
-    uint32_t ubo_words[128];
+    uint32_t* ubo[SPV_EVAL_BINDINGS]; /* uniform and storage buffers by binding (any set): their words */
+    uint32_t ubo_words[SPV_EVAL_BINDINGS];
     uint32_t in[32][4];  /* the inputs that are no built-ins, by location */
     uint32_t out[32][4]; /* the outputs by location */
     uint32_t out_written[32];

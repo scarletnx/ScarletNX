@@ -9,6 +9,7 @@
    thread asking, and shader results landing on whichever thread reads their memory first. Acquiring a swapchain image
    never waits for the display: with every image still on it or queued for it, that frame isn't shown (counted). */
 #include "common/utilities/bits.h"
+#include "common/utilities/common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -92,12 +93,12 @@ static int guest_covered(u64 a, u64 size) {
 /* The brackets of this thread that skipped vk_lock, a bit each by depth: mem.c's brackets don't nest, the GMMU's
    may run inside one of the renderer's own (vk_lock held there already) */
 static _Thread_local u32 t_mapping_depth, t_mapping_quick;
-/* Locks, in order: vk_lock, then pend_lock (pending_pages.h), then mem.c's (memory/own.c has the rest). Every
-   change holds pend_lock while it changes memory, from the end of its begin to its end, so nothing the renderer
-   holds over guest memory comes meanwhile: pending results (pend_add), GPU-owned memory (owned.c) and GPU mappings
-   (this bracket, for a GMMU change). A change of guest memory alone (GPU_MAPPING_GUEST_ONLY) that nothing covers takes no
-   more. In one game's menus its memory thread's MapPhysicalMemory and UnmapPhysicalMemory waited 59 s of 130 for
-   vk_lock, up to 7.9 s at a time, while a landing held it waiting for a pipeline */
+/* Locks, in order: vk_lock, then pend_lock (pending_pages.h), then mem.c's (memory/own.c has the rest). Every change
+   holds pend_lock while it changes memory, from the end of its begin to its end, so nothing the renderer holds over
+   guest memory comes meanwhile: pending results (pend_add), GPU-owned memory (owned.c) and GPU mappings (this bracket,
+   for a GMMU change). A change of guest memory alone (GPU_MAPPING_GUEST_ONLY) that nothing covers takes no more. In one
+   game's menus its memory thread's MapPhysicalMemory and UnmapPhysicalMemory waited 59 s of 130 for vk_lock, up to 7.9
+   s at a time, while a landing held it waiting for a pipeline */
 static void vkr_mapping_begin(u64 gva, u64 size, int kind) {
     u32 bit = 1u << (t_mapping_depth++ & 31);
     pend_lock();
@@ -830,7 +831,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 (unsigned long long)vk_buf_ahead());
             vk_pass_ends_log();
             vk_descriptors_stats();
-            /* what the GPU engines keep on the GPU (docs/GPU_OWNERSHIP.md), and what the CPU had to wait for */
+            /* what the GPU engines keep on the GPU (docs/layers/gpu/ownership.md), and what the CPU had to wait for */
             LOG("vulkan: GPU-owned guest memory landed for the CPU %llu times, render targets written back for an "
                 "engine %llu times\n",
                 (unsigned long long)own_landings(), (unsigned long long)g_vk_rt_readbacks);
@@ -1011,11 +1012,7 @@ static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const c
         FILE* f = fopen(fn, "wb");
         int ok = f != NULL;
         if (f) {
-            fprintf(f, "P6\n%u %u\n255\n", dw, dh);
-            for (u64 i = 0; i < (u64)w * h && ok; i++) {
-                u8 rgb[3] = {px[i * 4], px[i * 4 + 1], px[i * 4 + 2]};
-                ok = fwrite(rgb, 1, 3, f) == 3;
-            }
+            ok = !snx_ppm_write(f, dw, dh, px, 4, (ptrdiff_t)dw * 4, SNX_PPM_RGBA);
             ok = fclose(f) == 0 && ok;
         }
         if (!ok) WARN_LIMIT(1, "vulkan: the screenshot %s couldn't be written\n", fn);

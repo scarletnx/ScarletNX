@@ -10,22 +10,25 @@ on:
     # a draft builds and tests as much as a pull request ready for review, so leaving draft starts nothing
     types: [opened, synchronize, reopened]
     # skipped when the change is only in files that no build or test reads. tracked_material.py reads them all and runs
-    # on its own (pr-checks.yml). docs/ARCHITECTURE.md, DEPRECATIONS.md and GUI.md are test inputs: they build
+    # on its own (pr-checks.yml). docs/user/deprecations.md, docs/user/gui.md and docs/layers/cpu/plan.md are test
+    # inputs (tests/setup.c, tests/gui_theme.c, tests/cpu_plan_tools.py), so a change to one of them still builds
     paths:
       - '**'
       - '!**/*.md'
       - '!.claude/**'
       - '!.gitignore'
       - '!.github/ISSUE_TEMPLATE/**'
-      - 'docs/ARCHITECTURE.md'
-      - 'docs/DEPRECATIONS.md'
-      - 'docs/GUI.md'
+      - 'docs/layers/cpu/plan.md'
+      - 'docs/user/deprecations.md'
+      - 'docs/user/gui.md'
   workflow_dispatch:
 
-# Jobs only read the repository. A push to main that builds everywhere becomes a nightly, and a pull request's run a
-# prerelease, in scarletnx/nightly: publish.yml does it once this workflow ends
+# Jobs only read the repository, and a pull request's failed job has the rest of its run cancelled (cancel-run). A
+# push to main that builds everywhere becomes a nightly, and a pull request's run a prerelease, in scarletnx/nightly:
+# publish.yml does it once this workflow ends
 permissions:
   contents: read
+  actions: write
 
 # a push to a pull request cancels that pull request's build still running, and a push to main main's: only the newest
 # commit is built, and publish.yml publishes the newest that built everywhere. A tag and a run by hand build every time
@@ -215,6 +218,23 @@ jobs:
         with:
           name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}-install
           path: stage
+      # a pull request's run stops at its first failed job: the jobs done keep their results, and the others are
+      # cancelled instead of building for nothing. cancel-run.yml cancels the run once this job has ended failed: a
+      # job that cancels its own run ends cancelled, which hides what failed. Not in a job that may fail
+      # (continue-on-error), and a fork's token can't start it, so a fork's run goes on
+      - &cancel-run
+        name: Cancel the rest of the run
+        if: >-
+          failure() && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: >-
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json'
+          "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/cancel-run.yml/dispatches"
+          -d "{\"ref\": \"$BRANCH\", \"inputs\": {\"run\": \"$GITHUB_RUN_ID\"}}"
 
   # The cross jobs (appimage-cross) can't run qemu-aarch64 beside a host binary that qemu-user runs: the QEMU side of
   # the A64 differential is recorded here, once, and handed over as an artifact. A job of its own, so the cross jobs
@@ -288,6 +308,7 @@ jobs:
         with:
           name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
           path: build/llvm_qemu_reference.bin
+      - *cancel-run
 
   # x86-64 with ASan and UBSan (SNX_TEST_SANITIZERS): every test, and the programs and libraries of ours it runs or
   # links, built with them (runtime_architecture names any left out), so our code reading memory after it was freed or
@@ -381,6 +402,7 @@ jobs:
           key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Test under the sanitizers
         run: ctest --test-dir build/sanitizers --output-on-failure --parallel 4
+      - *cancel-run
 
   appimage:
     name: Linux AppImage (${{ matrix.arch }})
@@ -550,6 +572,7 @@ jobs:
           path: |
             dist/*.AppImage*
             dist/appinfo
+      - *cancel-run
 
   # The AppImages of hosts no GitHub runner is: cross-built on x86-64 with their linux-<arch>-cross preset
   # (cmake/cross.cmake) against the system root of pkgforge's Arch image of the architecture, then bundled in a
@@ -1134,8 +1157,9 @@ jobs:
           name: ScarletNX-windows-x86_64-${{ steps.commit.outputs.short }}
           path: stage
           if-no-files-found: error
+      - *cancel-run
 
-  # The Android app (docs/ANDROID.md), both ABIs on one runner, with the runner's Gradle and JDK. LLVM's libraries for an
+  # The Android app (docs/hosts/android-app.md), both ABIs on one runner, with the runner's Gradle and JDK. LLVM's libraries for an
   # ABI take most of an hour, so they are kept until the script that builds them changes (both cold: about two hours).
   # Each ABI packs an APK of its own, then one APK holds both
   android:
@@ -1212,7 +1236,7 @@ jobs:
             echo "SNX_DEPS_CACHE=$ws/.cache/deps"
             echo "SNX_CCACHE_START=$(date +%s)"
           } >> "$GITHUB_ENV"
-      # One key signs every APK, so each installs over the one before (docs/ANDROID.md): the ANDROID_KEYSTORE secret, a
+      # One key signs every APK, so each installs over the one before (docs/hosts/android-app.md): the ANDROID_KEYSTORE secret, a
       # keystore in base64. A fork's pull request has no secrets: its APKs carry the runner's own debug key, said here
       - name: The signing key
         env:
@@ -1323,12 +1347,13 @@ jobs:
           path: ScarletNX-android-arm64-v8a-${{ steps.commit.outputs.short }}.apk
           archive: false
           if-no-files-found: error
-      # The app's unit tests (docs/ANDROID.md), on the stage the APK was packed from: its classes build against SDL's
+      # The app's unit tests (docs/hosts/android-app.md), on the stage the APK was packed from: its classes build against SDL's
       # Java and the icon there. Last, so a test that fails fails the job and still leaves the APKs to try
       - name: Test the app's Java
         run: JAVA_HOME=$JAVA_HOME_21_X64 gradle -p dist/android testDebugUnitTest -Pscarletnx.stage="$PWD/stage"
+      - *cancel-run
 
-  # macOS and iOS (docs/APPLE.md), both on one Apple silicon runner with Xcode's Clang and SDKs; FFmpeg, OpenSSL and
+  # macOS and iOS (docs/hosts/apple.md), both on one Apple silicon runner with Xcode's Clang and SDKs; FFmpeg, OpenSSL and
   # SDL3 are built from the pinned sources as everywhere. Until both have built green once, a failure here does not
   # fail the run (continue-on-error), which would hold back the nightly: they are new, and no Mac checked them before
   # CI. iOS builds even when macOS failed, and each one's app is made from its own build alone. Each app carries
@@ -1550,6 +1575,7 @@ jobs:
         run: |
           chmod +x dist/*.AppImage
           scripts/check-package.sh dist/*.AppImage
+      - *cancel-run
 
   # The cross-built AppImage as installed, as the appimage-check job runs its own: qemu's binfmt handlers run it, and
   # everything it starts, as a machine of that architecture would
@@ -1660,8 +1686,9 @@ jobs:
           path: package
       - name: Run the zip's scarletnx.exe as a user would
         run: bash source/scripts/check-package.sh package/bin/scarletnx.exe
+      - *cancel-run
 
-  # edenprobe's probes (docs/EDENPROBE.md), a release of scarletnx/edenprobe pinned by its sha256, recompiled by the
+  # edenprobe's probes (docs/dev/edenprobe.md), a release of scarletnx/edenprobe pinned by its sha256, recompiled by the
   # Linux install and run on lavapipe: a case of tests/edenprobe/linux-x86_64.txt, the ones that passed before, that no
   # longer passes fails the job. Another release or other mode words want that file written again
   edenprobe:
@@ -1674,7 +1701,8 @@ jobs:
       EDENPROBE_VERSION: v0.10.0
       EDENPROBE_SHA256: 30abbafd40e997334c645d578a3016286fe1b482b2f66f8fc0c7b1e2df5ef5af
       # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
-      # its suites write their own GPU command buffers, which draw nothing now that NVN is the GPU path (docs/EDENPROBE.md)
+      # its suites write their own GPU command buffers, left out while the runtime had no Maxwell front end, and not
+      # added back since it returned (docs/dev/edenprobe.md)
       EDENPROBE_MODE: quick notime cpu fs video display kernel audio
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
@@ -1727,7 +1755,7 @@ jobs:
           fi
           exit "$status"
       # edenprobe's main, cases the release has not got yet: beside the release's report it only warns, and a nightly
-      # that cannot be fetched is a warning too (docs/EDENPROBE.md)
+      # that cannot be fetched is a warning too (docs/dev/edenprobe.md)
       - name: Fetch edenprobe's main
         id: main
         if: ${{ !cancelled() }}
@@ -1760,3 +1788,4 @@ jobs:
             !edenprobe/work
             edenprobe-main
             !edenprobe-main/work
+      - *cancel-run

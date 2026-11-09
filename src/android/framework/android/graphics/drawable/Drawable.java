@@ -136,6 +136,7 @@ public abstract class Drawable {
             case "ripple": d = new RippleDrawable(); break;
             case "shape": d = new GradientDrawable(); break;
             case "inset": d = new InsetDrawable(); break;
+            case "rotate": d = new RotateDrawable(); break;
             case "vector": d = new VectorDrawable(); break;
             case "animated-vector": d = new AnimatedVectorDrawable(); break;
             case "adaptive-icon": d = new AdaptiveIconDrawable(); break;

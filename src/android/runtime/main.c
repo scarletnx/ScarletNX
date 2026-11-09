@@ -22,6 +22,7 @@
 #include "android/runtime/fds.h"
 #include "android/runtime/install.h"
 #include "android/runtime/jvm.h"
+#include "common/utilities/cli.h"
 #include "common/utilities/common.h"
 #include "common/utilities/zip.h"
 #include <stdio.h>
@@ -34,37 +35,47 @@
 #include <pthread.h>
 #endif
 
-static const char usage[] =
+/* the common options scarletnx-android takes (common/utilities/cli.h): an APK is installed and run as it is, so of
+   the rest only a run without a user's: --headless and --shot, whose frames --shot-frame names */
+static const unsigned android_cli = SNX_CLI_BIT(SNX_CLI_HEADLESS) | SNX_CLI_BIT(SNX_CLI_SHOT) | SNX_CLI_BIT(SNX_CLI_HELP);
+static void usage(FILE* out) {
+    fputs(
     "Usage: scarletnx-android [options] APK\n"
-    "Runs an Android app: its DEX code translated to JVM classes, with ScarletNX's own Android framework. APK is an\n"
-    "APK, or a bundle of a base APK and its splits (XAPK, APKS), which is installed into the data folder first.\n"
-    "\n"
-    "  --translate=DIR   Translate every class of the APK ahead of time into DIR, a .class file for each, and stop\n"
-    "  -J OPTION         An option for the JVM (-J-Xmx2g)\n"
-    "  --jit-opt=LEVEL   LLVM's optimization of the native code the JIT compiles: 0, 1, 2 (the default), 3, s or z.\n"
-    "                    0 compiles several times faster, to test the JIT itself\n"
-    "  --framework=JAR   The framework's jar, in place of the one beside the program\n"
-    "  --java-home=DIR   The JDK to run on (21 or later), in place of the one the build found\n"
+    "Runs an Android app: its DEX code translated to JVM classes, with ScarletNX's own Android framework. APK is\n"
+    "an APK, or a bundle of a base APK and its splits (XAPK, APKS), which is installed into the data folder first.\n"
+    "\n",
+        out);
+    snx_cli_help(out, android_cli);
+    fputs(
+    "Android options:\n"
+    "  --translate=DIR        Translate every class of the APK ahead of time into DIR, a .class file for each,\n"
+    "                         and stop\n"
+    "  -J OPTION              An option for the JVM (-J-Xmx2g)\n"
+    "  --jit-opt=LEVEL        LLVM's optimization of the native code the JIT compiles: 0, 1, 2 (the default),\n"
+    "                         3, s or z. 0 compiles several times faster, to test the JIT itself\n"
+    "  --framework=JAR        The framework's jar, in place of the one beside the program\n"
+    "  --java-home=DIR        The JDK to run on (21 or later), in place of the one the build found\n"
     "\n"
     "A run without a user, as the Switch runtime's --script and --shot do it:\n"
-    "  --headless        No window: the renderer draws into an image of its own\n"
-    "  --shot=FILE.ppm   Save frames as binary PPM, %ld in the name the frame's number\n"
-    "  --shot-frame=N,M  The frames to save, 60 when not given\n"
-    "  --taps=SCRIPT     \"60:300,672 90:...\": a finger down at frame 60 at (300, 672), up 3 frames later\n"
-    "  --keys=TEXT       '120:2+3\\n|300:x': text typed from frame 120 on, as key presses (\\n is Enter)\n"
-    "  --key-frames=N    The frames between scripted keys, 4 when not given\n"
-    "  --pick=PATH       What the system's file pickers answer: the file, or for a folder picker its folder\n"
+    "  --shot-frame=N,M       The frames --shot saves, 60 when not given. On Android, --shot saves each of them\n"
+    "                         as a binary PPM, %ld in PATH the frame's number\n"
+    "  --taps=SCRIPT          \"60:300,672 90:...\": a finger down at frame 60 at (300, 672), up 3 frames later\n"
+    "  --type=TEXT            '120:2+3\\n|300:x': text typed from frame 120 on, as key presses (\\n is Enter)\n"
+    "  --key-frames=N         The frames between typed keys, 4 when not given\n"
+    "  --pick=PATH            What the system's file pickers answer: the file, or for a folder picker its folder\n"
     "\n"
     "Diagnostics:\n"
-    "  --trace-frames    Each frame the app's windows make, on stderr\n"
-    "  --log-level=L     The least android.util.Log level printed: V, D (the default), I, W, E or A\n"
-    "  --log-signals     Each guest signal action, send and delivery\n"
-    "  --sample          Every 5 s, each guest thread's pc, x30 and HLE call, and the Vulkan presents\n"
-    "  --jit-verbose     Each unit the JIT compiles, before and after, with its time\n"
-    "  --jit-keep-ir=DIR The LLVM IR of each unit the JIT compiles, saved in DIR\n"
-    "  --linker-verbose  Each native library and its load address\n"
-    "  --native-test LIB [SYMBOL...]  Load an AArch64 library through the native bridge and call each function\n"
-    ;
+    "  --trace-frames         Each frame the app's windows make, on stderr\n"
+    "  --log-level=L          The least android.util.Log level printed: V, D (the default), I, W, E or A\n"
+    "  --log-signals          Each guest signal action, send and delivery\n"
+    "  --sample               Every 5 s, each guest thread's pc, x30 and HLE call, and the Vulkan presents\n"
+    "  --jit-verbose          Each unit the JIT compiles, before and after, with its time\n"
+    "  --jit-keep-ir=DIR      The LLVM IR of each unit the JIT compiles, saved in DIR\n"
+    "  --linker-verbose       Each native library and its load address\n"
+    "  --native-test LIB [SYMBOL...]\n"
+    "                         Load an AArch64 library through the native bridge and call each function\n",
+        out);
+}
 
 typedef struct {
     unsigned warnings;
@@ -343,8 +354,8 @@ static const struct {
     const char* option;
     const char* property;
 } java_options[] = {
-    {"--headless", "headless"}, {"--trace-frames", "trace_frames"}, {"--taps", "taps"},
-    {"--keys", "keys"},         {"--key-frames", "key_frames"},     {"--log-level", "log_level"},
+    {"--trace-frames", "trace_frames"}, {"--taps", "taps"},           {"--type", "type"},
+    {"--key-frames", "key_frames"},     {"--log-level", "log_level"},
     {"--pick", "pick"},
 };
 
@@ -368,12 +379,38 @@ int snx_android_main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const char* value;
         bool java = false;
+        char error[256];
+        SnxCliArg common;
+        /* --keys, the text to type before it was --type: the other drivers' --keys names a key file */
+        if (!strcmp(argv[i], "--keys") || !strncmp(argv[i], "--keys=", 7)) {
+            fputs("scarletnx-android: the text to type is --type=TEXT now. --keys names a key file, which an Android "
+                  "app has none of\n",
+                  stderr);
+            free_options(options, owned, owned_count);
+            return 2;
+        }
+        /* the common options first: --headless is the Java side's too, as -Dsnx.android.headless=true */
+        int id = snx_cli_match(argc, argv, &i, android_cli, "scarletnx-android", &common, error, sizeof error);
+        if (id < 0 || id == SNX_CLI_HELP) {
+            if (id < 0)
+                fprintf(stderr, "%s\n", error);
+            else
+                usage(stdout);
+            free_options(options, owned, owned_count);
+            return id < 0 ? 2 : 0;
+        }
+        if (id == SNX_CLI_HEADLESS && !headless) {
+            char* d = snx_format("-Dsnx.android.headless=true");
+            if (d) options[option_count++] = owned[owned_count++] = d;
+            headless = true;
+        } else if (id == SNX_CLI_SHOT)
+            shot = common.value;
+        if (id) continue;
         for (size_t k = 0; k < sizeof java_options / sizeof *java_options && !java; ++k) {
             const char* v = !strcmp(argv[i], java_options[k].option) ? "true" : value_of(argv[i], java_options[k].option);
             if (!v) continue;
             char* d = snx_format("-Dsnx.android.%s=%s", java_options[k].property, v);
             if (d) options[option_count++] = owned[owned_count++] = d;
-            if (!strcmp(java_options[k].option, "--headless")) headless = true;
             java = true;
         }
         if (java) continue;
@@ -383,10 +420,6 @@ int snx_android_main(int argc, char** argv) {
         }
         if ((value = value_of(argv[i], "--java-home"))) {
             android_jvm_set_home(value);
-            continue;
-        }
-        if ((value = value_of(argv[i], "--shot"))) {
-            shot = value;
             continue;
         }
         if ((value = value_of(argv[i], "--shot-frame"))) {
@@ -430,12 +463,9 @@ int snx_android_main(int argc, char** argv) {
             options[option_count++] = argv[++i];
         else if (!strncmp(argv[i], "-J", 2) && argv[i][2])
             options[option_count++] = argv[i] + 2;
-        else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
-            fputs(usage, stdout);
-            free_options(options, owned, owned_count);
-            return 0;
-        } else if (argv[i][0] == '-') {
-            fprintf(stderr, "scarletnx-android: unknown option %s\n%s", argv[i], usage);
+        else if (argv[i][0] == '-') {
+            fprintf(stderr, "scarletnx-android: unknown option %s\n", argv[i]);
+            usage(stderr);
             free_options(options, owned, owned_count);
             return 2;
         } else {
@@ -449,7 +479,7 @@ int snx_android_main(int argc, char** argv) {
     }
     int status;
     if (!apk) {
-        fputs(usage, stderr);
+        usage(stderr);
         status = 2;
     } else {
         android_render_set_options(headless, shot, shot_frames);

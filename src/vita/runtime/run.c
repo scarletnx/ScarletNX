@@ -25,7 +25,6 @@
 #else
 #include <pthread.h>
 #include <signal.h>
-#include <time.h>
 #endif
 
 /* blocks between the scheduler's looks: a few milliseconds of a game's code */
@@ -277,20 +276,8 @@ static VitaThread* schedule(VitaProcess* p, uint64_t now, uint64_t* wake) {
     return best;
 }
 static void sleep_until(uint64_t when) {
-    uint64_t now = vita_now_ns();
-    if (when <= now) return;
-#ifdef _WIN32
-    static HANDLE timer;
-    if (!timer) timer = CreateWaitableTimerExW(NULL, NULL, 0x2, TIMER_ALL_ACCESS);
-    if (timer) {
-        LARGE_INTEGER due = {.QuadPart = -(LONGLONG)((when - now) / 100u)};
-        SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE);
-        WaitForSingleObject(timer, INFINITE);
-    } else Sleep((DWORD)((when - now) / 1000000u));
-#else
-    struct timespec ts = {(time_t)((when - now) / 1000000000u), (long)((when - now) % 1000000000u)};
-    nanosleep(&ts, NULL);
-#endif
+    uint64_t now = plat_ns();
+    if (when > now) plat_sleep_ns((int64_t)(when - now));
 }
 static bool live(const VitaProcess* p) {
     for (unsigned i = 0; i < VITA_THREADS; ++i)
@@ -352,10 +339,10 @@ static bool svc(VitaProcess* p, VitaThread* t, uint32_t imm) {
 int vita_run(VitaProcess* p, double seconds) {
     char why[256];
     if (!(p->jit = vita_jit_new(p, why, sizeof why))) printf("No run-time compiler (%s): only the module's blocks run\n", why);
-    uint64_t end = seconds > 0 ? vita_now_ns() + (uint64_t)(seconds * 1e9) : 0;
+    uint64_t end = seconds > 0 ? plat_ns() + (uint64_t)(seconds * 1e9) : 0;
     int result = 0;
     bool closed = false;
-    p->display.next_ns = vita_now_ns() + VBLANK_NS;
+    p->display.next_ns = plat_ns() + VBLANK_NS;
     VitaThread* volatile running = NULL;
     VitaThread* last = NULL; /* the thread that ran the last slice */
     if (!svc_index_make(p)) {
@@ -376,7 +363,7 @@ int vita_run(VitaProcess* p, double seconds) {
 #endif
     if (!vita_watch_init(p)) printf("vita: guest memory's writes aren't watched: the GPU copies its memory each time\n");
     while (!p->exited) {
-        uint64_t now = vita_now_ns(), wake;
+        uint64_t now = plat_ns(), wake;
         if (now >= p->display.next_ns) {
             ++p->display.vblanks;
             p->display.next_ns += VBLANK_NS;
@@ -451,12 +438,12 @@ done:
         printf("The game exited (%" PRId32 ")\n", p->exit_code);
     else if (closed)
         printf("The window was closed\n");
-    else if (end && vita_now_ns() >= end)
+    else if (end && plat_ns() >= end)
         printf("Stopped after %.0f seconds\n", seconds);
     else if (!result)
         printf("Every thread ended\n");
     if (result || !p->exited) report_threads(p);
-    if (!p->exited && (closed || (end && vita_now_ns() >= end)))
+    if (!p->exited && (closed || (end && plat_ns() >= end)))
         for (unsigned i = 0; i < VITA_THREADS; ++i) {
             VitaThread* t = &p->threads[i];
             if (t->state != VITA_THREAD_READY) continue;

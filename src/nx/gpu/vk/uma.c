@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The memory model of the device, and guest memory that the GPU reads in place (vk_memory, docs/GPU_OWNERSHIP.md).
+/* The memory model of the device, and guest memory that the GPU reads in place (vk_memory, docs/layers/gpu/ownership.md).
 
    The console's CPU and GPU share one memory: a game writes vertices and indices, and the GPU reads those bytes with no
    copy. The copy path (buffer.c) checks each guest range at each guest submit, and copies what changed into a staging

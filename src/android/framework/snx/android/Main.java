@@ -71,17 +71,25 @@ public final class Main {
      */
     public static void main(String[] args) throws Throwable {
         // an exception that no thread catches ends the process, as RuntimeInit's handler does
-        Thread.setDefaultUncaughtExceptionHandler((thread, e) -> {
-            android.util.Log.e("AndroidRuntime", "FATAL EXCEPTION: " + thread.getName(), e);
+        Thread.UncaughtExceptionHandler runtime = (thread, e) -> {
+            fatal(thread, e);
             Runtime.getRuntime().halt(1);
-        });
+        };
+        Thread.setDefaultUncaughtExceptionHandler(runtime);
         try {
             boot();
         } catch (Throwable e) {
-            Thread.getDefaultUncaughtExceptionHandler().uncaughtException(Thread.currentThread(), e);
+            // logged before an app's own handler, which may swallow it, as RuntimeInit's pre-handler does
+            Thread.UncaughtExceptionHandler handler = Thread.getDefaultUncaughtExceptionHandler();
+            if (handler != runtime) fatal(Thread.currentThread(), e);
+            handler.uncaughtException(Thread.currentThread(), e);
         }
         // the app's threads end with the process, as on Android
         System.exit(status);
+    }
+
+    private static void fatal(Thread thread, Throwable e) {
+        android.util.Log.e("AndroidRuntime", "FATAL EXCEPTION: " + thread.getName(), e);
     }
 
     /**

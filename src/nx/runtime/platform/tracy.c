@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Tracy client lifetime and emission gate; the client is manual-lifetime. */
 #include "nx/runtime/platform/tracy.h"
-#include "common/filesystem/host.h"
+#include "common/platform/thread.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
 #include "nx/runtime/main.h"

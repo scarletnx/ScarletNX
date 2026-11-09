@@ -39,6 +39,8 @@ public class Process {
     public static boolean is64Bit() { return true; }
     public static long getStartElapsedRealtime() { return 0; }
     public static long getStartUptimeMillis() { return 0; }
+    public static long getStartRequestedElapsedRealtime() { return 0; }
+    public static long getStartRequestedUptimeMillis() { return 0; }
     public static String myProcessName() { return snx.android.Main.processName(); }
     public static void setThreadPriority(int tid, int priority) {}
     public static void setThreadPriority(int priority) {}

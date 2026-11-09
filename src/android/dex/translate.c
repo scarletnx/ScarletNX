@@ -1035,12 +1035,28 @@ static bool program_subclass(const DexProgram* program, const char* desc, const 
     }
     return false;
 }
-/* whether iface is one of the method's class's direct superinterfaces */
-static bool direct_interface(const Method* m, const char* iface) {
-    uint32_t count = dex_type_list_count(m->dex, m->interfaces_off);
+/* whether interface desc of the program is target or extends it through interfaces of the program */
+static bool program_extends(const DexProgram* program, const char* desc, const char* target, unsigned depth) {
+    if (!strcmp(desc, target)) return true;
+    uint32_t dex, index;
+    if (depth > 64 || !dex_program_find(program, desc, &dex, &index)) return false;
+    const Dex* d = &program->dexes[dex];
+    DexClassDef def = dex_class_def(d, index);
+    uint32_t count = dex_type_list_count(d, def.interfaces_off);
     for (uint32_t i = 0; i < count; ++i)
-        if (!strcmp(dex_type(m->dex, dex_type_list_item(m->dex, m->interfaces_off, i)), iface)) return true;
+        if (program_extends(program, dex_type(d, dex_type_list_item(d, def.interfaces_off, i)), target, depth + 1))
+            return true;
     return false;
+}
+/* the method's class's direct superinterface that is iface or extends it through interfaces of the program, or
+   NULL */
+static const char* via_interface(const Method* m, const char* iface) {
+    uint32_t count = dex_type_list_count(m->dex, m->interfaces_off);
+    for (uint32_t i = 0; i < count; ++i) {
+        const char* direct = dex_type(m->dex, dex_type_list_item(m->dex, m->interfaces_off, i));
+        if (program_extends(m->program, direct, iface, 0)) return direct;
+    }
+    return NULL;
 }
 /* the class a receiver is cast to for a member of owner. R8 rebinds a reference to the class that declares the
    member, and the JVM allows a protected member of a class of another package only on the current class or its
@@ -1108,7 +1124,7 @@ static void store_result(Method* m, uint32_t pc, const Insn* in, const char* ret
 
 /* Calls of the JDK that behave otherwise on Android, sent to the runtime's own. An instance method becomes a static
    one with the receiver as its first parameter. System.loadLibrary must load the app's native libraries through the
-   native bridge (docs/android/NATIVE.md), not HotSpot's loader. ByteBuffer.allocateDirect gives a buffer that native
+   native bridge (docs/platforms/android-apps/native.md), not HotSpot's loader. ByteBuffer.allocateDirect gives a buffer that native
    code reaches, which for 32-bit libraries must be in their window */
 typedef struct {
     const char *owner, *name, *desc;
@@ -1150,10 +1166,11 @@ static void emit_invoke(Method* m, uint32_t pc, const Insn* in, const uint32_t* 
     if (op == 0x6f && m->super_desc) {
         /* invoke-super: a direct superinterface's default method, or what resolution from the superclass finds,
            which is where ART looks for a method of another interface or an ancestor. The JVM allows an
-           invokespecial only of the superclass's and a direct superinterface's */
-        bool direct = direct_interface(m, owner);
-        if (!direct) owner = m->super_desc;
-        tag = direct ? CF_INTERFACE_METHODREF : CF_METHODREF;
+           invokespecial only of the superclass's and a direct superinterface's, so a default method of an
+           interface inherited through another goes through the direct superinterface that extends it */
+        const char* via = via_interface(m, owner);
+        owner = via ? via : m->super_desc;
+        tag = via ? CF_INTERFACE_METHODREF : CF_METHODREF;
     }
     unsigned reg = 0, arg_slots = 0;
     uint32_t uninit = K_TOP;
@@ -2111,7 +2128,7 @@ static size_t next_param(const char** p);
 /* A native method's body: a call of the native bridge (snx.android.nativebridge.NativeBridge.invoke*), which runs
    the app's AArch64 code for it. The key names the method ("Lpkg/Class;.name(signature)"), then the object (or the
    class of a static method), the primitive parameters as their bits in a long[], and the references in an
-   Object[]. The result comes back as its bits, or as the reference (docs/android/NATIVE.md, "JNI") */
+   Object[]. The result comes back as its bits, or as the reference (docs/platforms/android-apps/native.md, "JNI") */
 static void write_native_stub(CfPool* pool, CfBuffer* out, const char* class_desc, const char* name, const char* desc,
                               bool is_static) {
     enum { LLOAD = 0x16, FLOAD = 0x17, DLOAD = 0x18, LASTORE = 0x50, L2I = 0x88, LRETURN = 0xad, FRETURN = 0xae,

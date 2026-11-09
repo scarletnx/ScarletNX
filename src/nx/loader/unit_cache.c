@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/loader/unit_cache.h"
 #include "common/cpu/recompiler/llvm/link.h"
+#include "common/platform/file.h"
 #include <llvm-c/BitWriter.h>
 #include <llvm/Config/llvm-config.h>
 #include <openssl/evp.h>
@@ -222,7 +223,7 @@ int snx_unit_cache_keep(const SnxUnitCache* cache, const char* key, const unsign
         }
         if (!written)
             snprintf(error, error_size, "cannot write %s: %s", tmp, reason);
-        else if (snx_replace(tmp, path))
+        else if (plat_replace_file(tmp, path))
             snprintf(error, error_size, "cannot rename %s to %s: %s", tmp, path, snx_os_error(reason, sizeof reason));
         else
             rc = 0;

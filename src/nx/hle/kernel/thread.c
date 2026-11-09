@@ -208,7 +208,7 @@ static void core_pin(KThread* t) {
     if (g_hle.thread.host_ncpu < n || !((g_hle.svcmem.core_mask >> k) & 1)) return;
     for (int i = snx_popcount64(g_hle.svcmem.core_mask & ((1ull << k) - 1)); i < g_hle.thread.host_ncpu; i += n)
         cpus[m++] = g_hle.thread.host_cpu[i];
-    plat_thread_cpus(cpus, m);
+    if (plat_thread_cpus(cpus, m)) WARN_LIMIT(1, "Could not move a game thread to its CPUs: %s\n", strerror(errno));
     if (__atomic_exchange_n(&g_hle.thread.pin_said[k], 1, __ATOMIC_RELAXED)) return;
     for (int i = 0; i < m && len < (int)sizeof list - 8; i++)
         len += snprintf(list + len, sizeof list - len, " %d", cpus[i]);

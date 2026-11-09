@@ -269,8 +269,8 @@ def verify_item(item, build, out, jobs, timeout, root):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--plan', type=Path, default=ROOT / 'docs/CPU_TRANSLATOR_PLAN.md')
-    parser.add_argument('--status', type=Path, default=ROOT / 'docs/cpu_plan_status.json')
+    parser.add_argument('--plan', type=Path, default=ROOT / 'docs/layers/cpu/plan.md')
+    parser.add_argument('--status', type=Path, default=ROOT / 'docs/layers/cpu/plan-status.json')
     sub = parser.add_subparsers(dest='command', required=True)
     listing = sub.add_parser('list')
     listing.add_argument('--json', action='store_true')

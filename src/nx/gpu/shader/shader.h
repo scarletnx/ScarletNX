@@ -30,8 +30,8 @@ typedef struct {
     u8 flags;    /* bit 0 raw integer surface load, bit 1 multisample fetch, bit 2 SNX_TEX_INDEXED; bits 4-7 the
                     indexed table's stride shift */
     u32 bl2_off; /* the second read's offset, in words */
-    /* an indexed table whose elements aren't a power of two apart (an Ounce's, by IMAD): the bytes between them, and how
-       many there are. 0: the shift in flags, and SNX_TEX_ARRAY */
+    /* an indexed table whose elements aren't a power of two apart (an Ounce's, by IMAD): the bytes between them, and
+       how many there are. 0: the shift in flags, and SNX_TEX_ARRAY */
     u16 stride, count;
 } ShTex;
 #define SH_HANDLE_IMM 255 /* ShTex.bl2_cbuf of a handle's half that is a constant (the sampler's, from a MOV32I) */

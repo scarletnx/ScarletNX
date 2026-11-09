@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The environment variables an older version read for what are settings of the game's .ini now (docs/DEPRECATIONS.md).
+/* The environment variables an older version read for what are settings of the game's .ini now (docs/user/deprecations.md).
    For one version each one set is still this run's value for its setting, as --key=value is, unless the command line
    or a variable before it gives that key; once the settings are read, the log names it with the value in effect. The
    runtime's only getenv of a setting (tests/architecture.py's ENV_DEPRECATED), removed with those rows */
@@ -79,15 +79,15 @@ void options_old_environment_say(void) {
         if (!o) continue;
         ini_format(o, now, sizeof now);
         if (g_deprecated_env.first[i])
-            WARN("settings: %s=%s is deprecated, and %s gives %s first: %s=%s this run (docs/DEPRECATIONS.md)\n",
+            WARN("settings: %s=%s is deprecated, and %s gives %s first: %s=%s this run (docs/user/deprecations.md)\n",
                  v->name, v->value, g_deprecated_env.first[i], v->key, v->key, now);
         else if (g_deprecated_env.given[i])
             WARN("settings: %s=%s is deprecated: this run reads it as %s=%s, a setting of the game's .ini and of "
-                 "--%s=VALUE (docs/DEPRECATIONS.md)\n",
+                 "--%s=VALUE (docs/user/deprecations.md)\n",
                  v->name, v->value, v->key, now, v->key);
         else
             WARN("settings: %s=%s is deprecated, and only %s=signal did anything: %s=%s this run "
-                 "(docs/DEPRECATIONS.md)\n",
+                 "(docs/user/deprecations.md)\n",
                  v->name, v->value, v->name, v->key, now);
     }
 }

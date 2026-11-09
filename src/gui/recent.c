@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gui/recent.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "gui/model.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,13 +11,8 @@
 /* fits its field, and one field of a line: no tab or line break */
 static int fits(const char* text, size_t size) { return strlen(text) < size && !strpbrk(text, "\t\r\n"); }
 static void name_of(const char* path, char* out, size_t size) {
-    const char *base, *p, *dot;
-    size_t n;
-    base = path;
-    for (p = path; *p; ++p)
-        if (*p == '/' || *p == '\\') base = p + 1;
-    dot = strrchr(base, '.');
-    n = dot && dot != base ? (size_t)(dot - base) : strlen(base);
+    const char *base = snx_path_leaf(path), *dot = strrchr(base, '.');
+    size_t n = dot && dot != base ? (size_t)(dot - base) : strlen(base);
     if (n >= size) n = size - 1;
     memcpy(out, base, n);
     out[n] = 0;
@@ -135,7 +131,7 @@ int gui_recent_save(const GuiRecent* recent, const char* file) {
     /* staged beside it, then put in place: a crash mid-write leaves the old list */
     directory = snx_dirname(file);
     staged = snx_format("%s.new", file);
-    failed = !directory || snx_mkdirs(directory) || snx_write_file(staged, text, at) || snx_replace(staged, file);
+    failed = !directory || snx_mkdirs(directory) || snx_write_file(staged, text, at) || plat_replace_file(staged, file);
     if (failed) remove(staged);
     free(directory);
     free(staged);

@@ -1,0 +1,91 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the ScarletNX contributors -->
+# Deprecations
+
+What an older version used that this one replaced, how a run tells you, and how it goes away.
+
+## The rule
+
+- Something that changes meaning (a setting, an option, a path, a file's layout) gets a **new** name. The old name is
+  never given a new meaning.
+- The old one becomes **deprecated**. A deprecated setting is not read (the new one is), but it is kept where it is,
+  never dropped in silence; a deprecated option still works.
+- **Each run says so** where you read it: stderr for the drivers, the game's `.log` and stderr for the runtime, the
+  launcher's box for files an older version left. The line names what replaced it.
+- **You remove it**: a setting by hand or with the launcher's **Settings > App > Clean Old Settings**, which takes
+  the `[Deprecated]` section out of every game's `.ini` the launcher reaches (the games' config folder, `games/` and
+  the libraries of Settings > App > Folders); a file an older version left, by moving it where the line says.
+- **It is listed below** until the code that reads it goes, which is a change of its own named in the table.
+
+A game's `.ini` keeps its deprecated keys last, under what became of each:
+
+```ini
+[Deprecated]
+; keys an older version used, which do nothing now (docs/user/deprecations.md): delete them, or use Settings > App >
+;   Clean Old Settings in the launcher
+; renderer: Vulkan is the only renderer
+renderer=opengl
+```
+
+## Now
+
+| Old | Replaced by | Now | How it is told |
+|---|---|---|---|
+| `.ini` keys `renderer`, `dynamic_resolution`, `dynamic_resolution_min`, `game_dynamic_resolution`, `low_priority_shader_compiler`, `smooth_recording`, `recording_fps`, `lsfg`, `lsfg_dll`, `lsfg_target`, `lsfg_multiplier`, `lsfg_flow`, `lsfg_resolution`, `lossless_scaling`, `lossless_path` | Remove the OpenGL renderer | nothing: they went with it | under `[Deprecated]`, named once a run |
+| `.ini` key `audio_device` | [gpu/audio] Fix viewport flips and audio playback | playback follows the system's default | the same |
+| `.ini` key `forced_vsync` | Remove the OpenGL renderer | `vsync` | the same |
+| `.ini` keys `touch_controls`, `touch_controls_opacity` | [runtime] Isolate shared core and NX runtime | `controls`, `controls_alpha` | the same |
+| `.ini` keys `modo_tv`, `idioma`, `resolucion`, `sombras`, `perfil` (the settings' first, Spanish names) | #185 | `docked`, `language`, `resolution`, `shadows`, `profile` | the same |
+| `.ini` key `gamepad_buttons` (A B X Y by position, by label or the map) | Swap A/B in place of the A B X Y presets | `gamepad_swap_ab`; `gamepad_map` always applies | the same |
+| `.ini` key `cpu_fallback` (the interpreter or the JIT for code the recompiler missed) | [recompiler] Replace the interpreter with the runtime JIT | nothing: the runtime JIT compiles that code | under `[Deprecated]`, named once a run |
+| `.ini` key `memory_fit` (`0` Off, `1` the game told no more than the device can give; `1` on iOS by default) | [runtime] memory_fit_mode, Auto by default, in place of memory_fit | `memory_fit_mode`: `0` Auto, `memory_fit`'s `1`, the default; `1` Off | read while `memory_fit_mode` has no value, the game's log and stderr saying once what it took: `1` is `0`; `0`, the default every `.ini` had written, leaves `memory_fit_mode` at its own (`0`); on iOS, whose default was `1`, `0` is `1` (Off) |
+| `.ini` key `astc_bc` (`0` ASTC decoded to RGBA8, the default; `1` encoded again as BC7) | [gpu] astc_mode, BC7 by default, in place of astc_bc | `astc_mode`: `0` Auto, `astc_bc`'s `1`, the default; `1` Exact, RGBA8; `2` BC7 ([ASTC](../layers/gpu/astc.md#auto-exact-and-bc7)) | read while `astc_mode` has no value, the game's log and stderr saying once what it took: `1` is `0`; `0`, the default every `.ini` had written, leaves `astc_mode` at its own (`0`) |
+| `.ini` key `controls_opacity` (the on-screen controls' opacity over the built-in art, itself 60% opaque at most) | [runtime] controls_alpha in place of controls_opacity, over opaque art | `controls_alpha` of the same look, the built-in art opaque now and drawn on a curve that gives rEden's 0.6 at `50`: `100`, the default every `.ini` had written, is `50`, `75` is `34`, `30` is `10`; `50`, its default from #1358, which new games' `.ini` wrote, leaves `controls_alpha` at its own (`50`) | read while `controls_alpha` has no value, the game's log and stderr saying once what it took |
+| `.ini` key `vk_descriptors` (graphics descriptors: `0` sets, its default until `3`, Automatic, was; `1` buffers; `2` heaps), and `--vk_descriptors=N` | [runtime] vk_descriptors_mode in place of vk_descriptors | `vk_descriptors_mode`, of the same values, `3` (Automatic) by default | read while `vk_descriptors_mode` has no value, the game's log and stderr saying once what it took: `1` and `2` as they are; `0` and `3`, the defaults every `.ini` had written, leave `vk_descriptors_mode` at its own (`3`); `--vk_descriptors=N` is still taken, as `--vk_descriptors_mode=N` for that run, said in the log |
+| `.ini` key `user` (the user's number in users.ini) and `--user=N` | [acc] the user plays by its uid: user_uid | `user_uid`, the uid of the user it named; `--user_uid=<uid>` | read while `user_uid` names none, the runtime's log and stderr saying once a run which uid replaces it; the launcher writes `user_uid` in its place once, said; under `[Deprecated]` |
+| `--keep-c` | Replace Python pipeline with a C90 driver | `--keep-ir` | still taken, said on stderr each time |
+| `--recomp` | [cli] the options' names | `--recompile` | still taken, said on stderr once a run |
+| `--repo DIR` | [cli] the options' names | `--data DIR` | still taken, said on stderr once a run |
+| `--debug`, `--skip --skip` | [cli] the options' names | `--no-setup` | still taken, said on stderr once a run |
+| `-r`'s `-o`, `--out`, `--outname` NAME | [cli] the options' names | `--name NAME` | still taken, said on stderr once a run |
+| `--interp-only` | [cli] the options' names | `--jit-only` | still taken, said on stderr once a run |
+| `scarletnx-vita --patch DIR` | [cli] the options' names | `--update DIR`, the name every driver gives an update ([Usage](usage.md#common-options)) | still taken, said on stderr once a run |
+| `scarletnx-android --keys=TEXT`, the text typed into the app | [cli] the options' names | `--type=TEXT`: `--keys` names a key file in every other driver | refused, the message naming `--type`, as a key file's path is not text to type |
+| A game's `shader_cache/<id>.vkshaders`, `<id>.vkshipped` and `vk_pipelines.bin`, which every driver shared | [vk] Keep one shader cache per driver | `<id>.<driver>.vkshaders`, `<id>.<driver>.vkshipped`, `vk_pipelines.<driver>.bin` ([Usage](usage.md#folders)) | the setup's notice, once; a driver's first run starts its own files from them, the game's log naming both, and leaves them where they are for the next driver's; the launcher's Clean Cache deletes them with the rest |
+| An installed copy's files in `~/.local/share/scarletnx` on Linux: `gui/last-run.log`, `gui/recent.txt`, `games/<Game>.ini`, `games/<Game>.log`, `games/threads.txt`, `games/shader_cache/vk_pipelines.bin`, `work/` | #212 | the config, state and cache folders ([Usage](usage.md#folders)) | the launcher lists their folders as it opens |
+| A game laid out beside the others: `games/<Game>`, `<Game>_code.so`, `<Game>.abi`, `<Game>_data/`, `<Game>.ini`, `<Game>.log` | [driver, runtime, gui] Keep each game in a folder of its own | `games/<id>/`, its settings, log and caches in their folders ([Usage](usage.md#folders)) | it runs where it is, each run naming its folder now; the launcher lists it as it opens |
+| The menu's `gui/` in the data folder (`~/.local/share/scarletnx/gui/`, `%APPDATA%\scarletnx\gui\`) and in Linux's state folder | [runtime, driver, gui] Split config, state and cache off Linux too | `settings.ini`, `app.ini`, `folders.txt`, `gamecontrollerdb.txt` in the config folder; `recent.txt`, `last-run.log` in the state folder | the launcher lists the folder as it opens |
+| A portable copy's `games/` beside the program, and outside Linux `work/` in the data folder | the same | `.scarletnx/` beside the program; `cache/work/` | the launcher lists each folder as it opens |
+| Android: the menu's `settings.ini`, `app.ini`, `folders.txt`, `gamecontrollerdb.txt`, `recent.txt`, `last-run.log` in the app's own files, outside its data folder, where the Files app does not reach | [gui, runtime] Keep the menu's files in the data folder on Android | the data folder's `config/` and `state/` | the launcher lists each as it opens, with its size; nothing reads them. Out of the player's reach, the box says that while the app is in testing clearing its storage takes them (Settings > Apps > ScarletNX > Storage > Clear storage), with all else of the app's. The check goes in a change of its own once the app is out of testing |
+| A build tree's checkout as its data folder: `games/`, `work/`, `prod.keys`, `title.keys`, `linux/`; `SNX_GAMES_DIR`'s default, the checkout's `games/` | #318 | the user's data folder, as an installed copy's ([Usage](usage.md#folders)); `--repo DIR` keeps a run's files in DIR | the drivers on stderr each run and the launcher as it opens, each with where it goes; CMake's configure for `SNX_GAMES_DIR`, set back to empty |
+| A game's Account saves in `<id>_data/save/user` (before there were other users) or, with none there, in `save/system` (the versions that read the save type from a byte that is always 0) | [filesystem] a folder of Account saves per user | `save/user.<uid>`, here the uid `0123456789abcdeffedcba9876543210`'s, user 1's without a users.ini that gives it another ([Usage](usage.md#users)) | played where they are while that uid has no folder, the game's log and stderr naming both folders once a run; with `save/user` and the user's folder both there the game stops, for you to keep one |
+| A theme's `[body] gap` and `[body] scroll` (the lists' spacing and scrolling) | [gui] a box of files' OK: a scene of ui.txt, the theme's last list gone | nothing: each list's rows are laid out by `src/gui/ui.txt` | the launcher as it loads the theme, the file named, in its message and Settings > App's note |
+| A theme's `[head] place`, `[tips] place` and `[body] sizing` (where the title, the tips and the list's column go) | [gui] the screens' boxes from ui.txt's Screen and Wide | nothing: `src/gui/ui.txt` lays out each screen as both built-ins had them, the title after the tabs, the tips on a row under the head, the list two fifths of the screen | the launcher as it loads the theme, the file named, in its message and Settings > App's note |
+| `recompile_background =` in `app.ini`'s `[app]` (`full`, the default, or `gentle`) | [gui] Background recompile Auto: Gentle on battery | `background_recompile =`: `auto`, the default, Gentle on battery and Full on the charger; `full`; `gentle` | the launcher as it opens, while `background_recompile` has no word: `full`, the default every `app.ini` wrote, is `auto`, `gentle` is `gentle`; `app.ini` is written again with `background_recompile =`, said once |
+| `text_size =` in `app.ini`'s `[app]`, Settings > App's **Text size** | [gui] Text size is UI scale, ui_scale in app.ini | `ui_scale =`, the same values; Settings > App's **UI scale** | the launcher as it opens: `app.ini` is written again with `ui_scale =`, said once |
+| A line of `folders.txt` with a path alone (before the recompiled and the dumps libraries) | [gui] A folder of the player's is in the recompiled or the dumps library | `recompiled <path>` or `dumps <path>`: each such folder goes in the library of what it holds, in both for both, in the dumps one with neither | the launcher as it opens, naming each folder with its library; `folders.txt` is written again so, once |
+| The data folder's `games/` of recompiled games, `[folders] games =` in `app.ini`, the CMake option `SNX_GAMES_DIR` | [gui] Recompiled games go to recompiled/, games/ still read | `recompiled/`, the dumps in `dumps/` beside it; `[folders] recompiled =`; `SNX_RECOMPILED_DIR` | the launcher lists `games/` as it opens and still lists and runs its games, the driver says so on stderr; `app.ini` is written again once, said; CMake says so as it configures |
+| LLVM's SLP vectorizer, on in the recompile and the JIT (LLVM's own) | [recompiler] LLVM's SLP vectorizer off by default | `slp_vectorizer = 0` in `[Debug]`; Settings > Debug > SLP vectorizer turns it on, which the next recompile and the JIT's next run take: LLVM 23 can break a module with it and stop the recompile (llvm-project issue 231525) | the setup's notice, once |
+| `ui_scale = auto`, `0.25`, `0.5` or `0.75` in `app.ini`'s `[app]` (`text_size =` before), Settings > App's UI scale **Auto** and its parts (the letters have whole sizes only) | [gui] Take out UI scale's Auto, an old one read as its number | `ui_scale =` 1 to 4: the number Auto gave on that screen, which a start without one takes | the launcher as it opens: `app.ini` is written again with the number, said once |
+| A game's saves in its own `<id>_data/save/`: `user.<uid>`, `device`, `bcat`, `cache` | [fs] saves in one folder of every game's: save_layout=global | the data folder's `save/user.<uid>/<title ID>/`, `save/device/<title ID>/`, `save/bcat/<title ID>/`, `save/cache/<title ID>/0/` ([Filesystem](../platforms/nx/filesystem.md)); `save_layout=game` keeps them where they are | played where they are while the new folder has none, the game's log and stderr saying once a run where each goes; with both there the game stops, for you to keep one; the launcher lists each as it opens and Move Old Files moves them. A System save stays: its folder there is named by its save ID, which the game's log says |
+| Environment variables `SNX_WW`, `SNX_NO_WW`, `SNX_TRAPS`, `SNX_NO_TRAPS`, `SNX_HOST_PAGE` | [runtime] Write tracking, memory traps and the host page are settings | `write_tracking`, `memory_traps`, `host_page` in `[Debug]` (`SNX_WW=signal` is `write_tracking=1`, `SNX_NO_WW` 2; `SNX_TRAPS=signal` is `memory_traps=1`, `SNX_NO_TRAPS` 2) | still read, as `--key=value` is, unless the command line gives the key: each set one named in the game's log with the value in effect |
+| Environment variables `SNX_ALIAS_CHECK`, `SNX_DIRTY_CHECK` | [gpu] The GPU page and draw state checks are settings | `gpu_page_check`, `draw_state_check` in `[Debug]` | the same |
+| Environment variable `SNX_LLVM_BRANCH_PROFILE` | [recompiler] The branch profile is a setting | `ir_branch_profile` in `[Debug]`, also `-r`'s `--ir_branch_profile=FILE` | the runtime as for `SNX_WW`; the recompile still reads it when given no `ir_branch_profile`, said on stderr; `scarletnx-gnuabi`, which has no such setting, says on stderr that its JIT runs without branch weights |
+| Environment variables `SNX_3DS_UDS_PACKET_TRACE`, `SNX_3DS_ROOM`, `SNX_3DS_ROOM_PASSWORD`, `SNX_3DS_NICKNAME` | [3ds] The UDS packet trace is a setting, the room the Network one | `scarletnx-3ds --ctr_uds_trace=1`; the room of the launcher's Network settings; `room_password` in `users/online.ini`; the nickname, nothing: the user's and a random suffix | still read, the trace under the command line's `--ctr_uds_trace`, said on stderr once a run with what the run takes |
+| Environment variables `VITA_LOCKSTEP`, `VITA_LOCKSTEP_STEPS` | [vita] Lockstep is a setting | `scarletnx-vita --vita_lockstep=N`, `--vita_lockstep_steps=M` (0 steps, which compared none, is `vita_lockstep=-1`: `vita_lockstep_steps=0` has no limit) | still read, under the command line's own, said on stderr |
+| Environment variables `SNX_GNU_STRACE`, `SNX_GNU_SAMPLE`, `SNX_HOST_PAGE`, `SNX_LINUX_SYSROOT` of `scarletnx-gnuabi` | [gnuabi] Trace, sampling and the host page are options | `--strace`, `--sample-pc`, `--host-page=N`, `-L DIR` or `--sysroot=DIR` | still read where they did something, under the command line's own, said on stderr |
+| `fullscreen=.ini` or `controls=.ini` in `settings.ini` (Settings' **Fullscreen** or **Show controls** left to each game's `.ini`, which showed as *Off [default]*) | [gui] Fullscreen and Show controls are Off or On, no third value | the launcher's own choice, passed to every run: Off on a computer, On on a phone | the launcher as it opens: `settings.ini` is written again without it, said once |
+| In `settings.ini`, `<key>=.ini` for any other setting whose default is one of its values (shown *On [default]* beside a picked *On*), or that default picked (`docked=1`), which every run was given over the game's `.ini` | [gui] A setting's values are its own, [default] on the default's | the default, which no run is given: each game's `.ini` keeps it | the launcher as it opens: `settings.ini` is written again without it, said once |
+
+Settings > App > Move Old Files in the launcher, or `scarletnx --migrate=yes`, moves the rest of these, an entry at a
+time, each to the folder its line names; `scarletnx --migrate` says first what would move ([Usage](usage.md#folders)).
+
+To move a game an older version laid out beside the others: run it from its dump once, which makes `games/<id>/`;
+move its saves, `<Game>_data/save/` and `<Game>_data/sdmc/`, into `games/<id>/<id>_data/`, and its settings,
+`<Game>.ini`, to `<id>.ini` where the table in [Usage](usage.md#folders) says; then delete the older files. The
+menu's files, and a checkout's `work/`, keys and `linux/`, move as they are, each to the folder the line names (on
+Android the menu's files are out of reach: the line says how they go). A checkout's
+`games/` does too, then each game's `<id>.ini` to where the table says (the game's run names it).
+
+A `.ini` key the runtime does not know at all (a newer version's, or a typo) is not deprecated: it stays under
+`[Other]`, as it was, since a newer version may read it.

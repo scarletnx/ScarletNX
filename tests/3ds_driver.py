@@ -22,7 +22,11 @@ def main():
         assert 'ScarletNX - ' not in output, output  # no false launch/completion banner
         return output
 
-    help_text = run(['--help'], 0, 'recompiled if needed,\n                  then played')
+    help_text = run(['--help'], 0, 'recompiled if\n                         needed, then played')
+    # the common options' lines, as every driver shows them (common/utilities/cli.h), and the 3DS's own after
+    assert 'Common options, each value given as --option VALUE or --option=VALUE:' in help_text
+    assert '\n  --update PATH          An update or a DLC' in help_text and '\n3DS options:' in help_text
+    assert '--headless' not in help_text and '--frames' not in help_text
     assert '--recomp' in help_text and '--extract' in help_text and 'scarletnx-3ds-aot' not in help_text
     assert '--extract-container' in help_text and 'read where it lies' in help_text
     assert '--ctr_separate_windows=1' in help_text and '--ctr_top_resolution=2' in help_text
@@ -38,6 +42,9 @@ def main():
     run(['--board-info', '-r'], 2, 'Usage:')
     run(['--output'], 2, 'requires a directory')
     run(['--repo'], 2, 'requires a directory')
+    run(['--data=', '--board-info'], 2, 'scarletnx-3ds: --data requires a directory')
+    run(['--headless', '--board-info'], 2, 'scarletnx-3ds does not take --headless')
+    run(['--board-info', '--data=.', '-f', '--script', '100:1'], 0, 'Old 3DS')  # both forms, --script is ctr_script
     run(['--board-info', '--repo', '.'], 0, 'Old 3DS')  # --repo is a global data-directory option
     run(['--board-info', '-x'], 2, 'Usage:')
     run([], 2, 'Usage:')
@@ -102,7 +109,7 @@ def main():
         0,
         'settings: fps_limit=fast is not game or a number of frames a second: it keeps game',
     )
-    # an older version's packet trace (docs/DEPRECATIONS.md): still ctr_uds_trace=1, under the command line's own
+    # an older version's packet trace (docs/user/deprecations.md): still ctr_uds_trace=1, under the command line's own
     old = 'SNX_3DS_UDS_PACKET_TRACE'
     run(
         ['--board-info'],

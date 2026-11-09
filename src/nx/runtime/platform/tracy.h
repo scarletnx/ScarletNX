@@ -160,7 +160,7 @@ void snx_tracy_log(int lvl, const char* text);
 /* Closes the client cleanly before plat_exit_now. */
 void snx_tracy_shutdown(void);
 #else
-/* Stubs for tests that link plat.c without tracy.c. */
+/* Stubs for tests that link log.c without tracy.c. */
 static inline int snx_tracy_init(const char* title) {
     (void)title;
     return 0;

@@ -181,6 +181,8 @@ static int nn_pctl_detail_ipc_IParentalControlService_Unknown1460(SvcObj* self, 
 }
 
 /* ============================================================ friend */
+#define FRIEND_NO_NOTIFICATIONS SNX_RC_ACCOUNT_NO_NOTIFICATIONS /* which friends answers too */
+
 static int nn_chat_IUserService_OpenUserShim(SvcObj* self, SvcObj** shim) {
     (void)self;
     *shim = nn_chat_IUserShimScopedObject_new();

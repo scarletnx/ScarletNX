@@ -84,8 +84,9 @@ static int user_writable(u64 a, u64 size) {
 }
 
 /* ============================================================ accounting */
-/* The 4, 6 and 8 GiB application pools follow Mesosphere's KSystemControl. The 12 GiB setting, and an Ounce game,
-   get an experimental 10 GiB application budget, more than the older console's pool. See docs/MEMORY_ACCOUNTING.md. */
+/* The application pool for each memory_gb (Mesosphere's KSystemControl application pool sizes for the 4, 6 and 8 GiB
+   boards; 12, and an Ounce game, an experimental 10 GiB budget, more than the older console's pool), see
+   docs/platforms/nx/memory-accounting.md */
 static int large(void) { return g_settings.memory_gb >= 12 || g_ounce; }
 static u64 pool(void) {
     if (large()) return 10ull << 30;

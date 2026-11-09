@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
 // The Android app around what CMake installs into the stage folder: the libraries, SDL's Java and the icon
-// (scripts/android-apk.sh, docs/ANDROID.md)
+// (scripts/android-apk.sh, docs/hosts/android-app.md)
 plugins {
     id 'com.android.application' version '9.4.0'
 }
@@ -10,7 +10,7 @@ def stage = file(providers.gradleProperty('scarletnx.stage').get())
 layout.buildDirectory = new File(stage, 'gradle')
 // One key signs every APK given it, so each installs over the one before: scarletnx.keystore names its keystore,
 // SNX_ANDROID_KEYSTORE_PASSWORD is the keystore's password and the key's, SNX_ANDROID_KEY_ALIAS the key (scarletnx).
-// Without it the machine's own debug key signs, a new one on every machine that had none (docs/ANDROID.md)
+// Without it the machine's own debug key signs, a new one on every machine that had none (docs/hosts/android-app.md)
 def keystore = providers.gradleProperty('scarletnx.keystore').orNull
 
 android {
@@ -42,7 +42,7 @@ android {
     testOptions.unitTests.includeAndroidResources = true
 }
 
-// The unit tests (src/test, docs/ANDROID.md): JUnit on the JVM, Robolectric where a test needs Android's own classes
+// The unit tests (src/test, docs/hosts/android-app.md): JUnit on the JVM, Robolectric where a test needs Android's own classes
 dependencies {
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.robolectric:robolectric:4.17'

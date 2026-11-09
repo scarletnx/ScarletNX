@@ -6,7 +6,7 @@
    macOS and Windows also the socket families, levels, options and addresses (BSD's have sa_len), the poll events, the
    mmap flags and struct dirent. The conversions are the GNU ABI's (gnuabi/abi/linux_file.h, linux_net.h) and the
    network stack's (common/network/net_host.h). Windows has no POSIX C library: its CRT, winpthreads and Winsock
-   give what they have, and the rest is a Win32 version or an error (docs/android/NATIVE.md, "Hosts"). The rest is
+   give what they have, and the rest is a Win32 version or an error (docs/platforms/android-apps/native.md, "Hosts"). The rest is
    PASS */
 #if defined(__linux__)
 #define _GNU_SOURCE
@@ -26,6 +26,7 @@
 #include "gnuabi/abi/linux_file.h"
 #include "gnuabi/abi/linux_net.h"
 #include "gnuabi/kernel/kernel.h"
+#include "common/platform/file.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -44,8 +45,10 @@
 #include <dirent.h>
 #include <io.h>
 #include <process.h>
+#include <stdatomic.h>
 #include <sys/utime.h>
 #include <unistd.h>
+#include <windows.h> /* GetTempPathA, GetTempFileNameA */
 #else
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -71,6 +74,7 @@
 #endif
 #if defined(__linux__)
 #include <malloc.h>
+#include <sys/eventfd.h>
 #include <sys/inotify.h>
 #include <sys/signalfd.h>
 #include <sys/statfs.h>
@@ -227,7 +231,7 @@ static void g_ftell(CPU* c, void* data) {
 #endif
 #define FILE_CALLS(F)                                                                                                  \
     F(fclose, 0) F(feof, 0) F(ferror, 0) F(clearerr, 0) F(fflush, 0) F(fgets, 2) F(fileno, 0) F(fputc, 1) F(fputs, 1)  \
-    F(fread, 3) F(fwrite, 3) F(getc, 0) F(ungetc, 1) F(rewind, 0) F(setbuf, 0) F(freopen, 2) F(pclose, 0)             \
+    F(fread, 3) F(fwrite, 3) F(getc, 0) F(fgetc, 0) F(ungetc, 1) F(rewind, 0) F(setbuf, 0) F(freopen, 2) F(pclose, 0)             \
     SEEK_FILE_CALLS(F) WIDE_FILE_CALLS(F)
 #define FILE_CALL_OBJECT(name, k) static const FileCall fc_##name = {(void*)name, k};
 FILE_CALLS(FILE_CALL_OBJECT)
@@ -253,6 +257,42 @@ static void g_fwrite_chk(CPU* c, void* data) {
         abort();
     }
     X(0) = fwrite(PTR(0), X(1), X(2), hle_file(X(3)));
+}
+
+/* __fgets_chk(buffer, size, file, buffer_size): fgets, with bionic's checks that the size is not negative and fits
+   the buffer; a failed one ends the app with the sizes, as bionic's __fortify_fatal does */
+static void g_fgets_chk(CPU* c, void* data) {
+    (void)data;
+    int size = (int)X(1);
+    if (size < 0) {
+        fprintf(stderr, "scarletnx-android: FORTIFY: fgets: buffer size %d < 0\n", size);
+        abort();
+    }
+    if ((uint64_t)size > X(3)) {
+        fprintf(stderr, "scarletnx-android: FORTIFY: fgets: prevented %d-byte write into %llu-byte buffer\n", size,
+                (unsigned long long)X(3));
+        abort();
+    }
+    X(0) = (uint64_t)(uintptr_t)fgets(PTR(0), size, hle_file(X(2)));
+}
+/* a template mkstemp and mkdtemp take: 6 X's or more at its end, as bionic's (OpenBSD's) code asks, else EINVAL;
+   macOS' C library makes a template with none as it is named */
+static bool temp_template(const char* t) {
+    size_t n = t ? strlen(t) : 0, x = 0;
+    while (x < n && t[n - 1 - x] == 'X') ++x;
+    if (x < 6) hle_set_errno(GNU_EINVAL);
+    return x >= 6;
+}
+/* mkdtemp(template): its XXXXXX made a name and the folder made: the template, or NULL */
+static void g_mkdtemp(CPU* c, void* data) {
+    (void)data;
+    char* t = PTR(0);
+#ifdef _WIN32
+    bool ok = temp_template(t) && !_mktemp_s(t, strlen(t) + 1) && !_mkdir(t);
+#else
+    bool ok = temp_template(t) && mkdtemp(t);
+#endif
+    if (!ok) X(0) = 0;
 }
 
 /* getdelim(line, size, delimiter, file) and getline(line, size, file), POSIX's, on every host (Windows' C runtime has
@@ -732,7 +772,7 @@ static void g_truncate(CPU* c, void* data) {
 }
 static void g_pread(CPU* c, void* data) {
     (void)data;
-    X(0) = (uint64_t)host_pread((int)X(0), PTR(1), (size_t)X(2), X(3));
+    X(0) = (uint64_t)plat_pread_fd((int)X(0), PTR(1), (size_t)X(2), X(3));
 }
 /* read and write of a socket go to Winsock, whose sockets the CRT doesn't know */
 static void g_read(CPU* c, void* data) {
@@ -803,6 +843,284 @@ static void g_close(CPU* c, void* data) {
     X(0) = wide_int(host_close((int)X(0)));
 }
 
+/* ---- the file calls past open, read and write: *at, pipe2, links, ownership, sessions and the rest ---- */
+
+/* a function the host has no equal of: ENOSYS, and its name said once on stderr */
+typedef struct {
+    const char* name;
+    bool said;
+} Absent;
+static void absent(CPU* c, void* data) {
+    Absent* a = data;
+    if (!a->said) {
+        a->said = true;
+        fprintf(stderr, "scarletnx-android: %s: this host has no equal, ENOSYS\n", a->name);
+    }
+    fail_errno(c, GNU_ENOSYS);
+}
+#define ABSENT(name)       static Absent absent_##name = {#name, false}
+#define ABSENT_ENTRY(name) {#name, absent, &absent_##name}
+
+/* AT_FDCWD as bionic has it (-100); the host's own value elsewhere (macOS has -2) */
+enum { L_AT_FDCWD = -100 };
+static bool at_is_cwd(uint64_t guest) { return (int)(int32_t)guest == L_AT_FDCWD; }
+#ifdef _WIN32
+/* Windows has no *at calls: the working folder's, or a path from the root, which no folder descriptor changes. Else
+   ENOSYS naming the call and the descriptor given */
+static bool win_at_ok(CPU* c, const char* name, uint64_t dirfd, const char* path) {
+    if (at_is_cwd(dirfd) || (path && path[0] == '/')) return true;
+    fprintf(stderr, "scarletnx-android: %s: the folder descriptor %d needs the *at calls this host has not, ENOSYS\n",
+            name, (int)(int32_t)dirfd);
+    fail_errno(c, GNU_ENOSYS);
+    return false;
+}
+#else
+static int at_dir(uint64_t guest) { return at_is_cwd(guest) ? AT_FDCWD : (int)(int32_t)guest; }
+#endif
+
+/* Linux's AT_ flags of the calls that take them (the same bit 0x200 means AT_EACCESS to faccessat, AT_REMOVEDIR to
+   unlinkat). 0, or a Linux errno for a bit the call does not have */
+enum { L_AT_SYMLINK_NOFOLLOW = 0x100, L_AT_REMOVEDIR = 0x200, L_AT_EACCESS = 0x200 };
+#ifndef _WIN32
+static int access_at_flags(uint64_t guest, int* host) {
+    *host = 0;
+    if (guest & ~(uint64_t)(L_AT_SYMLINK_NOFOLLOW | L_AT_EACCESS)) return GNU_EINVAL;
+    if (guest & L_AT_SYMLINK_NOFOLLOW) *host |= AT_SYMLINK_NOFOLLOW;
+    if (guest & L_AT_EACCESS) *host |= AT_EACCESS;
+    return 0;
+}
+static int unlink_at_flags(uint64_t guest, int* host) {
+    *host = 0;
+    if (guest & ~(uint64_t)L_AT_REMOVEDIR) return GNU_EINVAL;
+    if (guest & L_AT_REMOVEDIR) *host |= AT_REMOVEDIR;
+    return 0;
+}
+#endif
+
+/* bionic's open flags that make a file or a temporary one: the mode is then needed */
+static bool open_needs_mode(uint64_t flags) {
+    return (flags & GNU_O_CREAT) || (flags & (020000000 | GNU_O_DIRECTORY)) == (020000000 | GNU_O_DIRECTORY);
+}
+/* openat(dirfd, path, flags, mode) */
+static int64_t open_at(CPU* c, uint64_t dirfd, const char* path, uint64_t flags, uint64_t mode) {
+    if (at_is_cwd(dirfd) || path[0] == '/') {
+        int own = hle_proc_open(path); /* the app's own /proc files (hle_proc.h) */
+        if (own != -2) return own;
+    }
+#ifdef _WIN32
+    if (!win_at_ok(c, "openat", dirfd, path)) return -1;
+    return open(path, open_flags(flags), (int)mode);
+#else
+    (void)c;
+    return openat(at_dir(dirfd), path, open_flags(flags), (mode_t)mode);
+#endif
+}
+static void g_openat(CPU* c, void* data) {
+    (void)data;
+    X(0) = wide_int(open_at(c, X(0), STR(1), X(2), X(3)));
+}
+/* __openat_2(dirfd, path, flags): openat for a call the compiler saw without a mode, which O_CREAT cannot have */
+static void g_openat_2(CPU* c, void* data) {
+    (void)data;
+    if (open_needs_mode(X(2))) {
+        fprintf(stderr, "scarletnx-android: FORTIFY: open(O_CREAT) called without specifying a mode (flags 0x%llx)\n",
+                (unsigned long long)X(2));
+        abort();
+    }
+    X(0) = wide_int(open_at(c, X(0), STR(1), X(2), 0));
+}
+/* creat(path, mode) is open(path, O_CREAT | O_WRONLY | O_TRUNC, mode) */
+static void g_creat(CPU* c, void* data) {
+    (void)data;
+    X(0) = wide_int(open(STR(0), open_flags(GNU_O_CREAT | GNU_O_WRONLY | GNU_O_TRUNC), (int)X(1)));
+}
+
+static void g_pwrite(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint64_t)plat_pwrite_fd((int)X(0), PTR(1), (size_t)X(2), X(3));
+}
+
+/* pipe2(fds, flags): O_CLOEXEC and O_NONBLOCK, the ones a pipe has (Linux's O_DIRECT, the packet mode, too) */
+static void g_pipe2(CPU* c, void* data) {
+    (void)data;
+    uint64_t flags = X(1);
+    uint64_t known = GNU_O_CLOEXEC | GNU_O_NONBLOCK;
+#if defined(__linux__)
+    known |= 0x10000; /* O_DIRECT, AArch64's value */
+#endif
+    if (flags & ~known) {
+        fail_errno(c, GNU_EINVAL);
+        return;
+    }
+#if defined(_WIN32)
+    if (flags & GNU_O_NONBLOCK) {
+        fprintf(stderr, "scarletnx-android: pipe2: O_NONBLOCK (flags 0x%llx) has no equal on this host, ENOSYS\n",
+                (unsigned long long)flags);
+        fail_errno(c, GNU_ENOSYS);
+        return;
+    }
+    X(0) = wide_int(_pipe(PTR(0), 65536, _O_BINARY | (flags & GNU_O_CLOEXEC ? _O_NOINHERIT : 0)));
+#elif defined(__linux__) || defined(__FreeBSD__)
+    int host = 0;
+    if (flags & GNU_O_CLOEXEC) host |= O_CLOEXEC;
+    if (flags & GNU_O_NONBLOCK) host |= O_NONBLOCK;
+#if defined(__linux__)
+    if (flags & 0x10000) host |= O_DIRECT;
+#endif
+    X(0) = wide_int(pipe2(PTR(0), host));
+#else
+    /* macOS has no pipe2: pipe, then the flags on both ends (a fork between them could leak the descriptors) */
+    int* fds = PTR(0);
+    int r = pipe(fds);
+    for (int i = 0; !r && i < 2; ++i) {
+        if (flags & GNU_O_CLOEXEC) r |= fcntl(fds[i], F_SETFD, FD_CLOEXEC);
+        if (flags & GNU_O_NONBLOCK) r |= fcntl(fds[i], F_SETFL, O_NONBLOCK);
+    }
+    if (r) {
+        int saved = errno;
+        close(fds[0]);
+        close(fds[1]);
+        errno = saved;
+    }
+    X(0) = wide_int(r ? -1 : 0);
+#endif
+}
+
+#ifdef _WIN32
+/* the process's umask: the CRT keeps no POSIX one, so the value the app sets is kept and given back */
+static _Atomic unsigned g_umask = 022;
+static void g_umask_set(CPU* c, void* data) {
+    (void)data;
+    X(0) = atomic_exchange(&g_umask, (unsigned)X(0) & 0777);
+}
+#else
+static void g_umask_set(CPU* c, void* data) {
+    (void)data;
+    X(0) = (uint32_t)umask((mode_t)X(0));
+}
+#endif
+
+static void g_faccessat(CPU* c, void* data) {
+    (void)data;
+    if (at_is_cwd(X(0)) || STR(1)[0] == '/') {
+        int own = hle_proc_open(STR(1));
+        if (own != -2) {
+            if (own >= 0) host_close(own);
+            X(0) = wide_int(own < 0 ? -1 : 0);
+            return;
+        }
+    }
+#ifdef _WIN32
+    if (!win_at_ok(c, "faccessat", X(0), STR(1))) return;
+    if (X(3) & ~(uint64_t)(L_AT_SYMLINK_NOFOLLOW | L_AT_EACCESS)) {
+        fail_errno(c, GNU_EINVAL);
+        return;
+    }
+    X(0) = wide_int(_access(STR(1), (int)X(2) & 6)); /* no X_OK: what exists runs */
+#else
+    int flags;
+    int e = access_at_flags(X(3), &flags);
+    if (e)
+        fail_errno(c, e);
+    else
+        X(0) = wide_int(faccessat(at_dir(X(0)), STR(1), (int)X(2), flags));
+#endif
+}
+static void g_unlinkat(CPU* c, void* data) {
+    (void)data;
+#ifdef _WIN32
+    if (!win_at_ok(c, "unlinkat", X(0), STR(1))) return;
+    if (X(2) & ~(uint64_t)L_AT_REMOVEDIR)
+        fail_errno(c, GNU_EINVAL);
+    else
+        X(0) = wide_int(X(2) & L_AT_REMOVEDIR ? _rmdir(STR(1)) : _unlink(STR(1)));
+#else
+    int flags;
+    int e = unlink_at_flags(X(2), &flags);
+    if (e)
+        fail_errno(c, e);
+    else
+        X(0) = wide_int(unlinkat(at_dir(X(0)), STR(1), flags));
+#endif
+}
+
+/* getpriority(which, who): the nice value, where the system call (141, as setpriority's 140) gives 20 minus it */
+static void g_getpriority(CPU* c, void* data) {
+    (void)data;
+    const uint64_t arguments[6] = {X(0), X(1), 0, 0, 0, 0};
+    long r = hle_kernel_syscall(141, arguments, c, NULL);
+    if (r < 0)
+        fail_errno(c, (int)-r);
+    else
+        X(0) = (uint64_t)(int64_t)(20 - r);
+}
+
+#ifdef _WIN32
+/* link(old, new): a hard link, NTFS's. The error is the Win32 one as a Linux number */
+static void g_link(CPU* c, void* data) {
+    (void)data;
+    if (CreateHardLinkA(STR(1), STR(0), NULL)) {
+        X(0) = 0;
+        return;
+    }
+    DWORD e = GetLastError();
+    fail_errno(c, e == ERROR_ALREADY_EXISTS || e == ERROR_FILE_EXISTS      ? GNU_EEXIST
+                  : e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? GNU_ENOENT
+                                                                           : GNU_EACCES);
+}
+/* mkstemp(template): the XXXXXX made a name and the file made, read and write, for the owner: its descriptor */
+static void g_mkstemp(CPU* c, void* data) {
+    (void)data;
+    char* t = PTR(0);
+    int fd = -1;
+    if (temp_template(t) && !_mktemp_s(t, strlen(t) + 1))
+        fd = _open(t, _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY, _S_IREAD | _S_IWRITE);
+    X(0) = wide_int(fd);
+}
+static void g_getpgrp(CPU* c, void* data) {
+    (void)data;
+    X(0) = host_pid(); /* no process groups: the process leads its own */
+}
+#else
+static void g_mkstemp(CPU* c, void* data) {
+    (void)data;
+    X(0) = temp_template(PTR(0)) ? wide_int(mkstemp(PTR(0))) : (uint64_t)-1;
+}
+/* the calls that are the host's own with the guest's arguments, and their int result sign-extended */
+#define HOST_INT(name, call)                                                                                           \
+    static void g_##name(CPU* c, void* data) {                                                                         \
+        (void)data;                                                                                                    \
+        X(0) = wide_int(call);                                                                                         \
+    }
+HOST_INT(chown, chown(STR(0), (uid_t)X(1), (gid_t)X(2)))
+HOST_INT(fchdir, fchdir((int)X(0)))
+HOST_INT(symlink, symlink(STR(0), STR(1)))
+HOST_INT(link, link(STR(0), STR(1)))
+HOST_INT(getpgrp, getpgrp())
+HOST_INT(ftruncate64, ftruncate((int)X(0), (off_t)X(1)))
+#if defined(__APPLE__)
+HOST_INT(fdatasync, fsync((int)X(0))) /* macOS has no fdatasync: fsync is the call that reaches the disk's cache */
+#else
+HOST_INT(fdatasync, fdatasync((int)X(0)))
+#endif
+#endif
+
+#if defined(__linux__)
+static void g_eventfd(CPU* c, void* data) {
+    (void)data;
+    X(0) = wide_int(eventfd((unsigned)X(0), (int)X(1))); /* EFD_CLOEXEC, EFD_NONBLOCK and EFD_SEMAPHORE are Linux's */
+}
+#else
+ABSENT(eventfd);
+#endif
+#ifdef _WIN32
+ABSENT(chown);
+ABSENT(fchdir);
+ABSENT(symlink);
+#endif
+/* a session of its own would take the whole emulator process from its terminal, and the app is no process of its own */
+ABSENT(setsid);
+
 /* ---- memory maps: executable ones go into the code window, where the JIT finds them ---- */
 
 /* Linux's mmap flags (bionic's) */
@@ -843,7 +1161,7 @@ static void* win_mmap(void* address, size_t size, int prot, int flags, int fd, u
     } else
         p = VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!p) return map_failed();
-    if (!(flags & L_MAP_ANONYMOUS) && host_pread(fd, p, size, offset) < 0) {
+    if (!(flags & L_MAP_ANONYMOUS) && plat_pread_fd(fd, p, size, offset) < 0) {
         VirtualFree(p, 0, MEM_RELEASE);
         return map_failed();
     }
@@ -934,7 +1252,7 @@ static void g_mprotect(CPU* c, void* data) {
     int prot = (int)X(2);
     if (prot & L_PROT_EXEC) bridge_add_code(X(0), X(1) & ~(uint64_t)3);
     int access = (prot & 1 || prot & L_PROT_EXEC ? HOST_READ : 0) | (prot & 2 ? HOST_READ | HOST_WRITE : 0);
-    if (host_protect(PTR(0), X(1), access)) {
+    if (!plat_mem_protect(PTR(0), X(1), (unsigned)access)) {
         host_anon_protect(X(0), X(1), access);
         X(0) = 0;
     } else {
@@ -2009,17 +2327,28 @@ static void kernel_result(CPU* c, long number, unsigned first) {
     }
     X(0) = (uint64_t)(int64_t)r;
 }
-/* memfd_create(name, flags): an anonymous file of the host's, Linux's own there and an unlinked temporary file
-   elsewhere (MFD_CLOEXEC, 1, kept; sealing and huge pages are not). The descriptor, or -1 with the host's errno,
+/* memfd_create(name, flags): an anonymous file of the host's, Linux's own there and a temporary file that goes
+   with its last descriptor elsewhere (MFD_CLOEXEC, 1, kept; sealing and huge pages are not). The descriptor, or -1 with the host's errno,
    which the end of the call takes */
 static int host_memfd(const char* name, uint64_t flags) {
 #if defined(__linux__)
     return memfd_create(name ? name : "", (flags & 1) ? MFD_CLOEXEC : 0);
 #elif defined(_WIN32)
+    /* a file of the temporary folder that goes with its last descriptor (_O_TEMPORARY) */
+    char dir[MAX_PATH], path[MAX_PATH];
+    DWORD n = GetTempPathA(sizeof dir, dir);
     (void)name;
-    (void)flags;
-    errno = ENOSYS;
-    return -1;
+    if (!n || n >= sizeof dir || !GetTempFileNameA(dir, "mfd", 0, path)) {
+        errno = EIO;
+        return -1;
+    }
+    int fd = _open(path, _O_RDWR | _O_BINARY | _O_TEMPORARY | ((flags & 1) ? _O_NOINHERIT : 0));
+    if (fd < 0) {
+        int error = errno;
+        DeleteFileA(path);
+        errno = error;
+    }
+    return fd;
 #else
     (void)name;
     FILE* f = tmpfile();
@@ -2121,10 +2450,18 @@ const HleSymbol hle_posix[] = {
     {"stderr", NULL, &g_posix.guest_stderr},
     {"environ", NULL, &g_posix.environment},
     FILE_CALLS(FILE_CALL_ENTRY)
-    A(__fread_chk, g_fread_chk), A(__fwrite_chk, g_fwrite_chk), A(getdelim, g_getdelim), A(getline, g_getline),
+    A(__fread_chk, g_fread_chk), A(__fwrite_chk, g_fwrite_chk), A(__fgets_chk, g_fgets_chk), A(mkdtemp, g_mkdtemp), A(getdelim, g_getdelim), A(getline, g_getline),
     A(fopen, g_fopen), A(fdopen, g_fdopen), A(rename, g_rename), A(setvbuf, g_setvbuf), P(tmpfile), P(remove),
     A(tmpnam, refused), A(putchar, g_putchar), A(puts, g_puts), A(perror, g_perror), A(popen, g_popen),
     A(open, g_open), A(__open_2, g_open_2), A(fcntl, g_fcntl), A(ioctl, g_ioctl),
+    A(open64, g_open), A(openat, g_openat), A(__openat_2, g_openat_2), A(creat, g_creat), A(pwrite, g_pwrite),
+    A(pwrite64, g_pwrite), A(pipe2, g_pipe2), A(umask, g_umask_set), A(faccessat, g_faccessat),
+    A(unlinkat, g_unlinkat), A(getpriority, g_getpriority), A(mkstemp, g_mkstemp), ABSENT_ENTRY(setsid),
+#if defined(__linux__)
+    A(eventfd, g_eventfd),
+#else
+    ABSENT_ENTRY(eventfd),
+#endif
     A(stat, g_stat), A(lstat, g_lstat), A(fstat, g_fstat), A(fstat64, g_fstat), A(close, g_close),
     P(chmod), P(dup), P(dup2), P(isatty), P(rmdir), P(unlink), P(opendir), P(closedir),
     /* the process's working folder, which the JVM's relative paths share, as Android's do */
@@ -2135,7 +2472,11 @@ const HleSymbol hle_posix[] = {
     A(ftruncate, g_ftruncate), A(lseek, g_lseek), A(lseek64, g_lseek), A(mkdir, g_mkdir), A(pipe, g_pipe),
     A(pread, g_pread), A(read, g_read), A(readlink, g_readlink_proc), A(realpath, g_realpath), A(truncate, g_truncate),
     A(utime, g_utime), A(write, g_write), A(getcwd, g_getcwd), A(readdir, g_readdir),
+    A(pread64, g_pread), A(ftruncate64, g_ftruncate), A(fdatasync, g_fsync), A(link, g_link), A(getpgrp, g_getpgrp),
+    ABSENT_ENTRY(chown), ABSENT_ENTRY(fchdir), ABSENT_ENTRY(symlink),
 #else
+    PH(pread64, pread), A(chown, g_chown), A(fchdir, g_fchdir), A(symlink, g_symlink), A(link, g_link),
+    A(getpgrp, g_getpgrp), A(ftruncate64, g_ftruncate64), A(fdatasync, g_fdatasync),
     A(access, g_access_proc), P(fchmod), P(flock), P(fsync), P(ftruncate), P(lseek), P(mkdir), P(pipe), P(pread), P(read),
     A(readlink, g_readlink_proc), P(realpath), P(truncate), P(utime), P(write), P(getcwd),
 #if defined(__linux__)

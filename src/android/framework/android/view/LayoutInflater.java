@@ -193,6 +193,11 @@ public abstract class LayoutInflater {
     }
 
     private View createView(View parent, String name, AttributeSet attrs) throws Exception {
+        // <view class="..."> names its class in an attribute, as Android's createViewFromTag reads it
+        if (name.equals("view")) {
+            name = attrs.getAttributeValue(null, "class");
+            if (name == null) throw new InflateException("<view> without a class attribute");
+        }
         View v = null;
         if (factory2 != null) v = factory2.onCreateView(parent, name, mContext, attrs);
         else if (factory != null) v = factory.onCreateView(name, mContext, attrs);

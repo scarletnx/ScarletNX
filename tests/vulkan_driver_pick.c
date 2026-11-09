@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The Vulkan driver a macOS run picks (the vulkan_driver setting, docs/APPLE.md), on every system: the search goes
+/* The Vulkan driver a macOS run picks (the vulkan_driver setting, docs/hosts/apple.md), on every system: the search goes
    through folders the test makes, an app's Frameworks, two package prefixes and a folder of Vulkan SDKs, with files
    that only stand for the drivers */
 #include "common/utilities/common.h"

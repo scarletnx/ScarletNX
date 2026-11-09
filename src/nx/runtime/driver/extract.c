@@ -6,6 +6,8 @@
 #include "nx/runtime/driver/extract.h"
 #include "nx/runtime/driver/container.h"
 #include "nx/loader/loader.h"
+#include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -126,11 +128,7 @@ static int parse_options(int argc, char** argv, ExtractOptions* options) {
 }
 
 static char* dump_name(const char* path) {
-    const char *p, *base, *dot;
-    base = path;
-    for (p = path; *p; p++)
-        if (*p == '/' || *p == '\\') base = p + 1;
-    dot = strrchr(base, '.');
+    const char *base = snx_path_leaf(path), *dot = strrchr(base, '.');
     if (!dot || dot == base) dot = base + strlen(base);
     return text_copy(base, (size_t)(dot - base));
 }
@@ -326,7 +324,7 @@ static int extract_aoc(ExtractState* state) {
     }
     if (file && fclose(file)) failed = 1;
     if (state->said) progress_say(state, 1);
-    if (failed || snx_replace(tmp, path)) {
+    if (failed || plat_replace_file(tmp, path)) {
         failed = snx_error("cannot write the DLC's RomFS image %s", path);
         if (snx_is_file(tmp)) snx_remove_tree(tmp);
     } else {

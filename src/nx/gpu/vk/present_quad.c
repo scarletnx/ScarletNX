@@ -16,12 +16,6 @@ static struct {
     u32 count, capacity;
 } g_present_quad;
 
-static VkShaderModule module(const u32* code, size_t size) {
-    VkShaderModuleCreateInfo info = {
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = size, .pCode = code};
-    VkShaderModule result = VK_NULL_HANDLE;
-    return VK_OK(vkCreateShaderModule(g_vk.dev, &info, NULL, &result)) ? result : VK_NULL_HANDLE;
-}
 static int initialize(void) {
     if (g_present_quad.layout) return 1;
     VkDescriptorSetLayoutBinding binding = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
@@ -34,8 +28,12 @@ static int initialize(void) {
                                           .setLayoutCount = 1, .pSetLayouts = &g_present_quad.descriptors,
                                           .pushConstantRangeCount = 1, .pPushConstantRanges = &push};
     if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &layout, NULL, &g_present_quad.layout))) return 0;
-    g_present_quad.vertex = module(present_quad_vert_spv, present_quad_vert_spv_size);
-    g_present_quad.fragment = module(present_quad_frag_spv, present_quad_frag_spv_size);
+    if (!VK_OK(
+            snx_vk_shader_module(g_vk.dev, present_quad_vert_spv, present_quad_vert_spv_size, &g_present_quad.vertex)))
+        g_present_quad.vertex = VK_NULL_HANDLE;
+    if (!VK_OK(snx_vk_shader_module(g_vk.dev, present_quad_frag_spv, present_quad_frag_spv_size,
+                                    &g_present_quad.fragment)))
+        g_present_quad.fragment = VK_NULL_HANDLE;
     for (u32 i = 0; i < 2; i++) {
         VkSamplerCreateInfo sampler = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                                         .magFilter = i ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,

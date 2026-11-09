@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/users.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/mii_db.h"
 #include <stdio.h>
@@ -207,7 +208,7 @@ int snx_users_start(const char* dir, const uint64_t uid[2], const char* nickname
         goto done;
     }
     snx_users_uid_text(uid, hex);
-    text = snx_format("; The console's users (docs/USAGE.md#users), up to 8 in the console's order\n"
+    text = snx_format("; The console's users (docs/user/usage.md#users), up to 8 in the console's order\n"
                       "[user1]\nuid=%s\nnickname=%s\n",
                       hex, nickname);
     if (snx_mkdirs(dir)) {
@@ -220,12 +221,12 @@ int snx_users_start(const char* dir, const uint64_t uid[2], const char* nickname
         remove(staged);
         goto done;
     }
-    if (snx_is_file(path) && snx_replace(path, old)) {
+    if (snx_is_file(path) && plat_replace_file(path, old)) {
         snprintf(why, why_size, "%s could not be kept as %s", path, old);
         remove(staged);
         goto done;
     }
-    if (snx_replace(staged, path)) {
+    if (plat_replace_file(staged, path)) {
         snprintf(why, why_size, "%s could not be put in place of %s, whose users are in %s", staged, path, old);
         goto done;
     }
@@ -294,7 +295,7 @@ static int users_set_key(const char* dir, int number, const char* key, const cha
         remove(staged);
         goto done;
     }
-    if (snx_replace(staged, path)) {
+    if (plat_replace_file(staged, path)) {
         snprintf(why, why_size, "%s could not be put in place of %s", staged, path);
         remove(staged);
         goto done;
@@ -332,7 +333,7 @@ int snx_users_set_picture(const char* dir, int number, const unsigned char* data
         remove(staged);
         goto done;
     }
-    if (snx_replace(staged, path)) {
+    if (plat_replace_file(staged, path)) {
         snprintf(why, why_size, "%s could not be put in place of %s", staged, path);
         remove(staged);
         goto done;
@@ -410,7 +411,7 @@ int snx_users_remove(const char* dir, int number, char* why, size_t why_size) {
         remove(staged);
         goto done;
     }
-    if (snx_replace(staged, path)) {
+    if (plat_replace_file(staged, path)) {
         snprintf(why, why_size, "%s could not be put in place of %s", staged, path);
         remove(staged);
         goto done;
@@ -503,7 +504,7 @@ int snx_users_move(const char* dir, int number, int position, char* why, size_t 
         remove(staged);
         goto done;
     }
-    if (snx_replace(staged, path)) {
+    if (plat_replace_file(staged, path)) {
         snprintf(why, why_size, "%s could not be put in place of %s", staged, path);
         remove(staged);
         goto done;
@@ -578,7 +579,7 @@ int snx_users_save(const char* dir, int number, char* why, size_t why_size) {
         remove(staged);
         goto done;
     }
-    if (snx_replace(staged, path)) {
+    if (plat_replace_file(staged, path)) {
         snprintf(why, why_size, "%s could not be put in place of %s", staged, path);
         remove(staged);
         goto done;

@@ -13,7 +13,7 @@
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
-#include "common/filesystem/host.h"
+#include "common/platform/thread.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>

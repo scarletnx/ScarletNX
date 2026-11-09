@@ -10,7 +10,7 @@ import android.util.AttributeSet;
 import android.widget.FrameLayout;
 
 /**
- * A web page's view (Off in docs/android/INTERFACES.md: no web engine). It keeps its settings and clients, and a page
+ * A web page's view (Off in docs/platforms/android-apps/interfaces.md: no web engine). It keeps its settings and clients, and a page
  * it loads starts and finishes empty, as a blank page, so an app's flow goes on: onPageStarted and onPageFinished
  * come, a script's result is "null", and nothing draws.
  */
@@ -44,9 +44,18 @@ public class WebView extends FrameLayout {
     public static void setWebContentsDebuggingEnabled(boolean enabled) {}
     public static void setDataDirectorySuffix(String suffix) {}
     public static String findAddress(String addr) { return null; }
-    public static PackageInfoHolder getCurrentWebViewPackage() { return null; }
-    /** WebView's package: none */
-    public static final class PackageInfoHolder {}
+    /**
+     * The WebView provider's package: AOSP's, whose support library glue (org.chromium.support_lib_glue) is inert as
+     * this WebView is. Its version is a recent one's, as AndroidX WebKit asks of the provider (105 or later) before it
+     * uses some of its features
+     */
+    public static android.content.pm.PackageInfo getCurrentWebViewPackage() {
+        android.content.pm.PackageInfo info = new android.content.pm.PackageInfo();
+        info.packageName = "com.android.webview";
+        info.versionName = "136.0.0.0";
+        info.setLongVersionCode(713600000L);
+        return info;
+    }
     public static void clearClientCertPreferences(Runnable onCleared) { if (onCleared != null) onCleared.run(); }
 
     public WebSettings getSettings() { return settings; }
@@ -65,6 +74,25 @@ public class WebView extends FrameLayout {
         });
     }
     public void loadUrl(String url, java.util.Map<String, String> additionalHttpHeaders) { loadUrl(url); }
+    /** no history is kept: an empty one */
+    public WebBackForwardList copyBackForwardList() { return new WebBackForwardList(java.util.List.of(), -1); }
+    public boolean canGoBackOrForward(int steps) { return false; }
+    public void goBackOrForward(int steps) {}
+    public WebBackForwardList saveState(android.os.Bundle outState) { return null; }
+    public WebBackForwardList restoreState(android.os.Bundle inState) { return null; }
+    public interface FindListener {
+        void onFindResultReceived(int activeMatchOrdinal, int numberOfMatches, boolean isDoneCounting);
+    }
+    public void findAllAsync(String find) {}
+    public void findNext(boolean forward) {}
+    public void clearMatches() {}
+    public void postWebMessage(WebMessage message, android.net.Uri targetOrigin) {}
+    public WebMessagePort[] createWebMessageChannel() { return new WebMessagePort[0]; }
+    public android.net.http.SslCertificate getCertificate() { return null; }
+    public float getScale() { return getResources().getDisplayMetrics().density; }
+    public static ClassLoader getWebViewClassLoader() { return WebView.class.getClassLoader(); }
+    public Looper getWebViewLooper() { return Looper.getMainLooper(); }
+    public android.print.PrintDocumentAdapter createPrintDocumentAdapter(String documentName) { return null; }
     public void loadData(String data, String mimeType, String encoding) { loadUrl("about:blank"); }
     public void loadDataWithBaseURL(String baseUrl, String data, String mimeType, String encoding, String historyUrl) {
         loadUrl(baseUrl != null ? baseUrl : "about:blank");
@@ -97,8 +125,8 @@ public class WebView extends FrameLayout {
     public void destroy() {}
     public void setInitialScale(int scaleInPercent) {}
     public void setNetworkAvailable(boolean networkUp) {}
-    public void setDownloadListener(Object listener) {}
-    public void setFindListener(Object listener) {}
+    public void setDownloadListener(DownloadListener listener) {}
+    public void setFindListener(FindListener listener) {}
     public void setRendererPriorityPolicy(int rendererRequestedPriority, boolean waivedWhenNotVisible) {}
     public HitTestResult getHitTestResult() { return new HitTestResult(); }
     public void requestFocusNodeHref(android.os.Message hrefMsg) {}

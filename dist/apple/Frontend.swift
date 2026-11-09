@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
-// The system's side of the iOS and macOS apps (docs/APPLE.md), for src/gui/apple.m: the document picker and the share
+// The system's side of the iOS and macOS apps (docs/hosts/apple.md), for src/gui/apple.m: the document picker and the share
 // sheet SDL lacks on iOS. The menu and the runtime are SDL's window; this only presents over it.
 import Foundation
 

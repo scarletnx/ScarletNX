@@ -17,7 +17,7 @@
      pattern that matches. A trans_ function that answers false lets the decode try the next pattern of a { } group.
    The file that includes it defines DisasContext, the trans_ functions, the !function= functions
    (`int f(DisasContext *ctx, int x)`, or `int f(DisasContext *ctx)` for a field of no bits), and extract32,
-   sextract32 and deposit32 (QEMU's bitops.h).
+   sextract32 and deposit32, or their 64-bit forms for -w 64 (QEMU's bitops.h, common/utilities/decodetree.h).
 
    Options, as decodetree.py's: --decode NAME (an extern decode function), --static-decode NAME, --translate PREFIX
    (extern trans functions with that prefix), -w/--insnwidth 16|32|64, -o/--output FILE. Not supported:

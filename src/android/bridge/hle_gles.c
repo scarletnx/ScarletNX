@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* libGLESv1_CM as GLES 1.1's fixed function over Vulkan (docs/android/NATIVE.md, "EGL and GLES"), on the device and
+/* libGLESv1_CM as GLES 1.1's fixed function over Vulkan (docs/platforms/android-apps/native.md, "EGL and GLES"), on the device and
    the surfaces that it shares with GLES 2 and 3 (gles_vk.h).
 
    Each draw goes into a render pass on the surface's image, and a texture upload ends the pass, copies from a

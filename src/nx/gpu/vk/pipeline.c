@@ -35,11 +35,10 @@
 #include "common/utilities/endian.h"
 #include <sys/stat.h>
 
-/* the bytes of a program vk_shader_get reads, from its SPH. The SPH has no size, so shader_hash ends the program at
-   its EXIT or the zero padding after it, and NVN packs programs into one pool: the window has to reach past the
-   largest program's end (FINAL FANTASY RESONANCE has one of 70,728 bytes, an Ounce game one of 149,120), without going on into the next
-   program */
-#define SH_CODE VK_SHADER_CODE_WINDOW
+/* SH_CODE (vk.h), the bytes of a program vk_shader_get reads from its SPH. The SPH has no size, so shader_hash ends the
+   program at its EXIT or the zero padding after it, and NVN packs programs into one pool: the window has to reach past
+   the largest program's end (FINAL FANTASY RESONANCE has one of 70,728 bytes, an Ounce game one of 149,120), without
+   going on into the next program */
 
 /* The caches live in shader_cache/ of the game's cache folder (g_cachedir), wherever the runtime was started from */
 static char g_cache_dir[1100], g_pcache_path[1200], g_pcache_tmp[1230];
@@ -223,6 +222,11 @@ u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si
     return result;
 }
 
+/* an SM86 program's key: its bytes up to its end, len (0 with no program there: the bytes of a header, so each such
+   program keeps a key of its own) */
+static u64 sm86_hash(const u8* code, u32 max_bytes, u32 len) {
+    return snx_fnv1a(SNX_FNV_BASIS, code, len ? len : max_bytes < SM86_SPH_BYTES ? max_bytes : SM86_SPH_BYTES);
+}
 /* shader_hash with the jump tables of BRX read through read, as the translation reads them: without a reader the
    length stops at the first EXIT and leaves out code only a jump table reaches */
 u64 vk_shader_hash(const u8* code, u32 max_bytes, u32* out_len, VkCbReader read) {
@@ -231,7 +235,7 @@ u64 vk_shader_hash(const u8* code, u32 max_bytes, u32* out_len, VkCbReader read)
         /* with no program there, the bytes of a header: each such program keeps a key of its own */
         u32 len = sm86_program(code, max_bytes, &p) ? p.code + p.size : 0;
         *out_len = len;
-        return snx_fnv1a(SNX_FNV_BASIS, code, len ? len : max_bytes < SM86_SPH_BYTES ? max_bytes : SM86_SPH_BYTES);
+        return sm86_hash(code, max_bytes, len);
     }
     pm_lock(&g_xlate_lock);
     int (*old)(u32, u32, u32*) = g_shader_cb_read;
@@ -611,7 +615,9 @@ static int code_hash(u64 gva, u32 len, u64* hash) {
    unrelated storage image beside a tiny shader and wait for the GPU. Hash against the full zero-padded window so
    forward branch targets still prevent an early EXIT from ending the scan. Reaching a prefix boundary grows it. */
 void vk_shader_read_code(u64 gva, u8* code, u32* len, VkCbReader read) {
-    u32 prefix = 256;
+    /* an SM86 program's end is found by decoding it (sm86_find_programs), so a prefix too short to hold it would be
+       decoded again at each doubling: its window whole at once, as feat/ounce reads it */
+    u32 prefix = g_shader_sm86 ? SH_CODE : 256;
     memset(code, 0, SH_CODE);
     for (;;) {
         u64 cpu = gmem_read_code_cpu(gva, code, prefix);
@@ -703,8 +709,8 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[26], const ShX
 }
 /* a mesh program's per-primitive SPH, at the offset that its key's word 3 gives (vk_shader_mesh), into si. The offset
    counts from the start of the program's code area, its own SPH included, as code holds it: a code area of 0xe00
-   bytes has it at 0xd00, one of 0x4900 bytes at 0x4800 (docs/OUNCE.md) */
-static void sh_mesh_sph(ShaderInfo* si, int stage, const u8* code, const u32 mask[20]) {
+   bytes has it at 0xd00, one of 0x4900 bytes at 0x4800 (docs/platforms/nx/ounce.md) */
+static void sh_mesh_sph(ShaderInfo* si, int stage, const u8* code, const u32 mask[26]) {
     if (stage != ST_MS || !mask[3] || mask[3] > SH_CODE - sizeof si->mesh.prim_sph) return;
     const u8* at = code + mask[3];
     for (u32 i = 0; i < sizeof si->mesh.prim_sph / 4; i++) si->mesh.prim_sph[i] = snx_ld_le32(at + 4 * i);
@@ -915,8 +921,9 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
         }
         free(a);
     }
-    u32 mlen;
-    u64 h = vk_shader_hash(code, SH_CODE, &mlen, sh_cb_read);
+    /* an SM86 program, never merged, is hashed as vk_shader_read_code hashed it: its decode once */
+    u32 mlen = len;
+    u64 h = g_shader_sm86 && !gva_a ? sm86_hash(code, SH_CODE, len) : vk_shader_hash(code, SH_CODE, &mlen, sh_cb_read);
     mask[20] = shader_absolute_flow(code, mlen) ? (u32)gva : 0;
     VkSh* s = NULL;
     /* one made for the same program: its whole code hashes the same (the merged program's, and each part's with its
@@ -1182,7 +1189,7 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
             u32 set = (u32)shader_vk_set((int)s);
             o->mappings[o->nst] = (VkShaderDescriptorSetAndBindingMappingInfoEXT){
                 .sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
-                .pNext = o->st[o->nst].pNext,
+                .pNext = o->st[o->nst].pNext, /* a mesh stage's required subgroup size */
                 .mappingCount = vk_descriptor_heaps_mapping(g_vk_dslayout[(k->arrays >> set) & 1][set], set,
                                                              o->binding_maps[o->nst], SNX_VKB_END),
                 .pMappings = o->binding_maps[o->nst]};
@@ -1418,10 +1425,10 @@ static VkPipeline pipe_create(const Pipe* e, int* hit) {
     return p;
 }
 /* ------------------------------------------------------------ pipeline libraries */
-/* With graphics pipeline libraries (g_vk.has_gpl, docs/PIPELINE_LIBRARIES.md), a pipeline is the link of four parts:
-   vertex input, the stages before rasterization, the fragment stage and the fragment output. Each part is made once
-   for its key (vk_pipe_split), so a new state of known shaders costs a link of a few milliseconds where a whole
-   pipeline compiled every stage again: one Ounce vertex program of 1.7 MB of SPIR-V took 4 to 10 s for each
+/* With graphics pipeline libraries (g_vk.has_gpl, docs/layers/gpu/pipeline-libraries.md), a pipeline is the link of
+   four parts: vertex input, the stages before rasterization, the fragment stage and the fragment output. Each part is
+   made once for its key (vk_pipe_split), so a new state of known shaders costs a link of a few milliseconds where a
+   whole pipeline compiled every stage again: one Ounce vertex program of 1.7 MB of SPIR-V took 4 to 10 s for each
    pipeline. The draws wait for the link only, and a worker makes the optimized pipeline after it (pipe_optimize),
    which the draws take when it is ready */
 static PMutex g_pj_lock = PMUTEX_INIT;
@@ -1812,7 +1819,7 @@ static int g_warm_busy;                      /* the workers warming a part now (
 /* The most workers that make optimized pipelines at once. An optimized link compiles every stage again: 4 to 5 s
    for a pipeline of a 1.7 MB vertex program on NVIDIA, which no draw can take back once a worker has begun it. A
    first run queues hundreds of them behind the parts, and with no bound they took every worker while a new
-   shader's parts waited (docs/PIPELINE_LIBRARIES.md, "Results"). One worker optimizes, the others stay free */
+   shader's parts waited (docs/layers/gpu/pipeline-libraries.md, "Results"). One worker optimizes, the others stay free */
 #define PIPE_OPT_WORKERS 1
 static void pipe_queue(Pipe* e, int queue);
 /* on a worker: make a shipped program's part into the pipeline cache, then drop the module and the part pipeline (a
@@ -2607,7 +2614,7 @@ static void idx_add(u64 hash, int stage, u32 clip, u32 len, u64 qh, u32 len_a, u
 }
 /* The key's clip word the pass translates a stage with, as the draws ask for it (render.c): the clip distances the 3D
    engine enables, all eight (0xff) in the NVN games tried, for the stages that can be the last before rasterization
-   (docs/NVN_HLE.md); SNX_SH_NOT_LAST for tessellation control, which never is; none for fragment */
+   (docs/layers/gpu/nvn.md); SNX_SH_NOT_LAST for tessellation control, which never is; none for fragment */
 static u32 ship_clip(int stage) { return stage == ST_TCS ? SNX_SH_NOT_LAST : stage == ST_FS ? 0 : 0xFFu; }
 /* a key whose words are all zero but the clip word: the keys the pass translates with */
 static int ship_key_only_clip(const u32 mask[26]) {
@@ -2728,7 +2735,7 @@ static u8* ship_window(const u8* p, size_t avail) {
 /* a shipped program large enough that its part takes about a second to make: make that part into the pipeline cache now,
    on the lowest worker queue, so a draw that meets the program links it (a millisecond) instead of compiling it
    (seconds). The program's indexed bit and its clip word are the ship pass's guesses, so a draw whose key differs
-   still translates and compiles its own, as now (docs/PIPELINE_LIBRARIES.md, step 8) */
+   still translates and compiles its own, as now (docs/layers/gpu/pipeline-libraries.md, step 8) */
 static void ship_warm(int stage, int indexed, const u32* spv, u32 nw) {
     VkShaderModule mod = vk_module_spv(spv, nw);
     if (!mod) return;
@@ -2799,7 +2806,7 @@ static int ship_make(const u8* code, u64 h, int stage, u32 len, u64 qh, u32 len_
     return SHIP_NEW;
 }
 /* A VertexA with the VertexB after it, merged as a draw that binds the two merges them (vk_shader_get): the VertexB is
-   the first SPH of one in the 256-byte slots past A's code, where NVN's compiler puts it (docs/NVN_HLE.md). A
+   the first SPH of one in the 256-byte slots past A's code, where NVN's compiler puts it (docs/layers/gpu/nvn.md). A
    VertexA without one, or that won't merge, is SHIP_SKIPPED: no draw asks for it alone */
 static int ship_dual(const u8* sph, size_t avail) {
     u8 *a = ship_window(sph, avail), *b = NULL, *m = NULL;

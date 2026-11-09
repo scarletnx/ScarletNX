@@ -4,7 +4,7 @@
 #ifdef __linux__
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE   700
-/* MAP_ANONYMOUS (snx_vm_reserve) is POSIX only since 2024: older glibc and musl define it with this */
+/* the names beyond POSIX, which older glibc and musl define only with this */
 #define _DEFAULT_SOURCE
 #endif
 #ifdef __APPLE__
@@ -16,6 +16,8 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/ini_lines.h"
+#include "common/platform/time.h"
+#include "common/platform/vm.h"
 #include <libdeflate.h>
 #include <errno.h>
 #include <limits.h>
@@ -145,7 +147,7 @@ void snx_option_renamed(const char* old, const char* now) {
         if (!strcmp(g_common.renamed[i], old)) return;
     if (g_common.renamed_count < sizeof g_common.renamed / sizeof *g_common.renamed)
         g_common.renamed[g_common.renamed_count++] = old;
-    snx_error("%s is %s now: this run takes it as %s (docs/DEPRECATIONS.md)", old, now, now);
+    snx_error("%s is %s now: this run takes it as %s (docs/user/deprecations.md)", old, now, now);
 }
 
 void snx_error_sink(void (*sink)(const char* line)) {
@@ -558,7 +560,14 @@ char* snx_executable(const char* argv0) {
         free(resolved);
         return path;
     }
+#elif defined(__FreeBSD__)
+    /* FreeBSD mounts no /proc by default: the kernel's own record of the process's file */
+    char buf[8192];
+    size_t size = sizeof buf;
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+    if (!sysctl(mib, 4, buf, &size, NULL, 0) && size > 1 && buf[0] == '/') return snx_strdup(buf);
 #endif
+    if (!argv0) return NULL; /* a caller that has no argv[0] (NULL) takes the system's answer alone */
     {
         /* the program's own file, where snx_find_tool keeps the name of a link to it */
         char *found = snx_find_tool(argv0), *file = found ? snx_absolute(found) : NULL;
@@ -776,6 +785,34 @@ int snx_write_changed(const char* path, const void* data, size_t size) {
     int same = old && n == size && !memcmp(old, data, size);
     free(old);
     return same ? 0 : snx_write_file(path, data, size);
+}
+int snx_ppm_write(FILE* f, uint32_t width, uint32_t height, const unsigned char* pixels, ptrdiff_t pixel_step,
+                  ptrdiff_t row_step, int order) {
+    if (fprintf(f, "P6\n%u %u\n255\n", (unsigned)width, (unsigned)height) < 0) return -1;
+    unsigned char* line = width ? (unsigned char*)malloc((size_t)width * 3) : NULL;
+    if (width && !line) return -1;
+    int rc = 0;
+    for (uint32_t y = 0; y < height && !rc; ++y) {
+        const unsigned char* row = pixels + (ptrdiff_t)y * row_step;
+        for (uint32_t x = 0; x < width; ++x) {
+            const unsigned char* p = row + (ptrdiff_t)x * pixel_step;
+            unsigned char* out = line + (size_t)x * 3;
+            if (order == SNX_PPM_WORD) {
+                uint32_t word;
+                memcpy(&word, p, sizeof word);
+                out[0] = (unsigned char)word;
+                out[1] = (unsigned char)(word >> 8);
+                out[2] = (unsigned char)(word >> 16);
+            } else {
+                out[0] = p[order == SNX_PPM_BGRA ? 2 : 0];
+                out[1] = p[1];
+                out[2] = p[order == SNX_PPM_BGRA ? 0 : 2];
+            }
+        }
+        rc = fwrite(line, 3, width, f) != width ? -1 : 0;
+    }
+    free(line);
+    return rc;
 }
 int snx_copy_file(const char* src, const char* dst) {
     unsigned char buf[65536];
@@ -1336,17 +1373,6 @@ int snx_copy_tree(const char* src, const char* dst) {
     if (snx_path_within(dst, src)) return snx_error("copy destination is inside source: %s", dst);
     return copy_tree(src, dst, 0);
 }
-int snx_replace(const char* src, const char* dst) {
-#ifdef _WIN32
-    wchar_t *a = wide(src), *b = wide(dst);
-    int ok = a && b && MoveFileExW(a, b, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-    free(a);
-    free(b);
-    return !ok;
-#else
-    return rename(src, dst) != 0;
-#endif
-}
 int snx_make_executable(const char* path) {
 #ifdef _WIN32
     (void)path;
@@ -1668,7 +1694,7 @@ const SnxGameFile snx_game_files[SNX_GAME_FILES] = {{".log", SNX_USER_STATE},
 char* snx_work_dir(const char* data_dir) {
     char *old = snx_path_join(data_dir, "work"), *work = snx_user_path(old, SNX_USER_CACHE);
     if (snx_left_behind(old, work))
-        printf("scarletnx: %s was left by an older version: this one keeps it in %s (docs/DEPRECATIONS.md)\n", old,
+        printf("scarletnx: %s was left by an older version: this one keeps it in %s (docs/user/deprecations.md)\n", old,
                work);
     free(old);
     return work;
@@ -1693,7 +1719,7 @@ void snx_recompiled_left(const char* data_dir) {
     if (old && now && snx_left_behind(old, now))
         fprintf(stderr,
                 "scarletnx: %s was left by an older version: new games go to %s, and the ones in it still run until "
-                "they are moved there (docs/DEPRECATIONS.md)\n",
+                "they are moved there (docs/user/deprecations.md)\n",
                 old, now);
     free(old);
     free(now);
@@ -1742,7 +1768,7 @@ void snx_checkout_left(const char* checkout, const char* data) {
         now = snx_checkout_now(data, i);
         if (old && now && snx_left_behind(old, now))
             fprintf(stderr,
-                    "scarletnx: %s was left by an older version: this one keeps it in %s (docs/DEPRECATIONS.md)\n", old,
+                    "scarletnx: %s was left by an older version: this one keeps it in %s (docs/user/deprecations.md)\n", old,
                     now);
         free(old);
         free(now);
@@ -1850,18 +1876,7 @@ char* snx_temp_dir(const char* parent) {
     return path;
 #endif
 }
-double snx_seconds(void) {
-#ifdef _WIN32
-    LARGE_INTEGER frequency, now;
-    QueryPerformanceFrequency(&frequency);
-    QueryPerformanceCounter(&now);
-    return (double)now.QuadPart / (double)frequency.QuadPart;
-#else
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
-#endif
-}
+double snx_seconds(void) { return (double)plat_ns() / 1e9; }
 unsigned snx_cpu_count(void) {
 #ifdef _WIN32
     SYSTEM_INFO info;
@@ -1949,16 +1964,6 @@ unsigned snx_build_threads(void) {
    loader writes into read-write pages and makes them executable before anything jumps there */
 void snx_abort_request(int on) { g_common.abort_requested = on; }
 int snx_abort_requested(void) { return g_common.abort_requested; }
-size_t snx_vm_page_size(void) {
-#ifdef _WIN32
-    SYSTEM_INFO info;
-    GetSystemInfo(&info);
-    return info.dwPageSize;
-#else
-    long size = sysconf(_SC_PAGESIZE);
-    return size > 0 ? (size_t)size : 4096;
-#endif
-}
 SnxU64 snx_footprint(void) {
 #if defined(__APPLE__)
     task_vm_info_data_t info;
@@ -1972,7 +1977,7 @@ SnxU64 snx_footprint(void) {
     if (!f) return 0;
     if (fscanf(f, "%llu %llu", &pages, &resident) != 2) resident = 0;
     fclose(f);
-    return (SnxU64)resident * snx_vm_page_size();
+    return (SnxU64)resident * plat_mem_page();
 #elif defined(_WIN32)
     PROCESS_MEMORY_COUNTERS info;
     return GetProcessMemoryInfo(GetCurrentProcess(), &info, sizeof info) ? (SnxU64)info.WorkingSetSize : 0;
@@ -1981,7 +1986,7 @@ SnxU64 snx_footprint(void) {
     size_t size = sizeof proc;
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)getpid()};
     if (sysctl(mib, 4, &proc, &size, NULL, 0) || size != sizeof proc) return 0;
-    return (SnxU64)proc.ki_rssize * snx_vm_page_size();
+    return (SnxU64)proc.ki_rssize * plat_mem_page();
 #else
     return 0;
 #endif
@@ -2395,7 +2400,7 @@ int snx_memory_available(SnxU64* bytes) {
     if (sysctlbyname("vm.stats.vm.v_free_count", &free_pages, &size, NULL, 0) || size != sizeof free_pages) return 0;
     size = sizeof inactive;
     if (sysctlbyname("vm.stats.vm.v_inactive_count", &inactive, &size, NULL, 0) || size != sizeof inactive) return 0;
-    *bytes = ((SnxU64)free_pages + inactive) * snx_vm_page_size();
+    *bytes = ((SnxU64)free_pages + inactive) * plat_mem_page();
     return 1;
 #else
     (void)bytes;
@@ -2414,40 +2419,6 @@ int snx_memory_total(SnxU64* bytes) {
     if (pages <= 0 || page <= 0) return 0;
     *bytes = (SnxU64)pages * (SnxU64)page;
     return 1;
-#endif
-}
-void* snx_vm_reserve(size_t size) {
-#ifdef _WIN32
-    return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_NOACCESS);
-#else
-    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
-    void* p;
-#ifdef MAP_NORESERVE
-    flags |= MAP_NORESERVE; /* address space only: no swap is set aside for pages never committed */
-#endif
-    p = mmap(NULL, size, PROT_NONE, flags, -1, 0);
-    return p == MAP_FAILED ? NULL : p;
-#endif
-}
-int snx_vm_protect(void* p, size_t size, int access) {
-#ifdef _WIN32
-    static const DWORD protection[] = {PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, PAGE_EXECUTE_READ};
-    DWORD old;
-    if (access == SNX_VM_NONE) return VirtualFree(p, size, MEM_DECOMMIT) ? 0 : -1;
-    /* reserved pages are committed first: VirtualProtect only changes committed ones */
-    if (!VirtualAlloc(p, size, MEM_COMMIT, PAGE_READWRITE)) return -1;
-    return VirtualProtect(p, size, protection[access], &old) ? 0 : -1;
-#else
-    static const int protection[] = {PROT_NONE, PROT_READ, PROT_READ | PROT_WRITE, PROT_READ | PROT_EXEC};
-    return mprotect(p, size, protection[access]);
-#endif
-}
-void snx_vm_release(void* p, size_t size) {
-#ifdef _WIN32
-    (void)size;
-    VirtualFree(p, 0, MEM_RELEASE);
-#else
-    munmap(p, size);
 #endif
 }
 void snx_vm_flush_code(void* p, size_t size) {
@@ -3041,25 +3012,3 @@ int snx_ends_with_nocase(const char* text, const char* ending) {
         if (snx_to_lower(text[n - e + i]) != snx_to_lower(ending[i])) return 0;
     return 1;
 }
-#ifdef _WIN32
-void* snx_library_open(const char* path, char* error, size_t error_size) {
-    wchar_t* w = wide(path);
-    HMODULE library = w ? LoadLibraryW(w) : NULL;
-    if (!library && error_size)
-        snprintf(error, error_size, "cannot load %s: error %lu", path, (unsigned long)GetLastError());
-    free(w);
-    return (void*)library;
-}
-void* snx_library_symbol(void* library, const char* name) {
-    return (void*)(uintptr_t)GetProcAddress((HMODULE)library, name);
-}
-void snx_library_close(void* library) { FreeLibrary((HMODULE)library); }
-#else
-void* snx_library_open(const char* path, char* error, size_t error_size) {
-    void* library = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-    if (!library && error_size) snprintf(error, error_size, "cannot load %s: %s", path, dlerror());
-    return library;
-}
-void* snx_library_symbol(void* library, const char* name) { return dlsym(library, name); }
-void snx_library_close(void* library) { dlclose(library); }
-#endif

@@ -39,9 +39,7 @@ static int logged_write(u64 gva, u32 len, u32 from, u32 n, u32 logged_n, u8 valu
     vk_buf_log_retire(log);
     return 0;
 }
-static void logged_count(void* user, u32 from, u32 to) {
-    *(u32*)user += to - from;
-}
+static void logged_count(void* user, u32 from, u32 to) { *(u32*)user += to - from; }
 static int logged_expect(const u8* mem, const u8* before, u32 len, const u32* from, const u32* n, const u8* value,
                          u32 runs) {
     for (u32 i = 0; i < len; i++) {

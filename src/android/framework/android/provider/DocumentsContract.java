@@ -38,9 +38,72 @@ public final class DocumentsContract {
     public static Uri buildTreeDocumentUri(String authority, String documentId) {
         return new Uri.Builder().scheme("content").authority(authority).appendPath("tree").appendPath(documentId).build();
     }
-    /** No documents provider is here to remove the document. */
-    public static boolean removeDocument(android.content.ContentResolver content, Uri documentUri, Uri parentDocumentUri) throws java.io.FileNotFoundException { return false; }
-    public static Uri createDocument(android.content.ContentResolver content, Uri parentDocumentUri, String mimeType, String displayName) { return null; }
-    public static boolean deleteDocument(android.content.ContentResolver content, Uri documentUri) { return false; }
-    public static Uri renameDocument(android.content.ContentResolver content, Uri documentUri, String displayName) { return null; }
+    // the calls of a document provider, through the content resolver, as Android's: the method, and the URIs in extras
+    static final String METHOD_CREATE_DOCUMENT = "android:createDocument", METHOD_RENAME_DOCUMENT = "android:renameDocument",
+        METHOD_DELETE_DOCUMENT = "android:deleteDocument", METHOD_COPY_DOCUMENT = "android:copyDocument",
+        METHOD_MOVE_DOCUMENT = "android:moveDocument", METHOD_REMOVE_DOCUMENT = "android:removeDocument",
+        METHOD_IS_CHILD_DOCUMENT = "android:isChildDocument";
+    static final String EXTRA_URI = "uri", EXTRA_PARENT_URI = "parentUri", EXTRA_TARGET_URI = "android.content.extra.TARGET_URI",
+        EXTRA_RESULT = "result";
+
+    private static android.os.Bundle call(android.content.ContentResolver content, Uri uri, String method, android.os.Bundle in)
+            throws java.io.FileNotFoundException {
+        try {
+            return content.call(uri.getAuthority(), method, null, in);
+        } catch (IllegalArgumentException | UnsupportedOperationException | IllegalStateException e) {
+            android.util.Log.w("DocumentsContract", "Failed " + method + " on " + uri, e);
+            return null;
+        }
+    }
+    private static Uri uriOf(android.os.Bundle out) { return out != null ? (Uri) out.getParcelable(EXTRA_URI) : null; }
+
+    public static Uri createDocument(android.content.ContentResolver content, Uri parentDocumentUri, String mimeType, String displayName)
+            throws java.io.FileNotFoundException {
+        android.os.Bundle in = new android.os.Bundle();
+        in.putParcelable(EXTRA_URI, parentDocumentUri);
+        in.putString(Document.COLUMN_MIME_TYPE, mimeType);
+        in.putString(Document.COLUMN_DISPLAY_NAME, displayName);
+        return uriOf(call(content, parentDocumentUri, METHOD_CREATE_DOCUMENT, in));
+    }
+    public static Uri renameDocument(android.content.ContentResolver content, Uri documentUri, String displayName)
+            throws java.io.FileNotFoundException {
+        android.os.Bundle in = new android.os.Bundle();
+        in.putParcelable(EXTRA_URI, documentUri);
+        in.putString(Document.COLUMN_DISPLAY_NAME, displayName);
+        android.os.Bundle out = call(content, documentUri, METHOD_RENAME_DOCUMENT, in);
+        if (out == null) return null;
+        Uri renamed = uriOf(out);
+        return renamed != null ? renamed : documentUri;
+    }
+    public static boolean deleteDocument(android.content.ContentResolver content, Uri documentUri) throws java.io.FileNotFoundException {
+        android.os.Bundle in = new android.os.Bundle();
+        in.putParcelable(EXTRA_URI, documentUri);
+        return call(content, documentUri, METHOD_DELETE_DOCUMENT, in) != null;
+    }
+    public static boolean removeDocument(android.content.ContentResolver content, Uri documentUri, Uri parentDocumentUri)
+            throws java.io.FileNotFoundException {
+        android.os.Bundle in = new android.os.Bundle();
+        in.putParcelable(EXTRA_URI, documentUri);
+        in.putParcelable(EXTRA_PARENT_URI, parentDocumentUri);
+        return call(content, documentUri, METHOD_REMOVE_DOCUMENT, in) != null;
+    }
+    public static Uri copyDocument(android.content.ContentResolver content, Uri sourceDocumentUri, Uri targetParentDocumentUri)
+            throws java.io.FileNotFoundException {
+        android.os.Bundle in = new android.os.Bundle();
+        in.putParcelable(EXTRA_URI, sourceDocumentUri);
+        in.putParcelable(EXTRA_TARGET_URI, targetParentDocumentUri);
+        return uriOf(call(content, sourceDocumentUri, METHOD_COPY_DOCUMENT, in));
+    }
+    public static Uri moveDocument(android.content.ContentResolver content, Uri sourceDocumentUri, Uri sourceParentDocumentUri,
+                                   Uri targetParentDocumentUri) throws java.io.FileNotFoundException {
+        android.os.Bundle in = new android.os.Bundle();
+        in.putParcelable(EXTRA_URI, sourceDocumentUri);
+        in.putParcelable(EXTRA_PARENT_URI, sourceParentDocumentUri);
+        in.putParcelable(EXTRA_TARGET_URI, targetParentDocumentUri);
+        return uriOf(call(content, sourceDocumentUri, METHOD_MOVE_DOCUMENT, in));
+    }
+    /** a document of a tree stays in the tree, else the provider's own URI of it */
+    static Uri buildDocumentUriMaybeUsingTree(Uri base, String documentId) {
+        return isTreeUri(base) ? buildDocumentUriUsingTree(base, documentId) : buildDocumentUri(base.getAuthority(), documentId);
+    }
 }

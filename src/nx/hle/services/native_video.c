@@ -593,7 +593,9 @@ static int nn_gsv_INativeVideoCodec_GetOutputProperties(SvcObj* self, u32* prope
     codec_pump(s);
     int rc = nvideo_output_pop(s, properties);
     if (rc)
-        WARN_LIMIT(4, "gsv: video codec %u: output properties asked before an output (%s image for the decoder, %u inputs)\n",
+        WARN_LIMIT(4,
+                   "gsv: video codec %u: output properties asked before an output (%s image for the decoder, %u "
+                   "inputs)\n",
                    codec_index(s), nvideo_image_next(s) ? "an" : "no", s->input_count);
     return rc;
 }

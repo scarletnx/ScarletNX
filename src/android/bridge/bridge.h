@@ -7,7 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The native bridge's core (docs/android/NATIVE.md): the code window that holds the guest libraries, its dispatch
+/* The native bridge's core (docs/platforms/android-apps/native.md): the code window that holds the guest libraries, its dispatch
    table and the JIT that fills it, each thread's CPU state, calls from the host into guest code, and the addresses of
    host functions that guest code calls. Guest memory is the host's: every CPU has mem 0 */
 

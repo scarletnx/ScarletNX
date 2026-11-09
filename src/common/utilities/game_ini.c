@@ -3,6 +3,7 @@
 #include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/ascii.h"
+#include "common/platform/file.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -84,7 +85,7 @@ int snx_ini_record(const char* path, const char* key, const char* value) {
     }
     free(text);
     if (!placed) n += (size_t)sprintf(out + n, "%s[Game]\n%s=%s\n", n ? "\n" : "", key, value);
-    if (snx_mkdirs(dir) || snx_write_file(tmp, out, n) || snx_replace(tmp, path)) {
+    if (snx_mkdirs(dir) || snx_write_file(tmp, out, n) || plat_replace_file(tmp, path)) {
         snx_remove_tree(tmp);
         rc = snx_error("cannot record %s=%s in %s", key, value, path);
     }
@@ -125,7 +126,7 @@ int snx_ini_drop(const char* path, const char* key) {
         n += (size_t)(next - line);
     }
     tmp = snx_format("%s.tmp", path);
-    if (dropped && (snx_write_file(tmp, out, n) || snx_replace(tmp, path))) {
+    if (dropped && (snx_write_file(tmp, out, n) || plat_replace_file(tmp, path))) {
         snx_remove_tree(tmp);
         rc = snx_error("cannot take %s= out of %s", key, path);
     }
@@ -259,7 +260,7 @@ int snx_place_runtime(const char* runtime, const char* copy, char* error, size_t
         snprintf(error, error_size, "out of memory for the game's runtime");
         rc = -1;
     } else if (strcmp(own, mine) && !(snx_is_file(copy) && same_bytes(runtime, copy))) {
-        if (!snx_copy_file(runtime, staged) && !snx_make_executable(staged) && !snx_replace(staged, copy))
+        if (!snx_copy_file(runtime, staged) && !snx_make_executable(staged) && !plat_replace_file(staged, copy))
             rc = 1;
         else {
             snprintf(error, error_size, "cannot copy the runtime %s to %s: %s", runtime, copy,
@@ -383,7 +384,7 @@ int snx_next_write(const char* path, const SnxNext* next) {
         text[n++] = '\n';
     }
     tmp = snx_format("%s.tmp", path);
-    rc = snx_write_file(tmp, text, n) || snx_replace(tmp, path);
+    rc = snx_write_file(tmp, text, n) || plat_replace_file(tmp, path);
     if (rc) {
         snx_error("cannot write %s, the hand-over to the program %s", path, next->program);
         if (snx_is_file(tmp)) snx_remove_tree(tmp);

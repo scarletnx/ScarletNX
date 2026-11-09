@@ -3,7 +3,7 @@
 /* The shader programs a game ships in its RomFS and its executables, found before it runs them (gpu/shipped_pass.c
    walks them, gpu/vk/pipeline.c translates them at startup). NVN's compiled code is the same in every container the
    SDK and NintendoWare write (BNSH, the BFSHA that embeds BNSH, agl's SHARCB) and in the byte arrays executables
-   embed: a 0x30-byte wrapper starting 0x12345678, then the 0x50-byte SPH and the program (docs/NVN_HLE.md), which the
+   embed: a 0x30-byte wrapper starting 0x12345678, then the 0x50-byte SPH and the program (docs/layers/gpu/nvn.md), which the
    game copies into a code pool as it stands. Containers put the wrapper at a 256-byte boundary and an executable's
    arrays at any multiple of 8, so the programs are found by that wrapper at every 4-byte word of any uncompressed
    bytes, not by each container's tables. A bare NVN shader file (0x19866891, one game's) has its SPH at 0xB50.

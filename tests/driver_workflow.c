@@ -3,6 +3,7 @@
 /* Exercise the real driver/supervisor with synthetic extraction, compilation and game children. */
 #define _POSIX_C_SOURCE 200809L
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/setup.h"
 #include "nx/runtime/driver/driver.h"
 #include "nx/runtime/driver/extract.h"
@@ -223,7 +224,7 @@ char* snx_game_stamp(const char* mods) {
 char* snx_own_runtime(const SnxPaths* paths) { return snx_strdup(paths->executable); }
 int snx_deploy_runtime(const char* run, const char* exe) {
     char* tmp = snx_format("%s.tmp", exe);
-    int rc = snx_copy_file(run, tmp) || snx_make_executable(tmp) || snx_replace(tmp, exe);
+    int rc = snx_copy_file(run, tmp) || snx_make_executable(tmp) || plat_replace_file(tmp, exe);
     free(tmp);
     return rc;
 }
@@ -930,8 +931,8 @@ int main(int argc, char** argv) {
         run(exe, repo, dump, log, 1, "", "unknown option: --resoltion=2");
         set_env("SNX_WORKFLOW_FLAGS", "--controls_a=0.5 0.5 100 1");
         run(exe, repo, dump, log, 0, "G", NULL);
-        set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=invalid");
-        run(exe, repo, dump, log, 1, "", "unknown option");
+        set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=invalid"); /* the common option's own message (cli.h) */
+        run(exe, repo, dump, log, 1, "", "scarletnx: --fullscreen takes 0 or 1, not invalid");
         set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=0");
         run(exe, repo, dump, log, 0, "G", NULL);
         set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=1");
@@ -1237,7 +1238,7 @@ int main(int argc, char** argv) {
         set_env("SNX_WORKFLOW_NAMED", "");
         old_data = snx_format("%s_data", old);
         CHECK(!snx_copy_file(game, old) && !snx_mkdirs(old_data));
-        run(exe, repo, old, log, 1, "", "laid out by an older version: move its files as docs/DEPRECATIONS.md says");
+        run(exe, repo, old, log, 1, "", "laid out by an older version: move its files as docs/user/deprecations.md says");
         set_env("SNX_WORKFLOW_FLAGS", "-r");
         run(exe, repo, old, log, 1, "", "laid out by an older version");
         set_env("SNX_WORKFLOW_FLAGS", "");

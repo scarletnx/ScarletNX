@@ -1029,11 +1029,12 @@ int main(int argc, char** argv) {
     plat_file_unmap(&m);
 
     printf("replace\n");
-    /* replace: dst gets tmp's contents; a failing replace removes tmp */
+    /* replace: dst gets tmp's contents; a failing replace leaves tmp for the caller, dst untouched */
     CHECK(!plat_replace_file(tmp, path) && !stat(path, &st) && st.st_size == 0 && !fopen(tmp, "rb"), "replace");
     fclose(fopen(tmp, "wb"));
     snprintf(sub, sizeof sub, "%s/platform_posix.none/x", dir);
-    CHECK(plat_replace_file(tmp, sub) == -1 && !fopen(tmp, "rb"), "a failed replace kept tmp");
+    CHECK(plat_replace_file(tmp, sub) == -1 && !stat(tmp, &st) && stat(sub, &st), "a failed replace kept tmp");
+    remove(tmp);
 
     printf("folders\n");
     snprintf(sub, sizeof sub, "%s/platform_posix.dir", dir);

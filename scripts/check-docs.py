@@ -3,14 +3,15 @@
 # Copyright 2026 the ScarletNX contributors
 """The documentation held to the checkout, each failure a line that names its file and line:
 
-- links: each relative link of README.md, CONTRIBUTING.md, ROADMAP.md and docs/ (Markdown's [text](target) and
-  [name]: target, HTML's src= and href=, outside code) names a file or folder that is there. Its anchor is a heading of
-  the Markdown it names, as GitHub makes one (lowercase, punctuation dropped but - and _, each space a -, a repeated
-  one numbered), or an <a name=> or id= in it; on another file, #L<n> or #L<n>-L<m>, lines the file has
+- links: each relative link of README.md, CONTRIBUTING.md, ROADMAP.md, docs/, CLAUDE.md and .claude/ (its worktrees
+  aside), in Markdown's [text](target) and [name]: target, HTML's src= and href=, outside code, names a file or
+  folder that is there. Its anchor is a heading of the Markdown it names, as GitHub makes one (lowercase, punctuation
+  dropped but - and _, each space a -, a repeated one numbered), or an <a name=> or id= in it; on another file,
+  #L<n> or #L<n>-L<m>, lines the file has
 - indexes: a document over 100 lines with 3 or more ## and ### sections has an ## Index of them, and any document's
   ## Index lists its sections as they are. --index writes them: an index where it stands, a new one under the title
 - the docs' own index: docs/README.md links every document of docs/
-- settings: each key of src/nx/runtime/settings.txt has a row in a table of docs/SETTINGS.md whose header is
+- settings: each key of src/nx/runtime/settings.txt has a row in a table of docs/user/settings.md whose header is
   | Key | Default |, and its Default cell says the key's default and the one each platform gives it (`0` (iOS `1`));
   each key a row names is one settings.txt has. Several keys in a row take one default each, or one for them all,
   and a name in parentheses in the Key cell is no key (`controls_<ID>` (ID one of `a`, `b`))
@@ -27,10 +28,11 @@ from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ('README.md', 'CONTRIBUTING.md', 'ROADMAP.md', 'docs')
+LINKED = ('CLAUDE.md', '.claude')  # the Claude files: their links are held too, but they carry no ## Index
 INDEX_LINES = 100  # a document longer than this carries an ## Index
 INDEX_SECTIONS = 3  # of at least this many sections
 SETTINGS = 'src/nx/runtime/settings.txt'
-SETTINGS_DOC = 'docs/SETTINGS.md'
+SETTINGS_DOC = 'docs/user/settings.md'
 # settings.txt's default-if macros, by the platform a Default cell names
 PLATFORMS = {'SNX_IOS': 'iOS', '__ANDROID__': 'Android'}
 UNSET = object()  # an LLVM option's default: LLVM's own value
@@ -137,12 +139,17 @@ def in_order(paths):
     return sorted(paths, key=lambda p: p.parts)
 
 
-def documents(root):
+def in_worktree(root, path):
+    """whether path is in .claude/worktrees/, the checkouts of other sessions"""
+    return path.relative_to(root).parts[:2] == ('.claude', 'worktrees')
+
+
+def documents(root, names=DOCS):
     out = []
-    for name in DOCS:
+    for name in names:
         path = root / name
         if path.is_dir():
-            out += in_order(p for p in path.rglob('*.md') if p.is_file())
+            out += in_order(p for p in path.rglob('*.md') if p.is_file() and not in_worktree(root, p))
         elif path.is_file():
             out.append(path)
     return out
@@ -512,7 +519,7 @@ def main():
     docs = documents(root)
     failures = Failures()
     check_indexes(root, docs, failures, args.index)
-    check_links(root, docs, failures)
+    check_links(root, docs + documents(root, LINKED), failures)
     check_docs_index(root, failures)
     check_settings(root, failures)
     for failure in failures:
@@ -520,7 +527,10 @@ def main():
     if failures:
         print(f'check-docs.py: {len(failures)} to fix', file=sys.stderr)
         return 1
-    print(f'check-docs.py: {len(docs)} documents, their links, indexes and the settings they list hold')
+    print(
+        f'check-docs.py: {len(docs)} documents, their links, indexes and the settings they list hold, '
+        'and the links of the Claude files'
+    )
     return 0
 
 

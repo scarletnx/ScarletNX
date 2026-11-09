@@ -9,6 +9,7 @@
 #include "nx/hle/hle.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/tracy.h"
+#include "common/utilities/bits.h"
 #include <assert.h>
 
 #define SFCI                 0x49434653u /* the CmifInHeader's magic */
@@ -24,8 +25,6 @@ enum { IPC_DOMAIN_SESSION = 1, IPC_DOMAIN_MESSAGE = 2 };
 
 /* the message's words are little-endian, as every field of HIPC and CMIF is: the descriptors' packed bitfields are
    taken apart from the converted word */
-static u32 rd32(const u8* p) { return snx_ld_le32(p); }
-static void wr32(u8* p, u32 v) { snx_st_le32(p, v); }
 
 /* ipc.c's state is g_hle.ipc (ipc.h): the service objects, sessions and domains, each a pool (hle.h), the warned
    pairs, the registry and the crash report's ring */
@@ -208,7 +207,8 @@ static int out_of_space(u64 addr, u64 size) { return size && (addr >= AS_SIZE ||
    descriptors of a kind: all are read and checked, the first MAX_BUFS kept. 0, or the result in kernel_rc */
 static u32 parse_hipc(IpcCtx* c, Hipc* h) {
     const u8* m = c->msg;
-    u32 w0 = rd32(m), w1 = rd32(m + 4), off = 8, ncopy = 0, nmove = 0, cmode, rloff, rl, i, nx, na, nb, nw, nc;
+    u32 w0 = snx_ld_le32(m), w1 = snx_ld_le32(m + 4), off = 8, ncopy = 0, nmove = 0, cmode, rloff, rl, i, nx, na, nb,
+        nw, nc;
     c->type = w0 & 0xFFFF;
     nx = (w0 >> 16) & 15;
     na = (w0 >> 20) & 15;
@@ -218,13 +218,13 @@ static u32 parse_hipc(IpcCtx* c, Hipc* h) {
     cmode = (w1 >> 10) & 15;
     rloff = (w1 >> 20) & 0x7FF;
     if (w1 >> 31) {
-        u32 sh = rd32(m + 8);
+        u32 sh = snx_ld_le32(m + 8);
         c->has_pid = (int)(sh & 1);
         ncopy = (sh >> 1) & 15;
         nmove = (sh >> 5) & 15;
         off = 12 + (c->has_pid ? 8u : 0u);
         for (i = 0; i < ncopy; i++)
-            if (i < 8) c->copy_h[c->ncopy++] = rd32(m + off + 4 * i);
+            if (i < 8) c->copy_h[c->ncopy++] = snx_ld_le32(m + off + 4 * i);
         off += 4 * (ncopy + nmove);
         if (c->has_pid) c->pid = K_PROCESS_ID; /* the kernel's, whatever the client wrote */
     }
@@ -236,7 +236,7 @@ static u32 parse_hipc(IpcCtx* c, Hipc* h) {
     if (h->raw_end > SERVER_MSG) return c->kernel_rc = SNX_RC_SVC_MESSAGE_TOO_LARGE;
     if (nmove) return c->kernel_rc = SNX_RC_SVC_INVALID_COMBINATION;
     for (i = 0; i < nx; i++, off += 8) { /* X: the pointer buffer's send statics */
-        u32 d0 = rd32(m + off), d1 = rd32(m + off + 4);
+        u32 d0 = snx_ld_le32(m + off), d1 = snx_ld_le32(m + off + 4);
         IpcBuf b;
         b.addr = d1 | (u64)((d0 >> 12) & 15) << 32 | (u64)((d0 >> 6) & 7) << 36;
         b.size = d0 >> 16;
@@ -245,7 +245,7 @@ static u32 parse_hipc(IpcCtx* c, Hipc* h) {
         if (i < MAX_BUFS) c->x[c->nx++] = b;
     }
     for (i = 0; i < na + nb + nw; i++, off += 12) { /* A, B, W: mapped buffers */
-        u32 d0 = rd32(m + off), d1 = rd32(m + off + 4), d2 = rd32(m + off + 8);
+        u32 d0 = snx_ld_le32(m + off), d1 = snx_ld_le32(m + off + 4), d2 = snx_ld_le32(m + off + 8);
         IpcBuf b;
         b.addr = d1 | (u64)(d2 >> 28) << 32 | (u64)((d2 >> 2) & 0x3FFFFF) << 36;
         b.size = d0 | (u64)((d2 >> 24) & 15) << 32;
@@ -259,7 +259,7 @@ static u32 parse_hipc(IpcCtx* c, Hipc* h) {
             c->w[c->nw++] = b;
     }
     for (i = 0; i < nc; i++) { /* C: the receive list */
-        u32 d0 = rd32(m + rl + 8 * i), d1 = rd32(m + rl + 8 * i + 4);
+        u32 d0 = snx_ld_le32(m + rl + 8 * i), d1 = snx_ld_le32(m + rl + 8 * i + 4);
         IpcBuf b;
         b.addr = d0 | (u64)(d1 & 0xFFFF) << 32;
         b.size = d1 >> 16;
@@ -322,8 +322,8 @@ static void parse_cmif(IpcCtx* c, const Hipc* h, int domain) {
         }
         nobj = d[1];
         payload = d[2] | d[3] << 8;
-        c->domain_obj = rd32(d + 4);
-        c->token = rd32(d + 12);
+        c->domain_obj = snx_ld_le32(d + 4);
+        c->token = snx_ld_le32(d + 12);
         if (d[0] == 2) /* Close: nothing more */
             return;
         if (d[0] != 1)
@@ -335,7 +335,7 @@ static void parse_cmif(IpcCtx* c, const Hipc* h, int domain) {
         else {
             u32 i;
             c->nin_objs = (int)nobj;
-            for (i = 0; i < nobj; i++) c->in_objs[i] = rd32(d + 16 + payload + 4 * i);
+            for (i = 0; i < nobj; i++) c->in_objs[i] = snx_ld_le32(d + 16 + payload + 4 * i);
         }
         d += 16;
         if (c->domain_rc) return;
@@ -347,15 +347,15 @@ static void parse_cmif(IpcCtx* c, const Hipc* h, int domain) {
             c->header_rc = SNX_RC_SF_INVALID_CMIF_HEADER_SIZE;
         return;
     }
-    if (rd32(d) != SFCI || rd32(d + 4) > 1) {
+    if (snx_ld_le32(d) != SFCI || snx_ld_le32(d + 4) > 1) {
         if (domain)
             c->domain_rc = SNX_RC_SF_INVALID_CMIF_IN_HEADER;
         else
             c->header_rc = SNX_RC_SF_INVALID_CMIF_IN_HEADER;
         return;
     }
-    c->cmd = rd32(d + 8);
-    if (!domain) c->token = rd32(d + 12);
+    c->cmd = snx_ld_le32(d + 8);
+    if (!domain) c->token = snx_ld_le32(d + 12);
     c->raw = d + 16;
     c->raw_size = (u32)(payload - 16);
 }
@@ -435,30 +435,30 @@ static void respond(IpcCtx* c) {
         size = limit;
     }
     words = c->tipc ? (4 + size) / 4 : (16 + hdrs + size + 4 * nids) / 4;
-    wr32(m, c->tipc ? c->type : 0);
-    wr32(m + 4, words | (off > 8 ? 0x80000000u : 0u));
+    snx_st_le32(m, c->tipc ? c->type : 0);
+    snx_st_le32(m + 4, words | (off > 8 ? 0x80000000u : 0u));
     if (off > 8) {
-        wr32(m + 8, (u32)c->nout_copy << 1 | (u32)nmove << 5);
-        for (i = 0; i < c->nout_copy; i++) wr32(m + 12 + 4 * i, c->out_copy[i]);
-        for (i = 0; i < nmove; i++) wr32(m + 12 + 4 * (c->nout_copy + i), moves[i]);
+        snx_st_le32(m + 8, (u32)c->nout_copy << 1 | (u32)nmove << 5);
+        for (i = 0; i < c->nout_copy; i++) snx_st_le32(m + 12 + 4 * i, c->out_copy[i]);
+        for (i = 0; i < nmove; i++) snx_st_le32(m + 12 + 4 * (c->nout_copy + i), moves[i]);
     }
     if (c->tipc) {
-        wr32(m + start, c->rc);
+        snx_st_le32(m + start, c->rc);
         memcpy(m + start + 4, c->out, size);
         return;
     }
     memset(m + off, 0, start - off);
     if (dom) {
-        wr32(m + start, nids);
+        snx_st_le32(m + start, nids);
         memset(m + start + 4, 0, 12);
         start += 16;
     }
-    wr32(m + start, SFCO);
-    wr32(m + start + 4, 0);
-    wr32(m + start + 8, c->rc);
-    wr32(m + start + 12, c->token);
+    snx_st_le32(m + start, SFCO);
+    snx_st_le32(m + start + 4, 0);
+    snx_st_le32(m + start + 8, c->rc);
+    snx_st_le32(m + start + 12, c->token);
     memcpy(m + start + 16, c->out, size);
-    for (i = 0; i < (int)nids; i++) wr32(m + start + 16 + size + 4 * (u32)i, ids[i]);
+    for (i = 0; i < (int)nids; i++) snx_st_le32(m + start + 16 + size + 4 * (u32)i, ids[i]);
 }
 
 /* ============================================================ serving */
@@ -619,12 +619,10 @@ u32 ipc_handle(u32 handle, u64 msg_addr, u64 msg_size) {
    only. Past WARN_PAIRS pairs the table stops growing and new pairs go unreported, which the log is told once */
 int ipc_warn_once(const char* name, u32 cmd) {
     char key[128];
-    u32 h = 2166136261u, i;
-    size_t k;
+    u32 h, i;
     int report = 0, full = 0;
     snprintf(key, sizeof key, "%s", name && *name ? name : "?");
-    for (k = 0; key[k]; k++) h = (h ^ (u8)key[k]) * 16777619u; /* FNV-1a over the name, then the command */
-    h = (h ^ cmd) * 16777619u;
+    h = snx_fnv32_step(snx_fnv1a32(SNX_FNV32_BASIS, key, strlen(key)), cmd); /* over the name, then the command */
     pm_lock(&g_host.ipc.lk);
     for (i = h % WARN_SLOTS;; i = (i + 1) % WARN_SLOTS) {
         if (!g_hle.ipc.seen[i].name[0]) break;

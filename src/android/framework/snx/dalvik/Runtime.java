@@ -8,7 +8,7 @@ public final class Runtime {
 
     /**
      * System.loadLibrary and Runtime.loadLibrary, which the translator sends here: lib{name}.so of the app's native
-     * library folder, loaded by the native bridge (docs/android/NATIVE.md), never by HotSpot's loader.
+     * library folder, loaded by the native bridge (docs/platforms/android-apps/native.md), never by HotSpot's loader.
      */
     public static void loadLibrary(String name) {
         if (name == null) throw new NullPointerException("libName == null");

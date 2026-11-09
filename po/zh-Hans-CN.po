@@ -3762,8 +3762,8 @@ msgid "now"
 msgstr "现在"
 
 #: src/gui/main.c
-msgid "Not moved. See docs/DEPRECATIONS.md"
-msgstr "未移动任何文件。参见 docs/DEPRECATIONS.md"
+msgid "Not moved. See docs/user/deprecations.md"
+msgstr "未移动任何文件。参见 docs/user/deprecations.md"
 
 #: src/gui/main.c
 #, c-format
@@ -3940,8 +3940,8 @@ msgstr "已移除 %s"
 
 #: src/gui/main.c
 #, c-format
-msgid "Not moved: run it from its dump once, which makes %s, then move its saves (docs/DEPRECATIONS.md)"
-msgstr "未移动：从转储运行一次以创建 %s，再移动其存档（docs/DEPRECATIONS.md）"
+msgid "Not moved: run it from its dump once, which makes %s, then move its saves (docs/user/deprecations.md)"
+msgstr "未移动：从转储运行一次以创建 %s，再移动其存档（docs/user/deprecations.md）"
 
 #: src/gui/main.c
 #, c-format

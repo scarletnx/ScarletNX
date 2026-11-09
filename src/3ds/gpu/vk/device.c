@@ -661,27 +661,15 @@ bool snx_ctr_vk_compute(const uint32_t* words, size_t count, unsigned buffers, u
                                      .setLayoutCount = 1,
                                      .pushConstantRangeCount = push ? 1 : 0,
                                      .pPushConstantRanges = &range};
-    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                   .codeSize = count * 4,
-                                   .pCode = words};
-    VkShaderModule module = VK_NULL_HANDLE;
     if (vkCreateDescriptorSetLayout(v->device, &si, NULL, &out->set) != VK_SUCCESS) return false;
     li.pSetLayouts = &out->set;
     if (vkCreatePipelineLayout(v->device, &li, NULL, &out->layout) != VK_SUCCESS ||
-        vkCreateShaderModule(v->device, &mi, NULL, &module) != VK_SUCCESS) {
+        snx_vk_compute_pipeline(v->device, VK_NULL_HANDLE, out->layout, words, count * 4, &out->pipeline) !=
+            VK_SUCCESS) {
         snx_ctr_vk_compute_free(out);
         return false;
     }
-    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                .module = module,
-                                                .pName = "main"},
-                                      .layout = out->layout};
-    bool ok = vkCreateComputePipelines(v->device, VK_NULL_HANDLE, 1, &ci, NULL, &out->pipeline) == VK_SUCCESS;
-    vkDestroyShaderModule(v->device, module, NULL);
-    if (!ok) snx_ctr_vk_compute_free(out);
-    return ok;
+    return true;
 }
 void snx_ctr_vk_compute_free(SnxCtrVkCompute* c) {
     SnxCtrVk* v = &g_device.vk;

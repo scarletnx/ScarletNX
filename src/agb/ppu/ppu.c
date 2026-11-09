@@ -6,17 +6,7 @@
 #include "common/utilities/endian.h"
 #include <string.h>
 
-/* The scanline buffers the composite pass reads. The board renders one line at a time, on one thread. */
-#define LAYER_TRANSPARENT 0x8000 /* an unused bit of the 15 bit palette colour */
-#define LAYERS            6      /* BG0 to BG3, OBJ and the backdrop */
-typedef struct {
-    uint16_t color[LAYERS][AGB_SCREEN_WIDTH]; /* LAYER_TRANSPARENT marks the pixels a layer leaves open */
-    uint8_t obj_pri[AGB_SCREEN_WIDTH];
-    uint8_t obj_mode[AGB_SCREEN_WIDTH]; /* the mode of the sprite that drew the pixel */
-    uint8_t objwin[AGB_SCREEN_WIDTH];   /* the OBJ window layer */
-    uint8_t drawn[AGB_SCREEN_WIDTH];    /* a sprite already owns the pixel */
-} AgbScanline;
-static AgbScanline scan;
+#define LAYER_TRANSPARENT 0x8000 /* an unused bit of the 15 bit palette colour: AgbScanline's open pixels */
 
 static uint16_t vram16(const AgbBoard* board, uint32_t offset) {
     return snx_ld_le16(board->memory.vram + (offset & 0x1FFFE));
@@ -193,28 +183,29 @@ static int mosaic_size(const AgbPpu* ppu, int shift) { return (ppu->mosaic >> sh
 
 static void text_bg(AgbBoard* board, uint32_t index, int y) {
     AgbPpu* ppu = &board->ppu;
-    uint16_t* out = scan.color[index];
+    uint16_t* out = ppu->scan.color[index];
     uint32_t cnt = ppu->bgcnt[index], charbase = (cnt >> 2 & 3) * 0x4000, screen = (cnt >> 8 & 0x1F) * 0x800;
     int bpp8 = cnt & 0x80, size = cnt >> 14, mosaic = cnt & 0x40;
     int width = size & 1 ? 512 : 256, height = size & 2 ? 512 : 256;
     int py, block = mosaic ? mosaic_size(ppu, 0) : 1;
     if (mosaic) y -= y % mosaic_size(ppu, 4); /* the line its block of lines starts at */
     py = (y + ppu->bgvofs[index]) & (height - 1);
+    uint16_t entry = 0;
+    uint32_t row = 0; /* the tile's row of pixels in the character data */
     for (int x = 0; x < AGB_SCREEN_WIDTH; ++x) {
         int px = (x + ppu->bghofs[index]) & (width - 1);
-        uint32_t block = ((uint32_t)(py >> 8) * (uint32_t)(width >> 8) + (uint32_t)(px >> 8)) * 0x800;
-        uint32_t entry_address = screen + block + (uint32_t)((py >> 3) & 31) * 64 + (uint32_t)((px >> 3) & 31) * 2;
-        uint16_t entry = vram16(board, entry_address);
-        uint32_t tile = entry & 0x3FF;
-        int tx = entry & 0x400 ? 7 - (px & 7) : px & 7, ty = entry & 0x800 ? 7 - (py & 7) : py & 7;
-        uint32_t address;
+        if (!x || !(px & 7)) { /* a tile's map entry, read once for its pixels on the line */
+            uint32_t at = ((uint32_t)(py >> 8) * (uint32_t)(width >> 8) + (uint32_t)(px >> 8)) * 0x800;
+            entry = vram16(board, screen + at + (uint32_t)((py >> 3) & 31) * 64 + (uint32_t)((px >> 3) & 31) * 2);
+            uint32_t tile = entry & 0x3FF, ty = (uint32_t)(entry & 0x800 ? 7 - (py & 7) : py & 7);
+            row = bpp8 ? charbase + tile * 64 + ty * 8 : charbase + tile * 32 + ty * 4;
+        }
+        int tx = entry & 0x400 ? 7 - (px & 7) : px & 7;
         uint8_t color;
-        if (bpp8) {
-            address = charbase + tile * 64 + (uint32_t)ty * 8 + (uint32_t)tx;
-            color = board->memory.vram[address & 0xFFFF];
-        } else {
-            address = charbase + tile * 32 + (uint32_t)ty * 4 + (uint32_t)tx / 2;
-            uint8_t byte = board->memory.vram[address & 0xFFFF];
+        if (bpp8)
+            color = board->memory.vram[(row + (uint32_t)tx) & 0xFFFF];
+        else {
+            uint8_t byte = board->memory.vram[(row + (uint32_t)tx / 2) & 0xFFFF];
             color = tx & 1 ? byte >> 4 : byte & 15;
             if (color) color |= (uint8_t)(entry >> 12) << 4;
         }
@@ -227,7 +218,7 @@ static void text_bg(AgbBoard* board, uint32_t index, int y) {
    lines. A block's first pixel off a background that doesn't wrap leaves it open, and the next pixel starts the block */
 static void affine_bg(AgbBoard* board, uint32_t index, int y) {
     AgbPpu* ppu = &board->ppu;
-    uint16_t* out = scan.color[index];
+    uint16_t* out = ppu->scan.color[index];
     uint32_t cnt = ppu->bgcnt[index], charbase = (cnt >> 2 & 3) * 0x4000, screen = (cnt >> 8 & 0x1F) * 0x800;
     int wrap = cnt & 0x2000, pixels = 128 << (cnt >> 14), tiles = pixels / 8, block = 1, wait = 0;
     int64_t sx = ppu->bgx_line[index], sy = ppu->bgy_line[index];
@@ -265,7 +256,7 @@ static void affine_bg(AgbBoard* board, uint32_t index, int y) {
    that starts there starts again on the next pixel, as mGBA draws them */
 static void bitmap_bg(AgbBoard* board, int y, int mode) {
     AgbPpu* ppu = &board->ppu;
-    uint16_t* out = scan.color[2];
+    uint16_t* out = ppu->scan.color[2];
     uint32_t page = ppu->dispcnt & 0x10 ? 0xA000 : 0;
     int32_t height = mode == 5 ? 128 : AGB_SCREEN_HEIGHT, width = mode == 5 ? 160 : AGB_SCREEN_WIDTH;
     int block = 1, wait = 0;
@@ -401,21 +392,21 @@ static void obj_line(AgbBoard* board, int y) {
             if (!color) {
                 /* an open pixel still gives its priority, and whether it is semi transparent, to the pixel a sprite
                    of a lower one drew there, as mGBA draws it: that pixel goes over the backgrounds this one would */
-                if (scan.drawn[screen_x] && priority < scan.obj_pri[screen_x]) {
-                    scan.obj_pri[screen_x] = (uint8_t)priority;
-                    scan.obj_mode[screen_x] = (uint8_t)(semi ? 1 : 0);
+                if (ppu->scan.drawn[screen_x] && priority < ppu->scan.obj_pri[screen_x]) {
+                    ppu->scan.obj_pri[screen_x] = (uint8_t)priority;
+                    ppu->scan.obj_mode[screen_x] = (uint8_t)(semi ? 1 : 0);
                 }
                 continue;
             }
             if (objwin_mode) {
-                scan.objwin[screen_x] = 1;
+                ppu->scan.objwin[screen_x] = 1;
                 continue;
             }
-            if (scan.drawn[screen_x] && priority >= scan.obj_pri[screen_x]) continue;
-            scan.drawn[screen_x] = 1;
-            scan.color[4][screen_x] = palette(board, 0x100 + color);
-            scan.obj_pri[screen_x] = (uint8_t)priority;
-            scan.obj_mode[screen_x] = (uint8_t)(semi ? 1 : 0);
+            if (ppu->scan.drawn[screen_x] && priority >= ppu->scan.obj_pri[screen_x]) continue;
+            ppu->scan.drawn[screen_x] = 1;
+            ppu->scan.color[4][screen_x] = palette(board, 0x100 + color);
+            ppu->scan.obj_pri[screen_x] = (uint8_t)priority;
+            ppu->scan.obj_mode[screen_x] = (uint8_t)(semi ? 1 : 0);
         }
     }
 }
@@ -432,18 +423,28 @@ static void window_step(AgbPpu* ppu, int y) {
     }
 }
 
-static uint8_t window_mask(const AgbPpu* ppu, int x, int objwin) {
-    if (!(ppu->dispcnt & 0xE000)) return 0x3F;
-    if ((ppu->dispcnt & 0x2000) && ppu->window_on[0]) {
-        uint8_t x1 = ppu->win0h >> 8, x2 = ppu->win0h;
-        if (x1 <= x2 ? x >= x1 && x < x2 : x >= x1 || x < x2) return ppu->winin & 0x3F;
+/* value over the pixels of a window's horizontal span, h its WINxH: from its left edge up to its right one, around
+   the screen's edge when the right comes first */
+static void window_span(uint8_t* mask, uint16_t h, uint8_t value) {
+    int x1 = h >> 8, x2 = h & 0xFF;
+    if (x1 <= x2) {
+        for (int x = x1; x < x2 && x < AGB_SCREEN_WIDTH; ++x) mask[x] = value;
+        return;
     }
-    if ((ppu->dispcnt & 0x4000) && ppu->window_on[1]) {
-        uint8_t x1 = ppu->win1h >> 8, x2 = ppu->win1h;
-        if (x1 <= x2 ? x >= x1 && x < x2 : x >= x1 || x < x2) return (ppu->winin >> 8) & 0x3F;
+    for (int x = 0; x < x2 && x < AGB_SCREEN_WIDTH; ++x) mask[x] = value;
+    for (int x = x1; x < AGB_SCREEN_WIDTH; ++x) mask[x] = value;
+}
+/* the layers and effects each pixel of the line shows: WIN0 over WIN1 over the OBJ window over the outside */
+static void window_masks(const AgbPpu* ppu, uint8_t* mask) {
+    if (!(ppu->dispcnt & 0xE000)) {
+        memset(mask, 0x3F, AGB_SCREEN_WIDTH);
+        return;
     }
-    if ((ppu->dispcnt & 0x8000) && objwin) return (ppu->winout >> 8) & 0x3F;
-    return ppu->winout & 0x3F;
+    uint8_t outside = ppu->winout & 0x3F, objwin = (ppu->winout >> 8) & 0x3F;
+    int objwin_on = (ppu->dispcnt & 0x8000) != 0;
+    for (int x = 0; x < AGB_SCREEN_WIDTH; ++x) mask[x] = objwin_on && ppu->scan.objwin[x] ? objwin : outside;
+    if ((ppu->dispcnt & 0x4000) && ppu->window_on[1]) window_span(mask, ppu->win1h, (ppu->winin >> 8) & 0x3F);
+    if ((ppu->dispcnt & 0x2000) && ppu->window_on[0]) window_span(mask, ppu->win0h, ppu->winin & 0x3F);
 }
 
 /* a blend weight of BLDALPHA's or BLDY's, its five bits held to 16 sixteenths, as the hardware and mGBA hold them */
@@ -456,35 +457,50 @@ static void composite_line(AgbBoard* board, int y) {
     /* a second target among the layers shown, the backdrop always: what a semi transparent sprite's light needs */
     int seconds = ppu->bldcnt >> 13 & 1;
     for (int i = 0; i < 4; ++i) seconds |= (ppu->dispcnt >> (8 + i) & 1) && (ppu->bldcnt >> (8 + i) & 1);
+    if (forced_blank) {
+        for (int x = 0; x < AGB_SCREEN_WIDTH; ++x) out[x] = 0xFFu << 24 | 0xFFFFFFu;
+        return;
+    }
+    uint8_t masks[AGB_SCREEN_WIDTH];
+    window_masks(ppu, masks);
+    /* the backgrounds by their key (priority, then number), lowest first: an order that holds for the whole line. A
+       sprite's key is its priority times 8, which no background's equals */
+    int order[4], keys[4];
+    for (int layer = 0; layer < 4; ++layer) {
+        int key = (ppu->bgcnt[layer] & 3) * 8 + 1 + layer, at = layer;
+        for (; at && keys[at - 1] > key; --at) {
+            order[at] = order[at - 1];
+            keys[at] = keys[at - 1];
+        }
+        order[at] = layer;
+        keys[at] = key;
+    }
+    int effect = ppu->bldcnt >> 6 & 3;
+    uint16_t backdrop = palette(board, 0);
+    int32_t eva = weight(ppu->bldalpha), evb = weight(ppu->bldalpha >> 8), evy = weight(ppu->bldy);
     for (int x = 0; x < AGB_SCREEN_WIDTH; ++x) {
         int top = -1, second = -1, top_key = 99, second_key = 99;
-        uint8_t mask = window_mask(ppu, x, scan.objwin[x]);
+        uint8_t mask = masks[x];
         uint16_t color;
-        int effect = ppu->bldcnt >> 6 & 3;
-        if (forced_blank) {
-            out[x] = 0xFFu << 24 | 0xFFFFFFu;
-            continue;
-        }
-        for (int layer = 4; layer >= 0; --layer) {
-            int key;
-            uint16_t value = scan.color[layer][x];
-            if (value & LAYER_TRANSPARENT) continue;
-            if (layer == 4) {
-                if (!(mask & 0x10)) continue;
-                key = scan.obj_pri[x] * 8;
+        /* the two front backgrounds the window shows, then the sprite among them */
+        for (int i = 0; i < 4 && second < 0; ++i) {
+            int layer = order[i];
+            if ((ppu->scan.color[layer][x] & LAYER_TRANSPARENT) || !(mask & (1 << layer))) continue;
+            if (top < 0) {
+                top = layer;
+                top_key = keys[i];
             } else {
-                if (!(mask & (1 << layer))) continue;
-                key = (ppu->bgcnt[layer] & 3) * 8 + 1 + layer;
+                second = layer;
+                second_key = keys[i];
             }
+        }
+        if (!(ppu->scan.color[4][x] & LAYER_TRANSPARENT) && (mask & 0x10)) {
+            int key = ppu->scan.obj_pri[x] * 8;
             if (key < top_key) {
                 second = top;
-                second_key = top_key;
-                top = layer;
-                top_key = key;
-            } else if (key < second_key) {
-                second = layer;
-                second_key = key;
-            }
+                top = 4;
+            } else if (key < second_key)
+                second = 4;
         }
         /* the backdrop fills the pixel or stands under everything else; under the backdrop is nothing to blend with */
         if (top < 0)
@@ -492,11 +508,11 @@ static void composite_line(AgbBoard* board, int y) {
         else if (second < 0)
             second = 5;
         {
-            uint16_t first_color = top == 5 ? palette(board, 0) : scan.color[top][x];
-            uint16_t second_color = second < 0 ? 0 : second == 5 ? palette(board, 0) : scan.color[second][x];
+            uint16_t first_color = top == 5 ? backdrop : ppu->scan.color[top][x];
+            uint16_t second_color = second < 0 ? 0 : second == 5 ? backdrop : ppu->scan.color[second][x];
             int first_target = ppu->bldcnt >> top & 1;
             int second_target = second >= 0 && (ppu->bldcnt >> (second + 8) & 1);
-            int semi = top == 4 && scan.obj_mode[x] == 1;
+            int semi = top == 4 && ppu->scan.obj_mode[x] == 1;
             /* the brightness effect lights the first targets, and a semi transparent sprite that has nothing to blend
                with below when OBJ is a first target or another layer a second one, as mGBA's reblend has it */
             int lit = (mask & 0x20) && (effect == 2 || effect == 3) && (first_target || (semi && seconds));
@@ -504,7 +520,6 @@ static void composite_line(AgbBoard* board, int y) {
             if (second_target && (semi || ((mask & 0x20) && effect == 1 && first_target))) {
                 /* alpha blend: a semi transparent sprite blends whether or not the effect selects it, or the window
                    lets effects through, as mGBA has it */
-                int32_t eva = weight(ppu->bldalpha), evb = weight(ppu->bldalpha >> 8);
                 uint32_t result = 0;
                 for (int component = 0; component < 3; ++component) {
                     int32_t c1 = first_color >> (component * 5) & 31, c2 = second_color >> (component * 5) & 31;
@@ -513,7 +528,6 @@ static void composite_line(AgbBoard* board, int y) {
                 }
                 color = (uint16_t)result;
             } else if (lit) {
-                int32_t evy = weight(ppu->bldy);
                 uint32_t result = 0;
                 for (int component = 0; component < 3; ++component) {
                     int32_t c1 = first_color >> (component * 5) & 31;
@@ -531,12 +545,12 @@ static void render_line(AgbBoard* board, int y) {
     AgbPpu* ppu = &board->ppu;
     int mode = ppu->dispcnt & 7;
     window_step(ppu, y);
-    for (int layer = 0; layer < LAYERS; ++layer)
-        for (int x = 0; x < AGB_SCREEN_WIDTH; ++x) scan.color[layer][x] = LAYER_TRANSPARENT;
-    memset(scan.obj_pri, 0, sizeof(scan.obj_pri));
-    memset(scan.obj_mode, 0, sizeof(scan.obj_mode));
-    memset(scan.objwin, 0, sizeof(scan.objwin));
-    memset(scan.drawn, 0, sizeof(scan.drawn));
+    for (int layer = 0; layer < AGB_LAYERS; ++layer)
+        for (int x = 0; x < AGB_SCREEN_WIDTH; ++x) ppu->scan.color[layer][x] = LAYER_TRANSPARENT;
+    memset(ppu->scan.obj_pri, 0, sizeof(ppu->scan.obj_pri));
+    memset(ppu->scan.obj_mode, 0, sizeof(ppu->scan.obj_mode));
+    memset(ppu->scan.objwin, 0, sizeof(ppu->scan.objwin));
+    memset(ppu->scan.drawn, 0, sizeof(ppu->scan.drawn));
     if (!(ppu->dispcnt & 0x80)) {
         if (mode == 0) {
             for (int i = 0; i < 4; ++i)

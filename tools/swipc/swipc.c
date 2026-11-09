@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* swipc: the IPC interface generator (#155). It reads interface definitions written in SwIPC's language (.swipc,
-   see docs/IPC.md) and writes for each file a header, with the types and each interface's dispatcher and
+   see docs/platforms/nx/ipc.md) and writes for each file a header, with the types and each interface's dispatcher and
    registration, and a .inc with the handlers' prototypes and the dispatchers. A dispatcher checks the request sends
    what the command declares, unpacks a CMIF request into its handler's arguments and packs the reply, laid out as
    the SDK's service framework lays them out (Atmosphere's sf_impl_command_serialization.hpp, read, not ported, and

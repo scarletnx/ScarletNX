@@ -442,11 +442,11 @@ static int64_t waitid_call(GnuProcess* p, const uint64_t a[6]) {
                    : info.si_code == CLD_STOPPED                                ? 5
                                                                                 : 6;
         int status = info.si_code == CLD_EXITED ? info.si_status : gnu_guest_signal(info.si_status);
-        gnu_vfs_put32(out, 17); /* SIGCHLD */
-        gnu_vfs_put32(out + 8, (uint32_t)code);
-        gnu_vfs_put32(out + 16, (uint32_t)info.si_pid);
-        gnu_vfs_put32(out + 20, (uint32_t)info.si_uid);
-        gnu_vfs_put32(out + 24, (uint32_t)status);
+        snx_st_le32(out, 17); /* SIGCHLD */
+        snx_st_le32(out + 8, (uint32_t)code);
+        snx_st_le32(out + 16, (uint32_t)info.si_pid);
+        snx_st_le32(out + 20, (uint32_t)info.si_uid);
+        snx_st_le32(out + 24, (uint32_t)status);
     }
     if (a[2] && gnu_memory_write(&p->memory, a[2], out, sizeof out)) return -GNU_EFAULT;
     if (a[4]) {

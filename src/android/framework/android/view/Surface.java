@@ -18,8 +18,17 @@ public class Surface implements android.os.Parcelable {
         texture = true;
         width = height = 1;
     }
-    /** a SurfaceTexture's: ANativeWindow_fromSurface gives it a window of its own, which shows nowhere */
+    /** a SurfaceTexture's, or a SurfaceView's on a display that shows nowhere: ANativeWindow_fromSurface gives it a
+        window of its own, which shows nowhere */
     private boolean texture;
+    /** a SurfaceView's surface on a display that shows nowhere (a virtual display's), at the view's size */
+    void setNowhere(boolean valid, int width, int height) {
+        window = false;
+        texture = valid;
+        this.width = width;
+        this.height = height;
+        this.valid = valid;
+    }
     boolean isTexture() { return texture && valid; }
     void setWindow(boolean window, int width, int height) {
         this.window = window;

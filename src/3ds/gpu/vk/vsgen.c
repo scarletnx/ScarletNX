@@ -17,25 +17,43 @@
 
 #define PROGRAM_END 4096u
 
-enum {
-    OP_ADD = 0x00, OP_DP3 = 0x01, OP_DP4 = 0x02, OP_DPH = 0x03, OP_EX2 = 0x05, OP_LG2 = 0x06, OP_MUL = 0x08,
-    OP_SGE = 0x09, OP_SLT = 0x0a, OP_FLR = 0x0b, OP_MAX = 0x0c, OP_MIN = 0x0d, OP_RCP = 0x0e, OP_RSQ = 0x0f,
-    OP_MOVA = 0x12, OP_MOV = 0x13, OP_DPHI = 0x18, OP_SGEI = 0x1a, OP_SLTI = 0x1b, OP_NOP = 0x21, OP_END = 0x22,
-    OP_CALL = 0x24, OP_CALLC = 0x25, OP_CALLU = 0x26, OP_IFU = 0x27, OP_IFC = 0x28, OP_LOOP = 0x29, OP_EMIT = 0x2a,
-    OP_SETEMIT = 0x2b, OP_JMPC = 0x2c, OP_JMPU = 0x2d, OP_CMP = 0x2e, OP_MADI = 0x30, OP_MAD = 0x38
-};
-static unsigned opcode(uint32_t instr) { return instr >> 26; }
-static unsigned effective(unsigned op) {
-    if ((op & ~7u) == OP_MAD) return OP_MAD;
-    if ((op & ~7u) == OP_MADI) return OP_MADI;
-    if ((op & ~1u) == OP_CMP) return OP_CMP;
-    return op;
+/* what an instruction does to the flow of the program, which the control flow analysis and the walks over a range
+   read (step_of) */
+typedef enum {
+    STEP_NEXT,    /* on to the next instruction */
+    STEP_END,     /* END */
+    STEP_JUMP,    /* JMPC and JMPU: to dest, or on */
+    STEP_CALL,    /* CALL: the range dest to dest + num, then on */
+    STEP_CALL_IF, /* CALLC and CALLU */
+    STEP_IF,      /* IFC and IFU: the body up to dest, or the else part, dest to dest + num */
+    STEP_LOOP,    /* LOOP: the body up to dest, inclusive */
+    STEP_UNKNOWN  /* BREAK, BREAKC, and an opcode with no instruction: Azahar does not translate them either */
+} StepKind;
+typedef struct {
+    StepKind kind;
+    uint32_t dest, num;
+} Step;
+
+/* the decoder that tools/decodetree makes from gpu/pica.decode: decode_pica(c, word) calls the trans_ function of the
+   word's instruction, which gives its step and, when c has a Gen, compiles the instruction at c->offset */
+typedef struct Gen Gen;
+typedef struct {
+    Gen* g;
+    uint32_t offset;
+    Step step;
+} Decode;
+typedef Decode DisasContext;
+#include "common/utilities/decodetree.h"
+/* the generated extractors take a context that they leave unused, as QEMU's do */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#include "decode-pica.inc"
+#pragma GCC diagnostic pop
+static Step step_of(uint32_t instr) {
+    Decode c = {NULL, 0, {STEP_UNKNOWN, 0, 0}};
+    decode_pica(&c, instr);
+    return c.step;
 }
-static bool arithmetic(unsigned op) { return op <= 0x0f || op == OP_MOVA || op == OP_MOV || (op & ~1u) == OP_CMP; }
-static bool inverted_arithmetic(unsigned op) { return op >= 0x18 && op <= 0x1b; }
-/* the flow control fields */
-static uint32_t dest_offset(uint32_t i) { return snx_bits(i, 10, 12); }
-static uint32_t num_instructions(uint32_t i) { return snx_bits(i, 0, 8); }
 
 /* ---- the control flow analysis: subroutines, the ranges a CALL, IF or LOOP names, each with its exit and the
    addresses JMPs inside it reach ---- */
@@ -110,21 +128,20 @@ static Exit scan(Flow* f, uint32_t begin, uint32_t end, Labels* labels) {
     f->scans[slot] = (Scanned){begin, end, EXIT_UNDETERMINED};
     Exit result = EXIT_RETURN;
     for (uint32_t offset = begin; offset != end && offset < PROGRAM_END && !f->fail; ++offset) {
-        uint32_t instr = f->code[offset];
-        unsigned op = opcode(instr);
-        if (op == OP_END) {
+        Step st = step_of(f->code[offset]);
+        if (st.kind == STEP_END) {
             result = EXIT_END;
             goto done;
         }
-        if (op == OP_JMPC || op == OP_JMPU) {
-            if (!label_add(labels, dest_offset(instr))) f->fail = "out of memory";
+        if (st.kind == STEP_JUMP) {
+            if (!label_add(labels, st.dest)) f->fail = "out of memory";
             Exit no_jump = scan(f, offset + 1, end, labels);
-            Exit jump = scan(f, dest_offset(instr), end, labels);
+            Exit jump = scan(f, st.dest, end, labels);
             result = parallel(no_jump, jump);
             goto done;
         }
-        if (op == OP_CALL) {
-            const Sub* call = add_sub(f, dest_offset(instr), dest_offset(instr) + num_instructions(instr));
+        if (st.kind == STEP_CALL) {
+            const Sub* call = add_sub(f, st.dest, st.dest + st.num);
             if (!call) return EXIT_UNDETERMINED;
             if (call->exit == EXIT_END) {
                 result = EXIT_END;
@@ -134,30 +151,30 @@ static Exit scan(Flow* f, uint32_t begin, uint32_t end, Labels* labels) {
             result = series(exit, scan(f, offset + 1, end, labels));
             goto done;
         }
-        if (op == OP_LOOP) {
-            const Sub* loop = add_sub(f, offset + 1, dest_offset(instr) + 1);
+        if (st.kind == STEP_LOOP) {
+            const Sub* loop = add_sub(f, offset + 1, st.dest + 1);
             if (!loop) return EXIT_UNDETERMINED;
             if (loop->exit == EXIT_END) {
                 result = EXIT_END;
                 goto done;
             }
             Exit exit = loop->exit;
-            result = series(exit, scan(f, dest_offset(instr) + 1, end, labels));
+            result = series(exit, scan(f, st.dest + 1, end, labels));
             goto done;
         }
-        if (op == OP_CALLC || op == OP_CALLU) {
-            const Sub* call = add_sub(f, dest_offset(instr), dest_offset(instr) + num_instructions(instr));
+        if (st.kind == STEP_CALL_IF) {
+            const Sub* call = add_sub(f, st.dest, st.dest + st.num);
             if (!call) return EXIT_UNDETERMINED;
             Exit exit = call->exit;
             result = series(parallel(exit, EXIT_RETURN), scan(f, offset + 1, end, labels));
             goto done;
         }
-        if (op == OP_IFU || op == OP_IFC) {
-            const Sub* if_sub = add_sub(f, offset + 1, dest_offset(instr));
+        if (st.kind == STEP_IF) {
+            const Sub* if_sub = add_sub(f, offset + 1, st.dest);
             if (!if_sub) return EXIT_UNDETERMINED;
             Exit if_exit = if_sub->exit, else_exit = EXIT_RETURN;
-            if (num_instructions(instr)) {
-                const Sub* else_sub = add_sub(f, dest_offset(instr), dest_offset(instr) + num_instructions(instr));
+            if (st.num) {
+                const Sub* else_sub = add_sub(f, st.dest, st.dest + st.num);
                 if (!else_sub) return EXIT_UNDETERMINED;
                 else_exit = else_sub->exit;
             }
@@ -166,7 +183,7 @@ static Exit scan(Flow* f, uint32_t begin, uint32_t end, Labels* labels) {
                 result = EXIT_END;
                 goto done;
             }
-            result = series(both, scan(f, dest_offset(instr) + num_instructions(instr), end, labels));
+            result = series(both, scan(f, st.dest + st.num, end, labels));
             goto done;
         }
     }
@@ -216,7 +233,7 @@ static void flow_free(Flow* f) {
 }
 /* ---- the SPIR-V of the program: each subroutine a function returning whether the program ended in it, the
    registers Private variables they share (as the GLSL's globals were) ---- */
-typedef struct {
+struct Gen {
     const SnxCtrShaderSetup* setup;
     const SnxCtrVsConfig* config;
     Flow* flow;
@@ -235,7 +252,7 @@ typedef struct {
     uint32_t addr[3];                      /* a0.x, a0.y and aL, Private int */
     uint32_t cc[2];                        /* the conditional codes, Private bool */
     const char* fail;
-} Gen;
+};
 
 static uint32_t sconst(Gen* g, int32_t v) { return spv_emit_const_i32(g->s, v); }
 static uint32_t uconst(Gen* g, uint32_t v) { return spv_emit_const_u32(g->s, v); }
@@ -324,12 +341,11 @@ static uint32_t cc_bit(Gen* g, unsigned i, bool set) {
     uint32_t v = load(g, g->t_bool, g->cc[i]);
     return set ? v : SPV(g->s, SPV_OP_LOGICAL_NOT, g->t_bool, v);
 }
-static uint32_t condition(Gen* g, uint32_t instr) {
-    unsigned op = snx_bits(instr, 22, 2);
-    if (op == 2) return cc_bit(g, 0, snx_bits(instr, 25, 1));
-    if (op == 3) return cc_bit(g, 1, snx_bits(instr, 24, 1));
-    uint32_t x = cc_bit(g, 0, snx_bits(instr, 25, 1)), y = cc_bit(g, 1, snx_bits(instr, 24, 1));
-    return SPV(g->s, op == 0 ? SPV_OP_LOGICAL_OR : SPV_OP_LOGICAL_AND, g->t_bool, x, y); /* any, all */
+static uint32_t condition(Gen* g, const arg_cond* x) {
+    if (x->cond == 2) return cc_bit(g, 0, x->refx);
+    if (x->cond == 3) return cc_bit(g, 1, x->refy);
+    uint32_t a = cc_bit(g, 0, x->refx), b = cc_bit(g, 1, x->refy);
+    return SPV(g->s, x->cond == 0 ? SPV_OP_LOGICAL_OR : SPV_OP_LOGICAL_AND, g->t_bool, a, b); /* any, all */
 }
 static uint32_t uniform_bool(Gen* g, uint32_t index, bool invert) {
     uint32_t masked = SPV(g->s, SPV_OP_BITWISE_AND, g->t_uint, uniform_b(g), uconst(g, 1u << index));
@@ -393,214 +409,297 @@ static void set_dest(Gen* g, uint32_t pattern, uint32_t var, uint32_t value, boo
 }
 /* where the range goes on after the instruction at offset, what compile_instr returns */
 static uint32_t next_offset(Gen* g, uint32_t offset) {
-    uint32_t instr = g->setup->code[offset];
-    unsigned raw = opcode(instr), op = effective(raw);
-    if (arithmetic(raw) || inverted_arithmetic(raw) || op == OP_MAD || op == OP_MADI) return offset + 1;
-    switch (raw) {
-        case OP_END: return PROGRAM_END;
-        case OP_CALL: {
-            const Sub* s = find_sub(g->flow, dest_offset(instr), dest_offset(instr) + num_instructions(instr));
+    Step st = step_of(g->setup->code[offset]);
+    switch (st.kind) {
+        case STEP_NEXT:
+        case STEP_JUMP:
+        case STEP_CALL_IF: return offset + 1;
+        case STEP_END: return PROGRAM_END;
+        case STEP_CALL: {
+            const Sub* s = find_sub(g->flow, st.dest, st.dest + st.num);
             return s && s->exit == EXIT_END ? PROGRAM_END : offset + 1;
         }
-        case OP_JMPC:
-        case OP_JMPU:
-        case OP_CALLC:
-        case OP_CALLU:
-        case OP_NOP:
-        case OP_EMIT:
-        case OP_SETEMIT: return offset + 1;
-        case OP_IFC:
-        case OP_IFU: {
-            uint32_t else_offset = dest_offset(instr), endif_offset = else_offset + num_instructions(instr);
-            if (!num_instructions(instr)) return else_offset;
+        case STEP_IF: {
+            uint32_t else_offset = st.dest, endif_offset = else_offset + st.num;
+            if (!st.num) return else_offset;
             const Sub* if_sub = find_sub(g->flow, offset + 1, else_offset);
             const Sub* else_sub = find_sub(g->flow, else_offset, endif_offset);
             return if_sub && else_sub && if_sub->exit == EXIT_END && else_sub->exit == EXIT_END ? PROGRAM_END
                                                                                                 : endif_offset;
         }
-        case OP_LOOP: {
-            const Sub* s = find_sub(g->flow, offset + 1, dest_offset(instr) + 1);
-            return s && s->exit == EXIT_END ? PROGRAM_END : dest_offset(instr) + 1;
+        case STEP_LOOP: {
+            const Sub* s = find_sub(g->flow, offset + 1, st.dest + 1);
+            return s && s->exit == EXIT_END ? PROGRAM_END : st.dest + 1;
         }
         default: return PROGRAM_END;
     }
 }
-static void compile_arithmetic(Gen* g, uint32_t instr, unsigned raw) {
-    unsigned op = effective(raw);
-    bool inverted = inverted_arithmetic(raw);
-    uint32_t pattern = g->setup->swizzle[snx_bits(instr, 0, 7)];
-    unsigned address = snx_bits(instr, 19, 2);
-    unsigned reg1 = inverted ? snx_bits(instr, 14, 5) : snx_bits(instr, 12, 7);
-    unsigned reg2 = inverted ? snx_bits(instr, 7, 7) : snx_bits(instr, 7, 5);
-    uint32_t a = source(g, reg1, inverted ? 0 : address, pattern, 1);
-    uint32_t b = source(g, reg2, inverted ? address : 0, pattern, 2);
-    uint32_t d = destination(g, snx_bits(instr, 21, 5));
-    uint32_t f = g->t_float, v4 = g->t_vec4;
-    SpvEmitter* s = g->s;
-    switch (op) {
-        case OP_ADD: set_dest(g, pattern, d, SPV(s, SPV_OP_F_ADD, v4, a, b), false); break;
-        case OP_MUL: set_dest(g, pattern, d, SPV(s, SPV_OP_F_MUL, v4, a, b), false); break;
-        case OP_FLR: set_dest(g, pattern, d, SPV_EXT(s, v4, SPV_GLSL_FLOOR, a), false); break;
-        case OP_MAX: set_dest(g, pattern, d, SPV_EXT(s, v4, SPV_GLSL_F_MAX, a, b), false); break;
-        case OP_MIN: set_dest(g, pattern, d, SPV_EXT(s, v4, SPV_GLSL_F_MIN, a, b), false); break;
-        case OP_DP3: {
-            uint32_t a3 = SPV(s, SPV_OP_VECTOR_SHUFFLE, g->t_vec3, a, a, 0, 1, 2);
-            uint32_t b3 = SPV(s, SPV_OP_VECTOR_SHUFFLE, g->t_vec3, b, b, 0, 1, 2);
-            set_dest(g, pattern, d, SPV(s, SPV_OP_DOT, f, a3, b3), true);
-            break;
-        }
-        case OP_DP4:
-        case OP_DPH:
-        case OP_DPHI:
-            /* Azahar without sanitize_mul dots the sources as they are; DPH's w of 1.0 is the hardware's */
-            if (op != OP_DP4) a = SPV(s, SPV_OP_VECTOR_SHUFFLE, v4, a, vec4_const(g, 0, 0, 0, 1), 0, 1, 2, 7);
-            set_dest(g, pattern, d, SPV(s, SPV_OP_DOT, f, a, b), true);
-            break;
-        case OP_RCP:
-        case OP_RSQ: {
-            /* Azahar without sanitize_mul: a zero operand (RSQ: one not above zero) leaves the destination alone,
-               which avoids NaN; a NaN one passes RCP's != as it did in GLSL */
-            uint32_t x = extract(g, f, a, 0);
-            uint32_t ok = op == OP_RCP ? SPV(s, SPV_OP_F_UNORD_NOT_EQUAL, g->t_bool, x, fconst(g, 0))
-                                       : SPV(s, SPV_OP_F_ORD_GREATER_THAN, g->t_bool, x, fconst(g, 0));
-            uint32_t merge = if_begin(g, ok);
-            uint32_t value = op == OP_RCP ? SPV(s, SPV_OP_F_DIV, f, fconst(g, 1), x)
-                                          : SPV_EXT(s, f, SPV_GLSL_INVERSE_SQRT, x);
-            set_dest(g, pattern, d, value, true);
-            place(g, merge);
-            break;
-        }
-        case OP_MOVA:
-            /* address_registers.xy = ivec2(a), each enabled one of x and y */
-            for (unsigned i = 0; i < 2; ++i)
-                if (pattern & (8u >> i))
-                    store(g, g->addr[i], SPV(s, SPV_OP_CONVERT_F_TO_S, g->t_int, extract(g, f, a, i)));
-            break;
-        case OP_MOV: set_dest(g, pattern, d, a, false); break;
-        case OP_SGE:
-        case OP_SGEI:
-        case OP_SLT:
-        case OP_SLTI: {
-            uint32_t compare = op == OP_SGE || op == OP_SGEI ? SPV_OP_F_ORD_GREATER_THAN_EQUAL : SPV_OP_F_ORD_LESS_THAN;
-            uint32_t mask = SPV(s, compare, g->t_bool4, a, b);
-            uint32_t ones = vec4_const(g, 1, 1, 1, 1), zeros = vec4_const(g, 0, 0, 0, 0);
-            set_dest(g, pattern, d, SPV(s, SPV_OP_SELECT, v4, mask, ones, zeros), false);
-            break;
-        }
-        case OP_CMP: {
-            /* ==, !=, <, <=, >, >= as GLSL compiles them (!= unordered) */
-            static const uint32_t compare[6] = {SPV_OP_F_ORD_EQUAL,     SPV_OP_F_UNORD_NOT_EQUAL,
-                                                SPV_OP_F_ORD_LESS_THAN, SPV_OP_F_ORD_LESS_THAN_EQUAL,
-                                                SPV_OP_F_ORD_GREATER_THAN, SPV_OP_F_ORD_GREATER_THAN_EQUAL};
-            unsigned mode[2] = {snx_bits(instr, 24, 3), snx_bits(instr, 21, 3)};
-            if (mode[0] > 5 || mode[1] > 5) break; /* an unknown compare mode: Azahar logs it and leaves the codes */
-            for (unsigned i = 0; i < 2; ++i)
-                store(g, g->cc[i], SPV(s, compare[mode[i]], g->t_bool, extract(g, f, a, i), extract(g, f, b, i)));
-            break;
-        }
-        case OP_EX2: set_dest(g, pattern, d, SPV_EXT(s, f, SPV_GLSL_EXP2, extract(g, f, a, 0)), true); break;
-        case OP_LG2: set_dest(g, pattern, d, SPV_EXT(s, f, SPV_GLSL_LOG2, extract(g, f, a, 0)), true); break;
-        default: g->fail = "an arithmetic instruction Azahar does not translate either"; break;
-    }
+
+/* ---- the trans_ functions of pica.decode's patterns. Each gives the instruction's step, then, when the context has a
+   Gen, compiles it ---- */
+static bool emits(Decode* c, StepKind kind, uint32_t dest, uint32_t num) {
+    c->step = (Step){kind, dest, num};
+    return c->g != NULL;
 }
+
+/* an arithmetic instruction's sources, swizzled (inverted: the I forms, whose address register offsets src2), and its
+   destination's variable */
+typedef struct {
+    uint32_t pattern, a, b, d;
+} Operands;
+static Operands operands(Gen* g, const arg_arith* x, bool inverted) {
+    Operands o;
+    o.pattern = g->setup->swizzle[x->desc];
+    o.a = source(g, x->src1, inverted ? 0 : x->addr, o.pattern, 1);
+    o.b = source(g, x->src2, inverted ? x->addr : 0, o.pattern, 2);
+    o.d = destination(g, x->dest);
+    return o;
+}
+/* an arithmetic instruction that sets the destination to value, a scalar spread over the enabled components or a
+   vec4, of o's sources */
+#define SET(NAME, INVERTED, SCALAR, value)                                                                             \
+    static bool trans_##NAME(Decode* c, arg_##NAME* x) {                                                               \
+        if (!emits(c, STEP_NEXT, 0, 0)) return true;                                                                   \
+        Gen* g = c->g;                                                                                                 \
+        Operands o = operands(g, x, INVERTED);                                                                         \
+        set_dest(g, o.pattern, o.d, value, SCALAR);                                                                    \
+        return true;                                                                                                   \
+    }
+SET(ADD, false, false, SPV(g->s, SPV_OP_F_ADD, g->t_vec4, o.a, o.b))
+SET(MUL, false, false, SPV(g->s, SPV_OP_F_MUL, g->t_vec4, o.a, o.b))
+SET(FLR, false, false, SPV_EXT(g->s, g->t_vec4, SPV_GLSL_FLOOR, o.a))
+SET(MAX, false, false, SPV_EXT(g->s, g->t_vec4, SPV_GLSL_F_MAX, o.a, o.b))
+SET(MIN, false, false, SPV_EXT(g->s, g->t_vec4, SPV_GLSL_F_MIN, o.a, o.b))
+SET(MOV, false, false, o.a)
+SET(EX2, false, true, SPV_EXT(g->s, g->t_float, SPV_GLSL_EXP2, extract(g, g->t_float, o.a, 0)))
+SET(LG2, false, true, SPV_EXT(g->s, g->t_float, SPV_GLSL_LOG2, extract(g, g->t_float, o.a, 0)))
+
+static bool trans_DP3(Decode* c, arg_DP3* x) {
+    if (!emits(c, STEP_NEXT, 0, 0)) return true;
+    Gen* g = c->g;
+    Operands o = operands(g, x, false);
+    uint32_t a3 = SPV(g->s, SPV_OP_VECTOR_SHUFFLE, g->t_vec3, o.a, o.a, 0, 1, 2);
+    uint32_t b3 = SPV(g->s, SPV_OP_VECTOR_SHUFFLE, g->t_vec3, o.b, o.b, 0, 1, 2);
+    set_dest(g, o.pattern, o.d, SPV(g->s, SPV_OP_DOT, g->t_float, a3, b3), true);
+    return true;
+}
+/* DP4, and DPH and DPHI (homogeneous): Azahar without sanitize_mul dots the sources as they are; DPH's w of 1.0 is
+   the hardware's */
+static bool dot4(Decode* c, const arg_arith* x, bool inverted, bool homogeneous) {
+    if (!emits(c, STEP_NEXT, 0, 0)) return true;
+    Gen* g = c->g;
+    Operands o = operands(g, x, inverted);
+    uint32_t a = o.a;
+    if (homogeneous) a = SPV(g->s, SPV_OP_VECTOR_SHUFFLE, g->t_vec4, a, vec4_const(g, 0, 0, 0, 1), 0, 1, 2, 7);
+    set_dest(g, o.pattern, o.d, SPV(g->s, SPV_OP_DOT, g->t_float, a, o.b), true);
+    return true;
+}
+static bool trans_DP4(Decode* c, arg_DP4* x) { return dot4(c, x, false, false); }
+static bool trans_DPH(Decode* c, arg_DPH* x) { return dot4(c, x, false, true); }
+static bool trans_DPHI(Decode* c, arg_DPHI* x) { return dot4(c, x, true, true); }
+
+/* RCP and RSQ: Azahar without sanitize_mul: a zero operand (RSQ: one not above zero) leaves the destination alone,
+   which avoids NaN; a NaN one passes RCP's != as it did in GLSL */
+static bool reciprocal(Decode* c, const arg_arith* x, bool square_root) {
+    if (!emits(c, STEP_NEXT, 0, 0)) return true;
+    Gen* g = c->g;
+    SpvEmitter* s = g->s;
+    Operands o = operands(g, x, false);
+    uint32_t f = g->t_float, v = extract(g, f, o.a, 0);
+    uint32_t ok = !square_root ? SPV(s, SPV_OP_F_UNORD_NOT_EQUAL, g->t_bool, v, fconst(g, 0))
+                               : SPV(s, SPV_OP_F_ORD_GREATER_THAN, g->t_bool, v, fconst(g, 0));
+    uint32_t merge = if_begin(g, ok);
+    uint32_t value = !square_root ? SPV(s, SPV_OP_F_DIV, f, fconst(g, 1), v) : SPV_EXT(s, f, SPV_GLSL_INVERSE_SQRT, v);
+    set_dest(g, o.pattern, o.d, value, true);
+    place(g, merge);
+    return true;
+}
+static bool trans_RCP(Decode* c, arg_RCP* x) { return reciprocal(c, x, false); }
+static bool trans_RSQ(Decode* c, arg_RSQ* x) { return reciprocal(c, x, true); }
+
+/* address_registers.xy = ivec2(a), each enabled one of x and y */
+static bool trans_MOVA(Decode* c, arg_MOVA* x) {
+    if (!emits(c, STEP_NEXT, 0, 0)) return true;
+    Gen* g = c->g;
+    Operands o = operands(g, x, false);
+    for (unsigned i = 0; i < 2; ++i)
+        if (o.pattern & (8u >> i))
+            store(g, g->addr[i], SPV(g->s, SPV_OP_CONVERT_F_TO_S, g->t_int, extract(g, g->t_float, o.a, i)));
+    return true;
+}
+
+/* SGE, SLT and their I forms: 1.0 where the comparison holds, else 0.0 */
+static bool set_compare(Decode* c, const arg_arith* x, bool inverted, uint32_t compare) {
+    if (!emits(c, STEP_NEXT, 0, 0)) return true;
+    Gen* g = c->g;
+    Operands o = operands(g, x, inverted);
+    uint32_t mask = SPV(g->s, compare, g->t_bool4, o.a, o.b);
+    uint32_t ones = vec4_const(g, 1, 1, 1, 1), zeros = vec4_const(g, 0, 0, 0, 0);
+    set_dest(g, o.pattern, o.d, SPV(g->s, SPV_OP_SELECT, g->t_vec4, mask, ones, zeros), false);
+    return true;
+}
+static bool trans_SGE(Decode* c, arg_SGE* x) { return set_compare(c, x, false, SPV_OP_F_ORD_GREATER_THAN_EQUAL); }
+static bool trans_SGEI(Decode* c, arg_SGEI* x) { return set_compare(c, x, true, SPV_OP_F_ORD_GREATER_THAN_EQUAL); }
+static bool trans_SLT(Decode* c, arg_SLT* x) { return set_compare(c, x, false, SPV_OP_F_ORD_LESS_THAN); }
+static bool trans_SLTI(Decode* c, arg_SLTI* x) { return set_compare(c, x, true, SPV_OP_F_ORD_LESS_THAN); }
+
+static bool trans_CMP(Decode* c, arg_CMP* x) {
+    if (!emits(c, STEP_NEXT, 0, 0)) return true;
+    Gen* g = c->g;
+    /* ==, !=, <, <=, >, >= as GLSL compiles them (!= unordered) */
+    static const uint32_t compare[6] = {SPV_OP_F_ORD_EQUAL,        SPV_OP_F_UNORD_NOT_EQUAL,
+                                        SPV_OP_F_ORD_LESS_THAN,    SPV_OP_F_ORD_LESS_THAN_EQUAL,
+                                        SPV_OP_F_ORD_GREATER_THAN, SPV_OP_F_ORD_GREATER_THAN_EQUAL};
+    uint32_t pattern = g->setup->swizzle[x->desc];
+    uint32_t a = source(g, x->src1, x->addr, pattern, 1), b = source(g, x->src2, 0, pattern, 2);
+    /* the register the arithmetic format's destination field names (bits 21-25, the comparisons' low bits): the
+       other arithmetic instructions' code makes its variable, which the module keeps */
+    destination(g, (unsigned)(x->cmpx & 3) << 3 | (unsigned)x->cmpy);
+    unsigned mode[2] = {(unsigned)x->cmpx, (unsigned)x->cmpy};
+    if (mode[0] > 5 || mode[1] > 5) return true; /* an unknown compare mode: Azahar logs it and leaves the codes */
+    for (unsigned i = 0; i < 2; ++i)
+        store(g, g->cc[i],
+              SPV(g->s, compare[mode[i]], g->t_bool, extract(g, g->t_float, a, i), extract(g, g->t_float, b, i)));
+    return true;
+}
+
+/* DST, LITP and DSTI */
+static bool untranslated_arithmetic(Decode* c) {
+    if (emits(c, STEP_NEXT, 0, 0)) c->g->fail = "an arithmetic instruction Azahar does not translate either";
+    return true;
+}
+static bool trans_DST(Decode* c, arg_DST* x) { return (void)x, untranslated_arithmetic(c); }
+static bool trans_LITP(Decode* c, arg_LITP* x) { return (void)x, untranslated_arithmetic(c); }
+static bool trans_DSTI(Decode* c, arg_DSTI* x) { return (void)x, untranslated_arithmetic(c); }
+
+/* MAD and MADI (inverted: src3 takes the address register) */
+static bool multiply_add(Decode* c, const arg_mad* x, bool inverted) {
+    if (!emits(c, STEP_NEXT, 0, 0)) return true;
+    Gen* g = c->g;
+    uint32_t pattern = g->setup->swizzle[x->desc];
+    uint32_t a = source(g, x->src1, 0, pattern, 1);
+    uint32_t b = source(g, x->src2, inverted ? 0 : x->addr, pattern, 2);
+    uint32_t d = source(g, x->src3, inverted ? x->addr : 0, pattern, 3);
+    uint32_t product = SPV(g->s, SPV_OP_F_MUL, g->t_vec4, a, b);
+    set_dest(g, pattern, destination(g, x->dest), SPV(g->s, SPV_OP_F_ADD, g->t_vec4, product, d), false);
+    return true;
+}
+static bool trans_MAD(Decode* c, arg_MAD* x) { return multiply_add(c, x, false); }
+static bool trans_MADI(Decode* c, arg_MADI* x) { return multiply_add(c, x, true); }
+
+/* ---- flow control ---- */
+static bool trans_NOP(Decode* c, arg_NOP* x) { return (void)x, emits(c, STEP_NEXT, 0, 0), true; }
+/* a geometry shader's: nothing in a vertex shader */
+static bool trans_EMIT(Decode* c, arg_EMIT* x) { return (void)x, emits(c, STEP_NEXT, 0, 0), true; }
+static bool trans_SETEMIT(Decode* c, arg_SETEMIT* x) { return (void)x, emits(c, STEP_NEXT, 0, 0), true; }
+static bool trans_END(Decode* c, arg_END* x) {
+    (void)x;
+    if (emits(c, STEP_END, 0, 0)) ret(c->g, true);
+    return true;
+}
+/* BREAK and BREAKC */
+static bool untranslated(Decode* c) {
+    if (emits(c, STEP_UNKNOWN, 0, 0)) c->g->fail = "an instruction Azahar does not translate either";
+    return true;
+}
+static bool trans_BREAK(Decode* c, arg_BREAK* x) { return (void)x, untranslated(c); }
+static bool trans_BREAKC(Decode* c, arg_BREAKC* x) { return (void)x, untranslated(c); }
+
+static void jump_to(Gen* g, uint32_t cond, uint32_t dest) {
+    if (!g->jmp_to) {
+        /* a range the analysis took from its cache without the labels: the GLSL had no loop to break */
+        g->fail = "a jump in a subroutine without labels";
+        return;
+    }
+    uint32_t merge = if_begin(g, cond);
+    store(g, g->jmp_to, uconst(g, dest));
+    jump(g, g->switch_merge);
+    place(g, merge);
+}
+static bool trans_JMPC(Decode* c, arg_JMPC* x) {
+    if (emits(c, STEP_JUMP, x->dest, x->num)) jump_to(c->g, condition(c->g, x), x->dest);
+    return true;
+}
+static bool trans_JMPU(Decode* c, arg_JMPU* x) {
+    if (emits(c, STEP_JUMP, x->dest, x->num)) jump_to(c->g, uniform_bool(c->g, x->id, x->num & 1), x->dest);
+    return true;
+}
+
+static bool trans_CALL(Decode* c, arg_CALL* x) {
+    if (emits(c, STEP_CALL, x->dest, x->num)) call_sub(c->g, sub(c->g, x->dest, x->dest + x->num));
+    return true;
+}
+static void call_if(Gen* g, uint32_t cond, uint32_t dest, uint32_t num) {
+    uint32_t merge = if_begin(g, cond);
+    call_sub(g, sub(g, dest, dest + num));
+    place(g, merge);
+}
+static bool trans_CALLC(Decode* c, arg_CALLC* x) {
+    if (emits(c, STEP_CALL_IF, x->dest, x->num)) call_if(c->g, condition(c->g, x), x->dest, x->num);
+    return true;
+}
+static bool trans_CALLU(Decode* c, arg_CALLU* x) {
+    if (emits(c, STEP_CALL_IF, x->dest, x->num)) call_if(c->g, uniform_bool(c->g, x->id, false), x->dest, x->num);
+    return true;
+}
+
+/* the body (up to dest) when cond holds, else the else part (dest to dest + num) */
+static void if_else(Decode* c, uint32_t cond, uint32_t dest, uint32_t num) {
+    Gen* g = c->g;
+    uint32_t else_offset = dest, endif_offset = else_offset + num;
+    uint32_t then = spv_emit_id(g->s), merge = spv_emit_id(g->s);
+    uint32_t otherwise = num ? spv_emit_id(g->s) : merge;
+    SPV_VOID(g->s, SPV_OP_SELECTION_MERGE, merge, 0);
+    SPV_VOID(g->s, SPV_OP_BRANCH_CONDITIONAL, cond, then, otherwise);
+    g->open = false;
+    place(g, then);
+    call_sub(g, sub(g, c->offset + 1, else_offset));
+    if (num) {
+        jump(g, merge);
+        place(g, otherwise);
+        call_sub(g, sub(g, else_offset, endif_offset));
+    }
+    place(g, merge);
+}
+static bool trans_IFC(Decode* c, arg_IFC* x) {
+    if (emits(c, STEP_IF, x->dest, x->num)) if_else(c, condition(c->g, x), x->dest, x->num);
+    return true;
+}
+static bool trans_IFU(Decode* c, arg_IFU* x) {
+    if (emits(c, STEP_IF, x->dest, x->num)) if_else(c, uniform_bool(c->g, x->id, false), x->dest, x->num);
+    return true;
+}
+
+/* aL = i.y; for (uint n = 0u; n <= i.x; aL += i.z, ++n) */
+static bool trans_LOOP(Decode* c, arg_LOOP* x) {
+    if (!emits(c, STEP_LOOP, x->dest, 0)) return true;
+    Gen* g = c->g;
+    uint32_t i = uniform_i(g, x->id);
+    store(g, g->addr[2], SPV(g->s, SPV_OP_BITCAST, g->t_int, extract(g, g->t_uint, i, 1)));
+    uint32_t counter = spv_emit_local(g->s, g->t_uint);
+    store(g, counter, uconst(g, 0));
+    uint32_t header = spv_emit_id(g->s), body = spv_emit_id(g->s), next = spv_emit_id(g->s);
+    uint32_t merge = spv_emit_id(g->s);
+    place(g, header);
+    uint32_t more = SPV(g->s, SPV_OP_U_LESS_THAN_EQUAL, g->t_bool, load(g, g->t_uint, counter),
+                        extract(g, g->t_uint, i, 0));
+    SPV_VOID(g->s, SPV_OP_LOOP_MERGE, merge, next, 0);
+    SPV_VOID(g->s, SPV_OP_BRANCH_CONDITIONAL, more, body, merge);
+    g->open = false;
+    place(g, body);
+    call_sub(g, sub(g, c->offset + 1, (uint32_t)x->dest + 1));
+    place(g, next);
+    uint32_t step = SPV(g->s, SPV_OP_BITCAST, g->t_int, extract(g, g->t_uint, i, 2));
+    store(g, g->addr[2], SPV(g->s, SPV_OP_I_ADD, g->t_int, load(g, g->t_int, g->addr[2]), step));
+    store(g, counter, SPV(g->s, SPV_OP_I_ADD, g->t_uint, load(g, g->t_uint, counter), uconst(g, 1)));
+    jump(g, header);
+    place(g, merge);
+    return true;
+}
+
 static uint32_t compile_instr(Gen* g, uint32_t offset) {
-    uint32_t instr = g->setup->code[offset];
-    unsigned raw = opcode(instr), op = effective(raw);
-    if (arithmetic(raw) || inverted_arithmetic(raw)) {
-        compile_arithmetic(g, instr, raw);
-        return offset + 1;
-    }
-    if (op == OP_MAD || op == OP_MADI) {
-        bool inverted = op == OP_MADI;
-        uint32_t pattern = g->setup->swizzle[snx_bits(instr, 0, 5)];
-        unsigned address = snx_bits(instr, 22, 2);
-        unsigned reg2 = inverted ? snx_bits(instr, 12, 5) : snx_bits(instr, 10, 7);
-        unsigned reg3 = inverted ? snx_bits(instr, 5, 7) : snx_bits(instr, 5, 5);
-        uint32_t a = source(g, snx_bits(instr, 17, 5), 0, pattern, 1);
-        uint32_t b = source(g, reg2, inverted ? 0 : address, pattern, 2);
-        uint32_t c = source(g, reg3, inverted ? address : 0, pattern, 3);
-        uint32_t product = SPV(g->s, SPV_OP_F_MUL, g->t_vec4, a, b);
-        set_dest(g, pattern, destination(g, snx_bits(instr, 24, 5)), SPV(g->s, SPV_OP_F_ADD, g->t_vec4, product, c),
-                 false);
-        return offset + 1;
-    }
-    switch (raw) {
-        case OP_END: ret(g, true); break;
-        case OP_JMPC:
-        case OP_JMPU: {
-            uint32_t cond = raw == OP_JMPC ? condition(g, instr)
-                                           : uniform_bool(g, snx_bits(instr, 22, 4), num_instructions(instr) & 1);
-            if (!g->jmp_to) {
-                /* a range the analysis took from its cache without the labels: the GLSL had no loop to break */
-                g->fail = "a jump in a subroutine without labels";
-                break;
-            }
-            uint32_t merge = if_begin(g, cond);
-            store(g, g->jmp_to, uconst(g, dest_offset(instr)));
-            jump(g, g->switch_merge);
-            place(g, merge);
-            break;
-        }
-        case OP_CALL:
-        case OP_CALLC:
-        case OP_CALLU: {
-            uint32_t merge = 0;
-            if (raw == OP_CALLC)
-                merge = if_begin(g, condition(g, instr));
-            else if (raw == OP_CALLU)
-                merge = if_begin(g, uniform_bool(g, snx_bits(instr, 22, 4), false));
-            call_sub(g, sub(g, dest_offset(instr), dest_offset(instr) + num_instructions(instr)));
-            if (merge) place(g, merge);
-            break;
-        }
-        case OP_NOP: break;
-        case OP_IFC:
-        case OP_IFU: {
-            uint32_t cond = raw == OP_IFC ? condition(g, instr) : uniform_bool(g, snx_bits(instr, 22, 4), false);
-            uint32_t else_offset = dest_offset(instr), endif_offset = else_offset + num_instructions(instr);
-            uint32_t then = spv_emit_id(g->s), merge = spv_emit_id(g->s);
-            uint32_t otherwise = num_instructions(instr) ? spv_emit_id(g->s) : merge;
-            SPV_VOID(g->s, SPV_OP_SELECTION_MERGE, merge, 0);
-            SPV_VOID(g->s, SPV_OP_BRANCH_CONDITIONAL, cond, then, otherwise);
-            g->open = false;
-            place(g, then);
-            call_sub(g, sub(g, offset + 1, else_offset));
-            if (num_instructions(instr)) {
-                jump(g, merge);
-                place(g, otherwise);
-                call_sub(g, sub(g, else_offset, endif_offset));
-            }
-            place(g, merge);
-            break;
-        }
-        case OP_LOOP: {
-            /* aL = i.y; for (uint n = 0u; n <= i.x; aL += i.z, ++n) */
-            uint32_t i = uniform_i(g, snx_bits(instr, 22, 2));
-            store(g, g->addr[2], SPV(g->s, SPV_OP_BITCAST, g->t_int, extract(g, g->t_uint, i, 1)));
-            uint32_t counter = spv_emit_local(g->s, g->t_uint);
-            store(g, counter, uconst(g, 0));
-            uint32_t header = spv_emit_id(g->s), body = spv_emit_id(g->s), next = spv_emit_id(g->s);
-            uint32_t merge = spv_emit_id(g->s);
-            place(g, header);
-            uint32_t more = SPV(g->s, SPV_OP_U_LESS_THAN_EQUAL, g->t_bool, load(g, g->t_uint, counter),
-                                extract(g, g->t_uint, i, 0));
-            SPV_VOID(g->s, SPV_OP_LOOP_MERGE, merge, next, 0);
-            SPV_VOID(g->s, SPV_OP_BRANCH_CONDITIONAL, more, body, merge);
-            g->open = false;
-            place(g, body);
-            call_sub(g, sub(g, offset + 1, dest_offset(instr) + 1));
-            place(g, next);
-            uint32_t step = SPV(g->s, SPV_OP_BITCAST, g->t_int, extract(g, g->t_uint, i, 2));
-            store(g, g->addr[2], SPV(g->s, SPV_OP_I_ADD, g->t_int, load(g, g->t_int, g->addr[2]), step));
-            store(g, counter, SPV(g->s, SPV_OP_I_ADD, g->t_uint, load(g, g->t_uint, counter), uconst(g, 1)));
-            jump(g, header);
-            place(g, merge);
-            break;
-        }
-        case OP_EMIT:
-        case OP_SETEMIT: break; /* a geometry shader's: nothing in a vertex shader */
-        default: g->fail = "an instruction Azahar does not translate either"; break;
-    }
+    Decode c = {g, offset, {STEP_UNKNOWN, 0, 0}};
+    if (!decode_pica(&c, g->setup->code[offset])) g->fail = "an instruction Azahar does not translate either";
     return next_offset(g, offset);
 }
 /* the instructions from begin up to end (to the program's end when end is before begin), compiled or, with emit

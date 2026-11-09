@@ -19,7 +19,7 @@ VitaLockstep vita_lockstep_step(VitaProcess* p, VitaThread* t) {
     if (g_settings.vita_lockstep >= 0 && !g_lockstep.said) {
         g_lockstep.said = 1;
         snx_error("lockstep: vita_lockstep=%d needs a build configured with -DSNX_VITA_LOCKSTEP=ON: this run checks "
-                  "nothing against Unicorn (docs/VITA.md)",
+                  "nothing against Unicorn (docs/platforms/vita/README.md)",
                   g_settings.vita_lockstep);
     }
     return VITA_LOCKSTEP_OFF;

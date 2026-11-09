@@ -149,6 +149,7 @@ typedef struct {
 #define PT_PHDR      6
 #define PT_TLS       7
 #define PT_GNU_RELRO 0x6474e552
+#define PT_ARM_EXIDX 0x70000001
 #define PF_X         0x1
 #define PF_W         0x2
 #define PF_R         0x4
@@ -168,11 +169,16 @@ typedef struct {
 #define DT_SYMTAB          6
 #define DT_RELA            7
 #define DT_RELASZ          8
+#define DT_RELAENT         9
 #define DT_STRSZ           10
+#define DT_SYMENT          11
 #define DT_INIT            12
 #define DT_FINI            13
 #define DT_SONAME          14
 #define DT_SYMBOLIC        16
+#define DT_REL             17
+#define DT_RELSZ           18
+#define DT_RELENT          19
 #define DT_JMPREL          23
 #define DT_INIT_ARRAY      25
 #define DT_FINI_ARRAY      26
@@ -183,6 +189,7 @@ typedef struct {
 #define DT_PREINIT_ARRAYSZ 33
 #define DT_RELRSZ          35
 #define DT_RELR            36
+#define DT_RELRENT         37
 #define DT_GNU_HASH        0x6ffffef5
 #define DF_SYMBOLIC        0x2
 
@@ -202,6 +209,13 @@ typedef struct {
 #define R_AARCH64_TLS_TPREL64  1030
 #define R_AARCH64_TLSDESC      1031
 #define R_AARCH64_IRELATIVE 1032
+
+/* Arm's (ELF for the Arm Architecture 5.6.1) */
+#define R_ARM_NONE      0
+#define R_ARM_ABS32     2
+#define R_ARM_GLOB_DAT  21
+#define R_ARM_JUMP_SLOT 22
+#define R_ARM_RELATIVE  23
 
 /* the generic ABI's sizes, which the objects' bytes are read with */
 typedef char snx_elf64_ehdr_size[sizeof(Elf64_Ehdr) == 64 ? 1 : -1];

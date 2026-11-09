@@ -20,20 +20,9 @@
 
 /* guest words: the update's input and output, the effects' and sinks' parameters kept as the game wrote them, and
    the rings, wave buffers and contexts in guest memory are all little-endian */
-static u16 rd16(const u8* p) { return snx_ld_le16(p); }
-static u32 rd32(const u8* p) { return snx_ld_le32(p); }
-static u64 rd64(const u8* p) { return snx_ld_le64(p); }
-static float rdf(const u8* p) {
-    u32 w = snx_ld_le32(p);
-    float v;
-    memcpy(&v, &w, 4);
-    return v;
-}
 static void rdf_array(float* out, const u8* p, u32 n) {
-    for (u32 i = 0; i < n; i++) out[i] = rdf(p + i * 4);
+    for (u32 i = 0; i < n; i++) out[i] = snx_ld_lef32(p + i * 4);
 }
-static void wr32(u8* p, u32 v) { snx_st_le32(p, v); }
-static void wr64(u8* p, u64 v) { snx_st_le64(p, v); }
 static i16 sat16(float x) { return x >= 32767.0f ? 32767 : x <= -32768.0f ? -32768 : (i16)lrintf(x); }
 static i32 sat32(float x) {
     return x >= 2147483520.0f ? 2147483647 : x <= -2147483648.0f ? (i32)0x80000000u : (i32)lrintf(x);
@@ -227,8 +216,8 @@ void audren_state_free(ARState* s) {
 
 /* a wave buffer the game hands over, checked against its own size as Eden's VoiceInfo::UpdateWaveBuffer does */
 static void take_wave(ARWave* w, const u8* wb, u8 format) {
-    i32 st = (i32)rd32(wb + 0x10), en = (i32)rd32(wb + 0x14);
-    u64 size = rd64(wb + 8);
+    i32 st = (i32)snx_ld_le32(wb + 0x10), en = (i32)snx_ld_le32(wb + 0x14);
+    u64 size = snx_ld_le64(wb + 8);
     if (st < 0 || en < 0) return;
     if (format == SNX_AUDREN_ADPCM) {
         u64 a = (u64)(st / 14) * 8 + (st % 14 ? (u64)(st % 14) / 2 + 1 + (st % 14) % 2 : 0);
@@ -238,17 +227,17 @@ static void take_wave(ARWave* w, const u8* wb, u8 format) {
         u64 bytes = format == SNX_AUDREN_PCMF32 ? 4 : 2;
         if ((u64)st * bytes > size || (u64)en * bytes > size) return;
     }
-    w->addr = rd64(wb);
+    w->addr = snx_ld_le64(wb);
     w->size = size;
     w->start = st;
     w->end = en;
     w->loop = wb[0x18];
     w->ended = wb[0x19];
-    w->loop_count = (i32)rd32(wb + 0x1C);
-    w->ctx = rd64(wb + 0x20);
-    w->ctx_size = rd64(wb + 0x28);
-    w->loop_start = (i32)rd32(wb + 0x30);
-    w->loop_end = (i32)rd32(wb + 0x34);
+    w->loop_count = (i32)snx_ld_le32(wb + 0x1C);
+    w->ctx = snx_ld_le64(wb + 0x20);
+    w->ctx_size = snx_ld_le64(wb + 0x28);
+    w->loop_start = (i32)snx_ld_le32(wb + 0x30);
+    w->loop_end = (i32)snx_ld_le32(wb + 0x34);
     w->sent = 0;
 }
 
@@ -276,28 +265,30 @@ static void update_voice(ARState* s, ARVoice* v, const u8* vi, u8* vo, int v2) {
             case 2: v->play = SNX_AUDREN_PAUSED; break;
         }
         v->format = vi[0xB];
-        v->rate = rd32(vi + 0xC);
-        u32 ch = rd32(vi + 0x18);
+        v->rate = snx_ld_le32(vi + 0xC);
+        u32 ch = snx_ld_le32(vi + 0x18);
         v->channels = (u8)(ch < 1 ? 1 : ch > SNX_AUDREN_CHANNELS ? SNX_AUDREN_CHANNELS : ch);
-        v->pitch = rdf(vi + 0x1C);
-        v->volume = rdf(vi + 0x20);
+        v->pitch = snx_ld_lef32(vi + 0x1C);
+        v->volume = snx_ld_lef32(vi + 0x20);
         for (f = 0; f < 2; f++) { /* enabled 0, Q14 b 2 and a 8; v2's floats b 4 and a 0x10, never in Q14 */
             const u8* bq = vi + 0x24 + f * (v2 ? 0x18 : 0xC);
             int k;
             v->bq_on[f] = bq[0];
-            for (k = 0; k < 3; k++) v->bq_b[f][k] = v2 ? rdf(bq + 4 + k * 4) : (i16)rd16(bq + 2 + k * 2) / 16384.0f;
-            for (k = 0; k < 2; k++) v->bq_a[f][k] = v2 ? rdf(bq + 0x10 + k * 4) : (i16)rd16(bq + 8 + k * 2) / 16384.0f;
+            for (k = 0; k < 3; k++)
+                v->bq_b[f][k] = v2 ? snx_ld_lef32(bq + 4 + k * 4) : (i16)snx_ld_le16(bq + 2 + k * 2) / 16384.0f;
+            for (k = 0; k < 2; k++)
+                v->bq_a[f][k] = v2 ? snx_ld_lef32(bq + 0x10 + k * 4) : (i16)snx_ld_le16(bq + 8 + k * 2) / 16384.0f;
         }
         vi += v2 ? 0x18 : 0; /* the rest at the offsets above */
         if (vi[0x15E] <= 2) v->quality = vi[0x15E];
-        v->wave_count = rd32(vi + 0x3C);
-        v->wave_index = rd16(vi + 0x40) % SNX_AUDREN_WAVES;
-        v->data = rd64(vi + 0x48);
-        v->data_size = rd64(vi + 0x50);
+        v->wave_count = snx_ld_le32(vi + 0x3C);
+        v->wave_index = snx_ld_le16(vi + 0x40) % SNX_AUDREN_WAVES;
+        v->data = snx_ld_le64(vi + 0x48);
+        v->data_size = snx_ld_le64(vi + 0x50);
         v->flush += vi[0x159];
-        v->mix_id = rd32(vi + 0x58);
-        v->splitter_id = rd32(vi + 0x5C);
-        for (int c = 0; c < SNX_AUDREN_CHANNELS; c++) v->res[c] = rd32(vi + 0x140 + c * 4);
+        v->mix_id = snx_ld_le32(vi + 0x58);
+        v->splitter_id = snx_ld_le32(vi + 0x5C);
+        for (int c = 0; c < SNX_AUDREN_CHANNELS; c++) v->res[c] = snx_ld_le32(vi + 0x140 + c * 4);
         v->flags = vi[0x15C];
         for (int w = 0; w < SNX_AUDREN_WAVES; w++) {
             const u8* wb = vi + 0x60 + w * 0x38;
@@ -306,8 +297,8 @@ static void update_voice(ARState* s, ARVoice* v, const u8* vi, u8* vo, int v2) {
     }
     /* VoiceOut: played samples, consumed buffers, dropped. A voice not yet rendered since is_new reads 0 */
     if (!v->fresh && v->res[0] < s->nres) {
-        wr64(vo, s->chan[v->res[0]].played);
-        wr32(vo + 8, s->chan[v->res[0]].consumed);
+        snx_st_le64(vo, s->chan[v->res[0]].played);
+        snx_st_le32(vo + 8, s->chan[v->res[0]].consumed);
     }
 }
 
@@ -324,17 +315,17 @@ int audren_revision(u32 rev) { return rev_number(rev); }
 static void update_splitters(ARState* s, const u8* p, u64 size, int revn) {
     u32 ninfo, ndata, i, dsize, use;
     u64 off;
-    if (!s->nsplit || revn < 2 || size < 0x20 || rd32(p) != SNX_AUDREN_MAGIC('S', 'N', 'D', 'H')) return;
-    ninfo = rd32(p + 4);
-    ndata = rd32(p + 8);
+    if (!s->nsplit || revn < 2 || size < 0x20 || snx_ld_le32(p) != SNX_AUDREN_MAGIC('S', 'N', 'D', 'H')) return;
+    ninfo = snx_ld_le32(p + 4);
+    ndata = snx_ld_le32(p + 8);
     off = 0x20;
     for (i = 0; i < ninfo; i++) {
         u32 id, listed, n, k;
         ARSplitter* sp;
         i32 last;
-        if (off + 0x10 > size || rd32(p + off) != SNX_AUDREN_MAGIC('S', 'N', 'D', 'I')) break;
-        id = rd32(p + off + 4);
-        listed = rd32(p + off + 0xC);
+        if (off + 0x10 > size || snx_ld_le32(p + off) != SNX_AUDREN_MAGIC('S', 'N', 'D', 'I')) break;
+        id = snx_ld_le32(p + off + 4);
+        listed = snx_ld_le32(p + off + 0xC);
         n = listed;
         if (id >= s->nsplit || off + 0x1C + (u64)listed * 4 > size) break;
         sp = &s->split[id];
@@ -348,7 +339,7 @@ static void update_splitters(ARState* s, const u8* p, u64 size, int revn) {
         last = -1;
         sp->count = 0;
         for (k = 0; k < n; k++) {
-            u32 d = rd32(p + off + 0x10 + k * 4);
+            u32 d = snx_ld_le32(p + off + 0x10 + k * 4);
             if (d >= s->ndest) break;
             if (last < 0)
                 sp->head = (i32)d;
@@ -365,11 +356,11 @@ static void update_splitters(ARState* s, const u8* p, u64 size, int revn) {
     for (i = 0; i < ndata; i++) {
         u32 id;
         ARDest* d;
-        if (off + dsize > size || rd32(p + off) != SNX_AUDREN_MAGIC('S', 'N', 'D', 'D')) break;
-        id = rd32(p + off + 4);
+        if (off + dsize > size || snx_ld_le32(p + off) != SNX_AUDREN_MAGIC('S', 'N', 'D', 'D')) break;
+        id = snx_ld_le32(p + off + 4);
         if (id >= s->ndest) break;
         d = &s->dest[id];
-        d->mix_id = rd32(p + off + 0x68);
+        d->mix_id = snx_ld_le32(p + off + 0x68);
         rdf_array(d->vol, p + off + 8, SNX_AUDREN_MIX_OUTS);
         if (!d->in_use && p[off + use]) { /* newly in use: no ramp */
             memcpy(d->prev, d->vol, sizeof d->prev);
@@ -395,12 +386,12 @@ static void update_stateful(AREffect* e, const u8* ei, u32 state_at) {
     u8 old;
     int count_ok;
     const u8* in = ei + 0x20;
-    if (!channels_valid(rd16(in + 0xC))) return;
+    if (!channels_valid(snx_ld_le16(in + 0xC))) return;
     old = e->p[state_at];
-    count_ok = channels_valid(rd16(in + 0xE));
+    count_ok = channels_valid(snx_ld_le16(in + 0xE));
     e->enabled = ei[2];
-    e->mix_id = rd32(ei + 4);
-    e->order = rd32(ei + 0x18);
+    e->mix_id = snx_ld_le32(ei + 4);
+    e->order = snx_ld_le32(ei + 0x18);
     memcpy(e->p, in, sizeof e->p);
     if (!count_ok) memcpy(e->p + 0xE, in + 0xC, 2);
     if (!count_ok || old != SNX_AUDREN_PARAM_UPDATED) e->p[state_at] = old;
@@ -460,7 +451,7 @@ int audren_state_update(ARState* s, const u8* in, u64 is, u8* out, u64 os) {
     if (revn >= 7) {
         /* REV7 adds a 32-byte header before dirty-only mix entries; Eden and Ryubing refuse a section without it, an
            empty one too */
-        nmix = ih[6] >= 0x20 ? rd32(mixes + 4) : 0;
+        nmix = ih[6] >= 0x20 ? snx_ld_le32(mixes + 4) : 0;
         if (ih[6] < 0x20 || (u64)ih[6] != 0x20 + (u64)nmix * 0x930) {
             WARN_LIMIT(4, "audren: REV7 mix section of %lu bytes does not match its entry count\n",
                        (unsigned long)ih[6]);
@@ -489,8 +480,8 @@ int audren_state_update(ARState* s, const u8* in, u64 is, u8* out, u64 os) {
     u8* q = out + 0x40;
     /* pools: RequestAttach(4)->Attached(5), RequestDetach(2)->Detached(3). Guest memory needs no mapping here */
     for (u32 i = 0; i < npools; i++) {
-        u32 st = rd32(pools + i * 0x20 + 0x10);
-        wr32(q + i * 0x10, st == 4 ? 5 : st == 2 ? 3 : st);
+        u32 st = snx_ld_le32(pools + i * 0x20 + 0x10);
+        snx_st_le32(q + i * 0x10, st == 4 ? 5 : st == 2 ? 3 : st);
     }
     q += o_mp;
     /* voice channel resources: id 0, send volumes 4, in_use 0x64 */
@@ -522,8 +513,8 @@ int audren_state_update(ARState* s, const u8* in, u64 is, u8* out, u64 os) {
             /* Eden takes no version 1 update for the compressor: it stays unused */
         } else {
             e->enabled = ei[2];
-            e->mix_id = rd32(ei + 4);
-            e->order = rd32(ei + 0x18);
+            e->mix_id = snx_ld_le32(ei + 4);
+            e->order = snx_ld_le32(ei + 0x18);
             memcpy(e->p, ei + 0x20, sizeof e->p);
         }
         q[i * (eff_v2 ? 0x90 : 0x10)] = ei[2] ? 3 : 4;
@@ -533,7 +524,7 @@ int audren_state_update(ARState* s, const u8* in, u64 is, u8* out, u64 os) {
        takes it; a destination's splitter applies when the destination is unused */
     for (u32 i = 0; i < nmix; i++) {
         const u8* mi = mixes + i * 0x930;
-        u32 id = revn >= 7 ? rd32(mi + 0x10) : i;
+        u32 id = revn >= 7 ? snx_ld_le32(mi + 0x10) : i;
         /* from REV7 an entry is not mix i: one naming a mix the renderer did not open is skipped */
         if (id >= s->nmix && revn >= 7) {
             warn_once(s, SNX_AUDREN_WARN_MIX_ID, "the update of mix %u is skipped: the renderer opened %u mixes", id,
@@ -543,13 +534,13 @@ int audren_state_update(ARState* s, const u8* in, u64 is, u8* out, u64 os) {
         if (id >= s->nmix) continue;
         ARMix* m = &s->mix[id];
         m->in_use = mi[0xC];
-        m->volume = rdf(mi);
-        m->buffers = rd32(mi + 8);
+        m->volume = snx_ld_lef32(mi);
+        m->buffers = snx_ld_le32(mi + 8);
         if (m->buffers > SNX_AUDREN_MIX_OUTS) m->buffers = SNX_AUDREN_MIX_OUTS;
         for (u32 b = 0; b < SNX_AUDREN_MIX_OUTS; b++)
             rdf_array(m->vol[b], mi + 0x24 + b * SNX_AUDREN_MIX_OUTS * 4, SNX_AUDREN_MIX_OUTS);
-        m->dest = (i32)rd32(mi + 0x924);
-        m->dest_splitter = rd32(mi + 0x928);
+        m->dest = (i32)snx_ld_le32(mi + 0x924);
+        m->dest_splitter = snx_ld_le32(mi + 0x928);
     }
     /* sinks: type 0, in_use 1, the type's parameters from 0x20. Out: a circular buffer sink's write offset, two
        frames behind where it writes, as Eden's CircularBufferSinkInfo reports last_pos2 */
@@ -559,12 +550,12 @@ int audren_state_update(ARState* s, const u8* in, u64 is, u8* out, u64 os) {
         k->type = si[0];
         k->in_use = si[1];
         memcpy(k->p, si + 0x20, sizeof k->p);
-        wr32(q + i * 0x20, k->last2);
+        snx_st_le32(q + i * 0x20, k->last2);
     }
     q += o_sk;
     q += o_pf;
     q += o_bh;
-    if (o_ri) wr64(q, s->frames);
+    if (o_ri) snx_st_le64(q, s->frames);
     return 0;
 }
 
@@ -580,9 +571,9 @@ static u32 decode_pcm(const ARVoice* v, const ARWave* w, int ch, i32 st, i32 en,
     for (u32 i = 0; i < n; i++) {
         const u8* at = src + ((u64)i * v->channels + ch) * bytes;
         if (v->format == SNX_AUDREN_PCMF32)
-            out[i] = sat16(rdf(at) * 32767.0f);
+            out[i] = sat16(snx_ld_lef32(at) * 32767.0f);
         else
-            out[i] = (i16)rd16(at);
+            out[i] = (i16)snx_ld_le16(at);
     }
     return n;
 }
@@ -603,7 +594,7 @@ static u32 decode_adpcm(const ARVoice* v, ARChannel* c, const ARWave* w, i32 st,
     u64 avail = w->size - pos / 2;
     const u8* wb = GP(w->addr + pos / 2);
     i16 coef[16];
-    for (int k = 0; k < 16; k++) coef[k] = (i16)rd16(GP(v->data + (u64)k * 2));
+    for (int k = 0; k < 16; k++) coef[k] = (i16)snx_ld_le16(GP(v->data + (u64)k * 2));
     u16 header = c->adpcm_header;
     i32 scale = header & 0xF, ci = (header >> 4) & 7, c0 = coef[ci * 2], c1 = coef[ci * 2 + 1];
     i32 yn0 = c->yn0, yn1 = c->yn1;
@@ -724,9 +715,9 @@ static void voice_channel(ARState* s, ARVoice* v, int ch, float* out) {
         const ARWave* w = &v->wave[c->index];
         if (c->offset == 0 && v->format == SNX_AUDREN_ADPCM && w->ctx && w->ctx_size >= 6) {
             const u8* x = GP(w->ctx);
-            c->adpcm_header = rd16(x);
-            c->yn0 = (i16)rd16(x + 2);
-            c->yn1 = (i16)rd16(x + 4);
+            c->adpcm_header = snx_ld_le16(x);
+            c->yn0 = (i16)snx_ld_le16(x + 2);
+            c->yn1 = (i16)snx_ld_le16(x + 4);
         }
         i32 st = w->start, en = w->end;
         if (w->loop && c->loop_count > 0 && w->loop_start < w->loop_end) {
@@ -850,27 +841,27 @@ static u32 aux_ring(u64 info, u32 count_max, float* samples, u32 n, u32 place, u
     if (!info || !count_max || n > count_max) return 0;
     u8* dsp = GP(info + 0x40);
     u8* ring = GP(info + 0x80);
-    u32 at = rd32(dsp + (write ? 4 : 0)) + place;
+    u32 at = snx_ld_le32(dsp + (write ? 4 : 0)) + place;
     if (at > count_max) return 0;
     for (u32 left = n, k = 0; left > 0;) {
         u32 run = count_max - at < left ? count_max - at : left;
         for (u32 i = 0; i < run; i++, k++) {
             if (write)
-                wr32(ring + (u64)(at + i) * 4, (u32)sat32(samples[k]));
+                snx_st_le32(ring + (u64)(at + i) * 4, (u32)sat32(samples[k]));
             else
-                samples[k] = (float)(i32)rd32(ring + (u64)(at + i) * 4);
+                samples[k] = (float)(i32)snx_ld_le32(ring + (u64)(at + i) * 4);
         }
         at = (at + run) % count_max;
         left -= run;
     }
-    if (advance) wr32(dsp + (write ? 4 : 0), (rd32(dsp + (write ? 4 : 0)) + advance) % count_max);
+    if (advance) snx_st_le32(dsp + (write ? 4 : 0), (snx_ld_le32(dsp + (write ? 4 : 0)) + advance) % count_max);
     return n;
 }
 
 static void effect_aux(ARState* s, ARMix* m, AREffect* e) {
     const u8* p = e->p; /* inputs 0, outputs 0x18, channels 0x30, ring samples 0x38, send info 0x40, return 0x50 */
-    u32 count = rd32(p + 0x30), count_max = rd32(p + 0x38), n = s->frame;
-    u64 send = rd64(p + 0x40), ret = rd64(p + 0x50);
+    u32 count = snx_ld_le32(p + 0x30), count_max = snx_ld_le32(p + 0x38), n = s->frame;
+    u64 send = snx_ld_le64(p + 0x40), ret = snx_ld_le64(p + 0x50);
     if (!send || !ret) return;
     if (count > SNX_AUDREN_MIX_OUTS) count = SNX_AUDREN_MIX_OUTS;
     if (!e->enabled) {
@@ -897,33 +888,33 @@ static void capture_write(u64 info, u32 count_max, float* in, u32 n, u32 place, 
     if (!count_max || n > count_max) return;
     cpu = GP(info);
     dsp = GP(info + 0x40);
-    if (rd32(dsp + 4) + place > count_max) return;
+    if (snx_ld_le32(dsp + 4) + place > count_max) return;
     if (in) aux_ring(info, count_max, in, n, place, 0, 1);
     if (!update) return;
-    diff = rd32(dsp + 0xC) - rd32(cpu + 0xC);
+    diff = snx_ld_le32(dsp + 0xC) - snx_ld_le32(cpu + 0xC);
     if (diff >= count_max) {
-        u32 lost = rd32(dsp + 8) + update;
-        if (lost - rd32(cpu + 8) < rd32(dsp + 8) - rd32(cpu + 8)) lost = rd32(cpu + 8) - 1;
-        wr32(dsp + 8, lost);
+        u32 lost = snx_ld_le32(dsp + 8) + update;
+        if (lost - snx_ld_le32(cpu + 8) < snx_ld_le32(dsp + 8) - snx_ld_le32(cpu + 8)) lost = snx_ld_le32(cpu + 8) - 1;
+        snx_st_le32(dsp + 8, lost);
     }
-    wr32(dsp + 4, (rd32(dsp + 4) + update + count_max) % count_max);
-    total = rd32(dsp + 0xC) + update;
-    if (total - rd32(cpu + 0xC) < diff) total = rd32(cpu + 0xC) - 1;
-    wr32(dsp + 0xC, total);
+    snx_st_le32(dsp + 4, (snx_ld_le32(dsp + 4) + update + count_max) % count_max);
+    total = snx_ld_le32(dsp + 0xC) + update;
+    if (total - snx_ld_le32(cpu + 0xC) < diff) total = snx_ld_le32(cpu + 0xC) - 1;
+    snx_st_le32(dsp + 0xC, total);
 }
 
 /* switched off, the DSP's offsets and total go to 0 */
 static void effect_capture(ARState* s, ARMix* m, AREffect* e) {
     u32 ch;
     const u8* p = e->p;
-    u32 count = rd32(p + 0x30), count_max = rd32(p + 0x38), n = s->frame;
-    u64 info = rd64(p + 0x40);
+    u32 count = snx_ld_le32(p + 0x30), count_max = snx_ld_le32(p + 0x38), n = s->frame;
+    u64 info = snx_ld_le64(p + 0x40);
     if (!info) return;
     if (!e->enabled) {
         u8* dsp = GP(info + 0x40);
-        wr32(dsp, 0);
-        wr32(dsp + 4, 0);
-        wr32(dsp + 0xC, 0);
+        snx_st_le32(dsp, 0);
+        snx_st_le32(dsp + 4, 0);
+        snx_st_le32(dsp + 0xC, 0);
         return;
     }
     if (count > SNX_AUDREN_MIX_OUTS) count = SNX_AUDREN_MIX_OUTS;
@@ -944,9 +935,9 @@ static double recip_estimate(double a) {
    exact reciprocal (Eden's mode 0 "refinement" is not one; what the console's mode 0 does is not known) */
 static void effect_limiter(ARState* s, ARMix* m, AREffect* e) {
     const u8* p = e->p;
-    u32 channels = rd16(p + 0xE), n = s->frame;
+    u32 channels = snx_ld_le16(p + 0xE), n = s->frame;
     if (channels > SNX_AUDREN_CHANNELS) channels = SNX_AUDREN_CHANNELS;
-    i32 la_min = (i32)rd32(p + 0x38), la_max = (i32)rd32(p + 0x3C);
+    i32 la_min = (i32)snx_ld_le32(p + 0x38), la_max = (i32)snx_ld_le32(p + 0x3C);
     if (la_max < 1) la_max = 1;
     if (la_max > 4800) la_max = 4800;
     if (la_min < 1) la_min = 1;
@@ -962,8 +953,8 @@ static void effect_limiter(ARState* s, ARMix* m, AREffect* e) {
         }
     }
     e->fresh = 0;
-    float attack = rdf(p + 0x24), release = rdf(p + 0x28), threshold = rdf(p + 0x2C), in_gain = rdf(p + 0x30),
-          out_gain = rdf(p + 0x34);
+    float attack = snx_ld_lef32(p + 0x24), release = snx_ld_lef32(p + 0x28), threshold = snx_ld_lef32(p + 0x2C),
+          in_gain = snx_ld_lef32(p + 0x30), out_gain = snx_ld_lef32(p + 0x34);
     int mode1 = p[0x43] == 1;
     for (u32 ch = 0; ch < channels; ch++) {
         float *in = mixbuf(s, m, (i8)p[ch]), *out = mixbuf(s, m, (i8)p[6 + ch]);
@@ -991,10 +982,10 @@ static void effect_limiter(ARState* s, ARMix* m, AREffect* e) {
 /* a buffer mixer: inputs 0, outputs 0x18, volumes 0x30, count 0x90 */
 static void effect_mix(ARState* s, ARMix* m, AREffect* e) {
     const u8* p = e->p;
-    u32 count = rd32(p + 0x90), n = s->frame;
+    u32 count = snx_ld_le32(p + 0x90), n = s->frame;
     if (!e->enabled) return;
     for (u32 i = 0; i < count && i < SNX_AUDREN_MIX_OUTS; i++) {
-        float vol = rdf(p + 0x30 + i * 4);
+        float vol = snx_ld_lef32(p + 0x30 + i * 4);
         float *in = mixbuf(s, m, (i8)p[i]), *out = mixbuf(s, m, (i8)p[0x18 + i]);
         if (!in || !out || vol == 0.0f) continue;
         for (u32 k = 0; k < n; k++) out[k] += in[k] * vol;
@@ -1045,8 +1036,10 @@ static void effect_biquad(ARState* s, ARMix* m, AREffect* e) {
     u8 state = p[biquad_state_at(s)];
     u32 n = s->frame;
     float b[3], a[2]; /* in Q14 over 16384: Eden's effect takes its floats to Q14 */
-    for (k = 0; k < 3; k++) b[k] = (v2 ? q14(rdf(p + 0x10 + k * 4)) : (i16)rd16(p + 0xC + k * 2)) / 16384.0f;
-    for (k = 0; k < 2; k++) a[k] = (v2 ? q14(rdf(p + 0x1C + k * 4)) : (i16)rd16(p + 0x12 + k * 2)) / 16384.0f;
+    for (k = 0; k < 3; k++)
+        b[k] = (v2 ? q14(snx_ld_lef32(p + 0x10 + k * 4)) : (i16)snx_ld_le16(p + 0xC + k * 2)) / 16384.0f;
+    for (k = 0; k < 2; k++)
+        a[k] = (v2 ? q14(snx_ld_lef32(p + 0x1C + k * 4)) : (i16)snx_ld_le16(p + 0x12 + k * 2)) / 16384.0f;
     if (channels <= 0 || state > SNX_AUDREN_PARAM_UPDATED) return;
     if (channels > SNX_AUDREN_CHANNELS) channels = SNX_AUDREN_CHANNELS;
     clear = state == SNX_AUDREN_PARAM_INITIALIZED || (state == SNX_AUDREN_PARAM_UPDATING && revn < 6);
@@ -1097,13 +1090,13 @@ typedef struct {
 } ARDelay;
 
 static void delay_gains(ARDelay* d, const u8* p) {
-    i32 spread = (i32)rd32(p + 0x2C);
-    u16 count = rd16(p + 0xE);
-    d->feedback = q14mul((i32)rd32(p + 0x20), 16056); /* 0.97998046875 */
+    i32 spread = (i32)snx_ld_le32(p + 0x2C);
+    u16 count = snx_ld_le16(p + 0xE);
+    d->feedback = q14mul((i32)snx_ld_le32(p + 0x20), 16056); /* 0.97998046875 */
     d->delay_feedback = q14mul(d->feedback, 16384 - spread);
     if (count == 4 || count == 6) spread >>= 1;
     d->cross = q14mul(spread, d->feedback);
-    d->lowpass_feedback = q14mul((i32)rd32(p + 0x30), 15564); /* 0.949951171875 */
+    d->lowpass_feedback = q14mul((i32)snx_ld_le32(p + 0x30), 15564); /* 0.949951171875 */
     d->lowpass = 16384 - d->lowpass_feedback;
 }
 
@@ -1115,11 +1108,11 @@ static void delay_init(AREffect* e, const u8* p) {
     ARDelay* d;
     i64* line;
     fx_free(e);
-    count = rd16(p + 0xE);
-    rate = (i32)rd32(p + 0x18);
-    time = (i32)(rd32(p + 0x14) * 16384u);
+    count = snx_ld_le16(p + 0xE);
+    rate = (i32)snx_ld_le32(p + 0x18);
+    time = (i32)(snx_ld_le32(p + 0x14) * 16384u);
     time = q14mul(time, (i32)(((i64)rate << 14) / (1000 * 16384)));
-    n_max = (u32)(rate >> 14) * rd32(p + 0x10);
+    n_max = (u32)(rate >> 14) * snx_ld_le32(p + 0x10);
     len_max = snx_mul_shr_s64(274877920, (i64)((u64)n_max << 32), 32); /* 0.064f in Q32.32 */
     len = (i64)(((u64)(i64)(time >> 14) << 32) | ((u64)(time & 0x3FFF) << 18));
     if (len > len_max) len = len_max;
@@ -1141,7 +1134,7 @@ static void effect_delay(ARState* s, ARMix* m, AREffect* e) {
     u32 i;
     i32 in_gain, wet, dry, fb, x, mx[SNX_AUDREN_CHANNELS][SNX_AUDREN_CHANNELS];
     const u8* p = e->p;
-    u32 count = rd16(p + 0xE), n = s->frame;
+    u32 count = snx_ld_le16(p + 0xE), n = s->frame;
     float *in[SNX_AUDREN_CHANNELS], *out[SNX_AUDREN_CHANNELS];
     if (!channels_valid(count) || !fx_buffers(s, m, p, count, in, out)) return;
     if (e->enabled) { /* more channels than it was made with would read lines it lacks: made again */
@@ -1157,9 +1150,9 @@ static void effect_delay(ARState* s, ARMix* m, AREffect* e) {
         return;
     }
     d = e->fx;
-    in_gain = (i32)rd32(p + 0x1C);
-    wet = (i32)rd32(p + 0x24);
-    dry = (i32)rd32(p + 0x28);
+    in_gain = (i32)snx_ld_le32(p + 0x1C);
+    wet = (i32)snx_ld_le32(p + 0x24);
+    dry = (i32)snx_ld_le32(p + 0x28);
     fb = d->delay_feedback;
     x = d->cross;
     memset(mx, 0, sizeof mx);
@@ -1175,7 +1168,7 @@ static void effect_delay(ARState* s, ARMix* m, AREffect* e) {
             break;
         default: /* 6: centre and LFE apart, the LFE fed back at the feedback parameter as it is */
             mx[0][0] = mx[1][1] = mx[2][2] = mx[4][4] = mx[5][5] = fb;
-            mx[3][3] = (i32)rd32(p + 0x20);
+            mx[3][3] = (i32)snx_ld_le32(p + 0x20);
             mx[0][2] = mx[0][4] = mx[1][2] = mx[1][5] = mx[2][0] = mx[2][1] = x;
             mx[4][0] = mx[4][5] = mx[5][1] = mx[5][4] = x;
     }
@@ -1280,8 +1273,9 @@ static i32 clamp_time(i32 t, i32 max) { return t < 0 ? 0 : t > max ? max : t; }
 static void reverb_params(ARReverb* r, const u8* p) {
     int i;
     i32 pre_target;
-    u32 early = rd32(p + 0x14) < 5 ? rd32(p + 0x14) : 4, late = rd32(p + 0x20) < 5 ? rd32(p + 0x20) : 4;
-    i64 rate = rd32(p + 0x10), pre = (i32)rd32(p + 0x1C);
+    u32 early = snx_ld_le32(p + 0x14) < 5 ? snx_ld_le32(p + 0x14) : 4,
+        late = snx_ld_le32(p + 0x20) < 5 ? snx_ld_le32(p + 0x20) : 4;
+    i64 rate = snx_ld_le32(p + 0x10), pre = (i32)snx_ld_le32(p + 0x1C);
     if (qf(rate) < 1.0f) rate = 16384;
     if (qf(pre) < 0.0f) pre = 0;
     for (i = 0; i < 10; i++) {
@@ -1289,12 +1283,12 @@ static void reverb_params(ARReverb* r, const u8* p) {
         i32 target = clamp_time(q_int(q14mul64(pre + fq(snx_reverb_early_times[early][i]), rate)), r->pre.max);
         i32 old = r->early_time[i] - 1;
         r->early_time[i] = old + (target - old) / 4 + 1;
-        gain = q14mul64((i32)rd32(p + 0x18), fq(snx_reverb_early_gains[early][i]));
+        gain = q14mul64((i32)snx_ld_le32(p + 0x18), fq(snx_reverb_early_gains[early][i]));
         if (qf(gain) < 0.0f) gain = 0;
         if (qf(gain) > 1.0f) gain = 16384;
         r->early_gain[i] += q_div(gain - r->early_gain[i], 4 * 16384);
     }
-    if (rd16(p + 0xE) == 2) {
+    if (snx_ld_le16(p + 0xE) == 2) {
         r->early_gain[4] = q14mul64(r->early_gain[4], 8192);
         r->early_gain[5] = q14mul64(r->early_gain[5], 8192);
     }
@@ -1311,17 +1305,17 @@ static void reverb_params(ARReverb* r, const u8* p) {
         f->end = f->count - 1;
         d->count += (clamp_time(q_int(q14mul64(fq(snx_reverb_decay_times[late][i]), rate)), d->max) - d->count) / 4;
         d->end = d->count - 1;
-        colour = (i32)rd32(p + 0x30);
+        colour = (i32)snx_ld_le32(p + 0x30);
         if (qf(colour) < 0.0f) colour = 0;
         if (qf(colour) > 1.0f) colour = 16384;
         d->decay += q_div(q14mul64(9830, 16384 - colour) - d->decay, 4 * 16384); /* 0.5999755859375 */
-        decay_time = (i32)rd32(p + 0x28);
+        decay_time = (i32)snx_ld_le32(p + 0x28);
         if (qf(decay_time) <= 0.0f) decay_time = 1; /* 0.0001 */
         a = q14mul64((i64)(f->max + d->max) * 16384, -3 * 16384);
         b = q_div(a, q14mul64(decay_time, rate));
         c = 0;
         dd = 16384;
-        hf = (i32)rd32(p + 0x2C);
+        hf = (i32)snx_ld_le32(p + 0x2C);
         if (qf(hf) < 0.001f) hf = 16;
         if (qf(hf) > 0.999f) hf = 16367;
         if (qf(hf) <= 0.9949f) {
@@ -1350,7 +1344,7 @@ static int reverb_init(AREffect* e, const u8* p, int long_pre_delay) {
     i64* mem;
     i64* at;
     fx_free(e);
-    rate = rd32(p + 0x10);
+    rate = snx_ld_le32(p + 0x10);
     for (i = 0; i < 4; i++) {
         len[i] = (u32)(q14mul64(fq(snx_reverb_fdn_max[i]), rate) >> 14);
         len[4 + i] = (u32)(q14mul64(fq(snx_reverb_decay_max[i]), rate) >> 14);
@@ -1391,7 +1385,7 @@ static void effect_reverb(ARState* s, ARMix* m, AREffect* e) {
                                    {0},
                                    {0, 0, 1, 1, 2, 2, 4, 4, 5, 5}};
     const u8* p = e->p;
-    u32 count = rd16(p + 0xE), n = s->frame;
+    u32 count = snx_ld_le16(p + 0xE), n = s->frame;
     float *in[SNX_AUDREN_CHANNELS], *out[SNX_AUDREN_CHANNELS];
     if (!channels_valid(count) || !fx_buffers(s, m, p, count, in, out)) return;
     if (e->enabled) {
@@ -1408,10 +1402,10 @@ static void effect_reverb(ARState* s, ARMix* m, AREffect* e) {
         return;
     }
     r = e->fx;
-    base = (i32)rd32(p + 0x34);
-    late = (i32)rd32(p + 0x24);
-    wet = (i32)rd32(p + 0x38);
-    dry = (i32)rd32(p + 0x3C);
+    base = (i32)snx_ld_le32(p + 0x34);
+    late = (i32)snx_ld_le32(p + 0x24);
+    wet = (i32)snx_ld_le32(p + 0x38);
+    dry = (i32)snx_ld_le32(p + 0x3C);
     for (i = 0; i < n; i++) {
         int t, k;
         u32 c;
@@ -1528,14 +1522,15 @@ static void i3dl2_params(ARI3dl2* r, const u8* p) {
     i64 hf;
     int i;
     float reflection_time;
-    u32 rate = rd32(p + 0x14);
-    float ref_hf = rdf(p + 0x1C), decay_time = rdf(p + 0x20), hf_ratio = rdf(p + 0x24), room = rdf(p + 0x28),
-          density = rdf(p + 0x40), reverb_delay = rdf(p + 0x3C), reflection_delay = rdf(p + 0x38);
+    u32 rate = snx_ld_le32(p + 0x14);
+    float ref_hf = snx_ld_lef32(p + 0x1C), decay_time = snx_ld_lef32(p + 0x20), hf_ratio = snx_ld_lef32(p + 0x24),
+          room = snx_ld_lef32(p + 0x28), density = snx_ld_lef32(p + 0x40), reverb_delay = snx_ld_lef32(p + 0x3C),
+          reflection_delay = snx_ld_lef32(p + 0x38);
     i64 delay = fq((float)rate / 1000.0f);
-    r->dry = rdf(p + 0x44);
-    r->early_gain = pow10_clamped(qf(fq(min5000(room + rdf(p + 0x2C)) / 2000.0f)));
-    r->late_gain = pow10_clamped(qf(fq(min5000(room + rdf(p + 0x30)) / 2000.0f)));
-    hf = fq(pow10_clamped(rdf(p + 0x18) / 2000.0f));
+    r->dry = snx_ld_lef32(p + 0x44);
+    r->early_gain = pow10_clamped(qf(fq(min5000(room + snx_ld_lef32(p + 0x2C)) / 2000.0f)));
+    r->late_gain = pow10_clamped(qf(fq(min5000(room + snx_ld_lef32(p + 0x30)) / 2000.0f)));
+    hf = fq(pow10_clamped(snx_ld_lef32(p + 0x18) / 2000.0f));
     if (hf >= 16384) {
         r->lowpass_1 = 0.0f;
         r->lowpass_2 = 1.0f;
@@ -1547,7 +1542,7 @@ static void i3dl2_params(ARI3dl2* r, const u8* p) {
         r->lowpass_2 = 1.0f - r->lowpass_1;
     }
     r->early_to_late = q_int(q14mul64(fq((reflection_delay + reverb_delay) * 1000.0f), delay));
-    r->last_echo = rdf(p + 0x34) * 0.6f * 0.01f;
+    r->last_echo = snx_ld_lef32(p + 0x34) * 0.6f * 0.01f;
     for (i = 0; i < 4; i++) {
         float a, b, w, c, d, e;
         float span = snx_i3dl2_max[i] - snx_i3dl2_min[i];
@@ -1581,7 +1576,7 @@ static int i3dl2_init(AREffect* e, const u8* p) {
     i64* at;
     ARI3Line* lines[14];
     fx_free(e);
-    delay = fq((float)rd32(p + 0x14) / 1000.0f);
+    delay = fq((float)snx_ld_le32(p + 0x14) / 1000.0f);
     for (i = 0; i < 4; i++) {
         len[i] = (u32)(q14mul64(fq(snx_i3dl2_max[i]), delay) >> 14);
         len[4 + i] = (u32)(q14mul64(fq(snx_i3dl2_decay0[i]), delay) >> 14);
@@ -1624,7 +1619,7 @@ static void effect_i3dl2(ARState* s, ARMix* m, AREffect* e) {
                                    {0},
                                    {2, 0, 0, 1, 1, 1, 1, 4, 4, 4, 1, 1, 1, 0, 0, 0, 0, 5, 5, 5}};
     const u8* p = e->p;
-    u32 count = rd16(p + 0xE), n = s->frame;
+    u32 count = snx_ld_le16(p + 0xE), n = s->frame;
     float *in[SNX_AUDREN_CHANNELS], *out[SNX_AUDREN_CHANNELS];
     if (!channels_valid(count) || !fx_buffers(s, m, p, count, in, out)) return;
     if (e->enabled) {
@@ -1695,10 +1690,10 @@ static float db_gain(float db) {
 }
 
 static void compressor_params(ARCompressor* c, const u8* p) {
-    float threshold = rdf(p + 0x14), ratio = 1.0f / rdf(p + 0x18), makeup = 0.0f;
+    float threshold = snx_ld_lef32(p + 0x14), ratio = 1.0f / snx_ld_lef32(p + 0x18), makeup = 0.0f;
     if (p[0x35]) makeup = threshold * 0.5f * (ratio - 1.0f) - 3.0f;
-    c->rate = rdf(p + 0x28);
-    c->out = db_gain(rdf(p + 0x30) + makeup);
+    c->rate = snx_ld_lef32(p + 0x28);
+    c->out = db_gain(snx_ld_lef32(p + 0x30) + makeup);
     c->knee = (1.0f - ratio) / 6.0f;
     c->knee_hi = threshold + 1.5f;
     c->knee_lo = threshold - 1.5f;
@@ -1709,7 +1704,7 @@ static void effect_compressor(ARState* s, ARMix* m, AREffect* e) {
     ARCompressor* c;
     float threshold, ratio, detector;
     const u8* p = e->p;
-    u32 count = rd16(p + 0xE), n = s->frame;
+    u32 count = snx_ld_le16(p + 0xE), n = s->frame;
     float *in[SNX_AUDREN_CHANNELS], *out[SNX_AUDREN_CHANNELS];
     if (!channels_valid(count)) return;
     for (i = 0; i < count; i++)
@@ -1729,8 +1724,8 @@ static void effect_compressor(ARState* s, ARMix* m, AREffect* e) {
         return;
     }
     c = e->fx;
-    threshold = rdf(p + 0x14);
-    ratio = rdf(p + 0x18);
+    threshold = snx_ld_lef32(p + 0x14);
+    ratio = snx_ld_lef32(p + 0x18);
     detector = c->detector;
     for (i = 0; i < n; i++) {
         u32 ch;
@@ -1741,7 +1736,7 @@ static void effect_compressor(ARState* s, ARMix* m, AREffect* e) {
             x[ch] = (float)v;
             power += (float)(v * v);
         }
-        detector += rdf(p + 0x24) * (power / (float)count - c->detector);
+        detector += snx_ld_lef32(p + 0x24) * (power / (float)count - c->detector);
         level = -100.0f;
         target = 0.0f;
         if (detector >= 1.0e-10) {
@@ -1752,9 +1747,9 @@ static void effect_compressor(ARState* s, ARMix* m, AREffect* e) {
             target = db_gain(level >= c->knee_hi ? (1.0f / ratio - 1.0f) * (level - threshold)
                                                  : (level - c->knee_lo) * (level - c->knee_lo) * -c->knee);
         held = target;
-        c->rate = rdf(p + 0x28);
+        c->rate = snx_ld_lef32(p + 0x28);
         if (c->held - target <= 0.08f) {
-            c->rate = rdf(p + 0x2C);
+            c->rate = snx_ld_lef32(p + 0x2C);
             if (c->held - target >= -0.08f && fabsf(c->gain - target) >= 0.001f) held = c->held;
         }
         c->held = held;
@@ -2019,7 +2014,7 @@ static void sink_frame(ARState* s, ARSink* k, i16* stereo, int* device) {
     u32 n = s->frame;
     if (k->type ==
         SNX_AUDREN_SINK_DEVICE) { /* name 0, input count 0x100, inputs 0x104, downmix 0x10B, coefficients 0x10C */
-        u32 count = rd32(k->p + 0x100);
+        u32 count = snx_ld_le32(k->p + 0x100);
         if (!count || count > SNX_AUDREN_CHANNELS || !stereo) return;
         const float* in[SNX_AUDREN_CHANNELS];
         for (u32 c = 0; c < count; c++)
@@ -2043,8 +2038,8 @@ static void sink_frame(ARState* s, ARSink* k, i16* stereo, int* device) {
     } else if (k->type == SNX_AUDREN_SINK_CIRCULAR) {
         /* address 0, size 8, input count 0xC, inputs 0x1C (the format is the byte at 0x18). A frame is each input
            in turn, n 16-bit samples apiece (Eden's CircularBufferSinkCommand) */
-        u64 addr = rd64(k->p);
-        u32 size = rd32(k->p + 8), count = rd32(k->p + 0xC);
+        u64 addr = snx_ld_le64(k->p);
+        u32 size = snx_ld_le32(k->p + 8), count = snx_ld_le32(k->p + 0xC);
         if (!addr || !size || count > SNX_AUDREN_CHANNELS) return;
         u32 pos = k->pos;
         for (u32 c = 0; c < count; c++) {

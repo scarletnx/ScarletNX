@@ -22,6 +22,7 @@
 #include "common/gpu/vk/swapchain.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
 #include <stdio.h>
@@ -248,17 +249,13 @@ static void write_ppm(unsigned screen, unsigned width, unsigned height, const un
     snprintf(staged, sizeof staged, "%s.partial", path);
     FILE* file = fopen(latest ? staged : path, "wb");
     if (!file) return;
-    fprintf(file, "P6\n%u %u\n255\n", height, width);
-    for (uint32_t y = 0; y < width; ++y)        /* the landscape rows */
-        for (uint32_t x = 0; x < height; ++x) { /* the landscape columns */
-            const unsigned char* p = rgba + ((uint64_t)x * width + (width - 1 - y)) * 4;
-            if (fwrite(p, 1, 3, file) != 3) break;
-        }
+    /* the landscape rows are the framebuffer's columns from its last, each column's pixels a framebuffer row apart */
+    (void)snx_ppm_write(file, height, width, rgba + (size_t)(width - 1) * 4, (ptrdiff_t)width * 4, -4, SNX_PPM_RGBA);
     bool closed = !fclose(file);
     if (!latest)
         ++g_present.dumps;
     else if (closed)
-        (void)snx_replace(staged, path);
+        (void)plat_replace_file(staged, path);
 }
 /* The blit rectangle of a screen in swapchain pixels: in one window the pair scaled to fit and centred, each screen
    centred across the layout; in its own window the screen scaled to fit and centred. False before a layout and a

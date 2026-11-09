@@ -388,7 +388,7 @@ static void mesh_choose(int has_ext, const VkPhysicalDeviceMeshShaderFeaturesEXT
     VkPhysicalDeviceVulkan13Properties p13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES,
                                               .pNext = has_ext ? &mp : NULL};
     VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p13};
-    vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
+    if (g_vk.api >= VK_API_VERSION_1_3) vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
     const VkShaderStageFlags both = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT;
     const char* why = !g_settings.mesh_draws                                    ? "mesh_draws off (experimental)"
                       : !has_ext                                                ? "no VK_EXT_mesh_shader"
@@ -431,12 +431,19 @@ static void astc_choose(void) {
     }
     if (!g_vk.feat.textureCompressionBC) return; /* RGBA8, which the warning above says */
     vk_mem_use(&usage, &budget);
-    g_vk.astc_auto_bc7 = snx_astc_auto_bc7(budget);
-    if (g_settings.astc_mode == 0)
+    g_vk.astc_auto_bc7 = g_shader_sm86 || snx_astc_auto_bc7(budget);
+    g_vk.astc_at_load = g_settings.astc_mode == 3 || (g_settings.astc_mode == 0 && g_shader_sm86);
+    if (g_settings.astc_mode == 0 && g_shader_sm86)
+        LOG("vulkan: astc_mode=0 (Auto): an Ounce program: ASTC textures are encoded as BC7 as they load, a quarter of "
+            "RGBA8's memory (BC7 at load)\n");
+    else if (g_settings.astc_mode == 0)
         LOG("vulkan: astc_mode=0 (Auto): heap %d's budget is %llu MB as the device starts, %s %llu MB: ASTC textures "
             "are %s (%s)\n",
             vk_mem_heap(), (unsigned long long)(budget >> 20), g_vk.astc_auto_bc7 ? "under" : "at least",
             SNX_ASTC_EXACT_MB, g_vk.astc_auto_bc7 ? bc7 : exact, g_vk.astc_auto_bc7 ? "BC7" : "Exact");
+    else if (g_settings.astc_mode == 3)
+        LOG("vulkan: astc_mode=3 (BC7 at load): ASTC textures are encoded as BC7 as they load, a quarter of RGBA8's "
+            "memory\n");
     else
         LOG("vulkan: astc_mode=2 (BC7): ASTC textures are %s\n", bc7);
 }
@@ -706,6 +713,13 @@ static int create_device(void) {
                      g_vk.props.deviceName, lacks12);
             snx_vk_extensions_free(&e);
             return 0;
+        }
+        { /* every device here has maintenance4 (core in 1.3, required of 1.2 above) */
+            VkPhysicalDeviceMaintenance4Properties m4 = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES};
+            VkPhysicalDeviceProperties2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &m4};
+            vkGetPhysicalDeviceProperties2(g_vk.phys, &q);
+            g_vk.max_buffer_size = m4.maxBufferSize;
         }
         g_vk.has_divisor = snx_vk_extensions_has(&e, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
         has_vertex_input = snx_vk_extensions_has(&e, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
@@ -1016,7 +1030,7 @@ static int create_device(void) {
                              : "no VK_EXT_primitive_topology_list_restart");
     g_vk.has_index8 = index8_ext && qindex8.indexTypeUint8;
     mesh_choose(has_mesh, &qmesh, &q13);
-    {
+    if (core13) { /* the subgroup sizes are Vulkan 1.3's, as mesh_choose reads them */
         VkPhysicalDeviceVulkan13Properties p13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
         VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p13};
         vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);

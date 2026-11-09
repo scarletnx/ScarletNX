@@ -3,7 +3,7 @@
 #ifndef SNX_ANDROID_GLES_VK_H
 #define SNX_ANDROID_GLES_VK_H
 /* What GLES 1.1 (hle_gles.c) and GLES 2 and 3 (gles2*.c) share over Vulkan (gles_vk.c): one instance, device and
-   queue, the window surfaces with their swapchains, and the frames that the calls record (docs/android/NATIVE.md,
+   queue, the window surfaces with their swapchains, and the frames that the calls record (docs/platforms/android-apps/native.md,
    "EGL and GLES").
 
    A surface records one frame at a time into the command buffer of a slot. Two slots are in flight. The image of a
@@ -259,8 +259,9 @@ typedef struct {
 extern GlesVk g_gles_vk;
 
 /* the instance, a surface of the host window (*surface), the device and queue that present to it: once, at the first
-   window surface. Then only a new surface. False when there is no Vulkan device */
-bool gles_vk_device(VkSurfaceKHR* surface);
+   surface. Then only a new surface. A probe's surface (for a pbuffer, which draws offscreen) leaves the window to
+   ScarletNX's renderer. False when there is no Vulkan device */
+bool gles_vk_device(VkSurfaceKHR* surface, bool probe);
 /* the device and instance gone, and every object made on them that the library still keeps: after the last GLES 1.1 and
    2 surface and context (gles2_shutdown). The next surface brings them up again */
 void gles_vk_shutdown(void);

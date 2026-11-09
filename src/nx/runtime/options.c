@@ -21,6 +21,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/unattended.h"
 #include "nx/runtime/platform/vpad.h"
+#include "common/utilities/bits.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -221,13 +222,6 @@ static char g_path[1400];
 static int g_started; /* ini_open is done: the startup settings are kept from now on */
 static u64 g_hash;    /* the file as this run last read or wrote it */
 static u64 g_seen;    /* a changed file seen by the last poll, read once a second poll sees it unchanged */
-
-static u64 fnv1a(const unsigned char* p, size_t n) {
-    u64 h = 0xCBF29CE484222325ull;
-    size_t i;
-    for (i = 0; i < n; i++) h = (h ^ p[i]) * 0x100000001B3ull;
-    return h;
-}
 
 static const char* override_of(const char* key) {
     int i;
@@ -484,7 +478,7 @@ static int write_file(void) {
         return -1;
     }
     text = snx_read_file(g_path, &size);
-    g_hash = g_seen = text ? fnv1a(text, size) : 0;
+    g_hash = g_seen = text ? snx_fnv1a(SNX_FNV_BASIS, text, size) : 0;
     free(text);
     return 0;
 }
@@ -514,11 +508,11 @@ static void memory_fit_old(void) {
     else if (now == -1)
         WARN(
             "settings: memory_fit=%s, deprecated, was its default: memory_fit_mode takes its own, 0 (Auto), which fits "
-            "the game to the device (docs/DEPRECATIONS.md)\n",
+            "the game to the device (docs/user/deprecations.md)\n",
             old);
     else {
         store_put("memory_fit_mode", now ? "1" : "0");
-        WARN("settings: memory_fit=%s, deprecated, is memory_fit_mode=%d (%s) now (docs/DEPRECATIONS.md)\n", old, now,
+        WARN("settings: memory_fit=%s, deprecated, is memory_fit_mode=%d (%s) now (docs/user/deprecations.md)\n", old, now,
              now ? "Off" : "Auto");
     }
 }
@@ -540,11 +534,11 @@ static void astc_bc_old(void) {
     else if (now == -1)
         WARN("settings: astc_bc=%s, deprecated, was its default: astc_mode takes its own, 0 (Auto), which holds ASTC "
              "textures as RGBA8 or BC7 by the GPU's memory where the GPU samples BCn but not ASTC "
-             "(docs/DEPRECATIONS.md)\n",
+             "(docs/user/deprecations.md)\n",
              old);
     else {
         store_put("astc_mode", "0");
-        WARN("settings: astc_bc=%s, deprecated, is astc_mode=0 (Auto) now (docs/DEPRECATIONS.md)\n", old);
+        WARN("settings: astc_bc=%s, deprecated, is astc_mode=0 (Auto) now (docs/user/deprecations.md)\n", old);
     }
 }
 
@@ -565,13 +559,13 @@ static void controls_opacity_old(void) {
     v = options_controls_opacity_old(old);
     if (v == -2) {
         WARN("settings: controls_opacity=%s, deprecated, is not a whole number: controls_alpha takes its default, %s "
-             "(docs/DEPRECATIONS.md)\n",
+             "(docs/user/deprecations.md)\n",
              old, o->def);
         return;
     }
     if (v == -1) {
         WARN("settings: controls_opacity=%s, deprecated, was its default: controls_alpha takes its own, %s "
-             "(docs/DEPRECATIONS.md)\n",
+             "(docs/user/deprecations.md)\n",
              old, o->def);
         return;
     }
@@ -579,7 +573,7 @@ static void controls_opacity_old(void) {
     store_put("controls_alpha", now);
     WARN(
         "settings: controls_opacity=%s, deprecated, is controls_alpha=%d now, the same look: the built-in controls' art "
-        "is opaque (docs/DEPRECATIONS.md)\n",
+        "is opaque (docs/user/deprecations.md)\n",
         old, v);
 }
 
@@ -603,23 +597,23 @@ static void vk_descriptors_old(void) {
         if (now == -2)
             WARN(
                 "settings: vk_descriptors=%s, deprecated, is not a whole number from 0 to 3: vk_descriptors_mode takes "
-                "its default, 3 (Automatic) (docs/DEPRECATIONS.md)\n",
+                "its default, 3 (Automatic) (docs/user/deprecations.md)\n",
                 file->value);
         else if (now == -1)
             WARN("settings: vk_descriptors=%s, deprecated, was its default: vk_descriptors_mode takes its own, 3 "
                  "(Automatic), sets on a GPU with memory of its own and heaps on one that shares the system's "
-                 "(docs/DEPRECATIONS.md)\n",
+                 "(docs/user/deprecations.md)\n",
                  file->value);
         else {
             store_put("vk_descriptors_mode", values[now]);
-            WARN("settings: vk_descriptors=%s, deprecated, is vk_descriptors_mode=%d (%s) now (docs/DEPRECATIONS.md)\n",
+            WARN("settings: vk_descriptors=%s, deprecated, is vk_descriptors_mode=%d (%s) now (docs/user/deprecations.md)\n",
                  file->value, now, words[now]);
         }
     }
     if (!given) return;
     if (first) {
         WARN("settings: --vk_descriptors=%s is deprecated, and the command line gives --vk_descriptors_mode=%s too: "
-             "vk_descriptors_mode=%s this run (docs/DEPRECATIONS.md)\n",
+             "vk_descriptors_mode=%s this run (docs/user/deprecations.md)\n",
              given, first, first);
         return;
     }
@@ -627,12 +621,12 @@ static void vk_descriptors_old(void) {
     if (now >= 0) {
         ini_override("vk_descriptors_mode", values[now]);
         WARN("settings: --vk_descriptors=%s is deprecated: this run reads it as --vk_descriptors_mode=%d (%s) "
-             "(docs/DEPRECATIONS.md)\n",
+             "(docs/user/deprecations.md)\n",
              given, now, words[now]);
     } else {
         file = store_find("vk_descriptors_mode");
         WARN("settings: --vk_descriptors=%s, deprecated, is not a whole number from 0 to 3: vk_descriptors_mode=%s "
-             "this run, %s (docs/DEPRECATIONS.md)\n",
+             "this run, %s (docs/user/deprecations.md)\n",
              given, file ? file->value : "3", file ? "the .ini's" : "its default (Automatic)");
     }
 }
@@ -716,7 +710,7 @@ void ini_open(const char* path) {
     }
     if (text) {
         store_parse((char*)text);
-        g_hash = g_seen = fnv1a(text, size);
+        g_hash = g_seen = snx_fnv1a(SNX_FNV_BASIS, text, size);
         free(text);
     }
     memory_fit_old();
@@ -756,7 +750,7 @@ void ini_poll(int final) {
         pm_unlock(&g_poll_lock);
         return;
     }
-    h = fnv1a(text, size);
+    h = snx_fnv1a(SNX_FNV_BASIS, text, size);
     if (h != g_hash && (final ? pending : h == g_seen)) {
         /* changed, and settled (seen the same a second before), or the menu's changes are to be saved at exit */
         store_parse((char*)text);

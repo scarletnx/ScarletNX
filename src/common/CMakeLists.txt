@@ -3,7 +3,7 @@
 add_library(scarletnx-common STATIC
     utilities/common.c utilities/process.c utilities/font.c utilities/ini_lines.c utilities/game_ini.c utilities/pad_map.c
     utilities/pad_screen.c utilities/users.c utilities/mii_model.c utilities/mii_gltf.c utilities/mii_db.c utilities/logscan.c utilities/language_tag.c utilities/mods.c utilities/patches.c utilities/cheat_list.c utilities/state_header.c
-    utilities/gpu_driver.c utilities/run_mark.c
+    utilities/gpu_driver.c utilities/run_mark.c utilities/cli.c
     utilities/spirv_emit.c utilities/script.c memory/host.c
     cpu/aarch64/a64_decoder.c cpu/recompiler/codegen.c cpu/recompiler/variants.c runtime/cas128.c runtime/linux_signal.c)
 target_compile_definitions(scarletnx-common PRIVATE _CRT_SECURE_NO_WARNINGS
@@ -16,6 +16,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
     set_source_files_properties(runtime/cas128.c PROPERTIES COMPILE_OPTIONS -mcx16)
 endif()
 target_link_libraries(scarletnx-common PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+target_link_libraries(scarletnx-common PUBLIC scarletnx-platform) # the clocks (snx_seconds)
 target_link_libraries(scarletnx-common PRIVATE snx_yyjson) # the GPU driver packages' meta.json (utilities/gpu_driver.c)
 target_link_libraries(scarletnx-common PRIVATE snx_libdeflate) # a control.nacp's titles in deflate (utilities/common.c)
 target_link_libraries(scarletnx-common PRIVATE snx_cgltf) # a glTF model's Mii parts (utilities/mii_gltf.c)
@@ -55,13 +56,27 @@ if(TARGET OpenSSL::Crypto)
     target_link_libraries(snx_setup PUBLIC scarletnx-common OpenSSL::Crypto)
 endif()
 
-# The same indexed host filesystem and shared immutable file views serve NX
+# The host's thread primitives (platform/thread.h) that every driver shares: mutexes, condition variables, waits on
+# a word, thread ids; the clocks and sleep (platform/time.h); the files (platform/file.h); the address space
+# (platform/vm.h); and shared libraries (platform/dl.h). No guest type, setting or SDL enters this target
+add_library(scarletnx-platform STATIC platform/thread.c platform/thread_spawn.c platform/time.c platform/sleep.c
+    platform/file.c platform/file_map.c platform/file_share.c platform/file_replace.c platform/vm.c platform/dl.c)
+set_target_properties(scarletnx-platform PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
+target_compile_definitions(scarletnx-platform PRIVATE _FILE_OFFSET_BITS=64 _CRT_SECURE_NO_WARNINGS)
+target_compile_options(scarletnx-platform PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+target_link_libraries(scarletnx-platform PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+if(WIN32)
+    target_sources(scarletnx-platform PRIVATE platform/wpath.c) # snx_host_wpath
+    target_link_libraries(scarletnx-platform PUBLIC synchronization) # plat_wait_word's WaitOnAddress
+endif()
+
+# The same indexed host filesystem and shared immutable file views (platform/file.h) serve NX
 # and CTR. No guest ABI or runtime/platform dependency enters this target.
-add_library(scarletnx-filesystem STATIC filesystem/tree.c filesystem/host.c)
+add_library(scarletnx-filesystem STATIC filesystem/tree.c)
 set_target_properties(scarletnx-filesystem PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(scarletnx-filesystem PRIVATE _GNU_SOURCE _FILE_OFFSET_BITS=64 _CRT_SECURE_NO_WARNINGS)
 target_compile_options(scarletnx-filesystem PRIVATE -Wall -Wextra -Werror=missing-prototypes)
-target_link_libraries(scarletnx-filesystem PUBLIC Threads::Threads)
+target_link_libraries(scarletnx-filesystem PUBLIC scarletnx-platform Threads::Threads)
 
 # The launcher's HTTPS client (network/https.h) through libcurl, trusting Mozilla's roots compiled in: where the build
 # has OpenSSL, which libcurl's TLS is (cmake/dependencies.cmake)
@@ -76,7 +91,7 @@ endif()
 add_library(scarletnx-net STATIC network/net.c network/net_icmp.c network/net_event.c network/net_dns.c
     network/net_iface.c)
 target_compile_options(scarletnx-net PRIVATE -Wall -Wextra -Werror=missing-prototypes)
-target_link_libraries(scarletnx-net PUBLIC Threads::Threads)
+target_link_libraries(scarletnx-net PUBLIC scarletnx-platform Threads::Threads)
 if(WIN32)
     target_link_libraries(scarletnx-net PUBLIC ws2_32 iphlpapi)
 elseif(APPLE) # the system resolver's DNS servers (network/net_iface.c)

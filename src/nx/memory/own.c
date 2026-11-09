@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The map of guest memory the GPU holds, and the traps over it (docs/GPU_OWNERSHIP.md; the trap model is Skyline's,
+/* The map of guest memory the GPU holds, and the traps over it (docs/layers/gpu/ownership.md; the trap model is Skyline's,
    read for its design). Entries are byte exact and never overlap; a host page with any owned byte on it is armed
    (plat_trap_arm), so every access to it, the guest's or the runtime's, waits while own_fault lands the entries on
    it through the pool's mirror, and the page is let go. Owned memory is always pool pages mapped at one address
@@ -19,7 +19,15 @@
    holding mem.c's lock may not: holders of the producer's lock wait for it (own_begin, every mapping change), so mem.c
    lands what it touches first (own_acquire). Nor may one holding the producer's lock, on an owned page (its landing
    needs the lock): own_fault ends the process with the address, as that is a bug in the runtime. Its fault on a page no
-   entry is on any more goes on */
+   entry is on any more goes on.
+
+   A host with no pool (Windows: SNX_PLAT_TRAPS_IN_PLACE) has no mirror. Owned memory is the reservation's own pages,
+   which nothing else maps (views are copies there), and a landing writes them in place: the GPU's bytes go to a staging
+   copy while the pages stay trapped, then plat_trap_fill opens and fills them, and they are let go. Every entry on a
+   page it opens lands with it (close_pages_nl), as a page opened with an entry left on it would show that entry's stale
+   bytes. The CPU's bytes on a trapped page can't be read through a mirror either: an edge page's are copied when it is
+   first armed (its shadow, which own_stage reads), and a page with none (bytes own_drop uncovered on a page that stays
+   trapped) lands before own_stage reads it */
 #include "common/utilities/bits.h"
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +49,7 @@ static u64 g_own_lands; /* landings so far, for the statistics */
 static OwnHooks g_hooks;
 static int g_traps;    /* own_init found traps */
 static u64 g_page;     /* the host's page, which traps are armed in */
+static u8* g_mirror;   /* the pool's mirror, which landings write through; NULL where they land in place */
 static PMutex g_own_lk = PMUTEX_INIT;
 /* arming pages and the check that lets them go, one at a time: a page let go just as an entry lands on it stays
    trapped (taken before g_own_lk) */
@@ -69,6 +78,86 @@ static int region_owned(u64 lo, u64 hi) {
     for (u64 r = lo >> OWN_REGION_SHIFT, e = (hi - 1) >> OWN_REGION_SHIFT; r <= e; r++)
         if (r >= g_own_nregion || __atomic_load_n(&g_own_region[r], __ATOMIC_ACQUIRE)) return 1;
     return 0;
+}
+
+/* ---------------------------------------------------------------- in place (no mirror) */
+/* The CPU's bytes of a trapped page, where there is no mirror to read them through: its bytes as they were when it was
+   first armed with CPU bytes on it (an owner's edge page), sorted by page, under g_trap_lk. While the page is armed no
+   CPU write can change them: a write lands it first. They go when it is let go */
+typedef struct {
+    u64 page;
+    u8* bytes;
+} Shadow;
+static Shadow* g_shadow;
+static u32 g_nshadow, g_capshadow;
+static u32 shadow_at_nl(u64 page) {
+    u32 lo = 0, hi = g_nshadow;
+    while (lo < hi) {
+        u32 mid = (lo + hi) / 2;
+        if (g_shadow[mid].page < page)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo;
+}
+static const u8* shadow_get_nl(u64 page) {
+    u32 i = shadow_at_nl(page);
+    return i < g_nshadow && g_shadow[i].page == page ? g_shadow[i].bytes : NULL;
+}
+/* bytes (g_page of them, malloc's) as page's shadow, unless it has one: an older one, from when it was first armed */
+static void shadow_add_nl(u64 page, u8* bytes) {
+    u32 i = shadow_at_nl(page);
+    if (i < g_nshadow && g_shadow[i].page == page) {
+        free(bytes);
+        return;
+    }
+    if (g_nshadow == g_capshadow) {
+        u32 cap = g_capshadow ? g_capshadow * 2 : 64;
+        Shadow* n = (Shadow*)realloc(g_shadow, sizeof *n * (size_t)cap);
+        if (!n) fatal("Out of memory for the map of GPU-owned memory");
+        g_shadow = n;
+        g_capshadow = cap;
+    }
+    memmove(&g_shadow[i + 1], &g_shadow[i], sizeof *g_shadow * (size_t)(g_nshadow - i));
+    g_shadow[i].page = page;
+    g_shadow[i].bytes = bytes;
+    g_nshadow++;
+}
+/* the pages [lo, hi) let go: their shadows go */
+static void shadow_drop_nl(u64 lo, u64 hi) {
+    u32 i = shadow_at_nl(lo), j = i;
+    while (j < g_nshadow && g_shadow[j].page < hi) free(g_shadow[j++].bytes);
+    memmove(&g_shadow[i], &g_shadow[j], sizeof *g_shadow * (size_t)(g_nshadow - j));
+    g_nshadow -= j - i;
+}
+/* A landing's staging copy, kept for the next one up to STAGE_KEEP bytes: a fresh allocation of a landing's megabytes
+   takes a page fault per page on Windows. Landings run one at a time under the producer's lock, but a test's may not:
+   a second one at once gets an allocation of its own */
+#define STAGE_KEEP ((u64)64 << 20)
+static u8* g_stage;
+static u64 g_stage_cap;
+static int g_stage_busy; /* atomic */
+static u8* stage_get(u64 size) {
+    int none = 0;
+    u8* p;
+    if (size <= STAGE_KEEP && __atomic_compare_exchange_n(&g_stage_busy, &none, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        if (size <= g_stage_cap) return g_stage;
+        free(g_stage);
+        g_stage = (u8*)malloc((size_t)size);
+        g_stage_cap = g_stage ? size : 0;
+        if (g_stage) return g_stage;
+        __atomic_store_n(&g_stage_busy, 0, __ATOMIC_RELEASE);
+    }
+    p = (u8*)malloc((size_t)(size ? size : 1));
+    if (!p) fatal("Out of memory landing GPU-owned memory (%llu KiB)", (unsigned long long)(size >> 10));
+    return p;
+}
+static void stage_put(u8* p) {
+    if (p && p == g_stage && __atomic_load_n(&g_stage_busy, __ATOMIC_RELAXED))
+        __atomic_store_n(&g_stage_busy, 0, __ATOMIC_RELEASE);
+    else
+        free(p);
 }
 
 /* ---------------------------------------------------------------- the entries, under g_own_lk */
@@ -198,6 +287,7 @@ static void let_go(u64 lo, u64 hi) {
         /* maps the pages (waking a thread waiting on one) before the trap goes, which would leave it waiting */
         plat_trap_continue(GP(a), run - a);
         plat_trap_disarm(GP(a), run - a);
+        if (!g_mirror) shadow_drop_nl(a, run);
         a = run;
     }
     pm_unlock(&g_trap_lk);
@@ -215,44 +305,63 @@ static void producer_unlock(void) {
     if (g_hooks.unlock) g_hooks.unlock();
 }
 
+/* In place (no mirror): every entry on the pages of the entries [*first, *first + *n) joins them, until no page they
+   are on holds another, so the pages the landing opens hold no entry it leaves behind. 0 when one of those is being
+   landed (by a thread without the producer's lock: a test's), to be waited for */
+static int close_pages_nl(u32* first, u32* n) {
+    for (;;) {
+        u64 plo = g_own[*first].lo & ~(g_page - 1), phi = (g_own[*first + *n - 1].hi + g_page - 1) & ~(g_page - 1);
+        u32 f = first_after_nl(plo), e = f, i;
+        while (e < g_nown && g_own[e].lo < phi) e++;
+        for (i = f; i < e; i++)
+            if ((i < *first || i >= *first + *n) && g_own[i].landing) return 0;
+        if (f == *first && e == *first + *n) return 1;
+        *first = f;
+        *n = e - f;
+    }
+}
+
 /* every entry on the host pages [lo, hi) landed and let go, the pages with them, once. The producer's lock is taken
    only when entries are there (a fault with none, the trap thread's, never waits for it), before any is marked, then
    the entries are looked for again: they may have landed or changed while it waited. No owner can come while it is
    held (own_begin's callers hold it), so every page lands and is let go; an owner that publishes over them after the
    lock is let go stays until something touches its bytes, as any other */
 static void land_pages(u64 lo, u64 hi) {
-    int waited = 0;
-    for (;;) {
-        OwnRange* r;
-        u8** dst;
-        u8* mirror = plat_alias_mirror();
-        u64 elo = lo, ehi = hi, writer = 0;
-        u32 i, first, n = 0;
-        int any;
-        ResList rel = {0};
+    OwnRange* r;
+    u8** dst;
+    u8* mirror = g_mirror;
+    u8* stage = NULL;
+    u64 elo = lo, ehi = hi, writer = 0, total = 0, at;
+    u32 i, first, n = 0;
+    int any;
+    ResList rel = {0};
+    if (!region_owned(lo, hi)) return;
+    pm_lock(&g_own_lk);
+    any = owned_nl(lo, hi);
+    if (any && g_hooks.writer)
+        for (i = first_after_nl(lo); i < g_nown && g_own[i].lo < hi; i++) {
+            u64 w = g_hooks.writer(g_own[i].res);
+            if (w > writer) writer = w;
+        }
+    pm_unlock(&g_own_lk);
+    if (!any) return;
+    /* the GPU's work first, with no lock held: under the producer's lock, every thread that takes it waited too
+       (in one game's menus a landing held it 7.9 s, waiting for a draw's pipeline, and the GPU thread and the
+       game's memory thread with it). Once: an entry published again meanwhile lands under the lock, as before */
+    if (g_hooks.wait) {
+        g_hooks.wait(writer);
         if (!region_owned(lo, hi)) return;
         pm_lock(&g_own_lk);
         any = owned_nl(lo, hi);
-        if (any && g_hooks.writer && !waited)
-            for (i = first_after_nl(lo); i < g_nown && g_own[i].lo < hi; i++) {
-                u64 w = g_hooks.writer(g_own[i].res);
-                if (w > writer) writer = w;
-            }
         pm_unlock(&g_own_lk);
         if (!any) return;
-        /* the GPU's work first, with no lock held: under the producer's lock, every thread that takes it waited too
-           (in one game's menus a landing held it 7.9 s, waiting for a draw's pipeline, and the GPU thread and the
-           game's memory thread with it). Once: an entry published again meanwhile lands under the lock, as before */
-        if (g_hooks.wait && !waited) {
-            waited = 1;
-            g_hooks.wait(writer);
-            continue;
-        }
-        producer_lock();
-        pm_lock(&g_own_lk);
+    }
+    producer_lock();
+    pm_lock(&g_own_lk);
+    for (;;) {
         while (landing_nl(lo, hi)) pc_wait(&g_own_cv, &g_own_lk, -1);
         first = first_after_nl(lo);
-        for (i = first; i < g_nown && g_own[i].lo < hi; i++) n++;
+        for (n = 0, i = first; i < g_nown && g_own[i].lo < hi; i++) n++;
         if (!n) {
             pm_unlock(&g_own_lk);
             producer_unlock();
@@ -266,46 +375,57 @@ static void land_pages(u64 lo, u64 hi) {
         while (first + n < g_nown && g_own[first + n].res == g_own[first + n - 1].res &&
                g_own[first + n].lo == g_own[first + n - 1].hi && !g_own[first + n].landing)
             n++;
-        r = (OwnRange*)malloc(sizeof *r * n);
-        dst = (u8**)malloc(sizeof *dst * n);
-        if (!r || !dst) fatal("Out of memory landing GPU-owned memory");
-        for (i = 0; i < n; i++) {
-            Own* o = &g_own[first + i];
-            o->landing = 1;
-            r[i].addr = o->lo;
-            r[i].size = o->hi - o->lo;
-            r[i].res = o->res;
-            r[i].res_off = o->res_off;
-            dst[i] = mirror + o->pool;
-            if (o->lo < elo) elo = o->lo;
-            if (o->hi > ehi) ehi = o->hi;
-        }
-        pm_unlock(&g_own_lk);
-        g_hooks.land(r, dst, n);
-        __atomic_add_fetch(&g_own_lands, 1, __ATOMIC_RELAXED);
-        /* the landed pages through the mirror, still trapped: no thread can write them before let_go below. An entry is
-           a run of pool pages, so its pages lie in the mirror as they do in guest memory, the edges' CPU bytes too */
-        if (g_hooks.landed)
-            for (i = 0; i < n; i++) {
-                u64 plo = r[i].addr & ~(g_page - 1), phi = (r[i].addr + r[i].size + g_page - 1) & ~(g_page - 1);
-                g_hooks.landed(plo, phi - plo, dst[i] - (r[i].addr - plo));
-            }
-        pm_lock(&g_own_lk);
-        /* The snapshot is a consecutive run of entries, and the producer's lock prevents another owner coming
-           between them while they land. Remove the run at once, including empty gaps, instead of moving the
-           suffix n times. */
-        cut_nl(r[0].addr, r[n - 1].addr + r[n - 1].size, &rel);
-        pc_broadcast(&g_own_cv);
-        pm_unlock(&g_own_lk);
-        free(r);
-        free(dst);
-        /* the pages go before the resources: no page is left armed with no entry on it past this landing (own_stage
-           reads such a page directly) */
-        let_go(elo & ~(g_page - 1), (ehi + g_page - 1) & ~(g_page - 1));
-        res_release(&rel);
-        producer_unlock();
-        return; /* once: the loop only comes back after the wait for the GPU above */
+        /* no mirror (Windows): every entry on the pages being opened lands with them */
+        if (mirror || close_pages_nl(&first, &n)) break;
+        pc_wait(&g_own_cv, &g_own_lk, -1);
     }
+    r = (OwnRange*)malloc(sizeof *r * n);
+    dst = (u8**)malloc(sizeof *dst * n);
+    if (!r || !dst) fatal("Out of memory landing GPU-owned memory");
+    for (i = 0; i < n; i++) total += g_own[first + i].hi - g_own[first + i].lo;
+    if (!mirror) stage = stage_get(total); /* in place: the GPU's bytes wait there while the pages stay trapped */
+    for (i = 0, at = 0; i < n; i++) {
+        Own* o = &g_own[first + i];
+        o->landing = 1;
+        r[i].addr = o->lo;
+        r[i].size = o->hi - o->lo;
+        r[i].res = o->res;
+        r[i].res_off = o->res_off;
+        dst[i] = mirror ? mirror + o->pool : stage + at;
+        at += r[i].size;
+        if (o->lo < elo) elo = o->lo;
+        if (o->hi > ehi) ehi = o->hi;
+    }
+    pm_unlock(&g_own_lk);
+    g_hooks.land(r, dst, n);
+    __atomic_add_fetch(&g_own_lands, 1, __ATOMIC_RELAXED);
+    if (!mirror)
+        for (i = 0; i < n; i++)
+            if (plat_trap_fill(GP(r[i].addr), dst[i], r[i].size))
+                fatal("Could not land GPU-owned memory at %llx (%llu bytes)", (unsigned long long)r[i].addr,
+                      (unsigned long long)r[i].size);
+    /* the landed pages through the mirror, still trapped: no thread can write them before let_go below. An entry is
+       a run of pool pages, so its pages lie in the mirror as they do in guest memory, the edges' CPU bytes too.
+       Without a mirror, the pages that plat_trap_fill filled */
+    if (g_hooks.landed)
+        for (i = 0; i < n; i++) {
+            u64 plo = r[i].addr & ~(g_page - 1), phi = (r[i].addr + r[i].size + g_page - 1) & ~(g_page - 1);
+            g_hooks.landed(plo, phi - plo, mirror ? dst[i] - (r[i].addr - plo) : GP(plo));
+        }
+    pm_lock(&g_own_lk);
+    /* The snapshot is a consecutive run of entries, and the producer's lock prevents another owner coming between
+       them while they land. Remove the run at once, including empty gaps, instead of moving the suffix n times. */
+    cut_nl(r[0].addr, r[n - 1].addr + r[n - 1].size, &rel);
+    pc_broadcast(&g_own_cv);
+    pm_unlock(&g_own_lk);
+    free(r);
+    free(dst);
+    stage_put(stage);
+    /* the pages go before the resources: no page is left armed with no entry on it past this landing (own_stage
+       reads such a page directly) */
+    let_go(elo & ~(g_page - 1), (ehi + g_page - 1) & ~(g_page - 1));
+    res_release(&rel);
+    producer_unlock();
 }
 
 /* ---------------------------------------------------------------- traps */
@@ -348,7 +468,10 @@ static void own_fault(u8* p, int write, u32 tid) {
     pm_lock(&g_own_lk);
     owned = page_owned_nl(page);
     pm_unlock(&g_own_lk);
-    if (!owned) plat_trap_continue(p, g_page);
+    if (!owned) {
+        plat_trap_continue(p, g_page);
+        if (!g_mirror) shadow_drop_nl(page, page + g_page);
+    }
     pm_unlock(&g_trap_lk);
     if (!owned) return;
     /* An owned page faulted by the producer's lock holder: nothing can land it while that thread waits here. The holder
@@ -374,30 +497,58 @@ int own_init(const OwnHooks* h) {
     g_hooks = *h;
     g_page = plat_vm_page();
     pc_init(&g_own_cv);
-    /* memory_traps=2: as a host without traps (Windows, macOS), to measure and test that path here */
-    if (g_settings.memory_traps == 2 || !plat_alias_mirror() || plat_trap_init(own_fault)) {
+    /* memory_traps=2: as a host without traps (macOS, FreeBSD), to measure and test that path here. Without a mirror
+       only a host whose traps land in place traps (Windows) */
+    g_mirror = plat_alias_mirror();
+    if (g_settings.memory_traps == 2 || (!g_mirror && !SNX_PLAT_TRAPS_IN_PLACE) || plat_trap_init(own_fault)) {
         LOG("memory: no traps (%s): GPU engines land their results in guest memory at their fence\n",
             g_settings.memory_traps == 2   ? "memory_traps=2"
             : g_settings.memory_traps == 1 ? "memory_traps=1, page protection, has none on this host"
                                            : "none on this host");
+        g_mirror = NULL;
         return -1;
     }
     g_traps = 1;
     g_own_nregion = (AS_SIZE + (1ull << OWN_REGION_SHIFT) - 1) >> OWN_REGION_SHIFT;
     g_own_region = (u32*)calloc((size_t)g_own_nregion, sizeof *g_own_region);
-    LOG("memory: GPU engines keep their results, guest memory is trapped until the CPU needs it\n");
+    LOG("memory: GPU engines keep their results, guest memory is trapped until the CPU needs it%s\n",
+        g_mirror ? "" : " (page protection and an exception handler, landing in place)");
     return 0;
 }
 
 int own_begin(u64 addr, u64 size, void* res, u64 res_off) {
-    u64 lo = addr & ~(g_page - 1), hi, end = addr + size;
+    u64 lo = addr & ~(g_page - 1), hi, end = addr + size, edge[2];
     MemPoolRun runs[16];
     ResList rel = {0};
-    u32 i, n;
+    u8* snap[2];
+    u32 i, n, nedge = 0;
     if (!g_traps || !size || addr >= AS_SIZE || size > AS_SIZE - addr) return -1;
     hi = (end + g_page - 1) & ~(g_page - 1);
     /* the pages in the pool, mapped here only (the caller holds the renderer's lock, as host memory changes do) */
     if (mem_own_prepare(lo, hi - lo, runs, sizeof runs / sizeof *runs, &n)) return -1;
+    /* in place: an edge page with CPU bytes on it, armed by no owner yet (so readable), keeps a copy of them for
+       own_stage. One armed already has its copy from then, or none to keep (the older owners' bytes are the GPU's) */
+    if (!g_mirror) {
+        u64 last = hi - g_page;
+        pm_lock(&g_own_lk);
+        if ((addr > lo || (last == lo && end < hi)) && !page_owned_nl(lo)) edge[nedge++] = lo;
+        if (last != lo && end < hi && !page_owned_nl(last)) edge[nedge++] = last;
+        pm_unlock(&g_own_lk);
+        /* read without faulting: this thread holds the producer's lock, which a landing the trap's thread may be in
+           needs. A page that can't be read is armed already (an owner's): it keeps the copy it has */
+        u32 kept = 0;
+        for (i = 0; i < nedge; i++) {
+            u8* b = (u8*)malloc((size_t)g_page);
+            if (!b) fatal("Out of memory for the map of GPU-owned memory");
+            if (plat_vm_read(GP(edge[i]), b, g_page)) {
+                free(b);
+                continue;
+            }
+            edge[kept] = edge[i];
+            snap[kept++] = b;
+        }
+        nedge = kept;
+    }
     pm_lock(&g_own_lk);
     while (landing_nl(addr, end)) pc_wait(&g_own_cv, &g_own_lk, -1);
     cut_nl(addr, end, &rel);
@@ -418,6 +569,7 @@ int own_begin(u64 addr, u64 size, void* res, u64 res_off) {
     res_release(&rel);
     /* the pages trapped from now on: the CPU's bytes on them stay in the pool, the owned ones are stale there */
     pm_lock(&g_trap_lk);
+    for (i = 0; i < nedge; i++) shadow_add_nl(edge[i], snap[i]);
     if (plat_trap_arm(GP(lo), hi - lo)) fatal("Could not trap guest memory at %llx", (unsigned long long)lo);
     pm_unlock(&g_trap_lk);
     return 0;
@@ -445,24 +597,86 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
    bytes are in the pool), the others as they are. A page landed meanwhile reads the same through either */
 static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
     while (a < b) {
-        u64 end = (a & ~(g_page - 1)) + g_page, off;
+        u64 page = a & ~(g_page - 1), end = page + g_page, off;
         int owned;
         if (end > b) end = b;
         pm_lock(&g_own_lk);
-        owned = page_owned_nl(a & ~(g_page - 1));
+        owned = page_owned_nl(page);
         pm_unlock(&g_own_lk);
-        if (owned && !mem_pool_offset(a, &off))
+        if (owned && !mirror) { /* in place: the page's shadow (own_stage landed a page with none first) */
+            const u8* sh = NULL;
+            /* through a buffer of this thread's: dst is written with no lock of ours held, as a write to it that
+               faulted (dst in guest memory) would wait for a trap that needs g_trap_lk */
+            for (u64 at = a; at < end;) {
+                u8 part[1024];
+                u64 n = end - at < sizeof part ? end - at : sizeof part;
+                pm_lock(&g_trap_lk);
+                sh = shadow_get_nl(page);
+                if (sh) memcpy(part, sh + (at - page), (size_t)n);
+                pm_unlock(&g_trap_lk);
+                if (!sh) break;
+                memcpy(dst + (at - addr), part, (size_t)n);
+                at += n;
+            }
+            if (!sh) {
+                static int said;
+                memset(dst + (a - addr), 0, (size_t)(end - a));
+                if (!__atomic_exchange_n(&said, 1, __ATOMIC_RELAXED))
+                    WARN("memory: the CPU's bytes of trapped page %llx have no copy: read as zero\n",
+                         (unsigned long long)page);
+            }
+        } else if (owned && !mem_pool_offset(a, &off))
             memcpy(dst + (a - addr), mirror + off, (size_t)(end - a));
         else
             memcpy(dst + (a - addr), GP(a), (size_t)(end - a));
         a = end;
     }
 }
+/* In place: the first page of [addr, end) whose CPU bytes the range reads and no shadow holds (bytes own_drop
+   uncovered on a page an owner keeps trapped), in *at. Only a gap between the entries can be on such a page, and only
+   on its first and last pages: an entry on a page within it would be in it. Under g_trap_lk and g_own_lk */
+static int unshadowed_nl(u64 addr, u64 end, u64* at) {
+    u64 c = addr;
+    u32 i = first_after_nl(addr);
+    for (;;) {
+        u64 next = i < g_nown && g_own[i].lo < end ? (g_own[i].lo > addr ? g_own[i].lo : addr) : end;
+        if (next > c) {
+            u64 p0 = c & ~(g_page - 1), p1 = (next - 1) & ~(g_page - 1);
+            if (page_owned_nl(p0) && !shadow_get_nl(p0)) {
+                *at = p0;
+                return 1;
+            }
+            if (p1 != p0 && page_owned_nl(p1) && !shadow_get_nl(p1)) {
+                *at = p1;
+                return 1;
+            }
+        }
+        if (next >= end || g_own[i].hi >= end) return 0;
+        c = g_own[i++].hi;
+    }
+}
 
 u32 own_stage(u64 addr, u64 size, u8* dst, OwnRange* out, u32 max) {
     u64 lo = addr & ~(g_page - 1), hi = (addr + size + g_page - 1) & ~(g_page - 1), at = addr;
-    u32 n = own_lookup(addr, size, out, max), i;
+    u32 n, i;
     int trapped;
+    /* in place, a trapped page whose CPU bytes it reads and no shadow holds lands first: before the lookup, whose
+       resources a landing would release */
+    if (!g_mirror && g_traps && own_any() && region_owned(lo, hi)) {
+        if ((n = own_lookup(addr, size, NULL, 0)) > max) return n;
+        for (;;) {
+            u64 page;
+            int need;
+            pm_lock(&g_trap_lk);
+            pm_lock(&g_own_lk);
+            need = unshadowed_nl(addr, addr + size, &page);
+            pm_unlock(&g_own_lk);
+            pm_unlock(&g_trap_lk);
+            if (!need) break;
+            land_pages(page, page + g_page);
+        }
+    }
+    n = own_lookup(addr, size, out, max);
     if (n > max) return n;
     trapped = region_owned(lo, hi);
     if (trapped) {
@@ -481,7 +695,7 @@ u32 own_stage(u64 addr, u64 size, u8* dst, OwnRange* out, u32 max) {
        the CPU staged in 40 s of one game) for the GPU to overwrite */
     for (i = 0; i <= n; i++) {
         u64 end = i < n ? out[i].addr : addr + size;
-        if (end > at) stage_cpu(addr, at, end, dst, plat_alias_mirror());
+        if (end > at) stage_cpu(addr, at, end, dst, g_mirror);
         if (i < n) at = out[i].addr + out[i].size;
     }
     return n;

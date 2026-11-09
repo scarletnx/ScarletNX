@@ -15,4 +15,15 @@ public class TransitionManager {
         sceneRoot.post(t::runAtOnce);
     }
     public static void endTransitions(ViewGroup sceneRoot) {}
+    /** enters a scene, at once, with the default transition's listeners told */
+    public static void go(Scene scene) { go(scene, new AutoTransition()); }
+    public static void go(Scene scene, Transition transition) {
+        scene.enter();
+        if (transition != null) scene.getSceneRoot().post(transition.clone()::runAtOnce);
+    }
+    /* the transitions between scenes, kept: every change shows at once */
+    private final java.util.HashMap<Scene, Transition> transitions = new java.util.HashMap<>();
+    public void setTransition(Scene scene, Transition transition) { transitions.put(scene, transition); }
+    public void setTransition(Scene fromScene, Scene toScene, Transition transition) { transitions.put(toScene, transition); }
+    public void transitionTo(Scene scene) { go(scene, transitions.get(scene)); }
 }

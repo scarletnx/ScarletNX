@@ -21,14 +21,14 @@
 #define NVIDEO_OUTPUTS NVIDEO_IMAGES
 #define NVIDEO_PROPS   16 /* the words of an output's properties (213) */
 
-/* the results the SDK's codec library knows (module 111): Submit's queue full, which the movie library retries, and
-   no output yet, which its own Acquire also answers */
-#define NVIDEO_INPUT_FULL   SNX_RC_CODEC_VIDEO_INPUT_FULL
-#define NVIDEO_OUTPUT_EMPTY SNX_RC_CODEC_VIDEO_OUTPUT_EMPTY
-#define NVIDEO_BAD_ARGUMENT SNX_RC_CODEC_VIDEO_INVALID_ARGUMENT
-#define NVIDEO_BAD_STATE    SNX_RC_CODEC_VIDEO_INVALID_STATE
-#define NVIDEO_NOT_FOUND    SNX_RC_CODEC_VIDEO_NOT_FOUND
-#define NVIDEO_NO_ROOM      SNX_RC_CODEC_VIDEO_OUT_OF_SPACE
+/* the results the SDK's codec library knows (CODEC, result_codes.inc): Submit's queue full, which the movie library
+   retries, and no output yet, which its own Acquire also answers */
+#define NVIDEO_INPUT_FULL   SNX_RC_CODEC_INPUT_FULL
+#define NVIDEO_OUTPUT_EMPTY SNX_RC_CODEC_OUTPUT_EMPTY
+#define NVIDEO_BAD_ARGUMENT SNX_RC_CODEC_BAD_ARGUMENT
+#define NVIDEO_BAD_STATE    SNX_RC_CODEC_BAD_STATE
+#define NVIDEO_NOT_FOUND    SNX_RC_CODEC_NOT_FOUND
+#define NVIDEO_NO_ROOM      SNX_RC_CODEC_NO_ROOM
 
 /* the SDK's MakeDecodeImagePreference kinds: 1 and 4 NV12 (8 bit), which the decoder writes, and 2, 3, 5 and 6 four
    bytes a pixel */

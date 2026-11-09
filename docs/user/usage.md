@@ -1,0 +1,838 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the ScarletNX contributors -->
+# Usage
+
+## Index
+
+* [Common options](#common-options)
+* [Extract → AOT → run](#extract--aot--run)
+  * [Experimental CPU extensions](#experimental-cpu-extensions)
+  * [Updates and DLC](#updates-and-dlc)
+  * [Collections](#collections)
+  * [Mods](#mods)
+  * [NRO applications](#nro-applications)
+* [GDB (Linux)](#gdb-linux)
+  * [GDB through the MCP server](#gdb-through-the-mcp-server)
+* [Headless Vulkan / lavapipe](#headless-vulkan--lavapipe)
+* [AppImage / display](#appimage--display)
+* [Folders](#folders)
+* [Users](#users)
+* [Setup](#setup)
+* [Playing](#playing)
+  * [On-screen controls](#on-screen-controls)
+
+Setup: [Build](../dev/build.md). Checkout CWD; own dumps/keys.
+For the keyboard-controlled SDL3 menu and file drops, see [GUI](gui.md).
+
+## Common options
+
+Every driver of the program (`scarletnx` for the Switch, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-agb`,
+`scarletnx-android`, `scarletnx-gnuabi`) reads the options below from one table, `src/common/utilities/cli.c`. Each
+`--help` shows them first, with the same words in the same column, then the driver's own options. Each option that
+takes a value takes it as `--option VALUE` or as `--option=VALUE`. A common option that a driver cannot do stops the
+run with the same message in each driver, `scarletnx-agb does not take --update`. An older name of an option still
+works for now, and the run says once what it is called now ([Deprecations](deprecations.md#now)).
+
+| Option | Meaning | Switch | 3DS | Vita | AGB | Android | GNU ABI |
+|---|---|---|---|---|---|---|---|
+| `-x`, `--extract` | Extract the game, without playing it | yes | yes | yes | | | |
+| `--extract-container` | Extract the game into its folder and play it from there. Without it, the game is read where it lies | yes | yes | | | | |
+| `-r`, `--recompile` (`--recomp`) | Recompile the game, without playing it | yes | yes | yes | yes | | |
+| `--game DIR` | Play the game in its folder DIR (`recompiled/<name>`), as its copy of the runtime does | yes | yes | yes | yes | | |
+| `--update PATH` (`--patch`) | An update or a DLC of the game, played with it. Give it once for each. For the Vita, it is the dumped game's update folder, given once | yes | yes | yes | | | |
+| `--data DIR` (`--repo`) | The data folder ([Folders](#folders)) | yes | yes | yes | yes | | yes |
+| `--outdir DIR` | The folder of the games, in which the game's folder is made (default: `recompiled/` of the data folder) | yes | yes | yes | yes | | |
+| `--output DIR` | The game's folder itself (default: `<outdir>/<the game's name>`) | | yes | yes | yes | | |
+| `--keys FILE` | The console's keys: `prod.keys` for the Switch, Azahar's `aes_keys.txt` for the 3DS | yes | yes | | | | |
+| `--seconds N` | Stop after N seconds | yes | yes | yes | | | |
+| `--frames N` | Stop after N frames (the AGB's run has no window, sound or pacing) | yes | | | yes | | |
+| `--shot PATH` | Save the screen to PATH when the run ends (Android: each frame `--shot-frame` names) | yes | | yes | yes | yes | |
+| `--script SPEC` | Press buttons at times of the run, `MS:BUTTONS,...` (each platform's page names the buttons) | yes | yes | yes | yes | | |
+| `-f`, `--fullscreen[=0\|1]` | Start fullscreen for this run, or windowed with `=0` | yes | yes | | yes | | |
+| `-H`, `--headless` | Run without a window | yes | | | | yes | |
+| `-h`, `--help` | Show the help | yes | yes | yes | yes | yes | yes |
+
+The Switch's `--seconds`, `--frames`, `--shot` and `--script` are settings of the game's run
+([Settings](settings.md)), which reach the game as `--key=value` in both forms. The 3DS's `--script` is its setting
+`ctr_script`, and the Vita's is `vita_script`. The Switch driver also keeps its combined letters, as `-rx` and `-Hs`.
+
+## Extract → AOT → run
+
+Pass a single XCI, NSP, DXCI or DNSP to recompile and play:
+
+```sh
+./build/scarletnx "Game.xci"
+```
+
+The driver runs each step as a child process and starts the game with its folder, `recompiled/<id>/`, as its working
+directory. The game is named by its title ID, read from the dump's NCA headers, an NRO by its name (a dump without a
+title ID of its own by its stem); `recompiled/` is the data folder's, from a build tree too ([Folders](#folders)).
+
+Nothing of the dump is extracted by default. The game's `.ini` records the dump's path as `source=` under `[Game]`, and
+the recompile reads the ExeFS's modules from the dump itself. When the game runs, the runtime maps the dump read-only
+from that path and reads its ExeFS and RomFS out of it on the fly, decrypting what is encrypted, with the keys
+where the driver finds them (the data folder `recompiled/` is in, else `~/.switch`). No copy or cache of those files is
+kept anywhere: `recompiled/<id>/<id>_data/` holds only the game's `control.nacp` and its saves. An update embedded in an
+NSP is applied over the base as it is read. Moving or deleting the dump breaks the game until it is back, or until
+`source=` names its new place, and the run says so. A game made by an older version has `<id>.source` in its folder
+instead, a link to the dump, which is still read when the `.ini` names no dump. Playing the dump again records it in
+the `.ini`.
+
+`--extract-container` (the launcher's **Extract dump**) extracts the dump instead, straight into the game's
+folder, `recompiled/<id>/<id>_data/` (`exefs/`, `romfs/`, `control.nacp`), and the game is made from it there: there is no
+second copy. `<id>.extracting` stays in the game's folder while an extraction is unfinished, and a stopped one is redone
+on the next run, the game's saves kept. A game made from its dump is extracted on the first run with the option, with
+no recompile, and a game run without it again has that extraction taken away, as long as the dump it records is there.
+`--data DIR` and `--build-dir DIR` may precede the dump. Keys use the usual discovery paths below.
+`--outdir DIR` puts the game's folder in DIR in place of the data folder's `recompiled/`, as `-r` takes it. With
+`--extract-container`, `--out DIR` keeps the dump's extraction at DIR instead, as `-x` takes it, the game made from a
+copy of it; an NRO has no extraction to name.
+`--tmpfs` extracts to tmpfs instead, and implies `--extract-container`: `<temp>/scarletnx/work/<title ID>` (`$TMPDIR`,
+else `/tmp`; the temporary folder on Windows), where the game reads its RomFS from while its ExeFS and saves stay in
+`recompiled/<id>/<id>_data/`. The game's folder gets `<id>.tmpfs` while its RomFS is in tmpfs. A run extracts the RomFS again
+from the dump the game records when the system emptied tmpfs, and moves it between tmpfs and the game's folder when
+`--tmpfs` is given or left out. A game that records no dump says *Can't be extracted to tmpfs: the game's settings name
+no dump it was made from*. `-r --tmpfs` on an extraction leaves its RomFS where it is.
+`-H` (`--headless`) can precede or follow the dump and is passed to the game only.
+Omitting it starts the game with a window.
+`-x` means `--extract`, and `-r` means `--recompile` (`--recomp`, its older name, still works and says so once).
+On UNIX, short flags can be combined. Windows accepts separate short flags only.
+
+To prepare a dump without playing, use `./build/scarletnx -r "Game.xci"`.
+This forces recompilation, even if a cached executable exists, and extracts nothing unless `--extract-container` is
+given. `scarletnx -r --outdir games -- "Game.xci"` recompiles straight from a dump the same way, reading its ExeFS in
+place. `-rx` (`-r -x` on Windows) prepares it extracted, as `-r --extract-container` does. `-x` alone only extracts.
+
+A game made already plays the same way, named by its folder or its program: `./build/scarletnx recompiled/<id>` (or
+`recompiled/<id>/<id>`) runs it, recompiled first where it is when a build of another ABI made it, from what its `<id>_data/`
+keeps (the ExeFS or the NRO: no dump, keys or extraction), or from the dump its `.ini` records when it was
+made without extracting it. `-r` recompiles it without playing. `--outdir` and `--out`
+name a dump's folders and are refused for it. `--game=recompiled/<id>` runs it as it is, whichever build made it.
+Pass arguments to the game executable after `--`, for example:
+
+```sh
+./build/scarletnx "Game.xci" -- some arg
+```
+
+Everything after the `--` reaches the game executable as given, one named like a runtime option too (`-- --seconds=5`
+gives the game `--seconds=5`), so the runtime's own options go before the `--`.
+The argument boundary is retained when launching the deployed game, so game arguments
+cannot trigger launcher actions or overwrite runtime settings. This does not add a
+homebrew-loader guest argv block.
+`-f` (or `--fullscreen`, `--fullscreen=1`) can also precede or follow the dump and is forwarded to the game,
+which then starts fullscreen (not in timed test runs). `--fullscreen=0` starts it windowed. Without either, the
+game's `.ini` decides (`fullscreen=1` starts fullscreen).
+`--touch=0|1|2` is forwarded to the game too: its touch screen takes nothing, the fingers, or the fingers and the
+mouse's left button (the default). The game's menu sets it too; the game's `.ini` keeps its own `touch`.
+`--controls=0|1` likewise hides or shows the [on-screen controls](#on-screen-controls) (on by default on Android);
+the game's `.ini` keeps `controls`. Any other `--key=value` of the game's
+`.ini` is forwarded as well, for that run (`scarletnx --settings` lists them all), and so are the timed-run ones
+(`--seconds=`, `--shot=`...); any other key stops the run with `unknown option`.
+The game's own executable also takes `-v`, the same as `--log=2`.
+LLVM is the only backend. `--backend=llvm`, which older scripts give, is accepted and changes nothing, and any
+other `--backend` stops with an error.
+Use the separate commands for other compiler options.
+
+DXCI and DNSP with decrypted content need no keys. Containers are identified by their headers,
+including renamed files. A matching bundled update is applied automatically. DLC-only and update-only dumps cannot
+be used as a base game.
+
+```powershell
+.\build\scarletnx.exe "C:\Games\Game.dxci"
+.\build\scarletnx.exe --extract "C:\Games\Game.dnsp" --update "C:\Games\Update.dnsp"
+```
+
+### Experimental CPU extensions
+
+`--cpu_extensions=1` enables LSE atomics, RCpc loads and the PAuth branch, return and signing instructions with the emulated system's
+instruction and data authentication controls disabled. Signing and authentication leave the pointers unchanged.
+Pointer stripping uses 39-bit virtual addresses with top-byte ignore disabled.
+It provides no pointer authentication protection, and does not implement a complete CPU or graphics profile for a
+newer console. Instructions outside the implemented set still stop with an unsupported-instruction error.
+The experimental graphics supervisor path currently supports startup requests only; its native GPU memory,
+worker and display layer operations are incomplete, so games that require them may still stop during graphics setup.
+
+Use the same value when recompiling and running. Changing it requires recompilation of existing ahead-of-time
+code. The default is 0, which keeps the Cortex-A57 instruction set. For example:
+
+```sh
+./build/scarletnx -r work/Game Game --cpu_extensions=1
+./build/scarletnx --game=/path/to/recompiled/Game --cpu_extensions=1
+```
+
+### Updates and DLC
+
+An update or a DLC is recorded beside its game, in the game's folder, and checked in the game's list of updates and
+DLCs, `addons=` in the game's `.ini` (their title IDs, a comma between two). The game plays with what that list
+checks: any number of DLCs and one update at most. Give their dumps with the game's, or alone once the game is in
+`recompiled/`:
+
+```sh
+./build/scarletnx Game.xci --update Update.nsp --update Dlc.nsp   # the game made first if it isn't yet
+./build/scarletnx Dlc.nsp                                          # a game made already: its DLC checked too
+```
+
+Each dump given is checked along with what the list checks already: a DLC is added, and an update, older or newer,
+takes the place of the one checked before, as installing an older update means playing it. The launcher lists a
+game's updates and DLCs under it: opening a game that has some shows its updates as a choice of one (each version
+installed, the newest first, by its version from its own control data, or No update) and its DLCs as boxes to check
+(`DLC 1`, numbered from the base ID the game's control data gives). Save keeps the choice in `addons=` without
+playing, Play keeps it and plays the game, and Back leaves the list as it was. A 3DS game's update and DLC CIAs are
+kept the same way by `scarletnx-3ds` (`scarletnx-3ds DLC.cia`, or `--update` with the game); an update there has no
+program of its own, as the game's reads its code, and is listed by its TMD's version (`Update v1040`): see
+[3DS](../platforms/3ds/README.md).
+
+- **Programs:** an update is recompiled from its own ExeFS into a program beside the game,
+  `recompiled/<id>/<id>_<its title ID>v<its version>`, which runs whenever it is checked. Every version of a game's update
+  has the same title ID, so each version installed keeps a program of its own, its version its content meta's. A DLC runs its game's code and has no program,
+  only its record: its own `.ini`, which holds `source=` (the path of its dump), and its data folder. A DLC program
+  an older version made is taken away the next time its dump is played.
+- **Settings and saves:** an update runs with its game's `.ini` and its game's data folder, so its saves are the
+  game's.
+- **Files:** the game's own program never reads an update's files. Without Extract dump, an update reads
+  its ExeFS and RomFS from its dump, its RomFS patch read over the game's dump (the game's `.ini` must name it, which
+  playing the game's dump records). Each checked DLC's RomFS image is read from its dump and served as installed. A
+  checked DLC whose dump is not there is left out, and the log says so. With Extract dump, an update is
+  extracted into its own data folder with its RomFS applied, and a DLC's image goes to
+  `system/archives/<its title ID>.romfs` in its own. Those folders lie over the game's: an update's ExeFS, RomFS and
+  control data replace the game's, a DLC's `system/` is added to the game's, and nothing else of theirs is used.
+
+`-x` keeps extracting an update over its game into one folder (`-x Game.nsp --update Update.nsp`), and extracts a
+DLC's dump given alone as its RomFS image.
+
+### Collections
+
+A collection is one application of several programs: its menu, program 0, starts each of its games, another program
+of the same application, through `nn::oe::ExecuteProgram`. Its content meta numbers them, program `i` the
+application's title ID plus `i`, and that program's patch in an update the update's ID plus `i`.
+
+- **Programs:** making the game's dump makes every program of it, the game's own first; each other one is made beside
+  it in the game's folder as `recompiled/<id>/<id>_<its ID>`: its code (`_code.so`), its stamp (`.abi`) and its data
+  folder (`_data/`, its own `control.nacp`, and its ExeFS and RomFS with Extract dump), no copy of the runtime. An
+  update's patch of program `i` is `recompiled/<id>/<id>_<the update's ID + i>v<version>` the same way, and plays
+  while the update is checked. Each reads its own program of the dump in place, as the game's does.
+- **The switch:** a program that starts another ends as a quit does, saving what it saves at exit, and leaves
+  `recompiled/<id>/<id>.next`, the hand-over: the program it starts, its own index, the user channel's storages it
+  passes and whether it stored its open user. Its launcher (the driver, and the launcher, which plays through it;
+  the phone's app) starts that program with the same options, on the game's runtime with `--game=` it, and the program
+  takes the hand-over away as it starts. `GetPreviousProgramIndex` then answers the index of the program that started
+  it, -1 for one the player started.
+- **Settings and saves:** every program plays with the game's `.ini` and data folder, and keeps its saves as the
+  application's, under the game's title ID: the owner each program's `control.nacp` names (SaveDataOwnerId), one save
+  for all of them, as the console keeps a program of several by its main program.
+- **Mods:** a program plays the game's mods and the mods of its own data folder, `<id>_<its ID>_data/mods/`, laid as
+  Eden lays a program's (`load/<its ID>/` over `load/<the application's ID>/`): both folders' mods by their names,
+  its own after the game's of the same name; `mods_off=` is the game's for both. Cheats find their program by the
+  build ID of its main module.
+- **Playing one:** `scarletnx Game.nsp --program 2` (or `--program=2`) plays program 2 directly, without its menu,
+  `0` (the default) being the menu. One that is not made plays program 0, and the run says both: *--program 5:
+  program 5 is not one of this application's programs 0-3: it starts program 0*. `-r --program 2` recompiles that
+  program alone, and `-x --program 2` extracts it.
+
+### Mods
+
+A game's mods go in the `mods` folder of its data folder, one folder each, named as you like:
+`recompiled/<id>/<id>_data/mods/<mod name>/exefs/` and `.../<mod name>/romfs/`. A mod lies over the game the way an update
+does, and over the update too when one is checked. A file in its `romfs/` replaces the RomFS file at the same path, or
+is added to the RomFS when the game has none there. A file in its `exefs/` (`main`, `subsdk0` and the other modules,
+or `main.npdm`) replaces the program's file of that name. Mods are laid in the order of their names, so a later one
+wins over an earlier one where both have the same file.
+
+Every mod in the folder is played until it is turned off. Opening a game in the launcher lists its mods under its
+updates and DLCs, each with a box to check, and Open Mods Folder opens the folder in the file manager (it is made
+first when it isn't there). M on Games opens that box for the game in focus, one with nothing beside it too. The mods
+turned off are kept in `mods_off=` in the game's `.ini`, their folder names with a `/` between two.
+
+Add Mod, in the same box, opens the system's folder picker and copies the folder picked, whole, into the mods folder
+under its own name, the original left where it is; the mod shows checked at once, and the message says where it went.
+The copy goes into a hidden `.<name>.adding` first and takes the mod's name once every file is in, so a copy that
+stops never shows as a mod. It refuses, naming the folder: a name the mods folder has already, a folder inside the
+mods folder or one that holds it, one with neither `exefs/` nor `romfs/`, a name that starts with a dot (the mods list
+hides those), a link inside the folder, and on a phone a folder of an app or a cloud that no path reaches; a file that
+cannot be copied is named with the system's reason. On Android and iOS Open Mods Folder, Open Cheats Folder and Open
+Folder show the folder in the system's Files app: Android's shows the app's data folder and the shared storage (a
+dump's folder in `Download/`), iOS's the app's Documents alone, so there a folder of the app's `Library/` is greyed and
+says so.
+
+The box also has **Open Folder**, the game's other folders a row each: its dump's (as the recompile named it), the game's
+own, its saves (the user playing's where the game plays them: the data folder's `save/user.<uid>/<title ID>/`, the
+game's `<id>_data/save/` while only that is there, for a homebrew and with `save_layout=game`, [Users](#users)), its
+settings, its logs and its caches, each where the table below puts it. One not known (a game made before the recompile
+named its dump) or not there yet is greyed, and pressed it says why and makes nothing; Back goes back to the box's rows.
+**Clean Cache** deletes the game's shader cache (`shader_cache/` of its cache
+folder: the pipeline cache, the translated shaders and those prepared ahead of time) and its code cache
+(`<id>.jitcache`), asked first with each one's size and folder; the game makes them again as it runs, and its saves,
+settings and dump stay. It is greyed while the game has neither.
+
+A mod's `exefs/` changes the game's code, which ScarletNX compiles ahead of time. The game's stamp (`<id>.abi`) records
+the mods' ExeFS files it was recompiled with, and playing it through the driver or the launcher recompiles it when the
+mods played have other ones. Run directly, a game made with other mods' files runs the ExeFS it was made from, and the
+log says so.
+
+A mod's `exefs/` can also hold patches, each made for one build of a module: an IPS or IPS32 file named after the
+module's build ID (`exefs/<build id>.ips`), and IPSwitch text (`exefs/<name>.pchtxt`, the build ID after its
+`@nsobid-`), read as Eden reads them. Each is written over the module it is for when the game is recompiled, and over
+that module's segments as the game loads them. A patch that does not fit its module (a record past its end, a line
+the format has no meaning for) stops the recompile, which names the file, the line and the value. Patches count in
+the stamp as the mods' ExeFS files do: turning a mod with one on or off, or changing one, recompiles the game. Cheats
+in `exefs/` are not applied.
+
+A game's cheats go in the `cheats` folder of its data folder, in the Atmosphere format, a file named after the main
+module's build ID: `recompiled/<id>/<id>_data/cheats/<build id>.txt`, each cheat a `[name]` line and its codes under it.
+Every cheat in it runs once per frame shown until it is turned off. Opening a game in the launcher lists its cheats
+under its mods, each with a box to check, and Open Cheats Folder opens the folder (made first when it isn't there).
+The cheats turned off are kept in `cheats_off=` in the game's `.ini`, their names with a `|` between two; a cheat with
+a `|` in its name always runs, and the launcher says so.
+
+Add Cheats, in the same box, opens the system's file picker for a `.txt` and copies it into the cheats folder as
+`<build id>.txt`, the only name the runtime reads; the original stays where it is, and its cheats show checked at once.
+A file already named by a build ID (16 hex digits) keeps that name, in capitals, and is refused when the game plays
+with another, the message naming both. Another takes the build ID of the main module the game plays with as the box has
+it: a played mod's `exefs/main`, else the checked update's own (from its extraction: one read from its dump has none
+the launcher can read), else the game's `exefs/main` or `main.nro`; with none to read, the file is refused, the message
+naming the module it looked for. It refuses too a name the cheats folder has already (files are never merged), a file
+that is not a `.txt`, one over 1 MiB, one with no `[name]` line, and on a phone a document of an app or a cloud that no
+path reaches.
+
+Run the same command again to retry after a failure or interruption:
+
+- `work/Game/` skips extraction. Automatic extraction publishes this directory only after success,
+  using `work/Game.extracting/` while running. An incomplete staging directory is discarded on retry.
+- A complete `recompiled/<id>/<id>` (`<id>.exe` on Windows), code module and `<id>.abi` stamp naming this build's
+  ABI skip recompilation. The stamp holds `SNX_ABI`: a game a build of another ABI made is recompiled
+  automatically, as is one with a missing or invalid stamp, and that recompile takes from the unit cache (below) every
+  code unit whose code is the same. One another build of the same ABI made keeps its code,
+  and its `recompiled/<id>/<id>` is replaced by this build's runtime when the two differ, so a newer build's fixes reach
+  it. Failed builds never publish a valid ABI checkpoint. A change to the recompiler that keeps `SNX_ABI` isn't
+  seen: there `-r` recompiles. The stamp's last line says how the code was made, which no check reads: `made opt=2
+  aot=1 found=812345 code=1003210`, the `-O`, `aot=0` for `--jit-only` (the JIT compiles it all), and of the
+  instructions in the modules' code (`code`) those the analysis found and compiled ahead of time (`found`; both 0 for a
+  32-bit game). The launcher's side panel shows them. A version from before it reads a stamp with it as another
+  build's, and recompiles the game once.
+- Changing directory and running the game happen on every launch. A game failure never invalidates the build.
+
+Failures stop the workflow and print the failed stage and exit status or signal. On POSIX, stopping a
+child also aborts that stage so it can be retried, except for intentional debugger stops. Uncatchable termination of the driver itself, such as
+`SIGKILL`, cannot print a diagnostic. Do not run concurrent workflows for the same output name.
+Existing manually extracted directories are assumed complete. Remove stale checkpoints or use the
+explicit commands when changing a dump or rebuilding game code.
+
+### NRO applications
+
+Pass an uncompressed NRO directly to recompile and play, without keys or extraction:
+
+```sh
+./build/scarletnx "app.nro" -H
+```
+
+The `.nro` extension is case-insensitive. NRO launches always recompile and restage the input,
+so a same-named cached executable or extraction directory cannot silently select an older program.
+Embedded RomFS assets are staged by the recompiler. Compressed NROs are not supported.
+This uses ScarletNX's existing guest runtime, not a complete homebrew-loader environment.
+Compatibility still depends on the application's runtime and service requirements.
+See [NRO implementation notes](../platforms/nx/nro.md) for the reference and validation policy.
+
+To run the steps separately, here in folders of the current one (`--out` and `--outdir`; without them, the data
+folder's `work/` and `recompiled/`):
+
+```sh
+./build/scarletnx -x "Game.xci" --out work/Game
+./build/scarletnx -r work/Game Game --outdir recompiled
+recompiled/Game/Game
+```
+
+```powershell
+.\build\scarletnx.exe -x "Game.xci" --out work/Game
+.\build\scarletnx.exe -r work/Game Game --outdir games
+.\games\Game\Game.exe
+```
+
+Remaining examples: POSIX.
+
+```sh
+# NSP + same-title update
+./build/scarletnx -x Game.nsp --update update.nsp --name Game \
+  --keys /path/prod.keys --title-keys /path/title.keys
+
+./build/scarletnx -r work/Game Game --outdir games --jobs 8
+./build/scarletnx -r app.nro --name App --outdir games
+./build/scarletnx -r -h
+```
+
+- **Keys:** encrypted content uses `--keys`/`--title-keys` flags, then the data folder ([Folders](#folders)) → `~/.switch`
+  (`%USERPROFILE%\.switch` on Windows).
+  Common NSP tickets supplement title keys. Fully decrypted content needs neither key file.
+- **Extraction:** defaults to the data folder's `work/<dump stem>`; `--name`/`--out DIR` override. Refuses existing
+  `exefs`. hactool runs inside the driver and reads each NCA where it lies in the XCI or NSP, so the ExeFS and RomFS
+  are written straight into the output and nothing is unpacked beside it
+  ([key filtering and cleanup](../../src/nx/runtime/driver/extract.c)).
+  Sparse and compressed NCAs, updates with large relocation tables and gamecard dumps that start with the card's key
+  area all extract, through what [`storage.c`](../../src/nx/runtime/driver/hactool/storage.c) ports from LibHac.
+- **Recompile:** AOT → module (LLVM) →
+  final runtime deployment, for this machine's CPU. Shaders compile directly to SPIR-V at runtime.
+  `-O 0..3,s,z` (`--opt=`) sets the optimization level (2 by default), and `--jobs N` (`--aot_threads=N`) the threads
+  compiling (0 or none: the machine's cores with a quarter left free, the physical cores where it says them,
+  else the logical ones, at most 75%, so a recompile does not make the computer stutter). The quarter is
+  deliberate: a large game's recompile runs for minutes, a pass that took every core would keep the machine
+  unusable that long and heat a phone, while an LLVM pass gains little from a hyperthread. At most 75%, rounded
+  down, leaves one whole core free on a machine of 4, and a quarter of the largest ones. Every pass of LLVM's
+  pipelines can be turned off for the game's code,
+  `--llvm_pass_<pass>=0` (`--llvm_pass_instcombine=0`), and each option LLVM's C API sets on the pass builder and the
+  target machine set, `--llvm_<option>=N` (`--llvm_inliner_threshold=50`). `scarletnx --settings=recompile` lists
+  them, as the launcher's LLVM Internals page shows them: the passes are those of the pipelines the build's LLVM prints
+  for each level, and a build without an `opt` of that LLVM has none. A dump played with these is recompiled with them
+  when it has to be, and a game made already keeps its code until `-r` recompiles it. A value a setting does not take
+  (`--aot_threads=abc`) stops the recompile. The code the runtime compiles while the game runs keeps LLVM's own, but
+  for the SLP vectorizer, which `slp_vectorizer` turns on or off for both.
+  `--target auto|linux|win64` takes only this host's own system: modules are built for the machine that builds
+  them. `--target ios` writes `<id>_code.snxobj` instead, a pack of the code's objects for the iOS app to load into JIT
+  memory (64-bit games only, [macOS and iOS](../hosts/apple.md)); it makes no runtime copy. `--runtime FILE` deploys that runtime instead of the running one, or of the one a tools-only build builds in
+  its checkout's `build/native-recomp` (`build/win64-recomp` on Windows). `-q` (`--quiet`) prints no progress.
+  `--keep-c` is the deprecated spelling of `--keep-ir`.
+- **Codegen:** `--no-build` stages data/INI only; `--jit-only` omits AOT functions.
+  `--chunk N` (`--unit_instructions=N`) sets the instructions per code unit: 90000 by default, 20000 on Android and
+  iOS, where a smaller unit takes less memory at once. Each unit's object, a 32-bit game's blocks too, is kept in
+  `units/` of the cache folder ([Folders](#folders)), which every game's recompile shares, under the SHA-256 of the
+  unit's LLVM IR, the LLVM, the CPU and its features, the optimization level and the LLVM Internals: a unit found
+  there is not compiled again (a recompile after an `SNX_ABI` change that leaves the unit's IR alone, of a game whose
+  code changed in a few units, or one cut short, which goes on from the units it had compiled), and the last line says
+  how many were (`unit cache: 241 of 259 units reused (310.2 MB) from ...`). The module
+  descriptor and the link are made each time. A kept object that is not whole is compiled again, and said. The cache
+  always leaves a tenth of its disk free, at most 10 GB: when a new unit would take that, the units reused longest ago
+  are removed for it, and a unit there is still no room for is not cached (said once, with the disk's free bytes, the
+  unit's size and that rule, and how many units at the end; the units removed for room are summed there too).
+  `--unit_cache_gb=N` (0, no limit, by default) also holds the folder to N GB after each recompile, the units reused
+  longest ago removed first. A cache folder that cannot be made stops the recompile, saying why.
+  `--keep-ir` saves the generated code (LLVM IR) in `<outdir>/<NAME>/<NAME>_build/`.
+  `--hook-direct-calls` sends calls and branches between guest functions through the dispatch table too, so the
+  runtime's NVN handlers also take calls made by direct branch.
+- **Data updates:** ExeFS refreshes; `<id>_data/romfs` is reused.
+  Replace cached RomFS after asset changes; preserve `<id>_data/save/`.
+
+With `--out work/Game` and `--outdir games` as above (without them, see [Folders](#folders)):
+
+| Output | Contents |
+| --- | --- |
+| `work/Game/{exefs,romfs}` | Extracted input |
+| `recompiled/<id>/<id>[.exe]`, `<id>_code.so/.dll` | Runtime + AOT module |
+| `recompiled/<id>/<id>_data/`, `<id>.ini` | Data/saves (and `control.nacp`) + settings |
+| `recompiled/<id>/<id>_build/` | Generated code, only with `--keep-ir` |
+| `recompiled/<id>/shader_cache/vk_pipelines.<driver>.bin` | Vulkan pipeline cache, one per driver (`<driver>`: `d<driver ID>-<GPU vendor>-<GPU device>`, and `-<package>` for a `gpu_driver` package's), so going back to a driver finds its own |
+| `recompiled/<id>/shader_cache/<id>.<driver>.vkshaders` | One per driver: translated shaders and the pipelines made, made again at the next start, compute pipelines too (before the game starts, from their programs, so a new build or driver compiles them there); packed with zstd as they add up (`compress_shader_cache`) |
+| `recompiled/<id>/shader_cache/<id>.<driver>.vkshipped` | One per driver: the shaders found in the game's own files and executables, prepared ahead of time (`prepare_shaders`), each read when the game first draws with it, each packed with zstd on its own (`compress_prepared_shaders`). Unpacked it can be large: one game's 2,700 shaders took 245 MB, another's 18,500 took 2 GB; packed, about a quarter of that |
+| `recompiled/<id>/shader_cache/<id>.vkscan` | The game's files found to hold no shaders, so that after an update of ScarletNX or the driver the files aren't all read again to look for them |
+
+## GDB (Linux)
+
+Install `gdbserver` on PATH (and `gdb` for the MCP tools below). `-S` enables the native-code stub on loopback port **1234**
+(the QEMU default port). The game runs until a debugger connects.
+`-s` enables the stub and waits before runtime initialization. It implies `-S`.
+
+```sh
+./build/scarletnx -s "Game.xci"
+# Or: recompiled/<id>/<id> -Hs
+```
+
+In GDB, load the deployed executable's symbols and connect:
+
+```gdb
+file recompiled/Game/Game
+tar rem :1234
+continue
+```
+
+The launcher prints a connection hint before waiting. A separate helper keeps accepting
+connections while the game is stopped, then delegates the remote protocol to `gdbserver`.
+The stub debugs host/native registers and code, not an emulated ARM64 CPU. It supports one
+connection per run. Local ptrace permissions must allow attachment. Binding failures and
+missing `gdbserver` are reported instead of silently running without a debugger.
+No debugger flags or combined short flags are supported on Windows.
+
+The recompiled game module is a shared library with a symbol for each function, so GDB names game
+frames as it loads. A 64-bit game's functions are `F_<address>`, and a 32-bit game's blocks are
+`A_<address>` (A32) and `T_<address>` (Thumb). Code the JIT compiles at run time lives in an
+anonymous code arena. With `--gdb_jit=1` (the `[Debug]` setting `gdb_jit`) and the stub (`-S` or
+`-s`), the runtime hands each compile to GDB through its JIT interface, with its symbols. A 32-bit
+game's are `a32_<address>_<thumb>`. GDB stops the whole game to read each compile while it is
+attached, and again for each at the game's end. That slows a 32-bit game (its blocks compile one
+at a time) to a crawl, so it is off by default. Without the stub the setting does nothing.
+
+The runtime handles SIGSEGV and SIGBUS itself: memory it moves while a thread writes to it stops
+that thread on a fault, and a crash's fault writes the crash report. Tell GDB
+`handle SIGSEGV SIGBUS nostop noprint pass` and break on `crash_report` to stop only at a crash.
+A SIGSEGV or SIGBUS another process sends (`kill -SEGV`, or GDB's `signal SIGSEGV`) is not a
+crash. The runtime prints a line saying so and runs on.
+
+### GDB through the MCP server
+
+An agent can drive GDB through the MCP server (`scarletnx --mcp`). It needs `gdb` (9 or later)
+on PATH as well as `gdbserver`, and a runtime with its debug information (the default
+RelWithDebInfo build, not one built with `-g0`).
+
+- `gdb_attach` connects to a game started with `-S` or `-s` and stops it. It sets the `handle`
+  line above and a breakpoint on `crash_report`. Given the game (a folder, a game of `work/` or a
+  title ID, of the same version), the other tools name guest addresses and the symbols above by
+  the game's own symbols. The stub takes one connection per run, so a second attach is refused.
+- `gdb_command` runs one GDB command from a list of reading, breakpoint and execution commands
+  (`backtrace`, `info`, `print`, `x`, `frame`, `thread`, `break`, `watch`, `set var` and the
+  like), by GDB's names, aliases and unambiguous prefixes. Shells, scripts, file writes, command
+  bodies (`commands`, `define`, `if`, `while`) and session changes are refused. `print` and
+  `call` still run the game's own functions. A resume (`continue`, `next`, `step`, `finish` and
+  the rest) runs in the background and waits up to `wait` seconds for the game to stop at a
+  breakpoint or a crash, then interrupts it. With `wait` 0 the game runs on, and only
+  `interrupt` is taken until it stops.
+- `gdb_threads` lists each host thread, and each guest thread's id, its SDK name, whether it is
+  in an SVC and its guest pc and lr. It finds a guest thread through its host thread's TLS, which
+  GDB reads with the C library's `libthread_db`. Without it (a musl build) every thread is listed
+  as the runtime's.
+- `gdb_guest` shows a guest thread's registers and its guest backtrace from its frame records.
+- `gdb_memory` reads guest memory. A page the GPU holds can't be read until the game's CPU
+  touches it.
+- `gdb_detach` lets the game run on without the debugger.
+
+## Headless Vulkan / lavapipe
+
+The normal SDL3 build can run without initializing SDL video or opening a window:
+
+```sh
+./build/scarletnx --game=recompiled/Game -H --seconds=30 --shot=/tmp/frame
+# Or extract, recompile and launch a dump without a window:
+./build/scarletnx "Game.xci" -H
+```
+
+`-H` enables it. Omit the flag for the normal window. `--headless` is the long spelling
+and accepts no value (`--headless=0` and `--headless=1` are errors).
+This is a startup option, not a live toggle or an INI setting. SDL3 is required by every NX runtime
+build, but headless runs do not initialize its video subsystem or require a display server.
+
+Rendering still uses Vulkan 1.3, including uploads, draws, compute and screenshot readback. Headless runs
+create no window, `VkSurfaceKHR` or swapchain and request no WSI extensions, including `VK_EXT_headless_surface`.
+Frames still submit and recycle their resources. `--seconds`, `--frames`, `--script` and `--shot` work as before.
+The time and frame limits and the script count from the game's start, after the shaders made before it
+(`prepare_shaders`).
+FFmpeg decoding is always included in the NX runtime, including headless builds, for video and hwopus audio.
+
+To use software rendering, select Mesa's **lavapipe Vulkan ICD**, rather than the hardware driver. Mesa may
+report this device as `llvmpipe` in the Vulkan log. Selecting a CPU ICD is independent of `-H`:
+
+```sh
+# Linux example. Substitute the actual lvp ICD manifest installed on your machine.
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+  ./build/scarletnx --game=recompiled/Game -H --seconds=30 --shot=/tmp/frame
+```
+
+Manifest names vary (for example `lvp_icd.json`). FreeBSD packages normally install manifests under
+`/usr/local/share/vulkan/icd.d/`. Older Vulkan loaders use `VK_ICD_FILENAMES` instead of `VK_DRIVER_FILES`.
+`LIBGL_ALWAYS_SOFTWARE` is an OpenGL setting and is not how this Vulkan renderer selects lavapipe.
+No display server is required. Check the `vulkan:` device line in the log to confirm the chosen ICD.
+
+The NX runtime includes SDL3 even when running headless; headless mode skips video initialization.
+
+## AppImage / display
+
+```sh
+chmod +x ScarletNX-linux-x86_64.AppImage
+./ScarletNX-linux-x86_64.AppImage --game=recompiled/Game
+SDL_VIDEO_DRIVER=x11 recompiled/Game/Game
+```
+
+On an ARM64 machine the image is `ScarletNX-linux-aarch64.AppImage`, on PowerPC64 LE `ScarletNX-linux-ppc64le.AppImage`
+([PPC64](../hosts/ppc64.md)).
+`--game` selects the game's folder, its `Game_code.so` and `Game_data/`; or name the image `recompiled/Game/Game.AppImage`
+to load the files beside it.
+The AppImage also prepares dumps: `./ScarletNX-linux-x86_64.AppImage Game.nsp`, in the folder [Folders](#folders) names,
+and each game gets a copy of the AppImage (on Windows, of `scarletnx.exe` and the DLLs next to it).
+X11 bypasses Wayland. [Licenses](../CREDITS.md).
+
+## Folders
+
+The driver works in one folder, its data folder, the first of these that applies:
+
+1. the one `--data DIR` names (the menu names its own);
+2. a portable copy's: `.scarletnx/` beside the AppImage, or beside the Windows zip's programs, when it is there;
+3. the user's data folder: `~/.local/share/scarletnx` on Linux, `%APPDATA%\scarletnx` on Windows,
+   `~/Library/Application Support/scarletnx` on macOS. On Android the app names its own, `.scarletnx/` in its own
+   storage ([Android host](../hosts/android-app.md)).
+
+A driver run from its build tree works in the same folder as an installed one: the checkout it was built from is
+not a data folder. `--data DIR`, or `--outdir DIR` for a recompile, keeps a run's files in one folder of your choice.
+
+Each game is a folder of `recompiled/` named by its title ID, `recompiled/<title ID>/` and its files
+`<title ID>*` in it; a program without an ID of its own (an NRO, an ExeFS without NPDM) by its name, and
+`--name` names any. The game is shown by the name in its `control.nacp` (the window, the recompile, the menu's
+list). The user's data folder and a portable copy's keep each kind of file apart: on Linux the user's in the
+[XDG](https://specifications.freedesktop.org/basedir/latest/) folder of its kind, elsewhere in its own `config/`,
+`state/` and `cache/`. Any other folder `--data` or `--outdir` names keeps everything in its games' folders.
+
+| What | Another `--data`, an `--outdir` | Linux, the user's data folder | A portable copy's, the user's elsewhere |
+| --- | --- | --- | --- |
+| a game: its program, `<id>_code.so`, `<id>_data/` (saves, `control.nacp`, its SD card `sdmc/` with the pictures it saves to its album in `Nintendo/Album/`, as the console has them), `captures/` | `recompiled/<id>/` | `~/.local/share/scarletnx/recompiled/<id>/` | `recompiled/<id>/` |
+| its settings, `<id>.ini` | `recompiled/<id>/` | `~/.config/scarletnx/recompiled/<id>/` | `config/recompiled/<id>/` |
+| its `<id>.log` (this run's; the 4 before in `logs/<date>.log`) and `threads.txt` | `recompiled/<id>/` | `~/.local/state/scarletnx/recompiled/<id>/` | `state/recompiled/<id>/` |
+| its pipeline cache | `recompiled/<id>/shader_cache/` | `~/.cache/scarletnx/recompiled/<id>/shader_cache/` | `cache/recompiled/<id>/shader_cache/` |
+| extractions (`3ds/` for the 3DS driver) | `work/` | `~/.cache/scarletnx/work/` | `cache/work/` |
+| the recompile's code units, `<key>.o`, every game's | `units/` of the user's cache folder | `~/.cache/scarletnx/units/` | `cache/units/` |
+| the menu's themes, `<name>/theme.ini` | - | `~/.local/share/scarletnx/themes/` | `themes/` |
+| the menu's `settings.ini`, `app.ini`, `folders.txt`, `gamecontrollerdb.txt` | - | `~/.config/scarletnx/` | `config/` |
+| the setup's `setup.ini` ([Setup](#setup)) | - | `~/.config/scarletnx/` | `config/` |
+| the menu's `recent.txt`, `last-run.log`, `last-recompile.log` (a second launcher open at once `last-run-2.log` and `last-recompile-2.log`), its log `scarletnx-console-<date>.log` (a file a day, the 14 newest kept) and fatal errors `scarletnx-error.log` ([GUI](gui.md); iOS: `logs/` of its Documents) | - | `~/.local/state/scarletnx/` | `state/` |
+| the menu's Share Log, `scarletnx-logs-<date>.zip` or `scarletnx.log` (iOS: `logs/share/` of its Documents) | - | `~/.local/state/scarletnx/share/` | `state/share/` |
+| `prod.keys`, read before `~/.switch` | the folder | `~/.local/share/scarletnx/` | the folder |
+| the console's users, `users.ini` and `<uid>.jpg` ([Users](#users)), and `online.ini`, an Eden room's password (`room`) | `users/` of the user's data folder | `~/.local/share/scarletnx/users/` | `users/` |
+| the users a program deleted, each in `user.<uid>.<UTC time>/` with its users.ini section, picture and saves ([Users](#users)) | `trash/` of the user's data folder | `~/.local/share/scarletnx/trash/` | `trash/` |
+
+The menu works in the user's data folder or a portable copy's, unless its Settings > App > Folders picks a data
+folder, a games folder or an extractions folder ([GUI](gui.md)): it passes them to the driver as `--data`, `--outdir`
+and `--out` (an extractions folder picked keeps a Switch dump's extraction there, the game made from a copy; to the
+3DS driver as `--data` and `--output`), and its own files stay where they are. Its Logs and Caches move the state and
+cache folders of the table: `[folders] state =` and `cache =` in `app.ini`, full paths, which the menu, the drivers
+and the games read (a game's `.folders` below names them), its files going to the same place under them
+(`recompiled/<id>/<id>.log` of the state folder); a value that is not a full path is said once and the default kept.
+The config folder holds `app.ini`, so it moves only with `$XDG_CONFIG_HOME` or a portable copy. On Android they
+are in its data folder's `config/` and `state/`, in the app's own storage, which needs no permission. `~/.local/share`, `~/.config`, `~/.local/state` and `~/.cache` are the
+defaults of `$XDG_DATA_HOME`, `$XDG_CONFIG_HOME`, `$XDG_STATE_HOME` and `$XDG_CACHE_HOME` (a relative one is ignored).
+Each time the driver makes or starts a game of the user's data folder, it names the folders of the game's settings, log
+and caches in `recompiled/<id>/<id>.folders`, where the game reads them: started with other variables (its copy of an
+AppImage run with `--appimage-portable-config` or `--appimage-portable-home`, a shortcut), it finds them there.
+
+An older version made its games in the data folder's `games/` (`recompiled/` now, the dumps in `dumps/` beside it), and
+kept a game's files side by side in `games/` (`games/Game`, `Game_code.so`, `Game_data/`,
+`Game.ini`), the menu's in the data folder's `gui/`, outside Linux the rest in the data folder itself, a portable
+copy's in a `games/` beside the program, and a build tree's `games/`, `work/` and keys in its checkout. This one moves
+none of it by itself: as long as it is there, the menu lists each folder and where it goes now, the driver says so on
+each run, and an older game runs where it is, its run saying where its folder goes. Asked, it moves them:
+
+```
+./build/scarletnx --migrate       # each entry a line and where it would go; nothing is touched
+./build/scarletnx --migrate=yes   # moved, the same lines; Settings > App > Move Old Files in the menu
+```
+
+Each entry of an older folder goes into the folder this version keeps it in, the data folder's `games/` with its games'
+settings, logs and caches in the config, state and cache folders; one already there stays, and one on another disk is
+not moved, each said with both paths, the status 1. A game laid out beside the others is not moved by name: it moves
+as [Deprecations](deprecations.md) says.
+
+## Users
+
+The console's users are in `users/users.ini` of the data folder ([Folders](#folders)), every game's: up to 8, each a
+section in the console's order. Without the file there is one, `Player`. User 1 has the uid users.ini gives it; with
+none it has the one it always had, `0123456789abcdeffedcba9876543210`, so the saves made before there were others stay
+its own. Each other one needs a uid of 32 hex digits of its own (not zero) and a nickname. A nickname is what the
+console's account service keeps: 1 to 32 bytes of UTF-8, with no control character and no space at either end; any
+other stops the game and says why. An Eden room takes 4 to 20 letters, digits, spaces, `.`, `_` or `-`, and says so
+when it refuses another:
+
+```ini
+[user1]
+nickname=Aogo
+[user2]
+uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e
+nickname=Xuji
+```
+
+`uid`, `nickname`, `user_data`, `mii` and `picture` are the keys: `user_data` is the profile's UserData a program stored
+(its icon, colour and Mii), 256 hex digits, empty or left out for zeros; any other key, a section out of order or twice,
+or a line that is no key stops the game and says why. `mii` is the user's Mii, one of the Mii database's by its name:
+`Baguette` (the default), `Leek Girl`, `Phone Girl`, `Alex`, `Sam`, `Kai`, `Robin`, `Jamie`, `Taylor`, `Morgan` or
+`Riley`, as written. A game that takes the database's first Mii as the player's takes it. `picture` is `mii`, the
+user's picture drawn from that Mii, or `file`, `users/<uid>.jpg`; without the key it is `file`, so a user with no
+picture file is Wimsy. Neither ever stops the game: no key, no users.ini, a name the database does not hold or
+another word is the default, and the game's log and the launcher's say what was read and what is in effect. The
+launcher's Settings > User renames a user (Enter types its nickname, the rule above checked), picks each user's Mii
+(its `User N Mii` row, left and right) and the one the games play as; the file's other lines stay as they are. A
+user's picture file is `users/<uid>.jpg`, the bytes the account service keeps (a JPEG, 256x256 as the console's, from
+its editor), at most 128 KiB, read when the game starts; with `picture=file` and none, or an empty file, it is Wimsy,
+and a launcher that cannot draw it says so and shows Wimsy. The game plays as the user its `.ini`'s `user_uid` names by
+its uid, empty for `[user1]` (`--user_uid=<uid>` for one run): with one user, the game picks it on its own; with more,
+the game's user selector gets that user. Each user's Account saves are in the data folder's
+`save/user.<uid>/<title ID>/`, every save of a game in the data folder's `save/` as the console keeps them
+(`save_layout=global`, the default, [Filesystem](../platforms/nx/filesystem.md)); with
+`save_layout=game` they are `save/user.<uid>` in the game's `<id>_data/`. A save in the other layout's folder is played
+there until Settings > App > Move Old Files moves it. Those an older version left in a game's `save/user`, of the uid
+`0123456789abcdeffedcba9876543210`, are played there until you move them ([Deprecations](deprecations.md)). Beside
+an Account, Device or BCAT save's folder, `<its folder>.version` names the program and version that last committed it:
+when an older version of the game opens a save a newer one wrote, which a game may not read, the log says both, and so
+does the report if the game crashes or stops. The game's
+menu (Home, F2) shows the user playing in a box at its head's right, their nickname and picture, and the launcher the
+one its Settings' `user_uid` names, where a click picks another ([GUI](gui.md)); a users.ini that lists no users is said
+in the launcher's foot.
+
+A program with the console's administrator account service (acc:su, as the system's user settings) changes users.ini as
+the console's does, and the log says each change: a user it registers is the next `[userN]`, `Player` until it stores
+the profile; a profile it stores writes the nickname (the rule above), the UserData and the picture; a user it deletes
+goes to the Trash, a folder `trash/user.<uid>.<UTC time>/` of the data folder with its users.ini section, its picture
+and its saves in `save/user.<uid>/` (with `save_layout=game`, the running game's), the users after it a place up, and
+the user playing is refused; a user it moves takes its new place, those between a place over, user 1 given its uid and
+nickname lines as it leaves `[user1]`. An empty `user_uid` plays as whoever is `[user1]` then.
+
+## Setup
+
+The first start goes through a setup: in the launcher's window ([GUI](gui.md#setup)), or in the terminal a dump is
+first run from. It says first what older versions did that this one does otherwise ([Deprecations](deprecations.md):
+only said, nothing is moved), then asks:
+
+1. **Appearance**: the launcher's language (app.ini's `language`), starting on the one it has (the system's, until
+   one is picked), and in the launcher's setup its theme, UI scale, side panel and Games' view and icon size beside it;
+   the terminal's asks the language alone.
+2. **Install type**: installed, in the user's folders ([Folders](#folders)), or portable, everything in
+   `.scarletnx/` beside the program (or the AppImage), which it makes. An app (Android, iOS) has no other.
+3. **Folders**, the launcher's: where its recompiled games go and the folders of dumps it lists (Settings > App >
+   Folders).
+4. **Keys**: `prod.keys` and `title.keys` where the driver reads them, or installed from a folder that has them.
+5. **First user**: a `users/users.ini` there is kept, or overwritten, the one before kept as `users.ini.old`. A new one
+   has one user, the nickname given (`Player` by default), its uid random, of a v4 UUID's form as Ryujinx's are; or
+   `0123456789abcdeffedcba9876543210`, the uid user 1 has had, while a game in `recompiled/` has saves of it.
+
+In the launcher the first page also has Skip, which takes each step as its default, what Enter on each would take
+(the nickname `Player`), and writes `setup.ini`.
+
+`setup.ini`, in the config folder, keeps how far it went:
+
+```ini
+[setup]
+version = 1
+notices = 9
+```
+
+`version` is the steps asked, and a newer version's step is asked alone; `notices` is how many of the notices it has
+shown, and one a newer version adds shows alone, with OK, before anything else.
+
+```sh
+./build/scarletnx --setup                  # all of it again, in the terminal
+printf '\n\n\n\n\nAogo\n' | ./build/scarletnx --setup  # its answers a line each, Enter the one in brackets
+./build/scarletnx --no-setup "Game.xci"    # no setup this run, nothing written
+```
+
+A run whose stdin or stdout is no terminal (a pipe, the launcher's runs) asks nothing. With `--no-setup` nothing is
+written, so a data folder with no users.ini plays as `Player`, uid `0123456789abcdeffedcba9876543210`.
+
+## Playing
+
+Every setting of the game's `.ini`, with its default and what it does: [Settings](settings.md).
+
+A gamepad's motion sensors, a Joy-Con's among them, go to the game when SDL exposes them. No setting turns them off.
+
+`audout` PCM playback and the audio renderer's device sink (`audren`) use SDL3's system-default output on
+Windows, Linux and supported Unix systems. Choose the output in your operating system's sound settings. The
+renderer does not render splitters, voice biquad filters, or the delay, reverb and biquad effects yet.
+
+SDL gamepads send A, B, X and Y where the console's are (A right, B bottom, X top, Y left), as emulators do;
+`gamepad_swap_ab=1` swaps A and B. `gamepad_map` sets what any control sends, a control by where it sits and the
+button it sends, as `south:B east:A lt:ZL`; the ones it leaves out send the button in their place. The sticks'
+dead zone in `gamepad_deadzone` and the game's vibration as strong as `gamepad_rumble` (both in percent), and with
+`gamepad_background=1` still play while the window is not focused; the game's menu (Home, F2) sets them under
+*Controllers*, which names the pads connected; its *Player* row shows every player's settings (*All*) or one
+player's own Swap A/B, Vibration and Button map. Each connected gamepad uses its own player slot, up to eight.
+Keyboard and on-screen controls also drive player one.
+`gamepad_assign=1` gives the players out as a console does (after Eden's Modern Console): each controller that
+connects is the lowest player free ("P2: Xbox Wireless Controller joined"), and one that leaves keeps its player for
+45 seconds, which it takes back when it returns while another that connects goes past it. Once a player's controller
+has been gone 3 seconds the game pauses ("P2 disconnected: reconnect, or press + on another controller to go on")
+until it returns, or until + is let go on another controller, which goes on without that player. `0`, the default,
+gives them out as each player's `gamepad_p<N>_device` names its controller, the next to connect where it names none.
+`gamepad_joycon_pair=1` makes SDL combine a left and right Joy-Con. Set it to `0` to expose them separately and
+restart the game after changing it.
+
+For a joystick that SDL detects but does not recognize as a gamepad, put SDL mapping lines in
+`gamecontrollerdb.txt` beside the launcher's `settings.ini` ([Folders](#folders)). A game in the launcher's
+`recompiled/` reads the same file; any other game, the user's (on Android every game, the launcher's). To use a file
+elsewhere, set
+`SDL_GAMECONTROLLERCONFIG_FILE` to its path before starting the launcher or game. A mapping line starts with the
+joystick GUID shown in the game log or the launcher's Controllers page, which names the file too, followed by a name
+and SDL button and axis bindings. For example:
+
+```text
+GUID,My Controller,a:b0,b:b1,x:b2,y:b3,leftx:a0,lefty:a1,rightx:a2,righty:a3,platform:Linux,
+```
+
+Replace `GUID` and each binding with values for the device, and `Linux` with `Windows`, `FreeBSD` or `Android`
+where it runs: SDL takes a line of the file only with its own platform. This SDL mapping selects physical joystick
+controls; `gamepad_map` instead selects which Switch buttons the mapped controls send. The game log reports every
+detected joystick, whether it has an SDL mapping, and any gamepad open error. On Linux, installing
+`dist/72-scarletnx-input.rules` in `/etc/udev/rules.d/` grants desktop seat access to joystick event nodes and to
+the hidraw nodes of the console's controllers, for Joy-Con features. Reload udev rules and reconnect the controller
+after installation. Other HIDAPI controllers may need their vendor's own hidraw rule.
+
+On FreeBSD SDL reads the pads itself, over HIDAPI and libusb (the only way an Xbox pad is read: its own protocol is
+not HID) and the `usbhid` stack's `/dev/uhid*` nodes. Install `games/devd-controller-rules` and put your user in the
+`games` group: its devd rules give SDL's libusb the controller's USB device. The `libusb` package must be installed,
+which SDL loads when HIDAPI starts. A pad a driver has claimed — `xb360gp(4)`, `hgame(4)` or `webcamd`, which hand it
+out as `/dev/input/event*` and `/dev/input/js*` — sits where SDL cannot read it: stop that driver and reconnect the
+pad.
+
+| Keyboard | Switch |
+| --- | --- |
+| Arrows; WASD / IJKL | D-pad; L/R sticks |
+| X or Space / Z / C / V | A / B / X / Y |
+| Q / E / 1 / 3 | L / R / ZL / ZR |
+| Enter / Backspace | Plus / Minus |
+
+F1 a page of the game's menu with these keys and the buttons above, a row each (Up/Down go over it, any other key goes
+back to the game); F2 the game's menu; F3 screenshot; F4 FPS limit off and on; F5 thread dump; F6 showcase on and off;
+F7 save state; F8 load state; F9 next save state slot; F10 60-second Tracy capture (SNX_TRACY builds); F11/Alt+Enter
+fullscreen; F12 stats on and off; Ctrl+Shift+F12 a RenderDoc capture of the next frame, with RenderDoc in the game
+(`renderdoc`, or a game RenderDoc's program started), as the game's menu's **Capture frame** is, which shows only then;
+Pause pauses the whole game and resumes it (the window's title says "(paused)"); Escape quit. Each of these keys is a
+setting ([Shortcuts](settings.md#shortcuts)), set in the game's menu's **Shortcuts** page too, and F1 lists them as
+they are set. A window shows at most one image per refresh and drops the rest unless images tear, and the game keeps
+the pace `fps_limit` sets.
+
+A save state is the whole game at one moment, kept in `states/` in the game's folder, one file a slot. F7 saves to
+the selected slot and F8 loads it, and F9 selects the next slot and says what it holds. The menu's **Save states**
+page lists the slots with the date, the play time and a picture of each, and saves, loads and deletes them. A load
+and a delete ask first. The game waits while the page is open. Before a load the game is saved to the auto slot,
+listed first, so a load can be undone (`state_auto_backup`). The game's own save files are never part of a state,
+and loading one leaves them as they are. A state loads only into the game, update and mods it was saved with. A newer
+ScarletNX loads it too, unless it changed the recompiled code (`SNX_ABI`) or the layout of what a state holds, and
+then it says so. A save is refused, saying why, while the game holds what a state can't keep yet: a network
+connection, local play with others, code modules it loaded, or NVN work waiting on the GPU.
+
+In the launcher, S on Games lists the save states of the game in focus, the newest first, with the picture of the one
+in focus beside them. Enter plays the game from that state, and Del deletes it after asking. A state this version
+can't load is shown in the failure colour, and Enter on it says why. `--state_load=0:FILE` plays a game from the
+state FILE the same way.
+
+In the game's menu the arrows, Enter and Escape move, select and go back; a gamepad's D-pad or left stick, A and
+B do the same, the on-screen controls' too, and a direction held goes on after a moment.
+
+A game that asks for text (a name, a password, a search) shows a box over the game, in the menu's look and the same
+on every platform: the game's own words for it, the line with the text the game started it with, and how many
+characters it holds against the game's least and most. What you type goes in, from the keyboard or an input method,
+and on Android and iOS the system's keyboard comes up with the box (a tap on the line brings it back). Backspace takes
+the last character away, Enter or A gives the line, and Esc or B cancels; a tap on the box's OK or Cancel does the
+same. Short of the game's least, Enter says how many more it needs. The menu (Home, F2) opens over the box, and
+`swkbd_text` answers in its place. With no window to show it in (`-H`), the game's text is the answer, or the
+nickname of the user playing when the game gives none, and the log says which.
+
+A game that stops on an error shows a panel with **Share Log**, **Copy path** and **Close**. Share Log saves
+`scarletnx.log` (the build, the error and the game's log) beside the game's log, as the menu's does, and on Android
+sends it to the app you pick; Copy path copies that file's path once it is saved, else the game's log's. The panel says
+what each did. Up and Down move between the items, Enter or A does the one in focus, and any other key or button
+closes it. On a desktop the game's log path is
+underlined once the log exists: a click opens it in the system's viewer, the panel staying open.
+
+### On-screen controls
+
+A pad drawn over the game in white lines, with rEden's sizes, laid out as the console's two controllers hold them:
+sticks, D-pad, A B X Y, L R ZL ZR, plus and minus, the stick buttons, Home (the game's menu) and Capture (a
+screenshot). Fingers press them, the mouse's left button too; a finger that lands off them goes to the game's
+touch screen. They are on by default on Android and off elsewhere.
+
+The game's menu (Back on Android, Home on a gamepad, F2) has their page: show them, *Edit layout* (drag a control;
+tap one and size it with the bar on top; *Done* or Back ends it), snap to a grid, scale and opacity, the buttons
+shown, a stick's middle where the finger lands, a D-pad a finger slides on, a buzz on each press (Android), the touch
+screen, and *Reset layout*. *Skin* goes round their looks: ScarletNX's own, line (white lines, after libretro's flat
+retropad; the default) and yorha (the launcher's yorha theme on the controls), and the built-in one (rEden's). Any
+[RetroArch overlay](../../dist/controls/skins/README.md) is a skin too:
+`controls_skin=` the path of its `.cfg` (the launcher's Settings take it as text), and the controls take its places,
+sizes, images and pressed looks; what it lacks keeps the built-in look, and the log says each part it leaves out. The
+game's `.ini` keeps them: `controls`, `controls_scale`, `controls_alpha`, `controls_skin`,
+`controls_snap`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics`, a control's place once it
+was moved (`controls_a=0.930 0.470 100`: its middle across the screen and its size in percent), and whether it is
+shown once that changed (`controls_a_shown=0`). The launcher's Settings have the same, but the layout.
+Beside the executable: `Game.log`, `threads.txt` (15 s refresh), `captures/` (screenshots); an installed copy on Linux
+keeps the first two in its state folder ([Folders](#folders)). `Game.log` is this run's: the 4 runs before keep theirs
+in `logs/` beside it, named by when each was last written (`2026-10-28_14-05-33.log`). Past `log_max` (MiB, 1 to
+1024, default 16; [Debug](../dev/development.md)) the log keeps the run's start and its last lines, with a line saying how
+much went between them, and the game's picture says so once.
+Scripts/disasm/shaders: [Development](../dev/development.md).

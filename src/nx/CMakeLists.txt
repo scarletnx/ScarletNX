@@ -60,7 +60,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
 snx_hookgen(snx_hle)
 file(GLOB snx_patch_handlers CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.c")
 target_sources(snx_hle PRIVATE ${snx_patch_handlers})
-# the IPC interfaces of the services (docs/IPC.md): their dispatchers are generated, the handlers are in the services'
+# the IPC interfaces of the services (docs/platforms/nx/ipc.md): their dispatchers are generated, the handlers are in the services'
 # files. A type is defined before the files that use it
 include("${PROJECT_SOURCE_DIR}/cmake/swipc.cmake")
 snx_swipc(snx_hle FNS ROOT "${CMAKE_CURRENT_SOURCE_DIR}" FILES
@@ -90,7 +90,7 @@ snx_ship_walk(gpu/shipped_pass.c)
 include("${PROJECT_SOURCE_DIR}/cmake/controls_atlas.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/controls_skins.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
-set(platform runtime/platform/plat.c runtime/platform/plat_sdl.c runtime/platform/unattended.c
+set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform/unattended.c
              runtime/platform/backend/sdl3.c
              runtime/platform/backend/gamepad.c runtime/platform/connect.c runtime/platform/tracy.c
              runtime/platform/help.c runtime/platform/hotkeys.c runtime/platform/hud.c runtime/platform/overlay.c
@@ -532,8 +532,8 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_BINARY_DIR}/generated/spirv/bc7_fast_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_mode6_spv.c"
         "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp")
     target_include_directories(snx-test-astc-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests/glsl")
-    target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags scarletnx-filesystem snx_xxhash Threads::Threads
-                                                      SDL3::SDL3 ${CMAKE_DL_LIBS})
+    target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags scarletnx-filesystem snx_xxhash snx_vk_common
+                                                      Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})
     if(WIN32)
         target_link_libraries(snx-test-astc-vulkan PRIVATE powrprof)
     endif()

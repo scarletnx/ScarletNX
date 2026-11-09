@@ -11,7 +11,7 @@ import android.view.ViewRootImpl;
 
 /**
  * The host window: an SDL window with the runtime's Vulkan renderer (src/android/hwui/render.c), the Abstract of
- * SurfaceFlinger and the input dispatcher in docs/android/INTERFACES.md. Without a display the renderer draws into an
+ * SurfaceFlinger and the input dispatcher in docs/platforms/android-apps/interfaces.md. Without a display the renderer draws into an
  * image of its own (--shot saves one). --headless draws nothing at all.
  *
  * The main looper waits in short steps and reads the window's events between them, since SDL's event queue belongs
@@ -27,13 +27,13 @@ public final class Window {
     private static final long[] tapFrames;
     private static final float[][] tapPoints;
     private static long frames;
-    /** Scripted text (--keys="FRAME:TEXT|FRAME:TEXT"): its characters as key presses, from the frame on */
+    /** Scripted text (--type="FRAME:TEXT|FRAME:TEXT"): its characters as key presses, from the frame on */
     private static final long[] keyFrames;
     /** The frames between scripted keys (--key-frames, 4 when not given: about 66 ms, a fast typist's) */
     private static final int keyPace = Math.max(1, Integer.parseInt(System.getProperty("snx.android.key_frames", "4")));
     private static final String[] keyTexts;
     static {
-        String keys = System.getProperty("snx.android.keys");
+        String keys = System.getProperty("snx.android.type");
         String[] parts = keys != null && !keys.isEmpty() ? keys.split("\\|") : new String[0];
         keyFrames = new long[parts.length];
         keyTexts = new String[parts.length];

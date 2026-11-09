@@ -220,7 +220,7 @@ void gpu_mem_changed(u64 a, u64 size) {
     (void)size;
 }
 static u64 mapping_a, mapping_size; /* the guest range the last change named */
-static int mapping_kind;             /* and its kind (GPU_MAPPING_*) */
+static int mapping_kind;            /* and its kind (GPU_MAPPING_*) */
 static void mapping_begin(u64 a, u64 size, int kind) {
     CHECK((kind == GPU_MAPPING_GUEST || kind == GPU_MAPPING_GUEST_ONLY) && size != 0);
     mapping_a = a;
@@ -736,6 +736,20 @@ static int console_layout(u64 end) {
            g_layout.stack == 0x1300000000ull && g_layout.stack_size == 2ull << 30 && g_layout.kern == 0x1380000000ull &&
            g_layout.kern_end == 0x13C0000000ull;
 }
+/* mem_layout_large_heap on the layout mem_init made: the heap region 4 GiB larger and the stack region after it 4 GiB
+   up, with the kernel's pages where they follow the stack (the console's regions, whatever the reservation past
+   them) or kept at the end; nothing where the 4 GiB don't fit. The layout is put back after */
+static int large_heap(int grows, int kern_moves) {
+    MemLayout was = g_layout;
+    u64 up = grows ? 4ull << 30 : 0, kern_up = kern_moves ? up : 0;
+    mem_layout_large_heap();
+    int ok = g_layout.heap == was.heap && g_layout.heap_size == was.heap_size + up &&
+             g_layout.stack == was.stack + up && g_layout.stack_size == was.stack_size &&
+             g_layout.kern == was.kern + kern_up && g_layout.kern_end == was.kern_end + kern_up &&
+             g_layout.end == was.end;
+    g_layout = was;
+    return ok;
+}
 static void test_ladder(void) {
     int fds[2], status = 0;
     u64 got[2 * (LADDER_N + 2)];
@@ -745,6 +759,7 @@ static void test_ladder(void) {
     /* a host that gives it: the console's whole address space, asked first, and the game told so */
     reserve_again();
     CHECK(g_mem && g_as_size == 512ull << 30 && console_layout(512ull << 30));
+    CHECK(large_heap(1, 1));
     CHECK(asked_n == 1 && asked_watched(0, 1));
     CHECK(strstr(said, "memory: 512 GiB of address space reserved, the console's\n"));
     CHECK(info(12) == 0x8000000ull && info(13) == (512ull << 30) - 0x8000000ull);
@@ -753,6 +768,7 @@ static void test_ladder(void) {
     refuse_above = 256ull << 30;
     reserve_again();
     CHECK(g_mem && g_as_size == 256ull << 30 && console_layout(256ull << 30));
+    CHECK(large_heap(1, 1));
     CHECK(asked_n == 2 && asked_watched(0, 2));
     CHECK(strstr(said, "memory: 512 GiB of address space refused: "));
     CHECK(strstr(said, "memory: 256 GiB of address space reserved, of the console's 512: the game's address space ends "
@@ -762,6 +778,7 @@ static void test_ladder(void) {
     refuse_above = 128ull << 30;
     reserve_again();
     CHECK(g_mem && g_as_size == 128ull << 30 && console_layout(128ull << 30));
+    CHECK(large_heap(1, 1));
     CHECK(asked_n == 3 && asked_watched(0, 3));
     let_go();
     /* a Windows that gives no reservation with the write watch: every tier with it, then 512 and 256 GiB without */
@@ -833,6 +850,8 @@ static void test_alias_layouts(void) {
         CHECK(info(12) == 0x8000000ull && info(13) == size - 0x8000000ull);
         CHECK(info(14) == 28ull << 30 && info(15) == 2ull << 30);
         CHECK(STACK_BASE + STACK_SIZE + (1ull << 30) <= KERN_BASE);
+        /* the kernel's pages stay in the last GiB: 4 GiB more heap fit before them in 48 GiB, not in 32 */
+        CHECK(large_heap(size >= (48ull << 30), 0));
         /* the region's edges */
         CHECK(svc_map_physical(ALIAS_BASE + ALIAS_SIZE - 0x1000, 0x1000) == 0);
         CHECK(g_phys_mapped == 3 * 0x1000 && state(ALIAS_BASE + want - 0x1000) == MS_NORMAL);

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Graphics pipeline libraries (VK_EXT_graphics_pipeline_library, docs/PIPELINE_LIBRARIES.md): whether the renderer
+/* Graphics pipeline libraries (VK_EXT_graphics_pipeline_library, docs/layers/gpu/pipeline-libraries.md): whether the renderer
    makes its pipelines from them, and which pre-rasterization state its draws then set as dynamic state. Pure
    functions of what the device has, with no GPU, so a test checks each case */
 #ifndef SNX_VK_PIPELINE_PARTS_H
@@ -35,7 +35,7 @@ typedef struct {
    *dyn_pr (0 when they aren't), and the log line that says so into line */
 int vk_gpl_choose(const VkGplDevice* d, u32* dyn_pr, char* line, size_t n);
 
-/* the parts of a pipeline made of libraries, a bit each (docs/PIPELINE_LIBRARIES.md, "The four parts") */
+/* the parts of a pipeline made of libraries, a bit each (docs/layers/gpu/pipeline-libraries.md, "The four parts") */
 #define VK_PART_VI  1u  /* vertex input interface */
 #define VK_PART_PR  2u  /* pre-rasterization shaders */
 #define VK_PART_FS  4u  /* fragment shader */
@@ -51,7 +51,7 @@ typedef struct {
 } PipeDynIn;
 /* the dynamic states of the parts in parts (VK_PART_*) into out, in the order a whole pipeline lists them: how many */
 u32 vk_pipe_dynamic(u32 parts, const PipeDynIn* in, VkDynamicState* out);
-/* ---- the four parts of a pipeline (docs/PIPELINE_LIBRARIES.md, "The four parts") */
+/* ---- the four parts of a pipeline (docs/layers/gpu/pipeline-libraries.md, "The four parts") */
 /* the bits of PipeKey.arrays (a bit per set, shader_vk_set) of the fragment stage and of the stages before it */
 #define VK_ARRAYS_FS 2u
 #define VK_ARRAYS_PR 29u

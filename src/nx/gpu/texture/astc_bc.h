@@ -14,8 +14,9 @@
 #define SNX_ASTC_EXACT_MB 8192ull
 /* 1 where astc_mode's Auto holds them as BC7: a budget of budget bytes, under SNX_ASTC_EXACT_MB MiB */
 static inline int snx_astc_auto_bc7(unsigned long long budget) { return budget < (SNX_ASTC_EXACT_MB << 20); }
-/* 1 where astc_mode mode holds them as BC7, Auto as auto_bc7 says (snx_astc_auto_bc7 of the budget at start) */
-static inline int snx_astc_bc7(int mode, int auto_bc7) { return mode == 2 || (mode == 0 && auto_bc7); }
+/* 1 where astc_mode mode holds them as BC7 (2 between frames, 3 at load), Auto as auto_bc7 says (snx_astc_auto_bc7 of
+   the budget at start) */
+static inline int snx_astc_bc7(int mode, int auto_bc7) { return mode == 2 || mode == 3 || (mode == 0 && auto_bc7); }
 
 /* why the images ran short of memory (vk_mem_trim): an image allocation found none, a trim left the caches past their
    budget, or a trim took textures or targets the last two presents used, the working set, which the next frames load
@@ -26,6 +27,21 @@ enum { SNX_ASTC_SHORT_NONE, SNX_ASTC_SHORT_NO_MEMORY, SNX_ASTC_SHORT_PAST_BUDGET
    short (why) */
 static inline int snx_astc_bc_suggest(int bc7, int bc, int astc, unsigned long long astc_bytes, int why) {
     return why != SNX_ASTC_SHORT_NONE && !bc7 && bc && !astc && astc_bytes;
+}
+
+/* The blocks the BC7 encoder may have queued on the GPU before an upload waits for it to do them (bc7_queue, in
+   thousands; 0 is Auto): Auto gives 256 thousand for every 2 GiB of the GPU's own memory, heap bytes, from 256
+   thousand to 4 million, and 256 thousand to a GPU that shares the CPU's memory (uma). A GT 1030 (2 GB) lost the
+   device past 256 thousand, a second of its encoder; an RX 6700 XT (12 GB) encodes about 10 million a second, and
+   waited 2 s a minute at 256 thousand in one game's loads */
+#define SNX_BC7_QUEUE_MIN (256ull << 10)
+#define SNX_BC7_QUEUE_MAX (4096ull << 10)
+static inline unsigned long long snx_bc7_queue_blocks(int setting, unsigned long long heap, int uma) {
+    unsigned long long n;
+    if (setting > 0) return (unsigned long long)setting << 10;
+    if (uma) return SNX_BC7_QUEUE_MIN;
+    n = SNX_BC7_QUEUE_MIN * (heap / (2ull << 30));
+    return n < SNX_BC7_QUEUE_MIN ? SNX_BC7_QUEUE_MIN : n > SNX_BC7_QUEUE_MAX ? SNX_BC7_QUEUE_MAX : n;
 }
 
 #endif

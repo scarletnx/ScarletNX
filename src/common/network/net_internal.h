@@ -6,6 +6,7 @@
 #define SNX_NET_INTERNAL_H
 #include "common/network/net.h"
 #include "common/network/net_host.h"
+#include "common/platform/time.h"
 #ifdef _WIN32
 typedef SOCKET SnxHostFd;
 typedef SRWLOCK SnxLock;
@@ -72,8 +73,9 @@ int snx_net_host_setsockopt(SnxSocket* s, int level, int name, const void* value
 int snx_net_host_getsockopt(SnxSocket* s, int level, int name, void* value, size_t* size);
 int snx_net_sockopt_kept(int level, int name);
 uint16_t snx_net_checksum(const void* data, size_t size, uint32_t sum); /* the Internet checksum */
-int64_t snx_net_now_us(void);                                           /* a monotonic clock */
-void snx_net_sleep_us(int64_t us);
+/* the stack's clock and sleep in microseconds: plat_ns and plat_sleep_ns's */
+static inline int64_t snx_net_now_us(void) { return (int64_t)(plat_ns() / 1000u); }
+static inline void snx_net_sleep_us(int64_t us) { plat_sleep_ns(us * 1000); }
 
 /* locks, detached threads, and a pipe the stack can poll (a connected UDP pair on Windows) */
 void snx_lock_init(SnxLock* l);

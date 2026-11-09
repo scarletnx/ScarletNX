@@ -62,7 +62,7 @@ typedef struct {
     GpPass pass[GP_QUERIES / 2];
     GpSub sub[GP_SUBS];
     struct {
-        u32 qi; /* its begin's timestamp, its end's the one after */
+        u32 qi;   /* its begin's timestamp, its end's the one after */
         u32 kind; /* VK_OP_* */
         u64 key, bytes;
     } disp[GP_DISP];
@@ -115,8 +115,8 @@ typedef struct {
 } GpDKey;
 static GpDKey g_dkey[GP_DKEYS];
 static u64 g_disp_ns, g_disps;
-static VkCommandBuffer g_cur_cb; /* the frame's command buffer being recorded, between cb_begin and cb_end */
-static u64 g_tag, g_dispatched;  /* the next dispatch's tag, and the dispatches recorded into g_cur_cb */
+static VkCommandBuffer g_cur_cb;  /* the frame's command buffer being recorded, between cb_begin and cb_end */
+static u64 g_tag, g_dispatched;   /* the next dispatch's tag, and the dispatches recorded into g_cur_cb */
 static u64 g_last_end;            /* CLOCK_MONOTONIC of the last submission's end, 0 none */
 static int g_prev_why, g_prev_kind; /* that submission's VK_SUB_*, and the CPU's wait for it (VK_WAIT_* + 1, 0 none) */
 static u64 g_t0;        /* the report window's start (plat_ns) */
@@ -201,7 +201,8 @@ void vk_gpuprof_cb_begin(VkCommandBuffer cb) {
         g_lost++;
         return;
     }
-    g->sub[g->nsub] = (GpSub){.q0 = g->used, .passes = g->npass, .dispatches = (u32)g_dispatched, .xfers = g_rec_xfers, .cb = cb};
+    g->sub[g->nsub] =
+        (GpSub){.q0 = g->used, .passes = g->npass, .dispatches = (u32)g_dispatched, .xfers = g_rec_xfers, .cb = cb};
     gp_stamp(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->pool, g->used++);
     g->nsub++;
     g_cur_cb = cb;
@@ -628,9 +629,23 @@ static void gp_report(void) {
             (unsigned long long)sorted[i].draws, (unsigned long long)sorted[i].gva, sorted[i].w, sorted[i].h,
             sorted[i].fmt);
     memset(g_key, 0, sizeof g_key);
-    /* the dispatches by tag: compute programs by key (vulkan: compute KEY ready), the ASTC decode and BC7 encode, and
-       the renderer's own (0) */
+    /* the dispatches by tag: compute programs by key (vulkan: compute KEY ready), and the renderer's own pipelines by
+       their VK_PROF_* */
     if (g_disps) {
+        static const char* const own[VK_PROF_N] = {[VK_PROF_NONE] = "untagged",
+                                                   [VK_PROF_ASTC] = "the ASTC decode",
+                                                   [VK_PROF_BC7] = "the BC7 encode",
+                                                   [VK_PROF_MIRROR_FOLD] = "the GPU mirror's fold",
+                                                   [VK_PROF_MIRROR_HARVEST] = "the GPU mirror's harvest",
+                                                   [VK_PROF_WLOG_MERGE] = "the write log's merge",
+                                                   [VK_PROF_BL_MOVE] = "a block linear move",
+                                                   [VK_PROF_DEPTH_PACK] = "the depth pack",
+                                                   [VK_PROF_TEXCONV] = "a texture conversion",
+                                                   [VK_PROF_VIC] = "a VIC composition",
+                                                   [VK_PROF_XFB_INDIRECT] = "transform feedback's draw arguments",
+                                                   [VK_PROF_QUERY_PREDICATE] = "the queries' predicates",
+                                                   [VK_PROF_QUERY_COMPARE] = "a query compare",
+                                                   [VK_PROF_QUERY_COUNT] = "the queries' counts"};
         static GpDKey ds[GP_DKEYS];
         memcpy(ds, g_dkey, sizeof ds);
         qsort(ds, GP_DKEYS, sizeof *ds, dkey_cmp);
@@ -639,19 +654,17 @@ static void gp_report(void) {
         LOG("vulkan: GPU   dispatches and copies: %.2f ms a frame, %llu of them timed\n",
             (double)g_disp_ns / 1e6 / (double)g_frames, (unsigned long long)g_disps);
         for (int i = 0; i < 16 && ds[i].n; i++) {
-            char what[64];
+            char what[96];
             if (ds[i].kind != VK_OP_DISPATCH) /* a copy: by where it was recorded, from vk_gpuprof_base */
                 snprintf(what, sizeof what, "recorded at base%+lld", (long long)ds[i].key);
+            else if (ds[i].key < VK_PROF_N)
+                snprintf(what, sizeof what, "the renderer's own, %s", own[ds[i].key]);
             else
-                snprintf(what, sizeof what, "%s %016llx",
-                         ds[i].key == VK_PROF_ASTC ? "the ASTC decode"
-                         : ds[i].key == VK_PROF_BC7 ? "the BC7 encode"
-                         : ds[i].key               ? "compute"
-                                                   : "the renderer's own",
-                         (unsigned long long)ds[i].key);
+                snprintf(what, sizeof what, "compute %016llx", (unsigned long long)ds[i].key);
             LOG("vulkan: GPU     %.2f ms a frame (%.3f ms each, %.1f MB a frame): %llu %s, %s\n",
                 (double)ds[i].ns / 1e6 / (double)g_frames, (double)ds[i].ns / 1e6 / (double)ds[i].n,
-                (double)ds[i].bytes / 1048576.0 / (double)g_frames, (unsigned long long)ds[i].n, kinds[ds[i].kind], what);
+                (double)ds[i].bytes / 1048576.0 / (double)g_frames, (unsigned long long)ds[i].n, kinds[ds[i].kind],
+                what);
         }
         memset(g_dkey, 0, sizeof g_dkey);
         g_disp_ns = g_disps = 0;

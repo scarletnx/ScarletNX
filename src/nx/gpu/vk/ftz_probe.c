@@ -51,8 +51,6 @@ int vk_ftz_native(void) {
                                       .maxSets = 1,
                                       .poolSizeCount = 1,
                                       .pPoolSizes = &pool_size};
-    VkShaderModuleCreateInfo mi = {
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = ftz_probe_spv_size, .pCode = ftz_probe_spv};
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = 6 * PROBE_N * sizeof(u32),
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
@@ -64,7 +62,6 @@ int vk_ftz_native(void) {
     VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     VkDescriptorSetLayout dlayout = VK_NULL_HANDLE;
     VkPipelineLayout playout = VK_NULL_HANDLE;
-    VkShaderModule module = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkDescriptorPool dpool = VK_NULL_HANDLE;
     VkCommandPool cpool = VK_NULL_HANDLE;
@@ -80,14 +77,9 @@ int vk_ftz_native(void) {
     VkPipelineLayoutCreateInfo pli = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dlayout};
     if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &pli, NULL, &playout))) goto out;
-    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &module))) goto out;
-    VkComputePipelineCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                       .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                 .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                 .module = module,
-                                                 .pName = "main"},
-                                       .layout = playout};
-    if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &pci, NULL, &pipeline))) goto out;
+    if (!VK_OK(snx_vk_compute_pipeline(g_vk.dev, vk_pipeline_cache(), playout, ftz_probe_spv, ftz_probe_spv_size,
+                                       &pipeline)))
+        goto out;
     if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &buffer, &memory, &allocation))) goto out;
     words = allocation.pMappedData;
     for (int i = 0; i < PROBE_N; i++)
@@ -159,7 +151,6 @@ out:
     if (dpool) vkDestroyDescriptorPool(g_vk.dev, dpool, NULL);
     if (buffer) vmaDestroyBuffer(g_vk.vma, buffer, memory);
     if (pipeline) vkDestroyPipeline(g_vk.dev, pipeline, NULL);
-    if (module) vkDestroyShaderModule(g_vk.dev, module, NULL);
     if (playout) vkDestroyPipelineLayout(g_vk.dev, playout, NULL);
     if (dlayout) vkDestroyDescriptorSetLayout(g_vk.dev, dlayout, NULL);
     return native;

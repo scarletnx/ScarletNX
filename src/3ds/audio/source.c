@@ -124,7 +124,7 @@ static void step_over_samples(DspSourceState* s, float rate, DspFrame output, si
             }
             /* a saturated difference (verified by black-box fuzzing); the product is unsigned, as Azahar computes it,
                which rounds a negative step down */
-            int64_t delta = clamp16((int64_t)x1[c] - x0[c]);
+            int64_t delta = snx_clamp_s16((int64_t)x1[c] - x0[c]);
             output[*outputi][c] = (int16_t)(x0[c] + fraction * delta / SCALE);
         }
         ++*outputi;
@@ -165,7 +165,7 @@ static void filters_process(DspFilters* f, DspFrame frame) {
         for (unsigned n = 0; n < SNX_CTR_DSP_SAMPLES; ++n) {
             /* H(z) = b0 / (1 - a1 z^-1), 15 fractional bits */
             for (unsigned c = 0; c < 2; ++c)
-                frame[n][c] = clamp16((f->simple_b0 * frame[n][c] + f->simple_a1 * f->simple_y1[c]) >> 15);
+                frame[n][c] = snx_clamp_s16((f->simple_b0 * frame[n][c] + f->simple_a1 * f->simple_y1[c]) >> 15);
             memcpy(f->simple_y1, frame[n], sizeof f->simple_y1);
         }
     if (f->biquad_enabled)
@@ -173,7 +173,7 @@ static void filters_process(DspFilters* f, DspFrame frame) {
             int16_t y0[2];
             /* H(z) = (b0 + b1 z^-1 + b2 z^-2) / (1 - a1 z^-1 - a2 z^-2), 14 fractional bits */
             for (unsigned c = 0; c < 2; ++c)
-                y0[c] = clamp16(
+                y0[c] = snx_clamp_s16(
                     (f->b0 * frame[n][c] + f->b1 * f->x1[c] + f->b2 * f->x2[c] + f->a1 * f->y1[c] + f->a2 * f->y2[c]) >>
                     14);
             memcpy(f->x2, f->x1, sizeof f->x2);

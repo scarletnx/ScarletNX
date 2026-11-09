@@ -288,7 +288,7 @@ static int indirect_cases(GpuChannel* channel, u64 target, u64 indices, u64 args
     return 0;
 }
 
-/* Vertex colors a copy engine wrote, which the GPU holds (docs/GPU_OWNERSHIP.md), read by a draw after another in
+/* Vertex colors a copy engine wrote, which the GPU holds (docs/layers/gpu/ownership.md), read by a draw after another in
    the same pass: the red quad from the colors the CPU wrote, then the green one from the copy's. The second draw reads
    them where their owner holds them, inside the pass the first one opened, and nothing lands. Copied into staging,
    they ended the pass and a second one began over the same target */

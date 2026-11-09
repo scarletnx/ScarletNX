@@ -4,7 +4,7 @@
    SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
    SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
    SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project */
-/* The block linear layout of Maxwell surfaces (docs/BLOCKLINEAR.md), and block linear surfaces copied between two
+/* The block linear layout of Maxwell surfaces (docs/layers/gpu/blocklinear.md), and block linear surfaces copied between two
    buffers of the same layout (blocklinear.c). The GPU swizzles a render target written back (blocklinear.comp), and
    bl_land lands its bytes in guest memory. gpu.c's bl_offset gives a byte's offset in the layout with the same
    geometry.

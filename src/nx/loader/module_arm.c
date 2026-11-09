@@ -14,6 +14,8 @@
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "snx_settings.h"
+#include "common/utilities/endian.h"
+#include "common/platform/file.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -112,11 +114,6 @@ static void queue_pointer(Discovery* d, SnxU64 pointer) {
     queue(d, (SnxU32)pointer & ~1u, (int)(pointer & 1));
 }
 
-static SnxU32 sign_extend(SnxU32 value, unsigned bits) {
-    SnxU32 sign = 1u << (bits - 1);
-    return (value ^ sign) - sign;
-}
-
 /* whether control never reaches the instruction after the A32 instruction w when it runs: a branch without link, a
    write to the PC, BKPT. A call returns there, as does an instruction the block compiler leaves to the backend
    (SnxArmRt.undefined), which may run it. Anything else ends a block only at the code's end */
@@ -141,8 +138,8 @@ static int a32_ends(SnxU32 w) {
 static void a32_next(Discovery* d, SnxU32 pc, SnxU32 w) {
     SnxA32Kind kind = snx_a32_decode(w);
     unsigned cond = w >> 28;
-    if (kind == SNX_A32_BRANCH) queue(d, pc + 8 + (sign_extend(w & 0xFFFFFF, 24) << 2), 0);
-    if (kind == SNX_A32_BLX_IMM) queue(d, pc + 8 + (sign_extend(w & 0xFFFFFF, 24) << 2) + ((w >> 23) & 2), 1);
+    if (kind == SNX_A32_BRANCH) queue(d, pc + 8 + ((SnxU32)snx_sext32(w & 0xFFFFFF, 24) << 2), 0);
+    if (kind == SNX_A32_BLX_IMM) queue(d, pc + 8 + ((SnxU32)snx_sext32(w & 0xFFFFFF, 24) << 2) + ((w >> 23) & 2), 1);
     if (!(a32_ends(w) && (cond == 14 || cond == 15))) queue(d, pc + 4, 0);
 }
 
@@ -182,11 +179,11 @@ static void thumb_next(Discovery* d, SnxU32 pc, const unsigned char* code, size_
                 unsigned i1 = !(((hw2 >> 13) & 1) ^ s), i2 = !(((hw2 >> 11) & 1) ^ s);
                 switch (t.op) {
                     case BR_B:
-                        queue(d, base + (sign_extend(t.imm, 11) << 1), 1);
+                        queue(d, base + ((SnxU32)snx_sext32(t.imm, 11) << 1), 1);
                         ends = 1;
                         break;
                     case BR_BCOND:
-                        queue(d, base + (sign_extend(t.imm, 8) << 1), 1);
+                        queue(d, base + ((SnxU32)snx_sext32(t.imm, 8) << 1), 1);
                         always = 0;
                         break;
                     case BR_CBZ:
@@ -198,7 +195,7 @@ static void thumb_next(Discovery* d, SnxU32 pc, const unsigned char* code, size_
                     case BR_BW:
                         queue(d,
                               base +
-                                  (sign_extend(
+                                  ((SnxU32)snx_sext32(
                                        (s << 23) | (i1 << 22) | (i2 << 21) | ((hw1 & 0x3FF) << 11) | (hw2 & 0x7FF), 24)
                                    << 1),
                               1);
@@ -206,18 +203,21 @@ static void thumb_next(Discovery* d, SnxU32 pc, const unsigned char* code, size_
                         break;
                     case BR_BLX_IMM:
                         queue(d,
-                              (base & ~3u) + (sign_extend((s << 23) | (i1 << 22) | (i2 << 21) | ((hw1 & 0x3FF) << 11) |
-                                                              (((hw2 >> 1) & 0x3FF) << 1),
-                                                          24)
-                                              << 1),
+                              (base & ~3u) +
+                                  ((SnxU32)snx_sext32((s << 23) | (i1 << 22) | (i2 << 21) | ((hw1 & 0x3FF) << 11) |
+                                                          (((hw2 >> 1) & 0x3FF) << 1),
+                                                      24)
+                                   << 1),
                               0);
                         break;
                     case BR_BCOND_W:
                         queue(d,
-                              base + (sign_extend((s << 19) | (((hw2 >> 11) & 1) << 18) | (((hw2 >> 13) & 1) << 17) |
-                                                      ((hw1 & 0x3F) << 11) | (hw2 & 0x7FF),
-                                                  20)
-                                      << 1),
+                              base +
+                                  ((SnxU32)snx_sext32((s << 19) | (((hw2 >> 11) & 1) << 18) |
+                                                          (((hw2 >> 13) & 1) << 17) | ((hw1 & 0x3F) << 11) |
+                                                          (hw2 & 0x7FF),
+                                                      20)
+                                   << 1),
                               1);
                         always = 0;
                         break;
@@ -238,10 +238,6 @@ static void thumb_next(Discovery* d, SnxU32 pc, const unsigned char* code, size_
     }
 }
 
-static SnxU32 read32(const unsigned char* p) {
-    return (SnxU32)p[0] | (SnxU32)p[1] << 8 | (SnxU32)p[2] << 16 | (SnxU32)p[3] << 24;
-}
-
 /* the halfwords or words a block compiler reads: the guest's little-endian code as host integers */
 static void* units_of(const unsigned char* code, size_t count, int thumb) {
     size_t i;
@@ -251,7 +247,7 @@ static void* units_of(const unsigned char* code, size_t count, int thumb) {
         return h;
     } else {
         uint32_t* w = (uint32_t*)snx_alloc(count * sizeof(*w));
-        for (i = 0; i < count; ++i) w[i] = read32(code + i * 4);
+        for (i = 0; i < count; ++i) w[i] = snx_ld_le32(code + i * 4);
         return w;
     }
 }
@@ -317,7 +313,7 @@ static int discover(Discovery* d, const SnxCodegenOptions* options, char* error,
         if (key & 1)
             thumb_next(d, address, code, units, count);
         else
-            a32_next(d, address + (SnxU32)(units - 1) * 4, read32(code + (units - 1) * 4));
+            a32_next(d, address + (SnxU32)(units - 1) * 4, snx_ld_le32(code + (units - 1) * 4));
     }
     snx_ir_free(scratch);
     return 0;
@@ -335,7 +331,7 @@ static size_t block_next(const SnxProgram* p, SnxU32 key, size_t units, size_t c
     if (key & 1)
         thumb_next(&s, address, code, units, count);
     else
-        a32_next(&s, address + (SnxU32)(units - 1) * 4, read32(code + (units - 1) * 4));
+        a32_next(&s, address + (SnxU32)(units - 1) * 4, snx_ld_le32(code + (units - 1) * 4));
     return s.work_count;
 }
 
@@ -798,7 +794,7 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
         goto done;
     }
     tmp = snx_format("%s.tmp", build->output);
-    if (snx_write_file(tmp, linked.data, linked.size) || snx_replace(tmp, build->output)) {
+    if (snx_write_file(tmp, linked.data, linked.size) || plat_replace_file(tmp, build->output)) {
         snx_error("linking failed: cannot write %s", build->output);
         if (snx_is_file(tmp)) snx_remove_tree(tmp);
         goto done;

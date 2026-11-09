@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# LLVM's libraries for macOS or iOS on arm64, which the recompiler links (docs/APPLE.md). Only the libraries it links,
+# LLVM's libraries for macOS or iOS on arm64, which the recompiler links (docs/hosts/apple.md). Only the libraries it links,
 # their headers and CMake package, and one code generator: AArch64's, the Mac's or the phone's own. Run on a Mac with
 # Xcode.
 #

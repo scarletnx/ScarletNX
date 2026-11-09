@@ -1,31 +1,16 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
-   Ported in part from QEMU (include/qemu/bitops.h, target/arm/tcg/translate.h and translate.c), LGPL-2.1-or-later:
+   Ported in part from QEMU (target/arm/tcg/translate.h and translate.c), LGPL-2.1-or-later:
    Copyright (c) 2003 Fabrice Bellard
    Copyright (c) 2005-2007 CodeSourcery
    Copyright (c) 2007 OpenedHand, Ltd. */
 /* What the decoders tools/decodetree generates from the .decode files of decode/ need from the file that includes them: QEMU's
-   bit operations and the !function= helpers of the .decode files. That file typedefs DisasContext first */
+   bit operations (common/utilities/decodetree.h) and the !function= helpers of the .decode files. That file typedefs
+   DisasContext first */
 #ifndef SNX_ARM_DECODETREE_H
 #define SNX_ARM_DECODETREE_H
 
-#include <stdbool.h>
-#include <stdint.h>
-
-static inline uint32_t extract32(uint32_t value, int start, int length) {
-    return (value >> start) & (length == 32 ? 0xFFFFFFFFu : (1u << length) - 1);
-}
-
-/* the field, sign-extended from its top bit */
-static inline int32_t sextract32(uint32_t value, int start, int length) {
-    uint32_t sign = 1u << (length - 1);
-    return (int32_t)((extract32(value, start, length) ^ sign) - sign);
-}
-
-static inline uint32_t deposit32(uint32_t value, int start, int length, uint32_t field) {
-    uint32_t mask = (length == 32 ? 0xFFFFFFFFu : (1u << length) - 1) << start;
-    return (value & ~mask) | ((field << start) & mask);
-}
+#include "common/utilities/decodetree.h"
 
 /* the arithmetic is unsigned, converted back: the fields are small, and a negated one is a two's complement int */
 static inline int times_2(DisasContext* s, int x) { return (void)s, (int)((unsigned)x * 2); }

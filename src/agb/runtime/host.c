@@ -3,7 +3,7 @@
 #include "agb/runtime/host.h"
 #include "agb/apu/apu.h"
 #include "agb/ppu/ppu.h"
-#include "common/utilities/pad_map.h"
+#include "common/utilities/pad_sdl.h"
 #include "common/utilities/window_icon.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -64,25 +64,6 @@ uint16_t agb_host_button(int bit) {
     }
 }
 
-/* SDL's gamepad control, as pad_map.h names it by where it sits */
-static int control_of(SDL_GamepadButton button) {
-    switch (button) {
-        case SDL_GAMEPAD_BUTTON_SOUTH: return SNX_PAD_SOUTH;
-        case SDL_GAMEPAD_BUTTON_EAST: return SNX_PAD_EAST;
-        case SDL_GAMEPAD_BUTTON_WEST: return SNX_PAD_WEST;
-        case SDL_GAMEPAD_BUTTON_NORTH: return SNX_PAD_NORTH;
-        case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return SNX_PAD_LB;
-        case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return SNX_PAD_RB;
-        case SDL_GAMEPAD_BUTTON_BACK: return SNX_PAD_BACK;
-        case SDL_GAMEPAD_BUTTON_START: return SNX_PAD_START;
-        case SDL_GAMEPAD_BUTTON_DPAD_UP: return SNX_PAD_UP;
-        case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return SNX_PAD_DOWN;
-        case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return SNX_PAD_LEFT;
-        case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return SNX_PAD_RIGHT;
-        default: return SNX_PAD_NONE;
-    }
-}
-
 /* every open gamepad's buttons, triggers and left stick, through the console's map */
 static uint16_t gamepads(const AgbHost* host) {
     int count = 0;
@@ -91,16 +72,8 @@ static uint16_t gamepads(const AgbHost* host) {
     for (int i = 0; ids && i < count; ++i) {
         SDL_Gamepad* pad = SDL_GetGamepadFromID(ids[i]);
         if (!pad) continue;
-        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
-            int control = control_of((SDL_GamepadButton)b);
-            if (control != SNX_PAD_NONE && host->pad.bit[control] >= 0 &&
-                SDL_GetGamepadButton(pad, (SDL_GamepadButton)b))
-                keys |= agb_host_button(host->pad.bit[control]);
-        }
-        if (host->pad.bit[SNX_PAD_LT] >= 0 && SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > STICK_DEAD)
-            keys |= agb_host_button(host->pad.bit[SNX_PAD_LT]);
-        if (host->pad.bit[SNX_PAD_RT] >= 0 && SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > STICK_DEAD)
-            keys |= agb_host_button(host->pad.bit[SNX_PAD_RT]);
+        for (int c = 0; c < SNX_PAD_CONTROLS; ++c)
+            if (host->pad.bit[c] >= 0 && snx_pad_held(pad, c)) keys |= agb_host_button(host->pad.bit[c]);
         {
             int x = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX),
                 y = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY);

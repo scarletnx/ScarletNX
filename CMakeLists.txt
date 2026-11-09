@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# Builds the ScarletNX runtime for Linux or FreeBSD, for NetBSD (cross-built, docs/NETBSD.md), for Windows with
+# Builds the ScarletNX runtime for Linux or FreeBSD, for NetBSD (cross-built, docs/hosts/netbsd.md), for Windows with
 # llvm-mingw (natively, or cross-built), or for
-# macOS and iOS with Xcode's Clang (the macos and ios presets, docs/APPLE.md). The
+# macOS and iOS with Xcode's Clang (the macos and ios presets, docs/hosts/apple.md). The
 # game module (<Game>_code.so or .dll) comes from `scarletnx -r`. The
 # third-party libraries are fetched and built with the runtime, see cmake/dependencies.cmake.
 #
@@ -39,7 +39,7 @@ endif()
 # the CPU baseline (POWER4 on PowerPC64) and a Linux cross build's target and sysroot, for FFmpeg, OpenSSL and the
 # recompiler's runtime library
 include(cmake/cross.cmake)
-# the iOS and macOS apps' frontend (src/gui/apple.m and dist/apple's Swift, docs/APPLE.md), which the runtime links
+# the iOS and macOS apps' frontend (src/gui/apple.m and dist/apple's Swift, docs/hosts/apple.md), which the runtime links
 # with the menu: the languages are enabled where every target that links them is below
 if(APPLE AND (NOT DEFINED SNX_BUILD_GUI OR SNX_BUILD_GUI))
     enable_language(OBJC)
@@ -93,7 +93,7 @@ endif()
 option(SNX_DEPLOY "Copy the runtime next to every recompiled game in SNX_RECOMPILED_DIR after building" ON)
 set(SNX_RECOMPILED_DIR "" CACHE PATH
     "Folder holding the recompiled games (empty: recompiled/ of the drivers' data folder)")
-# SNX_GAMES_DIR, its name before (docs/DEPRECATIONS.md): taken while SNX_RECOMPILED_DIR is empty, and said
+# SNX_GAMES_DIR, its name before (docs/user/deprecations.md): taken while SNX_RECOMPILED_DIR is empty, and said
 if(DEFINED SNX_GAMES_DIR)
     if(NOT SNX_GAMES_DIR STREQUAL "" AND SNX_RECOMPILED_DIR STREQUAL "")
         message(STATUS "SNX_GAMES_DIR=${SNX_GAMES_DIR} is now SNX_RECOMPILED_DIR=${SNX_GAMES_DIR}")
@@ -103,7 +103,7 @@ if(DEFINED SNX_GAMES_DIR)
     endif()
     unset(SNX_GAMES_DIR CACHE)
 endif()
-# the checkout's games/ was the default while the drivers of a build tree worked in it (docs/DEPRECATIONS.md)
+# the checkout's games/ was the default while the drivers of a build tree worked in it (docs/user/deprecations.md)
 if(SNX_RECOMPILED_DIR STREQUAL "${PROJECT_SOURCE_DIR}/games")
     message(STATUS "SNX_RECOMPILED_DIR=${SNX_RECOMPILED_DIR} was the checkout's games/, an older version's default: "
                    "the data folder's recompiled/ from now on")
@@ -180,7 +180,7 @@ add_subdirectory(src/common)
 if(SNX_BUILD_NX)
     add_subdirectory(src/nx/runtime/driver host-tools)
 endif()
-# The recompiler library (docs/LIBRARY.md) is configured by the NX driver's tree or the GNU ABI runtime's. Without
+# The recompiler library (docs/dev/library.md) is configured by the NX driver's tree or the GNU ABI runtime's. Without
 # either, as a project that only wants the library builds ScarletNX, it is configured here, with LLVM alone
 if(NOT SNX_BUILD_NX AND NOT SNX_BUILD_GNUABI)
     include(cmake/llvm.cmake)
@@ -196,6 +196,7 @@ if(SNX_BUILD_3DS)
     add_subdirectory(src/3ds)
 endif()
 if(SNX_BUILD_VITA AND NOT SNX_TOOLS_ONLY)
+    include(cmake/pad_sdl.cmake) # the gamepads' controls, as the 3DS's
     add_subdirectory(src/vita)
 endif()
 # GLSL ES into SPIR-V (src/glslc), for the backends that run OpenGL ES programs: before the tests, which link it
@@ -222,8 +223,10 @@ if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
     add_subdirectory(src/android)
 endif()
 if(SNX_BUILD_AGB)
-    # the runner's window icon, made here as the 3DS's is: a target of src/agb compiles only src/agb
+    # the runner's window icon and the gamepads' controls, made here as the 3DS's are: a target of src/agb compiles
+    # only src/agb
     include(cmake/window_icon.cmake)
+    include(cmake/pad_sdl.cmake)
     add_subdirectory(src/agb)
 endif()
 if(SNX_BUILD_GUI)

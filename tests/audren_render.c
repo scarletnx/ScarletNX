@@ -320,7 +320,7 @@ static const i16* sink_frame_at(int f, int ch) {
     static unsigned next;
     i16* x = frames_read[next++ % 4];
     const u8* at = g_mem + SNX_ART_G_RING + ((size_t)(f % SNX_ART_RING_FRAMES) * 2 + (size_t)ch) * SNX_ART_FRAME * 2;
-    for (int i = 0; i < SNX_ART_FRAME; i++) x[i] = (i16)rd16(at + i * 2);
+    for (int i = 0; i < SNX_ART_FRAME; i++) x[i] = (i16)snx_ld_le16(at + i * 2);
     return x;
 }
 
@@ -839,11 +839,11 @@ static int first_diff(const i16* a, const i16* b, int n) {
 
 /* the aux ring's channel ch in its most recent full frame */
 static double captured(int ch, double hz) {
-    u32 woff = rd32(g_mem + SNX_ART_G_AUX_SEND + 0x40 + 4);
+    u32 woff = snx_ld_le32(g_mem + SNX_ART_G_AUX_SEND + 0x40 + 4);
     u32 frame_at = (woff + SNX_ART_AUX_COUNT - 2 * SNX_ART_FRAME) % SNX_ART_AUX_COUNT;
     const u8* ring = g_mem + SNX_ART_G_AUX_SEND + 0x80 + (size_t)(frame_at + ch * SNX_ART_FRAME) * 4;
     i32 x[SNX_ART_FRAME];
-    for (int i = 0; i < SNX_ART_FRAME; i++) x[i] = (i32)rd32(ring + i * 4);
+    for (int i = 0; i < SNX_ART_FRAME; i++) x[i] = (i32)snx_ld_le32(ring + i * 4);
     return level_i32(x, SNX_ART_FRAME, hz);
 }
 
@@ -921,16 +921,16 @@ static void update_output_counts(void) {
                 CHECK(rc == 0, "revision %u: update returned %d", revn, rc);
                 if (!rc) {
                     u32 at = 0x40 + pools * 0x10 + voices * 0x10;
-                    CHECK(rd32(output + 8) == pools * 0x10, "wrong pool output size");
-                    CHECK(rd32(output + 12) == voices * 0x10, "wrong voice output size");
-                    CHECK(rd32(output + 20) == effects * effect_stride, "wrong effect output size");
-                    CHECK(rd32(output + 28) == sinks * 0x20, "wrong sink output size");
-                    CHECK(rd32(output + 60) == reply, "wrong total output size");
-                    CHECK(rd32(output + 0x40 + (pools - 1) * 0x10) == 5u, "wrong last pool status");
+                    CHECK(snx_ld_le32(output + 8) == pools * 0x10, "wrong pool output size");
+                    CHECK(snx_ld_le32(output + 12) == voices * 0x10, "wrong voice output size");
+                    CHECK(snx_ld_le32(output + 20) == effects * effect_stride, "wrong effect output size");
+                    CHECK(snx_ld_le32(output + 28) == sinks * 0x20, "wrong sink output size");
+                    CHECK(snx_ld_le32(output + 60) == reply, "wrong total output size");
+                    CHECK(snx_ld_le32(output + 0x40 + (pools - 1) * 0x10) == 5u, "wrong last pool status");
                     CHECK(output[at + (effects - 1) * effect_stride] == 4u, "wrong last effect status");
                     at += effects * effect_stride;
-                    CHECK(rd32(output + at + 0x20) == 0x12345678u, "sink output was misplaced");
-                    if (revn >= 5) CHECK(rd64(output + reply - 0x10) == 42, "frame count was misplaced");
+                    CHECK(snx_ld_le32(output + at + 0x20) == 0x12345678u, "sink output was misplaced");
+                    if (revn >= 5) CHECK(snx_ld_le64(output + reply - 0x10) == 42, "frame count was misplaced");
                     for (i = 0; i < voices * 0x10; i++) /* no voice in use: nothing written there */
                         CHECK(output[0x40 + pools * 0x10 + i] == 0, "voice output byte %u not cleared", i);
                 }
@@ -1014,7 +1014,7 @@ static void update_voice_v2(void) {
     w32(vi, 0x70, 6);
     for (i = 0; i < 4; i++) w8(vi, 0x78 + i * 0x38 + 0x1A, 1);
     CHECK(audren_state_update(state, input, size, input + size, reply) == 0, "revision 15 update refused");
-    CHECK(rd32(input + size + 12) == voices * 0x10 && rd32(input + size + 60) == reply, "revision 15 reply sizes");
+    CHECK(snx_ld_le32(input + size + 12) == voices * 0x10 && snx_ld_le32(input + size + 60) == reply, "revision 15 reply sizes");
     v = &state->voice[1];
     CHECK(v->in_use && v->format == 1 && v->rate == 32000 && v->channels == 2 && v->pitch == 1.5f && v->volume == 0.75f,
           "revision 15 voice: rate %u, %u channels", v->rate, v->channels);
@@ -1218,7 +1218,7 @@ int main(void) {
     CHECK(fabs(r16 - 0.25) < 0.005 && r1k < 0.005, "right channel: 1.6 kHz %.4f, 1 kHz %.4f", r16, r1k);
     u32 woff;
     update();
-    woff = rd32(out + 0x40 + SNX_ART_POOLS * 0x10 + SNX_ART_VOICES * 0x10 + SNX_ART_EFFECTS * 0x10 + 0x20);
+    woff = snx_ld_le32(out + 0x40 + SNX_ART_POOLS * 0x10 + SNX_ART_VOICES * 0x10 + SNX_ART_EFFECTS * 0x10 + 0x20);
     CHECK(woff != 0 && woff % (2 * SNX_ART_FRAME * 2) == 0, "write offset %u", woff);
 
     /* the limiter switched off keeps a tone's level; in mode 1 the tone comes out at threshold over the detector:
@@ -1251,8 +1251,8 @@ int main(void) {
     update();
     u64 played;
     u32 consumed;
-    played = rd64(out + 0x40 + SNX_ART_POOLS * 0x10);
-    consumed = rd32(out + 0x40 + SNX_ART_POOLS * 0x10 + 8);
+    played = snx_ld_le64(out + 0x40 + SNX_ART_POOLS * 0x10);
+    consumed = snx_ld_le32(out + 0x40 + SNX_ART_POOLS * 0x10 + 8);
     CHECK(played == 480 && consumed == 1, "played %llu, consumed %u", (unsigned long long)played, consumed);
     /* a stop consumes what was queued and starts the count over */
     tone(1, 1000, 0.25, 0, 0, 1.0f);
@@ -1260,8 +1260,8 @@ int main(void) {
     silence(1);
     frames(2);
     update();
-    played = rd64(out + 0x40 + SNX_ART_POOLS * 0x10 + 0x10);
-    consumed = rd32(out + 0x40 + SNX_ART_POOLS * 0x10 + 0x10 + 8);
+    played = snx_ld_le64(out + 0x40 + SNX_ART_POOLS * 0x10 + 0x10);
+    consumed = snx_ld_le32(out + 0x40 + SNX_ART_POOLS * 0x10 + 0x10 + 8);
     CHECK(played == 0 && consumed == 1, "after a stop: played %llu, consumed %u", (unsigned long long)played, consumed);
 
     /* the resampler tables made from their windowed sincs, against the console's: phase 0 of default quality's
@@ -1870,10 +1870,10 @@ int main(void) {
         for (k = 25 - 4800 / span; k < 25 && bad < 0; k++)
             for (c = 0; c < nch; c++)
                 for (i = 0; i < SNX_ART_FRAME; i++)
-                    if ((i32)rd32(ring + (k * span + c * SNX_ART_FRAME + i) % 4800 * 4) !=
+                    if ((i32)snx_ld_le32(ring + (k * span + c * SNX_ART_FRAME + i) % 4800 * 4) !=
                         (c ? x1 : x0)[k * SNX_ART_FRAME + i])
                         bad = (int)(k * span + c * SNX_ART_FRAME + i);
-        wo = rd32(dsp + 4), lost = rd32(dsp + 8), total = rd32(dsp + 0xC);
+        wo = snx_ld_le32(dsp + 4), lost = snx_ld_le32(dsp + 8), total = snx_ld_le32(dsp + 0xC);
         lost_frames = 25 - 4800 / span;
         CHECK(bad < 0, "capture of %u: ring sample %d", nch, bad);
         CHECK(wo == 25 * span % 4800 && total == 25 * span && lost == lost_frames * span,
@@ -1884,7 +1884,7 @@ int main(void) {
         }
         w8(eff(0), 2, 0);
         frames(1);
-        rd = rd32(dsp), wo = rd32(dsp + 4), total = rd32(dsp + 0xC), lost = rd32(dsp + 8);
+        rd = snx_ld_le32(dsp), wo = snx_ld_le32(dsp + 4), total = snx_ld_le32(dsp + 0xC), lost = snx_ld_le32(dsp + 8);
         CHECK(rd == 0 && wo == 0 && total == 0 && lost == lost_frames * span,
               "capture switched off: read %u, write %u, total %u, lost %u", rd, wo, total, lost);
     }
@@ -1904,16 +1904,18 @@ int main(void) {
             memcpy(g_mem + SNX_ART_G_AUX_SEND + 0xC, g_mem + SNX_ART_G_AUX_SEND + 0x40 + 0xC, 4);
             frames(1);
         }
-        lost = rd32(g_mem + SNX_ART_G_AUX_SEND + 0x40 + 8), total = rd32(g_mem + SNX_ART_G_AUX_SEND + 0x4C);
+        lost = snx_ld_le32(g_mem + SNX_ART_G_AUX_SEND + 0x40 + 8);
+        total = snx_ld_le32(g_mem + SNX_ART_G_AUX_SEND + 0x4C);
         CHECK(lost == 0 && total == 25 * SNX_ART_FRAME, "a capture read in time: lost %u, total %u", lost, total);
 
         /* near the wrap, Eden's WriteAuxBufferDsp holds both counts one short of the game's */
         edge = 0xFFFFFFF0u;
         zero = 0;
-        wr32(g_mem + SNX_ART_G_AUX_SEND + 0x40 + 8, edge), wr32(g_mem + SNX_ART_G_AUX_SEND + 0x4C, edge);
-        wr32(g_mem + SNX_ART_G_AUX_SEND + 8, zero), wr32(g_mem + SNX_ART_G_AUX_SEND + 0xC, zero);
+        snx_st_le32(g_mem + SNX_ART_G_AUX_SEND + 0x40 + 8, edge), snx_st_le32(g_mem + SNX_ART_G_AUX_SEND + 0x4C, edge);
+        snx_st_le32(g_mem + SNX_ART_G_AUX_SEND + 8, zero), snx_st_le32(g_mem + SNX_ART_G_AUX_SEND + 0xC, zero);
         frames(1);
-        lost = rd32(g_mem + SNX_ART_G_AUX_SEND + 0x40 + 8), total = rd32(g_mem + SNX_ART_G_AUX_SEND + 0x4C);
+        lost = snx_ld_le32(g_mem + SNX_ART_G_AUX_SEND + 0x40 + 8);
+        total = snx_ld_le32(g_mem + SNX_ART_G_AUX_SEND + 0x4C);
         CHECK(lost == 0xFFFFFFFFu && total == 0xFFFFFFFFu, "capture counts at the wrap: lost %08x, total %08x", lost,
               total);
     }

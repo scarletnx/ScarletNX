@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The VIC composition as a compute shader (gpu/video/vic.comp), and its picture kept on the GPU (docs/GPU_OWNERSHIP.md).
+/* The VIC composition as a compute shader (gpu/video/vic.comp), and its picture kept on the GPU (docs/layers/gpu/ownership.md).
    gpu/video/vic.c hands over the job's planes and its slots' parameters. A job's buffer is device-local and its own:
    the parameters (gpu/video/vic.c's vic_gpu_params) as a uniform buffer at its start, the slots' input planes, then
    the output planes, each the rows the job reads or writes byte for byte as they lie in guest memory (the shader's
@@ -44,25 +44,16 @@ static void vic_init(void) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &g_vic_ds};
     if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_vic_layout)))
         fatal("vulkan: cannot create the VIC pipeline layout");
-    VkShaderModuleCreateInfo mi = {
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = (size_t)vic_spv_size, .pCode = vic_spv};
-    VkShaderModuleCreateInfo mi_unaligned = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                             .codeSize = (size_t)vic_unaligned_spv_size,
-                                             .pCode = vic_unaligned_spv};
     /* two builds of the shader: the aligned one is the happy path, the unaligned one handles planes whose rows
        are not word aligned (gpu/video/vic.comp) */
     VkPipeline* pipes[2] = {&g_vic_pipe, &g_vic_pipe_unaligned};
-    const VkShaderModuleCreateInfo* mis[2] = {&mi, &mi_unaligned};
+    const u32* words[2] = {vic_spv, vic_unaligned_spv};
+    const size_t sizes[2] = {(size_t)vic_spv_size, (size_t)vic_unaligned_spv_size};
     for (int i = 0; i < 2; i++) {
         VkShaderModule module;
-        if (!VK_OK(vkCreateShaderModule(g_vk.dev, mis[i], NULL, &module))) fatal("vulkan: cannot load the VIC shader");
-        VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                          .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                    .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                    .module = module,
-                                                    .pName = "main"},
-                                          .layout = g_vic_layout};
-        int ok = VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, pipes[i]));
+        if (!VK_OK(snx_vk_shader_module(g_vk.dev, words[i], sizes[i], &module)))
+            fatal("vulkan: cannot load the VIC shader");
+        int ok = VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), g_vic_layout, module, NULL, pipes[i]));
         vkDestroyShaderModule(g_vk.dev, module, NULL);
         if (!ok) fatal("vulkan: cannot create the VIC compute pipeline");
     }
@@ -282,6 +273,7 @@ static int compose(const VicJob* j, u32 r0, u32 r1, const VicBand* v) {
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, vic_gpu_aligned(j) ? g_vic_pipe : g_vic_pipe_unaligned);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vic_layout, 0, 1, &set, 0, NULL);
     /* a workgroup composes a tile of output pixels, over the target rectangle only: nothing else is written */
+    vk_gpuprof_tag(VK_PROF_VIC);
     rec_CmdDispatch(cb, (p.job.tx1 - p.job.gx0 + VIC_TILE_W - 1) / VIC_TILE_W,
                     (p.job.ty0 + p.job.th - p.job.gy0 + VIC_TILE_H - 1) / VIC_TILE_H, 1);
     /* what reads the picture next (a copy into a texture or the display, a landing) sees the shader's writes */

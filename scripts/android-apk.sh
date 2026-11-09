@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The Android app (docs/ANDROID.md): each ABI's native build, installed into OUT/stage, then the APK from dist/android.
+# The Android app (docs/hosts/android-app.md): each ABI's native build, installed into OUT/stage, then the APK from dist/android.
 #
 #   scripts/android-apk.sh OUT LLVM ABI... [-- cmake args]
 #

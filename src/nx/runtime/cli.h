@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_CLI_H
 #define SNX_CLI_H
+#include "common/utilities/cli.h"
 #include "common/utilities/common.h"
 #include <string.h>
 
@@ -23,28 +24,30 @@ enum {
     SNX_TRACY_CLIENT = 1024
 };
 /* Shared by the driver and standalone game runtime (startup.c), which refuses SNX_EXTRACT and SNX_RECOMP: only the
-   driver extracts and recompiles. Windows accepts individual short options, but deliberately not POSIX-style
-   clusters. */
+   driver extracts and recompiles. The long names and the single letters are the common options' (common/utilities/
+   cli.h), -1 for one malformed (--headless=1, --fullscreen=2). Windows accepts individual short options, but
+   deliberately not POSIX-style clusters. */
 static int snx_cli_flag(const char* arg, unsigned* flags) {
     unsigned bits = 0;
     const char* p;
-    if (!strcmp(arg, "--extract"))
+    char* one[1] = {(char*)arg};
+    char error[160];
+    int at = 0;
+    SnxCliArg given;
+    int common = snx_cli_match(1, one, &at,
+                               SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_CLI_RECOMPILE) |
+                                   SNX_CLI_BIT(SNX_CLI_HEADLESS) | SNX_CLI_BIT(SNX_CLI_FULLSCREEN),
+                               "scarletnx", &given, error, sizeof error);
+    if (common == SNX_CLI_ERROR)
+        return -1;
+    else if (common == SNX_CLI_EXTRACT)
         bits = SNX_EXTRACT;
-    else if (!strcmp(arg, "--recompile"))
+    else if (common == SNX_CLI_RECOMPILE)
         bits = SNX_RECOMP;
-    else if (!strcmp(arg, "--recomp")) {
-        snx_option_renamed("--recomp", "--recompile");
-        bits = SNX_RECOMP;
-    } else if (!strcmp(arg, "--headless"))
+    else if (common == SNX_CLI_HEADLESS)
         bits = SNX_HEADLESS;
-    else if (!strncmp(arg, "--headless=", 11))
-        return -1;
-    else if (!strcmp(arg, "--fullscreen") || !strcmp(arg, "--fullscreen=1"))
-        bits = SNX_FULLSCREEN;
-    else if (!strcmp(arg, "--fullscreen=0"))
-        bits = SNX_WINDOWED;
-    else if (!strncmp(arg, "--fullscreen=", 13))
-        return -1;
+    else if (common == SNX_CLI_FULLSCREEN)
+        bits = given.value[0] == '1' ? SNX_FULLSCREEN : SNX_WINDOWED;
     else if (!strcmp(arg, "--tracy-capture"))
         bits = SNX_TRACY_CAPTURE;
     else if (!strcmp(arg, "--tracy"))

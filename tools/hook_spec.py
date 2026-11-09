@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""The prototypes a hook spec declares (tools/hookgen's grammar, docs/HOOKS.md), for the tools that read the functions'
+"""The prototypes a hook spec declares (tools/hookgen's grammar, docs/platforms/nx/hooks.md), for the tools that read the functions'
 types from it: gpu/nvn/nvn.hook is the one prototype of each NVN function the runtime implements, and hookgen makes
 its PFNNVN...PROC types of the same lines.
 

@@ -14,6 +14,7 @@
 #include "common/utilities/pad_screen.h"
 #include "common/utilities/users.h"
 #include "common/utilities/common.h"
+#include "common/utilities/bits.h"
 #include <SDL3/SDL_keycode.h>
 #include <math.h>
 #include <stdio.h>
@@ -98,6 +99,7 @@ static const struct {
             {GUI_ICON_MONITOR, HOTKEY_FULLSCREEN, NULL, "fullscreen"}, /* with its second key */
             {GUI_ICON_ACTIVITY, HOTKEY_STATS, NULL, "stats off/on"},
             {GUI_ICON_IMAGE, HOTKEY_CAPTURE, NULL, "capture a frame"}, /* while RenderDoc is in the process */
+            {GUI_ICON_POINTER, HOTKEY_MOUSE, NULL, "let the mouse go, hold it"},
             {GUI_ICON_LOG_OUT, HOTKEY_QUIT, NULL, "quit the game"},
             {GUI_ICON_GAMEPAD, -1, "X, Space", "A"},
             {GUI_ICON_GAMEPAD, -1, "Z, C, V", "B, X, Y"},
@@ -110,15 +112,16 @@ static const struct {
             {GUI_ICON_JOYSTICK, -1, "I, J, K, L", "right stick"}};
 enum { KEYS_COUNT = sizeof KEYS / sizeof *KEYS };
 /* RenderDoc in the process, which shows the capture key's row (overlay_keys_extra), and the debugger's name */
-static int keys_capture;
+static int keys_capture, keys_mouse; /* keys_mouse: a game holds the mouse (overlay_keys_mouse) */
 static char keys_debugger[32];
 /* KEYS' row i's keys into out (n bytes): the game's buttons', or the runtime key's as set with what goes with it,
    fullscreen's two together. 0 for a row that doesn't show: a runtime key with none, the capture key's without
-   RenderDoc */
+   RenderDoc, the mouse key's while no game holds the mouse */
 static int keys_text(int i, char* out, size_t n) {
     const char *key = KEYS[i].action < 0 ? "" : hotkey_text(KEYS[i].action),
                *also = KEYS[i].action == HOTKEY_FULLSCREEN ? hotkey_text(HOTKEY_FULLSCREEN_2) : KEYS[i].key;
     if (KEYS[i].action == HOTKEY_CAPTURE && !keys_capture) return 0;
+    if (KEYS[i].action == HOTKEY_MOUSE && !keys_mouse) return 0;
     if (!also) also = "";
     snprintf(out, n, "%s%s%s", key, *key && *also ? ", " : "", also);
     return *out != 0;
@@ -138,6 +141,7 @@ static int keys_at(int r) {
         if (keys_text(i, text, sizeof text) && !r--) return i;
     return -1;
 }
+void overlay_keys_mouse(int on) { keys_mouse = on != 0; }
 void overlay_keys_extra(int capture, const char* debugger) {
     keys_capture = capture != 0;
     snprintf(keys_debugger, sizeof keys_debugger, "%s", debugger ? debugger : "");
@@ -208,7 +212,6 @@ static int all_shown(void) {
         if (!g_settings.control_shown[c]) return 0;
     return 1;
 }
-static int clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 /* the setting an item is, NULL for an action */
 static const IniOpt* setting(int i) {
     if (page == PAGE_MAIN) return main_item(i) == M_STATS ? ini_find(g_display_ini, "stats") : NULL;
@@ -932,7 +935,7 @@ int overlay_select(void) { return page == PAGE_MAP ? map_key(SNX_PAD_KEY_SELECT)
 /* F1's page rows on, back for a negative rows: its rows go by, none in focus, from the first to the last showing */
 static void keys_scroll(int rows) {
     int n = keys_rows();
-    top = clamp(top + rows, 0, n > VISIBLE ? n - VISIBLE : 0);
+    top = snx_clamp_int(top + rows, 0, n > VISIBLE ? n - VISIBLE : 0);
 }
 void overlay_move(int rows) {
     int n = items();
@@ -954,7 +957,7 @@ void overlay_scroll(int rows) {
         overlay_move(rows);
         return;
     }
-    focus = clamp(focus + rows, 0, items() - 1);
+    focus = snx_clamp_int(focus + rows, 0, items() - 1);
     keep_in_view();
 }
 int overlay_side(int step) {

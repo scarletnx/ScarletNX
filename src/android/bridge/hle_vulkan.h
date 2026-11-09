@@ -8,7 +8,7 @@
 /* libvulkan as a pass-through to the host's Vulkan (hle_vulkan.c) */
 
 /* The renderer's windows over the guest's frames, as Android's compositor puts an app's windows over its SurfaceView
-   (docs/android/HWUI.md, "Over an app's own Vulkan"): a ring of images on the renderer's device, which the guest's
+   (docs/platforms/android-apps/hwui.md, "Over an app's own Vulkan"): a ring of images on the renderer's device, which the guest's
    device imports through external memory and blends over each present */
 enum { HLE_LAYER_IMAGES = 3 };
 /* the memory handle type of the layer images (a VkExternalMemoryHandleTypeFlagBits) and its device extension: an

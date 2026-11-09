@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The host CPUs of plat_posix.c on Linux: plat_cpus lists the process's own and plat_cpu_count counts them,
-   plat_thread_cpus keeps the calling thread on the ones given, and a thread plat_thread starts runs on all of them
-   again, not only on the share of the game thread that started it (thread.c core_pin) */
+/* The host CPUs on Linux (common/platform/thread_spawn.c, with plat_posix.c's hooks): plat_cpus lists the process's
+   own and plat_cpu_count counts them, plat_thread_cpus keeps the calling thread on the ones given, and a thread
+   plat_thread starts runs on all of them again, not only on the share of the game thread that started it (thread.c
+   core_pin) */
 #include "nx/runtime/platform/plat_posix.c"
 #include <stdarg.h>
 
@@ -11,11 +12,6 @@ void log_crash_mode(void) {}
 void nce_crash_context(const void* context, const void* fault) {
     (void)context;
     (void)fault;
-}
-void pm_wait_note(const void* m, const void* at, int cond) {
-    (void)m;
-    (void)at;
-    (void)cond;
 }
 void crash_report(void* host_pc, void* fault, int sig) {
     (void)host_pc;

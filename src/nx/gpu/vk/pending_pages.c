@@ -4,7 +4,7 @@
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
-#include "common/filesystem/host.h"
+#include "common/platform/thread.h" /* PMutex */
 
 /* Changes take g_pend_lk as well as the vk_lock their callers hold: a thread without vk_lock (a change of guest memory
    that skips the renderer, vk_mem_pending) reads the tables with g_pend_lk held. Reentrant on its thread */
@@ -58,9 +58,26 @@ static void leaf_set(PendLeaf** leaf, u64 p, u32 v) {
         l->pages = (u32)((i64)l->pages + (v ? 1 : -1));
     }
 }
-/* pages [first, last], below TABLE_PAGES, gain delta each */
+/* pages [first, last], below TABLE_PAGES, gain delta each: a leaf at a time, its counts and their bits in one pass
+   (leaf_set's, a page at a time, looked its leaf up twice a page: a tenth of the GPU thread in one game) */
 static void leaves_add(PendLeaf** leaf, u64 first, u64 last, int delta) {
-    for (u64 p = first; p <= last; p++) leaf_set(leaf, p, (u32)((i64)leaf_count(leaf, p) + delta));
+    if (!delta) return;
+    for (u64 p = first; p <= last;) {
+        const u64 li = p / LEAF_PAGES, end = li * LEAF_PAGES + LEAF_PAGES - 1, stop = last < end ? last : end;
+        PendLeaf* l = leaf[li];
+        if (!l && !(l = leaf[li] = calloc(1, sizeof *l))) fatal("vulkan: out of memory for pending result pages");
+        i64 pages = 0;
+        for (u32 i = (u32)(p % LEAF_PAGES), e = (u32)(stop % LEAF_PAGES); i <= e; i++) {
+            const u32 before = l->count[i], v = (u32)((i64)before + delta);
+            l->count[i] = v;
+            if (!before != !v) {
+                l->group[i / 64] ^= 1ull << (i & 63u);
+                pages += v ? 1 : -1;
+            }
+        }
+        l->pages = (u32)((i64)l->pages + pages);
+        p = stop + 1;
+    }
 }
 /* Whether a page of [first, last], below TABLE_PAGES, has a count. The bitmap answers each group with one load,
    including partial groups: a sparse group used to scan up to 64 individual counters merely to find no overlap.

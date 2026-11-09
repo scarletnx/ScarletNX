@@ -31,7 +31,7 @@
 /scripts/build-languages.py @DraChimeraVee
 /po/ @DraChimeraVee
 /dist/splash/ @DraChimeraVee
-/docs/GUI.md @DraChimeraVee
+/docs/user/gui.md @DraChimeraVee
 
 # GPU: the Switch's GPU, its shaders and their compilers, texture and video engines
 /src/nx/gpu/ @fuddlesworth
@@ -41,19 +41,19 @@
 /cmake/glsl.cmake @fuddlesworth
 /cmake/spirv_source.cmake @fuddlesworth
 /scripts/build-ui-shaders.py @fuddlesworth
-/docs/ASTC.md @fuddlesworth
-/docs/BLOCKLINEAR.md @fuddlesworth
-/docs/GPU_OWNERSHIP.md @fuddlesworth
-/docs/NVDEC.md @fuddlesworth
-/docs/NVN_HLE.md @fuddlesworth
-/docs/UMA_MEMORY.md @fuddlesworth
-/docs/VIC.md @fuddlesworth
-/docs/shader-audit/ @fuddlesworth
+/docs/layers/gpu/astc.md @fuddlesworth
+/docs/layers/gpu/blocklinear.md @fuddlesworth
+/docs/layers/gpu/ownership.md @fuddlesworth
+/docs/history/nvdec-audit.md @fuddlesworth
+/docs/layers/gpu/nvn.md @fuddlesworth
+/docs/layers/gpu/ownership.md @fuddlesworth
+/docs/layers/media/vic.md @fuddlesworth
+/docs/history/shader-audit/ @fuddlesworth
 
 # CPU: the A64 and ARM instruction libraries, the recompiler with its LLVM backend and JIT
 /src/common/cpu/ @xinitrcn1
-/docs/DIVERGENCES.md @xinitrcn1
-/docs/LIBRARY.md @xinitrcn1
+/docs/history/divergences.md @xinitrcn1
+/docs/dev/library.md @xinitrcn1
 
 # The 3DS and the Vita: all of their code
 /src/3ds/ @xinitrcn1

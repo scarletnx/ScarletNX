@@ -17,10 +17,11 @@ typedef struct {
     uint8_t space;     /* its index in spaces[] */
 } Alias;
 #define TRACK_SPACES 4
-/* Two-level ARM-sized page metadata, not an emulated hardware MMU table. */
+/* Two-level ARM-sized page metadata, not an emulated hardware MMU table. region: the profile's region the frame is in,
+   plus 1, set at map time so that an access finds its host memory without a scan of the regions; 0 when unmapped */
 typedef struct {
     uint32_t pa;
-    unsigned char permissions, present;
+    unsigned char permissions, region;
 } Page;
 struct SnxCtrMemory {
     const SnxCtrProfile* profile;
@@ -134,7 +135,7 @@ void snx_ctr_space_free(SnxCtrAddressSpace* s) {
     if (s->base) { /* its aliases go with it */
         for (uint32_t t = 0; t < 1024; ++t)
             for (uint32_t i = 0; s->tables[t] && i < 1024; ++i)
-                if (s->tables[t][i].present) {
+                if (s->tables[t][i].region) {
                     uint32_t index = ram_index(s->memory, s->tables[t][i].pa);
                     if (index != UINT32_MAX) alias_remove(s->memory, index, s, t << 22 | i << 12);
                 }
@@ -277,13 +278,13 @@ static void touch_virtual(SnxCtrAddressSpace* s, uint32_t va, size_t size, bool 
     if (!s->memory->tracked || s->memory->resolving) return;
     for (uint64_t at = va & ~4095u; at < (uint64_t)va + size; at += 4096) {
         Page* p = page(s, (uint32_t)at);
-        if (p && p->present) touch(s->memory, p->pa, 4096, write);
+        if (p && p->region) touch(s->memory, p->pa, 4096, write);
     }
 }
 bool snx_ctr_track_fault(SnxCtrAddressSpace* s, uint32_t va) {
     SnxCtrMemory* m = s->memory;
     Page* p = page(s, va);
-    if (!p || !p->present || m->resolving) return false;
+    if (!p || !p->region || m->resolving) return false;
     uint32_t index = ram_index(m, p->pa);
     if (index == UINT32_MAX || m->level[index] == SNX_CTR_TRACK_NONE) return false; /* the guest's own data abort */
     step(m, index, p->pa);
@@ -304,7 +305,7 @@ static bool map_space(const SnxCtrAddressSpace* s, const SnxHostMemory* host) {
             va |= 0x3FF000;
             continue;
         }
-        uint32_t index = p && p->present ? ram_index(s->memory, p->pa) : UINT32_MAX;
+        uint32_t index = p && p->region ? ram_index(s->memory, p->pa) : UINT32_MAX;
         unsigned permissions = index == UINT32_MAX ? 0 : tracked_permissions(s->memory->level[index], p->permissions);
         if (run && index != UINT32_MAX && (uint64_t)index * 4096 == from + run && permissions == protection) {
             run += 4096;
@@ -369,7 +370,7 @@ SnxCtrMemResult snx_ctr_map(SnxCtrAddressSpace* s, uint32_t va, uint32_t pa, uin
     if (region->kind == SNX_CTR_MMIO && (permissions & SNX_CTR_EXEC)) return SNX_CTR_MEM_PERMISSION;
     for (uint64_t at = va; at < (uint64_t)va + size; at += 4096) {
         Page* p = page(s, (uint32_t)at);
-        if (p && p->present) return SNX_CTR_MEM_OVERLAP;
+        if (p && p->region) return SNX_CTR_MEM_OVERLAP;
     }
     /* Allocating empty tables is harmless on failure; no PTE is published yet. */
     for (uint64_t at = va; at < (uint64_t)va + size; at += 4096) {
@@ -383,7 +384,8 @@ SnxCtrMemResult snx_ctr_map(SnxCtrAddressSpace* s, uint32_t va, uint32_t pa, uin
         !snx_host_map(&s->memory->host, s->base, va, host_offset(s->memory, region, pa), size, permissions))
         return SNX_CTR_MEM_NOMEM;
     for (uint64_t offset = 0; offset < size; offset += 4096)
-        *page(s, va + (uint32_t)offset) = (Page){pa + (uint32_t)offset, (unsigned char)permissions, 1};
+        *page(s, va + (uint32_t)offset) = (Page){pa + (uint32_t)offset, (unsigned char)permissions,
+                                                 (unsigned char)(region - s->memory->profile->regions + 1)};
     /* a flat view of a RAM page is one of its aliases, at its level's protection */
     if (s->base && region->kind != SNX_CTR_MMIO)
         for (uint64_t offset = 0; offset < size; offset += 4096) {
@@ -427,7 +429,7 @@ static SnxCtrMemResult change(SnxCtrAddressSpace* s, uint32_t va, uint32_t size,
     if (!s || !valid_range(va, size) || !permissions_valid(permissions)) return SNX_CTR_MEM_INVALID;
     for (uint64_t at = va; at < (uint64_t)va + size; at += 4096) {
         Page* p = page(s, (uint32_t)at);
-        if (!p || !p->present) return SNX_CTR_MEM_UNMAPPED;
+        if (!p || !p->region) return SNX_CTR_MEM_UNMAPPED;
         const SnxCtrRegion* r = snx_ctr_physical_region(s->memory->profile, p->pa, 4096);
         if (!unmap && (permissions & SNX_CTR_EXEC) && r->kind == SNX_CTR_MMIO) return SNX_CTR_MEM_PERMISSION;
     }
@@ -456,31 +458,27 @@ SnxCtrMemResult snx_ctr_unmap(SnxCtrAddressSpace* s, uint32_t va, uint32_t size)
 SnxCtrMemResult snx_ctr_query(const SnxCtrAddressSpace* s, uint32_t va, uint32_t* pa, unsigned* permissions) {
     if (!s) return SNX_CTR_MEM_INVALID;
     Page* p = page(s, va);
-    if (!p || !p->present) return SNX_CTR_MEM_UNMAPPED;
+    if (!p || !p->region) return SNX_CTR_MEM_UNMAPPED;
     if (pa) *pa = p->pa + (va & 4095);
     if (permissions) *permissions = p->permissions;
     return SNX_CTR_MEM_OK;
 }
-static unsigned char* physical(SnxCtrMemory* m, uint32_t pa, bool* mmio) {
-    for (size_t i = 0; i < m->profile->region_count; ++i) {
-        const SnxCtrRegion* r = &m->profile->regions[i];
-        if (pa >= r->base && (uint64_t)pa < (uint64_t)r->base + r->size) {
-            *mmio = r->kind == SNX_CTR_MMIO;
-            return *mmio ? NULL : m->backing[i] + (pa - r->base);
-        }
-    }
-    *mmio = true; /* only reachable for an internally corrupted PTE */
-    return NULL;
+/* the host memory at offset into p's frame; NULL with *mmio set for a device's page */
+static unsigned char* page_host(const SnxCtrMemory* m, const Page* p, uint32_t offset, bool* mmio) {
+    size_t i = (size_t)p->region - 1;
+    const SnxCtrRegion* r = &m->profile->regions[i];
+    *mmio = r->kind == SNX_CTR_MMIO;
+    return *mmio ? NULL : m->backing[i] + (p->pa - r->base) + offset;
 }
 SnxCtrMemResult snx_ctr_check_ram(SnxCtrAddressSpace* s, uint32_t va, size_t size, unsigned access) {
     if (!s || !access || !permissions_valid(access) || size > 0x100000000ull - va) return SNX_CTR_MEM_INVALID;
     for (size_t off = 0; off < size;) {
         uint32_t at = va + (uint32_t)off;
         Page* p = page(s, at);
-        if (!p || !p->present) return SNX_CTR_MEM_UNMAPPED;
+        if (!p || !p->region) return SNX_CTR_MEM_UNMAPPED;
         if ((p->permissions & access) != access) return SNX_CTR_MEM_PERMISSION;
         bool mmio;
-        (void)physical(s->memory, p->pa, &mmio);
+        (void)page_host(s->memory, p, 0, &mmio);
         if (mmio) return SNX_CTR_MEM_DEVICE;
         size_t n = 4096 - (at & 4095);
         if (n > size - off) n = size - off;
@@ -495,10 +493,10 @@ static SnxCtrMemResult transfer(SnxCtrAddressSpace* s, uint32_t va, void* buffer
     /* within one page, as nearly every access is (each instruction's fetch among them): one lookup */
     if ((va & 4095) + size <= 4096) {
         Page* p = page(s, va);
-        if (!p || !p->present) return SNX_CTR_MEM_UNMAPPED;
+        if (!p || !p->region) return SNX_CTR_MEM_UNMAPPED;
         if (!(p->permissions & access)) return SNX_CTR_MEM_PERMISSION;
         bool mmio;
-        unsigned char* host = physical(s->memory, p->pa + (va & 4095), &mmio);
+        unsigned char* host = page_host(s->memory, p, va & 4095, &mmio);
         if (!mmio) {
             if (access == SNX_CTR_WRITE) {
                 memcpy(host, buffer, size);
@@ -512,10 +510,10 @@ static SnxCtrMemResult transfer(SnxCtrAddressSpace* s, uint32_t va, void* buffer
     while (offset < size) {
         uint32_t at = va + (uint32_t)offset;
         Page* p = page(s, at);
-        if (!p || !p->present) return SNX_CTR_MEM_UNMAPPED;
+        if (!p || !p->region) return SNX_CTR_MEM_UNMAPPED;
         if (!(p->permissions & access)) return SNX_CTR_MEM_PERMISSION;
         bool mmio;
-        (void)physical(s->memory, p->pa, &mmio);
+        (void)page_host(s->memory, p, 0, &mmio);
         size_t n = 4096 - (at & 4095);
         if (mmio) {
             if (ram_only || offset || size > n || (size != 1 && size != 2 && size != 4 && size != 8) ||
@@ -535,7 +533,7 @@ static SnxCtrMemResult transfer(SnxCtrAddressSpace* s, uint32_t va, void* buffer
         uint32_t at = va + (uint32_t)offset;
         Page* p = page(s, at);
         bool mmio;
-        unsigned char* host = physical(s->memory, p->pa + (at & 4095), &mmio);
+        unsigned char* host = page_host(s->memory, p, at & 4095, &mmio);
         size_t n = 4096 - (at & 4095);
         if (n > size - offset) n = size - offset;
         if (access == SNX_CTR_WRITE)

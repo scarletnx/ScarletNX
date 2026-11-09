@@ -1,7 +1,0 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
-   Copyright 2026 the ScarletNX contributors */
-/* the executable's resources on Windows: its application manifest (1 = CREATEPROCESS_MANIFEST_RESOURCE_ID,
-   24 = RT_MANIFEST) and its icon, which Explorer shows and SDL gives the windows (scripts/make-icons.py makes it;
-   llvm-rc finds it from this file's folder) */
-1 24 "runtime.manifest"
-1 ICON "../../../dist/icons/wimsy.ico"

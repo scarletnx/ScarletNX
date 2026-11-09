@@ -112,23 +112,24 @@ public final class Egl10 implements EGL11 {
     @Override public boolean eglWaitGL() { return true; }
     @Override public boolean eglWaitNative(int engine, Object bindTarget) { return true; }
 
-    private static native long nativeDisplay();
-    private static native boolean nativeInitialize(long display, int[] version);
-    private static native boolean nativeTerminate(long display);
-    private static native String nativeQueryString(long display, int name);
-    private static native int nativeError();
+    public static native long nativeDisplay();
+    public static native boolean nativeInitialize(long display, int[] version);
+    public static native boolean nativeTerminate(long display);
+    public static native String nativeQueryString(long display, int name);
+    public static native int nativeError();
+    /* the runtime's EGL, which android.opengl.EGL14 calls too */
     /** The configs that match, sorted as EGL sorts them, into out (null: the count alone); -1 for an error */
-    private static native int nativeChooseConfig(long display, int[] attributes, long[] out);
-    private static native boolean nativeConfigAttrib(long display, long config, int attribute, int[] value);
-    private static native long nativeCreateContext(long display, long config, long share, int[] attributes);
-    private static native boolean nativeDestroyContext(long display, long context);
-    private static native boolean nativeQueryContext(long display, long context, int attribute, int[] value);
-    private static native long nativeCreateWindowSurface(long display, long config, int width, int height, int[] attributes);
-    private static native long nativeCreatePbufferSurface(long display, long config, int[] attributes);
-    private static native boolean nativeDestroySurface(long display, long surface);
-    private static native boolean nativeQuerySurface(long display, long surface, int attribute, int[] value);
-    private static native boolean nativeMakeCurrent(long display, long draw, long read, long context);
+    public static native int nativeChooseConfig(long display, int[] attributes, long[] out);
+    public static native boolean nativeConfigAttrib(long display, long config, int attribute, int[] value);
+    public static native long nativeCreateContext(long display, long config, long share, int[] attributes);
+    public static native boolean nativeDestroyContext(long display, long context);
+    public static native boolean nativeQueryContext(long display, long context, int attribute, int[] value);
+    public static native long nativeCreateWindowSurface(long display, long config, int width, int height, int[] attributes);
+    public static native long nativeCreatePbufferSurface(long display, long config, int[] attributes);
+    public static native boolean nativeDestroySurface(long display, long surface);
+    public static native boolean nativeQuerySurface(long display, long surface, int attribute, int[] value);
+    public static native boolean nativeMakeCurrent(long display, long draw, long read, long context);
     /** The calling thread's current context (0), display (1), draw surface (2) or read surface (3) */
-    private static native long nativeCurrent(int which);
-    private static native boolean nativeSwapBuffers(long display, long surface);
+    public static native long nativeCurrent(int which);
+    public static native boolean nativeSwapBuffers(long display, long surface);
 }

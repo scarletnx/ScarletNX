@@ -40,6 +40,8 @@
 #include "nx/gpu/texture/astc_spv.h" /* compiled from astc.comp by the build (cmake/glsl.cmake) */
 #include "nx/gpu/texture/bc7_spv.h"  /* compiled from bc7.comp, and its fast build */
 #include "nx/gpu/texture/blocklinear_spv.h"
+#include "nx/gpu/texture/astc_bc.h"
+#include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 
@@ -84,7 +86,7 @@ typedef struct {
     u32 ncaptures;
     u64 captured;
     /* the encoder's blocks queued since the GPU was last waited for, and the submission that will include the last
-       one counted (BC7_QUEUED_BLOCKS). Completed uploads do not contribute to the limit: retaining their blocks
+       one counted (bc7_queued_limit). Completed uploads do not contribute to the limit: retaining their blocks
        across frames made a small later upload flush and wait for unrelated graphics work */
     struct {
         u64 blocks, until;
@@ -101,7 +103,25 @@ static Astc g_astc;
    tens of seconds of it ahead of the GPU, and the device was lost in most runs, with no error in the validation layer
    and no fault in the kernel's log. Past this many blocks an upload waits for the GPU to do them. A wait costs little,
    as the game is held by what the GPU has to do anyway. Splitting them over submissions with no wait did not help */
-#define BC7_QUEUED_BLOCKS (1u << 18)
+static u64 bc7_queued_limit(void) {
+    static u64 limit;
+    if (!limit) {
+        /* the GPU's own memory, its biggest device-local heap; an integrated GPU shares the CPU's */
+        VkPhysicalDeviceMemoryProperties mp;
+        u64 heap = 0;
+        vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+        for (u32 h = 0; h < mp.memoryHeapCount; h++)
+            if ((mp.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && mp.memoryHeaps[h].size > heap)
+                heap = mp.memoryHeaps[h].size;
+        const int shared = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+        limit = snx_bc7_queue_blocks(g_settings.bc7_queue, heap, shared);
+        LOG("vulkan: the BC7 encoder queues up to %llu thousand blocks before an upload waits for the GPU (bc7_queue=%d%s, "
+            "%llu MB of the GPU's own memory%s)\n",
+            (unsigned long long)(limit >> 10), g_settings.bc7_queue, g_settings.bc7_queue ? "" : ", Auto",
+            (unsigned long long)(heap >> 20), shared ? ", shared with the CPU" : "");
+    }
+    return limit;
+}
 
 /* astc.comp's push constants: the strip's width and its slices' height in texels and in blocks, and whether to use
    the specification's sRGB decode mode, whose void extents' R, G and B bytes differ from the UNORM mode's. An SRGB
@@ -144,9 +164,8 @@ static void astc_init(void) {
                                      .pPushConstantRanges = &push};
     if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_astc.layout)))
         fatal("vulkan: cannot create the ASTC pipeline layout");
-    VkShaderModuleCreateInfo mi = {
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = astc_spv_size, .pCode = astc_spv};
-    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &g_astc.module))) fatal("vulkan: cannot load the ASTC shader");
+    if (!VK_OK(snx_vk_shader_module(g_vk.dev, astc_spv, astc_spv_size, &g_astc.module)))
+        fatal("vulkan: cannot load the ASTC shader");
     g_astc.cap = 16ull << 20; /* a 2048x2048 slice a strip: fewer barriers between decoding and copying */
     if (g_astc.cap > g_vk.props.limits.maxStorageBufferRange) g_astc.cap = g_vk.props.limits.maxStorageBufferRange;
     if (g_astc.cap > g_vk.alloc_cap) g_astc.cap = g_vk.alloc_cap;
@@ -202,19 +221,11 @@ static VkPipeline bc7_pipe(u32 build) {
                    {bc7_fast_spv, &bc7_fast_spv_size, "fast"},
                    {bc7_mode6_spv, &bc7_mode6_spv_size, "mode 6"}};
     if (g_astc.bc7_pipes[build]) return g_astc.bc7_pipes[build];
-    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                   .codeSize = *builds[build].size,
-                                   .pCode = builds[build].code};
-    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &g_astc.bc7_modules[build])))
+    if (!VK_OK(snx_vk_shader_module(g_vk.dev, builds[build].code, *builds[build].size, &g_astc.bc7_modules[build])))
         fatal("vulkan: cannot load the BC7 encoder's %s build", builds[build].name);
-    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                .module = g_astc.bc7_modules[build],
-                                                .pName = "main"},
-                                      .layout = g_astc.bc7_layout};
     u64 started = plat_ns();
-    if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_astc.bc7_pipes[build])))
+    if (!VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), g_astc.bc7_layout, g_astc.bc7_modules[build], NULL,
+                                      &g_astc.bc7_pipes[build])))
         fatal("vulkan: cannot create the BC7 encoder's %s build", builds[build].name);
     vk_texture_pipeline_made(plat_ns() - started);
     return g_astc.bc7_pipes[build];
@@ -399,15 +410,8 @@ static VkPipeline astc_pipeline(u32 bw, u32 bh) {
     const u32 dims[2] = {bw, bh};
     const VkSpecializationMapEntry entries[2] = {{0, 0, sizeof(u32)}, {1, sizeof(u32), sizeof(u32)}};
     VkSpecializationInfo spec = {.mapEntryCount = 2, .pMapEntries = entries, .dataSize = sizeof dims, .pData = dims};
-    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                .module = g_astc.module,
-                                                .pName = "main",
-                                                .pSpecializationInfo = &spec},
-                                      .layout = g_astc.layout};
     u64 started = plat_ns();
-    if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, pipe)))
+    if (!VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), g_astc.layout, g_astc.module, &spec, pipe)))
         fatal("vulkan: cannot create the ASTC compute pipeline");
     vk_texture_pipeline_made(plat_ns() - started);
     return *pipe;
@@ -627,7 +631,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
             if (bc7) {
                 g_astc.bc7_queued.blocks += (u64)cx * ((height + 3) / 4) * nz;
                 g_astc.bc7_queued.until = vk_last_submit() + 1;
-                if (g_astc.bc7_queued.blocks >= BC7_QUEUED_BLOCKS) {
+                if (g_astc.bc7_queued.blocks >= bc7_queued_limit()) {
                     g_astc.bc7_queued.blocks = 0;
                     vk_submit_upload_wait();
                     /* This upload continues after the submission too. Rows callbacks may only stage bytes;

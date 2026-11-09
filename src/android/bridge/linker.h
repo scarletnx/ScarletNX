@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The guest's dynamic linker, as bionic's loads a library (docs/android/NATIVE.md, "Loading"): ELF64 AArch64 shared
+/* The guest's dynamic linker, as bionic's loads a library (docs/platforms/android-apps/native.md, "Loading"): ELF64 AArch64 shared
    objects mapped into the code window, their DT_NEEDED first (the app's own from the library folder, the system's as
    HLE libraries), relocated, and their initializers run. Symbols resolve in the global group, then each library's own
    tree. Every function is safe from any thread: one library loads at a time */
@@ -29,6 +29,9 @@ const char* linker_name(const GuestLibrary* library);
    its program headers in guest memory (count of them) */
 int linker_each(int (*fn)(void* context, uint64_t base, const char* name, uint64_t phdr, unsigned count),
                 void* context);
+/* the address of a TLS module's (1 on) byte at offset, in the calling thread's block of it, made when first asked
+   for; 0 for no such module */
+uint64_t linker_tls_address(unsigned module, uint64_t offset);
 /* the library that holds a guest address, NULL for none */
 GuestLibrary* linker_owner(uint64_t address);
 /* a symbol of the libraries loaded after the one that holds caller (dlsym's RTLD_NEXT) */

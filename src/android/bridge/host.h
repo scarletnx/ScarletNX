@@ -6,26 +6,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The host system under the native bridge (docs/android/NATIVE.md, "Hosts"): the calls whose form differs between
+#include "common/platform/vm.h"
+
+/* The host system under the native bridge (docs/platforms/android-apps/native.md, "Hosts"): the calls whose form differs between
    the hosts the bridge runs on, Linux, FreeBSD, macOS and Windows x64, each with a version for each of them. The
    bridge's other files call these, not the host's own API for the same work */
 
-/* the calling thread's id as the host numbers it (Linux's and FreeBSD's tid, macOS's thread id, Windows' thread id),
-   and the process's */
-uint32_t host_tid(void);
+/* the process's id as the host numbers it; the calling thread's is thread.h's plat_tid */
 uint32_t host_pid(void);
 
-/* Address space. A reservation holds addresses with no memory and no access: at address exactly when exact (NULL when
-   it is taken), else anywhere (address 0) or near it. A commit gives a range of a reservation fresh zero read-write
-   memory. Lazy memory is zero read-write memory that costs nothing before it is touched. host_unmap ends a whole
-   reservation or lazy block, by its first address */
-void* host_reserve(uint64_t address, size_t size, bool exact);
-bool host_commit(void* address, size_t size);
-void* host_lazy(size_t size);
-void host_unmap(void* address, size_t size);
-/* access: HOST_NONE, or HOST_READ with HOST_WRITE or not */
-enum { HOST_NONE = 0, HOST_READ = 1, HOST_WRITE = 2 };
-bool host_protect(void* address, size_t size, int access);
+/* The address space is common/platform/vm.h's (plat_mem_*). An access: HOST_NONE, or HOST_READ with HOST_WRITE or
+   not, which plat_mem_protect takes as they are */
+enum { HOST_NONE = PLAT_MEM_NONE, HOST_READ = PLAT_MEM_READ, HOST_WRITE = PLAT_MEM_WRITE };
 
 /* The guest's private anonymous mappings, with the access of each part (HOST_NONE, HOST_READ, with HOST_WRITE or
    not), which the HLE of mmap, mprotect and munmap keeps: host_anon_map records a range (over what it replaces), and
@@ -42,8 +34,6 @@ int host_dontneed(uint64_t address, uint64_t size);
    nothing done, for such an address. The guest's memory as the kernel checks it (EFAULT, never a fault) */
 bool host_copy_checked(void* to, const void* from, size_t size);
 
-/* pread(2): the bytes read, or -1 and errno */
-int64_t host_pread(int fd, void* buffer, size_t size, uint64_t offset);
 /* close(2) of any descriptor the guest has: a file, a socket (Windows' are not the CRT's), an epoll set */
 int host_close(int fd);
 /* whether fd is a socket (Windows: a SOCKET, whose numbers are not the CRT's descriptors) */

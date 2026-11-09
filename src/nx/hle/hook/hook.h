@@ -13,7 +13,7 @@
    (jit_service.c calls an AOT function directly only while its slot still holds it). Hooks are installed once the game's executables are loaded, before its first
    thread, and stay for the whole run. A hook may hold only for some versions of the SDK that built the module
    exporting its function, and its handler may read guest structs through the layout for that version
-   (docs/HOOKS.md) */
+   (docs/platforms/nx/hooks.md) */
 #ifndef SNX_HLE_HOOK_H
 #define SNX_HLE_HOOK_H
 #include "common/cpu/aarch64/cpu.h"

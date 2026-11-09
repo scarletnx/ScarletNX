@@ -140,6 +140,45 @@ int main(void) {
     agb_ppu_write(&board, 0x048, 0);
     agb_ppu_write(&board, 0x04A, 0);
 
+    /* WIN0 over WIN1 over the OBJ window over the outside, on every pixel of a line: WIN1 wraps around the screen's
+       edge (its left edge right of its right one), and sprites in OBJ window mode mark x 8, 9, 10 and 11. Inside WIN0
+       (x 8) and outside every window BG0 shows; inside WIN1 (x 236 to 239 and 0 to 9) and the OBJ window it doesn't */
+    {
+        uint32_t shown[AGB_SCREEN_WIDTH];
+        board.memory.vram[2] = 0x11; /* BG0's tile 0 opaque across its first row */
+        board.memory.vram[3] = 0x11;
+        agb_ppu_write(&board, 0x000, 0x0100);
+        run_frame();
+        for (int x = 0; x < AGB_SCREEN_WIDTH; ++x) shown[x] = pixel(x, 0);
+        agb_write16(&board, 0x07000000, 0x0800); /* sprite 0: OBJ window mode, x 10 and 11 */
+        agb_write16(&board, 0x07000008, 0x0800); /* sprite 1: the same at x 8 and 9 */
+        agb_write16(&board, 0x0700000A, 8);
+        agb_ppu_write(&board, 0x000, 0xF100);          /* BG0, OBJ, WIN0, WIN1 and the OBJ window */
+        agb_ppu_write(&board, 0x040, (8 << 8) | 9);    /* WIN0H: x 8 */
+        agb_ppu_write(&board, 0x042, (236 << 8) | 10); /* WIN1H: x 236 to 239, then 0 to 9 */
+        agb_ppu_write(&board, 0x044, 4);
+        agb_ppu_write(&board, 0x046, 4);
+        agb_ppu_write(&board, 0x048, 0x0001); /* WIN0: BG0, WIN1: nothing */
+        agb_ppu_write(&board, 0x04A, 0x0001); /* outside: BG0, the OBJ window: nothing */
+        run_frame();
+        for (int x = 0; x < AGB_SCREEN_WIDTH; ++x) {
+            int bg0 = x == 8 || (x >= 12 && x < 236);
+            CHECK(pixel(x, 0) == (bg0 ? shown[x] : PIX(0, 0, 0)));
+        }
+        agb_write16(&board, 0x07000000, 0x0000);
+        agb_write16(&board, 0x07000008, 0x0200); /* sprite 1 hidden */
+        agb_write16(&board, 0x0700000A, 10);
+        board.memory.vram[2] = 0;
+        board.memory.vram[3] = 0;
+        agb_ppu_write(&board, 0x000, 0x1100);
+        agb_ppu_write(&board, 0x040, 0);
+        agb_ppu_write(&board, 0x042, 0);
+        agb_ppu_write(&board, 0x044, 4); /* as the WIN0 check left it */
+        agb_ppu_write(&board, 0x046, 0);
+        agb_ppu_write(&board, 0x048, 0);
+        agb_ppu_write(&board, 0x04A, 0);
+    }
+
     /* brightness: the first target lightens toward white */
     agb_ppu_write(&board, 0x050, 0x0010 | (2 << 6)); /* OBJ first target, brightness up */
     agb_ppu_write(&board, 0x054, 8);

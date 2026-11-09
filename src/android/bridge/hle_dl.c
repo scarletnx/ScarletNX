@@ -174,7 +174,25 @@ static void g_dl_iterate_phdr(CPU* c, void* data) {
     X(0) = (uint64_t)(int64_t)linker_each(each_library, &it);
 }
 
+/* a TLS descriptor's resolver (R_AARCH64_TLSDESC): the variable's offset from the thread pointer, in x0 only, as
+   the ABI asks of a resolver. The descriptor's argument is the module above a 48-bit offset (linker.c) */
+static void g_tlsdesc(CPU* c, void* data) {
+    (void)data;
+    uint64_t arg;
+    memcpy(&arg, (const uint8_t*)(uintptr_t)X(0) + 8, sizeof arg);
+    X(0) = linker_tls_address((unsigned)(arg >> 48), arg & 0xffffffffffffull) - c->tpidr;
+}
+/* __tls_get_addr(&{module, offset}): the variable's address */
+static void g_tls_get_addr(CPU* c, void* data) {
+    (void)data;
+    uint64_t index[2];
+    memcpy(index, (const void*)(uintptr_t)X(0), sizeof index);
+    X(0) = linker_tls_address((unsigned)index[0], index[1]);
+}
+
 const HleSymbol hle_dl[] = {
+    {"__snx_tlsdesc", g_tlsdesc, NULL},
+    {"__tls_get_addr", g_tls_get_addr, NULL},
     /* dlopen itself is guest code that calls this, as libdl's calls the linker's (hle_code.c) */
     {"__loader_dlopen", g_dlopen, NULL},
     {"dlsym", g_dlsym, NULL},

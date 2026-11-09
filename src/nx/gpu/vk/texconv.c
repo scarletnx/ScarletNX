@@ -36,19 +36,11 @@ static void tc_init(void) {
                                      .pPushConstantRanges = &push};
     if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_tc_layout)))
         fatal("vulkan: cannot create the texture conversion pipeline layout");
-    VkShaderModuleCreateInfo mi = {
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = texconv_spv_size, .pCode = texconv_spv};
     VkShaderModule module;
-    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &module)))
+    if (!VK_OK(snx_vk_shader_module(g_vk.dev, texconv_spv, texconv_spv_size, &module)))
         fatal("vulkan: cannot load the texture conversion shader");
-    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                .module = module,
-                                                .pName = "main"},
-                                      .layout = g_tc_layout};
     u64 started = plat_ns();
-    if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_tc_pipe)))
+    if (!VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), g_tc_layout, module, NULL, &g_tc_pipe)))
         fatal("vulkan: cannot create the texture conversion compute pipeline");
     vk_texture_pipeline_made(plat_ns() - started);
     vkDestroyShaderModule(g_vk.dev, module, NULL);
@@ -152,6 +144,7 @@ static int tc_dispatch(VkCommandBuffer cb, const TcParams* p, u32 gx, u32 rows, 
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_tc_layout, 0, 1, &set, 0, NULL);
     rec_CmdPushConstants(cb, g_tc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof *p, p);
     vk_ck(cb, VK_CK_CONVERT, gx, rows, slices, 0);
+    vk_gpuprof_tag(VK_PROF_TEXCONV);
     rec_CmdDispatch(cb, gx, rows, slices);
     return 1;
 }

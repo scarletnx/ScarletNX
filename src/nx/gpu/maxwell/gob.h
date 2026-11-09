@@ -4,7 +4,7 @@
    SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
    SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project */
 /* A GOB (group of bytes), the tile of Maxwell's block linear layout: 64 bytes by 8 rows, 512 bytes, stacked in
-   blocks of 1 << block_height GOBs down and 1 << block_depth deep (docs/BLOCKLINEAR.md; Eden's GOB_SIZE_X, _Y and
+   blocks of 1 << block_height GOBs down and 1 << block_depth deep (docs/layers/gpu/blocklinear.md; Eden's GOB_SIZE_X, _Y and
    GOB_SIZE). The copy and 2D engines size their block linear operands with them */
 #ifndef SNX_MAXWELL_GOB_H
 #define SNX_MAXWELL_GOB_H

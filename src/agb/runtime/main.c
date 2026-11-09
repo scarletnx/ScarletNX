@@ -11,6 +11,7 @@
 #include "agb/runtime/host.h"
 #include "agb/runtime/main.h"
 #include "common/utilities/build_info.h"
+#include "common/utilities/cli.h"
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/script.h"
@@ -25,49 +26,51 @@
 /* KEYINPUT's ten keys, the bits a script's press may hold */
 #define SCRIPT_KEYS       0x3FFu
 
-static void usage(void) {
-    puts("Usage: scarletnx-agb [OPTIONS] ROM.gba\n"
-         "       scarletnx-agb [OPTIONS] --game=recompiled/<name>\n"
-         "       <name> [OPTIONS]   (the game's copy of the runtime, in its folder)\n"
-         "Recompiles a Game Boy Advance ROM and plays it on the AGB board, in a window.\n"
-         "\n"
-         "  --game=DIR        play the game in its folder DIR, as its copy of the runtime does\n"
-         "  -r, --recompile   compile the module again, without playing\n"
-         "  --data DIR        the data folder whose recompiled/ holds the game's folder (default: the user's)\n"
-         "  --outdir DIR      the folder of the games, in which the game's folder is made\n"
-         "  --fullscreen=1    start fullscreen (F11 switches)\n"
-         "  --frames=N        run N frames with no window, sound or pacing, and exit (tests)\n"
-         "  --shot=FILE       write the final frame as a PPM image\n"
-         "  --script=MS:KEYS,...  press keys at a time of the run, MS after its start, KEYS in hex as KEYINPUT has\n"
-         "                    them (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down, 100 R, 200 L)\n"
-         "  --press_len=MS    how long each scripted press is held (default 300)\n"
-         "  --registers       print the CPU's registers when the run ends\n"
-         "\n"
-         "The game's folder, named after the ROM's file, holds its save (<name>.sav), the recompiled module\n"
-         "(<name>_code.so), the copy of the runtime that plays it from then on (<name>) and <name>.ini, which\n"
-         "names the ROM and the console (source=, system=); a <ROM>.sav beside the ROM is read once when the\n"
-         "folder has none.");
+/* the common options scarletnx-agb takes (common/utilities/cli.h): a ROM is read as it is, never extracted, and the
+   AGB has no keys, updates, time limit or window-less run but --frames */
+static const unsigned agb_cli =
+    SNX_CLI_BIT(SNX_CLI_RECOMPILE) | SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_DATA) |
+    SNX_CLI_BIT(SNX_CLI_OUTDIR) | SNX_CLI_BIT(SNX_CLI_OUTPUT) | SNX_CLI_BIT(SNX_CLI_FRAMES) |
+    SNX_CLI_BIT(SNX_CLI_SHOT) | SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_FULLSCREEN) |
+    SNX_CLI_BIT(SNX_CLI_HELP);
+static void usage(FILE* out) {
+    fputs(
+        "Usage: scarletnx-agb [OPTIONS] ROM.gba\n"
+        "       scarletnx-agb [OPTIONS] --game=recompiled/<name>\n"
+        "       <name> [OPTIONS]   (the game's copy of the runtime, in its folder)\n"
+        "Recompiles a Game Boy Advance ROM and plays it on the AGB board, in a window.\n"
+        "\n",
+        out);
+    snx_cli_help(out, agb_cli);
+    fputs(
+        "AGB options:\n"
+        "  --press_len=MS         How long each scripted press is held (default 300)\n"
+        "  --registers            Print the CPU's registers when the run ends\n"
+        "\n"
+        "On the AGB, --frames runs with no window, sound or pacing, for tests. --shot writes the final frame as a\n"
+        "PPM image. --script=MS:KEYS,... presses keys MS after the run's start, KEYS in hex as KEYINPUT has them (1\n"
+        "A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down, 100 R, 200 L).\n"
+        "\n"
+        "The game's folder, named after the ROM's file, holds its save (<name>.sav), the recompiled module\n"
+        "(<name>_code.so), the copy of the runtime that plays it from then on (<name>) and <name>.ini, which names\n"
+        "the ROM and the console (source=, system=). A <ROM>.sav beside the ROM is read once when the folder has\n"
+        "none.\n",
+        out);
 }
 
 /* The frame the host presents: 240x160 RGB, straight out of the display device. */
 static int write_shot(const char* path, const uint32_t* framebuffer) {
     FILE* file = fopen(path, "wb");
     if (!file) return -1;
-    fprintf(file, "P6\n%d %d\n255\n", AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT);
-    for (int i = 0; i < AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT; ++i) {
-        uint8_t pixel[3] = {(uint8_t)framebuffer[i], (uint8_t)(framebuffer[i] >> 8), (uint8_t)(framebuffer[i] >> 16)};
-        fwrite(pixel, 1, 3, file);
-    }
+    (void)snx_ppm_write(file, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT, (const unsigned char*)framebuffer, 4,
+                        AGB_SCREEN_WIDTH * 4, SNX_PPM_WORD);
     fclose(file);
     return 0;
 }
 
 /* the ROM's file name without its folder and its last extension: the game's folder's name */
 static char* game_name(const char* rom) {
-    const char* leaf = rom;
-    for (const char* c = rom; *c; ++c)
-        if (*c == '/' || *c == '\\') leaf = c + 1;
-    char* name = snx_strdup(leaf);
+    char* name = snx_strdup(snx_path_leaf(rom));
     char* dot = strrchr(name, '.');
     if (dot && dot != name) *dot = 0;
     return name;
@@ -147,54 +150,52 @@ static int save_write(AgbBoard* board, const char* path) {
 int snx_agb_main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
-    const char *path = NULL, *shot = NULL, *data = NULL, *outdir = NULL, *game = NULL, *script = NULL;
-    long frames = -1, press_len = 300;
-    int recompile = 0, registers = 0, fullscreen = 0;
+    const char* path = NULL;
+    long press_len = 300;
+    int registers = 0;
+    SnxCli cli;
+    snx_cli_init(&cli, "scarletnx-agb", agb_cli);
     for (int i = 1; i < argc; ++i) {
-        if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
-            usage();
-            return 0;
+        char error[256];
+        int common = snx_cli_take(&cli, argc, argv, &i, error, sizeof error);
+        if (common < 0 || common == SNX_CLI_HELP) {
+            if (common < 0)
+                fprintf(stderr, "%s\n", error);
+            else
+                usage(stdout);
+            snx_cli_free(&cli);
+            return common < 0 ? 2 : 0;
         }
-        if (!strcmp(argv[i], "-r") || !strcmp(argv[i], "--recompile"))
-            recompile = 1;
-        else if (!strncmp(argv[i], "--frames=", 9))
-            frames = strtol(argv[i] + 9, NULL, 0);
-        else if (!strncmp(argv[i], "--script=", 9))
-            script = argv[i] + 9;
-        else if (!strncmp(argv[i], "--press_len=", 12)) {
+        if (common) continue;
+        if (!strncmp(argv[i], "--press_len=", 12)) {
             char* end;
             press_len = strtol(argv[i] + 12, &end, 10);
             if (end == argv[i] + 12 || *end || press_len < 0 || press_len > 0x7FFFFFFF) {
                 fprintf(stderr, "scarletnx-agb: --press_len=%s is not a whole number of ms\n", argv[i] + 12);
+                snx_cli_free(&cli);
                 return 2;
             }
-        } else if (!strncmp(argv[i], "--shot=", 7))
-            shot = argv[i] + 7;
-        else if (!strncmp(argv[i], "--game=", 7) && argv[i][7])
-            game = argv[i] + 7;
-        else if (!strcmp(argv[i], "--registers"))
+        } else if (!strcmp(argv[i], "--registers"))
             registers = 1;
-        else if (!strcmp(argv[i], "--fullscreen=0") || !strcmp(argv[i], "--fullscreen=1"))
-            fullscreen = argv[i][13] == '1';
-        else if (!strcmp(argv[i], "--data") || !strcmp(argv[i], "--outdir")) {
-            if (++i == argc || !*argv[i]) {
-                fprintf(stderr, "scarletnx-agb: %s takes a folder\n", argv[i - 1]);
-                return 2;
-            }
-            *(!strcmp(argv[i - 1], "--data") ? &data : &outdir) = argv[i];
-        } else if (!strcmp(argv[i], "--"))
+        else if (!strcmp(argv[i], "--"))
             continue;
         else if (!path && argv[i][0] != '-')
             path = argv[i];
         else {
             fprintf(stderr, "scarletnx-agb: unexpected argument: %s\n", argv[i]);
+            snx_cli_free(&cli);
             return 2;
         }
     }
+    const char *shot = cli.value[SNX_CLI_SHOT], *data = cli.value[SNX_CLI_DATA], *outdir = cli.value[SNX_CLI_OUTDIR];
+    const char *output = cli.value[SNX_CLI_OUTPUT], *game = cli.value[SNX_CLI_GAME], *script = cli.value[SNX_CLI_SCRIPT];
+    long frames = cli.frames;
+    int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE)), fullscreen = cli.fullscreen == 1;
+    snx_cli_free(&cli);
     char* own = path || game ? NULL : own_game(argv[0]); /* the game's copy of the runtime plays its game */
-    if ((!path && !game && !own) || (path && game) || (game && (data || outdir))) {
+    if ((!path && !game && !own) || (path && game) || (game && (data || outdir || output))) {
         free(own);
-        usage();
+        usage(stderr);
         return 2;
     }
     {
@@ -215,7 +216,9 @@ int snx_agb_main(int argc, char** argv) {
         /* a ROM's game is made in its folder; a game's folder (--game=, or the copy's own) names its ROM */
         if (path) {
             name = game_name(path);
-            folder = snx_game_folder(data, outdir, argv[0], name, 1);
+            folder = !output                ? snx_game_folder(data, outdir, argv[0], name, 1)
+                     : snx_mkdirs(output) ? NULL
+                                          : snx_absolute(output);
             if (!folder) {
                 char why[256];
                 fprintf(stderr, "scarletnx-agb: cannot make the folder of %s: %s\n", name,

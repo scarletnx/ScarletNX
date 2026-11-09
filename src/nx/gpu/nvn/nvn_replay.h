@@ -5,7 +5,7 @@
 #define SNX_NVN_REPLAY_H
 #include "nx/gpu/nvn/nvn_obj.h"
 #include "nx/gpu/nvn/nvn_draw.h"
-#include "common/filesystem/host.h"
+#include "common/platform/thread.h"
 
 /* a new queue's replay state: its index (1 up), whose syncpoint its fences count on */
 u32 nvn_replay_queue(void);

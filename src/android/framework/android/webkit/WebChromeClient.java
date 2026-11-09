@@ -34,4 +34,5 @@ public class WebChromeClient {
     public Bitmap getDefaultVideoPoster() { return null; }
     public View getVideoLoadingProgressView() { return null; }
     public boolean onShowFileChooser(WebView webView, ValueCallback<android.net.Uri[]> filePathCallback, FileChooserParams fileChooserParams) { return false; }
+    public void onReceivedTouchIconUrl(WebView view, String url, boolean precomposed) {}
 }

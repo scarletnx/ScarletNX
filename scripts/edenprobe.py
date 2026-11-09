@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 """edenprobe (https://github.com/scarletnx/edenprobe), a homebrew program of hardware probes, recompiled and run
-headless, its report held against a baseline: how each case ended before. docs/EDENPROBE.md has the how and why.
+headless, its report held against a baseline: how each case ended before. docs/dev/edenprobe.md has the how and why.
 
     scripts/edenprobe.py run --runtime SCARLETNX --nro edenprobe.nro --mode WORDS --out DIR
                              [--baseline FILE | --advisory REPORT] [--summary FILE] [--timeout SECONDS]
@@ -137,7 +137,7 @@ class Baseline:
         """cases: each case's expected result"""
         return (
             '# edenprobe cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT '
-            '(docs/EDENPROBE.md)\n'
+            '(docs/dev/edenprobe.md)\n'
             f'# build: {build}\n# mode: {" ".join(words(mode))}\n'
             + ''.join(
                 f'{case}\n' if expected == 'pass' else f'[{expected}] {case}\n'

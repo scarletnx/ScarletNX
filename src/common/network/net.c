@@ -10,6 +10,7 @@
 #define _GNU_SOURCE /* POLLRDHUP, accept4 and SOCK_CLOEXEC on glibc */
 #endif
 #include "common/network/net_internal.h"
+#include "common/platform/thread.h"
 #include "common/utilities/endian.h"
 #include <limits.h>
 #include <stdarg.h>
@@ -24,7 +25,6 @@
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/ioctl.h>
-#include <time.h>
 #include <unistd.h>
 #endif
 
@@ -106,42 +106,13 @@ void snx_net_warn(const char* fmt, ...) {
 }
 
 /* ============================================================ locks, threads, time, notifiers */
+/* the system's default stack: libc TLS and sanitizer runtimes may need more than a small fixed one */
+int snx_net_thread(void (*fn)(void*), void* arg) { return plat_thread(fn, arg, 0) ? -SNX_EAGAIN : 0; }
 #ifdef _WIN32
 void snx_lock_init(SnxLock* l) { InitializeSRWLock(l); }
 void snx_lock_destroy(SnxLock* l) { (void)l; }
 void snx_lock(SnxLock* l) { AcquireSRWLockExclusive(l); }
 void snx_unlock(SnxLock* l) { ReleaseSRWLockExclusive(l); }
-typedef struct {
-    void (*fn)(void*);
-    void* arg;
-} ThreadStart;
-static DWORD WINAPI thread_main(LPVOID p) {
-    ThreadStart t = *(ThreadStart*)p;
-    free(p);
-    t.fn(t.arg);
-    return 0;
-}
-int snx_net_thread(void (*fn)(void*), void* arg) {
-    ThreadStart* t = malloc(sizeof *t);
-    if (!t) return -SNX_ENOMEM;
-    t->fn = fn;
-    t->arg = arg;
-    HANDLE h = CreateThread(NULL, 64 * 1024, thread_main, t, 0, NULL);
-    if (!h) {
-        free(t);
-        return -SNX_EAGAIN;
-    }
-    CloseHandle(h);
-    return 0;
-}
-int64_t snx_net_now_us(void) {
-    static LARGE_INTEGER f;
-    LARGE_INTEGER c;
-    if (!f.QuadPart) QueryPerformanceFrequency(&f);
-    QueryPerformanceCounter(&c);
-    return (int64_t)(c.QuadPart / f.QuadPart * 1000000 + c.QuadPart % f.QuadPart * 1000000 / f.QuadPart);
-}
-void snx_net_sleep_us(int64_t us) { Sleep((DWORD)((us + 999) / 1000)); }
 int snx_net_close_fd(SnxHostFd fd) { return closesocket(fd) ? snx_net_host_error() : 0; }
 int snx_net_set_host_nonblocking(SnxHostFd fd) {
     u_long on = 1;
@@ -183,43 +154,6 @@ void snx_lock_init(SnxLock* l) { pthread_mutex_init(l, NULL); }
 void snx_lock_destroy(SnxLock* l) { pthread_mutex_destroy(l); }
 void snx_lock(SnxLock* l) { pthread_mutex_lock(l); }
 void snx_unlock(SnxLock* l) { pthread_mutex_unlock(l); }
-typedef struct {
-    void (*fn)(void*);
-    void* arg;
-} ThreadStart;
-static void* thread_main(void* p) {
-    ThreadStart t = *(ThreadStart*)p;
-    free(p);
-    t.fn(t.arg);
-    return NULL;
-}
-int snx_net_thread(void (*fn)(void*), void* arg) {
-    ThreadStart* t = malloc(sizeof *t);
-    if (!t) return -SNX_ENOMEM;
-    t->fn = fn;
-    t->arg = arg;
-    pthread_attr_t at;
-    pthread_attr_init(&at);
-    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
-    /* Keep the platform default: libc TLS and sanitizer runtimes may need more than a small fixed stack. */
-    pthread_t th;
-    int r = pthread_create(&th, &at, thread_main, t);
-    pthread_attr_destroy(&at);
-    if (r) {
-        free(t);
-        return -SNX_EAGAIN;
-    }
-    return 0;
-}
-int64_t snx_net_now_us(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
-}
-void snx_net_sleep_us(int64_t us) {
-    struct timespec ts = {(time_t)(us / 1000000), (long)(us % 1000000) * 1000};
-    while (nanosleep(&ts, &ts) && errno == EINTR) {}
-}
 int snx_net_close_fd(SnxHostFd fd) { return close(fd) ? snx_net_host_error() : 0; }
 static void set_cloexec(int fd) { fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC); }
 int snx_net_set_host_nonblocking(SnxHostFd fd) {

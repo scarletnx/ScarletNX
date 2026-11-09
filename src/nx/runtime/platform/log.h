@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The runtime's log and its fatal error, both in plat.c */
+/* The runtime's log and its fatal error, both in log.c */
 #ifndef SNX_LOG_H
 #define SNX_LOG_H
 #include <stdio.h>
@@ -39,7 +39,7 @@ void log_error_line(const char* line);
 /* Logs "FATAL: ..." and ends the process, after the error box where there is one */
 void fatal(const char* fmt, ...) __attribute__((format(printf, 1, 2), noreturn));
 
-/* plat.c's thread state, this thread's */
+/* log.c's thread state, this thread's */
 typedef struct {
     /* While set, the calling thread's lines go to this file and nowhere else (the main loop's threads.txt dump). It
        is per thread so the others keep writing the log during the dump */

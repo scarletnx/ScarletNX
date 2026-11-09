@@ -9,7 +9,10 @@
 #include <SDL3/SDL_vulkan.h>
 #include <vulkan/vulkan.h> /* GPU Drivers' System driver row: the system's, asked (vk_system_ask) */
 #endif
+#include "common/utilities/ascii.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/common.h"
+#include "common/platform/file.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/cheat_list.h"
 #include "common/utilities/mods.h"
@@ -990,10 +993,8 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
    OK, once in the session; the tips or the note keep it after. Over a run or another question, those alone. In the
    launcher's log once in the session either way */
 static void say_failure(App* app, const char* text) {
-    uint32_t hash = 2166136261u;
-    const char* c;
+    uint32_t hash = snx_fnv1a32(SNX_FNV32_BASIS, text, strlen(text));
     int i;
-    for (c = text; *c; ++c) hash = (hash ^ (unsigned char)*c) * 16777619u;
     for (i = 0; i < app->logged_count && i < (int)SDL_arraysize(app->errors_logged) && app->errors_logged[i] != hash;
          ++i) {}
     if (i == SDL_min(app->logged_count, (int)SDL_arraysize(app->errors_logged))) {
@@ -1389,7 +1390,7 @@ static int background_old(const char* value) {
     return !strcmp(value, "full") ? GUI_BACKGROUND_AUTO : !strcmp(value, "gentle") ? GUI_BACKGROUND_GENTLE : -1;
 }
 /* the UI scales older versions had besides 1 to 4, as their app.ini named them, Auto and its parts: read as the
-   number a start takes on that screen, said once (docs/DEPRECATIONS.md) */
+   number a start takes on that screen, said once (docs/user/deprecations.md) */
 static const char* const scale_words_gone[] = {"auto", "0.25", "0.5", "0.75"};
 /* Games' options (GUI_OPTION_*): each one's key in app.ini, its row in the View box, and its two words or three in
    app.ini and as the row shows them, the first its default (games_defaults says where it is not) */
@@ -1473,7 +1474,7 @@ static int app_write(App* app) {
     dir = snx_dirname(app->app_file);
     staged = snx_format("%s.new", app->app_file);
     failed = !dir || !staged || snx_mkdirs(dir) || snx_write_file(staged, text, (size_t)n) ||
-             snx_replace(staged, app->app_file);
+             plat_replace_file(staged, app->app_file);
     if (failed && staged) remove(staged);
     free(dir);
     free(staged);
@@ -2083,17 +2084,14 @@ static void render_dests(App* app);
 static void render_picks(App* app);
 /* the game's name as the run knows it: the runner's banner, else the file's own, in capitals */
 static void run_name_of(const GuiSteps* steps, bool native, const char* file, char* out, size_t size) {
-    const char* q;
     size_t n;
     const char* dot;
     const GuiStep *launch = gui_steps_last(steps, "LAUNCH"), *made = gui_steps_last(steps, "RECOMPILE");
     /* a game made already is named by its title ID: its recompile's line says what it is shown as */
-    const char* name = launch ? launch->detail : native && made ? made->detail : file ? file : "";
-    for (q = name; *q; ++q)
-        if (*q == '/' || *q == '\\') name = q + 1;
+    const char* name = snx_path_leaf(launch ? launch->detail : native && made ? made->detail : file ? file : "");
     n = 0;
     dot = launch || (native && made) ? NULL : strrchr(name, '.');
-    for (q = name; *q && q != dot && n + 1 < size; ++q) out[n++] = *q >= 'a' && *q <= 'z' ? (char)(*q - 32) : *q;
+    for (const char* q = name; *q && q != dot && n + 1 < size; ++q) out[n++] = (char)snx_to_upper((unsigned char)*q);
     out[n] = 0;
 }
 /* a step's line: its label, its detail in capitals and its status */
@@ -5302,7 +5300,7 @@ static void cheats_add(App* app, const char* picked) {
             snprintf(app->message, sizeof app->message, snx_tr("Not added: cannot make %s: %s"), app->cheats_folder,
                      snx_os_error(why, sizeof why));
             say_failure(app, app->message);
-        } else if (snx_write_file(staged, text, size) || snx_replace(staged, to)) {
+        } else if (snx_write_file(staged, text, size) || plat_replace_file(staged, to)) {
             snprintf(app->message, sizeof app->message, snx_tr("Not added: cannot write %s: %s"), to,
                      snx_os_error(why, sizeof why));
             if (snx_path_exists(staged)) snx_remove_tree(staged); /* this copy's alone */
@@ -8843,15 +8841,6 @@ static void made_list(const App* app, MadeGames* made, bool addons) {
 }
 static void made_read(const App* app, MadeGames* made) { made_list(app, made, false); }
 /* the program of the game made from dump, else NULL */
-#ifdef SDL_PLATFORM_IOS
-/* a file's own name, without its folder */
-static const char* leaf_of(const char* path) {
-    const char* leaf = path;
-    for (const char* s = path; *s; ++s)
-        if (*s == '/' || *s == '\\') leaf = s + 1;
-    return leaf;
-}
-#endif
 static const char* made_program(const MadeGames* made, const char* dump) {
     size_t i;
     for (i = 0; i < made->count; ++i)
@@ -8860,7 +8849,8 @@ static const char* made_program(const MadeGames* made, const char* dump) {
     /* a dump picked outside dumps/ was prepared from its copy there, and the picked file may not be readable any more:
        the copy keeps its name */
     for (i = 0; i < made->count; ++i)
-        if (*leaf_of(dump) && !strcmp(leaf_of(made->game[i].dump), leaf_of(dump))) return made->game[i].program;
+        if (*snx_path_leaf(dump) && !strcmp(snx_path_leaf(made->game[i].dump), snx_path_leaf(dump)))
+            return made->game[i].program;
 #endif
     return NULL;
 }
@@ -12738,7 +12728,7 @@ static void setup_notices_box(App* app, GuiRect r) {
         lines[k] = text[k];
         ++k;
     }
-    snprintf(text[k], sizeof text[k], "  %s", snx_tr("Not moved. See docs/DEPRECATIONS.md"));
+    snprintf(text[k], sizeof text[k], "  %s", snx_tr("Not moved. See docs/user/deprecations.md"));
     lines[k] = text[k];
     ++k;
     snprintf(head, sizeof head, snx_tr("Changed %d/%d"), SDL_min(app->setup_top, n - 1) + 1, n);
@@ -13597,7 +13587,7 @@ static void left_count(App* app) {
 /* what older versions left where this one no longer looks, a folder at a time, for the menu to say while it is there:
    the menu's own files' folder (gui/), work/, each game laid out beside the others, a portable copy's games/ beside
    the program (its data in .scarletnx/ now), a build tree's games/, work/ and keys in its checkout. Nothing is moved:
-   the player does that (docs/DEPRECATIONS.md) */
+   the player does that (docs/user/deprecations.md) */
 static void left_behind(App* app) {
     char *config = menu_folder(app, SNX_USER_CONFIG, false), *state = menu_folder(app, SNX_USER_STATE, false);
     char *data = snx_user_data_dir(), *gui = data ? snx_path_join(data, "gui") : NULL, *kept = NULL;
@@ -13744,7 +13734,7 @@ static void clean_old(App* app) {
 /* the moves of Move Old Files, made with apply, else what they would be, an entry each in done: each folder app->left
    names, entry by entry, into the one this version keeps it in; the menu's gui/ split by its files between the config
    and state folders; with the data folder's games/, its games' settings and caches in the config, state and cache
-   folders. A game laid out beside others is not moved: its run from its dump makes its folder (docs/DEPRECATIONS.md).
+   folders. A game laid out beside others is not moved: its run from its dump makes its folder (docs/user/deprecations.md).
    How many entries move */
 static const char* last_part(const char* path) {
     const char* end = path + strlen(path);
@@ -13770,7 +13760,7 @@ static int move_old(App* app, GuiCleaned* done, bool apply) {
         if (!snx_is_dir(old) && data && snx_is_dir(data)) { /* a game laid out beside others */
             snprintf(what, sizeof what,
                      snx_tr("Not moved: run it from its dump once, which makes %s, then move its saves "
-                            "(docs/DEPRECATIONS.md)"),
+                            "(docs/user/deprecations.md)"),
                      now);
             gui_cleaned_add(done, false, old, what);
             free(data);
@@ -15532,10 +15522,7 @@ static void open_recent(App* app, int shown, bool play) {
 }
 /* the console a made game's program plays, by its folder's .ini (snx_game_system): the driver that plays it */
 static int program_driver(const char* program) {
-    const char* leaf = program;
-    for (const char* c = program; *c; ++c)
-        if (*c == '/' || *c == '\\') leaf = c + 1;
-    char *folder = snx_dirname(program), *name = snx_strdup(leaf);
+    char *folder = snx_dirname(program), *name = snx_strdup(snx_path_leaf(program));
 #ifdef _WIN32
     if (strlen(name) > 4 && !SDL_strcasecmp(name + strlen(name) - 4, ".exe")) name[strlen(name) - 4] = 0;
 #endif
@@ -15903,13 +15890,10 @@ static void keys_write(App* app, const char* data, size_t size, bool ctr) {
     keys_result(app, ok); /* the keys' screen says it whole in its box */
 }
 static void install_keys(App* app, const char* source) {
-    const char* name = source;
+    const char* name = source ? snx_path_leaf(source) : NULL;
     char* data = NULL;
     size_t size = 0;
     bool ctr = false;
-    if (source)
-        for (const char* p = source; *p; ++p)
-            if (*p == '/' || *p == '\\') name = p + 1;
     /* the name says which console's keys: the same file can only be the Switch's (prod.keys) or the 3DS's (aes_keys.txt),
        each installed where its driver reads them */
     if (source && snx_is_file(source)) {

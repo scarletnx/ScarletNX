@@ -1,13 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The platform layer on Linux, Android, FreeBSD and Apple systems: threads, condition variables, the guest's address
-   space with written-page tracking, file reads and maps, the environment and the crash handler
-   (plat_sdl.c has the clocks, sleeping, libraries and path queries) */
+   space with written-page tracking, the environment and the crash handler
+   (plat_sdl.c has the libraries and path queries, common/platform the clocks, sleeping and files) */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE /* REG_RIP, pipe2 */
 #endif
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/bits.h"
+#include "common/platform/vm.h"
 #include "common/utilities/run_mark.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/nce/nce.h"
@@ -52,7 +53,7 @@
 #include <asm/sigcontext.h> /* the signal frame's ESR record (context_write) */
 #endif
 #endif
-#include <dlfcn.h> /* RTLD_NOLOAD (plat_dl_loaded) */
+#include <dlfcn.h> /* Android's libnativewindow (plat_gpu_buffer) */
 #if defined(__ANDROID__)
 #include <android/hardware_buffer.h>
 #include <jni.h>
@@ -80,200 +81,16 @@
 #define MAP_ANONYMOUS MAP_ANON
 #endif
 
-/* the crash report needs about 12 KiB of stack; a thread whose own stack overflowed has none left */
-#define ALT_STACK_SIZE 32768
-/* below this a thread is a small helper that gets no alternate signal stack */
-#define ALT_STACK_MIN_THREAD ((size_t)256 << 10)
-/* the least stack a thread gets: FreeBSD's PTHREAD_STACK_MIN (2 KiB on amd64) is less than its dynamic linker takes
-   to bind the thread's first call, so never under glibc's 16 KiB */
-#define THREAD_STACK_FLOOR   ((size_t)PTHREAD_STACK_MIN > 16384 ? (size_t)PTHREAD_STACK_MIN : (size_t)16384)
-
-/* ================================================================ condition variables */
-void pc_init(PCond* c) {
-#if defined(__APPLE__)
-    pthread_cond_init(&c->c, NULL); /* Darwin has no clock attribute: timed waits are relative there */
-#else
-    pthread_condattr_t a;
-    pthread_condattr_init(&a);
-    pthread_condattr_setclock(&a, CLOCK_MONOTONIC); /* deadlines don't move when the wall clock is set */
-    pthread_cond_init(&c->c, &a);
-    pthread_condattr_destroy(&a);
-#endif
-}
-void pc_signal(PCond* c) { pthread_cond_signal(&c->c); }
-void pc_broadcast(PCond* c) { pthread_cond_broadcast(&c->c); }
-static int cond_wait(PCond* c, PMutex* m, i64 timeout_ns) {
-    struct timespec ts;
-    int r;
-    if (timeout_ns < 0) {
-        pthread_cond_wait(&c->c, &m->l);
-        return 0;
-    }
-#if defined(__APPLE__)
-    ts.tv_sec = (time_t)(timeout_ns / 1000000000);
-    ts.tv_nsec = (long)(timeout_ns % 1000000000);
-    r = pthread_cond_timedwait_relative_np(&c->c, &m->l, &ts);
-#else
-    {
-        u64 sec;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        sec = (u64)timeout_ns / 1000000000u;
-        ts.tv_nsec += (long)((u64)timeout_ns % 1000000000u);
-        if (ts.tv_nsec >= 1000000000L) {
-            ts.tv_nsec -= 1000000000L;
-            sec++;
-        }
-        ts.tv_sec = (time_t)((u64)ts.tv_sec + sec);
-    }
-    r = pthread_cond_timedwait(&c->c, &m->l, &ts);
-#endif
-    return r == ETIMEDOUT;
-}
-/* the wait noted while it lasts, for a hang report (pm_waits) */
-int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
-    int r;
-    pm_wait_note(m, __builtin_return_address(0), 1);
-    r = cond_wait(c, m, timeout_ns);
-    pm_wait_note(NULL, NULL, 0);
-    return r;
-}
-
-#if defined(__APPLE__)
-/* libSystem's, which libc++'s atomic waits use too: the public os_sync_wait_on_address needs macOS 14.4 */
-extern int __ulock_wait(u32 operation, void* addr, u64 value, u32 timeout_us);
-extern int __ulock_wake(u32 operation, void* addr, u64 wake_value);
-#define SNX_UL_COMPARE_AND_WAIT 1u
-#define SNX_ULF_WAKE_ALL        0x100u
-#define SNX_ULF_NO_ERRNO        0x1000000u
-#endif
-void plat_wait_word(u32* w, u32 v, i64 timeout_ns) {
-#if defined(__linux__)
-    struct timespec ts;
-    if (timeout_ns >= 0) {
-        ts.tv_sec = (time_t)(timeout_ns / 1000000000);
-        ts.tv_nsec = (long)(timeout_ns % 1000000000);
-    }
-    syscall(SYS_futex, w, FUTEX_WAIT_PRIVATE, v, timeout_ns >= 0 ? &ts : NULL, NULL, 0);
-#elif defined(__FreeBSD__)
-    struct _umtx_time ut = {0};
-    if (timeout_ns < 0) {
-        _umtx_op(w, UMTX_OP_WAIT_UINT_PRIVATE, v, NULL, NULL);
-        return;
-    }
-    ut._timeout.tv_sec = (time_t)(timeout_ns / 1000000000);
-    ut._timeout.tv_nsec = (long)(timeout_ns % 1000000000);
-    ut._clockid = CLOCK_MONOTONIC;
-    _umtx_op(w, UMTX_OP_WAIT_UINT_PRIVATE, v, (void*)(uintptr_t)sizeof ut, &ut);
-#elif defined(__NetBSD__)
-    /* NetBSD's __futex takes Linux's operations, a relative timeout for FUTEX_WAIT included */
-    struct timespec ts;
-    if (timeout_ns >= 0) {
-        ts.tv_sec = (time_t)(timeout_ns / 1000000000);
-        ts.tv_nsec = (long)(timeout_ns % 1000000000);
-    }
-    syscall(SYS___futex, w, FUTEX_WAIT | FUTEX_PRIVATE_FLAG, v, timeout_ns >= 0 ? &ts : NULL, NULL, 0, 0);
-#else
-    /* 0 waits without limit: a timeout is at least a microsecond, and at most what the 32 bits hold */
-    u64 us = timeout_ns < 0 ? 0 : (u64)timeout_ns / 1000u + 1u;
-    __ulock_wait(SNX_UL_COMPARE_AND_WAIT | SNX_ULF_NO_ERRNO, w, v, us > 0xFFFFFFFFu ? 0xFFFFFFFFu : (u32)us);
-#endif
-}
-void plat_wake_word(u32* w) {
-#if defined(__linux__)
-    syscall(SYS_futex, w, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
-#elif defined(__FreeBSD__)
-    _umtx_op(w, UMTX_OP_WAKE_PRIVATE, INT_MAX, NULL, NULL);
-#elif defined(__NetBSD__)
-    syscall(SYS___futex, w, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, INT_MAX, NULL, NULL, 0, 0);
-#else
-    __ulock_wake(SNX_UL_COMPARE_AND_WAIT | SNX_ULF_WAKE_ALL | SNX_ULF_NO_ERRNO, w, 0);
-#endif
-}
-
 /* ================================================================ threads */
-typedef struct {
-    PThreadFn fn;
-    void* arg;
-    int alt_stack;
-} ThreadStart;
-
-static void alt_stack_off(void) {
-    stack_t ss;
-    memset(&ss, 0, sizeof ss);
-    ss.ss_flags = SS_DISABLE;
-    sigaltstack(&ss, NULL);
-}
-
-/* the alternate stack lives in this frame for as long as fn runs, and is switched off before the frame goes. Not
-   inlined: in thread_start's frame the array would take its room on every thread, the small ones too */
-__attribute__((noinline)) static void run_with_alt_stack(PThreadFn fn, void* arg) {
-    char stack[ALT_STACK_SIZE];
-    stack_t ss;
-    memset(&ss, 0, sizeof ss);
-    ss.ss_sp = stack;
-    ss.ss_size = sizeof stack;
-    sigaltstack(&ss, NULL);
-    fn(arg);
-    alt_stack_off();
-}
-
+/* touches t_plat_posix, which the fault handlers use, before the thread can fault */
 static void wp_thread_start(void);
-static void* thread_start(void* p) {
-    ThreadStart s = *(ThreadStart*)p;
-    free(p);
-    wp_thread_start();
-    if (s.alt_stack)
-        run_with_alt_stack(s.fn, s.arg);
-    else
-        s.fn(s.arg);
-    SDL_CleanupTLS(); /* SDL's per-thread state (plat_sdl.c's calls set its error text) */
-    return NULL;
-}
-
-#if defined(__linux__) && !defined(__ANDROID__)
-/* every CPU the process may use (plat_cpus), which plat_thread gives each thread it starts: one a game thread started
-   would otherwise run only on the share of that thread's core (plat_thread_cpus) */
-static cpu_set_t g_all_cpus;
-#endif
-int plat_thread(PThreadFn fn, void* arg, size_t stack) {
-    ThreadStart* s = malloc(sizeof *s);
-    pthread_attr_t a;
-    pthread_t t;
-    int r;
-    if (!s) return -1;
-    s->fn = fn;
-    s->arg = arg;
-    s->alt_stack = stack == 0 || stack >= ALT_STACK_MIN_THREAD;
-    pthread_attr_init(&a);
-    pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
-#if defined(__linux__) && !defined(__ANDROID__)
-    if (CPU_COUNT(&g_all_cpus)) pthread_attr_setaffinity_np(&a, sizeof g_all_cpus, &g_all_cpus);
-#endif
-    if (stack) {
-        /* smaller than the minimum, setstacksize fails and the default would be used silently */
-        if (stack < THREAD_STACK_FLOOR) stack = THREAD_STACK_FLOOR;
-#if defined(__APPLE__)
-        {
-            size_t page = (size_t)sysconf(_SC_PAGESIZE); /* 16 KiB on Apple silicon; Darwin wants whole pages */
-            stack = (stack + page - 1) / page * page;
-        }
-#endif
-        pthread_attr_setstacksize(&a, stack);
-    }
-    r = pthread_create(&t, &a, thread_start, s);
-    pthread_attr_destroy(&a);
-    if (r) {
-        free(s);
-        errno = r; /* the reason, for what the caller says */
-        return -1;
-    }
-    return 0;
-}
-void plat_thread_exit(void) {
-    /* pthread_exit leaves run_with_alt_stack's frame without returning through it */
-    alt_stack_off();
-    SDL_CleanupTLS();
-    pthread_exit(NULL);
+/* what each thread plat_thread starts (common/platform/thread.c) does here: the fault handlers' state touched before it
+   can fault, and SDL's per-thread state (plat_sdl.c's calls set its error text) ended with it. A constructor, so it is
+   in place before any thread, in the runtime and in each test that compiles this file */
+static void sdl_thread_end(void) { SDL_CleanupTLS(); }
+__attribute__((constructor)) static void plat_posix_threads(void) {
+    static const PThreadHooks hooks = {wp_thread_start, sdl_thread_end};
+    plat_thread_hooks(&hooks);
 }
 
 /* ================================================================ the host's power source */
@@ -414,37 +231,6 @@ int plat_memory_watch(int (*say)(const char* why)) {
     return -1;
 }
 #endif
-/* Linux only: Android's CPUs differ in speed, so a fixed share of them would make a core slow */
-#if defined(__linux__) && !defined(__ANDROID__)
-int plat_cpus(int* ids, int max) {
-    int c, n = 0;
-    if (sched_getaffinity(0, sizeof g_all_cpus, &g_all_cpus)) {
-        CPU_ZERO(&g_all_cpus);
-        return 0;
-    }
-    for (c = 0; c < CPU_SETSIZE && n < max; c++)
-        if (CPU_ISSET(c, &g_all_cpus)) ids[n++] = c;
-    return n;
-}
-void plat_thread_cpus(const int* ids, int n) {
-    cpu_set_t s;
-    int i;
-    CPU_ZERO(&s);
-    for (i = 0; i < n; i++) CPU_SET(ids[i], &s);
-    if (sched_setaffinity(0, sizeof s, &s))
-        WARN_LIMIT(1, "Could not move a game thread to its CPUs: %s\n", strerror(errno));
-}
-#else
-int plat_cpus(int* ids, int max) {
-    (void)ids;
-    (void)max;
-    return 0;
-}
-void plat_thread_cpus(const int* ids, int n) {
-    (void)ids;
-    (void)n;
-}
-#endif
 #if defined(__linux__) && !defined(__ANDROID__)
 /* the text after "key" (and a '=' or ':' with the spaces around it) on the first line of path that starts with it,
    unquoted; out empty when there's none */
@@ -525,7 +311,6 @@ void plat_system_info(char* out, size_t cap) {
     snprintf(out, cap, "%s%s%s, %ld threads, %llu GB RAM", os, *c ? ", " : "", c, threads > 0 ? threads : 0,
              (ram + (512ull << 20)) >> 30);
 }
-void plat_yield(void) { sched_yield(); }
 void plat_exit_now(int code) {
     fflush(NULL);
     snx_run_mark_end(); /* an exit: _exit runs no atexit handler */
@@ -704,9 +489,6 @@ static _Thread_local struct {
     u32 wp_retried_at;
     void* frz_retried; /* the address a thawed write was let go again at once (frozen_wait) */
     int crashed;       /* this thread faulted already */
-#if defined(__linux__)
-    u32 tid; /* plat_tid's */
-#endif
 } t_plat_posix;
 /* a range frozen while it is copied (plat_freeze, below) */
 static u8 *g_frz_lo, *g_frz_hi;
@@ -722,7 +504,6 @@ static u8* g_ww_open_hi[WW_OPEN_N];
 static u32 g_ww_open_live; /* atomic: the published slots, a bit each, read in one load */
 typedef char snx_ww_open_in_a_word[WW_OPEN_N <= 32 ? 1 : -1];
 
-/* touches t_plat_posix, which the fault handlers use, before the thread can fault */
 static void wp_thread_start(void) {
     __atomic_store_n(&t_plat_posix.wp_retried, NULL, __ATOMIC_RELAXED);
     __atomic_store_n(&t_plat_posix.wp_retried_at, 0, __ATOMIC_RELAXED);
@@ -1248,7 +1029,7 @@ int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
         arg.size = sizeof arg;
         /* no PM_SCAN_CHECK_WPASYNC: a range not registered for the write watch (an owned span, in minor mode for its
            trap: plat_trap_arm) is skipped rather than failing the scan with EPERM. Its consumers use the ownership
-           map (docs/GPU_OWNERSHIP.md) */
+           map (docs/layers/gpu/ownership.md) */
         arg.flags = PM_SCAN_WP_MATCHING;
         arg.start = start;
         arg.end = end;
@@ -1329,36 +1110,20 @@ int plat_address_space(u64* mapped, u64* largest_free) {
     *largest_free = hole;
     return 1;
 }
-/* mmap aligns to the host's own page: the reservation takes SNX_PLAT_PAGE_MAX more and trims the rest, so guest
-   addresses sit at the same place in any page plat_vm_page may work in as their host addresses */
-u8* plat_vm_reserve(u64 size) {
-    u64 host = (u64)sysconf(_SC_PAGESIZE), align = SNX_PLAT_PAGE_MAX, extra = align > host ? align - host : 0, head;
-    u8* p = (u8*)mmap(NULL, (size_t)(size + extra), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (p == (u8*)MAP_FAILED) return NULL;
-    head = (align - (u64)(uintptr_t)p % align) % align;
-    if (head) munmap(p, (size_t)head);
-    if (extra > head) munmap(p + head + size, (size_t)(extra - head));
-    return p + head;
-}
+/* aligned to SNX_PLAT_PAGE_MAX, so guest addresses sit at the same place in any page plat_vm_page may work in as their
+   host addresses */
+u8* plat_vm_reserve(u64 size) { return (u8*)plat_mem_reserve(size, SNX_PLAT_PAGE_MAX); }
 u8* plat_vm_reserve_unwatched(u64 size) {
     (void)size;
     errno = ENOSYS;
     return NULL;
 }
 u8* plat_vm_reserve_at(u64 addr, u64 size) {
-#if defined(MAP_FIXED_NOREPLACE)
-    u8* want = (u8*)(uintptr_t)addr;
+#if defined(MAP_FIXED_NOREPLACE) /* NCE's hosts */
     u8* p;
     if (addr % plat_vm_page()) return NULL;
-    p = (u8*)mmap(want, (size_t)size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE,
-                  -1, 0);
-    if (p == (u8*)MAP_FAILED) return NULL;
-    if (p != want) { /* a kernel before 4.17 takes the flag as a hint */
-        munmap(p, (size_t)size);
-        errno = EEXIST;
-        return NULL;
-    }
-    g_vm_exec = PROT_EXEC;
+    p = (u8*)plat_mem_reserve_at(addr, size);
+    if (p) g_vm_exec = PROT_EXEC;
     return p;
 #else
     (void)addr;
@@ -1370,7 +1135,7 @@ u8* plat_vm_reserve_at(u64 addr, u64 size) {
 int plat_vm_commit(u8* p, u64 size) {
     int r;
     wp_hold(p, size, WP_MAPPED);
-    r = mprotect(p, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec) ? -1 : 0;
+    r = plat_mem_protect(p, size, PLAT_MEM_READ | PLAT_MEM_WRITE | (g_vm_exec ? PLAT_MEM_EXEC : 0u));
     wp_let(p, size, WP_MAPPED, !r);
     return r;
 }
@@ -1380,9 +1145,7 @@ void plat_vm_decommit(u8* p, u64 size) {
     madvise(p, (size_t)size, MADV_DONTNEED);
     mprotect(p, (size_t)size, PROT_NONE);
 #else
-    /* only Linux's MADV_DONTNEED drops the contents (Darwin's may keep them, FreeBSD's does): fresh pages over the
-       range are certain to read zero */
-    mmap(p, (size_t)size, PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    (void)plat_mem_decommit(p, size); /* fresh pages: only Linux's MADV_DONTNEED drops the contents */
 #endif
     wp_let(p, size, 0, 1);
 }
@@ -1670,7 +1433,7 @@ int plat_alias_map(u8* p, u64 off, u64 size) {
 int plat_alias_unmap(u8* p, u64 size) {
     int r;
     wp_hold(p, size, 0);
-    r = mmap(p, (size_t)size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0) == MAP_FAILED;
+    r = plat_mem_decommit(p, size);
     wp_let(p, size, 0, !r);
     if (r) return -1;
     ww_remapped(p, size); /* the anonymous mapping is a new one too */
@@ -1748,16 +1511,6 @@ u8* plat_alias_host(u64 off, u64 size) {
 }
 void plat_alias_host_free(u8* p, u64 size) { munmap(p, (size_t)size); }
 static u64 g_alias_size;
-u32 plat_tid(void) {
-#if defined(__linux__)
-    /* kept per thread: vk_lock asks it on every acquire, thousands of times a frame in one game, and each was a
-       system call */
-    if (!t_plat_posix.tid) t_plat_posix.tid = (u32)syscall(SYS_gettid);
-    return t_plat_posix.tid;
-#else
-    return (u32)(uintptr_t)pthread_self();
-#endif
-}
 void plat_thread_where(u32 tid, char* out, size_t n) {
     snprintf(out, n, "?");
 #if defined(__linux__)
@@ -2240,6 +1993,20 @@ void plat_trap_disarm(u8* p, u64 size) {
 #endif
 }
 
+/* the landing writes through the pool's mirror here: no trap lands in place, nor is a landed page read in place */
+int plat_trap_fill(u8* p, const void* src, u64 size) {
+    (void)p;
+    (void)src;
+    (void)size;
+    return -1;
+}
+int plat_vm_read(const void* p, void* dst, u64 size) {
+    (void)p;
+    (void)dst;
+    (void)size;
+    return -1;
+}
+
 /* ---- a range frozen while it is copied: a write to it waits in the signal handler (fault_signal) for the thaw */
 static int frozen_wait(void* a, int access);
 
@@ -2378,85 +2145,12 @@ static int frozen_wait(void* a, int access) {
     return 1;
 }
 
-/* ================================================================ libraries */
-void* plat_dl_loaded(const char* name) {
-#ifdef RTLD_NOLOAD
-    return dlopen(name, RTLD_NOW | RTLD_NOLOAD);
-#else
-    (void)name;
-    return NULL;
-#endif
-}
-
 /* ================================================================ environment */
 int plat_setenv(const char* name, const char* value) { return setenv(name, value, 1); }
 
-/* ================================================================ files */
-i64 plat_pread(FILE* f, void* buf, u64 size, u64 off) {
-    int fd = fileno(f);
-    u64 got = 0;
-    if (fd < 0 || size > (u64)INT64_MAX || off > (u64)INT64_MAX - size) return -1;
-    /* pread may return less than asked (past 2 GiB on Linux, or interrupted): go on until done or at the end */
-    while (got < size) {
-        ssize_t r = pread(fd, (u8*)buf + got, (size_t)(size - got), (off_t)(off + got));
-        if (r < 0) {
-            if (errno == EINTR) continue;
-            return -1;
-        }
-        if (r == 0) break;
-        got += (u64)r;
-    }
-    return (i64)got;
-}
-
-static void file_map_clear(PFileMap* m) {
-    m->data = NULL;
-    m->size = 0;
-    m->borrowed = 0;
-    m->heap = 0;
-}
-/* stat_it: the size comes from fstat, and the file must be a regular one; else known is trusted */
-static int file_map(PFileMap* m, const char* path, int stat_it, u64 known) {
-    int fd;
-    u64 size = known;
-    void* p;
-    file_map_clear(m);
-    fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return -1;
-    if (stat_it) {
-        struct stat st;
-        if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_size < 0) {
-            close(fd);
-            return -1;
-        }
-        size = (u64)st.st_size;
-    }
-    if (size > (u64)SIZE_MAX || size > (u64)INT64_MAX) {
-        close(fd);
-        return -1;
-    }
-    if (!size) {
-        close(fd);
-        return 0;
-    }
-    p = mmap(NULL, (size_t)size, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd); /* the mapping keeps the file */
-    if (p == MAP_FAILED) return -1;
-    m->data = (const u8*)p;
-    m->size = size;
-    return 0;
-}
-int plat_file_map(PFileMap* m, const char* path) { return file_map(m, path, 1, 0); }
-int plat_file_map_sized(PFileMap* m, const char* path, u64 size) { return file_map(m, path, 0, size); }
-void plat_file_unmap(PFileMap* m) {
-    if (m->heap)
-        free((void*)m->data);
-    else if (m->data && !m->borrowed) munmap((void*)m->data, (size_t)m->size);
-    file_map_clear(m);
-}
 /* ================================================================ the crash handler */
 static int g_crash_reporting; /* a thread is reporting a crash */
-static char g_main_alt_stack[ALT_STACK_SIZE];
+static char g_main_alt_stack[PLAT_ALT_STACK_SIZE];
 
 static void* context_pc(void* ctx) {
     ucontext_t* uc = (ucontext_t*)ctx;
@@ -2550,9 +2244,3 @@ void plat_crash_code_module(const void* inside) { (void)inside; }
 void plat_crash_handler_check(void) {}
 
 void plat_prof_start(void) {}
-
-u64 plat_monotonic_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (u64)ts.tv_sec * 1000000000u + (u64)ts.tv_nsec;
-}

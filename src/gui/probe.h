@@ -3,7 +3,7 @@
 /* Settings > App > GPU Drivers' Run edenprobe: edenprobe (github.com/scarletnx/edenprobe), a homebrew program of
    hardware probes, played as a game from probe/ of the state folder. Its data folder there is a portable one
    (SNX_PORTABLE_DIR), so the run finds none of the player's settings, saves or users. What the menu needs of it,
-   without SDL: the paths, the card made ready for a press, and the report read (docs/EDENPROBE.md) */
+   without SDL: the paths, the card made ready for a press, and the report read (docs/dev/edenprobe.md) */
 #ifndef SNX_GUI_PROBE_H
 #define SNX_GUI_PROBE_H
 #include <stddef.h>

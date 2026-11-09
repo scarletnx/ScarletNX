@@ -27,7 +27,7 @@
    values live in shared memory, and the partitions' endpoints in registers chosen with selects. Bit replication
    is a multiplication, loops that only walked a fixed handful of fields are written out, and the texel loop does
    the work of two channels in each 32 bit operation. Every shortcut gives the bytes the CPU reference
-   (tests/support/astc.c) gives; docs/ASTC.md lists them with how each was checked. */
+   (tests/support/astc.c) gives; docs/layers/gpu/astc.md lists them with how each was checked. */
 
 /* the integer sequence encodings */
 #define JUST_BITS 0u
@@ -236,11 +236,10 @@ void DecodeSequence(uint kind, uint b, uint count) {
     }
 }
 
+/* the partition hash of the ASTC specification: its p -= p << 17, p += p << 7, p += p << 4 are one multiply by
+   (1 - 2^17)(1 + 2^7)(1 + 2^4) = 4007528593 mod 2^32, the same for every input */
 uint Hash52(uint p) {
-    p ^= p >> 15u;
-    p -= p << 17u;
-    p += p << 7u;
-    p += p << 4u;
+    p = (p ^ (p >> 15u)) * 4007528593u;
     p ^= p >> 5u;
     p += p << 16u;
     p ^= p >> 7u;

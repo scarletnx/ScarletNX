@@ -90,7 +90,7 @@ ENV_SYSTEM = {
 }
 ENV_SYSTEM_PREFIXES = ('XDG_',)
 # The variables an older version read for what are settings or options now, still read for one version
-# (docs/DEPRECATIONS.md), each in the files named here alone. The change that removes one removes its row
+# (docs/user/deprecations.md), each in the files named here alone. The change that removes one removes its row
 ENV_DEPRECATED = {
     'SNX_WW': {'src/nx/runtime/deprecated_env.c'},
     'SNX_NO_WW': {'src/nx/runtime/deprecated_env.c'},
@@ -466,7 +466,7 @@ def check_target_sources(repo, build):
                 if not path.is_absolute():
                     path = repo / path
                 path = path.resolve()
-                # the Windows programs' manifest and icon (src/common/platform/runtime.rc), which each program
+                # the Windows programs' manifest and icon (src/common/platform/windows/runtime.rc), which each program
                 # compiles into itself as a source of its own
                 if not path.is_relative_to(src):
                     continue

@@ -58,12 +58,16 @@ public final class Activities {
         if (!f.exists()) return null;
         String authority = snx.android.provider.ExternalStorageProvider.AUTHORITY;
         android.net.Uri uri;
-        if (Intent.ACTION_OPEN_DOCUMENT_TREE.equals(request.getAction())) {
-            java.io.File dir = f.isDirectory() ? f : f.getParentFile();
-            uri = android.provider.DocumentsContract.buildTreeDocumentUri(authority, snx.android.provider.ExternalStorageProvider.documentId(dir));
+        boolean tree = Intent.ACTION_OPEN_DOCUMENT_TREE.equals(request.getAction());
+        if (!tree && f.isDirectory()) return null;
+        // the folder (or the file's folder) as a folder of the shared storage
+        java.io.File folder = snx.android.provider.ExternalStorageProvider.shared(f.isDirectory() ? f : f.getParentFile());
+        if (folder == null) return null;
+        if (tree) {
+            uri = android.provider.DocumentsContract.buildTreeDocumentUri(authority, snx.android.provider.ExternalStorageProvider.documentId(folder));
         } else {
-            if (f.isDirectory()) return null;
-            uri = android.provider.DocumentsContract.buildDocumentUri(authority, snx.android.provider.ExternalStorageProvider.documentId(f));
+            uri = android.provider.DocumentsContract.buildDocumentUri(authority,
+                snx.android.provider.ExternalStorageProvider.documentId(new java.io.File(folder, f.getName())));
         }
         return new Intent().setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
@@ -77,6 +81,15 @@ public final class Activities {
             Intent result = pick(intent);
             if (caller != null && requestCode >= 0)
                 main.post(() -> caller.performActivityResult(requestCode, result != null ? Activity.RESULT_OK : Activity.RESULT_CANCELED, result));
+            return;
+        }
+        if (info == null && intent.getAction() != null && (intent.getAction().startsWith("android.settings.")
+                || intent.getAction().equals(android.app.role.RoleManager.ACTION_REQUEST_ROLE))) {
+            // a screen of the system's Settings, which every device has, or its dialog asking for a role: shown and
+            // backed out of, RESULT_CANCELED, as Settings gives (what it would grant, the app has: the permissions it
+            // asks for)
+            if (caller != null && requestCode >= 0)
+                main.post(() -> caller.performActivityResult(requestCode, Activity.RESULT_CANCELED, null));
             return;
         }
         if (info == null) throw new android.content.ActivityNotFoundException("No Activity found to handle " + intent);

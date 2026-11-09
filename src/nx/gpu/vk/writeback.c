@@ -17,7 +17,10 @@ int vk_result_landing(void) { return t_result_depth != 0; }
 
 /* temporary writeback cost diagnosis: bytes compared (memcmp) vs bytes actually changed and written back */
 static u64 g_wb_cmp_bytes, g_wb_chg_bytes;
-void vk_writeback_diag(u64* cmp, u64* chg) { *cmp = g_wb_cmp_bytes; *chg = g_wb_chg_bytes; }
+void vk_writeback_diag(u64* cmp, u64* chg) {
+    *cmp = g_wb_cmp_bytes;
+    *chg = g_wb_chg_bytes;
+}
 
 /* whether [p, p + n) overlaps the guest's address space, where pages the GPU holds fault when read. From AS_BASE:
    under NCE g_mem is 0, and on Android what lies below the moved layout is the app's own (mem.c) */

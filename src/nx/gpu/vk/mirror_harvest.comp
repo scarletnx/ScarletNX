@@ -1,12 +1,12 @@
 #version 450
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The pages of the GPU mirror (vk/mirror.c) the programs wrote in a submit, into host memory for landing: a workgroup
-   a page of a range the submit's programs had bound for writing. A page none of whose mask bits is set (most) returns.
-   A written one takes the next entry of the output, and copies there its page number, its mask words and, in an entry
-   of 1156 words, its bytes (an entry of 132 words has none: the page stays GPU-owned in the mirror until the CPU
-   touches it), and clears its mask. One past the output's room is left as it is, mask and all, and its page number is put in the
-   list of those left, for another pass. CMake compiles it into SPIR-V at build time (cmake/glsl.cmake). */
+/* The pages of the GPU mirror (vk/mirror.c) the programs wrote in a submit, into host memory for landing: a workgroup a
+   page of a range the submit's programs had bound for writing. A page none of whose mask bits is set (most) returns. A
+   written one takes the next entry of the output, and copies there its page number, its mask words and, in an entry of
+   1156 words, its bytes (an entry of 132 words has none: the page stays GPU-owned in the mirror until the CPU touches
+   it), and clears its mask. One past the output's room is left as it is, mask and all, and its page number is put in
+   the list of those left, for another pass. CMake compiles it into SPIR-V at build time (cmake/glsl.cmake). */
 layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
 
 layout(std430, set = 0, binding = 0) buffer Mask {

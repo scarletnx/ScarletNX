@@ -53,7 +53,7 @@ int main(void) {
     /* the runtime's section, last after [Other]: it and the blank line before it go, the rest as it was */
     const char* game =
         "[Display]\nfullscreen=1\n\n[Other]\nlanguage=en\n\n"
-        "[Deprecated]\n; keys an older version used, which do nothing now (docs/DEPRECATIONS.md): delete "
+        "[Deprecated]\n; keys an older version used, which do nothing now (docs/user/deprecations.md): delete "
         "them, or use Settings > App >\n;   Clean Old Settings in the launcher\n"
         "; renderer: Vulkan is the only renderer\nrenderer=opengl\n; touch_controls: now controls\n"
         "touch_controls=1\n";

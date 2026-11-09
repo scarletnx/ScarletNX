@@ -129,10 +129,11 @@ static bool make_device(void) {
     return hle_vulkan_create_device(g.physical, &dinfo, &g.device) == VK_SUCCESS;
 }
 
-bool gles_vk_device(VkSurfaceKHR* surface) {
+bool gles_vk_device(VkSurfaceKHR* surface, bool probe) {
+    VkResult (*make)(VkInstance, VkSurfaceKHR*) = probe ? hle_vulkan_probe_surface : hle_vulkan_create_surface;
     if (g.tried) {
         if (!g.up) return false;
-        return hle_vulkan_create_surface(g.instance, surface) == VK_SUCCESS;
+        return make(g.instance, surface) == VK_SUCCESS;
     }
     g.tried = true;
     static const char* const extensions[] = {"VK_KHR_android_surface"};
@@ -147,7 +148,7 @@ bool gles_vk_device(VkSurfaceKHR* surface) {
 #define GLES_LOAD(name) g.vk.name = (PFN_##name)vkGetInstanceProcAddr(g.instance, #name);
     GLES_INSTANCE_COMMANDS(GLES_LOAD)
 #undef GLES_LOAD
-    if (hle_vulkan_create_surface(g.instance, surface) != VK_SUCCESS) return false;
+    if (make(g.instance, surface) != VK_SUCCESS) return false;
     uint32_t n = 0;
     g.vk.vkEnumeratePhysicalDevices(g.instance, &n, NULL);
     VkPhysicalDevice physicals[16];
@@ -618,7 +619,7 @@ GlesSurface* gles_window_surface(int width, int height) {
     pthread_mutex_lock(&g.lock);
     VkSurfaceKHR vs = VK_NULL_HANDLE;
     GlesSurface* s = NULL;
-    if (gles_vk_device(&vs) && (s = calloc(1, sizeof *s))) {
+    if (gles_vk_device(&vs, false) && (s = calloc(1, sizeof *s))) {
         s->surface = vs;
         s->width = width > 0 ? width : 1;
         s->height = height > 0 ? height : 1;
@@ -638,8 +639,9 @@ GlesSurface* gles_window_surface(int width, int height) {
 GlesSurface* gles_pbuffer_make(int width, int height) {
     VkSurfaceKHR vs = VK_NULL_HANDLE;
     if (!g.tried) {
-        /* the first surface brings the device up, which takes a window surface: this one is let go */
-        if (gles_vk_device(&vs) && vs) g.vk.vkDestroySurfaceKHR(g.instance, vs, NULL);
+        /* the first surface brings the device up, which chooses it by a window surface: a probe's, let go, which
+           leaves the window to ScarletNX's renderer */
+        if (gles_vk_device(&vs, true) && vs) g.vk.vkDestroySurfaceKHR(g.instance, vs, NULL);
     }
     GlesSurface* s = g.up ? calloc(1, sizeof *s) : NULL;
     if (!s) return NULL;

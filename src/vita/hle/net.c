@@ -151,7 +151,7 @@ static uint32_t fail(VitaProcess* p, VitaThread* t, uint32_t error) {
    by the wait) */
 static uint32_t again(VitaProcess* p, VitaThread* t, uint64_t ns) {
     t->cpu.r[15] -= t->cpu.cpsr & SNX_ARM_T ? 2u : 4u;
-    vita_wait(p, (VitaWait){.kind = VITA_WAIT_DELAY, .a = 1, .deadline = vita_now_ns() + (ns ? ns : 1)});
+    vita_wait(p, (VitaWait){.kind = VITA_WAIT_DELAY, .a = 1, .deadline = plat_ns() + (ns ? ns : 1)});
     return 0;
 }
 

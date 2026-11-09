@@ -7,6 +7,8 @@
 #include "android/bridge/arm32.h"
 #include "android/bridge/hle_impl.h"
 #include "common/cpu/arm/exec.h"
+#include "common/cpu/recompiler/llvm/elf_defs.h"
+#include "common/cpu/recompiler/llvm/elf_hash.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
@@ -663,29 +665,6 @@ uint32_t arm32_guest_code(const uint32_t* words, unsigned count) {
 
 /* ---- the loader ---- */
 
-#define PT_LOAD_      1
-#define PT_DYNAMIC_   2
-#define PT_ARM_EXIDX_ 0x70000001u
-#define PF_X_         1
-enum {
-    DT_NULL_ = 0,
-    DT_NEEDED_ = 1,
-    DT_PLTRELSZ_ = 2,
-    DT_HASH_ = 4,
-    DT_STRTAB_ = 5,
-    DT_SYMTAB_ = 6,
-    DT_STRSZ_ = 10,
-    DT_INIT_ = 12,
-    DT_SONAME_ = 14,
-    DT_REL_ = 17,
-    DT_RELSZ_ = 18,
-    DT_JMPREL_ = 23,
-    DT_INIT_ARRAY_ = 25,
-    DT_INIT_ARRAYSZ_ = 27,
-    DT_GNU_HASH_ = 0x6ffffef5,
-};
-enum { R_ARM_NONE_ = 0, R_ARM_ABS32_ = 2, R_ARM_GLOB_DAT_ = 21, R_ARM_JUMP_SLOT_ = 22, R_ARM_RELATIVE_ = 23 };
-
 struct Arm32Library {
     char* name;
     char* path;
@@ -717,17 +696,6 @@ uint32_t arm32_exidx(uint32_t pc, int* count) {
     return l ? l->exidx : 0;
 }
 
-static uint32_t elf_hash(const char* name) {
-    uint32_t hv = 0;
-    for (const unsigned char* p = (const unsigned char*)name; *p; ++p) {
-        hv = (hv << 4) + *p;
-        uint32_t g = hv & 0xf0000000u;
-        hv ^= g >> 24;
-        hv &= ~g;
-    }
-    return hv;
-}
-
 /* symbol i of a library: its address when the library defines it under name, else 0 */
 static uint32_t named(const Arm32Library* l, uint32_t i, const char* name) {
     uint32_t sym = l->symtab + 16 * i;
@@ -737,19 +705,12 @@ static uint32_t named(const Arm32Library* l, uint32_t i, const char* name) {
     return strcmp((const char*)arm32_mem + l->strtab + rd32(sym), name) ? 0 : l->base + rd32(sym + 4);
 }
 
-/* GNU's hash of a name (DT_GNU_HASH): h * 33 + c from 5381 */
-static uint32_t gnu_hash_of(const char* name) {
-    uint32_t h = 5381;
-    for (const unsigned char* p = (const unsigned char*)name; *p; ++p) h = h * 33 + *p;
-    return h;
-}
-
 /* a symbol a library defines, by its SysV hash or its GNU one: its address, 0 when it has none. The GNU table is
    nbuckets, symoffset, bloom_size, bloom_shift, the bloom filter's 32-bit words, the buckets, then a hash for each
    symbol from symoffset on, bit 0 set on the last of a bucket's chain */
 static uint32_t defined(const Arm32Library* l, const char* name) {
     if (l->hash && l->nbucket) {
-        uint32_t hv = elf_hash(name);
+        uint32_t hv = snx_elf_sysv_hash(name);
         for (uint32_t i = rd32(l->hash + 8 + 4 * (hv % l->nbucket)); i && i < l->nchain;
              i = rd32(l->hash + 8 + 4 * l->nbucket + 4 * i)) {
             uint32_t a = named(l, i, name);
@@ -761,7 +722,7 @@ static uint32_t defined(const Arm32Library* l, const char* name) {
     uint32_t nbuckets = rd32(l->gnu_hash), symoffset = rd32(l->gnu_hash + 4);
     uint32_t bloom_size = rd32(l->gnu_hash + 8), bloom_shift = rd32(l->gnu_hash + 12);
     if (!nbuckets || !bloom_size) return 0;
-    uint32_t h = gnu_hash_of(name);
+    uint32_t h = snx_elf_gnu_hash(name);
     uint32_t bloom = rd32(l->gnu_hash + 16 + 4 * ((h / 32) % bloom_size));
     if (!((bloom >> (h % 32)) & (bloom >> ((h >> bloom_shift) % 32)) & 1)) return 0;
     uint32_t buckets = l->gnu_hash + 16 + 4 * bloom_size, chains = buckets + 4 * nbuckets;
@@ -808,11 +769,11 @@ static bool relocate(Arm32Library* l, uint32_t rel, uint32_t size, char* error, 
             if (!value && bind != 2 /* weak */) value = arm32_hle_missing(name);
         }
         switch (type) {
-        case R_ARM_NONE_: break;
-        case R_ARM_ABS32_: wr32(where, rd32(where) + value); break;
-        case R_ARM_GLOB_DAT_:
-        case R_ARM_JUMP_SLOT_: wr32(where, value); break;
-        case R_ARM_RELATIVE_: wr32(where, rd32(where) + l->base); break;
+        case R_ARM_NONE: break;
+        case R_ARM_ABS32: wr32(where, rd32(where) + value); break;
+        case R_ARM_GLOB_DAT:
+        case R_ARM_JUMP_SLOT: wr32(where, value); break;
+        case R_ARM_RELATIVE: wr32(where, rd32(where) + l->base); break;
         default:
             snprintf(error, error_size, "%s: relocation type %u is not done", l->name, type);
             return false;
@@ -861,7 +822,7 @@ static Arm32Library* load(const char* path, char* error, size_t error_size) {
     for (unsigned i = 0; i < phnum; ++i) {
         const unsigned char* ph = file + phoff + (size_t)i * phentsize;
         if (phoff + (size_t)(i + 1) * phentsize > size) break;
-        if (snx_ld_le32(ph) != PT_LOAD_) continue;
+        if (snx_ld_le32(ph) != PT_LOAD) continue;
         uint32_t vaddr = snx_ld_le32(ph + 8), memsz = snx_ld_le32(ph + 20);
         if (vaddr < lo) lo = vaddr;
         if (vaddr + memsz > hi) hi = vaddr + memsz;
@@ -885,12 +846,12 @@ static Arm32Library* load(const char* path, char* error, size_t error_size) {
         const unsigned char* ph = file + phoff + (size_t)i * phentsize;
         uint32_t type = snx_ld_le32(ph), offset = snx_ld_le32(ph + 4), vaddr = snx_ld_le32(ph + 8);
         uint32_t filesz = snx_ld_le32(ph + 16), memsz = snx_ld_le32(ph + 20), pflags = snx_ld_le32(ph + 24);
-        if (type == PT_LOAD_) {
+        if (type == PT_LOAD) {
             if ((uint64_t)offset + filesz <= size) memcpy(arm32_mem + l->base + vaddr, file + offset, filesz);
-            if (pflags & PF_X_) add_code(l->base + vaddr, l->base + vaddr + memsz);
-        } else if (type == PT_DYNAMIC_) {
+            if (pflags & PF_X) add_code(l->base + vaddr, l->base + vaddr + memsz);
+        } else if (type == PT_DYNAMIC) {
             dynamic = l->base + vaddr;
-        } else if (type == PT_ARM_EXIDX_) {
+        } else if (type == PT_ARM_EXIDX) {
             l->exidx = l->base + vaddr;
             l->exidx_count = memsz / 8;
         }
@@ -899,20 +860,20 @@ static Arm32Library* load(const char* path, char* error, size_t error_size) {
     *libraries_end = l;
     libraries_end = &l->next;
     uint32_t rel = 0, relsz = 0, jmprel = 0, pltrelsz = 0, init = 0, init_array = 0, init_arraysz = 0;
-    for (uint32_t d = dynamic; d && rd32(d) != DT_NULL_; d += 8) {
+    for (uint32_t d = dynamic; d && rd32(d) != DT_NULL; d += 8) {
         uint32_t tag = rd32(d), value = rd32(d + 4);
         switch (tag) {
-        case DT_HASH_: l->hash = l->base + value; break;
-        case DT_GNU_HASH_: l->gnu_hash = l->base + value; break;
-        case DT_STRTAB_: l->strtab = l->base + value; break;
-        case DT_SYMTAB_: l->symtab = l->base + value; break;
-        case DT_REL_: rel = l->base + value; break;
-        case DT_RELSZ_: relsz = value; break;
-        case DT_JMPREL_: jmprel = l->base + value; break;
-        case DT_PLTRELSZ_: pltrelsz = value; break;
-        case DT_INIT_: init = l->base + value; break;
-        case DT_INIT_ARRAY_: init_array = l->base + value; break;
-        case DT_INIT_ARRAYSZ_: init_arraysz = value; break;
+        case DT_HASH: l->hash = l->base + value; break;
+        case DT_GNU_HASH: l->gnu_hash = l->base + value; break;
+        case DT_STRTAB: l->strtab = l->base + value; break;
+        case DT_SYMTAB: l->symtab = l->base + value; break;
+        case DT_REL: rel = l->base + value; break;
+        case DT_RELSZ: relsz = value; break;
+        case DT_JMPREL: jmprel = l->base + value; break;
+        case DT_PLTRELSZ: pltrelsz = value; break;
+        case DT_INIT: init = l->base + value; break;
+        case DT_INIT_ARRAY: init_array = l->base + value; break;
+        case DT_INIT_ARRAYSZ: init_arraysz = value; break;
         default: break;
         }
     }
@@ -921,8 +882,8 @@ static Arm32Library* load(const char* path, char* error, size_t error_size) {
         l->nchain = rd32(l->hash + 4);
     }
     /* the libraries it needs first: the app's own, loaded; the system's, the HLE's */
-    for (uint32_t d = dynamic; d && rd32(d) != DT_NULL_; d += 8)
-        if (rd32(d) == DT_NEEDED_) {
+    for (uint32_t d = dynamic; d && rd32(d) != DT_NULL; d += 8)
+        if (rd32(d) == DT_NEEDED) {
             const char* needed = (const char*)arm32_mem + l->strtab + rd32(d + 4);
             if (arm32_hle_is_system_library(needed)) continue;
             if (!load_needed(needed, error, error_size)) return NULL;

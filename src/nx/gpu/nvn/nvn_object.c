@@ -258,7 +258,8 @@ void nvn_DeviceGetInteger(CPU* c, u64 d, i32 what, u64 out) {
     (void)c;
     (void)d;
     if (w >= NVN_DEVICE_INFO_ITEMS || (!v && (w == 0x62 || w >= 0x69)))
-        LOG_LIMIT(16, "nvn: nvnDeviceGetInteger of item %#x, which the driver reads from state nobody measured: 0\n", w);
+        LOG_LIMIT(16, "nvn: nvnDeviceGetInteger of item %#x, which the driver reads from state nobody measured: 0\n",
+                  w);
     gw32(out, (u32)v);
 }
 void nvn_DeviceSetWindowOriginMode(CPU* c, u64 d, i32 mode) {

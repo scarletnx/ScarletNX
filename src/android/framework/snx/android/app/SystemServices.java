@@ -7,7 +7,7 @@ import java.util.Map;
 import java.util.function.Function;
 
 /**
- * The system services of the process: each one is a local object (Abstract in docs/android/INTERFACES.md), no
+ * The system services of the process: each one is a local object (Abstract in docs/platforms/android-apps/interfaces.md), no
  * binder. A context makes its own the first time it asks (the window manager and the inflater depend on it). The
  * services of absent hardware (Bluetooth, NFC, telecom) are not here: Android gives null for them too.
  */
@@ -59,6 +59,7 @@ final class SystemServices {
         Map.entry(Context.SEARCH_SERVICE, new Entry(android.app.SearchManager.class, c -> new android.app.SearchManager())),
         Map.entry(Context.DEVICE_POLICY_SERVICE, new Entry(android.app.admin.DevicePolicyManager.class, c -> new android.app.admin.DevicePolicyManager())),
         Map.entry(Context.USAGE_STATS_SERVICE, new Entry(android.app.usage.UsageStatsManager.class, c -> new android.app.usage.UsageStatsManager())),
+        Map.entry(Context.ROLE_SERVICE, new Entry(android.app.role.RoleManager.class, c -> new android.app.role.RoleManager())),
         Map.entry(Context.CREDENTIAL_SERVICE, new Entry(android.credentials.CredentialManager.class, c -> new android.credentials.CredentialManager())),
         Map.entry(Context.PRINT_SERVICE, new Entry(android.print.PrintManager.class, c -> new android.print.PrintManager())),
         Map.entry(Context.VIBRATOR_SERVICE, new Entry(android.os.Vibrator.class, c -> new android.os.Vibrator() {})),

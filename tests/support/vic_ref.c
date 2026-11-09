@@ -4,7 +4,7 @@
    SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
    SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project */
 /* The VIC composition on the CPU, byte by byte as vic.comp does it: the reference the tests hold the shader to
-   (tests/glsl/vic_jobs.c, tests/vic_compose.c). The runtime composes every job on the GPU (docs/GPU_OWNERSHIP.md),
+   (tests/glsl/vic_jobs.c, tests/vic_compose.c). The runtime composes every job on the GPU (docs/layers/gpu/ownership.md),
    so this file isn't built into it.
 
    It takes the VicJob vic.c resolved. Each output pixel starts as the background, every enabled slot covering it

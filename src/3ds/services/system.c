@@ -70,5 +70,18 @@ void snx_ctr_system_dispatch(SnxCtrIpc* c) {
     }
     uint32_t name = p->objects[c->object].data.session.name, command = c->in[0] >> 16;
     uint32_t key = (SNX_CTR_SERVICE_COUNT + name) << 16 | command;
+    /* nim:aoc's commands that reach the eShop (3dbrew, NIM Services): Initialize, ListContentSetsEx, GetBalance and
+       RefreshServerTime. With no network a console's NIM gives 0xC8A0D027, its translation of an HTTP or SSL error,
+       and a game's add-on download menu shows the error; answered with success it waits for a shop that never
+       answers. SetApplicationId, SetTin and the local ones keep the unmodeled success */
+    if (!strcmp(snx_ctr_system_name(p, name), "nim:aoc") &&
+        (command == 0x0021 || command == 0x0009 || command == 0x0018 || command == 0x0025)) {
+        fprintf(stderr, "3ds ipc: nim:aoc command 0x%04x (header 0x%08x) answered 0xC8A0D027: no network reaches the "
+                        "eShop\n", command, c->in[0]);
+        memset(c->out, 0, sizeof c->out);
+        c->out[0] = command << 16 | 0x40;
+        c->out[1] = 0xC8A0D027u;
+        return;
+    }
     snx_ctr_system_unmodeled(c, snx_ctr_system_name(p, name), key);
 }

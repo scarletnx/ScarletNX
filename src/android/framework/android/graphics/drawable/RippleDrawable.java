@@ -10,7 +10,7 @@ import android.graphics.PixelFormat;
 import android.graphics.Rect;
 
 /**
- * A touch feedback (Abstract in docs/android/INTERFACES.md): while the state is pressed, focused or hovered, a circle
+ * A touch feedback (Abstract in docs/platforms/android-apps/interfaces.md): while the state is pressed, focused or hovered, a circle
  * of the ripple's color around the hotspot, over the content. Android animates the ripple in and out; this draws its
  * final frame, so the app sees the same states and invalidations without the animation.
  *

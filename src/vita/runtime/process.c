@@ -1,42 +1,21 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
-#define _DEFAULT_SOURCE /* MAP_ANONYMOUS, MAP_NORESERVE */
-#endif
 #include "vita/runtime/process.h"
 #include "vita/runtime/watch.h"
 #include "vita/hle/hle.h"
 #include "vita/loader/vpk.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
+#include "common/platform/vm.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <inttypes.h>
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <sys/mman.h>
-#endif
-
-#ifndef MAP_NORESERVE
-#define MAP_NORESERVE 0
-#endif
 
 #define PAGE 0x1000u
 #define MAIN_STACK 0x40000u /* the kernel's default when the process parameters name none */
 #define MAIN_PRIORITY 0x10000100u /* SCE_KERNEL_DEFAULT_PRIORITY_USER */
 
-uint64_t vita_now_ns(void) {
-#ifdef _WIN32
-    return (uint64_t)(snx_seconds() * 1e9);
-#else
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
-#endif
-}
 uint16_t vita_read16(VitaProcess* p, uint32_t address) { return snx_ld_le16(p->mem + address); }
 uint32_t vita_read32(VitaProcess* p, uint32_t address) { return snx_ld_le32(p->mem + address); }
 void vita_write16(VitaProcess* p, uint32_t address, uint16_t value) { snx_st_le16(p->mem + address, value); }
@@ -55,16 +34,12 @@ bool vita_string(VitaProcess* p, uint32_t address, char* out, size_t size) {
 /* ---- memory: pages made accessible (zero) and taken back ---- */
 static bool commit(VitaProcess* p, uint32_t address, uint32_t size) {
     vita_watch_release(address, size);
-    return !snx_vm_protect(p->mem + address, size, SNX_VM_READ_WRITE);
+    return !plat_mem_protect(p->mem + address, size, PLAT_MEM_READ | PLAT_MEM_WRITE);
 }
 /* inaccessible again, and zero when committed next */
 static void decommit(VitaProcess* p, uint32_t address, uint32_t size) {
     vita_watch_release(address, size);
-#ifdef _WIN32
-    (void)snx_vm_protect(p->mem + address, size, SNX_VM_NONE);
-#else
-    (void)mmap(p->mem + address, size, PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-#endif
+    (void)plat_mem_decommit(p->mem + address, size);
 }
 bool vita_mapped(VitaProcess* p, uint32_t address, uint32_t size) {
     uint64_t end = (uint64_t)address + size;
@@ -204,7 +179,7 @@ void vita_thread_end(VitaProcess* p, VitaThread* t, int32_t status) {
 }
 uint64_t vita_deadline(VitaProcess* p, uint32_t timeout) {
     if (!timeout) return 0;
-    uint64_t deadline = vita_now_ns() + (uint64_t)vita_read32(p, timeout) * 1000u;
+    uint64_t deadline = plat_ns() + (uint64_t)vita_read32(p, timeout) * 1000u;
     return deadline ? deadline : 1;
 }
 void vita_wait(VitaProcess* p, VitaWait wait) {
@@ -295,13 +270,13 @@ VitaProcess* vita_process_new(const VitaImage* image, const char* folder, char* 
     p->patch = p->folder ? snx_path_join(p->folder, "patch") : NULL;
     p->user = (VitaRegion){VITA_USER_BASE, VITA_USER_END, VITA_USER_BASE};
     p->cdram = (VitaRegion){VITA_CDRAM_BASE, VITA_CDRAM_END, VITA_CDRAM_BASE};
-    p->start_ns = vita_now_ns();
+    p->start_ns = plat_ns();
     p->unknown_logged = calloc(image->import_count ? image->import_count : 1, sizeof *p->unknown_logged);
     p->hle = calloc(image->import_count ? image->import_count : 1, sizeof *p->hle);
     p->hle_export = calloc(image->import_count ? image->import_count : 1, sizeof *p->hle_export);
     p->hle_export_known = calloc(image->import_count ? image->import_count : 1, sizeof *p->hle_export_known);
     /* the guest's 4 GiB and a guard page past it, inaccessible until committed */
-    p->mem = snx_vm_reserve(VITA_SPACE + 0x10000);
+    p->mem = plat_mem_reserve(VITA_SPACE + 0x10000, 0);
     if (!p->app || !p->ux0 || !p->patch || !p->unknown_logged || !p->hle || !p->hle_export || !p->hle_export_known || !p->mem || !trampolines(p)) {
         snprintf(error, error_size, "cannot reserve the guest's address space");
         goto fail;
@@ -375,7 +350,7 @@ void vita_process_free(VitaProcess* p) {
     vita_trophy_free(p);
     vita_gxm_free(p);
     vita_watch_free();
-    if (p->mem) snx_vm_release(p->mem, VITA_SPACE + 0x10000);
+    if (p->mem) plat_mem_release(p->mem, VITA_SPACE + 0x10000);
     free(p->unknown_logged);
     free(p->hle);
     free(p->hle_export);

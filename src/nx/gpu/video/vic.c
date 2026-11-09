@@ -20,9 +20,10 @@
 #include "nx/gpu/video/host1x_int.h"
 #include "nx/gpu/video/vic.h"
 #include "nx/gpu/renderer.h"
+#include "common/utilities/bits.h"
 
 /* A GOB, the unit of the block linear layout: 64 bytes wide and 8 rows high, stacked 1 << block_height high in a
-   block (docs/BLOCKLINEAR.md) */
+   block (docs/layers/gpu/blocklinear.md) */
 #define GOB_WIDTH       64u
 #define GOB_HEIGHT_LOG2 3u
 #define GOB_BYTES_LOG2  9u /* 64 x 8 */
@@ -30,7 +31,6 @@
    surfaces NVIDIA's libraries allocate */
 #define PITCH_ALIGN 256u
 
-static u32 min_u32(u32 a, u32 b) { return a < b ? a : b; }
 static int is_yuv(u32 fmt) { return fmt == VIC_PIXEL_Y8__V8U8_N420 || fmt == VIC_PIXEL_Y8__U8V8_N420; }
 
 /* a plane's row in bytes: the padded width the config names, as it is (rounding it turned a width that isn't a
@@ -100,8 +100,8 @@ static int job_output(VicJob* j, const u8* cfg, const u32* r) {
     if (right >= left && bottom >= top && left < j->sw && top < j->sh) {
         j->tx0 = left;
         j->ty0 = top;
-        j->tw = min_u32(right, j->sw - 1) - left + 1;
-        j->th = min_u32(bottom, j->sh - 1) - top + 1;
+        j->tw = snx_min_u32(right, j->sw - 1) - left + 1;
+        j->th = snx_min_u32(bottom, j->sh - 1) - top + 1;
     }
     j->bg[0] = vic_background_r(out);
     j->bg[1] = vic_background_g(out);
@@ -144,8 +144,8 @@ static void slot_resolve(VicJob* j, const u8* sl, const u32* planes, u32 s) {
     if (w != dx1 - dx0 + 1 || h != dy1 - dy0 + 1) {
         WARN_LIMIT(4, "video: VIC slot %u scales %ux%u to %ux%u: cropped instead\n", s, w, h, dx1 - dx0 + 1,
                    dy1 - dy0 + 1);
-        w = min_u32(w, dx1 - dx0 + 1);
-        h = min_u32(h, dy1 - dy0 + 1);
+        w = snx_min_u32(w, dx1 - dx0 + 1);
+        h = snx_min_u32(h, dy1 - dy0 + 1);
     }
     /* the target rectangle (inside the surface) cuts the source by as much as the destination */
     if (dx0 < j->tx0) {
@@ -157,8 +157,8 @@ static void slot_resolve(VicJob* j, const u8* sl, const u32* planes, u32 s) {
         sy0 += cut, dy0 += cut, h -= cut;
     }
     if (dx0 >= j->tx0 + j->tw || dy0 >= j->ty0 + j->th || sx0 >= iw || sy0 >= ih) return;
-    w = min_u32(min_u32(w, j->tx0 + j->tw - dx0), iw - sx0);
-    h = min_u32(min_u32(h, j->ty0 + j->th - dy0), ih - sy0);
+    w = snx_min_u32(snx_min_u32(w, j->tx0 + j->tw - dx0), iw - sx0);
+    h = snx_min_u32(snx_min_u32(h, j->ty0 + j->th - dy0), ih - sy0);
     if (!plane_map(&o->iy, vic_offset_address(planes[0]), row_bytes(vic_luma_width(sizes), iw, block_linear), ih,
                    block_linear, block_height) ||
         !plane_map(&o->ic, vic_offset_address(planes[1]),
@@ -282,7 +282,7 @@ void vic_execute(const u32* r) {
         any |= j.slots[s].on;
     }
     if (!any && !j.tw) return;
-    /* on the GPU, whose result stays there (docs/GPU_OWNERSHIP.md): a job before the renderer is up has nowhere to go */
+    /* on the GPU, whose result stays there (docs/layers/gpu/ownership.md): a job before the renderer is up has nowhere to go */
     if (!g_renderer_up || !g_renderer || !g_renderer->vic_compose) {
         WARN_LIMIT(4, "video: a VIC job before the renderer started, skipped\n");
         return;

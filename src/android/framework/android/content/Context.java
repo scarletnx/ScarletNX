@@ -70,6 +70,7 @@ public abstract class Context {
     public static final String TRANSLATION_MANAGER_SERVICE = "translation";
     public static final String STATUS_BAR_SERVICE = "statusbar";
     public static final String CREDENTIAL_SERVICE = "credential";
+    public static final String ROLE_SERVICE = "role";
     public static final String PRINT_SERVICE = "print";
     public static final String SHORTCUT_SERVICE = "shortcut";
     public static final String USAGE_STATS_SERVICE = "usagestats";

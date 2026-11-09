@@ -401,7 +401,8 @@ static void flow_program(Prog* p) {
 static void stores_program(Prog* p) {
     p->outputs = 8;
     prologue(p);
-    for (u32 k = 0; k < 6; k++) emit(p, ri(0x024, 12 + k, 2, 0x01020300u + 7 * k + 3, 4)); /* IMAD R12+k = R2 * c + R4 */
+    for (u32 k = 0; k < 6; k++) /* IMAD R12+k = R2 * c + R4 */
+        emit(p, ri(0x024, 12 + k, 2, 0x01020300u + 7 * k + 3, 4));
     store_typed(p, 0, 12, 6);
     store_typed(p, 16, 16, 5);
     store_typed(p, 24, 13, 4);

@@ -9,6 +9,7 @@
    host's interface, the one with the default route. */
 #include "nx/hle/services/network/network.h"
 #include "nx/hle/hle.h"
+#include "common/utilities/bits.h"
 #include "hle/services/network/nifm.swipc.inc"
 
 enum { REQ_INVALID = 1, REQ_ON_HOLD = 2, REQ_ACCEPTED = 3 }; /* nn::nifm::RequestState (1 is also NotSubmitted) */
@@ -84,11 +85,8 @@ static void network_profile(const SnxNetInterface* i, u8* p) {
     p[0xC0] = 1500 & 0xFF; /* IpSettingData's MTU, after the 0xAA bytes of proxy settings, all off */
     p[0xC1] = 1500 >> 8;
     /* the profile's id: two FNV-1a hashes of the interface's name, as Eden makes it from the SSID */
-    uint64_t h[2] = {0xcbf29ce484222325ull, 0xcbf29ce484222325ull ^ 0x9e3779b97f4a7c15ull};
-    for (const char* s = i->name; *s; s++) {
-        h[0] = (h[0] ^ (u8)*s) * 0x100000001b3ull;
-        h[1] = (h[1] ^ (u8)(*s ^ 0x5A)) * 0x100000001b3ull;
-    }
+    uint64_t h[2] = {snx_fnv1a(SNX_FNV_BASIS, i->name, strlen(i->name)), SNX_FNV_BASIS ^ 0x9e3779b97f4a7c15ull};
+    for (const char* s = i->name; *s; s++) h[1] = snx_fnv_step(h[1], (u8)(*s ^ 0x5A));
     snx_st_le64(p + 0xC2, h[0]); /* the same id as a little-endian host's */
     snx_st_le64(p + 0xCA, h[1]);
     snprintf((char*)p + 0xD2, 0x40, "%s", i->name);

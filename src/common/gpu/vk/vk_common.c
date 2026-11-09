@@ -287,3 +287,44 @@ int snx_vk_pipeline_workers(int setting, int cpus) {
    in a burst, where the frame waits and the game idles, and what the system gives after the game's threads while it
    plays */
 int snx_vk_pipeline_low_workers(int workers) { return workers > 2 ? workers - 2 : 0; }
+
+VkResult snx_vk_shader_module(VkDevice dev, const uint32_t* words, size_t size, VkShaderModule* out) {
+    VkShaderModuleCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = size, .pCode = words};
+    return vkCreateShaderModule(dev, &info, NULL, out);
+}
+static VkResult module_pipeline(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout, VkShaderModule module,
+                                const VkSpecializationInfo* spec, uint32_t subgroup, bool full, VkPipeline* out) {
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo size = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+        .requiredSubgroupSize = subgroup};
+    VkComputePipelineCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                  .pNext = subgroup ? &size : NULL,
+                  .flags = full ? VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT : 0,
+                  .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                  .module = module,
+                  .pName = "main",
+                  .pSpecializationInfo = spec},
+        .layout = layout};
+    return vkCreateComputePipelines(dev, cache, 1, &info, NULL, out);
+}
+VkResult snx_vk_module_pipeline(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout, VkShaderModule module,
+                                const VkSpecializationInfo* spec, VkPipeline* out) {
+    return module_pipeline(dev, cache, layout, module, spec, 0, false, out);
+}
+VkResult snx_vk_compute_pipeline_subgroups(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout,
+                                           const uint32_t* words, size_t size, uint32_t subgroup, bool full,
+                                           VkPipeline* out) {
+    VkShaderModule module;
+    VkResult r = snx_vk_shader_module(dev, words, size, &module);
+    if (r != VK_SUCCESS) return r;
+    r = module_pipeline(dev, cache, layout, module, NULL, subgroup, full, out);
+    vkDestroyShaderModule(dev, module, NULL);
+    return r;
+}
+VkResult snx_vk_compute_pipeline(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout, const uint32_t* words,
+                                 size_t size, VkPipeline* out) {
+    return snx_vk_compute_pipeline_subgroups(dev, cache, layout, words, size, 0, false, out);
+}
