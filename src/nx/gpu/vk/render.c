@@ -1092,12 +1092,81 @@ static u32 cb_word(const DsState* ds, int stage, u32 bank, u64 off) {
     u64 a = bank < DS_CBUFS ? ds->bind.cb_addr[stage][bank] : 0;
     return in.bytes ? ds_inline_word(in, off) : a ? gmem_r32(a + off) : 0;
 }
-static u32 tex_handle(const DsState* ds, int stage, u32 tcb, const ShTex* st) {
+static u32 tex_handle_cb(const DsState* ds, int stage, u32 tcb, const ShTex* st) {
     u32 ci = (st->bindless ? st->bl_cbuf : tcb) & 31, c2i = st->bl2_cbuf & 31;
     u32 h = cb_word(ds, stage, ci, st->cbuf_off * 4);
     if (st->bindless && st->bl2)
         h |= st->bl2_cbuf == SH_HANDLE_IMM ? st->bl2_off : cb_word(ds, stage, c2i, st->bl2_off * 4);
     return h;
+}
+/* Handles an Ounce program loads from memory (SNX_TEX_MEMORY): the instructions that make them (ShaderInfo.memh)
+   run on the draw's constant buffers and the guest memory they load from, a pending write there landed first (as
+   gbuf_pointer reads a pointer). A handle in a uniform register pair is the texture's word with the sampler's index
+   above it, as a constant buffer's handle holds them; a TEX.B's is its register. Run once a draw for each program
+   (vk_memory_handles) */
+static u32 memh_cbuf(void* user, u32 bank, u32 off) {
+    const DsState* ds = ((const void**)user)[0];
+    int stage = (int)(intptr_t)((const void**)user)[1];
+    return cb_word(ds, stage, bank, off);
+}
+int vk_memh_mem(void* user, u64 address, u32* words, u32 count) {
+    (void)user;
+    u64 cpu = 0;
+    if (!address || gmmu_run(address, 4ull * count, &cpu) < 4ull * count) return 0;
+    vk_buf_mem_need(address, 4ull * count);
+    vk_gmem_words(address, words, count);
+    return 1;
+}
+u32 vk_memory_handles(const ShaderInfo* si, const struct Sm86EvalIo* io, u32* out) {
+    u32 probes[2 * SH_MAXTEX], values[2 * SH_MAXTEX], np = 0, found = 0;
+    int nt = si->ntex > SH_MAXTEX ? SH_MAXTEX : si->ntex;
+    for (int i = 0; i < nt; i++) {
+        const ShTex* st = &si->tex[i];
+        out[i] = 0;
+        if (!(st->flags & SNX_TEX_MEMORY) || st->cbuf_off == SH_PROBE_NONE) continue;
+        probes[np++] = st->cbuf_off;
+        probes[np++] = st->bl2 ? st->bl2_off : st->cbuf_off;
+    }
+    if (np && !sm86_eval((const u64(*)[2])si->memh, si->nmemh, io, probes, np, values))
+        LOG_LIMIT(4, "vulkan: a program's texture handles from memory could not be read (some are 0)\n");
+    for (int i = 0, k = 0; i < nt; i++) {
+        const ShTex* st = &si->tex[i];
+        if (!(st->flags & SNX_TEX_MEMORY)) continue;
+        found++;
+        if (st->cbuf_off == SH_PROBE_NONE) { /* past any pool's limit: no texture */
+            out[i] = 0xFFFFFFFFu;
+            continue;
+        }
+        out[i] = st->bl2 ? (values[k] & 0xFFFFFu) | values[k + 1] << 20 : values[k];
+        k += 2;
+    }
+    return found;
+}
+/* the draw's handles of a program's memory slots, kept for the draw (g_memh_draw counts the draws) */
+static u64 g_memh_draw;
+static struct {
+    const ShaderInfo* si;
+    u64 draw;
+    int stage;
+    u32 h[SH_MAXTEX];
+} g_memh[4];
+static u32 memh_handle(const DsState* ds, int stage, const ShaderInfo* si, int i) {
+    u32 at = 0;
+    while (at < 4 && !(g_memh[at].si == si && g_memh[at].draw == g_memh_draw && g_memh[at].stage == stage)) at++;
+    if (at == 4) {
+        at = (u32)(g_memh_draw + (u64)stage) & 3;
+        const void* user[2] = {ds, (const void*)(intptr_t)stage};
+        Sm86EvalIo io = {(void*)user, memh_cbuf, vk_memh_mem};
+        vk_memory_handles(si, &io, g_memh[at].h);
+        g_memh[at].si = si, g_memh[at].draw = g_memh_draw, g_memh[at].stage = stage;
+    }
+    return g_memh[at].h[i];
+}
+/* the handle of si's texture slot i: its constant buffer's words (tex_handle_cb), or what the program loads from
+   memory (memh_handle) */
+static u32 tex_handle(const DsState* ds, int stage, u32 tcb, const ShaderInfo* si, int i) {
+    if (si->tex[i].flags & SNX_TEX_MEMORY) return memh_handle(ds, stage, si, i);
+    return tex_handle_cb(ds, stage, tcb, &si->tex[i]);
 }
 
 /* a texture binding of a draw: the headers its handle names, and the texture */
@@ -1353,7 +1422,7 @@ static u32 image_variant(const DsState* ds, int stage, const VkSh* s, u32* signe
         if (!vk_image_keyable(&s->si, i)) continue;
         ShTex handle_info = {
             .cbuf_off = s->si.img[i].cbuf_off, .bindless = s->si.img[i].bindless, .bl_cbuf = s->si.img[i].bl_cbuf};
-        u32 handle = tex_handle(ds, stage, ds->bind.tex_bank, &handle_info), tic[8];
+        u32 handle = tex_handle_cb(ds, stage, ds->bind.tex_bank, &handle_info), tic[8];
         vk_gmem_words(tic_base + (handle & 0xFFFFF) * 32ull, tic, 8);
         if (vk_image_key(&s->si, i, tic)) bits |= 1u << i;
         if (vk_tex_num(tic, NULL) == 2) *signed_images |= 1u << i;
@@ -1376,7 +1445,8 @@ static u32 vs_tex_variant(const DsState* ds, const VkSh* s, u32* signed_textures
     for (int i = 0; i < nt; i++) {
         const ShTex* st = &s->si.tex[i];
         if (st->flags & (SNX_TEX_INDEXED | 1)) continue;
-        u32 handle = tex_handle(ds, 0, ds->bind.tex_bank, st), tic[8];
+        if ((st->flags & SNX_TEX_MEMORY) && st->cbuf_off == SH_PROBE_NONE) continue; /* no texture, no header */
+        u32 handle = tex_handle(ds, 0, ds->bind.tex_bank, &s->si, i), tic[8];
         vk_gmem_words(tic_base + (handle & 0xFFFFF) * 32ull, tic, 8);
         if (vk_tic_unnormalized(tic) == 1) *rect |= 1ull << i;
         if (s->si.tex_query_mask >> i & 1) { /* only a TXQ names it: the header's dimension (fs_key) */
@@ -1432,7 +1502,7 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
     int nt = s0->si.ntex > SH_MAXTEX ? SH_MAXTEX : s0->si.ntex;
     for (int i = 0; i < nt; i++) {
         const ShTex* st = &s0->si.tex[i];
-        tex_resolve(ds, tex_handle(ds, 4, ds->bind.tex_bank, st), &res[i]);
+        tex_resolve(ds, tex_handle(ds, 4, ds->bind.tex_bank, &s0->si, i), &res[i]);
         if (!(st->flags & (SNX_TEX_INDEXED | 1)) && vk_tic_unnormalized(res[i].tic) == 1) fk->rect |= 1ull << i;
         /* a texture only a TXQ names: a 2D query until the header says what it is (a 3D query answers its depth,
            which a 2D slot can't bind) */
@@ -1476,7 +1546,7 @@ static VkSh* fs_variant(const DsState* ds, u64 addr, VkSh* s0, const FsKey* fk) 
 static int tex_same_handle(const ShTex* a, const ShTex* b) {
     return a->cbuf_off == b->cbuf_off && a->bindless == b->bindless && a->bl_cbuf == b->bl_cbuf && a->bl2 == b->bl2 &&
            a->bl2_cbuf == b->bl2_cbuf && a->bl2_off == b->bl2_off && a->stride == b->stride &&
-           (a->flags & SNX_TEX_INDEXED) == (b->flags & SNX_TEX_INDEXED);
+           (a->flags & (SNX_TEX_INDEXED | SNX_TEX_MEMORY)) == (b->flags & (SNX_TEX_INDEXED | SNX_TEX_MEMORY));
 }
 /* the resolutions of s's texture slots, from res0, which fs_key filled for s0's: res0 itself when s numbers its slots
    as s0 does, else out, each slot taking the resolution of the slot of s0 that reads its handle, or its own. A variant
@@ -1494,7 +1564,7 @@ static TexRes* fs_slot_res(const DsState* ds, const VkSh* s0, TexRes* res0, cons
         if (j < n0)
             out[i] = res0[j];
         else
-            tex_resolve(ds, tex_handle(ds, 4, ds->bind.tex_bank, st), &out[i]);
+            tex_resolve(ds, tex_handle(ds, 4, ds->bind.tex_bank, &s->si, i), &out[i]);
     }
     return out;
 }
@@ -2305,7 +2375,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         }
         /* the fragment stage's handle as fs_key read it from the same constant buffer in this draw, which the key it
            made was built from */
-        u32 handle = res && res[i].have ? res[i].handle : tex_handle(ds, stage, tcb, st);
+        u32 handle = res && res[i].have ? res[i].handle : tex_handle(ds, stage, tcb, &s->si, i);
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
         TexRes own, *x = res ? &res[i] : NULL;
@@ -3617,6 +3687,7 @@ static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o, con
     if (!count || !instances) return;
     vk_frame_check();
     g_mesh_first = VK_NULL_HANDLE; /* an indirect mesh draw's first group is this draw's (mesh_indirect) */
+    g_memh_draw++;                 /* and so are the handles from memory (memh_handle) */
     /* an Ounce's mesh draw: the mesh program reads the vertex stage's set and push constants and has bindings of its
        own, the task program the tessellation control stage's set (shader_vk_set) */
     int mesh = dc->mesh != 0, vs_bind = mesh ? DS_MESH : 0;

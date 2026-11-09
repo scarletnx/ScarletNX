@@ -17,6 +17,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/shader/shader.h"
+#include "nx/gpu/shader/sm86.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/lookup_ways.h"
@@ -188,6 +189,13 @@ static int cs_cb_read(u32 idx, u32 off, u32* out) {
         return 1;
     }
     return 0;
+}
+/* a constant buffer word for the handles a program loads from memory (vk_memory_handles) */
+static u32 cs_memh_cbuf(void* user, u32 bank, u32 off) {
+    (void)user;
+    u32 v = 0;
+    cs_cb_read(bank, off, &v);
+    return v;
 }
 
 static void cs_init(void) {
@@ -1622,17 +1630,31 @@ rebind:
         u32 tcb = d->tex_bank;
         int fmt_used = 0;
         i32 fmt[320] = {0}; /* SNX_FMT, std140: snx_ic[8] snx_tc[32] snx_ib[8] snx_tb[32], 16 bytes each */
+        u32 memh[SH_MAXTEX] = {0}; /* the handles the program loads from memory */
+        for (int i = 0; i < p->si.ntex && i < SH_MAXTEX; i++)
+            if (p->si.tex[i].flags & SNX_TEX_MEMORY) {
+                Sm86EvalIo io = {NULL, cs_memh_cbuf, vk_memh_mem};
+                vk_memory_handles(&p->si, &io, memh);
+                break;
+            }
         for (int i = 0; i < p->si.ntex && i < SH_MAXTEX; i++) {
             ShTex* st = &p->si.tex[i];
             u32 h = 0, h2 = 0;
-            cs_cb_read(st->bindless ? (st->bl_cbuf & 7) : tcb, st->cbuf_off * 4, &h);
-            if (st->bindless && st->bl2 && st->bl2_cbuf == SH_HANDLE_IMM)
-                h |= st->bl2_off;
-            else if (st->bindless && st->bl2 && cs_cb_read(st->bl2_cbuf & 7, st->bl2_off * 4, &h2))
-                h |= h2;
-            u32 tic[8], tsc[8];
-            vk_gmem_words(tic_base + (u64)texture_handle_tic_id(h) * TEXTURE_POOL_ENTRY_BYTES, tic, 8);
-            vk_gmem_words(tsc_base + (u64)texture_handle_tsc_id(h) * TEXTURE_POOL_ENTRY_BYTES, tsc, 8);
+            if (st->flags & SNX_TEX_MEMORY)
+                h = memh[i];
+            else {
+                cs_cb_read(st->bindless ? (st->bl_cbuf & 7) : tcb, st->cbuf_off * 4, &h);
+                if (st->bindless && st->bl2 && st->bl2_cbuf == SH_HANDLE_IMM)
+                    h |= st->bl2_off;
+                else if (st->bindless && st->bl2 && cs_cb_read(st->bl2_cbuf & 7, st->bl2_off * 4, &h2))
+                    h |= h2;
+            }
+            u32 tic[8] = {0}, tsc[8] = {0};
+            /* a handle from memory the program alone makes (SH_PROBE_NONE) names no header: no texture */
+            if (!(st->flags & SNX_TEX_MEMORY) || st->cbuf_off != SH_PROBE_NONE) {
+                vk_gmem_words(tic_base + (u64)texture_handle_tic_id(h) * TEXTURE_POOL_ENTRY_BYTES, tic, 8);
+                vk_gmem_words(tsc_base + (u64)texture_handle_tsc_id(h) * TEXTURE_POOL_ENTRY_BYTES, tsc, 8);
+            }
             VkImageViewType want = vk_tex_view_type(st);
             Surf* t = st->flags & 1 ? vk_tex_from_tic_raw(tic) : vk_tex_from_tic(tic);
             /* a program fetching samples (flags bit 1) reads a multisampled image, others a single-sampled one: an

@@ -186,6 +186,22 @@ static inline u64 sm86_mesh_output_bytes(const u32* sph, const ShMesh* mesh, u32
    a device that flushes by itself, else a flush of each such operand and result. sm86_to_spirv is SH_FTZ_EMULATE */
 u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count,
                        int can_flush);
+/* The texture handles an Ounce program loads from memory (SNX_TEX_MEMORY in shader.h): the CPU runs the instructions
+   the translation kept (ShaderInfo.memh) on what a draw binds, the constant buffer words that io->cbuf reads (bank,
+   byte offset) and the guest memory words io->mem reads (address, its words, their count: 0 when no memory is
+   there). Each probe (SH_PROBE) takes the value its register has when its instruction has run, into out. Returns 0
+   when an instruction is not one sm86_eval_takes, or a load finds no memory (out then holds 0 for the probes after
+   it) */
+typedef struct Sm86EvalIo {
+    void* user;
+    u32 (*cbuf)(void* user, u32 bank, u32 offset);
+    int (*mem)(void* user, u64 address, u32* words, u32 count);
+} Sm86EvalIo;
+int sm86_eval(const u64 (*insn)[2], u32 n, const Sm86EvalIo* io, const u32* probes, u32 nprobes, u32* out);
+/* whether sm86_eval runs the instruction: MOV, UMOV, R2UR, IADD3, IMAD (.WIDE), LEA, LOP3, SHF, SEL, IMNMX, ISETP,
+   PLOP3 and PRMT (their uniform forms too), CS2R of zero, LDC, ULDC (.IDX) and LDG, in the forms the translation
+   takes */
+int sm86_eval_takes(const Sm86Insn* in);
 /* Debug: with g_shader_sm86_dump (the sm86_dump setting) naming a folder, the bytes (and the 32 SPH words, NULL for
    none) go to DIR/sm86_<kind>_<hash>.bin (and .sph), and why to DIR/sm86_<kind>_<hash>.txt. sm86_to_spirv writes each
    program it refuses, sm86_find_programs each block without a complete program. The files are game data: keep
