@@ -2551,6 +2551,33 @@ static void test_uniform_handle(const char* dir) {
                     values[2], (unsigned long long)g_mh_loads[0]);
     }
 }
+/* An address's base through a ULDC of one word to the register before it: UR4 = c[0][0x530] (64 bits), UR7 = UR4 +
+   0x30, then a ULDC UR6 of one word of bank 3, UMOV UR4 = UR7, and the LDG at [UR4 + 0x5c]. UR7 keeps its key: the
+   word's ULDC took the key of UR7 as a 64-bit one's high word, and one game's material program was refused for "a
+   global address whose base no constant buffer holds (from UMOV)" */
+static void test_uldc_word_key(const char* dir) {
+    u8 code[16 * 8] = {0};
+    u32 n = 0;
+    put(code, n++, uldc64(0x530));
+    put(code, n++, ualu(0x090, 7, 4, 0x30)); /* UIADD3 UR7, UR4, 0x30, URZ */
+    put(code, n++, uldc_small(6, 3, 0x958, 4, 0, 63));
+    Word x = ualu(0x082, 4, 0, 0); /* UMOV UR4, UR7 (form 6) */
+    set(&x, 9, 3, 6);
+    set(&x, 32, 6, 7);
+    set(&x, 64, 6, 63);
+    put(code, n++, x);
+    put(code, n++, ldg_uniform64(2, 4, 0x5c));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL && si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x530);
+    if (!spv) fprintf(stderr, "uldc word key: %s\n", si.first_unsupported);
+    if (spv) CHECK(keep_module(dir, "uldc_word_key", spv, count));
+    free(spv);
+}
 /* bank 1 of mh_cross: the four words user points to */
 static u32 mh_cbuf1(void* user, u32 bank, u32 off) { return bank == 1 && off < 16 ? ((const u32*)user)[off / 4] : 0; }
 /* MOV R4-R7 from bank 1 (its words 0-3), the instructions, then R0-R3 out: the translation run on the CPU
@@ -3432,6 +3459,7 @@ int main(int argc, char** argv) {
     test_atomic_fadd(dir);
     test_uniform_handle(dir);
     test_memory_eval();
+    test_uldc_word_key(dir);
     test_mesh(dir);
     test_task(dir);
     test_mesh_after_task(dir);
