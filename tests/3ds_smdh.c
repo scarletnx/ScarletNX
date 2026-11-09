@@ -10,6 +10,7 @@
 static void put_title(unsigned char* smdh, unsigned language, const char* text) {
     unsigned char* entry = smdh + 0x8 + 0x200u * language;
     size_t i;
+    memset(entry, 0, 0x80);
     for (i = 0; text[i] && i < 0x40; ++i) {
         entry[i * 2] = (unsigned char)text[i];
         entry[i * 2 + 1] = 0;
@@ -55,6 +56,11 @@ int main(void) {
     assert(!strcmp(title, "Two "));
     snx_ctr_smdh_title(smdh, 0x2000, title, sizeof title);
     assert(!title[0]); /* no SMDH, no title */
+    /* the titles end before the icons: an ExeFS icon read in part still names the game, and has no icon */
+    put_title(smdh, 1, "Partial");
+    snx_ctr_smdh_title(smdh, 0x2020, title, sizeof title);
+    assert(!strcmp(title, "Partial"));
+    assert(snx_ctr_smdh_icon(smdh, 0x2020, rgba));
     /* the icon: a colour at a known place in the first tile, and one in the second */
     memset(rgba, 0, sizeof rgba);
     assert(snx_ctr_smdh_icon(smdh, 0x2000, rgba)); /* the icon is not there */

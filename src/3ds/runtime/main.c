@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/board/board.h"
 #include "3ds/loader/ctr_loader.h"
+#include "3ds/loader/smdh.h"
 #include "3ds/aot/ctr_module.h"
 #include "3ds/runtime/main.h"
 #include "3ds/ipc/ctr_ipc.h"
@@ -53,6 +54,9 @@ static void usage(FILE* out) {
         "3DS options:\n"
         "  --model old|new        The console to model (default old)\n"
         "  --board-info           Print the board of the console --model names, and stop\n"
+        "  --icon                 Write the game's SMDH icon as RGBA into --out DIR (icon.rgba, what Games draws),\n"
+        "                         and nothing else\n"
+        "  --out DIR              Where --icon writes it\n"
         "  --max-blocks N         Stop after N native blocks (default: run until the game exits or its window\n"
         "                         closes)\n"
         "  --ipc-stubs L          With --ctr_auto_stub_ipc=0, still answer a service command the runtime lacks with\n"
@@ -315,6 +319,49 @@ static int play_game(const SnxCtrSource* game, const char* folder, SnxCtrModel m
     if (status) fprintf(stderr, "scarletnx-3ds: %s\n", error);
 done:
     free(state);
+    return status;
+}
+/* --icon: the game's SMDH icon as RGBA into out, icon.rgba, which Games draws a dump's row by, as the Switch driver's
+   -x --icon writes its icon.jpg. An encrypted game is decrypted first, into work/3ds, as a run of it is */
+static int write_icon(const char* input, const char* out, const char* keys, const char* repo, const char* argv0) {
+    char error[512];
+    char *work = work_folder(repo, argv0), *leaf = input ? snx_dump_name(input) : NULL,
+         *kept = work && leaf ? snx_path_join(work, leaf) : NULL, *readable = NULL;
+    SnxCtrSource* source = NULL;
+    unsigned char rgba[48 * 48 * 4];
+    uint64_t size = 0;
+    const unsigned char* smdh;
+    int status = 1;
+    if (!input || !out || !kept) {
+        fprintf(stderr, "scarletnx-3ds: --icon takes the game's file and --out DIR\n");
+        goto done;
+    }
+    if (readable_game(input, kept, keys, &readable)) goto done;
+    if (snx_ctr_source_open(readable, &source, error, sizeof error) != SNX_CTR_EXTRACT_OK) {
+        fprintf(stderr, "scarletnx-3ds: %s\n", error);
+        goto done;
+    }
+    smdh = snx_ctr_source_exefs(source, "icon", &size);
+    if (!smdh || snx_ctr_smdh_icon(smdh, (size_t)size, rgba)) {
+        fprintf(stderr, "scarletnx-3ds: %s has no SMDH icon to write\n", input);
+        goto done;
+    }
+    {
+        char* file = snx_path_join(out, "icon.rgba");
+        if (!file || snx_mkdirs(out) || snx_write_file(file, rgba, sizeof rgba)) {
+            fprintf(stderr, "scarletnx-3ds: cannot write %s\n", file ? file : "the icon");
+            free(file);
+            goto done;
+        }
+        free(file);
+    }
+    status = 0;
+done:
+    snx_ctr_source_close(source);
+    free(readable);
+    free(kept);
+    free(leaf);
+    free(work);
     return status;
 }
 /* The game played, extracted or compiled as the options say, in its folder extracted (freed): an extraction there
@@ -672,8 +719,8 @@ static int play_folder(char* folder, SnxCtrModel model, bool model_set, const ch
 }
 int snx_ctr_main(int argc, char** argv) {
     SnxCtrModel model = SNX_CTR_OLD;
-    const char* input = NULL;
-    bool info = false, positional = false, budget_set = false, model_set = false;
+    const char* input = NULL, *icon_out = NULL;
+    bool info = false, positional = false, budget_set = false, model_set = false, icon = false;
     uint64_t max_blocks = 0; /* no budget */
     uint32_t ipc_stubs = 0;  /* with ctr_auto_stub_ipc off, every unknown service command stops the run */
     SnxCtrBoard board;
@@ -709,6 +756,16 @@ int snx_ctr_main(int argc, char** argv) {
             positional = true;
         else if (!positional && !strcmp(arg, "--board-info"))
             info = true;
+        else if (!positional && !strcmp(arg, "--icon"))
+            icon = true;
+        else if (!positional && (!strcmp(arg, "--out") || !strncmp(arg, "--out=", 6))) {
+            icon_out = arg[5] ? arg + 6 : ++i < argc ? argv[i] : NULL;
+            if (!icon_out || !icon_out[0] || icon_out[0] == '-') {
+                fputs("scarletnx-3ds: --out requires a folder\n", stderr);
+                snx_cli_free(&cli);
+                return 2;
+            }
+        }
         else if (!positional && (!strcmp(arg, "--max-blocks") || !strncmp(arg, "--max-blocks=", 13))) {
             if (!parse_blocks(arg[12] ? arg + 13 : ++i < argc ? argv[i] : NULL, &max_blocks)) {
                 fputs("scarletnx-3ds: --max-blocks requires a positive number\n", stderr);
@@ -792,6 +849,25 @@ int snx_ctr_main(int argc, char** argv) {
         return 2;
     }
     for (int u = 0; u < cli.update_count; ++u) updates[update_count++] = cli.updates[u];
+    if (icon) {
+        int status = 2;
+        const char* refused = NULL;
+        if (input && icon_out && !info && !game && !recompile && !extract_container && !update_count && !output &&
+            !outdir && !budget_set && !ipc_stubs) {
+            if (!visible_path(input) || !visible_path(icon_out))
+                fputs("scarletnx-3ds: input/output paths may not contain control characters\n", stderr);
+            else if ((refused = !game_path(input)         ? "is not a game of this system"
+                               : !snx_path_exists(input) ? "does not exist"
+                               : !snx_is_file(input)     ? "is not a file"
+                                                         : NULL))
+                fprintf(stderr, "scarletnx-3ds: %s %s\n", input, refused);
+            else
+                status = write_icon(input, icon_out, keys, repo, argv[0]);
+        }
+        if (status == 2) usage(stderr);
+        snx_cli_free(&cli);
+        return status;
+    }
     snx_cli_free(&cli);
     /* the Switch's fps_limit, its text as the Switch reads it, the game's clock's pace (board/clock.h) */
     char said[192];
