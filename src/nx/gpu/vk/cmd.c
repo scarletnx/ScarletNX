@@ -289,12 +289,18 @@ static int bar_room(const VmaBudget* b, u64 add, int back) {
    nothing, and the driver didn't report the device lost either: the frontend and the release thread waited here for
    good, the stall report (which the frontend makes) never came, and one game's window froze with no message. Once the
    semaphore hasn't moved for VK_GPU_STUCK_NS the hang is logged, with its checkpoints and the GPU's fault report, and
-   the run ends */
+   the run ends.
+   The graphics timeline's clock runs only while the queue holds work the GPU hasn't done. A value is handed to the
+   recording thread before its submission, and that thread waits for each new pipeline at its bind (pipeline.c's
+   vk_pipeline_resolve): in one race on a loaded host it waited past 15 s for a pipeline that a worker still made,
+   with the GPU idle at the last value submitted and 2 MB of commands not recorded. The run ended there as "GPU
+   stopped", where the GPU had nothing to do */
 #define VK_GPU_STUCK_NS 15000000000ull
 void vk_wait_semaphore(VkSemaphore sem, u64 value) {
     VkSemaphoreWaitInfo wi = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &sem, .pValues = &value};
     u64 moved = plat_ns(), seen = 0;
+    int said = 0, idle = 0;
     for (;;) {
         VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull);
         if (r != VK_TIMEOUT) {
@@ -311,6 +317,19 @@ void vk_wait_semaphore(VkSemaphore sem, u64 value) {
         if (!VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, sem, &now))) return;
         if (now != seen) { /* the GPU finished more: a long wait, not a stopped GPU */
             seen = now;
+            moved = plat_ns();
+        } else if (sem == g_gsem && now >= vk_rec_gfx_queued()) { /* the GPU has done all it has: it waits too */
+            u64 t = plat_ns();
+            if (t - moved >= VK_GPU_STUCK_NS && !said) {
+                said = 1;
+                LOG("vulkan: the GPU has done submission %llu, the last on its queue, and has waited %llu s for the "
+                    "recording thread to submit up to %llu (%llu bytes of commands not recorded)\n",
+                    (unsigned long long)now, (unsigned long long)((t - moved) / 1000000000ull),
+                    (unsigned long long)value, (unsigned long long)vk_rec_behind());
+            }
+            idle = 1;
+        } else if (idle) { /* the queue has work again: the clock of a stopped GPU starts now */
+            idle = 0;
             moved = plat_ns();
         } else if (plat_ns() - moved >= VK_GPU_STUCK_NS) {
             vk_checkpoint_dump("GPU stopped");
