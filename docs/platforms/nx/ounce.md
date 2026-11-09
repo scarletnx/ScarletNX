@@ -338,7 +338,8 @@ lines, invocations) and `SET_MESH_INIT_SHADER` (0x456: invocations, local lines,
 The host (an RTX 2080) has `VK_EXT_mesh_shader` with 256 vertices and primitives and 128 task invocations, more than
 the game asks for.
 
-1. NVN (done). `NvnProgram` keeps stages 6 and 7 (`NVN_STAGES`). SetShaders keeps the sections' fields
+1. NVN (done). `NvnProgram` keeps stages 6 and 7 (`NVN_STAGES`) last, in an Ounce game's program object only: another
+   game's keeps its own fields from byte 0x80 (`NVN_PROGRAM_SWITCH_BYTES`). SetShaders keeps the sections' fields
    (`DsMeshKey`) by the program's serial (`nvn_program_mesh`). `OP_DRAW_MESH` records {first, count}, a 3D draw as
    x y z workgroups in a row from 0, and an indirect one with the buffer's address, count address and stride. The
    replay (`nvn_draw.c`) makes it a `DrawCall` with `mesh` set, of `DsPrograms`' task and mesh programs and the
