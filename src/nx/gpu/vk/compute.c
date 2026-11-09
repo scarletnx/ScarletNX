@@ -96,6 +96,16 @@ static u32 g_phead, g_ptail; /* batches put aside, landed */
 static VkWriteLog** g_logs;
 static u32 g_nlogs, g_caplogs;
 static VkWriteLog* g_cs_spare; /* a log taken for a dispatch whose setup was abandoned: the next dispatch reuses it */
+/* the spare made a log of parts parts, in the GPU's memory (gpu) or in host memory: NULL when none can be made */
+static VkWriteLog* cs_log(u32 parts, int gpu) {
+    if (g_cs_spare &&
+        (vk_wlog_size(g_cs_spare) != (u64)parts * SH_WLOG_PART * 4 || vk_wlog_on_gpu(g_cs_spare) != !!gpu)) {
+        vk_wlog_put(g_cs_spare);
+        g_cs_spare = NULL;
+    }
+    if (!g_cs_spare) g_cs_spare = gpu ? vk_wlog_get_gpu(parts) : vk_wlog_get(parts);
+    return g_cs_spare;
+}
 static void logs_unref(VkWriteLog** logs, u32* n) {
     for (u32 i = 0; i < *n; i++) vk_wlog_unref(logs[i]);
     *n = 0;
@@ -1505,19 +1515,12 @@ rebind:
     }
     /* the program's write log (ShaderInfo.gbuf_mark): a deferred dispatch's written buffers land only the bytes the
        log gives, and every dispatch that marks must bind it, or the stores' atomic OR reads an unwritten descriptor
-       (Xid 13). Part p is SH_WLOG_PART words, its flags first, at the program's own place in the log */
+       (Xid 13). Part p is SH_WLOG_PART words, its flags first, at the program's own place in the log. In the mirror
+       only the GPU reads it (vk_mirror_fold): in the GPU's memory (writelog.c) */
     VkWriteLog* log = NULL;
-    if (p->si.nmarks) {
-        if (g_cs_spare && vk_wlog_size(g_cs_spare) != (u64)p->si.nmarks * SH_WLOG_PART * 4) {
-            vk_wlog_put(g_cs_spare);
-            g_cs_spare = NULL;
-        }
-        if (!g_cs_spare) g_cs_spare = vk_wlog_get(p->si.nmarks);
-        if (!g_cs_spare) {
-            g_cs_skips[CS_SKIP_RESOURCES]++;
-            return;
-        }
-        log = g_cs_spare;
+    if (p->si.nmarks && !(log = cs_log(p->si.nmarks, mir))) {
+        g_cs_skips[CS_SKIP_RESOURCES]++;
+        return;
     }
     u32 wseen = vk_ww_now(); /* before the inputs are read */
     /* in the mirror, brought up to date: what other work has pending there lands first. Where it can't be (no memory
@@ -1529,6 +1532,11 @@ rebind:
             if (sa[i]) mirror_need_others(sa[i], ss[i]);
         for (int i = 0; i < ng && mir; i++)
             if (sa[i]) mir = vk_mirror_slice(sa[i], ss[i], &mbuf[i], &moff[i]);
+        /* the copies' path reads the log on the CPU (land_logged): one in host memory */
+        if (!mir && log && !(log = cs_log(p->si.nmarks, 0))) {
+            g_cs_skips[CS_SKIP_RESOURCES]++;
+            return;
+        }
     }
     u64 so[16];
     VkBuffer bi_buf[16];
@@ -1946,6 +1954,7 @@ rebind:
         for (int i = 0; i < ng; i++)
             if (p->si.gbuf_mark[i] && sa[i]) f[nf++] = (VkMirFold){mcpu[i], ss[i], p->si.gbuf_mark[i] - 1u};
         vk_mirror_fold(cb, vk_wlog_buffer(log), vk_wlog_size(log), f, nf);
+        vk_wlog_clear(cb, log); /* in the GPU's memory (cs_log): the folds were its only readers */
     }
     if (log) { /* recorded: the dispatch's reference goes with the work that writes the log */
         g_cs_spare = NULL;

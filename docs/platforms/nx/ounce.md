@@ -93,7 +93,10 @@ of guest memory in the GPU's memory (`vk/mirror.c`): one sparse buffer as big as
 same offsets, with a mask beside it, a bit for each byte, memory bound in granules of 2 MiB where bindings are.
 Windows over the same guest memory are the same bytes, and the programs run one after another on the graphics queue,
 as on the console. After each dispatch a pass ORs the bits its log gives into the mask at each buffer's place, the
-bits past the buffer's length dropped (`mirror_fold.comp`, `vk_mirror_fold`).
+bits past the buffer's length dropped (`mirror_fold.comp`, `vk_mirror_fold`). Only the GPU reads such a log, so it is in
+the GPU's memory (`vk_wlog_get_gpu`) and cleared there after the pass (`vk_wlog_clear`). In host memory each store's
+log write, a store and an atomic OR, crossed the bus on a discrete GPU: on an RTX 5080 one upscaler program took
+47 ms a dispatch for 0.14 ms, and each pass, which read the log, 14 ms for 0.3 ms.
 A host shadow keeps the guest bytes each page was given. When a buffer is bound, its pages the CPU wrote since
 (write tracking) are compared with the shadow, and only the bytes the CPU changed are copied in, so the bytes the
 programs wrote there and haven't landed stay. At each submit a pass lists the pages written in it, those with mask

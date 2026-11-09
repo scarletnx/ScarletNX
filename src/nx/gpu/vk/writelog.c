@@ -1,9 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The write logs of compute programs where there is no GPU mirror (mirror.c), a dispatch's own: the bytes each store
-   wrote (shader.h's SNX_VKB_WPAGES, SH_WLOG_*), which the renderer lands in guest memory, and no others. A log is host
-   memory the GPU writes, kept in a pool: it is cleared when it goes back, where it was written (the windows its flags
-   give), so that a dispatch costs what its stores wrote, not the 16 MiB an Ounce program's storage buffer is bound as.
+/* The write logs of compute programs, a dispatch's own: the bytes each store wrote (shader.h's SNX_VKB_WPAGES,
+   SH_WLOG_*), which the renderer lands in guest memory, and no others. Kept in pools, of two kinds:
+   - Host memory the GPU writes, where there is no GPU mirror (mirror.c) or a dispatch doesn't take it: the CPU reads
+     it, and clears it when it goes back, where it was written (the windows its flags give), so that a dispatch costs
+     what its stores wrote, not the 16 MiB an Ounce program's storage buffer is bound as.
+   - The GPU's own memory, for a dispatch in the mirror (vk_wlog_get_gpu), whose log only the GPU reads (the mirror's
+     fold): cleared on the GPU after the fold (vk_wlog_clear). On a discrete GPU every store of a program writes its
+     log, a store and an atomic OR, and in host memory each crossed the bus: one game's upscaler program took 47 ms of
+     an RTX 5080's time a dispatch for 0.14 ms with the log in its own memory, and the folds, which read the logs,
+     14 ms each for 0.3 ms.
    All under vk_lock, or the GPU thread's before it shares any */
 #include <stdlib.h>
 #include <string.h>
@@ -18,52 +24,75 @@ struct VkWriteLog {
     VmaAllocation mem;
     u32* w;
     u32 parts, refs; /* parts: its global buffers' masks, SH_WLOG_PART words each */
+    int gpu;         /* in the GPU's memory, unmapped: only the GPU reads it, and clears it (vk_wlog_clear) */
     int seen;  /* invalidated since the GPU wrote it: its words are the GPU's to the host */
     u32 freed; /* the present it went back to the pool at, for vk_wlog_trim */
     struct VkWriteLog* next;
 };
 
-/* the logs free, by their parts less one; a log is never smaller than the program needs, nor bigger */
-static VkWriteLog* g_free[16];
+/* the logs free, by kind (host memory, the GPU's) and their parts less one; a log is never smaller than the program
+   needs, nor bigger */
+static VkWriteLog* g_free[2][16];
 static struct {
     u64 made, in_use, bytes, windows, cleared;
 } g_wlog;
 
 static u64 log_bytes(u32 parts) { return (u64)parts * SH_WLOG_PART * 4; }
 
-VkWriteLog* vk_wlog_get(u32 parts) {
+static VkWriteLog* log_get(u32 parts, int gpu) {
     if (!parts || parts > 16) return NULL;
-    VkWriteLog* l = g_free[parts - 1];
+    VkWriteLog* l = g_free[gpu][parts - 1];
     if (l) {
-        g_free[parts - 1] = l->next;
+        g_free[gpu][parts - 1] = l->next;
     } else {
         l = calloc(1, sizeof *l);
         if (!l) return NULL;
         u32 fam[2] = {g_vk.gfx_family, g_vk.compute_family};
         VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                                   .size = log_bytes(parts),
-                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                  /* a copy source for the tests that read one back */
+                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                   /* both queues write logs, one at a time, without ownership transfers */
                                   .sharingMode =
                                       fam[0] != fam[1] ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
                                   .queueFamilyIndexCount = fam[0] != fam[1] ? 2 : 0,
                                   .pQueueFamilyIndices = fam};
         /* host memory, cached where it can be: the CPU reads the flags of every part and the masks of the windows
-           written, and writes zeros over them */
-        VmaAllocationCreateInfo aci = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
-                                                VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                       .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+           written, and writes zeros over them. Or the GPU's, which only the GPU touches */
+        VmaAllocationCreateInfo aci = {
+            .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+            .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+        if (gpu) aci = (VmaAllocationCreateInfo){.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         VmaAllocationInfo info;
         if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &l->buf, &l->mem, &info))) {
             free(l);
             return NULL;
         }
         vk_mem_track(l->mem);
-        l->w = info.pMappedData;
         l->parts = parts;
-        memset(l->w, 0, log_bytes(parts)); /* the only time it is cleared whole */
-        if (!VK_OK(vmaFlushAllocation(g_vk.vma, l->mem, 0, VK_WHOLE_SIZE)))
-            fatal("vulkan: a write log stayed unflushed");
+        l->gpu = gpu;
+        if (gpu) {
+            /* cleared on the GPU, before the work it is given to */
+            VkCommandBuffer cb;
+            vk_render_end();
+            cb = vk_cmd();
+            rec_CmdFillBuffer(cb, l->buf, 0, VK_WHOLE_SIZE, 0);
+            VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                  .srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                                  .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                  .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                  .dstAccessMask =
+                                      VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
+            VkDependencyInfo d = {
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
+            rec_CmdPipelineBarrier2(cb, &d);
+        } else {
+            l->w = info.pMappedData;
+            memset(l->w, 0, log_bytes(parts)); /* the only time it is cleared whole */
+            if (!VK_OK(vmaFlushAllocation(g_vk.vma, l->mem, 0, VK_WHOLE_SIZE)))
+                fatal("vulkan: a write log stayed unflushed");
+        }
         g_wlog.made++;
         g_wlog.bytes += log_bytes(parts);
     }
@@ -72,6 +101,30 @@ VkWriteLog* vk_wlog_get(u32 parts) {
     l->next = NULL;
     g_wlog.in_use++;
     return l;
+}
+VkWriteLog* vk_wlog_get(u32 parts) { return log_get(parts, 0); }
+VkWriteLog* vk_wlog_get_gpu(u32 parts) { return log_get(parts, 1); }
+int vk_wlog_on_gpu(const VkWriteLog* l) { return l->gpu; }
+void vk_wlog_clear(VkCommandBuffer cb, VkWriteLog* l) {
+    /* after its readers (the fold's dispatches), and before any later work that writes it again: the barrier after the
+       fill is the one every later dispatch that takes the log from the pool comes after */
+    VkMemoryBarrier2 b[2] = {
+        {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+         .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+         .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+         .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT},
+        {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+         .srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+         .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+         .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT}};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b[0]};
+    rec_CmdPipelineBarrier2(cb, &d);
+    rec_CmdFillBuffer(cb, l->buf, 0, VK_WHOLE_SIZE, 0);
+    d.pMemoryBarriers = &b[1];
+    rec_CmdPipelineBarrier2(cb, &d);
 }
 VkBuffer vk_wlog_buffer(const VkWriteLog* l) { return l->buf; }
 u64 vk_wlog_size(const VkWriteLog* l) { return log_bytes(l->parts); }
@@ -85,9 +138,9 @@ static void log_see(VkWriteLog* l) {
     l->seen = 1;
 }
 static void log_free(VkWriteLog* l) {
-    l->next = g_free[l->parts - 1];
+    l->next = g_free[l->gpu][l->parts - 1];
     l->freed = g_vk_present;
-    g_free[l->parts - 1] = l;
+    g_free[l->gpu][l->parts - 1] = l;
     g_wlog.in_use--;
 }
 /* The logs free for WLOG_IDLE presents go: the pool keeps what the dispatches in flight lately took, which one game
@@ -95,8 +148,8 @@ static void log_free(VkWriteLog* l) {
    their ends */
 #define WLOG_IDLE 600
 void vk_wlog_trim(void) {
-    for (int p = 0; p < 16; p++) {
-        VkWriteLog** pp = &g_free[p];
+    for (int p = 0; p < 32; p++) {
+        VkWriteLog** pp = &g_free[p / 16][p % 16];
         while (*pp && (u32)(g_vk_present - (*pp)->freed) < WLOG_IDLE) pp = &(*pp)->next;
         while (*pp) {
             VkWriteLog* l = *pp;
@@ -110,9 +163,14 @@ void vk_wlog_trim(void) {
 void vk_wlog_put(VkWriteLog* l) {
     if (l) log_free(l); /* no work recorded with it: clear still */
 }
-/* the last reference gone, the work that wrote it done: its windows written cleared, and back to the pool */
+/* the last reference gone, the work that wrote it done: its windows written cleared, and back to the pool. The GPU
+   cleared one of its own already (vk_wlog_clear) */
 void vk_wlog_unref(VkWriteLog* l) {
     if (!l || --l->refs) return;
+    if (l->gpu) {
+        log_free(l);
+        return;
+    }
     log_see(l);
     int cleared = 0;
     for (u32 p = 0; p < l->parts; p++) {
@@ -132,6 +190,7 @@ void vk_wlog_unref(VkWriteLog* l) {
 }
 
 u32 vk_wlog_runs(VkWriteLog* l, u32 part, u32 size, VkRunFn fn, void* user) {
+    if (l->gpu) fatal("vulkan: a write log in the GPU's memory read on the CPU");
     log_see(l);
     const u32* flags = l->w + (size_t)part * SH_WLOG_PART;
     const u32* masks = flags + SH_WPAGE_SLOT;
@@ -224,6 +283,7 @@ int vk_wlog_merge(VkWriteLog* l, u32 part, u32 from, u32 to, VkBuffer src, u64 s
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_mg_pipe);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_mg_layout, 0, 1, &set, 0, NULL);
     rec_CmdPushConstants(cb, g_mg_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
+    vk_gpuprof_tag(VK_PROF_WLOG_MERGE);
     rec_CmdDispatch(cb, (to - 1) / 4096 - from / 4096 + 1, 1, 1);
     return 1;
 }
