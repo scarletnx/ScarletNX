@@ -656,6 +656,23 @@ static const char* run(Ev* e, uint32_t entry_at) {
                 if (e->ids[in[4]].v.c[0]) r->v.c[(lane >> 5) & 3] = 1ull << (lane & 31);
                 break;
             }
+            case 6035: { /* OpAtomicFAddEXT of a 32-bit float, on one invocation's memory */
+                uint64_t ptr = e->ids[in[3]].v.c[0];
+                Val old;
+                if (!load(e, t, ptr, &old)) return "atomic";
+                float x, y;
+                uint32_t xb = (uint32_t)old.c[0], yb = (uint32_t)e->ids[in[6]].v.c[0];
+                memcpy(&x, &xb, 4);
+                memcpy(&y, &yb, 4);
+                x += y;
+                memcpy(&xb, &x, 4);
+                Val nv = {{xb}};
+                if (!store(e, t, ptr, &nv)) return "atomic";
+                r->kind = K_VALUE;
+                r->type = t;
+                r->v = old;
+                break;
+            }
             default:
                 if (op >= 227 && op <= 242) { /* atomics on one invocation's memory */
                     uint64_t ptr = e->ids[in[3]].v.c[0];
@@ -671,14 +688,15 @@ static const char* run(Ev* e, uint32_t entry_at) {
                         r->kind = K_NONE;
                         break;
                     }
+                    /* OpAtomicCompareExchange: the value at word 7, the comparator at word 8 */
                     uint64_t x = old.c[0],
-                             y = op == 230                ? e->ids[in[7]].v.c[0]
+                             y = op == 230                ? e->ids[in[8]].v.c[0]
                                  : op >= 234 || op == 229 ? e->ids[in[6]].v.c[0]
                                                           : 1,
                              nv;
                     switch (op) {
                         case 229: nv = y; break;
-                        case 230: nv = trunc_to(e, t, x) == trunc_to(e, t, y) ? e->ids[in[6]].v.c[0] : x; break;
+                        case 230: nv = trunc_to(e, t, x) == trunc_to(e, t, y) ? e->ids[in[7]].v.c[0] : x; break;
                         case 232: nv = x + 1; break;
                         case 233: nv = x - 1; break;
                         case 234: nv = x + y; break;

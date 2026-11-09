@@ -144,6 +144,7 @@ int g_shader_quad_compute = 1;
 int g_shader_mixed_dot;
 int g_shader_hmma_coop;
 u32 g_shader_mesh_tasks_max;
+int g_shader_float_atomic_add;
 int g_shader_tessellation = 1;
 int g_shader_clock_scopes;
 int g_shader_maximal_reconvergence;

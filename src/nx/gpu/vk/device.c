@@ -704,7 +704,9 @@ static int create_device(void) {
     int has_mesh = 0;
     int has_mixed_dot = 0; /* VK_VALVE_shader_mixed_float_dot_product: HMMA's pairs of f16 products in one instruction */
     int has_coop = 0;      /* VK_KHR_cooperative_matrix: HMMA on the matrix unit (g_shader_hmma_coop) */
-    int has_fault = 0;     /* VK_EXT_device_fault: what the GPU reports of a fault, at a lost device */
+    /* VK_EXT_shader_atomic_float: RED.ADD.F32 in one instruction (g_shader_float_atomic_add) */
+    int has_atomic_float = 0;
+    int has_fault = 0; /* VK_EXT_device_fault: what the GPU reports of a fault, at a lost device */
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     const char* store_none_ext = NULL; /* a 1.2 device's store op NONE (vk12_store_none) */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -764,6 +766,7 @@ static int create_device(void) {
         has_mixed_dot = snx_vk_extensions_has(&e, VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME);
         has_coop = snx_vk_extensions_has(&e, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
         has_list_restart = snx_vk_extensions_has(&e, VK_EXT_PRIMITIVE_TOPOLOGY_LIST_RESTART_EXTENSION_NAME);
+        has_atomic_float = snx_vk_extensions_has(&e, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
         g_vk.has_conservative = snx_vk_extensions_has(&e, VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
         g_vk.has_depth_range_unrestricted = snx_vk_extensions_has(&e, VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME);
         has_pipeline_robustness = snx_vk_extensions_has(&e, VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
@@ -878,6 +881,8 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MIXED_FLOAT_DOT_PRODUCT_FEATURES_VALVE};
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR qcoop = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
+    VkPhysicalDeviceShaderAtomicFloatFeaturesEXT qatomic_float = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
     VkPhysicalDevicePipelineRobustnessFeaturesEXT qpipeline = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT};
     VkPhysicalDeviceRobustness2FeaturesEXT qrobust = {.sType =
@@ -990,6 +995,7 @@ static int create_device(void) {
                            has_shader_clock ? &qclock : NULL,
                            has_mixed_dot ? &qmixdot : NULL,
                            has_coop ? &qcoop : NULL,
+                           has_atomic_float ? &qatomic_float : NULL,
                            has_fault ? &qfault : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
@@ -1230,6 +1236,7 @@ static int create_device(void) {
     g_shader_float16 = q12.shaderFloat16 != 0;
     /* its f16 vectors are Float16's, so shaderFloat16 too */
     g_shader_mixed_dot = has_mixed_dot && qmixdot.shaderMixedFloatDotProductFloat16AccFloat32 && g_shader_float16;
+    g_shader_float_atomic_add = has_atomic_float && qatomic_float.shaderBufferFloat32AtomicAdd;
     /* its f16 matrices are Float16's, its modules the Vulkan memory model's, and its matrices span a subgroup of 32 */
     g_shader_hmma_coop = has_coop && qcoop.cooperativeMatrix && g_shader_float16 && q12.vulkanMemoryModel &&
                                  q12.vulkanMemoryModelDeviceScope && g_vk.has_cs_warp32 && coop_f16_f32(g_vk.phys)
@@ -1400,6 +1407,14 @@ static int create_device(void) {
     if (g_shader_hmma_coop) {
         chain = &fcoop;
         ext[next++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceShaderAtomicFloatFeaturesEXT fatomic_float = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT,
+        .pNext = chain,
+        .shaderBufferFloat32AtomicAdd = VK_TRUE};
+    if (g_shader_float_atomic_add) {
+        chain = &fatomic_float;
+        ext[next++] = VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME;
     }
     /* a lost device's fault, which vk_checkpoint_dump logs */
     VkPhysicalDeviceFaultFeaturesEXT ffault = {

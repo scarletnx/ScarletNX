@@ -512,6 +512,7 @@ typedef struct {
     int warp32;    /* compute pipelines can require subgroups of 32, whole, as vk/compute.c's do (enabled) */
     int coop; /* VK_KHR_cooperative_matrix's 16x16x16 f16 product into f32 in subgroup scope, with the Vulkan memory
                  model, enabled: the device's maxComputeSharedMemorySize, for g_shader_hmma_coop, else 0 */
+    int float_add; /* VK_EXT_shader_atomic_float's shaderBufferFloat32AtomicAdd, enabled (g_shader_float_atomic_add) */
 } Gpu;
 /* the subgroups of a device's compute stage: their size where they have shuffles, else 0, and *quad whether they
    have quad operations */
@@ -610,8 +611,18 @@ static int gpu_open(Gpu* g, int warp) {
     int has_coop = warp && has_device_extension(g->phys, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coopq = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR, .pNext = has_mixed ? &mixq : NULL};
+    /* and the float atomic add, which RED.ADD.F32 takes where the device has it (g_shader_float_atomic_add) */
+    int has_float_add = has_device_extension(g->phys, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
+    VkPhysicalDeviceShaderAtomicFloatFeaturesEXT addq = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT,
+        .pNext = has_coop    ? (void*)&coopq
+                 : has_mixed ? (void*)&mixq
+                             : NULL};
     VkPhysicalDeviceVulkan13Features v13q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-                                             .pNext = has_coop ? (void*)&coopq : has_mixed ? (void*)&mixq : NULL};
+                                             .pNext = has_float_add ? (void*)&addq
+                                                      : has_coop    ? (void*)&coopq
+                                                      : has_mixed   ? (void*)&mixq
+                                                                    : NULL};
     VkPhysicalDeviceVulkan12Features v12q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                              .pNext = &v13q};
     VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &v12q};
@@ -623,6 +634,7 @@ static int gpu_open(Gpu* g, int warp) {
                 p13.maxSubgroupSize >= 32 && (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT);
     g->float16 = v12q.shaderFloat16 != 0;
     g->mixed_dot = has_mixed && mixq.shaderMixedFloatDotProductFloat16AccFloat32 && g->float16;
+    g->float_add = has_float_add && addq.shaderBufferFloat32AtomicAdd;
     g->coop = has_coop && coopq.cooperativeMatrix && g->float16 && v12q.vulkanMemoryModel &&
                       v12q.vulkanMemoryModelDeviceScope && g->warp32 && coop_shape(g->phys)
                   ? (int)pp2.properties.limits.maxComputeSharedMemorySize
@@ -634,15 +646,25 @@ static int gpu_open(Gpu* g, int warp) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR,
         .pNext = g->mixed_dot ? &mix : NULL,
         .cooperativeMatrix = VK_TRUE};
+    VkPhysicalDeviceShaderAtomicFloatFeaturesEXT add = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT,
+        .pNext = g->coop        ? (void*)&coop
+                 : g->mixed_dot ? (void*)&mix
+                                : NULL,
+        .shaderBufferFloat32AtomicAdd = VK_TRUE};
     VkPhysicalDeviceVulkan12Features v12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                                            .pNext = g->coop ? (void*)&coop : g->mixed_dot ? (void*)&mix : NULL,
+                                            .pNext = g->float_add   ? (void*)&add
+                                                     : g->coop      ? (void*)&coop
+                                                     : g->mixed_dot ? (void*)&mix
+                                                                    : NULL,
                                             .shaderFloat16 = (VkBool32)g->float16,
                                             .vulkanMemoryModel = (VkBool32)(g->coop != 0),
                                             .vulkanMemoryModelDeviceScope = (VkBool32)(g->coop != 0)};
-    const char* exts[2];
+    const char* exts[3];
     u32 next = 0;
     if (g->mixed_dot) exts[next++] = VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME;
     if (g->coop) exts[next++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
+    if (g->float_add) exts[next++] = VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME;
     VkPhysicalDeviceVulkan13Features v13 = {0};
     v13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     v13.pNext = &v12;
@@ -919,6 +941,99 @@ static int run_program(Gpu* g, const char* name, void (*build)(Prog*)) {
            "(a subnormal input or result without FTZ: they differ)\n",
            name, p.n, p.outputs, INVOCATIONS, bad, nans, skipped);
     return bad == 0;
+}
+
+/* ---- float atomics ---- */
+
+/* RED.E.ADD.F32.FTZ.RN and ATOMG.E.ADD.F32.FTZ.RN raced by the 64 invocations on two words of the output buffer: each
+   adds 1.0 to word 0, and to word 1, whose word before it (ATOMG's result) it stores at its own word 2 + i. Word 0
+   and 1 end at 64.0, and the 64 words ATOMG returned are 0.0 to 63.0, each once: no add was lost. With the device's
+   float atomic add (OpAtomicFAddEXT) and with the loop of compare and exchange that stands in for it */
+#define FADD_WORDS (2u + INVOCATIONS)
+static void fadd_program(Prog* p) {
+    Sm86Word w = sm86_fix(0x919); /* S2R R0, TID.X */
+    f(&w, 72, 8, 0x21);
+    emit(p, w);
+    w = sm86_fix(0x919); /* S2R R1, CTAID.X */
+    f(&w, 16, 8, 1);
+    f(&w, 72, 8, 0x25);
+    emit(p, w);
+    emit(p, ri(0x024, 2, 1, LOCAL, 0)); /* IMAD R2, R1, 32, R0 */
+    emit(p, ri(0x024, 6, 2, 4, 255));   /* IMAD R6, R2, 4, RZ */
+    w = sm86_fix(0xab9);                /* ULDC.64 UR6, c[0x0][0x28] */
+    f(&w, 16, 6, 6);
+    sm86_cbuf(&w, 0, 0x28);
+    f(&w, 73, 3, 5);
+    emit(p, w);
+    emit(p, sm86_mov_imm(3, 0x3f800000u));
+    for (u32 k = 0; k < 2; k++) { /* RED.E.ADD.F32 [UR6], R3, then ATOMG.E.ADD.F32 R4, [UR6 + 4], R3 */
+        w = sm86_fix(k ? 0x9a8 : 0x98e);
+        f(&w, 16, 8, k ? 4 : 0);
+        f(&w, 24, 8, 255);
+        f(&w, 32, 8, 3);
+        f(&w, 40, 24, 4 * k);
+        f(&w, 64, 6, 6);
+        f(&w, 72, 1, 1);
+        f(&w, 73, 3, 3);
+        f(&w, 87, k ? 4 : 3, 0);
+        f(&w, 91, 1, 1);
+        emit(p, w);
+    }
+    w = sm86_fix(0x986); /* STG.E [R6.U32 + UR6 + 8], R4 */
+    f(&w, 24, 8, 6);
+    f(&w, 32, 8, 4);
+    f(&w, 40, 24, 8);
+    f(&w, 64, 6, 6);
+    f(&w, 72, 1, 1);
+    f(&w, 73, 3, 4);
+    f(&w, 91, 1, 1);
+    emit(p, w);
+    epilogue(p);
+}
+static int run_fadd(Gpu* g) {
+    static Prog p;
+    memset(&p, 0, sizeof p);
+    fadd_program(&p);
+    int ok = 1;
+    for (int native = 0; native < 2; native++) {
+        if (native && !g->float_add) {
+            printf("float atomics: no shaderBufferFloat32AtomicAdd, the native form not run\n");
+            continue;
+        }
+        u32 cb0[64] = {0};
+        cb0[0x28 / 4] = (u32)VA_OUT;
+        cb0[0x2c / 4] = (u32)(VA_OUT >> 32);
+        static u32 out[FADD_WORDS], in[2];
+        memset(out, 0, sizeof out);
+        ShaderInfo si = {0};
+        si.cs_local[0] = LOCAL, si.cs_local[1] = si.cs_local[2] = 1;
+        size_t words = 0;
+        g_shader_float_atomic_add = native;
+        u32* spv = sm86_to_spirv(p.code, p.n * 16, ST_CS, NULL, &si, &words);
+        g_shader_float_atomic_add = 0;
+        if (!spv) {
+            fprintf(stderr, "float atomics: not translated: %s\n", si.first_unsupported);
+            return 0;
+        }
+        int ran = si.ngbuf == 1 && gpu_run(g, spv, words, &si, cb0, sizeof cb0, 0x28, in, sizeof in, out, sizeof out);
+        free(spv);
+        u64 seen = 0;
+        u32 bad = 0;
+        for (u32 i = 0; i < INVOCATIONS; i++) {
+            float v;
+            memcpy(&v, &out[2 + i], 4);
+            if (v < 0 || v >= INVOCATIONS || v != (float)(u32)v || (seen >> (u32)v & 1))
+                bad++;
+            else
+                seen |= 1ull << (u32)v;
+        }
+        int good = ran && out[0] == 0x42800000u && out[1] == 0x42800000u && !bad;
+        printf("float atomics (%s): words 0x%08x 0x%08x, %u of the %u returned words wrong%s\n",
+               native ? "OpAtomicFAddEXT" : "compare and exchange", out[0], out[1], bad, INVOCATIONS,
+               ran ? "" : ", Vulkan failed");
+        ok &= good;
+    }
+    return ok;
 }
 
 /* ---- the warp's matrix instructions ---- */
@@ -1428,6 +1543,7 @@ int main(void) {
     ok &= run_program(&g, "wide", wide_program);
     ok &= run_program(&g, "stores", stores_program);
     ok &= maxwell_log(&g);
+    ok &= run_fadd(&g);
     vkDestroyDevice(g.device, NULL);
     vkDestroyInstance(g.instance, NULL);
     /* on a device of its own, which volk's functions are then loaded for */

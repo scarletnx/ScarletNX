@@ -1311,14 +1311,26 @@ VkImageViewType vk_storage_image_type(const ShaderInfo* si, int i) {
                                     : VK_IMAGE_VIEW_TYPE_2D;
 }
 
+/* An indirect buffer's address (SH_GBUF_INDIRECT): the 64-bit pointer at its cell, read from guest memory as the
+   program loads it, a pending write there landed first. The cell is at the address its parent's constant buffer word
+   holds (v). A cell or a pointer with no memory mapped binds nothing (0) */
+static u64 gbuf_pointer(u32 off, const u32* v) {
+    u64 cell = (((u64)v[1] << 32) | v[0]) + SH_GBUF_CELL(off), cpu = 0;
+    u32 w[2];
+    if (cell == SH_GBUF_CELL(off) || gmmu_run(cell, 8, &cpu) < 8) return 0;
+    vk_buf_mem_need(cell, 8);
+    vk_gmem_words(cell, w, 2);
+    u64 pointer = ((u64)w[1] << 32) | w[0];
+    return pointer && gmmu_run(pointer, 4, &cpu) ? pointer : 0;
+}
 u32 vk_gbuf_desc(int stage, u32 off, const u32* v, u64* addr) {
     u32 size = stage == ST_VS && off == 0xb0 ? 16 : v[2];
     u64 cpu = 0;
-    *addr = ((u64)v[1] << 32) | v[0];
     /* An address with nothing mapped there is no buffer, as address 0 is: it reads zeros and its writes land nowhere,
        as the copies of guest memory gave it before. The program cannot access it, or it would fault on the console.
        An Ounce game's dispatches leave such an address in a slot, and the GPU mirror took no dispatch with one: each
        copied its written buffers on the CPU instead, about 230 MB a second of one race */
+    *addr = SH_GBUF_INDIRECT(off) ? gbuf_pointer(off, v) : ((u64)v[1] << 32) | v[0];
     if (!shader_gbuf_sized(stage, off) && off != 0xb0) {
         /* a bare address in the program's own constant buffer has no size beside it: the memory mapped from it on,
            whole words, to the cap below (Eden binds such a buffer to the end of its mapping, at most 8 MiB) */
@@ -2100,7 +2112,8 @@ static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* cons
             VkDrawGbuf* b = &draw->b[s][i];
             u32 v[3] = {0, 0, 0}, desc = sh[s]->si.gbuf_cbuf_off[i];
             /* the constant buffer holding the address (SH_GBUF_*): NVN's descriptors in cbuf 0, or one of the
-               program's own */
+               program's own. An indirect buffer's is its parent's, which vk_gbuf_desc follows to the pointer, and it
+               takes the memory mapped from there, as a bare address does */
             DsCbBlock in = ds_cb_inline(ds, stage, SH_GBUF_BANK(desc));
             u64 cb = in.bytes ? 0 : ds->bind.cb_addr[stage][SH_GBUF_BANK(desc)];
             if (cb && SH_GBUF_BANK(desc)) vk_buf_mem_need(cb + SH_GBUF_OFFSET(desc), 8);
@@ -2111,7 +2124,7 @@ static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* cons
             for (u32 w = 0; in.bytes && w < (SH_GBUF_BANK(desc) ? 2u : 3u); w++)
                 v[w] = ds_inline_word(in, SH_GBUF_OFFSET(desc) + 4 * w);
             b->size = vk_gbuf_desc(sh[s]->stage, desc, v, &b->addr);
-            b->bare = SH_GBUF_BANK(desc) != 0;
+            b->bare = SH_GBUF_BANK(desc) != 0 || SH_GBUF_INDIRECT(desc);
             b->writable = (sh[s]->si.gbuf_wmask >> i) & 1;
         }
     }

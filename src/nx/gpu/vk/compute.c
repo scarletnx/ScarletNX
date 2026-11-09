@@ -1295,6 +1295,7 @@ void vk_dispatch(const DispatchState* d) {
     u64 need = 0;
     for (int i = 0; i < ng; i++) {
         u32 v[3] = {0, 0, 0}, bank = SH_GBUF_BANK(p->si.gbuf_cbuf_off[i]), off = SH_GBUF_OFFSET(p->si.gbuf_cbuf_off[i]);
+        /* the address's words: an indirect buffer's are its parent's, which vk_gbuf_desc follows to the pointer */
         for (u32 w = 0; w < (bank ? 2u : 3u); w++) cs_cb_read(bank, off + 4 * w, &v[w]);
         ss[i] = vk_gbuf_desc(ST_CS, p->si.gbuf_cbuf_off[i], v, &sa[i]);
         need += ss[i] + vk_stage_align();

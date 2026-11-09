@@ -54,9 +54,18 @@ static inline int shader_same_indexed_kind(const ShTex* tex, u64 int_mask, u64 s
    address in a constant buffer of its own, with nothing after it: one game's terrain vertex programs read their patch
    data through such an address in cbuf 6, as Eden tracks them when no NVN descriptor holds the base
    (global_memory_to_storage_buffer_pass.cpp's Track without the NVN bias). The renderer sizes those by the memory
-   mapped from the address on. The vertex stage's cbuf 0 at 0xb0 is a bare pointer of 16 bytes. */
-#define SH_GBUF_BANK(d)   ((d) >> 16)
-#define SH_GBUF_OFFSET(d) ((d) & 0xFFFFu)
+   mapped from the address on. The vertex stage's cbuf 0 at 0xb0 is a bare pointer of 16 bytes.
+   An Ounce program may also reach a buffer through a pointer in memory (SH_GBUF_INDIRECT, bit 31): the 64-bit address
+   stored at byte SH_GBUF_CELL (bits 21-30, in 8-byte units) of the buffer whose address the constant buffer word of
+   bits 0-20 holds (SH_GBUF_PARENT, itself one of the program's buffers). One game's material programs load pointers
+   from a table whose address is in cbuf 0, then index the tables they point to (vk/render.c binds the memory mapped
+   from the pointer, which it reads from guest memory, as a bare address's) */
+#define SH_GBUF_BANK(d)     ((d) >> 16 & 31u)
+#define SH_GBUF_OFFSET(d)   ((d) & 0xFFFFu)
+#define SH_GBUF_INDIRECT(d) ((d) >> 31)
+#define SH_GBUF_CELL(d)     (((d) >> 21 & 1023u) * 8u)
+#define SH_GBUF_PARENT(d)   ((d) & 0x1FFFFFu)
+#define SH_GBUF_CELL_MAX    8184u
 static inline int shader_gbuf_sized(int stage, u32 d) { return d >= 0x110 && d < (stage == ST_CS ? 0x410u : 0x830u); }
 /* Transform feedback (key of the last program before rasterization): for each of the 4 buffers, the attribute word
    each 4-byte word of a vertex there holds (its ISA attribute address / 4: the position's x is 28, generic i's
@@ -313,6 +322,9 @@ extern int g_shader_hmma_coop;
    the less of them): a task program's count, read from its payload's header, is clamped to it, as a count past it is
    undefined behavior that can hang the GPU. 0 offline: not clamped */
 extern u32 g_shader_mesh_tasks_max;
+/* VK_EXT_shader_atomic_float's shaderBufferFloat32AtomicAdd: an SM86 RED.ADD.F32 or ATOMG.ADD.F32 on global memory is
+   one OpAtomicFAddEXT, else a compare and exchange loop on the word's bits (sm86_translate.c's atomic_fadd). 0 offline */
+extern int g_shader_float_atomic_add;
 /* the Tessellation capability, which also gives a fragment program PrimitiveId without Geometry */
 extern int g_shader_tessellation;
 /* VK_KHR_shader_clock's scopes: bit 0 subgroup, bit 1 device */

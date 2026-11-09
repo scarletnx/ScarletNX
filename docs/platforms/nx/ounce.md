@@ -141,6 +141,23 @@ landed with no byte written by both.
 The translator declares the global buffers `Aliased` and `Coherent`: one game binds a range and a part of it to the
 same program, writes through one and waits for the value through the other.
 
+A program may also reach a buffer through a pointer in memory. One game's material programs load the addresses of
+five tables from a table whose own address is in cbuf 0 (`LDG.E.64 R, [UR + 8]`), then index them (`IMAD.WIDE`), and
+its compute programs pick one of two such pointers with a predicate. The tables are gigabytes away from the table
+that points to them, outside its 16 MiB. The translator names such a buffer by its pointer's cell (`SH_GBUF_INDIRECT`
+in `shader.h`, the cell's offset in the buffer of a constant buffer word): the renderer reads the pointer from guest
+memory when it binds the draw or dispatch, a pending write there landed first (`gbuf_pointer` in `vk/render.c`), and
+binds the memory mapped from it as a bare address's, and the program finds the buffer's base by loading the cell
+itself. An address that may be either of two pointers is compared with each buffer when it runs
+(`global_dynamic`). A cell that the GPU writes later in the stream than the bind would be read too early: the program
+would then index the window bound from the older pointer. Each such buffer is another window of up to 16 MiB bound for
+the draw, with the in-place bookkeeping of its pages. A general path (physical storage buffers,
+`VK_KHR_buffer_device_address`) would need every guest page a pointer can reach imported and tracked, which the
+import limits and the ownership model above don't allow.
+
+`RED` and `ATOMG` of `F32` add (`.FTZ.RN`) are one `OpAtomicFAddEXT` where the device has
+`shaderBufferFloat32AtomicAdd`, else a loop of compare and exchange on the word's bits.
+
 ## Surfaces
 
 An Ounce game's block linear surfaces use another GOB: bits 5 and 6 of a byte's offset in it are swapped, so x
