@@ -11,10 +11,10 @@
 
 /* each action's setting, in HOTKEY_'s order */
 static const char* const KEYS[HOTKEY_COUNT] = {
-    "hotkey_help",     "hotkey_menu",       "hotkey_screenshot",   "hotkey_fps_limit", "hotkey_thread_dump",
-    "hotkey_showcase", "hotkey_save_state", "hotkey_load_state",   "hotkey_next_slot", "hotkey_tracy",
-    "hotkey_pause",    "hotkey_fullscreen", "hotkey_fullscreen_2", "hotkey_stats",     "hotkey_capture",
-    "hotkey_mouse",    "hotkey_quit"};
+    "hotkey_help",     "hotkey_menu",    "hotkey_screenshot", "hotkey_fps_limit",    "hotkey_thread_dump",
+    "hotkey_showcase", "hotkey_tv_mode", "hotkey_save_state", "hotkey_load_state",   "hotkey_next_slot",
+    "hotkey_tracy",    "hotkey_pause",   "hotkey_fullscreen", "hotkey_fullscreen_2", "hotkey_stats",
+    "hotkey_capture",  "hotkey_mouse",   "hotkey_quit"};
 /* the modifiers' words, in a text's order */
 static const struct {
     const char* word;

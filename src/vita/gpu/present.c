@@ -15,6 +15,7 @@
 static struct {
     char* shot;
     bool video;
+    uint64_t quit_armed_ns; /* the second Esc, before this, quits: a first one only warns (#1168) */
 } g_present;
 static volatile sig_atomic_t g_interrupted;
 static void on_signal(int signal) {
@@ -42,6 +43,15 @@ bool vita_present_vblank(VitaProcess* p) {
     SDL_Event event;
     while (SDL_WasInit(SDL_INIT_EVENTS) && SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) return false;
+        /* #1168: Escape twice within three seconds quits, as on the Switch; a first press only warns */
+        if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && !event.key.repeat &&
+            !(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
+            uint64_t now = SDL_GetTicksNS();
+            if (g_present.quit_armed_ns && now < g_present.quit_armed_ns) return false;
+            g_present.quit_armed_ns = now + 3000000000ull;
+            printf("Press Esc again to quit\n");
+            continue;
+        }
         vita_input_event(&event);
     }
     return !g_interrupted;

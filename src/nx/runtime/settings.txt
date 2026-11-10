@@ -713,6 +713,14 @@ setting Showcase shortcut
     label Showcase
     set hotkey_set
     help The key that turns showcase on and off, as hotkey_help's
+setting TV mode shortcut
+    key hotkey_tv_mode
+    text 64
+    default Ctrl+D
+    label TV mode
+    set hotkey_set
+    help The key that cycles the console's TV mode while the game runs, as the game's menu's TV mode row does: On,
+    help Off and Auto, and round. It does not change the .ini, whose docked holds the start's choice
 setting Save state shortcut
     key hotkey_save_state
     text 64
@@ -793,7 +801,8 @@ setting Quit shortcut
     default Escape
     label Quit
     set hotkey_set
-    help The key that quits the game, as hotkey_help's
+    help The key that quits the game, as hotkey_help's. It asks twice: the first press warns, and a second within
+    help three seconds quits
 
 table g_network_ini
 setting Network

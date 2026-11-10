@@ -10,7 +10,7 @@
 
 #define F12  "  F12  turn the stats on or off\n"
 #define CTRL "  Ctrl+Shift+F12  capture the next frame with RenderDoc\n"
-#define ESC  "  Esc  quit the game"
+#define ESC  "  Esc twice  quit the game"
 
 static char g_text[HELP_MAX];
 
