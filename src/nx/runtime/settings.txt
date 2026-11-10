@@ -1218,7 +1218,8 @@ setting GPU checkpoints
     startup
     words Off|On
     help 1 = records what the GPU is doing as it goes (VK_NV_device_diagnostic_checkpoints), and when the device is
-    help lost logs the work each queue reached. Where the driver has no such extension it is only a warning
+    help lost logs the work each queue reached. Where the driver has no such extension it is only a warning. Off, the
+    help device is made without it, so a RenderDoc capture also replays on a driver that lacks it
 setting Guest memory
     key vk_memory
     int 0 2

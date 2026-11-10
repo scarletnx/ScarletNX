@@ -134,8 +134,8 @@ typedef struct {
     int has_portability;        /* a portability driver (MoltenVK): the device lists VK_KHR_portability_subset */
     int has_xfb;                /* VK_EXT_transform_feedback (without it, g_shader_xfb_stores) */
     int has_mixed_samples;      /* VK_NV_framebuffer_mixed_samples: coverage at more samples than color storage */
-    /* VK_NV_device_diagnostic_checkpoints, enabled where the device has it: the draw or dispatch a GPU fault hangs on
-       (record.c's vk_checkpoint_dump). has_checkpoints below is checkpoints.c's, with vk_checkpoints=1 */
+    /* VK_NV_device_diagnostic_checkpoints, enabled with vk_checkpoints=1 where the device has it: the draw or dispatch a
+       GPU fault hangs on (record.c's vk_checkpoint_dump). has_checkpoints below is checkpoints.c's markers, on it too */
     int has_nv_checkpoints;
     int has_fault; /* VK_EXT_device_fault: the GPU's own report of a fault, at a lost device */
     int has_coverage_to_color, has_post_depth_coverage;

@@ -754,7 +754,10 @@ static int create_device(void) {
         has_depth_clip_control = snx_vk_extensions_has(&e, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
-        g_vk.has_nv_checkpoints = snx_vk_extensions_has(&e, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+        /* only when vk_checkpoints asks: a device made with it marks every draw and dispatch, and a RenderDoc capture
+           of it needs the extension to replay, which other vendors' drivers lack */
+        g_vk.has_nv_checkpoints =
+            g_settings.gpu_checkpoints && snx_vk_extensions_has(&e, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
         has_fault = snx_vk_extensions_has(&e, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
         g_vk.has_coverage_to_color = snx_vk_extensions_has(&e, VK_NV_FRAGMENT_COVERAGE_TO_COLOR_EXTENSION_NAME);
         g_vk.has_post_depth_coverage = snx_vk_extensions_has(&e, VK_EXT_POST_DEPTH_COVERAGE_EXTENSION_NAME);
@@ -825,7 +828,7 @@ static int create_device(void) {
     if (g_vk.has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
     if (g_vk.has_depth_range_unrestricted) ext[next++] = VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME;
     if (g_vk.has_mixed_samples) ext[next++] = VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME;
-    /* the hanging draw's or dispatch's marker (record.c's vk_checkpoint_dump), and checkpoints.c's */
+    /* vk_checkpoints=1: the hanging draw's or dispatch's marker (record.c's vk_checkpoint_dump), and checkpoints.c's */
     if (g_vk.has_nv_checkpoints) ext[next++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
     if (g_vk.has_coverage_to_color) ext[next++] = VK_NV_FRAGMENT_COVERAGE_TO_COLOR_EXTENSION_NAME;
     if (g_vk.has_post_depth_coverage) ext[next++] = VK_EXT_POST_DEPTH_COVERAGE_EXTENSION_NAME;
@@ -1654,7 +1657,7 @@ static int create_device(void) {
         ext[next++] = VK_EXT_MESH_SHADER_EXTENSION_NAME;
     }
     /* vk_checkpoints=1: checkpoints.c's markers too, on VK_NV_device_diagnostic_checkpoints, which the device enables
-       above where it has it (has_nv_checkpoints) */
+       above for this setting where it has it (has_nv_checkpoints) */
     if (g_settings.gpu_checkpoints) {
         g_vk.has_checkpoints = g_vk.has_nv_checkpoints;
         if (!g_vk.has_checkpoints)
