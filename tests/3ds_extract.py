@@ -86,6 +86,20 @@ def main():
                            capture_output=True, text=True, timeout=20, env=env)
         assert p.returncode == 1 and 'no SMDH icon' in p.stderr, (p.returncode, p.stderr)
         assert not (root / 'icon-none').exists()
+        # an icon that cannot be written says where and the system's reason: a folder below a file cannot be made
+        source.write_bytes(cia(application=ncch(icon=bytes(smdh))))
+        (root / 'a file').write_bytes(b'x')
+        below = root / 'a file' / 'icon'
+        p = subprocess.run(
+            [driver, '-x', '--icon', '--out', str(below), str(source)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            env=env,
+        )
+        assert p.returncode == 1, (p.returncode, p.stdout, p.stderr)
+        said = [line for line in p.stderr.splitlines() if 'cannot write' in line]
+        assert len(said) == 1 and 'icon.rgba: ' in said[0] and said[0].split('icon.rgba: ', 1)[1].strip(), p.stderr
         # Signature-dependent body positions, absent content and optional metadata.
         for sig in [0x10000, 0x10001, 0x10002, 0x10003, 0x10004, 0x10005]:
             run(cia(signature=sig, with_meta=False))
