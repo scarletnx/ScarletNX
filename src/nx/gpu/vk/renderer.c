@@ -73,23 +73,36 @@ static void vkr_gfx_mem_need(u64 gva, u64 size) {
 }
 /* the GPU range a mapping change is changing, from its begin to its end (size 0 for a change of guest memory) */
 static u64 g_mapping_gva, g_mapping_size;
-/* whether the renderer may hold anything over guest memory [a, a + size), with pend_lock held: pending results or
+/* whether the renderer holds anything over guest memory [a, a + size), with pend_lock held: pending results or
    GPU-owned memory on its host pages, which land there, or a GPU mapping of it, through which the renderer reads and
    writes it (gmmu_run, then the bytes, with vk_lock held). Storage images and render targets write back through their
-   GPU mapping too. Unified memory reads guest memory in place, and its imports aren't looked at here */
+   GPU mapping too */
 static void alias_seen(void* ctx, u64 gva, u64 n) {
     (void)gva;
     (void)n;
     *(int*)ctx = 1;
 }
-static int guest_covered(u64 a, u64 size) {
-    u64 page = plat_vm_page(), lo = a & ~(page - 1), hi;
+static int guest_held(u64 a, u64 size) {
+    u64 page = plat_vm_page(), lo = a & ~(page - 1), hi = (a + size + page - 1) & ~(page - 1);
     int mapped = 0;
-    if (vk_uma() || size == ~0ull || a + size < a) return 1;
-    hi = (a + size + page - 1) & ~(page - 1);
     if (pend_hit_guest(&g_pend_any, a, size) || own_lookup(lo, hi - lo, NULL, 0)) return 1;
     gmmu_aliases(a, size, alias_seen, &mapped);
     return mapped;
+}
+/* whether it may: unified memory reads guest memory in place, and its imports aren't looked at here */
+static int guest_covered(u64 a, u64 size) {
+    if (vk_uma() || size == ~0ull || a + size < a) return 1;
+    return guest_held(a, size);
+}
+/* whether a change that takes vk_lock waits for results of the GPU, in its begin or in mem.c's change, with pend_lock
+   held. A change of guest pages alone (GPU_MAPPING_GUEST_ONLY): when the renderer holds something over them. Another
+   change of guest memory lands what the GPU holds of other pages too (a view's source), so: when anything pends or is
+   owned at all. A change of the GPU's address space has its callers off their cores already */
+static int mapping_lands(u64 gva, u64 size, int kind) {
+    if (kind == GPU_MAPPING_GMMU) return 0;
+    if (kind == GPU_MAPPING_GUEST || size == ~0ull || gva + size < gva)
+        return g_pend_any.total || own_any() || g_gfx_img_any;
+    return guest_held(gva, size);
 }
 /* The brackets of this thread that skipped vk_lock, a bit each by depth: mem.c's brackets don't nest, the GMMU's
    may run inside one of the renderer's own (vk_lock held there already) */
@@ -108,12 +121,18 @@ static void vkr_mapping_begin(u64 gva, u64 size, int kind) {
         return;
     }
     t_mapping_quick &= ~bit;
+    int full = kind != GPU_MAPPING_GMMU;
+    int lands = mapping_lands(gva, size, kind);
     /* taken again after vk_lock, in order, and once what lands here has landed: a landing may wait for the GPU, and
        held pend_lock meanwhile, which the quick changes of other guest memory and the game's reads wait for. Each
        change of the tables takes it on its own until then */
     pend_unlock();
-    int full = kind != GPU_MAPPING_GMMU;
-    vk_lock();
+    /* the kernel hears of a wait before it starts (g_gpu_mapping_waits), and of none where the lock is free and
+       nothing lands: a thread in a memory SVC then keeps its core to the SVC's end, as on the console */
+    if (lands || !vk_trylock()) {
+        if (g_gpu_mapping_waits) g_gpu_mapping_waits();
+        vk_lock();
+    }
     g_mapping_gva = full ? 0 : gva;
     g_mapping_size = full ? 0 : size;
     if (full) {
