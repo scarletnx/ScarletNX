@@ -3,7 +3,7 @@
 /* g_hle, the HLE's state, its initialization, its pools, and t_hle, its thread state (hle.h) */
 #include "nx/hle/hle.h"
 #include "nx/runtime/platform/log.h"
-#include <assert.h>
+#include <stdlib.h>
 
 /* zero, in .bss: hle_init sets what starts out non-zero */
 Hle g_hle;
@@ -66,16 +66,21 @@ static int slot_free(const void* slot, size_t size) {
     const u8* p = (const u8*)slot;
     return !p[0] && !memcmp(p, p + 1, size - 1);
 }
-void* pool_take(void* base, size_t size, u32 count, u32* next, const char* what) {
+void* pool_try(void* base, size_t size, u32 count, u32* next) {
     u32 i = *next < count ? *next : 0, k; /* a save state's next past the pool's end starts it over */
     for (k = 0; k < count; k++, i = i + 1 == count ? 0 : i + 1)
         if (slot_free((u8*)base + (size_t)i * size, size)) {
             *next = i + 1 == count ? 0 : i + 1;
             return (u8*)base + (size_t)i * size;
         }
-    /* the assert's message can't name the pool, and a core dump of the game is too large to keep its stack */
-    logf_(0, "pool_take: more than %u %s at once\n", (unsigned)count, what);
-    assert(!"an HLE pool is full");
     return NULL;
+}
+void* pool_take(void* base, size_t size, u32 count, u32* next, const char* what) {
+    void* slot = pool_try(base, size, count, next);
+    if (slot) return slot;
+    /* the line names the pool, and a core dump of the game is too large to keep its stack. Not an assert: a build
+       with NDEBUG would hand the caller NULL */
+    logf_(0, "pool_take: more than %u %s at once\n", (unsigned)count, what);
+    abort();
 }
 void pool_put(void* slot, size_t size) { memset(slot, 0, size); }

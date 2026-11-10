@@ -515,13 +515,14 @@ void kthread_destroy(KObj* o) {
 }
 
 /* a thread that hasn't started, entering at entry with arg in x0 (r0) and sp at stack_top, its return address 0, from
-   g_hle.thread.threads (KTHREAD_MAX). It stays valid while a reference to it is held */
+   g_hle.thread.threads (KTHREAD_MAX): NULL when all are in use. It stays valid while a reference to it is held */
 KThread* kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core) {
     KThread* t;
     pm_lock(&g_host.kernel.pool_lk);
-    t = (KThread*)POOL_TAKE(g_hle.thread.threads, g_hle.thread.thread_next, "threads");
-    t->o.type = KO_THREAD;
+    t = (KThread*)POOL_TRY(g_hle.thread.threads, g_hle.thread.thread_next);
+    if (t) t->o.type = KO_THREAD;
     pm_unlock(&g_host.kernel.pool_lk);
+    if (!t) return NULL;
     /* a slot's earlier thread may have ended inside an SVC, as a save state's load ends them where they stopped */
     __atomic_store_n(&g_host.thread.handed[kt_ix(t) - 1], 0, __ATOMIC_RELAXED);
     kobj_set_name(&t->o, "thread");
@@ -868,6 +869,7 @@ void kernel_run_main(u64 entry, u64 stack_size, int prio, int core) {
     g_main_stack_size = stack_size;
     g_hle.thread.default_core = core;
     t = kthread_create(entry, 0, stack + stack_size, prio, core);
+    if (!t) fatal("No thread slot for the main thread: all %d are in use", KTHREAD_MAX);
     memcpy(t->name, "main", 5);
     g_hle.thread.main_tid = t->id;
     h = h_new(&t->o);

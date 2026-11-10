@@ -175,13 +175,16 @@ void svcobj_unref(SvcObj* o) {
 }
 
 /* ============================================================ domains */
+/* root's domain, which takes the caller's reference to it: NULL when all DOMAIN_MAX are in use */
 static Domain* domain_new(SvcObj* root) {
     Domain* d;
     pm_lock(&g_host.ipc.lk);
-    d = (Domain*)POOL_TAKE(g_hle.ipc.domains, g_hle.ipc.domain_next, "domains");
-    d->obj[0] = root;
-    d->n = 1;
-    d->refs = 1;
+    d = (Domain*)POOL_TRY(g_hle.ipc.domains, g_hle.ipc.domain_next);
+    if (d) {
+        d->obj[0] = root;
+        d->n = 1;
+        d->refs = 1;
+    }
     pm_unlock(&g_host.ipc.lk);
     return d;
 }
@@ -568,6 +571,14 @@ static u32 control(IpcCtx* c, KSession* s) {
                 Domain* n;
                 svcobj_ref(s->obj);
                 n = domain_new(s->obj);
+                if (!n) {
+                    svcobj_unref(s->obj);
+                    WARN_LIMIT(4,
+                               "ipc: %s: all %d domains are in use, ConvertCurrentObjectToDomain gets OutOfDomains "
+                               "(%#x)\n",
+                               s->obj ? s->obj->name : "session", DOMAIN_MAX, SNX_RC_SF_HIPC_OUT_OF_DOMAINS);
+                    R_THROW(SNX_RC_SF_HIPC_OUT_OF_DOMAINS);
+                }
                 if (!__atomic_compare_exchange_n(&s->domain, &d, n, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
                     domain_unref(n); /* another thread converted it first */
             }

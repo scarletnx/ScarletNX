@@ -152,6 +152,13 @@ static u32 create_thread(u64 entry, u64 arg, u64 stack_top, i32 prio, i32 core, 
     R_UNLESS(valid_prio(prio), SNX_RC_SVC_INVALID_PRIORITY);
     u32 rc;
     t = kthread_create(entry, arg, stack_top, prio, core);
+    if (!t) {
+        WARN_LIMIT(4,
+                   "svcCreateThread: all %d thread slots are in use (exited threads keep theirs while a handle to "
+                   "them is open), the game gets OutOfResource (%#x)\n",
+                   KTHREAD_MAX, SNX_RC_SVC_OUT_OF_RESOURCE);
+        R_THROW(SNX_RC_SVC_OUT_OF_RESOURCE);
+    }
     rc = give_handle(&t->o, out);
     if (!rc) kthread_set_own_handle(t, *out);
     return rc;
@@ -368,12 +375,20 @@ static u32 cancel_sync(u32 h) {
 
 /* ============================================================ events */
 static u32 create_event(u32* wh, u32* rh) {
-    KEvent* r = kevent_new("event");
-    KWEvent* w;
-    pm_lock(&g_host.kernel.pool_lk);
-    w = (KWEvent*)POOL_TAKE(g_hle.svc.wevents, g_hle.svc.wevent_next, "writable events");
-    w->o.type = KO_WEVENT;
-    pm_unlock(&g_host.kernel.pool_lk);
+    KEvent* r = kevent_try_new("event");
+    KWEvent* w = NULL;
+    if (r) {
+        pm_lock(&g_host.kernel.pool_lk);
+        w = (KWEvent*)POOL_TRY(g_hle.svc.wevents, g_hle.svc.wevent_next);
+        if (w) w->o.type = KO_WEVENT;
+        pm_unlock(&g_host.kernel.pool_lk);
+    }
+    if (!w) {
+        WARN_LIMIT(4, "svcCreateEvent: all %d %s are in use, the game gets OutOfResource (%#x)\n",
+                   r ? KHANDLED_MAX : KEVENT_MAX, r ? "writable events" : "events", SNX_RC_SVC_OUT_OF_RESOURCE);
+        if (r) kobj_destroy(&r->o); /* no reference yet */
+        R_THROW(SNX_RC_SVC_OUT_OF_RESOURCE);
+    }
     kobj_set_name(&w->o, "writable event");
     w->r = kobj_id(&r->o);
     kobj_ref(&r->o);

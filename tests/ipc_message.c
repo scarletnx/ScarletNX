@@ -1130,6 +1130,29 @@ static void full_handle_table(void) {
     CHECK(h_close(h) == 0 && objects_live == objects);
 }
 
+/* every domain in use (DOMAIN_MAX sessions converted): ConvertCurrentObjectToDomain answers sf's OutOfDomains and the
+   session stays plain, with its object's references as they were; with a domain free again it converts */
+static void full_domains(void) {
+    int objects = objects_live;
+    SvcObj* root = test_object("test:d");
+    u32 h = session_new(root);
+    KSession* s = (KSession*)handle_object(h);
+    u8 filled[DOMAIN_MAX] = {0};
+    for (u32 i = 0; i < DOMAIN_MAX; i++) /* every free slot taken, as a pool's slot that isn't zero is */
+        if (!g_hle.ipc.domains[i].refs) g_hle.ipc.domains[i].refs = filled[i] = 1;
+    clear();
+    cmif_make_control_request(msg(), 0, 0);
+    CHECK(send(h) == 0);
+    CHECK(cmif_parse_response(msg(), 0, 0).result == SNX_RC_SF_HIPC_OUT_OF_DOMAINS && !s->domain && root->refs == 1);
+    for (u32 i = 0; i < DOMAIN_MAX; i++)
+        if (filled[i]) g_hle.ipc.domains[i].refs = 0;
+    clear();
+    cmif_make_control_request(msg(), 0, 0);
+    CHECK(send(h) == 0);
+    CHECK(cmif_parse_response(msg(), 0, 0).result == 0 && s->domain && root->refs == 2);
+    CHECK(h_close(h) == 0 && objects_live == objects);
+}
+
 /* what sf closes the session for: a message type it doesn't serve, a TIPC close, a CMIF close. The client's
    SendSyncRequest and every later one get SessionClosed, and the crash report's ring shows them */
 static void session_closes(void) {
@@ -1178,6 +1201,7 @@ int main(void) {
     failed_command(h, 1);
     clones();
     full_handle_table();
+    full_domains();
     session_closes();
     /* a plain Close (type 2): sf closes the session, and the client then closes its handle */
     clear();

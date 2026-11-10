@@ -160,6 +160,7 @@ int svc_mem_range_locked(u64 addr, u64 size);
 KObj* h_get_ref(u32 h, int t);
 
 KEvent* kevent_new(const char* name);
+KEvent* kevent_try_new(const char* name); /* NULL when every event is in use */
 void kevent_signal(KEvent* e);
 void kevent_clear(KEvent* e);
 

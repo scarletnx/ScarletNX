@@ -199,6 +199,18 @@ int main(void) {
     CHECK(kernel_timeouted_wait(1, 0, &idx) == SNX_RC_SVC_INVALID_HANDLE);
     kobj_unref(&g_ev[0]->o);
 
+    /* the event pool: with all KEVENT_MAX in use an event for a request of the game's is refused (NULL, which the
+       request answers OutOfResource for), and made again once one is freed */
+    {
+        KEvent *e, *last = NULL;
+        u32 n = 0;
+        while (n <= KEVENT_MAX && (e = kevent_try_new("fill")) != NULL) last = e, n++;
+        CHECK(n > 0 && n < KEVENT_MAX && kevent_try_new("one more") == NULL);
+        kobj_ref(&last->o);
+        kobj_unref(&last->o); /* its only reference */
+        CHECK(kevent_try_new("again") == last && kevent_try_new("one more") == NULL);
+    }
+
     printf("kernel_wait: %u checks, %u failed\n", checks, failures);
     free(g_mem);
     return failures != 0;

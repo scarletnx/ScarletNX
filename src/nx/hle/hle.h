@@ -11,7 +11,8 @@
    pools: a static array with a bound, in g_hle. An all-zero slot is free (a live object never is: the code that takes
    a slot makes it non-zero before it lets go of the pool's lock), a new object takes the first free slot from the one
    after the last taken, wrapping around, and a freed one is zeroed. A full pool is a bound below what a game uses,
-   asserted */
+   and ends the program (pool_take), but for the objects the console itself runs out of, whose request is answered
+   the console's result (pool_try) */
 #ifndef SNX_HLE_H
 #define SNX_HLE_H
 #include "nx/hle/kernel/kernel_int.h"
