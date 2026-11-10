@@ -220,7 +220,18 @@ build machine's Wayland and DRM.
 
 For the PowerPC 970 of the PowerMac G5. The `linux-ppc64-g5-cross` preset is the ELFv2 build for the 970.
 Clang, FFmpeg and the recompiler's runtime library are built for it, and the recompiler builds a game's module for
-the host's CPU, or for this one where the host's name isn't known. What changes before POWER8:
+the host's CPU, or for this one where the host's name isn't known. Arch POWER's `libLLVM` is built for POWER8 and
+stops in its static constructors on a 970, so the preset links the LLVM `scripts/linux-llvm.sh ppc64` builds for the
+970, as the big-endian AppImage does, from `.cache/llvm/ppc64`:
+
+```bash
+export SNX_SYSROOT=/path/to/arch-power-ppc64
+scripts/linux-llvm.sh ppc64 "$PWD/.cache/llvm/ppc64"
+cmake --preset linux-ppc64-g5-cross
+cmake --build --preset linux-ppc64-g5-cross
+```
+
+What changes before POWER8:
 
 - **STXP's 16-byte compare-and-swap goes through the runtime** (`RtAPI.cas128`, `common/runtime/cas128.c`), as on
   RISC-V and LoongArch. It runs POWER8's `lqarx`/`stqcx.` where the kernel reports ISA 2.07, and takes a lock of the
@@ -232,6 +243,3 @@ the host's CPU, or for this one where the host's name isn't known. What changes 
   emitters already avoid on PowerPC64.
 
 The PowerMac G5's own graphics cards have no Vulkan driver, so the 970 build needs a later card that Mesa drives.
-Under `qemu-ppc64 -cpu 970` the build stops in Arch POWER's `libLLVM`, in its static constructors before `main`, while
-a program without LLVM runs there: the 970 build is checked for instructions the 970 lacks (none outside OpenSSL's
-routines for later CPUs, which it picks by the machine's capabilities), and runs under qemu as a POWER8.
