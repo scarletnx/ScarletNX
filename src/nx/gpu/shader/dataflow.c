@@ -4,17 +4,15 @@
    guards, and where a texture handle, a constant or a global memory base comes from */
 #include "nx/gpu/shader/translate.h"
 
-static int direct_reaching_def_same(const u64* insn, u32 n, u32 index, u32 reg,
-                                    int (*same)(const u64*, u32, u32, u32, int), int depth);
-static int direct_reaching_def(const u64* insn, u32 n, u32 index, u32 reg);
+static int direct_reaching_def_same(const ShFlow* f, u32 index, u32 reg, int (*same)(const ShFlow*, u32, u32, int),
+                                    int depth);
+static int direct_reaching_def(const ShFlow* f, u32 index, u32 reg);
 
 /* Where control can arrive from the flow instruction at k, besides the next instruction: a branch, SSY, PBK or PCNT
    target, a jump table's entries, a CAL's callee and the return point after it, a PRET's return point. -1 when that
    can't be known (a JMP, or a jump table that isn't found). elsewhere[t] is set for arrivals that come from other
    instructions than k: a PCNT's target takes CONTs from later in the loop, and a return point takes RETs. */
-static __attribute__((noinline)) int direct_flow_decode(const u64* insn, u32 n, u32 k, u32 targets[64],
-                                                        u8 elsewhere[64]) {
-    const Op* flow = decode(insn[k]);
+static int direct_flow_decode(const u64* insn, u32 n, const Op* flow, u32 k, u32 targets[64], u8 elsewhere[64]) {
     if (!flow) return 0;
     switch (flow->id) {
         case O_JMP: return -1;
@@ -44,27 +42,98 @@ static __attribute__((noinline)) int direct_flow_decode(const u64* insn, u32 n, 
         default: return 0;
     }
 }
-/* every instruction direct_flow_decode looks for has 0xE2 as its top byte (maxwell_opcodes.def): the searches ask
-   this of each instruction in the program, and another one isn't decoded */
-static inline int direct_flow_targets(const u64* insn, u32 n, u32 k, u32 targets[64], u8 elsewhere[64]) {
-    return insn[k] >> 56 == 0xE2 ? direct_flow_decode(insn, n, k, targets, elsewhere) : 0;
+
+int shader_flow_init(ShFlow* f, const u64* insn, u32 n) {
+    u32 k, edges = 0, cap = 64, targets[64];
+    u8 elsewhere[64];
+    *f = (ShFlow){.insn = insn, .n = n, .bad = n, .known_to = ~0u};
+    f->op = malloc((n ? n : 1) * sizeof *f->op);
+    f->edge_at = malloc((n + 1) * sizeof *f->edge_at);
+    f->unknown = calloc(n ? n : 1, 1);
+    f->block_start = malloc((n ? n : 1) * sizeof *f->block_start);
+    f->flow = malloc((n ? n : 1) * sizeof *f->flow);
+    f->target = malloc(cap * sizeof *f->target);
+    f->elsewhere = malloc(cap);
+    if (!f->op || !f->edge_at || !f->unknown || !f->block_start || !f->flow || !f->target || !f->elsewhere) goto fail;
+    for (k = 0; k < n; k++) {
+        f->op[k] = decode(insn[k]);
+        f->edge_at[k] = edges;
+        if (!IDX_OK(k)) continue;
+        if (!f->op[k] && f->bad == n) f->bad = k;
+        /* every instruction with targets has 0xE2 as its top byte (maxwell_opcodes.def) */
+        int count = insn[k] >> 56 == 0xE2 ? direct_flow_decode(insn, n, f->op[k], k, targets, elsewhere) : 0;
+        if (!count) continue;
+        f->flow[f->nflow++] = k;
+        if (count < 0) {
+            f->unknown[k] = 1;
+            /* direct_flow_below: a jump table's cases all lie after it, a JMP's target anywhere */
+            if (f->op[k]->id != O_BRX)
+                f->known_to = 0;
+            else if (k < f->known_to)
+                f->known_to = k;
+            continue;
+        }
+        if (edges + (u32)count > cap) {
+            cap = (edges + (u32)count) * 2;
+            u32* t = realloc(f->target, cap * sizeof *t);
+            if (t) f->target = t;
+            u8* e = realloc(f->elsewhere, cap);
+            if (e) f->elsewhere = e;
+            if (!t || !e) goto fail;
+        }
+        memcpy(f->target + edges, targets, (size_t)count * sizeof *targets);
+        memcpy(f->elsewhere + edges, elsewhere, (size_t)count);
+        edges += (u32)count;
+    }
+    f->edge_at[n] = edges;
+    /* the arrivals' places, then each instruction's last one at or before it */
+    for (k = 0; k < n; k++) f->block_start[k] = 0;
+    for (u32 e = 0; e < edges; e++)
+        if (f->target[e] < n) f->block_start[f->target[e]] = 1;
+    for (k = 0, edges = 11; k < n; k++) {
+        if (k > 11 && f->block_start[k]) edges = k;
+        f->block_start[k] = edges;
+    }
+    return 1;
+fail:
+    shader_flow_free(f);
+    return 0;
+}
+
+void shader_flow_free(ShFlow* f) {
+    free(f->op);
+    free(f->edge_at);
+    free(f->target);
+    free(f->elsewhere);
+    free(f->unknown);
+    free(f->flow);
+    free(f->block_start);
+    *f = (ShFlow){0};
+}
+
+/* The flow targets of the word k (direct_flow_decode's, from f): their count, -1 when they can't be known */
+static inline int direct_flow_targets(const ShFlow* f, u32 k, const u32** targets, const u8** elsewhere) {
+    u32 at = f->edge_at[k];
+    *targets = f->target + at;
+    *elsewhere = f->elsewhere + at;
+    return f->unknown[k] ? -1 : (int)(f->edge_at[k + 1] - at);
 }
 
 /* Whether a flow instruction whose targets aren't known at k can be left out of a search that only cares about targets
    at or below limit: every case of a jump table lies after its BRX (shader_brx_targets), so one at or after limit
    cannot reach the search's region. A JMP takes a register's target and can go anywhere, so it never can. */
-static int direct_flow_below(const u64* insn, u32 k, u32 limit) {
-    const Op* op = decode(insn[k]);
+static int direct_flow_below(const ShFlow* f, u32 k, u32 limit) {
+    const Op* op = f->op[k];
     return op && op->id == O_BRX && k >= limit;
 }
 
 /* Whether control goes from the instruction at from straight on to the one at to, with nothing between that leaves */
-static int direct_straight(const u64* insn, u32 from, u32 to) {
+static int direct_straight(const ShFlow* f, u32 from, u32 to) {
     u32 k;
     for (k = from + 1; k < to; k++) {
         const Op* op;
         if (!IDX_OK(k)) continue;
-        op = decode(insn[k]);
+        op = f->op[k];
         if (!op) return 0;
         switch (op->id) {
             case O_BRA:
@@ -88,34 +157,35 @@ static int direct_straight(const u64* insn, u32 from, u32 to) {
     return 1;
 }
 
-static int direct_def_dominates(const u64* insn, u32 n, u32 def, u32 use, u32 reg,
-                                int (*same)(const u64*, u32, u32, u32, int), int depth) {
+static int direct_def_dominates(const ShFlow* f, u32 def, u32 use, u32 reg, int (*same)(const ShFlow*, u32, u32, int),
+                                int depth) {
+    const u64* insn = f->insn;
     u32 end = use;
+    if (f->bad < f->n) return 0; /* an instruction decode doesn't know may go anywhere */
     for (;;) {
         u32 k, grown = end;
-        for (k = 11; k < n; k++) {
-            u32 targets[64];
-            u8 elsewhere[64];
+        for (u32 i = 0; i < f->nflow; i++) {
+            const u32* targets;
+            const u8* elsewhere;
             int count;
             int t;
-            if (!IDX_OK(k)) continue;
-            const Op* op = decode(insn[k]);
-            if (!op) return 0;
-            count = direct_flow_targets(insn, n, k, targets, elsewhere);
+            k = f->flow[i];
+            const Op* op = f->op[k];
+            count = direct_flow_targets(f, k, &targets, &elsewhere);
             if (count < 0) {
-                if (direct_flow_below(insn, k, end)) continue;
+                if (direct_flow_below(f, k, end)) continue;
                 return 0;
             }
             for (t = 0; t < count; t++) {
                 if (targets[t] <= def || targets[t] > end) continue;
                 if (elsewhere[t]) return 0;
                 if (k < def) {
-                    if ((op->id == O_SSY || op->id == O_PBK) && direct_straight(insn, k, def)) continue;
+                    if ((op->id == O_SSY || op->id == O_PBK) && direct_straight(f, k, def)) continue;
                     /* a path that leaves before def carries def's value on if reg already has it there (a loop's
                        exit branch, taken before the loop's last write of reg) */
                     if (same) {
-                        int jk = direct_reaching_def_same(insn, n, k, reg, same, depth + 1);
-                        if (jk >= 0 && same(insn, n, def, (u32)jk, depth + 1)) continue;
+                        int jk = direct_reaching_def_same(f, k, reg, same, depth + 1);
+                        if (jk >= 0 && same(f, def, (u32)jk, depth + 1)) continue;
                     }
                     return 0;
                 }
@@ -126,11 +196,11 @@ static int direct_def_dominates(const u64* insn, u32 n, u32 def, u32 use, u32 re
         for (k = end + 1; k <= grown; k++) {
             const Op* op;
             if (!IDX_OK(k)) continue;
-            op = decode(insn[k]);
+            op = f->op[k];
             if (!op) return 0;
             if (shader_writes_reg(insn[k], op->id, reg)) {
                 /* a loop that rewrites reg with the definition def has doesn't hide def's value */
-                if (same && B(insn[k], 0, 8) == reg && same(insn, n, def, k, depth + 1)) continue;
+                if (same && B(insn[k], 0, 8) == reg && same(f, def, k, depth + 1)) continue;
                 return 0;
             }
         }
@@ -140,7 +210,8 @@ static int direct_def_dominates(const u64* insn, u32 n, u32 def, u32 use, u32 re
 
 /* A predicate's local definition, following a saved PSET boolean restored by
    ISETP.EQ/NE against RZ. Output predicates of a plain ISETP are complements. */
-static int direct_pred_origin(const u64* insn, u32 index, u32 floor, u32 guard, u32* invert, int depth) {
+static int direct_pred_origin(const ShFlow* f, u32 index, u32 floor, u32 guard, u32* invert, int depth) {
+    const u64* insn = f->insn;
     u32 pred = guard & 7;
     if (pred == 7 || depth > 8) return -1;
     *invert ^= guard >> 3;
@@ -172,7 +243,7 @@ static int direct_pred_origin(const u64* insn, u32 index, u32 floor, u32 guard, 
                 if (saved->id != O_PSET || B(v, 24, 2) || B(v, 45, 2) || B(v, 29, 4) != 7 || B(v, 39, 4) != 7)
                     return (int)j;
                 *invert ^= B(w, 49, 3) == 2;
-                return direct_pred_origin(insn, k, floor, B(v, 12, 4), invert, depth + 1);
+                return direct_pred_origin(f, k, floor, B(v, 12, 4), invert, depth + 1);
             }
         }
         return (int)j;
@@ -186,20 +257,21 @@ static int direct_pred_origin(const u64* insn, u32 index, u32 floor, u32 guard, 
 /* Two locally computed guards can have different predicate registers or have
    been saved and restored. Equal compares are equivalent only while their
    register operands retain their values. Constant buffers are read-only. */
-static int direct_same_guard(const u64* insn, u32 floor, u32 definition, u32 use) {
+static int direct_same_guard(const ShFlow* f, u32 floor, u32 definition, u32 use) {
+    const u64* insn = f->insn;
     u32 ai = 0, bi = 0;
-    int a = direct_pred_origin(insn, definition, floor, B(insn[definition], 16, 4), &ai, 0);
-    int b = direct_pred_origin(insn, use, floor, B(insn[use], 16, 4), &bi, 0);
+    int a = direct_pred_origin(f, definition, floor, B(insn[definition], 16, 4), &ai, 0);
+    int b = direct_pred_origin(f, use, floor, B(insn[use], 16, 4), &bi, 0);
     if (a == -1 || b == -1 || ai != bi) return 0;
     if (a == b) return 1;
     if (a < 0 || b < 0) return 0;
     if ((insn[a] & ~63ull) != (insn[b] & ~63ull)) return 0;
-    const Op* op = decode(insn[a]);
+    const Op* op = f->op[a];
     u32 lhs = B(insn[a], 8, 8), rhs = op->id == O_ISETP_R ? B(insn[a], 20, 8) : 255;
     u32 lo = (u32)(a < b ? a : b), hi = (u32)(a > b ? a : b);
     for (u32 k = lo + 1; k < hi; k++) {
         if (!IDX_OK(k)) continue;
-        const Op* mid = decode(insn[k]);
+        const Op* mid = f->op[k];
         if (!mid || (lhs != 255 && shader_writes_reg(insn[k], mid->id, lhs)) ||
             (rhs != 255 && shader_writes_reg(insn[k], mid->id, rhs)))
             return 0;
@@ -209,12 +281,13 @@ static int direct_same_guard(const u64* insn, u32 floor, u32 definition, u32 use
 
 /* Whether pred changes between lo and hi: a requirement's value at one end describes the other only while it
    doesn't. */
-static int direct_pred_written(const u64* insn, u32 lo, u32 hi, u32 pred) {
+static int direct_pred_written(const ShFlow* f, u32 lo, u32 hi, u32 pred) {
+    const u64* insn = f->insn;
     u32 k;
     for (k = lo + 1; k < hi; k++) {
         const Op* op;
         if (!IDX_OK(k)) continue;
-        op = decode(insn[k]);
+        op = f->op[k];
         if (!op) return 1;
         if (shader_direct_pred_writes(insn[k], op->id) >> pred & 1) return 1;
     }
@@ -230,7 +303,8 @@ static int direct_mark(u8* seen, u32 use, u32 at) {
 /* Whether control from from can reach use, by the flow instructions as far as they are known: -1 when a jump's target
    isn't (an indirect jump, a token's BRK or CONT), so the caller keeps what it asked about. The bitset is walked to a
    fixed point, which reaches through loops as well as forward edges. */
-static int direct_can_reach(const u64* insn, u32 n, u32 from, u32 use) {
+static int direct_can_reach(const ShFlow* f, u32 from, u32 use) {
+    const u64* insn = f->insn;
     u8 seen[DIRECT_WORDS_MAX / 8];
     u32 k;
     int changed = 1;
@@ -242,8 +316,8 @@ static int direct_can_reach(const u64* insn, u32 n, u32 from, u32 use) {
         changed = 0;
         for (k = from; k <= use; k++) {
             const Op* op;
-            u32 targets[64];
-            u8 elsewhere[64];
+            const u32* targets;
+            const u8* elsewhere;
             int count;
             int t;
             int fall = 1;
@@ -252,7 +326,7 @@ static int direct_can_reach(const u64* insn, u32 n, u32 from, u32 use) {
                 changed |= direct_mark(seen, use, k + 1);
                 continue;
             }
-            op = decode(insn[k]);
+            op = f->op[k];
             if (!op) return -1;
             switch (op->id) {
                 /* Lanes that do not take a conditional exit keep their register definitions. */
@@ -268,7 +342,7 @@ static int direct_can_reach(const u64* insn, u32 n, u32 from, u32 use) {
                 case O_BRX: fall = 0; break;
                 default: break;
             }
-            count = direct_flow_targets(insn, n, k, targets, elsewhere);
+            count = direct_flow_targets(f, k, &targets, &elsewhere);
             if (count < 0) return -1;
             if (op->id == O_BRX && !count) return -1;
             for (t = 0; t < count; t++)
@@ -280,16 +354,14 @@ static int direct_can_reach(const u64* insn, u32 n, u32 from, u32 use) {
 }
 
 /* Where index's basic block starts: the last place control can arrive at before it, as direct_reaching_def finds it. */
-static u32 direct_block_start(const u64* insn, u32 n, u32 index) {
+static u32 direct_block_start(const ShFlow* f, u32 index) {
     u32 start = 11;
-    u32 k;
-    for (k = 11; k < n; k++) {
-        u32 targets[64];
-        u8 elsewhere[64];
+    for (u32 i = 0; i < f->nflow; i++) {
+        const u32* targets;
+        const u8* elsewhere;
         int count;
         int t;
-        if (!IDX_OK(k)) continue;
-        count = direct_flow_targets(insn, n, k, targets, elsewhere);
+        count = direct_flow_targets(f, f->flow[i], &targets, &elsewhere);
         if (count < 0) return start;
         for (t = 0; t < count; t++)
             if (targets[t] > start && targets[t] <= index) start = targets[t];
@@ -300,27 +372,25 @@ static u32 direct_block_start(const u64* insn, u32 n, u32 index) {
 /* Whether control reaches use only through def and only forwards from it: no branch enters (def, use] from before def
    or from after it, and none in the region jumps back. A branch in between then tests a predicate def also saw, with
    no earlier pass through the region to change it. */
-static int direct_forward_only(const u64* insn, u32 n, u32 def, u32 use) {
-    u32 k;
-    for (k = 11; k < n; k++) {
-        u32 targets[64];
-        u8 elsewhere[64];
+static int direct_forward_only(const ShFlow* f, u32 def, u32 use) {
+    if (f->bad < f->n) return 0; /* an instruction decode doesn't know may go anywhere */
+    for (u32 i = 0; i < f->nflow; i++) {
+        const u32* targets;
+        const u8* elsewhere;
         int count;
         int t;
-        const Op* op;
-        if (!IDX_OK(k)) continue;
-        op = decode(insn[k]);
-        if (!op) return 0;
-        count = direct_flow_targets(insn, n, k, targets, elsewhere);
+        u32 k = f->flow[i];
+        const Op* op = f->op[k];
+        count = direct_flow_targets(f, k, &targets, &elsewhere);
         if (count < 0) {
-            if (direct_flow_below(insn, k, use)) continue;
+            if (direct_flow_below(f, k, use)) continue;
             return 0;
         }
         for (t = 0; t < count; t++) {
             if (targets[t] <= def || targets[t] > use) continue;
             if (elsewhere[t]) return 0;
             if (k < def) {
-                if ((op->id == O_SSY || op->id == O_PBK) && direct_straight(insn, k, def)) continue;
+                if ((op->id == O_SSY || op->id == O_PBK) && direct_straight(f, k, def)) continue;
                 return 0;
             }
             if (targets[t] <= k) return 0;
@@ -331,27 +401,25 @@ static int direct_forward_only(const u64* insn, u32 n, u32 def, u32 use) {
 
 /* Whether every path to use passes the branch at from: a branch before from that lands past it is a way around. The
    edges in (def, use] all run forwards when direct_forward_only passed, so one scan is enough. */
-static int direct_branch_dominates(const u64* insn, u32 n, u32 from, u32 use) {
-    u32 k;
-    for (k = 11; k < n; k++) {
-        u32 targets[64];
-        u8 elsewhere[64];
+static int direct_branch_dominates(const ShFlow* f, u32 from, u32 use) {
+    if (f->bad < f->n) return 0; /* an instruction decode doesn't know may go anywhere */
+    for (u32 i = 0; i < f->nflow; i++) {
+        const u32* targets;
+        const u8* elsewhere;
         int count;
         int t;
-        const Op* op;
-        if (!IDX_OK(k)) continue;
-        op = decode(insn[k]);
-        if (!op) return 0;
-        count = direct_flow_targets(insn, n, k, targets, elsewhere);
+        u32 k = f->flow[i];
+        const Op* op = f->op[k];
+        count = direct_flow_targets(f, k, &targets, &elsewhere);
         if (count < 0) {
-            if (direct_flow_below(insn, k, use)) continue;
+            if (direct_flow_below(f, k, use)) continue;
             return 0;
         }
         for (t = 0; t < count; t++) {
             if (targets[t] <= from || targets[t] > use) continue;
             if (elsewhere[t]) return 0;
             if (k < from) {
-                if ((op->id == O_SSY || op->id == O_PBK) && direct_straight(insn, k, from)) continue;
+                if ((op->id == O_SSY || op->id == O_PBK) && direct_straight(f, k, from)) continue;
                 return 0;
             }
         }
@@ -372,7 +440,8 @@ static int direct_pred_combine(u32 op, int a, int b) {
    have to run on every path to def (floor starts def's straight run). A requirement is a value at def, so it describes
    a predicate read earlier only while nothing writes the predicate between. 1 when the guard holds, 0 when it doesn't,
    -1 when this can't tell. */
-static int direct_guard_under(const u64* insn, u32 index, u32 floor, u32 guard, u32 known, u32 value, int depth) {
+static int direct_guard_under(const ShFlow* f, u32 index, u32 floor, u32 guard, u32 known, u32 value, int depth) {
+    const u64* insn = f->insn;
     u32 pred = guard & 7;
     int neg = (int)(guard >> 3);
     u32 j;
@@ -399,12 +468,12 @@ static int direct_guard_under(const u64* insn, u32 index, u32 floor, u32 guard, 
         ka = known;
         kb = known;
         kc = known;
-        if ((known >> pa & 1) && direct_pred_written(insn, j, index, pa)) ka &= ~(1u << pa);
-        if ((known >> pb & 1) && direct_pred_written(insn, j, index, pb)) kb &= ~(1u << pb);
-        if ((known >> pc & 1) && direct_pred_written(insn, j, index, pc)) kc &= ~(1u << pc);
-        va = direct_guard_under(insn, j, floor, pa | B(w, 15, 1) << 3, ka, value, depth + 1);
-        vb = direct_guard_under(insn, j, floor, pb | B(w, 32, 1) << 3, kb, value, depth + 1);
-        vc = direct_guard_under(insn, j, floor, pc | B(w, 42, 1) << 3, kc, value, depth + 1);
+        if ((known >> pa & 1) && direct_pred_written(f, j, index, pa)) ka &= ~(1u << pa);
+        if ((known >> pb & 1) && direct_pred_written(f, j, index, pb)) kb &= ~(1u << pb);
+        if ((known >> pc & 1) && direct_pred_written(f, j, index, pc)) kc &= ~(1u << pc);
+        va = direct_guard_under(f, j, floor, pa | B(w, 15, 1) << 3, ka, value, depth + 1);
+        vb = direct_guard_under(f, j, floor, pb | B(w, 32, 1) << 3, kb, value, depth + 1);
+        vc = direct_guard_under(f, j, floor, pc | B(w, 42, 1) << 3, kc, value, depth + 1);
         first = direct_pred_combine(B(w, 24, 2), va, vb);
         if (B(w, 0, 3) == pred) /* the second output is written last */
             first = direct_pred_combine(B(w, 24, 2), va < 0 ? -1 : !va, vb);
@@ -419,33 +488,34 @@ static int direct_guard_under(const u64* insn, u32 index, u32 floor, u32 guard, 
    use passes, and whose other edge doesn't reach use, forces its predicate's value at def; a guard those values make
    true under PSETP combinators then runs def on every path. The compiler guards a whole block's handles this way: one
    branch tests the predicate it later composes, so the def runs unguarded at the use. */
-static int direct_guard_implied(const u64* insn, u32 n, u32 def, u32 use) {
+static int direct_guard_implied(const ShFlow* f, u32 def, u32 use) {
+    const u64* insn = f->insn;
     u32 known = 0, value = 0;
-    u32 floor = direct_block_start(insn, n, def);
+    u32 floor = direct_block_start(f, def);
     u32 b;
-    if (!direct_forward_only(insn, n, def, use)) return 0;
+    if (!direct_forward_only(f, def, use)) return 0;
     /* the predicate setters resolved below have to run on every path to def */
-    if (!direct_straight(insn, floor, def)) return 0;
+    if (!direct_straight(f, floor, def)) return 0;
     for (b = def + 1; b < use; b++) {
         const Op* op;
         u32 g, pred, target;
         int taken, fall, val;
         if (!IDX_OK(b)) continue;
-        op = decode(insn[b]);
+        op = f->op[b];
         if (!op) return 0;
         if (op->id != O_BRA) continue;
         g = B(insn[b], 16, 4);
         if ((g & 7) == 7) continue;
-        if (!direct_branch_dominates(insn, n, b, use)) continue;
+        if (!direct_branch_dominates(f, b, use)) continue;
         target = bra_target(insn[b], b);
-        taken = direct_can_reach(insn, n, target, use);
-        fall = direct_can_reach(insn, n, b + 1, use);
+        taken = direct_can_reach(f, target, use);
+        fall = direct_can_reach(f, b + 1, use);
         if (taken < 0 || fall < 0) return 0;
         if (taken == fall) continue; /* both ways reach use: the branch doesn't force its predicate */
         /* the branch is taken when the predicate is the negation bit's opposite */
         pred = g & 7;
         val = taken ? !(int)(g >> 3) : (int)(g >> 3);
-        if (direct_pred_written(insn, def, b, pred)) continue;
+        if (direct_pred_written(f, def, b, pred)) continue;
         if (known >> pred & 1) {
             if ((int)(value >> pred & 1) != val) return 0;
             continue;
@@ -454,29 +524,30 @@ static int direct_guard_implied(const u64* insn, u32 n, u32 def, u32 use) {
         if (val) value |= 1u << pred;
     }
     if (!known) return 0;
-    return direct_guard_under(insn, def, floor, B(insn[def], 16, 4), known, value, 0) == 1;
+    return direct_guard_under(f, def, floor, B(insn[def], 16, 4), known, value, 0) == 1;
 }
 
 /* Whether a write under a predicate is followed, before the predicate changes or other flow, by a branch under
    want (that predicate or its complement) to where control doesn't reach use: under the same predicate the write's
    lanes all leave, so its value never arrives at use; under the complement the lanes that skipped it leave, so every
    lane that goes on to use made it */
-static int direct_guard_branch(const u64* insn, u32 n, u32 def, u32 use, u32 want) {
+static int direct_guard_branch(const ShFlow* f, u32 def, u32 use, u32 want) {
+    const u64* insn = f->insn;
     u32 guard = B(insn[def], 16, 4);
     if ((guard & 7) == 7) return 0;
     for (u32 m = def + 1; m < use; m++) {
         const Op* op;
-        u32 targets[64];
-        u8 elsewhere[64];
+        const u32* targets;
+        const u8* elsewhere;
         int count;
         if (!IDX_OK(m)) continue;
-        op = decode(insn[m]);
+        op = f->op[m];
         if (!op || shader_direct_pred_writes(insn[m], op->id) >> (guard & 7) & 1) return 0;
         if (op->id == O_BRA && B(insn[m], 16, 4) == want && B(insn[m], 0, 5) == 15) {
-            count = direct_flow_targets(insn, n, m, targets, elsewhere);
+            count = direct_flow_targets(f, m, &targets, &elsewhere);
             if (count <= 0) return 0;
             for (int t = 0; t < count; t++)
-                if (elsewhere[t] || direct_can_reach(insn, n, targets[t], use) != 0) return 0;
+                if (elsewhere[t] || direct_can_reach(f, targets[t], use) != 0) return 0;
             return 1;
         }
         if (op->id == O_BRA || op->id == O_BRX || op->id == O_JMP || op->id == O_CAL || op->id == O_RET ||
@@ -489,7 +560,9 @@ static int direct_guard_branch(const u64* insn, u32 n, u32 def, u32 use, u32 wan
 /* The writes of reg that reach use, as bits of defs (bit 63: the value entering the program), from the reaching
    definitions over the program's flow: an unpredicated write replaces what reached it, a predicated one adds to it.
    0 when the flow isn't known (JMP, BRK, CONT, a target elsewhere) or reg has more than 63 writes */
-static u64 direct_reaching_writes(const u64* insn, u32 n, u32 use, u32 reg, u32* defs, u32* ndefs) {
+static u64 direct_reaching_writes(const ShFlow* f, u32 use, u32 reg, u32* defs, u32* ndefs) {
+    const u64* insn = f->insn;
+    u32 n = f->n;
     u64* in;
     u64 reach;
     int changed = 1;
@@ -498,7 +571,7 @@ static u64 direct_reaching_writes(const u64* insn, u32 n, u32 use, u32 reg, u32*
     for (u32 k = 11; k < n; k++) {
         const Op* op;
         if (!IDX_OK(k)) continue;
-        op = decode(insn[k]);
+        op = f->op[k];
         if (!op) return 0;
         if (!shader_writes_reg(insn[k], op->id, reg)) continue;
         if (*ndefs == 63) return 0;
@@ -511,8 +584,8 @@ static u64 direct_reaching_writes(const u64* insn, u32 n, u32 use, u32 reg, u32*
         changed = 0;
         for (u32 k = 11, d = 0; k < n; k++) {
             const Op* op;
-            u32 targets[64];
-            u8 elsewhere[64];
+            const u32* targets;
+            const u8* elsewhere;
             int count, fall = 1;
             u64 out = in[k];
             if (!IDX_OK(k)) {
@@ -520,7 +593,7 @@ static u64 direct_reaching_writes(const u64* insn, u32 n, u32 use, u32 reg, u32*
                 in[k + 1] |= out;
                 continue;
             }
-            op = decode(insn[k]);
+            op = f->op[k];
             while (d < *ndefs && defs[d] < k) d++;
             if (d < *ndefs && defs[d] == k) out = (B(insn[k], 16, 4) == 7 ? 0 : out) | 1ull << d;
             switch (op->id) {
@@ -536,16 +609,19 @@ static u64 direct_reaching_writes(const u64* insn, u32 n, u32 use, u32 reg, u32*
                 case O_BRA: fall = !flow_always(insn[k]); break;
                 default: break;
             }
-            count = direct_flow_targets(insn, n, k, targets, elsewhere);
+            u32 sync_target;
+            static const u8 sync_elsewhere = 0;
+            count = direct_flow_targets(f, k, &targets, &elsewhere);
             /* an SSY carries no values to its target: each SYNC takes its own there, to the target of the innermost
                SSY still open (the nearest before it whose target is past it); a predicated one lets the others on */
             if (op->id == O_SSY) count = 0;
             if (op->id == O_SYNC) {
                 count = -1;
                 for (u32 m = k; m-- > 11 && count < 0;) {
-                    if (!IDX_OK(m) || decode(insn[m])->id != O_SSY || bra_target(insn[m], m) <= k) continue;
-                    targets[0] = bra_target(insn[m], m);
-                    elsewhere[0] = 0;
+                    if (!IDX_OK(m) || f->op[m]->id != O_SSY || bra_target(insn[m], m) <= k) continue;
+                    sync_target = bra_target(insn[m], m);
+                    targets = &sync_target;
+                    elsewhere = &sync_elsewhere;
                     count = 1;
                 }
                 fall = !flow_always(insn[k]);
@@ -578,22 +654,23 @@ static u64 direct_reaching_writes(const u64* insn, u32 n, u32 use, u32 reg, u32*
    without one, or one of them is made by every lane that reaches use (unpredicated, or a branch under the complement
    takes away the lanes that skipped it) and dominates use. A handle written on each side of a branch, or under each
    side of a predicate rewritten before the use, is so one handle */
-static int direct_all_defs_same(const u64* insn, u32 n, u32 def, u32 use, u32 reg,
-                                int (*same)(const u64*, u32, u32, u32, int), int depth) {
+static int direct_all_defs_same(const ShFlow* f, u32 def, u32 use, u32 reg, int (*same)(const ShFlow*, u32, u32, int),
+                                int depth) {
+    const u64* insn = f->insn;
     u32 defs[63], ndefs;
     u64 reach;
     int covered;
     if (depth > 6) return 0;
-    reach = direct_reaching_writes(insn, n, use, reg, defs, &ndefs);
+    reach = direct_reaching_writes(f, use, reg, defs, &ndefs);
     if (!reach) return 0;
     covered = !(reach >> 63 & 1);
     for (u32 d = 0; d < ndefs; d++) {
         u32 k = defs[d], guard = B(insn[k], 16, 4);
         if (!(reach >> d & 1)) continue;
-        if (guard != 7 && direct_guard_branch(insn, n, k, use, guard)) continue;
-        if (B(insn[k], 0, 8) != reg || (k != def && !same(insn, n, def, k, depth + 1))) return 0;
-        if (!covered && k < use && (guard == 7 || direct_guard_branch(insn, n, k, use, guard ^ 8)))
-            covered = direct_def_dominates(insn, n, k, use, reg, same, depth);
+        if (guard != 7 && direct_guard_branch(f, k, use, guard)) continue;
+        if (B(insn[k], 0, 8) != reg || (k != def && !same(f, def, k, depth + 1))) return 0;
+        if (!covered && k < use && (guard == 7 || direct_guard_branch(f, k, use, guard ^ 8)))
+            covered = direct_def_dominates(f, k, use, reg, same, depth);
     }
     return covered;
 }
@@ -602,34 +679,21 @@ static int direct_all_defs_same(const u64* insn, u32 n, u32 def, u32 use, u32 re
    write under a predicate reaches only an instruction under the same one, with that predicate not written between
    them (others may be): the compiler loads a handle and uses it under the guard of one side of a branch it made
    predicated. Across flow, the write has to be unconditional and dominate index. */
-static int direct_reaching_def_same(const u64* insn, u32 n, u32 index, u32 reg,
-                                    int (*same)(const u64*, u32, u32, u32, int), int depth) {
+static int direct_reaching_def_same(const ShFlow* f, u32 index, u32 reg, int (*same)(const ShFlow*, u32, u32, int),
+                                    int depth) {
+    const u64* insn = f->insn;
     u32 guard, pred_written = 0;
     int crossed = 0;
-    /* where index's basic block starts: the last place control can arrive at before it */
-    u32 block_start = 11;
-    u32 k;
     u32 j;
-    if (reg == 255) return -1;
+    if (reg == 255 || index > f->known_to) return -1;
+    assert(index < f->n);
+    /* where index's basic block starts: the last place control can arrive at before it */
+    u32 block_start = f->block_start[index];
     guard = B(insn[index], 16, 4);
-    for (k = 11; k < n; k++) {
-        u32 targets[64];
-        u8 elsewhere[64];
-        int count;
-        int t;
-        if (!IDX_OK(k)) continue;
-        count = direct_flow_targets(insn, n, k, targets, elsewhere);
-        if (count < 0) {
-            if (direct_flow_below(insn, k, index)) continue;
-            return -1;
-        }
-        for (t = 0; t < count; t++)
-            if (targets[t] > block_start && targets[t] <= index) block_start = targets[t];
-    }
     for (j = index; j-- > 11;) {
         const Op* op;
         if (!IDX_OK(j)) continue;
-        op = decode(insn[j]);
+        op = f->op[j];
         if (!op) return -1;
         if (j < block_start || op->id == O_BRA || op->id == O_BRX || op->id == O_CAL || op->id == O_RET ||
             op->id == O_SYNC || op->id == O_BRK || op->id == O_CONT || op->id == O_EXIT || op->id == O_KIL)
@@ -640,53 +704,54 @@ static int direct_reaching_def_same(const u64* insn, u32 n, u32 index, u32 reg,
         }
         /* A write in an earlier block that control never carries to index isn't the value there: the block's branch
            jumped past the use. */
-        if (j < block_start && direct_can_reach(insn, n, j + 1, index) == 0) continue;
+        if (j < block_start && direct_can_reach(f, j + 1, index) == 0) continue;
         /* A write under the complement of index's guard, the predicate kept since, runs in none of index's lanes */
         if ((guard & 7) != 7 && B(insn[j], 16, 4) == (guard ^ 8) && !crossed && !(pred_written >> (guard & 7) & 1))
             continue;
         /* A write that reaches reg from a lower destination leaves no single source. */
         if (B(insn[j], 0, 8) != reg) return -1;
         if ((B(insn[j], 16, 4) != 7 && (crossed || B(insn[j], 16, 4) != guard || (pred_written >> (guard & 7) & 1)) &&
-             !direct_same_guard(insn, block_start, j, index) && !direct_guard_implied(insn, n, j, index)) ||
-            (crossed && !direct_def_dominates(insn, n, j, index, reg, same, depth)))
-            return same && direct_all_defs_same(insn, n, j, index, reg, same, depth) ? (int)j : -1;
+             !direct_same_guard(f, block_start, j, index) && !direct_guard_implied(f, j, index)) ||
+            (crossed && !direct_def_dominates(f, j, index, reg, same, depth)))
+            return same && direct_all_defs_same(f, j, index, reg, same, depth) ? (int)j : -1;
         return (int)j;
     }
     return -1;
 }
 
-static int direct_reaching_def(const u64* insn, u32 n, u32 index, u32 reg) {
-    return direct_reaching_def_same(insn, n, index, reg, NULL, 0);
+static int direct_reaching_def(const ShFlow* f, u32 index, u32 reg) {
+    return direct_reaching_def_same(f, index, reg, NULL, 0);
 }
 
 /* reg at index holds the fragment's own column (addr 0x70) or row (0x74): the integer part of gl_FragCoord's x or y,
    F2I.FLOOR or .TRUNC of IPA's pass-through read of the position */
-static int direct_frag_coord(const u64* insn, u32 n, u32 index, u32 reg, u32 addr, int depth) {
-    int j = depth > 4 ? -1 : direct_reaching_def(insn, n, index, reg);
+static int direct_frag_coord(const ShFlow* f, u32 index, u32 reg, u32 addr, int depth) {
+    const u64* insn = f->insn;
+    int j = depth > 4 ? -1 : direct_reaching_def(f, index, reg);
     if (j < 0) return 0;
     u64 w = insn[j];
     int op = decode(w)->id;
-    if (op == O_MOV_R) return direct_frag_coord(insn, n, (u32)j, B(w, 20, 8), addr, depth + 1);
+    if (op == O_MOV_R) return direct_frag_coord(f, (u32)j, B(w, 20, 8), addr, depth + 1);
     /* F32 source, no negate or absolute value, rounding down or toward zero */
     if (op != O_F2I_R || B(w, 10, 2) != 2 || B(w, 45, 1) || B(w, 49, 1) || (B(w, 39, 2) != 1 && B(w, 39, 2) != 3))
         return 0;
-    int k = direct_reaching_def(insn, n, (u32)j, B(w, 20, 8));
+    int k = direct_reaching_def(f, (u32)j, B(w, 20, 8));
     if (k < 0) return 0;
     u64 v = insn[k];
     /* not indexed, not multiplied by 1/w, not saturated */
     return decode(v)->id == O_IPA && !B(v, 38, 1) && B(v, 30, 8) * 4 == addr && B(v, 54, 2) != 1 && !B(v, 51, 1);
 }
 /* the texel fetch at index reads the fragment's own pixel of a 2D texture: level 0, no offset, single sample */
-int shader_direct_own_pixel_fetch(const u64* insn, u32 n, u32 index) {
+int shader_direct_own_pixel_fetch(const ShFlow* f, u32 index) {
+    const u64* insn = f->insn;
     u64 w = insn[index];
     int op = decode(w)->id;
     u32 a = B(w, 8, 8), b = B(w, 20, 8);
     if (op == O_TLDS) /* encoding 2: 2D, level zero, x in Ra and y in Rb */
-        return B(w, 53, 4) == 2 && direct_frag_coord(insn, n, index, a, 0x70, 0) &&
-               direct_frag_coord(insn, n, index, b, 0x74, 0);
+        return B(w, 53, 4) == 2 && direct_frag_coord(f, index, a, 0x70, 0) && direct_frag_coord(f, index, b, 0x74, 0);
     if (op == O_TLD) /* 2D, not an array, no level (bit 55), offset (35) or sample (50): x in Ra, y in Ra + 1 */
         return B(w, 28, 3) == 2 && !B(w, 55, 1) && !B(w, 35, 1) && !B(w, 50, 1) && a < 254 &&
-               direct_frag_coord(insn, n, index, a, 0x70, 0) && direct_frag_coord(insn, n, index, a + 1, 0x74, 0);
+               direct_frag_coord(f, index, a, 0x70, 0) && direct_frag_coord(f, index, a + 1, 0x74, 0);
     return 0;
 }
 
@@ -694,48 +759,51 @@ int shader_direct_own_pixel_fetch(const u64* insn, u32 n, u32 index) {
    by a register: *mul gets the multiplier's value, its definition times 256 plus the register (one instruction may
    write several), -1 in pass mode, so that two reads can be told to interpolate alike. emit_io.c interpolates every
    IPA at the pixel's centre */
-static int direct_ipa_at(const u64* insn, u32 n, u32 index, u32 reg, u32 addr, int* mul, int depth) {
-    int j = depth > 4 ? -1 : direct_reaching_def(insn, n, index, reg);
+static int direct_ipa_at(const ShFlow* f, u32 index, u32 reg, u32 addr, int* mul, int depth) {
+    const u64* insn = f->insn;
+    int j = depth > 4 ? -1 : direct_reaching_def(f, index, reg);
     if (j < 0) return 0;
     u64 w = insn[j];
     int op = decode(w)->id;
-    if (op == O_MOV_R) return direct_ipa_at(insn, n, (u32)j, B(w, 20, 8), addr, mul, depth + 1);
+    if (op == O_MOV_R) return direct_ipa_at(f, (u32)j, B(w, 20, 8), addr, mul, depth + 1);
     if (op != O_IPA || B(w, 38, 1) || B(w, 51, 1) || B(w, 30, 8) * 4 != addr || B(w, 54, 2) > 1) return 0;
-    int def = B(w, 54, 2) == 1 && B(w, 20, 8) < 255 ? direct_reaching_def(insn, n, (u32)j, B(w, 20, 8)) : -1;
+    int def = B(w, 54, 2) == 1 && B(w, 20, 8) < 255 ? direct_reaching_def(f, (u32)j, B(w, 20, 8)) : -1;
     *mul = def >= 0 ? def * 256 + (int)B(w, 20, 8) : -1;
     return B(w, 54, 2) == 0 || *mul >= 0;
 }
 /* reg at index holds the reciprocal of a generic's w (MUFU.RCP of its IPA, no absolute value, negation or
    saturation): the generic's index, and in *mul its IPA's multiplier (direct_ipa_at); -1 when it isn't */
-static int direct_rcp_w(const u64* insn, u32 n, u32 index, u32 reg, int* mul, int depth) {
-    int j = depth > 4 ? -1 : direct_reaching_def(insn, n, index, reg);
+static int direct_rcp_w(const ShFlow* f, u32 index, u32 reg, int* mul, int depth) {
+    const u64* insn = f->insn;
+    int j = depth > 4 ? -1 : direct_reaching_def(f, index, reg);
     if (j < 0) return -1;
     u64 w = insn[j];
     int op = decode(w)->id;
-    if (op == O_MOV_R) return direct_rcp_w(insn, n, (u32)j, B(w, 20, 8), mul, depth + 1);
+    if (op == O_MOV_R) return direct_rcp_w(f, (u32)j, B(w, 20, 8), mul, depth + 1);
     if (op != O_MUFU || B(w, 20, 4) != 4 || B(w, 46, 1) || B(w, 48, 1) || B(w, 50, 1)) return -1;
-    int k = direct_reaching_def(insn, n, (u32)j, B(w, 8, 8));
+    int k = direct_reaching_def(f, (u32)j, B(w, 8, 8));
     if (k < 0) return -1;
     u64 v = insn[k];
     if (decode(v)->id != O_IPA || B(v, 38, 1)) return -1;
     u32 addr = B(v, 30, 8) * 4;
     if (addr < 0x80 || addr >= 0x280 || (addr & 15) != 12) return -1;
-    return direct_ipa_at(insn, n, (u32)j, B(w, 8, 8), addr, mul, 0) ? (int)((addr - 0x80) >> 4) : -1;
+    return direct_ipa_at(f, (u32)j, B(w, 8, 8), addr, mul, 0) ? (int)((addr - 0x80) >> 4) : -1;
 }
 /* reg at index holds a generic's component c (0 x, 1 y) divided by its w: FMUL, no negation, scale or saturation, of
    that component's IPA and the reciprocal of the w's IPA, both interpolated alike. The generic's index, or -1 */
-static int direct_over_w(const u64* insn, u32 n, u32 index, u32 reg, u32 c, int depth) {
-    int j = depth > 4 ? -1 : direct_reaching_def(insn, n, index, reg);
+static int direct_over_w(const ShFlow* f, u32 index, u32 reg, u32 c, int depth) {
+    const u64* insn = f->insn;
+    int j = depth > 4 ? -1 : direct_reaching_def(f, index, reg);
     if (j < 0) return -1;
     u64 w = insn[j];
     int op = decode(w)->id;
-    if (op == O_MOV_R) return direct_over_w(insn, n, (u32)j, B(w, 20, 8), c, depth + 1);
+    if (op == O_MOV_R) return direct_over_w(f, (u32)j, B(w, 20, 8), c, depth + 1);
     if (op != O_FMUL_R || B(w, 48, 1) || B(w, 41, 3) || B(w, 50, 1)) return -1;
     u32 ops[2] = {B(w, 8, 8), B(w, 20, 8)};
     for (int side = 0; side < 2; side++) {
         int rmul, vmul;
-        int g = direct_rcp_w(insn, n, (u32)j, ops[side], &rmul, 0);
-        if (g >= 0 && direct_ipa_at(insn, n, (u32)j, ops[!side], 0x80 + (u32)g * 16 + c * 4, &vmul, 0) && vmul == rmul)
+        int g = direct_rcp_w(f, (u32)j, ops[side], &rmul, 0);
+        if (g >= 0 && direct_ipa_at(f, (u32)j, ops[!side], 0x80 + (u32)g * 16 + c * 4, &vmul, 0) && vmul == rmul)
             return g;
     }
     return -1;
@@ -744,18 +812,19 @@ static int direct_over_w(const u64* insn, u32 n, u32 index, u32 reg, u32 c, int 
    own pixel when the vertex stage wrote that generic as its position mapped onto the target, (pos.xy * (1, +-1) +
    pos.w) / 2 with pos.w as its w (ShaderInfo.screen_out_mask), and the draw's viewport covers the target the texture
    is (vk/render.c). The generic's index, or -1 */
-int shader_direct_screen_uv(const u64* insn, u32 n, u32 index, u32 x, u32 y) {
-    int g = x < 255 ? direct_over_w(insn, n, index, x, 0, 0) : -1;
-    return g >= 0 && y < 255 && direct_over_w(insn, n, index, y, 1, 0) == g ? g : -1;
+int shader_direct_screen_uv(const ShFlow* f, u32 index, u32 x, u32 y) {
+    int g = x < 255 ? direct_over_w(f, index, x, 0, 0) : -1;
+    return g >= 0 && y < 255 && direct_over_w(f, index, y, 1, 0) == g ? g : -1;
 }
 
 /* reg's value at index past full register moves: the instruction that makes it times 256 plus the register it
    writes, as one instruction may write several (ALD.128, a texture read). -1 when no single one reaches it */
-static int direct_value_def(const u64* insn, u32 n, u32 index, u32 reg) {
+static int direct_value_def(const ShFlow* f, u32 index, u32 reg) {
+    const u64* insn = f->insn;
     for (int depth = 0; depth < 6; depth++) {
-        int j = reg < 255 ? direct_reaching_def(insn, n, index, reg) : -1;
+        int j = reg < 255 ? direct_reaching_def(f, index, reg) : -1;
         if (j < 0) return -1;
-        if (decode(insn[j])->id != O_MOV_R || B(insn[j], 39, 4) != 0xf) return j * 256 + (int)reg;
+        if (f->op[j]->id != O_MOV_R || B(insn[j], 39, 4) != 0xf) return j * 256 + (int)reg;
         index = (u32)j;
         reg = B(insn[j], 20, 8);
     }
@@ -764,31 +833,34 @@ static int direct_value_def(const u64* insn, u32 n, u32 index, u32 reg) {
 /* Whether every run of the program passes the instruction at index once: no EXIT, KIL or RET before it, no branch
    from before it that lands past it, none from after it back to it or before it. Its writes are the ones the program
    ends with, as long as nothing else writes there */
-static int direct_once_to_end(const u64* insn, u32 n, u32 index) {
+static int direct_once_to_end(const ShFlow* f, u32 index) {
+    u32 n = f->n;
     for (u32 k = 11; k < n; k++) {
-        u32 targets[64];
-        u8 elsewhere[64];
+        const u32* targets;
+        const u8* elsewhere;
         if (!IDX_OK(k)) continue;
-        const Op* op = decode(insn[k]);
+        const Op* op = f->op[k];
         if (!op) return 0;
         if (k < index && (op->id == O_EXIT || op->id == O_KIL || op->id == O_RET)) return 0;
-        int count = direct_flow_targets(insn, n, k, targets, elsewhere);
+        int count = direct_flow_targets(f, k, &targets, &elsewhere);
         if (count < 0) {
-            if (direct_flow_below(insn, k, index + 1)) continue;
+            if (direct_flow_below(f, k, index + 1)) continue;
             return 0;
         }
         for (int t = 0; t < count; t++) {
             if (k > index && targets[t] <= index) return 0;
             /* an SSY or PBK only names where its SYNC or BRK goes, and none comes between it and index */
             if (k < index && targets[t] > index &&
-                !((op->id == O_SSY || op->id == O_PBK) && direct_straight(insn, k, index)))
+                !((op->id == O_SSY || op->id == O_PBK) && direct_straight(f, k, index)))
                 return 0;
         }
     }
     return 1;
 }
 /* the last store of each output word under 0x280 (by its address / 4), an AST not per patch, or -1 */
-static void direct_output_stores(const u64* insn, u32 n, int store[0x280 / 4]) {
+static void direct_output_stores(const ShFlow* f, int store[0x280 / 4]) {
+    const u64* insn = f->insn;
+    u32 n = f->n;
     for (u32 a = 0; a < 0x280 / 4; a++) store[a] = -1;
     for (u32 k = 11; k < n; k++) {
         u64 w = insn[k];
@@ -803,17 +875,19 @@ static void direct_output_stores(const u64* insn, u32 n, int store[0x280 / 4]) {
 /* The value (direct_value_def) the vertex program's output word at addr ends with: its last store's (store, from
    direct_output_stores), an AST with no guard, not per patch nor indexed, that every run passes once
    (direct_once_to_end), so no store before it can come after it. -1 when there isn't one */
-static int direct_output_def(const u64* insn, u32 n, const int store[0x280 / 4], u32 addr) {
+static int direct_output_def(const ShFlow* f, const int store[0x280 / 4], u32 addr) {
+    const u64* insn = f->insn;
     int k = store[addr / 4];
     if (k < 0) return -1;
     u64 w = insn[k];
     u32 reg = B(w, 0, 8) + (addr - B(w, 20, 10)) / 4;
-    if (B(w, 16, 4) != 7 || B(w, 8, 8) != 255 || reg >= 255 || !direct_once_to_end(insn, n, (u32)k)) return -1;
-    return direct_value_def(insn, n, (u32)k, reg);
+    if (B(w, 16, 4) != 7 || B(w, 8, 8) != 255 || reg >= 255 || !direct_once_to_end(f, (u32)k)) return -1;
+    return direct_value_def(f, (u32)k, reg);
 }
 /* The value (direct_value_def) is half of another: FMUL or FMUL32I by the immediate 0.5, with no negation, scale or
    saturation. That other value, or -1 */
-static int direct_half_of(const u64* insn, u32 n, int value) {
+static int direct_half_of(const ShFlow* f, int value) {
+    const u64* insn = f->insn;
     if (value < 0) return -1;
     u32 def = (u32)value / 256;
     u64 w = insn[def];
@@ -823,16 +897,17 @@ static int direct_half_of(const u64* insn, u32 n, int value) {
             return -1;
     } else if (op != O_FMUL32I || B(w, 20, 32) != 0x3f000000u || B(w, 55, 1))
         return -1;
-    return direct_value_def(insn, n, def, B(w, 8, 8));
+    return direct_value_def(f, def, B(w, 8, 8));
 }
 /* The value (direct_value_def) is the sum of the values p and q, FADD with no absolute value or saturation and p not
    negated, in either order: 1 for p + q, 2 for p - q, 0 when it is neither */
-static int direct_sum_of(const u64* insn, u32 n, int value, int p, int q) {
+static int direct_sum_of(const ShFlow* f, int value, int p, int q) {
+    const u64* insn = f->insn;
     if (value < 0) return 0;
     u32 def = (u32)value / 256;
     u64 w = insn[def];
     if (decode(w)->id != O_FADD_R || B(w, 46, 1) || B(w, 49, 1) || B(w, 50, 1)) return 0;
-    int left = direct_value_def(insn, n, def, B(w, 8, 8)), right = direct_value_def(insn, n, def, B(w, 20, 8));
+    int left = direct_value_def(f, def, B(w, 8, 8)), right = direct_value_def(f, def, B(w, 20, 8));
     if (left == p && right == q && !B(w, 48, 1)) return B(w, 45, 1) ? 2 : 1;
     if (left == q && right == p && !B(w, 45, 1)) return B(w, 48, 1) ? 2 : 1;
     return 0;
@@ -841,20 +916,20 @@ static int direct_sum_of(const u64* insn, u32 n, int value, int p, int q) {
    y = (pos.w + pos.y) / 2 or (pos.w - pos.y) / 2 (its bit in *yneg) and w = pos.w, each of those words and pos.x, y
    and w written once (direct_output_def). A fragment's (x / w, y / w) of one is the centre of its own pixel in [0, 1]
    of the viewport, which vk/render.c checks covers the target with the y this sign maps */
-u32 shader_direct_screen_out(const u64* insn, u32 n, u32* yneg) {
+u32 shader_direct_screen_out(const ShFlow* f, u32* yneg) {
     int store[0x280 / 4];
-    direct_output_stores(insn, n, store);
-    int px = direct_output_def(insn, n, store, 0x70), py = direct_output_def(insn, n, store, 0x74);
-    int pw = direct_output_def(insn, n, store, 0x7c);
+    direct_output_stores(f, store);
+    int px = direct_output_def(f, store, 0x70), py = direct_output_def(f, store, 0x74);
+    int pw = direct_output_def(f, store, 0x7c);
     u32 mask = 0;
     *yneg = 0;
     if (px < 0 || py < 0 || pw < 0) return 0;
     for (u32 g = 0; g < 32; g++) {
         u32 at = 0x80 + g * 16;
-        if (direct_output_def(insn, n, store, at + 12) != pw ||
-            direct_sum_of(insn, n, direct_half_of(insn, n, direct_output_def(insn, n, store, at)), pw, px) != 1)
+        if (direct_output_def(f, store, at + 12) != pw ||
+            direct_sum_of(f, direct_half_of(f, direct_output_def(f, store, at)), pw, px) != 1)
             continue;
-        int sign = direct_sum_of(insn, n, direct_half_of(insn, n, direct_output_def(insn, n, store, at + 4)), pw, py);
+        int sign = direct_sum_of(f, direct_half_of(f, direct_output_def(f, store, at + 4)), pw, py);
         if (!sign) continue;
         mask |= 1u << g;
         if (sign == 2) *yneg |= 1u << g;
@@ -866,22 +941,25 @@ u32 shader_direct_screen_out(const u64* insn, u32 n, u32* yneg) {
    end with, each of those words written once (direct_output_def). Interpolated with perspective and divided by its
    w, one is the fragment's own place in the viewport, which the fragment program can take from gl_FragCoord
    (ShaderInfo.pos_out_mask) */
-u32 shader_direct_position_out(const u64* insn, u32 n) {
-    int px = direct_output_def(insn, n, 0x70), py = direct_output_def(insn, n, 0x74);
-    int pw = direct_output_def(insn, n, 0x7c);
+u32 shader_direct_position_out(const ShFlow* f) {
+    int store[0x280 / 4];
+    direct_output_stores(f, store);
+    int px = direct_output_def(f, store, 0x70), py = direct_output_def(f, store, 0x74);
+    int pw = direct_output_def(f, store, 0x7c);
     u32 mask = 0;
     if (px < 0 || py < 0 || pw < 0) return 0;
     for (u32 g = 0; g < 32; g++) {
         u32 at = 0x80 + g * 16;
-        if (direct_output_def(insn, n, at) == px && direct_output_def(insn, n, at + 4) == py &&
-            direct_output_def(insn, n, at + 12) == pw)
+        if (direct_output_def(f, store, at) == px && direct_output_def(f, store, at + 4) == py &&
+            direct_output_def(f, store, at + 12) == pw)
             mask |= 1u << g;
     }
     return mask;
 }
 
-int shader_direct_track_const(const u64* insn, u32 n, u32 index, u32 reg, u32* value, int depth) {
-    int j = depth > 6 ? -1 : direct_reaching_def(insn, n, index, reg);
+int shader_direct_track_const(const ShFlow* f, u32 index, u32 reg, u32* value, int depth) {
+    const u64* insn = f->insn;
+    int j = depth > 6 ? -1 : direct_reaching_def(f, index, reg);
     u64 w;
     int op;
     if (j < 0) return 0;
@@ -891,26 +969,28 @@ int shader_direct_track_const(const u64* insn, u32 n, u32 index, u32 reg, u32* v
         *value = B(w, 20, 32);
         return 1;
     }
-    if (op == O_MOV_R) return shader_direct_track_const(insn, n, (u32)j, B(w, 20, 8), value, depth + 1);
+    if (op == O_MOV_R) return shader_direct_track_const(f, (u32)j, B(w, 20, 8), value, depth + 1);
     return 0;
 }
 
 typedef struct {
     u32 known, value;
 } KnownBits;
-static KnownBits direct_known_bits(const u64* insn, u32 n, u32 index, u32 reg, int depth);
+static KnownBits direct_known_bits(const ShFlow* f, u32 index, u32 reg, int depth);
 /* The integer right operand's domain. Constant-buffer contents are deliberately not read: a proof about the
    instruction word must hold for every draw sharing this module. A caller can still specialize a whole fixed word. */
-static KnownBits direct_known_right(const u64* insn, u32 n, u32 index, u64 w, int kind, int depth) {
-    if (!kind) return direct_known_bits(insn, n, index, B(w, 20, 8), depth + 1);
+static KnownBits direct_known_right(const ShFlow* f, u32 index, u64 w, int kind, int depth) {
+    if (!kind) return direct_known_bits(f, index, B(w, 20, 8), depth + 1);
     if (kind == 1) return (KnownBits){0};
     u32 value = B(w, 20, 19);
     return (KnownBits){~0u, B(w, 56, 1) ? value | 0xfff80000u : value};
 }
-static KnownBits direct_known_bits(const u64* insn, u32 n, u32 index, u32 reg, int depth) {
+static KnownBits direct_known_bits(const ShFlow* f, u32 index, u32 reg, int depth) {
+    const u64* insn = f->insn;
+    u32 n = f->n;
     if (reg == 255) return (KnownBits){~0u, 0};
     if (depth > 6 || index >= n) return (KnownBits){0};
-    int definition = direct_reaching_def(insn, n, index, reg);
+    int definition = direct_reaching_def(f, index, reg);
     if (definition < 0) return (KnownBits){0};
     u32 at = (u32)definition;
     u64 w = insn[at];
@@ -919,12 +999,12 @@ static KnownBits direct_known_bits(const u64* insn, u32 n, u32 index, u32 reg, i
     if (B(w, 16, 4) != 7) return (KnownBits){0};
     int op = decode(w)->id;
     if (op == O_MOV32I) return (KnownBits){~0u, B(w, 20, 32)};
-    if (op == O_MOV_R) return direct_known_bits(insn, n, at, B(w, 20, 8), depth + 1);
+    if (op == O_MOV_R) return direct_known_bits(f, at, B(w, 20, 8), depth + 1);
     u32 source = B(w, 8, 8);
     if (op == O_LOP32I || op == O_LOP_R || op == O_LOP_C || op == O_LOP_I) {
-        KnownBits left = direct_known_bits(insn, n, at, source, depth + 1);
-        KnownBits right = op == O_LOP32I ? (KnownBits){~0u, B(w, 20, 32)}
-                                         : direct_known_right(insn, n, at, w, op - O_LOP_R, depth);
+        KnownBits left = direct_known_bits(f, at, source, depth + 1);
+        KnownBits right =
+            op == O_LOP32I ? (KnownBits){~0u, B(w, 20, 32)} : direct_known_right(f, at, w, op - O_LOP_R, depth);
         if (B(w, op == O_LOP32I ? 55 : 39, 1)) left.value ^= left.known;
         if (B(w, op == O_LOP32I ? 56 : 40, 1)) right.value ^= right.known;
         u32 mode = B(w, op == O_LOP32I ? 53 : 41, 2), ones, zeros;
@@ -946,7 +1026,7 @@ static KnownBits direct_known_bits(const u64* insn, u32 n, u32 index, u32 reg, i
         int right_shift = op == O_SHR_R || op == O_SHR_C || op == O_SHR_I;
         if ((right_shift ? B(w, 43, 2) || B(w, 40, 1) : B(w, 43, 1)) || B(w, 47, 1))
             return (KnownBits){0};
-        KnownBits control = direct_known_right(insn, n, at, w, op - (right_shift ? O_SHR_R : O_SHL_R), depth);
+        KnownBits control = direct_known_right(f, at, w, op - (right_shift ? O_SHR_R : O_SHL_R), depth);
         if (control.known != ~0u) return (KnownBits){0};
         u32 shift = control.value;
         if (B(w, 39, 1)) shift &= 31;
@@ -954,7 +1034,7 @@ static KnownBits direct_known_bits(const u64* insn, u32 n, u32 index, u32 reg, i
             if (!right_shift || !B(w, 48, 1)) return (KnownBits){~0u, 0};
             shift = 31;
         }
-        KnownBits input = direct_known_bits(insn, n, at, source, depth + 1);
+        KnownBits input = direct_known_bits(f, at, source, depth + 1);
         if (!shift) return input;
         if (!right_shift)
             return (KnownBits){input.known << shift | ((1u << shift) - 1), input.value << shift};
@@ -968,7 +1048,7 @@ static KnownBits direct_known_bits(const u64* insn, u32 n, u32 index, u32 reg, i
     }
     if (op == O_BFE_R || op == O_BFE_C || op == O_BFE_I) {
         if (B(w, 40, 1)) return (KnownBits){0}; /* reversed source */
-        KnownBits control = direct_known_right(insn, n, at, w, op - O_BFE_R, depth);
+        KnownBits control = direct_known_right(f, at, w, op - O_BFE_R, depth);
         if ((control.known & 0xffffu) != 0xffffu) return (KnownBits){0};
         u32 offset = control.value & 255, width = control.value >> 8 & 255;
         int sign = B(w, 48, 1);
@@ -976,7 +1056,7 @@ static KnownBits direct_known_bits(const u64* insn, u32 n, u32 index, u32 reg, i
         if (offset > 31) offset = 31;
         if (width > 32 - offset) width = 32 - offset;
         if (!width) return (KnownBits){~0u, 0};
-        KnownBits input = direct_known_bits(insn, n, at, source, depth + 1);
+        KnownBits input = direct_known_bits(f, at, source, depth + 1);
         u32 low = width == 32 ? ~0u : (1u << width) - 1;
         u32 known = (input.known >> offset) & low, value = (input.value >> offset) & low;
         if (!sign) known |= ~low;
@@ -987,21 +1067,21 @@ static KnownBits direct_known_bits(const u64* insn, u32 n, u32 index, u32 reg, i
         return (KnownBits){known, value};
     }
     if (op == O_BFI_R || op == O_BFI_I) {
-        KnownBits control = direct_known_right(insn, n, at, w, op == O_BFI_R ? 0 : 2, depth);
+        KnownBits control = direct_known_right(f, at, w, op == O_BFI_R ? 0 : 2, depth);
         if ((control.known & 0xffffu) != 0xffffu) return (KnownBits){0};
-        KnownBits base = direct_known_bits(insn, n, at, B(w, 39, 8), depth + 1);
+        KnownBits base = direct_known_bits(f, at, B(w, 39, 8), depth + 1);
         u32 offset = control.value & 255, width = control.value >> 8 & 255;
         if (offset >= 32 || !width) return base;
         if (width > 32 - offset) width = 32 - offset;
-        KnownBits input = direct_known_bits(insn, n, at, source, depth + 1);
+        KnownBits input = direct_known_bits(f, at, source, depth + 1);
         u32 field = (width == 32 ? ~0u : (1u << width) - 1) << offset;
         return (KnownBits){(base.known & ~field) | (input.known << offset & field),
                             (base.value & ~field) | (input.value << offset & field)};
     }
     return (KnownBits){0};
 }
-int shader_direct_track_known_bits(const u64* insn, u32 n, u32 index, u32 reg, u32* known, u32* value, int depth) {
-    KnownBits bits = direct_known_bits(insn, n, index, reg, depth);
+int shader_direct_track_known_bits(const ShFlow* f, u32 index, u32 reg, u32* known, u32* value, int depth) {
+    KnownBits bits = direct_known_bits(f, index, reg, depth);
     *known = bits.known;
     *value = bits.value & bits.known;
     return bits.known != 0;
@@ -1009,17 +1089,18 @@ int shader_direct_track_known_bits(const u64* insn, u32 n, u32 index, u32 reg, u
 
 /* A fixed constant-buffer word, for TXD's uniform offset specialization. Unlike the descriptor tracker below,
    LDC must have a proven address: a varying table index cannot select a translation-time texture offset. */
-int shader_direct_track_cbuf_word(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, int depth) {
-    int j = depth > 6 ? -1 : direct_reaching_def(insn, n, index, reg);
+int shader_direct_track_cbuf_word(const ShFlow* f, u32 index, u32 reg, u32* bank, u32* off, int depth) {
+    const u64* insn = f->insn;
+    int j = depth > 6 ? -1 : direct_reaching_def(f, index, reg);
     if (j < 0 && depth <= 6 && reg && reg < 255) {
         /* The general tracker accepts only an instruction's first destination. For LDC.B64's high word, prove
            that its low-word definition dominates this use and that nothing has overwritten the high word. */
-        int low = direct_reaching_def(insn, n, index, reg - 1);
-        if (low >= 0 && decode(insn[low])->id == O_LDC && B(insn[low], 48, 3) == 5) {
+        int low = direct_reaching_def(f, index, reg - 1);
+        if (low >= 0 && f->op[low]->id == O_LDC && B(insn[low], 48, 3) == 5) {
             int unchanged = 1;
             for (u32 at = (u32)low + 1; at < index; at++) {
                 if (!IDX_OK(at)) continue;
-                const Op* op = decode(insn[at]);
+                const Op* op = f->op[at];
                 if (!op || shader_writes_reg(insn[at], op->id, reg)) unchanged = 0;
             }
             if (unchanged) j = low;
@@ -1033,10 +1114,10 @@ int shader_direct_track_cbuf_word(const u64* insn, u32 n, u32 index, u32 reg, u3
         *off = B(w, 20, 14);
         return *bank < 18;
     }
-    if (op == O_MOV_R) return shader_direct_track_cbuf_word(insn, n, (u32)j, B(w, 20, 8), bank, off, depth + 1);
+    if (op == O_MOV_R) return shader_direct_track_cbuf_word(f, (u32)j, B(w, 20, 8), bank, off, depth + 1);
     if (op != O_LDC || B(w, 48, 3) < 4 || B(w, 48, 3) > 5) return 0;
     u32 source = 0, address_reg = B(w, 8, 8);
-    if (address_reg != 255 && !shader_direct_track_const(insn, n, (u32)j, address_reg, &source, depth + 1)) return 0;
+    if (address_reg != 255 && !shader_direct_track_const(f, (u32)j, address_reg, &source, depth + 1)) return 0;
     *bank = B(w, 36, 5);
     if (B(w, 44, 1)) {
         *bank += source >> 16;
@@ -1050,8 +1131,9 @@ int shader_direct_track_cbuf_word(const u64* insn, u32 n, u32 index, u32 reg, u3
 }
 
 /* Resolve a register supplied image handle to the constant buffer word read in this basic block. */
-int shader_direct_track_image_handle(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, int depth) {
-    int j = depth > 6 ? -1 : direct_reaching_def(insn, n, index, reg);
+int shader_direct_track_image_handle(const ShFlow* f, u32 index, u32 reg, u32* bank, u32* off, int depth) {
+    const u64* insn = f->insn;
+    int j = depth > 6 ? -1 : direct_reaching_def(f, index, reg);
     u64 w;
     int op;
     if (j < 0) return 0;
@@ -1067,7 +1149,7 @@ int shader_direct_track_image_handle(const u64* insn, u32 n, u32 index, u32 reg,
         *bank = B(w, 36, 5);
         if (B(w, 44, 1)) {
             u32 source;
-            if (!shader_direct_track_const(insn, n, (u32)j, B(w, 8, 8), &source, depth + 1)) return 0;
+            if (!shader_direct_track_const(f, (u32)j, B(w, 8, 8), &source, depth + 1)) return 0;
             *bank += source >> 16;
             byte_off += (i32)(source & 0xffff);
         }
@@ -1076,12 +1158,12 @@ int shader_direct_track_image_handle(const u64* insn, u32 n, u32 index, u32 reg,
            Runtime descriptor selection for arbitrary indices needs a separate path. */
         return *bank < 18 && byte_off >= 0 && !(byte_off & 3);
     }
-    if (op == O_MOV_R) return shader_direct_track_image_handle(insn, n, (u32)j, B(w, 20, 8), bank, off, depth + 1);
+    if (op == O_MOV_R) return shader_direct_track_image_handle(f, (u32)j, B(w, 20, 8), bank, off, depth + 1);
     return 0;
 }
 
-static int direct_handle_definition(const u64* insn, u32 n, u32 j, u32* bank, u32* off, u32* bank2, u32* off2,
-                                    int depth) {
+static int direct_handle_definition(const ShFlow* f, u32 j, u32* bank, u32* off, u32* bank2, u32* off2, int depth) {
+    const u64* insn = f->insn;
     u64 w = insn[j];
     int op = decode(w)->id;
     int plain_or;
@@ -1099,7 +1181,7 @@ static int direct_handle_definition(const u64* insn, u32 n, u32 j, u32* bank, u3
         *bank = B(w, 36, 5);
         if (B(w, 44, 1)) {
             u32 source;
-            if (!shader_direct_track_const(insn, n, j, B(w, 8, 8), &source, depth + 1)) return 0;
+            if (!shader_direct_track_const(f, j, B(w, 8, 8), &source, depth + 1)) return 0;
             *bank += source >> 16;
             byte_off += (i32)(source & 0xffff);
         }
@@ -1107,7 +1189,7 @@ static int direct_handle_definition(const u64* insn, u32 n, u32 j, u32* bank, u3
         return *bank < 18 && byte_off >= 0 && !(byte_off & 3);
     }
     if (op == O_MOV_R)
-        return shader_direct_track_image_handle_pair(insn, n, (u32)j, B(w, 20, 8), bank, off, bank2, off2, depth + 1);
+        return shader_direct_track_image_handle_pair(f, (u32)j, B(w, 20, 8), bank, off, bank2, off2, depth + 1);
     plain_or = (op == O_LOP_R || op == O_LOP_C) && B(w, 41, 2) == 1 && !B(w, 39, 2) && !B(w, 47, 1);
     plain_add = (op == O_IADD_R || op == O_IADD_C) && !B(w, 43, 1) && !B(w, 47, 1) && !B(w, 48, 2);
     if (!plain_or && !plain_add) return 0;
@@ -1122,19 +1204,17 @@ static int direct_handle_definition(const u64* insn, u32 n, u32 j, u32* bank, u3
         }
         *bank2 = cbank;
         *off2 = coff;
-        return shader_direct_track_image_handle(insn, n, (u32)j, lhs, bank, off, depth + 1) ? 2 : 0;
+        return shader_direct_track_image_handle(f, (u32)j, lhs, bank, off, depth + 1) ? 2 : 0;
     }
     rhs = B(w, 20, 8);
-    if (lhs == 255)
-        return shader_direct_track_image_handle_pair(insn, n, (u32)j, rhs, bank, off, bank2, off2, depth + 1);
-    if (rhs == 255)
-        return shader_direct_track_image_handle_pair(insn, n, (u32)j, lhs, bank, off, bank2, off2, depth + 1);
+    if (lhs == 255) return shader_direct_track_image_handle_pair(f, (u32)j, rhs, bank, off, bank2, off2, depth + 1);
+    if (rhs == 255) return shader_direct_track_image_handle_pair(f, (u32)j, lhs, bank, off, bank2, off2, depth + 1);
     /* both halves read, or one read and the other a constant (a sampler's from a MOV32I), kept as itself */
     for (int k = 0; k < 2; k++) {
         u32 half = k ? rhs : lhs, other = k ? lhs : rhs, value;
-        if (!shader_direct_track_image_handle(insn, n, (u32)j, half, bank, off, depth + 1)) continue;
-        if (shader_direct_track_image_handle(insn, n, (u32)j, other, bank2, off2, depth + 1)) return 2;
-        if (!shader_direct_track_const(insn, n, (u32)j, other, &value, depth + 1)) return 0;
+        if (!shader_direct_track_image_handle(f, (u32)j, half, bank, off, depth + 1)) continue;
+        if (shader_direct_track_image_handle(f, (u32)j, other, bank2, off2, depth + 1)) return 2;
+        if (!shader_direct_track_const(f, (u32)j, other, &value, depth + 1)) return 0;
         *bank2 = SH_HANDLE_IMM;
         *off2 = value;
         return 2;
@@ -1145,12 +1225,12 @@ static int direct_handle_definition(const u64* insn, u32 n, u32 j, u32* bank, u3
 /* Whether the write of reg at b defines the same handle as the one at a: a loop that rewrites reg with the same
    constant buffer reads leaves the handle at a use in the loop unchanged (the second tap of a blur, or its next
    iteration's first). */
-static int direct_same_handle(const u64* insn, u32 n, u32 a, u32 b, int depth) {
+static int direct_same_handle(const ShFlow* f, u32 a, u32 b, int depth) {
     u32 ab, ao, ab2, ao2, bb, bo, bb2, bo2;
     int ca, cb;
     if (depth > 6) return 0;
-    ca = direct_handle_definition(insn, n, a, &ab, &ao, &ab2, &ao2, depth);
-    cb = ca ? direct_handle_definition(insn, n, b, &bb, &bo, &bb2, &bo2, depth) : 0;
+    ca = direct_handle_definition(f, a, &ab, &ao, &ab2, &ao2, depth);
+    cb = ca ? direct_handle_definition(f, b, &bb, &bo, &bb2, &bo2, depth) : 0;
     return ca && ca == cb && ab == bb && ao == bo && (ca == 1 || (ab2 == bb2 && ao2 == bo2));
 }
 
@@ -1158,33 +1238,35 @@ static int direct_same_handle(const u64* insn, u32 n, u32 a, u32 b, int depth) {
    descriptor. Prove the value on every edge bypassing the nearest definition,
    rather than binding whichever side happens to appear last in the program.
    Indirect flow, reconvergence arrivals and back edges remain conservative. */
-static int direct_joined_handle(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, u32* bank2, u32* off2,
+static int direct_joined_handle(const ShFlow* f, u32 index, u32 reg, u32* bank, u32* off, u32* bank2, u32* off2,
                                 int depth) {
+    const u64* insn = f->insn;
+    u32 n = f->n;
     int j = -1, count, joined = 0;
     for (u32 k = index; k-- > 11;) {
         const Op* op;
         if (!IDX_OK(k)) continue;
-        op = decode(insn[k]);
+        op = f->op[k];
         if (!op) return 0;
         if (!shader_writes_reg(insn[k], op->id, reg)) continue;
         if (B(insn[k], 0, 8) != reg || B(insn[k], 16, 4) != 7) return 0;
         j = (int)k;
         break;
     }
-    if (j < 0 || !(count = direct_handle_definition(insn, n, (u32)j, bank, off, bank2, off2, depth + 1))) return 0;
+    if (j < 0 || !(count = direct_handle_definition(f, (u32)j, bank, off, bank2, off2, depth + 1))) return 0;
     for (u32 k = 11; k < n; k++) {
-        u32 targets[64];
-        u8 elsewhere[64];
+        const u32* targets;
+        const u8* elsewhere;
         const Op* op;
         int edges;
         if (!IDX_OK(k)) continue;
-        op = decode(insn[k]);
+        op = f->op[k];
         if (!op) return 0;
         if (k > (u32)j && k < index &&
             (op->id == O_CAL || op->id == O_RET || op->id == O_BRX || op->id == O_JMP || op->id == O_SYNC ||
              op->id == O_BRK || op->id == O_CONT))
             return 0;
-        edges = direct_flow_targets(insn, n, k, targets, elsewhere);
+        edges = direct_flow_targets(f, k, &targets, &elsewhere);
         if (edges < 0) return 0;
         for (int t = 0; t < edges; t++) {
             u32 b, o, b2, o2;
@@ -1192,8 +1274,8 @@ static int direct_joined_handle(const u64* insn, u32 n, u32 index, u32 reg, u32*
             if (elsewhere[t] || k > index) return 0;
             if (k >= (u32)j) continue;
             if (op->id != O_BRA ||
-                shader_direct_track_image_handle_pair(insn, n, k, reg, &b, &o, &b2, &o2, depth + 1) != count ||
-                b != *bank || o != *off || (count == 2 && (b2 != *bank2 || o2 != *off2)))
+                shader_direct_track_image_handle_pair(f, k, reg, &b, &o, &b2, &o2, depth + 1) != count || b != *bank ||
+                o != *off || (count == 2 && (b2 != *bank2 || o2 != *off2)))
                 return 0;
             joined = 1;
         }
@@ -1201,13 +1283,13 @@ static int direct_joined_handle(const u64* insn, u32 n, u32 index, u32 reg, u32*
     return joined ? count : 0;
 }
 
-int shader_direct_track_image_handle_pair(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, u32* bank2,
+int shader_direct_track_image_handle_pair(const ShFlow* f, u32 index, u32 reg, u32* bank, u32* off, u32* bank2,
                                           u32* off2, int depth) {
     int j;
     if (depth > 6 || reg == 255) return 0;
-    j = direct_reaching_def_same(insn, n, index, reg, direct_same_handle, depth);
-    if (j >= 0) return direct_handle_definition(insn, n, (u32)j, bank, off, bank2, off2, depth);
-    return direct_joined_handle(insn, n, index, reg, bank, off, bank2, off2, depth);
+    j = direct_reaching_def_same(f, index, reg, direct_same_handle, depth);
+    if (j >= 0) return direct_handle_definition(f, (u32)j, bank, off, bank2, off2, depth);
+    return direct_joined_handle(f, index, reg, bank, off, bank2, off2, depth);
 }
 
 /* AL2P's predicate (bits 44-46) is a range check no source describes. The NVN compiler gives every AL2P one, P0 to P6
@@ -1215,13 +1297,15 @@ int shader_direct_track_image_handle_pair(const u64* insn, u32 n, u32 index, u32
    instruction reads the predicate, or every path from the AL2P meets a comparison or AL2P without a guard that writes
    it whole before anything reads it. Paths follow branches, jump tables and the pops' targets as shader_resolve_crs
    gives them. A pop it can't resolve, a call, a return, a JMP, or an EXIT a PEXIT may take counts as a read */
-int shader_al2p_predicate_unseen(const u64* insn, u32 n, u32 at) {
+int shader_al2p_predicate_unseen(const ShFlow* f, u32 at) {
+    const u64* insn = f->insn;
+    u32 n = f->n;
     u32 p = B(insn[at], 44, 3), i, nwork = 0, *work = NULL, *pops = NULL, targets[64];
     int read = 0, pexit = 0, stack = 0, crs = 0, unseen = 0, count, t;
     u8* seen = NULL;
     if (p == 7) return 1;
     for (i = 11; i < n; i++) {
-        const Op* op = IDX_OK(i) && i != at ? decode(insn[i]) : NULL;
+        const Op* op = IDX_OK(i) && i != at ? f->op[i] : NULL;
         if (!op) continue;
         read |= shader_reads_predicate(insn[i], op->id, p);
         pexit |= op->id == O_PEXIT;
@@ -1299,13 +1383,14 @@ done:
    (SNX_TEX_INDEXED and the stride's shift: the SHL that made the address, or 2 for words) and *ldc, that LDC's
    instruction plus one. 0 when the handle isn't indexed, or can't be: the device has no texture arrays, or the
    stage is compute, which binds none. */
-u32 shader_direct_indexed_handle(const u64* insn, u32 n, u32 index, u32 reg, int stage, u32* ldc) {
+u32 shader_direct_indexed_handle(const ShFlow* f, u32 index, u32 reg, int stage, u32* ldc) {
+    const u64* insn = f->insn;
     int j = -1, k, depth, op = 0;
     u64 w = 0;
     u32 shift = 2;
     if (!g_shader_texture_arrays || stage == ST_CS) return 0;
     for (depth = 0; depth < 6; depth++) {
-        j = direct_reaching_def(insn, n, index, reg);
+        j = direct_reaching_def(f, index, reg);
         if (j < 0) return 0;
         w = insn[j];
         op = decode(w)->id;
@@ -1314,8 +1399,8 @@ u32 shader_direct_indexed_handle(const u64* insn, u32 n, u32 index, u32 reg, int
         reg = B(w, 20, 8);
     }
     if (depth == 6 || op != O_LDC || B(w, 8, 8) == 255 || B(w, 48, 3) != 4 || B(w, 44, 1)) return 0;
-    k = direct_reaching_def(insn, n, (u32)j, B(w, 8, 8));
-    if (k >= 0 && decode(insn[k])->id == O_SHL_I && B(insn[k], 20, 5) >= 2 && B(insn[k], 20, 5) <= 15)
+    k = direct_reaching_def(f, (u32)j, B(w, 8, 8));
+    if (k >= 0 && f->op[k]->id == O_SHL_I && B(insn[k], 20, 5) >= 2 && B(insn[k], 20, 5) <= 15)
         shift = B(insn[k], 20, 5);
     *ldc = (u32)j + 1;
     return SNX_TEX_INDEXED | shift << 4;
@@ -1334,12 +1419,14 @@ int shader_direct_bindless_matches(const ShTex* t, u32 bank, int handle_count, u
    the same texture: a bound one by its handle's offset, a bindless one by the first word of its tracked handle (the
    texture half: the sampler half may differ, as TXQ doesn't use it). TXQ itself doesn't say, and one game queries a 3D
    texture's depth with it, which a 2D slot can't bind. 0 when nothing else reads it: the query is then for a 2D one */
-int shader_direct_query_type(const u64* insn, u32 n, int bindless, u32 bank, u32 off, u32* type, u32* array) {
+int shader_direct_query_type(const ShFlow* f, int bindless, u32 bank, u32 off, u32* type, u32* array) {
+    const u64* insn = f->insn;
+    u32 n = f->n;
     for (u32 k = 11; k < n; k++) {
         const Op* op;
         u32 ty, kb, ko, kb2, ko2;
         int b;
-        if (!IDX_OK(k) || !(op = decode(insn[k]))) continue;
+        if (!IDX_OK(k) || !(op = f->op[k])) continue;
         switch (op->id) {
             case O_TEX:
             case O_TLD:
@@ -1354,7 +1441,7 @@ int shader_direct_query_type(const u64* insn, u32 n, int bindless, u32 bank, u32
         if (b != bindless) continue;
         ty = B(insn[k], 28, 3);
         if (b) {
-            if (!shader_direct_track_image_handle_pair(insn, n, k, B(insn[k], 20, 8), &kb, &ko, &kb2, &ko2, 0) ||
+            if (!shader_direct_track_image_handle_pair(f, k, B(insn[k], 20, 8), &kb, &ko, &kb2, &ko2, 0) ||
                 kb != bank || ko != off)
                 continue;
         } else if (B(insn[k], 36, 13) != off)

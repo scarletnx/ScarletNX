@@ -104,6 +104,30 @@ static const SpvGlsl450Op conversion_rounds[] = {SPV_GLSL_ROUND_EVEN, SPV_GLSL_F
    reads it from (SH_CODE), and the checks give up on a program longer than that */
 #define DIRECT_WORDS_MAX 16384u
 
+/* A program's words with what dataflow.c's searches ask of them again and again, made once (shader_flow_init): each
+   word's decode, the flow instructions and where control goes from each, and where each instruction's basic block
+   starts. The searches then go over the flow instructions, not every word, and decode nothing */
+typedef struct {
+    const u64* insn;
+    u32 n;
+    const Op** op; /* by word: decode()'s answer */
+    u32 bad;       /* the first instruction (IDX_OK) decode doesn't know, n when there is none */
+    /* each word's targets, besides the next instruction (direct_flow_decode): target and elsewhere from edge_at[k] to
+       edge_at[k + 1]. unknown[k] when they can't be known (a JMP, a jump table that isn't found) */
+    u32 *edge_at, *target;
+    u8 *elsewhere, *unknown;
+    u32* flow; /* the words with targets or unknown ones, in order, nflow of them */
+    u32 nflow;
+    /* by instruction: the last place before it or at it that control arrives at from a flow instruction, 11 for
+       none. It holds for an instruction at or before known_to: past a jump table that isn't found, or anywhere
+       in a program with a JMP, there is no telling (direct_reaching_def) */
+    u32* block_start;
+    u32 known_to;
+} ShFlow;
+/* f for the n words at insn, which stay its own until shader_flow_free: 0 when memory runs out */
+int shader_flow_init(ShFlow* f, const u64* insn, u32 n);
+void shader_flow_free(ShFlow* f);
+
 /* gb_at's mark for an access whose buffer is found when it runs (shader_global_dynamic) */
 #define GB_DYNAMIC 254
 
@@ -165,23 +189,23 @@ u32 shader_texs_dref(u32 encoding, u32 b);
 int shader_half_arithmetic(int op);
 u32 shader_sparse_predicate(u64 w, int op);
 /* dataflow.c */
-int shader_direct_own_pixel_fetch(const u64* insn, u32 n, u32 index);
-int shader_direct_screen_uv(const u64* insn, u32 n, u32 index, u32 x, u32 y);
-u32 shader_direct_screen_out(const u64* insn, u32 n, u32* yneg);
-u32 shader_direct_position_out(const u64* insn, u32 n);
-int shader_direct_track_const(const u64* insn, u32 n, u32 index, u32 reg, u32* value, int depth);
+int shader_direct_own_pixel_fetch(const ShFlow* f, u32 index);
+int shader_direct_screen_uv(const ShFlow* f, u32 index, u32 x, u32 y);
+u32 shader_direct_screen_out(const ShFlow* f, u32* yneg);
+u32 shader_direct_position_out(const ShFlow* f);
+int shader_direct_track_const(const ShFlow* f, u32 index, u32 reg, u32* value, int depth);
 /* Proven register bits at index: (runtime & *known)==*value, with *value masked by *known. Unknown is0/0.
    No specialization reads of mutable buffers; predicated or ambiguous definitions are left unknown. */
-int shader_direct_track_known_bits(const u64* insn, u32 n, u32 index, u32 reg, u32* known, u32* value, int depth);
-int shader_direct_track_cbuf_word(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, int depth);
-int shader_direct_track_image_handle(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, int depth);
-int shader_direct_track_image_handle_pair(const u64* insn, u32 n, u32 index, u32 reg, u32* bank, u32* off, u32* bank2,
+int shader_direct_track_known_bits(const ShFlow* f, u32 index, u32 reg, u32* known, u32* value, int depth);
+int shader_direct_track_cbuf_word(const ShFlow* f, u32 index, u32 reg, u32* bank, u32* off, int depth);
+int shader_direct_track_image_handle(const ShFlow* f, u32 index, u32 reg, u32* bank, u32* off, int depth);
+int shader_direct_track_image_handle_pair(const ShFlow* f, u32 index, u32 reg, u32* bank, u32* off, u32* bank2,
                                           u32* off2, int depth);
-int shader_al2p_predicate_unseen(const u64* insn, u32 n, u32 at);
-u32 shader_direct_indexed_handle(const u64* insn, u32 n, u32 index, u32 reg, int stage, u32* ldc);
+int shader_al2p_predicate_unseen(const ShFlow* f, u32 at);
+u32 shader_direct_indexed_handle(const ShFlow* f, u32 index, u32 reg, int stage, u32* ldc);
 int shader_direct_bindless_matches(const ShTex* t, u32 bank, int handle_count, u32 bank2, u32 off2, u32 indexed,
                                    u32 ldc);
-int shader_direct_query_type(const u64* insn, u32 n, int bindless, u32 bank, u32 off, u32* type, u32* array);
+int shader_direct_query_type(const ShFlow* f, int bindless, u32 bank, u32 off, u32* type, u32* array);
 u32* shader_untracked_handle(ShaderInfo* si, const char* kind, const u64* insn, u32 i, u32 reg);
 u32* shader_untracked_reject(ShaderInfo* si, const u64* insn, u32 i, u32 reg, u8* gb_at, u32* pop_targets);
 int shader_legacy_varyings(const u64* insn, u32 n, u32 words, const u32* sph, int stage, ShaderInfo* si, u64** moved,
@@ -399,6 +423,7 @@ typedef struct {
     int stage;
     const u64* insn;
     u32 n;
+    const ShFlow* flow; /* insn's, for the searches of dataflow.c */
     u32* sph;
     u32 target;
     int passthrough;

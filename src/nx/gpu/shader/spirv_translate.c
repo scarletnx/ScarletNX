@@ -247,16 +247,18 @@ static const u8 mixed_invariant_ops[O__COUNT] = {
 /* A fragment program's plain 2D sample (no offset, depth reference or level other than 0) at a perspective generic's
    (x / w, y / w), the same generic as the program's other such samples (*screen_in, -1 before the first): it reads the
    fragment's own pixel's centre where the vertex stage and the viewport map that generic onto the target (vk/render.c) */
-static int screen_sample(const u64* insn, u32 n, u32 i, const u32* sph, int plain, u32 x, u32 y, int* screen_in) {
-    int g = plain ? shader_direct_screen_uv(insn, n, i, x, y) : -1;
+static int screen_sample(const ShFlow* f, u32 i, const u32* sph, int plain, u32 x, u32 y, int* screen_in) {
+    int g = plain ? shader_direct_screen_uv(f, i, x, y) : -1;
     if (g < 0 || shader_ipa_interpolation(sph, (u32)g) != 2 || (*screen_in >= 0 && *screen_in != g)) return 0;
     *screen_in = g;
     return 1;
 }
 
+static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage, ShaderInfo* si, size_t* word_count,
+                      int can_flush, int can_preserve, int can_preserve_f64, int can_subgroup, u32 legacy_fs,
+                      const ShFlow* flow);
 static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, ShaderInfo* si, size_t* word_count,
                      int can_flush, int can_preserve, int can_preserve_f64, int can_subgroup, u32 legacy_fs) {
-    u32 clip;
     if (!code || !si || !word_count || max_bytes < 96 || stage < ST_VS || stage > ST_CS) return NULL;
     if (stage == ST_CS) {
         ShaderInfo original = *si;
@@ -267,7 +269,18 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     }
     u32 len;
     shader_hash(code, max_bytes, &len);
-    u32 n = len / 8;
+    ShFlow f;
+    if (!shader_flow_init(&f, insn, len / 8)) return direct_reject(si, "out of memory");
+    u32* r = translate(code, insn, max_bytes, stage, si, word_count, can_flush, can_preserve, can_preserve_f64,
+                       can_subgroup, legacy_fs, &f);
+    shader_flow_free(&f);
+    return r;
+}
+/* to_spirv's translation, once flow holds the program's words and what dataflow.c's searches ask of them */
+static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage, ShaderInfo* si, size_t* word_count,
+                      int can_flush, int can_preserve, int can_preserve_f64, int can_subgroup, u32 legacy_fs,
+                      const ShFlow* flow) {
+    u32 n = flow->n, clip;
     u32 sph[20];
     for (u32 i = 0; i < 20; i++) sph[i] = snx_ld_le32(code + i * 4);
     /* a fragment program's legacy varyings read through generics 17-31 (shader_legacy_varyings) interpolate as the header's
@@ -358,7 +371,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     int has_exit = 0, mixed_sample_invariant = stage == ST_FS;
     for (u32 i = 11; i < n; i++) {
         if (!IDX_OK(i)) continue;
-        const Op* op = decode(insn[i]);
+        const Op* op = flow->op[i];
         if (!op || !mixed_invariant_ops[op->id]) mixed_sample_invariant = 0;
         if (!op || !shader_supported(insn[i], op->id) || !shader_stage_has(insn[i], op->id, stage)) {
             if (op && op->id == O_TEXS)
@@ -568,7 +581,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             op->id != O_R2P_I && op->id != O_FCHK_R && op->id != O_FCHK_C && op->id != O_FCHK_I && op->id != O_MEMBAR &&
             op->id != O_CCTL && op->id != O_CCTLL && op->id != O_IDE && op->id != O_BPT && op->id != O_PEXIT)
             used[d] = 1;
-        if (op->id == O_AL2P && !shader_al2p_predicate_unseen(insn, n, i))
+        if (op->id == O_AL2P && !shader_al2p_predicate_unseen(flow, i))
             return direct_reject(si, "AL2P range predicate read");
         if (op->id == O_ALD && a != 255) {
             /* an indexed read can reach any generic input the header's map lists (bytes 0x18 to 0x27, a bit for
@@ -624,7 +637,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                        MOV32I's 1 and emits no vertex): viewport 0 alone or none, no broadcast, which the primitive's
                        own viewport (0 where the program writes no index) already is */
                     u32 mask = 0;
-                    if (d != 255 && !shader_direct_track_const(insn, n, i, d, &mask, 0)) {
+                    if (d != 255 && !shader_direct_track_const(flow, i, d, &mask, 0)) {
                         si->unsupported = 1;
                         snprintf(si->first_unsupported, sizeof si->first_unsupported,
                                  "viewport mask R%u at %x: no constant", d, i * 8);
@@ -941,7 +954,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 texture_count++;
             }
             tex_read |= 1ull << slot;
-            if (stage == ST_FS && screen_sample(insn, n, i, sph, encoding == 1 || encoding == 2, a,
+            if (stage == ST_FS && screen_sample(flow, i, sph, encoding == 1 || encoding == 2, a,
                                                 shader_texs_y(encoding, a, b), &screen_in))
                 tex_screen |= 1ull << slot;
             else
@@ -965,8 +978,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             u32 bank = 0, bank2 = 0, off2 = 0;
             int bindless = op->id == O_TLD_B;
             int handle_count =
-                bindless ? shader_direct_track_image_handle_pair(insn, n, i, b, &bank, &off, &bank2, &off2, 0) : 0;
-            if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, b, stage, &ldc);
+                bindless ? shader_direct_track_image_handle_pair(flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
+            if (handle_count == 1) indexed = shader_direct_indexed_handle(flow, i, b, stage, &ldc);
             if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, b);
             int type = ty >> 1, array = ty & 1, multisample = (int)B(insn[i], 50, 1);
             int read_slot =
@@ -974,7 +987,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                                              bindless, bank, handle_count, bank2, off2, indexed, ldc);
             if (read_slot < 0) return direct_reject(si, "texture descriptor count");
             tex_read |= 1ull << read_slot;
-            if (op->id == O_TLD ? !shader_direct_own_pixel_fetch(insn, n, i) : 1) tex_elsewhere |= 1ull << read_slot;
+            if (op->id == O_TLD ? !shader_direct_own_pixel_fetch(flow, i) : 1) tex_elsewhere |= 1ull << read_slot;
             u32 coordinate_count = (type == 0 ? 1u : type == 1 ? 2u : 3u) + (u32)array;
             for (u32 k = 0; k < coordinate_count; k++)
                 if (a + k < 255) used[a + k] = 1;
@@ -1002,7 +1015,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             off = B(insn[i], 36, 13);
             handle = B(insn[i], 39, 8);
             bindless = op->id == O_SUATOM ? (int)B(insn[i], 54, 1) : !B(insn[i], 51, 1);
-            if (bindless && !shader_direct_track_image_handle(insn, n, i, handle, &bank, &off, 0))
+            if (bindless && !shader_direct_track_image_handle(flow, i, handle, &bank, &off, 0))
                 return shader_untracked_handle(si, "surface", insn, i, handle);
             if (a < 255) used[a] = 1;
             if (!buffer && a + 1 < 255) used[a + 1] = 1;
@@ -1160,7 +1173,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 texture_count++;
             }
             tex_read |= 1ull << slot;
-            if (!shader_direct_own_pixel_fetch(insn, n, i)) tex_elsewhere |= 1ull << slot;
+            if (!shader_direct_own_pixel_fetch(flow, i)) tex_elsewhere |= 1ull << slot;
             if (!B(insn[i], 59, 1)) needs_glsl = 1;
             if (a < 255) used[a] = 1;
             if ((enc == 4 || enc == 5 || enc == 6 || enc == 7 || enc == 12) && a + 1 < 255) used[a + 1] = 1;
@@ -1195,8 +1208,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             bank2 = 0;
             off2 = 0;
             handle_count =
-                bindless ? shader_direct_track_image_handle_pair(insn, n, i, b, &bank, &off, &bank2, &off2, 0) : 0;
-            if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, b, stage, &ldc);
+                bindless ? shader_direct_track_image_handle_pair(flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
+            if (handle_count == 1) indexed = shader_direct_indexed_handle(flow, i, b, stage, &ldc);
             if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, b);
             int type = B(insn[i], 28, 3) >> 1;
             int array = B(insn[i], 28, 1), shadow = B(insn[i], 50, 1);
@@ -1206,8 +1219,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             tex_read |= 1ull << read_slot;
             u32 coordinate = a + (array || clamp), dimensions = type == 0 ? 1 : type >= 2 ? 3 : 2;
             if (stage == ST_FS &&
-                screen_sample(insn, n, i, sph, type == 1 && !array && !shadow && !offset_enabled && !clamp && mode <= 1,
-                              a, a < 254 ? a + 1 : 255, &screen_in))
+                screen_sample(flow, i, sph, type == 1 && !array && !shadow && !offset_enabled && !clamp && mode <= 1, a,
+                              a < 254 ? a + 1 : 255, &screen_in))
                 tex_screen |= 1ull << read_slot;
             else
                 tex_elsewhere |= 1ull << read_slot;
@@ -1231,9 +1244,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             u32 ty = B(insn[i], 28, 3), type = ty >> 1, array = ty & 1;
             u32 off = B(insn[i], 36, 13), bank = 0, bank2 = 0, off2 = 0, indexed = 0, ldc = 0;
             int handle_count =
-                bindless ? shader_direct_track_image_handle_pair(insn, n, i, b, &bank, &off, &bank2, &off2, 0) : 0;
+                bindless ? shader_direct_track_image_handle_pair(flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
             if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, b);
-            if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, b, stage, &ldc);
+            if (handle_count == 1) indexed = shader_direct_indexed_handle(flow, i, b, stage, &ldc);
             if (shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless, bank,
                                              handle_count, bank2, off2, indexed, ldc) < 0)
                 return direct_reject(si, "texture descriptor count");
@@ -1253,9 +1266,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             u32 ty = B(insn[i], 28, 3), type = ty >> 1, array = ty & 1, count = type == 0 ? 1 : type == 1 ? 2 : 3;
             u32 off = B(insn[i], 36, 13), bank = 0, bank2 = 0, off2 = 0, indexed = 0, ldc = 0;
             int handle_count =
-                bindless ? shader_direct_track_image_handle_pair(insn, n, i, a, &bank, &off, &bank2, &off2, 0) : 0;
+                bindless ? shader_direct_track_image_handle_pair(flow, i, a, &bank, &off, &bank2, &off2, 0) : 0;
             if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, a);
-            if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, a, stage, &ldc);
+            if (handle_count == 1) indexed = shader_direct_indexed_handle(flow, i, a, stage, &ldc);
             int read_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless,
                                                          bank, handle_count, bank2, off2, indexed, ldc);
             if (read_slot < 0) return direct_reject(si, "texture descriptor count");
@@ -1276,12 +1289,12 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             int bindless = op->id == O_TXQ_B;
             u32 off = B(insn[i], 36, 13), bank = 0, bank2 = 0, off2 = 0, indexed = 0, ldc = 0;
             int handle_count =
-                bindless ? shader_direct_track_image_handle_pair(insn, n, i, a, &bank, &off, &bank2, &off2, 0) : 0;
+                bindless ? shader_direct_track_image_handle_pair(flow, i, a, &bank, &off, &bank2, &off2, 0) : 0;
             if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, a);
-            if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, a, stage, &ldc);
+            if (handle_count == 1) indexed = shader_direct_indexed_handle(flow, i, a, stage, &ldc);
             u32 qtype = 1, qarray = 0;
             int guessed = 0, qslot;
-            if (!indexed && !shader_direct_query_type(insn, n, bindless, bank, off, &qtype, &qarray)) {
+            if (!indexed && !shader_direct_query_type(flow, bindless, bank, off, &qtype, &qarray)) {
                 /* nothing else in the program reads that texture (one game queries a volume through a bound handle
                    and fetches it through a bindless one, which no tracking joins): the header's dimension, from the
                    key, once the renderer has bound it; 2D before that */
@@ -1311,8 +1324,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             int bindless = op->id == O_TLD4_B;
             u32 off = B(insn[i], 36, 13), bank = 0, bank2 = 0, off2 = 0;
             int handle_count =
-                bindless ? shader_direct_track_image_handle_pair(insn, n, i, b, &bank, &off, &bank2, &off2, 0) : 0;
-            if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, b, stage, &ldc);
+                bindless ? shader_direct_track_image_handle_pair(flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
+            if (handle_count == 1) indexed = shader_direct_indexed_handle(flow, i, b, stage, &ldc);
             if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, b);
             u32 ty = op->id == O_TLD4S ? 2 : B(insn[i], 28, 3);
             u32 type = ty >> 1, array = ty & 1;
@@ -1468,7 +1481,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         u32 r;
         if (!IDX_OK(i)) continue;
         u64 w = insn[i];
-        int op = decode(w)->id;
+        int op = flow->op[i]->id;
         u32 d = B(w, 0, 8), a = B(w, 8, 8), b = B(w, 20, 8);
         int tag = 0;
         /* Direct CBE export is disabled (SR_DIRECTCBEWRITE* are zero). Track its address separately so the
@@ -2472,7 +2485,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         int unknown_brx = 0;
         for (u32 i = 11; i < n; i++) {
             if (!IDX_OK(i)) continue;
-            int id = decode(insn[i])->id;
+            int id = flow->op[i]->id;
             if ((id == O_CAL && B(insn[i], 5, 1)) || id == O_JCAL || id == O_JMP || id == O_JMX) unknown_brx = 1;
             if (id == O_BRX) {
                 u32 targets[64];
@@ -2629,6 +2642,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         .stage = stage,
         .insn = insn,
         .n = n,
+        .flow = flow,
         .sph = sph,
         .target = target,
         .passthrough = passthrough,
@@ -2782,7 +2796,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             spv_emit_store(&c->emit, pc, following);
         }
         u64 w = insn[i];
-        int op = decode(w)->id;
+        int op = (i < n ? flow->op[i] : decode(w))->id;
         u32 d = B(w, 0, 8), a = B(w, 8, 8), b = B(w, 20, 8);
         u32 guard_merge = 0;
         c->guard = 0; /* the instruction before may have ended its translation early */
@@ -2920,8 +2934,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     next.tex_own_pixel_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & ~tex_screen : 0;
     next.tex_screen_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & tex_screen : 0;
     next.screen_in = next.tex_screen_mask ? (u32)screen_in : 0;
-    if (stage == ST_VS) next.screen_out_mask = shader_direct_screen_out(insn, n, &next.screen_out_yneg_mask);
-    if (stage == ST_VS) next.pos_out_mask = shader_direct_position_out(insn, n);
+    if (stage == ST_VS) next.screen_out_mask = shader_direct_screen_out(flow, &next.screen_out_yneg_mask);
+    if (stage == ST_VS) next.pos_out_mask = shader_direct_position_out(flow);
     if (stage == ST_FS && !ipa_indexed && !legacy_fs) next.smooth_in_mask = smooth_in & ~si->in_unfed_mask;
     next.varying = si->varying;
     next.position_copy = si->position_copy;
