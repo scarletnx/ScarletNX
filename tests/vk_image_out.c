@@ -11,6 +11,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/pending_pages.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include <stdarg.h>
@@ -37,6 +38,8 @@ static struct {
     u8 last_original[SIZE]; /* the bytes from before the draws the last landing was given */
 } g;
 VkState g_vk;
+PendPages g_pend_any; /* the stand-in GPU tracks nothing per page: image_out's pend_add is a no-op here */
+void pend_add(PendPages* t, u64 gva, u64 size, int delta) { (void)t; (void)gva; (void)size; (void)delta; }
 
 static u8* image_of(const Surf* s) { return g.image[s - g.surf]; }
 static void note_landing(const Surf* s, const u8* original) {

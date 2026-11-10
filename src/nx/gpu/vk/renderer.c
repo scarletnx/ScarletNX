@@ -53,11 +53,10 @@ static void vkr_before_write(u64 gva, u64 size) {
     vk_rt_before_write(gva, size);
     vk_unlock();
 }
-/* pending compute and graphics results and queued releases all count their pages in g_pend_any (pending_pages.h);
-   storage images don't, so any of them pending answers yes */
+/* pending compute and graphics results, storage images and queued releases all count their pages in g_pend_any
+   (pending_pages.h) */
 static int vkr_mem_pending(u64 gva, u64 size) {
     int hit;
-    if (g_gfx_img_any) return 1;
     /* the tables' lock, not vk_lock: the game's threads ask this of each read they make through the GPU's address
        space (gmem_read), and waited here for vk_lock while the GPU thread held it across its waits for the GPU */
     pend_lock();
