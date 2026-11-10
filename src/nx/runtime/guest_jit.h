@@ -36,6 +36,10 @@ void jit_code_removed(u64 base);
 int jit_nro_added(const u8* hash, u64 base, u64 size, const u8* id, u32* entries);
 /* before the NRO at base is unmapped: its module's entries leave the dispatch table */
 void jit_nro_removed(u64 base);
+/* The dispatch slot of addr was given another function than the game module's (a hook, NVN's implementation of a
+   function the game resolved): an NRO's module that calls the game module's function there directly, through its
+   import of it, calls through the slot from now on. Called once the slot holds the new function */
+void jit_slot_taken(u64 addr);
 /* a mapping, permission or write-back change under [addr, addr+size) (mem_set_code_invalidate): the dispatch slots in
    the range are cleared, the JIT's code is invalidated, and a block the game mapped that is no longer executable loses
    its image */

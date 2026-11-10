@@ -500,9 +500,56 @@ typedef struct {
     void* library;
     NroModuleFn get;
     const SnxModule* module;
+    const SnxNroImports* imports; /* NULL for a module that imports nothing */
     int mapped, refused;
 } NroModule;
 static NroModule* g_nro_modules;
+
+/* An import of an NRO's module that has no function of the game's to call: through the dispatch table, where a hook,
+   the JIT's code or RtAPI.miss answers for the address */
+static void nro_import_dynamic(CPU* c, u64 pc) { snx_lookup(c, pc)(c, pc); }
+/* The NRO module's imports (its snx_imports, nro_slots.h) each bound to the game module's function for its address:
+   the entry the module has there, when its dispatch slot holds that very function. A slot that holds anything else (a
+   hook, NVN's implementation) keeps the call going through the table, and one that is given another function later
+   takes the import back to it (jit_slot_taken). Said: how many are direct. Under g_fn_lock */
+static const SnxNroImports* nro_imports_bind(void* library, u64 base) {
+    typedef const SnxNroImports* (*ImportsFn)(void);
+    const SnxNroImports* im;
+    ImportsFn get;
+    void* sym = plat_dl_sym(library, "snx_imports");
+    u32 i, direct = 0;
+    if (!sym) return NULL;
+    memcpy(&get, &sym, sizeof get);
+    im = get();
+    if (!im || im->version != SNX_NRO_IMPORTS_VERSION) {
+        WARN("jit: the NRO at %llx has an AOT module whose imports are of version %u, where this runtime reads %u: its "
+             "calls of the game's functions go through the dispatch table\n",
+             (unsigned long long)base, im ? (unsigned)im->version : 0u, (unsigned)SNX_NRO_IMPORTS_VERSION);
+        return NULL;
+    }
+    for (i = 0; i < im->count; i++) {
+        u64 a = im->address[i];
+        GuestFn f = nro_import_dynamic, entry;
+        size_t lo = 0, hi = g_mod->nentries;
+        while (lo < hi) {
+            size_t middle = lo + (hi - lo) / 2;
+            if (g_mod->entry_addr[middle] < a)
+                lo = middle + 1;
+            else
+                hi = middle;
+        }
+        if (lo < g_mod->nentries && g_mod->entry_addr[lo] == a && a >= g_code_lo && a < g_code_hi &&
+            (entry = __atomic_load_n(&g_mod->entry_fn[lo], __ATOMIC_ACQUIRE)) != NULL &&
+            __atomic_load_n(&g_disp[(a - g_code_lo) >> 2], __ATOMIC_ACQUIRE) == entry) {
+            f = entry;
+            direct++;
+        }
+        __atomic_store_n((GuestFn*)&im->function[i], f, __ATOMIC_RELEASE);
+    }
+    LOG("jit: the NRO at %llx calls %u of the %u functions of the game its module imports directly\n",
+        (unsigned long long)base, (unsigned)direct, (unsigned)im->count);
+    return im;
+}
 
 /* the module of the NRO at place, loaded, or NULL: no file (said nothing, the JIT's line follows), or refused */
 static const SnxModule* nro_module_load(long place, u64 base, u64 size, const u8* id, int* refused) {
@@ -561,10 +608,12 @@ static const SnxModule* nro_module_load(long place, u64 base, u64 size, const u8
         n->library = NULL;
         n->get = NULL;
         n->module = NULL;
+        n->imports = NULL;
         *refused = n->refused = 1;
         return NULL;
     }
     if (m->nfns) memset(m->stale, 0, m->nfns);
+    n->imports = nro_imports_bind(n->library, base);
     n->module = m;
     return m;
 }
@@ -594,6 +643,27 @@ int jit_nro_added(const u8* hash, u64 base, u64 size, const u8* id, u32* entries
     }
     pm_unlock(&g_fn_lock);
     return m ? 0 : refused ? -1 : 1;
+}
+
+void jit_slot_taken(u64 addr) {
+    u32 k;
+    if (!g_nros) return;
+    /* after the slot's store: a bind that read the slot before it is under this lock, and is undone here */
+    pm_lock(&g_fn_lock);
+    for (k = 0; g_nro_modules && k < g_nros->count; k++) {
+        const SnxNroImports* im = g_nro_modules[k].imports;
+        size_t lo = 0, hi = im ? im->count : 0;
+        while (lo < hi) {
+            size_t middle = lo + (hi - lo) / 2;
+            if (im->address[middle] < addr)
+                lo = middle + 1;
+            else
+                hi = middle;
+        }
+        if (im && lo < im->count && im->address[lo] == addr)
+            __atomic_store_n((GuestFn*)&im->function[lo], nro_import_dynamic, __ATOMIC_RELEASE);
+    }
+    pm_unlock(&g_fn_lock);
 }
 
 void jit_nro_removed(u64 base) {

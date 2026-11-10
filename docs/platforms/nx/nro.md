@@ -162,6 +162,19 @@ is mapped outside it. When LoadNro is given an image whose hash the table has (`
 The guest patching an NRO's code (IC IVAU) makes the functions compiled from those lines stale, as it does the game
 module's; each mapping starts from the module as it was made.
 
+An NRO calls the game's functions, and many of its own, through its PLT: a stub loads the function's address from a
+slot the game's linker (`nn::ro`) fills while the game runs, and branches to it. The recompile reads the NRO's PLT
+slots (`snx_module_plt` in `src/nx/loader/loader.c`) and binds each stub whose symbol names a function of the NRO
+itself, or one that a single module of the game exports and no hook names. Such a stub compares the address it
+loaded with the one function it is bound to: equal, it calls that function, the NRO's own as any call inside the
+module, the game's through the module's import of it; anything else in the slot (the linker has not bound it yet,
+another module defines the symbol first) goes through `CPU.disp` as before. A module's imports are its
+`snx_imports()` table (`nro_slots.h`): each pointer starts as the module's own lookup in `CPU.disp`, and the runtime
+puts the game module's function there when it has one for the address and its dispatch slot holds that function
+(`nro_imports_bind` in `guest_jit.c`); a slot a hook took keeps the call in the table, and a slot given another
+function later, as NVN's implementation of a function the game resolves while it runs, takes the import back to the
+table (`jit_slot_taken`). A recompile with `--hook-direct-calls` binds none.
+
 What is not made ahead of time: an NRO a mod adds or replaces (its hash is not in the table), an NRO the game takes
 from outside its RomFS, and the NROs of a game whose update is recompiled from the update's dump alone, which has
 no RomFS without its base.
@@ -199,7 +212,8 @@ ctest --test-dir build/default -R '^(ldr_service|memory_accounting|runtime_nro|n
 covers the mapping at its address by its hash, the same address again after an unload, an NRO without a place kept
 out of those addresses, an address in use (with the line that says so), a place of another size and one with no code
 room. `nro_modules` recompiles a small extracted game and checks the table and each NRO's module, whose code must run
-as code at its address; `runtime_variants` loads such a module through `guest_jit.c`, and `jit_service` compiles into
+as code at its address and call the game's function and its own through its PLT, directly once bound and through
+the table otherwise; `runtime_variants` loads such a module through `guest_jit.c`, and `jit_service` compiles into
 the table from an image inside it.
 It covers PID placeholders, initialization/handle validation, malformed ranges/headers/hash lists, hash snapshots,
 unauthorized/duplicate images, commit failure rollback, permissions, preserved bytes/BSS, no premature

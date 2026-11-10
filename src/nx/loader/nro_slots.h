@@ -27,6 +27,21 @@ typedef struct SnxNros {
     const SnxNroSlot* slots;
 } SnxNros;
 
+/* What snx_imports() of an NRO's module returns: the functions of the game's modules its code calls directly, by
+   their guest addresses in ascending order, and the pointer it calls each through. A pointer starts as dynamic, the
+   module's own function that looks the address up in CPU.disp; the runtime puts the game module's function there
+   when it has one for the address and its dispatch slot holds that function (no hook took it), and the module's
+   lookup again when the slot is given another function later, while guest threads run: the module reads a pointer
+   with a relaxed atomic load. The pointers are functions of the guest's signature, void(CPU*, u64) */
+#define SNX_NRO_IMPORTS_VERSION 1
+typedef struct SnxNroImports {
+    uint32_t version;
+    uint32_t count;
+    const uint64_t* address;
+    void** function;
+    void* dynamic;
+} SnxNroImports;
+
 /* the place of the NRO of hash in nros (NULL: no table), or -1 when it has none */
 static inline long snx_nro_slot(const SnxNros* nros, const uint8_t* hash) {
     size_t lo = 0, hi = nros ? nros->count : 0;

@@ -4,14 +4,15 @@
    0x1000 bytes with the module ID 0x42 thirty-two times, and two functions, 0x100 and 0x200 into it, each 0x40 bytes
    of guest code, which leave their own guest address in x0. snx_module fills the entries again at each call, as the
    recompiler's does. runtime_variants loads it through guest_jit.c: snx_fixture gives it what a copy of the module
-   says of itself, the ABI and the address it was made for, before the runtime asks */
+   says of itself, the ABI, the address it was made for and its imports' version, before the runtime asks */
 #include "nx/loader/module_abi.h"
 
 typedef struct {
     u32 abi;
     u64 base;
+    u32 imports; /* the version its imports say */
 } Fixture;
-static Fixture g_fixture = {SNX_ABI, 0x1000};
+static Fixture g_fixture = {SNX_ABI, 0x1000, SNX_NRO_IMPORTS_VERSION};
 
 static void first(CPU* c, u64 pc) {
     (void)pc;
@@ -29,6 +30,30 @@ static const GuestFn g_fns[2] = {first, second};
 static const u32 g_fn_len[2] = {0x40, 0x40};
 static u8 g_stale[2];
 static SnxModule g_module;
+
+/* its imports: two functions of the game's, at 0x2400 and 0x2500, each called through its pointer, which starts as
+   the module's own function for an import the runtime has not bound (it leaves 0xD1 in x1) */
+static void unbound(CPU* c, u64 pc) {
+    (void)pc;
+    c->x[1] = 0xD1;
+}
+static const u64 g_import_address[2] = {0x2400, 0x2500};
+static void* g_import_function[2];
+static SnxNroImports g_imports;
+SNX_EXPORT const SnxNroImports* snx_imports(void);
+SNX_EXPORT const SnxNroImports* snx_imports(void) {
+    GuestFn f = unbound;
+    if (!g_imports.count) { /* as a module's static initializer has them */
+        memcpy(&g_import_function[0], &f, sizeof f);
+        memcpy(&g_import_function[1], &f, sizeof f);
+        memcpy(&g_imports.dynamic, &f, sizeof f);
+    }
+    g_imports.version = g_fixture.imports;
+    g_imports.count = 2;
+    g_imports.address = g_import_address;
+    g_imports.function = g_import_function;
+    return &g_imports;
+}
 
 SNX_EXPORT Fixture* snx_fixture(void);
 SNX_EXPORT Fixture* snx_fixture(void) { return &g_fixture; }

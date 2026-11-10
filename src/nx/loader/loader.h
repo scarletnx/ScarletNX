@@ -139,6 +139,17 @@ int snx_load_nro_at(const unsigned char* data, size_t size, const char* name, Sn
    one after another from after (the end of the program's last module), a guard page before each. *end is the end of
    the last one. 0, or -1 said in error when they pass the addresses a module's entries reach */
 int snx_nro_slots_place(SnxNroSlot* slots, size_t* count, SnxU64 after, SnxU64* end, char* error, size_t error_size);
+/* One slot of a 64-bit module's PLT: where its JUMP_SLOT lies in the module, its symbol's name (in the module's image,
+   for as long as the module lives), and the symbol's value in the module when the module defines it, 0 when it
+   imports it */
+typedef struct {
+    SnxU64 slot, value;
+    const char* name;
+} SnxPltSlot;
+/* The module's PLT slots (the R_AARCH64_JUMP_SLOT entries of its DT_JMPREL) in the order of their offsets, malloc'd
+   into *slots, *count of them: none (NULL and 0) for a module without the table. 0, or -1 said in error for a table,
+   a symbol or a name that lies outside the image */
+int snx_module_plt(const SnxModuleImage* module, SnxPltSlot** slots, size_t* count, char* error, size_t error_size);
 /* An NRO's icon, the JPEG of its assets (ASET), the one Games shows: 0 with it in *icon (malloc'd) and *size, 1 when it
    has none, -1 said in error when the file is no NRO or cannot be read */
 int snx_nro_icon(const char* path, unsigned char** icon, size_t* size, char* error, size_t error_size);

@@ -41,6 +41,12 @@ typedef struct {
 typedef struct {
     SnxCodegen* codegen;
     const SnxLlvmBuild* build;
+    /* the module's bound branches (SnxCodegenOptions.bound) by address, and the functions of other modules among
+       their targets, each once, ascending: its imports (snx_imports) */
+    const SnxBoundBranch* bound;
+    size_t bound_count;
+    SnxU64* imports;
+    size_t import_count;
     SnxUnitCache* cache; /* NULL: every unit compiled */
     Unit* units;
     size_t* rank; /* per function: its place in the --layout order, or NO_RANK. NULL without one */
@@ -164,6 +170,33 @@ end:
     return order;
 }
 
+/* SnxIr.bound: the function the BR at address reaches once it is bound, 0 for none */
+static SnxU64 bound_at(void* user, SnxU64 address) {
+    const Queue* q = (const Queue*)user;
+    size_t lo = 0, hi = q->bound_count;
+    while (lo < hi) {
+        size_t middle = lo + (hi - lo) / 2;
+        if (q->bound[middle].at < address)
+            lo = middle + 1;
+        else
+            hi = middle;
+    }
+    return lo < q->bound_count && q->bound[lo].at == address ? q->bound[lo].target : 0;
+}
+/* SnxIr.direct: nonzero for a target the module imports, which its snx_aot_<target> calls */
+static SnxU64 imported(void* user, SnxU64 target) {
+    const Queue* q = (const Queue*)user;
+    size_t lo = 0, hi = q->import_count;
+    while (lo < hi) {
+        size_t middle = lo + (hi - lo) / 2;
+        if (q->imports[middle] < target)
+            lo = middle + 1;
+        else
+            hi = middle;
+    }
+    return lo < q->import_count && q->imports[lo] == target;
+}
+
 /* one chunk of functions, as module.c's code_NNN.c. A function of the --layout order gets its own code section, which
    the linker places by its rank: the function's code is the same, only where it goes changes */
 static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) {
@@ -178,6 +211,12 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     if (!ir) return -1;
     snx_ir_tune(ir, q->build->tuning);
     snx_ir_stale_checks(ir);
+    if (q->bound_count) {
+        ir->bound = bound_at;
+        ir->bound_user = q;
+        ir->direct = imported;
+        ir->direct_user = q;
+    }
     order = callees_first(q->codegen, u->first, u->last);
     for (size_t k = u->first; k < u->last; ++k) {
         i = order ? order[k - u->first] : k;
@@ -639,6 +678,61 @@ static int emit_nros(SnxIr* ir, const SnxCodegenOptions* options, const SnxProgr
     return 0;
 }
 
+/* SNX_EXPORT const SnxNroImports* snx_imports(void), and snx_aot_<address> for each import: what the code units call
+   for a function of the game's modules (ir_codegen.c's call), a jump through the import's pointer. Each pointer starts
+   as snx_import_dyn, CALLDYN(address), and the runtime puts the game module's function there (nro_slots.h) */
+static int emit_imports(SnxIr* ir, const SnxU64* imports, size_t count, char* error, size_t error_size) {
+    LLVMTypeRef fields[5] = {ir->t_i32, ir->t_i32, ir->t_ptr, ir->t_ptr, ir->t_ptr};
+    LLVMTypeRef type = LLVMStructTypeInContext(ir->ctx, fields, 5, 0);
+    LLVMTypeRef t_fns = LLVMArrayType(ir->t_ptr, (unsigned)count), t_addrs = LLVMArrayType(ir->t_i64, (unsigned)count);
+    LLVMTargetDataRef layout = LLVMGetModuleDataLayout(ir->mod);
+    LLVMValueRef args[2], site;
+    if (LLVMABISizeOfType(layout, type) != sizeof(SnxNroImports) ||
+        LLVMOffsetOfElement(layout, type, 2) != offsetof(SnxNroImports, address) ||
+        LLVMOffsetOfElement(layout, type, 3) != offsetof(SnxNroImports, function) ||
+        LLVMOffsetOfElement(layout, type, 4) != offsetof(SnxNroImports, dynamic)) {
+        snprintf(error, error_size, "SnxNroImports layout differs between the recompiler and the LLVM target");
+        return -1;
+    }
+    LLVMValueRef dynamic = LLVMAddFunction(ir->mod, "snx_import_dyn", ir->t_guest);
+    LLVMSetLinkage(dynamic, LLVMInternalLinkage);
+    snx_ir_begin(ir, dynamic);
+    args[0] = LLVMGetParam(dynamic, 0);
+    args[1] = LLVMGetParam(dynamic, 1);
+    site = LLVMBuildCall2(ir->b, ir->t_guest, ir_call_helper(ir, SNX_IR_LOOKUP, args, 2), args, 2, "");
+    LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
+    LLVMBuildRetVoid(ir->b);
+    LLVMValueRef* values = (LLVMValueRef*)snx_alloc(count * sizeof(*values));
+    for (size_t i = 0; i < count; ++i) values[i] = dynamic;
+    LLVMValueRef fns = global(ir, t_fns, "IMPORT_FN", LLVMConstArray(ir->t_ptr, values, (unsigned)count), 0);
+    for (size_t i = 0; i < count; ++i) values[i] = ir_i64(ir, imports[i]);
+    LLVMValueRef addrs = global(ir, t_addrs, "IMPORT_ADDR", LLVMConstArray(ir->t_i64, values, (unsigned)count), 1);
+    free(values);
+    for (size_t i = 0; i < count; ++i) {
+        char name[40];
+        sprintf(name, "snx_aot_%llx", (unsigned long long)imports[i]);
+        LLVMValueRef thunk = LLVMAddFunction(ir->mod, name, ir->t_guest);
+        LLVMSetVisibility(thunk, LLVMHiddenVisibility);
+        LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, thunk, "entry"));
+        args[0] = LLVMGetParam(thunk, 0);
+        args[1] = LLVMGetParam(thunk, 1);
+        /* relaxed: the runtime changes it while guest threads run (a slot taken later, nro_slots.h) */
+        LLVMValueRef to = ir_load(ir, ir->t_ptr, element(ir, t_fns, fns, ir_i64(ir, i)));
+        LLVMSetOrdering(to, LLVMAtomicOrderingMonotonic);
+        site = LLVMBuildCall2(ir->b, ir->t_guest, to, args, 2, "");
+        LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
+        LLVMBuildRetVoid(ir->b);
+    }
+    LLVMValueRef f[5] = {ir_i32(ir, SNX_NRO_IMPORTS_VERSION), ir_i32(ir, (SnxU32)count), addrs, fns, dynamic};
+    LLVMValueRef table = global(ir, type, "IMPORTS", LLVMConstStructInContext(ir->ctx, f, 5, 0), 1);
+    LLVMValueRef fn = LLVMAddFunction(ir->mod, "snx_imports", LLVMFunctionType(ir->t_ptr, NULL, 0, 0));
+    if (ir->windows) LLVMSetDLLStorageClass(fn, LLVMDLLExportStorageClass);
+    ir->fn = fn;
+    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, fn, "entry"));
+    LLVMBuildRet(ir->b, table);
+    return 0;
+}
+
 unsigned snx_module_abi(void) { return SNX_ABI; }
 static const char* base_name(const char* path) {
     const char *name = path, *p;
@@ -670,7 +764,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     unsigned char *module_object = NULL, *rtlib_object = NULL;
     size_t module_size = 0, rtlib_size = 0, first, last, count, limit, i, entry_count = 0, wrapped = 0, n = 0;
     size_t cache_count = 0, variant_count = 0, export_count = 1;
-    const char* exports[4];
+    const char* exports[5];
     char error[1024], *tmp = NULL;
     double start;
     int rc = -1;
@@ -719,6 +813,21 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     }
     q.codegen = &codegen;
     q.build = build;
+    /* the bound branches, and what they import: a target that is no function of this module's own. With every call
+       through CPU.disp (--hook-direct-calls) none is bound */
+    if (options->bound_count && !options->hook_direct_calls) {
+        q.bound = options->bound;
+        q.bound_count = options->bound_count;
+        q.imports = (SnxU64*)snx_alloc(q.bound_count * sizeof(*q.imports));
+        for (i = 0; i < q.bound_count; ++i)
+            if (q.bound[i].game && !snx_codegen_function(&codegen, q.bound[i].target))
+                q.imports[q.import_count++] = q.bound[i].target;
+        qsort(q.imports, q.import_count, sizeof(*q.imports), snx_compare_u64);
+        for (i = 0, n = 0; i < q.import_count; ++i)
+            if (!n || q.imports[n - 1] != q.imports[i]) q.imports[n++] = q.imports[i];
+        q.import_count = n;
+        n = 0;
+    }
     if (build->layout_count) {
 #if defined(_WIN32) || defined(__APPLE__)
         int elf = 0;
@@ -779,6 +888,10 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         snx_error("LLVM backend: %s", error);
         goto done;
     }
+    if (q.import_count && emit_imports(ir, q.imports, q.import_count, error, sizeof(error))) {
+        snx_error("LLVM backend: %s", error);
+        goto done;
+    }
     if (options->nro_count && emit_nros(ir, options, loaded, error, sizeof(error))) {
         snx_error("LLVM backend: %s", error);
         goto done;
@@ -833,6 +946,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     exports[export_count++] = "snx_routes";
     if (variant_count) exports[export_count++] = "snx_variants";
     if (options->nro_count) exports[export_count++] = "snx_nros";
+    if (q.import_count) exports[export_count++] = "snx_imports";
     tmp = snx_format("%s.tmp", build->output);
     if (build->triple) {
         /* the pack to its file a record at a time, the code generator's tables gone first: a game of hundreds of
@@ -876,6 +990,7 @@ done:
     for (i = 0; i < q.count; ++i) free(q.units[i].object);
     free(q.units);
     free(q.rank);
+    free(q.imports);
     free(inputs);
     free(module_object);
     free(rtlib_object);

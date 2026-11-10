@@ -26,6 +26,7 @@
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"
+#include "nx/runtime/guest_jit.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
@@ -215,6 +216,7 @@ static void take(u64 addr, const char* name, u32 len) {
         snprintf(family, sizeof family, "nvn unimplemented");
     nce_slot_taken(addr, family);
     pm_unlock(&g_nvn.loader.lock);
+    jit_slot_taken(addr); /* an NRO's module that called the driver's function there directly */
 }
 
 /* The driver's lookup runs with no device. Given one, it reads the driver's own state in it, which the runtime's
@@ -305,6 +307,7 @@ static void wrap_getproc(u64 addr) {
         g_nvn.loader.getproc_original = own;
         __atomic_store_n(slot, getproc, __ATOMIC_RELEASE);
         nce_slot_taken(addr, "nvn loader");
+        jit_slot_taken(addr);
     }
     note(addr, "nvnDeviceGetProcAddress", 0, 0);
     pm_unlock(&g_nvn.loader.lock);
