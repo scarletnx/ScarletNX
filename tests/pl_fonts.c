@@ -28,14 +28,14 @@ u8* fs_read_file(const char* path, u64* size) {
     *size = sizeof g_korean;
     return d;
 }
-/* what the IPC side of pl.c reaches: the handle a command gives, the copy handles of a reply, and how many commands
-   went to the stub that answers an undeclared one */
+/* what the IPC side of pl.c reaches: the handle a command gives (g_handle: 0 as the kernel's table gives when full),
+   the copy handles of a reply, and how many commands went to the stub that answers an undeclared one */
 u8* g_mem;
 #define SHM_HANDLE 0x1234u
-static u32 g_copied[2], g_ncopied, g_undeclared;
+static u32 g_handle = SHM_HANDLE, g_copied[2], g_ncopied, g_undeclared;
 u32 h_new(KObj* o) {
     (void)o;
-    return SHM_HANDLE;
+    return g_handle;
 }
 int ipc_bad_objects(SvcObj* o, IpcCtx* c) {
     (void)o, (void)c;
@@ -203,6 +203,22 @@ static void built_in_fonts(void) {
     }
 }
 
+/* the handle table full: the two commands that give the shared memory's handle answer OutOfHandles, not success with
+   handle 0, and 2000's reply carries no size */
+static void full_handle_table(void) {
+    IpcCtx c = {0};
+    u32 handle = 7;
+    g_handle = 0;
+    CHECK((u32)nn_pl_detail_IPlatformServiceManager_GetSharedMemoryNativeHandle(NULL, &handle) ==
+              SNX_RC_SVC_OUT_OF_HANDLES &&
+          handle == 0);
+    c.cmd = 2000;
+    g_ncopied = 0;
+    CHECK((u32)nn_pl_detail_IPlatformServiceManager_dispatch(NULL, &c) == SNX_RC_SVC_OUT_OF_HANDLES);
+    CHECK(g_ncopied == 1 && g_copied[0] == 0 && c.out_size == 0);
+    g_handle = SHM_HANDLE;
+}
+
 int main(void) {
     hle_init();
     fonts_fill(shm, sizeof shm);
@@ -234,12 +250,7 @@ int main(void) {
     CHECK(g_hle.pl.font_off[2] == g_hle.pl.font_off[1]);
     CHECK(g_hle.pl.font_size[1] > snx_font_chinese_simplified_size);
     CHECK(g_hle.pl.font_size[0] > snx_font_japanese_size && g_hle.pl.font_size[3] > snx_font_chinese_traditional_size);
-    { /* this test's handle table gives no handle, as the kernel's does when full: OutOfHandles, not success with 0 */
-        u32 handle = 7;
-        CHECK((u32)nn_pl_detail_IPlatformServiceManager_GetSharedMemoryNativeHandle(NULL, &handle) ==
-                  SNX_RC_SVC_OUT_OF_HANDLES &&
-              handle == 0);
-    }
+    full_handle_table();
     printf("pl_fonts: %u checks passed\n", checks);
     return 0;
 }

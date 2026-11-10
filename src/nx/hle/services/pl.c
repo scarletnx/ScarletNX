@@ -213,6 +213,7 @@ static int nn_pl_detail_IPlatformServiceManager_GetBuiltInFontSharedMemory(SvcOb
     (void)self;
     *size = PL_SHM_SIZE;
     *shared_memory = h_new(kobj_at(g_hle.pl.shm));
+    R_UNLESS(*shared_memory, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 /* where a font is in that memory. The SDK fills the caller's font only when found is 1, from the offset at 4 and the
