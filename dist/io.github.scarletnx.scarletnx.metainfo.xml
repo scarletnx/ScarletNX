@@ -15,14 +15,6 @@
 	<provides>
 		<binary>scarletnx</binary>
 	</provides>
-	<categories>
-		<category>Game</category>
-		<category>Emulator</category>
-	</categories>
-	<keywords>
-		<keyword>Switch</keyword>
-		<keyword>Recompiler</keyword>
-	</keywords>
 	<icon type="stock">wimsy</icon>
 	<branding>
 		<color type="primary" scheme_preference="light">#f3edc8</color>
