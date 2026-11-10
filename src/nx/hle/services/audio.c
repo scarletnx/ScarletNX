@@ -211,16 +211,23 @@ static int audout_append(SvcObj* self, u64 tag, IpcBuf b) {
     q->tag[i] = tag;
     q->frames[i] = (u32)((d.data_size < 0xFFFFFFFFu ? d.data_size : 0xFFFFFFFFu) / (q->channels * 2u));
     q->nqueued++;
-    if (!q->output || !q->frames[i]) { /* without a host device it is played on the clock alone */
-    } else if (d.data_size <= 0xFFFFFFFFu && d.data_offset <= d.buffer_capacity &&
-               d.data_size <= d.buffer_capacity - d.data_offset && d.buffer + d.data_offset >= d.buffer &&
-               guest_ok(d.buffer + d.data_offset, d.data_size, PERM_R))
-        /* the frames the clock plays, a part of one at the end left out: SDL refuses it, and the whole buffer too */
-        plat_audio_queue(q->output, GP(d.buffer + d.data_offset), q->frames[i] * q->channels * 2u);
-    else
-        WARN_LIMIT(4, "audout: buffer %#llx (%llu bytes at offset %llu) isn't readable, played as silence\n",
-                   (unsigned long long)d.buffer, (unsigned long long)d.data_size,
-                   (unsigned long long)d.data_offset);
+    if (q->output && q->frames[i]) { /* without a host device it is played on the clock alone */
+        u64 offset = d.data_offset;
+        /* an offset past the capacity is no place in the buffer (a game leaves the field unset): the buffer plays
+           from its start, as Eden and yuzu play every buffer, which never read the field */
+        if (offset > d.buffer_capacity) {
+            WARN_LIMIT(4, "audout: buffer %#llx's data offset %#llx is past its capacity %llu: played from offset 0\n",
+                       (unsigned long long)d.buffer, (unsigned long long)offset, (unsigned long long)d.buffer_capacity);
+            offset = 0;
+        }
+        if (d.data_size <= 0xFFFFFFFFu && d.data_size <= d.buffer_capacity - offset && d.buffer + offset >= d.buffer &&
+            guest_ok(d.buffer + offset, d.data_size, PERM_R))
+            /* the frames the clock plays, a part of one at the end left out: SDL refuses it, and the buffer with it */
+            plat_audio_queue(q->output, GP(d.buffer + offset), q->frames[i] * q->channels * 2u);
+        else
+            WARN_LIMIT(4, "audout: buffer %#llx (%llu bytes at offset %llu) isn't readable, played as silence\n",
+                       (unsigned long long)d.buffer, (unsigned long long)d.data_size, (unsigned long long)offset);
+    }
     pm_unlock(&g_host.audio.lk);
     R_SUCCEED();
 }

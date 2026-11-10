@@ -87,9 +87,13 @@ void mem_query(u64 addr, MemBlock* b) {
     b->size = addr < 0x8000 ? 0x8000 : AS_SIZE - 0x8000;
     b->perm = addr < 0x8000 ? PERM_RW : PERM_NONE;
 }
+static char test_last_log[256];
 void logf_(int level, const char* format, ...) {
+    va_list ap;
     (void)level;
-    (void)format;
+    va_start(ap, format);
+    vsnprintf(test_last_log, sizeof test_last_log, format, ap);
+    va_end(ap);
 }
 
 SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
@@ -422,6 +426,25 @@ static void test_audout_layouts(SvcObj* manager) {
     CHECK(q->nqueued == 3 && host->queued == before);
     CHECK(append(o, 3, 0x34, 0x2000, 96, 64, 64) == 0); /* past the capacity from its offset */
     CHECK(q->nqueued == 4 && host->queued == before);
+    svcobj_unref(o);
+}
+
+/* a data offset past the buffer's capacity (a game leaves the field unset, 0xCD in every byte) plays the buffer from
+   its start, as Eden and yuzu play every buffer: they never read the field. The message names both offsets */
+static void test_audout_offset_past_capacity(SvcObj* manager) {
+    SvcObj* o = open_output(manager);
+    AudOut* q = o->data;
+    PAudio* host = q->output;
+    u8 expected[192];
+    for (u32 i = 0; i < 196; i++) GP(0x400)[i] = (u8)(i * 5 + 1);
+    memcpy(expected, GP(0x400), sizeof expected);
+    test_last_log[0] = 0;
+    CHECK(append(o, 3, 0x51, 0x400, 196, 192, 0xCDCDCDCDCDCDCDCDull) == 0);
+    CHECK(q->nqueued == 1 && host->queued == 1 && host->bytes == 192 && !memcmp(host->pcm, expected, 192));
+    CHECK(strstr(test_last_log, "0xcdcdcdcdcdcdcdcd") && strstr(test_last_log, "capacity 196") &&
+          strstr(test_last_log, "from offset 0"));
+    CHECK(append(o, 7, 0x52, 0x400, 196, 192, 197) == 0); /* one past the capacity */
+    CHECK(host->queued == 2 && host->bytes == 384 && !memcmp(host->pcm + 192, expected, 192));
     svcobj_unref(o);
 }
 
@@ -868,7 +891,6 @@ static void test_hwopus(void) {
     svcobj_unref(manager);
 }
 
-
 int main(void) {
     hle_init();
     g_mem = calloc(1, 0x10000);
@@ -959,6 +981,7 @@ int main(void) {
     test_audout_queries(manager);
     test_open_audio_out(manager);
     test_audout_layouts(manager);
+    test_audout_offset_past_capacity(manager);
     test_audout_partial_frame(manager);
     test_auto_pointer_buffers(manager);
     svcobj_unref(manager);
