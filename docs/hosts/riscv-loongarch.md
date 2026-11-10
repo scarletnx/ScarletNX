@@ -3,13 +3,10 @@
 # RISC-V and LoongArch
 
 ScarletNX builds for 64-bit RISC-V (rv64gc) and LoongArch (LA64 v1.0) Linux. No machine of either has run it yet. CI
-cross-builds RISC-V's AppImage (`ScarletNX-linux-riscv64`, the `appimage-cross` job in
-`.github/workflows/build.yml`) against an Arch system root of the architecture and runs it under qemu as installed,
-as it does PowerPC64 LE's ([PowerPC64](./ppc64.md)). The nightlies publish it when its job built, as
+cross-builds their AppImages (`ScarletNX-linux-riscv64` and `ScarletNX-linux-loongarch64`, the `appimage-cross` job in
+`.github/workflows/build.yml`) against an Arch system root of the architecture and runs them under qemu as installed,
+as it does PowerPC64 LE's ([PowerPC64](./ppc64.md)). The nightlies publish them when their jobs built, as
 PowerPC64 LE's.
-
-LoongArch is supported, but CI neither builds nor tests it, and the nightlies carry no package of it: the
-`linux-loongarch64-cross` preset builds it, as below.
 
 ## Building
 
@@ -26,7 +23,7 @@ cmake --build --preset linux-riscv64-cross
 The root's `llvm-config` is a program of the target: `scripts/cross-llvm-config.sh` runs it under the qemu of the
 machine its ELF header names (`qemu-riscv64`, `qemu-loongarch64`). The AppImages link LLVM statically instead, built
 for the architecture by `scripts/linux-llvm.sh riscv64 PREFIX` with `SNX_SYSROOT` set, and configured with
-`-DLLVM_DIR=PREFIX/lib/cmake/llvm -DSNX_LLVM_CONFIG=` ([Build](../dev/build.md#install--appimage)). CI packages RISC-V's with
+`-DLLVM_DIR=PREFIX/lib/cmake/llvm -DSNX_LLVM_CONFIG=` ([Build](../dev/build.md#install--appimage)). CI packages them with
 this machine's `mkdwarfs`, as the target's compresses many times slower under qemu, and strips the target's files with
 `llvm-strip`, as this machine's `strip` knows its own architecture only.
 
