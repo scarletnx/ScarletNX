@@ -145,6 +145,10 @@ typedef struct {
     int fp32_flush, fp32_preserve;
     u32 gbuf_cbuf_off[16]; /* the global buffers found, by where a constant buffer holds their address (SH_GBUF_*) */
     int ngbuf;
+    /* the cells (bit k: the 8 bytes at 8 * k) of the memory a pointer table's words point to (SH_GBUF_TABLE) that the
+       program loads a pointer from and then reaches memory through: the renderer binds the memory those pointers
+       point to as the table's own (vk/compute.c's table_windows) */
+    u32 table_cells;
     int unsupported;            /* instructions or forms translation refused */
     char first_unsupported[96]; /* the longest: an untracked handle with its writer's constant (93 bytes) */
     u32 cs_local[3];
