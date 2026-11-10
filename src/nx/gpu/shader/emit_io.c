@@ -149,11 +149,13 @@ void shader_frag_ndc(DirectCtx* c, u32 fragcoord, u32 vec4_type, u32 push, u32 p
                                                  spv_emit_constant_u32(&c->emit, c->u32_type, k), c->f32_type);
         u32 extent = spv_emit_push_component_f32(&c->emit, push_pointer, push, member,
                                                  spv_emit_constant_u32(&c->emit, c->u32_type, k + 2), c->f32_type);
-        u32 from = spv_emit_fadd(&c->emit, c->f32_type, spv_emit_vec4_extract(&c->emit, c->f32_type, coord, k),
-                                 spv_emit_fnegate(&c->emit, c->f32_type, origin));
-        u32 across = spv_emit_fmul(&c->emit, c->f32_type, spv_emit_fdiv(&c->emit, c->f32_type, from, extent), two);
+        u32 from =
+            spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type, spv_emit_vec4_extract(&c->emit, c->f32_type, coord, k),
+                            spv_emit_unary(&c->emit, SPV_OP_F_NEGATE, c->f32_type, origin));
+        u32 across = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type,
+                                     spv_emit_binary(&c->emit, SPV_OP_F_DIV, c->f32_type, from, extent), two);
         spv_emit_no_contraction(&c->emit, across);
-        ndc[k] = spv_emit_fadd(&c->emit, c->f32_type, across, minus_one);
+        ndc[k] = spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type, across, minus_one);
         spv_emit_no_contraction(&c->emit, ndc[k]);
     }
 }
@@ -185,14 +187,16 @@ void shader_frag_weights(DirectCtx* c, u32 vec4_type, const u32 position[3], int
         u32 cross[3];
         for (u32 i = 0; i < 3; i++) {
             u32 j = (i + 1) % 3, l = (i + 2) % 3;
-            cross[i] = spv_emit_fadd(e, f, spv_emit_fmul(e, f, a[j], b[l]),
-                                     spv_emit_fnegate(e, f, spv_emit_fmul(e, f, a[l], b[j])));
+            cross[i] =
+                spv_emit_binary(e, SPV_OP_F_ADD, f, spv_emit_binary(e, SPV_OP_F_MUL, f, a[j], b[l]),
+                                spv_emit_unary(e, SPV_OP_F_NEGATE, f, spv_emit_binary(e, SPV_OP_F_MUL, f, a[l], b[j])));
         }
-        edge[k] = spv_emit_fadd(e, f, spv_emit_fmul(e, f, cross[0], ndc[0]),
-                                spv_emit_fadd(e, f, spv_emit_fmul(e, f, cross[1], ndc[1]), cross[2]));
+        edge[k] = spv_emit_binary(
+            e, SPV_OP_F_ADD, f, spv_emit_binary(e, SPV_OP_F_MUL, f, cross[0], ndc[0]),
+            spv_emit_binary(e, SPV_OP_F_ADD, f, spv_emit_binary(e, SPV_OP_F_MUL, f, cross[1], ndc[1]), cross[2]));
     }
-    u32 sum = spv_emit_fadd(e, f, edge[0], spv_emit_fadd(e, f, edge[1], edge[2]));
-    for (u32 k = 0; k < 2; k++) weight[k] = spv_emit_fdiv(e, f, edge[k + 1], sum);
+    u32 sum = spv_emit_binary(e, SPV_OP_F_ADD, f, edge[0], spv_emit_binary(e, SPV_OP_F_ADD, f, edge[1], edge[2]));
+    for (u32 k = 0; k < 2; k++) weight[k] = spv_emit_binary(e, SPV_OP_F_DIV, f, edge[k + 1], sum);
 }
 
 /* a captured word's bits (ShXfb.layout), 0 for one with no output (left as it is, as the extension does) */
@@ -682,10 +686,11 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 for (u32 k = 0; k < 3; k++) at[k] = shader_vertex_value(c, vec4, from, t->pv_flat, k, component);
                 value = at[0];
                 for (u32 k = 1; k < 3; k++) {
-                    u32 past =
-                        spv_emit_fadd(&c->emit, c->f32_type, at[k], spv_emit_fnegate(&c->emit, c->f32_type, at[0]));
-                    value = spv_emit_fadd(&c->emit, c->f32_type, value,
-                                          spv_emit_fmul(&c->emit, c->f32_type, t->pv_weight[k - 1], past));
+                    u32 past = spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type, at[k],
+                                               spv_emit_unary(&c->emit, SPV_OP_F_NEGATE, c->f32_type, at[0]));
+                    value = spv_emit_binary(
+                        &c->emit, SPV_OP_F_ADD, c->f32_type, value,
+                        spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, t->pv_weight[k - 1], past));
                 }
             } else if (inputs[input]) {
                 value = spv_emit_load(&c->emit, vec4, inputs[input]);
