@@ -1629,6 +1629,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME docs_check_script COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/docs_test.py")
     # which GitHub Actions caches the cleanup workflow deletes (scripts/trim-caches.py)
     add_test(NAME trim_caches COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/trim_caches_test.py")
+    # build.yml's LLVM builds, each saved by the step right after it: a later failure or a cancelled run keeps it
+    add_test(NAME build_caches COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/build_caches_test.py"
+                                       "${PROJECT_SOURCE_DIR}")
     # the runs a closed pull request left going, which pr-closed.yml cancels (scripts/cancel-pr-runs.py)
     add_test(NAME cancel_pr_runs COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/cancel_pr_runs_test.py")
     # the check that keeps a pull request red while its title says donotmerge (scripts/pr-title.py, pr-checks.yml)

@@ -522,7 +522,7 @@ jobs:
       - name: Name the LLVM version
         id: llvm
         run: echo "version=$(llvm-config --version)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v5
+      - uses: actions/cache/restore@v5
         id: llvm-cache
         with:
           path: .cache/llvm/${{ matrix.arch }}
@@ -532,6 +532,12 @@ jobs:
         env:
           LLVM_VERSION: ${{ steps.llvm.outputs.version }}
         run: scripts/linux-llvm.sh ${{ matrix.arch }} "$PWD/.cache/llvm/${{ matrix.arch }}"
+      # Saved as soon as it is built, as the apple job saves its own
+      - if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .cache/llvm/${{ matrix.arch }}
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
       # A release leaves out scarletnx --mcp's A64 disassembler (SNX_A64_DISASM), which is for working on the runtime
       - name: Build and install into /usr
         run: |
@@ -1184,12 +1190,14 @@ jobs:
           path: .cache/cpm
           key: cpm-android-${{ hashFiles('cmake/dependencies.cmake') }}
           restore-keys: cpm-android-
-      - uses: actions/cache@v5
+      # Each ABI's LLVM is saved as soon as it is built, as the apple job saves its own: the hour of one is kept when
+      # the other's build or a later step fails, or the run is cancelled
+      - uses: actions/cache/restore@v5
         id: llvm-x86_64
         with:
           path: android-llvm/x86_64
           key: android-llvm-x86_64-${{ hashFiles('scripts/android-llvm.sh') }}-${{ env.ANDROID_NDK_ROOT }}
-      - uses: actions/cache@v5
+      - uses: actions/cache/restore@v5
         id: llvm-arm64
         with:
           path: android-llvm/arm64-v8a
@@ -1207,9 +1215,19 @@ jobs:
       - name: Build LLVM's libraries for x86_64
         if: steps.llvm-x86_64.outputs.cache-hit != 'true'
         run: scripts/android-llvm.sh x86_64 "$PWD/android-llvm/x86_64"
+      - if: steps.llvm-x86_64.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: android-llvm/x86_64
+          key: ${{ steps.llvm-x86_64.outputs.cache-primary-key }}
       - name: Build LLVM's libraries for arm64-v8a
         if: steps.llvm-arm64.outputs.cache-hit != 'true'
         run: scripts/android-llvm.sh arm64-v8a "$PWD/android-llvm/arm64-v8a"
+      - if: steps.llvm-arm64.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: android-llvm/arm64-v8a
+          key: ${{ steps.llvm-arm64.outputs.cache-primary-key }}
       # ccache, set up as in the linux job: one for both ABIs, which compile apart
       - uses: actions/cache/restore@v5
         with:
