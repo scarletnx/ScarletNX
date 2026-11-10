@@ -558,8 +558,9 @@ int main(void) {
     /* a host thread the system refuses: the fatal says why, and the log the stack it asked and what the address space
        holds */
     {
-        KThread* t = kthread_create(0x1000, 0, 0x2000, 44, 0);
+        KThread* t;
         jmp_buf here;
+        CHECK(kthread_create(0x1000, 0, 0x2000, 44, 0, &t) == 0 && t, "a thread");
         g_settings.thread_stack_mb = 16;
         thread_fails = 1;
         fatal_jump = &here;
@@ -574,30 +575,53 @@ int main(void) {
         kthread_destroy(&t->o);
     }
 
-    /* the thread pool: KTHREAD_MAX (256) slots, filled by as many threads; an exited thread keeps its slot (the live
-       count leaves it out) until its last reference goes, and then a new thread takes that slot. A full pool gives no
-       thread (NULL, which svcCreateThread answers OutOfResource for) and takes no thread id. The tests above used the
-       first slots */
+    /* The process's threads. THREAD_MAX (96) that haven't exited, started or not: one more is LimitReached, as the
+       console answers an application at its ThreadCountMax, where it used to be made with a warning. An exited thread
+       stops counting but keeps its slot of the pool's KTHREAD_MAX (256) until its last reference goes: with every slot
+       in use a creation below the limit is OutOfResource, and a freed slot holds the next thread. A refused creation
+       takes no thread id. An Ounce program's limit isn't known: its 97th thread is made, and the log says so. The
+       tests above used the first slots */
     reset();
     memset(g_hle.thread.threads, 0, sizeof g_hle.thread.threads);
     {
         KThread* first[KTHREAD_MAX];
-        KThread* t;
+        KThread* t = NULL;
         int taken = 0;
-        for (int i = 0; i < KTHREAD_MAX; i++) first[i] = kthread_create(0x1000, 0, 0x2000, 44, 0);
+        u32 rc = 0;
+        for (int i = 0; i < THREAD_MAX; i++) rc |= kthread_create(0x1000, 0, 0x2000, 44, 0, &first[i]);
+        CHECK(rc == 0 && kthread_live_count() == THREAD_MAX, "%d threads made (%x)", kthread_live_count(), rc);
+        t = first[0];
+        rc = kthread_create(0x1000, 0, 0x2000, 44, 0, &t);
+        CHECK(rc == SNX_RC_SVC_LIMIT_REACHED && !t && kthread_live_count() == THREAD_MAX,
+              "one more than THREAD_MAX: %x, %d live", rc, kthread_live_count());
+        first[3]->state = 1; /* started: it counts as before */
+        CHECK(kthread_create(0x1000, 0, 0x2000, 44, 0, &t) == SNX_RC_SVC_LIMIT_REACHED, "a started thread counts");
+        g_ounce = 1;
+        logged[0] = 0;
+        rc = kthread_create(0x1000, 0, 0x2000, 44, 0, &t);
+        CHECK(rc == 0 && t && strstr(logged, "thread 97 of an Ounce program, past the 96"), "an Ounce program: %x, %s",
+              rc, logged);
+        g_ounce = 0;
+        if (t) kthread_destroy(&t->o);
+        /* each exit makes room for a creation, and the exited thread's slot stays taken */
+        rc = 0;
+        for (int i = THREAD_MAX; i < KTHREAD_MAX; i++) {
+            first[i - THREAD_MAX]->state = 2;
+            rc |= kthread_create(0x1000, 0, 0x2000, 44, 0, &first[i]);
+        }
         for (int i = 0; i < KTHREAD_MAX; i++) taken += g_hle.thread.threads[i].o.type == KO_THREAD;
-        CHECK(taken == KTHREAD_MAX && kthread_live_count() == KTHREAD_MAX, "%d threads, %d live", taken,
-              kthread_live_count());
-        CHECK(kthread_create(0x1000, 0, 0x2000, 44, 0) == NULL && kthread_live_count() == KTHREAD_MAX,
-              "a full pool gives no thread, %d live", kthread_live_count());
-        first[7]->state = 2;
-        CHECK(kthread_live_count() == KTHREAD_MAX - 1, "one exited: %d live", kthread_live_count());
-        CHECK(kthread_create(0x1000, 0, 0x2000, 44, 0) == NULL, "an exited thread keeps its slot");
-        kthread_destroy(&first[7]->o); /* its last reference */
-        CHECK(first[7]->o.type == 0 && kthread_live_count() == KTHREAD_MAX - 1, "the exited thread's slot is free");
-        t = kthread_create(0x1000, 0, 0x2000, 44, 0);
-        CHECK(t == first[7] && t->id == first[KTHREAD_MAX - 1]->id + 1 && kthread_live_count() == KTHREAD_MAX,
-              "the freed slot holds the new thread, %llu", (unsigned long long)t->id);
+        CHECK(rc == 0 && taken == KTHREAD_MAX && kthread_live_count() == THREAD_MAX, "%d threads, %d live (%x)", taken,
+              kthread_live_count(), rc);
+        CHECK(kthread_create(0x1000, 0, 0x2000, 44, 0, &t) == SNX_RC_SVC_LIMIT_REACHED, "the limit, before the pool");
+        first[200]->state = 2;
+        rc = kthread_create(0x1000, 0, 0x2000, 44, 0, &t);
+        CHECK(rc == SNX_RC_SVC_OUT_OF_RESOURCE && !t && kthread_live_count() == THREAD_MAX - 1,
+              "a full pool below the limit: %x, %d live", rc, kthread_live_count());
+        kthread_destroy(&first[7]->o); /* an exited thread's last reference */
+        CHECK(first[7]->o.type == 0 && kthread_live_count() == THREAD_MAX - 1, "the exited thread's slot is free");
+        rc = kthread_create(0x1000, 0, 0x2000, 44, 0, &t);
+        CHECK(rc == 0 && t == first[7] && t->id == first[KTHREAD_MAX - 1]->id + 1 && kthread_live_count() == THREAD_MAX,
+              "the freed slot holds the new thread, %llu (%x)", (unsigned long long)(t ? t->id : 0), rc);
         /* its host thread starts on thread_stack_mb's stack */
         int before = starts;
         g_settings.thread_stack_mb = 8;
