@@ -477,7 +477,11 @@ void vk_ck_report(void); /* logs them, once: before the fatal error of a lost de
 /* the next submission waits for a timeline semaphore of someone else's (FFmpeg's picture's) at one value and signals
    it at another: whichever submit comes next takes them, so commands recorded from now on never run before the wait */
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal);
-void vk_finish(void); /* submits and waits until the GPU has done everything, and lands every result */
+/* submits and waits until the GPU has done everything, and lands every result. The caller's file and line count the
+   finishes it made, which the stats every 600 presents name (vk_finishes_log), by their number and their wait */
+void vk_finish_at(const char* file, int line);
+#define vk_finish() vk_finish_at(__FILE__, __LINE__)
+void vk_finishes_log(void);
 /* a save state's load (Renderer.reset): every surface, buffer and sample counter kept of the old guest memory goes */
 void vk_surf_forget_all(void);
 void vk_buf_forget_all(void);
