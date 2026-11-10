@@ -861,11 +861,13 @@ static int create_device(void) {
                     for (u32 i = 0; i < nd; i++) {
                         if (dom[i] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT) g_vk.has_calibrated_host = 1;
                         if (dom[i] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT) g_vk.has_calibrated_mono = 1;
+                        if (dom[i] == VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT) g_vk.has_calibrated_qpc = 1;
                     }
                 free(dom);
             }
         }
-        if (g_vk.has_calibrated_host) ext[next++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
+        if (g_vk.has_calibrated_host || g_vk.has_calibrated_qpc)
+            ext[next++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
     }
     /* FFmpeg's Vulkan decoder loads the 1.3 commands by their core names */
     g_vk.video_family = g_settings.vulkan_video_decode && video_exts == 3 && core13 ? video_decode_family() : ~0u;

@@ -206,6 +206,9 @@ typedef struct {
        VK_KHR_get_surface_capabilities2): a present can be held until a time, on a surface that says so (sc_hold) */
     int has_present_timing;
     int has_calibrated_mono; /* CLOCK_MONOTONIC among the calibrateable time domains */
+    /* QueryPerformanceCounter among them (Windows), VK_EXT_calibrated_timestamps on for it: plat_ns's clock, which the
+       GPU profile's idle times are put on there (gpuprof.c) */
+    int has_calibrated_qpc;
     int has_surface_caps2;   /* the instance's VK_KHR_get_surface_capabilities2, which present timing is asked by */
     u32 gfx_timestamp_bits;  /* the graphics queue family's timestampValidBits: 0 where it writes no timestamps */
     /* VK_EXT_memory_budget: the driver tells each heap's use and budget (VMA reads them, and guesses without it) */

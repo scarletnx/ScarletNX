@@ -11,11 +11,12 @@
 
    The graphics queue's idle time comes with it. Every command buffer gets a timestamp at its start and its end, with
    the CPU's time (CLOCK_MONOTONIC) of its submit and why cmd.c submitted it. The device's clock is put next to the
-   CPU's with VK_EXT_calibrated_timestamps. Then the time between the end of one submission and the start of the next
-   splits into the time before the CPU submitted the next one (the GPU had nothing to do) and the time after it (a
-   semaphore wait, the recording thread). The first part goes by what the CPU did: it waited for the submission that
-   ended (a finish, a readback, a release's gate: a round trip), it was between frames (after the present's
-   submission), or it recorded slower than the GPU ran.
+   CPU's with VK_EXT_calibrated_timestamps (Windows has no CLOCK_MONOTONIC: the performance counter there, plat_ns's
+   clock). Then the time between the end of one submission and the start of the next splits into the time before the
+   CPU submitted the next one (the GPU had nothing to do) and the time after it (a semaphore wait, the recording
+   thread). The first part goes by what the CPU did: it waited for the submission that ended (a finish, a readback, a
+   release's gate: a round trip), it was between frames (after the present's submission), or it recorded slower than
+   the GPU ran.
 
    The stats box (settings.txt's stats) takes only the command buffers' timestamps, and their sum: the graphics queue's
    busy time, from the slot's results read at its reuse like the rest. Off with the profile off too, nothing is written
@@ -126,6 +127,8 @@ static u64 g_tag, g_dispatched;   /* the next dispatch's tag, and the dispatches
 static u64 g_last_end;            /* CLOCK_MONOTONIC of the last submission's end, 0 none */
 static int g_prev_why, g_prev_kind; /* that submission's VK_SUB_*, and the CPU's wait for it (VK_WAIT_* + 1, 0 none) */
 static u64 g_t0;        /* the report window's start (plat_ns) */
+/* the CPU's clock the idle times are on, CLOCK_MONOTONIC (0 where there is none) or the performance counter's */
+static u64 gp_host_ns(void) { return g_vk.has_calibrated_qpc ? plat_ns() : plat_monotonic_ns(); }
 static u32 g_present0; /* and g_vk_present then */
 /* the timeline values the CPU waited for, with the kind of wait (VK_WAIT_* + 1), by value modulo the ring */
 #define GP_WAITS 1024
@@ -228,7 +231,7 @@ void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value) {
     s->dispatches = (u32)g_dispatched - s->dispatches;
     s->xfers = g_rec_xfers - s->xfers;
     g_cur_cb = VK_NULL_HANDLE;
-    s->cpu = plat_monotonic_ns();
+    s->cpu = gp_host_ns();
     s->value = value;
     s->why = why;
     gp_stamp(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->pool, g->used++);
@@ -340,13 +343,16 @@ static void gp_report(void);
 /* the slot's submissions into the sums of busy and idle time, on the CPU's clock: one calibrated pair of the two clocks
    now puts the timestamps on it (they are a frame old at most, and the clocks drift by far less in that time) */
 static void gp_idle(const GpSlot* g, const u64* ts, double period) {
-    static const VkCalibratedTimestampInfoEXT spec[2] = {
+    const int qpc = g_vk.has_calibrated_qpc;
+    const VkCalibratedTimestampInfoEXT spec[2] = {
         {VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, NULL, VK_TIME_DOMAIN_DEVICE_EXT},
-        {VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, NULL, VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT}};
+        {VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, NULL,
+         qpc ? VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT : VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT}};
     u64 pair[2], deviation;
-    if (!g->nsub || !g_vk.has_calibrated_host || !g_vk.has_calibrated_mono ||
+    if (!g->nsub || !(qpc || (g_vk.has_calibrated_host && g_vk.has_calibrated_mono)) ||
         !VK_OK(vkGetCalibratedTimestampsEXT(g_vk.dev, 2, spec, pair, &deviation)))
         return;
+    if (qpc) pair[1] = plat_qpc_ns(pair[1]); /* counter ticks: plat_ns's nanoseconds */
     for (u32 i = 0; i < g->nsub; i++) {
         const GpSub* s = &g->sub[i];
         if (!s->q1) continue;

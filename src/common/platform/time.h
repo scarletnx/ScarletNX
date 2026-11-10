@@ -13,6 +13,9 @@ uint64_t plat_ns(void);
 /* the system's CLOCK_MONOTONIC in nanoseconds (Vulkan's VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR, a POSIX guest's
    CLOCK_MONOTONIC), which plat_ns isn't everywhere: 0 where there is none (Windows) */
 uint64_t plat_monotonic_ns(void);
+/* a QueryPerformanceCounter reading (Vulkan's VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR) on plat_ns's clock, in its
+   nanoseconds: 0 where there is none (only Windows has it) */
+uint64_t plat_qpc_ns(uint64_t ticks);
 int64_t plat_unix_ns(void);   /* the wall clock: nanoseconds since 1970 UTC */
 int64_t plat_unix_time(void); /* seconds since 1970 UTC */
 int64_t plat_tz_offset(void); /* local time minus UTC now, in seconds */
