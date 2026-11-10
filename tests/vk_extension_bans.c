@@ -379,7 +379,6 @@ static void check_filter(void) {
     CHECK(said_with("VK_EXT_e", NULL, NULL) >= 0, "a new device's lines are unclaimed again");
 }
 
-/* the table the build carries, read whole, against the drivers its lines are about */
 /* the extension settings (vk_extension_settings): off takes its extension out, on goes over its bans, auto leaves it to
    them, and each is said with its value in effect and why; a value not auto, on or off, and off for a needed extension
    the driver has, are refused */
@@ -435,6 +434,7 @@ static void check_settings(void) {
     if (g_test.nsaid != 8) show_said();
 }
 
+/* the table the build carries, read whole, against the drivers its lines are about */
 static void check_shipped(void) {
     char err[512] = "", text[1200];
     CHECK(vk_bans_load(snx_vk_extension_bans_text, err, sizeof err), err);
