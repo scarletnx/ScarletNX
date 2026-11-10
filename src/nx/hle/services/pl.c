@@ -214,8 +214,9 @@ static int nn_pl_detail_IPlatformServiceManager_GetBuiltInFontSharedMemory(SvcOb
     *shared_memory = h_new(kobj_at(g_hle.pl.shm));
     R_SUCCEED();
 }
-/* where a font is in that memory. The SDK fills the caller's font only when found is 1, from the offset at 4 and the
-   size at 8 of data; what its first two bytes mean is not known, and they stay 0 */
+/* where a font is in that memory. The SDK reads data as a u64 at 4 of the reply and a u32 at 12, and fills the caller's
+   font only when found is 1: the base of the memory it mapped (2000) plus the offset at 4 of data, and the size at 8.
+   It copies data's first two bytes to the caller's font too; what they mean is not known, and they stay 0 */
 static int nn_pl_detail_IPlatformServiceManager_GetBuiltInFontData(SvcObj* self, u8 font_type, u8 flag, u8* found,
                                                                    u8* data) {
     (void)self, (void)flag;

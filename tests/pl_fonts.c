@@ -177,7 +177,9 @@ static u32 command_u32(u32 cmd, u32 font_type) {
     return snx_ld_le32(c.out);
 }
 /* the built-in fonts of the later SDK: 2000 gives the shared memory of the fonts and its size, 2010 where a font is
-   in it, the same font at the same place as 3 and 2 give for its type; a type past the six is not found */
+   in it, the same font at the same place as 3 and 2 give for its type; a type past the six is not found. The reply's
+   bytes are where the SDK reads them: found at 0, then the font's 12 bytes at 4, its offset at 8 of the reply and its
+   size at 12 */
 static void built_in_fonts(void) {
     IpcCtx c;
     u32 type;
@@ -185,21 +187,19 @@ static void built_in_fonts(void) {
     CHECK(c.out_size == 4 && snx_ld_le32(c.out) == sizeof shm);
     CHECK(g_ncopied == 1 && g_copied[0] == SHM_HANDLE);
     for (type = 0; type < 8; type++) {
-        static const u8 none[0x18];
+        static const u8 none[0x10];
         u8 raw[2];
         raw[0] = (u8)type, raw[1] = 0;
         command(&c, 2010, raw, sizeof raw);
-        CHECK(c.out_size == 0x18 && !g_ncopied);
+        CHECK(c.out_size == 0x10 && !g_ncopied);
         if (type >= 6) {
             CHECK(!memcmp(c.out, none, sizeof none));
             continue;
         }
-        CHECK(c.out[0] == 1 && !memcmp(c.out + 1, none, 7)); /* found, and the padding up to the descriptor */
-        CHECK(snx_ld_le32(c.out + 8) == 0);
-        CHECK(snx_ld_le32(c.out + 8 + 4) == command_u32(3, type) && snx_ld_le32(c.out + 8 + 4) != 0);
-        CHECK(snx_ld_le32(c.out + 8 + 8) == command_u32(2, type) && snx_ld_le32(c.out + 8 + 8) != 0);
-        CHECK(snx_ld_le32(c.out + 8 + 12) == 0);
-        CHECK(truetype(snx_ld_le32(c.out + 8 + 4)));
+        CHECK(c.out[0] == 1 && !memcmp(c.out + 1, none, 7)); /* found, the padding, and the font's first bytes */
+        CHECK(snx_ld_le32(c.out + 8) == command_u32(3, type) && snx_ld_le32(c.out + 8) != 0);
+        CHECK(snx_ld_le32(c.out + 12) == command_u32(2, type) && snx_ld_le32(c.out + 12) != 0);
+        CHECK(truetype(snx_ld_le32(c.out + 8)));
     }
 }
 
