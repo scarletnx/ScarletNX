@@ -32,9 +32,8 @@ void emit_thread(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             u32 lane = lane_is_invocation ? spv_emit_load(&c->emit, c->u32_type, invocation_id)
                        : lane_model       ? c->zero
                                           : spv_emit_load(&c->emit, c->u32_type, c->subgroup_lane_input);
-            lane = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, lane,
-                                   spv_emit_constant_u32(&c->emit, c->u32_type, 31));
-            u32 one = spv_emit_constant_u32(&c->emit, c->u32_type, 1);
+            lane = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, lane, shader_u32(c, 31));
+            u32 one = shader_u32(c, 1);
             u32 eq = spv_emit_binary(&c->emit, SPV_OP_SHIFT_LEFT_LOGICAL, c->u32_type, one, lane);
             u32 lt = spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, eq, one);
             u32 le = spv_emit_binary(&c->emit, SPV_OP_BITWISE_OR, c->u32_type, lt, eq);
@@ -49,19 +48,19 @@ void emit_thread(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                gives y 8 bits) */
             u32 tid = spv_emit_load(&c->emit, vec3_u32, local_input);
             value = spv_emit_vec4_extract(&c->emit, c->u32_type, tid, 0);
-            value = spv_emit_bitfield_insert(
-                &c->emit, c->u32_type, value, spv_emit_vec4_extract(&c->emit, c->u32_type, tid, 1),
-                spv_emit_constant_u32(&c->emit, c->u32_type, 16), spv_emit_constant_u32(&c->emit, c->u32_type, 10));
-            value = spv_emit_bitfield_insert(
-                &c->emit, c->u32_type, value, spv_emit_vec4_extract(&c->emit, c->u32_type, tid, 2),
-                spv_emit_constant_u32(&c->emit, c->u32_type, 26), spv_emit_constant_u32(&c->emit, c->u32_type, 6));
+            value = spv_emit_bitfield_insert(&c->emit, c->u32_type, value,
+                                             spv_emit_vec4_extract(&c->emit, c->u32_type, tid, 1), shader_u32(c, 16),
+                                             shader_u32(c, 10));
+            value = spv_emit_bitfield_insert(&c->emit, c->u32_type, value,
+                                             spv_emit_vec4_extract(&c->emit, c->u32_type, tid, 2), shader_u32(c, 26),
+                                             shader_u32(c, 6));
         } else if (stage == ST_FS && sr == 0x13) /* SR_THREAD_KILL: all ones in a lane KIL demoted */
             value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, shader_lane_dead(c),
-                                     spv_emit_constant_u32(&c->emit, c->u32_type, 0xffffffffu), c->zero);
+                                     shader_u32(c, 0xffffffffu), c->zero);
         else if (sr == 0x11) /* SR_INVOCATION_ID */
             value = spv_emit_load(&c->emit, c->u32_type, invocation_id);
         else if (sr >= 0x50 && sr <= 0x53) {
-            u32 scope = spv_emit_constant_u32(&c->emit, c->u32_type, sr < 0x52 ? 3 : 1);
+            u32 scope = shader_u32(c, sr < 0x52 ? 3 : 1);
             u32 clock = spv_emit_unary(&c->emit, SPV_OP_READ_CLOCK_KHR, vec2_u32, scope);
             value = spv_emit_vec4_extract(&c->emit, c->u32_type, clock, sr & 1);
         } else if (sr == 0x1d && between) {
@@ -71,20 +70,19 @@ void emit_thread(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                geometry's input topology is known when translating. Its
                invocation info is a constant; tessellation remains dynamic. */
             if (stage == ST_GS)
-                value = spv_emit_constant_u32(&c->emit, c->u32_type, in_vertices << 16);
+                value = shader_u32(c, in_vertices << 16);
             else
                 value = spv_emit_binary(&c->emit, SPV_OP_SHIFT_LEFT_LOGICAL, c->u32_type,
-                                        spv_emit_load(&c->emit, c->u32_type, patch_vertices),
-                                        spv_emit_constant_u32(&c->emit, c->u32_type, 16));
+                                        spv_emit_load(&c->emit, c->u32_type, patch_vertices), shader_u32(c, 16));
         } else
             /* Direct CBE writes are disabled: their enable and address registers (0x15..0x17) are zero. */
-            value = sr == 0x12                     ? spv_emit_constant_u32(&c->emit, c->u32_type, 0x3f800000u)
-                    : sr == 0x1d && stage != ST_FS ? spv_emit_constant_u32(&c->emit, c->u32_type, 0x00ff0000u)
+            value = sr == 0x12                     ? shader_u32(c, 0x3f800000u)
+                    : sr == 0x1d && stage != ST_FS ? shader_u32(c, 0x00ff0000u)
                                                    : c->zero;
         reg_write(c, d, value);
     } else if (op == O_VOTE) {
         u32 value = pred_read(c, B(w, 39, 3), B(w, 42, 1));
-        u32 one = spv_emit_constant_u32(&c->emit, c->u32_type, 1);
+        u32 one = shader_u32(c, 1);
         /* the lane model's warp is lane 0 alone (spirv_translate.c's lone_lane) */
         u32 lane = lane_model ? c->zero : spv_emit_load(&c->emit, c->u32_type, c->subgroup_lane_input);
         u32 mask = lane_model ? spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, value, one, c->zero)
@@ -107,27 +105,25 @@ void emit_thread(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     } else if (op == O_SHFL && c->quad && shader_shfl_quad(w, NULL)) {
         u32 operand;
         int swap = shader_shfl_quad(w, &operand) == 2;
-        u32 value = spv_emit_subgroup_quad_u32(&c->emit, c->u32_type, reg_read(c, a), swap,
-                                               spv_emit_constant_u32(&c->emit, c->u32_type, operand));
+        u32 value = spv_emit_subgroup_quad_u32(&c->emit, c->u32_type, reg_read(c, a), swap, shader_u32(c, operand));
         pred_write(c, B(w, 48, 3), c->true_value);
         reg_write(c, d, value);
     } else if (op == O_SHFL) {
-        u32 index = B(w, 28, 1) ? spv_emit_constant_u32(&c->emit, c->u32_type, B(w, 20, 5)) : reg_read(c, b);
-        u32 mask = B(w, 29, 1) ? spv_emit_constant_u32(&c->emit, c->u32_type, B(w, 34, 13)) : reg_read(c, B(w, 39, 8));
+        u32 index = B(w, 28, 1) ? shader_u32(c, B(w, 20, 5)) : reg_read(c, b);
+        u32 mask = B(w, 29, 1) ? shader_u32(c, B(w, 34, 13)) : reg_read(c, B(w, 39, 8));
         u32 lane_full = lane_model ? c->zero : spv_emit_load(&c->emit, c->u32_type, c->subgroup_lane_input);
-        u32 lane = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, lane_full,
-                                   spv_emit_constant_u32(&c->emit, c->u32_type, 31));
-        u32 seg = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
-                                  spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, mask,
-                                                  spv_emit_constant_u32(&c->emit, c->u32_type, 8)),
-                                  spv_emit_constant_u32(&c->emit, c->u32_type, 31));
+        u32 lane = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, lane_full, shader_u32(c, 31));
+        u32 seg =
+            spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
+                            spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, mask, shader_u32(c, 8)),
+                            shader_u32(c, 31));
         u32 min_lane = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, lane, seg);
         u32 max_lane =
             spv_emit_binary(&c->emit, SPV_OP_BITWISE_OR, c->u32_type, min_lane,
                             spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, mask,
                                             spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
                                                             spv_emit_unary(&c->emit, SPV_OP_NOT, c->u32_type, seg),
-                                                            spv_emit_constant_u32(&c->emit, c->u32_type, 31))));
+                                                            shader_u32(c, 31))));
         u32 mode = B(w, 30, 2), source_lane, valid;
         if (mode == 0) {
             source_lane = spv_emit_binary(&c->emit, SPV_OP_BITWISE_OR, c->u32_type, min_lane,
@@ -154,11 +150,10 @@ void emit_thread(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             reg_write(c, d, value);
             return;
         }
-        u32 host_lane = spv_emit_binary(&c->emit, SPV_OP_BITWISE_OR, c->u32_type,
-                                        spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, lane_full,
-                                                        spv_emit_constant_u32(&c->emit, c->u32_type, ~31u)),
-                                        spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, source_lane,
-                                                        spv_emit_constant_u32(&c->emit, c->u32_type, 31)));
+        u32 host_lane =
+            spv_emit_binary(&c->emit, SPV_OP_BITWISE_OR, c->u32_type,
+                            spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, lane_full, shader_u32(c, ~31u)),
+                            spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, source_lane, shader_u32(c, 31)));
         u32 shuffled = spv_emit_subgroup_shuffle_u32(&c->emit, c->u32_type, value, host_lane);
         reg_write(c, d, spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, valid, shuffled, value));
     } else if (op == O_BAR) {
@@ -168,9 +163,9 @@ void emit_thread(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             spv_emit_control_barrier(&c->emit, c->u32_type);
     } else if (op == O_CS2R) {
         u32 sr = B(w, 20, 8);
-        u32 clock = sr == 0xff ? 0
-                               : spv_emit_unary(&c->emit, SPV_OP_READ_CLOCK_KHR, vec2_u32,
-                                                spv_emit_constant_u32(&c->emit, c->u32_type, sr == 0x50 ? 3 : 1));
+        u32 clock = sr == 0xff
+                        ? 0
+                        : spv_emit_unary(&c->emit, SPV_OP_READ_CLOCK_KHR, vec2_u32, shader_u32(c, sr == 0x50 ? 3 : 1));
         reg_write(c, d, clock ? spv_emit_vec4_extract(&c->emit, c->u32_type, clock, 0) : c->zero);
         if (d < 254) reg_write(c, d + 1, clock ? spv_emit_vec4_extract(&c->emit, c->u32_type, clock, 1) : c->zero);
     } else if (op == O_MEMBAR) {

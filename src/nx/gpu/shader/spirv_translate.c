@@ -1785,7 +1785,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     u32 vec3_i32 = spv_emit_type_vec3(&c->emit, i32_type);
     u32 fn_type = spv_emit_type_function_void(&c->emit, void_type);
     u32 reg_ptr = spv_emit_type_function_pointer(&c->emit, c->u32_type);
-    c->zero = spv_emit_constant_u32(&c->emit, c->u32_type, 0);
+    c->zero = shader_u32(c, 0);
     u32 zero_f = spv_emit_constant_f32(&c->emit, c->f32_type, 0.0f);
     /* Maximum VS interface: point size, position, 32 outputs, 32 inputs, 18 buffers, 32 samplers, push constants. */
     u32 outputs[8], inputs[32] = {0}, input_vec_type[32] = {0}, input_component_type[32] = {0};
@@ -2517,8 +2517,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         }
     }
     /* every OpVariable comes before the first block's other instructions, the clip distances' stores included */
-    if (has_flow && !structure)
-        pc = spv_emit_function_variable_init(&c->emit, reg_ptr, spv_emit_constant_u32(&c->emit, c->u32_type, 11));
+    if (has_flow && !structure) pc = spv_emit_function_variable_init(&c->emit, reg_ptr, shader_u32(c, 11));
     if (structure && structure->uses_flag) se.flag = spv_emit_function_variable_init(&c->emit, reg_ptr, c->zero);
     c->discarded = (has_flow && stage == ST_FS) || advanced_blend || si->late_depth
                        ? spv_emit_function_variable_init(&c->emit, pred_ptr, c->false_value)
@@ -2529,8 +2528,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         u32 one = spv_emit_constant_f32(&c->emit, c->f32_type, 1);
         u32 value[4] = {one, one, one, one};
         spv_emit_store(&c->emit, capture_output, spv_emit_constant_vec4(&c->emit, vec4, value));
-        u32 pointer = SPV(&c->emit, SPV_OP_ACCESS_CHAIN, spv_emit_type_pointer(&c->emit, 9, c->u32_type),
-                          push, spv_emit_constant_u32(&c->emit, c->u32_type, 2), c->zero);
+        u32 pointer = SPV(&c->emit, SPV_OP_ACCESS_CHAIN, spv_emit_type_pointer(&c->emit, 9, c->u32_type), push,
+                          shader_u32(c, 2), c->zero);
         c->primitive_base = spv_emit_load(&c->emit, c->u32_type, pointer);
     }
     if (capture_tiles) {
@@ -2547,7 +2546,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     if (needs_frag_ndc) shader_frag_ndc(c, fragcoord, vec4, push, push_pointer, frag_ndc);
     if (pv_mask) shader_frag_weights(c, vec4, pv_position, pv_flat, frag_ndc, pv_weight);
     for (clip = 0; clip < clip_count; clip++) {
-        u32 index = spv_emit_constant_u32(&c->emit, c->u32_type, clip);
+        u32 index = shader_u32(c, clip);
         u32 ptr = stage == ST_TCS
             ? spv_emit_interface_scalar_pointer(&c->emit, 3, c->f32_type, clip_output,
                  spv_emit_load(&c->emit, c->u32_type, invocation_id), index)
@@ -2576,8 +2575,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (point_size) {
                 default_point_size = point_size_used
                                          ? one_f
-                                         : spv_emit_push_component_f32(&c->emit, push_pointer, push,
-                                                                       spv_emit_constant_u32(&c->emit, c->u32_type, 1),
+                                         : spv_emit_push_component_f32(&c->emit, push_pointer, push, shader_u32(c, 1),
                                                                        c->zero, c->f32_type);
                 spv_emit_store(&c->emit, point_size, default_point_size);
             }
@@ -2605,7 +2603,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                                       selector, lowest);
             selector = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
                                         spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, selector, lowest),
-                                        selector, spv_emit_constant_u32(&c->emit, c->u32_type, UINT32_MAX - 1));
+                                        selector, shader_u32(c, UINT32_MAX - 1));
         }
         spv_emit_selection_merge(&c->emit, dispatch_merge);
         spv_emit_switch_u32(&c->emit, selector, dispatch_default, case_literals, case_labels, case_count);
@@ -2613,11 +2611,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     if ((stage == ST_VS || stage == ST_TES || stage == ST_GS) && (!has_flow || structure)) {
         u32 one_f = spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f);
         if (point_size) {
-            default_point_size = point_size_used
-                                     ? one_f
-                                     : spv_emit_push_component_f32(&c->emit, push_pointer, push,
-                                                                   spv_emit_constant_u32(&c->emit, c->u32_type, 1),
-                                                                   c->zero, c->f32_type);
+            default_point_size = point_size_used ? one_f
+                                                 : spv_emit_push_component_f32(&c->emit, push_pointer, push,
+                                                                               shader_u32(c, 1), c->zero, c->f32_type);
             spv_emit_store(&c->emit, point_size, default_point_size);
         }
         u32 components[4] = {zero_f, zero_f, zero_f, one_f};
@@ -2782,7 +2778,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         if (has_flow && !structure && block_start[i]) { spv_emit_label(&c->emit, case_labels[case_index++]); }
         if (has_flow && !structure &&
             (shader_next_instruction(i, n) >= n || block_start[shader_next_instruction(i, n)])) {
-            u32 following = spv_emit_constant_u32(&c->emit, c->u32_type, shader_next_instruction(i, n));
+            u32 following = shader_u32(c, shader_next_instruction(i, n));
             spv_emit_store(&c->emit, pc, following);
         }
         u64 w = insn[i];
@@ -2848,12 +2844,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             spv_emit_branch(&c->emit, dispatch_merge);
         }
         spv_emit_label(&c->emit, dispatch_default);
-        spv_emit_store(&c->emit, pc, spv_emit_constant_u32(&c->emit, c->u32_type, UINT32_MAX));
+        spv_emit_store(&c->emit, pc, shader_u32(c, UINT32_MAX));
         spv_emit_branch(&c->emit, dispatch_merge);
         spv_emit_label(&c->emit, dispatch_merge);
         u32 next_pc = spv_emit_load(&c->emit, c->u32_type, pc);
-        u32 finished = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, next_pc,
-                                       spv_emit_constant_u32(&c->emit, c->u32_type, UINT32_MAX));
+        u32 finished = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, next_pc, shader_u32(c, UINT32_MAX));
         spv_emit_branch_conditional(&c->emit, finished, loop_merge, loop_continue);
         spv_emit_label(&c->emit, loop_continue);
         spv_emit_branch(&c->emit, loop_header);
