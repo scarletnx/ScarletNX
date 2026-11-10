@@ -185,7 +185,6 @@ NVN_FITS(NvnSamplerBuilder, 0x30);
 typedef struct {
     u32 magic;
     NvnSamplerPar p;
-    u64 serial;
 } NvnSampler;
 NVN_FITS(NvnSampler, 0x40);
 
