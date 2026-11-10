@@ -3170,6 +3170,82 @@ static void test_atomic_fadd(const char* dir) {
     CHECK(!spv && strstr(si.first_unsupported, "RED of type 3, operation 1"));
     free(spv);
 }
+/* ULDC.64 ud, c[bank][off] */
+static Word uldc64_to(u32 ud, u32 bank, u32 off) {
+    Word x = uldc64(0);
+    set(&x, 16, 6, ud);
+    cbuf(&x, bank, off);
+    return x;
+}
+/* An address at the sum of two constant buffer pairs, as one game's programs that sum a texture's light into a
+   buffer form it: UMOV UR6, 1, ULDC.64 UR8, c[0][0x20] (the buffer, 0x1000), ULDC.64 UR4, c[1][0] (an offset, 0),
+   UIMAD.WIDE.U32 UR4, UR6, UR8, UR4, then RED.E.ADD.F32.FTZ.RN [UR4 + 0x10], R2. Each of the two may be the base: the
+   program binds both, and the add lands in the one that holds the address, word 4 of c[0][0x20]'s buffer, 1.0 + 2.5.
+   With the offset 0x40000 the sum is in neither, and nothing changes */
+static void test_global_two_bases(const char* dir) {
+    u8 code[16 * 9] = {0};
+    u32 n = 0;
+    put(code, n++, ualu(0x082, 6, 0, 1));
+    put(code, n++, uldc64_to(8, 0, 0x20));
+    put(code, n++, uldc64_to(4, 1, 0));
+    Word imad = fix(0x2a5); /* UIMAD.WIDE.U32 UR4, UR6, UR8, UR4 */
+    set(&imad, 16, 6, 4);
+    set(&imad, 24, 6, 6);
+    set(&imad, 32, 6, 8);
+    set(&imad, 64, 6, 4);
+    set(&imad, 81, 3, 7);
+    set(&imad, 87, 1, 1);
+    set(&imad, 88, 4, 0xf);
+    put(code, n++, imad);
+    put(code, n++, mov_imm(2, f2u(2.5f)));
+    put(code, n++, global_uniform(0x98e, 0, 4, 0x10, 2, 3, 0));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "global two bases: %s\n", si.first_unsupported);
+        return;
+    }
+    int at_c0 = -1, at_c1 = -1;
+    for (int k = 0; k < si.ngbuf; k++) {
+        if (si.gbuf_cbuf_off[k] == 0x20) at_c0 = k;
+        if (si.gbuf_cbuf_off[k] == 1u << 16) at_c1 = k;
+    }
+    CHECK(si.ngbuf == 2 && at_c0 >= 0 && at_c1 >= 0);
+    if (at_c0 < 0 || at_c1 < 0) {
+        free(spv);
+        return;
+    }
+    for (u32 offset = 0; offset <= 0x40000; offset += 0x40000) {
+        static u32 bank0[1024], bank1[64], buffer[64], other[4], log[2 * SH_WLOG_PART];
+        memset(buffer, 0, sizeof buffer);
+        memset(other, 0, sizeof other);
+        bank0[0x20 / 4] = 0x1000, bank0[0x28 / 4] = 0x100;
+        bank1[0] = offset;
+        buffer[4] = f2u(1.0f);
+        SpvEvalEnv env = {0};
+        env.ubo[SNX_VKB_CB] = bank0;
+        env.ubo_words[SNX_VKB_CB] = 1024;
+        env.ubo[SNX_VKB_CB + 1] = bank1;
+        env.ubo_words[SNX_VKB_CB + 1] = 64;
+        env.ubo[SNX_VKB_SSBO + at_c0] = buffer;
+        env.ubo_words[SNX_VKB_SSBO + at_c0] = 64;
+        env.ubo[SNX_VKB_SSBO + at_c1] = other;
+        env.ubo_words[SNX_VKB_SSBO + at_c1] = 4;
+        env.ubo[SNX_VKB_WPAGES] = log;
+        env.ubo_words[SNX_VKB_WPAGES] = 2 * SH_WLOG_PART;
+        const char* why = spv_eval(spv, count, &env);
+        int ok = !why && buffer[4] == f2u(offset ? 1.0f : 3.5f) && !other[0] && !other[1] && !other[2] && !other[3];
+        CHECK(ok);
+        if (!ok) fprintf(stderr, "global two bases (offset %x): %s, word %08x\n", offset, why ? why : "ran", buffer[4]);
+    }
+    CHECK(keep_module(dir, "global_two_bases", spv, count));
+    free(spv);
+}
 
 /* The driver's tessellation control programs: a header with 6 TessFactor words, no outputs and 0 threads for each
    input primitive, and an EXIT. It runs no invocation: draws take the passthrough in its place, and the translator
@@ -3856,6 +3932,7 @@ int main(int argc, char** argv) {
     test_shfl_creg(dir);
     test_shading_rate(dir);
     test_atomic_fadd(dir);
+    test_global_two_bases(dir);
     test_uniform_handle(dir);
     test_memory_eval();
     test_uldc_word_key(dir);
