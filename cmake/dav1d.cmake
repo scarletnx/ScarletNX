@@ -28,6 +28,13 @@ endif()
 if(snx_dav1d_ready)
     set(snx_dav1d_prefix "${PROJECT_BINARY_DIR}/dav1d")
     set(snx_dav1d_build "${PROJECT_BINARY_DIR}/dav1d-build/meson")
+    # where its dav1d.pc goes, which FFmpeg's configure reads (cmake/ffmpeg.cmake): meson's pkgconfig module puts it
+    # in libdata/pkgconfig on FreeBSD, whatever --libdir says, and in the libdir's pkgconfig elsewhere
+    if(CMAKE_HOST_SYSTEM_NAME STREQUAL "FreeBSD")
+        set(snx_dav1d_pkgconfig "${snx_dav1d_prefix}/libdata/pkgconfig")
+    else()
+        set(snx_dav1d_pkgconfig "${snx_dav1d_prefix}/lib/pkgconfig")
+    endif()
     # its x86-64 assembly needs NASM, as FFmpeg's does; other architectures' is assembled by the compiler
     set(snx_dav1d_asm true)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")

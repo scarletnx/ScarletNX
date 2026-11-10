@@ -81,7 +81,7 @@ set(snx_ffmpeg_args
 set(snx_ffmpeg_env "")
 if(snx_dav1d_ready)
     list(APPEND snx_ffmpeg_args --enable-libdav1d --enable-decoder=libdav1d --pkg-config-flags=--static)
-    set(snx_ffmpeg_env "PKG_CONFIG_LIBDIR=${snx_dav1d_prefix}/lib/pkgconfig" "PKG_CONFIG_PATH=")
+    set(snx_ffmpeg_env "PKG_CONFIG_LIBDIR=${snx_dav1d_pkgconfig}" "PKG_CONFIG_PATH=")
 endif()
 if(snx_ffmpeg_images)
     # the Android driver's BitmapFactory and Bitmap.compress (src/android/hwui/image.c), and libswscale for their pixel
