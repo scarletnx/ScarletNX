@@ -180,6 +180,8 @@ The skills in `.claude/skills/`:
 - `code-audit`: the audit and fix loop in many passes, with the `snx-*-reviewer` agents in `.claude/agents/review/`.
 - `ste100`: the ASD-STE100 rules for the Claude files and for agent prompts and reports, and the checker that the
   hooks run.
+- `game-tag`: the opaque tag that stands for a game in a commit message, an issue or a doc (`tools/game_tag.py`). It
+  also checks a text for titles and title IDs.
 
 The agents in `.claude/agents/` keep disassembly and logs out of the main context:
 
@@ -210,6 +212,7 @@ the agent can build and run. Only one agent at a time can build and run.
   diff.
 - A commit message says what a game did, not which game it was. Comments, docs and test data do the same. Examples
   are "one game's menus", "another's save load" and "a player's log". A title ID is no better than a name.
+  When the reader must find the same game again, write its tag (the `game-tag` skill).
 - Stage files by name. Run `git diff --cached --stat` just before the commit. A commit takes all the staged changes,
   also a `git mv` or `git rm` from earlier in the session. A commit ends with the `Co-Authored-By` line that the
   instructions of the session give.
