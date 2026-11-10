@@ -22,10 +22,14 @@ on:
       - 'docs/user/deprecations.md'
       - 'docs/user/gui.md'
   workflow_dispatch:
+  # main every three hours, so a nightly comes out while merges cancel main's pushes' runs; a run whose commit already
+  # has its nightly cancels itself (nightly-due)
+  schedule:
+    - cron: '23 */3 * * *'
 
 # Jobs only read the repository, and a pull request's failed job has the rest of its run cancelled (cancel-run). A
-# push to main that builds everywhere becomes a nightly, and a pull request's run a prerelease, in scarletnx/nightly:
-# publish.yml does it once this workflow ends
+# push to main or a scheduled run that builds everywhere becomes a nightly, and a pull request's run a prerelease, in
+# scarletnx/nightly: publish.yml does it once this workflow ends
 permissions:
   contents: read
   actions: write
@@ -50,6 +54,28 @@ concurrency:
 # trimmed to what the run used, and a pull request's run saves none: it reads main's (the linux job says why).
 # The artifacts are what `cmake --install` puts in place: the binaries with the licenses that go with them.
 jobs:
+  # A scheduled run of a commit that has its nightly already: the run cancels itself
+  nightly-due:
+    name: Nightly due
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - name: Cancel the run when this commit has its nightly
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          latest=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/scarletnx/nightly/releases/latest" | python3 -c 'import json, sys; print(json.load(sys.stdin)["tag_name"])')
+          echo "the newest nightly: $latest; this run: ${GITHUB_SHA::7}"
+          case $latest in
+          *-"${GITHUB_SHA::7}")
+            curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/cancel-run.yml/dispatches" \
+              -d "{\"ref\": \"$BRANCH\", \"inputs\": {\"run\": \"$GITHUB_RUN_ID\"}}" ;;
+          esac
   linux:
     name: Linux (${{ matrix.arch }})
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}

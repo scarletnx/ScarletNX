@@ -179,11 +179,11 @@ with tempfile.TemporaryDirectory() as temporary:
         planned = dict(line.split('=', 1) for line in output.read_text().splitlines())
         return done, planned
 
-    def push_run(commit, conclusion='success', branch='main', number=1):
+    def push_run(commit, conclusion='success', branch='main', number=1, event='push'):
         return {
             'workflow_run': {
                 'id': number,
-                'event': 'push',
+                'event': event,
                 'head_branch': branch,
                 'head_sha': commit,
                 'conclusion': conclusion,
@@ -244,7 +244,14 @@ with tempfile.TemporaryDirectory() as temporary:
         planned == {'kind': 'nightly', 'run': '41', 'sha': sha, 'short': sha[:7], 'pr': '', 'tag': ''},
         planned,
     )
+    done, planned = run('plan', event=push_run(sha, number=44, event='schedule'))
+    check(
+        'a green scheduled run of main is planned as a nightly',
+        planned == {'kind': 'nightly', 'run': '44', 'sha': sha, 'short': sha[:7], 'pr': '', 'tag': ''},
+        planned,
+    )
     for event, why in (
+        (push_run(sha, 'failure', event='schedule'), 'a failed scheduled run'),
         (push_run(sha, 'failure'), 'a failed run'),
         (push_run(sha, branch='dev'), 'another branch'),
         (push_run(sha, branch='v9.9.9'), 'a branch named like a version, no tag'),
