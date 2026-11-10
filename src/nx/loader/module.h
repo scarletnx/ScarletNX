@@ -16,6 +16,11 @@ typedef struct {
     size_t hint_count;
     const char* jit_cache; /* the profile run's .jitcache, linked into the module; NULL for none */
     unsigned abi;
+    /* the NROs the program maps while it runs, each placed (snx_nro_slots_place), behind its modules up to nro_end:
+       the module's snx_nros table (module_abi.h). None: no table */
+    const SnxNroSlot* nros;
+    size_t nro_count;
+    SnxU64 nro_end;
 } SnxCodegenOptions;
 
 /* An address the runtime can enter: a leader of a function, and that function's index */

@@ -968,12 +968,66 @@ static void test_mutations(void) {
     puts("PASS deterministic malformed MOD0/dynamic/unwind mutations");
 }
 
+/* The NROs a program maps while it runs, as the recompiler places them (snx_nro_slots_place) and loads each at its
+   address (snx_load_nro_at) */
+static void test_nro_slots(void) {
+    SnxNroSlot slots[4];
+    SnxProgram program;
+    SnxNpdm npdm;
+    SnxU64 end = 0;
+    char error[256];
+    size_t count = 4, size;
+    memset(slots, 0, sizeof slots);
+    slots[0].hash[0] = 0x80, slots[0].size = 0x3000; /* given last of three, after a guard page each */
+    slots[1].hash[0] = 0x10, slots[1].size = 0x1800; /* whole pages: 0x2000 */
+    slots[2].hash[0] = 0x80, slots[2].size = 0x3000; /* the same NRO under another name: one place */
+    slots[3].hash[0] = 0x10, slots[3].hash[31] = 1, slots[3].size = 0x1000;
+    CHECK(!snx_nro_slots_place(slots, &count, 0x8123456, &end, error, sizeof error) && count == 3);
+    CHECK(slots[0].hash[0] == 0x10 && !slots[0].hash[31] && slots[0].base == 0x8125000 && slots[0].size == 0x2000);
+    CHECK(slots[1].hash[31] == 1 && slots[1].base == 0x8128000 && slots[1].size == 0x1000);
+    CHECK(slots[2].hash[0] == 0x80 && slots[2].base == 0x812a000 && slots[2].size == 0x3000 && end == 0x812d000);
+    /* the same set in another order gets the same addresses */
+    {
+        SnxNroSlot again[3];
+        size_t n = 3;
+        SnxU64 end2 = 0;
+        memset(again, 0, sizeof again);
+        again[0] = slots[2], again[1] = slots[0], again[2] = slots[1];
+        again[0].base = again[1].base = again[2].base = 0;
+        CHECK(!snx_nro_slots_place(again, &n, 0x8123456, &end2, error, sizeof error) && n == 3 && end2 == end);
+        CHECK(!memcmp(again, slots, sizeof again));
+    }
+    /* past what a module's 32-bit entry offsets reach: refused, the addresses named */
+    count = 2;
+    slots[1].size = 0xfff00000ul;
+    CHECK(snx_nro_slots_place(slots, &count, 0x8123456, &end, error, sizeof error) == -1);
+    CHECK(strstr(error, "0x108000000") && strstr(error, "0x8123456") && strstr(error, "4293918720 bytes"));
+    /* an NRO as a program of its own at its address, with the NPDM of the program that maps it */
+    size = build_nro();
+    CHECK(!snx_parse_npdm(NULL, 0, &npdm, error, sizeof error));
+    npdm.title_id = 0x0100000000002000ull;
+    CHECK(!snx_load_nro_at(file_bytes, size, "romfs's sample.nro", 0x9000000, &npdm, &program, error, sizeof error));
+    CHECK(program.module_count == 1 && program.modules[0].is_nro && program.modules[0].base == 0x9000000);
+    CHECK(program.modules[0].image_size == 0x400 && program.modules[0].size == 0x1000 && !program.romfs_size);
+    CHECK(program.npdm.title_id == 0x0100000000002000ull && !program.entry_path);
+    snx_free_program(&program);
+    CHECK(snx_load_nro_at(file_bytes, size, "sample.nro", 0x9000800, &npdm, &program, error, sizeof error) == -1);
+    CHECK(strstr(error, "0x9000800") && strstr(error, "4096 bytes") && !program.modules);
+    npdm.is64 = 0;
+    CHECK(snx_load_nro_at(file_bytes, size, "sample.nro", 0x9000000, &npdm, &program, error, sizeof error) == -1);
+    CHECK(strstr(error, "32-bit") && !program.modules);
+    CHECK(snx_load_nro_at(file_bytes, 0x10, "sample.nro", 0x9000000, &npdm, &program, error, sizeof error) == -1);
+    CHECK(strstr(error, "not an NRO") && !program.modules);
+    puts("PASS NROs placed behind the modules and loaded at their addresses");
+}
+
 int main(void) {
     scratch = snx_temp_dir(NULL);
     CHECK(scratch != NULL);
     test_nso();
     test_hash_lz4();
     test_nro_npdm();
+    test_nro_slots();
     test_program();
     test_large_bss();
     test_elf32();

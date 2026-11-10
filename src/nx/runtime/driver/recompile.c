@@ -5,6 +5,7 @@
 #include "nx/runtime/driver/container.h"
 #include "nx/runtime/driver/extract.h"
 #include "nx/runtime/driver/game_name.h"
+#include "nx/runtime/driver/nros.h"
 #include "nx/loader/loader.h"
 #include "nx/loader/module.h"
 #include "nx/loader/module_llvm.h"
@@ -298,10 +299,11 @@ static int dump_read(void* source, const char* name, unsigned char** data, size_
     return 1;
 }
 /* a dump's program of index, its ExeFS read in place with the mods' files names[i] from paths[i] over it (count of
-   them), and its control.nacp out of its Control NCA: nothing is extracted. 0, else nonzero, said why */
+   them), and its control.nacp out of its Control NCA: nothing is extracted. With nros, the NROs of its RomFS are
+   added to it (nros.h). 0, else nonzero, said why */
 static int load_dump(const char* dump, const char* update, int index, const SnxPaths* paths, int quiet,
-                     char* const* names, char* const* files, size_t count, SnxProgram* program, char* error,
-                     size_t error_size) {
+                     char* const* names, char* const* files, size_t count, SnxProgram* program, SnxNroSet* nros,
+                     char* error, size_t error_size) {
     /* paths->keys and paths->title_keys, when given, are the files the keys are read from */
     SnxDump opened;
     SnxHacFs* fs = NULL;
@@ -324,6 +326,8 @@ static int load_dump(const char* dump, const char* update, int index, const SnxP
         snx_exefs_mods(&mods, &reader, names, files, count);
         rc = snx_load_program_from(&mods.reader, update ? update : dump, nacp, nacp_size, program, error, error_size);
         if (rc) snx_error("%s", error);
+        if (!rc && nros && program->npdm.is64) rc = snx_nros_dump(nros, fs, quiet);
+        if (rc) snx_free_program(program);
     }
     snx_hac_fs_free(fs);
     snx_dump_close(&opened);
@@ -539,6 +543,8 @@ static int make_program(const MakeArgs* a, int index) {
         dump = a->dump;
     SnxLlvmBuild llvm;
     SnxProgram program;
+    SnxNroSet nros = {0};
+    int want_nros;
     char *title = NULL, *game = NULL, *out = NULL, *folder = NULL, *base = NULL, *data = NULL, *code = NULL;
     char *ini = NULL, *ini_text = NULL, *run = NULL, *exe = NULL, *mods = NULL, *mods_off = NULL, *mods_stamp = NULL;
     char **mod_names = NULL, **mod_files = NULL, *own_mods = NULL;
@@ -549,10 +555,15 @@ static int make_program(const MakeArgs* a, int index) {
     int i, rc = 1;
     memset(&program, 0, sizeof(program));
     memset(&llvm, 0, sizeof(llvm));
-    if (dump ? load_dump(input, addon ? input : NULL, index, &key_paths, compile.quiet, NULL, NULL, 0, &program, error,
-                         sizeof(error))
-             : snx_load_program(input, &program, error, sizeof(error)))
+    /* the NROs of its RomFS, where code is made ahead of time for this host: an iOS pack and an NCE recompile have
+       none */
+    want_nros = !no_build && !ios && !gen.interp_only;
+    if (dump ? load_dump(input, addon ? input : NULL, index, &key_paths, compile.quiet, NULL, NULL, 0, &program,
+                         want_nros ? &nros : NULL, error, sizeof(error))
+             : snx_load_program(input, &program, error, sizeof(error))) {
+        snx_nros_free(&nros);
         return dump ? 1 : snx_error("%s", error);
+    }
     if (addon && program.npdm.title_id != owner + (SnxU64)index) {
         char of[17], other[17];
         snx_title_text(owner, of);
@@ -560,6 +571,7 @@ static int make_program(const MakeArgs* a, int index) {
         snx_error("%s is an update of the game %s, and its program is %s", input, of,
                   other[0] ? other : "none with a title ID");
         snx_free_program(&program);
+        snx_nros_free(&nros);
         return 1;
     }
     title = snx_game_shown(name, &program, reason, sizeof reason);
@@ -624,8 +636,9 @@ static int make_program(const MakeArgs* a, int index) {
     }
     if (mod_count) {
         snx_free_program(&program);
+        snx_nros_free(&nros);
         if (dump ? load_dump(input, addon ? input : NULL, index, &key_paths, compile.quiet, mod_names, mod_files,
-                             mod_count, &program, error, sizeof error)
+                             mod_count, &program, want_nros ? &nros : NULL, error, sizeof error)
                  : snx_load_program_mods(input, mod_names, mod_files, mod_count, &program, error, sizeof error)) {
             if (!dump) snx_error("%s", error);
             goto done;
@@ -744,6 +757,16 @@ static int make_program(const MakeArgs* a, int index) {
         free(stale);
         if (i) goto done;
     }
+    /* the NROs the program maps while it runs, each given its address behind the modules (nros.h): an extracted
+       game's from its RomFS folder, a dump's found as it was loaded */
+    if (gen.interp_only || !program.npdm.is64)
+        snx_nros_free(&nros);
+    else if (want_nros && !dump && program.romfs_path && snx_nros_folder(&nros, program.romfs_path, compile.quiet))
+        goto done;
+    if (snx_nros_place(&nros, &program, compile.quiet)) goto done;
+    gen.nros = nros.places;
+    gen.nro_count = nros.count;
+    gen.nro_end = nros.end;
     code = ios ? snx_format("%s_code.snxobj", base) : snx_format("%s_code.%s", base, compile.target_win ? "dll" : "so");
     {
         char *kept = keep_c ? snx_format("%s_build", base) : NULL, *units = NULL;
@@ -795,6 +818,11 @@ static int make_program(const MakeArgs* a, int index) {
             i = snx_build_module_arm(&program, &gen, &llvm);
         else if (!i)
             i = snx_build_module_llvm(&program, &gen, &llvm);
+        if (!i && !ios && program.npdm.is64) { /* each NRO's own module, and an earlier recompile's taken away */
+            char* folder = snx_format("%s" SNX_NROS_FOLDER, base);
+            i = snx_nros_build(&nros, &program, &gen, &llvm, folder, compile.target_win);
+            free(folder);
+        }
         free(kept);
         free(units);
         if (i) goto done;
@@ -843,6 +871,7 @@ static int make_program(const MakeArgs* a, int index) {
     rc = 0;
 done:
     snx_free_program(&program);
+    snx_nros_free(&nros);
     snx_free_strings(mod_names, mod_count);
     snx_free_strings(mod_files, mod_count);
     free(mods);
