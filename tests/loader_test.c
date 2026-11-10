@@ -195,6 +195,26 @@ static void test_nso(void) {
     CHECK(!snx_load_nso(path, "partial", &m, error, sizeof error));
     CHECK(m.eh_error && m.fde_count == 1 && m.function_count == 2 && m.functions[1] == 0x40);
     snx_free_module(&m);
+    /* DT_JMPREL at 0x320: an import's JUMP_SLOT at 0x3a0, which holds the code that calls the linker until it is
+       bound (0x60), a seed beside RELA's 0x30; a slot of another kind, at 0x3a8, is none */
+    memcpy(file_bytes, baseline, size);
+    put64(file_bytes + 0x100 + 0x170, 2);
+    put64(file_bytes + 0x100 + 0x178, 48);
+    put64(file_bytes + 0x100 + 0x180, 23);
+    put64(file_bytes + 0x100 + 0x188, 0x320);
+    put64(file_bytes + 0x100 + 0x320, 0x3a0);
+    put64(file_bytes + 0x100 + 0x328, ((SnxU64)1 << 32) | 1026);
+    put64(file_bytes + 0x100 + 0x338, 0x3a8);
+    put64(file_bytes + 0x100 + 0x340, ((SnxU64)1 << 32) | 1025);
+    put64(file_bytes + 0x100 + 0x3a0, 0x60);
+    put64(file_bytes + 0x100 + 0x3a8, 0x20);
+    CHECK(!snx_write_file(path, file_bytes, size));
+    CHECK(!snx_load_nso(path, "jmprel", &m, error, sizeof error));
+    CHECK(m.relptr_count == 2 && m.relptrs[0] == 0x30 && m.relptrs[1] == 0x60);
+    snx_free_module(&m);
+    put64(file_bytes + 0x100 + 0x178, 40);
+    CHECK(!snx_write_file(path, file_bytes, size));
+    CHECK(snx_load_nso(path, "jmprel-size", &m, error, sizeof error) == -1 && strstr(error, "JMPREL entry size"));
     /* DT_RELR at 0x320: the word at 0x3a0, then a bitmap of the words from 0x3a8 marking 0x3a8 and 0x3b8. The text
        pointers among them (0x20, 0x60) join RELA's 0x30, the one into the data (0x200) doesn't */
     memcpy(file_bytes, baseline, size);
