@@ -41,7 +41,6 @@
 #ifndef SNX_GLSL_HPP
 #define SNX_GLSL_HPP
 #include "common/utilities/bits.h"
-#include <atomic>
 #include <barrier>
 #include <bit>
 #include <cstdint>
@@ -285,14 +284,13 @@ struct Invocation {
     uint gl_LocalInvocationIndex;
 };
 
-// the atomic read-modify-writes on a buffer's word (GLSL 4.60 section 8.11), which return the old value
-inline uint atomicAnd(uint& mem, uint data) { return std::atomic_ref<uint>(mem).fetch_and(data); }
-inline uint atomicOr(uint& mem, uint data) { return std::atomic_ref<uint>(mem).fetch_or(data); }
+// the atomic read-modify-writes on a buffer's word (GLSL 4.60 section 8.11), which return the old value. The
+// builtins, not std::atomic_ref: the Android NDK's libc++ (before LLVM 19) has none
+inline uint atomicAnd(uint& mem, uint data) { return __atomic_fetch_and(&mem, data, __ATOMIC_SEQ_CST); }
+inline uint atomicOr(uint& mem, uint data) { return __atomic_fetch_or(&mem, data, __ATOMIC_SEQ_CST); }
 // on a buffer word in the device's order: a bitwise operation is the same on the bytes in either order
-inline uint atomicAnd(leuint& mem, uint data) {
-    return le_order(std::atomic_ref<uint>(mem.raw).fetch_and(le_order(data)));
-}
-inline uint atomicOr(leuint& mem, uint data) { return le_order(std::atomic_ref<uint>(mem.raw).fetch_or(le_order(data))); }
+inline uint atomicAnd(leuint& mem, uint data) { return le_order(atomicAnd(mem.raw, le_order(data))); }
+inline uint atomicOr(leuint& mem, uint data) { return le_order(atomicOr(mem.raw, le_order(data))); }
 
 // runs main() of every invocation of groups workgroups of local_size each, in order. setup(shader) fills in each
 // invocation's push constants and buffers before it runs
