@@ -448,8 +448,14 @@ static u32 float_add(Ctx* c, u32 mode, u32 x, u32 y) {
 }
 /* FMUL: x * y * 2^(scale - 4) in mode. The product of two floats is exact in a double */
 static u32 float_mul(Ctx* c, u32 mode, u32 scale, u32 x, u32 y) {
-    if ((mode == 0 && scale == 4) || !g_shader_float64)
-        return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, y));
+    if (mode == 0 && scale == 4) return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, y));
+    if (!g_shader_float64) {
+        /* no doubles (float_add): the product to nearest, then the scale, a power of two, which rounds again only
+           where the scaled product is subnormal or overflows */
+        static const float factor[8] = {0, 0.125f, 0.25f, 0.5f, 1, 2, 4, 8};
+        u32 r = nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, y));
+        return scale == 4 ? r : nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, r, cf(c, factor[scale])));
+    }
     u32 f64 = f64_type(c);
     u32 d = nocontract(c, op2(c, SPV_OP_F_MUL, f64, widen(c, x), widen(c, y)));
     if (scale != 4) {
