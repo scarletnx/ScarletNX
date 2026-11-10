@@ -8,6 +8,15 @@
 #include "nx/loader/loader.h"
 #include "common/cpu/recompiler/codegen.h"
 
+/* A branch through a register whose target is known once the program's linker has bound it: the BR of a PLT stub (at,
+   its guest address) and the function its slot's symbol names (target). game: the function is another module's (the
+   game's, for an NRO's module), which the module reaches through its import of it (snx_imports, nro_slots.h); else
+   one of the module's own */
+typedef struct {
+    SnxU64 at, target;
+    int game;
+} SnxBoundBranch;
+
 typedef struct {
     const char* title;
     size_t chunk_instrs; /* instructions per unit, 0 for the setting unit_instructions' */
@@ -21,6 +30,10 @@ typedef struct {
     const SnxNroSlot* nros;
     size_t nro_count;
     SnxU64 nro_end;
+    /* the module's bound branches, in the order of their addresses: where the register holds the function, the code
+       calls it directly, and goes through CPU.disp where it holds anything else. None: every BR through CPU.disp */
+    const SnxBoundBranch* bound;
+    size_t bound_count;
 } SnxCodegenOptions;
 
 /* An address the runtime can enter: a leader of a function, and that function's index */

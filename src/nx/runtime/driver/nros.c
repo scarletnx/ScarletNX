@@ -142,6 +142,122 @@ int snx_nros_place(SnxNroSet* set, const SnxProgram* program, int quiet) {
     return 0;
 }
 
+/* A function a module of the game exports, by its name: what an NRO's import of that name is bound to when one
+   module alone defines it. Functions a hook names are left out, their calls go through their dispatch slots */
+typedef struct {
+    const char* name;
+    SnxU64 address;
+} Export;
+static int export_order(const void* a, const void* b) {
+    return strcmp(((const Export*)a)->name, ((const Export*)b)->name);
+}
+/* the game's exports by name, each name once: one two modules define is left out, as the game's linker decides
+   between them. The names are the program's */
+static Export* exports_of(const SnxProgram* program, size_t* count) {
+    Export* all;
+    size_t m, k, n = 0, kept = 0, i, j;
+    for (m = 0; m < program->module_count; ++m) n += program->modules[m].symbol_count;
+    all = (Export*)snx_alloc((n ? n : 1) * sizeof(*all));
+    n = 0;
+    for (m = 0; m < program->module_count; ++m) {
+        const SnxModuleImage* module = &program->modules[m];
+        for (k = 0; k < module->symbol_count; ++k) {
+            const SnxSymbol* s = &module->symbols[k];
+            size_t lo = 0, hi = module->routed_count;
+            if (s->type != 2 /* STT_FUNC */ || (s->value & 3) || s->value < module->text_off ||
+                s->value - module->text_off >= module->text_size)
+                continue;
+            while (lo < hi) {
+                size_t middle = lo + (hi - lo) / 2;
+                if (module->routed[middle] < s->value)
+                    lo = middle + 1;
+                else
+                    hi = middle;
+            }
+            if (lo < module->routed_count && module->routed[lo] == s->value) continue;
+            all[n].name = s->name;
+            all[n++].address = module->base + s->value;
+        }
+    }
+    qsort(all, n, sizeof(*all), export_order);
+    for (i = 0; i < n; i = j) {
+        for (j = i + 1; j < n && !strcmp(all[i].name, all[j].name); ++j) continue;
+        if (j == i + 1) all[kept++] = all[i];
+    }
+    *count = kept;
+    return all;
+}
+
+/* The NRO's bound branches (module.h): each PLT stub of its text, adrp x16 / ldr x17,[x16,#slot] / add x16 / br x17,
+   whose slot's symbol names a function of the NRO itself or one the game's modules define once. *sites: the BL and B
+   instructions that go to those stubs. Owned by the caller */
+static SnxBoundBranch* bound_of(const SnxModuleImage* nro, const Export* exports, size_t export_count, size_t* count,
+                                size_t* own, size_t* sites, char* error, size_t error_size) {
+    SnxPltSlot* slots = NULL;
+    SnxBoundBranch* bound = NULL;
+    size_t slot_count = 0, n = 0;
+    SnxU64 pc, end = nro->text_off + nro->text_size;
+    *count = *own = *sites = 0;
+    if (snx_module_plt(nro, &slots, &slot_count, error, error_size)) return NULL;
+    if (slot_count) bound = (SnxBoundBranch*)snx_alloc(slot_count * sizeof(*bound));
+    for (pc = nro->text_off; slot_count && n < slot_count && end - pc >= 16; pc += 4) {
+        SnxU32 adrp = snx_ld_le32(nro->image + pc), ldr = snx_ld_le32(nro->image + pc + 4);
+        SnxU64 page, slot, target = 0;
+        size_t lo = 0, hi = slot_count;
+        int game = 0;
+        if (snx_ld_le32(nro->image + pc + 12) != 0xD61F0220UL || (adrp & 0x9F00001FUL) != 0x90000010UL ||
+            (ldr & 0xFFC003FFUL) != 0xF9400211UL || (snx_ld_le32(nro->image + pc + 8) & 0xFFC003FFUL) != 0x91000210UL)
+            continue;
+        page = ((SnxU64)((adrp >> 5) & 0x7FFFF) << 2 | ((adrp >> 29) & 3)) << 12;
+        if (page & ((SnxU64)1 << 32)) page |= ~(SnxU64)0 << 33; /* a page before this one */
+        slot = (pc & ~(SnxU64)0xFFF) + page + (SnxU64)((ldr >> 10) & 0xFFF) * 8;
+        while (lo < hi) {
+            size_t middle = lo + (hi - lo) / 2;
+            if (slots[middle].slot < slot)
+                lo = middle + 1;
+            else
+                hi = middle;
+        }
+        if (lo == slot_count || slots[lo].slot != slot) continue;
+        if (slots[lo].value) { /* the NRO's own function */
+            if (!(slots[lo].value & 3) && slots[lo].value >= nro->text_off && slots[lo].value < end)
+                target = nro->base + slots[lo].value;
+        } else {
+            Export key;
+            const Export* found;
+            key.name = slots[lo].name;
+            found = (const Export*)bsearch(&key, exports, export_count, sizeof(*exports), export_order);
+            if (found) target = found->address, game = 1;
+        }
+        if (!target) continue;
+        bound[n].at = nro->base + pc + 12;
+        bound[n].target = target;
+        bound[n].game = game;
+        *own += !game;
+        ++n;
+    }
+    /* the calls of them: every BL and B of the text whose target is such a stub (its BR 12 bytes on) */
+    for (pc = nro->text_off; n && pc < end; pc += 4) {
+        SnxU32 word = snx_ld_le32(nro->image + pc);
+        SnxU64 to, lo = 0, hi = n;
+        if ((word & 0x7C000000UL) != 0x14000000UL) continue;
+        to = pc + ((SnxU64)(word & 0x3FFFFFFUL) << 2);
+        if (word & 0x2000000UL) to -= (SnxU64)1 << 28;
+        to += nro->base + 12;
+        while (lo < hi) {
+            SnxU64 middle = lo + (hi - lo) / 2;
+            if (bound[middle].at < to)
+                lo = middle + 1;
+            else
+                hi = middle;
+        }
+        *sites += lo < n && bound[lo].at == to;
+    }
+    free(slots);
+    *count = n;
+    return bound;
+}
+
 /* a module of an NRO, by its name: 64 hex digits and the suffix, or that and .tmp (a write that did not end) */
 static int module_name(const char* name, const char* suffix) {
     size_t i, n = strlen(name), s = strlen(suffix);
@@ -155,7 +271,8 @@ int snx_nros_build(const SnxNroSet* set, const SnxProgram* program, const SnxCod
                    const SnxLlvmBuild* build, const char* folder, int windows) {
     const char* suffix = windows ? ".dll" : ".so";
     char **names = NULL, text[65], error[1024];
-    size_t count = 0, i, k, found, made = 0, code = 0;
+    size_t count = 0, i, k, found, made = 0, code = 0, export_count = 0, stubs = 0, stubs_own = 0, sites = 0;
+    Export* exports = set->count ? exports_of(program, &export_count) : NULL;
     double start, all = snx_seconds();
     int rc = 0;
     if (snx_is_link(folder)) return snx_error("%s is a link, and the NROs' code goes in a folder", folder);
@@ -166,6 +283,8 @@ int snx_nros_build(const SnxNroSet* set, const SnxProgram* program, const SnxCod
         SnxProgram nro;
         SnxCodegenOptions options = *gen;
         SnxLlvmBuild llvm = *build;
+        SnxBoundBranch* bound;
+        size_t bound_count, own, called;
         char *name, *output;
         hex(place->hash, text);
         if (snx_load_nro_at(file->data, file->size, file->name, place->base, &program->npdm, &nro, error,
@@ -176,6 +295,16 @@ int snx_nros_build(const SnxNroSet* set, const SnxProgram* program, const SnxCod
         }
         name = snx_format("%s%s", text, suffix);
         output = snx_path_join(folder, name);
+        /* its PLT's calls of its own functions and of the game's, made direct (module.h's SnxBoundBranch) */
+        error[0] = 0;
+        bound = NULL;
+        bound_count = own = called = 0;
+        if (!gen->hook_direct_calls) /* every call through its slot: none bound */
+            bound = bound_of(&nro.modules[0], exports, export_count, &bound_count, &own, &called, error, sizeof error);
+        if (!bound && error[0])
+            printf("NRO %s: %s: its PLT's calls go through the dispatch table\n", file->name, error);
+        options.bound = bound;
+        options.bound_count = bound_count;
         options.hints = NULL;
         options.hint_count = 0;
         options.jit_cache = NULL;
@@ -200,7 +329,11 @@ int snx_nros_build(const SnxNroSet* set, const SnxProgram* program, const SnxCod
                    snx_seconds() - start);
         made += found;
         code += nro.modules[0].text_size / 4;
+        stubs += bound_count;
+        stubs_own += own;
+        sites += called;
         fflush(stdout);
+        free(bound);
         free(name);
         free(output);
         snx_free_program(&nro);
@@ -224,8 +357,10 @@ int snx_nros_build(const SnxNroSet* set, const SnxProgram* program, const SnxCod
         snx_free_strings(names, count);
     }
     if (!rc && set->count && !build->quiet)
-        printf("NROs: the code of %zu, %zu of %zu instructions, in %s (%.1f s)\n", set->count, made, code, folder,
-               snx_seconds() - all);
+        printf("NROs: the code of %zu, %zu of %zu instructions, in %s (%.1f s); %zu calls through %zu PLT stubs made "
+               "direct, %zu stubs of the NROs' own functions and %zu of the game's\n",
+               set->count, made, code, folder, snx_seconds() - all, sites, stubs, stubs_own, stubs - stubs_own);
+    free(exports);
     return rc;
 }
 

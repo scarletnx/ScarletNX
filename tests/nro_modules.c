@@ -35,7 +35,39 @@ static void put32(unsigned char* p, size_t off, unsigned long n) {
     for (i = 0; i < 4; ++i) p[off + i] = (unsigned char)(n >> (8 * i));
 }
 
-/* the game's one module: text, rodata and data of a page each, stored as they are, a page of BSS; no MOD0 */
+static void put64(unsigned char* p, size_t off, unsigned long long n) {
+    put32(p, off, (unsigned long)(n & 0xFFFFFFFFu));
+    put32(p, off + 4, (unsigned long)(n >> 32));
+}
+/* MOD0 at 0x1000 of an image and its dynamic table at 0x1100: a symbol table of two symbols at 0x1200 (the first a
+   function the image defines at value; the second, when named, an import), their names at 0x1260, and, with slots, a
+   JUMP_SLOT of the second symbol at 0x2000 and of the first at 0x2008 */
+static void dynamic(unsigned char* image, const char* first, unsigned long long value, const char* second, int slots) {
+    size_t a = strlen(first) + 1, at = 0x1100;
+    put32(image, 4, 0x1000);
+    memcpy(image + 0x1000, "MOD0", 4);
+    put32(image, 0x1004, 0x100);
+    put32(image, 0x1008, 0x2000); /* an empty BSS at 0x3000 */
+    put32(image, 0x100c, 0x2000);
+    put64(image, at, 6), put64(image, at + 8, 0x1200), at += 16; /* DT_SYMTAB */
+    put64(image, at, 5), put64(image, at + 8, 0x1260), at += 16; /* DT_STRTAB */
+    put64(image, at, 10), put64(image, at + 8, 0x40), at += 16;  /* DT_STRSZ */
+    if (slots) {
+        put64(image, at, 23), put64(image, at + 8, 0x1300), at += 16; /* DT_JMPREL */
+        put64(image, at, 2), put64(image, at + 8, 48);                /* DT_PLTRELSZ */
+        put64(image, 0x1300, 0x2000), put64(image, 0x1308, (2ull << 32) | 1026);
+        put64(image, 0x1318, 0x2008), put64(image, 0x1320, (1ull << 32) | 1026);
+    }
+    put32(image, 0x1218, 1), image[0x121c] = 0x12, image[0x121e] = 1, put64(image, 0x1220, value);
+    memcpy(image + 0x1261, first, a);
+    if (second) {
+        put32(image, 0x1230, (unsigned long)(1 + a)), image[0x1234] = 0x12;
+        memcpy(image + 0x1261 + a, second, strlen(second) + 1);
+    }
+}
+/* the game's one module: text, rodata and data of a page each, stored as they are, a page of BSS. It exports one
+   function, game_add at 0x40, which adds 5 to x0 */
+#define GAME_ADD (SNX_CODE_BASE + 0x40)
 static size_t nso(unsigned char* file) {
     unsigned i;
     memset(file, 0, 0x3100);
@@ -48,13 +80,18 @@ static size_t nso(unsigned char* file) {
         put32(file, 0x60 + i * 4, 0x1000);
     }
     memset(file + 0x40, 0x4e, 32);
-    put32(file, 0x100, 0x14000002); /* b +8 */
-    put32(file, 0x108, 0xD65F03C0); /* ret */
+    put32(file, 0x100, 0x14000004); /* b +16 */
+    put32(file, 0x110, 0xD65F03C0); /* ret */
+    put32(file, 0x140, 0x91001400); /* game_add: add x0, x0, #5 */
+    put32(file, 0x144, 0xD65F03C0); /* ret */
+    dynamic(file + 0x100, "game_add", 0x40, NULL, 0);
     return 0x3100;
 }
-/* an NRO of three pages and bss bytes of BSS, its module ID id thirty-two times: 0 branches to 0x80, which leaves its
-   own address plus add in x0 and returns */
-static void nro(unsigned char* image, unsigned char id, unsigned add, unsigned long bss) {
+/* an NRO of three pages and bss bytes of BSS, its module ID id thirty-two times: 0 branches to 0x80, which leaves
+   0x84 of its own address plus add in x0 and returns. With calls, it first calls the game's game_add and its own
+   nro_own (0x100: x0 += 0x20), each through a PLT stub (0x200, 0x210) whose slot (0x2000, 0x2008) the game's linker
+   fills while the game runs */
+static void nro(unsigned char* image, unsigned char id, unsigned add, unsigned long bss, int calls) {
     memset(image, 0, 0x3000);
     put32(image, 0, 0x14000020); /* b 0x80 */
     memcpy(image + 0x10, "NRO0", 4);
@@ -66,19 +103,47 @@ static void nro(unsigned char* image, unsigned char id, unsigned add, unsigned l
     put32(image, 0x34, 0x1000);
     put32(image, 0x38, bss);
     memset(image + 0x40, id, 32);
-    put32(image, 0x80, 0x10000000);               /* adr x0, . */
-    put32(image, 0x84, 0x91000000 | (add << 10)); /* add x0, x0, #add */
-    put32(image, 0x88, 0xD65F03C0);               /* ret */
+    put32(image, 0x80, 0xAA1E03F3);               /* mov x19, x30 */
+    put32(image, 0x84, 0x10000000);               /* adr x0, . */
+    put32(image, 0x88, 0x91000000 | (add << 10)); /* add x0, x0, #add */
+    put32(image, 0x8c, 0xD503201F);               /* nop */
+    put32(image, 0x90, 0xD503201F);               /* nop */
+    put32(image, 0x94, 0xAA1303FE);               /* mov x30, x19 */
+    put32(image, 0x98, 0xD65F03C0);               /* ret */
+    if (!calls) return;
+    put32(image, 0x8c, 0x94000000 | ((0x200 - 0x8c) >> 2));           /* bl 0x200 */
+    put32(image, 0x90, 0x94000000 | ((0x210 - 0x90) >> 2));           /* bl 0x210 */
+    put32(image, 0x100, 0x91008000);                                  /* nro_own: add x0, x0, #0x20 */
+    put32(image, 0x104, 0xD65F03C0);                                  /* ret */
+    put32(image, 0x200, 0xD0000010), put32(image, 0x204, 0xF9400211); /* adrp x16, 0x2000; ldr x17, [x16] */
+    put32(image, 0x208, 0x91000210), put32(image, 0x20c, 0xD61F0220); /* add x16, x16, #0; br x17 */
+    put32(image, 0x210, 0xD0000010), put32(image, 0x214, 0xF9400611); /* adrp x16, 0x2000; ldr x17, [x16, #8] */
+    put32(image, 0x218, 0x91002210), put32(image, 0x21c, 0xD61F0220); /* add x16, x16, #8; br x17 */
+    dynamic(image, "nro_own", 0x100, "game_add", 1);
 }
 static void hex(const unsigned char* hash, char* out) {
     int i;
     for (i = 0; i < 32; ++i) sprintf(out + 2 * i, "%02x", hash[i]);
 }
 
+/* What stands in for the runtime while an NRO's module runs: the return to x30, outside the NRO, ends the run; any
+   other address the dispatch table has no code for is a function that adds 1000 to x0 and returns, so a call that
+   went through the table shows in x0. game_add is the game module's function, as an import bound to it calls it */
+#define RETURN 0x1000
 static int missed;
-static void miss(CPU* c, u64 pc) { /* the return to x30, outside the NRO: the run's end */
+static void miss(CPU* c, u64 pc) {
     ++missed;
-    c->pc = pc;
+    if (pc == RETURN) {
+        c->pc = pc;
+        return;
+    }
+    c->x[0] += 1000;
+    c->pc = c->x[30];
+}
+static void game_add(CPU* c, u64 pc) {
+    (void)pc;
+    c->x[0] += 5;
+    c->pc = c->x[30];
 }
 static void poll(CPU* c) { c->poll = 0; }
 static void undefined(CPU* c, u64 pc, u32 w) {
@@ -90,17 +155,25 @@ static void svc(CPU* c, u32 imm) {
     check(0, "no SVC");
 }
 
-/* the module at path is the NRO's of module ID id at base, size bytes with its BSS, and its code entered at the
-   NRO's first instruction leaves base + 0x80 + add in x0 */
-static void module_runs(const char* path, u64 base, u64 size, unsigned char id, unsigned add) {
+/* The module at path is the NRO's of module ID id at base, size bytes with its BSS, and its code entered at the NRO's
+   first instruction leaves base + 0x84 + add in x0. image, for an NRO with calls: the NRO, mapped at base for the run,
+   whose two PLT slots are filled as the game's linker fills them. The module must import game_add alone, call it
+   through CPU.disp until the import is bound and directly after, call its own nro_own directly, and take either call
+   through CPU.disp when the slot holds another address than the one its symbol names */
+static void module_runs(const char* path, u64 base, u64 size, unsigned char id, unsigned add,
+                        const unsigned char* image) {
     typedef const SnxModule* (*ModuleFn)(void);
+    typedef const SnxNroImports* (*ImportsFn)(void);
     RtAPI rt = {.cas128 = snx_runtime_cas128};
     void *library = plat_dl_open(path), *sym;
     ModuleFn get;
+    ImportsFn get_imports;
     const SnxModule* m;
-    GuestFn entry = NULL;
-    unsigned char ids[32];
+    const SnxNroImports* imports = NULL;
+    GuestFn entry = NULL, bound = game_add;
+    unsigned char ids[32], *memory;
     u32 i;
+    int step;
     if (!library) fprintf(stderr, "%s: %s\n", path, plat_dl_error());
     check(library != NULL, "the NRO's module loads");
     if (!library) return;
@@ -117,28 +190,54 @@ static void module_runs(const char* path, u64 base, u64 size, unsigned char id, 
     for (i = 0; i < m->nentries; ++i)
         if (m->entry_addr[i] == base) entry = m->entry_fn[i];
     check(entry != NULL, "the NRO's first instruction is an entry");
-    if (entry) {
+    sym = plat_dl_sym(library, "snx_imports");
+    check((sym != NULL) == (image != NULL), "a module has imports when its NRO calls the game's functions");
+    if (sym) {
+        memcpy(&get_imports, &sym, sizeof get_imports);
+        imports = get_imports();
+        check(imports->version == SNX_NRO_IMPORTS_VERSION && imports->count == 1 && imports->address[0] == GAME_ADD,
+              "the module imports the game's function its PLT names, and not its own");
+        check(imports->function[0] == imports->dynamic && imports->dynamic, "an import starts as the table's lookup");
+    }
+    memory = (unsigned char*)calloc(1, (size_t)base + 0x4000);
+    /* 0: as made. With calls, 1: the import bound; 2: the game's slot holds another function; 3: the NRO's own does */
+    for (step = 0; entry && memory && step < (image ? 4 : 1); ++step) {
         CPU c = {0};
+        u64 want = base + 0x84 + add, slot[2];
+        slot[0] = step == 2 ? 0x7000 : GAME_ADD;
+        slot[1] = step == 3 ? 0x7000 : base + 0x100;
+        if (image) {
+            memcpy(memory + base, image, 0x3000);
+            for (i = 0; i < 16; ++i) memory[base + 0x2000 + i] = (unsigned char)(slot[i / 8] >> (8 * (i % 8)));
+            if (step) memcpy(&imports->function[0], &bound, sizeof bound);
+            want += (step == 1 || step == 3 ? 5 : 1000) + (step == 3 ? 1000 : 0x20);
+        }
         rt.svc = svc;
         rt.undef = undefined;
         rt.poll = poll;
         rt.miss = miss;
         c.rt = &rt;
+        c.mem = memory;
         c.disp = (GuestFn*)calloc(0x1000 / 4, sizeof(GuestFn));
         c.code_lo = base;
         c.code_hi = base + 0x1000;
         for (i = 0; i < m->nentries; ++i) c.disp[(m->entry_addr[i] - base) / 4] = m->entry_fn[i];
-        c.x[30] = 0x1000; /* outside the NRO */
+        c.x[30] = RETURN;
         missed = 0;
         entry(&c, base);
-        if (c.x[0] != base + 0x80 + add)
-            fprintf(stderr, "x0 = %llx, where %llx + 0x80 + %u was wanted\n", (unsigned long long)c.x[0],
-                    (unsigned long long)base, add);
-        check(c.x[0] == base + 0x80 + add, "the NRO's code runs as code at its place");
-        /* the RET leaves the module's code for the thread's loop, or reaches rt->miss itself: either way at x30 */
-        check(missed <= 1 && c.pc == 0x1000, "it returns to its caller, outside the NRO");
+        if (c.x[0] != want)
+            fprintf(stderr, "step %d: x0 = %llx, where %llx was wanted\n", step, (unsigned long long)c.x[0],
+                    (unsigned long long)want);
+        check(c.x[0] == want, !image      ? "the NRO's code runs as code at its place"
+                              : !step     ? "an unbound import calls through the table"
+                              : step == 1 ? "a bound import and the NRO's own function are called directly"
+                                          : "a slot that holds another address goes through the table");
+        /* through the table: the game's function unbound or replaced (steps 0, 2), the NRO's own replaced (3) */
+        check(c.pc == RETURN && missed <= (image && step != 1 ? 2 : 1), "it returns to its caller, outside the NRO");
+        if (image) check(missed >= (step == 1 ? 0 : 1), "a call through the table reaches the miss");
         free(c.disp);
     }
+    free(memory);
     plat_dl_close(library);
 }
 
@@ -163,9 +262,9 @@ int main(int argc, char** argv) {
     path = snx_path_join(exefs, "main");
     check(!snx_write_file(path, file, nso(file)), "write the game's module");
     free(path);
-    nro(a, 0xA1, 1, 0x1000);
-    nro(b, 0xB2, 2, 0);
-    nro(odd, 0xC3, 3, 0x800); /* a BSS that is not whole pages: ldr:ro maps no such NRO */
+    nro(a, 0xA1, 1, 0x1000, 1);
+    nro(b, 0xB2, 2, 0, 0);
+    nro(odd, 0xC3, 3, 0x800, 0); /* a BSS that is not whole pages: ldr:ro maps no such NRO */
     path = snx_path_join(sub, "a.nro");
     check(!snx_write_file(path, a, sizeof a), "write an NRO");
     free(path);
@@ -237,6 +336,9 @@ int main(int argc, char** argv) {
               "an NRO ldr:ro would not map is said and left out");
         snprintf(line, sizeof line, "  NRO %u/%u: ", (unsigned)count, (unsigned)count);
         check(text && strstr(text, line), "each NRO's module is said as it is made");
+        check(text && strstr(text, "; 2 calls through 2 PLT stubs made direct, 1 stubs of the NROs' own functions and "
+                                   "1 of the game's\n"),
+              "the recompile says how many of the NROs' PLT calls it made direct");
         free(text);
         text = NULL;
         /* the game module's table */
@@ -267,16 +369,47 @@ int main(int argc, char** argv) {
         if (library) plat_dl_close(library);
         /* each NRO's own module, and nothing of an earlier recompile's but what is no module */
         path = snx_path_join(folder, name[0]);
-        module_runs(path, base[0], 0x4000, 0xA1, 1);
+        module_runs(path, base[0], 0x4000, 0xA1, 1, a);
         free(path);
         path = snx_path_join(folder, name[1]);
         if (!pass)
-            module_runs(path, base[1], 0x3000, 0xB2, 2);
+            module_runs(path, base[1], 0x3000, 0xB2, 2, NULL);
         else
             check(!snx_path_exists(path), "the module of an NRO the game has no more is removed");
         free(path);
         check(!snx_path_exists(stale), "an earlier recompile's module is removed");
         check(snx_is_file(other), "a file that is no module stays");
+    }
+    /* with every call sent through its dispatch slot no stub is bound, and a function two of the game's modules
+       export is no stub's: the game's linker picks between them */
+    for (pass = 0; pass < 2; ++pass) {
+        if (pass) {
+            path = snx_path_join(exefs, "sdk");
+            check(!snx_write_file(path, file, nso(file)), "write a second module of the game, with the same export");
+            free(path);
+        }
+        k = 0;
+        args[k++] = argv[1];
+        args[k++] = "--data";
+        args[k++] = argv[2];
+        args[k++] = "-r";
+        args[k++] = game;
+        args[k++] = "--outdir";
+        args[k++] = out;
+        args[k++] = "--nce=0";
+        if (!pass) args[k++] = "--hook-direct-calls";
+        args[k] = NULL;
+        if (snx_run(args, root, NULL, &text)) {
+            fprintf(stderr, "%s\n", text ? text : "");
+            check(0, "the game recompiles again");
+        }
+        check(text && strstr(text, pass ? "; 1 calls through 1 PLT stubs made direct, 1 stubs of the NROs' own "
+                                          "functions and 0 of the game's\n"
+                                        : "; 0 calls through 0 PLT stubs made direct, 0 stubs of the NROs' own "
+                                          "functions and 0 of the game's\n"),
+              pass ? "a function two modules export is not bound" : "nothing is bound when every call is hooked");
+        free(text);
+        text = NULL;
     }
     check(!snx_remove_tree(root), "fixture cleanup");
     free(stale);

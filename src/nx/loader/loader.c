@@ -960,6 +960,66 @@ int snx_load_nro(const char* path, SnxModuleImage* module, char* error, size_t e
     return 0;
 }
 
+static int plt_order(const void* a, const void* b) {
+    const SnxPltSlot *x = (const SnxPltSlot*)a, *y = (const SnxPltSlot*)b;
+    return x->slot < y->slot ? -1 : x->slot > y->slot;
+}
+int snx_module_plt(const SnxModuleImage* module, SnxPltSlot** slots, size_t* count, char* error, size_t error_size) {
+    Parse p = {0};
+    Dynamic d;
+    SnxU64 table, size, symtab, strtab, strsz, at, info, symbol, name;
+    SnxPltSlot* out;
+    size_t n = 0;
+    *slots = NULL;
+    *count = 0;
+    if (!module->has_mod0) return 0;
+    p.m = (SnxModuleImage*)module; /* read only */
+    p.is64 = 1;
+    p.word = 8;
+    p.error = error;
+    p.error_size = error_size;
+    if (read_dynamic(&p, &d)) return -1;
+    if (!d.have[DT_JMPREL] || !d.have[DT_SYMTAB] || !d.have[DT_STRTAB]) return 0;
+    table = d.value[DT_JMPREL];
+    size = d.have[DT_PLTRELSZ] ? d.value[DT_PLTRELSZ] : 0;
+    symtab = d.value[DT_SYMTAB];
+    strtab = d.value[DT_STRTAB];
+    strsz = d.have[DT_STRSZ] ? d.value[DT_STRSZ] : 0;
+    if (size % 24 || !inside(table, size, module->image_size))
+        return fail(error, error_size,
+                    snx_format("%s: the JMPREL table (%llu bytes at %#llx) is no table of RELA entries in the image",
+                               module->path, (unsigned long long)size, (unsigned long long)table));
+    if (!inside(strtab, strsz, module->image_size))
+        return fail(error, error_size, snx_format("%s: the string table lies outside the image", module->path));
+    if (!size) return 0;
+    out = (SnxPltSlot*)snx_alloc((size_t)(size / 24) * sizeof(*out));
+    for (at = table; at < table + size; at += 24) {
+        info = snx_ld_le64(module->image + at + 8);
+        if ((info & 0xFFFFFFFFUL) != R_AARCH64_JUMP_SLOT) continue;
+        symbol = info >> 32;
+        if (symbol > module->image_size / 24 || !inside(symtab + symbol * 24, 24, module->image_size) ||
+            (name = snx_ld_le32(module->image + symtab + symbol * 24)) >= strsz ||
+            !memchr(module->image + strtab + name, 0, (size_t)(strsz - name))) {
+            free(out);
+            return fail(error, error_size,
+                        snx_format("%s: the JMPREL entry at %#llx names symbol %llu, which lies outside the image",
+                                   module->path, (unsigned long long)at, (unsigned long long)symbol));
+        }
+        out[n].slot = snx_ld_le64(module->image + at);
+        out[n].name = (const char*)module->image + strtab + name;
+        /* defined here (a section index), a function: its value; else an import */
+        out[n].value = snx_ld_le16(module->image + symtab + symbol * 24 + 6) &&
+                               (module->image[symtab + symbol * 24 + 4] & 15) == STT_FUNC
+                           ? snx_ld_le64(module->image + symtab + symbol * 24 + 8)
+                           : 0;
+        ++n;
+    }
+    qsort(out, n, sizeof(*out), plt_order);
+    *slots = out;
+    *count = n;
+    return 0;
+}
+
 int snx_load_nro_at(const unsigned char* data, size_t size, const char* name, SnxU64 base, const SnxNpdm* npdm,
                     SnxProgram* program, char* error, size_t error_size) {
     SnxModuleImage* m;

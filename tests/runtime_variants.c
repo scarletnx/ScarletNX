@@ -158,7 +158,8 @@ u64* hints_copy(size_t* count) {
     return NULL;
 }
 
-int nvn_loader_active(void) { return 0; }
+static int g_nvn_active;
+int nvn_loader_active(void) { return g_nvn_active; }
 /* no hooks here: nothing goes back in a slot */
 void hook_restore(u64 addr, u64 size) {
     (void)addr;
@@ -180,12 +181,13 @@ void mem_query(u64 addr, MemBlock* out) {
 static void (*g_invalidate)(u64, u64);
 void mem_set_code_invalidate(void (*fn)(u64, u64)) { g_invalidate = fn; }
 
+static char g_logged[512]; /* the last LOG line */
 void logf_(int lvl, const char* fmt, ...) {
     size_t at = strlen(g_warned);
     va_list ap;
-    if (lvl != 0) return; /* WARN's level */
     va_start(ap, fmt);
-    vsnprintf(g_warned + at, sizeof g_warned - at, fmt, ap);
+    if (lvl == 1) vsnprintf(g_logged, sizeof g_logged, fmt, ap);
+    if (lvl == 0) vsnprintf(g_warned + at, sizeof g_warned - at, fmt, ap); /* WARN's level */
     va_end(ap);
 }
 
@@ -215,7 +217,40 @@ static void check_jit_opt(const char* given, char default_level) {
 typedef struct {
     u32 abi;
     u64 base;
+    u32 imports;
 } Fixture;
+static int g_import_missed;
+static void import_miss(CPU* c, u64 pc) {
+    (void)c;
+    g_import_missed += pc == 0x2500 ? 1 : 100;
+}
+/* the module's two imports, the game's functions at 0x2400 and 0x2500: which of them calls the game module's function
+   (0x2400's, test_fn2) directly, the other going through the dispatch table to import_miss */
+static int imports_direct(const SnxModule* (*module)(void), void* library) {
+    RtAPI rt = {.cas128 = snx_runtime_cas128, .miss = import_miss};
+    const SnxNroImports* (*get)(void);
+    const SnxNroImports* im;
+    GuestFn f[2];
+    void* sym = plat_dl_sym(library, "snx_imports");
+    CPU cpu = {0};
+    int direct = 0, before = g_called2;
+    (void)module;
+    if (!sym) return -1;
+    memcpy(&get, &sym, sizeof get);
+    im = get();
+    memcpy(f, im->function, sizeof f);
+    cpu.rt = &rt;
+    cpu.disp = g_disp;
+    cpu.code_lo = g_code_lo;
+    cpu.code_hi = g_code_hi;
+    g_import_missed = 0;
+    f[0](&cpu, 0x2400);
+    f[1](&cpu, 0x2500);
+    if (f[0] == test_fn2) direct |= 1;
+    if (f[1] == test_fn2) direct |= 2;
+    if (cpu.x[1] == 0xD1) direct |= 4; /* one was left as the module had it */
+    return direct | (g_called2 - before) << 4 | g_import_missed << 8;
+}
 static void nro_modules(const char* path) {
     static SnxNroSlot slots[3];
     static SnxNros table = {SNX_NROS_VERSION, 3, CODE_LO, CODE_HI, slots};
@@ -227,7 +262,7 @@ static void nro_modules(const char* path) {
     const SnxModule* (*module)(void);
     const SnxModule* m;
     void* sym;
-    CPU cpu;
+    CPU cpu = {0};
     u32 entries = 9;
     int k;
     CHECK(root != NULL);
@@ -254,6 +289,13 @@ static void nro_modules(const char* path) {
     CHECK(jit_nro_added(slots[0].hash, 0x1000, 0x2000, id, &entries) == 1);
     CHECK(jit_nro_added(slots[0].hash, 0x1000, 0x1000, id, &entries) == 1 && !entries);
     CHECK(!g_disp[(0x1100 - CODE_LO) / 4]);
+    /* the game module's function at 0x2400, in its entries and its slot: what the NRO module's import of it calls */
+    static const u64 game_addr[1] = {0x2400};
+    static GuestFn game_fn[1] = {test_fn2};
+    g_module.nentries = 1;
+    g_module.entry_addr = game_addr;
+    g_module.entry_fn = game_fn;
+    g_disp[(0x2400 - CODE_LO) / 4] = test_fn2;
     /* its module: both entries in the table, each its function */
     CHECK(!snx_copy_file(path, file[0]));
     own = plat_dl_open(file[0]);
@@ -265,9 +307,36 @@ static void nro_modules(const char* path) {
     g_warned[0] = 0;
     CHECK(jit_nro_added(slots[0].hash, 0x1000, 0x1000, id, &entries) == 0 && entries == 2);
     CHECK(g_disp[(0x1100 - CODE_LO) / 4] == m->fn[0] && g_disp[(0x1200 - CODE_LO) / 4] == m->fn[1]);
-    memset(&cpu, 0, sizeof cpu);
     if (g_disp[(0x1200 - CODE_LO) / 4]) g_disp[(0x1200 - CODE_LO) / 4](&cpu, 0x1200);
     CHECK(cpu.x[0] == 0x1200 && !g_warned[0]);
+    /* its imports: the game module has a function at 0x2400 and its slot holds it, so the import calls it directly,
+       with NVN's functions taken too; it has none at 0x2500, which goes through the table (one miss, at 0x2500). A
+       slot that holds another function when the NRO is mapped (a hook's) keeps the call in the table */
+    CHECK(strstr(g_logged, "the NRO at 1000 calls 1 of the 2 functions of the game its module imports directly"));
+    CHECK(imports_direct(module, own) == (1 | 1 << 4 | 1 << 8));
+    g_disp[(0x2400 - CODE_LO) / 4] = test_fn;
+    jit_nro_removed(0x1000);
+    CHECK(jit_nro_added(slots[0].hash, 0x1000, 0x1000, id, &entries) == 0);
+    CHECK(strstr(g_logged, "calls 0 of the 2 functions") && imports_direct(module, own) == (1 << 8));
+    g_disp[(0x2400 - CODE_LO) / 4] = test_fn2;
+    g_nvn_active = 1;
+    jit_nro_removed(0x1000);
+    CHECK(jit_nro_added(slots[0].hash, 0x1000, 0x1000, id, &entries) == 0 && entries == 2);
+    CHECK(imports_direct(module, own) == (1 | 1 << 4 | 1 << 8));
+    g_nvn_active = 0;
+    /* the slot given another function while the NRO is mapped (NVN's, for a function the game resolved then): the
+       import calls through the slot from then on, and another address's taking changes nothing */
+    jit_slot_taken(0x2500);
+    jit_slot_taken(0x2404);
+    jit_slot_taken(0x2300);
+    CHECK(imports_direct(module, own) == (1 | 1 << 4 | 1 << 8));
+    g_disp[(0x2400 - CODE_LO) / 4] = test_fn;
+    jit_slot_taken(0x2400);
+    CHECK(imports_direct(module, own) == (1 << 8));
+    g_disp[(0x2400 - CODE_LO) / 4] = test_fn2;
+    jit_nro_removed(0x1000);
+    CHECK(jit_nro_added(slots[0].hash, 0x1000, 0x1000, id, &entries) == 0 && entries == 2);
+    CHECK(imports_direct(module, own) == (1 | 1 << 4 | 1 << 8));
     /* the game changes a line of the first function: it is stale and out of the table, its entry too; the second
        stays */
     jit_code_changed(0x1120, 64);
