@@ -565,25 +565,33 @@ static uint32_t rescan(Glslc* g, uint32_t lo, uint32_t hi, uint32_t site) {
     return out;
 }
 
-static void put(Glslc* g, GlslcToken t) {
-    if (is_ident(t.kind)) {
-        const GlslcName* x = &g->names[name_of(g, &t)];
+/* token t let through the preprocessor: a name's kind its keyword's where the version has it, and the token's kind
+   into g->kinds, its text, site and flags into g->toks */
+static void put(Glslc* g, GlslcToken* t) {
+    uint32_t kind = t->kind;
+    if (is_ident(kind)) {
+        const GlslcName* x = &g->names[name_of(g, t)];
+        kind = t->kind;
         if (x->keyword != GLSLC_NAME_PLAIN) {
             const GlslcKeyword* k = &glslc_keywords[x->keyword - 1];
             uint32_t vm = 1u << g->vi;
             if ((k->kw & vm) || (k->ext && g->ext[k->ext] != GLSLC_BEHAVIOR_DISABLE))
-                t.kind = k->kind;
+                kind = k->kind;
             else if (k->res & vm)
-                t.kind = TK_RESERVED;
+                kind = TK_RESERVED;
         }
-    } else if (t.kind == TK_HASH || t.kind == TK_HASHHASH) {
-        glslc_fail(g, t.site, "'%.*s' is only a directive at the start of a line", (int)t.text.len, text_of(g, &t));
+    } else if (kind == TK_HASH || kind == TK_HASHHASH) {
+        glslc_fail(g, t->site, "'%.*s' is only a directive at the start of a line", (int)t->text.len, text_of(g, t));
     }
-    t.flags &= (uint8_t)~GLSLC_TF_BOL;
     if (g->ntoks < SNX_GLSLC_MAX_TOKENS) {
-        g->toks[g->ntoks] = t;
+        GlslcPlace* p = &g->toks[g->ntoks];
+        p->text = t->text;
+        p->site = t->site;
+        p->flags = (uint8_t)(t->flags & ~GLSLC_TF_BOL);
+        p->pad = 0;
+        g->kinds[g->ntoks] = kind;
     } else if (g->ntoks == SNX_GLSLC_MAX_TOKENS) {
-        g->overflow_site = t.site;
+        g->overflow_site = t->site;
     }
     g->ntoks++;
 }
@@ -610,7 +618,8 @@ static void expand_source(Glslc* g, const GlslcToken* use, uint32_t m) {
         if (t.kind != TK_LPAREN) {
             g->cur = cur;
             g->bol = bol;
-            put(g, *use);
+            GlslcToken u = *use;
+            put(g, &u);
             return;
         }
         exp_push(g, &t);
@@ -631,7 +640,7 @@ static void expand_source(Glslc* g, const GlslcToken* use, uint32_t m) {
     for (uint32_t i = result; i < g->nexp; i++) {
         GlslcToken t = g->exp[i];
         t.site = use->site;
-        put(g, t);
+        put(g, &t);
     }
     g->nexp = 0;
 }
@@ -1128,7 +1137,7 @@ void glslc_lex(Glslc* g) {
                 continue;
             }
         }
-        put(g, t);
+        put(g, &t);
     }
     if (g->nifs) {
         uint32_t site = g->ifs[g->nifs - 1] >> 8;
@@ -1138,7 +1147,9 @@ void glslc_lex(Glslc* g) {
     GlslcToken end = {{0, 0}, TK_EOF, 0, 0, 0};
     end.text.pos = (uint16_t)g->src_len;
     end.site = (uint16_t)g->src_len;
-    put(g, end);
+    put(g, &end);
+    /* the kinds a look past the end reads */
+    for (uint32_t i = 0; i < GLSLC_KIND_PAD && g->ntoks <= SNX_GLSLC_MAX_TOKENS; i++) g->kinds[g->ntoks + i] = TK_EOF;
     if (g->ntoks > SNX_GLSLC_MAX_TOKENS)
         glslc_fail(g, g->overflow_site, "the shader has %u tokens after preprocessing, more than the %u glslc takes",
                    g->ntoks, SNX_GLSLC_MAX_TOKENS);

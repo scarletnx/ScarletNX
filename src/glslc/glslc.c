@@ -27,7 +27,8 @@ static size_t place(size_t* at, size_t count, size_t size) {
 }
 
 typedef struct {
-    size_t source, synth, toks, macros, interned, mtoks, exp, marks, nodes, types, members, syms, params, calls, walk;
+    size_t source, synth, toks, kinds, macros, interned, mtoks, exp,
+        marks, nodes, types, members, syms, params, calls, walk;
     size_t type_ids, sym_ids, sym_types, sampler_ids, hash, hash_used, hash_back, stack;
     size_t caps, imports, entry, modes, names, annotations, globals, functions, locals, body;
     size_t total;
@@ -37,7 +38,8 @@ static void layout(Layout* l) {
     size_t at = sizeof(Glslc);
     l->source = place(&at, SNX_GLSLC_MAX_SOURCE + GLSLC_SOURCE_PAD, 1);
     l->synth = place(&at, SNX_GLSLC_MAX_SYNTH, 1);
-    l->toks = place(&at, SNX_GLSLC_MAX_TOKENS, sizeof(GlslcToken));
+    l->toks = place(&at, SNX_GLSLC_MAX_TOKENS, sizeof(GlslcPlace));
+    l->kinds = place(&at, SNX_GLSLC_MAX_TOKENS + GLSLC_KIND_PAD, sizeof(uint32_t));
     l->macros = place(&at, SNX_GLSLC_MAX_MACROS, sizeof(GlslcMacro));
     l->interned = place(&at, SNX_GLSLC_MAX_NAMES, sizeof(GlslcName));
     l->mtoks = place(&at, SNX_GLSLC_MAX_MACRO_TOKENS, sizeof(GlslcToken));
@@ -154,7 +156,8 @@ Glslc* glslc_open(void* memory, size_t memory_size, GlslcStage stage, const char
     g->result = result;
     g->bol = 1;
     g->synth = block + l.synth;
-    g->toks = (GlslcToken*)(void*)(block + l.toks);
+    g->toks = (GlslcPlace*)(void*)(block + l.toks);
+    g->kinds = (uint32_t*)(void*)(block + l.kinds);
     g->macros = (GlslcMacro*)(void*)(block + l.macros);
     g->nmacros = 1; /* 0 is no macro */
     g->names = (GlslcName*)(void*)(block + l.interned);
@@ -277,4 +280,8 @@ const char* glslc_view_text(const Glslc* g, GlslcView v) { return g->src + v.pos
 
 const char* glslc_token_text(const Glslc* g, const GlslcToken* t) {
     return (t->flags & GLSLC_TF_SYNTH) ? g->synth + t->text.pos : g->src + t->text.pos;
+}
+
+const char* glslc_place_text(const Glslc* g, const GlslcPlace* p) {
+    return (p->flags & GLSLC_TF_SYNTH) ? g->synth + p->text.pos : g->src + p->text.pos;
 }

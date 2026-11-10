@@ -30,9 +30,9 @@ static const char* lex(GlslcStage stage, const char* source, size_t size) {
     } else {
         g_lex_test.text[0] = 0;
         for (uint32_t i = 0; i + 1 < g->ntoks && w + 1 < sizeof g_lex_test.text; i++) {
-            const GlslcToken* t = &g->toks[i];
+            const GlslcPlace* t = &g->toks[i];
             int k = snprintf(g_lex_test.text + w, sizeof g_lex_test.text - w, "%.*s ", (int)t->text.len,
-                             glslc_token_text(g, t));
+                             glslc_place_text(g, t));
             if (k < 0) break;
             w += (size_t)k;
         }
@@ -136,9 +136,9 @@ static void keywords(void) {
         Glslc* g = glslc_open(g_lex_test.workspace, g_lex_test.workspace_size, SNX_GLSLC_FRAGMENT, cases[i].source,
                               strlen(cases[i].source), r);
         assert(g && glslc_run(g, GLSLC_PASS_LEX, NULL, 0) == 0);
-        uint32_t got = g->toks[0].kind;
+        uint32_t got = g->kinds[0];
         if (cases[i].kind == TK_IDENT ? !GLSLC_IS_NAME(got) : got != cases[i].kind) {
-            fprintf(stderr, "%s: kind %u, want %u\n", cases[i].source, g->toks[0].kind, cases[i].kind);
+            fprintf(stderr, "%s: kind %u, want %u\n", cases[i].source, got, cases[i].kind);
             exit(1);
         }
     }

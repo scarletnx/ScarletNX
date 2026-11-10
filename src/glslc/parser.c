@@ -5,10 +5,11 @@
    is folded into a GLSLC_N_CONST as it is made, which array sizes, case labels and layout values need. The descent
    counts how deep it is (SNX_GLSLC_MAX_DEPTH), so no source can take the C stack further than that. */
 #include "glslc/internal.h"
+#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 
-#define TOKV(g, i)    (int)tk((g), (i))->text.len, glslc_token_text((g), tk((g), (i)))
+#define TOKV(g, i)    (int)tk((g), (i))->text.len, glslc_place_text((g), tk((g), (i)))
 #define VIEWV(g, v)   (int)(v).len, glslc_view_text((g), (v))
 #define TX_EXTRA_BIAS 1u /* a texture call's op: it was given a bias */
 #define TX_EXTRA_COMP 2u /* textureGather's component was given */
@@ -32,13 +33,19 @@ static uint32_t parse_conditional(Glslc* g);
 static uint32_t parse_statement(Glslc* g, uint32_t* last);
 static uint32_t parse_type_specifier(Glslc* g, int nested);
 
-static const GlslcToken* tk(const Glslc* g, uint32_t i) { return &g->toks[i < g->ntoks ? i : g->ntoks - 1]; }
-static uint32_t kind_at(const Glslc* g, uint32_t ahead) { return tk(g, g->pos + ahead)->kind; }
+static const GlslcPlace* tk(const Glslc* g, uint32_t i) { return &g->toks[i < g->ntoks ? i : g->ntoks - 1]; }
+/* token i's kind, the last's past it */
+static uint32_t kind_of(const Glslc* g, uint32_t i) { return g->kinds[i < g->ntoks ? i : g->ntoks - 1]; }
+/* the kind ahead of g->pos: the TK_EOF kinds after the last token's (GLSLC_KIND_PAD) are a look past the end's */
+static uint32_t kind_at(const Glslc* g, uint32_t ahead) {
+    assert(g->pos + ahead < g->ntoks + GLSLC_KIND_PAD);
+    return g->kinds[g->pos + ahead];
+}
 static uint32_t site(const Glslc* g, uint32_t tok) { return tk(g, tok)->site; }
 
 static uint32_t next_tok(Glslc* g) {
     uint32_t t = g->pos;
-    if (tk(g, t)->kind != TK_EOF) g->pos++;
+    if (kind_of(g, t) != TK_EOF) g->pos++;
     return t;
 }
 
@@ -54,11 +61,11 @@ static const char* version_name(const Glslc* g) {
 }
 
 static void describe(const Glslc* g, uint32_t tok, char* out, size_t size) {
-    const GlslcToken* t = tk(g, tok);
-    if (t->kind == TK_EOF) {
+    const GlslcPlace* t = tk(g, tok);
+    if (kind_of(g, tok) == TK_EOF) {
         snprintf(out, size, "the end of the source");
     } else {
-        snprintf(out, size, "'%.*s'", (int)t->text.len, glslc_token_text(g, t));
+        snprintf(out, size, "'%.*s'", (int)t->text.len, glslc_place_text(g, t));
     }
 }
 
@@ -183,7 +190,7 @@ static uint32_t array_of(Glslc* g, uint32_t elem, uint32_t len, uint32_t tok) {
 
 /* the name of token tok, the index its kind holds; 0 for a token that is no name */
 static uint32_t key_of(const Glslc* g, uint32_t tok) {
-    uint32_t k = tk(g, tok)->kind;
+    uint32_t k = kind_of(g, tok);
     return GLSLC_IS_NAME(k) ? GLSLC_NAME_OF(k) : 0;
 }
 
@@ -602,7 +609,7 @@ static void parse_layout(Glslc* g, Qual* q) {
             glslc_fail(g, site(g, id), "expected a layout qualifier, found %s", found);
         }
         g->pos++;
-        const char* text = glslc_token_text(g, tk(g, id));
+        const char* text = glslc_place_text(g, tk(g, id));
         uint32_t len = tk(g, id)->text.len;
         int has_value = 0;
         uint32_t value = 0;
@@ -880,7 +887,7 @@ static uint32_t parse_struct(Glslc* g, int nested) {
 }
 
 static int is_struct_name(const Glslc* g, uint32_t tok) {
-    if (!GLSLC_IS_NAME(tk(g, tok)->kind)) return 0;
+    if (!GLSLC_IS_NAME(kind_of(g, tok))) return 0;
     uint32_t s = lookup(g, key_of(g, tok));
     return s && g->syms[s].kind == GLSLC_SK_STRUCT;
 }
@@ -1108,7 +1115,7 @@ static uint32_t make_index(Glslc* g, uint32_t tok, uint32_t base, uint32_t index
 static uint32_t make_swizzle(Glslc* g, uint32_t tok, uint32_t base) {
     uint32_t bt = nd(g, base)->type;
     const GlslcType* b = ty(g, bt);
-    const char* text = glslc_token_text(g, tk(g, tok));
+    const char* text = glslc_place_text(g, tk(g, tok));
     uint32_t len = tk(g, tok)->text.len;
     if (b->kind != GLSLC_T_VECTOR) glslc_fail(g, site(g, tok), "%s has no field %.*s", type_text(g, bt), TOKV(g, tok));
     if (len > 4)
@@ -1762,13 +1769,13 @@ static uint32_t parse_primary(Glslc* g) {
         case TK_UINTCONST: {
             g->pos++;
             uint32_t v;
-            if (!glslc_parse_int(glslc_token_text(g, tk(g, t)), tk(g, t)->text.len, &v))
+            if (!glslc_parse_int(glslc_place_text(g, tk(g, t)), tk(g, t)->text.len, &v))
                 glslc_fail(g, site(g, t), "%.*s does not fit in 32 bits", TOKV(g, t));
             return make_const(g, t, k == TK_INTCONST ? GT_INT : GT_UINT, v);
         }
         case TK_FLOATCONST:
             g->pos++;
-            return make_const(g, t, GT_FLOAT, parse_float(glslc_token_text(g, tk(g, t)), tk(g, t)->text.len));
+            return make_const(g, t, GT_FLOAT, parse_float(glslc_place_text(g, tk(g, t)), tk(g, t)->text.len));
         case TK_TRUE:
         case TK_FALSE: g->pos++; return make_const(g, t, GT_BOOL, k == TK_TRUE);
         case TK_LPAREN: { /* parse_expression counts the depth */
@@ -1842,7 +1849,7 @@ static uint32_t parse_postfix(Glslc* g) {
             case TK_INC:
             case TK_DEC:
                 g->pos++;
-                e = make_unary(g, tk(g, t)->kind == TK_INC ? GLSLC_OP_POST_INC : GLSLC_OP_POST_DEC, t, e);
+                e = make_unary(g, kind_of(g, t) == TK_INC ? GLSLC_OP_POST_INC : GLSLC_OP_POST_DEC, t, e);
                 break;
             default: return e;
         }
@@ -2946,7 +2953,7 @@ static void parse_global(Glslc* g) {
     uint32_t t0 = g->pos;
     uint32_t type = parse_type_specifier(g, 0);
     if (accept(g, TK_SEMICOLON)) {
-        if (tk(g, t0)->kind != TK_STRUCT || q.any) glslc_fail(g, site(g, t0), "this declaration declares nothing");
+        if (kind_of(g, t0) != TK_STRUCT || q.any) glslc_fail(g, site(g, t0), "this declaration declares nothing");
         return;
     }
     uint32_t name = expect_name(g, "a name");
