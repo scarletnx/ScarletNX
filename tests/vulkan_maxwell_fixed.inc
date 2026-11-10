@@ -155,6 +155,10 @@ static int check_maxwell_depth_bounds(void) {
     return 0;
 }
 
+/* g_vk.has_gpl as the device's start left it, which run_headless keeps here: SNX_TEST_GPL=whole clears it afterwards so
+   that every pipeline is made whole, and those pipelines keep the dynamic state the libraries gave (g_vk.dyn_pr), as the
+   optimized pipeline that replaces a link does */
+static int g_mx_fixed_libraries;
 /* whether a depth range of -1 to 1 is the device's on this device (VK_DYN_PR_DEPTH_RANGE): pipeline libraries, the
    depth clip control and the range as dynamic state, each as the device reports it and no ban holding for it */
 static int mx_depth_range_device(void) {
@@ -170,7 +174,7 @@ static int mx_depth_range_device(void) {
         eds3 |= !strcmp(list[i].extensionName, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
     }
     free(list);
-    if (!g_vk.has_gpl || !clip_control || !eds3 || vk_ban_find(VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME) ||
+    if (!g_mx_fixed_libraries || !clip_control || !eds3 || vk_ban_find(VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME) ||
         vk_ban_find(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME) || vk_ban_find(member))
         return 0;
     VkPhysicalDeviceDepthClipControlFeaturesEXT control = {

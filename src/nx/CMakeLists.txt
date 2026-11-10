@@ -460,7 +460,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with each draw binding the pipeline linked from its parts, never the one made whole, under the
     # validation layer when it is installed (gpu/vk/pipeline.c, VK_EXT_graphics_pipeline_library; a device that
-    # doesn't link them skips, 77); and with each pipeline made whole, as a device without them makes it
+    # doesn't link them skips, 77); and with each pipeline made whole, with the dynamic state the libraries gave
     add_test(NAME vulkan_headless_pipeline_library_linked COMMAND snx-test-vulkan -H --vk_validation=1)
     add_test(NAME vulkan_headless_pipeline_library_whole COMMAND snx-test-vulkan -H)
     set_tests_properties(vulkan_headless_pipeline_library_linked PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
