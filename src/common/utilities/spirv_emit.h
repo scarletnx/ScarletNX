@@ -377,25 +377,26 @@ void spv_emit_destroy(SpvEmitter* e);
 uint32_t spv_emit_id(SpvEmitter* e);
 /* the GLSL.std.450 import, made on the first call */
 uint32_t spv_emit_glsl450_import(SpvEmitter* e);
-void spv_emit_shader_capability(SpvEmitter* e);
-void spv_emit_float16_capability(SpvEmitter* e);
-void spv_emit_demote_extension(SpvEmitter* e);
+static inline void spv_emit_shader_capability(SpvEmitter* e);
+static inline void spv_emit_float16_capability(SpvEmitter* e);
+static inline void spv_emit_demote_extension(SpvEmitter* e);
 void spv_emit_shader_clock_extension(SpvEmitter* e);
-void spv_emit_float64_capability(SpvEmitter* e);
-void spv_emit_draw_parameters_capability(SpvEmitter* e);
-void spv_emit_layer_capability(SpvEmitter* e);
-void spv_emit_clip_distance_capability(SpvEmitter* e);
+static inline void spv_emit_float64_capability(SpvEmitter* e);
+static inline void spv_emit_draw_parameters_capability(SpvEmitter* e);
+static inline void spv_emit_layer_capability(SpvEmitter* e);
+static inline void spv_emit_clip_distance_capability(SpvEmitter* e);
 uint32_t spv_emit_layer_output(SpvEmitter* e, uint32_t i32_type);
 uint32_t spv_emit_clip_distance_output(SpvEmitter* e, uint32_t f32_type, uint32_t u32_type, uint32_t length);
-uint32_t spv_emit_output_element_pointer(SpvEmitter* e, uint32_t f32_type, uint32_t array, uint32_t index);
-void spv_emit_image_query_capability(SpvEmitter* e);
+static inline uint32_t spv_emit_output_element_pointer(SpvEmitter* e, uint32_t f32_type, uint32_t array,
+                                                       uint32_t index);
+static inline void spv_emit_image_query_capability(SpvEmitter* e);
 void spv_emit_subgroup_capabilities(SpvEmitter* e);
-void spv_emit_subgroup_quad_capability(SpvEmitter* e);
-void spv_emit_image_gather_extended_capability(SpvEmitter* e);
+static inline void spv_emit_subgroup_quad_capability(SpvEmitter* e);
+static inline void spv_emit_image_gather_extended_capability(SpvEmitter* e);
 void spv_emit_entry_str(SpvEmitter* e, SpvShaderStage stage, uint32_t function, const char* name,
                         const uint32_t* interfaces, size_t interface_count);
-void spv_emit_compute_entry_str(SpvEmitter* e, uint32_t function, const char* name, const uint32_t* interfaces,
-                                size_t interface_count);
+static inline void spv_emit_compute_entry_str(SpvEmitter* e, uint32_t function, const char* name,
+                                              const uint32_t* interfaces, size_t interface_count);
 void spv_emit_fragment_origin_upper_left(SpvEmitter* e, uint32_t function);
 void spv_emit_fragment_depth_replacing(SpvEmitter* e, uint32_t function);
 void spv_emit_float_controls(SpvEmitter* e, uint32_t function, int flush_denorms, int preserve_infnan,
@@ -406,27 +407,27 @@ void spv_emit_local_size(SpvEmitter* e, uint32_t function, uint32_t x, uint32_t 
 void spv_emit_name_str(SpvEmitter* e, uint32_t id, const char* name);
 uint32_t spv_emit_type_void(SpvEmitter* e);
 uint32_t spv_emit_type_bool(SpvEmitter* e);
-uint32_t spv_emit_type_u32(SpvEmitter* e);
-uint32_t spv_emit_type_i32(SpvEmitter* e);
+static inline uint32_t spv_emit_type_u32(SpvEmitter* e);
+static inline uint32_t spv_emit_type_i32(SpvEmitter* e);
 /* a 64-bit integer type: the module declares the Int64 capability (11) */
-uint32_t spv_emit_type_int64(SpvEmitter* e, int is_signed);
+static inline uint32_t spv_emit_type_int64(SpvEmitter* e, int is_signed);
 /* OpSConvert requires a signed result type; OpUConvert requires an unsigned result type. Both truncate if narrowing. */
 uint32_t spv_emit_int_convert(SpvEmitter* e, uint32_t type, uint32_t value, int is_signed);
-uint32_t spv_emit_type_f16(SpvEmitter* e);
-uint32_t spv_emit_type_f32(SpvEmitter* e);
-uint32_t spv_emit_type_f64(SpvEmitter* e);
-uint32_t spv_emit_type_vec4(SpvEmitter* e, uint32_t component_type);
-uint32_t spv_emit_type_vec2(SpvEmitter* e, uint32_t component_type);
-uint32_t spv_emit_type_vec3(SpvEmitter* e, uint32_t component_type);
+static inline uint32_t spv_emit_type_f16(SpvEmitter* e);
+static inline uint32_t spv_emit_type_f32(SpvEmitter* e);
+static inline uint32_t spv_emit_type_f64(SpvEmitter* e);
+static inline uint32_t spv_emit_type_vec4(SpvEmitter* e, uint32_t component_type);
+static inline uint32_t spv_emit_type_vec2(SpvEmitter* e, uint32_t component_type);
+static inline uint32_t spv_emit_type_vec3(SpvEmitter* e, uint32_t component_type);
 uint32_t spv_emit_type_runtime_array(SpvEmitter* e, uint32_t element_type, uint32_t stride);
 uint32_t spv_emit_type_struct_one(SpvEmitter* e, uint32_t member_type);
-uint32_t spv_emit_type_storage_pointer(SpvEmitter* e, uint32_t pointee_type);
-uint32_t spv_emit_type_function_pointer(SpvEmitter* e, uint32_t pointee_type);
-uint32_t spv_emit_type_workgroup_pointer(SpvEmitter* e, uint32_t pointee_type);
+static inline uint32_t spv_emit_type_storage_pointer(SpvEmitter* e, uint32_t pointee_type);
+static inline uint32_t spv_emit_type_function_pointer(SpvEmitter* e, uint32_t pointee_type);
+static inline uint32_t spv_emit_type_workgroup_pointer(SpvEmitter* e, uint32_t pointee_type);
 uint32_t spv_emit_type_array_u32(SpvEmitter* e, uint32_t u32_type, uint32_t length);
 uint32_t spv_emit_workgroup_variable(SpvEmitter* e, uint32_t pointer_type);
 uint32_t spv_emit_function_element_pointer(SpvEmitter* e, uint32_t pointer_type, uint32_t array, uint32_t index);
-uint32_t spv_emit_type_function_void(SpvEmitter* e, uint32_t void_type);
+static inline uint32_t spv_emit_type_function_void(SpvEmitter* e, uint32_t void_type);
 uint32_t spv_emit_constant_u32(SpvEmitter* e, uint32_t type, uint32_t value);
 /* whether id is a 32-bit OpConstant this emitter made, and its type and bits */
 int spv_emit_constant_bits(const SpvEmitter* e, uint32_t id, uint32_t* type, uint32_t* value);
@@ -485,15 +486,16 @@ void spv_emit_emit_vertex(SpvEmitter* e);
 void spv_emit_end_primitive(SpvEmitter* e);
 /* a tessellation control barrier: the patch's invocations, and its outputs written before it */
 void spv_emit_patch_barrier(SpvEmitter* e, uint32_t u32_type);
-uint32_t spv_emit_sampler_image_array(SpvEmitter* e, uint32_t scalar_type, uint32_t u32_type, uint32_t set,
-                                      uint32_t binding, uint32_t type, int array, int shadow, uint32_t count,
-                                      uint32_t* sampled_type);
+/* count textures at one binding, an element picked per invocation with spv_emit_sampler_array_element */
+static inline uint32_t spv_emit_sampler_image_array(SpvEmitter* e, uint32_t scalar_type, uint32_t u32_type,
+                                                    uint32_t set, uint32_t binding, uint32_t type, int array,
+                                                    int shadow, uint32_t count, uint32_t* sampled_type);
 uint32_t spv_emit_sampler_image_array_ex(SpvEmitter* e, uint32_t scalar_type, uint32_t u32_type, uint32_t set,
                                          uint32_t binding, uint32_t type, int array, int shadow, int multisample,
                                          uint32_t count, uint32_t* sampled_type);
 uint32_t spv_emit_sampler_array_element(SpvEmitter* e, uint32_t sampled_type, uint32_t array_variable, uint32_t index);
-uint32_t spv_emit_sampler2d(SpvEmitter* e, uint32_t f32_type, uint32_t set, uint32_t binding, int shadow,
-                            uint32_t* sampled_type);
+static inline uint32_t spv_emit_sampler2d(SpvEmitter* e, uint32_t f32_type, uint32_t set, uint32_t binding, int shadow,
+                                          uint32_t* sampled_type);
 uint32_t spv_emit_sampler_image(SpvEmitter* e, uint32_t f32_type, uint32_t set, uint32_t binding, uint32_t type,
                                 int array, int shadow, int multisample, uint32_t* sampled_type);
 uint32_t spv_emit_storage_image(SpvEmitter* e, uint32_t scalar_type, uint32_t set, uint32_t binding, uint32_t type,
@@ -556,7 +558,7 @@ uint32_t spv_emit_saturate(SpvEmitter* e, uint32_t f32_type, uint32_t u32_type, 
 uint32_t spv_emit_vec4_extract(SpvEmitter* e, uint32_t component_type, uint32_t vector, uint32_t component);
 uint32_t spv_emit_subgroup_ballot(SpvEmitter* e, uint32_t vec4_type, uint32_t u32_type, uint32_t predicate);
 uint32_t spv_emit_subgroup_umin_u32(SpvEmitter* e, uint32_t u32_type, uint32_t value);
-void spv_emit_subgroup_arithmetic_capability(SpvEmitter* e);
+static inline void spv_emit_subgroup_arithmetic_capability(SpvEmitter* e);
 uint32_t spv_emit_subgroup_shuffle_u32(SpvEmitter* e, uint32_t u32_type, uint32_t value, uint32_t lane);
 /* value from a lane of the invocation's quad: the lane (0-3) when swap is 0, else the neighbour across direction (0
    horizontal, 1 vertical, 2 diagonal); lane and direction are constants. Helper invocations take part */
@@ -582,19 +584,20 @@ uint32_t spv_emit_image_fetch_sample(SpvEmitter* e, uint32_t result_type, uint32
 uint32_t spv_emit_image_gather_ex(SpvEmitter* e, uint32_t vec4_type, uint32_t sampled_type, uint32_t sampler,
                                   uint32_t coordinates, uint32_t component, uint32_t dref, uint32_t offset);
 /* mode: 0 implicit LOD, 1 explicit LOD, 2 bias. Optional depth and texel offset. */
-uint32_t spv_emit_sample_image(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
-                               uint32_t coordinates, uint32_t depth_reference, uint32_t mode, uint32_t level,
-                               uint32_t offset, int dynamic_offset);
+static inline uint32_t spv_emit_sample_image(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type,
+                                             uint32_t sampler, uint32_t coordinates, uint32_t depth_reference,
+                                             uint32_t mode, uint32_t level, uint32_t offset, int dynamic_offset);
 /* MinLod is valid with implicit LOD or gradients. It is not valid with the Lod image operand. */
 uint32_t spv_emit_sample_image_min_lod(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
                                        uint32_t coordinates, uint32_t depth_reference, uint32_t mode, uint32_t level,
                                        uint32_t offset, int dynamic_offset, uint32_t min_lod);
 /* OpImageSampleExplicitLod with the Grad operand (dx and dy) and an optional constant offset */
-uint32_t spv_emit_sample_grad(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
-                              uint32_t coordinates, uint32_t dx, uint32_t dy, uint32_t offset);
-uint32_t spv_emit_sample_grad_min_lod(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
-                                      uint32_t coordinates, uint32_t dx, uint32_t dy, uint32_t offset,
-                                      uint32_t min_lod);
+static inline uint32_t spv_emit_sample_grad(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type,
+                                            uint32_t sampler, uint32_t coordinates, uint32_t dx, uint32_t dy,
+                                            uint32_t offset);
+static inline uint32_t spv_emit_sample_grad_min_lod(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type,
+                                                    uint32_t sampler, uint32_t coordinates, uint32_t dx, uint32_t dy,
+                                                    uint32_t offset, uint32_t min_lod);
 /* Dynamic Offset requires maintenance8 in Vulkan. The caller gates that enabled device feature. */
 uint32_t spv_emit_sample_grad_offset(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type, uint32_t sampler,
                                      uint32_t coordinates, uint32_t dx, uint32_t dy, uint32_t offset,
@@ -604,7 +607,7 @@ uint32_t spv_emit_storage_access_u32(SpvEmitter* e, uint32_t pointer_type, uint3
                                      uint32_t element_index);
 uint32_t spv_emit_iadd_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right);
 uint32_t spv_emit_umul_high_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right);
-void spv_emit_store_u32(SpvEmitter* e, uint32_t pointer, uint32_t value);
+static inline void spv_emit_store_u32(SpvEmitter* e, uint32_t pointer, uint32_t value);
 void spv_emit_store(SpvEmitter* e, uint32_t pointer, uint32_t value);
 /* a load or store of Workgroup or StorageBuffer memory that other invocations read or write: NonPrivatePointer in a
    module of the Vulkan memory model, where without it the barriers don't order the access for them; a plain one in
@@ -694,4 +697,95 @@ uint32_t spv_emit_ext(SpvEmitter* e, uint32_t type, uint32_t instruction, const 
 #define SPV(e, opcode, type, ...) spv_emit_op((e), (opcode), (type), SPV_ARGS(__VA_ARGS__))
 #define SPV_VOID(e, opcode, ...)  spv_emit_void_op((e), (opcode), SPV_ARGS(__VA_ARGS__))
 #define SPV_EXT(e, type, instruction, ...) spv_emit_ext((e), (type), (instruction), SPV_ARGS(__VA_ARGS__))
+/* The functions declared static inline above: each is another with some of its arguments given, inline in its users */
+static inline void spv_emit_shader_capability(SpvEmitter* e) { spv_emit_capability(e, SPV_CAPABILITY_SHADER); }
+static inline void spv_emit_float16_capability(SpvEmitter* e) { spv_emit_capability(e, SPV_CAPABILITY_FLOAT16); }
+static inline void spv_emit_demote_extension(SpvEmitter* e) {
+    spv_emit_extension(e, "SPV_EXT_demote_to_helper_invocation");
+}
+static inline void spv_emit_float64_capability(SpvEmitter* e) { spv_emit_capability(e, SPV_CAPABILITY_FLOAT64); }
+static inline void spv_emit_draw_parameters_capability(SpvEmitter* e) {
+    spv_emit_capability(e, SPV_CAPABILITY_DRAW_PARAMETERS);
+}
+static inline void spv_emit_layer_capability(SpvEmitter* e) { spv_emit_capability(e, SPV_CAPABILITY_SHADER_LAYER); }
+static inline void spv_emit_clip_distance_capability(SpvEmitter* e) {
+    spv_emit_capability(e, SPV_CAPABILITY_CLIP_DISTANCE);
+}
+static inline void spv_emit_image_query_capability(SpvEmitter* e) {
+    spv_emit_capability(e, SPV_CAPABILITY_IMAGE_QUERY);
+}
+static inline void spv_emit_subgroup_quad_capability(SpvEmitter* e) {
+    spv_emit_capability(e, SPV_CAPABILITY_GROUP_NON_UNIFORM_QUAD);
+}
+static inline void spv_emit_image_gather_extended_capability(SpvEmitter* e) {
+    spv_emit_capability(e, SPV_CAPABILITY_IMAGE_GATHER_EXTENDED);
+}
+static inline void spv_emit_compute_entry_str(SpvEmitter* e, uint32_t function, const char* name,
+                                              const uint32_t* interfaces, size_t interface_count) {
+    spv_emit_entry_str(e, SPV_STAGE_COMPUTE, function, name, interfaces, interface_count);
+}
+static inline uint32_t spv_emit_type_u32(SpvEmitter* e) { return spv_emit_type_int(e, 32, 0); }
+static inline uint32_t spv_emit_type_i32(SpvEmitter* e) { return spv_emit_type_int(e, 32, 1); }
+static inline uint32_t spv_emit_type_int64(SpvEmitter* e, int is_signed) { return spv_emit_type_int(e, 64, is_signed); }
+static inline uint32_t spv_emit_type_f16(SpvEmitter* e) { return spv_emit_type_float(e, 16); }
+static inline uint32_t spv_emit_type_f32(SpvEmitter* e) { return spv_emit_type_float(e, 32); }
+static inline uint32_t spv_emit_type_f64(SpvEmitter* e) { return spv_emit_type_float(e, 64); }
+static inline uint32_t spv_emit_type_vec4(SpvEmitter* e, uint32_t component_type) {
+    return spv_emit_type_vector(e, component_type, 4);
+}
+static inline uint32_t spv_emit_type_vec2(SpvEmitter* e, uint32_t component_type) {
+    return spv_emit_type_vector(e, component_type, 2);
+}
+static inline uint32_t spv_emit_type_vec3(SpvEmitter* e, uint32_t component_type) {
+    return spv_emit_type_vector(e, component_type, 3);
+}
+static inline uint32_t spv_emit_type_storage_pointer(SpvEmitter* e, uint32_t pointee_type) {
+    return spv_emit_type_pointer(e, 12, pointee_type);
+}
+static inline uint32_t spv_emit_type_function_pointer(SpvEmitter* e, uint32_t pointee_type) {
+    return spv_emit_type_pointer(e, 7, pointee_type);
+}
+static inline uint32_t spv_emit_type_workgroup_pointer(SpvEmitter* e, uint32_t pointee_type) {
+    return spv_emit_type_pointer(e, 4, pointee_type);
+}
+static inline uint32_t spv_emit_type_function_void(SpvEmitter* e, uint32_t void_type) {
+    return spv_emit_type_function(e, void_type, NULL, 0);
+}
+static inline uint32_t spv_emit_output_element_pointer(SpvEmitter* e, uint32_t f32_type, uint32_t array,
+                                                       uint32_t index) {
+    return spv_emit_function_element_pointer(e, spv_emit_type_pointer(e, 3, f32_type), array, index);
+}
+static inline uint32_t spv_emit_sampler_image_array(SpvEmitter* e, uint32_t scalar_type, uint32_t u32_type,
+                                                    uint32_t set, uint32_t binding, uint32_t type, int array,
+                                                    int shadow, uint32_t count, uint32_t* sampled_type) {
+    return spv_emit_sampler_image_array_ex(e, scalar_type, u32_type, set, binding, type, array, shadow, 0, count,
+                                           sampled_type);
+}
+static inline uint32_t spv_emit_sampler2d(SpvEmitter* e, uint32_t f32_type, uint32_t set, uint32_t binding, int shadow,
+                                          uint32_t* sampled_type) {
+    return spv_emit_sampler_image(e, f32_type, set, binding, 1, 0, shadow, 0, sampled_type);
+}
+static inline void spv_emit_subgroup_arithmetic_capability(SpvEmitter* e) {
+    spv_emit_capability(e, SPV_CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC);
+}
+static inline uint32_t spv_emit_sample_image(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type,
+                                             uint32_t sampler, uint32_t coordinates, uint32_t depth_reference,
+                                             uint32_t mode, uint32_t level, uint32_t offset, int dynamic_offset) {
+    return spv_emit_sample_image_min_lod(e, result_type, sampled_type, sampler, coordinates, depth_reference, mode,
+                                         level, offset, dynamic_offset, 0);
+}
+static inline uint32_t spv_emit_sample_grad(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type,
+                                            uint32_t sampler, uint32_t coordinates, uint32_t dx, uint32_t dy,
+                                            uint32_t offset) {
+    return spv_emit_sample_grad_min_lod(e, result_type, sampled_type, sampler, coordinates, dx, dy, offset, 0);
+}
+static inline uint32_t spv_emit_sample_grad_min_lod(SpvEmitter* e, uint32_t result_type, uint32_t sampled_type,
+                                                    uint32_t sampler, uint32_t coordinates, uint32_t dx, uint32_t dy,
+                                                    uint32_t offset, uint32_t min_lod) {
+    return spv_emit_sample_grad_offset(e, result_type, sampled_type, sampler, coordinates, dx, dy, offset, 0, min_lod);
+}
+static inline void spv_emit_store_u32(SpvEmitter* e, uint32_t pointer, uint32_t value) {
+    spv_emit_store(e, pointer, value);
+}
+
 #endif
