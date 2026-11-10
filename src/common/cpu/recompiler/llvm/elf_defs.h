@@ -179,6 +179,7 @@ typedef struct {
 #define DT_REL             17
 #define DT_RELSZ           18
 #define DT_RELENT          19
+#define DT_PLTREL          20
 #define DT_JMPREL          23
 #define DT_INIT_ARRAY      25
 #define DT_FINI_ARRAY      26
