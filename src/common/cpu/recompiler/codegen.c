@@ -226,8 +226,11 @@ static SnxA64Flow decode(const SnxCodegen* codegen, SnxU32 word, SnxA64Insn* ins
    an entry into an address (its shift and extension; none when the table holds absolute addresses) */
 typedef struct {
     SnxU64 base;
+    /* what the ADD adds an entry to: the table's base, or an address in the code that the function takes for it
+       (LLVM's compressed tables: unsigned bytes or halves, counted in instructions from a label) */
+    SnxU64 anchor;
     SnxU64 load; /* the entry load's address, the bound's search starts there */
-    unsigned index_reg, base_reg;
+    unsigned index_reg;
     unsigned width; /* entry bytes */
     unsigned scale; /* the ADD's left shift of the entry */
     unsigned ext;   /* 1 UXTW, 2 SXTW, 0 the 64-bit entry */
@@ -236,6 +239,12 @@ typedef struct {
 } JumpTable;
 
 #define SNX_JUMP_TABLE_MAX 256 /* a switch with more cases is followed to here */
+/* instructions a compiler puts between the ADD that makes a case's address and its BR, and between the code that
+   takes a table's address and the entry's load (the first cases' moves; a loop keeps the table's address outside) */
+#define SNX_JUMP_TABLE_GAP   16
+#define SNX_JUMP_TABLE_BASE  256
+/* instructions either side of a table's code in which the branch to it is looked for */
+#define SNX_JUMP_TABLE_REACH 8192
 
 static int is_br(SnxU32 word) { return (word & 0xfffffc1fUL) == 0xd61f0000UL; }
 
@@ -348,53 +357,83 @@ static SnxU64 taken_address(SnxCodegen* codegen, SnxU64 address, SnxU32 word) {
     return target && !jump_table_base(codegen, address, reg) ? target : 0;
 }
 
-/* whether the BR at address dispatches through a jump table, filling in where its cases are */
-static int jump_table_shape(SnxCodegen* codegen, SnxU64 address, SnxU32 word, JumpTable* table) {
-    SnxU32 before, next;
-    unsigned rd, rn, rm, scale, ext, base, index, entry, width;
-    int sign;
-    memset(table, 0, sizeof(*table));
-    if (!snx_codegen_word(codegen, address - 4, &before)) return 0;
-    if (table_add(before, &rd, &rn, &rm, &scale, &ext) && rd == ((word >> 5) & 31)) {
-        table->base_reg = rn;
-        table->scale = scale;
-        table->ext = ext;
-        for (unsigned i = 2; i <= 5; ++i) {
-            if (!snx_codegen_word(codegen, address - (SnxU64)i * 4, &next)) return 0;
-            if (table_load(next, &base, &index, &entry, &width, &sign)) {
-                if (entry != rm || base != rn) return 0;
-                table->load = address - (SnxU64)i * 4;
-                table->index_reg = index;
-                table->width = width;
-                table->sign = sign;
-                break;
-            }
-            if (snx_a64_flow(next, codegen->features) != SNX_A64_FLOW_PLAIN) return 0;
-        }
-        if (!table->width) return 0;
-    } else if (table_load(before, &base, &index, &entry, &width, &sign) && entry == ((word >> 5) & 31) &&
-               width == 8 && !sign) {
-        /* ldr xentry, [base, ...]; br xentry: absolute addresses */
-        table->base_reg = base;
-        table->load = address - 4;
-        table->index_reg = index;
-        table->width = width;
-        table->absolute = 1;
-    } else
-        return 0;
-    for (unsigned i = 1; i <= 8; ++i) { /* the base's own address: ADR, or ADRP and an ADD */
-        SnxU32 setup;
-        unsigned written;
-        SnxU64 value;
-        if (table->load < (SnxU64)i * 4 || !snx_codegen_word(codegen, table->load - (SnxU64)i * 4, &setup)) return 0;
-        value = address_value(codegen, table->load - (SnxU64)i * 4, setup, &written);
-        if (value && written == table->base_reg) {
-            table->base = value;
-            return 1;
-        }
-        if (snx_a64_flow(setup, codegen->features) != SNX_A64_FLOW_PLAIN) return 0;
+/* whether a plain instruction may write general register reg: its Rd or Rt (bits 0-4, an FP register's number there
+   too, which only ends a search early), a load pair's second register, the base a load or store writes back */
+static int may_write(SnxU32 word, unsigned reg) {
+    if ((word & 31) == reg) return 1;
+    if ((word & 0x0a000000UL) != 0x08000000UL) return 0; /* not a load or store */
+    if ((word & 0x3a000000UL) == 0x28000000UL)           /* a pair: a load's Rt2, a pre- or post-indexed one's base */
+        return ((word & (1UL << 22)) && ((word >> 10) & 31) == reg) ||
+               ((word & (1UL << 23)) && ((word >> 5) & 31) == reg);
+    return (word & 0x3b200400UL) == 0x38000400UL && ((word >> 5) & 31) == reg; /* pre- or post-indexed: its base */
+}
+
+/* The instruction that gives reg the value it has at address: the nearest before it that may write reg, at most limit
+   back, 0 for none. Only plain instructions lie in between; with far, also branches and, for a register a call keeps
+   (x19 to x28), calls: the nearest in the function's layout, where a loop's setup comes before the loop */
+static SnxU64 written_at(SnxCodegen* codegen, SnxU64 address, unsigned reg, unsigned limit, int far) {
+    for (unsigned i = 1; i <= limit && address >= (SnxU64)i * 4; ++i) {
+        SnxU32 word;
+        SnxA64Flow flow;
+        if (!snx_codegen_word(codegen, address - (SnxU64)i * 4, &word)) return 0;
+        flow = snx_a64_flow(word, codegen->features);
+        if (flow == SNX_A64_FLOW_PLAIN) {
+            if (may_write(word, reg)) return address - (SnxU64)i * 4;
+        } else if (!far || (flow != SNX_A64_FLOW_BC && flow != SNX_A64_FLOW_B &&
+                            !((flow == SNX_A64_FLOW_BL || flow == SNX_A64_FLOW_BLR) && reg >= 19 && reg <= 28)))
+            return 0;
     }
     return 0;
+}
+
+/* the address reg holds at address, which the code took for it (address_value) at most limit instructions back, 0 for
+   none */
+static SnxU64 address_in(SnxCodegen* codegen, SnxU64 address, unsigned reg, unsigned limit, int far) {
+    SnxU64 at = written_at(codegen, address, reg, limit, far);
+    SnxU32 word;
+    unsigned written;
+    SnxU64 value = at && snx_codegen_word(codegen, at, &word) ? address_value(codegen, at, word, &written) : 0;
+    return value && written == reg ? value : 0;
+}
+
+/* whether the BR at address dispatches through a jump table, filling in where its cases are */
+static int jump_table_shape(SnxCodegen* codegen, SnxU64 address, SnxU32 word, JumpTable* table) {
+    SnxU32 made, load;
+    unsigned rd, rn, rm, scale, ext, base, index, entry, width, target = (word >> 5) & 31;
+    int sign;
+    memset(table, 0, sizeof(*table));
+    /* what makes the BR's register: an ADD of the entry to an address, or the entry's own load */
+    SnxU64 at = written_at(codegen, address, target, SNX_JUMP_TABLE_GAP, 0);
+    if (!at || !snx_codegen_word(codegen, at, &made)) return 0;
+    if (table_add(made, &rd, &rn, &rm, &scale, &ext)) {
+        if (rd != target) return 0;
+        table->load = written_at(codegen, at, rm, 4, 0);
+        if (!table->load || !snx_codegen_word(codegen, table->load, &load) ||
+            !table_load(load, &base, &index, &entry, &width, &sign) || entry != rm)
+            return 0;
+        table->scale = scale;
+        table->ext = ext;
+        table->sign = sign;
+    } else if (at == address - 4 && table_load(made, &base, &index, &entry, &width, &sign) && entry == target &&
+               width == 8 && !sign) {
+        /* ldr xentry, [base, ...]; br xentry: absolute addresses */
+        table->load = at;
+        table->absolute = 1;
+        rn = base;
+    } else
+        return 0;
+    table->index_reg = index;
+    table->width = width;
+    /* the base's own address: ADR, or ADRP and an ADD, by the load or, for a table outside the text, further back
+       (before the loop the switch is in) */
+    table->base = address_in(codegen, table->load, base, 8, 0);
+    if (!table->base && !table->absolute) {
+        table->base = address_in(codegen, table->load, base, SNX_JUMP_TABLE_BASE, 1);
+        if (snx_codegen_module(codegen, table->base)) return 0;
+    }
+    if (!table->base) return 0;
+    table->anchor = rn == base ? table->base : address_in(codegen, at, rn, 8, 0);
+    return table->anchor != 0;
 }
 
 /* an image read, not only the text: a jump table sits in .rodata */
@@ -411,20 +450,53 @@ static int image_read(SnxCodegen* codegen, SnxU64 address, unsigned width, SnxU6
     return 0;
 }
 
+/* the entries a CMP Wn, #imm or Xn, #imm of the index bounds a table to, cases + 1; 0 when word is no such compare */
+static unsigned compare_bound(SnxU32 word, unsigned index_reg) {
+    if (((word & 0xff800000UL) != 0x71000000UL && (word & 0xff800000UL) != 0xf1000000UL) ||
+        ((word >> 5) & 31) != index_reg || (word & 31) != 31)
+        return 0;
+    SnxU64 imm = (word >> 10) & 0xfff;
+    if (word & (1UL << 22)) imm <<= 12;
+    return imm < SNX_JUMP_TABLE_MAX ? (unsigned)imm + 1 : SNX_JUMP_TABLE_MAX;
+}
+
+/* the bound of a table whose code starts a block, block, that the compare's branch jumps to: cmp index, #imm;
+   b.ls block, in the instructions around it */
+static unsigned branch_bound(SnxCodegen* codegen, SnxU64 block, unsigned index_reg) {
+    for (int64_t at = -SNX_JUMP_TABLE_REACH; at < SNX_JUMP_TABLE_REACH; ++at) {
+        SnxU64 address = block + (SnxU64)(at * 4);
+        SnxU32 word, compare;
+        unsigned limit;
+        if (!snx_codegen_word(codegen, address, &word) || (word & 0xff00001fUL) != 0x54000009UL) continue; /* B.LS */
+        if (address + (SnxU64)(sign_extend((word >> 5) & 0x7ffffUL, 19) * 4) != block) continue;
+        limit = snx_codegen_word(codegen, address - 4, &compare) ? compare_bound(compare, index_reg) : 0;
+        if (limit) return limit;
+    }
+    return 0;
+}
+
 /* the entries the compare guarding the table bounds: cases + 1, or 0 when there is no such compare */
 static unsigned table_bound(SnxCodegen* codegen, SnxU64 load, unsigned index_reg) {
     for (unsigned i = 1; i <= 16 && load >= (SnxU64)i * 4; ++i) {
         SnxU32 word;
         SnxA64Flow flow;
+        unsigned limit;
         if (!snx_codegen_word(codegen, load - (SnxU64)i * 4, &word)) break;
-        if (((word & 0xff800000UL) == 0x71000000UL || (word & 0xff800000UL) == 0xf1000000UL) &&
-            ((word >> 5) & 31) == index_reg && (word & 31) == 31) { /* CMP Wn, #imm or Xn, #imm */
-            SnxU64 imm = (word >> 10) & 0xfff;
-            if (word & (1UL << 22)) imm <<= 12;
-            return imm < SNX_JUMP_TABLE_MAX ? (unsigned)imm + 1 : SNX_JUMP_TABLE_MAX;
-        }
+        limit = compare_bound(word, index_reg);
+        if (limit) return limit;
         flow = snx_a64_flow(word, codegen->features);
+        /* nothing runs on into the table's code: the compare is where a branch to it is */
+        if (flow == SNX_A64_FLOW_B || flow == SNX_A64_FLOW_RET || flow == SNX_A64_FLOW_BR)
+            return branch_bound(codegen, load - (SnxU64)i * 4 + 4, index_reg);
         if (flow != SNX_A64_FLOW_PLAIN && flow != SNX_A64_FLOW_BC) break;
+        /* the index widened to 64 bits after the compare (mov wI, wS; and xI, xS, #0xffffffff): the compare is on
+           the register it came from */
+        if (flow == SNX_A64_FLOW_PLAIN && (word & 31) == index_reg) {
+            if ((word & 0x7fe0ffe0UL) == 0x2a0003e0UL)
+                index_reg = (word >> 16) & 31;
+            else if ((word & 0xfffffc00UL) == 0x92407c00UL)
+                index_reg = (word >> 5) & 31;
+        }
     }
     return 0;
 }
@@ -438,6 +510,9 @@ size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targe
         !jump_table_shape(codegen, address, word, &table))
         return 0;
     limit = table_bound(codegen, table.load, table.index_reg);
+    /* an entry of four bytes that is no case leaves the text and ends an unbounded table; a byte or a half from an
+       address in the code lands in the text whatever it holds, so such a table is followed only to its bound */
+    if (!limit && table.anchor != table.base && table.width < 4) return 0;
     for (unsigned i = 0; i < (limit ? limit : SNX_JUMP_TABLE_MAX) && count < capacity; ++i) {
         SnxU64 raw, target;
         int64_t value;
@@ -448,8 +523,7 @@ size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targe
             value = (int64_t)(SnxU32)value;
         else if (table.ext == 2)
             value = (int64_t)(int32_t)value;
-        target = table.absolute ? (SnxU64)value
-                                : table.base + (SnxU64)(value * ((int64_t)1 << table.scale));
+        target = table.absolute ? (SnxU64)value : table.anchor + (SnxU64)(value * ((int64_t)1 << table.scale));
         if ((target & 3) || !snx_codegen_module(codegen, target)) {
             if (limit) continue; /* not code: the switch's default, or the next table's word */
             break;               /* no bound: the table ends where the code does */
