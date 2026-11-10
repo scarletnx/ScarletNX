@@ -514,13 +514,13 @@ static int moves_scaled(const Surf* s) {
 }
 /* src (TRANSFER_SRC) scaled into dst (TRANSFER_DST), whole images */
 static void scale_blit(VkCommandBuffer cb, VkImage src, u32 sw, u32 sh, u32 src_layer, VkImage dst, u32 dw, u32 dh,
-                       u32 dst_layer, int is_int) {
+                       u32 dst_layer, int nearest) {
     VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, src_layer, 1},
                      .srcOffsets = {{0, 0, 0}, {(i32)sw, (i32)sh, 1}},
                      .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, dst_layer, 1},
                      .dstOffsets = {{0, 0, 0}, {(i32)dw, (i32)dh, 1}}};
     rec_CmdBlitImage(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b,
-                     is_int ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+                     nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
 }
 
 /* the guest bytes of a render target: block linear, or pitch linear (its last row ends after the row's bytes, not
@@ -604,7 +604,9 @@ static int rt_load_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 off, u32 
             vk_barrier(cb, t, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                        VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            scale_blit(cb, t, s->w, s->h, 0, s->img, s->sw, s->sh, layer, s->f.is_int);
+            /* a bigger image takes each of the guest's texels whole, in all its pixels: blended with its neighbours,
+               a table's entry (a row of parameters, a list a compute program stored) has a part of the next one */
+            scale_blit(cb, t, s->w, s->h, 0, s->img, s->sw, s->sh, layer, s->f.is_int || s->sw > s->w || s->sh > s->h);
             vk_defer_image(t, tm, VK_NULL_HANDLE, VK_NULL_HANDLE);
         }
     }
