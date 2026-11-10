@@ -3,43 +3,34 @@
    The operand layout is the inverse of Mesa's NAK encoder (src/nouveau/compiler/nak/sm70_encode.rs):
    Copyright © 2022 Collabora, Ltd.
    SPDX-License-Identifier: MIT */
-/* The SM86 instruction decoder (sm86.h) and the search for programs in shader memory. The opcodes are
-   sm86_opcodes.def. Two switches made from it match an instruction: the 12-bit opcodes first, then the 9-bit ALU
-   opcodes with the forms each takes. A code that two rows share is a duplicate case, which the compiler refuses. */
+/* The SM86 instruction decoder (sm86.h) and the search for programs in shader memory. The opcodes are sm86.decode;
+   tools/decodetree turns them into a switch on the low 16 bits of the instruction (decode-sm86.inc in the build
+   folder), whose trans_ functions name the opcode. */
 #include "nx/gpu/shader/sm86.h"
+#include "common/utilities/decodetree.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/bits.h"
 #include <stdio.h>
 #include <stdlib.h>
 
 const Sm86OpInfo sm86_ops[SM86__COUNT] = {
-    {0, SM86_K_FIX, 0, "(unknown)"},
-#define SM86_OP(name, code, kind, forms, display) {code, kind, forms, display},
-#include "nx/gpu/shader/sm86_opcodes.def"
-#undef SM86_OP
+    {SM86_K_FIX, "(unknown)"},
+#define SM86_ROW(name, kind, display) {SM86_K_##kind, display},
+    SM86_OPS(SM86_ROW)
+#undef SM86_ROW
 };
 
-/* the row of a 12-bit opcode, or SM86_NONE */
-static int match_fix(u32 op12) {
-    switch (op12) {
-/* rows of the other kinds get a case past 12 bits, so that each row is one case */
-#define SM86_OP(name, code, kind, forms, display)                                                                      \
-    case (kind) == SM86_K_FIX ? (code): 0x10000 + SM86_##name : return SM86_##name;
-#include "nx/gpu/shader/sm86_opcodes.def"
-#undef SM86_OP
-        default: return SM86_NONE;
+/* the decoder's context: the opcode the trans_ function of the matching pattern names */
+typedef int DisasContext;
+#include "decode-sm86.inc"
+#define SM86_TRANS(name, kind, display)                                                                                \
+    static bool trans_##name(DisasContext* ctx, arg_##name* a) {                                                       \
+        (void)a;                                                                                                       \
+        *ctx = SM86_##name;                                                                                            \
+        return true;                                                                                                   \
     }
-}
-/* the row of a 9-bit ALU opcode, or SM86_NONE */
-static int match_alu(u32 op9) {
-    switch (op9) {
-#define SM86_OP(name, code, kind, forms, display)                                                                      \
-    case (kind) != SM86_K_FIX ? (code): 0x10000 + SM86_##name : return SM86_##name;
-#include "nx/gpu/shader/sm86_opcodes.def"
-#undef SM86_OP
-        default: return SM86_NONE;
-    }
-}
+SM86_OPS(SM86_TRANS)
+#undef SM86_TRANS
 
 static Sm86Src reg_src(const Sm86Insn* in, unsigned at, unsigned neg, unsigned abs, int uniform) {
     Sm86Src s = {0};
@@ -84,11 +75,8 @@ int sm86_decode(u64 lo, u64 hi, Sm86Insn* out) {
     in.ctrl.rd_bar = (u8)sm86_field(&in, 113, 3);
     in.ctrl.wait_mask = (u8)sm86_field(&in, 116, 6);
     in.ctrl.reuse = (u8)sm86_field(&in, 122, 4);
-    int op = match_fix(sm86_field(&in, 0, 12));
-    if (op == SM86_NONE) {
-        op = match_alu(sm86_field(&in, 0, 9));
-        if (op != SM86_NONE && !(sm86_ops[op].forms & (1u << in.form))) op = SM86_NONE;
-    }
+    int op = SM86_NONE;
+    if (!decode_sm86(&op, (uint16_t)lo)) op = SM86_NONE;
     in.op = (u16)op;
     if (op != SM86_NONE && sm86_ops[op].kind == SM86_K_UALU) {
         /* uniform registers throughout: a at 24, b and c at 32 or 64 */

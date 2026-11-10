@@ -185,30 +185,32 @@ static void test_flow(void) {
 }
 
 static void test_table(void) {
-    /* each row decodes to itself, in every form it takes, and no 12-bit code is also an ALU form */
-    for (int op = 1; op < SM86__COUNT; op++) {
-        const Sm86OpInfo* info = &sm86_ops[op];
-        for (u32 form = 0; form < 8; form++) {
-            if (info->kind == SM86_K_FIX && form) break;
-            if (info->kind != SM86_K_FIX && !(info->forms & (1u << form))) continue;
-            Word x = info->kind == SM86_K_FIX ? fix(info->code) : alu(info->code, form, 1, 2);
-            if (info->kind == SM86_K_UALU) set(&x, 91, 1, 1);
-            Sm86Insn in = dec(x);
-            if (in.op != op) fprintf(stderr, "%s form %u decodes as %s\n", info->name, form, sm86_ops[in.op].name);
-            CHECK(in.op == op);
-        }
-    }
+    /* sm86.decode's patterns agree with SM86_OPS: every opcode has a code, an ALU opcode's codes (its forms) share
+       their low 9 bits, any other opcode has a single 12-bit code, and the predicate bits change nothing */
+    u32 codes[SM86__COUNT] = {0}, low9[SM86__COUNT] = {0};
     for (u32 code = 0; code < 4096; code++) {
-        int fixed = 0, as_alu = 0;
-        for (int op = 1; op < SM86__COUNT; op++) {
-            const Sm86OpInfo* info = &sm86_ops[op];
-            if (info->kind == SM86_K_FIX && info->code == code) fixed++;
-            if (info->kind != SM86_K_FIX && info->code == (code & 0x1ff) && (info->forms & (1u << (code >> 9))))
-                as_alu++;
+        Sm86Insn in = dec(fix(code));
+        for (u32 pred = 0; pred < 16; pred++) {
+            Word x = fix(code);
+            set(&x, 12, 4, pred);
+            CHECK(dec(x).op == in.op);
         }
-        if (fixed + as_alu > 1) fprintf(stderr, "code 0x%03x matches %d rows\n", code, fixed + as_alu);
-        CHECK(fixed + as_alu <= 1);
+        if (in.op == SM86_NONE) continue;
+        if (codes[in.op]++ && sm86_ops[in.op].kind != SM86_K_FIX && low9[in.op] != (code & 0x1ff)) {
+            fprintf(stderr, "%s has codes of two ALU opcodes\n", sm86_ops[in.op].name);
+            CHECK(0);
+        }
+        low9[in.op] = code & 0x1ff;
     }
+    for (int op = 1; op < SM86__COUNT; op++) {
+        int ok = sm86_ops[op].kind == SM86_K_FIX ? codes[op] == 1 : codes[op] >= 1 && codes[op] <= 7;
+        if (!ok) fprintf(stderr, "%s has %u codes\n", sm86_ops[op].name, codes[op]);
+        CHECK(ok);
+    }
+    /* a few rows of sm86.decode: FADD in form 1 and 7, FMUL not in form 2, UIADD3 in form 4, FSWZADD */
+    CHECK(dec(alu(0x021, 1, 1, 2)).op == SM86_FADD && dec(alu(0x021, 7, 1, 2)).op == SM86_FADD);
+    CHECK(dec(alu(0x020, 2, 1, 2)).op == SM86_NONE && dec(alu(0x090, 4, 1, 2)).op == SM86_UIADD3);
+    CHECK(dec(fix(0x822)).op == SM86_FSWZADD && dec(fix(0x022)).op == SM86_NONE);
     Sm86Insn in;
     CHECK(!sm86_decode(0x7fff, 0, &in) && in.op == SM86_NONE); /* 0xfff is no opcode */
 }

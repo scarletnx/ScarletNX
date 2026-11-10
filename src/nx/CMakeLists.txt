@@ -118,10 +118,13 @@ snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c
                      gpu/shader/emit_io.c gpu/shader/emit_flow.c gpu/shader/emit_thread.c
                      gpu/shader/sm86_decode.c gpu/shader/sm86_translate.c gpu/shader/sm86_eval.c gpu/shader/advanced_blend_spirv.c
                      gpu/shader/coverage_spirv.c gpu/shader/capture_tiles_spirv.c gpu/shader/depth_stencil_spirv.c gpu/shader/write_log.c)
-# decode.c includes the Maxwell decoder tools/decodetree makes from gpu/shader/sm53.decode (cmake/decodetree.cmake)
+# decode.c and sm86_decode.c include the Maxwell and SM86 decoders tools/decodetree makes from gpu/shader/sm53.decode
+# and sm86.decode (cmake/decodetree.cmake)
 include("${PROJECT_SOURCE_DIR}/cmake/decodetree.cmake")
 snx_decodetree(snx_shader OUTPUT decode-sm53.inc DECODE "${CMAKE_CURRENT_SOURCE_DIR}/gpu/shader/sm53.decode"
                OPTIONS -w 16 --static-decode=decode_sm53)
+snx_decodetree(snx_shader OUTPUT decode-sm86.inc DECODE "${CMAKE_CURRENT_SOURCE_DIR}/gpu/shader/sm86.decode"
+               OPTIONS -w 16 --static-decode=decode_sm86)
 # the drivers known to break an extension or feature, compiled in from gpu/vk/extension_bans.txt
 include("${PROJECT_SOURCE_DIR}/cmake/vk_extension_bans.cmake")
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c

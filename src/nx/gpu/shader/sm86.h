@@ -23,18 +23,195 @@
 #include "nx/gpu/shader/shader.h"
 #include <stddef.h>
 
+/* the kind of an opcode: an ALU instruction (its sources placed by its form), the same on the uniform datapath, or
+   another */
 enum { SM86_K_FIX = 0, SM86_K_ALU = 1, SM86_K_UALU = 2 };
-/* the opcodes, SM86_<NAME> from sm86_opcodes.def, after SM86_NONE (an unknown one) */
+/* The SM86 opcodes: X(NAME, kind, display name) for each, the kind SM86_K_<kind>. sm86.decode has their encodings,
+   under the same names, and sm86_decode.c a trans_ function for each. The enum is SM86_NONE (an unknown one), then
+   SM86_<NAME> in this order. Keep the families together: the translator tests the names, not ranges */
+#define SM86_OPS(X)                                                                                                    \
+    X(FADD, ALU, "FADD")                                                                                               \
+    X(FMUL, ALU, "FMUL")                                                                                               \
+    X(FFMA, ALU, "FFMA")                                                                                               \
+    X(FMNMX, ALU, "FMNMX")                                                                                             \
+    X(FSET, ALU, "FSET")                                                                                               \
+    X(FSETP, ALU, "FSETP")                                                                                             \
+    X(FSEL, ALU, "FSEL")                                                                                               \
+    X(MUFU, ALU, "MUFU")                                                                                               \
+    X(FSWZADD, FIX, "FSWZADD")                                                                                         \
+    X(DADD, ALU, "DADD")                                                                                               \
+    X(DMUL, ALU, "DMUL")                                                                                               \
+    X(DFMA, ALU, "DFMA")                                                                                               \
+    X(DSETP, ALU, "DSETP")                                                                                             \
+    X(HADD2, ALU, "HADD2")                                                                                             \
+    X(HMUL2, ALU, "HMUL2")                                                                                             \
+    X(HFMA2, ALU, "HFMA2")                                                                                             \
+    X(HFMA2_MMA, ALU, "HFMA2.MMA")                                                                                     \
+    X(HSET2, ALU, "HSET2")                                                                                             \
+    X(HSETP2, ALU, "HSETP2")                                                                                           \
+    X(HMNMX2, ALU, "HMNMX2")                                                                                           \
+    X(F2F, ALU, "F2F")                                                                                                 \
+    X(F2F64, ALU, "F2F.F64")                                                                                           \
+    X(F2FP, ALU, "F2FP")                                                                                               \
+    X(F2I, ALU, "F2I")                                                                                                 \
+    X(F2I64, ALU, "F2I.64")                                                                                            \
+    X(I2F, ALU, "I2F")                                                                                                 \
+    X(I2F64, ALU, "I2F.64")                                                                                            \
+    X(I2FP, ALU, "I2FP")                                                                                               \
+    X(F2IP, ALU, "F2IP")                                                                                               \
+    X(FRND, ALU, "FRND")                                                                                               \
+    X(FRND64, ALU, "FRND.F64")                                                                                         \
+    X(IADD3, ALU, "IADD3")                                                                                             \
+    X(IMAD, ALU, "IMAD")                                                                                               \
+    X(IMAD_WIDE, ALU, "IMAD.WIDE")                                                                                     \
+    X(IMAD_HI, ALU, "IMAD.HI")                                                                                         \
+    X(IDP4, ALU, "IDP4A")                                                                                              \
+    X(IMNMX, ALU, "IMNMX")                                                                                             \
+    X(ISETP, ALU, "ISETP")                                                                                             \
+    X(IABS, ALU, "IABS")                                                                                               \
+    X(LEA, ALU, "LEA")                                                                                                 \
+    X(LOP3, ALU, "LOP3")                                                                                               \
+    X(SHF, ALU, "SHF")                                                                                                 \
+    X(PRMT, ALU, "PRMT")                                                                                               \
+    X(SGXT, ALU, "SGXT")                                                                                               \
+    X(BMSK, ALU, "BMSK")                                                                                               \
+    X(BREV, ALU, "BREV")                                                                                               \
+    X(FLO, ALU, "FLO")                                                                                                 \
+    X(POPC, ALU, "POPC")                                                                                               \
+    X(MOV, ALU, "MOV")                                                                                                 \
+    X(SEL, ALU, "SEL")                                                                                                 \
+    X(R2P, ALU, "R2P")                                                                                                 \
+    X(P2R, ALU, "P2R")                                                                                                 \
+    X(UP2UR, UALU, "UP2UR")                                                                                            \
+    X(PLOP3, FIX, "PLOP3")                                                                                             \
+    X(UPLOP3, FIX, "UPLOP3")                                                                                           \
+    X(CS2R, FIX, "CS2R")                                                                                               \
+    X(S2R, FIX, "S2R")                                                                                                 \
+    X(S2UR, FIX, "S2UR")                                                                                               \
+    X(R2UR, FIX, "R2UR")                                                                                               \
+    X(UMOV, UALU, "UMOV")                                                                                              \
+    X(REDUX, FIX, "REDUX")                                                                                             \
+    X(VOTE, FIX, "VOTE")                                                                                               \
+    X(UVOTE, FIX, "VOTEU")                                                                                             \
+    X(MATCH, FIX, "MATCH")                                                                                             \
+    X(SHFL_RR, FIX, "SHFL (reg, reg)")                                                                                 \
+    X(SHFL_RI, FIX, "SHFL (reg, imm)")                                                                                 \
+    X(SHFL_IR, FIX, "SHFL (imm, reg)")                                                                                 \
+    X(SHFL_II, FIX, "SHFL (imm, imm)")                                                                                 \
+    X(UIADD3, UALU, "UIADD3")                                                                                          \
+    X(UIMAD, UALU, "UIMAD")                                                                                            \
+    X(UIMAD_WIDE, UALU, "UIMAD.WIDE")                                                                                  \
+    X(ULEA, UALU, "ULEA")                                                                                              \
+    X(ULOP3, UALU, "ULOP3")                                                                                            \
+    X(USHF, UALU, "USHF")                                                                                              \
+    X(UPRMT, UALU, "UPRMT")                                                                                            \
+    X(USEL, UALU, "USEL")                                                                                              \
+    X(UISETP, UALU, "UISETP")                                                                                          \
+    X(UIMNMX, UALU, "UIMNMX")                                                                                          \
+    X(USGXT, UALU, "USGXT")                                                                                            \
+    X(UBMSK, UALU, "UBMSK")                                                                                            \
+    X(UFLO, UALU, "UFLO")                                                                                              \
+    X(UBREV, UALU, "UBREV")                                                                                            \
+    X(UPOPC, UALU, "UPOPC")                                                                                            \
+    X(UIABS, UALU, "UIABS")                                                                                            \
+    X(UF2FP, UALU, "UF2FP")                                                                                            \
+    X(LDG, FIX, "LDG")                                                                                                 \
+    X(LDG_NOU, FIX, "LDG (no uniform)")                                                                                \
+    X(LDL, FIX, "LDL")                                                                                                 \
+    X(LDS, FIX, "LDS")                                                                                                 \
+    X(STG, FIX, "STG")                                                                                                 \
+    X(STG_NOU, FIX, "STG (no uniform)")                                                                                \
+    X(STL, FIX, "STL")                                                                                                 \
+    X(STL_NOU, FIX, "STL (no uniform)")                                                                                \
+    X(STS, FIX, "STS")                                                                                                 \
+    X(STS_NOU, FIX, "STS (no uniform)")                                                                                \
+    X(LDC, FIX, "LDC")                                                                                                 \
+    X(LDC_BINDLESS, FIX, "LDC (bindless)")                                                                             \
+    X(ULDC, FIX, "ULDC")                                                                                               \
+    X(ULDC_IDX, FIX, "ULDC (indexed)")                                                                                 \
+    X(ULDCG, FIX, "ULDC (global)")                                                                                     \
+    X(RED, FIX, "RED")                                                                                                 \
+    X(ATOMG, FIX, "ATOMG")                                                                                             \
+    X(ATOMG_NOU, FIX, "ATOMG (no uniform)")                                                                            \
+    X(ATOMG_CAS, FIX, "ATOMG.CAS")                                                                                     \
+    X(ATOMS, FIX, "ATOMS")                                                                                             \
+    X(ATOMS_NOU, FIX, "ATOMS (no uniform)")                                                                            \
+    X(ATOMS_CAS, FIX, "ATOMS.CAS")                                                                                     \
+    X(ATOMS_POPC_INC, FIX, "ATOMS.POPC.INC")                                                                           \
+    X(CCTL, FIX, "CCTL")                                                                                               \
+    X(MEMBAR, FIX, "MEMBAR")                                                                                           \
+    X(ALD, FIX, "ALD")                                                                                                 \
+    X(AST, FIX, "AST")                                                                                                 \
+    X(AL2P, FIX, "AL2P")                                                                                               \
+    X(IPA, FIX, "IPA")                                                                                                 \
+    X(IPA_U, FIX, "IPA (uniform index)")                                                                               \
+    X(LDTRAM, FIX, "LDTRAM")                                                                                           \
+    X(ISBERD, FIX, "ISBERD")                                                                                           \
+    X(ISBEWR, FIX, "ISBEWR")                                                                                           \
+    X(PIXLD, FIX, "PIXLD")                                                                                             \
+    X(OUT, ALU, "OUT")                                                                                                 \
+    X(TEX, FIX, "TEX")                                                                                                 \
+    X(TEX_B, FIX, "TEX.B")                                                                                             \
+    X(TLD, FIX, "TLD")                                                                                                 \
+    X(TLD_B, FIX, "TLD.B")                                                                                             \
+    X(TLD4, FIX, "TLD4")                                                                                               \
+    X(TLD4_B, FIX, "TLD4.B")                                                                                           \
+    X(TMML, FIX, "TMML")                                                                                               \
+    X(TMML_B, FIX, "TMML.B")                                                                                           \
+    X(TXD, FIX, "TXD")                                                                                                 \
+    X(TXD_B, FIX, "TXD.B")                                                                                             \
+    X(TXQ, FIX, "TXQ")                                                                                                 \
+    X(TXQ_B, FIX, "TXQ.B")                                                                                             \
+    X(TEX_U, FIX, "TEX (uniform handle)")                                                                              \
+    X(TLD_U, FIX, "TLD (uniform handle)")                                                                              \
+    X(TLD4_U, FIX, "TLD4 (uniform handle)")                                                                            \
+    X(TXQ_U, FIX, "TXQ (uniform handle)")                                                                              \
+    X(SULD_P, FIX, "SULD.P")                                                                                           \
+    X(SULD_P_B, FIX, "SULD.P.B")                                                                                       \
+    X(SULD_D, FIX, "SULD.D")                                                                                           \
+    X(SULD_D_B, FIX, "SULD.D.B")                                                                                       \
+    X(SUST_P, FIX, "SUST.P")                                                                                           \
+    X(SUST_D, FIX, "SUST.D")                                                                                           \
+    X(SUST_P_B, FIX, "SUST.P.B")                                                                                       \
+    X(SUST_D_B, FIX, "SUST.D.B")                                                                                       \
+    X(SURED_B, FIX, "SURED.B")                                                                                         \
+    X(SURED, FIX, "SURED")                                                                                             \
+    X(SUATOM, FIX, "SUATOM")                                                                                           \
+    X(HMMA, FIX, "HMMA")                                                                                               \
+    X(LDSM, FIX, "LDSM")                                                                                               \
+    X(MOVM, FIX, "MOVM")                                                                                               \
+    X(SUATOM_B, FIX, "SUATOM.B")                                                                                       \
+    X(SUATOM_CAS_B, FIX, "SUATOM.CAS.B")                                                                               \
+    X(BRA, FIX, "BRA")                                                                                                 \
+    X(CALL, FIX, "CALL")                                                                                               \
+    X(RET, FIX, "RET")                                                                                                 \
+    X(BRX, FIX, "BRX")                                                                                                 \
+    X(BRXU, FIX, "BRXU")                                                                                               \
+    X(UBRA, FIX, "BRA.U")                                                                                              \
+    X(EXIT, FIX, "EXIT")                                                                                               \
+    X(BSSY, FIX, "BSSY")                                                                                               \
+    X(BSYNC, FIX, "BSYNC")                                                                                             \
+    X(BREAK, FIX, "BREAK")                                                                                             \
+    X(BMOV_R, FIX, "BMOV (to register)")                                                                               \
+    X(BMOV_B, FIX, "BMOV (to barrier)")                                                                                \
+    X(BMOV_BI, FIX, "BMOV (barrier from an immediate)")                                                                \
+    X(BMOV_BL, FIX, "BMOV (barrier from a barrier or state)")                                                          \
+    X(WARPSYNC, ALU, "WARPSYNC")                                                                                       \
+    X(KILL, FIX, "KILL")                                                                                               \
+    X(BAR, FIX, "BAR")                                                                                                 \
+    X(NOP, FIX, "NOP")                                                                                                 \
+    X(ERRBAR, FIX, "ERRBAR")                                                                                           \
+    X(DEPBAR, FIX, "DEPBAR")                                                                                           \
+    X(NANOSLEEP, ALU, "NANOSLEEP")
 enum {
     SM86_NONE = 0,
-#define SM86_OP(name, code, kind, forms, display) SM86_##name,
-#include "nx/gpu/shader/sm86_opcodes.def"
-#undef SM86_OP
+#define SM86_ENUM(name, kind, display) SM86_##name,
+    SM86_OPS(SM86_ENUM)
+#undef SM86_ENUM
     SM86__COUNT
 };
 typedef struct {
-    u16 code; /* 12 bits for SM86_K_FIX, 9 for the ALU kinds */
-    u8 kind, forms;
+    u8 kind;
     const char* name;
 } Sm86OpInfo;
 /* by opcode, SM86_NONE's first */
