@@ -3840,7 +3840,7 @@ static void wait_taken(const char* path) {
 }
 /* Run edenprobe's game as the fake driver plays it (SNX_TEST_PROBE): edenprobe's report in the card of the game made
    in the --data folder, a launch a line of the plan, each line's words "pass=N", "fail=SUITE" and
-   "summary=P,F,S,C"; the launches counted beside the report */
+   "summary=P,F,S,C"; the launches counted beside the report, each after its lines are there */
 static void fake_probe(int argc, char** argv) {
     char *card = NULL, *runs, *report, *counter, *plan, *line, *word, *last, *text;
     int launch, i;
@@ -3856,9 +3856,6 @@ static void fake_probe(int argc, char** argv) {
     assert(!snx_mkdirs(runs) && !snx_write_file(last, "runs/abc1234\n", 13));
     text = (char*)snx_read_file(counter, &size);
     launch = text ? atoi(text) : 0;
-    free(text);
-    text = snx_format("%d", launch + 1);
-    assert(!snx_write_file(counter, text, strlen(text)));
     free(text);
     plan = (char*)snx_read_file(getenv("SNX_TEST_PROBE"), &size);
     assert(plan);
@@ -3893,6 +3890,11 @@ static void fake_probe(int argc, char** argv) {
         FILE* out = fopen(report, "ab");
         assert(out && fputs(text, out) >= 0 && !fclose(out));
     }
+    free(text);
+    /* counted once its report is written: the test ends a launch (ESC) when it sees the count, and a launch ended
+       before its report leaves no run to go on with */
+    text = snx_format("%d", launch + 1);
+    assert(!snx_write_file(counter, text, strlen(text)));
     free(text);
     free(plan);
     free(last);
