@@ -5617,7 +5617,8 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_recorder_self_sync());
     viw_install();
     /* every check with each draw binding the pipeline linked from its parts and never the one made whole
-       (SNX_TEST_GPL=linked), or with each pipeline made whole as on a device without pipeline libraries (whole) */
+       (SNX_TEST_GPL=linked), or with each pipeline made whole, with the dynamic state the libraries gave (whole) */
+    g_mx_fixed_libraries = g_vk.has_gpl;
     if (getenv("SNX_TEST_GPL")) {
         const char* gpl = getenv("SNX_TEST_GPL");
         if (!strcmp(gpl, "linked")) {
