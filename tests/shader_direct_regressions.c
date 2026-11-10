@@ -4295,6 +4295,99 @@ static void vertex_screen_out(void) {
         free(spv);
     }
 }
+
+/* ShaderInfo.pos_out_mask: the vertex program writes generic 5's x, y and w from the registers its position's x, y
+   and w come from, whatever its z. A w or an x from another register, a store under a predicate or a later store of x
+   leave the generic out */
+static void vertex_position_out(void) {
+    struct {
+        u64 instructions[9];
+        int count;
+        u32 out;
+        const char* what;
+    } cases[] = {
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 0, 2),
+          SCREEN_AST(0xdc, 3, 1)},
+         7,
+         1u << 5,
+         "x, y and w stored from the position's registers"},
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 0, 4)},
+         6,
+         1u << 5,
+         "the four words stored as the position's"},
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 0, 2),
+          SCREEN_AST(0xdc, 2, 1)},
+         7,
+         0,
+         "a w that is the position's z, not its w"},
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 1, 1),
+          SCREEN_AST(0xd4, 1, 1), SCREEN_AST(0xdc, 3, 1)},
+         8,
+         0,
+         "an x that is the position's y"},
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_AST(0x70, 0, 4),
+          SCREEN_AST(0xd0, 0, 2) & ~(0xfull << 16), SCREEN_AST(0xdc, 3, 1)},
+         7,
+         0,
+         "a store under @P0 may not run"},
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 0, 2),
+          SCREEN_AST(0xdc, 3, 1), SCREEN_AST(0xd0, 2, 1)},
+         8,
+         0,
+         "a later store of x leaves the generic as that one wrote it"},
+    };
+    for (size_t k = 0; k < sizeof cases / sizeof *cases; k++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* spv = translate(cases[k].instructions, cases[k].count, ST_VS, &info, &words, 0);
+        check_translated(spv, &info, cases[k].what);
+        if (spv && info.pos_out_mask != cases[k].out)
+            fprintf(stderr, "  position out %#x, expected %#x\n", info.pos_out_mask, cases[k].out);
+        check(spv && info.pos_out_mask == cases[k].out, cases[k].what);
+        free(spv);
+    }
+}
+
+/* The position pass (ShaderInfo.varying, SH_VARYING_POSITION): a perspective generic the key names reads its x and y
+   over w as the fragment's own place, (gl_FragCoord - the viewport's origin) / its size * 2 - 1 with the viewport the
+   third vector of the push constants, at byte 80, and its w over w as 1; its z, a screen-linear input and a program
+   without the key read the input. smooth_in_mask names the perspective generics that plain IPAs read, none where an
+   indexed IPA reads any. A division (OpFDiv, 136) is the pass's alone in these programs */
+static void position_pass_case(const u64* instructions, int count, u32 imap7, u32 varying, int divisions, u32 smooth,
+                               const char* what) {
+    size_t slots, words = 0;
+    u64* code = guest_program(instructions, count, NULL, &slots);
+    if (!code) return;
+    set_sph(code, 7, imap7); /* byte 0x18 + 5 on: generic 5's (and 6's) components, 2 bits each */
+    ShaderInfo info = {0};
+    info.varying = varying;
+    u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 0, 1, 1, 1);
+    free(code);
+    check_translated(spv, &info, what);
+    if (spv) {
+        int found = count_opcode(spv, words, 136, 0xffffffffu), viewport = count_opcode(spv, words, 72, 2);
+        if (found != divisions || viewport != (divisions != 0) || info.smooth_in_mask != smooth)
+            fprintf(stderr, "  %d divisions (expected %d), %d third push constant vectors, smooth inputs %#x (%#x)\n",
+                    found, divisions, viewport, info.smooth_in_mask, smooth);
+        check(found == divisions && viewport == (divisions != 0) && info.smooth_in_mask == smooth, what);
+    }
+    free(spv);
+}
+static void fragment_position_pass(void) {
+    const u32 generic5 = shader_varying_positions(1u << 5);
+    const u64 xyw[] = {SCREEN_IPA(1, 0xd0), SCREEN_IPA(2, 0xd4), SCREEN_IPA(3, 0xdc)};
+    const u64 z[] = {SCREEN_IPA(1, 0xd8)};
+    const u64 indexed[] = {SCREEN_IPA(1, 0xd0), 0xe000000000070000ull | 1ull << 38 | 1ull << 8 | 2}; /* a[R1] */
+    check(shader_varying_position_mask(shader_varying_positions(0x80000021u)) == 0x80000021u &&
+              shader_varying_position_mask(shader_varying_positions(0x8000002fu)) == 7u && !shader_varying_positions(0),
+          "the position pass's key holds the three lowest generics");
+    position_pass_case(xyw, 3, 0xaa00, generic5, 2, 1u << 5, "x, y and w of a position generic from gl_FragCoord");
+    position_pass_case(xyw, 3, 0xaa00, 0, 0, 1u << 5, "without the key the inputs are read");
+    position_pass_case(xyw, 3, 0xaa00, shader_varying_positions(1u << 6), 0, 1u << 5, "another generic's key");
+    position_pass_case(z, 1, 0xaa00, generic5, 0, 1u << 5, "a position generic's z is the input's");
+    position_pass_case(xyw, 3, 0xff00, generic5, 0, 0, "a screen-linear generic is not rebuilt");
+    position_pass_case(indexed, 2, 0xaa00, 0, 0, 0, "an indexed IPA leaves no generic to a varying pass");
+}
 #undef SCREEN_IPA
 #undef SCREEN_IPA_MUL
 #undef SCREEN_RCP
@@ -4694,6 +4787,8 @@ int main(int argc, char** argv) {
     feedback_own_pixel();
     feedback_screen_uv();
     vertex_screen_out();
+    vertex_position_out();
+    fragment_position_pass();
     check(!g_fixtures.failed, "shader fixture paths allocated");
     for (size_t i = 0; i < g_fixtures.count; i++) free(g_fixtures.paths[i]);
     free(g_fixtures.paths);

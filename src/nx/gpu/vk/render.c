@@ -3076,6 +3076,18 @@ static int draw_shaders(const DsState* ds, u32 topology, int mesh, DrawShaders* 
     rt_int_targets(&ds->tgt, &o->rt_int, &o->rt_sint);
     return 1;
 }
+/* The varying pass of a draw with shaders sh (ShaderInfo.varying, the fragment program's key): none where the host
+   interpolates as the console does (NVIDIA's driver, which Eden leaves alone too). The position pass needs the
+   fragment program straight after the vertex program, whose position is the rasterizer's as written (no swizzle the
+   program applies, the viewport transform on) in viewport 0, and triangles drawn filled */
+static u32 draw_varying(const DsState* ds, const DrawShaders* sh) {
+    const VkSh *vs = sh->vs, *fs = sh->fs0;
+    if (g_vk.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY || sh->mesh || sh->tcs || sh->tes || sh->gs || !fs) return 0;
+    if (vs->si.writes_viewport || sh->window_xy || sh->swizzle || sh->topology < 4 || sh->topology > 9 ||
+        ds->rkey.polygon != DS_POLYGON_FILL)
+        return 0;
+    return shader_varying_positions(vs->si.pos_out_mask & fs->si.smooth_in_mask);
+}
 /* stream s's address and bytes (to its limit, 0 when the limit is below) */
 static u64 stream_start(const DsVertexBuffers* b, u32 s) { return b->addr[s]; }
 static u64 stream_len(const DsVertexBuffers* b, u32 s) { return b->size[s]; }
@@ -3910,8 +3922,10 @@ retry:
             tex_resolve(ds, texture->handle, &fres[0]);
             int num = vk_tex_num(fres[0].tic, fres[0].t);
             fk = (FsKey){.tm = num != 0, .ts = num == 2, .rm = sh.rt_int, .rs = sh.rt_sint};
-        } else
+        } else {
             fs_key(ds, sh.fs0, fres, last->si.out_mask, sh.rt_int, sh.rt_sint, &fk);
+            if (!capture) fk.config |= draw_varying(ds, &sh) << SH_FS_VARYING_SHIFT;
+        }
         fk.prim = sh.prim;
         if (shader_to_color) {
             fk.rm |= 1u << dc->coverage_to_color_output;
@@ -4810,8 +4824,16 @@ retry:
         memcpy(pc + 14, dc->tess_levels + 4, 2 * sizeof pc[0]);
     }
     if (capture) memcpy(&pc[28], &g_capture_draw.primitive, sizeof g_capture_draw.primitive);
+    /* a varying pass's viewport (shader/emit_io.c's shader_frag_ndc): this draw's, as it was set above */
+    int varying = fs && fs->si.varying;
+    if (varying) {
+        pc[20] = viewport[0].x;
+        pc[21] = viewport[0].y;
+        pc[22] = viewport[0].width;
+        pc[23] = viewport[0].height;
+    }
     rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0,
-                         g_vk.has_descriptor_heaps && capture ? sizeof pc : 20 * sizeof pc[0], pc);
+                         g_vk.has_descriptor_heaps && capture ? sizeof pc : (varying ? 24 : 20) * sizeof pc[0], pc);
     if (texture) {
         Surf* source = fres[0].t;
         if (!source || !rt[0]) {

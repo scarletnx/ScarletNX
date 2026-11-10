@@ -5298,6 +5298,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_txd_uniform.inc"
 #include "vulkan_vertex_input.inc"
 #include "vulkan_frag_coord.inc"
+#include "vulkan_varying.inc"
 #include "vulkan_vertex_restride.inc"
 #include "vulkan_msaa.inc"
 #include "vulkan_cross_stage_alias.inc"
@@ -6035,6 +6036,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_mesh_inputs());
     CHECK(!check_lone_lane());
     CHECK(!check_frag_coord_origin());
+    CHECK(!check_varying_passes());
     CHECK(!check_rt_other_layout());
     CHECK(!check_vertex_restride());
     CHECK(!check_vertex_input_layouts());
