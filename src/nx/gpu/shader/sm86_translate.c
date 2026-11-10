@@ -3230,22 +3230,25 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             return;
         }
         case SM86_F2IP: {
-            /* F2IP.U8.F32.NTZ d, a, b, c: the floats a and b each rounded to the nearest even integer and saturated
-               to 8 bits, a NaN 0 (.NTZ), packed as PTX's cvt.pack packs I2IP's: d = c << 16 | a' << 8 | b'. Bits
-               72-79 (CuAssembler's sm_86 records): 0x04 .U8.F32.NTZ, bit 76 .S8 (-128 to 127), bit 75 .RELU (0 to
-               127). One game's compute programs pack colours with F2IP.U8 then PRMT */
+            /* F2IP.U8.F32.NTZ d, a, b, c: the floats a and b each rounded to an integer and saturated to 8 bits, a
+               NaN 0 (.NTZ), packed as PTX's cvt.pack packs I2IP's: d = c << 16 | a' << 8 | b'. Bits 72-79
+               (CuAssembler's sm_86 records): 0x04 .U8.F32.NTZ, bit 76 .S8 (-128 to 127), bit 75 .RELU (0 to 127).
+               Bits 78-79 are the rounding, in F2I's place and order (nearest even, down, up, toward zero):
+               CuAssembler records none but the nearest, and one game's mesh programs give 3 to F2IP.U8 of a float
+               times 255, as a shader's uint() truncates. Its compute programs pack colours with F2IP.U8 then PRMT */
             u32 flags = sm86_field(in, 72, 8);
-            if ((flags & ~0x18u) != 0x04 || sm86_field(in, 78, 2)) {
+            if ((flags & ~0xd8u) != 0x04) {
                 fail(c, "F2IP with flags 0x%x", flags);
                 return;
             }
+            static const u16 rounding[4] = {SPV_GLSL_ROUND_EVEN, SPV_GLSL_FLOOR, SPV_GLSL_CEIL, SPV_GLSL_TRUNC};
             int s8 = (flags >> 4) & 1, relu = (flags >> 3) & 1;
             float lo = s8 && !relu ? -128.0f : 0.0f, hi = s8 ? 127.0f : 255.0f;
             u32 part[2];
             for (u32 k = 0; k < 2; k++) {
                 u32 x = to_f(c, rd(c, sm86_field(in, k ? 32 : 24, 8)));
                 u32 nan = spv_emit_unary(&c->e, SPV_OP_IS_NAN, c->t_bool, x);
-                u32 r = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_ROUND_EVEN, x);
+                u32 r = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, rounding[flags >> 6], x);
                 r = spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_N_MIN,
                                          spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_N_MAX, r, cf(c, lo)),
                                          cf(c, hi));
