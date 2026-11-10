@@ -584,7 +584,12 @@ typedef struct {
     uint32_t* sym_types;   /* variables: their SPIR-V storage class plus one; functions: their OpTypeFunction */
     uint32_t* sampler_ids; /* a uniform or parameter of a struct that holds samplers: its first sampler's variable or
                               parameter, the next sampler's at the next id */
-    GlslcHashEntry* hash;  /* pointer, image and sampler array types, constants: open addressing on GLSLC_HASH_SIZE */
+    /* pointer, image and sampler array types, constants: open addressing on GLSLC_HASH_SIZE. A sparse set says which
+       slots are taken (Briggs and Torczon's): slot i is when hash_back[i] < nhash and hash_used[hash_back[i]] is i,
+       which nothing left in the workspace can make true, so the hash is empty without being cleared */
+    GlslcHashEntry* hash;
+    uint16_t *hash_used, *hash_back;
+    uint32_t nhash;
     GlslcWords caps, imports, entry, modes, names, annotations, globals, functions, locals, body;
     uint32_t next_id;
     uint32_t glsl_ext;  /* the GLSL.std.450 import */

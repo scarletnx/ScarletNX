@@ -28,7 +28,7 @@ static size_t place(size_t* at, size_t count, size_t size) {
 
 typedef struct {
     size_t synth, toks, macros, interned, mtoks, exp, marks, nodes, types, members, syms, sym_hash, params, calls, walk;
-    size_t type_ids, sym_ids, sym_types, sampler_ids, hash, stack;
+    size_t type_ids, sym_ids, sym_types, sampler_ids, hash, hash_used, hash_back, stack;
     size_t caps, imports, entry, modes, names, annotations, globals, functions, locals, body;
     size_t total;
 } Layout;
@@ -55,6 +55,8 @@ static void layout(Layout* l) {
     l->sym_types = place(&at, SNX_GLSLC_MAX_SYMBOLS, sizeof(uint32_t));
     l->sampler_ids = place(&at, SNX_GLSLC_MAX_SYMBOLS, sizeof(uint32_t));
     l->hash = place(&at, GLSLC_HASH_SIZE, sizeof(GlslcHashEntry));
+    l->hash_used = place(&at, GLSLC_HASH_SIZE, sizeof(uint16_t));
+    l->hash_back = place(&at, GLSLC_HASH_SIZE, sizeof(uint16_t));
     l->stack = place(&at, GLSLC_STACK_WORDS, sizeof(uint32_t));
     l->caps = place(&at, WORDS_CAPS, sizeof(uint32_t));
     l->imports = place(&at, WORDS_IMPORTS, sizeof(uint32_t));
@@ -172,16 +174,15 @@ Glslc* glslc_open(void* memory, size_t memory_size, GlslcStage stage, const char
     g->params = (GlslcParam*)(void*)(block + l.params);
     g->calls = (GlslcCall*)(void*)(block + l.calls);
     g->walk = (uint16_t*)(void*)(block + l.walk);
+    /* the emitter's ids by type and symbol, which glslc_emit clears for the ones the shader has, and its hash, whose
+       sparse set starts empty with nhash (the context's memset) */
     g->e.type_ids = (uint32_t*)(void*)(block + l.type_ids);
-    memset(g->e.type_ids, 0, (size_t)SNX_GLSLC_MAX_TYPES * 3u * sizeof(uint32_t));
     g->e.sym_ids = (uint32_t*)(void*)(block + l.sym_ids);
-    memset(g->e.sym_ids, 0, SNX_GLSLC_MAX_SYMBOLS * sizeof(uint32_t));
     g->e.sym_types = (uint32_t*)(void*)(block + l.sym_types);
-    memset(g->e.sym_types, 0, SNX_GLSLC_MAX_SYMBOLS * sizeof(uint32_t));
     g->e.sampler_ids = (uint32_t*)(void*)(block + l.sampler_ids);
-    memset(g->e.sampler_ids, 0, SNX_GLSLC_MAX_SYMBOLS * sizeof(uint32_t));
     g->e.hash = (GlslcHashEntry*)(void*)(block + l.hash);
-    memset(g->e.hash, 0, GLSLC_HASH_SIZE * sizeof(GlslcHashEntry));
+    g->e.hash_used = (uint16_t*)(void*)(block + l.hash_used);
+    g->e.hash_back = (uint16_t*)(void*)(block + l.hash_back);
     g->e.stack = (uint32_t*)(void*)(block + l.stack);
     words_at(&g->e.caps, block, l.caps, WORDS_CAPS, "capabilities");
     words_at(&g->e.imports, block, l.imports, WORDS_IMPORTS, "imports");

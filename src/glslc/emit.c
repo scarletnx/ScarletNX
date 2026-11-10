@@ -279,8 +279,12 @@ static GlslcHashEntry* slot(Glslc* g, uint32_t k0, uint32_t k1, uint32_t k2, uin
     uint32_t h = (k0 * 0x9e3779b1u) ^ (k1 * 0x85ebca77u) ^ (k2 * 0xc2b2ae3du) ^ (k3 * 0x27d4eb2fu);
     h ^= h >> 15;
     for (uint32_t i = 0; i < GLSLC_HASH_SIZE; i++) {
-        GlslcHashEntry* e = &g->e.hash[(h + i) & (GLSLC_HASH_SIZE - 1u)];
-        if (!e->id) {
+        uint32_t at = (h + i) & (GLSLC_HASH_SIZE - 1u), back = g->e.hash_back[at];
+        GlslcHashEntry* e = &g->e.hash[at];
+        if (back >= g->e.nhash || g->e.hash_used[back] != at) { /* free: taken now, its id still to make */
+            g->e.hash_back[at] = (uint16_t)g->e.nhash;
+            g->e.hash_used[g->e.nhash++] = (uint16_t)at;
+            e->id = 0;
             e->key[0] = k0;
             e->key[1] = k1;
             e->key[2] = k2;
@@ -2580,6 +2584,11 @@ static void fail_size(Glslc* g, const char* message) {
 
 void glslc_emit(Glslc* g, uint32_t* words, size_t capacity) {
     GlslcEmitter* e = &g->e;
+    /* the ids of the shader's types and symbols, none made yet: glslc_open leaves the arrays as they were */
+    memset(e->type_ids, 0, (size_t)g->ntypes * 3u * sizeof(uint32_t));
+    memset(e->sym_ids, 0, (size_t)g->nsyms * sizeof(uint32_t));
+    memset(e->sym_types, 0, (size_t)g->nsyms * sizeof(uint32_t));
+    memset(e->sampler_ids, 0, (size_t)g->nsyms * sizeof(uint32_t));
     e->next_id = 1;
     e->site = 0;
     cap(g, CAP_SHADER);
