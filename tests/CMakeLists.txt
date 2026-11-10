@@ -2811,6 +2811,12 @@ else()
     add_test(NAME audio_opus COMMAND snx-test-audio-opus)
 endif()
 
+# a 5.1 game's PCM mixed to stereo for a host output of two channels (runtime/platform/audio_downmix.c)
+add_executable(snx-test-audio-downmix audio_downmix.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/audio_downmix.c")
+snx_test_target(snx-test-audio-downmix 99)
+target_link_libraries(snx-test-audio-downmix PRIVATE scarletnx-common)
+add_test(NAME audio_downmix COMMAND snx-test-audio-downmix)
+
 if(UNIX)
     add_executable(snx-test-audren audren_render.c)
     snx_test_target(snx-test-audren 11)
