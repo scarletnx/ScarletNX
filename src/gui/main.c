@@ -11198,6 +11198,7 @@ static void warn_tick(App* app) {
     app->editor.note[0] = 0;
 }
 static void typed_keyboard(App* app);
+static bool form_row_off(App* app, const GuiEditor* e, int r);
 static void editor_key(App* app, GuiKey key) {
     GuiEditorDo what;
     int was_typing = app->editor.typing;
@@ -11209,6 +11210,18 @@ static void editor_key(App* app, GuiKey key) {
         !snx_users_nickname_valid(app->editor.text)) { /* a nickname refused in its dialog, which goes on */
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s is not a nickname: %s"), app->editor.text,
                  snx_tr(SAY_SETUP_NICKNAME));
+        return;
+    }
+    /* a greyed setting, one of other systems: Enter and a step say so and leave its value, which Del still resets */
+    if (app->form == GUI_FORM_GROUP && !app->editor.typing &&
+        (key == GUI_SELECT || key == GUI_LEFT || key == GUI_RIGHT) &&
+        form_row_off(app, &app->editor, app->editor.row)) {
+        int row = setting_of(app, app->editor.row);
+        char value[GUI_SETTING_TEXT + 32];
+        gui_settings_shown(&app->settings, row, value, sizeof value);
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 snx_tr("%s: %s. A game on this system runs the same whatever it says, and it stays %s"),
+                 snx_tr(app->settings.keys[row].key), snx_tr(app->settings.values[row].only), value);
         return;
     }
     /* a player's map row opens its button map, as every player's Button map page does; its Controller row waits for
@@ -11525,18 +11538,23 @@ static int form_room(const App* app, int width) {
 #define GUI_NUMBER_VALUE 4
 /* after the value of a setting's row that is not at its default: where Del has something to put back */
 #define GUI_CHANGED_MARK "*"
+/* the setting row r of e is, its index in the Settings' rows: -1 for a row of another form, the theme's among them,
+   which has no object as the Settings have none before they are read */
+static int form_setting(const App* app, const GuiEditor* e, int r) {
+    const GuiThemeKey* k = gui_editor_key_of(e, r);
+    if (!k || !e->object || e->object != (char*)app->settings.values) return -1;
+    return e->keys == app->view_keys   ? app->view_rows[k - app->view_keys]
+           : e->keys == app->peek_keys ? app->peek_rows[k - app->peek_keys]
+                                       : (int)(k - app->settings.keys);
+}
 /* a row of a form as its box shows it, its marker first: its label, the value past the widest label (labels
    columns), in room columns; a value typed is typed in its dialog (render_typed) */
 static void form_line(App* app, const GuiEditor* e, int r, int labels, int room, char* line, size_t size) {
     char label[256], value[400];
     const GuiThemeKey* k = gui_editor_key_of(e, r);
     const char* path;
-    int pad, row = -1;
+    int pad, row = form_setting(app, e, r);
     gui_editor_label(e, r, label, sizeof label);
-    if (k && e->object == (char*)app->settings.values)
-        row = e->keys == app->view_keys   ? app->view_rows[k - app->view_keys]
-              : e->keys == app->peek_keys ? app->peek_rows[k - app->peek_keys]
-                                          : (int)(k - app->settings.keys);
     if (row >= 0 && k->numeric && !k->whole) { /* its value right in four slots */
         const GuiSetting* s = &app->settings.values[row];
         const char* picked = gui_settings_value(&app->settings, s->key);
@@ -11555,6 +11573,9 @@ static void form_line(App* app, const GuiEditor* e, int r, int labels, int room,
         gui_editor_value(e, r, value, sizeof value);
     if (row >= 0 && !gui_settings_at_start(&app->settings, row)) /* a page's and an All's: for any of their rows */
         snprintf(value + strlen(value), sizeof value - strlen(value), "%s" GUI_CHANGED_MARK, value[0] ? " " : "");
+    if (row >= 0 && app->settings.values[row].only) /* greyed: where it does something, beside its value */
+        snprintf(value + strlen(value), sizeof value - strlen(value), "%s%s", value[0] ? " " : "",
+                 snx_tr(app->settings.values[row].only));
     if (k && e->keys == app->folder_keys && (path = folder_row_path(app, r)) != NULL) {
         /* its folder, then what it is at the row's end; with no room for both the folder stays whole and what it is
            goes, and one too long alone is cut in its middle (whole under the boxes) */
@@ -11590,11 +11611,12 @@ static int clean_left(App* app) {
                            app_read(app, false, unread, sizeof unread, NULL, 0);
     return app->clean_found;
 }
-/* a row of App, Folders or GPU Drivers with nothing to do now, greyed, whose Enter says why (#614): nothing to clean
-   or move, every setting at its default, no folder picked, a library's Main off it, a GPU driver package where none
-   loads */
+/* a row of App, Folders, GPU Drivers or a group of settings with nothing to do now, greyed, whose Enter says why
+   (#614): nothing to clean or move, every setting at its default, no folder picked, a library's Main off it, a GPU
+   driver package where none loads, a setting that does something on other systems alone */
 static bool form_row_off(App* app, const GuiEditor* e, int r) {
-    int picked = 0;
+    int picked = 0, setting = form_setting(app, e, r);
+    if (setting >= 0) return app->settings.values[setting].only != NULL;
     if (e->keys == app->drivers_keys) return driver_row_off(app, r);
     if (e->keys == app_keys)
         return (r == GUI_APP_MOVE && !app->lefts) || (r == GUI_APP_CLEAN && !clean_left(app)) ||
@@ -11630,12 +11652,8 @@ static unsigned form_icon(const App* app, const GuiEditor* e, int r) {
         return !k                                               ? GUI_ICON_ROTATE_CCW /* Reset to Defaults */
                : folder_row(app, r, &at, &group) == GUI_ROW_ADD ? GUI_ICON_FOLDER_PLUS
                                                                 : GUI_ICON_NONE;
-    if (k && e->object == (char*)app->settings.values) {
-        int row = e->keys == app->view_keys   ? app->view_rows[k - app->view_keys]
-                  : e->keys == app->peek_keys ? app->peek_rows[k - app->peek_keys]
-                                              : (int)(k - app->settings.keys);
-        if (app->settings.values[row].kind == GUI_SETTING_PAGE) return page_icon(k->key);
-    }
+    if (form_setting(app, e, r) >= 0 && app->settings.values[form_setting(app, e, r)].kind == GUI_SETTING_PAGE)
+        return page_icon(k->key);
     return GUI_ICON_NONE;
 }
 /* row r of e as a list of ui.txt asks for it, in a row width pixels wide: false past its last. In a form with icons a

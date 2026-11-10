@@ -5,7 +5,8 @@
 
 --pot writes po/scarletnx.pot from the phrases of src/gui (snx_tr, SNX_TR_NOOP, SNX_TR_KEYS, SNX_TR_KEY, and the texts
 of the items of its scenes, ui.txt, which main.c draws through snx_tr), the setup's
-notices it shows (src/common/utilities/setup.c) and the launcher's own rows in src/nx/runtime/settings.txt (their
+notices it shows (src/common/utilities/setup.c), the systems a greyed setting's row names (src/nx/runtime/ini.c) and
+the launcher's own rows in src/nx/runtime/settings.txt (their
 names, labels, help and sections, which its Settings show through snx_tr), and brings each po/*.po to it as msgmerge
 does: a phrase it lacks added untranslated, in the .pot's order with its comments, and the translation of a phrase the
 code no longer has kept as an obsolete entry (#~). --check fails when the .pot is not what the code makes, a po/*.po
@@ -25,7 +26,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = 'src/gui'
-SHOWN = ('src/common/utilities/setup.c',)  # files elsewhere with phrases the menu shows: the setup's notices
+# files elsewhere with phrases the menu shows: the setup's notices, and where a setting of some systems alone does
+# something (a greyed row's words)
+SHOWN = ('src/common/utilities/setup.c', 'src/nx/runtime/ini.c')
 SETTINGS = 'src/nx/runtime/settings.txt'
 UI = 'src/gui/ui.txt'
 UI_TEXT = re.compile(r'\t*@?\[[a-z]+\]"((?:[^"\\]|\\["\\])*)"')  # tools/uigen's [type]"Text", \" and \\ in it

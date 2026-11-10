@@ -42,6 +42,7 @@ typedef struct {
     char *name, *member, *key, *label, *help, *words, *set, *lo, *hi, *def;
     char *def_if[DEF_IFS], *def_if_value[DEF_IFS]; /* default-if's, the first that holds taken */
     int def_ifs;
+    const char* only; /* the systems it does something on, where not every one: ini.h's INI_ONLY_ of them, else NULL */
     int type, size, once, startup, in_game, recompile, step, shift, list, repeat, block, table, line;
     /* LLVM's: its kind, its ID (a pass's name, a setter's suffix), the pipelines' levels a pass is in (bit per LEVELS
        character), the setter's argument type (LLVMBool, int or unsigned) */
@@ -395,6 +396,19 @@ static void add_help(char** help, const char* text) {
     *help = joined;
 }
 
+/* an only line's system as the flag ini.h has for it (" | INI_ONLY_MACOS"), NULL for a word that is none */
+static const char* only_of(const char* word) {
+    static const char* const systems[][2] = {{"macos", " | INI_ONLY_MACOS"},
+                                             {"windows", " | INI_ONLY_WINDOWS"},
+                                             {"android", " | INI_ONLY_ANDROID"},
+                                             {"linux", " | INI_ONLY_LINUX"},
+                                             {"arm64-linux", " | INI_ONLY_ARM64_LINUX"}};
+    size_t i;
+    for (i = 0; i < sizeof systems / sizeof *systems; i++)
+        if (!strcmp(word, systems[i][0])) return systems[i][1];
+    return NULL;
+}
+
 static void read_spec(const char* path) {
     char* text = read_file(path, 1);
     char *line, *next, *rest, *word;
@@ -524,6 +538,9 @@ static void read_spec(const char* path) {
             if (s->def_ifs == DEF_IFS) fail(number, "a setting takes at most %d default-if", DEF_IFS);
             s->def_if[s->def_ifs] = dup(macro);
             s->def_if_value[s->def_ifs++] = dup(strcmp(rest, "\"\"") ? rest : "");
+        } else if (!strcmp(word, "only")) {
+            s->only = only_of(rest);
+            if (!s->only) fail(number, "only %s: the systems are macos, windows, android, linux and arm64-linux", rest);
         } else if (!strcmp(word, "once")) {
             s->once = 1;
         } else if (!strcmp(word, "words")) {
@@ -1085,7 +1102,7 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
         s->type == T_INT     ? "INI_INT"
         : s->type == T_FLOAT ? "INI_FLOAT"
                              : "INI_TEXT",
-        s->startup ? "INI_STARTUP" : "0", s->in_game ? " | INI_IN_GAME" : "", "");
+        s->startup ? "INI_STARTUP" : "0", s->in_game ? " | INI_IN_GAME" : "", s->only ? s->only : "");
     if (count_of(s)) {
         if (s->type == T_TEXT)
             out("g_settings.%s[%d]", s->member, index);

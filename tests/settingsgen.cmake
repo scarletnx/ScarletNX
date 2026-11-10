@@ -61,6 +61,17 @@ setting Two hosts
     default 1
     default-if HOST_A 2
     default-if HOST_B 3
+setting One system
+    key one_system
+    int 0 1
+    default 0
+    startup
+    only macos
+setting Its kernel
+    key its_kernel
+    int 0 1
+    default 0
+    only arm64-linux
 setting ${long_name}
     key long
     text 4
@@ -126,6 +137,24 @@ foreach(what INIT DEF)
         message(FATAL_ERROR "SETTING_${what}_two_hosts is not HOST_A's, else HOST_B's, else the default:\n${text}")
     endif()
 endforeach()
+# a setting of one system alone: its row's flags name the system (ini.h's INI_ONLY_), after startup's; another row's
+# name none
+file(READ "${WORK}/out/settings_test.c" text)
+foreach(row "{\"one_system\", \"0\", NULL, INI_INT, INI_STARTUP | INI_ONLY_MACOS, &g_settings.one_system,"
+            "{\"its_kernel\", \"0\", NULL, INI_INT, 0 | INI_ONLY_ARM64_LINUX, &g_settings.its_kernel,"
+            "{\"plain\", \"0\", NULL, INI_INT, 0, &g_settings.plain,")
+    string(FIND "${text}" "${row}" at)
+    if(at LESS 0)
+        message(FATAL_ERROR "settings_test.c lacks the row ${row}:\n${text}")
+    endif()
+endforeach()
+# a system only does not know is refused with its line, the word and the systems it takes
+file(WRITE "${WORK}/unknown.txt" "table g_test_ini\nsetting Elsewhere\n    key elsewhere\n    int 0 1\n    default 0\n    only amiga\n")
+execute_process(COMMAND "${SETTINGSGEN}" --out "${WORK}/out" "${WORK}/unknown.txt"
+                RESULT_VARIABLE unknown_result OUTPUT_VARIABLE unknown_output ERROR_VARIABLE unknown_errors)
+if(NOT unknown_result OR NOT unknown_errors MATCHES "unknown.txt:6: only amiga: the systems are macos, windows, android, linux and arm64-linux\n$")
+    message(FATAL_ERROR "settingsgen took only amiga (${unknown_result}), or did not say which systems only takes:\n${unknown_errors}")
+endif()
 # each setter found, with its argument cast to the type the header declares, and the setting its @ID names
 foreach(line "LLVMPassBuilderOptionsSetLoopVectorization(options, (LLVMBool)s->loop_vectorization)"
              "LLVMPassBuilderOptionsSetSLPVectorization(options, (LLVMBool)s->llvm_slp_vectorization)"

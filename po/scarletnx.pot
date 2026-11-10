@@ -2933,7 +2933,7 @@ msgstr ""
 msgid "System driver"
 msgstr ""
 
-#: src/gui/main.c
+#: src/gui/main.c src/nx/runtime/ini.c
 msgid "Android only"
 msgstr ""
 
@@ -3480,6 +3480,11 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s is not a nickname: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s. A game on this system runs the same whatever it says, and it stays %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -5619,6 +5624,22 @@ msgstr ""
 
 #: src/common/utilities/setup.c
 msgid "background_recompile =, Auto by default: Gentle on battery, Full on the charger"
+msgstr ""
+
+#: src/nx/runtime/ini.c
+msgid "macOS only"
+msgstr ""
+
+#: src/nx/runtime/ini.c
+msgid "Windows only"
+msgstr ""
+
+#: src/nx/runtime/ini.c
+msgid "Linux and Android only"
+msgstr ""
+
+#: src/nx/runtime/ini.c
+msgid "arm64 Linux and Android only"
 msgstr ""
 
 #: src/nx/runtime/settings.txt
