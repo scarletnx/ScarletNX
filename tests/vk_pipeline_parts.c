@@ -2,13 +2,16 @@
    Copyright 2026 the ScarletNX contributors */
 /* Graphics pipeline libraries (gpu/vk/pipeline_parts.c), with no GPU: the choice of the library path from the setting
    and what a stand-in device has, each condition that turns it off named in the log line, and the dynamic
-   pre-rasterization state taken only where the device has its member and the renderer uses its feature */
+   pre-rasterization state taken only where the device has its member, no extension ban holds for it, and the renderer
+   uses its feature */
 #include "nx/gpu/vk/pipeline_parts.h"
 #include <stdio.h>
 #include <string.h>
 
 static struct {
     unsigned checks, failures;
+    unsigned said;   /* the ban lines of the last vk_gpl_bans */
+    char line[2048]; /* the last of them */
 } g_test;
 #define CHECK(c, what)                                                                                                 \
     do {                                                                                                               \
@@ -289,9 +292,55 @@ static void check_split(void) {
         }
 }
 
+static void say(const char* line, int warn) {
+    (void)warn;
+    g_test.said++;
+    snprintf(g_test.line, sizeof g_test.line, "%s", line);
+}
+
+/* The table's bans on a state as dynamic state hold for the choice: a stand-in device's driver and version, the
+   members vk_gpl_bans turns off of a device that has them all, each said with its key, and the states the choice
+   then leaves in the part's key. A member the device doesn't have is not said */
+static void check_bans(void) {
+    static const struct {
+        const char* what;
+        uint32_t driver, version, off; /* VkDriverId, driverVersion, the VK_DYN_PR_* a ban takes */
+        const char* key;               /* in the last line said */
+    } cases[] = {
+        {"RADV 26.2.6", VK_DRIVER_ID_MESA_RADV, VK_MAKE_VERSION(26, 2, 6), 0, NULL},
+        {"RADV 22.3.0", VK_DRIVER_ID_MESA_RADV, VK_MAKE_VERSION(22, 3, 0), VK_DYN_PR_DEPTH_CLAMP,
+         "extendedDynamicState3DepthClampEnable"},
+        {"PowerVR", VK_DRIVER_ID_IMAGINATION_PROPRIETARY, VK_MAKE_VERSION(1, 21, 0),
+         VK_DYN_PR_POLYGON | VK_DYN_PR_DEPTH_CLAMP, "extendedDynamicState3DepthClampEnable"},
+    };
+    char err[512], line[512];
+    CHECK(vk_bans_load(snx_vk_extension_bans_text, err, sizeof err), err);
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        VkBanDevice device = {cases[i].what, "", "", cases[i].driver, cases[i].version, 0, SNX_VK_BAN_LINUX};
+        vk_bans_device(&device);
+        VkGplDevice d = full();
+        u32 dyn = 0, lines = 0;
+        for (u32 bit = cases[i].off; bit; bit &= bit - 1) lines++;
+        g_test.said = 0;
+        g_test.line[0] = 0;
+        vk_gpl_bans(&d, say);
+        CHECK(g_test.said == lines, cases[i].what);
+        CHECK(!cases[i].key || strstr(g_test.line, cases[i].key), g_test.line);
+        CHECK(vk_gpl_choose(&d, &dyn, line, sizeof line) && dyn == (31u & ~cases[i].off), cases[i].what);
+        CHECK(!(cases[i].off & VK_DYN_PR_DEPTH_CLAMP) || !strstr(line, "depth clamp"), line);
+        /* without the member there is nothing to turn off, and nothing to say */
+        d = full();
+        d.polygon = d.depth_clamp = 0;
+        g_test.said = 0;
+        vk_gpl_bans(&d, say);
+        CHECK(g_test.said == 0, "no line for a member the device has not");
+    }
+}
+
 int main(void) {
     check_off();
     check_dynamic();
+    check_bans();
     check_states();
     check_split();
     printf("%s: %u checks, %u failed\n", g_test.failures ? "FAIL" : "PASS", g_test.checks, g_test.failures);

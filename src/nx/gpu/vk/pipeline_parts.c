@@ -5,6 +5,24 @@
 #include <stdio.h>
 #include <string.h>
 
+void vk_gpl_bans(VkGplDevice* d, VkBanSay say) {
+#define EDS3 "VK_EXT_extended_dynamic_state3.extendedDynamicState3"
+    const struct {
+        const char* key;
+        int* member;
+    } members[] = {
+        {EDS3 "PolygonMode", &d->polygon},
+        {EDS3 "DepthClampEnable", &d->depth_clamp},
+        {EDS3 "ProvokingVertexMode", &d->provoking},
+        {EDS3 "ConservativeRasterizationMode", &d->conservative_mode},
+        {EDS3 "ExtraPrimitiveOverestimationSize", &d->conservative_size},
+        {"VK_EXT_extended_dynamic_state2.extendedDynamicState2PatchControlPoints", &d->patch},
+    };
+#undef EDS3
+    for (size_t i = 0; i < sizeof members / sizeof *members; i++)
+        if (vk_ban(members[i].key, *members[i].member, say)) *members[i].member = 0;
+}
+
 int vk_gpl_choose(const VkGplDevice* d, u32* dyn_pr, char* line, size_t n) {
     /* a link without fast linking compiles, so it would save nothing; without independent interpolation the
        pre-rasterization and fragment parts must agree on decorations the translator doesn't promise, and
