@@ -1832,7 +1832,12 @@ typedef struct {
 #define WW_LANDED_MAX (1u << 18) /* pages (1 GB): past it the reports count as they are */
 static WwLanded* g_wland;
 static u32 g_wland_n, g_wland_cap, g_wland_seq;
-static int g_wland_sorted = 1;
+/* g_wland is sorted (landed_order) up to g_wland_sorted, the entries after it added since, in their order. Sorting
+   all of them again for each landing's few, with the qsort of the C library through a function pointer, was a
+   fourteenth of one game's GPU thread: the new ones are sorted alone and merged in (landed_sort) */
+static u32 g_wland_sorted;
+static WwLanded* g_wland_tmp; /* the merge's copy of the new entries */
+static u32 g_wland_tmp_cap;
 static PMutex g_wland_lk = PMUTEX_INIT; /* after g_wres_lk */
 void vk_ww_landed(u64 cpu, u64 size, const u8* bytes) {
     if (!bytes || cpu >= AS_SIZE || size > AS_SIZE - cpu) return;
@@ -1846,7 +1851,6 @@ void vk_ww_landed(u64 cpu, u64 size, const u8* bytes) {
             g_wland_cap = cap;
         }
         g_wland[g_wland_n++] = (WwLanded){(cpu + o) >> 12, vk_hash(bytes + o, 4096), bytes + o, g_wland_seq++};
-        g_wland_sorted = 0;
     }
     pm_unlock(&g_wland_lk);
 }
@@ -1855,17 +1859,60 @@ static int landed_order(const void* a, const void* b) {
     if (x->page != y->page) return x->page < y->page ? -1 : 1;
     return x->seq < y->seq ? -1 : x->seq > y->seq;
 }
-/* g_wland by page, a page's newest entry alone */
+/* g_wland by page, a page's newest entry alone: the entries added since the last sort sorted (by page, then by their
+   order, which is newer than every sorted entry's) and merged into the sorted ones from the end, then a page's older
+   entries dropped from where the merge began */
 static void landed_sort(void) {
-    u32 n = 0;
-    if (g_wland_sorted) return;
-    qsort(g_wland, g_wland_n, sizeof *g_wland, landed_order);
-    for (u32 i = 0; i < g_wland_n; i++) {
+    u32 s = g_wland_sorted, k = g_wland_n - s, n, from;
+    if (!k) return;
+    qsort(g_wland + s, k, sizeof *g_wland, landed_order);
+    from = s;
+    if (s && g_wland[s - 1].page >= g_wland[s].page) {
+        if (g_wland_tmp_cap < k) {
+            WwLanded* t = (WwLanded*)realloc(g_wland_tmp, (size_t)k * sizeof *t);
+            if (!t) { /* all of them sorted again, as before */
+                qsort(g_wland, g_wland_n, sizeof *g_wland, landed_order);
+                from = 0;
+                goto dedup;
+            }
+            g_wland_tmp = t;
+            g_wland_tmp_cap = k;
+        }
+        memcpy(g_wland_tmp, g_wland + s, (size_t)k * sizeof *g_wland);
+        i64 i = (i64)s - 1, j = (i64)k - 1, w = (i64)g_wland_n - 1;
+        while (j >= 0) /* a new entry of a page goes after its sorted ones: its seq is newer */
+            if (i >= 0 && g_wland[i].page > g_wland_tmp[j].page)
+                g_wland[w--] = g_wland[i--];
+            else
+                g_wland[w--] = g_wland_tmp[j--];
+        from = (u32)(i + 1); /* below it nothing moved */
+    }
+dedup:
+    n = from ? from - 1 : 0; /* the entry before where the merge began may have the same page as the first after it */
+    for (u32 i = n; i < g_wland_n; i++) {
         if (n && g_wland[n - 1].page == g_wland[i].page) n--;
         g_wland[n++] = g_wland[i];
     }
     g_wland_n = n;
-    g_wland_sorted = 1;
+    g_wland_sorted = n;
+}
+u32 vk_ww_landed_check(void) {
+    pm_lock(&g_wland_lk);
+    landed_sort();
+    u32 n = g_wland_n;
+    for (u32 i = 1; i < g_wland_n; i++)
+        if (g_wland[i - 1].page >= g_wland[i].page) n = ~0u;
+    pm_unlock(&g_wland_lk);
+    return n;
+}
+u64 vk_ww_landed_hash(u64 cpu) {
+    u64 h = 0;
+    pm_lock(&g_wland_lk);
+    landed_sort();
+    for (u32 i = 0; i < g_wland_n; i++)
+        if (g_wland[i].page == cpu >> 12) h = g_wland[i].hash;
+    pm_unlock(&g_wland_lk);
+    return h;
 }
 /* whether a landed page still holds the landing's bytes. Where traps land in place (no mirror: Windows) they are the
    page's own, read without faulting: an owner may hold it again, or mem.c have given it back, and its report counts */
@@ -1879,7 +1926,8 @@ static int landed_unchanged(const WwLanded* l) {
     return vk_hash(bytes, 4096) == l->hash;
 }
 /* what a scan found written, [o, e), marked but for the landed pages on it that still hold the landing's bytes. Every
-   entry on it goes (no bytes until ww_take_scanned drops them) */
+   entry on it goes (no bytes until ww_take_scanned drops them, from the first, g_wland_gone) */
+static u32 g_wland_gone;
 static void ww_mark_scanned(u64 o, u64 e) {
     u32 lo = 0, hi = g_wland_n;
     u64 at = o;
@@ -1898,6 +1946,7 @@ static void ww_mark_scanned(u64 o, u64 e) {
             at = a + 4096;
         }
         g_wland[i].bytes = NULL;
+        if (i < g_wland_gone) g_wland_gone = i;
     }
     if (at < e) ww_mark_range(at, e);
 }
@@ -1909,12 +1958,13 @@ static void ww_take_scanned(void) {
     if (g_wres_n) g_wclock++;
     pm_lock(&g_wland_lk);
     if (g_wland_n) {
-        u32 n = 0;
         landed_sort();
+        g_wland_gone = g_wland_n;
         for (int i = 0; i < g_wres_n; i++) ww_mark_scanned(g_wres[i].a, g_wres[i].e);
-        for (u32 i = 0; i < g_wland_n; i++)
+        u32 n = g_wland_gone; /* the entries before the first that went stay where they are */
+        for (u32 i = n; i < g_wland_n; i++)
             if (g_wland[i].bytes) g_wland[n++] = g_wland[i];
-        g_wland_n = n;
+        g_wland_n = g_wland_sorted = n;
     } else
         for (int i = 0; i < g_wres_n; i++) ww_mark_range(g_wres[i].a, g_wres[i].e);
     pm_unlock(&g_wland_lk);

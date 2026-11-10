@@ -1185,11 +1185,51 @@ static int check_wt_compares(void) {
     return 0;
 }
 
+/* The pages landings wrote (buffer.c vk_ww_landed), kept one entry a page in the pages' order, the newest landing's: a
+   take sorts the entries added since the last one and merges them in. Landings over pages below, among and above
+   those kept, over some of them again, several between two takes and one alone, each followed by the list's check and
+   the hashes of pages landed more than once. The pages are far in the guest's space, where no case maps memory, so no
+   scan ever reports them */
+static int check_wt_landed_order(void) {
+    static u8 bytes[3][32 * 4096];
+    const u64 base = (AS_SIZE / 2) & ~((u64)WT_LEAF - 1);
+    for (u32 k = 0; k < 3; k++) memset(bytes[k], 0x30 + (int)k, sizeof bytes[k]);
+    for (u32 p = 0; p < 32; p++) bytes[2][p * 4096] = (u8)p; /* each page of the third its own hash */
+    u32 n0 = vk_ww_landed_check();
+    CHECK(n0 != ~0u);
+    struct {
+        u32 first, n, which, check; /* pages [first, first + n) of base with bytes[which], then a check if check */
+    } steps[] = {{10, 10, 0, 1}, {15, 10, 1, 1}, {0, 5, 0, 0}, {30, 2, 0, 1}, {12, 1, 2, 0},
+                 {22, 1, 2, 0},  {3, 1, 2, 1},   {5, 5, 1, 0}, {9, 1, 2, 0},  {31, 1, 2, 1}};
+    u32 who[32];
+    for (u32 p = 0; p < 32; p++) who[p] = ~0u;
+    for (size_t i = 0; i < sizeof steps / sizeof *steps; i++) {
+        vk_ww_landed(base + steps[i].first * 4096ull, steps[i].n * 4096ull,
+                     bytes[steps[i].which] + steps[i].first * 4096);
+        for (u32 p = steps[i].first; p < steps[i].first + steps[i].n; p++) who[p] = steps[i].which;
+        if (!steps[i].check) continue;
+        u32 want = n0, got = vk_ww_landed_check();
+        for (u32 p = 0; p < 32; p++) want += who[p] != ~0u;
+        if (got != want)
+            fprintf(stderr, "landed order: after step %zu the list has %u entries, %u wanted\n", i, got, want);
+        CHECK(got == want);
+        for (u32 p = 0; p < 32; p++) {
+            if (who[p] == ~0u) continue;
+            u64 h = vk_ww_landed_hash(base + p * 4096ull), w = vk_hash(bytes[who[p]] + p * 4096, 4096);
+            if (h != w) fprintf(stderr, "landed order: after step %zu page %u keeps another landing's hash\n", i, p);
+            CHECK(h == w);
+        }
+    }
+    puts("write tracking: landed pages kept one entry a page, in order, the newest landing's, across merges");
+    return 0;
+}
+
 /* the cases by name, for SNX_TEST_WW_ONLY=NAME */
 static const struct {
     const char* name;
     int (*check)(void);
 } g_wt_cases[] = {
+    {"landed_order", check_wt_landed_order},
     {"two_consumers", check_wt_two_consumers},
     {"concurrent", check_wt_concurrent},
     {"record_submit", check_wt_record_submit},
@@ -1240,7 +1280,8 @@ static int check_write_tracking(void) {
     }
     if (!ran) {
         fprintf(stderr,
-                "SNX_TEST_WW_ONLY=%s names no case: 1, each, two_consumers, concurrent, record_submit, runtime_writes, "
+                "SNX_TEST_WW_ONLY=%s names no case: 1, each, landed_order, two_consumers, concurrent, record_submit, "
+                "runtime_writes, "
                 "owned, alias, shared, mixed_leaf, hot_page, hot_rt_overlap, hot_rt_fresh, hot_alias, hot_same_frame, "
                 "hot_rt_take_in, pieces, sampled or compares\n",
                 only);

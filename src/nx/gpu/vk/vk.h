@@ -1793,6 +1793,10 @@ void vk_mem_changed(u64 cpu, u64 len); /* gpu.c's g_gpu_mem_changed: the range c
 /* own.c's landed hook: host pages [cpu, cpu + size) a landing wrote, with their bytes then, whose next report as
    written counts only if those changed */
 void vk_ww_landed(u64 cpu, u64 size, const u8* bytes);
+/* tests: the landed pages' list sorted as a scan's take sorts it, its length, or ~0u when it isn't one entry a page in
+   the pages' order; and the hash kept for the host page at cpu (0 for none) */
+u32 vk_ww_landed_check(void);
+u64 vk_ww_landed_hash(u64 cpu);
 
 /* pipeline.c */
 /* the constant buffer words a translation read (the translator resolves BRX jump tables through them): what it made
