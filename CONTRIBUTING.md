@@ -9,6 +9,9 @@
 
 Nothing of a game goes into git, an issue, a pull request or a comment: keys, dumps (XCI, NSP, NCA, CIA), `work/`,
 `games/` and shader or texture dumps. [CLAUDE.md](CLAUDE.md) has the full rule.
+Nor is a game named there, by its title or its title ID. Where a reader has to find the same game again, it goes by
+a tag: `tools/game_tag.py tag <ID>` makes one with a key that stays on your machine, and `scan` checks a text for title
+IDs and game names (`--help`).
 
 ## Build and check
 
