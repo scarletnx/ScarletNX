@@ -554,6 +554,31 @@ static void logical_immediates(void) {
             }
 }
 
+/* the arguments that reach furthest, at both ends: SnxA64Args gives each the narrowest type that holds it */
+static void argument_ends(void) {
+    /* B to the farthest targets: imm26 = -2^25 and 2^25 - 1, scaled by 4 (C6.2.26) */
+    DEC(0x16000000u, SW, B);
+    A(imm, -134217728);
+    DEC(0x15ffffffu, SW, B);
+    A(imm, 134217724);
+    /* AND x0, x1, #0xfffffffffffffffd: N=1 immr=111111 imms=111110, the greatest N:immr:imms that names a mask */
+    DEC(0x927ff820u, SW, AND_i);
+    A(dbm, 0x1ffe);
+    /* MOVI v0.16b, #0xff: a:b:c:d:e:f:g:h all ones */
+    DEC(0x4f07e7e0u, SW, Vimm);
+    A(abcdefgh, 255);
+    /* CBGT x0, #0, with the label 256 instructions back and 255 ahead: imm9 scaled by 4, FEAT_CMPBR */
+    DEC(0xf5002000u, MAX, CB_cond_imm);
+    A(imm9, -1024);
+    DEC(0xf5001fe0u, MAX, CB_cond_imm);
+    A(imm9, 1020);
+    /* LDUR x0, [x1, #-256] and #255: imm9 unscaled */
+    DEC(0xf8500020u, SW, LDR_i);
+    A(imm, -256);
+    DEC(0xf84ff020u, SW, LDR_i);
+    A(imm, 255);
+}
+
 /* the index (buckets on bits [31:21], split where crowded) finds what a scan of every row in order finds, each row
    tried alone (snx_a64_row with no row after it), and fills the instruction the same; an UNDEF's is all zero */
 static void index_matches_scan(void) {
@@ -605,6 +630,7 @@ int main(void) {
     loads_stores();
     data_register();
     simd_fp();
+    argument_ends();
     index_matches_scan();
     eq(SNX_A64_DECODE_HASH != 0, 1, "SNX_A64_DECODE_HASH", __LINE__);
     if (g_test.failures) {
