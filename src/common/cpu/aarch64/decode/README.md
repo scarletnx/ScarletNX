@@ -14,4 +14,6 @@ format.
 `tools/decodetree --a64` (`cmake/decodetree.cmake`) generates `a64_decode.h` and `a64_decode.inc` from both into the
 build folder. `a64.decode` says that QEMU's `scripts/decodetree.py` reads it. ScarletNX does not use that Python
 script: `tools/decodetree` is a port of it in C, and the A32, T32 and T16 decoders come from the same tool. The
-generated files are derived from `a64.decode` and carry its license. `tests/a64_decode_test.c` checks them.
+generated files are derived from `a64.decode` and carry its license. `tests/a64_decode_test.c` checks them, and
+`tests/a64_decode_group.c` a decoder of four rows of its own (`tests/a64_decode_group/`), for the rows a word falls to
+when the body of an earlier one refuses it.
