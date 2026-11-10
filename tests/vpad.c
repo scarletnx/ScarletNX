@@ -369,6 +369,45 @@ int main(void) {
                   dy = knob->y + knob->h / 2 - (ring->y + ring->h / 2);
             assert(fabsf(sqrtf(dx * dx + dy * dy) - ring->w / 2) < 0.01f && dx > 0 && dy < 0);
         }
+        /* the showcase is a part of the picture, whatever its pixels: on one twice the size every quad is twice as
+           big and twice as far from the corner, the frames' letters too, from the first draw that gets that size
+           and back on the next; a picture between bars holds it from its own corner */
+        for (k = 0; k < 4; k += 3) {
+            static const char* const name[4] = {"tl", "tr", "bl", "br"};
+            static const int twice[4] = {0, 0, 4000, 2000}, barred[4] = {120, 40, 2000, 1000};
+            static SnxUiQuad one[512];
+            int n, turn;
+            ini_read(where, name[k]);
+            vpad_showcase_input(1u << 0, right);
+            l.n = 0;
+            vpad_showcase_draw(&l, safe, 60);
+            n = l.n;
+            assert(n > 13 + 6);
+            memcpy(one, l.q, (size_t)n * sizeof *one);
+            assert(one[0].w == 500 && one[0].h == 300);
+            for (turn = 0; turn < 2; ++turn) { /* a window pulled wider and back: no draw at the size before */
+                l.n = 0;
+                vpad_showcase_draw(&l, twice, 60);
+                assert(l.n == n && l.q[0].w == 1000 && l.q[0].h == 600);
+                for (i = 0; i < n; ++i)
+                    assert(fabsf(l.q[i].x - 2 * one[i].x) < 0.01f && fabsf(l.q[i].y - 2 * one[i].y) < 0.01f &&
+                           fabsf(l.q[i].w - 2 * one[i].w) < 0.01f && fabsf(l.q[i].h - 2 * one[i].h) < 0.01f &&
+                           l.q[i].u == one[i].u && l.q[i].v == one[i].v);
+                l.n = 0;
+                vpad_showcase_draw(&l, safe, 60);
+                assert(l.n == n);
+                for (i = 0; i < n; ++i)
+                    assert(l.q[i].x == one[i].x && l.q[i].y == one[i].y && l.q[i].w == one[i].w &&
+                           l.q[i].h == one[i].h);
+            }
+            l.n = 0;
+            vpad_showcase_draw(&l, barred, 60);
+            assert(l.n == n);
+            for (i = 0; i < n; ++i)
+                assert(fabsf(l.q[i].x - (one[i].x + 120)) < 0.01f && fabsf(l.q[i].y - (one[i].y + 40)) < 0.01f &&
+                       fabsf(l.q[i].w - one[i].w) < 0.01f && fabsf(l.q[i].h - one[i].h) < 0.01f);
+        }
+        ini_read(where, "tl");
         /* the frames a second: none until half a second is over, then the presents over the last half or more */
         assert(vpad_showcase_fps(100, 1000000000ull) == -1 && vpad_showcase_fps(115, 1250000000ull) == -1);
         assert(vpad_showcase_fps(130, 1500000000ull) == 60 && vpad_showcase_fps(131, 1700000000ull) == 60);
