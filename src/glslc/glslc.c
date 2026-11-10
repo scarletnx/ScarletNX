@@ -27,7 +27,7 @@ static size_t place(size_t* at, size_t count, size_t size) {
 }
 
 typedef struct {
-    size_t synth, toks, macros, interned, mtoks, exp, marks, nodes, types, members, syms, sym_hash, params, calls, walk;
+    size_t source, synth, toks, macros, interned, mtoks, exp, marks, nodes, types, members, syms, sym_hash, params, calls, walk;
     size_t type_ids, sym_ids, sym_types, sampler_ids, hash, hash_used, hash_back, stack;
     size_t caps, imports, entry, modes, names, annotations, globals, functions, locals, body;
     size_t total;
@@ -35,6 +35,7 @@ typedef struct {
 
 static void layout(Layout* l) {
     size_t at = sizeof(Glslc);
+    l->source = place(&at, SNX_GLSLC_MAX_SOURCE + GLSLC_SOURCE_PAD, 1);
     l->synth = place(&at, SNX_GLSLC_MAX_SYNTH, 1);
     l->toks = place(&at, SNX_GLSLC_MAX_TOKENS, sizeof(GlslcToken));
     l->macros = place(&at, SNX_GLSLC_MAX_MACROS, sizeof(GlslcMacro));
@@ -142,7 +143,10 @@ Glslc* glslc_open(void* memory, size_t memory_size, GlslcStage stage, const char
     /* what the passes read before writing: the counts, the hash heads, the emitter's ids */
     memset(block, 0, sizeof(Glslc));
     Glslc* g = (Glslc*)(void*)block;
-    g->src = source;
+    char* copy = block + l.source;
+    memcpy(copy, source, size);
+    memset(copy + size, 0, GLSLC_SOURCE_PAD);
+    g->src = copy;
     g->src_len = (uint32_t)size;
     g->stage = stage;
     g->smask = stage == SNX_GLSLC_VERTEX ? GLSLC_SV : stage == SNX_GLSLC_FRAGMENT ? GLSLC_SF : GLSLC_SC;
