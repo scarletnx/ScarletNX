@@ -1738,11 +1738,13 @@ static void test_ipa_uniform(const char* dir) {
 
 /* A fragment program at a resolution scale (SNX_VKB_RS: 1 / the scale twice, then the scale). Its position is
    FragCoord over the scale, the guest's pixels. TLD.LZ of c[2][0x40] at texel p fetches p where the push constants do
-   not mark the slot as bound to a scaled target; where they do, the pixel of texel p that lies where the fragment lies
-   in its guest pixel: at 2x texel (5, 3) is (10, 6) for the fragment at (6, 4) and (11, 7) for the one at (7, 5); at
-   1.5x texel 4 is pixel 6 alone, where the fragment's place would give 7; at 0.5x texel (5, 3) is (2, 1). TXQ answers
-   a scaled target's 32x16 image over the scale, and another texture's as it is. A compute program fetches the texel as
-   it is and takes no push constant: the renderer gives it scaled targets at the guest's size */
+   not mark the slot as bound to a scaled target. Where they do, and mark the target as one of the size drawn to, the
+   pixel of texel p that lies where the fragment lies in its guest pixel: at 2x texel (5, 3) is (10, 6) for the
+   fragment at (6, 4) and (11, 7) for the one at (7, 5); at 1.5x texel 4 is pixel 6 alone, where the fragment's place
+   would give 7; at 0.5x texel (5, 3) is (2, 1). A scaled target of another size (a table) gives every fragment the
+   pixel at the texel's centre, (11, 7) at 2x. TXQ answers a scaled target's 32x16 image over the scale, and another
+   texture's as it is. A compute program fetches the texel as it is and takes no push constant: the renderer gives it
+   scaled targets at the guest's size */
 static Word scale_fetch(void) {
     Word x = fix(0xb66); /* TLD.LZ R8-R11, R4, R5, c[2][0x40], 2D */
     set(&x, 16, 8, 8);
@@ -1758,12 +1760,16 @@ static Word scale_fetch(void) {
 static void test_resolution_scale(const char* dir) {
     static const struct {
         float scale, fx, fy; /* the fragment's FragCoord */
-        u32 px, py, scaled;  /* the texel fetched, and whether its slot is bound to a scaled target */
-        u32 x, y, w, h;      /* the coordinates fetched and the size answered */
+        /* the texel fetched, whether its slot is bound to a scaled target, and to one of the size drawn to */
+        u32 px, py, scaled, own;
+        u32 x, y, w, h; /* the coordinates fetched and the size answered */
     } cases[] = {
-        {2.0f, 7.5f, 5.5f, 5, 3, 1, 11, 7, 16, 8}, {2.0f, 6.5f, 4.5f, 5, 3, 1, 10, 6, 16, 8},
-        {2.0f, 7.5f, 5.5f, 5, 3, 0, 5, 3, 32, 16}, {1.5f, 5.5f, 3.5f, 4, 3, 1, 6, 5, 21, 11},
-        {0.5f, 2.5f, 1.5f, 5, 3, 1, 2, 1, 64, 32},
+        {2.0f, 7.5f, 5.5f, 5, 3, 1, 1, 11, 7, 16, 8}, {2.0f, 6.5f, 4.5f, 5, 3, 1, 1, 10, 6, 16, 8},
+        {2.0f, 7.5f, 5.5f, 5, 3, 0, 0, 5, 3, 32, 16}, {1.5f, 5.5f, 3.5f, 4, 3, 1, 1, 6, 5, 21, 11},
+        {0.5f, 2.5f, 1.5f, 5, 3, 1, 1, 2, 1, 64, 32}, {2.0f, 7.5f, 5.5f, 5, 3, 1, 0, 11, 7, 16, 8},
+        {2.0f, 6.5f, 4.5f, 5, 3, 1, 0, 11, 7, 16, 8}, {2.0f, 6.5f, 4.5f, 5, 3, 0, 1, 5, 3, 32, 16},
+        {1.5f, 4.5f, 3.5f, 5, 3, 1, 0, 8, 5, 21, 11}, {3.0f, 0.5f, 0.5f, 5, 3, 1, 0, 16, 10, 11, 5},
+        {0.5f, 2.5f, 1.5f, 5, 3, 1, 0, 2, 1, 64, 32},
     };
     u32 fsph[32] = {0};
     fsph[0] = sph0(2, 5);
@@ -1811,13 +1817,16 @@ static void test_resolution_scale(const char* dir) {
         env.ubo[SNX_VKB_RS] = scale;
         env.ubo_words[SNX_VKB_RS] = 4;
         env.push[4] = cases[k].scaled; /* the uvec4 after the fragment stage's vec4: slot 0's bit */
+        env.push[8] = cases[k].own;    /* and the one after it: slot 0's target has the size drawn to */
         env.image_size[SNX_VKB_TEX][0] = 32;
         env.image_size[SNX_VKB_TEX][1] = 16;
         const char* why = spv_eval(spv, count, &env);
         if (why) fprintf(stderr, "resolution scale: the evaluator stops at %s\n", why);
         CHECK(!why && env.out_written[0]);
         free(spv);
-        const char* bound = cases[k].scaled ? "bound to" : "that is not";
+        const char* bound = !cases[k].scaled ? "that is not"
+                            : cases[k].own   ? "bound to, of the size drawn to,"
+                                             : "bound to, of another size than the one drawn to,";
         float gx = cases[k].fx / s, gy = cases[k].fy / s;
         float dx = u2f(env.out[0][0]) - gx, dy = u2f(env.out[0][1]) - gy;
         int near = dx > -1e-5f && dx < 1e-5f && dy > -1e-5f && dy < 1e-5f;

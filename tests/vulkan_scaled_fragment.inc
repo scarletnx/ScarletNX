@@ -7,10 +7,13 @@
      position in the image's pixels, the texture filled the top-left quarter of the image, and the rest was fetched
      past its edge
    - another 8x8 target, which a draw filled with each fragment's position: pixel (x, y) holds that target's pixel
-     (x, y), the one where the fragment lies in its guest pixel, not one pixel for the four of a guest pixel.
+     (x, y), the one where the fragment lies in its guest pixel, not one pixel for the four of a guest pixel. The same
+     through a 6x5 header on that target, as a frame at a dynamic resolution is read, over the header's pixels
    - a table, a 4x1 target whose memory the program wrote, of which every fragment fetches the same texel: every pixel
-     holds that texel's value. A load that blended the texels gave each of a texel's pixels a part of a neighbour, so
-     the columns alternated between two values that were neither the texel's. The same through a 2x1 header on it */
+     holds that texel's value. A fetch that follows the fragment's place in its guest pixel took another of the
+     texel's pixels in every other column, and a load that blended the texels gave each a part of its neighbour, so
+     the columns alternated between two values that were neither the texel's. The same through a 2x1 header on it,
+     and of the table once a draw filled it with positions: one pixel of the texel for every fragment */
 #define SF_GPU 0x870000000ull
 #define SF_CPU (HEAP_BASE + 0x5540000)
 #define SF_W   8u
@@ -93,7 +96,7 @@ static int sf_draw(GpuChannel* channel, u64 target, u32 w, u32 h, u32 format, u3
     DsState* state = &channel->ds;
     state->bind.tex_pool = SF_GPU + SF_POOL;
     state->bind.smp_pool = SF_GPU + SF_SAMPLERS;
-    state->bind.tex_max = 4;
+    state->bind.tex_max = 5;
     state->bind.smp_max = 0;
     state->bind.cb_addr[ST_FS][2] = SF_GPU + SF_CONSTANTS;
     state->bind.cb_size[ST_FS][2] = 256;
@@ -145,8 +148,8 @@ static int check_scaled_fragment(void) {
     CHECK(!sf_program(SF_GPU, 0x000c0481u, 13, 0xfu << 12, code, 3)); /* the output map's position */
     /* the fragment programs: the fetch of the texture, the fragment's position, the fetch of the positions' target */
     CHECK(!sf_fragment(0x800, 0x40) && !sf_fragment(0x1000, 0) && !sf_fragment(0x1800, 0x44));
-    /* the fetches of the table's texel 1, whole and through the 2x1 header */
-    CHECK(!sf_table_fragment(0x2800, 0x48, 1) && !sf_table_fragment(0x3000, 0x4c, 1));
+    /* the fetches of the table's texel 1, whole and through the 2x1 header, and of the positions through a header */
+    CHECK(!sf_table_fragment(0x2800, 0x48, 1) && !sf_table_fragment(0x3000, 0x4c, 1) && !sf_fragment(0x3800, 0x50));
     g_renderer->method_barrier(5); /* other code at the addresses */
     u8 texels[512] = {0}, table[256] = {0};
     for (u32 y = 0; y < SF_W; y++)
@@ -177,6 +180,11 @@ static int check_scaled_fragment(void) {
     snx_st_le32(table + 0x44, 2);
     snx_st_le32(table + 0x48, 3);
     snx_st_le32(table + 0x4c, 4);
+    /* header 5: the top-left 6x5 of the positions' target, its rows as many blocks wide as the target's */
+    CHECK(!storage_write_words(
+        SF_GPU + SF_POOL + 160,
+        (const u32[8]){rgba32f, (u32)positions, (u32)(positions >> 32) | 3u << 21, 0, 5 | 1u << 23, 4, 0, 0}, 8));
+    snx_st_le32(table + 0x50, 5);
     CHECK(!gmem_write(SF_GPU + SF_CONSTANTS, table, sizeof table));
     float scale = g_vk_scale;
     int sm86 = g_shader_sm86, bad = 0;
@@ -209,6 +217,18 @@ static int check_scaled_fragment(void) {
             }
         CHECK(!bad);
     }
+    CHECK(!sf_draw(channel, copy, SF_W, SF_W, 0xC0, 0x3800, pixels, 16));
+    for (u32 y = 0; y < 2 * 5; y++)
+        for (u32 x = 0; x < 2 * 6; x++) {
+            float at[2];
+            memcpy(at, pixels + (y * 2 * SF_W + x) * 16, sizeof at);
+            if ((at[0] != ((float)x + 0.5f) / 2 || at[1] != ((float)y + 0.5f) / 2) && bad++ < 4)
+                fprintf(stderr,
+                        "scaled fragment: pixel %u,%u of a target at 2x fetched through a 6x5 header on the target "
+                        "of the positions (%g, %g), not its own (%g, %g)\n",
+                        x, y, (double)at[0], (double)at[1], ((double)x + 0.5) / 2, ((double)y + 0.5) / 2);
+        }
+    CHECK(!bad);
     /* the table: cleared as a target, then written by the program and loaded again */
     float values[4][4];
     u8 bytes[512] = {0}; /* a block of 64 bytes by 8 rows */
@@ -221,9 +241,14 @@ static int check_scaled_fragment(void) {
     CHECK(!gmem_write(entries, bytes, sizeof bytes));
     g_renderer->mem_may_have_changed();
     vk_rt_reload(entries);
-    for (u32 pass = 0; pass < 2; pass++) {
-        const float want[2] = {values[1][0], values[1][1]};
-        CHECK(!sf_draw(channel, copy, SF_W, SF_W, 0xC0, pass ? 0x3000 : 0x2800, pixels, 16));
+    for (u32 pass = 0; pass < 3; pass++) {
+        float want[2] = {values[1][0], values[1][1]};
+        if (pass == 2) { /* the positions drawn over it: texel 1's are 1.25 and 1.75 across, 0.25 and 0.75 down */
+            CHECK(!sf_draw(channel, entries, 4, 1, 0xC0, 0x1000, pixels, 16));
+            memcpy(want, pixels + (1 * 8 + 3) * 16, sizeof want);
+            CHECK(want[0] == 1.75f && want[1] == 0.75f);
+        }
+        CHECK(!sf_draw(channel, copy, SF_W, SF_W, 0xC0, pass == 1 ? 0x3000 : 0x2800, pixels, 16));
         for (u32 y = 0; y < 2 * SF_W; y++)
             for (u32 x = 0; x < 2 * SF_W; x++) {
                 float at[2];
@@ -232,7 +257,10 @@ static int check_scaled_fragment(void) {
                     fprintf(stderr,
                             "scaled fragment: pixel %u,%u of a target at 2x fetched texel 1 of a 4x1 table %s as "
                             "(%g, %g), not (%g, %g)\n",
-                            x, y, pass ? "loaded from memory, through a 2x1 header" : "loaded from memory",
+                            x, y,
+                            pass == 0   ? "loaded from memory"
+                            : pass == 1 ? "loaded from memory, through a 2x1 header"
+                                        : "a draw filled",
                             (double)at[0], (double)at[1], (double)want[0], (double)want[1]);
             }
         CHECK(!bad);
