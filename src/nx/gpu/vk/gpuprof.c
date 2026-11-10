@@ -22,6 +22,7 @@
    or read. */
 #include <stdlib.h>
 #include <string.h>
+#include "nx/gpu/vk/gpuprof_setting.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
@@ -147,8 +148,10 @@ int vk_gpuprof_calibrated(void) {
 
 static int gp_on(void) {
     if (g_on < 0) {
-        g_on = g_settings.gpu_profile && g_vk.props.limits.timestampComputeAndGraphics;
-        if (g_settings.gpu_profile && !g_on) WARN("vulkan: vk_gpu_profile: the device has no timestamps on its graphics queue\n");
+        char say[640];
+        g_on = vk_gpuprof_setting(g_settings.gpu_profile, g_vk.props.limits.timestampComputeAndGraphics,
+                                  g_vk.has_portability, g_vk.props.deviceName, say, sizeof say);
+        if (say[0]) WARN("%s\n", say);
     }
     if (g_dead) return 0;
 #if defined(SNX_TRACY)
