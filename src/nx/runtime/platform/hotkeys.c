@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/hotkeys.h"
 #include "nx/runtime/platform/log.h"
+#include "common/utilities/quit_key.h"
 #include "snx_settings.h"
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_keycode.h>
@@ -27,6 +28,7 @@ static const struct {
 static struct {
     unsigned key[HOTKEY_COUNT], mods[HOTKEY_COUNT];
     int started;
+    uint64_t quit_by; /* a second press of the quit key before this quits */
 } g_hotkeys;
 
 const IniOpt* hotkey_row(int action) {
@@ -160,3 +162,5 @@ int hotkeys_ini(const char* k, const char* v) {
     if (o) ini_read(o, v);
     return o != NULL;
 }
+
+int hotkey_quit_press(uint64_t now_ns) { return snx_quit_press(&g_hotkeys.quit_by, now_ns); }

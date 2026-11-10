@@ -4,6 +4,7 @@
 #include "agb/apu/apu.h"
 #include "agb/ppu/ppu.h"
 #include "common/utilities/pad_sdl.h"
+#include "common/utilities/quit_key.h"
 #include "common/utilities/window_icon.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -27,6 +28,7 @@ struct AgbHost {
     SnxPadMap pad;
     uint16_t keyboard, buttons; /* the keys the keyboard and the gamepads hold */
     uint64_t due;               /* when the next frame goes on screen, SDL_GetTicksNS's */
+    uint64_t quit_by;           /* a second Esc before this closes the window (common/utilities/quit_key.h) */
 };
 
 uint16_t agb_host_key(int scancode) {
@@ -148,6 +150,19 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED: open = false; break;
             case SDL_EVENT_GAMEPAD_ADDED: SDL_OpenGamepad(event.gdevice.which); break;
             case SDL_EVENT_KEY_DOWN:
+                /* Esc twice closes the window, a first one warning on the terminal; not with Ctrl, Alt or the system
+                   key */
+                if (event.key.key == SDLK_ESCAPE && !event.key.repeat &&
+                    !(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
+                    char warning[64];
+                    if (snx_quit_press(&host->quit_by, SDL_GetTicksNS())) {
+                        open = false;
+                        break;
+                    }
+                    snx_quit_warning(warning, sizeof warning, "Esc");
+                    fprintf(stderr, "scarletnx-agb: %s\n", warning);
+                    break;
+                }
                 if (event.key.scancode == SDL_SCANCODE_F11 && !event.key.repeat)
                     SDL_SetWindowFullscreen(host->window, !(SDL_GetWindowFlags(host->window) & SDL_WINDOW_FULLSCREEN));
                 host->keyboard |= agb_host_key(event.key.scancode);

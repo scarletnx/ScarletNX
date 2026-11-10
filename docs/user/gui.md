@@ -737,7 +737,7 @@ to 4.5:1 for text: a colour changes there, not in the files.
 The runtime draws a loading screen of its own in the same look while it prepares the shaders before a game starts
 (`prepare_shaders = 2`, the default). It shows steps with their progress, the lines of the work scrolling under
 them, and a progress bar in every theme. A key that types, an arrow or the keypad, a gamepad button other than Home,
-or a tap starts the game at once, and the rest is prepared while it runs. Esc quits, or on Android back opens the
+or a tap starts the game at once, and the rest is prepared while it runs. Esc twice quits, or on Android back opens the
 menu, whose Exit quits. The screen appears only when the work takes longer than a quarter second, and its words are
 in English whatever language the launcher uses. It reads the theme the launcher picked from the launcher's
 `app.ini`, from the built-ins, the `themes/` of the data folder (the one Folders picked, when it did) and

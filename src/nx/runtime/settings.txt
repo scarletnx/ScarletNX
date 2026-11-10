@@ -432,7 +432,7 @@ setting Prepare shaders
     help is updated. Off = shaders are made only when the game first draws with them. While playing = prepared in the
     help background, used once all are ready. Before starting = a loading screen waits for them and for the shader cache
     help of earlier sessions. Any key, button or tap starts the game at once and the rest is prepared while you play.
-    help Esc quits (on Android, back opens the menu)
+    help Esc twice quits (on Android, back opens the menu)
 setting Compress shader cache
     key compress_shader_cache
     int 0 1
@@ -823,7 +823,7 @@ setting Quit shortcut
     default Escape
     label Quit
     set hotkey_set
-    help The key that quits the game, as hotkey_help's
+    help The key that quits the game, as hotkey_help's: a first press warns, and a second within 3 seconds quits
 setting TV mode shortcut
     key hotkey_tv_mode
     text 64
