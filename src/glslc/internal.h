@@ -26,62 +26,75 @@ enum { GLSLC_V100 = 0, GLSLC_V300 = 1, GLSLC_V310 = 2, GLSLC_V320 = 3 };
 #define GLSLC_SC   4u
 #define GLSLC_SALL 7u
 
+/* Token kinds, 32 bits. A punctuator is its own characters: one is its ASCII code ('('), two or three are packed from
+   the first in the low byte (GLSLC_TK2('+', '='), GLSLC_TK3('<', '<', '=')), made from the bytes one at a time, so a
+   kind is the same number on a big-endian host. The kinds no character spells are below ' '; keywords from 0x80, the
+   built-in types' from TK_TYPE (0x100), which no two characters reach (their second byte is past ' '). A name the
+   preprocessor let through is GLSLC_TK_NAME | its index in g->names: two tokens name the same thing when their kinds
+   are equal. Inside the lexer an identifier is TK_IDENT until its name is needed */
+#define GLSLC_TK2(a, b)    ((uint32_t)(unsigned char)(a) | (uint32_t)(unsigned char)(b) << 8)
+#define GLSLC_TK3(a, b, c) (GLSLC_TK2(a, b) | (uint32_t)(unsigned char)(c) << 16)
+#define GLSLC_TK_NAME      0x80000000u
+#define GLSLC_IS_NAME(k)   (((k)&GLSLC_TK_NAME) != 0)
+#define GLSLC_NAME_OF(k)   ((k) & ~GLSLC_TK_NAME)
+#define GLSLC_IS_TYPE(k)   ((k) >= TK_TYPE && (k) < TK_TYPE + 0x100u)
 enum {
     TK_EOF = 0,
-    TK_IDENT,
+    TK_IDENT,      /* an identifier the lexer has not named yet */
     TK_INTCONST,
     TK_UINTCONST,
     TK_FLOATCONST,
-    TK_JUNK, /* a character no token starts with, only seen in a section #if leaves out */
-    TK_LPAREN,
-    TK_RPAREN,
-    TK_LBRACKET,
-    TK_RBRACKET,
-    TK_LBRACE,
-    TK_RBRACE,
-    TK_DOT,
-    TK_COMMA,
-    TK_COLON,
-    TK_SEMICOLON,
-    TK_QUESTION,
-    TK_PLUS,
-    TK_MINUS,
-    TK_STAR,
-    TK_SLASH,
-    TK_PERCENT,
-    TK_LT,
-    TK_GT,
-    TK_LE,
-    TK_GE,
-    TK_EQ,
-    TK_NE,
-    TK_ANDAND,
-    TK_OROR,
-    TK_XORXOR,
-    TK_BANG,
-    TK_TILDE,
-    TK_AMP,
-    TK_BAR,
-    TK_CARET,
-    TK_SHL,
-    TK_SHR,
-    TK_INC,
-    TK_DEC,
-    TK_ASSIGN,
-    TK_ADD_ASSIGN,
-    TK_SUB_ASSIGN,
-    TK_MUL_ASSIGN,
-    TK_DIV_ASSIGN,
-    TK_MOD_ASSIGN,
-    TK_SHL_ASSIGN,
-    TK_SHR_ASSIGN,
-    TK_AND_ASSIGN,
-    TK_XOR_ASSIGN,
-    TK_OR_ASSIGN,
-    TK_HASH,
-    TK_HASHHASH,
+    TK_JUNK,     /* a character no token starts with, only seen in a section #if leaves out */
+    TK_RESERVED, /* a word the version reserves: an error wherever it is used */
+    TK_LPAREN = '(',
+    TK_RPAREN = ')',
+    TK_LBRACKET = '[',
+    TK_RBRACKET = ']',
+    TK_LBRACE = '{',
+    TK_RBRACE = '}',
+    TK_DOT = '.',
+    TK_COMMA = ',',
+    TK_COLON = ':',
+    TK_SEMICOLON = ';',
+    TK_QUESTION = '?',
+    TK_PLUS = '+',
+    TK_MINUS = '-',
+    TK_STAR = '*',
+    TK_SLASH = '/',
+    TK_PERCENT = '%',
+    TK_LT = '<',
+    TK_GT = '>',
+    TK_BANG = '!',
+    TK_TILDE = '~',
+    TK_AMP = '&',
+    TK_BAR = '|',
+    TK_CARET = '^',
+    TK_ASSIGN = '=',
+    TK_HASH = '#',
+    TK_LE = GLSLC_TK2('<', '='),
+    TK_GE = GLSLC_TK2('>', '='),
+    TK_EQ = GLSLC_TK2('=', '='),
+    TK_NE = GLSLC_TK2('!', '='),
+    TK_ANDAND = GLSLC_TK2('&', '&'),
+    TK_OROR = GLSLC_TK2('|', '|'),
+    TK_XORXOR = GLSLC_TK2('^', '^'),
+    TK_SHL = GLSLC_TK2('<', '<'),
+    TK_SHR = GLSLC_TK2('>', '>'),
+    TK_INC = GLSLC_TK2('+', '+'),
+    TK_DEC = GLSLC_TK2('-', '-'),
+    TK_ADD_ASSIGN = GLSLC_TK2('+', '='),
+    TK_SUB_ASSIGN = GLSLC_TK2('-', '='),
+    TK_MUL_ASSIGN = GLSLC_TK2('*', '='),
+    TK_DIV_ASSIGN = GLSLC_TK2('/', '='),
+    TK_MOD_ASSIGN = GLSLC_TK2('%', '='),
+    TK_AND_ASSIGN = GLSLC_TK2('&', '='),
+    TK_XOR_ASSIGN = GLSLC_TK2('^', '='),
+    TK_OR_ASSIGN = GLSLC_TK2('|', '='),
+    TK_HASHHASH = GLSLC_TK2('#', '#'),
+    TK_SHL_ASSIGN = GLSLC_TK3('<', '<', '='),
+    TK_SHR_ASSIGN = GLSLC_TK3('>', '>', '='),
     /* keywords, classified as the tokens leave the preprocessor: which words are keywords depends on the version */
-    TK_ATTRIBUTE,
+    TK_ATTRIBUTE = 0x80,
     TK_VARYING,
     TK_CONST,
     TK_UNIFORM,
@@ -122,8 +135,7 @@ enum {
     TK_RETURN,
     TK_TRUE,
     TK_FALSE,
-    TK_RESERVED, /* a word the version reserves: an error wherever it is used */
-    TK_TYPE      /* TK_TYPE + i is the keyword of built-in type i + 1 (GT_VOID is TK_TYPE) */
+    TK_TYPE = 0x100 /* TK_TYPE + i is the keyword of built-in type i + 1 (GT_VOID is TK_TYPE) */
 };
 
 /* token flags */
@@ -132,10 +144,10 @@ enum {
 
 typedef struct {
     GlslcView text; /* the token's text in the source, or in the synthesized text with GLSLC_TF_SYNTH */
+    uint32_t kind;  /* TK_*, or GLSLC_TK_NAME | the name */
     uint16_t site;  /* where an error about it points: its own place, or the macro use it came out of */
-    uint8_t kind;
     uint8_t flags;
-    uint16_t name; /* an identifier's name (g->names), 0 until the lexer needs it, and for other tokens */
+    uint8_t pad;
 } GlslcToken;
 
 /* A name the preprocessor read: every identifier with the same text has the same one, so what the lexer learns of a
@@ -462,11 +474,11 @@ typedef struct {
 
 typedef struct {
     const char* name;
-    uint8_t len; /* the name's, builtins.c's ROW */
-    uint8_t kind; /* the token kind */
-    uint8_t kw;   /* versions it is a keyword in */
-    uint8_t res;  /* versions it is reserved in */
-    uint8_t ext;  /* the extension that makes it a keyword where it is not one */
+    uint8_t len;   /* the name's, builtins.c's ROW */
+    uint16_t kind; /* the token kind */
+    uint8_t kw;    /* versions it is a keyword in */
+    uint8_t res;   /* versions it is reserved in */
+    uint8_t ext;   /* the extension that makes it a keyword where it is not one */
 } GlslcKeyword;
 
 /* how a built-in function is written in SPIR-V */
@@ -621,9 +633,11 @@ typedef struct {
 #define GLSLC_HASH_SIZE   8192u
 enum { GLSLC_LAYOUT_NONE = 0, GLSLC_LAYOUT_STD140 = 1, GLSLC_LAYOUT_STD430 = 2 };
 
+#define GLSLC_SOURCE_PAD 8u
 #define GLSLC_TYPE_NAMES 4u /* the most types one message names, and one more */
 typedef struct {
-    /* the input */
+    /* the input: a copy of the source in the workspace, GLSLC_SOURCE_PAD zero bytes after its end, so the lexer reads
+       a byte or three ahead without asking whether the source has them (a view's place is the same in both) */
     const char* src;
     uint32_t src_len;
     GlslcStage stage;

@@ -113,7 +113,7 @@ static void keywords(void) {
     GlslcResult* r = &g_lex_test.result;
     static const struct {
         const char* source;
-        uint8_t kind;
+        uint32_t kind; /* TK_IDENT: a name (GLSLC_TK_NAME) */
     } cases[] = {
         {"uint", TK_IDENT},
         {"#version 300 es\nuint", TK_TYPE + GT_UINT - 1},
@@ -136,7 +136,8 @@ static void keywords(void) {
         Glslc* g = glslc_open(g_lex_test.workspace, g_lex_test.workspace_size, SNX_GLSLC_FRAGMENT, cases[i].source,
                               strlen(cases[i].source), r);
         assert(g && glslc_run(g, GLSLC_PASS_LEX, NULL, 0) == 0);
-        if (g->toks[0].kind != cases[i].kind) {
+        uint32_t got = g->toks[0].kind;
+        if (cases[i].kind == TK_IDENT ? !GLSLC_IS_NAME(got) : got != cases[i].kind) {
             fprintf(stderr, "%s: kind %u, want %u\n", cases[i].source, g->toks[0].kind, cases[i].kind);
             exit(1);
         }

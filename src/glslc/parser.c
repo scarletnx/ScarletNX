@@ -33,7 +33,7 @@ static uint32_t parse_statement(Glslc* g, uint32_t* last);
 static uint32_t parse_type_specifier(Glslc* g, int nested);
 
 static const GlslcToken* tk(const Glslc* g, uint32_t i) { return &g->toks[i < g->ntoks ? i : g->ntoks - 1]; }
-static uint8_t kind_at(const Glslc* g, uint32_t ahead) { return tk(g, g->pos + ahead)->kind; }
+static uint32_t kind_at(const Glslc* g, uint32_t ahead) { return tk(g, g->pos + ahead)->kind; }
 static uint32_t site(const Glslc* g, uint32_t tok) { return tk(g, tok)->site; }
 
 static uint32_t next_tok(Glslc* g) {
@@ -42,7 +42,7 @@ static uint32_t next_tok(Glslc* g) {
     return t;
 }
 
-static int accept(Glslc* g, uint8_t kind) {
+static int accept(Glslc* g, uint32_t kind) {
     if (kind_at(g, 0) != kind) return 0;
     g->pos++;
     return 1;
@@ -62,8 +62,9 @@ static void describe(const Glslc* g, uint32_t tok, char* out, size_t size) {
     }
 }
 
-static uint32_t expect(Glslc* g, uint8_t kind, const char* what) {
-    if (kind_at(g, 0) != kind) {
+/* the token at g->pos, which is of kind or a name (GLSLC_TK_NAME), and the next one after it; else an error */
+static uint32_t expect_kind(Glslc* g, uint32_t kind, const char* what) {
+    if (kind == GLSLC_TK_NAME ? !GLSLC_IS_NAME(kind_at(g, 0)) : kind_at(g, 0) != kind) {
         char found[96];
         describe(g, g->pos, found, sizeof found);
         if (kind_at(g, 0) == TK_RESERVED)
@@ -73,6 +74,8 @@ static uint32_t expect(Glslc* g, uint8_t kind, const char* what) {
     }
     return g->pos++;
 }
+static uint32_t expect(Glslc* g, uint32_t kind, const char* what) { return expect_kind(g, kind, what); }
+static uint32_t expect_name(Glslc* g, const char* what) { return expect_kind(g, GLSLC_TK_NAME, what); }
 
 static void enter(Glslc* g, uint32_t tok) {
     if (++g->depth > SNX_GLSLC_MAX_DEPTH)
@@ -596,7 +599,7 @@ static void parse_layout(Glslc* g, Qual* q) {
     expect(g, TK_LPAREN, "'(' after layout");
     for (;;) {
         uint32_t id = g->pos;
-        if (kind_at(g, 0) != TK_IDENT && kind_at(g, 0) != TK_SHARED) {
+        if (!GLSLC_IS_NAME(kind_at(g, 0)) && kind_at(g, 0) != TK_SHARED) {
             char found[96];
             describe(g, id, found, sizeof found);
             glslc_fail(g, site(g, id), "expected a layout qualifier, found %s", found);
@@ -814,7 +817,7 @@ static uint32_t parse_struct(Glslc* g, int nested) {
     uint32_t st = next_tok(g);
     if (nested) glslc_fail(g, site(g, st), "a struct cannot be defined inside a struct or block");
     uint32_t name_tok = 0;
-    if (kind_at(g, 0) == TK_IDENT) name_tok = next_tok(g);
+    if (GLSLC_IS_NAME(kind_at(g, 0))) name_tok = next_tok(g);
     expect(g, TK_LBRACE, "'{' after struct");
     uint32_t t = new_type(g, st);
     g->types[t].kind = GLSLC_T_STRUCT;
@@ -829,7 +832,7 @@ static uint32_t parse_struct(Glslc* g, int nested) {
             glslc_fail(g, site(g, q.tok), "a struct member takes no qualifier but a precision");
         uint32_t mt = parse_type_specifier(g, 1);
         do {
-            uint32_t mn = expect(g, TK_IDENT, "a member name");
+            uint32_t mn = expect_name(g, "a member name");
             uint32_t full = parse_array_suffix(g, mt);
             if (element_of(g, full) == GT_VOID) glslc_fail(g, site(g, mn), "member %.*s cannot be void", TOKV(g, mn));
             if (ty(g, full)->kind == GLSLC_T_ARRAY && ty(g, full)->len == 0)
@@ -878,16 +881,16 @@ static uint32_t parse_struct(Glslc* g, int nested) {
 }
 
 static int is_struct_name(const Glslc* g, uint32_t tok) {
-    if (tk(g, tok)->kind != TK_IDENT) return 0;
+    if (!GLSLC_IS_NAME(tk(g, tok)->kind)) return 0;
     uint32_t s = lookup(g, tk(g, tok)->text);
     return s && g->syms[s].kind == GLSLC_SK_STRUCT;
 }
 
 static uint32_t parse_type_specifier(Glslc* g, int nested) {
     uint32_t t0 = g->pos;
-    uint8_t k = kind_at(g, 0);
+    uint32_t k = kind_at(g, 0);
     uint32_t t;
-    if (k >= TK_TYPE) {
+    if (GLSLC_IS_TYPE(k)) {
         t = (uint32_t)(k - TK_TYPE) + 1u;
         g->pos++;
         if (ty(g, t)->kind == GLSLC_T_ATOMIC)
@@ -903,7 +906,7 @@ static uint32_t parse_type_specifier(Glslc* g, int nested) {
         char found[96];
         describe(g, t0, found, sizeof found);
         if (k == TK_RESERVED) glslc_fail(g, site(g, t0), "%s is a word GLSL ES %s reserves", found, version_name(g));
-        if (k == TK_IDENT) glslc_fail(g, site(g, t0), "%s is not a type", found);
+        if (GLSLC_IS_NAME(k)) glslc_fail(g, site(g, t0), "%s is not a type", found);
         glslc_fail(g, site(g, t0), "expected a type, found %s", found);
         return 0;
     }
@@ -1731,8 +1734,8 @@ static uint32_t variable(Glslc* g, uint32_t tok) {
 
 static uint32_t parse_primary(Glslc* g) {
     uint32_t t = g->pos;
-    uint8_t k = kind_at(g, 0);
-    switch (k) {
+    uint32_t k = kind_at(g, 0);
+    switch (GLSLC_IS_NAME(k) ? (uint32_t)TK_IDENT : k) { /* TK_IDENT: a name */
         case TK_INTCONST:
         case TK_UINTCONST: {
             g->pos++;
@@ -1762,7 +1765,7 @@ static uint32_t parse_primary(Glslc* g) {
             g->pos++;
             return variable(g, t);
         default:
-            if (k < TK_TYPE) {
+            if (!GLSLC_IS_TYPE(k)) {
                 char found[96];
                 describe(g, t, found, sizeof found);
                 if (k == TK_RESERVED)
@@ -1791,7 +1794,7 @@ static uint32_t parse_postfix(Glslc* g) {
             }
             case TK_DOT: {
                 g->pos++;
-                uint32_t f = expect(g, TK_IDENT, "a field or swizzle after '.'");
+                uint32_t f = expect_name(g, "a field or swizzle after '.'");
                 if (glslc_view_is(g, tk(g, f)->text, "length") && kind_at(g, 0) == TK_LPAREN) {
                     g->pos++;
                     expect(g, TK_RPAREN, "')' after length(");
@@ -1843,9 +1846,10 @@ static uint32_t parse_unary(Glslc* g) {
     return make_unary(g, op, t, a);
 }
 
-static int binary_op(uint8_t kind, uint8_t* op) {
+static int binary_op(uint32_t kind, uint8_t* op) {
     static const struct {
-        uint8_t kind, op, prec;
+        uint16_t kind;
+        uint8_t op, prec;
     } ops[] = {{TK_OROR, GLSLC_OP_LOGIC_OR, 1},
                {TK_XORXOR, GLSLC_OP_LOGIC_XOR, 2},
                {TK_ANDAND, GLSLC_OP_LOGIC_AND, 3},
@@ -1918,7 +1922,7 @@ static uint32_t parse_conditional(Glslc* g) {
     return n;
 }
 
-static uint8_t assign_op(uint8_t kind) {
+static uint8_t assign_op(uint32_t kind) {
     switch (kind) {
         case TK_ASSIGN: return GLSLC_OP_ASSIGN;
         case TK_ADD_ASSIGN: return GLSLC_OP_ADD;
@@ -2133,7 +2137,7 @@ static uint32_t declare_variable(Glslc* g, const Qual* q, uint32_t type, uint32_
 static uint32_t parse_declarators(Glslc* g, const Qual* q, uint32_t type, int global, uint32_t* last) {
     uint32_t first = 0, tail = 0;
     do {
-        uint32_t name = expect(g, TK_IDENT, "a variable name");
+        uint32_t name = expect_name(g, "a variable name");
         uint32_t t = parse_array_suffix(g, type);
         uint32_t init = 0;
         if (accept(g, TK_ASSIGN)) init = parse_assignment(g);
@@ -2155,7 +2159,7 @@ static uint32_t parse_declarators(Glslc* g, const Qual* q, uint32_t type, int gl
 }
 
 static int starts_declaration(Glslc* g) {
-    uint8_t k = kind_at(g, 0);
+    uint32_t k = kind_at(g, 0);
     switch (k) {
         case TK_CONST:
         case TK_IN:
@@ -2184,19 +2188,19 @@ static int starts_declaration(Glslc* g) {
         case TK_STRUCT: return 1;
         default: break;
     }
-    if (!(k >= TK_TYPE || is_struct_name(g, g->pos))) return 0;
-    uint8_t k1 = kind_at(g, 1);
-    if (k1 == TK_IDENT || k1 == TK_RESERVED) return 1; /* the declarator says what is wrong with a reserved word */
+    if (!(GLSLC_IS_TYPE(k) || is_struct_name(g, g->pos))) return 0;
+    uint32_t k1 = kind_at(g, 1);
+    if (GLSLC_IS_NAME(k1) || k1 == TK_RESERVED) return 1; /* the declarator says what is wrong with a reserved word */
     if (k1 != TK_LBRACKET) return 0;
     /* float[2] a; or float[2](...): past the brackets */
     uint32_t i = 1, depth = 0;
     for (;; i++) {
-        uint8_t kk = kind_at(g, i);
+        uint32_t kk = kind_at(g, i);
         if (kk == TK_EOF) return 0;
         if (kk == TK_LBRACKET) depth++;
         if (kk == TK_RBRACKET && --depth == 0 && kind_at(g, i + 1) != TK_LBRACKET) break;
     }
-    return kind_at(g, i + 1) == TK_IDENT;
+    return GLSLC_IS_NAME(kind_at(g, i + 1));
 }
 
 static void parse_precision(Glslc* g) {
@@ -2207,8 +2211,8 @@ static void parse_precision(Glslc* g) {
                                               : 0;
     if (!p) glslc_fail(g, site(g, g->pos), "precision takes lowp, mediump or highp, then a type");
     g->pos++;
-    uint8_t k = kind_at(g, 0);
-    uint32_t type = k >= TK_TYPE ? (uint32_t)(k - TK_TYPE) + 1u : 0;
+    uint32_t k = kind_at(g, 0);
+    uint32_t type = GLSLC_IS_TYPE(k) ? (uint32_t)(k - TK_TYPE) + 1u : 0;
     if (!type || !(type == GT_FLOAT || type == GT_INT || is_opaque_kind(ty(g, type)->kind))) {
         char found[96];
         describe(g, g->pos, found, sizeof found);
@@ -2271,7 +2275,7 @@ static uint32_t parse_condition(Glslc* g) {
         Qual q;
         parse_qualifiers(g, &q);
         uint32_t type = parse_type_specifier(g, 0);
-        uint32_t name = expect(g, TK_IDENT, "a variable name");
+        uint32_t name = expect_name(g, "a variable name");
         expect(g, TK_ASSIGN, "'=' and a value: a condition's variable is initialized");
         uint32_t init = parse_assignment(g);
         uint32_t s = declare_variable(g, &q, type, name, init, 0);
@@ -2596,7 +2600,7 @@ static void parse_block(Glslc* g, const Qual* q) {
         uint32_t mt = parse_type_specifier(g, 1);
         int first_declarator = 1;
         do {
-            uint32_t mn = expect(g, TK_IDENT, "a member name");
+            uint32_t mn = expect_name(g, "a member name");
             uint32_t full = parse_array_suffix(g, mt);
             if (unsized_at)
                 glslc_fail(g, site(g, unsized_at), "only a buffer block's last member may be an array with no size");
@@ -2663,7 +2667,7 @@ static void parse_block(Glslc* g, const Qual* q) {
     g->types[t].len = (uint16_t)count;
     g->types[t].dim = packing;
     uint32_t s;
-    if (kind_at(g, 0) == TK_IDENT) {
+    if (GLSLC_IS_NAME(kind_at(g, 0))) {
         uint32_t inst = next_tok(g);
         uint32_t full = parse_array_suffix(g, t);
         if (io && full != t && (ty(g, ty(g, full)->elem)->kind != GLSLC_T_BLOCK || located))
@@ -2739,7 +2743,7 @@ static void invariant_names(Glslc* g, const Qual* q) {
     if (q->qual != GLSLC_Q_INVARIANT || q->storage || q->has_layout || q->prec)
         glslc_fail(g, site(g, q->tok), "a declaration of names alone takes invariant only");
     do {
-        uint32_t t = expect(g, TK_IDENT, "a variable name");
+        uint32_t t = expect_name(g, "a variable name");
         uint32_t n = variable(g, t);
         uint32_t s = nd(g, n)->kind == GLSLC_N_VAR ? nd(g, n)->a : 0;
         if (!s || g->syms[s].storage != GLSLC_ST_OUT)
@@ -2793,7 +2797,7 @@ static void parse_function(Glslc* g, const Qual* q, uint32_t ret, uint32_t name_
             uint32_t ptok = g->pos;
             uint32_t pt = parse_type_specifier(g, 0);
             uint32_t pname = 0;
-            if (kind_at(g, 0) == TK_IDENT) {
+            if (GLSLC_IS_NAME(kind_at(g, 0))) {
                 pname = next_tok(g);
                 pt = parse_array_suffix(g, pt);
             }
@@ -2895,18 +2899,18 @@ static void parse_global(Glslc* g) {
     }
     Qual q;
     parse_qualifiers(g, &q);
-    uint8_t k = kind_at(g, 0);
+    uint32_t k = kind_at(g, 0);
     if (q.any && k == TK_SEMICOLON) {
         qualifier_only(g, &q);
         g->pos++;
         return;
     }
-    if (q.qual == GLSLC_Q_INVARIANT && !q.storage && !q.has_layout && k == TK_IDENT && !is_struct_name(g, g->pos) &&
+    if (q.qual == GLSLC_Q_INVARIANT && !q.storage && !q.has_layout && GLSLC_IS_NAME(k) && !is_struct_name(g, g->pos) &&
         kind_at(g, 1) != TK_LBRACE) {
         invariant_names(g, &q);
         return;
     }
-    if (k == TK_IDENT && kind_at(g, 1) == TK_LBRACE &&
+    if (GLSLC_IS_NAME(k) && kind_at(g, 1) == TK_LBRACE &&
         (q.storage == GLSLC_ST_UNIFORM || q.storage == GLSLC_ST_BUFFER || q.storage == GLSLC_ST_IN ||
          q.storage == GLSLC_ST_OUT)) {
         parse_block(g, &q);
@@ -2918,7 +2922,7 @@ static void parse_global(Glslc* g) {
         if (tk(g, t0)->kind != TK_STRUCT || q.any) glslc_fail(g, site(g, t0), "this declaration declares nothing");
         return;
     }
-    uint32_t name = expect(g, TK_IDENT, "a name");
+    uint32_t name = expect_name(g, "a name");
     if (kind_at(g, 0) == TK_LPAREN) {
         parse_function(g, &q, type, name);
         return;

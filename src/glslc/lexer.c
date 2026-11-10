@@ -16,12 +16,33 @@
 #define IF_DEAD    8u /* the #if is inside a group left out */
 #define MAX_PARAMS 64u
 
-static int ident_start(unsigned c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
-static int ident_char(unsigned c) { return ident_start(c) || (c >= '0' && c <= '9'); }
-static int digit(unsigned c) { return c >= '0' && c <= '9'; }
-static int hex_digit(unsigned c) { return digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
-static unsigned at(const Glslc* g, uint32_t i) { return i < g->src_len ? (unsigned char)g->src[i] : 0u; }
+/* each byte's classes, one bit each */
+enum { C_START = 1, C_IDENT = 2, C_DIGIT = 4, C_HEX = 8, C_SPACE = 16 };
+#define C_LETTER (C_START | C_IDENT)
+#define C_DEC    (C_IDENT | C_DIGIT | C_HEX)
+#define C_HEXL   (C_LETTER | C_HEX)
+static const unsigned char classes[256] = {
+    ['_'] = C_LETTER, [' '] = C_SPACE, ['\t'] = C_SPACE, ['\r'] = C_SPACE, ['\v'] = C_SPACE, ['\f'] = C_SPACE,
+    ['0'] = C_DEC,    ['1'] = C_DEC,   ['2'] = C_DEC,    ['3'] = C_DEC,    ['4'] = C_DEC,    ['5'] = C_DEC,
+    ['6'] = C_DEC,    ['7'] = C_DEC,   ['8'] = C_DEC,    ['9'] = C_DEC,    ['a'] = C_HEXL,   ['b'] = C_HEXL,
+    ['c'] = C_HEXL,   ['d'] = C_HEXL,  ['e'] = C_HEXL,   ['f'] = C_HEXL,   ['A'] = C_HEXL,   ['B'] = C_HEXL,
+    ['C'] = C_HEXL,   ['D'] = C_HEXL,  ['E'] = C_HEXL,   ['F'] = C_HEXL,   ['g'] = C_LETTER, ['h'] = C_LETTER,
+    ['i'] = C_LETTER, ['j'] = C_LETTER, ['k'] = C_LETTER, ['l'] = C_LETTER, ['m'] = C_LETTER, ['n'] = C_LETTER,
+    ['o'] = C_LETTER, ['p'] = C_LETTER, ['q'] = C_LETTER, ['r'] = C_LETTER, ['s'] = C_LETTER, ['t'] = C_LETTER,
+    ['u'] = C_LETTER, ['v'] = C_LETTER, ['w'] = C_LETTER, ['x'] = C_LETTER, ['y'] = C_LETTER, ['z'] = C_LETTER,
+    ['G'] = C_LETTER, ['H'] = C_LETTER, ['I'] = C_LETTER, ['J'] = C_LETTER, ['K'] = C_LETTER, ['L'] = C_LETTER,
+    ['M'] = C_LETTER, ['N'] = C_LETTER, ['O'] = C_LETTER, ['P'] = C_LETTER, ['Q'] = C_LETTER, ['R'] = C_LETTER,
+    ['S'] = C_LETTER, ['T'] = C_LETTER, ['U'] = C_LETTER, ['V'] = C_LETTER, ['W'] = C_LETTER, ['X'] = C_LETTER,
+    ['Y'] = C_LETTER, ['Z'] = C_LETTER};
+static int ident_start(unsigned c) { return classes[c] & C_START; }
+static int ident_char(unsigned c) { return classes[c] & C_IDENT; }
+static int digit(unsigned c) { return classes[c] & C_DIGIT; }
+static int hex_digit(unsigned c) { return classes[c] & C_HEX; }
+/* byte i of the source, 0 past its end: the copy's padding (glslc_open) holds the bytes read ahead of it */
+static unsigned at(const Glslc* g, uint32_t i) { return (unsigned char)g->src[i]; }
 static int skipping(const Glslc* g) { return g->nifs && !(g->ifs[g->nifs - 1] & IF_LIVE); }
+/* an identifier, named yet or not */
+static int is_ident(uint32_t kind) { return kind == TK_IDENT || GLSLC_IS_NAME(kind); }
 
 int glslc_parse_int(const char* text, uint32_t len, uint32_t* value) {
     uint64_t v = 0;
@@ -60,9 +81,9 @@ static uint32_t continuation(const Glslc* g, uint32_t i) {
     return 0;
 }
 
-static uint8_t number(Glslc* g, uint32_t* pi) {
+static uint32_t number(Glslc* g, uint32_t* pi) {
     uint32_t i = *pi, start = i;
-    uint8_t kind = TK_INTCONST;
+    uint32_t kind = TK_INTCONST;
     if (at(g, i) == '0' && (at(g, i + 1) == 'x' || at(g, i + 1) == 'X')) {
         i += 2;
         if (!hex_digit(at(g, i)) && !skipping(g)) glslc_fail(g, start, "'0x' has no hexadecimal digits after it");
@@ -116,95 +137,53 @@ static uint8_t number(Glslc* g, uint32_t* pi) {
     return kind;
 }
 
-static uint8_t punct(Glslc* g, uint32_t* pi) {
+/* the characters that are a token on their own, by their code */
+static const unsigned char single[128] = {['('] = 1, [')'] = 1, ['['] = 1, [']'] = 1, ['{'] = 1, ['}'] = 1, ['.'] = 1,
+                                          [','] = 1, [':'] = 1, [';'] = 1, ['?'] = 1, ['+'] = 1, ['-'] = 1, ['*'] = 1,
+                                          ['/'] = 1, ['%'] = 1, ['<'] = 1, ['>'] = 1, ['!'] = 1, ['~'] = 1, ['&'] = 1,
+                                          ['|'] = 1, ['^'] = 1, ['='] = 1, ['#'] = 1};
+
+/* the punctuator at *pi, the longest GLSL ES has there: its kind is its characters (internal.h) */
+static uint32_t punct(Glslc* g, uint32_t* pi) {
     uint32_t i = *pi;
-    unsigned c = at(g, i), d = at(g, i + 1), e = at(g, i + 2);
-    uint8_t k = TK_JUNK;
-    uint32_t n = 1;
-    switch (c) {
-        case '(': k = TK_LPAREN; break;
-        case ')': k = TK_RPAREN; break;
-        case '[': k = TK_LBRACKET; break;
-        case ']': k = TK_RBRACKET; break;
-        case '{': k = TK_LBRACE; break;
-        case '}': k = TK_RBRACE; break;
-        case '.': k = TK_DOT; break;
-        case ',': k = TK_COMMA; break;
-        case ':': k = TK_COLON; break;
-        case ';': k = TK_SEMICOLON; break;
-        case '?': k = TK_QUESTION; break;
-        case '~': k = TK_TILDE; break;
-        case '+':
-            k = d == '+' ? TK_INC : d == '=' ? TK_ADD_ASSIGN : TK_PLUS;
-            n = k == TK_PLUS ? 1 : 2;
-            break;
-        case '-':
-            k = d == '-' ? TK_DEC : d == '=' ? TK_SUB_ASSIGN : TK_MINUS;
-            n = k == TK_MINUS ? 1 : 2;
-            break;
-        case '*':
-            k = d == '=' ? TK_MUL_ASSIGN : TK_STAR;
-            n = k == TK_STAR ? 1 : 2;
-            break;
-        case '/':
-            k = d == '=' ? TK_DIV_ASSIGN : TK_SLASH;
-            n = k == TK_SLASH ? 1 : 2;
-            break;
-        case '%':
-            k = d == '=' ? TK_MOD_ASSIGN : TK_PERCENT;
-            n = k == TK_PERCENT ? 1 : 2;
-            break;
-        case '<':
-            if (d == '<') {
-                k = e == '=' ? TK_SHL_ASSIGN : TK_SHL;
-                n = e == '=' ? 3 : 2;
-            } else {
-                k = d == '=' ? TK_LE : TK_LT;
-                n = d == '=' ? 2 : 1;
-            }
-            break;
-        case '>':
-            if (d == '>') {
-                k = e == '=' ? TK_SHR_ASSIGN : TK_SHR;
-                n = e == '=' ? 3 : 2;
-            } else {
-                k = d == '=' ? TK_GE : TK_GT;
-                n = d == '=' ? 2 : 1;
-            }
-            break;
-        case '=':
-            k = d == '=' ? TK_EQ : TK_ASSIGN;
-            n = d == '=' ? 2 : 1;
-            break;
-        case '!':
-            k = d == '=' ? TK_NE : TK_BANG;
-            n = d == '=' ? 2 : 1;
-            break;
-        case '&':
-            k = d == '&' ? TK_ANDAND : d == '=' ? TK_AND_ASSIGN : TK_AMP;
-            n = k == TK_AMP ? 1 : 2;
-            break;
-        case '|':
-            k = d == '|' ? TK_OROR : d == '=' ? TK_OR_ASSIGN : TK_BAR;
-            n = k == TK_BAR ? 1 : 2;
-            break;
-        case '^':
-            k = d == '^' ? TK_XORXOR : d == '=' ? TK_XOR_ASSIGN : TK_CARET;
-            n = k == TK_CARET ? 1 : 2;
-            break;
-        case '#':
-            k = d == '#' ? TK_HASHHASH : TK_HASH;
-            n = d == '#' ? 2 : 1;
-            break;
-        default:
-            if (skipping(g)) break;
-            if (c == '\\')
-                glslc_fail(g, i, "a backslash is only a line continuation at the end of a line, outside a token");
-            if (c >= 0x21 && c < 0x7f) glslc_fail(g, i, "the character '%c' is not in GLSL ES's character set", (int)c);
-            glslc_fail(g, i, "the byte 0x%02x is not in GLSL ES's character set", c);
+    unsigned c = at(g, i), d = at(g, i + 1);
+    uint32_t two = GLSLC_TK2(c, d);
+    if ((two == TK_SHL || two == TK_SHR) && at(g, i + 2) == '=') {
+        *pi = i + 3;
+        return GLSLC_TK3(c, d, '=');
     }
-    *pi = i + n;
-    return k;
+    switch (two) {
+        case TK_LE:
+        case TK_GE:
+        case TK_EQ:
+        case TK_NE:
+        case TK_ANDAND:
+        case TK_OROR:
+        case TK_XORXOR:
+        case TK_SHL:
+        case TK_SHR:
+        case TK_INC:
+        case TK_DEC:
+        case TK_ADD_ASSIGN:
+        case TK_SUB_ASSIGN:
+        case TK_MUL_ASSIGN:
+        case TK_DIV_ASSIGN:
+        case TK_MOD_ASSIGN:
+        case TK_AND_ASSIGN:
+        case TK_XOR_ASSIGN:
+        case TK_OR_ASSIGN:
+        case TK_HASHHASH: *pi = i + 2; return two;
+        default: break;
+    }
+    *pi = i + 1;
+    if (c < 128 && single[c]) return c;
+    if (!skipping(g)) {
+        if (c == '\\')
+            glslc_fail(g, i, "a backslash is only a line continuation at the end of a line, outside a token");
+        if (c >= 0x21 && c < 0x7f) glslc_fail(g, i, "the character '%c' is not in GLSL ES's character set", (int)c);
+        glslc_fail(g, i, "the byte 0x%02x is not in GLSL ES's character set", c);
+    }
+    return TK_JUNK;
 }
 
 /* the next raw token at g->cur, with GLSLC_TF_BOL when it starts its line. With line_only, a token that starts a
@@ -220,7 +199,7 @@ static void scan(Glslc* g, GlslcToken* t, int line_only) {
             bol = 1;
             continue;
         }
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\v' || c == '\f') {
+        if (classes[c] & C_SPACE) { /* \r too: a line's end, the line feed after it, is handled above */
             i++;
             continue;
         }
@@ -252,7 +231,7 @@ static void scan(Glslc* g, GlslcToken* t, int line_only) {
     t->text.pos = (uint16_t)i;
     t->site = (uint16_t)i;
     t->flags = bol ? GLSLC_TF_BOL : 0;
-    t->name = 0;
+    t->pad = 0;
     if (i >= g->src_len || (line_only && bol)) {
         t->kind = TK_EOF;
         t->text.len = 0;
@@ -273,7 +252,7 @@ static void scan(Glslc* g, GlslcToken* t, int line_only) {
     t->text.len = (uint16_t)(i - start);
     /* a continuation right after a name or number, before more of one, splices them in C: glslc does not */
     uint32_t cont = continuation(g, i);
-    if (cont && (t->kind == TK_IDENT || t->kind == TK_INTCONST || t->kind == TK_FLOATCONST) &&
+    if (cont && (is_ident(t->kind) || t->kind == TK_INTCONST || t->kind == TK_FLOATCONST) &&
         ident_char(at(g, i + cont)) && !skipping(g))
         glslc_fail(g, i, "a line continuation inside a name or number is not supported by glslc");
     g->cur = i;
@@ -318,7 +297,7 @@ static uint32_t synth_add(Glslc* g, const char* text, uint32_t len, uint32_t sit
 static GlslcToken synth_number(Glslc* g, uint32_t value, uint32_t site) {
     char text[16];
     int n = snprintf(text, sizeof text, "%u", value);
-    GlslcToken t = {{0, 0}, 0, TK_INTCONST, GLSLC_TF_SYNTH, 0};
+    GlslcToken t = {{0, 0}, TK_INTCONST, 0, GLSLC_TF_SYNTH, 0};
     t.text.pos = (uint16_t)synth_add(g, text, (uint32_t)n, site);
     t.text.len = (uint16_t)n;
     t.site = (uint16_t)site;
@@ -355,12 +334,14 @@ static uint32_t intern(Glslc* g, GlslcView view, int synth, uint32_t site) {
 
 /* t's name, kept in t for the next asker */
 static uint32_t name_of(Glslc* g, GlslcToken* t) {
-    if (!t->name) t->name = (uint16_t)intern(g, t->text, (t->flags & GLSLC_TF_SYNTH) != 0, t->site);
-    return t->name;
+    if (!GLSLC_IS_NAME(t->kind))
+        t->kind = GLSLC_TK_NAME | intern(g, t->text, (t->flags & GLSLC_TF_SYNTH) != 0, t->site);
+    return GLSLC_NAME_OF(t->kind);
 }
 
+
 /* the macro identifier t names now, 0 for none */
-static uint32_t macro_of(Glslc* g, GlslcToken* t) { return t->kind == TK_IDENT ? g->names[name_of(g, t)].macro : 0; }
+static uint32_t macro_of(Glslc* g, GlslcToken* t) { return is_ident(t->kind) ? g->names[name_of(g, t)].macro : 0; }
 
 /* a macro for name (g->names), which names it from now on */
 static uint32_t new_macro(Glslc* g, uint32_t name_id, GlslcView name, uint8_t flags, uint32_t site) {
@@ -392,7 +373,7 @@ static void define_synth(Glslc* g, const char* name, const char* value, uint8_t 
     v.pos = (uint16_t)synth_add(g, name, v.len, 0);
     uint32_t m = new_macro(g, intern(g, v, 1, 0), v, (uint8_t)(flags | GLSLC_MF_SYNTH), 0);
     if (value) {
-        GlslcToken t = {{0, 0}, 0, TK_INTCONST, GLSLC_TF_SYNTH, 0};
+        GlslcToken t = {{0, 0}, TK_INTCONST, 0, GLSLC_TF_SYNTH, 0};
         t.text.len = (uint16_t)strlen(value);
         t.text.pos = (uint16_t)synth_add(g, value, t.text.len, 0);
         mtok_push(g, &t);
@@ -438,7 +419,7 @@ static uint32_t expand_one(Glslc* g, uint32_t m, uint32_t i, uint32_t args_end, 
         /* exp[i + 1] is '(' and exp[args_end - 1] its ')' */
         uint32_t depth = 0, start = i + 2;
         for (uint32_t k = i + 2; k < args_end; k++) {
-            uint8_t kind = g->exp[k].kind;
+            uint32_t kind = g->exp[k].kind;
             int last = k == args_end - 1;
             if (kind == TK_LPAREN) depth++;
             if (kind == TK_RPAREN && !last) depth--;
@@ -467,7 +448,7 @@ static uint32_t expand_one(Glslc* g, uint32_t m, uint32_t i, uint32_t args_end, 
     for (uint32_t b = mc->params; b < mc->count; b++) {
         const GlslcToken* t = &g->mtoks[mc->first + b];
         uint32_t p = mc->params;
-        if (t->kind == TK_IDENT) {
+        if (is_ident(t->kind)) {
             for (p = 0; p < mc->params; p++) {
                 const GlslcToken* name = &g->mtoks[mc->first + p];
                 if (name->text.len == t->text.len && !memcmp(text_of(g, name), text_of(g, t), t->text.len)) break;
@@ -536,7 +517,7 @@ static uint32_t rescan(Glslc* g, uint32_t lo, uint32_t hi, uint32_t site) {
 }
 
 static void put(Glslc* g, GlslcToken t) {
-    if (t.kind == TK_IDENT) {
+    if (is_ident(t.kind)) {
         GlslcName* x = &g->names[name_of(g, &t)];
         if (!x->keyword) { /* looked up once a name */
             const GlslcKeyword* k = glslc_find_keyword(text_of(g, &t), t.text.len);
@@ -626,7 +607,7 @@ static int64_t pp_unary(Glslc* g, PpCursor* c, int live, uint32_t site) {
         glslc_fail(g, t->site, "this #if expression nests more than %u deep", SNX_GLSLC_MAX_DEPTH);
     c->i++;
     int64_t v = 0;
-    switch (t->kind) {
+    switch (is_ident(t->kind) ? (uint32_t)TK_IDENT : t->kind) {
         case TK_PLUS: v = pp_unary(g, c, live, site); break;
         case TK_MINUS: v = -pp_unary(g, c, live, site); break;
         case TK_TILDE: v = ~pp_unary(g, c, live, site); break;
@@ -659,7 +640,7 @@ static int64_t pp_unary(Glslc* g, PpCursor* c, int live, uint32_t site) {
     return v;
 }
 
-static int pp_level(uint8_t kind) {
+static int pp_level(uint32_t kind) {
     switch (kind) {
         case TK_OROR: return 0;
         case TK_ANDAND: return 1;
@@ -737,7 +718,7 @@ static int if_expression(Glslc* g, const GlslcToken* directive) {
     g->exp_site = directive->site;
     GlslcToken t;
     while (line_next(g, &t)) {
-        if (t.kind == TK_IDENT && token_is(g, &t, "defined")) {
+        if (is_ident(t.kind) && token_is(g, &t, "defined")) {
             GlslcToken n, r;
             int paren = 0;
             if (!line_next(g, &n)) glslc_fail(g, t.site, "'defined' needs a macro name after it");
@@ -745,11 +726,11 @@ static int if_expression(Glslc* g, const GlslcToken* directive) {
                 paren = 1;
                 if (!line_next(g, &n)) glslc_fail(g, t.site, "'defined(' needs a macro name after it");
             }
-            if (n.kind != TK_IDENT)
+            if (!is_ident(n.kind))
                 glslc_fail(g, n.site, "'defined' takes a macro name, not '%.*s'", (int)n.text.len, text_of(g, &n));
             if (paren && (!line_next(g, &r) || r.kind != TK_RPAREN))
                 glslc_fail(g, t.site, "'defined(%.*s' has no )", (int)n.text.len, text_of(g, &n));
-            GlslcToken v = {{0, 1}, 0, TK_INTCONST, GLSLC_TF_SYNTH, 0};
+            GlslcToken v = {{0, 1}, TK_INTCONST, 0, GLSLC_TF_SYNTH, 0};
             v.text.pos = macro_of(g, &n) ? 1 : 0; /* g->synth starts with "01" */
             v.site = t.site;
             exp_push(g, &v);
@@ -793,7 +774,7 @@ static int has_double_underscore(const char* text, uint32_t len) {
 
 static void directive_define(Glslc* g, const GlslcToken* hash) {
     GlslcToken name, t;
-    if (!line_next(g, &name) || name.kind != TK_IDENT) glslc_fail(g, hash->site, "#define needs a macro name");
+    if (!line_next(g, &name) || !is_ident(name.kind)) glslc_fail(g, hash->site, "#define needs a macro name");
     const char* text = text_of(g, &name);
     if (name.text.len >= 3 && !memcmp(text, "GL_", 3))
         glslc_fail(g, name.site, "'%.*s': macro names starting with GL_ are reserved", (int)name.text.len, text);
@@ -816,7 +797,7 @@ static void directive_define(Glslc* g, const GlslcToken* hash) {
         if (!line_next(g, &t))
             glslc_fail(g, name.site, "the parameters of macro %.*s have no )", (int)name.text.len, text);
         while (t.kind != TK_RPAREN) {
-            if (t.kind != TK_IDENT)
+            if (!is_ident(t.kind))
                 glslc_fail(g, t.site, "'%.*s' is not a macro parameter's name", (int)t.text.len, text_of(g, &t));
             for (uint32_t p = 0; p < params; p++) {
                 const GlslcToken* q = &g->mtoks[first + p];
@@ -860,7 +841,7 @@ static void directive_define(Glslc* g, const GlslcToken* hash) {
         g->nmtoks = first; /* the same definition again changes nothing */
         return;
     }
-    uint32_t m = new_macro(g, name.name, name.text, flags, name.site);
+    uint32_t m = new_macro(g, GLSLC_NAME_OF(name.kind), name.text, flags, name.site);
     g->macros[m].first = (uint16_t)first;
     g->macros[m].count = (uint16_t)count;
     g->macros[m].params = (uint8_t)params;
@@ -868,7 +849,7 @@ static void directive_define(Glslc* g, const GlslcToken* hash) {
 
 static void directive_undef(Glslc* g, const GlslcToken* hash, const GlslcToken* directive) {
     GlslcToken name;
-    if (!line_next(g, &name) || name.kind != TK_IDENT) glslc_fail(g, hash->site, "#undef needs a macro name");
+    if (!line_next(g, &name) || !is_ident(name.kind)) glslc_fail(g, hash->site, "#undef needs a macro name");
     no_more(g, directive);
     const char* text = text_of(g, &name);
     if (name.text.len >= 3 && !memcmp(text, "GL_", 3))
@@ -878,7 +859,7 @@ static void directive_undef(Glslc* g, const GlslcToken* hash, const GlslcToken* 
         glslc_fail(g, name.site, "'%.*s' is a predefined macro, which cannot be undefined", (int)name.text.len, text);
     if (m) {
         g->macros[m].flags |= GLSLC_MF_DEAD;
-        g->names[name.name].macro = 0;
+        g->names[GLSLC_NAME_OF(name.kind)].macro = 0;
     }
 }
 
@@ -890,7 +871,7 @@ static void directive_version(Glslc* g, const GlslcToken* hash) {
     uint32_t v = 0;
     if (!glslc_parse_int(text_of(g, &n), n.text.len, &v)) v = 0xffffffffu;
     int es = line_next(g, &p);
-    if (es && !(p.kind == TK_IDENT && token_is(g, &p, "es")))
+    if (es && !(is_ident(p.kind) && token_is(g, &p, "es")))
         glslc_fail(g, p.site, "'#version %u %.*s': GLSL ES's profile is es", v, (int)p.text.len, text_of(g, &p));
     if (es) {
         GlslcToken x;
@@ -925,9 +906,9 @@ static void directive_version(Glslc* g, const GlslcToken* hash) {
 
 static void directive_extension(Glslc* g, const GlslcToken* hash, const GlslcToken* directive) {
     GlslcToken name, colon, behavior;
-    if (!line_next(g, &name) || name.kind != TK_IDENT)
+    if (!line_next(g, &name) || !is_ident(name.kind))
         glslc_fail(g, hash->site, "#extension needs a name: #extension name : behavior");
-    if (!line_next(g, &colon) || colon.kind != TK_COLON || !line_next(g, &behavior) || behavior.kind != TK_IDENT)
+    if (!line_next(g, &colon) || colon.kind != TK_COLON || !line_next(g, &behavior) || !is_ident(behavior.kind))
         glslc_fail(g, name.site, "#extension %.*s needs ': behavior' after it (require, enable, warn or disable)",
                    (int)name.text.len, text_of(g, &name));
     no_more(g, directive);
@@ -1004,7 +985,7 @@ static void directive(Glslc* g, const GlslcToken* hash) {
         return; /* # alone on its line */
     }
     int dead = skipping(g);
-    if (name.kind == TK_IDENT &&
+    if (is_ident(name.kind) &&
         (token_is(g, &name, "if") || token_is(g, &name, "ifdef") || token_is(g, &name, "ifndef"))) {
         if (dead) {
             skip_line(g);
@@ -1017,7 +998,7 @@ static void directive(Glslc* g, const GlslcToken* hash) {
             v = if_expression(g, &name);
         } else {
             GlslcToken m;
-            if (!line_next(g, &m) || m.kind != TK_IDENT)
+            if (!line_next(g, &m) || !is_ident(m.kind))
                 glslc_fail(g, hash->site, "#%.*s needs a macro name", (int)name.text.len, text_of(g, &name));
             no_more(g, &name);
             v = macro_of(g, &m) != 0;
@@ -1026,7 +1007,7 @@ static void directive(Glslc* g, const GlslcToken* hash) {
         push_if(g, hash, v ? IF_LIVE | IF_TAKEN : 0);
         return;
     }
-    if (name.kind == TK_IDENT && (token_is(g, &name, "elif") || token_is(g, &name, "else"))) {
+    if (is_ident(name.kind) && (token_is(g, &name, "elif") || token_is(g, &name, "else"))) {
         int is_else = token_is(g, &name, "else");
         if (!g->nifs) glslc_fail(g, hash->site, "#%.*s without #if", (int)name.text.len, text_of(g, &name));
         uint32_t* top = &g->ifs[g->nifs - 1];
@@ -1043,7 +1024,7 @@ static void directive(Glslc* g, const GlslcToken* hash) {
         if (is_else) *top |= IF_ELSE;
         return;
     }
-    if (name.kind == TK_IDENT && token_is(g, &name, "endif")) {
+    if (is_ident(name.kind) && token_is(g, &name, "endif")) {
         if (!g->nifs) glslc_fail(g, hash->site, "#endif without #if");
         if (!dead) no_more(g, &name);
         skip_line(g);
@@ -1054,12 +1035,12 @@ static void directive(Glslc* g, const GlslcToken* hash) {
         skip_line(g);
         return;
     }
-    if (name.kind == TK_IDENT && token_is(g, &name, "version")) {
+    if (is_ident(name.kind) && token_is(g, &name, "version")) {
         directive_version(g, hash);
         return;
     }
     settle_version(g, hash->site);
-    if (name.kind != TK_IDENT) {
+    if (!is_ident(name.kind)) {
         glslc_fail(g, name.site, "'#%.*s' is not a directive", (int)name.text.len, text_of(g, &name));
     } else if (token_is(g, &name, "define")) {
         directive_define(g, hash);
@@ -1101,7 +1082,7 @@ void glslc_lex(Glslc* g) {
         if (skipping(g)) continue;
         settle_version(g, t.site);
         g->seen_code = 1;
-        if (t.kind == TK_IDENT) {
+        if (is_ident(t.kind)) {
             uint32_t m = macro_of(g, &t);
             if (m) {
                 expand_source(g, &t, m);
@@ -1115,7 +1096,7 @@ void glslc_lex(Glslc* g) {
         glslc_fail(g, site, "this #if has no #endif before the end of the source");
     }
     settle_version(g, g->src_len);
-    GlslcToken end = {{0, 0}, 0, TK_EOF, 0, 0};
+    GlslcToken end = {{0, 0}, TK_EOF, 0, 0, 0};
     end.text.pos = (uint16_t)g->src_len;
     end.site = (uint16_t)g->src_len;
     put(g, end);
