@@ -8,7 +8,9 @@ it: once the pull request is closed or the branch gone, nothing reads them, yet 
 A key that ends in a run's number or a hash (ccache-linux-x86_64-<run>-<attempt>, cpm-linux-<hash of the
 dependencies>) is one entry of a cache whose runs restore the entry used last: on each ref the older entries of that
 family go too, among those of one version (GitHub's hash of the paths and of the system, so one key saved by two
-systems is two caches). A key without such an end is a family of its own and stays.
+systems is two caches). A key without such an end is a family of its own and stays. A compiler cache (ccache-...) is
+saved by a push alone (build.yml): one on a pull request's ref, which that pull request reads in place of main's
+newer one, goes too.
 
 .github/workflows/cache-cleanup.yml runs it when a pull request closes and after each build. It needs gh, with GH_REPO
 set and a token allowed actions: write; --dry-run only lists.
@@ -25,6 +27,8 @@ import time
 # what follows it (android-llvm's NDK path), setup-msys2's hash of its package files
 VOLATILE = re.compile(r'-\d+-\d+$|-[0-9a-f]{64}(-.*)?$|-files:[0-9a-f]+$')
 PULL = re.compile(r'refs/pull/(\d+)/(merge|head)')
+# How the key of a cache starts that build.yml saves from a push alone: a pull request's run reads main's
+PUSH_ONLY = ('ccache-',)
 
 
 def family(key):
@@ -40,6 +44,8 @@ def plan(caches, open_prs, branches):
         pull = PULL.fullmatch(ref)
         if pull and int(pull.group(1)) not in open_prs:
             doomed.append((cache, f'pull request #{pull.group(1)} is closed'))
+        elif pull and cache['key'].startswith(PUSH_ONLY):
+            doomed.append((cache, f"on pull request #{pull.group(1)}'s ref, where it is read in place of main's"))
         elif ref.startswith('refs/heads/') and ref[len('refs/heads/') :] not in branches:
             doomed.append((cache, 'its branch is gone'))
         elif ref.startswith('refs/tags/'):  # a version's build reads main's: what it saves no later run reads

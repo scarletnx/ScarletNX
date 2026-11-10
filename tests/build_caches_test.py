@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""The Build workflow keeps each LLVM it builds. A step of .github/workflows/build.yml that runs one of the LLVM
-scripts (scripts/linux-llvm.sh, android-llvm.sh, apple-llvm.sh) runs only when its cache missed; the cache is read by
-actions/cache/restore, and the step right after the build saves it under the key the restore named. actions/cache
-alone saves when the job ends and only if it succeeded: a failed test or a cancelled run threw away a build of up to
-an hour, and the next run made it again. Then the same check on copies of the workflow made to fail it. Offline.
+"""What the Build workflow (.github/workflows/build.yml) saves in the repository's caches, and when.
+
+It keeps each LLVM it builds. A step that runs one of the LLVM scripts (scripts/linux-llvm.sh, android-llvm.sh,
+apple-llvm.sh) runs only when its cache missed; the cache is read by actions/cache/restore, and the step right after
+the build saves it under the key the restore named. actions/cache alone saves when the job ends and only if it
+succeeded: a failed test or a cancelled run threw away a build of up to an hour, and the next run made it again.
+
+A pull request's run saves no compiler cache (.cache/ccache): every save of one is skipped on pull_request, and none
+is left to actions/cache alone, which saves whatever the event. Only that pull request would read it, and the caches
+share 10 GB: with one of every run in them, main's LLVM builds and system roots are evicted and built again.
+
+Then the same checks on copies of the workflow made to fail them. Offline.
 
     tests/build_caches_test.py [REPO]   (default: the checkout this file is in)"""
 
@@ -16,8 +23,11 @@ from pathlib import Path
 WORKFLOW = Path('.github/workflows/build.yml')
 SCRIPT = re.compile(r'scripts/(linux|android|apple)-llvm\.sh')
 MISSED = re.compile(r"steps\.([\w-]+)\.outputs\.cache-hit != 'true'")
-# the LLVM builds of the workflow: fewer found means this check no longer reads the file as it is written
+NOT_A_PULL_REQUEST = "github.event_name != 'pull_request'"
+# the LLVM builds of the workflow and its saves of a compiler cache: fewer found means this check no longer reads the
+# file as it is written
 BUILDS = 6
+COMPILER_CACHES = 7
 
 
 def indent(line):
@@ -70,9 +80,41 @@ def jobs(text):
 
 
 def check(text):
-    """What is wrong with the LLVM caches of a workflow's text, one line each; none when they are kept"""
+    """What is wrong with the caches of a workflow's text, one line each; none when they are as the top says"""
+    found = jobs(text)
+    return check_llvm(found) + check_compiler(found)
+
+
+def check_compiler(found):
+    wrong, saves = [], 0
+    for job, steps in found.items():
+        for step in steps:
+            if step.get('with.path') != '.cache/ccache':
+                continue
+            uses = step.get('uses', '')
+            if uses.startswith('actions/cache@'):
+                wrong.append(
+                    f'{job}: {uses} on .cache/ccache saves it when the job ends, on a pull request too: restore it'
+                    ' with actions/cache/restore and save it with an actions/cache/save a pull request skips'
+                )
+            elif uses.startswith('actions/cache/save@'):
+                saves += 1
+                if NOT_A_PULL_REQUEST not in step.get('if', ''):
+                    wrong.append(
+                        f'{job}: the save of .cache/ccache runs if "{step.get("if", "")}", so on a pull request too:'
+                        f' its if: needs {NOT_A_PULL_REQUEST}'
+                    )
+    if saves < COMPILER_CACHES:
+        wrong.append(
+            f'{saves} steps save .cache/ccache, and the workflow had {COMPILER_CACHES}: this check reads fewer than'
+            ' are there, or one was taken out (then COMPILER_CACHES goes down with it)'
+        )
+    return wrong
+
+
+def check_llvm(found):
     wrong, builds = [], 0
-    for job, steps in jobs(text).items():
+    for job, steps in found.items():
         for i, step in enumerate(steps):
             if not SCRIPT.search(step.get('run', '')):
                 continue
@@ -141,6 +183,16 @@ def self_test(text):
     build = (
         "      - name: Build LLVM's libraries for x86_64\n        if: steps.llvm-x86_64.outputs.cache-hit != 'true'\n"
     )
+    sanitizers = (
+        f'      - if: {NOT_A_PULL_REQUEST}\n        uses: actions/cache/save@v5\n'
+        '        with:\n          path: .cache/ccache\n'
+        '          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}\n'
+        '      - name: Test under the sanitizers\n'
+    )
+    reference = (
+        '      - uses: actions/cache/restore@v5\n        with:\n          path: .cache/ccache\n'
+        '          key: ccache-linux-x86_64-${{ github.run_id }}-${{ github.run_attempt }}\n'
+    )
     cases = [
         (
             'the cache read and saved by actions/cache',
@@ -203,6 +255,28 @@ def self_test(text):
             replace_once(text, 'run: scripts/android-llvm.sh x86_64 "$PWD/android-llvm/x86_64"\n', 'run: true\n'),
             f'5 steps run an LLVM script, and the workflow had {BUILDS}',
         ),
+        (
+            "a compiler cache saved on a pull request's run too",
+            replace_once(
+                text, sanitizers, sanitizers.replace(f'      - if: {NOT_A_PULL_REQUEST}\n        uses', '      - uses')
+            ),
+            'linux-sanitizers: the save of .cache/ccache runs if ""',
+        ),
+        (
+            'a compiler cache saved whenever the run is not cancelled',
+            replace_once(text, f'${{{{ !cancelled() && {NOT_A_PULL_REQUEST} }}}}', '${{ !cancelled() }}'),
+            'apple: the save of .cache/ccache runs if "${{ !cancelled() }}"',
+        ),
+        (
+            'a compiler cache left to actions/cache',
+            replace_once(text, reference, reference.replace('actions/cache/restore@v5', 'actions/cache@v5')),
+            'qemu-reference: actions/cache@v5 on .cache/ccache saves it when the job ends',
+        ),
+        (
+            "a compiler cache's save taken out",
+            replace_once(text, sanitizers, '      - name: Test under the sanitizers\n'),
+            f'6 steps save .cache/ccache, and the workflow had {COMPILER_CACHES}',
+        ),
     ]
     failed = []
     for name, changed, want in cases:
@@ -223,7 +297,10 @@ def main():
     failed, cases = self_test(text)
     if failed:
         sys.exit('build_caches: the check misses a workflow made wrong:\n  ' + '\n  '.join(failed))
-    print(f'build_caches: {BUILDS} LLVM builds each saved by the step after them; {cases} wrong copies named')
+    print(
+        f'build_caches: {BUILDS} LLVM builds each saved by the step after them, {COMPILER_CACHES} compiler caches saved'
+        f" by no pull request's run; {cases} wrong copies named"
+    )
     return 0
 
 

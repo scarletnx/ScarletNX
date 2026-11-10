@@ -46,7 +46,8 @@ concurrency:
 # Configure runs on. Downloads are cached in .cache/cpm: one cache for the jobs that fetch the same sources (a Linux
 # architecture's jobs, the three cross builds, Windows, Apple, Android), named by cmake/dependencies.cmake's hash, with
 # the name before the hash as a restore key, so a bump downloads only the packages it changed. Compiles go through
-# ccache, whose .cache/ccache each compiling job restores from its newest run and saves trimmed to what the run used.
+# ccache, whose .cache/ccache each compiling job restores from the newest one a push saved; a push saves it again,
+# trimmed to what the run used, and a pull request's run saves none: it reads main's (the linux job says why).
 # The artifacts are what `cmake --install` puts in place: the binaries with the licenses that go with them.
 jobs:
   linux:
@@ -111,8 +112,8 @@ jobs:
           key: cpm-linux-${{ matrix.arch }}-${{ hashFiles('cmake/dependencies.cmake') }}
           restore-keys: cpm-linux-${{ matrix.arch }}-
       # ccache under every compile, FFmpeg's and OpenSSL's too, from the newest cache of this job on this branch, else
-      # on main. Each cmake gets it as its launcher: from the environment CMake would run its configure checks through
-      # it, and they only miss
+      # on main: a pull request has none of its own, so it reads main's. Each cmake gets it as its launcher: from the
+      # environment CMake would run its configure checks through it, and they only miss
       - uses: actions/cache/restore@v5
         with:
           path: .cache/ccache
@@ -187,7 +188,11 @@ jobs:
           ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
           ccache --zero-stats
           du -sh "$CCACHE_DIR"
-      - uses: actions/cache/save@v5
+      # Not from a pull request: only that pull request would read what it saved, and it builds as fast from main's.
+      # The repository's caches share 10 GB, the least recently read evicted first, and a cache of each run's own
+      # pushes out main's LLVM builds and system roots, which every run reads
+      - if: github.event_name != 'pull_request'
+        uses: actions/cache/save@v5
         with:
           path: .cache/ccache
           key: ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -396,7 +401,8 @@ jobs:
           ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
           ccache --zero-stats
           du -sh "$CCACHE_DIR"
-      - uses: actions/cache/save@v5
+      - if: github.event_name != 'pull_request'
+        uses: actions/cache/save@v5
         with:
           path: .cache/ccache
           key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -553,7 +559,8 @@ jobs:
           ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
           ccache --zero-stats
           du -sh "$CCACHE_DIR"
-      - uses: actions/cache/save@v5
+      - if: github.event_name != 'pull_request'
+        uses: actions/cache/save@v5
         with:
           path: .cache/ccache
           key: ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -893,7 +900,8 @@ jobs:
           done
           exit $failed
           EOF
-      - uses: actions/cache/save@v5
+      - if: github.event_name != 'pull_request'
+        uses: actions/cache/save@v5
         with:
           path: .cache/ccache
           key: ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1087,7 +1095,8 @@ jobs:
           ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
           ccache --zero-stats
           du -sh "$CCACHE_DIR"
-      - uses: actions/cache/save@v5
+      - if: github.event_name != 'pull_request'
+        uses: actions/cache/save@v5
         with:
           path: .cache/ccache
           key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1284,7 +1293,8 @@ jobs:
           ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
           ccache --zero-stats
           du -sh "$CCACHE_DIR"
-      - uses: actions/cache/save@v5
+      - if: github.event_name != 'pull_request'
+        uses: actions/cache/save@v5
         with:
           path: .cache/ccache
           key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1489,7 +1499,7 @@ jobs:
           ccache --zero-stats
           du -sh "$CCACHE_DIR"
       - uses: actions/cache/save@v5
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
         with:
           path: .cache/ccache
           key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
