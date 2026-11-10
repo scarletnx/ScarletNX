@@ -150,6 +150,16 @@ typedef struct {
     uint8_t pad;
 } GlslcToken;
 
+/* A token as the passes after the lexer read it: its kind is g->kinds' (a dense array, for the parser's look at
+   the kinds ahead), its text, site and flags here (GLSLC_TF_SYNTH; GLSLC_TF_BOL is the lexer's only) */
+typedef struct {
+    GlslcView text;
+    uint16_t site;
+    uint8_t flags;
+    uint8_t pad;
+} GlslcPlace;
+#define GLSLC_KIND_PAD 16u /* TK_EOF kinds after the last token's, so a look past the end reads within the array */
+
 /* A name the preprocessor read: every identifier with the same text has the same one, so what the lexer learns of a
    name (the macro it names, whether it is a keyword) it learns once */
 #define GLSLC_NAME_SYNTH 1u     /* text is in the synthesized text: a predefined macro's name */
@@ -663,7 +673,8 @@ typedef struct {
     /* the preprocessor */
     char* synth;
     uint32_t nsynth;
-    GlslcToken* toks;
+    GlslcPlace* toks;  /* the tokens the preprocessor let through, the last TK_EOF */
+    uint32_t* kinds;   /* their kinds, then GLSLC_KIND_PAD more TK_EOF */
     uint32_t ntoks;
     uint32_t overflow_site; /* the first token past SNX_GLSLC_MAX_TOKENS */
     GlslcMacro* macros;
@@ -769,6 +780,7 @@ static inline uint32_t glslc_keyword_slot(uint32_t h, uint32_t displacement, uin
 }
 const char* glslc_view_text(const Glslc* g, GlslcView v);
 const char* glslc_token_text(const Glslc* g, const GlslcToken* t);
+const char* glslc_place_text(const Glslc* g, const GlslcPlace* p);
 /* whether v is the n bytes at word: the lengths first, so most names differ without a byte read */
 static inline int glslc_view_is_n(const Glslc* g, GlslcView v, const char* word, uint32_t n) {
     return v.len == n && !memcmp(g->src + v.pos, word, n);
