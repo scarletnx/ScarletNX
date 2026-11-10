@@ -657,9 +657,9 @@ static u64 as_map(u32 flags, u32 h, u64 size, u64 gva) {
 }
 static void test_nvmap_as(void) {
     u8 d[64] = {0};
-    u32 h, again, v, one = 1;
+    u32 h, again, last = 0, v, one = 1;
     u64 gva, fixed, addr, size;
-    /* CREATE and FROM_ID take a reference each, FREE gives one back; the number is handed out again after the last */
+    /* CREATE and FROM_ID take a reference each, FREE gives one back, and the last one ends the handle */
     h = nvmap_new(0x2000, 0x8000);
     snx_st_le32(d, h);
     CHECK(nvmap_call(0x03, d) == 0 && snx_ld_le32(d + 4) == h); /* FROM_ID: the id is the handle's number */
@@ -686,6 +686,29 @@ static void test_nvmap_as(void) {
     CHECK(nvmap_call(0x0E, d) == 1);
     snx_st_le32(d, h);
     CHECK(nvmap_call(0x03, d) == 1); /* no live handle with that id */
+    /* The freed number is not the next one out: the game's NvRm library still knows it for a moment after FREE, and
+       would take the new handle for the one it freed. The numbers never used go out first, then the freed ones in
+       the order they were freed, and a full table has none */
+    again = nvmap_new(0x3000, 0x9000);
+    CHECK(again == h + 1);
+    while (g_hle.nvdrv.nvh_next < NVMAP_HANDLES) last = nvmap_new(0x1000, 0x8000);
+    CHECK(last == NVMAP_HANDLES - 1 && g_hle.nvdrv.nvh_nfree == 1);
+    memset(d, 0, sizeof d);
+    snx_st_le32(d, last);
+    CHECK(nvmap_call(0x05, d) == 0);
+    memset(d, 0, sizeof d);
+    snx_st_le32(d, again);
+    CHECK(nvmap_call(0x05, d) == 0);
+    CHECK(nvmap_new(0x1000, 0x8000) == h && nvmap_new(0x1000, 0x8000) == last && nvmap_new(0x1000, 0x8000) == again);
+    memset(d, 0, sizeof d);
+    snx_st_le32(d, 0x1000);
+    CHECK(nvmap_call(0x01, d) == NV_RESULT_INSUFFICIENT_MEMORY && snx_ld_le32(d + 4) == 0);
+    for (v = h; v < NVMAP_HANDLES; v++) {
+        memset(d, 0, sizeof d);
+        snx_st_le32(d, v);
+        CHECK(nvmap_call(0x05, d) == 0);
+    }
+    CHECK(g_hle.nvdrv.nvh_nfree == NVMAP_HANDLES - h && g_hle.nvdrv.nvh_free[0] == h);
     again = nvmap_new(0x3000, 0x9000);
     CHECK(again == h);
 

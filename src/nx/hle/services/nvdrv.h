@@ -197,8 +197,8 @@ typedef struct {
 typedef struct {
     NvMapH nvh[NVMAP_HANDLES];
     u32 nvh_next; /* handles below this have been handed out */
-    /* freed handles, handed out again before nvh_next grows: movies create and free buffers for every clip, and a
-       handle past the table would be written outside it */
+    /* freed handles, the oldest first, handed out again once nvh_next has reached the table's end: movies create and
+       free buffers for every clip, and a handle past the table would be written outside it */
     u32 nvh_free[NVMAP_HANDLES];
     u32 nvh_nfree;
     u64* gmmu[NV_GMMU_L1]; /* gmmu[i] -> GMMU_L2_ENTRIES page entries (nvdrv.c's GMMU_PTE_*) */
