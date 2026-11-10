@@ -2,8 +2,8 @@
 # Copyright 2026 the ScarletNX contributors
 #
 # libadrenotools and its liblinkernsbypass (both BSD-2-Clause, Billy Laws), which load a Vulkan driver package the
-# player added (src/nx/runtime/platform/gpu_driver_android.c) in place of an Adreno GPU's own driver on Android arm64.
-# Built here from their sources, as the three libraries the app's libraries folder carries: libadrenotools.so
+# player added (src/nx/runtime/platform/gpu_driver_load.c) in place of an Adreno or Xclipse GPU's own driver on Android
+# arm64. Built here from their sources, as the three libraries the app's libraries folder carries: libadrenotools.so
 # (driver.cpp with linkernsbypass), which a run opens only once it picked such a driver, so linkernsbypass's constructor
 # (it makes the linker's pages writable to reach its namespaces) never runs with the system's driver; and the hooks it
 # loads by name from that folder, libhook_impl.so and libmain_hook.so. Their CMakeLists would build the file

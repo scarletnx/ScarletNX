@@ -11,6 +11,12 @@
 #if defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>
 #endif
+#ifdef __linux__ /* Android too: a render node's kernel driver, asked by DRM's version ioctl */
+#include <drm/drm.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#endif
 #ifdef __ANDROID__
 #include <android/api-level.h>
 #endif
@@ -166,6 +172,36 @@ int snx_gpu_driver_elf(const unsigned char* head, size_t n, char* why, size_t si
     return 1;
 }
 
+/* the render node whose kernel driver is amdgpu, as Mesa's RADV looks for its device (it takes each node of /dev/dri
+   and keeps the one DRM's version names amdgpu); else the first node there is, with its driver or with why it did not
+   answer */
+void snx_gpu_driver_render_node(SnxGpuDriverHost* host) {
+    host->amdgpu = 0;
+    host->render[0] = 0;
+#ifdef __linux__
+    /* DRM's render nodes are minors 128 to 191 */
+    for (int minor = 128; minor < 192 && !host->amdgpu; ++minor) {
+        char path[32], name[32] = "", said[sizeof host->render];
+        struct drm_version version = {.name = name, .name_len = sizeof name - 1};
+        int fd, failed;
+        snprintf(path, sizeof path, "/dev/dri/renderD%d", minor);
+        fd = open(path, O_RDWR | O_CLOEXEC);
+        if (fd < 0 && errno == ENOENT) continue;
+        failed = fd < 0 || ioctl(fd, DRM_IOCTL_VERSION, &version) != 0;
+        if (failed)
+            snprintf(said, sizeof said, "%s did not %s: %s", path, fd < 0 ? "open" : "name its kernel driver",
+                     strerror(errno));
+        else {
+            name[version.name_len < sizeof name ? version.name_len : sizeof name - 1] = 0;
+            snprintf(said, sizeof said, "%s, kernel driver %s", path, name);
+            host->amdgpu = !strcmp(name, "amdgpu");
+        }
+        if (fd >= 0) close(fd);
+        if (host->amdgpu || !host->render[0]) memcpy(host->render, said, sizeof said);
+    }
+#endif
+}
+
 void snx_gpu_driver_host(SnxGpuDriverHost* host) {
     memset(host, 0, sizeof *host);
 #if defined(__ANDROID__)
@@ -204,34 +240,56 @@ void snx_gpu_driver_host(SnxGpuDriverHost* host) {
 #if defined(__unix__) || defined(__APPLE__)
     host->kgsl = access("/dev/kgsl-3d0", F_OK) == 0;
 #endif
+#ifdef __ANDROID__ /* elsewhere no package loads whatever the GPU is, and opening a node wakes a GPU that sleeps */
+    if (!host->kgsl) snx_gpu_driver_render_node(host);
+#endif
 #if defined(__ANDROID__) && defined(__aarch64__)
     host->built = 1;
 #endif
 }
 
-int snx_gpu_driver_loads(const SnxGpuDriverHost* host, char* what, size_t size) {
-    char device[160];
-    int android = !strcmp(host->system, "Android"), arm64 = !strcmp(host->arch, "arm64");
-    if (android)
-        snprintf(device, sizeof device, "Android API %d, %s, %s", host->api, host->arch,
-                 host->kgsl ? "Adreno GPU (/dev/kgsl-3d0)" : "no /dev/kgsl-3d0 (the GPU is not an Adreno)");
+SnxGpuDriverLack snx_gpu_driver_lack(const SnxGpuDriverHost* host) {
+    if (strcmp(host->system, "Android")) return SNX_GPU_DRIVER_NOT_ANDROID;
+    if (strcmp(host->arch, "arm64")) return SNX_GPU_DRIVER_NOT_ARM64;
+    if (!host->kgsl && !host->amdgpu) return SNX_GPU_DRIVER_NO_GPU;
+    if (host->api < SNX_GPU_DRIVER_MIN_API) return SNX_GPU_DRIVER_OLD_ANDROID;
+    return host->built ? SNX_GPU_DRIVER_LOADS : SNX_GPU_DRIVER_NOT_BUILT;
+}
+
+/* host's GPU as a line names it: the kernel driver found, or what was found in place of the two a package drives */
+static void gpu_text(const SnxGpuDriverHost* host, char* out, size_t size) {
+    if (host->kgsl)
+        snprintf(out, size, "Adreno GPU (/dev/kgsl-3d0)");
+    else if (host->amdgpu)
+        snprintf(out, size, "Xclipse GPU (%s)", host->render);
     else
+        snprintf(out, size, "no Adreno GPU (no /dev/kgsl-3d0) and no Xclipse GPU (%s)",
+                 host->render[0] ? host->render : "no render node in /dev/dri");
+}
+
+int snx_gpu_driver_loads(const SnxGpuDriverHost* host, char* what, size_t size) {
+    char device[320], gpu[224];
+    SnxGpuDriverLack lack = snx_gpu_driver_lack(host);
+    if (lack == SNX_GPU_DRIVER_NOT_ANDROID)
         snprintf(device, sizeof device, "%s %s", host->system, host->arch);
-    if (android && arm64 && host->built && host->kgsl && host->api >= SNX_GPU_DRIVER_MIN_API) {
-        snprintf(what, size, "This device: %s: custom drivers load.", device);
-        return 1;
+    else {
+        gpu_text(host, gpu, sizeof gpu);
+        snprintf(device, sizeof device, "Android API %d, %s, %s", host->api, host->arch, gpu);
     }
-    if (android && arm64 && host->kgsl && host->api < SNX_GPU_DRIVER_MIN_API)
+    if (lack == SNX_GPU_DRIVER_LOADS)
+        snprintf(what, size, "This device: %s: custom drivers load.", device);
+    else if (lack == SNX_GPU_DRIVER_OLD_ANDROID)
         snprintf(what, size, "This device: %s: custom drivers load on Android 9 (API %d) or newer.", device,
                  SNX_GPU_DRIVER_MIN_API);
-    else if (android && arm64 && host->kgsl)
+    else if (lack == SNX_GPU_DRIVER_NOT_BUILT)
         snprintf(what, size, "This device: %s: this build of ScarletNX carries no libadrenotools.", device);
     else
         snprintf(what, size,
                  "This device: %s: custom drivers load on Android 9 (API %d) or newer, arm64, with an Adreno GPU "
-                 "(/dev/kgsl-3d0). Games here use the system driver.",
+                 "(/dev/kgsl-3d0) or an Xclipse GPU (a render node of the amdgpu kernel driver). Games here use the "
+                 "system driver.",
                  device, SNX_GPU_DRIVER_MIN_API);
-    return 0;
+    return lack == SNX_GPU_DRIVER_LOADS;
 }
 
 /* a folder of path, its first len bytes, is dir by its device and inode */

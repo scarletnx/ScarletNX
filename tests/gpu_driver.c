@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* common/utilities/gpu_driver.c: a driver package's meta.json in the shapes released packages have, and each one
    refused with the value said; a package's folder name from its zip's; an arm64 library told from others; whether a
-   device loads packages, said with its values; whether a process mapped a package's library; Freedreno's variables */
+   device loads packages (an Adreno's and an Xclipse's do), said with its values; this machine's render node asked its
+   kernel driver; whether a process mapped a package's library; Freedreno's variables */
 #include "common/utilities/gpu_driver.h"
 #include "common/utilities/common.h"
 #include <assert.h>
@@ -17,7 +18,7 @@ static int has(const char* text, const char* part) { return strstr(text, part) !
 
 int main(void) {
     SnxGpuDriverMeta m;
-    SnxGpuDriverHost host;
+    SnxGpuDriverHost host = {0};
     SnxFreedrenoVar vars[SNX_FREEDRENO_MAX];
     char why[512], id[128], text[SNX_FREEDRENO_TEXT], *big, *dir;
     unsigned char elf[64];
@@ -33,6 +34,14 @@ int main(void) {
                    "\"libraryName\": \"vulkan.adreno.so\", \"packageVersion\": 2}",
                    &m, why));
     assert(!strcmp(m.package_version, "2") && !m.description[0] && m.min_api == 35); /* a number as its text */
+    /* RADV for an Xclipse GPU, as its releases write it (radv-xclipse's android/package.py) */
+    assert(meta_of("{\n  \"schemaVersion\": 1,\n  \"name\": \"RADV Xclipse (Mesa 27.0.0-devel-269238e)\",\n"
+                   "  \"description\": \"RADV for Samsung Xclipse GPUs, based on Mesa 27.0.0-devel.\",\n"
+                   "  \"author\": \"JimVulkan\",\n  \"packageVersion\": \"18\",\n  \"vendor\": \"Mesa\",\n"
+                   "  \"driverVersion\": \"Vulkan 1.4.363\",\n  \"minApi\": 34,\n"
+                   "  \"libraryName\": \"vulkan.radeon.so\"\n}\n",
+                   &m, why));
+    assert(!strcmp(m.library, "vulkan.radeon.so") && m.min_api == 34 && !strcmp(m.package_version, "18"));
     /* what it must have, said by its key, and each wrong value said as it is */
     assert(!meta_of("{\"name\": \"A\", \"minApi\": 28}", &m, why) && has(why, "has no libraryName"));
     assert(!meta_of("{\"libraryName\": \"a.so\", \"minApi\": 28}", &m, why) && has(why, "has no name"));
@@ -84,21 +93,63 @@ int main(void) {
     elf[18] = 40;
     assert(!snx_gpu_driver_elf(elf, sizeof elf, why, sizeof why) && has(why, "32-bit library for machine 40"));
     assert(!snx_gpu_driver_elf((const unsigned char*)"PK\3\4", 4, why, sizeof why) && has(why, "starts 50 4b 03 04"));
-    /* the devices that load packages, and what each other one is said to lack */
+    /* the devices that load packages: an Adreno's (its kgsl node) and an Xclipse's (a render node of amdgpu) */
     host.system = "Android", host.arch = "arm64", host.api = 36, host.kgsl = 1, host.built = 1;
-    assert(snx_gpu_driver_loads(&host, why, sizeof why) &&
+    assert(snx_gpu_driver_loads(&host, why, sizeof why) && snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_LOADS &&
            !strcmp(why, "This device: Android API 36, arm64, Adreno GPU (/dev/kgsl-3d0): custom drivers load."));
     host.api = 27;
-    assert(!snx_gpu_driver_loads(&host, why, sizeof why) && has(why, "Android API 27") && has(why, "API 28) or newer"));
-    host.api = 36, host.kgsl = 0;
-    assert(!snx_gpu_driver_loads(&host, why, sizeof why) && has(why, "no /dev/kgsl-3d0 (the GPU is not an Adreno)"));
-    host.system = "Linux", host.arch = "x86_64", host.api = 0, host.built = 0;
+    assert(!snx_gpu_driver_loads(&host, why, sizeof why) && has(why, "Android API 27") &&
+           has(why, "API 28) or newer") && snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_OLD_ANDROID);
+    host.api = 34, host.kgsl = 0, host.amdgpu = 1;
+    snprintf(host.render, sizeof host.render, "%s", "/dev/dri/renderD128, kernel driver amdgpu");
+    assert(snx_gpu_driver_loads(&host, why, sizeof why) && snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_LOADS &&
+           !strcmp(why, "This device: Android API 34, arm64, Xclipse GPU (/dev/dri/renderD128, kernel driver amdgpu): "
+                        "custom drivers load."));
+    host.api = 27;
+    assert(!snx_gpu_driver_loads(&host, why, sizeof why) && has(why, "Android API 27, arm64, Xclipse GPU (") &&
+           snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_OLD_ANDROID);
+    host.api = 34, host.built = 0;
+    assert(!snx_gpu_driver_loads(&host, why, sizeof why) && has(why, "Xclipse GPU (") &&
+           has(why, "carries no libadrenotools") && snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_NOT_BUILT);
+    /* each other one, and what it is said to lack: another GPU by what its render node is, or by none */
+    host.api = 36, host.built = 1, host.amdgpu = 0;
+    snprintf(host.render, sizeof host.render, "%s", "/dev/dri/renderD128, kernel driver panfrost");
+    assert(!snx_gpu_driver_loads(&host, why, sizeof why) && snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_NO_GPU &&
+           !strcmp(why, "This device: Android API 36, arm64, no Adreno GPU (no /dev/kgsl-3d0) and no Xclipse GPU "
+                        "(/dev/dri/renderD128, kernel driver panfrost): custom drivers load on Android 9 (API 28) or "
+                        "newer, arm64, with an Adreno GPU (/dev/kgsl-3d0) or an Xclipse GPU (a render node of the "
+                        "amdgpu kernel driver). Games here use the system driver."));
+    snprintf(host.render, sizeof host.render, "%s", "/dev/dri/renderD128 did not open: Permission denied");
+    assert(!snx_gpu_driver_loads(&host, why, sizeof why) &&
+           has(why, "no Xclipse GPU (/dev/dri/renderD128 did not open: Permission denied)"));
+    host.render[0] = 0;
+    assert(!snx_gpu_driver_loads(&host, why, sizeof why) && has(why, "no Xclipse GPU (no render node in /dev/dri)"));
+    /* a desktop, whatever its GPU (an AMD one's render node is amdgpu's too), and Android on another CPU */
+    host.system = "Linux", host.arch = "x86_64", host.api = 0, host.kgsl = 0, host.amdgpu = 1, host.built = 0;
+    snprintf(host.render, sizeof host.render, "%s", "/dev/dri/renderD128, kernel driver amdgpu");
     assert(!snx_gpu_driver_loads(&host, why, sizeof why) && has(why, "This device: Linux x86_64:") &&
-           has(why, "Games here use the system driver."));
-    host.system = "Android", host.arch = "x86_64", host.api = 36, host.kgsl = 0;
-    assert(!snx_gpu_driver_loads(&host, why, sizeof why) && has(why, "Android API 36, x86_64"));
+           !has(why, "Xclipse GPU (/dev") && has(why, "Games here use the system driver.") &&
+           snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_NOT_ANDROID);
+    host.system = "Android", host.arch = "x86_64", host.api = 36, host.kgsl = 1, host.amdgpu = 0;
+    assert(!snx_gpu_driver_loads(&host, why, sizeof why) && has(why, "Android API 36, x86_64") &&
+           snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_NOT_ARM64);
     snx_gpu_driver_host(&host); /* this machine's, whatever it is: named, and loading only where it can */
     assert(host.system && host.arch && (snx_gpu_driver_loads(&host, why, sizeof why) == 0 || host.built));
+    /* its render nodes, asked as an Android device's are: one of amdgpu's named so, else the first there is */
+    snx_gpu_driver_render_node(&host);
+    assert(!host.amdgpu || has(host.render, ", kernel driver amdgpu"));
+    printf("gpu_driver: this machine's render node: %s\n", host.render[0] ? host.render : "none");
+    {
+        /* where the kernel's own device file says the first render node is amdgpu's (Linux's sysfs), and the node
+           opens, DRM's version says so too */
+        size_t size = 0;
+        char* uevent = (char*)snx_read_file("/sys/class/drm/renderD128/device/uevent", &size);
+        FILE* node = fopen("/dev/dri/renderD128", "r+");
+        if (uevent && node && has(uevent, "DRIVER=amdgpu\n"))
+            assert(host.amdgpu && !strcmp(host.render, "/dev/dri/renderD128, kernel driver amdgpu"));
+        if (node) fclose(node);
+        free(uevent);
+    }
     /* the package's library mapped from its folder, or from unique/ in it; another folder's or the system's is not */
     {
         const char* maps = "7f00000000-7f00001000 r--p 00000000 fd:00 123  /system/lib64/libvulkan.so\n"
