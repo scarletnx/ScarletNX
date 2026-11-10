@@ -25,6 +25,7 @@
 #define SNX_GLSLC_MAX_SOURCE       65535u  /* bytes of source: a view's position is 16 bits */
 #define SNX_GLSLC_MAX_TOKENS       32768u  /* tokens after preprocessing, the end included */
 #define SNX_GLSLC_MAX_MACROS       512u    /* #define'd names, predefined ones included */
+#define SNX_GLSLC_MAX_NAMES        8192u   /* distinct names the preprocessor reads, predefined macros' included */
 #define SNX_GLSLC_MAX_MACRO_TOKENS 8192u   /* the parameters and bodies of every macro */
 #define SNX_GLSLC_MAX_EXPANSION    4096u   /* the tokens one macro use expands to, with its arguments */
 #define SNX_GLSLC_MAX_MACRO_DEPTH  32u     /* macros expanding inside each other */

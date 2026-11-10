@@ -27,7 +27,7 @@ static size_t place(size_t* at, size_t count, size_t size) {
 }
 
 typedef struct {
-    size_t synth, toks, macros, mtoks, exp, marks, nodes, types, members, syms, sym_hash, params, calls, walk;
+    size_t synth, toks, macros, interned, mtoks, exp, marks, nodes, types, members, syms, sym_hash, params, calls, walk;
     size_t type_ids, sym_ids, sym_types, sampler_ids, hash, stack;
     size_t caps, imports, entry, modes, names, annotations, globals, functions, locals, body;
     size_t total;
@@ -38,6 +38,7 @@ static void layout(Layout* l) {
     l->synth = place(&at, SNX_GLSLC_MAX_SYNTH, 1);
     l->toks = place(&at, SNX_GLSLC_MAX_TOKENS, sizeof(GlslcToken));
     l->macros = place(&at, SNX_GLSLC_MAX_MACROS, sizeof(GlslcMacro));
+    l->interned = place(&at, SNX_GLSLC_MAX_NAMES, sizeof(GlslcName));
     l->mtoks = place(&at, SNX_GLSLC_MAX_MACRO_TOKENS, sizeof(GlslcToken));
     l->exp = place(&at, SNX_GLSLC_MAX_EXPANSION, sizeof(GlslcToken));
     l->marks = place(&at, SNX_GLSLC_MAX_LINE_MARKS, sizeof(GlslcLineMark));
@@ -151,6 +152,8 @@ Glslc* glslc_open(void* memory, size_t memory_size, GlslcStage stage, const char
     g->toks = (GlslcToken*)(void*)(block + l.toks);
     g->macros = (GlslcMacro*)(void*)(block + l.macros);
     g->nmacros = 1; /* 0 is no macro */
+    g->names = (GlslcName*)(void*)(block + l.interned);
+    g->nnames = 1; /* 0 is no name */
     g->mtoks = (GlslcToken*)(void*)(block + l.mtoks);
     g->exp = (GlslcToken*)(void*)(block + l.exp);
     g->marks = (GlslcLineMark*)(void*)(block + l.marks);
