@@ -55,6 +55,9 @@ typedef struct {
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
     u32 point_coord, front_facing;
+    /* a fragment program at a resolution scale: SNX_VKB_RS's vec4 (scale_component) and the fragment stage's push
+       constants, whose uvec4 marks the textures bound to scaled render targets (scaled_slot) */
+    u32 scale, scale_ptr, scaled_push;
     u32 tex[SH_MAXTEX], tex_sampled[SH_MAXTEX];
     /* an indexed slot's arrays on SNX_VKB_TEXARRAY and SNX_VKB_TEXDEPTH, by kind (its tex[] is the element of the
        instruction being written), and SNX_VKB_TEXMAP and SNX_VKB_TEXFUNCS */
@@ -573,12 +576,89 @@ static u32 builtin_vec3(Ctx* c, u32* var, u32 builtin, u32 k) {
     }
     return spv_emit_vec4_extract(&c->e, c->t_u32, spv_emit_load(&c->e, c->t_v3u, *var), k);
 }
-static u32 frag_coord(Ctx* c, u32 k) {
+/* ---- a fragment program at a resolution scale (resolution= other than 1) ---- */
+
+/* The render targets' images are the resolution scale times the guest's size, and a fragment program counts the
+   guest's pixels and texels, as the Maxwell translator gives them to its programs (spirv_translate.c's needs_scale
+   and shader_scaled_coords): the fragment's x and y are FragCoord's over the scale, a fetch from a texture bound to
+   a scaled target reads texel p in the pixels the image has for it, and a size query of one answers its size over
+   the scale. Other textures (one a compute program stored, one from memory) keep their own texels. Left in the
+   target's pixels, a fetch at the fragment's own coordinates read a texture of the guest's size over the target's
+   top-left corner alone, and past the texture's edge everywhere else */
+/* component k of SNX_VKB_RS's vec4, which the renderer gives the fragment stage (vk/render.c's frame_consts): 0 and
+   1 are 1 / the resolution scale, 2 the scale */
+static u32 scale_component(Ctx* c, u32 k) {
+    if (!c->scale) {
+        c->scale = spv_emit_uniform_vec4_array(&c->e, c->t_v4f, c->t_f32, c->t_u32, (u32)shader_vk_set(ST_FS),
+                                               SNX_VKB_RS, 1, &c->scale_ptr);
+        add_interface(c, c->scale);
+    }
+    return spv_emit_uniform_component(&c->e, c->scale_ptr, c->scale, c->zero, c->zero, cu(c, k), c->t_f32);
+}
+/* whether texture slot is bound to a scaled render target: its bit in the uvec4 after the fragment stage's vec4 at
+   push constant offset 16 (vk/render.c: x the slots 0 to 31, y 32 to 63), as a bool */
+static u32 scaled_slot(Ctx* c, int slot) {
+    if (!c->scaled_push) {
+        u32 pointer;
+        c->scaled_push = spv_emit_push_vec4(&c->e, c->t_v4f, c->t_f32, 16, c->t_v4u, &pointer);
+        add_interface(c, c->scaled_push);
+    }
+    u32 bits = spv_emit_push_component_f32(&c->e, spv_emit_type_pointer(&c->e, 9, c->t_u32), c->scaled_push, cu(c, 1),
+                                           cu(c, slot >= 32), c->t_u32); /* 9: PushConstant */
+    u32 bit = spv_emit_bitwise_and_u32(
+        &c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, bits, cu(c, (u32)slot & 31)), cu(c, 1));
+    return spv_emit_i_not_equal(&c->e, c->t_bool, bit, c->zero);
+}
+static u32 fl(Ctx* c, u32 v) { return spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_FLOOR, v); }
+/* FragCoord's component k, in the pixels of the target's image */
+static u32 frag_pixel(Ctx* c, u32 k) {
     if (!c->fragcoord) {
         c->fragcoord = spv_emit_fragcoord_input(&c->e, c->t_v4f);
         add_interface(c, c->fragcoord);
     }
     return spv_emit_vec4_extract(&c->e, c->t_f32, spv_emit_load(&c->e, c->t_v4f, c->fragcoord), k);
+}
+/* A fragment program's 2D texel coordinates *x and *y (bits of signed integers) of texture slot, as the image has
+   them. The image of a scaled target has texel p from pixel p times the scale on, and of those the one that lies
+   where the fragment lies in its own guest pixel is fetched, as Eden's rescaling pass places it (SubScale): at a whole
+   scale a pass that fetches its own pixel reads that very pixel, not one for all the fragments of a guest pixel. It
+   stays within the texel's pixels, which at another scale end before a whole one. Another texture keeps p */
+static void scaled_fetch(Ctx* c, int slot, u32* x, u32* y) {
+    u32 scaled = scaled_slot(c, slot), scale = scale_component(c, 2), over = scale_component(c, 0);
+    u32* v[2] = {x, y};
+    for (u32 k = 0; k < 2; k++) {
+        u32 first = nocontract(
+            c,
+            spv_emit_fmul(&c->e, c->t_f32,
+                          spv_emit_convert_s_to_f(&c->e, c->t_f32, spv_emit_bitcast(&c->e, c->t_i32, *v[k])), scale));
+        u32 next = fl(c, nocontract(c, spv_emit_fadd(&c->e, c->t_f32, first, scale)));
+        u32 last = spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_MAX, fl(c, first),
+                                        nocontract(c, op2(c, SPV_OP_F_SUB, c->t_f32, next, cf(c, 1.0f))));
+        /* the fragment's place in its guest pixel, in the image's pixels: 0 up to the scale */
+        u32 pixel = frag_pixel(c, k);
+        u32 corner = nocontract(c, spv_emit_fmul(&c->e, c->t_f32, scale,
+                                                 fl(c, nocontract(c, spv_emit_fmul(&c->e, c->t_f32, pixel, over)))));
+        u32 place = nocontract(c, op2(c, SPV_OP_F_SUB, c->t_f32, pixel, corner));
+        u32 at = spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_MIN,
+                                      fl(c, nocontract(c, spv_emit_fadd(&c->e, c->t_f32, first, place))), last);
+        *v[k] = spv_emit_select(&c->e, c->t_u32, scaled,
+                                spv_emit_bitcast(&c->e, c->t_u32, spv_emit_convert_f_to_s(&c->e, c->t_i32, at)), *v[k]);
+    }
+}
+/* The size *x by *y of texture slot's image as the guest has it: a scaled target's over the scale, rounded as the
+   renderer rounds a scaled size */
+static void scaled_size(Ctx* c, int slot, u32* x, u32* y) {
+    u32 factor = spv_emit_select(&c->e, c->t_f32, scaled_slot(c, slot), scale_component(c, 0), cf(c, 1.0f));
+    u32* v[2] = {x, y};
+    for (u32 k = 0; k < 2; k++) {
+        u32 f = nocontract(c, spv_emit_fmul(&c->e, c->t_f32, spv_emit_convert_u_to_f(&c->e, c->t_f32, *v[k]), factor));
+        *v[k] = spv_emit_convert_f_to_u(&c->e, c->t_u32, nocontract(c, spv_emit_fadd(&c->e, c->t_f32, f, cf(c, 0.5f))));
+    }
+}
+/* FragCoord's component k: x and y in the guest's pixels, z and w as they are */
+static u32 frag_coord(Ctx* c, u32 k) {
+    u32 v = frag_pixel(c, k);
+    return k < 2 ? nocontract(c, spv_emit_fmul(&c->e, c->t_f32, v, scale_component(c, 0))) : v;
 }
 /* ALD's attribute at byte address addr, as bits */
 static u32 attr_load(Ctx* c, u32 addr) {
@@ -2052,6 +2132,7 @@ static void texel_fetch(Ctx* c, const Sm86Insn* in) {
             v[k] = spv_emit_iadd_u32(&c->e, c->t_u32, v[k],
                                      spv_emit_bitcast(&c->e, c->t_u32,
                                                       offset_part(c, 0, 0, rd(c, regs[n0 + (lod_mode == 3)]), k, 4)));
+    if (c->stage == ST_FS && type == 1) scaled_fetch(c, slot, &v[0], &v[1]);
     if (array) v[count++] = spv_emit_bitwise_and_u32(&c->e, c->t_u32, rd(c, regs[0]), cu(c, 0xffff));
     u32 ivec = spv_emit_type_vector(&c->e, c->t_i32, count);
     u32 uvec = spv_emit_type_vector(&c->e, c->t_u32, count);
@@ -2096,6 +2177,7 @@ static void texture_query(Ctx* c, const Sm86Insn* in) {
     u32 v[4];
     for (u32 k = 0; k < 3; k++) v[k] = k < dims ? SPV(&c->e, SPV_OP_COMPOSITE_EXTRACT, c->t_u32, size, k) : cu(c, 1);
     if (t->type == 0) v[1] = cu(c, 1);
+    if (c->stage == ST_FS && t->type == 1) scaled_size(c, slot, &v[0], &v[1]);
     v[3] = ms ? cu(c, 1) : spv_emit_image_query_levels(&c->e, c->t_u32, c->tex_sampled[slot], c->tex[slot]);
     tex_results(c, in, spv_emit_vec4_construct(&c->e, c->t_v4u, v), c->t_u32);
 }
