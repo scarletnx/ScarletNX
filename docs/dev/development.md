@@ -147,6 +147,11 @@ beside it:
   most time on the processors, by the names the runtime gives them (Linux and Android keep 15 bytes of a name,
   FreeBSD 19). A `memory: under N MiB free` line, with each GPU heap, the first time what the system still gives
   falls under 1024, 512, 256 and 128 MiB: on iOS the app's own room, elsewhere the system's free memory.
+- `--log=2` also counts the IPC requests the services serve, by service and command, with the time each took from
+  its arrival to its reply (the clock's, so a command that waits in its handler counts the wait). At the renderer's
+  first present and every 600 after, an `ipc:` line gives the requests since the line before, their time, and the 8
+  commands that took the most (`ISystemClock cmd 0 600 in 0.412 ms`). Up to 1024 commands count apart; the line
+  gives the rest as one sum.
 - On every log level, a warning of low memory from the system logs a `memory:` line with the same values and each
   GPU heap, 6 in a run at most: the memory pressure of iOS and macOS, SDL's low memory event (iOS; Android up to 13,
   and from 14 only as the app goes to the background), Linux's pressure stall trigger (tasks waiting for memory

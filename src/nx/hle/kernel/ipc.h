@@ -240,8 +240,26 @@ typedef struct {
     char apart[64];
     u32 ring_n;
 } HleIpc;
-/* ipc's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+#define IPC_STAT_PAIRS 1024 /* the (service, command) pairs log=2 counts apart: past them, one sum for the rest */
+#define IPC_STAT_SLOTS (2 * IPC_STAT_PAIRS) /* their hash table, kept half empty as the warned pairs' */
+#define IPC_STAT_TOP   8                    /* the pairs the log's line names */
+/* what one (service, command) pair was served since the log's last line: how many requests, and the time they took.
+   name is the service object's, as IpcRec's */
+typedef struct {
+    const char* name;
+    u32 cmd;
+    u64 n, ns;
+} IpcStat;
+/* ipc's host side: locks and condition variables, which a save state never holds (hle.h's g_host), and log=2's
+   counters, a measure of this run */
 typedef struct {
     PMutex lk;
+    /* under lk, written only with log=2: the pairs served, open addressing on a hash of the name's text and the
+       command (a slot is free while it has no name, and a pair keeps its slot for the run); stat_rest sums the pairs
+       that came once the table was full; stat_since is when the window began (plat_ns), 0 while none has */
+    IpcStat stat[IPC_STAT_SLOTS];
+    IpcStat stat_rest;
+    u32 nstat;
+    u64 stat_since;
 } HostIpc;
 #endif

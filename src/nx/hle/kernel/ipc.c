@@ -27,7 +27,7 @@ enum { IPC_DOMAIN_SESSION = 1, IPC_DOMAIN_MESSAGE = 2 };
    taken apart from the converted word */
 
 /* ipc.c's state is g_hle.ipc (ipc.h): the service objects, sessions and domains, each a pool (hle.h), the warned
-   pairs, the registry and the crash report's ring */
+   pairs, the registry and the crash report's ring; log=2's counters are g_host.ipc's */
 
 /* ============================================================ the crash report's ring */
 u32 ipc_ring_count(void) { return __atomic_load_n(&g_hle.ipc.ring_n, __ATOMIC_RELAXED); }
@@ -70,6 +70,71 @@ static void ring_set(u32 seq, u32 kind, const char* name, u32 type, u32 cmd, con
     r->in[0] = in ? in[0] : 0;
     r->in[1] = in ? in[1] : 0;
     r->rc = rc;
+}
+
+/* ============================================================ log=2's counters */
+/* a served request of the service object name's command cmd took ns: its pair's count and time, under the pools'
+   lock. Only log=2 comes here */
+static void stat_add(const char* name, u32 cmd, u64 ns) {
+    IpcStat* s;
+    u32 i;
+    if (!name || !*name) name = "?";
+    i = snx_fnv32_step(snx_fnv1a32(SNX_FNV32_BASIS, name, strlen(name)), cmd) % IPC_STAT_SLOTS;
+    pm_lock(&g_host.ipc.lk);
+    for (;; i = (i + 1) % IPC_STAT_SLOTS) {
+        s = &g_host.ipc.stat[i];
+        if (!s->name || (s->cmd == cmd && (s->name == name || !strcmp(s->name, name)))) break;
+    }
+    if (!s->name) {
+        if (g_host.ipc.nstat < IPC_STAT_PAIRS) {
+            g_host.ipc.nstat++;
+            s->name = name;
+            s->cmd = cmd;
+        } else
+            s = &g_host.ipc.stat_rest;
+    }
+    s->n++;
+    s->ns += ns;
+    pm_unlock(&g_host.ipc.lk);
+}
+void ipc_stats_log(u64 now_ns) {
+    IpcStat top[IPC_STAT_TOP], rest;
+    char list[IPC_STAT_TOP * 96], more[128] = "";
+    u64 since, n = 0, ns = 0;
+    unsigned k = 0, pairs = 0;
+    size_t at = 0;
+    int on = g_settings.log_level >= 2;
+    double s;
+    pm_lock(&g_host.ipc.lk);
+    since = g_host.ipc.stat_since;
+    g_host.ipc.stat_since = on ? now_ns : 0;
+    if (on || since) /* the window's counts, taken and zeroed: the largest by time, then by requests */
+        for (u32 i = 0; i < IPC_STAT_SLOTS; i++) {
+            IpcStat* p = &g_host.ipc.stat[i];
+            unsigned j;
+            if (!p->n) continue;
+            pairs++, n += p->n, ns += p->ns;
+            j = k < IPC_STAT_TOP ? k++ : IPC_STAT_TOP;
+            for (; j > 0 && (top[j - 1].ns < p->ns || (top[j - 1].ns == p->ns && top[j - 1].n < p->n)); j--)
+                if (j < IPC_STAT_TOP) top[j] = top[j - 1];
+            if (j < IPC_STAT_TOP) top[j] = *p;
+            p->n = p->ns = 0;
+        }
+    rest = g_host.ipc.stat_rest;
+    g_host.ipc.stat_rest.n = g_host.ipc.stat_rest.ns = 0;
+    pm_unlock(&g_host.ipc.lk);
+    if (!on || !since || now_ns <= since) return;
+    s = (double)(now_ns - since) / 1e9;
+    for (unsigned i = 0; i < k && at < sizeof list; i++)
+        at += (size_t)snprintf(list + at, sizeof list - at, "%s %s cmd %u %llu in %.3f ms", i ? "," : "", top[i].name,
+                               top[i].cmd, (unsigned long long)top[i].n, (double)top[i].ns / 1e6);
+    if (!k) snprintf(list, sizeof list, " none");
+    if (rest.n)
+        snprintf(more, sizeof more, "; %llu more in %.3f ms to commands past the first %d", (unsigned long long)rest.n,
+                 (double)rest.ns / 1e6, IPC_STAT_PAIRS);
+    LOGV("ipc: %llu requests served in %.2f s (%.0f a second) took %.3f ms, to %u commands; the most time:%s%s\n",
+         (unsigned long long)(n + rest.n), s, (double)(n + rest.n) / s, (double)(ns + rest.ns) / 1e6, pairs, list,
+         more);
 }
 
 /* ============================================================ service objects */
@@ -465,6 +530,8 @@ static void respond(IpcCtx* c) {
 /* the request goes to o's dispatcher, and its result into the reply */
 static void serve(IpcCtx* c, SvcObj* o, u32 seq) {
     u32 in[2];
+    int timed = g_settings.log_level >= 2; /* all that a run without the counters pays for them */
+    u64 t0 = timed ? plat_ns() : 0;
     SNX_ZONE_TV(z_ipc, "ipc", c->cmd, "%s cmd %u", o->name, c->cmd);
     ipc_in(c, 0, &in[0], 4);
     ipc_in(c, 4, &in[1], 4);
@@ -474,6 +541,7 @@ static void serve(IpcCtx* c, SvcObj* o, u32 seq) {
     c->rc = (u32)o->dispatch(o, c);
     ring_set(seq, IPC_REC_SERVED, o->name, c->type, c->cmd, in, c->rc, NULL);
     respond(c);
+    if (timed) stat_add(o->name, c->cmd, plat_ns() - t0);
 }
 /* a request sf answers without the service: a refusal, or a control request */
 static void answer(IpcCtx* c, u32 rc, u32 seq, const char* name, const char* what) {

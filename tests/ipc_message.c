@@ -2,8 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* ipc.c's parse() and ipc_handle() driven with raw HIPC messages in guest memory, laid out byte for byte as libnx's
    client builds them: plain, domain and TIPC requests, the control requests, the requests sf refuses with a result
-   and the ones the kernel refuses before the server sees them, what a failed command returns, and the crash report's
-   ring. The kernel under ipc.c (handles, objects, locks, guest memory, logging) is stood in for here */
+   and the ones the kernel refuses before the server sees them, what a failed command returns, the crash report's
+   ring, and log=2's counters with their line. The kernel under ipc.c (handles, objects, locks, guest memory, logging)
+   is stood in for here */
 #include <stdarg.h>
 #include <stddef.h>
 
@@ -34,10 +35,18 @@ void pm_unlock(PMutex* m) {
     CHECK(test_locks > 0);
     test_locks--;
 }
+/* the clock: a request takes test_takes of it in its handler, so the counters' times are exact */
+static u64 test_now = 1000, test_takes;
+u64 plat_ns(void) { return test_now; }
+static char test_line[2048]; /* the last "ipc:" line of the verbose log, the counters' */
 void logf_(int level, const char* format, ...) {
-    (void)level;
-    if (!test_log) return;
     va_list args;
+    if (level == 2 && !strncmp(format, "ipc:", 4)) {
+        va_start(args, format);
+        vsnprintf(test_line, sizeof test_line, format, args);
+        va_end(args);
+    }
+    if (!test_log) return;
     va_start(args, format);
     vfprintf(stderr, format, args);
     va_end(args);
@@ -338,6 +347,7 @@ static SvcObj* test_object(const char* name) {
    and data in the reply, 3 answers an object, 4 answers a missing object, 5 answers 0xD0 bytes, 6 0x100 bytes (more
    than fits), 7 two copy handles and 0xD0 bytes, 8 claims the crash report ring's next 32 entries while it runs */
 static int test_dispatch(SvcObj* self, IpcCtx* c) {
+    test_now += test_takes;
     got.calls++;
     got.self = self;
     got.type = c->type, got.cmd = c->cmd, got.token = c->token, got.raw_size = c->raw_size;
@@ -901,6 +911,78 @@ static void reply_sizes(void) {
     CHECK(h_close(h) == 0);
 }
 
+/* log=2's counters: each served request counts on its (service, command) pair with the time it took, and
+   ipc_stats_log gives a window's sum and the 8 pairs that took the most; nothing counts on another log level */
+static void counted(u32 h, u32 cmd, int times, u64 takes) {
+    test_takes = takes;
+    for (int i = 0; i < times; i++) {
+        clear();
+        cmif_make_request(msg(), (CmifRequestFormat){.request_id = cmd});
+        send(h);
+    }
+    test_takes = 0;
+}
+static void counters(u32 h) {
+    u32 used;
+    g_settings.log_level = 1;
+    counted(h, 9, 4, 250000);
+    ipc_stats_log(5000000000u);
+    CHECK(!g_host.ipc.nstat && !g_host.ipc.stat_since && !test_line[0]);
+    g_settings.log_level = 2;
+    ipc_stats_log(6000000000u); /* the first call only starts the window */
+    CHECK(!test_line[0]);
+    counted(h, 9, 5, 250000);
+    counted(h, 10, 3, 1000);
+    counted(h, 1, 2, 0);
+    ipc_stats_log(8000000000u);
+    CHECK(!strcmp(test_line, "ipc: 10 requests served in 2.00 s (5 a second) took 1.253 ms, to 3 commands; the most "
+                             "time: test:p cmd 9 5 in 1.250 ms, test:p cmd 10 3 in 0.003 ms, test:p cmd 1 2 in 0.000 "
+                             "ms\n"));
+    /* the next window starts empty, with the pairs known */
+    ipc_stats_log(9000000000u);
+    CHECK(!strcmp(test_line, "ipc: 0 requests served in 1.00 s (0 a second) took 0.000 ms, to 0 commands; the most "
+                             "time: none\n"));
+    CHECK(g_host.ipc.nstat == 3);
+    /* 9 pairs: the line names the 8 that took the most, and sums them all */
+    for (u32 i = 0; i < 9; i++) counted(h, 20 + i, 1, 1000 * (i + 1));
+    ipc_stats_log(10000000000u);
+    CHECK(strstr(test_line, "ipc: 9 requests served in 1.00 s (9 a second) took 0.045 ms, to 9 commands; the most "
+                            "time: test:p cmd 28 1 in 0.009 ms, test:p cmd 27 1 in 0.008 ms,"));
+    CHECK(strstr(test_line, "test:p cmd 21 1 in 0.002 ms\n") && !strstr(test_line, "cmd 20 "));
+    /* what is served on log level 1 is not counted, and the level's return starts a new window */
+    g_settings.log_level = 1;
+    test_line[0] = 0;
+    counted(h, 9, 1, 250000);
+    ipc_stats_log(11000000000u);
+    CHECK(!test_line[0] && !g_host.ipc.stat_since);
+    g_settings.log_level = 2;
+    counted(h, 9, 1, 250000); /* before the window: dropped as it starts */
+    ipc_stats_log(12000000000u);
+    CHECK(!test_line[0]);
+    /* a full table: the pairs past it count in one sum, and those in it go on apart */
+    used = g_host.ipc.nstat;
+    for (u32 cmd = 0; cmd < IPC_STAT_PAIRS + 100; cmd++) stat_add("stat:fill", cmd, 1000);
+    CHECK(g_host.ipc.nstat == IPC_STAT_PAIRS && g_host.ipc.stat_rest.n == 100 + used);
+    stat_add("stat:new", 1, 5000);
+    counted(h, 9, 2, 250000);
+    ipc_stats_log(13000000000u);
+    {
+        char want[256];
+        snprintf(want, sizeof want,
+                 "ipc: %u requests served in 1.00 s (%u a second) took %.3f ms, to %u commands; "
+                 "the most time: test:p cmd 9 2 in 0.500 ms, stat:fill cmd ",
+                 IPC_STAT_PAIRS + 103, IPC_STAT_PAIRS + 103, (double)(IPC_STAT_PAIRS + 100) / 1e3 + 0.505,
+                 IPC_STAT_PAIRS - used + 1);
+        CHECK(!strncmp(test_line, want, strlen(want)));
+        snprintf(want, sizeof want, "; %u more in %.3f ms to commands past the first %d\n", 101 + used,
+                 (double)(100 + used) / 1e3 + 0.005, IPC_STAT_PAIRS);
+        CHECK(strstr(test_line, want));
+    }
+    g_settings.log_level = 1;
+    ipc_stats_log(14000000000u);
+    CHECK(!g_host.ipc.stat_rest.n);
+}
+
 /* the crash report's ring: one entry a request, served or not, and a request whose service runs long leaves alone the
    entry that took its slot meanwhile */
 static void ring_entries(u32 h) {
@@ -1044,6 +1126,7 @@ int main(void) {
     SvcObj* root = test_object("test:p");
     u32 h = session_new(root);
     plain_requests(h, root);
+    counters(h);
     ring_entries(h);
     plain_refusals(h);
     kernel_refusals(h);
