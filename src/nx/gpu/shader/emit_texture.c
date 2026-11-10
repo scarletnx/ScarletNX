@@ -418,8 +418,8 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 off = B(w, 36, 13), ty = B(w, 28, 3);
         u32 bank = 0, bank2 = 0, off2 = 0;
         int handle_count =
-            op == O_TLD_B ? shader_direct_track_image_handle_pair(insn, n, i, b, &bank, &off, &bank2, &off2, 0) : 0;
-        if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, b, stage, &ldc);
+            op == O_TLD_B ? shader_direct_track_image_handle_pair(t->flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
+        if (handle_count == 1) indexed = shader_direct_indexed_handle(t->flow, i, b, stage, &ldc);
         int type = ty >> 1, array = ty & 1, multisample = (int)B(w, 50, 1), slot = 0;
         while (slot < texture_count &&
                (textures[slot].cbuf_off != off || textures[slot].type != type || textures[slot].array != array ||
@@ -473,7 +473,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         int dim = (int)B(w, 33, 3), buffer = dim == 1;
         u32 bank = 0, off = B(w, 36, 13);
         int bindless = op == O_SUATOM ? (int)B(w, 54, 1) : !B(w, 51, 1);
-        if (bindless) shader_direct_track_image_handle(insn, n, i, B(w, 39, 8), &bank, &off, 0);
+        if (bindless) shader_direct_track_image_handle(t->flow, i, B(w, 39, 8), &bank, &off, 0);
         u32 x = reg_read_as(c, a, i32_type), coord = x;
         if (!buffer) {
             u32 y = reg_read_as(c, a + 1, i32_type);
@@ -655,11 +655,11 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 offset_source = source + has_level;
         u32 off = B(w, 36, 13), bank = 0, bank2 = 0, off2 = 0, indexed = 0, ldc = 0;
         int handle_count =
-            bindless ? shader_direct_track_image_handle_pair(insn, n, i, b, &bank, &off, &bank2, &off2, 0) : 0;
+            bindless ? shader_direct_track_image_handle_pair(t->flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
         int type = B(w, 28, 3) >> 1;
         int array = B(w, 28, 1), shadow = B(w, 50, 1);
         int slot = 0;
-        if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, b, stage, &ldc);
+        if (handle_count == 1) indexed = shader_direct_indexed_handle(t->flow, i, b, stage, &ldc);
         while (slot < texture_count &&
                (textures[slot].cbuf_off != off || textures[slot].shadow != shadow || textures[slot].type != type ||
                 textures[slot].array != array || textures[slot].bindless != bindless || (textures[slot].flags & 3) ||
@@ -696,14 +696,14 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         int dynamic_offset = 0;
         if (offset_enabled) {
             u32 packed = 0, domain = (1u << (4 * offset_count)) - 1;
-            int known = shader_direct_track_const(insn, n, i, offset_source, &packed, 0);
+            int known = shader_direct_track_const(t->flow, i, offset_source, &packed, 0);
             if (!known && !g_shader_dynamic_texture_offsets && g_shader_cb_read) {
                 u32 offset_bank, offset_word;
-                if (shader_direct_track_cbuf_word(insn, n, i, offset_source, &offset_bank, &offset_word, 0))
+                if (shader_direct_track_cbuf_word(t->flow, i, offset_source, &offset_bank, &offset_word, 0))
                     known = g_shader_cb_read(offset_bank, offset_word * 4, &packed);
             }
             if (!known) {
-                shader_direct_track_known_bits(insn, n, i, offset_source, &offset_known, &offset_value, 0);
+                shader_direct_track_known_bits(t->flow, i, offset_source, &offset_known, &offset_value, 0);
                 offset_known &= domain;
                 offset_value &= offset_known;
                 known = offset_known == domain;
@@ -773,8 +773,8 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 ty = B(w, 28, 3), type = ty >> 1, array = ty & 1, count = type == 0 ? 1 : type == 1 ? 2 : 3;
         u32 off = B(w, 36, 13), bank = 0, bank2 = 0, off2 = 0, indexed = 0, ldc = 0;
         int handle_count =
-            bindless ? shader_direct_track_image_handle_pair(insn, n, i, a, &bank, &off, &bank2, &off2, 0) : 0;
-        if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, a, stage, &ldc);
+            bindless ? shader_direct_track_image_handle_pair(t->flow, i, a, &bank, &off, &bank2, &off2, 0) : 0;
+        if (handle_count == 1) indexed = shader_direct_indexed_handle(t->flow, i, a, stage, &ldc);
         int slot = shader_direct_typed_slot(textures, texture_count, off, type, array, 0, 0, bindless, bank,
                                             handle_count, bank2, off2, indexed, ldc);
         if (textures[slot].flags & SNX_TEX_INDEXED) shader_direct_swap_element(c, slot);
@@ -799,17 +799,17 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 offset = 0, varying_offset = 0, varying_known = 0, varying_value = 0, dynamic_offset = 0;
         if (B(w, 35, 1)) { /* signed 4-bit offsets from bit 16 of the packed register */
             u32 packed = 0, o[3];
-            int known = shader_direct_track_const(insn, n, i, packed_reg, &packed, 0);
+            int known = shader_direct_track_const(t->flow, i, packed_reg, &packed, 0);
             if (!known && !g_shader_dynamic_texture_offsets && g_shader_cb_read) {
                 u32 offset_bank, offset_word;
                 /* The shader cache records this word and makes another variant when it changes. A ConstOffset
                    applies in the selected mip's texels; moving normalized coordinates by the base size does not. */
-                if (shader_direct_track_cbuf_word(insn, n, i, packed_reg, &offset_bank, &offset_word, 0))
+                if (shader_direct_track_cbuf_word(t->flow, i, packed_reg, &offset_bank, &offset_word, 0))
                     known = g_shader_cb_read(offset_bank, offset_word * 4, &packed);
             }
             if (!known) {
                 u32 known_bits = 0, known_value = 0, domain = (1u << (4 * count)) - 1;
-                shader_direct_track_known_bits(insn, n, i, packed_reg, &known_bits, &known_value, 0);
+                shader_direct_track_known_bits(t->flow, i, packed_reg, &known_bits, &known_value, 0);
                 varying_known = known_bits >> 16 & domain;
                 varying_value = known_value >> 16 & varying_known;
                 /* A varying layer cannot force offset dispatch when every spatial offset bit is constant. */
@@ -859,11 +859,11 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         int bindless = op == O_TXQ_B;
         u32 off = B(w, 36, 13), bank = 0, bank2 = 0, off2 = 0, indexed = 0, ldc = 0;
         int handle_count =
-            bindless ? shader_direct_track_image_handle_pair(insn, n, i, a, &bank, &off, &bank2, &off2, 0) : 0;
+            bindless ? shader_direct_track_image_handle_pair(t->flow, i, a, &bank, &off, &bank2, &off2, 0) : 0;
         int slot;
         u32 qtype = 1, qarray = 0;
-        if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, a, stage, &ldc);
-        if (!indexed && shader_direct_query_type(insn, n, bindless, bank, off, &qtype, &qarray))
+        if (handle_count == 1) indexed = shader_direct_indexed_handle(t->flow, i, a, stage, &ldc);
+        if (!indexed && shader_direct_query_type(t->flow, bindless, bank, off, &qtype, &qarray))
             slot = shader_direct_typed_slot(textures, texture_count, off, qtype, qarray, 0, 0, bindless, bank,
                                             handle_count, bank2, off2, indexed, ldc);
         else {
@@ -896,8 +896,8 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 ty = B(w, 28, 3), type = ty >> 1, array = ty & 1;
         u32 off = B(w, 36, 13), bank = 0, bank2 = 0, off2 = 0, indexed = 0, ldc = 0;
         int handle_count =
-            bindless ? shader_direct_track_image_handle_pair(insn, n, i, b, &bank, &off, &bank2, &off2, 0) : 0;
-        if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, b, stage, &ldc);
+            bindless ? shader_direct_track_image_handle_pair(t->flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
+        if (handle_count == 1) indexed = shader_direct_indexed_handle(t->flow, i, b, stage, &ldc);
         int slot = shader_direct_typed_slot(textures, texture_count, off, type, array, 0, 0, bindless, bank,
                                             handle_count, bank2, off2, indexed, ldc);
         if (textures[slot].flags & SNX_TEX_INDEXED) shader_direct_swap_element(c, slot);
@@ -930,8 +930,8 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         int bindless = op == O_TLD4_B;
         u32 off = B(w, 36, 13), bank = 0, bank2 = 0, off2 = 0;
         int handle_count =
-            bindless ? shader_direct_track_image_handle_pair(insn, n, i, b, &bank, &off, &bank2, &off2, 0) : 0;
-        if (handle_count == 1) indexed = shader_direct_indexed_handle(insn, n, i, b, stage, &ldc);
+            bindless ? shader_direct_track_image_handle_pair(t->flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
+        if (handle_count == 1) indexed = shader_direct_indexed_handle(t->flow, i, b, stage, &ldc);
         u32 ty = op == O_TLD4S ? 2 : B(w, 28, 3);
         u32 type = ty >> 1, array = ty & 1;
         u32 shadow = B(w, 50, 1);

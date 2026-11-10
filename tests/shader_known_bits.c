@@ -81,6 +81,14 @@ static int execute(u64 word, u32 registers[256]) {
     if (destination < 255) registers[destination] = value;
     return 1;
 }
+/* shader_direct_track_known_bits over the n words of program */
+static int track(const u64* program, u32 n, u32 index, u32 reg, u32* known, u32* value, int depth) {
+    ShFlow flow;
+    if (!shader_flow_init(&flow, program, n)) return -1;
+    int found = shader_direct_track_known_bits(&flow, index, reg, known, value, depth);
+    shader_flow_free(&flow);
+    return found;
+}
 static void test(const u64* operations, u32 count, u32 minimum_known, u32 expected_value) {
     u64 program[64] = {0};
     u32 index = 10;
@@ -91,7 +99,7 @@ static void test(const u64* operations, u32 count, u32 minimum_known, u32 expect
     if ((index - 10) % 4 == 0) program[index++] = 0x001f8000fc0007e0ull;
     program[index] = 0xe30000000007000full;
     u32 known = UINT32_MAX, value = UINT32_MAX;
-    int found = shader_direct_track_known_bits(program, index + 1, index, 6, &known, &value, 0);
+    int found = track(program, index + 1, index, 6, &known, &value, 0);
     check(found == (known != 0) && !(value & ~known), "domain is canonical and reports unknown explicitly");
     check((known & minimum_known) == minimum_known && (value & minimum_known) == expected_value,
           "instruction domain retains its forced bits");
@@ -153,13 +161,11 @@ int main(void) {
     uncertain[11] = move(6, 7) & ~(15ull << 16); /* predicated P0: old R6 remains possible */
     uncertain[12] = 0xe30000000007000full;
     u32 known, value;
-    check(!shader_direct_track_known_bits(uncertain, 13, 12, 6, &known, &value, 0) && !known && !value,
-          "predicated definition remains unknown");
+    check(!track(uncertain, 13, 12, 6, &known, &value, 0) && !known && !value, "predicated definition remains unknown");
     uncertain[11] = logic(6, 40, 0xff, 0);
-    check(!shader_direct_track_known_bits(uncertain, 13, 12, 6, &known, &value, 7) && !known && !value,
-          "recursion limit remains unknown");
+    check(!track(uncertain, 13, 12, 6, &known, &value, 7) && !known && !value, "recursion limit remains unknown");
     uncertain[11] = 0xf0c8000002070006ull;
-    check(!shader_direct_track_known_bits(uncertain, 13, 12, 6, &known, &value, 0) && !known && !value,
+    check(!track(uncertain, 13, 12, 6, &known, &value, 0) && !known && !value,
           "unrestricted system input remains unknown");
     printf("shader known bits: %u checks, %u failures\n", checks, failures);
     return failures != 0;
