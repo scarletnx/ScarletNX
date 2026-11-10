@@ -628,6 +628,10 @@ int main(void) {
         kthread_start(t);
         CHECK(starts == before + 1 && started_stack == (size_t)8 << 20, "%d started, a stack of %zu bytes",
               starts - before, started_stack);
+        /* a second StartThread on the same thread starts no other host thread and takes no reference */
+        u32 again = kthread_start(t);
+        CHECK(again == SNX_RC_SVC_INVALID_STATE && starts == before + 1 && t->state == 1 && t->o.refs == 1,
+              "started twice: %x, %d host threads, %d references", again, starts - before, t->o.refs);
     }
 
     /* a game pause: two threads running game code on one core both stop at a poll, the second once the first lets go

@@ -168,15 +168,11 @@ static u32 create_thread(u64 entry, u64 arg, u64 stack_top, i32 prio, i32 core, 
 }
 static u32 start_thread(u32 h) {
     KThread* t = thread_of(h);
-    int st;
+    u32 rc;
     R_UNLESS(t, SNX_RC_SVC_INVALID_HANDLE);
-    pm_lock(&g_host.kernel.klock);
-    st = t->state;
-    klock_unlock();
-    if (st == 0) kthread_start(t);
+    rc = kthread_start(t);
     thread_put(t);
-    R_UNLESS(st == 0, SNX_RC_SVC_INVALID_STATE);
-    R_SUCCEED();
+    return rc;
 }
 /* svcSleepThread: a sleep off the core, or one of the three yields (0 on its core, -1 and -2 to any core) */
 static void sleep_thread(KThread* t, i64 ns) {

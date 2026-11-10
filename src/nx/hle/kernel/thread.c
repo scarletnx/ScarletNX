@@ -617,12 +617,16 @@ static void thread_main(void* p) {
     __atomic_add_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
     thread_run(t, t->entry);
 }
-/* the host thread holds a reference from here until svc_exit_thread */
-void kthread_start(KThread* t) {
-    kobj_ref(&t->o);
+/* the host thread holds a reference from here until svc_exit_thread. The state is read and set in one hold of the
+   lock: of two StartThread calls on one handle, the second finds the thread started and gets InvalidState */
+u32 kthread_start(KThread* t) {
+    int state;
     pm_lock(&g_host.kernel.klock);
-    t->state = 1;
+    state = t->state;
+    if (state == 0) t->state = 1;
     klock_unlock();
+    R_UNLESS(state == 0, SNX_RC_SVC_INVALID_STATE);
+    kobj_ref(&t->o);
     LOGV("StartThread %llu entry=%llx prio=%d core=%d\n", (unsigned long long)t->id, (unsigned long long)t->entry,
          t->prio, t->core);
     {
@@ -639,6 +643,7 @@ void kthread_start(KThread* t) {
                   strerror(reason));
         }
     }
+    R_SUCCEED();
 }
 /* svcExitThread: the thread's waiters (joins) are woken, and its core goes to the next thread. Then its host thread
    lets go of it: its last use of the KThread, which may be freed with that reference */
@@ -893,7 +898,7 @@ void kernel_run_main(u64 entry, u64 stack_size, int prio, int core) {
     t->arm.r[1] = h;
     LOG("main thread: entry %llx, stack %llx (%llu KiB), priority %d, core %d\n", (unsigned long long)entry,
         (unsigned long long)stack, (unsigned long long)(stack_size >> 10), prio, core);
-    kthread_start(t);
+    (void)kthread_start(t); /* made above: it has not started */
 }
 
 /* svcExitProcess, and the game's end however it comes: what the runtime keeps across runs is saved first, as the
