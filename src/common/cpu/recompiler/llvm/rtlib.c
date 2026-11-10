@@ -60,3 +60,37 @@ int DllMainCRTStartup(void* module, unsigned long reason, void* reserved) {
     return 1;
 }
 #endif
+#if defined(_WIN32) && defined(__x86_64__)
+/* The stack probe of generated functions (SNX_IR_STACK_PROBE, ir_codegen.c). Windows commits a thread's stack as it
+   grows, through the guard page below the part in use: a frame of more than a page that nothing touches on the way
+   down skips that page, and its first store lands in reserved memory. The system then cannot even write the
+   exception's record (the stack pointer is in that memory) and ends the process with no handler run. A prologue whose
+   frame is a page or more calls this with the frame's size in rax and subtracts rax from rsp after it, so every
+   register but the flags comes back as it was. It reads one byte in each page from the caller's stack pointer down to
+   the new one, nearest first, so each read meets the guard page or a page already committed. The compiler runtime's
+   ___chkstk_ms does the same, and a module links no compiler runtime. Naked, with the unwind codes of its two pushes */
+__attribute__((naked)) void snx_stack_probe(void);
+__attribute__((naked)) void snx_stack_probe(void) {
+    __asm__(".seh_proc snx_stack_probe\n\t"
+            "pushq %rcx\n\t"
+            ".seh_pushreg %rcx\n\t"
+            "pushq %rax\n\t"
+            ".seh_pushreg %rax\n\t"
+            ".seh_endprologue\n\t"
+            "leaq 24(%rsp), %rcx\n" /* the caller's stack pointer: above the return address and the two pushes */
+            "1:\n\t"
+            "cmpq $0x1000, %rax\n\t"
+            "jb 2f\n\t"
+            "subq $0x1000, %rcx\n\t"
+            "testb %cl, (%rcx)\n\t"
+            "subq $0x1000, %rax\n\t"
+            "jmp 1b\n"
+            "2:\n\t"
+            "subq %rax, %rcx\n\t" /* the new stack pointer, less than a page below the last page read */
+            "testb %cl, (%rcx)\n\t"
+            "popq %rax\n\t"
+            "popq %rcx\n\t"
+            "retq\n\t"
+            ".seh_endproc");
+}
+#endif

@@ -713,7 +713,11 @@ static int crash_code(DWORD code) {
 /* A fault in the game's code module is reported before anything else sees it. The unhandled-exception filter alone is
    not enough: the process has one, the last SetUnhandledExceptionFilter's, and a driver may set its own after ours
    (Intel's igdumdim64 does, which hid Breakpad's reports). The runtime takes no exception in the game's code on
-   Windows but the traps' (trap_fault, first in the chain), so nothing else would handle one */
+   Windows but the traps' (trap_fault, first in the chain), so nothing else would handle one.
+   No handler sees a fault whose stack pointer is in reserved memory, as after a frame of more than a page that no probe
+   walked down (rtlib.c's snx_stack_probe): the system writes the exception's record below the stack pointer, cannot,
+   and ends the process with the exception's code as its exit code, with no report and no Windows Error Reporting
+   event. Only a debugger sees it */
 static LONG WINAPI code_fault(EXCEPTION_POINTERS* e) {
     const EXCEPTION_RECORD* r = e->ExceptionRecord;
     const u8* pc = (const u8*)r->ExceptionAddress;
