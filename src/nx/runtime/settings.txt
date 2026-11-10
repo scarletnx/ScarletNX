@@ -824,6 +824,14 @@ setting Quit shortcut
     label Quit
     set hotkey_set
     help The key that quits the game, as hotkey_help's
+setting TV mode shortcut
+    key hotkey_tv_mode
+    text 64
+    default Ctrl+D
+    label TV mode
+    set hotkey_set
+    help The key, as hotkey_help's, that steps the TV mode round On, Off and Auto while the game runs, as the game's
+    help menu's TV mode row does: for this run, docked keeps the .ini's choice
 
 table g_network_ini
 setting Network

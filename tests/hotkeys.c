@@ -37,10 +37,10 @@ static int find(unsigned key, unsigned mods) { return hotkey_find(key, mods, &g.
 static void set(int action, const char* v) { ini_read(hotkey_row(action), v); }
 
 int main(void) {
-    static const char* const DEFAULTS[HOTKEY_COUNT] = {"F1",     "F2",    "F3",         "F4",  "F5",
-                                                       "F6",     "F7",    "F8",         "F9",  "F10",
-                                                       "Pause",  "F11",   "Alt+Return", "F12", "Ctrl+Shift+F12",
-                                                       "Ctrl+G", "Escape"};
+    static const char* const DEFAULTS[HOTKEY_COUNT] = {"F1",     "F2",     "F3",         "F4",  "F5",
+                                                       "F6",     "F7",     "F8",         "F9",  "F10",
+                                                       "Pause",  "F11",    "Alt+Return", "F12", "Ctrl+Shift+F12",
+                                                       "Ctrl+G", "Escape", "Ctrl+D"};
     char name[64];
     const IniOpt* o;
     int a, rows = 0;
@@ -95,6 +95,7 @@ int main(void) {
     assert(find(SDLK_F11, 0) == HOTKEY_FULLSCREEN && find(SDLK_ESCAPE, HOTKEY_SHIFT) == HOTKEY_QUIT);
     assert(find(SDLK_G, HOTKEY_CTRL) == HOTKEY_MOUSE && find(SDLK_G, 0) == -1); /* Ctrl+G, hotkey_mouse's default */
     assert(find(SDLK_PAUSE, 0) == HOTKEY_PAUSE && find(0, 0) == -1 && find(SDLK_X, 0) == -1);
+    assert(find(SDLK_D, HOTKEY_CTRL) == HOTKEY_TV_MODE && find(SDLK_D, 0) == -1); /* Ctrl+D, hotkey_tv_mode's */
 
     /* read from the .ini: said back as SDL names it, and the old key no more */
     set(HOTKEY_SCREENSHOT, "ctrl+s");

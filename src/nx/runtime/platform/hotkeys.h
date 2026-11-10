@@ -29,6 +29,7 @@ enum {
     HOTKEY_CAPTURE,
     HOTKEY_MOUSE,
     HOTKEY_QUIT,
+    HOTKEY_TV_MODE,
     HOTKEY_COUNT
 };
 /* the modifiers held with a key, either side's, in the order a key's text names them */
