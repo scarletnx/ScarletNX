@@ -541,7 +541,9 @@ static bool shadow_ram(SnxCtrVk* v, SnxCtrMemory* memory, char* error, size_t er
             release_ram(v);
             return false;
         }
-        /* in the RAM from here on, so every failure below releases this region's buffer and memory too */
+        /* in the RAM from here on, so every failure below releases this region's buffer and memory too: not the
+           memory an import that was refused left in this place, freed already */
+        ram->memory = VK_NULL_HANDLE;
         ram->base = r->base;
         ram->size = r->size;
         ++v->ram_count;
