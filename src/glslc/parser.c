@@ -178,32 +178,30 @@ static uint32_t array_of(Glslc* g, uint32_t elem, uint32_t len, uint32_t tok) {
     return t;
 }
 
-/* symbols */
+/* symbols: a name's innermost symbol in scope is its g->names entry's sym, and each symbol's next the one of its name
+   it hides, so finding one is a load and leaving a scope gives each name back what it had */
 
-static uint32_t bucket(const Glslc* g, GlslcView name) {
-    return glslc_hash(glslc_view_text(g, name), name.len) & (GLSLC_SYM_BUCKETS - 1u);
+/* the name of token tok, the index its kind holds; 0 for a token that is no name */
+static uint32_t key_of(const Glslc* g, uint32_t tok) {
+    uint32_t k = tk(g, tok)->kind;
+    return GLSLC_IS_NAME(k) ? GLSLC_NAME_OF(k) : 0;
 }
 
-static uint32_t lookup(const Glslc* g, GlslcView name) {
-    for (uint32_t s = g->sym_hash[bucket(g, name)]; s; s = g->syms[s].next) {
-        if (glslc_views_equal(g, g->syms[s].name, name)) return s;
-    }
-    return 0;
-}
+static uint32_t lookup(const Glslc* g, uint32_t key) { return key ? g->names[key].sym : 0; }
 
-static uint32_t add_symbol(Glslc* g, GlslcView name, uint8_t kind, uint32_t at, int link) {
+static uint32_t add_symbol(Glslc* g, GlslcView name, uint32_t key, uint8_t kind, uint32_t at, int link) {
     if (g->nsyms >= SNX_GLSLC_MAX_SYMBOLS)
         glslc_fail(g, at, "the shader declares more than the %u names glslc takes", SNX_GLSLC_MAX_SYMBOLS - 1);
     uint32_t s = g->nsyms++;
     GlslcSymbol* y = &g->syms[s];
     memset(y, 0, sizeof *y);
     y->name = name;
+    y->key = (uint16_t)key;
     y->kind = kind;
     y->location = y->binding = y->set = -1;
-    if (link) {
-        uint32_t b = bucket(g, name);
-        y->next = g->sym_hash[b];
-        g->sym_hash[b] = (uint16_t)s;
+    if (link && key) {
+        y->next = g->names[key].sym;
+        g->names[key].sym = (uint16_t)s;
     }
     return s;
 }
@@ -223,15 +221,14 @@ static void check_name(Glslc* g, GlslcView name, uint32_t at) {
 }
 
 /* name declared in the innermost scope, which must not have it yet (a function may have overloads) */
-static uint32_t declare(Glslc* g, GlslcView name, uint32_t at, uint8_t kind) {
+static uint32_t declare(Glslc* g, GlslcView name, uint32_t key, uint32_t at, uint8_t kind) {
     check_name(g, name, at);
     uint32_t start = g->scopes[g->nscopes - 1];
-    for (uint32_t s = g->sym_hash[bucket(g, name)]; s; s = g->syms[s].next) {
-        if (s < start || !glslc_views_equal(g, g->syms[s].name, name)) continue;
+    for (uint32_t s = lookup(g, key); s >= start && s; s = g->syms[s].next) { /* newest first: this scope's */
         if (kind == GLSLC_SK_FUNC && g->syms[s].kind == GLSLC_SK_FUNC) continue;
         glslc_fail(g, at, "'%.*s' is already declared in this scope", VIEWV(g, name));
     }
-    return add_symbol(g, name, kind, at, 1);
+    return add_symbol(g, name, key, kind, at, 1);
 }
 
 static void push_scope(Glslc* g, uint32_t tok) {
@@ -243,8 +240,8 @@ static void push_scope(Glslc* g, uint32_t tok) {
 static void pop_scope(Glslc* g) {
     uint32_t start = g->scopes[--g->nscopes];
     for (uint32_t s = g->nsyms; s-- > start;) {
-        uint32_t b = bucket(g, g->syms[s].name);
-        if (g->sym_hash[b] == s) g->sym_hash[b] = g->syms[s].next; /* only a linked symbol is ever a head */
+        uint32_t k = g->syms[s].key;
+        if (k && g->names[k].sym == s) g->names[k].sym = g->syms[s].next; /* only a linked symbol is ever one */
     }
     while (g->nprecs && g->precs[g->nprecs - 1].scope > g->nscopes) g->nprecs--;
 }
@@ -853,7 +850,7 @@ static uint32_t parse_struct(Glslc* g, int nested) {
                 g->types[t].tflags |= GLSLC_TF_OPAQUE;
             }
             for (uint32_t m = g->types[t].first; m < g->nmembers; m++) {
-                if (glslc_views_equal(g, g->members[m].name, tk(g, mn)->text))
+                if (g->members[m].key == key_of(g, mn))
                     glslc_fail(g, site(g, mn), "the struct has two members named %.*s", TOKV(g, mn));
             }
             if (g->nmembers >= SNX_GLSLC_MAX_MEMBERS)
@@ -862,6 +859,7 @@ static uint32_t parse_struct(Glslc* g, int nested) {
             GlslcMember* m = &g->members[g->nmembers++];
             memset(m, 0, sizeof *m);
             m->name = tk(g, mn)->text;
+            m->key = (uint16_t)key_of(g, mn);
             m->type = (uint16_t)full;
             m->prec = resolve_precision(g, full, q.prec, mn);
             m->location = -1;
@@ -874,7 +872,8 @@ static uint32_t parse_struct(Glslc* g, int nested) {
     if (!count) glslc_fail(g, site(g, st), "a struct needs at least one member");
     g->types[t].len = (uint16_t)count;
     if (name_tok) {
-        uint32_t s = declare(g, tk(g, name_tok)->text, site(g, name_tok), GLSLC_SK_STRUCT);
+        uint32_t s =
+            declare(g, tk(g, name_tok)->text, key_of(g, name_tok), site(g, name_tok), GLSLC_SK_STRUCT);
         g->syms[s].type = (uint16_t)t;
     }
     return t;
@@ -882,7 +881,7 @@ static uint32_t parse_struct(Glslc* g, int nested) {
 
 static int is_struct_name(const Glslc* g, uint32_t tok) {
     if (!GLSLC_IS_NAME(tk(g, tok)->kind)) return 0;
-    uint32_t s = lookup(g, tk(g, tok)->text);
+    uint32_t s = lookup(g, key_of(g, tok));
     return s && g->syms[s].kind == GLSLC_SK_STRUCT;
 }
 
@@ -900,7 +899,7 @@ static uint32_t parse_type_specifier(Glslc* g, int nested) {
     } else if (k == TK_STRUCT) {
         t = parse_struct(g, nested);
     } else if (is_struct_name(g, t0)) {
-        t = g->syms[lookup(g, tk(g, t0)->text)].type;
+        t = g->syms[lookup(g, key_of(g, t0))].type;
         g->pos++;
     } else {
         char found[96];
@@ -1150,7 +1149,7 @@ static uint32_t make_field(Glslc* g, uint32_t tok, uint32_t base) {
     const GlslcType* b = ty(g, bt);
     if (b->kind == GLSLC_T_STRUCT || b->kind == GLSLC_T_BLOCK) {
         for (uint32_t m = 0; m < b->len; m++) {
-            if (glslc_views_equal(g, g->members[b->first + m].name, tk(g, tok)->text)) {
+            if (g->members[b->first + m].key == key_of(g, tok)) {
                 if (b->kind == GLSLC_T_STRUCT && has_opaque(g, g->members[b->first + m].type)) sampler_holder(g, base);
                 uint32_t n = node(g, GLSLC_N_FIELD, tok, g->members[b->first + m].type);
                 nd(g, n)->a = (uint16_t)base;
@@ -1463,6 +1462,34 @@ static int builtin_available(const Glslc* g, const GlslcBuiltinFn* f) {
     return (f->vmask & (1u << g->vi)) || (f->ext && g->ext[f->ext] != GLSLC_BEHAVIOR_DISABLE);
 }
 
+/* whether rows a and b of a table have one name */
+#define SAME_ROW_NAME(a, b) ((a)->len == (b)->len && !memcmp((a)->name, (b)->name, (a)->len))
+
+/* the first row of glslc_builtin_fns with token tok's name, glslc_builtin_fn_count for none: looked up once a name,
+   as a name's rows follow one another */
+static uint32_t builtin_fn_row(Glslc* g, uint32_t tok) {
+    GlslcName* x = &g->names[key_of(g, tok)];
+    if (!x->builtin_fn) {
+        GlslcView name = tk(g, tok)->text;
+        uint32_t r = 0;
+        while (r < glslc_builtin_fn_count && !GLSLC_VIEW_IS_ROW(g, name, &glslc_builtin_fns[r])) r++;
+        x->builtin_fn = (uint16_t)(r + 1);
+    }
+    return x->builtin_fn - 1u;
+}
+
+/* the same for glslc_builtin_vars */
+static uint32_t builtin_var_row(Glslc* g, uint32_t tok) {
+    GlslcName* x = &g->names[key_of(g, tok)];
+    if (!x->builtin_var) {
+        GlslcView name = tk(g, tok)->text;
+        uint32_t r = 0;
+        while (r < glslc_builtin_var_count && !GLSLC_VIEW_IS_ROW(g, name, &glslc_builtin_vars[r])) r++;
+        x->builtin_var = (uint8_t)(r + 1);
+    }
+    return x->builtin_var - 1u;
+}
+
 static uint32_t builtin_call(Glslc* g, uint32_t name_tok, uint32_t first) {
     GlslcView name = tk(g, name_tok)->text;
     uint16_t at[16];
@@ -1473,9 +1500,10 @@ static uint32_t builtin_call(Glslc* g, uint32_t name_tok, uint32_t first) {
         at[n++] = g->nodes[a].type;
     }
     int too_many = count_args(g, first) > 16;
-    for (uint32_t r = 0; r < glslc_builtin_fn_count; r++) {
+    uint32_t first_row = builtin_fn_row(g, name_tok);
+    for (uint32_t r = first_row; r < glslc_builtin_fn_count; r++) {
         const GlslcBuiltinFn* f = &glslc_builtin_fns[r];
-        if (!GLSLC_VIEW_IS_ROW(g, name, f)) continue;
+        if (!SAME_ROW_NAME(f, &glslc_builtin_fns[first_row])) break;
         any = 1;
         if (!builtin_available(g, f)) continue;
         in_version = 1;
@@ -1494,17 +1522,11 @@ static uint32_t builtin_call(Glslc* g, uint32_t name_tok, uint32_t first) {
         glslc_fail(g, site(g, name_tok), "the built-in function %.*s is not in GLSL ES %s%s", VIEWV(g, name),
                    version_name(g), g->vi == GLSLC_V100 ? " without its extension" : "");
     if (!in_stage) {
-        const char* where = "this stage";
-        for (uint32_t r = 0; r < glslc_builtin_fn_count; r++) {
-            if (GLSLC_VIEW_IS_ROW(g, name, &glslc_builtin_fns[r])) {
-                uint8_t st = glslc_builtin_fns[r].stages;
-                where = st == GLSLC_SF   ? "fragment shaders"
-                        : st == GLSLC_SC ? "compute shaders"
-                        : st == GLSLC_SV ? "vertex shaders"
-                                         : "other stages";
-                break;
-            }
-        }
+        uint8_t st = glslc_builtin_fns[first_row].stages;
+        const char* where = st == GLSLC_SF   ? "fragment shaders"
+                            : st == GLSLC_SC ? "compute shaders"
+                            : st == GLSLC_SV ? "vertex shaders"
+                                             : "other stages";
         glslc_fail(g, site(g, name_tok), "the built-in function %.*s is only in %s", VIEWV(g, name), where);
     }
     if (!type) {
@@ -1591,13 +1613,13 @@ static int same_params(const Glslc* g, uint32_t first_param, uint32_t count, uin
 
 static uint32_t function_call(Glslc* g, uint32_t name_tok, uint32_t first) {
     GlslcView name = tk(g, name_tok)->text;
-    uint32_t s = lookup(g, name);
+    uint32_t key = key_of(g, name_tok), s = lookup(g, key);
     if (s && g->syms[s].kind != GLSLC_SK_FUNC)
         glslc_fail(g, site(g, name_tok), "'%.*s' is a variable, not a function", VIEWV(g, name));
     if (!s) return builtin_call(g, name_tok, first);
     uint32_t found = 0;
     for (uint32_t u = s; u; u = g->syms[u].next) {
-        if (g->syms[u].kind == GLSLC_SK_FUNC && glslc_views_equal(g, g->syms[u].name, name) &&
+        if (g->syms[u].kind == GLSLC_SK_FUNC && g->syms[u].key == key &&
             same_params(g, g->syms[u].aux, g->syms[u].aux2, first)) {
             found = u;
             break;
@@ -1657,10 +1679,10 @@ static uint32_t parse_arguments(Glslc* g) {
 
 static uint32_t builtin_variable(Glslc* g, uint32_t tok) {
     GlslcView name = tk(g, tok)->text;
-    uint32_t row = glslc_builtin_var_count, other_stage = 0, other_version = 0;
-    for (uint32_t r = 0; r < glslc_builtin_var_count; r++) {
+    uint32_t row = glslc_builtin_var_count, other_stage = 0, other_version = 0, first_row = builtin_var_row(g, tok);
+    for (uint32_t r = first_row; r < glslc_builtin_var_count; r++) {
         const GlslcBuiltinVar* v = &glslc_builtin_vars[r];
-        if (!GLSLC_VIEW_IS_ROW(g, name, v)) continue;
+        if (!SAME_ROW_NAME(v, &glslc_builtin_vars[first_row])) break;
         if (!((v->vmask & (1u << g->vi)) || (v->ext && g->ext[v->ext] != GLSLC_BEHAVIOR_DISABLE))) {
             other_version = 1;
             continue;
@@ -1694,7 +1716,7 @@ static uint32_t builtin_variable(Glslc* g, uint32_t tok) {
         glslc_fail(g, site(g, tok), "a fragment shader writes gl_FragColor or gl_FragData, not both");
     uint32_t s = g->builtin_syms[row];
     if (!s) {
-        s = add_symbol(g, name, GLSLC_SK_BUILTIN, site(g, tok), 0);
+        s = add_symbol(g, name, key_of(g, tok), GLSLC_SK_BUILTIN, site(g, tok), 0);
         g->builtin_syms[row] = (uint16_t)s;
         GlslcSymbol* y = &g->syms[s];
         y->storage = v->storage;
@@ -1715,7 +1737,7 @@ static uint32_t builtin_variable(Glslc* g, uint32_t tok) {
 static uint32_t variable(Glslc* g, uint32_t tok) {
     GlslcView name = tk(g, tok)->text;
     if (name.len >= 3 && !memcmp(glslc_view_text(g, name), "gl_", 3)) return builtin_variable(g, tok);
-    uint32_t s = lookup(g, name);
+    uint32_t s = lookup(g, key_of(g, tok));
     if (!s) glslc_fail(g, site(g, tok), "'%.*s' is not declared", VIEWV(g, name));
     const GlslcSymbol* y = &g->syms[s];
     if (y->kind == GLSLC_SK_FUNC) glslc_fail(g, site(g, tok), "'%.*s' is a function: call it with ()", VIEWV(g, name));
@@ -2120,7 +2142,7 @@ static uint32_t declare_variable(Glslc* g, const Qual* q, uint32_t type, uint32_
         ty(g, element_of(g, type))->kind != GLSLC_T_IMAGE)
         glslc_fail(g, site(g, q->tok), "memory qualifiers are for images and buffer blocks");
     uint8_t prec = resolve_precision(g, type, q->prec, name_tok);
-    uint32_t s = declare(g, tk(g, name_tok)->text, site(g, name_tok), GLSLC_SK_VAR);
+    uint32_t s = declare(g, tk(g, name_tok)->text, key_of(g, name_tok), site(g, name_tok), GLSLC_SK_VAR);
     GlslcSymbol* y = &g->syms[s];
     y->type = (uint16_t)type;
     y->storage = storage;
@@ -2630,7 +2652,7 @@ static void parse_block(Glslc* g, const Qual* q) {
                                type_text(g, full));
             }
             for (uint32_t m = g->types[t].first; m < g->nmembers; m++) {
-                if (glslc_views_equal(g, g->members[m].name, tk(g, mn)->text))
+                if (g->members[m].key == key_of(g, mn))
                     glslc_fail(g, site(g, mn), "the block has two members named %.*s", TOKV(g, mn));
             }
             if (g->nmembers >= SNX_GLSLC_MAX_MEMBERS)
@@ -2639,6 +2661,7 @@ static void parse_block(Glslc* g, const Qual* q) {
             GlslcMember* m = &g->members[g->nmembers++];
             memset(m, 0, sizeof *m);
             m->name = tk(g, mn)->text;
+            m->key = (uint16_t)key_of(g, mn);
             m->type = (uint16_t)full;
             m->prec = resolve_precision(g, full, mq.prec, mn);
             m->location = -1;
@@ -2677,14 +2700,14 @@ static void parse_block(Glslc* g, const Qual* q) {
             glslc_fail(g, site(g, inst), "an array of blocks needs a size");
         if (ty(g, full)->kind == GLSLC_T_ARRAY && ty(g, ty(g, full)->elem)->kind == GLSLC_T_ARRAY)
             glslc_fail(g, site(g, inst), "an array of blocks has one dimension in GLSL ES");
-        s = declare(g, tk(g, inst)->text, site(g, inst), GLSLC_SK_VAR);
+        s = declare(g, tk(g, inst)->text, key_of(g, inst), site(g, inst), GLSLC_SK_VAR);
         g->syms[s].type = (uint16_t)full;
     } else {
-        s = add_symbol(g, tk(g, name_tok)->text, GLSLC_SK_VAR, site(g, name_tok), 0);
+        s = add_symbol(g, tk(g, name_tok)->text, key_of(g, name_tok), GLSLC_SK_VAR, site(g, name_tok), 0);
         g->syms[s].type = (uint16_t)t;
         for (uint32_t m = 0; m < count; m++) {
             const GlslcMember* mb = &g->members[g->types[t].first + m];
-            uint32_t ms = declare(g, mb->name, mb->name.pos, GLSLC_SK_BLOCK_MEMBER);
+            uint32_t ms = declare(g, mb->name, mb->key, mb->name.pos, GLSLC_SK_BLOCK_MEMBER);
             g->syms[ms].type = mb->type;
             g->syms[ms].storage = st;
             g->syms[ms].prec = mb->prec;
@@ -2753,9 +2776,11 @@ static void invariant_names(Glslc* g, const Qual* q) {
     expect(g, TK_SEMICOLON, "';' after the invariant names");
 }
 
-static int is_builtin_function(const Glslc* g, GlslcView name) {
-    for (uint32_t r = 0; r < glslc_builtin_fn_count; r++) {
-        if (GLSLC_VIEW_IS_ROW(g, name, &glslc_builtin_fns[r]) && builtin_available(g, &glslc_builtin_fns[r])) return 1;
+static int is_builtin_function(Glslc* g, uint32_t tok) {
+    uint32_t first = builtin_fn_row(g, tok);
+    for (uint32_t r = first; r < glslc_builtin_fn_count; r++) {
+        if (!SAME_ROW_NAME(&glslc_builtin_fns[r], &glslc_builtin_fns[first])) break;
+        if (builtin_available(g, &glslc_builtin_fns[r])) return 1;
     }
     return 0;
 }
@@ -2768,7 +2793,7 @@ static void parse_function(Glslc* g, const Qual* q, uint32_t ret, uint32_t name_
     if (ty(g, ret)->kind == GLSLC_T_ARRAY) need_version(g, name_tok, GLSLC_V300, "a function returning an array");
     uint8_t ret_prec = ret == GT_VOID ? 0 : resolve_precision(g, ret, q->prec, name_tok);
     check_name(g, name, site(g, name_tok));
-    if (is_builtin_function(g, name))
+    if (is_builtin_function(g, name_tok))
         glslc_fail(g, site(g, name_tok),
                    "%.*s is a built-in function, which a GLSL ES shader cannot redefine or "
                    "overload",
@@ -2814,7 +2839,10 @@ static void parse_function(Glslc* g, const Qual* q, uint32_t ret, uint32_t name_
                            SNX_GLSLC_MAX_PARAMS);
             GlslcParam* p = &g->params[g->nparams++];
             memset(p, 0, sizeof *p);
-            if (pname) p->name = tk(g, pname)->text;
+            if (pname) {
+                p->name = tk(g, pname)->text;
+                p->key = (uint16_t)key_of(g, pname);
+            }
             p->type = (uint16_t)pt;
             p->storage = st;
             p->qual = qual;
@@ -2825,8 +2853,7 @@ static void parse_function(Glslc* g, const Qual* q, uint32_t ret, uint32_t name_
     expect(g, TK_RPAREN, "')' after the parameters");
     /* the function: one declared before with these parameters, or a new overload */
     uint32_t s = 0;
-    for (uint32_t u = g->sym_hash[bucket(g, name)]; u; u = g->syms[u].next) {
-        if (!glslc_views_equal(g, g->syms[u].name, name)) continue;
+    for (uint32_t u = lookup(g, key_of(g, name_tok)); u; u = g->syms[u].next) {
         if (g->syms[u].kind != GLSLC_SK_FUNC)
             glslc_fail(g, site(g, name_tok), "'%.*s' is already declared, and not as a function", VIEWV(g, name));
         if (g->syms[u].aux2 != count) continue;
@@ -2851,7 +2878,7 @@ static void parse_function(Glslc* g, const Qual* q, uint32_t ret, uint32_t name_
                            i + 1, VIEWV(g, name));
         }
     } else {
-        s = declare(g, name, site(g, name_tok), GLSLC_SK_FUNC);
+        s = declare(g, name, key_of(g, name_tok), site(g, name_tok), GLSLC_SK_FUNC);
         g->syms[s].type = (uint16_t)ret;
         g->syms[s].prec = ret_prec;
         g->syms[s].aux = (uint16_t)first;
@@ -2870,7 +2897,7 @@ static void parse_function(Glslc* g, const Qual* q, uint32_t ret, uint32_t name_
     for (uint32_t i = 0; i < count; i++) {
         GlslcParam* p = &g->params[first + i];
         if (!p->name.len) continue;
-        uint32_t ps = declare(g, p->name, p->name.pos, GLSLC_SK_PARAM);
+        uint32_t ps = declare(g, p->name, p->key, p->name.pos, GLSLC_SK_PARAM);
         g->syms[ps].type = p->type;
         g->syms[ps].storage = p->storage;
         g->syms[ps].prec = p->prec;

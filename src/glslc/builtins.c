@@ -300,11 +300,14 @@ const uint32_t glslc_keyword_count = sizeof glslc_keywords / sizeof glslc_keywor
 
 const GlslcKeyword* glslc_find_keyword(const char* text, uint32_t len) {
     uint32_t lo = 0, hi = glslc_keyword_count;
+    if (!len) return NULL;
     while (lo < hi) {
         uint32_t mid = (lo + hi) / 2;
         const char* name = glslc_keywords[mid].name;
         uint32_t n = glslc_keywords[mid].len;
-        int c = memcmp(text, name, len < n ? len : n);
+        /* the first bytes decide most steps, without a call */
+        int c = (int)(unsigned char)text[0] - (int)(unsigned char)name[0];
+        if (c == 0) c = memcmp(text + 1, name + 1, (len < n ? len : n) - 1);
         if (c == 0) c = len < n ? -1 : len > n ? 1 : 0;
         if (c == 0) return &glslc_keywords[mid];
         if (c < 0) {

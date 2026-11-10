@@ -326,8 +326,10 @@ static uint32_t intern(Glslc* g, GlslcView view, int synth, uint32_t site) {
     x->next = g->name_hash[h];
     x->macro = 0;
     x->keyword = 0;
+    x->sym = 0;
+    x->builtin_fn = 0;
+    x->builtin_var = 0;
     x->flags = synth ? GLSLC_NAME_SYNTH : 0;
-    x->pad = 0;
     g->name_hash[h] = (uint16_t)n;
     return n;
 }
