@@ -11454,29 +11454,28 @@ static int form_room(const App* app, int width) {
 }
 /* a numeric setting's value right-aligned in four slots (0.25, 16.0), the group's numbers in a column */
 #define GUI_NUMBER_VALUE 4
+/* after the value of a setting's row that is not at its default: where Del has something to put back */
+#define GUI_CHANGED_MARK "*"
 /* a row of a form as its box shows it, its marker first: its label, the value past the widest label (labels
    columns), in room columns; a value typed is typed in its dialog (render_typed) */
 static void form_line(App* app, const GuiEditor* e, int r, int labels, int room, char* line, size_t size) {
     char label[256], value[400];
     const GuiThemeKey* k = gui_editor_key_of(e, r);
     const char* path;
-    int pad, srow = -1;
+    int pad, row = -1;
     gui_editor_label(e, r, label, sizeof label);
-    if (k && k->numeric && !k->whole && e->object == (char*)app->settings.values)
-        srow = e->keys == app->view_keys   ? app->view_rows[k - app->view_keys]
-               : e->keys == app->peek_keys ? app->peek_rows[k - app->peek_keys]
-                                           : (int)(k - app->settings.keys);
-    if (srow >= 0) { /* its value right in four slots */
-        const GuiSetting* s = &app->settings.values[srow];
+    if (k && e->object == (char*)app->settings.values)
+        row = e->keys == app->view_keys   ? app->view_rows[k - app->view_keys]
+              : e->keys == app->peek_keys ? app->peek_rows[k - app->peek_keys]
+                                          : (int)(k - app->settings.keys);
+    if (row >= 0 && k->numeric && !k->whole) { /* its value right in four slots */
+        const GuiSetting* s = &app->settings.values[row];
         const char* picked = gui_settings_value(&app->settings, s->key);
         const char* number = picked ? picked : s->fallback ? s->fallback : "";
         int cols = gui_text_cols(number);
         snprintf(value, sizeof value, "%*s%.*s%s%s", SDL_max(GUI_NUMBER_VALUE - cols, 0), "",
                  SDL_min(cols, GUI_NUMBER_VALUE), number, picked ? "" : " ", picked ? "" : snx_tr("[default]"));
-    } else if (k && e->object == (char*)app->settings.values) { /* a setting: a pick, else its default and [default] */
-        int row = e->keys == app->view_keys   ? app->view_rows[k - app->view_keys]
-                  : e->keys == app->peek_keys ? app->peek_rows[k - app->peek_keys]
-                                              : (int)(k - app->settings.keys);
+    } else if (row >= 0) { /* a setting: a pick, else its default and [default] */
         gui_settings_shown(&app->settings, row, value, sizeof value);
         if (player_key(app->settings.values[row].key, "device") && !app->settings.values[row].text[0])
             snprintf(value, sizeof value, "%s", snx_tr("Any [default]")); /* the next to connect */
@@ -11485,6 +11484,8 @@ static void form_line(App* app, const GuiEditor* e, int r, int labels, int room,
                      app->settings.values[row].text[0] ? snx_tr("Custom >") : snx_tr("As All >"));
     } else
         gui_editor_value(e, r, value, sizeof value);
+    if (row >= 0 && !gui_settings_at_start(&app->settings, row)) /* a page's and an All's: for any of their rows */
+        snprintf(value + strlen(value), sizeof value - strlen(value), "%s" GUI_CHANGED_MARK, value[0] ? " " : "");
     if (k && e->keys == app->folder_keys && (path = folder_row_path(app, r)) != NULL) {
         /* its folder, then what it is at the row's end; with no room for both the folder stays whole and what it is
            goes, and one too long alone is cut in its middle (whole under the boxes) */
