@@ -30,6 +30,9 @@ typedef struct {
     /* a line of the walk, for the log, and for the screen when shown (the screen's in a player's words, the log's
        with the stages and the failures) */
     void (*note)(void* ctx, const char* line, int shown);
+    /* the file or segment the walk's pass over them all starts to look in, by its name, and "" once that pass ends:
+       for the screen, which names what the walk is at */
+    void (*at)(void* ctx, const char* name);
 } ShipSink;
 /* how far the walk is (atomics): the files and segments, those it looked at, the programs found (once counted) and
    those handed to the sink */

@@ -2,13 +2,14 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/fatal_screen.h"
+#include "nx/gpu/renderer.h"
 #include "gui_theme_colors.h"
 #include <stdio.h>
 #include <string.h>
 
 /* a step as kept: its own copy of the label */
 typedef struct {
-    char label[32], detail[64];
+    char label[32], detail[SNX_PREPARE_DETAIL_SIZE];
     u32 value, total;
     u64 started_ms;
     int done;
@@ -60,6 +61,45 @@ void prepare_screen_set(const SnxRunTheme* theme, const char* name, const SnxPre
     }
 }
 int prepare_screen_shown(void) { return g_prepare_screen.rows > 0; }
+
+typedef char prepare_step_room[SNX_PREPARE_KINDS <= SNX_PREPARE_STEPS ? 1 : -1];
+/* the next row of the screen, a step of a kind first seen at work at *began (set to now_ms the first time) */
+static SnxPrepareStep* prepare_step(SnxPrepareStep* st, int* n, u64* began, u64 now_ms, const char* label, u32 value,
+                                    u32 total, int done) {
+    SnxPrepareStep* s = &st[(*n)++];
+    *s = (SnxPrepareStep){0};
+    if (!*began) *began = now_ms;
+    s->label = label;
+    s->value = value;
+    s->total = total;
+    s->started_ms = *began; /* for the theme's time left */
+    s->done = done;
+    return s;
+}
+int prepare_screen_steps(const RendererPrepare* p, SnxPrepareStep* st, u64 began[SNX_PREPARE_KINDS], u64 now_ms) {
+    SnxPrepareStep* s;
+    int n = 0;
+    if (p->files) { /* the walk that finds the programs, then their translation */
+        s = prepare_step(st, &n, &began[SNX_PREPARE_FIND], now_ms, "FINDING SHADERS", p->files_seen, p->files,
+                         p->programs || !p->scanning);
+        /* how many it looked in, whatever the theme's progress says (a percentage, a time left), and until it is
+           done the one it looks in now, so that a file it takes long over shows by its name */
+        snprintf(s->detail, sizeof s->detail, "%u of %u file%s%s%s", p->files_seen, p->files, p->files == 1 ? "" : "s",
+                 !s->done && p->file[0] ? ", " : "", s->done ? "" : p->file);
+    }
+    if (p->programs) {
+        s = prepare_step(st, &n, &began[SNX_PREPARE_TRANSLATE], now_ms, "PREPARING SHADERS", p->programs_done,
+                         p->programs, !p->scanning);
+        snprintf(s->detail, sizeof s->detail, "(%u new)", p->shipped);
+    }
+    if (p->pipes) {
+        /* the pipelines of earlier runs, made from the shader cache: a player knows them by that name */
+        s = prepare_step(st, &n, &began[SNX_PREPARE_PIPES], now_ms, "LOADING SHADER CACHE", p->pipes_made, p->pipes,
+                         p->pipes_made >= p->pipes);
+        snprintf(s->detail, sizeof s->detail, "%s", "from earlier sessions");
+    }
+    return n;
+}
 
 static u32 rgba(u32 rgb, u32 a) { return (u32)a << 24 | (rgb & 0xFFu) << 16 | (rgb & 0xFF00u) | (rgb >> 16 & 0xFFu); }
 /* text in the font's bytes into out, capitals when upper (as the launcher's loading screen writes the game's name and
@@ -157,25 +197,30 @@ void prepare_screen_draw(SnxUiList* l, int sw, int sh, const int safe[4], int di
         u32 label_ink = last ? t->ink : t->soft, detail_ink = last || !r->done ? t->ink : t->soft;
         y = top + ch * (float)(3 + i);
         screen_progress(r, now, progress, sizeof progress);
-        if (t->steps) {        /* LABEL: DETAIL progress, then dots while at work, ...OK once done */
-            if (r->label[0]) { /* no label: no colon alone */
+        if (t->steps) { /* LABEL: DETAIL progress, then dots while at work, ...OK once done */
+            const char* status = r->done ? "...OK" : progress;
+            int end = (int)strlen(status) + (r->done ? 0 : 3); /* its columns, with the dots' at most */
+            if (r->label[0]) {                                 /* no label: no colon alone */
                 snprintf(line, sizeof line, "%s:", r->label);
                 col +=
                     (int)(screen_text(l, cw * (float)col + (float)x0, y, s, line, 0, cols - 1 - col, label_ink) / cw) +
                     1;
             }
-            col += (int)(screen_text(l, cw * (float)col + (float)x0, y, s, r->detail, 1, cols - 1 - col, detail_ink) /
+            /* the detail cut to what the status leaves, as the launcher cuts a step's: a long one (a file's name)
+               keeps the progress on the row */
+            col += (int)(screen_text(l, cw * (float)col + (float)x0, y, s, r->detail, 1, cols - 2 - col - end,
+                                     detail_ink) /
                          cw) +
                    1;
-            col += (int)(screen_text(l, cw * (float)col + (float)x0, y, s, r->done ? "...OK" : progress, 0,
-                                     cols - 1 - col, t->ink) /
-                         cw);
+            col += (int)(screen_text(l, cw * (float)col + (float)x0, y, s, status, 0, cols - 1 - col, t->ink) / cw);
             if (!r->done)
                 screen_text(l, cw * (float)col + (float)x0, y, s, turn[now / 400 % 4], 0, cols - 1 - col, t->ink);
-        } else { /* the console's: the line as the runtime says it */
-            snprintf(line, sizeof line, "%s %s%s%s", r->label, r->detail, progress[0] && !r->done ? ": " : "",
-                     r->done ? "" : progress);
-            screen_text(l, left, y, s, line, 0, cols - 2, last ? t->ink : t->soft);
+        } else { /* the console's: the line as the runtime says it, its detail cut before its progress */
+            char status[40];
+            snprintf(status, sizeof status, "%s%s", progress[0] && !r->done ? ": " : "", r->done ? "" : progress);
+            snprintf(line, sizeof line, "%s %s", r->label, r->detail);
+            x = left + screen_text(l, left, y, s, line, 0, cols - 2 - (int)strlen(status), last ? t->ink : t->soft);
+            screen_text(l, x, y, s, status, 0, cols - 2 - (int)((x - left) / cw), last ? t->ink : t->soft);
         }
     }
     /* the bar shows the first step not done, as the launcher's shows the step at work, full once every one is */

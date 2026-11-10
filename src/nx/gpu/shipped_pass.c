@@ -411,6 +411,7 @@ int ship_walk(const ShipSink* sink, ShipProgress* progress, int count, int ounce
         u8* owned;
         const u8* d;
         int kind, got, rc;
+        sink->at(sink->ctx, s->name);
         __atomic_add_fetch(&progress->files_seen, 1, __ATOMIC_RELAXED);
         /* a file of a kind skipped by its name, or that an earlier run of this walk found nothing in: none of it read */
         if (!s->mem && ((shipped_name_skips(s->name) && !(w.ounce && shipped_name_ounce(s->name))) ||
@@ -461,6 +462,7 @@ int ship_walk(const ShipSink* sink, ShipProgress* progress, int count, int ounce
             unhold(&w, s->size);
         }
     }
+    sink->at(sink->ctx, "");
     if (w.counting && !stopped(&w)) { /* each hit's programs translated, now that their number is known */
         __atomic_store_n(&progress->programs, w.found, __ATOMIC_RELAXED);
         w.counting = 0;

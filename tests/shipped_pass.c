@@ -4,7 +4,7 @@
    programs counted then handed on, the files and the whole marked read, a later walk that reads none of them again,
    a later build's walk that reads again the files with programs and not the one found to hold none, and what keeps a
    mark from being written (a program not handled for want of memory, a stop) or doesn't (a program that fails to
-   translate) */
+   translate), and the names of what the walk is at, for the screen */
 #include "nx/gpu/shipped_pass.h"
 #include "nx/gpu/shader/shipped.h"
 #include "nx/gpu/shader/shader.h"
@@ -61,11 +61,15 @@ void loader_segments(LoaderSegEach each, void* ctx) {
     each(ctx, "main.data", sizeof "main.data" - 1, g_data, 0x8000000, sizeof g_data, 1);
 }
 
-/* the sink: the ids marked (SHIP_FILE ones and SHIP_ALL's), the programs handed on, and what to answer for them */
+/* the sink: the ids marked (SHIP_FILE ones and SHIP_ALL's), the programs handed on, and what to answer for them; the
+   names it was told the walk is at, each ended by a ';' ("" once the pass over them ended), and the programs handed
+   on by then */
 static struct {
     u64 marked[16];
     u32 what[16];
     int nmarked, programs, answer, stop_after;
+    char at[256];
+    int at_end;
 } g_sink;
 static int scanned(void* ctx, u32 what, u64 id) {
     (void)ctx;
@@ -99,6 +103,12 @@ static void noted(void* ctx, const char* line, int shown) {
     (void)line;
     (void)shown;
 }
+static void at(void* ctx, const char* name) {
+    size_t n = strlen(g_sink.at);
+    (void)ctx;
+    snprintf(g_sink.at + n, sizeof g_sink.at - n, "%s;", name);
+    if (!name[0]) g_sink.at_end = g_sink.programs;
+}
 static int marks(u32 what) {
     int n = 0;
     for (int i = 0; i < g_sink.nmarked; i++) n += g_sink.what[i] == what;
@@ -118,8 +128,10 @@ static void keep(u32 what, int most) {
 }
 
 static int walk(int count, int answer, int stop_after, ShipProgress* p) {
-    static const ShipSink sink = {NULL, scanned, mark, program_handed, not_stopped, noted};
+    static const ShipSink sink = {NULL, scanned, mark, program_handed, not_stopped, noted, at};
     *p = (ShipProgress){0};
+    g_sink.at[0] = 0;
+    g_sink.at_end = -1;
     g_sink.programs = 0;
     g_sink.answer = answer;
     g_sink.stop_after = stop_after;
@@ -146,6 +158,9 @@ int main(void) {
     CHECK(walk(1, SHIP_LACKED, 0, &p) == -1);
     CHECK(g_sink.programs == 3 && p.programs == 3 && p.programs_done == 3 && p.files == 4 && p.files_seen == 4);
     CHECK(marks(SHIP_FILE) == 0 && marks(SHIP_ALL) == 0);
+    /* each source named as the walk starts on it, the segment first, c.bfres too though its name skips it; then ""
+       once the pass over them ended, before counting's hits are translated */
+    CHECK(!strcmp(g_sink.at, "main.data;a.bnsh;b.bin;c.bfres;;") && g_sink.at_end == 0);
     /* stopped by the sink: nothing more handed on, the whole not marked */
     CHECK(walk(1, SHIP_NEW, 2, &p) == 1 && g_sink.programs == 2 && marks(SHIP_ALL) == 0);
     g_sink.nmarked = 0;
@@ -155,6 +170,7 @@ int main(void) {
     CHECK(marks(SHIP_FILE) == 2 && marks(SHIP_ALL) == 1 && marks(SHIP_NONE) == 1);
     /* a later walk: the whole was read, so nothing is read again */
     CHECK(walk(1, SHIP_NEW, 0, &p) == 0 && g_sink.programs == 0 && p.files == 0);
+    CHECK(!g_sink.at[0]); /* nor named */
     /* another build's walk, which has the SHIP_NONE marks alone: the sources with programs read again, b.bin not */
     keep(SHIP_NONE, FILES);
     memset(g_peeks, 0, sizeof g_peeks);
@@ -163,6 +179,7 @@ int main(void) {
     /* without counting first, a source not marked read is handed on as it is read, and the rest aren't again */
     keep(SHIP_FILE, 1); /* the segment's alone, the first marked: a.bnsh is read again */
     CHECK(walk(0, SHIP_NEW, 0, &p) == 0 && g_sink.programs == 2 && p.programs == 0 && marks(SHIP_ALL) == 1);
+    CHECK(!strcmp(g_sink.at, "main.data;a.bnsh;b.bin;c.bfres;;") && g_sink.at_end == 2); /* handed on in the pass */
     CHECK(g_peeks[2] == 0); /* c.bfres, by its name, on no walk */
     ship_release();
 
