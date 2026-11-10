@@ -186,6 +186,34 @@ static uint32_t punct(Glslc* g, uint32_t* pi) {
     return TK_JUNK;
 }
 
+/* where a // comment whose text starts at i ends: at its line's end (a line feed, or a carriage return with no line
+   feed after it), which is left for the scanner; from 3.00 a backslash ending the line continues it on the next.
+   memchr finds the line feed, and the carriage returns before it are looked at only there */
+static uint32_t line_comment_end(const Glslc* g, uint32_t i) {
+    for (;;) {
+        const char* lf = (const char*)memchr(g->src + i, '\n', g->src_len - i);
+        uint32_t end = lf ? (uint32_t)(lf - g->src) : g->src_len;
+        const char* cr = (const char*)memchr(g->src + i, '\r', end - i);
+        /* a carriage return before the line feed's own (\r\n) has none after it: the line ends there */
+        if (cr && (uint32_t)(cr - g->src) + 1 < end) return (uint32_t)(cr - g->src);
+        if (end >= g->src_len || g->vi == GLSLC_V100) return end;
+        uint32_t back = cr ? end - 2 : end - 1; /* the backslash a continuation would have */
+        if (back < i || back >= end || at(g, back) != '\\') return end;
+        i = end + 1; /* continued: the comment goes on after the line feed */
+    }
+}
+
+/* the star and slash that end a block comment whose text starts at i, NULL when the source has none */
+static const char* block_comment_end(const Glslc* g, uint32_t i) {
+    const char* p = g->src + i;
+    const char* end = g->src + g->src_len;
+    while (p < end && (p = (const char*)memchr(p, '*', (size_t)(end - p))) != NULL) {
+        if (p[1] == '/' && p + 1 < end) return p;
+        p++;
+    }
+    return NULL;
+}
+
 /* the next raw token at g->cur, with GLSLC_TF_BOL when it starts its line. With line_only, a token that starts a
    line is not read (TK_EOF, with GLSLC_TF_BOL): the directive that looks for its own line's end may be an #if that
    leaves out the next line, whose characters must not be looked at */
@@ -211,19 +239,13 @@ static void scan(Glslc* g, GlslcToken* t, int line_only) {
             continue;
         }
         if (c == '/' && at(g, i + 1) == '/') {
-            i += 2;
-            while (i < g->src_len && at(g, i) != '\n' && !(at(g, i) == '\r' && at(g, i + 1) != '\n')) {
-                uint32_t k = g->vi != GLSLC_V100 ? continuation(g, i) : 0;
-                i += k ? k : 1;
-            }
+            i = line_comment_end(g, i + 2);
             continue;
         }
         if (c == '/' && at(g, i + 1) == '*') {
-            uint32_t start = i;
-            i += 2;
-            while (i < g->src_len && !(at(g, i) == '*' && at(g, i + 1) == '/')) i++;
-            if (i >= g->src_len) glslc_fail(g, start, "this comment has no */ before the end of the source");
-            i += 2;
+            const char* end = block_comment_end(g, i + 2);
+            if (!end) glslc_fail(g, i, "this comment has no */ before the end of the source");
+            i = (uint32_t)(end - g->src) + 2;
             continue;
         }
         break;
