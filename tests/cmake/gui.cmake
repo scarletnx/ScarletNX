@@ -129,8 +129,10 @@ if(BUILD_TESTING)
     endif()
     if(NOT IOS)
         add_test(NAME gui_sdl_events COMMAND snx-test-gui-sdl)
-        # 20 to 27 s under the sanitizers in CI, where 30 stopped it (#1638)
-        set_tests_properties(gui_sdl_events PROPERTIES TIMEOUT 60 ENVIRONMENT "${gui_screen_env}")
+        # the real renderer over every screen, a 3DS row and a dump's icon ask included: 20 to 27 s under the
+        # sanitizers in CI, where 30 stopped it (#1638), and more on a busy runner; the timeout is a hang guard, not a
+        # pace
+        set_tests_properties(gui_sdl_events PROPERTIES TIMEOUT 120 ENVIRONMENT "${gui_screen_env}")
     endif()
     # the setup's pages (gui_setup.c), as gui_sdl's: the real renderer, a language of the tests' own, no picker
     add_executable(snx-test-gui-setup "${PROJECT_SOURCE_DIR}/tests/gui_setup.c")
