@@ -1435,13 +1435,29 @@ int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
     }
     mem_lock();
     if (placed_nl(a, size)) goto out; /* the renderer's GPU memory isn't trapped: what it gets lands at once */
+    /* pool pages of the range mapped here alone: a view of them at another address lands them first. The aliased
+       ranges are built lazily from the blocks (g_alias), searched by address here, not a scan of every block for each
+       block of the range as before */
+    if (__atomic_load_n(&g_alias.built, __ATOMIC_RELAXED) != __atomic_load_n(&g_alias.gen, __ATOMIC_RELAXED))
+        aliases_build_nl();
+    {
+        u32 lo = 0, hi = g_alias.n;
+        while (lo < hi) { /* the first aliased range ending past a */
+            u32 mid = lo + (hi - lo) / 2;
+            if (g_alias.r[mid].addr + g_alias.r[mid].size <= a)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        if (lo < g_alias.n && g_alias.r[lo].addr < end) goto out;
+    }
     for (i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
         const MemBlock* b = &g_blk[i];
         if (!data_state(b->state)) goto out;
-        if (b->pool) { /* pool pages already: only when mapped here alone */
+        if (b->pool) {
             u64 lo = b->addr > a ? b->addr : a, hi = blk_end(b) < end ? blk_end(b) : end;
             u64 boff = b->pool - 1 + (lo - b->addr);
-            if (pool_mapped_elsewhere_nl(boff, hi - lo, lo) || host_view_nl(boff, hi - lo)) goto out;
+            if (host_view_nl(boff, hi - lo)) goto out;
         }
     }
     /* the parts that aren't pool pages yet moved there, each a run of its own: parts that are may be another owner's,
