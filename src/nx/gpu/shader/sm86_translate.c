@@ -590,7 +590,7 @@ static u32 builtin_vec3(Ctx* c, u32* var, u32 builtin, u32 k) {
 
 /* The render targets' images are the resolution scale times the guest's size, and a fragment program counts the
    guest's pixels and texels, as the Maxwell translator gives them to its programs (spirv_translate.c's needs_scale
-   and shader_scaled_coords): the fragment's x and y are FragCoord's over the scale, a fetch from a texture bound to
+   and shader_scaled_fetch): the fragment's x and y are FragCoord's over the scale, a fetch from a texture bound to
    a scaled target reads texel p in the pixels the image has for it, and a size query of one answers its size over
    the scale. Other textures (one a compute program stored, one from memory) keep their own texels. Left in the
    target's pixels, a fetch at the fragment's own coordinates read a texture of the guest's size over the target's
@@ -639,7 +639,7 @@ static u32 frag_pixel(Ctx* c, u32 k) {
    one for all the fragments of a guest pixel. It stays within the texel's pixels, which at another scale end before a
    whole one. A target of another size (a table of a few texels, a smaller level) has no such pixel for the fragment,
    and its place there would give a texel's value by the fragment's column and row: the pixel at the texel's centre
-   is fetched, as the Maxwell translator fetches it (shader_scaled_coords). Another texture keeps p */
+   is fetched, as the Maxwell translator fetches it (shader_scaled_fetch). Another texture keeps p */
 static void scaled_fetch(Ctx* c, int slot, u32* x, u32* y) {
     u32 scaled = scaled_slot(c, slot, 0), own = scaled_slot(c, slot, 1);
     u32 scale = scale_component(c, 2), over = scale_component(c, 0);

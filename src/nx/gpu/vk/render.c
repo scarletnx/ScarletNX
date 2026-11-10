@@ -2304,7 +2304,7 @@ static int screen_covers(const VkViewport* vp, const Surf* t) {
     return vp && vp->x == 0.0f && vp->width == w &&
            (vp->height > 0 ? vp->y == 0.0f && vp->height == h : vp->y == h && vp->height == -h);
 }
-/* scaled: a bit for each texture slot bound to a scaled render target (shader_scaled_coords in shader/emit_texture.c),
+/* scaled: a bit for each texture slot bound to a scaled render target (shader_scaled_fetch in shader/emit_texture.c),
    and in scaled[1] the ones of those whose target has the size of the draw's (own_size) */
 /* screen: the slots sampled at the own pixel's centre where the draw's viewport covers their target (render_draw), NULL
    for none.

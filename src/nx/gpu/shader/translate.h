@@ -100,8 +100,9 @@ static inline u32 shader_u32(DirectCtx* c, u32 value) {
     return c->small_u32[value];
 }
 
-/* Fragment fetches from a scaled render target (resolution=): texel p is at (p + 0.5) * scale, and TXQ answers the
-   size over the scale. The texture's bit is in the push constants' uvec4, x for slots 0-31, y for 32-63 */
+/* Fragment fetches from a scaled render target (resolution=): texel p is from pixel p * scale on (shader_scaled_fetch),
+   and TXQ answers the size over the scale. The texture's bit is in the push constants' uvec4, x for slots 0-31, y for
+   32-63 */
 _Static_assert(SH_MAXTEX <= 64, "the scaled textures' mask has a bit a slot");
 
 static const SpvGlsl450Op conversion_rounds[] = {SPV_GLSL_ROUND_EVEN, SPV_GLSL_FLOOR, SPV_GLSL_CEIL, SPV_GLSL_TRUNC};
@@ -267,7 +268,8 @@ u32 shader_indexed_is_depth(DirectCtx* c, int slot);
 u32 shader_dc_compare_indexed(DirectCtx* c, int slot, u32 reference, u32 texel);
 u32 shader_sample_dref(DirectCtx* c, const ShaderInfo* si, int slot, u32 vec4_type, u32 coords, u32 dref, int use_lod,
                        u32 lod);
-void shader_scaled_coords(DirectCtx* c, u32 push, int slot, int size, u32 i32_type, u32* x, u32* y);
+void shader_scaled_fetch(DirectCtx* c, u32 push, u32 fragcoord, u32 vec4, int slot, u32 i32_type, u32* x, u32* y);
+void shader_scaled_size(DirectCtx* c, u32 push, int slot, u32* x, u32* y);
 void shader_rect_coords(DirectCtx* c, u32 push, int scaled, int slot, u32 vec2_u32, u32 i32_type, u32* x, u32* y,
                         u32* gx, u32* gy);
 void shader_texel_row_coord(DirectCtx* c, u32 i32_type, u32* x, u32* y);

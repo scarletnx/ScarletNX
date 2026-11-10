@@ -73,35 +73,86 @@ u32 shader_sample_dref(DirectCtx* c, const ShaderInfo* si, int slot, u32 vec4_ty
                 : spv_emit_sample2d(&c->emit, vec4_type, c->sampled_type[slot], c->sampler[slot], coords, 0);
     return shader_dc_compare(c, func, dref, spv_emit_vec4_extract(&c->emit, c->f32_type, texel, 0));
 }
-void shader_scaled_coords(DirectCtx* c, u32 push, int slot, int size, u32 i32_type, u32* x, u32* y) {
-    u32 one = shader_u32(c, 1);
-    u32 bits = spv_emit_push_component_f32(&c->emit, spv_emit_type_pointer(&c->emit, 9, c->u32_type), push, one,
+/* Whether a fragment program's texture slot is bound to a scaled render target (resolution= other than 1): its bit in
+   the push constants' uvec4, x for slots 0 to 31 and y for 32 to 63 (vk/render.c's stage_set). With own, whether that
+   target has the size of the one the draw renders to as well (render.c's own_size): its bit in the uvec4 at byte 96 */
+static u32 scaled_slot(DirectCtx* c, u32 push, int slot, int own) {
+    u32 one = spv_emit_constant_u32(&c->emit, c->u32_type, 1);
+    u32 bits = spv_emit_push_component_f32(&c->emit, spv_emit_type_pointer(&c->emit, 9, c->u32_type), push,
+                                           own ? spv_emit_constant_u32(&c->emit, c->u32_type, 3) : one,
                                            slot >= 32 ? one : c->zero, c->u32_type); /* PushConstant */
-    u32 bit = spv_emit_binary(
-        &c->emit, SPV_OP_BITWISE_AND, c->u32_type,
-        spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, bits, shader_u32(c, slot & 31)), one);
-    /* component 2 is the scale, 0 its reciprocal (frame_consts) */
-    u32 factor = spv_emit_uniform_component(&c->emit, c->scale_pointer, c->scale_buffer, c->zero, c->zero,
-                                            size ? c->zero : shader_u32(c, 2), c->f32_type);
-    factor = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type,
-                              spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type, bit, c->zero), factor,
-                              spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f));
+    u32 bit = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
+        spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, bits, spv_emit_constant_u32(&c->emit, c->u32_type, slot & 31)),
+        one);
+    return spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type, bit, c->zero);
+}
+/* component k of SNX_VKB_RS's vec4 (vk/render.c's frame_consts): 0 and 1 are 1 / the resolution scale, 2 the scale */
+static u32 scale_component(DirectCtx* c, u32 k) {
+    return spv_emit_uniform_component(&c->emit, c->scale_pointer, c->scale_buffer, c->zero, c->zero,
+                                      spv_emit_constant_u32(&c->emit, c->u32_type, k), c->f32_type);
+}
+static u32 exact(DirectCtx* c, u32 value) {
+    spv_emit_no_contraction(&c->emit, value);
+    return value;
+}
+static u32 floor_of(DirectCtx* c, u32 value) {
+    return spv_emit_glsl_unary(&c->emit, c->f32_type, c->glsl, SPV_GLSL_FLOOR, value);
+}
+/* A fragment program's 2D texel coordinates *x and *y of texture slot, as its image has them. The image of a scaled
+   target has texel p from pixel p times the scale on. Where the target has the size of the one drawn to, the pixel
+   that lies where the fragment lies in its own guest pixel is fetched, as the Ounce translator's scaled_fetch does
+   (sm86_translate.c) and Eden's rescaling pass (SubScale): at a whole scale a pass that fetches its own pixel reads
+   that very pixel, not one for all the fragments of a guest pixel. It stays within the texel's pixels, which at
+   another scale end before a whole one. In a lower-left window the fragment's y counts up (shader_frag_y_origin),
+   and so does its place. A target of another size (a table, a smaller level) gives every fragment the pixel at the
+   texel's centre. Another texture keeps p. fragcoord is the FragCoord input, a vec4 */
+void shader_scaled_fetch(DirectCtx* c, u32 push, u32 fragcoord, u32 vec4, int slot, u32 i32_type, u32* x, u32* y) {
+    u32 scaled = scaled_slot(c, push, slot, 0), own = scaled_slot(c, push, slot, 1);
+    u32 scale = scale_component(c, 2), over = scale_component(c, 0);
+    u32 lower_left =
+        spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type,
+                             spv_emit_push_component_f32(&c->emit, spv_emit_type_pointer(&c->emit, 9, c->u32_type),
+                                                         push, spv_emit_constant_u32(&c->emit, c->u32_type, 1),
+                                                         spv_emit_constant_u32(&c->emit, c->u32_type, 2), c->u32_type),
+                             c->zero);
+    u32 position = spv_emit_load(&c->emit, vec4, fragcoord);
     u32 half = spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f);
     u32* v[2] = {x, y};
-    for (int k = 0; k < 2; k++) {
-        u32 f = size ? spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, c->f32_type, *v[k])
-                     : spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type,
-                                       spv_emit_unary(&c->emit, SPV_OP_CONVERT_S_TO_F, c->f32_type, *v[k]), half);
-        spv_emit_no_contraction(&c->emit, f);
-        f = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, f, factor);
-        spv_emit_no_contraction(&c->emit, f);
-        if (size) { /* rounded, as vk_sc */
-            f = spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type, f, half);
-            spv_emit_no_contraction(&c->emit, f);
-            *v[k] = spv_emit_unary(&c->emit, SPV_OP_CONVERT_F_TO_U, c->u32_type, f);
-        } else /* floored: below 0 stays outside */
-            *v[k] = spv_emit_unary(&c->emit, SPV_OP_CONVERT_F_TO_S, i32_type,
-                                   spv_emit_glsl_unary(&c->emit, c->f32_type, c->glsl, SPV_GLSL_FLOOR, f));
+    for (u32 k = 0; k < 2; k++) {
+        u32 p = spv_emit_unary(&c->emit, SPV_OP_CONVERT_S_TO_F, c->f32_type, *v[k]);
+        u32 first = exact(c, spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, p, scale));
+        u32 next = floor_of(c, exact(c, spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type, first, scale)));
+        u32 last = spv_emit_glsl_binary(&c->emit, c->f32_type, c->glsl, SPV_GLSL_F_MAX, floor_of(c, first),
+                                        exact(c, SPV(&c->emit, SPV_OP_F_SUB, c->f32_type, next,
+                                                     spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f))));
+        /* the fragment's place in its guest pixel, in the image's pixels: 0 up to the scale */
+        u32 pixel = spv_emit_vec4_extract(&c->emit, c->f32_type, position, k);
+        u32 corner = exact(c, spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, scale,
+                                            floor_of(c, exact(c, spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, pixel, over)))));
+        u32 place = exact(c, SPV(&c->emit, SPV_OP_F_SUB, c->f32_type, pixel, corner));
+        if (k)
+            place = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type, lower_left,
+                                    exact(c, SPV(&c->emit, SPV_OP_F_SUB, c->f32_type, scale, place)), place);
+        u32 at = spv_emit_glsl_binary(&c->emit, c->f32_type, c->glsl, SPV_GLSL_F_MIN,
+                                      floor_of(c, exact(c, spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type, first, place))), last);
+        u32 centre =
+            floor_of(c, exact(c, spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type,
+                                               exact(c, spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type, p, half)), scale)));
+        at = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type, own, at, centre);
+        *v[k] = spv_emit_ternary(&c->emit, SPV_OP_SELECT, i32_type, scaled, spv_emit_unary(&c->emit, SPV_OP_CONVERT_F_TO_S, i32_type, at), *v[k]);
+    }
+}
+/* The size *x by *y of texture slot's image as the guest has it: a scaled target's over the scale, rounded as vk_sc
+   rounds a scaled size */
+void shader_scaled_size(DirectCtx* c, u32 push, int slot, u32* x, u32* y) {
+    u32 factor = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type, scaled_slot(c, push, slot, 0), scale_component(c, 0),
+                                 spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f));
+    u32* v[2] = {x, y};
+    for (u32 k = 0; k < 2; k++) {
+        u32 f = exact(
+            c, spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, c->f32_type, *v[k]), factor));
+        *v[k] = spv_emit_unary(&c->emit, SPV_OP_CONVERT_F_TO_U, c->u32_type,
+            exact(c, spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type, f, spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f))));
     }
 }
 
@@ -109,16 +160,15 @@ void shader_scaled_coords(DirectCtx* c, u32 push, int slot, int size, u32 i32_ty
    bottom of the surface clip, its height the w, as the viewport and the scissor measure it there: the guest's GL driver
    leaves its own gl_FragCoord transform the identity for the window it draws lower left */
 /* A rectangle texture's coordinates (ShaderInfo.tex_rect_mask) are texels: x and y over its size at level 0, the
-   size a fragment program's TXQ answers on a scaled target (shader_scaled_coords' unscaled size), which the guest's texels
+   size a fragment program's TXQ answers on a scaled target (shader_scaled_size), which the guest's texels
    count. *gx and *gy, when not NULL, are gradients in texels, divided the same */
 void shader_rect_coords(DirectCtx* c, u32 push, int scaled, int slot, u32 vec2_u32, u32 i32_type, u32* x, u32* y,
                         u32* gx, u32* gy) {
     u32 size = spv_emit_image_query_size_lod(&c->emit, vec2_u32, c->sampled_type[slot], c->sampler[slot], c->zero);
     u32 w = spv_emit_vec4_extract(&c->emit, c->u32_type, size, 0),
         h = spv_emit_vec4_extract(&c->emit, c->u32_type, size, 1);
-    if (scaled) shader_scaled_coords(c, push, slot, 1, i32_type, &w, &h);
-    u32 fw = spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, c->f32_type, w),
-        fh = spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, c->f32_type, h);
+    if (scaled) shader_scaled_size(c, push, slot, &w, &h);
+    u32 fw = spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, c->f32_type, w), fh = spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, c->f32_type, h);
     *x = spv_emit_binary(&c->emit, SPV_OP_F_DIV, c->f32_type, *x, fw);
     *y = spv_emit_binary(&c->emit, SPV_OP_F_DIV, c->f32_type, *y, fh);
     for (int k = 0; k < 2 && gx; k++) {
@@ -455,7 +505,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                     spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type, packed, shader_u32(c, 8), four));
         }
         if (type == 0 && !array) shader_texel_row_coord(c, i32_type, &x, &y);
-        if (type == 1 && needs_texel_scale) shader_scaled_coords(c, push, slot, 0, i32_type, &x, &y);
+        if (type == 1 && needs_texel_scale) shader_scaled_fetch(c, push, t->fragcoord, vec4, slot, i32_type, &x, &y);
         u32 coord = z ? spv_emit_vec3_construct(&c->emit, vec3_i32, x, y, z)
                       : spv_emit_vec2_construct(&c->emit, vec2_i32, x, y);
         u32 sample = multisample ? spv_emit_image_fetch_sample(&c->emit, texture_vec4[slot], c->sampled_type[slot],
@@ -587,7 +637,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             y = spv_emit_iadd_u32(&c->emit, i32_type, y, oy);
         }
         if (type == 0) shader_texel_row_coord(c, i32_type, &x, &y);
-        if (type == 1 && needs_texel_scale) shader_scaled_coords(c, push, slot, 0, i32_type, &x, &y);
+        if (type == 1 && needs_texel_scale) shader_scaled_fetch(c, push, t->fragcoord, vec4, slot, i32_type, &x, &y);
         u32 coord =
             type == 2 ? spv_emit_vec3_construct(&c->emit, vec3_i32, x, y, reg_read_as(c, b, i32_type))
             : array ? spv_emit_vec3_construct(&c->emit, vec3_i32, x, y,
@@ -882,7 +932,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                          spv_emit_vec4_extract(&c->emit, c->u32_type, dimensions, 1),
                          third ? spv_emit_vec4_extract(&c->emit, c->u32_type, dimensions, 2) : shader_u32(c, 1),
                          spv_emit_image_query_levels(&c->emit, c->u32_type, c->sampled_type[slot], c->sampler[slot])};
-        if (qtype == 1 && needs_texel_scale) shader_scaled_coords(c, push, slot, 1, i32_type, &values[0], &values[1]);
+        if (qtype == 1 && needs_texel_scale) shader_scaled_size(c, push, slot, &values[0], &values[1]);
         u32 dst = d;
         for (u32 k = 0; k < 4; k++)
             if (B(w, 31 + k, 1)) {
