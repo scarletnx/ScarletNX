@@ -321,6 +321,15 @@ static void diff_run(void* user, u64 at, u64 n) {
     }
 }
 
+/* the bits of word w of a granule's page mask that are pages [lo, hi) (w within them) */
+static u64 span_bits(u64 w, u64 lo, u64 hi) {
+    u64 a = w * 64, m = ~0ull;
+    if (lo > a) m &= ~0ull << (lo - a);
+    if (hi < a + 64) m &= (1ull << (hi - a)) - 1;
+    return m;
+}
+/* A slice is a binding's granules, up to 16 MiB of them for each storage buffer of each draw and dispatch: their pages
+   are looked at by the 64 of a mask word, as a loop over each page's bit was a fourteenth of one game's GPU thread */
 int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     u64 cpu = 0;
     if (!vk_mirror_on() || !len || gmmu_run(gva, len, &cpu) != len || cpu + len > AS_SIZE) return 0;
@@ -348,13 +357,26 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         /* the binding's valid pages written since the oldest of them was brought up to date: the bytes the CPU
            changed, those that differ from the shadow (a page brought up to date later compares equal). Owned pages
            aren't watched: their owners are copied in below */
-        u32 oldest = now;
+        /* the oldest by its age, as every clock taken is now or before it */
+        u32 age = 0;
         int any = 0;
-        for (u64 p = lo; p < hi; p++)
-            if (r->valid[p / 64] >> (p % 64) & 1) {
-                if (!any || (i32)(r->synced[p] - oldest) < 0) oldest = r->synced[p];
-                any = 1;
-            }
+        for (u64 w = lo / 64; w < (hi + 63) / 64; w++) {
+            u64 bits = r->valid[w] & span_bits(w, lo, hi);
+            const u32* at = r->synced + w * 64;
+            if (!bits) continue;
+            any = 1;
+            if (bits == ~0ull)
+                for (u32 k = 0; k < 64; k++) {
+                    u32 a = now - at[k];
+                    age = a > age ? a : age;
+                }
+            else
+                for (; bits; bits &= bits - 1) {
+                    u32 a = now - at[snx_ctz64(bits)];
+                    age = a > age ? a : age;
+                }
+        }
+        u32 oldest = now - age;
         int written = any ? vk_written_since(GP(base + lo * 4096), (hi - lo) * 4096, oldest) : 0;
         if (written) {
             Diff d = {r, base, lo, &u};
@@ -367,19 +389,19 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         /* the binding's pages not given yet: whole, guest memory's bytes, an owned part's left for its owner. One the
            mirror owns has its bytes there already */
         int whole = 1; /* every page of [lo, hi) valid after this */
-        for (u64 p = lo; p < hi; p++) {
-            if (r->valid[p / 64] >> (p % 64) & 1) continue;
-            u64 a = base + p * 4096;
-            if (mirror_owns(a, 4096)) { /* filled at a binding after it lands */
-                whole = 0;
-                continue;
+        for (u64 w = lo / 64; w < (hi + 63) / 64; w++)
+            for (u64 bits = ~r->valid[w] & span_bits(w, lo, hi); bits; bits &= bits - 1) {
+                u64 p = w * 64 + snx_ctz64(bits), a = base + p * 4096;
+                if (mirror_owns(a, 4096)) { /* filled at a binding after it lands */
+                    whole = 0;
+                    continue;
+                }
+                OwnRange o[16];
+                u8* dst = up_bytes(&u, a, 4096);
+                if (own_stage(a, 4096, dst, o, 16)) owners = 1;
+                memcpy(r->shadow + p * 4096, dst, 4096);
+                r->valid[w] |= 1ull << (p % 64);
             }
-            OwnRange o[16];
-            u8* dst = up_bytes(&u, a, 4096);
-            if (own_stage(a, 4096, dst, o, 16)) owners = 1;
-            memcpy(r->shadow + p * 4096, dst, 4096);
-            r->valid[p / 64] |= 1ull << (p % 64);
-        }
         if (whole && r->ck_epoch == epoch && lo <= r->ck_hi && r->ck_lo <= hi) { /* touching this epoch's: one */
             if (lo < r->ck_lo) r->ck_lo = (u32)lo;
             if (hi > r->ck_hi) r->ck_hi = (u32)hi;
