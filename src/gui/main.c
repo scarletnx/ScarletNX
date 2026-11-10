@@ -7800,8 +7800,9 @@ static const GuiThemeKey app_keys[] = {
      0, NULL},
     {"", SNX_TR_NOOP("GPU Drivers"), GUI_KEY_ACTION, offsetof(GuiAppForm, drivers), sizeof(((GuiAppForm*)0)->drivers),
      NULL, 0,
-     SNX_TR_NOOP("Vulkan drivers for Adreno GPUs on Android, Turnip among them: add, remove, and the one games use"), 0,
-     0, 0, 0, NULL},
+     SNX_TR_NOOP("Vulkan drivers for Adreno and Xclipse GPUs on Android (Turnip, RADV): add, remove, and the one games "
+                 "use"),
+     0, 0, 0, 0, NULL},
     {"", SNX_TR_NOOP("Freedreno Settings"), GUI_KEY_ACTION, offsetof(GuiAppForm, freedreno),
      sizeof(((GuiAppForm*)0)->freedreno), NULL, 0,
      SNX_TR_NOOP("Mesa's Freedreno and Turnip variables every game starts with (TU_DEBUG...), and their presets"), 0, 0,

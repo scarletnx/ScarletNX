@@ -56,17 +56,21 @@ recompiles on the phone, then the game opens.
   game's menu over it, in the menu's look (a gamepad's Home does on every system): the on-screen controls'
   settings, the touch screen's, and *Exit*; back again returns to the game. Leaving it for the home screen keeps it:
   its window is made anew when it comes back.
-- **GPU drivers**: on arm64 with an Adreno GPU, from Android 9, a game can run with a Vulkan driver package the
-  player added (Turnip's releases, as Eden takes them) in place of the system's, picked for every game or for one in
-  Settings > App > GPU Drivers ([GUI](../user/gui.md)). libadrenotools loads it: `libadrenotools.so`, opened only by a game
-  that picked a package, and the hooks it loads by name, `libhook_impl.so` and `libmain_hook.so`, are in the app's
-  libraries folder. The packages are unpacked into the app's own storage (`gpu_drivers/` of the user's data folder),
-  as the linker loads libraries from there alone. A game's log says the package it asked for and, after the Vulkan
-  instance, `vulkan: GPU driver <name> runs: its libraries are mapped`; one the system's driver took the place of (the
-  hook falls back to it on its own) stops the game, saying so. On Android 16 the system's `vulkan.adreno.so` is in the
-  process as the app starts, so a package of that soname, Qualcomm's own, loads from a renamed copy
-  (`cmake/adrenotools-unique-soname.patch`). Download Driver fetches them over HTTPS through libcurl, trusting the Mozilla
-  root certificates the build carries (curl's extract of them, `cmake/cacert.cmake`), as Eden does with its own OpenSSL.
+- **GPU drivers**: on arm64 with an Adreno or an Xclipse GPU, from Android 9, a game can run with a Vulkan driver
+  package the player added (Turnip's releases, as Eden takes them; [RADV's port to
+  Xclipse](https://github.com/JimVulkan/radv-xclipse), from Android 14) in place of the system's, picked for every
+  game or for one in Settings > App > GPU Drivers ([GUI](../user/gui.md)). An Adreno is known by `/dev/kgsl-3d0`, an
+  Xclipse by a render node of `/dev/dri` whose kernel driver DRM names `amdgpu`, the one RADV opens. libadrenotools
+  loads either, its hook taking the place of whichever driver Android's Vulkan loader asks for: `libadrenotools.so`,
+  opened only by a game that picked a package, and the hooks it loads by name, `libhook_impl.so` and
+  `libmain_hook.so`, are in the app's libraries folder. The packages are unpacked into the app's own storage
+  (`gpu_drivers/` of the user's data folder), as the linker loads libraries from there alone. A game's log says the
+  package it asked for and, after the Vulkan instance, `vulkan: GPU driver <name> runs: its libraries are mapped`; one
+  the system's driver took the place of (the hook falls back to it on its own) stops the game, saying so. On Android
+  16 the system's `vulkan.adreno.so` is in the process as the app starts, so a package of that soname, Qualcomm's own,
+  loads from a renamed copy (`cmake/adrenotools-unique-soname.patch`). Download Driver fetches them over HTTPS through
+  libcurl, trusting the Mozilla root certificates the build carries (curl's extract of them, `cmake/cacert.cmake`), as
+  Eden does with its own OpenSSL.
 - **Share Log**, in the menu, asks how; its Share Zip saves the message on the screen, the last run's output (`last-run.log`, which the
   menu keeps on every system), the menu's own log and fatal errors (`scarletnx-console-<date>.log`, `scarletnx-error.log`,
   [GUI](../user/gui.md)) and the newest game log, none when it is older than the game played last, as `summary.txt` of

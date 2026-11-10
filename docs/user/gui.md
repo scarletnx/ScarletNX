@@ -186,9 +186,11 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   opens, with the GPU and the driver Eden recommends for it; a repository that failed says why, and Enter fetches the
   lists again. A release's box lists its downloads with their sizes, a GPU maker's own drivers (every GameHub one, and
   one named Qualcomm) marked *proprietary, no license*; the one picked is downloaded, its progress in the note, and
-  added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an Adreno GPU (`/dev/kgsl-3d0`): the page's first line says
-  what this device is and, anywhere else, why games there use the system driver, and Use is refused there with that
-  line. A game whose package does not load stops, saying why. Under them, **edenprobe Mode** (Quick, the default:
+  added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an Adreno GPU (`/dev/kgsl-3d0`) or an
+  Xclipse GPU (a render node of the `amdgpu` kernel driver in `/dev/dri`, for [RADV's port to
+  it](https://github.com/JimVulkan/radv-xclipse), whose package asks Android 14): the page's first line says what this
+  device is and, anywhere else, why games there use the system driver, and Use is refused there with that line. A game
+  whose package does not load stops, saying why. Under them, **edenprobe Mode** (Quick, the default:
   `quick notime cpu graphics`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays
   [edenprobe](../dev/edenprobe.md)'s probes as a game with the GPU driver picked here, from `probe/edenprobe.nro` of the
   Logs folder, in a data folder of its own there (`probe/.scarletnx`: none of your settings, saves or users) with the

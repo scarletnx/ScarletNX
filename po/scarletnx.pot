@@ -2463,7 +2463,7 @@ msgid "GPU Drivers"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Vulkan drivers for Adreno GPUs on Android, Turnip among them: add, remove, and the one games use"
+msgid "Vulkan drivers for Adreno and Xclipse GPUs on Android (Turnip, RADV): add, remove, and the one games use"
 msgstr ""
 
 #: src/gui/main.c

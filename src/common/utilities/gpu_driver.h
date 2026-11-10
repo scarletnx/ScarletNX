@@ -2,9 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* The Vulkan driver packages a player adds, in libadrenotools' format (its tools/ADPKG.md): a zip of a meta.json and the
    driver's libraries, each kept in a folder of its own under the drivers folder, which a game's run loads in place of
-   the system's driver on Android arm64 with an Adreno GPU (nx/runtime/platform/gpu_driver_android.c). What is read and
-   checked the same way by the launcher, which adds them (gui/gpu_driver.c), and by a run, which loads one: their
-   meta.json, their folder's name, whether this device loads them, whether a run's process mapped one, and the
+   the system's driver on Android arm64 with an Adreno or an Xclipse GPU (nx/runtime/platform/gpu_driver_load.c). What
+   is read and checked the same way by the launcher, which adds them (gui/gpu_driver.c), and by a run, which loads one:
+   their meta.json, their folder's name, whether this device loads them, whether a run's process mapped one, and the
    Freedreno variables a run sets for Mesa's Turnip. No SDL, no Android headers: the tests run them anywhere */
 #ifndef SNX_COMMON_GPU_DRIVER_H
 #define SNX_COMMON_GPU_DRIVER_H
@@ -48,12 +48,29 @@ typedef struct {
     const char* arch;   /* "arm64", "x86_64"... */
     int api;            /* Android's API level, 0 elsewhere */
     int kgsl;           /* /dev/kgsl-3d0 is there: an Adreno GPU's kernel driver */
+    int amdgpu;         /* a render node's kernel driver is amdgpu, the name Mesa's RADV asks of it: on Android an
+                           Xclipse GPU's (Samsung's sgpu answers by it) */
+    char render[96];    /* that node and its driver, "/dev/dri/renderD128, kernel driver amdgpu"; without one, the
+                           first render node there is with its driver, or with why it did not answer; "" for none */
     int built;          /* the build carries libadrenotools: Android arm64 */
 } SnxGpuDriverHost;
-/* this device's */
+/* this device's; on Android with no Adreno, its render nodes asked too (snx_gpu_driver_render_node) */
 void snx_gpu_driver_host(SnxGpuDriverHost* host);
-/* 1 when host loads packages; what says so either way, with its values: "This device: Android API 36, arm64, Adreno
-   GPU (/dev/kgsl-3d0): custom drivers load." or the reason they do not */
+/* host's amdgpu and render from /dev/dri's render nodes, each opened to ask DRM its kernel driver's name; none where
+   there is no DRM (a system other than Linux and Android) */
+void snx_gpu_driver_render_node(SnxGpuDriverHost* host);
+/* what a device that loads no package lacks, for the few words a row has; SNX_GPU_DRIVER_LOADS when it loads them */
+typedef enum {
+    SNX_GPU_DRIVER_LOADS,
+    SNX_GPU_DRIVER_NOT_ANDROID, /* another system: libadrenotools hooks Android's Vulkan loader */
+    SNX_GPU_DRIVER_NOT_ARM64,   /* the only ABI libadrenotools builds for */
+    SNX_GPU_DRIVER_NO_GPU,      /* neither an Adreno nor an Xclipse: no package drives the GPU */
+    SNX_GPU_DRIVER_OLD_ANDROID, /* under SNX_GPU_DRIVER_MIN_API */
+    SNX_GPU_DRIVER_NOT_BUILT    /* this build carries no libadrenotools */
+} SnxGpuDriverLack;
+SnxGpuDriverLack snx_gpu_driver_lack(const SnxGpuDriverHost* host);
+/* 1 when host loads packages (snx_gpu_driver_lack); what says so either way, with its values: "This device: Android
+   API 36, arm64, Adreno GPU (/dev/kgsl-3d0): custom drivers load." or the reason they do not */
 int snx_gpu_driver_loads(const SnxGpuDriverHost* host, char* what, size_t size);
 /* 1 when maps, /proc/self/maps' text, has a library mapped from the folder dir or a folder in it, by dir's name or by
    another the kernel gives it: the package a run asked for is the driver its Vulkan loader opened, not the system's in
