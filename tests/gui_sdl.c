@@ -8438,6 +8438,82 @@ int main(int argc, char** argv) {
         free(vpk);
         free(recent_file);
     }
+    /* several files dragged onto a load at once (a game's DLCs): SDL gives a drop a file, between the drag's begin and
+       its end. The first goes to the queue, whose tab then shows; the others of that drag join it behind, each its own
+       compile. A drop on the Compile tab that is no drag's next file opens nothing */
+    {
+        char* original_games = app.games_dir;
+        char* got = snx_path_join(temporary, "driver argv");
+        char* dropped[3];
+        int i;
+        app.games_dir = snx_path_join(temporary, "dlc-games");
+        assert(!snx_mkdirs(app.games_dir));
+        for (i = 0; i < 3; ++i) {
+            char leaf[32];
+            snprintf(leaf, sizeof leaf, "dlc %d.nsp", i + 1);
+            dropped[i] = snx_path_join(temporary, leaf);
+            assert(!snx_write_file(dropped[i], "fixture", 7));
+        }
+        launcher(&app, true);
+        driver_will(got, 3, "the package is no game");
+        point(&app, entry_box(&app, GUI_SWITCH), true);
+        assert(app.menu.view == GUI_LOAD_DROP && app.menu.active == GUI_SWITCH && !app.queue.count);
+        e.type = SDL_EVENT_DROP_BEGIN;
+        e.drop.data = NULL;
+        event(&app, &e);
+        for (i = 0; i < 3; ++i) {
+            e.type = SDL_EVENT_DROP_FILE;
+            e.drop.data = dropped[i];
+            event(&app, &e);
+            if (app.queue.count != i + 1)
+                fprintf(stderr, "drop %d of 3: the queue holds %d, view %d, message \"%s\"\n", i + 1, app.queue.count,
+                        (int)app.menu.view, app.message);
+            assert(app.queue.count == i + 1 && app.menu.view == GUI_LOAD_RECOMPILE && !app.menu.running);
+            assert(same_path(gui_queue_file(&app.queue, i), dropped[i]) && app.queue.job[i].console == GUI_SWITCH);
+        }
+        e.type = SDL_EVENT_DROP_COMPLETE;
+        e.drop.data = NULL;
+        event(&app, &e);
+        assert(gui_queue_running(&app.queue) == 0 && app.queue.job[1].state == GUI_JOB_WAITING);
+        /* the drag ended: a file dropped on the Compile tab is no load's */
+        e.type = SDL_EVENT_DROP_BEGIN;
+        event(&app, &e);
+        e.type = SDL_EVENT_DROP_FILE;
+        e.drop.data = dropped[0];
+        app.message[0] = 0;
+        event(&app, &e);
+        e.type = SDL_EVENT_DROP_COMPLETE;
+        e.drop.data = NULL;
+        event(&app, &e);
+        assert(app.queue.count == 3 && !app.message[0]);
+        { /* each runs, in the order dropped */
+            Uint64 until = SDL_GetTicks() + 30000;
+            while ((gui_queue_running(&app.queue) >= 0 || gui_queue_next(&app.queue) >= 0) && SDL_GetTicks() < until) {
+                pump(&app);
+                SDL_Delay(5);
+            }
+            for (i = 0; i < 3; ++i) assert(app.queue.job[i].state == GUI_JOB_FAILED && app.queue.job[i].status == 3);
+        }
+        while (app.queue.count) queue_drop(&app, 0);
+        key(&app, SDLK_ESCAPE);
+        driver_will(NULL, 0, NULL);
+        remove(got);
+        free(got);
+        app.recent = (GuiRecent){0};
+        recent_changed(&app);
+        app.message[0] = 0;
+        go_tab(&app, GUI_TAB_MENU);
+        launcher(&app, false);
+        app.menu.selected = GUI_LINUX;
+        assert(!snx_remove_tree(app.games_dir));
+        free(app.games_dir);
+        app.games_dir = original_games;
+        app.games_stamp = stamp_now(&app);
+        for (i = 0; i < 3; ++i) {
+            assert(!remove(dropped[i]));
+            free(dropped[i]);
+        }
+    }
     /* GBA: a ROM through scarletnx-agb as a VPK through its driver; then a game a driver made, its folder's .ini saying
        gba: Games shows it ready, Enter plays it in its folder through that driver, and Recent keeps it made */
     {
