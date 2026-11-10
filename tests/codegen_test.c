@@ -296,6 +296,28 @@ static void jump_table_sign_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* A thread stopped in an SVC (a save state's) starts again at the instruction after it, through dispatch: the
+   function has an entry there */
+static void svc_resume_test(void) {
+    static const SnxU32 words[] = {
+        0xD4000161UL, /* svc #0xb */
+        0xD65F03C0UL, /* ret */
+    };
+    unsigned char image[sizeof(words)];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    const SnxFunction* function;
+    size_t i;
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+    setup_program(&program, &module, image, sizeof(image));
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze an SVC's function");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    check(function && has_leader(function, SNX_CODE_BASE + 4), "the instruction after an SVC is a leader");
+    check(snx_codegen_entry(&codegen, SNX_CODE_BASE + 4) == function, "a thread goes on after the SVC in its function");
+    snx_codegen_free(&codegen);
+}
+
 /* A switch whose cases lie in the function after its own (a compiler's cold part, with its own unwind range): they
    are leaders of that function */
 static void jump_table_other_function_test(void) {
@@ -1351,6 +1373,7 @@ int main(void) {
     address_taken_shifted_test();
     jump_table_test();
     jump_table_sign_test();
+    svc_resume_test();
     jump_table_other_function_test();
     jump_table_anchor_test();
     jump_table_anchor_far_test();
