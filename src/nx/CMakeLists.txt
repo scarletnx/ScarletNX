@@ -460,7 +460,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_libraries_off COMMAND snx-test-vulkan -H --pipeline_libraries=0 --vk_validation=1)
     set_tests_properties(vulkan_headless_libraries vulkan_headless_libraries_off PROPERTIES TIMEOUT 120
         ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error" FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
-    set_tests_properties(vulkan_headless_vertex_input_off PROPERTIES TIMEOUT 60
+    set_tests_properties(vulkan_headless_vertex_input_off PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with each draw binding the pipeline linked from its parts, never the one made whole, under the
     # validation layer when it is installed (gpu/vk/pipeline.c, VK_EXT_graphics_pipeline_library; a device that
@@ -470,16 +470,16 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_tests_properties(vulkan_headless_pipeline_library_linked PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
         ENVIRONMENT "SNX_TEST_GPL=linked;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
-    set_tests_properties(vulkan_headless_pipeline_library_whole PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_GPL=whole"
+    set_tests_properties(vulkan_headless_pipeline_library_whole PROPERTIES TIMEOUT 120 ENVIRONMENT "SNX_TEST_GPL=whole"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with guest memory read in place where the device can import it (gpu/vk/uma.c)
     add_test(NAME vulkan_headless_uma COMMAND snx-test-vulkan -H --vk_memory=2)
-    set_tests_properties(vulkan_headless_uma PROPERTIES TIMEOUT 60
+    set_tests_properties(vulkan_headless_uma PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with the write tracking by page protection and its hot pages (write_tracking_hot): each render
     # target's baseline cools its pages, or its write-back keeps the CPU's old bytes over its pixels
     add_test(NAME vulkan_headless_hot COMMAND snx-test-vulkan -H --write_tracking=1 --write_tracking_hot=1)
-    set_tests_properties(vulkan_headless_hot PROPERTIES TIMEOUT 60
+    set_tests_properties(vulkan_headless_hot PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the checks of guest memory read in place again with the write tracking by page protection: the driver takes an
     # import's pages for writing, and amdgpu refuses those a scan left protected (VK_ERROR_INVALID_EXTERNAL_HANDLE)

@@ -234,8 +234,12 @@ jobs:
         with:
           path: .cache/deps
           key: ${{ steps.deps-used.outputs.key }}
+      # vulkan_headless again in the variants that take another path on lavapipe: a change that passes the plain run
+      # and breaks one of them is found here, not on a GPU later. Left out: mesh (lavapipe has no subgroups of 32, so
+      # it is the plain run), descriptor_heaps (heaps are lavapipe's default already), libraries (the plain run under
+      # the validation layer, which pipeline_library_linked has) and descriptor_buffers_uma (each of its two alone)
       - name: Test headless Vulkan and NX runtime
-        run: ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|vulkan_recorder|vulkan_tex_partial|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|vulkan_storage_buffer_keep)$' --output-on-failure
+        run: ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|vulkan_headless_pipeline_library_whole|vulkan_headless_pipeline_library_linked|vulkan_headless_libraries_off|vulkan_headless_vk12|vulkan_headless_descriptor_buffers|vulkan_headless_vertex_input_off|vulkan_headless_uma|vulkan_headless_hot|vulkan_recorder|vulkan_tex_partial|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|vulkan_storage_buffer_keep)$' --output-on-failure
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
         run: clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
