@@ -15,6 +15,7 @@
 #include "nx/gpu/shader/translator.h"
 #include "nx/gpu/shader/write_log.h"
 #include "common/utilities/spirv_emit.h"
+#include "common/utilities/bits.h"
 #include <stdarg.h>
 
 #define MAX_INTERFACES 256
@@ -42,7 +43,7 @@ typedef struct {
     u32 gbuf[16], gbuf_ptr, smap;
     u32 gbuf_f32[16];  /* each global buffer's view as floats, for OpAtomicFAddEXT (atomic_fadd) */
     u32 cas_var;       /* atomic_fadd's loop's word, made at the start where the device has no float atomics */
-    u32 wpages, mbase; /* SNX_VKB_WPAGES and SNX_VKB_MBASE (the GPU mirror's; the write log's bases are in gbuf_mark) */
+    u32 wpages, mbase; /* SNX_VKB_WPAGES, and SNX_VKB_MBASE (the windows of pointer tables, SH_GBUF_TABLE) */
     u32 gkey;   /* the global buffer the last global_address named */
     u32 shared, shared_ptr, shared_words;
     u32 local, local_ptr, local_words; /* LDL and STL's memory: a Function array, made at the start */
@@ -82,6 +83,7 @@ typedef struct {
        wrote its address, then (2 (n + 1) on) whether the address came from memory (track_step) */
     u32* addr_key;
     u32 dyn_keys[16], ndyn_keys; /* the keys an address may be one of where they met (track_conflict) */
+    u32 table_banks;             /* the banks whose pointer tables (SH_GBUF_TABLE) addresses come from */
     u32* jump_first; /* by instruction, the first of the BRAs and BRX that go to it in jump_from (n + 1 words), and */
     u32* jump_from;  /* those instructions: made the first time reg_const_at needs them (flow_sources) */
     u32 cur;         /* the instruction being written */
@@ -806,6 +808,23 @@ static u32 gbuf_base(Ctx* c, u32 key, int wide) {
         fail(c, "global address whose base is in constant buffer %u", SH_GBUF_BANK(parent));
         return 0;
     }
+    if (SH_GBUF_TABLE(key)) { /* the window's base, at its buffer's slot of SNX_VKB_MBASE */
+        int slot = -1;
+        for (int i = 0; i < c->si->ngbuf; i++)
+            if (c->si->gbuf_cbuf_off[i] == key) slot = i;
+        if (slot < 0) return 0;
+        if (!c->mbase) {
+            c->mbase = spv_emit_uniform_vec4_array(&c->e, c->t_v4u, c->t_u32, c->t_u32, (u32)shader_vk_set(c->stage),
+                                                   SNX_VKB_MBASE, 16, &c->cbuf_ptr);
+            add_interface(c, c->mbase);
+        }
+        u32 low =
+            spv_emit_uniform_component(&c->e, c->cbuf_ptr, c->mbase, c->zero, cu(c, (u32)slot), c->zero, c->t_u32);
+        return wide ? pair64(c, low,
+                             spv_emit_uniform_component(&c->e, c->cbuf_ptr, c->mbase, c->zero, cu(c, (u32)slot),
+                                                        cu(c, 1), c->t_u32))
+                    : low;
+    }
     if (SH_GBUF_INDIRECT(key)) {
         u32 buffer = gbuf_slot(c, parent, 0), cell = cu(c, SH_GBUF_CELL(key));
         if (!buffer) return 0;
@@ -844,34 +863,45 @@ static u32 global_address(Ctx* c, const Sm86Insn* in, int uniform_form, int writ
     c->gkey = key;
     return gbuf_slot(c, key, write);
 }
-/* An LDG or STG whose address is a pointer that the program loaded from memory, which no constant buffer word holds, as one
-   game's vertex program that clears the indirect draws a table of pointers names. As the Maxwell translator does
-   (shader_global_dynamic, after Eden's DefineGlobalMemoryFunctions), its 64-bit address is compared with each global
-   buffer of the program when it runs, and the first that holds it takes the access. A buffer is the 16 MiB that the
-   renderer binds from the address its word holds (vk_gbuf_desc). A load from none of them reads 0 and a store there
-   is dropped, where the console's GPU reaches all of its address space. The address: a register, a pair with bit 90
-   in the uniform form or bit 72 in the other, plus the uniform register (a pair with bit 72) of the uniform form,
-   plus the signed 24-bit offset. Its buffers: those of the program's accesses, and the indirect ones an address may be
-   one of (track_conflict): one game's compute programs pick one of two pointers they load with a predicate, then index
-   the table it names */
+/* An LDG, STG, ATOMG or RED whose address is a pointer that the program loaded from memory, which no constant buffer
+   word holds, as one game's vertex program that clears the indirect draws a table of pointers names. As the Maxwell
+   translator does (shader_global_dynamic, after Eden's DefineGlobalMemoryFunctions), its 64-bit address is compared
+   with each global buffer of the program when it runs, and the first whose bound bytes hold it takes the access: the
+   renderer binds the memory mapped from the address its word holds, at most 16 MiB (vk_gbuf_desc), and its length is
+   the buffer's (OpArrayLength), so an address past a shorter one goes on to the next. A load from none of them reads 0
+   and a store there is dropped, where the console's GPU reaches all of its address space; an atomic does its
+   operation in the buffer that holds the address and returns what was there, 0 from none. The address: a register,
+   a pair with bit 90 in the uniform form of LDG and STG or bit 72 in the others, plus the uniform register (a pair
+   with bit 72) of the uniform forms (LDG's at 32, STG's and ATOMG's at 64), plus the signed 24-bit offset. RED adds
+   the uniform register at 64 only with bit 91: one game's mesh programs' RED of [UR4] have it, and its culling
+   programs' RED of a register pair have bits 64-71 0 without it, where an unused uniform register would be URZ (63).
+   Its buffers: those of the program's accesses, the indirect ones an address may be one of (track_conflict): one
+   game's compute programs pick one of two pointers they load with a predicate, then index the table it names, and the
+   windows of a pointer table (SH_GBUF_TABLE): its culling programs count and fill their lists at pointers they load
+   from cbuf 4 */
+enum { DYN_STORE, DYN_LOAD, DYN_ATOMIC };
 static void mem_load(Ctx* c, u32 buffer, u32 address, u32 type, u32 dst, int uniform_dst);
 static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data);
-static void global_dynamic(Ctx* c, const Sm86Insn* in, int uniform_form, int load) {
-    u32 type = sm86_field(in, 73, 3), words = type == 5 ? 2 : type == 6 ? 4 : 1;
+static u32 atomic_fadd(Ctx* c, u32 buffer, u32 address, u32 data);
+static void global_dynamic(Ctx* c, const Sm86Insn* in, int kind, u32 opcode, int fadd) {
+    int op = in->op, ldst_uniform = op == SM86_LDG || op == SM86_STG;
+    u32 type = sm86_field(in, 73, 3), words = kind == DYN_ATOMIC ? 1 : type == 5 ? 2 : type == 6 ? 4 : 1;
     u32 reg = sm86_field(in, 24, 8), imm = sm86_field(in, 40, 24);
-    u32 hi = sm86_field(in, uniform_form ? 90 : 72, 1) && reg < SM86_RZ ? rd(c, reg + 1) : c->zero;
+    u32 hi = sm86_field(in, ldst_uniform ? 90 : 72, 1) && reg < SM86_RZ ? rd(c, reg + 1) : c->zero;
     u32 address = pair64(c, rd(c, reg), hi);
     u64 bias = imm & 0x800000u ? (u64)imm | 0xffffffffff000000ull : imm;
     address = op2(c, SPV_OP_I_ADD, u64_type(c), address, c64(c, bias));
-    if (uniform_form) {
-        u32 ur = sm86_field(in, in->op == SM86_LDG ? 32 : 64, 6);
+    if (ldst_uniform || op == SM86_ATOMG || (op == SM86_RED && sm86_field(in, 91, 1))) {
+        u32 ur = sm86_field(in, op == SM86_LDG ? 32 : 64, 6);
         if (ur < SM86_URZ) {
             u32 uhi = sm86_field(in, 72, 1) && ur + 1 < SM86_URZ ? urd(c, ur + 1) : c->zero;
             address = op2(c, SPV_OP_I_ADD, u64_type(c), address, pair64(c, urd(c, ur), uhi));
         }
     }
-    if (load)
+    int returns = kind == DYN_LOAD || (kind == DYN_ATOMIC && op != SM86_RED);
+    if (returns)
         for (u32 k = 0; k < words && in->dst + k < SM86_RZ; k++) wr(c, in->dst + k, c->zero);
+    u32 data = kind == DYN_ATOMIC ? rd(c, sm86_field(in, 32, 8)) : 0;
     /* the program's buffers, each key once, in the order of their first access, then the candidates of addresses
        that met */
     u32 keys[16], nkeys = 0;
@@ -883,23 +913,31 @@ static void global_dynamic(Ctx* c, const Sm86Insn* in, int uniform_form, int loa
     }
     u32 merges[16];
     for (u32 k = 0; k < nkeys; k++) {
-        u32 buffer = gbuf_slot(c, keys[k], !load);
+        u32 buffer = gbuf_slot(c, keys[k], kind != DYN_LOAD);
         if (!buffer) return;
+        if (kind == DYN_ATOMIC) mark_read(c, keys[k]);
         u32 base = gbuf_base(c, keys[k], 1);
         if (!base) return;
         u32 relative = op2(c, SPV_OP_I_SUB, u64_type(c), address, base);
-        u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, relative, c64(c, 16u << 20));
+        u32 length = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                                     SPV(&c->e, 68 /* OpArrayLength */, c->t_u32, buffer, 0), cu(c, 2));
+        u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, relative, to64(c, length));
         u32 then = spv_emit_id(&c->e), other = spv_emit_id(&c->e);
         merges[k] = spv_emit_id(&c->e);
         spv_emit_selection_merge(&c->e, merges[k]);
         spv_emit_branch_conditional(&c->e, inside, then, other);
         spv_emit_label(&c->e, then);
         u32 offset = lo32(c, relative);
-        if (load)
+        if (kind == DYN_LOAD)
             mem_load(c, buffer, offset, type, in->dst, 0);
-        else {
+        else if (kind == DYN_STORE) {
             mark_written(c, keys[k], offset, type < 2 ? 1 : type < 4 ? 2 : type == 4 ? 4 : type == 5 ? 8 : 16);
             mem_store(c, buffer, offset, type, sm86_field(in, 32, 8));
+        } else {
+            mark_written(c, keys[k], offset, 4);
+            u32 old = fadd ? atomic_fadd(c, buffer, offset, data)
+                           : spv_emit_atomic_u32(&c->e, c->t_u32, opcode, mem_ptr(c, buffer, offset, 0), data);
+            if (returns && in->dst < SM86_RZ) wr(c, in->dst, old);
         }
         spv_emit_branch(&c->e, merges[k]);
         spv_emit_label(&c->e, other);
@@ -912,12 +950,14 @@ static void global_dynamic(Ctx* c, const Sm86Insn* in, int uniform_form, int loa
 /* what track_globals follows at an instruction: each register's key (a global buffer's SH_GBUF_* + 1, 0 for none),
    whether it holds that buffer's base itself with nothing added (where the program loads a pointer from, an
    indirect buffer's cell), and whether its value came from memory (a pointer the program loaded, through moves and
-   arithmetic: global_dynamic's), then the opcode that last wrote it (for the message of an address without a key).
-   The keys and flags first: the flow settles on them */
+   arithmetic: global_dynamic's), and the bank + 1 of the pointer table it came from (SH_GBUF_TABLE), then the opcode
+   that last wrote it (for the message of an address without a key). The keys and flags first: the flow settles on
+   them */
 typedef struct {
     u32 rkey[256], ukey[64];
     u8 rexact[256], uexact[64];
     u8 rdyn[256], udyn[64];
+    u8 rtab[256], utab[64];
     u16 rsrc[256], usrc[64];
 } TrackState;
 #define TRACK_KEYS offsetof(TrackState, rsrc)
@@ -945,6 +985,11 @@ static int src_dyn(const TrackState* s, const Sm86Src* x) {
            : x->kind == SM86_SRC_UREG && x->reg < SM86_URZ ? s->udyn[x->reg]
                                                            : 0;
 }
+static u32 src_tab(const TrackState* s, const Sm86Src* x) {
+    return x->kind == SM86_SRC_REG && x->reg < SM86_RZ     ? s->rtab[x->reg]
+           : x->kind == SM86_SRC_UREG && x->reg < SM86_URZ ? s->utab[x->reg]
+                                                           : 0;
+}
 /* a register (uniform when u) takes a key: a guarded write over an indirect key, or of one over another key, leaves it
    as either, a candidate pair for global_dynamic */
 static void track_write(Ctx* c, TrackState* s, int u, u32 d, u32 key, int exact, int dyn, u16 op, int always) {
@@ -966,13 +1011,17 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
     u32 n1 = c->n + 1;
     if (op == SM86_LDG || op == SM86_STG || op == SM86_LDG_NOU || op == SM86_STG_NOU || op == SM86_ATOMG ||
         op == SM86_ATOMG_NOU || op == SM86_RED) {
-        int uniform_form = op == SM86_LDG || op == SM86_STG || op == SM86_ATOMG || op == SM86_RED;
+        /* RED adds its uniform register only with bit 91 (global_dynamic) */
+        int uniform_form =
+            op == SM86_LDG || op == SM86_STG || op == SM86_ATOMG || (op == SM86_RED && sm86_field(in, 91, 1));
         u32 reg = sm86_field(in, 24, 8), ur = uniform_form ? sm86_field(in, op == SM86_LDG ? 32 : 64, 6) : SM86_URZ;
         u32 k = ur < SM86_URZ && s->ukey[ur] ? s->ukey[ur] : reg < SM86_RZ ? s->rkey[reg] : 0;
         c->addr_key[i] = k;
         c->addr_key[n1 + i] = ur < SM86_URZ && s->ukey[ur] ? s->usrc[ur] : reg < SM86_RZ ? s->rsrc[reg] : 0;
         if (!k && ur < SM86_URZ && !s->ukey[ur] && s->usrc[ur]) c->addr_key[n1 + i] = s->usrc[ur];
         c->addr_key[2 * n1 + i] = (ur < SM86_URZ && s->udyn[ur]) || (reg < SM86_RZ && s->rdyn[reg]);
+        u32 tab = ur < SM86_URZ && s->utab[ur] ? s->utab[ur] : reg < SM86_RZ ? s->rtab[reg] : 0;
+        if (tab) c->table_banks |= 1u << (tab - 1);
         if (op == SM86_LDG || op == SM86_LDG_NOU || op == SM86_ATOMG || op == SM86_ATOMG_NOU) {
             /* the words loaded are data: one, or two or four for an LDG.64 or .128, from memory */
             u32 type = sm86_field(in, 73, 3), words = op == SM86_ATOMG || op == SM86_ATOMG_NOU ? 1
@@ -991,17 +1040,20 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
             for (u32 w = 0; w < words && in->dst + w < SM86_RZ; w++) {
                 u32 key = cell && !(w & 1) ? (cell + (w / 2 << 21)) + 1 : 0;
                 track_write(c, s, 0, in->dst + w, key, key != 0, !key, (u16)op, always);
+                s->rtab[in->dst + w] = 0;
             }
         }
         return;
     }
     if (op == SM86_LDS || op == SM86_LDL) { /* data from memory, as a load from global memory's */
         u32 type = sm86_field(in, 73, 3), words = type == 5 ? 2 : type == 6 ? 4 : 1;
-        for (u32 w = 0; w < words && in->dst + w < SM86_RZ; w++)
+        for (u32 w = 0; w < words && in->dst + w < SM86_RZ; w++) {
             track_write(c, s, 0, in->dst + w, 0, 0, 1, (u16)op, always);
+            s->rtab[in->dst + w] = 0;
+        }
         return;
     }
-    u32 key = 0;
+    u32 key = 0, tab = 0;
     int found = 0, exact = 0, dyn = 0;
     if (op == SM86_ULDC || (op == SM86_LDC && sm86_field(in, 24, 8) == SM86_RZ))
         key = (sm86_field(in, 54, 5) << 16 | sm86_field(in, 38, 16)) + 1, found = 1, exact = 1;
@@ -1009,13 +1061,13 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
         const Sm86Src* b = &in->b;
         if (op == SM86_R2UR) {
             u32 r = sm86_field(in, 24, 8) & 255;
-            key = s->rkey[r], exact = s->rexact[r], dyn = s->rdyn[r];
+            key = s->rkey[r], exact = s->rexact[r], dyn = s->rdyn[r], tab = s->rtab[r];
         } else if (b->kind == SM86_SRC_CBUF && !b->bindless)
             key = (u32)(b->bank << 16 | b->value) + 1, exact = 1;
         else if (b->kind == SM86_SRC_REG && b->reg < SM86_RZ)
-            key = s->rkey[b->reg], exact = s->rexact[b->reg], dyn = s->rdyn[b->reg];
+            key = s->rkey[b->reg], exact = s->rexact[b->reg], dyn = s->rdyn[b->reg], tab = s->rtab[b->reg];
         else if (b->kind == SM86_SRC_UREG && b->reg < SM86_URZ)
-            key = s->ukey[b->reg], exact = s->uexact[b->reg], dyn = s->udyn[b->reg];
+            key = s->ukey[b->reg], exact = s->uexact[b->reg], dyn = s->udyn[b->reg], tab = s->utab[b->reg];
         found = 1;
     } else if ((op == SM86_IADD3 || op == SM86_UIADD3 || op == SM86_IMAD || op == SM86_UIMAD ||
                 op == SM86_IMAD_WIDE || op == SM86_UIMAD_WIDE || op == SM86_LEA || op == SM86_ULEA) &&
@@ -1049,15 +1101,29 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
         case SM86_IMAD_WIDE:
         case SM86_UIMAD_WIDE:
         case SM86_LOP3:
-        case SM86_ULOP3: dyn |= src_dyn(s, &in->c); /* fall through */
+        case SM86_ULOP3:
+            dyn |= src_dyn(s, &in->c);
+            if (!tab) tab = src_tab(s, &in->c);
+            /* fall through */
         case SM86_LEA:
         case SM86_ULEA:
         case SM86_SEL:
-        case SM86_USEL: dyn |= src_dyn(s, &in->a) || src_dyn(s, &in->b); break;
+        case SM86_USEL:
+            dyn |= src_dyn(s, &in->a) || src_dyn(s, &in->b);
+            if (!tab) tab = src_tab(s, &in->a) ? src_tab(s, &in->a) : src_tab(s, &in->b);
+            break;
         case SM86_SHF:
-        case SM86_USHF: dyn |= src_dyn(s, &in->a) || src_dyn(s, &in->c); break;
+        case SM86_USHF:
+            dyn |= src_dyn(s, &in->a) || src_dyn(s, &in->c);
+            if (!tab) tab = src_tab(s, &in->a) ? src_tab(s, &in->a) : src_tab(s, &in->c);
+            break;
         default: break;
     }
+    /* a compute program's LDC.64 at an offset it computes: a pointer from the bank's table (SH_GBUF_TABLE), whose
+       windows the addresses made from it are compared with (track_globals adds them once the flow settles) */
+    if (op == SM86_LDC && sm86_field(in, 24, 8) < SM86_RZ && sm86_field(in, 73, 3) == 5 && c->stage == ST_CS &&
+        sm86_field(in, 54, 5) < 18)
+        dyn = 1, tab = sm86_field(in, 54, 5) + 1;
     /* the destination: the key, or none for any other write (the high word of a pair takes none either) */
     u32 d = uniform || op == SM86_ULDC || op == SM86_UMOV || op == SM86_R2UR ? sm86_field(in, 16, 6) : in->dst;
     int to_uniform = uniform || op == SM86_ULDC || op == SM86_R2UR || op == SM86_S2UR || op == SM86_ULDC_IDX;
@@ -1069,11 +1135,15 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
     if (!found) key = 0, exact = 0;
     if (to_uniform) {
         track_write(c, s, 1, d, key, exact, dyn, (u16)op, always);
-        if (wide && d + 1 < SM86_URZ) s->ukey[d + 1] = 0, s->uexact[d + 1] = 0, s->udyn[d + 1] = (u8)dyn;
+        if (d < SM86_URZ) s->utab[d] = (u8)tab;
+        if (wide && d + 1 < SM86_URZ)
+            s->ukey[d + 1] = 0, s->uexact[d + 1] = 0, s->udyn[d + 1] = (u8)dyn, s->utab[d + 1] = (u8)tab;
     } else if ((sm86_ops[op].kind == SM86_K_ALU || op == SM86_LDC || op == SM86_S2R || op == SM86_CS2R) &&
                op != SM86_FSETP && op != SM86_ISETP && op != SM86_DSETP && op != SM86_HSETP2 && op != SM86_R2P) {
         track_write(c, s, 0, d, key, exact, dyn, (u16)op, always);
-        if (wide && d + 1 < SM86_RZ) s->rkey[d + 1] = 0, s->rexact[d + 1] = 0, s->rdyn[d + 1] = (u8)dyn;
+        if (d < SM86_RZ) s->rtab[d] = (u8)tab;
+        if (wide && d + 1 < SM86_RZ)
+            s->rkey[d + 1] = 0, s->rexact[d + 1] = 0, s->rdyn[d + 1] = (u8)dyn, s->rtab[d + 1] = (u8)tab;
     }
 }
 /* BRX, and BRXU, which takes its index from a uniform register */
@@ -1087,8 +1157,10 @@ static int flow_sources(Ctx* c);
    cases wrote over a register that the code after them had from before them, on every path */
 /* where two paths meet: the keys they agree on, exact where both are; dyn where either is, or where an indirect key
    meets another (track_conflict) */
-static void track_meet(Ctx* c, u32* key, u8* exact, u8* dyn, const u32* key2, const u8* exact2, const u8* dyn2, u32 n) {
+static void track_meet(Ctx* c, u32* key, u8* exact, u8* dyn, u8* tab, const u32* key2, const u8* exact2, const u8* dyn2,
+                       const u8* tab2, u32 n) {
     for (u32 r = 0; r < n; r++) {
+        if (!tab[r]) tab[r] = tab2[r]; /* a pointer from a table on either path; two tables keep the first */
         if (key[r] != key2[r]) {
             if (key_indirect(key[r]) || key_indirect(key2[r])) {
                 track_conflict(c, key[r], key2[r]);
@@ -1147,8 +1219,10 @@ static int track_globals(Ctx* c) {
                     *s = out[p];
                     continue;
                 }
-                track_meet(c, s->rkey, s->rexact, s->rdyn, out[p].rkey, out[p].rexact, out[p].rdyn, 256);
-                track_meet(c, s->ukey, s->uexact, s->udyn, out[p].ukey, out[p].uexact, out[p].udyn, 64);
+                track_meet(c, s->rkey, s->rexact, s->rdyn, s->rtab, out[p].rkey, out[p].rexact, out[p].rdyn,
+                           out[p].rtab, 256);
+                track_meet(c, s->ukey, s->uexact, s->udyn, s->utab, out[p].ukey, out[p].uexact, out[p].udyn,
+                           out[p].utab, 64);
             }
             if (!preds) continue; /* nothing reaches it yet */
             for (u32 i = first; i < start[b + 1]; i++) track_step(c, i, s);
@@ -1156,6 +1230,21 @@ static int track_globals(Ctx* c) {
             out[b] = *s;
             reached[b] = 1;
         }
+    }
+    /* each pointer table's windows: the buffer slots the program's other buffers leave, shared among its tables */
+    if (ok && c->table_banks) {
+        u32 others[16], nothers = 0, ntables = snx_popcount64(c->table_banks);
+        for (u32 i = 0; i < n + c->ndyn_keys; i++) {
+            u32 key = i < n ? c->addr_key[i] : c->dyn_keys[i - n] + 1, seen = 0;
+            if (!key) continue;
+            for (u32 k = 0; k < nothers; k++) seen |= others[k] == key;
+            if (!seen && nothers < 16) others[nothers++] = key;
+        }
+        u32 windows = nothers + ntables <= 16 ? (16 - nothers) / ntables : 1;
+        if (windows > SH_GBUF_TABLE_MAX) windows = SH_GBUF_TABLE_MAX;
+        for (u32 b = 0; b < 18; b++)
+            for (u32 w = 0; (c->table_banks >> b & 1) && w < windows && c->ndyn_keys < 16; w++)
+                c->dyn_keys[c->ndyn_keys++] = SH_GBUF_TABLE_KEY(b, w);
     }
     free(s);
     free(reached);
@@ -3645,7 +3734,12 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 fail(c, "%s of type %u, operation %u", sm86_ops[op].name, type, how);
                 return;
             }
-            u32 address, buffer = global_address(c, in, op != SM86_ATOMG_NOU, 1, &address);
+            if (!c->addr_key[c->cur] && c->addr_key[2 * (c->n + 1) + c->cur]) {
+                global_dynamic(c, in, DYN_ATOMIC, opcode, fadd);
+                return;
+            }
+            u32 address, buffer = global_address(c, in, op == SM86_ATOMG || (op == SM86_RED && sm86_field(in, 91, 1)),
+                                                 1, &address);
             if (!buffer) return;
             mark_read(c, c->gkey);
             mark_written(c, c->gkey, address, 4);
@@ -4036,7 +4130,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             int load = op == SM86_LDG || op == SM86_LDG_NOU;
             /* a pointer from memory, or derived from one, that no buffer key names */
             if (!c->addr_key[c->cur] && c->addr_key[2 * (c->n + 1) + c->cur]) {
-                global_dynamic(c, in, op == SM86_LDG || op == SM86_STG, load);
+                global_dynamic(c, in, load ? DYN_LOAD : DYN_STORE, 0, 0);
                 return;
             }
             u32 address, buffer = global_address(c, in, op == SM86_LDG || op == SM86_STG, !load, &address);

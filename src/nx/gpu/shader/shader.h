@@ -75,7 +75,20 @@ static inline int shader_same_indexed_kind(const ShTex* tex, u64 int_mask, u64 s
    stored at byte SH_GBUF_CELL (bits 21-30, in 8-byte units) of the buffer whose address the constant buffer word of
    bits 0-20 holds (SH_GBUF_PARENT, itself one of the program's buffers). One game's material programs load pointers
    from a table whose address is in cbuf 0, then index the tables they point to (vk/render.c binds the memory mapped
-   from the pointer, which it reads from guest memory, as a bare address's) */
+   from the pointer, which it reads from guest memory, as a bare address's).
+   A compute program may load a pointer from a constant buffer at an offset it computes (LDC.64 with a register): one
+   of the bank's words, which one known only when it runs. Such a pointer may be in any of the bank's windows
+   (SH_GBUF_TABLE, bit 30 with bit 31 clear): window SH_GBUF_TABLE_WINDOW (bits 21-24) of bank SH_GBUF_BANK, the
+   offset 0, as many windows as the buffer slots the program's other buffers leave. The renderer reads the bank as it
+   binds the dispatch, takes its words that map as pointers, and makes a window of the memory mapped from the lowest
+   of them, the next from the lowest past that one's end, and so on (vk/compute.c). The program reads each window's
+   base from the uniform buffer at SNX_VKB_MBASE, the 64-bit base at the window's buffer slot. One game's culling
+   programs keep the lists they fill, their counts and their draws' records in such a table in cbuf 4: 20 pointers
+   into 12 mappings */
+#define SH_GBUF_TABLE(d)           (((d) >> 30) == 1u)
+#define SH_GBUF_TABLE_KEY(bank, w) (1u << 30 | (u32)(w) << 21 | (u32)(bank) << 16)
+#define SH_GBUF_TABLE_WINDOW(d)    ((d) >> 21 & 15u)
+#define SH_GBUF_TABLE_MAX          16u
 #define SH_GBUF_BANK(d)     ((d) >> 16 & 31u)
 #define SH_GBUF_OFFSET(d)   ((d) & 0xFFFFu)
 #define SH_GBUF_INDIRECT(d) ((d) >> 31)
@@ -304,9 +317,9 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
    bytes in (gbuf_mark, SH_WLOG_*). With the GPU mirror, a pass after the dispatch puts the log's bits in the mirror's
    mask (vk/mirror.c vk_mirror_fold) */
 #define SNX_VKB_WPAGES   SNX_VKB_SMAP
-/* compute, the fragment program's binding, which no compute program has: the mask's bases and the buffers' lengths, a
-   uniform buffer of 16 bases then 16 lengths, 4 a vec4 (the GPU mirror's, mirror.c; the write log has its bases in the
-   program: gbuf_mark) */
+/* compute, the fragment program's binding, which no compute program has otherwise: the windows of its pointer tables
+   (SH_GBUF_TABLE), a uniform buffer of 16 vec4 of words, one for each global buffer slot: the low and high words of
+   the window's base and its length in bytes */
 #define SNX_VKB_MBASE    SNX_VKB_RS
 /* The write log: for each logged global buffer (ShaderInfo.gbuf_mark), a part of SH_WLOG_PART words. Its first
    SH_WPAGE_SLOT words are flags, word j set to 1 by any store to the 4 KiB window j of the binding; then a bit for each
