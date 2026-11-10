@@ -10,7 +10,7 @@
 #include "nx/runtime/ini.h"
 #include <stddef.h>
 
-/* the actions, in F1's order */
+/* the actions, in the order hotkey_find tries them: a key two of them share does the first's */
 enum {
     HOTKEY_HELP,
     HOTKEY_MENU,
@@ -18,6 +18,7 @@ enum {
     HOTKEY_FPS_LIMIT,
     HOTKEY_THREAD_DUMP,
     HOTKEY_SHOWCASE,
+    HOTKEY_TV_MODE,
     HOTKEY_SAVE_STATE,
     HOTKEY_LOAD_STATE,
     HOTKEY_NEXT_SLOT,

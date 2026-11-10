@@ -24,7 +24,8 @@ A game keeps its settings in its `.ini` (`recompiled/<id>/<id>.ini`), a section 
 Settings show a group for each section ([GUI launcher](gui.md)).
 
 `Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
-Restart for `docked` (`Auto` follows the host's power while the game runs), `fullscreen`, `language`, `resolution`,
+Restart for `docked`'s value in the `.ini` (Auto follows the host's power while the game runs, and the game's menu's
+TV mode row and `hotkey_tv_mode` change the mode live), `fullscreen`, `language`, `resolution`,
 `anisotropy`, `memory_gb`, `memory_fit_mode`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
 `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `pipeline_libraries`, `prepare_shaders`, `compress_shader_cache`,
 `compress_prepared_shaders`, `jit_threads`, `vertex_input_dynamic_state`, `astc_mode`, and
@@ -51,7 +52,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `docked` | `1` | `1` is TV mode, `0` handheld mode (1280x720), `2` Auto: TV mode while the host is on its charger, handheld mode on its battery. Auto switches while the game runs |
+| `docked` | `1` | `1` is TV mode, `0` handheld mode (1280x720), `2` Auto: TV mode while the host is on its charger, handheld mode on its battery. Auto switches while the game runs. The game's menu's **TV mode** row and `hotkey_tv_mode` cycle it while the game runs without changing the `.ini` |
 | `fullscreen` | `0` | `1` starts fullscreen, except in timed test runs (`--seconds`, `--frames`). `-f` or `--fullscreen=0` sets it for one run. F11 or Alt+Enter switches without changing it. A 3DS game takes it too (`--fullscreen=1`, not in `--seconds` or `--max-blocks` runs), with the same keys |
 | `language` | `1` | The game's language, English (US). The `.ini` lists the others, `0` to `17`. One the runtime doesn't know is English (US) |
 | `showcase` | `0` | `1` draws player 1's buttons and sticks, as the game gets them, and the frames a second in a corner of the window, for a video. F6 turns it on and off |
@@ -90,7 +91,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `pipeline_threads` | `0` | Threads that make the GPU's new pipelines while the game goes on, and those of earlier runs before it starts with `prepare_shaders=2`. `0` uses all the computer's threads but two, two to twelve. `1` to `32` is that many. Past the first two they run at the system's low priority (nice +10 on Linux and Android, the utility QoS class on macOS and iOS, below normal on Windows, the idle class where FreeBSD allows it), so more make a first run's new pipelines sooner and the game's own threads still go first |
 | `async_pipelines` | `0` | `1` skips what a new shader draws while its pipeline is made, where the game would otherwise pause until it is ready. The game no longer stops where a new shader first appears, and the things that shader draws show up a few frames later. `0` waits for every pipeline. A 3DS game takes it too, and `pipeline_threads` (the launcher passes them to `scarletnx-3ds` as `--async_pipelines=1` and `--pipeline_threads=N`) |
 | `pipeline_libraries` | `1` | `1` makes a new pipeline from parts of its shaders that compile once, where the GPU has graphics pipeline libraries, and makes an optimized one in the background. A new state of a known shader then costs a link of a few milliseconds, not a compile. `0` compiles each pipeline whole |
-| `prepare_shaders` | `2` | Prepares the shaders the game ships in its files and executables ahead of time, so the game's draws needn't make them and it stutters less. They are prepared again after ScarletNX, the GPU or its driver is updated. `0` (Off) makes each shader only when the game first draws with it. `1` (While playing) prepares them in the background, and the game uses them once all are ready. `2` (Before starting) prepares them behind a loading screen in the launcher theme's look, which also waits for the shader cache of earlier sessions, so an opening movie doesn't stutter. A key that types, an arrow or the keypad, a gamepad button other than Home, or a tap starts the game at once, and the rest is prepared while it runs. Esc quits (on Android, back opens the menu, whose Exit quits). F2 or a gamepad's Home opens the menu, and F11 or Alt+Enter switches fullscreen, without starting the game. The screen shows only when the wait passes a quarter second, its words are in English, and a timed run (`--seconds`) starts its clock after it |
+| `prepare_shaders` | `2` | Prepares the shaders the game ships in its files and executables ahead of time, so the game's draws needn't make them and it stutters less. They are prepared again after ScarletNX, the GPU or its driver is updated. `0` (Off) makes each shader only when the game first draws with it. `1` (While playing) prepares them in the background, and the game uses them once all are ready. `2` (Before starting) prepares them behind a loading screen in the launcher theme's look, which also waits for the shader cache of earlier sessions, so an opening movie doesn't stutter. A key that types, an arrow or the keypad, a gamepad button other than Home, or a tap starts the game at once, and the rest is prepared while it runs. Esc twice quits (on Android, back opens the menu, whose Exit quits). F2 or a gamepad's Home opens the menu, and F11 or Alt+Enter switches fullscreen, without starting the game. The screen shows only when the wait passes a quarter second, its words are in English, and a timed run (`--seconds`) starts its clock after it |
 | `compress_shader_cache` | `1` | `1` packs the shaders and pipelines saved from earlier sessions (`shader_cache/<id>.<driver>.vkshaders`) with zstd, about 70 shaders at a time: about a quarter of the space, a few milliseconds more to read when the game starts, and up to 7 ms on the thread that made the last of each 70 new shaders. `0` saves them as they are made. What is packed already is read either way |
 | `compress_prepared_shaders` | `1` | `1` packs each shader `prepare_shaders` makes (`shader_cache/<id>.<driver>.vkshipped`) with zstd on its own: about a quarter of the space, about 50 microseconds more for each as it is prepared, and 15 the first time a draw uses it. `0` saves them as they are made. What is packed already is read either way |
 | `nce` | `1` | On an AArch64 Linux host or Android 10 and later on arm64, `1` runs the game's 64-bit code natively on the host's CPU (native code execution), with the words that cannot run as they are patched: SVCs, the TLS registers, the counter registers, and the exclusives made ordered, as Eden patches them. The recompile then makes no code ahead of time. `0` recompiles the code. Other hosts, 32-bit games and, on Android, games of the 36-bit address space always recompile. The next recompile takes it ([NCE](../platforms/nx/nce.md)) |
@@ -143,6 +144,7 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 | `hotkey_fps_limit` | `F4` | Turns the FPS limit off and back on |
 | `hotkey_thread_dump` | `F5` | Writes every thread's state to the log |
 | `hotkey_showcase` | `F6` | Turns `showcase` on and off |
+| `hotkey_tv_mode` | `Ctrl+D` | Cycles the console's TV mode while the game runs: On, Off and Auto, and round. The game's menu's **TV mode** row does the same, and neither changes `docked` |
 | `hotkey_save_state` | `F7` | Saves the game's state to the selected slot |
 | `hotkey_load_state` | `F8` | Loads the selected slot's state |
 | `hotkey_next_slot` | `F9` | Selects the next save state slot |
@@ -153,7 +155,7 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 | `hotkey_stats` | `F12` | Turns `stats` on and off |
 | `hotkey_capture` | `Ctrl+Shift+F12` | Captures the next frame with RenderDoc while RenderDoc is in the game (`renderdoc`) |
 | `hotkey_mouse` | `Ctrl+G` | Lets the mouse go from a game that holds it (an Ounce game's Joy-Con mouse mode), and holds it again |
-| `hotkey_quit` | `Escape` | Quits the game |
+| `hotkey_quit` | `Escape` | Quits the game, asked twice: the first press warns, and a second within three seconds quits |
 
 ## Network
 

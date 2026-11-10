@@ -68,14 +68,23 @@ extern int g_opt_fps;                              /* atomic: the game's threads
 void fps_limit_text(int fps, char* out, size_t n); /* g_opt_fps as fps_limit's value: "game", "0", "30"... */
 
 /* The TV mode in effect now: 0 handheld, 1 TV (docked). docked's Auto asks the host's power state, and
-   options_tv_mode_update keeps g_settings.tv_mode at the mode it picks */
-static inline int snx_tv_mode(void) { return g_settings.tv_mode; }
+   options_tv_mode_update keeps g_settings.tv_mode at the mode it picks. The game's threads read it, so it is atomic */
+static inline int snx_tv_mode(void) { return __atomic_load_n(&g_settings.tv_mode, __ATOMIC_RELAXED); }
 /* docked's set function: 0 Off, 1 On, 2 Auto, which picks the mode in effect now */
 void options_tv_mode_set(const IniOpt* o, const char* v);
 /* starts the host's power watcher and logs the mode Auto picks, once the window backend is up */
 void options_tv_mode_start(void);
 /* the watcher's change, each frame: the new mode, its events, and the log line when it changed */
 void options_tv_mode_update(void);
+/* the hotkey's and the game's menu's choice in effect: 0 Off, 1 On, 2 Auto */
+int options_tv_mode_choice(void);
+/* the host's power state Auto last read: 1 its charger, 0 its battery, -1 unknown (the hotkey's toast) */
+int options_tv_mode_on_charger(void);
+/* The next choice in that ring, On -> Off -> Auto -> On, step < 0 the other way; the choice now. It changes the mode
+   in effect; the display-mode events reach the services on the frontend's next tick, out of the input's lock */
+int options_tv_mode_step(int step);
+/* tests only: forget the host the watcher was started for, so a test can give the runtime another one */
+void options_tv_mode_forget_watcher(void);
 /* ldn, read: local wireless over the LAN (ldn_mitm's protocol), through an Eden room, or off
    (hle/services/network/ldn.c) */
 enum { SNX_OPT_LDN_LAN, SNX_OPT_LDN_ROOM, SNX_OPT_LDN_OFF };

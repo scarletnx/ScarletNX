@@ -46,13 +46,24 @@ static int g_tv_mode_choice = 1;
 static int g_tv_on_charger; /* the host's state at the last update: 1, 0 or -1 */
 static int g_tv_power_logged;
 static int g_tv_watch; /* 1 when the platform watches the power source, 0 when the fallback polls it */
+static int g_tv_watch_started;  /* the watcher was asked for once: Auto can be entered again without a second one */
+static int g_tv_events_pending; /* the mode changed: the frontend's tick tells the services, out of the input's lock */
 static int g_tv_first = 1;
 static u64 g_tv_poll_next; /* the fallback's next query, in plat_ns */
 /* a host with no watcher: rarely, since a charger is not a thing that changes every second */
 #define TV_POLL_NS (15ull * 1000000000ull)
+/* the choice in effect, read on the renderer's thread too (the menu's TV mode row) */
+static int tv_mode_choice(void) { return __atomic_load_n(&g_tv_mode_choice, __ATOMIC_RELAXED); }
+/* the host's power watcher, started once: Auto can be entered again without a second one */
+static void tv_mode_watch_once(void) {
+    if (g_tv_watch_started) return;
+    g_tv_watch = plat_power_watch() == 0;
+    g_tv_watch_started = 1;
+}
 /* Auto picks TV mode unless the host runs on its battery. A host whose state cannot be read is on TV mode */
 static int tv_mode_now(void) {
-    if (g_tv_mode_choice != 2) return g_tv_mode_choice;
+    int choice = tv_mode_choice();
+    if (choice != 2) return choice;
     return plat_power_on_charger() != 0;
 }
 void options_tv_mode_set(const IniOpt* o, const char* v) {
@@ -60,33 +71,20 @@ void options_tv_mode_set(const IniOpt* o, const char* v) {
     long n = strtol(v, &end, 10);
     (void)o;
     if (end == v) return;
-    g_tv_mode_choice = n < 0 ? 0 : n > 2 ? 2 : (int)n;
+    __atomic_store_n(&g_tv_mode_choice, n < 0 ? 0 : n > 2 ? 2 : (int)n, __ATOMIC_RELAXED);
     __atomic_store_n(&g_settings.tv_mode, tv_mode_now(), __ATOMIC_RELAXED);
 }
 void options_tv_mode_start(void) {
-    if (g_tv_mode_choice != 2) return; /* fixed On and Off need no watcher */
-    g_tv_watch = plat_power_watch() == 0;
+    if (tv_mode_choice() != 2) return; /* fixed On and Off need no watcher */
+    tv_mode_watch_once();
     g_tv_first = 1;
     options_tv_mode_update();
 }
-void options_tv_mode_update(void) {
-    int mode, on, was;
-    if (g_tv_mode_choice != 2) return;
-    if (!g_tv_first) {
-        if (g_tv_watch) {
-            if (!plat_power_take_change()) return;
-        } else {
-            /* no watcher on this host: ask rarely, and nowhere else */
-            u64 now = plat_ns();
-            if (now < g_tv_poll_next) return;
-            g_tv_poll_next = now + TV_POLL_NS;
-        }
-    } else if (g_tv_watch) {
-        (void)plat_power_take_change(); /* the watcher's first event, already in the state below */
-    }
-    on = plat_power_on_charger();
-    mode = on != 0;
-    was = __atomic_load_n(&g_settings.tv_mode, __ATOMIC_RELAXED);
+/* Auto's state now: its pick into g_settings.tv_mode, its line in the log, and 1 when the pick is a new mode */
+static int tv_mode_auto_pick(void) {
+    int on = plat_power_on_charger();
+    int mode = on != 0;
+    int was = __atomic_load_n(&g_settings.tv_mode, __ATOMIC_RELAXED);
     if (!g_tv_power_logged || on != g_tv_on_charger || mode != was) {
         if (on > 0)
             LOG("power: the host is on its charger: TV mode Auto picks %s\n", mode ? "TV mode" : "handheld mode");
@@ -99,10 +97,70 @@ void options_tv_mode_update(void) {
     g_tv_on_charger = on;
     g_tv_first = 0;
     if (!g_tv_watch) g_tv_poll_next = plat_ns() + TV_POLL_NS;
-    if (mode == was) return;
+    if (mode == was) return 0;
     __atomic_store_n(&g_settings.tv_mode, mode, __ATOMIC_RELAXED);
-    am_display_mode_changed();
-    hid_mode_changed();
+    return 1;
+}
+void options_tv_mode_update(void) {
+    if (g_tv_events_pending) { /* the menu's pads or a key made the change under a lock: this tick is out of it */
+        g_tv_events_pending = 0;
+        am_display_mode_changed();
+        hid_mode_changed();
+    }
+    if (tv_mode_choice() != 2) return;
+    if (!g_tv_first) {
+        if (g_tv_watch) {
+            if (!plat_power_take_change()) return;
+        } else {
+            /* no watcher on this host: ask rarely, and nowhere else */
+            u64 now = plat_ns();
+            if (now < g_tv_poll_next) return;
+            g_tv_poll_next = now + TV_POLL_NS;
+        }
+    } else if (g_tv_watch) {
+        (void)plat_power_take_change(); /* nothing has been taken yet: the state below is read now, not waited for */
+    }
+    if (tv_mode_auto_pick()) {
+        am_display_mode_changed();
+        hid_mode_changed();
+    }
+}
+/* The hotkey and the game's menu change the choice while the game runs: backported from #1168's docked_key, so the
+   rest of that branch can be taken one piece at a time. The ring is On -> Off -> Auto -> On, and the .ini keeps its
+   own value; only the choice in effect changes. Auto starts the host's watcher once, however often the ring returns
+   to it, and names the mode it picks and why in the log. The services hear of the change on the frontend's tick
+   (options_tv_mode_update): the menu's pads call this under the input's lock, which hid_update takes. */
+int options_tv_mode_choice(void) { return tv_mode_choice(); }
+
+int options_tv_mode_on_charger(void) { return g_tv_on_charger; }
+
+int options_tv_mode_step(int step) {
+    int was = tv_mode_choice();
+    int next = step < 0 ? (was == 1 ? 2 : was == 2 ? 0 : 1) : (was == 1 ? 0 : was == 0 ? 2 : 1);
+    __atomic_store_n(&g_tv_mode_choice, next, __ATOMIC_RELAXED);
+    if (next == 2) {
+        tv_mode_watch_once();
+        g_tv_first = 1;
+        if (tv_mode_auto_pick()) g_tv_events_pending = 1; /* the services hear it on the frontend's tick */
+        LOG("TV mode: Auto (%s)\n",
+            __atomic_load_n(&g_settings.tv_mode, __ATOMIC_RELAXED) ? "TV mode" : "handheld mode");
+    } else {
+        int was_now = __atomic_load_n(&g_settings.tv_mode, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_settings.tv_mode, next, __ATOMIC_RELAXED);
+        if (next != was_now) g_tv_events_pending = 1;
+        LOG("TV mode: %s\n", next ? "On (TV mode)" : "Off (handheld mode)");
+    }
+    return next;
+}
+
+/* tests only: forget the host the watcher was started for, so a test can give the runtime another one */
+void options_tv_mode_forget_watcher(void) {
+    g_tv_watch_started = 0;
+    g_tv_watch = 0;
+    g_tv_on_charger = 0;
+    g_tv_power_logged = 0;
+    g_tv_first = 1;
+    g_tv_poll_next = 0;
 }
 
 /* "game" in any case, or a number: 0 and below 1 unlimited, 10 to 1000 frames a second (clamped), and the values an

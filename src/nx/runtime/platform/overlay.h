@@ -39,6 +39,8 @@ int overlay_select(void);      /* the focused item's action: a page, a setting c
 void overlay_move(int rows);   /* the focus up (-1) or down (1), round the page */
 void overlay_scroll(int rows); /* the mouse's wheel: the same, stopping at the ends */
 int overlay_side(int step);    /* the focused setting down (-1) or up (1); OVERLAY_CLOSE on F1's page */
+/* the first page's TV mode row in focus: its step is one press, so an arrow's repeat does not cycle it */
+int overlay_tv_mode_focused(void);
 int overlay_back(void);        /* the page above; OVERLAY_CLOSE from the first, and from F1's */
 /* F1: the page of the runtime's keys and the game's buttons on the keyboard, a row each, in place of the page showing,
    the menu open; OVERLAY_CLOSE when it shows already. Up/Down and the wheel go over its rows; any other key, button
