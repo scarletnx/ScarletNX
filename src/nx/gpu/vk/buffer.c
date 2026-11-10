@@ -2677,7 +2677,9 @@ static int copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
     out_map(o, gva);
     u64 align = vk_stage_align();
     if (align < g_vk.props.limits.nonCoherentAtomSize) align = g_vk.props.limits.nonCoherentAtomSize;
-    o->ptr = vk_stage_output(len, align, buf, off, &o->mem);
+    /* a write-only logged binding's staging is filled with zeros on the GPU (below), in whole words */
+    int zeros = !(owned && !(back && g_bind_no_read)) && pending != 2 && logged && g_bind_no_read;
+    o->ptr = vk_stage_output(zeros ? (len + 3) & ~3ull : len, align, buf, off, &o->mem);
     if (!o->ptr) {
         free(o);
         return 0;
@@ -2707,8 +2709,11 @@ static int copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
         } else {
             /* write-only: the program only writes it, its bytes (if any) land from the log. But its stores are
                partial, and the GPU's read-modify-write of the surrounding cache line reads the staging it would
-               have written over: give it zeros, not uninitialized ring memory, which can hang the GPU */
-            memset(o->ptr, 0, len);
+               have written over: give it zeros, not uninitialized ring memory, which can hang the GPU. The GPU
+               writes them, in the upload command buffer that runs first in the submission: nothing before them
+               there uses this new staging, and nothing on the CPU writes it after. The CPU's memset of up to
+               16 MiB a binding was a twentieth of one game's GPU thread */
+            rec_CmdFillBuffer(vk_cmd_upload(0), *buf, *off, (len + 3) & ~3ull, 0);
             o->no_input = 1;
         }
     } else {

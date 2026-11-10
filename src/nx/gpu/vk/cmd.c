@@ -812,9 +812,10 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     vk_query_flush(cb);            /* the samples-passed counts of the passes ended (query.c) */
     vk_buf_host_barrier(cb, g_gval + 1);
     VkCommandBuffer up = VK_NULL_HANDLE;
-    if (f->up) { /* the upload command buffer's copies before everything the frame's command buffer reads or writes */
+    if (f->up) { /* the upload command buffer's copies and fills before everything the frame's command buffer reads or
+                    writes */
         up = f->ups[f->icb];
-        mem_barrier(up, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        mem_barrier(up, VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
         f->up = 0;
     }
