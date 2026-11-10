@@ -221,8 +221,6 @@ static char* read_file(const char* path, int must) {
 
 /* ============================================================ names */
 
-/* NAME in snake_case: letters and digits lowercased, every other run an underscore, none at either end; a camel-case
-   word split where its case changes (LoopVectorization, SLPVectorization: loop_vectorization, slp_vectorization) */
 /* NAME lowercased: a Vulkan extension's key and member (VK_EXT_transform_feedback: vk_ext_transform_feedback) */
 static char* lower(const char* name) {
     char* l = dup(name);
@@ -231,6 +229,8 @@ static char* lower(const char* name) {
     return l;
 }
 
+/* NAME in snake_case: letters and digits lowercased, every other run an underscore, none at either end; a camel-case
+   word split where its case changes (LoopVectorization, SLPVectorization: loop_vectorization, slp_vectorization) */
 static char* snake(const char* name) {
     size_t n = strlen(name), i, o = 0;
     char* s = (char*)alloc(2 * n + 2);
