@@ -135,7 +135,22 @@ typedef struct {
     uint16_t site;  /* where an error about it points: its own place, or the macro use it came out of */
     uint8_t kind;
     uint8_t flags;
+    uint16_t name; /* an identifier's name (g->names), 0 until the lexer needs it, and for other tokens */
 } GlslcToken;
+
+/* A name the preprocessor read: every identifier with the same text has the same one, so what the lexer learns of a
+   name (the macro it names, whether it is a keyword) it learns once */
+#define GLSLC_NAME_SYNTH 1u     /* text is in the synthesized text: a predefined macro's name */
+#define GLSLC_NAME_PLAIN 0xffffu /* keyword: the name is no keyword in any version */
+typedef struct {
+    GlslcView text;   /* its first place */
+    uint16_t next;    /* the next name in its hash bucket */
+    uint16_t macro;   /* the macro it names now, 0 for none */
+    uint16_t keyword; /* glslc_keywords' row plus one, GLSLC_NAME_PLAIN, or 0 until looked up */
+    uint8_t flags;    /* GLSLC_NAME_* */
+    uint8_t pad;
+} GlslcName;
+#define GLSLC_NAME_BUCKETS 2048u
 
 #define GLSLC_MF_FUNCTION 1u  /* takes arguments */
 #define GLSLC_MF_SYNTH    2u  /* name is in the synthesized text: a predefined macro */
@@ -147,7 +162,7 @@ typedef struct {
     GlslcView name;
     uint16_t first; /* its parameters, then its body, in mtoks */
     uint16_t count; /* parameters and body tokens */
-    uint16_t next;  /* the next macro in its hash bucket */
+    uint16_t pad;
     uint8_t params; /* how many of the tokens at first are the parameters */
     uint8_t flags;  /* GLSLC_MF_* */
 } GlslcMacro;
@@ -627,7 +642,9 @@ typedef struct {
     uint32_t overflow_site; /* the first token past SNX_GLSLC_MAX_TOKENS */
     GlslcMacro* macros;
     uint32_t nmacros;
-    uint16_t macro_hash[256];
+    GlslcName* names;
+    uint32_t nnames;
+    uint16_t name_hash[GLSLC_NAME_BUCKETS];
     GlslcToken* mtoks;
     uint32_t nmtoks;
     GlslcToken* exp;
