@@ -513,19 +513,8 @@ bool vita_render_init(VitaProcess* p) {
                 ok = vkCreateSampler(v->device, &ci, NULL, &r->samplers[lin][mip][mode]) == VK_SUCCESS;
             }
     /* the deswizzle: two storage buffers, its parameters, its pipeline; its linear rows' rings */
-    VkDescriptorSetLayoutBinding sb[2] = {{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
-                                          {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
-    VkDescriptorSetLayoutCreateInfo ssi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                           .bindingCount = 2,
-                                           .pBindings = sb};
-    VkPushConstantRange spush = {VK_SHADER_STAGE_COMPUTE_BIT, 0, COMPUTE_PUSH};
-    VkPipelineLayoutCreateInfo sli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                      .setLayoutCount = 1,
-                                      .pSetLayouts = &r->swizzle_set,
-                                      .pushConstantRangeCount = 1,
-                                      .pPushConstantRanges = &spush};
-    ok = ok && vkCreateDescriptorSetLayout(v->device, &ssi, NULL, &r->swizzle_set) == VK_SUCCESS &&
-         vkCreatePipelineLayout(v->device, &sli, NULL, &r->swizzle_layout) == VK_SUCCESS &&
+    ok = ok &&
+         snx_vk_compute_layouts(v->device, 2, 0, COMPUTE_PUSH, &r->swizzle_set, &r->swizzle_layout) == VK_SUCCESS &&
          compute_pipeline(r, vita_swizzle_spv, (size_t)vita_swizzle_spv_size, &r->swizzle) &&
          compute_pipeline(r, vita_picture_spv, (size_t)vita_picture_spv_size, &r->picture) &&
          compute_pipeline(r, vita_yuv_spv, (size_t)vita_yuv_spv_size, &r->yuv) &&

@@ -66,24 +66,10 @@ int vk_xfb_control_buffer(VkBuffer counters, u64 counter_offset, u64 control, u3
 
 static int xfb_indirect_init(void) {
     if (g_xfb_indirect.pipeline) return 1;
-    if (!g_xfb_indirect.descriptors) {
-        VkDescriptorSetLayoutBinding bindings[2];
-        for (u32 i = 0; i < 2; i++)
-            bindings[i] = (VkDescriptorSetLayoutBinding){i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-                                                         VK_SHADER_STAGE_COMPUTE_BIT, NULL};
-        VkDescriptorSetLayoutCreateInfo info = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = bindings};
-        if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &info, NULL, &g_xfb_indirect.descriptors))) return 0;
-    }
-    if (!g_xfb_indirect.layout) {
-        VkPushConstantRange push = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 4};
-        VkPipelineLayoutCreateInfo info = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                           .setLayoutCount = 1,
-                                           .pSetLayouts = &g_xfb_indirect.descriptors,
-                                           .pushConstantRangeCount = 1,
-                                           .pPushConstantRanges = &push};
-        if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &info, NULL, &g_xfb_indirect.layout))) return 0;
-    }
+    /* both layouts or neither: a pipeline that could not be made is tried again with the ones it has */
+    if (!g_xfb_indirect.layout &&
+        !VK_OK(snx_vk_compute_layouts(g_vk.dev, 2, 0, 4, &g_xfb_indirect.descriptors, &g_xfb_indirect.layout)))
+        return 0;
     return VK_OK(snx_vk_compute_pipeline(g_vk.dev, vk_pipeline_cache(), g_xfb_indirect.layout, xfb_indirect_spv,
                                          xfb_indirect_spv_size, &g_xfb_indirect.pipeline));
 }

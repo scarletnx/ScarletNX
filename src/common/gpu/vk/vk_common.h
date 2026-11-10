@@ -105,6 +105,13 @@ VkResult snx_vk_compute_pipeline(VkDevice dev, VkPipelineCache cache, VkPipeline
 VkResult snx_vk_compute_pipeline_subgroups(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout,
                                            const uint32_t* words, size_t size, uint32_t subgroup, bool full,
                                            VkPipeline* out);
+/* A compute program's layouts: a descriptor set layout of buffers storage buffers at bindings 0 on, then images storage
+   images, the compute stage's, and a pipeline layout of that one set with push bytes of push constants (0: none).
+   Neither is left when one cannot be made, nor with more than SNX_VK_COMPUTE_BINDINGS bindings, which gives
+   VK_ERROR_TOO_MANY_OBJECTS */
+#define SNX_VK_COMPUTE_BINDINGS 16
+VkResult snx_vk_compute_layouts(VkDevice dev, uint32_t buffers, uint32_t images, uint32_t push,
+                                VkDescriptorSetLayout* set, VkPipelineLayout* layout);
 /* count storage buffers written to set's bindings 0 on, in infos' order */
 void snx_vk_storage_buffers(VkDevice dev, VkDescriptorSet set, const VkDescriptorBufferInfo* infos, uint32_t count);
 #endif
