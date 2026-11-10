@@ -234,7 +234,7 @@ typedef struct {
     SDL_Condition* wake;
     SDL_Thread* thread;
     char* driver;   /* the program asked, and the data folder its keys are found by */
-    char* driver3ds; /* the 3DS driver, for a 3DS dump's icon, "" when the build has none */
+    char* driver3ds; /* the 3DS driver, for a 3DS dump's icon: NULL before one is asked, or with none in the build */
     char* driver3ds_first; /* the 3DS driver's name, for a program that holds several (gui_driver_run) */
     char* repo;
     char* dumps[GUI_DUMP_ASKS]; /* each owned, with its folder in the cache beside it */
