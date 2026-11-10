@@ -1793,6 +1793,7 @@ void vk_mem_changed(u64 cpu, u64 len); /* gpu.c's g_gpu_mem_changed: the range c
 /* own.c's landed hook: host pages [cpu, cpu + size) a landing wrote, with their bytes then, whose next report as
    written counts only if those changed */
 void vk_ww_landed(u64 cpu, u64 size, const u8* bytes);
+void vk_ww_stats(u32 presents); /* the stats: the write tracking's epochs and scans since the last, a line */
 /* tests: the landed pages' list sorted as a scan's take sorts it, its length, or ~0u when it isn't one entry a page in
    the pages' order; and the hash kept for the host page at cpu (0 for none) */
 u32 vk_ww_landed_check(void);
