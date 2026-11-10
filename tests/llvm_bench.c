@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* Speed of the generated code. Each kernel is AArch64 assembly (assembled with CLANG's aarch64 target), recompiled by
    the CLI, and run AOT with x19 iterations.
-     llvm_bench SCARLETNX REPO CLANG [--iterations N] [--kernel NAME] [-O LEVEL] [--abi-contract] [--stats]
+     llvm_bench SCARLETNX REPO CLANG [--iterations N] [--kernel NAME] [-O LEVEL] [--abi-contract]
+                [--unit-instructions N] [--stats]
    Prints one line per kernel: seconds and ns per iteration. */
 #include "common/utilities/common.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -20,6 +21,11 @@ typedef struct {
     const char *name, *source;
     u64 (*checksum)(u64 iterations); /* x1 at the end, NULL when the kernel leaves no checkable result */
 } Kernel;
+
+/* the leaf calls increment x1 once a pass and the kernels never write it: it ends as the iteration count */
+static u64 one_per_pass(u64 iterations) {
+    return iterations;
+}
 
 /* the switch kernel's sum: indices 0..7 select 10, 20, 30, 40 and the default 99 four times */
 static u64 switch_sum(u64 iterations) {
@@ -66,6 +72,19 @@ static const Kernel kernels[] = {
     {"calls", "main:\n mov x21, x30\n adr x20, f2\n mov x1, #0\nloop:\n bl f1\n blr x20\n subs x19, x19, #1\n"
               " b.ne loop\n mov x30, x21\n ret\n bl f2\nf1:\n add x1, x1, #1\n eor x2, x2, x1, ror #7\n ret\n"
               "f2:\n add x2, x2, x1, lsl #2\n ret\n", NULL},
+    /* the caller keeps X20 live across a direct call to a leaf that touches only X1: a whole module whose callees
+       are emitted first has the leaf's summary and keeps X20 in a host register, one function per unit has no
+       summary of the leaf and stores and reloads X20 every pass */
+    {"calls-leaf", "main:\n mov x21, x30\n mov x20, #0\nloop:\n bl leaf\n add x20, x20, x1\n"
+                   " subs x19, x19, #1\n b.ne loop\n mov x30, x21\n str x20, [x3]\n ret\n"
+                   "leaf:\n add x1, x1, #1\n ret\n", one_per_pass},
+    /* eight registers the caller keeps live across the same direct call: with the leaf's summary in the same unit
+       they stay in host registers, across a unit boundary the caller stores and reloads all of them every pass */
+    {"calls-live", "main:\n mov x21, x30\n mov x9, #1\n mov x10, #2\n mov x11, #3\n mov x12, #4\n"
+                   " mov x13, #5\n mov x14, #6\n mov x15, #7\nloop:\n bl leaf\n add x9, x9, x1\n"
+                   " eor x10, x10, x9\n add x11, x11, x10\n eor x12, x12, x11\n add x13, x13, x12\n"
+                   " eor x14, x14, x13\n add x15, x15, x14\n subs x19, x19, #1\n b.ne loop\n"
+                   " mov x30, x21\n str x15, [x3]\n ret\nleaf:\n add x1, x1, #1\n ret\n", one_per_pass},
     /* the callee saves and restores two callee-saved registers, which the caller keeps live across the call: under
        abi_contract the caller reloads neither, without it it reloads both after every call */
     {"calls-saved", "main:\n mov x21, x30\n mov x20, #0\n mov x22, #0\nloop:\n bl f\n"
@@ -177,7 +196,7 @@ static int run(const char* path, const unsigned char* image, size_t image_size, 
 }
 
 int main(int argc, char** argv) {
-    const char *only = NULL, *opt = NULL;
+    const char *only = NULL, *opt = NULL, *unit = NULL;
     size_t k;
     u64 iterations = 2000000;
     char *root, *text = NULL;
@@ -190,6 +209,8 @@ int main(int argc, char** argv) {
             only = argv[++a];
         else if (a + 1 < argc && !strcmp(argv[a], "-O"))
             opt = argv[++a];
+        else if (a + 1 < argc && !strcmp(argv[a], "--unit-instructions"))
+            unit = argv[++a];
         else if (!strcmp(argv[a], "--abi-contract"))
             abi_contract = 1;
         else if (!strcmp(argv[a], "--stats"))
@@ -261,6 +282,10 @@ int main(int argc, char** argv) {
                 rargs[n++] = opt;
             }
             if (abi_contract) rargs[n++] = "--abi_contract=1";
+            if (unit) {
+                rargs[n++] = "--chunk";
+                rargs[n++] = unit;
+            }
             rargs[n] = NULL;
             if (snx_run(rargs, root, NULL, &text) || run(module, image, sizeof(image), iterations, &result, &seconds)) {
                 fprintf(stderr, "%s failed\n%s\n", kernels[k].name, text ? text : "");

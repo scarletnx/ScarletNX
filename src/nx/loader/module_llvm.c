@@ -137,7 +137,7 @@ static size_t* callees_first(SnxCodegen* codegen, size_t first, size_t last) {
                 SnxU32 word = 0;
                 SnxA64Insn insn;
                 const SnxFunction* to;
-                if (snx_codegen_word(codegen, address, &word)) continue;
+                if (!snx_codegen_word(codegen, address, &word)) continue;
                 snx_a64_decode_word(word, codegen->features, &insn);
                 if (insn.flow != SNX_A64_FLOW_BL && insn.flow != SNX_A64_FLOW_B) continue;
                 target = snx_a64_branch_target(&insn, address);

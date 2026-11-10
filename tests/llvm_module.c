@@ -398,7 +398,9 @@ static void layout(const char* scarletnx, const char* repo, const char* root, co
 /* Hand counts of complete CLI modules. The first writes X0/X1/X2 and returns through X30. Its dynamic return
    contributes a lookup/tail call and the dispatch poll. The second has a root and a leaf. The root synchronizes X0
    before BL and at RET, and reloads it after BL. The leaf synchronizes X0 at RET. X28/X30 in the root stay in CPU
-   memory and are not promoted synchronization stores. Splitting units must not change these totals. */
+   memory and are not promoted synchronization stores. One row is a whole module: callees first lets the root use the
+   leaf's summary and keep X0 in a host register across BL. The other is one function per unit: the leaf's summary is
+   not at hand, so the root stores and reloads X0 at the call. Both run the same guest code. */
 static void stats_fixture(const char* cli, const char* repo, const char* root, const char* self,
                           const unsigned char* header) {
     static const char* const names[] = {
@@ -406,9 +408,12 @@ static void stats_fixture(const char* cli, const char* repo, const char* root, c
         "indirect calls", "sync stores", "call stores", "edge stores", "store bytes", "reloads", "reload bytes",
         "lookups", "polls", "stale checks", "return checks"
     };
-    static const unsigned long long expected[][19] = {
-        {1, 1, 4, 0, 4, 1, 0, 0, 2, 3, 0, 0, 24, 1, 8, 1, 1, 1, 0},
-        {2, 2, 3, 2, 8, 2, 0, 1, 3, 3, 1, 0, 24, 1, 8, 2, 1, 3, 1}
+    /* [variant][split], split 0 whole module (1000000 instructions a unit), split 1 one function a unit */
+    static const unsigned long long expected[][2][19] = {
+        {{1, 1, 4, 0, 4, 1, 0, 0, 2, 3, 0, 0, 24, 1, 8, 1, 1, 1, 0},
+         {1, 1, 4, 0, 4, 1, 0, 0, 2, 3, 0, 0, 24, 1, 8, 1, 1, 1, 0}},
+        {{2, 2, 4, 1, 8, 2, 0, 1, 3, 6, 1, 1, 48, 2, 16, 2, 1, 3, 1},
+         {2, 2, 3, 2, 8, 2, 0, 1, 3, 3, 1, 0, 24, 1, 8, 2, 1, 3, 1}}
     };
     static const u32 leafless[] = {0xd28000e0, 0xd2800121, 0x8b010002, 0xd65f03c0};
     static const u32 caller[] = {0xaa1e03fc, 0xd28000e0, 0x9400001e, 0x91000400, 0xaa1c03fe, 0xd65f03c0};
@@ -450,10 +455,10 @@ static void stats_fixture(const char* cli, const char* repo, const char* root, c
             }
             check(units == (split && variant ? 2u : 1u), "one count per emitted code unit");
             for (unsigned i = 0; i < 19; i++) {
-                if (total[i] != expected[variant][i])
+                if (total[i] != expected[variant][split][i])
                     fprintf(stderr, "hand-count module %u split %u %s: %llu, expected %llu\n",
-                            variant, split, names[i], total[i], expected[variant][i]);
-                check(total[i] == expected[variant][i], "whole-module statistics match the hand count");
+                            variant, split, names[i], total[i], expected[variant][split][i]);
+                check(total[i] == expected[variant][split][i], "hand-count statistics match");
             }
             free(text);
             free(dir);
