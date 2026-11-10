@@ -218,6 +218,31 @@ def check_environment(repo):
     return errors
 
 
+WINDOW_OPEN = re.compile(r'(?<![A-Za-z0-9_])(SDL_CreateWindow|SDL_CreateWindowAndRenderer)\s*\(')
+
+
+def check_window_pixels(repo):
+    """every window src/nx opens asks for the display's own pixels (SDL_WINDOW_HIGH_PIXEL_DENSITY among the call's
+    flags): without it a display scaled 2x gets a picture of half as many pixels each way, stretched"""
+    errors = []
+    for path in sorted((repo / 'src/nx').rglob('*')):
+        if path.suffix not in {'.c', '.h', '.cpp', '.hpp', '.inc'}:
+            continue
+        text = path.read_text(encoding='utf-8', errors='replace')
+        source = without_comments(text)
+        shown = path.relative_to(repo).as_posix()
+        for match in WINDOW_OPEN.finditer(without_comments(text, literals=False)):
+            arguments = call_arguments(source, match.end() - 1)
+            if not any(re.search(r'\bSDL_WINDOW_HIGH_PIXEL_DENSITY\b', argument) for argument in arguments):
+                line = source.count('\n', 0, match.start()) + 1
+                errors.append(
+                    f'{shown}:{line}: {match.group(1)} without SDL_WINDOW_HIGH_PIXEL_DENSITY among its flags: on a '
+                    'display scaled 2x the window is a picture of half as many pixels each way, which the display '
+                    'server stretches. Name the flag in the call'
+                )
+    return errors
+
+
 def check_graph(graph):
     source = graph.read_text(encoding='utf-8')
     nodes = {
@@ -676,6 +701,7 @@ def main():
         check_sources(args.repo.resolve())
         + check_include_flags(args.repo.resolve())
         + check_environment(args.repo.resolve())
+        + check_window_pixels(args.repo.resolve())
         + check_state_fns(args.repo.resolve())
     )
     if args.build:
