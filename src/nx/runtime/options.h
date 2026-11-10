@@ -68,8 +68,9 @@ extern int g_opt_fps;                              /* atomic: the game's threads
 void fps_limit_text(int fps, char* out, size_t n); /* g_opt_fps as fps_limit's value: "game", "0", "30"... */
 
 /* The TV mode in effect now: 0 handheld, 1 TV (docked). docked's Auto asks the host's power state, and
-   options_tv_mode_update keeps g_settings.tv_mode at the mode it picks */
-static inline int snx_tv_mode(void) { return g_settings.tv_mode; }
+   options_tv_mode_update keeps g_settings.tv_mode at the mode it picks from the frontend's thread, while the game's
+   threads read it */
+static inline int snx_tv_mode(void) { return __atomic_load_n(&g_settings.tv_mode, __ATOMIC_RELAXED); }
 /* docked's set function: 0 Off, 1 On, 2 Auto, which picks the mode in effect now */
 void options_tv_mode_set(const IniOpt* o, const char* v);
 /* starts the host's power watcher and logs the mode Auto picks, once the window backend is up */
