@@ -19,6 +19,16 @@ enum {
    out */
 #define INI_IN_GAME 2
 
+/* the systems a setting does something on, where not every one (settings.txt's only): one of these in flags, macOS
+   without iOS, Linux the kernel (Android too), arm64 Linux the same on arm64 (NCE's hosts, nce_host.h). On another
+   system the menus grey its row and say which (ini_only), and its value is read and written as anywhere */
+#define INI_ONLY_MACOS       (1 << 8)
+#define INI_ONLY_WINDOWS     (2 << 8)
+#define INI_ONLY_ANDROID     (3 << 8)
+#define INI_ONLY_LINUX       (4 << 8)
+#define INI_ONLY_ARM64_LINUX (5 << 8)
+#define INI_ONLY             (15 << 8)
+
 typedef struct IniOpt IniOpt;
 struct IniOpt {
     const char* key;  /* NULL ends a table */
@@ -67,13 +77,19 @@ void ini_format(const IniOpt* o, char* out, size_t n);
 #define INI_CHANGED_DEFAULT 1
 #define INI_CHANGED_NO_TEXT 2
 int ini_changed(const IniOpt* table, int flags, char* out, size_t n);
+/* where a setting with these flags does something, as its greyed row says it ("macOS only"): NULL for one that does
+   on every system. The words are marked for scripts/build-languages.py: the launcher shows them in its language */
+const char* ini_only_words(int flags);
+/* ini_only_words on a system the setting does nothing on, this one: NULL where it does something here */
+const char* ini_only(const IniOpt* o);
 /* an INI_INT's value v as the menus read it: its word, or the number */
 void ini_word(const IniOpt* o, int v, char* out, size_t n);
 /* v a step down (dir -1) or up (1): words go round, numbers stop at lo and hi */
 int ini_step(const IniOpt* o, int v, int dir);
 /* the sections' settings but the INI_IN_GAME ones as the launcher reads them (gui/settings.h), a line each: section
-   [/page], key, default, int | float | text, lowest, highest, help, name, the values value=word between '|', tabs
-   between. Into out, NUL-terminated as it fits; the length it needs, without the NUL */
+   [/page], key, default, int | float | text, lowest, highest, help, name, the values value=word between '|', then
+   ini_only's words (empty where the setting does something on this system), tabs between. Into out, NUL-terminated
+   as it fits; the length it needs, without the NUL */
 size_t ini_list_text(const IniSection* sections, int count, char* out, size_t size);
 
 /* a key an older version used, which does nothing now (docs/user/deprecations.md): what became of it, NULL for another */

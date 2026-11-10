@@ -211,7 +211,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
 
   A row with nothing to do now is greyed, still there, and Enter on it says why: Clean Old Settings with nothing to
   clean, Move Old Files with nothing left, App's Reset to Defaults with every setting at its default, Folders' with
-  every folder its default.
+  every folder its default. So is a setting that does something on other systems alone, its row saying where beside
+  its value (*macOS only* for Vulkan driver, *Windows only* for Profiler, *Android only* for Haptics...): Enter and a
+  step leave the value, and Del still puts its default back.
 
   A row is its name, its folder (one too long for the row cut in its middle: its root and first folder, `...`, as
   many of its last folders as fit; the whole path under the boxes) and what it is. Data, Logs, Caches, Extractions and

@@ -931,6 +931,106 @@ static void players_view(App* app) {
     app->player = 0;
     leave_editor(app);
 }
+/* A setting that does something on other systems alone (settings.txt's only, which the runtime lists last on its line
+   where this system is none of them): its row greyed with where beside its value, among the group's rows and beside
+   the groups; Enter and a step say why and leave its value; a pick a file had still shows, is still passed to a run,
+   and Del puts its default back. The same setting listed with no systems, as on its own system, is a row as any */
+static void only_rows(App* app) {
+    static const char elsewhere[] =
+        "Graphics\tvsync\t1\tint\t0\t1\tNo tearing\tVSync\t0=Off|1=On\t\n"
+        "Graphics\tvulkan_driver\tauto\ttext\t0\t0\tThe driver\tVulkan driver\tauto=Auto|moltenvk=MoltenVK\t"
+        "macOS only\n"
+        "Graphics\tanisotropy\t0\tint\t0\t16\tSharper\tAnisotropic filtering\t\tWindows only\n";
+    static const char here[] =
+        "Graphics\tvsync\t1\tint\t0\t1\tNo tearing\tVSync\t0=Off|1=On\t\n"
+        "Graphics\tvulkan_driver\tauto\ttext\t0\t0\tThe driver\tVulkan driver\tauto=Auto|moltenvk=MoltenVK\t\n";
+    const char* options[8];
+    UiRowInfo info = {0};
+    int group, row;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, elsewhere));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (group = 0; group < app->groups && strcmp(app->group_keys[group].key, "Graphics"); ++group) {}
+    assert(group < app->groups);
+    /* beside the groups, before its group opens: greyed there too */
+    app->editor.row = group;
+    render(app);
+    assert(app->form == GUI_FORM_SETTINGS && ui_form_side_rows_get_row_info(app, 1, 0, &info) &&
+           (info.attr & UI_ATTR_OFF) && strstr(info.label, "Vulkan driver") && strstr(info.label, "macOS only"));
+    info = (UiRowInfo){0};
+    assert(ui_form_side_rows_get_row_info(app, 0, 0, &info) && !(info.attr & UI_ATTR_OFF));
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_GROUP && gui_editor_rows(&app->editor) == 3);
+    row = row_of(app, setting_row(app, "vulkan_driver"));
+    assert(row == 1 && !form_row_off(app, &app->editor, 0) && form_row_off(app, &app->editor, 1) &&
+           form_row_off(app, &app->editor, 2));
+    info = (UiRowInfo){0};
+    assert(form_row_info(app, &app->editor, 1, form_labels(&app->editor), 0, &info) && (info.attr & UI_ATTR_OFF) &&
+           strstr(info.label, "Vulkan driver") && strstr(info.label, "Auto [default] macOS only"));
+    info = (UiRowInfo){0};
+    assert(form_row_info(app, &app->editor, 2, form_labels(&app->editor), 0, &info) && (info.attr & UI_ATTR_OFF) &&
+           strstr(info.label, "0 [default] Windows only")); /* a typed row's */
+    info = (UiRowInfo){0};
+    assert(form_row_info(app, &app->editor, 0, form_labels(&app->editor), 0, &info) && !(info.attr & UI_ATTR_OFF) &&
+           !strstr(info.label, "only"));
+    render(app); /* drawn: where it does something, in the greyed rows' soft colour */
+    shows(app, "macOS only", rgb(app->theme.soft));
+    /* Enter, Right and Left: why, with the value it stays at, and no pick; a typed row's Enter opens no dialog */
+    app->editor.row = 1;
+    key(app, SDLK_RETURN);
+    assert(!strcmp(app->editor.note, "Vulkan driver: macOS only. A game on this system runs the same whatever it says, "
+                                     "and it stays Auto [default]") &&
+           setting_is(app, "vulkan_driver", NULL));
+    app->editor.note[0] = 0;
+    key(app, SDLK_RIGHT);
+    assert(strstr(app->editor.note, "Vulkan driver: macOS only. ") && setting_is(app, "vulkan_driver", NULL));
+    app->editor.note[0] = 0;
+    key(app, SDLK_LEFT);
+    assert(strstr(app->editor.note, "Vulkan driver: macOS only. ") && setting_is(app, "vulkan_driver", NULL));
+    app->editor.row = 2;
+    key(app, SDLK_RETURN);
+    assert(!app->editor.typing && setting_is(app, "anisotropy", NULL) &&
+           strstr(app->editor.note, "Anisotropic filtering: Windows only. ") &&
+           strstr(app->editor.note, "and it stays 0 [default]"));
+    /* a pick from a file, as another system's or an older version's wrote it: shown with its mark, passed to a run,
+       left by Enter, which says it; Del puts the default back */
+    assert(gui_settings_set(&app->settings, "vulkan_driver", "moltenvk"));
+    info = (UiRowInfo){0};
+    assert(form_row_info(app, &app->editor, 1, form_labels(&app->editor), 0, &info) && (info.attr & UI_ATTR_OFF) &&
+           strstr(info.label, "MoltenVK " GUI_CHANGED_MARK " macOS only"));
+    assert(gui_settings_options(&app->settings, 0, options) == 1 && !strcmp(options[0], "--vulkan_driver=moltenvk"));
+    app->editor.row = 1;
+    key(app, SDLK_RETURN);
+    assert(strstr(app->editor.note, "and it stays MoltenVK") && setting_is(app, "vulkan_driver", "moltenvk"));
+    key(app, SDLK_DELETE);
+    assert(setting_is(app, "vulkan_driver", NULL));
+    /* a row of every system beside them: Enter steps it */
+    app->editor.row = 0;
+    app->editor.note[0] = 0;
+    key(app, SDLK_RETURN);
+    assert(setting_is(app, "vsync", "0") && !strstr(app->editor.note, "only"));
+    key(app, SDLK_DELETE);
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_SETTINGS);
+    /* on its own system the runtime lists it with no systems: a row as any, which Enter steps */
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, here));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    app->editor.row = group;
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_GROUP && !form_row_off(app, &app->editor, 1));
+    info = (UiRowInfo){0};
+    assert(form_row_info(app, &app->editor, 1, form_labels(&app->editor), 0, &info) && !(info.attr & UI_ATTR_OFF) &&
+           strstr(info.label, "Auto [default]") && !strstr(info.label, "only"));
+    app->editor.row = 1;
+    key(app, SDLK_RETURN);
+    assert(setting_is(app, "vulkan_driver", "moltenvk") && !app->editor.note[0]);
+    key(app, SDLK_DELETE);
+    key(app, SDLK_ESCAPE);
+    leave_editor(app);
+}
 /* Settings > Controllers > Button map: the pad drawn (pad_screen.h) with what each control sends, on SDL's virtual
    Xbox pad. No presets: each control the button in its place, gamepad_map over that, A and B as gamepad_swap_ab says;
    the keys, the pad's presses, its triggers and stick, a click and the wheel act on it, each change kept in the picks
@@ -14575,6 +14675,7 @@ int main(int argc, char** argv) {
         leave_editor(&app);
     }
     players_view(&app);
+    only_rows(&app);
     icons_named();
     help_icons_named();
     step_line();

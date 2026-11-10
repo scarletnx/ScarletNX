@@ -29,6 +29,9 @@
 #     default VALUE       its value until one is read, as the .ini writes it ("" or none for empty text)
 #     default-if MACRO V  its default where MACRO is defined (#if defined): up to four, the first that holds
 #     once                written to the .ini only once it is set (the default stays its value until then)
+#     only SYSTEM         it does something on SYSTEM alone: macos, windows, android, linux (Android too) or
+#                         arm64-linux (the same on arm64). On another system the launcher's Settings grey its row and
+#                         say which beside it (ini.h's ini_only); its value is read and written there as anywhere
 #     words W|W...        the menus' words (ini.h): an int's for LO, LO + step..., a text's value=word
 #     step N, shift N     the menus' step and shift (ini.h)
 #     label TEXT          the menus' name when it is not NAME (the game's menu shows a page's settings by it)
@@ -238,6 +241,7 @@ setting Vulkan Video decode
     help decode on the CPU
 setting Vulkan driver
     key vulkan_driver
+    only macos
     label Vulkan driver
     text 16
     default auto
@@ -453,6 +457,7 @@ setting Compress prepared shaders
     help made. What is packed is read either way
 setting NCE
     key nce
+    only arm64-linux
     int 0 1
     default 1
     startup
@@ -560,6 +565,7 @@ setting D-pad slide
     help 1 = a finger sliding on the D-pad changes its direction
 setting Haptics
     key controls_haptics
+    only android
     int 0 1
     default 1
     words Off|On
@@ -1071,6 +1077,7 @@ setting GDB JIT symbols
     help blocks compile one at a time) to a crawl. Each compile's object is also kept in memory for the whole run
 setting Alias pool
     key alias_pool
+    only linux
     int 0 1
     default 1
     startup
@@ -1123,6 +1130,7 @@ setting Host page size
 setting NCE foreign scan
     label NCE address scan
     key nce_foreign_scan
+    only arm64-linux
     int 0 3600
     default 0
     startup
@@ -1152,6 +1160,7 @@ setting Draw state check
     help a draw keeps
 setting Profiler
     key profile
+    only windows
     int 0 1
     default 0
     startup

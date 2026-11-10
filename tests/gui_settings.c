@@ -766,6 +766,20 @@ int main(int argc, char** argv) {
         assert(key(&s, "resolution")->lo == 0.25 && key(&s, "resolution")->hi == 16.0);
         page = at(&s, "Buttons");
         assert(page > 0 && s.values[page].count == 1 + 17 && !strcmp(s.keys[page + 2].key, "L"));
+        /* a setting of some systems alone says where on every other, last on its line: the Mac's Vulkan driver, the
+           phone's buzz; one of every system says nothing, nor do the launcher's own rows */
+        assert(!s.values[at(&s, "fullscreen")].only && !s.values[at(&s, "gdbstub")].only);
+#if defined(__APPLE__) && !defined(SNX_IOS)
+        assert(!s.values[at(&s, "vulkan_driver")].only);
+#else
+        assert(!strcmp(s.values[at(&s, "vulkan_driver")].only, "macOS only"));
+#endif
+#if defined(__ANDROID__)
+        assert(!s.values[at(&s, "controls_haptics")].only);
+#else
+        assert(!strcmp(s.values[at(&s, "controls_haptics")].only, "Android only"));
+#endif
+        assert(words(key(&s, "vulkan_driver")) == 3 && !strcmp(on_screen(&s, "vulkan_driver"), "Auto [default]"));
         /* each game's setting the recompile takes too is a row, which a run that makes the game (-r) gets picked off its
            default, NCE Off among them, and a run with the game's options alone */
         {
@@ -788,6 +802,25 @@ int main(int argc, char** argv) {
         }
         gui_settings_free(&s);
         free(output);
+    }
+    /* where a setting does something, the line's last field, when this system is not one: kept for its greyed row,
+       its words and its pick as any row's, passed to a run and saved as they were; none for a line without the
+       field (an older runtime's) or with it empty */
+    {
+        static const char list[] =
+            "Graphics\tvulkan_driver\tauto\ttext\t0\t0\tThe driver\tVulkan driver\tauto=Auto|moltenvk=MoltenVK\t"
+            "macOS only\n"
+            "Graphics\tvsync\t1\tint\t0\t1\tNo tearing\tVSync\t0=Off|1=On\t\n"
+            "Graphics\tshadows\t1\tint\t0\t1\tShadow maps\tShadows\t0=Off|1=On\n"
+            "Debug\tprofile\t0\tint\t0\t1\tThe profiler\tProfiler\t0=Off|1=On\tWindows only";
+        assert(!gui_settings_read(&s, list));
+        assert(!strcmp(s.values[at(&s, "vulkan_driver")].only, "macOS only") && !s.values[at(&s, "vsync")].only &&
+               !s.values[at(&s, "shadows")].only && !strcmp(s.values[at(&s, "profile")].only, "Windows only"));
+        assert(words(key(&s, "vulkan_driver")) == 2 && !strcmp(key(&s, "vulkan_driver")->words[1], "MoltenVK") &&
+               words(key(&s, "profile")) == 2 && !strcmp(on_screen(&s, "vulkan_driver"), "Auto [default]"));
+        assert(gui_settings_set(&s, "vulkan_driver", "moltenvk") && gui_settings_options(&s, 0, options) == 1 &&
+               !strcmp(options[0], "--vulkan_driver=moltenvk") && !strcmp(on_screen(&s, "vulkan_driver"), "MoltenVK"));
+        gui_settings_free(&s);
     }
     /* the Debug settings a run of a game takes off their default: its .ini's, a pick over it, a text by its key alone,
        the GDB stub; another section's never */

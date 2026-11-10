@@ -27,6 +27,7 @@ typedef struct {
     const char** values;                /* a word row's values by word, NULL where the words are the values */
     const char* fallback; /* the runtime's default for the .ini, as the row words it: what it shows while not picked */
     const char* def;      /* that default as the .ini writes it */
+    const char* only;     /* where it does something, when not on this system ("macOS only", ini.h's ini_only) */
     int kind;             /* 0, GUI_SETTING_PAGE or GUI_SETTING_ALL */
     int plain;            /* a word row whose words are its values alone, no .ini's: its default's is no pick */
     int always;           /* plain, and passed to every run, its start too (gui_settings_always) */
@@ -41,7 +42,8 @@ typedef struct {
 } GuiSettings;
 /* the launcher's own rows and the recompiler's (g_launch_sections, listed by ini_list_text), then the runtime's list of
    the game's settings, a line each (section[/page], key, default, int | float | text, lowest, highest, help, name, the
-   values value=word between '|', tabs between); another line is left out. A page's rows are listed after its
+   values value=word between '|', where it does something when not on this system, tabs between); another line is
+   left out. A page's rows are listed after its
    section's others, one page a section. 0, else nonzero when out of memory */
 int gui_settings_read(GuiSettings* settings, const char* runtime);
 void gui_settings_free(GuiSettings* settings);
