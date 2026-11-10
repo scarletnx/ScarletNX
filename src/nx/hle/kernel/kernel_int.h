@@ -73,8 +73,9 @@ int sleep_nl(KThread* t, i64 timeout);
 
 /* ---- thread.c: threads and the guest cores */
 int kthread_live_count(void);
-/* a thread with no reference: the first handle takes one, as its host thread does from its start to its exit */
-KThread* kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core);
+/* a thread with no reference: the first handle takes one, as its host thread does from its start to its exit. 0, or
+   the result svcCreateThread answers, with *out NULL */
+u32 kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core, KThread** out);
 /* h, the thread's own handle, where an Ounce program's thread finds it in its TLS (thread.c) */
 void kthread_set_own_handle(KThread* t, u32 h);
 void kthread_start(KThread* t);

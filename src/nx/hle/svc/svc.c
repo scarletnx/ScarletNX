@@ -150,15 +150,18 @@ static u32 create_thread(u64 entry, u64 arg, u64 stack_top, i32 prio, i32 core, 
     if (core == -2) core = g_hle.thread.default_core;
     R_UNLESS(core >= 0 && core < NCORES && ((g_hle.svcmem.core_mask >> core) & 1), SNX_RC_SVC_INVALID_CORE_ID);
     R_UNLESS(valid_prio(prio), SNX_RC_SVC_INVALID_PRIORITY);
-    u32 rc;
-    t = kthread_create(entry, arg, stack_top, prio, core);
-    if (!t) {
+    u32 rc = kthread_create(entry, arg, stack_top, prio, core, &t);
+    if (rc == SNX_RC_SVC_LIMIT_REACHED)
+        WARN_LIMIT(4,
+                   "svcCreateThread: the process has %d threads that have not exited, the most a console application "
+                   "may, the game gets LimitReached (%#x)\n",
+                   THREAD_MAX, rc);
+    else if (rc)
         WARN_LIMIT(4,
                    "svcCreateThread: all %d thread slots are in use (exited threads keep theirs while a handle to "
                    "them is open), the game gets OutOfResource (%#x)\n",
-                   KTHREAD_MAX, SNX_RC_SVC_OUT_OF_RESOURCE);
-        R_THROW(SNX_RC_SVC_OUT_OF_RESOURCE);
-    }
+                   KTHREAD_MAX, rc);
+    R_TRY(rc);
     rc = give_handle(&t->o, out);
     if (!rc) kthread_set_own_handle(t, *out);
     return rc;
