@@ -780,6 +780,7 @@ static int create_device(void) {
         /* a portability driver's subset must be enabled when it has one (MoltenVK) */
         has_portability = snx_vk_extensions_has(&e, "VK_KHR_portability_subset");
         if (has_portability) ext[next++] = "VK_KHR_portability_subset";
+        g_vk.has_portability = has_portability;
         video_exts = snx_vk_extensions_has(&e, VK_KHR_VIDEO_QUEUE_EXTENSION_NAME) +
                      snx_vk_extensions_has(&e, VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME) +
                      snx_vk_extensions_has(&e, VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME);
