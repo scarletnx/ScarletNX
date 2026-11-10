@@ -79,6 +79,8 @@ int nvn_subroutine_apply(u32 linkage, i32 first, i32 count, const i32* values) {
 u32 nvn_rt_format(u32 format, int* depth) {
     *depth = format == NVN_FORMAT_DEPTH32F;
     if (*depth) return 0x0a;
+    if (format == NVN_FORMAT_RGBA32UI) return 0xC2;
+    if (format == NVN_FORMAT_RG32UI) return 0xCD;
     return format == NVN_FORMAT_RGBA8 ? 0xD5 : 0; /* compressed formats: no target takes them */
 }
 void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
@@ -111,9 +113,12 @@ u32 nvn_tex_msaa(int samples) {
          : samples == 8 ? DS_MSAA_4X2 : samples == 16 ? DS_MSAA_4X4 : DS_MSAA_1X1;
 }
 int nvn_fmt_bpb(int format, int* bw, int* bh) {
-    int bc7 = format == NVN_FORMAT_BPTC_UNORM_SRGB, bc1 = format == NVN_FORMAT_RGBA_DXT1;
+    int bc7 = format == NVN_FORMAT_BPTC_UNORM_SRGB || format == NVN_FORMAT_RGTC2_UNORM; /* 16-byte blocks */
+    int bc1 = format == NVN_FORMAT_RGBA_DXT1;
     if (bw) *bw = bc7 || bc1 ? 4 : 1;
     if (bh) *bh = bc7 || bc1 ? 4 : 1;
+    if (format == NVN_FORMAT_RGBA32UI) return 16;
+    if (format == NVN_FORMAT_RG32UI) return 8;
     return bc7 ? 16 : bc1 ? 8 : format == NVN_FORMAT_RGBA8 ? 4 : 0;
 }
 void logf_(int lvl, const char* fmt, ...) {
@@ -1321,6 +1326,45 @@ static void test_compressed_targets(void) {
     }
 }
 
+/* a compressed texture bound through a view whose texel has the bytes of a block (a program encodes a BC5 texture
+   on the GPU through an RGBA32UI view): the target's texels are the texture's blocks, not its texels. A view whose
+   texel is not a block, and the same format on a texture that is not compressed, keep the texture's size */
+static void test_block_texel_views(void) {
+    static const struct {
+        u32 format, view, rt, w, h;
+    } cases[] = {{NVN_FORMAT_RGTC2_UNORM, NVN_FORMAT_RGBA32UI, 0xC2, 100, 60},
+                 {NVN_FORMAT_RGBA_DXT1, NVN_FORMAT_RG32UI, 0xCD, 100, 60},
+                 {NVN_FORMAT_RGBA_DXT1, NVN_FORMAT_RGBA32UI, 0xC2, 400, 240},
+                 {NVN_FORMAT_RGBA8, NVN_FORMAT_RGBA32UI, 0xC2, 400, 240},
+                 {NVN_FORMAT_RGBA32UI, NVN_FORMAT_RGBA32UI, 0xC2, 400, 240}};
+    for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) {
+        NvnTexture t = {0};
+        t.magic = NVN_MAGIC('T', 'E', 'X', 0);
+        t.gpu = 0x100000;
+        t.d.format = (u16)cases[i].format;
+        t.d.target = NVN_TEXTURE_TARGET_2D;
+        t.d.width = 400;
+        t.d.height = 240;
+        t.d.depth = 1;
+        t.d.levels = 1;
+        memcpy(g_mem + TEXSNAP, &t, NVN_TEX_SNAP);
+        NvnView v = {0};
+        v.set = NVN_VIEW_FORMAT;
+        v.format = cases[i].view;
+        DsSurf ds;
+        int depth = 1;
+        u32 msaa;
+        check(nvn_draw_surface(TEXSNAP, &v, &ds, &depth, &msaa) && ds.format == cases[i].rt && !depth &&
+                  ds.height == cases[i].h,
+              "format %#x through a view of %#x: %#x, %u high for %u", cases[i].format, cases[i].view, ds.format,
+              ds.height, cases[i].h);
+        /* the width a whole number of 64-byte GOBs across: 100 blocks of 16 bytes are 25 */
+        u32 texel = cases[i].rt == 0xC2 ? 16 : 8, wide = (cases[i].w * texel + 63) / 64 * 64 / texel;
+        check(ds.width == wide, "format %#x through a view of %#x: %u wide for %u", cases[i].format, cases[i].view,
+              ds.width, wide);
+    }
+}
+
 static void test_depth_sample_layouts(void) {
     NvnDraw draw;
     nvn_draw_init(&draw, 7);
@@ -1413,6 +1457,7 @@ int main(int argc, char** argv) {
     nvn_init();
     test_samples_without_reset();
     test_compressed_targets();
+    test_block_texel_views();
     test_depth_sample_layouts();
     test_init();
     test_barriers();

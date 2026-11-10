@@ -302,6 +302,13 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
         *depth = 0;
     } else {
         bw = bh = 1;
+        /* A view of another format whose texel has the bytes of the compressed texture's block (an encoder that
+           writes a BC5 texture through an RGBA32UI view): the target's texels are the blocks too, as a Vulkan
+           block-texel view's are */
+        if (format != t.d.format) {
+            int tw = 1, th = 1;
+            if (nvn_fmt_bpb((int)t.d.format, &tw, &th) == bpb && (tw > 1 || th > 1)) bw = tw, bh = th;
+        }
     }
     if (!s->format) {
         LOG_LIMIT(8, "nvn: a render target of format %#x, which no target takes\n", format);
