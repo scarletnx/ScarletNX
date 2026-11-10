@@ -593,6 +593,52 @@ static int emit_routes(SnxIr* ir, int all, char* error, size_t error_size) {
     return 0;
 }
 
+/* SNX_EXPORT const SnxNros* snx_nros(void): where the NROs the program maps while it runs go (module_abi.h), for
+   ldr:ro to map each at the address its own module was made for */
+static int emit_nros(SnxIr* ir, const SnxCodegenOptions* options, const SnxProgram* loaded, char* error,
+                     size_t error_size) {
+    LLVMTypeRef slot_fields[3] = {LLVMArrayType(ir->t_i8, 32), ir->t_i64, ir->t_i64};
+    LLVMTypeRef slot_type = LLVMStructTypeInContext(ir->ctx, slot_fields, 3, 0);
+    LLVMTypeRef fields[5] = {ir->t_i32, ir->t_i32, ir->t_i64, ir->t_i64, ir->t_ptr};
+    LLVMTypeRef type = LLVMStructTypeInContext(ir->ctx, fields, 5, 0);
+    LLVMTargetDataRef layout = LLVMGetModuleDataLayout(ir->mod);
+    SnxU64 lo = 0;
+    if (LLVMABISizeOfType(layout, slot_type) != sizeof(SnxNroSlot) ||
+        LLVMOffsetOfElement(layout, slot_type, 1) != offsetof(SnxNroSlot, base) ||
+        LLVMOffsetOfElement(layout, slot_type, 2) != offsetof(SnxNroSlot, size) ||
+        LLVMABISizeOfType(layout, type) != sizeof(SnxNros) ||
+        LLVMOffsetOfElement(layout, type, 2) != offsetof(SnxNros, lo) ||
+        LLVMOffsetOfElement(layout, type, 3) != offsetof(SnxNros, hi) ||
+        LLVMOffsetOfElement(layout, type, 4) != offsetof(SnxNros, slots)) {
+        snprintf(error, error_size, "SnxNros layout differs between the recompiler and the LLVM target");
+        return -1;
+    }
+    for (size_t i = 0; i < loaded->module_count; ++i)
+        if (loaded->modules[i].base + loaded->modules[i].size > lo)
+            lo = loaded->modules[i].base + loaded->modules[i].size;
+    LLVMValueRef* values = (LLVMValueRef*)snx_alloc(options->nro_count * sizeof(*values));
+    for (size_t i = 0; i < options->nro_count; ++i) {
+        LLVMValueRef f[3], hash[32];
+        for (size_t j = 0; j < 32; ++j) hash[j] = ir_i8(ir, options->nros[i].hash[j]);
+        f[0] = LLVMConstArray(ir->t_i8, hash, 32);
+        f[1] = ir_i64(ir, options->nros[i].base);
+        f[2] = ir_i64(ir, options->nros[i].size);
+        values[i] = LLVMConstStructInContext(ir->ctx, f, 3, 0);
+    }
+    LLVMValueRef slots = global(ir, LLVMArrayType(slot_type, (unsigned)options->nro_count), "NRO_SLOTS",
+                                LLVMConstArray(slot_type, values, (unsigned)options->nro_count), 1);
+    free(values);
+    LLVMValueRef f[5] = {ir_i32(ir, SNX_NROS_VERSION), ir_i32(ir, (SnxU32)options->nro_count), ir_i64(ir, lo),
+                         ir_i64(ir, options->nro_end), slots};
+    LLVMValueRef nros = global(ir, type, "NROS", LLVMConstStructInContext(ir->ctx, f, 5, 0), 1);
+    LLVMValueRef fn = LLVMAddFunction(ir->mod, "snx_nros", LLVMFunctionType(ir->t_ptr, NULL, 0, 0));
+    if (ir->windows) LLVMSetDLLStorageClass(fn, LLVMDLLExportStorageClass);
+    ir->fn = fn;
+    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, fn, "entry"));
+    LLVMBuildRet(ir->b, nros);
+    return 0;
+}
+
 unsigned snx_module_abi(void) { return SNX_ABI; }
 static const char* base_name(const char* path) {
     const char *name = path, *p;
@@ -624,7 +670,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     unsigned char *module_object = NULL, *rtlib_object = NULL;
     size_t module_size = 0, rtlib_size = 0, first, last, count, limit, i, entry_count = 0, wrapped = 0, n = 0;
     size_t cache_count = 0, variant_count = 0, export_count = 1;
-    const char* exports[3];
+    const char* exports[4];
     char error[1024], *tmp = NULL;
     double start;
     int rc = -1;
@@ -733,6 +779,10 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         snx_error("LLVM backend: %s", error);
         goto done;
     }
+    if (options->nro_count && emit_nros(ir, options, loaded, error, sizeof(error))) {
+        snx_error("LLVM backend: %s", error);
+        goto done;
+    }
     if (cache_count &&
         snx_module_variants_emit(ir, cache, &variant_count, error, sizeof(error))) {
         snx_error("LLVM backend: %s", error);
@@ -782,6 +832,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     exports[0] = "snx_module";
     exports[export_count++] = "snx_routes";
     if (variant_count) exports[export_count++] = "snx_variants";
+    if (options->nro_count) exports[export_count++] = "snx_nros";
     tmp = snx_format("%s.tmp", build->output);
     if (build->triple) {
         /* the pack to its file a record at a time, the code generator's tables gone first: a game of hundreds of

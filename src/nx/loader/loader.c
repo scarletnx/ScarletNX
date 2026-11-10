@@ -960,6 +960,68 @@ int snx_load_nro(const char* path, SnxModuleImage* module, char* error, size_t e
     return 0;
 }
 
+int snx_load_nro_at(const unsigned char* data, size_t size, const char* name, SnxU64 base, const SnxNpdm* npdm,
+                    SnxProgram* program, char* error, size_t error_size) {
+    SnxModuleImage* m;
+    memset(program, 0, sizeof(*program));
+    program->modules = (SnxModuleImage*)snx_alloc(sizeof(*program->modules));
+    m = program->modules;
+    memset(m, 0, sizeof(*m));
+    set_names(m, "main", name);
+    program->module_count = 1;
+    if (!decode_nro(m, data, size, error, error_size)) {
+        m->image = (unsigned char*)snx_alloc(m->image_size);
+        memcpy(m->image, data, m->image_size);
+        m->base = base;
+        program->npdm = *npdm;
+        if (!npdm->is64)
+            fail(error, error_size, snx_format("%s: an NRO of a 32-bit program is not recompiled", name));
+        else if ((base & (SNX_PAGE_SIZE - 1)) || base < SNX_CODE_BASE || m->size > CODE_END64 - base)
+            fail(error, error_size,
+                 snx_format("%s: no NRO of %llu bytes goes at %#llx", name, (unsigned long long)m->size,
+                            (unsigned long long)base));
+        else if (!read_metadata(m, 1, NULL, error, error_size))
+            return 0;
+    }
+    snx_free_program(program);
+    return -1;
+}
+
+/* the page left free before each NRO: ldr:ro maps a code view only with a free page on either side of it (mem.c's
+   mem_map_code), which the game's own modules, one right after another, need none of */
+#define NRO_GUARD SNX_PAGE_SIZE
+static int slot_order(const void* a, const void* b) {
+    return memcmp(((const SnxNroSlot*)a)->hash, ((const SnxNroSlot*)b)->hash, 32);
+}
+int snx_nro_slots_place(SnxNroSlot* slots, size_t* count, SnxU64 after, SnxU64* end, char* error, size_t error_size) {
+    /* a module's entries are 32-bit offsets from SNX_CODE_BASE (module_llvm.c's ENT_OFF) */
+    const SnxU64 limit = SNX_CODE_BASE + 0x100000000ull;
+    SnxU64 cursor = page_up(after);
+    size_t i, kept = 0;
+    qsort(slots, *count, sizeof(*slots), slot_order);
+    for (i = 0; i < *count; ++i)
+        if (!kept || memcmp(slots[kept - 1].hash, slots[i].hash, 32)) slots[kept++] = slots[i];
+    for (i = 0; i < kept; ++i) {
+        SnxU64 size = page_up(slots[i].size);
+        if (cursor > limit || NRO_GUARD > limit - cursor || size > limit - cursor - NRO_GUARD)
+            return fail(error, error_size,
+                        snx_format("the program's %zu NROs do not fit below %#llx after its modules, which end at "
+                                   "%#llx: NRO %zu of %llu bytes would start at %#llx",
+                                   kept, (unsigned long long)limit, (unsigned long long)after, i,
+                                   (unsigned long long)size, (unsigned long long)cursor));
+        cursor += NRO_GUARD + size;
+    }
+    cursor = page_up(after);
+    for (i = 0; i < kept; ++i) {
+        slots[i].size = page_up(slots[i].size);
+        slots[i].base = cursor + NRO_GUARD;
+        cursor = slots[i].base + slots[i].size;
+    }
+    *count = kept;
+    *end = cursor;
+    return 0;
+}
+
 int snx_nro_icon(const char* path, unsigned char** icon, size_t* size, char* error, size_t error_size) {
     unsigned char header[NRO_HEADER_SIZE], asset[ASET_HEADER_SIZE];
     SnxU64 file_size = snx_file_size(path), image = 0, off, length = 0;

@@ -2574,6 +2574,11 @@ add_test(NAME llvm_fp_store COMMAND snx-test-llvm-fp-store)
 add_executable(snx-test-llvm-module llvm_module.c llvm_steps.c)
 snx_test_target(snx-test-llvm-module 11)
 target_link_libraries(snx-test-llvm-module PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+# the NROs of a game's RomFS made ahead of time: the game module's table of where they go, and each one's own module
+add_executable(snx-test-nro-modules nro_modules.c)
+snx_test_target(snx-test-nro-modules 11)
+target_link_libraries(snx-test-nro-modules PRIVATE snx_llvm snx_driver OpenSSL::Crypto ${CMAKE_DL_LIBS})
+add_test(NAME nro_modules COMMAND snx-test-nro-modules $<TARGET_FILE:scarletnx> "${CMAKE_CURRENT_BINARY_DIR}/nro-modules-data")
 add_test(NAME llvm_module COMMAND snx-test-llvm-module $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}")
 add_test(NAME llvm_module_stats COMMAND snx-test-llvm-module $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}" --stats)
 # the recompiler as a library (snx_recompiler.h): A64 on every backend built, A32, from code in memory
@@ -3463,7 +3468,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
 endif()
 # these recompile with --repo of the checkout, which keeps the code units (nx/loader/unit_cache.c) in the user's cache
 # folder: a folder of the build tree's instead, where XDG names it
-foreach(snx_test native_recompiler llvm_module nx_runtime_homebrew nx_runtime_homebrew_64k_pages)
+foreach(snx_test native_recompiler llvm_module nro_modules nx_runtime_homebrew nx_runtime_homebrew_64k_pages)
     if(TEST ${snx_test})
         set_property(TEST ${snx_test} APPEND PROPERTY ENVIRONMENT "XDG_CACHE_HOME=${CMAKE_CURRENT_BINARY_DIR}/xdg-cache")
     endif()
