@@ -78,7 +78,8 @@ int kthread_live_count(void);
 u32 kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core, KThread** out);
 /* h, the thread's own handle, where an Ounce program's thread finds it in its TLS (thread.c) */
 void kthread_set_own_handle(KThread* t, u32 h);
-void kthread_start(KThread* t);
+/* 0, or InvalidState for a thread that has started already: only one call starts it */
+u32 kthread_start(KThread* t);
 void svc_exit_thread(KThread* t);
 void process_exit(int code);
 /* gives the core to a waiting thread of higher priority, then waits for it again */
