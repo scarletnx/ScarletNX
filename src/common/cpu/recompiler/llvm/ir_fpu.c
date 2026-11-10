@@ -425,7 +425,7 @@ static void fp_move(SnxIr* ir, const SnxA64Args* a, int op) {
 static void fp_sqrt(SnxIr* ir, const SnxA64Args* a) {
     unsigned width = width_of(a->esz);
     V n = fp_reg(ir, (unsigned)a->rn, width), r;
-    if (width != 16 && host_fp(ir)) {
+    if (width != 16 && host_sqrt(ir)) {
         V ok, inexact, fast = fast_sqrt(ir, width, n, &ok, &inexact);
         relax(ir, width, fast, &ok, &inexact);
         Split s;
