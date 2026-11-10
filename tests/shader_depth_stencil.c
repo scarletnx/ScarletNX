@@ -99,11 +99,12 @@ static uint32_t* make_scalar_module(size_t* words) {
     uint32_t input[RESULT_PASS];
     for (uint32_t i = 0; i < RESULT_PASS; i++) input[i] = spv_emit_load(&e, u, buffer_word(&e, u, buffer, i));
     uint32_t zero = spv_emit_constant_u32(&e, u, 0);
-    ShaderDepthStencilResult result = shader_depth_stencil_evaluate(&e, f, u, b, input,
-        spv_emit_bitcast(&e, f, input[INPUT_DEPTH]), input[OLD_DEPTH], input[OLD_STENCIL],
-        spv_emit_i_not_equal(&e, b, input[FRONT], zero), spv_emit_i_not_equal(&e, b, input[COVERED], zero));
-    spv_emit_store(&e, buffer_word(&e, u, buffer, RESULT_PASS), spv_emit_select(&e, u, result.pass,
-        spv_emit_constant_u32(&e, u, 1), zero));
+    ShaderDepthStencilResult result = shader_depth_stencil_evaluate(
+        &e, f, u, b, input, spv_emit_unary(&e, SPV_OP_BITCAST, f, input[INPUT_DEPTH]), input[OLD_DEPTH],
+        input[OLD_STENCIL], spv_emit_binary(&e, SPV_OP_I_NOT_EQUAL, b, input[FRONT], zero),
+        spv_emit_binary(&e, SPV_OP_I_NOT_EQUAL, b, input[COVERED], zero));
+    spv_emit_store(&e, buffer_word(&e, u, buffer, RESULT_PASS),
+                   spv_emit_ternary(&e, SPV_OP_SELECT, u, result.pass, spv_emit_constant_u32(&e, u, 1), zero));
     spv_emit_store(&e, buffer_word(&e, u, buffer, RESULT_DEPTH), result.depth);
     spv_emit_store(&e, buffer_word(&e, u, buffer, RESULT_STENCIL), result.stencil);
     spv_emit_return(&e);
@@ -346,11 +347,12 @@ static uint32_t* make_guarded_module(size_t* words) {
     uint32_t input[4];
     for (uint32_t i = 0; i < 4; i++) input[i] = spv_emit_load(&e, u, buffer_word(&e, u, buffer, GUARDED_INDEX + i));
     uint32_t zero = spv_emit_constant_u32(&e, u, 0);
-    uint32_t result = shader_depth_stencil_test(&e, f, u, b, buffer, input[0],
-        spv_emit_bitcast(&e, f, input[1]), spv_emit_i_not_equal(&e, b, input[2], zero),
-        spv_emit_i_not_equal(&e, b, input[3], zero));
-    spv_emit_store(&e, buffer_word(&e, u, buffer, GUARDED_RESULT), spv_emit_select(&e, u, result,
-        spv_emit_constant_u32(&e, u, 1), zero));
+    uint32_t result =
+        shader_depth_stencil_test(&e, f, u, b, buffer, input[0], spv_emit_unary(&e, SPV_OP_BITCAST, f, input[1]),
+                                  spv_emit_binary(&e, SPV_OP_I_NOT_EQUAL, b, input[2], zero),
+                                  spv_emit_binary(&e, SPV_OP_I_NOT_EQUAL, b, input[3], zero));
+    spv_emit_store(&e, buffer_word(&e, u, buffer, GUARDED_RESULT),
+                   spv_emit_ternary(&e, SPV_OP_SELECT, u, result, spv_emit_constant_u32(&e, u, 1), zero));
     spv_emit_return(&e); spv_emit_function_end(&e);
     spv_emit_compute_entry_str(&e, function, "main", &buffer, 1);
     spv_emit_local_size(&e, function, 1, 1, 1);

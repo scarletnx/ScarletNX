@@ -12,7 +12,7 @@ void shader_var_flush(void* user) {
         if (!c->var_dirty[v]) continue;
         c->var_dirty[v] = 0;
         if (c->var_block[v] != c->emit.block) continue;
-        if (!c->var_val[v]) c->var_val[v] = spv_emit_bitcast(&c->emit, c->u32_type, c->reg_alt[v]);
+        if (!c->var_val[v]) c->var_val[v] = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, c->reg_alt[v]);
         spv_emit_store(&c->emit, var_of(c, v), c->var_val[v]);
     }
 }
@@ -38,13 +38,13 @@ u32 shader_ftz_read(DirectCtx* c, const u64* insn, const u8* block_start, u32 i,
 }
 
 void shader_flags_logic(DirectCtx* c, u32 value) {
-    u32 sign = spv_emit_i_not_equal(&c->emit, c->bool_type,
-                                    spv_emit_bitwise_and_u32(&c->emit, c->u32_type, value,
-                                                             spv_emit_constant_u32(&c->emit, c->u32_type, 0x80000000u)),
-                                    c->zero);
+    u32 sign = spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type,
+                               spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, value,
+                                               spv_emit_constant_u32(&c->emit, c->u32_type, 0x80000000u)),
+                               c->zero);
     cc_store(c, c->cc_c, c->false_value);
     cc_store(c, c->cc_o, c->false_value);
-    cc_store(c, c->cc_z, spv_emit_i_equal(&c->emit, c->bool_type, value, c->zero));
+    cc_store(c, c->cc_z, spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, value, c->zero));
     cc_store(c, c->cc_s, sign);
 }
 
@@ -52,12 +52,12 @@ void shader_flags_logic(DirectCtx* c, u32 value) {
    the words of a wider value. */
 void shader_flags_logic_extended(DirectCtx* c, u32 value, int extended) {
     u32 previous = extended ? flag_read(c, c->cc_z) : 0;
-    u32 zero = spv_emit_i_equal(&c->emit, c->bool_type, value, c->zero);
+    u32 zero = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, value, c->zero);
     if (extended) zero = spv_emit_bool_binary(&c->emit, c->bool_type, 0, previous, zero);
-    u32 sign = spv_emit_i_not_equal(&c->emit, c->bool_type,
-                                    spv_emit_bitwise_and_u32(&c->emit, c->u32_type, value,
-                                                             spv_emit_constant_u32(&c->emit, c->u32_type, 0x80000000u)),
-                                    c->zero);
+    u32 sign = spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type,
+                               spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, value,
+                                               spv_emit_constant_u32(&c->emit, c->u32_type, 0x80000000u)),
+                               c->zero);
     cc_store(c, c->cc_z, zero);
     cc_store(c, c->cc_s, sign);
 }

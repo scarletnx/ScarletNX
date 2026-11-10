@@ -8,20 +8,23 @@
    and past an OpTypeArray in SPIR-V. A vertex of an input or output array is kept inside it the same way */
 u32 shader_shared_index(DirectCtx* c, u32 index, u32 words) {
     u32 last = spv_emit_constant_u32(&c->emit, c->u32_type, words - 1);
-    return spv_emit_select(&c->emit, c->u32_type, spv_emit_u_less(&c->emit, c->bool_type, last, index), last, index);
+    return spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
+                            spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, last, index), last, index);
 }
 /* what an atomic INC (decrement 0) or DEC (1) leaves in place of old, value its operand: INC wraps to 0 once old
    reaches value, DEC to value from 0 or from above it (CUDA's atomicInc and atomicDec, which these are) */
 u32 shader_wrap_step(DirectCtx* c, u32 old, u32 value, int decrement) {
     if (!decrement) {
         u32 increment = spv_emit_iadd_u32(&c->emit, c->u32_type, old, spv_emit_constant_u32(&c->emit, c->u32_type, 1));
-        return spv_emit_select(&c->emit, c->u32_type, cc_not(c, spv_emit_u_less(&c->emit, c->bool_type, old, value)),
-                               c->zero, increment);
+        return spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
+                                cc_not(c, spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, old, value)),
+                                c->zero, increment);
     }
-    u32 decremented = spv_emit_isub_u32(&c->emit, c->u32_type, old, spv_emit_constant_u32(&c->emit, c->u32_type, 1));
-    u32 zero = spv_emit_i_equal(&c->emit, c->bool_type, old, c->zero);
-    u32 greater = spv_emit_u_less(&c->emit, c->bool_type, value, old);
-    return spv_emit_select(&c->emit, c->u32_type, cc_or(c, zero, greater), value, decremented);
+    u32 decremented =
+        spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, old, spv_emit_constant_u32(&c->emit, c->u32_type, 1));
+    u32 zero = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, old, c->zero);
+    u32 greater = spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, value, old);
+    return spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, cc_or(c, zero, greater), value, decremented);
 }
 /* an atomic INC or DEC (shader_wrap_step) on pointer, an image texel's, which only atomics may read: a compare and exchange
    loop through old_var. What the texel held before */
@@ -38,7 +41,8 @@ u32 shader_atomic_wrap_loop(DirectCtx* c, u32 old_var, u32 pointer, u32 value, i
     u32 observed = spv_emit_atomic_compare_exchange_u32(&c->emit, c->u32_type, pointer,
                                                         shader_wrap_step(c, old, value, decrement), old);
     spv_emit_store(&c->emit, old_var, observed);
-    spv_emit_branch_conditional(&c->emit, spv_emit_i_equal(&c->emit, c->bool_type, observed, old), merge, cont);
+    spv_emit_branch_conditional(&c->emit, spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, observed, old), merge,
+                                cont);
     spv_emit_label(&c->emit, cont);
     spv_emit_branch(&c->emit, header);
     spv_emit_label(&c->emit, merge);
@@ -63,15 +67,15 @@ static u32 cbuf_entry(DirectCtx* c, u64 w) {
         /* an indirect draw's base vertex or instance: its record's, which the GPU has, where the push says so */
         int vertex = off == SH_CB0_BASE_VERTEX;
         u32 flags =
-            spv_emit_bitcast(&c->emit, c->u32_type,
-                             spv_emit_push_component_f32(&c->emit, c->dp_push_pointer, c->dp_push, c->zero,
-                                                         spv_emit_constant_u32(&c->emit, c->u32_type, 2), c->f32_type));
+            spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
+                           spv_emit_push_component_f32(&c->emit, c->dp_push_pointer, c->dp_push, c->zero,
+                                                       spv_emit_constant_u32(&c->emit, c->u32_type, 2), c->f32_type));
         u32 bit =
             spv_emit_constant_u32(&c->emit, c->u32_type, vertex ? SH_PUSH_GPU_BASE_VERTEX : SH_PUSH_GPU_BASE_INSTANCE);
-        u32 on = spv_emit_i_not_equal(&c->emit, c->bool_type,
-                                      spv_emit_bitwise_and_u32(&c->emit, c->u32_type, flags, bit), c->zero);
+        u32 on = spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type,
+                                 spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, flags, bit), c->zero);
         u32 gpu = spv_emit_load(&c->emit, c->u32_type, vertex ? c->dp_base_vertex : c->dp_base_instance);
-        word = spv_emit_select(&c->emit, c->u32_type, on, gpu, word);
+        word = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, on, gpu, word);
     }
     c->cbuf_seen[at].word = word;
     c->cbuf_seen[at].as_float = 0;
@@ -81,16 +85,17 @@ u32 shader_cbuf_word(DirectCtx* c, u64 w) { return c->cbuf_seen[cbuf_entry(c, w)
 u32 shader_cbuf_read(DirectCtx* c, u64 w) {
     u32 at = cbuf_entry(c, w);
     if (!c->cbuf_seen[at].as_float)
-        c->cbuf_seen[at].as_float = spv_emit_bitcast(&c->emit, c->f32_type, c->cbuf_seen[at].word);
+        c->cbuf_seen[at].as_float = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, c->cbuf_seen[at].word);
     return c->cbuf_seen[at].as_float;
 }
 u32 shader_cbuf_read_dynamic(DirectCtx* c, u32 bank, u32 address) {
     u32 four = spv_emit_constant_u32(&c->emit, c->u32_type, 4);
     u32 two = spv_emit_constant_u32(&c->emit, c->u32_type, 2);
     u32 three = spv_emit_constant_u32(&c->emit, c->u32_type, 3);
-    u32 element = spv_emit_shift_right_u32(&c->emit, c->u32_type, address, four);
-    u32 component = spv_emit_bitwise_and_u32(&c->emit, c->u32_type,
-                                             spv_emit_shift_right_u32(&c->emit, c->u32_type, address, two), three);
+    u32 element = spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, address, four);
+    u32 component =
+        spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
+                        spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, address, two), three);
     return spv_emit_uniform_component(&c->emit, c->cbuf_pointer[bank], c->cbuf[bank], c->zero, element, component,
                                       c->u32_type);
 }
@@ -130,25 +135,26 @@ u32 shader_gbuf_word_index(DirectCtx* c, int stage, u32 slot, u32 word) {
        The graphics page table descriptor is not present in their descriptor set. */
     if (stage == ST_CS) return word;
     u32 h = smap_word(c, spv_emit_constant_u32(&c->emit, c->u32_type, slot));
-    u32 no_map = spv_emit_i_equal(&c->emit, c->bool_type, h, spv_emit_constant_u32(&c->emit, c->u32_type, 0xffffffffu));
+    u32 no_map = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, h,
+                                 spv_emit_constant_u32(&c->emit, c->u32_type, 0xffffffffu));
     u32 offset = smap_word(c, spv_emit_constant_u32(&c->emit, c->u32_type, 16 + slot));
     u32 count = smap_word(c, spv_emit_constant_u32(&c->emit, c->u32_type, 32 + slot));
-    u32 valid = spv_emit_u_less(&c->emit, c->bool_type, word, count);
+    u32 valid = spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, word, count);
     u32 mapped_word = spv_emit_iadd_u32(&c->emit, c->u32_type, word, offset);
-    u32 page =
-        spv_emit_shift_right_u32(&c->emit, c->u32_type, mapped_word, spv_emit_constant_u32(&c->emit, c->u32_type, 10));
-    u32 safe_h = spv_emit_select(&c->emit, c->u32_type, no_map, c->zero, h);
-    u32 safe_page = spv_emit_select(&c->emit, c->u32_type, no_map, c->zero, page);
+    u32 page = spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, mapped_word,
+                               spv_emit_constant_u32(&c->emit, c->u32_type, 10));
+    u32 safe_h = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, no_map, c->zero, h);
+    u32 safe_page = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, no_map, c->zero, page);
     u32 page_ix = spv_emit_iadd_u32(&c->emit, c->u32_type, safe_h, safe_page);
     u32 mapped_page = smap_word(c, page_ix);
-    u32 high =
-        spv_emit_shift_left_u32(&c->emit, c->u32_type, mapped_page, spv_emit_constant_u32(&c->emit, c->u32_type, 10));
-    u32 low = spv_emit_bitwise_and_u32(&c->emit, c->u32_type, mapped_word,
-                                       spv_emit_constant_u32(&c->emit, c->u32_type, 1023));
-    u32 mapped = spv_emit_bitwise_or_u32(&c->emit, c->u32_type, high, low);
-    mapped = spv_emit_select(&c->emit, c->u32_type, valid, mapped,
-                             spv_emit_constant_u32(&c->emit, c->u32_type, 0xffffffffu));
-    return spv_emit_select(&c->emit, c->u32_type, no_map, word, mapped);
+    u32 high = spv_emit_binary(&c->emit, SPV_OP_SHIFT_LEFT_LOGICAL, c->u32_type, mapped_page,
+                               spv_emit_constant_u32(&c->emit, c->u32_type, 10));
+    u32 low = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, mapped_word,
+                              spv_emit_constant_u32(&c->emit, c->u32_type, 1023));
+    u32 mapped = spv_emit_binary(&c->emit, SPV_OP_BITWISE_OR, c->u32_type, high, low);
+    mapped = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, valid, mapped,
+                              spv_emit_constant_u32(&c->emit, c->u32_type, 0xffffffffu));
+    return spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, no_map, word, mapped);
 }
 
 /* a compute program's store or atomic of bytes bytes at byte offset into global buffer slot, recorded in its write
@@ -165,10 +171,10 @@ u32 shader_global_atomic_pointer(DirectCtx* c, int stage, u32 slot, u32 base_off
     u32 immediate = (u32)((i32)(B(w, 28, 20) << 12) >> 12);
     u32 address = spv_emit_iadd_u32(&c->emit, c->u32_type, reg_read(c, a),
                                     spv_emit_constant_u32(&c->emit, c->u32_type, immediate));
-    address = spv_emit_isub_u32(&c->emit, c->u32_type, address, base);
+    address = spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, address, base);
     *offset = address;
-    u32 word =
-        spv_emit_shift_right_u32(&c->emit, c->u32_type, address, spv_emit_constant_u32(&c->emit, c->u32_type, 2));
+    u32 word = spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, address,
+                               spv_emit_constant_u32(&c->emit, c->u32_type, 2));
     return spv_emit_storage_access_u32(&c->emit, c->gbuf_pointer, c->gbuf[slot], c->zero,
                                        shader_gbuf_word_index(c, stage, slot, word));
 }
@@ -177,9 +183,10 @@ u32 shader_shared_atomic_index(DirectCtx* c, u32 a, u64 w, u32 shared_words) {
     i32 relative = (i32)(B(w, 30, 22) << 10) >> 10;
     u32 immediate = spv_emit_constant_u32(&c->emit, c->u32_type, (u32)(relative * 4));
     u32 address = a == 255 ? immediate : spv_emit_iadd_u32(&c->emit, c->u32_type, reg_read(c, a), immediate);
-    return shader_shared_index(
-        c, spv_emit_shift_right_u32(&c->emit, c->u32_type, address, spv_emit_constant_u32(&c->emit, c->u32_type, 2)),
-        shared_words);
+    return shader_shared_index(c,
+                               spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, address,
+                                               spv_emit_constant_u32(&c->emit, c->u32_type, 2)),
+                               shared_words);
 }
 
 /* An LDG or STG of whole words whose base register the tracking lost (gb_at's GB_DYNAMIC): as Eden's SPIR-V backend
@@ -196,12 +203,12 @@ void shader_global_dynamic(DirectCtx* c, int stage, u64 w, int op, const u32* gb
     u32 address =
         spv_emit_iadd_u32(&c->emit, c->u32_type, lo, spv_emit_constant_u32(&c->emit, c->u32_type, (u32)offset));
     /* the offset's carry into the high word, or its borrow */
-    u32 wrapped = offset < 0 ? spv_emit_u_less(&c->emit, c->bool_type, lo, address)
-                             : spv_emit_u_less(&c->emit, c->bool_type, address, lo);
+    u32 wrapped = offset < 0 ? spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, lo, address)
+                             : spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, address, lo);
     u32 one = spv_emit_constant_u32(&c->emit, c->u32_type, 1);
-    u32 carry = spv_emit_select(&c->emit, c->u32_type, wrapped, one, c->zero);
+    u32 carry = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, wrapped, one, c->zero);
     u32 data[4];
-    hi = offset < 0 ? spv_emit_isub_u32(&c->emit, c->u32_type, hi, carry)
+    hi = offset < 0 ? spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, hi, carry)
                     : spv_emit_iadd_u32(&c->emit, c->u32_type, hi, carry);
     for (k = 0; k < words; k++) data[k] = op == O_STG ? reg_read(c, d + k) : c->zero;
     if (op == O_LDG)
@@ -215,25 +222,29 @@ void shader_global_dynamic(DirectCtx* c, int stage, u64 w, int op, const u32* gb
         /* a bare address has no size beside it: the cap below, of which the renderer binds what is mapped */
         if (shader_gbuf_sized(stage, gbuf_off[slot])) {
             size = shader_cbuf_read_dynamic(c, 0, spv_emit_constant_u32(&c->emit, c->u32_type, at + 8));
-            size = spv_emit_select(&c->emit, c->u32_type, spv_emit_i_equal(&c->emit, c->bool_type, size, c->zero),
-                                   spv_emit_constant_u32(&c->emit, c->u32_type, 16), size);
+            size = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
+                                    spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, size, c->zero),
+                                    spv_emit_constant_u32(&c->emit, c->u32_type, 16), size);
         } else
             size = spv_emit_constant_u32(&c->emit, c->u32_type, 16u << 20);
-        size = spv_emit_select(
-            &c->emit, c->u32_type,
-            spv_emit_u_less(&c->emit, c->bool_type, spv_emit_constant_u32(&c->emit, c->u32_type, 16u << 20), size),
-            spv_emit_constant_u32(&c->emit, c->u32_type, 16u << 20), size);
-        relative = spv_emit_isub_u32(&c->emit, c->u32_type, address, base_lo);
-        borrow = spv_emit_select(&c->emit, c->u32_type, spv_emit_u_less(&c->emit, c->bool_type, address, base_lo), one,
-                                 c->zero);
+        size = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
+                                spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type,
+                                                spv_emit_constant_u32(&c->emit, c->u32_type, 16u << 20), size),
+                                spv_emit_constant_u32(&c->emit, c->u32_type, 16u << 20), size);
+        relative = spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, address, base_lo);
+        borrow = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
+                                  spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, address, base_lo), one,
+                                  c->zero);
         /* inside: the high words' difference, less the low words' borrow, is 0, and the low one is under the size
            (each access's words lie within the binding, as the tracked path's do) */
-        inside = spv_emit_select(
-            &c->emit, c->u32_type, spv_emit_u_less(&c->emit, c->bool_type, relative, size),
-            spv_emit_isub_u32(&c->emit, c->u32_type, spv_emit_isub_u32(&c->emit, c->u32_type, hi, base_hi), borrow),
-            one);
         inside =
-            spv_emit_i_equal(&c->emit, c->bool_type, inside, c->zero); /* before the merge, which precedes the branch */
+            spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
+                             spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, relative, size),
+                             spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type,
+                                             spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, hi, base_hi), borrow),
+                             one);
+        inside = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, inside,
+                                 c->zero); /* before the merge, which precedes the branch */
         then_label = spv_emit_id(&c->emit);
         merge_label = spv_emit_id(&c->emit);
         spv_emit_selection_merge(&c->emit, merge_label);
@@ -242,8 +253,8 @@ void shader_global_dynamic(DirectCtx* c, int stage, u64 w, int op, const u32* gb
         if (op == O_STG) log_written(c, stage, (u32)slot, relative, words * 4);
         for (k = 0; k < words; k++) {
             u32 word = spv_emit_iadd_u32(&c->emit, c->u32_type,
-                                         spv_emit_shift_right_u32(&c->emit, c->u32_type, relative,
-                                                                  spv_emit_constant_u32(&c->emit, c->u32_type, 2)),
+                                         spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, relative,
+                                                         spv_emit_constant_u32(&c->emit, c->u32_type, 2)),
                                          spv_emit_constant_u32(&c->emit, c->u32_type, k));
             u32 ptr = spv_emit_storage_access_u32(&c->emit, c->gbuf_pointer, c->gbuf[slot], c->zero,
                                                   shader_gbuf_word_index(c, stage, (u32)slot, word));
@@ -280,12 +291,11 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 source = reg_read(c, a), dynamic_bank = 0;
         u32 bank = B(w, 36, 5);
         if (B(w, 44, 1)) {
-            dynamic_bank = spv_emit_iadd_u32(
-                &c->emit, c->u32_type, spv_emit_constant_u32(&c->emit, c->u32_type, bank),
-                spv_emit_shift_right_u32(&c->emit, c->u32_type, source,
-                                          spv_emit_constant_u32(&c->emit, c->u32_type, 16)));
-            source = spv_emit_bitwise_and_u32(&c->emit, c->u32_type, source,
-                                               spv_emit_constant_u32(&c->emit, c->u32_type, 0xffff));
+            dynamic_bank = spv_emit_iadd_u32(&c->emit, c->u32_type, spv_emit_constant_u32(&c->emit, c->u32_type, bank),
+                                             spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, source,
+                                                             spv_emit_constant_u32(&c->emit, c->u32_type, 16)));
+            source = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, source,
+                                     spv_emit_constant_u32(&c->emit, c->u32_type, 0xffff));
         }
         u32 address = spv_emit_iadd_u32(&c->emit, c->u32_type, source, off);
         u32 value = dynamic_bank ? cbuf_read_bank(c, bank, dynamic_bank, address)
@@ -294,21 +304,22 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         /* the element an indexed texture whose handle this loads picks: the address register over the stride */
         for (k_indexed = 0; k_indexed < texture_count; k_indexed++)
             if ((textures[k_indexed].flags & SNX_TEX_INDEXED) && textures[k_indexed].bl2_off == i + 1)
-                spv_emit_store(&c->emit, c->tex_index[k_indexed],
-                               spv_emit_shift_right_u32(
-                                   &c->emit, c->u32_type, reg_read(c, a),
-                                   spv_emit_constant_u32(&c->emit, c->u32_type, textures[k_indexed].flags >> 4)));
+                spv_emit_store(
+                    &c->emit, c->tex_index[k_indexed],
+                    spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, reg_read(c, a),
+                                    spv_emit_constant_u32(&c->emit, c->u32_type, textures[k_indexed].flags >> 4)));
         if (size < 4) {
-            u32 byte_offset = spv_emit_bitwise_and_u32(&c->emit, c->u32_type, address,
-                                                       spv_emit_constant_u32(&c->emit, c->u32_type, size < 2 ? 3 : 2));
-            u32 bit_offset = spv_emit_shift_left_u32(&c->emit, c->u32_type, byte_offset,
-                                                     spv_emit_constant_u32(&c->emit, c->u32_type, 3));
+            u32 byte_offset = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, address,
+                                              spv_emit_constant_u32(&c->emit, c->u32_type, size < 2 ? 3 : 2));
+            u32 bit_offset = spv_emit_binary(&c->emit, SPV_OP_SHIFT_LEFT_LOGICAL, c->u32_type, byte_offset,
+                                             spv_emit_constant_u32(&c->emit, c->u32_type, 3));
             u32 width = spv_emit_constant_u32(&c->emit, c->u32_type, size < 2 ? 8 : 16);
-            value = size & 1 ? spv_emit_bitcast(&c->emit, c->u32_type,
-                                                spv_emit_bitfield_sextract(&c->emit, i32_type,
-                                                                           spv_emit_bitcast(&c->emit, i32_type, value),
-                                                                           bit_offset, width))
-                             : spv_emit_bitfield_uextract(&c->emit, c->u32_type, value, bit_offset, width);
+            value = size & 1
+                        ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
+                                         spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type,
+                                                          spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, value),
+                                                          bit_offset, width))
+                        : spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_U_EXTRACT, c->u32_type, value, bit_offset, width);
         }
         reg_write(c, d, value);
         if (size == 5) {
@@ -347,7 +358,8 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             u32 next = shader_wrap_step(c, old, reg_read(c, b), B(w, 52, 4) != 3);
             u32 observed = spv_emit_atomic_compare_exchange_shared_u32(&c->emit, c->u32_type, pointer, next, old);
             spv_emit_store(&c->emit, atomic_old_var, observed);
-            spv_emit_branch_conditional(&c->emit, spv_emit_i_equal(&c->emit, c->bool_type, observed, old), merge, cont);
+            spv_emit_branch_conditional(
+                &c->emit, spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, observed, old), merge, cont);
             spv_emit_label(&c->emit, cont);
             spv_emit_branch(&c->emit, header);
             spv_emit_label(&c->emit, merge);
@@ -356,8 +368,8 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     } else if (op == O_LDS || op == O_STS) {
         u32 immediate = spv_emit_constant_u32(&c->emit, c->u32_type, (u32)((i32)(B(w, 20, 24) << 8) >> 8));
         u32 address = a == 255 ? immediate : spv_emit_iadd_u32(&c->emit, c->u32_type, reg_read(c, a), immediate);
-        u32 first =
-            spv_emit_shift_right_u32(&c->emit, c->u32_type, address, spv_emit_constant_u32(&c->emit, c->u32_type, 2));
+        u32 first = spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, address,
+                                    spv_emit_constant_u32(&c->emit, c->u32_type, 2));
         u32 words = B(w, 48, 3) == 5 ? 2 : B(w, 48, 3) >= 6 ? 4 : 1;
         u32 size = B(w, 48, 3);
         for (u32 k = 0; k < words; k++) {
@@ -367,10 +379,10 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             index = shader_shared_index(c, index, shared_words);
             u32 pointer = spv_emit_function_element_pointer(&c->emit, shared_element_pointer, shared_array, index);
             if (size < 4) {
-                u32 bit_offset = spv_emit_bitwise_and_u32(
-                    &c->emit, c->u32_type, address, spv_emit_constant_u32(&c->emit, c->u32_type, size < 2 ? 3 : 2));
-                bit_offset = spv_emit_shift_left_u32(&c->emit, c->u32_type, bit_offset,
-                                                     spv_emit_constant_u32(&c->emit, c->u32_type, 3));
+                u32 bit_offset = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, address,
+                                                 spv_emit_constant_u32(&c->emit, c->u32_type, size < 2 ? 3 : 2));
+                bit_offset = spv_emit_binary(&c->emit, SPV_OP_SHIFT_LEFT_LOGICAL, c->u32_type, bit_offset,
+                                             spv_emit_constant_u32(&c->emit, c->u32_type, 3));
                 u32 width = spv_emit_constant_u32(&c->emit, c->u32_type, size < 2 ? 8 : 16);
                 if (op == O_STS) {
                     u32 header = spv_emit_id(&c->emit), body = spv_emit_id(&c->emit);
@@ -385,7 +397,7 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                         spv_emit_bitfield_insert(&c->emit, c->u32_type, old, reg_read(c, d), bit_offset, width);
                     u32 actual =
                         spv_emit_atomic_compare_exchange_shared_u32(&c->emit, c->u32_type, pointer, desired, old);
-                    u32 success = spv_emit_i_equal(&c->emit, c->bool_type, actual, old);
+                    u32 success = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, actual, old);
                     spv_emit_branch_conditional(&c->emit, success, done, retry);
                     spv_emit_label(&c->emit, retry);
                     spv_emit_branch(&c->emit, header);
@@ -394,11 +406,12 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                     u32 old = spv_emit_atomic_load_shared_u32(&c->emit, c->u32_type, pointer);
                     u32 value =
                         size & 1
-                            ? spv_emit_bitcast(&c->emit, c->u32_type,
-                                               spv_emit_bitfield_sextract(&c->emit, i32_type,
-                                                                          spv_emit_bitcast(&c->emit, i32_type, old),
-                                                                          bit_offset, width))
-                            : spv_emit_bitfield_uextract(&c->emit, c->u32_type, old, bit_offset, width);
+                            ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
+                                             spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type,
+                                                              spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, old),
+                                                              bit_offset, width))
+                            : spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_U_EXTRACT, c->u32_type, old, bit_offset,
+                                               width);
                     reg_write(c, d, value);
                 }
             } else if (op == O_STS)
@@ -409,22 +422,22 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     } else if (op == O_LDL || op == O_STL) {
         u32 immediate = spv_emit_constant_u32(&c->emit, c->u32_type, (u32)((i32)(B(w, 20, 24) << 8) >> 8));
         u32 address = a == 255 ? immediate : spv_emit_iadd_u32(&c->emit, c->u32_type, reg_read(c, a), immediate);
-        u32 first =
-            spv_emit_shift_right_u32(&c->emit, c->u32_type, address, spv_emit_constant_u32(&c->emit, c->u32_type, 2));
+        u32 first = spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, address,
+                                    spv_emit_constant_u32(&c->emit, c->u32_type, 2));
         u32 words = B(w, 48, 3) == 5 ? 2 : B(w, 48, 3) >= 6 ? 4 : 1;
         u32 size = B(w, 48, 3);
         for (u32 k = 0; k < words; k++) {
             u32 index =
                 k ? spv_emit_iadd_u32(&c->emit, c->u32_type, first, spv_emit_constant_u32(&c->emit, c->u32_type, k))
                   : first;
-            index = spv_emit_bitwise_and_u32(&c->emit, c->u32_type, index,
-                                             spv_emit_constant_u32(&c->emit, c->u32_type, local_words - 1));
+            index = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, index,
+                                    spv_emit_constant_u32(&c->emit, c->u32_type, local_words - 1));
             u32 pointer = spv_emit_function_element_pointer(&c->emit, local_element_pointer, local_array, index);
             if (size < 4) {
-                u32 bit_offset = spv_emit_bitwise_and_u32(
-                    &c->emit, c->u32_type, address, spv_emit_constant_u32(&c->emit, c->u32_type, size < 2 ? 3 : 2));
-                bit_offset = spv_emit_shift_left_u32(&c->emit, c->u32_type, bit_offset,
-                                                     spv_emit_constant_u32(&c->emit, c->u32_type, 3));
+                u32 bit_offset = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, address,
+                                                 spv_emit_constant_u32(&c->emit, c->u32_type, size < 2 ? 3 : 2));
+                bit_offset = spv_emit_binary(&c->emit, SPV_OP_SHIFT_LEFT_LOGICAL, c->u32_type, bit_offset,
+                                             spv_emit_constant_u32(&c->emit, c->u32_type, 3));
                 u32 width = spv_emit_constant_u32(&c->emit, c->u32_type, size < 2 ? 8 : 16);
                 u32 old = spv_emit_load(&c->emit, c->u32_type, pointer);
                 if (op == O_STL)
@@ -434,11 +447,12 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 else {
                     u32 value =
                         size & 1
-                            ? spv_emit_bitcast(&c->emit, c->u32_type,
-                                               spv_emit_bitfield_sextract(&c->emit, i32_type,
-                                                                          spv_emit_bitcast(&c->emit, i32_type, old),
-                                                                          bit_offset, width))
-                            : spv_emit_bitfield_uextract(&c->emit, c->u32_type, old, bit_offset, width);
+                            ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
+                                             spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type,
+                                                              spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, old),
+                                                              bit_offset, width))
+                            : spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_U_EXTRACT, c->u32_type, old, bit_offset,
+                                               width);
                     reg_write(c, d, value);
                 }
             } else if (op == O_STL)
@@ -456,9 +470,9 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 base = shader_cbuf_read_dynamic(c, SH_GBUF_BANK(gbuf_off[slot]), offset);
         u32 immediate = spv_emit_constant_u32(&c->emit, c->u32_type, (u32)((i32)(B(w, 20, 24) << 8) >> 8));
         u32 address = spv_emit_iadd_u32(&c->emit, c->u32_type, reg_read(c, a), immediate);
-        address = spv_emit_isub_u32(&c->emit, c->u32_type, address, base);
-        u32 index =
-            spv_emit_shift_right_u32(&c->emit, c->u32_type, address, spv_emit_constant_u32(&c->emit, c->u32_type, 2));
+        address = spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, address, base);
+        u32 index = spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, address,
+                                    spv_emit_constant_u32(&c->emit, c->u32_type, 2));
         u32 words = B(w, 48, 3) == 5 ? 2 : B(w, 48, 3) >= 6 ? 4 : 1;
         u32 size = B(w, 48, 3);
         if (op == O_STG) log_written(c, stage, slot, address, size < 2 ? 1 : size < 4 ? 2 : words * 4);
@@ -469,10 +483,10 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             word = shader_gbuf_word_index(c, stage, slot, word);
             u32 ptr = spv_emit_storage_access_u32(&c->emit, c->gbuf_pointer, c->gbuf[slot], c->zero, word);
             if (size < 4) {
-                u32 byte_offset = spv_emit_bitwise_and_u32(
-                    &c->emit, c->u32_type, address, spv_emit_constant_u32(&c->emit, c->u32_type, size < 2 ? 3 : 2));
-                u32 bit_offset = spv_emit_shift_left_u32(&c->emit, c->u32_type, byte_offset,
-                                                         spv_emit_constant_u32(&c->emit, c->u32_type, 3));
+                u32 byte_offset = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, address,
+                                                  spv_emit_constant_u32(&c->emit, c->u32_type, size < 2 ? 3 : 2));
+                u32 bit_offset = spv_emit_binary(&c->emit, SPV_OP_SHIFT_LEFT_LOGICAL, c->u32_type, byte_offset,
+                                                 spv_emit_constant_u32(&c->emit, c->u32_type, 3));
                 u32 width = spv_emit_constant_u32(&c->emit, c->u32_type, size < 2 ? 8 : 16);
                 if (op == O_STG) {
                     u32 header = spv_emit_id(&c->emit), body = spv_emit_id(&c->emit);
@@ -486,7 +500,7 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                     u32 desired =
                         spv_emit_bitfield_insert(&c->emit, c->u32_type, old, reg_read(c, d), bit_offset, width);
                     u32 actual = spv_emit_atomic_compare_exchange_u32(&c->emit, c->u32_type, ptr, desired, old);
-                    u32 success = spv_emit_i_equal(&c->emit, c->bool_type, actual, old);
+                    u32 success = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, actual, old);
                     spv_emit_branch_conditional(&c->emit, success, done, retry);
                     spv_emit_label(&c->emit, retry);
                     spv_emit_branch(&c->emit, header);
@@ -495,11 +509,12 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                     u32 old = spv_emit_atomic_load_u32(&c->emit, c->u32_type, ptr);
                     u32 value =
                         size & 1
-                            ? spv_emit_bitcast(&c->emit, c->u32_type,
-                                               spv_emit_bitfield_sextract(&c->emit, i32_type,
-                                                                          spv_emit_bitcast(&c->emit, i32_type, old),
-                                                                          bit_offset, width))
-                            : spv_emit_bitfield_uextract(&c->emit, c->u32_type, old, bit_offset, width);
+                            ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
+                                             spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type,
+                                                              spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, old),
+                                                              bit_offset, width))
+                            : spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_U_EXTRACT, c->u32_type, old, bit_offset,
+                                               width);
                     reg_write(c, d, value);
                 }
             } else if (op == O_STG)
@@ -544,14 +559,15 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             spv_emit_label(&c->emit, body);
             u32 old = spv_emit_load(&c->emit, c->u32_type, atomic_old_var), desired;
             if (size == 3) {
-                u32 sum = spv_emit_fadd(&c->emit, c->f32_type, spv_emit_bitcast(&c->emit, c->f32_type, old),
-                                        spv_emit_bitcast(&c->emit, c->f32_type, value));
-                desired = spv_emit_bitcast(&c->emit, c->u32_type, sum);
+                u32 sum = spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type,
+                                          spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, old),
+                                          spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, value));
+                desired = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, sum);
             } else
                 desired = shader_wrap_step(c, old, value, operation != 3);
             u32 observed = spv_emit_atomic_compare_exchange_u32(&c->emit, c->u32_type, pointer, desired, old);
             spv_emit_store(&c->emit, atomic_old_var, observed);
-            u32 done = spv_emit_i_equal(&c->emit, c->bool_type, observed, old);
+            u32 done = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, observed, old);
             spv_emit_branch_conditional(&c->emit, done, merge, cont);
             spv_emit_label(&c->emit, cont);
             spv_emit_branch(&c->emit, header);

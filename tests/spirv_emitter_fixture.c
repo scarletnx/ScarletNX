@@ -66,11 +66,11 @@ uint32_t* snx_test_spirv_flush(uint32_t n, int signed_zeros, size_t* words) {
     spv_emit_label(&e, label);
     for (uint32_t k = 0; k < n; k++) {
         uint32_t in = spv_emit_storage_access_u32(&e, pointer_type, buffer, member, spv_emit_constant_u32(&e, u32_type, k));
-        uint32_t value = spv_emit_bitcast(&e, f32_type, spv_emit_load(&e, u32_type, in));
+        uint32_t value = spv_emit_unary(&e, SPV_OP_BITCAST, f32_type, spv_emit_load(&e, u32_type, in));
         uint32_t flushed = spv_emit_flush_subnormal(&e, f32_type, u32_type, bool_type, glsl, value, signed_zeros);
         uint32_t out =
             spv_emit_storage_access_u32(&e, pointer_type, buffer, member, spv_emit_constant_u32(&e, u32_type, n + k));
-        spv_emit_store_u32(&e, out, spv_emit_bitcast(&e, u32_type, flushed));
+        spv_emit_store_u32(&e, out, spv_emit_unary(&e, SPV_OP_BITCAST, u32_type, flushed));
     }
     spv_emit_return(&e);
     spv_emit_function_end(&e);
@@ -105,15 +105,15 @@ uint32_t* snx_test_spirv_saturate(uint32_t n, int signed_zeros, size_t* words) {
     for (uint32_t k = 0; k < n; k++) {
         uint32_t in =
             spv_emit_storage_access_u32(&e, pointer_type, buffer, member, spv_emit_constant_u32(&e, u32_type, k));
-        uint32_t value = spv_emit_bitcast(&e, f32_type, spv_emit_load(&e, u32_type, in));
+        uint32_t value = spv_emit_unary(&e, SPV_OP_BITCAST, f32_type, spv_emit_load(&e, u32_type, in));
         uint32_t saturated = spv_emit_saturate(&e, f32_type, u32_type, bool_type, glsl, value);
         uint32_t clamped = spv_emit_glsl_ternary(&e, f32_type, glsl, SPV_GLSL_F_CLAMP, value, zero, one);
         uint32_t out =
             spv_emit_storage_access_u32(&e, pointer_type, buffer, member, spv_emit_constant_u32(&e, u32_type, n + k));
-        spv_emit_store_u32(&e, out, spv_emit_bitcast(&e, u32_type, saturated));
+        spv_emit_store_u32(&e, out, spv_emit_unary(&e, SPV_OP_BITCAST, u32_type, saturated));
         out = spv_emit_storage_access_u32(&e, pointer_type, buffer, member,
                                           spv_emit_constant_u32(&e, u32_type, 2 * n + k));
-        spv_emit_store_u32(&e, out, spv_emit_bitcast(&e, u32_type, clamped));
+        spv_emit_store_u32(&e, out, spv_emit_unary(&e, SPV_OP_BITCAST, u32_type, clamped));
     }
     spv_emit_return(&e);
     spv_emit_function_end(&e);
@@ -164,24 +164,24 @@ uint32_t* snx_test_spirv_graphics(int fragment, size_t* words) {
         uint32_t reg = spv_emit_function_variable(&e, reg_type);
         spv_emit_store(&e, reg, half_bits);
         uint32_t bits = spv_emit_load(&e, u32_type, reg);
-        uint32_t half = spv_emit_bitcast(&e, f32_type, bits);
-        uint32_t sum = spv_emit_fadd(&e, f32_type, half, half);
-        uint32_t product = spv_emit_fmul(&e, f32_type, half, half);
-        uint32_t neg = spv_emit_fnegate(&e, f32_type, product);
+        uint32_t half = spv_emit_unary(&e, SPV_OP_BITCAST, f32_type, bits);
+        uint32_t sum = spv_emit_binary(&e, SPV_OP_F_ADD, f32_type, half, half);
+        uint32_t product = spv_emit_binary(&e, SPV_OP_F_MUL, f32_type, half, half);
+        uint32_t neg = spv_emit_unary(&e, SPV_OP_F_NEGATE, f32_type, product);
         uint32_t absval = spv_emit_glsl_unary(&e, f32_type, glsl, SPV_GLSL_F_ABS, neg);
         uint32_t fused = spv_emit_glsl_ternary(&e, f32_type, glsl, SPV_GLSL_FMA, half, half, absval);
         uint32_t varying = spv_emit_load(&e, vec4_type, input);
         uint32_t coord = spv_emit_load(&e, vec4_type, fragcoord);
         uint32_t x = spv_emit_vec4_extract(&e, f32_type, varying, 0);
         uint32_t w = spv_emit_vec4_extract(&e, f32_type, coord, 3);
-        uint32_t perspective = spv_emit_fdiv(&e, f32_type, x, w);
+        uint32_t perspective = spv_emit_binary(&e, SPV_OP_F_DIV, f32_type, x, w);
         uint32_t constant = spv_emit_uniform_component(&e, component_ptr, cbuf, idx0, idx0, idx0, f32_type);
         uint32_t uv = spv_emit_vec2_construct(&e, vec2_type, half, half);
         uint32_t texel = spv_emit_sample2d(&e, vec4_type, sampled_type, sampler, uv, 0);
         uint32_t compare = spv_emit_sample2d(&e, f32_type, shadow_type, shadow, uv, half);
         uint32_t texel_x = spv_emit_vec4_extract(&e, f32_type, texel, 0);
-        uint32_t mix = spv_emit_fadd(&e, f32_type, perspective, constant);
-        mix = spv_emit_fadd(&e, f32_type, mix, texel_x);
+        uint32_t mix = spv_emit_binary(&e, SPV_OP_F_ADD, f32_type, perspective, constant);
+        mix = spv_emit_binary(&e, SPV_OP_F_ADD, f32_type, mix, texel_x);
         spv_emit_no_contraction(&e, sum);
         spv_emit_no_contraction(&e, product);
         uint32_t components[4] = {sum, fused, mix, compare};
@@ -189,10 +189,10 @@ uint32_t* snx_test_spirv_graphics(int fragment, size_t* words) {
     }
     if (fragment) {
         uint32_t bool_type = spv_emit_type_bool(&e);
-        uint32_t half_value = spv_emit_bitcast(&e, f32_type, half_bits);
+        uint32_t half_value = spv_emit_unary(&e, SPV_OP_BITCAST, f32_type, half_bits);
         uint32_t cond_a = spv_emit_fcompare(&e, bool_type, 9, half_value, one);
-        uint32_t cond_b = spv_emit_i_equal(&e, bool_type, half_bits, half_bits);
-        uint32_t negated = spv_emit_bool_not(&e, bool_type, cond_a);
+        uint32_t cond_b = spv_emit_binary(&e, SPV_OP_I_EQUAL, bool_type, half_bits, half_bits);
+        uint32_t negated = spv_emit_unary(&e, SPV_OP_LOGICAL_NOT, bool_type, cond_a);
         uint32_t condition = spv_emit_bool_binary(&e, bool_type, 0, negated, cond_b);
         uint32_t yes = spv_emit_id(&e), no = spv_emit_id(&e), merge = spv_emit_id(&e);
         spv_emit_selection_merge(&e, merge);
@@ -241,7 +241,7 @@ uint32_t* snx_test_spirv_sample(size_t* words) {
     spv_emit_function_void(&e, void_type, function, function_type);
     spv_emit_label(&e, label);
     uint32_t texel = spv_emit_sample2d_lod(&e, vec4_type, sampled_type, interfaces[1], at, 0, zero);
-    uint32_t red = spv_emit_bitcast(&e, u32_type, spv_emit_vec4_extract(&e, f32_type, texel, 0));
+    uint32_t red = spv_emit_unary(&e, SPV_OP_BITCAST, u32_type, spv_emit_vec4_extract(&e, f32_type, texel, 0));
     spv_emit_store_u32(&e, spv_emit_storage_access_u32(&e, pointer_type, interfaces[0], member, member), red);
     spv_emit_return(&e);
     spv_emit_function_end(&e);

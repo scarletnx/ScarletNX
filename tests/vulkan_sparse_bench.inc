@@ -235,20 +235,24 @@ static u32* sb_read_program(u32 size, int hashed, size_t* words) {
     const u32 id = spv_emit_load(&e, uvec3, io[2]);
     u32 x = spv_emit_vec4_extract(&e, u32_type, id, 0), y = spv_emit_vec4_extract(&e, u32_type, id, 1);
     if (hashed) { /* invocation i = y * size + x reads at two of its hashes' bits */
-        const u32 i = spv_emit_bitwise_or_u32(&e, u32_type, spv_emit_shift_left_u32(&e, u32_type, y, shift), x);
-        x = spv_emit_bitwise_and_u32(
-            &e, u32_type, spv_emit_shift_right_u32(&e, u32_type, spv_emit_imul_u32(&e, u32_type, i, mul_x), high),
-            mask);
-        y = spv_emit_bitwise_and_u32(
-            &e, u32_type, spv_emit_shift_right_u32(&e, u32_type, spv_emit_imul_u32(&e, u32_type, i, mul_y), high),
-            mask);
+        const u32 i = spv_emit_binary(&e, SPV_OP_BITWISE_OR, u32_type,
+                                      spv_emit_binary(&e, SPV_OP_SHIFT_LEFT_LOGICAL, u32_type, y, shift), x);
+        x = spv_emit_binary(&e, SPV_OP_BITWISE_AND, u32_type,
+                            spv_emit_binary(&e, SPV_OP_SHIFT_RIGHT_LOGICAL, u32_type,
+                                            spv_emit_binary(&e, SPV_OP_I_MUL, u32_type, i, mul_x), high),
+                            mask);
+        y = spv_emit_binary(&e, SPV_OP_BITWISE_AND, u32_type,
+                            spv_emit_binary(&e, SPV_OP_SHIFT_RIGHT_LOGICAL, u32_type,
+                                            spv_emit_binary(&e, SPV_OP_I_MUL, u32_type, i, mul_y), high),
+                            mask);
     }
     const u32 texel =
         spv_emit_image_fetch(&e, vec4, sampled_type, io[1], spv_emit_vec2_construct(&e, uvec2, x, y), zero);
-    const u32 red = spv_emit_bitcast(&e, u32_type, spv_emit_vec4_extract(&e, f32_type, texel, 0));
-    spv_emit_store_u32(
-        &e, spv_emit_storage_access_u32(&e, pointer, io[0], zero, spv_emit_bitwise_and_u32(&e, u32_type, x, slots)),
-        red);
+    const u32 red = spv_emit_unary(&e, SPV_OP_BITCAST, u32_type, spv_emit_vec4_extract(&e, f32_type, texel, 0));
+    spv_emit_store_u32(&e,
+                       spv_emit_storage_access_u32(&e, pointer, io[0], zero,
+                                                   spv_emit_binary(&e, SPV_OP_BITWISE_AND, u32_type, x, slots)),
+                       red);
     spv_emit_return(&e);
     spv_emit_function_end(&e);
     u32* code = spv_emit_finish(&e, words);

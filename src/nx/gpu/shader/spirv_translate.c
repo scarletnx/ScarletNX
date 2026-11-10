@@ -50,7 +50,7 @@ static void advanced_blend_epilogue(DirectCtx* c, const ShaderInfo* si, u32 vec4
                                     u32 source_variable, u32 image, u32 image_type) {
     SpvEmitter* e = &c->emit;
     spv_emit_label(e, c->blend_end);
-    u32 kept = spv_emit_bool_not(e, c->bool_type, shader_lane_dead(c));
+    u32 kept = spv_emit_unary(e, SPV_OP_LOGICAL_NOT, c->bool_type, shader_lane_dead(c));
     u32 position = 0, pixel = 0, incoming = 0, front = 0;
     if (depth_buffer) {
         position = spv_emit_load(e, vec4, fragcoord);
@@ -65,8 +65,9 @@ static void advanced_blend_epilogue(DirectCtx* c, const ShaderInfo* si, u32 vec4
                 spv_emit_interface_scalar_pointer(e, 3, c->u32_type, sample_mask_output, 0, c->zero));
             mask = SPV(e, SPV_OP_BITWISE_AND, c->u32_type, mask, output_mask);
         }
-        u32 covered = spv_emit_i_not_equal(e, c->bool_type, SPV(e, SPV_OP_BITWISE_AND, c->u32_type,
-            mask, spv_emit_constant_u32(e, c->u32_type, 1)), c->zero);
+        u32 covered = spv_emit_binary(
+            e, SPV_OP_I_NOT_EQUAL, c->bool_type,
+            SPV(e, SPV_OP_BITWISE_AND, c->u32_type, mask, spv_emit_constant_u32(e, c->u32_type, 1)), c->zero);
         kept = SPV(e, SPV_OP_LOGICAL_AND, c->bool_type, kept, covered);
         incoming = spv_emit_vec4_extract(e, c->f32_type, position, 2);
         front = spv_emit_load(e, c->bool_type, frontface);
@@ -83,7 +84,8 @@ static void advanced_blend_epilogue(DirectCtx* c, const ShaderInfo* si, u32 vec4
         if (!position) position = spv_emit_load(e, vec4, fragcoord);
         u32 coordinate[3];
         for (u32 i = 0; i < 2; i++)
-            coordinate[i] = spv_emit_convert_f_to_s(e, i32, spv_emit_vec4_extract(e, c->f32_type, position, i));
+            coordinate[i] =
+                spv_emit_unary(e, SPV_OP_CONVERT_F_TO_S, i32, spv_emit_vec4_extract(e, c->f32_type, position, i));
         u32 xy;
         if (si->advanced_blend_mask & SH_BLEND_ARRAY) {
             coordinate[2] = spv_emit_load(e, i32, layer);
@@ -96,8 +98,8 @@ static void advanced_blend_epilogue(DirectCtx* c, const ShaderInfo* si, u32 vec4
             u32 samples = si->advanced_blend_mask >> 8 & 63;
             for (u32 i = 0; i < samples; i++) {
                 u32 bit = spv_emit_constant_u32(e, c->u32_type, 1u << i);
-                u32 covered = spv_emit_i_not_equal(e, c->bool_type,
-                    spv_emit_bitwise_and_u32(e, c->u32_type, mask, bit), c->zero);
+                u32 covered = spv_emit_binary(e, SPV_OP_I_NOT_EQUAL, c->bool_type,
+                                              spv_emit_binary(e, SPV_OP_BITWISE_AND, c->u32_type, mask, bit), c->zero);
                 u32 apply = spv_emit_id(e), next = spv_emit_id(e);
                 spv_emit_selection_merge(e, next);
                 spv_emit_branch_conditional(e, covered, apply, next);
@@ -116,7 +118,7 @@ static void advanced_blend_epilogue(DirectCtx* c, const ShaderInfo* si, u32 vec4
     /* Coverage-only keeps its native integer output. Kill after the interlock suppresses that output on a late
        failure while retaining stencil fail/depth-fail updates and all original guest shader side effects. */
     u32 reject = spv_emit_id(e), finish = spv_emit_id(e);
-    u32 discarded = depth_buffer ? spv_emit_bool_not(e, c->bool_type, kept)
+    u32 discarded = depth_buffer ? spv_emit_unary(e, SPV_OP_LOGICAL_NOT, c->bool_type, kept)
                                  : spv_emit_load(e, c->bool_type, c->discarded);
     spv_emit_selection_merge(e, finish);
     spv_emit_branch_conditional(e, discarded, reject, finish);
@@ -2532,10 +2534,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         c->primitive_base = spv_emit_load(&c->emit, c->u32_type, pointer);
     }
     if (capture_tiles) {
-        u32 layer = layer_input ? spv_emit_bitcast(&c->emit, c->u32_type,
-                                                    spv_emit_load(&c->emit, i32_type, layer_input)) : c->zero;
-        u32 live = spv_emit_bool_not(&c->emit, c->bool_type,
-                                      spv_emit_load(&c->emit, c->bool_type, capture_helper));
+        u32 layer = layer_input ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
+                                                 spv_emit_load(&c->emit, i32_type, layer_input))
+                                : c->zero;
+        u32 live = spv_emit_unary(&c->emit, SPV_OP_LOGICAL_NOT, c->bool_type,
+                                  spv_emit_load(&c->emit, c->bool_type, capture_helper));
         shader_capture_tile_mark(&c->emit, c->f32_type, c->u32_type, c->bool_type, capture_tiles,
                                    spv_emit_load(&c->emit, vec4, fragcoord), layer, live);
     }
@@ -2595,13 +2598,14 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             /* Helper lanes may be inactive for subgroup arithmetic. Their minimum may be undefined; they must
                continue at their own pc so they can still provide derivative values to their quad. */
             if (stage == ST_FS)
-                lowest = spv_emit_select(&c->emit, c->u32_type, spv_emit_is_helper(&c->emit, c->bool_type), selector,
-                                         lowest);
-            lowest = spv_emit_select(&c->emit, c->u32_type, spv_emit_u_less(&c->emit, c->bool_type, selector, lowest),
-                                     selector, lowest);
-            selector =
-                spv_emit_select(&c->emit, c->u32_type, spv_emit_i_equal(&c->emit, c->bool_type, selector, lowest),
-                                selector, spv_emit_constant_u32(&c->emit, c->u32_type, UINT32_MAX - 1));
+                lowest = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
+                                          spv_emit_is_helper(&c->emit, c->bool_type), selector, lowest);
+            lowest = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
+                                      spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, selector, lowest),
+                                      selector, lowest);
+            selector = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
+                                        spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, selector, lowest),
+                                        selector, spv_emit_constant_u32(&c->emit, c->u32_type, UINT32_MAX - 1));
         }
         spv_emit_selection_merge(&c->emit, dispatch_merge);
         spv_emit_switch_u32(&c->emit, selector, dispatch_default, case_literals, case_labels, case_count);
@@ -2848,8 +2852,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         spv_emit_branch(&c->emit, dispatch_merge);
         spv_emit_label(&c->emit, dispatch_merge);
         u32 next_pc = spv_emit_load(&c->emit, c->u32_type, pc);
-        u32 finished =
-            spv_emit_i_equal(&c->emit, c->bool_type, next_pc, spv_emit_constant_u32(&c->emit, c->u32_type, UINT32_MAX));
+        u32 finished = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, next_pc,
+                                       spv_emit_constant_u32(&c->emit, c->u32_type, UINT32_MAX));
         spv_emit_branch_conditional(&c->emit, finished, loop_merge, loop_continue);
         spv_emit_label(&c->emit, loop_continue);
         spv_emit_branch(&c->emit, loop_header);

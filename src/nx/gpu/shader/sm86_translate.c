@@ -114,8 +114,8 @@ static void add_interface(Ctx* c, u32 id) {
 }
 static u32 cu(Ctx* c, u32 v) { return spv_emit_constant_u32(&c->e, c->t_u32, v); }
 static u32 cf(Ctx* c, float v) { return spv_emit_constant_f32(&c->e, c->t_f32, v); }
-static u32 to_f(Ctx* c, u32 v) { return spv_emit_bitcast(&c->e, c->t_f32, v); }
-static u32 to_u(Ctx* c, u32 v) { return spv_emit_bitcast(&c->e, c->t_u32, v); }
+static u32 to_f(Ctx* c, u32 v) { return spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_f32, v); }
+static u32 to_u(Ctx* c, u32 v) { return spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_u32, v); }
 static u32 op2(Ctx* c, u32 opcode, u32 type, u32 a, u32 b) { return SPV(&c->e, opcode, type, a, b); }
 
 /* ---- registers ---- */
@@ -130,7 +130,7 @@ static void uwr(Ctx* c, u32 r, u32 v) {
 }
 static u32 prd(Ctx* c, u32 p, u32 negate, int uniform) {
     u32 v = p >= SM86_PT ? c->true_v : spv_emit_load(&c->e, c->t_bool, uniform ? c->upred[p] : c->pred[p]);
-    return negate ? spv_emit_bool_not(&c->e, c->t_bool, v) : v;
+    return negate ? spv_emit_unary(&c->e, SPV_OP_LOGICAL_NOT, c->t_bool, v) : v;
 }
 static void pwr(Ctx* c, u32 p, u32 v, int uniform) {
     if (p < SM86_PT) spv_emit_store(&c->e, uniform ? c->upred[p] : c->pred[p], v);
@@ -180,10 +180,12 @@ static u32 cbuf_load(Ctx* c, u32 bank, u32 off, u32 index) {
     u32 element, component;
     if (index) {
         u32 at = spv_emit_iadd_u32(&c->e, c->t_u32, index, cu(c, off));
-        element = spv_emit_bitwise_and_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, at, cu(c, 4)),
-                                           cu(c, elements - 1));
-        component = spv_emit_bitwise_and_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, at, cu(c, 2)),
-                                             cu(c, 3));
+        element = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
+                                  spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, at, cu(c, 4)),
+                                  cu(c, elements - 1));
+        component =
+            spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
+                            spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, at, cu(c, 2)), cu(c, 3));
     } else {
         element = cu(c, (off >> 4) & (elements - 1));
         component = cu(c, (off >> 2) & 3);
@@ -195,12 +197,13 @@ static u32 cbuf_load(Ctx* c, u32 bank, u32 off, u32 index) {
    ULDC.IDX's */
 static u32 cbuf_subword(Ctx* c, u32 bank, u32 off, u32 index, u32 type) {
     u32 at = index ? spv_emit_iadd_u32(&c->e, c->t_u32, index, cu(c, off)) : cu(c, off);
-    u32 shift = spv_emit_shift_left_u32(
-        &c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, at, cu(c, type < 2 ? 3 : 2)), cu(c, 3));
+    u32 shift =
+        spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                        spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, at, cu(c, type < 2 ? 3 : 2)), cu(c, 3));
     u32 word = cbuf_load(c, bank, off, index), bits = cu(c, type < 2 ? 8 : 16);
-    return type & 1 ? to_u(c, spv_emit_bitfield_sextract(&c->e, c->t_i32, spv_emit_bitcast(&c->e, c->t_i32, word),
-                                                         shift, bits))
-                    : spv_emit_bitfield_uextract(&c->e, c->t_u32, word, shift, bits);
+    return type & 1 ? to_u(c, spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_S_EXTRACT, c->t_i32,
+                                               spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, word), shift, bits))
+                    : spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_U_EXTRACT, c->t_u32, word, shift, bits);
 }
 
 /* ---- ALU sources ---- */
@@ -222,14 +225,14 @@ static u32 src_bits(Ctx* c, const Sm86Src* s) {
 /* an integer source with its negation */
 static u32 src_int(Ctx* c, const Sm86Src* s) {
     u32 v = src_bits(c, s);
-    return s->neg && s->kind != SM86_SRC_IMM ? spv_emit_isub_u32(&c->e, c->t_u32, c->zero, v) : v;
+    return s->neg && s->kind != SM86_SRC_IMM ? spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, c->zero, v) : v;
 }
 /* a float source with its absolute value and negation */
 static u32 src_f(Ctx* c, const Sm86Src* s) {
     u32 v = to_f(c, src_bits(c, s));
     if (s->kind == SM86_SRC_IMM) return v;
     if (s->abs) v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_ABS, v);
-    if (s->neg) v = spv_emit_fnegate(&c->e, c->t_f32, v);
+    if (s->neg) v = spv_emit_unary(&c->e, SPV_OP_F_NEGATE, c->t_f32, v);
     return v;
 }
 /* the second source of a two-source ALU instruction: b, or c for the forms that put a register in b's place and the
@@ -242,7 +245,7 @@ static u32 saturate(Ctx* c, u32 v, int on) {
     /* NaN gives 0, as the hardware's .SAT */
     u32 positive = spv_emit_fcompare(&c->e, c->t_bool, 4, v, cf(c, 0.0f)); /* NAK's FloatCmpOp: 4 >, 6 >= */
     u32 low = spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_MIN, v, cf(c, 1.0f));
-    return spv_emit_select(&c->e, c->t_f32, positive, low, cf(c, 0.0f));
+    return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, positive, low, cf(c, 0.0f));
 }
 /* where an instruction runs: its guard, and a BRA's or an EXIT's predicate operand (sm86_has_cond) as well. One game's
    interface programs exit the lanes their KILL took with @P0 EXIT P1: with P1 left out, every lane of a draw with P0
@@ -331,13 +334,13 @@ static u32 pair64(Ctx* c, u32 low, u32 high) {
 }
 static u32 carry_in(Ctx* c, u32 field_lo, const Sm86Insn* in, int uniform) {
     u32 p = prd(c, sm86_field(in, field_lo, 3), sm86_field(in, field_lo + 3, 1), uniform);
-    return spv_emit_select(&c->e, u64_type(c), p, c64(c, 1), c64(c, 0));
+    return spv_emit_ternary(&c->e, SPV_OP_SELECT, u64_type(c), p, c64(c, 1), c64(c, 0));
 }
 /* a source of a 64-bit sum: its two's complement as NAK's fold reads it, ~x + 1 in 33 bits */
 static u32 term64(Ctx* c, const Sm86Src* s) {
     u32 v = src_bits(c, s);
     if (!s->neg || s->kind == SM86_SRC_IMM) return to64(c, v);
-    return op2(c, SPV_OP_I_ADD, u64_type(c), to64(c, spv_emit_not_u32(&c->e, c->t_u32, v)), c64(c, 1));
+    return op2(c, SPV_OP_I_ADD, u64_type(c), to64(c, spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, v)), c64(c, 1));
 }
 
 /* ---- FTZ and the rounding modes ---- */
@@ -369,8 +372,8 @@ static u32 nocontract(Ctx* c, u32 v) {
 static u32 directed(Ctx* c, u32 mode, u32 r, u32 above, u32 below) {
     if (mode == 0) return r;
     u32 bits = to_u(c, r);
-    u32 negative = spv_emit_u_less(&c->e, c->t_bool, cu(c, 0x7fffffffu), bits);
-    u32 positive = spv_emit_bool_not(&c->e, c->t_bool, negative);
+    u32 negative = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, cu(c, 0x7fffffffu), bits);
+    u32 positive = spv_emit_unary(&c->e, SPV_OP_LOGICAL_NOT, c->t_bool, negative);
     u32 up, down; /* toward +inf, toward -inf */
     if (mode == 1) {
         up = c->false_v;
@@ -385,14 +388,16 @@ static u32 directed(Ctx* c, u32 mode, u32 r, u32 above, u32 below) {
     /* a step up adds one to a positive value's bits and takes one from a negative one's, and -0 goes to the
        smallest positive subnormal. A step down is the mirror of it */
     u32 plus = spv_emit_iadd_u32(&c->e, c->t_u32, bits, cu(c, 1));
-    u32 minus = spv_emit_isub_u32(&c->e, c->t_u32, bits, cu(c, 1));
-    u32 is_neg_zero = spv_emit_i_equal(&c->e, c->t_bool, bits, cu(c, 0x80000000u));
-    u32 is_pos_zero = spv_emit_i_equal(&c->e, c->t_bool, bits, c->zero);
-    u32 up_bits = spv_emit_select(&c->e, c->t_u32, positive, plus,
-                                  spv_emit_select(&c->e, c->t_u32, is_neg_zero, cu(c, 1), minus));
-    u32 down_bits = spv_emit_select(&c->e, c->t_u32, negative, plus,
-                                    spv_emit_select(&c->e, c->t_u32, is_pos_zero, cu(c, 0x80000001u), minus));
-    bits = spv_emit_select(&c->e, c->t_u32, up, up_bits, spv_emit_select(&c->e, c->t_u32, down, down_bits, bits));
+    u32 minus = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, bits, cu(c, 1));
+    u32 is_neg_zero = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, bits, cu(c, 0x80000000u));
+    u32 is_pos_zero = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, bits, c->zero);
+    u32 up_bits = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, positive, plus,
+                                   spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, is_neg_zero, cu(c, 1), minus));
+    u32 down_bits =
+        spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, negative, plus,
+                         spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, is_pos_zero, cu(c, 0x80000001u), minus));
+    bits = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, up, up_bits,
+                            spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, down, down_bits, bits));
     return to_f(c, bits);
 }
 static u32 widen(Ctx* c, u32 f) { return SPV(&c->e, SPV_OP_F_CONVERT, f64_type(c), f); }
@@ -432,12 +437,12 @@ static u32 round_sum(Ctx* c, u32 mode, u32 p, u32 q) {
 }
 /* FADD: x + y in mode */
 static u32 float_add(Ctx* c, u32 mode, u32 x, u32 y) {
-    if (mode == 0) return nocontract(c, spv_emit_fadd(&c->e, c->t_f32, x, y));
+    if (mode == 0) return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_ADD, c->t_f32, x, y));
     return round_sum(c, mode, widen(c, x), widen(c, y));
 }
 /* FMUL: x * y * 2^(scale - 4) in mode. The product of two floats is exact in a double */
 static u32 float_mul(Ctx* c, u32 mode, u32 scale, u32 x, u32 y) {
-    if (mode == 0 && scale == 4) return nocontract(c, spv_emit_fmul(&c->e, c->t_f32, x, y));
+    if (mode == 0 && scale == 4) return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, y));
     u32 f64 = f64_type(c);
     u32 d = nocontract(c, op2(c, SPV_OP_F_MUL, f64, widen(c, x), widen(c, y)));
     if (scale != 4) {
@@ -474,9 +479,10 @@ static void vertex_depth_fix(Ctx* c) {
     spv_emit_branch_conditional(&c->e, enabled, adjust, merge);
     spv_emit_label(&c->e, adjust);
     u32 value = spv_emit_load(&c->e, c->t_v4f, c->position);
-    u32 sum = nocontract(c, spv_emit_fadd(&c->e, c->t_f32, spv_emit_vec4_extract(&c->e, c->t_f32, value, 2),
-                                          spv_emit_vec4_extract(&c->e, c->t_f32, value, 3)));
-    u32 depth = nocontract(c, spv_emit_fmul(&c->e, c->t_f32, sum, cf(c, 0.5f)));
+    u32 sum =
+        nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_ADD, c->t_f32, spv_emit_vec4_extract(&c->e, c->t_f32, value, 2),
+                                      spv_emit_vec4_extract(&c->e, c->t_f32, value, 3)));
+    u32 depth = nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, sum, cf(c, 0.5f)));
     spv_emit_store(&c->e, c->position, spv_emit_vec4_insert(&c->e, c->t_v4f, value, depth, 2));
     spv_emit_branch(&c->e, merge);
     spv_emit_label(&c->e, merge);
@@ -491,17 +497,17 @@ static void position_var(Ctx* c) {
 /* a float to BF16 bits, rounded to nearest even, a NaN kept a NaN */
 static u32 bf16(Ctx* c, u32 f) {
     u32 bits = to_u(c, f);
-    u32 odd =
-        spv_emit_bitwise_and_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, bits, cu(c, 16)), cu(c, 1));
-    u32 rounded = spv_emit_shift_right_u32(
-        &c->e, c->t_u32,
+    u32 odd = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
+                              spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, bits, cu(c, 16)), cu(c, 1));
+    u32 rounded = spv_emit_binary(
+        &c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32,
         spv_emit_iadd_u32(&c->e, c->t_u32, bits, spv_emit_iadd_u32(&c->e, c->t_u32, cu(c, 0x7fff), odd)), cu(c, 16));
-    u32 nan = spv_emit_isnan(&c->e, c->t_bool, f);
-    return spv_emit_select(&c->e, c->t_u32, nan,
-                           spv_emit_bitwise_or_u32(&c->e, c->t_u32,
-                                                   spv_emit_shift_right_u32(&c->e, c->t_u32, bits, cu(c, 16)),
-                                                   cu(c, 0x40)),
-                           spv_emit_bitwise_and_u32(&c->e, c->t_u32, rounded, cu(c, 0xffff)));
+    u32 nan = spv_emit_unary(&c->e, SPV_OP_IS_NAN, c->t_bool, f);
+    return spv_emit_ternary(
+        &c->e, SPV_OP_SELECT, c->t_u32, nan,
+        spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32,
+                        spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, bits, cu(c, 16)), cu(c, 0x40)),
+        spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, rounded, cu(c, 0xffff)));
 }
 /* ---- attributes ---- */
 
@@ -605,9 +611,10 @@ static u32 scaled_slot(Ctx* c, int slot) {
     }
     u32 bits = spv_emit_push_component_f32(&c->e, spv_emit_type_pointer(&c->e, 9, c->t_u32), c->scaled_push, cu(c, 1),
                                            cu(c, slot >= 32), c->t_u32); /* 9: PushConstant */
-    u32 bit = spv_emit_bitwise_and_u32(
-        &c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, bits, cu(c, (u32)slot & 31)), cu(c, 1));
-    return spv_emit_i_not_equal(&c->e, c->t_bool, bit, c->zero);
+    u32 bit = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
+                              spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, bits, cu(c, (u32)slot & 31)),
+                              cu(c, 1));
+    return spv_emit_binary(&c->e, SPV_OP_I_NOT_EQUAL, c->t_bool, bit, c->zero);
 }
 static u32 fl(Ctx* c, u32 v) { return spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_FLOOR, v); }
 /* FragCoord's component k, in the pixels of the target's image */
@@ -627,45 +634,53 @@ static void scaled_fetch(Ctx* c, int slot, u32* x, u32* y) {
     u32 scaled = scaled_slot(c, slot), scale = scale_component(c, 2), over = scale_component(c, 0);
     u32* v[2] = {x, y};
     for (u32 k = 0; k < 2; k++) {
-        u32 first = nocontract(
-            c,
-            spv_emit_fmul(&c->e, c->t_f32,
-                          spv_emit_convert_s_to_f(&c->e, c->t_f32, spv_emit_bitcast(&c->e, c->t_i32, *v[k])), scale));
-        u32 next = fl(c, nocontract(c, spv_emit_fadd(&c->e, c->t_f32, first, scale)));
+        u32 first =
+            nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32,
+                                          spv_emit_unary(&c->e, SPV_OP_CONVERT_S_TO_F, c->t_f32,
+                                                         spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, *v[k])),
+                                          scale));
+        u32 next = fl(c, nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_ADD, c->t_f32, first, scale)));
         u32 last = spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_MAX, fl(c, first),
                                         nocontract(c, op2(c, SPV_OP_F_SUB, c->t_f32, next, cf(c, 1.0f))));
         /* the fragment's place in its guest pixel, in the image's pixels: 0 up to the scale */
         u32 pixel = frag_pixel(c, k);
-        u32 corner = nocontract(c, spv_emit_fmul(&c->e, c->t_f32, scale,
-                                                 fl(c, nocontract(c, spv_emit_fmul(&c->e, c->t_f32, pixel, over)))));
+        u32 corner = nocontract(
+            c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, scale,
+                               fl(c, nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, pixel, over)))));
         u32 place = nocontract(c, op2(c, SPV_OP_F_SUB, c->t_f32, pixel, corner));
-        u32 at = spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_MIN,
-                                      fl(c, nocontract(c, spv_emit_fadd(&c->e, c->t_f32, first, place))), last);
-        *v[k] = spv_emit_select(&c->e, c->t_u32, scaled,
-                                spv_emit_bitcast(&c->e, c->t_u32, spv_emit_convert_f_to_s(&c->e, c->t_i32, at)), *v[k]);
+        u32 at = spv_emit_glsl_binary(
+            &c->e, c->t_f32, c->glsl, SPV_GLSL_F_MIN,
+            fl(c, nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_ADD, c->t_f32, first, place))), last);
+        *v[k] = spv_emit_ternary(
+            &c->e, SPV_OP_SELECT, c->t_u32, scaled,
+            spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_u32, spv_emit_unary(&c->e, SPV_OP_CONVERT_F_TO_S, c->t_i32, at)),
+            *v[k]);
     }
 }
 /* The size *x by *y of texture slot's image as the guest has it: a scaled target's over the scale, rounded as the
    renderer rounds a scaled size */
 static void scaled_size(Ctx* c, int slot, u32* x, u32* y) {
-    u32 factor = spv_emit_select(&c->e, c->t_f32, scaled_slot(c, slot), scale_component(c, 0), cf(c, 1.0f));
+    u32 factor =
+        spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, scaled_slot(c, slot), scale_component(c, 0), cf(c, 1.0f));
     u32* v[2] = {x, y};
     for (u32 k = 0; k < 2; k++) {
-        u32 f = nocontract(c, spv_emit_fmul(&c->e, c->t_f32, spv_emit_convert_u_to_f(&c->e, c->t_f32, *v[k]), factor));
-        *v[k] = spv_emit_convert_f_to_u(&c->e, c->t_u32, nocontract(c, spv_emit_fadd(&c->e, c->t_f32, f, cf(c, 0.5f))));
+        u32 f = nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32,
+                                              spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32, *v[k]), factor));
+        *v[k] = spv_emit_unary(&c->e, SPV_OP_CONVERT_F_TO_U, c->t_u32,
+                               nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_ADD, c->t_f32, f, cf(c, 0.5f))));
     }
 }
 /* FragCoord's component k: x and y in the guest's pixels, z and w as they are */
 static u32 frag_coord(Ctx* c, u32 k) {
     u32 v = frag_pixel(c, k);
-    return k < 2 ? nocontract(c, spv_emit_fmul(&c->e, c->t_f32, v, scale_component(c, 0))) : v;
+    return k < 2 ? nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, v, scale_component(c, 0))) : v;
 }
 /* ALD's attribute at byte address addr, as bits */
 static u32 attr_load(Ctx* c, u32 addr) {
     if (addr >= 0x80 && addr < 0x280) return input_load(c, (addr - 0x80) >> 4, (addr >> 2) & 3);
     if (c->stage == ST_VS && addr == 0x2f8) /* InstanceIndex counts from the base instance, the push constant's x */
-        return spv_emit_isub_u32(&c->e, c->t_u32, builtin_u32(c, &c->instance_index, 43),
-                                 to_u(c, push_component(c, 0)));
+        return spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, builtin_u32(c, &c->instance_index, 43),
+                               to_u(c, push_component(c, 0)));
     if (c->stage == ST_VS && addr == 0x2fc) return builtin_u32(c, &c->vertex_index, 42);
     if (c->stage == ST_FS && addr >= 0x70 && addr < 0x80) return to_u(c, frag_coord(c, (addr >> 2) & 3));
     fail(c, "attribute load 0x%x", addr);
@@ -825,7 +840,7 @@ static u32 global_address(Ctx* c, const Sm86Insn* in, int uniform_form, int writ
     }
     u32 base = gbuf_base(c, key, 0);
     if (!base) return 0;
-    *offset = spv_emit_isub_u32(&c->e, c->t_u32, at, base);
+    *offset = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, at, base);
     c->gkey = key;
     return gbuf_slot(c, key, write);
 }
@@ -873,7 +888,7 @@ static void global_dynamic(Ctx* c, const Sm86Insn* in, int uniform_form, int loa
         u32 base = gbuf_base(c, keys[k], 1);
         if (!base) return;
         u32 relative = op2(c, SPV_OP_I_SUB, u64_type(c), address, base);
-        u32 inside = spv_emit_u_less(&c->e, c->t_bool, relative, c64(c, 16u << 20));
+        u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, relative, c64(c, 16u << 20));
         u32 then = spv_emit_id(&c->e), other = spv_emit_id(&c->e);
         merges[k] = spv_emit_id(&c->e);
         spv_emit_selection_merge(&c->e, merges[k]);
@@ -1182,29 +1197,34 @@ static u32 gbuf_word_index(Ctx* c, u32 buffer, u32 word) {
     }
     u32 first = smap_word(c, cu(c, slot)), offset = smap_word(c, cu(c, 16 + slot)),
         count = smap_word(c, cu(c, 32 + slot));
-    u32 none = spv_emit_i_equal(&c->e, c->t_bool, first, cu(c, ~0u));
+    u32 none = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, first, cu(c, ~0u));
     u32 at = spv_emit_iadd_u32(&c->e, c->t_u32, word, offset);
-    u32 page = spv_emit_shift_right_u32(&c->e, c->t_u32, at, cu(c, 10));
-    u32 entry = spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_select(&c->e, c->t_u32, none, c->zero, first),
-                                  spv_emit_select(&c->e, c->t_u32, none, c->zero, page));
-    u32 mapped = spv_emit_bitwise_or_u32(&c->e, c->t_u32,
-                                         spv_emit_shift_left_u32(&c->e, c->t_u32, smap_word(c, entry), cu(c, 10)),
-                                         spv_emit_bitwise_and_u32(&c->e, c->t_u32, at, cu(c, 1023)));
-    mapped = spv_emit_select(&c->e, c->t_u32, spv_emit_u_less(&c->e, c->t_bool, word, count), mapped, cu(c, ~0u));
-    return spv_emit_select(&c->e, c->t_u32, none, word, mapped);
+    u32 page = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, at, cu(c, 10));
+    u32 entry =
+        spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, none, c->zero, first),
+                          spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, none, c->zero, page));
+    u32 mapped =
+        spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32,
+                        spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, smap_word(c, entry), cu(c, 10)),
+                        spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, at, cu(c, 1023)));
+    mapped = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
+                              spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, word, count), mapped, cu(c, ~0u));
+    return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, none, word, mapped);
 }
 /* a word of global (buffer), shared (buffer 0) or local (MEM_LOCAL) memory at the byte address. An address past
    the local memory wraps in it, as spirv_translate.c keeps Maxwell's LDL and STL in theirs */
 static u32 mem_ptr(Ctx* c, u32 buffer, u32 address, u32 word) {
-    u32 index =
-        spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, address, cu(c, 2)), cu(c, word));
+    u32 index = spv_emit_iadd_u32(
+        &c->e, c->t_u32, spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, address, cu(c, 2)), cu(c, word));
     if (buffer == MEM_LOCAL)
         return spv_emit_function_element_pointer(
-            &c->e, c->local_ptr, c->local, spv_emit_bitwise_and_u32(&c->e, c->t_u32, index, cu(c, c->local_words - 1)));
+            &c->e, c->local_ptr, c->local,
+            spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, index, cu(c, c->local_words - 1)));
     if (buffer)
         return spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, buffer, c->zero, gbuf_word_index(c, buffer, index));
     u32 last = cu(c, c->shared_words - 1);
-    index = spv_emit_select(&c->e, c->t_u32, spv_emit_u_less(&c->e, c->t_bool, last, index), last, index);
+    index = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
+                             spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, last, index), last, index);
     return SPV(&c->e, SPV_OP_ACCESS_CHAIN, c->shared_ptr, shared_var(c), index);
 }
 /* an address in shared or local memory: the register at 24 times 1, 4, 8 or 16 (bits 78-79, NAK's OffsetStride), the
@@ -1214,7 +1234,7 @@ static u32 stack_address(Ctx* c, const Sm86Insn* in, u32 ur) {
     u32 imm = sm86_field(in, 40, 24);
     u32 bias = imm & 0x800000u ? imm | 0xff000000u : imm;
     u32 base = rd(c, sm86_field(in, 24, 8)), shift = shifts[sm86_field(in, 78, 2)];
-    if (shift) base = spv_emit_shift_left_u32(&c->e, c->t_u32, base, cu(c, shift));
+    if (shift) base = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, base, cu(c, shift));
     u32 address = spv_emit_iadd_u32(&c->e, c->t_u32, base, cu(c, bias));
     return ur < SM86_URZ ? spv_emit_iadd_u32(&c->e, c->t_u32, address, urd(c, ur)) : address;
 }
@@ -1249,12 +1269,13 @@ static void mem_load(Ctx* c, u32 buffer, u32 address, u32 type, u32 dst, int uni
         u32 v = mem_word_load(c, buffer, mem_ptr(c, buffer, address, k));
         if (type < 4) {
             /* a byte or a halfword of the word, sign or zero extended */
-            u32 shift = spv_emit_shift_left_u32(
-                &c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, address, cu(c, type < 2 ? 3 : 2)), cu(c, 3));
+            u32 shift = spv_emit_binary(
+                &c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, address, cu(c, type < 2 ? 3 : 2)), cu(c, 3));
             u32 bits = cu(c, type < 2 ? 8 : 16);
-            v = type & 1 ? to_u(c, spv_emit_bitfield_sextract(&c->e, c->t_i32, spv_emit_bitcast(&c->e, c->t_i32, v),
-                                                              shift, bits))
-                         : spv_emit_bitfield_uextract(&c->e, c->t_u32, v, shift, bits);
+            v = type & 1 ? to_u(c, spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_S_EXTRACT, c->t_i32,
+                                                    spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, v), shift, bits))
+                         : spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_U_EXTRACT, c->t_u32, v, shift, bits);
         }
         if (uniform_dst)
             uwr(c, dst + k, v);
@@ -1268,25 +1289,28 @@ static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data) {
         /* a byte or halfword: its bits in the word cleared, then set, by two atomics, so that the other bytes of
            the word, which other invocations can store, stay */
         u32 width = type < 2 ? 8 : 16;
-        u32 shift = spv_emit_shift_left_u32(
-            &c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, address, cu(c, type < 2 ? 3 : 2)), cu(c, 3));
-        u32 mask = spv_emit_shift_left_u32(&c->e, c->t_u32, cu(c, (1u << width) - 1), shift);
-        u32 bits = spv_emit_bitwise_and_u32(&c->e, c->t_u32,
-                                            spv_emit_shift_left_u32(&c->e, c->t_u32, rd(c, data), shift), mask);
+        u32 shift = spv_emit_binary(
+            &c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+            spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, address, cu(c, type < 2 ? 3 : 2)), cu(c, 3));
+        u32 mask = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, cu(c, (1u << width) - 1), shift);
+        u32 bits =
+            spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
+                            spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, rd(c, data), shift), mask);
         u32 ptr = mem_ptr(c, buffer, address, 0);
         if (buffer == MEM_LOCAL) /* the invocation's own: no other can store to the word */
-            spv_emit_store(
-                &c->e, ptr,
-                spv_emit_bitwise_or_u32(&c->e, c->t_u32,
-                                        spv_emit_bitwise_and_u32(&c->e, c->t_u32, spv_emit_load(&c->e, c->t_u32, ptr),
-                                                                 spv_emit_not_u32(&c->e, c->t_u32, mask)),
-                                        bits));
+            spv_emit_store(&c->e, ptr,
+                           spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32,
+                                           spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
+                                                           spv_emit_load(&c->e, c->t_u32, ptr),
+                                                           spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, mask)),
+                                           bits));
         else if (buffer) {
-            spv_emit_atomic_u32(&c->e, c->t_u32, SPV_OP_ATOMIC_AND, ptr, spv_emit_not_u32(&c->e, c->t_u32, mask));
+            spv_emit_atomic_u32(&c->e, c->t_u32, SPV_OP_ATOMIC_AND, ptr,
+                                spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, mask));
             spv_emit_atomic_u32(&c->e, c->t_u32, SPV_OP_ATOMIC_OR, ptr, bits);
         } else {
             spv_emit_atomic_shared_u32(&c->e, c->t_u32, SPV_OP_ATOMIC_AND, ptr,
-                                       spv_emit_not_u32(&c->e, c->t_u32, mask));
+                                       spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, mask));
             spv_emit_atomic_shared_u32(&c->e, c->t_u32, SPV_OP_ATOMIC_OR, ptr, bits);
         }
         return;
@@ -1316,7 +1340,8 @@ static u32 atomic_fadd(Ctx* c, u32 buffer, u32 address, u32 data) {
         }
         spv_emit_extension(&c->e, "SPV_EXT_shader_atomic_float_add");
         spv_emit_capability(&c->e, 6033 /* AtomicFloat32AddEXT */);
-        u32 index = gbuf_word_index(c, buffer, spv_emit_shift_right_u32(&c->e, c->t_u32, address, cu(c, 2)));
+        u32 index =
+            gbuf_word_index(c, buffer, spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, address, cu(c, 2)));
         u32 ptr = spv_emit_storage_access_u32(&c->e, spv_emit_type_storage_pointer(&c->e, c->t_f32), c->gbuf_f32[slot],
                                               c->zero, index);
         return to_u(c, SPV(&c->e, 6035 /* OpAtomicFAddEXT */, c->t_f32, ptr, cu(c, 1) /* Device */,
@@ -1332,10 +1357,11 @@ static u32 atomic_fadd(Ctx* c, u32 buffer, u32 address, u32 data) {
     spv_emit_branch(e, body);
     spv_emit_label(e, body);
     u32 old = spv_emit_load(e, c->t_u32, c->cas_var);
-    u32 sum = nocontract(c, spv_emit_fadd(e, c->t_f32, ftz(c, to_f(c, old), 1), ftz(c, to_f(c, data), 1)));
+    u32 sum =
+        nocontract(c, spv_emit_binary(e, SPV_OP_F_ADD, c->t_f32, ftz(c, to_f(c, old), 1), ftz(c, to_f(c, data), 1)));
     u32 seen = spv_emit_atomic_compare_exchange_u32(e, c->t_u32, ptr, to_u(c, ftz(c, sum, 1)), old);
     spv_emit_store(e, c->cas_var, seen);
-    spv_emit_branch_conditional(e, spv_emit_i_equal(e, c->t_bool, seen, old), merge, cont);
+    spv_emit_branch_conditional(e, spv_emit_binary(e, SPV_OP_I_EQUAL, c->t_bool, seen, old), merge, cont);
     spv_emit_label(e, cont);
     spv_emit_branch(e, header);
     spv_emit_label(e, merge);
@@ -1388,14 +1414,15 @@ static u32 isbe_ptr(Ctx* c, u32 var, u32 storage, u32 index) {
 /* word index of an ISBE array of words, or 0 past its end */
 static u32 isbe_load(Ctx* c, u32 var, u32 storage, u32 words, u32 index) {
     u32 last = cu(c, words - 1);
-    u32 inside = spv_emit_u_less(&c->e, c->t_bool, index, cu(c, words));
-    u32 v = spv_emit_load(&c->e, c->t_u32,
-                          isbe_ptr(c, var, storage, spv_emit_select(&c->e, c->t_u32, inside, index, last)));
-    return spv_emit_select(&c->e, c->t_u32, inside, v, c->zero);
+    u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, index, cu(c, words));
+    u32 v =
+        spv_emit_load(&c->e, c->t_u32,
+                      isbe_ptr(c, var, storage, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, inside, index, last)));
+    return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, inside, v, c->zero);
 }
 /* value into word index of an ISBE array of words: a store past its end goes nowhere */
 static void isbe_store(Ctx* c, u32 var, u32 storage, u32 words, u32 index, u32 value) {
-    u32 inside = spv_emit_u_less(&c->e, c->t_bool, index, cu(c, words));
+    u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, index, cu(c, words));
     u32 then = spv_emit_id(&c->e), merge = spv_emit_id(&c->e);
     spv_emit_selection_merge(&c->e, merge);
     spv_emit_branch_conditional(&c->e, inside, then, merge);
@@ -1419,11 +1446,11 @@ static u32 workgroup_index(Ctx* c) {
         add_interface(c, c->mesh_first);
     }
     u32 flags = to_u(c, push_component(c, 2));
-    u32 gpu = spv_emit_i_not_equal(&c->e, c->t_bool,
-                                   spv_emit_bitwise_and_u32(&c->e, c->t_u32, flags, cu(c, SH_PUSH_GPU_MESH_FIRST)),
-                                   c->zero);
-    u32 first = spv_emit_select(
-        &c->e, c->t_u32, gpu,
+    u32 gpu = spv_emit_binary(
+        &c->e, SPV_OP_I_NOT_EQUAL, c->t_bool,
+        spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, flags, cu(c, SH_PUSH_GPU_MESH_FIRST)), c->zero);
+    u32 first = spv_emit_ternary(
+        &c->e, SPV_OP_SELECT, c->t_u32, gpu,
         spv_emit_uniform_component(&c->e, c->cbuf_ptr, c->mesh_first, c->zero, c->zero, c->zero, c->t_u32),
         to_u(c, push_component(c, 0)));
     return spv_emit_iadd_u32(&c->e, c->t_u32, id, first);
@@ -1446,7 +1473,7 @@ static void isbe(Ctx* c, const Sm86Insn* in) {
         return;
     }
     u32 address = fixed ? cu(c, imm) : spv_emit_iadd_u32(&c->e, c->t_u32, rd(c, base), cu(c, imm));
-    u32 word = spv_emit_shift_right_u32(&c->e, c->t_u32, address, cu(c, 2));
+    u32 word = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, address, cu(c, 2));
     if (!write && attr && !output && b32 && fixed && !imm && skew == (u32)(task || !m->has_task)) {
         wr(c, in->dst, workgroup_index(c));
         return;
@@ -1467,7 +1494,7 @@ static void isbe(Ctx* c, const Sm86Insn* in) {
     }
     if (write && mesh && access == 0 && !skew && output && size == 0) {
         isbe_store(c, map_var(c), SPV_STORAGE_WORKGROUP, c->isbe_map_words, address,
-                   spv_emit_bitwise_and_u32(&c->e, c->t_u32, data, cu(c, 0xff)));
+                   spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, data, cu(c, 0xff)));
         return;
     }
     if (write && mesh && access == 0 && !skew && output && b32 && fixed && imm == 3) {
@@ -1657,8 +1684,8 @@ static u32 offset_part(Ctx* c, int known, u32 value, u32 x, u32 k, u32 bits) {
         u32 raw = value >> (k * bits) & ((1u << bits) - 1);
         return spv_emit_constant_u32(&c->e, c->t_i32, raw >> (bits - 1) ? raw | ~((1u << bits) - 1) : raw);
     }
-    return spv_emit_bitfield_sextract(&c->e, c->t_i32, spv_emit_bitcast(&c->e, c->t_i32, x), cu(c, k * bits),
-                                      cu(c, bits));
+    return spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_S_EXTRACT, c->t_i32,
+                            spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, x), cu(c, k * bits), cu(c, bits));
 }
 /* the offset a texture instruction packs in a register, as the integer vector of dims components SPIR-V takes (a
    1D texture's y, bound as 2D, is 0): constant when known */
@@ -1777,14 +1804,15 @@ static u32 indexed_table(const ShaderInfo* si, int slot) {
 /* the word at an index of a uniform array of vec4s */
 static u32 uniform_word(Ctx* c, u32 pointer, u32 buffer, u32 index) {
     return spv_emit_uniform_component(&c->e, pointer, buffer, c->zero,
-                                      spv_emit_shift_right_u32(&c->e, c->t_u32, index, cu(c, 2)),
-                                      spv_emit_bitwise_and_u32(&c->e, c->t_u32, index, cu(c, 3)), c->t_u32);
+                                      spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, index, cu(c, 2)),
+                                      spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, index, cu(c, 3)), c->t_u32);
 }
 /* For this instruction, an indexed slot's tex[] is the element its LDC chose, clamped to the array, as
    shader_direct_swap_element does. Returns the array's element */
 static u32 indexed_element(Ctx* c, int slot, u32 var) {
     u32 limit = cu(c, SNX_TEX_ARRAY - 1), index = spv_emit_load(&c->e, c->t_u32, var);
-    index = spv_emit_select(&c->e, c->t_u32, spv_emit_u_less(&c->e, c->t_bool, limit, index), limit, index);
+    index = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
+                             spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, limit, index), limit, index);
     index = spv_emit_iadd_u32(&c->e, c->t_u32, index, cu(c, indexed_table(c->si, slot) * SNX_TEX_ARRAY));
     u32 element = uniform_word(c, c->tex_map_ptr, c->tex_map, index);
     c->tex[slot] = spv_emit_sampler_array_element(&c->e, c->tex_sampled[slot], c->tex_array[slot], element);
@@ -1800,19 +1828,21 @@ static u32 sample_indexed_shadow(Ctx* c, int slot, u32 element, u32 coord, u32 d
         spv_emit_sample_image(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, 0, mode, level, offset, 0),
         0);
     u32 meta = uniform_word(c, c->tex_func_ptr, c->tex_func, element);
-    u32 func = spv_emit_bitwise_and_u32(&c->e, c->t_u32, meta, cu(c, 7)), one = cf(c, 1.0f), none = cf(c, 0.0f);
+    u32 func = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, meta, cu(c, 7)), one = cf(c, 1.0f),
+        none = cf(c, 0.0f);
     u32 result = none;
     for (u32 i = 0; i < 8; i++) {
-        u32 pass =
-            spv_emit_select(&c->e, c->t_f32, spv_emit_fcompare(&c->e, c->t_bool, condition[i], dref, color), one, none);
-        result = spv_emit_select(&c->e, c->t_f32, spv_emit_i_equal(&c->e, c->t_bool, func, cu(c, i)), pass, result);
+        u32 pass = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32,
+                                    spv_emit_fcompare(&c->e, c->t_bool, condition[i], dref, color), one, none);
+        result = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32,
+                                  spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, func, cu(c, i)), pass, result);
     }
     u32 view = spv_emit_sampler_array_element(&c->e, c->tex_depth_type[slot], c->tex_depth[slot], element);
     u32 depth =
         spv_emit_sample_image(&c->e, c->t_f32, c->tex_depth_type[slot], view, coord, dref, mode, level, offset, 0);
-    u32 is_depth =
-        spv_emit_i_equal(&c->e, c->t_bool, spv_emit_bitwise_and_u32(&c->e, c->t_u32, meta, cu(c, 8)), cu(c, 8));
-    return spv_emit_select(&c->e, c->t_f32, is_depth, depth, result);
+    u32 is_depth = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool,
+                                   spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, meta, cu(c, 8)), cu(c, 8));
+    return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, is_depth, depth, result);
 }
 /* NAK's TexDim (bits 61-63): ShTex's type (0 1D, 1 2D, 2 3D, 3 cube), array, and the coordinates */
 static int tex_dim(u32 dim, u32* type, u32* array, u32* coords) {
@@ -1919,8 +1949,9 @@ static void texture(Ctx* c, const Sm86Insn* in) {
     for (u32 k = 0; k < coords; k++) f[count++] = to_f(c, rd(c, regs[array + k]));
     if (type == 0) f[count++] = cf(c, 0.0f);
     if (array)
-        f[count++] = spv_emit_convert_u_to_f(&c->e, c->t_f32,
-                                             spv_emit_bitwise_and_u32(&c->e, c->t_u32, rd(c, regs[0]), cu(c, 0xffff)));
+        f[count++] =
+            spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32,
+                           spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, rd(c, regs[0]), cu(c, 0xffff)));
     u32 coord = coord_vector(c, f, count);
     u32 next = n0 + (u32)bindless, level = 0, dref = 0, off_reg = SM86_RZ;
     int indexed = (c->si->tex[slot].flags & SNX_TEX_INDEXED) != 0;
@@ -1962,10 +1993,10 @@ static void texture(Ctx* c, const Sm86Insn* in) {
         u32 lod = spv_emit_image_query_lod(&c->e, c->t_v2f, c->tex_sampled[slot], c->tex[slot], coord);
         u32 v[4] = {0};
         for (u32 k = 0; k < 2; k++)
-            v[k] = to_f(c, spv_emit_convert_f_to_s(&c->e, c->t_i32,
-                                                   spv_emit_fmul(&c->e, c->t_f32,
-                                                                 spv_emit_vec4_extract(&c->e, c->t_f32, lod, 1 - k),
-                                                                 cf(c, 256.0f))));
+            v[k] = to_f(
+                c, spv_emit_unary(&c->e, SPV_OP_CONVERT_F_TO_S, c->t_i32,
+                                  spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32,
+                                                  spv_emit_vec4_extract(&c->e, c->t_f32, lod, 1 - k), cf(c, 256.0f))));
         v[2] = v[3] = cf(c, 0.0f);
         spv_emit_capability(&c->e, SPV_CAPABILITY_IMAGE_QUERY);
         result = spv_emit_vec4_construct(&c->e, c->t_v4f, v);
@@ -2002,18 +2033,18 @@ static void texture(Ctx* c, const Sm86Insn* in) {
                 spv_emit_capability(&c->e, SPV_CAPABILITY_IMAGE_QUERY);
                 u32 size = spv_emit_image_query_size_lod(&c->e, spv_emit_type_vector(&c->e, c->t_i32, dims + array),
                                                          c->tex_sampled[slot], c->tex[slot],
-                                                         spv_emit_convert_f_to_s(&c->e, c->t_i32, at));
+                                                         spv_emit_unary(&c->e, SPV_OP_CONVERT_F_TO_S, c->t_i32, at));
                 u32 moved[4];
                 for (u32 k = 0; k < count; k++) {
                     moved[k] = spv_emit_vec4_extract(&c->e, c->t_f32, coord, k);
                     if (k < used)
-                        moved[k] = spv_emit_fadd(
-                            &c->e, c->t_f32, moved[k],
-                            spv_emit_fdiv(&c->e, c->t_f32,
-                                          spv_emit_convert_s_to_f(&c->e, c->t_f32,
-                                                                  spv_emit_vec4_extract(&c->e, c->t_i32, o, k)),
-                                          spv_emit_convert_s_to_f(&c->e, c->t_f32,
-                                                                  spv_emit_vec4_extract(&c->e, c->t_i32, size, k))));
+                        moved[k] = spv_emit_binary(
+                            &c->e, SPV_OP_F_ADD, c->t_f32, moved[k],
+                            spv_emit_binary(&c->e, SPV_OP_F_DIV, c->t_f32,
+                                            spv_emit_unary(&c->e, SPV_OP_CONVERT_S_TO_F, c->t_f32,
+                                                           spv_emit_vec4_extract(&c->e, c->t_i32, o, k)),
+                                            spv_emit_unary(&c->e, SPV_OP_CONVERT_S_TO_F, c->t_f32,
+                                                           spv_emit_vec4_extract(&c->e, c->t_i32, size, k))));
                 }
                 coord = coord_vector(c, moved, count);
             }
@@ -2090,8 +2121,9 @@ static void texture_grad(Ctx* c, const Sm86Insn* in) {
     }
     u32 gx = coord_vector(c, dx, count), gy = coord_vector(c, dy, count);
     if (array)
-        f[count++] = spv_emit_convert_u_to_f(
-            &c->e, c->t_f32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, rd(c, TXD_REG(a, coords)), cu(c, 0xffff)));
+        f[count++] = spv_emit_unary(
+            &c->e, SPV_OP_CONVERT_U_TO_F, c->t_f32,
+            spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, rd(c, TXD_REG(a, coords)), cu(c, 0xffff)));
 #undef TXD_REG
     tex_results(
         c, in,
@@ -2130,20 +2162,21 @@ static void texel_fetch(Ctx* c, const Sm86Insn* in) {
     if (offset)
         for (u32 k = 0; k < coords; k++)
             v[k] = spv_emit_iadd_u32(&c->e, c->t_u32, v[k],
-                                     spv_emit_bitcast(&c->e, c->t_u32,
-                                                      offset_part(c, 0, 0, rd(c, regs[n0 + (lod_mode == 3)]), k, 4)));
+                                     spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_u32,
+                                                    offset_part(c, 0, 0, rd(c, regs[n0 + (lod_mode == 3)]), k, 4)));
     if (c->stage == ST_FS && type == 1) scaled_fetch(c, slot, &v[0], &v[1]);
-    if (array) v[count++] = spv_emit_bitwise_and_u32(&c->e, c->t_u32, rd(c, regs[0]), cu(c, 0xffff));
+    if (array) v[count++] = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, rd(c, regs[0]), cu(c, 0xffff));
     u32 ivec = spv_emit_type_vector(&c->e, c->t_i32, count);
     u32 uvec = spv_emit_type_vector(&c->e, c->t_u32, count);
-    u32 coord = spv_emit_bitcast(&c->e, ivec,
-                                 count == 2 ? spv_emit_vec2_construct(&c->e, uvec, v[0], v[1])
-                                            : spv_emit_vec3_construct(&c->e, uvec, v[0], v[1], v[2]));
-    u32 level =
-        lod_mode == 3 ? spv_emit_bitcast(&c->e, c->t_i32, rd(c, regs[n0])) : spv_emit_bitcast(&c->e, c->t_i32, c->zero);
-    u32 texel = ms ? spv_emit_image_fetch_sample(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord,
-                                                 spv_emit_bitcast(&c->e, c->t_i32, rd(c, regs[n0 + offset])))
-                   : spv_emit_image_fetch(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, level);
+    u32 coord = spv_emit_unary(&c->e, SPV_OP_BITCAST, ivec,
+                               count == 2 ? spv_emit_vec2_construct(&c->e, uvec, v[0], v[1])
+                                          : spv_emit_vec3_construct(&c->e, uvec, v[0], v[1], v[2]));
+    u32 level = lod_mode == 3 ? spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, regs[n0]))
+                              : spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, c->zero);
+    u32 texel =
+        ms ? spv_emit_image_fetch_sample(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord,
+                                         spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, regs[n0 + offset])))
+           : spv_emit_image_fetch(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, level);
     tex_results(c, in, texel, c->t_f32);
 }
 /* TXQ of the dimensions (bits 62-63 = 0): width, height, depth or layers, and the levels, at the level in register
@@ -2171,9 +2204,9 @@ static void texture_query(Ctx* c, const Sm86Insn* in) {
     if (t->type == 3) dims = 2 + t->array;
     spv_emit_capability(&c->e, SPV_CAPABILITY_IMAGE_QUERY);
     /* a multisampled texture has one level, and its size takes none */
-    u32 size = spv_emit_image_query_size_lod(&c->e, spv_emit_type_vector(&c->e, c->t_u32, dims), c->tex_sampled[slot],
-                                             c->tex[slot],
-                                             ms ? 0 : spv_emit_bitcast(&c->e, c->t_i32, rd(c, sm86_field(in, 24, 8))));
+    u32 size = spv_emit_image_query_size_lod(
+        &c->e, spv_emit_type_vector(&c->e, c->t_u32, dims), c->tex_sampled[slot], c->tex[slot],
+        ms ? 0 : spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, sm86_field(in, 24, 8))));
     u32 v[4];
     for (u32 k = 0; k < 3; k++) v[k] = k < dims ? SPV(&c->e, SPV_OP_COMPOSITE_EXTRACT, c->t_u32, size, k) : cu(c, 1);
     if (t->type == 0) v[1] = cu(c, 1);
@@ -2242,9 +2275,9 @@ static void surface(Ctx* c, const Sm86Insn* in) {
     if (sdim == 0 && coords == 1) v[count++] = c->zero;
     u32 ivec = count == 2 ? spv_emit_type_vec2(&c->e, c->t_i32) : spv_emit_type_vec3(&c->e, c->t_i32);
     u32 uvec = count == 2 ? c->t_v2u : c->t_v3u;
-    u32 coord = spv_emit_bitcast(&c->e, ivec,
-                                 count == 2 ? spv_emit_vec2_construct(&c->e, uvec, v[0], v[1])
-                                            : spv_emit_vec3_construct(&c->e, uvec, v[0], v[1], v[2]));
+    u32 coord = spv_emit_unary(&c->e, SPV_OP_BITCAST, ivec,
+                               count == 2 ? spv_emit_vec2_construct(&c->e, uvec, v[0], v[1])
+                                          : spv_emit_vec3_construct(&c->e, uvec, v[0], v[1], v[2]));
     if (atomic) {
         /* SURED: NAK's set_atom_op at 87-89 (0 add, 1 min, 2 max, 5 and, 6 or, 7 xor) and atom type at 73-75 (0
            u32, 1 s32), the data at 32 */
@@ -2274,9 +2307,10 @@ static void surface(Ctx* c, const Sm86Insn* in) {
         u32 data = sm86_field(in, 32, 8), f[4], next = 0;
         for (u32 k = 0; k < 4; k++) {
             if (mask & (1u << k))
-                f[k] = spv_emit_bitcast(&c->e, scalar, rd(c, data >= SM86_RZ ? data : data + next++));
+                f[k] = spv_emit_unary(&c->e, SPV_OP_BITCAST, scalar, rd(c, data >= SM86_RZ ? data : data + next++));
             else
-                f[k] = kind == 0 ? cf(c, k == 3 ? 1.0f : 0.0f) : spv_emit_bitcast(&c->e, scalar, cu(c, k == 3));
+                f[k] = kind == 0 ? cf(c, k == 3 ? 1.0f : 0.0f)
+                                 : spv_emit_unary(&c->e, SPV_OP_BITCAST, scalar, cu(c, k == 3));
         }
         spv_emit_image_write(&c->e, c->img_type[slot], c->img[slot], coord, spv_emit_vec4_construct(&c->e, vec4, f));
     } else {
@@ -2295,13 +2329,15 @@ static u32 system_value(Ctx* c, u32 sr);
 /* ---- the warp's matrix instructions (HMMA, LDSM, MOVM), as the lanes of an invocation's own 32 of a subgroup of 32 or
    64 (NVIDIA's warp: lane l of it is the local invocation index's l % 32), each one's registers spread over the lanes
    as PTX's mma.sync, ldmatrix and movmatrix lay them out. A lane reads another's register with a shuffle */
-static u32 warp_lane(Ctx* c) { return spv_emit_bitwise_and_u32(&c->e, c->t_u32, system_value(c, 0), cu(c, 31)); }
+static u32 warp_lane(Ctx* c) {
+    return spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, 31));
+}
 /* value as lane j (0-31) of the invocation's own 32 holds it */
 static u32 warp_read(Ctx* c, u32 value, u32 j) {
-    u32 own = spv_emit_bitwise_and_u32(&c->e, c->t_u32, system_value(c, 0), cu(c, ~31u));
+    u32 own = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, ~31u));
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
     return SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, c->t_u32, cu(c, 3), value,
-               spv_emit_bitwise_or_u32(&c->e, c->t_u32, own, j));
+               spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, own, j));
 }
 /* value as lane 4g + p of the invocation's own 32 holds it, g4 = 4g for the reader's own g: a quad broadcast where the
    stage has quad operations, which AMD makes a DPP move where a shuffle goes through LDS. Vulkan's quad is four
@@ -2313,7 +2349,7 @@ static u32 quad_read(Ctx* c, u32 value, u32 g4, u32 p) {
         spv_emit_subgroup_quad_capability(&c->e);
         return spv_emit_subgroup_quad_u32(&c->e, c->t_u32, value, 0, cu(c, p));
     }
-    return warp_read(c, value, spv_emit_bitwise_or_u32(&c->e, c->t_u32, g4, cu(c, p)));
+    return warp_read(c, value, spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, g4, cu(c, p)));
 }
 static u32 half_pair(Ctx* c, u32 bits) { return SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, bits); }
 /* A zero for an HMMA to OR its B registers with before it gathers them, a new one every 8 HMMAs, so that a driver
@@ -2329,8 +2365,8 @@ static u32 half_pair(Ctx* c, u32 bits) { return SPV_EXT(&c->e, c->t_v2f, SPV_GLS
 static u32 hmma_zero(Ctx* c) {
     u32 group = c->hmma_count++ / 8;
     if (c->stage != ST_CS) return 0;
-    u32 never = spv_emit_i_equal(&c->e, c->t_bool, builtin_vec3(c, &c->num_groups, 24, 0), c->zero);
-    return spv_emit_select(&c->e, c->t_u32, never, cu(c, group + 1), c->zero);
+    u32 never = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, builtin_vec3(c, &c->num_groups, 24, 0), c->zero);
+    return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, never, cu(c, group + 1), c->zero);
 }
 /* HMMA on the device's matrix unit (g_shader_hmma_coop): one OpCooperativeMatrixMulAddKHR of 16x16 f16 A and B into
    a 16x16 f32 accumulator, in place of hmma's 16 B gathers and 32 dot products. SPV_KHR_cooperative_matrix leaves
@@ -2396,21 +2432,22 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
         c->coop_slots = spv_emit_workgroup_variable(&c->e, spv_emit_type_workgroup_pointer(&c->e, array));
         add_interface(c, c->coop_slots);
     }
-    u32 base =
-        spv_emit_imul_u32(&c->e, c->t_u32, builtin_u32(c, &c->subgroup_id, 40 /* SubgroupId */), cu(c, COOP_WORDS));
+    u32 base = spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, builtin_u32(c, &c->subgroup_id, 40 /* SubgroupId */),
+                               cu(c, COOP_WORDS));
     u32 lane = warp_lane(c);
-    u32 g8 =
-        spv_emit_shift_left_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, lane, cu(c, 2)), cu(c, 3));
-    u32 t = spv_emit_bitwise_and_u32(&c->e, c->t_u32, lane, cu(c, 3));
+    u32 g8 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                             spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, lane, cu(c, 2)), cu(c, 3));
+    u32 t = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3));
     /* lane l's words (g = l / 4, t = l % 4): A's at 8g + t (+64 row g + 8, +4 columns 8-15), B's at 8g + t (+4 rows
        8-15), D's at 16g + 2t (+1 the next column, +128 row g + 8) */
     u32 at_a = spv_emit_iadd_u32(&c->e, c->t_u32, base, spv_emit_iadd_u32(&c->e, c->t_u32, g8, t));
     u32 at_b = coop_add(c, at_a, COOP_B);
     u32 at_d = spv_emit_iadd_u32(
         &c->e, c->t_u32, base,
-        spv_emit_iadd_u32(
-            &c->e, c->t_u32, spv_emit_shift_left_u32(&c->e, c->t_u32, g8, cu(c, 1)),
-            spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_shift_left_u32(&c->e, c->t_u32, t, cu(c, 1)), cu(c, COOP_D))));
+        spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g8, cu(c, 1)),
+                          spv_emit_iadd_u32(&c->e, c->t_u32,
+                                            spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 1)),
+                                            cu(c, COOP_D))));
     coop_barrier(c);
     static const u32 a_at[4] = {0, 64, 4, 68};
     for (k = 0; k < 4; k++)
@@ -2480,13 +2517,13 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
     u32 zero = rb >= SM86_RZ ? 0 : hmma_zero(c);
     for (k = 0; k < nb; k++) {
         b[k] = rb >= SM86_RZ ? c->zero : rd(c, rb + k);
-        if (zero) b[k] = spv_emit_bitwise_or_u32(&c->e, c->t_u32, b[k], zero);
+        if (zero) b[k] = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, b[k], zero);
     }
     for (k = 0; k < ncd; k++) cc[k] = rc >= SM86_RZ ? c->zero : rd(c, rc + k);
     u32 lane = warp_lane(c);
-    u32 g4 = spv_emit_bitwise_and_u32(&c->e, c->t_u32, lane, cu(c, 28));
-    u32 t8 =
-        spv_emit_shift_left_u32(&c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, lane, cu(c, 3)), cu(c, 3));
+    u32 g4 = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 28));
+    u32 t8 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                             spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3)), cu(c, 3));
     /* the pairs as two f16 for OpFDot2MixAcc32VALVE (a bitcast: no instruction), or unpacked to two f32 */
     int mixed = g_shader_mixed_dot && g_shader_float16;
     u32 t_v2h = 0;
@@ -2508,17 +2545,17 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
         }
     }
     for (u32 p = 0; p < 4; p++) {
-        u32 lb[2] = {spv_emit_bitwise_or_u32(&c->e, c->t_u32, t8, cu(c, p)),
-                     spv_emit_bitwise_or_u32(&c->e, c->t_u32, t8, cu(c, 4 + p))};
+        u32 lb[2] = {spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8, cu(c, p)),
+                     spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8, cu(c, 4 + p))};
         u32 av[4], bv[2][2];
         for (k = 0; k < na; k++) {
             u32 bits = quad_read(c, a[k], g4, p);
-            av[k] = mixed ? spv_emit_bitcast(&c->e, t_v2h, bits) : half_pair(c, bits);
+            av[k] = mixed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
         }
         for (u32 j = 0; j < 2; j++)
             for (k = 0; k < nb; k++) {
                 u32 bits = warp_read(c, b[k], lb[j]);
-                bv[j][k] = mixed ? spv_emit_bitcast(&c->e, t_v2h, bits) : half_pair(c, bits);
+                bv[j][k] = mixed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);
             }
         for (u32 h = 0; h < nb; h++) /* the k halves: A's registers 2h (row g) and 2h + 1 (row g + 8), B's h */
             for (u32 i = 0; i < 2; i++)
@@ -2544,10 +2581,10 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
 /* a 16-bit element of shared memory at the byte address, in the low half */
 static u32 shared_u16(Ctx* c, u32 address) {
     u32 word = spv_emit_load_nonprivate(&c->e, c->t_u32, mem_ptr(c, 0, address, 0));
-    u32 shift = spv_emit_shift_left_u32(&c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, address, cu(c, 2)),
-                                        cu(c, 3));
-    return spv_emit_bitwise_and_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, word, shift),
-                                    cu(c, 0xffff));
+    u32 shift = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                                spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, address, cu(c, 2)), cu(c, 3));
+    return spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
+                           spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, word, shift), cu(c, 0xffff));
 }
 /* LDSM.16 (0x83b): 1, 2 or 4 (bits 72-73) 8x8 matrices of 16-bit elements from shared memory into the destination's
    registers, one for each, as PTX's ldmatrix.sync.aligned.m8n8: lanes 8m to 8m + 7 give the addresses of matrix m's
@@ -2564,23 +2601,25 @@ static void ldsm(Ctx* c, const Sm86Insn* in) {
                       before any other access to shared memory */
     u32 imm = sm86_field(in, 40, 24), bias = imm & 0x800000u ? imm | 0xff000000u : imm;
     u32 addr = spv_emit_iadd_u32(&c->e, c->t_u32, rd(c, sm86_field(in, 24, 8)), cu(c, bias));
-    u32 lane = warp_lane(c), g = spv_emit_shift_right_u32(&c->e, c->t_u32, lane, cu(c, 2));
-    u32 t = spv_emit_bitwise_and_u32(&c->e, c->t_u32, lane, cu(c, 3)), out[4];
+    u32 lane = warp_lane(c), g = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, lane, cu(c, 2));
+    u32 t = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3)), out[4];
     for (u32 m = 0; m < (1u << count); m++) {
         if (!trans) {
             u32 row = warp_read(c, addr, spv_emit_iadd_u32(&c->e, c->t_u32, g, cu(c, 8 * m)));
-            u32 at = spv_emit_iadd_u32(&c->e, c->t_u32, row, spv_emit_shift_left_u32(&c->e, c->t_u32, t, cu(c, 2)));
+            u32 at = spv_emit_iadd_u32(&c->e, c->t_u32, row,
+                                       spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 2)));
             out[m] = spv_emit_load_nonprivate(&c->e, c->t_u32, mem_ptr(c, 0, at, 0));
         } else {
-            u32 r0 =
-                spv_emit_iadd_u32(&c->e, c->t_u32, spv_emit_shift_left_u32(&c->e, c->t_u32, t, cu(c, 1)), cu(c, 8 * m));
-            u32 col = spv_emit_shift_left_u32(&c->e, c->t_u32, g, cu(c, 1));
+            u32 r0 = spv_emit_iadd_u32(&c->e, c->t_u32,
+                                       spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, t, cu(c, 1)),
+                                       cu(c, 8 * m));
+            u32 col = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, g, cu(c, 1));
             u32 lo = shared_u16(c, spv_emit_iadd_u32(&c->e, c->t_u32, warp_read(c, addr, r0), col));
             u32 hi = shared_u16(
                 c, spv_emit_iadd_u32(&c->e, c->t_u32,
                                      warp_read(c, addr, spv_emit_iadd_u32(&c->e, c->t_u32, r0, cu(c, 1))), col));
-            out[m] =
-                spv_emit_bitwise_or_u32(&c->e, c->t_u32, lo, spv_emit_shift_left_u32(&c->e, c->t_u32, hi, cu(c, 16)));
+            out[m] = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, lo,
+                                     spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, hi, cu(c, 16)));
         }
     }
     for (u32 m = 0; m < (1u << count); m++)
@@ -2596,25 +2635,27 @@ static void movm(Ctx* c, const Sm86Insn* in) {
         return;
     }
     u32 src = rd(c, sm86_field(in, 24, 8)), lane = warp_lane(c);
-    u32 g = spv_emit_shift_right_u32(&c->e, c->t_u32, lane, cu(c, 2));
-    u32 t8 =
-        spv_emit_shift_left_u32(&c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, lane, cu(c, 3)), cu(c, 3));
-    u32 from = spv_emit_iadd_u32(&c->e, c->t_u32, t8, spv_emit_shift_right_u32(&c->e, c->t_u32, g, cu(c, 1)));
-    u32 shift =
-        spv_emit_shift_left_u32(&c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, g, cu(c, 1)), cu(c, 4));
+    u32 g = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, lane, cu(c, 2));
+    u32 t8 = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                             spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 3)), cu(c, 3));
+    u32 from = spv_emit_iadd_u32(&c->e, c->t_u32, t8,
+                                 spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, g, cu(c, 1)));
+    u32 shift = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                                spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, g, cu(c, 1)), cu(c, 4));
     u32 v0 = warp_read(c, src, from), v1 = warp_read(c, src, spv_emit_iadd_u32(&c->e, c->t_u32, from, cu(c, 4)));
-    u32 lo =
-        spv_emit_bitwise_and_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, v0, shift), cu(c, 0xffff));
-    u32 hi =
-        spv_emit_bitwise_and_u32(&c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, v1, shift), cu(c, 0xffff));
+    u32 lo = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
+                             spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, v0, shift), cu(c, 0xffff));
+    u32 hi = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
+                             spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, v1, shift), cu(c, 0xffff));
     wr(c, in->dst,
-       spv_emit_bitwise_or_u32(&c->e, c->t_u32, lo, spv_emit_shift_left_u32(&c->e, c->t_u32, hi, cu(c, 16))));
+       spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, lo,
+                       spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, hi, cu(c, 16))));
 }
 /* the ballot of a predicate over the invocation's 32 lanes, on a subgroup of 32 or 64 */
 static u32 ballot32(Ctx* c, u32 pred) {
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT);
     u32 all = spv_emit_subgroup_ballot(&c->e, c->t_v4u, c->t_u32, pred);
-    u32 half = spv_emit_shift_right_u32(&c->e, c->t_u32, system_value(c, 0), cu(c, 5));
+    u32 half = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, system_value(c, 0), cu(c, 5));
     return SPV(&c->e, 77 /* OpVectorExtractDynamic */, c->t_u32, all, half);
 }
 
@@ -2632,7 +2673,7 @@ static u32 ipa_input(Ctx* c, u32 i, u32 k, u32 loc, u32 freq) {
     /* The hardware interpolates attr/w for a perspective input, and the program multiplies by w (the reciprocal of
        a[0x7c]). Vulkan's input is attr itself: times the interpolated 1/w, FragCoord.w */
     if (interp_mode(c, i) == 2 && freq == 0) {
-        v = spv_emit_fmul(&c->e, c->t_f32, v, frag_coord(c, 3));
+        v = spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, v, frag_coord(c, 3));
         spv_emit_no_contraction(&c->e, v);
     }
     return v;
@@ -2685,15 +2726,15 @@ static u32 system_value(Ctx* c, u32 sr) {
         case 0x3a:
         case 0x3b:
         case 0x3c: {
-            u32 lane = spv_emit_bitwise_and_u32(&c->e, c->t_u32, system_value(c, 0), cu(c, 31));
-            u32 eq = spv_emit_shift_left_u32(&c->e, c->t_u32, cu(c, 1), lane);
-            u32 lt = spv_emit_isub_u32(&c->e, c->t_u32, eq, cu(c, 1));
-            u32 le = spv_emit_bitwise_or_u32(&c->e, c->t_u32, lt, eq);
+            u32 lane = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, 31));
+            u32 eq = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, cu(c, 1), lane);
+            u32 lt = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, eq, cu(c, 1));
+            u32 le = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, lt, eq);
             return sr == 0x38   ? eq
                    : sr == 0x39 ? lt
                    : sr == 0x3a ? le
-                   : sr == 0x3b ? spv_emit_not_u32(&c->e, c->t_u32, le)
-                                : spv_emit_not_u32(&c->e, c->t_u32, lt);
+                   : sr == 0x3b ? spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, le)
+                                : spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, lt);
         }
         case 0x84:
             /* NAK's NAK_SV_VARIABLE_RATE, a fragment's shading rate: its width in pixels in bits 8-15 and its height
@@ -2715,7 +2756,7 @@ static u32 system_value(Ctx* c, u32 sr) {
    slots of the list. Whole objects came and went, or jumped to where another's should be */
 static u32 program_sr(Ctx* c, u32 sr) {
     u32 v = system_value(c, sr);
-    return sr == 0 ? spv_emit_bitwise_and_u32(&c->e, c->t_u32, v, cu(c, 31)) : v;
+    return sr == 0 ? spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, v, cu(c, 31)) : v;
 }
 /* for (i = start; i < end; i += step) in a structured loop, i in the Function variable counter: loop_begin gives i in
    the loop's body, and loop_end closes it with the labels it set */
@@ -2730,7 +2771,7 @@ static u32 loop_begin(Ctx* c, MeshLoop* l, u32 start, u32 end) {
     spv_emit_branch(e, l->header);
     spv_emit_label(e, l->header);
     u32 i = spv_emit_load(e, c->t_u32, l->counter);
-    u32 more = spv_emit_u_less(e, c->t_bool, i, end);
+    u32 more = spv_emit_binary(e, SPV_OP_U_LESS_THAN, c->t_bool, i, end);
     spv_emit_loop_merge(e, l->merge, l->cont);
     spv_emit_branch_conditional(e, more, body, l->merge);
     spv_emit_label(e, body);
@@ -2766,8 +2807,9 @@ static u32 mesh_outputs(Ctx* c, const u32* sph, u32 base, u32 element, u32 count
         if (!slot) {
             /* the depth fix of vertex_depth_fix: z becomes (z + w) / 2 when the push constant's y is not 0 */
             u32 on = spv_emit_fcompare(e, c->t_bool, 5, push_component(c, 1), cf(c, 0.0f)); /* 5: != */
-            u32 sum = nocontract(c, spv_emit_fadd(e, c->t_f32, v[2], v[3]));
-            v[2] = spv_emit_select(e, c->t_f32, on, nocontract(c, spv_emit_fmul(e, c->t_f32, sum, cf(c, 0.5f))), v[2]);
+            u32 sum = nocontract(c, spv_emit_binary(e, SPV_OP_F_ADD, c->t_f32, v[2], v[3]));
+            v[2] = spv_emit_ternary(e, SPV_OP_SELECT, c->t_f32, on,
+                                    nocontract(c, spv_emit_binary(e, SPV_OP_F_MUL, c->t_f32, sum, cf(c, 0.5f))), v[2]);
             if (!c->position) {
                 c->position = spv_emit_interface_variable(e, SPV_STORAGE_OUTPUT, c->t_v4f, c->t_u32, count,
                                                           SPV_BUILT_IN_POSITION, 0, 0);
@@ -2809,7 +2851,7 @@ static u32 mesh_entry(Ctx* c, u32 body) {
     if (c->stage == ST_MS) loop.counter = spv_emit_function_variable(e, spv_emit_type_function_pointer(e, c->t_u32));
     loop.step = cu(c, m->threads);
     u32 invocation = builtin_u32(c, &c->local_index, 29); /* LocalInvocationIndex */
-    u32 first = spv_emit_i_equal(e, c->t_bool, invocation, c->zero);
+    u32 first = spv_emit_binary(e, SPV_OP_I_EQUAL, c->t_bool, invocation, c->zero);
     u32 then = spv_emit_id(e), merge = spv_emit_id(e);
     spv_emit_selection_merge(e, merge);
     spv_emit_branch_conditional(e, first, then, merge);
@@ -2839,9 +2881,11 @@ static u32 mesh_entry(Ctx* c, u32 body) {
     /* the vertices */
     if (c->vertex_words) {
         u32 v = loop_begin(c, &loop, invocation, cu(c, m->max_vertices));
-        u32 group = spv_emit_imul_u32(e, c->t_u32, spv_emit_shift_right_u32(e, c->t_u32, v, cu(c, 5)),
-                                      cu(c, 32 * c->vertex_words));
-        u32 base = spv_emit_iadd_u32(e, c->t_u32, group, spv_emit_bitwise_and_u32(e, c->t_u32, v, cu(c, 31)));
+        u32 group = spv_emit_binary(e, SPV_OP_I_MUL, c->t_u32,
+                                    spv_emit_binary(e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, v, cu(c, 5)),
+                                    cu(c, 32 * c->vertex_words));
+        u32 base =
+            spv_emit_iadd_u32(e, c->t_u32, group, spv_emit_binary(e, SPV_OP_BITWISE_AND, c->t_u32, v, cu(c, 31)));
         mesh_outputs(c, c->sph, base, v, m->max_vertices, 0, c->out_attr);
         loop_end(c, &loop, v);
     }
@@ -2851,7 +2895,8 @@ static u32 mesh_entry(Ctx* c, u32 body) {
     u32 indices = spv_emit_interface_variable(e, SPV_STORAGE_OUTPUT, c->t_v3u, c->t_u32, m->max_primitives,
                                               5296 /* PrimitiveTriangleIndicesEXT */, 0, 0);
     add_interface(c, indices);
-    u32 at = spv_emit_iadd_u32(e, c->t_u32, spv_emit_imul_u32(e, c->t_u32, p, cu(c, 3)), cu(c, 4)), index[3];
+    u32 at = spv_emit_iadd_u32(e, c->t_u32, spv_emit_binary(e, SPV_OP_I_MUL, c->t_u32, p, cu(c, 3)), cu(c, 4)),
+        index[3];
     for (u32 k = 0; k < 3; k++)
         index[k] = isbe_load(c, map, SPV_STORAGE_WORKGROUP, c->isbe_map_words,
                              spv_emit_iadd_u32(e, c->t_u32, at, cu(c, k)));
@@ -2864,9 +2909,11 @@ static u32 mesh_entry(Ctx* c, u32 body) {
                    SPV(e, SPV_OP_COMPOSITE_CONSTRUCT, c->t_v3u, index[0], index[1], index[2]));
     if (c->primitive_words) {
         u32 groups = (m->max_vertices + 31) / 32;
-        u32 group = spv_emit_imul_u32(e, c->t_u32, spv_emit_shift_right_u32(e, c->t_u32, p, cu(c, 5)),
-                                      cu(c, 32 * c->primitive_words));
-        u32 base = spv_emit_iadd_u32(e, c->t_u32, group, spv_emit_bitwise_and_u32(e, c->t_u32, p, cu(c, 31)));
+        u32 group = spv_emit_binary(e, SPV_OP_I_MUL, c->t_u32,
+                                    spv_emit_binary(e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, p, cu(c, 5)),
+                                    cu(c, 32 * c->primitive_words));
+        u32 base =
+            spv_emit_iadd_u32(e, c->t_u32, group, spv_emit_binary(e, SPV_OP_BITWISE_AND, c->t_u32, p, cu(c, 31)));
         base = spv_emit_iadd_u32(e, c->t_u32, base, cu(c, 32 * c->vertex_words * groups));
         mesh_outputs(c, m->prim_sph, base, p, m->max_primitives, 1, c->prim_attr);
     }
@@ -2909,8 +2956,8 @@ static void emit_insn_iadd3(Ctx* c, const Sm86Insn* in, int uniform, u32 p, u32 
     }
     u32 high = hi32(c, sum);
     dwr(c, in, lo32(c, sum));
-    pwr(c, p, spv_emit_u_less(&c->e, c->t_bool, c->zero, high), uniform);
-    pwr(c, q, spv_emit_u_less(&c->e, c->t_bool, cu(c, 1), high), uniform);
+    pwr(c, p, spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, c->zero, high), uniform);
+    pwr(c, q, spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, cu(c, 1), high), uniform);
 }
 
 static void emit_insn(Ctx* c, const Sm86Insn* in) {
@@ -2973,18 +3020,22 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 swizzle = sm86_field(in, 32, 8);
             u32 a = to_f(c, rd(c, sm86_field(in, 24, 8))), b = to_f(c, rd(c, sm86_field(in, 64, 8)));
             spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
-            u32 lane = spv_emit_bitwise_and_u32(&c->e, c->t_u32, system_value(c, 0), cu(c, 3));
-            u32 shift =
-                spv_emit_isub_u32(&c->e, c->t_u32, cu(c, 6), spv_emit_shift_left_u32(&c->e, c->t_u32, lane, cu(c, 1)));
-            u32 mode = spv_emit_bitwise_and_u32(
-                &c->e, c->t_u32, spv_emit_shift_right_u32(&c->e, c->t_u32, cu(c, swizzle), shift), cu(c, 3));
-            u32 x = spv_emit_select(&c->e, c->t_f32, spv_emit_i_equal(&c->e, c->t_bool, mode, cu(c, 1)),
-                                    spv_emit_fnegate(&c->e, c->t_f32, a), a);
-            u32 y = spv_emit_select(&c->e, c->t_f32, spv_emit_i_equal(&c->e, c->t_bool, mode, cu(c, 2)),
-                                    spv_emit_fnegate(&c->e, c->t_f32, b), b);
+            u32 lane = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, 3));
+            u32 shift = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, cu(c, 6),
+                                        spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, lane, cu(c, 1)));
+            u32 mode = spv_emit_binary(
+                &c->e, SPV_OP_BITWISE_AND, c->t_u32,
+                spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, cu(c, swizzle), shift), cu(c, 3));
+            u32 x = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32,
+                                     spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, mode, cu(c, 1)),
+                                     spv_emit_unary(&c->e, SPV_OP_F_NEGATE, c->t_f32, a), a);
+            u32 y = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32,
+                                     spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, mode, cu(c, 2)),
+                                     spv_emit_unary(&c->e, SPV_OP_F_NEGATE, c->t_f32, b), b);
             u32 sum = nocontract(c, op2(c, SPV_OP_F_ADD, c->t_f32, x, y));
             dwr(c, in,
-                to_u(c, spv_emit_select(&c->e, c->t_f32, spv_emit_i_equal(&c->e, c->t_bool, mode, cu(c, 3)), b, sum)));
+                to_u(c, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32,
+                                         spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, mode, cu(c, 3)), b, sum)));
             return;
         }
         case SM86_FMNMX: {
@@ -2993,7 +3044,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 x = ftz(c, src_f(c, &in->a), on), y = ftz(c, src_f(c, &in->b), on);
             u32 lo = spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_N_MIN, x, y);
             u32 hi = spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_N_MAX, x, y);
-            dwr(c, in, to_u(c, spv_emit_select(&c->e, c->t_f32, min, lo, hi)));
+            dwr(c, in, to_u(c, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, min, lo, hi)));
             return;
         }
         case SM86_FSET: {
@@ -3002,7 +3053,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                         ftz(c, src_f(c, &in->b), on));
             u32 acc = prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), 0);
             cmp = combine(c, sm86_field(in, 74, 2), cmp, acc);
-            dwr(c, in, to_u(c, spv_emit_select(&c->e, c->t_f32, cmp, cf(c, 1.0f), cf(c, 0.0f))));
+            dwr(c, in, to_u(c, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, cmp, cf(c, 1.0f), cf(c, 0.0f))));
             return;
         }
         case SM86_FSETP:
@@ -3021,15 +3072,18 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                   src_bits(c, &in->b));
                 if (sm86_field(in, 72, 1)) { /* .EX: equal high words take the low words' comparison */
                     u32 low = prd(c, sm86_field(in, 68, 3), sm86_field(in, 71, 1), uniform);
-                    u32 equal = spv_emit_i_equal(&c->e, c->t_bool, src_bits(c, &in->a), src_bits(c, &in->b));
+                    u32 equal =
+                        spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, src_bits(c, &in->a), src_bits(c, &in->b));
                     u32 cmp_op = sm86_field(in, 76, 3);
-                    if (cmp_op != 0 && cmp_op != 7) cmp = spv_emit_select(&c->e, c->t_bool, equal, low, cmp);
+                    if (cmp_op != 0 && cmp_op != 7)
+                        cmp = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_bool, equal, low, cmp);
                 }
             }
             u32 acc = prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), uniform);
             u32 set_op = sm86_field(in, 74, 2);
             pwr(c, sm86_field(in, 81, 3), combine(c, set_op, cmp, acc), uniform);
-            pwr(c, sm86_field(in, 84, 3), combine(c, set_op, spv_emit_bool_not(&c->e, c->t_bool, cmp), acc), uniform);
+            pwr(c, sm86_field(in, 84, 3),
+                combine(c, set_op, spv_emit_unary(&c->e, SPV_OP_LOGICAL_NOT, c->t_bool, cmp), acc), uniform);
             return;
         }
         case SM86_HSETP2: {
@@ -3076,7 +3130,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 p = prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), uniform);
             u32 x = op == SM86_FSEL ? to_u(c, src_f(c, &in->a)) : src_bits(c, &in->a);
             u32 y = op == SM86_FSEL ? to_u(c, src_f(c, &in->b)) : src_bits(c, &in->b);
-            dwr(c, in, spv_emit_select(&c->e, c->t_u32, p, x, y));
+            dwr(c, in, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, p, x, y));
             return;
         }
         case SM86_MUFU: {
@@ -3092,18 +3146,19 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                           SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, src_bits(c, &in->b)),
                                           sm86_field(in, 60, 1));
                 if (in->b.abs) x = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_ABS, x);
-                if (in->b.neg) x = spv_emit_fnegate(&c->e, c->t_f32, x);
+                if (in->b.neg) x = spv_emit_unary(&c->e, SPV_OP_F_NEGATE, c->t_f32, x);
             } else
                 x = src_f(c, &in->b);
             switch (fn) {
                 case 0:
                 case 1: /* the argument in turns, as the hardware takes it */
-                    v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, fn ? SPV_GLSL_SIN : SPV_GLSL_COS,
-                                            spv_emit_fmul(&c->e, c->t_f32, x, cf(c, 6.28318530717958647692f)));
+                    v = spv_emit_glsl_unary(
+                        &c->e, c->t_f32, c->glsl, fn ? SPV_GLSL_SIN : SPV_GLSL_COS,
+                        spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, cf(c, 6.28318530717958647692f)));
                     break;
                 case 2: v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_EXP2, x); break;
                 case 3: v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_LOG2, x); break;
-                case 4: v = spv_emit_fdiv(&c->e, c->t_f32, cf(c, 1.0f), x); break;
+                case 4: v = spv_emit_binary(&c->e, SPV_OP_F_DIV, c->t_f32, cf(c, 1.0f), x); break;
                 case 5: v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_INVERSE_SQRT, x); break;
                 case 8: v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_SQRT, x); break;
                 case 9: v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, (SpvGlsl450Op)21 /* Tanh */, x); break;
@@ -3142,14 +3197,14 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                              SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, src_bits(c, &in->b)),
                                              sm86_field(in, 60, 1));
                 if (in->b.abs) from = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_ABS, from);
-                if (in->b.neg) from = spv_emit_fnegate(&c->e, c->t_f32, from);
+                if (in->b.neg) from = spv_emit_unary(&c->e, SPV_OP_F_NEGATE, c->t_f32, from);
             } else
                 from = src_f(c, &in->b);
             static const u16 rounding[4] = {SPV_GLSL_ROUND_EVEN, SPV_GLSL_FLOOR, SPV_GLSL_CEIL, SPV_GLSL_TRUNC};
             u32 x = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, rounding[sm86_field(in, 78, 2)], from);
             int is_signed = (int)sm86_field(in, 72, 1);
             /* the hardware saturates, and a NaN gives 0 */
-            u32 nan = spv_emit_isnan(&c->e, c->t_bool, x), v;
+            u32 nan = spv_emit_unary(&c->e, SPV_OP_IS_NAN, c->t_bool, x), v;
             if (dsize < 2) {
                 /* an 8- or 16-bit result saturates to its range, then fills the register sign or zero extended */
                 u32 bits = 8u << dsize;
@@ -3158,20 +3213,20 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 u32 clamped = spv_emit_glsl_binary(
                     &c->e, c->t_f32, c->glsl, SPV_GLSL_N_MIN,
                     spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_N_MAX, x, cf(c, lo)), cf(c, hi));
-                v = is_signed ? to_u(c, spv_emit_convert_f_to_s(&c->e, c->t_i32, clamped))
-                              : spv_emit_convert_f_to_u(&c->e, c->t_u32, clamped);
+                v = is_signed ? to_u(c, spv_emit_unary(&c->e, SPV_OP_CONVERT_F_TO_S, c->t_i32, clamped))
+                              : spv_emit_unary(&c->e, SPV_OP_CONVERT_F_TO_U, c->t_u32, clamped);
             } else if (is_signed) {
                 u32 high = spv_emit_fcompare(&c->e, c->t_bool, 6, x, cf(c, 2147483648.0f));
                 u32 clamped = spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_N_MAX, x, cf(c, -2147483648.0f));
-                v = to_u(c, spv_emit_convert_f_to_s(&c->e, c->t_i32, clamped));
-                v = spv_emit_select(&c->e, c->t_u32, high, cu(c, 0x7fffffffu), v);
+                v = to_u(c, spv_emit_unary(&c->e, SPV_OP_CONVERT_F_TO_S, c->t_i32, clamped));
+                v = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, high, cu(c, 0x7fffffffu), v);
             } else {
                 u32 high = spv_emit_fcompare(&c->e, c->t_bool, 6, x, cf(c, 4294967296.0f));
                 u32 clamped = spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_N_MAX, x, cf(c, 0.0f));
-                v = spv_emit_convert_f_to_u(&c->e, c->t_u32, clamped);
-                v = spv_emit_select(&c->e, c->t_u32, high, cu(c, 0xffffffffu), v);
+                v = spv_emit_unary(&c->e, SPV_OP_CONVERT_F_TO_U, c->t_u32, clamped);
+                v = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, high, cu(c, 0xffffffffu), v);
             }
-            dwr(c, in, spv_emit_select(&c->e, c->t_u32, nan, c->zero, v));
+            dwr(c, in, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, nan, c->zero, v));
             return;
         }
         case SM86_F2IP: {
@@ -3189,20 +3244,23 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 part[2];
             for (u32 k = 0; k < 2; k++) {
                 u32 x = to_f(c, rd(c, sm86_field(in, k ? 32 : 24, 8)));
-                u32 nan = spv_emit_isnan(&c->e, c->t_bool, x);
+                u32 nan = spv_emit_unary(&c->e, SPV_OP_IS_NAN, c->t_bool, x);
                 u32 r = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_ROUND_EVEN, x);
                 r = spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_N_MIN,
                                          spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_N_MAX, r, cf(c, lo)),
                                          cf(c, hi));
-                r = s8 ? to_u(c, spv_emit_convert_f_to_s(&c->e, c->t_i32, r))
-                       : spv_emit_convert_f_to_u(&c->e, c->t_u32, r);
-                r = spv_emit_bitwise_and_u32(&c->e, c->t_u32, r, cu(c, 0xff));
-                part[k] = spv_emit_select(&c->e, c->t_u32, nan, c->zero, r);
+                r = s8 ? to_u(c, spv_emit_unary(&c->e, SPV_OP_CONVERT_F_TO_S, c->t_i32, r))
+                       : spv_emit_unary(&c->e, SPV_OP_CONVERT_F_TO_U, c->t_u32, r);
+                r = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, r, cu(c, 0xff));
+                part[k] = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, nan, c->zero, r);
             }
-            u32 v = spv_emit_bitwise_or_u32(&c->e, c->t_u32,
-                                            spv_emit_shift_left_u32(&c->e, c->t_u32, part[0], cu(c, 8)), part[1]);
-            v = spv_emit_bitwise_or_u32(
-                &c->e, c->t_u32, spv_emit_shift_left_u32(&c->e, c->t_u32, rd(c, sm86_field(in, 64, 8)), cu(c, 16)), v);
+            u32 v = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32,
+                                    spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, part[0], cu(c, 8)),
+                                    part[1]);
+            v = spv_emit_binary(
+                &c->e, SPV_OP_BITWISE_OR, c->t_u32,
+                spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, rd(c, sm86_field(in, 64, 8)), cu(c, 16)),
+                v);
             wr(c, in->dst, v);
             return;
         }
@@ -3218,13 +3276,15 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 x = src_bits(c, &in->b), mode = sm86_field(in, 78, 2), is_signed = sm86_field(in, 74, 1);
             if (src_size < 2) {
                 u32 width = src_size ? 16 : 8, at = cu(c, width * sm86_field(in, 60, 2));
-                x = is_signed ? to_u(c, spv_emit_bitfield_sextract(
-                                            &c->e, c->t_i32, spv_emit_bitcast(&c->e, c->t_i32, x), at, cu(c, width)))
-                              : spv_emit_bitfield_uextract(&c->e, c->t_u32, x, at, cu(c, width));
+                x = is_signed ? to_u(c, spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_S_EXTRACT, c->t_i32,
+                                                         spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, x), at,
+                                                         cu(c, width)))
+                              : spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_U_EXTRACT, c->t_u32, x, at, cu(c, width));
             }
             u32 type = mode ? f64_type(c) : c->t_f32;
-            u32 v = is_signed ? spv_emit_convert_s_to_f(&c->e, type, spv_emit_bitcast(&c->e, c->t_i32, x))
-                              : spv_emit_convert_u_to_f(&c->e, type, x);
+            u32 v = is_signed ? spv_emit_unary(&c->e, SPV_OP_CONVERT_S_TO_F, type,
+                                               spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, x))
+                              : spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, type, x);
             if (mode) v = round_f64(c, mode, v);
             dwr(c, in, to_u(c, v));
             return;
@@ -3250,13 +3310,13 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_UIMAD:
         case SM86_IMAD: {
             /* .X (bit 74) adds the carry predicate at 87-90, as IADD3.X does */
-            u32 v = spv_emit_imul_u32(&c->e, c->t_u32, src_int(c, &in->a), src_int(c, &in->b));
+            u32 v = spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, src_int(c, &in->a), src_int(c, &in->b));
             v = spv_emit_iadd_u32(&c->e, c->t_u32, v, src_int(c, &in->c));
             if (sm86_field(in, 74, 1))
                 v = spv_emit_iadd_u32(&c->e, c->t_u32, v,
-                                      spv_emit_select(&c->e, c->t_u32,
-                                                      prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), uniform),
-                                                      cu(c, 1), c->zero));
+                                      spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
+                                                       prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), uniform),
+                                                       cu(c, 1), c->zero));
             dwr(c, in, v);
             return;
         }
@@ -3266,14 +3326,15 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 x = src_bits(c, &in->a), y = src_bits(c, &in->b);
             u32 v;
             if (sm86_field(in, 73, 1)) {
-                u32 xi = spv_emit_bitcast(&c->e, c->t_i32, x), yi = spv_emit_bitcast(&c->e, c->t_i32, y);
-                v = to_u(c, spv_emit_select(&c->e, c->t_i32, min,
-                                            spv_emit_glsl_binary(&c->e, c->t_i32, c->glsl, SPV_GLSL_S_MIN, xi, yi),
-                                            spv_emit_glsl_binary(&c->e, c->t_i32, c->glsl, SPV_GLSL_S_MAX, xi, yi)));
+                u32 xi = spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, x),
+                    yi = spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, y);
+                v = to_u(c, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_i32, min,
+                                             spv_emit_glsl_binary(&c->e, c->t_i32, c->glsl, SPV_GLSL_S_MIN, xi, yi),
+                                             spv_emit_glsl_binary(&c->e, c->t_i32, c->glsl, SPV_GLSL_S_MAX, xi, yi)));
             } else
-                v = spv_emit_select(&c->e, c->t_u32, min,
-                                    spv_emit_glsl_binary(&c->e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, x, y),
-                                    spv_emit_glsl_binary(&c->e, c->t_u32, c->glsl, SPV_GLSL_U_MAX, x, y));
+                v = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, min,
+                                     spv_emit_glsl_binary(&c->e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, x, y),
+                                     spv_emit_glsl_binary(&c->e, c->t_u32, c->glsl, SPV_GLSL_U_MAX, x, y));
             dwr(c, in, v);
             return;
         }
@@ -3282,25 +3343,26 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             /* NAK's OpFlo: bit 73 signed, 74 the shift amount (31 - the bit) in place of the bit, 63 the source
                inverted. No 1 gives 0xffffffff, as FindUMsb's -1 */
             u32 x = src_bits(c, &in->b);
-            if (sm86_field(in, 63, 1)) x = spv_emit_not_u32(&c->e, c->t_u32, x);
-            u32 bit = sm86_field(in, 73, 1)
-                          ? to_u(c, SPV_EXT(&c->e, c->t_i32, 74 /* FindSMsb */, spv_emit_bitcast(&c->e, c->t_i32, x)))
-                          : SPV_EXT(&c->e, c->t_u32, 75 /* FindUMsb */, x);
+            if (sm86_field(in, 63, 1)) x = spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, x);
+            u32 bit = sm86_field(in, 73, 1) ? to_u(c, SPV_EXT(&c->e, c->t_i32, 74 /* FindSMsb */,
+                                                              spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, x)))
+                                            : SPV_EXT(&c->e, c->t_u32, 75 /* FindUMsb */, x);
             if (sm86_field(in, 74, 1))
-                bit = spv_emit_select(&c->e, c->t_u32, spv_emit_i_equal(&c->e, c->t_bool, bit, cu(c, 0xffffffffu)), bit,
-                                      spv_emit_isub_u32(&c->e, c->t_u32, cu(c, 31), bit));
+                bit = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
+                                       spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, bit, cu(c, 0xffffffffu)), bit,
+                                       spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, cu(c, 31), bit));
             dwr(c, in, bit);
             return;
         }
         case SM86_POPC:
         case SM86_UPOPC: {
             u32 x = src_bits(c, &in->b);
-            if (sm86_field(in, 63, 1)) x = spv_emit_not_u32(&c->e, c->t_u32, x);
-            dwr(c, in, spv_emit_bit_count(&c->e, c->t_u32, x));
+            if (sm86_field(in, 63, 1)) x = spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, x);
+            dwr(c, in, spv_emit_unary(&c->e, SPV_OP_BIT_COUNT, c->t_u32, x));
             return;
         }
         case SM86_BREV:
-        case SM86_UBREV: dwr(c, in, spv_emit_bit_reverse_u32(&c->e, c->t_u32, src_bits(c, &in->b))); return;
+        case SM86_UBREV: dwr(c, in, spv_emit_unary(&c->e, SPV_OP_BIT_REVERSE, c->t_u32, src_bits(c, &in->b))); return;
         case SM86_R2UR: /* the register is the same in each invocation: its value as it is */
             uwr(c, sm86_field(in, 16, 6), rd(c, sm86_field(in, 24, 8)));
             return;
@@ -3315,15 +3377,15 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 bits = cu(c, 0x80);
             for (u32 i = 0; i < 7; i++)
                 if (mask & (1u << i))
-                    bits = spv_emit_bitwise_or_u32(
-                        &c->e, c->t_u32, bits,
-                        spv_emit_select(&c->e, c->t_u32, prd(c, i, 0, uniform), cu(c, 1u << i), c->zero));
-            pr = spv_emit_bitwise_and_u32(&c->e, c->t_u32, bits, cu(c, mask & 0xff));
-            u32 keep =
-                spv_emit_bitwise_and_u32(&c->e, c->t_u32, src_bits(c, &in->a), cu(c, ~((mask & 0xffu) << (8 * byte))));
+                    bits = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, bits,
+                                           spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, prd(c, i, 0, uniform),
+                                                            cu(c, 1u << i), c->zero));
+            pr = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, bits, cu(c, mask & 0xff));
+            u32 keep = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, src_bits(c, &in->a),
+                                       cu(c, ~((mask & 0xffu) << (8 * byte))));
             dwr(c, in,
-                spv_emit_bitwise_or_u32(&c->e, c->t_u32, keep,
-                                        spv_emit_shift_left_u32(&c->e, c->t_u32, pr, cu(c, 8 * byte))));
+                spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, keep,
+                                spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, pr, cu(c, 8 * byte))));
             return;
         }
         case SM86_F2FP: {
@@ -3333,19 +3395,21 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 /* .MERGE_C (NAK's note): b converted in the low half, c's low half (its high one with .H1, bit 72) in
                    the high half, a unused */
                 u32 keep = src_bits(c, &in->c);
-                if (sm86_field(in, 72, 1)) keep = spv_emit_shift_right_u32(&c->e, c->t_u32, keep, cu(c, 16));
+                if (sm86_field(in, 72, 1))
+                    keep = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, keep, cu(c, 16));
                 u32 low = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
                                   spv_emit_vec2_construct(&c->e, c->t_v2f, src_f(c, &in->b), cf(c, 0.0f)));
                 dwr(c, in,
-                    spv_emit_bitwise_or_u32(&c->e, c->t_u32, spv_emit_shift_left_u32(&c->e, c->t_u32, keep, cu(c, 16)),
-                                            low));
+                    spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32,
+                                    spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, keep, cu(c, 16)), low));
                 return;
             }
             u32 hi = src_f(c, &in->a), lo = src_f(c, second(in));
             u32 v;
             if (sm86_field(in, 76, 1))
-                v = spv_emit_bitwise_or_u32(
-                    &c->e, c->t_u32, spv_emit_shift_left_u32(&c->e, c->t_u32, bf16(c, hi), cu(c, 16)), bf16(c, lo));
+                v = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32,
+                                    spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, bf16(c, hi), cu(c, 16)),
+                                    bf16(c, lo));
             else
                 v = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, spv_emit_vec2_construct(&c->e, c->t_v2f, lo, hi));
             dwr(c, in, v);
@@ -3354,7 +3418,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
         case SM86_IABS:
             dwr(c, in,
                 to_u(c, spv_emit_glsl_unary(&c->e, c->t_i32, c->glsl, SPV_GLSL_S_ABS,
-                                            spv_emit_bitcast(&c->e, c->t_i32, src_bits(c, &in->b)))));
+                                            spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, src_bits(c, &in->b)))));
             return;
         case SM86_ULEA:
         case SM86_LEA: {
@@ -3362,14 +3426,15 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             int high = (int)sm86_field(in, 80, 1), x = (int)sm86_field(in, 74, 1);
             u32 a = src_bits(c, &in->a), shifted;
             if (high) /* the high word of (c:a) << shift */
-                shifted = shift ? spv_emit_bitwise_or_u32(
-                                      &c->e, c->t_u32,
-                                      spv_emit_shift_left_u32(&c->e, c->t_u32, src_bits(c, &in->c), cu(c, shift)),
-                                      spv_emit_shift_right_u32(&c->e, c->t_u32, a, cu(c, 32 - shift)))
+                shifted = shift ? spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32,
+                                                  spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                                                                  src_bits(c, &in->c), cu(c, shift)),
+                                                  spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, a,
+                                                                  cu(c, 32 - shift)))
                                 : src_bits(c, &in->c);
             else
-                shifted = spv_emit_shift_left_u32(&c->e, c->t_u32, a, cu(c, shift));
-            if (sm86_field(in, 72, 1)) shifted = spv_emit_isub_u32(&c->e, c->t_u32, c->zero, shifted);
+                shifted = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, a, cu(c, shift));
+            if (sm86_field(in, 72, 1)) shifted = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, c->zero, shifted);
             if (p >= SM86_PT && !x) {
                 dwr(c, in, spv_emit_iadd_u32(&c->e, c->t_u32, shifted, src_int(c, &in->b)));
                 return;
@@ -3377,7 +3442,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 sum = op2(c, SPV_OP_I_ADD, u64_type(c), to64(c, shifted), to64(c, src_int(c, &in->b)));
             if (x) sum = op2(c, SPV_OP_I_ADD, u64_type(c), sum, carry_in(c, 87, in, uniform));
             dwr(c, in, lo32(c, sum));
-            pwr(c, p, spv_emit_u_less(&c->e, c->t_bool, c->zero, hi32(c, sum)), uniform);
+            pwr(c, p, spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, c->zero, hi32(c, sum)), uniform);
             return;
         }
         case SM86_ULOP3:
@@ -3389,7 +3454,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 v = lut3(c, sm86_field(in, 72, 8), c->t_u32, src_bits(c, &in->a), src_bits(c, &in->b),
                          src_bits(c, &in->c), cu(c, 0xffffffffu), c->zero);
             dwr(c, in, v);
-            pwr(c, sm86_field(in, 81, 3), spv_emit_i_not_equal(&c->e, c->t_bool, v, c->zero), uniform);
+            pwr(c, sm86_field(in, 81, 3), spv_emit_binary(&c->e, SPV_OP_I_NOT_EQUAL, c->t_bool, v, c->zero), uniform);
             return;
         }
         case SM86_USHF:
@@ -3399,14 +3464,14 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 high = (int)sm86_field(in, 80, 1);
             int is_signed = dtype == 0 || dtype == 2;
             u32 s = src_bits(c, &in->b);
-            s = wrap ? spv_emit_bitwise_and_u32(&c->e, c->t_u32, s, cu(c, bits - 1))
+            s = wrap ? spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, s, cu(c, bits - 1))
                      : spv_emit_glsl_binary(&c->e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, s, cu(c, bits));
             u32 value = pair64(c, src_bits(c, &in->a), src_bits(c, &in->c));
             /* a shift by 64 is out of SPIR-V's range: split it in two */
             u32 s64 = to64(c, s), half = c64(c, 0);
-            u32 big = spv_emit_u_less(&c->e, c->t_bool, cu(c, 63), s);
-            u32 s_part = spv_emit_select(&c->e, u64_type(c), big, c64(c, 63), s64);
-            u32 extra = spv_emit_select(&c->e, u64_type(c), big, c64(c, 1), half);
+            u32 big = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, cu(c, 63), s);
+            u32 s_part = spv_emit_ternary(&c->e, SPV_OP_SELECT, u64_type(c), big, c64(c, 63), s64);
+            u32 extra = spv_emit_ternary(&c->e, SPV_OP_SELECT, u64_type(c), big, c64(c, 1), half);
             u32 opcode = !right      ? SPV_OP_SHIFT_LEFT_LOGICAL
                          : is_signed ? SPV_OP_SHIFT_RIGHT_ARITHMETIC
                                      : SPV_OP_SHIFT_RIGHT_LOGICAL;
@@ -3425,9 +3490,10 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             for (u32 i = 0; i < 7; i++)
                 if (mask & (1u << i))
                     pwr(c, i,
-                        spv_emit_i_not_equal(&c->e, c->t_bool,
-                                             spv_emit_bitwise_and_u32(&c->e, c->t_u32, x, cu(c, 1u << (i + 8 * byte))),
-                                             c->zero),
+                        spv_emit_binary(
+                            &c->e, SPV_OP_I_NOT_EQUAL, c->t_bool,
+                            spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, x, cu(c, 1u << (i + 8 * byte))),
+                            c->zero),
                         0);
             return;
         }
@@ -3468,39 +3534,42 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 creg = c_reg ? rd(c, sm86_field(in, 64, 8)) : 0;
             u32 b =
                 op == SM86_SHFL_II || op == SM86_SHFL_IR ? cu(c, sm86_field(in, 53, 5)) : rd(c, sm86_field(in, 32, 8));
-            u32 id = system_value(c, 0), lane = spv_emit_bitwise_and_u32(&c->e, c->t_u32, id, cu(c, 31));
+            u32 id = system_value(c, 0), lane = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, id, cu(c, 31));
             if (c_reg) { /* c's fields as the immediate's, at run time */
-                seg = spv_emit_bitwise_and_u32(&c->e, c->t_u32,
-                                               spv_emit_shift_right_u32(&c->e, c->t_u32, creg, cu(c, 8)), cu(c, 31));
-                not_seg = spv_emit_bitwise_and_u32(&c->e, c->t_u32, spv_emit_not_u32(&c->e, c->t_u32, seg), cu(c, 31));
+                seg = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
+                                      spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, creg, cu(c, 8)),
+                                      cu(c, 31));
+                not_seg = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
+                                          spv_emit_unary(&c->e, SPV_OP_NOT, c->t_u32, seg), cu(c, 31));
             } else
                 seg = cu(c, (cc >> 8) & 31);
-            u32 min_lane = spv_emit_bitwise_and_u32(&c->e, c->t_u32, lane, seg);
-            clamp_bits = c_reg ? spv_emit_bitwise_and_u32(&c->e, c->t_u32, creg, not_seg) : cu(c, cc & ~(cc >> 8) & 31);
-            u32 max_lane = spv_emit_bitwise_or_u32(&c->e, c->t_u32, min_lane, clamp_bits);
+            u32 min_lane = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, seg);
+            clamp_bits = c_reg ? spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, creg, not_seg)
+                               : cu(c, cc & ~(cc >> 8) & 31);
+            u32 max_lane = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, min_lane, clamp_bits);
             u32 j, ok;
             if (mode == 0) {
                 if (!c_reg) not_seg = cu(c, ~(cc >> 8) & 31);
-                j = spv_emit_bitwise_or_u32(&c->e, c->t_u32, min_lane,
-                                            spv_emit_bitwise_and_u32(&c->e, c->t_u32, b, not_seg));
+                j = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, min_lane,
+                                    spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, b, not_seg));
                 ok = op2(c, SPV_OP_U_LESS_THAN_EQUAL, c->t_bool, j, max_lane);
             } else if (mode == 1) {
-                j = spv_emit_isub_u32(&c->e, c->t_u32, lane, b);
-                ok = op2(c, SPV_OP_S_GREATER_THAN_EQUAL, c->t_bool, spv_emit_bitcast(&c->e, c->t_i32, j),
-                         spv_emit_bitcast(&c->e, c->t_i32, min_lane));
+                j = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32, lane, b);
+                ok = op2(c, SPV_OP_S_GREATER_THAN_EQUAL, c->t_bool, spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, j),
+                         spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, min_lane));
             } else {
                 j = mode == 2 ? spv_emit_iadd_u32(&c->e, c->t_u32, lane, b)
-                              : spv_emit_bitwise_xor_u32(&c->e, c->t_u32, lane, b);
+                              : spv_emit_binary(&c->e, SPV_OP_BITWISE_XOR, c->t_u32, lane, b);
                 ok = op2(c, SPV_OP_U_LESS_THAN_EQUAL, c->t_bool, j, max_lane);
             }
             spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
             /* the lane in the invocation's own 32, on a subgroup of 32 or 64 */
-            u32 source =
-                spv_emit_bitwise_or_u32(&c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, id, cu(c, ~31u)),
-                                        spv_emit_bitwise_and_u32(&c->e, c->t_u32, j, cu(c, 31)));
+            u32 source = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32,
+                                         spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, id, cu(c, ~31u)),
+                                         spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, j, cu(c, 31)));
             u32 value = rd(c, sm86_field(in, 24, 8));
             u32 got = SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, c->t_u32, cu(c, 3), value, source);
-            wr(c, in->dst, spv_emit_select(&c->e, c->t_u32, ok, got, value));
+            wr(c, in->dst, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, ok, got, value));
             pwr(c, sm86_field(in, 81, 3), ok, 0);
             return;
         }
@@ -3534,26 +3603,28 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             int any = (int)sm86_field(in, 79, 1), pair = (int)sm86_field(in, 73, 1);
             u32 r = sm86_field(in, 24, 8);
             u32 lo = rd(c, r), hi = pair ? rd(c, r >= SM86_RZ ? r : r + 1) : 0;
-            u32 id = system_value(c, 0), base = spv_emit_bitwise_and_u32(&c->e, c->t_u32, id, cu(c, ~31u));
+            u32 id = system_value(c, 0), base = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, id, cu(c, ~31u));
             spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
             spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT);
             u32 mask = c->zero;
             for (u32 j = 0; j < 32; j++) {
-                u32 lane = spv_emit_bitwise_or_u32(&c->e, c->t_u32, base, cu(c, j));
-                u32 same = spv_emit_i_equal(&c->e, c->t_bool, SPV(&c->e, 345, c->t_u32, cu(c, 3), lo, lane), lo);
+                u32 lane = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, base, cu(c, j));
+                u32 same = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool,
+                                           SPV(&c->e, 345, c->t_u32, cu(c, 3), lo, lane), lo);
                 if (pair)
                     same = op2(c, SPV_OP_LOGICAL_AND, c->t_bool, same,
-                               spv_emit_i_equal(&c->e, c->t_bool, SPV(&c->e, 345, c->t_u32, cu(c, 3), hi, lane), hi));
-                mask = spv_emit_bitwise_or_u32(&c->e, c->t_u32, mask,
-                                               spv_emit_select(&c->e, c->t_u32, same, cu(c, 1u << j), c->zero));
+                               spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool,
+                                               SPV(&c->e, 345, c->t_u32, cu(c, 3), hi, lane), hi));
+                mask = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, mask,
+                                       spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, same, cu(c, 1u << j), c->zero));
             }
             u32 active = ballot32(c, c->true_v);
-            mask = spv_emit_bitwise_and_u32(&c->e, c->t_u32, mask, active);
+            mask = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, mask, active);
             if (any)
                 wr(c, in->dst, mask);
             else {
-                u32 all = spv_emit_i_equal(&c->e, c->t_bool, mask, active);
-                wr(c, in->dst, spv_emit_select(&c->e, c->t_u32, all, mask, c->zero));
+                u32 all = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, mask, active);
+                wr(c, in->dst, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, all, mask, c->zero));
                 pwr(c, sm86_field(in, 81, 3), all, 0);
             }
             return;
@@ -3637,10 +3708,12 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 a32 = src_int(c, &in->a), b32 = src_int(c, &in->b), a64, b64;
             if (is_signed) {
                 u32 i64 = spv_emit_type_int64(&c->e, 1);
-                a64 = spv_emit_bitcast(&c->e, t64,
-                                       SPV(&c->e, SPV_OP_S_CONVERT, i64, spv_emit_bitcast(&c->e, c->t_i32, a32)));
-                b64 = spv_emit_bitcast(&c->e, t64,
-                                       SPV(&c->e, SPV_OP_S_CONVERT, i64, spv_emit_bitcast(&c->e, c->t_i32, b32)));
+                a64 = spv_emit_unary(
+                    &c->e, SPV_OP_BITCAST, t64,
+                    SPV(&c->e, SPV_OP_S_CONVERT, i64, spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, a32)));
+                b64 = spv_emit_unary(
+                    &c->e, SPV_OP_BITCAST, t64,
+                    SPV(&c->e, SPV_OP_S_CONVERT, i64, spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, b32)));
             } else
                 a64 = to64(c, a32), b64 = to64(c, b32);
             u32 creg = in->c.reg, chi;
@@ -3666,20 +3739,21 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 t64 = u64_type(c), a32 = src_int(c, &in->a), b32 = src_int(c, &in->b), product;
             if (is_signed) {
                 u32 i64 = spv_emit_type_int64(&c->e, 1);
-                product =
-                    op2(c, SPV_OP_I_MUL, t64,
-                        spv_emit_bitcast(&c->e, t64,
-                                         SPV(&c->e, SPV_OP_S_CONVERT, i64, spv_emit_bitcast(&c->e, c->t_i32, a32))),
-                        spv_emit_bitcast(&c->e, t64,
-                                         SPV(&c->e, SPV_OP_S_CONVERT, i64, spv_emit_bitcast(&c->e, c->t_i32, b32))));
+                product = op2(c, SPV_OP_I_MUL, t64,
+                              spv_emit_unary(&c->e, SPV_OP_BITCAST, t64,
+                                             SPV(&c->e, SPV_OP_S_CONVERT, i64,
+                                                 spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, a32))),
+                              spv_emit_unary(&c->e, SPV_OP_BITCAST, t64,
+                                             SPV(&c->e, SPV_OP_S_CONVERT, i64,
+                                                 spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, b32))));
             } else
                 product = op2(c, SPV_OP_I_MUL, t64, to64(c, a32), to64(c, b32));
             u32 v = spv_emit_iadd_u32(&c->e, c->t_u32, hi32(c, product), src_int(c, &in->c));
             if (sm86_field(in, 74, 1))
                 v = spv_emit_iadd_u32(&c->e, c->t_u32, v,
-                                      spv_emit_select(&c->e, c->t_u32,
-                                                      prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), 0), cu(c, 1),
-                                                      c->zero));
+                                      spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
+                                                       prd(c, sm86_field(in, 87, 3), sm86_field(in, 90, 1), 0),
+                                                       cu(c, 1), c->zero));
             dwr(c, in, v);
             return;
         }
@@ -3689,10 +3763,12 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 bits = spv_emit_glsl_binary(&c->e, c->t_u32, c->glsl, SPV_GLSL_U_MIN, src_bits(c, &in->b), cu(c, 32));
             u32 a = src_bits(c, &in->a);
             u32 v = sm86_field(in, 73, 1)
-                        ? to_u(c, spv_emit_bitfield_sextract(&c->e, c->t_i32, spv_emit_bitcast(&c->e, c->t_i32, a),
-                                                             c->zero, bits))
-                        : spv_emit_bitfield_uextract(&c->e, c->t_u32, a, c->zero, bits);
-            dwr(c, in, spv_emit_select(&c->e, c->t_u32, spv_emit_i_equal(&c->e, c->t_bool, bits, c->zero), c->zero, v));
+                        ? to_u(c, spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_S_EXTRACT, c->t_i32,
+                                                   spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, a), c->zero, bits))
+                        : spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_U_EXTRACT, c->t_u32, a, c->zero, bits);
+            dwr(c, in,
+                spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
+                                 spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, bits, c->zero), c->zero, v));
             return;
         }
         case SM86_PRMT:
@@ -3704,23 +3780,26 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             }
             u32 a = src_bits(c, &in->a), sel = src_bits(c, &in->b), hi = src_bits(c, &in->c), v = c->zero;
             for (u32 k = 0; k < 4; k++) {
-                u32 nib = spv_emit_bitfield_uextract(&c->e, c->t_u32, sel, cu(c, 4 * k), cu(c, 4));
-                u32 from_c = spv_emit_i_not_equal(&c->e, c->t_bool,
-                                                  spv_emit_bitwise_and_u32(&c->e, c->t_u32, nib, cu(c, 4)), c->zero);
-                u32 word = spv_emit_select(&c->e, c->t_u32, from_c, hi, a);
-                u32 shift = spv_emit_shift_left_u32(&c->e, c->t_u32,
-                                                    spv_emit_bitwise_and_u32(&c->e, c->t_u32, nib, cu(c, 3)), cu(c, 3));
-                u32 byte = spv_emit_bitfield_uextract(&c->e, c->t_u32, word, shift, cu(c, 8));
-                u32 spread = spv_emit_i_not_equal(&c->e, c->t_bool,
-                                                  spv_emit_bitwise_and_u32(&c->e, c->t_u32, nib, cu(c, 8)), c->zero);
-                u32 sign = spv_emit_select(
-                    &c->e, c->t_u32,
-                    spv_emit_i_not_equal(&c->e, c->t_bool, spv_emit_bitwise_and_u32(&c->e, c->t_u32, byte, cu(c, 0x80)),
-                                         c->zero),
+                u32 nib = spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_U_EXTRACT, c->t_u32, sel, cu(c, 4 * k), cu(c, 4));
+                u32 from_c =
+                    spv_emit_binary(&c->e, SPV_OP_I_NOT_EQUAL, c->t_bool,
+                                    spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, nib, cu(c, 4)), c->zero);
+                u32 word = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, from_c, hi, a);
+                u32 shift =
+                    spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32,
+                                    spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, nib, cu(c, 3)), cu(c, 3));
+                u32 byte = spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_U_EXTRACT, c->t_u32, word, shift, cu(c, 8));
+                u32 spread =
+                    spv_emit_binary(&c->e, SPV_OP_I_NOT_EQUAL, c->t_bool,
+                                    spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, nib, cu(c, 8)), c->zero);
+                u32 sign = spv_emit_ternary(
+                    &c->e, SPV_OP_SELECT, c->t_u32,
+                    spv_emit_binary(&c->e, SPV_OP_I_NOT_EQUAL, c->t_bool,
+                                    spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, byte, cu(c, 0x80)), c->zero),
                     cu(c, 0xff), c->zero);
-                byte = spv_emit_select(&c->e, c->t_u32, spread, sign, byte);
-                v = spv_emit_bitwise_or_u32(&c->e, c->t_u32, v,
-                                            spv_emit_shift_left_u32(&c->e, c->t_u32, byte, cu(c, 8 * k)));
+                byte = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, spread, sign, byte);
+                v = spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, v,
+                                    spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, byte, cu(c, 8 * k)));
             }
             dwr(c, in, v);
             return;
@@ -3790,8 +3869,8 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 if (neg) pair = SPV(&c->e, SPV_OP_F_NEGATE, c->t_v2f, pair);
                 v[k] = pair;
             }
-            u32 r = nocontract(
-                c, op2(c, SPV_OP_F_ADD, c->t_v2f, nocontract(c, spv_emit_fmul(&c->e, c->t_v2f, v[0], v[1])), v[2]));
+            u32 r = nocontract(c, op2(c, SPV_OP_F_ADD, c->t_v2f,
+                                      nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_v2f, v[0], v[1])), v[2]));
             if (sm86_field(in, 77, 1))
                 r = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_N_CLAMP, r,
                             spv_emit_vec2_construct(&c->e, c->t_v2f, cf(c, 0.0f), cf(c, 0.0f)),
@@ -3802,8 +3881,8 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                     /* a comparison NaN fails, and -0 passes on its way to +0 */
                     u32 x = spv_emit_vec4_extract(&c->e, c->t_f32, r, k);
                     u32 below = op2(c, SPV_OP_F_ORD_LESS_THAN_EQUAL, c->t_bool, x, cf(c, 0.0f));
-                    lane[k] = spv_emit_select(&c->e, c->t_f32, op2(c, SPV_OP_LOGICAL_AND, c->t_bool, holds, below),
-                                              cf(c, 0.0f), x);
+                    lane[k] = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32,
+                                               op2(c, SPV_OP_LOGICAL_AND, c->t_bool, holds, below), cf(c, 0.0f), x);
                 }
                 r = spv_emit_vec2_construct(&c->e, c->t_v2f, lane[0], lane[1]);
             }
@@ -3839,7 +3918,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             }
             u32 r;
             if (op == SM86_HMUL2) {
-                r = nocontract(c, spv_emit_fmul(&c->e, c->t_v2f, v[0], v[1]));
+                r = nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_v2f, v[0], v[1]));
                 if (sm86_field(in, 77, 1))
                     r = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_N_CLAMP, r,
                                 spv_emit_vec2_construct(&c->e, c->t_v2f, cf(c, 0.0f), cf(c, 0.0f)),
@@ -3849,8 +3928,9 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 u32 lo = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_N_MIN, v[0], v[1]);
                 u32 hi = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_N_MAX, v[0], v[1]);
                 for (u32 k = 0; k < 2; k++)
-                    lane[k] = spv_emit_select(&c->e, c->t_f32, min, spv_emit_vec4_extract(&c->e, c->t_f32, lo, k),
-                                              spv_emit_vec4_extract(&c->e, c->t_f32, hi, k));
+                    lane[k] = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, min,
+                                               spv_emit_vec4_extract(&c->e, c->t_f32, lo, k),
+                                               spv_emit_vec4_extract(&c->e, c->t_f32, hi, k));
                 r = spv_emit_vec2_construct(&c->e, c->t_v2f, lane[0], lane[1]);
             }
             dwr(c, in, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, r));
@@ -3934,8 +4014,8 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             u32 index = r < SM86_RZ ? rd(c, r) : 0;
             if (c->handle && c->handle[c->cur].var) { /* the element of the table of handles this reads */
                 const TexHandle* h = &c->handle[c->cur];
-                u32 at = spv_emit_isub_u32(&c->e, c->t_u32, spv_emit_iadd_u32(&c->e, c->t_u32, index, cu(c, off)),
-                                           cu(c, h->first));
+                u32 at = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->t_u32,
+                                         spv_emit_iadd_u32(&c->e, c->t_u32, index, cu(c, off)), cu(c, h->first));
                 spv_emit_store(&c->e, h->var, op2(c, SPV_OP_U_DIV, c->t_u32, at, cu(c, h->stride)));
             }
             if (type < 4) {
@@ -4026,8 +4106,9 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                     c->front_facing = spv_emit_builtin_input_u32(&c->e, c->t_bool, 17);
                     add_interface(c, c->front_facing);
                 }
-                v = to_f(c, spv_emit_select(&c->e, c->t_u32, spv_emit_load(&c->e, c->t_bool, c->front_facing),
-                                            cu(c, 0xffffffffu), c->zero));
+                v = to_f(c, spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
+                                             spv_emit_load(&c->e, c->t_bool, c->front_facing), cu(c, 0xffffffffu),
+                                             c->zero));
             } else if (addr == 0x2e0 || addr == 0x2e4) {
                 /* NAK's NAK_ATTR_POINT_SPRITE_S and _T: PointCoord. The Maxwell path flips T with the sprite's
                    origin, a push constant of the fragment stage that this translation does not have */
@@ -4059,9 +4140,10 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             for (u32 i = 0; i < 32; i++)
                 for (u32 k = 0; k < 4; k++)
                     if ((c->sph[6 + i / 4] >> ((i % 4) * 8 + k * 2)) & 3)
-                        v = spv_emit_select(&c->e, c->t_u32,
-                                            spv_emit_i_equal(&c->e, c->t_bool, at, cu(c, 0x80 + 16 * i + 4 * k)),
-                                            to_u(c, ipa_input(c, i, k, loc, freq)), v);
+                        v = spv_emit_ternary(
+                            &c->e, SPV_OP_SELECT, c->t_u32,
+                            spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, at, cu(c, 0x80 + 16 * i + 4 * k)),
+                            to_u(c, ipa_input(c, i, k, loc, freq)), v);
             wr(c, in->dst, v);
             return;
         }
@@ -4143,20 +4225,22 @@ static void se_pending(Ctx* c, StructEmit* se, u32 scope) {
     u32 t = spv_emit_load(&c->e, c->t_u32, se->flag);
     u32 go = spv_emit_id(&c->e), pending = spv_emit_id(&c->e);
     u32 here = cu(c, parent + 1);
-    u32 set = spv_emit_i_not_equal(&c->e, c->t_bool, t, c->zero); /* before the merge, which precedes the branch */
+    u32 set = spv_emit_binary(&c->e, SPV_OP_I_NOT_EQUAL, c->t_bool, t,
+                              c->zero); /* before the merge, which precedes the branch */
     spv_emit_selection_merge(&c->e, go);
     spv_emit_branch_conditional(&c->e, set, pending, go);
     spv_emit_label(&c->e, pending);
     if (!se->st->scope[parent].loop) {
         if (s->arrive && s->beyond)
             spv_emit_store(&c->e, se->flag,
-                           spv_emit_select(&c->e, c->t_u32, spv_emit_i_equal(&c->e, c->t_bool, t, here), c->zero, t));
+                           spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
+                                            spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, t, here), c->zero, t));
         else if (s->arrive)
             spv_emit_store(&c->e, se->flag, c->zero);
         se_break(c, se, parent);
     } else if (s->arrive && s->beyond) {
         u32 again = spv_emit_id(&c->e), out = spv_emit_id(&c->e), merge = spv_emit_id(&c->e);
-        u32 arrived = spv_emit_i_equal(&c->e, c->t_bool, t, here);
+        u32 arrived = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->t_bool, t, here);
         spv_emit_selection_merge(&c->e, merge);
         spv_emit_branch_conditional(&c->e, arrived, again, out);
         spv_emit_label(&c->e, again);
@@ -5365,8 +5449,9 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                 if (never) continue;
                 if (is_brx(in->op)) { /* the block's end: SHS_SWITCH takes the target's instruction */
                     u32 index = in->op == SM86_BRXU ? urd(c, sm86_field(in, 24, 6)) : rd(c, sm86_field(in, 24, 8));
-                    c->branch_target = spv_emit_shift_right_u32(
-                        e, c->t_u32, spv_emit_iadd_u32(e, c->t_u32, index, cu(c, brx_bias(in, i))), cu(c, 4));
+                    c->branch_target =
+                        spv_emit_binary(e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32,
+                                        spv_emit_iadd_u32(e, c->t_u32, index, cu(c, brx_bias(in, i))), cu(c, 4));
                     continue;
                 }
                 if (in->op == SM86_BRA) { /* the block's end: SHS_IF takes its condition */

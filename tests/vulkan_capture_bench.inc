@@ -28,7 +28,7 @@ static u32* capture_bench_mark_code(size_t* words) {
     u32 pointer = SPV(&e, SPV_OP_ACCESS_CHAIN, spv_emit_type_storage_pointer(&e, v4), input,
                       spv_emit_constant_u32(&e, u, 0), id);
     u32 position = spv_emit_load(&e, v4, pointer);
-    u32 layer = spv_emit_convert_f_to_u(&e, u, spv_emit_vec4_extract(&e, f, position, 2));
+    u32 layer = spv_emit_unary(&e, SPV_OP_CONVERT_F_TO_U, u, spv_emit_vec4_extract(&e, f, position, 2));
     u32 live = SPV(&e, SPV_OP_F_ORD_GREATER_THAN, b, spv_emit_vec4_extract(&e, f, position, 3),
                    spv_emit_constant_f32(&e, f, 0));
     shader_capture_tile_mark(&e, f, u, b, tiles, position, layer, live);

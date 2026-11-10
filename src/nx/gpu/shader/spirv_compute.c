@@ -20,7 +20,7 @@ static void cw(CsDirect* c, u32 r, u32 v) {
 }
 static u32 cp(CsDirect* c, u32 p, int neg) {
     u32 v = p == 7 ? c->yes : spv_emit_load(&c->e, c->b, c->pred[p]);
-    return neg ? spv_emit_bool_not(&c->e, c->b, v) : v;
+    return neg ? spv_emit_unary(&c->e, SPV_OP_LOGICAL_NOT, c->b, v) : v;
 }
 static void pw(CsDirect* c, u32 p, u32 v) {
     if (p != 7) spv_emit_store(&c->e, c->pred[p], v);
@@ -316,22 +316,25 @@ static u32* compute_to_spirv(const u8* code, const u64* words, u32 max_bytes, Sh
             u32 avg = imm32 ? B(w, 55, 2) : B(w, 48, 2);
             int x = imm32 ? B(w, 53, 1) : !scaled && B(w, 43, 1);
             int cc = imm32 ? B(w, 52, 1) : B(w, 47, 1);
-            if (scaled) av = spv_emit_shift_left_u32(&c->e, c->u, av, cu(c, B(w, 39, 5)));
+            if (scaled) av = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->u, av, cu(c, B(w, 39, 5)));
             if (avg == 2)
-                av = cc || x ? spv_emit_not_u32(&c->e, c->u, av) : spv_emit_isub_u32(&c->e, c->u, c->zero, av);
+                av = cc || x ? spv_emit_unary(&c->e, SPV_OP_NOT, c->u, av)
+                             : spv_emit_binary(&c->e, SPV_OP_I_SUB, c->u, c->zero, av);
             if (avg == 1)
-                bv = cc || x ? spv_emit_not_u32(&c->e, c->u, bv) : spv_emit_isub_u32(&c->e, c->u, c->zero, bv);
+                bv = cc || x ? spv_emit_unary(&c->e, SPV_OP_NOT, c->u, bv)
+                             : spv_emit_binary(&c->e, SPV_OP_I_SUB, c->u, c->zero, bv);
             u32 sum = spv_emit_iadd_u32(&c->e, c->u, av, bv);
-            u32 carry = spv_emit_u_less(&c->e, c->b, sum, av);
+            u32 carry = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->b, sum, av);
             u32 cin = cc || x ? (avg ? cu(c, 1) : c->zero) : avg == 3 ? cu(c, 1) : c->zero;
             if (x) {
-                u32 old = spv_emit_select(&c->e, c->u, spv_emit_load(&c->e, c->b, c->carry), cu(c, 1), c->zero);
+                u32 old = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->u, spv_emit_load(&c->e, c->b, c->carry), cu(c, 1),
+                                           c->zero);
                 cin = spv_emit_iadd_u32(&c->e, c->u, cin, old);
             }
             if (cc || x || avg) {
                 u32 next = spv_emit_iadd_u32(&c->e, c->u, sum, cin);
                 if (cc) {
-                    u32 extra = spv_emit_u_less(&c->e, c->b, next, sum);
+                    u32 extra = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->b, next, sum);
                     spv_emit_store(&c->e, c->carry, spv_emit_bool_binary(&c->e, c->b, 1, carry, extra));
                 }
                 sum = next;
@@ -339,10 +342,12 @@ static u32* compute_to_spirv(const u8* code, const u64* words, u32 max_bytes, Sh
             cw(c, d, sum);
         } else if (id == O_SHL_R || id == O_SHL_C || id == O_SHL_I) {
             u32 shift = right(c, w, id - O_SHL_R);
-            u32 safe = B(w, 39, 1) ? spv_emit_bitwise_and_u32(&c->e, c->u, shift, cu(c, 31)) : shift;
-            u32 result = spv_emit_shift_left_u32(&c->e, c->u, cr(c, a), safe);
+            u32 safe = B(w, 39, 1) ? spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->u, shift, cu(c, 31)) : shift;
+            u32 result = spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->u, cr(c, a), safe);
             if (!B(w, 39, 1))
-                result = spv_emit_select(&c->e, c->u, spv_emit_u_less(&c->e, c->b, shift, cu(c, 32)), result, c->zero);
+                result = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->u,
+                                          spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->b, shift, cu(c, 32)), result,
+                                          c->zero);
             cw(c, d, result);
         } else if (id == O_ISET_R || id == O_ISET_C || id == O_ISET_I || id == O_ISETP_R || id == O_ISETP_C ||
                    id == O_ISETP_I) {
@@ -350,20 +355,22 @@ static u32* compute_to_spirv(const u8* code, const u64* words, u32 max_bytes, Sh
             u32 lhs = cr(c, a), rhs = right(c, w, id - (ispred ? O_ISETP_R : O_ISET_R));
             u32 op = B(w, 49, 3);
             int sign = B(w, 48, 1);
-            u32 less = sign ? spv_emit_s_greater(&c->e, c->b, rhs, lhs) : spv_emit_u_less(&c->e, c->b, lhs, rhs);
-            u32 greater = sign ? spv_emit_s_greater(&c->e, c->b, lhs, rhs) : spv_emit_u_less(&c->e, c->b, rhs, lhs);
-            u32 equal = spv_emit_i_equal(&c->e, c->b, lhs, rhs);
+            u32 less = sign ? spv_emit_binary(&c->e, SPV_OP_S_GREATER_THAN, c->b, rhs, lhs)
+                            : spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->b, lhs, rhs);
+            u32 greater = sign ? spv_emit_binary(&c->e, SPV_OP_S_GREATER_THAN, c->b, lhs, rhs)
+                               : spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->b, rhs, lhs);
+            u32 equal = spv_emit_binary(&c->e, SPV_OP_I_EQUAL, c->b, lhs, rhs);
             u32 test = op == 0   ? c->no
                        : op == 1 ? less
                        : op == 2 ? equal
-                       : op == 3 ? spv_emit_bool_not(&c->e, c->b, greater)
+                       : op == 3 ? spv_emit_unary(&c->e, SPV_OP_LOGICAL_NOT, c->b, greater)
                        : op == 4 ? greater
-                       : op == 5 ? spv_emit_bool_not(&c->e, c->b, equal)
-                       : op == 6 ? spv_emit_bool_not(&c->e, c->b, less)
+                       : op == 5 ? spv_emit_unary(&c->e, SPV_OP_LOGICAL_NOT, c->b, equal)
+                       : op == 6 ? spv_emit_unary(&c->e, SPV_OP_LOGICAL_NOT, c->b, less)
                                  : c->yes;
             u32 pc = cp(c, B(w, 39, 3), B(w, 42, 1));
             u32 bop = B(w, 45, 2);
-            u32 inverse = spv_emit_bool_not(&c->e, c->b, test);
+            u32 inverse = spv_emit_unary(&c->e, SPV_OP_LOGICAL_NOT, c->b, test);
             if (bop < 3) {
                 test = spv_emit_bool_binary(&c->e, c->b, bop, test, pc);
                 inverse = spv_emit_bool_binary(&c->e, c->b, bop, inverse, pc);
@@ -372,35 +379,37 @@ static u32* compute_to_spirv(const u8* code, const u64* words, u32 max_bytes, Sh
                 pw(c, B(w, 3, 3), test);
                 pw(c, B(w, 0, 3), inverse);
             } else
-                cw(c, d, spv_emit_select(&c->e, c->u, test, cu(c, B(w, 44, 1) ? 0x3f800000u : 0xffffffffu), c->zero));
+                cw(c, d,
+                   spv_emit_ternary(&c->e, SPV_OP_SELECT, c->u, test, cu(c, B(w, 44, 1) ? 0x3f800000u : 0xffffffffu),
+                                    c->zero));
         } else if (id == O_FMUL_R || id == O_FMUL_C || id == O_FMUL_I || id == O_FFMA_R || id == O_FFMA_RC ||
                    id == O_FFMA_CR || id == O_FFMA_I) {
             int fma = id >= O_FFMA_R && id <= O_FFMA_I;
-            u32 lhs = spv_emit_bitcast(&c->e, c->f, cr(c, a));
+            u32 lhs = spv_emit_unary(&c->e, SPV_OP_BITCAST, c->f, cr(c, a));
             u32 rhs = fma && id == O_FFMA_CR             ? right(c, w, 1)
                       : fma && id == O_FFMA_RC           ? cr(c, B(w, 39, 8))
                       : id == O_FFMA_I || id == O_FMUL_I ? cu(c, (B(w, 20, 19) << 12) | (B(w, 56, 1) << 31))
                                                          : right(c, w, fma ? 0 : id - O_FMUL_R);
-            rhs = spv_emit_bitcast(&c->e, c->f, rhs);
-            if (fma && B(w, 48, 1)) rhs = spv_emit_fnegate(&c->e, c->f, rhs);
-            if (!fma && B(w, 48, 1)) rhs = spv_emit_fnegate(&c->e, c->f, rhs);
+            rhs = spv_emit_unary(&c->e, SPV_OP_BITCAST, c->f, rhs);
+            if (fma && B(w, 48, 1)) rhs = spv_emit_unary(&c->e, SPV_OP_F_NEGATE, c->f, rhs);
+            if (!fma && B(w, 48, 1)) rhs = spv_emit_unary(&c->e, SPV_OP_F_NEGATE, c->f, rhs);
             u32 result;
             if (fma) {
                 u32 add = id == O_FFMA_RC ? right(c, w, 1) : cr(c, B(w, 39, 8));
-                add = spv_emit_bitcast(&c->e, c->f, add);
-                if (B(w, 49, 1)) add = spv_emit_fnegate(&c->e, c->f, add);
+                add = spv_emit_unary(&c->e, SPV_OP_BITCAST, c->f, add);
+                if (B(w, 49, 1)) add = spv_emit_unary(&c->e, SPV_OP_F_NEGATE, c->f, add);
                 result = spv_emit_glsl_ternary(&c->e, c->f, c->glsl, SPV_GLSL_FMA, lhs, rhs, add);
             } else {
-                result = spv_emit_fmul(&c->e, c->f, lhs, rhs);
+                result = spv_emit_binary(&c->e, SPV_OP_F_MUL, c->f, lhs, rhs);
                 spv_emit_no_contraction(&c->e, result);
             }
-            cw(c, d, spv_emit_bitcast(&c->e, c->u, result));
+            cw(c, d, spv_emit_unary(&c->e, SPV_OP_BITCAST, c->u, result));
         } else if (id == O_LDG || id == O_STG) {
             u32 gi = (u32)gb_at[i] - 1;
             i32 imm = (i32)(B(w, 20, 24) << 8) >> 8;
             u32 addr = spv_emit_iadd_u32(&c->e, c->u, cr(c, a), cu(c, (u32)imm));
-            addr = spv_emit_isub_u32(&c->e, c->u, addr, cbread(c, 0, meta.gbuf_cbuf_off[gi]));
-            u32 index = spv_emit_shift_right_u32(&c->e, c->u, addr, cu(c, 2));
+            addr = spv_emit_binary(&c->e, SPV_OP_I_SUB, c->u, addr, cbread(c, 0, meta.gbuf_cbuf_off[gi]));
+            u32 index = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u, addr, cu(c, 2));
             u32 count = B(w, 48, 3) == 5 ? 2 : B(w, 48, 3) == 6 ? 4 : 1;
             if (id == O_STG) shader_wlog_store(&c->e, c->u, c->b, c->wlog, meta.gbuf_mark[gi] - 1u, addr, count * 4);
             for (u32 k = 0; k < count; k++) {

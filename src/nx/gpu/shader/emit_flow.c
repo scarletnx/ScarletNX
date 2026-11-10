@@ -18,16 +18,18 @@ void shader_dynamic_pop(DirectCtx* c, u32 stack_ptr, const u32 stack[32], u32 ki
     *new_sp = sp;
     for (int k = 31; k >= 0; k--) {
         u32 index = spv_emit_constant_u32(&c->emit, c->u32_type, (u32)k);
-        u32 in_range = spv_emit_u_less(&c->emit, c->bool_type, index, sp);
+        u32 in_range = spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, index, sp);
         u32 token = spv_emit_load(&c->emit, c->u32_type, stack[k]);
-        u32 matches = spv_emit_i_equal(&c->emit, c->bool_type,
-                                       spv_emit_shift_right_u32(&c->emit, c->u32_type, token, shift), kind);
+        u32 matches =
+            spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type,
+                            spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, token, shift), kind);
         u32 choose = spv_emit_bool_binary(&c->emit, c->bool_type, 0, in_range, matches);
-        choose =
-            spv_emit_bool_binary(&c->emit, c->bool_type, 0, choose, spv_emit_bool_not(&c->emit, c->bool_type, *found));
-        *destination = spv_emit_select(&c->emit, c->u32_type, choose,
-                                       spv_emit_bitwise_and_u32(&c->emit, c->u32_type, token, mask), *destination);
-        *new_sp = spv_emit_select(&c->emit, c->u32_type, choose, index, *new_sp);
+        choose = spv_emit_bool_binary(&c->emit, c->bool_type, 0, choose,
+                                      spv_emit_unary(&c->emit, SPV_OP_LOGICAL_NOT, c->bool_type, *found));
+        *destination =
+            spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, choose,
+                             spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, token, mask), *destination);
+        *new_sp = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, choose, index, *new_sp);
         *found = spv_emit_bool_binary(&c->emit, c->bool_type, 1, *found, choose);
     }
 }
@@ -46,16 +48,16 @@ static u32 indirect_target(const Tr* t, u32 i, u64 w, int op, u32 a) {
     if (op == O_JMX) value = spv_emit_iadd_u32(&c->emit, c->u32_type, value, reg_read(c, a));
     u32 base = spv_emit_constant_u32(&c->emit, c->u32_type, op == O_CAL ? (i + 1) * 8 : t->si->flow_base);
     value = op == O_CAL ? spv_emit_iadd_u32(&c->emit, c->u32_type, value, base)
-                        : spv_emit_isub_u32(&c->emit, c->u32_type, value, base);
-    u32 target =
-        spv_emit_shift_right_u32(&c->emit, c->u32_type, value, spv_emit_constant_u32(&c->emit, c->u32_type, 3));
-    u32 schedule = spv_emit_i_equal(
-        &c->emit, c->bool_type,
-        spv_emit_bitwise_and_u32(&c->emit, c->u32_type, target, spv_emit_constant_u32(&c->emit, c->u32_type, 3)),
-        spv_emit_constant_u32(&c->emit, c->u32_type, 2));
-    return spv_emit_iadd_u32(
-        &c->emit, c->u32_type, target,
-        spv_emit_select(&c->emit, c->u32_type, schedule, spv_emit_constant_u32(&c->emit, c->u32_type, 1), c->zero));
+                        : spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, value, base);
+    u32 target = spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, value,
+                                 spv_emit_constant_u32(&c->emit, c->u32_type, 3));
+    u32 schedule = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type,
+                                   spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, target,
+                                                   spv_emit_constant_u32(&c->emit, c->u32_type, 3)),
+                                   spv_emit_constant_u32(&c->emit, c->u32_type, 2));
+    return spv_emit_iadd_u32(&c->emit, c->u32_type, target,
+                             spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, schedule,
+                                              spv_emit_constant_u32(&c->emit, c->u32_type, 1), c->zero));
 }
 
 static void se_branch(DirectCtx* c, StructEmit* se, u32 label) {
@@ -84,21 +86,22 @@ static void se_pending(DirectCtx* c, StructEmit* se, u32 scope) {
     u32 t = spv_emit_load(&c->emit, c->u32_type, se->flag);
     u32 go = spv_emit_id(&c->emit), pending = spv_emit_id(&c->emit);
     u32 here = spv_emit_constant_u32(&c->emit, c->u32_type, parent + 1);
-    u32 set = spv_emit_i_not_equal(&c->emit, c->bool_type, t, c->zero);
+    u32 set = spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type, t, c->zero);
     spv_emit_selection_merge(&c->emit, go);
     spv_emit_branch_conditional(&c->emit, set, pending, go);
     spv_emit_label(&c->emit, pending);
     if (!se->st->scope[parent].loop) {
         if (s->arrive && s->beyond)
-            spv_emit_store(
-                &c->emit, se->flag,
-                spv_emit_select(&c->emit, c->u32_type, spv_emit_i_equal(&c->emit, c->bool_type, t, here), c->zero, t));
+            spv_emit_store(&c->emit, se->flag,
+                           spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
+                                            spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, t, here), c->zero,
+                                            t));
         else if (s->arrive)
             spv_emit_store(&c->emit, se->flag, c->zero);
         se_break(c, se, parent);
     } else if (s->arrive && s->beyond) {
         u32 again = spv_emit_id(&c->emit), out = spv_emit_id(&c->emit), merge = spv_emit_id(&c->emit);
-        u32 arrived = spv_emit_i_equal(&c->emit, c->bool_type, t, here);
+        u32 arrived = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, t, here);
         spv_emit_selection_merge(&c->emit, merge);
         spv_emit_branch_conditional(&c->emit, arrived, again, out);
         spv_emit_label(&c->emit, again);
@@ -285,48 +288,56 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     if (op == O_CAL || op == O_JCAL || op == O_PRET) {
         /* CAL pushes the instruction after it and jumps. PRET only pushes its target, where a later RET returns */
         u32 sp = spv_emit_load(&c->emit, c->u32_type, call_ptr);
-        u32 room = spv_emit_u_less(&c->emit, c->bool_type, sp, spv_emit_constant_u32(&c->emit, c->u32_type, 32));
+        u32 room = spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, sp,
+                                   spv_emit_constant_u32(&c->emit, c->u32_type, 32));
         u32 address = spv_emit_constant_u32(&c->emit, c->u32_type,
                                             op == O_PRET ? bra_target(w, i) : shader_next_instruction(i, n));
         for (u32 k = 0; k < 32; k++) {
-            u32 at = spv_emit_i_equal(&c->emit, c->bool_type, sp, spv_emit_constant_u32(&c->emit, c->u32_type, k));
+            u32 at = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, sp,
+                                     spv_emit_constant_u32(&c->emit, c->u32_type, k));
             u32 old = spv_emit_load(&c->emit, c->u32_type, call_stack[k]);
-            spv_emit_store(&c->emit, call_stack[k], spv_emit_select(&c->emit, c->u32_type, at, address, old));
+            spv_emit_store(&c->emit, call_stack[k],
+                           spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, at, address, old));
         }
         spv_emit_store(&c->emit, call_ptr,
                        spv_emit_iadd_u32(&c->emit, c->u32_type, sp,
-                                         spv_emit_select(&c->emit, c->u32_type, room,
-                                                         spv_emit_constant_u32(&c->emit, c->u32_type, 1), c->zero)));
+                                         spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, room,
+                                                          spv_emit_constant_u32(&c->emit, c->u32_type, 1), c->zero)));
         if (op == O_CAL || op == O_JCAL)
             spv_emit_store(&c->emit, pc,
-                           spv_emit_select(&c->emit, c->u32_type, room,
-                                           op == O_JCAL || B(w, 5, 1)
-                                               ? indirect_target(t, i, w, op, a)
-                                               : spv_emit_constant_u32(&c->emit, c->u32_type, bra_target(w, i)),
-                                           spv_emit_constant_u32(&c->emit, c->u32_type, UINT32_MAX)));
+                           spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, room,
+                                            op == O_JCAL || B(w, 5, 1)
+                                                ? indirect_target(t, i, w, op, a)
+                                                : spv_emit_constant_u32(&c->emit, c->u32_type, bra_target(w, i)),
+                                            spv_emit_constant_u32(&c->emit, c->u32_type, UINT32_MAX)));
     } else if (op == O_RET) {
         u32 sp = spv_emit_load(&c->emit, c->u32_type, call_ptr);
-        u32 has_entry = spv_emit_u_less(&c->emit, c->bool_type, c->zero, sp);
-        u32 index = spv_emit_isub_u32(&c->emit, c->u32_type, sp, spv_emit_constant_u32(&c->emit, c->u32_type, 1));
+        u32 has_entry = spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, c->zero, sp);
+        u32 index =
+            spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, sp, spv_emit_constant_u32(&c->emit, c->u32_type, 1));
         u32 destination = spv_emit_constant_u32(&c->emit, c->u32_type, UINT32_MAX);
         for (u32 k = 0; k < 32; k++) {
-            u32 at = spv_emit_i_equal(&c->emit, c->bool_type, index, spv_emit_constant_u32(&c->emit, c->u32_type, k));
+            u32 at = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, index,
+                                     spv_emit_constant_u32(&c->emit, c->u32_type, k));
             u32 old = spv_emit_load(&c->emit, c->u32_type, call_stack[k]);
-            destination = spv_emit_select(&c->emit, c->u32_type, at, old, destination);
+            destination = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, at, old, destination);
         }
-        spv_emit_store(&c->emit, call_ptr, spv_emit_select(&c->emit, c->u32_type, has_entry, index, c->zero));
+        spv_emit_store(&c->emit, call_ptr,
+                       spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, has_entry, index, c->zero));
         spv_emit_store(&c->emit, pc, destination);
     } else if (dynamic_stack && (op == O_SSY || op == O_PBK || op == O_PCNT || op == O_PEXIT)) {
         u32 sp = spv_emit_load(&c->emit, c->u32_type, stack_ptr);
         u32 token = spv_emit_constant_u32(&c->emit, c->u32_type, bra_target(w, i) | (u32)CRS_KIND(op) << 16);
         for (u32 k = 0; k < 32; k++) {
-            u32 at = spv_emit_i_equal(&c->emit, c->bool_type, sp, spv_emit_constant_u32(&c->emit, c->u32_type, k));
+            u32 at = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, sp,
+                                     spv_emit_constant_u32(&c->emit, c->u32_type, k));
             u32 old = spv_emit_load(&c->emit, c->u32_type, stack[k]);
-            spv_emit_store(&c->emit, stack[k], spv_emit_select(&c->emit, c->u32_type, at, token, old));
+            spv_emit_store(&c->emit, stack[k], spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, at, token, old));
         }
-        u32 room = spv_emit_u_less(&c->emit, c->bool_type, sp, spv_emit_constant_u32(&c->emit, c->u32_type, 32));
-        u32 inc =
-            spv_emit_select(&c->emit, c->u32_type, room, spv_emit_constant_u32(&c->emit, c->u32_type, 1), c->zero);
+        u32 room = spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, sp,
+                                   spv_emit_constant_u32(&c->emit, c->u32_type, 32));
+        u32 inc = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, room,
+                                   spv_emit_constant_u32(&c->emit, c->u32_type, 1), c->zero);
         spv_emit_store(&c->emit, stack_ptr, spv_emit_iadd_u32(&c->emit, c->u32_type, sp, inc));
     } else if (dynamic_stack && (op == O_SYNC || op == O_BRK || op == O_CONT)) {
         u32 found, destination, new_sp;
@@ -343,22 +354,24 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     } else if (op == O_BRX) {
         u32 offset = spv_emit_constant_u32(&c->emit, i32_type, (u32)((i32)(B(w, 20, 24) << 8) >> 8));
         u32 signed_index = spv_emit_iadd_u32(&c->emit, i32_type, reg_read_as(c, a, i32_type), offset);
-        u32 words = spv_emit_sdiv_i32(&c->emit, i32_type, signed_index, spv_emit_constant_u32(&c->emit, i32_type, 8));
-        u32 target = spv_emit_iadd_u32(&c->emit, c->u32_type, spv_emit_bitcast(&c->emit, c->u32_type, words),
-                                       spv_emit_constant_u32(&c->emit, c->u32_type, i + 1));
-        u32 after_ten =
-            spv_emit_isub_u32(&c->emit, c->u32_type, target, spv_emit_constant_u32(&c->emit, c->u32_type, 10));
-        u32 aligned = spv_emit_i_equal(
-            &c->emit, c->bool_type,
-            spv_emit_bitwise_and_u32(&c->emit, c->u32_type, after_ten, spv_emit_constant_u32(&c->emit, c->u32_type, 3)),
-            c->zero);
-        u32 in_range = spv_emit_bool_not(
-            &c->emit, c->bool_type,
-            spv_emit_u_less(&c->emit, c->bool_type, target, spv_emit_constant_u32(&c->emit, c->u32_type, 10)));
+        u32 words = spv_emit_binary(&c->emit, SPV_OP_S_DIV, i32_type, signed_index,
+                                    spv_emit_constant_u32(&c->emit, i32_type, 8));
+        u32 target =
+            spv_emit_iadd_u32(&c->emit, c->u32_type, spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, words),
+                              spv_emit_constant_u32(&c->emit, c->u32_type, i + 1));
+        u32 after_ten = spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, target,
+                                        spv_emit_constant_u32(&c->emit, c->u32_type, 10));
+        u32 aligned = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type,
+                                      spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, after_ten,
+                                                      spv_emit_constant_u32(&c->emit, c->u32_type, 3)),
+                                      c->zero);
+        u32 in_range = spv_emit_unary(&c->emit, SPV_OP_LOGICAL_NOT, c->bool_type,
+                                      spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, target,
+                                                      spv_emit_constant_u32(&c->emit, c->u32_type, 10)));
         u32 needs_skip = spv_emit_bool_binary(&c->emit, c->bool_type, 0, aligned, in_range);
         target = spv_emit_iadd_u32(&c->emit, c->u32_type, target,
-                                   spv_emit_select(&c->emit, c->u32_type, needs_skip,
-                                                   spv_emit_constant_u32(&c->emit, c->u32_type, 1), c->zero));
+                                   spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, needs_skip,
+                                                    spv_emit_constant_u32(&c->emit, c->u32_type, 1), c->zero));
         if (structure)
             c->branch_target = target; /* the structure's SHS_SWITCH */
         else
@@ -409,10 +422,11 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 u32 color_type = integer ? signed_color ? vec4_i32 : vec4_u32 : vec4;
                 for (u32 k = 0; k < 4; k++, reg++) {
                     u32 raw = mask & (1u << k) ? reg_read(c, reg) : c->zero;
-                    components[k] = integer            ? signed_color ? spv_emit_bitcast(&c->emit, i32_type, raw) : raw
-                                    : mask & (1u << k) ? spv_emit_bitcast(&c->emit, c->f32_type, raw)
+                    components[k] = integer
+                                        ? signed_color ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, raw) : raw
+                                    : mask & (1u << k) ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, raw)
                                                        : zero_f;
-                    if (rt == 0 && k == 3) alpha = spv_emit_bitcast(&c->emit, c->f32_type, raw);
+                    if (rt == 0 && k == 3) alpha = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, raw);
                 }
                 /* Tests and sample coverage keep the original Location0 alpha. Alpha-to-one precedes ratio-one
                    color modulation. Integer outputs retain their bits; an integer primary disables alpha-to-one. */
@@ -435,7 +449,7 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 u32 values[4] = {bits, c->zero, c->zero, c->zero};
                 u32 color = spv_emit_vec4_construct(&c->emit, vec4_u32, values);
                 if (si->rt_sint_mask & (1u << (si->coverage_to_color - 1)))
-                    color = spv_emit_bitcast(&c->emit, vec4_i32, color);
+                    color = spv_emit_unary(&c->emit, SPV_OP_BITCAST, vec4_i32, color);
                 spv_emit_store(&c->emit, t->coverage_output, color);
             }
             if (sample_mask_output) {

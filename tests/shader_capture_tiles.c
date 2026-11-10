@@ -21,8 +21,10 @@ static uint32_t* capture_tile_module(int coordinates, size_t* words) {
     else {
         uint32_t y = spv_emit_vec4_extract(&e, u, xyz, 1), layer = spv_emit_vec4_extract(&e, u, xyz, 2);
         uint32_t zero = spv_emit_constant_f32(&e, f, 0), one = spv_emit_constant_f32(&e, f, 1);
-        uint32_t position = spv_emit_vec4_construct(&e, v4, (const uint32_t[4]){
-            spv_emit_convert_u_to_f(&e, f, x), spv_emit_convert_u_to_f(&e, f, y), zero, one});
+        uint32_t position =
+            spv_emit_vec4_construct(&e, v4,
+                                    (const uint32_t[4]){spv_emit_unary(&e, SPV_OP_CONVERT_U_TO_F, f, x),
+                                                        spv_emit_unary(&e, SPV_OP_CONVERT_U_TO_F, f, y), zero, one});
         shader_capture_tile_mark(&e, f, u, b, buffer, position, layer, spv_emit_const_bool(&e, 1));
     }
     spv_emit_return(&e);

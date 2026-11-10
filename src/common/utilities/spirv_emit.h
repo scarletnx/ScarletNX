@@ -6,7 +6,7 @@
    orders the sections into a Vulkan shader module of the Logical GLSL450 memory model, SPIR-V 1.6 unless version says
    otherwise.
 
-   Two layers share the sections. The instruction functions (spv_emit_fadd, spv_emit_sample_image...) each write one
+   Two layers share the sections. The instruction functions (spv_emit_binary, spv_emit_sample_image...) each write one
    instruction or declaration of their kind, with the types and ids the caller passes. The generic layer writes any
    instruction from its opcode and operands (spv_emit_op, and the SPV, SPV_VOID and SPV_EXT shorthands), and declares
    any variable, decoration or type. Scalar, vector, pointer, function and image types are made once each, by either
@@ -409,13 +409,6 @@ uint32_t spv_emit_type_i32(SpvEmitter* e);
 uint32_t spv_emit_type_int64(SpvEmitter* e, int is_signed);
 /* OpSConvert requires a signed result type; OpUConvert requires an unsigned result type. Both truncate if narrowing. */
 uint32_t spv_emit_int_convert(SpvEmitter* e, uint32_t type, uint32_t value, int is_signed);
-/* OpFConvert: a float of one width to another (F32 and F64) */
-uint32_t spv_emit_fconvert(SpvEmitter* e, uint32_t type, uint32_t value);
-uint32_t spv_emit_convert_f_to_s(SpvEmitter* e, uint32_t i32_type, uint32_t value);
-uint32_t spv_emit_convert_f_to_u(SpvEmitter* e, uint32_t u32_type, uint32_t value);
-uint32_t spv_emit_convert_s_to_f(SpvEmitter* e, uint32_t f32_type, uint32_t value);
-uint32_t spv_emit_convert_u_to_f(SpvEmitter* e, uint32_t f32_type, uint32_t value);
-uint32_t spv_emit_convert_f_to_f(SpvEmitter* e, uint32_t result_type, uint32_t value);
 uint32_t spv_emit_type_f16(SpvEmitter* e);
 uint32_t spv_emit_type_f32(SpvEmitter* e);
 uint32_t spv_emit_type_f64(SpvEmitter* e);
@@ -514,24 +507,15 @@ void spv_emit_label(SpvEmitter* e, uint32_t label);
 uint32_t spv_emit_function_variable(SpvEmitter* e, uint32_t pointer_type);
 uint32_t spv_emit_function_variable_init(SpvEmitter* e, uint32_t pointer_type, uint32_t initial_value);
 uint32_t spv_emit_load(SpvEmitter* e, uint32_t result_type, uint32_t pointer);
-uint32_t spv_emit_bitcast(SpvEmitter* e, uint32_t result_type, uint32_t value);
-uint32_t spv_emit_fadd(SpvEmitter* e, uint32_t f32_type, uint32_t left, uint32_t right);
-uint32_t spv_emit_fmul(SpvEmitter* e, uint32_t f32_type, uint32_t left, uint32_t right);
-uint32_t spv_emit_i_equal(SpvEmitter* e, uint32_t bool_type, uint32_t left, uint32_t right);
-uint32_t spv_emit_i_not_equal(SpvEmitter* e, uint32_t bool_type, uint32_t left, uint32_t right);
-uint32_t spv_emit_u_less(SpvEmitter* e, uint32_t bool_type, uint32_t left, uint32_t right);
-uint32_t spv_emit_s_greater(SpvEmitter* e, uint32_t bool_type, uint32_t left, uint32_t right);
-uint32_t spv_emit_isub_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right);
-uint32_t spv_emit_shift_left_u32(SpvEmitter* e, uint32_t u32_type, uint32_t value, uint32_t shift);
-uint32_t spv_emit_shift_right_u32(SpvEmitter* e, uint32_t u32_type, uint32_t value, uint32_t shift);
-uint32_t spv_emit_shift_right_s32(SpvEmitter* e, uint32_t i32_type, uint32_t value, uint32_t shift);
-uint32_t spv_emit_sdiv_i32(SpvEmitter* e, uint32_t i32_type, uint32_t left, uint32_t right);
-uint32_t spv_emit_bitwise_and_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right);
-uint32_t spv_emit_bitwise_or_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right);
-uint32_t spv_emit_bitwise_xor_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right);
-uint32_t spv_emit_not_u32(SpvEmitter* e, uint32_t u32_type, uint32_t value);
-uint32_t spv_emit_bitfield_uextract(SpvEmitter* e, uint32_t u32_type, uint32_t value, uint32_t offset, uint32_t count);
-uint32_t spv_emit_bit_reverse_u32(SpvEmitter* e, uint32_t u32_type, uint32_t value);
+/* The common forms: an instruction of op, its result type, a new id and one, two or three operands, the id returned.
+   unary takes OpFConvert (a float of one width to another), the conversions between floats and integers, OpBitcast,
+   OpNot, OpBitReverse, OpBitCount, OpLogicalNot, OpFNegate, OpIsNan and OpReadClockKHR (its operand the scope);
+   binary OpFAdd, OpFMul, OpFDiv, OpIEqual, OpINotEqual, OpULessThan, OpSGreaterThan, OpISub, OpIMul, OpSDiv, the
+   shifts (value, then shift) and the bitwise ands, ors and xors; ternary OpBitFieldUExtract and OpBitFieldSExtract
+   (value, offset, count) and OpSelect (condition, then the values). Another op is a failed assertion */
+uint32_t spv_emit_unary(SpvEmitter* e, uint32_t op, uint32_t result_type, uint32_t a);
+uint32_t spv_emit_binary(SpvEmitter* e, uint32_t op, uint32_t result_type, uint32_t a, uint32_t b);
+uint32_t spv_emit_ternary(SpvEmitter* e, uint32_t op, uint32_t result_type, uint32_t a, uint32_t b, uint32_t c);
 uint32_t spv_emit_atomic_u32(SpvEmitter* e, uint32_t u32_type, uint32_t opcode, uint32_t pointer, uint32_t value);
 uint32_t spv_emit_atomic_shared_u32(SpvEmitter* e, uint32_t u32_type, uint32_t opcode, uint32_t pointer,
                                     uint32_t value);
@@ -551,21 +535,14 @@ void spv_emit_memory_barrier(SpvEmitter* e, uint32_t u32_type, uint32_t scope, u
 uint32_t spv_emit_memory_semantics(const SpvEmitter* e, uint32_t semantics);
 uint32_t spv_emit_bitfield_insert(SpvEmitter* e, uint32_t u32_type, uint32_t base, uint32_t insert, uint32_t offset,
                                   uint32_t count);
-uint32_t spv_emit_bit_count(SpvEmitter* e, uint32_t u32_type, uint32_t value);
-uint32_t spv_emit_bitfield_sextract(SpvEmitter* e, uint32_t i32_type, uint32_t value, uint32_t offset, uint32_t count);
 uint32_t spv_emit_fcompare(SpvEmitter* e, uint32_t bool_type, uint32_t condition, uint32_t left, uint32_t right);
-uint32_t spv_emit_bool_not(SpvEmitter* e, uint32_t bool_type, uint32_t value);
 uint32_t spv_emit_bool_binary(SpvEmitter* e, uint32_t bool_type, uint32_t op, uint32_t left, uint32_t right);
-uint32_t spv_emit_fdiv(SpvEmitter* e, uint32_t f32_type, uint32_t left, uint32_t right);
-uint32_t spv_emit_fnegate(SpvEmitter* e, uint32_t f32_type, uint32_t value);
 uint32_t spv_emit_derivative(SpvEmitter* e, uint32_t f32_type, uint32_t value, int y_axis);
 uint32_t spv_emit_glsl_unary(SpvEmitter* e, uint32_t f32_type, uint32_t import, SpvGlsl450Op op, uint32_t value);
 uint32_t spv_emit_glsl_binary(SpvEmitter* e, uint32_t f32_type, uint32_t import, SpvGlsl450Op op, uint32_t left,
                               uint32_t right);
 uint32_t spv_emit_glsl_ternary(SpvEmitter* e, uint32_t f32_type, uint32_t import, SpvGlsl450Op op, uint32_t a,
                                uint32_t b, uint32_t c);
-uint32_t spv_emit_isnan(SpvEmitter* e, uint32_t bool_type, uint32_t value);
-uint32_t spv_emit_select(SpvEmitter* e, uint32_t result_type, uint32_t condition, uint32_t yes, uint32_t no);
 /* a 32-bit float with a subnormal flushed to the zero of its sign, NaN and everything else as it is: with a float test
    when the module preserves signed zeros (SignedZeroInfNanPreserve), else on its bits */
 uint32_t spv_emit_flush_subnormal(SpvEmitter* e, uint32_t f32_type, uint32_t u32_type, uint32_t bool_type,
@@ -623,7 +600,6 @@ void spv_emit_no_contraction(SpvEmitter* e, uint32_t result);
 uint32_t spv_emit_storage_access_u32(SpvEmitter* e, uint32_t pointer_type, uint32_t buffer, uint32_t member_index,
                                      uint32_t element_index);
 uint32_t spv_emit_iadd_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right);
-uint32_t spv_emit_imul_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right);
 uint32_t spv_emit_umul_high_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right);
 void spv_emit_store_u32(SpvEmitter* e, uint32_t pointer, uint32_t value);
 void spv_emit_store(SpvEmitter* e, uint32_t pointer, uint32_t value);
@@ -638,7 +614,6 @@ void spv_emit_kill(SpvEmitter* e);
 void spv_emit_demote(SpvEmitter* e);
 /* OpIsHelperInvocationEXT: whether the lane is a helper, including one demoted by KIL */
 uint32_t spv_emit_is_helper(SpvEmitter* e, uint32_t bool_type);
-uint32_t spv_emit_read_clock(SpvEmitter* e, uint32_t vec2_u32_type, uint32_t scope);
 void spv_emit_selection_merge(SpvEmitter* e, uint32_t merge_label);
 void spv_emit_branch_conditional(SpvEmitter* e, uint32_t condition, uint32_t yes_label, uint32_t no_label);
 void spv_emit_branch(SpvEmitter* e, uint32_t label);

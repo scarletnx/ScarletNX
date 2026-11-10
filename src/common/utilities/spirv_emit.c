@@ -313,42 +313,6 @@ uint32_t spv_emit_int_convert(SpvEmitter* e, uint32_t type, uint32_t value, int 
     return id;
 }
 
-uint32_t spv_emit_fconvert(SpvEmitter* e, uint32_t type, uint32_t value) {
-    uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_F_CONVERT, type, id, value);
-    return id;
-}
-
-uint32_t spv_emit_convert_f_to_s(SpvEmitter* e, uint32_t i32_type, uint32_t value) {
-    uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_CONVERT_F_TO_S, i32_type, id, value);
-    return id;
-}
-
-uint32_t spv_emit_convert_f_to_u(SpvEmitter* e, uint32_t u32_type, uint32_t value) {
-    uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_CONVERT_F_TO_U, u32_type, id, value);
-    return id;
-}
-
-uint32_t spv_emit_convert_s_to_f(SpvEmitter* e, uint32_t f32_type, uint32_t value) {
-    uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_CONVERT_S_TO_F, f32_type, id, value);
-    return id;
-}
-
-uint32_t spv_emit_convert_u_to_f(SpvEmitter* e, uint32_t f32_type, uint32_t value) {
-    uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_CONVERT_U_TO_F, f32_type, id, value);
-    return id;
-}
-
-uint32_t spv_emit_convert_f_to_f(SpvEmitter* e, uint32_t result_type, uint32_t value) {
-    uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_F_CONVERT, result_type, id, value);
-    return id;
-}
-
 uint32_t spv_emit_type_f16(SpvEmitter* e) { return spv_emit_type_float(e, 16); }
 uint32_t spv_emit_type_f32(SpvEmitter* e) { return spv_emit_type_float(e, 32); }
 
@@ -913,87 +877,9 @@ uint32_t spv_emit_load(SpvEmitter* e, uint32_t result_type, uint32_t pointer) {
     return id;
 }
 
-uint32_t spv_emit_bitcast(SpvEmitter* e, uint32_t result_type, uint32_t value) {
-    uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_BITCAST, result_type, id, value);
-    return id;
-}
-
 static uint32_t binary(SpvEmitter* e, uint32_t opcode, uint32_t result_type, uint32_t left, uint32_t right) {
     uint32_t id = spv_emit_id(e);
     EMIT(&e->functions, opcode, result_type, id, left, right);
-    return id;
-}
-
-uint32_t spv_emit_fadd(SpvEmitter* e, uint32_t f32_type, uint32_t left, uint32_t right) {
-    return binary(e, SPV_OP_F_ADD, f32_type, left, right);
-}
-
-uint32_t spv_emit_fmul(SpvEmitter* e, uint32_t f32_type, uint32_t left, uint32_t right) {
-    return binary(e, SPV_OP_F_MUL, f32_type, left, right);
-}
-
-uint32_t spv_emit_i_equal(SpvEmitter* e, uint32_t bool_type, uint32_t left, uint32_t right) {
-    return binary(e, SPV_OP_I_EQUAL, bool_type, left, right);
-}
-
-uint32_t spv_emit_i_not_equal(SpvEmitter* e, uint32_t bool_type, uint32_t left, uint32_t right) {
-    return binary(e, SPV_OP_I_NOT_EQUAL, bool_type, left, right);
-}
-
-uint32_t spv_emit_u_less(SpvEmitter* e, uint32_t bool_type, uint32_t left, uint32_t right) {
-    return binary(e, SPV_OP_U_LESS_THAN, bool_type, left, right);
-}
-
-uint32_t spv_emit_s_greater(SpvEmitter* e, uint32_t bool_type, uint32_t left, uint32_t right) {
-    return binary(e, SPV_OP_S_GREATER_THAN, bool_type, left, right);
-}
-
-uint32_t spv_emit_isub_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right) {
-    return binary(e, SPV_OP_I_SUB, u32_type, left, right);
-}
-
-uint32_t spv_emit_shift_left_u32(SpvEmitter* e, uint32_t u32_type, uint32_t value, uint32_t shift) {
-    return binary(e, SPV_OP_SHIFT_LEFT_LOGICAL, u32_type, value, shift);
-}
-
-uint32_t spv_emit_shift_right_u32(SpvEmitter* e, uint32_t u32_type, uint32_t value, uint32_t shift) {
-    return binary(e, SPV_OP_SHIFT_RIGHT_LOGICAL, u32_type, value, shift);
-}
-uint32_t spv_emit_shift_right_s32(SpvEmitter* e, uint32_t i32_type, uint32_t value, uint32_t shift) {
-    return binary(e, SPV_OP_SHIFT_RIGHT_ARITHMETIC, i32_type, value, shift);
-}
-uint32_t spv_emit_sdiv_i32(SpvEmitter* e, uint32_t i32_type, uint32_t left, uint32_t right) {
-    return binary(e, SPV_OP_S_DIV, i32_type, left, right);
-}
-
-uint32_t spv_emit_bitwise_and_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right) {
-    return binary(e, SPV_OP_BITWISE_AND, u32_type, left, right);
-}
-
-uint32_t spv_emit_bitwise_or_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right) {
-    return binary(e, SPV_OP_BITWISE_OR, u32_type, left, right);
-}
-
-uint32_t spv_emit_bitwise_xor_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right) {
-    return binary(e, SPV_OP_BITWISE_XOR, u32_type, left, right);
-}
-
-uint32_t spv_emit_not_u32(SpvEmitter* e, uint32_t u32_type, uint32_t value) {
-    uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_NOT, u32_type, id, value);
-    return id;
-}
-
-uint32_t spv_emit_bitfield_uextract(SpvEmitter* e, uint32_t u32_type, uint32_t value, uint32_t offset, uint32_t count) {
-    uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_BIT_FIELD_U_EXTRACT, u32_type, id, value, offset, count);
-    return id;
-}
-
-uint32_t spv_emit_bit_reverse_u32(SpvEmitter* e, uint32_t u32_type, uint32_t value) {
-    uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_BIT_REVERSE, u32_type, id, value);
     return id;
 }
 
@@ -1118,15 +1004,69 @@ uint32_t spv_emit_bitfield_insert(SpvEmitter* e, uint32_t u32_type, uint32_t bas
     return id;
 }
 
-uint32_t spv_emit_bit_count(SpvEmitter* e, uint32_t u32_type, uint32_t value) {
+/* The common forms: an instruction of op, its result type, a new id and one, two or three operands. Each takes the ops
+   its switch names, whose operands are of that shape */
+static int unary_op(uint32_t op) {
+    switch (op) {
+        case SPV_OP_BITCAST:
+        case SPV_OP_BIT_COUNT:
+        case SPV_OP_BIT_REVERSE:
+        case SPV_OP_CONVERT_F_TO_S:
+        case SPV_OP_CONVERT_F_TO_U:
+        case SPV_OP_CONVERT_S_TO_F:
+        case SPV_OP_CONVERT_U_TO_F:
+        case SPV_OP_F_CONVERT:
+        case SPV_OP_F_NEGATE:
+        case SPV_OP_IS_NAN:
+        case SPV_OP_LOGICAL_NOT:
+        case SPV_OP_NOT:
+        case SPV_OP_READ_CLOCK_KHR: return 1;
+        default: return 0;
+    }
+}
+static int binary_op(uint32_t op) {
+    switch (op) {
+        case SPV_OP_BITWISE_AND:
+        case SPV_OP_BITWISE_OR:
+        case SPV_OP_BITWISE_XOR:
+        case SPV_OP_F_ADD:
+        case SPV_OP_F_DIV:
+        case SPV_OP_F_MUL:
+        case SPV_OP_I_EQUAL:
+        case SPV_OP_I_MUL:
+        case SPV_OP_I_NOT_EQUAL:
+        case SPV_OP_I_SUB:
+        case SPV_OP_SHIFT_LEFT_LOGICAL:
+        case SPV_OP_SHIFT_RIGHT_ARITHMETIC:
+        case SPV_OP_SHIFT_RIGHT_LOGICAL:
+        case SPV_OP_S_DIV:
+        case SPV_OP_S_GREATER_THAN:
+        case SPV_OP_U_LESS_THAN: return 1;
+        default: return 0;
+    }
+}
+static int ternary_op(uint32_t op) {
+    switch (op) {
+        case SPV_OP_BIT_FIELD_S_EXTRACT:
+        case SPV_OP_BIT_FIELD_U_EXTRACT:
+        case SPV_OP_SELECT: return 1;
+        default: return 0;
+    }
+}
+uint32_t spv_emit_unary(SpvEmitter* e, uint32_t op, uint32_t result_type, uint32_t a) {
+    assert(unary_op(op));
     uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_BIT_COUNT, u32_type, id, value);
+    EMIT(&e->functions, op, result_type, id, a);
     return id;
 }
-
-uint32_t spv_emit_bitfield_sextract(SpvEmitter* e, uint32_t i32_type, uint32_t value, uint32_t offset, uint32_t count) {
+uint32_t spv_emit_binary(SpvEmitter* e, uint32_t op, uint32_t result_type, uint32_t a, uint32_t b) {
+    assert(binary_op(op));
+    return binary(e, op, result_type, a, b);
+}
+uint32_t spv_emit_ternary(SpvEmitter* e, uint32_t op, uint32_t result_type, uint32_t a, uint32_t b, uint32_t c) {
+    assert(ternary_op(op));
     uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type, id, value, offset, count);
+    EMIT(&e->functions, op, result_type, id, a, b, c);
     return id;
 }
 
@@ -1135,9 +1075,9 @@ uint32_t spv_emit_fcompare(SpvEmitter* e, uint32_t bool_type, uint32_t condition
     assert(condition < 16);
     if (condition == 0 || condition == 15) return spv_emit_constant_bool(e, bool_type, condition == 15);
     if (condition == 7 || condition == 8) {
-        uint32_t nan = spv_emit_bool_binary(e, bool_type, 1, spv_emit_isnan(e, bool_type, left),
-                                            spv_emit_isnan(e, bool_type, right));
-        return condition == 7 ? spv_emit_bool_not(e, bool_type, nan) : nan;
+        uint32_t nan = spv_emit_bool_binary(e, bool_type, 1, spv_emit_unary(e, SPV_OP_IS_NAN, bool_type, left),
+                                            spv_emit_unary(e, SPV_OP_IS_NAN, bool_type, right));
+        return condition == 7 ? spv_emit_unary(e, SPV_OP_LOGICAL_NOT, bool_type, nan) : nan;
     }
     return binary(e, opcode[condition], bool_type, left, right);
 }
@@ -1147,15 +1087,18 @@ uint32_t spv_emit_flush_subnormal(SpvEmitter* e, uint32_t f32_type, uint32_t u32
     if (signed_zeros) { /* below the smallest normal, times zero: the zero of its sign; NaN fails the test */
         uint32_t magnitude = spv_emit_glsl_unary(e, f32_type, glsl, SPV_GLSL_F_ABS, value);
         uint32_t tiny = spv_emit_fcompare(e, bool_type, 1, magnitude, spv_emit_constant_u32(e, f32_type, 0x00800000u));
-        uint32_t zero = spv_emit_fmul(e, f32_type, value, spv_emit_constant_u32(e, f32_type, 0));
-        return spv_emit_select(e, f32_type, tiny, zero, value);
+        uint32_t zero = spv_emit_binary(e, SPV_OP_F_MUL, f32_type, value, spv_emit_constant_u32(e, f32_type, 0));
+        return spv_emit_ternary(e, SPV_OP_SELECT, f32_type, tiny, zero, value);
     }
-    uint32_t bits = spv_emit_bitcast(e, u32_type, value);
-    uint32_t exponent = spv_emit_bitwise_and_u32(e, u32_type, bits, spv_emit_constant_u32(e, u32_type, 0x7f800000u));
-    uint32_t sign = spv_emit_bitwise_and_u32(e, u32_type, bits, spv_emit_constant_u32(e, u32_type, 0x80000000u));
-    uint32_t flushed = spv_emit_select(
-        e, u32_type, spv_emit_i_equal(e, bool_type, exponent, spv_emit_constant_u32(e, u32_type, 0)), sign, bits);
-    return spv_emit_bitcast(e, f32_type, flushed);
+    uint32_t bits = spv_emit_unary(e, SPV_OP_BITCAST, u32_type, value);
+    uint32_t exponent =
+        spv_emit_binary(e, SPV_OP_BITWISE_AND, u32_type, bits, spv_emit_constant_u32(e, u32_type, 0x7f800000u));
+    uint32_t sign =
+        spv_emit_binary(e, SPV_OP_BITWISE_AND, u32_type, bits, spv_emit_constant_u32(e, u32_type, 0x80000000u));
+    uint32_t flushed = spv_emit_ternary(
+        e, SPV_OP_SELECT, u32_type,
+        spv_emit_binary(e, SPV_OP_I_EQUAL, bool_type, exponent, spv_emit_constant_u32(e, u32_type, 0)), sign, bits);
+    return spv_emit_unary(e, SPV_OP_BITCAST, f32_type, flushed);
 }
 
 /* PTX's add, sub, mul, fma and cvt .sat flush a NaN result to +0, and GLSL.std.450 leaves FClamp's result undefined for
@@ -1165,32 +1108,18 @@ uint32_t spv_emit_saturate(SpvEmitter* e, uint32_t f32_type, uint32_t u32_type, 
                            uint32_t value) {
     uint32_t zero = spv_emit_constant_u32(e, f32_type, 0), one = spv_emit_constant_u32(e, f32_type, 0x3f800000u);
     uint32_t clamped = spv_emit_glsl_ternary(e, f32_type, glsl, SPV_GLSL_F_CLAMP, value, zero, one);
-    uint32_t magnitude = spv_emit_bitwise_and_u32(e, u32_type, spv_emit_bitcast(e, u32_type, value),
-                                                  spv_emit_constant_u32(e, u32_type, 0x7fffffffu));
-    uint32_t nan = spv_emit_u_less(e, bool_type, spv_emit_constant_u32(e, u32_type, 0x7f800000u), magnitude);
-    return spv_emit_select(e, f32_type, nan, zero, clamped);
-}
-
-uint32_t spv_emit_bool_not(SpvEmitter* e, uint32_t bool_type, uint32_t value) {
-    uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_LOGICAL_NOT, bool_type, id, value);
-    return id;
+    uint32_t magnitude =
+        spv_emit_binary(e, SPV_OP_BITWISE_AND, u32_type, spv_emit_unary(e, SPV_OP_BITCAST, u32_type, value),
+                        spv_emit_constant_u32(e, u32_type, 0x7fffffffu));
+    uint32_t nan =
+        spv_emit_binary(e, SPV_OP_U_LESS_THAN, bool_type, spv_emit_constant_u32(e, u32_type, 0x7f800000u), magnitude);
+    return spv_emit_ternary(e, SPV_OP_SELECT, f32_type, nan, zero, clamped);
 }
 
 uint32_t spv_emit_bool_binary(SpvEmitter* e, uint32_t bool_type, uint32_t op, uint32_t left, uint32_t right) {
     static const uint32_t opcode[3] = {SPV_OP_LOGICAL_AND, SPV_OP_LOGICAL_OR, SPV_OP_LOGICAL_NOT_EQUAL};
     assert(op < 3);
     return binary(e, opcode[op], bool_type, left, right);
-}
-
-uint32_t spv_emit_fdiv(SpvEmitter* e, uint32_t f32_type, uint32_t left, uint32_t right) {
-    return binary(e, SPV_OP_F_DIV, f32_type, left, right);
-}
-
-uint32_t spv_emit_fnegate(SpvEmitter* e, uint32_t f32_type, uint32_t value) {
-    uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_F_NEGATE, f32_type, id, value);
-    return id;
 }
 
 uint32_t spv_emit_derivative(SpvEmitter* e, uint32_t f32_type, uint32_t value, int y_axis) {
@@ -1209,18 +1138,6 @@ uint32_t spv_emit_glsl_binary(SpvEmitter* e, uint32_t f32_type, uint32_t import,
                               uint32_t right) {
     uint32_t id = spv_emit_id(e);
     EMIT(&e->functions, SPV_OP_EXT_INST, f32_type, id, import, (uint32_t)op, left, right);
-    return id;
-}
-
-uint32_t spv_emit_isnan(SpvEmitter* e, uint32_t bool_type, uint32_t value) {
-    uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_IS_NAN, bool_type, id, value);
-    return id;
-}
-
-uint32_t spv_emit_select(SpvEmitter* e, uint32_t result_type, uint32_t condition, uint32_t yes, uint32_t no) {
-    uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_SELECT, result_type, id, condition, yes, no);
     return id;
 }
 
@@ -1505,10 +1422,6 @@ uint32_t spv_emit_iadd_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint
     return id;
 }
 
-uint32_t spv_emit_imul_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right) {
-    return binary(e, SPV_OP_I_MUL, u32_type, left, right);
-}
-
 uint32_t spv_emit_umul_high_u32(SpvEmitter* e, uint32_t u32_type, uint32_t left, uint32_t right) {
     uint32_t pair_type = spv_emit_id(e);
     EMIT(&e->types, SPV_OP_TYPE_STRUCT, pair_type, u32_type, u32_type);
@@ -1544,11 +1457,6 @@ void spv_emit_demote(SpvEmitter* e) { instruction(&e->functions, SPV_OP_DEMOTE_T
 uint32_t spv_emit_is_helper(SpvEmitter* e, uint32_t bool_type) {
     uint32_t id = spv_emit_id(e);
     EMIT(&e->functions, SPV_OP_IS_HELPER_INVOCATION, bool_type, id);
-    return id;
-}
-uint32_t spv_emit_read_clock(SpvEmitter* e, uint32_t vec2_u32_type, uint32_t scope) {
-    uint32_t id = spv_emit_id(e);
-    EMIT(&e->functions, SPV_OP_READ_CLOCK_KHR, vec2_u32_type, id, scope);
     return id;
 }
 static void block_ends(SpvEmitter* e) {

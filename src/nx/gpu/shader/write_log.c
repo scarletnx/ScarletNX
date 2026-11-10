@@ -21,22 +21,23 @@ u32 shader_wlog_buffer(SpvEmitter* e, u32 u32_type, u32 set) {
 void shader_wlog_store(SpvEmitter* e, u32 u32_type, u32 bool_type, u32 log, u32 part, u32 offset, u32 bytes) {
     u32 base = part * SH_WLOG_PART, zero = spv_emit_constant_u32(e, u32_type, 0);
     u32 ptr_type = spv_emit_type_storage_pointer(e, u32_type);
-    u32 at = spv_emit_bitwise_and_u32(e, u32_type, offset, spv_emit_constant_u32(e, u32_type, ~(bytes - 1)));
-    u32 window = spv_emit_shift_right_u32(e, u32_type, at, spv_emit_constant_u32(e, u32_type, 12));
+    u32 at = spv_emit_binary(e, SPV_OP_BITWISE_AND, u32_type, offset, spv_emit_constant_u32(e, u32_type, ~(bytes - 1)));
+    u32 window = spv_emit_binary(e, SPV_OP_SHIFT_RIGHT_LOGICAL, u32_type, at, spv_emit_constant_u32(e, u32_type, 12));
     u32 last = spv_emit_constant_u32(e, u32_type, SH_WPAGE_SLOT - 1);
-    u32 past = spv_emit_u_less(e, bool_type, last, window);
-    window = spv_emit_select(e, u32_type, past, last, window);
+    u32 past = spv_emit_binary(e, SPV_OP_U_LESS_THAN, bool_type, last, window);
+    window = spv_emit_ternary(e, SPV_OP_SELECT, u32_type, past, last, window);
     u32 flag = spv_emit_iadd_u32(e, u32_type, window, spv_emit_constant_u32(e, u32_type, base));
     spv_emit_store(e, spv_emit_storage_access_u32(e, ptr_type, log, zero, flag), spv_emit_constant_u32(e, u32_type, 1));
     /* the mask word: window * SH_WLOG_MASK + (at & 4095) / 32, after the part's flags */
-    u32 masks = spv_emit_imul_u32(e, u32_type, window, spv_emit_constant_u32(e, u32_type, SH_WLOG_MASK));
-    u32 in_window = spv_emit_bitwise_and_u32(e, u32_type, at, spv_emit_constant_u32(e, u32_type, 4095));
-    in_window = spv_emit_shift_right_u32(e, u32_type, in_window, spv_emit_constant_u32(e, u32_type, 5));
+    u32 masks = spv_emit_binary(e, SPV_OP_I_MUL, u32_type, window, spv_emit_constant_u32(e, u32_type, SH_WLOG_MASK));
+    u32 in_window = spv_emit_binary(e, SPV_OP_BITWISE_AND, u32_type, at, spv_emit_constant_u32(e, u32_type, 4095));
+    in_window =
+        spv_emit_binary(e, SPV_OP_SHIFT_RIGHT_LOGICAL, u32_type, in_window, spv_emit_constant_u32(e, u32_type, 5));
     u32 word = spv_emit_iadd_u32(e, u32_type, spv_emit_iadd_u32(e, u32_type, masks, in_window),
                                  spv_emit_constant_u32(e, u32_type, base + SH_WPAGE_SLOT));
-    u32 bits =
-        spv_emit_shift_left_u32(e, u32_type, spv_emit_constant_u32(e, u32_type, (u32)((1ull << bytes) - 1)),
-                                spv_emit_bitwise_and_u32(e, u32_type, at, spv_emit_constant_u32(e, u32_type, 31)));
-    bits = spv_emit_select(e, u32_type, past, zero, bits);
+    u32 bits = spv_emit_binary(
+        e, SPV_OP_SHIFT_LEFT_LOGICAL, u32_type, spv_emit_constant_u32(e, u32_type, (u32)((1ull << bytes) - 1)),
+        spv_emit_binary(e, SPV_OP_BITWISE_AND, u32_type, at, spv_emit_constant_u32(e, u32_type, 31)));
+    bits = spv_emit_ternary(e, SPV_OP_SELECT, u32_type, past, zero, bits);
     spv_emit_atomic_u32(e, u32_type, SPV_OP_ATOMIC_OR, spv_emit_storage_access_u32(e, ptr_type, log, zero, word), bits);
 }

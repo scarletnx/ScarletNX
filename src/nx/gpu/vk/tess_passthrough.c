@@ -80,7 +80,7 @@ u32* vk_tess_passthrough_spirv_full(u32 vertices, u32 attributes, int point_size
         spv_emit_store(&e, destination, spv_emit_load(&e, vec4, source));
     }
     u32 write = spv_emit_id(&e), done = spv_emit_id(&e), zero = spv_emit_constant_u32(&e, u32_type, 0);
-    u32 first = spv_emit_i_equal(&e, boolean, vertex, zero);
+    u32 first = spv_emit_binary(&e, SPV_OP_I_EQUAL, boolean, vertex, zero);
     spv_emit_selection_merge(&e, done);
     spv_emit_branch_conditional(&e, first, write, done);
     spv_emit_label(&e, write);
