@@ -361,7 +361,7 @@ VkPipelineLayout vk_playout(u32 arrays) {
         VkDescriptorSetLayout sets[5];
         for (u32 s = 0; s < g_vk_stage_sets; s++) sets[s] = g_vk_dslayout[(arrays >> s) & 1][s];
         /* push constants: viewport/depth pc[0..3], fragment alpha test pc[4..6], sprite T flip pc[7], scaled textures
-           pc[8..9] */
+           pc[8..9], and of those the ones of the draw's size pc[24..25] */
         VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 128};
         /* with pipeline libraries, a link of parts whose layouts have only their own sets (part_layout) */
         VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
