@@ -942,14 +942,50 @@ void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
 }
 
 u64 g_vk_finishes, g_vk_finish_ns;
-void vk_finish(void) {
+/* the finishes since the last stats by their call site (a file's literal and a line), with their time, under vk_lock
+   as vk_finish is: one game made nine a frame, a round trip each with the GPU idle after it */
+#define FINISH_SITES 32
+static struct {
+    const char* file;
+    int line;
+    u64 n, ns;
+} g_finish_sites[FINISH_SITES];
+void vk_finish_at(const char* file, int line) {
     u64 t0 = plat_ns();
     SNX_ZONE(z_finish, "vk finish");
     submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_FINISH);
     timeline_wait(g_gval, VK_WAIT_FINISH);
     land_through(g_gval);
+    u64 ns = plat_ns() - t0;
     g_vk_finishes++;
-    g_vk_finish_ns += plat_ns() - t0;
+    g_vk_finish_ns += ns;
+    for (u32 i = 0; i < FINISH_SITES; i++) {
+        if (!g_finish_sites[i].file) {
+            g_finish_sites[i].file = file;
+            g_finish_sites[i].line = line;
+        }
+        if (g_finish_sites[i].file == file && g_finish_sites[i].line == line) {
+            g_finish_sites[i].n++;
+            g_finish_sites[i].ns += ns;
+            break;
+        }
+    }
+}
+void vk_finishes_log(void) {
+    u64 total = 0;
+    for (u32 i = 0; i < FINISH_SITES && g_finish_sites[i].file; i++) total += g_finish_sites[i].n;
+    for (u32 k = 0; total && k < 8; k++) {
+        u32 best = FINISH_SITES;
+        for (u32 i = 0; i < FINISH_SITES && g_finish_sites[i].file; i++)
+            if (g_finish_sites[i].n && (best == FINISH_SITES || g_finish_sites[i].n > g_finish_sites[best].n)) best = i;
+        if (best == FINISH_SITES) break;
+        const char* f = strrchr(g_finish_sites[best].file, '/');
+        LOG("vulkan:   %llu finishes (%.0f%%, %.0f ms) at %s:%d\n", (unsigned long long)g_finish_sites[best].n,
+            100.0 * (double)g_finish_sites[best].n / (double)total, (double)g_finish_sites[best].ns / 1e6,
+            f ? f + 1 : g_finish_sites[best].file, g_finish_sites[best].line);
+        g_finish_sites[best].n = 0;
+    }
+    for (u32 i = 0; i < FINISH_SITES && g_finish_sites[i].file; i++) g_finish_sites[i].n = g_finish_sites[i].ns = 0;
 }
 
 /* A present ends the frame: the next one records in the other slot, once that slot's previous use is done */
