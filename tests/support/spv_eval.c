@@ -656,6 +656,7 @@ static const char* run(Ev* e, uint32_t entry_at) {
             case 338: /* BroadcastFirst */
             case 345: /* Shuffle: the invocation is alone, so every lane's value is its own */
             case 346:
+                if (op == 345) e->env->shuffle_id = (uint32_t)e->ids[in[5]].v.c[0];
                 r->kind = K_VALUE;
                 r->type = t;
                 r->v = e->ids[in[4]].v;
