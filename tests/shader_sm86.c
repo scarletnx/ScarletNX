@@ -2221,6 +2221,24 @@ static void test_f2ip(const char* dir) {
     int ok = ran && out[0] == 0x123402ffu && out[1] == 0x200u && out[2] == 0x8000u && out[3] == 0x7fu;
     CHECK(ok);
     if (!ok) fprintf(stderr, "f2ip: %08x %08x %08x %08x\n", out[0], out[1], out[2], out[3]);
+    /* bits 78-79 round as F2I's: R0 .U8 toward zero (0xc4, as one game's mesh programs have it) of 2.9 (2) and 254.7
+       (254); R1 .U8 down (0x44) of 2.5 (2) and -0.5 (-1, saturated to 0); R2 .U8 up (0x84) of 2.1 (3) and 254.2
+       (255); R3 .S8 toward zero (0xd4) of -3.7 (-3) and 126.9 (126) */
+    {
+        u8 rcode[16 * 20] = {0};
+        u32 m = 0;
+        static const float rin[8] = {2.9f, 254.7f, 2.5f, -0.5f, 2.1f, 254.2f, -3.7f, 126.9f};
+        static const u32 rflags[4] = {0xc4, 0x44, 0x84, 0xd4};
+        for (u32 k = 0; k < 8; k++) put(rcode, m++, mov_imm(4 + k, f2u(rin[k])));
+        for (u32 k = 0; k < 4; k++) put(rcode, m++, f2ip(k, 4 + 2 * k, 5 + 2 * k, 255, rflags[k]));
+        put(rcode, m++, exit_insn());
+        put(rcode, m, bra(m, m, 7, 0));
+        m++;
+        ran = run_fs_at(rcode, m, 0, NULL, 0, out);
+        ok = ran && out[0] == 0x2feu && out[1] == 0x200u && out[2] == 0x3ffu && out[3] == 0xfd7eu;
+        CHECK(ok);
+        if (!ok) fprintf(stderr, "f2ip rounding: %08x %08x %08x %08x\n", out[0], out[1], out[2], out[3]);
+    }
     /* a flag it doesn't know (bit 73) is refused */
     put(code, 13, f2ip(3, 10, 11, 255, 0x06));
     u32 fsph[32] = {0};
