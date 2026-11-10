@@ -970,6 +970,9 @@ static void test_sampler(void) {
     check(nvn_SamplerInitialize(NULL, SAMPLER, SAMPLER_B), "a sampler");
     nvn_SamplerGetBorderColori(NULL, SAMPLER, s + 0x60);
     check(!memcmp(GP(s), GP(s + 0x60), 16), "the sampler's integer border color");
+    /* a game's sampler cache compares the objects' bytes: nothing of ours may tell two of one state apart */
+    check(nvn_SamplerInitialize(NULL, SAMPLER + 0x40, SAMPLER_B), "a second sampler from the same builder");
+    check(!memcmp(GP(SAMPLER), GP(SAMPLER + 0x40), sizeof(NvnSampler)), "two samplers of one state are the same bytes");
     /* a pool's descriptor from the builder: the sampler's */
     memset(GP(POOL_MEM + 0x40000), 0, 2 * 32);
     check(nvn_SamplerPoolInitialize(NULL, SAMPLER_P, POOL, 0x40000, 16), "a sampler pool");

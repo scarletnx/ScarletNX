@@ -90,7 +90,7 @@ typedef struct {
 /* an NVN object of type T at guest address a, in place in the game's memory */
 #define NVN_OBJ(T, a) ((T*)(void*)GP(a))
 
-/* a new serial for a texture, sampler or program: above 0, never reused */
+/* a new serial for a texture or program: above 0, never reused */
 u64 nvn_serial(void);
 /* a memory pool object's storage: its guest address (0 for none), and its GPU address */
 u64 nvn_pool_memory(u64 pool);

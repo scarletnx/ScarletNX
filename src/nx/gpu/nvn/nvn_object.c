@@ -1535,7 +1535,7 @@ int nvn_SamplerInitialize(CPU* c, u64 s, u64 b) {
     (void)c;
     o.magic = NVN_MAGIC('S', 'M', 'P', 0);
     o.p = *SB(b);
-    o.serial = nvn_serial();
+    /* nothing of ours besides: a game's sampler cache compares the objects' bytes, as the console's are for one state */
     memcpy(GP(s), &o, sizeof o);
     return 1;
 }
