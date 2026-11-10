@@ -194,6 +194,11 @@ void shader_xfb_store(DirectCtx* c, const XfbOut* x) {
         for (u32 k = 0; k < 4; k++)
             spv_emit_store(&c->emit, x->components[i][k], spv_emit_vec4_extract(&c->emit, c->f32_type, value, k));
     }
+    for (u32 k = 0; k < 4; k++) {
+        if (!x->position_copy[k]) continue;
+        u32 value = spv_emit_load(&c->emit, x->vec4, x->position);
+        spv_emit_store(&c->emit, x->position_copy[k], spv_emit_vec4_extract(&c->emit, c->f32_type, value, k));
+    }
 }
 
 /* Hardware passthrough emits once at program exit. Save generated outputs before EmitVertex,
@@ -484,9 +489,9 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             spv_emit_label(&c->emit, emit_label);
             if (B(w, 39, 1)) {
                 if (!target) {
+                    if (xfb_on) shader_xfb_store(c, t->xfb_out); /* the position as written, before its fix */
                     if (position_fix) shader_vertex_position_fix(c, position, push, push_pointer, vec4);
                     spv_emit_store(&c->emit, primitive_id_out, spv_emit_load(&c->emit, c->u32_type, primitive_id));
-                    if (xfb_on) shader_xfb_store(c, t->xfb_out);
                 } else {
                     for (u32 buffer = 0; buffer < 4; buffer++) {
                         if (t->si->xfb.stream[buffer] != target) continue;

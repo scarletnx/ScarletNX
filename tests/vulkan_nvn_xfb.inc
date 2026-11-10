@@ -152,6 +152,60 @@ static int check_nvn_xfb(void) {
         CHECK(!gmem_read(output_a, captured, sizeof captured) && !memcmp(captured, initial, sizeof captured));
         memset(initial, 0xcd, sizeof initial);
     }
+    /* a captured position is the one the program wrote, whichever depth range the rasterizer takes it in: a z that
+       is not its w tells the position apart from the one made for a depth range of -1 to 1. Then some of its words
+       in an order of their own: z, x, y */
+    {
+        const float deep[12] = {-1, -1, 0.25f, 1, 3, -1, -0.5f, 2, -1, 3, 0.75f, 1};
+        const float zxy[9] = {0.25f, -1, -1, -0.5f, 3, -1, 0.75f, -1, 3};
+        const ShXfb whole = state->xfb;
+        CHECK(!gmem_write(stream, deep, sizeof deep));
+        for (u32 round = 0; round < 3; round++) {
+            const u32 zero_to_one = round == 1, words = round == 2 ? 3 : 4;
+            const float* want = round == 2 ? zxy : deep;
+            DrawOwner a = {0};
+            CHECK(!gmem_write(output_a, initial, sizeof initial));
+            state->owner = owner_a;
+            state->bind.xfb[0].addr = output_a;
+            state->vbuf.addr[0] = stream;
+            state->vbuf.size[0] = sizeof deep;
+            state->dyn.depth_mode = (u8)zero_to_one;
+            if (round == 2) {
+                state->xfb.layout[0][0] = 30;
+                state->xfb.layout[0][1] = 28;
+                state->xfb.layout[0][2] = 29;
+                state->xfb.count[0] = 3;
+                state->xfb.stride[0] = 12;
+                state->gen[DS_XFB] = ds_generation_next();
+            }
+            state->gen[DS_BIND] = ds_generation_next();
+            state->gen[DS_VBUF] = ds_generation_next();
+            state->gen[DS_DYNAMIC] = ds_generation_next();
+            DrawCall draw = {.topology = 0, .count = 3, .instances = 1};
+            CHECK(g_renderer->xfb_control(owner_a, control_a, 0, words * 4, &a));
+            g_renderer->draw(state, &draw, &a);
+            CHECK(g_renderer->xfb_control(owner_a, control_a, 1, words * 4, &a));
+            float got[12];
+            CHECK(!gmem_read(output_a, got, sizeof got));
+            if (memcmp(got, want, words * 12)) {
+                printf("FAIL a captured position, depth range %s, %s: its first vertex %g %g %g and its second %g %g "
+                       "%g, the program wrote %g %g %g and %g %g %g\n",
+                       zero_to_one ? "0 to 1" : "-1 to 1", round == 2 ? "words z, x, y" : "words y, z, w of x, y, z, w",
+                       (double)got[round == 2 ? 0 : 1], (double)got[round == 2 ? 1 : 2],
+                       (double)got[round == 2 ? 2 : 3], (double)got[round == 2 ? 3 : 5],
+                       (double)got[round == 2 ? 4 : 6], (double)got[round == 2 ? 5 : 7],
+                       (double)want[round == 2 ? 0 : 1], (double)want[round == 2 ? 1 : 2],
+                       (double)want[round == 2 ? 2 : 3], (double)want[round == 2 ? 3 : 5],
+                       (double)want[round == 2 ? 4 : 6], (double)want[round == 2 ? 5 : 7]);
+                return 1;
+            }
+        }
+        state->xfb = whole;
+        state->dyn.depth_mode = 0;
+        state->gen[DS_XFB] = ds_generation_next();
+        state->gen[DS_DYNAMIC] = ds_generation_next();
+        CHECK(!gmem_write(stream, positions, sizeof positions));
+    }
     static const u32 cases[][2] = {{16, 48}, {16, 49}, {0, 99}, {1, 0xffffffffu}, {0xffffffffu, 0xffffffffu}};
     for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) {
         CHECK(!gmem_write(control_a, cases[i], sizeof cases[i]));

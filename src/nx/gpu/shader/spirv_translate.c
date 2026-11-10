@@ -1765,7 +1765,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
        and their component outputs (shader_xfb_store) */
     u8 xfb_buf[160], attr_private[32] = {0};
     u16 xfb_off[160] = {0};
-    u32 xfb_components[32][4] = {{0}};
+    u32 xfb_components[32][4] = {{0}}, xfb_position[4] = {0};
     u32 stream_capture[4][128] = {{0}};
     int xfb_on = 0, xfb_stores = 0;
     memset(xfb_buf, 0xFF, sizeof xfb_buf);
@@ -1874,10 +1874,30 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             position = per_vertex ? spv_emit_interface_variable(&c->emit, 3, vec4, c->u32_type, per_vertex, 0, 0, 0)
                                   : spv_emit_position_output(&c->emit, vec4);
             interfaces[count++] = position;
-            /* the position is a built-in: captured only whole, its four words in order in one buffer */
-            if (!xfb_stores && xfb_buf[28] != 0xFF && xfb_buf[29] == xfb_buf[28] && xfb_buf[30] == xfb_buf[28] &&
-                xfb_buf[31] == xfb_buf[28] && xfb_off[29] == xfb_off[28] + 4 && xfb_off[30] == xfb_off[28] + 8 &&
-                xfb_off[31] == xfb_off[28] + 12)
+            /* the captured position is a copy, a component a variable at an output location the program leaves
+               free, past those the other streams' captured words take (stream_capture), made before the position is
+               fixed for the rasterizer (shader_xfb_store): the built-in holds the fixed one, and is captured only
+               whole. With no location free, or in a passthrough program, which copies nothing, the built-in is
+               captured where its four words go in order to one buffer */
+            u32 copy_at = 0;
+            for (u32 stream = 1; stream < 4; stream++) {
+                u32 words = 0;
+                for (u32 b = 0; b < 4; b++)
+                    if (si->xfb.stream[b] == stream) words += si->xfb.count[b] < 128 ? si->xfb.count[b] : 128;
+                if ((words + 3) / 4 > copy_at) copy_at = (words + 3) / 4;
+            }
+            while (copy_at < 32 && outputs_used[copy_at]) copy_at++;
+            if (!xfb_stores && !passthrough && copy_at < 32) {
+                for (u32 k = 0; k < 4; k++) {
+                    if (xfb_buf[28 + k] == 0xFF) continue;
+                    xfb_position[k] = spv_emit_output_component(&c->emit, c->f32_type, copy_at, k);
+                    interfaces[count++] = xfb_position[k];
+                    spv_emit_xfb_capture(&c->emit, xfb_position[k], xfb_buf[28 + k], si->xfb.stride[xfb_buf[28 + k]],
+                                         xfb_off[28 + k]);
+                }
+            } else if (!xfb_stores && xfb_buf[28] != 0xFF && xfb_buf[29] == xfb_buf[28] && xfb_buf[30] == xfb_buf[28] &&
+                       xfb_buf[31] == xfb_buf[28] && xfb_off[29] == xfb_off[28] + 4 && xfb_off[30] == xfb_off[28] + 8 &&
+                       xfb_off[31] == xfb_off[28] + 12)
                 spv_emit_xfb_capture(&c->emit, position, xfb_buf[28], si->xfb.stride[xfb_buf[28]], xfb_off[28]);
         }
         for (u32 i = 0; i < 32; i++)
@@ -2217,6 +2237,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                  .output_attrs = output_attrs,
                  .attr_private = attr_private,
                  .components = xfb_components,
+                 .position_copy = xfb_position,
                  .pointer = c->gbuf_pointer,
                  .vertex_index = vertex_index,
                  .instance_index = instance_index,
