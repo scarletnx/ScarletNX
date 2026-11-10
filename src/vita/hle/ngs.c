@@ -66,6 +66,7 @@ struct Voice {
     unsigned rack;
     uint32_t state, updates;
     bool paused;
+    uint64_t input_epoch;
     uint32_t module_callback[TEMPLATE1_MODULES], module_user_data[TEMPLATE1_MODULES];
     /* the player's SceNgsPlayerStates: the byte in its buffer, the buffer, the samples and bytes since its key on,
        and in all; its current buffer's loops so far, and the resampler's place between its last two frames */
@@ -86,6 +87,7 @@ typedef struct {
 } Rack;
 struct VitaNgs {
     uint32_t granularity, rate;
+    uint64_t input_epoch;
     Rack racks[RACKS];
     Voice voices[VOICES];
     bool logged_type;
@@ -139,6 +141,12 @@ static uint32_t patch_offset(uint32_t kind) {
 static unsigned outputs_of_kind(uint32_t kind) {
     if (kind == DEF_MASTER) return 1;
     return kind == DEF_TEMPLATE1 ? TEMPLATE1_OUTPUTS : OUTPUTS;
+}
+/* A patch can deliver samples before its destination voice runs. */
+static void clear_input(struct VitaNgs* n, Voice* v) {
+    if (v->input_epoch == n->input_epoch) return;
+    memset(v->input, 0, n->granularity * 2 * sizeof *v->input);
+    v->input_epoch = n->input_epoch;
 }
 static Voice* voice_of(VitaProcess* p, uint32_t handle) {
     struct VitaNgs* n = p->ngs;
@@ -626,6 +634,7 @@ static void deliver(VitaProcess* p, struct VitaNgs* n, const Voice* v, const flo
             const Patch* patch = &v->patches[o][i];
             Voice* d = patch->used ? voice_of(p, patch->destination) : NULL;
             if (!d || d->state != ACTIVE || d->paused) continue;
+            clear_input(n, d);
             bool mono_out = n->racks[d->rack].channels == 1;
             float m00 = patch->matrix[0][0], m01 = mono_out ? 0.0f : patch->matrix[0][1];
             float m10 = mono ? 0.0f : patch->matrix[1][0], m11 = mono || mono_out ? 0.0f : patch->matrix[1][1];
@@ -701,6 +710,7 @@ static uint32_t system_update_continue(VitaProcess* p, VitaThread* t) {
             }
             n->update_voice_started = true;
             n->update_sample = 0;
+            clear_input(n, v);
             memset(n->sound, 0, n->granularity * 2 * sizeof *n->sound);
             ++v->updates;
         }
@@ -740,7 +750,10 @@ static uint32_t system_update_continue(VitaProcess* p, VitaThread* t) {
 static uint32_t system_update(VitaProcess* p, VitaThread* t) {
     struct VitaNgs* n = p->ngs;
     if (!n || !n->granularity || n->updating) return SCE_NGS_ERROR_INVALID_PARAM;
-    for (unsigned i = 0; i < VOICES; ++i) memset(n->voices[i].input, 0, n->granularity * 2 * sizeof(float));
+    if (++n->input_epoch == 0) {
+        for (unsigned i = 0; i < VOICES; ++i) n->voices[i].input_epoch = 0;
+        n->input_epoch = 1;
+    }
     n->updating = true;
     n->update_order = n->update_rack = n->update_voice = n->update_sample = 0;
     n->update_voice_started = n->callback_end = false;
