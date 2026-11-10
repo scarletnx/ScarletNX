@@ -2041,6 +2041,9 @@ void vk_ww_new_epoch(void) {
         pm_unlock(&g_wscan_wlk);
     }
 }
+void vk_ww_seen(void) {
+    if (t_buffer.ww_streaming) t_buffer.ww_stream = __atomic_load_n(&g_ww_epoch, __ATOMIC_ACQUIRE);
+}
 u32 vk_ww_epoch(void) {
     return t_buffer.ww_streaming ? t_buffer.ww_stream : __atomic_load_n(&g_ww_epoch, __ATOMIC_ACQUIRE);
 }

@@ -2455,6 +2455,7 @@ u32 nvn_EventGetValue(CPU* c, u64 e) {
 void nvn_EventSignal(CPU* c, u64 e, i32 mode, u32 value) {
     u64 a = NVN_OBJ(NvnEvent, e)->value;
     (void)c;
+    gpu_cpu_signal(); /* a stream's wait on the event takes in what the CPU wrote before (nvn_replay.c) */
     __atomic_thread_fence(__ATOMIC_RELEASE);
     gw32(a, mode == NVN_EVENT_SIGNAL_MODE_ADD ? gr32(a) + value : value);
     gpu_kick();

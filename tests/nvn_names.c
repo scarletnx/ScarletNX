@@ -81,6 +81,7 @@ void arm_run(SnxArmCPU* c, SnxArmBlock first, u32 stop_at) {
     (void)stop_at;
 }
 void gpu_kick(void) {}
+void gpu_cpu_signal(void) {}
 /* native memory pools (nvn_object.c's): none here */
 int gsv_native_memory_cpu(u32 memory, u64* cpu, u64* size) {
     (void)memory, (void)cpu, (void)size;

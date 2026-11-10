@@ -325,7 +325,15 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                 }
                 __atomic_thread_fence(__ATOMIC_ACQUIRE);
                 j->waiting = 0;
-                if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
+                /* What released the wait came after the CPU's writes it covers: a stream's signal after its submission
+                   (or its own wait), or a CPU signal, which starts an epoch before it (gpu_cpu_signal). The epochs so
+                   far hold them, and the checks after the wait take them in. A new epoch at each wait had the write
+                   tracking scan the game's memory again 31 times a frame in one game, the GPU thread a fifth of its
+                   time */
+                if (g_renderer->mem_seen)
+                    g_renderer->mem_seen();
+                else if (g_renderer->mem_may_have_changed)
+                    g_renderer->mem_may_have_changed();
             }
             j->cursor[level].previous = op;
             j->cursor[level].pc = h.op & NVN_REC_LAST ? 0 : pc + h.size;
