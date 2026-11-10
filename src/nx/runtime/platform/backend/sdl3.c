@@ -575,6 +575,7 @@ const char* const* backend_vk_extensions(u32* n) {
     return e;
 }
 void backend_vk_check(void) { gpu_driver_check(); }
+int backend_vk_no_device(char* out, size_t size) { return gpu_driver_no_device(out, size); }
 int backend_vk_surface(VkInstance instance, VkSurfaceKHR* surface) {
 #ifdef SDL_PLATFORM_ANDROID
     /* a package's instance: SDL would ask the system's loader for its surface */

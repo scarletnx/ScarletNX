@@ -28,6 +28,7 @@ typedef void* (*AdrenotoolsOpen)(int mode, int features, const char* tmp_dir, co
 static struct {
     int opened;     /* gpu_driver_open ran */
     void* gipa;     /* the package's vkGetInstanceProcAddr, NULL with the system's driver */
+    char name[256]; /* the package's name, its meta.json's */
     char dir[1100]; /* the package's folder, a '/' at its end */
 } g_gpu_driver_load;
 
@@ -80,6 +81,7 @@ void* gpu_driver_open(void) {
         fatal("GPU driver %s: its library %s, which its meta.json names, is not in its folder", id, meta.library);
     free(path);
     snprintf(g_gpu_driver_load.dir, sizeof g_gpu_driver_load.dir, "%s/", dir);
+    snprintf(g_gpu_driver_load.name, sizeof g_gpu_driver_load.name, "%s", meta.name);
     LOG("vulkan: GPU driver %s is %s, %s (%s), its library %s\n", id, meta.name,
         meta.driver_version[0] ? meta.driver_version : "no driverVersion", meta.vendor[0] ? meta.vendor : "no vendor",
         meta.library);
@@ -148,6 +150,14 @@ void gpu_driver_check(void) {
 }
 
 int gpu_driver_custom(void) { return g_gpu_driver_load.gipa != NULL; }
+
+int gpu_driver_no_device(char* out, size_t size) {
+    SnxGpuDriverHost host;
+    if (!g_gpu_driver_load.gipa) return 0;
+    snx_gpu_driver_host(&host);
+    snx_gpu_driver_no_device(g_settings.gpu_driver, g_gpu_driver_load.name, &host, out, size);
+    return 1;
+}
 
 int gpu_driver_surface(VkInstance instance, void* window, VkSurfaceKHR* surface) {
 #ifdef __ANDROID__

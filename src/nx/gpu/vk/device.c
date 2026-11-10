@@ -325,12 +325,17 @@ static int device_rating(VkPhysicalDevice pd, const VkPhysicalDeviceProperties* 
 }
 
 /* g_vk.start_failure for no device found: each device with its Vulkan version, which a driver under 1.3 holds back
-   (a GPU driver package may have a newer one: gpu_driver), and what a 1.2 one lacks of vk12_extensions */
+   (a GPU driver package may have a newer one: gpu_driver), and what a 1.2 one lacks of vk12_extensions; with none
+   listed by a GPU driver package, the package and the GPU it does not drive */
 static void start_failure_devices(void) {
     VkPhysicalDevice devices[8];
     u32 n = 8;
     size_t at = 0;
     if (vkEnumeratePhysicalDevices(g_vk.instance, &n, devices) < 0) n = 0;
+    if (!n && backend_vk_no_device(g_vk.start_failure, sizeof g_vk.start_failure)) {
+        WARN("vulkan: %s\n", g_vk.start_failure);
+        return;
+    }
     for (u32 i = 0; i < n && at < sizeof g_vk.start_failure; ++i) {
         VkPhysicalDeviceProperties p;
         char lacks[512] = "";

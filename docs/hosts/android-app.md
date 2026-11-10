@@ -66,11 +66,12 @@ recompiles on the phone, then the game opens.
   `libmain_hook.so`, are in the app's libraries folder. The packages are unpacked into the app's own storage
   (`gpu_drivers/` of the user's data folder), as the linker loads libraries from there alone. A game's log says the
   package it asked for and, after the Vulkan instance, `vulkan: GPU driver <name> runs: its libraries are mapped`; one
-  the system's driver took the place of (the hook falls back to it on its own) stops the game, saying so. On Android
-  16 the system's `vulkan.adreno.so` is in the process as the app starts, so a package of that soname, Qualcomm's own,
-  loads from a renamed copy (`cmake/adrenotools-unique-soname.patch`). Download Driver fetches them over HTTPS through
-  libcurl, trusting the Mozilla root certificates the build carries (curl's extract of them, `cmake/cacert.cmake`), as
-  Eden does with its own OpenSSL.
+  the system's driver took the place of (the hook falls back to it on its own) stops the game, saying so, as does a
+  package that lists no Vulkan device (Turnip on an Xclipse, RADV on an Adreno), with the package and the GPU. On
+  Android 16 the system's `vulkan.adreno.so` is in the process as the app starts, so a package of that soname,
+  Qualcomm's own, loads from a renamed copy (`cmake/adrenotools-unique-soname.patch`). Download Driver fetches them
+  over HTTPS through libcurl, trusting the Mozilla root certificates the build carries (curl's extract of them,
+  `cmake/cacert.cmake`), as Eden does with its own OpenSSL.
 - **Share Log**, in the menu, asks how; its Share Zip saves the message on the screen, the last run's output (`last-run.log`, which the
   menu keeps on every system), the menu's own log and fatal errors (`scarletnx-console-<date>.log`, `scarletnx-error.log`,
   [GUI](../user/gui.md)) and the newest game log, none when it is older than the game played last, as `summary.txt` of

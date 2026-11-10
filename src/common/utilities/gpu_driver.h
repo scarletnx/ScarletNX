@@ -72,6 +72,9 @@ SnxGpuDriverLack snx_gpu_driver_lack(const SnxGpuDriverHost* host);
 /* 1 when host loads packages (snx_gpu_driver_lack); what says so either way, with its values: "This device: Android
    API 36, arm64, Adreno GPU (/dev/kgsl-3d0): custom drivers load." or the reason they do not */
 int snx_gpu_driver_loads(const SnxGpuDriverHost* host, char* what, size_t size);
+/* what a run says when the package it loaded, folder id and meta.json's name, lists no Vulkan device: the package and
+   host's GPU, which it does not drive (Turnip on an Xclipse, RADV on an Adreno) */
+void snx_gpu_driver_no_device(const char* id, const char* name, const SnxGpuDriverHost* host, char* out, size_t size);
 /* 1 when maps, /proc/self/maps' text, has a library mapped from the folder dir or a folder in it, by dir's name or by
    another the kernel gives it: the package a run asked for is the driver its Vulkan loader opened, not the system's in
    its place */

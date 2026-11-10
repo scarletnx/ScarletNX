@@ -67,6 +67,9 @@ void* backend_vk_loader(void); /* the address of vkGetInstanceProcAddr: gpu_driv
 void* backend_vk_driver(void);
 /* after vkCreateInstance: the run ends when the GPU driver it asked for (gpu_driver_load.h) is not the one running */
 void backend_vk_check(void);
+/* no Vulkan device listed: 1 with out saying so of the GPU driver package the run loaded (gpu_driver_load.h), 0 with
+   the system's driver */
+int backend_vk_no_device(char* out, size_t size);
 const char* const* backend_vk_extensions(u32* n); /* the instance extensions the window needs */
 int backend_vk_surface(VkInstance instance, VkSurfaceKHR* surface);
 
