@@ -249,9 +249,11 @@ typedef struct {
     const ShXfb* key;
     u32 vec4, position;
     const u32* output_attrs;
-    /* the extension's: the captured outputs' private vec4s and their component outputs */
+    /* the extension's: the captured outputs' private vec4s and their component outputs, and the position's (0 for a
+       word that isn't captured) */
     const u8* attr_private;
     u32 (*components)[4];
+    const u32* position_copy;
     /* the stores': their storage buffers, a word pointer type, VertexIndex and InstanceIndex */
     u32 params, buffer[4], pointer, vertex_index, instance_index;
     const u8* outputs_used;
