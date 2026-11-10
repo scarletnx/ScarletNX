@@ -1254,6 +1254,85 @@ static void test_lane_masks(const char* dir) {
     (void)dir;
 }
 
+/* SHFL with its lane operand and c each an immediate or a register (II 0xf89, RI 0x589, IR 0x989, RR 0x389), run at
+   every lane of a warp: the lane it reads and whether that lane is in range are PTX's shfl.sync, the same in the
+   four forms. c 0x1c03 is a segment of 4 lanes, 0x1807 of 8, 0x1c1f a segment of 4 whose clamp says 32, 0x1f the
+   warp. A compute network's upscaler has c in a register */
+static Word predicated(Word x, u32 pred);
+static void test_shfl_operands(const char* dir) {
+    static const u32 forms[4] = {0xf89, 0x589, 0x989, 0x389}, cs[4] = {0x1c03, 0x1807, 0x1c1f, 0x1f};
+    static const u32 bs[4] = {0, 1, 3, 30};
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    int bad = 0;
+    for (u32 f = 0; f < 4; f++)
+        for (u32 mode = 0; mode < 4; mode++)
+            for (u32 ci = 0; ci < 4; ci++)
+                for (u32 bi = 0; bi < 4; bi++) {
+                    int lane_reg = forms[f] == 0x589 || forms[f] == 0x389,
+                        c_reg = forms[f] == 0x989 || forms[f] == 0x389;
+                    u32 b = bs[bi], cc = cs[ci];
+                    u8 code[16 * 8] = {0};
+                    put(code, 0, mov_imm(2, 0x1234));
+                    put(code, 1, mov_imm(4, cc | 0xffff0000u)); /* the bits above c's 13 are not its */
+                    put(code, 2, mov_imm(5, b));
+                    put(code, 3, mov_imm(0, 0));
+                    Word x = fix(forms[f]); /* SHFL P0, R6, R2, b, c */
+                    set(&x, 16, 8, 6);
+                    set(&x, 24, 8, 2);
+                    if (lane_reg)
+                        set(&x, 32, 8, 5);
+                    else
+                        set(&x, 53, 5, b);
+                    if (c_reg)
+                        set(&x, 64, 8, 4);
+                    else
+                        set(&x, 40, 13, cc);
+                    set(&x, 58, 2, mode);
+                    set(&x, 81, 3, 0);
+                    put(code, 4, x);
+                    put(code, 5, predicated(mov_imm(0, 1), 0));
+                    put(code, 6, exit_insn());
+                    put(code, 7, bra(7, 7, 7, 0));
+                    ShaderInfo si = {0};
+                    size_t count = 0;
+                    u32* spv = sm86_to_spirv(code, 8 * 16, ST_FS, fsph, &si, &count);
+                    if (!spv) {
+                        if (!bad++) fprintf(stderr, "shfl 0x%x mode %u: %s\n", forms[f], mode, si.first_unsupported);
+                        continue;
+                    }
+                    if (mode == 0 && ci == 0 && bi == 0) {
+                        char name[32];
+                        snprintf(name, sizeof name, "fs_shfl_%x", forms[f]);
+                        CHECK(keep_module(dir, name, spv, count));
+                    }
+                    for (u32 lane = 0; lane < 32; lane++) {
+                        u32 seg = (cc >> 8) & 31, min_lane = lane & seg, max_lane = min_lane | (cc & ~seg & 31);
+                        u32 j = mode == 0   ? (min_lane | (b & ~seg & 31))
+                                : mode == 1 ? lane - b
+                                : mode == 2 ? lane + b
+                                            : lane ^ b;
+                        u32 ok = mode == 1 ? (i32)j >= (i32)min_lane : j <= max_lane;
+                        SpvEvalEnv env = {0};
+                        env.builtin[41][0] = lane;
+                        env.shuffle_id = ~0u;
+                        const char* why = spv_eval(spv, count, &env);
+                        if (why || !env.out_written[0] || env.out[0][0] != ok || env.shuffle_id != (j & 31)) {
+                            if (!bad++)
+                                fprintf(stderr,
+                                        "shfl 0x%x mode %u c 0x%x b %u lane %u: reads lane %u in range %u, wants %u "
+                                        "and %u%s%s\n",
+                                        forms[f], mode, cc, b, lane, env.shuffle_id, env.out[0][0], j & 31, ok,
+                                        why ? ", the evaluator stops at " : "", why ? why : "");
+                        }
+                    }
+                    free(spv);
+                }
+    CHECK(bad == 0);
+    if (bad) fprintf(stderr, "shfl: %d cases differ\n", bad);
+}
+
 /* LDC c[bank][R + offset] of NAK's MemType U8 (0), I8 (1), U16 (2) and I16 (3): the byte or halfword at the
    address, zero or sign extended */
 static Word ldc(u32 dst, u32 index, u32 bank, u32 off, u32 type) {
@@ -3159,7 +3238,7 @@ static void test_mesh_output_bytes(void) {
         for (u32 k = 0; k < nd; k++) {
             const u32* d = spv + decorations[k];
             if (d[1] != id) continue;
-            per_primitive |= d[2] == 5271; /* PerPrimitiveEXT */
+            per_primitive |= d[2] == 5271;                       /* PerPrimitiveEXT */
             indices |= d[2] == 11 /* BuiltIn */ && d[3] == 5296; /* PrimitiveTriangleIndicesEXT */
         }
         if (!indices) *(per_primitive ? &primitive : &vertex) += 1;
@@ -3572,6 +3651,7 @@ int main(int argc, char** argv) {
     test_global_flow(dir);
     test_fswzadd(dir);
     test_lane_masks(dir);
+    test_shfl_operands(dir);
     test_ldc_small(dir);
     test_break(dir);
     test_local_memory(dir);
