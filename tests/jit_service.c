@@ -10,7 +10,9 @@
    measured against one pc per compile. Then the warm start: queued pcs compile before any miss, and a miss goes ahead
    of them. Then an image added while the service runs, as ldr:ro maps an NRO outside CPU.disp: its misses compile and
    its code is found by snx_jit_resolve alone, it calls the AOT module directly, and removing it, even with its
-   compiles in flight, forgets its code, so the different code mapped at the same place later is what runs. Then the
+   compiles in flight, forgets its code, so the different code mapped at the same place later is what runs. Then an
+   image added inside CPU.disp, as ldr:ro maps an NRO at the address its own AOT module was made for: its misses
+   compile into the main table beside that module's entries, and removing it empties its slots. Then the
    cache: a second service on the same file loads the first one's units instead of compiling them, refuses a unit whose
    code changed (and compiles the new code), and reads the records before one a run left unfinished. A change in the
    middle of a function drops its whole unit */
@@ -148,6 +150,7 @@ static void run(CPU* c, u64 pc) { snx_lookup(c, pc)(c, pc); }
 /* a fresh table, with only the module's function, and a service over it */
 static const char* cache_path; /* start's config.cache_path */
 static size_t region_limit, discovery_budget; /* the bounded-region witnesses below */
+static u64 text_end = CODE_HI; /* where the config's image ends: the table past it has no code until an image joins */
 
 static SnxJitService* start(size_t batch, unsigned threads) {
     SnxJitConfig config;
@@ -163,7 +166,7 @@ static SnxJitService* start(size_t batch, unsigned threads) {
     image.image_size = MEMORY;
     image.base = 0;
     image.text_off = CODE_LO;
-    image.text_size = CODE_HI - CODE_LO;
+    image.text_size = text_end - CODE_LO;
     memset(&config, 0, sizeof(config));
     config.images = &image;
     config.image_count = 1;
@@ -403,6 +406,85 @@ static void test_added_image(void) {
     for (i = 1; i < NRO_COUNT; ++i) CHECK(snx_jit_resolve(service, NRO + 0x40 * (u64)i) != NULL);
     printf("added image: %u misses, every function compiled after the image went and came back\n",
            misses - before_misses);
+    snx_jit_service_free(service);
+}
+
+/* An image added inside CPU.disp, as ldr:ro maps an NRO at the address the recompiler made its own module for: the
+   table past the config's image (INNER on) has slots and no code until then. Its misses compile into the main table,
+   beside the code its owner put there (the NRO module's entries, here the host function at INNER + 0x40), which the
+   JIT's code reaches through the table. Removing it empties its slots, the owner's too, and what is mapped there next
+   compiles afresh */
+#define INNER 0x28000
+static void put_inner(u32 add) {
+    /* INNER: x0 += add. INNER + 0x1000 calls it and INNER + 0x40, which has no guest code the JIT is asked for */
+    u32 words[5] = {0x91000000 | add << 10, 0xD65F03C0, 0, 0, 0};
+    put(INNER, words, 2);
+    words[0] = 0xA9BF7BFD;
+    words[1] = 0x94000000 | (u32)(((u64)INNER - (INNER + 0x1000 + 4)) >> 2 & 0x3FFFFFF);        /* bl INNER */
+    words[2] = 0x94000000 | (u32)(((u64)INNER + 0x40 - (INNER + 0x1000 + 8)) >> 2 & 0x3FFFFFF); /* bl INNER + 0x40 */
+    words[3] = 0xA8C17BFD;
+    words[4] = 0xD65F03C0;
+    put(INNER + 0x1000, words, 5);
+}
+static void test_inner_image(void) {
+    SnxCodeImage nro = {0}, over_text;
+    unsigned before;
+    CPU c;
+    int i;
+    text_end = INNER;
+    service = start(0, 2);
+    text_end = CODE_HI;
+    if (!service) {
+        ++failures;
+        return;
+    }
+    nro.image = memory;
+    nro.image_size = MEMORY;
+    nro.text_off = INNER;
+    nro.text_size = 0x2000;
+    over_text = nro;
+    over_text.text_off = INNER - 0x1000; /* half over the config's image */
+    put_inner(7);
+    CHECK(!snx_jit_resolve(service, INNER + 0x1000) && !snx_jit_covers(service, INNER + 0x1000)); /* no image yet */
+    CHECK(snx_jit_add_image(service, &over_text) == -1);
+    CHECK(snx_jit_add_image(service, &nro) == 0 && snx_jit_add_image(service, &nro) == -1);
+    CHECK(snx_jit_covers(service, INNER + 0x1000) && !snx_jit_covers(service, INNER + 0x2000));
+    *slot(INNER + 0x40) = aot_add100; /* its owner's AOT code */
+    for (i = 0; i < 2; ++i) {
+        before = misses;
+        cpu_init(&c, 0xF000);
+        c.x[0] = 1;
+        run(&c, INNER + 0x1000);
+        CHECK(c.x[0] == 1 + 7 + 100 && c.pc == RETURN);
+        snx_jit_drain(service);
+    }
+    /* in the main table, so the second run missed nothing; the owner's slot is the owner's still */
+    CHECK(before == misses && get(INNER + 0x1000) != NULL && get(INNER) != NULL && get(INNER + 0x40) == aot_add100);
+    /* a change in the image drops the unit that reaches into it, and the next run compiles what is there now */
+    put_inner(8);
+    snx_jit_invalidate(service, INNER, 0x40);
+    CHECK(!get(INNER) && !get(INNER + 0x1000) && get(INNER + 0x40) == aot_add100);
+    cpu_init(&c, 0xF000);
+    c.x[0] = 1;
+    run(&c, INNER + 0x1000);
+    CHECK(c.x[0] == 1 + 8 + 100);
+    snx_jit_drain(service);
+    CHECK(get(INNER + 0x1000) != NULL);
+    /* removed: nothing of it is found or left in the table, and the image mapped there next runs its own code */
+    snx_jit_remove_image(service, 0);
+    CHECK(!snx_jit_resolve(service, INNER + 0x1000) && !snx_jit_covers(service, INNER + 0x1000));
+    CHECK(!get(INNER) && !get(INNER + 0x1000) && !get(INNER + 0x40));
+    put_inner(9);
+    CHECK(snx_jit_add_image(service, &nro) == 0);
+    *slot(INNER + 0x40) = aot_add100;
+    for (i = 0; i < 2; ++i) {
+        cpu_init(&c, 0xF000);
+        c.x[0] = 1;
+        run(&c, INNER + 0x1000);
+        CHECK(c.x[0] == 1 + 9 + 100);
+        snx_jit_drain(service);
+    }
+    snx_jit_remove_image(service, 0);
     snx_jit_service_free(service);
 }
 
@@ -973,6 +1055,7 @@ int main(int argc, char** argv) {
     snx_jit_service_free(service);
 
     test_added_image();
+    test_inner_image();
     test_cache();
     test_invalidate();
     test_invalidate_middle();
