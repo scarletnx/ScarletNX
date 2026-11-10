@@ -146,6 +146,10 @@ struct SnxJitService {
     size_t entry_count, entry_capacity; /* capacity: a power of two */
     Queue queues[QUEUES];               /* under lock */
     unsigned busy;                      /* batches compiling, under lock */
+    unsigned waiting;                   /* under lock: threads in snx_jit_wait with no code yet */
+    unsigned named;                     /* under lock: compile threads that took their index */
+    int miss_ready;                     /* under lock: the miss thread takes batches */
+    int miss_busy;                      /* under lock: it compiles one */
     int stop;                           /* under lock: the compile threads end */
     SnxU64 epoch;                       /* under lock: incremented by snx_jit_invalidate */
     SnxU64 takes;                       /* under lock: incremented by each take, which stamps its pcs with it */
@@ -154,6 +158,7 @@ struct SnxJitService {
     size_t span_count, span_capacity;
     JitLock lock;                       /* everything above marked so */
     JitCond work;                       /* signalled when a pc is queued, broadcast at stop */
+    JitCond miss;                       /* the miss thread's: signalled when a thread waits, broadcast at stop */
     JitCond idle;                       /* broadcast when nothing is queued or compiling */
     JitCond released;                   /* broadcast when a batch stops reading added images */
     JitCond done;                       /* broadcast when a batch ends its pcs, or an image's pcs are gone */
@@ -162,6 +167,8 @@ struct SnxJitService {
     char run[20];                       /* this run's part of each unit's table name, unique across runs */
     Cache cache;                        /* under load_lock but its index, fixed once read */
     JitThread threads[SNX_JIT_THREADS];
+    JitThread miss_thread; /* joined when miss_started */
+    int miss_started;
 };
 
 static void lock_init(JitLock* l) {
@@ -1203,13 +1210,13 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
     free(left);
 }
 
-/* Under lock: up to max pcs of the first queue that has any into pcs, made IN_FLIGHT and stamped with this take, which
-   goes in *taken, and the queue they came from in *queue; 0 when both are empty. Skips the pcs a batch compiled while
-   they waited */
-static size_t take(SnxJitService* s, SnxU64* pcs, SnxU64* taken, int* queue) {
+/* Under lock: up to max pcs of the first queue of first..last that has any into pcs, made IN_FLIGHT and stamped with
+   this take, which goes in *taken, and the queue they came from in *queue; 0 when those are empty. Skips the pcs a
+   batch compiled while they waited */
+static size_t take(SnxJitService* s, SnxU64* pcs, SnxU64* taken, int* queue, int first, int last) {
     size_t n = 0;
     *taken = ++s->takes;
-    for (int q = LIVE; q < QUEUES && !n; ++q) {
+    for (int q = first; q <= last && !n; ++q) {
         *queue = q;
         size_t max = q == LIVE ? s->config.batch : (s->config.batch + 7) / 8;
         while (n < max && s->queues[q].count) {
@@ -1229,33 +1236,78 @@ static size_t take(SnxJitService* s, SnxU64* pcs, SnxU64* taken, int* queue) {
     return n;
 }
 
-/* A compile thread: batch after batch until the service stops. A batch that leaves pcs queued wakes another thread
-   for them */
-static void worker(SnxJitService* s) {
-    SnxU64* pcs = (SnxU64*)malloc(s->config.batch * sizeof(*pcs));
-    /* below the guest threads: when the host has no idle CPU, a compile waits, not the game */
+/* The calling thread's priority for its role, and what config.thread hears of it. A compile thread goes below the
+   guest threads: when the host has no idle CPU, a compile waits, not the game. The miss thread keeps the priority it
+   started with, a guest thread's: the thread it compiles for does nothing else meanwhile */
+static void thread_priority(SnxJitThread* t) {
 #if defined(__linux__)
-    setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 10);
+    id_t self = (id_t)syscall(SYS_gettid);
+    t->scale = "nice";
+    errno = 0;
+    t->asked = getpriority(PRIO_PROCESS, self);
+    if (t->asked == -1 && errno) t->asked = 0;
+    /* a process already at 10 or below it stays there: a higher priority is not a thread's to take */
+    if (!t->misses && t->asked < 10) {
+        t->asked = 10;
+        setpriority(PRIO_PROCESS, self, t->asked);
+    }
+    errno = 0;
+    t->priority = getpriority(PRIO_PROCESS, self);
+    if (t->priority == -1 && errno) t->priority = t->asked;
 #elif defined(_WIN32)
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    t->scale = "Windows thread priority";
+    t->asked = t->misses ? GetThreadPriority(GetCurrentThread()) : THREAD_PRIORITY_BELOW_NORMAL;
+    if (!t->misses) SetThreadPriority(GetCurrentThread(), t->asked);
+    t->priority = GetThreadPriority(GetCurrentThread());
+#else
+    (void)t;
 #endif
+}
+
+/* A thread of the service: batch after batch until the service stops. A batch that leaves pcs queued wakes a compile
+   thread for them. misses: the miss thread, which takes misses only, and only while a thread waits for one */
+static void worker(SnxJitService* s, int misses) {
+    SnxU64* pcs = (SnxU64*)malloc(s->config.batch * sizeof(*pcs));
+    SnxJitThread me = {0};
+    me.misses = misses;
+    lock(&s->lock);
+    if (!misses) me.index = s->named++;
+    unlock(&s->lock);
+    thread_priority(&me);
+    if (s->config.thread) s->config.thread(&me);
     lock(&s->lock);
     while (pcs && !s->stop) {
-        SnxU64 taken;
-        int queue;
-        size_t n = take(s, pcs, &taken, &queue);
+        SnxU64 taken = 0;
+        int queue = LIVE;
+        size_t n = 0;
+        if (misses) {
+            if (s->waiting)
+                n = take(s, pcs, &taken, &queue, LIVE, LIVE);
+            else if (s->queues[LIVE].count)
+                cond_signal(&s->work); /* nobody waits for these any more: a compile thread's */
+        } else if (s->waiting && s->miss_ready && !s->miss_busy && s->queues[LIVE].count) {
+            cond_signal(&s->miss); /* a thread waits and the miss thread is free: the misses are that thread's */
+            n = take(s, pcs, &taken, &queue, WARM, WARM);
+        } else
+            n = take(s, pcs, &taken, &queue, LIVE, WARM);
         if (!n) {
             if (!s->busy) cond_broadcast(&s->idle);
-            cond_wait(&s->work, &s->lock);
+            cond_wait(misses ? &s->miss : &s->work, &s->lock);
             continue;
         }
         ++s->busy;
+        if (misses) s->miss_busy = 1;
         if (s->queues[LIVE].count || s->queues[WARM].count) cond_signal(&s->work);
         unlock(&s->lock);
         qsort(pcs, n, sizeof(*pcs), snx_compare_u64);
         compile(s, pcs, n, taken, queue);
         lock(&s->lock);
         --s->busy;
+        if (misses) s->miss_busy = 0;
+    }
+    if (misses) { /* it takes no batch any more: every miss is the compile threads' from here */
+        s->miss_ready = 0;
+        cond_broadcast(&s->work);
     }
     if (!s->busy) cond_broadcast(&s->idle);
     unlock(&s->lock);
@@ -1264,11 +1316,15 @@ static void worker(SnxJitService* s) {
 
 #ifdef _WIN32
 static DWORD WINAPI worker_main(LPVOID s) {
-    worker((SnxJitService*)s);
+    worker((SnxJitService*)s, 0);
     return 0;
 }
-static int thread_start(JitThread* t, SnxJitService* s) {
-    *t = snx_compile_thread(worker_main, s);
+static DWORD WINAPI miss_main(LPVOID s) {
+    worker((SnxJitService*)s, 1);
+    return 0;
+}
+static int thread_start(JitThread* t, SnxJitService* s, int misses) {
+    *t = snx_compile_thread(misses ? miss_main : worker_main, s);
     return *t ? 0 : -1;
 }
 static void thread_join(JitThread t) {
@@ -1277,11 +1333,15 @@ static void thread_join(JitThread t) {
 }
 #else
 static void* worker_main(void* s) {
-    worker((SnxJitService*)s);
+    worker((SnxJitService*)s, 0);
     return NULL;
 }
-static int thread_start(JitThread* t, SnxJitService* s) {
-    int failed = snx_compile_thread(t, worker_main, s);
+static void* miss_main(void* s) {
+    worker((SnxJitService*)s, 1);
+    return NULL;
+}
+static int thread_start(JitThread* t, SnxJitService* s, int misses) {
+    int failed = snx_compile_thread(t, misses ? miss_main : worker_main, s);
     if (failed) errno = failed; /* the reason, for what the caller says */
     return failed ? -1 : 0;
 }
@@ -1295,7 +1355,10 @@ int snx_jit_covers(const SnxJitService* s, SnxU64 pc) {
     return in_text(s, pc) || (r && r != &s->regions[0]);
 }
 
-GuestFn snx_jit_resolve(SnxJitService* s, SnxU64 pc) {
+/* snx_jit_resolve. waits: the caller is snx_jit_wait, which waits when this gives no code. Where this took the lock, it
+   counts the thread in s->waiting under it and says so in *waits: no compile thread sees the pc queued before it sees
+   the thread waiting */
+static GuestFn resolve(SnxJitService* s, SnxU64 pc, int* waits) {
     GuestFn code = NULL;
     Region* r = region_of(s, pc);
     /* an added image's table is the service's alone: its code is found here, without the lock (the main table's slot
@@ -1316,9 +1379,16 @@ GuestFn snx_jit_resolve(SnxJitService* s, SnxU64 pc) {
             e->state = FAILED; /* in no queue: memory ran out */
     } else if (e->state == DONE)
         code = e->code;
+    if (waits && !code) {
+        ++s->waiting;
+        *waits = 1;
+        cond_signal(&s->miss);
+    }
     unlock(&s->lock);
     return code;
 }
+
+GuestFn snx_jit_resolve(SnxJitService* s, SnxU64 pc) { return resolve(s, pc, NULL); }
 
 size_t snx_jit_warm(SnxJitService* s, const SnxU64* pcs, size_t count) {
     size_t queued = 0;
@@ -1348,9 +1418,11 @@ void snx_jit_drain(SnxJitService* s) {
 }
 
 GuestFn snx_jit_wait(SnxJitService* s, SnxU64 pc) {
-    GuestFn code = snx_jit_resolve(s, pc); /* queued in the live misses' queue, if it wasn't */
+    int counted = 0;
+    GuestFn code = resolve(s, pc, &counted); /* queued in the live misses' queue, if it wasn't */
     if (code) return code;
     lock(&s->lock);
+    if (!counted) ++s->waiting;
     for (;;) {
         /* found again each time: the table moves when it grows */
         Entry* e = find(s, pc);
@@ -1361,15 +1433,18 @@ GuestFn snx_jit_wait(SnxJitService* s, SnxU64 pc) {
         }
         if (e->state == QUEUED_WARM || e->state == GONE) { /* in the warm queue only, or invalidated: queued to compile */
             unlock(&s->lock);
-            if ((code = snx_jit_resolve(s, pc)) != NULL) return code;
+            code = snx_jit_resolve(s, pc);
             lock(&s->lock);
+            if (code) break;
             /* resolve queues a gone pc the images still hold; one they don't any more stays gone: uncompilable */
             e = find(s, pc);
             if (!e || e->state == GONE) break;
             continue;
         }
+        cond_signal(&s->miss); /* the pc may have been queued before this thread waited for it */
         cond_wait(&s->done, &s->lock);
     }
+    --s->waiting;
     unlock(&s->lock);
     return code;
 }
@@ -1603,8 +1678,9 @@ static unsigned usable_cpus(void) {
     return snx_cpu_count();
 }
 /* the compile threads when the config leaves it open: every CPU the process may use but two, from one up to
-   SNX_JIT_THREADS. They run below the game's threads (compile_thread lowers their priority), so a compile only gets a
-   CPU the guest threads, the GPU thread and audio leave idle. Keeping six CPUs for the game left one compile thread on
+   SNX_JIT_THREADS. They run below the game's threads (thread_priority), so a compile only gets a CPU the guest
+   threads, the GPU thread and audio leave idle; the miss thread is not one of them and takes no CPU from the game: it
+   compiles while the thread it compiles for waits. Keeping six CPUs for the game left one compile thread on
    hosts with up to 7 CPUs and two on 8, which fell minutes behind Ender Magnolia's misses */
 static unsigned default_threads(void) {
     unsigned cpus = usable_cpus();
@@ -1668,12 +1744,13 @@ SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size
     lock_init(&s->lock);
     lock_init(&s->load_lock);
     cond_init(&s->work);
+    cond_init(&s->miss);
     cond_init(&s->idle);
     cond_init(&s->released);
     cond_init(&s->done);
     size_t i;
     for (i = 0; i < s->config.threads; ++i)
-        if (thread_start(&s->threads[i], s)) break;
+        if (thread_start(&s->threads[i], s, 0)) break;
     s->stats.threads = (unsigned)i;
     if (!i) {
         char why[256];
@@ -1681,6 +1758,18 @@ SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size
         snx_jit_service_free(s);
         return NULL;
     }
+    /* ready before it runs, so that a miss waited for from the first moment is its own; were it not to start, the
+       service ends here */
+    lock(&s->lock);
+    s->miss_ready = 1;
+    unlock(&s->lock);
+    if (thread_start(&s->miss_thread, s, 1)) {
+        char why[256];
+        snprintf(error, error_size, "cannot start the miss thread: %s", snx_os_error(why, sizeof why));
+        snx_jit_service_free(s);
+        return NULL;
+    }
+    s->miss_started = 1;
     return s;
 }
 
@@ -1689,8 +1778,10 @@ void snx_jit_service_free(SnxJitService* s) {
     lock(&s->lock);
     s->stop = 1;
     cond_broadcast(&s->work);
+    cond_broadcast(&s->miss);
     unlock(&s->lock);
     for (unsigned i = 0; i < s->stats.threads; ++i) thread_join(s->threads[i]);
+    if (s->miss_started) thread_join(s->miss_thread);
     cache_close(&s->cache);
     snx_code_loader_free(s->loader);
     for (size_t i = 0; i < s->span_count; ++i) free(s->spans[i].leaders);
@@ -1713,6 +1804,7 @@ void snx_jit_service_free(SnxJitService* s) {
         }
     }
     cond_free(&s->work);
+    cond_free(&s->miss);
     cond_free(&s->idle);
     cond_free(&s->released);
     cond_free(&s->done);

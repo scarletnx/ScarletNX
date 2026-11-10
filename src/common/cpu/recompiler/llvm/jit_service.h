@@ -15,6 +15,13 @@
    compile threads are host threads: none is a guest thread or holds a guest core, so a compile never delays another
    guest thread's turn on its core.
 
+   The compile threads run below the guest threads, so that a compile takes a CPU the game leaves idle. A guest thread
+   that waits in snx_jit_wait is not served by them while the miss thread is free: that one thread more keeps the
+   priority the process's threads start with and compiles only misses, and only while a thread waits for one, so on a
+   host with no idle CPU the waiting thread's compile is scheduled as the thread itself would be. A host thread can't
+   raise its own priority back without a privilege, which is why the role is a thread's for good. While the miss
+   thread compiles, the compile threads take the other misses, waited for or not.
+
    Two queues: the pcs guest threads missed, and the warm start's (snx_jit_warm, the pcs earlier runs missed), taken
    only while no miss waits and in smaller batches, so a miss that arrives behind a warm batch waits less. A pc is in
    the service's table once (queued, compiling, compiled or failed), so it is compiled once by the queue, though two
@@ -63,6 +70,15 @@ typedef struct {
     int dropped;       /* guest memory changed while it compiled: nothing published, its pcs queued again */
 } SnxJitReport;
 
+/* one thread of the service, once, as it starts (config.thread) */
+typedef struct {
+    int misses;        /* the miss thread; 0: a compile thread */
+    unsigned index;    /* which compile thread, from 0 */
+    const char* scale; /* what priority and asked count in ("nice"); NULL on a host where the service sets none */
+    int priority;      /* the thread's, read back from the host */
+    int asked;         /* what the service wanted for it: not priority when the host refused */
+} SnxJitThread;
+
 typedef struct {
     /* the guest code the JIT may compile: images[i].image is the guest memory at images[i].base, readable for as long
        as the service lives. A pc outside their text is refused */
@@ -85,10 +101,13 @@ typedef struct {
     size_t batch;     /* 0: SNX_JIT_BATCH */
     size_t region_instructions; /* 0: adaptive REGION/OVERFLOW limits above; SIZE_MAX: previous unbounded discovery */
     size_t live_budget; /* 0: SNX_JIT_LIVE_BUDGET, SIZE_MAX: use budget for live misses too */
-    unsigned threads; /* compile threads, 0: by the host's CPUs (jit_service.c), at most SNX_JIT_THREADS */
+    /* compile threads, 0: by the host's CPUs (jit_service.c), at most SNX_JIT_THREADS. The miss thread is one more */
+    unsigned threads;
     char opt;         /* the -O letter, 0: '0' */
     /* after each batch, on its compile thread, outside every lock of the service (NULL: none) */
     void (*report)(const SnxJitReport* report);
+    /* once on each thread of the service as it starts, outside every lock of the service (NULL: none) */
+    void (*thread)(const SnxJitThread* thread);
     /* the JIT's cache (NULL: none): every unit compiled is appended to this file, and a later run loads a unit again
        instead of compiling it when the code it was compiled from is the same, byte for byte, and the file was written
        by the same ABI, IR object version, target triple, LLVM, runtime library, host CPU and settings */
@@ -96,7 +115,7 @@ typedef struct {
 } SnxJitConfig;
 
 /* NULL with the reason in error: no code arena, a host the loader doesn't support (Windows before 10 1803), entries out of
-   order, no compile thread. The config's arrays are used where they are */
+   order, no compile thread, no miss thread. The config's arrays are used where they are */
 SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size_t error_size);
 /* Stops the compile threads, after the batches they are compiling. Nothing may run the service's code any more */
 void snx_jit_service_free(SnxJitService* service);
@@ -135,7 +154,7 @@ typedef struct {
     unsigned long cached; /* units loaded from the cache instead of compiled */
     size_t bytes;         /* of the arena, the runtime library's copy included */
     double seconds;       /* compiling, summed over the compile threads */
-    unsigned threads;
+    unsigned threads;     /* compile threads, the miss thread apart */
 } SnxJitStats;
 void snx_jit_stats(SnxJitService* service, SnxJitStats* stats);
 

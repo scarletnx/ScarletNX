@@ -26,6 +26,12 @@
 #else
 #include <sched.h>
 #endif
+#ifdef __linux__
+#include <errno.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 #define MEMORY     0x40000
 #define CODE_LO    0x1000
@@ -94,9 +100,24 @@ static void undef(CPU* c, u64 pc, u32 w) {
     fprintf(stderr, "undefined instruction %08x at %llx\n", w, (unsigned long long)pc);
     __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
 }
+#ifdef __linux__
+/* the nice value of the thread that compiled the batch whose first pc is nice_pc (NICE_UNSEEN: no such batch yet) */
+#define NICE_UNSEEN 1000
+static SnxU64 nice_pc;
+static int nice_seen = NICE_UNSEEN;
+static int thread_nice(void) {
+    errno = 0;
+    int nice = getpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid));
+    return nice == -1 && errno ? NICE_UNSEEN : nice;
+}
+#endif
 /* on a compile thread */
 static void report(const SnxJitReport* r) {
     unsigned i = __atomic_fetch_add(&batch_count, 1, __ATOMIC_RELAXED), unset = ~0u;
+#ifdef __linux__
+    if (r->pc == __atomic_load_n(&nice_pc, __ATOMIC_RELAXED))
+        __atomic_store_n(&nice_seen, thread_nice(), __ATOMIC_RELAXED);
+#endif
     if (get(0x3800)) __atomic_compare_exchange_n(&live_batch, &unset, i, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
     if (r->error) {
         fprintf(stderr, "jit: %llx: %s\n", (unsigned long long)r->pc, r->error);
@@ -726,6 +747,39 @@ static void test_region_limit(int benchmark) {
     region_limit = discovery_budget = 0;
 }
 
+/* A miss a thread waits for is compiled at that thread's priority, a warm batch below it: on a host with no idle CPU a
+   compile thread at nice 10 got its turn long after the game's threads, the one waiting for it among them */
+static void test_waited_priority(void) {
+#ifdef __linux__
+    static const SnxU64 warm[] = {0x2800};
+    int mine = thread_nice();
+    if (mine >= 10) { /* the compile threads stay where the test already is, so the two would not differ */
+        printf("waited priority: not checked, the test runs at nice %d\n", mine);
+        return;
+    }
+    cache_path = NULL; /* a unit loaded from a cache has no report */
+    SnxJitService* s = start(0, 2);
+    CHECK(s != NULL);
+    if (!s) return;
+    __atomic_store_n(&nice_seen, NICE_UNSEEN, __ATOMIC_RELAXED);
+    __atomic_store_n(&nice_pc, 0x3400, __ATOMIC_RELAXED);
+    CHECK(snx_jit_wait(s, 0x3400) != NULL);
+    snx_jit_drain(s); /* the report comes after the batch's pcs are published */
+    int waited = __atomic_load_n(&nice_seen, __ATOMIC_RELAXED);
+    __atomic_store_n(&nice_seen, NICE_UNSEEN, __ATOMIC_RELAXED);
+    __atomic_store_n(&nice_pc, warm[0], __ATOMIC_RELAXED);
+    CHECK(snx_jit_warm(s, warm, 1) == 1);
+    snx_jit_drain(s);
+    int background = __atomic_load_n(&nice_seen, __ATOMIC_RELAXED);
+    __atomic_store_n(&nice_pc, 0, __ATOMIC_RELAXED);
+    printf("waited priority: the test at nice %d, the waited miss compiled at nice %d, the warm batch at nice %d\n",
+           mine, waited, background);
+    CHECK(waited == mine);
+    CHECK(background == 10);
+    snx_jit_service_free(s);
+#endif
+}
+
 int main(int argc, char** argv) {
     int benchmark = argc == 2 && !strcmp(argv[1], "--region-bench");
     if (argc > 1 && !benchmark) return 2;
@@ -925,6 +979,7 @@ int main(int argc, char** argv) {
     test_invalidate_in_flight();
     test_image_map();
     test_region_limit(0);
+    test_waited_priority();
     free(memory);
     if (failures) return 1;
     printf("jit service: passed\n");
