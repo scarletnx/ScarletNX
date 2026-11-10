@@ -27,7 +27,6 @@ struct AgbHost {
     SnxPadMap pad;
     uint16_t keyboard, buttons; /* the keys the keyboard and the gamepads hold */
     uint64_t due;               /* when the next frame goes on screen, SDL_GetTicksNS's */
-    uint64_t quit_armed_ns;     /* the second Esc, before this, quits: a first one only warns (#1168) */
 };
 
 uint16_t agb_host_key(int scancode) {
@@ -149,18 +148,6 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED: open = false; break;
             case SDL_EVENT_GAMEPAD_ADDED: SDL_OpenGamepad(event.gdevice.which); break;
             case SDL_EVENT_KEY_DOWN:
-                /* #1168: Escape twice within three seconds quits, as on the Switch; a first press only warns */
-                if (event.key.key == SDLK_ESCAPE && !event.key.repeat &&
-                    !(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
-                    uint64_t now = SDL_GetTicksNS();
-                    if (host->quit_armed_ns && now < host->quit_armed_ns) {
-                        open = false;
-                        break;
-                    }
-                    host->quit_armed_ns = now + 3000000000ull;
-                    fprintf(stderr, "Press Esc again to quit\n");
-                    break;
-                }
                 if (event.key.scancode == SDL_SCANCODE_F11 && !event.key.repeat)
                     SDL_SetWindowFullscreen(host->window, !(SDL_GetWindowFlags(host->window) & SDL_WINDOW_FULLSCREEN));
                 host->keyboard |= agb_host_key(event.key.scancode);

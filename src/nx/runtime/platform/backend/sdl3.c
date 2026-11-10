@@ -61,10 +61,6 @@ static u64 g_menu_held_extra[SNX_GAMEPADS - 1];
 static int g_fullscreen;
 static void set_fullscreen(int on);
 static int g_shot_req;
-/* two quick presses of the quit key, as #1168's Escape asks twice: the first warns, the second within this window
-   quits, so a stray key on the way to the game cannot close it */
-#define QUIT_ARM_NS (3ull * 1000000000ull)
-static u64 g_quit_armed_ns; /* the second press of the quit key, before this, quits */
 /* SDL's text input for the keyboard's box (overlay.h): the box it is on for (0: off), the system's keyboard asked for
    again (a tap on the box's line), and the box's line SDL was last given, in window points */
 static struct {
@@ -1064,23 +1060,6 @@ static void hotkey(int action) {
                 LOG("showcase: off\n");
             break;
         }
-        case HOTKEY_TV_MODE: { /* #1168's docked_key: On, Off and Auto, with the mode the .ini starts with */
-            char text[128];
-            int choice = options_tv_mode_step(1);
-            if (choice == 2) {
-                int on = options_tv_mode_on_charger(); /* the read the step made, not a second one */
-                snprintf(text, sizeof text, "TV mode: Auto (%s, %s)", snx_tv_mode() ? "TV mode" : "handheld mode",
-                         on > 0    ? "on the charger"
-                         : on == 0 ? "on the battery"
-                                   : "power state not readable");
-            } else {
-                snprintf(text, sizeof text, "TV mode: %s", choice ? "On" : "Off");
-            }
-            ui_lock();
-            overlay_toast(text, plat_ns());
-            ui_unlock();
-            break;
-        }
         case HOTKEY_SAVE_STATE: state_ask(STATE_SAVE, -1); break;
         case HOTKEY_LOAD_STATE: state_ask(STATE_LOAD, -1); break;
         case HOTKEY_NEXT_SLOT: state_slot_next(); break;
@@ -1105,21 +1084,7 @@ static void hotkey(int action) {
             break;
         case HOTKEY_CAPTURE: g_renderer->capture(1); break;
         case HOTKEY_MOUSE: mouse_let_go(); break;
-        case HOTKEY_QUIT: { /* #1168: ask twice, so a stray key on the way to the game cannot close it */
-            u64 now = plat_ns();
-            if (g_quit_armed_ns && now < g_quit_armed_ns) {
-                g_quit = 1;
-            } else {
-                char text[96];
-                g_quit_armed_ns = now + QUIT_ARM_NS;
-                snprintf(text, sizeof text, "Press %s again to quit", hotkey_text(HOTKEY_QUIT));
-                ui_lock();
-                overlay_toast(text, now);
-                ui_unlock();
-                LOG("%s\n", text);
-            }
-            break;
-        }
+        case HOTKEY_QUIT: g_quit = 1; break;
         default: break;
     }
 }
@@ -1221,12 +1186,8 @@ static int menu_event(const SDL_Event* e, int action) {
         switch (e->key.key) {
             case SDLK_UP: overlay_move(-1); break;
             case SDLK_DOWN: overlay_move(1); break;
-            case SDLK_LEFT: /* a held arrow cycles the TV mode at the repeat rate: one press for it */
-                if (!e->key.repeat || !overlay_tv_mode_focused()) overlay_do(overlay_side(-1));
-                break;
-            case SDLK_RIGHT:
-                if (!e->key.repeat || !overlay_tv_mode_focused()) overlay_do(overlay_side(1));
-                break;
+            case SDLK_LEFT: overlay_do(overlay_side(-1)); break;
+            case SDLK_RIGHT: overlay_do(overlay_side(1)); break;
             case SDLK_RETURN:
             case SDLK_SPACE:
                 if (!e->key.repeat) overlay_do(overlay_select());
