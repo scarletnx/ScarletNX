@@ -130,8 +130,6 @@ VkPipeline vk_pipeline_wait(VkPipeline h, i64 ns, int* pending) {
     *pending = 0;
     return h;
 }
-/* and pipeline_wait's frame budget (common/gpu/vk/vk_common.c, not here), which no pipeline here waits within */
-int64_t snx_vk_pipeline_budget(uint64_t period_ns) { return (int64_t)(period_ns / 2); }
 /* cmd.c reads the frame's GPU timestamps for gpuprof.c, which isn't here */
 void vk_gpuprof_frame_done(u32 slot) { (void)slot; }
 void vk_gpuprof_cb_begin(VkCommandBuffer cb) { (void)cb; }
