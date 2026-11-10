@@ -48,6 +48,8 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
     list(APPEND snx_rtlib_flags -mno-outline-atomics)
 endif()
 if(WIN32)
+    # no __chkstk, which the module doesn't link: the library's own frames stay under a page (its snx_stack_probe is
+    # for the generated functions' larger ones)
     list(APPEND snx_rtlib_flags -mno-stack-arg-probe)
 else()
     list(APPEND snx_rtlib_flags -fPIC)
