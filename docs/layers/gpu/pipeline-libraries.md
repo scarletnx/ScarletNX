@@ -190,7 +190,7 @@ So the GPL path makes every graphics layout with `INDEPENDENT_SETS`:
   (VUID-VkGraphicsPipelineCreateInfo-flags-06729 and 06730).
 
 All three have the same push constant range, as the push constant VUIDs (06620, 06621) need. The null-set layouts
-come from a second table beside `g_playouts`, keyed by the part (PR or FS) and the bits of the part. That is 16 PR
+come from a second table beside `g_pipeline.playouts`, keyed by the part (PR or FS) and the bits of the part. That is 16 PR
 layouts and 2 FS layouts at most.
 
 Vulkan calls two layouts compatible for set N only when both or neither have `INDEPENDENT_SETS`. Thus the binds of
@@ -246,21 +246,21 @@ the other parts.
 
 The caches:
 
-- One table of `PipeLib` entries for the four parts, in `g_plib` in `pipeline.c`. The parts share the workers, their
+- One table of `PipeLib` entries for the four parts, in `g_pipeline.plib` in `pipeline.c`. The parts share the workers, their
   queues and their lock with the whole pipelines, so they stay in the same file. The pure functions (the choice, the
   split, the dynamic state lists) are in `pipeline_parts.c`, which the test compiles alone. An entry holds the part's
-  key, its hash, the `VkPipeline` of the library and its state (to make, being made, made, under `g_pj_lock`).
+  key, its hash, the `VkPipeline` of the library and its state (to make, being made, made, under `g_pipeline.pj_lock`).
 - Each part is made from a whole key that holds its own state alone (`vk_pipe_part_src`), not from the key of the
   first pipeline that needed it. So one part has one create info, and a part made without a draw is the one that a
   draw makes.
-- The GPU thread and the reading thread of the pipeline file both add entries, under the lock `g_plib.lock`. A
-  worker or the GPU thread that needs a part makes it, or waits on `g_pj_done` while another thread makes it.
+- The GPU thread and the reading thread of the pipeline file both add entries, under the lock `g_pipeline.plib.lock`. A
+  worker or the GPU thread that needs a part makes it, or waits on `g_pipeline.pj_done` while another thread makes it.
 - The library pipelines live as long as the run, as the shader modules and the pipelines do now. A count is
   thousands of PR and FS parts at most, and tens of VI and FO parts.
 - `Pipe` gets pointers to its four parts, the `fast` pipeline (the link) and an `opt` flag. `Pipe.p` stays as "the
   best one now", for the code that reads it, with atomic loads and stores.
 
-PR and FS parts use `g_pcache`, so the driver keeps their compiled code across runs in `vk_pipelines.bin`. VI and FO
+PR and FS parts use `g_pipeline.pcache`, so the driver keeps their compiled code across runs in `vk_pipelines.bin`. VI and FO
 parts and the links use no cache: they are cheap, and a link with LTO off gives no data worth a cache entry.
 
 ## The draw: link, then optimize
@@ -275,7 +275,7 @@ stand-in at its bind. Inside it, a new `Pipe` on the GPL path goes this way:
 3. When the PR and FS parts are ready, a worker links the four with `VkPipelineLibraryCreateInfoKHR`, with no
    `LINK_TIME_OPTIMIZATION` flag. This is the fast link. It sets `Pipe.fast` and the ready flag.
 4. The same worker then queues the optimized pipeline on a third queue, below the draws' queue and the file's queue.
-   It is the same link with `VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT`, into `g_pcache`. All parts are made
+   It is the same link with `VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT`, into `g_pipeline.pcache`. All parts are made
    with `VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT` (VUID-VkGraphicsPipelineCreateInfo-flags-06609).
    When it is done, it sets `Pipe.opt`.
 
@@ -317,7 +317,7 @@ So at startup the reading thread (`pf_load_pipe`) queues on the file's queue, in
 2. The link of each `PF_PIPE`, when its parts are ready.
 3. The optimized pipeline of each `PF_PIPE`, on the lowest queue.
 
-With warm caches, step 1 is a hit in `g_pcache` for each part, and step 3 a hit for each pipeline. The file key
+With warm caches, step 1 is a hit in `g_pipeline.pcache` for each part, and step 3 a hit for each pipeline. The file key
 (`pf_key`, `PF_GUEST_VERSION`) does not change, because a `PipeKey` keeps its meaning. A field that becomes 0 for
 dynamic state is set to 0 only in the part key, never in the record.
 
@@ -353,10 +353,10 @@ What the pass must guess for each part, from no draw:
 | transform feedback | none | the module differs, so a new translation |
 
 A part compile for 7,400 programs is a lot of driver time and driver memory. A 1.7 MB vertex program takes seconds.
-So the pass does not keep these parts. A worker makes each part into `g_pcache` and destroys it at once. This is
+So the pass does not keep these parts. A worker makes each part into `g_pipeline.pcache` and destroys it at once. This is
 the method that Fossilize uses to warm a driver cache. When a draw asks for the part later, its make is a hit in the
 cache. Its cost is the hash and the lookup, not the compile. The parts go on the lowest queue, behind the draws'
-work. They stop when the game exits, and `g_pcache` is saved by `vk_pipeline_save` as now.
+work. They stop when the game exits, and `g_pipeline.pcache` is saved by `vk_pipeline_save` as now.
 
 The module that a part needs must exist for the make. A worker makes a module from the SPIR-V of the ship record,
 makes the part, then destroys both. The draw's module later is a new `VkShaderModule` with the same SPIR-V. The
@@ -394,8 +394,8 @@ after it.
   compiles its own modules.
 - **Robustness**: `VkPipelineRobustnessCreateInfoEXT` with `vertexInputs` goes on every part and on the link. Then the
   vertex fetch is robust in whichever part the driver compiles it.
-- **The pipeline cache save**: `vk_pipeline_save` writes `g_pcache` after `PCACHE_QUIET_NS` with no new pipeline.
-  Part makes and optimized pipelines must also update `g_pcache_used` (`pcache_note`), so a save does not hold the
+- **The pipeline cache save**: `vk_pipeline_save` writes `g_pipeline.pcache` after `PCACHE_QUIET_NS` with no new pipeline.
+  Part makes and optimized pipelines must also update `g_pipeline.pcache_used` (`pcache_note`), so a save does not hold the
   cache's lock while a draw's part compiles.
 
 ## Without the extension
@@ -433,7 +433,7 @@ validation layer for times.
   In a capture, the sum and the largest "pipeline wait" are the stall. The `mcp__tracy__compare_captures` tool
   compares two captures.
 - **The stats line**: `vk_pipeline_stats` gets the parts made, their cache hits, the links, the link ms, and the
-  optimized pipelines made. The wait ms (`g_pipe_wait_ns`) is the number to compare.
+  optimized pipelines made. The wait ms (`g_pipeline.pipe_wait_ns`) is the number to compare.
 - **The stalls in each run**: the count of "pipeline wait" zones over 50 ms, and the largest. On the Ounce game with
   empty caches, the build before waits 6 to 10 s for each new pipeline of a large vertex program. The build after
   must wait that long only one time for each vertex program (its PR part), and only a link for each new state of it.
@@ -520,7 +520,7 @@ menus of an Ounce game under `--vk_validation=1` against the same run on feat/ou
    waits for a worker, and the setting `vk_pipeline_cache` for cold runs.
 7. `[vk] Warm the large shipped programs' parts into the pipeline cache`: the pass warms the part of each shipped
    program whose SPIR-V is 256 KiB or larger (step 8, below). One worker warms at a time (`WARM_WORKERS`), as the
-   optimized pipelines, and the parts are made into `g_pcache` and dropped, so a draw that meets the program later
+   optimized pipelines, and the parts are made into `g_pipeline.pcache` and dropped, so a draw that meets the program later
    hits the cache by the SPIR-V. A warm-up of every shipped program is still not done: the 7,403 programs would cost
    about 18 minutes of worker time in a first run (see [The warm-up of the shipped programs](#the-warm-up-of-the-shipped-programs-measured)).
 
@@ -541,7 +541,7 @@ menus of an Ounce game under `--vk_validation=1` against the same run on feat/ou
   would also need more EDS3 members on every device.
 - **No `INDEPENDENT_SETS`, with a key that holds both stages' array bits**. See [Layouts](#layouts): a vertex program
   would compile one time for each kind of fragment program that it meets.
-- **`VK_KHR_pipeline_binary` for the parts**. The device has it. But `g_pcache` and the driver's disk cache already
+- **`VK_KHR_pipeline_binary` for the parts**. The device has it. But `g_pipeline.pcache` and the driver's disk cache already
   keep the compiled parts. A binary format of our own would be a second cache to keep in step, with no gain shown.
   It can come back if the cache hit of a part costs too much (see the open questions).
 - **Skip a draw while its pipeline compiles**. It broke one game's menus and 190 edenprobe cases. A draw still never
@@ -575,7 +575,7 @@ licenses that the project can port (CLAUDE.md).
   do not say. Check the spec section of the flag, then the layer on a device without
   `attachmentFeedbackLoopDynamicState` (lavapipe, or the setting forced off in a scratch build).
 - **The cost of a cache hit for a 1.7 MB part**: the warm method of the shipped programs depends on it. Measure a
-  part make with a warm `g_pcache` on the Ounce game. If it is more than tens of milliseconds, keep the parts of the
+  part make with a warm `g_pipeline.pcache` on the Ounce game. If it is more than tens of milliseconds, keep the parts of the
   vertex programs alive instead, and measure the driver memory that they hold.
 - **The driver's cache key with a new module handle**: check that a part made from a new `VkShaderModule` with the same
   SPIR-V is a hit (the creation feedback's `APPLICATION_PIPELINE_CACHE_HIT` bit).
