@@ -27,8 +27,15 @@ mkdir "$work/pkg" # pacman's downloads, which it doesn't make a folder for
 sed "s#/etc/pacman.d/#$root/etc/pacman.d/#g" "$root/etc/pacman.conf" >"$work/pacman.conf"
 pacman-key --gpgdir "$root/etc/pacman.d/gnupg" --init
 pacman-key --gpgdir "$root/etc/pacman.d/gnupg" --populate-from "$root/usr/share/pacman/keyrings" --populate
-retry pacman --root "$root" --dbpath "$root/var/lib/pacman" --config "$work/pacman.conf" \
-    --gpgdir "$root/etc/pacman.d/gnupg" --cachedir "$work/pkg" --noscriptlet -Syu --noconfirm --needed $libraries
+pm() {
+    pacman --root "$root" --dbpath "$root/var/lib/pacman" --config "$work/pacman.conf" \
+        --gpgdir "$root/etc/pacman.d/gnupg" --cachedir "$work/pkg" --noscriptlet "$@"
+}
+retry pm -Sy --noconfirm
+# A port whose openssl is already 4 while some of its packages still link OpenSSL 3 refuses the upgrade unless its
+# openssl-3 comes along; a port still on OpenSSL 3 has no such package
+if pm -Si openssl-3 >/dev/null 2>&1; then libraries="$libraries openssl-3"; fi
+retry pm -Su --noconfirm --needed $libraries
 # without them CMake's first test link fails, its message deep in the configure's output
 ls "$root"/usr/lib/gcc/*/*/crtbeginS.o >/dev/null 2>&1 ||
     { echo "the system root has no GCC runtime (crtbeginS.o, libgcc) for Clang to link with" >&2; exit 1; }
