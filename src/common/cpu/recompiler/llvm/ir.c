@@ -81,6 +81,14 @@ static int ppc_cpu_vsx(const char* cpu, int little_endian) {
     return 0;
 }
 
+/* fsqrt in the CPU new_ir gives the target machine on a PowerPC64 host: every little-endian one, and a big-endian
+   one but NXP's e500 family and the baseline new_ir takes where LLVM names no CPU, which leaves it out */
+static int ppc_cpu_fsqrt(const char* cpu, int little_endian) {
+    if (little_endian) return 1;
+    return cpu && *cpu && strcmp(cpu, "generic") && strncmp(cpu, "e500", 4) && strcmp(cpu, "e5500") &&
+           strcmp(cpu, "e6500");
+}
+
 /* RISC-V's and LoongArch's: their objects go through the module's own linker (link_elf.c), which takes no relaxation */
 static int riscv_triple(const char* triple) { return !strncmp(triple, "riscv64", 7); }
 static int loongarch_triple(const char* triple) { return !strncmp(triple, "loongarch64", 11); }
@@ -183,6 +191,7 @@ int snx_ir_init(char* error, size_t error_size) {
     if (ppc && !snx_ir_host.ppc) {
         char *f = snx_ir_host_features(), *cpu = LLVMGetHostCPUName();
         snx_ir_host.ppc_vsx = has_feature(f, "vsx") || ppc_cpu_vsx(cpu, ppc_le);
+        snx_ir_host.ppc_fsqrt = ppc_cpu_fsqrt(cpu, ppc_le);
         LLVMDisposeMessage(f);
         LLVMDisposeMessage(cpu);
         snx_ir_host.ppc = 1;
@@ -278,8 +287,8 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
         return NULL;
     }
     /* -march=native -mtune=native, -fPIC (toolchain.c). Another triple gets its architecture's baseline: x86-64 with
-       CMPXCHG16B as rtlib is built, POWER8 on PowerPC64, rv64gc and LA64 below, anything else (AArch64) the generic CPU,
-       since an x86 CPU name crashes another target's instruction selection */
+       CMPXCHG16B as rtlib is built, big-endian PowerPC64's, rv64gc and LA64 below, anything else (AArch64, ppc64le's
+       POWER8) the generic CPU, since an x86 CPU name crashes another target's instruction selection */
     int ppc = !strncmp(triple, "powerpc64", 9) || !strncmp(triple, "ppc64", 5);
     if (!target_triple) {
         cpu = LLVMGetHostCPUName();
@@ -290,6 +299,22 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
     } else {
         cpu = LLVMCreateMessage("generic");
         features = LLVMCreateMessage("");
+    }
+    /* big-endian PowerPC64 where LLVM names no CPU, a target triple's or a host whose /proc/cpuinfo names none it knows
+       (an e5500, qemu-user): every 64-bit PowerPC, as cmake/cross.cmake builds the runtime, and not LLVM's generic
+       ppc64, which is the 970's AltiVec, nor the square root and estimates the e5500 lacks */
+    if (ppc && strncmp(triple, "powerpc64le", 11) && strncmp(triple, "ppc64le", 7) &&
+        (!*cpu || !strcmp(cpu, "generic"))) {
+        static const char base[] = "-altivec,-fsqrt,-fres,-frsqrte,-frsqrtes,-fre,-stfiwx";
+        char* all = (char*)malloc(strlen(features) + sizeof(base) + 1);
+        if (all) {
+            sprintf(all, "%s%s%s", features, *features ? "," : "", base);
+            LLVMDisposeMessage(features);
+            features = LLVMCreateMessage(all);
+            free(all);
+        }
+        LLVMDisposeMessage(cpu);
+        cpu = LLVMCreateMessage("ppc64");
     }
     /* RISC-V and LoongArch: rv64gc and LA64 with double floats at least, as the runtime is built, so a module's float
        ABI (lp64d) is the runtime's whatever the host reports (qemu-user may report nothing), and no linker relaxation:
