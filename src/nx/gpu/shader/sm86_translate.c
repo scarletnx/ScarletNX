@@ -899,9 +899,10 @@ static void global_dynamic(Ctx* c, const Sm86Insn* in, int kind, u32 opcode, int
         }
     }
     int returns = kind == DYN_LOAD || (kind == DYN_ATOMIC && op != SM86_RED);
+    /* an atomic's data before its destination is cleared: they may be one register */
+    u32 data = kind == DYN_ATOMIC ? rd(c, sm86_field(in, 32, 8)) : 0;
     if (returns)
         for (u32 k = 0; k < words && in->dst + k < SM86_RZ; k++) wr(c, in->dst + k, c->zero);
-    u32 data = kind == DYN_ATOMIC ? rd(c, sm86_field(in, 32, 8)) : 0;
     /* the program's buffers, each key once, in the order of their first access, then the candidates of addresses
        that met */
     u32 keys[16], nkeys = 0;

@@ -2649,6 +2649,26 @@ static void test_global_table(const char* dir) {
     if (!ok) fprintf(stderr, "global table: %s, words %x %x %x\n", why ? why : "ran", a[0x42], a[0x43], a[0x44]);
     CHECK(keep_module(dir, "global_table", spv, count));
     free(spv);
+    /* the ATOMG's data and destination in one register (R5), as a count's increment that takes the old count has
+       them: it still adds the 3, and the STG after it puts the 10 it returns at word 0x44 */
+    put(code, 5, atomg_add(5, 2, 0xc, 5));
+    put(code, 6, stg_nou(2, 0x10, 5));
+    si = (ShaderInfo){0};
+    spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (spv) {
+        memset(log, 0, sizeof log);
+        a[0x43] = 10, a[0x44] = 0;
+        why = spv_eval(spv, count, &env);
+        ok = !why && a[0x43] == 13 && a[0x44] == 10;
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr,
+                    "global table, an ATOMG into its data's register: %s, the words hold %u and %u (13 and 10 "
+                    "wanted)\n",
+                    why ? why : "ran", a[0x43], a[0x44]);
+        free(spv);
+    }
     u32 vsph[32] = {0};
     vsph[0] = sph0(1, 1);
     si = (ShaderInfo){0};
