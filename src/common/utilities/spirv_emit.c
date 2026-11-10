@@ -87,7 +87,8 @@ static void put_str(SpvWords* s, const char* str) {
 }
 
 /* The hash tables below are kept at most half full on a power of two, and grow only as an entry joins one, so a
-   table's size follows from its count: 0 for none, else the power of two at least twice count, and least */
+   table's size follows from its count: 0 for none, else the power of two at least twice count, and least. Each keeps
+   its mask (the size less one, what a lookup takes) for a hit not to work the size out again; a miss does */
 static size_t table_size(size_t count, size_t least) {
     if (!count) return 0;
     size_t size = (size_t)1 << (64u - snx_clz64((uint64_t)(2 * count - 1)));
@@ -105,6 +106,7 @@ static size_t known_slot(uint64_t h, size_t size) { return (size_t)(h ^ h >> 29)
    size (a slot of the table's old size moves up by it, or not, and probing moved some past their own) */
 static void known_slots_resize(SpvEmitter* e, size_t count) {
     size_t size = table_size(count, KNOWN_SLOTS_LEAST);
+    e->known_mask = size - 1;
     uint32_t* slots = (uint32_t*)realloc(e->known_slots, size * sizeof *slots);
     if (!slots) abort();
     memset(slots, 0, size * sizeof *slots);
@@ -121,7 +123,7 @@ static void known_slots_resize(SpvEmitter* e, size_t count) {
 static uint32_t known(SpvEmitter* e, uint32_t op, size_t at, const uint32_t* operands, size_t count) {
     uint64_t h = SNX_FNV_BASIS ^ op;
     for (size_t i = 0; i < count; i++) h = snx_fnv_step(h, operands[i]);
-    size_t size = table_size(e->known_count, KNOWN_SLOTS_LEAST), slot = 0;
+    size_t size = e->known_count ? e->known_mask + 1 : 0, slot = 0;
     for (slot = size ? known_slot(h, size) : 0; size && e->known_slots[slot]; slot = (slot + 1) & (size - 1)) {
         const SpvKnown* k = &e->known[e->known_slots[slot] - 1];
         if (k->hash != h) continue;
@@ -404,10 +406,11 @@ static void constants_resize(SpvEmitter* e, size_t size, size_t grown) {
     free(e->constant_ids);
     e->constants = constants;
     e->constant_ids = ids;
+    e->constant_mask = grown - 1;
 }
 
 uint32_t spv_emit_constant_u32(SpvEmitter* e, uint32_t type, uint32_t value) {
-    size_t size = table_size(e->constant_count, CONSTANTS_LEAST), i = 0;
+    size_t size = e->constant_count ? e->constant_mask + 1 : 0, i = 0;
     for (i = size ? constant_slot(type, value, size) : 0; size && e->constants[i].id; i = (i + 1) & (size - 1))
         if (e->constants[i].type == type && e->constants[i].value == value) return e->constants[i].id;
     size_t grown = table_size(e->constant_count + 1, CONSTANTS_LEAST);
@@ -424,8 +427,8 @@ uint32_t spv_emit_constant_u32(SpvEmitter* e, uint32_t type, uint32_t value) {
 }
 
 int spv_emit_constant_bits(const SpvEmitter* e, uint32_t id, uint32_t* type, uint32_t* value) {
-    size_t size = table_size(e->constant_count, CONSTANTS_LEAST);
-    if (!size || !id) return 0;
+    if (!e->constant_count || !id) return 0;
+    size_t size = e->constant_mask + 1;
     for (size_t i = constant_slot(id, 0, size); e->constant_ids[i].id; i = (i + 1) & (size - 1))
         if (e->constant_ids[i].id == id) {
             *type = e->constant_ids[i].type;
@@ -721,12 +724,12 @@ static size_t nonuniform_slot(const uint32_t* set, size_t capacity, uint32_t id)
     return i;
 }
 static int is_nonuniform(const SpvEmitter* e, uint32_t id) {
-    size_t size = table_size(e->nonuniform_count, NONUNIFORM_LEAST);
+    size_t size = e->nonuniform_count ? e->nonuniform_mask + 1 : 0;
     return size && e->nonuniform[nonuniform_slot(e->nonuniform, size, id)] == id;
 }
 static void nonuniform(SpvEmitter* e, uint32_t id) {
     if (is_nonuniform(e, id)) return;
-    size_t size = table_size(e->nonuniform_count, NONUNIFORM_LEAST);
+    size_t size = e->nonuniform_count ? e->nonuniform_mask + 1 : 0;
     size_t grown = table_size(e->nonuniform_count + 1, NONUNIFORM_LEAST);
     if (grown != size) { /* the ids placed again in a new set: the set is all that holds them */
         uint32_t* set = (uint32_t*)calloc(grown, sizeof *set);
@@ -735,6 +738,7 @@ static void nonuniform(SpvEmitter* e, uint32_t id) {
             if (e->nonuniform[i]) set[nonuniform_slot(set, grown, e->nonuniform[i])] = e->nonuniform[i];
         free(e->nonuniform);
         e->nonuniform = set;
+        e->nonuniform_mask = grown - 1;
     }
     e->nonuniform[nonuniform_slot(e->nonuniform, grown, id)] = id;
     e->nonuniform_count++;

@@ -66,6 +66,9 @@ typedef struct {
     /* known's index: open addressing on a power of two, each slot an entry of known plus one (0 free), at most half
        full, so finding one asks a slot or two, not every type and constant made; its size follows from known_count */
     uint32_t* known_slots;
+    /* the masks of known_slots, the constants' tables and the NonUniform set: each one's size less one, set as it
+       grows (its count decides when), read only while its count is not 0 */
+    size_t known_mask, constant_mask, nonuniform_mask;
 } SpvEmitter;
 
 typedef enum {
