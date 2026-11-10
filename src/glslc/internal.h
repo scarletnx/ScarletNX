@@ -169,11 +169,11 @@ typedef struct {
 } GlslcName;
 #define GLSLC_NAME_BUCKETS 2048u
 
-#define GLSLC_MF_FUNCTION 1u  /* takes arguments */
-#define GLSLC_MF_SYNTH    2u  /* name is in the synthesized text: a predefined macro */
-#define GLSLC_MF_LINE     4u  /* __LINE__: the line it is used on */
-#define GLSLC_MF_DEAD     8u  /* #undef'd */
-#define GLSLC_MF_VERSION  16u /* __VERSION__: the version #version set */
+#define GLSLC_MF_FUNCTION   1u  /* takes arguments */
+#define GLSLC_MF_PREDEFINED 2u  /* a predefined macro, which #define and #undef refuse */
+#define GLSLC_MF_LINE       4u  /* __LINE__: the line it is used on */
+#define GLSLC_MF_DEAD       8u  /* #undef'd */
+#define GLSLC_MF_VERSION    16u /* __VERSION__: the version #version set */
 
 typedef struct {
     GlslcView name;

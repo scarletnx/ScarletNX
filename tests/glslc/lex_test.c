@@ -235,11 +235,13 @@ static void bounds(void) {
     n = (size_t)snprintf(big, sizeof g_lex_test.big, "#version 300 es\n");
     for (uint32_t i = 0; i < 257; i++) n += (size_t)snprintf(big + n, sizeof g_lex_test.big - n, "#line %u\n", i + 10);
     expect_error(SNX_GLSLC_FRAGMENT, big, n, 265, 1, "more than the 256 #line directives"); /* numbered by the last */
-    /* macro definitions */
+    /* macro definitions: the predefined macros count once the shader reads them, GL_ES here */
     n = (size_t)snprintf(big, sizeof g_lex_test.big, "#version 300 es\n");
     for (uint32_t i = 0; i < 520; i++) n += (size_t)snprintf(big + n, sizeof g_lex_test.big - n, "#define M%u\n", i);
-    expect_error(SNX_GLSLC_FRAGMENT, big, n, 2 + SNX_GLSLC_MAX_MACROS - 1 - 5 - glslc_extension_count, 9,
-                 "more than the 511 macros");
+    expect_error(SNX_GLSLC_FRAGMENT, big, n, 2 + SNX_GLSLC_MAX_MACROS - 1, 9, "more than the 511 macros");
+    n = (size_t)snprintf(big, sizeof g_lex_test.big, "#version 300 es\n#ifdef GL_ES\n#endif\n");
+    for (uint32_t i = 0; i < 520; i++) n += (size_t)snprintf(big + n, sizeof g_lex_test.big - n, "#define M%u\n", i);
+    expect_error(SNX_GLSLC_FRAGMENT, big, n, 4 + SNX_GLSLC_MAX_MACROS - 2, 9, "more than the 511 macros");
 }
 
 int main(void) {

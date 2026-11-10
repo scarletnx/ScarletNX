@@ -89,7 +89,7 @@ shader needed (`the shader has 32769 tokens after preprocessing, more than the 3
 | `SNX_GLSLC_MAX_SOURCE` | 65535 | bytes of source |
 | `SNX_GLSLC_MAX_TOKENS` | 32768 | tokens after preprocessing |
 | `SNX_GLSLC_MAX_NODES` | 32768 | syntax nodes; no construct makes more than it has tokens |
-| `SNX_GLSLC_MAX_MACROS` | 512 | macros, the predefined ones included |
+| `SNX_GLSLC_MAX_MACROS` | 512 | macros, the predefined ones the shader reads included |
 | `SNX_GLSLC_MAX_NAMES` | 8192 | distinct names the preprocessor reads, the predefined macros' included |
 | `SNX_GLSLC_MAX_MACRO_TOKENS` | 8192 | tokens of every macro's parameters and body |
 | `SNX_GLSLC_MAX_EXPANSION` | 4096 | tokens one macro use expands to |
