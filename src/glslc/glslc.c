@@ -27,7 +27,7 @@ static size_t place(size_t* at, size_t count, size_t size) {
 }
 
 typedef struct {
-    size_t source, synth, toks, macros, interned, mtoks, exp, marks, nodes, types, members, syms, sym_hash, params, calls, walk;
+    size_t source, synth, toks, macros, interned, mtoks, exp, marks, nodes, types, members, syms, params, calls, walk;
     size_t type_ids, sym_ids, sym_types, sampler_ids, hash, hash_used, hash_back, stack;
     size_t caps, imports, entry, modes, names, annotations, globals, functions, locals, body;
     size_t total;
@@ -47,7 +47,6 @@ static void layout(Layout* l) {
     l->types = place(&at, SNX_GLSLC_MAX_TYPES, sizeof(GlslcType));
     l->members = place(&at, SNX_GLSLC_MAX_MEMBERS, sizeof(GlslcMember));
     l->syms = place(&at, SNX_GLSLC_MAX_SYMBOLS, sizeof(GlslcSymbol));
-    l->sym_hash = place(&at, GLSLC_SYM_BUCKETS, sizeof(uint16_t));
     l->params = place(&at, SNX_GLSLC_MAX_PARAMS, sizeof(GlslcParam));
     l->calls = place(&at, SNX_GLSLC_MAX_CALLS, sizeof(GlslcCall));
     l->walk = place(&at, (size_t)SNX_GLSLC_MAX_SYMBOLS * 3u, sizeof(uint16_t));
@@ -159,6 +158,7 @@ Glslc* glslc_open(void* memory, size_t memory_size, GlslcStage stage, const char
     g->macros = (GlslcMacro*)(void*)(block + l.macros);
     g->nmacros = 1; /* 0 is no macro */
     g->names = (GlslcName*)(void*)(block + l.interned);
+    memset(&g->names[0], 0, sizeof g->names[0]);
     g->nnames = 1; /* 0 is no name */
     g->mtoks = (GlslcToken*)(void*)(block + l.mtoks);
     g->exp = (GlslcToken*)(void*)(block + l.exp);
@@ -173,8 +173,6 @@ Glslc* glslc_open(void* memory, size_t memory_size, GlslcStage stage, const char
     g->syms = (GlslcSymbol*)(void*)(block + l.syms);
     memset(&g->syms[0], 0, sizeof g->syms[0]);
     g->nsyms = 1;
-    g->sym_hash = (uint16_t*)(void*)(block + l.sym_hash);
-    memset(g->sym_hash, 0, GLSLC_SYM_BUCKETS * sizeof(uint16_t));
     g->params = (GlslcParam*)(void*)(block + l.params);
     g->calls = (GlslcCall*)(void*)(block + l.calls);
     g->walk = (uint16_t*)(void*)(block + l.walk);
@@ -275,18 +273,27 @@ void glslc_warn(Glslc* g, uint32_t site, const char* fmt, ...) {
     if (g->result->warnings == 0) g->result->warnings = 0xffffu; /* the count stops at its largest */
 }
 
+/* the 8 bytes at p as a number, the first in the low byte: the same number on any host, and one load on a
+   little-endian one */
+static uint64_t bytes8(const char* p) {
+    const unsigned char* b = (const unsigned char*)p;
+    return (uint64_t)b[0] | (uint64_t)b[1] << 8 | (uint64_t)b[2] << 16 | (uint64_t)b[3] << 24 | (uint64_t)b[4] << 32 |
+           (uint64_t)b[5] << 40 | (uint64_t)b[6] << 48 | (uint64_t)b[7] << 56;
+}
+
+/* text's hash, 8 bytes a step (the last ones padded with zeros), then mixed (the finalizer of MurmurHash3) */
 uint32_t glslc_hash(const char* text, uint32_t len) {
-    uint32_t h = 2166136261u;
-    for (uint32_t i = 0; i < len; i++) h = (h ^ (unsigned char)text[i]) * 16777619u;
-    return h;
+    uint64_t h = (uint64_t)len * 0x9e3779b97f4a7c15ull, w = 0;
+    uint32_t i = 0;
+    for (; i + 8 <= len; i += 8) h = (h ^ bytes8(text + i)) * 0xff51afd7ed558ccdull;
+    for (uint32_t k = 0; i + k < len; k++) w |= (uint64_t)(unsigned char)text[i + k] << (8u * k);
+    h = (h ^ w) * 0xc4ceb9fe1a85ec53ull;
+    h ^= h >> 33;
+    return (uint32_t)h;
 }
 
 const char* glslc_view_text(const Glslc* g, GlslcView v) { return g->src + v.pos; }
 
 const char* glslc_token_text(const Glslc* g, const GlslcToken* t) {
     return (t->flags & GLSLC_TF_SYNTH) ? g->synth + t->text.pos : g->src + t->text.pos;
-}
-
-int glslc_views_equal(const Glslc* g, GlslcView a, GlslcView b) {
-    return a.len == b.len && !memcmp(g->src + a.pos, g->src + b.pos, a.len);
 }

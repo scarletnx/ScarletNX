@@ -159,8 +159,13 @@ typedef struct {
     uint16_t next;    /* the next name in its hash bucket */
     uint16_t macro;   /* the macro it names now, 0 for none */
     uint16_t keyword; /* glslc_keywords' row plus one, GLSLC_NAME_PLAIN, or 0 until looked up */
-    uint8_t flags;    /* GLSLC_NAME_* */
-    uint8_t pad;
+    /* the parser's: the innermost symbol of the name in scope (0 for none), and the first rows of
+       glslc_builtin_fns and glslc_builtin_vars with its text, plus one (the table's count plus one for none, 0
+       until looked up) */
+    uint16_t sym;
+    uint16_t builtin_fn;
+    uint8_t builtin_var;
+    uint8_t flags; /* GLSLC_NAME_* */
 } GlslcName;
 #define GLSLC_NAME_BUCKETS 2048u
 
@@ -263,7 +268,7 @@ typedef struct {
     uint8_t prec;
     uint8_t mflags;   /* GLSLC_MEM_* */
     int16_t location; /* in and out blocks' members: the one given, -1 without one */
-    uint16_t pad;
+    uint16_t key;     /* the name's index in g->names */
 } GlslcMember;
 
 /* symbols */
@@ -311,9 +316,9 @@ typedef struct {
     uint16_t node; /* variables: their declaration; functions: their definition (0 while only declared) */
     uint16_t aux;  /* functions: first parameter; block members: the block's symbol; built-ins: the table row */
     uint16_t aux2; /* functions: parameters; block members: the member */
-    uint16_t next; /* the next symbol in its hash bucket */
+    uint16_t next; /* the symbol of its name it hides, in scope again after it */
     int16_t location, binding, set; /* -1 without one */
-    uint16_t pad;
+    uint16_t key;                   /* the name's index in g->names, 0 for a symbol no name finds */
 } GlslcSymbol;
 
 typedef struct {
@@ -323,6 +328,8 @@ typedef struct {
     uint8_t prec;
     uint16_t qual;
     uint16_t sym; /* the parameter's symbol in the function's definition */
+    uint16_t key; /* the name's index in g->names, 0 for no name */
+    uint16_t pad;
 } GlslcParam;
 
 typedef struct {
@@ -688,9 +695,8 @@ typedef struct {
     uint32_t ntypes;
     GlslcMember* members;
     uint32_t nmembers;
-    GlslcSymbol* syms;
+    GlslcSymbol* syms; /* each name's innermost one is its g->names entry's sym */
     uint32_t nsyms;
-    uint16_t* sym_hash; /* GLSLC_SYM_BUCKETS heads */
     GlslcParam* params;
     uint32_t nparams;
     GlslcCall* calls;
@@ -722,7 +728,6 @@ typedef struct {
     /* the back end */
     GlslcEmitter e;
 } Glslc;
-#define GLSLC_SYM_BUCKETS 1024u
 
 /* glslc.c: a compilation in a workspace's memory, and its passes up to last (the tests stop after a pass to read its
    arrays). glslc_open refuses a workspace, stage, size or source glslc cannot take (NULL, and result->error) */
@@ -736,7 +741,6 @@ void glslc_locate(const Glslc* g, uint32_t site, uint32_t* line, uint32_t* colum
 uint32_t glslc_hash(const char* text, uint32_t len);
 const char* glslc_view_text(const Glslc* g, GlslcView v);
 const char* glslc_token_text(const Glslc* g, const GlslcToken* t);
-int glslc_views_equal(const Glslc* g, GlslcView a, GlslcView b);
 /* whether v is the n bytes at word: the lengths first, so most names differ without a byte read */
 static inline int glslc_view_is_n(const Glslc* g, GlslcView v, const char* word, uint32_t n) {
     return v.len == n && !memcmp(g->src + v.pos, word, n);
