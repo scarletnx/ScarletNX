@@ -254,7 +254,9 @@ def main():
                 raise AssertionError(f'missing {expected} in direct vertex shader')
         abs_code = disassemble(args.disassembler, abs_fragment)
         if 'FAbs' not in abs_code:
-            raise AssertionError('missing right-operand absolute value in FADD32I shader')
+            raise AssertionError('missing left-operand absolute value in FADD32I shader')
+        if not re.search(r'OpFAdd %float %\w+ %float_1\b', abs_code):
+            raise AssertionError('FADD32I with an absolute -1.0 immediate must add the constant 1.0')
         subgroup_code = disassemble(args.disassembler, subgroup)
         for expected in (
             'GroupNonUniformBallot',

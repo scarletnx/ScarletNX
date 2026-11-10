@@ -87,7 +87,8 @@ int main(int argc, char** argv) {
     memset(code, 0, sizeof code);
     code[9] = 15;
     code[10] = SCHED;
-    code[11] = FADD32I | (1ull << 57); /* right-operand absolute value needs GLSL.std.450 */
+    /* |r0| + |-1.0|: the register's absolute value needs GLSL.std.450, the immediate's is 1.0 as translated */
+    code[11] = FADD32I | (1ull << 54) | (1ull << 57) | (0xBF800000ull << 20);
     code[12] = EXIT;
     info = (ShaderInfo){0};
     spv = translate(code, ST_FS, &info, &words);

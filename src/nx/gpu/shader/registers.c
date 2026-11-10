@@ -12,7 +12,7 @@ void shader_var_flush(void* user) {
         if (!c->var_dirty[v]) continue;
         c->var_dirty[v] = 0;
         if (c->var_block[v] != c->emit.block) continue;
-        if (!c->var_val[v]) c->var_val[v] = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, c->reg_alt[v]);
+        if (!c->var_val[v]) c->var_val[v] = shader_cast(c, c->u32_type, c->reg_alt[v], c->reg_alt_type[v]);
         spv_emit_store(&c->emit, var_of(c, v), c->var_val[v]);
     }
 }

@@ -302,7 +302,12 @@ void emit_int(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         if (B(w, 40, 1)) value = spv_emit_unary(&c->emit, SPV_OP_NOT, c->u32_type, value);
         reg_write(c, d, spv_emit_unary(&c->emit, SPV_OP_BIT_COUNT, c->u32_type, value));
     } else if (op == O_MOV_R || op == O_MOV_C || op == O_MOV_I) {
-        if (B(w, 39, 4) == 1 || B(w, 39, 4) == 15) reg_write(c, d, shader_integer_right(c, w, op - O_MOV_R));
+        if (B(w, 39, 4) == 1 || B(w, 39, 4) == 15) {
+            if (op == O_MOV_R)
+                reg_copy(c, d, B(w, 20, 8));
+            else
+                reg_write(c, d, shader_integer_right(c, w, op - O_MOV_R));
+        }
     } else if (op == O_IADD32I) {
         u32 immediate = shader_u32(c, B(w, 20, 32));
         reg_write(c, d, shader_integer_add(c, reg_read(c, a), immediate, B(w, 55, 2), B(w, 53, 1), B(w, 52, 1)));
