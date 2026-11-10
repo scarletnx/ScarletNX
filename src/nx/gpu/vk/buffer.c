@@ -1802,11 +1802,17 @@ static void ww_publish(WwStage* st) {
     pm_unlock(&g_wres_lk);
     st->n = 0;
 }
+/* the scans since the last stats (vk_ww_stats), the scanner's [0] and the checks' [1]: leaves, and their time */
+static u64 g_wscan_leaves[2], g_wscan_ns[2]; /* atomic */
+static u64 g_wscan_skipped; /* the leaves a check claimed that the scanner had scanned in their epoch already */
 /* scans leaves [lo, hi], claimed by the caller, in the epoch seen - 1, and ends the claims: 0, or -1 when tracking
    failed */
 static int ww_scan_leaves(u64 lo, u64 hi, u32 seen, WwStage* st) {
     t_buffer.wstage = st;
+    u64 t0 = plat_ns();
     int r = ww_scan_free(lo << WW_LEAF_SHIFT, (hi + 1) << WW_LEAF_SHIFT);
+    __atomic_add_fetch(&g_wscan_leaves[st != &g_wstage_scanner], hi - lo + 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_wscan_ns[st != &g_wstage_scanner], plat_ns() - t0, __ATOMIC_RELAXED);
     ww_publish(st);
     if (r < 0) __atomic_store_n(&g_wscan_failed, 1, __ATOMIC_RELEASE);
     for (u64 l = lo; l <= hi; l++) {
@@ -2076,11 +2082,22 @@ static int ww_take_leaves(u64 lo, u64 hi, u32 seen) {
         /* the scanner may be scanning some of them: wait for those, which it may have scanned in this epoch */
         for (a = first; a <= last; a++)
             while (!ww_claim(a)) plat_yield();
-        for (; first <= last && (i32)(__atomic_load_n(&g_wleaf_done[first], __ATOMIC_RELAXED) - seen) >= 0; first++)
-            __atomic_store_n(&g_wleaf_busy[first], 0, __ATOMIC_RELEASE);
-        for (; last > first && (i32)(__atomic_load_n(&g_wleaf_done[last], __ATOMIC_RELAXED) - seen) >= 0; last--)
-            __atomic_store_n(&g_wleaf_busy[last], 0, __ATOMIC_RELEASE);
-        if (first <= last && ww_scan_leaves(first, last, seen, &g_wstage_check) < 0) return -1;
+        /* the runs of them not scanned in this epoch, each scanned once: one the scanner did between two the check
+           needs is let go, as one at either end is */
+        for (a = first; a <= last;) {
+            if ((i32)(__atomic_load_n(&g_wleaf_done[a], __ATOMIC_RELAXED) - seen) >= 0) {
+                __atomic_store_n(&g_wleaf_busy[a], 0, __ATOMIC_RELEASE);
+                g_wscan_skipped++;
+                a++;
+                continue;
+            }
+            u64 run = a;
+            while (a <= last && (i32)(__atomic_load_n(&g_wleaf_done[a], __ATOMIC_RELAXED) - seen) < 0) a++;
+            if (ww_scan_leaves(run, a - 1, seen, &g_wstage_check) < 0) {
+                for (; a <= last; a++) __atomic_store_n(&g_wleaf_busy[a], 0, __ATOMIC_RELEASE);
+                return -1;
+            }
+        }
     }
     ww_take_scanned();
     for (a = l; a <= hi; a++)
@@ -2172,6 +2189,22 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
     return 0;
 }
 u32 vk_ww_now(void) { return g_wclock; }
+void vk_ww_stats(u32 presents) {
+    static u32 epoch0;
+    u32 e = __atomic_load_n(&g_ww_epoch, __ATOMIC_RELAXED);
+    u64 l[2], ns[2];
+    for (int i = 0; i < 2; i++) {
+        l[i] = __atomic_exchange_n(&g_wscan_leaves[i], 0, __ATOMIC_RELAXED);
+        ns[i] = __atomic_exchange_n(&g_wscan_ns[i], 0, __ATOMIC_RELAXED);
+    }
+    if (g_ww > 0 && presents)
+        LOG("vulkan: write scans over %u presents: %.1f epochs a present; the scanner %.1f leaves of 4 MiB a present "
+            "(%.2f ms), the checks %.1f (%.2f ms, and %.1f the scanner had)\n",
+            presents, (double)(e - epoch0) / presents, (double)l[0] / presents, (double)ns[0] / 1e6 / presents,
+            (double)l[1] / presents, (double)ns[1] / 1e6 / presents, (double)g_wscan_skipped / presents);
+    epoch0 = e;
+    g_wscan_skipped = 0;
+}
 /* the hot pages of guest memory [a, e) protected again and reported (plat_ww_cool), its leaves claimed as a check's
    scan claims them: 1 when it had any, which the next ww_take_scanned marks */
 static int ww_cool_range(u64 a, u64 e) {
