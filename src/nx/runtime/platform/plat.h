@@ -210,7 +210,9 @@ int plat_setenv(const char* name, const char* value); /* for this process and wh
 /* Host audio output of interleaved signed 16-bit samples, little-endian as the guest's are, implemented by the window
    backend. plat_audio_open gives a paused stream, or NULL when there is no device (always when headless).
    plat_audio_queue takes whole frames (SDL refuses a call ending in part of one) and copies them before it returns, so
-   the guest may reuse its buffer at once */
+   the guest may reuse its buffer at once. Six channels are the console's 5.1 (front left, front right, centre, LFE,
+   back left, back right): a device of one or two channels gets them mixed to stereo here (audio_downmix.h), and
+   plat_audio_queued still counts in the six-channel bytes given */
 typedef struct PAudio PAudio;
 PAudio* plat_audio_open(u32 rate, u32 channels);
 void plat_audio_close(PAudio* a);

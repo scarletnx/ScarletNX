@@ -11,6 +11,7 @@
 #include "nx/hle/services/hid.h"
 #include "nx/hle/services/services.h" /* am_keyboard_answered: the keyboard's box's answer */
 #include "nx/hle/kernel/kernel.h"
+#include "nx/runtime/platform/audio_downmix.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -96,11 +97,27 @@ static u32 g_generation;     /* the window's surface came back this many times *
 struct PAudio {
     SDL_AudioStream* stream;
     int logged_data, logged_nonzero;
+    int downmix; /* the game's 5.1 is mixed to the stream's stereo here */
 };
 
 PAudio* plat_audio_open(u32 rate, u32 channels) {
     if (g_opt_headless || !g_audio_ready) return NULL;
     SDL_AudioSpec spec = {SDL_AUDIO_S16LE, (int)channels, (int)rate};
+    /* 5.1 for a device of one or two channels is mixed down here, the console's way. Asked for six, a system opens
+       six and mixes them its own way (a phone's left the centre, the voices, far under the rest), and SDL's own
+       mix scales every channel for the worst case, the fronts to 0.29. Asked before the device opens: an open one
+       reports the channels it was opened with */
+    int downmix = 0;
+    if (channels == 6) {
+        SDL_AudioSpec preferred;
+        if (SDL_GetAudioDeviceFormat(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &preferred, NULL))
+            downmix = preferred.channels <= 2;
+        else
+            WARN("audio: SDL does not give the default output's channels (%s): the game's 6 channels go to it as 6, "
+                 "not mixed to 2 here\n",
+                 SDL_GetError());
+    }
+    if (downmix) spec.channels = 2;
     /* Keep the logical device tied to the system default on every SDL audio backend. */
     SDL_AudioStream* stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
     if (!stream) {
@@ -113,19 +130,20 @@ PAudio* plat_audio_open(u32 rate, u32 channels) {
         return NULL;
     }
     a->stream = stream;
+    a->downmix = downmix;
     /* the device by its format, never its name: the system names a headset after its owner ("<name>'s headphones"), and
        players attach the log to public reports */
     SDL_AudioSpec device;
     int frames = 0;
     if (SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream), &device, &frames))
         LOG("audio: SDL %s output opened on the system default, which plays %s at %d Hz, %d channels, %d-frame "
-            "buffer; the game gives %u Hz, %u channels, signed 16-bit PCM\n",
+            "buffer; the game gives %u Hz, %u channels, signed 16-bit PCM%s\n",
             SDL_GetCurrentAudioDriver(), SDL_GetAudioFormatName(device.format), device.freq, device.channels, frames,
-            rate, channels);
+            rate, channels, downmix ? ", mixed to 2 channels here" : "");
     else
         LOG("audio: SDL %s output opened on the system default, whose format SDL does not give (%s); the game gives "
-            "%u Hz, %u channels, signed 16-bit PCM\n",
-            SDL_GetCurrentAudioDriver(), SDL_GetError(), rate, channels);
+            "%u Hz, %u channels, signed 16-bit PCM%s\n",
+            SDL_GetCurrentAudioDriver(), SDL_GetError(), rate, channels, downmix ? ", mixed to 2 channels here" : "");
     return a;
 }
 
@@ -140,9 +158,21 @@ int plat_audio_queue(PAudio* a, const void* samples, u32 bytes) {
     /* SDL's length is signed. Split only at whole stereo frames, without truncating a large guest buffer. */
     const u8* p = samples;
     u32 left = bytes;
+    if (a->downmix && bytes % 12) { /* as SDL refuses a part of a frame */
+        WARN_LIMIT(4, "audio: %u bytes of 5.1 PCM end in part of a 12-byte frame: none of them queued\n", bytes);
+        return 0;
+    }
     while (left) {
-        u32 n = left > 0x7FFFFFFCu ? 0x7FFFFFFCu : left;
-        if (!SDL_PutAudioStreamData(a->stream, p, (int)n)) {
+        u8 stereo[4096];
+        u32 n = left > 0x7FFFFFFCu ? 0x7FFFFFFCu : left, put = n;
+        const u8* from = p;
+        if (a->downmix) {
+            if (n > sizeof stereo / 4 * 12) n = sizeof stereo / 4 * 12;
+            snx_audio_downmix_51(stereo, p, n / 12);
+            from = stereo;
+            put = n / 12 * 4;
+        }
+        if (!SDL_PutAudioStreamData(a->stream, from, (int)put)) {
             WARN_LIMIT(4, "audio: SDL could not queue PCM: %s\n", SDL_GetError());
             return 0;
         }
@@ -181,7 +211,8 @@ void plat_audio_clear(PAudio* a) {
 
 u32 plat_audio_queued(PAudio* a) {
     int n = a ? SDL_GetAudioStreamQueued(a->stream) : 0;
-    return n > 0 ? (u32)n : 0;
+    if (n <= 0) return 0;
+    return a->downmix ? (u32)n / 4 * 12 : (u32)n; /* the stream holds stereo frames of a game's 5.1 ones */
 }
 
 void plat_audio_volume(PAudio* a, float volume) {
