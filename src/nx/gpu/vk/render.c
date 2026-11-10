@@ -1286,8 +1286,12 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
                   handle, b->tex_max, b->smp_max);
         return;
     }
+    /* a pending storage image over this texture's own memory invalidates it; one elsewhere does not. The global flag
+       alone dropped every memo once any fragment program's storage image was pending, so a race that draws its
+       targets and writes storage images in the same frame re-resolved every texture of every draw */
     if (m && m->surf_epoch == vk_surf_epoch_at(m->t_gva) && tex_memo_unwritten(m, tic_at, tsc_at, epoch, now) &&
-        !g_gfx_img_any && tex_memo_unpended(m, tic_at, tsc_at, adds) &&
+        !(g_gfx_img_any && vk_gfx_image_pending(m->t->gva, vk_surf_guest_size(m->t))) &&
+        tex_memo_unpended(m, tic_at, tsc_at, adds) &&
         (m->gw == gw || (!gpu_mem_dirty_since(m->gw, tic_at, 32) && !gpu_mem_dirty_since(m->gw, tsc_at, 32)))) {
         m->gw = gw;
         m->used = ++g_tex_memo.use;
