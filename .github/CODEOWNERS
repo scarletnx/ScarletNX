@@ -35,9 +35,7 @@
 
 # GPU: the Switch's GPU, its shaders and their compilers, texture and video engines
 /src/nx/gpu/ @fuddlesworth
-/tools/shaderdec/ @fuddlesworth
 /tools/snx_shaderc.c @fuddlesworth
-/cmake/shaderdec.cmake @fuddlesworth
 /cmake/glsl.cmake @fuddlesworth
 /cmake/spirv_source.cmake @fuddlesworth
 /scripts/build-ui-shaders.py @fuddlesworth

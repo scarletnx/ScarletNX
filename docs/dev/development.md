@@ -329,12 +329,12 @@ build/snx-shaderc corpus --validate --out translated
 
 `--validate` needs `spirv-val`. `--out` writes SPIR-V modules for build comparisons.
 
-The instruction decoder is generated at build time. `src/nx/gpu/shader/maxwell_opcodes.def` lists each encoding
-(opcode name, display name, 16-bit pattern), and `tools/shaderdec/shaderdec.c` (strict C99, built for the build
-machine in a cross build, as swipc is) checks it and writes the opcode enum and a table-driven matcher into the
-build folder, so nothing is set up at run time. Two patterns may overlap only when one is strictly narrower, and
-that one is tried first. A new opcode is a row there (its `O_` name then exists for the translator), and
-`ctest -R 'shaderdec|shader_decode'` checks the spec and decodes every row back to itself.
+The instruction decoder is generated at build time. `src/nx/gpu/shader/sm53.decode` lists each encoding (a
+16-bit pattern of the word's top bits), and `tools/decodetree` (strict C99, built for the build machine in a cross
+build) checks it and writes a switch-based decoder into the build folder, so nothing is set up at run time.
+Patterns that overlap must be in a `{ }` group, which tries them in order: the narrower first. A new opcode is a
+pattern there and an entry of `SM53_OPS` in `translator.h` (its `O_` name and display name), from which `decode.c`
+makes its `trans_` function. `ctest -R shader_decode` checks that every opcode decodes.
 `[Debug] shader_corpus=` in the game's INI does the same for every run. Where the game gets no command line
 (Android), its INI's `[Debug] diag=1` keeps each shader's entry in `captures/shaders` beside the game, for the same `snx-shaderc`.
 
