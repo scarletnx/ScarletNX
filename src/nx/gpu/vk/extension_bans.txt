@@ -69,12 +69,13 @@ VK_KHR_present_id2 | off | nvidia | < 595.0.0 | any | * | hangs games at their f
 VK_EXT_descriptor_heap | off | amd-proprietary | * | any | * | crashes a game at start with descriptor heaps (Adrenalin 26.7.1 on an RX 7900 XTX) | DXVK 076922bd24 (2026-09-19), issue 5837 | headless:--vk_descriptors_mode=3 | never | -
 VK_EXT_descriptor_heap | warn | nvidia | < 595.84.0 | any | * | runs descriptor heaps slower than its later drivers do | DXVK dxvk_device_info.cpp:506 (b5fadf8e5a, 2026-06-18) | new:headless:--bench-descriptors under vk_descriptors_mode=3 against vk_descriptors_mode=1 | never | -
 
-# Pipeline libraries (not used yet)
+# Pipeline libraries (gpu/vk/pipeline_parts.c: a new pipeline links the parts of its shaders)
 VK_EXT_graphics_pipeline_library | off | nvidia | < 531.0.0 | any | * | draws transient glitches with pipeline libraries | ANGLE vk_renderer.cpp:6928, anglebug 42266655 | new:edenprobe:the graphics suites with pipeline libraries on | never | -
 VK_EXT_graphics_pipeline_library | off | mali | * | any | * | runs unacceptably slower with pipeline libraries | ANGLE vk_renderer.cpp:6928, anglebug 404581992 | new:edenprobe:the graphics suites timed with pipeline libraries on and off | never | -
 VK_EXT_graphics_pipeline_library | warn | radv | * | any | * | crashed creating graphics pipelines with it under ANGLE, which keeps it off on RADV; DXVK and vkd3d-proton use it there | ANGLE vk_renderer.cpp:6928, crbug 1497512 | new:headless:pipelines made from libraries and fast-linked | never | -
 
-# Extended dynamic state 3 (not used yet)
+# Extended dynamic state 3 (pipeline_parts.c's vk_gpl_bans: with pipeline libraries the polygon mode, the depth clamp,
+# the provoking vertex and conservative rasterization are dynamic state; a member a line holds for stays in the key)
 VK_EXT_extended_dynamic_state3 | off | samsung | * | any | * | has bugs with extended dynamic state 3, blend enable and equation among them | ANGLE vk_renderer.cpp:6732 (issues.angleproject.org/579500670); Eden PR 3074 (5edcdea78f, 2026-01-07) | new:edenprobe:blending suites with blend state dynamic | never | -
 VK_EXT_extended_dynamic_state3.extendedDynamicState3DepthClampEnable | off | radv | < 23.1.0 | any | * | breaks depth clamp as dynamic state | yuzu 856838f7ce (2023-05-13) | new:edenprobe:depth clamp cases with it dynamic | never | -
 VK_EXT_extended_dynamic_state3.extendedDynamicState3ColorBlendEquation | warn | radv | * | any | * | broke blend enable and equation as dynamic state (2023); Eden lifted the ban | yuzu da83afdeaf (2023-03-15); lifted in Eden PR 3074 (5edcdea78f, 2026-01-07) | new:edenprobe:blending suites with blend state dynamic | never | -

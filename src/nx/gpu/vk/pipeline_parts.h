@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "common/cpu/aarch64/cpu.h"
 #include "volk.h"
+#include "nx/gpu/vk/extension_bans.h"
 #include "nx/gpu/vk/vk.h"
 
 /* the pre-rasterization state a pipeline made of libraries takes as dynamic state (g_vk.dyn_pr), so that one
@@ -31,6 +32,9 @@ typedef struct {
     int has_provoking_last, has_conservative;
 } VkGplDevice;
 
+/* turns off each dynamic state member of d that an extension ban holds for on the device (vk_bans_device), said
+   through say: its state then stays in the part's key, as on a device without the member */
+void vk_gpl_bans(VkGplDevice* d, VkBanSay say);
 /* whether pipelines are made from libraries on d: 1 or 0, the dynamic pre-rasterization state (VK_DYN_PR_*) in
    *dyn_pr (0 when they aren't), and the log line that says so into line */
 int vk_gpl_choose(const VkGplDevice* d, u32* dyn_pr, char* line, size_t n);

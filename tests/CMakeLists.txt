@@ -2124,8 +2124,10 @@ if(NOT SNX_TOOLS_ONLY)
     target_link_libraries(snx-test-vk-vertex-input PRIVATE snx_nx_flags)
     add_test(NAME vk_vertex_input COMMAND snx-test-vk-vertex-input)
     # graphics pipeline libraries (gpu/vk/pipeline_parts.c): the choice from the setting and stand-in devices, each
-    # condition that turns them off named, and the dynamic pre-rasterization state each device member gives
-    add_executable(snx-test-vk-pipeline-parts vk_pipeline_parts.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pipeline_parts.c")
+    # condition that turns them off named, and the dynamic pre-rasterization state each device member gives where the
+    # table of bans holds none for it
+    add_executable(snx-test-vk-pipeline-parts vk_pipeline_parts.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pipeline_parts.c"
+                   ${snx_vk_extension_bans_sources})
     snx_test_target(snx-test-vk-pipeline-parts 23)
     target_link_libraries(snx-test-vk-pipeline-parts PRIVATE snx_nx_flags)
     add_test(NAME vk_pipeline_parts COMMAND snx-test-vk-pipeline-parts)

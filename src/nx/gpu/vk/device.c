@@ -1116,6 +1116,7 @@ static int create_device(void) {
                           .has_provoking_last = g_vk.has_provoking_last,
                           .has_conservative = g_vk.has_conservative};
         char line[400];
+        vk_gpl_bans(&gd, ban_say);
         g_vk.has_gpl = vk_gpl_choose(&gd, &g_vk.dyn_pr, line, sizeof line);
         LOG("%s\n", line);
         /* a ban that holds took the extension out of the list (vk_bans_filter): its line says why */
