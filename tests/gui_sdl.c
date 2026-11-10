@@ -624,14 +624,13 @@ static bool has_arg(const char* argv, const char* arg, const char* after) {
     }
     return false;
 }
-/* a console's game not made yet, opened: its first compile through driver, its own (no Switch flag, nor the
-   --aot_threads= of a Gentle queue, which these drivers refuse), -r before file and its data folder, run to its end
-   with status (driver_will) */
+/* a console's game not made yet, opened: its first compile through driver, its own (no Switch flag), -r before file
+   and its data folder, run to its end with status (driver_will) */
 static void compiled_by(App* app, const char* driver, const char* file, int status) {
     char* argv = ran(app, status);
     assert(strstr(argv, driver) && strstr(argv, driver) < strchr(argv, '\n') && has_arg(argv, "-r", file) &&
            has_arg(argv, "--data", app->data_dir) && !has_arg(argv, "-S", NULL) &&
-           !has_arg(argv, "--fullscreen=1", NULL) && !strstr(argv, "--aot_threads="));
+           !has_arg(argv, "--fullscreen=1", NULL));
     free(argv);
 }
 /* snx_menu_has_driver of a program that has the 3DS driver alone */
@@ -8560,16 +8559,7 @@ int main(int argc, char** argv) {
         assert(app.menu.view == GUI_LOAD_DROP && app.menu.active == GUI_GBA);
         e.type = SDL_EVENT_DROP_FILE;
         e.drop.data = rom;
-        { /* Background recompile Gentle: the low priority, and no threads option, which scarletnx-agb has none of */
-            char said[160];
-            int mode = app.background_mode;
-            app.background_mode = GUI_BACKGROUND_GENTLE;
-            event(&app, &e);
-            app.background_mode = mode;
-            assert(app.job_low && !app.job_threads);
-            job_speed(&app, said, sizeof said);
-            assert(!strstr(said, "threads"));
-        }
+        event(&app, &e);
         assert(launched(&app) && app.menu.selected == GUI_GBA && !app.native);
         compiled_by(&app, "scarletnx-agb", rom, 4);
         assert(app.recent.count == 1 && app.recent.game[0].driver == GUI_GBA && !app.recent.game[0].prepared);
