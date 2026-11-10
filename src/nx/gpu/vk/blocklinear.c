@@ -149,16 +149,9 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
     bl_init();
     VkDescriptorSet set = vk_desc_alloc(g_blocklinear.ds);
     if (!set) return 0;
-    VkDescriptorBufferInfo sides[2] = {{bl, bl_off, bl_size}, {lin, lin_off, lin_size}};
-    VkWriteDescriptorSet writes[2];
-    for (u32 i = 0; i < 2; i++)
-        writes[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                           .dstSet = set,
-                                           .dstBinding = to_bl ? 1 - i : i, /* binding 0 is read, 1 written */
-                                           .descriptorCount = 1,
-                                           .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                           .pBufferInfo = &sides[i]};
-    vkUpdateDescriptorSets(g_vk.dev, 2, writes, 0, NULL);
+    const VkDescriptorBufferInfo bl_side = {bl, bl_off, bl_size}, lin_side = {lin, lin_off, lin_size};
+    VkDescriptorBufferInfo sides[2] = {to_bl ? lin_side : bl_side, to_bl ? bl_side : lin_side}; /* read, written */
+    snx_vk_storage_buffers(g_vk.dev, set, sides, 2);
     BlParams p = {.runs = runs,
                   .rows = m->rows,
                   .lin_runs = m->lin_pitch >> 4,
