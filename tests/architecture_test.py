@@ -67,6 +67,34 @@ class ArchitectureTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn(f'SNX_WW is deprecated, and read only in {listed}', errors[0])
 
+    def window_errors(self, files):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            return architecture.check_window_pixels(root)
+
+    def test_a_window_of_points_is_rejected(self):
+        opened = 'void o(void) {\n    w = SDL_CreateWindow("t", 1, 1, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);\n}\n'
+        errors = self.window_errors({'src/nx/runtime/platform/backend/sdl3.c': opened})
+        self.assertEqual(len(errors), 1)
+        self.assertIn(
+            'src/nx/runtime/platform/backend/sdl3.c:2: SDL_CreateWindow without SDL_WINDOW_HIGH_PIXEL_DENSITY',
+            errors[0],
+        )
+        both = 'void o(void) { SDL_CreateWindowAndRenderer("t", 1, 1, 0, &w, &r); }\n'
+        self.assertEqual(len(self.window_errors({'src/nx/a.c': both})), 1)
+
+    def test_a_window_of_the_displays_pixels_passes(self):
+        files = {
+            'src/nx/a.c': 'void o(void) { w = SDL_CreateWindow("t", 1, 1, SDL_WINDOW_VULKAN |\n'
+            '    SDL_WINDOW_HIGH_PIXEL_DENSITY); }\n',
+            'src/nx/b.c': '/* SDL_CreateWindow("t", 1, 1, 0) */\nconst char* s = "SDL_CreateWindow(0)";\n',
+            'src/nx/c.c': 'void o(void) { SDL_CreateWindowWithProperties(p); snx_SDL_CreateWindow(1); }\n',
+        }
+        self.assertEqual(self.window_errors(files), [])
+
     def test_compiling_nx_source_into_common_is_rejected(self):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             repo = Path(temporary)

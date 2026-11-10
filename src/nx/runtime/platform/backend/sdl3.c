@@ -524,7 +524,9 @@ void video_init(const char* title, const char* addons) {
         snprintf(header, sizeof header, "%s (%s) - %s", title, addons, snx_build_info());
     else
         snprintf(header, sizeof header, "%s - %s", title, snx_build_info());
-    g_win = SDL_CreateWindow(header, w, h, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+    /* the display's own pixels: on one scaled 2x (Wayland, a Mac) a window without it is a picture of half as many
+       each way, which the display server stretches, the game and what is drawn over it blurred alike */
+    g_win = SDL_CreateWindow(header, w, h, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!g_win) fatal("SDL could not open a Vulkan window: %s", SDL_GetError());
     snx_window_icon(g_win);
     overlay_set_display_scale(SDL_GetWindowDisplayScale(g_win));
@@ -532,6 +534,7 @@ void video_init(const char* title, const char* addons) {
     vpad_set_store(ini_set);
     buzzer_open();
     SDL_GetWindowSizeInPixels(g_win, &w, &h);
+    LOG("video: a window of %dx%d pixels, the display's scale %.2f\n", w, h, SDL_GetWindowDisplayScale(g_win));
     wsize_set(w, h);
     wsafe_set();
     refresh_set();
