@@ -133,6 +133,9 @@ void kernel_init(void);
    holds (footprint), when measured says the system told both. The game is told no more than mem_fit_budget's */
 void mem_fit(int measured, u64 available, u64 footprint);
 u64 mem_fit_budget(u64 available, u64 footprint);
+/* Says in the log, for an Ounce game the player gave a memory_gb other than its default 0, that the key does not
+   change what the game is told, and the amount it is told. After mem_fit, whose measure that amount follows */
+void mem_gb_said(void);
 /* For a crash that looks like a game out of memory: what the game was told, where that amount came from and the key
    that tells it more, in out; 0, and an empty out, when no key does (an Ounce game told all of its pool, memory_gb
    at 6 or more) */
