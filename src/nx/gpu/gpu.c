@@ -52,6 +52,7 @@ void (*g_gpu_before_write)(u64 gva, u64 size);
 int g_gpu_releases;
 void (*g_gpu_mapping_begin)(u64 gva, u64 size, int kind);
 void (*g_gpu_mapping_end)(void);
+void (*g_gpu_mapping_waits)(void);
 
 /* ------------------------------------------------------------ guest memory through the GPU's address space */
 #define GMEM_PAGE           0x1000u /* the granule unmapped memory and memory states are walked in: a 4 KiB page */

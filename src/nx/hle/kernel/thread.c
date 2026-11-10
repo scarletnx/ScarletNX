@@ -11,6 +11,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/hle/hle.h"
+#include "nx/gpu/gpu.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/runtime/guest_stats.h"
 
@@ -240,6 +241,26 @@ void core_leave(KThread* t) {
     pm_lock(&g_host.thread.core_lk);
     if (t->on_core >= 0) core_release_nl(t);
     core_unlock();
+}
+/* A change of guest memory is about to wait for the renderer (g_gpu_mapping_waits). On the console an SVC that changes
+   memory holds its core to its end, so a thread of the same priority lined up on that core runs only once the caller
+   blocks. The renderer's lock and its landings are waits the console's SVC doesn't have, seconds long at times, with
+   every thread of the core behind them: there, and nowhere else in the SVC, the calling thread lets go of its core.
+   svc_leave takes it back; outside an SVC nothing would, so there the thread keeps it */
+void core_leave_waiting(void) {
+    KThread* t = kthread_cur();
+    int k = -1;
+    if (!t || !g_settings.emulated_cores || !__atomic_load_n(&t->in_svc, __ATOMIC_SEQ_CST)) return;
+    pm_lock(&g_host.thread.core_lk);
+    if (t->on_core >= 0) {
+        k = t->on_core;
+        core_release_nl(t);
+        g_host.thread.waits_off_core++;
+    }
+    core_unlock();
+    if (k >= 0)
+        LOG_LIMIT(1, "kernel: thread %llu let go of core %d in a memory SVC to wait for the renderer, the first time\n",
+                  (unsigned long long)t->id, k);
 }
 /* The two words after the IPC buffer in a thread's TLS, which the console's kernel shares with the SDK: the disable
    count, which the SDK raises around its spinning locks (a busy mutex's, a light message queue's, a light semaphore's),
@@ -477,6 +498,7 @@ KThread* kthread_cur(void) { return t_hle.thread.cur; }
 /* the host's CPUs, which the cores pin to (the locks and the cores' wait lists start in hle_init) */
 void kernel_init(void) {
     g_hle.thread.host_ncpu = plat_cpus(g_hle.thread.host_cpu, 256);
+    g_gpu_mapping_waits = core_leave_waiting;
 }
 
 /* Each thread's thread-local storage is 0x200 bytes (the IPC message buffer in the first 0x100), eight to a page, as

@@ -27,6 +27,8 @@ const SnxArmModule* g_arm_mod; /* a 64-bit game */
 int g_ounce; /* main.c's: a Switch program, whose threads find no handle in their TLS (thread.c) */
 const SnxArmRt g_arm_rt;
 void arm_thread_run(KThread* t) { (void)t; }
+/* gpu.c's, which kernel_init sets: the renderer calls it as a change of guest memory starts to wait for it */
+void (*g_gpu_mapping_waits)(void);
 /* nce.c, whose NCE no game here is of: thread_run asks it, and a flagged core kicks its thread */
 int nce_on(void) { return 0; }
 void nce_thread_run(KThread* t, u64 pc) { (void)t, (void)pc; }
@@ -373,6 +375,43 @@ int main(void) {
     core_leave(a);
     pthread_join(h, NULL);
     CHECK(b->on_core == 0, "mask 1: got core %d", b->on_core);
+    core_leave(b);
+
+    /* A change of guest memory that waits for the renderer (g_gpu_mapping_waits, which the renderer calls only then):
+       the thread in the SVC lets go of its core, which the thread of its priority lined up behind it takes, and the
+       wait is counted and said once. Until then it holds the core through its SVC, as on the console, and outside
+       an SVC it keeps it, as nothing would take it back */
+    reset();
+    a = thread(0, 44, 0, 1), b = thread(1, 44, 0, 1);
+    core_enter(a);
+    pthread_create(&h, NULL, enter_body, b);
+    CHECK(settle(b, -2) == -2 && b->core == 0, "the same priority and core: on core %d", b->on_core);
+    CHECK(g_gpu_mapping_waits == core_leave_waiting, "the kernel did not take the renderer's waits");
+    t_hle.thread.cur = a;
+    a->id = 82;
+    a->in_svc = 1; /* svc_enter: the SVC itself moves no core */
+    CHECK(on_core(a) == 0 && on_core(b) == -2, "in an SVC that waits for nothing: holder on %d, the other on %d",
+          on_core(a), on_core(b));
+    a->in_svc = 0;
+    logged[0] = 0;
+    g_gpu_mapping_waits();
+    CHECK(on_core(a) == 0 && on_core(b) == -2 && !g_host.thread.waits_off_core && !logged[0],
+          "outside an SVC: holder on %d, the other on %d, %llu waits counted, said \"%s\"", on_core(a), on_core(b),
+          (unsigned long long)g_host.thread.waits_off_core, logged);
+    a->in_svc = 1;
+    g_gpu_mapping_waits();
+    pthread_join(h, NULL);
+    CHECK(on_core(a) == -1 && b->on_core == 0 && g_host.thread.waits_off_core == 1,
+          "a wait in an SVC: holder on %d, the other on %d, %llu waits counted", on_core(a), b->on_core,
+          (unsigned long long)g_host.thread.waits_off_core);
+    CHECK(!strcmp(logged,
+                  "kernel: thread 82 let go of core 0 in a memory SVC to wait for the renderer, the first time\n"),
+          "said \"%s\"", logged);
+    g_gpu_mapping_waits(); /* it holds none now: nothing more to let go of, or to count */
+    CHECK(b->on_core == 0 && g_host.thread.waits_off_core == 1, "a second wait: the other on %d, %llu waits counted",
+          b->on_core, (unsigned long long)g_host.thread.waits_off_core);
+    a->in_svc = 0;
+    t_hle.thread.cur = NULL;
     core_leave(b);
 
     /* a core that falls idle takes a thread waiting for another one, if its mask allows it */
