@@ -29,6 +29,8 @@ keeps audits and measurements as they were taken.
   GDB, folders, users and the keys in a game
 - [Settings](user/settings.md): every key of a game's `.ini` and of the launcher, with its default
 - [AOT packs](user/aot-packs.md): a game build that links in the functions the JIT compiled while it played
+- [What ScarletNX isolates](user/security.md): a game runs as a program of your user, what the services give it, and
+  what the launcher downloads
 - [Testing and reporting](user/testing.md): how to test a build, and the form a report takes
 - [Deprecations](user/deprecations.md): what an older version used, how a run tells you, and how it goes away
 
