@@ -9178,11 +9178,20 @@ static void recent_as_games(App* app) {
             } else
                 ++j;
     for (i = 0; i < app->recent.count; ++i) {
-        /* a game made, whichever console's: its own name in its .ini, else its folder's, as Games shows it */
-        char* shown = app->recent.game[i].prepared && gui_game_program(app->recent.game[i].path)
-                          ? gui_game_shown(app->recent.game[i].path)
-                          : NULL;
-        if (shown && gui_recent_rename(&app->recent, app->recent.game[i].path, shown)) changed = true;
+        /* a game made, whichever console's: its own name (its control.nacp's, its .ini's), as Games shows it. A Switch
+           game with none takes its folder's; another console's folder is named by a title ID, which says less than
+           the name the run gave the entry */
+        const GuiRecentGame* r = &app->recent.game[i];
+        char* shown = r->prepared && gui_game_program(r->path) ? gui_game_shown(r->path) : NULL;
+        if (shown && r->driver != GUI_SWITCH) {
+            char* folder = snx_dirname(r->path);
+            if (!folder || !strcmp(shown, snx_path_leaf(folder))) {
+                free(shown);
+                shown = NULL;
+            }
+            free(folder);
+        }
+        if (shown && gui_recent_rename(&app->recent, r->path, shown)) changed = true;
         free(shown);
     }
     if (changed) recent_changed(app);

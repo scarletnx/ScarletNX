@@ -8708,6 +8708,32 @@ int main(int argc, char** argv) {
                     memcpy(&argb, drawn, sizeof argb);
                     assert(argb == 0xFFDC1E1Eu);
                 }
+                { /* its recent game takes the name its .ini gives it; a game with no name of its own, another console's
+                     in the folder its title ID names, keeps the name its run gave it */
+                    GuiRecent kept = app.recent;
+                    char *other = snx_path_join(app.games_dir, "PCSA00000"), *vita;
+                    int at;
+#ifdef _WIN32
+                    vita = snx_path_join(other, "PCSA00000.exe");
+#else
+                    vita = snx_path_join(other, "PCSA00000");
+#endif
+                    assert(other && vita && !snx_mkdirs(other) && !snx_write_file(vita, "x", 1) &&
+                           !snx_make_executable(vita));
+                    assert(!gui_recent_add(&app.recent, ctr, GUI_3DS, 1));
+                    assert(!gui_recent_add(&app.recent, vita, GUI_VITA, 1));
+                    assert(gui_recent_rename(&app.recent, vita, "A Vita Game"));
+                    recent_as_games(&app);
+                    for (at = 0; at < app.recent.count && strcmp(app.recent.game[at].path, ctr); ++at) {}
+                    assert(at < app.recent.count && !strcmp(app.recent.game[at].name, "A CTR Game"));
+                    for (at = 0; at < app.recent.count && strcmp(app.recent.game[at].path, vita); ++at) {}
+                    assert(at < app.recent.count && !strcmp(app.recent.game[at].name, "A Vita Game"));
+                    app.recent = kept;
+                    recent_changed(&app);
+                    snx_remove_tree(other);
+                    free(vita);
+                    free(other);
+                }
                 snx_remove_tree(own);
                 free(icon);
                 free(ini);
