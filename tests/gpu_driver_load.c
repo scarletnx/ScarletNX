@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* nx/runtime/platform/gpu_driver_load.c away from Android: Freedreno's variables set before any driver reads them, and
    each run that asks for what it cannot have stopped, saying why, rather than going on with the system's driver. A run
-   opens its driver once, so each case is a run of this program: env, badenv, here, badid */
+   opens its driver once, so each case is a run of this program: env, badenv, here, badid. With the system's driver a
+   run that finds no Vulkan device has nothing to say of a package */
 #include "nx/runtime/platform/gpu_driver_load.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h" /* fatal and logf_, which this file stands in for */
@@ -53,6 +54,10 @@ int main(int argc, char** argv) {
                strstr(g_test.log, "freedreno: FD_RD_DUMP=enable\n"));
         gpu_driver_check();
         assert(!gpu_driver_open()); /* once a run: the first one's answer */
+        {
+            char said[8] = "none";
+            assert(!gpu_driver_no_device(said, sizeof said) && !strcmp(said, "none"));
+        }
     } else if (!strcmp(which, "badenv")) {
         /* a variable Freedreno does not read stops the run with its name, and nothing is set */
         assert(!run("", "TU_DEBUG=sysmem;LD_PRELOAD=/x.so", &gipa));

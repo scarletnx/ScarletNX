@@ -3,7 +3,8 @@
 /* common/utilities/gpu_driver.c: a driver package's meta.json in the shapes released packages have, and each one
    refused with the value said; a package's folder name from its zip's; an arm64 library told from others; whether a
    device loads packages (an Adreno's and an Xclipse's do), said with its values; this machine's render node asked its
-   kernel driver; whether a process mapped a package's library; Freedreno's variables */
+   kernel driver; what a run says of a package that lists no device; whether a process mapped a package's library;
+   Freedreno's variables */
 #include "common/utilities/gpu_driver.h"
 #include "common/utilities/common.h"
 #include <assert.h>
@@ -105,6 +106,12 @@ int main(void) {
     assert(snx_gpu_driver_loads(&host, why, sizeof why) && snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_LOADS &&
            !strcmp(why, "This device: Android API 34, arm64, Xclipse GPU (/dev/dri/renderD128, kernel driver amdgpu): "
                         "custom drivers load."));
+    /* a package that lists no device there: the package and the GPU, said */
+    snx_gpu_driver_no_device("Turnip_v32", "Turnip test", &host, why, sizeof why);
+    assert(!strcmp(why, "GPU driver Turnip_v32 (Turnip test) lists no Vulkan device on this device's Xclipse GPU "
+                        "(/dev/dri/renderD128, kernel driver amdgpu): the package is for another GPU, or does not "
+                        "drive this model. Pick the System driver, or a package for this GPU, in Settings > App > GPU "
+                        "Drivers"));
     host.api = 27;
     assert(!snx_gpu_driver_loads(&host, why, sizeof why) && has(why, "Android API 27, arm64, Xclipse GPU (") &&
            snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_OLD_ANDROID);
@@ -124,6 +131,10 @@ int main(void) {
            has(why, "no Xclipse GPU (/dev/dri/renderD128 did not open: Permission denied)"));
     host.render[0] = 0;
     assert(!snx_gpu_driver_loads(&host, why, sizeof why) && has(why, "no Xclipse GPU (no render node in /dev/dri)"));
+    host.kgsl = 1;
+    snx_gpu_driver_no_device("radv", "RADV Xclipse", &host, why, sizeof why);
+    assert(
+        has(why, "GPU driver radv (RADV Xclipse) lists no Vulkan device on this device's Adreno GPU (/dev/kgsl-3d0)"));
     /* a desktop, whatever its GPU (an AMD one's render node is amdgpu's too), and Android on another CPU */
     host.system = "Linux", host.arch = "x86_64", host.api = 0, host.kgsl = 0, host.amdgpu = 1, host.built = 0;
     snprintf(host.render, sizeof host.render, "%s", "/dev/dri/renderD128, kernel driver amdgpu");

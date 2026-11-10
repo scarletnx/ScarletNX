@@ -190,7 +190,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Xclipse GPU (a render node of the `amdgpu` kernel driver in `/dev/dri`, for [RADV's port to
   it](https://github.com/JimVulkan/radv-xclipse), whose package asks Android 14): the page's first line says what this
   device is and, anywhere else, why games there use the system driver, and Use is refused there with that line. A game
-  whose package does not load stops, saying why. Under them, **edenprobe Mode** (Quick, the default:
+  whose package does not load stops, saying why, and so does one whose package lists no Vulkan device, a driver for
+  another GPU. Under them, **edenprobe Mode** (Quick, the default:
   `quick notime cpu graphics`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays
   [edenprobe](../dev/edenprobe.md)'s probes as a game with the GPU driver picked here, from `probe/edenprobe.nro` of the
   Logs folder, in a data folder of its own there (`probe/.scarletnx`: none of your settings, saves or users) with the

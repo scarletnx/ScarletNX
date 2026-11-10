@@ -292,6 +292,16 @@ int snx_gpu_driver_loads(const SnxGpuDriverHost* host, char* what, size_t size) 
     return lack == SNX_GPU_DRIVER_LOADS;
 }
 
+void snx_gpu_driver_no_device(const char* id, const char* name, const SnxGpuDriverHost* host, char* out, size_t size) {
+    char gpu[224];
+    gpu_text(host, gpu, sizeof gpu);
+    snprintf(out, size,
+             "GPU driver %s (%s) lists no Vulkan device on this device's %s: the package is for another GPU, or "
+             "does not drive this model. Pick the System driver, or a package for this GPU, in Settings > App > GPU "
+             "Drivers",
+             id, name, gpu);
+}
+
 /* a folder of path, its first len bytes, is dir by its device and inode */
 static int mapped_under(const char* path, size_t len, const char* dir) {
     char folder[4096];
