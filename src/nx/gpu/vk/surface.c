@@ -1015,19 +1015,69 @@ static void flush_note_landed(u64 gva, u64 from, u64 to) {
     if (to > from && mirror) span_runs(lo, hi - lo, run_landed, mirror);
 }
 static u32 rt_pending_over(u64 gva, u64 size, Surf** local, u32 nlocal, Surf*** out);
+typedef struct {
+    Surf** surfaces;
+    u32 count, capacity;
+} RtPendingList;
+
+/* Collect under the GMMU alias lock, then flush after it is released. A flush
+   writes guest memory and asks the alias index about those writes itself. */
+static void rt_pending_alias(void* ctx, u64 gva, u64 size) {
+    RtPendingList* pending = ctx;
+    Surf *local[16], **list;
+    u32 count;
+    if (!pend_hit_va(&g_rt_pages, gva, size)) return;
+    count = rt_pending_over(gva, size, local, 16, &list);
+    for (u32 i = 0; i < count; i++) {
+        Surf* s = list[i];
+        u32 at = 0;
+        while (at < pending->count && pending->surfaces[at]->wseq < s->wseq) at++;
+        if (at < pending->count && pending->surfaces[at] == s) continue;
+        if (pending->count == pending->capacity) {
+            u32 capacity = pending->capacity * 2;
+            if (capacity < pending->capacity || (u64)capacity > SIZE_MAX / sizeof *pending->surfaces)
+                fatal("Too many render target aliases");
+            Surf** grown = malloc((size_t)capacity * sizeof *grown);
+            if (!grown) fatal("Out of memory collecting render target aliases");
+            memcpy(grown, pending->surfaces, (size_t)pending->count * sizeof *grown);
+            if (pending->capacity > 16) free(pending->surfaces);
+            pending->surfaces = grown;
+            pending->capacity = capacity;
+        }
+        memmove(pending->surfaces + at + 1, pending->surfaces + at,
+                (size_t)(pending->count - at) * sizeof *pending->surfaces);
+        pending->surfaces[at] = s;
+        pending->count++;
+    }
+    if (list != local) free(list);
+}
 /* The targets over s's bytes whose images are newer than s's and newer than memory, with nothing written under them
    since they last matched it: s's landing goes under them, as rt_flush_older leaves them pending on top, so it is no
-   write of theirs: loading memory there would drop their pixels for bytes that never held them. In local while it
-   holds nlocal, else in a list the caller frees */
+   write of theirs: loading memory there would drop their pixels for bytes that never held them. Those at other GPU
+   addresses showing the same guest memory too: one game maps one physical pool through several virtual pools, and
+   its cutscenes' post-processing draws its targets through one of them over the bytes of the shadow map drawn
+   earlier through another. Landing that shadow map late (under a compute program's result published over the same
+   bytes) left the newer target looking written, and its next use loaded the old bytes over its pixels: a cutscene's
+   whole frame showed pieces of old frames. In local (nlocal of 16) while it holds them, else in a list the caller
+   frees */
 static u32 rt_newer_over(const Surf* s, u64 size, Surf** local, u32 nlocal, Surf*** out) {
-    u32 n, k = 0;
+    RtPendingList pending = {local, 0, nlocal};
+    u32 k = 0;
     *out = local;
-    if ((s->gva >> 63) || !size || !pend_hit_va(&g_rt_pages, s->gva, size)) return 0;
-    n = rt_pending_over(s->gva, size, local, nlocal, out);
-    for (u32 i = 0; i < n; i++) {
-        Surf* t = (*out)[i];
-        if (t != s && t->wseq > s->wseq && !gpu_mem_dirty_since(t->gw, t->gva, rt_bytes(t))) (*out)[k++] = t;
+    if ((s->gva >> 63) || !size) return 0;
+    for (u64 off = 0; off < size;) { /* each run of guest memory s's addresses show, and every address showing it */
+        u64 cpu = 0, n = gmmu_run(s->gva + off, size - off, &cpu);
+        if (n)
+            gmmu_aliases(cpu, n, rt_pending_alias, &pending);
+        else if ((n = 0x1000 - ((s->gva + off) & 0xfff)) > size - off)
+            n = size - off;
+        off += n;
     }
+    for (u32 i = 0; i < pending.count; i++) {
+        Surf* t = pending.surfaces[i];
+        if (t != s && t->wseq > s->wseq && !gpu_mem_dirty_since(t->gw, t->gva, rt_bytes(t))) pending.surfaces[k++] = t;
+    }
+    *out = pending.surfaces;
     return k;
 }
 /* s's pixels, read back to p as of its write generation wgen, into guest memory in its layout (or over original, a
@@ -1558,43 +1608,6 @@ void vk_rt_before_write(u64 gva, u64 size) {
     }
     g_rt_flushing = 0;
     vk_unlock();
-}
-
-typedef struct {
-    Surf** surfaces;
-    u32 count, capacity;
-} RtPendingList;
-
-/* Collect under the GMMU alias lock, then flush after it is released. A flush
-   writes guest memory and asks the alias index about those writes itself. */
-static void rt_pending_alias(void* ctx, u64 gva, u64 size) {
-    RtPendingList* pending = ctx;
-    Surf *local[16], **list;
-    u32 count;
-    if (!pend_hit_va(&g_rt_pages, gva, size)) return;
-    count = rt_pending_over(gva, size, local, 16, &list);
-    for (u32 i = 0; i < count; i++) {
-        Surf* s = list[i];
-        u32 at = 0;
-        while (at < pending->count && pending->surfaces[at]->wseq < s->wseq) at++;
-        if (at < pending->count && pending->surfaces[at] == s) continue;
-        if (pending->count == pending->capacity) {
-            u32 capacity = pending->capacity * 2;
-            if (capacity < pending->capacity || (u64)capacity > SIZE_MAX / sizeof *pending->surfaces)
-                fatal("Too many render target aliases");
-            Surf** grown = malloc((size_t)capacity * sizeof *grown);
-            if (!grown) fatal("Out of memory collecting render target aliases");
-            memcpy(grown, pending->surfaces, (size_t)pending->count * sizeof *grown);
-            if (pending->capacity > 16) free(pending->surfaces);
-            pending->surfaces = grown;
-            pending->capacity = capacity;
-        }
-        memmove(pending->surfaces + at + 1, pending->surfaces + at,
-                (size_t)(pending->count - at) * sizeof *pending->surfaces);
-        pending->surfaces[at] = s;
-        pending->count++;
-    }
-    if (list != local) free(list);
 }
 
 /* A producer can replace image memory through another GPU address. Land every

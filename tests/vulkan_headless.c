@@ -1540,6 +1540,53 @@ static int check_clear_load_op(void) {
     return 0;
 }
 
+/* Two GPU addresses showing the same guest memory, as one game's virtual pools over one physical pool do: a target
+   drawn through the second after one drawn through the first holds the newer pixels, and the older one's write-back
+   (which lands under it, as a compute result published over the bytes lands every older image first) leaves it as it
+   is. The write-back stamped the second address written, and the newer target's next use loaded the older pixels
+   over its own: a cutscene's whole frame showed pieces of old frames */
+static int check_alias_newer_target(void) {
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    u32* r = ch->r3d;
+    const u64 cpu = HEAP_BASE + 0xA80000, older = 0x9800000ull, newer = 0x9900000ull;
+    CHECK(mem_map(cpu, 0x10000, MS_NORMAL, PERM_RW) == 0);
+    memset(GP(cpu), 0, 0x10000);
+    gmmu_map(older, cpu, 0x10000);
+    gmmu_map(newer, cpu, 0x10000);
+    r[0x487] = 1;
+    r[0x202] = 64; /* 16 RGBA pixels, pitch linear */
+    r[0x203] = 16;
+    r[0x204] = 0xD5; /* A8B8G8R8 */
+    r[0x205] = 0x1000;
+    r[0x206] = 1;
+    const float red[4] = {1, 0, 0, 1}, green[4] = {0, 1, 0, 1};
+    r[0x201] = (u32)older;
+    memcpy(&r[0x360], red, sizeof red);
+    engine_clear(ch, 15 << 2);
+    r[0x201] = (u32)newer;
+    memcpy(&r[0x360], green, sizeof green);
+    engine_clear(ch, 15 << 2);
+    vk_render_end();
+    Surf *a = vk_rt_find(older), *b = vk_rt_find(newer);
+    CHECK(a && b && a != b && b->wseq > a->wseq);
+    vk_rt_flush(older); /* the older pixels land in memory, under the newer target */
+    u8 mem[4], px[4];
+    CHECK(!gmem_read(newer, mem, 4));
+    CHECK(mem[0] == 255 && mem[1] == 0);
+    vk_rt_note_read(b); /* its next use */
+    CHECK(vk_rt_find(newer) == b);
+    CHECK(!read_pixel0(b, px));
+    if (px[0] != 0 || px[1] != 255) {
+        fprintf(stderr, "the newer target over an older one's bytes at another address: %u %u %u %u, not green\n",
+                px[0], px[1], px[2], px[3]);
+        return 1;
+    }
+    CHECK(mem_unmap(cpu, 0x10000) == 0);
+    free(ch);
+    return 0;
+}
+
 /* Images in pieces (sparse binding: vkQueueBindSparse on the graphics queue) made on this thread while the recording
    thread submits frames to the same queue: Vulkan requires the two calls to be externally synchronized, which the
    validation layer's threading checks report when they overlap */
@@ -6053,6 +6100,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_srgb_write());
     CHECK(!check_srgb_blit());
     CHECK(!check_clear_load_op());
+    CHECK(!check_alias_newer_target());
     CHECK(!check_sparse_while_submitting());
     CHECK(!check_multisample_shader_gate());
     CHECK(!check_msaa());
