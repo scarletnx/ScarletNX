@@ -162,6 +162,7 @@ static int nn_ldn_detail_IUserLocalCommunicationService_GetState(SvcObj* self, u
 static int nn_ldn_detail_IUserLocalCommunicationService_AttachStateChangeEvent(SvcObj* self, u32* event) {
     Ldn* d = self->data;
     *event = ev_handle(d->ev);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 /* an Initialize refused: GetState says Error until one is taken, as Eden and Ryujinx answer */

@@ -1925,6 +1925,7 @@ static int nns_nvdrv_INvDrvServices_QueryEvent(SvcObj* self, u32 fd, u32 event_i
     if (!e) e = kevent_new("nv query");
     *event = h_new(&e->o);
     if (held) kobj_unref(&e->o);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     *error = NV_RESULT_SUCCESS;
     R_SUCCEED();
 }

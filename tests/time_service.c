@@ -36,9 +36,10 @@ KShmem* kshmem_new(u64 size, const char* name) {
     return &shm_obj;
 }
 u8* kshmem_ptr(KShmem* s) { return s->host; }
+static int test_table_full; /* the handle table has no free entry */
 u32 h_new(KObj* o) {
     (void)o;
-    return 0x100;
+    return test_table_full ? 0 : 0x100;
 }
 int new_event(u32* event, const char* name, int signaled) {
     (void)name, (void)signaled;
@@ -246,6 +247,16 @@ int main(void) {
     }
 
     test_permissions();
+    { /* the shared memory's handle, and OutOfHandles in its place when the handle table is full */
+        u32 handle = 0;
+        CHECK(nn_timesrv_detail_service_IStaticService_GetSharedMemoryNativeHandle(NULL, &handle) == 0 &&
+              handle == 0x100);
+        test_table_full = 1;
+        CHECK((u32)nn_timesrv_detail_service_IStaticService_GetSharedMemoryNativeHandle(NULL, &handle) ==
+                  SNX_RC_SVC_OUT_OF_HANDLES &&
+              handle == 0);
+        test_table_full = 0;
+    }
     free(g_mem);
     printf("time_service: %u checks passed\n", checks);
     return 0;

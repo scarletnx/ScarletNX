@@ -234,6 +234,12 @@ int main(void) {
     CHECK(g_hle.pl.font_off[2] == g_hle.pl.font_off[1]);
     CHECK(g_hle.pl.font_size[1] > snx_font_chinese_simplified_size);
     CHECK(g_hle.pl.font_size[0] > snx_font_japanese_size && g_hle.pl.font_size[3] > snx_font_chinese_traditional_size);
+    { /* this test's handle table gives no handle, as the kernel's does when full: OutOfHandles, not success with 0 */
+        u32 handle = 7;
+        CHECK((u32)nn_pl_detail_IPlatformServiceManager_GetSharedMemoryNativeHandle(NULL, &handle) ==
+                  SNX_RC_SVC_OUT_OF_HANDLES &&
+              handle == 0);
+    }
     printf("pl_fonts: %u checks passed\n", checks);
     return 0;
 }

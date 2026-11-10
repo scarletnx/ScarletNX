@@ -701,6 +701,7 @@ static int nn_hid_IHidServer_CreateAppletResource(SvcObj* self, u64 aruid, SvcOb
 static int nn_hid_IAppletResource_GetSharedMemoryHandle(SvcObj* self, u32* shared_memory) {
     (void)self;
     *shared_memory = h_new(kobj_at(g_hle.hid.shm));
+    R_UNLESS(*shared_memory, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_hid_IHidServer_AcquireXpadIdEventHandle(SvcObj* self, u64 unknown, u32* event) {
@@ -710,16 +711,19 @@ static int nn_hid_IHidServer_AcquireXpadIdEventHandle(SvcObj* self, u64 unknown,
 static int nn_hid_IHidServer_GetJoyXpadLifoHandle(SvcObj* self, nn_hid_JoyXpadId id, u32* lifo) {
     (void)self, (void)id;
     *lifo = h_new(kobj_at(g_hle.hid.xpad_shm));
+    R_UNLESS(*lifo, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_hid_IHidServer_GetSixAxisSensorLifoHandle(SvcObj* self, nn_hid_BasicXpadId id, u32* lifo) {
     (void)self, (void)id;
     *lifo = h_new(kobj_at(g_hle.hid.six_shm));
+    R_UNLESS(*lifo, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_hid_IHidServer_GetJoySixAxisSensorLifoHandle(SvcObj* self, nn_hid_JoyXpadId id, u32* lifo) {
     (void)self, (void)id;
     *lifo = h_new(kobj_at(g_hle.hid.joysix_shm));
+    R_UNLESS(*lifo, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_hid_IHidServer_IsSixAxisSensorFusionEnabled(SvcObj* self, nn_hid_SixAxisSensorHandle handle, u64 aruid,
@@ -798,6 +802,7 @@ static int nn_hid_IHidServer_AcquireNpadStyleSetUpdateEventHandle(SvcObj* self, 
     (void)self, (void)aruid, (void)event_ptr;
     R_UNLESS(e >= 0, SNX_RC_HID_INVALID_NPAD_ID);
     *event = ev_handle(g_hle.hid.style_ev[e]);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 /* the player lights: one more from the left for No1 to No4, then the console's patterns for No5 to No8 */

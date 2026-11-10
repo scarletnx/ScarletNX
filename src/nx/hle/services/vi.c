@@ -480,6 +480,7 @@ static int nns_hosbinder_IHOSBinderDriver_GetNativeHandle(SvcObj* self, i32 bind
     pm_unlock(&g_host.vi.lock);
     R_UNLESS(l, SNX_RC_VI_NOT_FOUND);
     *event = ev_handle(l->event);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 
@@ -646,12 +647,14 @@ static int nn_visrv_sf_IApplicationDisplayService_GetIndirectLayerImageRequiredM
 static int nn_visrv_sf_IApplicationDisplayService_GetDisplayVsyncEvent(SvcObj* self, u64 display_id, u32* event) {
     (void)self, (void)display_id;
     *event = ev_handle(g_hle.vi.vsync);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_visrv_sf_IApplicationDisplayService_GetDisplayVsyncEventForDebug(SvcObj* self, u64 display_id,
                                                                                u32* event) {
     (void)self, (void)display_id;
     *event = ev_handle(g_hle.vi.vsync);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 
@@ -697,11 +700,13 @@ static int nn_visrv_sf_IManagerDisplayService_AcquireLayerTexturePresentingEvent
 static int nn_visrv_sf_IManagerDisplayService_GetDisplayHotplugEvent(SvcObj* self, u64 display_id, u32* event) {
     (void)self, (void)display_id;
     *event = ev_handle(g_hle.vi.hotplug);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_visrv_sf_IManagerDisplayService_GetDisplayModeChangedEvent(SvcObj* self, u64 display_id, u32* event) {
     (void)self, (void)display_id;
     *event = ev_handle(g_hle.vi.mode_changed);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 

@@ -2471,6 +2471,7 @@ static SvcObj* notifier_new(const char* name) {
 }
 static int nn_fssrv_sf_IEventNotifier_GetEventHandle(SvcObj* self, u32* event) {
     *event = ev_handle((u32)self->u[0]);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_fssrv_sf_IFileSystemProxy_OpenSdCardDetectionEventNotifier(SvcObj* self, SvcObj** notifier) {

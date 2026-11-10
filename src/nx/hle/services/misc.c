@@ -274,6 +274,7 @@ static int nn_streamplay_IUserShimScopedObject_GetHidSharedMemory(SvcObj* self,
     kobj_ref(&s->o);
     *memory = h_new(&s->o);
     kobj_unref(&s->o);
+    R_UNLESS(*memory, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_friends_detail_ipc_IServiceCreator_CreateFriendService(SvcObj* self, SvcObj** service) {
@@ -843,6 +844,7 @@ static int nn_nfp_detail_IUser_GetApplicationAreaSize(SvcObj* self, const nn_nfc
 }
 static int nn_nfp_detail_IUser_AttachAvailabilityChangeEvent(SvcObj* self, u32* event) {
     *event = ev_handle(((NfcUser*)self->data)->availability);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_nfp_detail_IUser_RecreateApplicationArea(SvcObj* self, const nn_nfc_DeviceHandle* device_handle,
@@ -898,6 +900,7 @@ static int nn_nfc_detail_IUser_GetNpadId(SvcObj* self, const nn_nfc_DeviceHandle
 }
 static int nn_nfc_detail_IUser_AttachAvailabilityChangeEvent(SvcObj* self, u32* event) {
     *event = ev_handle(((NfcUser*)self->data)->availability);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_nfc_detail_IUser_StartDetection(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, u32 protocol) {
@@ -1170,6 +1173,7 @@ static int nn_irsensor_IIrSensorServer_GetIrsensorSharedMemoryHandle(SvcObj* sel
     }
     pm_unlock(&g_host.misc.irs_lock);
     *shared_memory = h_new(kobj_at(g_hle.misc.irs_shm));
+    R_UNLESS(*shared_memory, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 

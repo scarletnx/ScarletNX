@@ -32,6 +32,7 @@ static int nn_nifm_detail_IRequest_GetSystemEventReadableHandles(SvcObj* self, u
     NifmRequest* r = self->data;
     *state_event = ev_handle(r->ev[0]);
     *other_event = ev_handle(r->ev[1]);
+    R_UNLESS(*state_event && *other_event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_nifm_detail_IRequest_Cancel(SvcObj* self) {

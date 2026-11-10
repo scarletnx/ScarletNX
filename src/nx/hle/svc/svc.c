@@ -519,9 +519,11 @@ static u32 get_info(u32 id0, u32 h, u64 id1, u64* out) {
         R_SUCCEED();
     }
     if (id0 != 9) return svc_get_info(id0, h, id1, out);
-    R_UNLESS(!h, SNX_RC_SVC_INVALID_HANDLE); /* ResourceLimit: always succeeds after its checks */
+    R_UNLESS(!h, SNX_RC_SVC_INVALID_HANDLE); /* ResourceLimit */
     R_UNLESS(!id1, SNX_RC_SVC_INVALID_COMBINATION);
-    *out = h_new(&g_hle.svc.reslimit);
+    u32 rh = h_new(&g_hle.svc.reslimit);
+    R_UNLESS(rh, SNX_RC_SVC_OUT_OF_HANDLES);
+    *out = rh;
     R_SUCCEED();
 }
 
