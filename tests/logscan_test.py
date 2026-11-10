@@ -322,8 +322,8 @@ def main():
     check(rt['signature'] == 'crash (invalid memory access) in the runtime 1234abc +1a2b3c', rt['signature'])
 
     # a build that says the day its commit was made: the commit is the hash still, the runtime's offsets keep their
-    # signature, and the markdown says the day; a log read as text has no run time, so no days before it (the Share
-    # Log's: tests/gui_sdl.c and tests/logscan_age.c)
+    # signature, and the markdown says the day; a log read as text that does not say when its run began has no run time, so no
+    # days before it (the Share Log's: tests/gui_sdl.c and tests/logscan_age.c)
     dated = CRASH_IN_RUNTIME.replace('1234abc (clang', '1234abc, committed 2026-11-02 (clang')
     d = scan(dated)
     check(
@@ -334,6 +334,14 @@ def main():
     check(d['signature'] == rt['signature'], f"a dated build's runtime crash: {d['signature']}")
     md = run(['-', '--format', 'markdown'], dated.encode())
     check('\n- **Build:** `main 1234abc`, committed 2026-11-02\n' in md, f'the markdown of a dated build:\n{md}')
+    # and one whose log says when its run began has them, read as text too, with the same signature
+    began = dated.replace('x86_64)\n', 'x86_64)\n[   0.00] run: started 2026-11-05 14:03:10 UTC\n', 1)
+    check(scan(began)['signature'] == rt['signature'], f"a run's start line: {scan(began)['signature']}")
+    md = run(['-', '--format', 'markdown'], began.encode())
+    check(
+        '\n- **Build:** `main 1234abc`, committed 2026-11-02, 3 days before this run\n' in md,
+        f'the markdown of a log that says when its run began:\n{md}',
+    )
     md = run(['-', '--format', 'markdown'], CRASH_IN_RUNTIME.encode())
     check(
         '\n- **Build:** `ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)`\n' in md,

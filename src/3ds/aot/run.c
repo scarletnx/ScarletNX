@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define SNX_CTR_RUN_SLICE 1000000u
 
@@ -203,7 +204,10 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
        is loaded) */
     char id[17];
     snprintf(id, sizeof id, "%016llX", (unsigned long long)process->title_id);
+    char run[SNX_RUN_LOG_LINE];
     printf("Game: %s (%s) - %s\n", process->title[0] ? process->title : id, id, snx_build_log_line());
+    snx_run_log_line(run, (long long)time(NULL));
+    printf("%s\n", run);
     if (!snx_ctr_present_init(process->memory, frames))
         printf("No Vulkan device: no frames will be drawn, shown or saved\n");
     else {

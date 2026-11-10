@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* the common options scarletnx-vita takes (common/utilities/cli.h): a VPK is always extracted, and the Vita runtime
    has no keys, frame count, fullscreen setting or window-less run */
@@ -272,7 +273,10 @@ static int play(const char* folder, bool recompile, double seconds, const char* 
     /* the window's title as the 3DS driver's and a Switch game's: the game's name, then the build; the log's line with
        the day its commit was made */
     char* header = snx_format("%s - %s", title ? title : image.name, snx_build_info());
+    char run[SNX_RUN_LOG_LINE];
     printf("Game: %s - %s\n", title ? title : image.name, snx_build_log_line());
+    snx_run_log_line(run, (long long)time(NULL));
+    printf("%s\n", run);
     vita_present_init(header ? header : image.name, shot);
     free(header);
     free(sfo);

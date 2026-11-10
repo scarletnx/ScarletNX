@@ -520,6 +520,30 @@ static int is_day(Span s) {
     return (s.p[5] == '0' ? s.p[6] != '0' : s.p[5] == '1' && s.p[6] <= '2') &&
            (s.p[8] == '0' ? s.p[9] != '0' : s.p[8] < '3' || (s.p[8] == '3' && s.p[9] <= '1'));
 }
+/* the days from 1970-01-01 to y-m-d of the Gregorian calendar (Howard Hinnant's days_from_civil) */
+static long days_from_civil(long y, long m, long d) {
+    long era, yoe, doy;
+    y -= m <= 2;
+    era = (y >= 0 ? y : y - 399) / 400;
+    yoe = y - era * 400;
+    doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+    return era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
+}
+/* "<YYYY-MM-DD> <HH:MM:SS> UTC" of the run's line (snx_run_log_line) in seconds since 1970, 0 for anything else */
+static long long run_started(Span at) {
+    Span day = {at.p, 10};
+    const char* p = at.p;
+    long h, m, sec;
+    if (at.n != 23 || !is_day(day) || p[10] != ' ' || p[13] != ':' || p[16] != ':' || memcmp(p + 19, " UTC", 4))
+        return 0;
+    for (int i = 11; i < 19; i++)
+        if (i != 13 && i != 16 && (p[i] < '0' || p[i] > '9')) return 0;
+    h = (p[11] - '0') * 10 + (p[12] - '0');
+    m = (p[14] - '0') * 10 + (p[15] - '0');
+    sec = (p[17] - '0') * 10 + (p[18] - '0');
+    if (h > 23 || m > 59 || sec > 59) return 0;
+    return (long long)days_from_civil(atol(p), atol(p + 5), atol(p + 8)) * 86400 + h * 3600 + m * 60 + sec;
+}
 /* "build: ScarletNX <branch> <commit>, committed <YYYY-MM-DD> (<compiler>, <system>)", a build before the day had no
    ", committed ...", or the launcher's line without "build: " */
 static int build_line(SnxLogScan* s, Span line) {
@@ -1188,6 +1212,12 @@ void snx_logscan_line(SnxLogScan* s, const char* p, size_t n) {
         case 'b':
             if (!s->build && take_lit(&rest, "build: ") && build_line(s, rest)) return;
             break;
+        case 'r': /* "run: started <YYYY-MM-DD> <HH:MM:SS> UTC" (snx_run_log_line) */
+            if (!s->started && take_lit(&rest, "run: started ")) {
+                s->started = run_started(rest);
+                if (s->started) return;
+            }
+            break;
         case 'G':
             if (!s->title && take_lit(&rest, "Game: ") && frontend_header(s, rest)) return;
             break;
@@ -1683,21 +1713,12 @@ static void md_sym(Buf* b, const SnxLogScan* s, const SnxLogSym* sym, SnxDemangl
     }
     free(plain);
 }
-/* the days from 1970-01-01 to y-m-d of the Gregorian calendar (Howard Hinnant's days_from_civil) */
-static long days_from_civil(long y, long m, long d) {
-    long era, yoe, doy;
-    y -= m <= 2;
-    era = (y >= 0 ? y : y - 399) / 400;
-    yoe = y - era * 400;
-    doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
-    return era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
-}
-/* "`<branch> <commit>`, committed <day>", and when the run's time is known (written) and the day is one, ", <n> days
-   before this run", by the days of the UTC calendar */
+/* "`<branch> <commit>`, committed <day>", and when the run's time is known (the log's "run: started" line, else
+   written) and the day is one, ", <n> days before this run", by the days of the UTC calendar */
 static void md_build_age(Buf* b, const SnxLogScan* s) {
     Buf name = {0};
     const char* day = snx_logscan_text(s, s->committed);
-    long long began = s->written - (s->centiseconds > 0 ? s->centiseconds / 100 : 0);
+    long long began = s->started > 0 ? s->started : s->written - (s->centiseconds > 0 ? s->centiseconds / 100 : 0);
     put(&name, snx_logscan_text(s, s->branch));
     put(&name, " ");
     put(&name, snx_logscan_text(s, s->commit));
@@ -1705,7 +1726,7 @@ static void md_build_age(Buf* b, const SnxLogScan* s) {
     free(name.p);
     put(b, ", committed ");
     put(b, day);
-    if (s->written > 0 && began >= 0 && strcmp(day, "unknown")) {
+    if ((s->started > 0 || s->written > 0) && began >= 0 && strcmp(day, "unknown")) {
         char age[64];
         long days = (long)(began / 86400) - days_from_civil(atol(day), atol(day + 5), atol(day + 8));
         sprintf(age, ", %ld %s before this run", days, days == 1 || days == -1 ? "day" : "days");
