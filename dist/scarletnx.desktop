@@ -4,6 +4,7 @@ Name=ScarletNX
 Comment=Runs Switch games recompiled to native code
 Exec=scarletnx
 Icon=wimsy
+MimeType=application/x-nx-nsp;application/x-nx-xci;application/x-nx-nro;
 Categories=Game;Emulator;
 Keywords=Switch;recompiler;
 Terminal=false
