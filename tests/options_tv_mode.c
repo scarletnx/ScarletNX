@@ -46,7 +46,6 @@ static struct {
     int changed;    /* the watcher's mark, which plat_power_take_change takes */
     u64 ns;         /* plat_ns */
     int queries;    /* plat_power_on_charger's calls */
-    int watch_calls; /* plat_power_watch's calls */
     int am, hid;    /* am_display_mode_changed's and hid_mode_changed's calls */
     int lines;      /* the log's lines */
     char logged[256];
@@ -60,10 +59,7 @@ int plat_power_on_charger(void) {
     g_test.queries++;
     return g_test.on_charger;
 }
-int plat_power_watch(void) {
-    g_test.watch_calls++;
-    return g_test.watch;
-}
+int plat_power_watch(void) { return g_test.watch; }
 int plat_power_take_change(void) {
     int was = g_test.changed;
     g_test.changed = 0;
@@ -222,7 +218,6 @@ static void test_auto_watched(void) {
 /* Auto on a host with no watcher: asked as the game starts, then every 15 s and not before */
 static void test_auto_polled(void) {
     int queries;
-    options_tv_mode_forget_watcher();
     g_test.watch = -1;
     g_test.on_charger = 0;
     g_test.ns = 100 * POLL_NS;
@@ -240,38 +235,6 @@ static void test_auto_polled(void) {
     CHECK(!strcmp(g_test.logged, "power: the host is on its charger: TV mode Auto picks TV mode\n"));
 }
 
-/* The hotkey and the menu's TV mode row (#1168): On -> Off -> Auto -> On, its events only on a real change, the
-   watcher started once however often Auto comes back, and a step the other way */
-static void test_cycle(void) {
-    int before, calls;
-    options_tv_mode_forget_watcher();
-    g_test.watch = 0;
-    g_test.on_charger = 0;
-    g_test.watch_calls = 0;
-    docked("1");
-    CHECK(options_tv_mode_choice() == 1 && mode() == 1);
-    before = g_test.am;
-    CHECK(options_tv_mode_step(1) == 0);
-    CHECK(mode() == 0 &&
-          g_test.am == before); /* the services hear it on the frontend's tick, out of the input's lock */
-    options_tv_mode_update();
-    CHECK(g_test.am == before + 1 && g_test.hid >= 1);
-    CHECK(!strcmp(g_test.logged, "TV mode: Off (handheld mode)\n"));
-    /* Auto on the battery picks handheld, so the mode does not change, and the watcher starts */
-    before = g_test.am;
-    CHECK(options_tv_mode_step(1) == 2);
-    CHECK(mode() == 0 && g_test.am == before && g_test.watch_calls == 1);
-    CHECK(!strcmp(g_test.logged, "TV mode: Auto (handheld mode)\n"));
-    CHECK(options_tv_mode_step(1) == 1 && mode() == 1);
-    calls = g_test.watch_calls;
-    CHECK(options_tv_mode_step(1) == 0);
-    CHECK(options_tv_mode_step(1) == 2);
-    CHECK(g_test.watch_calls == calls);                  /* once only, however often Auto comes back */
-    CHECK(options_tv_mode_step(-1) == 0 && mode() == 0); /* the other way: Auto -> Off -> On -> Auto */
-    CHECK(options_tv_mode_step(-1) == 1 && mode() == 1);
-    CHECK(options_tv_mode_step(-1) == 2);
-    /* the cycle changes the choice in effect and nothing else: tests/overlay.c shows its row keeps no .ini key */
-}
 /* vk_memory at the top, in no section, and again in [Debug]: the second line's 0 is taken, and a line says so with
    both values, as the runtime writes the file back with that one line */
 static void test_key_twice(void) {
@@ -561,7 +524,6 @@ int main(int argc, char** argv) {
     test_fixed();
     test_auto_watched();
     test_auto_polled();
-    test_cycle();     /* before the file's every setting is applied, which counts from nought */
     test_key_twice(); /* after the TV mode tests: the file's every setting applied, which they count from nought */
     test_settings_line();
     test_memory_fit_old();

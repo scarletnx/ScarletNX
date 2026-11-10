@@ -51,8 +51,7 @@ value as `--option VALUE` or `--option=VALUE`.
 `scarletnx-agb Game.gba` plays the ROM in a window four times the console's
 screen, scaled by whole steps when it is resized, with the console's sound and
 its 59.73 frames a second. `-f` (or `--fullscreen=1`) starts it fullscreen, and F11
-switches. Escape twice within three seconds quits, as on the Switch: the first
-press only warns. The keyboard is the Switch runtime's: the arrows are the D-pad, X or
+switches. The keyboard is the Switch runtime's: the arrows are the D-pad, X or
 Space A, Z B, Q L, E R, Enter Start and Backspace Select. A gamepad's buttons are
 where the console has them (A east, B south), its shoulders and triggers L and
 R, its left stick the D-pad. `--script ms:hex,...` presses keys unattended, as the

@@ -22,7 +22,6 @@ static const char* const HELP_KEYS =
     "  F4  turn the FPS limit off or back on\n"
     "  F5  write every thread's state to the log\n"
     "  F6  turn showcase mode on or off\n"
-    "  Ctrl+D  cycle the TV mode: On, Off and Auto\n"
     "  F7  save the game's state to the selected slot\n"
     "  F8  load the selected slot's state\n"
     "  F9  select the next save state slot\n"
@@ -35,7 +34,7 @@ static const char* const HELP_KEYS =
 
 int help_text(char* out, size_t size, int capture, const char* debugger) {
     int has = debugger && *debugger;
-    return snprintf(out, size, "%s%s  Esc twice  quit the game%s%s", HELP_KEYS,
+    return snprintf(out, size, "%s%s  Esc  quit the game%s%s", HELP_KEYS,
                     capture ? "  Ctrl+Shift+F12  capture the next frame with RenderDoc\n" : "",
                     has ? "\n\nDebugger attached: " : "", has ? debugger : "");
 }
