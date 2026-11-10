@@ -8731,6 +8731,9 @@ int main(int argc, char** argv) {
         SDL_Color page = rgb(app.theme.page), was, mid;
         int x, y;
         app.animations_off = false;
+        /* no fade under way at this clock: the last box closed on the real one, ahead of it once the test ran 50 s,
+           and its shade would stay on every frame here */
+        app.switch_ms = app.box_ms = 0;
         app.clock = 50000;
         render(&app); /* the menu, as it settled */
         go_tab(&app, GUI_TAB_GAMES);
@@ -8766,6 +8769,7 @@ int main(int argc, char** argv) {
             y = m.place.tabs.y + m.place.tabs.h / 2;
         }
         was = pixel(&app, (float)x, (float)y);
+        assert(same_colour(was, rgb(app.theme.focus))); /* settled: no shade left on it */
         key(&app, SDLK_ESCAPE); /* Exit? over the menu: its shade comes in */
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_EXIT);
         render(&app);
