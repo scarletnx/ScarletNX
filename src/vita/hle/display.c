@@ -35,6 +35,8 @@ static uint32_t get_frame_buf(VitaProcess* p, VitaThread* t) {
 }
 static uint32_t wait_vblank(VitaProcess* p, VitaThread* t, uint32_t count) {
     p->pacer = t;
+    p->display.due_count = count ? count : 1;
+    p->display.due = p->display.vblanks + p->display.due_count;
     vita_wait(p, (VitaWait){.kind = VITA_WAIT_VBLANK, .a = (uint32_t)p->display.vblanks + (count ? count - 1 : 0)});
     return 0;
 }
@@ -47,6 +49,8 @@ static uint32_t pace_vblank(VitaProcess* p, VitaThread* t, uint32_t count) {
     uint64_t now = p->display.vblanks, n = count ? count : 1, target = now + n;
     if (t->vblank_wake && now <= t->vblank_wake + 2 * n && t->vblank_wake + n < target) target = t->vblank_wake + n;
     p->pacer = t;
+    p->display.due_count = (uint32_t)n;
+    p->display.due = target > now ? target : now;
     if (target <= now) {
         t->vblank_wake = now;
         return 0;
