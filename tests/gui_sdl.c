@@ -1214,7 +1214,7 @@ static void icons_named(void) {
         ++sections;
         for (page = strchr(rest, '/'); page; page = strchr(page + 1, '/')) {
             char p[64];
-            assert(sscanf(page + 1, "%63[^,\t\n]", p) == 1);
+            assert(sscanf(page + 1, "%63[^,\t\r\n]", p) == 1);
             if (strstr(p, "  ")) *strstr(p, "  ") = 0; /* the section's words after its tables: backend, launcher */
             while (p[0] && p[strlen(p) - 1] == ' ') p[strlen(p) - 1] = 0;
             if (!strcmp(p, "Player")) continue;
