@@ -1719,7 +1719,7 @@ void vk_release_retire(u32 id);
 void vk_release_drain(void);
 /* query.c: the samples-passed counter with occlusion queries (renderer.h samples_*), under vk_lock. vk_query_draw before
    a game's draw in a rendering pass, vk_query_pass_end before the pass ends or a draw of the renderer's own in it
-   (render.c), vk_query_flush outside a pass before a submit (cmd.c) */
+   (render.c), vk_query_flush outside a pass before a submit (cmd.c), where the reports' copies are recorded */
 void vk_query_draw(VkCommandBuffer cb, u32 owner); /* counted as the targets' samples, the guest's */
 void vk_query_pass_end(VkCommandBuffer cb);
 void vk_query_flush(VkCommandBuffer cb);
