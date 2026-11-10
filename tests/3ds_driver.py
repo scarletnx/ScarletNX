@@ -35,7 +35,7 @@ def main():
     assert '--gamepad_swap_ab=1' in help_text and '--gamepad_deadzone=N' in help_text
     assert '--gamepad_map=MAP' in help_text and '--touch=N' in help_text
     assert '--vsync=0' in help_text and '--fullscreen=1' in help_text and '--anisotropy=N' in help_text
-    assert '--fps_limit=N' in help_text
+    assert '--fps_limit=N' in help_text and '--aot_threads=N' in help_text
     run(['--board-info', '--extract-container'], 2, 'Usage:')
     run(['-x', '-r', 'game.cia'], 2, 'Usage:')
     run(['-r', '--max-blocks', '5', 'game.cia'], 2, 'Usage:')
@@ -60,6 +60,15 @@ def main():
     run(['--board-info', '--vk_memory=1'], 0, 'Old 3DS')
     run(['--board-info', '--async_pipelines=1', '--pipeline_threads=2'], 0, 'Old 3DS')
     run(['--board-info', '--vk_budget_mb=64'], 2, 'unknown setting: --vk_budget_mb=64')
+    # the recompile's threads, the Switch's setting, which the launcher's queue gives every driver: a value it does
+    # not take stops the run with the value
+    run(['--board-info', '--aot_threads=3'], 0, 'Old 3DS')
+    run(
+        ['--board-info', '--aot_threads=many'],
+        2,
+        'scarletnx-3ds: aot_threads=many is not a whole number from 0 to 1024',
+    )
+    run(['--board-info', '--aot_threads=2000'], 2, 'aot_threads=2000 is not a whole number from 0 to 1024')
     # the Controllers table's A and B and dead zone, read as the Switch's (a dead zone past 90 is 90, said), never
     # its vibration, which the 3DS has none of
     run(['--board-info', '--gamepad_swap_ab=1', '--gamepad_deadzone=30'], 0, 'Old 3DS')

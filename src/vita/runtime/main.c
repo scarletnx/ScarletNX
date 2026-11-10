@@ -47,7 +47,9 @@ static void usage(FILE* out) {
     fputs(
         "Vita options:\n"
         "  --KEY=VALUE            A Vita debug setting: --vita_hle_trace=1 logs each import the runtime lacks (2\n"
-        "                         every call), --vita_gxm_trace=1 each scene\n"
+        "                         every call), --vita_gxm_trace=1 each scene. And the Switch's --aot_threads=N:\n"
+        "                         the game's code compiles on N threads (1 to 1024; the default 0: the computer's\n"
+        "                         cores with a quarter left free)\n"
         "\n"
         "On the Vita, --update is the dumped game's update folder (default: patch/<title ID> beside its app/<title\n"
         "ID>), --shot saves PATH.ppm, and --script=ms:buttons,... is the setting vita_script.\n",
@@ -332,7 +334,15 @@ int snx_vita_main(int argc, char** argv) {
             char key[64];
             const char* value = ini_arg(a, key, sizeof key);
             const IniOpt* o = NULL;
-            if (value) {
+            /* the recompile's threads, the Switch's setting: a value it does not take stops here, as there */
+            if (value && !strcmp(key, "aot_threads")) {
+                o = ini_find(g_recompile_ini, key);
+                if (ini_check(o, value, error, sizeof error)) {
+                    fprintf(stderr, "scarletnx-vita: %s\n", error);
+                    snx_cli_free(&cli);
+                    return 2;
+                }
+            } else if (value) {
                 o = ini_find(g_vita_debug_ini, !strcmp(key, "press_len")    ? "vita_press_len"
                                                : !strcmp(key, "shot_every") ? "vita_shot_every"
                                                                             : key);

@@ -155,7 +155,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   **Background recompile** (*Auto*, `background_recompile = auto` in `app.ini`: *Gentle* while the computer or
   phone runs on its battery and *Full* on its charger or with none, asked as a recompile starts and every 5 s while it
   runs, the row saying what it is now; *Full*, `full`: the queue's recompiles take every core, or the AOT threads
-  picked; *Gentle*, `gentle`: half of them, at a low priority, ten steps of nice under the launcher's, on Windows the
+  picked; *Gentle*, `gentle`: half of them (`--aot_threads=N` to the game's driver, whichever console's; a GBA ROM
+  compiles on one thread either way), at a low priority, ten steps of nice under the launcher's, on Windows the
   class under the launcher's, for using the computer meanwhile; [the Compile tab](#the-compile-tab)),
 **Theme Editor**, which comes
   back to App, and **Folders**, every folder on one screen, the whole of it, a box a group:

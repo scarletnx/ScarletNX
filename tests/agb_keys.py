@@ -83,6 +83,24 @@ def main():
         )
         if bad.returncode != 2 or '--press_len=soon is not a whole number of ms' not in bad.stderr:
             sys.exit('agb_keys: --press_len=soon was taken (%d)\n%s' % (bad.returncode, bad.stderr))
+        # --aot_threads=, which the launcher's queue gives every driver: taken, and the recompile says what it does
+        # with it; a value it does not take stops the run with the value
+        made = subprocess.run(
+            [args.runner, '-r', '--aot_threads=4', '--outdir', str(work), str(work / 'keys.gba')],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if made.returncode or "aot_threads=4: a ROM's code is one module, compiled on 1 thread\n" not in made.stdout:
+            sys.exit('agb_keys: -r --aot_threads=4 (%d)\n%s%s' % (made.returncode, made.stdout, made.stderr))
+        bad = subprocess.run(
+            [args.runner, '-r', '--aot_threads=many', str(work / 'keys.gba')],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if bad.returncode != 2 or 'aot_threads=many is not a whole number from 0 to 1024' not in bad.stderr:
+            sys.exit('agb_keys: --aot_threads=many was taken (%d)\n%s' % (bad.returncode, bad.stderr))
     print('agb_keys: passed')
 
 

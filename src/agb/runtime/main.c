@@ -47,6 +47,8 @@ static void usage(FILE* out) {
         "AGB options:\n"
         "  --press_len=MS         How long each scripted press is held (default 300)\n"
         "  --registers            Print the CPU's registers when the run ends\n"
+        "  --aot_threads=N        The threads a recompile may take (0 to 1024), as the other drivers': a ROM's code\n"
+        "                         is one module, which compiles on 1 thread whatever N, and the recompile says so\n"
         "\n"
         "On the AGB, --frames runs with no window, sound or pacing, for tests. --shot writes the final frame as a\n"
         "PPM image. --script=MS:KEYS,... presses keys MS after the run's start, KEYS in hex as KEYINPUT has them (1\n"
@@ -153,6 +155,7 @@ int snx_agb_main(int argc, char** argv) {
     setvbuf(stderr, NULL, _IONBF, 0);
     const char* path = NULL;
     long press_len = 300;
+    const char* threads = NULL; /* --aot_threads=, as given */
     int registers = 0;
     SnxCli cli;
     snx_cli_init(&cli, "scarletnx-agb", agb_cli);
@@ -176,6 +179,15 @@ int snx_agb_main(int argc, char** argv) {
                 snx_cli_free(&cli);
                 return 2;
             }
+        } else if (!strncmp(argv[i], "--aot_threads=", 14)) {
+            char* end;
+            long n = strtol(argv[i] + 14, &end, 10);
+            if (end == argv[i] + 14 || *end || n < 0 || n > 1024) {
+                fprintf(stderr, "scarletnx-agb: aot_threads=%s is not a whole number from 0 to 1024\n", argv[i] + 14);
+                snx_cli_free(&cli);
+                return 2;
+            }
+            threads = argv[i] + 14;
         } else if (!strcmp(argv[i], "--registers"))
             registers = 1;
         else if (!strcmp(argv[i], "--"))
@@ -294,6 +306,8 @@ int snx_agb_main(int argc, char** argv) {
                 printf("Recompiling %s: %s\n", path, error);
             else
                 printf("Recompiling %s\n", path);
+            /* the queue's and a script's --aot_threads=, which every driver takes: nothing here to give them to */
+            if (threads) printf("aot_threads=%s: a ROM's code is one module, compiled on 1 thread\n", threads);
             error[0] = 0;
             if (agb_recomp_build(&recomp, &board, error, sizeof error)) {
                 fprintf(stderr, "scarletnx-agb: %s\n", error);

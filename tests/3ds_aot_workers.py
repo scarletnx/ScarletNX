@@ -3,7 +3,8 @@
 # Copyright 2026 the ScarletNX contributors
 """The static ARM11 compile on one machine's worker threads, again and again: every chunk is built for the memory
 model of the host, so the module links. A chunk built for the checked model on a host that is flat calls a stack probe
-the module does not define, and the link fails."""
+the module does not define, and the link fails. --aot_threads=N, the Switch's setting, is how many of them work: the
+compile says the count it started."""
 
 import importlib.util
 from pathlib import Path
@@ -29,10 +30,18 @@ def main():
         source.write_bytes(blob)
         for run in range(RUNS):
             output = Path(temp) / f'out {run}'
-            p = subprocess.run([driver, '-r', '--output', str(output), str(source)], text=True, capture_output=True,
-                               timeout=120)
+            # the first two on 2 and on 3 threads, whatever the host's cores; the rest on the host's own count
+            threads = [f'--aot_threads={run + 2}'] if run < 2 else []
+            p = subprocess.run(
+                [driver, '-r', *threads, '--output', str(output), str(source)],
+                text=True,
+                capture_output=True,
+                timeout=120,
+            )
             if p.returncode != 0:
                 sys.exit(f'3ds_aot_workers: run {run} exited with {p.returncode}\n{p.stdout}{p.stderr}')
+            if threads and f'static blocks on {run + 2} threads\n' not in p.stdout:
+                sys.exit(f'3ds_aot_workers: {threads[0]} did not compile on {run + 2} threads\n{p.stdout}{p.stderr}')
             if not ctr_aot.module_of(output).is_file():
                 sys.exit(f'3ds_aot_workers: run {run} wrote no module\n{p.stdout}{p.stderr}')
     print(f'3ds_aot_workers: ok, {RUNS} compiles')

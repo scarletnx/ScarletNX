@@ -12,6 +12,7 @@
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
 #include "common/utilities/endian.h"
+#include "snx_settings.h"
 #include <llvm-c/Core.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -267,10 +268,12 @@ static void worker(void* arg) {
     }
     snx_ir_free(ir);
 }
+/* on the threads the setting aot_threads gives, as the Switch's recompile: N, or for 0 the machine's own count */
 static bool compile_chunks(Work* w) {
-    unsigned jobs = snx_build_threads();
+    unsigned jobs = g_settings.aot_threads > 0 ? (unsigned)g_settings.aot_threads : snx_build_threads();
     if (jobs > w->chunks) jobs = w->chunks;
     if (jobs < 1) jobs = 1;
+    printf("ARM11 AOT: %u chunks of static blocks on %u threads\n", w->chunks, jobs);
     snx_work_lock_init(&w->lock);
     snx_run_workers(jobs, worker, w);
     snx_work_lock_destroy(&w->lock);
