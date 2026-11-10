@@ -249,12 +249,12 @@ typedef struct {
     char drivers[64], freedreno[32];
     char folder[GUI_FOLDER_ROWS][64];
 } GuiAppForm;
-/* GPU Drivers' values: each row's mark, (*) on the pick */
+/* GPU Drivers' values: each row's mark, (*) on the pick; on a greyed row, what this device lacks for it */
 #define GUI_DRIVERS_SHOWN 64 /* the packages the page lists; its note says how many more there are */
 /* Global, System driver, the packages, Download Driver, Add Driver, then edenprobe's Mode, Run, Continue, Clear */
 #define GUI_DRIVER_ROWS   (GUI_DRIVERS_SHOWN + 8)
 typedef struct {
-    char value[GUI_DRIVER_ROWS][8];
+    char value[GUI_DRIVER_ROWS][96];
 } GuiDriversForm;
 /* Freedreno Settings' values: the name and value typed, and each variable's value as its row shows it */
 #define GUI_FREEDRENO_PRESETS 16
@@ -607,6 +607,7 @@ typedef struct App {
        Freedreno Settings', for the launcher's picks or, with drivers_game (a game's program, drivers_title its name),
        that game's own */
     char* drivers_dir;
+    SnxGpuDriverHost gpu_host; /* this device as packages need it, asked once (drivers_host): no system until then */
     GuiGpuDriver* packages;
     size_t packages_count;
     char gpu_driver[128];
@@ -631,6 +632,7 @@ typedef struct App {
     int probe_row;           /* GPU Drivers' row it was started from, the page shown again as it ends; -1 for none */
     char vk_system[300];     /* the system's Vulkan driver as System driver's row says it, asked once */
     char addons_driver[400]; /* the game box's GPU Driver row: the game's pick, or Global and the launcher's */
+    bool addons_driver_off;  /* that row greyed: no package loads here, and the game picked none to take back */
     SnxFreedrenoVar fd_vars[SNX_FREEDRENO_MAX]; /* Freedreno Settings' variables as the page edits them */
     int fd_count;
     GuiFreedrenoForm fd_form;
@@ -797,6 +799,8 @@ typedef struct App {
 #endif
 } App;
 static const char* pick_name(const App* app, const char* id);
+static const SnxGpuDriverHost* drivers_host(App* app);
+static const char* drivers_lack(App* app);
 static void open_drivers(App* app, const char* game, const char* title, int row);
 static void open_freedreno(App* app, const char* game, const char* title);
 static char* game_ini_of(const char* program);
@@ -4899,15 +4903,23 @@ static void addons_open(App* app, const char* game, const char* title, bool alwa
     text = snx_ini_value(ini, "cheats_off");
     for (i = 0; i < app->cheats_count; ++i) app->cheats_on[i] = !snx_cheat_off(text, app->cheats[i]);
     free(text);
+    /* greyed where no package loads, the row saying what the device lacks; but for a game set to a package, whose row
+       stays to take the pick back */
+    app->addons_driver_off = drivers_lack(app) != NULL;
     if (snx_ini_has(ini, "gpu_driver")) { /* its own pick, else Global's */
         text = snx_ini_value(ini, "gpu_driver");
         snprintf(app->addons_driver, sizeof app->addons_driver, snx_tr("GPU Driver: %s"),
                  pick_name(app, text ? text : ""));
+        if (text && text[0]) app->addons_driver_off = false;
         free(text);
     } else {
         char global[300];
         snprintf(global, sizeof global, snx_tr("Global (%s)"), pick_name(app, app->gpu_driver));
         snprintf(app->addons_driver, sizeof app->addons_driver, snx_tr("GPU Driver: %s"), global);
+    }
+    if (app->addons_driver_off) {
+        size_t n = strlen(app->addons_driver);
+        snprintf(app->addons_driver + n, sizeof app->addons_driver - n, ", %s", drivers_lack(app));
     }
     free(ini);
     free(folder);
@@ -5017,12 +5029,14 @@ bool ui_addons_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* inf
     addons_label(app, (int)row, app->row_text, sizeof app->row_text);
     info->label = app->row_text + strlen(app->theme.marker);
     info->icon = addons_icon(app, (int)row);
-    /* greyed: a folder Open Folder cannot open, Clean Cache with none, Save States of a dump (which has none) */
+    /* greyed: a folder Open Folder cannot open, Clean Cache with none, Save States of a dump (which has none), GPU
+       Driver where no package loads */
     if (app->addons_folders_shown)
         addons_folder_off(app, (int)row, why, sizeof why);
     else
         why[0] = (addons_row(app, (int)row) == ROW_CLEAN_CACHE && !caches_there(app)) ||
-                 (addons_row(app, (int)row) == ROW_STATES && !states_kept(app->addons_game));
+                 (addons_row(app, (int)row) == ROW_STATES && !states_kept(app->addons_game)) ||
+                 (addons_row(app, (int)row) == ROW_GPU_DRIVER && app->addons_driver_off);
     if (why[0]) info->attr |= UI_ATTR_OFF;
     return true;
 }
@@ -5446,6 +5460,10 @@ static void addons_press(App* app, int row) {
     }
     if (item == ROW_CLEAN_CACHE) {
         caches_ask(app);
+        return;
+    }
+    if (item == ROW_GPU_DRIVER && app->addons_driver_off) { /* greyed: why, the box staying */
+        snx_gpu_driver_loads(drivers_host(app), app->message, sizeof app->message);
         return;
     }
     if (item == ROW_GPU_DRIVER ||
@@ -9276,6 +9294,27 @@ static void drivers_load(App* app) {
     free(app->packages);
     app->packages = gui_gpu_drivers_list(app->drivers_dir, &app->packages_count);
 }
+/* this device as packages need it (snx_gpu_driver_host), asked the first time a row needs it */
+static const SnxGpuDriverHost* drivers_host(App* app) {
+    if (!app->gpu_host.system) snx_gpu_driver_host(&app->gpu_host);
+    return &app->gpu_host;
+}
+/* what this device lacks to load a package (snx_gpu_driver_lack), in the few words a greyed row has room for beside
+   its label; NULL where packages load */
+static const char* drivers_lack(App* app) {
+    SnxGpuDriverLack lack = snx_gpu_driver_lack(drivers_host(app));
+    return lack == SNX_GPU_DRIVER_LOADS         ? NULL
+           : lack == SNX_GPU_DRIVER_NOT_ANDROID ? snx_tr("Android only")
+           : lack == SNX_GPU_DRIVER_NOT_ARM64   ? snx_tr("arm64 only")
+           : lack == SNX_GPU_DRIVER_NO_GPU      ? snx_tr("Unsupported GPU")
+           : lack == SNX_GPU_DRIVER_OLD_ANDROID ? snx_tr("Needs Android 9")
+                                                : snx_tr("Not in this build");
+}
+/* the same for Download Driver, whose repositories hold drivers for Adreno GPUs alone */
+static const char* fetch_lack(App* app) {
+    const char* lack = drivers_lack(app);
+    return lack ? lack : drivers_host(app)->kgsl ? NULL : snx_tr("Adreno only");
+}
 /* the system's Vulkan driver, as GPU Drivers' System driver row says it: asked once, an instance and no device */
 static void vk_system_ask(App* app) {
 #ifdef SNX_GUI_VULKAN
@@ -9344,7 +9383,7 @@ static bool probe_unfinished(const char* folder, char* about, size_t size) {
 static int drivers_fill(App* app) {
     GuiDriversForm* f = &app->drivers_form;
     char *ini = game_ini_of(app->drivers_game), *own = NULL;
-    const char* picked = app->gpu_driver;
+    const char *picked = app->gpu_driver, *lack = drivers_lack(app);
     size_t i, shown = SDL_min(app->packages_count, (size_t)GUI_DRIVERS_SHOWN);
     int r = 0;
     memset(f, 0, sizeof *f);
@@ -9380,22 +9419,40 @@ static int drivers_fill(App* app) {
                      d->meta.author[0] ? d->meta.author : snx_tr("no author"),
                      d->meta.package_version[0] ? d->meta.package_version : "?", d->meta.min_api, SNX_GPU_DRIVERS_DIR,
                      d->id, d->meta.description);
-        snprintf(f->value[r], sizeof f->value[r], "%s", picked && !strcmp(picked, d->id) ? "(*)" : "( )");
+        snprintf(f->value[r], sizeof f->value[r], "%s%s%s", picked && !strcmp(picked, d->id) ? "(*)" : "( )",
+                 lack ? " " : "", lack ? lack : "");
         app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
                                         sizeof f->value[0], app->drivers_about[r]);
     }
+    /* Download Driver and Add Driver: greyed where their package would not load, each saying what the device lacks
+       as its value and the whole of it as its help */
     app->drivers_tail = r;
     snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Download Driver"));
-    snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
-             snx_tr("The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded and "
-                    "added as Add Driver adds a zip. A GPU maker's own drivers are marked proprietary, no license"));
-    app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
+    if (lack)
+        snx_gpu_driver_loads(drivers_host(app), app->drivers_about[r], sizeof app->drivers_about[r]);
+    else if (fetch_lack(app))
+        snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
+                 snx_tr("The driver repositories Eden lists hold drivers for Adreno GPUs. An Xclipse GPU's driver, "
+                        "RADV, is added from its zip with Add Driver"));
+    else
+        snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
+                 snx_tr("The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded "
+                        "and added as Add Driver adds a zip. A GPU maker's own drivers are marked proprietary, no "
+                        "license"));
+    snprintf(f->value[r], sizeof f->value[r], "%s", fetch_lack(app) ? fetch_lack(app) : "");
+    app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
+                                    sizeof f->value[0], app->drivers_about[r]);
     ++r;
     snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Add Driver"));
-    snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
-             snx_tr("A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's releases "
-                    "are: unpacked into gpu_drivers/ of the user's data folder"));
-    app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
+    if (lack)
+        snx_gpu_driver_loads(drivers_host(app), app->drivers_about[r], sizeof app->drivers_about[r]);
+    else
+        snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
+                 snx_tr("A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's "
+                        "releases are: unpacked into gpu_drivers/ of the user's data folder"));
+    snprintf(f->value[r], sizeof f->value[r], "%s", lack ? lack : "");
+    app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
+                                    sizeof f->value[0], app->drivers_about[r]);
     /* the launcher's page: edenprobe Mode and Run edenprobe (gui/probe.h) */
     if (!app->drivers_game) {
         ++r;
@@ -9440,13 +9497,17 @@ static int driver_of(const App* app, int r) {
     int i = r - app->drivers_base;
     return i >= 0 && i < (int)SDL_min(app->packages_count, (size_t)GUI_DRIVERS_SHOWN) ? i : -1;
 }
+/* a GPU Drivers row greyed: a package, Download Driver and Add Driver where no package loads, Download Driver where
+   its repositories hold no driver for the GPU */
+static bool driver_row_off(App* app, int r) {
+    if (r == app->drivers_tail) return fetch_lack(app) != NULL;
+    return (driver_of(app, r) >= 0 || r == app->drivers_tail + 1) && drivers_lack(app) != NULL;
+}
 /* the page's note: this device's line (snx_gpu_driver_loads), whose game, the packages not listed */
 static void drivers_note(App* app) {
-    SnxGpuDriverHost host;
     char loads[512];
     size_t n;
-    snx_gpu_driver_host(&host);
-    snx_gpu_driver_loads(&host, loads, sizeof loads);
+    snx_gpu_driver_loads(drivers_host(app), loads, sizeof loads);
     if (app->drivers_game)
         n = (size_t)snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s: its own GPU driver. %s"),
                              app->drivers_title, loads);
@@ -9485,7 +9546,6 @@ static void driver_use(App* app, int r) {
     char *ini = game_ini_of(app->drivers_game), loads[512];
     const char* id = NULL; /* NULL: Global */
     int global = ini && r == 0, i = driver_of(app, r), failed;
-    SnxGpuDriverHost host;
     if (!global) id = i >= 0 ? app->packages[i].id : "";
     if (i >= 0 && app->packages[i].error[0]) {
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not picked: %s/%s does not read: %s"),
@@ -9493,8 +9553,7 @@ static void driver_use(App* app, int r) {
         free(ini);
         return;
     }
-    snx_gpu_driver_host(&host);
-    if (i >= 0 && !snx_gpu_driver_loads(&host, loads, sizeof loads)) {
+    if (i >= 0 && !snx_gpu_driver_loads(drivers_host(app), loads, sizeof loads)) {
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not picked: %s"), loads);
         free(ini);
         return;
@@ -9622,10 +9681,9 @@ static void driver_take(App* app, const void* zip, size_t size, const char* name
     char id[100], said[700], loads[512];
     size_t n;
     int added, i;
-    SnxGpuDriverHost host;
+    const SnxGpuDriverHost* host = drivers_host(app);
     bool here = app->editing && app->form == GUI_FORM_DRIVERS;
-    snx_gpu_driver_host(&host);
-    added = gui_gpu_driver_add(zip, size, name, app->drivers_dir, !strcmp(host.system, "Android") ? host.api : 0, id,
+    added = gui_gpu_driver_add(zip, size, name, app->drivers_dir, !strcmp(host->system, "Android") ? host->api : 0, id,
                                sizeof id, said, sizeof said);
     drivers_load(app);
     if (!here) { /* the page was left while the picker or the download went: added all the same, said on the menu */
@@ -9634,18 +9692,19 @@ static void driver_take(App* app, const void* zip, size_t size, const char* name
     }
     drivers_show(app, app->editor.row);
     for (i = 0; added != GUI_DRIVER_REFUSED && i < (int)app->packages_count && strcmp(app->packages[i].id, id); ++i) {}
-    if (added == GUI_DRIVER_ADDED && i < (int)app->packages_count && snx_gpu_driver_loads(&host, loads, sizeof loads))
+    if (added == GUI_DRIVER_ADDED && i < (int)app->packages_count && snx_gpu_driver_loads(host, loads, sizeof loads))
         driver_use(app, app->drivers_base + i);
     else if (added == GUI_DRIVER_ADDED && i < (int)app->packages_count)
         app->editor.row = app->drivers_base + i;
     n = strlen(said);
-    if (added == GUI_DRIVER_ADDED && !snx_gpu_driver_loads(&host, loads, sizeof loads))
+    if (added == GUI_DRIVER_ADDED && !snx_gpu_driver_loads(host, loads, sizeof loads))
         snprintf(said + n, sizeof said - n, ". %s", loads);
     else if (added == GUI_DRIVER_ADDED)
         snprintf(said + n, sizeof said - n, ". %s", app->editor.note);
     snprintf(app->editor.note, sizeof app->editor.note, "%s", said);
 }
-/* Select on a GPU Drivers row: a package's box (Use, Remove), System driver or Global used, Add Driver's picker */
+/* Select on a GPU Drivers row: a package's box (Use, Remove), System driver or Global used, Add Driver's picker; a
+   greyed row's why */
 static void picks_open(App* app, GuiPicksOf of);
 static void themes_open(App* app);
 static void picks_key(App* app, GuiKey key);
@@ -9655,7 +9714,10 @@ static void probe_clear(App* app);
 static void probe_after(App* app);
 static void probe_back(App* app);
 static void driver_select(App* app, int r) {
-    if (r == app->drivers_tail + 1)
+    /* Download Driver or Add Driver greyed: why, its help's words; a greyed package's box opens, for its Remove */
+    if (driver_row_off(app, r) && driver_of(app, r) < 0)
+        snprintf(app->editor.note, sizeof app->editor.note, "%s", app->drivers_about[r]);
+    else if (r == app->drivers_tail + 1)
         driver_pick(app);
     else if (r == app->drivers_tail)
         open_fetch(app);
@@ -11527,10 +11589,12 @@ static int clean_left(App* app) {
                            app_read(app, false, unread, sizeof unread, NULL, 0);
     return app->clean_found;
 }
-/* a row of App or Folders with nothing to do now, greyed, whose Enter says why (#614): nothing to clean or move, every
-   setting at its default, no folder picked, a library's Main off it */
+/* a row of App, Folders or GPU Drivers with nothing to do now, greyed, whose Enter says why (#614): nothing to clean
+   or move, every setting at its default, no folder picked, a library's Main off it, a GPU driver package where none
+   loads */
 static bool form_row_off(App* app, const GuiEditor* e, int r) {
     int picked = 0;
+    if (e->keys == app->drivers_keys) return driver_row_off(app, r);
     if (e->keys == app_keys)
         return (r == GUI_APP_MOVE && !app->lefts) || (r == GUI_APP_CLEAN && !clean_left(app)) ||
                (r == GUI_APP_RESET && app->settings.keys && !gui_settings_changed(&app->settings));

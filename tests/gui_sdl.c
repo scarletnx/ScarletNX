@@ -2670,6 +2670,21 @@ static void add_cheats(App* app, const char* temporary) {
     free(cheats);
     free(root);
 }
+/* the devices GPU Drivers is shown on, each as snx_gpu_driver_host finds it: a desktop, a phone with an Adreno GPU,
+   one with an Xclipse and one with another GPU */
+static const SnxGpuDriverHost host_desktop = {.system = "Linux", .arch = "x86_64"};
+static const SnxGpuDriverHost host_adreno = {.system = "Android", .arch = "arm64", .api = 36, .kgsl = 1, .built = 1};
+static const SnxGpuDriverHost host_xclipse = {.system = "Android",
+                                              .arch = "arm64",
+                                              .api = 34,
+                                              .amdgpu = 1,
+                                              .render = "/dev/dri/renderD128, kernel driver amdgpu",
+                                              .built = 1};
+static const SnxGpuDriverHost host_other = {.system = "Android",
+                                            .arch = "arm64",
+                                            .api = 36,
+                                            .render = "/dev/dri/renderD128, kernel driver panfrost",
+                                            .built = 1};
 /* a GPU driver package's zip, as released: meta.json, an arm64 library (its ELF header) and its folder name's file */
 static char* driver_zip(const char* temporary, const char* name) {
     mz_zip_archive z = {0};
@@ -2690,17 +2705,23 @@ static char* driver_zip(const char* temporary, const char* name) {
     mz_free(zip);
     return path;
 }
-/* Settings > App > GPU Drivers away from Android: its rows, this device said, a package added from its zip but not
-   picked (packages do not load here), its box's Use refused saying why, Remove asked first; then Freedreno Settings:
-   a preset applied, a variable Freedreno does not read refused, and Save keeping them in app.ini */
+/* Settings > App > GPU Drivers. On a desktop: its rows, this device said, Download Driver and Add Driver greyed, each
+   saying Android only on its row and why as its help and on Enter, with no page and no picker; a package left in the
+   folder greyed too, its box's Use refused saying why, its Remove asked first. On a phone with an Xclipse GPU: the
+   page saying so, Download Driver greyed for its Adreno drivers, a package added and picked. On a phone with another
+   GPU: greyed as a desktop, saying which GPUs, the package removed by Del. Then Freedreno Settings: a preset applied,
+   a variable Freedreno does not read refused, and Save keeping them in app.ini */
 static void gpu_drivers(App* app, const char* temporary) {
     char *dir = snx_path_join(temporary, "gpu_drivers"), *zip = driver_zip(temporary, "Turnip_v32.zip"), *kept;
     char *bad = snx_path_join(temporary, "not a package.zip"), *package;
+    SnxGpuDriverHost was = app->gpu_host;
+    UiRowInfo info = {0};
     size_t size;
     int x, y;
     free(app->drivers_dir);
     app->drivers_dir = dir;
     app->gpu_driver[0] = app->freedreno[0] = 0;
+    app->gpu_host = host_desktop;
     drivers_load(app);
     app->editor.row = GUI_APP_DRIVERS;
     render(app);
@@ -2708,17 +2729,43 @@ static void gpu_drivers(App* app, const char* temporary) {
     /* System driver, picked, Download Driver, Add Driver, edenprobe Mode and Run edenprobe; this device's line, which
        says packages do not load here */
     assert(app->form == GUI_FORM_DRIVERS && gui_editor_rows(&app->editor) == 5 && !app->editor.row);
-    assert(!strcmp(app->drivers_form.value[0], "(*)") && strstr(app->editor.note, "This device: ") &&
+    assert(!strcmp(app->drivers_form.value[0], "(*)") && strstr(app->editor.note, "This device: Linux x86_64: ") &&
            strstr(app->editor.note, "custom drivers load on Android 9 (API 28) or newer"));
-    render(app); /* drawn: its rows, the System driver's mark, Add Driver's icon */
-    /* a file that is no zip: refused, said by its name; a package's: added, not picked here */
+    /* Download Driver and Add Driver greyed, what the device lacks on the row itself; the others as they were */
+    assert(!strcmp(app->drivers_form.value[1], "Android only") && !strcmp(app->drivers_form.value[2], "Android only"));
+    assert(!form_row_off(app, &app->editor, 0) && form_row_off(app, &app->editor, 1) &&
+           form_row_off(app, &app->editor, 2) && !form_row_off(app, &app->editor, 3) &&
+           !form_row_off(app, &app->editor, 4));
+    assert(form_row_info(app, &app->editor, 2, form_labels(&app->editor), 0, &info) && (info.attr & UI_ATTR_OFF) &&
+           strstr(info.label, "Add Driver") && strstr(info.label, "Android only"));
+    info = (UiRowInfo){0};
+    assert(form_row_info(app, &app->editor, 0, form_labels(&app->editor), 0, &info) && !(info.attr & UI_ATTR_OFF));
+    render(app); /* drawn: its rows, the System driver's mark, Add Driver's icon, the greyed rows' reason whole */
+    shows(app, "Android only", rgb(app->theme.soft));
+    /* Enter on each: why, the page staying and no picker asked */
+    app->editor.row = 1;
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_DRIVERS &&
+           !strncmp(app->editor.note,
+                    "This device: Linux x86_64: custom drivers load on Android 9 (API 28) or newer, "
+                    "arm64, with an Adreno GPU (/dev/kgsl-3d0) or an Xclipse GPU",
+                    strlen("This device: Linux x86_64: custom drivers load on Android 9 (API 28) or newer, arm64, "
+                           "with an Adreno GPU (/dev/kgsl-3d0) or an Xclipse GPU")));
+    app->editor.note[0] = 0;
+    app->editor.row = 2;
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_DRIVERS && !app->driver_picked &&
+           strstr(app->editor.note, "This device: Linux x86_64: "));
+    /* a file that is no zip: refused, said by its name; a package's, as one left in the folder: added, not picked here,
+       its row greyed with its mark */
     assert(!snx_write_file(bad, "not a zip", 9));
     driver_picked(app, bad, NULL, false);
     assert(strstr(app->editor.note, "Not added: not a package.zip is not a zip (") && !app->packages_count);
     driver_picked(app, zip, NULL, false);
     assert(app->packages_count == 1 && !strcmp(app->packages[0].id, "Turnip_v32") && !app->gpu_driver[0]);
     assert(strstr(app->editor.note, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/Turnip_v32. This device: "));
-    assert(gui_editor_rows(&app->editor) == 6 && !strcmp(app->drivers_form.value[1], "( )"));
+    assert(gui_editor_rows(&app->editor) == 6 && !strcmp(app->drivers_form.value[1], "( ) Android only") &&
+           form_row_off(app, &app->editor, 1));
     package = snx_path_join(dir, "Turnip_v32/libvulkan_freedreno.so");
     assert(snx_is_file(package));
     /* its box: Use refused here, saying this device; Remove asked first, then the folder gone */
@@ -2738,7 +2785,46 @@ static void gpu_drivers(App* app, const char* temporary) {
     assert(!app->confirm.shown);
     assert(!snx_path_exists(package) && !app->packages_count &&
            !strcmp(app->editor.note, "Removed gpu_drivers/Turnip_v32"));
+    /* a phone with an Xclipse GPU: packages load, the page saying its GPU and render node; Download Driver alone
+       greyed, as its repositories hold Adreno's drivers, saying to add the zip; a package added is picked */
+    app->gpu_host = host_xclipse;
+    open_drivers(app, NULL, NULL, 0);
+    assert(!strcmp(app->editor.note, "This device: Android API 34, arm64, Xclipse GPU (/dev/dri/renderD128, kernel "
+                                     "driver amdgpu): custom drivers load."));
+    assert(gui_editor_rows(&app->editor) == 5 && !strcmp(app->drivers_form.value[1], "Adreno only") &&
+           !app->drivers_form.value[2][0] && form_row_off(app, &app->editor, 1) && !form_row_off(app, &app->editor, 2));
+    app->editor.row = 1;
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_DRIVERS && strstr(app->editor.note, "RADV, is added from its zip with Add Driver"));
+    driver_picked(app, zip, NULL, false);
+    assert(app->packages_count == 1 && !strcmp(app->gpu_driver, "Turnip_v32") &&
+           !strcmp(app->drivers_form.value[1], "(*)") && !form_row_off(app, &app->editor, 1));
+    assert(!strcmp(app->editor.note, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/Turnip_v32. GPU driver for "
+                                     "every game: Turnip test"));
+    render(app);
+    shows(app, "Adreno only", rgb(app->theme.soft));
+    /* a phone with another GPU: the package, Download Driver and Add Driver greyed, saying which GPUs load one; Del
+       still removes the package, the launcher's pick going back to the System driver */
+    app->gpu_host = host_other;
+    open_drivers(app, NULL, NULL, 0);
+    assert(strstr(app->editor.note, "no Adreno GPU (no /dev/kgsl-3d0) and no Xclipse GPU (/dev/dri/renderD128, kernel "
+                                    "driver panfrost)"));
+    assert(gui_editor_rows(&app->editor) == 6 && !strcmp(app->drivers_form.value[1], "(*) Unsupported GPU") &&
+           !strcmp(app->drivers_form.value[2], "Unsupported GPU") &&
+           !strcmp(app->drivers_form.value[3], "Unsupported GPU") && form_row_off(app, &app->editor, 1) &&
+           form_row_off(app, &app->editor, 2) && form_row_off(app, &app->editor, 3));
+    render(app);
+    shows(app, "(*) Unsupported GPU", rgb(app->theme.soft));
+    app->editor.row = 1;
+    key(app, SDLK_DELETE);
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_DRIVER);
+    key(app, SDLK_RIGHT);
+    key(app, SDLK_RETURN);
+    assert(!snx_path_exists(package) && !app->packages_count && !app->gpu_driver[0] &&
+           !strcmp(app->editor.note, "Removed gpu_drivers/Turnip_v32; the GPU driver for every game is the System "
+                                     "driver now"));
     free(package);
+    app->gpu_host = was;
     key(app, SDLK_ESCAPE);
     assert(app->form == GUI_FORM_APP && app->editor.row == GUI_APP_DRIVERS &&
            !strcmp(app->app_form.drivers, "System driver"));
@@ -2839,18 +2925,24 @@ static void pump_until(App* app, const bool* busy) {
     }
     assert(!*busy);
 }
-/* GPU Drivers > Download Driver against the test's network: the lists fetched as the page opens, one repository's
-   failure said, a GPU maker's own marked in its release's box, a download failing said, and a package downloaded,
-   added and, as nothing loads here, not picked */
+/* GPU Drivers > Download Driver on a phone with an Adreno GPU, against the test's network: the lists fetched as the
+   page opens, one repository's failure said, a GPU maker's own marked in its release's box, a download failing said,
+   and a package downloaded, added and picked */
 static void download_driver(App* app, const char* temporary) {
     char* zip = driver_zip(temporary, "turnip.zip");
+    SnxGpuDriverHost was = app->gpu_host;
     size_t i;
     int row = -1, blob = -1;
     g_fake_net.zip = (char*)snx_read_file(zip, &g_fake_net.zip_size);
     assert(g_fake_net.zip);
     app->https_get = fake_get;
+    app->gpu_host = host_adreno;
     open_drivers(app, NULL, NULL, 0);
     assert(app->form == GUI_FORM_DRIVERS && gui_editor_rows(&app->editor) == 5 && !app->packages_count);
+    assert(!strcmp(app->editor.note, "This device: Android API 36, arm64, Adreno GPU (/dev/kgsl-3d0): custom drivers "
+                                     "load.") &&
+           !app->drivers_form.value[1][0] && !form_row_off(app, &app->editor, 1) &&
+           !form_row_off(app, &app->editor, 2));
     snprintf(app->vk_gpu, sizeof app->vk_gpu, "%s", "Adreno (TM) 740"); /* Eden recommends Mr. Purple T23 */
     app->editor.row = 1; /* Download Driver */
     key(app, SDLK_RETURN);
@@ -2914,19 +3006,21 @@ static void download_driver(App* app, const char* temporary) {
     pump_until(app, &app->downloading);
     assert(strstr(app->editor.note, "Not downloaded: GET https://example.invalid/gone.zip: HTTP 404") &&
            !strstr(app->editor.note, "aaaa"));
-    /* a package's: downloaded and added, GPU Drivers showing it, not picked here */
+    /* a package's: downloaded and added, GPU Drivers showing it picked */
     key(app, SDLK_RETURN);
     assert(app->picks_shown && !app->picks.focus && strstr(pick_label(app, 0), "turnip.zip, ") &&
            !strstr(pick_label(app, 0), "proprietary"));
     key(app, SDLK_RETURN);
     pump_until(app, &app->downloading);
     assert(app->form == GUI_FORM_DRIVERS && app->packages_count == 1 && !strcmp(app->packages[0].id, "turnip") &&
-           !app->gpu_driver[0]);
-    assert(strstr(app->editor.note, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/turnip. This device: "));
+           !strcmp(app->gpu_driver, "turnip") && !strcmp(app->drivers_form.value[1], "(*)"));
+    assert(strstr(app->editor.note, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/turnip. GPU driver for every "
+                                    "game: Turnip test"));
     app->editor.row = 1;
     app->driver_off = 0;
     change_answer(app, GUI_ASK_DRIVER, true); /* back to none, for what follows */
-    assert(!app->packages_count);
+    assert(!app->packages_count && !app->gpu_driver[0]);
+    app->gpu_host = was;
     key(app, SDLK_ESCAPE);
     assert(app->form == GUI_FORM_APP);
     for (i = 0; i < GUI_DRIVER_REPOS; ++i) gui_driver_releases_free(&app->fetch_lists[i]);
@@ -3108,14 +3202,39 @@ static void run_edenprobe(App* app, const char* temporary) {
     free(plan);
     free(argv_file);
 }
-/* a game's box's GPU Driver: Global and the launcher's first, then the game's own pick kept in its .ini (System
-   driver, gpu_driver= with nothing), Global again taking the key out; its Freedreno Settings start with none of its
-   own; and each run's option, the game's own when it has one */
+/* a game's box's GPU Driver. On a desktop: greyed, saying Android only on the row, Enter saying this device's line
+   with the box staying; but for a game set to a package, whose row stays to take the pick back. On a phone with an
+   Adreno GPU: Global and the launcher's first, then the game's own pick kept in its .ini (System driver, gpu_driver=
+   with nothing), Global again taking the key out; its Freedreno Settings start with none of its own; and each run's
+   option, the game's own when it has one */
 static void game_gpu_driver(App* app) {
-    char *game = snx_strdup(app->addons_game), *ini = game_ini_of(game), *option;
+    char *game = snx_strdup(app->addons_game), *title = snx_strdup(app->addons_title), *ini = game_ini_of(game);
+    char* option;
+    SnxGpuDriverHost was = app->gpu_host;
+    UiRowInfo info = {0};
     int row;
+    app->gpu_host = host_desktop;
+    addons_open(app, game, title, true);
     for (row = 0; row < addons_rows(app) && addons_row(app, row) != ROW_GPU_DRIVER; ++row) {}
-    assert(row < addons_rows(app) && !strcmp(app->addons_driver, "GPU Driver: Global (System driver)"));
+    assert(row < addons_rows(app) && app->addons_driver_off &&
+           !strcmp(app->addons_driver, "GPU Driver: Global (System driver), Android only"));
+    assert(ui_addons_rows_get_row_info(app, (size_t)row, 0, &info) && (info.attr & UI_ATTR_OFF) &&
+           strstr(info.label, "Android only"));
+    app->addons_focus = row;
+    app->message[0] = 0;
+    key(app, SDLK_RETURN);
+    assert(app->addons_shown && !app->editing &&
+           strstr(app->message, "This device: Linux x86_64: custom drivers load on Android 9 (API 28) or newer"));
+    assert(!snx_ini_record(ini, "gpu_driver", "Turnip_v32"));
+    addons_open(app, game, title, true);
+    info = (UiRowInfo){0};
+    assert(!app->addons_driver_off && !strcmp(app->addons_driver, "GPU Driver: Turnip_v32") &&
+           ui_addons_rows_get_row_info(app, (size_t)row, 0, &info) && !(info.attr & UI_ATTR_OFF));
+    assert(!snx_ini_drop(ini, "gpu_driver"));
+    app->gpu_host = host_adreno;
+    app->message[0] = 0;
+    addons_open(app, game, title, true);
+    assert(!app->addons_driver_off && !strcmp(app->addons_driver, "GPU Driver: Global (System driver)"));
     app->addons_focus = row;
     key(app, SDLK_RETURN);
     assert(!app->addons_shown && app->editing && app->form == GUI_FORM_DRIVERS && app->drivers_game &&
@@ -3141,7 +3260,9 @@ static void game_gpu_driver(App* app) {
     assert(app->form == GUI_FORM_FREEDRENO && !app->fd_count && strstr(app->editor.note, ": none of its own"));
     key(app, SDLK_ESCAPE);
     assert(app->addons_shown);
+    app->gpu_host = was;
     free(ini);
+    free(title);
     free(game);
 }
 #ifdef SNX_XDG

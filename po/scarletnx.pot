@@ -2934,6 +2934,30 @@ msgid "System driver"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Android only"
+msgstr ""
+
+#: src/gui/main.c
+msgid "arm64 only"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Unsupported GPU"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Needs Android 9"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Not in this build"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Adreno only"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "No Vulkan loader: %s"
 msgstr ""
@@ -2990,6 +3014,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Download Driver"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The driver repositories Eden lists hold drivers for Adreno GPUs. An Xclipse GPU's driver, RADV, is added from its zip with Add Driver"
 msgstr ""
 
 #: src/gui/main.c
