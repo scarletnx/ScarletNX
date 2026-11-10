@@ -47,7 +47,9 @@ typedef struct {
     size_t known_count, known_capacity;
     uint32_t* interface; /* the Input and Output variables spv_emit_variable made, for the entry point */
     size_t interface_count, interface_capacity;
-    uint32_t* nonuniform; /* ids decorated NonUniform: texture array elements and what is made from them */
+    /* the ids decorated NonUniform (texture array elements and what is made from them), a set: open addressing on a
+       power of two (nonuniform_capacity), 0 a free slot, at most half full */
+    uint32_t* nonuniform;
     size_t nonuniform_count, nonuniform_capacity;
     uint32_t block; /* the OpLabels emitted so far: values an emitter's user keeps are good within one block */
     /* the 32-bit constants made, open addressing on a power of two: by type and value, and by id */
@@ -61,6 +63,10 @@ typedef struct {
        barriers' and atomics' acquire and release semantics then also make memory visible and available, as GLSL450
        implies, and spv_emit_load_nonprivate and spv_emit_store_nonprivate access memory other invocations share */
     int vulkan_memory_model;
+    /* known's index: open addressing on a power of two, each slot an entry of known plus one (0 free), at most half
+       full, so finding one asks a slot or two, not every type and constant made */
+    uint32_t* known_slots;
+    size_t known_slot_count;
 } SpvEmitter;
 
 typedef enum {
