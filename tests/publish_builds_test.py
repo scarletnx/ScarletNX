@@ -27,7 +27,6 @@ FILES = [
     'ScarletNX-linux-ppc64le.AppImage',
     'ScarletNX-linux-ppc64.AppImage',
     'ScarletNX-linux-riscv64.AppImage',
-    'ScarletNX-linux-loongarch64.AppImage',
     'ScarletNX-windows-x86_64.zip',
     'ScarletNX-android-universal.apk',
     'ScarletNX-macos-arm64.zip',
@@ -39,7 +38,6 @@ ZSYNC = [
     'ScarletNX-linux-ppc64le.AppImage.zsync',
     'ScarletNX-linux-ppc64.AppImage.zsync',
     'ScarletNX-linux-riscv64.AppImage.zsync',
-    'ScarletNX-linux-loongarch64.AppImage.zsync',
 ]
 failures = []
 
@@ -126,10 +124,6 @@ with tempfile.TemporaryDirectory() as temporary:
             f'ScarletNX-linux-riscv64-{short}.AppImage': {
                 'ScarletNX-linux-riscv64.AppImage': 'elf riscv',
                 'ScarletNX-linux-riscv64.AppImage.zsync': 'zsync riscv',
-            },
-            f'ScarletNX-linux-loongarch64-{short}.AppImage': {
-                'ScarletNX-linux-loongarch64.AppImage': 'elf loong',
-                'ScarletNX-linux-loongarch64.AppImage.zsync': 'zsync loong',
             },
             f'ScarletNX-windows-x86_64-{short}': {'bin/scarletnx.exe': 'MZ', 'share/licenses/LICENSE': 'GPL'},
             f'ScarletNX-android-universal-{short}.apk': {f'ScarletNX-android-universal-{short}.apk': 'PK apk'},
@@ -266,6 +260,11 @@ with tempfile.TemporaryDirectory() as temporary:
         "its files, and the AppImages' .zsync",
         made and sorted(a['name'] for a in made['assets']) == sorted(FILES + ZSYNC),
         made and made['assets'],
+    )
+    check(
+        'no row for LoongArch, which CI builds no package of',
+        made and 'LoongArch' not in made['body'],
+        made and made['body'],
     )
     check(
         'its notes: the files linked from this release, the changes, the source',
@@ -474,7 +473,6 @@ with tempfile.TemporaryDirectory() as temporary:
             'Linux AppImage (ppc64le)',
             'Linux AppImage (ppc64)',
             'Linux AppImage (riscv64)',
-            'Linux AppImage (loongarch64)',
             'Windows (Clang + LLVM)',
             'Android APK',
         ]
