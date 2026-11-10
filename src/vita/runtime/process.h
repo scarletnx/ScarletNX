@@ -223,10 +223,11 @@ typedef struct VitaProcess {
     VitaThread* pacer;
     uint64_t seq;
     uint64_t start_ns;
-    /* the display: the framebuffer sceDisplaySetFrameBuf last set, the vblanks so far and the next one's time */
+    /* the display: the framebuffer sceDisplaySetFrameBuf last set, the vblanks so far and the next one's time, and
+       the vblank the game's last wait for one ended at (due) with its count: the next frame is due at due + due_count */
     struct {
-        uint32_t base, pitch, format, width, height;
-        uint64_t vblanks, next_ns;
+        uint32_t base, pitch, format, width, height, due_count;
+        uint64_t vblanks, next_ns, due;
     } display;
     struct VitaGxm* gxm;
     struct VitaAudio* audio;

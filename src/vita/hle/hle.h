@@ -91,6 +91,8 @@ bool vita_kernel_wait_try(VitaProcess* p, VitaThread* t, uint64_t now);
 bool vita_gxm_wait_try(VitaProcess* p, VitaThread* t, uint64_t now);
 /* the notifications of the scenes the GPU drew since written (gxm.c): at each vblank too, for a game that reads them */
 void vita_gxm_poll(VitaProcess* p);
+/* a frame is on its way to the screen (queued and not yet at the callback's wait for the vblank): run.c lets a vblank wait for it */
+bool vita_gxm_frame_coming(VitaProcess* p);
 
 /* net.c: what an offline console's network library answers for a function the runtime doesn't know: its library's
    error, 0 for a library that isn't the network's */

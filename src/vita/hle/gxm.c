@@ -101,6 +101,14 @@ void vita_gxm_display_done(VitaProcess* p, VitaThread* t) {
     g->queue_head = (g->queue_head + 1) % g->max_pending;
     --g->queue_count;
 }
+/* a frame on its way to the screen that the next vblank may wait for (VBLANK_SLACK_NS in run.c): a queued scene the GPU
+   still draws, or one drawn whose display callback has not yet reached its wait for the vblank */
+bool vita_gxm_frame_coming(VitaProcess* p) {
+    VitaGxm* g = p->gxm;
+    if (!g || !g->initialized || !g->queue_count) return false;
+    const VitaThread* d = vita_thread(p, g->display_thread);
+    return !(d && d->state == VITA_THREAD_WAITING && d->wait.kind == VITA_WAIT_VBLANK);
+}
 /* the notifications whose scenes the GPU drew written, oldest first */
 static void notifications_poll(VitaProcess* p) {
     VitaGxm* g = p->gxm;

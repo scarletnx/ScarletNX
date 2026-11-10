@@ -292,6 +292,19 @@ static VitaThread* schedule(VitaProcess* p, uint64_t now, uint64_t* wake) {
     }
     return starved ? starved : top;
 }
+/* the longest a due vblank waits for a frame that is nearly ready */
+#define VBLANK_SLACK_NS 3000000u
+/* a vblank that is due, and that the game's next wait ends at, waits up to VBLANK_SLACK_NS while a frame is nearly ready: the thread that paces
+   the frames still runs its frame (it has not yet waited for this vblank), or the display queue has a scene on its
+   way (vita_gxm_frame_coming). A frame that ends a little after the vblank then makes it, where otherwise it waits
+   a whole extra vblank (a game at 60 frames a second drops to 30) */
+static bool vblank_waits(const VitaProcess* p, uint64_t now) {
+    if (now >= p->display.next_ns + VBLANK_SLACK_NS) return false;
+    /* only the vblank that the game's next wait ends at: the others of a game at 30 frames a second are not its own */
+    if (p->display.vblanks + 1 < p->display.due + p->display.due_count) return false;
+    const VitaThread* pacer = p->pacer;
+    return (pacer && pacer->state == VITA_THREAD_READY) || vita_gxm_frame_coming((VitaProcess*)p);
+}
 #define GPU_POLL_NS 200000u /* the longest sleep with a submission on the GPU */
 static void sleep_until(uint64_t when) {
     uint64_t now = plat_ns();
@@ -380,11 +393,14 @@ int vita_run(VitaProcess* p, double seconds) {
     SetUnhandledExceptionFilter(crash_filter);
 #endif
     if (!vita_watch_init(p)) printf("vita: guest memory's writes aren't watched: the GPU copies its memory each time\n");
+    bool vblank_late = false; /* this vblank waited for a frame: the next one is due a period after it */
     while (!p->exited) {
         uint64_t now = plat_ns(), wake;
-        if (now >= p->display.next_ns) {
+        if (now >= p->display.next_ns && vblank_waits(p, now)) vblank_late = true;
+        else if (now >= p->display.next_ns) {
             ++p->display.vblanks;
-            p->display.next_ns += VBLANK_NS;
+            p->display.next_ns = vblank_late ? now + VBLANK_NS : p->display.next_ns + VBLANK_NS;
+            vblank_late = false;
             if (p->display.next_ns < now) p->display.next_ns = now + VBLANK_NS;
             if (!vita_display_vblank(p)) {
                 closed = true;
