@@ -156,6 +156,7 @@ u32 shader_sparse_predicate(u64 w, int op);
 int shader_direct_own_pixel_fetch(const u64* insn, u32 n, u32 index);
 int shader_direct_screen_uv(const u64* insn, u32 n, u32 index, u32 x, u32 y);
 u32 shader_direct_screen_out(const u64* insn, u32 n, u32* yneg);
+u32 shader_direct_position_out(const u64* insn, u32 n);
 int shader_direct_track_const(const u64* insn, u32 n, u32 index, u32 reg, u32* value, int depth);
 /* Proven register bits at index: (runtime & *known)==*value, with *value masked by *known. Unknown is0/0.
    No specialization reads of mutable buffers; predicated or ambiguous definitions are left unknown. */
@@ -243,6 +244,8 @@ u32 shader_ipa_interpolation(const u32* sph, u32 input);
 void shader_alpha_test(DirectCtx* c, u32 push, u32 push_pointer, u32 alpha);
 u32 shader_frag_y_origin(DirectCtx* c, u32 push, u32 y);
 void shader_vertex_position_fix(DirectCtx* c, u32 position, u32 push, u32 push_pointer, u32 vec4_type);
+int shader_ipa_position(u32 pos_in, const u32* sph, u32 addr);
+void shader_frag_ndc(DirectCtx* c, u32 fragcoord, u32 vec4_type, u32 push, u32 push_pointer, u32 ndc[2]);
 /* What a program's transform feedback writes at each exit or emitted vertex (shader_xfb_store) */
 typedef struct {
     int stores; /* by storage buffer stores (g_shader_xfb_stores), else by the extension's decorations */
@@ -449,6 +452,9 @@ typedef struct {
     u32 invocation_id;
     u32 patch_vertices;
     int position_fix;
+    /* a fragment program's inputs the position pass takes (ShaderInfo.varying), and the fragment's own x and y in clip
+       space over w that they read as (shader_frag_ndc) */
+    u32 pos_in, frag_ndc[2];
     u32 sample_mask_output;
     int guest_sample_mask;
     u32 sample_id;

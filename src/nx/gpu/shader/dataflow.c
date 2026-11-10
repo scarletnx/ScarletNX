@@ -849,6 +849,24 @@ u32 shader_direct_screen_out(const u64* insn, u32 n, u32* yneg) {
     return mask;
 }
 
+/* The generic outputs the vertex program writes as its position: x, y and w the very values the position's x, y and w
+   end with, each of those words written once (direct_output_def). Interpolated with perspective and divided by its
+   w, one is the fragment's own place in the viewport, which the fragment program can take from gl_FragCoord
+   (ShaderInfo.pos_out_mask) */
+u32 shader_direct_position_out(const u64* insn, u32 n) {
+    int px = direct_output_def(insn, n, 0x70), py = direct_output_def(insn, n, 0x74);
+    int pw = direct_output_def(insn, n, 0x7c);
+    u32 mask = 0;
+    if (px < 0 || py < 0 || pw < 0) return 0;
+    for (u32 g = 0; g < 32; g++) {
+        u32 at = 0x80 + g * 16;
+        if (direct_output_def(insn, n, at) == px && direct_output_def(insn, n, at + 4) == py &&
+            direct_output_def(insn, n, at + 12) == pw)
+            mask |= 1u << g;
+    }
+    return mask;
+}
+
 int shader_direct_track_const(const u64* insn, u32 n, u32 index, u32 reg, u32* value, int depth) {
     int j = depth > 6 ? -1 : direct_reaching_def(insn, n, index, reg);
     u64 w;

@@ -669,6 +669,7 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[26], const ShX
     if (stage == ST_FS) {
         si->late_depth = (mask[24] >> 8) & SH_FS_LATE_DEPTH;
         si->capture_outputs = (mask[24] >> (8 + SH_FS_CAPTURE_SHIFT)) & 7;
+        si->varying = mask[24] >> (8 + SH_FS_VARYING_SHIFT);
     }
     if (stage == ST_FS) {
         si->tex_int_mask = ints;
@@ -2455,7 +2456,7 @@ static void pf_load_pipe(void* ctx, const u64 m[5], const void* key, u32 keylen)
 /* PF_GUEST_VERSION: what a PF_SOURCE or PF_PIPE record means, beyond the sizes the key holds. Raised when a PipeKey
    field or a key word (vk_shader_get's mask) comes to mean something else, so that the records of an earlier build
    are dropped rather than made into pipelines and shaders of the wrong state */
-#define PF_GUEST_VERSION 5
+#define PF_GUEST_VERSION 6
 /* The file's key: whatever changes the SPIR-V translation makes or what a PipeKey means. First its guest part, which
    the PF_SOURCE and PF_PIPE records depend on (pf_open): the device; the features and limits the translator,
    vk_shader_get and pipe_create consult; the sizes of what those records hold whole. Then the rest, which only the

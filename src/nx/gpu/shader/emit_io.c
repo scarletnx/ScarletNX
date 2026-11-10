@@ -21,6 +21,14 @@ u32 shader_ipa_interpolation(const u32* sph, u32 input) {
     return 2;
 }
 
+/* Whether a plain IPA of the attribute word at addr reads one of the position pass's inputs (pos_in, a mask of
+   generics) where the pass has its value: a perspective one's x, y or w */
+int shader_ipa_position(u32 pos_in, const u32* sph, u32 addr) {
+    u32 input = (addr - 0x80) >> 4;
+    return addr >= 0x80 && addr < 0x280 && (pos_in >> input & 1) && (addr >> 2 & 3) != 2 &&
+           shader_ipa_interpolation(sph, input) == 2;
+}
+
 void shader_alpha_test(DirectCtx* c, u32 push, u32 push_pointer, u32 alpha) {
     u32 index[3];
     for (u32 i = 0; i < 3; i++) index[i] = spv_emit_constant_u32(&c->emit, c->u32_type, i);
@@ -127,6 +135,29 @@ void shader_vertex_position_fix(DirectCtx* c, u32 position, u32 push, u32 push_p
     spv_emit_store(&c->emit, position, value);
     spv_emit_branch(&c->emit, merge);
     spv_emit_label(&c->emit, merge);
+}
+
+/* The fragment's own x and y in clip space over its w, from gl_FragCoord and the draw's viewport 0 (x, y, width and
+   height as the draw sets them, the push constant's third vector: vk/render.c): what a perspective input holding the
+   position reads as over w, with the precision of the rasterizer's position rather than of the host's interpolation
+   of a clipped primitive's inputs (shader.h, SH_VARYING_) */
+void shader_frag_ndc(DirectCtx* c, u32 fragcoord, u32 vec4_type, u32 push, u32 push_pointer, u32 ndc[2]) {
+    u32 coord = spv_emit_load(&c->emit, vec4_type, fragcoord);
+    u32 member = spv_emit_constant_u32(&c->emit, c->u32_type, 2);
+    u32 two = spv_emit_constant_f32(&c->emit, c->f32_type, 2.0f);
+    u32 minus_one = spv_emit_constant_f32(&c->emit, c->f32_type, -1.0f);
+    for (u32 k = 0; k < 2; k++) {
+        u32 origin = spv_emit_push_component_f32(&c->emit, push_pointer, push, member,
+                                                 spv_emit_constant_u32(&c->emit, c->u32_type, k), c->f32_type);
+        u32 extent = spv_emit_push_component_f32(&c->emit, push_pointer, push, member,
+                                                 spv_emit_constant_u32(&c->emit, c->u32_type, k + 2), c->f32_type);
+        u32 from = spv_emit_fadd(&c->emit, c->f32_type, spv_emit_vec4_extract(&c->emit, c->f32_type, coord, k),
+                                 spv_emit_fnegate(&c->emit, c->f32_type, origin));
+        u32 across = spv_emit_fmul(&c->emit, c->f32_type, spv_emit_fdiv(&c->emit, c->f32_type, from, extent), two);
+        spv_emit_no_contraction(&c->emit, across);
+        ndc[k] = spv_emit_fadd(&c->emit, c->f32_type, across, minus_one);
+        spv_emit_no_contraction(&c->emit, ndc[k]);
+    }
 }
 
 /* a captured word's bits (ShXfb.layout), 0 for one with no output (left as it is, as the extension does) */
@@ -607,12 +638,16 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             }
         } else if (addr >= 0x80) {
             u32 input = (addr - 0x80) >> 4;
-            if (inputs[input]) {
+            interpolation = shader_ipa_interpolation(sph, input);
+            if (shader_ipa_position(t->pos_in, sph, addr)) {
+                /* the position over its w (SH_VARYING_): the fragment's own x and y, and 1 */
+                value = component == 3 ? spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f) : t->frag_ndc[component];
+                interpolation = 0;
+            } else if (inputs[input]) {
                 value = spv_emit_load(&c->emit, vec4, inputs[input]);
                 value = spv_emit_vec4_extract(&c->emit, c->f32_type, value, component);
             } else /* no output feeds it (in_unfed_mask) */
                 value = spv_emit_constant_f32(&c->emit, c->f32_type, component == 3 ? 1.0f : 0.0f);
-            interpolation = shader_ipa_interpolation(sph, input);
         }
         if (addr >= 0x70 && addr < 0x80) {
             u32 coord = spv_emit_load(&c->emit, vec4, fragcoord);

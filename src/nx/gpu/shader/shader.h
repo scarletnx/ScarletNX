@@ -175,6 +175,13 @@ typedef struct {
     /* VS: generic outputs written as the position mapped onto [0, 1], ((pos.w + pos.x) / 2, (pos.w + pos.y) / 2, -,
        pos.w), and of them in screen_out_yneg_mask those whose y is (pos.w - pos.y) / 2 */
     u32 screen_out_mask, screen_out_yneg_mask;
+    /* VS: generic outputs written as the position itself: their x, y and w end with the values the position's x, y and
+       w end with, so a fragment's x / w and y / w of one is its own place in the viewport (SH_VARYING_) */
+    u32 pos_out_mask;
+    /* FS: the generic inputs something feeds that are read with perspective, every one of them by a plain IPA: the
+       ones a varying pass may take. 0 for a program with an indexed IPA or legacy varyings */
+    u32 smooth_in_mask;
+    u32 varying;  /* FS key: the draw's varying pass (SH_VARYING_) */
     u32 out_mask; /* generic outputs 0-31 written (all of them after an attribute store at a register's offset) */
     /* FS key: generic inputs the last stage before rasterization doesn't write. They read 0, 0, 0, 1 as yuzu reads
        them (GPL-2.0-or-later, shader_recompiler emit_spirv_context_get_set.cpp): Vulkan leaves an unfed input
@@ -213,7 +220,31 @@ typedef struct {
     char memh_why[64]; /* and why the first is */
 } ShaderInfo;
 /* The graphics cache packs these explicit fragment-only fields above its eight image-format bits. */
-enum { SH_FS_LATE_DEPTH = 1u, SH_FS_CAPTURE_SHIFT = 1, SH_FS_CONFIG_MASK = 15u };
+enum { SH_FS_LATE_DEPTH = 1u, SH_FS_CAPTURE_SHIFT = 1, SH_FS_VARYING_SHIFT = 4, SH_FS_CONFIG_MASK = 0xFFFFFFu };
+/* ShaderInfo.varying, a fragment program's key from SH_FS_VARYING_SHIFT up of those fields. A host GPU that clips a
+   huge primitive (AMD, Intel, Arm) interpolates the inputs of the clipped vertices with less precision than the
+   position, where the console interpolates the vertices' own values: a generic holding the position, divided by its
+   w, misses the fragment's pixel by a pixel or more, and the depth a program fetches there is a neighbour's (Eden's
+   position_varying_pass.cpp, GPL-3.0-or-later: John and Amicuchu's finding). Its low 2 bits name the pass that
+   makes up for it.
+   SH_VARYING_POSITION, the position pass: up to SH_VARYING_POSITIONS perspective inputs the vertex stage writes as
+   its position (pos_out_mask), 1 + each one's generic in 6 bits from bit 2 up. Their x and y over w read as the
+   fragment's own place in clip space, from gl_FragCoord and the draw's viewport (shader_frag_ndc), and their w over
+   w as 1 */
+enum { SH_VARYING_POSITION = 0 };
+#define SH_VARYING_POSITIONS 3
+static inline u32 shader_varying_positions(u32 generics) {
+    u32 key = 0;
+    for (u32 g = 0, k = 0; g < 32 && k < SH_VARYING_POSITIONS; g++)
+        if (generics >> g & 1) key |= (g + 1) << (2 + 6 * k++);
+    return key | SH_VARYING_POSITION;
+}
+static inline u32 shader_varying_position_mask(u32 varying) {
+    u32 generics = 0;
+    for (u32 k = 0; k < SH_VARYING_POSITIONS && (varying & 3) == SH_VARYING_POSITION; k++)
+        if (varying >> (2 + 6 * k) & 63) generics |= 1u << ((varying >> (2 + 6 * k) & 63) - 1);
+    return generics;
+}
 /* ShaderInfo.tex_query_hint in a graphics key's words (vk_shader_get's mask words 14 to 19: 3 bits a slot, the 64
    slots in 6 words), and back. A 1D header's hint (1) goes as none: its query is the 2D slot's, a texel high, as the
    translation binds 1D textures */

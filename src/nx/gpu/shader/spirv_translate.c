@@ -323,6 +323,10 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     int needs_draw_params = 0; /* a vertex program reads NVN's draw parameters (shader.h SH_CB0_) */
     int needs_local_id = 0, needs_group_id = 0;
     int needs_scale = 0, needs_texel_scale = 0, needs_frag_y = 0;
+    /* the varying passes (shader.h, SH_VARYING_): the inputs the position pass takes, whether an IPA reads one where
+       the pass has its value, the generics plain IPAs read with perspective, and whether an indexed IPA reads any */
+    u32 pos_in = stage == ST_FS ? shader_varying_position_mask(si->varying) : 0, smooth_in = 0;
+    int needs_frag_ndc = 0, ipa_indexed = 0;
     int needs_glsl = 0, needs_f16 = 0, needs_f64 = 0, needs_i64 = 0;
     int has_flow = 0, has_calls = 0, has_barrier = 0, converge;
     u32 wait_label = 0;
@@ -1354,6 +1358,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             /* indexed: any generic input the header's map gives a mode, the perspective ones through FragCoord */
             if (B(insn[i], 51, 1)) needs_glsl = 1;
             used[a] = 1;
+            ipa_indexed = 1;
             for (u32 v = 0; v < 32; v++)
                 if ((sph[6 + v / 4] >> (v % 4 * 8)) & 0xff) {
                     inputs_used[v] = 1;
@@ -1376,6 +1381,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 u32 interpolation = shader_ipa_interpolation(sph, input);
                 inputs_used[input] = 1;
                 if (interpolation == 2) needs_fragcoord = 1;
+                if (interpolation == 2 && input < 32) smooth_in |= 1u << input;
+                if (shader_ipa_position(pos_in, sph, addr)) needs_frag_ndc = 1;
             } else
                 needs_fragcoord = 1;
             if (addr == 0x70 || addr == 0x74) needs_scale = 1;
@@ -1684,6 +1691,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             return direct_reject_with_buffers(si, "coverage-to-color integer output", pop_targets, gb_at);
         needs_coverage = 1;
     }
+    /* a capture's push constants have their own third vector */
+    if (needs_frag_ndc && (si->advanced_blend_mask & SH_CAPTURE_SOURCE))
+        return direct_reject_with_buffers(si, "a varying pass in a capture's fragment program", pop_targets, gb_at);
     DirectCtx* c = calloc(1, sizeof *c);
     if (!c) {
         free(gb_at);
@@ -2262,10 +2272,18 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         interfaces[count++] = shared_array;
     }
     u32 push = 0, push_pointer = 0;
-    if ((stage == ST_FS && ((target & 15) || capture_output || needs_point_coord || needs_texel_scale || needs_frag_y)) || position_fix ||
-        needs_instance || base_vertex || (point_size && !point_size_used)) {
+    if ((stage == ST_FS && ((target & 15) || capture_output || needs_point_coord || needs_texel_scale || needs_frag_y ||
+                            needs_frag_ndc)) ||
+        position_fix || needs_instance || base_vertex || (point_size && !point_size_used)) {
         /* the fragment stage's uvec4: its scaled textures (shader_scaled_coords) and the window's origin (shader_frag_y_origin) */
-        if (capture_output) {
+        if (needs_frag_ndc) {
+            /* and after them the draw's viewport, at byte 80 (shader_frag_ndc) */
+            u32 members[3] = {vec4, vec4_u32, vec4}, offsets[3] = {16, 32, 80};
+            u32 structure = spv_emit_type_struct(&c->emit, members, offsets, 3);
+            spv_emit_decorate(&c->emit, structure, 2, NULL, 0); /* Block */
+            push = spv_emit_variable(&c->emit, 9, structure);   /* PushConstant */
+            push_pointer = spv_emit_type_pointer(&c->emit, 9, c->f32_type);
+        } else if (capture_output) {
             u32 members[3] = {vec4, vec4_u32, vec4_u32}, offsets[3] = {16, 32, 112};
             u32 structure = spv_emit_type_struct(&c->emit, members, offsets, 3);
             spv_emit_decorate(&c->emit, structure, 2, NULL, 0);
@@ -2480,6 +2498,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         shader_capture_tile_mark(&c->emit, c->f32_type, c->u32_type, c->bool_type, capture_tiles,
                                    spv_emit_load(&c->emit, vec4, fragcoord), layer, live);
     }
+    /* in the function's first block, so that every read has them */
+    u32 frag_ndc[2] = {0, 0};
+    if (needs_frag_ndc) shader_frag_ndc(c, fragcoord, vec4, push, push_pointer, frag_ndc);
     for (clip = 0; clip < clip_count; clip++) {
         u32 index = spv_emit_constant_u32(&c->emit, c->u32_type, clip);
         u32 ptr = stage == ST_TCS
@@ -2634,6 +2655,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         .invocation_id = invocation_id,
         .patch_vertices = patch_vertices,
         .position_fix = position_fix,
+        .pos_in = pos_in,
+        .frag_ndc = {frag_ndc[0], frag_ndc[1]},
         .sample_mask_output = sample_mask_output,
         .guest_sample_mask = (sph[19] & 1u) != 0,
         .sample_id = sample_id,
@@ -2853,6 +2876,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     next.tex_screen_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & tex_screen : 0;
     next.screen_in = next.tex_screen_mask ? (u32)screen_in : 0;
     if (stage == ST_VS) next.screen_out_mask = shader_direct_screen_out(insn, n, &next.screen_out_yneg_mask);
+    if (stage == ST_VS) next.pos_out_mask = shader_direct_position_out(insn, n);
+    if (stage == ST_FS && !ipa_indexed && !legacy_fs) next.smooth_in_mask = smooth_in & ~si->in_unfed_mask;
+    next.varying = si->varying;
     next.tex_query_mask = tex_query;
     memcpy(next.tex_query_hint, si->tex_query_hint, sizeof next.tex_query_hint);
     next.nimg = image_info.nimg;
