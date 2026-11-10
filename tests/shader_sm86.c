@@ -2686,6 +2686,64 @@ static void test_global_table(const char* dir) {
     free(spv);
 }
 
+/* A pointer in the memory a table's word points to, as one game's culling programs reach the instances of a kind of
+   plant: LDC.64 R2, c[4][R0] (0x5_0000_1100), MOV R8, R2 and R9, R3, LDG.64 R4, [R8] (cell 0 of that record:
+   0x7_0000_9010), LDG R6, [R4 + 4], STG [R2 + 8], R6. The program names cell 0 (ShaderInfo.table_cells), and with the
+   record in window 0 (0x5_0000_1000) and the instances in window 1 (0x7_0000_9000) the STG puts the word at
+   0x7_0000_9014 (0xdef) at 0x5_0000_1108. A pointer loaded at the word plus 0x10, an offset the IADD3 adds, names no
+   cell: only the record's own cells are read as the dispatch binds */
+static Word iadd3_imm(u32 dst, u32 a, u32 imm);
+static void test_global_table_cells(const char* dir) {
+    u8 code[16 * 10] = {0};
+    u32 n = 0;
+    put(code, n++, mov_imm(0, 0x20));
+    put(code, n++, ldc(2, 0, 4, 0, 5));
+    put(code, n++, mov_if(8, 2, 7, 0));
+    put(code, n++, mov_if(9, 3, 7, 0));
+    put(code, n++, ldg_nou(4, 8, 0, 5));
+    put(code, n++, ldg_nou(6, 4, 4, 4));
+    put(code, n++, stg_nou(2, 8, 6));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "global table cells: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(si.table_cells == 1);
+    static u32 bank4[1024], windows[64], a[256], b[64], log[16 * SH_WLOG_PART];
+    bank4[0x20 / 4] = 0x1100, bank4[0x24 / 4] = 5;
+    windows[0] = 0x1000, windows[1] = 5, windows[2] = 0x400;
+    windows[4] = 0x9000, windows[5] = 7, windows[6] = 0x100;
+    a[0x40] = 0x9010, a[0x41] = 7;
+    b[5] = 0xdef;
+    SpvEvalEnv env = {0};
+    env.ubo[SNX_VKB_CB + 4] = bank4;
+    env.ubo_words[SNX_VKB_CB + 4] = 1024;
+    env.ubo[SNX_VKB_MBASE] = windows;
+    env.ubo_words[SNX_VKB_MBASE] = 64;
+    env.ubo[SNX_VKB_SSBO] = a;
+    env.ubo_words[SNX_VKB_SSBO] = 256;
+    env.ubo[SNX_VKB_SSBO + 1] = b;
+    env.ubo_words[SNX_VKB_SSBO + 1] = 64;
+    env.ubo[SNX_VKB_WPAGES] = log;
+    env.ubo_words[SNX_VKB_WPAGES] = 16 * SH_WLOG_PART;
+    const char* why = spv_eval(spv, count, &env);
+    CHECK(!why && a[0x42] == 0xdef);
+    if (why || a[0x42] != 0xdef) fprintf(stderr, "global table cells: %s, word %x\n", why ? why : "ran", a[0x42]);
+    CHECK(keep_module(dir, "global_table_cells", spv, count));
+    free(spv);
+    put(code, 2, iadd3_imm(8, 2, 0x10));
+    si = (ShaderInfo){0};
+    spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL && si.table_cells == 0);
+    free(spv);
+}
+
 /* TEX, TLD, TLD4 and TXQ with the handle in a uniform register (0xf60, 0xf66, 0xf63, 0xf6f), as CuAssembler's sm_86
    records encode "TEX.SCR.LL.DC R34, R8, R2, R6, UR4, 2D", "TLD.SCR.LZ R4, R14, R6, UR4, 2D", "TLD4.SCR.A
    R16, R2, R48, UR4, 2D" and "TXQ R35, R20, UR12, TEX_HEADER_DIMENSION, 0x2": the register at 40-45. A handle that
@@ -3792,6 +3850,7 @@ int main(int argc, char** argv) {
     test_global_pointer(dir);
     test_global_indirect(dir);
     test_global_table(dir);
+    test_global_table_cells(dir);
     test_f2ip(dir);
     test_uldc_small(dir);
     test_shfl_creg(dir);
