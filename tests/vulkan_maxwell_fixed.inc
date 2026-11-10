@@ -103,7 +103,7 @@ static int check_maxwell_point_size(void) {
    fixed suite draws it: bounds around the fragment's depth but not the buffer's reject every pixel */
 static int check_maxwell_depth_bounds(void) {
     static const struct {
-        f32 near, far;
+        f32 near_end, far_end; /* not near and far: Windows' headers define those away */
         u32 on, want;
     } cases[] = {
         {0.2f, 0.3f, 1, 0},   /* the fragment's 0.25 inside, the buffer's 0.5 not */
@@ -138,14 +138,15 @@ static int check_maxwell_depth_bounds(void) {
     engine_clear(channel, 1);
     for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) {
         r[MAXWELL3D_DEPTH_BOUNDS_ENABLE] = cases[i].on;
-        memcpy(&r[MAXWELL3D_DEPTH_BOUNDS], &cases[i].near, sizeof cases[i].near);
-        memcpy(&r[MAXWELL3D_DEPTH_BOUNDS + 1], &cases[i].far, sizeof cases[i].far);
+        memcpy(&r[MAXWELL3D_DEPTH_BOUNDS], &cases[i].near_end, sizeof cases[i].near_end);
+        memcpy(&r[MAXWELL3D_DEPTH_BOUNDS + 1], &cases[i].far_end, sizeof cases[i].far_end);
         u64 covered;
         CHECK(!mx_fixed_draw(channel, 4, 1, 3, &covered));
         u32 count = (u32)snx_popcount64(covered);
         if (count != cases[i].want)
             fprintf(stderr, "3D engine depth bounds %g to %g, test %s, over a buffer of 0.5: %u pixels, expected %u\n",
-                    (double)cases[i].near, (double)cases[i].far, cases[i].on ? "on" : "off", count, cases[i].want);
+                    (double)cases[i].near_end, (double)cases[i].far_end, cases[i].on ? "on" : "off", count,
+                    cases[i].want);
         CHECK(count == cases[i].want);
     }
     vk_unlock();
