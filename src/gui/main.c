@@ -15201,7 +15201,8 @@ static void queue_show(App* app, int i) {
 /* the output box of the Compile tab's console layout, in cells of the letters a half step under the text's */
 static void job_console_size(App* app, int* cols, int* rows);
 /* the first recompile waiting, when none runs: its argv, half the threads and a low priority while it goes gently
-   (job_gentle); one that cannot start ends there, saying why, and the next is tried */
+   (job_gentle), the threads for the Switch driver alone, the one that takes --aot_threads=; one that cannot start ends
+   there, saying why, and the next is tried */
 static void job_start(App* app) {
     const char* argv[GUI_QUEUE_ARGS + 1];
     char threads[32], why[256];
@@ -15212,8 +15213,8 @@ static void job_start(App* app) {
         job = &app->queue.job[i];
         n = gui_queue_argv(&app->queue, i, argv);
         gentle = job_gentle(app);
-        app->job_threads = gentle ? SDL_max(1, job_cores(app) / 2) : 0;
-        if (gentle) { /* after the settings' --aot_threads=, which the last one given replaces */
+        app->job_threads = gentle && job->console == GUI_SWITCH ? SDL_max(1, job_cores(app) / 2) : 0;
+        if (app->job_threads) { /* after the settings' --aot_threads=, which the last one given replaces */
             snprintf(threads, sizeof threads, "--aot_threads=%d", app->job_threads);
             argv[n++] = threads;
             argv[n] = NULL;
