@@ -568,6 +568,10 @@ static int create_device(void) {
                      VK_SUBGROUP_FEATURE_ARITHMETIC_BIT)
             ? subgroup.supportedStages
             : 0;
+    /* a driver that lists the stage and gives wrong ballot and shuffle results there (Turnip's geometry stage, as
+       Eden found): its programs take the path of a device that does not list it */
+    if (vk_ban("VK_SHADER_STAGE_GEOMETRY_BIT", (g_vk_subgroup_stages & VK_SHADER_STAGE_GEOMETRY_BIT) != 0, ban_say))
+        g_vk_subgroup_stages &= ~(VkShaderStageFlags)VK_SHADER_STAGE_GEOMETRY_BIT;
     g_shader_quad = (g_vk_subgroup_stages & VK_SHADER_STAGE_FRAGMENT_BIT) &&
                     (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
     /* compute has quad operations wherever the bit is and the stage has subgroup operations at all (the quad limit,
