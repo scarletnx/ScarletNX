@@ -17,6 +17,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/gpu.h"
+#include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/log.h"
@@ -681,7 +682,10 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
             }
             stats_frame(now_ns, &gpu);
         }
-        if (g_vk_present == 1 || g_vk_present % 600 == 0) guest_stats_log(now_ns, g_vk_present);
+        if (g_vk_present == 1 || g_vk_present % 600 == 0) {
+            guest_stats_log(now_ns, g_vk_present);
+            ipc_stats_log(now_ns);
+        }
         vk_mem_present();
         if (g_last) vk_surf_touch(g_last); /* what screenshots read stays */
         vk_tex_frame();

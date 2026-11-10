@@ -198,6 +198,11 @@ void snx_svc32(SnxArmCPU* a, u32 imm);
 extern void (*const g_svc64[SNX_SVC_COUNT])(CPU* c, u32 imm);
 /* SVC #imm's name in hos.svc (WaitSynchronization), NULL for a number it does not name */
 const char* svc_name(u32 imm);
+/* with log=2, the requests ipc.c served since the last call (ipc.c counts each by service and command, and the time
+   from the request's arrival to its reply, the handler's waits included): one line with their sum and the
+   IPC_STAT_TOP pairs that took the most time. From the renderer, beside guest_stats_log; the first call, and one
+   after the log's level rose to 2, only starts the window */
+void ipc_stats_log(u64 now_ns);
 
 KShmem* kshmem_new(u64 size, const char* name);
 u8* kshmem_ptr(KShmem* s);
