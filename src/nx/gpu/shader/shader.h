@@ -239,8 +239,12 @@ enum { SH_FS_LATE_DEPTH = 1u, SH_FS_CAPTURE_SHIFT = 1, SH_FS_VARYING_SHIFT = 4, 
    (PerVertexKHR, VK_KHR_fragment_shader_barycentric), and so does the position, in the free generic SH_VARYING_SLOT
    names (the vertex program's position_copy). The program interpolates them with the fragment's own weights among
    the three positions (shader_frag_weights), in 32-bit floats: a fraction of a pixel off on the largest primitives,
-   so the position inputs, up to two of them from bit 7 up, still read the position pass's exact value */
-enum { SH_VARYING_POSITION = 0, SH_VARYING_BARYCENTRIC = 1 };
+   so the position inputs, up to two of them from bit 7 up, still read the position pass's exact value.
+   SH_VARYING_GEOMETRY, the per-vertex pass on a device without that extension: a geometry program made for the draw
+   (vk/varying_geometry.c) hands the fragment program the same values as flat inputs. The three positions go in the
+   generics from SH_VARYING_SLOT on; each generic of the pass keeps its first vertex's value, and its second and
+   third vertices' go in the next two free generics, in the generics' order (shader_varying_copy) */
+enum { SH_VARYING_POSITION = 0, SH_VARYING_BARYCENTRIC = 1, SH_VARYING_GEOMETRY = 2 };
 #define SH_VARYING_SLOT(varying) ((varying) >> 2 & 31)
 #define SH_VARYING_POSITIONS 3
 static inline u32 shader_varying_positions(u32 generics) {
@@ -249,8 +253,15 @@ static inline u32 shader_varying_positions(u32 generics) {
         if (generics >> g & 1) key |= (g + 1) << (2 + 6 * k++);
     return key | SH_VARYING_POSITION;
 }
-static inline u32 shader_varying_per_vertex(u32 slot, u32 positions) {
-    return SH_VARYING_BARYCENTRIC | slot << 2 | (shader_varying_positions(positions) >> 2 & 0xFFF) << 7;
+static inline u32 shader_varying_per_vertex(u32 pass, u32 slot, u32 positions) {
+    return pass | slot << 2 | (shader_varying_positions(positions) >> 2 & 0xFFF) << 7;
+}
+/* SH_VARYING_GEOMETRY: the generic that holds vertex 1 + k's value (k 0 or 1) of the pass's generic g, per_vertex
+   the generics the pass takes and slot the first of the position's three; 32 and up when the generics run out */
+static inline u32 shader_varying_copy(u32 per_vertex, u32 slot, u32 g, u32 k) {
+    u32 before = 0;
+    for (u32 i = 0; i < g; i++) before += per_vertex >> i & 1;
+    return slot + 3 + 2 * before + k;
 }
 static inline u32 shader_varying_position_mask(u32 varying) {
     u32 generics = 0, first = (varying & 3) == SH_VARYING_POSITION ? 2 : 7;

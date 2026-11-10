@@ -4392,8 +4392,9 @@ static void fragment_position_pass(void) {
 /* The per-vertex pass (SH_VARYING_BARYCENTRIC): each perspective generic a plain IPA reads, and the position in the
    key's generic, are the three vertices' values (PerVertexKHR, 5285, with the FragmentBarycentricKHR capability,
    5284), weighed by the fragment's place; a screen-linear input stays the device's. The vertex program's key names
-   the generic its position goes to as well, which no store of its own may be */
-static void per_vertex_case(u32 imap7, u32 varying, int inputs, const char* what) {
+   the generic its position goes to as well, which no store of its own may be. With a geometry program's key
+   (SH_VARYING_GEOMETRY) the same values are flat inputs (14): the generic's own, two copies of it and three positions */
+static void per_vertex_case(u32 imap7, u32 varying, int inputs, int flats, const char* what) {
     const u64 xyw[] = {SCREEN_IPA(1, 0xd0), SCREEN_IPA(2, 0xd4), SCREEN_IPA(3, 0xe8)}; /* generics 5 and 6 */
     size_t slots, words = 0;
     u64* code = guest_program(xyw, 3, NULL, &slots);
@@ -4406,21 +4407,31 @@ static void per_vertex_case(u32 imap7, u32 varying, int inputs, const char* what
     check_translated(spv, &info, what);
     if (spv) {
         int found = count_opcode(spv, words, 71, 5285), capability = count_opcode(spv, words, 17, 5284);
-        if (found != inputs || capability != (inputs != 0))
-            fprintf(stderr, "  %d per-vertex inputs (expected %d), %d capabilities\n", found, inputs, capability);
-        check(found == inputs && capability == (inputs != 0), what);
+        int flat = count_opcode(spv, words, 71, 14); /* Flat */
+        if (found != inputs || capability != (inputs != 0) || flat != flats)
+            fprintf(stderr, "  %d per-vertex inputs (expected %d), %d capabilities, %d flat inputs (expected %d)\n",
+                    found, inputs, capability, flat, flats);
+        check(found == inputs && capability == (inputs != 0) && flat == flats, what);
     }
     free(spv);
 }
 static void per_vertex_pass(void) {
-    const u32 key = shader_varying_per_vertex(7, 0); /* the position in generic 7 */
+    const u32 key = shader_varying_per_vertex(SH_VARYING_BARYCENTRIC, 7, 0); /* the position in generic 7 */
+    const u32 flat = shader_varying_per_vertex(SH_VARYING_GEOMETRY, 7, 0);
     check(SH_VARYING_SLOT(key) == 7 && !shader_varying_position_mask(key) &&
-              shader_varying_position_mask(shader_varying_per_vertex(31, 0x80000021u)) == 0x21u,
+              shader_varying_position_mask(shader_varying_per_vertex(SH_VARYING_BARYCENTRIC, 31, 0x80000021u)) == 0x21u,
           "the per-vertex pass's key holds the position's generic and the two lowest position inputs");
-    per_vertex_case(0xaaaa00, key, 3, "two perspective generics and the position per vertex");
-    per_vertex_case(0xffaa00, key, 2, "a screen-linear generic is the device's");
-    per_vertex_case(0xaaaa00, shader_varying_per_vertex(7, 1u << 5), 2, "a position input stays the position pass's");
-    per_vertex_case(0xaaaa00, 0, 0, "without the key the inputs are the device's");
+    check(shader_varying_copy(0x60, 7, 5, 0) == 10 && shader_varying_copy(0x60, 7, 6, 1) == 13 &&
+              shader_varying_copy(0x60, 7, 32, 0) == 14,
+          "a geometry program's copies follow the position's three generics, two a generic");
+    per_vertex_case(0xaaaa00, key, 3, 0, "two perspective generics and the position per vertex");
+    per_vertex_case(0xffaa00, key, 2, 0, "a screen-linear generic is the device's");
+    per_vertex_case(0xaaaa00, shader_varying_per_vertex(SH_VARYING_BARYCENTRIC, 7, 1u << 5), 2, 0,
+                    "a position input stays the position pass's");
+    per_vertex_case(0xaaaa00, 0, 0, 0, "without the key the inputs are the device's");
+    /* a geometry program's: each generic flat with two flat copies, and the three positions */
+    per_vertex_case(0xaaaa00, flat, 0, 9, "two perspective generics and the position as flat inputs");
+    per_vertex_case(0xffaa00, flat, 0, 6, "a screen-linear generic beside one taken as flat inputs");
     struct {
         u64 instructions[7];
         int count;

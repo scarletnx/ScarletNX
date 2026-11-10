@@ -247,7 +247,8 @@ void shader_alpha_test(DirectCtx* c, u32 push, u32 push_pointer, u32 alpha);
 u32 shader_frag_y_origin(DirectCtx* c, u32 push, u32 y);
 void shader_vertex_position_fix(DirectCtx* c, u32 position, u32 push, u32 push_pointer, u32 vec4_type);
 int shader_ipa_position(u32 pos_in, const u32* sph, u32 addr);
-void shader_frag_weights(DirectCtx* c, u32 position, const u32 ndc[2], u32 weight[2]);
+u32 shader_vertex_value(DirectCtx* c, u32 vec4_type, const u32 at[3], int flat, u32 vertex, u32 component);
+void shader_frag_weights(DirectCtx* c, u32 vec4_type, const u32 position[3], int flat, const u32 ndc[2], u32 weight[2]);
 void shader_frag_ndc(DirectCtx* c, u32 fragcoord, u32 vec4_type, u32 push, u32 push_pointer, u32 ndc[2]);
 /* What a program's transform feedback writes at each exit or emitted vertex (shader_xfb_store) */
 typedef struct {
@@ -458,9 +459,12 @@ typedef struct {
     /* a fragment program's inputs the position pass takes (ShaderInfo.varying), and the fragment's own x and y in clip
        space over w that they read as (shader_frag_ndc) */
     u32 pos_in, frag_ndc[2];
-    /* the inputs the per-vertex pass takes, each an array of its three vertices' values, and the fragment's weights
-       of the second and third vertex (shader_frag_weights) */
+    /* the inputs the per-vertex pass takes and the fragment's weights of the second and third vertex
+       (shader_frag_weights). An input is an array of its three vertices' values, or with pv_flat (a geometry program
+       wrote them) the first vertex's, the others' in pv_copy */
     u32 pv_mask, pv_weight[2];
+    const u32 (*pv_copy)[2];
+    int pv_flat;
     u32 sample_mask_output;
     int guest_sample_mask;
     u32 sample_id;

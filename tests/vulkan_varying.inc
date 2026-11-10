@@ -115,7 +115,12 @@ static int check_varying_passes(void) {
     r[0x701] = (u32)(vertices >> 32);
     r[0x702] = (u32)vertices;
     float error[2];
-    for (u32 topology = 4; topology <= 7; topology += 3) {
+    /* the per-vertex pass as the device has it, then through the geometry program, which a device with barycentrics
+       would not take */
+    const int barycentric = g_vk.has_barycentric;
+    for (u32 turn = 0; turn < (barycentric ? 4u : 2u); turn++) {
+        u32 topology = turn & 1 ? 7 : 4;
+        g_vk.has_barycentric = barycentric && turn < 2;
         u8 bytes[6 * 32];
         u32 count = topology == 7 ? 4 : 6;
         for (u32 v = 0; v < count; v++) {
@@ -131,16 +136,21 @@ static int check_varying_passes(void) {
         r[0x7c0] = (u32)((vertices + count * 32 - 1) >> 32);
         r[0x7c1] = (u32)(vertices + count * 32 - 1);
         CHECK(!varying_error(channel, target, topology, error));
-        printf("varying passes: %s of a plane clipped at the eye: the position generic over its w is %.4f pixels off "
-               "at most, another generic %.4f\n",
-               topology == 7 ? "a quad" : "triangles", (double)error[0], (double)error[1]);
+        printf("varying passes: %s of a plane clipped at the eye%s: the position generic over its w is %.4f pixels "
+               "off at most, another generic %.4f\n",
+               topology == 7 ? "a quad" : "triangles",
+               topology != 7          ? ""
+               : g_vk.has_barycentric ? " (barycentrics)"
+                                      : " (a geometry program)",
+               (double)error[0], (double)error[1]);
         /* the position pass, on every driver but NVIDIA's (which needs none): the fragment's own place. A quad that
-           culls no face takes the per-vertex pass where the device has barycentrics: its other generic within what
-           32-bit floats give on this plane, half a pixel */
+           culls no face takes the per-vertex pass: its other generic within what 32-bit floats give on this plane,
+           half a pixel */
         int nvidia = g_vk.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
         CHECK(nvidia || error[0] < 1.0f / 64);
-        CHECK(nvidia || topology != 7 || !g_vk.has_barycentric || error[1] < 1.0f);
+        CHECK(nvidia || topology != 7 || !(g_vk.has_barycentric || g_vk.feat.geometryShader) || error[1] < 1.0f);
     }
+    g_vk.has_barycentric = barycentric;
     vk_lock();
     vk_render_end();
     vk_unlock();

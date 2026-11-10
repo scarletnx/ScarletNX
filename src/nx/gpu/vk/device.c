@@ -1068,7 +1068,9 @@ static int create_device(void) {
             "(VK_KHR_fragment_shader_barycentric), another draw's position inputs read from the fragment's place\n");
     else
         LOG("vulkan: a draw's position inputs are read from the fragment's place; an unculled quad draw's other "
-            "inputs are the driver's interpolation, as the device has %s\n",
+            "inputs are %s, as the device has %s\n",
+            g_vk.feat.geometryShader ? "interpolated from its vertices' values, which a geometry program hands over"
+                                     : "the driver's interpolation",
             has_barycentric ? "VK_KHR_fragment_shader_barycentric without its feature"
                             : "no VK_KHR_fragment_shader_barycentric");
     g_vk.has_index8 = index8_ext && qindex8.indexTypeUint8;
