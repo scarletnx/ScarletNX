@@ -82,6 +82,8 @@ void svc_exit_thread(KThread* t);
 void process_exit(int code);
 /* gives the core to a waiting thread of higher priority, then waits for it again */
 void core_preempt(KThread* t);
+/* svcSynchronizePreemptionState's: clears the interrupt flag a poll set in t's TLS when it left t its core */
+void core_synchronize(KThread* t);
 /* gives the core to a waiting thread of any priority. migrate 2 may run it on an idle core of its mask instead */
 void core_yield(KThread* t, int migrate);
 void core_set_prio(KThread* t, int prio); /* the effective priority, reordering the core's wait list */
@@ -227,6 +229,8 @@ typedef struct {
        (plat_ns, 0 for none), and per core the hand-offs over 10 ms late, the latest one and its holder (kt_ix) */
     u64 preempt_since[NCORES], preempt_late[NCORES], preempt_max_ns[NCORES];
     u32 preempt_max_by[NCORES];
+    /* how often a thread stopped with its disable count raised ran on (core_switch), under core_lk */
+    u64 kept;
     /* kernel_core_watch's, on the frontend's thread: the flag time it last told of per core, and its lines so far */
     u64 preempt_said[NCORES];
     u32 preempt_lines;

@@ -66,11 +66,14 @@ u32 h_new(KObj* o) {
     (void)o;
     return 0;
 }
+/* a thread's TLS page (thread.c's tls_alloc_nl): with no guest memory here a guest address is the host's, so this is a
+   host page, the same for every caller, where a poll reads the thread's disable count as zero */
+static u8 snx_kct_tls[0x1000];
 u64 kmem_alloc(u64 size, u32 state, u32 perm) {
     (void)size;
     (void)state;
     (void)perm;
-    return 0;
+    return (u64)(uintptr_t)snx_kct_tls;
 }
 void kobj_signal_nl(KObj* o) { (void)o; }
 u64 mem_find_free(u64 lo, u64 hi, u64 size, u64 align) {
@@ -240,6 +243,12 @@ static int settle(KThread* t, int want) {
     for (int i = 0; i < 2000 && on_core(t) != want; i++) nanosleep(&pause, NULL);
     return on_core(t);
 }
+/* until the 16-bit word at guest address at holds want, for up to 2 s; what it holds then */
+static u16 settle16(u64 at, u16 want) {
+    struct timespec pause = {0, 1000000};
+    for (int i = 0; i < 2000 && gr16(at) != want; i++) nanosleep(&pause, NULL);
+    return gr16(at);
+}
 /* the last move (by >= 0: the last one of test thread by) went to the CPUs in want, such as "1 4 7 10", and there
    were moves moves so far */
 static int moved(int by, const char* want, int moves) {
@@ -297,6 +306,13 @@ static void* game_body(void* p) {
 static void* poll_body(void* p) {
     snx_kct_who = (int)((KThread*)p - snx_kct_thread);
     core_poll((KThread*)p);
+    return NULL;
+}
+/* an SVC of a thread, as svc.c's svc_enter runs it: a waiter of better priority takes the core on the way in */
+static void* svc_body(void* p) {
+    snx_kct_who = (int)((KThread*)p - snx_kct_thread);
+    core_enter((KThread*)p);
+    core_preempt((KThread*)p);
     return NULL;
 }
 typedef struct {
@@ -787,6 +803,98 @@ int main(void) {
     CHECK(on_core(a) == -1 && !a->cpu.poll, "a fault off its core: on %d, poll %u", on_core(a), a->cpu.poll);
     g_host.thread.host_tid[0] = 0;
     a->o.type = 0;
+
+    /* A thread stopped in game code with its disable count raised (the SDK raises it around its spinning locks)
+       keeps its core past a waiter of better priority, as on the console: the waiter would spin on the lock for good,
+       on the core its holder then waits for. The interrupt flag is set in its TLS and its poll stays set. With no
+       guest memory here a guest address is the host's, so the TLS is a host array */
+    u8 tls[0x200] = {0};
+    reset();
+    a = thread(0, 45, 0, 1), b = thread(1, 43, 0, 1);
+    a->id = 7;
+    a->tls = (u64)(uintptr_t)tls;
+    gw16(a->tls + SNX_TLS_DISABLE_COUNT, 3);
+    core_enter(a);
+    pthread_create(&h, NULL, enter_body, b);
+    CHECK(settle(b, -2) == -2 && __atomic_load_n(&a->cpu.poll, __ATOMIC_RELAXED) == 1,
+          "43 waits for core 0 behind 45: on core %d, the holder's poll %u", on_core(b), a->cpu.poll);
+    logged[0] = 0;
+    pthread_create(&h2, NULL, poll_body, a);
+    CHECK(settle16(a->tls + SNX_TLS_INTERRUPT_FLAG, 1) == 1 && on_core(a) == 0 && on_core(b) == -2 &&
+              __atomic_load_n(&a->cpu.poll, __ATOMIC_RELAXED) == 1,
+          "stopped with a disable count of 3: interrupt flag %u, 45 on %d, 43 on %d, poll %u",
+          gr16(a->tls + SNX_TLS_INTERRUPT_FLAG), on_core(a), on_core(b), a->cpu.poll);
+    if (on_core(a) != 0) { /* a scheduler that took the core: its waiter lets the poll through */
+        pthread_join(h, NULL);
+        core_leave(b);
+        pthread_join(h2, NULL);
+    } else {
+        pthread_join(h2, NULL);
+        CHECK(strstr(logged, "thread 7 (prio 45) keeps core 0 past a waiter of priority 43: its disable count is 3"),
+              "the kept core is said with its values: \"%s\"", logged);
+        /* an SVC gives the core up whatever the count: only game code stopped where it runs is spared */
+        pthread_create(&h2, NULL, svc_body, a);
+        pthread_join(h, NULL);
+        CHECK(on_core(b) == 0 && settle(a, -2) == -2, "an SVC with the count at 3: 43 on %d, 45 on %d", on_core(b),
+              on_core(a));
+        core_leave(b);
+        pthread_join(h2, NULL);
+        CHECK(on_core(a) == 0 && gr16(a->tls + SNX_TLS_INTERRUPT_FLAG) == 1, "45 back on core %d, interrupt flag %u",
+              on_core(a), gr16(a->tls + SNX_TLS_INTERRUPT_FLAG));
+        /* svcSynchronizePreemptionState clears the flag, and nothing else of the TLS */
+        core_synchronize(a);
+        CHECK(!gr16(a->tls + SNX_TLS_INTERRUPT_FLAG) && gr16(a->tls + SNX_TLS_DISABLE_COUNT) == 3,
+              "after svcSynchronizePreemptionState: interrupt flag %u, disable count %u",
+              gr16(a->tls + SNX_TLS_INTERRUPT_FLAG), gr16(a->tls + SNX_TLS_DISABLE_COUNT));
+    }
+    /* its count back at zero, its next poll gives the core up: the SDK's call may come a moment later */
+    b = thread(1, 43, 0, 1);
+    pthread_create(&h, NULL, enter_body, b);
+    CHECK(settle(b, -2) == -2, "43 waits for core 0 again: on core %d", on_core(b));
+    gw16(a->tls + SNX_TLS_DISABLE_COUNT, 0);
+    pthread_create(&h2, NULL, poll_body, a);
+    pthread_join(h, NULL);
+    CHECK(on_core(b) == 0 && settle(a, -2) == -2 && !gr16(a->tls + SNX_TLS_INTERRUPT_FLAG),
+          "stopped with a disable count of 0: 43 on %d, 45 on %d, interrupt flag %u", on_core(b), on_core(a),
+          gr16(a->tls + SNX_TLS_INTERRUPT_FLAG));
+    core_leave(b);
+    pthread_join(h2, NULL);
+    core_leave(a);
+    /* a thread whose core a fault lent away runs on with no core while its count is raised, where it would line up
+       behind the core's new holder; at zero its poll lines it up */
+    reset();
+    a = thread(2, 44, 0, 1), w = thread(3, 31, 0, 1);
+    a->o.type = KO_THREAD;
+    a->state = 1;
+    a->id = 9;
+    a->tls = (u64)(uintptr_t)tls;
+    g_host.thread.host_tid[2] = 4242;
+    gw16(a->tls + SNX_TLS_DISABLE_COUNT, 2);
+    core_enter(a);
+    pthread_create(&h, NULL, enter_body, w);
+    CHECK(settle(w, -2) == -2, "31 waits for core 0 behind 44: on core %d", on_core(w));
+    kthread_fault_lend(4242);
+    pthread_join(h, NULL);
+    pthread_create(&h2, NULL, poll_body, a);
+    CHECK(settle16(a->tls + SNX_TLS_INTERRUPT_FLAG, 1) == 1 && on_core(a) == -1 && on_core(w) == 0 &&
+              __atomic_load_n(&a->cpu.poll, __ATOMIC_RELAXED) == 1,
+          "off its core with a disable count of 2: interrupt flag %u, 44 on %d, 31 on %d, poll %u",
+          gr16(a->tls + SNX_TLS_INTERRUPT_FLAG), on_core(a), on_core(w), a->cpu.poll);
+    if (on_core(a) == -1) {
+        pthread_join(h2, NULL);
+        CHECK(strstr(logged, "thread 9 (prio 44), its core lent in a fault, runs on with none: its disable count is 2"),
+              "the thread with no core is said with its values: \"%s\"", logged);
+        gw16(a->tls + SNX_TLS_DISABLE_COUNT, 0);
+        pthread_create(&h2, NULL, poll_body, a);
+        CHECK(settle(a, -2) == -2, "at a count of 0 its poll waits behind 31: on core %d", on_core(a));
+    }
+    core_leave(w);
+    pthread_join(h2, NULL);
+    CHECK(on_core(a) == 0 && !a->cpu.poll, "44 back on core %d, poll %u", on_core(a), a->cpu.poll);
+    core_leave(a);
+    g_host.thread.host_tid[2] = 0;
+    a->o.type = 0;
+    CHECK(g_host.thread.kept == 2, "%llu stops kept a core or none, not 2", (unsigned long long)g_host.thread.kept);
 
     /* The Ounce's NPDM can permit six cores. Its last guest core gets its own share of host CPUs. */
     host(twelve, 12);

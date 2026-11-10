@@ -241,11 +241,22 @@ void core_leave(KThread* t) {
     if (t->on_core >= 0) core_release_nl(t);
     core_unlock();
 }
+/* The two words after the IPC buffer in a thread's TLS, which the console's kernel shares with the SDK: the disable
+   count, which the SDK raises around its spinning locks (a busy mutex's, a light message queue's, a light semaphore's),
+   and the interrupt flag, which the kernel sets when it would have taken the thread's core meanwhile */
+#define SNX_TLS_DISABLE_COUNT  0x100
+#define SNX_TLS_INTERRUPT_FLAG 0x102
 /* every waiter that would preempt t has flagged it, so an unflagged holder has nothing to do here: that is the path of
-   every SVC */
-void core_preempt(KThread* t) {
-    int k, j, got = 1;
+   every SVC. stopped: t's game code was stopped where it ran (a poll at a backward branch, NCE's kick), not at an SVC.
+   A thread stopped with its disable count raised keeps its core and runs on, as on the console: it may hold a
+   spinning lock, and the thread that took its core would spin on that lock for good while the holder waits for the
+   core. Its interrupt flag is set instead and its poll stays set: the SDK, its count back at zero, sees the flag and
+   calls svcSynchronizePreemptionState, where the core changes hands (svc_enter) */
+static void core_switch(KThread* t, int stopped) {
+    int k, j, got = 1, kept = 0, best = 64;
+    u16 count = 0;
     if (!t || !__atomic_load_n(&t->cpu.poll, __ATOMIC_RELAXED)) return;
+    if (stopped && t->tls) count = gr16(t->tls + SNX_TLS_DISABLE_COUNT); /* its own TLS: only t's thread is here */
     pm_lock(&g_host.thread.core_lk);
     if (!g_settings.emulated_cores) { /* only a game pause sets poll: kernel_hold, under core_lk */
         if (!__atomic_load_n(&g_hle.thread.hold, __ATOMIC_RELAXED))
@@ -254,7 +265,13 @@ void core_preempt(KThread* t) {
         return;
     }
     k = t->on_core;
-    if (k == -1) { /* its core was let go while it waited in a fault (kthread_fault_lend): it takes one again */
+    if (count && (k == -1 || (k >= 0 && g_hle.thread.core_best[k] < t->prio))) {
+        /* either way it would line up for a core here, behind the thread that may want its lock */
+        gw16(t->tls + SNX_TLS_INTERRUPT_FLAG, 1);
+        kept = 1;
+        if (k >= 0) best = g_hle.thread.core_best[k];
+        g_host.thread.kept++;
+    } else if (k == -1) { /* its core was let go while it waited in a fault (kthread_fault_lend): it takes one again */
         __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
         got = core_take_nl(t);
     } else if (k >= 0 && g_hle.thread.core_best[k] < t->prio) {
@@ -266,16 +283,35 @@ void core_preempt(KThread* t) {
     } else
         __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
     core_unlock();
+    if (kept) { /* it holds the core it held, or none still: nothing moved */
+        if (k >= 0)
+            LOG_LIMIT(1,
+                      "kernel: thread %llu (prio %d) keeps core %d past a waiter of priority %d: its disable count "
+                      "is %u\n",
+                      (unsigned long long)t->id, t->prio, k, best, (unsigned)count);
+        else
+            LOG_LIMIT(1,
+                      "kernel: thread %llu (prio %d), its core lent in a fault, runs on with none: its disable "
+                      "count is %u\n",
+                      (unsigned long long)t->id, t->prio, (unsigned)count);
+        return;
+    }
     if (!got) core_await(t);
     core_pin(t);
 }
+void core_preempt(KThread* t) { core_switch(t, 0); }
 void core_poll(KThread* t) {
     if (t) { /* for the thread dump: only t's own thread writes its count */
         u32* polls = &g_host.thread.polls[kt_ix(t) - 1];
         __atomic_store_n(polls, __atomic_load_n(polls, __ATOMIC_RELAXED) + 1, __ATOMIC_RELAXED);
     }
-    core_preempt(t);
+    core_switch(t, 1);
     if (kthread_hold_point(t, PARK_RUN)) core_enter(t);
+}
+/* svcSynchronizePreemptionState: the SDK found the interrupt flag that core_switch set. The flag goes; the core went
+   to its waiter on the way into the SVC */
+void core_synchronize(KThread* t) {
+    if (t && t->tls) gw16(t->tls + SNX_TLS_INTERRUPT_FLAG, 0);
 }
 /* The traps, as they learn that host thread tid waits in a fault on memory the GPU holds (plat_trap_waiting), before
    its page lands, which can wait for the GPU for seconds: the guest thread blocked in that fault lets go of its core,
