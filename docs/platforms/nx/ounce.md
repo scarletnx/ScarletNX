@@ -197,10 +197,11 @@ a grid in world space, then the cell's list, in a loop) is bound as no texture, 
 indexed on the GPU would sample them, but the renderer would have to make each texture such a handle can name, which
 no draw tells it.
 
-On a device without `shaderFloat64`, a fragment program that rounds through a double is refused as a whole, and its
-draws are skipped. `g_shader_float64` makes the translation take the nearest round in floats instead, so the program
-runs. KosmicKrisp budgets 2025 MB of this Mac's 24 GB heap, so a game of this size logs allocations that fail even now
-that it draws. MoltenVK reports 18 GB and logs none.
+On a device without `shaderFloat64` (`g_shader_float64` is 0), a module that declares `Float64` is refused as a whole,
+and its draws are skipped. There, an `FADD`, `FMUL` or `FFMA` with a directed rounding mode rounds to nearest in floats,
+and `FMUL`'s scale is a second multiply by a power of two, so the program runs: a result may differ from the console's
+by one unit in the last place. An `I2F` with a directed mode still converts through a double, and its program is still
+refused there.
 
 ## Surfaces
 
