@@ -269,15 +269,7 @@ int vk_wlog_merge(VkWriteLog* l, u32 part, u32 from, u32 to, VkBuffer src, u64 s
     VkDescriptorBufferInfo info[3] = {{src, sb, src_off + to - sb},
                                       {dst, db, dst_off + (to - from) - db},
                                       {l->buf, (u64)part * SH_WLOG_PART * 4, (u64)SH_WLOG_PART * 4}};
-    VkWriteDescriptorSet w[3];
-    for (u32 k = 0; k < 3; k++)
-        w[k] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                      .dstSet = set,
-                                      .dstBinding = k,
-                                      .descriptorCount = 1,
-                                      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                      .pBufferInfo = &info[k]};
-    vkUpdateDescriptorSets(g_vk.dev, 3, w, 0, NULL);
+    snx_vk_storage_buffers(g_vk.dev, set, info, 3);
     MergeParams p = {from / 4096, from, to, (u32)((src_off + from - sb) / 4), (u32)((dst_off - db) / 4)};
     VkCommandBuffer cb = vk_cmd();
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_mg_pipe);

@@ -105,4 +105,6 @@ VkResult snx_vk_compute_pipeline(VkDevice dev, VkPipelineCache cache, VkPipeline
 VkResult snx_vk_compute_pipeline_subgroups(VkDevice dev, VkPipelineCache cache, VkPipelineLayout layout,
                                            const uint32_t* words, size_t size, uint32_t subgroup, bool full,
                                            VkPipeline* out);
+/* count storage buffers written to set's bindings 0 on, in infos' order */
+void snx_vk_storage_buffers(VkDevice dev, VkDescriptorSet set, const VkDescriptorBufferInfo* infos, uint32_t count);
 #endif

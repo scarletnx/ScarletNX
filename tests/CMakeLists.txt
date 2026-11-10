@@ -3308,6 +3308,11 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         snx_test_target(snx-test-vk-compute-subgroups 11)
         target_link_libraries(snx-test-vk-compute-subgroups PRIVATE snx_vk_common)
         add_test(NAME vk_compute_subgroups COMMAND snx-test-vk-compute-subgroups)
+        # what a compute program's descriptor set is written with, for every frontend's dispatches
+        add_executable(snx-test-vk-compute-program vk_compute_program.c "${volk_SOURCE_DIR}/volk.c")
+        snx_test_target(snx-test-vk-compute-program 11)
+        target_link_libraries(snx-test-vk-compute-program PRIVATE snx_vk_common)
+        add_test(NAME vk_compute_program COMMAND snx-test-vk-compute-program)
         # the presentation the vsync setting picks, for every frontend's swapchain
         add_executable(snx-test-vk-present-mode vk_present_mode.c "${volk_SOURCE_DIR}/volk.c")
         snx_test_target(snx-test-vk-present-mode 11)

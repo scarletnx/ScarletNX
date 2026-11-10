@@ -94,15 +94,7 @@ int vk_depth_pack(VkCommandBuffer cb, const Surf* s, u32 layer, VkBuffer buf, u6
     barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
     VkDescriptorBufferInfo bufs[3] = {{db, dat, n * 4}, {sb, sat, (n + 3) / 4 * 4}, {pb, pat, n * bpp}};
-    VkWriteDescriptorSet wr[3];
-    for (u32 i = 0; i < 3; i++)
-        wr[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                       .dstSet = set,
-                                       .dstBinding = i,
-                                       .descriptorCount = 1,
-                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                       .pBufferInfo = &bufs[i]};
-    vkUpdateDescriptorSets(g_vk.dev, 3, wr, 0, NULL);
+    snx_vk_storage_buffers(g_vk.dev, set, bufs, 3);
     u32 push[4] = {w, h, (u32)mode, s->f.vk == VK_FORMAT_D32_SFLOAT_S8_UINT && mode != DP_Z32F_S8};
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_depth_pack.pipe);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_depth_pack.layout, 0, 1, &set, 0, NULL);

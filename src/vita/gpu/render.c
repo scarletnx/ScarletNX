@@ -1134,15 +1134,7 @@ static bool compute(struct VitaRender* r, VkCommandBuffer cb, VkPipeline pipelin
     VkDescriptorSet set = vita_vk_set(r->swizzle_set);
     if (!set) return false;
     VkDescriptorBufferInfo infos[2] = {{source, base, VK_WHOLE_SIZE}, {destination, at, size}};
-    VkWriteDescriptorSet writes[2];
-    for (unsigned i = 0; i < 2; ++i)
-        writes[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                           .dstSet = set,
-                                           .dstBinding = i,
-                                           .descriptorCount = 1,
-                                           .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                           .pBufferInfo = &infos[i]};
-    vkUpdateDescriptorSets(r->vk->device, 2, writes, 0, NULL);
+    snx_vk_storage_buffers(r->vk->device, set, infos, 2);
     memory_barrier(cb);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, r->swizzle_layout, 0, 1, &set, 0, NULL);

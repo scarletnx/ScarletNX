@@ -93,12 +93,7 @@ int vk_ftz_native(void) {
                                        .pSetLayouts = &dlayout};
     if (!VK_OK(vkAllocateDescriptorSets(g_vk.dev, &dai, &set))) goto out;
     VkDescriptorBufferInfo dbi = {buffer, 0, VK_WHOLE_SIZE};
-    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                              .dstSet = set,
-                              .descriptorCount = 1,
-                              .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                              .pBufferInfo = &dbi};
-    vkUpdateDescriptorSets(g_vk.dev, 1, &w, 0, NULL);
+    snx_vk_storage_buffers(g_vk.dev, set, &dbi, 1);
     if (!VK_OK(vkCreateCommandPool(g_vk.dev, &cpi, NULL, &cpool))) goto out;
     VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
                                        .commandPool = cpool,

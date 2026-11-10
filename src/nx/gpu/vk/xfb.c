@@ -99,15 +99,7 @@ int vk_xfb_indirect(u64 control, VkBuffer* arguments, u64* offset) {
     if (!set) return 0;
     u64 base = input_offset / alignment * alignment;
     VkDescriptorBufferInfo buffers[2] = {{input, base, input_offset - base + 8}, {*arguments, *offset, 16}};
-    VkWriteDescriptorSet writes[2];
-    for (u32 i = 0; i < 2; i++)
-        writes[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                           .dstSet = set,
-                                           .dstBinding = i,
-                                           .descriptorCount = 1,
-                                           .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                           .pBufferInfo = &buffers[i]};
-    vkUpdateDescriptorSets(g_vk.dev, 2, writes, 0, NULL);
+    snx_vk_storage_buffers(g_vk.dev, set, buffers, 2);
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     xfb_barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,

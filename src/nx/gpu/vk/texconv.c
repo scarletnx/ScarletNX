@@ -131,15 +131,7 @@ static int tc_dispatch(VkCommandBuffer cb, const TcParams* p, u32 gx, u32 rows, 
     VkDescriptorSet set = vk_desc_alloc(g_tc_ds);
     if (!set) return 0;
     VkDescriptorBufferInfo sides[2] = {{in, in_off, in_size}, {out, out_off, out_size}};
-    VkWriteDescriptorSet writes[2];
-    for (u32 i = 0; i < 2; i++)
-        writes[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                           .dstSet = set,
-                                           .dstBinding = i,
-                                           .descriptorCount = 1,
-                                           .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                           .pBufferInfo = &sides[i]};
-    vkUpdateDescriptorSets(g_vk.dev, 2, writes, 0, NULL);
+    snx_vk_storage_buffers(g_vk.dev, set, sides, 2);
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_tc_pipe);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_tc_layout, 0, 1, &set, 0, NULL);
     rec_CmdPushConstants(cb, g_tc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof *p, p);

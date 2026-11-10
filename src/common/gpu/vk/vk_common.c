@@ -328,3 +328,18 @@ VkResult snx_vk_compute_pipeline(VkDevice dev, VkPipelineCache cache, VkPipeline
                                  size_t size, VkPipeline* out) {
     return snx_vk_compute_pipeline_subgroups(dev, cache, layout, words, size, 0, false, out);
 }
+void snx_vk_storage_buffers(VkDevice dev, VkDescriptorSet set, const VkDescriptorBufferInfo* infos, uint32_t count) {
+    VkWriteDescriptorSet writes[16];
+    for (uint32_t first = 0; first < count;) { /* sixteen at a time: no program here binds more, and none is refused */
+        uint32_t n = count - first < 16 ? count - first : 16;
+        for (uint32_t i = 0; i < n; ++i)
+            writes[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                               .dstSet = set,
+                                               .dstBinding = first + i,
+                                               .descriptorCount = 1,
+                                               .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                               .pBufferInfo = &infos[first + i]};
+        vkUpdateDescriptorSets(dev, n, writes, 0, NULL);
+        first += n;
+    }
+}
