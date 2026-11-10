@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/present.h"
 #include "common/utilities/common.h"
+#include "common/utilities/quit_key.h"
 #include "vita/gpu/render.h"
 #include "vita/gpu/vk.h"
 #include "vita/platform/input.h"
@@ -15,6 +16,7 @@
 static struct {
     char* shot;
     bool video;
+    uint64_t quit_by; /* a second Esc before this ends the game (common/utilities/quit_key.h) */
 } g_present;
 static volatile sig_atomic_t g_interrupted;
 static void on_signal(int signal) {
@@ -42,6 +44,15 @@ bool vita_present_vblank(VitaProcess* p) {
     SDL_Event event;
     while (SDL_WasInit(SDL_INIT_EVENTS) && SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) return false;
+        /* Esc twice ends the game, a first one warning on the terminal; not with Ctrl, Alt or the system key */
+        if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && !event.key.repeat &&
+            !(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
+            char warning[64];
+            if (snx_quit_press(&g_present.quit_by, SDL_GetTicksNS())) return false;
+            snx_quit_warning(warning, sizeof warning, "Esc");
+            printf("%s\n", warning);
+            continue;
+        }
         vita_input_event(&event);
     }
     return !g_interrupted;

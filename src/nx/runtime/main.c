@@ -932,7 +932,7 @@ static void prepare_wait(const char* title) {
                          "Any button or tap: start now. The rest is prepared while you play. Back: menu.");
 #else
             prepare_draw(look, title, st, n, &p,
-                         "Any key, button or tap: start now. The rest is prepared while you play. Esc: quit.");
+                         "Any key, button or tap: start now. The rest is prepared while you play. Esc twice: quit.");
 #endif
             shown = 1;
         }

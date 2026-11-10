@@ -9,6 +9,7 @@
 #define SNX_HOTKEYS_H
 #include "nx/runtime/ini.h"
 #include <stddef.h>
+#include <stdint.h>
 
 /* the actions, in F1's order */
 enum {
@@ -59,4 +60,7 @@ void hotkey_set(const IniOpt* o, const char* v);
 int hotkey_assign(int action, unsigned key, unsigned mods, int* owner);
 /* backend_ini's: k a Shortcuts' row, v read into it: 1; else 0 */
 int hotkeys_ini(const char* k, const char* v);
+/* the quit key pressed at now_ns (plat_ns): 1 when it quits, a second press within SNX_QUIT_AGAIN_NS of a first
+   (common/utilities/quit_key.h); 0 for a first, which only warns */
+int hotkey_quit_press(uint64_t now_ns);
 #endif

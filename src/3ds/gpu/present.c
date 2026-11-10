@@ -22,6 +22,7 @@
 #include "common/gpu/vk/swapchain.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
+#include "common/utilities/quit_key.h"
 #include "common/platform/file.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
@@ -55,6 +56,7 @@ static struct {
     unsigned bottom_alone; /* bottom screen frames since the window last showed, the top screen showing none */
     uint64_t decoded[2];   /* each screen's frames decoded */
     uint64_t unshown;      /* the shows that found every image of their window on the display */
+    uint64_t quit_by;      /* a second Esc before this closes the window (common/utilities/quit_key.h) */
     SDL_FingerID finger;   /* the finger holding the touch screen, while one does (by_finger) */
     unsigned up : 1, closed : 1, separate : 1, by_finger : 1;
 } g_present;
@@ -372,14 +374,22 @@ void snx_ctr_present_fullscreen(void) {
     if (g_present.up && v && v->host.window) fullscreen(v->host.window, true);
 }
 /* The window's own keys, as a Switch game's (backend/sdl3.c): F11, or Alt+Enter, switches the window it is pressed in
-   to fullscreen and back, and F4 turns the FPS limit off and back on (board/clock.h); not with Ctrl or the system
-   key, the desktop's, nor F4 with Alt, which closes a window */
+   to fullscreen and back, F4 turns the FPS limit off and back on (board/clock.h), and Esc twice closes it, a first one
+   warning on the terminal; not with Ctrl or the system key, the desktop's, nor F4 or Esc with Alt */
 static void key_event(const SDL_Event* event) {
     if (event->type != SDL_EVENT_KEY_DOWN || event->key.repeat || (event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)))
         return;
     bool alt = event->key.mod & SDL_KMOD_ALT;
     SDL_Window* window = SDL_GetWindowFromID(event->key.windowID);
-    if (window && ((event->key.key == SDLK_F11 && !alt) || (event->key.key == SDLK_RETURN && alt)))
+    if (event->key.key == SDLK_ESCAPE && !alt) {
+        if (snx_quit_press(&g_present.quit_by, SDL_GetTicksNS()))
+            g_present.closed = 1;
+        else {
+            char warning[64];
+            snx_quit_warning(warning, sizeof warning, "Esc");
+            fprintf(stderr, "%s\n", warning);
+        }
+    } else if (window && ((event->key.key == SDLK_F11 && !alt) || (event->key.key == SDLK_RETURN && alt)))
         fullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
     else if (event->key.key == SDLK_F4 && !alt) {
         int pace = snx_ctr_clock_toggle();

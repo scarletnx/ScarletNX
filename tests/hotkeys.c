@@ -4,8 +4,9 @@
    key; a key's text read as SDL names keys, its modifiers before it in any case, and said back in one way; the action
    a key pressed with modifiers does, Shift's loose match below an exact one, and a key two actions share; a setting
    read from the .ini, an empty one no key, and one that isn't a key refused with the value given and the one in
-   effect */
+   effect; the quit key's two presses */
 #include "nx/runtime/platform/hotkeys.h"
+#include "common/utilities/quit_key.h"
 #include "snx_settings.h"
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_keycode.h>
@@ -123,6 +124,17 @@ int main(void) {
     /* backend_ini's way in: the Shortcuts' keys, no other */
     assert(hotkeys_ini("hotkey_quit", "Q") == 1 && find(SDLK_Q, 0) == HOTKEY_QUIT && find(SDLK_ESCAPE, 0) == -1);
     assert(hotkeys_ini("hotkey_nope", "F1") == 0 && hotkeys_ini("stats", "1") == 0);
+    /* the quit key asks twice: a first press warns, a second within 3 s quits, one 3 s or more after a first warns
+       again; the warning names the key and the time */
+    {
+        char warning[64];
+        const uint64_t again = SNX_QUIT_AGAIN_NS;
+        assert(again == 3000000000ull);
+        assert(!hotkey_quit_press(1000) && hotkey_quit_press(1000 + again - 1));
+        assert(!hotkey_quit_press(10 * again) && !hotkey_quit_press(11 * again) && hotkey_quit_press(11 * again + 1));
+        snx_quit_warning(warning, sizeof warning, "Escape");
+        assert(!strcmp(warning, "Press Escape again within 3 seconds to quit"));
+    }
     puts("hotkeys passed");
     return 0;
 }

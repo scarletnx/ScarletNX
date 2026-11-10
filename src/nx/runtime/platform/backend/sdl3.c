@@ -26,6 +26,7 @@
 #include "nx/runtime/platform/help.h"
 #include "nx/runtime/platform/hotkeys.h"
 #include "common/utilities/pad_sdl.h"
+#include "common/utilities/quit_key.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1090,7 +1091,16 @@ static void hotkey(int action) {
             break;
         case HOTKEY_CAPTURE: g_renderer->capture(1); break;
         case HOTKEY_MOUSE: mouse_let_go(); break;
-        case HOTKEY_QUIT: g_quit = 1; break;
+        case HOTKEY_QUIT: /* asked twice: a first press only warns */
+            if (hotkey_quit_press(plat_ns()))
+                g_quit = 1;
+            else {
+                char text[96];
+                snx_quit_warning(text, sizeof text, hotkey_text(HOTKEY_QUIT));
+                toast(text);
+                LOG("%s\n", text);
+            }
+            break;
         case HOTKEY_TV_MODE: {
             char text[64];
             options_tv_mode_step(1, text, sizeof text);
