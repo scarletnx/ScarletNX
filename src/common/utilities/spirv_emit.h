@@ -43,18 +43,18 @@ typedef struct {
     uint32_t next_id;
     uint32_t version; /* the module's SPIR-V version word, spv_emit_set_version's (1.6 unless set) from spv_emit_init */
     uint32_t glsl;    /* the GLSL.std.450 import, 0 until it is made */
-    SpvKnown* known;
-    size_t known_count, known_capacity;
+    SpvKnown* known; /* doubled from 128 entries as it fills: its size follows from known_count */
+    size_t known_count;
     uint32_t* interface; /* the Input and Output variables spv_emit_variable made, for the entry point */
     size_t interface_count, interface_capacity;
     /* the ids decorated NonUniform (texture array elements and what is made from them), a set: open addressing on a
-       power of two (nonuniform_capacity), 0 a free slot, at most half full */
+       power of two, 0 a free slot, at most half full, so its size follows from nonuniform_count */
     uint32_t* nonuniform;
-    size_t nonuniform_count, nonuniform_capacity;
+    size_t nonuniform_count;
     uint32_t block; /* the OpLabels emitted so far: values an emitter's user keeps are good within one block */
     /* the 32-bit constants made, open addressing on a power of two: by type and value, and by id */
     SpvConstant *constants, *constant_ids;
-    size_t constant_count, constant_capacity;
+    size_t constant_count; /* the tables' size follows from it, as known_slots' does */
     /* called before each merge instruction and each branch or switch (not a return, kill or OpUnreachable) with
        block_end_user, so that a user keeping values of its own Function variables in a block stores them there */
     void (*block_end)(void* user);
@@ -64,9 +64,8 @@ typedef struct {
        implies, and spv_emit_load_nonprivate and spv_emit_store_nonprivate access memory other invocations share */
     int vulkan_memory_model;
     /* known's index: open addressing on a power of two, each slot an entry of known plus one (0 free), at most half
-       full, so finding one asks a slot or two, not every type and constant made */
+       full, so finding one asks a slot or two, not every type and constant made; its size follows from known_count */
     uint32_t* known_slots;
-    size_t known_slot_count;
 } SpvEmitter;
 
 typedef enum {

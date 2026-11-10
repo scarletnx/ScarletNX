@@ -86,22 +86,34 @@ static void put_str(SpvWords* s, const char* str) {
     for (size_t i = 0; i * 4 < n; i++) put(s, string_word(str, n, i));
 }
 
-/* the slot of known_slots to look for hash h from */
-static size_t known_slot(const SpvEmitter* e, uint64_t h) { return (size_t)(h ^ h >> 29) & (e->known_slot_count - 1); }
+/* The hash tables below are kept at most half full on a power of two, and grow only as an entry joins one, so a
+   table's size follows from its count: 0 for none, else the power of two at least twice count, and least */
+static size_t table_size(size_t count, size_t least) {
+    if (!count) return 0;
+    size_t size = (size_t)1 << (64u - snx_clz64((uint64_t)(2 * count - 1)));
+    return size < least ? least : size;
+}
+#define KNOWN_SLOTS_LEAST   256u
+#define KNOWN_LEAST         128u
+#define CONSTANTS_LEAST     256u
+#define NONUNIFORM_LEAST    64u
 
-/* known_slots at twice the size (256 at first), every entry of known in it again */
-static void known_slots_grow(SpvEmitter* e) {
-    size_t count = e->known_slot_count ? e->known_slot_count * 2 : 256;
-    uint32_t* slots = (uint32_t*)calloc(count, sizeof *slots);
+/* the slot of a known_slots of size slots to look for hash h from */
+static size_t known_slot(uint64_t h, size_t size) { return (size_t)(h ^ h >> 29) & (size - 1); }
+
+/* known_slots at the size of count entries: the entries of known placed again, as each one's slot depends on the
+   size (a slot of the table's old size moves up by it, or not, and probing moved some past their own) */
+static void known_slots_resize(SpvEmitter* e, size_t count) {
+    size_t size = table_size(count, KNOWN_SLOTS_LEAST);
+    uint32_t* slots = (uint32_t*)realloc(e->known_slots, size * sizeof *slots);
     if (!slots) abort();
-    free(e->known_slots);
-    e->known_slots = slots;
-    e->known_slot_count = count;
+    memset(slots, 0, size * sizeof *slots);
     for (size_t k = 0; k < e->known_count; k++) {
-        size_t i = known_slot(e, e->known[k].hash);
-        while (slots[i]) i = (i + 1) & (count - 1);
+        size_t i = known_slot(e->known[k].hash, size);
+        while (slots[i]) i = (i + 1) & (size - 1);
         slots[i] = (uint32_t)(k + 1);
     }
+    e->known_slots = slots;
 }
 
 /* a type (the id first, at = 1) or constant (its type first, the id second, at = 2) of these words in types, made
@@ -109,9 +121,8 @@ static void known_slots_grow(SpvEmitter* e) {
 static uint32_t known(SpvEmitter* e, uint32_t op, size_t at, const uint32_t* operands, size_t count) {
     uint64_t h = SNX_FNV_BASIS ^ op;
     for (size_t i = 0; i < count; i++) h = snx_fnv_step(h, operands[i]);
-    if ((e->known_count + 1) * 2 > e->known_slot_count) known_slots_grow(e);
-    size_t slot = known_slot(e, h);
-    for (; e->known_slots[slot]; slot = (slot + 1) & (e->known_slot_count - 1)) {
+    size_t size = table_size(e->known_count, KNOWN_SLOTS_LEAST), slot = 0;
+    for (slot = size ? known_slot(h, size) : 0; size && e->known_slots[slot]; slot = (slot + 1) & (size - 1)) {
         const SpvKnown* k = &e->known[e->known_slots[slot] - 1];
         if (k->hash != h) continue;
         const uint32_t* w = e->types.words + k->at;
@@ -123,12 +134,17 @@ static uint32_t known(SpvEmitter* e, uint32_t op, size_t at, const uint32_t* ope
         }
         if (same) return k->id;
     }
-    if (e->known_count == e->known_capacity) {
-        size_t capacity = e->known_capacity ? e->known_capacity * 2 : 128;
-        SpvKnown* grown = realloc(e->known, capacity * sizeof *grown);
-        if (!grown) abort();
-        e->known = grown;
-        e->known_capacity = capacity;
+    /* a new one: the index at the size its count takes, and known doubled from KNOWN_LEAST as it fills */
+    size_t grown = table_size(e->known_count + 1, KNOWN_SLOTS_LEAST);
+    if (grown != size) {
+        known_slots_resize(e, e->known_count + 1);
+        for (slot = known_slot(h, grown); e->known_slots[slot]; slot = (slot + 1) & (grown - 1)) {}
+    }
+    size_t n = e->known_count;
+    if (!n || (n >= KNOWN_LEAST && !(n & (n - 1)))) {
+        SpvKnown* more = (SpvKnown*)realloc(e->known, (n ? 2 * n : KNOWN_LEAST) * sizeof *more);
+        if (!more) abort();
+        e->known = more;
     }
     uint32_t id = spv_emit_id(e);
     e->known_slots[slot] = (uint32_t)(e->known_count + 1); /* the free slot the search stopped at */
@@ -410,41 +426,43 @@ static void constant_insert(SpvConstant* table, size_t capacity, const SpvConsta
     while (table[i].id) i = (i + 1) & (capacity - 1);
     table[i] = *c;
 }
-/* both tables at twice the capacity, the constants made so far in them again */
-static void constants_grow(SpvEmitter* e) {
-    size_t capacity = e->constant_capacity ? e->constant_capacity * 2 : 256;
-    SpvConstant* constants = (SpvConstant*)calloc(capacity, sizeof *constants);
-    SpvConstant* ids = (SpvConstant*)calloc(capacity, sizeof *ids);
+/* both tables from size to grown slots, the constants made so far in them again */
+static void constants_resize(SpvEmitter* e, size_t size, size_t grown) {
+    SpvConstant* constants = (SpvConstant*)calloc(grown, sizeof *constants);
+    SpvConstant* ids = (SpvConstant*)calloc(grown, sizeof *ids);
     if (!constants || !ids) abort();
-    for (size_t i = 0; i < e->constant_capacity; i++)
+    for (size_t i = 0; i < size; i++)
         if (e->constants[i].id) {
-            constant_insert(constants, capacity, &e->constants[i], 0);
-            constant_insert(ids, capacity, &e->constants[i], 1);
+            constant_insert(constants, grown, &e->constants[i], 0);
+            constant_insert(ids, grown, &e->constants[i], 1);
         }
     free(e->constants);
     free(e->constant_ids);
     e->constants = constants;
     e->constant_ids = ids;
-    e->constant_capacity = capacity;
 }
 
 uint32_t spv_emit_constant_u32(SpvEmitter* e, uint32_t type, uint32_t value) {
-    if ((e->constant_count + 1) * 2 > e->constant_capacity) constants_grow(e);
-    size_t i = constant_slot(type, value, e->constant_capacity);
-    for (; e->constants[i].id; i = (i + 1) & (e->constant_capacity - 1))
+    size_t size = table_size(e->constant_count, CONSTANTS_LEAST), i = 0;
+    for (i = size ? constant_slot(type, value, size) : 0; size && e->constants[i].id; i = (i + 1) & (size - 1))
         if (e->constants[i].type == type && e->constants[i].value == value) return e->constants[i].id;
+    size_t grown = table_size(e->constant_count + 1, CONSTANTS_LEAST);
+    if (grown != size) {
+        constants_resize(e, size, grown);
+        for (i = constant_slot(type, value, grown); e->constants[i].id; i = (i + 1) & (grown - 1)) {}
+    }
     SpvConstant c = {type, value, spv_emit_id(e)};
     EMIT(&e->types, SPV_OP_CONSTANT, type, c.id, value);
     e->constants[i] = c;
-    constant_insert(e->constant_ids, e->constant_capacity, &c, 1);
+    constant_insert(e->constant_ids, grown, &c, 1);
     e->constant_count++;
     return c.id;
 }
 
 int spv_emit_constant_bits(const SpvEmitter* e, uint32_t id, uint32_t* type, uint32_t* value) {
-    if (!e->constant_capacity || !id) return 0;
-    for (size_t i = constant_slot(id, 0, e->constant_capacity); e->constant_ids[i].id;
-         i = (i + 1) & (e->constant_capacity - 1))
+    size_t size = table_size(e->constant_count, CONSTANTS_LEAST);
+    if (!size || !id) return 0;
+    for (size_t i = constant_slot(id, 0, size); e->constant_ids[i].id; i = (i + 1) & (size - 1))
         if (e->constant_ids[i].id == id) {
             *type = e->constant_ids[i].type;
             *value = e->constant_ids[i].value;
@@ -738,25 +756,25 @@ static size_t nonuniform_slot(const uint32_t* set, size_t capacity, uint32_t id)
     while (set[i] && set[i] != id) i = (i + 1) & (capacity - 1);
     return i;
 }
+static int is_nonuniform(const SpvEmitter* e, uint32_t id) {
+    size_t size = table_size(e->nonuniform_count, NONUNIFORM_LEAST);
+    return size && e->nonuniform[nonuniform_slot(e->nonuniform, size, id)] == id;
+}
 static void nonuniform(SpvEmitter* e, uint32_t id) {
-    if ((e->nonuniform_count + 1) * 2 > e->nonuniform_capacity) { /* twice the size, the ids in it again */
-        size_t capacity = e->nonuniform_capacity ? e->nonuniform_capacity * 2 : 64;
-        uint32_t* set = (uint32_t*)calloc(capacity, sizeof *set);
+    if (is_nonuniform(e, id)) return;
+    size_t size = table_size(e->nonuniform_count, NONUNIFORM_LEAST);
+    size_t grown = table_size(e->nonuniform_count + 1, NONUNIFORM_LEAST);
+    if (grown != size) { /* the ids placed again in a new set: the set is all that holds them */
+        uint32_t* set = (uint32_t*)calloc(grown, sizeof *set);
         if (!set) abort();
-        for (size_t i = 0; i < e->nonuniform_capacity; i++)
-            if (e->nonuniform[i]) set[nonuniform_slot(set, capacity, e->nonuniform[i])] = e->nonuniform[i];
+        for (size_t i = 0; i < size; i++)
+            if (e->nonuniform[i]) set[nonuniform_slot(set, grown, e->nonuniform[i])] = e->nonuniform[i];
         free(e->nonuniform);
         e->nonuniform = set;
-        e->nonuniform_capacity = capacity;
     }
-    size_t i = nonuniform_slot(e->nonuniform, e->nonuniform_capacity, id);
-    if (e->nonuniform[i]) return;
-    e->nonuniform[i] = id;
+    e->nonuniform[nonuniform_slot(e->nonuniform, grown, id)] = id;
     e->nonuniform_count++;
     EMIT(&e->decorations, SPV_OP_DECORATE, id, 5300); /* NonUniform */
-}
-static int is_nonuniform(const SpvEmitter* e, uint32_t id) {
-    return e->nonuniform[nonuniform_slot(e->nonuniform, e->nonuniform_capacity, id)] == id;
 }
 
 /* the sampled image type of a texture, and its image type, declared once each */
