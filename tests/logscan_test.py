@@ -86,7 +86,7 @@ CRASH_IN_GAME = (
 *** Crash (signal 11) at host pc=0x7f0000001234, access to 0x7e0000000010 (game address 10) ***
 [   3.00]   invalid memory access
 [   3.00]   inside the recompiled code of game function 8123450 (+40 on the host)
-[   3.00]   a null pointer plus an offset: a game short of memory does this, memory_gb=6 in its .ini may help
+[   3.00]   a null pointer plus an offset: a game short of memory does this. It was told 3285 MiB (memory_gb=0): memory_gb=6 in its .ini tells it 4916 MiB
 [   3.00]   thread 7 (Render)
 [   3.00]   x0 = 0000000000000000  x1 = 0000000000000010  x2 = 0000000000000004  x3 = 0000000000000000
 [   3.00]   pc <_ZN4Game6Render4DrawEv+24>  lr <_ZN4Game6Render5FrameEv+80>
