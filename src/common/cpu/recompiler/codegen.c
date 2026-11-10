@@ -557,10 +557,14 @@ static void mark_entry(SnxCodegen* codegen, SnxU64 address) {
 }
 
 static void leaders(SnxCodegen* codegen, const AddressSet* extra, const AddressSet* hints) {
+    /* every function's first: a jump table's case can lie in a function after its BR's (mark_entry) */
     for (size_t i = 0; i < codegen->function_count; ++i) {
         SnxFunction* f = &codegen->functions[i];
         f->leaders = (unsigned char*)snx_alloc(f->count);
         memset(f->leaders, 0, f->count);
+    }
+    for (size_t i = 0; i < codegen->function_count; ++i) {
+        SnxFunction* f = &codegen->functions[i];
         mark_leader(f, f->start);
         int previous_terminal = 0;
         for (size_t j = 0; j < f->count; ++j) {

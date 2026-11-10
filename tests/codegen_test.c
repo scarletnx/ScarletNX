@@ -296,6 +296,48 @@ static void jump_table_sign_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* A switch whose cases lie in the function after its own (a compiler's cold part, with its own unwind range): they
+   are leaders of that function */
+static void jump_table_other_function_test(void) {
+    static const SnxU32 words[] = {
+        0x7100041FUL, /* cmp w0, #1 */
+        0x540000C8UL, /* b.hi 0x1c: the default */
+        0x90000001UL, /* adrp x1, base's page */
+        0x91020021UL, /* add x1, x1, #0x80: the table */
+        0xB8A05822UL, /* ldrsw x2, [x1, w0, uxtw #2] */
+        0x8B020022UL, /* add x2, x1, x2 */
+        0xD61F0040UL, /* br x2 */
+        0xD65F03C0UL, /* 0x1c, default: ret */
+        0x52800020UL, /* 0x20, the next function, case 0: mov w0, #1 */
+        0x52800040UL, /* 0x24, case 1: mov w0, #2 */
+        0xD65F03C0UL, /* ret */
+    };
+    unsigned char image[0x100];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxFde ranges[2];
+    const SnxFunction* function;
+    size_t i;
+    memset(image, 0, sizeof(image));
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+    put32(image, 0x80, (SnxU32)(0x20 - 0x80));
+    put32(image, 0x84, (SnxU32)(0x24 - 0x80));
+    setup_program(&program, &module, image, sizeof(image));
+    module.text_size = sizeof(words);
+    ranges[0].start = 0;
+    ranges[0].size = 0x20;
+    ranges[1].start = 0x20;
+    ranges[1].size = 0xC;
+    module.fde = ranges;
+    module.fde_count = 2;
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0),
+          "analyze a table with cases in the next function");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE + 0x20);
+    check(function && has_leader(function, SNX_CODE_BASE + 0x24), "a case in the next function is its leader");
+    snx_codegen_free(&codegen);
+}
+
 static void large_range_test(void) {
     SnxProgram program;
     SnxModuleImage module;
@@ -1168,6 +1210,7 @@ int main(void) {
     address_taken_shifted_test();
     jump_table_test();
     jump_table_sign_test();
+    jump_table_other_function_test();
     large_range_test();
     semantics_test();
     poll_test();
