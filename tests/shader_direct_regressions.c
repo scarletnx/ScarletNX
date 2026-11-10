@@ -4388,6 +4388,84 @@ static void fragment_position_pass(void) {
     position_pass_case(xyw, 3, 0xff00, generic5, 0, 0, "a screen-linear generic is not rebuilt");
     position_pass_case(indexed, 2, 0xaa00, 0, 0, 0, "an indexed IPA leaves no generic to a varying pass");
 }
+
+/* The per-vertex pass (SH_VARYING_BARYCENTRIC): each perspective generic a plain IPA reads, and the position in the
+   key's generic, are the three vertices' values (PerVertexKHR, 5285, with the FragmentBarycentricKHR capability,
+   5284), weighed by the fragment's place; a screen-linear input stays the device's. The vertex program's key names
+   the generic its position goes to as well, which no store of its own may be */
+static void per_vertex_case(u32 imap7, u32 varying, int inputs, const char* what) {
+    const u64 xyw[] = {SCREEN_IPA(1, 0xd0), SCREEN_IPA(2, 0xd4), SCREEN_IPA(3, 0xe8)}; /* generics 5 and 6 */
+    size_t slots, words = 0;
+    u64* code = guest_program(xyw, 3, NULL, &slots);
+    if (!code) return;
+    set_sph(code, 7, imap7);
+    ShaderInfo info = {0};
+    info.varying = varying;
+    u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 0, 1, 1, 1);
+    free(code);
+    check_translated(spv, &info, what);
+    if (spv) {
+        int found = count_opcode(spv, words, 71, 5285), capability = count_opcode(spv, words, 17, 5284);
+        if (found != inputs || capability != (inputs != 0))
+            fprintf(stderr, "  %d per-vertex inputs (expected %d), %d capabilities\n", found, inputs, capability);
+        check(found == inputs && capability == (inputs != 0), what);
+    }
+    free(spv);
+}
+static void per_vertex_pass(void) {
+    const u32 key = shader_varying_per_vertex(7, 0); /* the position in generic 7 */
+    check(SH_VARYING_SLOT(key) == 7 && !shader_varying_position_mask(key) &&
+              shader_varying_position_mask(shader_varying_per_vertex(31, 0x80000021u)) == 0x21u,
+          "the per-vertex pass's key holds the position's generic and the two lowest position inputs");
+    per_vertex_case(0xaaaa00, key, 3, "two perspective generics and the position per vertex");
+    per_vertex_case(0xffaa00, key, 2, "a screen-linear generic is the device's");
+    per_vertex_case(0xaaaa00, shader_varying_per_vertex(7, 1u << 5), 2, "a position input stays the position pass's");
+    per_vertex_case(0xaaaa00, 0, 0, "without the key the inputs are the device's");
+    struct {
+        u64 instructions[7];
+        int count;
+        u32 slot, out;
+        const char* refused;
+        const char* what;
+    } cases[] = {
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 0, 4)},
+         6,
+         7,
+         1u << 5 | 1u << 7,
+         NULL,
+         "the position goes to the key's generic too"},
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 0, 4)},
+         6,
+         0,
+         1u << 5,
+         NULL,
+         "without the key the program's own outputs"},
+        {{SCREEN_ALD(0), SCREEN_ALD(1), SCREEN_ALD(2), SCREEN_ALD(3), SCREEN_AST(0x70, 0, 4), SCREEN_AST(0xd0, 0, 4)},
+         6,
+         5,
+         0,
+         "the position's copy onto a generic the program writes",
+         "a generic the program writes can't take the position"},
+    };
+    for (size_t k = 0; k < sizeof cases / sizeof *cases; k++) {
+        size_t slots, words = 0;
+        u64* code = guest_program(cases[k].instructions, cases[k].count, NULL, &slots);
+        if (!code) continue;
+        ShaderInfo info = {0};
+        info.position_copy = cases[k].slot ? cases[k].slot + 1 : 0;
+        u32* spv = spirv_of(code, slots * sizeof *code, ST_VS, &info, &words, 0, 1, 1, 1);
+        free(code);
+        if (cases[k].refused)
+            check_refused(spv, &info, cases[k].refused, cases[k].what);
+        else {
+            check_translated(spv, &info, cases[k].what);
+            if (spv && info.out_mask != cases[k].out)
+                fprintf(stderr, "  outputs %#x, expected %#x\n", info.out_mask, cases[k].out);
+            check(spv && info.out_mask == cases[k].out, cases[k].what);
+        }
+        free(spv);
+    }
+}
 #undef SCREEN_IPA
 #undef SCREEN_IPA_MUL
 #undef SCREEN_RCP
@@ -4789,6 +4867,7 @@ int main(int argc, char** argv) {
     vertex_screen_out();
     vertex_position_out();
     fragment_position_pass();
+    per_vertex_pass();
     check(!g_fixtures.failed, "shader fixture paths allocated");
     for (size_t i = 0; i < g_fixtures.count; i++) free(g_fixtures.paths[i]);
     free(g_fixtures.paths);

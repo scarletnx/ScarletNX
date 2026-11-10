@@ -134,8 +134,12 @@ static int check_varying_passes(void) {
         printf("varying passes: %s of a plane clipped at the eye: the position generic over its w is %.4f pixels off "
                "at most, another generic %.4f\n",
                topology == 7 ? "a quad" : "triangles", (double)error[0], (double)error[1]);
-        /* the position pass, on every driver but NVIDIA's (which needs none): the fragment's own place */
-        CHECK(g_vk.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY || error[0] < 1.0f / 64);
+        /* the position pass, on every driver but NVIDIA's (which needs none): the fragment's own place. A quad that
+           culls no face takes the per-vertex pass where the device has barycentrics: its other generic within what
+           32-bit floats give on this plane, half a pixel */
+        int nvidia = g_vk.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+        CHECK(nvidia || error[0] < 1.0f / 64);
+        CHECK(nvidia || topology != 7 || !g_vk.has_barycentric || error[1] < 1.0f);
     }
     vk_lock();
     vk_render_end();

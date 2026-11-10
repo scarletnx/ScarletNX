@@ -49,6 +49,8 @@ typedef struct {
     /* the last stage before rasterization takes its position's x and y from pixels (SNX_SH_WINDOW_XY), and gives
        it a viewport swizzle (the key's SNX_SH_SWIZZLE and its fields, else 0), in shader_vertex_position_fix */
     int window_xy;
+    /* a vertex program's output that takes the position after its fix (ShaderInfo.position_copy), 0 for none */
+    u32 position_copy;
     u32 swizzle;
     /* constant buffer words read in the block being written, by bank and offset (a cache: a word that collides is
        read again), and their bitcast to a float, 0 until made. A draw's constant buffers don't change under it */
@@ -245,6 +247,7 @@ void shader_alpha_test(DirectCtx* c, u32 push, u32 push_pointer, u32 alpha);
 u32 shader_frag_y_origin(DirectCtx* c, u32 push, u32 y);
 void shader_vertex_position_fix(DirectCtx* c, u32 position, u32 push, u32 push_pointer, u32 vec4_type);
 int shader_ipa_position(u32 pos_in, const u32* sph, u32 addr);
+void shader_frag_weights(DirectCtx* c, u32 position, const u32 ndc[2], u32 weight[2]);
 void shader_frag_ndc(DirectCtx* c, u32 fragcoord, u32 vec4_type, u32 push, u32 push_pointer, u32 ndc[2]);
 /* What a program's transform feedback writes at each exit or emitted vertex (shader_xfb_store) */
 typedef struct {
@@ -455,6 +458,9 @@ typedef struct {
     /* a fragment program's inputs the position pass takes (ShaderInfo.varying), and the fragment's own x and y in clip
        space over w that they read as (shader_frag_ndc) */
     u32 pos_in, frag_ndc[2];
+    /* the inputs the per-vertex pass takes, each an array of its three vertices' values, and the fragment's weights
+       of the second and third vertex (shader_frag_weights) */
+    u32 pv_mask, pv_weight[2];
     u32 sample_mask_output;
     int guest_sample_mask;
     u32 sample_id;

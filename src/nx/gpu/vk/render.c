@@ -3077,16 +3077,39 @@ static int draw_shaders(const DsState* ds, u32 topology, int mesh, DrawShaders* 
     return 1;
 }
 /* The varying pass of a draw with shaders sh (ShaderInfo.varying, the fragment program's key): none where the host
-   interpolates as the console does (NVIDIA's driver, which Eden leaves alone too). The position pass needs the
-   fragment program straight after the vertex program, whose position is the rasterizer's as written (no swizzle the
-   program applies, the viewport transform on) in viewport 0, and triangles drawn filled */
-static u32 draw_varying(const DsState* ds, const DrawShaders* sh) {
+   interpolates as the console does (NVIDIA's driver, which Eden leaves alone too). A pass needs the fragment program
+   straight after the vertex program, whose position is the rasterizer's as written (no swizzle the program applies,
+   the viewport transform on) in viewport 0, and triangles drawn filled. The per-vertex pass (per_vertex: the draw may
+   take it) is for a draw of quads, the game's own topology, that culls no face, and captures nothing: the huge
+   clipped primitives one game draws its sea of clouds and its sky with. Eden's rule (PR 4575, vk_pipeline_cache.cpp):
+   on every draw the pass cost two other games 4 and 7 points of GPU time for nothing visible. The position goes in
+   the generic after the last one the two programs use, and the position inputs stay the position pass's. Every other
+   draw takes the position pass */
+static u32 draw_varying(const DsState* ds, const DrawShaders* sh, int per_vertex) {
     const VkSh *vs = sh->vs, *fs = sh->fs0;
     if (g_vk.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY || sh->mesh || sh->tcs || sh->tes || sh->gs || !fs) return 0;
     if (vs->si.writes_viewport || sh->window_xy || sh->swizzle || sh->topology < 4 || sh->topology > 9 ||
         ds->rkey.polygon != DS_POLYGON_FILL)
         return 0;
-    return shader_varying_positions(vs->si.pos_out_mask & fs->si.smooth_in_mask);
+    u32 used = vs->si.out_mask | fs->si.in_mask, smooth = vs->si.out_mask & fs->si.smooth_in_mask;
+    u32 positions = vs->si.pos_out_mask & fs->si.smooth_in_mask;
+    if (per_vertex && g_vk.has_barycentric && (sh->topology == 7 || sh->topology == 8) &&
+        ds->dyn.cull == DS_CULL_NONE && !sh->xfb_on && (smooth & ~positions) && !(used >> 31))
+        return shader_varying_per_vertex(32 - snx_clz32(used), positions);
+    return shader_varying_positions(positions);
+}
+/* the vertex program vs of ds's draw in the variant that also writes its position to the generic slot, for a
+   per-vertex pass: vs's own key, as draw_shaders gave it (no capture: draw_varying), and the slot */
+static VkSh* vs_position_copy(const DsState* ds, const VkSh* vs, u32 slot) {
+    const DsPrograms* p = &ds->prog;
+    u8 query[SH_MAXTEX];
+    int queried = 0;
+    shader_query_hint_unpack(vs->mask + 14, query);
+    for (int i = 0; i < SH_MAXTEX; i++) queried |= query[i] != 0;
+    return vk_shader_get_ex(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, vs->mask[0] | (u64)vs->mask[1] << 32,
+                            vs->mask[2] | (u64)vs->mask[3] << 32, vs->mask[4], vs->mask[5], vs->mask[6], 0, vs->mask[9],
+                            vs->mask[10], vs->mask[12] | (u64)vs->mask[13] << 32, NULL, queried ? query : NULL, 0, 0,
+                            vs->mask[24] & 255, vs->mask[25], 1 + slot);
 }
 /* stream s's address and bytes (to its limit, 0 when the limit is below) */
 static u64 stream_start(const DsVertexBuffers* b, u32 s) { return b->addr[s]; }
@@ -3915,7 +3938,7 @@ retry:
         g_vk_skipped++;
         return;
     }
-    VkSh* fs = NULL;
+    VkSh *fs = NULL, *varying_vs = NULL; /* and the vertex program of a per-vertex pass (draw_varying) */
     FsKey fk = {0};
     if (sh.fs0) {
         if (texture) {
@@ -3924,7 +3947,15 @@ retry:
             fk = (FsKey){.tm = num != 0, .ts = num == 2, .rm = sh.rt_int, .rs = sh.rt_sint};
         } else {
             fs_key(ds, sh.fs0, fres, last->si.out_mask, sh.rt_int, sh.rt_sint, &fk);
-            if (!capture) fk.config |= draw_varying(ds, &sh) << SH_FS_VARYING_SHIFT;
+            u32 varying = capture ? 0 : draw_varying(ds, &sh, 1);
+            if ((varying & 3) == SH_VARYING_BARYCENTRIC) {
+                varying_vs = vs_position_copy(ds, sh.vs, SH_VARYING_SLOT(varying));
+                if (!varying_vs || varying_vs->failed) { /* its position's copy can't be: the position pass */
+                    varying_vs = NULL;
+                    varying = draw_varying(ds, &sh, 0);
+                }
+            }
+            fk.config |= varying << SH_FS_VARYING_SHIFT;
         }
         fk.prim = sh.prim;
         if (shader_to_color) {
@@ -3980,6 +4011,8 @@ retry:
         }
         if (!texture && fs && fs != sh.fs0) res = fs_slot_res(ds, sh.fs0, fres, fs, vres);
     }
+    DrawShaders drawn = sh; /* the stages drawn: sh's, with a per-vertex pass's vertex program */
+    if (varying_vs) drawn.vs = vs = last = varying_vs;
     cb_prefetch(ds, vs_bind, vs, 0);
     if (fs) cb_prefetch(ds, 4, fs, 0);
     if (!dc->indirect && !mesh) draw_indices_prefetch(&ds->index, indexed, first, count, 0);
@@ -4101,7 +4134,7 @@ retry:
     const PipeKey* k = &g_draw.k;
     const VertexPlan* pl = &g_draw.plan;
     if (!kept || g_draw.check) {
-        if (!draw_key(ds, &sh, fs, rt, zt, n, &made_k, &made_pl)) {
+        if (!draw_key(ds, &drawn, fs, rt, zt, n, &made_k, &made_pl)) {
             if (kept) {
                 draw_differs("pipeline key");
                 g_draw.sh.vs = NULL;
