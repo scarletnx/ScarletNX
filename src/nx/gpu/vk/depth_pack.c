@@ -33,20 +33,8 @@ static int pack_init(void) {
     if (g_depth_pack.pipe) return 1;
     if (g_depth_pack.failed) return 0;
     g_depth_pack.failed = 1; /* until everything below is made */
-    VkDescriptorSetLayoutBinding b[3];
-    for (u32 i = 0; i < 3; i++)
-        b[i] =
-            (VkDescriptorSetLayoutBinding){i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL};
-    VkDescriptorSetLayoutCreateInfo di = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 3, .pBindings = b};
-    if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &di, NULL, &g_depth_pack.ds))) return 0;
-    VkPushConstantRange push = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 4 * sizeof(u32)};
-    VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                     .setLayoutCount = 1,
-                                     .pSetLayouts = &g_depth_pack.ds,
-                                     .pushConstantRangeCount = 1,
-                                     .pPushConstantRanges = &push};
-    if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_depth_pack.layout))) return 0;
+    if (!VK_OK(snx_vk_compute_layouts(g_vk.dev, 3, 0, 4 * sizeof(u32), &g_depth_pack.ds, &g_depth_pack.layout)))
+        return 0;
     u64 started = plat_ns();
     int ok = VK_OK(snx_vk_compute_pipeline(g_vk.dev, vk_pipeline_cache(), g_depth_pack.layout, depth_pack_spv,
                                            depth_pack_spv_size, &g_depth_pack.pipe));

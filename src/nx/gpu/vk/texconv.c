@@ -21,21 +21,8 @@ static VkPipeline g_tc_pipe;
 
 static void tc_init(void) {
     if (g_tc_pipe) return;
-    VkDescriptorSetLayoutBinding bindings[2] = {
-        {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
-        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
-    VkDescriptorSetLayoutCreateInfo di = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = bindings};
-    if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &di, NULL, &g_tc_ds)))
-        fatal("vulkan: cannot create the texture conversion descriptor layout");
-    VkPushConstantRange push = {VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TcParams)};
-    VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                     .setLayoutCount = 1,
-                                     .pSetLayouts = &g_tc_ds,
-                                     .pushConstantRangeCount = 1,
-                                     .pPushConstantRanges = &push};
-    if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_tc_layout)))
-        fatal("vulkan: cannot create the texture conversion pipeline layout");
+    if (!VK_OK(snx_vk_compute_layouts(g_vk.dev, 2, 0, sizeof(TcParams), &g_tc_ds, &g_tc_layout)))
+        fatal("vulkan: cannot create the texture conversion descriptor and pipeline layouts");
     VkShaderModule module;
     if (!VK_OK(snx_vk_shader_module(g_vk.dev, texconv_spv, texconv_spv_size, &module)))
         fatal("vulkan: cannot load the texture conversion shader");
