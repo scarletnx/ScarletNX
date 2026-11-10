@@ -569,10 +569,13 @@ static int u64_order(const void* a, const void* b) {
 }
 static void table_window(u32 bank, u32 w, u32 windows, u64* base, u32* len) {
     u64 v[512], from[64], to[64];
-    u32 n = 0, runs = 0;
+    u32 n = 0, runs = 0, unused;
     *base = 0;
     *len = 16;
     if (bank >= QMD_NUM_CONST_BUFFERS) return;
+    /* a bank a pending write in place covers isn't in g_cb yet (g_cb_later): the windows are made of its words, so it
+       is read now, after the write, or they would be the table an earlier dispatch left there */
+    cs_cb_read(bank, 0, &unused);
     for (u32 o = 0; o + 8 <= g_cbn[bank] && n < 512; o += 8) {
         u64 x = snx_ld_le32(g_cb[bank] + o) | (u64)snx_ld_le32(g_cb[bank] + o + 4) << 32;
         if (x && !(x & 3) && !(x >> 40)) v[n++] = x; /* the GPU's addresses have 40 bits */
