@@ -992,10 +992,12 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             if (shadow && shader_texs_dref(encoding, b) < 255) used[shader_texs_dref(encoding, b)] = 1;
             shader_texs_mark_outputs(insn[i], used);
         }
-        /* fragment fetches and size queries may read a scaled target (shader_scaled_coords) */
+        /* fragment fetches and size queries may read a scaled target (shader_scaled_fetch, shader_scaled_size) */
         if ((op->id == O_TLD || op->id == O_TLD_B || op->id == O_TLDS || op->id == O_TXQ || op->id == O_TXQ_B) &&
             stage == ST_FS)
             needs_texel_scale = needs_glsl = 1;
+        /* a fetch takes the pixel where the fragment lies in its guest pixel */
+        if ((op->id == O_TLD || op->id == O_TLD_B || op->id == O_TLDS) && stage == ST_FS) needs_fragcoord = 1;
         if (op->id == O_TLD || op->id == O_TLD_B) {
             u32 indexed = 0, ldc = 0;
             u32 off = B(insn[i], 36, 13), ty = B(insn[i], 28, 3);
@@ -2422,19 +2424,15 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     if ((stage == ST_FS && ((target & 15) || capture_output || needs_point_coord || needs_texel_scale || needs_frag_y ||
                             needs_frag_ndc)) ||
         position_fix || needs_instance || base_vertex || (point_size && !point_size_used)) {
-        /* the fragment stage's uvec4: its scaled textures (shader_scaled_coords) and the window's origin (shader_frag_y_origin) */
-        if (needs_frag_ndc) {
-            /* and after them the draw's viewport, at byte 80 (shader_frag_ndc) */
-            u32 members[3] = {vec4, vec4_u32, vec4}, offsets[3] = {16, 32, 80};
-            u32 structure = spv_emit_type_struct(&c->emit, members, offsets, 3);
+        /* the fragment stage's uvec4: its scaled textures (shader_scaled_fetch) and the window's origin
+           (shader_frag_y_origin). After it, each at its own member whichever the program reads: at byte 80 the draw's
+           viewport (shader_frag_ndc), at 96 the scaled textures of the size drawn to (vk/render.c's own_size), at 112
+           the capture's words */
+        if (stage == ST_FS && (needs_frag_ndc || capture_output || needs_texel_scale)) {
+            u32 members[5] = {vec4, vec4_u32, vec4, vec4_u32, vec4_u32}, offsets[5] = {16, 32, 80, 96, 112};
+            u32 structure = spv_emit_type_struct(&c->emit, members, offsets, 5);
             spv_emit_decorate(&c->emit, structure, 2, NULL, 0); /* Block */
             push = spv_emit_variable(&c->emit, 9, structure);   /* PushConstant */
-            push_pointer = spv_emit_type_pointer(&c->emit, 9, c->f32_type);
-        } else if (capture_output) {
-            u32 members[3] = {vec4, vec4_u32, vec4_u32}, offsets[3] = {16, 32, 112};
-            u32 structure = spv_emit_type_struct(&c->emit, members, offsets, 3);
-            spv_emit_decorate(&c->emit, structure, 2, NULL, 0);
-            push = spv_emit_variable(&c->emit, 9, structure);
             push_pointer = spv_emit_type_pointer(&c->emit, 9, c->f32_type);
         } else if (point_size && !point_size_used) {
             /* The first vector retains the viewport/draw ABI. Fixed point size has a separate vector at byte48,
@@ -2589,7 +2587,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         u32 value[4] = {one, one, one, one};
         spv_emit_store(&c->emit, capture_output, spv_emit_constant_vec4(&c->emit, vec4, value));
         u32 pointer = SPV(&c->emit, SPV_OP_ACCESS_CHAIN, spv_emit_type_pointer(&c->emit, 9, c->u32_type), push,
-                          shader_u32(c, 2), c->zero);
+                          shader_u32(c, 4), c->zero);
         c->primitive_base = spv_emit_load(&c->emit, c->u32_type, pointer);
     }
     if (capture_tiles) {

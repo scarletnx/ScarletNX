@@ -3,6 +3,7 @@
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/vk/xfb_stores.h"
 #include "common/utilities/endian.h"
+#include "support/spv_eval.h"
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -4020,21 +4021,78 @@ static void query_only_volume_stages(void) {
     }
 }
 
-/* fragment TLD and TXQ of a scaled target take the scale its texture's bit selects (issue #730) */
+/* A fragment program at a resolution scale (SNX_VKB_RS: 1 / the scale twice, then the scale). TLD.LZ at texel p
+   fetches p where the push constants do not mark the slot as bound to a scaled target. Where they do, and mark the
+   target as one of the size drawn to, the pixel of texel p that lies where the fragment lies in its guest pixel
+   (issues #730, #1579): at 2x texel (5, 3) is (10, 6) for the fragment at (6, 4) and (11, 7) for the one at (7, 5),
+   where the centre of the scaled texel gave (11, 7) to both; in a lower-left window, whose y counts up, the rows are
+   7 and 6; at 1.5x texel 4 is pixel 6 alone, where the fragment's place would give 7; at 0.5x texel (5, 3) is
+   (2, 1). A scaled target of another size (a table) gives every fragment the centre. TLDS fetches the same pixel */
 static void scaled_texel_fetch(void) {
+    static const struct {
+        float scale, fx, fy; /* the fragment's FragCoord */
+        /* the texel fetched, its slot's bit, whether its target has the size drawn to, the window's origin */
+        u32 px, py, scaled, own, lower_left;
+        u32 x, y; /* the coordinates fetched */
+    } cases[] = {
+        {2.0f, 7.5f, 5.5f, 5, 3, 1, 1, 0, 11, 7}, {2.0f, 6.5f, 4.5f, 5, 3, 1, 1, 0, 10, 6},
+        {2.0f, 7.5f, 5.5f, 5, 3, 0, 0, 0, 5, 3},  {2.0f, 7.5f, 5.5f, 5, 3, 1, 1, 1, 11, 6},
+        {2.0f, 6.5f, 4.5f, 5, 3, 1, 1, 1, 10, 7}, {2.0f, 6.5f, 4.5f, 5, 3, 0, 1, 1, 5, 3},
+        {1.5f, 5.5f, 3.5f, 4, 3, 1, 1, 0, 6, 5},  {0.5f, 2.5f, 1.5f, 5, 3, 1, 1, 0, 2, 1},
+        {2.0f, 6.5f, 4.5f, 5, 3, 1, 0, 0, 11, 7}, {2.0f, 6.5f, 4.5f, 5, 3, 1, 0, 1, 11, 7},
+        {1.5f, 4.5f, 3.5f, 5, 3, 1, 0, 0, 8, 5},  {3.0f, 0.5f, 0.5f, 5, 3, 1, 0, 0, 16, 10},
+    };
     static const u64 tld_2d[] = {0xdc00000000000000ull | 7ull << 51 | 0xfull << 31 | 2ull << 28 | 0x10ull << 36 |
                                  0xffull << 20 | 7ull << 16 | 2ull << 8}; /* TLD.LZ R0, R2, RZ, 2D */
     /* TXQ.B: the handle in R4, the level in R5 */
     static const u64 txq_2d[] = {HANDLE_CBUF_R4, 0x5c9807800ff70005ull, 0xdf50000180470400ull};
     ShaderInfo info;
     size_t words = 0;
-    u32* code = translate(tld_2d, 1, ST_FS, &info, &words, 0);
-    check_translated(code, &info, "fragment TLD 2D translates");
-    if (code)
-        check(count_opcode(code, words, 111, 0xffffffffu) == 2 && count_opcode(code, words, 110, 0xffffffffu) == 2 &&
-                  count_opcode(code, words, 169, 0xffffffffu) == 1,
-              "fragment TLD 2D takes x and y at the scale its texture's bit selects");
-    free(code);
+    u32* code = NULL;
+    for (u32 k = 0; k < 2 * sizeof cases / sizeof *cases; k++) {
+        u32 at = k / 2, tlds = k & 1;
+        /* x and y in R2 and R3, then the TLD, or TLDS.LZ R0, R2, R3, 2D (encoding 2: x in Ra, y in Rb) */
+        const u64 fetch[] = {mov32i(2, cases[at].px), mov32i(3, cases[at].py),
+                             tlds ? 0xd200000000000000ull | 2ull << 53 | 0x10ull << 36 | 0xffull << 28 | 3ull << 20 |
+                                        7ull << 16 | 2ull << 8
+                                  : tld_2d[0]};
+        code = translate(fetch, 3, ST_FS, &info, &words, 0);
+        check_translated(code, &info, tlds ? "fragment TLDS 2D translates" : "fragment TLD 2D translates");
+        if (!code) continue;
+        float s = cases[at].scale;
+        u32 scale[4], bits;
+        const float values[3] = {1.0f / s, 1.0f / s, s};
+        memcpy(scale, values, sizeof values);
+        scale[3] = 0;
+        SpvEvalEnv env = {0};
+        memcpy(&bits, &cases[at].fx, 4);
+        env.builtin[15][0] = bits; /* FragCoord */
+        memcpy(&bits, &cases[at].fy, 4);
+        env.builtin[15][1] = bits;
+        env.ubo[SNX_VKB_RS] = scale;
+        env.ubo_words[SNX_VKB_RS] = 4;
+        env.push[4] = cases[at].scaled; /* the uvec4 after the fragment stage's vec4: slot 0's bit, then the origin */
+        env.push[6] = cases[at].lower_left;
+        env.push[7] = 8;
+        env.push[12] = cases[at].own; /* the uvec4 at byte 96: slot 0's target has the size drawn to */
+        const char* why = spv_eval(code, words, &env);
+        if (why) fprintf(stderr, "scaled fetch: the evaluator stops at %s\n", why);
+        int fetched = !why && env.fetched[SNX_VKB_TEX][0] == cases[at].x && env.fetched[SNX_VKB_TEX][1] == cases[at].y;
+        if (!fetched)
+            fprintf(stderr,
+                    "scaled fetch: at %gx the fragment at (%g, %g) of a%s window fetches (%s) texel (%u, %u) of a "
+                    "texture %s a scaled target at (%u, %u), not (%u, %u)\n",
+                    (double)s, (double)cases[at].fx, (double)cases[at].fy,
+                    cases[at].lower_left ? " lower-left" : "n upper-left", tlds ? "TLDS" : "TLD", cases[at].px,
+                    cases[at].py,
+                    !cases[at].scaled ? "that is not"
+                    : cases[at].own   ? "bound to, of the size drawn to,"
+                                      : "bound to, of another size than the one drawn to,",
+                    env.fetched[SNX_VKB_TEX][0], env.fetched[SNX_VKB_TEX][1], cases[at].x, cases[at].y);
+        check(fetched,
+              "a fragment fetch of a scaled target reads the pixel where the fragment lies in its guest pixel");
+        free(code);
+    }
     code = translate(txq_2d, 3, ST_FS, &info, &words, 0);
     check_translated(code, &info, "fragment TXQ translates");
     if (code)
