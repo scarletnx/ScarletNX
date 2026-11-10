@@ -15,7 +15,8 @@
 ScarletNX builds for 64-bit PowerPC Linux from POWER8 on, and big-endian builds from the PowerPC 970 (the PowerMac
 G5) and POWER4 on. The little-endian port (ppc64le) works: the test suite
 passes under qemu-user, and Super Haxagon, recompiled under qemu, played a level to its game over screen there with
-lavapipe as the Vulkan driver. No real POWER machine has run it yet. CI cross-builds its AppImage
+lavapipe as the Vulkan driver. No real POWER machine has run it yet. CI cross-builds its AppImage for the nightlies, not
+for pull requests
 (`ScarletNX-linux-ppc64le.AppImage`, the `appimage-cross` job in `.github/workflows/build.yml`) against an Arch POWER
 system root and runs it under qemu as installed; the test suite's job, `linux-ppc64le`, is commented out.
 The big-endian port has a job of its own, `linux-ppc64`, which builds the Linux runtime and runs its tests under

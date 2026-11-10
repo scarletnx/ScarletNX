@@ -3,7 +3,8 @@
 # RISC-V and LoongArch
 
 ScarletNX builds for 64-bit RISC-V (rv64gc) and LoongArch (LA64 v1.0) Linux. No machine of either has run it yet. CI
-cross-builds their AppImages (`ScarletNX-linux-riscv64` and `ScarletNX-linux-loongarch64`, the `appimage-cross` job in
+cross-builds their AppImages for the nightlies, not for pull requests (`ScarletNX-linux-riscv64` and
+`ScarletNX-linux-loongarch64`, the `appimage-cross` job in
 `.github/workflows/build.yml`) against an Arch system root of the architecture and runs them under qemu as installed,
 as it does PowerPC64 LE's ([PowerPC64](./ppc64.md)). The nightlies publish them when their jobs built, as
 PowerPC64 LE's.
