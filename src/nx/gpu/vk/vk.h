@@ -1450,6 +1450,10 @@ Surf* vk_tex_from_tic_storage(const u32* tic);
    targets drew into it. NULL when it can't be drawn now */
 Surf* vk_tex_recheck(Surf* t);
 Surf* vk_tex_from_tic_raw(const u32* tic); /* UINT view of raw RGBA8 texel bytes */
+/* vk_tex_from_tic, or with raw vk_tex_from_tic_raw, for a compute program, whose fetches, size queries and storage
+   images count the guest's texels: a scaled render target (resolution= other than 1) comes as a copy of the guest's
+   size, and as the scaled image itself only where no such copy can be made */
+Surf* vk_tex_from_tic_guest(const u32* tic, int raw);
 /* a view of s as the shader declares it, sRGB or linear (color formats that have both), with a component mapping;
    VK_NULL_HANDLE when the image can't be viewed that way */
 /* stencil: a depth/stencil surface's stencil aspect instead of its depth */

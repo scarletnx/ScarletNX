@@ -1656,7 +1656,7 @@ rebind:
                 vk_gmem_words(tsc_base + (u64)texture_handle_tsc_id(h) * TEXTURE_POOL_ENTRY_BYTES, tsc, 8);
             }
             VkImageViewType want = vk_tex_view_type(st);
-            Surf* t = st->flags & 1 ? vk_tex_from_tic_raw(tic) : vk_tex_from_tic(tic);
+            Surf* t = vk_tex_from_tic_guest(tic, st->flags & 1);
             /* a program fetching samples (flags bit 1) reads a multisampled image, others a single-sampled one: an
                image of other samples reads zeros, as a missing texture does */
             int ms = (st->flags & 2) != 0;
