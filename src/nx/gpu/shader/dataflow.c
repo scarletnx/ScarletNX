@@ -12,7 +12,8 @@ static int direct_reaching_def(const u64* insn, u32 n, u32 index, u32 reg);
    target, a jump table's entries, a CAL's callee and the return point after it, a PRET's return point. -1 when that
    can't be known (a JMP, or a jump table that isn't found). elsewhere[t] is set for arrivals that come from other
    instructions than k: a PCNT's target takes CONTs from later in the loop, and a return point takes RETs. */
-static int direct_flow_targets(const u64* insn, u32 n, u32 k, u32 targets[64], u8 elsewhere[64]) {
+static __attribute__((noinline)) int direct_flow_decode(const u64* insn, u32 n, u32 k, u32 targets[64],
+                                                        u8 elsewhere[64]) {
     const Op* flow = decode(insn[k]);
     if (!flow) return 0;
     switch (flow->id) {
@@ -42,6 +43,11 @@ static int direct_flow_targets(const u64* insn, u32 n, u32 k, u32 targets[64], u
             return 1;
         default: return 0;
     }
+}
+/* every instruction direct_flow_decode looks for has 0xE2 as its top byte (maxwell_opcodes.def): the searches ask
+   this of each instruction in the program, and another one isn't decoded */
+static inline int direct_flow_targets(const u64* insn, u32 n, u32 k, u32 targets[64], u8 elsewhere[64]) {
+    return insn[k] >> 56 == 0xE2 ? direct_flow_decode(insn, n, k, targets, elsewhere) : 0;
 }
 
 /* Whether a flow instruction whose targets aren't known at k can be left out of a search that only cares about targets
