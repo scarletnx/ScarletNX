@@ -174,6 +174,22 @@ static void jit_log(const SnxJitReport* r) {
              (unsigned long)r->instructions, (unsigned long)(r->bytes >> 10), r->seconds * 1000.0);
 }
 
+/* on the thread it tells of, once */
+static void jit_thread_log(const SnxJitThread* t) {
+    char name[32];
+    if (t->misses)
+        snprintf(name, sizeof(name), "the miss thread");
+    else
+        snprintf(name, sizeof(name), "compile thread %u", t->index);
+    if (!t->scale)
+        LOG("jit: %s runs at the priority the process started it with: the JIT sets none on this host\n", name);
+    else if (t->priority != t->asked)
+        WARN("jit: %s runs at %s %d: the host refused %s %d\n", name, t->scale, t->priority, t->scale, t->asked);
+    else
+        LOG("jit: %s runs at %s %d%s\n", name, t->scale, t->priority,
+            t->misses ? ": it compiles what a game thread waits for" : "");
+}
+
 void jit_init(void) {
     SnxJitConfig config;
     SnxJitStats stats;
@@ -234,6 +250,7 @@ void jit_init(void) {
     config.region_instructions = (size_t)g_settings.jit_region_size;
     config.live_budget = (size_t)g_settings.jit_live_budget;
     config.report = jit_log;
+    config.thread = jit_thread_log;
     snprintf(g_jit_cache, sizeof(g_jit_cache), "%s%s.jitcache", g_cachedir, g_exename);
     config.cache_path = g_jit_cache;
     g_jit = snx_jit_service_new(&config, error, sizeof(error));
@@ -248,7 +265,8 @@ void jit_init(void) {
             free(hints);
         }
         snx_jit_stats(g_jit, &stats);
-        LOG("jit: %u compile threads, %lu pcs of earlier runs queued\n", stats.threads, (unsigned long)warm);
+        LOG("jit: %u compile threads and the miss thread, %lu pcs of earlier runs queued\n", stats.threads,
+            (unsigned long)warm);
     }
     /* mapping, permission and write-back changes drop the slots and images the range's code filled (mem.c) */
     mem_set_code_invalidate(jit_code_invalidate);
