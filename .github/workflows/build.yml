@@ -44,7 +44,7 @@ concurrency:
 # and LLVM's development libraries come from one compatible toolchain. FFmpeg, OpenSSL, Vulkan and SDL3 are built from
 # the pinned CPM sources, with MSYS2 providing the shell, GNU make and NASM needed by FFmpeg and the Perl OpenSSL's
 # Configure runs on. Downloads are cached in .cache/cpm: one cache for the jobs that fetch the same sources (a Linux
-# architecture's jobs, the three cross builds, Windows, Apple, Android), named by cmake/dependencies.cmake's hash, with
+# architecture's jobs, the four cross builds, Windows, Apple, Android), named by cmake/dependencies.cmake's hash, with
 # the name before the hash as a restore key, so a bump downloads only the packages it changed. Compiles go through
 # ccache, whose .cache/ccache each compiling job restores from the newest one a push saved; a push saves it again,
 # trimmed to what the run used, and a pull request's run saves none: it reads main's (the linux job says why).
@@ -590,11 +590,11 @@ jobs:
   # The AppImages of hosts no GitHub runner is: cross-built on x86-64 with their linux-<arch>-cross preset
   # (cmake/cross.cmake) against the system root of pkgforge's Arch image of the architecture, then bundled in a
   # container of that image, whose / holds the runtime, and made on the build machine. The build container is
-  # pkgforge's x86-64 image with the workspace at /src; platform is Docker's name of the architecture. Big-endian
-  # ppc64's has every runtime (the 3DS one builds there but isn't ported to a big-endian host): Arch POWER's glibc
-  # there is ELFv2, not Debian ports' ELFv1, which the linux-ppc64 job tests. No POWER or RISC-V machine has run the
-  # AppImages yet, so like the macOS and iOS jobs they may fail without failing the run (scripts/publish-builds.py,
-  # OPTIONAL). LoongArch has no job: its linux-loongarch64-cross preset builds it (docs/hosts/riscv-loongarch.md)
+  # pkgforge's x86-64 image with the workspace at /src; platform is Docker's name of the architecture (loong64 for
+  # LoongArch). Big-endian ppc64's has every runtime (the 3DS one builds there but isn't ported to a big-endian host):
+  # Arch POWER's glibc there is ELFv2, not Debian ports' ELFv1, which the linux-ppc64 job tests. No POWER, RISC-V or
+  # LoongArch machine has run the AppImages yet, so like the macOS and iOS jobs they may fail without failing the run
+  # (scripts/publish-builds.py, OPTIONAL)
   appimage-cross:
     name: Linux AppImage (${{ matrix.arch }})
     needs: qemu-reference
@@ -621,6 +621,10 @@ jobs:
             platform: riscv64
             preset: linux-riscv64-cross
             qemu: riscv64
+          - arch: loongarch64
+            platform: loong64
+            preset: linux-loongarch64-cross
+            qemu: loongarch64
           - arch: ppc64
             platform: ppc64
             preset: linux-ppc64-elfv2-cross
@@ -641,7 +645,7 @@ jobs:
         with:
           name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
           path: reference
-      # The three cross builds run on x86-64 and fetch the same sources, SDL3's from the pinned archive among them
+      # The four cross builds run on x86-64 and fetch the same sources, SDL3's from the pinned archive among them
       # (the linux job takes it from its package). ppc64 has no GUI, so no miniz: one cache either way only costs the
       # others that package. The first to finish saves it, and the second restore key reads the caches from before
       # this one
@@ -1623,6 +1627,9 @@ jobs:
           - arch: riscv64
             platform: riscv64
             qemu: riscv64
+          - arch: loongarch64
+            platform: loong64
+            qemu: loongarch64
           - arch: ppc64
             platform: ppc64
             qemu: ppc64

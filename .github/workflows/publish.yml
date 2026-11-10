@@ -106,6 +106,15 @@ jobs:
           path: artifacts/ScarletNX-linux-riscv64-${{ steps.plan.outputs.short }}.AppImage
           run-id: ${{ steps.plan.outputs.run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download the LoongArch64 AppImage
+        if: steps.plan.outputs.run
+        continue-on-error: true # its job may fail without failing the run: the notes say not built
+        uses: actions/download-artifact@v8
+        with:
+          name: ScarletNX-linux-loongarch64-${{ steps.plan.outputs.short }}.AppImage
+          path: artifacts/ScarletNX-linux-loongarch64-${{ steps.plan.outputs.short }}.AppImage
+          run-id: ${{ steps.plan.outputs.run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the Windows build
         if: steps.plan.outputs.run
         continue-on-error: ${{ steps.plan.outputs.kind == 'pr' }}

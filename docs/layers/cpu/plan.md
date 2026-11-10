@@ -64,8 +64,8 @@ guest for free, and each part below notes where that matters.
 
 The object formats, page sizes and JIT support come from `docs/dev/architecture.md`, `docs/hosts/apple.md`, `docs/hosts/ppc64.md`,
 `docs/hosts/riscv-loongarch.md`, `docs/hosts/mips64.md`, `docs/hosts/s390x.md` and `HOST_MACHINE` in
-`src/common/cpu/recompiler/llvm/code_loader.c`. `docs/user/install.md` says the PowerPC64 and RISC-V builds are
-cross-built, that LoongArch has no CI build, that big-endian PowerPC64 has not run on a big-endian machine, and that no game runs on macOS yet.
+`src/common/cpu/recompiler/llvm/code_loader.c`. `docs/user/install.md` says the PowerPC64, RISC-V and LoongArch builds are
+cross-built, that big-endian PowerPC64 has not run on a big-endian machine, and that no game runs on macOS yet.
 `docs/hosts/riscv-loongarch.md` says no real RISC-V or LoongArch machine has run them, `docs/hosts/mips64.md` no MIPS machine and
 `docs/hosts/s390x.md` no IBM Z.
 

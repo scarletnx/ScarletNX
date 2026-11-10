@@ -15,12 +15,12 @@ builds. The latest:
 | Linux PowerPC64 LE | [ScarletNX-linux-ppc64le.AppImage](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-linux-ppc64le.AppImage) | Cross-built ([PowerPC64](../hosts/ppc64.md)), when its job built |
 | Linux PowerPC64 BE | [ScarletNX-linux-ppc64.AppImage](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-linux-ppc64.AppImage) | Cross-built ([big-endian hosts](../hosts/ppc64.md#big-endian-hosts)), not yet run on a big-endian machine |
 | Linux RISC-V 64 | [ScarletNX-linux-riscv64.AppImage](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-linux-riscv64.AppImage) | Cross-built ([RISC-V and LoongArch](../hosts/riscv-loongarch.md)), when its job built |
+| Linux LoongArch 64 | [ScarletNX-linux-loongarch64.AppImage](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-linux-loongarch64.AppImage) | Cross-built ([RISC-V and LoongArch](../hosts/riscv-loongarch.md)), when its job built |
 | Windows x86-64 | [ScarletNX-windows-x86_64.zip](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-windows-x86_64.zip) | Run `bin\scarletnx.exe` |
 | Android, arm64 and x86_64 | [ScarletNX-android-universal.apk](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-android-universal.apk) | [Android](../hosts/android-app.md) |
 
-Games need a Vulkan 1.3 driver. LoongArch 64, MIPS64 and s390x have no download: they build from their presets
-([LoongArch](../hosts/riscv-loongarch.md), [MIPS64](../hosts/mips64.md), [s390x](../hosts/s390x.md)). LoongArch 64 is supported,
-but CI neither builds nor tests it: its preset is `linux-loongarch64-cross`. macOS and iOS build in CI. An iPhone prepares and runs a game by itself, and no game runs on macOS
+Games need a Vulkan 1.3 driver. MIPS64 and s390x have no download: they build from their presets ([MIPS64](../hosts/mips64.md),
+[s390x](../hosts/s390x.md)). macOS and iOS build in CI. An iPhone prepares and runs a game by itself, and no game runs on macOS
 yet: see [macOS and iOS](../hosts/apple.md). To build ScarletNX yourself, see [Build](../dev/build.md), whose
 [Install / AppImage](../dev/build.md#install--appimage) installs a build.
 
