@@ -14,8 +14,8 @@
    when the GPFIFO submission ends (renderer.h stream_end): a game that reports often doesn't submit once for each.
    When it is performed, the GPU has counted, and the owner's segments since its previous report are added to the
    epoch's sum, which is its value: a game that resets once and subtracts reports keeps only the segments since its
-   last report live. Whatever reads the report (a semaphore acquire, the CPU, the render enable's comparison but the one
-   with zero) waits for that release, as for any other.
+   last report live. Whatever reads the report (a semaphore acquire, the CPU, the render enable's comparison but the
+   ones the GPU makes) waits for that release, as for any other.
 
    Counting starts at an owner's first reset: deko3d and NVN turn the counter on at startup, and a game that never
    resets it never reads it, so it costs those games nothing. A report before any reset, or in an epoch that outgrew
@@ -25,7 +25,8 @@
    multiplied by its guest sample count (3D 0x574, deko3d's MsaaMode). Render targets scaled by the resolution
    setting pass that many more samples: the sum is divided back, and a count that wasn't zero stays at least 1, as an
    object behind it is visible.
-   A render enable that compares a count not known yet with zero is made on the GPU (the predicates at the end).
+   A render enable that compares a count not known yet with zero, or with another of its epoch, is made on the GPU
+   (the predicates at the end).
 
    Everything here runs with vk_lock held. */
 #include <stdlib.h>
@@ -301,7 +302,7 @@ u64 vk_query_peek(u32 ci, u64 first, u64 end) {
    A predicate's slot is held by its report until the report is performed and by each channel whose render enable
    uses it (release.c), and isn't given out again until both let go: draws recorded later may still use it. The GPU's
    reads of a slot before it is written again come first, by the barrier before each batch */
-#define PN 4096 /* predicate slots: more than the release queue holds, with the channels' */
+#define PN 4096 /* predicate slots: more than two for each release queued (release.c), with the channels' */
 static VkBuffer g_pbuf;
 static VmaAllocation g_pmem;
 static VkDescriptorSetLayout g_pds;

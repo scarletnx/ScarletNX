@@ -282,6 +282,42 @@ static int indirect_cases(GpuChannel* channel, u64 target, u64 indices, u64 args
             CHECK(differ ? px.blue == 16 : index_all_green(&px));
         }
         puts("render enable: two values in guest memory compared on the GPU");
+        /* a render enable comparing two samples-passed reports both still queued (release.c's compare_queued), around
+           a draw: one that passes samples, and the two differ; then one predicated off, which counts none, and they
+           are equal, as only the GPU knows. IF_NOT_EQUAL draws the green quad over the clear in the first alone */
+        const u64 counts = args + 0x100;
+        const u32 owner = channel->ds.owner;
+        g_renderer->samples_reset(owner);
+        for (int counted = 1; counted >= 0; counted--) {
+            u32 off = 0, pred = 0;
+            CHECK(!put_words(args + 0x80, values, 6));
+            call = (DrawCall){.topology = 6, .count = 4, .first = 4, .instances = 1};
+            vk_lock();
+            CHECK(vk_query_pred_compare(args + 0x80, &off)); /* 0: the values don't differ */
+            CHECK(vk_query_report(owner, counts, 16, 0));
+            rt_clear(channel, target, 4, 4, 0, 1);
+            channel->r3d_dirty = ~0u; /* the registers were set directly */
+            mx_draw_state_sync(channel);
+            channel->owner.pred = counted ? 0 : off + 1;
+            vk_render_draw(&channel->ds, &call, &channel->owner);
+            channel->owner.pred = 0;
+            CHECK(vk_query_report(owner, counts + 16, 16, 0));
+            vk_unlock();
+            CHECK(g_renderer->render_predicate(counts, 0, &pred) == 2);
+            g_index_pred = pred;
+            CHECK(!index_draw(channel, target, &call, &px));
+            g_index_pred = 0;
+            g_renderer->render_predicate_drop(pred);
+            vk_lock();
+            vk_query_pred_drop(off);
+            vk_unlock();
+            if (counted ? !index_all_green(&px) : px.blue != 16)
+                fprintf(stderr, "render enable on two queued counts %s: %u green, %u blue\n",
+                        counted ? "apart" : "equal", px.green, px.blue);
+            CHECK(counted ? index_all_green(&px) : px.blue == 16);
+        }
+        g_renderer->samples_enable(owner, 0);
+        puts("render enable: two queued samples-passed counts compared on the GPU");
     }
     printf("indirect draws: a fan, indexed through a base vertex%s checked on the GPU\n",
            g_vk.has_draw_indirect_count ? ", and a count of one and two records" : "");
