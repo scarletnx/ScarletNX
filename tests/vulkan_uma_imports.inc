@@ -707,6 +707,100 @@ static int check_uma_dispatch_constants(void) {
     return 0;
 }
 
+/* A compute program's pointer table (SH_GBUF_TABLE) in a constant buffer an engine's result is being written to in
+   place: the windows the dispatch binds are made from the table's words (compute.c's table_window), so the bank is
+   read after the write, as a word a translation depends on is. Made from what the last dispatch left of that bank,
+   the windows were an older table's, and the program's stores through the pointers it loads went nowhere. An SM86
+   program loads the pointer at c[4][0x20] with an LDC.64 at a register's offset and stores 0x5eed 8 bytes on: first
+   with no pointer in the table, then with one the pending write puts there. Where guest memory is copied, the CPU
+   writes the pointer and no write is pending */
+#define UMA_TB  (HEAP_BASE + 0xd600000)
+#define UMA_GTB 0x4d6000000ull
+static int check_uma_dispatch_table(void) {
+    const u64 table = UMA_GTB + 0x3000, result = UMA_GTB + 0x10000, code = UMA_GTB + 0x20000,
+              pointer = UMA_GTB + 0x40100;
+    u8 program[16 * 6] = {0}, word[4];
+    u32 qmd[64] = {0}, n = 0;
+    DispatchState d;
+    VkBuffer r;
+    u64 ro;
+    int held = 1, pending = 1;
+    Sm86Word x = sm86_fix(0xb82); /* LDC.64 R2, c[4][R0] */
+    sm86_set(&x, 16, 8, 2);
+    sm86_set(&x, 24, 8, 0);
+    sm86_cbuf(&x, 4, 0);
+    sm86_set(&x, 73, 3, 5);
+    sm86_put(program, n++, sm86_mov_imm(0, 0x20));
+    sm86_put(program, n++, x);
+    sm86_put(program, n++, sm86_mov_imm(5, 0x5eed));
+    x = sm86_fix(0x386); /* STG.E [R2:R3 + 8], R5 */
+    sm86_set(&x, 24, 8, 2);
+    sm86_set(&x, 32, 8, 5);
+    sm86_set(&x, 40, 24, 8);
+    sm86_set(&x, 72, 1, 1);
+    sm86_set(&x, 73, 3, 4);
+    sm86_put(program, n++, x);
+    sm86_put(program, n++, sm86_exit());
+    sm86_put(program, n, sm86_bra(n, n, 7, 0));
+    GpuChannel* channel = calloc(1, sizeof *channel);
+    CHECK(channel);
+    CHECK(mem_map(UMA_TB, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GTB, UMA_TB, 0x200000);
+    memset(GP(UMA_TB), 0, 0x50000);
+    CHECK(!gmem_write(code, program, sizeof program));
+    qmd[QMD_GRID_DIM_X] = 1;
+    qmd[QMD_GRID_DIM_YZ] = 1 | 1u << 16;
+    qmd[QMD_BLOCK_DIM_X] = 1u << 16;
+    qmd[QMD_BLOCK_DIM_YZ] = 1 | 1u << 16;
+    qmd[QMD_CONST_BUFFER_ENABLE] = 1u << 4;
+    qmd[QMD_CONST_BUFFER_CONFIG + 4 * QMD_CONST_BUFFER_CONFIG_WORDS] = (u32)table;
+    qmd[QMD_CONST_BUFFER_CONFIG + 4 * QMD_CONST_BUFFER_CONFIG_WORDS + 1] = (u32)(table >> 32) | 0x100u << 15;
+    int sm86 = g_shader_sm86;
+    g_shader_sm86 = 1;
+    u64 dispatches = g_vk_dispatches;
+    vk_lock();
+    mx_dispatch_state(qmd, channel->rcomp, code, &d);
+    vk_dispatch(&d); /* the table with no pointer: the bank as this dispatch read it */
+    vk_compute_land();
+    vk_unlock();
+    if (vk_uma()) {
+        snx_st_le64(GP(UMA_TB) + 0x10020, pointer); /* the engine's result: the table with its pointer */
+        vk_lock();
+        CHECK(vk_buf_get_input(table, 256, 4, &r, &ro)); /* a draw reads it in place: an import holds it */
+        held = vk_uma_held(UMA_TB + 0x3000, 256);
+        vk_unlock();
+        CHECK(!uma_dma(table, result)); /* written in place by a submit not made yet */
+    } else {
+        u8 bytes[8];
+        snx_st_le64(bytes, pointer);
+        CHECK(!gmem_write(table + 0x20, bytes, sizeof bytes));
+        g_renderer->mem_may_have_changed();
+    }
+    vk_lock();
+    if (vk_uma()) pending = vk_uma_pending(table, 256);
+    mx_dispatch_state(qmd, channel->rcomp, code, &d);
+    vk_dispatch(&d);
+    int ran = g_vk_dispatches == dispatches + 2;
+    vk_unlock();
+    g_shader_sm86 = sm86;
+    /* the store, needed where it went as a reader of that memory needs it: the compute queue's batch, or the graphics
+       queue's results (the GPU mirror's, the writes in place) */
+    g_renderer->cs_mem_need(pointer, 16);
+    g_renderer->gfx_mem_need(pointer, 16);
+    CHECK(!gmem_read(pointer + 8, word, sizeof word));
+    free(channel);
+    CHECK(mem_unmap(UMA_TB, 0x200000) == 0);
+    if (!held || !pending || !ran || snx_ld_le32(word) != 0x5eed)
+        fprintf(stderr,
+                "dispatch table: held %d, pending %d, ran %d, the word 8 bytes past the table's pointer holds %08x "
+                "(0x5eed wanted)\n",
+                held, pending, ran, snx_ld_le32(word));
+    CHECK(held && pending && ran && snx_ld_le32(word) == 0x5eed);
+    printf("%s: a dispatch's pointer table %s binds the windows of its pointers, and a store through one lands\n",
+           vk_uma() ? "in place" : "copied", vk_uma() ? "under a pending write in place" : "the CPU wrote");
+    return 0;
+}
+
 /* Texture and sampler headers are read without waiting for a write in place over them, as no program writes headers
    (one game's dispatches found such a write over theirs once a frame, and the GPU thread waited 20 ms for it):
    vk_gmem_words reads the words memory holds as it reads, and the write stays pending */
