@@ -66,7 +66,8 @@ A token's kind is 32 bits. A punctuator's is its characters, packed from the fir
 `'+' | '=' << 8`), made from the bytes one at a time, so the same number on a big-endian host; keywords and the
 built-in types are past them. Every identifier is interned: one name for each text, by hash, and the token's kind is
 the name's index with the top bit set, so two tokens name the same thing when their kinds are equal. A name holds what
-the passes learn of it once: the macro it names, its keyword row, its innermost symbol in scope (each symbol keeps the
+the passes learn of it once: the macro it names, its keyword row (one slot of a perfect hash that `tools/glslc_kwgen`
+makes of `builtins.c`'s keyword table as glslc is built), its innermost symbol in scope (each symbol keeps the
 one it hides), and its rows of the built-in functions and variables. The tables' names carry their lengths, known
 when compiled (`builtins.c`'s `ROW`), and no type's name is made unless an error shows it.
 

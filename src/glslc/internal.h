@@ -158,7 +158,7 @@ typedef struct {
     GlslcView text;   /* its first place */
     uint16_t next;    /* the next name in its hash bucket */
     uint16_t macro;   /* the macro it names now, 0 for none */
-    uint16_t keyword; /* glslc_keywords' row plus one, GLSLC_NAME_PLAIN, or 0 until looked up */
+    uint16_t keyword; /* glslc_keywords' row plus one, or GLSLC_NAME_PLAIN */
     /* the parser's: the innermost symbol of the name in scope (0 for none), and the first rows of
        glslc_builtin_fns and glslc_builtin_vars with its text, plus one (the table's count plus one for none, 0
        until looked up) */
@@ -738,10 +738,35 @@ int glslc_run(Glslc* g, int last, uint32_t* words, size_t capacity);
 void glslc_fail(Glslc* g, uint32_t site, const char* fmt, ...);
 void glslc_warn(Glslc* g, uint32_t site, const char* fmt, ...);
 void glslc_locate(const Glslc* g, uint32_t site, uint32_t* line, uint32_t* column);
+/* the 8 bytes at p as a number, the first in the low byte: the same number on any host, and one load on a
+   little-endian one */
+static inline uint64_t glslc_bytes8(const char* p) {
+    const unsigned char* b = (const unsigned char*)p;
+    return (uint64_t)b[0] | (uint64_t)b[1] << 8 | (uint64_t)b[2] << 16 | (uint64_t)b[3] << 24 | (uint64_t)b[4] << 32 |
+           (uint64_t)b[5] << 40 | (uint64_t)b[6] << 48 | (uint64_t)b[7] << 56;
+}
 /* text's hash, 8 bytes a step, each made from its bytes (the same on any host), then mixed (MurmurHash3's finalizer).
    It reads up to 7 bytes past text's end, which the source's copy (GLSLC_SOURCE_PAD) and the synthesized text (the
-   workspace's next array) have */
-uint32_t glslc_hash(const char* text, uint32_t len);
+   workspace's next array) have. Inline: tools/glslc_kwgen hashes the keywords with it too */
+static inline uint32_t glslc_hash(const char* text, uint32_t len) {
+    uint64_t h = (uint64_t)len * 0x9e3779b97f4a7c15ull, w = 0;
+    uint32_t i = 0;
+    for (; i + 8 <= len; i += 8) h = (h ^ glslc_bytes8(text + i)) * 0xff51afd7ed558ccdull;
+    if (i < len) w = glslc_bytes8(text + i) & (~0ull >> (64u - 8u * (len - i))); /* the last bytes, the ones past cut */
+    h = (h ^ w) * 0xc4ceb9fe1a85ec53ull;
+    h ^= h >> 33;
+    return (uint32_t)h;
+}
+/* The keywords' perfect hash, which tools/glslc_kwgen finds for glslc_keywords at build time (glslc_keywords.inc,
+   keywords.c reads it): a keyword's bucket is the low bits of its hash, and its slot its hash mixed with the bucket's
+   displacement, the one that gives each of the bucket's keywords a slot no other keyword has */
+static inline uint32_t glslc_keyword_slot(uint32_t h, uint32_t displacement, uint32_t mask) {
+    uint32_t x = (h ^ displacement * 0x85ebca6bu) * 0x9e3779b1u;
+    x ^= x >> 15;
+    x *= 0x2c1b3c6du;
+    x ^= x >> 12;
+    return x & mask;
+}
 const char* glslc_view_text(const Glslc* g, GlslcView v);
 const char* glslc_token_text(const Glslc* g, const GlslcToken* t);
 /* whether v is the n bytes at word: the lengths first, so most names differ without a byte read */
@@ -758,7 +783,10 @@ static inline int glslc_view_is(const Glslc* g, GlslcView v, const char* word) {
 void glslc_lex(Glslc* g);
 int glslc_parse_int(const char* text, uint32_t len, uint32_t* value); /* 0 when it does not fit in 32 bits */
 /* builtins.c */
+/* keywords.c: the keyword of text, NULL for none, in one slot of the perfect hash; with its glslc_hash, h, as the
+   lexer has it, which reads past text (see glslc_hash), or without, which does not */
 const GlslcKeyword* glslc_find_keyword(const char* text, uint32_t len);
+const GlslcKeyword* glslc_find_keyword_hashed(const char* text, uint32_t len, uint32_t h);
 /* parser.c: fills the nodes, types and symbols */
 void glslc_parse(Glslc* g);
 uint32_t glslc_type_components(const Glslc* g, uint32_t type);

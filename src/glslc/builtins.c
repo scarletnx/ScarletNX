@@ -92,7 +92,8 @@ const GlslcBuiltinType glslc_builtin_types[] = {
 };
 const uint32_t glslc_builtin_type_count = sizeof glslc_builtin_types / sizeof glslc_builtin_types[0];
 
-/* sorted by name, byte by byte, for glslc_find_keyword's binary search (tests/glslc checks the order) */
+/* sorted by name, byte by byte, for its readers (tests/glslc checks the order); glslc_find_keyword finds a word by
+   the perfect hash tools/glslc_kwgen makes of this table */
 const GlslcKeyword glslc_keywords[] = {
     ROW(active, TK_RESERVED, 0, GLSLC_MALL, 0),
     ROW(asm, TK_RESERVED, 0, GLSLC_MALL, 0),
@@ -297,27 +298,6 @@ const GlslcKeyword glslc_keywords[] = {
     ROW(writeonly, TK_WRITEONLY, GLSLC_M31X, GLSLC_M300, 0),
 };
 const uint32_t glslc_keyword_count = sizeof glslc_keywords / sizeof glslc_keywords[0];
-
-const GlslcKeyword* glslc_find_keyword(const char* text, uint32_t len) {
-    uint32_t lo = 0, hi = glslc_keyword_count;
-    if (!len) return NULL;
-    while (lo < hi) {
-        uint32_t mid = (lo + hi) / 2;
-        const char* name = glslc_keywords[mid].name;
-        uint32_t n = glslc_keywords[mid].len;
-        /* the first bytes decide most steps, without a call */
-        int c = (int)(unsigned char)text[0] - (int)(unsigned char)name[0];
-        if (c == 0) c = memcmp(text + 1, name + 1, (len < n ? len : n) - 1);
-        if (c == 0) c = len < n ? -1 : len > n ? 1 : 0;
-        if (c == 0) return &glslc_keywords[mid];
-        if (c < 0) {
-            hi = mid;
-        } else {
-            lo = mid + 1;
-        }
-    }
-    return NULL;
-}
 
 const GlslcExtension glslc_extensions[] = {
     ROW(GL_OES_standard_derivatives, GLSLC_EXT_OES_STANDARD_DERIVATIVES, GLSLC_M100),

@@ -333,8 +333,8 @@ static const char* macro_name(const Glslc* g, const GlslcMacro* m) {
 /* the name of the text at view (in the synthesized text with synth), made the first time it is read */
 static uint32_t intern(Glslc* g, GlslcView view, int synth, uint32_t site) {
     const char* text = (synth ? g->synth : g->src) + view.pos;
-    uint32_t h = glslc_hash(text, view.len) & (GLSLC_NAME_BUCKETS - 1u);
-    for (uint32_t n = g->name_hash[h]; n; n = g->names[n].next) {
+    uint32_t h = glslc_hash(text, view.len), bucket = h & (GLSLC_NAME_BUCKETS - 1u);
+    for (uint32_t n = g->name_hash[bucket]; n; n = g->names[n].next) {
         const GlslcName* x = &g->names[n];
         const char* xt = ((x->flags & GLSLC_NAME_SYNTH) ? g->synth : g->src) + x->text.pos;
         if (x->text.len == view.len && !memcmp(xt, text, view.len)) return n;
@@ -345,14 +345,16 @@ static uint32_t intern(Glslc* g, GlslcView view, int synth, uint32_t site) {
     uint32_t n = g->nnames++;
     GlslcName* x = &g->names[n];
     x->text = view;
-    x->next = g->name_hash[h];
+    x->next = g->name_hash[bucket];
     x->macro = 0;
-    x->keyword = 0;
+    /* its keyword, by the hash it has: found once a name, as it is made */
+    const GlslcKeyword* k = glslc_find_keyword_hashed(text, view.len, h);
+    x->keyword = k ? (uint16_t)(k - glslc_keywords + 1) : GLSLC_NAME_PLAIN;
     x->sym = 0;
     x->builtin_fn = 0;
     x->builtin_var = 0;
     x->flags = synth ? GLSLC_NAME_SYNTH : 0;
-    g->name_hash[h] = (uint16_t)n;
+    g->name_hash[bucket] = (uint16_t)n;
     return n;
 }
 
@@ -542,11 +544,7 @@ static uint32_t rescan(Glslc* g, uint32_t lo, uint32_t hi, uint32_t site) {
 
 static void put(Glslc* g, GlslcToken t) {
     if (is_ident(t.kind)) {
-        GlslcName* x = &g->names[name_of(g, &t)];
-        if (!x->keyword) { /* looked up once a name */
-            const GlslcKeyword* k = glslc_find_keyword(text_of(g, &t), t.text.len);
-            x->keyword = k ? (uint16_t)(k - glslc_keywords + 1) : GLSLC_NAME_PLAIN;
-        }
+        const GlslcName* x = &g->names[name_of(g, &t)];
         if (x->keyword != GLSLC_NAME_PLAIN) {
             const GlslcKeyword* k = &glslc_keywords[x->keyword - 1];
             uint32_t vm = 1u << g->vi;
