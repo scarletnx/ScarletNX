@@ -92,6 +92,7 @@ void fatal(const char* fmt, ...) {
 }
 
 u64 g_code_lo, g_code_hi;
+const SnxNros* g_nros; /* main.c's: a game module without NROs of its own */
 void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }

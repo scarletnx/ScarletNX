@@ -10,6 +10,7 @@
 * [Loading NROs at run time (`ldr:ro`)](#loading-nros-at-run-time-ldrro)
   * [Reference and ABI details](#reference-and-abi-details)
   * [Execution and memory](#execution-and-memory)
+  * [NROs made ahead of time](#nros-made-ahead-of-time)
   * [Tests](#tests)
 
 ScarletNX already parsed NRO files and staged optional embedded RomFS data through
@@ -102,7 +103,9 @@ The service does **not** relocate the NRO or resolve its ELF symbols. The guest 
 LoadNro returns. It also manages constructors/destructors. Pre-relocating in the service would change bytes the
 client expects to receive untouched. The caller's BSS backing is preserved, not silently zeroed.
 
-NRO code is compiled by the runtime JIT. When LoadNro maps an NRO, its text joins
+An NRO the recompiler found in the game's RomFS has its code made ahead of time
+([below](#nros-made-ahead-of-time)). The code of any other NRO is compiled by the runtime JIT. When LoadNro maps
+such an NRO, its text joins
 the JIT's images (`jit_code_added` in `src/nx/runtime/guest_jit.c`, `snx_jit_add_image` in
 `src/common/cpu/recompiler/llvm/jit_service.c`). Its pcs lie outside `CPU.disp`, so a call into it misses in
 `snx_lookup` and reaches `RtAPI.miss`. Resolution first checks any compatible AOT variants through `variant_resolve`,
@@ -116,7 +119,52 @@ next run maps the NRO elsewhere. Without the JIT (a system it can't start on), N
 
 A host `dlopen()` alone cannot execute ARM64 NRO bytes on another host architecture. Nor can an existing fixed-base
 ScarletNX AOT module be relocated just by moving its dispatch entries: generated PC-relative addresses and direct
-calls use its original guest addresses. The JIT compiles the NRO at the address it is mapped at, so neither is needed.
+calls use its original guest addresses. The JIT compiles the NRO at the address it is mapped at, and an NRO made
+ahead of time is mapped at the one address its code was made for.
+
+### NROs made ahead of time
+
+The recompile of a game finds every `.nro` file of its RomFS (an extracted game's `romfs/` folder, or a dump's RomFS
+read in place), and makes each one's code a module of its own (`src/nx/runtime/driver/nros.c`):
+
+- Each NRO is named by the SHA-256 of its image, the hash `ldr:ro` checks against an NRR. Two files with the same
+  image are one NRO.
+- Each gets one guest address: they lie one after another behind the game's own modules, a guard page before each, in
+  the order of their hashes (`snx_nro_slots_place` in `src/nx/loader/loader.c`), so the same set of NROs is laid out
+  the same at every recompile. An NRO goes where `ldr:ro` would put the first one it maps anyway.
+- The game module tells the runtime where they go: its `snx_nros()` returns the table
+  (`src/nx/loader/nro_slots.h`), a symbol with a version of its own beside `snx_module()`, so `SNX_ABI` is unchanged
+  and a module without NROs has none.
+- Each NRO's code is `<Game>_nro/<sha256>.so` (`.dll` on Windows) beside `<Game>_code.so`: a module like the game's,
+  whose descriptor names the NRO as its one module at its address. The modules an earlier recompile left there for
+  NROs the game has no more are removed.
+
+A file that is no NRO `ldr:ro` maps (not an NRO, compressed, an image or a BSS that is not whole pages) is said and
+left out. An NCE recompile and an iOS pack make none.
+
+At run time `CPU.disp` covers the NROs' addresses too, and the memory there is kept for them: an NRO without a place
+is mapped outside it. When LoadNro is given an image whose hash the table has (`ro_load_nro` in
+`src/nx/hle/services/ldr.c`):
+
+- The image is mapped at its address, and its module is loaded and checked to be that NRO's for that address
+  (the ABI, the address and size, the module ID); its entries go into `CPU.disp` (`jit_nro_added` in
+  `src/nx/runtime/guest_jit.c`). Calls into the NRO then find its code in the table, with no miss.
+- The module stays loaded when the NRO is unmapped, its entries leave the table, and the next LoadNro of that NRO maps
+  it at the same address again.
+- The NRO's text joins the JIT's images as well, inside the table (`snx_jit_add_image`): a pc the module has no
+  function for (a jump-table case the analysis did not find) is compiled into `CPU.disp` like the game's own.
+- When the address is in use (other memory the game put there, or an address space with no code room there), the
+  NRO is mapped where there is room, the JIT runs that mapping, and the log names the NRO's hash and both
+  addresses. One session cannot map one NRO twice at once: the second LoadNro is refused as already loaded.
+- With no module file for it, or one that is refused (another ABI, another NRO or address: said once), the NRO is
+  still mapped at its address and the JIT runs it.
+
+The guest patching an NRO's code (IC IVAU) makes the functions compiled from those lines stale, as it does the game
+module's; each mapping starts from the module as it was made.
+
+What is not made ahead of time: an NRO a mod adds or replaces (its hash is not in the table), an NRO the game takes
+from outside its RomFS, and the NROs of a game whose update is recompiled from the update's dump alone, which has
+no RomFS without its base.
 
 `mem_map_code` / `mem_unmap_code` in `src/nx/memory/mem.c`:
 
@@ -141,11 +189,18 @@ Only the current application process is supported. `ro:dmnt` is not part of this
 With a configured build:
 
 ```sh
-cmake --build --preset default --target snx-test-ldr-service snx-test-memory snx-test-runtime-nro
-ctest --test-dir build/default -R '^(ldr_service|memory_accounting|runtime_nro)$' --output-on-failure
+cmake --build --preset default --target snx-test-ldr-service snx-test-memory snx-test-runtime-nro \
+    snx-test-nro-modules snx-test-runtime-variants snx-test-jit-service
+ctest --test-dir build/default -R '^(ldr_service|memory_accounting|runtime_nro|nro_modules|runtime_variants|jit_service)$' \
+    --output-on-failure
 ```
 
-`ldr_service` uses synthetic images and the real service and memory block list.
+`ldr_service` uses synthetic images and the real service and memory block list. For an NRO made ahead of time it
+covers the mapping at its address by its hash, the same address again after an unload, an NRO without a place kept
+out of those addresses, an address in use (with the line that says so), a place of another size and one with no code
+room. `nro_modules` recompiles a small extracted game and checks the table and each NRO's module, whose code must run
+as code at its address; `runtime_variants` loads such a module through `guest_jit.c`, and `jit_service` compiles into
+the table from an image inside it.
 It covers PID placeholders, initialization/handle validation, malformed ranges/headers/hash lists, hash snapshots,
 unauthorized/duplicate images, commit failure rollback, permissions, preserved bytes/BSS, no premature
 relocations, unload-by-base, copy-back, reloading, session cleanup, simultaneous loads, and both capacity limits.

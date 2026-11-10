@@ -2358,7 +2358,14 @@ endif()
 add_executable(snx-test-runtime-variants runtime_variants.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/guest_jit.c")
 snx_test_target(snx-test-runtime-variants 11)
 target_link_libraries(snx-test-runtime-variants PRIVATE scarletnx-common scarletnx-filesystem snx_settings)
-add_test(NAME runtime_variants COMMAND snx-test-runtime-variants)
+# an NRO's own AOT module (nro_module_fixture.c, a descriptor and two functions by hand), which guest_jit.c loads for
+# the NRO mapped at the address it was made for: runtime_variants copies it under the names the NROs' hashes give
+add_library(snx-test-nro-module MODULE nro_module_fixture.c)
+set_target_properties(snx-test-nro-module PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(snx-test-nro-module PRIVATE -Wall -Wextra -Werror)
+target_include_directories(snx-test-nro-module PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_dependencies(snx-test-runtime-variants snx-test-nro-module)
+add_test(NAME runtime_variants COMMAND snx-test-runtime-variants --nro-module=$<TARGET_FILE:snx-test-nro-module>)
 # a hand-edited jit_opt the JIT does not take, a letter and an empty value
 add_test(NAME runtime_variants_jit_opt_letter COMMAND snx-test-runtime-variants --jit-opt=x)
 add_test(NAME runtime_variants_jit_opt_empty COMMAND snx-test-runtime-variants --jit-opt=)
