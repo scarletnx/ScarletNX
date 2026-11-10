@@ -263,6 +263,75 @@ static void cut_nl(u64 lo, u64 hi, ResList* rel) {
     }
 }
 
+/* own_begin's taking of [lo, hi) in one move: the entries over it go (their resources to release in rel), and the n
+   entries nw (sorted by lo, apart, within [lo, hi)) take their place. cut_nl then one insert_nl per entry would move
+   the suffix once for the cut and once for each insert, though a range re-owned with the same count ends where it
+   began. Here it moves once, and not at all when n is the count it replaces */
+static void own_replace(u64 lo, u64 hi, const Own* nw, u32 n, ResList* rel) {
+    u32 i = first_after_nl(lo), past = i;
+    while (past < g_nown && g_own[past].lo < hi) past++;
+    int left = i < past && g_own[i].lo < lo;         /* the first sticks out below lo */
+    int right = past > i && g_own[past - 1].hi > hi; /* the last sticks out above hi */
+    u32 from = i, to = past, added = n;
+    Own up;                                          /* the upper part of an entry split by [lo, hi) */
+    int split = left && right && i + 1 == past;      /* one entry spans [lo, hi) wholly */
+    if (split) {
+        Own* o = &g_own[i];
+        up = *o;
+        up.res_off += hi - o->lo;
+        up.pool += hi - o->lo;
+        up.lo = hi;
+        cover_nl(o, (u32)-1);
+        o->hi = lo;
+        cover_nl(o, 1);
+        g_hooks.retain(up.res); /* the upper part keeps the resource beside the lower one */
+        from = to = i + 1;      /* nothing removed: the new entries follow the lower part */
+        added = n + 1;
+    } else {
+        if (left) {
+            cover_nl(&g_own[i], (u32)-1);
+            g_own[i].hi = lo;
+            cover_nl(&g_own[i], 1);
+            from = i + 1;
+        }
+        if (right) {
+            Own* o = &g_own[past - 1];
+            o->res_off += hi - o->lo;
+            o->pool += hi - o->lo;
+            cover_nl(o, (u32)-1);
+            o->lo = hi;
+            cover_nl(o, 1);
+            to = past - 1;
+        }
+    }
+    u32 removed = to - from;
+    u32 total = g_nown - removed + added;
+    if (total > g_capown) {
+        u32 cap = g_capown ? g_capown : 64;
+        while (cap < total) cap *= 2;
+        Own* grown = (Own*)realloc(g_own, sizeof *grown * (size_t)cap);
+        if (!grown) fatal("Out of memory for the map of GPU-owned memory");
+        g_own = grown;
+        g_capown = cap;
+    }
+    for (u32 k = from; k < to; k++) {
+        res_push(rel, g_own[k].res);
+        cover_nl(&g_own[k], (u32)-1);
+    }
+    /* one move for the net change (none when the count is replaced), then the new entries fill the gap */
+    if (added != removed && g_nown > to)
+        memmove(&g_own[from + added], &g_own[to], sizeof *g_own * (size_t)(g_nown - to));
+    __atomic_store_n(&g_nown, g_nown - removed + added, __ATOMIC_RELEASE);
+    for (u32 k = 0; k < n; k++) {
+        g_own[from + k] = nw[k];
+        cover_nl(&nw[k], 1);
+    }
+    if (split) {
+        g_own[from + n] = up;
+        cover_nl(&up, 1);
+    }
+}
+
 /* the host pages [lo, hi) (page aligned): those no entry is on any more let go, and trapped no more */
 static void let_go(u64 lo, u64 hi) {
     u64 a = lo;
@@ -551,20 +620,19 @@ int own_begin(u64 addr, u64 size, void* res, u64 res_off) {
     }
     pm_lock(&g_own_lk);
     while (landing_nl(addr, end)) pc_wait(&g_own_cv, &g_own_lk, -1);
-    cut_nl(addr, end, &rel);
-    for (i = 0; i < n; i++) { /* an entry a run of pool pages, so each has one place in the mirror */
+    Own nw[16]; /* an entry a run of pool pages, so each has one place in the mirror */
+    for (i = 0; i < n; i++) {
         u64 elo = runs[i].addr > addr ? runs[i].addr : addr;
         u64 ehi = runs[i].addr + runs[i].size < end ? runs[i].addr + runs[i].size : end;
-        Own o;
-        o.lo = elo;
-        o.hi = ehi;
-        o.pool = runs[i].pool + (elo - runs[i].addr);
-        o.res = res;
-        o.res_off = res_off + (elo - addr);
-        o.landing = 0;
+        nw[i] = (Own){.lo = elo,
+                      .hi = ehi,
+                      .pool = runs[i].pool + (elo - runs[i].addr),
+                      .res = res,
+                      .res_off = res_off + (elo - addr),
+                      .landing = 0};
         g_hooks.retain(res);
-        insert_nl(first_after_nl(elo), &o);
     }
+    own_replace(addr, end, nw, n, &rel);
     pm_unlock(&g_own_lk);
     res_release(&rel);
     /* the pages trapped from now on: the CPU's bytes on them stay in the pool, the owned ones are stale there */
