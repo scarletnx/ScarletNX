@@ -787,24 +787,29 @@ static int direct_once_to_end(const u64* insn, u32 n, u32 index) {
     }
     return 1;
 }
-/* The value (direct_value_def) the vertex program's output word at addr ends with: its last store's, an AST with no
-   guard, not per patch nor indexed, that every run passes once (direct_once_to_end), so no store before it can come
-   after it. -1 when there isn't one */
-static int direct_output_def(const u64* insn, u32 n, u32 addr) {
-    int store = -1;
+/* the last store of each output word under 0x280 (by its address / 4), an AST not per patch, or -1 */
+static void direct_output_stores(const u64* insn, u32 n, int store[0x280 / 4]) {
+    for (u32 a = 0; a < 0x280 / 4; a++) store[a] = -1;
     for (u32 k = 11; k < n; k++) {
-        if (!IDX_OK(k)) continue;
-        const Op* op = decode(insn[k]);
         u64 w = insn[k];
-        if (op && op->id == O_AST && !B(w, 31, 1) && addr >= B(w, 20, 10) &&
-            addr < B(w, 20, 10) + (B(w, 47, 2) + 1) * 4)
-            store = (int)k;
+        /* AST's top 13 bits (maxwell_opcodes.def): another instruction isn't decoded */
+        if (!IDX_OK(k) || w >> 51 != 0x1DFE) continue;
+        const Op* op = decode(w);
+        if (!op || op->id != O_AST || B(w, 31, 1)) continue;
+        u32 base = B(w, 20, 10), end = base + (B(w, 47, 2) + 1) * 4;
+        for (u32 addr = (base + 3) & ~3u; addr < end && addr < 0x280; addr += 4) store[addr / 4] = (int)k;
     }
-    if (store < 0) return -1;
-    u64 w = insn[store];
+}
+/* The value (direct_value_def) the vertex program's output word at addr ends with: its last store's (store, from
+   direct_output_stores), an AST with no guard, not per patch nor indexed, that every run passes once
+   (direct_once_to_end), so no store before it can come after it. -1 when there isn't one */
+static int direct_output_def(const u64* insn, u32 n, const int store[0x280 / 4], u32 addr) {
+    int k = store[addr / 4];
+    if (k < 0) return -1;
+    u64 w = insn[k];
     u32 reg = B(w, 0, 8) + (addr - B(w, 20, 10)) / 4;
-    if (B(w, 16, 4) != 7 || B(w, 8, 8) != 255 || reg >= 255 || !direct_once_to_end(insn, n, (u32)store)) return -1;
-    return direct_value_def(insn, n, (u32)store, reg);
+    if (B(w, 16, 4) != 7 || B(w, 8, 8) != 255 || reg >= 255 || !direct_once_to_end(insn, n, (u32)k)) return -1;
+    return direct_value_def(insn, n, (u32)k, reg);
 }
 /* The value (direct_value_def) is half of another: FMUL or FMUL32I by the immediate 0.5, with no negation, scale or
    saturation. That other value, or -1 */
@@ -837,17 +842,19 @@ static int direct_sum_of(const u64* insn, u32 n, int value, int p, int q) {
    and w written once (direct_output_def). A fragment's (x / w, y / w) of one is the centre of its own pixel in [0, 1]
    of the viewport, which vk/render.c checks covers the target with the y this sign maps */
 u32 shader_direct_screen_out(const u64* insn, u32 n, u32* yneg) {
-    int px = direct_output_def(insn, n, 0x70), py = direct_output_def(insn, n, 0x74);
-    int pw = direct_output_def(insn, n, 0x7c);
+    int store[0x280 / 4];
+    direct_output_stores(insn, n, store);
+    int px = direct_output_def(insn, n, store, 0x70), py = direct_output_def(insn, n, store, 0x74);
+    int pw = direct_output_def(insn, n, store, 0x7c);
     u32 mask = 0;
     *yneg = 0;
     if (px < 0 || py < 0 || pw < 0) return 0;
     for (u32 g = 0; g < 32; g++) {
         u32 at = 0x80 + g * 16;
-        if (direct_output_def(insn, n, at + 12) != pw ||
-            direct_sum_of(insn, n, direct_half_of(insn, n, direct_output_def(insn, n, at)), pw, px) != 1)
+        if (direct_output_def(insn, n, store, at + 12) != pw ||
+            direct_sum_of(insn, n, direct_half_of(insn, n, direct_output_def(insn, n, store, at)), pw, px) != 1)
             continue;
-        int sign = direct_sum_of(insn, n, direct_half_of(insn, n, direct_output_def(insn, n, at + 4)), pw, py);
+        int sign = direct_sum_of(insn, n, direct_half_of(insn, n, direct_output_def(insn, n, store, at + 4)), pw, py);
         if (!sign) continue;
         mask |= 1u << g;
         if (sign == 2) *yneg |= 1u << g;
