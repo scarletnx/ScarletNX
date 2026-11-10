@@ -87,9 +87,9 @@ static uint32_t f24(float f) {
     return sign << 23 | exponent << 16 | mantissa;
 }
 
-/* a vertex: position, colour, texture coordinate 0 */
+/* a vertex: position, colour, texture coordinate 0 and its w (which only scenes that load three components read) */
 typedef struct {
-    float pos[4], color[4], tc[2];
+    float pos[4], color[4], tc[3];
 } Vertex;
 
 /* what every scene draws with: the program (o0 = v0 * c0, o1 = v1, o2 = v2), the outputs' semantics, the viewport,
@@ -671,6 +671,155 @@ static void presented_after_draw(SnxCtrMemory* m) {
     commands_after_draw(m);
 }
 
+/* Shadow maps (Azahar's sw_framebuffer.cpp DrawShadowMapPixel and sw_rasterizer.cpp TextureColor): the colour buffer
+   of a shadow pass holds one word per pixel, its bytes the depth from the most significant byte, then the strength */
+#define TEX_CUBE   0x086
+#define TEX_SHADOW 0x08b
+#define OM_MODE    0x100
+#define FB_SHADOW  0x130
+#define F16_ONE    0x3c00u
+#define F16_TWO    0x4000u
+/* a strip over the whole target at depth 0.5 in one colour, drawn. Texture coordinate 0 goes from 0.25 to 0.75 over
+   it (spread), else stays at 0, and its w is w */
+static void shadow_quad(Scene* s, uint32_t rgba, bool spread, float w) {
+    s->vertex_count = 4;
+    for (unsigned k = 0; k < 4; ++k) {
+        float x = k & 1 ? 1.0f : -1.0f, y = k & 2 ? 1.0f : -1.0f;
+        float u = spread ? ((k & 1) ? 0.75f : 0.25f) : 0.0f, v = spread ? ((k & 2) ? 0.75f : 0.25f) : 0.0f;
+        s->vertices[k] = vertex(x, y, -0.5f, rgba, u, v);
+        s->vertices[k].tc[2] = w;
+    }
+    put(&s->list, SNX_PICA_TOPOLOGY, 1u << 8);
+    strip_draw(&s->list, 0);
+}
+/* a colour buffer that holds a shadow map with the same word in every pixel */
+static void shadow_fill(unsigned char* map, uint32_t depth, uint8_t strength) {
+    for (unsigned i = 0; i < W * H * 4; i += 4) {
+        map[i] = (unsigned char)(depth >> 16);
+        map[i + 1] = (unsigned char)(depth >> 8);
+        map[i + 2] = (unsigned char)depth;
+        map[i + 3] = strength;
+    }
+}
+/* A shadow pass at depth 0.5 (0x7fffff) with strength green, over a map of map_depth and map_strength. Where the map
+   is nearer, the word stays. Else a fragment with no strength writes its depth, and one with strength writes it over
+   (constant + linear * its depth / the map's) if that is less than the map's. FB_SHADOW holds constant in its low
+   half and linear in its high half, as float16 */
+static void shadow_pass(SnxCtrMemory* m, const char* name, uint8_t green, uint32_t factors, uint32_t map_depth,
+                        uint8_t map_strength, uint32_t depth, uint8_t strength) {
+    static unsigned char start[W * H * 4], sw[W * H * 4], gpu[W * H * 4], unused[W * H * 4];
+    Scene* s = scene(name, 0, 0xff);
+    put(&s->list, OM_MODE, 3);
+    put(&s->list, FB_SHADOW, factors);
+    shadow_quad(s, (uint32_t)green << 16 | 0xffu, false, 0.0f);
+    list_end(&s->list);
+    shadow_fill(start, map_depth, map_strength);
+    setup(m, s, start, start);
+    bool a = draw(m, s, &software, sw, unused);
+    setup(m, s, start, start);
+    bool b = draw(m, s, &vulkan, gpu, unused);
+    if (drew(s, a, b)) {
+        unsigned off = 0;
+        for (unsigned i = 0; i < W * H; ++i) {
+            const unsigned char* words[2] = {sw + i * 4, gpu + i * 4};
+            for (unsigned k = 0; k < 2; ++k) {
+                uint32_t z = (uint32_t)words[k][0] << 16 | (uint32_t)words[k][1] << 8 | words[k][2];
+                uint32_t e = z > depth ? z - depth : depth - z;
+                off += e > 16384u || words[k][3] != strength;
+            }
+        }
+        printf("%-24s %4u words off: %s\n", s->name, off, off ? "FAIL" : "ok");
+        if (off) ++failures;
+    }
+    free(s);
+}
+/* A draw into a second buffer, a shadow pass into the first, a draw into the second again, then a draw into the first.
+   The last draw loads, as an attachment, the image that the shadow pass wrote as storage, with only a pass into
+   another target between them. Both renderers must leave the last draw's colour, RGBA8 bytes a b g r */
+static void shadow_then_colour(SnxCtrMemory* m) {
+    static unsigned char start[W * H * 4], sw[W * H * 4], gpu[W * H * 4], unused[W * H * 4];
+    static const unsigned char colour[4] = {0x40, 0x30, 0x20, 0x10};
+    Scene* s = scene("shadow pass, then colour", 0, 0xff);
+    put(&s->list, FB_COLOR_ADDR, SECOND_COLOR / 8);
+    shadow_quad(s, 0x10203040u, false, 0.0f);
+    put(&s->list, FB_COLOR_ADDR, COLOR / 8);
+    put(&s->list, OM_MODE, 3);
+    put(&s->list, FB_SHADOW, F16_ONE);
+    strip_draw(&s->list, 0);
+    put(&s->list, OM_MODE, 0);
+    put(&s->list, FB_COLOR_ADDR, SECOND_COLOR / 8);
+    strip_draw(&s->list, 0);
+    put(&s->list, FB_COLOR_ADDR, COLOR / 8);
+    strip_draw(&s->list, 0);
+    list_end(&s->list);
+    shadow_fill(start, 0xffffffu, 255);
+    setup(m, s, start, start);
+    bool a = draw(m, s, &software, sw, unused);
+    setup(m, s, start, start);
+    bool b = draw(m, s, &vulkan, gpu, unused);
+    if (drew(s, a, b)) {
+        unsigned off = 0;
+        for (unsigned i = 0; i < W * H * 4; ++i) off += (sw[i] != colour[i % 4]) + (gpu[i] != colour[i % 4]);
+        printf("%-24s %4u bytes off: %s\n", s->name, off, off ? "FAIL" : "ok");
+        if (off) ++failures;
+    }
+    free(s);
+}
+/* A shadow map read by texture unit 0, each texel at depth 0.5. The 2D map has strength 200. The cube's +Z face, the
+   one its direction (0, 0, w) picks, has strength 200 and its other faces 50. A fragment in front of the map gets the
+   strength in every channel, one behind it 0. tex_shadow is TEX_SHADOW: bit 0 orthographic, bits 1-23 the bias. The
+   colour buffer starts at 0x5a, so a draw that writes nothing fails. The 2D map is read away from its edges, where
+   the GPU's four texels and the reference's one differ */
+static void shadow_sample(SnxCtrMemory* m, const char* name, bool cube, float w, uint32_t tex_shadow,
+                          uint8_t expected) {
+    static unsigned char start[W * H * 4], sw[W * H * 4], gpu[W * H * 4], unused[W * H * 4];
+    Scene* s = scene(name, 0, 0xff);
+    for (unsigned i = 0; i < sizeof s->texture; i += 4) {
+        s->texture[i] = 0x7f;
+        s->texture[i + 1] = 0xff;
+        s->texture[i + 2] = 0xff;
+        s->texture[i + 3] = i < 0x1000 ? 200 : 50;
+    }
+    texture_state(&s->list, TEXTURE, 16);
+    put(&s->list, TEX0_PARAMS, 2u << 8 | 2u << 12 | (cube ? 4u : 2u) << 28);
+    put(&s->list, TEX_SHADOW, tex_shadow);
+    if (cube) { /* +X, then -X +Y -Y +Z -Z in TEX_CUBE's order */
+        put(&s->list, TEX0_ADDRESS, (TEXTURE + 0x1000) / 8);
+        for (unsigned f = 0; f < 5; ++f)
+            put(&s->list, TEX_CUBE + f, (f == 3 ? TEXTURE : TEXTURE + 0x1000) / 8 & 0x3fffff);
+    }
+    put(&s->list, 0x201, 0xbff);       /* texture coordinate 0 with three components */
+    put(&s->list, 0x052, 0x1f100d0cu); /* o2.z is its w */
+    shadow_quad(s, 0xffffffffu, !cube, w);
+    list_end(&s->list);
+    memset(start, 0x5a, sizeof start);
+    setup(m, s, start, start);
+    bool a = draw(m, s, &software, sw, unused);
+    setup(m, s, start, start);
+    bool b = draw(m, s, &vulkan, gpu, unused);
+    if (drew(s, a, b)) {
+        unsigned off = 0;
+        for (unsigned i = 0; i < W * H * 4; ++i) off += (sw[i] != expected) + (gpu[i] != expected);
+        printf("%-24s %4u bytes off: %s\n", s->name, off, off ? "FAIL" : "ok");
+        if (off) ++failures;
+    }
+    free(s);
+}
+static void shadows(SnxCtrMemory* m) {
+    shadow_pass(m, "shadow pass, opaque", 0, F16_ONE, 0xffffffu, 255, 0x7fffffu, 255);
+    shadow_pass(m, "shadow pass, soft", 128, F16_ONE, 0xffffffu, 255, 0xffffffu, 128);
+    /* 128 / (2 + 1 * 0x7fffff / 0xffffff) = 51.2 */
+    shadow_pass(m, "shadow pass, scaled", 128, F16_ONE << 16 | F16_TWO, 0xffffffu, 255, 0xffffffu, 51);
+    shadow_pass(m, "shadow pass, map nearer", 0, F16_ONE, 0x400000u, 90, 0x400000u, 90);
+    shadow_pass(m, "shadow pass, map weaker", 128, F16_ONE, 0xffffffu, 100, 0xffffffu, 100);
+    shadow_then_colour(m);
+    shadow_sample(m, "shadow 2D, lit", false, 0.25f, 1, 200);
+    shadow_sample(m, "shadow 2D, shadowed", false, 0.75f, 1, 0);
+    /* perspective, at w 1: 0xffffff less the bias 0xa00000 is nearer than the map */
+    shadow_sample(m, "shadow 2D, biased", false, 1.0f, 0x500000u << 1, 200);
+    shadow_sample(m, "shadow cube, lit", true, 0.25f, 1, 200);
+    shadow_sample(m, "shadow cube, shadowed", true, 0.75f, 1, 0);
+}
 static void all_scenes(SnxCtrMemory* m) {
     static const char* const color_names[5] = {"colour RGBA8", "colour RGB8", "colour RGB5A1", "colour RGB565",
                                                "colour RGBA4"};
@@ -943,6 +1092,7 @@ static void all_scenes(SnxCtrMemory* m) {
     texture_after_draw(m);
     draw_after_index_copy(m);
     index_count_past_ram(m);
+    shadows(m);
 }
 
 typedef struct {
@@ -956,7 +1106,8 @@ static const Mode modes[] = {{"--present", "the presented screens", screens},
                              {"--after-draw", "the commands after a draw", presented_after_draw},
                              {"--texture-after-draw", "the textures after a draw", texture_after_draw},
                              {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy},
-                             {"--async", "the draws with async_pipelines", async_pipelines}};
+                             {"--async", "the draws with async_pipelines", async_pipelines},
+                             {"--shadow", "the shadow maps", shadows}};
 
 int main(int argc, char** argv) {
     int vk_memory = test_ctr_vk_memory(&argc, argv);
