@@ -326,9 +326,9 @@ static GlslcToken synth_number(Glslc* g, uint32_t value, uint32_t site) {
     return t;
 }
 
-static const char* macro_name(const Glslc* g, const GlslcMacro* m) {
-    return (m->flags & GLSLC_MF_SYNTH) ? g->synth + m->name.pos : g->src + m->name.pos;
-}
+static const char* macro_name(const Glslc* g, const GlslcMacro* m) { return g->src + m->name.pos; }
+
+static void predefine(Glslc* g, uint32_t n, const char* text, uint32_t len);
 
 /* the name of the text at view (in the synthesized text with synth), made the first time it is read */
 static uint32_t intern(Glslc* g, GlslcView view, int synth, uint32_t site) {
@@ -355,6 +355,7 @@ static uint32_t intern(Glslc* g, GlslcView view, int synth, uint32_t site) {
     x->builtin_var = 0;
     x->flags = synth ? GLSLC_NAME_SYNTH : 0;
     g->name_hash[bucket] = (uint16_t)n;
+    if (!synth) predefine(g, n, text, view.len);
     return n;
 }
 
@@ -372,7 +373,8 @@ static uint32_t macro_of(Glslc* g, GlslcToken* t) { return is_ident(t->kind) ? g
 /* a macro for name (g->names), which names it from now on */
 static uint32_t new_macro(Glslc* g, uint32_t name_id, GlslcView name, uint8_t flags, uint32_t site) {
     if (g->nmacros >= SNX_GLSLC_MAX_MACROS)
-        glslc_fail(g, site, "the shader defines more than the %u macros glslc takes (the predefined ones count)",
+        glslc_fail(g, site,
+                   "the shader defines more than the %u macros glslc takes (the predefined ones it reads count)",
                    SNX_GLSLC_MAX_MACROS - 1);
     uint32_t m = g->nmacros++;
     GlslcMacro* mc = &g->macros[m];
@@ -393,15 +395,36 @@ static void mtok_push(Glslc* g, const GlslcToken* t) {
     g->mtoks[g->nmtoks++] = *t;
 }
 
-static void define_synth(Glslc* g, const char* name, const char* value, uint8_t flags) {
-    GlslcView v;
-    v.len = (uint16_t)strlen(name);
-    v.pos = (uint16_t)synth_add(g, name, v.len, 0);
-    uint32_t m = new_macro(g, intern(g, v, 1, 0), v, (uint8_t)(flags | GLSLC_MF_SYNTH), 0);
-    if (value) {
-        GlslcToken t = {{0, 0}, TK_INTCONST, 0, GLSLC_TF_SYNTH, 0};
-        t.text.len = (uint16_t)strlen(value);
-        t.text.pos = (uint16_t)synth_add(g, value, t.text.len, 0);
+/* The predefined macros, made as a shader first reads one's name, which every macro lookup interns: GL_ES,
+   __VERSION__, __LINE__, __FILE__, GL_FRAGMENT_PRECISION_HIGH and each extension's name. value is the synthesized
+   text's "0" or "1" (glslc_lex puts them first), or -1 for __VERSION__ and __LINE__, which glslc makes as they are
+   used */
+static const struct {
+    const char* name;
+    uint8_t len;
+    int8_t value;
+    uint8_t flags;
+} predefined[] = {
+    {"GL_ES", 5, 1, 0},     {"__VERSION__", 11, -1, GLSLC_MF_VERSION}, {"__LINE__", 8, -1, GLSLC_MF_LINE},
+    {"__FILE__", 8, 0, 0}, {"GL_FRAGMENT_PRECISION_HIGH", 26, 1, 0},
+};
+
+/* name n, of text, made a predefined macro where it is one */
+static void predefine(Glslc* g, uint32_t n, const char* text, uint32_t len) {
+    int value = -2;
+    uint8_t flags = 0;
+    if (len < 5 || !((text[0] == 'G' && text[1] == 'L' && text[2] == '_') || (text[0] == '_' && text[1] == '_')))
+        return;
+    for (uint32_t i = 0; i < sizeof predefined / sizeof predefined[0] && value == -2; i++)
+        if (predefined[i].len == len && !memcmp(predefined[i].name, text, len))
+            value = predefined[i].value, flags = predefined[i].flags;
+    for (uint32_t e = 0; e < glslc_extension_count && value == -2; e++)
+        if (glslc_extensions[e].len == len && !memcmp(glslc_extensions[e].name, text, len)) value = 1;
+    if (value == -2) return;
+    uint32_t m = new_macro(g, n, g->names[n].text, (uint8_t)(flags | GLSLC_MF_PREDEFINED), 0);
+    if (value >= 0) {
+        GlslcToken t = {{0, 1}, TK_INTCONST, 0, GLSLC_TF_SYNTH, 0};
+        t.text.pos = (uint16_t)value; /* g->synth starts with "01" */
         mtok_push(g, &t);
         g->macros[m].count = 1;
     }
@@ -802,7 +825,7 @@ static void directive_define(Glslc* g, const GlslcToken* hash) {
         glslc_fail(g, name.site, "'%.*s': macro names starting with GL_ are reserved", (int)name.text.len, text);
     if (token_is(g, &name, "defined")) glslc_fail(g, name.site, "'defined' cannot be a macro's name");
     uint32_t old = macro_of(g, &name);
-    if (old && (g->macros[old].flags & GLSLC_MF_SYNTH))
+    if (old && (g->macros[old].flags & GLSLC_MF_PREDEFINED))
         glslc_fail(g, name.site, "'%.*s' is a predefined macro, which cannot be defined again", (int)name.text.len,
                    text);
     if (has_double_underscore(text, name.text.len)) { /* reserved: an error in 1.00, a warning from 3.00 */
@@ -877,7 +900,7 @@ static void directive_undef(Glslc* g, const GlslcToken* hash, const GlslcToken* 
     if (name.text.len >= 3 && !memcmp(text, "GL_", 3))
         glslc_fail(g, name.site, "'%.*s': macro names starting with GL_ are reserved", (int)name.text.len, text);
     uint32_t m = macro_of(g, &name);
-    if (m && (g->macros[m].flags & GLSLC_MF_SYNTH))
+    if (m && (g->macros[m].flags & GLSLC_MF_PREDEFINED))
         glslc_fail(g, name.site, "'%.*s' is a predefined macro, which cannot be undefined", (int)name.text.len, text);
     if (m) {
         g->macros[m].flags |= GLSLC_MF_DEAD;
@@ -1087,12 +1110,6 @@ static void directive(Glslc* g, const GlslcToken* hash) {
 
 void glslc_lex(Glslc* g) {
     synth_add(g, "01", 2, 0); /* defined's values */
-    define_synth(g, "GL_ES", "1", 0);
-    define_synth(g, "__VERSION__", NULL, GLSLC_MF_VERSION);
-    define_synth(g, "__LINE__", NULL, GLSLC_MF_LINE);
-    define_synth(g, "__FILE__", "0", 0);
-    define_synth(g, "GL_FRAGMENT_PRECISION_HIGH", "1", 0);
-    for (uint32_t e = 0; e < glslc_extension_count; e++) define_synth(g, glslc_extensions[e].name, "1", 0);
     for (;;) {
         GlslcToken t;
         scan(g, &t, 0);
