@@ -63,8 +63,14 @@ caches = {
     'msys2 new files': cache(MAIN, f'msys2-pkgs-upd:true-conf:b326d718-files:{H2}', '2026-10-15T00:00:00Z'),
     'msys2 other conf': cache(MAIN, f'msys2-pkgs-upd:true-conf:855f2908-files:{H1}', '2026-10-12T00:00:00Z'),
     # an open pull request's: the same rule, on its own ref; its newest is not main's
-    'open pr old': cache(PR, 'ccache-linux-x86_64-150-1', '2026-10-14T00:00:00Z'),
-    'open pr new': cache(PR, 'ccache-linux-x86_64-160-1', '2026-10-14T01:00:00Z'),
+    'open pr old': cache(PR, f'deps-linux-x86_64-{H1}', '2026-10-14T00:00:00Z'),
+    'open pr new': cache(PR, f'deps-linux-x86_64-{H2}', '2026-10-14T01:00:00Z'),
+    # but no compiler cache, which a push alone saves: the pull request would read its own in place of main's
+    'open pr ccache': cache(PR, 'ccache-linux-x86_64-160-1', '2026-10-14T01:00:00Z'),
+    'open pr ccache head': cache('refs/pull/204/head', 'ccache-apple-161-2', '2026-10-14T02:00:00Z'),
+    'live branch ccache': cache('refs/heads/dravee/ci-arm64', 'ccache-linux-x86_64-170-1', '2026-10-15T11:00:00Z'),
+    'open pr cpm': cache(PR, f'cpm-linux-{H1}', '2026-10-14T03:00:00Z'),
+    'closed pr ccache': cache('refs/pull/180/merge', 'ccache-linux-x86_64-140-1', '2026-10-15T11:00:00Z'),
     'closed pr': cache('refs/pull/180/merge', f'cpm-linux-{H1}', '2026-10-15T11:00:00Z'),
     'closed pr head': cache('refs/pull/181/head', f'cpm-linux-{H1}', '2026-10-15T11:00:00Z'),
     'gone branch': cache('refs/heads/dravee/merged', f'cpm-linux-{H1}', '2026-10-15T11:00:00Z'),
@@ -88,7 +94,10 @@ check(
             'cpm left',
             'msys2 old files',
             'open pr old',
+            'open pr ccache',
+            'open pr ccache head',
             'closed pr',
+            'closed pr ccache',
             'closed pr head',
             'gone branch',
             'copy',
@@ -97,9 +106,15 @@ check(
     ),
 )
 check('why for a closed pull request', got.get('closed pr'), 'pull request #180 is closed')
+check("why for a closed pull request's compiler cache", got.get('closed pr ccache'), 'pull request #180 is closed')
 check('why for a gone branch', got.get('gone branch'), 'its branch is gone')
 check("why for a tag's", got.get('tag'), "a tag's")
 check('why for a replaced entry', got.get('old ccache'), 'replaced by ccache-linux-x86_64-200-1')
+check(
+    "why for a pull request's compiler cache",
+    got.get('open pr ccache'),
+    "on pull request #204's ref, where it is read in place of main's",
+)
 check('nothing deleted twice', len(doomed), len(got))
 # a listing of nothing but main's newest entries leaves them all
 newest = [caches[name] for name in ('new ccache', 'aarch64 ccache', 'cpm read now', 'llvm', 'msys2 new files')]
