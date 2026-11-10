@@ -1677,7 +1677,19 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
         *off = e->off;
         return 1;
     }
-    if (!(a ? vk_buf_get_uniform(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off))) return 0;
+    /* a constant buffer's bytes are usually the CPU's, in one run: copy them straight into staging. The general buffer
+       path (the mirror, the cache, the hash) runs only where a result holds them, the mirror has them, the run isn't
+       whole, or unified memory reads them in place */
+    if (a && !pending && !vk_uma() && !vk_mirror_pending(a, sz) && !vk_mirror_holds(a, sz)) {
+        const u8* src = gmem_host(a, sz);
+        if (src) {
+            u8* p = vk_stage_upload(sz, vk_stage_align(), buf, off);
+            if (!p) return 0;
+            memcpy(p, src, sz);
+        } else if (!vk_buf_get_uniform(a, sz, buf, off))
+            return 0;
+    } else if (!(a ? vk_buf_get_uniform(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off)))
+        return 0;
     if (pending) {
         e->a = 0;
         return 1;
