@@ -575,8 +575,9 @@ int main(void) {
     }
 
     /* the thread pool: KTHREAD_MAX (256) slots, filled by as many threads; an exited thread keeps its slot (the live
-       count leaves it out) until its last reference goes, and then a new thread takes that slot. A full pool is a bound
-       below what a game uses, asserted, so no thread is left out. The tests above used the first slots */
+       count leaves it out) until its last reference goes, and then a new thread takes that slot. A full pool gives no
+       thread (NULL, which svcCreateThread answers OutOfResource for) and takes no thread id. The tests above used the
+       first slots */
     reset();
     memset(g_hle.thread.threads, 0, sizeof g_hle.thread.threads);
     {
@@ -587,8 +588,11 @@ int main(void) {
         for (int i = 0; i < KTHREAD_MAX; i++) taken += g_hle.thread.threads[i].o.type == KO_THREAD;
         CHECK(taken == KTHREAD_MAX && kthread_live_count() == KTHREAD_MAX, "%d threads, %d live", taken,
               kthread_live_count());
+        CHECK(kthread_create(0x1000, 0, 0x2000, 44, 0) == NULL && kthread_live_count() == KTHREAD_MAX,
+              "a full pool gives no thread, %d live", kthread_live_count());
         first[7]->state = 2;
         CHECK(kthread_live_count() == KTHREAD_MAX - 1, "one exited: %d live", kthread_live_count());
+        CHECK(kthread_create(0x1000, 0, 0x2000, 44, 0) == NULL, "an exited thread keeps its slot");
         kthread_destroy(&first[7]->o); /* its last reference */
         CHECK(first[7]->o.type == 0 && kthread_live_count() == KTHREAD_MAX - 1, "the exited thread's slot is free");
         t = kthread_create(0x1000, 0, 0x2000, 44, 0);

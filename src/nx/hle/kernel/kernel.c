@@ -273,16 +273,20 @@ int sleep_nl(KThread* t, i64 timeout) {
 
 /* ============================================================ events */
 /* the readable end, with no reference: the first handle takes one, or the service that keeps it. From
-   g_hle.kernel.events (KEVENT_MAX) */
-KEvent* kevent_new(const char* name) {
+   g_hle.kernel.events (KEVENT_MAX): kevent_new for an event of the runtime's own, kevent_try_new for one a request of
+   the game's makes, NULL when the pool is full */
+static KEvent* event_take(const char* name, int own) {
     KEvent* e;
     pm_lock(&g_host.kernel.pool_lk);
-    e = (KEvent*)POOL_TAKE(g_hle.kernel.events, g_hle.kernel.event_next, "events");
-    e->o.type = KO_EVENT;
+    e = own ? (KEvent*)POOL_TAKE(g_hle.kernel.events, g_hle.kernel.event_next, "events")
+            : (KEvent*)POOL_TRY(g_hle.kernel.events, g_hle.kernel.event_next);
+    if (e) e->o.type = KO_EVENT;
     pm_unlock(&g_host.kernel.pool_lk);
-    kobj_set_name(&e->o, name);
+    if (e) kobj_set_name(&e->o, name);
     return e;
 }
+KEvent* kevent_new(const char* name) { return event_take(name, 1); }
+KEvent* kevent_try_new(const char* name) { return event_take(name, 0); }
 /* An event stays signaled until it is cleared, waking every waiter. The console notifies only when the event was
    clear, when no thread can be waiting on it; the waiters are woken either way here, in case a service set the flag
    by itself */

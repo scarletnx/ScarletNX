@@ -709,9 +709,15 @@ static u32 svc_tmem_new_impl(u64 addr, u64 size, u32 perm, KTmem** out) {
     if (!in_region(addr, size, 0, AS_END) || !range_ok(addr, size, 0, MSF_CAN_TRANSFER, PERM_RW, ~0u, 0))
         R_THROW(SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     pm_lock(&g_host.kernel.pool_lk);
-    m = (KTmem*)POOL_TAKE(g_hle.svcmem.tmems, g_hle.svcmem.tmem_next, "transfer memories");
-    m->o.type = KO_TMEM;
+    m = (KTmem*)POOL_TRY(g_hle.svcmem.tmems, g_hle.svcmem.tmem_next);
+    if (m) m->o.type = KO_TMEM;
     pm_unlock(&g_host.kernel.pool_lk);
+    if (!m) {
+        WARN_LIMIT(4,
+                   "svcCreateTransferMemory: all %d transfer memories are in use, the game gets OutOfResource (%#x)\n",
+                   KHANDLED_MAX, SNX_RC_SVC_OUT_OF_RESOURCE);
+        R_THROW(SNX_RC_SVC_OUT_OF_RESOURCE);
+    }
     kobj_set_name(&m->o, "transfer memory");
     m->addr = addr;
     m->size = size;
@@ -757,9 +763,15 @@ static u32 svc_codemem_new_impl(u64 addr, u64 size, KObj** out) {
         R_THROW(SNX_RC_SVC_INVALID_CURRENT_MEMORY);
     R_TRY(mem_result(mem_alias_begin(addr, size)));
     pm_lock(&g_host.kernel.pool_lk);
-    c = (KCodeMem*)POOL_TAKE(g_hle.svcmem.codemems, g_hle.svcmem.codemem_next, "code memories");
-    c->o.type = KO_CODEMEM;
+    c = (KCodeMem*)POOL_TRY(g_hle.svcmem.codemems, g_hle.svcmem.codemem_next);
+    if (c) c->o.type = KO_CODEMEM;
     pm_unlock(&g_host.kernel.pool_lk);
+    if (!c) {
+        WARN_LIMIT(4, "svcCreateCodeMemory: all %d code memories are in use, the game gets OutOfResource (%#x)\n",
+                   KHANDLED_MAX, SNX_RC_SVC_OUT_OF_RESOURCE);
+        mem_alias_end(addr, size);
+        R_THROW(SNX_RC_SVC_OUT_OF_RESOURCE);
+    }
     kobj_set_name(&c->o, "code memory");
     c->addr = addr;
     c->size = size;

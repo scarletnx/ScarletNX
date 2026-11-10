@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* the services sm hands out, registered under their names, and the events the service files give the game */
 #include "nx/hle/services/services_int.h"
+#include "nx/hle/kernel/kernel_int.h"
 #include "nx/hle/services/network/network.h"
 #include "hle/services/sm.swipc.h"
 #include "hle/services/am.swipc.h"
@@ -24,7 +25,12 @@ u32 ev_handle(u32 ev) {
 }
 
 int new_event(u32* event, const char* name, int signaled) {
-    KEvent* e = kevent_new(name);
+    KEvent* e = kevent_try_new(name);
+    if (!e) {
+        WARN_LIMIT(4, "%s: all %d events are in use, the game gets OutOfResource (%#x)\n", name, KEVENT_MAX,
+                   SNX_RC_SVC_OUT_OF_RESOURCE);
+        R_THROW(SNX_RC_SVC_OUT_OF_RESOURCE);
+    }
     e->signaled = signaled;
     /* the reference held here keeps the event alive while the handle is made, and goes with it: the game's handle
        is the only one left, or none when the table is full */
