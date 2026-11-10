@@ -701,6 +701,7 @@ static int create_device(void) {
     int has_maintenance8 = 0;
     int has_vertex_input = 0;
     int has_gpl = 0, has_eds2 = 0, has_eds3 = 0; /* the extensions of pipeline libraries and their dynamic state */
+    int has_depth_clip_control = 0;              /* and of the depth range as one of those states */
     int has_mesh = 0;
     int has_mixed_dot = 0; /* VK_VALVE_shader_mixed_float_dot_product: HMMA's pairs of f16 products in one instruction */
     int has_coop = 0;      /* VK_KHR_cooperative_matrix: HMMA on the matrix unit (g_shader_hmma_coop) */
@@ -738,6 +739,7 @@ static int create_device(void) {
                   snx_vk_extensions_has(&e, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
         has_eds2 = snx_vk_extensions_has(&e, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
         has_eds3 = snx_vk_extensions_has(&e, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+        has_depth_clip_control = snx_vk_extensions_has(&e, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_mixed_samples = snx_vk_extensions_has(&e, VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
         g_vk.has_nv_checkpoints = snx_vk_extensions_has(&e, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
@@ -932,6 +934,8 @@ static int create_device(void) {
     /* qeds2 above: a 1.2 device's, and the pipeline libraries' patch control points (has_eds2) */
     VkPhysicalDeviceExtendedDynamicState3FeaturesEXT qeds3 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
+    VkPhysicalDeviceDepthClipControlFeaturesEXT qclip_control = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT};
     /* with the subset enabled, each of its features is off until the device asks for it: a view's swizzle, for one */
     PortabilityFeatures qport = {.sType = PORTABILITY_FEATURES_STYPE};
     VkPhysicalDevicePresentIdFeaturesKHR qpid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
@@ -978,6 +982,7 @@ static int create_device(void) {
                            has_vertex_input ? &qvertex_input : NULL,
                            has_gpl ? &qgpl : NULL,
                            has_eds3 ? &qeds3 : NULL,
+                           has_depth_clip_control ? &qclip_control : NULL,
                            has_portability ? &qport : NULL,
                            has_reconvergence ? &qreconv : NULL,
                            robustness ? &qpipeline : NULL,
@@ -1107,6 +1112,8 @@ static int create_device(void) {
                           .conservative_mode = qeds3.extendedDynamicState3ConservativeRasterizationMode,
                           .conservative_size = qeds3.extendedDynamicState3ExtraPrimitiveOverestimationSize,
                           .patch = qeds2.extendedDynamicState2PatchControlPoints,
+                          .depth_range = qeds3.extendedDynamicState3DepthClipNegativeOneToOne,
+                          .depth_clip_control = qclip_control.depthClipControl,
                           .has_provoking_last = g_vk.has_provoking_last,
                           .has_conservative = g_vk.has_conservative};
         char line[400];
@@ -1120,6 +1127,8 @@ static int create_device(void) {
             vk_ban_why(ban_line, ban, sizeof ban);
             LOG("%s\n", ban);
         }
+        vk_depth_range_line(&gd, g_vk.dyn_pr, line, sizeof line);
+        LOG("%s\n", line);
     }
     g_vk.has_xfb = g_vk.has_xfb && fxfb.transformFeedback;
     g_vk.has_geometry_streams = g_vk.has_xfb && fxfb.geometryStreams;
@@ -1512,7 +1521,10 @@ static int create_device(void) {
         .extendedDynamicState3DepthClampEnable = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_CLAMP) != 0,
         .extendedDynamicState3ProvokingVertexMode = (g_vk.dyn_pr & VK_DYN_PR_PROVOKING) != 0,
         .extendedDynamicState3ConservativeRasterizationMode = (g_vk.dyn_pr & VK_DYN_PR_CONSERVATIVE) != 0,
-        .extendedDynamicState3ExtraPrimitiveOverestimationSize = (g_vk.dyn_pr & VK_DYN_PR_CONSERVATIVE) != 0};
+        .extendedDynamicState3ExtraPrimitiveOverestimationSize = (g_vk.dyn_pr & VK_DYN_PR_CONSERVATIVE) != 0,
+        .extendedDynamicState3DepthClipNegativeOneToOne = (g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) != 0};
+    VkPhysicalDeviceDepthClipControlFeaturesEXT fclip_control = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT, .depthClipControl = VK_TRUE};
     if (g_vk.has_gpl) {
         chain = &fgpl;
         ext[next++] = VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME;
@@ -1528,6 +1540,11 @@ static int create_device(void) {
             feds3.pNext = chain;
             chain = &feds3;
             ext[next++] = VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME;
+        }
+        if (g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) {
+            fclip_control.pNext = chain;
+            chain = &fclip_control;
+            ext[next++] = VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME;
         }
     }
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR findex8 = {

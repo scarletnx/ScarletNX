@@ -24,9 +24,21 @@ static struct {
 
 /* the RTX 2080 of this machine: everything */
 static VkGplDevice full(void) {
-    VkGplDevice d = {.setting = 1, .has_ext = 1, .library = 1, .fast_link = 1, .independent_interpolation = 1,
-                     .polygon = 1, .depth_clamp = 1, .provoking = 1, .conservative_mode = 1, .conservative_size = 1,
-                     .patch = 1, .has_provoking_last = 1, .has_conservative = 1};
+    VkGplDevice d = {.setting = 1,
+                     .has_ext = 1,
+                     .library = 1,
+                     .fast_link = 1,
+                     .independent_interpolation = 1,
+                     .polygon = 1,
+                     .depth_clamp = 1,
+                     .provoking = 1,
+                     .conservative_mode = 1,
+                     .conservative_size = 1,
+                     .patch = 1,
+                     .depth_range = 1,
+                     .depth_clip_control = 1,
+                     .has_provoking_last = 1,
+                     .has_conservative = 1};
     return d;
 }
 
@@ -60,10 +72,10 @@ static void check_dynamic(void) {
     VkGplDevice d = full();
     CHECK(vk_gpl_choose(&d, &dyn, line, sizeof line), "on with everything");
     CHECK(dyn == (VK_DYN_PR_POLYGON | VK_DYN_PR_DEPTH_CLAMP | VK_DYN_PR_PROVOKING | VK_DYN_PR_CONSERVATIVE |
-                  VK_DYN_PR_PATCH),
+                  VK_DYN_PR_PATCH | VK_DYN_PR_DEPTH_RANGE),
           "every pre-rasterization state dynamic");
     CHECK(strstr(line, "libraries on") && strstr(line, "polygon mode, depth clamp, provoking vertex, conservative "
-                                                       "rasterization, patch control points"),
+                                                       "rasterization, patch control points, depth range"),
           line);
     /* each member alone off leaves its state in the part's key, and the rest dynamic */
     static const struct {
@@ -78,19 +90,51 @@ static void check_dynamic(void) {
         {offsetof(VkGplDevice, conservative_size), VK_DYN_PR_CONSERVATIVE},
         {offsetof(VkGplDevice, has_conservative), VK_DYN_PR_CONSERVATIVE},
         {offsetof(VkGplDevice, patch), VK_DYN_PR_PATCH},
+        {offsetof(VkGplDevice, depth_range), VK_DYN_PR_DEPTH_RANGE},
+        {offsetof(VkGplDevice, depth_clip_control), VK_DYN_PR_DEPTH_RANGE},
     };
     for (size_t i = 0; i < sizeof members / sizeof *members; i++) {
         d = full();
         *(int*)((char*)&d + members[i].offset) = 0;
         CHECK(vk_gpl_choose(&d, &dyn, line, sizeof line), "on without one member");
         CHECK(!(dyn & members[i].bit), "the member's state static");
-        CHECK((dyn | members[i].bit) == 31u, "the other states dynamic");
+        CHECK((dyn | members[i].bit) == 63u, "the other states dynamic");
     }
     /* a device without EDS2 and EDS3: libraries with every pre-rasterization state static */
     d = full();
     d.polygon = d.depth_clamp = d.provoking = d.conservative_mode = d.conservative_size = d.patch = 0;
+    d.depth_range = 0; /* the depth clip control alone gives no state */
     CHECK(vk_gpl_choose(&d, &dyn, line, sizeof line) && dyn == 0, "on, nothing dynamic");
     CHECK(strstr(line, "dynamic pre-rasterization state: none") != NULL, line);
+}
+
+/* Who makes a depth range of -1 to 1, in the log: the device with the state, else the last stage, with the first
+   thing the device lacks for it named */
+static void check_depth_range(void) {
+    char line[512];
+    u32 dyn = 0;
+    VkGplDevice d = full();
+    CHECK(vk_gpl_choose(&d, &dyn, line, sizeof line), "on with everything");
+    vk_depth_range_line(&d, dyn, line, sizeof line);
+    CHECK(strstr(line, "is the device's (VK_EXT_depth_clip_control, as dynamic state)") != NULL, line);
+    static const struct {
+        size_t offset;
+        const char* says;
+    } cases[] = {
+        {offsetof(VkGplDevice, depth_clip_control), "(the device has no VK_EXT_depth_clip_control)"},
+        {offsetof(VkGplDevice, depth_range), "(the device has no extendedDynamicState3DepthClipNegativeOneToOne)"},
+        {offsetof(VkGplDevice, setting), "(graphics pipeline libraries are off, and their dynamic state with them)"},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        d = full();
+        *(int*)((char*)&d + cases[i].offset) = 0;
+        vk_gpl_choose(&d, &dyn, line, sizeof line);
+        CHECK(!(dyn & VK_DYN_PR_DEPTH_RANGE), cases[i].says);
+        vk_depth_range_line(&d, dyn, line, sizeof line);
+        CHECK(strstr(line, "is made by the last stage before rasterization, z = (z + w) / 2") &&
+                  strstr(line, cases[i].says),
+              line);
+    }
 }
 
 /* the states a whole pipeline listed before pipeline libraries, in their order (pipe_create): a change of the order is a
@@ -133,7 +177,8 @@ static void check_states(void) {
               {VK_DYN_PR_PROVOKING, VK_DYNAMIC_STATE_PROVOKING_VERTEX_MODE_EXT},
               {VK_DYN_PR_CONSERVATIVE, VK_DYNAMIC_STATE_CONSERVATIVE_RASTERIZATION_MODE_EXT},
               {VK_DYN_PR_CONSERVATIVE, VK_DYNAMIC_STATE_EXTRA_PRIMITIVE_OVERESTIMATION_SIZE_EXT},
-              {VK_DYN_PR_PATCH, VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT}};
+              {VK_DYN_PR_PATCH, VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT},
+              {VK_DYN_PR_DEPTH_RANGE, VK_DYNAMIC_STATE_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE_EXT}};
     for (u32 i = 0; i < sizeof pr / sizeof *pr; i++)
         for (int tess = 0; tess < 2; tess++) {
             PipeDynIn in = {.dyn_pr = pr[i].bit, .tess = tess};
@@ -145,7 +190,7 @@ static void check_states(void) {
         }
     /* the four parts together list what the whole pipeline does, each state once, but the feedback loop's, which the
        fragment shader and fragment output parts both hold */
-    PipeDynIn all = {.dyn_pr = 31, .feedback_dynamic = 1, .stride = 1, .vertex_input = 1, .tess = 1};
+    PipeDynIn all = {.dyn_pr = 63, .feedback_dynamic = 1, .stride = 1, .vertex_input = 1, .tess = 1};
     VkDynamicState whole[VK_PIPE_DYN_MAX], part[4][VK_PIPE_DYN_MAX];
     u32 nwhole = vk_pipe_dynamic(VK_PART_ALL, &all, whole), np[4];
     for (u32 p = 0; p < 4; p++) np[p] = vk_pipe_dynamic(1u << p, &all, part[p]);
@@ -160,6 +205,7 @@ static void check_states(void) {
           "the vertex input part holds the topology and the layout");
     CHECK(has(part[1], np[1], VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT) &&
               has(part[1], np[1], VK_DYNAMIC_STATE_POLYGON_MODE_EXT) &&
+              has(part[1], np[1], VK_DYNAMIC_STATE_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE_EXT) &&
               has(part[1], np[1], VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT),
           "the pre-rasterization part holds the viewports and the rasterization state");
     CHECK(has(part[2], np[2], VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE) && has(part[2], np[2], VK_DYNAMIC_STATE_STENCIL_OP),
@@ -226,7 +272,7 @@ static u32 parts_differ(const PipeKey* a, const PipeKey* b, const PipeSplitDevic
 static void check_split(void) {
     for (int dynamic = 0; dynamic < 2; dynamic++)
         for (int shading = 0; shading < 2; shading++) {
-            const PipeSplitDevice d = {.dyn_pr = dynamic ? 31u : 0u, .feedback_dynamic = dynamic};
+            const PipeSplitDevice d = {.dyn_pr = dynamic ? 63u : 0u, .feedback_dynamic = dynamic};
             PipeKey base;
             memset(&base, 0, sizeof base);
             base.vs = (VkShaderModule)(uintptr_t)0x1000;
@@ -312,6 +358,8 @@ static void check_bans(void) {
          "extendedDynamicState3DepthClampEnable"},
         {"PowerVR", VK_DRIVER_ID_IMAGINATION_PROPRIETARY, VK_MAKE_VERSION(1, 21, 0),
          VK_DYN_PR_POLYGON | VK_DYN_PR_DEPTH_CLAMP, "extendedDynamicState3DepthClampEnable"},
+        {"Intel on Windows", VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, 101u << 14 | 5000u, VK_DYN_PR_DEPTH_RANGE,
+         "extendedDynamicState3DepthClipNegativeOneToOne"},
     };
     char err[512], line[512];
     CHECK(vk_bans_load(snx_vk_extension_bans_text, err, sizeof err), err);
@@ -326,11 +374,18 @@ static void check_bans(void) {
         vk_gpl_bans(&d, say);
         CHECK(g_test.said == lines, cases[i].what);
         CHECK(!cases[i].key || strstr(g_test.line, cases[i].key), g_test.line);
-        CHECK(vk_gpl_choose(&d, &dyn, line, sizeof line) && dyn == (31u & ~cases[i].off), cases[i].what);
+        CHECK(vk_gpl_choose(&d, &dyn, line, sizeof line) && dyn == (63u & ~cases[i].off), cases[i].what);
         CHECK(!(cases[i].off & VK_DYN_PR_DEPTH_CLAMP) || !strstr(line, "depth clamp"), line);
+        /* the depth range a ban takes is the last stage's, and the log says the ban's line and what it is on */
+        vk_depth_range_line(&d, dyn, line, sizeof line);
+        CHECK(!(cases[i].off & VK_DYN_PR_DEPTH_RANGE) ||
+                  (d.depth_range_ban && strstr(line, "extension_bans.txt:") &&
+                   strstr(line, "holds for extendedDynamicState3DepthClipNegativeOneToOne on this driver")),
+              line);
+        CHECK((cases[i].off & VK_DYN_PR_DEPTH_RANGE) || strstr(line, "is the device's"), line);
         /* without the member there is nothing to turn off, and nothing to say */
         d = full();
-        d.polygon = d.depth_clamp = 0;
+        d.polygon = d.depth_clamp = d.depth_range = 0;
         g_test.said = 0;
         vk_gpl_bans(&d, say);
         CHECK(g_test.said == 0, "no line for a member the device has not");
@@ -340,6 +395,7 @@ static void check_bans(void) {
 int main(void) {
     check_off();
     check_dynamic();
+    check_depth_range();
     check_bans();
     check_states();
     check_split();

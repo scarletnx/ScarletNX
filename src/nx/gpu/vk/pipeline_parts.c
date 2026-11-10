@@ -18,9 +18,33 @@ void vk_gpl_bans(VkGplDevice* d, VkBanSay say) {
         {EDS3 "ExtraPrimitiveOverestimationSize", &d->conservative_size},
         {"VK_EXT_extended_dynamic_state2.extendedDynamicState2PatchControlPoints", &d->patch},
     };
-#undef EDS3
     for (size_t i = 0; i < sizeof members / sizeof *members; i++)
         if (vk_ban(members[i].key, *members[i].member, say)) *members[i].member = 0;
+    d->depth_range_ban = vk_ban(EDS3 "DepthClipNegativeOneToOne", d->depth_range, say);
+    if (d->depth_range_ban) d->depth_range = 0;
+#undef EDS3
+}
+
+void vk_depth_range_line(const VkGplDevice* d, u32 dyn_pr, char* line, size_t n) {
+    if (dyn_pr & VK_DYN_PR_DEPTH_RANGE) {
+        snprintf(line, n,
+                 "vulkan: a depth range of -1 to 1 is the device's (VK_EXT_depth_clip_control, as dynamic state)");
+        return;
+    }
+    char why[160];
+    if (!d->depth_clip_control)
+        snprintf(why, sizeof why, "the device has no VK_EXT_depth_clip_control");
+    else if (d->depth_range_ban)
+        snprintf(why, sizeof why,
+                 "extension_bans.txt:%u holds for extendedDynamicState3DepthClipNegativeOneToOne on this driver",
+                 (unsigned)d->depth_range_ban);
+    else if (!d->depth_range)
+        snprintf(why, sizeof why, "the device has no extendedDynamicState3DepthClipNegativeOneToOne");
+    else
+        snprintf(why, sizeof why, "graphics pipeline libraries are off, and their dynamic state with them");
+    snprintf(line, n,
+             "vulkan: a depth range of -1 to 1 is made by the last stage before rasterization, z = (z + w) / 2 (%s)",
+             why);
 }
 
 int vk_gpl_choose(const VkGplDevice* d, u32* dyn_pr, char* line, size_t n) {
@@ -45,12 +69,14 @@ int vk_gpl_choose(const VkGplDevice* d, u32* dyn_pr, char* line, size_t n) {
     if (d->provoking && d->has_provoking_last) *dyn_pr |= VK_DYN_PR_PROVOKING;
     if (d->conservative_mode && d->conservative_size && d->has_conservative) *dyn_pr |= VK_DYN_PR_CONSERVATIVE;
     if (d->patch) *dyn_pr |= VK_DYN_PR_PATCH;
-    static const char* const names[5] = {"polygon mode", "depth clamp", "provoking vertex",
-                                         "conservative rasterization", "patch control points"};
+    if (d->depth_range && d->depth_clip_control) *dyn_pr |= VK_DYN_PR_DEPTH_RANGE;
+    static const char* const names[6] = {"polygon mode",         "depth clamp",
+                                         "provoking vertex",     "conservative rasterization",
+                                         "patch control points", "depth range"};
     char dyn[160];
     size_t at = 0;
     dyn[0] = 0;
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < 6; i++)
         if ((*dyn_pr >> i & 1) && at < sizeof dyn)
             at += (size_t)snprintf(dyn + at, sizeof dyn - at, "%s%s", at ? ", " : "", names[i]);
     snprintf(line, n,
@@ -158,6 +184,7 @@ static const struct {
     {VK_DYNAMIC_STATE_CONSERVATIVE_RASTERIZATION_MODE_EXT, VK_PART_PR, DYN_PR | VK_DYN_PR_CONSERVATIVE << 8},
     {VK_DYNAMIC_STATE_EXTRA_PRIMITIVE_OVERESTIMATION_SIZE_EXT, VK_PART_PR, DYN_PR | VK_DYN_PR_CONSERVATIVE << 8},
     {VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT, VK_PART_PR, DYN_PR_TESS | VK_DYN_PR_PATCH << 8},
+    {VK_DYNAMIC_STATE_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE_EXT, VK_PART_PR, DYN_PR | VK_DYN_PR_DEPTH_RANGE << 8},
 };
 typedef char dyn_states_fit[sizeof g_dyn_states / sizeof *g_dyn_states <= VK_PIPE_DYN_MAX ? 1 : -1];
 

@@ -14,6 +14,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/extension_bans.h"
+#include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/maxwell/engines_int.h"
@@ -5975,6 +5976,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_nvn_fixed_state());
     CHECK(!check_maxwell_point_size());
     CHECK(!check_maxwell_depth_bounds());
+    CHECK(!check_maxwell_depth_range());
     CHECK(!check_maxwell_viewport_swizzle());
     CHECK(!check_nvn_default_tessellation());
     CHECK(!check_nvn_advanced_blend());

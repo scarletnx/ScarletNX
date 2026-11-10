@@ -566,7 +566,7 @@ static void feedback_done(u32 read, u32 write) {
 }
 
 /* every dynamic state at a neutral value, for draws of our own */
-static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int fresh);
+static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int minus_one, int fresh);
 static void plain_state(VkCommandBuffer cb, VkRect2D sc) {
     vk_render_forget_state(); /* every state set here, differently from a draw */
     VkViewport vp = {0, 0, (float)g_rp.ext.width, (float)g_rp.ext.height, 0, 1};
@@ -596,7 +596,7 @@ static void plain_state(VkCommandBuffer cb, VkRect2D sc) {
     if (g_vk.has_feedback_dynamic) rec_CmdSetAttachmentFeedbackLoopEnableEXT(cb, VK_IMAGE_ASPECT_NONE);
     if (g_vk.vertex_input_dynamic) rec_CmdSetVertexInputEXT(cb, 0, NULL, 0, NULL); /* our draws read no vertices */
     const PipeKey plain = {.polygon = VK_POLYGON_MODE_FILL}; /* the clears' keys: fill, no clamp, no tessellation */
-    pr_dynamic(cb, &plain, 1);
+    pr_dynamic(cb, &plain, 0, 1);                            /* and their depths, from 0 to 1 */
 }
 
 /* a channel's render enable predicate (gpu.h render_pred, 0 none) around one of its draws or clears, inside the
@@ -2506,6 +2506,7 @@ static struct {
     u64 set_binds; /* vk_rec_set_binds when sets were: a set bound the old way since unbinds descriptor buffers */
     u32 fb, cull, front, topo, restart, discard, bias_on, dt, dw, dcmp, dbounds, st;
     u32 polygon, clamp, provoking, conservative, patch; /* g_vk.dyn_pr's, as PipeKey holds them */
+    u32 minus_one;                                      /* and its depth range, which no key holds: from -1 */
     VkViewport vp[GUEST_VIEWPORTS];
     VkRect2D sc[GUEST_VIEWPORTS];
     u32 viewports;
@@ -2532,9 +2533,12 @@ static struct {
     } while (0)
 void vk_render_forget_state(void) { g_dyn.cb = 0; }
 /* the pre-rasterization state a pipeline of libraries takes as dynamic (g_vk.dyn_pr), from the key it was made for:
-   what a whole pipeline holds of k, the draw sets (fresh: all of it) */
-static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int fresh) {
+   what a whole pipeline holds of k, the draw sets (fresh: all of it). And the clip volume's depth, from -w
+   (minus_one) or from 0, which the device then makes in place of the last stage's (z + w) / 2 */
+static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int minus_one, int fresh) {
     u32 d = g_vk.dyn_pr;
+    if (d & VK_DYN_PR_DEPTH_RANGE)
+        DYN(minus_one, (u32)minus_one, rec_CmdSetDepthClipNegativeOneToOneEXT(cb, minus_one ? VK_TRUE : VK_FALSE));
     if (d & VK_DYN_PR_POLYGON) DYN(polygon, k->polygon, rec_CmdSetPolygonModeEXT(cb, (VkPolygonMode)k->polygon));
     if (d & VK_DYN_PR_DEPTH_CLAMP)
         DYN(clamp, k->depth_clamp, rec_CmdSetDepthClampEnableEXT(cb, k->depth_clamp ? VK_TRUE : VK_FALSE));
@@ -4456,7 +4460,7 @@ retry:
             g_dyn.vi_set = 0;
         }
     }
-    if (g_vk.dyn_pr) pr_dynamic(cb, k, fresh);
+    if (g_vk.dyn_pr) pr_dynamic(cb, k, !ds->dyn.depth_mode, fresh);
     vk_descriptor_heaps_pipeline_state(g_vk.has_descriptor_heaps);
     if (g_vk.has_feedback_dynamic)
         DYN(fb, fb ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_NONE,
@@ -4622,12 +4626,13 @@ retry:
               rec_CmdSetStencilCompareMask(cb, VK_STENCIL_FACE_BACK_BIT, sb[5]),
               rec_CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_BACK_BIT, sb[6])));
     }
-    /* push constants: the depth mode (snx_vp.y) for the vertex stage, the alpha test (on, function, reference) and
+    /* push constants: the depth mode (snx_vp.y) for the vertex stage, 0 too where the device makes the range of -1 to
+       1 (VK_DYN_PR_DEPTH_RANGE), the alpha test (on, function, reference) and
        the point sprite's T flip for the fragment stage. PointCoord's T is 0 at row 0, which is a lower-left window's
        bottom: it flips when the sprite's origin (1 the top) is the other side. Then the fragment stage's scaled
        textures (stage_set), and whether the window is lower left and its surface clip's height, which the fragment's
        y counts up from there (shader/emit_io.c's shader_frag_y_origin) */
-    float pc[32] = {0, ds->dyn.depth_mode ? 0.0f : 1.0f, 0, 0};
+    float pc[32] = {0, ds->dyn.depth_mode || (g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) ? 0.0f : 1.0f, 0, 0};
     /* with the viewport transform off, the viewport's width and height (window_size), which the last stage before
        rasterization takes the position's pixels to clip space by (SNX_SH_WINDOW_XY) */
     u32 window_w = 0, window_h = 0;

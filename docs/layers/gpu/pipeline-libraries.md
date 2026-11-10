@@ -132,12 +132,20 @@ goes into the command buffer only when it changes). Each one needs a `rec_CmdSet
 | provoking vertex | `vkCmdSetProvokingVertexModeEXT` | `extendedDynamicState3ProvokingVertexMode` |
 | conservative mode and its size | `vkCmdSetConservativeRasterizationModeEXT`, `vkCmdSetExtraPrimitiveOverestimationSizeEXT` | the two `extendedDynamicState3` members, with `has_conservative` |
 | patch control points | `vkCmdSetPatchControlPointsEXT` | `extendedDynamicState2PatchControlPoints` |
+| depth range of the clip volume | `vkCmdSetDepthClipNegativeOneToOneEXT` | `extendedDynamicState3DepthClipNegativeOneToOne`, with `depthClipControl` of `VK_EXT_depth_clip_control` |
 
 Each state becomes dynamic only on the GPL path, and only when its feature is there. A state without its feature
 stays in the PR key, as a static value. This keeps the whole-pipeline path of today unchanged, and a device with
 partial EDS3 still works. `g_vk` gets one bit for each state (`g_vk.dyn_pr`, a mask), which the key split and the
 draw both read. The device must enable `VK_EXT_extended_dynamic_state3` and the members that it uses, and
 `extendedDynamicState2PatchControlPoints`.
+
+A member that a line of `extension_bans.txt` turns off on the driver counts as absent (`vk_gpl_bans`).
+
+The depth range is in no key. Without its state, the last stage before rasterization makes a range of -1 to 1
+(`shader_vertex_position_fix`, z = (z + w) / 2), as on the whole-pipeline path. With it, the device makes the
+range and the push constant that turns the fix on stays 0. The log line at start says which, and what the device
+lacks.
 
 Depth clamp as dynamic state keeps the meaning of today. Without `VK_EXT_depth_clip_enable`, depth clip is the
 opposite of depth clamp, for a static value and for a dynamic one.

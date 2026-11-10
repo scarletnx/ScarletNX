@@ -18,6 +18,9 @@
 #define VK_DYN_PR_PROVOKING    4u  /* provoking vertex: extendedDynamicState3ProvokingVertexMode */
 #define VK_DYN_PR_CONSERVATIVE 8u  /* conservative rasterization and its dilation: the two EDS3 members */
 #define VK_DYN_PR_PATCH        16u /* patch control points: extendedDynamicState2PatchControlPoints */
+/* the clip volume's depth, from -w or from 0 (DsDynamic.depth_mode): extendedDynamicState3DepthClipNegativeOneToOne
+   with VK_EXT_depth_clip_control. No key holds it: without the state the last stage makes the range (render.c) */
+#define VK_DYN_PR_DEPTH_RANGE  32u
 
 /* what a device has, as the choice reads it */
 typedef struct {
@@ -28,6 +31,9 @@ typedef struct {
     int independent_interpolation; /* graphicsPipelineLibraryIndependentInterpolationDecoration */
     /* the members of VK_EXT_extended_dynamic_state3 and 2 the parts can take (0 without the extension) */
     int polygon, depth_clamp, provoking, conservative_mode, conservative_size, patch;
+    int depth_range;          /* extendedDynamicState3DepthClipNegativeOneToOne */
+    int depth_clip_control;   /* VK_EXT_depth_clip_control's depthClipControl */
+    uint32_t depth_range_ban; /* the table's line of the ban that turned depth_range off (vk_gpl_bans), 0 for none */
     /* what the renderer uses at all: a dynamic state of a feature it doesn't use is left out */
     int has_provoking_last, has_conservative;
 } VkGplDevice;
@@ -38,6 +44,10 @@ void vk_gpl_bans(VkGplDevice* d, VkBanSay say);
 /* whether pipelines are made from libraries on d: 1 or 0, the dynamic pre-rasterization state (VK_DYN_PR_*) in
    *dyn_pr (0 when they aren't), and the log line that says so into line */
 int vk_gpl_choose(const VkGplDevice* d, u32* dyn_pr, char* line, size_t n);
+
+/* the log line of who makes a depth range of -1 to 1 on d, the device (dyn_pr has VK_DYN_PR_DEPTH_RANGE) or the last
+   stage before rasterization, and then what the device lacks for it, into line */
+void vk_depth_range_line(const VkGplDevice* d, u32 dyn_pr, char* line, size_t n);
 
 /* the parts of a pipeline made of libraries, a bit each (docs/layers/gpu/pipeline-libraries.md, "The four parts") */
 #define VK_PART_VI  1u  /* vertex input interface */

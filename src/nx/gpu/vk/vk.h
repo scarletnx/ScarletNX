@@ -85,7 +85,7 @@ typedef struct {
        asks for it (experimental): FFmpeg's Vulkan decoder decodes on it (vk/nvdec.c), told of the device by the
        extensions and features enabled */
     u32 video_family;
-    const char* dev_ext[64]; /* create_device enables 64 at most, were every one it can enable there */
+    const char* dev_ext[65]; /* create_device enables 65 at most, were every one it can enable there */
     u32 dev_ext_n;
     VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained (to 1.2 on a 1.2 device) */
     VkPhysicalDeviceVulkan11Features feat11;
@@ -667,6 +667,7 @@ void rec_CmdSetProvokingVertexModeEXT(VkCommandBuffer cb, VkProvokingVertexModeE
 void rec_CmdSetConservativeRasterizationModeEXT(VkCommandBuffer cb, VkConservativeRasterizationModeEXT mode);
 void rec_CmdSetExtraPrimitiveOverestimationSizeEXT(VkCommandBuffer cb, float size);
 void rec_CmdSetPatchControlPointsEXT(VkCommandBuffer cb, u32 points);
+void rec_CmdSetDepthClipNegativeOneToOneEXT(VkCommandBuffer cb, VkBool32 on);
 void rec_CmdResetQueryPool(VkCommandBuffer cb, VkQueryPool pool, u32 first, u32 count);
 void rec_CmdWriteTimestamp2(VkCommandBuffer cb, VkPipelineStageFlags2 stage, VkQueryPool pool, u32 query);
 void rec_CmdBeginQuery(VkCommandBuffer cb, VkQueryPool pool, u32 query, VkQueryControlFlags flags);

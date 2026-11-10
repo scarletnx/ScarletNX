@@ -6,10 +6,12 @@
 
 /* Vertex 0 the centre of the 8x8 target, window (4, 4); 1 to 3 a triangle over the whole target at clip z -0.5,
    depth 0.25 in the depth mode from -1 to 1 a channel starts in; 4 to 9 the rectangle from clip (-1, 0) to
-   (-0.5, 1), two triangles, which a mirror or a transposition moves elsewhere */
+   (-0.5, 1), two triangles, which a mirror or a transposition moves elsewhere; 10 to 12 the triangle over the whole
+   target again, at clip z 0.5 */
 static const f32 g_mx_fixed_vertices[][4] = {{0, 0, 0, 1},     {-1, -1, -0.5f, 1}, {3, -1, -0.5f, 1}, {-1, 3, -0.5f, 1},
                                              {-1, 0, 0, 1},    {-0.5f, 0, 0, 1},   {-0.5f, 1, 0, 1},  {-1, 0, 0, 1},
-                                             {-0.5f, 1, 0, 1}, {-1, 1, 0, 1}};
+                                             {-0.5f, 1, 0, 1}, {-1, 1, 0, 1},      {-1, -1, 0.5f, 1}, {3, -1, 0.5f, 1},
+                                             {-1, 3, 0.5f, 1}};
 
 /* a channel drawing into the 8x8 RGBA32F target at gpu + 0x8000 with the vertices above, attribute 0 the position,
    in red (1, 0, 0, 0.5) over a blue clear, as check_nvn_fixed_state draws: the code at gpu, the vertices at
@@ -149,6 +151,99 @@ static int check_maxwell_depth_bounds(void) {
     vk_unlock();
     free(channel);
     puts("PASS 3D engine depth bounds: the buffer's depth tested against them, ends in, off keeps every pixel");
+    return 0;
+}
+
+/* whether a depth range of -1 to 1 is the device's on this device (VK_DYN_PR_DEPTH_RANGE): pipeline libraries, the
+   depth clip control and the range as dynamic state, each as the device reports it and no ban holding for it */
+static int mx_depth_range_device(void) {
+    static const char member[] = "VK_EXT_extended_dynamic_state3.extendedDynamicState3DepthClipNegativeOneToOne";
+    u32 count = 0;
+    int clip_control = 0, eds3 = 0;
+    vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &count, NULL);
+    VkExtensionProperties* list = calloc(count ? count : 1, sizeof *list);
+    if (!list) return -1;
+    vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &count, list);
+    for (u32 i = 0; i < count; i++) {
+        clip_control |= !strcmp(list[i].extensionName, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
+        eds3 |= !strcmp(list[i].extensionName, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+    }
+    free(list);
+    if (!g_vk.has_gpl || !clip_control || !eds3 || vk_ban_find(VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME) ||
+        vk_ban_find(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME) || vk_ban_find(member))
+        return 0;
+    VkPhysicalDeviceDepthClipControlFeaturesEXT control = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT};
+    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT dynamic = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT, .pNext = &control};
+    VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &dynamic};
+    vkGetPhysicalDeviceFeatures2(g_vk.phys, &features);
+    return control.depthClipControl && dynamic.extendedDynamicState3DepthClipNegativeOneToOne;
+}
+
+/* SET_DEPTH_MODE (0x35F) says whether the clip volume's depth goes from -w or from 0. A triangle over the target,
+   depth clipped, tested against a buffer cleared just past and just before the depth it must have: under a depth
+   scale and offset of 0.5, clip z -0.5 is depth 0.25 from -1 to 1 and before the near plane from 0 to 1, and clip
+   z 0.5 is depth 0.75 in both. The range changes from draw to draw. The device makes the range of -1 to 1 where it
+   can (VK_EXT_depth_clip_control as dynamic state), else the last stage before rasterization: both are checked by
+   what they draw, and that the device is the one where it can be */
+static int check_maxwell_depth_range(void) {
+    enum { LESS = 0x201, ALWAYS = 0x207 };
+    static const struct {
+        u32 zero_to_one, first, func, want;
+        f32 buffer;
+    } cases[] = {
+        {0, 1, LESS, 64, 0.3f},                          /* -1 to 1: z -0.5 is 0.25, */
+        {0, 1, LESS, 0, 0.2f},                           /* no nearer */
+        {1, 1, ALWAYS, 0, 1.0f},                         /* 0 to 1: z -0.5 is before the near plane */
+        {1, 10, LESS, 64, 0.8f},                         /* and z 0.5 is 0.5 + 0.5 * 0.5, */
+        {1, 10, LESS, 0, 0.7f},                          /* no nearer */
+        {0, 10, LESS, 64, 0.8f},                         /* -1 to 1 again: z 0.5 is 0.75 there too, */
+        {0, 10, LESS, 0, 0.7f},  {0, 1, LESS, 64, 0.3f}, /* and z -0.5 is drawn again */
+    };
+    const u64 gpu = 0x4c2030000ull, depth = gpu + 0xc000;
+    GpuChannel* channel = NULL;
+    CHECK(!mx_fixed_channel(160, gpu, HEAP_BASE + 0x5470000, &channel));
+    u32* r = channel->r3d;
+    r[0x54E] = 1; /* a Z32_FLOAT target of 8 by 8, block linear one GOB high */
+    r[0x3F8] = (u32)(depth >> 32);
+    r[0x3F9] = (u32)depth;
+    r[0x3FA] = 0x0A;
+    r[0x3FB] = 0;
+    r[0x3FC] = 512 / 4;
+    r[0x48A] = r[0x48B] = 8;
+    r[0x48C] = 1;
+    r[0x4B3] = 1;        /* the depth test, */
+    r[0x4BA] = 0;        /* no writes, */
+    r[0x64F] = 1u << 11; /* and depth clipped, not clamped */
+    int device = mx_depth_range_device();
+    CHECK(device >= 0);
+    if (((g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) != 0) != device) {
+        fprintf(stderr, "3D engine depth range: the device %s make a range of -1 to 1 and the renderer %s it\n",
+                device ? "can" : "can't", g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE ? "takes" : "doesn't take");
+        CHECK(0);
+    }
+    vk_lock();
+    for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) {
+        r[0x35F] = cases[i].zero_to_one;
+        r[0x4C3] = cases[i].func;
+        memcpy(&r[0x364], &cases[i].buffer, sizeof cases[i].buffer);
+        engine_clear(channel, 1);
+        u64 covered;
+        CHECK(!mx_fixed_draw(channel, 4, cases[i].first, 3, &covered));
+        u32 count = (u32)snx_popcount64(covered);
+        if (count != cases[i].want)
+            fprintf(stderr,
+                    "3D engine depth range %s, clip z %g, %s a buffer of %g (case %u): %u pixels, expected %u\n",
+                    cases[i].zero_to_one ? "0 to 1" : "-1 to 1", (double)g_mx_fixed_vertices[cases[i].first][2],
+                    cases[i].func == LESS ? "nearer than" : "always passing over", (double)cases[i].buffer, i, count,
+                    cases[i].want);
+        CHECK(count == cases[i].want);
+    }
+    vk_unlock();
+    free(channel);
+    printf("PASS 3D engine depth range: -1 to 1 made by %s, 0 to 1, and one after the other\n",
+           device ? "the device" : "the last stage");
     return 0;
 }
 
