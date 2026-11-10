@@ -242,10 +242,12 @@ static void release(Release* r) {
     else
         r->gate =
             r->samples || vk_buf_pending_unsubmitted() || vk_gfx_image_in_flight(1) ? recording : vk_last_submit();
+    int freed = 0; /* the stream's hold ended for the queue: the release thread may perform the rest */
     pm_lock(&g_rlock);
     if (g_rhead - g_rtail == RQ_N) { /* full: the oldest goes now, held or not */
         hold_inplace(g_rheld, g_rhead);
         g_rheld = g_rhead;
+        freed = 1;
         u64 oldest = g_rq[g_rtail % RQ_N].gate, coldest = g_rq[g_rtail % RQ_N].cgate;
         pm_unlock(&g_rlock);
         submit_through(oldest);
@@ -275,7 +277,11 @@ static void release(Release* r) {
             fatal("could not start the GPU release thread: %s", snx_os_error(why, sizeof why));
         }
     }
-    pc_broadcast(&g_rcv);
+    /* The release just queued is held (g_rheld), so the thread has nothing new to perform unless the full queue's
+       hold ended above: whatever ends the hold wakes it (vk_release_submit, release_match, read_queued). Woken for
+       each of them, it found nothing and slept again: one game's thousands of reports a frame cost its GPU thread a
+       thirtieth of its time in the system's wake-ups */
+    if (freed) pc_broadcast(&g_rcv);
     pm_unlock(&g_rlock);
     vk_unlock();
 }
