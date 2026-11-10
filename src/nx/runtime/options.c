@@ -40,19 +40,19 @@ void options_language_set(const IniOpt* o, const char* v) {
 }
 
 /* ---- TV mode ---- */
-/* docked's choice, which the .ini keeps: 0 Off, 1 On, 2 Auto. g_settings.tv_mode holds the mode in effect, 0 or 1,
-   so every service reads it as it always has */
-static int g_tv_mode_choice = 1;
-static int g_tv_on_charger; /* the host's state at the last update: 1, 0 or -1 */
-static int g_tv_power_logged;
-static int g_tv_watch; /* 1 when the platform watches the power source, 0 when the fallback polls it */
-static int g_tv_first = 1;
-static u64 g_tv_poll_next; /* the fallback's next query, in plat_ns */
+/* docked's choice, which the .ini keeps (0 Off, 1 On, 2 Auto), and Auto's view of the host. g_settings.tv_mode holds
+   the mode in effect, 0 or 1, so every service reads it as it always has */
+static struct {
+    int choice;
+    int on_charger; /* the host's state at Auto's last read: 1, 0 or -1 */
+    int watch;      /* 1 when the platform watches the power source, 0 when Auto polls it */
+    u64 poll_next;  /* with no watcher, Auto's next read, in plat_ns */
+} g_tv = {.choice = 1};
 /* a host with no watcher: rarely, since a charger is not a thing that changes every second */
 #define TV_POLL_NS (15ull * 1000000000ull)
 /* Auto picks TV mode unless the host runs on its battery. A host whose state cannot be read is on TV mode */
 static int tv_mode_now(void) {
-    if (g_tv_mode_choice != 2) return g_tv_mode_choice;
+    if (g_tv.choice != 2) return g_tv.choice;
     return plat_power_on_charger() != 0;
 }
 void options_tv_mode_set(const IniOpt* o, const char* v) {
@@ -60,49 +60,43 @@ void options_tv_mode_set(const IniOpt* o, const char* v) {
     long n = strtol(v, &end, 10);
     (void)o;
     if (end == v) return;
-    g_tv_mode_choice = n < 0 ? 0 : n > 2 ? 2 : (int)n;
+    g_tv.choice = n < 0 ? 0 : n > 2 ? 2 : (int)n;
     __atomic_store_n(&g_settings.tv_mode, tv_mode_now(), __ATOMIC_RELAXED);
 }
-void options_tv_mode_start(void) {
-    if (g_tv_mode_choice != 2) return; /* fixed On and Off need no watcher */
-    g_tv_watch = plat_power_watch() == 0;
-    g_tv_first = 1;
-    options_tv_mode_update();
-}
-void options_tv_mode_update(void) {
-    int mode, on, was;
-    if (g_tv_mode_choice != 2) return;
-    if (!g_tv_first) {
-        if (g_tv_watch) {
-            if (!plat_power_take_change()) return;
-        } else {
-            /* no watcher on this host: ask rarely, and nowhere else */
-            u64 now = plat_ns();
-            if (now < g_tv_poll_next) return;
-            g_tv_poll_next = now + TV_POLL_NS;
-        }
-    } else if (g_tv_watch) {
-        (void)plat_power_take_change(); /* the watcher's first event, already in the state below */
-    }
-    on = plat_power_on_charger();
-    mode = on != 0;
-    was = __atomic_load_n(&g_settings.tv_mode, __ATOMIC_RELAXED);
-    if (!g_tv_power_logged || on != g_tv_on_charger || mode != was) {
+/* Auto's read of the host's power state: the mode it picks in effect, its line in the log when say asks for it or the
+   state or the mode changed since the last read, and 1 when the mode changed */
+static int tv_auto_read(int say) {
+    int on = plat_power_on_charger(), mode = on != 0, was = snx_tv_mode();
+    if (say || on != g_tv.on_charger || mode != was) {
         if (on > 0)
             LOG("power: the host is on its charger: TV mode Auto picks %s\n", mode ? "TV mode" : "handheld mode");
         else if (on == 0)
             LOG("power: the host is on its battery: TV mode Auto picks %s\n", mode ? "TV mode" : "handheld mode");
         else
             LOG("power: the host's power state cannot be read: TV mode Auto picks TV mode\n");
-        g_tv_power_logged = 1;
     }
-    g_tv_on_charger = on;
-    g_tv_first = 0;
-    if (!g_tv_watch) g_tv_poll_next = plat_ns() + TV_POLL_NS;
-    if (mode == was) return;
+    g_tv.on_charger = on;
+    if (!g_tv.watch) g_tv.poll_next = plat_ns() + TV_POLL_NS;
+    if (mode == was) return 0;
     __atomic_store_n(&g_settings.tv_mode, mode, __ATOMIC_RELAXED);
+    return 1;
+}
+/* a new mode in effect, told as a console put in its dock or taken out: am's message and event, hid's handheld Npad */
+static void tv_mode_tell(void) {
     am_display_mode_changed();
     hid_mode_changed();
+}
+void options_tv_mode_start(void) {
+    if (g_tv.choice != 2) return; /* fixed On and Off need no watcher */
+    g_tv.watch = plat_power_watch() == 0;
+    if (g_tv.watch) (void)plat_power_take_change(); /* the state is read now: a change marked before is in it */
+    if (tv_auto_read(1)) tv_mode_tell();
+}
+void options_tv_mode_update(void) {
+    if (g_tv.choice != 2) return;
+    /* the host read again when its watcher marked a change, or with none every TV_POLL_NS, and nowhere else */
+    if (g_tv.watch ? !plat_power_take_change() : plat_ns() < g_tv.poll_next) return;
+    if (tv_auto_read(0)) tv_mode_tell();
 }
 
 /* "game" in any case, or a number: 0 and below 1 unlimited, 10 to 1000 frames a second (clamped), and the values an
