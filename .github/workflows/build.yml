@@ -1608,13 +1608,35 @@ jobs:
         env:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
+      # A cross build that failed uploaded no AppImage, and its own job says why: this one says which job that is and
+      # runs nothing more, where its download would fail as one more red job. The run's jobs come in pages of 100
+      - name: Ask how the ${{ matrix.arch }} AppImage's build ended
+        id: build
+        shell: bash # with pipefail: a failed request fails the step
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB: Linux AppImage (${{ matrix.arch }})
+        run: |
+          result=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" |
+            jq -r --arg job "$JOB" '.jobs[] | select(.name == $job) | .conclusion')
+          case $result in
+            success) ;;
+            failure|cancelled|timed_out)
+              echo "::notice title=No ${{ matrix.arch }} AppImage to check::the job \"$JOB\" ended as $result" ;;
+            *)
+              echo "the job \"$JOB\" of run $GITHUB_RUN_ID ended as '$result'," \
+                "not success, failure, cancelled or timed_out" >&2
+              exit 1 ;;
+          esac
+          echo "result=$result" >> "$GITHUB_OUTPUT"
       # The AppImage itself runs through qemu-user (scripts/check-package.sh says why), the programs it starts through the
       # binfmt handler the next step registers: installed first, as its package's systemd trigger can clear the handlers
       # registered before it. No recommends: qemu-user-binfmt would register handlers of its own
       - name: Install qemu-user
+        if: steps.build.outputs.result == 'success'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user
       - name: Set up qemu emulation for ${{ matrix.arch }}
-        if: matrix.platform != 'ppc64'
+        if: steps.build.outputs.result == 'success' && matrix.platform != 'ppc64'
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         with:
           platforms: ${{ matrix.platform }}
@@ -1622,7 +1644,7 @@ jobs:
       # programs instead, by the magic and mask Debian's qemu-user-binfmt gives them (its qemu-ppc64.conf). F opens
       # qemu now, so the containers use it too, and P keeps argv[0], as qemu reads from the kernel since 9.0
       - name: Set up qemu emulation for ppc64
-        if: matrix.platform == 'ppc64'
+        if: steps.build.outputs.result == 'success' && matrix.platform == 'ppc64'
         run: |
           printf ':qemu-ppc64:M::%s:%s:%s:POCF\n' \
             '\x7f\x45\x4c\x46\x02\x02\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x15' \
@@ -1630,7 +1652,9 @@ jobs:
             "$(command -v qemu-ppc64)" | sudo tee /proc/sys/fs/binfmt_misc/register
           head -n 3 /proc/sys/fs/binfmt_misc/qemu-ppc64
       - uses: actions/checkout@v7
+        if: steps.build.outputs.result == 'success'
       - uses: actions/download-artifact@v8
+        if: steps.build.outputs.result == 'success'
         with:
           name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}.AppImage
           path: dist
@@ -1641,6 +1665,7 @@ jobs:
       # tool it carries as itself; both handlers are printed. e_type's low byte, executable or shared, is left to either:
       # byte 16 of a little-endian header, 17 of a big-endian one (EI_DATA 2, PowerPC64 BE's)
       - name: Run ${{ matrix.arch }} AppImages through qemu-user
+        if: steps.build.outputs.result == 'success'
         run: |
           set -- $(head -c 20 dist/*.AppImage | od -An -v -tx1)
           low=$(($6 == 2 ? 17 : 16))
@@ -1654,6 +1679,7 @@ jobs:
           grep -qx enabled /proc/sys/fs/binfmt_misc/appimage-${{ matrix.qemu }}
           head -n 3 /proc/sys/fs/binfmt_misc/qemu-${{ matrix.qemu }} /proc/sys/fs/binfmt_misc/appimage-${{ matrix.qemu }}
       - name: Run the AppImage as a user would
+        if: steps.build.outputs.result == 'success'
         run: |
           grep -qx enabled /proc/sys/fs/binfmt_misc/qemu-${{ matrix.qemu }} ||
             { echo "no binfmt handler runs ${{ matrix.qemu }} programs here" >&2; exit 1; }
