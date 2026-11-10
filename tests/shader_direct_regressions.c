@@ -4699,6 +4699,84 @@ static void rendering_stage_features(const char* directory) {
     g_shader_stage_point_size = point_size_available;
 }
 
+/* What the translator knows as it translates is settled there, not left for the driver's compiler: PT, the
+   predicate most instructions name, is the constant true */
+static void settled_when_translated(void) {
+    enum { SELECT = 169, F_MIN = 37, F_MAX = 40 };
+    const u64 pt = 7ull << 39, negated = 1ull << 42, a1_b2 = 1ull << 8 | 2ull << 20;
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code = translate(NULL, 0, ST_FS, &info, &words, 0);
+    check_translated(code, &info, "a program of an EXIT alone translates");
+    int selects = code ? count_opcode(code, words, SELECT, 0xffffffffu) : 0;
+    check(code && !has_glsl_instruction(code, words, F_MIN) && !has_glsl_instruction(code, words, F_MAX),
+          "a fragment program's epilogue has no minimum or maximum of its own");
+    free(code);
+    /* FSETP P1, P2 = R1 < R2 combined with PT, !PT and P0: by AND, OR and XOR (bits 45-46) */
+    const u64 fsetp = 0x5BB0000000070000ull | 1ull << 48 | a1_b2 | 1ull << 3 | 2;
+    const struct {
+        u64 predicate;
+        int made; /* the ANDs, ORs or XORs written, one for each of the two predicates */
+    } combined[] = {{pt, 0}, {pt | negated, 0}, {0, 2}};
+    static const u32 combine[3] = {167, 166, 165}; /* OpLogicalAnd, OpLogicalOr, OpLogicalNotEqual */
+    for (u32 by = 0; by < 3; by++) {
+        code = translate(NULL, 0, ST_FS, &info, &words, 0);
+        int epilogue = code ? count_opcode(code, words, combine[by], 0xffffffffu) : 0;
+        free(code);
+        for (int i = 0; i < 3; i++) {
+            const u64 program[] = {fsetp | combined[i].predicate | (u64)by << 45};
+            code = translate(program, 1, ST_FS, &info, &words, 0);
+            check_translated(code, &info, "FSETP translates");
+            int made = code ? count_opcode(code, words, combine[by], 0xffffffffu) - epilogue : -1;
+            if (made != combined[i].made)
+                fprintf(stderr, "FSETP combined by %u with predicate form %d writes %d of opcode %u, not %d\n", by, i,
+                        made, combine[by], combined[i].made);
+            check(
+                made == combined[i].made,
+                "a comparison combined with PT or !PT is settled, and one combined with a predicate is written twice");
+            free(code);
+        }
+    }
+    /* PSETP P1, P2 = PT and P0, !PT and P0, each combined with PT: P0 and false, with no NOT of PT written */
+    code = translate(NULL, 0, ST_FS, &info, &words, 0);
+    int nots = code ? count_opcode(code, words, 168, 0xffffffffu) : 0;
+    free(code);
+    const u64 psetp[] = {0x5090000000070000ull | 7ull << 12 | pt | 1ull << 3 | 2};
+    code = translate(psetp, 1, ST_FS, &info, &words, 0);
+    check_translated(code, &info, "PSETP translates");
+    check(code && count_opcode(code, words, 168, 0xffffffffu) == nots,
+          "PSETP's second predicate takes !PT as the constant false, with no OpLogicalNot");
+    free(code);
+    /* FMNMX R4 = R1, R2 picked by PT (the minimum), !PT (the maximum) and P0 (either), then DMNMX, IMNMX and SEL */
+    const struct {
+        u64 word;
+        int minimum, maximum, selects;
+    } picked[] = {{0x5C60000000070000ull | pt, 1, 0, 2}, /* the two operands' NaN tests */
+                  {0x5C60000000070000ull | pt | negated, 0, 1, 2},
+                  {0x5C60000000070000ull, 1, 1, 3},
+                  {0x5C50000000070000ull | pt, 1, 0, 2}, /* DMNMX: as FMNMX, of doubles */
+                  {0x5C50000000070000ull | pt | negated, 0, 1, 2},
+                  {0x5C50000000070000ull, 1, 1, 5},
+                  {0x5C20000000070000ull | pt, 0, 0, 1}, /* IMNMX: the minimum's select */
+                  {0x5C20000000070000ull | pt | negated, 0, 0, 1},
+                  {0x5C20000000070000ull, 0, 0, 3},
+                  {0x5CA0000000070000ull | pt, 0, 0, 0}, /* SEL: R1 itself */
+                  {0x5CA0000000070000ull, 0, 0, 1}};
+    for (int i = 0; i < 11; i++) {
+        const u64 program[] = {picked[i].word | a1_b2 | 4};
+        code = translate(program, 1, ST_FS, &info, &words, 0);
+        check_translated(code, &info, "FMNMX, DMNMX, IMNMX and SEL translate");
+        if (code && count_opcode(code, words, SELECT, 0xffffffffu) != selects + picked[i].selects)
+            fprintf(stderr, "pick %d: %d OpSelect, not the epilogue's %d and its %d\n", i,
+                    count_opcode(code, words, SELECT, 0xffffffffu), selects, picked[i].selects);
+        check(code && has_glsl_instruction(code, words, F_MIN) == picked[i].minimum &&
+                  has_glsl_instruction(code, words, F_MAX) == picked[i].maximum &&
+                  count_opcode(code, words, SELECT, 0xffffffffu) == selects + picked[i].selects,
+              "PT or !PT picks one side as the program is translated: the other side and the select are not made");
+        free(code);
+    }
+}
+
 int main(int argc, char** argv) {
     g_shader_clock_scopes = 3; /* Exercise both optional Vulkan clock scopes in offline SPIR-V fixtures. */
     if (argc != 1 && argc != 2) {
@@ -4879,6 +4957,7 @@ int main(int argc, char** argv) {
     vertex_position_out();
     fragment_position_pass();
     per_vertex_pass();
+    settled_when_translated();
     check(!g_fixtures.failed, "shader fixture paths allocated");
     for (size_t i = 0; i < g_fixtures.count; i++) free(g_fixtures.paths[i]);
     free(g_fixtures.paths);

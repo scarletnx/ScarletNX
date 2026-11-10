@@ -377,9 +377,46 @@ static inline u32 reg_read_as(DirectCtx* c, u32 r, u32 type) {
     return c->reg_alt[r];
 }
 
+/* Booleans, with no instruction where one is the module's true or false constant: PT, the predicate most
+   instructions name, reads as the constant, and so does its negation and what a comparison is combined with */
+static inline u32 cc_not(DirectCtx* c, u32 x) {
+    if (x == c->true_value) return c->false_value;
+    if (x == c->false_value) return c->true_value;
+    return spv_emit_unary(&c->emit, SPV_OP_LOGICAL_NOT, c->bool_type, x);
+}
+static inline u32 cc_and(DirectCtx* c, u32 x, u32 y) {
+    if (x == c->true_value) return y;
+    if (y == c->true_value) return x;
+    if (x == c->false_value || y == c->false_value) return c->false_value;
+    return spv_emit_bool_binary(&c->emit, c->bool_type, 0, x, y);
+}
+static inline u32 cc_or(DirectCtx* c, u32 x, u32 y) {
+    if (x == c->false_value) return y;
+    if (y == c->false_value) return x;
+    if (x == c->true_value || y == c->true_value) return c->true_value;
+    return spv_emit_bool_binary(&c->emit, c->bool_type, 1, x, y);
+}
+static inline u32 cc_xor(DirectCtx* c, u32 x, u32 y) {
+    if (x == c->false_value) return y;
+    if (y == c->false_value) return x;
+    if (x == c->true_value) return cc_not(c, y);
+    if (y == c->true_value) return cc_not(c, x);
+    return spv_emit_bool_binary(&c->emit, c->bool_type, 2, x, y);
+}
+/* left combined with right as a comparison's 2-bit field says: 0 and, 1 or, 2 xor, 3 left alone */
+static inline u32 bool_combine(DirectCtx* c, u32 op, u32 left, u32 right) {
+    return op == 0 ? cc_and(c, left, right) : op == 1 ? cc_or(c, left, right) : op == 2 ? cc_xor(c, left, right) : left;
+}
+/* condition ? yes : no, which is yes or no itself where the condition is the true or false constant */
+static inline u32 shader_select(DirectCtx* c, u32 type, u32 condition, u32 yes, u32 no) {
+    if (condition == c->true_value) return yes;
+    if (condition == c->false_value) return no;
+    return spv_emit_ternary(&c->emit, SPV_OP_SELECT, type, condition, yes, no);
+}
+
 static inline u32 pred_read(DirectCtx* c, u32 p, int negative) {
     u32 value = p == 7 ? c->true_value : var_read(c, VAR_PRED + p);
-    return negative ? spv_emit_unary(&c->emit, SPV_OP_LOGICAL_NOT, c->bool_type, value) : value;
+    return negative ? cc_not(c, value) : value;
 }
 
 static inline void pred_write(DirectCtx* c, u32 p, u32 value) {
@@ -395,14 +432,6 @@ static inline void cc_store(DirectCtx* c, u32 flag, u32 value) {
     if (c->guard) value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->bool_type, c->guard, value, flag_read(c, flag));
     var_write(c, flag_var(c, flag), value);
 }
-
-static inline u32 bool_combine(DirectCtx* c, u32 op, u32 left, u32 right) {
-    return op < 3 ? spv_emit_bool_binary(&c->emit, c->bool_type, op, left, right) : left;
-}
-static inline u32 cc_not(DirectCtx* c, u32 x) { return spv_emit_unary(&c->emit, SPV_OP_LOGICAL_NOT, c->bool_type, x); }
-static inline u32 cc_and(DirectCtx* c, u32 x, u32 y) { return spv_emit_bool_binary(&c->emit, c->bool_type, 0, x, y); }
-static inline u32 cc_or(DirectCtx* c, u32 x, u32 y) { return spv_emit_bool_binary(&c->emit, c->bool_type, 1, x, y); }
-static inline u32 cc_xor(DirectCtx* c, u32 x, u32 y) { return spv_emit_bool_binary(&c->emit, c->bool_type, 2, x, y); }
 
 static inline u32* direct_reject(ShaderInfo* si, const char* reason) {
     si->unsupported = 1;
