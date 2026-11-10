@@ -697,6 +697,7 @@ static int create_device(void) {
     u32 next = 0;
     int has_shader_clock = 0, has_feedback_dynamic = 0, has_cond = 0, has_provoking = 0, video_exts = 0;
     int has_list_restart = 0;
+    int has_barycentric = 0;
     int has_portability = 0, has_reconvergence = 0;
     int has_calibrated = 0, has_present_id = 0, has_present_wait = 0, has_present_v2 = 0, has_calibrated_khr = 0;
     int has_google_timing = 0;
@@ -773,6 +774,7 @@ static int create_device(void) {
         has_coop = snx_vk_extensions_has(&e, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
         has_list_restart = snx_vk_extensions_has(&e, VK_EXT_PRIMITIVE_TOPOLOGY_LIST_RESTART_EXTENSION_NAME);
         has_atomic_float = snx_vk_extensions_has(&e, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
+        has_barycentric = snx_vk_extensions_has(&e, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
         g_vk.has_conservative = snx_vk_extensions_has(&e, VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
         g_vk.has_depth_range_unrestricted = snx_vk_extensions_has(&e, VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME);
         has_pipeline_robustness = snx_vk_extensions_has(&e, VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
@@ -935,6 +937,8 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
     VkPhysicalDevicePrimitiveTopologyListRestartFeaturesEXT qlist_restart = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIMITIVE_TOPOLOGY_LIST_RESTART_FEATURES_EXT};
+    VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR qbarycentric = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR};
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR qindex8 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR};
     VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT qvertex_input = {
@@ -988,6 +992,7 @@ static int create_device(void) {
                            has_cond ? &qcond : NULL,
                            has_provoking ? &qprov : NULL,
                            has_list_restart ? &qlist_restart : NULL,
+                           has_barycentric ? &qbarycentric : NULL,
                            index8_ext ? &qindex8 : NULL,
                            has_vertex_input ? &qvertex_input : NULL,
                            has_gpl ? &qgpl : NULL,
@@ -1055,6 +1060,17 @@ static int create_device(void) {
         LOG("vulkan: the restart index restarts strips and fans only: it is a vertex in a list, as the device has %s\n",
             has_list_restart ? "VK_EXT_primitive_topology_list_restart without its list feature"
                              : "no VK_EXT_primitive_topology_list_restart");
+    g_vk.has_barycentric = has_barycentric && qbarycentric.fragmentShaderBarycentric;
+    if (p12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
+        LOG("vulkan: fragment inputs are the driver's interpolation (NVIDIA's keeps the console's precision)\n");
+    else if (g_vk.has_barycentric)
+        LOG("vulkan: an unculled quad draw's fragment inputs are interpolated from its vertices' values "
+            "(VK_KHR_fragment_shader_barycentric), another draw's position inputs read from the fragment's place\n");
+    else
+        LOG("vulkan: a draw's position inputs are read from the fragment's place; an unculled quad draw's other "
+            "inputs are the driver's interpolation, as the device has %s\n",
+            has_barycentric ? "VK_KHR_fragment_shader_barycentric without its feature"
+                            : "no VK_KHR_fragment_shader_barycentric");
     g_vk.has_index8 = index8_ext && qindex8.indexTypeUint8;
     mesh_choose(has_mesh, &qmesh, &q13);
     if (core13) { /* the subgroup sizes are Vulkan 1.3's, as mesh_choose reads them */
@@ -1491,6 +1507,14 @@ static int create_device(void) {
     if (g_vk.has_cond_render) {
         chain = &fcond;
         ext[next++] = VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR fbarycentric = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR,
+        .pNext = chain,
+        .fragmentShaderBarycentric = VK_TRUE};
+    if (g_vk.has_barycentric) {
+        chain = &fbarycentric;
+        ext[next++] = VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME;
     }
     VkPhysicalDevicePrimitiveTopologyListRestartFeaturesEXT flist_restart = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIMITIVE_TOPOLOGY_LIST_RESTART_FEATURES_EXT,

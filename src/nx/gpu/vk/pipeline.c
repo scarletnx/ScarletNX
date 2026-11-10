@@ -696,6 +696,7 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[26], const ShX
     } else {
         si->attr_int_mask = ints;
         si->attr_sint_mask = sints;
+        if (stage == ST_VS) si->position_copy = mask[24] >> 8;
         /* a vertex program's integer textures, in the words of the fragment stage's dc_funcs and unfed */
         si->tex_int_mask = mask[9];
         si->tex_sint_mask = mask[10];
@@ -829,7 +830,9 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
                        u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
                        const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint,
                        u32 fs_config) {
-    if ((fs_config & ~SH_FS_CONFIG_MASK) || (fs_config && stage != ST_FS)) return NULL;
+    /* a vertex program's is its position's copy (ShaderInfo.position_copy) */
+    if ((fs_config & ~SH_FS_CONFIG_MASK) || (fs_config && stage != ST_FS && (stage != ST_VS || fs_config > 32)))
+        return NULL;
     const DsPrograms* p = ds ? &ds->prog : NULL;
     pf_merge();
     g_sh_ds = ds;

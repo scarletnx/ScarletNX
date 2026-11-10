@@ -327,6 +327,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
        the pass has its value, the generics plain IPAs read with perspective, and whether an indexed IPA reads any */
     u32 pos_in = stage == ST_FS ? shader_varying_position_mask(si->varying) : 0, smooth_in = 0;
     int needs_frag_ndc = 0, ipa_indexed = 0;
+    int per_vertex_in = stage == ST_FS && (si->varying & 3) == SH_VARYING_BARYCENTRIC;
+    u32 pv_mask = 0, pv_slot = SH_VARYING_SLOT(si->varying), position_slot = stage == ST_VS ? si->position_copy : 0;
     int needs_glsl = 0, needs_f16 = 0, needs_f64 = 0, needs_i64 = 0;
     int has_flow = 0, has_calls = 0, has_barrier = 0, converge;
     u32 wait_label = 0;
@@ -1691,6 +1693,17 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             return direct_reject_with_buffers(si, "coverage-to-color integer output", pop_targets, gb_at);
         needs_coverage = 1;
     }
+    /* the per-vertex pass: the generics it takes, and a generic of the three positions, which nothing else may use */
+    if (per_vertex_in) {
+        pv_mask = smooth_in & ~si->in_unfed_mask & ~pos_in;
+        if (ipa_indexed || legacy_fs || inputs_used[pv_slot])
+            return direct_reject_with_buffers(si, "a per-vertex pass over indexed, legacy or the position's inputs",
+                                              pop_targets, gb_at);
+        if (pv_mask) needs_frag_ndc = needs_fragcoord = 1;
+    }
+    if (position_slot && (position_slot > 32 || indexed_store || outputs_used[position_slot - 1]))
+        return direct_reject_with_buffers(si, "the position's copy onto a generic the program writes", pop_targets,
+                                          gb_at);
     /* a capture's push constants have their own third vector */
     if (needs_frag_ndc && (si->advanced_blend_mask & SH_CAPTURE_SOURCE))
         return direct_reject_with_buffers(si, "a varying pass in a capture's fragment program", pop_targets, gb_at);
@@ -1937,6 +1950,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                                              : spv_emit_output_vec4(&c->emit, vec4, i);
                 interfaces[count++] = output_attrs[i];
             }
+        if (position_slot && position_fix) {
+            c->position_copy = spv_emit_output_vec4(&c->emit, vec4, position_slot - 1);
+            interfaces[count++] = c->position_copy;
+        } else
+            position_slot = 0;
         u32 stream_slots[4] = {0};
         for (u32 b = 0; b < 4; b++) {
             u32 stream = si->xfb.stream[b];
@@ -2049,10 +2067,20 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         }
         input_vec_type[i] = vector_type;
         input_component_type[i] = component_type;
-        inputs[i] = between ? spv_emit_interface_variable(&c->emit, 1, vector_type, c->u32_type, in_vertices,
-                                                          SPV_NOT_BUILTIN, i, 0)
-                            : spv_emit_input_vec4(&c->emit, vector_type, i, interpolation);
+        inputs[i] = between || (pv_mask >> i & 1)
+                        ? spv_emit_interface_variable(&c->emit, 1, vector_type, c->u32_type, between ? in_vertices : 3,
+                                                      SPV_NOT_BUILTIN, i, 0)
+                        : spv_emit_input_vec4(&c->emit, vector_type, i, interpolation);
+        if (pv_mask >> i & 1) spv_emit_decorate(&c->emit, inputs[i], 5285, NULL, 0); /* PerVertexKHR */
         interfaces[count++] = inputs[i];
+    }
+    u32 pv_position = 0;
+    if (pv_mask) {
+        spv_emit_extension(&c->emit, "SPV_KHR_fragment_shader_barycentric");
+        spv_emit_capability(&c->emit, 5284); /* FragmentBarycentricKHR */
+        pv_position = spv_emit_interface_variable(&c->emit, 1, vec4, c->u32_type, 3, SPV_NOT_BUILTIN, pv_slot, 0);
+        spv_emit_decorate(&c->emit, pv_position, 5285, NULL, 0);
+        interfaces[count++] = pv_position;
     }
     u32 fragcoord = 0;
     if (layer_input_used) {
@@ -2499,8 +2527,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                                    spv_emit_load(&c->emit, vec4, fragcoord), layer, live);
     }
     /* in the function's first block, so that every read has them */
-    u32 frag_ndc[2] = {0, 0};
+    u32 frag_ndc[2] = {0, 0}, pv_weight[2] = {0, 0};
     if (needs_frag_ndc) shader_frag_ndc(c, fragcoord, vec4, push, push_pointer, frag_ndc);
+    if (pv_mask) shader_frag_weights(c, pv_position, frag_ndc, pv_weight);
     for (clip = 0; clip < clip_count; clip++) {
         u32 index = spv_emit_constant_u32(&c->emit, c->u32_type, clip);
         u32 ptr = stage == ST_TCS
@@ -2657,6 +2686,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         .position_fix = position_fix,
         .pos_in = pos_in,
         .frag_ndc = {frag_ndc[0], frag_ndc[1]},
+        .pv_mask = pv_mask,
+        .pv_weight = {pv_weight[0], pv_weight[1]},
         .sample_mask_output = sample_mask_output,
         .guest_sample_mask = (sph[19] & 1u) != 0,
         .sample_id = sample_id,
@@ -2879,6 +2910,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     if (stage == ST_VS) next.pos_out_mask = shader_direct_position_out(insn, n);
     if (stage == ST_FS && !ipa_indexed && !legacy_fs) next.smooth_in_mask = smooth_in & ~si->in_unfed_mask;
     next.varying = si->varying;
+    next.position_copy = si->position_copy;
     next.tex_query_mask = tex_query;
     memcpy(next.tex_query_hint, si->tex_query_hint, sizeof next.tex_query_hint);
     next.nimg = image_info.nimg;
@@ -2910,6 +2942,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         if (inputs_used[i]) next.in_mask |= 1u << i;
         if (outputs_used[i]) next.out_mask |= 1u << i;
     }
+    if (position_slot) next.out_mask |= 1u << (position_slot - 1);
     next.mixed_sample_invariant = mixed_sample_invariant && !next.in_mask && !needs_fragcoord && !needs_sample_id &&
                                   !texture_count && !ngbuf && !image_info.nimg && !(sph[19] & 3u) &&
                                   !si->advanced_blend && !si->advanced_blend_mask && !si->coverage_to_color;

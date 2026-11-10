@@ -135,6 +135,7 @@ void shader_vertex_position_fix(DirectCtx* c, u32 position, u32 push, u32 push_p
     spv_emit_store(&c->emit, position, value);
     spv_emit_branch(&c->emit, merge);
     spv_emit_label(&c->emit, merge);
+    if (c->position_copy) spv_emit_store(&c->emit, c->position_copy, spv_emit_load(&c->emit, vec4_type, position));
 }
 
 /* The fragment's own x and y in clip space over its w, from gl_FragCoord and the draw's viewport 0 (x, y, width and
@@ -158,6 +159,35 @@ void shader_frag_ndc(DirectCtx* c, u32 fragcoord, u32 vec4_type, u32 push, u32 p
         ndc[k] = spv_emit_fadd(&c->emit, c->f32_type, across, minus_one);
         spv_emit_no_contraction(&c->emit, ndc[k]);
     }
+}
+
+/* The fragment's weights of its triangle's second and third vertices (the first's is what is left of 1), from the
+   three vertices' clip space positions (position, the per-vertex input that holds them) and the fragment's own place
+   (ndc, shader_frag_ndc): with q = (ndc.x, ndc.y, 1) and v the vertices' (x, y, w), vertex i's is q . (vj x vk) over
+   the sum of the three, as Eden's BarycentricVaryingPass has them. They are the weights the console interpolates
+   with, of the primitive as the program gave it and not of what the host's clipping left of it */
+void shader_frag_weights(DirectCtx* c, u32 position, const u32 ndc[2], u32 weight[2]) {
+    SpvEmitter* e = &c->emit;
+    u32 f = c->f32_type, v[3][3], edge[3];
+    for (u32 k = 0; k < 3; k++)
+        for (u32 i = 0; i < 3; i++)
+            v[k][i] = spv_emit_load(
+                e, f,
+                spv_emit_interface_scalar_pointer(e, 1, f, position, spv_emit_constant_u32(e, c->u32_type, k),
+                                                  spv_emit_constant_u32(e, c->u32_type, i == 2 ? 3 : i)));
+    for (u32 k = 0; k < 3; k++) {
+        const u32 *a = v[(k + 1) % 3], *b = v[(k + 2) % 3];
+        u32 cross[3];
+        for (u32 i = 0; i < 3; i++) {
+            u32 j = (i + 1) % 3, l = (i + 2) % 3;
+            cross[i] = spv_emit_fadd(e, f, spv_emit_fmul(e, f, a[j], b[l]),
+                                     spv_emit_fnegate(e, f, spv_emit_fmul(e, f, a[l], b[j])));
+        }
+        edge[k] = spv_emit_fadd(e, f, spv_emit_fmul(e, f, cross[0], ndc[0]),
+                                spv_emit_fadd(e, f, spv_emit_fmul(e, f, cross[1], ndc[1]), cross[2]));
+    }
+    u32 sum = spv_emit_fadd(e, f, edge[0], spv_emit_fadd(e, f, edge[1], edge[2]));
+    for (u32 k = 0; k < 2; k++) weight[k] = spv_emit_fdiv(e, f, edge[k + 1], sum);
 }
 
 /* a captured word's bits (ShXfb.layout), 0 for one with no output (left as it is, as the extension does) */
@@ -643,6 +673,23 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 /* the position over its w (SH_VARYING_): the fragment's own x and y, and 1 */
                 value = component == 3 ? spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f) : t->frag_ndc[component];
                 interpolation = 0;
+            } else if (input < 32 && (t->pv_mask >> input & 1)) {
+                /* its three vertices' values: the first's, and the others' differences from it by their weights, so
+                   that a value the three share comes out as it is (Eden: one game truncates such an input) */
+                u32 at[3];
+                for (u32 k = 0; k < 3; k++)
+                    at[k] = spv_emit_load(
+                        &c->emit, c->f32_type,
+                        spv_emit_interface_scalar_pointer(&c->emit, 1, c->f32_type, inputs[input],
+                                                          spv_emit_constant_u32(&c->emit, c->u32_type, k),
+                                                          spv_emit_constant_u32(&c->emit, c->u32_type, component)));
+                value = at[0];
+                for (u32 k = 1; k < 3; k++) {
+                    u32 from =
+                        spv_emit_fadd(&c->emit, c->f32_type, at[k], spv_emit_fnegate(&c->emit, c->f32_type, at[0]));
+                    value = spv_emit_fadd(&c->emit, c->f32_type, value,
+                                          spv_emit_fmul(&c->emit, c->f32_type, t->pv_weight[k - 1], from));
+                }
             } else if (inputs[input]) {
                 value = spv_emit_load(&c->emit, vec4, inputs[input]);
                 value = spv_emit_vec4_extract(&c->emit, c->f32_type, value, component);

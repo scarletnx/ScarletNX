@@ -183,6 +183,9 @@ typedef struct {
     u32 mesh_groups_max; /* the most workgroups a mesh draw launches: maxTaskWorkGroupCount[0], with maxMesh...'s */
     /* maxMeshOutputMemorySize and the granules that sm86_mesh_output_bytes counts vertices and primitives in */
     u32 mesh_output_bytes_max, mesh_vertex_granule, mesh_primitive_granule;
+    /* VK_KHR_fragment_shader_barycentric's fragmentShaderBarycentric: a fragment program reads its inputs' values at
+       the triangle's three vertices (render.c's draw_varying, the per-vertex pass) */
+    int has_barycentric;
     /* VK_EXT_primitive_topology_list_restart: the guest's restart index restarts lists as it does strips (render.c),
        and patch lists with its patch list feature */
     int has_list_restart, has_patch_list_restart;
