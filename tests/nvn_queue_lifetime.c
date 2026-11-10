@@ -451,6 +451,21 @@ static void retained_texture_snapshot(void) {
     nvn_replay_queue_free(a);
     nvn_replay_queue_free(b);
 }
+/* Every live queue's submitted work is done when nvn_replay_finish_all returns, with a freed queue's slot between
+   them, and with no queue it queues nothing. */
+static void finish_all(void) {
+    nvn_replay_finish_all();
+    assert(!fixture.count);
+    u32 a = nvn_replay_queue(), b = nvn_replay_queue(), c = nvn_replay_queue(), draws = fixture.draws;
+    nvn_replay_queue_free(b);
+    submit(a);
+    submit(c);
+    assert(fixture.draws == draws && fixture.count == 2);
+    nvn_replay_finish_all();
+    assert(fixture.draws == draws + 2 && !fixture.count);
+    nvn_replay_queue_free(a);
+    nvn_replay_queue_free(c);
+}
 static void bench_replay(void) {
     static const u32 record_counts[] = {1, 32, 256};
     const u32 operations = 50000;
@@ -521,6 +536,7 @@ int main(int argc, char** argv) {
     cross_queue_fences();
     present_order();
     retained_texture_snapshot();
+    finish_all();
     if (argc == 2 && !strcmp(argv[1], "--bench-replay")) bench_replay();
     puts("nvn_queue_lifetime: ok");
     return 0;

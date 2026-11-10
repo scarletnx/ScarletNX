@@ -232,6 +232,21 @@ u32 nvn_replay_syncpt(u32 queue) {
 }
 u32 nvn_replay_shown_syncpt(void) { return 0; }
 void nvn_replay_finish(u32 queue) { (void)queue; }
+/* the wait for every queue's submitted work: how often it ran, and the descriptor at g_finish_at as it was then */
+static u32 g_finish_all, g_finish_saw[8];
+static u64 g_finish_at;
+void nvn_replay_finish_all(void) {
+    g_finish_all++;
+    if (g_finish_at) memcpy(g_finish_saw, GP(g_finish_at), sizeof g_finish_saw);
+}
+/* the writes recorded for the renderer: how many, and the last one's range */
+static u32 g_written;
+static u64 g_written_at, g_written_size;
+void gpu_mem_written_cpu(u64 cpu, u64 size) {
+    g_written++;
+    g_written_at = cpu;
+    g_written_size = size;
+}
 void nvn_replay_wait(u32 queue, const NvnSync* sync) {
     (void)queue;
     (void)sync;
@@ -986,11 +1001,32 @@ static void test_sampler(void) {
         check((w1 & 0xff) == (2u | 2u << 4 | 1u << 6) && !(w1 >> 10 & 3), "a reserved sampler's filters");
         check((w2 & 0xfff) == 0 && (w2 >> 12 & 0xfff) == 15u * 256, "a reserved sampler's LOD range");
     }
+    u64 slot = POOL_MEM + 0x40000 + 32 * 3;
+    u32 waits = g_finish_all, written = g_written, tsc_new[8];
     nvn_SamplerPoolRegisterSamplerBuilder(NULL, SAMPLER_P, 3, SAMPLER_B);
     nvn_SamplerPoolRegisterSampler(NULL, SAMPLER_P, 4, SAMPLER);
-    memcpy(tsc_b, GP(POOL_MEM + 0x40000 + 32 * 3), 32);
+    memcpy(tsc_b, GP(slot), 32);
     memcpy(tsc_s, GP(POOL_MEM + 0x40000 + 32 * 4), 32);
     check(!memcmp(tsc_b, tsc_s, 32), "RegisterSamplerBuilder writes the sampler's descriptor");
+    check(g_finish_all == waits + 2 && g_written == written + 2 && g_written_at == slot + 32 && g_written_size == 32,
+          "a descriptor over an empty one waits for the submitted work and is recorded");
+    /* the descriptor a slot already holds: nothing changes for the work in flight, so no wait and no write */
+    nvn_SamplerPoolRegisterSamplerBuilder(NULL, SAMPLER_P, 3, SAMPLER_B);
+    nvn_SamplerPoolRegisterSampler(NULL, SAMPLER_P, 3, SAMPLER);
+    check(g_finish_all == waits + 2 && g_written == written + 2, "the same descriptor again waits for nothing");
+    /* another over it: the submitted work is done while the slot still holds the one it read */
+    nvn_SamplerBuilderSetLodClamp(NULL, SAMPLER_B, 2.0f, 2.0f);
+    g_finish_at = slot;
+    nvn_SamplerPoolRegisterSamplerBuilder(NULL, SAMPLER_P, 3, SAMPLER_B);
+    memcpy(tsc_new, GP(slot), 32);
+    check(g_finish_all == waits + 3 && !memcmp(g_finish_saw, tsc_b, 32) && memcmp(tsc_new, tsc_b, 32) != 0,
+          "a builder's descriptor over another waits before it is written");
+    check(g_written == written + 3 && g_written_at == slot && g_written_size == 32, "and its 32 bytes are recorded");
+    nvn_SamplerPoolRegisterSampler(NULL, SAMPLER_P, 3, SAMPLER);
+    check(g_finish_all == waits + 4 && !memcmp(g_finish_saw, tsc_new, 32) && !memcmp(GP(slot), tsc_b, 32),
+          "a sampler's descriptor over another waits before it is written");
+    check(g_written == written + 4 && g_written_at == slot && g_written_size == 32, "and its 32 bytes are recorded");
+    g_finish_at = 0;
 }
 
 /* ---- events, programs, syncs */

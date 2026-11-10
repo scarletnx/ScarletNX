@@ -33,6 +33,8 @@ u64 nvn_replay_walked(void);
 void nvn_replay_fence(u32 queue, u64 sync, u64 ready, u32 shown);
 /* returns once the queue's work submitted so far is replayed and done (a fence of its own, waited for) */
 void nvn_replay_finish(u32 queue);
+/* the same for every live queue: their fences queued together, then waited for */
+void nvn_replay_finish_all(void);
 /* A window texture to show: its storage's GPU address (0: black), size, the vi pixel format and layout of its bytes
    (block height log2 for a block-linear one, row pitch for a pitch-linear one), the crop (left, top, right, bottom;
    all 0 for the whole texture), its flips as vi takes them (FlipV 2), and for the renderer's display times and holds
