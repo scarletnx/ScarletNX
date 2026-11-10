@@ -1523,22 +1523,19 @@ static void view_box(App* app, const char* temporary) {
     hides(app, "Dumps", rgb(app->theme.soft)); /* a group's heading */
     hides(app, "dumps", rgb(app->theme.soft));
     shows(app, "recompiled", rgb(app->theme.soft));
-    /* read back as the menu opens; an app.ini without them, an older version's, has the defaults: on, iOS's off */
+    /* read back as the menu opens; an app.ini without them, an older version's, has the defaults: on */
     memset(app->options, 0, sizeof app->options);
     app->message[0] = 0;
     app_load(app);
     assert(!recent_on(app) && !dumps_on(app) && by_last_opened(app) && !app->message[0]);
     snprintf(expected, sizeof expected, "[app]\ntheme = %s\n", app->theme.id);
     assert(!snx_write_file(app->app_file, expected, strlen(expected)));
-    games_defaults(app, false);
+    games_defaults(app);
     app_load(app);
     assert(recent_on(app) && dumps_on(app) && !by_last_opened(app) && !app->message[0]);
     assert(app->options[GUI_OPTION_ICONS] == 1); /* Medium */
-    games_defaults(app, true);
-    app_load(app);
-    assert(!recent_on(app) && !dumps_on(app) && !by_last_opened(app) && !app->message[0]);
     /* a word it does not know: named with the word it keeps, the file's last it knows or the default's */
-    games_defaults(app, false);
+    games_defaults(app);
     {
         const char* broken =
             "[app]\nrecent_games = maybe\ngames_dumps = off\ngames_dumps = none\ngames_sort = newest\n";
@@ -1551,19 +1548,19 @@ static void view_box(App* app, const char* temporary) {
         assert(recent_on(app) && !dumps_on(app) && !by_last_opened(app) && !strcmp(app->message, expected));
         broken = "[app]\nrecent_games = maybe\nrecent_games = off\n"; /* the file's own after it, in use after it */
         assert(!snx_write_file(app->app_file, broken, strlen(broken)));
-        games_defaults(app, false);
+        games_defaults(app);
         app->message[0] = 0;
         app_load(app);
         snprintf(expected, sizeof expected, "Not used from %s: recent_games = maybe (it keeps off)", app->app_file);
         assert(!recent_on(app) && dumps_on(app) && !strcmp(app->message, expected));
         broken = "[app]\ngames_icons = large\ngames_icons = huge\n"; /* Icon size's three words */
         assert(!snx_write_file(app->app_file, broken, strlen(broken)));
-        games_defaults(app, false);
+        games_defaults(app);
         app->message[0] = 0;
         app_load(app);
         snprintf(expected, sizeof expected, "Not used from %s: games_icons = huge (it keeps large)", app->app_file);
         assert(app->options[GUI_OPTION_ICONS] == 2 && !strcmp(app->message, expected));
-        games_defaults(app, false);
+        games_defaults(app);
         app->message[0] = 0;
     }
     /* the pointer: over a row its focus, a click changes it; a click off the box closes it */
@@ -1588,7 +1585,7 @@ static void view_box(App* app, const char* temporary) {
         app->folders_library[0] = GUI_LIBRARY_DUMPS;
         app->folders_deep[0] = false;
         app->folder_count = 1;
-        games_defaults(app, false);
+        games_defaults(app);
         list_games(app);
         assert(strstr(app->message, "gone dumps"));
         app->options[GUI_OPTION_DUMPS] = 1;
@@ -1605,7 +1602,7 @@ static void view_box(App* app, const char* temporary) {
             if (!unreadable) snx_free_strings(names, count);
             list_games(app);
             assert(!app->message[0]);
-            games_defaults(app, false);
+            games_defaults(app);
             list_games(app);
             assert(!unreadable || strstr(app->message, dumps));
         }
@@ -1613,7 +1610,7 @@ static void view_box(App* app, const char* temporary) {
 #endif
         app->message[0] = 0;
     }
-    games_defaults(app, false);
+    games_defaults(app);
     { /* dumps/'s subfolders: their dumps listed with dumps_subfolders on, its default, not with it off; its Folders
          row says which */
         char *sub = snx_path_join(dumps, "more"), *deep = snx_path_join(sub, "deep dump.nsp");
@@ -2120,7 +2117,7 @@ static void grid_view(App* app, const char* temporary) {
         assert(grid_focused(app) == tile && g.grid_lists[UI_GAMES_GRID_TILES].first > first);
     }
     app->menu.text_size = was_size;
-    games_defaults(app, false);
+    games_defaults(app);
     app->recent = was_recent;
     app->recent_file = was_recent_file;
     app->folder_count = was_folders;
