@@ -299,11 +299,10 @@ static int dump_read(void* source, const char* name, unsigned char** data, size_
     return 1;
 }
 /* a dump's program of index, its ExeFS read in place with the mods' files names[i] from paths[i] over it (count of
-   them), and its control.nacp out of its Control NCA: nothing is extracted. With nros, the NROs of its RomFS are
-   added to it (nros.h). 0, else nonzero, said why */
+   them), and its control.nacp out of its Control NCA: nothing is extracted. 0, else nonzero, said why */
 static int load_dump(const char* dump, const char* update, int index, const SnxPaths* paths, int quiet,
-                     char* const* names, char* const* files, size_t count, SnxProgram* program, SnxNroSet* nros,
-                     char* error, size_t error_size) {
+                     char* const* names, char* const* files, size_t count, SnxProgram* program, char* error,
+                     size_t error_size) {
     /* paths->keys and paths->title_keys, when given, are the files the keys are read from */
     SnxDump opened;
     SnxHacFs* fs = NULL;
@@ -326,11 +325,46 @@ static int load_dump(const char* dump, const char* update, int index, const SnxP
         snx_exefs_mods(&mods, &reader, names, files, count);
         rc = snx_load_program_from(&mods.reader, update ? update : dump, nacp, nacp_size, program, error, error_size);
         if (rc) snx_error("%s", error);
-        if (!rc && nros && program->npdm.is64) rc = snx_nros_dump(nros, fs, quiet);
-        if (rc) snx_free_program(program);
     }
     snx_hac_fs_free(fs);
     snx_dump_close(&opened);
+    return rc;
+}
+/* The NROs of a dump's program of index (nros.h), from its RomFS read in place. An update's RomFS is its own over its
+   game's, so its dump is read with the game's (base, the dump the game's .ini records): alone it has no RomFS, and
+   the update's NROs, the game's unless it brings its own, would not be found. 0, else nonzero, said why */
+static int dump_nros(const char* base, const char* update, int index, const SnxPaths* paths, int quiet,
+                     SnxNroSet* nros) {
+    SnxDump opened;
+    SnxHacFs* fs = NULL;
+    int rc = snx_dump_open(&opened, base, update, index, paths->keys, paths->title_keys, paths->repo, 0);
+    if (!rc && opened.program.found) rc = snx_nca_keys(&opened, &opened.program, "The game's Program NCA");
+    if (!rc && opened.patch.found) rc = snx_nca_keys(&opened, &opened.patch, "The update's Program NCA");
+    if (!rc && !(fs = snx_dump_fs(&opened))) rc = 1;
+    if (!rc) rc = snx_nros_dump(nros, fs, quiet);
+    snx_hac_fs_free(fs);
+    snx_dump_close(&opened);
+    return rc;
+}
+/* An update's NROs: its dump read with its game's, the dump the game's .ini in folder records as its source. Without
+   that dump (the game was made from an extracted folder, or its dump is gone) the update has no RomFS to look in:
+   said, and its NROs run in the JIT. 0, else nonzero, said why */
+static int update_nros(const char* folder, const char* update, SnxU64 owner, int index, const SnxPaths* paths,
+                       int quiet, SnxNroSet* nros) {
+    char of[17], *base;
+    int rc = 0, recorded = 0;
+    snx_title_text(owner, of);
+    base = snx_game_source(folder, of, &recorded);
+    if (base && snx_is_file(base) && snx_is_dump(base))
+        rc = dump_nros(base, update, index, paths, quiet, nros);
+    else if (!quiet && recorded && base)
+        printf("NROs: the update's RomFS is its game's with its own files over it, and the game's dump, %s, is not "
+               "there: no code is made for the NROs it maps, the JIT runs them\n",
+               base);
+    else if (!quiet)
+        printf("NROs: the update's RomFS is its game's with its own files over it, and the game's settings name no "
+               "dump of it: no code is made for the NROs it maps, the JIT runs them\n");
+    free(base);
     return rc;
 }
 /* a game made from its dump, or an extracted game's folder (kind "dump" or "folder"), read in place: what an
@@ -558,12 +592,10 @@ static int make_program(const MakeArgs* a, int index) {
     /* the NROs of its RomFS, where code is made ahead of time for this host: an iOS pack and an NCE recompile have
        none */
     want_nros = !no_build && !ios && !gen.interp_only;
-    if (dump ? load_dump(input, addon ? input : NULL, index, &key_paths, compile.quiet, NULL, NULL, 0, &program,
-                         want_nros ? &nros : NULL, error, sizeof(error))
-             : snx_load_program(input, &program, error, sizeof(error))) {
-        snx_nros_free(&nros);
+    if (dump ? load_dump(input, addon ? input : NULL, index, &key_paths, compile.quiet, NULL, NULL, 0, &program, error,
+                         sizeof(error))
+             : snx_load_program(input, &program, error, sizeof(error)))
         return dump ? 1 : snx_error("%s", error);
-    }
     if (addon && program.npdm.title_id != owner + (SnxU64)index) {
         char of[17], other[17];
         snx_title_text(owner, of);
@@ -571,7 +603,6 @@ static int make_program(const MakeArgs* a, int index) {
         snx_error("%s is an update of the game %s, and its program is %s", input, of,
                   other[0] ? other : "none with a title ID");
         snx_free_program(&program);
-        snx_nros_free(&nros);
         return 1;
     }
     title = snx_game_shown(name, &program, reason, sizeof reason);
@@ -636,9 +667,8 @@ static int make_program(const MakeArgs* a, int index) {
     }
     if (mod_count) {
         snx_free_program(&program);
-        snx_nros_free(&nros);
         if (dump ? load_dump(input, addon ? input : NULL, index, &key_paths, compile.quiet, mod_names, mod_files,
-                             mod_count, &program, want_nros ? &nros : NULL, error, sizeof error)
+                             mod_count, &program, error, sizeof error)
                  : snx_load_program_mods(input, mod_names, mod_files, mod_count, &program, error, sizeof error)) {
             if (!dump) snx_error("%s", error);
             goto done;
@@ -758,11 +788,16 @@ static int make_program(const MakeArgs* a, int index) {
         if (i) goto done;
     }
     /* the NROs the program maps while it runs, each given its address behind the modules (nros.h): an extracted
-       game's from its RomFS folder, a dump's found as it was loaded */
-    if (gen.interp_only || !program.npdm.is64)
-        snx_nros_free(&nros);
-    else if (want_nros && !dump && program.romfs_path && snx_nros_folder(&nros, program.romfs_path, compile.quiet))
-        goto done;
+       game's from its RomFS folder, a dump's from its RomFS read in place, an update's over its game's */
+    if (want_nros && !gen.interp_only && program.npdm.is64) {
+        if (!dump)
+            i = program.romfs_path ? snx_nros_folder(&nros, program.romfs_path, compile.quiet) : 0;
+        else if (!addon)
+            i = dump_nros(input, NULL, index, &key_paths, compile.quiet, &nros);
+        else
+            i = update_nros(folder, input, owner, index, &key_paths, compile.quiet, &nros);
+        if (i) goto done;
+    }
     if (snx_nros_place(&nros, &program, compile.quiet)) goto done;
     gen.nros = nros.places;
     gen.nro_count = nros.count;
