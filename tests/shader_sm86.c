@@ -2585,6 +2585,78 @@ static void test_global_indirect(const char* dir) {
     }
 }
 
+/* ATOMG.E.ADD (no uniform, 0x3a8) of 32-bit data into dst, at [addr + imm], as one game's culling programs encode it */
+static Word atomg_add(u32 dst, u32 addr, u32 imm, u32 data) {
+    Word x = fix(0x3a8);
+    set(&x, 16, 8, dst);
+    set(&x, 24, 8, addr);
+    set(&x, 32, 8, data);
+    set(&x, 40, 24, imm);
+    set(&x, 72, 16, 0x1ee1);
+    return x;
+}
+/* A pointer that a compute program loads from a constant buffer at an offset it computes, as one game's culling
+   programs do: LDC.64 R2, c[4][R0] with R0 = 0x20, where c[4] holds 0x5_0000_1100. The address may be in any window of
+   the table (SH_GBUF_TABLE): the program has the 16 buffer slots, windows 0 to 15 of bank 4, each base and length in
+   SNX_VKB_MBASE. Window 0, from 0x5_0000_1000, 0x400 bytes, holds it; window 1, 0x7_0000_9000, doesn't. The LDG of
+   [R2 + 4] reads word 0x41 (0xabc), the STG puts it at word 0x42, the ATOMG adds 3 to word 0x43 (10) and the STG
+   after it puts the 10 it returns at word 0x44. A vertex program with the same LDC is refused, as before */
+static void test_global_table(const char* dir) {
+    u8 code[16 * 10] = {0};
+    u32 n = 0;
+    put(code, n++, mov_imm(0, 0x20));
+    put(code, n++, ldc(2, 0, 4, 0, 5));
+    put(code, n++, ldg_nou(4, 2, 4, 4));
+    put(code, n++, stg_nou(2, 8, 4));
+    put(code, n++, mov_imm(5, 3));
+    put(code, n++, atomg_add(6, 2, 0xc, 5));
+    put(code, n++, stg_nou(2, 0x10, 6));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "global table: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(si.ngbuf == 16);
+    for (int k = 0; k < si.ngbuf; k++)
+        CHECK(SH_GBUF_TABLE(si.gbuf_cbuf_off[k]) && SH_GBUF_BANK(si.gbuf_cbuf_off[k]) == 4 &&
+              SH_GBUF_TABLE_WINDOW(si.gbuf_cbuf_off[k]) == (u32)k && !SH_GBUF_INDIRECT(si.gbuf_cbuf_off[k]));
+    static u32 bank4[1024], windows[64], a[256], b[64], log[16 * SH_WLOG_PART];
+    bank4[0x20 / 4] = 0x1100, bank4[0x24 / 4] = 5;
+    windows[0] = 0x1000, windows[1] = 5, windows[2] = 0x400;
+    windows[4] = 0x9000, windows[5] = 7, windows[6] = 0x100;
+    a[0x41] = 0xabc, a[0x43] = 10;
+    SpvEvalEnv env = {0};
+    env.ubo[SNX_VKB_CB + 4] = bank4;
+    env.ubo_words[SNX_VKB_CB + 4] = 1024;
+    env.ubo[SNX_VKB_MBASE] = windows;
+    env.ubo_words[SNX_VKB_MBASE] = 64;
+    env.ubo[SNX_VKB_SSBO] = a;
+    env.ubo_words[SNX_VKB_SSBO] = 256;
+    env.ubo[SNX_VKB_SSBO + 1] = b;
+    env.ubo_words[SNX_VKB_SSBO + 1] = 64;
+    env.ubo[SNX_VKB_WPAGES] = log;
+    env.ubo_words[SNX_VKB_WPAGES] = 16 * SH_WLOG_PART;
+    const char* why = spv_eval(spv, count, &env);
+    int ok = !why && a[0x42] == 0xabc && a[0x43] == 13 && a[0x44] == 10;
+    for (u32 k = 0; k < 64; k++) ok &= !b[k];
+    CHECK(ok);
+    if (!ok) fprintf(stderr, "global table: %s, words %x %x %x\n", why ? why : "ran", a[0x42], a[0x43], a[0x44]);
+    CHECK(keep_module(dir, "global_table", spv, count));
+    free(spv);
+    u32 vsph[32] = {0};
+    vsph[0] = sph0(1, 1);
+    si = (ShaderInfo){0};
+    spv = sm86_to_spirv(code, n * 16, ST_VS, vsph, &si, &count);
+    CHECK(!spv && strstr(si.first_unsupported, "global address whose base no constant buffer holds (from LDC"));
+    free(spv);
+}
+
 /* TEX, TLD, TLD4 and TXQ with the handle in a uniform register (0xf60, 0xf66, 0xf63, 0xf6f), as CuAssembler's sm_86
    records encode "TEX.SCR.LL.DC R34, R8, R2, R6, UR4, 2D", "TLD.SCR.LZ R4, R14, R6, UR4, 2D", "TLD4.SCR.A
    R16, R2, R48, UR4, 2D" and "TXQ R35, R20, UR12, TEX_HEADER_DIMENSION, 0x2": the register at 40-45. A handle that
@@ -3690,6 +3762,7 @@ int main(int argc, char** argv) {
     test_flow_operand(dir);
     test_global_pointer(dir);
     test_global_indirect(dir);
+    test_global_table(dir);
     test_f2ip(dir);
     test_uldc_small(dir);
     test_shfl_creg(dir);

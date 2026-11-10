@@ -556,6 +556,58 @@ static void cs_land(void) {
     cs_any_update();
 }
 
+/* Window w of the windows a dispatch binds for a pointer table in constant buffer bank (SH_GBUF_TABLE): the bank's
+   64-bit words that map are its pointers, and each run of memory mapped from the lowest pointer not in an earlier run
+   (at most 16 MiB, as vk_gbuf_desc binds a bare address) holds those below its end. With more runs than windows, the
+   two runs closest together are bound as one, the memory between them too, until they fit: copy_runs reads what
+   isn't mapped as zero. *base 0 for a window the table has no run for, with the 16 bytes an unbound buffer gets. One
+   game's culling programs keep 20 pointers in cbuf 4, in 11 runs over two stretches of about 2 MiB, and one of them
+   has 9 buffer slots left for them */
+static int u64_order(const void* a, const void* b) {
+    u64 x = *(const u64*)a, y = *(const u64*)b;
+    return x < y ? -1 : x > y;
+}
+static void table_window(u32 bank, u32 w, u32 windows, u64* base, u32* len) {
+    u64 v[512], from[64], to[64];
+    u32 n = 0, runs = 0;
+    *base = 0;
+    *len = 16;
+    if (bank >= QMD_NUM_CONST_BUFFERS) return;
+    for (u32 o = 0; o + 8 <= g_cbn[bank] && n < 512; o += 8) {
+        u64 x = snx_ld_le32(g_cb[bank] + o) | (u64)snx_ld_le32(g_cb[bank] + o + 4) << 32;
+        if (x && !(x & 3) && !(x >> 40)) v[n++] = x; /* the GPU's addresses have 40 bits */
+    }
+    qsort(v, n, sizeof *v, u64_order);
+    for (u32 i = 0; i < n && runs < 64;) {
+        u64 cpu = 0, run = gmmu_run(v[i], 16u << 20, &cpu) & ~3ull;
+        if (!run) { /* no memory there: a word that is no pointer */
+            i++;
+            continue;
+        }
+        from[runs] = v[i];
+        to[runs++] = v[i] + run;
+        while (i < n && v[i] < to[runs - 1]) i++;
+    }
+    while (runs > windows) { /* the two runs closest together, as one window of at most 16 MiB */
+        u32 best = runs;
+        for (u32 k = 0; k + 1 < runs; k++)
+            if (to[k + 1] - from[k] <= (16u << 20) && (best == runs || from[k + 1] - to[k] < from[best + 1] - to[best]))
+                best = k;
+        if (best == runs) break;
+        to[best] = to[best + 1] > to[best] ? to[best + 1] : to[best];
+        for (u32 k = best + 1; k + 1 < runs; k++) from[k] = from[k + 1], to[k] = to[k + 1];
+        runs--;
+    }
+    if (runs > windows && !w)
+        LOG_LIMIT(1,
+                  "vulkan: a compute program's pointer table in constant buffer %u has %u runs of mapped memory "
+                  "that its %u windows can't hold: the pointers in the others read 0\n",
+                  bank, runs, windows);
+    if (w < runs) {
+        *base = from[w];
+        *len = (u32)(to[w] - from[w]);
+    }
+}
 /* A descriptor can fail after its inputs were copied into the arena. No command references those inputs yet. */
 static void cs_abandon_binding(u8* originals[8]) {
     vk_buf_writable_abort(); /* a deferred dispatch's outputs, not recorded */
@@ -1328,7 +1380,19 @@ void vk_dispatch(const DispatchState* d) {
     u32 ss[16];
     int ng = p->si.ngbuf > 16 ? 16 : p->si.ngbuf;
     u64 need = 0;
+    int tables = 0;
     for (int i = 0; i < ng; i++) {
+        if (SH_GBUF_TABLE(p->si.gbuf_cbuf_off[i])) { /* a pointer table's window, whose base the program reads */
+            u32 windows = 0;
+            for (int j = 0; j < ng; j++)
+                windows += SH_GBUF_TABLE(p->si.gbuf_cbuf_off[j]) &&
+                           SH_GBUF_BANK(p->si.gbuf_cbuf_off[j]) == SH_GBUF_BANK(p->si.gbuf_cbuf_off[i]);
+            table_window(SH_GBUF_BANK(p->si.gbuf_cbuf_off[i]), SH_GBUF_TABLE_WINDOW(p->si.gbuf_cbuf_off[i]), windows,
+                         &sa[i], &ss[i]);
+            need += ss[i] + vk_stage_align();
+            tables = 1;
+            continue;
+        }
         u32 v[3] = {0, 0, 0}, bank = SH_GBUF_BANK(p->si.gbuf_cbuf_off[i]), off = SH_GBUF_OFFSET(p->si.gbuf_cbuf_off[i]);
         /* the address's words: an indirect buffer's are its parent's, which vk_gbuf_desc follows to the pointer */
         for (u32 w = 0; w < (bank ? 2u : 3u); w++) cs_cb_read(bank, off + 4 * w, &v[w]);
@@ -1359,6 +1423,7 @@ void vk_dispatch(const DispatchState* d) {
         need += bimg[i].bytes + vk_stage_align();
     }
     need += sizeof(i32) * 320 + vk_stage_align(); /* optional format data */
+    if (tables) need += 16 * 16 + vk_stage_align(); /* the windows' bases (SNX_VKB_MBASE) */
     /* dispatches that read textures run on the graphics queue, after what was recorded before them. Inputs that
        pending compute results overlap land those first, before anything is put in the arena. With unified memory every
        dispatch does: its storage buffers are read and written in place (uma.c), in order with the draws on one queue,
@@ -1646,6 +1711,41 @@ rebind:
                                        .dstBinding = SNX_VKB_WPAGES,
                                        .descriptorCount = 1,
                                        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                       .pBufferInfo = &bi[nw]};
+        nw++;
+    }
+    if (tables) {
+        /* each pointer table window's base and length, at its buffer's slot: 16 vec4 of words (SNX_VKB_MBASE) */
+        u32 mb[64] = {0};
+        for (int i = 0; i < ng; i++)
+            if (SH_GBUF_TABLE(p->si.gbuf_cbuf_off[i])) {
+                mb[4 * i] = (u32)sa[i];
+                mb[4 * i + 1] = (u32)(sa[i] >> 32);
+                mb[4 * i + 2] = ss[i];
+            }
+        VkBuffer mbase = g_ar;
+        u64 o = 0;
+        u8* dst;
+        if (deferred)
+            dst = vk_stage(sizeof mb, vk_stage_align(), &mbase, &o);
+        else {
+            o = arena_alloc(sizeof mb);
+            dst = g_ar_ptr + o;
+        }
+        if (!dst) {
+            res_unref_all(made, ng);
+            g_cs_skips[CS_SKIP_RESOURCES]++;
+            cs_abandon_binding(originals);
+            return;
+        }
+        memcpy(dst, mb, sizeof mb);
+        snx_le32_array(dst, sizeof mb / 4); /* the shader reads the words little-endian */
+        bi[nw] = (VkDescriptorBufferInfo){mbase, o, sizeof mb};
+        w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = SNX_VKB_MBASE,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                        .pBufferInfo = &bi[nw]};
         nw++;
     }

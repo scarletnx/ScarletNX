@@ -393,6 +393,16 @@ static const char* run(Ev* e, uint32_t entry_at) {
                 r->v.c[0] = ptr;
                 break;
             }
+            case 68: { /* OpArrayLength: the elements of the runtime array member in what the block holds */
+                uint64_t ptr = e->ids[in[3]].v.c[0];
+                uint32_t b = (uint32_t)(ptr >> 32), off, st = e->ids[e->ids[in[3]].type].a;
+                uint32_t arr = struct_member(e, st, in[4], &off), stride = type_words(e, e->ids[arr].a);
+                uint32_t have = b < e->nblocks ? e->blocks[b].n : 0, at = (uint32_t)ptr + off;
+                r->kind = K_VALUE;
+                r->type = t;
+                r->v = (Val){{have > at && stride ? (have - at) / stride : 0}};
+                break;
+            }
             case 86:  /* OpSampledImage */
             case 100: /* OpImage */
                 r->kind = K_VALUE;
