@@ -112,6 +112,14 @@ uint32_t glslc_vector_type(uint32_t base, uint32_t rows) {
 
 uint32_t glslc_matrix_type(uint32_t cols, uint32_t rows) { return GT_MAT2 + (cols - 2u) * 3u + rows - 2u; }
 
+/* type t's name for an error's message, in the next of the context's few buffers. Only an argument of glslc_fail or
+   glslc_warn calls it: C evaluates those only when the message is made, so a shader that compiles names no type */
+static const char* type_text(Glslc* g, uint32_t t) {
+    char* out = g->type_names[g->type_name_next++ % GLSLC_TYPE_NAMES];
+    glslc_type_name(g, t, out, sizeof g->type_names[0]);
+    return out;
+}
+
 uint32_t glslc_type_components(const Glslc* g, uint32_t t) {
     const GlslcType* y = ty(g, t);
     if (y->kind == GLSLC_T_SCALAR) return 1;
@@ -271,12 +279,10 @@ static uint8_t resolve_precision(Glslc* g, uint32_t t, uint8_t given, uint32_t t
     if (given) return given;
     uint8_t p = default_precision(g, key);
     if (!p) {
-        char name[64];
-        glslc_type_name(g, key, name, sizeof name);
         glslc_fail(g, site(g, tok),
                    "%s has no precision here: give it lowp, mediump or highp, or set a default with 'precision "
                    "mediump %s;'",
-                   name, name);
+                   type_text(g, key), type_text(g, key));
     }
     return p;
 }
@@ -825,8 +831,6 @@ static uint32_t parse_struct(Glslc* g, int nested) {
         do {
             uint32_t mn = expect(g, TK_IDENT, "a member name");
             uint32_t full = parse_array_suffix(g, mt);
-            char name[64];
-            glslc_type_name(g, full, name, sizeof name);
             if (element_of(g, full) == GT_VOID) glslc_fail(g, site(g, mn), "member %.*s cannot be void", TOKV(g, mn));
             if (ty(g, full)->kind == GLSLC_T_ARRAY && ty(g, full)->len == 0)
                 glslc_fail(g, site(g, mn), "member %.*s is an array with no size", TOKV(g, mn));
@@ -836,13 +840,13 @@ static uint32_t parse_struct(Glslc* g, int nested) {
                     glslc_fail(g, site(g, mn),
                                "member %.*s is %s, which holds a sampler: glslc takes samplers one "
                                "struct deep",
-                               TOKV(g, mn), name);
+                               TOKV(g, mn), type_text(g, full));
                 if (k != GLSLC_T_SAMPLER)
                     glslc_fail(g, site(g, mn), "member %.*s is %s: a struct holds samplers, and no image", TOKV(g, mn),
-                               name);
+                               type_text(g, full));
                 if (ty(g, full)->kind == GLSLC_T_ARRAY && ty(g, ty(g, full)->elem)->kind == GLSLC_T_ARRAY)
                     glslc_fail(g, site(g, mn), "member %.*s is %s: a Vulkan descriptor's array has one dimension",
-                               TOKV(g, mn), name);
+                               TOKV(g, mn), type_text(g, full));
                 g->types[t].tflags |= GLSLC_TF_OPAQUE;
             }
             for (uint32_t m = g->types[t].first; m < g->nmembers; m++) {
@@ -972,10 +976,8 @@ static uint32_t make_binary(Glslc* g, uint8_t op, uint32_t tok, uint32_t l, uint
         glslc_fail(g, site(g, tok), "operator %s needs GLSL ES 3.00 (1.00 reserves it)", op_text(op));
     uint32_t t = binary_type(g, op, lt, rt);
     if (!t) {
-        char a[64], b[64];
-        glslc_type_name(g, lt, a, sizeof a);
-        glslc_type_name(g, rt, b, sizeof b);
-        glslc_fail(g, site(g, tok), "no operator %s takes %s and %s (GLSL ES converts neither)", op_text(op), a, b);
+        glslc_fail(g, site(g, tok), "no operator %s takes %s and %s (GLSL ES converts neither)", op_text(op),
+                   type_text(g, lt), type_text(g, rt));
     }
     uint32_t bits;
     if (nd(g, l)->kind == GLSLC_N_CONST && nd(g, r)->kind == GLSLC_N_CONST && is_scalar(g, t) &&
@@ -991,25 +993,24 @@ static uint32_t make_binary(Glslc* g, uint8_t op, uint32_t tok, uint32_t l, uint
 
 static uint32_t make_unary(Glslc* g, uint8_t op, uint32_t tok, uint32_t a) {
     uint32_t t = nd(g, a)->type;
-    char name[64];
-    glslc_type_name(g, t, name, sizeof name);
     switch (op) {
         case GLSLC_OP_NEG:
         case GLSLC_OP_PLUS:
             if (!is_numeric(g, t))
-                glslc_fail(g, site(g, tok), "unary %s takes a number, not %s", op == GLSLC_OP_NEG ? "-" : "+", name);
+                glslc_fail(g, site(g, tok), "unary %s takes a number, not %s", op == GLSLC_OP_NEG ? "-" : "+",
+                           type_text(g, t));
             break;
         case GLSLC_OP_NOT:
-            if (t != GT_BOOL) glslc_fail(g, site(g, tok), "! takes a bool, not %s", name);
+            if (t != GT_BOOL) glslc_fail(g, site(g, tok), "! takes a bool, not %s", type_text(g, t));
             break;
         case GLSLC_OP_BITNOT:
             if (g->vi == GLSLC_V100) glslc_fail(g, site(g, tok), "operator ~ needs GLSL ES 3.00 (1.00 reserves it)");
-            if (!is_integer(g, t)) glslc_fail(g, site(g, tok), "~ takes an int or uint, not %s", name);
+            if (!is_integer(g, t)) glslc_fail(g, site(g, tok), "~ takes an int or uint, not %s", type_text(g, t));
             break;
         default:
             if (!is_numeric(g, t))
                 glslc_fail(g, site(g, tok), "%s takes a number, not %s",
-                           op == GLSLC_OP_PRE_INC || op == GLSLC_OP_POST_INC ? "++" : "--", name);
+                           op == GLSLC_OP_PRE_INC || op == GLSLC_OP_POST_INC ? "++" : "--", type_text(g, t));
             need_lvalue(g, a, tok, op == GLSLC_OP_PRE_INC || op == GLSLC_OP_POST_INC ? "++" : "--");
     }
     if (nd(g, a)->kind == GLSLC_N_CONST) {
@@ -1034,47 +1035,38 @@ static uint32_t make_unary(Glslc* g, uint8_t op, uint32_t tok, uint32_t a) {
 static void sampler_holder(Glslc* g, uint32_t n) {
     const GlslcNode* x = nd(g, n);
     uint32_t v = x->kind == GLSLC_N_INDEX ? x->a : n;
-    char name[64];
-    glslc_type_name(g, nd(g, v)->type, name, sizeof name);
     if (nd(g, v)->kind != GLSLC_N_VAR)
         glslc_fail(g, site(g, x->tok),
-                   "this %s holds a sampler: glslc reads one through the uniform or parameter that holds it", name);
+                   "this %s holds a sampler: glslc reads one through the uniform or parameter that holds it",
+                   type_text(g, nd(g, v)->type));
     if (x->kind == GLSLC_N_INDEX && nd(g, x->b)->kind != GLSLC_N_CONST && g->vi < GLSLC_V320)
         glslc_fail(g, site(g, x->tok), "%s holds samplers: it is indexed by a constant expression only in GLSL ES %s",
-                   name, version_name(g));
+                   type_text(g, nd(g, v)->type), version_name(g));
 }
 
 /* the samplers of a struct in an array have the array's dimension, and a Vulkan descriptor's array has one */
 static void sampler_dimensions(Glslc* g, uint32_t type, uint32_t name_tok) {
     if (ty(g, type)->kind != GLSLC_T_ARRAY || !has_opaque(g, type)) return;
-    char name[64];
-    glslc_type_name(g, type, name, sizeof name);
     if (ty(g, ty(g, type)->elem)->kind == GLSLC_T_ARRAY)
         glslc_fail(g, site(g, name_tok), "%.*s is %s: a Vulkan descriptor's array has one dimension", TOKV(g, name_tok),
-                   name);
+                   type_text(g, type));
     const GlslcType* st = ty(g, ty(g, type)->elem);
     for (uint32_t m = 0; st->kind == GLSLC_T_STRUCT && m < st->len; m++) {
         const GlslcMember* mb = &g->members[st->first + m];
         if (ty(g, mb->type)->kind != GLSLC_T_ARRAY || !has_opaque(g, mb->type)) continue;
-        char mname[64];
-        glslc_type_name(g, mb->type, mname, sizeof mname);
         glslc_fail(g, site(g, name_tok),
                    "%.*s is %s, and its member %.*s is %s: a Vulkan descriptor's array has one "
                    "dimension",
-                   TOKV(g, name_tok), name, VIEWV(g, mb->name), mname);
+                   TOKV(g, name_tok), type_text(g, type), VIEWV(g, mb->name), type_text(g, mb->type));
     }
 }
 
 static uint32_t make_index(Glslc* g, uint32_t tok, uint32_t base, uint32_t index) {
     uint32_t bt = nd(g, base)->type, it = nd(g, index)->type;
     const GlslcType* b = ty(g, bt);
-    char name[64];
-    glslc_type_name(g, bt, name, sizeof name);
     if (!(it == GT_INT || (it == GT_UINT && g->vi != GLSLC_V100))) {
-        char iname[64];
-        glslc_type_name(g, it, iname, sizeof iname);
         glslc_fail(g, site(g, nd(g, index)->tok), "an index is an int%s, not %s",
-                   g->vi == GLSLC_V100 ? "" : " or a uint", iname);
+                   g->vi == GLSLC_V100 ? "" : " or a uint", type_text(g, it));
     }
     uint32_t t, len;
     if (b->kind == GLSLC_T_ARRAY) {
@@ -1087,21 +1079,22 @@ static uint32_t make_index(Glslc* g, uint32_t tok, uint32_t base, uint32_t index
         t = glslc_vector_type(SNX_GLSLC_BASE_FLOAT, b->rows);
         len = b->cols;
     } else {
-        glslc_fail(g, site(g, tok), "%s cannot be indexed", name);
+        glslc_fail(g, site(g, tok), "%s cannot be indexed", type_text(g, bt));
         return 0;
     }
     if (nd(g, index)->kind == GLSLC_N_CONST) {
         int32_t i = (int32_t)bits_of(g, index);
-        if (i < 0) glslc_fail(g, site(g, nd(g, index)->tok), "index %d of %s is negative", (int)i, name);
+        if (i < 0) glslc_fail(g, site(g, nd(g, index)->tok), "index %d of %s is negative", (int)i, type_text(g, bt));
         if (len && (uint32_t)i >= len)
-            glslc_fail(g, site(g, nd(g, index)->tok), "index %d is past the end of %s", (int)i, name);
+            glslc_fail(g, site(g, nd(g, index)->tok), "index %d is past the end of %s", (int)i, type_text(g, bt));
         uint32_t bits;
         if (b->kind == GLSLC_T_VECTOR && const_component(g, base, (uint32_t)i, &bits))
             return make_const(g, tok, t, bits);
     } else if (g->vi < GLSLC_V320 && b->kind == GLSLC_T_ARRAY &&
                (is_opaque_kind(ty(g, element_of(g, bt))->kind) || ty(g, element_of(g, bt))->kind == GLSLC_T_BLOCK)) {
         /* an array of structs that hold samplers: where a sampler is read from one (sampler_holder) */
-        glslc_fail(g, site(g, tok), "%s is indexed by a constant expression only in GLSL ES %s", name, version_name(g));
+        glslc_fail(g, site(g, tok), "%s is indexed by a constant expression only in GLSL ES %s", type_text(g, bt),
+                   version_name(g));
     }
     uint32_t n = node(g, GLSLC_N_INDEX, tok, t);
     nd(g, n)->a = (uint16_t)base;
@@ -1115,9 +1108,7 @@ static uint32_t make_swizzle(Glslc* g, uint32_t tok, uint32_t base) {
     const GlslcType* b = ty(g, bt);
     const char* text = glslc_token_text(g, tk(g, tok));
     uint32_t len = tk(g, tok)->text.len;
-    char name[64];
-    glslc_type_name(g, bt, name, sizeof name);
-    if (b->kind != GLSLC_T_VECTOR) glslc_fail(g, site(g, tok), "%s has no field %.*s", name, TOKV(g, tok));
+    if (b->kind != GLSLC_T_VECTOR) glslc_fail(g, site(g, tok), "%s has no field %.*s", type_text(g, bt), TOKV(g, tok));
     if (len > 4)
         glslc_fail(g, site(g, tok), "the swizzle %.*s has %u components: a swizzle takes 1 to 4", TOKV(g, tok), len);
     static const char* const sets[] = {"xyzw", "rgba", "stpq"};
@@ -1136,7 +1127,7 @@ static uint32_t make_swizzle(Glslc* g, uint32_t tok, uint32_t base) {
                        TOKV(g, tok));
         if (c >= b->rows)
             glslc_fail(g, site(g, tok), "'%c' in .%.*s is past the %u components of %s", text[i], TOKV(g, tok),
-                       (unsigned)b->rows, name);
+                       (unsigned)b->rows, type_text(g, bt));
         set = s;
         packed |= c << (2 * i);
     }
@@ -1165,9 +1156,7 @@ static uint32_t make_field(Glslc* g, uint32_t tok, uint32_t base) {
                 return n;
             }
         }
-        char name[64];
-        glslc_type_name(g, bt, name, sizeof name);
-        glslc_fail(g, site(g, tok), "%s has no member %.*s", name, TOKV(g, tok));
+        glslc_fail(g, site(g, tok), "%s has no member %.*s", type_text(g, bt), TOKV(g, tok));
     }
     return make_swizzle(g, tok, base);
 }
@@ -1191,41 +1180,38 @@ static void arg_list_text(const Glslc* g, uint32_t first, char* out, size_t size
 }
 
 static uint32_t make_constructor(Glslc* g, uint32_t type, uint32_t tok, uint32_t first) {
-    char name[64];
-    glslc_type_name(g, type, name, sizeof name);
     const GlslcType* t = ty(g, type);
     uint32_t count = count_args(g, first), all_const = 1;
     for (uint32_t a = first; a; a = g->nodes[a].next) all_const &= is_const(g, a);
-    if (!count) glslc_fail(g, site(g, tok), "%s() needs arguments", name);
+    if (!count) glslc_fail(g, site(g, tok), "%s() needs arguments", type_text(g, type));
     if (t->kind == GLSLC_T_ARRAY) {
         if (t->len == 0) {
             type = array_of(g, t->elem, count, tok);
             t = ty(g, type);
         } else if (count != t->len) {
-            glslc_fail(g, site(g, tok), "%s takes %u elements, and %u are given", name, (unsigned)t->len, count);
+            glslc_fail(g, site(g, tok), "%s takes %u elements, and %u are given", type_text(g, type), (unsigned)t->len,
+                       count);
         }
         uint32_t i = 0;
         for (uint32_t a = first; a; a = g->nodes[a].next, i++) {
             if (g->nodes[a].type != t->elem) {
-                char en[64], an[64];
-                glslc_type_name(g, t->elem, en, sizeof en);
-                glslc_type_name(g, g->nodes[a].type, an, sizeof an);
-                glslc_fail(g, site(g, g->nodes[a].tok), "element %u of %s is %s, not %s", i, name, an, en);
+                glslc_fail(g, site(g, g->nodes[a].tok), "element %u of %s is %s, not %s", i, type_text(g, type),
+                           type_text(g, g->nodes[a].type), type_text(g, t->elem));
             }
         }
     } else if (t->kind == GLSLC_T_STRUCT) {
-        if (has_opaque(g, type)) glslc_fail(g, site(g, tok), "%s holds a sampler, so it has no constructor", name);
+        if (has_opaque(g, type))
+            glslc_fail(g, site(g, tok), "%s holds a sampler, so it has no constructor", type_text(g, type));
         if (count != t->len)
-            glslc_fail(g, site(g, tok), "%s has %u members, and %u values are given", name, (unsigned)t->len, count);
+            glslc_fail(g, site(g, tok), "%s has %u members, and %u values are given", type_text(g, type),
+                       (unsigned)t->len, count);
         uint32_t i = 0;
         for (uint32_t a = first; a; a = g->nodes[a].next, i++) {
             uint32_t mt = g->members[t->first + i].type;
             if (g->nodes[a].type != mt) {
-                char en[64], an[64];
-                glslc_type_name(g, mt, en, sizeof en);
-                glslc_type_name(g, g->nodes[a].type, an, sizeof an);
                 glslc_fail(g, site(g, g->nodes[a].tok), "member %.*s of %s is %s, not %s",
-                           VIEWV(g, g->members[t->first + i].name), name, en, an);
+                           VIEWV(g, g->members[t->first + i].name), type_text(g, type), type_text(g, mt),
+                           type_text(g, g->nodes[a].type));
             }
         }
     } else if (is_svm(g, type)) {
@@ -1233,9 +1219,8 @@ static uint32_t make_constructor(Glslc* g, uint32_t type, uint32_t tok, uint32_t
         for (uint32_t a = first; a; a = g->nodes[a].next) {
             uint32_t at = g->nodes[a].type;
             if (!is_svm(g, at)) {
-                char an[64];
-                glslc_type_name(g, at, an, sizeof an);
-                glslc_fail(g, site(g, g->nodes[a].tok), "%s cannot be made from %s", name, an);
+                glslc_fail(g, site(g, g->nodes[a].tok), "%s cannot be made from %s", type_text(g, type),
+                           type_text(g, at));
             }
             if (t->kind == GLSLC_T_MATRIX && is_matrix(g, at) && count > 1)
                 glslc_fail(g, site(g, g->nodes[a].tok), "a matrix made from a matrix takes no other argument");
@@ -1244,14 +1229,16 @@ static uint32_t make_constructor(Glslc* g, uint32_t type, uint32_t tok, uint32_t
         }
         int single = count == 1;
         if (t->kind == GLSLC_T_SCALAR) {
-            if (count != 1) glslc_fail(g, site(g, tok), "%s takes one argument, and %u are given", name, count);
+            if (count != 1)
+                glslc_fail(g, site(g, tok), "%s takes one argument, and %u are given", type_text(g, type), count);
         } else if (!(single && (is_scalar(g, g->nodes[first].type) ||
                                 (is_matrix(g, type) && is_matrix(g, g->nodes[first].type))))) {
             if (sum < need)
-                glslc_fail(g, site(g, tok), "%s needs %u components, and its arguments have %u", name, need, sum);
+                glslc_fail(g, site(g, tok), "%s needs %u components, and its arguments have %u", type_text(g, type),
+                           need, sum);
             if (sum - last >= need)
                 glslc_fail(g, site(g, tok), "%s has %u components, and its arguments give %u: the last is left over",
-                           name, need, sum);
+                           type_text(g, type), need, sum);
         }
         uint32_t bits;
         if (t->kind == GLSLC_T_SCALAR && const_component(g, first, 0, &bits))
@@ -1259,7 +1246,7 @@ static uint32_t make_constructor(Glslc* g, uint32_t type, uint32_t tok, uint32_t
                 g, tok, type,
                 glslc_fold_convert(g, bits, glslc_vector_type(ty(g, g->nodes[first].type)->base, 1), type));
     } else {
-        glslc_fail(g, site(g, tok), "%s has no constructor", name);
+        glslc_fail(g, site(g, tok), "%s has no constructor", type_text(g, type));
     }
     uint32_t n = node(g, GLSLC_N_CONSTRUCT, tok, type);
     nd(g, n)->a = (uint16_t)first;
@@ -1820,9 +1807,7 @@ static uint32_t parse_postfix(Glslc* g) {
                         nd(g, n)->a = (uint16_t)e;
                         e = n;
                     } else {
-                        char name[64];
-                        glslc_type_name(g, bt, name, sizeof name);
-                        glslc_fail(g, site(g, f), "%s has no length()", name);
+                        glslc_fail(g, site(g, f), "%s has no length()", type_text(g, bt));
                     }
                     break;
                 }
@@ -1913,21 +1898,15 @@ static uint32_t parse_conditional(Glslc* g) {
     uint32_t b = parse_assignment(g);
     leave(g);
     if (nd(g, c)->type != GT_BOOL) {
-        char name[64];
-        glslc_type_name(g, nd(g, c)->type, name, sizeof name);
-        glslc_fail(g, site(g, t), "the condition of ?: is a bool, not %s", name);
+        glslc_fail(g, site(g, t), "the condition of ?: is a bool, not %s", type_text(g, nd(g, c)->type));
     }
     uint32_t at = nd(g, a)->type, bt = nd(g, b)->type;
     if (at != bt) {
-        char an[64], bn[64];
-        glslc_type_name(g, at, an, sizeof an);
-        glslc_type_name(g, bt, bn, sizeof bn);
-        glslc_fail(g, site(g, t), "the two sides of ?: are %s and %s, not one type", an, bn);
+        glslc_fail(g, site(g, t), "the two sides of ?: are %s and %s, not one type", type_text(g, at),
+                   type_text(g, bt));
     }
     if (has_opaque(g, at) || (ty(g, at)->kind == GLSLC_T_ARRAY && g->vi == GLSLC_V100) || at == GT_VOID) {
-        char an[64];
-        glslc_type_name(g, at, an, sizeof an);
-        glslc_fail(g, site(g, t), "?: cannot choose between two %s", an);
+        glslc_fail(g, site(g, t), "?: cannot choose between two %s", type_text(g, at));
     }
     if (nd(g, c)->kind == GLSLC_N_CONST && nd(g, a)->kind == GLSLC_N_CONST && nd(g, b)->kind == GLSLC_N_CONST)
         return make_const(g, t, at, bits_of(g, c) ? bits_of(g, a) : bits_of(g, b));
@@ -1969,13 +1948,13 @@ static uint32_t parse_assignment(Glslc* g) {
     uint32_t r = parse_assignment(g);
     leave(g);
     uint32_t lt = nd(g, l)->type, rt = nd(g, r)->type;
-    char ln[64], rn[64];
-    glslc_type_name(g, lt, ln, sizeof ln);
-    glslc_type_name(g, rt, rn, sizeof rn);
     need_lvalue(g, l, t, "this assignment");
-    if (has_opaque(g, lt)) glslc_fail(g, site(g, t), "%s cannot be assigned: it is or holds a sampler or image", ln);
+    if (has_opaque(g, lt))
+        glslc_fail(g, site(g, t), "%s cannot be assigned: it is or holds a sampler or image", type_text(g, lt));
     if (op == GLSLC_OP_ASSIGN) {
-        if (lt != rt) glslc_fail(g, site(g, t), "cannot assign %s to %s (GLSL ES converts no value)", rn, ln);
+        if (lt != rt)
+            glslc_fail(g, site(g, t), "cannot assign %s to %s (GLSL ES converts no value)", type_text(g, rt),
+                       type_text(g, lt));
         if (ty(g, lt)->kind == GLSLC_T_ARRAY && g->vi == GLSLC_V100)
             glslc_fail(g, site(g, t), "an array cannot be assigned in GLSL ES 1.00");
     } else {
@@ -1983,7 +1962,8 @@ static uint32_t parse_assignment(Glslc* g) {
                                     op == GLSLC_OP_AND || op == GLSLC_OP_OR || op == GLSLC_OP_XOR))
             glslc_fail(g, site(g, t), "operator %s= needs GLSL ES 3.00 (1.00 reserves it)", op_text(op));
         if (binary_type(g, op, lt, rt) != lt)
-            glslc_fail(g, site(g, t), "no operator %s= takes %s and %s", op_text(op), ln, rn);
+            glslc_fail(g, site(g, t), "no operator %s= takes %s and %s", op_text(op), type_text(g, lt),
+                       type_text(g, rt));
     }
     uint32_t n = node(g, GLSLC_N_ASSIGN, t, lt);
     nd(g, n)->op = op;
@@ -2011,8 +1991,6 @@ static uint32_t parse_expression(Glslc* g) {
 static void check_interface(Glslc* g, const Qual* q, uint32_t type, uint32_t name_tok) {
     uint32_t e = element_of(g, type);
     const GlslcType* et = ty(g, e);
-    char name[64];
-    glslc_type_name(g, type, name, sizeof name);
     int in = q->storage == GLSLC_ST_IN, vertex = g->stage == SNX_GLSLC_VERTEX,
         fragment = g->stage == SNX_GLSLC_FRAGMENT;
     if (g->stage == SNX_GLSLC_COMPUTE)
@@ -2023,10 +2001,10 @@ static void check_interface(Glslc* g, const Qual* q, uint32_t type, uint32_t nam
                    in ? "in" : "out");
     if (q->legacy && et->base != SNX_GLSLC_BASE_FLOAT)
         glslc_fail(g, site(g, name_tok), "%s %.*s is %s: it takes float types only",
-                   q->legacy == 1 ? "attribute" : "varying", TOKV(g, name_tok), name);
+                   q->legacy == 1 ? "attribute" : "varying", TOKV(g, name_tok), type_text(g, type));
     if (!is_svm(g, e) || et->base == SNX_GLSLC_BASE_BOOL)
         glslc_fail(g, site(g, name_tok), "%s %.*s is %s: %s variables are numbers, vectors or matrices",
-                   in ? "in" : "out", TOKV(g, name_tok), name, in ? "in" : "out");
+                   in ? "in" : "out", TOKV(g, name_tok), type_text(g, type), in ? "in" : "out");
     if (ty(g, type)->kind == GLSLC_T_ARRAY && in && vertex)
         glslc_fail(g, site(g, name_tok), "a vertex input cannot be an array");
     if (q->location >= 0 && g->vi == GLSLC_V300 && ((vertex && !in) || (fragment && in)))
@@ -2034,8 +2012,8 @@ static void check_interface(Glslc* g, const Qual* q, uint32_t type, uint32_t nam
                    vertex ? "vertex output" : "fragment input");
     if (fragment && !in && is_matrix(g, e)) glslc_fail(g, site(g, name_tok), "a fragment output cannot be a matrix");
     if (et->base != SNX_GLSLC_BASE_FLOAT && ((fragment && in) || (vertex && !in)) && !(q->qual & GLSLC_Q_FLAT))
-        glslc_fail(g, site(g, name_tok), "%.*s is %s: an integer %s must be flat", TOKV(g, name_tok), name,
-                   vertex ? "vertex output" : "fragment input");
+        glslc_fail(g, site(g, name_tok), "%.*s is %s: an integer %s must be flat", TOKV(g, name_tok),
+                   type_text(g, type), vertex ? "vertex output" : "fragment input");
     if ((q->qual & (GLSLC_Q_FLAT | GLSLC_Q_SMOOTH | GLSLC_Q_CENTROID | GLSLC_Q_SAMPLE)) &&
         ((vertex && in) || (fragment && !in)))
         glslc_fail(g, site(g, q->tok), "interpolation qualifiers are for vertex outputs and fragment inputs");
@@ -2043,8 +2021,6 @@ static void check_interface(Glslc* g, const Qual* q, uint32_t type, uint32_t nam
 
 /* declares the variable name of type with q; init is its initializer node or 0 */
 static uint32_t declare_variable(Glslc* g, const Qual* q, uint32_t type, uint32_t name_tok, uint32_t init, int global) {
-    char name[64];
-    glslc_type_name(g, type, name, sizeof name);
     if (element_of(g, type) == GT_VOID) glslc_fail(g, site(g, name_tok), "%.*s cannot be void", TOKV(g, name_tok));
     const GlslcType* t = ty(g, type);
     if (t->kind == GLSLC_T_ARRAY && t->len == 0) {
@@ -2052,7 +2028,6 @@ static uint32_t declare_variable(Glslc* g, const Qual* q, uint32_t type, uint32_
             glslc_fail(g, site(g, name_tok), "the array %.*s needs a size, or an initializer that gives one",
                        TOKV(g, name_tok));
         type = nd(g, init)->type;
-        glslc_type_name(g, type, name, sizeof name);
     }
     uint8_t storage = q->storage ? q->storage : (global ? GLSLC_ST_GLOBAL : GLSLC_ST_LOCAL);
     if (init) {
@@ -2062,12 +2037,10 @@ static uint32_t declare_variable(Glslc* g, const Qual* q, uint32_t type, uint32_
                        storage == GLSLC_ST_UNIFORM  ? "a uniform"
                        : storage == GLSLC_ST_SHARED ? "shared"
                                                     : "an interface variable");
-        if (has_opaque(g, type)) glslc_fail(g, site(g, name_tok), "%s cannot be initialized", name);
+        if (has_opaque(g, type)) glslc_fail(g, site(g, name_tok), "%s cannot be initialized", type_text(g, type));
         if (it != type) {
-            char iname[64];
-            glslc_type_name(g, it, iname, sizeof iname);
-            glslc_fail(g, site(g, name_tok), "cannot initialize %s %.*s with %s (GLSL ES converts no value)", name,
-                       TOKV(g, name_tok), iname);
+            glslc_fail(g, site(g, name_tok), "cannot initialize %s %.*s with %s (GLSL ES converts no value)",
+                       type_text(g, type), TOKV(g, name_tok), type_text(g, it));
         }
         if ((global || storage == GLSLC_ST_CONST) && !is_const(g, init))
             glslc_fail(g, site(g, nd(g, init)->tok), "the initializer of %.*s must be a constant expression",
@@ -2086,13 +2059,15 @@ static uint32_t declare_variable(Glslc* g, const Qual* q, uint32_t type, uint32_
             case GLSLC_ST_SHARED:
                 if (g->stage != SNX_GLSLC_COMPUTE)
                     glslc_fail(g, site(g, q->tok), "shared variables are only in compute shaders");
-                if (has_opaque(g, type)) glslc_fail(g, site(g, name_tok), "a shared variable cannot be %s", name);
+                if (has_opaque(g, type))
+                    glslc_fail(g, site(g, name_tok), "a shared variable cannot be %s", type_text(g, type));
                 break;
             case GLSLC_ST_PARAM_INOUT: glslc_fail(g, site(g, q->tok), "inout is only for parameters"); break;
             case GLSLC_ST_GLOBAL:
             case GLSLC_ST_CONST:
                 if (has_opaque(g, type))
-                    glslc_fail(g, site(g, name_tok), "%s %.*s must be a uniform", name, TOKV(g, name_tok));
+                    glslc_fail(g, site(g, name_tok), "%s %.*s must be a uniform", type_text(g, type),
+                               TOKV(g, name_tok));
                 break;
             default: break;
         }
@@ -2104,8 +2079,8 @@ static uint32_t declare_variable(Glslc* g, const Qual* q, uint32_t type, uint32_
                                : q->format <= GLSLC_FMT_R32I      ? SNX_GLSLC_BASE_INT
                                                                   : SNX_GLSLC_BASE_UINT;
             if (fmt_base != ty(g, element_of(g, type))->base)
-                glslc_fail(g, site(g, name_tok), "%s %.*s cannot have the format %s", name, TOKV(g, name_tok),
-                           glslc_format_names[q->format - 1]);
+                glslc_fail(g, site(g, name_tok), "%s %.*s cannot have the format %s", type_text(g, type),
+                           TOKV(g, name_tok), glslc_format_names[q->format - 1]);
             int one_channel =
                 q->format == GLSLC_FMT_R32F || q->format == GLSLC_FMT_R32I || q->format == GLSLC_FMT_R32UI;
             if (!one_channel && !(q->qual & (GLSLC_Q_READONLY | GLSLC_Q_WRITEONLY)))
@@ -2115,7 +2090,7 @@ static uint32_t declare_variable(Glslc* g, const Qual* q, uint32_t type, uint32_
                            TOKV(g, name_tok), glslc_format_names[q->format - 1]);
         } else if (q->format) {
             glslc_fail(g, site(g, name_tok), "an image format is only for images, and %.*s is %s", TOKV(g, name_tok),
-                       name);
+                       type_text(g, type));
         }
         if (q->location >= 0 && storage != GLSLC_ST_IN && storage != GLSLC_ST_OUT &&
             !(storage == GLSLC_ST_UNIFORM && g->vi >= GLSLC_V310))
@@ -2127,7 +2102,8 @@ static uint32_t declare_variable(Glslc* g, const Qual* q, uint32_t type, uint32_
         if (q->storage && q->storage != GLSLC_ST_CONST)
             glslc_fail(g, site(g, q->tok), "a variable inside a function takes no storage qualifier but const");
         if (has_opaque(g, type))
-            glslc_fail(g, site(g, name_tok), "%s %.*s must be a uniform at global scope", name, TOKV(g, name_tok));
+            glslc_fail(g, site(g, name_tok), "%s %.*s must be a uniform at global scope", type_text(g, type),
+                       TOKV(g, name_tok));
     }
     if (q->has_layout && !global) glslc_fail(g, site(g, q->tok), "layout(...) is only for global declarations");
     if (q->const_in) glslc_fail(g, site(g, q->tok), "const in is for parameters");
@@ -2308,9 +2284,7 @@ static uint32_t parse_condition(Glslc* g) {
     }
     uint32_t e = parse_expression(g);
     if (nd(g, e)->type != GT_BOOL) {
-        char name[64];
-        glslc_type_name(g, nd(g, e)->type, name, sizeof name);
-        glslc_fail(g, site(g, nd(g, e)->tok), "a condition is a bool, not %s", name);
+        glslc_fail(g, site(g, nd(g, e)->tok), "a condition is a bool, not %s", type_text(g, nd(g, e)->type));
     }
     return e;
 }
@@ -2322,9 +2296,7 @@ static uint32_t parse_switch(Glslc* g) {
     expect(g, TK_RPAREN, "')' after the switch's value");
     uint32_t st = nd(g, sel)->type;
     if (st != GT_INT && st != GT_UINT) {
-        char name[64];
-        glslc_type_name(g, st, name, sizeof name);
-        glslc_fail(g, site(g, t), "a switch takes an int or uint, not %s", name);
+        glslc_fail(g, site(g, t), "a switch takes an int or uint, not %s", type_text(g, st));
     }
     uint32_t open = expect(g, TK_LBRACE, "'{' after switch (...)");
     push_scope(g, open);
@@ -2406,9 +2378,8 @@ static uint32_t parse_statement(Glslc* g, uint32_t* last) {
             expect(g, TK_LPAREN, "'(' after if");
             uint32_t c = parse_expression(g);
             if (nd(g, c)->type != GT_BOOL) {
-                char name[64];
-                glslc_type_name(g, nd(g, c)->type, name, sizeof name);
-                glslc_fail(g, site(g, nd(g, c)->tok), "an if's condition is a bool, not %s", name);
+                glslc_fail(g, site(g, nd(g, c)->tok), "an if's condition is a bool, not %s",
+                           type_text(g, nd(g, c)->type));
             }
             expect(g, TK_RPAREN, "')' after the if's condition");
             uint32_t a = parse_substatement(g), b = 0;
@@ -2513,18 +2484,15 @@ static uint32_t parse_statement(Glslc* g, uint32_t* last) {
         case TK_RETURN: {
             g->pos++;
             uint32_t ret = g->syms[g->func].type, v = 0;
-            char rn[64];
-            glslc_type_name(g, ret, rn, sizeof rn);
             if (kind_at(g, 0) != TK_SEMICOLON) {
                 v = parse_expression(g);
                 if (ret == GT_VOID) glslc_fail(g, site(g, t), "this function returns void, and return gives a value");
                 if (nd(g, v)->type != ret) {
-                    char vn[64];
-                    glslc_type_name(g, nd(g, v)->type, vn, sizeof vn);
-                    glslc_fail(g, site(g, t), "return gives %s, and the function returns %s", vn, rn);
+                    glslc_fail(g, site(g, t), "return gives %s, and the function returns %s",
+                               type_text(g, nd(g, v)->type), type_text(g, ret));
                 }
             } else if (ret != GT_VOID) {
-                glslc_fail(g, site(g, t), "return needs a value: the function returns %s", rn);
+                glslc_fail(g, site(g, t), "return needs a value: the function returns %s", type_text(g, ret));
             }
             expect(g, TK_SEMICOLON, "';' after return");
             g->func_returns = 1;
@@ -2630,8 +2598,6 @@ static void parse_block(Glslc* g, const Qual* q) {
         do {
             uint32_t mn = expect(g, TK_IDENT, "a member name");
             uint32_t full = parse_array_suffix(g, mt);
-            char tname[64];
-            glslc_type_name(g, full, tname, sizeof tname);
             if (unsized_at)
                 glslc_fail(g, site(g, unsized_at), "only a buffer block's last member may be an array with no size");
             if (ty(g, full)->kind == GLSLC_T_ARRAY && ty(g, full)->len == 0) {
@@ -2644,7 +2610,8 @@ static void parse_block(Glslc* g, const Qual* q) {
             }
             if (element_of(g, full) == GT_VOID) glslc_fail(g, site(g, mn), "member %.*s cannot be void", TOKV(g, mn));
             if (has_opaque(g, full))
-                glslc_fail(g, site(g, mn), "member %.*s is %s: a block holds no sampler or image", TOKV(g, mn), tname);
+                glslc_fail(g, site(g, mn), "member %.*s is %s: a block holds no sampler or image", TOKV(g, mn),
+                           type_text(g, full));
             uint16_t interp =
                 (uint16_t)((mq.qual | q->qual) & (GLSLC_Q_FLAT | GLSLC_Q_SMOOTH | GLSLC_Q_CENTROID | GLSLC_Q_SAMPLE));
             if (io) {
@@ -2652,11 +2619,11 @@ static void parse_block(Glslc* g, const Qual* q) {
                 if (!is_svm(g, element_of(g, full)) || et->base == SNX_GLSLC_BASE_BOOL)
                     glslc_fail(g, site(g, mn),
                                "member %.*s is %s: an in or out block holds numbers, vectors and matrices", TOKV(g, mn),
-                               tname);
+                               type_text(g, full));
                 /* the fragment input is what interpolates: a vertex output member needs no flat (glslang's rule) */
                 if (et->base != SNX_GLSLC_BASE_FLOAT && fragment && !(interp & GLSLC_Q_FLAT))
                     glslc_fail(g, site(g, mn), "member %.*s is %s: an integer fragment input must be flat", TOKV(g, mn),
-                               tname);
+                               type_text(g, full));
             }
             for (uint32_t m = g->types[t].first; m < g->nmembers; m++) {
                 if (glslc_views_equal(g, g->members[m].name, tk(g, mn)->text))
@@ -2791,11 +2758,9 @@ static int is_builtin_function(const Glslc* g, GlslcView name) {
 
 static void parse_function(Glslc* g, const Qual* q, uint32_t ret, uint32_t name_tok) {
     GlslcView name = tk(g, name_tok)->text;
-    char rn[64];
-    glslc_type_name(g, ret, rn, sizeof rn);
     if (q->storage || q->qual || q->has_layout)
         glslc_fail(g, site(g, q->tok), "a function's return type takes a precision qualifier only");
-    if (has_opaque(g, ret)) glslc_fail(g, site(g, name_tok), "a function cannot return %s", rn);
+    if (has_opaque(g, ret)) glslc_fail(g, site(g, name_tok), "a function cannot return %s", type_text(g, ret));
     if (ty(g, ret)->kind == GLSLC_T_ARRAY) need_version(g, name_tok, GLSLC_V300, "a function returning an array");
     uint8_t ret_prec = ret == GT_VOID ? 0 : resolve_precision(g, ret, q->prec, name_tok);
     check_name(g, name, site(g, name_tok));
@@ -2832,13 +2797,11 @@ static void parse_function(Glslc* g, const Qual* q, uint32_t ret, uint32_t name_
                 pname = next_tok(g);
                 pt = parse_array_suffix(g, pt);
             }
-            char pn[64];
-            glslc_type_name(g, pt, pn, sizeof pn);
             if (pt == GT_VOID) glslc_fail(g, site(g, ptok), "void is a parameter list alone: f(void)");
             if (ty(g, pt)->kind == GLSLC_T_ARRAY && ty(g, pt)->len == 0)
                 glslc_fail(g, site(g, ptok), "a parameter cannot be an array with no size");
             if (has_opaque(g, pt) && st != GLSLC_ST_PARAM_IN)
-                glslc_fail(g, site(g, ptok), "%s is an in parameter only", pn);
+                glslc_fail(g, site(g, ptok), "%s is an in parameter only", type_text(g, pt));
             sampler_dimensions(g, pt, pname ? pname : ptok);
             if (ty(g, element_of(g, pt))->kind == GLSLC_T_IMAGE)
                 glslc_fail(g, site(g, ptok), "glslc passes no image to a function: use the image's uniform in it");
@@ -2918,7 +2881,8 @@ static void parse_function(Glslc* g, const Qual* q, uint32_t ret, uint32_t name_
     pop_scope(g);
     g->func = 0;
     if (ret != GT_VOID && !g->func_returns)
-        glslc_fail(g, site(g, name_tok), "%.*s returns %s and has no return statement", VIEWV(g, name), rn);
+        glslc_fail(g, site(g, name_tok), "%.*s returns %s and has no return statement", VIEWV(g, name),
+                   type_text(g, ret));
     nd(g, n)->a = (uint16_t)s;
     nd(g, n)->b = (uint16_t)body;
     add_global(g, n, n);
