@@ -5,14 +5,14 @@
 
 /* a texture instruction's array layer: the low 16 bits of its register */
 u32 shader_array_layer(DirectCtx* c, u32 r) {
-    return spv_emit_convert_u_to_f(&c->emit, c->f32_type,
-                                   spv_emit_bitwise_and_u32(&c->emit, c->u32_type, reg_read(c, r),
-                                                            spv_emit_constant_u32(&c->emit, c->u32_type, 0xffff)));
+    return spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, c->f32_type,
+                          spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, reg_read(c, r),
+                                          spv_emit_constant_u32(&c->emit, c->u32_type, 0xffff)));
 }
 
 u32 shader_texture_component(DirectCtx* c, u32 sampled, u32 scalar_type, u32 component) {
     u32 value = spv_emit_vec4_extract(&c->emit, scalar_type, sampled, component);
-    return scalar_type == c->u32_type ? value : spv_emit_bitcast(&c->emit, c->u32_type, value);
+    return scalar_type == c->u32_type ? value : spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, value);
 }
 
 /* A depth-compare sample of a color texture (ShaderInfo.tex_dc_color_mask): its compare function (TSC's, 0 NEVER to
@@ -26,34 +26,39 @@ int shader_dc_color_func(const ShaderInfo* si, int slot) {
 u32 shader_dc_compare(DirectCtx* c, int func, u32 reference, u32 texel) {
     static const u32 condition[8] = {0, 1, 2, 3, 4, 5, 6, 15}; /* spv_emit_fcompare's codes for NEVER..ALWAYS */
     u32 pass = spv_emit_fcompare(&c->emit, c->bool_type, condition[func], reference, texel);
-    return spv_emit_select(&c->emit, c->f32_type, pass, spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f),
-                           spv_emit_constant_f32(&c->emit, c->f32_type, 0.0f));
+    return spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type, pass,
+                            spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f),
+                            spv_emit_constant_f32(&c->emit, c->f32_type, 0.0f));
 }
 static u32 indexed_metadata(DirectCtx* c, int slot) {
     u32 limit = spv_emit_constant_u32(&c->emit, c->u32_type, SNX_TEX_ARRAY - 1);
     u32 index = c->active_index;
-    index = spv_emit_select(&c->emit, c->u32_type, spv_emit_u_less(&c->emit, c->bool_type, limit, index), limit, index);
-    u32 element =
-        spv_emit_shift_right_u32(&c->emit, c->u32_type, index, spv_emit_constant_u32(&c->emit, c->u32_type, 2));
-    u32 component =
-        spv_emit_bitwise_and_u32(&c->emit, c->u32_type, index, spv_emit_constant_u32(&c->emit, c->u32_type, 3));
+    index = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
+                             spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, limit, index), limit, index);
+    u32 element = spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, index,
+                                  spv_emit_constant_u32(&c->emit, c->u32_type, 2));
+    u32 component = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, index,
+                                    spv_emit_constant_u32(&c->emit, c->u32_type, 3));
     u32 func = spv_emit_uniform_component(&c->emit, c->tex_func_pointer, c->tex_func_buffer, c->zero, element,
                                           component, c->u32_type);
     return func;
 }
 u32 shader_indexed_is_depth(DirectCtx* c, int slot) {
     u32 bit = spv_emit_constant_u32(&c->emit, c->u32_type, 8);
-    return spv_emit_i_equal(&c->emit, c->bool_type,
-                            spv_emit_bitwise_and_u32(&c->emit, c->u32_type, indexed_metadata(c, slot), bit), bit);
+    return spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type,
+                           spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, indexed_metadata(c, slot), bit),
+                           bit);
 }
 u32 shader_dc_compare_indexed(DirectCtx* c, int slot, u32 reference, u32 texel) {
-    u32 func = spv_emit_bitwise_and_u32(&c->emit, c->u32_type, indexed_metadata(c, slot),
-                                        spv_emit_constant_u32(&c->emit, c->u32_type, 7));
+    u32 func = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, indexed_metadata(c, slot),
+                               spv_emit_constant_u32(&c->emit, c->u32_type, 7));
     u32 result = shader_dc_compare(c, 3, reference, texel);
     for (int i = 0; i < 8; ++i) {
         if (i == 3) continue;
-        u32 selected = spv_emit_i_equal(&c->emit, c->bool_type, func, spv_emit_constant_u32(&c->emit, c->u32_type, i));
-        result = spv_emit_select(&c->emit, c->f32_type, selected, shader_dc_compare(c, i, reference, texel), result);
+        u32 selected = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, func,
+                                       spv_emit_constant_u32(&c->emit, c->u32_type, i));
+        result = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type, selected,
+                                  shader_dc_compare(c, i, reference, texel), result);
     }
     return result;
 }
@@ -75,32 +80,33 @@ void shader_scaled_coords(DirectCtx* c, u32 push, int slot, int size, u32 i32_ty
     u32 one = spv_emit_constant_u32(&c->emit, c->u32_type, 1);
     u32 bits = spv_emit_push_component_f32(&c->emit, spv_emit_type_pointer(&c->emit, 9, c->u32_type), push, one,
                                            slot >= 32 ? one : c->zero, c->u32_type); /* PushConstant */
-    u32 bit = spv_emit_bitwise_and_u32(
-        &c->emit, c->u32_type,
-        spv_emit_shift_right_u32(&c->emit, c->u32_type, bits, spv_emit_constant_u32(&c->emit, c->u32_type, slot & 31)),
-        one);
+    u32 bit = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
+                              spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, bits,
+                                              spv_emit_constant_u32(&c->emit, c->u32_type, slot & 31)),
+                              one);
     /* component 2 is the scale, 0 its reciprocal (frame_consts) */
     u32 factor =
         spv_emit_uniform_component(&c->emit, c->scale_pointer, c->scale_buffer, c->zero, c->zero,
                                    size ? c->zero : spv_emit_constant_u32(&c->emit, c->u32_type, 2), c->f32_type);
-    factor = spv_emit_select(&c->emit, c->f32_type, spv_emit_i_not_equal(&c->emit, c->bool_type, bit, c->zero), factor,
-                             spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f));
+    factor = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type,
+                              spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type, bit, c->zero), factor,
+                              spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f));
     u32 half = spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f);
     u32* v[2] = {x, y};
     for (int k = 0; k < 2; k++) {
-        u32 f = size
-                    ? spv_emit_convert_u_to_f(&c->emit, c->f32_type, *v[k])
-                    : spv_emit_fadd(&c->emit, c->f32_type, spv_emit_convert_s_to_f(&c->emit, c->f32_type, *v[k]), half);
+        u32 f = size ? spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, c->f32_type, *v[k])
+                     : spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type,
+                                       spv_emit_unary(&c->emit, SPV_OP_CONVERT_S_TO_F, c->f32_type, *v[k]), half);
         spv_emit_no_contraction(&c->emit, f);
-        f = spv_emit_fmul(&c->emit, c->f32_type, f, factor);
+        f = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, f, factor);
         spv_emit_no_contraction(&c->emit, f);
         if (size) { /* rounded, as vk_sc */
-            f = spv_emit_fadd(&c->emit, c->f32_type, f, half);
+            f = spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type, f, half);
             spv_emit_no_contraction(&c->emit, f);
-            *v[k] = spv_emit_convert_f_to_u(&c->emit, c->u32_type, f);
+            *v[k] = spv_emit_unary(&c->emit, SPV_OP_CONVERT_F_TO_U, c->u32_type, f);
         } else /* floored: below 0 stays outside */
-            *v[k] = spv_emit_convert_f_to_s(&c->emit, i32_type,
-                                            spv_emit_glsl_unary(&c->emit, c->f32_type, c->glsl, SPV_GLSL_FLOOR, f));
+            *v[k] = spv_emit_unary(&c->emit, SPV_OP_CONVERT_F_TO_S, i32_type,
+                                   spv_emit_glsl_unary(&c->emit, c->f32_type, c->glsl, SPV_GLSL_FLOOR, f));
     }
 }
 
@@ -116,22 +122,24 @@ void shader_rect_coords(DirectCtx* c, u32 push, int scaled, int slot, u32 vec2_u
     u32 w = spv_emit_vec4_extract(&c->emit, c->u32_type, size, 0),
         h = spv_emit_vec4_extract(&c->emit, c->u32_type, size, 1);
     if (scaled) shader_scaled_coords(c, push, slot, 1, i32_type, &w, &h);
-    u32 fw = spv_emit_convert_u_to_f(&c->emit, c->f32_type, w), fh = spv_emit_convert_u_to_f(&c->emit, c->f32_type, h);
-    *x = spv_emit_fdiv(&c->emit, c->f32_type, *x, fw);
-    *y = spv_emit_fdiv(&c->emit, c->f32_type, *y, fh);
+    u32 fw = spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, c->f32_type, w),
+        fh = spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, c->f32_type, h);
+    *x = spv_emit_binary(&c->emit, SPV_OP_F_DIV, c->f32_type, *x, fw);
+    *y = spv_emit_binary(&c->emit, SPV_OP_F_DIV, c->f32_type, *y, fh);
     for (int k = 0; k < 2 && gx; k++) {
-        gx[k] = spv_emit_fdiv(&c->emit, c->f32_type, gx[k], k ? fh : fw);
-        gy[k] = spv_emit_fdiv(&c->emit, c->f32_type, gy[k], k ? fh : fw);
+        gx[k] = spv_emit_binary(&c->emit, SPV_OP_F_DIV, c->f32_type, gx[k], k ? fh : fw);
+        gy[k] = spv_emit_binary(&c->emit, SPV_OP_F_DIV, c->f32_type, gy[k], k ? fh : fw);
     }
 }
 /* x of a 1D texel fetch as the row and column of the 2D image a 1D texture is bound as (SH_TEXEL_ROW_SHIFT). A
    negative x lands in a negative row, out of the image as it is out of the texture */
 void shader_texel_row_coord(DirectCtx* c, u32 i32_type, u32* x, u32* y) {
     u32 shift = spv_emit_constant_u32(&c->emit, c->u32_type, SH_TEXEL_ROW_SHIFT);
-    u32 column = spv_emit_bitwise_and_u32(&c->emit, c->u32_type, spv_emit_bitcast(&c->emit, c->u32_type, *x),
-                                          spv_emit_constant_u32(&c->emit, c->u32_type, (1u << SH_TEXEL_ROW_SHIFT) - 1));
-    *y = spv_emit_shift_right_s32(&c->emit, i32_type, *x, shift);
-    *x = spv_emit_bitcast(&c->emit, i32_type, column);
+    u32 column = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
+                                 spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, *x),
+                                 spv_emit_constant_u32(&c->emit, c->u32_type, (1u << SH_TEXEL_ROW_SHIFT) - 1));
+    *y = spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_ARITHMETIC, i32_type, *x, shift);
+    *x = spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, column);
 }
 
 /* The storage image slot for a surface operation: images of one handle share a slot when they have the same
@@ -204,14 +212,15 @@ void shader_direct_swap_element(DirectCtx* c, int slot) {
     int table = c->tex_table[slot];
     u32 limit = spv_emit_constant_u32(&c->emit, c->u32_type, SNX_TEX_ARRAY - 1);
     u32 index = spv_emit_load(&c->emit, c->u32_type, c->tex_index[slot]);
-    index = spv_emit_select(&c->emit, c->u32_type, spv_emit_u_less(&c->emit, c->bool_type, limit, index), limit, index);
+    index = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
+                             spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, limit, index), limit, index);
     if (c->tex_map_buffer) {
         u32 base = spv_emit_constant_u32(&c->emit, c->u32_type, (u32)table * SNX_TEX_ARRAY);
         u32 flat = spv_emit_iadd_u32(&c->emit, c->u32_type, base, index);
-        u32 element =
-            spv_emit_shift_right_u32(&c->emit, c->u32_type, flat, spv_emit_constant_u32(&c->emit, c->u32_type, 2));
-        u32 component =
-            spv_emit_bitwise_and_u32(&c->emit, c->u32_type, flat, spv_emit_constant_u32(&c->emit, c->u32_type, 3));
+        u32 element = spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, flat,
+                                      spv_emit_constant_u32(&c->emit, c->u32_type, 2));
+        u32 component = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, flat,
+                                        spv_emit_constant_u32(&c->emit, c->u32_type, 3));
         index = spv_emit_uniform_component(&c->emit, c->tex_map_pointer, c->tex_map_buffer, c->zero, element, component,
                                            c->u32_type);
     }
@@ -225,8 +234,8 @@ void shader_direct_swap_element(DirectCtx* c, int slot) {
 
 u32 shader_texture_float_component(DirectCtx* c, u32 value, u32 scalar, u32 i32_type) {
     if (scalar == c->f32_type) return value;
-    return scalar == i32_type ? spv_emit_convert_s_to_f(&c->emit, c->f32_type, value)
-                              : spv_emit_convert_u_to_f(&c->emit, c->f32_type, value);
+    return scalar == i32_type ? spv_emit_unary(&c->emit, SPV_OP_CONVERT_S_TO_F, c->f32_type, value)
+                              : spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, c->f32_type, value);
 }
 
 u32 shader_pack_texture_halves(DirectCtx* c, u32 vec2, u32 first, u32 second) {
@@ -235,13 +244,13 @@ u32 shader_pack_texture_halves(DirectCtx* c, u32 vec2, u32 first, u32 second) {
 
 /* Gather AOFFI stores signed six-bit x/y offsets in the low bits of two consecutive bytes. */
 u32 shader_direct_gather_offset(DirectCtx* c, u32 raw, u32 shift, int zero_y, u32 i32_type, u32 vec2_i32) {
-    u32 bits = spv_emit_bitcast(&c->emit, i32_type, raw);
+    u32 bits = spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, raw);
     u32 width = spv_emit_constant_u32(&c->emit, c->u32_type, 6);
-    u32 x = spv_emit_bitfield_sextract(&c->emit, i32_type, bits, spv_emit_constant_u32(&c->emit, c->u32_type, shift),
-                                       width);
+    u32 x = spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type, bits,
+                             spv_emit_constant_u32(&c->emit, c->u32_type, shift), width);
     u32 y = zero_y ? spv_emit_constant_u32(&c->emit, i32_type, 0)
-                   : spv_emit_bitfield_sextract(&c->emit, i32_type, bits,
-                                                spv_emit_constant_u32(&c->emit, c->u32_type, shift + 8), width);
+                   : spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type, bits,
+                                      spv_emit_constant_u32(&c->emit, c->u32_type, shift + 8), width);
     return spv_emit_vec2_construct(&c->emit, vec2_i32, x, y);
 }
 
@@ -253,11 +262,11 @@ void shader_texs_store(DirectCtx* c, u64 w, u32 sample, u32 scalar, int shadow, 
     if (B(w, 59, 1)) {
         for (int k = 0; k < outputs; k++) {
             if (regs[k] >= 255) continue;
-            reg_write(
-                c, regs[k],
-                shadow ? spv_emit_bitcast(&c->emit, c->u32_type,
-                                          comps[k] == 3 ? spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f) : sample)
-                       : shader_texture_component(c, sample, scalar, comps[k]));
+            reg_write(c, regs[k],
+                      shadow
+                          ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
+                                           comps[k] == 3 ? spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f) : sample)
+                          : shader_texture_component(c, sample, scalar, comps[k]));
         }
         return;
     }
@@ -328,9 +337,11 @@ static u32 texture_offset_select(const TextureOffsetTree* tree, u32 level, u32 v
             u32 sample = level + 1 < tree->levels
                 ? texture_offset_select(tree, level + 1, value | subset, last_label)
                 : texture_offset_leaf(tree, value | subset);
-            result = k ? spv_emit_select(&c->emit, result_type,
-                spv_emit_i_equal(&c->emit, c->bool_type, tree->selector[level],
-                    spv_emit_constant_u32(&c->emit, c->u32_type, subset)), sample, result) : sample;
+            result = k ? spv_emit_ternary(&c->emit, SPV_OP_SELECT, result_type,
+                                          spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, tree->selector[level],
+                                                          spv_emit_constant_u32(&c->emit, c->u32_type, subset)),
+                                          sample, result)
+                       : sample;
         }
         return result;
     }
@@ -366,12 +377,13 @@ static u32 texture_offset_dispatch(TextureOffsetTree tree, u32 packed, u32 shift
         used++;
         tree.levels = (used + 3) / 4;
     }
-    u32 raw = shift ? spv_emit_shift_right_u32(&c->emit, c->u32_type, packed,
-                                        spv_emit_constant_u32(&c->emit, c->u32_type, shift)) : packed;
+    u32 raw = shift ? spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, packed,
+                                      spv_emit_constant_u32(&c->emit, c->u32_type, shift))
+                    : packed;
     for (u32 level = 0; level < tree.levels; level++) {
         tree.mask[level] = groups[tree.levels - level - 1];
-        tree.selector[level] = spv_emit_bitwise_and_u32(&c->emit, c->u32_type, raw,
-            spv_emit_constant_u32(&c->emit, c->u32_type, tree.mask[level]));
+        tree.selector[level] = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, raw,
+                                               spv_emit_constant_u32(&c->emit, c->u32_type, tree.mask[level]));
     }
     u32 last_label = 0;
     return texture_offset_select(&tree, 0, value, &last_label);
@@ -433,23 +445,24 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 meta = b + (op == O_TLD_B), level = B(w, 55, 1) ? meta++ : 255, packed_reg = B(w, 35, 1) ? meta++ : 255;
         u32 z = type <= 1 && !array ? 0
                 : type == 0 || array
-                    ? spv_emit_bitcast(&c->emit, i32_type,
-                                       spv_emit_bitwise_and_u32(&c->emit, c->u32_type, reg_read(c, a),
-                                                                spv_emit_constant_u32(&c->emit, c->u32_type, 0xffff)))
+                    ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type,
+                                     spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, reg_read(c, a),
+                                                     spv_emit_constant_u32(&c->emit, c->u32_type, 0xffff)))
                     : reg_read_as(c, a + 2, i32_type);
         if (packed_reg < 255) { /* 4-bit signed offsets: x, then y but for 1D, then z for 3D */
             u32 packed = reg_read_as(c, packed_reg, i32_type);
             u32 four = spv_emit_constant_u32(&c->emit, c->u32_type, 4);
-            x = spv_emit_iadd_u32(&c->emit, i32_type, x,
-                                  spv_emit_bitfield_sextract(&c->emit, i32_type, packed, c->zero, four));
+            x = spv_emit_iadd_u32(
+                &c->emit, i32_type, x,
+                spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type, packed, c->zero, four));
             if (type >= 1)
-                y = spv_emit_iadd_u32(&c->emit, i32_type, y,
-                                      spv_emit_bitfield_sextract(&c->emit, i32_type, packed, four, four));
+                y = spv_emit_iadd_u32(
+                    &c->emit, i32_type, y,
+                    spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type, packed, four, four));
             if (type == 2)
                 z = spv_emit_iadd_u32(&c->emit, i32_type, z,
-                                      spv_emit_bitfield_sextract(&c->emit, i32_type, packed,
-                                                                 spv_emit_constant_u32(&c->emit, c->u32_type, 8),
-                                                                 four));
+                                      spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type, packed,
+                                                       spv_emit_constant_u32(&c->emit, c->u32_type, 8), four));
         }
         if (type == 0 && !array) shader_texel_row_coord(c, i32_type, &x, &y);
         if (type == 1 && needs_texel_scale) shader_scaled_coords(c, push, slot, 0, i32_type, &x, &y);
@@ -477,14 +490,15 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             u32 y = reg_read_as(c, a + 1, i32_type);
             /* a 2D array's layer is the low 16 bits of the third register, as TLD's is, and a 3D surface's z the
                whole register (Eden's MakeCoords in surface_load_store.cpp reads them the same way) */
-            coord = dim == 4   ? spv_emit_vec3_construct(
-                                     &c->emit, vec3_i32, x, y,
-                                     spv_emit_bitcast(
-                                         &c->emit, i32_type,
-                                         spv_emit_bitwise_and_u32(&c->emit, c->u32_type, reg_read(c, a + 2),
-                                                                  spv_emit_constant_u32(&c->emit, c->u32_type, 0xffff))))
-                    : dim == 5 ? spv_emit_vec3_construct(&c->emit, vec3_i32, x, y, reg_read_as(c, a + 2, i32_type))
-                               : spv_emit_vec2_construct(&c->emit, vec2_i32, x, y);
+            coord =
+                dim == 4
+                    ? spv_emit_vec3_construct(
+                          &c->emit, vec3_i32, x, y,
+                          spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type,
+                                         spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, reg_read(c, a + 2),
+                                                         spv_emit_constant_u32(&c->emit, c->u32_type, 0xffff))))
+                : dim == 5 ? spv_emit_vec3_construct(&c->emit, vec3_i32, x, y, reg_read_as(c, a + 2, i32_type))
+                           : spv_emit_vec2_construct(&c->emit, vec2_i32, x, y);
         }
         int raw = op == O_SULD && B(w, 52, 1);
         u32 mask = raw ? 1u : B(w, 20, 4), source = d;
@@ -570,31 +584,30 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         /* the 2D array form takes x and y from Rb and Rb + 1, the layer from Ra's low 16 bits */
         x = reg_read_as(c, array ? b : a, i32_type);
         y = type == 0 ? spv_emit_constant_u32(&c->emit, i32_type, 0)
-                      : spv_emit_bitcast(&c->emit, i32_type,
-                                         reg_read(c, array ? b + 1
-                                                     : encoding == 4 || encoding == 5 || encoding == 6 ||
-                                                             encoding == 7 || encoding == 12
-                                                         ? a + 1
-                                                         : b));
+                      : spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type,
+                                       reg_read(c, array ? b + 1
+                                                   : encoding == 4 || encoding == 5 || encoding == 6 || encoding == 7 ||
+                                                           encoding == 12
+                                                       ? a + 1
+                                                       : b));
         if (encoding == 4 || encoding == 12) {
-            u32 packed = spv_emit_bitcast(&c->emit, i32_type, reg_read(c, b + (encoding == 12)));
+            u32 packed = spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, reg_read(c, b + (encoding == 12)));
             u32 four = spv_emit_constant_u32(&c->emit, c->u32_type, 4);
-            u32 ox = spv_emit_bitfield_sextract(&c->emit, i32_type, packed, c->zero, four);
-            u32 oy = spv_emit_bitfield_sextract(&c->emit, i32_type, packed, four, four);
+            u32 ox = spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type, packed, c->zero, four);
+            u32 oy = spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type, packed, four, four);
             x = spv_emit_iadd_u32(&c->emit, i32_type, x, ox);
             y = spv_emit_iadd_u32(&c->emit, i32_type, y, oy);
         }
         if (type == 0) shader_texel_row_coord(c, i32_type, &x, &y);
         if (type == 1 && needs_texel_scale) shader_scaled_coords(c, push, slot, 0, i32_type, &x, &y);
-        u32 coord =
-            type == 2 ? spv_emit_vec3_construct(&c->emit, vec3_i32, x, y, reg_read_as(c, b, i32_type))
-            : array
-                ? spv_emit_vec3_construct(
-                      &c->emit, vec3_i32, x, y,
-                      spv_emit_bitcast(&c->emit, i32_type,
-                                       spv_emit_bitwise_and_u32(&c->emit, c->u32_type, reg_read(c, a),
-                                                                spv_emit_constant_u32(&c->emit, c->u32_type, 0xffff))))
-                : spv_emit_vec2_construct(&c->emit, vec2_i32, x, y);
+        u32 coord = type == 2 ? spv_emit_vec3_construct(&c->emit, vec3_i32, x, y, reg_read_as(c, b, i32_type))
+                    : array
+                        ? spv_emit_vec3_construct(
+                              &c->emit, vec3_i32, x, y,
+                              spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type,
+                                             spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, reg_read(c, a),
+                                                             spv_emit_constant_u32(&c->emit, c->u32_type, 0xffff))))
+                        : spv_emit_vec2_construct(&c->emit, vec2_i32, x, y);
         u32 lod = encoding == 1 || encoding == 5 || encoding == 12 ? reg_read(c, b) : c->zero;
         u32 sample = multisample ? spv_emit_image_fetch_sample(&c->emit, texture_vec4[slot], c->sampled_type[slot],
                                                                c->sampler[slot], coord, reg_read(c, b))
@@ -629,14 +642,17 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 textures[slot].array != array || textures[slot].bindless || textures[slot].flags))
             slot++;
         u32 x = reg_read_as(c, array ? a + 1 : a, c->f32_type);
-        u32 y = encoding == 0 ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f)
-                              : spv_emit_bitcast(&c->emit, c->f32_type, reg_read(c, shader_texs_y(encoding, a, b)));
+        u32 y = encoding == 0
+                    ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f)
+                    : spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, reg_read(c, shader_texs_y(encoding, a, b)));
         if (rect_slots >> slot & 1)
             shader_rect_coords(c, push, stage == ST_FS, slot, vec2_u32, i32_type, &x, &y, NULL, NULL);
         u32 uv = array       ? spv_emit_vec3_construct(&c->emit, vec3, x, y, shader_array_layer(c, a))
                  : type >= 2 ? spv_emit_vec3_construct(&c->emit, vec3, x, y, reg_read_as(c, b, c->f32_type))
                              : spv_emit_vec2_construct(&c->emit, vec2, x, y);
-        u32 dref = shadow ? spv_emit_bitcast(&c->emit, c->f32_type, reg_read(c, shader_texs_dref(encoding, b))) : 0;
+        u32 dref =
+            shadow ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, reg_read(c, shader_texs_dref(encoding, b)))
+                   : 0;
         u32 sample;
         int explicit_lod = shader_texs_explicit(encoding) || stage != ST_FS;
         u32 level = shader_texs_explicit(encoding) ? shader_texs_level(encoding, b) : 255;
@@ -668,14 +684,14 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         /* LC adds a packed word before coordinates, even for a non-array texture. Its low half is the layer and
            its high half is an unsigned minimum LOD with eight fractional bits (Mesa nak_nir_lower_tex.c). */
         u32 coord = a + (array || clamp);
-        u32 min_lod = clamp ? spv_emit_fmul(
-                                 &c->emit, c->f32_type,
-                                 spv_emit_convert_u_to_f(
-                                     &c->emit, c->f32_type,
-                                     spv_emit_shift_right_u32(&c->emit, c->u32_type, reg_read(c, a),
-                                                               spv_emit_constant_u32(&c->emit, c->u32_type, 16))),
-                                 spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f / 256.0f))
-                            : 0;
+        u32 min_lod =
+            clamp ? spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type,
+                                    spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, c->f32_type,
+                                                   spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type,
+                                                                   reg_read(c, a),
+                                                                   spv_emit_constant_u32(&c->emit, c->u32_type, 16))),
+                                    spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f / 256.0f))
+                  : 0;
         u32 x = reg_read_as(c, coord, c->f32_type);
         u32 y =
             type == 0 ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f) : reg_read_as(c, coord + 1, c->f32_type);
@@ -710,14 +726,14 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             }
             if (!known) varying_offset = reg_read(c, offset_source);
             if (known || g_shader_dynamic_texture_offsets) {
-                u32 o[3], signed_bits = known ? 0 : spv_emit_bitcast(&c->emit, i32_type, varying_offset);
+                u32 o[3], signed_bits = known ? 0 : spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, varying_offset);
                 for (u32 axis = 0; axis < 3; axis++) {
                     u32 nibble = packed >> (4 * axis) & 15;
                     o[axis] = axis >= offset_count ? spv_emit_constant_u32(&c->emit, i32_type, 0)
-                        : known ? spv_emit_constant_u32(&c->emit, i32_type, nibble >= 8 ? nibble - 16 : nibble)
-                        : spv_emit_bitfield_sextract(&c->emit, i32_type, signed_bits,
-                            spv_emit_constant_u32(&c->emit, c->u32_type, 4 * axis),
-                            spv_emit_constant_u32(&c->emit, c->u32_type, 4));
+                              : known ? spv_emit_constant_u32(&c->emit, i32_type, nibble >= 8 ? nibble - 16 : nibble)
+                                      : spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type, signed_bits,
+                                                         spv_emit_constant_u32(&c->emit, c->u32_type, 4 * axis),
+                                                         spv_emit_constant_u32(&c->emit, c->u32_type, 4));
                 }
                 offset = offset_count == 3
                     ? known ? spv_emit_constant_vec3(&c->emit, vec3_i32, o[0], o[1], o[2])
@@ -755,16 +771,16 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             sampling.depth_reference = dref;
             u32 depth = varying_offset ? texture_offset_dispatch(sampling, varying_offset, 0, offset_known, offset_value)
                                        : texture_offset_sample(&sampling, offset, dynamic_offset);
-            sample = spv_emit_select(&c->emit, c->f32_type, shader_indexed_is_depth(c, slot), depth, sample);
+            sample =
+                spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type, shader_indexed_is_depth(c, slot), depth, sample);
         }
         u32 mask = B(w, 31, 4), dst = d;
         for (u32 component = 0; component < 4; component++)
             if (mask & (1u << component)) {
-                u32 value =
-                    shadow
-                        ? spv_emit_bitcast(&c->emit, c->u32_type,
-                                           component == 3 ? spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f) : sample)
-                        : shader_texture_component(c, sample, texture_scalar[slot], component);
+                u32 value = shadow ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
+                                                    component == 3 ? spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f)
+                                                                   : sample)
+                                   : shader_texture_component(c, sample, texture_scalar[slot], component);
                 reg_write(c, dst, value);
                 if (dst < 255) dst++;
             }
@@ -827,13 +843,13 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 if (g_shader_dynamic_texture_offsets) {
                     /* maintenance8 keeps the offset in texels at the selected mip. Coordinates, explicit
                        gradients, sampler filtering and the array layer all retain their original values. */
-                    u32 signed_bits = spv_emit_bitcast(&c->emit, i32_type, varying_offset);
+                    u32 signed_bits = spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, varying_offset);
                     u32 four = spv_emit_constant_u32(&c->emit, c->u32_type, 4);
                     for (k = 0; k < dims; k++)
                         o[k] = k < count
-                            ? spv_emit_bitfield_sextract(&c->emit, i32_type, signed_bits,
-                                spv_emit_constant_u32(&c->emit, c->u32_type, 16 + 4 * k), four)
-                            : spv_emit_constant_u32(&c->emit, i32_type, 0);
+                                   ? spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type, signed_bits,
+                                                      spv_emit_constant_u32(&c->emit, c->u32_type, 16 + 4 * k), four)
+                                   : spv_emit_constant_u32(&c->emit, i32_type, 0);
                     offset = dims == 3 ? spv_emit_vec3_construct(&c->emit, vec3_i32, o[0], o[1], o[2])
                                        : spv_emit_vec2_construct(&c->emit, vec2_i32, o[0], o[1]);
                     dynamic_offset = 1;
@@ -919,8 +935,10 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             u32 value = c->zero;
             if (component < 2) {
                 u32 f = spv_emit_vec4_extract(&c->emit, c->f32_type, lod, 1 - component);
-                f = spv_emit_fmul(&c->emit, c->f32_type, f, spv_emit_constant_f32(&c->emit, c->f32_type, 256.0f));
-                value = spv_emit_bitcast(&c->emit, c->u32_type, spv_emit_convert_f_to_s(&c->emit, i32_type, f));
+                f = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, f,
+                                    spv_emit_constant_f32(&c->emit, c->f32_type, 256.0f));
+                value = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
+                                       spv_emit_unary(&c->emit, SPV_OP_CONVERT_F_TO_S, i32_type, f));
             }
             reg_write(c, dst, value);
             if (dst < 255) dst++;
@@ -945,8 +963,8 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         if (textures[slot].flags & SNX_TEX_INDEXED) shader_direct_swap_element(c, slot);
         u32 x = reg_read_as(c, a + array, c->f32_type);
         u32 y = type == 0 ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f)
-                          : spv_emit_bitcast(&c->emit, c->f32_type,
-                                             reg_read(c, op == O_TLD4S && !shadow && !B(w, 51, 1) ? b : a + array + 1));
+                          : spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type,
+                                           reg_read(c, op == O_TLD4S && !shadow && !B(w, 51, 1) ? b : a + array + 1));
         if (rect_slots >> slot & 1)
             shader_rect_coords(c, push, stage == ST_FS, slot, vec2_u32, i32_type, &x, &y, NULL, NULL);
         u32 coords;
@@ -982,7 +1000,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             if (shadow) dref = reg_read_as(c, source, c->f32_type);
         } else {
             if (B(w, 51, 1)) { offset = shader_direct_gather_offset(c, reg_read(c, b), 0, 0, i32_type, vec2_i32); }
-            if (shadow) dref = spv_emit_bitcast(&c->emit, c->f32_type, reg_read(c, b + B(w, 51, 1)));
+            if (shadow) dref = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, reg_read(c, b + B(w, 51, 1)));
         }
         /* a compare gather of a color texture gathers its first components and compares them in the shader */
         int indexed_dc = dref && shadow && (textures[slot].flags & SNX_TEX_INDEXED);
@@ -1006,8 +1024,8 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 if (indexed_dc) {
                     u32 depth = spv_emit_image_gather_ex(&c->emit, texture_vec4[slot], c->depth_type, c->depth_sampler,
                                                          coords, component, dref, tap_offset);
-                    taps[tap] = spv_emit_select(&c->emit, c->f32_type, shader_indexed_is_depth(c, slot),
-                                                spv_emit_vec4_extract(&c->emit, c->f32_type, depth, 3), taps[tap]);
+                    taps[tap] = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type, shader_indexed_is_depth(c, slot),
+                                                 spv_emit_vec4_extract(&c->emit, c->f32_type, depth, 3), taps[tap]);
                 }
             }
             gathered = spv_emit_vec4_construct(&c->emit, texture_vec4[slot], taps);
@@ -1028,7 +1046,8 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         if (indexed_dc && !per_tap_offset) {
             u32 depth = spv_emit_image_gather_ex(&c->emit, texture_vec4[slot], c->depth_type, c->depth_sampler, coords,
                                                  component, dref, offset);
-            gathered = spv_emit_select(&c->emit, texture_vec4[slot], shader_indexed_is_depth(c, slot), depth, gathered);
+            gathered = spv_emit_ternary(&c->emit, SPV_OP_SELECT, texture_vec4[slot], shader_indexed_is_depth(c, slot),
+                                        depth, gathered);
         }
         if (op == O_TLD4S) {
             u32 db = B(w, 28, 8);

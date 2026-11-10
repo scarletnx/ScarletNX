@@ -304,7 +304,7 @@ static inline void var_write(DirectCtx* c, u32 v, u32 value) {
 static inline u32 reg_read(DirectCtx* c, u32 r) {
     if (r >= 255) return c->zero;
     if (c->var_block[r] == c->emit.block && (c->var_val[r] || c->reg_alt_type[r])) {
-        if (!c->var_val[r]) c->var_val[r] = spv_emit_bitcast(&c->emit, c->u32_type, c->reg_alt[r]);
+        if (!c->var_val[r]) c->var_val[r] = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, c->reg_alt[r]);
         return c->var_val[r];
     }
     c->var_val[r] = spv_emit_load(&c->emit, c->u32_type, c->reg[r]);
@@ -316,7 +316,7 @@ static inline u32 reg_read(DirectCtx* c, u32 r) {
 
 static inline void reg_write(DirectCtx* c, u32 r, u32 value) {
     if (r >= 255) return;
-    if (c->guard) value = spv_emit_select(&c->emit, c->u32_type, c->guard, value, reg_read(c, r));
+    if (c->guard) value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, c->guard, value, reg_read(c, r));
     var_write(c, r, value);
     c->reg_alt_type[r] = 0;
 }
@@ -326,7 +326,7 @@ static inline void reg_write(DirectCtx* c, u32 r, u32 value) {
 static inline void reg_write_as(DirectCtx* c, u32 r, u32 value, u32 type) {
     if (r >= 255) return;
     if (c->guard) { /* a guarded write's bits are a select of value's, not value's */
-        reg_write(c, r, spv_emit_bitcast(&c->emit, c->u32_type, value));
+        reg_write(c, r, spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, value));
         return;
     }
     var_write(c, r, 0);
@@ -334,10 +334,10 @@ static inline void reg_write_as(DirectCtx* c, u32 r, u32 value, u32 type) {
     c->reg_alt_type[r] = type;
 }
 static inline u32 reg_read_as(DirectCtx* c, u32 r, u32 type) {
-    if (r >= 255) return spv_emit_bitcast(&c->emit, type, c->zero);
+    if (r >= 255) return spv_emit_unary(&c->emit, SPV_OP_BITCAST, type, c->zero);
     if (c->var_block[r] == c->emit.block && c->reg_alt_type[r] == type) return c->reg_alt[r];
     u32 bits = reg_read(c, r);
-    c->reg_alt[r] = spv_emit_bitcast(&c->emit, type, bits);
+    c->reg_alt[r] = spv_emit_unary(&c->emit, SPV_OP_BITCAST, type, bits);
     c->reg_alt_type[r] = type;
     if (type == c->f32_type && c->taint_known && !c->tainted[r]) shader_ftz_mark(c, c->reg_alt[r]);
     return c->reg_alt[r];
@@ -345,12 +345,12 @@ static inline u32 reg_read_as(DirectCtx* c, u32 r, u32 type) {
 
 static inline u32 pred_read(DirectCtx* c, u32 p, int negative) {
     u32 value = p == 7 ? c->true_value : var_read(c, VAR_PRED + p);
-    return negative ? spv_emit_bool_not(&c->emit, c->bool_type, value) : value;
+    return negative ? spv_emit_unary(&c->emit, SPV_OP_LOGICAL_NOT, c->bool_type, value) : value;
 }
 
 static inline void pred_write(DirectCtx* c, u32 p, u32 value) {
     if (p >= 7) return;
-    if (c->guard) value = spv_emit_select(&c->emit, c->bool_type, c->guard, value, pred_read(c, p, 0));
+    if (c->guard) value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->bool_type, c->guard, value, pred_read(c, p, 0));
     var_write(c, VAR_PRED + p, value);
 }
 
@@ -358,14 +358,14 @@ static inline void pred_write(DirectCtx* c, u32 p, u32 value) {
    instruction's guard is false */
 static inline u32 flag_read(DirectCtx* c, u32 flag) { return var_read(c, flag_var(c, flag)); }
 static inline void cc_store(DirectCtx* c, u32 flag, u32 value) {
-    if (c->guard) value = spv_emit_select(&c->emit, c->bool_type, c->guard, value, flag_read(c, flag));
+    if (c->guard) value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->bool_type, c->guard, value, flag_read(c, flag));
     var_write(c, flag_var(c, flag), value);
 }
 
 static inline u32 bool_combine(DirectCtx* c, u32 op, u32 left, u32 right) {
     return op < 3 ? spv_emit_bool_binary(&c->emit, c->bool_type, op, left, right) : left;
 }
-static inline u32 cc_not(DirectCtx* c, u32 x) { return spv_emit_bool_not(&c->emit, c->bool_type, x); }
+static inline u32 cc_not(DirectCtx* c, u32 x) { return spv_emit_unary(&c->emit, SPV_OP_LOGICAL_NOT, c->bool_type, x); }
 static inline u32 cc_and(DirectCtx* c, u32 x, u32 y) { return spv_emit_bool_binary(&c->emit, c->bool_type, 0, x, y); }
 static inline u32 cc_or(DirectCtx* c, u32 x, u32 y) { return spv_emit_bool_binary(&c->emit, c->bool_type, 1, x, y); }
 static inline u32 cc_xor(DirectCtx* c, u32 x, u32 y) { return spv_emit_bool_binary(&c->emit, c->bool_type, 2, x, y); }

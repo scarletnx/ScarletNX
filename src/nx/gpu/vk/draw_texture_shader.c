@@ -54,8 +54,8 @@ VkSh* vk_draw_texture_vertex(void) {
     spv_emit_label(&e, spv_emit_id(&e));
     u32 index = spv_emit_load(&e, u32_type, vertex);
     u32 one = spv_emit_constant_u32(&e, u32_type, 1);
-    u32 component[2] = {spv_emit_bitwise_and_u32(&e, u32_type, index, one),
-                        spv_emit_shift_right_u32(&e, u32_type, index, one)};
+    u32 component[2] = {spv_emit_binary(&e, SPV_OP_BITWISE_AND, u32_type, index, one),
+                        spv_emit_binary(&e, SPV_OP_SHIFT_RIGHT_LOGICAL, u32_type, index, one)};
     u32 output[2][4];
     for (u32 member = 0; member < 2; member++) {
         for (u32 axis = 0; axis < 2; axis++) {
@@ -65,8 +65,8 @@ VkSh* vk_draw_texture_vertex(void) {
             u32 high = spv_emit_push_component_f32(&e, pointer, push,
                 spv_emit_constant_u32(&e, u32_type, member),
                 spv_emit_constant_u32(&e, u32_type, axis + 2), f32);
-            u32 select_high = spv_emit_i_equal(&e, boolean, component[axis], one);
-            output[member][axis] = spv_emit_select(&e, f32, select_high, high, low);
+            u32 select_high = spv_emit_binary(&e, SPV_OP_I_EQUAL, boolean, component[axis], one);
+            output[member][axis] = spv_emit_ternary(&e, SPV_OP_SELECT, f32, select_high, high, low);
         }
         output[member][2] = spv_emit_constant_f32(&e, f32, 0);
         output[member][3] = spv_emit_constant_f32(&e, f32, 1);

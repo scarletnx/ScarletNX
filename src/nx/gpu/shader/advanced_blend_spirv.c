@@ -11,18 +11,18 @@ typedef struct {
     u32 f, b, zero, one;
 } BlendEmit;
 static u32 constant(BlendEmit* c, float x) { return spv_emit_constant_f32(c->e, c->f, x); }
-static u32 add(BlendEmit* c, u32 a, u32 b) { return spv_emit_fadd(c->e, c->f, a, b); }
+static u32 add(BlendEmit* c, u32 a, u32 b) { return spv_emit_binary(c->e, SPV_OP_F_ADD, c->f, a, b); }
 static u32 subtract(BlendEmit* c, u32 a, u32 b) { return SPV(c->e, SPV_OP_F_SUB, c->f, a, b); }
-static u32 multiply(BlendEmit* c, u32 a, u32 b) { return spv_emit_fmul(c->e, c->f, a, b); }
+static u32 multiply(BlendEmit* c, u32 a, u32 b) { return spv_emit_binary(c->e, SPV_OP_F_MUL, c->f, a, b); }
 static u32 minimum(BlendEmit* c, u32 a, u32 b) { return SPV_EXT(c->e, c->f, SPV_GLSL_F_MIN, a, b); }
 static u32 maximum(BlendEmit* c, u32 a, u32 b) { return SPV_EXT(c->e, c->f, SPV_GLSL_F_MAX, a, b); }
 static u32 less(BlendEmit* c, u32 a, u32 b) { return SPV(c->e, SPV_OP_F_ORD_LESS_THAN, c->b, a, b); }
 static u32 equal(BlendEmit* c, u32 a, u32 b) { return SPV(c->e, SPV_OP_F_ORD_EQUAL, c->b, a, b); }
 static u32 choose(BlendEmit* c, u32 predicate, u32 yes, u32 no) {
-    return spv_emit_select(c->e, c->f, predicate, yes, no);
+    return spv_emit_ternary(c->e, SPV_OP_SELECT, c->f, predicate, yes, no);
 }
 static u32 divide(BlendEmit* c, u32 a, u32 b) {
-    return spv_emit_fdiv(c->e, c->f, a, choose(c, equal(c, b, c->zero), c->one, b));
+    return spv_emit_binary(c->e, SPV_OP_F_DIV, c->f, a, choose(c, equal(c, b, c->zero), c->one, b));
 }
 /* OpFDiv permits reciprocal error. Preserve the exact fully covered color endpoint before equations compare it to
    one; otherwise VIVIDLIGHT can choose zero instead of one when a source color equals its nonzero alpha. */
@@ -91,7 +91,7 @@ static u32 artistic(BlendEmit* c, u32 mode, u32 s, u32 d) {
         }
         case NVN_BLEND_ADVANCED_MODE_DIFFERENCE: {
             u32 delta = subtract(c, d, s);
-            return maximum(c, delta, spv_emit_fnegate(c->e, c->f, delta));
+            return maximum(c, delta, spv_emit_unary(c->e, SPV_OP_F_NEGATE, c->f, delta));
         }
         case NVN_BLEND_ADVANCED_MODE_EXCLUSION: return subtract(c, add(c, s, d), multiply(c, two, multiply(c, s, d)));
         case NVN_BLEND_ADVANCED_MODE_INVERT: return complement(c, d);
@@ -265,7 +265,8 @@ static void blend_resolve_sample(SpvEmitter* e, u32 f, u32 b, u32 vec4, const u3
     u32 valid = sample ? SPV(e, SPV_OP_IMAGE_READ, vec4, images[1], coordinate, 64, sample)
                        : SPV(e, SPV_OP_IMAGE_READ, vec4, images[1], coordinate);
     u32 valid_red = spv_emit_vec4_extract(e, f, valid, 0);
-    u32 covered = spv_emit_bool_not(e, b, SPV(e, SPV_OP_F_ORD_EQUAL, b, valid_red, spv_emit_constant_f32(e, f, 0)));
+    u32 covered = spv_emit_unary(e, SPV_OP_LOGICAL_NOT, b,
+                                 SPV(e, SPV_OP_F_ORD_EQUAL, b, valid_red, spv_emit_constant_f32(e, f, 0)));
     u32 write = spv_emit_id(e), done = spv_emit_id(e);
     spv_emit_selection_merge(e, done);
     spv_emit_branch_conditional(e, covered, write, done);

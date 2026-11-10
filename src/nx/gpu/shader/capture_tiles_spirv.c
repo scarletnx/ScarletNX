@@ -27,23 +27,25 @@ void shader_capture_tile_mark(SpvEmitter* e, uint32_t f32, uint32_t u32_type, ui
     inside = SPV(e, SPV_OP_LOGICAL_AND, boolean, inside, SPV(e, SPV_OP_F_ORD_GREATER_THAN_EQUAL, boolean, x, zero_f));
     inside = SPV(e, SPV_OP_LOGICAL_AND, boolean, inside, SPV(e, SPV_OP_F_ORD_GREATER_THAN_EQUAL, boolean, y, zero_f));
     inside = SPV(e, SPV_OP_LOGICAL_AND, boolean, inside,
-                 SPV(e, SPV_OP_F_ORD_LESS_THAN, boolean, x, spv_emit_convert_u_to_f(e, f32, width)));
+                 SPV(e, SPV_OP_F_ORD_LESS_THAN, boolean, x, spv_emit_unary(e, SPV_OP_CONVERT_U_TO_F, f32, width)));
     inside = SPV(e, SPV_OP_LOGICAL_AND, boolean, inside,
-                 SPV(e, SPV_OP_F_ORD_LESS_THAN, boolean, y, spv_emit_convert_u_to_f(e, f32, height)));
+                 SPV(e, SPV_OP_F_ORD_LESS_THAN, boolean, y, spv_emit_unary(e, SPV_OP_CONVERT_U_TO_F, f32, height)));
     uint32_t mark = spv_emit_id(e), done = spv_emit_id(e);
     spv_emit_selection_merge(e, done);
     spv_emit_branch_conditional(e, inside, mark, done);
     spv_emit_label(e, mark);
     uint32_t shift = spv_emit_constant_u32(e, u32_type, 3);
-    uint32_t tx = SPV(e, SPV_OP_SHIFT_RIGHT_LOGICAL, u32_type, spv_emit_convert_f_to_u(e, u32_type, x), shift);
-    uint32_t ty = SPV(e, SPV_OP_SHIFT_RIGHT_LOGICAL, u32_type, spv_emit_convert_f_to_u(e, u32_type, y), shift);
+    uint32_t tx =
+        SPV(e, SPV_OP_SHIFT_RIGHT_LOGICAL, u32_type, spv_emit_unary(e, SPV_OP_CONVERT_F_TO_U, u32_type, x), shift);
+    uint32_t ty =
+        SPV(e, SPV_OP_SHIFT_RIGHT_LOGICAL, u32_type, spv_emit_unary(e, SPV_OP_CONVERT_F_TO_U, u32_type, y), shift);
     uint32_t row = SPV(e, SPV_OP_I_ADD, u32_type, SPV(e, SPV_OP_I_MUL, u32_type, layer, tiles_y), ty);
     uint32_t tile = SPV(e, SPV_OP_I_ADD, u32_type, SPV(e, SPV_OP_I_MUL, u32_type, row, tiles_x), tx);
     uint32_t header = spv_emit_constant_u32(e, u32_type, SH_CAPTURE_TILE_HEADER);
     uint32_t flag = tile_word(e, u32_type, buffer, SPV(e, SPV_OP_I_ADD, u32_type, header, tile));
     uint32_t prior = spv_emit_atomic_u32(e, u32_type, SPV_OP_ATOMIC_OR, flag,
                                          spv_emit_constant_u32(e, u32_type, 1));
-    uint32_t first = spv_emit_i_equal(e, boolean, prior, zero);
+    uint32_t first = spv_emit_binary(e, SPV_OP_I_EQUAL, boolean, prior, zero);
     uint32_t append = spv_emit_id(e), next = spv_emit_id(e);
     spv_emit_selection_merge(e, next);
     spv_emit_branch_conditional(e, first, append, next);
@@ -70,8 +72,8 @@ uint32_t shader_capture_tile_coordinates(SpvEmitter* e, uint32_t u32_type, uint3
     if (adaptive) {
         full = spv_emit_id(e); listed = spv_emit_id(e); merge = spv_emit_id(e);
         uint32_t mode = tile_header(e, u32_type, buffer, 11);
-        uint32_t dense = spv_emit_i_not_equal(e, spv_emit_type_bool(e), mode,
-                                              spv_emit_constant_u32(e, u32_type, 0));
+        uint32_t dense =
+            spv_emit_binary(e, SPV_OP_I_NOT_EQUAL, spv_emit_type_bool(e), mode, spv_emit_constant_u32(e, u32_type, 0));
         spv_emit_selection_merge(e, merge);
         spv_emit_branch_conditional(e, dense, full, listed);
         spv_emit_label(e, full);
@@ -103,7 +105,8 @@ uint32_t shader_capture_tile_coordinates(SpvEmitter* e, uint32_t u32_type, uint3
     uint32_t y = spv_emit_vec4_extract(e, u32_type, local_xyz, 1);
     uint32_t z = spv_emit_vec4_extract(e, u32_type, local_xyz, 2);
     uint32_t local = SPV(e, SPV_OP_BITWISE_OR, u32_type, SPV(e, SPV_OP_BITWISE_OR, u32_type, x, y), z);
-    uint32_t first = spv_emit_i_equal(e, spv_emit_type_bool(e), local, spv_emit_constant_u32(e, u32_type, 0));
+    uint32_t first =
+        spv_emit_binary(e, SPV_OP_I_EQUAL, spv_emit_type_bool(e), local, spv_emit_constant_u32(e, u32_type, 0));
     uint32_t reset = spv_emit_id(e), done = spv_emit_id(e);
     spv_emit_selection_merge(e, done);
     spv_emit_branch_conditional(e, first, reset, done);
@@ -128,10 +131,12 @@ uint32_t* shader_capture_tiles_finalize_spirv(uint32_t binding, size_t* words) {
     uint32_t active = tile_header(&e, u, buffer, 0), x = tile_header(&e, u, buffer, 3);
     uint32_t y = tile_header(&e, u, buffer, 4), layers = tile_header(&e, u, buffer, 7);
     uint32_t total = SPV(&e, SPV_OP_I_MUL, u, SPV(&e, SPV_OP_I_MUL, u, x, y), layers);
-    uint32_t full = spv_emit_i_equal(&e, b, active, total);
+    uint32_t full = spv_emit_binary(&e, SPV_OP_I_EQUAL, b, active, total);
     uint32_t one = spv_emit_constant_u32(&e, u, 1), zero = spv_emit_constant_u32(&e, u, 0);
-    uint32_t values[4] = {spv_emit_select(&e, u, full, x, active), spv_emit_select(&e, u, full, y, one),
-                          spv_emit_select(&e, u, full, layers, one), spv_emit_select(&e, u, full, one, zero)};
+    uint32_t values[4] = {spv_emit_ternary(&e, SPV_OP_SELECT, u, full, x, active),
+                          spv_emit_ternary(&e, SPV_OP_SELECT, u, full, y, one),
+                          spv_emit_ternary(&e, SPV_OP_SELECT, u, full, layers, one),
+                          spv_emit_ternary(&e, SPV_OP_SELECT, u, full, one, zero)};
     for (uint32_t i = 0; i < 4; i++)
         spv_emit_store(&e, tile_word(&e, u, buffer, spv_emit_constant_u32(&e, u, 8 + i)), values[i]);
     spv_emit_return(&e);

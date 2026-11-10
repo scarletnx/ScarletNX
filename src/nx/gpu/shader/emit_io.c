@@ -46,7 +46,7 @@ void shader_alpha_test(DirectCtx* c, u32 push, u32 push_pointer, u32 alpha) {
         u32 result = spv_emit_bool_binary(&c->emit, c->bool_type, 0, selected, comparison);
         pass = spv_emit_bool_binary(&c->emit, c->bool_type, 1, pass, result);
     }
-    u32 fail = spv_emit_bool_not(&c->emit, c->bool_type, pass);
+    u32 fail = spv_emit_unary(&c->emit, SPV_OP_LOGICAL_NOT, c->bool_type, pass);
     fail = spv_emit_bool_binary(&c->emit, c->bool_type, 0, active, fail);
     if (c->discarded) { /* in the flow loop: discarded after it */
         spv_emit_store(
@@ -69,11 +69,12 @@ u32 shader_frag_y_origin(DirectCtx* c, u32 push, u32 y) {
                                                  spv_emit_constant_u32(&c->emit, c->u32_type, 2), c->u32_type);
     u32 height = spv_emit_push_component_f32(&c->emit, pointer, push, one,
                                              spv_emit_constant_u32(&c->emit, c->u32_type, 3), c->u32_type);
-    u32 up = spv_emit_fadd(&c->emit, c->f32_type, spv_emit_convert_u_to_f(&c->emit, c->f32_type, height),
-                           spv_emit_fnegate(&c->emit, c->f32_type, y));
+    u32 up = spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type,
+                             spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, c->f32_type, height),
+                             spv_emit_unary(&c->emit, SPV_OP_F_NEGATE, c->f32_type, y));
     spv_emit_no_contraction(&c->emit, up);
-    return spv_emit_select(&c->emit, c->f32_type, spv_emit_i_not_equal(&c->emit, c->bool_type, lower_left, c->zero), up,
-                           y);
+    return spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type,
+                            spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type, lower_left, c->zero), up, y);
 }
 
 /* The last stage's position as the rasterizer takes it. A viewport coordinate swizzle in the key (SNX_SH_SWIZZLE)
@@ -89,28 +90,29 @@ void shader_vertex_position_fix(DirectCtx* c, u32 position, u32 push, u32 push_p
         for (u32 k = 0; k < 4; k++) {
             u32 code = (c->swizzle >> (SNX_SH_SWIZZLE_SHIFT + 4 * k)) & 7;
             u32 part = spv_emit_vec4_extract(&c->emit, c->f32_type, value, code >> 1);
-            if (code & 1) part = spv_emit_fnegate(&c->emit, c->f32_type, part);
+            if (code & 1) part = spv_emit_unary(&c->emit, SPV_OP_F_NEGATE, c->f32_type, part);
             swizzled = spv_emit_vec4_insert(&c->emit, vec4_type, swizzled, part, k);
         }
         spv_emit_store(&c->emit, position, swizzled);
     }
     if (c->window_xy) {
         u32 size =
-            spv_emit_bitcast(&c->emit, c->u32_type,
-                             spv_emit_push_component_f32(&c->emit, push_pointer, push, member,
-                                                         spv_emit_constant_u32(&c->emit, c->u32_type, 3), c->f32_type));
-        u32 extent[2] = {
-            spv_emit_bitwise_and_u32(&c->emit, c->u32_type, size, spv_emit_constant_u32(&c->emit, c->u32_type, 0xFFFF)),
-            spv_emit_shift_right_u32(&c->emit, c->u32_type, size, spv_emit_constant_u32(&c->emit, c->u32_type, 16))};
+            spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
+                           spv_emit_push_component_f32(&c->emit, push_pointer, push, member,
+                                                       spv_emit_constant_u32(&c->emit, c->u32_type, 3), c->f32_type));
+        u32 extent[2] = {spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, size,
+                                         spv_emit_constant_u32(&c->emit, c->u32_type, 0xFFFF)),
+                         spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, size,
+                                         spv_emit_constant_u32(&c->emit, c->u32_type, 16))};
         u32 two = spv_emit_constant_f32(&c->emit, c->f32_type, 2.0f);
         u32 minus_one = spv_emit_constant_f32(&c->emit, c->f32_type, -1.0f);
         u32 value = spv_emit_load(&c->emit, vec4_type, position);
         for (u32 k = 0; k < 2; k++) {
-            u32 scale =
-                spv_emit_fdiv(&c->emit, c->f32_type, two, spv_emit_convert_u_to_f(&c->emit, c->f32_type, extent[k]));
+            u32 scale = spv_emit_binary(&c->emit, SPV_OP_F_DIV, c->f32_type, two,
+                                        spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, c->f32_type, extent[k]));
             u32 pixels = spv_emit_vec4_extract(&c->emit, c->f32_type, value, k);
-            u32 clip =
-                spv_emit_fadd(&c->emit, c->f32_type, spv_emit_fmul(&c->emit, c->f32_type, pixels, scale), minus_one);
+            u32 clip = spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type,
+                                       spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, pixels, scale), minus_one);
             value = spv_emit_vec4_insert(&c->emit, vec4_type, value, clip, k);
         }
         spv_emit_store(&c->emit, position, value);
@@ -126,10 +128,10 @@ void shader_vertex_position_fix(DirectCtx* c, u32 position, u32 push, u32 push_p
     u32 value = spv_emit_load(&c->emit, vec4_type, position);
     u32 z = spv_emit_vec4_extract(&c->emit, c->f32_type, value, 2);
     u32 w = spv_emit_vec4_extract(&c->emit, c->f32_type, value, 3);
-    u32 sum = spv_emit_fadd(&c->emit, c->f32_type, z, w);
+    u32 sum = spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type, z, w);
     spv_emit_no_contraction(&c->emit, sum);
     u32 half = spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f);
-    u32 depth = spv_emit_fmul(&c->emit, c->f32_type, sum, half);
+    u32 depth = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, sum, half);
     spv_emit_no_contraction(&c->emit, depth);
     value = spv_emit_vec4_insert(&c->emit, vec4_type, value, depth, 2);
     spv_emit_store(&c->emit, position, value);
@@ -208,7 +210,7 @@ static u32 xfb_word(DirectCtx* c, const XfbOut* x, u32 word) {
         var = x->output_attrs[(word - 32) >> 2];
     if (!var) return 0;
     u32 value = spv_emit_vec4_extract(&c->emit, c->f32_type, spv_emit_load(&c->emit, x->vec4, var), component);
-    return spv_emit_bitcast(&c->emit, c->u32_type, value);
+    return spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, value);
 }
 
 /* Transform feedback by stores: a vertex's place is VertexIndex - first + (InstanceIndex - first instance) * the
@@ -219,11 +221,12 @@ static void xfb_write(DirectCtx* c, const XfbOut* x) {
     for (u32 i = 0; i < 5; i++)
         p[i] = spv_emit_load(
             e, u, spv_emit_storage_access_u32(e, x->pointer, x->params, c->zero, spv_emit_constant_u32(e, u, i)));
-    u32 vertex = spv_emit_isub_u32(e, u, spv_emit_load(e, u, x->vertex_index), p[0]);
-    u32 instance = spv_emit_isub_u32(e, u, spv_emit_load(e, u, x->instance_index), p[1]);
-    u32 place = spv_emit_iadd_u32(e, u, vertex, spv_emit_imul_u32(e, u, instance, p[2]));
-    u32 in = spv_emit_bool_binary(e, c->bool_type, 0, spv_emit_u_less(e, c->bool_type, vertex, p[2]), /* and */
-                                  spv_emit_u_less(e, c->bool_type, place, p[3]));
+    u32 vertex = spv_emit_binary(e, SPV_OP_I_SUB, u, spv_emit_load(e, u, x->vertex_index), p[0]);
+    u32 instance = spv_emit_binary(e, SPV_OP_I_SUB, u, spv_emit_load(e, u, x->instance_index), p[1]);
+    u32 place = spv_emit_iadd_u32(e, u, vertex, spv_emit_binary(e, SPV_OP_I_MUL, u, instance, p[2]));
+    u32 in = spv_emit_bool_binary(e, c->bool_type, 0,
+                                  spv_emit_binary(e, SPV_OP_U_LESS_THAN, c->bool_type, vertex, p[2]), /* and */
+                                  spv_emit_binary(e, SPV_OP_U_LESS_THAN, c->bool_type, place, p[3]));
     u32 yes = spv_emit_id(e), done = spv_emit_id(e);
     spv_emit_selection_merge(e, done);
     spv_emit_branch_conditional(e, in, yes, done);
@@ -231,12 +234,13 @@ static void xfb_write(DirectCtx* c, const XfbOut* x) {
     for (u32 b = 0; b < 4; b++) {
         if (!x->buffer[b]) continue;
         /* a buffer that the guest left off has a 16-byte placeholder binding: no store goes there (p[4], the mask) */
-        u32 bit = spv_emit_bitwise_and_u32(e, u, p[4], spv_emit_constant_u32(e, u, 1u << b));
-        u32 on = spv_emit_i_not_equal(e, c->bool_type, bit, c->zero), store = spv_emit_id(e), next = spv_emit_id(e);
+        u32 bit = spv_emit_binary(e, SPV_OP_BITWISE_AND, u, p[4], spv_emit_constant_u32(e, u, 1u << b));
+        u32 on = spv_emit_binary(e, SPV_OP_I_NOT_EQUAL, c->bool_type, bit, c->zero), store = spv_emit_id(e),
+            next = spv_emit_id(e);
         spv_emit_selection_merge(e, next); /* the merge must come just before its branch */
         spv_emit_branch_conditional(e, on, store, next);
         spv_emit_label(e, store);
-        u32 base = spv_emit_imul_u32(e, u, place, spv_emit_constant_u32(e, u, x->key->stride[b] / 4u));
+        u32 base = spv_emit_binary(e, SPV_OP_I_MUL, u, place, spv_emit_constant_u32(e, u, x->key->stride[b] / 4u));
         for (u32 w = 0; w < x->key->count[b] && w < 128; w++) {
             u32 value = xfb_word(c, x, x->key->layout[b][w]);
             if (!value) continue;
@@ -387,9 +391,10 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             u32 offset =
                 k ? spv_emit_iadd_u32(&c->emit, c->u32_type, base, spv_emit_constant_u32(&c->emit, c->u32_type, k * 4))
                   : base;
-            u32 vector = spv_emit_shift_right_u32(&c->emit, c->u32_type, offset, four);
-            u32 component = spv_emit_bitwise_and_u32(
-                &c->emit, c->u32_type, spv_emit_shift_right_u32(&c->emit, c->u32_type, offset, two), three);
+            u32 vector = spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, offset, four);
+            u32 component =
+                spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
+                                spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, offset, two), three);
             u32 value = c->zero;
             for (u32 v = 0; v <= 32; v++) {
                 u32 variable = v < 32 ? inputs[v] : between ? position_in : 0;
@@ -397,10 +402,11 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 u32 type = v < 32 ? input_component_type[v] : c->f32_type;
                 u32 bits = spv_emit_load(
                     &c->emit, type, spv_emit_interface_scalar_pointer(&c->emit, 1, type, variable, vertex, component));
-                if (type != c->u32_type) bits = spv_emit_bitcast(&c->emit, c->u32_type, bits);
+                if (type != c->u32_type) bits = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, bits);
                 u32 at = spv_emit_constant_u32(&c->emit, c->u32_type, v < 32 ? 8 + v : 7);
-                value = spv_emit_select(&c->emit, c->u32_type, spv_emit_i_equal(&c->emit, c->bool_type, vector, at),
-                                        bits, value);
+                value =
+                    spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
+                                     spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, vector, at), bits, value);
             }
             reg_write(c, d + k, value);
         }
@@ -447,7 +453,9 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 pointer = spv_emit_interface_scalar_pointer(
                     &c->emit, 1, c->f32_type, location < 0x80 ? position_in : inputs[(location - 0x80) >> 4], vertex,
                     component);
-            if (pointer) value = spv_emit_bitcast(&c->emit, c->u32_type, spv_emit_load(&c->emit, c->f32_type, pointer));
+            if (pointer)
+                value = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
+                                       spv_emit_load(&c->emit, c->f32_type, pointer));
             reg_write(c, d + k, value);
         }
     } else if (op == O_ALD) {
@@ -460,13 +468,13 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                     instance = spv_emit_load(&c->emit, c->u32_type, instance_index);
                     u32 base_bits =
                         spv_emit_push_component_f32(&c->emit, push_pointer, push, c->zero, c->zero, c->f32_type);
-                    u32 base = spv_emit_bitcast(&c->emit, c->u32_type, base_bits);
+                    u32 base = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, base_bits);
                     /* with draw parameters the push holds what the draw's first instance adds to the base
                        instance (render.c), which BaseInstance gives */
                     if (base_instance)
-                        base = spv_emit_isub_u32(&c->emit, c->u32_type,
-                                                 spv_emit_load(&c->emit, c->u32_type, base_instance), base);
-                    instance = spv_emit_isub_u32(&c->emit, c->u32_type, instance, base);
+                        base = spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type,
+                                               spv_emit_load(&c->emit, c->u32_type, base_instance), base);
+                    instance = spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, instance, base);
                 } else
                     instance = spv_emit_load(&c->emit, c->u32_type, vertex_index);
                 reg_write(c, d + k, instance);
@@ -474,8 +482,9 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 u32 vector = spv_emit_load(&c->emit, input_vec_type[index], inputs[index]);
                 u32 value = spv_emit_vec4_extract(&c->emit, input_component_type[index], vector, (location >> 2) & 3);
                 reg_write(c, d + k,
-                          input_component_type[index] == c->u32_type ? value
-                                                                     : spv_emit_bitcast(&c->emit, c->u32_type, value));
+                          input_component_type[index] == c->u32_type
+                              ? value
+                              : spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, value));
             }
         }
     } else if (op == O_AST && (stage == ST_TCS || B(w, 31, 1))) {
@@ -546,13 +555,13 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 stream = op == O_OUT_I ? spv_emit_constant_u32(&c->emit, c->u32_type, B(w, 20, 2))
                      : op == O_OUT_C ? shader_cbuf_word(c, w)
                                         : reg_read(c, b);
-        stream = spv_emit_bitwise_and_u32(&c->emit, c->u32_type, stream,
-                                           spv_emit_constant_u32(&c->emit, c->u32_type, 3));
+        stream = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, stream,
+                                 spv_emit_constant_u32(&c->emit, c->u32_type, 3));
         for (u32 target = 0; target < 4; target++) {
             if (target && !(t->stream_mask & (1u << target))) continue;
             u32 literal = spv_emit_constant_u32(&c->emit, c->u32_type, target);
             u32 emit_label = spv_emit_id(&c->emit), merge = spv_emit_id(&c->emit);
-            u32 selected = spv_emit_i_equal(&c->emit, c->bool_type, stream, literal);
+            u32 selected = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, stream, literal);
             spv_emit_selection_merge(&c->emit, merge);
             spv_emit_branch_conditional(&c->emit, selected, emit_label, merge);
             spv_emit_label(&c->emit, emit_label);
@@ -580,11 +589,11 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                             else if (attr == 27 && point_size)
                                 value = spv_emit_load(&c->emit, c->f32_type, point_size);
                             else if (attr == 25 && layer_output)
-                                value = spv_emit_bitcast(&c->emit, c->f32_type,
-                                                          spv_emit_load(&c->emit, i32_type, layer_output));
+                                value = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type,
+                                                       spv_emit_load(&c->emit, i32_type, layer_output));
                             else if (attr == 26 && viewport_output)
-                                value = spv_emit_bitcast(&c->emit, c->f32_type,
-                                                          spv_emit_load(&c->emit, i32_type, viewport_output));
+                                value = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type,
+                                                       spv_emit_load(&c->emit, i32_type, viewport_output));
                             spv_emit_store(&c->emit, variable, value);
                         }
                     }
@@ -611,13 +620,14 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
            mode by its vector (one nothing feeds reads 0, 0, 0, 1) and interpolated in its own mode, then the
            instruction's mode and saturation, as below */
         u32 offset = reg_read(c, a);
-        u32 vector =
-            spv_emit_shift_right_u32(&c->emit, c->u32_type, offset, spv_emit_constant_u32(&c->emit, c->u32_type, 4));
-        u32 component = spv_emit_bitwise_and_u32(
-            &c->emit, c->u32_type,
-            spv_emit_shift_right_u32(&c->emit, c->u32_type, offset, spv_emit_constant_u32(&c->emit, c->u32_type, 2)),
-            spv_emit_constant_u32(&c->emit, c->u32_type, 3));
-        u32 last = spv_emit_i_equal(&c->emit, c->bool_type, component, spv_emit_constant_u32(&c->emit, c->u32_type, 3));
+        u32 vector = spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, offset,
+                                     spv_emit_constant_u32(&c->emit, c->u32_type, 4));
+        u32 component = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
+                                        spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, offset,
+                                                        spv_emit_constant_u32(&c->emit, c->u32_type, 2)),
+                                        spv_emit_constant_u32(&c->emit, c->u32_type, 3));
+        u32 last = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, component,
+                                   spv_emit_constant_u32(&c->emit, c->u32_type, 3));
         u32 wcoord =
             fragcoord ? spv_emit_vec4_extract(&c->emit, c->f32_type, spv_emit_load(&c->emit, vec4, fragcoord), 3) : 0;
         u32 value = zero_f;
@@ -629,19 +639,19 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                     spv_emit_load(&c->emit, c->f32_type,
                                   spv_emit_interface_scalar_pointer(&c->emit, 1, c->f32_type, inputs[v], 0, component));
                 if (shader_ipa_interpolation(sph, v) == 2 && wcoord) {
-                    bits = spv_emit_fmul(&c->emit, c->f32_type, bits, wcoord);
+                    bits = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, bits, wcoord);
                     spv_emit_no_contraction(&c->emit, bits);
                 }
             } else /* no output feeds it (in_unfed_mask) */
-                bits = spv_emit_select(&c->emit, c->f32_type, last, spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f),
-                                       zero_f);
-            value = spv_emit_select(
-                &c->emit, c->f32_type,
-                spv_emit_i_equal(&c->emit, c->bool_type, vector, spv_emit_constant_u32(&c->emit, c->u32_type, 8 + v)),
-                bits, value);
+                bits = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type, last,
+                                        spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f), zero_f);
+            value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type,
+                                     spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, vector,
+                                                     spv_emit_constant_u32(&c->emit, c->u32_type, 8 + v)),
+                                     bits, value);
         }
         if (B(w, 54, 2) == 1) {
-            value = spv_emit_fmul(&c->emit, c->f32_type, value, reg_read_as(c, b, c->f32_type));
+            value = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, value, reg_read_as(c, b, c->f32_type));
             spv_emit_no_contraction(&c->emit, value);
         }
         value = shader_float_saturate(c, value, B(w, 51, 1));
@@ -652,27 +662,28 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 value;
         u32 interpolation = 0;
         if (addr == 0x64) {
-            value = layer_input ? spv_emit_bitcast(&c->emit, c->f32_type,
-                                                   spv_emit_bitcast(&c->emit, c->u32_type,
-                                                                    spv_emit_load(&c->emit, i32_type, layer_input)))
-                                : spv_emit_bitcast(&c->emit, c->f32_type, c->zero); /* no capability: layer 0 */
+            value = layer_input
+                        ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type,
+                                         spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
+                                                        spv_emit_load(&c->emit, i32_type, layer_input)))
+                        : spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, c->zero); /* no capability: layer 0 */
         } else if (addr == 0x3fc) {
             u32 facing = spv_emit_load(&c->emit, c->bool_type, frontface);
-            u32 bits = spv_emit_select(&c->emit, c->u32_type, facing,
-                                       spv_emit_constant_u32(&c->emit, c->u32_type, 0xffffffffu), c->zero);
-            value = spv_emit_bitcast(&c->emit, c->f32_type, bits);
+            u32 bits = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, facing,
+                                        spv_emit_constant_u32(&c->emit, c->u32_type, 0xffffffffu), c->zero);
+            value = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, bits);
         } else if (addr == 0x60) {
-            value = spv_emit_bitcast(&c->emit, c->f32_type,
-                                     primitive_read(c, primitive_id));
+            value = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, primitive_read(c, primitive_id));
         } else if (addr == 0x2e0 || addr == 0x2e4) {
             value = spv_emit_vec4_extract(&c->emit, c->f32_type, spv_emit_load(&c->emit, vec2, point_coord), component);
             if (addr == 0x2e4) { /* T flips with the sprite's origin, a push constant (see vk/render.c) */
                 u32 flip = spv_emit_push_component_f32(&c->emit, push_pointer, push, c->zero,
                                                        spv_emit_constant_u32(&c->emit, c->u32_type, 3), c->f32_type);
-                u32 flipped = spv_emit_fadd(&c->emit, c->f32_type, spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f),
-                                            spv_emit_fnegate(&c->emit, c->f32_type, value));
-                value = spv_emit_select(&c->emit, c->f32_type,
-                                        spv_emit_fcompare(&c->emit, c->bool_type, 5, flip, zero_f), flipped, value);
+                u32 flipped = spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type,
+                                              spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f),
+                                              spv_emit_unary(&c->emit, SPV_OP_F_NEGATE, c->f32_type, value));
+                value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type,
+                                         spv_emit_fcompare(&c->emit, c->bool_type, 5, flip, zero_f), flipped, value);
             }
         } else if (addr >= 0x80) {
             u32 input = (addr - 0x80) >> 4;
@@ -710,7 +721,7 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 u32 zero_index = spv_emit_constant_u32(&c->emit, c->u32_type, 0);
                 u32 scale = spv_emit_uniform_component(&c->emit, c->scale_pointer, c->scale_buffer, zero_index,
                                                        zero_index, zero_index, c->f32_type);
-                value = spv_emit_fmul(&c->emit, c->f32_type, value, scale);
+                value = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, value, scale);
                 spv_emit_no_contraction(&c->emit, value);
             }
             if (addr == 0x74) value = shader_frag_y_origin(c, push, value);
@@ -720,12 +731,12 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                interpolated 1/w, FragCoord.w, it is what the hardware gives. */
             u32 coord = spv_emit_load(&c->emit, vec4, fragcoord);
             u32 wcoord = spv_emit_vec4_extract(&c->emit, c->f32_type, coord, 3);
-            value = spv_emit_fmul(&c->emit, c->f32_type, value, wcoord);
+            value = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, value, wcoord);
             spv_emit_no_contraction(&c->emit, value);
         }
         if (B(w, 54, 2) == 1) {
             u32 rhs = reg_read_as(c, b, c->f32_type);
-            value = spv_emit_fmul(&c->emit, c->f32_type, value, rhs);
+            value = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, value, rhs);
             spv_emit_no_contraction(&c->emit, value);
         }
         value = shader_float_saturate(c, value, B(w, 51, 1));
