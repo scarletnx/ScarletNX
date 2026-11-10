@@ -2799,7 +2799,7 @@ static u8* ship_window(const u8* p, size_t avail) {
    still translates and compiles its own, as now (docs/layers/gpu/pipeline-libraries.md, step 8) */
 static void ship_warm(int stage, int indexed, const u32* spv, u32 nw) {
     /* A part exists only with pipeline libraries (g_vk.has_gpl): a device without them makes every pipeline whole, and
-       a part made there is a library create the driver was never promised — MoltenVK dereferences the null
+       a part made there is a library create the driver was never promised: MoltenVK dereferences the null
        rasterization state of a fragment part and takes the process down */
     if (!g_vk.has_gpl) return;
     /* a control program shares the pre-rasterization part with the vertex program, so it is warmed with its draw */

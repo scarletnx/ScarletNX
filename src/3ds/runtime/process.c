@@ -297,7 +297,7 @@ static bool mount(SnxCtrProcess* p, const char* directory, const SnxCtrSource* g
         return false;
     }
     p->sd = sd;
-/* the regions the title's SMDH (ExeFS icon) says it runs in, which pick the console's (services/cfg.c) */
+    /* the regions the title's SMDH (ExeFS icon) says it runs in, which pick the console's (services/cfg.c) */
     unsigned char smdh[0x2020];
     uint64_t smdh_size = 0;
     const unsigned char* icon = game ? snx_ctr_source_exefs(game, "icon", &smdh_size) : NULL;
