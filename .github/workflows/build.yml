@@ -611,24 +611,16 @@ jobs:
       DEBLOATED_PACKAGES_SHA: c8880a7e2f0a47b68ed5ae34e1b7aeecc2e5b3a55f3583b0b43d9818a15dbe8b
     strategy:
       fail-fast: false
+      # A pull request builds big-endian ppc64's alone; ppc64le, riscv64 and loongarch64 build where a nightly can
+      # come of the run (a push or a manual run)
       matrix:
-        include:
-          - arch: ppc64le
-            platform: ppc64le
-            preset: linux-ppc64le-cross
-            qemu: ppc64le
-          - arch: riscv64
-            platform: riscv64
-            preset: linux-riscv64-cross
-            qemu: riscv64
-          - arch: loongarch64
-            platform: loong64
-            preset: linux-loongarch64-cross
-            qemu: loongarch64
-          - arch: ppc64
-            platform: ppc64
-            preset: linux-ppc64-elfv2-cross
-            qemu: ppc64
+        include: >-
+          ${{ fromJSON(github.event_name == 'pull_request' && '[
+            {"arch": "ppc64", "platform": "ppc64", "preset": "linux-ppc64-elfv2-cross", "qemu": "ppc64"}]' || '[
+            {"arch": "ppc64le", "platform": "ppc64le", "preset": "linux-ppc64le-cross", "qemu": "ppc64le"},
+            {"arch": "riscv64", "platform": "riscv64", "preset": "linux-riscv64-cross", "qemu": "riscv64"},
+            {"arch": "loongarch64", "platform": "loong64", "preset": "linux-loongarch64-cross", "qemu": "loongarch64"},
+            {"arch": "ppc64", "platform": "ppc64", "preset": "linux-ppc64-elfv2-cross", "qemu": "ppc64"}]') }}
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -1619,20 +1611,15 @@ jobs:
     continue-on-error: true
     strategy:
       fail-fast: false
+      # platform as Docker names it, qemu as qemu-user and binfmt_misc do: the architectures appimage-cross built
       matrix:
-        include: # platform as Docker names it, qemu as qemu-user and binfmt_misc do
-          - arch: ppc64le
-            platform: ppc64le
-            qemu: ppc64le
-          - arch: riscv64
-            platform: riscv64
-            qemu: riscv64
-          - arch: loongarch64
-            platform: loong64
-            qemu: loongarch64
-          - arch: ppc64
-            platform: ppc64
-            qemu: ppc64
+        include: >-
+          ${{ fromJSON(github.event_name == 'pull_request' && '[
+            {"arch": "ppc64", "platform": "ppc64", "qemu": "ppc64"}]' || '[
+            {"arch": "ppc64le", "platform": "ppc64le", "qemu": "ppc64le"},
+            {"arch": "riscv64", "platform": "riscv64", "qemu": "riscv64"},
+            {"arch": "loongarch64", "platform": "loong64", "qemu": "loongarch64"},
+            {"arch": "ppc64", "platform": "ppc64", "qemu": "ppc64"}]') }}
     steps:
       - name: Name the commit
         id: commit
