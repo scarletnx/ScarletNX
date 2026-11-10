@@ -650,7 +650,10 @@ static void leaders(SnxCodegen* codegen, const AddressSet* extra, const AddressS
                 : SNX_A64_FLOW_UNDEF;
             if (kind == SNX_A64_FLOW_B || kind == SNX_A64_FLOW_BC)
                 mark_leader(f, snx_a64_branch_target(&insn, address));
-            if (kind == SNX_A64_FLOW_BL || kind == SNX_A64_FLOW_BLR) mark_leader(f, address + 4);
+            /* where a thread goes on through dispatch: after a call, and after an SVC it was stopped in (a save
+               state's threads start again from there) */
+            if (kind == SNX_A64_FLOW_BL || kind == SNX_A64_FLOW_BLR || kind == SNX_A64_FLOW_SVC)
+                mark_leader(f, address + 4);
             if (kind == SNX_A64_FLOW_BR) {
                 SnxU64 targets[SNX_JUMP_TABLE_MAX];
                 size_t n = snx_codegen_jump_table(codegen, address, targets, SNX_JUMP_TABLE_MAX);
