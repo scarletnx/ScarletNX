@@ -4,8 +4,11 @@
 # The target's flags for what is compiled outside CMake's own compiles (FFmpeg's and OpenSSL's builds and the
 # recompiler's runtime library), as cmake/apple.cmake gives them for Apple's: SNX_TARGET_FLAGS. It holds:
 #   - SNX_ARCH_FLAGS, the CPU baseline the whole build compiles for, which CMake's compiles get too (added here).
-#     Big-endian PowerPC64 builds for Clang's default CPU (ppc64, the PowerPC 970's ISA with AltiVec), ppc64le for
-#     POWER8. Before POWER8 there is no lqarx/stqcx., and Clang would call libatomic's __atomic_compare_exchange_16 for
+#     Big-endian PowerPC64 builds for every 64-bit PowerPC, as x86-64 builds for every x86-64: the ppc64 CPU without
+#     AltiVec (POWER4, POWER5 and the e5500 have none; Clang's default ppc64 takes the 970's) and without the optional
+#     square root and estimate instructions (fsqrt, fres, frsqrte, stfiwx), which the e5500 and e6500 lack. Clang has
+#     no -mno- flag for those, so the target features go to cc1. ppc64le builds for POWER8. Before POWER8 there is no
+#     lqarx/stqcx., and Clang would call libatomic's __atomic_compare_exchange_16 for
 #     snx_cas128 (helpers/integer.c), which a module links no library to have: such a build's modules call RtAPI.cas128
 #     (common/runtime/cas128.c), which takes POWER8's instructions where the machine has them and a lock elsewhere.
 #     SNX_PPC64_ELFV2 builds big-endian glibc for ELFv2 (Arch POWER's), as Clang builds it for ELFv1 (Debian ports').
@@ -25,6 +28,12 @@
 include_guard(GLOBAL)
 option(SNX_PPC64_ELFV2 "Build big-endian PowerPC64 glibc for ELFv2 (Arch POWER), not ELFv1 (Debian ports)" ON)
 set(SNX_ARCH_FLAGS "")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64|powerpc64)$")
+    list(APPEND SNX_ARCH_FLAGS -mcpu=ppc64 -mno-altivec)
+    foreach(feature IN ITEMS fsqrt fres frsqrte frsqrtes fre stfiwx)
+        list(APPEND SNX_ARCH_FLAGS -Xclang -target-feature -Xclang -${feature})
+    endforeach()
+endif()
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64|ppc64le|powerpc64|powerpc64le)$")
     if(SNX_PPC64_ELFV2)
         list(APPEND SNX_ARCH_FLAGS -mabi=elfv2)

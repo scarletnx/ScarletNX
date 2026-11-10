@@ -10,10 +10,10 @@
 * [What differs from the other hosts](#what-differs-from-the-other-hosts)
 * [Big-endian hosts](#big-endian-hosts)
   * [The Switch runtime](#the-switch-runtime)
-* [The PowerPC 970 and POWER4](#the-powerpc-970-and-power4)
+* [Every 64-bit PowerPC](#every-64-bit-powerpc)
 
-ScarletNX builds for 64-bit PowerPC Linux from POWER8 on, and big-endian builds from the PowerPC 970 (the PowerMac
-G5) and POWER4 on. The little-endian port (ppc64le) works: the test suite
+ScarletNX builds for 64-bit PowerPC Linux from POWER8 on, and big-endian builds for every 64-bit PowerPC: POWER4
+on, the PowerPC 970 (the PowerMac G5), Cell, PA6T and NXP's e5500 and e6500. The little-endian port (ppc64le) works: the test suite
 passes under qemu-user, and Super Haxagon, recompiled under qemu, played a level to its game over screen there with
 lavapipe as the Vulkan driver. No real POWER machine has run it yet. CI cross-builds its AppImage for the nightlies, not
 for pull requests
@@ -91,7 +91,8 @@ itself.
 
 ## What differs from the other hosts
 
-- **The baseline is POWER4** but see [below](#the-powerpc-970-and-power4). Before it there is
+- **The big-endian baseline is every 64-bit PowerPC** (see [below](#every-64-bit-powerpc)), ppc64le's POWER8. Before
+  POWER8 there is
   no `lqarx`/`stqcx.`, and the 128-bit compare-and-swap that STXP becomes would be a libatomic call,
   which a module doesn't link.
 - **Guest tail calls go through stubs.** Without POWER10's PC-relative code, LLVM refuses a guaranteed tail call to a
@@ -216,13 +217,22 @@ A rebuild that runs CMake again needs the preset's `PKG_CONFIG_LIBDIR` and `PKG_
 environment: `cmake --build --preset` sets them, a plain `cmake --build` of the folder doesn't, and SDL then finds the
 build machine's Wayland and DRM.
 
-## The PowerPC 970 and POWER4
+## Every 64-bit PowerPC
 
-For the PowerPC 970 of the PowerMac G5. The `linux-ppc64-g5-cross` preset is the ELFv2 build for the 970.
-Clang, FFmpeg and the recompiler's runtime library are built for it, and the recompiler builds a game's module for
-the host's CPU, or for this one where the host's name isn't known. Arch POWER's `libLLVM` is built for POWER8 and
-stops in its static constructors on a 970, so the preset links the LLVM `scripts/linux-llvm.sh ppc64` builds for the
-970, as the big-endian AppImage does, from `.cache/llvm/ppc64`:
+Big-endian builds run on every 64-bit PowerPC, as x86-64 builds run on every x86-64 (`cmake/cross.cmake`): the
+`ppc64` CPU without AltiVec, which POWER4, POWER5 and the e5500 lack (Clang's default `ppc64` is the 970's, with
+it), and without the optional `fsqrt`, `fres`, `frsqrte` and `stfiwx`, which the e5500 and e6500 lack. Clang has no
+`-mno-` flag for those, so they go to cc1 as `-Xclang -target-feature -Xclang -fsqrt` and so on. The code keeps
+`fsel`, which LLVM emits for every PowerPC (its e5500 too), and `mfocrf`, which a CPU before POWER4 runs as `mfcr`.
+FFmpeg is built without AltiVec (`cmake/ffmpeg.cmake`), as its configure would compile every file with `-maltivec`;
+OpenSSL picks its routines for later CPUs by the machine's capabilities.
+
+The recompiler builds a game's module for the host's CPU, which LLVM names from `/proc/cpuinfo` (`970` on a
+PowerMac G5, with AltiVec), and for this baseline where it names none (`new_ir` in `ir.c`): an e5500, or qemu-user.
+
+The `linux-ppc64-g5-cross` preset is the ELFv2 build with this baseline, named for the PowerMac G5. Arch POWER's
+`libLLVM` is built for POWER8 and stops in its static constructors on a 970, so the preset links the LLVM
+`scripts/linux-llvm.sh ppc64` builds for the baseline, as the big-endian AppImage does, from `.cache/llvm/ppc64`:
 
 ```bash
 export SNX_SYSROOT=/path/to/arch-power-ppc64
@@ -236,9 +246,11 @@ What changes before POWER8:
 - **STXP's 16-byte compare-and-swap goes through the runtime** (`RtAPI.cas128`, `common/runtime/cas128.c`), as on
   RISC-V and LoongArch. It runs POWER8's `lqarx`/`stqcx.` where the kernel reports ISA 2.07, and takes a lock of the
   address's stripe elsewhere, which keeps the 16 bytes atomic against other STXPs but not against plain stores.
-- **Single-precision vector lanes can flush denormals.** Without VSX, LLVM puts them on AltiVec, whose VSCR[NJ] is
-  set when Linux starts a thread, so denormals flush to zero where an emitter (`ir_vec_fp.c`) uses the host's vector
-  arithmetic. Double lanes and scalars use the FPU.
+- **Single-precision vector lanes can flush denormals on an AltiVec host.** Where the module is built for a CPU with
+  AltiVec but no VSX (the 970, POWER6, Cell), LLVM puts them on AltiVec, whose VSCR[NJ] is set when Linux starts a
+  thread, so denormals flush to zero where an emitter (`ir_vec_fp.c`) uses the host's vector arithmetic. Double
+  lanes and scalars use the FPU, as every lane does for the baseline.
+- **Square roots are libm calls** for the baseline, where the host's CPU has no name LLVM knows.
 - Rounding, `floor`, `trunc`, `rint`, `minnum` and the half conversions would be libm calls on these CPUs, which the
   emitters already avoid on PowerPC64.
 
