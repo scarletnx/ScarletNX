@@ -105,6 +105,80 @@ vulkan: VK_EXT_custom_border_color: on (auto: the driver has it, and no ban hold
 vulkan: VK_KHR_cooperative_matrix: off (the driver has it not)
 ```
 
+The settings, each with its extension and, where one took it in, the Vulkan version it was promoted to:
+
+| Key | Default | Extension |
+| --- | --- | --- |
+| `vk_android_external_memory_android_hardware_buffer` | `auto` | `VK_ANDROID_external_memory_android_hardware_buffer` |
+| `vk_ext_attachment_feedback_loop_dynamic_state` | `auto` | `VK_EXT_attachment_feedback_loop_dynamic_state` |
+| `vk_ext_attachment_feedback_loop_layout` | `auto` | `VK_EXT_attachment_feedback_loop_layout` |
+| `vk_ext_blend_operation_advanced` | `auto` | `VK_EXT_blend_operation_advanced` |
+| `vk_ext_calibrated_timestamps` | `auto` | `VK_EXT_calibrated_timestamps` |
+| `vk_ext_conditional_rendering` | `auto` | `VK_EXT_conditional_rendering` |
+| `vk_ext_conservative_rasterization` | `auto` | `VK_EXT_conservative_rasterization` |
+| `vk_ext_custom_border_color` | `auto` | `VK_EXT_custom_border_color` |
+| `vk_ext_depth_clip_control` | `auto` | `VK_EXT_depth_clip_control` |
+| `vk_ext_depth_range_unrestricted` | `auto` | `VK_EXT_depth_range_unrestricted` |
+| `vk_ext_descriptor_buffer` | `auto` | `VK_EXT_descriptor_buffer` |
+| `vk_ext_descriptor_heap` | `auto` | `VK_EXT_descriptor_heap` |
+| `vk_ext_device_fault` | `auto` | `VK_EXT_device_fault` |
+| `vk_ext_extended_dynamic_state` | `auto` | `VK_EXT_extended_dynamic_state`, promoted to Vulkan 1.3 |
+| `vk_ext_extended_dynamic_state2` | `auto` | `VK_EXT_extended_dynamic_state2`, promoted to Vulkan 1.3 |
+| `vk_ext_extended_dynamic_state3` | `auto` | `VK_EXT_extended_dynamic_state3` |
+| `vk_ext_external_memory_dma_buf` | `auto` | `VK_EXT_external_memory_dma_buf` |
+| `vk_ext_external_memory_host` | `auto` | `VK_EXT_external_memory_host` |
+| `vk_ext_fragment_shader_interlock` | `auto` | `VK_EXT_fragment_shader_interlock` |
+| `vk_ext_graphics_pipeline_library` | `auto` | `VK_EXT_graphics_pipeline_library` |
+| `vk_ext_index_type_uint8` | `auto` | `VK_EXT_index_type_uint8` |
+| `vk_ext_load_store_op_none` | `auto` | `VK_EXT_load_store_op_none` |
+| `vk_ext_map_memory_placed` | `auto` | `VK_EXT_map_memory_placed` |
+| `vk_ext_memory_budget` | `auto` | `VK_EXT_memory_budget` |
+| `vk_ext_mesh_shader` | `auto` | `VK_EXT_mesh_shader` |
+| `vk_ext_pipeline_creation_feedback` | `auto` | `VK_EXT_pipeline_creation_feedback`, promoted to Vulkan 1.3 |
+| `vk_ext_pipeline_robustness` | `auto` | `VK_EXT_pipeline_robustness`, promoted to Vulkan 1.4 |
+| `vk_ext_post_depth_coverage` | `auto` | `VK_EXT_post_depth_coverage` |
+| `vk_ext_present_timing` | `auto` | `VK_EXT_present_timing` |
+| `vk_ext_primitive_topology_list_restart` | `auto` | `VK_EXT_primitive_topology_list_restart` |
+| `vk_ext_provoking_vertex` | `auto` | `VK_EXT_provoking_vertex` |
+| `vk_ext_robustness2` | `auto` | `VK_EXT_robustness2` |
+| `vk_ext_sample_locations` | `auto` | `VK_EXT_sample_locations` |
+| `vk_ext_shader_atomic_float` | `auto` | `VK_EXT_shader_atomic_float` |
+| `vk_ext_shader_demote_to_helper_invocation` | `auto` | `VK_EXT_shader_demote_to_helper_invocation`, promoted to Vulkan 1.3 |
+| `vk_ext_transform_feedback` | `auto` | `VK_EXT_transform_feedback` |
+| `vk_ext_vertex_attribute_divisor` | `auto` | `VK_EXT_vertex_attribute_divisor` |
+| `vk_ext_vertex_input_dynamic_state` | `auto` | `VK_EXT_vertex_input_dynamic_state` |
+| `vk_google_display_timing` | `auto` | `VK_GOOGLE_display_timing` |
+| `vk_khr_calibrated_timestamps` | `auto` | `VK_KHR_calibrated_timestamps` |
+| `vk_khr_cooperative_matrix` | `auto` | `VK_KHR_cooperative_matrix` |
+| `vk_khr_dynamic_rendering` | `auto` | `VK_KHR_dynamic_rendering`, promoted to Vulkan 1.3 |
+| `vk_khr_dynamic_rendering_local_read` | `auto` | `VK_KHR_dynamic_rendering_local_read`, promoted to Vulkan 1.4 |
+| `vk_khr_extended_flags` | `auto` | `VK_KHR_extended_flags` |
+| `vk_khr_external_memory_fd` | `auto` | `VK_KHR_external_memory_fd` |
+| `vk_khr_format_feature_flags2` | `auto` | `VK_KHR_format_feature_flags2`, promoted to Vulkan 1.3 |
+| `vk_khr_index_type_uint8` | `auto` | `VK_KHR_index_type_uint8`, promoted to Vulkan 1.4 |
+| `vk_khr_load_store_op_none` | `auto` | `VK_KHR_load_store_op_none`, promoted to Vulkan 1.4 |
+| `vk_khr_maintenance4` | `auto` | `VK_KHR_maintenance4`, promoted to Vulkan 1.3 |
+| `vk_khr_maintenance5` | `auto` | `VK_KHR_maintenance5`, promoted to Vulkan 1.4 |
+| `vk_khr_maintenance8` | `auto` | `VK_KHR_maintenance8` |
+| `vk_khr_map_memory2` | `auto` | `VK_KHR_map_memory2`, promoted to Vulkan 1.4 |
+| `vk_khr_pipeline_library` | `auto` | `VK_KHR_pipeline_library` |
+| `vk_khr_portability_subset` | `auto` | `VK_KHR_portability_subset` |
+| `vk_khr_present_id` | `auto` | `VK_KHR_present_id` |
+| `vk_khr_present_id2` | `auto` | `VK_KHR_present_id2` |
+| `vk_khr_present_wait` | `auto` | `VK_KHR_present_wait` |
+| `vk_khr_present_wait2` | `auto` | `VK_KHR_present_wait2` |
+| `vk_khr_shader_clock` | `auto` | `VK_KHR_shader_clock` |
+| `vk_khr_shader_maximal_reconvergence` | `auto` | `VK_KHR_shader_maximal_reconvergence` |
+| `vk_khr_swapchain` | `auto` | `VK_KHR_swapchain` |
+| `vk_khr_synchronization2` | `auto` | `VK_KHR_synchronization2`, promoted to Vulkan 1.3 |
+| `vk_khr_video_decode_h264` | `auto` | `VK_KHR_video_decode_h264` |
+| `vk_khr_video_decode_queue` | `auto` | `VK_KHR_video_decode_queue` |
+| `vk_khr_video_queue` | `auto` | `VK_KHR_video_queue` |
+| `vk_nv_device_diagnostic_checkpoints` | `auto` | `VK_NV_device_diagnostic_checkpoints` |
+| `vk_nv_fragment_coverage_to_color` | `auto` | `VK_NV_fragment_coverage_to_color` |
+| `vk_nv_framebuffer_mixed_samples` | `auto` | `VK_NV_framebuffer_mixed_samples` |
+| `vk_valve_shader_mixed_float_dot_product` | `auto` | `VK_VALVE_shader_mixed_float_dot_product` |
+
 ## Performance
 
 | Key | Default | Effect |

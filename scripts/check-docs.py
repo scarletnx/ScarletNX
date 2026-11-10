@@ -14,7 +14,8 @@
 - settings: each key of src/nx/runtime/settings.txt has a row in a table of docs/user/settings.md whose header is
   | Key | Default |, and its Default cell says the key's default and the one each platform gives it (`0` (iOS `1`));
   each key a row names is one settings.txt has. Several keys in a row take one default each, or one for them all,
-  and a name in parentheses in the Key cell is no key (`controls_<ID>` (ID one of `a`, `b`))
+  and a name in parentheses in the Key cell is no key (`controls_<ID>` (ID one of `a`, `b`)). A vulkan table's
+  setting @NAME is keyed by NAME in lowercase and `auto` by default, as tools/settingsgen makes it
 
     scripts/check-docs.py [--root DIR] [--index]
 """
@@ -336,7 +337,8 @@ def snake(name):
 
 def settings_keys(path):
     """{key: (line, {platform or None: default})} of settings.txt, its <N> and <ID> kept in the key. A text with no
-    default is empty; an LLVM pass (@lowercase) is on, 1, and an LLVM option (@CamelCase) LLVM's own until it is set"""
+    default is empty; an LLVM pass (@lowercase) is on, 1, and an LLVM option (@CamelCase) LLVM's own until it is set; a
+    vulkan table's extension (@VK_EXT_name) is keyed by its name in lowercase and auto"""
     keys, current, table_kind = {}, None, None
 
     def done():
@@ -388,6 +390,8 @@ def settings_keys(path):
             done()
             llvm = rest[1:] if table_kind == 'llvm' and rest.startswith('@') else None
             current = {'line': number, 'key': None, 'llvm': llvm, 'default': None, 'ifs': [], 'kind': None}
+            if table_kind == 'vulkan' and rest.startswith('@'):
+                current.update(key=rest[1:].lower(), default='auto', kind='text')
             continue
         if current is None:
             continue
