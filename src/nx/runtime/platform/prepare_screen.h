@@ -12,7 +12,9 @@
 #define SNX_PREPARE_STEPS     4
 typedef struct {
     const char* label; /* NULL for none */
-    char detail[64];
+    /* a detail's bytes: a count of files and a name (RENDERER_FILE_SIZE) */
+#define SNX_PREPARE_DETAIL_SIZE 128
+    char detail[SNX_PREPARE_DETAIL_SIZE];
     u32 value, total; /* total 0: no progress to show */
     u64 started_ms;   /* when it began, for the theme's time left */
     int done;
@@ -23,6 +25,15 @@ typedef struct {
    now_ms: the time of the update, a monotonic clock's. Under ui_lock; the strings are copied, NULL ones as "" */
 void prepare_screen_set(const SnxRunTheme* theme, const char* name, const SnxPrepareStep* steps, int n,
                         const char (*notes)[SNX_PREPARE_NOTE_SIZE], int nnotes, const char* foot, u64 now_ms);
+struct RendererPrepare;
+/* the kinds of step prepare_screen_steps makes, by their place in its began */
+enum { SNX_PREPARE_FIND, SNX_PREPARE_TRANSLATE, SNX_PREPARE_PIPES, SNX_PREPARE_KINDS };
+/* The steps for the renderer's progress p (gpu/renderer.h) into steps, SNX_PREPARE_KINDS at most, each once it has
+   work: the files looked in for the game's shaders (how many, and the one looked in now), the shaders translated, and
+   the pipelines of earlier runs made. began: when each kind of step was first seen at work, 0 until it is (then set to
+   now_ms), for the theme's time left. Their count */
+int prepare_screen_steps(const struct RendererPrepare* p, SnxPrepareStep* steps, u64 began[SNX_PREPARE_KINDS],
+                         u64 now_ms);
 #define PREPARE_SCREEN_MENU_QUADS 1536 /* the quads its scrolling lines leave for the menu: its widest page's */
 /* whether it is up (under ui_lock): the on-screen controls aren't drawn under it, nor take fingers */
 int prepare_screen_shown(void);

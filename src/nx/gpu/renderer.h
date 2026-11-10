@@ -21,6 +21,8 @@ typedef struct RendererPrepare {
     int scanning;                /* the pass runs */
     int loaded;                  /* the shader files of earlier runs are read */
     int done;
+#define RENDERER_FILE_SIZE 96      /* a name's bytes, as the pass keeps them (shipped_pass.c's Source) */
+    char file[RENDERER_FILE_SIZE]; /* the file or segment the pass looks in now, "" once it has looked in every one */
 #define RENDERER_NOTES     48
 #define RENDERER_NOTE_SIZE 256                     /* a line's bytes: as wide as a wide window's row, which cuts it */
     char note[RENDERER_NOTES][RENDERER_NOTE_SIZE]; /* the pass's latest lines, oldest first (the log has every one) */

@@ -410,6 +410,114 @@ static void prepare_screen_size(void) {
     assert(prepare_letters(4, 1280, 720, 100) == 32);  /* 4x and 3x leave under 16 rows of 720: 2x */
     assert(prepare_letters(2, 640, 200, 100) == 16);   /* never under 1x */
 }
+/* The steps the screen shows for the renderer's progress (prepare_screen_steps): none before there is work; the files
+   looked in for the game's shaders counted, whatever the theme's progress says, and the one looked in now named until
+   that step is done; each kind's start kept from the first time it was seen at work */
+static void prepare_screen_steps_from(void) {
+    RendererPrepare p = {0};
+    SnxPrepareStep st[SNX_PREPARE_STEPS];
+    u64 began[SNX_PREPARE_KINDS] = {0};
+    assert(prepare_screen_steps(&p, st, began, 500) == 0 && began[SNX_PREPARE_FIND] == 0);
+    p.files = 51234;
+    p.files_seen = 1234;
+    p.scanning = 1;
+    snprintf(p.file, sizeof p.file, "%s", "effect.bnsh");
+    assert(prepare_screen_steps(&p, st, began, 1000) == 1);
+    assert(!strcmp(st[0].label, "FINDING SHADERS") && st[0].value == 1234 && st[0].total == 51234 && !st[0].done);
+    assert(!strcmp(st[0].detail, "1234 of 51234 files, effect.bnsh") && st[0].started_ms == 1000);
+    p.files_seen = 1235; /* between two files */
+    p.file[0] = 0;
+    assert(prepare_screen_steps(&p, st, began, 2000) == 1);
+    assert(!strcmp(st[0].detail, "1235 of 51234 files") && st[0].started_ms == 1000);
+    /* every file counted: the step done, a name left behind not shown; the translation's */
+    p.files_seen = 51234;
+    p.programs = 300;
+    p.programs_done = 12;
+    p.shipped = 5;
+    snprintf(p.file, sizeof p.file, "%s", "last.bin");
+    assert(prepare_screen_steps(&p, st, began, 3000) == 2);
+    assert(st[0].done && !strcmp(st[0].detail, "51234 of 51234 files") && st[0].started_ms == 1000);
+    assert(!strcmp(st[1].label, "PREPARING SHADERS") && st[1].value == 12 && st[1].total == 300 && !st[1].done);
+    assert(!strcmp(st[1].detail, "(5 new)") && st[1].started_ms == 3000);
+    /* one file, an executable's segment; the pipelines of earlier runs, made */
+    p = (RendererPrepare){0};
+    p.files = p.files_seen = 1;
+    p.scanning = 1;
+    snprintf(p.file, sizeof p.file, "%s", "main.ro");
+    p.pipes = p.pipes_made = 10;
+    memset(began, 0, sizeof began);
+    assert(prepare_screen_steps(&p, st, began, 4000) == 2 && !strcmp(st[0].detail, "1 of 1 file, main.ro"));
+    assert(!strcmp(st[1].label, "LOADING SHADER CACHE") && !strcmp(st[1].detail, "from earlier sessions"));
+    assert(st[1].done && st[1].value == 10 && st[1].total == 10);
+    /* the longest counts and name fit whole */
+    p.files = p.files_seen = 0xFFFFFFFFu;
+    memset(p.file, 'n', sizeof p.file - 1);
+    assert(prepare_screen_steps(&p, st, began, 5000) == 2);
+    assert(strlen(st[0].detail) == strlen("4294967295 of 4294967295 files, ") + sizeof p.file - 1);
+    assert(st[0].detail[strlen(st[0].detail) - 1] == 'n');
+}
+/* the text the screen before the game draws on its row at y, a glyph a column of 8 * s pixels from the left (a space
+   where none is), up to its last glyph */
+static void prepare_row(const SnxUiList* l, float y, int s, char* out, int size) {
+    int i, end = 0;
+    memset(out, ' ', (size_t)size);
+    for (i = 0; i < l->n; ++i) {
+        const SnxUiQuad* q = &l->q[i];
+        int col = (int)(q->x / (8.0f * (float)s));
+        if (q->y != y || q->uw != 8 || q->vh != 16 || q->u < SNX_CONTROLS_FONT_X || q->v < SNX_CONTROLS_FONT_Y ||
+            col >= size - 1)
+            continue;
+        out[col] = (char)((q->u - SNX_CONTROLS_FONT_X) / 8 + (q->v - SNX_CONTROLS_FONT_Y) / 16 * 16);
+        if (col >= end) end = col + 1;
+    }
+    out[end] = 0;
+}
+/* A step's row on a window 80 columns wide (1280 pixels at 2x): a detail too long for it (a file's name) cut before
+   its progress, which stays on the row, in a theme of steps and in a console's; a done one's as it was */
+static void prepare_screen_cut(void) {
+    static SnxUiQuad q[4096];
+    RendererPrepare p = {0};
+    SnxUiList l = {q, 0, 4096};
+    SnxPrepareStep st[SNX_PREPARE_STEPS];
+    u64 began[SNX_PREPARE_KINDS] = {0};
+    SnxRunTheme t = {0};
+    char row[128];
+    int n;
+    t.ink = 0xFFFFFFu;
+    t.steps = 1;
+    t.progress = SNX_RUN_PROGRESS_PERCENT;
+    p.files = 51234;
+    p.files_seen = 14858; /* 29% */
+    p.scanning = 1;
+    snprintf(p.file, sizeof p.file, "%s", "a_name_long_enough_to_run_past_the_row_of_a_narrow_window.bnsh");
+    n = prepare_screen_steps(&p, st, began, 1000);
+    prepare_screen_set(&t, "GAME", st, n, NULL, 0, "FOOT", 1200); /* 1200 ms: three dots */
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    prepare_row(&l, 32.0f * 3, 2, row, sizeof row); /* the first step's row, under the head */
+    assert(!strcmp(row, " FINDING SHADERS: 14858 OF 51234 FILES, A_NAME_LONG_ENOUGH_TO_RUN_PAS... 29%..."));
+    /* a console's line: the label, the detail cut, then the progress as the theme says it */
+    t.steps = 0;
+    t.progress = SNX_RUN_PROGRESS_AMOUNT;
+    prepare_screen_set(&t, "GAME", st, n, NULL, 0, "FOOT", 1200);
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    prepare_row(&l, 32.0f * 3, 2, row, sizeof row);
+    assert(!strcmp(row, " FINDING SHADERS 14858 of 51234 files, a_name_long_enough_to_...: 14858 / 51234"));
+    /* every file counted, the shaders being translated: the done row whole, the next one's progress */
+    p.files_seen = 51234;
+    p.programs = 300;
+    t.steps = 1;
+    t.progress = SNX_RUN_PROGRESS_PERCENT;
+    n = prepare_screen_steps(&p, st, began, 2000);
+    prepare_screen_set(&t, "GAME", st, n, NULL, 0, "FOOT", 1200);
+    l.n = 0;
+    prepare_screen_draw(&l, 1280, 720, NULL, 100);
+    prepare_row(&l, 32.0f * 3, 2, row, sizeof row);
+    assert(!strcmp(row, " FINDING SHADERS: 51234 OF 51234 FILES ...OK"));
+    prepare_row(&l, 32.0f * 4, 2, row, sizeof row);
+    assert(!strcmp(row, " PREPARING SHADERS: (0 NEW) 0%..."));
+    prepare_screen_set(NULL, NULL, NULL, 0, NULL, 0, NULL, 0);
+}
 /* a tap on a row of the dialog drawn last, list.q[0] its page: rows from its top, items counted from its foot */
 static int tap_row(int row) {
     return overlay_tap(list.q[0].x + 10.0f, list.q[0].y + (float)(row * 16 * s) + 5.0f, SW, SH);
@@ -556,6 +664,8 @@ int main(void) {
     snx_pad_map_unset(&players[0].own);
     prepare_screen();
     prepare_screen_size();
+    prepare_screen_steps_from();
+    prepare_screen_cut();
     assert(!overlay_shown());
     overlay_toggle();
     assert(overlay_shown());

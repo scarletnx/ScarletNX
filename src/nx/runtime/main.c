@@ -825,44 +825,7 @@ static void frontend_loop(void) {
    starts the game at once (the rest is made in the background as it runs), the run quits (the window closed, Esc),
    or an unattended run's time limit passes. Then the game starts, its window black until it draws. It shows past a
    quarter second only, so a run with little to make doesn't flash it */
-enum { STEP_FIND, STEP_TRANSLATE, STEP_PIPES, STEP_KINDS };
-/* the next row of the screen, a step of a kind first seen at work at *began (set to now_ms the first time) */
-static SnxPrepareStep* prepare_step(SnxPrepareStep* st, int* n, u64* began, u64 now_ms, const char* label, u32 value,
-                                    u32 total, int done) {
-    SnxPrepareStep* s = &st[(*n)++];
-    *s = (SnxPrepareStep){0};
-    if (!*began) *began = now_ms;
-    s->label = label;
-    s->value = value;
-    s->total = total;
-    s->started_ms = *began; /* for the theme's time left */
-    s->done = done;
-    return s;
-}
-/* the screen's rows for p into st (STEP_KINDS of SNX_PREPARE_STEPS at most): their count */
-static int prepare_steps(const RendererPrepare* p, SnxPrepareStep* st, u64 began[STEP_KINDS], u64 now_ms) {
-    SnxPrepareStep* s;
-    int n = 0;
-    if (p->files) { /* the walk that finds the programs, then their translation */
-        s = prepare_step(st, &n, &began[STEP_FIND], now_ms, "FINDING SHADERS", p->files_seen, p->files,
-                         p->programs || !p->scanning);
-        snprintf(s->detail, sizeof s->detail, "%s", "files checked");
-    }
-    if (p->programs) {
-        s = prepare_step(st, &n, &began[STEP_TRANSLATE], now_ms, "PREPARING SHADERS", p->programs_done, p->programs,
-                         !p->scanning);
-        snprintf(s->detail, sizeof s->detail, "(%u new)", p->shipped);
-    }
-    if (p->pipes) {
-        /* the pipelines of earlier runs, made from the shader cache: a player knows them by that name */
-        s = prepare_step(st, &n, &began[STEP_PIPES], now_ms, "LOADING SHADER CACHE", p->pipes_made, p->pipes,
-                         p->pipes_made >= p->pipes);
-        snprintf(s->detail, sizeof s->detail, "%s", "from earlier sessions");
-    }
-    return n;
-}
 typedef char prepare_note_sizes[RENDERER_NOTE_SIZE == SNX_PREPARE_NOTE_SIZE ? 1 : -1]; /* the renderer's, handed on */
-typedef char prepare_step_room[STEP_KINDS <= SNX_PREPARE_STEPS ? 1 : -1];
 static void prepare_draw(const SnxRunTheme* look, const char* title, const SnxPrepareStep* st, int n,
                          const RendererPrepare* p, const char* foot) {
     ui_lock();
@@ -875,7 +838,7 @@ static void prepare_wait(const char* title) {
     RendererPrepare p;
     SnxRunTheme theme = {0}, *look = NULL;
     SnxPrepareStep st[SNX_PREPARE_STEPS];
-    u64 began[STEP_KINDS] = {0}, t0 = plat_ns(), moved = t0;
+    u64 began[SNX_PREPARE_KINDS] = {0}, t0 = plat_ns(), moved = t0;
     u32 was = 0;
     int shown = 0, themed = 0, n = 0, stalls = 0;
     char ended[96] = "", how[96];
@@ -918,7 +881,7 @@ static void prepare_wait(const char* title) {
                  (unsigned long long)(STALL_NS / 1000000000u), p.files_seen, p.files, p.programs_done, p.programs,
                  p.pipes_made, p.pipes, p.loaded ? "read" : "still being read");
         }
-        n = prepare_steps(&p, st, began, now / 1000000u);
+        n = prepare_screen_steps(&p, st, began, now / 1000000u);
         if (now - t0 >= 250000000ull && n && backend_window_shown()) { /* not for a headless run */
             char* dir = !themed && snx_menu_run_theme ? backend_launcher_folder() : NULL;
             if (dir) {
@@ -941,7 +904,7 @@ static void prepare_wait(const char* title) {
     g_renderer->prepare(&p);
     if (shown && !g_quit) { /* the steps as they ended, a quarter second; then gone, the window black until the game
                                draws */
-        n = prepare_steps(&p, st, began, plat_ns() / 1000000u);
+        n = prepare_screen_steps(&p, st, began, plat_ns() / 1000000u);
         plat_sleep_ns(40000000); /* refresh's pace after the loop's last picture, so this one isn't dropped */
         prepare_draw(look, title, st, n, &p, "");
         plat_sleep_ns(250000000);
