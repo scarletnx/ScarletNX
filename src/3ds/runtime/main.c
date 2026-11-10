@@ -79,7 +79,9 @@ static void usage(FILE* out) {
         "                         --anisotropy=N (2 to 16) filters a mipmapped texture the game filters linearly\n"
         "                         anisotropically (default 0: as the game asks). --fps_limit=N runs the game at\n"
         "                         N/60 of the console's pace (the 3DS shows 60 frames a second), 0 as fast as it\n"
-        "                         goes, game the console's (the default), and F4 turns it off and on\n"
+        "                         goes, game the console's (the default), and F4 turns it off and on.\n"
+        "                         --aot_threads=N compiles the game's code on N threads (1 to 1024; the default 0:\n"
+        "                         the computer's cores with a quarter left free), as the Switch's\n"
         "\n"
         "On the 3DS, --update takes an update's or a DLC's CIA (a bare NCCH for an update), given again for each.\n"
         "It is recorded beside the game in its folder and checked in its .ini's addons=, as a Switch game's are,\n"
@@ -739,7 +741,15 @@ int snx_ctr_main(int argc, char** argv) {
             const char* value = ini_arg(arg, key, sizeof key);
             const IniOpt* o = NULL;
             bool map = false;
-            if (value) {
+            /* the recompile's threads, the Switch's setting: a value it does not take stops here, as there */
+            if (value && !strcmp(key, "aot_threads")) {
+                o = ini_find(g_recompile_ini, key);
+                if (ini_check(o, value, error, sizeof error)) {
+                    fprintf(stderr, "scarletnx-3ds: %s\n", error);
+                    snx_cli_free(&cli);
+                    return 2;
+                }
+            } else if (value) {
                 o = ini_find(g_ctr_display_ini, key);
                 if (!o) o = ini_find(g_ctr_debug_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_debug_ini, key);

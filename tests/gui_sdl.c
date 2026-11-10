@@ -625,13 +625,28 @@ static bool has_arg(const char* argv, const char* arg, const char* after) {
     return false;
 }
 /* a console's game not made yet, opened: its first compile through driver, its own (no Switch flag), -r before file
-   and its data folder, run to its end with status (driver_will) */
+   and its data folder, run to its end with status (driver_will). One the queue started gently has half the threads
+   as --aot_threads=, which every console's driver takes; another has none */
 static void compiled_by(App* app, const char* driver, const char* file, int status) {
-    char* argv = ran(app, status);
+    char threads[32];
+    bool gentle = !app->menu.running && app->job_low;
+    char* argv;
+    snprintf(threads, sizeof threads, "--aot_threads=%d", SDL_max(1, job_cores(app) / 2));
+    assert(!gentle || app->job_threads == SDL_max(1, job_cores(app) / 2));
+    argv = ran(app, status);
     assert(strstr(argv, driver) && strstr(argv, driver) < strchr(argv, '\n') && has_arg(argv, "-r", file) &&
            has_arg(argv, "--data", app->data_dir) && !has_arg(argv, "-S", NULL) &&
            !has_arg(argv, "--fullscreen=1", NULL));
+    assert(gentle ? has_arg(argv, threads, NULL) : !strstr(argv, "--aot_threads="));
     free(argv);
+}
+/* the event e (a game dropped) taken with Background recompile Gentle: its compile starts gently */
+static void gently(App* app, SDL_Event* e) {
+    int mode = app->background_mode;
+    app->background_mode = GUI_BACKGROUND_GENTLE;
+    event(app, e);
+    app->background_mode = mode;
+    assert(gui_queue_running(&app->queue) >= 0 && app->job_low && app->job_threads);
 }
 /* snx_menu_has_driver of a program that has the 3DS driver alone */
 static int has_ctr(const char* name) { return !strcmp(name, "scarletnx-3ds"); }
@@ -8495,7 +8510,7 @@ int main(int argc, char** argv) {
         point(&app, entry_box(&app, GUI_LINUX), false); /* where Linux's was: nothing there now */
         e.type = SDL_EVENT_DROP_FILE;
         e.drop.data = cia;
-        event(&app, &e);
+        gently(&app, &e); /* the queue's half of the threads reaches this driver too */
         assert(launched(&app) && app.menu.selected == GUI_3DS && !app.native);
         compiled_by(&app, "scarletnx-3ds", cia, 3);
         assert(app.recent.count == 1 && app.recent.game[0].driver == GUI_3DS && !app.recent.game[0].prepared);
@@ -8552,7 +8567,7 @@ int main(int argc, char** argv) {
         assert(app.menu.view == GUI_LOAD_DROP && app.menu.active == GUI_VITA);
         e.type = SDL_EVENT_DROP_FILE;
         e.drop.data = vpk;
-        event(&app, &e);
+        gently(&app, &e); /* the queue's half of the threads reaches this driver too */
         assert(launched(&app) && app.menu.selected == GUI_VITA && !app.native);
         compiled_by(&app, "scarletnx-vita", vpk, 4);
         assert(app.recent.count == 1 && app.recent.game[0].driver == GUI_VITA && !app.recent.game[0].prepared);
@@ -8680,7 +8695,7 @@ int main(int argc, char** argv) {
         assert(app.menu.view == GUI_LOAD_DROP && app.menu.active == GUI_GBA);
         e.type = SDL_EVENT_DROP_FILE;
         e.drop.data = rom;
-        event(&app, &e);
+        gently(&app, &e); /* the queue's half of the threads reaches this driver too */
         assert(launched(&app) && app.menu.selected == GUI_GBA && !app.native);
         compiled_by(&app, "scarletnx-agb", rom, 4);
         assert(app.recent.count == 1 && app.recent.game[0].driver == GUI_GBA && !app.recent.game[0].prepared);

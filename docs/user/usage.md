@@ -33,6 +33,11 @@ takes a value takes it as `--option VALUE` or as `--option=VALUE`. A common opti
 run with the same message in each driver, `scarletnx-agb does not take --update`. An older name of an option still
 works for now, and the run says once what it is called now ([Deprecations](deprecations.md#now)).
 
+Each driver that recompiles (`scarletnx`, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-agb`) also takes
+`--aot_threads=N`, the setting [`aot_threads`](settings.md): the threads compiling the game's code, 0 (the default)
+the computer's cores with a quarter left free. A GBA ROM's code is one module and compiles on one thread whatever N,
+which its recompile says. A value that is not a whole number from 0 to 1024 stops the run.
+
 | Option | Meaning | Switch | 3DS | Vita | AGB | Android | GNU ABI |
 |---|---|---|---|---|---|---|---|
 | `-x`, `--extract` | Extract the game, without playing it | yes | yes | yes | | | |
