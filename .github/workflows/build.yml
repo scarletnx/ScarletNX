@@ -28,8 +28,8 @@ on:
     - cron: '23 */3 * * *'
 
 # Jobs only read the repository, and a pull request's failed job has the rest of its run cancelled (cancel-run). A
-# push to main or a scheduled run that builds everywhere becomes a nightly, and a pull request's run a prerelease, in
-# scarletnx/nightly: publish.yml does it once this workflow ends
+# push to main, a scheduled run or a run of main by hand that builds everywhere becomes a nightly, and a pull request's
+# run a prerelease, in scarletnx/nightly: publish.yml does it once this workflow ends
 permissions:
   contents: read
   actions: write
