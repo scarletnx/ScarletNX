@@ -651,10 +651,15 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         right = shader_float_mod(c, right, B(w, 49, 1), B(w, 45, 1));
         u32 is_left_nan = spv_emit_unary(&c->emit, SPV_OP_IS_NAN, c->bool_type, left);
         u32 is_right_nan = spv_emit_unary(&c->emit, SPV_OP_IS_NAN, c->bool_type, right);
-        u32 minimum = spv_emit_glsl_binary(&c->emit, c->f32_type, c->glsl, SPV_GLSL_F_MIN, left, right);
-        u32 maximum = spv_emit_glsl_binary(&c->emit, c->f32_type, c->glsl, SPV_GLSL_F_MAX, left, right);
+        /* PT or !PT picks the minimum or the maximum as the program is translated: the other one isn't made */
         u32 choose_min = pred_read(c, B(w, 39, 3), B(w, 42, 1));
-        u32 value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type, choose_min, minimum, maximum);
+        u32 minimum = choose_min == c->false_value
+                          ? 0
+                          : spv_emit_glsl_binary(&c->emit, c->f32_type, c->glsl, SPV_GLSL_F_MIN, left, right);
+        u32 maximum = choose_min == c->true_value
+                          ? 0
+                          : spv_emit_glsl_binary(&c->emit, c->f32_type, c->glsl, SPV_GLSL_F_MAX, left, right);
+        u32 value = shader_select(c, c->f32_type, choose_min, minimum, maximum);
         value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type, is_right_nan, left, value);
         value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type, is_left_nan, right, value);
         reg_write_as(c, d, value, c->f32_type);
@@ -706,16 +711,22 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         } else {
             left = shader_double_mod(c, left, B(w, 46, 1), B(w, 48, 1));
             right = shader_double_mod(c, right, B(w, 49, 1), B(w, 45, 1));
-            u32 min = spv_emit_glsl_binary(&c->emit, c->f64_type, c->glsl, SPV_GLSL_F_MIN, left, right);
-            u32 max = spv_emit_glsl_binary(&c->emit, c->f64_type, c->glsl, SPV_GLSL_F_MAX, left, right);
+            /* as FMNMX: PT or !PT picks one as the program is translated */
+            u32 choose_min = pred_read(c, B(w, 39, 3), B(w, 42, 1));
             u32 left_nan = spv_emit_unary(&c->emit, SPV_OP_IS_NAN, c->bool_type, left);
             u32 right_nan = spv_emit_unary(&c->emit, SPV_OP_IS_NAN, c->bool_type, right);
-            min = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f64_type, left_nan, right, min);
-            max = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f64_type, left_nan, right, max);
-            min = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f64_type, right_nan, left, min);
-            max = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f64_type, right_nan, left, max);
-            value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f64_type, pred_read(c, B(w, 39, 3), B(w, 42, 1)), min,
-                                     max);
+            u32 min = 0, max = 0;
+            if (choose_min != c->false_value) {
+                min = spv_emit_glsl_binary(&c->emit, c->f64_type, c->glsl, SPV_GLSL_F_MIN, left, right);
+                min = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f64_type, left_nan, right, min);
+                min = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f64_type, right_nan, left, min);
+            }
+            if (choose_min != c->true_value) {
+                max = spv_emit_glsl_binary(&c->emit, c->f64_type, c->glsl, SPV_GLSL_F_MAX, left, right);
+                max = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f64_type, left_nan, right, max);
+                max = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f64_type, right_nan, left, max);
+            }
+            value = shader_select(c, c->f64_type, choose_min, min, max);
         }
         shader_double_write(c, vec2_u32, d, value);
     } else if ((op >= O_DSET_R && op <= O_DSET_I) || (op >= O_DSETP_R && op <= O_DSETP_I)) {

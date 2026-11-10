@@ -427,7 +427,7 @@ void emit_int(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     } else if (op == O_SEL_R || op == O_SEL_C || op == O_SEL_I) {
         u32 condition = pred_read(c, B(w, 39, 3), B(w, 42, 1));
         u32 rhs = shader_integer_right(c, w, op - O_SEL_R);
-        reg_write(c, d, spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, condition, reg_read(c, a), rhs));
+        reg_write(c, d, shader_select(c, c->u32_type, condition, reg_read(c, a), rhs));
     } else if (op >= O_XMAD_R && op <= O_XMAD_I) {
         /* Each form's operands and fields, as Eden reads them: B is Rb (R), Rc at bit 39 (RC), a constant buffer
            word (CR) or a 16-bit immediate (I), and C is Rc or the constant buffer word. The product of A's and
@@ -605,7 +605,7 @@ void emit_int(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 pb = pred_read(c, B(w, 29, 3), B(w, 32, 1));
         u32 pc = pred_read(c, B(w, 39, 3), B(w, 42, 1));
         u32 first = bool_combine(c, B(w, 24, 2), pa, pb);
-        u32 second = bool_combine(c, B(w, 24, 2), spv_emit_unary(&c->emit, SPV_OP_LOGICAL_NOT, c->bool_type, pa), pb);
+        u32 second = bool_combine(c, B(w, 24, 2), cc_not(c, pa), pb);
         pred_write(c, B(w, 3, 3), bool_combine(c, B(w, 45, 2), first, pc));
         pred_write(c, B(w, 0, 3), bool_combine(c, B(w, 45, 2), second, pc));
     } else if (op == O_CSETP || op == O_CSET) {
@@ -678,10 +678,14 @@ void emit_int(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                                                  spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, right),
                                                  spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, left))
                                : spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, left, right);
-        u32 min_value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, less, left, right);
-        u32 max_value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, less, right, left);
+        /* PT or !PT picks the minimum or the maximum as the program is translated: the other one isn't made */
         u32 choose_min = pred_read(c, B(w, 39, 3), B(w, 42, 1));
-        u32 value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, choose_min, min_value, max_value);
+        u32 min_value = choose_min == c->false_value
+                            ? 0
+                            : spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, less, left, right);
+        u32 max_value =
+            choose_min == c->true_value ? 0 : spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, less, right, left);
+        u32 value = shader_select(c, c->u32_type, choose_min, min_value, max_value);
         if (B(w, 47, 1)) shader_flags_logic(c, value);
         reg_write(c, d, value);
     } else if (op == O_VSETP) {
