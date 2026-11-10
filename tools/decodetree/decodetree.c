@@ -12,7 +12,8 @@
    - a typedef arg_SET for each argument set that is not !extern
    - for each pattern name, `typedef arg_SET arg_NAME;` and `bool trans_NAME(DisasContext *ctx, arg_NAME *a);`,
      static unless --translate names another prefix
-   - a static `decode_extract_FORMAT(DisasContext *ctx, arg_SET *a, insn)` for each format
+   - a static `decode_extract_FORMAT(DisasContext *ctx, arg_SET *a, insn)` for each format, which casts its
+     parameters to void first, so that the decoder compiles under -Wextra
    - `bool decode(DisasContext *ctx, insn)`, a switch tree on the fixed bits that calls the trans_ function of the
      pattern that matches. A trans_ function that answers false lets the decode try the next pattern of a { } group.
    The file that includes it defines DisasContext, the trans_ functions, the !function= functions
@@ -1236,6 +1237,8 @@ int main(int argc, char** argv) {
         char ex[NAME_LEN * 2];
         extract_name(order[i], ex);
         out("static void %s(DisasContext *ctx, arg_%s *a, %s insn)\n{\n", ex, args[f->base].name, insntype);
+        /* a format of no fields uses none of them, and most use no ctx: quiet under -Wextra */
+        out("    (void)ctx, (void)a, (void)insn;\n");
         output_fields(f, 4, "a->");
         out("}\n\n");
     }
