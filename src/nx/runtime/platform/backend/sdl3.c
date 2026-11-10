@@ -51,49 +51,85 @@
 #include <dispatch/dispatch.h> /* the system's memory pressure */
 #endif
 
-static SDL_Window* g_win;
-/* the window's size in pixels, width | height << 32: the renderer reads it on its own thread, and one atomic keeps
-   a width from one resize from pairing with the height of another */
-static u64 g_wsize = 1280 | (720ull << 32); /* atomic */
-static u64 keys_held;
-static u64 g_menu_held;      /* keyboard, scripted and on-screen buttons held while the menu had them */
-static u64 g_menu_held_pad0; /* No1's physical pad, tracked separately so a replacement has fresh presses */
-static u64 g_menu_held_extra[SNX_GAMEPADS - 1];
-static int g_fullscreen;
-static void set_fullscreen(int on);
-static int g_shot_req;
-/* SDL's text input for the keyboard's box (overlay.h): the box it is on for (0: off), the system's keyboard asked for
-   again (a tap on the box's line), and the box's line SDL was last given, in window points */
-static struct {
-    u32 ticket;
-    int again;
-    SDL_Rect area;
-} g_typing;
-static int g_audio_ready;
-static int g_hidden;      /* the app is in the background (Android) */
-static int g_given_up;    /* the window went to a fatal error's screen: the renderer presents nothing more */
-static char g_title[256]; /* the game's name, for that screen */
-/* The press that skips main.c's prepare screen (backend_pressed), taken while that screen asks for one: from its
-   first call until the frontend's first pass once the game's first thread runs (frontend_frame), before the game
-   has drawn. It is that screen's alone: the press doesn't reach the menu or the game, nor do the moves and the lift
-   of a finger that pressed, and a pad's buttons held then reach the game only once let go. A pad's buttons and
-   triggers count from up to down only, so one held as the pad came (from the launcher) doesn't skip when SDL knew it
-   held as the screen began to listen (press_pad_held) */
 enum { PRESS_NONE, PRESS_KEY, PRESS_TOUCH, PRESS_BUTTON, PRESS_TRIGGER };
+/* The file's state */
 static struct {
-    int listening;
-    int kind, code;      /* the press since the last call: PRESS_*, and the key's scancode or the pad's button */
-    SDL_TouchID touch;   /* a finger that pressed, by its device and id, whose moves and lift are the screen's too */
-    SDL_FingerID finger; /* (0 for none) */
+    SDL_Window* win;
+    /* the window's size in pixels, width | height << 32: the renderer reads it on its own thread, and one atomic keeps
+       a width from one resize from pairing with the height of another. 0 until a window gave one: 1280 by 720 */
+    u64 wsize; /* atomic */
+    u64 keys_held;
+    u64 menu_held;      /* keyboard, scripted and on-screen buttons held while the menu had them */
+    u64 menu_held_pad0; /* No1's physical pad, tracked separately so a replacement has fresh presses */
+    u64 menu_held_extra[SNX_GAMEPADS - 1];
+    int fullscreen;
+    int shot_req;
+    /* SDL's text input for the keyboard's box (overlay.h): the box it is on for (0: off), the system's keyboard asked
+       for again (a tap on the box's line), and the box's line SDL was last given, in window points */
     struct {
-        SDL_JoystickID id; /* 0 for a free slot */
-        u32 held;          /* its buttons down (bit by SDL_GamepadButton), and its triggers past half (bits 30, 31) */
-    } pad[SNX_GAMEPADS];
-    char said[64];
-} g_press;
-static SDL_Haptic* g_buzzer; /* the phone's vibrator, for the on-screen controls' taps (Android) */
-static u32 g_generation;     /* the window's surface came back this many times */
-static u32 g_window_changes; /* the app's, the displays' and the window's events (backend_window_changes) */
+        u32 ticket;
+        int again;
+        SDL_Rect area;
+    } typing;
+    int audio_ready;
+    int hidden;      /* the app is in the background (Android) */
+    int given_up;    /* the window went to a fatal error's screen: the renderer presents nothing more */
+    char title[256]; /* the game's name, for that screen */
+    /* The press that skips main.c's prepare screen (backend_pressed), taken while that screen asks for one: from its
+       first call until the frontend's first pass once the game's first thread runs (frontend_frame), before the game
+       has drawn. It is that screen's alone: the press doesn't reach the menu or the game, nor do the moves and the lift
+       of a finger that pressed, and a pad's buttons held then reach the game only once let go. A pad's buttons and
+       triggers count from up to down only, so one held as the pad came (from the launcher) doesn't skip when SDL knew
+       it held as the screen began to listen (press_pad_held) */
+    struct {
+        int listening;
+        int kind, code;    /* the press since the last call: PRESS_*, and the key's scancode or the pad's button */
+        SDL_TouchID touch; /* a finger that pressed, by its device and id, whose moves and lift are the screen's too */
+        SDL_FingerID finger; /* (0 for none) */
+        struct {
+            SDL_JoystickID id; /* 0 for a free slot */
+            u32 held; /* its buttons down (bit by SDL_GamepadButton), and its triggers past half (bits 30, 31) */
+        } pad[SNX_GAMEPADS];
+        char said[64];
+    } press;
+    SDL_Haptic* buzzer;             /* the phone's vibrator, for the on-screen controls' taps (Android) */
+    u32 generation;                 /* the window's surface came back this many times */
+    u32 window_changes;             /* the app's, the displays' and the window's events (backend_window_changes) */
+    u64 touch_ids[SNX_HID_TOUCHES]; /* the finger in each slot of g_hle.hid.touch */
+    int touch_lift; /* backend_touch_mode_set asks video_poll to lift what the touch screen no longer takes */
+    /* the window's display's refresh period in ns (0 not known), set on the main thread when the window opens or moves
+       to another display, read by the renderer's threads */
+    u64 refresh_ns;
+    /* the window's part clear of the system's bars, in pixels, x | y << 16 | w << 32 | h << 48, or 0 for all of it: set
+       on the main thread with the size, read by the renderer on its own */
+    u64 wsafe;
+    u32 memory_said; /* memory_line's lines so far (atomic) */
+#ifdef SDL_PLATFORM_APPLE
+    dispatch_source_t pressure; /* the system's memory pressure's source (pressure_watch) */
+#endif
+    /* minimized or covered: a compositor shows nothing of it, and may never hand its swapchain's images back (Wayland
+       with FIFO), so presenting stops until it is back (the main thread sets it, the renderer reads it) */
+    int minimized;
+    /* vulkan_driver's pick, once made */
+    SnxVulkanDriver driver;
+    int driver_picked;
+#ifdef __APPLE__
+    /* backend_vk_driver's: that pick's library, loaded once for a run with no window */
+    void* driver_module;
+    int driver_looked;
+#endif
+    char* fatal_left; /* an error another thread left for the main thread to show */
+    int fatal_taken;  /* the main thread is showing it */
+    /* fatal_screen's: as many as the renderer's list, a long message's rows on a wide window */
+    SnxUiQuad fatal_quads[4096];
+    int fps_was; /* the limit the fps hotkey took off, to put back (0 for none yet: the game's pace) */
+    /* The mouse is held for the game while it plays with it: a Joy-Con on a table has no window's edge to stop at. The
+       menu takes it back, and hotkey_mouse (Ctrl+G) lets it go until the game's mouse mode ends or the key again */
+    int mouse_let_go, mouse_held;
+    u64 script_was;                 /* the scripted buttons of the last poll: a Home press opens or closes the menu */
+    u32 previous_ids[SNX_GAMEPADS]; /* the pad video_poll last saw in each slot */
+} g_sdl3;
+static void set_fullscreen(int on);
 
 struct PAudio {
     SDL_AudioStream* stream;
@@ -102,7 +138,7 @@ struct PAudio {
 };
 
 PAudio* plat_audio_open(u32 rate, u32 channels) {
-    if (g_opt_headless || !g_audio_ready) return NULL;
+    if (g_opt_headless || !g_sdl3.audio_ready) return NULL;
     SDL_AudioSpec spec = {SDL_AUDIO_S16LE, (int)channels, (int)rate};
     /* 5.1 for a device of one or two channels is mixed down here, the console's way. Asked for six, a system opens
        six and mixes them its own way (a phone's left the centre, the voices, far under the rest), and SDL's own
@@ -223,35 +259,33 @@ void plat_audio_volume(PAudio* a, float volume) {
 
 /* the game's touch screen is g_settings.touch_screen: 0 nothing, 1 the fingers, 2 the fingers and the mouse's left
    button (ini key touch) */
-static u64 g_touch_ids[SNX_HID_TOUCHES]; /* the finger in each slot of g_hle.hid.touch */
 /* a finger (or the mouse) down, moved or up on the game's touch screen: under input_lock, which hid's update reads
    the touch screen under (hid_take_input) */
 enum { TOUCH_DOWN, TOUCH_MOVE, TOUCH_UP };
 static void touch_set(int how, u64 id, const int picture[4], float px, float py) {
     pm_lock(&g_host.hid.input_lock);
     if (how == TOUCH_DOWN)
-        touch_down(&g_hle.hid.touch, g_touch_ids, id, picture, px, py);
+        touch_down(&g_hle.hid.touch, g_sdl3.touch_ids, id, picture, px, py);
     else if (how == TOUCH_MOVE)
-        touch_move(&g_hle.hid.touch, g_touch_ids, id, picture, px, py);
+        touch_move(&g_hle.hid.touch, g_sdl3.touch_ids, id, picture, px, py);
     else
-        touch_up(&g_hle.hid.touch, g_touch_ids, id);
+        touch_up(&g_hle.hid.touch, g_sdl3.touch_ids, id);
     pm_unlock(&g_host.hid.input_lock);
 }
 
 /* the touch screen's setting changed (the .ini's setter, on the main thread): the fingers or the mouse it no longer
    takes are lifted by the next video_poll, under the input_lock it holds already. Not here: the in-game menu sets it
    from inside video_poll (overlay_controls), where taking the lock again would hang the thread */
-static int g_touch_lift;
 void backend_touch_mode_set(const IniOpt* o, const char* v) {
     (void)o;
     (void)v;
-    g_touch_lift = 1;
+    g_sdl3.touch_lift = 1;
 }
 static void touch_lift(void) { /* under input_lock */
-    if (!g_touch_lift) return;
-    g_touch_lift = 0;
+    if (!g_sdl3.touch_lift) return;
+    g_sdl3.touch_lift = 0;
     if (!g_settings.touch_screen) g_hle.hid.touch.down = 0;
-    if (g_settings.touch_screen != 2) touch_up(&g_hle.hid.touch, g_touch_ids, SNX_TOUCH_MOUSE);
+    if (g_settings.touch_screen != 2) touch_up(&g_hle.hid.touch, g_sdl3.touch_ids, SNX_TOUCH_MOUSE);
 }
 /* from the in-game menu, under ui_lock: the mode as the .ini clamps it, saved */
 void backend_touch_set(int mode) {
@@ -274,34 +308,30 @@ int backend_ini(const char* k, const char* v) {
 }
 
 static void wsize_set(int w, int h) {
-    if (w > 0 && h > 0) __atomic_store_n(&g_wsize, (u64)(u32)w | (u64)(u32)h << 32, __ATOMIC_RELAXED);
+    if (w > 0 && h > 0) __atomic_store_n(&g_sdl3.wsize, (u64)(u32)w | (u64)(u32)h << 32, __ATOMIC_RELAXED);
 }
-/* the window's display's refresh period in ns (0 not known), set on the main thread when the window opens or moves
-   to another display, read by the renderer's threads */
-static u64 g_refresh_ns;
 static void refresh_set(void) {
-    const SDL_DisplayMode* m = g_win ? SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(g_win)) : NULL;
+    const SDL_DisplayMode* m = g_sdl3.win ? SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(g_sdl3.win)) : NULL;
     u64 ns = 0;
     if (m && m->refresh_rate_numerator > 0 && m->refresh_rate_denominator > 0)
         ns = (u64)1000000000u * (u64)m->refresh_rate_denominator / (u64)m->refresh_rate_numerator;
     else if (m && m->refresh_rate > 0)
         ns = (u64)(1e9 / m->refresh_rate);
-    __atomic_store_n(&g_refresh_ns, ns, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_sdl3.refresh_ns, ns, __ATOMIC_RELAXED);
 }
-u64 backend_display_refresh_ns(void) { return g_opt_headless ? 0 : __atomic_load_n(&g_refresh_ns, __ATOMIC_RELAXED); }
-/* the window's part clear of the system's bars, in pixels, x | y << 16 | w << 32 | h << 48, or 0 for all of it: set
-   on the main thread with the size, read by the renderer on its own */
-static u64 g_wsafe;
+u64 backend_display_refresh_ns(void) {
+    return g_opt_headless ? 0 : __atomic_load_n(&g_sdl3.refresh_ns, __ATOMIC_RELAXED);
+}
 static void wsafe_set(void) {
     SDL_Rect r;
-    float d = g_win ? SDL_GetWindowPixelDensity(g_win) : 0;
+    float d = g_sdl3.win ? SDL_GetWindowPixelDensity(g_sdl3.win) : 0;
     u64 v = 0;
-    if (!g_fullscreen && d > 0 && SDL_GetWindowSafeArea(g_win, &r))
+    if (!g_sdl3.fullscreen && d > 0 && SDL_GetWindowSafeArea(g_sdl3.win, &r))
         v = (u64)(u16)(r.x * d) | (u64)(u16)(r.y * d) << 16 | (u64)(u16)(r.w * d) << 32 | (u64)(u16)(r.h * d) << 48;
-    __atomic_store_n(&g_wsafe, v, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_sdl3.wsafe, v, __ATOMIC_RELEASE);
 }
 void backend_window_safe(int* x, int* y, int* w, int* h) {
-    u64 v = __atomic_load_n(&g_wsafe, __ATOMIC_ACQUIRE);
+    u64 v = __atomic_load_n(&g_sdl3.wsafe, __ATOMIC_ACQUIRE);
     *x = (int)(u16)v;
     *y = (int)(u16)(v >> 16);
     *w = (int)(u16)(v >> 32);
@@ -319,11 +349,10 @@ void backend_window_safe(int* x, int* y, int* w, int* h) {
 #define MEMORY_LINES 6
 /* 1 while more lines may come */
 static int memory_line(const char* why) {
-    static u32 said;
     char stats[320], gpu[1024] = "";
     u32 n;
-    if (__atomic_load_n(&said, __ATOMIC_RELAXED) >= MEMORY_LINES ||
-        (n = __atomic_fetch_add(&said, 1, __ATOMIC_RELAXED)) >= MEMORY_LINES)
+    if (__atomic_load_n(&g_sdl3.memory_said, __ATOMIC_RELAXED) >= MEMORY_LINES ||
+        (n = __atomic_fetch_add(&g_sdl3.memory_said, 1, __ATOMIC_RELAXED)) >= MEMORY_LINES)
         return 0;
     resources_text(stats, sizeof stats);
     if (g_renderer && g_renderer->memory_text) g_renderer->memory_text(gpu, sizeof gpu);
@@ -335,9 +364,8 @@ static int memory_line(const char* why) {
 /* The system's memory pressure on iOS and macOS, on a queue of the system: SDL's low memory event (iOS's alone) comes
    through the main thread's run loop, which the game's frames can hold up (one came 0.1 s before the kill). The source
    is kept for the whole run */
-static dispatch_source_t g_pressure;
 static void pressure(void* unused) {
-    unsigned long level = dispatch_source_get_data(g_pressure);
+    unsigned long level = dispatch_source_get_data(g_sdl3.pressure);
     (void)unused;
     if (level & DISPATCH_MEMORYPRESSURE_CRITICAL)
         memory_line("the system's memory pressure is critical");
@@ -345,16 +373,16 @@ static void pressure(void* unused) {
         memory_line("the system's memory pressure is at its warning level");
 }
 static void pressure_watch(void) {
-    if (g_pressure) return; /* a second game of the menu's */
-    g_pressure = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0,
-                                        DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL,
-                                        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
-    if (!g_pressure) {
+    if (g_sdl3.pressure) return; /* a second game of the menu's */
+    g_sdl3.pressure = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0,
+                                             DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL,
+                                             dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+    if (!g_sdl3.pressure) {
         WARN("memory: no source for the system's memory pressure\n");
         return;
     }
-    dispatch_source_set_event_handler_f(g_pressure, pressure);
-    dispatch_resume(g_pressure);
+    dispatch_source_set_event_handler_f(g_sdl3.pressure, pressure);
+    dispatch_resume(g_sdl3.pressure);
 }
 #endif
 /* as SDL queues each event, from its own thread: on Android the main loop is held while the app is in the
@@ -375,33 +403,32 @@ static bool SDLCALL lifecycle(void* unused, SDL_Event* e) {
         case SDL_EVENT_TERMINATING: LOG("lifecycle: the system is ending the app\n"); break;
         default: break;
     }
-    if (e->type == SDL_EVENT_WILL_ENTER_BACKGROUND) __atomic_store_n(&g_hidden, 1, __ATOMIC_RELEASE);
+    if (e->type == SDL_EVENT_WILL_ENTER_BACKGROUND) __atomic_store_n(&g_sdl3.hidden, 1, __ATOMIC_RELEASE);
     if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) {
 #ifndef SDL_PLATFORM_IOS
         /* Android makes the window's surface anew when the app comes back. iOS keeps it: making another from the
            renderer's thread is UIKit work off the main thread, which aborts the app */
-        __atomic_add_fetch(&g_generation, 1, __ATOMIC_RELEASE);
+        __atomic_add_fetch(&g_sdl3.generation, 1, __ATOMIC_RELEASE);
 #endif
-        __atomic_store_n(&g_hidden, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_sdl3.hidden, 0, __ATOMIC_RELEASE);
     }
     return true;
 }
-/* minimized or covered: a compositor shows nothing of it, and may never hand its swapchain's images back (Wayland
-   with FIFO), so presenting stops until it is back (the main thread sets it, the renderer reads it) */
-static int g_minimized;
 int backend_window_shown(void) {
-    return !g_opt_headless && !__atomic_load_n(&g_hidden, __ATOMIC_ACQUIRE) &&
-           !__atomic_load_n(&g_minimized, __ATOMIC_ACQUIRE) && !__atomic_load_n(&g_given_up, __ATOMIC_ACQUIRE);
+    return !g_opt_headless && !__atomic_load_n(&g_sdl3.hidden, __ATOMIC_ACQUIRE) &&
+           !__atomic_load_n(&g_sdl3.minimized, __ATOMIC_ACQUIRE) &&
+           !__atomic_load_n(&g_sdl3.given_up, __ATOMIC_ACQUIRE);
 }
-u32 backend_window_generation(void) { return __atomic_load_n(&g_generation, __ATOMIC_ACQUIRE); }
-u32 backend_window_changes(void) { return __atomic_load_n(&g_window_changes, __ATOMIC_ACQUIRE); }
+u32 backend_window_generation(void) { return __atomic_load_n(&g_sdl3.generation, __ATOMIC_ACQUIRE); }
+u32 backend_window_changes(void) { return __atomic_load_n(&g_sdl3.window_changes, __ATOMIC_ACQUIRE); }
 void backend_window_size(int* w, int* h) {
-    u64 s = g_opt_headless ? 0 : __atomic_load_n(&g_wsize, __ATOMIC_RELAXED);
+    u64 s = g_opt_headless ? 0 : __atomic_load_n(&g_sdl3.wsize, __ATOMIC_RELAXED);
+    if (!s && !g_opt_headless) s = 1280 | (720ull << 32);
     *w = (int)(u32)s;
     *h = (int)(u32)(s >> 32);
 }
 int backend_keyboard_show(const OverlayKeyboard* k) {
-    if (g_opt_headless || !g_win) return -1;
+    if (g_opt_headless || !g_sdl3.win) return -1;
     ui_lock();
     overlay_keyboard_show(k);
     ui_unlock();
@@ -422,14 +449,14 @@ static void buzzer_open(void) {
     SDL_HapticID* ids;
     if (!SDL_InitSubSystem(SDL_INIT_HAPTIC)) return;
     ids = SDL_GetHaptics(&n);
-    for (int i = 0; ids && i < n && !g_buzzer; i++) {
+    for (int i = 0; ids && i < n && !g_sdl3.buzzer; i++) {
         const char* name = SDL_GetHapticNameForID(ids[i]);
-        if (name && !strcmp(name, "VIBRATOR_SERVICE")) g_buzzer = SDL_OpenHaptic(ids[i]);
+        if (name && !strcmp(name, "VIBRATOR_SERVICE")) g_sdl3.buzzer = SDL_OpenHaptic(ids[i]);
     }
     SDL_free(ids);
-    if (g_buzzer && !SDL_InitHapticRumble(g_buzzer)) {
-        SDL_CloseHaptic(g_buzzer);
-        g_buzzer = NULL;
+    if (g_sdl3.buzzer && !SDL_InitHapticRumble(g_sdl3.buzzer)) {
+        SDL_CloseHaptic(g_sdl3.buzzer);
+        g_sdl3.buzzer = NULL;
     }
 #endif
 }
@@ -444,43 +471,42 @@ static void renderer_failed(const char* what) {
    KosmicKrisp the ICD the Vulkan loader takes; elsewhere the system's, which moltenvk and kosmickrisp also take, said.
    Once a run, before SDL opens the window or the headless renderer its loader */
 static const SnxVulkanDriver* vulkan_driver(void) {
-    static SnxVulkanDriver pick;
-    static int picked;
-    if (picked) return &pick;
-    picked = 1;
+    if (g_sdl3.driver_picked) return &g_sdl3.driver;
+    g_sdl3.driver_picked = 1;
     const char* asked = g_settings.vulkan_driver;
 #ifdef __APPLE__
     /* a library SDL already names (SDL_VULKAN_LIBRARY) is the one auto takes, as before the setting: a checkout's test */
     const char* named = SDL_GetHint(SDL_HINT_VULKAN_LIBRARY);
     if (named && named[0] && (!asked[0] || !strcmp(asked, "auto"))) {
-        pick.library = snx_strdup(named);
-        pick.name = "SDL_VULKAN_LIBRARY's";
+        g_sdl3.driver.library = snx_strdup(named);
+        g_sdl3.driver.name = "SDL_VULKAN_LIBRARY's";
         LOG("vulkan: the Vulkan library SDL_VULKAN_LIBRARY names, %s (vulkan_driver=auto leaves it)\n", named);
-        return &pick;
+        return &g_sdl3.driver;
     }
 #endif
     char reason[4096] = "";
     char* self = snx_executable(NULL);
-    int found = snx_vulkan_driver_choose(self, asked, &pick, reason, sizeof reason);
+    int found = snx_vulkan_driver_choose(self, asked, &g_sdl3.driver, reason, sizeof reason);
     free(self);
     /* A value that is no driver stops, as a menu that shows no other would hide the mistake. A driver the system has
        not plays auto's in its place, so that a game still starts, and the warning names it */
     if (!found) fatal("%s", reason);
-    if (pick.instead)
+    if (g_sdl3.driver.instead)
         WARN("vulkan: vulkan_driver=%s: %s\n", asked, reason);
     else if (reason[0])
         LOG("vulkan: %s\n", reason);
 #ifdef __APPLE__
     /* the loader takes the driver its ICD names, and no other */
-    if (pick.icd && setenv("VK_DRIVER_FILES", pick.icd, 1)) {
+    if (g_sdl3.driver.icd && setenv("VK_DRIVER_FILES", g_sdl3.driver.icd, 1)) {
         char error[256];
-        LOG("vulkan: VK_DRIVER_FILES=%s could not be set: %s\n", pick.icd, snx_os_error(error, sizeof error));
+        LOG("vulkan: VK_DRIVER_FILES=%s could not be set: %s\n", g_sdl3.driver.icd, snx_os_error(error, sizeof error));
         fatal("vulkan: VK_DRIVER_FILES could not be set for KosmicKrisp's ICD (see the log)");
     }
     /* the setting's driver over a library SDL_VULKAN_LIBRARY names, which only auto leaves */
-    if (pick.library) SDL_SetHintWithPriority(SDL_HINT_VULKAN_LIBRARY, pick.library, SDL_HINT_OVERRIDE);
+    if (g_sdl3.driver.library)
+        SDL_SetHintWithPriority(SDL_HINT_VULKAN_LIBRARY, g_sdl3.driver.library, SDL_HINT_OVERRIDE);
 #endif
-    return &pick;
+    return &g_sdl3.driver;
 }
 
 void video_init(const char* title, const char* addons) {
@@ -505,8 +531,8 @@ void video_init(const char* title, const char* addons) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
     gamepad_scan();
     /* SDL subsystem initialization belongs to the main thread, before the guest can open audout sessions. */
-    g_audio_ready = SDL_InitSubSystem(SDL_INIT_AUDIO);
-    if (!g_audio_ready) WARN("audio: SDL could not start its audio: %s\n", SDL_GetError());
+    g_sdl3.audio_ready = SDL_InitSubSystem(SDL_INIT_AUDIO);
+    if (!g_sdl3.audio_ready) WARN("audio: SDL could not start its audio: %s\n", SDL_GetError());
     LOG("video: SDL %d.%d.%d on %s\n", SDL_VERSIONNUM_MAJOR(SDL_GetVersion()), SDL_VERSIONNUM_MINOR(SDL_GetVersion()),
         SDL_VERSIONNUM_MICRO(SDL_GetVersion()), SDL_GetCurrentVideoDriver());
     unattended_start();
@@ -520,7 +546,7 @@ void video_init(const char* title, const char* addons) {
     SDL_DisableScreenSaver();
     int w, h;
     char header[768];
-    snprintf(g_title, sizeof g_title, "%s", title);
+    snprintf(g_sdl3.title, sizeof g_sdl3.title, "%s", title);
     backend_window_size(&w, &h);
     if (addons[0])
         snprintf(header, sizeof header, "%s (%s) - %s", title, addons, snx_build_info());
@@ -528,18 +554,19 @@ void video_init(const char* title, const char* addons) {
         snprintf(header, sizeof header, "%s - %s", title, snx_build_info());
     /* the display's own pixels: on one scaled 2x (Wayland, a Mac) a window without it is a picture of half as many
        each way, which the display server stretches, the game and what is drawn over it blurred alike */
-    g_win = SDL_CreateWindow(header, w, h, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
-    if (!g_win) fatal("SDL could not open a Vulkan window: %s", SDL_GetError());
-    snx_window_icon(g_win);
-    overlay_set_display_scale(SDL_GetWindowDisplayScale(g_win));
+    g_sdl3.win =
+        SDL_CreateWindow(header, w, h, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    if (!g_sdl3.win) fatal("SDL could not open a Vulkan window: %s", SDL_GetError());
+    snx_window_icon(g_sdl3.win);
+    overlay_set_display_scale(SDL_GetWindowDisplayScale(g_sdl3.win));
 #if defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
     overlay_set_fingers(1); /* a screen of fingers, as the launcher's SNX_TOUCH_UI: the menu's rows a finger's */
 #endif
     controls_atlas();
     vpad_set_store(ini_set);
     buzzer_open();
-    SDL_GetWindowSizeInPixels(g_win, &w, &h);
-    LOG("video: a window of %dx%d pixels, the display's scale %.2f\n", w, h, SDL_GetWindowDisplayScale(g_win));
+    SDL_GetWindowSizeInPixels(g_sdl3.win, &w, &h);
+    LOG("video: a window of %dx%d pixels, the display's scale %.2f\n", w, h, SDL_GetWindowDisplayScale(g_sdl3.win));
     wsize_set(w, h);
     wsafe_set();
     refresh_set();
@@ -563,15 +590,13 @@ void* backend_vk_driver(void) {
 #ifdef __APPLE__
     /* The library this run picked (vulkan_driver), for a run with no window: SDL's own search of the bundle needs its
        video subsystem, and a game's runtime copy is outside the bundle. It stays loaded for the run, as SDL's does */
-    static void* module;
-    static int looked;
-    if (!looked) {
+    if (!g_sdl3.driver_looked) {
         const SnxVulkanDriver* pick = vulkan_driver();
-        looked = 1;
-        if (pick->library && (module = dlopen(pick->library, RTLD_NOW | RTLD_LOCAL)) != NULL)
+        g_sdl3.driver_looked = 1;
+        if (pick->library && (g_sdl3.driver_module = dlopen(pick->library, RTLD_NOW | RTLD_LOCAL)) != NULL)
             LOG("vulkan: the Vulkan driver at %s\n", pick->library);
     }
-    return module ? (void*)dlsym(module, "vkGetInstanceProcAddr") : NULL;
+    return g_sdl3.driver_module ? (void*)dlsym(g_sdl3.driver_module, "vkGetInstanceProcAddr") : NULL;
 #else
     return NULL;
 #endif
@@ -590,10 +615,10 @@ int backend_vk_surface(VkInstance instance, VkSurfaceKHR* surface) {
     if (gpu_driver_custom())
         return gpu_driver_surface(
             instance,
-            SDL_GetPointerProperty(SDL_GetWindowProperties(g_win), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL),
+            SDL_GetPointerProperty(SDL_GetWindowProperties(g_sdl3.win), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL),
             surface);
 #endif
-    if (SDL_Vulkan_CreateSurface(g_win, instance, NULL, surface)) return 1;
+    if (SDL_Vulkan_CreateSurface(g_sdl3.win, instance, NULL, surface)) return 1;
     LOG("video: no Vulkan surface: %s\n", SDL_GetError());
     return 0;
 }
@@ -640,18 +665,16 @@ static u64 keymap(SDL_Scancode k) {
     return 0;
 }
 
-/* g_fullscreen follows the window: also set from the fullscreen events, for a change the window manager made */
+/* g_sdl3.fullscreen follows the window: also set from the fullscreen events, for a change the window manager made */
 static void set_fullscreen(int on) {
-    if (SDL_SetWindowFullscreen(g_win, on))
-        g_fullscreen = on;
+    if (SDL_SetWindowFullscreen(g_sdl3.win, on))
+        g_sdl3.fullscreen = on;
     else
         LOG("video: fullscreen %s failed: %s\n", on ? "on" : "off", SDL_GetError());
 }
 /* ---- a fatal error's box (log.c's fatal): the game's menu panel (overlay.c) with the error, what it means and what
    to do, until the player closes it. The game's renderer lets go of the window first (its device may be what was
    lost), and an SDL renderer of its own draws the panel's quads from the same atlas ---- */
-static char* g_fatal_left; /* an error another thread left for the main thread to show */
-static int g_fatal_taken;  /* the main thread is showing it */
 
 /* ui.h's quads, as the Vulkan renderer draws them (gpu/vk/ui.c): the atlas's premultiplied texels times their colour */
 /* one quad as it is drawn (ui_drawn: a bar of the ring where it is) */
@@ -734,7 +757,7 @@ static void fatal_share(const char* msg, const char* game_log, char* saved, size
     else if (!android_share(made))
         snprintf(said, size, "Log saved to %s, but nothing took it to share.", made);
 #elif defined(SDL_PLATFORM_IOS)
-    else if (!gui_apple_share(g_win, made))
+    else if (!gui_apple_share(g_sdl3.win, made))
         snprintf(said, size, "Log saved to %s, but the share sheet did not open.", made);
 #endif
     else
@@ -770,8 +793,8 @@ static int fatal_at(const SnxOverlayError* panel, float x, float y) {
 static int fatal_draw_make(SDL_Renderer** r, SDL_Texture** atlas, int* aw, int* ah) {
     const u32* px;
     u32 version;
-    if (!*r) *r = SDL_CreateRenderer(g_win, "vulkan");
-    if (!*r) *r = SDL_CreateRenderer(g_win, NULL);
+    if (!*r) *r = SDL_CreateRenderer(g_sdl3.win, "vulkan");
+    if (!*r) *r = SDL_CreateRenderer(g_sdl3.win, NULL);
     if (!*r) {
         LOG("video: no renderer for the error's box: %s\n", SDL_GetError());
         return 0;
@@ -803,8 +826,7 @@ static int fatal_screen(const char* msg) {
     static const char* const how = "The game's log has what ran last: ";
     char log_url[3608];
 #endif
-    static SnxUiQuad quads[4096]; /* as many as the renderer's list: a long message's rows on a wide window */
-    SnxUiList l = {quads, 0, 4096};
+    SnxUiList l = {g_sdl3.fatal_quads, 0, 4096};
     char name[256], what[1400], log_path[1200], said[1400], saved[1300] = "", *full;
     char *shown_msg, *shown_log; /* fatal_shown's; NULL out of memory: the text as it is, rather than none */
     SnxOverlayError panel;
@@ -814,13 +836,13 @@ static int fatal_screen(const char* msg) {
     SDL_Texture* atlas = NULL;
     int aw = 0, ah = 0, done = 0, i;
     Uint64 since;
-    if (!g_win) return 0;
-    __atomic_store_n(&g_given_up, 1, __ATOMIC_RELEASE);
+    if (!g_sdl3.win) return 0;
+    __atomic_store_n(&g_sdl3.given_up, 1, __ATOMIC_RELEASE);
     if (g_renderer_up && g_renderer->release_window && !g_renderer->release_window()) return 0;
     if (!fatal_draw_make(&r, &atlas, &aw, &ah)) return 0;
     shown_msg = fatal_shown(msg);
-    for (i = 0; g_title[i] && i < (int)sizeof name - 1; ++i)
-        name[i] = g_title[i] >= 'a' && g_title[i] <= 'z' ? (char)(g_title[i] - 32) : g_title[i];
+    for (i = 0; g_sdl3.title[i] && i < (int)sizeof name - 1; ++i)
+        name[i] = g_sdl3.title[i] >= 'a' && g_sdl3.title[i] <= 'z' ? (char)(g_sdl3.title[i] - 32) : g_sdl3.title[i];
     name[i] = 0;
     memset(&panel, 0, sizeof panel);
     panel.name = name;
@@ -845,7 +867,7 @@ static int fatal_screen(const char* msg) {
     } else
         snprintf(what, sizeof what, "%s%s", how, shown_log ? shown_log : log_path);
 #endif
-    if (g_win) SDL_SetWindowRelativeMouseMode(g_win, false); /* the panel is clicked */
+    if (g_sdl3.win) SDL_SetWindowRelativeMouseMode(g_sdl3.win, false); /* the panel is clicked */
     since = SDL_GetTicks();
     while (!done) {
         SDL_Event e;
@@ -1011,23 +1033,24 @@ void win_fatal_box(const char* msg) {
     if (g_opt_headless || unattended_active()) return;
     if (SDL_IsMainThread()) {
         /* an error another thread left first: this one followed from it */
-        char* left = __atomic_load_n(&g_fatal_left, __ATOMIC_ACQUIRE);
-        __atomic_store_n(&g_fatal_taken, 1, __ATOMIC_RELEASE);
+        char* left = __atomic_load_n(&g_sdl3.fatal_left, __ATOMIC_ACQUIRE);
+        __atomic_store_n(&g_sdl3.fatal_taken, 1, __ATOMIC_RELEASE);
         if (!fatal_screen(left ? left : msg))
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", left ? left : msg, g_win);
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", left ? left : msg, g_sdl3.win);
         return;
     }
-    if (g_win) {
+    if (g_sdl3.win) {
         char* none = NULL;
         char* copy = SDL_strdup(msg);
         int i;
         /* the renderer stops presenting and lets go of the window here: the main thread may be waiting for it */
-        __atomic_store_n(&g_given_up, 1, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_sdl3.given_up, 1, __ATOMIC_RELEASE);
         if (g_renderer_up && g_renderer->release_window) g_renderer->release_window();
-        if (!copy || !__atomic_compare_exchange_n(&g_fatal_left, &none, copy, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        if (!copy ||
+            !__atomic_compare_exchange_n(&g_sdl3.fatal_left, &none, copy, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
             SDL_free(copy); /* a second error: the first one shows */
         for (i = 0; i < 300; ++i) {
-            if (__atomic_load_n(&g_fatal_taken, __ATOMIC_ACQUIRE))
+            if (__atomic_load_n(&g_sdl3.fatal_taken, __ATOMIC_ACQUIRE))
                 for (;;) SDL_Delay(1000); /* the main thread shows it and ends the process */
             SDL_Delay(10);
         }
@@ -1044,14 +1067,14 @@ void win_fatal_box(const char* msg) {
 /* the window's title says so while the player has the game paused */
 static void title_paused(int paused) {
     static const char mark[] = " (paused)";
-    const char* t = g_win ? SDL_GetWindowTitle(g_win) : NULL;
+    const char* t = g_sdl3.win ? SDL_GetWindowTitle(g_sdl3.win) : NULL;
     char title[1024];
     size_t n;
     if (!t) return;
     n = strlen(t);
     if (n >= sizeof mark - 1 && !strcmp(t + n - (sizeof mark - 1), mark)) n -= sizeof mark - 1;
     snprintf(title, sizeof title, "%.*s%s", (int)n, t, paused ? mark : "");
-    SDL_SetWindowTitle(g_win, title);
+    SDL_SetWindowTitle(g_sdl3.win, title);
 }
 static void menu_open(int open);
 /* a key's modifiers as hotkeys.h counts them, either side's */
@@ -1090,16 +1113,15 @@ static void hotkey(int action) {
             overlay_keys();
             ui_unlock();
             break;
-        case HOTKEY_SCREENSHOT: g_shot_req = 1; break;
+        case HOTKEY_SCREENSHOT: g_sdl3.shot_req = 1; break;
         case HOTKEY_FPS_LIMIT: {
             /* off and back to the limit the player set (fps_limit=120 stays 120), or to the game's pace when it
                started off */
-            static int was = SNX_FPS_GAME;
             if (g_opt_fps) {
-                was = g_opt_fps;
+                g_sdl3.fps_was = g_opt_fps;
                 __atomic_store_n(&g_opt_fps, 0, __ATOMIC_RELAXED); /* present_pace reads it on the game's threads */
             } else
-                __atomic_store_n(&g_opt_fps, was, __ATOMIC_RELAXED);
+                __atomic_store_n(&g_opt_fps, g_sdl3.fps_was ? g_sdl3.fps_was : SNX_FPS_GAME, __ATOMIC_RELAXED);
             char v[16];
             fps_limit_text(g_opt_fps, v, sizeof v);
             ini_set("fps_limit", v);
@@ -1139,7 +1161,7 @@ static void hotkey(int action) {
         case HOTKEY_TRACY: snx_tracy_capture_now(); break;
 #endif
         case HOTKEY_FULLSCREEN:
-        case HOTKEY_FULLSCREEN_2: set_fullscreen(!g_fullscreen); break;
+        case HOTKEY_FULLSCREEN_2: set_fullscreen(!g_sdl3.fullscreen); break;
         case HOTKEY_PAUSE:
             game_pause_toggle();
             title_paused(game_paused());
@@ -1177,13 +1199,13 @@ static u64 finger_id(const SDL_TouchFingerEvent* f) {
 static void menu_open(int open) {
     if (overlay_shown() != open) overlay_toggle();
     vpad_release();
-    keys_held = 0;
+    g_sdl3.keys_held = 0;
     /* a finger or button down before this (Home on the on-screen controls opened it) lifts without a tap */
     overlay_pointers_reset();
 }
 static void overlay_do(int action) {
     if (action == OVERLAY_EXIT) g_quit = 1;
-    if (action == OVERLAY_TYPE) g_typing.again = 1; /* a tap on the box's line: the system's keyboard again */
+    if (action == OVERLAY_TYPE) g_sdl3.typing.again = 1; /* a tap on the box's line: the system's keyboard again */
     if (action == OVERLAY_CLOSE) menu_open(0);
     /* the frontend's loop does them (state_poll), the menu closed first for a load: the game it goes back to shows */
     if (action == OVERLAY_SAVE) state_ask(STATE_SAVE, overlay_slot());
@@ -1312,7 +1334,7 @@ static int menu_event(const SDL_Event* e, int action) {
               y = e->type == SDL_EVENT_MOUSE_MOTION ? e->motion.y : e->button.y;
         backend_window_size(&w, &h);
         backend_window_safe(&safe[0], &safe[1], &safe[2], &safe[3]);
-        d = SDL_GetWindowPixelDensity(g_win);
+        d = SDL_GetWindowPixelDensity(g_sdl3.win);
         if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
             overlay_pointer_down(SNX_TOUCH_MOUSE, x * d, y * d, safe);
         else if (e->type == SDL_EVENT_MOUSE_MOTION)
@@ -1364,23 +1386,20 @@ static void touch_finger(const SDL_Event* e) {
                                                    : TOUCH_UP,
               finger_id(&e->tfinger), picture, px, py);
 }
-/* The mouse is held for the game while it plays with it: a Joy-Con on a table has no window's edge to stop at. The menu
-   takes it back, and hotkey_mouse (Ctrl+G) lets it go until the game's mouse mode ends or the key again */
-static int g_mouse_let_go, g_mouse_held;
 /* hotkey_mouse: the mouse let go, or held again; what it held comes up with it */
 static void mouse_let_go(void) {
-    g_mouse_let_go = !g_mouse_let_go;
+    g_sdl3.mouse_let_go = !g_sdl3.mouse_let_go;
     pm_lock(&g_host.hid.input_lock);
     g_hle.hid.mouse.buttons = 0;
     pm_unlock(&g_host.hid.input_lock);
 }
 static void mouse_hold_update(void) {
-    int mode = g_win && hid_mouse_mode();
-    if (!mode) g_mouse_let_go = 0;
-    int want = mode && !g_mouse_let_go && !overlay_shown() && !vpad_editing() && !overlay_keyboard_shown();
-    if (want == g_mouse_held) return;
-    g_mouse_held = want;
-    if (!SDL_SetWindowRelativeMouseMode(g_win, want))
+    int mode = g_sdl3.win && hid_mouse_mode();
+    if (!mode) g_sdl3.mouse_let_go = 0;
+    int want = mode && !g_sdl3.mouse_let_go && !overlay_shown() && !vpad_editing() && !overlay_keyboard_shown();
+    if (want == g_sdl3.mouse_held) return;
+    g_sdl3.mouse_held = want;
+    if (!SDL_SetWindowRelativeMouseMode(g_sdl3.win, want))
         LOG("input: the mouse couldn't be %s: %s\n", want ? "held" : "let go", SDL_GetError());
     else if (!want)
         LOG("input: the mouse is let go\n");
@@ -1390,7 +1409,7 @@ static void mouse_hold_update(void) {
 /* the mouse as an Ounce game's Joy-Con in mouse mode (hid_mouse_update): what it moved, under input_lock */
 static void game_mouse(const SDL_Event* e) {
     HidMouse* m = &g_hle.hid.mouse;
-    if (g_mouse_let_go) return;
+    if (g_sdl3.mouse_let_go) return;
     pm_lock(&g_host.hid.input_lock);
     if (e->type == SDL_EVENT_MOUSE_MOTION) {
         if (e->motion.which != SDL_TOUCH_MOUSEID) {
@@ -1413,7 +1432,7 @@ static void game_mouse(const SDL_Event* e) {
    when the touch option asks for it; positions come in window points */
 static void touch_mouse(const SDL_Event* e) {
     int picture[4], safe[4], taken = 0;
-    float d = SDL_GetWindowPixelDensity(g_win);
+    float d = SDL_GetWindowPixelDensity(g_sdl3.win);
     backend_window_safe(&safe[0], &safe[1], &safe[2], &safe[3]);
     if (e->type == SDL_EVENT_MOUSE_MOTION) {
         if (e->motion.which == SDL_TOUCH_MOUSEID) return;
@@ -1449,17 +1468,17 @@ static int press_key(const SDL_KeyboardEvent* k) {
             (c >= SDL_SCANCODE_RIGHT && c <= SDL_SCANCODE_UP) ||
             (c >= SDL_SCANCODE_KP_DIVIDE && c <= SDL_SCANCODE_KP_PERIOD));
 }
-/* a pad's slot in g_press, by its id: a free one taken for one not seen yet (NULL when none is) */
+/* a pad's slot in g_sdl3.press, by its id: a free one taken for one not seen yet (NULL when none is) */
 static u32* press_pad(SDL_JoystickID id) {
     int i, free_at = -1;
     for (i = 0; i < SNX_GAMEPADS; ++i) {
-        if (g_press.pad[i].id == id) return &g_press.pad[i].held;
-        if (!g_press.pad[i].id && free_at < 0) free_at = i;
+        if (g_sdl3.press.pad[i].id == id) return &g_sdl3.press.pad[i].held;
+        if (!g_sdl3.press.pad[i].id && free_at < 0) free_at = i;
     }
     if (free_at < 0) return NULL;
-    g_press.pad[free_at].id = id;
-    g_press.pad[free_at].held = 0;
-    return &g_press.pad[free_at].held;
+    g_sdl3.press.pad[free_at].id = id;
+    g_sdl3.press.pad[free_at].held = 0;
+    return &g_sdl3.press.pad[free_at].held;
 }
 /* What a pad holds as SDL knows it, which doesn't press until let go: from nothing for a pad just opened
    (gamepad_open), else added to what was followed. SDL starts an opened pad at nothing and sends what it holds as
@@ -1489,11 +1508,11 @@ static void press_pads_held(void) {
    (action, hotkeys.h's; -1 for none), whatever key it is set to */
 static int press_event(const SDL_Event* e, int action) {
     u32* held;
-    int bit, listening = g_press.listening && !overlay_shown() && !vpad_editing();
+    int bit, listening = g_sdl3.press.listening && !overlay_shown() && !vpad_editing();
     switch (e->type) {
         case SDL_EVENT_GAMEPAD_REMOVED:
             for (bit = 0; bit < SNX_GAMEPADS; ++bit)
-                if (g_press.pad[bit].id == e->gdevice.which) g_press.pad[bit].id = 0;
+                if (g_sdl3.press.pad[bit].id == e->gdevice.which) g_sdl3.press.pad[bit].id = 0;
             return 0;
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
         case SDL_EVENT_GAMEPAD_BUTTON_UP: {
@@ -1507,8 +1526,8 @@ static int press_event(const SDL_Event* e, int action) {
             *held |= 1u << e->gbutton.button;
             /* not Home (the guide button), which opens the menu */
             if (!listening || was || e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) return 0;
-            g_press.kind = PRESS_BUTTON;
-            g_press.code = e->gbutton.button;
+            g_sdl3.press.kind = PRESS_BUTTON;
+            g_sdl3.press.code = e->gbutton.button;
             return 1;
         }
         case SDL_EVENT_GAMEPAD_AXIS_MOTION: { /* ZL and ZR, as far as the game holds them (SNX_PAD_TRIGGER) */
@@ -1524,14 +1543,14 @@ static int press_event(const SDL_Event* e, int action) {
             if ((*held >> bit) & 1) return 0;
             *held |= 1u << bit;
             if (!listening) return 0;
-            g_press.kind = PRESS_TRIGGER;
-            g_press.code = bit == 30 ? 'L' : 'R';
+            g_sdl3.press.kind = PRESS_TRIGGER;
+            g_sdl3.press.code = bit == 30 ? 'L' : 'R';
             return 1;
         }
         case SDL_EVENT_KEY_DOWN:
             if (!listening || !press_key(&e->key) || action >= 0) return 0;
-            g_press.kind = PRESS_KEY;
-            g_press.code = e->key.scancode;
+            g_sdl3.press.kind = PRESS_KEY;
+            g_sdl3.press.code = e->key.scancode;
             return 1;
         /* A finger on the screen itself presses, or a pen's tip (SDL makes it a touch of a direct device,
            SDL_PEN_TOUCHID), not a trackpad's (an indirect device), nor the mouse: the click that gives the window the
@@ -1539,17 +1558,18 @@ static int press_event(const SDL_Event* e, int action) {
            on-screen controls it hides (Home, Capture) take none */
         case SDL_EVENT_FINGER_DOWN:
             if (!listening) return 0;
-            if (!g_press.finger && SDL_GetTouchDeviceType(e->tfinger.touchID) == SDL_TOUCH_DEVICE_DIRECT) {
-                g_press.kind = PRESS_TOUCH;
-                g_press.touch = e->tfinger.touchID;
-                g_press.finger = e->tfinger.fingerID;
+            if (!g_sdl3.press.finger && SDL_GetTouchDeviceType(e->tfinger.touchID) == SDL_TOUCH_DEVICE_DIRECT) {
+                g_sdl3.press.kind = PRESS_TOUCH;
+                g_sdl3.press.touch = e->tfinger.touchID;
+                g_sdl3.press.finger = e->tfinger.fingerID;
             }
             return 1;
         case SDL_EVENT_FINGER_MOTION:
         case SDL_EVENT_FINGER_UP:
         case SDL_EVENT_FINGER_CANCELED:
-            if (g_press.finger && e->tfinger.fingerID == g_press.finger && e->tfinger.touchID == g_press.touch) {
-                if (e->type != SDL_EVENT_FINGER_MOTION) g_press.finger = 0;
+            if (g_sdl3.press.finger && e->tfinger.fingerID == g_sdl3.press.finger &&
+                e->tfinger.touchID == g_sdl3.press.touch) {
+                if (e->type != SDL_EVENT_FINGER_MOTION) g_sdl3.press.finger = 0;
                 return 1;
             }
             /* a lift goes on, so a finger that went down before the screen listened doesn't stay down in the game
@@ -1575,19 +1595,20 @@ static void keyboard_sync(void) {
     answer = overlay_keyboard_take(&ticket, text, sizeof text);
     ui_unlock();
     if (shown) {
-        float d = SDL_GetWindowPixelDensity(g_win);
+        float d = SDL_GetWindowPixelDensity(g_sdl3.win);
         SDL_Rect r;
         if (d <= 0) d = 1;
         r.x = (int)(t.line.x / d);
         r.y = (int)(t.line.y / d);
         r.w = (int)(t.line.w / d);
         r.h = (int)(t.line.h / d);
-        if (r.x != g_typing.area.x || r.y != g_typing.area.y || r.w != g_typing.area.w || r.h != g_typing.area.h) {
-            SDL_SetTextInputArea(g_win, &r, 0);
-            g_typing.area = r;
+        if (r.x != g_sdl3.typing.area.x || r.y != g_sdl3.typing.area.y || r.w != g_sdl3.typing.area.w ||
+            r.h != g_sdl3.typing.area.h) {
+            SDL_SetTextInputArea(g_sdl3.win, &r, 0);
+            g_sdl3.typing.area = r;
         }
     }
-    if (shown && (t.ticket != g_typing.ticket || g_typing.again)) {
+    if (shown && (t.ticket != g_sdl3.typing.ticket || g_sdl3.typing.again)) {
         SDL_PropertiesID props = SDL_CreateProperties();
         SDL_TextInputType type = t.numbers && t.password ? SDL_TEXTINPUT_TYPE_NUMBER_PASSWORD_HIDDEN
                                  : t.numbers             ? SDL_TEXTINPUT_TYPE_NUMBER
@@ -1595,23 +1616,23 @@ static void keyboard_sync(void) {
                                                          : SDL_TEXTINPUT_TYPE_TEXT;
         SDL_SetNumberProperty(props, SDL_PROP_TEXTINPUT_TYPE_NUMBER, type);
         SDL_SetBooleanProperty(props, SDL_PROP_TEXTINPUT_MULTILINE_BOOLEAN, false); /* Return gives the line */
-        if (!SDL_StartTextInputWithProperties(g_win, props))
+        if (!SDL_StartTextInputWithProperties(g_sdl3.win, props))
             WARN_LIMIT(4, "input: SDL could not start text input for the keyboard's box: %s\n", SDL_GetError());
         SDL_DestroyProperties(props);
-        g_typing.ticket = t.ticket;
-        g_typing.again = 0;
-    } else if (!shown && g_typing.ticket) {
-        SDL_StopTextInput(g_win);
-        g_typing.ticket = 0;
+        g_sdl3.typing.ticket = t.ticket;
+        g_sdl3.typing.again = 0;
+    } else if (!shown && g_sdl3.typing.ticket) {
+        SDL_StopTextInput(g_sdl3.win);
+        g_sdl3.typing.ticket = 0;
     }
     if (answer >= 0) am_keyboard_answered(ticket, answer, text);
 }
 void video_poll(void) {
     SDL_Event e;
-    char* left = __atomic_load_n(&g_fatal_left, __ATOMIC_ACQUIRE);
+    char* left = __atomic_load_n(&g_sdl3.fatal_left, __ATOMIC_ACQUIRE);
     if (left) { /* another thread's fatal error, left for this thread to show */
-        __atomic_store_n(&g_fatal_taken, 1, __ATOMIC_RELEASE);
-        if (!fatal_screen(left)) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", left, g_win);
+        __atomic_store_n(&g_sdl3.fatal_taken, 1, __ATOMIC_RELEASE);
+        if (!fatal_screen(left)) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", left, g_sdl3.win);
         plat_exit_now(1);
     }
     /* the menu, or the keyboard's box, had the controls when this poll began: the press that closes it (B, or A that
@@ -1621,26 +1642,26 @@ void video_poll(void) {
     while (!g_opt_headless && SDL_PollEvent(&e)) {
         int action = e.type == SDL_EVENT_KEY_DOWN ? key_action(&e.key) : -1; /* the runtime key it is */
         /* SDL numbers the app's, the displays' and the window's events under the keyboard's */
-        if (e.type < SDL_EVENT_KEY_DOWN) __atomic_add_fetch(&g_window_changes, 1, __ATOMIC_RELEASE);
+        if (e.type < SDL_EVENT_KEY_DOWN) __atomic_add_fetch(&g_sdl3.window_changes, 1, __ATOMIC_RELEASE);
         if (press_event(&e, action)) continue;
         if (overlay_event(&e, action)) continue;
         switch (e.type) {
             case SDL_EVENT_QUIT: g_quit = 1; break;
             case SDL_EVENT_WINDOW_MINIMIZED:
-            case SDL_EVENT_WINDOW_OCCLUDED: __atomic_store_n(&g_minimized, 1, __ATOMIC_RELEASE); break;
+            case SDL_EVENT_WINDOW_OCCLUDED: __atomic_store_n(&g_sdl3.minimized, 1, __ATOMIC_RELEASE); break;
             case SDL_EVENT_WINDOW_RESTORED:
             case SDL_EVENT_WINDOW_MAXIMIZED:
             case SDL_EVENT_WINDOW_EXPOSED:
-            case SDL_EVENT_WINDOW_SHOWN: __atomic_store_n(&g_minimized, 0, __ATOMIC_RELEASE); break;
+            case SDL_EVENT_WINDOW_SHOWN: __atomic_store_n(&g_sdl3.minimized, 0, __ATOMIC_RELEASE); break;
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-                if (e.window.windowID == SDL_GetWindowID(g_win)) wsize_set(e.window.data1, e.window.data2);
+                if (e.window.windowID == SDL_GetWindowID(g_sdl3.win)) wsize_set(e.window.data1, e.window.data2);
                 wsafe_set();
                 break;
             case SDL_EVENT_WINDOW_SAFE_AREA_CHANGED: wsafe_set(); break;
             case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
             case SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED: refresh_set(); break;
             case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
-                overlay_set_display_scale(SDL_GetWindowDisplayScale(g_win));
+                overlay_set_display_scale(SDL_GetWindowDisplayScale(g_sdl3.win));
                 break;
             case SDL_EVENT_FINGER_DOWN:
             case SDL_EVENT_FINGER_MOTION:
@@ -1650,31 +1671,31 @@ void video_poll(void) {
             case SDL_EVENT_MOUSE_BUTTON_UP:
             case SDL_EVENT_MOUSE_MOTION:
                 game_mouse(&e);
-                if (!g_mouse_held) touch_mouse(&e);
+                if (!g_sdl3.mouse_held) touch_mouse(&e);
                 break;
             case SDL_EVENT_MOUSE_WHEEL: game_mouse(&e); break;
             case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
-                g_fullscreen = 1;
+                g_sdl3.fullscreen = 1;
                 wsafe_set();
                 break;
             case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
-                g_fullscreen = 0;
+                g_sdl3.fullscreen = 0;
                 wsafe_set();
                 break;
             case SDL_EVENT_KEY_DOWN:
                 /* a runtime key is no button of the game's. A repeat does neither: a key held as the menu closed (which
-                   cleared keys_held) stays from the game until it is let go, and the Esc that closed the menu doesn't
-                   quit. A key with modifiers the setting doesn't name is no runtime key (Alt+F4 also arrives as F4 on
-                   Windows) */
+                   cleared g_sdl3.keys_held) stays from the game until it is let go, and the Esc that closed the menu
+                   doesn't quit. A key with modifiers the setting doesn't name is no runtime key (Alt+F4 also arrives as
+                   F4 on Windows) */
                 if (e.key.repeat) break;
                 if (action >= 0)
                     hotkey(action);
                 else
-                    keys_held |= keymap(e.key.scancode);
+                    g_sdl3.keys_held |= keymap(e.key.scancode);
                 break;
-            case SDL_EVENT_KEY_UP: keys_held &= ~keymap(e.key.scancode); break;
+            case SDL_EVENT_KEY_UP: g_sdl3.keys_held &= ~keymap(e.key.scancode); break;
             case SDL_EVENT_WINDOW_FOCUS_LOST:
-                keys_held = 0;
+                g_sdl3.keys_held = 0;
                 ui_lock();
                 vpad_release();
                 overlay_pointers_reset(); /* lifts that come without their presses don't tap the menu */
@@ -1696,14 +1717,13 @@ void video_poll(void) {
     }
     /* the scripted presses act like keys, stick keys included. Bits 16..23 (the stick directions as buttons) can be
        scripted too, but the stick keys (40..47) are no npad buttons */
-    static u64 script_was; /* the scripted buttons of the last poll: a Home press opens or closes the menu */
-    u64 s = unattended_buttons(), k = keys_held | s;
-    if (s & ~script_was & SNX_SCRIPT_HOME) {
+    u64 s = unattended_buttons(), k = g_sdl3.keys_held | s;
+    if (s & ~g_sdl3.script_was & SNX_SCRIPT_HOME) {
         ui_lock();
         menu_open(!overlay_shown());
         ui_unlock();
     }
-    script_was = s;
+    g_sdl3.script_was = s;
     u64 nonpad = (k & 0xFFFFull) | (s & 0xFF0000ull), b;
     i32 st[4], pad[4], pad0[4];
     u64 pb;
@@ -1712,7 +1732,6 @@ void video_poll(void) {
     pm_lock(&g_host.hid.input_lock);
     touch_lift();
     /* Each SDL slot is one guest Npad. Keyboard, scripted and on-screen input also drive No1. */
-    static u32 previous_ids[SNX_GAMEPADS];
     pad0[0] = pad0[1] = pad0[2] = pad0[3] = 0;
     for (int i = 0; i < SNX_GAMEPADS; i++) {
         PadState* player = i ? &g_hle.hid.pad_extra[i - 1] : &g_hle.hid.pad1;
@@ -1722,14 +1741,14 @@ void video_poll(void) {
         int kept = !id && gamepad_slot_kept(i); /* gamepad_assign=1: the player kept for its controller a while */
         int connected = id != 0 || kept;
         /* A disconnect and replacement can happen in one poll. Do not send the old player's rumble to the new pad. */
-        if (previous_ids[i] != id) {
+        if (g_sdl3.previous_ids[i] != id) {
             __atomic_store_n(&player->rumble[0], 0, __ATOMIC_RELAXED);
             __atomic_store_n(&player->rumble[1], 0, __ATOMIC_RELAXED);
             if (i)
-                g_menu_held_extra[i - 1] = 0;
+                g_sdl3.menu_held_extra[i - 1] = 0;
             else
-                g_menu_held_pad0 = 0;
-            previous_ids[i] = id;
+                g_sdl3.menu_held_pad0 = 0;
+            g_sdl3.previous_ids[i] = id;
         }
         gamepad_state_slot(i, &one_buttons, one_sticks);
         gamepad_rumble_slot(i, __atomic_load_n(&player->rumble[0], __ATOMIC_RELAXED),
@@ -1779,24 +1798,24 @@ void video_poll(void) {
             rx = vs[2];
             ry = vs[3];
         }
-        if (acts & SNX_VPAD_DO_SHOT) g_shot_req = 1;
-        if ((acts & SNX_VPAD_DO_BUZZ) && g_buzzer) SDL_PlayHapticRumble(g_buzzer, 0.5f, 15);
+        if (acts & SNX_VPAD_DO_SHOT) g_sdl3.shot_req = 1;
+        if ((acts & SNX_VPAD_DO_BUZZ) && g_sdl3.buzzer) SDL_PlayHapticRumble(g_sdl3.buzzer, 0.5f, 15);
     }
     input_stick_clamp(&lx, &ly);
     input_stick_clamp(&rx, &ry);
-    if (g_press.listening) { /* the loading screen's: a pad's buttons held then reach the game only once let go */
-        g_menu_held_pad0 |= g_hle.hid.pad1.buttons;
-        for (int i = 0; i < SNX_GAMEPADS - 1; i++) g_menu_held_extra[i] |= g_hle.hid.pad_extra[i].buttons;
+    if (g_sdl3.press.listening) { /* the loading screen's: a pad's buttons held then reach the game only once let go */
+        g_sdl3.menu_held_pad0 |= g_hle.hid.pad1.buttons;
+        for (int i = 0; i < SNX_GAMEPADS - 1; i++) g_sdl3.menu_held_extra[i] |= g_hle.hid.pad_extra[i].buttons;
     }
     /* the game's menu, the controls' edit mode or the keyboard's box has them */
     if (menu_had || overlay_shown() || vpad_editing() || overlay_keyboard_shown()) {
-        g_menu_held = nonpad;
-        g_menu_held_pad0 = g_hle.hid.pad1.buttons;
+        g_sdl3.menu_held = nonpad;
+        g_sdl3.menu_held_pad0 = g_hle.hid.pad1.buttons;
         b = 0;
         lx = ly = rx = ry = 0;
         g_hle.hid.touch.down = 0;
         for (int i = 0; i < SNX_GAMEPADS - 1; i++) {
-            g_menu_held_extra[i] = g_hle.hid.pad_extra[i].buttons;
+            g_sdl3.menu_held_extra[i] = g_hle.hid.pad_extra[i].buttons;
             g_hle.hid.pad_extra[i].buttons = 0;
             g_hle.hid.pad_extra[i].lx = g_hle.hid.pad_extra[i].ly = 0;
             g_hle.hid.pad_extra[i].rx = g_hle.hid.pad_extra[i].ry = 0;
@@ -1804,12 +1823,12 @@ void video_poll(void) {
         }
         memset(g_hle.hid.pad1.motion, 0, sizeof g_hle.hid.pad1.motion);
     } else {
-        g_menu_held &= nonpad;
-        g_menu_held_pad0 &= g_hle.hid.pad1.buttons;
-        b = (nonpad & ~g_menu_held) | (g_hle.hid.pad1.buttons & ~g_menu_held_pad0);
+        g_sdl3.menu_held &= nonpad;
+        g_sdl3.menu_held_pad0 &= g_hle.hid.pad1.buttons;
+        b = (nonpad & ~g_sdl3.menu_held) | (g_hle.hid.pad1.buttons & ~g_sdl3.menu_held_pad0);
         for (int i = 0; i < SNX_GAMEPADS - 1; i++) {
-            g_menu_held_extra[i] &= g_hle.hid.pad_extra[i].buttons;
-            g_hle.hid.pad_extra[i].buttons &= ~g_menu_held_extra[i];
+            g_sdl3.menu_held_extra[i] &= g_hle.hid.pad_extra[i].buttons;
+            g_hle.hid.pad_extra[i].buttons &= ~g_sdl3.menu_held_extra[i];
         }
     }
     st[0] = lx;
@@ -1841,30 +1860,32 @@ char* backend_launcher_folder(void) {
 }
 const char* backend_pressed(void) {
     if (g_opt_headless) return NULL; /* no window, and SDL isn't started for one */
-    if (!g_press.listening) press_pads_held();
-    g_press.listening = 1;
-    switch (g_press.kind) {
+    if (!g_sdl3.press.listening) press_pads_held();
+    g_sdl3.press.listening = 1;
+    switch (g_sdl3.press.kind) {
         case PRESS_KEY:
-            snprintf(g_press.said, sizeof g_press.said, "the key %s",
-                     SDL_GetKeyName(SDL_GetKeyFromScancode((SDL_Scancode)g_press.code, SDL_KMOD_NONE, false)));
+            snprintf(g_sdl3.press.said, sizeof g_sdl3.press.said, "the key %s",
+                     SDL_GetKeyName(SDL_GetKeyFromScancode((SDL_Scancode)g_sdl3.press.code, SDL_KMOD_NONE, false)));
             break;
-        case PRESS_TOUCH: snprintf(g_press.said, sizeof g_press.said, "a touch"); break;
+        case PRESS_TOUCH: snprintf(g_sdl3.press.said, sizeof g_sdl3.press.said, "a touch"); break;
         case PRESS_BUTTON: {
-            const char* name = SDL_GetGamepadStringForButton((SDL_GamepadButton)g_press.code);
-            snprintf(g_press.said, sizeof g_press.said, "a gamepad's button %s", name ? name : "?");
+            const char* name = SDL_GetGamepadStringForButton((SDL_GamepadButton)g_sdl3.press.code);
+            snprintf(g_sdl3.press.said, sizeof g_sdl3.press.said, "a gamepad's button %s", name ? name : "?");
             break;
         }
-        case PRESS_TRIGGER: snprintf(g_press.said, sizeof g_press.said, "a gamepad's Z%c", (char)g_press.code); break;
+        case PRESS_TRIGGER:
+            snprintf(g_sdl3.press.said, sizeof g_sdl3.press.said, "a gamepad's Z%c", (char)g_sdl3.press.code);
+            break;
         default: return NULL;
     }
-    g_press.kind = PRESS_NONE;
-    return g_press.said;
+    g_sdl3.press.kind = PRESS_NONE;
+    return g_sdl3.press.said;
 }
 void frontend_frame(void) {
     char p[1200];
     int full = log_full_take();
-    g_press.listening = 0; /* the game's first thread runs: its presses are its own */
-    g_press.kind = PRESS_NONE;
+    g_sdl3.press.listening = 0; /* the game's first thread runs: its presses are its own */
+    g_sdl3.press.kind = PRESS_NONE;
     if (full) { /* the log's first cut (log.c), said over the game once */
         snprintf(p, sizeof p, "Log full at %d MiB: older lines cut (Debug > Log size limit)", full);
         ui_lock();
@@ -1878,8 +1899,8 @@ void frontend_frame(void) {
          __atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED) ||
          __atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)))
         g_renderer->refresh();
-    if (g_shot_req) {
-        g_shot_req = 0;
+    if (g_sdl3.shot_req) {
+        g_sdl3.shot_req = 0;
         time_t now = time(NULL);
         struct tm t;
 #ifdef _WIN32
