@@ -53,6 +53,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef __APPLE__
 #include <TargetConditionals.h>
@@ -1204,6 +1205,11 @@ int snx_main(int argc, char** argv) {
        public reports and the folder names their account */
     LOG("ScarletNX - %s\n", title);
     LOG("build: %s\n", snx_build_log_line());
+    {
+        char run[SNX_RUN_LOG_LINE];
+        snx_run_log_line(run, (long long)time(NULL));
+        LOG("%s\n", run);
+    }
     {
         char sys[384];
         plat_system_info(sys, sizeof sys);

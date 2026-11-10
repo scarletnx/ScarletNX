@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* a save the game writes goes on disk this many frames (a second) after its first write, and at the end */
 #define SAVE_QUIET_FRAMES 60
@@ -336,6 +337,11 @@ int snx_agb_main(int argc, char** argv) {
         /* the build and the cartridge's game code, which the log summary reads (common/utilities/logscan.c): the code
            names the game where the cartridge's title is 12 letters at most */
         printf("build: %s\n", snx_build_log_line());
+        {
+            char run[SNX_RUN_LOG_LINE];
+            snx_run_log_line(run, (long long)time(NULL));
+            printf("%s\n", run);
+        }
         if (board.cartridge.game_code[0]) printf("cartridge: %s\n", board.cartridge.game_code);
         press_count = snx_script_parse("scarletnx-agb", script, SCRIPT_KEYS, &presses);
         int told_swi = 0; /* the last BIOS function the BIOS does not have that the run said, to say each once */

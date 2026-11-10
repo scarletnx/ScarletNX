@@ -104,6 +104,9 @@ typedef struct SnxLogScan {
        after the scan, from the log's file as the run left it (the launcher's Share Log does), 0 for unknown. Less the
        last line's time, the run began then: the markdown says how many days the build's commit is older */
     long long written;
+    /* when the run began, in seconds since 1970 (UTC), from the log's own line "run: started <YYYY-MM-DD> <HH:MM:SS>
+       UTC" (snx_run_log_line); 0 in a log without one. Where it is, the days are counted from it and not from written */
+    long long started;
     int outcome;
     unsigned signature;
     /* the failure, when outcome isn't SNX_LOG_NONE: the marker's fields, then its report's */

@@ -52,6 +52,25 @@ int main(void) {
              __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__, os, arch ? arch : "");
 #endif
     printf("%s\n%s\n", snx_build_info(), snx_build_log_line());
+    {
+        /* the run's line: the epoch, a leap day's last second, a year's first, a day before 1970 */
+        static const struct {
+            long long now;
+            const char* line;
+        } runs[] = {{0, "run: started 1970-01-01 00:00:00 UTC"},
+                    {1835481599LL, "run: started 2028-02-29 23:59:59 UTC"},
+                    {1798761600LL, "run: started 2027-01-01 00:00:00 UTC"},
+                    {1793793600LL, "run: started 2026-11-04 12:00:00 UTC"},
+                    {-1, "run: started 1969-12-31 23:59:59 UTC"}};
+        for (size_t i = 0; i < sizeof runs / sizeof *runs; i++) {
+            char run[SNX_RUN_LOG_LINE];
+            snx_run_log_line(run, runs[i].now);
+            if (strcmp(run, runs[i].line)) {
+                fprintf(stderr, "build_info: %lld gives \"%s\", not \"%s\"\n", runs[i].now, run, runs[i].line);
+                return 1;
+            }
+        }
+    }
     assert(!arch || !strcmp(snx_build_info(), want));
     assert(!arch || !strcmp(snx_build_log_line(), logged));
     /* a day, YYYY-MM-DD, or "unknown" */
