@@ -175,9 +175,13 @@ puts the game module's function there when it has one for the address and its di
 function later, as NVN's implementation of a function the game resolves while it runs, takes the import back to the
 table (`jit_slot_taken`). A recompile with `--hook-direct-calls` binds none.
 
-What is not made ahead of time: an NRO a mod adds or replaces (its hash is not in the table), an NRO the game takes
-from outside its RomFS, and the NROs of a game whose update is recompiled from the update's dump alone, which has
-no RomFS without its base.
+An update's NROs are found in its RomFS over its game's: the recompile of an update's dump reads it together with
+the game's dump, the one the game's settings record (`source=`). Without that dump, a game made from an extracted
+folder or one whose dump is gone, the update has no RomFS to look in, which the recompile says, and the JIT runs
+its NROs.
+
+What is not made ahead of time: an NRO a mod adds or replaces (its hash is not in the table), and an NRO the game
+takes from outside its RomFS.
 
 `mem_map_code` / `mem_unmap_code` in `src/nx/memory/mem.c`:
 
