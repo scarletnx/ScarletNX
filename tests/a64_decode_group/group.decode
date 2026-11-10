@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # A decoder of a few rows for tests/a64_decode_group.c: a { } group whose rows take the same words, so only their
-# bodies (group.profile's predicates and conditional features) tell which one a word is.
+# bodies (group.profile's predicates and conditional features) tell which one a word is, and rows whose arguments end
+# where one integer type stops holding them.
 
 &r      rd
 
@@ -13,3 +14,17 @@
 
 # a row outside the group, with a predicate and nothing after it
 ALONE     0000 0001 0000 0000 0000 0000 000 rd:5  &r
+
+# arguments of 8 and 9, 16 and 17 bits, unsigned and signed
+EDGE_8    1000 0001 0000 0000 u8:8 s8:s8
+EDGE_9    1000 0010 0000 00 u9:9 s9:s9
+EDGE_U16  1000 0011 u16:16 0000 0000
+EDGE_S16  1000 0100 s16:s16 0000 0000
+EDGE_U17  1000 0101 u17:17 000 0000
+EDGE_S17  1000 0110 s17:s17 000 0000
+# constants
+EDGE_K    1000 0111 0000 0000 0000 0000 0000 0000  k=-200 m=70000
+# functions: 8 - x is least where x is greatest, and x ^ 2 rises and falls
+%down     0:5 !function=rsub_8
+%swap     8:2 !function=xor_2
+EDGE_F    1000 1000 0000 0000 0000 00 .. 000 .....  down=%down swap=%swap

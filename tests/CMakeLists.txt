@@ -1002,6 +1002,14 @@ snx_test_target(snx-test-a64-decode-group 99)
 snx_decodetree_a64(snx-test-a64-decode-group PROFILE "${CMAKE_CURRENT_SOURCE_DIR}/a64_decode_group/group.profile"
                    DECODE "${CMAKE_CURRENT_SOURCE_DIR}/a64_decode_group/group.decode")
 add_test(NAME a64_decode_group COMMAND snx-test-a64-decode-group)
+# a function that is not rising over a field too wide to try whole: refused, with the span and the limit
+add_test(NAME a64_decode_unordered
+         COMMAND snx-decodetree --a64-profile "${CMAKE_CURRENT_SOURCE_DIR}/a64_decode_group/unordered.profile"
+                 --a64-header "${CMAKE_CURRENT_BINARY_DIR}/decodetree/unordered.h"
+                 --a64-decoder "${CMAKE_CURRENT_BINARY_DIR}/decodetree/unordered.inc"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/a64_decode_group/unordered.decode")
+set_tests_properties(a64_decode_unordered PROPERTIES PASS_REGULAR_EXPRESSION
+    "unordered.decode:7: %wide spans 0 to 2097151: !function=xor_2 is not rising, and a span is tried whole up to 1048576 values")
 
 
 # The QEMU reference (tests/qemu_ref/): hand-checked cases, the ported cases and the decoder's UNDEF sets under

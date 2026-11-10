@@ -14,7 +14,7 @@
 
    It writes two files, both derived from the .decode files (LGPL-2.1-or-later):
    - the header: the features and targets, SNX_A64_OPS(X) (the names), SnxA64Op, SnxA64Flow, SnxA64Args (every
-     argument of every row, as int) and SnxA64Insn
+     argument of every row, each of the narrowest integer type that holds what the rows give it) and SnxA64Insn
    - the decoder: the rows (mask, value, features, op, body, flow, nop), a static index of 2048 buckets on bits
      [31:21] with a second level on a run of lower bits for a bucket of more than 16 rows, and
      snx_a64_decode(word, features, insn): it scans the word's bucket for the first row whose mask, value and features
@@ -61,26 +61,28 @@ static const char* const flow_names[FLOW_COUNT] = {"UNDEF", "PLAIN", "B",   "BL"
 enum { OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE };
 static const char* const op_text[] = {"==", "!=", "<", "<=", ">", ">="};
 
-/* the !function= decodetree may name; @ stands for the field's value */
+/* the !function= decodetree may name; @ stands for the field's value. rising: a greater field gives a greater
+   value, so the ends of a field too wide to try whole give the ends of its values (field_range) */
 static const struct {
     const char* name;
     const char* expr;
+    int rising;
 } funcs[] = {
-    {"", "@"},
-    {"plus_1", "(@ + 1)"},
-    {"plus_2", "(@ + 2)"},
-    {"xor_2", "(@ ^ 2)"},
-    {"rsub_8", "(8 - @)"},
-    {"rsub_16", "(16 - @)"},
-    {"rsub_32", "(32 - @)"},
-    {"rsub_64", "(64 - @)"},
-    {"shl_12", "(@ * 4096)"},
-    {"times_4", "(@ * 4)"},
-    {"times_8", "(@ * 8)"},
+    {"", "@", 1},
+    {"plus_1", "(@ + 1)", 1},
+    {"plus_2", "(@ + 2)", 1},
+    {"xor_2", "(@ ^ 2)", 0},
+    {"rsub_8", "(8 - @)", 0},
+    {"rsub_16", "(16 - @)", 0},
+    {"rsub_32", "(32 - @)", 0},
+    {"rsub_64", "(64 - @)", 0},
+    {"shl_12", "(@ * 4096)", 1},
+    {"times_4", "(@ * 4)", 1},
+    {"times_8", "(@ * 8)", 1},
     /* the size of an MTE tag granule is 16 bytes */
-    {"scale_by_log2_tag_granule", "(@ * 16)"},
+    {"scale_by_log2_tag_granule", "(@ * 16)", 1},
     /* sz:3 below imm12, the immediate scaled by the access size */
-    {"uimm_scaled", "(int)(((unsigned)@ >> 3) << ((unsigned)@ & 7))"},
+    {"uimm_scaled", "(int)(((unsigned)@ >> 3) << ((unsigned)@ & 7))", 0},
 };
 #define NFUNCS ((int)(sizeof funcs / sizeof funcs[0]))
 
@@ -93,6 +95,8 @@ typedef struct {
     char name[A64_NAME];
     Sub sub[MAX_SUB];
     int nsub, func, file;
+    int ranged; /* lo and hi are set: the least and the greatest value it gives (field_range) */
+    long long lo, hi;
 } Field;
 
 typedef struct {
@@ -178,6 +182,7 @@ static struct {
     Name names[MAX_NAMES];
     int nnames;
     char args[MAX_ARGS][A64_NAME];
+    long long arg_lo[MAX_ARGS], arg_hi[MAX_ARGS]; /* the least and the greatest value the rows give each */
     int nargs;
     char feats[MAX_FEATS][A64_NAME];
     int nfeats;
@@ -881,6 +886,78 @@ static void check_overlaps(void) {
         }
 }
 
+/* ---- the arguments' types ---- */
+
+#define MAX_TRIED (1 << 20)
+
+/* the least and the greatest value a field can give, whatever the word: every value its parts can hold goes through
+   its function, up to MAX_TRIED of them; a wider field is ranged by its two ends, which a rising function allows */
+static void field_range(Field* f, long long* lo, long long* hi) {
+    long long l = 0, h = 0, x;
+    int i;
+    if (f->ranged) {
+        *lo = f->lo;
+        *hi = f->hi;
+        return;
+    }
+    for (i = 0; i < f->nsub; i++) {
+        const Sub* s = &f->sub[i];
+        long long top = 1ll << s->len;
+        int sign = s->sign && !s->ref;
+        l = l * top + (sign ? -(top / 2) : 0);
+        h = h * top + (sign ? top / 2 - 1 : top - 1);
+    }
+    if (l < -0x7FFFFFFFLL - 1 || h > 0x7FFFFFFFLL) fail("%%%s spans %lld to %lld, outside an int", f->name, l, h);
+    f->lo = apply_func(f->func, (int)l);
+    f->hi = apply_func(f->func, (int)h);
+    if (h - l >= MAX_TRIED) {
+        if (!funcs[f->func].rising)
+            fail("%%%s spans %lld to %lld: !function=%s is not rising, and a span is tried whole up to %d values",
+                 f->name, l, h, funcs[f->func].name, MAX_TRIED);
+    } else {
+        for (x = l; x <= h; x++) {
+            long long v = apply_func(f->func, (int)x);
+            if (v < f->lo) f->lo = v;
+            if (v > f->hi) f->hi = v;
+        }
+    }
+    f->ranged = 1;
+    *lo = f->lo;
+    *hi = f->hi;
+}
+
+/* every argument's range over the rows; an argument starts at 0, which is what a row that doesn't give it leaves */
+static void arg_ranges(void) {
+    int i, k;
+    for (i = 0; i < g.nrows; i++) {
+        g.where = g.files[g.rows[i].p.file];
+        g.line = g.rows[i].p.line;
+        for (k = 0; k < g.rows[i].p.nas; k++) {
+            const Assign* a = &g.rows[i].p.as[k];
+            long long lo = a->value, hi = a->value;
+            if (a->field) field_range(&g.fields[a->field - 1], &lo, &hi);
+            if (lo < g.arg_lo[a->arg]) g.arg_lo[a->arg] = lo;
+            if (hi > g.arg_hi[a->arg]) g.arg_hi[a->arg] = hi;
+        }
+    }
+    g.where = NULL;
+    g.line = 0;
+}
+
+/* the narrowest integer type that holds an argument's range, and its size. Each promotes to int, so code that reads
+   an argument computes with the value an int member would give it */
+static const char* arg_type(int arg, int* size) {
+    long long lo = g.arg_lo[arg], hi = g.arg_hi[arg];
+    *size = 1;
+    if (lo >= 0 && hi <= 0xFF) return "uint8_t";
+    if (lo >= -0x80 && hi <= 0x7F) return "int8_t";
+    *size = 2;
+    if (lo >= 0 && hi <= 0xFFFF) return "uint16_t";
+    if (lo >= -0x8000 && hi <= 0x7FFF) return "int16_t";
+    *size = 4;
+    return "int32_t";
+}
+
 /* ---- the index ---- */
 
 static int row_in(const Row* r, unsigned word, unsigned mask) {
@@ -957,8 +1034,12 @@ static unsigned long long fnv1a(const char* s, size_t n) {
     return h;
 }
 
+/* the widest first, so no padding comes between them, then by name */
 static int cmp_args(const void* a, const void* b) {
-    return strcmp(g.args[*(const int*)a], g.args[*(const int*)b]);
+    int x = *(const int*)a, y = *(const int*)b, sx, sy;
+    arg_type(x, &sx);
+    arg_type(y, &sy);
+    return sx != sy ? sy - sx : strcmp(g.args[x], g.args[y]);
 }
 
 /* a path's file name, for the outputs, which don't depend on where the build is */
@@ -1006,10 +1087,15 @@ static void write_header(const char* path) {
     out("/* what an instruction does to the flow: UNDEF when no row matches; BC is a conditional branch; EXC an\n"
         "   exception other than SVC and BRK (HVC, SMC, HLT) */\ntypedef enum {\n");
     for (i = 0; i < FLOW_COUNT; i++) out("    SNX_A64_FLOW_%s,\n", flow_names[i]);
-    out("} SnxA64Flow;\n\n/* every argument of every row; those a row doesn't give are 0 */\ntypedef struct {\n");
+    out("} SnxA64Flow;\n\n/* every argument of every row; those a row doesn't give are 0. Each has the narrowest type that\n"
+        "   holds every value the rows give it, the widest first: an instruction is zeroed whole at each decode */\n"
+        "typedef struct {\n");
     for (i = 0; i < g.nargs; i++) order[i] = i;
     qsort(order, (size_t)g.nargs, sizeof order[0], cmp_args);
-    for (i = 0; i < g.nargs; i++) out("    int %s;\n", g.args[order[i]]);
+    for (i = 0; i < g.nargs; i++) {
+        int size;
+        out("    %s %s;\n", arg_type(order[i], &size), g.args[order[i]]);
+    }
     out("} SnxA64Args;\n\n/* a decoded word: feature is what this instance needs */\ntypedef struct {\n"
         "    SnxA64Op op;\n    SnxA64Flow flow;\n    int nop;\n    uint64_t feature;\n    SnxA64Args args;\n"
         "} SnxA64Insn;\n\n#endif\n");
@@ -1186,6 +1272,7 @@ int a64_generate(const char* profile, const char* header, const char* decoder, i
     g.where = NULL;
     g.line = 0;
     check_overlaps();
+    arg_ranges();
     build_index();
     write_header(header);
     write_decoder(decoder);
