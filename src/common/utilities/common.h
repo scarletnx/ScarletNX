@@ -424,7 +424,11 @@ void snx_addon_entry(SnxU64 game, SnxU64 id, SnxU64 version, char entry[32]);
 SnxU64 snx_addon_version(const char* entry);
 /* a save's note, <its folder> and this beside the folder: which program and version committed the save last (fs.c's
    save_note). What moves a save's folder moves its note with it */
-#define SNX_SAVE_NOTE ".version"
+#define SNX_SAVE_NOTE    ".version"
+/* a save's pending folder, <its folder> and this beside the folder: the files the game wrote since the save's last
+   commit, each at its path in the save, while the game runs (fs.c's save_pend). Nothing in it is the save's: what a
+   run left there is removed when the save is next opened, so what moves a save's folder leaves it */
+#define SNX_SAVE_PENDING ".pending"
 enum { SNX_ADDON_NONE, SNX_ADDON_UPDATE, SNX_ADDON_DLC, SNX_ADDON_PROGRAM };
 /* what the title id is to the game: SNX_ADDON_UPDATE for its patch (its ID with 0x800, as the console makes every
    patch's), SNX_ADDON_PROGRAM for another program of its application or that program's patch (snx_program_index),

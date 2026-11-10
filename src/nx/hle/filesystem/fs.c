@@ -555,7 +555,17 @@ static void romfs_map(FsNode* node) {
 static const u8* node_memory(const FsNode* node) { return node->is_virtual ? node->virtual_data : node->map; }
 
 /* Callers hold tree.lock: content I/O is permitted only after resolving an indexed node. */
-static FILE* node_open(FsNode* node, const char* mode) { return fs_tree_open(&g_hle.fs.tree, node, mode); }
+static int save_pending_path(const FsNode* node, char* out, size_t size);
+/* node's host file opened, unbuffered as fs_tree_open's: a save's file written since the save's last commit is the
+   one in its pending folder ("A save's commit") */
+static FILE* node_open(FsNode* node, const char* mode) {
+    char path[FS_TREE_PATH_MAX * 2];
+    FILE* f;
+    if (node->is_dir || !node->save) return fs_tree_open(&g_hle.fs.tree, node, mode);
+    if (save_pending_path(node, path, sizeof path) || !(f = snx_fopen(path, mode))) return NULL;
+    setvbuf(f, NULL, _IONBF, 0);
+    return f;
+}
 
 FILE* fs_open_read(const char* path, u64* size) {
     FsNode* node;
@@ -1449,6 +1459,292 @@ static int nn_fssrv_sf_IStorage_OperateRange(SvcObj* self, i32 operation_id, i64
     R_SUCCEED();
 }
 
+/* ============================================================ A save's commit
+   The console keeps what a game writes to a save apart until the game commits it: a save not committed is as its last
+   commit left it. Here the save's folder holds the last commit, and a file written since has its bytes in <the save's
+   folder>.pending beside it (SNX_SAVE_PENDING), at the file's path in the save, where none of the game's mounts
+   reaches: a file changed is copied there at its first write (save_pend), a file made is moved there (save_made), and
+   every handle of the file reads and writes that one (node_open). Commit syncs each and moves it over the save's own
+   (save_land), a file at a time, so a kill leaves each file whole, the old one or the new. A save closed with no
+   commit goes back to its last one (save_discard), and so does what a run that ended without one left in the folder
+   (save_left). Nothing in that folder is put in a save but by the run that wrote it, so a stale one (the save played
+   by another version meanwhile) is only removed.
+   Folders made, and files and folders deleted or renamed, are not kept apart: they are done at once, the pending
+   files put in place first (save_land), so a file's new bytes are never lost to a deletion that stays.
+   FsNode.save is 1 on a save's folder (open_save), and FS_PENDING_CHANGED or FS_PENDING_MADE on a file of one while
+   its bytes are in the pending folder. tree.lock held throughout */
+enum { FS_PENDING_CHANGED = 1, FS_PENDING_MADE = 2 };
+/* the save a file or folder is in: its folder, or NULL for one of no save */
+static FsNode* save_of(const FsNode* node) {
+    FsNode* at;
+    for (at = node->parent; at; at = at->parent)
+        if (at->save) return at;
+    return NULL;
+}
+/* into out, the pending folder of the save whose folder node is, or where the bytes of node, a file of a save, are
+   while pending. 0, or nonzero for a node of no save or a path past size */
+static int save_pending_path(const FsNode* node, char* out, size_t size) {
+    const FsNode *root = node->is_dir ? node : save_of(node), *at;
+    size_t n, k, len = 0;
+    if (!root || fs_tree_path(&g_hle.fs.tree, root, out, size)) return 1;
+    n = strlen(out);
+    while (n > 1 && (out[n - 1] == '/' || out[n - 1] == '\\')) out[--n] = 0;
+    for (at = node; at != root; at = at->parent) len += strlen(at->name) + 1;
+    if (size - n < sizeof SNX_SAVE_PENDING + len) return 1;
+    memcpy(out + n, SNX_SAVE_PENDING, sizeof SNX_SAVE_PENDING);
+    n += sizeof SNX_SAVE_PENDING - 1;
+    out[n + len] = 0;
+    for (at = node; at != root; at = at->parent) {
+        k = strlen(at->name);
+        len -= k + 1;
+        out[n + len] = '/';
+        memcpy(out + n + len + 1, at->name, k);
+    }
+    return 0;
+}
+/* the handles the game has on node closed, for its host file to move (Windows moves no open file) */
+static void node_handles_close(const FsNode* node) {
+    u32 i;
+    for (i = 0; i < FS_FILE_MAX; i++) {
+        FileData* data = &g_hle.fs.files[i];
+        if (!data->obj || data->node != node || !data->f) continue;
+        fclose(data->f);
+        data->f = NULL;
+    }
+}
+/* and opened again, where its bytes are now. One that can't be answers PathNotFound from then on (file_disp) */
+static void node_handles_open(FsNode* node) {
+    char why[256];
+    u32 i;
+    for (i = 0; i < FS_FILE_MAX; i++) {
+        FileData* data = &g_hle.fs.files[i];
+        if (!data->obj || data->node != node || data->f) continue;
+        if (!(data->f = node_open(node, (data->mode & 2) ? "rb+" : "rb")))
+            WARN("fs: %s, a save's file the game has open, could not be opened again after its bytes moved (%s): the "
+                 "game's handle of it answers PathNotFound from here on\n",
+                 node->name, snx_os_error(why, sizeof why));
+    }
+}
+static int file_sync(FILE* f) {
+    if (fflush(f)) return -1;
+#if defined(_WIN32)
+    return _commit(_fileno(f));
+#else
+    return fsync(fileno(f));
+#endif
+}
+/* node, a file about to be written: one of a save is written in the pending folder from here on, the first keep of its
+   bytes copied there (all of them for a write, those a new size leaves for a size set). 0, also for a file of no save
+   and one pending already; nonzero, said, with the file as it was */
+static int save_pend(FsNode* node, u64 keep) {
+    char host[FS_TREE_PATH_MAX], path[FS_TREE_PATH_MAX * 2], why[256], *folder;
+    int failed;
+    if (node->save || !save_of(node)) return 0;
+    if (save_pending_path(node, path, sizeof path) || fs_tree_path(&g_hle.fs.tree, node, host, sizeof host)) {
+        WARN("fs: %s, a save's file, has a path too long for its copy in the save's pending folder: not written\n",
+             node->name);
+        return 1;
+    }
+    folder = snx_dirname(path);
+    failed = !folder || snx_mkdirs(folder) || snx_copy_file_range(host, 0, keep < node->size ? keep : node->size, path);
+    free(folder);
+    if (failed) {
+        WARN("fs: could not copy %s to %s, where a save's file is written until the save's commit (%s): not written\n",
+             host, path, snx_os_error(why, sizeof why));
+        if (snx_path_exists(path)) snx_remove_tree(path);
+        return 1;
+    }
+    node_handles_close(node);
+    node->save = FS_PENDING_CHANGED;
+    node_handles_open(node);
+    return 0;
+}
+/* node, a file just made in a save: its host file moved to the pending folder, so the save has it once committed.
+   0, or nonzero, said, with the file where it was made */
+static int save_made(FsNode* node) {
+    char host[FS_TREE_PATH_MAX], path[FS_TREE_PATH_MAX * 2], why[256], *folder;
+    int failed;
+    if (save_pending_path(node, path, sizeof path) || fs_tree_path(&g_hle.fs.tree, node, host, sizeof host)) {
+        WARN("fs: %s, a file made in a save, has a path too long for the save's pending folder: not made\n",
+             node->name);
+        return 1;
+    }
+    folder = snx_dirname(path);
+    failed = !folder || snx_mkdirs(folder) || plat_replace_file(host, path);
+    free(folder);
+    if (failed) {
+        WARN("fs: could not move %s to %s, where a file made in a save is until the save's commit (%s): not made\n",
+             host, path, snx_os_error(why, sizeof why));
+        return 1;
+    }
+    node->save = FS_PENDING_MADE;
+    return 0;
+}
+/* a pending file put in its place in the save: synced, then moved over the save's own. 0, or nonzero, said, with the
+   file pending still */
+static int save_land_file(FsNode* node) {
+    char host[FS_TREE_PATH_MAX], path[FS_TREE_PATH_MAX * 2], why[256];
+    FILE* f;
+    int failed;
+    if (save_pending_path(node, path, sizeof path) || fs_tree_path(&g_hle.fs.tree, node, host, sizeof host)) {
+        WARN("fs: %s, a save's file written since the save's last commit, has no path to be committed to\n",
+             node->name);
+        return 1;
+    }
+    node_handles_close(node);
+    f = snx_fopen(path, "rb+");
+    failed = !f || file_sync(f);
+    if (f && fclose(f)) failed = 1;
+    if (!failed) failed = plat_replace_file(path, host) != 0;
+    if (failed)
+        snx_os_error(why, sizeof why);
+    else
+        node->save = 0;
+    node_handles_open(node);
+    if (failed)
+        WARN("fs: could not commit %s: its bytes, in %s, could not be synced and moved over it (%s). The save has "
+             "the file of its last commit, and the game goes on with the one it wrote\n",
+             host, path, why);
+    return failed;
+}
+static int save_land_in(FsNode* dir, int* files) {
+    FsNode* node;
+    int failed = 0;
+    for (node = dir->children; node; node = node->next) {
+        if (node->is_dir)
+            failed |= save_land_in(node, files);
+        else if (node->save) {
+            ++*files;
+            failed |= save_land_file(node);
+        }
+    }
+    return failed;
+}
+/* the pending folder of the save root taken away once nothing of it is pending */
+static void save_pending_remove(FsNode* root) {
+    char path[FS_TREE_PATH_MAX * 2];
+    if (save_pending_path(root, path, sizeof path) || !snx_is_dir(path)) return;
+    if (snx_remove_tree(path))
+        WARN("fs: could not remove %s, a save's pending folder with nothing pending in it\n", path);
+}
+/* every pending file of the save root in its place: the save's commit, and what comes before a deletion or a new name
+   in it. 0, or nonzero when a file could not be, said */
+static int save_land(FsNode* root) {
+    int files = 0, failed = save_land_in(root, &files);
+    if (files && !failed) save_pending_remove(root);
+    return failed;
+}
+/* the files a message names, by their paths in the save: as many as fit, and how many there are */
+typedef struct {
+    char names[384];
+    int files, cut;
+} SaveSaid;
+static void save_said(SaveSaid* said, const char* name) {
+    size_t n = strlen(said->names);
+    said->files++;
+    if (said->cut || n + strlen(name) + 3 > sizeof said->names - 8) {
+        if (!said->cut) memcpy(said->names + n, ", ...", 6);
+        said->cut = 1;
+        return;
+    }
+    snprintf(said->names + n, sizeof said->names - n, "%s%s", n ? ", " : "", name);
+}
+/* the pending files under dir, a folder of the save root, discarded: a changed file is the save's own again, a made
+   one is gone. skip is the length of the pending folder's path */
+static void save_discard_in(FsNode* root, FsNode* dir, size_t skip, SaveSaid* said) {
+    char host[FS_TREE_PATH_MAX], path[FS_TREE_PATH_MAX * 2], why[256];
+    FsNode *node, *next;
+    FsTreeResult r;
+    for (node = dir->children; node; node = next) {
+        next = node->next;
+        if (node->is_dir) {
+            save_discard_in(root, node, skip, said);
+            continue;
+        }
+        if (!node->save) continue;
+        if (save_pending_path(node, path, sizeof path) || fs_tree_path(&g_hle.fs.tree, node, host, sizeof host)) {
+            WARN("fs: %s, a save's file written and not committed, has no path to be discarded from\n", node->name);
+            continue;
+        }
+        save_said(said, path + skip + 1);
+        node_handles_close(node);
+        if (node->save == FS_PENDING_MADE) {
+            /* the tree takes a file away with its host file, which is put where the tree has it for that */
+            node->save = 0;
+            if (plat_replace_file(path, host) ||
+                (r = fs_tree_remove(&g_hle.fs.tree, root, path + skip + 1, 0, 0, 0)) != FS_TREE_OK)
+                WARN("fs: %s, a file made in a save and not committed, could not be taken out of the save (%s)\n", host,
+                     snx_os_error(why, sizeof why));
+            continue;
+        }
+        if (snx_remove_tree(path)) WARN("fs: could not remove %s, a save's file written and not committed\n", path);
+        node->save = 0;
+        node->size = snx_file_size(host);
+        node_handles_open(node);
+    }
+}
+/* the save root as its last commit left it: closed by the game with no commit since it wrote to it, said */
+static void save_discard(FsNode* root) {
+    char path[FS_TREE_PATH_MAX * 2];
+    SaveSaid said = {0};
+    if (save_pending_path(root, path, sizeof path)) return;
+    save_discard_in(root, root, strlen(path), &said);
+    if (!said.files) return;
+    save_pending_remove(root);
+    WARN("fs: the game closed the save %.*s with no commit after writing %d file%s of it (%s): the save is as its last "
+         "commit left it, as on the console\n",
+         (int)(strlen(path) - (sizeof SNX_SAVE_PENDING - 1)), path, said.files, said.files == 1 ? "" : "s", said.names);
+}
+/* the files under folder, a host folder, into said, each by its path from the folder save_left started at */
+static void save_left_in(const char* folder, const char* from, SaveSaid* said) {
+    char **names, *host, *name;
+    size_t count, i;
+    if (snx_list_dir(folder, &names, &count)) return;
+    for (i = 0; i < count; i++) {
+        host = snx_path_join(folder, names[i]);
+        name = from[0] ? snx_format("%s/%s", from, names[i]) : snx_strdup(names[i]);
+        if (snx_is_dir(host) && !snx_is_link(host))
+            save_left_in(host, name, said);
+        else
+            save_said(said, name);
+        free(host);
+        free(name);
+    }
+    snx_free_strings(names, count);
+}
+static int node_path(const FsNode* node, char* out, size_t cap);
+/* The save root opened with no other file system of it open: what a run that ended with no commit (a crash, a kill)
+   left in its pending folder is removed, said with its files; that run's writes were never the save's. The folder is
+   in the index when it was there at startup, and goes from it too */
+static void save_left(FsNode* root) {
+    char path[FS_TREE_PATH_MAX * 2], indexed[FS_TREE_PATH_MAX + sizeof SNX_SAVE_PENDING];
+    SaveSaid said = {0};
+    FsNode* node;
+    if (save_pending_path(root, path, sizeof path) || !snx_is_dir(path)) return;
+    save_left_in(path, "", &said);
+    if (!node_path(root, indexed, FS_TREE_PATH_MAX)) {
+        memcpy(indexed + strlen(indexed), SNX_SAVE_PENDING, sizeof SNX_SAVE_PENDING);
+        if (!fs_tree_lookup(&g_hle.fs.tree, NULL, indexed, &node))
+            fs_tree_remove(&g_hle.fs.tree, NULL, indexed, 1, 1, 0);
+    }
+    if (snx_is_dir(path) && snx_remove_tree(path)) {
+        WARN("fs: could not remove %s, what a run that ended with no commit wrote to the save beside it\n", path);
+        return;
+    }
+    WARN("fs: removed %s, where a run that ended with no commit (a crash, a kill) left %d file%s it wrote to the save "
+         "%.*s (%s): the save is as its last commit left it\n",
+         path, said.files, said.files == 1 ? "" : "s", (int)(strlen(path) - (sizeof SNX_SAVE_PENDING - 1)), path,
+         said.names);
+}
+/* how many open file systems have root for their folder, data's own aside */
+static int save_mounts(const FsNode* root, const FsData* data) {
+    int n = 0;
+    u32 i;
+    for (i = 0; i < FS_FS_MAX; i++)
+        n += g_hle.fs.fss[i].obj && g_hle.fs.fss[i].root == root && &g_hle.fs.fss[i] != data;
+    return n;
+}
+
 /* ============================================================ Indexed IFileSystem */
 static u32 read_path(IpcBuf b, char out[0x301]) {
     /* the path is read, never written: it has to be mapped and readable, not writable (ldr.c's ro_readable) */
@@ -1532,6 +1828,8 @@ static int nn_fssrv_sf_IFile_Write(SvcObj* self, nn_fs_WriteOption option, i64 o
     R_UNLESS((f->mode & 2) && !f->node->readonly, SNX_RC_FS_WRITE_UNPERMITTED);
     R_UNLESS(readable_span(a, sz), SNX_RC_FS_OUT_OF_RANGE); /* the buffer's bytes are read out, not written into */
     if (off + sz > f->node->size && !(f->mode & 4)) R_THROW(SNX_RC_FS_FILE_EXTENSION_WITHOUT_OPEN_MODE_ALLOW_APPEND);
+    R_UNLESS(!save_pend(f->node, f->node->size), SNX_RC_FS_USABLE_SPACE_NOT_ENOUGH);
+    R_UNLESS(f->f, SNX_RC_FS_PATH_NOT_FOUND); /* save_pend opened it again, or could not */
     R_UNLESS(!file_seek(f->f, off), SNX_RC_FS_OUT_OF_RANGE);
     own_acquire(a, sz); /* write() can't wait on memory the GPU holds: it lands first */
     SNX_ZONE_TV(z, "fs write", sz, "%s", f->node->name);
@@ -1549,6 +1847,8 @@ static int nn_fssrv_sf_IFile_SetSize(SvcObj* self, i64 size) {
     FileData* f = self->data;
     R_UNLESS(size >= 0, SNX_RC_FS_INVALID_SIZE);
     R_UNLESS((f->mode & 2) && !f->node->readonly, SNX_RC_FS_WRITE_UNPERMITTED);
+    R_UNLESS(!save_pend(f->node, (u64)size), SNX_RC_FS_USABLE_SPACE_NOT_ENOUGH);
+    R_UNLESS(f->f, SNX_RC_FS_PATH_NOT_FOUND); /* save_pend opened it again, or could not */
     R_UNLESS(!file_truncate(f->f, (u64)size, &f->node->size), SNX_RC_FS_USABLE_SPACE_NOT_ENOUGH);
     R_SUCCEED();
 }
@@ -1560,9 +1860,12 @@ static int nn_fssrv_sf_IFile_OperateRange(SvcObj* self, i32 operation_id, i64 of
                                           nn_fs_QueryRangeInfo* info) {
     R_SUCCEED();
 }
+/* a save's file whose handle could not be opened again after its bytes moved (node_handles_open) answers NotFound to
+   everything */
 static int file_disp(SvcObj* o, IpcCtx* c) {
+    FileData* data = o->data;
     pm_lock(&g_hle.fs.tree.lock);
-    int r = nn_fssrv_sf_IFile_dispatch(o, c);
+    int r = data->f || node_in_memory(data->node) ? nn_fssrv_sf_IFile_dispatch(o, c) : (int)SNX_RC_FS_PATH_NOT_FOUND;
     pm_unlock(&g_hle.fs.tree.lock);
     return r;
 }
@@ -1653,15 +1956,32 @@ static void dir_destroy(SvcObj* o) {
     pm_unlock(&g_hle.fs.tree.lock);
 }
 static FsNode* fs_root(SvcObj* self) { return ((FsData*)self->data)->root; }
+/* before a deletion or a new name of path in self's folder: when there is such an entry and it is in a save, the
+   save's pending files are put in place ("A save's commit"). 0, or the result when one could not be */
+static u32 fs_settle(SvcObj* self, const char* path) {
+    FsNode *node, *save;
+    if (fs_tree_lookup(&g_hle.fs.tree, fs_root(self), path, &node)) R_SUCCEED();
+    save = node->is_dir && node->save ? node : save_of(node);
+    R_UNLESS(!save || !save_land(save), SNX_RC_FS_USABLE_SPACE_NOT_ENOUGH);
+    R_SUCCEED();
+}
+/* a file made in a save is in the save's pending folder until its commit (save_made) */
 static int nn_fssrv_sf_IFileSystem_CreateFile(SvcObj* self, IpcBuf path, i64 size, i32 option) {
     char p[0x301];
+    FsNode* node;
     R_UNLESS(size >= 0, SNX_RC_FS_INVALID_SIZE);
     R_TRY(read_path(path, p));
-    return (int)tree_result(fs_tree_create(&g_hle.fs.tree, fs_root(self), p, 0, (u64)size, NULL));
+    R_TRY(tree_result(fs_tree_create(&g_hle.fs.tree, fs_root(self), p, 0, (u64)size, &node)));
+    if (save_of(node) && save_made(node)) {
+        fs_tree_remove(&g_hle.fs.tree, fs_root(self), p, 0, 0, 0);
+        R_THROW(SNX_RC_FS_USABLE_SPACE_NOT_ENOUGH);
+    }
+    R_SUCCEED();
 }
 static int nn_fssrv_sf_IFileSystem_DeleteFile(SvcObj* self, IpcBuf path) {
     char p[0x301];
     R_TRY(read_path(path, p));
+    R_TRY(fs_settle(self, p));
     return (int)tree_result(fs_tree_remove(&g_hle.fs.tree, fs_root(self), p, 0, 0, 0));
 }
 static int nn_fssrv_sf_IFileSystem_CreateDirectory(SvcObj* self, IpcBuf path) {
@@ -1673,6 +1993,7 @@ static int nn_fssrv_sf_IFileSystem_CreateDirectory(SvcObj* self, IpcBuf path) {
 static int remove_dir(SvcObj* self, IpcBuf path, int recursive, int clean) {
     char p[0x301];
     R_TRY(read_path(path, p));
+    R_TRY(fs_settle(self, p));
     return (int)tree_result(fs_tree_remove(&g_hle.fs.tree, fs_root(self), p, 1, recursive, clean));
 }
 static int nn_fssrv_sf_IFileSystem_DeleteDirectory(SvcObj* self, IpcBuf path) { return remove_dir(self, path, 0, 0); }
@@ -1686,6 +2007,7 @@ static int rename_entry(SvcObj* self, IpcBuf old_path, IpcBuf new_path, int dir)
     char p[0x301], p2[0x301];
     R_TRY(read_path(old_path, p));
     R_TRY(read_path(new_path, p2));
+    R_TRY(fs_settle(self, p));
     return (int)tree_result(fs_tree_rename(&g_hle.fs.tree, fs_root(self), p, p2, dir));
 }
 static int nn_fssrv_sf_IFileSystem_RenameFile(SvcObj* self, IpcBuf old_path, IpcBuf new_path) {
@@ -1710,7 +2032,12 @@ static int nn_fssrv_sf_IFileSystem_GetFileTimeStampRaw(SvcObj* self, IpcBuf path
     u64 ms, s;
     R_TRY(read_path(path, p));
     R_TRY(tree_result(fs_tree_lookup(&g_hle.fs.tree, fs_root(self), p, &node)));
-    R_TRY(tree_result(fs_tree_mtime(&g_hle.fs.tree, node, &ms)));
+    if (!node->is_dir && node->save) { /* its bytes, and their time, are in its save's pending folder */
+        char pending[FS_TREE_PATH_MAX * 2];
+        R_UNLESS(!save_pending_path(node, pending, sizeof pending), SNX_RC_FS_PATH_NOT_FOUND);
+        ms = snx_file_time(pending) * 1000;
+    } else
+        R_TRY(tree_result(fs_tree_mtime(&g_hle.fs.tree, node, &ms)));
     s = ms / 1000;
     memset(timestamp->v, 0, sizeof timestamp->v);
     snx_st_le64(timestamp->v, s); /* bytes in the guest's order, as the console lays them out */
@@ -1755,10 +2082,12 @@ static int nn_fssrv_sf_IFileSystem_OpenDirectory(SvcObj* self, IpcBuf path, u32 
     R_SUCCEED();
 }
 static void save_note_write(FsNode* root);
-/* Commit: what the game writes lands on the host as it writes it, so a save's note is all there is to do (save_note).
-   tree.lock held, as fs_disp holds it around every command */
+/* Commit: a save's files written since its last one put in place (save_land), then its note (save_note). Any other
+   file system's files are written where they are, so there is nothing to do. tree.lock held, as fs_disp holds it
+   around every command */
 static int nn_fssrv_sf_IFileSystem_Commit(SvcObj* self) {
     FsData* data = self->data;
+    R_UNLESS(!data->root->save || !save_land(data->root), SNX_RC_FS_USABLE_SPACE_NOT_ENOUGH);
     if (data->noted) save_note_write(data->root);
     R_SUCCEED();
 }
@@ -1777,9 +2106,12 @@ static int fs_disp(SvcObj* o, IpcCtx* c) {
     pm_unlock(&g_hle.fs.tree.lock);
     return r;
 }
+/* a save closed, by the last of its file systems, with files written and not committed: discarded (save_discard) */
 static void fs_destroy(SvcObj* o) {
     FsData* data = o->data;
     pm_lock(&g_hle.fs.tree.lock);
+    if (data->root && data->root->save && data->root->attached && !save_mounts(data->root, data))
+        save_discard(data->root);
     fs_tree_release(data->root);
     pm_unlock(&g_hle.fs.tree.lock);
 }
@@ -2395,7 +2727,10 @@ static void save_note_write(FsNode* root) { /* tree.lock held */
 void fs_save_report(void) {
     if (g_host.fs.save_newer[0]) WARN("  %s\n", g_host.fs.save_newer);
 }
-/* the attribute's save, where save_folder says; an Account, BCAT or Device save noted (save_note) */
+/* the attribute's save, where save_folder says; an Account, BCAT or Device save noted (save_note). Every save but
+   temporary storage, which the console commits nothing of either, is written through its pending folder ("A save's
+   commit"): opened with no other file system of it open, nothing is pending in it, whatever a save state's load or
+   a run that ended left */
 static int open_save(const nn_fs_SaveDataAttribute* attribute, SvcObj** filesystem) {
     char p[96], stop[FS_TREE_PATH_MAX * 2 + 512];
     u32 rc;
@@ -2403,6 +2738,14 @@ static int open_save(const nn_fs_SaveDataAttribute* attribute, SvcObj** filesyst
     pm_lock(&g_hle.fs.tree.lock);
     rc = save_folder(attribute, p, sizeof p, stop, sizeof stop);
     *filesystem = R_FAILED(rc) || stop[0] ? NULL : hostfs_new(p, &rc);
+    if (*filesystem && type != 4) {
+        FsData* data = (*filesystem)->data;
+        data->root->save = 1;
+        if (!save_mounts(data->root, data)) {
+            save_discard(data->root);
+            save_left(data->root);
+        }
+    }
     if (*filesystem && type >= 1 && type <= 3) {
         FsData* data = (*filesystem)->data;
         data->noted = 1;
@@ -2568,8 +2911,9 @@ static int nn_fssrv_sf_IMultiCommitManager_Add(SvcObj* self, SvcObj* filesystem)
     R_UNLESS(n < FS_MULTI_COMMIT_MAX, SNX_RC_FS_MULTI_COMMIT_FILE_SYSTEM_LIMIT);
     R_SUCCEED();
 }
-/* each added file system committed as its Commit does it (its save's note), or none when one of them is gone: closed,
-   or its save deleted (NotFound, as its own Commit answers then) */
+/* each added file system committed as its Commit does it (a save's pending files put in place, then its note), or
+   none when one of them is gone: closed, or its save deleted (NotFound, as its own Commit answers then). The saves
+   are committed one after the other, each file whole: a kill between two leaves the first committed alone */
 static int nn_fssrv_sf_IMultiCommitManager_Commit(SvcObj* self) {
     u64 added = self->u[0];
     int i;
@@ -2579,8 +2923,14 @@ static int nn_fssrv_sf_IMultiCommitManager_Commit(SvcObj* self) {
             pm_unlock(&g_hle.fs.tree.lock);
             R_THROW(SNX_RC_FS_PATH_NOT_FOUND);
         }
-    for (i = 0; i < FS_FS_MAX; i++)
-        if ((added >> i & 1) && g_hle.fs.fss[i].noted) save_note_write(g_hle.fs.fss[i].root);
+    for (i = 0; i < FS_FS_MAX; i++) {
+        if (!(added >> i & 1)) continue;
+        if (g_hle.fs.fss[i].root->save && save_land(g_hle.fs.fss[i].root)) {
+            pm_unlock(&g_hle.fs.tree.lock);
+            R_THROW(SNX_RC_FS_USABLE_SPACE_NOT_ENOUGH);
+        }
+        if (g_hle.fs.fss[i].noted) save_note_write(g_hle.fs.fss[i].root);
+    }
     pm_unlock(&g_hle.fs.tree.lock);
     R_SUCCEED();
 }
