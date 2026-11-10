@@ -33,10 +33,11 @@
    anything else through CPU.disp (CALLDYN), the code of other units included. Code is never freed: the arena lives as
    long as the service, which outlives every thread that runs its code.
 
-   Images can join while the service runs (snx_jit_add_image: an NRO the game maps). Their pcs are outside CPU.disp,
-   so the service keeps a table for each, which snx_jit_resolve reads without a lock before anything else: a call
-   into such code misses in snx_lookup and costs RtAPI.miss and that load once compiled. Removing one (the game
-   unmaps the NRO) waits for the batches reading it and forgets its pcs.
+   Images can join while the service runs (snx_jit_add_image: an NRO the game maps). The pcs of one outside CPU.disp
+   have a table of the service's own, which snx_jit_resolve reads without a lock before anything else: a call into
+   such code misses in snx_lookup and costs RtAPI.miss and that load once compiled. One inside CPU.disp (an NRO the
+   recompiler gave its address, whose own AOT module fills its slots) is compiled into CPU.disp as the modules' code
+   is. Removing one (the game unmaps the NRO) waits for the batches reading it and forgets its pcs.
 
    Not NX-specific: gnuabi's execution can create one too, with its code ranges and table */
 #ifndef SNX_RECOMPILER_LLVM_JIT_SERVICE_H
@@ -132,11 +133,14 @@ GuestFn snx_jit_wait(SnxJitService* service, SnxU64 pc);
 size_t snx_jit_warm(SnxJitService* service, const SnxU64* pcs, size_t count);
 /* Returns once nothing is queued or compiling: for tests, the runtime never waits for the JIT */
 void snx_jit_drain(SnxJitService* service);
-/* Guest code that joins while the service runs: image's text, readable until snx_jit_remove_image, outside the
-   config's table and every other added image. 0, or -1 (overlap, SNX_JIT_IMAGES already, out of memory) */
+/* Guest code that joins while the service runs: image's text, readable until snx_jit_remove_image, outside every
+   other added image, and either outside the config's table or wholly inside it and outside its images' text (an NRO
+   at the address the recompiler gave it): the code compiled from it is then published in the config's table, where
+   the caller may hold AOT code for it too. 0, or -1 (overlap, SNX_JIT_IMAGES already, out of memory) */
 int snx_jit_add_image(SnxJitService* service, const SnxCodeImage* image);
 /* The image added at base goes, before its memory does: waits for the batches reading it, and forgets its pcs and
-   code (code is never freed, but nothing finds it any more). No thread may run its code any more */
+   code (code is never freed, but nothing finds it any more). The slots of an image inside the config's table are
+   emptied, the caller's code in them too. No thread may run its code any more */
 void snx_jit_remove_image(SnxJitService* service, SnxU64 base);
 /* Guest memory in [addr, addr+size) changed: what was compiled from it is stale. Its dispatch slots and entries go;
    the next lookup compiles a pc in the range from what is there now, and a compile already running publishes nothing
