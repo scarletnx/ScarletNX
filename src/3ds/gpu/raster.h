@@ -4,8 +4,8 @@
    texture combiners, fog, the alpha, stencil and depth tests and blending into the framebuffer in physical memory.
    Ported from Azahar video_core/renderer_software/{sw_rasterizer,sw_clipper,sw_texturing,sw_framebuffer}.cpp
    (GPL-2.0-or-later, Copyright 2014-2026 Citra Emulator Project / Azahar Emulator Project) at azahar-emu/azahar
-   a4b335e, fragment lighting in lighting.c. Procedural textures and shadow textures and rendering are not ported
-   yet: a draw that enables one stops (snx_ctr_raster_check). */
+   a4b335e, fragment lighting in lighting.c. Procedural textures are not ported yet: a draw that enables them stops
+   (snx_ctr_raster_check). */
 #ifndef SNX_CTR_RASTER_H
 #define SNX_CTR_RASTER_H
 #include "3ds/gpu/pica.h"
