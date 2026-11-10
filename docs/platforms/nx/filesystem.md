@@ -61,6 +61,16 @@ Opening a save whose note names a newer version of the same game, by the content
 else by the numbers of the display versions, warns once with both, and the crash, svcBreak and BRK reports repeat the
 line (`fs_save_report`).
 
+A save's folder holds its last commit. What the game writes to a save's file since then is in `<its folder>.pending`
+beside the folder, at the file's path in the save: a file changed is copied there at its first write, a file made is
+made there, and the game reads and writes that one. Commit, alone or of several saves together
+(`IMultiCommitManager`), syncs each of those files and moves it over the save's own, a file at a time, so a game
+killed at any moment leaves each file of a save whole, the committed one or the new one; several files of one commit
+are not replaced as a set. A save closed with no commit goes back to its last one, as the console's, and the log names
+the files; what a run that ended with no commit left in the pending folder is removed when the save is next opened,
+also named. Folders made, and files and folders deleted or renamed, are done at once, after the pending files are put
+in place. Temporary storage, the SD card and the other file systems have no commit and are written where they are.
+
 Init rejects scan/stat errors, symlinks/junctions, regular-file hardlinks, special files and invalid names, and the
 game stops with the path it stopped at and why in the line before (`fs: could not index the game's files in ...:
 .../sdmc/shared is a symbolic link, which the index follows only as a folder at the top of the game's data folder`).
