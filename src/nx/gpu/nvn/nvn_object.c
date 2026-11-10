@@ -801,13 +801,26 @@ void nvn_TexturePoolRegisterImage(CPU* c, u64 tp, i32 id, u64 t, u64 v) {
     (void)c;
     register_texture(tp, id, t, v, 1);
 }
+/* A sampler descriptor written over another that the submitted work may still read. The game reuses a pool entry as
+   soon as the console's GPU is past the work that read it, which the replay can still have ahead of it: its draws would
+   read the new sampler (one game's bloom reuses an entry per mip level each frame, read other levels and went white).
+   So the write waits for the work submitted before it, and is recorded for the renderer's kept descriptors. The
+   descriptor the slot already holds changes nothing for that work: no wait */
+static void sampler_write(u64 slot, const u32 tsc[8]) {
+    if (!memcmp(GP(slot), tsc, NVN_DESCRIPTOR_SIZE)) return;
+    nvn_wait_begin();
+    nvn_replay_finish_all();
+    nvn_wait_end();
+    memcpy(GP(slot), tsc, NVN_DESCRIPTOR_SIZE);
+    gpu_mem_written_cpu(slot, NVN_DESCRIPTOR_SIZE);
+}
 void nvn_SamplerPoolRegisterSampler(CPU* c, u64 sp, i32 id, u64 s) {
     u64 slot = desc_slot(sp, id, "sampler");
     u32 tsc[8];
     (void)c;
     if (!slot) return;
     nvn_tsc_encode(&NVN_OBJ(const NvnSampler, s)->p, tsc);
-    memcpy(GP(slot), tsc, sizeof tsc);
+    sampler_write(slot, tsc);
 }
 /* a sampler's descriptor straight from a builder's state, as the game's driver writes it with no sampler object */
 void nvn_SamplerPoolRegisterSamplerBuilder(CPU* c, u64 sp, i32 id, u64 b) {
@@ -816,7 +829,7 @@ void nvn_SamplerPoolRegisterSamplerBuilder(CPU* c, u64 sp, i32 id, u64 b) {
     (void)c;
     if (!slot) return;
     nvn_tsc_encode(&NVN_OBJ(const NvnSamplerBuilder, b)->p, tsc);
-    memcpy(GP(slot), tsc, sizeof tsc);
+    sampler_write(slot, tsc);
 }
 
 /* ============================================================ textures */

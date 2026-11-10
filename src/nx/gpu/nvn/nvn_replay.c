@@ -504,6 +504,19 @@ void nvn_replay_finish(u32 queue) {
     pm_unlock(&g_nvn.replay.lock);
     syncpt_wait(id, value, -1);
 }
+void nvn_replay_finish_all(void) {
+    u32 id[NVN_QUEUES], value[NVN_QUEUES], i, n = 0;
+    pm_lock(&g_nvn.replay.lock);
+    for (i = 0; i < NVN_QUEUES; i++) {
+        if (!g_nvn.replay.q[i].syncpt) continue;
+        id[n] = g_nvn.replay.q[i].syncpt;
+        value[n] = syncpt_promise(id[n], 1);
+        gpu_call_poll(run, job(i + 1, JOB_FENCE, 0), i);
+        n++;
+    }
+    pm_unlock(&g_nvn.replay.lock);
+    for (i = 0; i < n; i++) syncpt_wait(id[i], value[i], -1);
+}
 u32 nvn_replay_present(u32 queue, const NvnReplayPresent* p, u32* shown) {
     u32 value;
     pm_lock(&g_nvn.replay.lock);

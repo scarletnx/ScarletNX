@@ -72,6 +72,11 @@ u64 nvn_loader_run_driver(CPU* c, GuestFn fn, u64 at, u64 a0, u64 a1, u64 a2) {
 u32 nvn_replay_shown_syncpt(void) { return 9; }
 
 /* ---- what the file needs of the runtime besides: stubs, none reached by the cases below */
+void nvn_replay_finish_all(void) {}
+void gpu_mem_written_cpu(u64 cpu, u64 size) {
+    (void)cpu;
+    (void)size;
+}
 void logf_(int lvl, const char* fmt, ...) {
     (void)lvl;
     (void)fmt;
