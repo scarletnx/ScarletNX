@@ -258,6 +258,76 @@ static void ngs_template1(VitaProcess* p, VitaThread* t, uint32_t mem) {
     assert(CALL(n, "sceNgsSystemRelease", system) == 0);
 }
 
+static void ngs_sparse_input_clear(VitaProcess* p, VitaThread* t, uint32_t mem) {
+    const VitaHle* n = vita_hle_ngs;
+    uint32_t system = mem + 0x2000, params = mem + 0x2100, description = mem + 0x2200;
+    uint32_t buffer_info = mem + 0x2300, rack_out = mem + 0x2310, voice_out = mem + 0x2320;
+    uint32_t patch_info = mem + 0x2400, patch_out = mem + 0x2420, matrix = mem + 0x2440;
+    uint32_t source_rack = mem + 0x3000, master_rack = mem + 0x4000, rack_size = 0x40 + 0x400;
+    uint32_t source_voice = source_rack + 0x40, master_voice = master_rack + 0x40;
+    uint32_t player_params = source_voice + 0x40, samples = mem + 0x5000, output = mem + 0x6000;
+
+    vita_write32(p, params + 8, 256);
+    vita_write32(p, params + 12, 48000);
+    assert(CALL(n, "sceNgsSystemInit", system, 0x1000, params, mem + 0x2210) == 0);
+
+    vita_write32(p, description, CALL(n, "sceNgsVoiceDefGetSimpleVoice"));
+    vita_write32(p, description + 4, 1);
+    vita_write32(p, description + 8, 2);
+    vita_write32(p, buffer_info, source_rack);
+    vita_write32(p, buffer_info + 4, rack_size);
+    assert(CALL(n, "sceNgsRackInit", system, buffer_info, description, rack_out) == 0);
+    assert(CALL(n, "sceNgsRackGetVoiceHandle", source_rack, 0, voice_out) == 0);
+    assert(vita_read32(p, voice_out) == source_voice);
+
+    vita_write32(p, description, CALL(n, "sceNgsVoiceDefGetMasterBuss"));
+    vita_write32(p, buffer_info, master_rack);
+    assert(CALL(n, "sceNgsRackInit", system, buffer_info, description, rack_out) == 0);
+    assert(CALL(n, "sceNgsRackGetVoiceHandle", master_rack, 0, voice_out) == 0);
+    assert(vita_read32(p, voice_out) == master_voice);
+
+    vita_write32(p, patch_info, source_voice);
+    vita_write32(p, patch_info + 4, 0);
+    vita_write32(p, patch_info + 8, UINT32_MAX);
+    vita_write32(p, patch_info + 12, master_voice);
+    vita_write32(p, patch_info + 16, UINT32_MAX);
+    assert(CALL(n, "sceNgsPatchCreateRouting", patch_info, patch_out) == 0);
+    vita_write32(p, matrix, 0x3f800000u);
+    vita_write32(p, matrix + 4, 0);
+    vita_write32(p, matrix + 8, 0);
+    vita_write32(p, matrix + 12, 0x3f800000u);
+    assert(CALL(n, "sceNgsVoicePatchSetVolumesMatrix", vita_read32(p, patch_out), matrix) == 0);
+
+    assert(CALL(n, "sceNgsVoiceLockParams", source_voice, 0, 0, buffer_info) == 0);
+    player_params = vita_read32(p, buffer_info);
+    vita_write32(p, player_params, 0x01015ce6u);
+    vita_write32(p, player_params + 8, samples);
+    vita_write32(p, player_params + 12, 256 * 4);
+    vita_write32(p, player_params + 16, 1);
+    vita_write32(p, player_params + 0x38, 0x473b8000u);
+    vita_write32(p, player_params + 0x3c, 0x3f800000u);
+    vita_write32(p, player_params + 0x4c, 2);
+    for (unsigned i = 0; i < 256; ++i) {
+        vita_write16(p, samples + i * 4, 8192);
+        vita_write16(p, samples + i * 4 + 2, 8192);
+    }
+    assert(CALL(n, "sceNgsVoiceSetModuleCallback", source_voice, 0, VITA_RUNTIME_PAGE + 0x20, 0) == 0);
+    assert(CALL(n, "sceNgsVoicePlay", source_voice) == 0);
+    assert(CALL(n, "sceNgsVoicePlay", master_voice) == 0);
+    assert(CALL(n, "sceNgsSystemUpdate", system) == 0 && !t->call.redirected);
+    assert(CALL(n, "sceNgsVoiceGetStateData", master_voice, 1, output, 256 * 4) == 0);
+    assert(vita_read16(p, output + 10 * 4) == 8192);
+
+    assert(CALL(n, "sceNgsVoiceKill", master_voice) == 0);
+    assert(CALL(n, "sceNgsSystemUpdate", system) == 0 && t->call.redirected);
+    assert(CALL(n, "sceNgsVoicePlay", master_voice) == 0);
+    vita_hle_call_returned(p, t);
+    assert(!t->call.active);
+    assert(CALL(n, "sceNgsVoiceGetStateData", master_voice, 1, output, 256 * 4) == 0);
+    assert(vita_read16(p, output + 10 * 4) == 8192);
+    assert(CALL(n, "sceNgsSystemRelease", system) == 0);
+}
+
 static void gxm_program_metadata(VitaProcess* p, VitaThread* t, uint32_t mem) {
     const VitaHle* gxm = vita_hle_gxm;
     uint32_t parameter = mem + 0x8000, patcher_out = mem + 0x8020, program = mem + 0x8040,
@@ -313,6 +383,7 @@ int main(void) {
     save_data(p, t, mem, end);
     net(p, t, mem, end);
     ngs_template1(p, t, mem);
+    ngs_sparse_input_clear(p, t, mem);
     gxm_program_metadata(p, t, mem);
     gxm_texture_transfers(p, t, mem);
     vita_process_free(p);
