@@ -535,6 +535,11 @@ typedef struct App {
        them; and the one a run plays (--program, the run's --game= on a phone), 0 for the game's own */
     int programs[SNX_PROGRAMS_MAX], programs_count, play_program;
     bool* cheats_on;     /* each of cheats': run, not in cheats_off= */
+    /* a drag of several files: SDL gives a drop each, between its DROP_BEGIN and DROP_COMPLETE (dropping). Once one
+       of them went to the queue, whose tab shows then (drop_queued), the others open with drop_item, the load it was
+       dropped on */
+    bool dropping, drop_queued;
+    int drop_item;
     Uint32 addon_picked; /* the event the system's picker answers Add Mod's folder or Add Cheats' file with */
     int addon_adding;    /* the row it was opened for, ROW_ADD_MOD or ROW_ADD_CHEATS; 0 while none waits */
     char* adding_game;   /* and the game whose box it was, which the answer goes to only while that box shows */
@@ -15975,7 +15980,10 @@ static bool drop_elsewhere(App* app, const char* path) {
     return true;
 }
 static void drop(App* app, const char* value, bool text_drop) {
-    if ((app->menu.view != GUI_LOAD_DROP && app->menu.view != GUI_LOAD_KEYS) || app->menu.running || app->finished)
+    /* a drag's next file, its first in the queue: the Compile tab took the load's place (queue_show) */
+    bool next = app->drop_queued && app->menu.view == GUI_LOAD_RECOMPILE;
+    if ((app->menu.view != GUI_LOAD_DROP && app->menu.view != GUI_LOAD_KEYS && !next) || app->menu.running ||
+        app->finished)
         return;
     char* path = gui_drop_path(value, text_drop);
     if (!path) {
@@ -15991,11 +15999,13 @@ static void drop(App* app, const char* value, bool text_drop) {
         free(absolute);
     } else {
         /* Hovering another main item must not change the driver for this drop. */
-        app->menu.selected = app->menu.active;
+        app->menu.selected = next ? app->drop_item : app->menu.active;
+        app->drop_item = app->menu.selected;
         if (!drop_elsewhere(app, absolute))
             launch(app, absolute, false);
         else
             free(absolute);
+        if (app->dropping && app->menu.view == GUI_LOAD_RECOMPILE) app->drop_queued = true;
     }
 }
 static void picked(App* app, const char* uri);
@@ -17748,6 +17758,12 @@ static void event_take(App* app, const SDL_Event* e) {
         return;
     }
     if (app->closing_ms) return; /* closing: nothing else is taken */
+    /* a drag's first and last event, whatever shows: no screen takes them */
+    if (e->type == SDL_EVENT_DROP_BEGIN || e->type == SDL_EVENT_DROP_COMPLETE) {
+        app->dropping = e->type == SDL_EVENT_DROP_BEGIN;
+        app->drop_queued = false;
+        return;
+    }
     /* the setup, while it shows, takes the keys and the typing; the pointer goes to it through pointer() */
     if (app->setup_on && !app->splash && setup_event(app, e)) return;
     /* what Clean Old Settings did, and the box of an older version's files: Up/Down and the wheel go over their files,
@@ -18244,6 +18260,8 @@ static bool initialize(App* app, const char* self) {
     SDL_SetRenderVSync(app->renderer, 1);
     SDL_SetEventEnabled(SDL_EVENT_DROP_FILE, true);
     SDL_SetEventEnabled(SDL_EVENT_DROP_TEXT, true);
+    SDL_SetEventEnabled(SDL_EVENT_DROP_BEGIN, true); /* a drag of several files, from its first to its last */
+    SDL_SetEventEnabled(SDL_EVENT_DROP_COMPLETE, true);
     if (!create_font(app)) {
         char why[256];
         SDL_strlcpy(why, SDL_GetError(), sizeof why); /* SDL_SetError writes over the text it formats */
