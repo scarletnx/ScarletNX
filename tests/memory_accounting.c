@@ -475,6 +475,33 @@ static void test_short_hint(void) {
     mem_fit(0, 0, 0);
     g_layout = saved;
 }
+/* memory_gb given for an Ounce game: the log says once that it changes nothing there, and the amount in effect */
+static void test_gb_said(void) {
+    MemLayout saved = g_layout;
+    base_process();
+    mem_fit(0, 0, 0);
+    said[0] = 0;
+    g_settings.memory_gb = 8;
+    mem_gb_said(); /* another game's memory follows the key */
+    CHECK(!said[0] && mem_total() == 6964 * MIB);
+    mem_layout_large_heap();
+    g_ounce = 1;
+    mem_gb_said();
+    CHECK(!strcmp(said, "memory: memory_gb=8 does not change an Ounce game's memory: it is told 10240 MiB\n"));
+    mem_fit(1, 8006 * MIB, 106 * MIB);
+    said[0] = 0;
+    g_settings.memory_gb = 6;
+    mem_gb_said();
+    CHECK(!strcmp(said, "memory: memory_gb=6 does not change an Ounce game's memory: it is told 7412 MiB\n"));
+    said[0] = 0;
+    g_settings.memory_gb = 0; /* the key's default: nothing was asked */
+    mem_gb_said();
+    CHECK(!said[0]);
+    mem_fit(0, 0, 0);
+    said[0] = 0;
+    g_ounce = 0;
+    g_layout = saved;
+}
 static void test_system_resource(void) {
     base_process();
     CHECK(svc_map_physical(ALIAS_BASE, 0x1000) == SNX_RC_SVC_INVALID_STATE);
@@ -1089,6 +1116,7 @@ int main(void) {
         test_heap32();
         test_fit();
         test_short_hint();
+        test_gb_said();
         test_system_resource();
         test_rollback();
         test_locked_shrink();

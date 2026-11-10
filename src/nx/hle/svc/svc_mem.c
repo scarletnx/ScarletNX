@@ -133,6 +133,11 @@ void mem_fit(int measured, u64 available, u64 footprint) {
         (unsigned long long)(process_memory_total() >> 20), (unsigned long long)(reach(pool()) >> 20),
         (unsigned long long)(available >> 20), (unsigned long long)(footprint >> 20));
 }
+void mem_gb_said(void) {
+    if (g_ounce && g_settings.memory_gb)
+        LOG("memory: memory_gb=%d does not change an Ounce game's memory: it is told %llu MiB\n", g_settings.memory_gb,
+            (unsigned long long)(process_memory_total() >> 20));
+}
 int mem_short_hint(char* out, size_t size) {
     u64 told = process_memory_total(), console = reach(pool()), fit = g_hle.svcmem.fit;
     u64 available = g_hle.svcmem.fit_available;
