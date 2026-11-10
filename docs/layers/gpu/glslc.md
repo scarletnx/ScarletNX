@@ -40,7 +40,7 @@ if (snx_glslc_compile(&workspace, &options, source, size, words, SNX_GLSLC_MAX_W
     fprintf(stderr, "%u:%u: %s\n", result.line, result.column, result.error);
 ```
 
-- The workspace is the caller's memory, 16-byte aligned and `snx_glslc_workspace_size()` bytes (3.7 MiB): one per
+- The workspace is the caller's memory, 16-byte aligned and `snx_glslc_workspace_size()` bytes (4.1 MiB): one per
   thread, reused by every compilation on it, one at a time. Each compilation carves its arrays from it anew, so
   nothing of one reaches the next. A workspace too small or misaligned is refused with its size and the size needed.
 - `result.words` is the module's size. With a buffer too small (or `NULL`) the call returns -1 and still says how
@@ -56,8 +56,19 @@ The library links as `snx_glslc`. `tests/glslc/glslc_cli.c` is a small command l
 ## How it works
 
 The source stays where the caller keeps it. A token, an identifier or a member name is a view of it, a 16-bit position
-and length, so a source is 65535 bytes at most. Three passes write arrays of fixed records that refer to each other
-by 16-bit index, never by pointer, all carved from the caller's workspace by each compilation:
+and length, so a source is 65535 bytes at most; the lexer scans a copy in the workspace with zero bytes after its end,
+so it reads ahead without asking where the source ends. Three passes write arrays of fixed records that refer to each
+other by 16-bit index, never by pointer, all carved from the caller's workspace by each compilation, which clears none
+of it: the emitter's hash of types and constants says which slots are taken with a sparse set, which nothing the
+workspace held can fake.
+
+A token's kind is 32 bits. A punctuator's is its characters, packed from the first in the low byte (`'('`,
+`'+' | '=' << 8`), made from the bytes one at a time, so the same number on a big-endian host; keywords and the
+built-in types are past them. Every identifier is interned: one name for each text, by hash, and the token's kind is
+the name's index with the top bit set, so two tokens name the same thing when their kinds are equal. A name holds what
+the passes learn of it once: the macro it names, its keyword row, its innermost symbol in scope (each symbol keeps the
+one it hides), and its rows of the built-in functions and variables. The tables' names carry their lengths, known
+when compiled (`builtins.c`'s `ROW`), and no type's name is made unless an error shows it.
 
 1. `lexer.c`: the preprocessor and the tokens. Macros expand on a stack of tokens: a use's arguments are expanded,
    put into the body, and the result scanned again with the macro turned off, each step on top of the last.
@@ -78,6 +89,7 @@ shader needed (`the shader has 32769 tokens after preprocessing, more than the 3
 | `SNX_GLSLC_MAX_TOKENS` | 32768 | tokens after preprocessing |
 | `SNX_GLSLC_MAX_NODES` | 32768 | syntax nodes; no construct makes more than it has tokens |
 | `SNX_GLSLC_MAX_MACROS` | 512 | macros, the predefined ones included |
+| `SNX_GLSLC_MAX_NAMES` | 8192 | distinct names the preprocessor reads, the predefined macros' included |
 | `SNX_GLSLC_MAX_MACRO_TOKENS` | 8192 | tokens of every macro's parameters and body |
 | `SNX_GLSLC_MAX_EXPANSION` | 4096 | tokens one macro use expands to |
 | `SNX_GLSLC_MAX_MACRO_DEPTH` | 32 | macros expanding inside each other |
