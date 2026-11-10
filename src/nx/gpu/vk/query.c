@@ -7,9 +7,14 @@
 
    The count runs from its reset. It is kept in segments: a segment is one query, begun at the first draw counted in a
    rendering pass and ended with the pass, at a reset, at a report, or at a draw of another owner or another sample
-   count. A segment belongs to the owner that began it, and holds that draw's guest sample count. At a submit (and
-   at a report), the results of the segments ended so far are copied into host-cached memory and their queries reset,
-   in the same command buffer: once per submit, as each copy waits for its queries on the GPU. A report is a release
+   count. A segment belongs to the owner that began it, and holds that draw's guest sample count. At a submit, the
+   results of the segments ended so far are copied into host-cached memory and their queries reset, in the same command
+   buffer: once per submit, as each copy waits for its queries on the GPU. A copy and a reset can't be recorded inside a
+   rendering pass, where the queries begin and end with the draws, so a report leaves its copy to the submit it waits
+   for, and the pass goes on. Copying at each report ended the pass at each one: one game reports after almost every
+   draw of its scene's main pass, which became two thousand passes a frame, each pass end a wait for the GPU to drain.
+   The copies come sooner only when a shader reads the counts (the predicates and counts below, whose dispatches end
+   the pass anyway), or when half the ring waits for its copy (copy_if_full). A report is a release
    (release.c) gated on the submit being recorded, which happens when anything needs the release, and at the latest
    when the GPFIFO submission ends (renderer.h stream_end): a game that reports often doesn't submit once for each.
    When it is performed, the GPU has counted, and the owner's segments since its previous report are added to the
@@ -209,7 +214,20 @@ void vk_query_flush(VkCommandBuffer cb) {
                            .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT};
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     rec_CmdPipelineBarrier2(cb, &di);
-    g_qmark[g_qmark_at++ % QMARKS] = (typeof(g_qmark[0])){vk_submit_number(), g_q.copied};
+    /* one mark a submission, its latest copy's end: a submission with many copies left fold_done no older marks */
+    u64 sub = vk_submit_number();
+    if (g_qmark_at && g_qmark[(g_qmark_at - 1) % QMARKS].sub == sub)
+        g_qmark[(g_qmark_at - 1) % QMARKS].copied = g_q.copied;
+    else
+        g_qmark[g_qmark_at++ % QMARKS] = (typeof(g_qmark[0])){sub, g_q.copied};
+}
+/* Half the ring's segments wait for their copy: it is recorded now. Where no draw is being recorded (a report, a reset,
+   a counter turned off), so the pass can end there. A pass that went on through the ring's segments would leave the
+   next draw no query reset to begin, and its counter's reports made up */
+static void copy_if_full(void) {
+    if (g_q.next - g_q.copied < QN / 2) return;
+    vk_render_end();
+    vk_query_flush(vk_cmd());
 }
 
 /* a segment open now of this counter ends: what comes after is another epoch's, or isn't counted */
@@ -227,6 +245,7 @@ void vk_query_reset(u32 owner) {
     QCounter* c = counter(owner, 1);
     if (!c) return;
     end_own(c);
+    copy_if_full();
     if (!c->started) LOG("vulkan: draw owner %#x counts samples passed, with occlusion queries\n", owner);
     c->started = 1;
     c->bad = 0;
@@ -235,7 +254,10 @@ void vk_query_reset(u32 owner) {
 void vk_query_enable(u32 owner, int on) {
     QCounter* c = counter(owner, 1);
     if (!c) return;
-    if (!on) end_own(c);
+    if (!on) {
+        end_own(c);
+        copy_if_full();
+    }
     c->disabled = !on;
 }
 int vk_query_enabled(u32 owner) {
@@ -246,8 +268,7 @@ int vk_query_report(u32 owner, u64 gva, u32 len, u64 ticks) {
     QCounter* c = counter(owner, 0);
     if (!c || !c->started || c->bad || c->whead - c->wtail == QWAIT) return 0;
     end_own(c);
-    vk_render_end();
-    vk_query_flush(vk_cmd()); /* the segments counted so far, copied in the submit the report waits for */
+    copy_if_full(); /* else the segments counted so far are copied at the end of the submit the report waits for */
     c->wait[c->whead++ % QWAIT] = c->reported;
     c->reported = g_q.next;
     vk_release_samples(gva, len, (u32)(c - g_qc), c->first, g_q.next, ticks);
@@ -498,10 +519,11 @@ int vk_query_pred_flush(void) {
                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                       .pBufferInfo = &bufs[i]};
     vkUpdateDescriptorSets(g_vk.dev, 3, w, 0, NULL);
-    vk_render_end(); /* a dispatch is outside a rendering pass */
-    /* the counts' copies (vk_query_flush) and an earlier batch's predicates a group starts from before the shader
-       reads them, and the draws predicated on a slot before it is written again. The batch's words are host writes,
-       made visible by the submit */
+    vk_render_end();    /* a dispatch is outside a rendering pass */
+    vk_query_flush(cb); /* the copies of the reports' segments, which a report leaves to its submit */
+    /* the counts' copies and an earlier batch's predicates a group starts from before the shader reads them, and the
+       draws predicated on a slot before it is written again. The batch's words are host writes, made visible by the
+       submit */
     VkMemoryBarrier2 before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
                                                VK_PIPELINE_STAGE_2_CONDITIONAL_RENDERING_BIT_EXT,
@@ -662,10 +684,11 @@ static int count_init(void) {
     return 1;
 }
 /* the segments of report r its sum still needs, from *from, and the part vk_query_value already added (*sum): 0 when
-   they can't be read on the GPU (the epoch outgrew the ring, or its copies aren't recorded) */
+   they can't be read on the GPU (the epoch outgrew the ring). A report leaves their copies to its submit:
+   vk_query_counts records them before its shader reads them */
 static int count_range(const SamplesCount* r, u64* from, u64* sum) {
     const QCounter* c = &g_qc[r->counter % QCH];
-    if (!c->used || !c->started || c->bad || r->end > g_q.copied) return 0;
+    if (!c->used || !c->started || c->bad) return 0;
     *from = r->first;
     *sum = 0;
     if (c->sum_first == r->first) { /* the reports performed summed the epoch's segments up to sum_end */
@@ -719,7 +742,8 @@ int vk_query_counts(VkBuffer buf, u64 off, const SamplesCount* counts, u32 n) {
                                        .pBufferInfo = &bufs[k]};
     vkUpdateDescriptorSets(g_vk.dev, 3, wr, 0, NULL);
     VkCommandBuffer cb = vk_cmd();
-    vk_render_end(); /* a dispatch is outside a rendering pass */
+    vk_render_end();    /* a dispatch is outside a rendering pass */
+    vk_query_flush(cb); /* the copies of the reports' segments, which a report leaves to its submit */
     /* the counts' copies before the shader reads them; its writes before whatever reads the buffer, and its reads of
        the counts before a copy reuses their slots. The jobs and the buffer's other bytes are host writes, made visible
        by the submit */

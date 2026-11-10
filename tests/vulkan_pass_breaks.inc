@@ -274,6 +274,113 @@ static int pb_patch_case(GpuChannel* ch, u64 target) {
     return 0;
 }
 
+/* Occlusion queries (query.c) as one game makes them: a report of the samples-passed count after each draw of its
+   scene's pass. After a reset, red quads over the left half, the right half and the whole target, a report after each:
+   the draws stay in one rendering pass, as a report leaves the copy of its counts to the submit it waits for (copied at
+   each report, the pass ended at each one), and each report holds the samples passed since the reset, 8 for a half
+   and 16 for the whole (any nonzero count where the device's queries aren't precise). Then a render enable on the last
+   report, still queued: the GPU makes its predicate from counts not copied yet, which the predicate's batch copies
+   first. The right half drawn green where the count isn't zero, the left half where it is: left red, right green.
+   Then resets and draws with no report, more than half the query ring's segments: their copies come at a reset, and
+   the pass ends there once */
+#define PB_REPORTS (PB_GVA + 0x1C000) /* a report every 32 bytes: the count, the time, then zeros */
+static int pb_samples_case(GpuChannel* ch, u64 target, u64 red, u64 green) {
+    const u32 owner = 0x7f10, n = 12, many = 2100, where[3] = {PB_LEFT, PB_RIGHT, PB_ALL}, area[3] = {8, 8, 16};
+    const int precise = g_vk.feat.occlusionQueryPrecise;
+    u8 zero[32 * 12], rep[16];
+    u64 want = 0, passes, submits, begun, v;
+    char half[2];
+    memset(zero, 0, sizeof zero);
+    CHECK(!gmem_write(PB_REPORTS, zero, sizeof zero));
+    ch->ds.owner = owner;
+    g_renderer->mem_may_have_changed();
+    rt_clear(ch, target, 4, 4, 0, 1);
+    vk_lock();
+    g_renderer->samples_reset(owner);
+    pb_stream(ch, red, PB_LEN);
+    passes = g_vk_passes;
+    submits = vk_submit_number();
+    for (u32 i = 0; i < n; i++) {
+        pb_draw(ch, where[i % 3]);
+        CHECK(g_renderer->samples_report(owner, PB_REPORTS + i * 32ull, 16, i));
+    }
+    begun = g_vk_passes - passes;
+    submits = vk_submit_number() - submits; /* a submit ends the pass whatever the draws do (pb_frame) */
+    if (begun > submits + 1)
+        fprintf(stderr, "samples passed: %llu passes for %u draws with a report after each, %llu submits between\n",
+                (unsigned long long)begun, n, (unsigned long long)submits);
+    CHECK(begun <= submits + 1);
+    /* the render enable on the last report, compared with the zero 16 bytes on */
+    u64 last = PB_REPORTS + (n - 1) * 32ull;
+    u32 pred[2] = {0, 0};
+    int got[2] = {-1, -1};
+    if (g_vk.has_cond_render && vk_query_pred_ok()) {
+        for (int equal = 0; equal < 2; equal++) got[equal] = vk_render_predicate(last, equal, &pred[equal]);
+        pb_stream(ch, green, PB_LEN);
+        for (int equal = 0; equal < 2; equal++) {
+            if (got[equal] != 2) continue;
+            ch->owner.pred = pred[equal];
+            pb_draw(ch, equal ? PB_LEFT : PB_RIGHT);
+            ch->owner.pred = 0;
+            vk_render_predicate_drop(pred[equal]);
+        }
+        if (got[0] != 2 || got[1] != 2)
+            fprintf(stderr, "samples passed: the render enable on a queued report gave %d and %d (2 and 2 wanted)\n",
+                    got[0], got[1]);
+        CHECK(got[0] == 2 && got[1] == 2);
+        CHECK(!pb_halves(target, half));
+        if (half[0] != 'r' || half[1] != 'g')
+            fprintf(stderr, "samples passed: under the render enable left %c, right %c (r, g wanted)\n", half[0],
+                    half[1]);
+        CHECK(half[0] == 'r' && half[1] == 'g');
+    }
+    vk_unlock();
+    vk_release_drain();
+    for (u32 i = 0; i < n; i++) {
+        want += area[i % 3];
+        CHECK(!gmem_read(PB_REPORTS + i * 32ull, rep, sizeof rep));
+        v = snx_ld_le64(rep);
+        if (precise ? v != want : !v)
+            fprintf(stderr, "samples passed: report %u holds %llu (%llu wanted)\n", i, (unsigned long long)v,
+                    (unsigned long long)want);
+        CHECK(precise ? v == want : v != 0);
+        CHECK(snx_ld_le64(rep + 8) == i); /* the time the report was given */
+    }
+    /* many segments with no report: one pass end for their copies, and the count after the last reset right */
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    pb_stream(ch, red, PB_LEN);
+    passes = g_vk_passes;
+    submits = vk_submit_number();
+    for (u32 i = 0; i < many; i++) {
+        g_renderer->samples_reset(owner);
+        pb_draw(ch, where[i % 3]);
+    }
+    CHECK(g_renderer->samples_report(owner, PB_REPORTS, 16, 7));
+    begun = g_vk_passes - passes;
+    submits = vk_submit_number() - submits;
+    if (begun > submits + 2)
+        fprintf(stderr, "samples passed: %llu passes for %u draws after a reset each, %llu submits between\n",
+                (unsigned long long)begun, many, (unsigned long long)submits);
+    CHECK(begun <= submits + 2);
+    vk_unlock();
+    vk_release_drain();
+    CHECK(!gmem_read(PB_REPORTS, rep, sizeof rep));
+    v = snx_ld_le64(rep);
+    if (precise ? v != area[(many - 1) % 3] : !v)
+        fprintf(stderr, "samples passed: after %u resets the report holds %llu (%u wanted)\n", many,
+                (unsigned long long)v, area[(many - 1) % 3]);
+    CHECK(precise ? v == area[(many - 1) % 3] : v != 0);
+    vk_lock();
+    g_renderer->samples_enable(owner, 0);
+    vk_unlock();
+    ch->ds.owner = 0;
+    printf("pass breaks: %u draws with a samples-passed report after each kept their pass%s, and %u resets with no "
+           "report ended it once at most\n",
+           n, got[0] == 2 ? ", a render enable on the last made on the GPU" : "", many);
+    return 0;
+}
+
 /* the harness: vertex positions (stream 0), a colors stream (stream 1), and the programs that pass the color on */
 static GpuChannel* pb_channel(void) {
     const u64 vertex[] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
@@ -341,6 +448,7 @@ static int check_pass_breaks(void) {
     CHECK(!pb_owners_case(ch, target, PB_GVA + 0x13000, PB_GVA + 0x17000, PB_GVA + 0x1A000, PB_CPU + 0x1A000,
                           PB_FRAME_CHECK));
     CHECK(!pb_patch_case(ch, target));
+    CHECK(!pb_samples_case(ch, target, PB_GVA + 0x13000, PB_GVA + 0x14000));
     vk_lock();
     vk_finish();
     vk_unlock();
