@@ -738,6 +738,9 @@ int glslc_run(Glslc* g, int last, uint32_t* words, size_t capacity);
 void glslc_fail(Glslc* g, uint32_t site, const char* fmt, ...);
 void glslc_warn(Glslc* g, uint32_t site, const char* fmt, ...);
 void glslc_locate(const Glslc* g, uint32_t site, uint32_t* line, uint32_t* column);
+/* text's hash, 8 bytes a step, each made from its bytes (the same on any host), then mixed (MurmurHash3's finalizer).
+   It reads up to 7 bytes past text's end, which the source's copy (GLSLC_SOURCE_PAD) and the synthesized text (the
+   workspace's next array) have */
 uint32_t glslc_hash(const char* text, uint32_t len);
 const char* glslc_view_text(const Glslc* g, GlslcView v);
 const char* glslc_token_text(const Glslc* g, const GlslcToken* t);

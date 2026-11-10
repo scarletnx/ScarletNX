@@ -281,12 +281,11 @@ static uint64_t bytes8(const char* p) {
            (uint64_t)b[5] << 40 | (uint64_t)b[6] << 48 | (uint64_t)b[7] << 56;
 }
 
-/* text's hash, 8 bytes a step (the last ones padded with zeros), then mixed (the finalizer of MurmurHash3) */
 uint32_t glslc_hash(const char* text, uint32_t len) {
     uint64_t h = (uint64_t)len * 0x9e3779b97f4a7c15ull, w = 0;
     uint32_t i = 0;
     for (; i + 8 <= len; i += 8) h = (h ^ bytes8(text + i)) * 0xff51afd7ed558ccdull;
-    for (uint32_t k = 0; i + k < len; k++) w |= (uint64_t)(unsigned char)text[i + k] << (8u * k);
+    if (i < len) w = bytes8(text + i) & (~0ull >> (64u - 8u * (len - i))); /* the last bytes, the ones past cut */
     h = (h ^ w) * 0xc4ceb9fe1a85ec53ull;
     h ^= h >> 33;
     return (uint32_t)h;
