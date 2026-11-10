@@ -327,7 +327,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
        the pass has its value, the generics plain IPAs read with perspective, and whether an indexed IPA reads any */
     u32 pos_in = stage == ST_FS ? shader_varying_position_mask(si->varying) : 0, smooth_in = 0;
     int needs_frag_ndc = 0, ipa_indexed = 0;
-    int per_vertex_in = stage == ST_FS && (si->varying & 3) == SH_VARYING_BARYCENTRIC;
+    int pv_flat = stage == ST_FS && (si->varying & 3) == SH_VARYING_GEOMETRY;
+    int per_vertex_in = (stage == ST_FS && (si->varying & 3) == SH_VARYING_BARYCENTRIC) || pv_flat;
     u32 pv_mask = 0, pv_slot = SH_VARYING_SLOT(si->varying), position_slot = stage == ST_VS ? si->position_copy : 0;
     int needs_glsl = 0, needs_f16 = 0, needs_f64 = 0, needs_i64 = 0;
     int has_flow = 0, has_calls = 0, has_barrier = 0, converge;
@@ -1696,7 +1697,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     /* the per-vertex pass: the generics it takes, and a generic of the three positions, which nothing else may use */
     if (per_vertex_in) {
         pv_mask = smooth_in & ~si->in_unfed_mask & ~pos_in;
-        if (ipa_indexed || legacy_fs || inputs_used[pv_slot])
+        int taken = inputs_used[pv_slot];
+        /* a geometry program's values: the position's three generics, then two for each generic of the pass */
+        for (u32 g = pv_flat ? pv_slot + 1 : 32; g < 32 && g < shader_varying_copy(pv_mask, pv_slot, 32, 0); g++)
+            taken |= inputs_used[g];
+        if (ipa_indexed || legacy_fs || taken || (pv_flat && shader_varying_copy(pv_mask, pv_slot, 32, 0) > 32))
             return direct_reject_with_buffers(si, "a per-vertex pass over indexed, legacy or the position's inputs",
                                               pop_targets, gb_at);
         if (pv_mask) needs_frag_ndc = needs_fragcoord = 1;
@@ -2067,20 +2072,28 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         }
         input_vec_type[i] = vector_type;
         input_component_type[i] = component_type;
-        inputs[i] = between || (pv_mask >> i & 1)
-                        ? spv_emit_interface_variable(&c->emit, 1, vector_type, c->u32_type, between ? in_vertices : 3,
-                                                      SPV_NOT_BUILTIN, i, 0)
-                        : spv_emit_input_vec4(&c->emit, vector_type, i, interpolation);
-        if (pv_mask >> i & 1) spv_emit_decorate(&c->emit, inputs[i], 5285, NULL, 0); /* PerVertexKHR */
+        int arrays = between || ((pv_mask >> i & 1) && !pv_flat);
+        if ((pv_mask >> i & 1) && pv_flat) interpolation = 1; /* the first vertex's value, flat */
+        inputs[i] = arrays ? spv_emit_interface_variable(&c->emit, 1, vector_type, c->u32_type,
+                                                         between ? in_vertices : 3, SPV_NOT_BUILTIN, i, 0)
+                           : spv_emit_input_vec4(&c->emit, vector_type, i, interpolation);
+        if (arrays && !between) spv_emit_decorate(&c->emit, inputs[i], 5285, NULL, 0); /* PerVertexKHR */
         interfaces[count++] = inputs[i];
     }
-    u32 pv_position = 0;
-    if (pv_mask) {
+    u32 pv_position[3] = {0, 0, 0}, pv_copy[32][2] = {{0}};
+    if (pv_mask && !pv_flat) {
         spv_emit_extension(&c->emit, "SPV_KHR_fragment_shader_barycentric");
         spv_emit_capability(&c->emit, 5284); /* FragmentBarycentricKHR */
-        pv_position = spv_emit_interface_variable(&c->emit, 1, vec4, c->u32_type, 3, SPV_NOT_BUILTIN, pv_slot, 0);
-        spv_emit_decorate(&c->emit, pv_position, 5285, NULL, 0);
-        interfaces[count++] = pv_position;
+        pv_position[0] = spv_emit_interface_variable(&c->emit, 1, vec4, c->u32_type, 3, SPV_NOT_BUILTIN, pv_slot, 0);
+        spv_emit_decorate(&c->emit, pv_position[0], 5285, NULL, 0);
+        interfaces[count++] = pv_position[1] = pv_position[2] = pv_position[0];
+    } else if (pv_mask) {
+        for (u32 k = 0; k < 3; k++)
+            interfaces[count++] = pv_position[k] = spv_emit_input_vec4(&c->emit, vec4, pv_slot + k, 1);
+        for (u32 i = 0; i < 32; i++)
+            for (u32 k = 0; k < 2 && (pv_mask >> i & 1); k++)
+                interfaces[count++] = pv_copy[i][k] =
+                    spv_emit_input_vec4(&c->emit, vec4, shader_varying_copy(pv_mask, pv_slot, i, k), 1);
     }
     u32 fragcoord = 0;
     if (layer_input_used) {
@@ -2529,7 +2542,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     /* in the function's first block, so that every read has them */
     u32 frag_ndc[2] = {0, 0}, pv_weight[2] = {0, 0};
     if (needs_frag_ndc) shader_frag_ndc(c, fragcoord, vec4, push, push_pointer, frag_ndc);
-    if (pv_mask) shader_frag_weights(c, pv_position, frag_ndc, pv_weight);
+    if (pv_mask) shader_frag_weights(c, vec4, pv_position, pv_flat, frag_ndc, pv_weight);
     for (clip = 0; clip < clip_count; clip++) {
         u32 index = spv_emit_constant_u32(&c->emit, c->u32_type, clip);
         u32 ptr = stage == ST_TCS
@@ -2688,6 +2701,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         .frag_ndc = {frag_ndc[0], frag_ndc[1]},
         .pv_mask = pv_mask,
         .pv_weight = {pv_weight[0], pv_weight[1]},
+        .pv_copy = pv_copy,
+        .pv_flat = pv_flat,
         .sample_mask_output = sample_mask_output,
         .guest_sample_mask = (sph[19] & 1u) != 0,
         .sample_id = sample_id,
