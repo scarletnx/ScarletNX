@@ -7,6 +7,7 @@
 * [Game](#game)
 * [Display](#display)
 * [Graphics](#graphics)
+  * [Vulkan Extensions](#vulkan-extensions)
 * [Performance](#performance)
 * [On-screen controls](#on-screen-controls)
 * [Controllers](#controllers)
@@ -27,7 +28,7 @@ Settings show a group for each section ([GUI launcher](gui.md)).
 Restart for `docked` (`Auto` follows the host's power while the game runs), `fullscreen`, `language`, `resolution`,
 `anisotropy`, `memory_gb`, `memory_fit_mode`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
 `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `pipeline_libraries`, `prepare_shaders`, `compress_shader_cache`,
-`compress_prepared_shaders`, `jit_threads`, `vertex_input_dynamic_state`, `astc_mode`, and
+`compress_prepared_shaders`, `jit_threads`, `vertex_input_dynamic_state`, `astc_mode`, every `vk_ext_*`, and
 the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
 `scarletnx --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
 type, range and help, tab-separated. Every setting, the recompiler's too, is described once in
@@ -78,6 +79,31 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `astc_quick_mtexels` | `8` | With ASTC textures encoded as BC7 as they load (`astc_mode` `0` for an Ounce game, or `3`), a texture level of this many megatexels (2^20 texels) or more, all its layers or slices counted (`8`: a 4096x2048 level, or two layers of 2048x2048), is encoded quickly in the frame that first needs it, in the BC7 encoder's quick build (mode 6 from one line: softer edges), and its better version (the fast build) is made in the background by what `astc_background` picks. The better blocks replace the quick ones in the texture as they come, and go into the BC7 cache in pieces, which the next run copies with no encode (from a disk too slow for that frame, it encodes quickly again and loads the pieces over the next frames). `0` never encodes quickly: every level takes the fast build at once, which stopped one game's first 3D scene for 10 seconds on a Radeon 890M ([ASTC](../layers/gpu/astc.md#very-large-levels)) |
 | `astc_background` | `2` | Who makes the better version of the levels `astc_quick_mtexels` encodes quickly. `2`, the GPU: a piece of 256 KiB of blocks after each present, in a submission of its own, the next once it is done. `1`, worker threads at the system's idle priority (`astc_background_threads`), which run the same decoder and encoder on the CPU and store the same bytes: for a game the GPU holds back, on a computer with cores to spare, as they take far longer (one game's arrays took them 10 minutes of CPU time where the GPU took 13 seconds). `0`, nobody: those levels keep the quick encode, and the next run encodes them quickly again |
 | `astc_background_threads` | `0` | The worker threads `astc_background=1` runs: `0` is a quarter of the computer's threads, one to eight, and `1` to `32` that many |
+
+### Vulkan Extensions
+
+Each Vulkan extension the Switch's renderer can use has a setting of its own in `[Graphics]`, its name in lowercase:
+`vk_ext_transform_feedback` for `VK_EXT_transform_feedback`, `vk_khr_maintenance5` for `VK_KHR_maintenance5`. The
+launcher's Graphics group shows them on its Vulkan Extensions page. Each is `auto` by default:
+
+| Value | Effect |
+| --- | --- |
+| `auto` | ScarletNX decides: the extension is used where the driver has it and no [driver ban](../dev/development.md#driver-bans) holds |
+| `on` | Used wherever the driver has it, over a ban: the log warns with the ban it goes over |
+| `off` | Never used: the extension leaves the device's list before the renderer reads it, so it does without |
+
+The driver says whether an extension is there: `on` can't add one it lacks. Turning off one ScarletNX can't run
+without on the device (`VK_KHR_swapchain` with a window, `VK_KHR_portability_subset` where the driver lists it, and on
+a Vulkan 1.2 device the extensions Vulkan 1.3 took in) stops the game, saying which and why; so does a value other
+than these three. An extension that is core in the Vulkan version the renderer runs the device at (its help says
+which it was promoted to) leaves only its name out when off. The settings are read when the game starts, and the
+log has a line for each, with its value in effect and why:
+
+```
+vulkan: VK_EXT_transform_feedback: off (vk_ext_transform_feedback=off)
+vulkan: VK_EXT_custom_border_color: on (auto: the driver has it, and no ban holds)
+vulkan: VK_KHR_cooperative_matrix: off (the driver has it not)
+```
 
 ## Performance
 

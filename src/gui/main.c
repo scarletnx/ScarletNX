@@ -8208,10 +8208,11 @@ static unsigned group_icon(const char* name) {
     return GUI_ICON_NONE;
 }
 static unsigned page_icon(const char* page) {
-    return !strcmp(page, "LLVM Internals") ? GUI_ICON_CPU
-           : !strcmp(page, "Buttons")      ? GUI_ICON_LAYOUT_GRID
-           : !strcmp(page, "Button map")   ? GUI_ICON_GAMEPAD_DIRECTIONAL
-                                           : GUI_ICON_NONE;
+    return !strcmp(page, "LLVM Internals")      ? GUI_ICON_CPU
+           : !strcmp(page, "Vulkan Extensions") ? GUI_ICON_GPU
+           : !strcmp(page, "Buttons")           ? GUI_ICON_LAYOUT_GRID
+           : !strcmp(page, "Button map")        ? GUI_ICON_GAMEPAD_DIRECTIONAL
+                                                : GUI_ICON_NONE;
 }
 static void settings_groups(App* app) {
     GuiSettings* s = settings_of(app);

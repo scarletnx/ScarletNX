@@ -1572,9 +1572,85 @@ setting Vita lockstep steps
     help With vita_lockstep, how many instruction groups are compared before the game runs on without Unicorn.
     help 0 = no limit
 
+# ---- the Vulkan extensions ----
+
+# One setting per Vulkan extension the Switch's renderer can use (gpu/vk/device.c), auto by default: ScarletNX decides
+# whether to use it (gpu/vk/extension_bans.c, by the extension bans), and the driver says whether it is there.
+# settingsgen checks each against the Khronos registry and makes its key, the name in lowercase, and help
+table g_vk_extensions_ini vulkan
+setting @VK_ANDROID_external_memory_android_hardware_buffer
+setting @VK_EXT_attachment_feedback_loop_dynamic_state
+setting @VK_EXT_attachment_feedback_loop_layout
+setting @VK_EXT_blend_operation_advanced
+setting @VK_EXT_calibrated_timestamps
+setting @VK_EXT_conditional_rendering
+setting @VK_EXT_conservative_rasterization
+setting @VK_EXT_custom_border_color
+setting @VK_EXT_depth_clip_control
+setting @VK_EXT_depth_range_unrestricted
+setting @VK_EXT_descriptor_buffer
+setting @VK_EXT_descriptor_heap
+setting @VK_EXT_device_fault
+setting @VK_EXT_extended_dynamic_state
+setting @VK_EXT_extended_dynamic_state2
+setting @VK_EXT_extended_dynamic_state3
+setting @VK_EXT_external_memory_dma_buf
+setting @VK_EXT_external_memory_host
+setting @VK_EXT_fragment_shader_interlock
+setting @VK_EXT_graphics_pipeline_library
+setting @VK_EXT_index_type_uint8
+setting @VK_EXT_load_store_op_none
+setting @VK_EXT_map_memory_placed
+setting @VK_EXT_memory_budget
+setting @VK_EXT_mesh_shader
+setting @VK_EXT_pipeline_creation_feedback
+setting @VK_EXT_pipeline_robustness
+setting @VK_EXT_post_depth_coverage
+setting @VK_EXT_present_timing
+setting @VK_EXT_primitive_topology_list_restart
+setting @VK_EXT_provoking_vertex
+setting @VK_EXT_robustness2
+setting @VK_EXT_sample_locations
+setting @VK_EXT_shader_atomic_float
+setting @VK_EXT_shader_demote_to_helper_invocation
+setting @VK_EXT_transform_feedback
+setting @VK_EXT_vertex_attribute_divisor
+setting @VK_EXT_vertex_input_dynamic_state
+setting @VK_GOOGLE_display_timing
+setting @VK_KHR_calibrated_timestamps
+setting @VK_KHR_cooperative_matrix
+setting @VK_KHR_dynamic_rendering
+setting @VK_KHR_dynamic_rendering_local_read
+setting @VK_KHR_extended_flags
+setting @VK_KHR_external_memory_fd
+setting @VK_KHR_format_feature_flags2
+setting @VK_KHR_index_type_uint8
+setting @VK_KHR_load_store_op_none
+setting @VK_KHR_maintenance4
+setting @VK_KHR_maintenance5
+setting @VK_KHR_maintenance8
+setting @VK_KHR_map_memory2
+setting @VK_KHR_pipeline_library
+setting @VK_KHR_portability_subset
+setting @VK_KHR_present_id
+setting @VK_KHR_present_id2
+setting @VK_KHR_present_wait
+setting @VK_KHR_present_wait2
+setting @VK_KHR_shader_clock
+setting @VK_KHR_shader_maximal_reconvergence
+setting @VK_KHR_swapchain
+setting @VK_KHR_synchronization2
+setting @VK_KHR_video_decode_h264
+setting @VK_KHR_video_decode_queue
+setting @VK_KHR_video_queue
+setting @VK_NV_device_diagnostic_checkpoints
+setting @VK_NV_fragment_coverage_to_color
+setting @VK_NV_framebuffer_mixed_samples
+setting @VK_VALVE_shader_mixed_float_dot_product
+
 section Game: g_game_ini
 section Display: g_display_ini
-section Graphics: g_graphics_ini
+section Graphics: g_graphics_ini, g_vk_extensions_ini/Vulkan Extensions
 section 3DS: g_ctr_display_ini
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend

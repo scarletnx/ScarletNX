@@ -22,8 +22,18 @@ typedef struct {
     uint32_t at[VK_BAN_FIELDS], size[VK_BAN_FIELDS]; /* each field in g_extension_bans.text */
     uint32_t driver, low, high, systems, gpus[BAN_GPUS], ngpus;
     uint32_t low_at, low_size, high_at, high_size; /* the bounds' versions as the table writes them */
-    unsigned char off, low_bound, high_bound, extension, claimed, ignored; /* ignored: by vulkan_ban_ignore */
+    unsigned char off, low_bound, high_bound, extension, claimed;
+    unsigned char ignored, forced; /* gone over: by vulkan_ban_ignore, by the extension's setting set on */
 } Ban;
+
+#define EXTENSION_SETTINGS 160
+/* the extension settings as vk_extension_settings found them, for vk_extension_settings_say */
+enum { SETTING_AUTO, SETTING_ON, SETTING_OFF };
+static struct {
+    const char* name[EXTENSION_SETTINGS];
+    unsigned char value[EXTENSION_SETTINGS], had[EXTENSION_SETTINGS], core[EXTENSION_SETTINGS];
+    uint32_t count;
+} g_extension_settings;
 
 static struct {
     char text[BAN_TEXT];
@@ -597,8 +607,9 @@ static void say_ban(const Ban* b, int how, VkBanSay say) {
 }
 
 static int key_is(const Ban* b, const char* key) { return field_is(b, VK_BAN_KEY, key); }
-/* an off line that holds and that vulkan_ban_ignore does not go over: what turns its key off */
-static int bans(const Ban* b) { return b->off && !b->ignored && holds(b); }
+/* an off line that holds and that neither vulkan_ban_ignore nor its extension's setting goes over: what turns its key
+   off */
+static int bans(const Ban* b) { return b->off && !b->ignored && !b->forced && holds(b); }
 
 /* the edit distance from a's size bytes to b's: insertions, deletions and substitutions, for the nearest keys */
 static uint32_t distance(const char* a, uint32_t na, const char* b, uint32_t nb) {
@@ -728,7 +739,7 @@ uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say) {
             if (!b->off) say_ban(b, SAY_WARN, say), b->claimed = 1;
             continue;
         }
-        if (b->off && b->ignored) { /* vulkan_ban_ignore goes over it: vk_bans_ignored says so */
+        if (b->off && (b->ignored || b->forced)) { /* gone over: vk_bans_ignored or vk_extension_settings_say says so */
             b->claimed = 1;
             continue;
         }
@@ -761,4 +772,119 @@ uint32_t vk_bans_holding(uint32_t line) {
         if (g_extension_bans.bans[i].line > line && holds(&g_extension_bans.bans[i]))
             return g_extension_bans.bans[i].line;
     return 0;
+}
+
+/* ---- the extension settings ---- */
+
+/* the setting's key: the extension's name in lowercase (settingsgen's) */
+static void setting_key(const char* name, char* out, size_t n) {
+    size_t i = 0;
+    for (; name[i] && i + 1 < n; i++)
+        out[i] = (char)(name[i] >= 'A' && name[i] <= 'Z' ? name[i] - 'A' + 'a' : name[i]);
+    if (n) out[i] = 0;
+}
+
+static int list_has(const SnxVkExtensions* e, const char* name) {
+    for (uint32_t i = 0; i < e->count; i++)
+        if (!strcmp(e->list[i].extensionName, name)) return 1;
+    return 0;
+}
+
+int vk_extension_settings(SnxVkExtensions* e, const VkExtensionSetting* s, uint32_t count, const VkExtensionNeed* need,
+                          uint32_t needs, char* err, size_t n) {
+    char key[160];
+    g_extension_settings.count = 0;
+    for (uint32_t i = 0; i < g_extension_bans.count; i++) g_extension_bans.bans[i].forced = 0;
+    if (count > EXTENSION_SETTINGS) {
+        snprintf(err, n, "%u extension settings, past the %u the renderer keeps", count, EXTENSION_SETTINGS);
+        return 0;
+    }
+    for (uint32_t k = 0; k < count; k++) {
+        int value = !strcmp(s[k].value, "auto") ? SETTING_AUTO
+                    : !strcmp(s[k].value, "on") ? SETTING_ON
+                    : !strcmp(s[k].value, "off") ? SETTING_OFF
+                                                 : -1;
+        setting_key(s[k].name, key, sizeof key);
+        if (value < 0) {
+            snprintf(err, n, "%s=%s is not auto, on or off", key, s[k].value);
+            return 0;
+        }
+        g_extension_settings.name[k] = s[k].name;
+        g_extension_settings.value[k] = (unsigned char)value;
+        g_extension_settings.had[k] = (unsigned char)list_has(e, s[k].name);
+        g_extension_settings.core[k] = (unsigned char)(s[k].core > 0 && s[k].core < 256 ? s[k].core : 0);
+        if (value == SETTING_ON)
+            for (uint32_t i = 0; i < g_extension_bans.count; i++)
+                if (key_is(&g_extension_bans.bans[i], s[k].name)) g_extension_bans.bans[i].forced = 1;
+        if (value != SETTING_OFF || !g_extension_settings.had[k]) continue;
+        for (uint32_t j = 0; j < needs; j++)
+            if (!strcmp(need[j].name, s[k].name)) {
+                snprintf(err, n, "%s=off turns off %s, which ScarletNX can't run without on this device: %s", key,
+                         s[k].name, need[j].why);
+                return 0;
+            }
+        uint32_t at = 0;
+        while (strcmp(e->list[at].extensionName, s[k].name)) at++;
+        memmove(&e->list[at], &e->list[at + 1], (e->count - at - 1) * sizeof *e->list);
+        e->count--;
+    }
+    g_extension_settings.count = count;
+    return 1;
+}
+
+/* the first off line on key that holds for the device, whatever goes over it: 0 for none */
+static const Ban* held_off(const char* key) {
+    for (uint32_t i = 0; i < g_extension_bans.count; i++) {
+        const Ban* b = &g_extension_bans.bans[i];
+        if (b->off && holds(b) && key_is(b, key)) return b;
+    }
+    return NULL;
+}
+
+void vk_extension_settings_say(const SnxVkExtensions* e, uint32_t api, VkBanSay say) {
+    for (uint32_t k = 0; k < g_extension_settings.count; k++) {
+        const char* name = g_extension_settings.name[k];
+        int value = g_extension_settings.value[k], had = g_extension_settings.had[k], in = list_has(e, name);
+        int core = g_extension_settings.core[k], warn = 0;
+        const Ban* ban = held_off(name);
+        char key[160], why[1100] = "", line[1600], over[200] = "", core_text[120] = "";
+        setting_key(name, key, sizeof key);
+        if (ban) vk_ban_why(ban->line, why, sizeof why);
+        /* core in the version the renderer runs the device at: it has the feature as core whatever the setting */
+        if (core && api >= ((uint32_t)(core / 10) << 22 | (uint32_t)(core % 10) << 12))
+            snprintf(core_text, sizeof core_text, "; core in Vulkan %d.%d, which the renderer runs this device at",
+                     core / 10, core % 10);
+        if (value == SETTING_OFF)
+            snprintf(line, sizeof line, "vulkan: %s: off (%s=off%s%s)", name, key,
+                     had ? "" : ", and the driver has it not", core_text);
+        else if (!had && value == SETTING_ON)
+            snprintf(line, sizeof line, "vulkan: %s: off (the driver has it not, which %s=on can't change)", name, key);
+        else if (!had)
+            snprintf(line, sizeof line, "vulkan: %s: off (the driver has it not)", name);
+        else if (value == SETTING_ON) {
+            warn = ban != NULL;
+            if (ban)
+                snprintf(line, sizeof line, "vulkan: %s: on (%s=on goes over the ban: %s%s)", name, key, why,
+                         core_text);
+            else
+                snprintf(line, sizeof line, "vulkan: %s: on (%s=on, and no ban holds%s)", name, key, core_text);
+        } else if (!in)
+            snprintf(line, sizeof line, "vulkan: %s: off (auto, as the ban holds: %s%s)", name, why, core_text);
+        else if (!ban)
+            snprintf(line, sizeof line, "vulkan: %s: on (auto: the driver has it, and no ban holds%s)", name,
+                     core_text);
+        else if (ban->ignored)
+            snprintf(line, sizeof line, "vulkan: %s: on (auto, with vulkan_ban_ignore=%s going over the ban: %s%s)",
+                     name, g_extension_bans.ignore, why, core_text);
+        else {
+            /* a ban another setting applies, as its override says (vertex_input_dynamic_state=on): the extension
+               stays in the list for that setting's code to decide */
+            vk_ban_field(ban->line, VK_BAN_OVERRIDE, over, sizeof over);
+            char* eq = strchr(over, '=');
+            if (eq) *eq = 0;
+            snprintf(line, sizeof line, "vulkan: %s: on (auto, with a ban that %s applies: %s%s)", name, over, why,
+                     core_text);
+        }
+        say(line, warn);
+    }
 }

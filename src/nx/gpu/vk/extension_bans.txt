@@ -9,6 +9,10 @@
 # (cmake/vk_extension_bans.cmake); tests/vk_extension_bans.c reads it, and "snx-test-vk-bans --devices" lists the lines
 # that hold for this machine's drivers.
 #
+# Each extension the renderer can use has a setting of its own (vk_ext_<its name in lowercase>, Graphics > Vulkan
+# Extensions), auto by default: auto leaves the extension to this table, on goes over every line on it, off takes it out
+# of the device's list. The log says each extension's value in effect and why (extension_bans.c).
+#
 # A line per ban, its fields between |, in the header's order:
 #   key       an extension (VK_EXT_custom_border_color), taken out of the device's list; or a feature, property,
 #             dynamic state, format or call (shaderFloat16, VK_DYNAMIC_STATE_CULL_MODE, an extension's feature as
