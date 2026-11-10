@@ -919,8 +919,9 @@ static void directive_extension(Glslc* g, const GlslcToken* hash, const GlslcTok
         return;
     }
     for (uint32_t e = 0; e < glslc_extension_count; e++) {
-        if (token_is(g, &name, glslc_extensions[e].name) && (glslc_extensions[e].vmask & (1u << g->vi))) {
-            g->ext[glslc_extensions[e].feature] = b;
+        const GlslcExtension* x = &glslc_extensions[e];
+        if (name.text.len == x->len && !memcmp(text_of(g, &name), x->name, x->len) && (x->vmask & (1u << g->vi))) {
+            g->ext[x->feature] = b;
             return;
         }
     }

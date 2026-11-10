@@ -1472,7 +1472,7 @@ static uint32_t builtin_call(Glslc* g, uint32_t name_tok, uint32_t first) {
     int too_many = count_args(g, first) > 16;
     for (uint32_t r = 0; r < glslc_builtin_fn_count; r++) {
         const GlslcBuiltinFn* f = &glslc_builtin_fns[r];
-        if (!glslc_view_is(g, name, f->name)) continue;
+        if (!GLSLC_VIEW_IS_ROW(g, name, f)) continue;
         any = 1;
         if (!builtin_available(g, f)) continue;
         in_version = 1;
@@ -1493,7 +1493,7 @@ static uint32_t builtin_call(Glslc* g, uint32_t name_tok, uint32_t first) {
     if (!in_stage) {
         const char* where = "this stage";
         for (uint32_t r = 0; r < glslc_builtin_fn_count; r++) {
-            if (glslc_view_is(g, name, glslc_builtin_fns[r].name)) {
+            if (GLSLC_VIEW_IS_ROW(g, name, &glslc_builtin_fns[r])) {
                 uint8_t st = glslc_builtin_fns[r].stages;
                 where = st == GLSLC_SF   ? "fragment shaders"
                         : st == GLSLC_SC ? "compute shaders"
@@ -1657,7 +1657,7 @@ static uint32_t builtin_variable(Glslc* g, uint32_t tok) {
     uint32_t row = glslc_builtin_var_count, other_stage = 0, other_version = 0;
     for (uint32_t r = 0; r < glslc_builtin_var_count; r++) {
         const GlslcBuiltinVar* v = &glslc_builtin_vars[r];
-        if (!glslc_view_is(g, name, v->name)) continue;
+        if (!GLSLC_VIEW_IS_ROW(g, name, v)) continue;
         if (!((v->vmask & (1u << g->vi)) || (v->ext && g->ext[v->ext] != GLSLC_BEHAVIOR_DISABLE))) {
             other_version = 1;
             continue;
@@ -2751,7 +2751,7 @@ static void invariant_names(Glslc* g, const Qual* q) {
 
 static int is_builtin_function(const Glslc* g, GlslcView name) {
     for (uint32_t r = 0; r < glslc_builtin_fn_count; r++) {
-        if (glslc_view_is(g, name, glslc_builtin_fns[r].name) && builtin_available(g, &glslc_builtin_fns[r])) return 1;
+        if (GLSLC_VIEW_IS_ROW(g, name, &glslc_builtin_fns[r]) && builtin_available(g, &glslc_builtin_fns[r])) return 1;
     }
     return 0;
 }

@@ -9,6 +9,7 @@
 #define SNX_GLSLC_INTERNAL_H
 #include "glslc/glslc.h"
 #include <setjmp.h>
+#include <string.h>
 
 /* versions, as an index (vi) and as a mask of indices */
 enum { GLSLC_V100 = 0, GLSLC_V300 = 1, GLSLC_V310 = 2, GLSLC_V320 = 3 };
@@ -429,6 +430,7 @@ enum {
 };
 typedef struct {
     const char* name;
+    uint8_t len; /* the name's, builtins.c's ROW */
     uint8_t feature; /* GLSLC_EXT_* */
     uint8_t vmask;   /* the versions it is for */
 } GlslcExtension;
@@ -437,6 +439,7 @@ enum { GLSLC_BEHAVIOR_DISABLE = 0, GLSLC_BEHAVIOR_ENABLE, GLSLC_BEHAVIOR_REQUIRE
 /* built-in tables (builtins.c) */
 typedef struct {
     const char* name;
+    uint8_t len; /* the name's, builtins.c's ROW */
     uint8_t kind, base, rows, cols, dim, tflags;
     uint8_t vmask; /* versions it is a type in */
     uint8_t ext;   /* the extension that adds it to 1.00 */
@@ -444,6 +447,7 @@ typedef struct {
 
 typedef struct {
     const char* name;
+    uint8_t len; /* the name's, builtins.c's ROW */
     uint8_t kind; /* the token kind */
     uint8_t kw;   /* versions it is a keyword in */
     uint8_t res;  /* versions it is reserved in */
@@ -504,6 +508,7 @@ enum {
 
 typedef struct {
     const char* name;
+    uint8_t len; /* the name's, builtins.c's ROW */
     const char* sig; /* return, '=', arguments: one letter each (builtins.c says what each means) */
     uint8_t bk;      /* GLSLC_BK_* */
     uint8_t vmask;   /* versions it is in */
@@ -515,6 +520,7 @@ typedef struct {
 
 typedef struct {
     const char* name;
+    uint8_t len; /* the name's, builtins.c's ROW */
     uint16_t type;   /* GT_* */
     uint8_t storage; /* GLSLC_ST_IN, OUT, CONST */
     uint8_t stages;
@@ -694,8 +700,17 @@ void glslc_locate(const Glslc* g, uint32_t site, uint32_t* line, uint32_t* colum
 uint32_t glslc_hash(const char* text, uint32_t len);
 const char* glslc_view_text(const Glslc* g, GlslcView v);
 const char* glslc_token_text(const Glslc* g, const GlslcToken* t);
-int glslc_view_is(const Glslc* g, GlslcView v, const char* word);
 int glslc_views_equal(const Glslc* g, GlslcView a, GlslcView b);
+/* whether v is the n bytes at word: the lengths first, so most names differ without a byte read */
+static inline int glslc_view_is_n(const Glslc* g, GlslcView v, const char* word, uint32_t n) {
+    return v.len == n && !memcmp(g->src + v.pos, word, n);
+}
+/* whether v is word: inline, so a literal's strlen is the compiler's */
+static inline int glslc_view_is(const Glslc* g, GlslcView v, const char* word) {
+    return glslc_view_is_n(g, v, word, (uint32_t)strlen(word));
+}
+/* whether v is a table row's name (builtins.c's ROW gives its length) */
+#define GLSLC_VIEW_IS_ROW(g, v, row) glslc_view_is_n((g), (v), (row)->name, (row)->len)
 /* lexer.c: fills toks, ending with TK_EOF */
 void glslc_lex(Glslc* g);
 int glslc_parse_int(const char* text, uint32_t len, uint32_t* value); /* 0 when it does not fit in 32 bits */
