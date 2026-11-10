@@ -510,8 +510,8 @@ static void focus_game(App* app, const char* name) {
     app->browser.selected = app->browser.head + i % app->browser.page_size;
 }
 static void finish(App* app, int status) {
-    /* the fake driver's game run waits for this, so the menu has shown it running before it ends: without it the
-       process could exit before the test's first pump, which made compile_first fail now and then */
+    /* the fake driver's game run plays until it takes this file, so the menu has shown it running before it ends:
+       one that ends by itself can start and end inside one pump, and compile_first then never sees it play */
     const char* argv_file = getenv("SNX_TEST_ARGV");
     char* go = argv_file ? snx_format("%s.go", argv_file) : NULL;
     if (go) { assert(!snx_write_file(go, "", 0)); }
@@ -3833,10 +3833,179 @@ static void recompile_queue(App* app) {
     }
     go_tab(app, GUI_TAB_MENU);
 }
-/* the fake driver's wait for the test: until path is there and taken away, ten seconds at most. Windows refuses the
-   removal while the test still has the file open, and a file left there would be the next wait's step too */
-static void wait_taken(const char* path) {
-    for (int n = 0; n < 2000 && (!snx_is_file(path) || remove(path)); ++n) SDL_Delay(5);
+/* the queue's compile run to its end and its game played, a pump every few milliseconds for up to 10 s; on a timeout
+   what the menu saw, for the assert that follows: the first job's state, whether one still runs, the view, the
+   queue's focus and the menu's line */
+static void wait_played(App* app, int line) {
+    static const char* const states[] = {"waiting", "running", "OK", "failed"};
+    Uint64 until = SDL_GetTicks() + 10000;
+    while (!app->menu.running && SDL_GetTicks() < until) {
+        pump(app);
+        SDL_Delay(2);
+    }
+    if (!app->menu.running)
+        fprintf(stderr,
+                "gui_sdl.c:%d: no game played after 10 s: job 0 %s of %d, %s running, view %d, focus %d, said \"%s\"\n",
+                line, app->queue.count ? states[app->queue.job[0].state] : "none", app->queue.count,
+                gui_queue_running(&app->queue) >= 0 ? "one" : "none", (int)app->menu.view, (int)app->queue_focus,
+                app->message);
+}
+/* a game opened that no game of the library was made from: its first compile in the queue, the Compile tab showing it.
+   It plays once it ended while the tab still shows it; sent away from the tab first, the tips say it is ready instead
+   (DraVee's pick, 2026-10-24) */
+static void compile_first(App* app, const char* dir) {
+    char *dump = snx_path_join(dir, "first compile.nsp"), *got = snx_path_join(dir, "driver argv"), *made, *argv_got;
+    Uint64 until;
+    assert(!snx_write_file(dump, "fixture", 7) && !app->queue.count);
+    assert(gui_settings_set(&app->settings, "fullscreen", "1")); /* as finish() reads a run's */
+    go_tab(app, GUI_TAB_MENU);
+    app->menu.selected = GUI_SWITCH;
+    driver_will(got, 0, "Recompiling first compile");
+    launch(app, snx_strdup(dump), false);
+    assert(!app->menu.running && gui_queue_running(&app->queue) == 0 && app->queue.job[0].kind == GUI_JOB_COMPILE);
+    assert(app->menu.view == GUI_LOAD_RECOMPILE && tab_shown(app) == GUI_TAB_RECOMPILE && tab_reads(app, "Compile"));
+    made = made_game(app, dump, "first compile"); /* as its driver leaves it, before the menu sees it end */
+    wait_played(app, __LINE__);
+    assert(app->queue.job[0].state == GUI_JOB_OK && app->menu.running && app->menu.selected == GUI_SWITCH);
+    argv_got = ran(app, 0); /* the game it made, played */
+    assert(strstr(argv_got, made) && !has_arg(argv_got, "-r", NULL));
+    free(argv_got);
+    queue_drop(app, 0);
+    assert(!snx_remove_tree(made));
+    free(made);
+    /* away from the tab before it ended: nothing plays, the tips say it is ready, Enter then plays it */
+    launch(app, snx_strdup(dump), false);
+    assert(app->queue.job[0].kind == GUI_JOB_COMPILE && app->menu.view == GUI_LOAD_RECOMPILE);
+    key(app, SDLK_TAB);
+    assert(app->menu.view != GUI_LOAD_RECOMPILE);
+    made = made_game(app, dump, "first compile");
+    for (until = SDL_GetTicks() + 10000; app->queue.job[0].state < GUI_JOB_OK && SDL_GetTicks() < until; SDL_Delay(2))
+        pump(app);
+    assert(app->queue.job[0].state == GUI_JOB_OK && !app->menu.running);
+    assert(!strcmp(app->message, "first compile: compiled, Enter on it plays it"));
+    remove(got);
+    queue_drop(app, 0);
+    made_gone(app, made);
+    /* made already in a folder of the Library's recompiled ones, where a recompile keeps it: opening the dump asks,
+       naming the game and its folder, Play first. Back does nothing, Recompile queues it as R does, Play runs it */
+    {
+        char *library = snx_path_join(dir, "library recompiled"), *games_was = app->games_dir, expected[1024];
+        app->games_dir = library; /* made_game's place, for the game alone */
+        made = made_game(app, dump, "first compile");
+        app->games_dir = games_was;
+        folder_keep(app, library, GUI_LIBRARY_RECOMPILED, false);
+        go_tab(app, GUI_TAB_MENU);
+        launch(app, snx_strdup(dump), false);
+        snprintf(expected, sizeof expected, "first compile is compiled already, in %s", made);
+        assert(app->confirm.shown && app->confirm.ask == GUI_ASK_MADE && !launched(app));
+        assert(!strcmp(app->ask_line, expected));
+        key(app, SDLK_ESCAPE);
+        assert(!app->confirm.shown && !launched(app) && !app->made_file);
+        launch(app, snx_strdup(dump), false);
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN); /* Recompile */
+        assert(!app->menu.running && app->queue.job[0].kind == GUI_JOB_RECOMPILE);
+        argv_got = ran(app, 0);
+        assert(has_arg(argv_got, "-r", dump));
+        free(argv_got);
+        launch(app, snx_strdup(dump), false);
+        key(app, SDLK_RETURN); /* Play: the dump, its driver playing the game made */
+        assert(app->menu.running && !app->queue.count);
+        argv_got = ran(app, 0);
+        assert(strstr(argv_got, dump) && !has_arg(argv_got, "-r", NULL));
+        free(argv_got);
+        /* made by another build (its stamp another ABI's): Play compiles the dump in the queue first, as a first
+           compile does, -r and the dump, and plays the game once it ended while the tab shows it */
+        {
+            char *base = snx_path_join(made, "first compile"), *stamp = snx_format("%s.abi", base),
+                 *other = snx_game_stamp_for(SNX_ABI + 1, ""), *program;
+            const char* job_argv[GUI_QUEUE_ARGS];
+            int n, k;
+#ifdef _WIN32
+            program = snx_format("%s.exe", base);
+#else
+            program = snx_strdup(base);
+#endif
+            assert(!snx_write_file(stamp, other, strlen(other)));
+            launch(app, snx_strdup(dump), false);
+            key(app, SDLK_RETURN); /* Play */
+            assert(!app->menu.running && app->queue.count == 1 && app->queue.job[0].kind == GUI_JOB_COMPILE);
+            assert(app->menu.view == GUI_LOAD_RECOMPILE && tab_reads(app, "Compile"));
+            n = gui_queue_argv(&app->queue, 0, job_argv);
+            for (k = 1; k + 1 < n && strcmp(job_argv[k], "-r"); ++k) continue;
+            assert(k + 1 < n && !strcmp(job_argv[k + 1], dump));
+            stamp_here(made, "first compile"); /* as the driver's -r leaves it */
+            wait_played(app, __LINE__);
+            assert(app->queue.job[0].state == GUI_JOB_OK && app->menu.running && app->queue.count == 1);
+            argv_got = ran(app, 0); /* the game's program, played */
+            assert(strstr(argv_got, program) && !has_arg(argv_got, "-r", NULL));
+            free(argv_got);
+            queue_drop(app, 0);
+            free(program);
+            free(other);
+            free(stamp);
+            free(base);
+        }
+        free(app->folders[--app->folder_count]); /* off the list, no screen of Folders opened for it */
+        assert(!snx_remove_tree(library));
+        free(made);
+        free(library);
+    }
+    /* a game of the library another build made (its stamp another ABI's): opened, it compiles in the queue as a first
+       compile does, -r and its program, and plays once it ended while the tab shows it. A compile that left the stamp
+       as it was plays it all the same, once, with no second compile */
+    for (int kept = 0; kept < 2; ++kept) {
+        char *base, *stamp, *other = snx_game_stamp_for(SNX_ABI + 1, ""), *program;
+        const char* job_argv[GUI_QUEUE_ARGS];
+        int n, k;
+        made = made_game(app, dump, "first compile");
+        base = snx_path_join(made, "first compile");
+        stamp = snx_format("%s.abi", base);
+#ifdef _WIN32
+        program = snx_format("%s.exe", base);
+#else
+        program = snx_strdup(base);
+#endif
+        assert(!snx_write_file(stamp, other, strlen(other)));
+        go_tab(app, GUI_TAB_MENU);
+        app->menu.selected = GUI_SWITCH;
+        driver_will(got, 0, "Recompiling first compile");
+        launch(app, snx_strdup(program), true);
+        assert(!app->menu.running && app->queue.count == 1 && app->queue.job[0].kind == GUI_JOB_COMPILE &&
+               app->queue.job[0].native);
+        assert(app->menu.view == GUI_LOAD_RECOMPILE && tab_shown(app) == GUI_TAB_RECOMPILE &&
+               tab_reads(app, "Compile"));
+        n = gui_queue_argv(&app->queue, 0, job_argv);
+        for (k = 1; k + 1 < n && strcmp(job_argv[k], "-r"); ++k) continue;
+        assert(k + 1 < n && !strcmp(job_argv[k + 1], program));
+        if (!kept) stamp_here(made, "first compile"); /* as the driver's -r leaves it */
+        wait_played(app, __LINE__);
+        assert(app->queue.job[0].state == GUI_JOB_OK && app->menu.running && app->native && app->queue.count == 1);
+        argv_got = ran(app, 0); /* the game's program, played */
+        assert(strstr(argv_got, program) && !has_arg(argv_got, "-r", NULL));
+        free(argv_got);
+        queue_drop(app, 0);
+        made_gone(app, made);
+        free(program);
+        free(other);
+        free(stamp);
+        free(base);
+    }
+    driver_will(NULL, 0, NULL);
+    assert(!remove(dump));
+    go_tab(app, GUI_TAB_MENU);
+    free(got);
+    free(dump);
+}
+/* the fake driver's wait for the test: until path is there and taken away, ten seconds at most; whether it was.
+   Windows refuses the removal while the test still has the file open, and a file left there would be the next wait's
+   step too */
+static bool wait_taken(const char* path) {
+    for (int n = 0; n < 2000; ++n) {
+        if (snx_is_file(path) && !remove(path)) return true;
+        SDL_Delay(5);
+    }
+    return false;
 }
 /* Run edenprobe's game as the fake driver plays it (SNX_TEST_PROBE): edenprobe's report in the card of the game made
    in the --data folder, a launch a line of the plan, each line's words "pass=N", "fail=SUITE" and
@@ -3995,10 +4164,13 @@ int main(int argc, char** argv) {
         puts(getenv("SNX_TEST_SAY") ? getenv("SNX_TEST_SAY") : "the fake driver ran");
         status = getenv("SNX_TEST_STATUS") ? atoi(getenv("SNX_TEST_STATUS")) : 0;
         if (getenv("SNX_TEST_PROBE")) fake_probe(argc, argv);
-        if (!compiling) { /* a game: let the menu show it running, then the test's finish lets it end */
+        if (!compiling) { /* a game: it plays until the test lets it end (finish makes <argv file>.go) */
             char* go = snx_format("%s.go", getenv("SNX_TEST_ARGV"));
-            for (int n = 0; n < 100 && !snx_is_file(go); ++n) SDL_Delay(5);
-            remove(go);
+            if (!wait_taken(go)) {
+                fprintf(stderr, "gui_sdl: the fake game played 10 s and the test never made %s: status 98, not %d\n",
+                        go, status);
+                status = 98;
+            }
             free(go);
         }
         return status;
@@ -7264,7 +7436,7 @@ int main(int argc, char** argv) {
         free(exefs);
         free(folder);
     }
-    /* the NRO made already: opening it plays it, as below (a game not made compiles first) */
+    /* the NRO made already: opening it plays it, as below (a game not made compiles first: compile_first) */
     char* input_made = made_game(&app, input, "game with spaces");
     app.menu.selected = GUI_LINUX; /* a drop runs the item that opened the screen */
     SDL_Event e = {0};
@@ -14315,6 +14487,7 @@ int main(int argc, char** argv) {
         leave_editor(&app);
         app.theme = *gui_theme_builtin("default");
     }
+    compile_first(&app, temporary);
     recompile_queue(&app);
 #ifdef SNX_XDG /* the last of the test: SDL keeps the picker it found from then on */
     pickers_asked(&app, temporary, self);
