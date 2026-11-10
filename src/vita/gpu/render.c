@@ -71,6 +71,9 @@ typedef struct {
     /* the watch epoch (vita_watch_epoch) plus one at which its memory was last found unchanged: a draw at the same
        epoch needn't look at the pages again. 0: not found so */
     uint64_t clean;
+    /* the scene and draw count at which it was last copied from the color surface being drawn (texture_for), so a
+       draw that samples it again with nothing drawn between copies it no more */
+    uint64_t snapshot_scene, snapshot_draws;
 } Texture;
 /* swizzle.comp's, yuv.comp's, picture.comp's and rgb24.comp's push constants, member for member */
 typedef struct {
@@ -145,6 +148,7 @@ struct VitaRender {
     Surface *color, *depth;
     uint32_t width, height;
     uint64_t scene;
+    uint64_t draws; /* the draws recorded so far */
     unsigned logged;           /* each reason reported at least once: a bit each */
     uint64_t logged_value[32]; /* the value once_value last logged for each bit, so a different one still prints */
     /* the framebuffer the window shows (vita_render_show): its address and generation, and the vblanks since */
@@ -1497,6 +1501,22 @@ bool vita_render_transfer_copy(VitaProcess* p, uint32_t width, uint32_t height, 
     if (rendering) rendering_resume(r, cb);
     return true;
 }
+/* the color surface whose image holds the memory a texture reads as it is now: the same address, size and format,
+   stored to its memory by a scene that ended, and the memory not written since */
+static const Surface* surface_holding(const struct VitaRender* r, uint32_t address, uint32_t width, uint32_t height,
+                                      VkFormat vk, uint32_t stride) {
+    for (unsigned i = 0; i < SURFACES; ++i) {
+        const Surface* s = &r->surfaces[i];
+        VkFormat format;
+        unsigned bytes;
+        if (!s->image || s->depth || s == r->color || !s->synced || s->type != GXM_COLOR_SURFACE_LINEAR ||
+            s->address != address || s->width != width || s->height != height || s->vk_format != vk ||
+            !color_format(s->format, &format, &bytes) || s->stride * bytes != stride)
+            continue;
+        if (!vita_watch_changed(s->address, s->stride * bytes * s->height, s->since)) return s;
+    }
+    return NULL;
+}
 static Texture* texture_for(struct VitaRender* r, VitaProcess* p, VkCommandBuffer cb, const GxmTexture* x) {
     uint32_t type = gxm_texture_type(x), format = gxm_texture_format(x), data = gxm_texture_data(x);
     uint32_t width = gxm_texture_width(x), height = gxm_texture_height(x);
@@ -1562,6 +1582,7 @@ static Texture* texture_for(struct VitaRender* r, VitaProcess* p, VkCommandBuffe
         t->address = data, t->format = format, t->width = width, t->height = height, t->stride = stride;
         t->type = type, t->levels = count;
         t->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        t->snapshot_scene = t->snapshot_draws = 0;
     }
     /* Its memory again once a scene, the CPU may have changed it; and at each draw while it overlaps the color surface
        being drawn, with what the scene drew so far written back first. The console's GPU draws a scene a tile at a
@@ -1576,10 +1597,63 @@ static Texture* texture_for(struct VitaRender* r, VitaProcess* p, VkCommandBuffe
     }
     uint32_t span = (uint32_t)span64;
     bool drawn_over = r->rendering && overlaps_color(r, data, span);
+    /* The texture is the color surface being drawn, whole and in the same format (a game blurs or filters a surface
+       by drawing from it onto itself): the image copied to the texture's on the GPU, where the memory's round trip
+       would write the surface back to guest memory and read it again for each draw. Its memory is not written here;
+       the scene's end does that. The copy is once for the draws between two draws */
+    if (drawn_over && type == GXM_TEXTURE_LINEAR && !cube && !yuv && !rgb24 && count == 1 &&
+        r->color->type == GXM_COLOR_SURFACE_LINEAR && data == r->color->address && width == r->color->width &&
+        height == r->color->height && vk == r->color->vk_format && stride == r->color->stride * bytes) {
+        if (t->snapshot_scene != r->scene || t->snapshot_draws != r->draws) {
+            const Surface* s = r->color;
+            VkImageCopy copy = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                .extent = {width, height, 1}};
+            rendering_pause(cb);
+            barrier(cb, s->image, VK_IMAGE_ASPECT_COLOR_BIT, s->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            barrier(cb, t->image, VK_IMAGE_ASPECT_COLOR_BIT, t->layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            vkCmdCopyImage(cb, s->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            barrier(cb, s->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s->layout);
+            barrier(cb, t->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            rendering_resume(r, cb);
+            t->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            t->snapshot_scene = r->scene, t->snapshot_draws = r->draws;
+        }
+        t->synced = false; /* it holds the surface, not its memory: the next scene reads the memory again */
+        t->clean = 0;
+        t->used = r->scene;
+        return t;
+    }
     /* read before the pages are, so a write that lands meanwhile makes the next draw look again */
     uint64_t epoch = vita_watch_epoch() + 1;
     if (!t->synced || drawn_over || (t->clean != epoch && vita_watch_changed(data, span, t->since))) {
         t->clean = 0;
+        /* A scene's result read by a later scene (a game's passes draw each from the one before): the surface's image
+           copied to the texture's on the GPU, where the memory's copy would read back what the scene's end just wrote */
+        const Surface* source = !drawn_over && type == GXM_TEXTURE_LINEAR && !cube && !yuv && !rgb24 && count == 1
+                                  ? surface_holding(r, data, width, height, vk, stride)
+                                  : NULL;
+        if (source) {
+            VkImageCopy copy = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                .extent = {width, height, 1}};
+            rendering_pause(cb);
+            barrier(cb, source->image, VK_IMAGE_ASPECT_COLOR_BIT, source->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            barrier(cb, t->image, VK_IMAGE_ASPECT_COLOR_BIT, t->layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            vkCmdCopyImage(cb, source->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            barrier(cb, source->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, source->layout);
+            barrier(cb, t->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            rendering_resume(r, cb);
+            t->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            t->synced = true;
+            t->since = source->since; /* the memory it holds is the surface's, unwritten since its store */
+            t->used = r->scene;
+            return t;
+        }
         VkDeviceSize at;
         const Import* m = buffer_of(r, p, data, span, &at);
         if (!m) {
@@ -1882,6 +1956,7 @@ static const char* draw(VitaProcess* p, GxmContext* c, uint32_t primitive, uint3
         b->index = m->buffer, b->index_at = at, b->index_type = index_type;
     }
     vkCmdDrawIndexed(cb, count, instances, 0, 0, 0);
+    ++r->draws;
     return NULL;
 }
 void vita_render_draw(VitaProcess* p, GxmContext* c, uint32_t primitive, uint32_t index_format, uint32_t indices,
