@@ -40,12 +40,15 @@
 	<screenshots>
 		<screenshot type="default">
 			<image>https://scarletnx.github.io/assets/1.png</image>
+			<caption>Main screen</caption>
 		</screenshot>
 		<screenshot>
 			<image>https://scarletnx.github.io/assets/2.png</image>
+			<caption>In game</caption>
 		</screenshot>
 		<screenshot>
 			<image>https://scarletnx.github.io/assets/3.png</image>
+			<caption>Graphic settings</caption>
 		</screenshot>
 	</screenshots>
 	<releases>
@@ -59,9 +62,6 @@
 		<control>gamepad</control>
 		<internet>offline-only</internet>
 	</supports>
-	<requires>
-		<memory>8192</memory>
-	</requires>
 	<recommends>
 		<memory>16384</memory>
 	</recommends>
