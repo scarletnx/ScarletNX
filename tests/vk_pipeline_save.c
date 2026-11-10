@@ -17,17 +17,20 @@
 Settings g_settings;
 VkState g_vk;
 /* Only the owner state read by the production cache saver: no shader loader, pipeline worker or callback table. */
-static VkPipelineCache g_pcache;
-static char g_pcache_path[1200], g_pcache_tmp[1230];
-static int g_pcache_dirty;
-static u64 g_pcache_used;
-static PMutex g_pj_lock = PMUTEX_INIT;
-static void *g_pj_head, *g_pw_head;
-static int g_pj_busy;
 static struct {
-    int ship_ready;
-    u32 nidx, ship_used, ship_said;
-} g_pf;
+    VkPipelineCache pcache;
+    char pcache_path[1200], pcache_tmp[1230];
+    int pcache_dirty;
+    u64 pcache_used;
+    PMutex psave;
+    PMutex pj_lock;
+    void *pj_head, *pw_head;
+    int pj_busy;
+    struct {
+        int ship_ready;
+        u32 nidx, ship_used, ship_said;
+    } pf;
+} g_pipeline = {.psave = PMUTEX_INIT, .pj_lock = PMUTEX_INIT};
 #include "nx/gpu/vk/pipeline_cache_save.inc"
 #undef pm_lock
 #undef pm_unlock
@@ -38,9 +41,9 @@ static int queued;
 
 u64 plat_ns(void) { return now; }
 void pipeline_test_lock(PMutex* m) {
-    if (m == &g_psave && save_lock_event) {
+    if (m == &g_pipeline.psave && save_lock_event) {
         if (save_lock_event == 1)
-            g_pj_busy = 1;
+            g_pipeline.pj_busy = 1;
         else
             pcache_note();
         save_lock_event = 0;
@@ -60,47 +63,47 @@ PFN_vkGetPipelineCacheData vkGetPipelineCacheData = snapshot;
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "pipeline_save:%d: %s\n", __LINE__, #x); return 1; } } while (0)
 static void reset(void) {
-    g_pj_head = g_pw_head = NULL;
-    g_pj_busy = 0;
-    g_pcache_used = 0;
-    g_pcache_dirty = 1;
+    g_pipeline.pj_head = g_pipeline.pw_head = NULL;
+    g_pipeline.pj_busy = 0;
+    g_pipeline.pcache_used = 0;
+    g_pipeline.pcache_dirty = 1;
     snapshots = save_lock_event = 0;
     now = PCACHE_QUIET_NS + 1;
 }
 int main(void) {
     g_settings.vulkan_pipeline_cache = 1; /* its default: the cache is written */
-    g_pcache = (VkPipelineCache)(uintptr_t)1;
-    snprintf(g_pcache_path, sizeof g_pcache_path, "pipeline_save_test.bin");
-    snprintf(g_pcache_tmp, sizeof g_pcache_tmp, "pipeline_save_test.tmp");
+    g_pipeline.pcache = (VkPipelineCache)(uintptr_t)1;
+    snprintf(g_pipeline.pcache_path, sizeof g_pipeline.pcache_path, "pipeline_save_test.bin");
+    snprintf(g_pipeline.pcache_tmp, sizeof g_pipeline.pcache_tmp, "pipeline_save_test.tmp");
     reset();
     pcache_note();
     vk_pipeline_save(0);
-    CHECK(!snapshots && g_pcache_dirty);
+    CHECK(!snapshots && g_pipeline.pcache_dirty);
     reset();
-    g_pj_head = &queued;
+    g_pipeline.pj_head = &queued;
     vk_pipeline_save(0);
-    CHECK(!snapshots && g_pcache_dirty);
+    CHECK(!snapshots && g_pipeline.pcache_dirty);
     reset();
-    g_pw_head = &queued;
+    g_pipeline.pw_head = &queued;
     vk_pipeline_save(0);
-    CHECK(!snapshots && g_pcache_dirty);
+    CHECK(!snapshots && g_pipeline.pcache_dirty);
     reset();
-    g_pj_busy = 1;
+    g_pipeline.pj_busy = 1;
     vk_pipeline_save(0);
-    CHECK(!snapshots && g_pcache_dirty);
+    CHECK(!snapshots && g_pipeline.pcache_dirty);
     reset();
     save_lock_event = 1; /* job starts after the first quiet/idle check */
     vk_pipeline_save(0);
-    CHECK(!snapshots && g_pcache_dirty && g_pj_busy);
+    CHECK(!snapshots && g_pipeline.pcache_dirty && g_pipeline.pj_busy);
     reset();
     save_lock_event = 2; /* a compile publishes activity while the save mutex is taken */
     vk_pipeline_save(0);
-    CHECK(!snapshots && g_pcache_dirty && g_pcache_used == now);
+    CHECK(!snapshots && g_pipeline.pcache_dirty && g_pipeline.pcache_used == now);
     /* The work stayed dirty; once quiet it is saved, and the driver is not called again without new work. */
     now += PCACHE_QUIET_NS;
     vk_pipeline_save(0);
-    CHECK(snapshots == 2 && !g_pcache_dirty);
-    FILE* f = fopen(g_pcache_path, "rb");
+    CHECK(snapshots == 2 && !g_pipeline.pcache_dirty);
+    FILE* f = fopen(g_pipeline.pcache_path, "rb");
     char data[4];
     CHECK(f && fread(data, 1, sizeof data, f) == sizeof data && !memcmp(data, "warm", 4));
     CHECK(!fclose(f));
@@ -108,11 +111,11 @@ int main(void) {
     CHECK(snapshots == 2);
     /* Exit retains its unconditional flush, after the renderer has quiesced its workers. */
     reset();
-    g_pj_busy = 1;
+    g_pipeline.pj_busy = 1;
     pcache_note();
     vk_pipeline_save(1);
-    CHECK(snapshots == 2 && !g_pcache_dirty);
-    CHECK(!remove(g_pcache_path));
+    CHECK(snapshots == 2 && !g_pipeline.pcache_dirty);
+    CHECK(!remove(g_pipeline.pcache_path));
     puts("pipeline cache saves defer active work and retain warm-cache persistence");
     return 0;
 }
