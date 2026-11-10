@@ -425,6 +425,12 @@ static void check_shipped(void) {
          "VK_EXT_blend_operation_advanced", 1, "Qualcomm's driver on the GPUs 0x6020200, 0x7000201"},
         {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0x43050a01, SNX_VK_BAN_ANDROID,
          "VK_EXT_blend_operation_advanced", 0, NULL},
+        {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 0u, 0u), 0, SNX_VK_BAN_ANDROID, "VK_SHADER_STAGE_GEOMETRY_BIT", 1,
+         "Turnip"},
+        {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 0u, 0u), 0, SNX_VK_BAN_LINUX, "VK_SHADER_STAGE_GEOMETRY_BIT", 1, "Turnip"},
+        {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0, SNX_VK_BAN_ANDROID,
+         "VK_SHADER_STAGE_GEOMETRY_BIT", 0, NULL},
+        {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0, SNX_VK_BAN_LINUX, "VK_SHADER_STAGE_GEOMETRY_BIT", 0, NULL},
     };
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         char what[400];
@@ -452,6 +458,22 @@ static void check_shipped(void) {
                         NULL, NULL) >= 0,
               "the log line docs/dev/development.md shows");
         if (said_with("VK_KHR_present_id2", NULL, NULL) < 0) show_said();
+    }
+    /* subgroup operations leave Turnip's geometry stage as device.c asks, the line naming the driver and its version;
+       a device that does not list the stage is told nothing */
+    {
+        VkBanDevice d = {"Turnip Adreno (TM) 740", "turnip Mesa driver", "Mesa 26.0.3",     VK_DRIVER_ID_MESA_TURNIP,
+                         MESA(26u, 0u, 3u),        0x43050a01,           SNX_VK_BAN_ANDROID};
+        vk_bans_device(&d);
+        g_test.nsaid = 0;
+        CHECK(vk_ban("VK_SHADER_STAGE_GEOMETRY_BIT", 0, say) == 0 && g_test.nsaid == 0,
+              "a Turnip that does not list the geometry stage is told nothing");
+        CHECK(vk_ban("VK_SHADER_STAGE_GEOMETRY_BIT", 1, say) != 0, "Turnip's geometry stage is banned");
+        CHECK(said_with("vulkan: VK_SHADER_STAGE_GEOMETRY_BIT is off on Turnip Adreno (TM) 740 (turnip Mesa driver, "
+                        "Mesa 26.0.3, driver version 26.0.3): Turnip lists the geometry stage for subgroup operations",
+                        "wrong ballot and shuffle results", "Eden PR 4344 (b846577037") >= 0,
+              "the line says the stage, the device, the driver's version and why");
+        if (said_with("VK_SHADER_STAGE_GEOMETRY_BIT", NULL, NULL) < 0) show_said();
     }
     /* this machine's drivers, RADV and lavapipe: no "off" line holds; RADV's warnings are the lifted bans */
     static const struct {
