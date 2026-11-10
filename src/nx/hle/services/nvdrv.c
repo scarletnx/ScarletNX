@@ -1332,7 +1332,10 @@ static u32 ioctl_ctrl(u32 fd, u32 cmd, u8* d, u32 n) {
     }
     switch (c) {
         case NVHOST_CTRL_SYNCPT_READ: snx_st_le32(d + CTRL_SYNCPT_VALUE, syncpt_read(id)); return NV_RESULT_SUCCESS;
-        case NVHOST_CTRL_SYNCPT_INCR: syncpt_incr(id); return NV_RESULT_SUCCESS;
+        case NVHOST_CTRL_SYNCPT_INCR: /* a GPU stream's wait on it takes in what the CPU wrote before */
+            gpu_cpu_signal();
+            syncpt_incr(id);
+            return NV_RESULT_SUCCESS;
         case NVHOST_CTRL_SYNCPT_WAIT:
         case NVHOST_CTRL_SYNCPT_WAITEX: { /* WAITEX has the value back at its end */
             int ok = syncpt_wait(id, snx_ld_le32(d + CTRL_SYNCPT_THRESH),

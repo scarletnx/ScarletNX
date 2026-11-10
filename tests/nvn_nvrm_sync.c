@@ -36,6 +36,7 @@ int gmem_write(u64 address, const void* data, u64 size) {
     abort();
 }
 void gpu_kick(void) { abort(); }
+void gpu_cpu_signal(void) {}
 /* native memory pools (nvn_object.c's): none here */
 int gsv_native_memory_cpu(u32 memory, u64* cpu, u64* size) {
     (void)memory, (void)cpu, (void)size;

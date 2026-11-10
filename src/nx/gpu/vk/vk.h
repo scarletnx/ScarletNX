@@ -1789,6 +1789,7 @@ u32 vk_ww_epoch(void);
 /* the calling thread runs a job of a stream (1: its checks see the CPU's writes from before the newest epoch now, and
    from before the waits it ends) or stops (0: they see every epoch's) */
 void vk_ww_stream(int on);
+void vk_ww_seen(void);                 /* renderer.h mem_seen: the running job's checks take in the newest epoch */
 void vk_mem_changed(u64 cpu, u64 len); /* gpu.c's g_gpu_mem_changed: the range counts as written */
 /* own.c's landed hook: host pages [cpu, cpu + size) a landing wrote, with their bytes then, whose next report as
    written counts only if those changed */

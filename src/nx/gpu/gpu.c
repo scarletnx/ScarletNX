@@ -1109,6 +1109,7 @@ void gpu_init(void) {
     queue_init();
     pm_unlock(&g_qlk);
 }
+void gpu_cpu_signal(void) { may_have_changed(); }
 void gpu_kick(void) {
     pm_lock(&g_qlk);
     g_qgen++;

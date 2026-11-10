@@ -38,6 +38,11 @@ typedef struct Renderer {
        submitting thread), or a stream goes on after a wait (gpu_park, on the GPU thread) that the CPU may have ended
        after writing data. Caches read guest memory again. Any thread */
     void (*mem_may_have_changed)(void);
+    /* a stream goes on after a wait of its own that the GPU's work released, or the CPU through gpu_cpu_signal, which
+       started an epoch of its own (nvn_replay.c): the caches' checks take in what mem_may_have_changed has started so
+       far, which holds the CPU's writes from before every submission and signal, without starting more. Without it,
+       mem_may_have_changed. On the GPU thread */
+    void (*mem_seen)(void);
     /* the GPU thread starts running a job (1) or stops (0): the caches' checks while it runs need the CPU's writes from
        before the submissions and wait ends so far (mem_may_have_changed), and from before those its own waits end,
        but not those a later submission makes meanwhile */
