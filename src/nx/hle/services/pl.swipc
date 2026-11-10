@@ -12,4 +12,6 @@ interface nn::pl::detail::IPlatformServiceManager is pl:u, pl:s {
                                        array<u32, 6> offsets, array<u32, 6> sizes) -> (b8 loaded, u32 count);
     [6] GetSharedFontInOrderOfPriorityForSystem(nn::settings::LanguageCode language_code, array<u32, 6> font_codes,
                                                 array<u32, 6> offsets, array<u32, 6> sizes) -> (b8 loaded, u32 count);
+    [2000] GetBuiltInFontSharedMemory() -> (u32 size, handle<copy, shared_memory> shared_memory);
+    [2010] GetBuiltInFontData(u8 font_type, b8 flag) -> (b8 found, bytes<0x10, 8> data);
 }

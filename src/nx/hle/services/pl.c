@@ -205,3 +205,23 @@ static int nn_pl_detail_IPlatformServiceManager_GetSharedFontInOrderOfPriorityFo
     (void)self, (void)language_code;
     return pl_in_order(font_codes, offsets, sizes, loaded, count);
 }
+/* the built-in fonts a later SDK asks for: the shared fonts, each already a plain TrueType font past its header, so
+   the same memory answers */
+static int nn_pl_detail_IPlatformServiceManager_GetBuiltInFontSharedMemory(SvcObj* self, u32* size,
+                                                                           u32* shared_memory) {
+    (void)self;
+    *size = PL_SHM_SIZE;
+    *shared_memory = h_new(kobj_at(g_hle.pl.shm));
+    R_SUCCEED();
+}
+/* where a font is in that memory. The SDK fills the caller's font only when found is 1, from the offset at 4 and the
+   size at 8 of data; what its first two bytes mean is not known, and they stay 0 */
+static int nn_pl_detail_IPlatformServiceManager_GetBuiltInFontData(SvcObj* self, u8 font_type, u8 flag, u8* found,
+                                                                   u8* data) {
+    (void)self, (void)flag;
+    if (font_type >= PL_FONTS || !g_hle.pl.font_size[font_type]) R_SUCCEED(); /* found stays 0 */
+    *found = 1;
+    snx_st_le32(data + 4, g_hle.pl.font_off[font_type]);
+    snx_st_le32(data + 8, g_hle.pl.font_size[font_type]);
+    R_SUCCEED();
+}
