@@ -338,6 +338,147 @@ static void jump_table_other_function_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* LLVM's compressed table: unsigned bytes outside the text, each the number of instructions from an address in the
+   code that the function takes with an ADR, not from the table; the first case's move sits between the ADD and the
+   BR. The cases are reached by nothing else, so unless the table is followed they have no code at all */
+static void jump_table_anchor_test(void) {
+    static const SnxU32 words[] = {
+        0x7100081FUL, /* cmp w0, #2 */
+        0x540001C8UL, /* b.hi 0x3c: the default */
+        0x90000009UL, /* adrp x9, base's page */
+        0x91020129UL, /* add x9, x9, #0x80: the table */
+        0x100000AAUL, /* adr x10, 0x24: what an entry counts from */
+        0x3860692BUL, /* ldrb w11, [x9, x0] */
+        0x8B0B094AUL, /* add x10, x10, x11, lsl #2 */
+        0x2A1F03E8UL, /* mov w8, wzr */
+        0xD61F0140UL, /* br x10 */
+        0x52800020UL, /* 0x24, case 0: mov w0, #1 */
+        0x14000006UL, /* b 0x40 */
+        0x52800040UL, /* 0x2c, case 1 */
+        0x14000004UL, /* b 0x40 */
+        0x52800060UL, /* 0x34, case 2 */
+        0x14000002UL, /* b 0x40 */
+        0x52800000UL, /* 0x3c, default: mov w0, #0 */
+        0xD65F03C0UL, /* 0x40: ret */
+    };
+    static const SnxU64 cases[] = {0x24, 0x2C, 0x34};
+    unsigned char image[0x100];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxU64 targets[8];
+    const SnxFunction* function;
+    size_t i, n;
+    memset(image, 0, sizeof(image));
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+    for (i = 0; i < 3; ++i) image[0x80 + i] = (unsigned char)((cases[i] - 0x24) / 4);
+    image[0x83] = 6; /* the next table's byte, past the bound: it would name the default */
+    setup_program(&program, &module, image, sizeof(image));
+    module.text_size = sizeof(words); /* the table is .rodata, outside the text */
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a table of offsets from the code");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    n = snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x20, targets, 8);
+    check(n == 3, "the byte table's three cases, to its bound");
+    for (i = 0; i < n && i < 3; ++i)
+        check(targets[i] == SNX_CODE_BASE + cases[i], "a case counted in instructions from the ADR's address");
+    check(function && function->count == 17, "the byte table's cases are in the function");
+    for (i = 0; i < 3; ++i)
+        check(function && has_leader(function, SNX_CODE_BASE + cases[i]), "a byte table's case is a leader");
+    check(!snx_codegen_function(&codegen, SNX_CODE_BASE + 0x24), "the address entries count from is not a function");
+    snx_codegen_free(&codegen);
+    /* without the compare every byte would name an instruction of the text: such a table is not followed */
+    put32(image, 0, 0xD503201FUL);
+    put32(image, 4, 0xD503201FUL);
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a byte table without a bound");
+    check(snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x20, targets, 8) == 0, "a byte table without a bound");
+    snx_codegen_free(&codegen);
+}
+
+/* The same with halves, the table's address taken before the compare's branch: the code that takes it is not next
+   to the load (in a loop it is outside the loop) */
+static void jump_table_anchor_far_test(void) {
+    static const SnxU32 words[] = {
+        0x90000009UL, /* adrp x9, base's page */
+        0x91020129UL, /* add x9, x9, #0x80: the table */
+        0x7100041FUL, /* cmp w0, #1 */
+        0x54000128UL, /* b.hi 0x30: the default */
+        0x1000008AUL, /* adr x10, 0x20 */
+        0x7860792BUL, /* ldrh w11, [x9, x0, lsl #1] */
+        0x8B0B094AUL, /* add x10, x10, x11, lsl #2 */
+        0xD61F0140UL, /* br x10 */
+        0x52800020UL, /* 0x20, case 0: mov w0, #1 */
+        0xD65F03C0UL, /* ret */
+        0x52800040UL, /* 0x28, case 1: mov w0, #2 */
+        0xD65F03C0UL, /* ret */
+        0x52800000UL, /* 0x30, default: mov w0, #0 */
+        0xD65F03C0UL, /* ret */
+    };
+    unsigned char image[0x100];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxU64 targets[8];
+    const SnxFunction* function;
+    size_t i;
+    memset(image, 0, sizeof(image));
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+    image[0x80] = 0; /* case 0 at the ADR's address */
+    image[0x82] = 2; /* case 1 two instructions on */
+    image[0x84] = 4; /* past the bound */
+    setup_program(&program, &module, image, sizeof(image));
+    module.text_size = sizeof(words);
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a table whose address is taken early");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    check(snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x1C, targets, 8) == 2, "the half table's two cases");
+    check(targets[0] == SNX_CODE_BASE + 0x20 && targets[1] == SNX_CODE_BASE + 0x28, "a half table's case");
+    check(function && function->count == 14 && has_leader(function, SNX_CODE_BASE + 0x28),
+          "the half table's cases are leaders of the function");
+    snx_codegen_free(&codegen);
+}
+
+/* The table's code in a block of its own, which the compare's branch jumps to: the bound is at that branch */
+static void jump_table_anchor_branch_test(void) {
+    static const SnxU32 words[] = {
+        0x7100041FUL, /* cmp w0, #1 */
+        0x54000069UL, /* b.ls 0x10: the switch */
+        0x52800000UL, /* default: mov w0, #0 */
+        0xD65F03C0UL, /* ret */
+        0x90000009UL, /* 0x10: adrp x9, base's page */
+        0x91020129UL, /* add x9, x9, #0x80: the table */
+        0x1000008AUL, /* adr x10, 0x28 */
+        0x3860692BUL, /* ldrb w11, [x9, x0] */
+        0x8B0B094AUL, /* add x10, x10, x11, lsl #2 */
+        0xD61F0140UL, /* br x10 */
+        0x52800020UL, /* 0x28, case 0: mov w0, #1 */
+        0xD65F03C0UL, /* ret */
+        0x52800040UL, /* 0x30, case 1: mov w0, #2 */
+        0xD65F03C0UL, /* ret */
+    };
+    unsigned char image[0x100];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxU64 targets[8];
+    const SnxFunction* function;
+    size_t i;
+    memset(image, 0, sizeof(image));
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+    image[0x80] = 0;
+    image[0x81] = 2;
+    image[0x82] = 1; /* past the bound: it would name case 0's return */
+    setup_program(&program, &module, image, sizeof(image));
+    module.text_size = sizeof(words);
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a table a compare's branch jumps to");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    check(snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x24, targets, 8) == 2,
+          "the bound at the branch to the table");
+    check(targets[0] == SNX_CODE_BASE + 0x28 && targets[1] == SNX_CODE_BASE + 0x30, "the branched-to table's cases");
+    check(function && function->count == 14 && has_leader(function, SNX_CODE_BASE + 0x30) &&
+              !has_leader(function, SNX_CODE_BASE + 0x2C),
+          "the branched-to table's cases are leaders, and nothing past its bound");
+    snx_codegen_free(&codegen);
+}
+
 static void large_range_test(void) {
     SnxProgram program;
     SnxModuleImage module;
@@ -1211,6 +1352,9 @@ int main(void) {
     jump_table_test();
     jump_table_sign_test();
     jump_table_other_function_test();
+    jump_table_anchor_test();
+    jump_table_anchor_far_test();
+    jump_table_anchor_branch_test();
     large_range_test();
     semantics_test();
     poll_test();
