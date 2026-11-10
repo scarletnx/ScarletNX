@@ -5308,6 +5308,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_mixed_coverage.inc"
 #include "vulkan_alpha_coverage.inc"
 #include "vulkan_indexed_feedback.inc"
+#include "vulkan_scaled_fragment.inc"
 #include "vulkan_targetless_stores.inc"
 #include "vulkan_storage_image_keep.inc"
 #include "vulkan_uma_imports.inc"
@@ -5845,6 +5846,7 @@ static int run_headless(int argc, char** argv) {
     }
     if (getenv("SNX_TEST_SCALED_ONLY")) { /* the resolution scale's checks alone, for their mutants */
         CHECK(!check_scaled_compute());
+        CHECK(!check_scaled_fragment());
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan resolution scale only: %u validation messages\n", g_vk_validation_messages);
@@ -6023,6 +6025,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_shader_float_rounding());
     CHECK(!check_storage_image_formats());
     CHECK(!check_scaled_compute());
+    CHECK(!check_scaled_fragment());
     CHECK(!check_volume_surface_atomics());
     CHECK(!check_layered_surface_loads());
     CHECK(!check_rect_textures());

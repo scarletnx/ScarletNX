@@ -24,10 +24,12 @@ typedef struct {
     uint32_t position[4];  /* the Position output (BuiltIn 0) when the invocation ends */
     uint32_t shared[4096]; /* the first Workgroup variable's words when the invocation ends */
     uint32_t shared_words;
-    uint32_t texel[64][4]; /* what every sample or fetch of the sampled image at each binding returns */
-    int killed;            /* the invocation ended with OpKill or OpTerminateInvocation */
-    uint32_t steps_max;    /* 0: 1000000 */
-    uint32_t push[20];     /* the push constant block's words */
+    uint32_t texel[64][4];      /* what every sample or fetch of the sampled image at each binding returns */
+    uint32_t image_size[64][3]; /* what a size query of the sampled image at each binding answers; its levels are 1 */
+    uint32_t fetched[64][3];    /* the coordinates of the last OpImageFetch of the image at each binding */
+    int killed;                 /* the invocation ended with OpKill or OpTerminateInvocation */
+    uint32_t steps_max;         /* 0: 1000000 */
+    uint32_t push[20];          /* the push constant block's words */
     /* task and mesh programs, one invocation of a workgroup: the TaskPayloadWorkgroupEXT variable's words (given, and
        kept when the invocation ends), the counts of OpSetMeshOutputsEXT (vertices, primitives) and of
        OpEmitMeshTasksEXT (x, y, z), each with its flag, and where the words of each Output array go: by location,

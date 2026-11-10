@@ -408,6 +408,18 @@ static const char* run(Ev* e, uint32_t entry_at) {
                 r->type = t;
                 r->v = (Val){{0}};
                 for (uint32_t k = 0; k < 4; k++) r->v.c[k] = e->env->texel[b - 1][k];
+                for (uint32_t k = 0; op == 95 && k < 3; k++) e->env->fetched[b - 1][k] = (uint32_t)e->ids[in[4]].v.c[k];
+                break;
+            }
+            case 103:   /* OpImageQuerySizeLod */
+            case 104:   /* OpImageQuerySize */
+            case 106: { /* OpImageQueryLevels */
+                uint64_t b = e->ids[in[3]].v.c[0];
+                if (!b || b > 64) return "a query of an image with no binding";
+                r->kind = K_VALUE;
+                r->type = t;
+                r->v = (Val){{1}};
+                for (uint32_t k = 0; op != 106 && k < 3; k++) r->v.c[k] = e->env->image_size[b - 1][k];
                 break;
             }
             case 12: { /* OpExtInst */

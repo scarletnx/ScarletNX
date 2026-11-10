@@ -566,6 +566,11 @@ static u32 f2u(float f) {
     memcpy(&u, &f, 4);
     return u;
 }
+static float u2f(u32 u) {
+    float f;
+    memcpy(&f, &u, 4);
+    return f;
+}
 /* the fragment program code (n instructions, its SPH writing color 0 from R0-R3) translated and run at lane, with
    bank 1 as cb1 (cb1_words of it, NULL for none): its color 0 into out, 1 when it ran */
 static int run_fs_at(const u8* code, u32 n, u32 lane, const u32* cb1, u32 cb1_words, u32 out[4]) {
@@ -1648,6 +1653,138 @@ static void test_ipa_uniform(const char* dir) {
     env.in[1][0] = f2u(5.0f);
     CHECK(run_stage(ST_FS, code, 4, fsph, &env) && env.out[0][0] == f2u(5.0f));
     (void)dir;
+}
+
+/* A fragment program at a resolution scale (SNX_VKB_RS: 1 / the scale twice, then the scale). Its position is
+   FragCoord over the scale, the guest's pixels. TLD.LZ of c[2][0x40] at texel p fetches p where the push constants do
+   not mark the slot as bound to a scaled target; where they do, the pixel of texel p that lies where the fragment lies
+   in its guest pixel: at 2x texel (5, 3) is (10, 6) for the fragment at (6, 4) and (11, 7) for the one at (7, 5); at
+   1.5x texel 4 is pixel 6 alone, where the fragment's place would give 7; at 0.5x texel (5, 3) is (2, 1). TXQ answers
+   a scaled target's 32x16 image over the scale, and another texture's as it is. A compute program fetches the texel as
+   it is and takes no push constant: the renderer gives it scaled targets at the guest's size */
+static Word scale_fetch(void) {
+    Word x = fix(0xb66); /* TLD.LZ R8-R11, R4, R5, c[2][0x40], 2D */
+    set(&x, 16, 8, 8);
+    set(&x, 24, 8, 4);
+    set(&x, 32, 8, 255);
+    set(&x, 40, 19, 2u << 14 | 0x40 >> 2);
+    set(&x, 61, 3, 1);
+    set(&x, 64, 8, 255);
+    set(&x, 72, 4, 0xf);
+    set(&x, 87, 3, 1);
+    return x;
+}
+static void test_resolution_scale(const char* dir) {
+    static const struct {
+        float scale, fx, fy; /* the fragment's FragCoord */
+        u32 px, py, scaled;  /* the texel fetched, and whether its slot is bound to a scaled target */
+        u32 x, y, w, h;      /* the coordinates fetched and the size answered */
+    } cases[] = {
+        {2.0f, 7.5f, 5.5f, 5, 3, 1, 11, 7, 16, 8}, {2.0f, 6.5f, 4.5f, 5, 3, 1, 10, 6, 16, 8},
+        {2.0f, 7.5f, 5.5f, 5, 3, 0, 5, 3, 32, 16}, {1.5f, 5.5f, 3.5f, 4, 3, 1, 6, 5, 21, 11},
+        {0.5f, 2.5f, 1.5f, 5, 3, 1, 2, 1, 64, 32},
+    };
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    for (u32 k = 0; k < sizeof cases / sizeof *cases; k++) {
+        u8 code[16 * 12] = {0};
+        u32 n = 0;
+        for (u32 i = 0; i < 2; i++) {
+            Word x = fix(0x326); /* IPA R0, a[0x70] and IPA R1, a[0x74] */
+            set(&x, 16, 8, i);
+            set(&x, 32, 8, 255);
+            set(&x, 64, 8, (0x70 + 4 * i) >> 2);
+            set(&x, 81, 3, 7);
+            put(code, n++, x);
+        }
+        put(code, n++, mov_imm(4, cases[k].px));
+        put(code, n++, mov_imm(5, cases[k].py));
+        put(code, n++, scale_fetch());
+        Word x = fix(0xb6f); /* TXQ R2, R3, RZ, c[2][0x40]: the width and the height */
+        set(&x, 16, 8, 2);
+        set(&x, 24, 8, 255);
+        set(&x, 40, 19, 2u << 14 | 0x40 >> 2);
+        set(&x, 64, 8, 255);
+        set(&x, 72, 4, 3);
+        put(code, n++, x);
+        put(code, n, exit_insn());
+        n++;
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "resolution scale: %s\n", si.first_unsupported);
+            return;
+        }
+        if (!k) CHECK(keep_module(dir, "fs_resolution_scale", spv, count));
+        CHECK(si.ntex == 1);
+        float s = cases[k].scale;
+        u32 scale[4] = {f2u(1.0f / s), f2u(1.0f / s), f2u(s), 0};
+        SpvEvalEnv env = {0};
+        env.builtin[15][0] = f2u(cases[k].fx); /* FragCoord */
+        env.builtin[15][1] = f2u(cases[k].fy);
+        env.ubo[SNX_VKB_RS] = scale;
+        env.ubo_words[SNX_VKB_RS] = 4;
+        env.push[4] = cases[k].scaled; /* the uvec4 after the fragment stage's vec4: slot 0's bit */
+        env.image_size[SNX_VKB_TEX][0] = 32;
+        env.image_size[SNX_VKB_TEX][1] = 16;
+        const char* why = spv_eval(spv, count, &env);
+        if (why) fprintf(stderr, "resolution scale: the evaluator stops at %s\n", why);
+        CHECK(!why && env.out_written[0]);
+        free(spv);
+        const char* bound = cases[k].scaled ? "bound to" : "that is not";
+        float gx = cases[k].fx / s, gy = cases[k].fy / s;
+        float dx = u2f(env.out[0][0]) - gx, dy = u2f(env.out[0][1]) - gy;
+        int near = dx > -1e-5f && dx < 1e-5f && dy > -1e-5f && dy < 1e-5f;
+        if (!near)
+            fprintf(stderr,
+                    "resolution scale: the fragment at (%g, %g) of a target at %gx reads its position as "
+                    "(%g, %g), not the guest's (%g, %g)\n",
+                    (double)cases[k].fx, (double)cases[k].fy, (double)s, (double)u2f(env.out[0][0]),
+                    (double)u2f(env.out[0][1]), (double)gx, (double)gy);
+        CHECK(near);
+        int fetched = env.fetched[SNX_VKB_TEX][0] == cases[k].x && env.fetched[SNX_VKB_TEX][1] == cases[k].y;
+        if (!fetched)
+            fprintf(stderr,
+                    "resolution scale: at %gx the fragment at (%g, %g) fetches texel (%u, %u) of a texture %s "
+                    "a scaled target at (%u, %u), not (%u, %u)\n",
+                    (double)s, (double)cases[k].fx, (double)cases[k].fy, cases[k].px, cases[k].py, bound,
+                    env.fetched[SNX_VKB_TEX][0], env.fetched[SNX_VKB_TEX][1], cases[k].x, cases[k].y);
+        CHECK(fetched);
+        if (env.out[0][2] != cases[k].w || env.out[0][3] != cases[k].h)
+            fprintf(stderr,
+                    "resolution scale: at %gx the 32x16 image of a texture %s a scaled target has the size "
+                    "%ux%u, not %ux%u\n",
+                    (double)s, bound, env.out[0][2], env.out[0][3], cases[k].w, cases[k].h);
+        CHECK(env.out[0][2] == cases[k].w && env.out[0][3] == cases[k].h);
+    }
+    /* the same fetch in a compute program: the texel as it is, and no push constant block */
+    u8 compute[16 * 5] = {0};
+    put(compute, 0, mov_imm(4, 5));
+    put(compute, 1, mov_imm(5, 3));
+    put(compute, 2, scale_fetch());
+    put(compute, 3, exit_insn());
+    put(compute, 4, bra(4, 4, 7, 0));
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(compute, 5 * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "resolution scale, compute: %s\n", si.first_unsupported);
+        return;
+    }
+    u32 vars[64], nv = spv_find(spv, count, 59 /* OpVariable */, vars, 64), pushed = 0;
+    for (u32 k = 0; k < nv && k < 64; k++) pushed += spv[vars[k] + 3] == 9; /* PushConstant */
+    CHECK(!pushed);
+    SpvEvalEnv env = {0};
+    const char* why = spv_eval(spv, count, &env);
+    if (why) fprintf(stderr, "resolution scale, compute: the evaluator stops at %s\n", why);
+    CHECK(!why && env.fetched[SNX_VKB_TEX][0] == 5 && env.fetched[SNX_VKB_TEX][1] == 3);
+    free(spv);
 }
 
 /* TXQ R4, R5 of the handle c[2][0x20] before TLD.LZ.MS R0-R3, R4, R5, sample R9 of it, as a game's resolve programs
@@ -3446,6 +3583,7 @@ int main(int argc, char** argv) {
     test_brxu(dir);
     test_ipa_uniform(dir);
     test_tld_multisample(dir);
+    test_resolution_scale(dir);
     test_tex_f16(dir);
     test_output_defaults(dir);
     test_fragment_depth(dir);
