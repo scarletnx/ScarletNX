@@ -356,6 +356,14 @@ static GuiRect row_box(App* app, int row, bool right) {
 /* text drawn from pixel x, y in the font's own bytes: its glyphs in color, around them back but on the font's last row,
    empty, which a box's frame may cover; a pixel that differs is named with the check's line */
 #define text_px_is(app, x0, y0, text, color, back) text_px_is_at(__LINE__, app, x0, y0, text, color, back)
+/* 1 when row r of the form's rows ends with the mark of a setting not at its default */
+static int row_marked(App* app, int r) {
+    char line[700];
+    size_t n;
+    form_line(app, &app->editor, r, form_labels(&app->editor), 400, line, sizeof line);
+    n = strlen(line);
+    return n > 2 && !strcmp(line + n - 2, " *");
+}
 static void text_px_is_at(int line, App* app, int x0, int y0, const char* text, SDL_Color color, SDL_Color back) {
     SDL_Surface* image = SDL_RenderReadPixels(app->renderer, NULL);
     int half = app->half ? app->half : 2 * app->scale; /* the letters' size, in halves of a cell */
@@ -4904,14 +4912,17 @@ int main(int argc, char** argv) {
     assert(setting_is(&app, "fullscreen", "1"));
     render(&app);
     shows(&app, "Display", normal);
-    shows(&app, "- fullscreen 1", yellow); /* the launcher's choice was 0 */
+    shows(&app, "- fullscreen 1 *", yellow); /* the launcher's choice was 0: marked as changed */
     hides(&app, "- fullscreen 1 [default]", yellow);
+    assert(row_marked(&app, app.editor.row));
     /* Del puts a setting back as it started */
     key(&app, SDLK_DELETE);
     assert(setting_is(&app, "fullscreen", "0"));
     /* the launcher's own choice: 0 or 1, both passed, [default] on the one it starts with; no third, the .ini's */
     render(&app);
     shows(&app, "- fullscreen 0 [default]", yellow);
+    hides(&app, "- fullscreen 0 [default] *", yellow); /* Del took the mark */
+    assert(!row_marked(&app, app.editor.row));
     assert(!strcmp(form_note(&app), "For the next runs, over the game's .ini"));
     key(&app, SDLK_RIGHT);
     key(&app, SDLK_RIGHT);
@@ -4927,6 +4938,7 @@ int main(int argc, char** argv) {
     /* a number typed; one equal to a whole number as that number; nothing typed the scale's default, shown */
     render(&app);
     shows(&app, "- resolution    1 [default]", yellow); /* right in its field, not picked: the default */
+    assert(!row_marked(&app, app.editor.row));
     assert(!strcmp(form_note(&app), "For the next runs. [default]: as the game's .ini says"));
     key(&app, SDLK_RETURN);
     typed(&app, "0.5");
@@ -4979,7 +4991,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_RETURN);
     assert(setting_is(&app, "resolution", "1"));
     render(&app);
-    shows(&app, "- resolution    1", yellow); /* the default itself, not [default] */
+    shows(&app, "- resolution    1 *", yellow); /* the default itself, not [default]: a pick, marked */
     /* past the range: refused, OK leaving its dialog up, saying the value typed and the range, the row as it was;
        past 4x and under 0.5x in the range: the row's own warning line */
     key(&app, SDLK_RETURN);
@@ -5037,8 +5049,10 @@ int main(int argc, char** argv) {
         shows(&app, line, yellow);
         snprintf(line, sizeof line, "- %-8s %s", "B", "[default]"); /* an empty default */
         shows(&app, line, normal);
+        assert(!row_marked(&app, 0) && !row_marked(&app, 1) && !row_marked(&app, 2));
         key(&app, SDLK_RIGHT);
         assert(setting_is(&app, "controls_a_shown", "0") && setting_is(&app, "controls_b_shown", "0"));
+        assert(row_marked(&app, 0) && row_marked(&app, 1) && row_marked(&app, 2)); /* an All's with its rows */
         key(&app, SDLK_DOWN);
         key(&app, SDLK_RIGHT);
         assert(setting_is(&app, "controls_a_shown", "1") && setting_is(&app, "controls_b_shown", "0"));
@@ -5050,9 +5064,15 @@ int main(int argc, char** argv) {
         /* ESC comes back to the page's row, Del on it puts its rows back */
         key(&app, SDLK_ESCAPE);
         assert(app.form == GUI_FORM_GROUP && app.page < 0 && app.editor.row == 1);
+        render(&app);
+        /* a row of its page changed */
+        snprintf(line, sizeof line, "- " ICON_LAYOUT_GRID " %-13s %s", "Buttons", "> *");
+        shows(&app, line, yellow);
+        assert(row_marked(&app, 1) && !row_marked(&app, 0));
         key(&app, SDLK_DELETE);
         assert(!gui_settings_value(&app.settings, "controls_a_shown") &&
                !gui_settings_value(&app.settings, "controls_b_shown"));
+        assert(!row_marked(&app, 1));
         key(&app, SDLK_ESCAPE);
         assert(app.form == GUI_FORM_SETTINGS && app.editor.row == 4);
     }
