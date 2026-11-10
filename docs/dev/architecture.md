@@ -266,7 +266,9 @@ from `runtime/platform/`.
 
 Guest thread = host thread + `CPU` + TLS. `hle/kernel/thread.c`: one owner/core, four cores; release on kernel block,
 sleep/yield, IPC, WFE. Waiters: priority then FIFO; a waiter of higher priority takes the core at the holder's next SVC
-or backward branch (`CPU.poll`, `RtAPI.poll`). A ready thread that would wait
+or backward branch (`CPU.poll`, `RtAPI.poll`), or where NCE's kick stops its code. Game code stopped with its TLS
+disable count raised (the SDK's spinning locks) keeps the core, with its interrupt flag set, until its
+`svcSynchronizePreemptionState`. A ready thread that would wait
 behind its core's holder runs on an idle core of its mask, and an idle core takes such a waiter (only
 `svcSleepThread(0)` keeps a yielding thread on its core). A mutex owner runs at its best waiter's priority
 (`hle/kernel/sync.c`).

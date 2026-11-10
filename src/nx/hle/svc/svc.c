@@ -775,7 +775,7 @@ static u32 svc_WaitForAddress(u64 address, u32 arb_type, i32 value, i64 timeout_
 static u32 svc_SignalToAddress(u64 address, u32 signal_type, i32 value, i32 count) {
     return svc_signal_addr(address, signal_type, value, count);
 }
-static void svc_SynchronizePreemptionState(void) {}
+static void svc_SynchronizePreemptionState(void) { core_synchronize(kthread_cur()); }
 static u32 svc_GetResourceLimitPeakValue(i64* out_peak_value, u32 resource_limit_handle, u32 which) {
     return resource_limit(resource_limit_handle, which, 2, (u64*)out_peak_value);
 }

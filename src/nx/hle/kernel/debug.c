@@ -379,6 +379,10 @@ void kernel_core_report(void) {
             k, (unsigned long long)g_host.thread.preempt_late[k], (double)g_host.thread.preempt_max_ns[k] / 1e6,
             (unsigned long long)(by ? by->id : 0));
     }
+    if (g_host.thread.kept)
+        LOG("kernel:   %llu times a thread stopped with its disable count raised ran on, to its "
+            "svcSynchronizePreemptionState\n",
+            (unsigned long long)g_host.thread.kept);
     for (k = 0; k < NCORES; k++) { /* each core's main holders: who the waiters waited behind */
         const KThread* h[3] = {0};
         for (i = 0; i < KTHREAD_MAX; i++) {
