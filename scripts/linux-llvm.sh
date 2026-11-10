@@ -51,7 +51,7 @@ if [ "$arch" != "$machine" ]; then
         -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY -DLLVM_HOST_TRIPLE="$triple" \
         -DCROSS_TOOLCHAIN_FLAGS_NATIVE="-DCMAKE_C_COMPILER=clang;-DCMAKE_CXX_COMPILER=clang++" "$@"
 fi
-version=${LLVM_VERSION:-23.1.3}
+version=${LLVM_VERSION:-23.1.5}
 work=$prefix.build/$version
 mkdir -p "$work"
 if [ -z "$source" ]; then
