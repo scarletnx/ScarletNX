@@ -154,6 +154,12 @@ if(SNX_TARGET_FLAGS)
     list(APPEND snx_ffmpeg_args "--extra-cflags=${snx_ffmpeg_target_flags}"
          "--extra-ldflags=${snx_ffmpeg_target_flags} ${snx_ffmpeg_target_ldflags}")
 endif()
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64|powerpc64)$")
+    # big-endian PowerPC64's baseline has no AltiVec (cmake/cross.cmake): configure's AltiVec adds -maltivec to every
+    # file's flags, not only to the routines it picks by the machine's capabilities, which the compiler may then
+    # vectorize with on a POWER5 or an e5500
+    list(APPEND snx_ffmpeg_args --disable-altivec --disable-vsx --disable-power8)
+endif()
 if(CMAKE_CROSSCOMPILING)
     # configure builds a few helper programs for the machine doing the build, which needs its own C compiler
     include("${CMAKE_CURRENT_LIST_DIR}/host_cc.cmake")
