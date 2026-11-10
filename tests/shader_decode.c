@@ -1,9 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The generated Maxwell decoder: every row's pattern, with its free bits all clear, all set and random, decodes to that
-   row, or to a narrower row that the word also matches, and random words decode as a plain scan of the rows says. */
+/* The Maxwell decoder tools/decodetree makes from sm53.decode: every opcode has an encoding, the opcode is the top 16
+   bits' alone (but for EXIT.FCSM_TR, read as NOP), and the patterns that overlap pick the narrower. */
 #include "nx/gpu/shader/translator.h"
-#include "maxwell_decode.inc"
 
 static int failures;
 static u64 state = 0x9E3779B97F4A7C15ull;
@@ -15,62 +14,60 @@ static u64 next_random(void) {
     return state;
 }
 
-/* the first row in priority order that matches w, the way the rows are meant to be read */
-static const Op* scan(u64 w) {
-    int i;
-    for (i = 0; i < (int)(sizeof shaderdec_ops / sizeof *shaderdec_ops); i++)
-        if ((w & shaderdec_ops[i].mask) == shaderdec_ops[i].val) return &shaderdec_ops[i];
-    return NULL;
+static int id_of(u64 w) {
+    const Op* op = decode(w);
+    return op ? op->id : O_NONE;
 }
 
-/* what decode() should give w: the scan's row, with EXIT.FCSM_TR read as NOP */
-static const Op* expected(u64 w) {
-    const Op* op = scan(w);
-    if (op && op->id == O_EXIT && B(w, 0, 5) == 0x1C) return &shaderdec_ops[shaderdec_row[O_NOP]];
-    return op;
-}
-
-/* decode() returns decode.c's copy of the rows: the same row of this one */
-static const Op* local(const Op* op) {
-    int i;
-    for (i = 0; op && i < (int)(sizeof shaderdec_ops / sizeof *shaderdec_ops); i++)
-        if (shaderdec_ops[i].id == op->id && shaderdec_ops[i].mask == op->mask && shaderdec_ops[i].val == op->val)
-            return &shaderdec_ops[i];
-    return NULL;
-}
-
-static void check_word(const Op* row, u64 w) {
-    const Op* got = local(decode(w));
-    const Op* want = expected(w);
-    /* a narrower row may take the word: it fixes every bit the row does and more */
-    int own = got == row || (got && (got->mask & row->mask) == row->mask && got->mask != row->mask) ||
-              (row->id == O_EXIT && got && got->id == O_NOP);
-    if (got != want || !own || shaderdec_match(w) != scan(w)) {
-        fprintf(stderr, "FAIL: %s: %016llx decodes as %s\n", row->name, (unsigned long long)w,
-                got ? got->name : "nothing");
+/* the opcode of the top 16 bits, the rest of the word random */
+static void expect(unsigned top, int id, const char* name) {
+    u64 w = (u64)top << 48 | (next_random() & 0xFFFFFFFFFFE0ull);
+    const Op* op = decode(w);
+    if (!op || op->id != id || strcmp(op->name, name)) {
+        fprintf(stderr, "FAIL: %04x decodes as %s, not %s\n", top, op ? op->name : "nothing", name);
         failures++;
     }
 }
 
 int main(void) {
+    static unsigned char seen[O__COUNT];
+    unsigned top;
     int i, k;
-    for (i = 0; i < (int)(sizeof shaderdec_ops / sizeof *shaderdec_ops); i++) {
-        const Op* row = &shaderdec_ops[i];
-        if (shaderdec_row[row->id] > i || shaderdec_ops[shaderdec_row[row->id]].id != row->id) {
-            fprintf(stderr, "FAIL: %s: its opcode's first row is wrong\n", row->name);
-            failures++;
+    for (top = 0; top < 0x10000; top++) {
+        int id = id_of((u64)top << 48);
+        seen[id] = 1;
+        for (k = 0; k < 8; k++) {
+            u64 w = (u64)top << 48 | (next_random() & 0xFFFFFFFFFFFFull);
+            int want = id == O_EXIT && B(w, 0, 5) == 0x1C ? O_NOP : id;
+            if (id_of(w) != want) {
+                fprintf(stderr, "FAIL: %016llx decodes apart from its top 16 bits\n", (unsigned long long)w);
+                failures++;
+                break;
+            }
         }
-        check_word(row, row->val);
-        check_word(row, row->val | ~row->mask);
-        for (k = 0; k < 64; k++) check_word(row, row->val | (next_random() & ~row->mask));
     }
-    for (k = 0; k < 1000000; k++) {
-        u64 w = next_random();
-        if (local(decode(w)) != expected(w)) {
-            fprintf(stderr, "FAIL: random word %016llx\n", (unsigned long long)w);
+    for (i = 1; i < O__COUNT; i++)
+        if (!seen[i]) {
+            fprintf(stderr, "FAIL: opcode %d has no encoding\n", i);
             failures++;
-            break;
         }
+    expect(0x5C58, O_FADD_R, "FADD (reg)");
+    expect(0x3858, O_FADD_I, "FADD (imm)");
+    expect(0x3958, O_FADD_I, "FADD (imm)");
+    /* the { } groups: IMAD32I inside LD, LDC and MEMBAR inside CCTLL, LDG, STG, STP and ATOM.CAS inside ATOMS.CAS */
+    expect(0x8000, O_IMAD32I, "IMAD32I");
+    expect(0x8400, O_LD, "LD");
+    expect(0xEF90, O_LDC, "LDC");
+    expect(0xEF98, O_MEMBAR, "MEMBAR");
+    expect(0xEF80, O_CCTLL, "CCTLL");
+    expect(0xEED0, O_LDG, "LDG");
+    expect(0xEEF0, O_ATOM_CAS, "ATOM.CAS");
+    expect(0xEE00, O_ATOMS_CAS, "ATOMS.CAS");
+    /* CCTL's further encoding */
+    expect(0xEBF0, O_CCTL, "CCTLT");
+    if (id_of(0xE30000000000001Full) != O_EXIT || id_of(0xE30000000000001Cull) != O_NOP) {
+        fprintf(stderr, "FAIL: EXIT.FCSM_TR is not a NOP\n");
+        failures++;
     }
     if (decode(0xFFFFFFFFFFFFFFFFull)) {
         fprintf(stderr, "FAIL: an all-ones word decodes\n");

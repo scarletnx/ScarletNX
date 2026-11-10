@@ -1,0 +1,291 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# Encodings from Eden (src/shader_recompiler/frontend/maxwell/maxwell.inc):
+# SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# The Maxwell (SM53) instruction encodings the shader translator decodes. tools/decodetree makes decode-sm53.inc from
+# this file (src/nx/CMakeLists.txt, cmake/decodetree.cmake), and decode.c defines a trans_ function for each pattern.
+# The opcode is the top 16 bits of the 64-bit instruction, which decode.c gives the decoder (-w 16), the left bit
+# bit 63. 0 and 1 are fixed, - is either. Spaces are for reading.
+#
+# A pattern's name is the opcode's, O_<NAME> in the translator, whose list (SM53_OPS in translator.h) gives the enum
+# order and the display names. CCTLT is a further encoding of CCTL. Patterns that both match a word are in a { }
+# group, the narrower first: decodetree refuses any other overlap.
+# Eden's opcodes the translator has no name for (IDP, IMADSP, VABSDIFF4, LONGJMP, PLONGJMP, RAM, RTT, SAM,
+# GETLMEMBASE, SETLMEMBASE) are left out and decode as unknown. Fork additions to the set this file started from
+# (DSET, ATOM.CAS, OUT immediate, SUATOM, CCTLT, STP, TLD.B, TLD4.B, TMML.B, TXD.B, VABSDIFF, VSET, VSHL, VSHR)
+# match Eden's encodings.
+
+FADD_R       0101 1100 0101 1---
+FADD_C       0100 1100 0101 1---
+FADD_I       0011 100- 0101 1---
+FADD32I      0000 10-- ---- ----
+FMUL_R       0101 1100 0110 1---
+FMUL_C       0100 1100 0110 1---
+FMUL_I       0011 100- 0110 1---
+FMUL32I      0001 1110 ---- ----
+FFMA_R       0101 1001 1--- ----
+FFMA_RC      0101 0001 1--- ----
+FFMA_CR      0100 1001 1--- ----
+FFMA_I       0011 001- 1--- ----
+FFMA32I      0000 11-- ---- ----
+FMNMX_R      0101 1100 0110 0---
+FMNMX_C      0100 1100 0110 0---
+FMNMX_I      0011 100- 0110 0---
+FSETP_R      0101 1011 1011 ----
+FSETP_C      0100 1011 1011 ----
+FSETP_I      0011 011- 1011 ----
+FSET_R       0101 1000 ---- ----
+FSET_C       0100 1000 ---- ----
+FSET_I       0011 000- ---- ----
+FCMP_R       0101 1011 1010 ----
+FCMP_RC      0101 0011 1010 ----
+FCMP_CR      0100 1011 1010 ----
+FCMP_I       0011 011- 1010 ----
+MUFU         0101 0000 1000 0---
+RRO_R        0101 1100 1001 0---
+RRO_C        0100 1100 1001 0---
+RRO_I        0011 100- 1001 0---
+F2F_R        0101 1100 1010 1---
+F2F_C        0100 1100 1010 1---
+F2F_I        0011 100- 1010 1---
+F2I_R        0101 1100 1011 0---
+F2I_C        0100 1100 1011 0---
+F2I_I        0011 100- 1011 0---
+I2F_R        0101 1100 1011 1---
+I2F_C        0100 1100 1011 1---
+I2F_I        0011 100- 1011 1---
+I2I_R        0101 1100 1110 0---
+I2I_C        0100 1100 1110 0---
+I2I_I        0011 100- 1110 0---
+MOV_R        0101 1100 1001 1---
+MOV_C        0100 1100 1001 1---
+MOV_I        0011 100- 1001 1---
+MOV32I       0000 0001 0000 ----
+IADD_R       0101 1100 0001 0---
+IADD_C       0100 1100 0001 0---
+IADD_I       0011 100- 0001 0---
+IADD32I      0001 110- ---- ----
+IADD3_R      0101 1100 1100 ----
+IADD3_C      0100 1100 1100 ----
+IADD3_I      0011 100- 1100 ----
+ISCADD_R     0101 1100 0001 1---
+ISCADD_C     0100 1100 0001 1---
+ISCADD_I     0011 100- 0001 1---
+ISCADD32I    0001 01-- ---- ----
+IMNMX_R      0101 1100 0010 0---
+IMNMX_C      0100 1100 0010 0---
+IMNMX_I      0011 100- 0010 0---
+ISETP_R      0101 1011 0110 ----
+ISETP_C      0100 1011 0110 ----
+ISETP_I      0011 011- 0110 ----
+ISET_R       0101 1011 0101 ----
+ISET_C       0100 1011 0101 ----
+ISET_I       0011 011- 0101 ----
+ICMP_R       0101 1011 0100 ----
+ICMP_RC      0101 0011 0100 ----
+ICMP_CR      0100 1011 0100 ----
+ICMP_I       0011 011- 0100 ----
+LOP_R        0101 1100 0100 0---
+LOP_C        0100 1100 0100 0---
+LOP_I        0011 100- 0100 0---
+LOP32I       0000 01-- ---- ----
+LOP3_R       0101 1011 1110 0---
+LOP3_C       0000 001- ---- ----
+LOP3_I       0011 11-- ---- ----
+SHL_R        0101 1100 0100 1---
+SHL_C        0100 1100 0100 1---
+SHL_I        0011 100- 0100 1---
+SHR_R        0101 1100 0010 1---
+SHR_C        0100 1100 0010 1---
+SHR_I        0011 100- 0010 1---
+SHF_LR       0101 1011 1111 1---
+SHF_LI       0011 011- 1111 1---
+SHF_RR       0101 1100 1111 1---
+SHF_RI       0011 100- 1111 1---
+BFE_R        0101 1100 0000 0---
+BFE_C        0100 1100 0000 0---
+BFE_I        0011 100- 0000 0---
+BFI_R        0101 1011 1111 0---
+BFI_RC       0101 0011 1111 0---
+BFI_CR       0100 1011 1111 0---
+BFI_I        0011 011- 1111 0---
+SEL_R        0101 1100 1010 0---
+SEL_C        0100 1100 1010 0---
+SEL_I        0011 100- 1010 0---
+POPC_R       0101 1100 0000 1---
+POPC_C       0100 1100 0000 1---
+POPC_I       0011 100- 0000 1---
+FLO_R        0101 1100 0011 0---
+FLO_C        0100 1100 0011 0---
+FLO_I        0011 100- 0011 0---
+PRMT_R       0101 1011 1100 ----
+PRMT_RC      0101 0011 1100 ----
+PRMT_CR      0100 1011 1100 ----
+PRMT_I       0011 011- 1100 ----
+XMAD_R       0101 1011 00-- ----
+XMAD_RC      0101 0001 0--- ----
+XMAD_CR      0100 111- ---- ----
+XMAD_I       0011 011- 00-- ----
+IMUL_R       0101 1100 0011 1---
+IMUL_C       0100 1100 0011 1---
+IMUL_I       0011 100- 0011 1---
+IMUL32I      0001 1111 ---- ----
+IMAD_R       0101 1010 0--- ----
+IMAD_RC      0101 0010 0--- ----
+IMAD_CR      0100 1010 0--- ----
+IMAD_I       0011 010- 0--- ----
+{
+  IMAD32I    1000 00-- ---- ----
+  LD         100- ---- ---- ----
+}
+LEA_HR       0101 1011 1101 1---
+LEA_HC       0001 10-- ---- ----
+LEA_LR       0101 1011 1101 0---
+LEA_LC       0100 1011 1101 ----
+LEA_LI       0011 011- 1101 0---
+PSETP        0101 0000 1001 0---
+PSET         0101 0000 1000 1---
+P2R_R        0101 1100 1110 1---
+P2R_C        0100 1100 1110 1---
+P2R_I        0011 1000 1110 1---
+R2P_R        0101 1100 1111 0---
+R2P_C        0100 1100 1111 0---
+R2P_I        0011 100- 1111 0---
+CSET         0101 0000 1001 1---
+CSETP        0101 0000 1010 0---
+S2R          1111 0000 1100 1---
+CS2R         0101 0000 1100 1---
+IPA          1110 0000 ---- ----
+ALD          1110 1111 1101 1---
+AST          1110 1111 1111 0---
+OUT_R        1111 1011 1110 0---
+OUT_C        1110 1011 1110 0---
+OUT_I        1111 011- 1110 0---
+{
+  LDC        1110 1111 1001 0---
+  MEMBAR     1110 1111 1001 1---
+  CCTLL      1110 1111 100- ----
+}
+{
+  LDG        1110 1110 1101 0---
+  STG        1110 1110 1101 1---
+  STP        1110 1110 1010 0---
+  ATOM_CAS   1110 1110 1111 ----
+  ATOMS_CAS  1110 1110 ---- ----
+}
+LDS          1110 1111 0100 1---
+STS          1110 1111 0101 1---
+LDL          1110 1111 0100 0---
+STL          1110 1111 0101 0---
+ST           101- ---- ---- ----
+ATOM         1110 1101 ---- ----
+ATOMS        1110 1100 ---- ----
+RED          1110 1011 1111 1---
+TEX          1100 0--- ---- ----
+TEX_B        1101 1110 10-- ----
+TEXS         1101 -00- ---- ----
+TLD          1101 1100 ---- ----
+TLD_B        1101 1101 ---- ----
+TLDS         1101 -01- ---- ----
+TLD4         1100 10-- ---- ----
+TLD4_B       1101 1110 11-- ----
+TLD4S        1101 1111 -0-- ----
+TXQ          1101 1111 0100 1---
+TXQ_B        1101 1111 0101 0---
+TMML         1101 1111 0101 1---
+TMML_B       1101 1111 0110 0---
+TXD          1101 1110 00-- ----
+TXD_B        1101 1110 01-- ----
+SULD         1110 1011 000- ----
+SUST         1110 1011 001- ----
+SURED        1110 1011 010- ----
+SUATOM       1110 1010 0--- ----
+SUATOM_CAS   1110 1010 1--- ----
+BRA          1110 0010 0100 ----
+BRX          1110 0010 0101 ----
+SSY          1110 0010 1001 ----
+SYNC         1111 0000 1111 1---
+PBK          1110 0010 1010 ----
+BRK          1110 0011 0100 ----
+PCNT         1110 0010 1011 ----
+CONT         1110 0011 0101 ----
+EXIT         1110 0011 0000 ----
+KIL          1110 0011 0011 ----
+JCAL         1110 0010 0010 ----
+JMX          1110 0010 0000 ----
+JMP          1110 0010 0001 ----
+CAL          1110 0010 0110 ----
+RET          1110 0011 0010 ----
+PRET         1110 0010 0111 ----
+PEXIT        1110 0010 0011 ----
+NOP          0101 0000 1011 0---
+BAR          1111 0000 1010 1---
+DEPBAR       1111 0000 1111 0---
+VOTE         0101 0000 1101 1---
+VOTE_VTG     0101 0000 1110 0---
+SHFL         1110 1111 0001 0---
+FSWZADD      0101 0000 1111 1---
+FCHK_R       0101 1100 1000 1---
+FCHK_C       0100 1100 1000 1---
+FCHK_I       0011 100- 1000 1---
+HADD2_R      0101 1101 0001 0---
+HADD2_C      0111 101- 1--- ----
+HADD2_I      0111 101- 0--- ----
+HADD2_32I    0010 110- ---- ----
+HMUL2_R      0101 1101 0000 1---
+HMUL2_C      0111 100- 1--- ----
+HMUL2_I      0111 100- 0--- ----
+HMUL2_32I    0010 101- ---- ----
+HFMA2_R      0101 1101 0000 0---
+HFMA2_RC     0110 0--- 1--- ----
+HFMA2_CR     0111 0--- 1--- ----
+HFMA2_I      0111 0--- 0--- ----
+HFMA2_32I    0010 100- ---- ----
+HSETP2_R     0101 1101 0010 0---
+HSETP2_C     0111 111- 1--- ----
+HSETP2_I     0111 111- 0--- ----
+HSET2_R      0101 1101 0001 1---
+HSET2_C      0111 110- 1--- ----
+HSET2_I      0111 110- 0--- ----
+DADD_R       0101 1100 0111 0---
+DADD_C       0100 1100 0111 0---
+DADD_I       0011 100- 0111 0---
+DMUL_R       0101 1100 1000 0---
+DMUL_C       0100 1100 1000 0---
+DMUL_I       0011 100- 1000 0---
+DFMA_R       0101 1011 0111 ----
+DFMA_RC      0101 0011 0111 ----
+DFMA_CR      0100 1011 0111 ----
+DFMA_I       0011 011- 0111 ----
+DSET_R       0101 1001 0--- ----
+DSET_C       0100 1001 0--- ----
+DSET_I       0011 001- 0--- ----
+DSETP_R      0101 1011 1000 ----
+DSETP_C      0100 1011 1000 ----
+DSETP_I      0011 011- 1000 ----
+DMNMX_R      0101 1100 0101 0---
+DMNMX_C      0100 1100 0101 0---
+DMNMX_I      0011 100- 0101 0---
+VMNMX        0011 101- ---- ----
+VMAD         0101 1111 ---- ----
+VSETP        0101 0000 1111 0---
+VADD         0010 00-- ---- ----
+VABSDIFF     0101 0100 ---- ----
+VSET         0100 000- ---- ----
+VSHL         0101 0111 ---- ----
+VSHR         0101 0110 ---- ----
+IDE          1110 0011 1001 ----
+CCTL         1110 1111 011- ----
+CCTLT        1110 1011 1111 0--0
+BPT          1110 0011 1010 ----
+ISBERD       1110 1111 1101 0---
+AL2P         1110 1111 1010 0---
+PIXLD        1110 1111 1110 1---
+TXA          1101 1111 0100 0---
+B2R          1111 0000 1011 1---
+R2B          1111 0000 1100 0---
+LEPC         0101 0000 1101 0---
+SETCRSPTR    1110 0010 1110 ----
+GETCRSPTR    1110 0010 1100 ----
