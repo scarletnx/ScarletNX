@@ -726,7 +726,11 @@ jobs:
             libxext libxcursor libxfixes libxi libxinerama libxrandr libxrender libxss libxtst libxkbcommon wayland
             wayland-protocols libdecor alsa-lib libpulse libpipewire hidapi libusb"
           retry() { for try in 1 2 3; do "$@" && return; [ "$try" = 3 ] && return 1; sleep 5; done; }
-          retry pacman -Syu --noconfirm --needed $libraries
+          # A port whose openssl is already 4 while some of its packages still link OpenSSL 3 refuses the upgrade
+          # unless its openssl-3 comes along; a port still on OpenSSL 3 has no such package
+          retry pacman -Sy --noconfirm
+          if pacman -Si openssl-3 >/dev/null 2>&1; then libraries="$libraries openssl-3"; fi
+          retry pacman -Su --noconfirm --needed $libraries
           curl -fsSL --retry 3 -o /usr/local/bin/quick-sharun "$QUICK_SHARUN"
           curl -fsSL --retry 3 -o /usr/local/bin/get-debloated-pkgs "$DEBLOATED_PACKAGES"
           chmod +x /usr/local/bin/quick-sharun /usr/local/bin/get-debloated-pkgs
