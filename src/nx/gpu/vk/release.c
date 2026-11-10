@@ -41,6 +41,10 @@ typedef struct {
     /* a samples report's render enable predicate (query.c): 0 none made, slot + 1 while it holds one, or what the count
        is known to be without the GPU, PRED_ZERO or PRED_NONZERO, or PRED_NONE when no predicate can be had */
     int pred;
+    /* and its predicate against a report of its counter's epoch queued before it, the one ending at dfrom: whether
+       their counts differ, which is whether the segments [dfrom, qend) counted. The same values as pred */
+    int dpred;
+    u64 dfrom;
     u64 cpu; /* the guest address of its payload, translated when it was queued, 0 when it isn't in the word index */
 } Release;
 enum { PRED_NONE = -3, PRED_ZERO = -2, PRED_NONZERO = -1 };
@@ -171,6 +175,7 @@ static void release_through(u64 gate, u64 cgate) {
         if (r.gva) rix_track(&r, g_rtail, -1);
         g_rtail++;
         if (r.pred > 0) vk_query_pred_drop((u32)r.pred - 1); /* the draws recorded with it may still hold it */
+        if (r.dpred > 0) vk_query_pred_drop((u32)r.dpred - 1);
         if (r.gva) pend_add(&g_rpages, r.gva, r.len, -1);
         if (!r.gva) {
             /* release_value sees the transfer from queued to completed atomically. */
@@ -584,7 +589,8 @@ void vk_release_drain(void) { release_match(0, 0, 0, 1); }
 void vk_release_retire(u32 id) { release_match(0, 0, id, 0); }
 /* The render enable's comparison of a count with zero (renderer.h render_predicate), when the count is a samples report
    still queued: made on the GPU (query.c's predicates), or known without it. The report must be the last release
-   queued over the count's 8 bytes, and the other side of the comparison zero, read without waiting for anything */
+   queued over the count's 8 bytes, and the other side of the comparison zero, read without waiting for anything, or
+   such a report too, of the same counter's epoch (compare_queued) */
 /* the queued release that is the last over [gva, gva + 8): its queue number, -1 when none is, -2 when the last isn't
    a whole samples count there. With g_rlock held */
 static i64 count_queued(u64 gva) {
@@ -628,10 +634,71 @@ static int compare_on_gpu(u64 a, int equal, u32* pred) {
     *pred = (slot + 1) | (equal ? VK_PRED_EQUAL : 0);
     return 2;
 }
+/* Both sides counts still queued, the releases ia and ib, of one counter's epoch: a game reports before and after a
+   depth pass and draws when the two differ. A counter's reports in an epoch are cumulative, so the two differ when a
+   segment between their ends counted a sample: a predicate over those segments, as a count's against zero is over all
+   of its own. With the targets scaled up, a difference that vk_query_value's rounding to the guest's size would lose
+   still draws. With vk_lock held: 2 with *pred, 0 or 1 when known without the GPU, -1 when no predicate can be had */
+static int compare_queued(i64 ia, i64 ib, int equal, u32* pred) {
+    i64 lo = ia < ib ? ia : ib, hi = ia < ib ? ib : ia;
+    Release* h = &g_rq[hi % RQ_N];
+    u32 slot = 0;
+    int k;
+    pm_lock(&g_rlock);
+    u64 from = g_rq[lo % RQ_N].qend;
+    if (!h->dpred) {
+        /* every whole count queued gets its predicate against the count before it of its counter, in one batch, as
+           the predicates against zero are made: a frame's tests come before the draws they decide */
+        u64 batch[RQ_N];
+        i64 last[VK_QUERY_COUNTERS];
+        u32 nb = 0, j;
+        for (j = 0; j < VK_QUERY_COUNTERS; j++) last[j] = -1;
+        for (u64 i = g_rtail; i < g_rhead; i++) {
+            Release* r = &g_rq[i % RQ_N];
+            const Release* p;
+            if (!r->samples || r->qch >= VK_QUERY_COUNTERS) continue;
+            p = last[r->qch] >= 0 ? &g_rq[last[r->qch] % RQ_N] : NULL;
+            last[r->qch] = (i64)i;
+            if (r->dpred || !p || p->qfirst != r->qfirst || p->len != 16 || r->len != 16) continue;
+            k = p->qend == r->qend ? 0 : vk_query_pred_job(r->qch, p->qend, r->qend, 0, VK_PRED_PREV_NONE, 0, &slot);
+            r->dpred = k == 2 ? (int)slot + 1 : k == 1 ? PRED_NONZERO : k == 0 ? PRED_ZERO : PRED_NONE;
+            r->dfrom = p->qend;
+            if (k == 2) batch[nb++] = i;
+        }
+        pm_unlock(&g_rlock);
+        if (nb && !vk_query_pred_flush()) { /* no predicates: the counts are waited for */
+            pm_lock(&g_rlock);
+            for (j = 0; j < nb; j++) g_rq[batch[j] % RQ_N].dpred = PRED_NONE;
+            pm_unlock(&g_rlock);
+        }
+        pm_lock(&g_rlock);
+    }
+    if (h->dpred && h->dfrom == from) {
+        k = h->dpred;
+        pm_unlock(&g_rlock);
+        if (k > 0) vk_query_pred_hold((u32)k - 1);
+    } else {
+        /* not the count before it (another report of the counter came between them): a predicate for this render
+           enable alone, held by the caller only */
+        u32 qch = h->qch;
+        u64 end = h->qend;
+        pm_unlock(&g_rlock);
+        k = from == end ? 0 : vk_query_pred_job(qch, from, end, 0, VK_PRED_PREV_NONE, 0, &slot);
+        k = k == 2   ? (vk_query_pred_flush() ? (int)slot + 1 : PRED_NONE)
+            : k == 1 ? PRED_NONZERO
+            : k == 0 ? PRED_ZERO
+                     : PRED_NONE;
+    }
+    if (k > 0) {
+        *pred = (u32)k | (equal ? VK_PRED_EQUAL : 0);
+        return 2;
+    }
+    return k == PRED_ZERO || k == PRED_NONZERO ? (k == PRED_ZERO) == !!equal : -1;
+}
 int vk_render_predicate(u64 a, int equal, u32* pred) {
     i64 ia, ib, at;
     u32 slot = 0;
-    int got = -1, k;
+    int got = -1, k, pair;
     if (!__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) {
         vk_lock();
         got = vk_query_pred_ok() ? compare_on_gpu(a, equal, pred) : -1;
@@ -646,7 +713,14 @@ int vk_render_predicate(u64 a, int equal, u32* pred) {
     pm_lock(&g_rlock);
     ia = count_queued(a);
     ib = count_queued(a + 16);
+    pair = ia >= 0 && ib >= 0 && g_rq[ia % RQ_N].qch == g_rq[ib % RQ_N].qch &&
+           g_rq[ia % RQ_N].qch < VK_QUERY_COUNTERS && g_rq[ia % RQ_N].qfirst == g_rq[ib % RQ_N].qfirst;
     pm_unlock(&g_rlock);
+    if (pair) {
+        got = compare_queued(ia, ib, equal, pred);
+        vk_unlock();
+        return got;
+    }
     /* one side a count still queued, the other zero */
     if (ia >= 0 && ib == -1 && reads_zero(a + 16))
         at = ia;

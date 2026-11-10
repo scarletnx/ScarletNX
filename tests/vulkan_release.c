@@ -554,6 +554,36 @@ int main(void) {
     vk_release_samples(0x10140, 16, 3, 13, 14, 0);
     assert(vk_render_predicate(0x10140, 1, &pred) == 1 && vk_render_predicate(0x10140, 0, &pred) == 0);
     vk_release_drain();
+    /* two reports of one counter's epoch, both still queued, 16 bytes apart (a count taken before and after a depth
+       pass): their counts differ when a segment between their ends counted, a predicate too (here the slot of the
+       earlier one's end), made in one batch for each queued report against the one before it. The same end is the
+       same count, known without the GPU. A pair with another report between them gets a predicate of its own, the
+       caller's alone */
+    {
+        unsigned flushes = pred_flushes;
+        job_known = 2;
+        vk_release_samples(0x10100, 16, 3, 20, 21, 0);
+        vk_release_samples(0x10110, 16, 3, 20, 23, 0);
+        vk_release_samples(0x10120, 16, 3, 20, 23, 0);
+        vk_release_samples(0x10130, 16, 3, 20, 26, 0);
+        assert(vk_render_predicate(0x10100, 0, &pred) == 2 && pred == 22 && pred_flushes == flushes + 1);
+        assert(pred_refs[21] == 2 && pred_refs[23] == 1);
+        vk_render_predicate_drop(pred);
+        assert(vk_render_predicate(0x10110, 1, &pred) == 1 && vk_render_predicate(0x10110, 0, &pred) == 0);
+        assert(vk_render_predicate(0x10120, 1, &pred) == 2 && pred == (24 | VK_PRED_EQUAL));
+        assert(pred_flushes == flushes + 1 && pred_refs[23] == 2);
+        vk_render_predicate_drop(pred);
+        vk_release_samples(0x10160, 4, 3, 20, 28, 0); /* between the two in the queue, not a whole count */
+        vk_release_samples(0x10140, 16, 3, 20, 30, 0);
+        assert(vk_render_predicate(0x10130, 0, &pred) == 2 && pred == 27 && pred_flushes == flushes + 2);
+        assert(pred_refs[26] == 1);
+        vk_release_samples(0x10150, 16, 3, 31, 33, 0); /* another epoch's count: read, as before */
+        assert(vk_render_predicate(0x10140, 0, &pred) == -1 && pred_flushes == flushes + 2);
+        vk_release_drain();
+        assert(!pred_refs[21] && !pred_refs[23] && pred_refs[26] == 1 && g_rhead == g_rtail);
+        vk_render_predicate_drop(27);
+        assert(!pred_refs[26]);
+    }
     /* two words of one home in the payloads' index (guest 0x1100 and 0x7ab4): the second goes in the slot after it,
        and moves back to its home when the older is performed, still found there */
     u32 word4 = 5;

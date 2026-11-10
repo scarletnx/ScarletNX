@@ -1688,7 +1688,8 @@ extern u64 g_vk_counts_on_gpu; /* statistics: the counts vk_query_counts wrote *
    a predicate slot, held once, that the next vk_query_pred_flush writes (2, *slot set), or its count is known now: 1
    not zero, 0 zero. -1 when there can be no predicate: the device can't make them, or there's no memory for the
    batch. The reports of a counter come in their queue order, each with what the one before it in its epoch, still
-   queued, is known to be (prev, ending at prev_end): the count up to there, which it goes on from */
+   queued, is known to be (prev, ending at prev_end): the count up to there, which it goes on from. first may be the
+   end of an earlier report of the epoch: the predicate is then whether the two reports' counts differ */
 enum { VK_PRED_PREV_NONE, VK_PRED_PREV_ZERO, VK_PRED_PREV_NONZERO, VK_PRED_PREV_SLOT };
 int vk_query_pred_ok(void); /* the device makes predicates (VK_EXT_conditional_rendering); makes the shader */
 int vk_query_pred_job(u32 counter, u64 first, u64 end, u64 prev_end, int prev, u32 prev_slot, u32* slot);
