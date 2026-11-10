@@ -273,24 +273,6 @@ void glslc_warn(Glslc* g, uint32_t site, const char* fmt, ...) {
     if (g->result->warnings == 0) g->result->warnings = 0xffffu; /* the count stops at its largest */
 }
 
-/* the 8 bytes at p as a number, the first in the low byte: the same number on any host, and one load on a
-   little-endian one */
-static uint64_t bytes8(const char* p) {
-    const unsigned char* b = (const unsigned char*)p;
-    return (uint64_t)b[0] | (uint64_t)b[1] << 8 | (uint64_t)b[2] << 16 | (uint64_t)b[3] << 24 | (uint64_t)b[4] << 32 |
-           (uint64_t)b[5] << 40 | (uint64_t)b[6] << 48 | (uint64_t)b[7] << 56;
-}
-
-uint32_t glslc_hash(const char* text, uint32_t len) {
-    uint64_t h = (uint64_t)len * 0x9e3779b97f4a7c15ull, w = 0;
-    uint32_t i = 0;
-    for (; i + 8 <= len; i += 8) h = (h ^ bytes8(text + i)) * 0xff51afd7ed558ccdull;
-    if (i < len) w = bytes8(text + i) & (~0ull >> (64u - 8u * (len - i))); /* the last bytes, the ones past cut */
-    h = (h ^ w) * 0xc4ceb9fe1a85ec53ull;
-    h ^= h >> 33;
-    return (uint32_t)h;
-}
-
 const char* glslc_view_text(const Glslc* g, GlslcView v) { return g->src + v.pos; }
 
 const char* glslc_token_text(const Glslc* g, const GlslcToken* t) {
