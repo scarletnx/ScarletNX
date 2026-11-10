@@ -31,9 +31,9 @@ typedef struct {
 #define BIT(w, b) (((w) >> (b)) & 1)
 
 /* a trans_ function that gives check(word): a kind, or SNX_A32_UNDEFINED. It always answers true, so a { } group
-   never tries a later pattern for a word one has refused */
+   never tries a later pattern for a word one has refused. Inlined, so the decoder leaves out the fields it ignores */
 #define KIND(name, check)                                                                                              \
-    static bool trans_##name(DisasContext* ctx, arg_##name* a) {                                                       \
+    static inline __attribute__((always_inline)) bool trans_##name(DisasContext* ctx, arg_##name* a) {                 \
         (void)a;                                                                                                       \
         ctx->kind = check(ctx->w);                                                                                     \
         return true;                                                                                                   \
