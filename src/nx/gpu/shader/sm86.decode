@@ -1,0 +1,477 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# Encodings from Mesa's NAK (src/nouveau/compiler/nak/sm70_encode.rs), the encoder of SM70 to SM89:
+# Copyright © 2022 Collabora, Ltd.
+# SPDX-License-Identifier: MIT
+#
+# The SM86 (Volta to Ada, 128-bit) instruction encodings sm86_decode.c decodes. tools/decodetree makes
+# decode-sm86.inc from this file (src/nx/CMakeLists.txt, cmake/decodetree.cmake), and sm86_decode.c defines a trans_
+# function for each opcode. The decoder reads the low 16 bits of the instruction (-w 16), the left bit bit 15:
+# 12-15 are the predicate, which the decoder ignores (----), and the rest the opcode:
+#   an ALU instruction: bits 0-8 its opcode and bits 9-11 the form, which places its sources (sm86.h). An opcode has
+#     a pattern for each form it takes: 001 b a register; 010 b a register at 64, c an immediate; 011 the same, c a
+#     constant buffer; 100 b an immediate; 101 b a constant buffer; 110 b a uniform register; 111 c a uniform
+#     register. The uniform datapath's instructions (bit 91 set, uniform registers) take 001, 010, 100 and 110.
+#   any other: bits 0-11, the opcode.
+# A pattern's name is the opcode's, SM86_<NAME> in the translator, whose list (SM86_OPS in sm86.h) gives the enum
+# order, whether it is an ALU instruction and its display name. No two patterns overlap, which decodetree checks.
+# NAK's encoder gives every opcode but these, which the captured programs of an Ounce game use and NAK does not emit:
+# FSEL (0x008), R2P (0x004), I2FP (0x045, SM86+), DEPBAR (0x91a) and the surface loads and stores that take their
+# handle from a constant buffer (SULD.P 0xb97, SULD.D 0xb99, SUST.P 0xb9b, SUST.D 0xb9d: the bindless codes less one,
+# as TEX's 0xb60 is to 0x361). CuAssembler's sm_86 encodings, which nvdisasm named, show all of them but SULD.P
+# (github.com/cloudcores/CuAssembler, CuAsm/InsAsmRepos/DefaultInsAsmRepos.sm_86.txt), and I2FP only from sm_86 on.
+
+# floating point
+FADD         ---- 001 000100001
+FADD         ---- 010 000100001
+FADD         ---- 011 000100001
+FADD         ---- 100 000100001
+FADD         ---- 101 000100001
+FADD         ---- 110 000100001
+FADD         ---- 111 000100001
+FMUL         ---- 001 000100000
+FMUL         ---- 100 000100000
+FMUL         ---- 101 000100000
+FMUL         ---- 110 000100000
+FFMA         ---- 001 000100011
+FFMA         ---- 010 000100011
+FFMA         ---- 011 000100011
+FFMA         ---- 100 000100011
+FFMA         ---- 101 000100011
+FFMA         ---- 110 000100011
+FFMA         ---- 111 000100011
+FMNMX        ---- 001 000001001
+FMNMX        ---- 100 000001001
+FMNMX        ---- 101 000001001
+FMNMX        ---- 110 000001001
+FSET         ---- 001 000001010
+FSET         ---- 100 000001010
+FSET         ---- 101 000001010
+FSET         ---- 110 000001010
+FSETP        ---- 001 000001011
+FSETP        ---- 100 000001011
+FSETP        ---- 101 000001011
+FSETP        ---- 110 000001011
+FSEL         ---- 001 000001000
+FSEL         ---- 100 000001000
+FSEL         ---- 101 000001000
+FSEL         ---- 110 000001000
+MUFU         ---- 001 100001000
+MUFU         ---- 100 100001000
+MUFU         ---- 101 100001000
+MUFU         ---- 110 100001000
+FSWZADD      ---- 100 000100010
+DADD         ---- 001 000101001
+DADD         ---- 010 000101001
+DADD         ---- 011 000101001
+DADD         ---- 100 000101001
+DADD         ---- 101 000101001
+DADD         ---- 110 000101001
+DADD         ---- 111 000101001
+DMUL         ---- 001 000101000
+DMUL         ---- 100 000101000
+DMUL         ---- 101 000101000
+DMUL         ---- 110 000101000
+DFMA         ---- 001 000101011
+DFMA         ---- 010 000101011
+DFMA         ---- 011 000101011
+DFMA         ---- 100 000101011
+DFMA         ---- 101 000101011
+DFMA         ---- 110 000101011
+DFMA         ---- 111 000101011
+DSETP        ---- 001 000101010
+DSETP        ---- 100 000101010
+DSETP        ---- 101 000101010
+DSETP        ---- 110 000101010
+HADD2        ---- 001 000110000
+HADD2        ---- 010 000110000
+HADD2        ---- 011 000110000
+HADD2        ---- 100 000110000
+HADD2        ---- 101 000110000
+HADD2        ---- 110 000110000
+HADD2        ---- 111 000110000
+HMUL2        ---- 001 000110010
+HMUL2        ---- 100 000110010
+HMUL2        ---- 101 000110010
+HMUL2        ---- 110 000110010
+HFMA2        ---- 001 000110001
+HFMA2        ---- 010 000110001
+HFMA2        ---- 011 000110001
+HFMA2        ---- 100 000110001
+HFMA2        ---- 101 000110001
+HFMA2        ---- 110 000110001
+HFMA2        ---- 111 000110001
+# HFMA2.MMA (0x035), HFMA2 on the MMA pipe: CuAssembler's sm_86 records give forms 1 and 2 with HFMA2's fields,
+# "HFMA2.MMA R24, R12, R17, R24" and "HFMA2.MMA R4, -RZ, RZ, 0, 0"
+HFMA2_MMA    ---- 001 000110101
+HFMA2_MMA    ---- 010 000110101
+HSET2        ---- 001 000110011
+HSET2        ---- 100 000110011
+HSET2        ---- 101 000110011
+HSET2        ---- 110 000110011
+# HSETP2's forms are the 16-bit ALU's: b a register (1), two halves (2), a constant buffer (3), as CuAssembler's sm_86
+# encodings 0x234, 0x434 and 0x634 show
+HSETP2       ---- 001 000110100
+HSETP2       ---- 010 000110100
+HSETP2       ---- 011 000110100
+HMNMX2       ---- 001 001000000
+HMNMX2       ---- 100 001000000
+HMNMX2       ---- 101 001000000
+HMNMX2       ---- 110 001000000
+# conversions
+F2F          ---- 001 100000100
+F2F          ---- 100 100000100
+F2F          ---- 101 100000100
+F2F          ---- 110 100000100
+F2F64        ---- 001 100010000
+F2F64        ---- 100 100010000
+F2F64        ---- 101 100010000
+F2F64        ---- 110 100010000
+F2FP         ---- 001 000111110
+F2FP         ---- 010 000111110
+F2FP         ---- 011 000111110
+F2FP         ---- 100 000111110
+F2FP         ---- 101 000111110
+F2FP         ---- 110 000111110
+F2FP         ---- 111 000111110
+F2I          ---- 001 100000101
+F2I          ---- 100 100000101
+F2I          ---- 101 100000101
+F2I          ---- 110 100000101
+F2I64        ---- 001 100010001
+F2I64        ---- 100 100010001
+F2I64        ---- 101 100010001
+F2I64        ---- 110 100010001
+I2F          ---- 001 100000110
+I2F          ---- 100 100000110
+I2F          ---- 101 100000110
+I2F          ---- 110 100000110
+I2F64        ---- 001 100010010
+I2F64        ---- 100 100010010
+I2F64        ---- 101 100010010
+I2F64        ---- 110 100010010
+I2FP         ---- 001 001000101
+I2FP         ---- 100 001000101
+I2FP         ---- 101 001000101
+I2FP         ---- 110 001000101
+# F2IP (0x243): two floats to 8-bit integers, packed. Form 1 alone: a at 24, b at 32, c at 64, as CuAssembler's sm_86
+# records "F2IP.U8.F32.NTZ R9, RZ, R4, RZ" (0x00000000000004ff_00000004ff097243) and "F2IP.S8.F32.NTZ R6, R15, R6,
+# R4" give
+F2IP         ---- 001 001000011
+FRND         ---- 001 100000111
+FRND         ---- 100 100000111
+FRND         ---- 101 100000111
+FRND         ---- 110 100000111
+FRND64       ---- 001 100010011
+FRND64       ---- 100 100010011
+FRND64       ---- 101 100010011
+FRND64       ---- 110 100010011
+# integer
+IADD3        ---- 001 000010000
+IADD3        ---- 010 000010000
+IADD3        ---- 011 000010000
+IADD3        ---- 100 000010000
+IADD3        ---- 101 000010000
+IADD3        ---- 110 000010000
+IADD3        ---- 111 000010000
+IMAD         ---- 001 000100100
+IMAD         ---- 010 000100100
+IMAD         ---- 011 000100100
+IMAD         ---- 100 000100100
+IMAD         ---- 101 000100100
+IMAD         ---- 110 000100100
+IMAD         ---- 111 000100100
+IMAD_WIDE    ---- 001 000100101
+IMAD_WIDE    ---- 010 000100101
+IMAD_WIDE    ---- 011 000100101
+IMAD_WIDE    ---- 100 000100101
+IMAD_WIDE    ---- 101 000100101
+IMAD_WIDE    ---- 110 000100101
+IMAD_WIDE    ---- 111 000100101
+# IMAD.HI (0x027): CuAssembler sm_86 (0x827 its immediate form)
+IMAD_HI      ---- 001 000100111
+IMAD_HI      ---- 010 000100111
+IMAD_HI      ---- 011 000100111
+IMAD_HI      ---- 100 000100111
+IMAD_HI      ---- 101 000100111
+IMAD_HI      ---- 110 000100111
+IMAD_HI      ---- 111 000100111
+IDP4         ---- 001 000100110
+IDP4         ---- 010 000100110
+IDP4         ---- 011 000100110
+IDP4         ---- 100 000100110
+IDP4         ---- 101 000100110
+IDP4         ---- 110 000100110
+IDP4         ---- 111 000100110
+IMNMX        ---- 001 000010111
+IMNMX        ---- 100 000010111
+IMNMX        ---- 101 000010111
+IMNMX        ---- 110 000010111
+ISETP        ---- 001 000001100
+ISETP        ---- 100 000001100
+ISETP        ---- 101 000001100
+ISETP        ---- 110 000001100
+IABS         ---- 001 000010011
+IABS         ---- 100 000010011
+IABS         ---- 101 000010011
+IABS         ---- 110 000010011
+LEA          ---- 001 000010001
+LEA          ---- 010 000010001
+LEA          ---- 011 000010001
+LEA          ---- 100 000010001
+LEA          ---- 101 000010001
+LEA          ---- 110 000010001
+LEA          ---- 111 000010001
+LOP3         ---- 001 000010010
+LOP3         ---- 010 000010010
+LOP3         ---- 011 000010010
+LOP3         ---- 100 000010010
+LOP3         ---- 101 000010010
+LOP3         ---- 110 000010010
+LOP3         ---- 111 000010010
+SHF          ---- 001 000011001
+SHF          ---- 010 000011001
+SHF          ---- 011 000011001
+SHF          ---- 100 000011001
+SHF          ---- 101 000011001
+SHF          ---- 110 000011001
+SHF          ---- 111 000011001
+PRMT         ---- 001 000010110
+PRMT         ---- 010 000010110
+PRMT         ---- 011 000010110
+PRMT         ---- 100 000010110
+PRMT         ---- 101 000010110
+PRMT         ---- 110 000010110
+PRMT         ---- 111 000010110
+SGXT         ---- 001 000011010
+SGXT         ---- 100 000011010
+SGXT         ---- 101 000011010
+SGXT         ---- 110 000011010
+BMSK         ---- 001 000011011
+BMSK         ---- 100 000011011
+BMSK         ---- 101 000011011
+BMSK         ---- 110 000011011
+BREV         ---- 001 100000001
+BREV         ---- 100 100000001
+BREV         ---- 101 100000001
+BREV         ---- 110 100000001
+FLO          ---- 001 100000000
+FLO          ---- 100 100000000
+FLO          ---- 101 100000000
+FLO          ---- 110 100000000
+POPC         ---- 001 100001001
+POPC         ---- 100 100001001
+POPC         ---- 101 100001001
+POPC         ---- 110 100001001
+# moves and predicates
+MOV          ---- 001 000000010
+MOV          ---- 100 000000010
+MOV          ---- 101 000000010
+MOV          ---- 110 000000010
+SEL          ---- 001 000000111
+SEL          ---- 100 000000111
+SEL          ---- 101 000000111
+SEL          ---- 110 000000111
+R2P          ---- 001 000000100
+R2P          ---- 100 000000100
+R2P          ---- 101 000000100
+R2P          ---- 110 000000100
+# P2R (0x803) and its uniform UP2UR (0x883): CuAssembler's sm_86 and sm_80 encodings
+P2R          ---- 001 000000011
+P2R          ---- 100 000000011
+P2R          ---- 101 000000011
+P2R          ---- 110 000000011
+UP2UR        ---- 001 010000011
+UP2UR        ---- 010 010000011
+UP2UR        ---- 100 010000011
+PLOP3        ---- 100 000011100
+UPLOP3       ---- 100 010011100
+CS2R         ---- 100 000000101
+S2R          ---- 100 100011001
+S2UR         ---- 100 111000011
+R2UR         ---- 001 111000010
+# NAK encodes UMOV as a uniform ALU instruction: form 4 an immediate (0x882), form 6 a uniform register (0xc82)
+UMOV         ---- 100 010000010
+UMOV         ---- 110 010000010
+REDUX        ---- 001 111000100
+VOTE         ---- 100 000000110
+UVOTE        ---- 100 010000110
+MATCH        ---- 001 110100001
+SHFL_RR      ---- 001 110001001
+SHFL_RI      ---- 010 110001001
+SHFL_IR      ---- 100 110001001
+SHFL_II      ---- 111 110001001
+# the uniform datapath
+UIADD3       ---- 001 010010000
+UIADD3       ---- 010 010010000
+UIADD3       ---- 100 010010000
+UIMAD        ---- 001 010100100
+UIMAD        ---- 010 010100100
+UIMAD        ---- 100 010100100
+UIMAD_WIDE   ---- 001 010100101
+UIMAD_WIDE   ---- 010 010100101
+UIMAD_WIDE   ---- 100 010100101
+ULEA         ---- 001 010010001
+ULEA         ---- 010 010010001
+ULEA         ---- 100 010010001
+ULOP3        ---- 001 010010010
+ULOP3        ---- 010 010010010
+ULOP3        ---- 100 010010010
+USHF         ---- 001 010011001
+USHF         ---- 010 010011001
+USHF         ---- 100 010011001
+UPRMT        ---- 001 010010110
+UPRMT        ---- 010 010010110
+UPRMT        ---- 100 010010110
+USEL         ---- 001 010000111
+USEL         ---- 010 010000111
+USEL         ---- 100 010000111
+UISETP       ---- 001 010001100
+UISETP       ---- 010 010001100
+UISETP       ---- 100 010001100
+UIMNMX       ---- 001 010000101
+UIMNMX       ---- 010 010000101
+UIMNMX       ---- 100 010000101
+USGXT        ---- 001 010011010
+USGXT        ---- 010 010011010
+USGXT        ---- 100 010011010
+UBMSK        ---- 001 010011011
+UBMSK        ---- 010 010011011
+UBMSK        ---- 100 010011011
+UFLO         ---- 001 010111101
+UFLO         ---- 010 010111101
+UFLO         ---- 100 010111101
+UBREV        ---- 001 010111110
+UBREV        ---- 010 010111110
+UBREV        ---- 100 010111110
+UPOPC        ---- 001 010111111
+UPOPC        ---- 010 010111111
+UPOPC        ---- 100 010111111
+UIABS        ---- 001 001001101
+UIABS        ---- 010 001001101
+UIABS        ---- 100 001001101
+UF2FP        ---- 001 010111010
+UF2FP        ---- 010 010111010
+UF2FP        ---- 100 010111010
+# memory
+LDG          ---- 100 110000001
+LDG_NOU      ---- 001 110000001
+LDL          ---- 100 110000011
+LDS          ---- 100 110000100
+STG          ---- 100 110000110
+STG_NOU      ---- 001 110000110
+STL          ---- 100 110000111
+STL_NOU      ---- 001 110000111
+STS          ---- 100 110001000
+STS_NOU      ---- 001 110001000
+LDC          ---- 101 110000010
+LDC_BINDLESS ---- 010 110000010
+ULDC         ---- 101 010111001
+# ULDC UR, c[bank][UR + offset]: the uniform register at 24, the offset signed (CuAssembler sm_86, cAURI)
+ULDC_IDX     ---- 101 010111011
+ULDCG        ---- 100 010111000
+RED          ---- 100 110001110
+ATOMG        ---- 100 110101000
+ATOMG_NOU    ---- 001 110101000
+ATOMG_CAS    ---- 001 110101001
+ATOMS        ---- 100 110001100
+ATOMS_NOU    ---- 001 110001100
+ATOMS_CAS    ---- 001 110001101
+ATOMS_POPC_INC ---- 111 110001100
+CCTL         ---- 100 110001111
+MEMBAR       ---- 100 110010010
+# attributes and the stage's own memory
+ALD          ---- 001 100100001
+AST          ---- 001 100100010
+AL2P         ---- 100 100100000
+IPA          ---- 001 100100110
+# IPA with a uniform register in its address (0x526, bit 91), as a game's fragment programs index an input array
+IPA_U        ---- 010 100100110
+LDTRAM       ---- 001 110101101
+ISBERD       ---- 100 100100011
+ISBEWR       ---- 100 100100111
+PIXLD        ---- 100 100100101
+OUT          ---- 001 100100100
+OUT          ---- 100 100100100
+OUT          ---- 101 100100100
+OUT          ---- 110 100100100
+# textures and surfaces: the handle in a constant buffer, or bindless (.B, in a register)
+TEX          ---- 101 101100000
+TEX_B        ---- 001 101100001
+TLD          ---- 101 101100110
+TLD_B        ---- 001 101100111
+TLD4         ---- 101 101100011
+TLD4_B       ---- 001 101100100
+TMML         ---- 101 101101001
+TMML_B       ---- 001 101101010
+TXD          ---- 101 101101100
+TXD_B        ---- 001 101101101
+TXQ          ---- 101 101101111
+TXQ_B        ---- 001 101110000
+# TEX, TLD, TLD4 and TXQ with the handle in a uniform register: the constant buffer codes with bit 10, the register at
+# 40-45 in place of the constant buffer's reference, bit 91 set, the rest of the fields theirs. CuAssembler's sm_86
+# records: "TEX.SCR.LL.DC R34, R8, R2, R6, UR4, 2D" (0x00000000099e4f08_3000040602227f60) and "TXQ R35, R20, UR12,
+# TEX_HEADER_DIMENSION, 0x2" (0x00000000080002ff_00000c0014237f6f). One game's programs take the handle from memory:
+# an LDG.64 of a table of handles, R2UR, then UR + 1 = UR >> 20, the sampler's index
+TEX_U        ---- 111 101100000
+TLD_U        ---- 111 101100110
+TLD4_U       ---- 111 101100011
+TXQ_U        ---- 111 101101111
+SULD_P       ---- 101 110010111
+SULD_P_B     ---- 100 110011000
+SULD_D       ---- 101 110011001
+SULD_D_B     ---- 100 110011010
+SUST_P       ---- 101 110011011
+SUST_D       ---- 101 110011101
+SUST_P_B     ---- 100 110011100
+SUST_D_B     ---- 100 110011110
+SURED_B      ---- 001 110100000
+# SURED with the handle in a constant buffer: no source names 0x59f. The bindless 0x3a0 plus 0x1ff, as 0x998 is to
+# 0xb97, and its fields (the handle at 40-58, the dimension, ADD, U32) agree in a game's program
+SURED        ---- 010 110011111
+# SUATOM with the handle in a constant buffer: the bindless 0x394 plus 0x1ff, as SURED's 0x59f is to 0x3a0, with the
+# bindless one's fields (NAK's: destination 16, coordinates 24, data 32, dimension 61, type 73, operation 87-90) and
+# SURED's handle at 40-58. A game's fragment programs use it
+SUATOM       ---- 010 110010011
+# the warp's matrix instructions, CuAssembler's sm_86 encodings: HMMA (0x23c, A at 24, B at 32, C at 64), LDSM
+# (0x83b, the address register at 24 and offset at 40-63) and MOVM (0x23a, the source at 24)
+HMMA         ---- 001 000111100
+LDSM         ---- 100 000111011
+MOVM         ---- 001 000111010
+SUATOM_B     ---- 001 110010100
+SUATOM_CAS_B ---- 001 110010110
+# control flow: convergence barriers (BSSY, BSYNC, BREAK, BMOV) in place of Maxwell's CRS stack
+BRA          ---- 100 101000111
+# CALL.REL (0x944), RET.REL (0x950) and BRX (0x949): CuAssembler's sm_86 encodings
+CALL         ---- 100 101000100
+RET          ---- 100 101010000
+BRX          ---- 100 101001001
+# BRXU (0x958): BRX with the index in the uniform register at 24, CuAssembler's sm_86 encoding
+BRXU         ---- 100 101011000
+UBRA         ---- 010 101000111
+EXIT         ---- 100 101001101
+BSSY         ---- 100 101000101
+BSYNC        ---- 100 101000001
+BREAK        ---- 100 101000010
+BMOV_R       ---- 001 101010101
+BMOV_B       ---- 001 101010110
+# BMOV.32 B, imm (0x956): the barrier at 24-27, the immediate at 32-63, from the SM89 tables that nv_isa_solver made
+# with nvdisasm (github.com/kuterd/nv_isa_solver); the same code with 28-29 set names a state register. BMOV.32 B, B
+# or a state register (0xf55): the barrier written at 16-23, the source at 24-29, as CuAssembler's sm_86 record
+# "BMOV.32 B15, MACTIVE" (0x1a0f7f55) shows
+BMOV_BI      ---- 100 101010110
+BMOV_BL      ---- 111 101010101
+WARPSYNC     ---- 001 101001000
+WARPSYNC     ---- 100 101001000
+WARPSYNC     ---- 101 101001000
+WARPSYNC     ---- 110 101001000
+KILL         ---- 100 101011011
+BAR          ---- 101 100011101
+NOP          ---- 100 100011000
+# ERRBAR (0x9ab): CuAssembler sm_86
+ERRBAR       ---- 100 110101011
+DEPBAR       ---- 100 100011010
+NANOSLEEP    ---- 001 101011101
+NANOSLEEP    ---- 100 101011101
+NANOSLEEP    ---- 101 101011101
+NANOSLEEP    ---- 110 101011101

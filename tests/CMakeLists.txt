@@ -1123,6 +1123,10 @@ add_executable(snx-test-nvn-nvrm-sync nvn_nvrm_sync.c "${PROJECT_SOURCE_DIR}/src
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sm86_decode.c")
 snx_test_target(snx-test-nvn-nvrm-sync 11)
 target_include_directories(snx-test-nvn-nvrm-sync PRIVATE "${PROJECT_SOURCE_DIR}/src")
+# sm86_decode.c's decoder, which tools/decodetree makes from sm86.decode
+include("${PROJECT_SOURCE_DIR}/cmake/decodetree.cmake")
+snx_decodetree(snx-test-nvn-nvrm-sync OUTPUT decode-sm86.inc DECODE "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sm86.decode"
+               OPTIONS -w 16 --static-decode=decode_sm86)
 target_link_libraries(snx-test-nvn-nvrm-sync PRIVATE m)
 snx_hookgen(snx-test-nvn-nvrm-sync SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
 add_test(NAME nvn_nvrm_sync COMMAND snx-test-nvn-nvrm-sync)
@@ -1142,6 +1146,9 @@ add_executable(snx-test-nvn-names nvn_names.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sm86_decode.c")
 snx_test_target(snx-test-nvn-names 11)
 target_include_directories(snx-test-nvn-names PRIVATE "${PROJECT_SOURCE_DIR}/src")
+# sm86_decode.c's decoder, which tools/decodetree makes from sm86.decode
+snx_decodetree(snx-test-nvn-names OUTPUT decode-sm86.inc DECODE "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sm86.decode"
+               OPTIONS -w 16 --static-decode=decode_sm86)
 target_link_libraries(snx-test-nvn-names PRIVATE m)
 snx_hookgen(snx-test-nvn-names SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
 add_test(NAME nvn_names COMMAND snx-test-nvn-names)
