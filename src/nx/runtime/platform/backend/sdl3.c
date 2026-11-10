@@ -1012,6 +1012,12 @@ static int key_action(const SDL_KeyboardEvent* k) {
                    hotkey_row(also)->key, hotkey_row(a)->key);
     return a;
 }
+/* a line over the game for a few seconds, from the frontend's thread: the renderer draws it under ui_lock */
+static void toast(const char* text) {
+    ui_lock();
+    overlay_toast(text, plat_ns());
+    ui_unlock();
+}
 /* a runtime key's action, which the game's menu's F1 page lists (overlay.c's keys_row) with the game's buttons of
    keymap: a binding changed here changes there. The menu's is menu_event's */
 static void mouse_let_go(void);
@@ -1085,6 +1091,12 @@ static void hotkey(int action) {
         case HOTKEY_CAPTURE: g_renderer->capture(1); break;
         case HOTKEY_MOUSE: mouse_let_go(); break;
         case HOTKEY_QUIT: g_quit = 1; break;
+        case HOTKEY_TV_MODE: {
+            char text[64];
+            options_tv_mode_step(1, text, sizeof text);
+            toast(text);
+            break;
+        }
         default: break;
     }
 }
@@ -1186,8 +1198,8 @@ static int menu_event(const SDL_Event* e, int action) {
         switch (e->key.key) {
             case SDLK_UP: overlay_move(-1); break;
             case SDLK_DOWN: overlay_move(1); break;
-            case SDLK_LEFT: overlay_do(overlay_side(-1)); break;
-            case SDLK_RIGHT: overlay_do(overlay_side(1)); break;
+            case SDLK_LEFT: overlay_do(e->key.repeat ? overlay_side_held(-1) : overlay_side(-1)); break;
+            case SDLK_RIGHT: overlay_do(e->key.repeat ? overlay_side_held(1) : overlay_side(1)); break;
             case SDLK_RETURN:
             case SDLK_SPACE:
                 if (!e->key.repeat) overlay_do(overlay_select());

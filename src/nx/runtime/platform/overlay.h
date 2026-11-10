@@ -40,6 +40,9 @@ void overlay_move(int rows);   /* the focus up (-1) or down (1), round the page 
 void overlay_scroll(int rows); /* the mouse's wheel: the same, stopping at the ends */
 int overlay_side(int step);    /* the focused setting down (-1) or up (1); OVERLAY_CLOSE on F1's page */
 int overlay_back(void);        /* the page above; OVERLAY_CLOSE from the first, and from F1's */
+/* a direction held: overlay_side, but for the first page's TV mode row, which a press steps once, as each step docks or
+   undocks the console under the game */
+int overlay_side_held(int step);
 /* F1: the page of the runtime's keys and the game's buttons on the keyboard, a row each, in place of the page showing,
    the menu open; OVERLAY_CLOSE when it shows already. Up/Down and the wheel go over its rows; any other key, button
    or tap is OVERLAY_CLOSE, back to the game: overlay_other for the keys the menu has no other use for */

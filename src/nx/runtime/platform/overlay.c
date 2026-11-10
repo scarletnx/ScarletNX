@@ -8,6 +8,7 @@
 #include "nx/runtime/platform/plat.h" /* the notices' lock */
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/vpad.h"
+#include "nx/runtime/options.h"
 #include "nx/gpu/renderer.h"
 #include "gui_theme_colors.h"
 #include "gui/icons.h"
@@ -35,7 +36,7 @@ enum {
     PAGE_KEYS
 };
 /* the first page's items: Capture frame only while RenderDoc can capture */
-enum { M_CONTROLS, M_PADS, M_STATES, M_SHORTCUTS, M_STATS, M_CAPTURE, M_EXIT, M_COUNT };
+enum { M_CONTROLS, M_PADS, M_STATES, M_SHORTCUTS, M_TV_MODE, M_STATS, M_CAPTURE, M_EXIT, M_COUNT };
 enum { S_SAVE, S_LOAD, S_DELETE, S_BACK, S_COUNT };              /* a slot's page's, the auto slot without Save */
 enum { P_PLAYER, P_SWAP, P_DEADZONE, P_RUMBLE, P_BACKGROUND, P_MAP, P_BACK, P_COUNT }; /* the gamepads' page's */
 /* the controls page's items */
@@ -101,6 +102,7 @@ static const struct {
             {GUI_ICON_IMAGE, HOTKEY_CAPTURE, NULL, "capture a frame"}, /* while RenderDoc is in the process */
             {GUI_ICON_POINTER, HOTKEY_MOUSE, NULL, "let the mouse go, hold it"},
             {GUI_ICON_LOG_OUT, HOTKEY_QUIT, NULL, "quit the game"},
+            {GUI_ICON_MONITOR, HOTKEY_TV_MODE, NULL, "TV on/off/auto"},
             {GUI_ICON_GAMEPAD, -1, "X, Space", "A"},
             {GUI_ICON_GAMEPAD, -1, "Z, C, V", "B, X, Y"},
             {GUI_ICON_GAMEPAD, -1, "Q, E", "L, R"},
@@ -242,10 +244,13 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
         return;
     }
     if (page == PAGE_MAIN) {
-        static const char* const main_items[M_COUNT] = {SNX_VPAD_PAGE, SNX_GAMEPAD_PAGE, "Save states", "Shortcuts",
-                                                        "Stats",       "Capture frame",  "Exit"};
+        static const char* const main_items[M_COUNT] = {SNX_VPAD_PAGE, SNX_GAMEPAD_PAGE, "Save states",   "Shortcuts",
+                                                        "TV mode",     "Stats",          "Capture frame", "Exit"};
         snprintf(text, size, "%s", main_items[main_item(i)]);
-        if (main_item(i) < M_CAPTURE) snprintf(value, vsize, ">");
+        if (main_item(i) == M_TV_MODE) /* the choice in effect, in docked's words: the .ini keeps its own */
+            ini_word(ini_find(g_display_ini, "docked"), options_tv_mode_choice(), value, vsize);
+        else if (main_item(i) < M_CAPTURE)
+            snprintf(value, vsize, ">");
         return;
     }
     if (page == PAGE_BUTTONS) {
@@ -431,6 +436,11 @@ static void map_draw(SnxUiList* l, int sw, int sh) {
 static int act(int i, int step) {
     const IniOpt* o = setting(i);
     if (page == PAGE_KEYS) return OVERLAY_CLOSE; /* F1's: any key, the game again */
+    if (page == PAGE_MAIN && main_item(i) == M_TV_MODE) {
+        /* a select or a tap steps on, as the key does; Left and Right either way */
+        options_tv_mode_step(step < 0 ? -1 : 1, NULL, 0);
+        return OVERLAY_NONE;
+    }
     if (o && o->type == INI_TEXT) { /* the skin: round the built-in look and the shipped skins; a .cfg's path goes to
                                        the built-in look, or the last skin stepping down */
         char names[8][64];
@@ -960,15 +970,18 @@ void overlay_scroll(int rows) {
     focus = snx_clamp_int(focus + rows, 0, items() - 1);
     keep_in_view();
 }
-int overlay_side(int step) {
+/* the first page's settings take no side step but the TV mode row's, and that one only on a press */
+static int side(int step, int held) {
     listening = 0;
     if (page == PAGE_KEYS) return OVERLAY_CLOSE;
     if (page == PAGE_MAP)
         map_key(step < 0 ? SNX_PAD_KEY_LEFT : SNX_PAD_KEY_RIGHT);
-    else if (page != PAGE_MAIN)
+    else if (page != PAGE_MAIN || (main_item(focus) == M_TV_MODE && !held))
         act(focus, step);
     return OVERLAY_NONE;
 }
+int overlay_side(int step) { return side(step, 0); }
+int overlay_side_held(int step) { return side(step, 1); }
 int overlay_keys(void) {
     if (page == PAGE_KEYS) return OVERLAY_CLOSE;
     page_open(PAGE_KEYS);
@@ -994,6 +1007,7 @@ int overlay_pad(u64 button) {
 int overlay_controls(u64 buttons, const i32 sticks[4], u64 ms) {
     static u64 seen, next;       /* the buttons of the last call; when a held direction moves again */
     const u64 dirs = 0xFF000ull; /* the D-pad's and the left stick's: bits 12 to 19 */
+    const u64 sides = 1ull << 12 | 1ull << 14 | 1ull << 16 | 1ull << 18; /* their lefts and rights */
     u64 now = buttons | (sticks[0] < -16384 ? 1ull << 16 : 0) | (sticks[1] > 16384 ? 1ull << 17 : 0) |
               (sticks[0] > 16384 ? 1ull << 18 : 0) | (sticks[1] < -16384 ? 1ull << 19 : 0),
         pressed = shown || g_overlay.kb_shown ? now & ~seen : 0;
@@ -1003,15 +1017,18 @@ int overlay_controls(u64 buttons, const i32 sticks[4], u64 ms) {
         seen = now;
         return OVERLAY_NONE;
     }
+    u64 held = 0;                   /* the lowest direction held, again */
     if ((pressed & dirs) || !shown) /* a direction held as the menu opens waits as a fresh press would */
         next = ms + SNX_OVERLAY_REPEAT_DELAY;
-    else if (shown && (now & dirs) && ms >= next) { /* held: the lowest direction again */
-        pressed |= now & dirs & (~(now & dirs) + 1);
+    else if (shown && (now & dirs) && ms >= next) {
+        held = now & dirs & (~(now & dirs) + 1);
         next = ms + SNX_OVERLAY_REPEAT_MS;
     }
     seen = now;
     for (bit = 0; bit < 20 && did == OVERLAY_NONE; ++bit)
         if (pressed >> bit & 1) did = shown ? overlay_pad(1ull << bit) : kb_pad(1ull << bit);
+    if (did == OVERLAY_NONE && held)
+        did = held & sides ? overlay_side_held(held & (1ull << 12 | 1ull << 16) ? -1 : 1) : overlay_pad(held);
     return did;
 }
 int overlay_back(void) {
@@ -1138,8 +1155,8 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
     d->shown = n - top < VISIBLE ? n - top : VISIBLE;
     for (r = 0; r < d->shown; ++r) {
         static const unsigned main_icons[M_COUNT] = {GUI_ICON_POINTER,  GUI_ICON_GAMEPAD_2, GUI_ICON_SAVE,
-                                                     GUI_ICON_KEYBOARD, GUI_ICON_ACTIVITY,  GUI_ICON_IMAGE,
-                                                     GUI_ICON_LOG_OUT};
+                                                     GUI_ICON_KEYBOARD, GUI_ICON_MONITOR,   GUI_ICON_ACTIVITY,
+                                                     GUI_ICON_IMAGE,    GUI_ICON_LOG_OUT};
         label(top + r, text[r], sizeof *text, value[r], sizeof *value);
         d->label[r] = text[r];
         d->icon[r] = page == PAGE_MAIN ? main_icons[main_item(top + r)] : GUI_ICON_NONE;

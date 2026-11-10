@@ -3,7 +3,7 @@
 /* docked's Auto (runtime/options.c) over a faked host power source: the mode each state picks (the battery handheld,
    the charger TV, a state that cannot be read TV), the log line that names both, am's and hid's change on a switch
    and on no other update, a change only when the watcher marks one, the 15 s query of a host with no watcher, and
-   Off and On never asking the host. And a key the .ini gives twice: the last line's value, and a line that names the
+   Off and On never asking the host; the steps round On, Off and Auto of hotkey_tv_mode and the game's menu. And a key the .ini gives twice: the last line's value, and a line that names the
    key and both values; and memory_fit, deprecated, read from an old .ini as memory_fit_mode while the file gives that
    one none, and the file written with memory_fit_mode and memory_fit under [Deprecated]. And controls_skin: a .ini
    without it opens with line, its default, and one that gives it empty keeps the built-in look. And controls_opacity,
@@ -46,6 +46,7 @@ static struct {
     int changed;    /* the watcher's mark, which plat_power_take_change takes */
     u64 ns;         /* plat_ns */
     int queries;    /* plat_power_on_charger's calls */
+    int asked;      /* plat_power_watch's calls */
     int am, hid;    /* am_display_mode_changed's and hid_mode_changed's calls */
     int lines;      /* the log's lines */
     char logged[256];
@@ -59,7 +60,10 @@ int plat_power_on_charger(void) {
     g_test.queries++;
     return g_test.on_charger;
 }
-int plat_power_watch(void) { return g_test.watch; }
+int plat_power_watch(void) {
+    g_test.asked++;
+    return g_test.watch;
+}
 int plat_power_take_change(void) {
     int was = g_test.changed;
     g_test.changed = 0;
@@ -233,6 +237,57 @@ static void test_auto_polled(void) {
     options_tv_mode_update();
     CHECK(mode() == 1 && g_test.queries == queries + 1 && g_test.am == 5 && g_test.hid == 5);
     CHECK(!strcmp(g_test.logged, "power: the host is on its charger: TV mode Auto picks TV mode\n"));
+}
+
+/* hotkey_tv_mode and the game's menu's TV mode row: round On, Off and Auto, and back the other way, in effect at once
+   and told to the services on the next update, once for each mode they had not heard of; Auto asks the host and says
+   what it picks, and asks the platform for its watcher only where none watches yet */
+static void test_cycle(void) {
+    char text[64];
+    int am, hid, asked;
+    docked("1");
+    g_test.watch = 0; /* this host has a watcher, which the last test's had not */
+    g_test.on_charger = 0;
+    am = g_test.am;
+    hid = g_test.hid;
+    asked = g_test.asked;
+    CHECK(options_tv_mode_choice() == 1 && mode() == 1);
+    /* On to Off: handheld mode at once, its line and the same words for the toast; the services hear of it on the
+       update, and once */
+    CHECK(options_tv_mode_step(1, text, sizeof text) == 0 && options_tv_mode_choice() == 0 && mode() == 0);
+    CHECK(!strcmp(text, "TV mode: Off (handheld mode)") && !strcmp(g_test.logged, "TV mode: Off (handheld mode)\n"));
+    CHECK(g_test.am == am && g_test.hid == hid);
+    options_tv_mode_update();
+    CHECK(g_test.am == am + 1 && g_test.hid == hid + 1);
+    options_tv_mode_update();
+    CHECK(g_test.am == am + 1 && g_test.hid == hid + 1);
+    /* Off to Auto on the battery: the watcher asked for, the host read and said; handheld mode still, nothing to tell */
+    g_test.said[0] = 0;
+    CHECK(options_tv_mode_step(1, text, sizeof text) == 2 && mode() == 0 && g_test.asked == asked + 1);
+    CHECK(!strcmp(g_test.said, "power: the host is on its battery: TV mode Auto picks handheld mode\n"
+                               "TV mode: Auto (handheld mode)\n"));
+    CHECK(!strcmp(text, "TV mode: Auto (handheld mode)"));
+    options_tv_mode_update();
+    CHECK(g_test.am == am + 1);
+    /* Auto follows the watcher, as from the start */
+    g_test.on_charger = 1;
+    plat_power_mark_changed();
+    options_tv_mode_update();
+    CHECK(mode() == 1 && g_test.am == am + 2 && g_test.hid == hid + 2);
+    /* Auto to On, the mode it had: nothing to tell. On to Off and on to Auto before an update: TV mode again, which
+       the services never stopped hearing, and the watcher not asked twice */
+    CHECK(options_tv_mode_step(1, NULL, 0) == 1 && mode() == 1);
+    CHECK(options_tv_mode_step(1, NULL, 0) == 0 && mode() == 0);
+    CHECK(options_tv_mode_step(1, NULL, 0) == 2 && mode() == 1 && g_test.asked == asked + 1);
+    options_tv_mode_update();
+    CHECK(g_test.am == am + 2 && g_test.hid == hid + 2);
+    /* the other way: Auto, Off, On, Auto */
+    CHECK(options_tv_mode_step(-1, NULL, 0) == 0 && mode() == 0);
+    CHECK(options_tv_mode_step(-1, NULL, 0) == 1 && mode() == 1);
+    CHECK(options_tv_mode_step(-1, NULL, 0) == 2 && mode() == 1);
+    /* a text too small for the line: cut, ended */
+    options_tv_mode_step(1, text, 9);
+    CHECK(!strcmp(text, "TV mode:") && !strcmp(g_test.logged, "TV mode: On (TV mode)\n"));
 }
 
 /* vk_memory at the top, in no section, and again in [Debug]: the second line's 0 is taken, and a line says so with
@@ -524,6 +579,7 @@ int main(int argc, char** argv) {
     test_fixed();
     test_auto_watched();
     test_auto_polled();
+    test_cycle();
     test_key_twice(); /* after the TV mode tests: the file's every setting applied, which they count from nought */
     test_settings_line();
     test_memory_fit_old();
