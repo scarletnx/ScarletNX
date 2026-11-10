@@ -38,7 +38,7 @@ case $system in
         ;;
     *) echo "macos, ios or iossim, not $system" >&2; exit 2 ;;
 esac
-version=${LLVM_VERSION:-23.1.3}
+version=${LLVM_VERSION:-23.1.5}
 work=$prefix.build/$version
 mkdir -p "$work"
 if [ -z "$source" ]; then
