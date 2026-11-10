@@ -348,8 +348,9 @@ static SvcObj* test_object(const char* name) {
 #define RC_FAIL RC(5, 7)
 /* records what reached it. 1 answers the sum of two words and a constant, 2 fails after putting handles, an object
    and data in the reply, 3 answers an object, 4 answers a missing object, 5 answers 0xD0 bytes, 6 0x100 bytes (more
-   than fits), 7 two copy handles and 0xD0 bytes, 8 claims the crash report ring's next 32 entries while it runs, 10
-   answers a copy handle, two objects and a word; 9 is a command it doesn't have */
+   than fits), 7 two copy handles and 0xD0 bytes, 8 claims the crash report ring's next 32 entries while it runs, 11
+   answers a copy handle, two objects and a word; 9, 10 and 20 to 28 are commands it doesn't have, which the tests
+   of the requests it refuses and of the counters send */
 static int test_dispatch(SvcObj* self, IpcCtx* c) {
     test_now += test_takes;
     got.calls++;
@@ -397,7 +398,7 @@ static int test_dispatch(SvcObj* self, IpcCtx* c) {
         case 8:
             for (int i = 0; i < 32; i++) ring_claim();
             return 0;
-        case 10:
+        case 11:
             out_copy_h(c, event_handle());
             out_obj(c, test_object("test:child"));
             out_obj(c, test_object("test:child"));
@@ -1108,7 +1109,7 @@ static void full_handle_table(void) {
     u32 h = session_new(root), open = 0;
     for (u32 i = 0; i < 64; i++) open += handles[i] != NULL;
     clear();
-    cmif_make_request(msg(), (CmifRequestFormat){.request_id = 10});
+    cmif_make_request(msg(), (CmifRequestFormat){.request_id = 11});
     handles_left = 2; /* the event's and the first object's */
     CHECK(send(h) == 0);
     handles_left = -1;
