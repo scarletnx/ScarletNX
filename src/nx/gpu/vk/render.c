@@ -2466,7 +2466,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                       ds_msaa_samples(t->msaa), ms ? "samples" : "pixels");
             t = NULL;
         }
-        if (st->flags & 1) t = vk_tex_from_tic_raw(x->tic);
+        /* a stage before the fragment's has no fragment to place a fetch by: its fetches, its size queries and its
+           raw loads count the guest's texels, as a compute program's do, so a scaled target comes to it as a copy
+           of the guest's size (vk_tex_from_tic_guest), and as its scaled image only where none can be made */
+        int guest = stage != ST_FS && t && t->is_rt && (t->sw != t->w || t->sh != t->h);
+        if (guest) t = vk_tex_from_tic_guest(x->tic, 0);
+        if (st->flags & 1) t = stage != ST_FS ? vk_tex_from_tic_guest(x->tic, 1) : vk_tex_from_tic_raw(x->tic);
         /* a raw load's header without 4-byte texels, or no header at all, reads zeros through the null view, as a
            missing texture does: the draw still runs (it was dropped, from one game's movie and gameplay passes) */
         if ((st->flags & 1) && !t)

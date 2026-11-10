@@ -1649,17 +1649,17 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
     return c;
 }
 static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) { return rt_copy(rt, w, h, as, 0, 1); }
-/* A scaled color target for a program whose texels are the guest's (a compute program: its fetches, its size queries
-   and the images it stores into count them): its top-left w x h at the guest's size, in as when not NULL. NULL for a
-   multisampled or depth target, a format that can't be blitted or a copy that found no memory, said once: the caller
-   takes the scaled image */
+/* A scaled color target for a program whose texels are the guest's (a compute program, whose fetches, size queries
+   and stored images count them, or a stage before the fragment's): its top-left w x h at the guest's size, in as when
+   not NULL. NULL for a multisampled or depth target, a format that can't be blitted or a copy that found no memory,
+   said once: the caller takes the scaled image */
 static Surf* rt_guest(Surf* rt, u32 w, u32 h, const VkFmt* as) {
     Surf* c = rt->msaa || rt->f.depth || !can_blit(rt->f.vk) ? NULL : rt_copy(rt, w, h, as, 1, 1);
     if (!c)
         LOG_LIMIT(1,
-                  "vulkan: a compute program reads the %ux%u render target at %llx (format %d, depth %d, %u samples) "
-                  "and no copy of the guest's size could be made of it: the program is given its %ux%u image, "
-                  "whose pixels its fetches count\n",
+                  "vulkan: a compute, vertex, tessellation, geometry or mesh program reads the %ux%u render target at "
+                  "%llx (format %d, depth %d, %u samples) and no copy of the guest's size could be made of it: the "
+                  "program is given its %ux%u image, whose pixels its fetches count\n",
                   rt->w, rt->h, (unsigned long long)rt->gva, (int)rt->f.vk, rt->f.depth, ds_msaa_samples(rt->msaa),
                   rt->sw, rt->sh);
     return c;

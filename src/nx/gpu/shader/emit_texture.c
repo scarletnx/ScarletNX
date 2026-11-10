@@ -437,6 +437,19 @@ static u32 texture_gradient_offset(const Tr* t, int slot, u32 coords, u32 dx, u3
         .sampled_type = t->c->sampled_type[slot], .sampler = t->c->sampler[slot]};
     return texture_offset_dispatch(tree, packed, 16, known, value);
 }
+/* a surface instruction's coordinates x and y with what its dimension adds: a 2D array's layer is the low 16 bits of
+   the third register (a + 2), as TLD's is, and a 3D surface's z the whole register (Eden's MakeCoords in
+   surface_load_store.cpp reads them the same way) */
+static u32 surface_coord(DirectCtx* c, int dim, u32 x, u32 y, u32 a, u32 i32_type, u32 vec2_i32, u32 vec3_i32) {
+    if (dim == 4)
+        return spv_emit_vec3_construct(
+            &c->emit, vec3_i32, x, y,
+            spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type,
+                           spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, reg_read(c, a + 2),
+                                           shader_u32(c, 0xffff))));
+    if (dim == 5) return spv_emit_vec3_construct(&c->emit, vec3_i32, x, y, reg_read_as(c, a + 2, i32_type));
+    return spv_emit_vec2_construct(&c->emit, vec2_i32, x, y);
+}
 /* the texture and surface instructions */
 void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     const u64* insn = t->insn;
@@ -525,19 +538,8 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 bank = 0, off = B(w, 36, 13);
         int bindless = op == O_SUATOM ? (int)B(w, 54, 1) : !B(w, 51, 1);
         if (bindless) shader_direct_track_image_handle(t->flow, i, B(w, 39, 8), &bank, &off, 0);
-        u32 x = reg_read_as(c, a, i32_type), coord = x;
-        if (!buffer) {
-            u32 y = reg_read_as(c, a + 1, i32_type);
-            /* a 2D array's layer is the low 16 bits of the third register, as TLD's is, and a 3D surface's z the
-               whole register (Eden's MakeCoords in surface_load_store.cpp reads them the same way) */
-            coord = dim == 4   ? spv_emit_vec3_construct(
-                                     &c->emit, vec3_i32, x, y,
-                                     spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type,
-                                                    spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
-                                                                    reg_read(c, a + 2), shader_u32(c, 0xffff))))
-                    : dim == 5 ? spv_emit_vec3_construct(&c->emit, vec3_i32, x, y, reg_read_as(c, a + 2, i32_type))
-                               : spv_emit_vec2_construct(&c->emit, vec2_i32, x, y);
-        }
+        u32 x = reg_read_as(c, a, i32_type), y = buffer ? 0 : reg_read_as(c, a + 1, i32_type);
+        u32 coord = buffer ? x : surface_coord(c, dim, x, y, a, i32_type, vec2_i32, vec3_i32);
         int raw = op == O_SULD && B(w, 52, 1);
         u32 mask = raw ? 1u : B(w, 20, 4), source = d;
         if (op != O_SULD || buffer) {
@@ -600,6 +602,11 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                     (textures[slot].flags & 3) != (B(w, 52, 1) ? 1 : 0) ||
                     (bindless && textures[slot].bl_cbuf != bank)))
                 slot++;
+            /* a load is a fetch at a texel: of a scaled target it takes TLD's pixel (shader_scaled_fetch) */
+            if (sample_type == 1 && needs_texel_scale) {
+                shader_scaled_fetch(c, push, t->fragcoord, vec4, slot, i32_type, &x, &y);
+                coord = surface_coord(c, dim, x, y, a, i32_type, vec2_i32, vec3_i32);
+            }
             u32 sample = spv_emit_image_fetch(&c->emit, texture_vec4[slot], c->sampled_type[slot], c->sampler[slot],
                                               coord, spv_emit_constant_u32(&c->emit, i32_type, 0));
             for (u32 q = 0; q < 4; q++)

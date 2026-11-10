@@ -15,7 +15,11 @@
      the columns alternated between two values that were neither the texel's. The same through a 2x1 header on it,
      and of the table once a draw filled it with positions: one pixel of the texel for every fragment
    A Maxwell program draws the first two again in a lower-left window, where the fragment's y counts up from the
-   bottom: the texture and the positions' target come upside down, row for row */
+   bottom: the texture and the positions' target come upside down, row for row.
+   A Maxwell fragment program's raw load (SULD.D.32) of an 8x8 R32F target of the fragments' x at its own coordinates
+   is a fetch like TLD's: its own pixel. A Maxwell vertex program has no fragment to place a fetch by: its TLD of the
+   positions' texel (1, 0) reads the guest's texel, the middle of the four pixels, (1.5, 0.5), where the scaled image
+   gave it pixel (1, 0), (0.75, 0.25), and so does its raw load of the R32F target's texel (1, 0), 1.5 */
 #define SF_GPU 0x870000000ull
 #define SF_CPU (HEAP_BASE + 0x5540000)
 #define SF_W   8u
@@ -116,10 +120,10 @@ static int sf_draw(GpuChannel* channel, u64 target, u32 w, u32 h, u32 format, u3
     DsState* state = &channel->ds;
     state->bind.tex_pool = SF_GPU + SF_POOL;
     state->bind.smp_pool = SF_GPU + SF_SAMPLERS;
-    state->bind.tex_max = 5;
+    state->bind.tex_max = 6;
     state->bind.smp_max = 0;
-    state->bind.cb_addr[ST_FS][2] = SF_GPU + SF_CONSTANTS;
-    state->bind.cb_size[ST_FS][2] = 256;
+    state->bind.cb_addr[ST_FS][2] = state->bind.cb_addr[ST_VS][2] = SF_GPU + SF_CONSTANTS;
+    state->bind.cb_size[ST_FS][2] = state->bind.cb_size[ST_VS][2] = 256;
     state->blend.en[0] = 0;
     state->blend.mask[0] = 15;
     state->dyn.depth_test = state->dyn.depth_write = state->dyn.stencil_test = state->dyn.alpha_test = 0;
@@ -145,7 +149,7 @@ static int sf_draw(GpuChannel* channel, u64 target, u32 w, u32 h, u32 format, u3
 static u32 sf_texel(u32 x, u32 y) { return (10 + 30 * x) | (20 + 30 * y) << 8 | (x + SF_W * y) << 16 | 255u << 24; }
 static int check_scaled_fragment(void) {
     const u64 target = SF_GPU + 0x4000, texture = SF_GPU + 0x6000, positions = SF_GPU + 0xc000, copy = SF_GPU + 0xe000;
-    const u64 entries = SF_GPU + 0xf000;
+    const u64 entries = SF_GPU + 0xf000, xs = SF_GPU + 0xd000;
     const u32 rgba32f = 0x01 | 7u << 7 | 7u << 10 | 7u << 13 | 7u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28;
     /* sample_raster_channel gives the triangle, its position the first attribute, and maps the memory */
     GpuChannel* channel = sample_raster_channel(SF_GPU, SF_CPU, 0);
@@ -205,7 +209,41 @@ static int check_scaled_fragment(void) {
         SF_GPU + SF_POOL + 160,
         (const u32[8]){rgba32f, (u32)positions, (u32)(positions >> 32) | 3u << 21, 0, 5 | 1u << 23, 4, 0, 0}, 8));
     snx_st_le32(table + 0x50, 5);
+    /* header 6: the R32F target of the fragments' x */
+    CHECK(!storage_write_words(
+        SF_GPU + SF_POOL + 192,
+        (const u32[8]){0x0f | 7u << 7 | 7u << 10 | 7u << 13 | 7u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                       (u32)xs, (u32)(xs >> 32) | 3u << 21, 0, (SF_W - 1) | 1u << 23, SF_W - 1, 0, 0},
+        8));
+    snx_st_le32(table + 0x54, 6);
     CHECK(!gmem_write(SF_GPU + SF_CONSTANTS, table, sizeof table));
+    /* a vertex program that fetches the positions' texel (1, 0) into its first varying (ALD and AST of the position,
+       MOV32I R2, 1 and R3, 0, LDC R4, c[2][0x44], TLD.B.LZ R0-R3, AST a[0x80]), sample_raster_channel's fragment
+       program, which draws that varying, and a fragment program that loads the R32F target raw at its own
+       coordinates (IPA and F2I of the position, LDC R4, c[2][0x54], SULD.D.32 R8, MOV R0, R8) */
+    const u64 fetching[] = {0xefd9ff800807ff00ull, 0xeff1ff800707ff00ull, 0x0100000000171002ull, 0x0100000000071003ull,
+                            0xef9400200447ff04ull, 0xdd380007a0470200ull, 0xeff1ff800807ff00ull, 0xe30000000007000full};
+    u64 varying[5], loading[8];
+    for (u32 i = 0; i < 4; i++) varying[i] = 0xe000000000070000ull | (0x20ull + i) << 30 | i;
+    varying[4] = 0xe30000000007000full;
+    for (u32 k = 0; k < 2; k++) {
+        loading[k] = 0xe000000000070000ull | (0x1cull + k) << 30 | k;
+        loading[2 + k] = 0x5cb0000000070000ull | 3ull << 39 | (u64)k << 20 | 2ull << 10 | 2ull << 8 | k;
+    }
+    loading[4] = 0xef9400200547ff04ull;
+    loading[5] = 0xeb00000000070008ull | 3ull << 33 | 4ull << 39 | 1ull << 52 | 4ull << 20;
+    loading[6] = 0x5c98078000870000ull;
+    loading[7] = 0xe30000000007000full;
+    /* the vertex program with a raw load in the fetch's place: MOV32I R4, 1 and R5, 0, LDC R6, c[2][0x54], SULD.D.32
+       R8, R4, MOV R0, R8 */
+    const u64 vertex_loading[] = {
+        0xefd9ff800807ff00ull, 0xeff1ff800707ff00ull,
+        0x0100000000171004ull, 0x0100000000071005ull,
+        0xef9400200547ff06ull, 0xeb00000000070408ull | 3ull << 33 | 6ull << 39 | 1ull << 52 | 4ull << 20,
+        0x5c98078000870000ull, 0xeff1ff800807ff00ull,
+        0xe30000000007000full};
+    CHECK(mesh_program(SF_GPU + 0x3c00, fetching, 8, 0) && mesh_program(SF_GPU + 0x400, varying, 5, 1) &&
+          mesh_program(SF_GPU + 0xc00, loading, 8, 1) && mesh_program(SF_GPU + 0x1400, vertex_loading, 9, 0));
     /* the Maxwell programs: sample_raster_channel's vertex program again, the three fragment programs and the fetch
        of the table's texel 1 */
     const u64 vertex[] = {0xefd9ff800807ff00ull, 0xeff1ff800707ff00ull, 0xefd9ff800907ff00ull, 0xeff1ff800807ff00ull,
@@ -267,6 +305,48 @@ static int check_scaled_fragment(void) {
                         "scaled fragment: pixel %u,%u of a target at 2x fetched through a 6x5 header on the target "
                         "of the positions (%g, %g), not its own (%g, %g)\n",
                         x, y, (double)at[0], (double)at[1], ((double)x + 0.5) / 2, ((double)y + 0.5) / 2);
+        }
+    CHECK(!bad);
+    /* the Maxwell vertex program's fetch of the positions' texel (1, 0), then the raw load of the R32F target */
+    g_shader_sm86 = 0;
+    r[0x811] = 0x3c00;
+    CHECK(!sf_draw(channel, copy, SF_W, SF_W, 0xC0, 0x400, pixels, 16));
+    for (u32 y = 0; y < 2 * SF_W; y++)
+        for (u32 x = 0; x < 2 * SF_W; x++) {
+            float at[2];
+            memcpy(at, pixels + (y * 2 * SF_W + x) * 16, sizeof at);
+            if ((at[0] != 1.5f || at[1] != 0.5f) && bad++ < 4)
+                fprintf(stderr,
+                        "scaled fragment: pixel %u,%u of a target at 2x has (%g, %g) from a Maxwell vertex program's "
+                        "fetch of texel (1, 0) of the positions' target, not the guest's texel, (1.5, 0.5)\n",
+                        x, y, (double)at[0], (double)at[1]);
+        }
+    CHECK(!bad);
+    r[0x811] = 0x2200;
+    CHECK(!sf_draw(channel, xs, SF_W, SF_W, 0xE5, 0x2600, pixels, 4));
+    CHECK(!sf_draw(channel, copy, SF_W, SF_W, 0xC0, 0xc00, pixels, 16));
+    for (u32 y = 0; y < 2 * SF_W; y++)
+        for (u32 x = 0; x < 2 * SF_W; x++) {
+            float at;
+            memcpy(&at, pixels + (y * 2 * SF_W + x) * 16, sizeof at);
+            if (at != ((float)x + 0.5f) / 2 && bad++ < 4)
+                fprintf(stderr,
+                        "scaled fragment: pixel %u,%u of a target at 2x loaded raw (SULD.D.32) from the R32F target "
+                        "of the fragments' x at its own coordinates %g, not %g\n",
+                        x, y, (double)at, ((double)x + 0.5) / 2);
+        }
+    CHECK(!bad);
+    r[0x811] = 0x1400;
+    CHECK(!sf_draw(channel, copy, SF_W, SF_W, 0xC0, 0x400, pixels, 16));
+    for (u32 y = 0; y < 2 * SF_W; y++)
+        for (u32 x = 0; x < 2 * SF_W; x++) {
+            float at;
+            memcpy(&at, pixels + (y * 2 * SF_W + x) * 16, sizeof at);
+            if (at != 1.5f && bad++ < 4)
+                fprintf(stderr,
+                        "scaled fragment: pixel %u,%u of a target at 2x has %g from a Maxwell vertex program's raw "
+                        "load of texel (1, 0) of the R32F target, not the guest's texel, 1.5\n",
+                        x, y, (double)at);
         }
     CHECK(!bad);
     /* the table: cleared as a target, then written by the program and loaded again */
