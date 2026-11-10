@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The drivers known to break a Vulkan extension or feature (extension_bans.txt, whose head explains each field), and
-   what the device does about them: device.c loads the table, says which device it runs on, takes the banned extensions
+   what the device does about them: device.c loads the table, says which device it runs on, applies the extension
+   settings (vk_extension_settings: auto, on, off for each extension, auto by the bans), takes the banned extensions
    out of the device's list before anything reads it (vk_bans_filter), asks for each feature it can do without
    (vk_ban), and at the end says the "off" lines that held for something nothing asked for (vk_bans_unclaimed). Every
    line that holds is said in the log with the extension, the device, its driver and version, and why */
@@ -67,6 +68,27 @@ void vk_ban_why(uint32_t line, char* out, size_t n);
 uint32_t vk_bans_filter(SnxVkExtensions* e, VkBanSay say);
 /* says each "off" line that holds and nothing claimed */
 void vk_bans_unclaimed(VkBanSay say);
+/* The extension settings (settings.txt's g_vk_extensions_ini, vk_ext_*), one per extension the renderer can use: its
+   name, the setting's value (auto, on or off) and the Vulkan version it was promoted to (13 for 1.3, 0 for none).
+   auto leaves the extension to the bans; on goes over every ban on it; off takes it out of the device's list */
+typedef struct {
+    const char* name;
+    const char* value;
+    int core;
+} VkExtensionSetting;
+/* an extension the renderer can't run without on this device, and why: off is refused for it */
+typedef struct {
+    const char* name;
+    const char* why;
+} VkExtensionNeed;
+/* the settings applied to e, the device's list as its driver gives it, before vk_bans_filter: each off one taken out,
+   each on one's bans gone over. 1, or 0 with why in err: a value not auto, on or off, or off for a needed extension
+   the driver has. Kept for vk_extension_settings_say */
+int vk_extension_settings(SnxVkExtensions* e, const VkExtensionSetting* s, uint32_t count, const VkExtensionNeed* need,
+                          uint32_t needs, char* err, size_t n);
+/* after vk_bans_filter, a line for each setting: its extension on or off in e, the list the renderer reads, and why.
+   api: the Vulkan version the renderer runs the device at, for an extension that is core there */
+void vk_extension_settings_say(const SnxVkExtensions* e, uint32_t api, VkBanSay say);
 /* the first line after line that holds for the device, of either action; 0 past the last */
 uint32_t vk_bans_holding(uint32_t line);
 /* a field of a line (VK_BAN_*), as the table writes it */

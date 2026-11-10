@@ -472,6 +472,35 @@ static void ban_say(const char* line, int warn) {
         LOG("%s\n", line);
 }
 
+/* the extension settings (settings.txt's g_vk_extensions_ini) applied to e, the device's list: a value not auto, on or
+   off, or off for an extension the renderer can't run without here, stops the game, as vulkan_ban_ignore's unknown key
+   does. Those are the swapchain of a window, a portability driver's subset, which Vulkan has turned on wherever a
+   driver lists it, and on a 1.2 device what 1.3 took in (vk12_extensions, and one of the store op NONE's two) */
+static void apply_extension_settings(SnxVkExtensions* e, int core13) {
+    static VkExtensionSetting settings[160];
+    VkExtensionNeed need[VK12_EXTENSIONS + 4];
+    u32 count = 0, needs = 0;
+    char err[512];
+    for (int i = 0; i < g_vk_extension_settings_count && count < sizeof settings / sizeof *settings; i++)
+        settings[count++] = (VkExtensionSetting){g_vk_extension_settings[i].name, g_vk_extension_settings[i].value,
+                                                 g_vk_extension_settings[i].core};
+    if (!g_opt_headless)
+        need[needs++] = (VkExtensionNeed){VK_KHR_SWAPCHAIN_EXTENSION_NAME, "the window is drawn with it"};
+    need[needs++] = (VkExtensionNeed){"VK_KHR_portability_subset",
+                                      "Vulkan has a portability driver's subset on wherever the driver lists it"};
+    if (!core13) {
+        static const char why[] = "the device has Vulkan 1.2, where ScarletNX needs it for what Vulkan 1.3 took in";
+        for (u32 i = 0; i < VK12_EXTENSIONS; i++) need[needs++] = (VkExtensionNeed){vk12_extensions[i], why};
+        /* the store op NONE: one of the two, the other where only one is listed */
+        int khr = snx_vk_extensions_has(e, VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME),
+            ext = snx_vk_extensions_has(e, VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME);
+        if (khr != ext) need[needs++] = (VkExtensionNeed){khr ? VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME
+                                                              : VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME,
+                                                          why};
+    }
+    if (!vk_extension_settings(e, settings, count, need, needs, err, sizeof err)) fatal("settings: %s", err);
+}
+
 /* the stages whose programs the translator gives subgroup operations, and what VOTE and SHFL do in the others */
 static void log_subgroups(u32 size, VkSubgroupFeatureFlags operations, VkShaderStageFlags stages) {
     static const struct {
@@ -724,8 +753,12 @@ static int create_device(void) {
     {
         SnxVkExtensions e;
         snx_vk_device_extensions(g_vk.phys, &e);
+        /* the extension settings (vk_ext_*) first: an off one leaves the list, an on one goes over its bans */
+        apply_extension_settings(&e, core13);
         /* the extensions a driver is banned from leave the list before anything below reads it */
         vk_bans_filter(&e, ban_say);
+        /* each setting's extension, on or off in the list, and why */
+        vk_extension_settings_say(&e, g_vk.api, ban_say);
         store_none_ext = vk12_store_none(&e);
         /* again on this list, which the bans took out of (each said above): a 1.2 device banned from one of them is
            refused by its name, as one without it */

@@ -394,9 +394,21 @@ build/tests/snx-test-vk-bans --check src/nx/gpu/vk/extension_bans.txt   # a tabl
 ctest --test-dir build -R 'vk_extension_bans|vk_vertex_input'
 ```
 
+Each extension the renderer can use also has a setting, `vk_ext_<name>`
+([Settings](../user/settings.md#vulkan-extensions)), `auto` by default: `auto` leaves the extension to this table, `on` goes over every line on it, `off` takes it out of
+the device's list (`vk_extension_settings`, beside the table in `extension_bans.c`). The list is the `table
+g_vk_extensions_ini vulkan` of `src/nx/runtime/settings.txt`, a `setting @VK_...` line per extension `device.c`
+names: `tools/settingsgen` checks each against the Khronos registry (the build's Vulkan-Headers' `registry/vk.xml`)
+and makes its key and help. A new extension the renderer reads is a line there. The log says each one's value in
+effect and why after the bans:
+
+```
+vulkan: VK_EXT_vertex_input_dynamic_state: on (vk_ext_vertex_input_dynamic_state=on goes over the ban: ...)
+```
+
 `vk_extension_bans` checks the table's errors, each driver's numbering at every bound's edge, the filter and the
-features asked for against stand-in devices, the table the build carries, and `vulkan_ban_ignore` read from a `.ini`
-with a key the table has and with one it has not.
+features asked for against stand-in devices, the table the build carries, `vulkan_ban_ignore` read from a `.ini`
+with a key the table has and with one it has not, and the extension settings' values and log lines.
 
 ## SVCs
 
