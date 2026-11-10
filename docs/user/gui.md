@@ -522,10 +522,9 @@ cannot be read is named and the others still listed.
   *Small*, `small`: 8 by 3; *Large*, `large`: 16 by 6), then the **Side panel** of Settings > App (`side_box`, which
   F2 turns too). Enter, Left, Right or
   a click change the focused one,
-  kept in `app.ini` at once, and the list is read again by it; ESC or a click off the box closes it. On iOS Recent
-  Games and Dumps start *Off*, as a phone keeps the games made in the app's `recompiled/` and prepares a dump from the
-  Menu; the player turns them on there. An `app.ini` without them, an older version's, has these defaults, and a word
-  it does not know is named in the message with the one kept: `recent_games = maybe (it keeps on)`.
+  kept in `app.ini` at once, and the list is read again by it; ESC or a click off the box closes it. An `app.ini`
+  without them, an older version's, has these defaults, and a word it does not know is named in the message with the
+  one kept: `recent_games = maybe (it keeps on)`.
 - In the list, Up/Down go round the recent games and the page's files. Enter/Space opens one. A game no game of the
   recompiled library was made from yet (a dump, a package, a ROM) compiles first, through the queue of compiles R's
   goes through: the Compile tab shows it, and it plays once its compile ended if the tab still shows it; sent away
