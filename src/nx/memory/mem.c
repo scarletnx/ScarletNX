@@ -1792,14 +1792,26 @@ int mem_unmap_physical(u64 addr, u64 size) {
 }
 
 /* ============================================================ ldr:ro's code views */
+/* the addresses kept for the code views whose caller names their base (mem_code_slots): none without one */
+static struct {
+    u64 lo, hi;
+} g_code_slots;
+void mem_code_slots(u64 lo, u64 hi) {
+    mem_lock();
+    g_code_slots.lo = lo;
+    g_code_slots.hi = hi;
+    mem_unlock();
+}
 /* a free range for a code view, with a free guard page on either side: anywhere in the address space outside the
-   heap and alias regions (the console's CanContain for alias code) and the kernel's pages, lowest first */
+   heap and alias regions (the console's CanContain for alias code), the kernel's pages and the addresses kept for the
+   views that name their base, lowest first */
 static u64 code_find_nl(u64 size) {
-    u64 lo[3], hi[3], from = AS_BASE, a;
+    u64 lo[4], hi[4], from = AS_BASE, a;
     int i, j, n = 0;
     lo[n] = HEAP_BASE, hi[n] = HEAP_BASE + HEAP_SIZE, n++;
     if (ALIAS_SIZE) lo[n] = ALIAS_BASE, hi[n] = ALIAS_BASE + ALIAS_SIZE, n++;
     lo[n] = KERN_BASE, hi[n] = KERN_END, n++;
+    if (g_code_slots.hi > g_code_slots.lo) lo[n] = g_code_slots.lo, hi[n] = g_code_slots.hi, n++;
     for (i = 1; i < n; i++) /* in address order */
         for (j = i; j > 0 && lo[j] < lo[j - 1]; j--) {
             u64 l = lo[j], h = hi[j];
@@ -1812,6 +1824,16 @@ static u64 code_find_nl(u64 size) {
         if (i < n && hi[i] > from) from = hi[i];
     }
     return 0;
+}
+/* whether a code view of size bytes may go at base, an address its caller wants: free with a free guard page on either
+   side, and outside the heap and alias regions and the kernel's pages, as the views code_find_nl places */
+static int code_fits_nl(u64 base, u64 size) {
+    u64 end = base + size;
+    if ((base & (PAGE - 1)) || base < AS_BASE + PAGE || end < base || end > AS_END) return 0;
+    if (base < HEAP_BASE + HEAP_SIZE && HEAP_BASE < end) return 0;
+    if (ALIAS_SIZE && base < ALIAS_BASE + ALIAS_SIZE && ALIAS_BASE < end) return 0;
+    if (base < KERN_END && KERN_BASE < end) return 0;
+    return find_free_nl(base, end, size, PAGE, PAGE) == base;
 }
 /* heap memory a code view may copy: normal, read-write, no attribute, and neither IPC- nor device-mapped */
 static int code_source_nl(u64 a, u64 size) {
@@ -1851,9 +1873,10 @@ static int code_alias_nl(const MemCodeMap* m, u64 base) {
 }
 /* The image (source) and its BSS, each at a page, are mapped one after the other at a new view, and locked (no
    permission, the locked attribute) until mem_unmap_code: the same pages with the alias pool, as the console maps
-   them, else a copy that mem_unmap_code copies back. The view isn't charged: its pages are the heap's */
+   them, else a copy that mem_unmap_code copies back. The view isn't charged: its pages are the heap's. A base the
+   caller names is the view's or none is made (MEM_LIMIT, with the base left as given) */
 int mem_map_code(MemCodeMap* m) {
-    u64 total = m->size + m->bss_size, base = 0;
+    u64 total = m->size + m->bss_size, base = 0, want = m->base;
     int r = 0;
     if (!m->size || m->size > AS_END || m->source > AS_END - m->size || m->bss_size > AS_END ||
         m->bss > AS_END - m->bss_size || m->bss_size > ~m->size || (m->source & (PAGE - 1)) ||
@@ -1869,7 +1892,7 @@ int mem_map_code(MemCodeMap* m) {
         (m->bss_size && (!code_source_nl(m->bss, m->bss_size) ||
                          (m->bss < m->source + m->size && m->source < m->bss + m->bss_size))))
         r = MEM_BADSTATE;
-    else if ((base = code_find_nl(total)) == 0)
+    else if ((base = want ? (code_fits_nl(want, total) ? want : 0) : code_find_nl(total)) == 0)
         r = MEM_LIMIT;
     else if (g_pool_on)
         r = code_alias_nl(m, base);

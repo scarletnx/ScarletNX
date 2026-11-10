@@ -90,6 +90,7 @@ void (*snx_menu_run_theme)(const char* folder, SnxRunTheme* out);
 const SnxModule* g_mod;
 const SnxVariants* g_variants;
 const SnxRoutes* g_routes;
+const SnxNros* g_nros;
 GuestFn* g_disp;
 
 /* A build that links a game's code into the runtime defines it; none does yet (src/nx/CMakeLists.txt) */
@@ -99,6 +100,7 @@ typedef const SnxModule* (*ModuleFn)(void);
 typedef const SnxArmModule* (*ArmModuleFn)(void);
 typedef const SnxVariants* (*VariantsFn)(void);
 typedef const SnxRoutes* (*RoutesFn)(void);
+typedef const SnxNros* (*NrosFn)(void);
 
 /* ---- the game to run ---- */
 
@@ -193,6 +195,35 @@ static void routes_load(RoutesFn get) {
              (unsigned)g_routes->version, (unsigned)SNX_ROUTES_VERSION);
         g_routes = NULL;
     }
+}
+
+/* the module's table of the NROs the game maps (snx_nros, nro_slots.h), kept when it is one this runtime can place
+   them by: its version, each NRO behind the one before it in the order of their hashes, all of them between the
+   modules' code and the table's end. Else said once, and the NROs' code is the JIT's, as without a table */
+static void nros_load(NrosFn get, const SnxModule* m) {
+    const SnxNros* n = get();
+    u64 at;
+    u32 i;
+    if (!n || !n->count) return;
+    if (n->version != SNX_NROS_VERSION) {
+        WARN("game: its table of NROs is of version %u, where this runtime reads %u: the JIT runs their code\n",
+             (unsigned)n->version, (unsigned)SNX_NROS_VERSION);
+        return;
+    }
+    at = n->lo;
+    for (i = 0; i < n->count; i++) {
+        const SnxNroSlot* s = &n->slots[i];
+        if (n->lo < m->code_hi || s->base < at || (s->base & 0xFFF) || (s->size & 0xFFF) || !s->size ||
+            s->size > n->hi || s->base > n->hi - s->size || (i && memcmp(s[-1].hash, s->hash, 32) >= 0)) {
+            WARN("game: its table of NROs is out of order at NRO %u of %u (%#llx, %#llx bytes, in %#llx-%#llx): the "
+                 "JIT runs their code\n",
+                 (unsigned)i, (unsigned)n->count, (unsigned long long)s->base, (unsigned long long)s->size,
+                 (unsigned long long)n->lo, (unsigned long long)n->hi);
+            return;
+        }
+        at = s->base + s->size;
+    }
+    g_nros = n;
 }
 
 #ifdef MODULE_PACK
@@ -297,6 +328,11 @@ static const SnxModule* load_module(const char* path) {
         memcpy(&get_routes, &sym, sizeof get_routes);
         routes_load(get_routes);
     }
+    if (!g_arm_mod && (sym = plat_dl_sym(lib, "snx_nros")) != NULL) {
+        NrosFn get_nros;
+        memcpy(&get_nros, &sym, sizeof get_nros);
+        nros_load(get_nros, m);
+    }
     return m;
 }
 
@@ -305,6 +341,15 @@ static void dispatch_init(void) {
     u64 words, i;
     g_code_lo = g_mod->code_lo;
     g_code_hi = g_mod->code_hi;
+    /* the NROs' addresses behind the modules, whose own modules fill their slots as ldr:ro maps them (guest_jit.c's
+       jit_nro_added): not under NCE, which runs the game's code itself */
+    if (g_nros && (nce_wanted() || g_code_hi <= g_code_lo)) g_nros = NULL;
+    if (g_nros) {
+        g_code_hi = g_nros->hi;
+        mem_code_slots(g_nros->lo, g_nros->hi);
+        LOG("game: %u NROs have their own AOT modules, at %llx-%llx\n", (unsigned)g_nros->count,
+            (unsigned long long)g_nros->lo, (unsigned long long)g_nros->hi);
+    }
     if (g_code_hi <= g_code_lo) return;
     words = (g_code_hi - g_code_lo) / 4;
     if (words > SIZE_MAX / sizeof *g_disp) fatal("The game's code range is too large");

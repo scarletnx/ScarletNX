@@ -13,6 +13,8 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include "common/platform/dl.h"
+#include "common/utilities/common.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +47,7 @@ const SnxModule* g_mod = &g_module;
 static GuestFn g_dispatch[(CODE_HI - CODE_LO) / 4];
 GuestFn* g_disp = g_dispatch;
 u64 g_code_lo = CODE_LO, g_code_hi = CODE_HI;
+const SnxNros* g_nros; /* main.c's: set by the NRO module checks */
 int g_ounce; /* main.c's: a Switch program */
 
 static SnxVariantRun g_run, g_run2;
@@ -56,6 +59,7 @@ const SnxVariants* g_variants = &g_variants_table;
 
 char g_cachedir[1024];
 char g_exename[256] = "runtime_variants";
+char g_exedir[1024]; /* where the NRO module checks put their modules */
 
 static int g_called;
 static void test_fn(CPU* c, u64 entry) {
@@ -204,6 +208,118 @@ static void check_jit_opt(const char* given, char default_level) {
                 g_warned);
 }
 
+/* An NRO's own AOT module (nro_module_fixture.c, at path), loaded when the NRO is mapped at the address g_nros gives
+   it: found by the hash's name in <exedir><exename>_nro, checked to be that NRO's for that address, its entries put
+   in the dispatch table and taken out again, its functions made stale by a change of their code, and each mapping
+   starting from the module as it was made. A module of another ABI or another address is refused, said once */
+typedef struct {
+    u32 abi;
+    u64 base;
+} Fixture;
+static void nro_modules(const char* path) {
+    static SnxNroSlot slots[3];
+    static SnxNros table = {SNX_NROS_VERSION, 3, CODE_LO, CODE_HI, slots};
+    static const u8 unknown[32] = {0x44};
+    u8 id[32], other[32];
+    char *root = snx_temp_dir(NULL), *folder, *file[3], name[80];
+    void* own;
+    Fixture* (*fixture)(void);
+    const SnxModule* (*module)(void);
+    const SnxModule* m;
+    void* sym;
+    CPU cpu;
+    u32 entries = 9;
+    int k;
+    CHECK(root != NULL);
+    memset(id, 0x42, sizeof id);
+    memset(other, 0x24, sizeof other);
+    memset(slots, 0, sizeof slots);
+    memset(slots[0].hash, 0x11, 32), slots[0].base = 0x1000, slots[0].size = 0x1000;
+    memset(slots[1].hash, 0x22, 32), slots[1].base = 0x2000, slots[1].size = 0x1000;
+    memset(slots[2].hash, 0x33, 32), slots[2].base = 0x2000, slots[2].size = 0x1000;
+    snprintf(g_exedir, sizeof g_exedir, "%s/", root);
+    folder = snx_format("%s/%s" SNX_NROS_FOLDER, root, g_exename);
+    CHECK(!snx_mkdirs(folder));
+    for (k = 0; k < 3; k++) {
+        memset(name, "123"[k], 64);
+        strcpy(name + 64, ".so");
+        file[k] = snx_path_join(folder, name);
+    }
+    memset(g_disp, 0, sizeof g_dispatch);
+    /* no table, an NRO the table has not, one mapped elsewhere, one of another size, one without a module file */
+    CHECK(jit_nro_added(slots[0].hash, 0x1000, 0x1000, id, &entries) == 1 && !entries);
+    g_nros = &table;
+    CHECK(jit_nro_added(unknown, 0x1000, 0x1000, id, &entries) == 1);
+    CHECK(jit_nro_added(slots[0].hash, 0x2000, 0x1000, id, &entries) == 1);
+    CHECK(jit_nro_added(slots[0].hash, 0x1000, 0x2000, id, &entries) == 1);
+    CHECK(jit_nro_added(slots[0].hash, 0x1000, 0x1000, id, &entries) == 1 && !entries);
+    CHECK(!g_disp[(0x1100 - CODE_LO) / 4]);
+    /* its module: both entries in the table, each its function */
+    CHECK(!snx_copy_file(path, file[0]));
+    own = plat_dl_open(file[0]);
+    CHECK(own != NULL);
+    sym = plat_dl_sym(own, "snx_module");
+    CHECK(sym != NULL);
+    memcpy(&module, &sym, sizeof module);
+    m = module();
+    g_warned[0] = 0;
+    CHECK(jit_nro_added(slots[0].hash, 0x1000, 0x1000, id, &entries) == 0 && entries == 2);
+    CHECK(g_disp[(0x1100 - CODE_LO) / 4] == m->fn[0] && g_disp[(0x1200 - CODE_LO) / 4] == m->fn[1]);
+    memset(&cpu, 0, sizeof cpu);
+    if (g_disp[(0x1200 - CODE_LO) / 4]) g_disp[(0x1200 - CODE_LO) / 4](&cpu, 0x1200);
+    CHECK(cpu.x[0] == 0x1200 && !g_warned[0]);
+    /* the game changes a line of the first function: it is stale and out of the table, its entry too; the second
+       stays */
+    jit_code_changed(0x1120, 64);
+    CHECK(m->stale[0] == 1 && !m->stale[1] && !m->entry_fn[0] && m->entry_fn[1] == m->fn[1]);
+    CHECK(!g_disp[(0x1100 - CODE_LO) / 4] && g_disp[(0x1200 - CODE_LO) / 4] == m->fn[1]);
+    /* unmapped: its entries leave the table, and a change of that memory is no change of its code any more */
+    jit_nro_removed(0x1000);
+    CHECK(!g_disp[(0x1200 - CODE_LO) / 4]);
+    jit_code_changed(0x1200, 64);
+    CHECK(!m->stale[1]);
+    /* mapped again: the module as it was made, but a slot something else holds by then keeps what it holds */
+    g_disp[(0x1200 - CODE_LO) / 4] = test_fn;
+    CHECK(jit_nro_added(slots[0].hash, 0x1000, 0x1000, id, &entries) == 0 && entries == 1);
+    CHECK(!m->stale[0] && m->entry_fn[0] == m->fn[0] && g_disp[(0x1100 - CODE_LO) / 4] == m->fn[0]);
+    CHECK(g_disp[(0x1200 - CODE_LO) / 4] == test_fn);
+    jit_nro_removed(0x1000);
+    CHECK(!g_disp[(0x1100 - CODE_LO) / 4] && g_disp[(0x1200 - CODE_LO) / 4] == test_fn);
+    g_disp[(0x1200 - CODE_LO) / 4] = NULL;
+    /* the module of another NRO (its module ID is not the mapped one's): refused, and not asked again */
+    g_warned[0] = 0;
+    CHECK(jit_nro_added(slots[0].hash, 0x1000, 0x1000, other, &entries) == -1 && !entries);
+    CHECK(strstr(g_warned, "the NRO at 1000 has an AOT module made from another NRO (module ID 42424242..., where the "
+                           "mapped one's is 24242424...)") &&
+          !g_disp[(0x1100 - CODE_LO) / 4]);
+    g_warned[0] = 0;
+    CHECK(jit_nro_added(slots[0].hash, 0x1000, 0x1000, id, &entries) == 1 && !g_warned[0]);
+    plat_dl_close(own);
+    /* a module of another ABI, and one made for another address (0x1000, where its NRO is at 0x2000) */
+    CHECK(!snx_copy_file(path, file[1]) && !snx_copy_file(path, file[2]));
+    own = plat_dl_open(file[1]);
+    CHECK(own != NULL);
+    sym = plat_dl_sym(own, "snx_fixture");
+    CHECK(sym != NULL);
+    memcpy(&fixture, &sym, sizeof fixture);
+    fixture()->abi = SNX_ABI + 1;
+    fixture()->base = 0x2000;
+    g_warned[0] = 0;
+    CHECK(jit_nro_added(slots[1].hash, 0x2000, 0x1000, id, &entries) == -1);
+    snprintf(name, sizeof name, "of ABI %u, where this runtime runs %u", (unsigned)SNX_ABI + 1, (unsigned)SNX_ABI);
+    CHECK(strstr(g_warned, name) && strstr(g_warned, "the NRO at 2000 "));
+    plat_dl_close(own);
+    g_warned[0] = 0;
+    CHECK(jit_nro_added(slots[2].hash, 0x2000, 0x1000, id, &entries) == -1);
+    CHECK(strstr(g_warned, "the NRO at 2000 (4096 bytes) has an AOT module made for 1000 (4096 bytes, 1 modules)"));
+    CHECK(!g_disp[(0x2100 - CODE_LO) / 4] && !g_disp[(0x1100 - CODE_LO) / 4]);
+    g_nros = NULL;
+    for (k = 0; k < 3; k++) free(file[k]);
+    free(folder);
+    CHECK(!snx_remove_tree(root));
+    free(root);
+}
+
 int main(int argc, char** argv) {
     static const SnxU32 words[] = {0x91000400u, 0xD65F03C0u};  /* add x0, x0, #1; ret */
     static const SnxU32 words2[] = {0x91000800u, 0xD65F03C0u}; /* add x0, x0, #2; ret */
@@ -327,6 +443,8 @@ int main(int argc, char** argv) {
     CHECK(jit_wait(JIT_PC) == test_jit_fn);
     g_variants = pack;
     jit_report();
+    for (int i = 1; i < argc; i++)
+        if (!strncmp(argv[i], "--nro-module=", 13)) nro_modules(argv[i] + 13);
 
     if (failures) {
         fprintf(stderr, "%d failure(s)\n", failures);

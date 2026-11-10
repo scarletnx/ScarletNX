@@ -26,6 +26,7 @@
 static u8 memory[4 << 20];
 u8* g_mem = memory; /* guest address a is memory + a */
 u64 g_code_lo, g_code_hi;
+const SnxNros* g_nros; /* main.c's: a game module without NROs of its own */
 int g_frames, g_opt_fps;
 
 /* the memory: a pool's storage at POOL_MEM, objects below it */
