@@ -58,21 +58,42 @@ static void put_str(SpvWords* s, const char* str) {
     for (size_t i = 0; i * 4 < n; i++) put(s, string_word(str, n, i));
 }
 
+/* the slot of known_slots to look for hash h from */
+static size_t known_slot(const SpvEmitter* e, uint64_t h) { return (size_t)(h ^ h >> 29) & (e->known_slot_count - 1); }
+
+/* known_slots at twice the size (256 at first), every entry of known in it again */
+static void known_slots_grow(SpvEmitter* e) {
+    size_t count = e->known_slot_count ? e->known_slot_count * 2 : 256;
+    uint32_t* slots = (uint32_t*)calloc(count, sizeof *slots);
+    if (!slots) abort();
+    free(e->known_slots);
+    e->known_slots = slots;
+    e->known_slot_count = count;
+    for (size_t k = 0; k < e->known_count; k++) {
+        size_t i = known_slot(e, e->known[k].hash);
+        while (slots[i]) i = (i + 1) & (count - 1);
+        slots[i] = (uint32_t)(k + 1);
+    }
+}
+
 /* a type (the id first, at = 1) or constant (its type first, the id second, at = 2) of these words in types, made
    once */
 static uint32_t known(SpvEmitter* e, uint32_t op, size_t at, const uint32_t* operands, size_t count) {
     uint64_t h = SNX_FNV_BASIS ^ op;
     for (size_t i = 0; i < count; i++) h = snx_fnv_step(h, operands[i]);
-    for (size_t k = 0; k < e->known_count; k++) {
-        if (e->known[k].hash != h) continue;
-        const uint32_t* w = e->types.words + e->known[k].at;
+    if ((e->known_count + 1) * 2 > e->known_slot_count) known_slots_grow(e);
+    size_t slot = known_slot(e, h);
+    for (; e->known_slots[slot]; slot = (slot + 1) & (e->known_slot_count - 1)) {
+        const SpvKnown* k = &e->known[e->known_slots[slot] - 1];
+        if (k->hash != h) continue;
+        const uint32_t* w = e->types.words + k->at;
         if ((w[0] & 0xffff) != op || w[0] >> 16 != count + 2) continue;
         int same = 1;
         for (size_t i = 0, j = 1; i < count && same; i++, j++) {
             if (j == at) j++;
             same = w[j] == operands[i];
         }
-        if (same) return e->known[k].id;
+        if (same) return k->id;
     }
     if (e->known_count == e->known_capacity) {
         size_t capacity = e->known_capacity ? e->known_capacity * 2 : 128;
@@ -82,6 +103,7 @@ static uint32_t known(SpvEmitter* e, uint32_t op, size_t at, const uint32_t* ope
         e->known_capacity = capacity;
     }
     uint32_t id = spv_emit_id(e);
+    e->known_slots[slot] = (uint32_t)(e->known_count + 1); /* the free slot the search stopped at */
     e->known[e->known_count++] = (SpvKnown){h, e->types.count, id};
     instruction(&e->types, op, (uint32_t)(count + 2));
     for (size_t i = 0, j = 1; j < count + 2; j++) put(&e->types, j == at ? id : operands[i++]);
@@ -101,6 +123,7 @@ void spv_emit_destroy(SpvEmitter* e) {
                             &e->debug,        &e->decorations, &e->types,   &e->functions,    &e->locals};
     for (size_t i = 0; i < sizeof sections / sizeof sections[0]; i++) free(sections[i]->words);
     free(e->known);
+    free(e->known_slots);
     free(e->interface);
     free(e->nonuniform);
     free(e->constants);
@@ -844,25 +867,33 @@ void spv_emit_patch_barrier(SpvEmitter* e, uint32_t u32_type) {
 
 /* Ids that are not dynamically uniform: an element of a texture array, and what is loaded or made from it.
    Vulkan wants each decorated NonUniform. */
+/* the slot of the set where id is, or the free one where it would go */
+static size_t nonuniform_slot(const uint32_t* set, size_t capacity, uint32_t id) {
+    size_t i = (size_t)((id * 0x9e3779b1u) >> 8) & (capacity - 1);
+    while (set[i] && set[i] != id) i = (i + 1) & (capacity - 1);
+    return i;
+}
 static void nonuniform(SpvEmitter* e, uint32_t id) {
-    for (size_t i = 0; i < e->nonuniform_count; i++)
-        if (e->nonuniform[i] == id) return;
-    if (e->nonuniform_count == e->nonuniform_capacity) {
-        size_t capacity = e->nonuniform_capacity ? e->nonuniform_capacity * 2 : 32;
-        uint32_t* grown = realloc(e->nonuniform, capacity * sizeof *grown);
-        if (!grown) abort();
-        e->nonuniform = grown;
+    if ((e->nonuniform_count + 1) * 2 > e->nonuniform_capacity) { /* twice the size, the ids in it again */
+        size_t capacity = e->nonuniform_capacity ? e->nonuniform_capacity * 2 : 64;
+        uint32_t* set = (uint32_t*)calloc(capacity, sizeof *set);
+        if (!set) abort();
+        for (size_t i = 0; i < e->nonuniform_capacity; i++)
+            if (e->nonuniform[i]) set[nonuniform_slot(set, capacity, e->nonuniform[i])] = e->nonuniform[i];
+        free(e->nonuniform);
+        e->nonuniform = set;
         e->nonuniform_capacity = capacity;
     }
-    e->nonuniform[e->nonuniform_count++] = id;
+    size_t i = nonuniform_slot(e->nonuniform, e->nonuniform_capacity, id);
+    if (e->nonuniform[i]) return;
+    e->nonuniform[i] = id;
+    e->nonuniform_count++;
     instruction(&e->decorations, SPV_OP_DECORATE, 3);
     put(&e->decorations, id);
     put(&e->decorations, 5300); /* NonUniform */
 }
 static int is_nonuniform(const SpvEmitter* e, uint32_t id) {
-    for (size_t i = 0; i < e->nonuniform_count; i++)
-        if (e->nonuniform[i] == id) return 1;
-    return 0;
+    return e->nonuniform[nonuniform_slot(e->nonuniform, e->nonuniform_capacity, id)] == id;
 }
 
 /* the sampled image type of a texture, and its image type, declared once each */
