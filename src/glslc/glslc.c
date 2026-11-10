@@ -279,11 +279,6 @@ const char* glslc_token_text(const Glslc* g, const GlslcToken* t) {
     return (t->flags & GLSLC_TF_SYNTH) ? g->synth + t->text.pos : g->src + t->text.pos;
 }
 
-int glslc_view_is(const Glslc* g, GlslcView v, const char* word) {
-    size_t n = strlen(word);
-    return v.len == n && !memcmp(g->src + v.pos, word, n);
-}
-
 int glslc_views_equal(const Glslc* g, GlslcView a, GlslcView b) {
     return a.len == b.len && !memcmp(g->src + a.pos, g->src + b.pos, a.len);
 }
