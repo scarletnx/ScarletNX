@@ -24,6 +24,11 @@ uint64_t plat_ns(void) {
     return ticks_ns((uint64_t)counter.QuadPart, (uint64_t)freq.QuadPart);
 }
 uint64_t plat_monotonic_ns(void) { return 0; }
+uint64_t plat_qpc_ns(uint64_t ticks) {
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    return ticks_ns(ticks, (uint64_t)freq.QuadPart);
+}
 int64_t plat_unix_ns(void) {
     FILETIME ft;
     GetSystemTimePreciseAsFileTime(&ft);
@@ -59,6 +64,10 @@ uint64_t plat_ns(void) {
 #endif
 }
 uint64_t plat_monotonic_ns(void) { return clock_ns(CLOCK_MONOTONIC); }
+uint64_t plat_qpc_ns(uint64_t ticks) {
+    (void)ticks;
+    return 0;
+}
 int64_t plat_unix_ns(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts)) return 0;
