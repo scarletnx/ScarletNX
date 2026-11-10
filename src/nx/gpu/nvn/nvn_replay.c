@@ -31,7 +31,7 @@
    writes, an event's add of v to what is there) */
 enum { FX_FENCE, FX_WRITE, FX_ADD };
 
-enum { JOB_SUBMIT, JOB_FENCE, JOB_PRESENT, JOB_DESTROY, JOB_WAIT };
+enum { JOB_SUBMIT, JOB_FENCE, JOB_PRESENT, JOB_DESTROY, JOB_WAIT, JOB_SETTLE };
 
 u32 nvn_replay_queue(void) {
     u32 i;
@@ -275,6 +275,28 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
     }
 }
 
+/* whether the sync wait w is over: its syncpoint reached its value (no syncpoint: nothing to wait for) */
+static int sync_over(const NvnReplayWait* w) { return !w->syncpt || (i32)(syncpt_read(w->syncpt) - w->value) >= 0; }
+/* whether the wait record of op at pc (size bytes, header included) of j's submission is over. *sync gets a sync
+   wait's syncpoint and value, zeros for an event wait */
+static int wait_over(const NvnJob* j, u32 op, u64 pc, u32 size, NvnReplayWait* sync) {
+    *sync = (NvnReplayWait){0};
+    if (op == OP_WAIT_SYNC) {
+        if (!j->snapshot || size < sizeof(NvnRecHdr) + sizeof *sync) fatal("nvn: invalid captured sync wait");
+        memcpy(sync, GP(pc + 8), sizeof *sync);
+        return sync_over(sync);
+    }
+    if (size < sizeof(NvnRecHdr) + sizeof(NvnPWaitEvent)) fatal("nvn: truncated event wait");
+    NvnPWaitEvent event;
+    memcpy(&event, GP(pc + 8), sizeof event);
+    /* A preceding signal in this recording must be submitted before its wait can see it. Other NVN
+       queues can then signal the event while this job stays at its cursor. */
+    u32 current = gmem_r32(event.address);
+    return event.mode == NVN_EVENT_WAIT_MODE_EQUAL
+               ? current == event.value
+               : event.mode == NVN_EVENT_WAIT_MODE_GEQUAL_WRAP && (i32)(current - event.value) >= 0;
+}
+
 /* Replay resumes at an unmet event or captured sync wait. Waiting submissions retain flattened command records;
    direct submissions keep CALL cursors so nested recordings do not repeat earlier draws. */
 static int replay_records(NvnJob* j, NvnReplayQueue* q) {
@@ -302,24 +324,8 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
             if (op == OP_WAIT_EVENT || op == OP_WAIT_SYNC) {
                 effects(q);
                 if (!j->waiting && g_renderer->stream_end) g_renderer->stream_end();
-                int met;
-                if (op == OP_WAIT_SYNC) {
-                    NvnReplayWait wait;
-                    if (!j->snapshot || h.size < sizeof h + sizeof wait) fatal("nvn: invalid captured sync wait");
-                    memcpy(&wait, GP(pc + 8), sizeof wait);
-                    met = !wait.syncpt || (i32)(syncpt_read(wait.syncpt) - wait.value) >= 0;
-                } else {
-                    if (h.size < sizeof h + sizeof(NvnPWaitEvent)) fatal("nvn: truncated event wait");
-                    NvnPWaitEvent event;
-                    memcpy(&event, GP(pc + 8), sizeof event);
-                    /* A preceding signal in this recording must be submitted before its wait can see it. Other NVN
-                   queues can then signal the event while this job stays at its cursor. */
-                    u32 current = gmem_r32(event.address);
-                    met = event.mode == NVN_EVENT_WAIT_MODE_EQUAL
-                              ? current == event.value
-                              : event.mode == NVN_EVENT_WAIT_MODE_GEQUAL_WRAP && (i32)(current - event.value) >= 0;
-                }
-                if (!met) {
+                NvnReplayWait sync;
+                if (!wait_over(j, op, pc, h.size, &sync)) {
                     j->waiting = 1;
                     return 0;
                 }
@@ -354,9 +360,47 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
     }
     return 1;
 }
+/* JOB_SETTLE's look. The GPU thread starts its pass again after any work that ran (gpu.c's run_pass), so it comes
+   here only once all the work queued before stayed where it was: none left, or what is left behind a queue's wait.
+   1 when none of those waits ends without the game. 0 while one can: a wait that is over by now (an event that work
+   later in the pass signalled, a syncpoint the renderer incremented since the pass looked: the pass runs again at
+   once), or a sync wait that the increments the renderer still holds will end (it looks again as they happen:
+   syncpt_add kicks the GPU thread). Only the first work of a queue's lane is ever found waiting: one a queue at most */
+static int settled(void) {
+    NvnReplayState* st = &g_nvn.replay;
+    const NvnJob* waits[NVN_QUEUES];
+    u32 n = 0, i;
+    pm_lock(&st->lock); /* the pool's slots are taken under it */
+    for (i = 0; i < NVN_JOBS; i++) {
+        if (!st->jobs[i].queue || !st->jobs[i].waiting) continue;
+        if (n == NVN_QUEUES) fatal("nvn: more than %d queues' work is stopped at a wait at once", NVN_QUEUES);
+        waits[n++] = &st->jobs[i];
+    }
+    pm_unlock(&st->lock);
+    for (i = 0; i < n; i++) {
+        const NvnJob* w = waits[i];
+        NvnReplayWait sync = w->wait;
+        int over;
+        if (w->kind == JOB_WAIT)
+            over = sync_over(&sync);
+        else {
+            u64 pc = w->cursor[w->depth - 1].pc;
+            NvnRecHdr h;
+            memcpy(&h, GP(pc), sizeof h);
+            over = wait_over(w, NVN_REC_OP(h.op), pc, h.size, &sync);
+        }
+        if (over) {
+            gpu_kick();
+            return 0;
+        }
+        if (sync.syncpt && g_renderer->release_value && (i32)(g_renderer->release_value(sync.syncpt) - sync.value) >= 0)
+            return 0;
+    }
+    return 1;
+}
 static int run(void* arg) {
     NvnJob* j = (NvnJob*)arg;
-    NvnReplayQueue* q = &g_nvn.replay.q[j->queue - 1];
+    NvnReplayQueue* q = j->kind == JOB_SETTLE ? NULL : &g_nvn.replay.q[j->queue - 1]; /* JOB_SETTLE is no queue's */
     switch (j->kind) {
         case JOB_SUBMIT: {
             if (g_renderer->stream_run) g_renderer->stream_run(1);
@@ -367,13 +411,17 @@ static int run(void* arg) {
             break;
         }
         case JOB_WAIT:
-            if (j->wait.syncpt && (i32)(syncpt_read(j->wait.syncpt) - j->wait.value) < 0) {
+            if (!sync_over(&j->wait)) {
                 if (!j->waiting && g_renderer->stream_end) g_renderer->stream_end();
                 j->waiting = 1;
                 return 0;
             }
             break;
         case JOB_FENCE: stream_incr(q->syncpt); break;
+        case JOB_SETTLE:
+            if (!settled()) return 0;
+            stream_incr(g_nvn.replay.settled);
+            break;
         case JOB_DESTROY:
             nvn_draw_free(&q->d);
             stream_incr(q->syncpt);
@@ -504,18 +552,25 @@ void nvn_replay_finish(u32 queue) {
     pm_unlock(&g_nvn.replay.lock);
     syncpt_wait(id, value, -1);
 }
+/* A single piece of work behind every queue's, in a lane of its own (NVN_QUEUES, past the queues' lanes; its queue
+   NVN_QUEUES + 1), which counts on a syncpoint of its own once settled() lets it. A fence in each queue
+   (nvn_replay_finish's way) would never come for a queue stopped at an event that the calling thread signals later:
+   one game registers a sampler between a recording's event wait and that event's signal */
 void nvn_replay_finish_all(void) {
-    u32 id[NVN_QUEUES], value[NVN_QUEUES], i, n = 0;
-    pm_lock(&g_nvn.replay.lock);
-    for (i = 0; i < NVN_QUEUES; i++) {
-        if (!g_nvn.replay.q[i].syncpt) continue;
-        id[n] = g_nvn.replay.q[i].syncpt;
-        value[n] = syncpt_promise(id[n], 1);
-        gpu_call_poll(run, job(i + 1, JOB_FENCE, 0), i);
-        n++;
+    NvnReplayState* st = &g_nvn.replay;
+    u32 i, id, value;
+    pm_lock(&st->lock);
+    for (i = 0; i < NVN_QUEUES && !st->q[i].syncpt; i++) {}
+    if (i == NVN_QUEUES) { /* no queue: no work */
+        pm_unlock(&st->lock);
+        return;
     }
-    pm_unlock(&g_nvn.replay.lock);
-    for (i = 0; i < n; i++) syncpt_wait(id[i], value[i], -1);
+    if (!st->settled) st->settled = syncpt_alloc();
+    id = st->settled;
+    value = syncpt_promise(id, 1);
+    gpu_call_poll(run, job(NVN_QUEUES + 1, JOB_SETTLE, 0), NVN_QUEUES);
+    pm_unlock(&st->lock);
+    syncpt_wait(id, value, -1);
 }
 u32 nvn_replay_present(u32 queue, const NvnReplayPresent* p, u32* shown) {
     u32 value;

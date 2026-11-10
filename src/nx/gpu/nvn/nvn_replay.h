@@ -33,7 +33,9 @@ u64 nvn_replay_walked(void);
 void nvn_replay_fence(u32 queue, u64 sync, u64 ready, u32 shown);
 /* returns once the queue's work submitted so far is replayed and done (a fence of its own, waited for) */
 void nvn_replay_finish(u32 queue);
-/* the same for every live queue: their fences queued together, then waited for */
+/* returns once every live queue's work submitted so far is replayed and done as far as it goes without the game: a
+   queue stopped at a wait that only the game ends (an event it signals, a sync it has not fenced yet) is not waited
+   for, nor is the work behind that wait. The console's GPU stands at such a wait too */
 void nvn_replay_finish_all(void);
 /* A window texture to show: its storage's GPU address (0: black), size, the vi pixel format and layout of its bytes
    (block height log2 for a block-linear one, row pitch for a pitch-linear one), the crop (left, top, right, bottom;
@@ -74,8 +76,8 @@ typedef struct {
 typedef struct {
     u32 syncpt, value;
 } NvnReplayWait;
-/* work for the GPU thread (nvn_replay.c's JOB_*): its queue (1 up, so a slot in use is never all zero), and a
-   submission's n recordings or a present */
+/* work for the GPU thread (nvn_replay.c's JOB_*): its queue (1 up, so a slot in use is never all zero; NVN_QUEUES + 1
+   for nvn_replay_finish_all's, which is no queue's), and a submission's n recordings or a present */
 typedef struct {
     u32 queue, kind, n;
     u32 handle, depth, waiting, present_order;
@@ -103,6 +105,7 @@ typedef struct {
     u32 shown;   /* the presents' syncpoint: up by one as each reaches the display, 0 before the first queue */
     u32 present_submitted, present_walked; /* the shared shown syncpoint requires global present order */
     u64 submitted, walked;                 /* nvn_replay_submitted and nvn_replay_walked */
+    u32 settled; /* nvn_replay_finish_all's syncpoint: up by one as each of its waits ends, 0 before the first */
 } NvnReplayState;
 
 #endif

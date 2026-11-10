@@ -27,6 +27,7 @@ Settings g_settings;
 int g_renderer_up;
 static struct {
     u32 used[32], current[32], promised[32], pending[32], npending;
+    u32 held[32], nheld, hold, kicked; /* hold: the renderer keeps a stream's increments until its GPU is done */
     struct {
         void (*fn)(void*);
         int (*poll)(void*);
@@ -115,9 +116,22 @@ static int pump(void) {
     }
     return 0;
 }
+void gpu_kick(void) { fixture.kicked = 1; }
+/* the renderer's GPU is done with the work before the increments it held: 1 when it held any */
+static int gpu_done(void) {
+    u32 n = fixture.nheld;
+    fixture.nheld = 0;
+    for (u32 i = 0; i < n; i++) syncpt_incr(fixture.held[i]);
+    return n != 0;
+}
+/* The GPU thread passes over its queue again after work that ran and after a kick. With neither, it sleeps: only the
+   renderer's GPU getting done can still end the wait, and with nothing held there the wait never ends. */
 int syncpt_wait(u32 id, u32 value, i64 timeout) {
     (void)timeout;
-    while ((i32)(fixture.current[id] - value) < 0) assert(fixture.count && pump());
+    while ((i32)(fixture.current[id] - value) < 0) {
+        fixture.kicked = 0;
+        if (!pump() && !fixture.kicked) assert(gpu_done());
+    }
     return 0;
 }
 static void stream_incr(u32 id) {
@@ -126,8 +140,21 @@ static void stream_incr(u32 id) {
 }
 static void stream_end(void) {
     assert(fixture.in_gpu);
-    for (u32 i = 0; i < fixture.npending; i++) syncpt_incr(fixture.pending[i]);
+    for (u32 i = 0; i < fixture.npending; i++) {
+        if (!fixture.hold) {
+            syncpt_incr(fixture.pending[i]);
+            continue;
+        }
+        assert(fixture.nheld < 32);
+        fixture.held[fixture.nheld++] = fixture.pending[i];
+    }
     fixture.npending = 0;
+}
+static u32 release_value(u32 id) {
+    u32 value = fixture.current[id];
+    for (u32 i = 0; i < fixture.npending; i++) value += fixture.pending[i] == id;
+    for (u32 i = 0; i < fixture.nheld; i++) value += fixture.held[i] == id;
+    return value;
 }
 static void present_buffer(u64 cpu, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
                            u32 transform, u64 released, u64 period, u32 shown) {
@@ -145,8 +172,10 @@ static void present_buffer(u64 cpu, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl
     fixture.presented[fixture.presents++] = cpu;
     syncpt_incr(shown);
 }
-static const Renderer renderer = {
-    .stream_incr = stream_incr, .stream_end = stream_end, .present_buffer = present_buffer};
+static const Renderer renderer = {.stream_incr = stream_incr,
+                                  .stream_end = stream_end,
+                                  .release_value = release_value,
+                                  .present_buffer = present_buffer};
 const Renderer* g_renderer = &renderer;
 void nvn_draw_init(NvnDraw* d, u32 owner) {
     d->ds.owner = owner;
@@ -466,6 +495,74 @@ static void finish_all(void) {
     nvn_replay_queue_free(a);
     nvn_replay_queue_free(c);
 }
+/* nvn_replay_finish_all returns with a queue stopped at a wait that only the game ends, and never before a wait that
+   ends without the game. */
+static void finish_all_waits(void) {
+    u32 a = nvn_replay_queue(), b = nvn_replay_queue(), draws = fixture.draws;
+    u64 ready = 0;
+    u32 shown = 0;
+    /* One game registers a sampler between a recording's event wait and the signal of that event, on one thread:
+       queue a's work before the wait and queue b's are done, a's draw behind the wait is left for the signal. */
+    gw32(0x800, 0);
+    *(NvnRecHdr*)(void*)GP(0x400) = (NvnRecHdr){OP_DRAW, 8};
+    *(NvnRecHdr*)(void*)GP(0x408) = (NvnRecHdr){OP_WAIT_EVENT, 24};
+    *(NvnPWaitEvent*)(void*)GP(0x410) = (NvnPWaitEvent){0x800, NVN_EVENT_WAIT_MODE_EQUAL, 1};
+    *(NvnRecHdr*)(void*)GP(0x420) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x400);
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    *(NvnRecHdr*)(void*)GP(0x500) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x500);
+    nvn_replay_submit(b, 1, 0x108, &ready, &shown);
+    nvn_replay_finish_all();
+    assert(fixture.draws == draws + 2 && fixture.count == 1);
+    gw32(0x800, 1);
+    drain();
+    assert(fixture.draws == draws + 3);
+
+    /* Queue b's work signals a's event in the pass that found a waiting for it, and stops at a wait of its own: a's
+       wait is over by the look, so its draw is done before the return. */
+    draws = fixture.draws;
+    gw32(0x800, 0);
+    gw32(0x804, 0);
+    gw32(0x808, 0);
+    *(NvnRecHdr*)(void*)GP(0x400) = (NvnRecHdr){OP_WAIT_EVENT, 24};
+    *(NvnPWaitEvent*)(void*)GP(0x408) = (NvnPWaitEvent){0x800, NVN_EVENT_WAIT_MODE_EQUAL, 1};
+    *(NvnRecHdr*)(void*)GP(0x418) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x400);
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    *(NvnRecHdr*)(void*)GP(0x500) = (NvnRecHdr){OP_WAIT_EVENT, 24};
+    *(NvnPWaitEvent*)(void*)GP(0x508) = (NvnPWaitEvent){0x804, NVN_EVENT_WAIT_MODE_EQUAL, 1};
+    *(NvnRecHdr*)(void*)GP(0x518) = (NvnRecHdr){OP_SIGNAL_EVENT, 24};
+    *(NvnPSignalEvent*)(void*)GP(0x520) = (NvnPSignalEvent){0x800, NVN_EVENT_SIGNAL_MODE_WRITE, 1};
+    *(NvnRecHdr*)(void*)GP(0x530) = (NvnRecHdr){OP_WAIT_EVENT, 24};
+    *(NvnPWaitEvent*)(void*)GP(0x538) = (NvnPWaitEvent){0x808, NVN_EVENT_WAIT_MODE_EQUAL, 1};
+    *(NvnRecHdr*)(void*)GP(0x548) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x500);
+    nvn_replay_submit(b, 1, 0x108, &ready, &shown);
+    assert(!pump() && fixture.count == 2); /* both stopped */
+    gw32(0x804, 1);                        /* the game signals b's first event */
+    nvn_replay_finish_all();
+    assert(fixture.draws == draws + 1 && gr32(0x800) == 1 && fixture.count == 1);
+    gw32(0x808, 1);
+    drain();
+    assert(fixture.draws == draws + 2);
+
+    /* Queue a waits for a sync whose fence is replayed, its increment still held by the renderer until its GPU is
+       done: that wait ends without the game, so the return comes after it and after a's draw behind it. */
+    draws = fixture.draws;
+    fixture.hold = 1;
+    nvn_replay_fence(b, 0x900, 0, 0);
+    NvnSync sync = *NVN_OBJ(NvnSync, 0x900);
+    nvn_replay_wait(a, &sync);
+    *(NvnRecHdr*)(void*)GP(0x400) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x400);
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    nvn_replay_finish_all();
+    fixture.hold = 0;
+    assert(fixture.draws == draws + 1 && !fixture.count && !fixture.nheld);
+    nvn_replay_queue_free(a);
+    nvn_replay_queue_free(b);
+}
 static void bench_replay(void) {
     static const u32 record_counts[] = {1, 32, 256};
     const u32 operations = 50000;
@@ -537,6 +634,7 @@ int main(int argc, char** argv) {
     present_order();
     retained_texture_snapshot();
     finish_all();
+    finish_all_waits();
     if (argc == 2 && !strcmp(argv[1], "--bench-replay")) bench_replay();
     puts("nvn_queue_lifetime: ok");
     return 0;
