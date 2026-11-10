@@ -595,6 +595,7 @@ typedef struct {
 #define GLSLC_HASH_SIZE   8192u
 enum { GLSLC_LAYOUT_NONE = 0, GLSLC_LAYOUT_STD140 = 1, GLSLC_LAYOUT_STD430 = 2 };
 
+#define GLSLC_TYPE_NAMES 4u /* the most types one message names, and one more */
 typedef struct {
     /* the input */
     const char* src;
@@ -673,6 +674,9 @@ typedef struct {
     uint8_t buffer_packing;
     uint8_t uniform_row_major;
     uint8_t buffer_row_major;
+    /* the types an error's message names, made only when it is (parser.c's type_text) */
+    char type_names[GLSLC_TYPE_NAMES][64];
+    uint32_t type_name_next;
     /* the back end */
     GlslcEmitter e;
 } Glslc;
