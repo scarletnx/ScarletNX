@@ -172,8 +172,11 @@ static void game_metadata(const char* directory, const SnxCtrSource* game, char*
     {
         char* file = snx_path_join(directory, "icon.rgba");
         if (file && icon && !snx_ctr_smdh_icon(icon, (size_t)size, rgba)) {
-            if (snx_write_file(file, rgba, sizeof rgba))
-                fprintf(stderr, "scarletnx-3ds: cannot write %s\n", file);
+            if (snx_write_file(file, rgba, sizeof rgba)) {
+                char why[256];
+                snx_os_error(why, sizeof why);
+                fprintf(stderr, "scarletnx-3ds: cannot write %s: %s\n", file, why);
+            }
         } else if (file && snx_is_file(file)) { /* the game has no icon now: the launcher must not draw the old one */
             (void)snx_remove_tree(file);
         }

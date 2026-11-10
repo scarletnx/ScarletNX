@@ -355,7 +355,9 @@ static int write_icon(const char* input, const char* out, const char* keys, cons
     {
         char* file = snx_path_join(out, "icon.rgba");
         if (!file || snx_mkdirs(out) || snx_write_file(file, rgba, sizeof rgba)) {
-            fprintf(stderr, "scarletnx-3ds: cannot write %s\n", file ? file : "the icon");
+            char why[256];
+            snx_os_error(why, sizeof why);
+            fprintf(stderr, "scarletnx-3ds: cannot write %s: %s\n", file ? file : "the icon", why);
             free(file);
             goto done;
         }
