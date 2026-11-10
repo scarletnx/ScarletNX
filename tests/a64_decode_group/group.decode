@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# A decoder of a few rows for tests/a64_decode_group.c: a { } group whose rows take the same words, so only their
+# bodies (group.profile's predicates and conditional features) tell which one a word is.
+
+&r      rd
+
+{
+  FIRST   0000 0000 0000 0000 0000 0000 000 rd:5  &r
+  SECOND  0000 0000 0000 0000 0000 0000 000 rd:5  &r
+  THIRD   0000 0000 0000 0000 0000 0000 000 rd:5  &r
+}
+
+# a row outside the group, with a predicate and nothing after it
+ALONE     0000 0001 0000 0000 0000 0000 000 rd:5  &r

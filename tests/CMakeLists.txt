@@ -996,6 +996,12 @@ add_executable(snx-test-a64-decode a64_decode_test.c)
 snx_test_target(snx-test-a64-decode 99)
 snx_decodetree_a64(snx-test-a64-decode)
 add_test(NAME a64_decode COMMAND snx-test-a64-decode)
+# a decoder of four rows (a64_decode_group/): a row whose body refuses a word hands it to the rows after it
+add_executable(snx-test-a64-decode-group a64_decode_group.c)
+snx_test_target(snx-test-a64-decode-group 99)
+snx_decodetree_a64(snx-test-a64-decode-group PROFILE "${CMAKE_CURRENT_SOURCE_DIR}/a64_decode_group/group.profile"
+                   DECODE "${CMAKE_CURRENT_SOURCE_DIR}/a64_decode_group/group.decode")
+add_test(NAME a64_decode_group COMMAND snx-test-a64-decode-group)
 
 
 # The QEMU reference (tests/qemu_ref/): hand-checked cases, the ported cases and the decoder's UNDEF sets under
