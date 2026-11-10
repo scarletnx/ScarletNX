@@ -88,7 +88,10 @@ void kobj_unref(KObj* o) {
     else if (o->type == KO_SESSION)
         ksession_destroy(o);
 }
+static int handles_left = -1; /* how many more handles the table gives, when a test bounds it */
 u32 h_new(KObj* o) {
+    if (!handles_left) return 0; /* the table is full */
+    if (handles_left > 0) handles_left--;
     for (u32 i = 0; i < 64; i++)
         if (!handles[i]) {
             kobj_ref(o);
@@ -345,7 +348,8 @@ static SvcObj* test_object(const char* name) {
 #define RC_FAIL RC(5, 7)
 /* records what reached it. 1 answers the sum of two words and a constant, 2 fails after putting handles, an object
    and data in the reply, 3 answers an object, 4 answers a missing object, 5 answers 0xD0 bytes, 6 0x100 bytes (more
-   than fits), 7 two copy handles and 0xD0 bytes, 8 claims the crash report ring's next 32 entries while it runs */
+   than fits), 7 two copy handles and 0xD0 bytes, 8 claims the crash report ring's next 32 entries while it runs, 10
+   answers a copy handle, two objects and a word; 9 is a command it doesn't have */
 static int test_dispatch(SvcObj* self, IpcCtx* c) {
     test_now += test_takes;
     got.calls++;
@@ -392,6 +396,12 @@ static int test_dispatch(SvcObj* self, IpcCtx* c) {
             return 0;
         case 8:
             for (int i = 0; i < 32; i++) ring_claim();
+            return 0;
+        case 10:
+            out_copy_h(c, event_handle());
+            out_obj(c, test_object("test:child"));
+            out_obj(c, test_object("test:child"));
+            out32(c, 0xBAD);
             return 0;
         default: return RC(10, 221);
     }
@@ -1089,6 +1099,37 @@ static void clones(void) {
     CHECK(h_close(h) == 0 && objects_live == objects);
 }
 
+/* The handle table filling up under a reply: an object that gets no session fails the request with OutOfHandles, and
+   what the reply held until then goes (the first object's session, the copy handle, the data), where the game would
+   get success with a move handle of 0. A clone that gets no handle fails the same way, and takes nothing with it */
+static void full_handle_table(void) {
+    int objects = objects_live, events = events_live;
+    SvcObj* root = test_object("test:f");
+    u32 h = session_new(root), open = 0;
+    for (u32 i = 0; i < 64; i++) open += handles[i] != NULL;
+    clear();
+    cmif_make_request(msg(), (CmifRequestFormat){.request_id = 10});
+    handles_left = 2; /* the event's and the first object's */
+    CHECK(send(h) == 0);
+    handles_left = -1;
+    CmifResponse resp = cmif_parse_response(msg(), 0, 0);
+    CHECK(resp.result == SNX_RC_SVC_OUT_OF_HANDLES);
+    CHECK(snx_ld_le32(msg() + 4) >> 31 == 0); /* no handle descriptor: neither a copy nor a move handle */
+    CHECK(objects_live == objects + 1 && events_live == events);
+    for (u32 i = 0; i < 64; i++) open -= handles[i] != NULL;
+    CHECK(open == 0); /* the handles there were before the request, and no other */
+    /* CloneCurrentObject and CloneCurrentObjectEx */
+    for (u32 cmd = 2; cmd <= 4; cmd += 2) {
+        clear();
+        cmif_make_control_request(msg(), cmd, cmd == 4 ? 4 : 0);
+        handles_left = 0;
+        CHECK(send(h) == 0);
+        handles_left = -1;
+        CHECK(cmif_parse_response(msg(), 0, 0).result == SNX_RC_SVC_OUT_OF_HANDLES && root->refs == 1);
+    }
+    CHECK(h_close(h) == 0 && objects_live == objects);
+}
+
 /* what sf closes the session for: a message type it doesn't serve, a TIPC close, a CMIF close. The client's
    SendSyncRequest and every later one get SessionClosed, and the crash report's ring shows them */
 static void session_closes(void) {
@@ -1136,6 +1177,7 @@ int main(void) {
     domain_requests(h, root);
     failed_command(h, 1);
     clones();
+    full_handle_table();
     session_closes();
     /* a plain Close (type 2): sf closes the session, and the client then closes its handle */
     clear();

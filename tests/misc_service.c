@@ -184,7 +184,9 @@ KShmem* kshmem_new(u64 size, const char* name) {
 u8* kshmem_ptr(KShmem* s) { return s->host; }
 /* the handle table: the handle a test reads back names the object it was made for */
 static KObj* test_handles[64];
+static int test_table_full; /* the handle table has no free entry, as kernel.c's with 1024 handles open */
 u32 h_new(KObj* o) {
+    if (test_table_full) return 0;
     CHECK(test_next_handle - 0x100 < 64);
     kobj_ref(o);
     test_handles[test_next_handle - 0x100] = o;
@@ -215,6 +217,39 @@ u32 owned_event(const char* name) {
     KEvent* e = kevent_new(name);
     kobj_ref(&e->o);
     return kobj_id(&e->o);
+}
+
+/* The handle table full: each command that hands the game a handle answers OutOfHandles, where success with handle 0
+   would have the game wait on, map or close a handle that names nothing. The memory GetHidSharedMemory makes for the
+   handle goes with it; with room again the same commands give their handles */
+static void test_full_handle_table(SvcObj* h) {
+    nn_hid_JoyXpadId joy;
+    nn_hid_BasicXpadId basic;
+    nn_hid_NpadIdType npad;
+    nn_streamplay_HidSharedMemoryConfig config;
+    u32 handle[7];
+    int kobjs;
+    memset(&joy, 0, sizeof joy);
+    memset(&basic, 0, sizeof basic);
+    memset(&npad, 0, sizeof npad);
+    for (int full = 1; full >= 0; full--) {
+        u32 want = full ? SNX_RC_SVC_OUT_OF_HANDLES : 0;
+        memset(handle, 0, sizeof handle);
+        test_table_full = full;
+        CHECK((u32)nn_hid_IAppletResource_GetSharedMemoryHandle(h, &handle[0]) == want);
+        CHECK((u32)nn_hid_IHidServer_GetJoyXpadLifoHandle(h, joy, &handle[1]) == want);
+        CHECK((u32)nn_hid_IHidServer_GetSixAxisSensorLifoHandle(h, basic, &handle[2]) == want);
+        CHECK((u32)nn_hid_IHidServer_GetJoySixAxisSensorLifoHandle(h, joy, &handle[3]) == want);
+        CHECK((u32)nn_hid_IHidServer_AcquireNpadStyleSetUpdateEventHandle(h, npad, 0, 0, &handle[4]) == want);
+        CHECK((u32)nn_irsensor_IIrSensorServer_GetIrsensorSharedMemoryHandle(NULL, 0, &handle[5]) == want);
+        kobjs = (int)test_kobjs;
+        CHECK((u32)nn_streamplay_IUserShimScopedObject_GetHidSharedMemory(NULL, &config, &handle[6]) == want);
+        CHECK((int)test_kobjs == kobjs + !full);
+        for (int i = 0; i < 7; i++) CHECK((handle[i] == 0) == full);
+    }
+    close_handles();
+    kobj_unref(kobj_at(g_hle.misc.irs_shm)); /* the service's own reference */
+    g_hle.misc.irs_shm = 0;
 }
 
 typedef struct {
@@ -699,6 +734,8 @@ static void test_hid(void) {
     set_styles(h, 0x7F);
     test_vibration(h);
     test_npad_players(h);
+    close_handles();
+    test_full_handle_table(h);
     svcobj_unref(h);
     close_handles();
     /* the service's own references: everything it made goes with them */

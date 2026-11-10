@@ -140,7 +140,9 @@ KEvent* kevent_new(const char* name) {
 void kevent_signal(KEvent* e) { e->signaled = 1; }
 void kevent_clear(KEvent* e) { e->signaled = 0; }
 static KObj* test_handles[64];
+static int test_table_full; /* the handle table has no free entry */
 u32 h_new(KObj* o) {
+    if (test_table_full) return 0;
     CHECK(test_next_handle - 0x100 < 64);
     kobj_ref(o);
     test_handles[test_next_handle - 0x100] = o;
@@ -1084,13 +1086,19 @@ int main(void) {
     CHECK(query_event(gpu, 1) == sm && query_event(gpu, 3) != sm);
     KEvent* slot = query_event(ctrl, 0x10000005u);
     CHECK(slot == kev(CTRL_EV(ctrl)[5].ev) && query_event(ctrl, 5) == slot);
+    /* with the handle table full QueryEvent answers OutOfHandles, not NvError 0 with handle 0; the fd keeps its event */
+    test_table_full = 1;
+    request(4, gpu, 1);
+    CHECK((u32)nvdrv->dispatch(nvdrv, &ctx) == SNX_RC_SVC_OUT_OF_HANDLES && ctx.out_copy[0] == 0 && sm->o.refs == 3);
+    test_table_full = 0;
+    CHECK(query_event(gpu, 1) == sm);
 
     /* closing the GPU channel retires its syncpoint once the GPU thread has run what was queued on it: a call after
        the channel's jobs */
     u32 sp = test_gpu.channel, calls = test_gpu.calls;
     CHECK(nv_close(gpu) == 0 && test_gpu.closed_channel == sp && !g_hle.nvdrv.syncpt_used[sp] && !g_hle.nvdrv.nvf[gpu].dev);
     CHECK(test_gpu.calls == calls + 1 && test_gpu.ncall_chans == 1 && test_gpu.call_chans[0] == sp);
-    CHECK(sm->o.refs == 2); /* the game's two handles keep it, the fd's reference is gone */
+    CHECK(sm->o.refs == 3); /* the game's three handles keep it, the fd's reference is gone */
     CHECK(nv_ioctl1(gpu, SUBMIT_GPFIFO_EX, 0x18) == 8);
     CHECK(nv_close(gpu) == 8 && nv_close(0) == 8 && nv_close(0xFFFF) == 8); /* not open: as an ioctl to it */
     /* QueryEvent on an fd that isn't open: the bad-fd NvError, no handle, and no event slot of the ctrl device */

@@ -470,7 +470,8 @@ static void drop_outputs(IpcCtx* c) {
    move handle, ahead of the declared ones), then for CMIF the data words at the next 16-byte boundary (counted with 16
    bytes of padding, as sf counts them), a domain header in a domain message's reply, the CmifOutHeader, the data and
    a domain message's object ids; for TIPC the result and the data right after the handles, under the request's type.
-   What doesn't fit the server's 0x100 bytes is cut, and logged */
+   What doesn't fit the server's 0x100 bytes is cut, and logged. An object the handle table has no room for a session
+   of fails the request with OutOfHandles, and nothing of it goes out */
 static void respond(IpcCtx* c) {
     u8* m = c->msg;
     int dom = c->is_domain == IPC_DOMAIN_MESSAGE, i, nmove = 0;
@@ -478,10 +479,15 @@ static void respond(IpcCtx* c) {
     if (c->rc) drop_outputs(c);
     for (i = 0; i < c->nout_objs; i++) {
         SvcObj* o = c->out_objs[i];
+        c->out_objs[i] = NULL; /* the domain or the session has its reference from here */
         if (dom)
             ids[nids++] = o ? domain_add(c->sess->domain, o) : 0;
-        else
-            moves[nmove++] = o ? session_new(o) : 0;
+        else if (!(moves[nmove++] = o ? session_new(o) : 0) && o) {
+            while (nmove) /* the sessions of the objects before it go with their handles */
+                if (moves[--nmove]) h_close(moves[nmove]);
+            c->rc = SNX_RC_SVC_OUT_OF_HANDLES;
+            drop_outputs(c);
+        }
     }
     for (i = 0; i < c->nout_move; i++) moves[nmove++] = c->out_move[i];
     while (nmove > 15) { /* the special header counts 15 at most */
@@ -573,14 +579,18 @@ static u32 control(IpcCtx* c, KSession* s) {
             ipc_in(c, 0, &id, 4);
             o = domain_get(d, snx_le32(id));
             R_UNLESS(o, SNX_RC_SF_HIPC_DOMAIN_OBJECT_NOT_FOUND);
-            out_move_h(c, session_new(o));
+            id = session_new(o);
+            R_UNLESS(id, SNX_RC_SVC_OUT_OF_HANDLES);
+            out_move_h(c, id);
             R_SUCCEED();
         }
         case 2:
         case 4:
             svcobj_ref(s->obj);
             if (d) __atomic_add_fetch(&d->refs, 1, __ATOMIC_RELAXED);
-            out_move_h(c, session_make(s->obj, d));
+            id = session_make(s->obj, d);
+            R_UNLESS(id, SNX_RC_SVC_OUT_OF_HANDLES);
+            out_move_h(c, id);
             R_SUCCEED();
         case 3: out32(c, s->obj ? s->obj->ptrbuf : POINTER_BUFFER); R_SUCCEED();
         default:

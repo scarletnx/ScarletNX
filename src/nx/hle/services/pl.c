@@ -175,6 +175,7 @@ static int nn_pl_detail_IPlatformServiceManager_GetSharedMemoryAddressOffset(Svc
 static int nn_pl_detail_IPlatformServiceManager_GetSharedMemoryNativeHandle(SvcObj* self, u32* shared_memory) {
     (void)self;
     *shared_memory = h_new(kobj_at(g_hle.pl.shm));
+    R_UNLESS(*shared_memory, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 /* every font, in the order of their types whatever the language, as Eden does: up to 6, or as many as the buffers

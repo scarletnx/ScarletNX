@@ -241,6 +241,7 @@ static int nn_audio_detail_IAudioOut_AppendAudioOutBufferAuto(SvcObj* self, u64 
 
 static int nn_audio_detail_IAudioOut_RegisterBufferEvent(SvcObj* self, u32* event) {
     *event = ev_handle(((AudOut*)self->data)->ev);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 
@@ -477,6 +478,7 @@ static int nn_audio_detail_IAudioRenderer_Stop(SvcObj* self) {
 static int nn_audio_detail_IAudioRenderer_QuerySystemEvent(SvcObj* self, u32* event) {
     R_UNLESS(!((AudRen*)self->data)->manual, SNX_RC_AUDIO_NOT_SUPPORTED);
     *event = ev_handle(g_hle.audio.ev);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_audio_detail_IAudioRenderer_SetRenderingTimeLimit(SvcObj* self, u32 percent) {
@@ -696,14 +698,17 @@ static int nn_audio_detail_IAudioDevice_QueryAudioDeviceSystemEvent(SvcObj* self
     u32 e = ((AudDevice*)self->data)->ev[0];
     ev_signal(e);
     *event = ev_handle(e);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_audio_detail_IAudioDevice_QueryAudioDeviceInputEvent(SvcObj* self, u32* event) {
     *event = ev_handle(((AudDevice*)self->data)->ev[1]);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_audio_detail_IAudioDevice_QueryAudioDeviceOutputEvent(SvcObj* self, u32* event) {
     *event = ev_handle(((AudDevice*)self->data)->ev[2]);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 

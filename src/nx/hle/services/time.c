@@ -409,6 +409,7 @@ static int nn_timesrv_detail_service_IStaticService_GetEphemeralNetworkSystemClo
 static int nn_timesrv_detail_service_IStaticService_GetSharedMemoryNativeHandle(SvcObj* self, u32* shared_memory) {
     (void)self;
     *shared_memory = h_new(kobj_at(g_hle.time.shm));
+    R_UNLESS(*shared_memory, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_timesrv_detail_service_IStaticService_GetStandardNetworkClockOperationEventReadableHandle(SvcObj* self,

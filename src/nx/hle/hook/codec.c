@@ -80,7 +80,11 @@ KEvent* hook_attach_event(CPU* c, u64 event, const char* name) {
     u32 h;
     if (!fn) return NULL;
     e = kevent_new(name);
+    /* a reference held while the handle is made, so that a full handle table destroys the event here */
+    kobj_ref(&e->o);
     h = h_new(&e->o); /* the handle's reference, which the SystemEvent's destruction closes; the caller keeps its own */
+    kobj_unref(&e->o);
+    if (!h) return NULL;
     if (event) hook_guest_call(c, fn, event, h, 1, 1);
     return e;
 }

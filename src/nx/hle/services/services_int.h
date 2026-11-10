@@ -40,7 +40,8 @@ static inline void ev_clear(u32 id) {
 }
 static inline u8* shm_ptr(u32 id) { return kshmem_ptr(kshm(id)); }
 u32 ev_handle(u32 ev); /* a handle to the event for a reply, with its own reference */
-/* a new event for a reply that only the game holds, signaled or not. Returns 0, for a handler to return */
+/* a new event for a reply that only the game holds, signaled or not. Returns 0, or OutOfHandles with the handle table
+   full, for a handler to return */
 int new_event(u32* event, const char* name, int signaled);
 u32 owned_event(const char* name); /* a new event the service keeps a reference on: its id */
 

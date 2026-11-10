@@ -31,6 +31,7 @@ int new_event(u32* event, const char* name, int signaled) {
     kobj_ref(&e->o);
     *event = h_new(&e->o);
     kobj_unref(&e->o);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 

@@ -990,6 +990,7 @@ static int nn_gsv_SyncptSession_GetEvent(SvcObj* self, u32 slot, u32* event) {
     /* the service keeps the kernel object id to signal it, and hands the game a handle of its own */
     sync_waits[slot].event = owned_event("gsv:syncpoint");
     *event = ev_handle(sync_waits[slot].event);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_gsv_SyncptSession_QueryCounter(SvcObj* self, u32 id, u64* value, u32* reserved) {

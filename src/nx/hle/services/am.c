@@ -272,6 +272,7 @@ static int nn_am_service_IGraphicsScalingParametersFunctions_SetGraphicsScaleCha
 static int nn_am_service_ICommonStateGetter_GetEventHandle(SvcObj* self, u32* event) {
     (void)self;
     *event = ev_handle(g_hle.am.msg_event);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_am_service_ICommonStateGetter_ReceiveMessage(SvcObj* self, nn_am_AppletMessage* message) {
@@ -312,6 +313,7 @@ static int nn_am_service_ICommonStateGetter_RequestToAcquireSleepLock(SvcObj* se
 static int nn_am_service_ICommonStateGetter_GetAcquiredSleepLockEvent(SvcObj* self, u32* event) {
     (void)self;
     *event = ev_handle(g_hle.am.sleep_lock_event);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 
@@ -348,7 +350,10 @@ static int nn_am_service_ILockAccessor_TryLock(SvcObj* self, u8 return_handle, u
     *is_locked = (u8)!l->locked;
     l->locked = 1;
     pm_unlock(&g_host.am.lock);
-    if (return_handle) *event = ev_handle(l->event);
+    if (return_handle) {
+        *event = ev_handle(l->event);
+        R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
+    }
     R_SUCCEED();
 }
 static int nn_am_service_ILockAccessor_Unlock(SvcObj* self) {
@@ -361,6 +366,7 @@ static int nn_am_service_ILockAccessor_Unlock(SvcObj* self) {
 }
 static int nn_am_service_ILockAccessor_GetEvent(SvcObj* self, u32* event) {
     *event = ev_handle(((AmLock*)self->data)->event);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_am_service_ILockAccessor_IsLocked(SvcObj* self, u8* is_locked) {
@@ -406,11 +412,13 @@ static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolution(SvcObj* 
 static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolutionChangeEvent(SvcObj* self, u32* event) {
     (void)self;
     *event = ev_handle(g_hle.am.resolution_event);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_am_service_ICommonStateGetter_GetHdcpAuthenticationStateChangeEvent(SvcObj* self, u32* event) {
     (void)self;
     *event = ev_handle(g_hle.am.resolution_event);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 /* HDCP authenticates on the console's TV output; Eden answers 1 (common_state_getter.cpp) */
@@ -479,6 +487,7 @@ static int nn_am_service_ISelfController_Exit(SvcObj* self) {
 static int nn_am_service_ISelfController_GetLibraryAppletLaunchableEvent(SvcObj* self, u32* event) {
     (void)self;
     *event = ev_handle(g_hle.am.launchable_event);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_am_service_ISelfController_GetGraphicsSupervisor(SvcObj* self, u32* session) {
@@ -1027,6 +1036,7 @@ static int nn_am_service_ILibraryAppletCreator_CreateHandleStorage(SvcObj* self,
 
 static int nn_am_service_ILibraryAppletAccessor_GetAppletStateChangedEvent(SvcObj* self, u32* event) {
     *event = ev_handle(((LibApplet*)self->data)->state_ev);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_am_service_ILibraryAppletAccessor_IsCompleted(SvcObj* self, u8* completed) {
@@ -1726,14 +1736,17 @@ static int nn_am_service_ILibraryAppletAccessor_PopInteractiveOutData(SvcObj* se
 }
 static int nn_am_service_ILibraryAppletAccessor_GetPopOutDataEvent(SvcObj* self, u32* event) {
     *event = ev_handle(((LibApplet*)self->data)->out_ev);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_am_service_ILibraryAppletAccessor_GetPopInteractiveOutDataEvent(SvcObj* self, u32* event) {
     *event = ev_handle(((LibApplet*)self->data)->interactive_ev);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_am_service_ILibraryAppletAccessor_GetUnknown170Event(SvcObj* self, u32* event) {
     *event = ev_handle(((LibApplet*)self->data)->unknown170_ev);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }
 static int nn_am_service_ILibraryAppletAccessor_GetLibraryAppletInfo(SvcObj* self,
