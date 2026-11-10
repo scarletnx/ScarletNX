@@ -53,7 +53,7 @@ u32 shader_half_pair_mod(DirectCtx* c, u32 vec2, u32 pair, int absolute, int neg
 u32 shader_half_immediate(DirectCtx* c, u64 w) {
     u32 low = (B(w, 20, 9) << 6) | (B(w, 29, 1) << 15);
     u32 high = (B(w, 30, 9) << 6) | (B(w, 56, 1) << 15);
-    return spv_emit_constant_u32(&c->emit, c->u32_type, low | (high << 16));
+    return shader_u32(c, low | (high << 16));
 }
 
 /* HMUL2's and HFMA2's FMZ precision (2): a product with a zero factor is zero, even with an infinity or a NaN, so a
@@ -90,7 +90,7 @@ u32 shader_half_pair_result(DirectCtx* c, u32 vec2, u32 pair, u32 old, u32 merge
                               spv_emit_vec4_extract(&c->emit, c->f32_type, pair, 0));
     u32 packed = shader_pack_half_rte(c, pair);
     if (merge == 2 || merge == 3) {
-        u32 mask = spv_emit_constant_u32(&c->emit, c->u32_type, merge == 2 ? 0xffffu : 0xffff0000u);
+        u32 mask = shader_u32(c, merge == 2 ? 0xffffu : 0xffff0000u);
         return spv_emit_binary(&c->emit, SPV_OP_BITWISE_OR, c->u32_type,
                                spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, old,
                                                spv_emit_unary(&c->emit, SPV_OP_NOT, c->u32_type, mask)),
@@ -119,16 +119,15 @@ u32 shader_double_source(DirectCtx* c, u32 vec2_u32, u64 w, int kind) {
     u32 low = c->zero, high;
     if (kind == 1) {
         u32 bank = B(w, 34, 5), offset = B(w, 20, 14) * 4;
-        if (!(offset & 4))
-            low = shader_cbuf_read_dynamic(c, bank, spv_emit_constant_u32(&c->emit, c->u32_type, offset));
-        high = shader_cbuf_read_dynamic(c, bank, spv_emit_constant_u32(&c->emit, c->u32_type, offset | 4u));
+        if (!(offset & 4)) low = shader_cbuf_read_dynamic(c, bank, shader_u32(c, offset));
+        high = shader_cbuf_read_dynamic(c, bank, shader_u32(c, offset | 4u));
     } else
-        high = spv_emit_constant_u32(&c->emit, c->u32_type, (B(w, 20, 19) << 12) | (B(w, 56, 1) << 31));
+        high = shader_u32(c, (B(w, 20, 19) << 12) | (B(w, 56, 1) << 31));
     return spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f64_type,
                           spv_emit_vec2_construct(&c->emit, vec2_u32, low, high));
 }
 
-static u32 conversion_constant(DirectCtx* c, u32 value) { return spv_emit_constant_u32(&c->emit, c->u32_type, value); }
+static u32 conversion_constant(DirectCtx* c, u32 value) { return shader_u32(c, value); }
 static u32 conversion_select(DirectCtx* c, u32 condition, u32 yes, u32 no) {
     return spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, condition, yes, no);
 }
@@ -429,19 +428,19 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             u32 overflow = spv_emit_fcompare(&c->emit, c->bool_type, 6, src,
                                              wide ? spv_emit_constant64(&c->emit, ftype, 0x41f0000000000000ull)
                                                   : spv_emit_constant_f32(&c->emit, ftype, 4294967296.0f));
-            result = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, overflow,
-                                      spv_emit_constant_u32(&c->emit, c->u32_type, 0xffffffffu), result);
-            result = spv_emit_ternary(
-                &c->emit, SPV_OP_SELECT, c->u32_type, spv_emit_unary(&c->emit, SPV_OP_IS_NAN, c->bool_type, src),
-                wide ? spv_emit_constant_u32(&c->emit, c->u32_type, 0x80000000u) : c->zero, result);
+            result =
+                spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, overflow, shader_u32(c, 0xffffffffu), result);
+            result = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
+                                      spv_emit_unary(&c->emit, SPV_OP_IS_NAN, c->bool_type, src),
+                                      wide ? shader_u32(c, 0x80000000u) : c->zero, result);
             if (dst_format == 1) {
-                u32 bound = spv_emit_constant_u32(&c->emit, c->u32_type, 65535);
+                u32 bound = shader_u32(c, 65535);
                 u32 large = spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, bound, result);
                 result = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, large, bound, result);
                 if (wide)
                     result = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type,
                                               spv_emit_unary(&c->emit, SPV_OP_IS_NAN, c->bool_type, src),
-                                              spv_emit_constant_u32(&c->emit, c->u32_type, 0x8000), result);
+                                              shader_u32(c, 0x8000), result);
             }
             reg_write(c, d, result);
         } else {
@@ -485,12 +484,12 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 high = reg_read(c, b < 254 ? b + 1 : 255);
             } else if (op == O_I2F_C) {
                 u32 bank = B(w, 34, 5), offset = B(w, 20, 14) * 4;
-                low = shader_cbuf_read_dynamic(c, bank, spv_emit_constant_u32(&c->emit, c->u32_type, offset));
-                high = shader_cbuf_read_dynamic(c, bank, spv_emit_constant_u32(&c->emit, c->u32_type, offset + 4));
+                low = shader_cbuf_read_dynamic(c, bank, shader_u32(c, offset));
+                high = shader_cbuf_read_dynamic(c, bank, shader_u32(c, offset + 4));
             } else {
                 i32 immediate = (i32)(B(w, 20, 19) | (B(w, 56, 1) ? 0xfff80000u : 0));
-                low = spv_emit_constant_u32(&c->emit, c->u32_type, (u32)immediate);
-                high = spv_emit_constant_u32(&c->emit, c->u32_type, immediate < 0 ? 0xffffffffu : 0);
+                low = shader_u32(c, (u32)immediate);
+                high = shader_u32(c, immediate < 0 ? 0xffffffffu : 0);
             }
             u32 itype = is_signed ? i64_type : u64_type;
             u32 value =
@@ -511,9 +510,8 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             u32 value = shader_integer_right(c, w, op - O_I2F_R);
             u32 width = size == 0 ? 8 : size == 1 ? 16 : 32;
             if (size < 2) {
-                u32 offset =
-                    spv_emit_constant_u32(&c->emit, c->u32_type, size == 0 ? B(w, 41, 2) * 8 : (B(w, 41, 2) & 2) * 8);
-                u32 bits = spv_emit_constant_u32(&c->emit, c->u32_type, width);
+                u32 offset = shader_u32(c, size == 0 ? B(w, 41, 2) * 8 : (B(w, 41, 2) & 2) * 8);
+                u32 bits = shader_u32(c, width);
                 value = is_signed
                             ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
                                              spv_emit_ternary(&c->emit, SPV_OP_BIT_FIELD_S_EXTRACT, i32_type,
@@ -523,9 +521,9 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             }
             if (is_signed && negate && !absolute)
                 least = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, value,
-                                        spv_emit_constant_u32(&c->emit, c->u32_type, 0u - (1u << (width - 1))));
+                                        shader_u32(c, 0u - (1u << (width - 1))));
             if (is_signed && absolute) {
-                u32 min_value = spv_emit_constant_u32(&c->emit, c->u32_type, 0u - (1u << (width - 1)));
+                u32 min_value = shader_u32(c, 0u - (1u << (width - 1)));
                 u32 negative = spv_emit_binary(&c->emit, SPV_OP_S_GREATER_THAN, c->bool_type,
                                                spv_emit_constant_u32(&c->emit, i32_type, 0),
                                                spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, value));
@@ -730,7 +728,7 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 predicate = pred_read(c, B(w, 39, 3), B(w, 42, 1));
         if (is_set) {
             u32 test = bool_combine(c, B(w, 45, 2), comparison, predicate);
-            u32 truth = spv_emit_constant_u32(&c->emit, c->u32_type, B(w, 52, 1) ? 0x3f800000u : 0xffffffffu);
+            u32 truth = shader_u32(c, B(w, 52, 1) ? 0x3f800000u : 0xffffffffu);
             u32 value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, test, truth, c->zero);
             if (B(w, 47, 1)) shader_flags_logic(c, value);
             reg_write(c, d, value);
@@ -749,7 +747,7 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 test = spv_emit_fcompare(&c->emit, c->bool_type, B(w, 48, 4), left, right);
         u32 pc = pred_read(c, B(w, 39, 3), B(w, 42, 1));
         test = bool_combine(c, B(w, 45, 2), test, pc);
-        u32 truth = spv_emit_constant_u32(&c->emit, c->u32_type, B(w, 52, 1) ? 0x3f800000u : 0xffffffffu);
+        u32 truth = shader_u32(c, B(w, 52, 1) ? 0x3f800000u : 0xffffffffu);
         u32 value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, test, truth, c->zero);
         if (B(w, 47, 1)) shader_flags_logic(c, value);
         reg_write(c, d, value);
@@ -813,19 +811,17 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 lane = 0;
         if (shader_fswzadd_lanes(w, B(w, 28, 2)) != 15)
             lane = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
-                                   spv_emit_load(&c->emit, c->u32_type, c->subgroup_lane_input),
-                                   spv_emit_constant_u32(&c->emit, c->u32_type, 3));
+                                   spv_emit_load(&c->emit, c->u32_type, c->subgroup_lane_input), shader_u32(c, 3));
         /* pick[k]: whether this lane's mode is k + 1, where some lanes' are and others' aren't */
         u32 masks[3] = {shader_fswzadd_lanes(w, 1), shader_fswzadd_lanes(w, 2), shader_fswzadd_lanes(w, 3)};
         u32 pick[3] = {0, 0, 0};
         for (int k = 0; k < 3; k++) {
             if (!masks[k] || masks[k] == 15) continue;
-            u32 bit = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
-                                      spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type,
-                                                      spv_emit_constant_u32(&c->emit, c->u32_type, masks[k]), lane),
-                                      spv_emit_constant_u32(&c->emit, c->u32_type, 1));
-            pick[k] = spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type, bit,
-                                      spv_emit_constant_u32(&c->emit, c->u32_type, 0));
+            u32 bit = spv_emit_binary(
+                &c->emit, SPV_OP_BITWISE_AND, c->u32_type,
+                spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, shader_u32(c, masks[k]), lane),
+                shader_u32(c, 1));
+            pick[k] = spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type, bit, shader_u32(c, 0));
         }
         u32 result = right;
         if (masks[2] != 15) {
@@ -877,7 +873,7 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 break;
             case O_HADD2_32I:
             case O_HMUL2_32I:
-                raw_b = spv_emit_constant_u32(&c->emit, c->u32_type, B(w, 20, 32));
+                raw_b = shader_u32(c, B(w, 20, 32));
                 saturate = (int)B(w, 52, 1);
                 break;
             case O_HFMA2_R:
@@ -910,7 +906,7 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 precision = B(w, 57, 2);
                 break;
             default: /* O_HFMA2_32I */
-                raw_b = spv_emit_constant_u32(&c->emit, c->u32_type, B(w, 20, 32));
+                raw_b = shader_u32(c, B(w, 20, 32));
                 raw_c = reg_read(c, d);
                 neg_c = (int)B(w, 52, 1);
                 precision = B(w, 55, 2);
@@ -961,8 +957,8 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             u32 test = spv_emit_fcompare(&c->emit, c->bool_type, compare, left, right);
             test = bool_combine(c, B(w, 45, 2), test, predicate);
             u32 truth = B(w, op == O_HSET2_R ? 49 : 53, 1) ? 0x3c00u : 0xffffu;
-            u32 bits = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, test,
-                                        spv_emit_constant_u32(&c->emit, c->u32_type, truth << (lane * 16)), c->zero);
+            u32 bits = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, test, shader_u32(c, truth << (lane * 16)),
+                                        c->zero);
             result = spv_emit_binary(&c->emit, SPV_OP_BITWISE_OR, c->u32_type, result, bits);
         }
         reg_write(c, d, result);

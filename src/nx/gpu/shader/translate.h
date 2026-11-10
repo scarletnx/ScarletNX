@@ -82,7 +82,17 @@ typedef struct {
     u32 primitive_base; /* capture slices preserve the original fragment PrimitiveId through push constants */
     u32 branch_cond;   /* with structured flow, the condition of the branch that ends the block, 0 for always */
     u32 branch_target; /* and the word a BRX that ends it goes to */
+    /* the u32 constants under SH_SMALL_U32 made so far, 0 for one not made: shader_u32 asks the emitter once each */
+    u32 small_u32[64];
 } DirectCtx;
+#define SH_SMALL_U32 64u
+
+/* the u32 constant of value: a small one from c->small_u32, after the emitter makes it the first time */
+static inline u32 shader_u32(DirectCtx* c, u32 value) {
+    if (value >= SH_SMALL_U32) return spv_emit_constant_u32(&c->emit, c->u32_type, value);
+    if (!c->small_u32[value]) c->small_u32[value] = spv_emit_constant_u32(&c->emit, c->u32_type, value);
+    return c->small_u32[value];
+}
 
 /* Fragment fetches from a scaled render target (resolution=): texel p is at (p + 0.5) * scale, and TXQ answers the
    size over the scale. The texture's bit is in the push constants' uvec4, x for slots 0-31, y for 32-63 */

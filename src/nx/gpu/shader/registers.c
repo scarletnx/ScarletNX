@@ -38,10 +38,9 @@ u32 shader_ftz_read(DirectCtx* c, const u64* insn, const u8* block_start, u32 i,
 }
 
 void shader_flags_logic(DirectCtx* c, u32 value) {
-    u32 sign = spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type,
-                               spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, value,
-                                               spv_emit_constant_u32(&c->emit, c->u32_type, 0x80000000u)),
-                               c->zero);
+    u32 sign = spv_emit_binary(
+        &c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type,
+        spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, value, shader_u32(c, 0x80000000u)), c->zero);
     cc_store(c, c->cc_c, c->false_value);
     cc_store(c, c->cc_o, c->false_value);
     cc_store(c, c->cc_z, spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, value, c->zero));
@@ -54,10 +53,9 @@ void shader_flags_logic_extended(DirectCtx* c, u32 value, int extended) {
     u32 previous = extended ? flag_read(c, c->cc_z) : 0;
     u32 zero = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, value, c->zero);
     if (extended) zero = spv_emit_bool_binary(&c->emit, c->bool_type, 0, previous, zero);
-    u32 sign = spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type,
-                               spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, value,
-                                               spv_emit_constant_u32(&c->emit, c->u32_type, 0x80000000u)),
-                               c->zero);
+    u32 sign = spv_emit_binary(
+        &c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type,
+        spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, value, shader_u32(c, 0x80000000u)), c->zero);
     cc_store(c, c->cc_z, zero);
     cc_store(c, c->cc_s, sign);
 }
