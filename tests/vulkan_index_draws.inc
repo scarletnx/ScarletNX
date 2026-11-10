@@ -742,6 +742,159 @@ static int index_bound_cases(GpuChannel* channel, u64 target, u64 indices, u64 p
     return 0;
 }
 
+/* shadows=0 skips the depth-only passes into a shadow map, which is a depth target a draw samples with a compare, and
+   no other depth-only pass: a depth prepass draws at any size. Here an 8x8 Z32F target (the color target is 4x4) takes a
+   depth-only quad at depth 0.5 while nothing samples it: it draws. A fragment program then samples it with a compare
+   (TEX.LZ.DC, 0.9 LEQUAL the texel, the result its green): no green under the quad's depth. From then on the target is
+   a shadow map: the next pass into it is skipped and the target cleared to far, so the same sample is green (lit).
+   Left unsampled for more presents than the renderer keeps a shadow map for, it takes its passes again */
+static int shadow_map_depth(u64 map, float* depth) {
+    vk_render_end();
+    Surf* surface = vk_rt_find(map);
+    VkBuffer buffer;
+    u8* data = vk_readback_buffer(4, &buffer);
+    CHECK(surface && data);
+    vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+    rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    memcpy(depth, data, 4);
+    return 0;
+}
+/* a depth-only pass of the green quad into map: the depth of its first pixel afterwards, and whether the draw ran (1)
+   or was skipped (0) */
+static int shadow_map_pass(GpuChannel* channel, u64 map, float* depth, int* ran) {
+    u32* r = channel->r3d;
+    const DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
+    vk_lock();
+    r[0x487] = 0; /* no color target */
+    r[0x54E] = 1;
+    r[0x3F8] = (u32)(map >> 32);
+    r[0x3F9] = (u32)map;
+    r[0x3FA] = 0x0A;   /* Z32F */
+    r[0x3FB] = 0x1000; /* pitch linear */
+    r[0x3FC] = 64;
+    r[0x48A] = r[0x48B] = 8;
+    r[0x48C] = 1 | 1u << 16;
+    r[0x4B3] = r[0x4BA] = 1;
+    r[0x4C3] = 0x207; /* ALWAYS */
+    channel->r3d_dirty = ~0u;
+    mx_draw_state_sync(channel);
+    vk_render_draw(&channel->ds, &call, &channel->owner);
+    r[0x487] = 1;
+    r[0x54E] = r[0x4B3] = r[0x4BA] = 0;
+    int failed = shadow_map_depth(map, depth);
+    vk_unlock();
+    CHECK(!failed);
+    CHECK(g_vk_drawn - drawn + (g_vk_skipped - skipped) == 1);
+    *ran = g_vk_drawn != drawn;
+    return 0;
+}
+static u64 shadow_mov(u32 reg, float value) {
+    u32 bits;
+    memcpy(&bits, &value, 4);
+    return 0x0100000000071000ull | (u64)bits << 20 | reg; /* MOV32I */
+}
+static int shadow_map_cases(GpuChannel* channel, u64 target, u64 address) {
+    const u64 program = address + 0x4800, pool = address + 0x1F000, samplers = pool + 0x100, cbuf = pool + 0x200,
+              map = address + 0x19000;
+    /* the handle at 0x78 of the fragment stage's constant buffer 2: header 2, sampler 1 */
+    const u64 fragment[] = {shadow_mov(8, 0.25f),                       /* the coordinates: a texel under the quad */
+                            shadow_mov(9, 0.25f), shadow_mov(10, 0.9f), /* the reference */
+                            /* TEX.LZ.DC R1 (green), R8, R10, 2D */
+                            0xc000000000000000ull | 1ull << 55 | 7ull << 51 | 1ull << 50 | 0x1eull << 36 | 1ull << 31 |
+                                2ull << 28 | 10ull << 20 | 7ull << 16 | 8ull << 8 | 1,
+                            shadow_mov(0, 0), shadow_mov(2, 0), shadow_mov(3, 1), 0xe30000000007000full};
+    /* the map as a texture: ZF32, 8x8, pitch linear of 32 bytes a row, normalized coordinates */
+    const u32 tic[8] = {0x2F | 7u << 7 | 7u << 10 | 7u << 13 | 7u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                        (u32)map,
+                        (u32)(map >> 32) | 2u << 21,
+                        1,
+                        7 | 1u << 23,
+                        7 | 1u << 31,
+                        0,
+                        0};
+    const u32 tsc[8] = {1u << 9 | 3u << 10}; /* nearest, a compare: LEQUAL */
+    const DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    u8 bytes[256] = {0};
+    IndexPixels px;
+    float depth;
+    int ran, had = g_settings.shadows;
+    CHECK(!gmem_write(map, bytes, 256));
+    CHECK(!put_words(pool + 64, tic, 8));
+    CHECK(!put_words(samplers + 32, tsc, 8));
+    CHECK(!gmem_write(cbuf, bytes, 256));
+    CHECK(!put_words(cbuf + 0x78, (const u32[1]){2 | 1u << 20}, 1));
+    CHECK(index_program(program, fragment, sizeof fragment / sizeof fragment[0], 1));
+    u32* r = channel->r3d;
+    r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 2;
+    r[0x557] = (u32)(samplers >> 32), r[0x558] = (u32)samplers, r[0x559] = 1;
+    r[0x48D] = 0;
+    r[0x982] = 2;
+    channel->ds.bind.cb_addr[4][2] = cbuf;
+    channel->ds.bind.cb_size[4][2] = 256;
+    g_settings.shadows = 0;
+    /* a depth-only pass at another size than the color target's, into a target nothing samples: drawn */
+    int ok = !shadow_map_pass(channel, map, &depth, &ran) && ran && depth == 0.5f;
+    if (!ok)
+        fprintf(stderr,
+                "shadows=0, a depth-only pass into an 8x8 target no draw samples: %s, depth %g (want drawn, 0.5)\n",
+                ran ? "drawn" : "skipped", (double)depth);
+    /* sampled with a compare: under the quad's depth, no green */
+    r[0x851] = (u32)(program - address);
+    int sampled = ok && !index_draw(channel, target, &call, &px) && !px.green && !px.red && !px.blue;
+    if (ok && !sampled)
+        fprintf(stderr, "a compare sample of the drawn map: %u green, %u blue, %u red (want none: in shadow)\n",
+                px.green, px.blue, px.red);
+    ok = ok && sampled;
+    /* the next frame's pass into what is now a shadow map: skipped, the map cleared to far and read as lit */
+    g_vk_present++;
+    r[0x851] = 0x10000;
+    int skipped = ok && !shadow_map_pass(channel, map, &depth, &ran) && !ran && depth == 1.0f;
+    if (ok && !skipped)
+        fprintf(stderr,
+                "shadows=0, a depth-only pass into a map sampled with a compare: %s, depth %g (want skipped, 1)\n",
+                ran ? "drawn" : "skipped", (double)depth);
+    ok = ok && skipped;
+    r[0x851] = (u32)(program - address);
+    int lit = ok && !index_draw(channel, target, &call, &px) && index_all_green(&px);
+    if (ok && !lit)
+        fprintf(stderr, "a compare sample of the skipped map: %u green, %u blue, %u red (want 16 green: lit)\n",
+                px.green, px.blue, px.red);
+    ok = ok && lit;
+    /* no compare sample for longer than a shadow map is kept: its passes draw again */
+    g_vk_present += 61;
+    r[0x851] = 0x10000;
+    int again = ok && !shadow_map_pass(channel, map, &depth, &ran) && ran && depth == 0.5f;
+    if (ok && !again)
+        fprintf(stderr,
+                "shadows=0, a depth-only pass into a map last sampled 61 presents ago: %s, depth %g (want drawn, "
+                "0.5)\n",
+                ran ? "drawn" : "skipped", (double)depth);
+    ok = ok && again;
+    /* shadows=1 draws into a map sampled this frame */
+    g_settings.shadows = 1;
+    r[0x851] = (u32)(program - address);
+    int on = ok && !index_draw(channel, target, &call, &px);
+    r[0x851] = 0x10000;
+    on = on && !shadow_map_pass(channel, map, &depth, &ran) && ran && depth == 0.5f;
+    if (ok && !on)
+        fprintf(stderr, "shadows=1, a depth-only pass into a sampled map: %s, depth %g (want drawn, 0.5)\n",
+                ran ? "drawn" : "skipped", (double)depth);
+    ok = ok && on;
+    g_settings.shadows = had;
+    r[0x55F] = r[0x559] = 0;
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    CHECK(ok);
+    puts("shadows=0: a depth-only pass draws until a draw samples its target with a compare, is skipped while it does, "
+         "and draws again once it stops");
+    return 0;
+}
+
 static int check_index_draws(void) {
     const u64 address = 0x478000000ull, cpu = HEAP_BASE + 0x7A0000;
     const u64 positions = address + 0x12000, colors = address + 0x13000, indices = address + 0x14000,
@@ -817,6 +970,7 @@ static int check_index_draws(void) {
     CHECK(!vertex_query_volume_case(channel, target, address));
     CHECK(!fragment_query_volume_case(channel, target, address));
     CHECK(!fragment_query_slots_case(channel, target, address));
+    CHECK(!shadow_map_cases(channel, target, address));
     CHECK(!index_bound_cases(channel, target, indices, address + 0x1A000, address + 0x1C000));
     printf(
         "index draws: quads, widened and native 8-bit indices, restart indices and rewritten indices' bounds checked "

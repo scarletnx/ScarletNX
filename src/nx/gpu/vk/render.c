@@ -1848,6 +1848,16 @@ static int dw_buffer_image(DescWrites* d, VkDescriptorSet set, int stage, int i,
     return 1;
 }
 
+/* shadows=0: a depth target a draw samples with a compare is a shadow map, and render_draw skips the passes into it.
+   t is the target itself, or what a draw reads of it at its address: a copy, or a texture over it */
+enum { SHADOW_MAP_FRAMES = 60 }; /* presents a target stays a shadow map after its last compare sample */
+static void shadow_map_sampled(const Surf* t) {
+    Surf* target = vk_rt_find(t->gva);
+    if (!target || !target->f.depth) return;
+    target->compared = 1;
+    target->compared_at = g_vk_present;
+}
+static int shadow_map(const Surf* zt) { return zt->compared && g_vk_present - zt->compared_at <= SHADOW_MAP_FRAMES; }
 static int is_target(Surf* s, Surf** rt, Surf* zt, u32 n) {
     if (s == zt) return 1;
     for (u32 i = 0; i < n; i++)
@@ -2046,6 +2056,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                     smp, color_view, color_view == tk->none ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
                 if (kind->shadow) {
                     VkImageView depth_view = depth && view != tk->none ? view : tk->depth.imageView;
+                    if (depth_view != tk->depth.imageView && !g_settings.shadows) shadow_map_sampled(x.t);
                     VkSampler compare = vk_tex_bind_sampler(x.tsc, x.tic, kind, 0,
                                                             depth_view != tk->depth.imageView ? x.t : NULL, tk->want);
                     if (!compare) return 0;
@@ -2354,6 +2365,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         } else
             view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
         const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */
+        if (sampled && st->shadow && !g_settings.shadows) shadow_map_sampled(sampled);
         if (scaled && sampled && (sampled->sw != sampled->w || sampled->sh != sampled->h)) *scaled |= 1ull << i;
         if (view && depth_ro) {
             *zt_ro = 1; /* render_begin moves it to the read-only layout */
@@ -3855,14 +3867,9 @@ retry:
         g_vk_skipped++;
         return;
     }
-    static u32 last_cw, last_ch; /* the size of the last color target drawn to */
-    if (n && rt[0]) {
-        last_cw = rt[0]->w;
-        last_ch = rt[0]->h;
-    }
-    if (!g_settings.shadows && !n && zt && (zt->w != last_cw || zt->h != last_ch)) {
-        /* shadows=0: depth-only passes at another size (shadow maps) are skipped, and the map is cleared to far once
-           a frame so it reads as fully lit */
+    if (!g_settings.shadows && !n && zt && shadow_map(zt)) {
+        /* shadows=0: depth-only passes into a shadow map are skipped, and the map is cleared to far once a frame so it
+           reads as fully lit. Other depth-only passes (a depth prepass, at any size) draw */
         static u32 cleared_frame = ~0u;
         static Surf* cleared;
         if (cleared_frame != g_vk_present || cleared != zt) {

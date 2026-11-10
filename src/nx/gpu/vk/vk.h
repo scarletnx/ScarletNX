@@ -835,6 +835,8 @@ typedef struct Surf {
                          DONT_CARE while nothing wrote it since */
     u8 discarded;
     u32 drawn_at;  /* render targets: g_vk_present when last drawn to */
+    u8 compared;   /* depth targets: a draw sampled it with a compare while shadows=0 (render.c shadow_map_sampled) */
+    u32 compared_at; /* g_vk_present at the last such sample */
     u64 draw_wseq; /* render targets: wseq at its last draw or clear (vk_rt_drawn), 0 before one */
     int in_drawn;  /* in surface.c's list of drawn targets, entered at drawn_from */
     int take_seen; /* render targets: vk_rt_drawn_in gave it to a texture's search since its last write */
