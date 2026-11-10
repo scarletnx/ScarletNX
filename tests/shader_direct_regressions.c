@@ -4027,7 +4027,8 @@ static void query_only_volume_stages(void) {
    (issues #730, #1579): at 2x texel (5, 3) is (10, 6) for the fragment at (6, 4) and (11, 7) for the one at (7, 5),
    where the centre of the scaled texel gave (11, 7) to both; in a lower-left window, whose y counts up, the rows are
    7 and 6; at 1.5x texel 4 is pixel 6 alone, where the fragment's place would give 7; at 0.5x texel (5, 3) is
-   (2, 1). A scaled target of another size (a table) gives every fragment the centre. TLDS fetches the same pixel */
+   (2, 1). A scaled target of another size (a table) gives every fragment the centre. TLDS and a surface load (SULD)
+   fetch the same pixel */
 static void scaled_texel_fetch(void) {
     static const struct {
         float scale, fx, fy; /* the fragment's FragCoord */
@@ -4049,15 +4050,24 @@ static void scaled_texel_fetch(void) {
     ShaderInfo info;
     size_t words = 0;
     u32* code = NULL;
-    for (u32 k = 0; k < 2 * sizeof cases / sizeof *cases; k++) {
-        u32 at = k / 2, tlds = k & 1;
-        /* x and y in R2 and R3, then the TLD, or TLDS.LZ R0, R2, R3, 2D (encoding 2: x in Ra, y in Rb) */
+    u32* constants = calloc(4096 * 4, sizeof *constants); /* the constant buffers SULD's handle comes from: zeros */
+    if (!constants) {
+        check(0, "scaled_texel_fetch: out of memory");
+        return;
+    }
+    for (u32 k = 0; k < 3 * sizeof cases / sizeof *cases; k++) {
+        u32 at = k / 3, form = k % 3;
+        const char* name = form == 0 ? "TLD" : form == 1 ? "TLDS" : "SULD.D.32";
+        /* x and y in R2 and R3, then the TLD, or TLDS.LZ R0, R2, R3, 2D (encoding 2: x in Ra, y in Rb), or the handle in
+           R4 and SULD.D.32 R8, R2, a raw load of a 2D surface */
         const u64 fetch[] = {mov32i(2, cases[at].px), mov32i(3, cases[at].py),
-                             tlds ? 0xd200000000000000ull | 2ull << 53 | 0x10ull << 36 | 0xffull << 28 | 3ull << 20 |
-                                        7ull << 16 | 2ull << 8
-                                  : tld_2d[0]};
-        code = translate(fetch, 3, ST_FS, &info, &words, 0);
-        check_translated(code, &info, tlds ? "fragment TLDS 2D translates" : "fragment TLD 2D translates");
+                             form == 0   ? tld_2d[0]
+                             : form == 1 ? 0xd200000000000000ull | 2ull << 53 | 0x10ull << 36 | 0xffull << 28 |
+                                               3ull << 20 | 7ull << 16 | 2ull << 8
+                                         : HANDLE_CBUF_R4,
+                             0xeb00000000070208ull | 3ull << 33 | 4ull << 39 | 1ull << 52 | 4ull << 20};
+        code = translate(fetch, form == 2 ? 4 : 3, ST_FS, &info, &words, 0);
+        check_translated(code, &info, "a fragment fetch of a 2D texture translates");
         if (!code) continue;
         float s = cases[at].scale;
         u32 scale[4], bits;
@@ -4069,6 +4079,10 @@ static void scaled_texel_fetch(void) {
         env.builtin[15][0] = bits; /* FragCoord */
         memcpy(&bits, &cases[at].fy, 4);
         env.builtin[15][1] = bits;
+        for (u32 bank = 0; bank < 18; bank++) {
+            env.ubo[SNX_VKB_CB + bank] = constants;
+            env.ubo_words[SNX_VKB_CB + bank] = 4096 * 4;
+        }
         env.ubo[SNX_VKB_RS] = scale;
         env.ubo_words[SNX_VKB_RS] = 4;
         env.push[4] = cases[at].scaled; /* the uvec4 after the fragment stage's vec4: slot 0's bit, then the origin */
@@ -4083,8 +4097,7 @@ static void scaled_texel_fetch(void) {
                     "scaled fetch: at %gx the fragment at (%g, %g) of a%s window fetches (%s) texel (%u, %u) of a "
                     "texture %s a scaled target at (%u, %u), not (%u, %u)\n",
                     (double)s, (double)cases[at].fx, (double)cases[at].fy,
-                    cases[at].lower_left ? " lower-left" : "n upper-left", tlds ? "TLDS" : "TLD", cases[at].px,
-                    cases[at].py,
+                    cases[at].lower_left ? " lower-left" : "n upper-left", name, cases[at].px, cases[at].py,
                     !cases[at].scaled ? "that is not"
                     : cases[at].own   ? "bound to, of the size drawn to,"
                                       : "bound to, of another size than the one drawn to,",
@@ -4093,6 +4106,7 @@ static void scaled_texel_fetch(void) {
               "a fragment fetch of a scaled target reads the pixel where the fragment lies in its guest pixel");
         free(code);
     }
+    free(constants);
     code = translate(txq_2d, 3, ST_FS, &info, &words, 0);
     check_translated(code, &info, "fragment TXQ translates");
     if (code)

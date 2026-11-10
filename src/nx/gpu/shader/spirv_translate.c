@@ -1097,6 +1097,8 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                 }
                 tex_read |= 1ull << slot;
                 tex_elsewhere |= 1ull << slot;
+                /* a fragment program's load of a scaled target is scaled as its fetch is (shader_scaled_fetch) */
+                if (stage == ST_FS && sample_type == 1) needs_texel_scale = needs_glsl = needs_fragcoord = 1;
             }
         }
         if (shader_half_arithmetic(op->id)) {
