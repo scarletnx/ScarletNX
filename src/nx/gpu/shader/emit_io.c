@@ -444,9 +444,9 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                     &c->emit, 1, c->f32_type, location < 0x80 ? position_in : inputs[(location - 0x80) >> 4], vertex,
                     component);
             if (pointer)
-                value = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
-                                       spv_emit_load(&c->emit, c->f32_type, pointer));
-            reg_write(c, d + k, value);
+                reg_write_as(c, d + k, spv_emit_load(&c->emit, c->f32_type, pointer), c->f32_type);
+            else
+                reg_write(c, d + k, value);
         }
     } else if (op == O_ALD) {
         u32 addr = B(w, 20, 10), width = B(w, 47, 2) + 1;
@@ -471,10 +471,7 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             } else {
                 u32 vector = spv_emit_load(&c->emit, input_vec_type[index], inputs[index]);
                 u32 value = spv_emit_vec4_extract(&c->emit, input_component_type[index], vector, (location >> 2) & 3);
-                reg_write(c, d + k,
-                          input_component_type[index] == c->u32_type
-                              ? value
-                              : spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, value));
+                reg_write_as(c, d + k, value, input_component_type[index]);
             }
         }
     } else if (op == O_AST && (stage == ST_TCS || B(w, 31, 1))) {

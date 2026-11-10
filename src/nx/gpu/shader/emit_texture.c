@@ -10,9 +10,10 @@ u32 shader_array_layer(DirectCtx* c, u32 r) {
         spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, reg_read(c, r), shader_u32(c, 0xffff)));
 }
 
-u32 shader_texture_component(DirectCtx* c, u32 sampled, u32 scalar_type, u32 component) {
-    u32 value = spv_emit_vec4_extract(&c->emit, scalar_type, sampled, component);
-    return scalar_type == c->u32_type ? value : spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, value);
+/* A sampled texel's component into register r, as the value of the texture's scalar type: a read of that type in
+   the block takes it back, and its bits are made when something reads or stores them (reg_write_as) */
+void shader_texture_write(DirectCtx* c, u32 r, u32 sampled, u32 scalar_type, u32 component) {
+    if (r < 255) reg_write_as(c, r, spv_emit_vec4_extract(&c->emit, scalar_type, sampled, component), scalar_type);
 }
 
 /* A depth-compare sample of a color texture (ShaderInfo.tex_dc_color_mask): its compare function (TSC's, 0 NEVER to
@@ -253,11 +254,11 @@ void shader_texs_store(DirectCtx* c, u64 w, u32 sample, u32 scalar, int shadow, 
     if (B(w, 59, 1)) {
         for (int k = 0; k < outputs; k++) {
             if (regs[k] >= 255) continue;
-            reg_write(c, regs[k],
-                      shadow
-                          ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
-                                           comps[k] == 3 ? spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f) : sample)
-                          : shader_texture_component(c, sample, scalar, comps[k]));
+            if (shadow)
+                reg_write_as(c, regs[k], comps[k] == 3 ? spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f) : sample,
+                             c->f32_type);
+            else
+                shader_texture_write(c, regs[k], sample, scalar, comps[k]);
         }
         return;
     }
@@ -466,7 +467,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 mask = B(w, 31, 4), target = d;
         for (u32 k = 0; k < 4; k++)
             if (mask & (1u << k)) {
-                reg_write(c, target, shader_texture_component(c, sample, texture_scalar[slot], k));
+                shader_texture_write(c, target, sample, texture_scalar[slot], k);
                 if (target < 255) target++;
             }
     } else if (op == O_SULD || op == O_SUST || op == O_SURED || op == O_SUATOM) {
@@ -553,7 +554,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                                               coord, spv_emit_constant_u32(&c->emit, i32_type, 0));
             for (u32 q = 0; q < 4; q++)
                 if (mask & (1u << q)) {
-                    reg_write(c, source, shader_texture_component(c, sample, texture_scalar[slot], q));
+                    shader_texture_write(c, source, sample, texture_scalar[slot], q);
                     if (source < 255) source++;
                 }
         }
@@ -628,17 +629,14 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 textures[slot].array != array || textures[slot].bindless || textures[slot].flags))
             slot++;
         u32 x = reg_read_as(c, array ? a + 1 : a, c->f32_type);
-        u32 y = encoding == 0
-                    ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f)
-                    : spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, reg_read(c, shader_texs_y(encoding, a, b)));
+        u32 y = encoding == 0 ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f)
+                              : reg_read_as(c, shader_texs_y(encoding, a, b), c->f32_type);
         if (rect_slots >> slot & 1)
             shader_rect_coords(c, push, stage == ST_FS, slot, vec2_u32, i32_type, &x, &y, NULL, NULL);
         u32 uv = array       ? spv_emit_vec3_construct(&c->emit, vec3, x, y, shader_array_layer(c, a))
                  : type >= 2 ? spv_emit_vec3_construct(&c->emit, vec3, x, y, reg_read_as(c, b, c->f32_type))
                              : spv_emit_vec2_construct(&c->emit, vec2, x, y);
-        u32 dref =
-            shadow ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, reg_read(c, shader_texs_dref(encoding, b)))
-                   : 0;
+        u32 dref = shadow ? reg_read_as(c, shader_texs_dref(encoding, b), c->f32_type) : 0;
         u32 sample;
         int explicit_lod = shader_texs_explicit(encoding) || stage != ST_FS;
         u32 level = shader_texs_explicit(encoding) ? shader_texs_level(encoding, b) : 255;
@@ -761,11 +759,11 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 mask = B(w, 31, 4), dst = d;
         for (u32 component = 0; component < 4; component++)
             if (mask & (1u << component)) {
-                u32 value = shadow ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
-                                                    component == 3 ? spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f)
-                                                                   : sample)
-                                   : shader_texture_component(c, sample, texture_scalar[slot], component);
-                reg_write(c, dst, value);
+                if (shadow)
+                    reg_write_as(c, dst, component == 3 ? spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f) : sample,
+                                 c->f32_type);
+                else
+                    shader_texture_write(c, dst, sample, texture_scalar[slot], component);
                 if (dst < 255) dst++;
             }
     } else if (op == O_TXD || op == O_TXD_B) {
@@ -852,7 +850,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 mask = B(w, 31, 4), dst = d;
         for (u32 component = 0; component < 4; component++)
             if (mask & (1u << component)) {
-                reg_write(c, dst, shader_texture_component(c, sample, texture_scalar[slot], component));
+                shader_texture_write(c, dst, sample, texture_scalar[slot], component);
                 if (dst < 255) dst++;
             }
     } else if (op == O_TXQ || op == O_TXQ_B) {
@@ -945,8 +943,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         if (textures[slot].flags & SNX_TEX_INDEXED) shader_direct_swap_element(c, slot);
         u32 x = reg_read_as(c, a + array, c->f32_type);
         u32 y = type == 0 ? spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f)
-                          : spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type,
-                                           reg_read(c, op == O_TLD4S && !shadow && !B(w, 51, 1) ? b : a + array + 1));
+                          : reg_read_as(c, op == O_TLD4S && !shadow && !B(w, 51, 1) ? b : a + array + 1, c->f32_type);
         if (rect_slots >> slot & 1)
             shader_rect_coords(c, push, stage == ST_FS, slot, vec2_u32, i32_type, &x, &y, NULL, NULL);
         u32 coords;
@@ -982,7 +979,7 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             if (shadow) dref = reg_read_as(c, source, c->f32_type);
         } else {
             if (B(w, 51, 1)) { offset = shader_direct_gather_offset(c, reg_read(c, b), 0, 0, i32_type, vec2_i32); }
-            if (shadow) dref = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, reg_read(c, b + B(w, 51, 1)));
+            if (shadow) dref = reg_read_as(c, b + B(w, 51, 1), c->f32_type);
         }
         /* a compare gather of a color texture gathers its first components and compares them in the shader */
         int indexed_dc = dref && shadow && (textures[slot].flags & SNX_TEX_INDEXED);
@@ -1044,14 +1041,13 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             } else {
                 u32 regs[4] = {d, d < 254 ? d + 1 : 255, db, db < 254 ? db + 1 : 255};
                 for (u32 k = 0; k < 4; k++)
-                    if (regs[k] < 255)
-                        reg_write(c, regs[k], shader_texture_component(c, gathered, texture_scalar[slot], k));
+                    if (regs[k] < 255) shader_texture_write(c, regs[k], gathered, texture_scalar[slot], k);
             }
         } else {
             u32 mask = B(w, 31, 4), dst = d;
             for (u32 k = 0; k < 4; k++)
                 if (mask & (1u << k)) {
-                    reg_write(c, dst, shader_texture_component(c, gathered, texture_scalar[slot], k));
+                    shader_texture_write(c, dst, gathered, texture_scalar[slot], k);
                     if (dst < 255) dst++;
                 }
         }

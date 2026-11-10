@@ -82,7 +82,7 @@ u32 shader_cbuf_word(DirectCtx* c, u64 w) { return c->cbuf_seen[cbuf_entry(c, w)
 u32 shader_cbuf_read(DirectCtx* c, u64 w) {
     u32 at = cbuf_entry(c, w);
     if (!c->cbuf_seen[at].as_float)
-        c->cbuf_seen[at].as_float = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, c->cbuf_seen[at].word);
+        c->cbuf_seen[at].as_float = shader_cast(c, c->f32_type, c->cbuf_seen[at].word, c->u32_type);
     return c->cbuf_seen[at].as_float;
 }
 u32 shader_cbuf_read_dynamic(DirectCtx* c, u32 bank, u32 address) {

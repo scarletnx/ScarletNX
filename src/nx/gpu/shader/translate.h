@@ -57,6 +57,12 @@ typedef struct {
     struct {
         u32 key, block, word, as_float;
     } cbuf_seen[512];
+    /* the bitcasts made in the block being written between 32-bit scalar types, by the value cast (a cache: one that
+       collides is cast again): the result and its type. shader_cast notes each both ways, so a value cast back to
+       the type it came from is the value it came from */
+    struct {
+        u32 from, block, to, to_type;
+    } cast_seen[512];
     u32 scale_buffer, scale_pointer;
     u32 sampler[SH_MAXTEX], sampled_type[SH_MAXTEX];
     u32 tex_index[SH_MAXTEX], tex_map_buffer, tex_map_pointer, active_index;
@@ -252,7 +258,7 @@ u32 shader_shared_atomic_index(DirectCtx* c, u32 a, u64 w, u32 shared_words);
 void shader_global_dynamic(DirectCtx* c, int stage, u64 w, int op, const u32* gbuf_off, int ngbuf);
 /* emit_texture.c */
 u32 shader_array_layer(DirectCtx* c, u32 r);
-u32 shader_texture_component(DirectCtx* c, u32 sampled, u32 scalar_type, u32 component);
+void shader_texture_write(DirectCtx* c, u32 r, u32 sampled, u32 scalar_type, u32 component);
 int shader_dc_color_func(const ShaderInfo* si, int slot);
 u32 shader_dc_compare(DirectCtx* c, int func, u32 reference, u32 texel);
 u32 shader_indexed_is_depth(DirectCtx* c, int slot);
@@ -310,6 +316,30 @@ void shader_dynamic_pop(DirectCtx* c, u32 stack_ptr, const u32 stack[32], u32 ki
                         u32* destination, u32* new_sp);
 int shader_structure_step(DirectCtx* c, StructEmit* se);
 
+/* value, of from_type, as to_type (both 32-bit scalars): a constant's bits as a constant of to_type, a value cast
+   in this block as what that cast made or was made from, else its bitcast. A register copied and then read as a
+   float so takes the float back, not a bitcast of its bits */
+static inline u32 shader_cast(DirectCtx* c, u32 to_type, u32 value, u32 from_type) {
+    u32 type, bits;
+    if (to_type == from_type) return value;
+    if (spv_emit_constant_bits(&c->emit, value, &type, &bits)) return spv_emit_constant_u32(&c->emit, to_type, bits);
+    size_t slots = sizeof c->cast_seen / sizeof *c->cast_seen, at = value % slots;
+    if (c->cast_seen[at].from == value && c->cast_seen[at].block == c->emit.block &&
+        c->cast_seen[at].to_type == to_type)
+        return c->cast_seen[at].to;
+    u32 result = spv_emit_unary(&c->emit, SPV_OP_BITCAST, to_type, value);
+    c->cast_seen[at].from = value;
+    c->cast_seen[at].block = c->emit.block;
+    c->cast_seen[at].to = result;
+    c->cast_seen[at].to_type = to_type;
+    at = result % slots;
+    c->cast_seen[at].from = result;
+    c->cast_seen[at].block = c->emit.block;
+    c->cast_seen[at].to = value;
+    c->cast_seen[at].to_type = from_type;
+    return result;
+}
+
 /* the Function variable of a register, predicate or flag (z, s, c, o) */
 static inline u32 var_of(const DirectCtx* c, u32 v) {
     if (v < VAR_PRED) return c->reg[v];
@@ -338,7 +368,7 @@ static inline void var_write(DirectCtx* c, u32 v, u32 value) {
 static inline u32 reg_read(DirectCtx* c, u32 r) {
     if (r >= 255) return c->zero;
     if (c->var_block[r] == c->emit.block && (c->var_val[r] || c->reg_alt_type[r])) {
-        if (!c->var_val[r]) c->var_val[r] = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, c->reg_alt[r]);
+        if (!c->var_val[r]) c->var_val[r] = shader_cast(c, c->u32_type, c->reg_alt[r], c->reg_alt_type[r]);
         return c->var_val[r];
     }
     c->var_val[r] = spv_emit_load(&c->emit, c->u32_type, c->reg[r]);
@@ -367,11 +397,19 @@ static inline void reg_write_as(DirectCtx* c, u32 r, u32 value, u32 type) {
     c->reg_alt[r] = value;
     c->reg_alt_type[r] = type;
 }
+/* register r into register d as the block holds it (MOV): a value of another type whose bits nothing has asked for
+   stays that value in d, and its bits are still not made */
+static inline void reg_copy(DirectCtx* c, u32 d, u32 r) {
+    if (r < 255 && !c->var_val[r] && c->var_block[r] == c->emit.block && c->reg_alt_type[r])
+        reg_write_as(c, d, c->reg_alt[r], c->reg_alt_type[r]);
+    else
+        reg_write(c, d, reg_read(c, r));
+}
 static inline u32 reg_read_as(DirectCtx* c, u32 r, u32 type) {
-    if (r >= 255) return spv_emit_unary(&c->emit, SPV_OP_BITCAST, type, c->zero);
+    if (r >= 255) return shader_cast(c, type, c->zero, c->u32_type);
     if (c->var_block[r] == c->emit.block && c->reg_alt_type[r] == type) return c->reg_alt[r];
     u32 bits = reg_read(c, r);
-    c->reg_alt[r] = spv_emit_unary(&c->emit, SPV_OP_BITCAST, type, bits);
+    c->reg_alt[r] = shader_cast(c, type, bits, c->u32_type);
     c->reg_alt_type[r] = type;
     if (type == c->f32_type && c->taint_known && !c->tainted[r]) shader_ftz_mark(c, c->reg_alt[r]);
     return c->reg_alt[r];

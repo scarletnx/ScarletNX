@@ -6,6 +6,15 @@
 /* the absolute value and negation of a value with no subnormal have none either */
 u32 shader_float_mod(DirectCtx* c, u32 value, int absolute, int negative) {
     int flushed = shader_ftz_has(c, value);
+    u32 type, bits;
+    /* a constant's sign is set as the program is translated, on its bits as the console sets it */
+    if ((absolute || negative) && spv_emit_constant_bits(&c->emit, value, &type, &bits) && type == c->f32_type) {
+        if (absolute) bits &= 0x7fffffffu;
+        if (negative) bits ^= 0x80000000u;
+        value = spv_emit_constant_u32(&c->emit, c->f32_type, bits);
+        if (flushed) shader_ftz_mark(c, value);
+        return value;
+    }
     if (absolute) value = spv_emit_glsl_unary(&c->emit, c->f32_type, c->glsl, SPV_GLSL_F_ABS, value);
     if (negative) value = spv_emit_unary(&c->emit, SPV_OP_F_NEGATE, c->f32_type, value);
     if (flushed && (absolute || negative)) shader_ftz_mark(c, value);
@@ -33,7 +42,7 @@ void shader_double_write(DirectCtx* c, u32 vec2_u32, u32 index, u32 value) {
 
 u32 shader_half_pair(DirectCtx* c, u32 vec2, u32 raw, u32 swizzle) {
     if (swizzle == 1) {
-        u32 scalar = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, raw);
+        u32 scalar = shader_cast(c, c->f32_type, raw, c->u32_type);
         return spv_emit_vec2_construct(&c->emit, vec2, scalar, scalar);
     }
     u32 unpacked = spv_emit_glsl_unary(&c->emit, vec2, c->glsl, SPV_GLSL_UNPACK_HALF2X16, raw);
@@ -107,9 +116,12 @@ u32 shader_float_imm32(DirectCtx* c, u64 w) { return spv_emit_constant_u32(&c->e
 
 /* A conversion's register, constant-buffer or immediate source, unpacked from F16 when requested. */
 u32 shader_conversion_source_f32(DirectCtx* c, u32 vec2, u64 w, int kind, u32 format) {
+    if (format != 1) /* an F32: read as the float it is, with no bits made on the way */
+        return kind == 2   ? shader_float_imm20(c, w)
+               : kind == 1 ? shader_cbuf_read(c, w)
+                           : reg_read_as(c, B(w, 20, 8), c->f32_type);
     u32 raw = kind == 2 ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, shader_float_imm20(c, w))
                         : shader_integer_right(c, w, kind);
-    if (format != 1) return spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, raw);
     u32 unpacked = spv_emit_glsl_unary(&c->emit, vec2, c->glsl, SPV_GLSL_UNPACK_HALF2X16, raw);
     return spv_emit_vec4_extract(&c->emit, c->f32_type, unpacked, B(w, 41, 1));
 }
@@ -290,13 +302,12 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     u32 zero_f = t->zero_f;
     u8* block_start = t->block_start;
     if (op == O_FCMP_R || op == O_FCMP_RC || op == O_FCMP_CR || op == O_FCMP_I) {
-        u32 third = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, reg_read(c, B(w, 39, 8)));
+        u32 third = reg_read_as(c, B(w, 39, 8), c->f32_type);
         u32 comparison = op == O_FCMP_RC ? shader_cbuf_read(c, w) : third;
         u32 alternative = op == O_FCMP_RC   ? reg_read(c, B(w, 39, 8))
                           : op == O_FCMP_CR ? shader_cbuf_word(c, w)
-                          : op == O_FCMP_I
-                              ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, shader_float_imm20(c, w))
-                              : reg_read(c, b);
+                          : op == O_FCMP_I  ? shader_cast(c, c->u32_type, shader_float_imm20(c, w), c->f32_type)
+                                            : reg_read(c, b);
         u32 test = spv_emit_fcompare(&c->emit, c->bool_type, B(w, 48, 4), comparison, zero_f);
         reg_write(c, d, spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, test, reg_read(c, a), alternative));
     } else if (op == O_F2F_R || op == O_F2F_C || op == O_F2F_I) {
@@ -365,7 +376,7 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             if (dst_format == src_format && B(w, 42, 1))
                 src = spv_emit_glsl_unary(&c->emit, c->f32_type, c->glsl, conversion_rounds[B(w, 39, 2)], src);
             src = shader_float_saturate(c, src, B(w, 50, 1));
-            u32 result;
+            u32 result = 0;
             if (dst_format == 1 && src_format == 2 && !B(w, 39, 2) && g_shader_half_rounding && c->f16_type)
                 result = conversion_native_half(c, src);
             else if (dst_format == 1) {
@@ -376,8 +387,8 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                     result = conversion_narrow(c, spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, src), c->zero,
                                                2, 1, B(w, 39, 2), result);
             } else
-                result = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, src);
-            reg_write(c, d, result);
+                reg_write_as(c, d, src, c->f32_type);
+            if (result) reg_write(c, d, result);
         }
     } else if (op == O_F2I_R || op == O_F2I_C || op == O_F2I_I) {
         /* The source is an F16, F32 or F64 (format 3, a pair), the result 16, 32 or 64 bits (3, a pair). Out of
