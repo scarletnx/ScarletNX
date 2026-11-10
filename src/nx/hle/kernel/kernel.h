@@ -133,6 +133,10 @@ void kernel_init(void);
    holds (footprint), when measured says the system told both. The game is told no more than mem_fit_budget's */
 void mem_fit(int measured, u64 available, u64 footprint);
 u64 mem_fit_budget(u64 available, u64 footprint);
+/* For a crash that looks like a game out of memory: what the game was told, where that amount came from and the key
+   that tells it more, in out; 0, and an empty out, when no key does (an Ounce game told all of its pool, memory_gb
+   at 6 or more) */
+int mem_short_hint(char* out, size_t size);
 u32 h_new(KObj* o); /* a new handle to o, which takes a reference */
 /* an object as a number, which a save state can hold: its type and its slot in its type's pool, 0 for none. kobj_at
    is the object again, NULL for 0 */

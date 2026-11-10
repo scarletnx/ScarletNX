@@ -316,6 +316,7 @@ typedef struct {
     KCodeView views[KCODEVIEW_MAX]; /* under g_host.svcmem.views_lk: a free one has size 0 */
     KMapView maps[KMAPVIEW_MAX]; /* under g_host.svcmem.map_lk: a free one has size 0 */
     u64 fit; /* memory_fit_mode's: the most the game is told, measured as it starts (mem_fit); 0 for the console's */
+    u64 fit_available, fit_footprint; /* what mem_fit measured for it, 0 with fit: a crash's hint says them */
 } HleSvcMem;
 /* svc_mem's host side: the views' lock, which a save state never holds (hle.h's g_host) */
 typedef struct {

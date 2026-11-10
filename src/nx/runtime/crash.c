@@ -136,7 +136,7 @@ void crash_report(void* host_pc, void* fault, int sig) {
     const char* kind = crash_kind(fault, sig);
     u8* f = (u8*)fault;
     KThread* t = kthread_cur();
-    char memory[256];
+    char memory[256], hint[512];
     int in_guest = g_mem && f >= g_mem && (u64)(f - g_mem) < AS_SIZE;
     u64 guest = in_guest ? (u64)(f - g_mem) : 0;
 #if defined(_WIN32)
@@ -161,8 +161,8 @@ void crash_report(void* host_pc, void* fault, int sig) {
     report_place(host_pc);
     /* the low pages are never mapped: a pointer the game failed to get (an allocation it ran out of memory for) plus
        a field's offset lands there */
-    if (fault && in_guest && guest < ((u64)16 << 20) && g_settings.memory_gb < 6)
-        WARN("  a null pointer plus an offset: a game short of memory does this, memory_gb=6 in its .ini may help\n");
+    if (fault && in_guest && guest < ((u64)16 << 20) && mem_short_hint(hint, sizeof hint))
+        WARN("  a null pointer plus an offset: a game short of memory does this. %s\n", hint);
     fs_save_report(); /* a save a newer version wrote, which a game often crashes on */
     if (t) {
         WARN("  thread %llu (%s)\n", (unsigned long long)t->id, t->name);
