@@ -250,8 +250,15 @@ with tempfile.TemporaryDirectory() as temporary:
         planned == {'kind': 'nightly', 'run': '44', 'sha': sha, 'short': sha[:7], 'pr': '', 'tag': ''},
         planned,
     )
+    done, planned = run('plan', event=push_run(sha, number=45, event='workflow_dispatch'))
+    check(
+        'a green run of main by hand is planned as a nightly',
+        planned == {'kind': 'nightly', 'run': '45', 'sha': sha, 'short': sha[:7], 'pr': '', 'tag': ''},
+        planned,
+    )
     for event, why in (
         (push_run(sha, 'failure', event='schedule'), 'a failed scheduled run'),
+        (push_run(sha, branch='dev', event='workflow_dispatch'), 'a run by hand of another branch'),
         (push_run(sha, 'failure'), 'a failed run'),
         (push_run(sha, branch='dev'), 'another branch'),
         (push_run(sha, branch='v9.9.9'), 'a branch named like a version, no tag'),

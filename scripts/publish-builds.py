@@ -576,7 +576,8 @@ class Publisher(Hub):
             return False
 
     def on_run(self, run):
-        if run['event'] in ('push', 'schedule'):  # a scheduled run builds the default branch, as a push to it
+        # a scheduled run builds the default branch, as a push to it; a run by hand builds the branch it was asked for
+        if run['event'] in ('push', 'schedule', 'workflow_dispatch'):
             name = run['head_branch']
             if run['head_repository']['full_name'] != self.repo:
                 print(f'a push to {run["head_repository"]["full_name"]}: nothing to publish')
