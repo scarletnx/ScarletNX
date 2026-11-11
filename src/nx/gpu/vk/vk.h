@@ -975,7 +975,9 @@ static inline VkSampleCountFlagBits vk_surf_samples(const Surf* s) {
 int vk_ms_supported(VkFormat f, VkImageUsageFlags usage, VkImageCreateFlags flags, u32 msaa);
 Surf* vk_rt_find(u64 gva);
 int vk_rt_same_layout(const Surf* s, u32 w, u32 h, int bl, u32 bh, u32 pitch); /* a header with s's pixels */
-Surf* vk_rt_snapshot(Surf* rt);                  /* copy a target so a draw can sample its contents while writing it */
+/* a copy of a target, for a draw that samples it while writing it. pixels: the target's pixels are brought into the
+   copy; 0 for a program that only asks the texture's size or levels, which takes the copy as it is */
+Surf* vk_rt_snapshot(Surf* rt, int pixels);
 Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest presents from that memory */
 /* a render target read where its guest memory is (a texture, a present): reload it if the GPU wrote its memory */
 void vk_rt_note_read(Surf* s);
@@ -2172,8 +2174,9 @@ extern u64 g_vk_draw_kept, g_vk_draw_checked;
 extern u64 g_vk_targets_kept;
 /* draws that sampled a color target they render to in place, the barriers ordering them within a pass, the passes
    begun again for them (a target's layout, or ordering without those barriers), and draws that sampled a target
-   through a copy instead (gpu/vk/render.c) */
-extern u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies;
+   through a copy instead (gpu/vk/render.c); the times a target's pixels were copied into a copy of it, for those draws
+   and for textures that read a target as another size or format (gpu/vk/texture.c) */
+extern u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies, g_vk_rt_copy_writes;
 /* rendering passes begun; clears recorded as vkCmdClearAttachments; attachments a pass began by clearing (its load
    op) and by loading as DONT_CARE */
 extern u64 g_vk_passes, g_vk_clear_cmds, g_vk_clear_loads, g_vk_dontcare_loads;

@@ -931,6 +931,88 @@ static int shadow_map_cases(GpuChannel* channel, u64 target, u64 address) {
     return 0;
 }
 
+/* A program that only asks the size of a texture its draw renders to binds the target's copy with none of the
+   target's pixels brought into it (ShaderInfo.tex_unread_mask): one game's vertex programs ask the size of the target
+   they draw to, in three full-target passes a frame, each of which copied the target first. Here a vertex program's
+   TXQ of the 4x4 target is the quad's red, less 4: the quad is green when the query answers 4, and no copy is
+   written, before a copy of the target exists and with one left by an earlier draw. Between the two a fragment
+   program fetches the target's texel (0, 0) for every pixel: that draw has the pixels it found copied, the clear's
+   blue */
+static int query_target_case(GpuChannel* channel, u64 target, u64 address) {
+    const u64 query = address + 0x5000, fetch = address + 0x5400, pool = address + 0x1F000, samplers = pool + 0x100,
+              cbuf = pool + 0x200;
+    const u64 vertex[] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
+                          0xeff1ff800707ff00ull, /* position */
+                          0xefd9ff800907ff08ull, /* ALD R8..11, a[0x90]: the green quad's 0, 1, 0, 1 */
+                          0x0100000000071005ull, /* MOV32I R5, 0: the level */
+                          0x010fffffffc71006ull, /* MOV32I R6, -4 */
+                          /* TXQ.DIMENSION R0, R5, 0x1f, width only */
+                          (0xdf48010200470500ull & ~(1ull << 33)) | 1ull << 31 | 0xfull << 36,
+                          0x5c10000000670008ull, /* IADD R8, R0, R6 */
+                          0x5cb8000000870a08ull, /* I2F.F32.U32 R8, R8: the red */
+                          0xeff1ff800807ff08ull, /* color varying from R8..11 */
+                          0xe30000000007000full};
+    const u64 fragment[] = {0x0100000000071008ull, /* MOV32I R8, 0: the texel's x */
+                            0x0100000000071009ull, /* MOV32I R9, 0: and y */
+                            /* TLD.LZ R0..3, R8, 2D, the handle at 0x7C */
+                            0xdc00000000000000ull | 7ull << 51 | 0xfull << 31 | 2ull << 28 | 0x1full << 36 |
+                                0xffull << 20 | 7ull << 16 | 8ull << 8,
+                            0xe30000000007000full};
+    /* the target as a texture: header 3, 4x4 A8B8G8R8, one level */
+    const u32 tic[8] = {0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                        (u32)target,
+                        (u32)(target >> 32) | 3u << 21,
+                        0,
+                        3 | 1u << 23, /* width 4, 2D */
+                        3 | 1u << 31, /* height 4, depth 1, normalized */
+                        0,
+                        0};
+    u8 bytes[256] = {0};
+    IndexPixels px = {0};
+    for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+    CHECK(!gmem_write(pool + 96, bytes, 32));
+    memset(bytes, 0, sizeof bytes);
+    CHECK(!gmem_write(samplers, bytes, 32));
+    snx_st_le32(bytes + 0x7C, 3); /* the handle at 0x7C: header 3, sampler 0 */
+    CHECK(!gmem_write(cbuf, bytes, 256));
+    CHECK(index_program(query, vertex, 10, 0));
+    CHECK(index_program(fetch, fragment, 4, 1));
+    u32* r = channel->r3d;
+    r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 3;
+    r[0x557] = (u32)(samplers >> 32), r[0x558] = (u32)samplers, r[0x559] = 0;
+    r[0x48D] = 0;
+    r[0x982] = 2;
+    DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    int ok = 1;
+    for (u32 round = 0; ok && round < 3; round++) {
+        int fetches = round == 1, stage = fetches ? 4 : 0;
+        u64 written = g_vk_rt_copy_writes, through = g_vk_rt_copies;
+        r[0x811] = fetches ? 0 : (u32)(query - address);
+        r[0x851] = fetches ? (u32)(fetch - address) : 0x10000;
+        channel->ds.bind.cb_addr[stage][2] = cbuf;
+        channel->ds.bind.cb_size[stage][2] = 256;
+        ok = !index_draw(channel, target, &call, &px);
+        channel->ds.bind.cb_addr[stage][2] = 0;
+        channel->ds.bind.cb_size[stage][2] = 0;
+        written = g_vk_rt_copy_writes - written;
+        through = g_vk_rt_copies - through;
+        ok = ok && (fetches ? px.blue == 16 && !px.green && !px.red && written == 1 && through == 1
+                            : index_all_green(&px) && !written && !through);
+        if (!ok)
+            fprintf(stderr,
+                    "target query: draw %u (%s): %u green, %u blue, %u red, %llu copies of the target written, %llu "
+                    "draws through a copy\n",
+                    round,
+                    fetches ? "a fragment program fetches the target's texel" : "a vertex program asks its width",
+                    px.green, px.blue, px.red, (unsigned long long)written, (unsigned long long)through);
+    }
+    r[0x811] = 0;
+    r[0x851] = 0x10000; /* the harness's programs again */
+    CHECK(ok);
+    puts("target queries: a program that only asks the size of the target it draws to has no copy of it written");
+    return 0;
+}
+
 static int check_index_draws(void) {
     const u64 address = 0x478000000ull, cpu = HEAP_BASE + 0x7A0000;
     const u64 positions = address + 0x12000, colors = address + 0x13000, indices = address + 0x14000,
@@ -1007,6 +1089,7 @@ static int check_index_draws(void) {
     CHECK(!fragment_query_volume_case(channel, target, address));
     CHECK(!fragment_query_slots_case(channel, target, address));
     CHECK(!shadow_map_cases(channel, target, address));
+    CHECK(!query_target_case(channel, target, address));
     CHECK(!index_bound_cases(channel, target, indices, address + 0x1A000, address + 0x1C000));
     printf(
         "index draws: quads, widened and native 8-bit indices, restart indices and rewritten indices' bounds checked "

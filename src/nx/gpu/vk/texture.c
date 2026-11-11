@@ -1543,10 +1543,14 @@ static int rt_copy_guest(Surf* rt, Surf* c, u32 sw, u32 sh) {
     vk_defer_image(mid, mid_memory, VK_NULL_HANDLE, VK_NULL_HANDLE); /* freed once the frame is done */
     return 1;
 }
+
+u64 g_vk_rt_copy_writes;
 /* the target's top-left w x h copied out, in the target's format, or in as: another color format of the same texel
    size, the target's bytes read as that format (a bit copy, which vkCmdCopyImage makes between such formats). The
-   copy has the target's scale, or with guest the guest's size (rt_copy_guest): then NULL when it can't be made */
-static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest) {
+   copy has the target's scale, or with guest the guest's size (rt_copy_guest): then NULL when it can't be made.
+   Without pixels the copy is returned as it is, the target's pixels not brought into it: for a program that only
+   asks its size */
+static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pixels) {
     Surf* c = NULL;
     VkFmt f = as ? *as : rt->f;
     /* the same region of the scaled target */
@@ -1611,9 +1615,11 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest) {
                       h, rt->w, rt->h, (unsigned long long)rt->gva);
     }
     c->last_used = g_vk_present;
+    if (!pixels) return c;
     if (guest && c->crop_gen != rt->wgen) {
         if (!rt_copy_guest(rt, c, sw, sh)) return NULL; /* asked for again at its next use */
         c->crop_gen = rt->wgen;
+        g_vk_rt_copy_writes++;
     }
     if (c->crop_gen != rt->wgen) {
         VkCommandBuffer cb = vk_cmd();
@@ -1638,16 +1644,17 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest) {
         rec_CmdCopyImage(cb, rt->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, c->img,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rt->f.stencil ? 2 : 1, r);
         c->crop_gen = rt->wgen;
+        g_vk_rt_copy_writes++;
     }
     return c;
 }
-static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) { return rt_copy(rt, w, h, as, 0); }
+static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) { return rt_copy(rt, w, h, as, 0, 1); }
 /* A scaled color target for a program whose texels are the guest's (a compute program: its fetches, its size queries
    and the images it stores into count them): its top-left w x h at the guest's size, in as when not NULL. NULL for a
    multisampled or depth target, a format that can't be blitted or a copy that found no memory, said once: the caller
    takes the scaled image */
 static Surf* rt_guest(Surf* rt, u32 w, u32 h, const VkFmt* as) {
-    Surf* c = rt->msaa || rt->f.depth || !can_blit(rt->f.vk) ? NULL : rt_copy(rt, w, h, as, 1);
+    Surf* c = rt->msaa || rt->f.depth || !can_blit(rt->f.vk) ? NULL : rt_copy(rt, w, h, as, 1, 1);
     if (!c)
         LOG_LIMIT(1,
                   "vulkan: a compute program reads the %ux%u render target at %llx (format %d, depth %d, %u samples) "
@@ -1658,9 +1665,9 @@ static Surf* rt_guest(Surf* rt, u32 w, u32 h, const VkFmt* as) {
     return c;
 }
 
-Surf* vk_rt_snapshot(Surf* rt) {
+Surf* vk_rt_snapshot(Surf* rt, int pixels) {
     if (!rt || rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) return rt;
-    return rt_crop(rt, rt->w, rt->h, NULL);
+    return rt_copy(rt, rt->w, rt->h, NULL, 0, pixels);
 }
 
 /* texture header type -> what the image is created as */

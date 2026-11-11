@@ -835,9 +835,10 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                     (unsigned long long)(budget >> 20), (unsigned long long)(trimmed >> 20));
             }
             LOG("vulkan: %llu draws sampled a target they render to in place (%llu barriers in passes, %llu passes "
-                "begun again), %llu through a copy\n",
+                "begun again), %llu through a copy; %llu copies of targets written\n",
                 (unsigned long long)g_vk_fb_draws, (unsigned long long)g_vk_fb_barriers,
-                (unsigned long long)g_vk_fb_restarts, (unsigned long long)g_vk_rt_copies);
+                (unsigned long long)g_vk_fb_restarts, (unsigned long long)g_vk_rt_copies,
+                (unsigned long long)g_vk_rt_copy_writes);
             if (g_vk_capture_draws || g_vk_capture_capped)
                 LOG("vulkan: %llu draws captured a primitive at a time (%llu primitives), %llu skipped past %u "
                     "primitives\n",

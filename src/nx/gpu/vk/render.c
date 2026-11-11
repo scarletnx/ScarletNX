@@ -1186,7 +1186,7 @@ static struct {
 } g_capture_draw;
 static Surf* capture_sample(Surf* texture) {
     if (!g_capture_draw.images || texture != g_capture_draw.images->target) return texture;
-    if (!g_capture_draw.snapshot) g_capture_draw.snapshot = vk_rt_snapshot(texture);
+    if (!g_capture_draw.snapshot) g_capture_draw.snapshot = vk_rt_snapshot(texture, 1);
     return g_capture_draw.snapshot;
 }
 
@@ -2141,7 +2141,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                         if (is_target(x.t, rt, zt, n)) {
                             /* An indexed handle needs the same pre-draw contents as a directly bound texture.
                                Snapshot each resolved target; rt_crop reuses a copy until its draw generation changes. */
-                            Surf* snapshot = vk_rt_snapshot(x.t);
+                            Surf* snapshot = vk_rt_snapshot(x.t, 1);
                             if (snapshot != x.t) {
                                 x.t = snapshot;
                                 g_vk_rt_copies++;
@@ -2478,12 +2478,14 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         } else if (t && is_target(t, rt, zt, n) && !depth_ro) {
             /* The guest reads the target's previous contents during a draw that writes it. Without a feedback loop
                Vulkan can't bind one image for both uses here, so copy it before the draw starts and sample that
-               copy. */
-            Surf* snap = vk_rt_snapshot(t);
+               copy. A slot the program reads no texel of asks only the size or the levels, which the copy answers
+               as it is: nothing is copied into it */
+            int texels = !(s->si.tex_unread_mask >> i & 1);
+            Surf* snap = vk_rt_snapshot(t, texels);
             if (snap != t) {
                 t = snap;
                 view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
-                g_vk_rt_copies++;
+                if (texels) g_vk_rt_copies++;
             } else
                 LOG_LIMIT(1, "vulkan: a draw samples a target it renders to (read as empty)\n");
         } else
