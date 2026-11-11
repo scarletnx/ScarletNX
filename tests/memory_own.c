@@ -780,6 +780,36 @@ static void test_watch(void) {
     res_free(r);
 }
 
+/* a watch of many pages (more than the first slab of shadows holds, in place), with an owner's page inside it: the
+   watch goes around the owner, each of its pages is staged with the CPU's bytes, and the owner's with its own. Let go
+   and watched again after the CPU wrote, the pages are staged with the new bytes (a slot let go and taken again) */
+static void test_watch_many(void) {
+    const u64 size = 0x60000;
+    u64 a = region(R0 + 0xD00000, size);
+    Res* r = res_new(0x1000, 0x30);
+    OwnRange o[4];
+    u8* buf = (u8*)malloc((size_t)size);
+    CHECK(buf && own_begin(a + 0x20000, 0x1000, r, 0) == 0);
+    CHECK(own_watch(a, size) == 0);
+    CHECK(own_watched(a, 0x20000) && own_watched(a + 0x21000, size - 0x21000) && !own_watched(a, size));
+    CHECK(own_stage(a, size, buf, o, 4) == 1 && o[0].addr == a + 0x20000 && o[0].size == 0x1000);
+    for (u64 i = 0; i < size; i++)
+        if (i < 0x20000 || i >= 0x21000) CHECK(buf[i] == (u8)(0x11 + i));
+    own_unwatch(a, size);
+    own_acquire(a + 0x20000, 0x1000);
+    CHECK(refs(r) == 0 && !own_trapped(a, size));
+    for (u64 i = 0; i < size; i += 0x1000) GP(a)[i + 7] = (u8)(0xC0 + (i >> 12));
+    CHECK(own_watch(a, size) == 0 && own_stage(a, size, buf, o, 4) == 0);
+    for (u64 i = 0; i < size; i++) { /* the owner's page has its bytes, landed */
+        u8 was = i >= 0x20000 && i < 0x21000 ? (u8)(0x30 + (i - 0x20000)) : (u8)(0x11 + i);
+        CHECK(buf[i] == ((i & 0xFFF) == 7 ? (u8)(0xC0 + (i >> 12)) : was));
+    }
+    CHECK(mem_unmap(a, size) == 0);
+    CHECK(!own_trapped(a, size));
+    free(buf);
+    res_free(r);
+}
+
 /* many threads fault on many owned pages at once while the owners change between rounds. In place (no mirror:
    Windows) a page is open while a landing fills it, so a thread that reaches it then without faulting (a reader
    started late, its first read on a page already filling) can read its old bytes: those reads are noted, and each
@@ -932,6 +962,7 @@ int main(int argc, char** argv) {
     test_scan_owned();
     test_let_go_watched();
     test_watch();
+    test_watch_many();
     test_stress();
     CHECK(!own_any());
     printf("memory_own: %u checks passed (%d landings, %d bytes)\n", checks, g_lands, g_landed_bytes);
