@@ -13,7 +13,7 @@
    src/core/hle/service/mii/types/raw_data.cpp, and StoreData's checksums from Ryubing's
    src/Ryujinx.HLE/HOS/Services/Mii/Helper.cs and Types/StoreData.cs:
    SPDX-FileCopyrightText: Ryujinx Team and Contributors (MIT) */
-/* The smaller services: apm, lm, pctl, friend, ns, prepo, caps, ectx, psm, fatal, csrng, spl, mm, nfp, nfc, bcat,
+/* The smaller services: apm, lm, friend, ns, prepo, caps, ectx, psm, fatal, csrng, spl, mm, nfp, nfc, bcat,
    nim, aoc, irs, mii, btm, audin and olsc, each as a console offline, with no NFC device or microphone, and the add-on
    content the data folder holds */
 #include "nx/hle/services/services_int.h"
@@ -132,52 +132,6 @@ static int nn_lm_ILogger_Log(SvcObj* self, IpcBuf message) {
             LOG("[lm] %.*s\n", (int)text_n, text);
     }
     R_SUCCEED();
-}
-
-/* ============================================================ pctl: no restrictions set */
-static int nn_pctl_detail_ipc_IParentalControlServiceFactory_CreateService(SvcObj* self, u64 pid, SvcObj** service) {
-    (void)self, (void)pid;
-    *service = nn_pctl_detail_ipc_IParentalControlService_new();
-    R_SUCCEED();
-}
-static int nn_pctl_detail_ipc_IParentalControlServiceFactory_CreateServiceWithoutInitialize(SvcObj* self, u64 pid,
-                                                                                         SvcObj** service) {
-    return nn_pctl_detail_ipc_IParentalControlServiceFactory_CreateService(self, pid, service);
-}
-static int nn_pctl_detail_ipc_IParentalControlService_IsStereoVisionPermitted(SvcObj* self, u8* permitted) {
-    (void)self;
-    *permitted = 1;
-    R_SUCCEED();
-}
-static int nn_pctl_detail_ipc_IParentalControlService_GetSynchronizationEvent(SvcObj* self, u32* event) {
-    (void)self;
-    return new_event(event, "pctl synchronization", 0);
-}
-static int nn_pctl_detail_ipc_IParentalControlService_GetPlayTimerEventToRequestSuspension(SvcObj* self, u32* event) {
-    (void)self;
-    return new_event(event, "pctl play timer", 0);
-}
-static int nn_pctl_detail_ipc_IParentalControlService_GetUnlinkedEvent(SvcObj* self, u32* event) {
-    (void)self;
-    return new_event(event, "pctl unlinked", 0);
-}
-/* the play timer's display as nobody configured it: NotConfigured in its first byte. Zeros read as TimesUp, and a
-   game that believes it stops the person playing */
-#define SNX_PCTL_PLAY_TIMER_NOT_CONFIGURED 7
-static int pctl_play_timer(nn_pctl_PlayTimerRemainingTimeDisplayInfo* info) {
-    memset(info->v, 0, sizeof info->v);
-    info->v[0] = SNX_PCTL_PLAY_TIMER_NOT_CONFIGURED;
-    return 0;
-}
-static int nn_pctl_detail_ipc_IParentalControlService_GetPlayTimerRemainingTimeDisplayInfo(
-    SvcObj* self, nn_pctl_PlayTimerRemainingTimeDisplayInfo* info) {
-    (void)self;
-    return pctl_play_timer(info);
-}
-static int nn_pctl_detail_ipc_IParentalControlService_Unknown1460(SvcObj* self, u8 unknown,
-                                                                  nn_pctl_PlayTimerRemainingTimeDisplayInfo* info) {
-    (void)self, (void)unknown;
-    return pctl_play_timer(info);
 }
 
 /* ============================================================ friend */
@@ -1621,7 +1575,6 @@ static int nn_olsc_srv_IAsyncResult_GetSystemEvent(SvcObj* self, u32* event) {
 /* ============================================================ the services' objects */
 SvcObj* new_apm(void) { return nn_apm_IManager_new(); }
 SvcObj* new_lm(void) { return nn_lm_ILogService_new(); }
-SvcObj* new_pctl(void) { return nn_pctl_detail_ipc_IParentalControlServiceFactory_new(); }
 SvcObj* new_friend(void) { return nn_friends_detail_ipc_IServiceCreator_new(); }
 SvcObj* new_chat(void) { return nn_chat_IUserService_new(); }
 SvcObj* new_ntc(void) { return nn_ntc_detail_service_IStaticService_new(); }

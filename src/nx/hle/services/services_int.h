@@ -93,7 +93,6 @@ SvcObj* new_hwopus(void);
 /* ---- misc.c: the small services */
 SvcObj* new_apm(void);
 SvcObj* new_lm(void);
-SvcObj* new_pctl(void);
 SvcObj* new_friend(void);
 SvcObj* new_chat(void);
 SvcObj* new_ntc(void);

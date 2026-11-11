@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The native nn::pctl (pctl.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
+# nn::pctl: the parental controls of a console with none set, with no pctl session. Initialize is here, so the
+# SDK's start makes no session, with every function whose answer is known for no restriction
+family nn_pctl
+hook _ZN2nn4pctl10InitializeEv() -> u32 = nnpctl_initialize
+hook _ZN2nn4pctl32CheckFreeCommunicationPermissionEb(bool show_error) -> bool = nnpctl_permitted
+hook _ZN2nn4pctl25TryBeginFreeCommunicationEb(bool show_error) -> bool = nnpctl_permitted
+hook _ZN2nn4pctl27CheckStereoVisionPermissionEb(bool show_error) -> bool = nnpctl_permitted
+hook _ZN2nn4pctl28IsFreeCommunicationAvailableEv() -> bool = nnpctl_yes
+hook _ZN2nn4pctl23IsStereoVisionPermittedEv() -> bool = nnpctl_yes
+hook _ZN2nn4pctl20EndFreeCommunicationEv() -> u32 = nnpctl_success
+hook _ZN2nn4pctl24ConfirmSnsPostPermissionEv() -> u32 = nnpctl_success
+hook _ZN2nn4pctl20IsRestrictionEnabledEv() -> bool = nnpctl_no
+hook _ZN2nn4pctl30IsRestrictionTemporaryUnlockedEv() -> bool = nnpctl_no
+hook _ZN2nn4pctl33IsRestrictedSystemSettingsEnteredEv() -> bool = nnpctl_no
+hook _ZN2nn4pctl26GetStereoVisionRestrictionEv() -> bool = nnpctl_no
+hook _ZN2nn4pctl15IsPairingActiveEv() -> bool = nnpctl_no
+hook _ZN2nn4pctl18IsPlayTimerEnabledEv() -> bool = nnpctl_no
+hook _ZN2nn4pctl23IsRestrictedByPlayTimerEv() -> bool = nnpctl_no
+hook _ZN2nn4pctl14GetSafetyLevelEv() -> u32 = nnpctl_none
+hook _ZN2nn4pctl21GetRestrictedFeaturesEv() -> u32 = nnpctl_none
+hook _ZN2nn4pctl40GetFreeCommunicationApplicationListCountEv() -> u32 = nnpctl_none
+hook _ZN2nn4pctl25GetPlayTimerRemainingTimeEv() -> i64 = nnpctl_no_time
+hook _ZN2nn4pctl36GetPlayTimerRemainingTimeDisplayInfoEPNS0_33PlayTimerRemainingTimeDisplayInfoE(addr info) = nnpctl_play_timer_display_info
