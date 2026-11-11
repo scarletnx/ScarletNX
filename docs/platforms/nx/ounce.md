@@ -223,9 +223,15 @@ A program whose FADD, FMUL, FFMA or I2F has a directed rounding mode is translat
 rounding exact. Apple's GPUs have no `shaderFloat64`, and the runtime skipped each such program: one game's title
 sequence drew black, and 10 of its compute programs never ran. `g_shader_float64` is the device's capability now, and
 the translator keeps those operations in f32, as rounds to nearest, where it is 0. A float scale of FMUL is a power
-of two, so it stays exact. The same game then ran its compute programs, and KosmicKrisp's Metal compiler failed on
-one of them (an XPC error in the compiler service, on every retry) where MoltenVK compiled it: that game shows its
-title menu with `vulkan_driver=moltenvk`.
+of two, so it stays exact.
+
+`snx-shaderc DIR --sm86 --out DIR` translates a recorded compute program again without the game (`--sm86` also needs
+no header, which a compute program has none of). Five of that game's compute programs then failed to make a pipeline
+on KosmicKrisp: the Metal compiler service ended with an XPC error, after Mesa's own retries, about 30 s each, and
+220 s of presents were lost before the game ran again. The same modules of one game's programs make a pipeline on
+MoltenVK, and `vkCreateComputePipelines` alone, with the runtime's compute layout, fails on KosmicKrisp and succeeds
+on MoltenVK: the fault is the driver's, not the call's. The game shows its title menu on either driver, after that
+stall on KosmicKrisp, and `vulkan_driver=moltenvk` skips the stall.
 
 ## Surfaces
 
