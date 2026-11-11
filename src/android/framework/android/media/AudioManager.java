@@ -93,6 +93,18 @@ public class AudioManager {
         return (flags & GET_DEVICES_OUTPUTS) != 0 ? new AudioDeviceInfo[] { SPEAKER } : new AudioDeviceInfo[0];
     }
 
+    /**
+     * The devices never change here: a callback is told the ones there are once, as Android tells a new one, on the
+     * handler's looper (the main one without a handler).
+     */
+    public void registerAudioDeviceCallback(AudioDeviceCallback callback, android.os.Handler handler) {
+        if (callback == null) throw new IllegalArgumentException("Illegal null AudioDeviceCallback argument");
+        android.os.Handler h = handler != null ? handler : new android.os.Handler(android.os.Looper.getMainLooper());
+        AudioDeviceInfo[] devices = getDevices(GET_DEVICES_ALL);
+        h.post(() -> callback.onAudioDevicesAdded(devices));
+    }
+    public void unregisterAudioDeviceCallback(AudioDeviceCallback callback) {}
+
     public String getParameters(String keys) { return ""; }
     public void setParameters(String keyValuePairs) {}
 
