@@ -56,16 +56,18 @@ int main(int argc, char** argv) {
             flush = 0;
         else if (!strcmp(argv[i], "--sm86")) /* an Ounce game's programs, which the SM86 frontend reads */
             g_shader_sm86 = 1;
+        else if (!strcmp(argv[i], "--no-doubles")) /* a device without shaderFloat64, which Apple's are */
+            g_shader_float64 = 0;
         else if (!strcmp(argv[i], "--direct")) { /* accepted for older corpus commands */
         } else if (argv[i][0] != '-' && !dir)
             dir = argv[i];
         else {
-            fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush] [--sm86] [--dispatch-reconverge]\n", argv[0]);
+            fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush] [--sm86] [--no-doubles] [--dispatch-reconverge]\n", argv[0]);
             return 2;
         }
     }
     if (!dir) {
-        fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush] [--sm86] [--dispatch-reconverge]\n", argv[0]);
+        fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush] [--sm86] [--no-doubles] [--dispatch-reconverge]\n", argv[0]);
         return 2;
     }
     /* Match a renderer with non-uniform sampled image array indexing. Otherwise indexed
