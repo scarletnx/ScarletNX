@@ -98,6 +98,10 @@ int gamepad_layout(int i, int labels[4], int* symmetric) {
 }
 unsigned gamepad_held(int i) { return i < 0 ? pads_held[0] | pads_held[1] | pads_held[2] : i < 3 ? pads_held[i] : 0; }
 const char* gamepad_name(int i) { return i >= 0 && i < 3 ? pad_names[i] : NULL; }
+/* the names change only as the tests set them: their pointers, mixed */
+u32 gamepad_names_version(void) {
+    return (u32)(uintptr_t)pad_names[0] ^ (u32)(uintptr_t)pad_names[1] * 3u ^ (u32)(uintptr_t)pad_names[2] * 7u;
+}
 int gamepad_of_player(int slot) { return slot >= 0 && slot < 3 ? pad_of_player[slot] : -1; }
 /* the renderer's RenderDoc: whether a capture can be taken, which shows the menu's Capture frame */
 static int can_capture;
@@ -299,6 +303,20 @@ static void keys_page(void) {
     overlay_scroll(-100);
     draw();
     assert(!shows("capture a frame") && !shows("Debugger"));
+    /* the page kept from frame to frame is laid out again for RenderDoc found alone, and for a key set elsewhere (the
+       .ini read again) with no call of the menu's between */
+    overlay_keys_extra(1, "");
+    draw();
+    assert(shows("capture a frame"));
+    overlay_keys_extra(0, "");
+    draw();
+    assert(!shows("capture a frame"));
+    assert(hotkeys_ini("hotkey_screenshot", "Ctrl+S"));
+    draw();
+    assert(shows_as("Ctrl+S", 0, light));
+    assert(hotkeys_ini("hotkey_screenshot", "F3"));
+    draw();
+    assert(!shows("Ctrl+S"));
     /* the keys as set: one moved; one with no key left out; the menu's Home without its key; fullscreen's second
        alone; the capture key's row, with RenderDoc in the process, gone with its key */
     assert(hotkeys_ini("hotkey_screenshot", "Ctrl+S") && hotkeys_ini("hotkey_quit", "") &&
@@ -744,6 +762,24 @@ int main(void) {
     assert(overlay_select() == OVERLAY_NONE && tv.steps == 3 && tv.last == 1);
     draw();
     assert(text_at(C - 3, 7, "On") && !strcmp(stored, "stats"));
+    /* the page kept from frame to frame, laid out again for what changes elsewhere with no call of the menu's between:
+       a setting a row shows (F12's Stats), the TV mode (its key), RenderDoc's capture */
+    g_settings.stats = 1;
+    draw();
+    assert(text_at(C - 3, 8, "On"));
+    g_settings.stats = 0;
+    draw();
+    assert(text_at(C - 4, 8, "Off"));
+    tv.choice = 2;
+    draw();
+    assert(text_at(C - 5, 7, "Auto"));
+    tv.choice = 1;
+    can_capture = 1;
+    draw();
+    assert(text_at(6, 9, "Capture frame") && text_at(C - 3, 7, "On"));
+    can_capture = 0;
+    draw();
+    assert(text_at(6, 9, "Exit"));
     /* a tap on Exit exits; on the title, nothing; outside the panel, it closes */
     assert(tap(6, 3) == OVERLAY_EXIT && tap(-3, 3) == OVERLAY_NONE);
     assert(overlay_tap(5.0f, 5.0f, SW, SH) == OVERLAY_CLOSE);
