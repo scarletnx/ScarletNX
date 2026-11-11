@@ -7,7 +7,20 @@
 #include "nx/gpu/vk/uma_budget.h"
 #define MB (1ull << 20)
 static int trims(uint64_t usage, uint64_t budget) { return usage > budget / 100 * 90; }
+/* a frame's rings (vk_uma_ring_cap): four allocations of 256 MiB at most, an eighth of the budget where that is less,
+   and two chunks of 16 MiB at least. The phone that ran out at an 8192x8192 texture had 1037 MB available as the upload
+   began and keeps 463 back: with 300 MB in the caches, say, a budget of 874 MB, and frames of 109 MiB rather than
+   1024 */
+static void ring_caps(void) {
+    const uint64_t caps = 4 * 256 * MB, floor = 32 * MB,
+                   phone = vk_uma_budget(1365 * MB, 300 * MB, 1037 * MB, 463 * MB);
+    assert(phone == 874 * MB && vk_uma_ring_cap(caps, phone, floor) == phone / 8);
+    /* a budget of 8 GB or more leaves the four allocations, and one squeezed to 100 MB keeps the two chunks */
+    assert(vk_uma_ring_cap(caps, 8192 * MB, floor) == caps && vk_uma_ring_cap(caps, 31640 * MB, floor) == caps);
+    assert(vk_uma_ring_cap(caps, 100 * MB, floor) == floor);
+}
 int main(void) {
+    ring_caps();
     const uint64_t driver = 8897 * MB, reserve = vk_uma_reserve(11388864ull << 10);
     assert(reserve == 1423608ull << 10); /* an eighth: 1390 MB */
     /* at the start, the caches may take what the system can give above the reserve */

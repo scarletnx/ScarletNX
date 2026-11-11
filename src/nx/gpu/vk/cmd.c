@@ -15,6 +15,7 @@
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/uma_budget.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/common.h"
 #include "nx/runtime/platform/backend.h"
@@ -1023,18 +1024,26 @@ static u64 frame_rings(const Frame* f) {
     for (u32 r = 0; r < FRAME_RINGS; r++) n += f->ring[r].used;
     return n;
 }
+/* the bytes a frame writes to its rings before it ends, as it has written rings already: VK_FRAME_RING_CAPS
+   allocations, and on a GPU that shares the system's memory, where the rings are memory the caches budget, an eighth
+   of the budget, but no less than two chunks (uma_budget.h). The budget is asked only past those two */
+static u64 frame_ring_cap(u64 rings) {
+    u64 caps = VK_FRAME_RING_CAPS * g_vk.alloc_cap, floor = 2 * chunk_size(), usage, budget;
+    if (g_vk.mem_model != VK_MEM_UMA || rings < floor) return caps;
+    vk_mem_use(&usage, &budget);
+    return vk_uma_ring_cap(caps, budget, floor);
+}
 static void frame_check(void) {
     const Frame* f = &g_fr[g_cur];
     /* a fresh frame has recorded nothing, and its counts are still its last use's until frame_recycle: ending it
        would only move on to the slot whose work was just submitted, and wait for it */
     if (f->fresh) return;
-    u64 rings = frame_rings(f);
-    if (rings >= VK_FRAME_RING_CAPS * g_vk.alloc_cap) {
-        LOG_LIMIT(4,
-                  "vulkan: frame %llu ends before a present: %llu MiB written to its rings, %d allocations of %llu "
-                  "MiB\n",
-                  (unsigned long long)g_frame_id, (unsigned long long)(rings >> 20), VK_FRAME_RING_CAPS,
-                  (unsigned long long)(g_vk.alloc_cap >> 20));
+    u64 rings = frame_rings(f), cap = frame_ring_cap(rings);
+    if (rings >= cap) {
+        LOG_LIMIT(
+            4,
+            "vulkan: frame %llu ends before a present: %llu MiB written to its rings, which end a frame at %llu MiB\n",
+            (unsigned long long)g_frame_id, (unsigned long long)(rings >> 20), (unsigned long long)(cap >> 20));
         vk_frame_next();
     } else if (f->icb >= 128 || f->ipool >= 32 || vk_rec_frame_sets(g_cur) >= 32 * 1024 || !vk_descriptors_room(g_cur))
         vk_frame_next();
