@@ -787,6 +787,73 @@ static void f2i_modifiers(void) {
     }
 }
 
+/* the instruction in a function whose result is id: its offset in code, 0 for none. A value is made before an
+   instruction without a result names it in the same word (OpStore's object), as blocks come in dominance order */
+static size_t defined_at(const u32* code, size_t words, u32 id) {
+    int in_function = 0;
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return 0;
+        in_function |= (code[i] & 0xffff) == 54; /* OpFunction */
+        if (in_function && width >= 3 && code[i + 2] == id) return i;
+        i += width;
+    }
+    return 0;
+}
+/* the module's OpConvertSToF and OpConvertUToF: in halves, those whose operand is an OpBitwiseAnd with 0xffff0000 or
+   0xffff (through an OpBitcast or not), a value with 16 significant bits at most, which every driver converts exactly;
+   in whole, the others */
+static void count_conversions(const u32* code, size_t words, int* halves, int* whole) {
+    *halves = *whole = 0;
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16, op = code[i] & 0xffff;
+        if (!width || i + width > words) return;
+        if ((op == 111 || op == 112) && width == 4) {
+            size_t at = defined_at(code, words, code[i + 3]);
+            if (at && (code[at] & 0xffff) == 124 /* OpBitcast */) at = defined_at(code, words, code[at + 3]);
+            int masked = at && (code[at] & 0xffff) == 199 /* OpBitwiseAnd */ && (code[at] >> 16) == 5 &&
+                         (is_constant_value(code, words, code[at + 4], 0xffff0000u) ||
+                          is_constant_value(code, words, code[at + 4], 0xffffu));
+            ++*(masked ? halves : whole);
+        }
+        i += width;
+    }
+}
+
+/* I2F.F32 of a 32-bit integer where the driver's conversions truncate (g_shader_i2f_nearest, a Turnip on an Adreno
+   610): no conversion is left a value with more than 16 significant bits, so the only rounding is the OpFAdd's, to
+   nearest even as the console's. A 16-bit integer converts exactly, and as it did */
+static void i2f_by_halves(void) {
+    int was = g_shader_i2f_nearest;
+    for (u32 size = 1; size < 3; size++)
+        for (u32 is_signed = 0; is_signed < 2; is_signed++)
+            for (int nearest = 0; nearest < 2; nearest++) {
+                g_shader_i2f_nearest = nearest ? 3 : 0;
+                /* I2F.F32.{U,S}{16,32} R9, R9 */
+                const u64 program[] = {(0x5cb8000000970209ull | (u64)size << 10 | (u64)is_signed << 13)};
+                ShaderInfo info;
+                size_t words = 0;
+                u32* code = translate(program, 1, ST_FS, &info, &words, 1);
+                char what[96];
+                snprintf(what, sizeof what, "I2F.F32.%c%u with i2f_nearest %d translates", is_signed ? 'S' : 'U',
+                         8u << size, g_shader_i2f_nearest);
+                check_translated(code, &info, what);
+                if (!code) continue;
+                int halves, whole;
+                count_conversions(code, words, &halves, &whole);
+                int split = size == 2 && nearest;
+                if (halves != (split ? 2 : 0) || whole != (split ? 0 : 1))
+                    fprintf(stderr, "I2F.F32.%c%u i2f_nearest %d: %d conversions of halves, %d of a whole value\n",
+                            is_signed ? 'S' : 'U', 8u << size, g_shader_i2f_nearest, halves, whole);
+                snprintf(what, sizeof what, "I2F.F32.%c%u with i2f_nearest %d converts %s", is_signed ? 'S' : 'U',
+                         8u << size, g_shader_i2f_nearest, split ? "two halves" : "the whole value");
+                check(halves == (split ? 2 : 0) && whole == (split ? 0 : 1), what);
+                if (split) check(count_opcode(code, words, 129, 0xffffffffu) == 1, "one OpFAdd sums the halves");
+                free(code);
+            }
+    g_shader_i2f_nearest = was;
+}
+
 static u64 mov32i(u32 reg, u32 value) { return 0x0100000000000000ull | ((u64)value << 20) | 0x71000ull | reg; }
 
 /* R2P and P2R transfer the condition flags too (bit 40): the flags are variables of their own (z, s, c, o), read
@@ -5194,6 +5261,7 @@ int main(int argc, char** argv) {
     cbuf_integer_loads();
     unsupported_names_word();
     f2i_modifiers();
+    i2f_by_halves();
     flag_transfers();
     global_buffers();
     compute_write_log();

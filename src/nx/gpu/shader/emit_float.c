@@ -545,9 +545,13 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, negate_abs,
                                          spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, c->zero, value), value);
             }
-            result = is_signed ? spv_emit_unary(&c->emit, SPV_OP_CONVERT_S_TO_F, target_type,
-                                                spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, value))
-                               : spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, target_type, value);
+            /* a 16-bit or narrower integer is exact in a float, and the finite F16 ones in an F32 */
+            if (size == 2 && dst_format == 2 && (g_shader_i2f_nearest & (is_signed ? 1 : 2)))
+                result = spv_emit_int_to_f32_nearest(&c->emit, value, is_signed);
+            else
+                result = is_signed ? spv_emit_unary(&c->emit, SPV_OP_CONVERT_S_TO_F, target_type,
+                                                    spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, value))
+                                   : spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, target_type, value);
         }
         if (negate) {
             u32 negated = spv_emit_unary(&c->emit, SPV_OP_F_NEGATE, target_type, result);

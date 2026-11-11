@@ -486,6 +486,10 @@ static void check_shipped(void) {
         {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0, SNX_VK_BAN_ANDROID,
          "VK_SHADER_STAGE_GEOMETRY_BIT", 0, NULL},
         {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0, SNX_VK_BAN_LINUX, "VK_SHADER_STAGE_GEOMETRY_BIT", 0, NULL},
+        {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 2u, 99u), 0, SNX_VK_BAN_ANDROID, "OpConvertSToF", 1, "Turnip"},
+        {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 2u, 99u), 0, SNX_VK_BAN_ANDROID, "OpConvertUToF", 1, "Turnip"},
+        {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0, SNX_VK_BAN_ANDROID, "OpConvertSToF", 0, NULL},
+        {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0, SNX_VK_BAN_LINUX, "OpConvertUToF", 0, NULL},
     };
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         char what[400];

@@ -2489,6 +2489,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   (u32)g_shader_geometry,
                   (u32)g_shader_float16,
                   (u32)g_shader_half_rounding,
+                  (u32)g_shader_i2f_nearest,
                   (u32)g_shader_geometry_streams,
                   (u32)g_shader_geometry_streams_lines_triangles,
                   (u32)g_shader_tessellation,

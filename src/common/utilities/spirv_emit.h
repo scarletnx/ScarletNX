@@ -413,6 +413,10 @@ static inline uint32_t spv_emit_type_i32(SpvEmitter* e);
 static inline uint32_t spv_emit_type_int64(SpvEmitter* e, int is_signed);
 /* OpSConvert requires a signed result type; OpUConvert requires an unsigned result type. Both truncate if narrowing. */
 uint32_t spv_emit_int_convert(SpvEmitter* e, uint32_t type, uint32_t value, int is_signed);
+/* a 32-bit integer (value, an OpTypeInt 32 0) as a 32-bit float rounded to nearest, ties to even, with no conversion
+   left to round: its high and low 16 bits each convert exactly, and one OpFAdd rounds their sum. For a driver whose
+   OpConvertSToF or OpConvertUToF truncates */
+uint32_t spv_emit_int_to_f32_nearest(SpvEmitter* e, uint32_t value, int is_signed);
 static inline uint32_t spv_emit_type_f16(SpvEmitter* e);
 static inline uint32_t spv_emit_type_f32(SpvEmitter* e);
 static inline uint32_t spv_emit_type_f64(SpvEmitter* e);
