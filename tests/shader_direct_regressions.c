@@ -155,6 +155,36 @@ static int float_round_trips(const u32* code, size_t words) {
     }
     return found;
 }
+/* The OpLoads of a whole Input variable in a module, of the variables decorated BuiltIn builtin (-1: those with no
+   BuiltIn, the generic inputs; -2: every Input variable), and in *again those of a variable its block already
+   loaded */
+static int input_loads(const u32* code, size_t words, int builtin, int* again) {
+    u32 inputs[96], loaded[96];
+    int count = 0, in_block = 0, loads = 0;
+    *again = 0;
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16, op = code[i] & 0xffff;
+        if (!width || i + width > words) return -1;
+        if (op == 59 && width >= 4 && code[i + 3] == 1 && count < 96) { /* OpVariable, Input */
+            int decorated = -1;
+            for (size_t k = 5; k < i; k += code[k] >> 16) /* OpDecorate variable BuiltIn */
+                if ((code[k] & 0xffff) == 71 && code[k] >> 16 == 4 && code[k + 1] == code[i + 2] && code[k + 2] == 11)
+                    decorated = (int)code[k + 3];
+            if (builtin == -2 || builtin == decorated) inputs[count++] = code[i + 2];
+        }
+        if (op == 248) in_block = 0; /* OpLabel */
+        if (op == 61 && width >= 4) {
+            int input = 0, seen = 0;
+            for (int k = 0; k < count; k++) input |= inputs[k] == code[i + 3];
+            for (int k = 0; k < in_block; k++) seen |= loaded[k] == code[i + 3];
+            loads += input;
+            *again += input && seen;
+            if (input && !seen && in_block < 96) loaded[in_block++] = code[i + 3];
+        }
+        i += width;
+    }
+    return loads;
+}
 static u32* spirv_of(const u64* code, size_t bytes, int stage, ShaderInfo* info, size_t* words, int flush,
                      int can_preserve, int can_preserve_f64, int can_subgroup) {
     u8* guest = guest_bytes(code, bytes);
@@ -166,6 +196,12 @@ static u32* spirv_of(const u64* code, size_t bytes, int stage, ShaderInfo* info,
         int trips = float_round_trips(result, *words);
         if (trips) fprintf(stderr, "a module of %zu words has %d float round trips through its bits\n", *words, trips);
         check(!trips, "no float is cast to its bits and back");
+        int again = 0;
+        input_loads(result, *words, -2, &again);
+        if (again)
+            fprintf(stderr, "a module of %zu words loads an Input variable its block has loaded %d times\n", *words,
+                    again);
+        check(!again, "an Input variable is loaded once a block");
     }
     return result;
 }
@@ -5307,6 +5343,111 @@ static void fragment_flow_derivatives(void) {
     }
 }
 
+/* An Input variable is loaded once in a block and each of its components taken once, however many instructions read
+   it (translate.h's input_seen); a later block, which the first need not dominate, loads it again */
+static void inputs_loaded_once_a_block(void) {
+#define INPUT_IPA(d, addr) (0xe000000000070000ull | (u64)(addr) << 28 | 0xff00ull | (u64)(d))
+#define INPUT_ALD(d, addr) ((0xefd9ff8000070000ull & ~(3ull << 47)) | (u64)(addr) << 20 | 0xff00ull | (u64)(d))
+    enum { EXTRACT = 81, FRAG_COORD = 15, LANE = 41 };
+    const u64 branch = 0xe24000000000000full | (16ull << 20); /* @P0 BRA over the next instruction */
+    const u64 al2p =
+        (0xefa070010607ff01ull & ~(0xffull | (0xffull << 8) | (0x7ffull << 20))) | 8ull | (2ull << 8) | (0x80ull << 20);
+    const u64 indexed = 0xe06000c800770800ull; /* IPA.IDX.MUL R0, a[R8], R7 */
+    const struct {
+        u64 instructions[5];
+        int count;
+        int generic, coord, extracts; /* the loads of the generic inputs and of FragCoord, and the components taken */
+        const char* what;
+    } fragment[] = {
+        {{0}, 0, 0, 0, 0, "a fragment program of an EXIT alone loads no input"},
+        {{INPUT_IPA(0, 0xc0), INPUT_IPA(1, 0xc4), INPUT_IPA(2, 0xc0)},
+         3,
+         1,
+         1,
+         3,
+         "a perspective input's x, y and x again: one load of it and one of FragCoord, and x, y and w taken once"},
+        {{INPUT_IPA(0, 0x70), INPUT_IPA(1, 0x74), INPUT_IPA(2, 0x7c), INPUT_IPA(3, 0x70)},
+         4,
+         0,
+         1,
+         3,
+         "the fragment's x, y, 1/w and x again: one load of FragCoord and three components"},
+        {{INPUT_IPA(0, 0xc0), INPUT_IPA(1, 0x7c)},
+         2,
+         1,
+         1,
+         2,
+         "a perspective input and a[0x7c] share FragCoord's load and its w"},
+        {{INPUT_IPA(0, 0xc0), branch, INPUT_IPA(1, 0xc0), INPUT_IPA(2, 0xc0)},
+         4,
+         3,
+         3,
+         6,
+         "an input read in three blocks is loaded in each, with FragCoord, and its x and w taken in each"},
+        {{mov32i(2, 0x10), al2p, indexed, indexed},
+         4,
+         -1,
+         1,
+         -1,
+         "two indexed IPAs in a block share FragCoord's load for their perspective inputs"},
+    };
+    int base_extracts = 0;
+    for (size_t i = 0; i < sizeof fragment / sizeof *fragment; i++) {
+        ShaderInfo info;
+        size_t words = 0, slots;
+        int again = 0;
+        u64* code = guest_program(fragment[i].instructions, fragment[i].count, NULL, &slots);
+        if (!code) return;
+        set_sph(code, 6, 0xaaaa); /* generic inputs 0 and 1, perspective: the indexed IPAs' candidates */
+        set_sph(code, 7, 0xaa);   /* generic input 4, perspective */
+        set_sph(code, 18, 0xf);
+        memset(&info, 0, sizeof info);
+        u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 0, 1, 1, 1);
+        free(code);
+        check_translated(spv, &info, "a fragment program reading its inputs translates");
+        if (!spv) continue;
+        int generic = input_loads(spv, words, -1, &again), coord = input_loads(spv, words, FRAG_COORD, &again);
+        int extracts = count_opcode(spv, words, EXTRACT, 0xffffffffu) - base_extracts;
+        if (!i) base_extracts = extracts;
+        if ((fragment[i].generic >= 0 && generic != fragment[i].generic) || coord != fragment[i].coord ||
+            (i && fragment[i].extracts >= 0 && extracts != fragment[i].extracts))
+            fprintf(stderr,
+                    "fragment inputs %zu: %d loads of generic inputs, %d of FragCoord, %d components, not %d, %d, %d\n",
+                    i, generic, coord, extracts, fragment[i].generic, fragment[i].coord, fragment[i].extracts);
+        check((fragment[i].generic < 0 || generic == fragment[i].generic) && coord == fragment[i].coord &&
+                  (!i || fragment[i].extracts < 0 || extracts == fragment[i].extracts),
+              fragment[i].what);
+        free(spv);
+    }
+    /* a vertex program: attribute 0's x, y and x again */
+    ShaderInfo info;
+    size_t words = 0;
+    int again = 0;
+    const u64 attribute[] = {INPUT_ALD(0, 0x80), INPUT_ALD(1, 0x84), INPUT_ALD(2, 0x80)};
+    u32* spv = translate(NULL, 0, ST_VS, &info, &words, 0);
+    int vertex_extracts = spv ? count_opcode(spv, words, EXTRACT, 0xffffffffu) : 0;
+    free(spv);
+    spv = translate(attribute, 3, ST_VS, &info, &words, 0);
+    check_translated(spv, &info, "a vertex program reading an attribute translates");
+    check(spv && input_loads(spv, words, -1, &again) == 1 &&
+              count_opcode(spv, words, EXTRACT, 0xffffffffu) == vertex_extracts + 2,
+          "an attribute's x, y and x again: one load of it, and x and y taken once");
+    free(spv);
+    /* two FSWZADD whose lanes differ read the subgroup's lane once */
+    const u64 swizzled[] = {fswzadd(0x99), fswzadd(0x99)};
+    size_t slots;
+    u64* code = guest_program(swizzled, 2, NULL, &slots);
+    if (!code) return;
+    memset(&info, 0, sizeof info);
+    spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 0, 1, 1, 1);
+    free(code);
+    check_translated(spv, &info, "two FSWZADD translate");
+    check(spv && input_loads(spv, words, LANE, &again) == 1, "two FSWZADD in a block load the subgroup's lane once");
+    free(spv);
+#undef INPUT_IPA
+#undef INPUT_ALD
+}
+
 /* What the translator knows as it translates is settled there, not left for the driver's compiler: PT, the
    predicate most instructions name, is the constant true; a constant a register holds is a constant of the type it
    is read as; and a float a register holds is read back as that float, not through its bits */
@@ -5683,6 +5824,7 @@ int main(int argc, char** argv) {
     fragment_position_pass();
     per_vertex_pass();
     settled_when_translated();
+    inputs_loaded_once_a_block();
     check(!g_fixtures.failed, "shader fixture paths allocated");
     for (size_t i = 0; i < g_fixtures.count; i++) free(g_fixtures.paths[i]);
     free(g_fixtures.paths);

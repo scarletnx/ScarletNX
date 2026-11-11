@@ -140,7 +140,6 @@ void shader_vertex_position_fix(DirectCtx* c, u32 position, u32 push, u32 push_p
    position reads as over w, with the precision of the rasterizer's position rather than of the host's interpolation
    of a clipped primitive's inputs (shader.h, SH_VARYING_) */
 void shader_frag_ndc(DirectCtx* c, u32 fragcoord, u32 vec4_type, u32 push, u32 push_pointer, u32 ndc[2]) {
-    u32 coord = spv_emit_load(&c->emit, vec4_type, fragcoord);
     u32 member = spv_emit_constant_u32(&c->emit, c->u32_type, 2);
     u32 two = spv_emit_constant_f32(&c->emit, c->f32_type, 2.0f);
     u32 minus_one = spv_emit_constant_f32(&c->emit, c->f32_type, -1.0f);
@@ -149,9 +148,9 @@ void shader_frag_ndc(DirectCtx* c, u32 fragcoord, u32 vec4_type, u32 push, u32 p
                                                  spv_emit_constant_u32(&c->emit, c->u32_type, k), c->f32_type);
         u32 extent = spv_emit_push_component_f32(&c->emit, push_pointer, push, member,
                                                  spv_emit_constant_u32(&c->emit, c->u32_type, k + 2), c->f32_type);
-        u32 from =
-            spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type, spv_emit_vec4_extract(&c->emit, c->f32_type, coord, k),
-                            spv_emit_unary(&c->emit, SPV_OP_F_NEGATE, c->f32_type, origin));
+        u32 from = spv_emit_binary(&c->emit, SPV_OP_F_ADD, c->f32_type,
+                                   shader_input_component(c, vec4_type, fragcoord, c->f32_type, k),
+                                   spv_emit_unary(&c->emit, SPV_OP_F_NEGATE, c->f32_type, origin));
         u32 across = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type,
                                      spv_emit_binary(&c->emit, SPV_OP_F_DIV, c->f32_type, from, extent), two);
         spv_emit_no_contraction(&c->emit, across);
@@ -164,7 +163,7 @@ void shader_frag_ndc(DirectCtx* c, u32 fragcoord, u32 vec4_type, u32 push, u32 p
    (PerVertexKHR), or with flat the flat input that holds that vertex's value (SH_VARYING_GEOMETRY) */
 u32 shader_vertex_value(DirectCtx* c, u32 vec4_type, const u32 at[3], int flat, u32 vertex, u32 component) {
     SpvEmitter* e = &c->emit;
-    if (flat) return spv_emit_vec4_extract(e, c->f32_type, spv_emit_load(e, vec4_type, at[vertex]), component);
+    if (flat) return shader_input_component(c, vec4_type, at[vertex], c->f32_type, component);
     return spv_emit_load(e, c->f32_type,
                          spv_emit_interface_scalar_pointer(e, 1, c->f32_type, at[vertex],
                                                            spv_emit_constant_u32(e, c->u32_type, vertex),
@@ -469,15 +468,15 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                     instance = spv_emit_load(&c->emit, c->u32_type, vertex_index);
                 reg_write(c, d + k, instance);
             } else {
-                u32 vector = spv_emit_load(&c->emit, input_vec_type[index], inputs[index]);
-                u32 value = spv_emit_vec4_extract(&c->emit, input_component_type[index], vector, (location >> 2) & 3);
+                u32 value = shader_input_component(c, input_vec_type[index], inputs[index], input_component_type[index],
+                                                   (location >> 2) & 3);
                 reg_write_as(c, d + k, value, input_component_type[index]);
             }
         }
     } else if (op == O_AST && (stage == ST_TCS || B(w, 31, 1))) {
         /* a control program stores its invocation's output vertex, and the patch's levels and vectors */
         u32 addr = B(w, 20, 10), width = B(w, 47, 2) + 1, k;
-        u32 vertex = B(w, 31, 1) ? 0 : spv_emit_load(&c->emit, c->u32_type, invocation_id);
+        u32 vertex = B(w, 31, 1) ? 0 : shader_input(c, c->u32_type, invocation_id);
         for (k = 0; k < width; k++) {
             u32 location = addr + k * 4, pointer = 0;
             /* A later evaluation stage makes the control program's layer and viewport outputs inert. */
@@ -611,8 +610,7 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, offset, shader_u32(c, 2)),
             shader_u32(c, 3));
         u32 last = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, component, shader_u32(c, 3));
-        u32 wcoord =
-            fragcoord ? spv_emit_vec4_extract(&c->emit, c->f32_type, spv_emit_load(&c->emit, vec4, fragcoord), 3) : 0;
+        u32 wcoord = fragcoord ? shader_input_component(c, vec4, fragcoord, c->f32_type, 3) : 0;
         u32 value = zero_f;
         for (u32 v = 0; v < 32; v++) {
             u32 bits;
@@ -657,7 +655,7 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         } else if (addr == 0x60) {
             value = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, primitive_read(c, primitive_id));
         } else if (addr == 0x2e0 || addr == 0x2e4) {
-            value = spv_emit_vec4_extract(&c->emit, c->f32_type, spv_emit_load(&c->emit, vec2, point_coord), component);
+            value = shader_input_component(c, vec2, point_coord, c->f32_type, component);
             if (addr == 0x2e4) { /* T flips with the sprite's origin, a push constant (see vk/render.c) */
                 u32 flip =
                     spv_emit_push_component_f32(&c->emit, push_pointer, push, c->zero, shader_u32(c, 3), c->f32_type);
@@ -690,14 +688,12 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                         spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, t->pv_weight[k - 1], past));
                 }
             } else if (inputs[input]) {
-                value = spv_emit_load(&c->emit, vec4, inputs[input]);
-                value = spv_emit_vec4_extract(&c->emit, c->f32_type, value, component);
+                value = shader_input_component(c, vec4, inputs[input], c->f32_type, component);
             } else /* no output feeds it (in_unfed_mask) */
                 value = spv_emit_constant_f32(&c->emit, c->f32_type, component == 3 ? 1.0f : 0.0f);
         }
         if (addr >= 0x70 && addr < 0x80) {
-            u32 coord = spv_emit_load(&c->emit, vec4, fragcoord);
-            value = spv_emit_vec4_extract(&c->emit, c->f32_type, coord, component);
+            value = shader_input_component(c, vec4, fragcoord, c->f32_type, component);
             /* a[0x7c] is the interpolated 1/w, FragCoord.w as it is: shaders take its reciprocal for
                IPA.MUL */
             if (addr != 0x7c && needs_scale && component < 2) {
@@ -712,8 +708,7 @@ void emit_io(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             /* The hardware interpolates attr/w for a perspective input, and the shader multiplies by w
                (IPA.MUL with the reciprocal of a[0x7c]). Vulkan's input is attr itself: times the
                interpolated 1/w, FragCoord.w, it is what the hardware gives. */
-            u32 coord = spv_emit_load(&c->emit, vec4, fragcoord);
-            u32 wcoord = spv_emit_vec4_extract(&c->emit, c->f32_type, coord, 3);
+            u32 wcoord = shader_input_component(c, vec4, fragcoord, c->f32_type, 3);
             value = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, value, wcoord);
             spv_emit_no_contraction(&c->emit, value);
         }

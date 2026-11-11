@@ -63,6 +63,12 @@ typedef struct {
     struct {
         u32 from, block, to, to_type;
     } cast_seen[512];
+    /* the stage's Input variables loaded whole in the block being written, by variable (a cache: one that collides
+       is loaded again), and each component taken of that load, 0 until taken. A stage's inputs don't change while it
+       runs */
+    struct {
+        u32 variable, block, value, part[4];
+    } input_seen[64];
     u32 scale_buffer, scale_pointer;
     u32 sampler[SH_MAXTEX], sampled_type[SH_MAXTEX];
     u32 tex_index[SH_MAXTEX], tex_map_buffer, tex_map_pointer, active_index;
@@ -343,6 +349,29 @@ static inline u32 shader_cast(DirectCtx* c, u32 to_type, u32 value, u32 from_typ
     c->cast_seen[at].to = value;
     c->cast_seen[at].to_type = from_type;
     return result;
+}
+
+/* the cache entry of an Input variable of type, loaded in this block if it wasn't */
+static inline u32 shader_input_entry(DirectCtx* c, u32 type, u32 variable) {
+    u32 at = variable % (u32)(sizeof c->input_seen / sizeof *c->input_seen);
+    if (c->input_seen[at].variable == variable && c->input_seen[at].block == c->emit.block) return at;
+    c->input_seen[at].variable = variable;
+    c->input_seen[at].block = c->emit.block;
+    c->input_seen[at].value = spv_emit_load(&c->emit, type, variable);
+    for (u32 k = 0; k < 4; k++) c->input_seen[at].part[k] = 0;
+    return at;
+}
+/* an Input variable of type: its load in this block, made once */
+static inline u32 shader_input(DirectCtx* c, u32 type, u32 variable) {
+    return c->input_seen[shader_input_entry(c, type, variable)].value;
+}
+/* component (0 to 3) of an Input variable, a vector of vector_type whose components are of type: taken once a block
+   from the variable's load in it */
+static inline u32 shader_input_component(DirectCtx* c, u32 vector_type, u32 variable, u32 type, u32 component) {
+    u32 at = shader_input_entry(c, vector_type, variable);
+    if (!c->input_seen[at].part[component])
+        c->input_seen[at].part[component] = spv_emit_vec4_extract(&c->emit, type, c->input_seen[at].value, component);
+    return c->input_seen[at].part[component];
 }
 
 /* the Function variable of a register, predicate or flag (z, s, c, o) */

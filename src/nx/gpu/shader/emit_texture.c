@@ -115,7 +115,6 @@ void shader_scaled_fetch(DirectCtx* c, u32 push, u32 fragcoord, u32 vec4, int sl
                                                          push, spv_emit_constant_u32(&c->emit, c->u32_type, 1),
                                                          spv_emit_constant_u32(&c->emit, c->u32_type, 2), c->u32_type),
                              c->zero);
-    u32 position = spv_emit_load(&c->emit, vec4, fragcoord);
     u32 half = spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f);
     u32* v[2] = {x, y};
     for (u32 k = 0; k < 2; k++) {
@@ -126,7 +125,7 @@ void shader_scaled_fetch(DirectCtx* c, u32 push, u32 fragcoord, u32 vec4, int sl
                                         exact(c, SPV(&c->emit, SPV_OP_F_SUB, c->f32_type, next,
                                                      spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f))));
         /* the fragment's place in its guest pixel, in the image's pixels: 0 up to the scale */
-        u32 pixel = spv_emit_vec4_extract(&c->emit, c->f32_type, position, k);
+        u32 pixel = shader_input_component(c, vec4, fragcoord, c->f32_type, k);
         u32 corner = exact(c, spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, scale,
                                             floor_of(c, exact(c, spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, pixel, over)))));
         u32 place = exact(c, SPV(&c->emit, SPV_OP_F_SUB, c->f32_type, pixel, corner));

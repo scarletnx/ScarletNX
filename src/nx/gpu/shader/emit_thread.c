@@ -31,7 +31,7 @@ void emit_thread(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             /* SR_LANEID, and the EQ, LT, LE, GT and GE lane masks of a 32-lane warp */
             u32 lane = lane_is_invocation ? spv_emit_load(&c->emit, c->u32_type, invocation_id)
                        : lane_model       ? c->zero
-                                          : spv_emit_load(&c->emit, c->u32_type, c->subgroup_lane_input);
+                                          : shader_input(c, c->u32_type, c->subgroup_lane_input);
             lane = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, lane, shader_u32(c, 31));
             u32 one = shader_u32(c, 1);
             u32 eq = spv_emit_binary(&c->emit, SPV_OP_SHIFT_LEFT_LOGICAL, c->u32_type, one, lane);
@@ -58,7 +58,7 @@ void emit_thread(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, shader_lane_dead(c),
                                      shader_u32(c, 0xffffffffu), c->zero);
         else if (sr == 0x11) /* SR_INVOCATION_ID */
-            value = spv_emit_load(&c->emit, c->u32_type, invocation_id);
+            value = shader_input(c, c->u32_type, invocation_id);
         else if (sr >= 0x50 && sr <= 0x53) {
             u32 scope = shader_u32(c, sr < 0x52 ? 3 : 1);
             u32 clock = spv_emit_unary(&c->emit, SPV_OP_READ_CLOCK_KHR, vec2_u32, scope);
@@ -84,7 +84,7 @@ void emit_thread(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         u32 value = pred_read(c, B(w, 39, 3), B(w, 42, 1));
         u32 one = shader_u32(c, 1);
         /* the lane model's warp is lane 0 alone (spirv_translate.c's lone_lane) */
-        u32 lane = lane_model ? c->zero : spv_emit_load(&c->emit, c->u32_type, c->subgroup_lane_input);
+        u32 lane = lane_model ? c->zero : shader_input(c, c->u32_type, c->subgroup_lane_input);
         u32 mask = lane_model ? spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, value, one, c->zero)
                               : shader_subgroup_ballot_word(c, vec4_u32, lane, value);
         u32 mode = B(w, 48, 2);
@@ -111,7 +111,7 @@ void emit_thread(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     } else if (op == O_SHFL) {
         u32 index = B(w, 28, 1) ? shader_u32(c, B(w, 20, 5)) : reg_read(c, b);
         u32 mask = B(w, 29, 1) ? shader_u32(c, B(w, 34, 13)) : reg_read(c, B(w, 39, 8));
-        u32 lane_full = lane_model ? c->zero : spv_emit_load(&c->emit, c->u32_type, c->subgroup_lane_input);
+        u32 lane_full = lane_model ? c->zero : shader_input(c, c->u32_type, c->subgroup_lane_input);
         u32 lane = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, lane_full, shader_u32(c, 31));
         u32 seg =
             spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
