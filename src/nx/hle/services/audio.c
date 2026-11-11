@@ -588,20 +588,22 @@ static int nn_audio_detail_IAudioRendererManager_GetWorkBufferSize(
 }
 
 /* ------------------------------------------------------------ IAudioDevice: the TV output, two channels */
-/* its system, input and output events, signaled when the device is made (the game reads the device then): an
+/* its system, input and output events, signaled when the device is made (the game reads the device then), and its
+   input and output device notifications, which a change of the device would signal and the host's never makes: an
    AudDevice (services_int.h) */
 static void device_destroy(SvcObj* o) {
     int i;
-    for (i = 0; i < 3; i++) kobj_unref(kobj_at(((AudDevice*)o->data)->ev[i]));
+    for (i = 0; i < 5; i++) kobj_unref(kobj_at(((AudDevice*)o->data)->ev[i]));
 }
 
 static SvcObj* new_device(void) {
-    static const char* const names[3] = {"IAudioDevice system", "IAudioDevice input", "IAudioDevice output"};
+    static const char* const names[5] = {"IAudioDevice system", "IAudioDevice input", "IAudioDevice output",
+                                         "IAudioDevice input notification", "IAudioDevice output notification"};
     SvcObj* o = nn_audio_detail_IAudioDevice_new_data(g_hle.audio.devices, g_hle.audio.device_next, "audio devices");
     int i;
-    for (i = 0; i < 3; i++) {
+    for (i = 0; i < 5; i++) {
         ((AudDevice*)o->data)->ev[i] = owned_event(names[i]);
-        ev_signal(((AudDevice*)o->data)->ev[i]);
+        if (i < 3) ev_signal(((AudDevice*)o->data)->ev[i]);
     }
     o->destroy = device_destroy;
     return o;
@@ -712,6 +714,21 @@ static int nn_audio_detail_IAudioDevice_QueryAudioDeviceOutputEvent(SvcObj* self
     *event = ev_handle(((AudDevice*)self->data)->ev[2]);
     R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
+}
+/* 17.0.0 and later. The SDK's wrapper attaches the copy handle to a SystemEvent that owns it, and acquires one a run:
+   each acquire gives the device's one event. The u64 is the SDK's own, which the server doesn't need here */
+static int device_notification(SvcObj* self, int which, u32* event) {
+    *event = ev_handle(((AudDevice*)self->data)->ev[which]);
+    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
+    R_SUCCEED();
+}
+static int nn_audio_detail_IAudioDevice_AcquireAudioInputDeviceNotification(SvcObj* self, u64 id, u32* event) {
+    (void)id;
+    return device_notification(self, 3, event);
+}
+static int nn_audio_detail_IAudioDevice_AcquireAudioOutputDeviceNotification(SvcObj* self, u64 id, u32* event) {
+    (void)id;
+    return device_notification(self, 4, event);
 }
 
 SvcObj* new_audren(void) { return nn_audio_detail_IAudioRendererManager_new(); }

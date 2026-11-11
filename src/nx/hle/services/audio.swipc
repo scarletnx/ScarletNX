@@ -124,6 +124,12 @@ interface nn::audio::detail::IAudioDevice {
     [13] GetActiveAudioOutputDeviceName(buffer<nn::audio::AudioDeviceName, 6> name);
     # SDK 13 and later (nn::audio::ListAudioOutputDeviceName): a game may compare each name with the outputs it knows
     [14] ListAudioOutputDeviceName(array<nn::audio::AudioDeviceName, 6> names) -> i32 count;
+    # 17.0.0 and later: the server's own symbols give (Out<NativeHandle>, u64) and (u64). The SDK's client reads a copy
+    # handle, and its wrapper aborts on a failed result. A release changes nothing: the device keeps its event to its end
+    [15] AcquireAudioInputDeviceNotification(u64 id) -> handle<copy, event> event;
+    @stub [16] ReleaseAudioInputDeviceNotification(u64 id);
+    [17] AcquireAudioOutputDeviceNotification(u64 id) -> handle<copy, event> event;
+    @stub [18] ReleaseAudioOutputDeviceNotification(u64 id);
     # 18.0.0 and later: a mode in which the console tunes the output volume. A failed result stops the SDK's wrapper
     # (an abort)
     [19] SetAudioDeviceOutputVolumeAutoTuneEnabled(b8 enabled);

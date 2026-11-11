@@ -673,6 +673,15 @@ static void test_device(void) {
     CHECK(query32(d, 5) == 2); /* GetActiveChannelCount */
     c = request(4, NULL, 0);   /* QueryAudioDeviceSystemEvent */
     CHECK(d->dispatch(d, &c) == 0 && c.nout_copy == 1 && c.out_copy[0] == 7);
+    /* AcquireAudioInputDeviceNotification (15) and AcquireAudioOutputDeviceNotification (17), a u64 in: a copy handle
+       to the device's own notification event, which nothing signals, as the host's device never changes. Their releases
+       (16, 18) take the u64 and answer nothing */
+    CHECK(dev->ev[3] != dev->ev[4] && !kev(dev->ev[3])->signaled && !kev(dev->ev[4])->signaled);
+    u64 notification_id = 0;
+    for (u32 cmd = 15; cmd <= 18; cmd++) {
+        c = request(cmd, le64(notification_id), sizeof notification_id);
+        CHECK(d->dispatch(d, &c) == 0 && c.out_size == 0 && c.nout_copy == (cmd & 1) && !c.nout_move);
+    }
     /* SetAudioDeviceOutputVolume (1) and GetAudioDeviceOutputVolume (2), the name in A: the device keeps the volume set
        on it, and another name has 1 and keeps nothing; the Auto ones (7, 8) through X */
     float half = 0.5f, quarter = 0.25f, got = 0.0f;
