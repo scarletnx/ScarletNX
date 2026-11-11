@@ -328,6 +328,44 @@ int main(void) {
     for (k = 0; k < 2 * STATS_FRAMES; ++k) stats_frame(at += 16 * MS, &g_test.gpu);
     draw(at);
     assert(bars(&newest) == STATS_FRAMES - 1);
+    /* the box laid out once: other values, and another frame, take the same quads at the same places, the lines'
+       letters and the bars' heights all that changes (ui_cells) */
+    {
+        static SnxUiQuad before[4096];
+        int n = g_test.l.n, moved = 0, i;
+        char line[32], *end;
+        memcpy(before, g_test.quads, (size_t)n * sizeof *before);
+        stats_frame(at += 40 * MS, &g_test.gpu); /* before the measure: one it takes would go over it */
+        stats_measured(&(SnxStatsMeasure){.cpu = 100, .memory = 65535ull << 20, .gpu = 100, .gpu_ns = 99990000});
+        draw(at);
+        assert(g_test.l.n == n && !strcmp(text(1), "cpu 100%") && !strcmp(gpu_text(), "gpu 100%  100.0 ms"));
+        assert(strstr(text(0), "40.0 ms"));
+        for (i = 0; i < n; ++i) {
+            const SnxUiQuad *q = &g_test.quads[i], *p = &before[i];
+            /* a fill's top and height can change: the bars' */
+            moved += q->x != p->x || q->w != p->w || (q->uw != 2 && (q->y != p->y || q->h != p->h));
+        }
+        assert(!moved);
+        /* the cells' letters without printf */
+        *ui_put_u(line, 0) = 0;
+        assert(!strcmp(line, "0"));
+        *ui_put_u(line, 18446744073709551615ull) = 0;
+        assert(!strcmp(line, "18446744073709551615"));
+        *ui_put_tenths(ui_put(line, "at "), 7) = 0;
+        assert(!strcmp(line, "at 0.7"));
+        end = ui_put_tenths(line, 12345);
+        *end = 0;
+        assert(!strcmp(line, "1234.5") && end == line + 6);
+        /* longer than its cells: cut at their end; a shorter one blanks the rest, which draw nothing */
+        {
+            SnxUiQuad cells[4];
+            SnxUiList kept = {cells, 0, 4};
+            assert(ui_cells(&kept, 0, 0, 1, 5, TEXT_RGBA) == -1 && ui_cells(&kept, 0, 0, 1, 4, TEXT_RGBA) == 0);
+            assert(ui_cells_set(cells, 4, "abcdef") == 4 && cells[3].u == SNX_CONTROLS_FONT_X + 'd' % 16 * 8);
+            assert(ui_cells_set(cells, 4, "abcdef") == 0 && ui_cells_set(cells, 4, "a c") == 2);
+            assert(cells[1].uw == 0 && cells[3].uw == 0 && cells[2].uw == 8 && cells[3].x == 24 && cells[3].w == 8);
+        }
+    }
     /* the GPU's lines from what the renderer reads at each frame, measured once a second from the first frame: 12 ms
        busy in each 20 ms frame is 60% and 12.0 ms; the video memory as it reads it */
     g_settings.stats = 0;
