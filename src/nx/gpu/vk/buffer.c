@@ -1499,17 +1499,13 @@ static int out_absorbable(const GfxOut* h, const GfxOut* n) {
    again, and ended the rendering pass to copy them (133 times a frame). Merged once, the reads after it bind h.
    h compares with its original bytes when it lands (a logged one lands only its writers' bytes, and those of the
    dropped results would be lost), and the dropped results' bytes are its own then: their guest bytes held h's
-   original ones, as both were still copyable. The result h, or NULL when no result can hold them */
-static GfxOut* out_absorb(u64 gva, u64 len) {
+   original ones, as both were still copyable. h is the newest result that holds the binding's range, which the
+   caller's search found: searching again compared every result near the binding once more, and most bindings that
+   meet several results have none that holds them all. The result h, or NULL when it can't take the others' bytes */
+static GfxOut* out_absorb(GfxOut* h) {
     RangePages q;
     OutList l;
-    GfxOut* h = NULL;
-    range_pages(gva, len, &q);
-    out_near(&l, gva, len, &q);
-    for (u32 i = l.n; i-- && !h;) /* the newest that holds the range */
-        if (out_holds(l.v[i], gva, len)) h = l.v[i];
-    out_list_free(&l);
-    if (!h || h->keep || !h->org || h->no_input || h->initial || h->frame_id != vk_frame_id()) return NULL;
+    if (h->keep || !h->org || h->no_input || h->initial || h->frame_id != vk_frame_id()) return NULL;
     /* every later result with bytes of h goes into it, or none does: h, the newest then, must hold all of theirs */
     u64 local[16], *rmap = NULL;
     u32 n = 0;
@@ -1634,11 +1630,14 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
             count++;
             before |= o->frame_id != vk_frame_id();
         }
+    GfxOut* holder = NULL; /* the newest result of this search that holds the whole range */
+    for (u32 i = l.n; count > 1 && i-- && !holder;)
+        if (out_holds(l.v[i], gva, len)) holder = l.v[i];
     out_list_free(&l);
     if (rmap && rmap != local) free(rmap);
     if (!count) return 0;
-    if (count > 1) { /* the later ones inside an earlier one: into its buffer once, for this binding and the next */
-        GfxOut* h = out_absorb(gva, len);
+    if (holder) { /* the later ones inside an earlier one: into its buffer once, for this binding and the next */
+        GfxOut* h = out_absorb(holder);
         if (h) {
             match = h;
             count = 1;
