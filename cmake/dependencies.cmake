@@ -32,6 +32,9 @@ if(NOT cpm_have STREQUAL CPM_HASH)
     file(RENAME "${cpm_file}.part" "${cpm_file}")
 endif()
 include("${cpm_file}")
+# before the first package: a folder a failed download left in the cache is not taken for its package
+include("${PROJECT_SOURCE_DIR}/cmake/cpm_cache.cmake")
+snx_cpm_cache_sweep()
 
 # Packages whose headers a system may also have (Vulkan) are added without SYSTEM. The compiler searches every
 # -I folder before any -isystem one, so as -isystem they lost to an -I/usr/local/include in CFLAGS, usual on FreeBSD,
