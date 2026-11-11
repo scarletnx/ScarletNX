@@ -857,6 +857,8 @@ typedef struct Surf {
     VkImageView att_linear; /* same storage without sRGB conversion */
     VkImageView present;    /* level 0's layer 0 as its bytes (its sRGB twin's UNORM), sampled: the window's present
                                (present_quad.c), made at its first */
+    u32 present_serial;     /* that view's number among all made, which a set holding it is known by: unlike its
+                               handle, never another view's */
     VkImageLayout layout;   /* the whole image is kept in one layout */
     VkPipelineStageFlags2 stage;
     VkAccessFlags2 access;

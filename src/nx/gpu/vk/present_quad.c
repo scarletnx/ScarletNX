@@ -18,6 +18,8 @@ static struct {
        set from the frame's pool cost more than the rest of the present */
     VkDescriptorPool pool;
     VkDescriptorSet frames[VK_FRAMES];
+    u32 holds[VK_FRAMES]; /* the serial of the view each holds (Surf.present_serial), 0 for none */
+    u32 serials;          /* the views made */
 } g_present_quad;
 
 static int initialize(void) {
@@ -135,8 +137,10 @@ int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw
     set = raw ? g_present_quad.frames[vk_frame_id() % VK_FRAMES] : vk_desc_alloc(g_present_quad.descriptors);
     if (!set) return 0;
     if (raw) { /* kept on the surface for the next present of it */
-        if (!source->present)
+        if (!source->present) {
             source->present = view(source->img, vk_srgb_as(source->f.vk, 0), VK_IMAGE_USAGE_SAMPLED_BIT);
+            source->present_serial = ++g_present_quad.serials ? g_present_quad.serials : ++g_present_quad.serials;
+        }
         from = source->present;
     } else
         from = view(source->img, source->f.vk, VK_IMAGE_USAGE_SAMPLED_BIT);
@@ -147,8 +151,14 @@ int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw
     VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0,
                                    .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                    .pImageInfo = &image};
-    vkUpdateDescriptorSets(g_vk.dev, 1, &write, 0, NULL);
-    if (!raw) vk_defer_image(VK_NULL_HANDLE, NULL, from, VK_NULL_HANDLE);
+    if (raw) { /* the frame's set: written only when it holds another view, or the other sampler */
+        u32* holds = &g_present_quad.holds[vk_frame_id() % VK_FRAMES], tag = source->present_serial << 1 | !!linear;
+        if (*holds != tag) vkUpdateDescriptorSets(g_vk.dev, 1, &write, 0, NULL);
+        *holds = tag;
+    } else {
+        vkUpdateDescriptorSets(g_vk.dev, 1, &write, 0, NULL);
+        vk_defer_image(VK_NULL_HANDLE, NULL, from, VK_NULL_HANDLE);
+    }
     *out = (SnxPresentSource){.surf = source, .set = set};
     return 1;
 }
