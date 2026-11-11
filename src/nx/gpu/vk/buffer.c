@@ -1269,6 +1269,11 @@ static void copyable_span(void* user, u64 at, u64 from, u64 n) {
     Copyable* c = user;
     const u8* host = c->ok ? gmem_host(c->gva + at, n) : NULL;
     if (!host) {
+        /* a page the result doesn't map (vmap ~0: out_spans pairs it only with the range's unmapped page) holds no guest
+           bytes for the guest to write, and its landing writes nothing there either. One game's storage results end 336
+           bytes into an unmapped page: answered "changed", each binding of them landed, 15 waits for the GPU a frame */
+        u64 j = (((c->o->addr + from) & ~4095ull) - (c->o->addr & ~4095ull)) >> 12;
+        if (c->ok && j < c->o->npages && c->o->vmap[j] == ~0ull) return;
         c->ok = 0;
         return;
     }
