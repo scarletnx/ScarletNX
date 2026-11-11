@@ -2,13 +2,14 @@
    Copyright 2026 the ScarletNX contributors */
 /* Which BC2, BC3 and BC7 textures a GPU that samples ETC2 and ASTC but not BCn holds as ASTC 4x4 (texture.c makes it
    between frames, astc_encode.glsl encodes it): the ones whose alpha stays one value within every block. Their colours
-   come out of an ASTC 4x4 block 5 to 16 dB nearer than out of ETC2's, and their alpha as it was (0 and 255 exact,
-   another value the nearest of 192 levels, one off at most); a block whose alpha moves is another matter: BC2's, BC3's and ETC2's alpha is a block of its own, 8 or 16 levels a texel, where an ASTC
-   4x4 block of two planes has four levels a plane, 10 to 17 dB behind ETC2's. So those stay ETC2 RGBA8, as they load.
+   come out of an ASTC 4x4 block 5 to 16 dB nearer than out of ETC2's, and their alpha as it was (BC2's and BC3's
+   exact; BC7's exact at 0 and 255, else the nearest of 192 levels, one off at most). A block whose alpha moves is
+   another matter: BC2's, BC3's and ETC2's alpha is a block of its own, 8 or 16 levels a texel, where this encoder's
+   block of two planes has four levels a plane, 7 to 17 dB behind ETC2's. So those stay ETC2 RGBA8, as they load.
 
    The answer comes from the blocks' own bytes, with no decoding: it may call a block whose alpha is one value moving
    (its indices pick one value out of two ends that differ), which only leaves a texture as ETC2; never the other way
-   round, which tests/bcn_astc_alpha.c holds against the reference decoder on every kind of block */
+   round, which bcn_astc_glsl holds against the reference decoder on every kind of block */
 #ifndef SNX_TEXTURE_BCN_ASTC_H
 #define SNX_TEXTURE_BCN_ASTC_H
 
