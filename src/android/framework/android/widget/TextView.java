@@ -309,6 +309,13 @@ public class TextView extends View {
     private void setRawTextSize(float px) { if (px != paint.getTextSize()) { paint.setTextSize(px); textChanged(); } }
     public float getTextSize() { return paint.getTextSize(); }
     public TextPaint getPaint() { return paint; }
+    /** the text paint's flags (Paint.UNDERLINE_TEXT_FLAG, STRIKE_THRU_TEXT_FLAG and the others) */
+    public int getPaintFlags() { return paint.getFlags(); }
+    public void setPaintFlags(int flags) {
+        if (paint.getFlags() == flags) return;
+        paint.setFlags(flags);
+        textChanged();
+    }
     public final Layout getLayout() { return layout; }
     public void setTypeface(Typeface tf) { if (paint.getTypeface() != tf) { paint.setTypeface(tf); textChanged(); } }
     public void setTypeface(Typeface tf, int style) {

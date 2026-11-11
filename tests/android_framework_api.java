@@ -69,6 +69,12 @@ final class AndroidFrameworkApi {
             /* .NET MAUI's bindings, by JNI */
             links("android.widget.TextView", "setJustificationMode", void.class, int.class);
             links("android.widget.TextView", "getJustificationMode", int.class);
+            links("android.widget.TextView", "getPaintFlags", int.class);
+            links("android.widget.TextView", "setPaintFlags", void.class, int.class);
+            links("android.graphics.drawable.PaintDrawable", "setCornerRadius", void.class, float.class);
+            links("android.graphics.drawable.ShapeDrawable", "setShaderFactory", void.class,
+                  type("android.graphics.drawable.ShapeDrawable$ShaderFactory"));
+            links("android.view.OrientationEventListener", "canDetectOrientation", boolean.class);
             links("android.content.Context", "getAttributionSource", type("android.content.AttributionSource"));
             links("android.content.ContextWrapper", "getAttributionSource", type("android.content.AttributionSource"));
             overridable("android.widget.ArrayAdapter", "addAll", Object[].class);
