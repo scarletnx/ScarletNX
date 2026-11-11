@@ -1419,6 +1419,13 @@ snx_service_swipc(snx-test-am-service hle/services/am.swipc hle/services/vi.swip
 target_link_libraries(snx-test-am-service PRIVATE snx_test_common) # snx_nacp_aoc_base
 add_test(NAME am_service COMMAND snx-test-am-service)
 
+# gsv.c's display session: what a game is told of the display's HDR (GetHdrStatus, GetHdrPaperWhite, the HDR status
+# event), with the renderer stood in for
+add_executable(snx-test-gsv-hdr gsv_hdr.c)
+snx_test_target(snx-test-gsv-hdr 23)
+snx_service_swipc(snx-test-gsv-hdr hle/services/native_video.swipc hle/services/gsv.swipc hle/services/nvdrv.swipc)
+add_test(NAME gsv_hdr COMMAND snx-test-gsv-hdr)
+
 # am.c with a control.nacp: the desired language against its supported languages, its version and save sizes
 add_executable(snx-test-am-nacp am_nacp.c am_service_stubs.c)
 snx_test_target(snx-test-am-nacp 23)

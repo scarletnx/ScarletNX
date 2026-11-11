@@ -194,6 +194,9 @@ typedef struct Renderer {
     /* What the next present_buffer's frame holds, and its window's HDR metadata (gpu/hdr_output.h): on the presenting
        thread, before that present. A present without it is an SDR frame's. NULL: every frame is shown as SDR */
     void (*present_hdr)(const SnxHdrFrame* frame);
+    /* Whether the display shows a game's HDR frames as HDR: 1 with the peak and the paper white the game is to be
+       told, in nits, 0 with neither. Any thread, unlocked. NULL: never */
+    int (*hdr_display)(u32* peak, u32* paper_white);
     /* the display's clock, before the game is given a buffer for its next frame at its own pace: waits until the
        game's frames presented have been displayed (all but one where the display doesn't hold them until their
        refresh, and one more when deadline_ns has passed already), or until deadline_ns (plat_ns), and sets

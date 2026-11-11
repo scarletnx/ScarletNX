@@ -248,6 +248,15 @@ setting HDR paper white
     step 10
     help With Game HDR output: the light of white a game is told to draw its SDR parts at, which the menu and the
     help on-screen controls are drawn at too, in nits. 0 = BT.2408's reference white of 203 nits
+setting HDR peak
+    key hdr_peak
+    label Peak light (nits)
+    int 400 4000
+    default 1000
+    startup
+    step 100
+    help With Game HDR output: the brightest light a game is told the display shows, in nits, which it tone maps its
+    help frames for: the display's own peak, 1000 for most TVs
 setting Vulkan Video decode
     key vulkan_video
     label Vulkan Video decode (experimental)
