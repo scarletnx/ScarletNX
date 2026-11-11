@@ -54,12 +54,15 @@ static void ui_blend(UiCheck* c, int n) {
             c->sure[y][x] = 1;
         }
     for (i = 0; i < n; ++i) {
-        const SnxUiQuad* q = &c->quads[i];
-        int x0 = (int)floorf(q->x) - 1, y0 = (int)floorf(q->y) - 1, x1 = (int)ceilf(q->x + q->w) + 1,
-            y1 = (int)ceilf(q->y + q->h) + 1;
+        SnxUiQuad at = ui_drawn(&c->quads[i]), *q = &at; /* a bar of the ring where it is, from its byte */
+        int x0, y0, x1, y1;
         float color[4] = {(float)(q->rgba & 0xFF) / 255.0f, (float)(q->rgba >> 8 & 0xFF) / 255.0f,
                           (float)(q->rgba >> 16 & 0xFF) / 255.0f, (float)(q->rgba >> 24) / 255.0f};
-        if (!q->uw) continue; /* a blank cell */
+        if (!q->uw) continue; /* a blank cell, or no bar */
+        x0 = (int)floorf(q->x) - 1;
+        y0 = (int)floorf(q->y) - 1;
+        x1 = (int)ceilf(q->x + q->w) + 1;
+        y1 = (int)ceilf(q->y + q->h) + 1;
         for (y = y0 < 0 ? 0 : y0; y < y1 && y < UI_H; ++y)
             for (x = x0 < 0 ? 0 : x0; x < x1 && x < UI_W; ++x) {
                 float cx = (float)x + 0.5f, cy = (float)y + 0.5f, tu, tv, tex[4], src[4];
@@ -82,9 +85,9 @@ static void ui_blend(UiCheck* c, int n) {
             }
     }
 }
-/* a frame of the layer on the image, read back, against the CPU's blend: the pixels that differ from the frame
-   before's into *changed */
-static int ui_frame(UiCheck* c, const int safe[4], const char* what, int* changed) {
+/* a frame of the layer on the image, read back, against the CPU's blend, said when loud: the channels that differ,
+   and the pixels that differ from the frame before's into *changed */
+static int ui_frame_once(UiCheck* c, const int safe[4], const char* what, int* changed, int loud) {
     VkBuffer rb;
     u8* px = vk_readback_buffer((u64)UI_W * UI_H * 4, &rb);
     VkClearColorValue back = {{ui_back[0] / 255.0f, ui_back[1] / 255.0f, ui_back[2] / 255.0f, 1}};
@@ -121,13 +124,20 @@ static int ui_frame(UiCheck* c, const int safe[4], const char* what, int* change
             if (!c->sure[y][x]) continue;
             for (k = 0; k < 4; ++k) {
                 int want = (int)lroundf(c->want[y][x][k] * 255.0f);
-                if (abs(want - p[k]) > 1 && bad++ < 4)
+                if (abs(want - p[k]) > 1 && bad++ < 4 && loud)
                     fprintf(stderr, "vulkan_ui: %s: pixel %d,%d channel %d is %d, not %d\n", what, x, y, k, p[k], want);
             }
         }
     memcpy(c->last, px, sizeof c->last);
-    if (bad) fprintf(stderr, "vulkan_ui: %s: %d channels differ (%d quads)\n", what, bad, n);
+    if (bad && loud) fprintf(stderr, "vulkan_ui: %s: %d channels differ (%d quads)\n", what, bad, n);
     return bad;
+}
+/* ui_frame_once, and once more where it differs: the frame rate's half second can end between the GPU's frame and
+   the CPU's, whose first line then differs. A fault differs again; *changed is the first one's */
+static int ui_frame(UiCheck* c, const int safe[4], const char* what, int* changed) {
+    int again;
+    if (!ui_frame_once(c, safe, what, changed, 0)) return 0;
+    return ui_frame_once(c, safe, what, &again, 1);
 }
 
 static int check_ui(void) {
@@ -191,6 +201,24 @@ static int check_ui(void) {
     CHECK(!ui_frame(c, safe, "the box at the bottom right", &changed));
     stats_corner_set(corner, "tl");
     CHECK(!ui_frame(c, safe, "the box at the top left again", &changed));
+    /* the graph's ring: bars for 30 frames, slow ones among them; one more, which writes one bar and scrolls the
+       others; and past its slots, round it more than once */
+    {
+        SnxStatsGpu gpu = {0};
+        u64 at = 1000000000ull;
+        int k;
+        for (k = 0; k < 30; ++k) stats_frame(at += (k % 4 ? 16 : 40) * 1000000ull, &gpu);
+        CHECK(!ui_frame(c, safe, "30 bars", &changed));
+        stats_frame(at += 25 * 1000000ull, &gpu);
+        CHECK(!ui_frame(c, safe, "a bar more", &changed));
+        CHECK(changed > 0);
+        for (k = 0; k < 2 * STATS_FRAMES + 7; ++k) stats_frame(at += (u64)(5 + k % 45) * 1000000ull, &gpu);
+        CHECK(!ui_frame(c, safe, "the ring round twice", &changed));
+        for (k = 0; k < 3; ++k) {
+            stats_frame(at += (u64)(10 + 15 * k) * 1000000ull, &gpu);
+            CHECK(!ui_frame(c, safe, "a bar a frame", &changed));
+        }
+    }
     vk_finish();
     vk_ui_swapchain_gone();
     vmaDestroyImage(g_vk.vma, c->img, c->mem);

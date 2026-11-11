@@ -38,6 +38,10 @@ static VmaAllocation g_inst_mem;
 #define UI_GLYPHS_SIZE ((256 + 2 * GUI_ICON_COUNT) * 16)
 static VkBuffer g_glyphs;
 static VmaAllocation g_glyphs_mem;
+/* ui_ring's bytes on the device (ui.vert's Ring), and what it holds: a frame sends the bytes that changed, its bar's */
+static VkBuffer g_ring;
+static VmaAllocation g_ring_mem;
+static u8 g_ring_sent[SNX_UI_RING_MAX];
 static VkDescriptorSetLayout g_dsl;
 static VkPipelineLayout g_layout;
 static VkPipeline g_pipe;
@@ -58,24 +62,28 @@ static VkImage g_sc_img[VK_SC_MAX];
 static VkImageView g_sc_view[VK_SC_MAX];
 
 static int layout_make(void) {
-    VkDescriptorSetLayoutBinding b[2] = {{.binding = 0,
+    VkDescriptorSetLayoutBinding b[3] = {{.binding = 0,
                                           .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                           .descriptorCount = 1,
                                           .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
                                          {.binding = 1,
                                           .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                           .descriptorCount = 1,
-                                          .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}};
+                                          .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+                                         {.binding = 2,
+                                          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                          .descriptorCount = 1,
+                                          .stageFlags = VK_SHADER_STAGE_VERTEX_BIT}};
     VkDescriptorSetLayoutCreateInfo dci = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = b};
-    VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16};
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 3, .pBindings = b};
+    VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 24};
     VkPipelineLayoutCreateInfo lci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                       .setLayoutCount = 1,
                                       .pSetLayouts = &g_dsl,
                                       .pushConstantRangeCount = 1,
                                       .pPushConstantRanges = &pc};
     VkDescriptorPoolSize size[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
-                                    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}};
+                                    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6}};
     VkDescriptorPoolCreateInfo pci = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 3, .poolSizeCount = 2, .pPoolSizes = size};
     VkDescriptorSetLayout layouts[3];
@@ -339,10 +347,11 @@ void vk_ui_swapchain_gone(void) {
     }
 }
 
-/* the glyphs' rows to the device, once: gui_vga_font's, then gui_icon_font's, each set's binding 1 */
+/* the glyphs' rows to the device, once: gui_vga_font's, then gui_icon_font's, each set's binding 1; and the ring's
+   bytes, all 0 (no bar), binding 2 */
 static int glyphs_upload(VkCommandBuffer cb) {
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                              .size = UI_GLYPHS_SIZE,
+                              .size = UI_GLYPHS_SIZE + SNX_UI_RING_MAX,
                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
@@ -350,42 +359,100 @@ static int glyphs_upload(VkCommandBuffer cb) {
     VkBufferMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                                 .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                                 .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                                .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                                 .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
                                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                 .size = VK_WHOLE_SIZE};
     VkDependencyInfo d = {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &b};
-    VkBufferCopy copy = {.size = UI_GLYPHS_SIZE};
+    VkBufferCopy copy[2] = {{.size = UI_GLYPHS_SIZE}, {.dstOffset = 0, .size = SNX_UI_RING_MAX}};
     VkBuffer buf;
     u64 off;
     u8* to;
     int i;
     if (g_glyphs) return 1;
-    to = vk_stage(UI_GLYPHS_SIZE, 16, &buf, &off);
+    to = vk_stage(UI_GLYPHS_SIZE + SNX_UI_RING_MAX, 16, &buf, &off);
     if (!to) return 0;
+    bci.size = UI_GLYPHS_SIZE;
     if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &ai, &g_glyphs, &g_glyphs_mem, &info))) {
         g_glyphs = VK_NULL_HANDLE;
         return 0;
     }
     vk_mem_track(g_glyphs_mem);
+    bci.size = SNX_UI_RING_MAX;
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &ai, &g_ring, &g_ring_mem, &info))) {
+        vk_mem_untrack(g_glyphs_mem);
+        vmaDestroyBuffer(g_vk.vma, g_glyphs, g_glyphs_mem);
+        g_glyphs = g_ring = VK_NULL_HANDLE;
+        return 0;
+    }
+    vk_mem_track(g_ring_mem);
     memcpy(to, gui_vga_font, 256 * 16); /* bytes: the device's words read them little-endian, as the shader takes */
     memcpy(to + 256 * 16, gui_icon_font, 2 * GUI_ICON_COUNT * 16);
-    copy.srcOffset = off;
-    rec_CmdCopyBuffer(cb, buf, g_glyphs, 1, &copy);
+    memset(to + UI_GLYPHS_SIZE, 0, SNX_UI_RING_MAX);
+    memset(g_ring_sent, 0, sizeof g_ring_sent);
+    copy[0].srcOffset = off;
+    copy[1].srcOffset = off + UI_GLYPHS_SIZE;
+    rec_CmdCopyBuffer(cb, buf, g_glyphs, 1, &copy[0]);
+    rec_CmdCopyBuffer(cb, buf, g_ring, 1, &copy[1]);
     b.buffer = g_glyphs;
     rec_CmdPipelineBarrier2(cb, &d);
+    b.buffer = g_ring;
+    rec_CmdPipelineBarrier2(cb, &d);
     for (i = 0; i < 3; ++i) {
-        VkDescriptorBufferInfo bi = {g_glyphs, 0, VK_WHOLE_SIZE};
-        VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                   .dstSet = g_sets[i],
-                                   .dstBinding = 1,
-                                   .descriptorCount = 1,
-                                   .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                   .pBufferInfo = &bi};
-        vkUpdateDescriptorSets(g_vk.dev, 1, &wr, 0, NULL);
+        VkDescriptorBufferInfo bi[2] = {{g_glyphs, 0, VK_WHOLE_SIZE}, {g_ring, 0, VK_WHOLE_SIZE}};
+        VkWriteDescriptorSet wr[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = g_sets[i],
+                                       .dstBinding = 1,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                       .pBufferInfo = &bi[0]},
+                                      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = g_sets[i],
+                                       .dstBinding = 2,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                       .pBufferInfo = &bi[1]}};
+        vkUpdateDescriptorSets(g_vk.dev, 2, wr, 0, NULL);
     }
+    return 1;
+}
+/* the ring's bytes that differ from what the device holds, as one copy from the first to the last of them: a frame's
+   one bar, or all of them after the box is laid out. 0 when they could not be sent */
+static int ring_send(VkCommandBuffer cb, const SnxUiRing* r) {
+    VkBufferMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .size = VK_WHOLE_SIZE};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &b};
+    VkBufferCopy copy;
+    VkBuffer buf;
+    u64 off;
+    u8* to;
+    int first = 0, end = r->n;
+    while (first < end && r->height[first] == g_ring_sent[first]) ++first;
+    while (end > first && r->height[end - 1] == g_ring_sent[end - 1]) --end;
+    if (first == end) return 1;
+    to = vk_stage((u64)(end - first), 4, &buf, &off);
+    if (!to) return 0;
+    memcpy(to, r->height + first, (size_t)(end - first));
+    memcpy(g_ring_sent + first, r->height + first, (size_t)(end - first));
+    copy = (VkBufferCopy){.srcOffset = off, .dstOffset = (u64)first, .size = (u64)(end - first)};
+    /* the last frame's draws read it before the copy writes, and the copy writes before this frame's read */
+    b.buffer = g_ring;
+    rec_CmdPipelineBarrier2(cb, &d);
+    rec_CmdCopyBuffer(cb, buf, g_ring, 1, &copy);
+    b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+    rec_CmdPipelineBarrier2(cb, &d);
     return 1;
 }
 
@@ -486,10 +553,12 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
     SnxUiList list = {g_quads, 0, MAX_QUADS};
     int sw = (int)g_vk.sc_extent.width, sh = (int)g_vk.sc_extent.height, n, i, run;
     VkImageView view;
+    /* ui.vert's Picture: the ring's head and its slots from bit 16, and the bars' slow colour and its height */
     struct {
         float w, h;
-        u32 srgb, pad;
-    } pc = {(float)sw, (float)sh, (u32)g_vk.sc_srgb, 0};
+        u32 srgb, ring, slow, slow_from;
+    } pc = {(float)sw, (float)sh, (u32)g_vk.sc_srgb, 0, 0, 0};
+    SnxUiRing ring;
     if (!layout_make()) return;
     ui_lock();
     atlas_upload(cb);
@@ -511,10 +580,14 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
         hud_draw(&list, safe, scale);
     }
     overlay_draw(&list, sw, sh, plat_ns());
+    ring = *ui_ring();
     ui_unlock();
     n = list.n;
+    pc.ring = (u32)ring.head | (u32)ring.n << 16;
+    pc.slow = ring.slow;
+    pc.slow_from = ring.slow_from;
     if (!n || !g_atlas || !pipeline_make(g_vk.sc_format) || !(view = sc_view(sc)) || !glyphs_upload(cb)) return;
-    if (!instances_send(cb, n)) return;
+    if (!instances_send(cb, n) || !ring_send(cb, &ring)) return;
     vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,

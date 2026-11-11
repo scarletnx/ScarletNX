@@ -198,6 +198,32 @@ char* ui_put_tenths(char* at, u64 tenths) {
     *at++ = (char)('0' + tenths % 10);
     return at;
 }
+static SnxUiRing g_ring;
+void ui_ring_set(const u8* height, int n, int head, int slow_from, u32 slow) {
+    n = n < 0 ? 0 : n > SNX_UI_RING_MAX ? SNX_UI_RING_MAX : n;
+    memcpy(g_ring.height, height, (size_t)n);
+    g_ring.n = (u16)n;
+    g_ring.head = (u16)(n ? head % n : 0);
+    g_ring.slow_from = (u8)slow_from;
+    g_ring.slow = slow;
+}
+const SnxUiRing* ui_ring(void) { return &g_ring; }
+SnxUiQuad ui_drawn(const SnxUiQuad* q) {
+    SnxUiQuad d = *q;
+    unsigned age, height;
+    if (q->ink != UI_RING) return d;
+    height = g_ring.n && q->glyph < g_ring.n ? g_ring.height[q->glyph] : 0;
+    if (!height) {
+        d.uw = d.vh = 0;
+        return d;
+    }
+    age = ((unsigned)g_ring.head + g_ring.n - q->glyph) % g_ring.n;
+    d.x = q->x - (float)(age + 1) * q->w;
+    d.h = q->h * (float)height / 255.0f;
+    d.y = q->y + q->h - d.h;
+    if (height > g_ring.slow_from) d.rgba = g_ring.slow;
+    return d;
+}
 void ui_append(SnxUiList* l, const SnxUiList* from) {
     int n = from->n < l->max - l->n ? from->n : l->max - l->n;
     if (n <= 0) return;

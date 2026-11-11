@@ -40,8 +40,14 @@ static struct {
 
 /* The box as stats_draw lays it out, kept from frame to frame: laid out again only when its place or the lines under
    the graph change. Its lines that change are fields of cells (ui_cells), whose letters a frame writes where a value
-   changed, and the graph is STATS_FRAMES - 1 bars in fixed places, whose heights a frame writes: the same quads at
-   the same places each frame, which the renderer finds unchanged and does not send again (gpu/vk/ui.c) */
+   changed. The graph's STATS_FRAMES - 1 bars are the ring (ui.h's ui_ring): a frame writes its time as a byte, its
+   bar's height in 255ths of the graph's (a frame past STATS_TOP_MS as tall as it), into the next slot, and moves the
+   ring's head, and the GPU scrolls the others left. The bars' quads never change: a frame changes a few letters and
+   a byte, which is all the renderer sends to the device (gpu/vk/ui.c) */
+#define STATS_BARS      (STATS_FRAMES - 1)
+_Static_assert(STATS_BARS <= SNX_UI_RING_MAX, "the bars fit the ring, a slot each, which is a quad's glyph byte");
+/* the height past which a bar draws in the failure colour: a frame past 30 FPS's, STATS_30_MS of STATS_TOP_MS */
+#define STATS_SLOW_FROM ((int)(255.0f * STATS_30_MS / STATS_TOP_MS + 0.5f))
 #define STATS_QUADS     1536 /* its quads at most: the lines, the graph and three lines under it of 255 letters */
 #define STATS_CELLS     (STATS_COLS - 5) /* a line's cells: after the icon's three, to a letter before the right */
 #define STATS_CPU_CELLS (STATS_GPU_AT - 4)
@@ -58,7 +64,10 @@ static struct {
     SnxUiQuad q[STATS_QUADS];
     int n;
     int cells[STATS_LINES - 1], gpu; /* the first cell of each line that changes, and of the GPU's text */
-    int bars;                        /* the first of the bars, the newest's */
+    int bars;                        /* the first of the bars, slot 0's */
+    u8 height[STATS_BARS];           /* the ring's bytes (ui.h) */
+    unsigned head;                   /* the newest bar's slot */
+    int full;                        /* every bar to be written: laid out since */
     float gx, gw, gy, gh, bw;        /* the graph */
     int fps10, ms10;                 /* what the cells show: the frame rate and the last frame's time in tenths */
     u32 measures;                    /* g_stats.measures */
@@ -285,7 +294,12 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
         ui_text(&l, g_box.gx + g_box.gw + cw, top - ch / 2, scale, guides[j].label, STATS_GUIDE);
     }
     g_box.bars = l.n;
-    for (j = 0; j + 1 < STATS_FRAMES; ++j) l.q[l.n++] = (SnxUiQuad){.sample = UI_SHARP}; /* none yet */
+    for (j = 0; j < STATS_BARS; ++j) { /* each in its slot, over the graph from its right edge: none yet */
+        ui_fill(&l, g_box.gx + g_box.gw, g_box.gy, g_box.bw, g_box.gh, STATS_TEXT);
+        l.q[l.n - 1].ink = UI_RING;
+        l.q[l.n - 1].glyph = (u8)j;
+    }
+    memset(g_box.height, 0, sizeof g_box.height);
     /* the lines under it, a quarter line down, each after its icon as the lines above */
     for (j = 0; j < (unsigned)notes.n; ++j) {
         float y = g_box.gy + g_box.gh + ch / 4 + (float)j * ch;
@@ -298,7 +312,12 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
     /* nothing written yet: each value differs from these */
     g_box.fps10 = g_box.ms10 = -2;
     g_box.measures = g_stats.measures - 1;
-    g_box.frames = g_stats.frames - 1;
+    g_box.full = 1;
+    g_box.head = 0;
+}
+/* the bar of a frame of t ms into its slot of the ring: its height in 255ths of the graph's, rounded */
+static void bar_set(unsigned slot, float t) {
+    g_box.height[slot] = (u8)(255.0f * (t < STATS_TOP_MS ? t : STATS_TOP_MS) / STATS_TOP_MS + 0.5f);
 }
 void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
     int scale = stats_scale(menu_scale);
@@ -324,20 +343,16 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
     key.notes = g_stats.notes;
     memcpy(key.shortcut, g_settings.render_doc_capture_shortcut, sizeof key.shortcut);
     if (!g_box.laid || memcmp(&key, &g_box.key, sizeof key)) box_layout(safe, scale, &key);
-    if (g_box.frames != g_stats.frames) { /* a frame kept: the last one's time and the bars */
+    if (g_box.full || g_box.frames != g_stats.frames) { /* frames kept: the last one's time, and the new bars */
         int ms10 = g_stats.count >= 2 ? (int)(frame_ms(0) * 10 + 0.5f) : -1;
-        for (j = 0; j + 1 < STATS_FRAMES; ++j) {
-            SnxUiQuad* q = &g_box.q[g_box.bars + j];
-            float x = g_box.gx + g_box.gw - (float)(j + 1) * g_box.bw, t, bh;
-            if (j + 1 >= g_stats.count) {
-                ui_fill_set(q, x, g_box.gy + g_box.gh, g_box.bw, 0, STATS_TEXT);
-                continue;
-            }
-            t = frame_ms(j);
-            bh = g_box.gh * (t < STATS_TOP_MS ? t : STATS_TOP_MS) / STATS_TOP_MS;
-            ui_fill_set(q, x, g_box.gy + g_box.gh - bh, g_box.bw, bh, t > STATS_30_MS ? STATS_SLOW : STATS_TEXT);
-        }
+        /* the times kept, frame j back from the newest in slot (frames - 2 - j) mod STATS_BARS: the frames since the
+           last draw, or all after a layout */
+        unsigned kept = g_stats.count ? g_stats.count - 1 : 0, fresh = kept;
+        if (!g_box.full && g_stats.frames - g_box.frames < kept) fresh = (unsigned)(g_stats.frames - g_box.frames);
+        for (j = 0; j < fresh; ++j) bar_set((unsigned)((g_stats.frames - 2 - j) % STATS_BARS), frame_ms(j));
+        if (kept) g_box.head = (unsigned)((g_stats.frames - 2) % STATS_BARS);
         g_box.frames = g_stats.frames;
+        g_box.full = 0;
         if (ms10 != g_box.ms10) {
             g_box.ms10 = ms10;
             g_box.fps10 = -2; /* the first line written again below: no frame rate is -2 */
@@ -368,4 +383,5 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
         g_box.measures = g_stats.measures;
     }
     ui_append(l, &(SnxUiList){g_box.q, g_box.n, STATS_QUADS});
+    ui_ring_set(g_box.height, STATS_BARS, (int)g_box.head, STATS_SLOW_FROM, STATS_SLOW);
 }
