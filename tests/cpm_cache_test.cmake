@@ -4,10 +4,12 @@
 #   cmake -DSRC=<source dir> -DCPM=<CPM.cmake> -DWORK=<scratch dir> [-DGENERATOR=<generator> -DMAKE=<its program>]
 #         -P tests/cpm_cache_test.cmake
 #
-# The empty folder a failed download leaves in CPM_SOURCE_CACHE (cmake/cpm_cache.cmake): a configure whose download
-# fails leaves one, for a package that is one file and for an archive, in both of CPM's cache layouts; the next
-# configure removes it, says which, and downloads the package; a folder with its package stays as it is. And
-# cmake/dependencies.cmake sweeps the cache before its first package. Offline: the packages are files of this folder.
+# What a failed download leaves in CPM_SOURCE_CACHE (cmake/cpm_cache.cmake). The empty folder: a configure whose
+# download fails leaves one, for a package that is one file and for an archive, in both of CPM's cache layouts; the next
+# configure removes it, says which, and downloads the package; a folder with its package stays as it is. The file cut
+# short: a package of one file (snx_cpm_file) is checked on every configure, and one that is not the pinned file stops
+# it, with both hashes and the folder to delete. And cmake/dependencies.cmake sweeps the cache before its first package
+# and adds every package of one file that way. Offline: the packages are files of this folder.
 foreach(var SRC CPM WORK)
     if(NOT DEFINED ${var})
         message(FATAL_ERROR "cpm_cache_test.cmake needs -D${var}=...")
@@ -27,10 +29,15 @@ if(failed)
 endif()
 file(SHA256 "${WORK}/payload/one.txt" one_sha256)
 file(SHA256 "${WORK}/payload/arc.tar.gz" arc_sha256)
+# how a project adds each: CPM's own call for the one file and for the archive, snx_cpm_file for the one file
+set(served "${WORK}/served")
 set(one_file one.txt)
-set(one_args DOWNLOAD_NO_EXTRACT YES)
+set(one_add "CPMAddPackage(NAME one VERSION 1 URL \"${served}/one.txt\" URL_HASH SHA256=${one_sha256}
+              DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)")
 set(arc_file arc.tar.gz)
-set(arc_args "")
+set(arc_add "CPMAddPackage(NAME arc VERSION 1 URL \"${served}/arc.tar.gz\" URL_HASH SHA256=${arc_sha256}
+              DOWNLOAD_ONLY YES)")
+set(checked_add "snx_cpm_file(checked 1 \"${served}/one.txt\" ${one_sha256})")
 set(generator "")
 if(GENERATOR)
     set(generator -G "${GENERATOR}" "-DCMAKE_MAKE_PROGRAM=${MAKE}")
@@ -47,8 +54,7 @@ project(cpm_cache_test NONE)
 include(\"${CPM}\")
 include(\"${SRC}/cmake/cpm_cache.cmake\")
 snx_cpm_cache_sweep()
-CPMAddPackage(NAME ${kind} VERSION 1 URL \"${WORK}/served/${${kind}_file}\" URL_HASH SHA256=${${kind}_sha256}
-              DOWNLOAD_ONLY YES ${${kind}_args})
+${${kind}_add}
 file(WRITE \"\${CMAKE_BINARY_DIR}/folder.txt\" \"\${${kind}_SOURCE_DIR}\")
 ")
     execute_process(COMMAND "${CMAKE_COMMAND}" -S "${project}" -B "${WORK}/build${configures}" ${generator}
@@ -119,6 +125,46 @@ foreach(named OFF ON)
     endforeach()
 endforeach()
 
+# a package of one file, added by snx_cpm_file: taken while its file is the pinned one
+set(cache "${WORK}/cache-checked")
+file(COPY "${WORK}/payload/one.txt" DESTINATION "${served}")
+configure(checked "${cache}" OFF)
+if(failed OR NOT EXISTS "${folder}/one.txt")
+    fail("a package of one file is not added by snx_cpm_file:\n${out}")
+endif()
+set(package "${folder}")
+# its file cut short in the cache: the configure stops, with the file, its hash, the pinned one and the folder
+file(WRITE "${package}/one.txt" "the who")
+file(SHA256 "${package}/one.txt" cut)
+configure(checked "${cache}" OFF)
+if(NOT failed)
+    fail("a file cut short in the cache was taken for the package")
+endif()
+foreach(said "${package}/one.txt" "${cut}" "${one_sha256}" "Delete" "${package}")
+    string(FIND "${out}" "${said}" at)
+    if(at LESS 0)
+        fail("a file cut short: the message lacks [${said}]:\n${out}")
+    endif()
+endforeach()
+# no file at all, in a folder that is not empty: stopped too
+file(REMOVE "${package}/one.txt")
+file(WRITE "${package}/other" "")
+configure(checked "${cache}" OFF)
+string(FIND "${out}" "has no one.txt" at)
+if(NOT failed OR at LESS 0)
+    fail("a folder without the package's file was taken for the package:\n${out}")
+endif()
+# what the message says to do: the folder deleted, and the next configure downloads the file
+file(REMOVE_RECURSE "${package}")
+configure(checked "${cache}" OFF)
+set(got "")
+if(EXISTS "${package}/one.txt")
+    file(SHA256 "${package}/one.txt" got)
+endif()
+if(failed OR NOT got STREQUAL one_sha256)
+    fail("after its folder is deleted, the package's file has the SHA-256 [${got}], not ${one_sha256}:\n${out}")
+endif()
+
 # cmake/dependencies.cmake: CPM included, then the sweep, then the first package
 file(READ "${SRC}/cmake/dependencies.cmake" dependencies)
 string(FIND "${dependencies}" "include(\"\${cpm_file}\")" at_cpm)
@@ -128,4 +174,15 @@ if(at_cpm LESS 0 OR at_sweep LESS at_cpm OR at_package LESS at_sweep)
     fail("cmake/dependencies.cmake does not call snx_cpm_cache_sweep() between including CPM (at ${at_cpm}) and its "
          "first package (at ${at_package}): the call is at ${at_sweep}")
 endif()
-message(STATUS "cpm_cache: ${configures} configures, the failed downloads' folders removed, their packages downloaded")
+# and its packages of one file, and the tests' vectors, are checked on every configure
+string(FIND "${dependencies}" "DOWNLOAD_NO_EXTRACT" at)
+if(at GREATER_EQUAL 0)
+    fail("cmake/dependencies.cmake adds a package of one file with CPMAddPackage and DOWNLOAD_NO_EXTRACT (at ${at}), "
+         "which checks the file only when it downloads it: snx_cpm_file adds it")
+endif()
+file(READ "${SRC}/tests/CMakeLists.txt" tests)
+string(FIND "${tests}" "snx_cpm_file_check(\"\${\${package}_SOURCE_DIR}\" \"\${file}\" \${sha256})" at)
+if(at LESS 0)
+    fail("tests/CMakeLists.txt does not check its VP9 vectors with snx_cpm_file_check on every configure")
+endif()
+message(STATUS "cpm_cache: ${configures} configures, the failed downloads' folders removed, a file cut short refused")
