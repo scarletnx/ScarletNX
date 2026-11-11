@@ -75,9 +75,9 @@ if [ -z "${NEEDS:-}" ]; then
         from_entries' <<<"$jobs")
     probe_job=$(jq -r '.edenprobe | select(.result == "success" or .result == "failure") | .job // empty' <<<"$needs")
     if [ -n "$probe_job" ]; then
-        # one notice a run of it: the NRO's, then the APK's
+        # a notice for each of its runs, the NRO's first: the API does not list them in the order the job left them
         notice=$(gh api "repos/$repo/check-runs/$probe_job/annotations" |
-            jq -r '[.[] | select(.title == "edenprobe") | .message] | join("; ")')
+            jq -r '[.[] | select(.title == "edenprobe") | .message] | sort_by(test("s APK: ")) | join("; ")')
         needs=$(jq --arg notice "$notice" 'if $notice != "" then .edenprobe.outputs.result = $notice else . end' <<<"$needs")
     fi
 else
