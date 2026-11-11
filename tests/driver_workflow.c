@@ -764,6 +764,18 @@ static void ready_runs(const char* exe, const char* repo, const char* dump, cons
     free(game_dump);
 }
 #endif
+#if !SNX_DRIVER_READY && !defined(_WIN32)
+/* The Extract to tmpfs block's temporary folder, on a tmpfs: the test's own when it is one (or the system cannot say, as
+   macOS, where the driver extracts wherever the folder is), else one in /dev/shm when that is a tmpfs. NULL where
+   neither is: the driver then reads the dump in place, which the block after it checks */
+static char* tmpfs_temp(const char* root) {
+    char* own = snx_path_join(root, "tmp");
+    if (own && !snx_mkdirs(own) && snx_tmpfs_check(own, NULL, 0) != 0) return own;
+    free(own);
+    return snx_tmpfs_check("/dev/shm", NULL, 0) == 1 ? snx_format("/dev/shm/snx-test-%ld", (long)getpid()) : NULL;
+}
+#endif
+
 int main(int argc, char** argv) {
     char *exe, *root, *repo, *dump, *log, *extracted, *extracting, *kept, *game, *cwd, *expected_cwd, *keys,
         *title_keys;
@@ -1141,15 +1153,11 @@ int main(int argc, char** argv) {
        tmpfs is emptied, said why not without it, then from the link an older version made, and the RomFS back on disk
        with it off. Windows makes links only with the right to (developer mode), which a runner may not have */
 #ifndef _WIN32
-    {
-        char *folder = snx_path_join(repo, "recompiled/0100ABCD12345000"),
-#ifdef __linux__
-             /* the driver refuses a temporary folder that is not a tmpfs: a Linux test uses the one system it has */
-            *temp = snx_is_dir("/dev/shm") ? snx_format("/dev/shm/snx-test-%ld", (long)getpid())
-                                           : snx_path_join(root, "tmp");
-#else
-             *temp = snx_path_join(root, "tmp");
-#endif
+    char* tmpfs_folder = tmpfs_temp(root);
+    if (!tmpfs_folder)
+        puts("Extract to tmpfs: skipped, neither the test's folder nor /dev/shm is a tmpfs here");
+    else {
+        char *folder = snx_path_join(repo, "recompiled/0100ABCD12345000"), *temp = tmpfs_folder;
         char *work = snx_path_join(temp, "scarletnx/work/0100ABCD12345000"), *ram = snx_path_join(work, "romfs/data");
         char *disk = snx_format("%s/0100ABCD12345000_data/romfs/data", folder);
         char *link = snx_format("%s/0100ABCD12345000.source", folder);
@@ -1205,7 +1213,7 @@ int main(int argc, char** argv) {
         free(ini);
     }
 #endif
-#ifdef __linux__
+#ifndef _WIN32
     { /* a temporary folder on a disk: the driver says so and reads the dump in place, making no extraction */
         const char* extract_env = getenv("SNX_WORKFLOW_EXTRACT");
         char* old_extract = extract_env ? snx_strdup(extract_env) : NULL;
@@ -1434,7 +1442,8 @@ int main(int argc, char** argv) {
 #ifndef _WIN32
     {
         char *source = snx_path_join(root, "Extracted game"), *moved = snx_format("%s.moved", source);
-        char *own = snx_path_join(repo, "recompiled/0100ABCD12345000"), *temp = snx_path_join(root, "tmp");
+        char *own = snx_path_join(repo, "recompiled/0100ABCD12345000"), *tmpfs_dir = tmpfs_temp(root);
+        char* temp = tmpfs_dir ? tmpfs_dir : snx_path_join(root, "tmp");
         char *data = snx_path_join(own, "0100ABCD12345000_data"), *exefs = snx_path_join(data, "exefs");
         char *romfs = snx_path_join(data, "romfs"), *program = snx_path_join(own, "0100ABCD12345000");
         char *work = snx_path_join(temp, "scarletnx/work/0100ABCD12345000"), *ram = snx_path_join(work, "romfs/data");
@@ -1473,17 +1482,21 @@ int main(int argc, char** argv) {
         CHECK(!snx_path_exists(exefs) && records_dump(own, "0100ABCD12345000", source));
         /* Extract to tmpfs: the folder copied there, its ExeFS staged in the data folder by the recompile */
         set_env("SNX_WORKFLOW_SOURCE", "");
-        set_env("SNX_WORKFLOW_FLAGS", "--tmpfs");
-        set_env("SNX_WORKFLOW_TMPFS", "1");
-        reset(repo, dump);
-        run(exe, repo, source, log, 0, "ERG", NULL);
-        CHECK(snx_is_file(ram) && !snx_path_exists(romfs) && snx_is_file(marker));
-        CHECK(records_dump(own, "0100ABCD12345000", source));
-        CHECK(!snx_remove_tree(work) && !rename(source, moved)); /* a reboot, and the folder moved */
-        run(exe, repo, program, log, 0, "G", "The game cannot be extracted to tmpfs: its folder");
-        CHECK(!rename(moved, source));
-        run(exe, repo, program, log, 0, "EG", NULL);
-        CHECK(snx_is_file(ram));
+        if (!tmpfs_dir)
+            puts("Extract to tmpfs of a folder: skipped, neither the test's folder nor /dev/shm is a tmpfs here");
+        else {
+            set_env("SNX_WORKFLOW_FLAGS", "--tmpfs");
+            set_env("SNX_WORKFLOW_TMPFS", "1");
+            reset(repo, dump);
+            run(exe, repo, source, log, 0, "ERG", NULL);
+            CHECK(snx_is_file(ram) && !snx_path_exists(romfs) && snx_is_file(marker));
+            CHECK(records_dump(own, "0100ABCD12345000", source));
+            CHECK(!snx_remove_tree(work) && !rename(source, moved)); /* a reboot, and the folder moved */
+            run(exe, repo, program, log, 0, "G", "The game cannot be extracted to tmpfs: its folder");
+            CHECK(!rename(moved, source));
+            run(exe, repo, program, log, 0, "EG", NULL);
+            CHECK(snx_is_file(ram));
+        }
         set_env("SNX_WORKFLOW_FLAGS", "");
         set_env("SNX_WORKFLOW_TMPFS", "");
         set_env("SNX_WORKFLOW_OUT", temp);
@@ -1493,7 +1506,7 @@ int main(int argc, char** argv) {
         free(own);
         own = snx_path_join(repo, "recompiled/Test game");
         set_env("SNX_WORKFLOW_GAMES", own);
-        CHECK(!snx_remove_tree(source) && !snx_remove_tree(empty));
+        CHECK(!snx_remove_tree(source) && !snx_remove_tree(empty) && !snx_remove_tree(temp));
         free(source);
         free(moved);
         free(own);
