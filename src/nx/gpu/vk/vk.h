@@ -2091,6 +2091,12 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]);
 void vk_ui_present(VkCommandBuffer cb, VkImage sc, Surf* src, VkRect2D crop, VkRect2D to, u32 transform,
                    const int safe[4]);
 void vk_ui_swapchain_gone(void); /* its images' views go before the swapchain does */
+/* Whether the on-screen layer is another than the one the last pass drew: its parts are made as a frame makes them
+   (what they write is kept for the next pass, which sends it), and 1 when a quad was written, their number or what the
+   shaders take beside them changed, the atlas or the picture is a newer one, or no pass drew it on this swapchain yet;
+   1 from then until a pass draws it. For the refresh of a game that shows nothing new (renderer.c), which draws the
+   window again only for a layer that changed. Under the Vulkan lock */
+int vk_ui_changed(void);
 void vk_render_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o);
 /* viewport index of a draw's state with the resolution scale, and the draw's facing */
 VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index);

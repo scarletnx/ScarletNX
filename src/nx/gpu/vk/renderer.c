@@ -933,9 +933,24 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
     vk_unlock();
 }
 
+/* whether the window needs its picture drawn again though the game gave no frame: the on-screen layer is another
+   (vk_ui_changed), or the window is: its surface, its size or the .ini's vsync (what show makes a swapchain for), or an
+   event of its own came (uncovered, moved, back from behind) */
+static int refresh_due(void) {
+    static u32 seen = ~0u; /* the window's events at the last refresh drawn */
+    u32 events = backend_window_changes();
+    int ww, wh, due;
+    backend_window_size(&ww, &wh);
+    due = g_lost || backend_window_generation() != g_generation || ww != g_vk.sc_win_w || wh != g_vk.sc_win_h ||
+          __atomic_load_n(&g_settings.vsync, __ATOMIC_RELAXED) != g_vk.sc_vsync || events != seen;
+    if (vk_ui_changed()) due = 1; /* asked whatever the window says: it makes the layer's parts, as a frame does */
+    if (due) seen = events;
+    return due;
+}
 /* The last frame again, under the controls and the menu, while the game shows none: a game loading, stuck, or drawing
    nothing still has them. Not before a quarter second without a frame (a slow game's own come between), at 30 a second
-   at most, and only when the GPU thread holds no Vulkan work: then the next call tries again */
+   at most, only when the GPU thread holds no Vulkan work (then the next call tries again), and only when the layer or
+   the window changed: a still layer over a still frame is on the window already */
 static void vkr_refresh(void) {
     static u64 last;
     u64 now = plat_ns();
@@ -944,8 +959,10 @@ static void vkr_refresh(void) {
         return;
     if (!vk_trylock()) return;
     last = now;
-    vk_render_end();
-    show(g_last, g_last_w, g_last_h, g_last_transform, 0, 0, 0, 0);
+    if (refresh_due()) {
+        vk_render_end();
+        show(g_last, g_last_w, g_last_h, g_last_transform, 0, 0, 0, 0);
+    }
     vk_unlock();
 }
 
