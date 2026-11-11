@@ -532,6 +532,9 @@ void video_init(const char* title, const char* addons) {
     if (!g_win) fatal("SDL could not open a Vulkan window: %s", SDL_GetError());
     snx_window_icon(g_win);
     overlay_set_display_scale(SDL_GetWindowDisplayScale(g_win));
+#if defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
+    overlay_set_fingers(1); /* a screen of fingers, as the launcher's SNX_TOUCH_UI: the menu's rows a finger's */
+#endif
     controls_atlas();
     vpad_set_store(ini_set);
     buzzer_open();
