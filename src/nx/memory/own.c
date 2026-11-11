@@ -418,8 +418,25 @@ static void unwatch(u64 lo, u64 hi, int whole, u64* keep) {
 }
 /* the watches on [lo, hi), found by a landing with the producer's lock held and no mark taken: the producer publishes
    its result over them (unless this thread held its lock before, busy), then every watch on [lo, hi) goes whole. Its
-   pages widen keep, which the landing lets go of when it is done (unwatch) */
+   pages widen keep, which the landing lets go of when it is done (unwatch). A watch is an entry per run of pool pages,
+   and its pages come into the pool at different times (an owner's own_begin moves its own first): the watch entries
+   that continue the ones on [lo, hi) are the same watch, and are answered and go with them */
 static void watch_hit(u64 lo, u64 hi, int busy, u64* keep) {
+    pm_lock(&g_own.lk);
+    u32 i = first_after_nl(lo), first = g_own.nown, last = 0;
+    for (; i < g_own.nown && g_own.ent[i].lo < hi; i++)
+        if (!g_own.ent[i].res) {
+            if (first == g_own.nown) first = i;
+            last = i;
+        }
+    if (first < g_own.nown) {
+        while (first && !g_own.ent[first - 1].res && g_own.ent[first - 1].hi == g_own.ent[first].lo) first--;
+        while (last + 1 < g_own.nown && !g_own.ent[last + 1].res && g_own.ent[last + 1].lo == g_own.ent[last].hi)
+            last++;
+        if (g_own.ent[first].lo < lo) lo = g_own.ent[first].lo;
+        if (g_own.ent[last].hi > hi) hi = g_own.ent[last].hi;
+    }
+    pm_unlock(&g_own.lk);
     if (!busy && g_own.hooks.resolve) g_own.hooks.resolve(lo, hi - lo);
     unwatch(lo, hi, 1, keep);
 }

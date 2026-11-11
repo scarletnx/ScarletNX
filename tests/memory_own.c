@@ -868,10 +868,13 @@ static void test_stress(void) {
     for (; g_round < 30; g_round++) {
         Res* r = res_new(0x20000, (u8)(g_round * 7));
         int resolves = g_resolves;
-        for (i = 0; i < 0x20000; i += 0x1800) CHECK(own_watch(g_sa + i, 0x20000 - i < 0x1800 ? 0x20000 - i : 0x1800) == 0);
+        /* the publish is ready before the watches: a fault of the round before's readers can come late, after them, and
+           with none it would drop them */
         g_resolve_res = r;
         g_resolve_lo = g_sa;
         g_resolve_size = 0x20000;
+        for (i = 0; i < 0x20000; i += 0x1800)
+            CHECK(own_watch(g_sa + i, 0x20000 - i < 0x1800 ? 0x20000 - i : 0x1800) == 0);
         for (i = 0; i < THREADS; i++) pthread_create(&t[i], NULL, reader, (void*)(uintptr_t)(i + 1));
         for (i = 0; i < THREADS; i++) pthread_join(t[i], NULL);
         own_acquire(g_sa, 0x20000);
