@@ -179,7 +179,7 @@ static bool folders(AndroidInstall* out, char* error, size_t error_size) {
     out->app_dir = data ? snx_format("%s/android/app/%s", data, out->package) : NULL;
     out->data_dir = data ? snx_format("%s/android/data/%s", data, out->package) : NULL;
     free(data);
-    if (!out->app_dir || !out->data_dir || snx_mkdirs(out->data_dir)) {
+    if (!out->app_dir || !out->data_dir || snx_mkdirs(out->app_dir) || snx_mkdirs(out->data_dir)) {
         snprintf(error, error_size, "cannot make the app's folders in the data folder");
         return false;
     }
@@ -220,8 +220,11 @@ static bool unpack(const char* bundle, SnxZip* zip, AndroidInstall* out, char* e
             char* file = split[0] ? snx_format("split_%s.apk", split) : snx_format("base.apk");
             dest = file ? snx_path_join(out->app_dir, file) : NULL;
             free(file);
-            ok = dest && !snx_copy_file(stage, dest) && add_apk(out, dest, split, error, error_size);
-            if (!dest || !ok) snprintf(error, error_size, "cannot install %s", name);
+            if (!dest || snx_copy_file(stage, dest)) {
+                snprintf(error, error_size, "cannot copy %s into %s", name, out->app_dir);
+                ok = false;
+            } else
+                ok = add_apk(out, dest, split, error, error_size);
         }
         free(dest);
         remove(stage);

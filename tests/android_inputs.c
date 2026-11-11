@@ -188,6 +188,39 @@ static unsigned long crc32_of(const unsigned char* p, size_t n) {
     return crc ^ 0xffffffffu;
 }
 
+/* a zip of one file, name, stored: a local header and the file, the central directory's entry, its end */
+static unsigned char* zip_of(const char* name, const unsigned char* data, size_t data_size, size_t* size) {
+    const size_t name_size = strlen(name);
+    unsigned long crc = crc32_of(data, data_size);
+    *size = 30 + name_size + data_size + 46 + name_size + 22;
+    unsigned char* z = calloc(1, *size);
+    if (!z) exit(2);
+    put32(z, 0x04034b50u);
+    put16(z + 4, 20);
+    put32(z + 14, crc);
+    put32(z + 18, data_size);
+    put32(z + 22, data_size);
+    put16(z + 26, (unsigned)name_size);
+    memcpy(z + 30, name, name_size);
+    memcpy(z + 30 + name_size, data, data_size);
+    unsigned char* c = z + 30 + name_size + data_size;
+    put32(c, 0x02014b50u);
+    put16(c + 4, 20);
+    put16(c + 6, 20);
+    put32(c + 16, crc);
+    put32(c + 20, data_size);
+    put32(c + 24, data_size);
+    put16(c + 28, (unsigned)name_size);
+    memcpy(c + 46, name, name_size);
+    unsigned char* end = c + 46 + name_size;
+    put32(end, 0x06054b50u);
+    put16(end + 8, 1);
+    put16(end + 10, 1);
+    put32(end + 12, 46 + name_size);
+    put32(end + 16, (unsigned long)(c - z));
+    return z;
+}
+
 /* an APK of one file, AndroidManifest.xml, stored: a binary XML manifest tag whose package attribute is package */
 static unsigned char* apk(const char* package, size_t* size) {
     /* the string pool: "manifest", "package" and the package, UTF-8 */
@@ -232,53 +265,31 @@ static unsigned char* apk(const char* package, size_t* size) {
     put16(e + 48, 8);
     e[51] = 0x03; /* a string */
     put32(e + 52, 2);
-    /* the zip: a local header and the file, the central directory's entry, its end */
-    static const char name[] = "AndroidManifest.xml";
-    const size_t name_size = sizeof name - 1;
-    unsigned long crc = crc32_of(xml, xml_size);
-    *size = 30 + name_size + xml_size + 46 + name_size + 22;
-    unsigned char* z = calloc(1, *size);
-    if (!z) exit(2);
-    put32(z, 0x04034b50u);
-    put16(z + 4, 20);
-    put32(z + 14, crc);
-    put32(z + 18, xml_size);
-    put32(z + 22, xml_size);
-    put16(z + 26, (unsigned)name_size);
-    memcpy(z + 30, name, name_size);
-    memcpy(z + 30 + name_size, xml, xml_size);
-    unsigned char* c = z + 30 + name_size + xml_size;
-    put32(c, 0x02014b50u);
-    put16(c + 4, 20);
-    put16(c + 6, 20);
-    put32(c + 16, crc);
-    put32(c + 20, xml_size);
-    put32(c + 24, xml_size);
-    put16(c + 28, (unsigned)name_size);
-    memcpy(c + 46, name, name_size);
-    unsigned char* end = c + 46 + name_size;
-    put32(end, 0x06054b50u);
-    put16(end + 8, 1);
-    put16(end + 10, 1);
-    put32(end + 12, 46 + name_size);
-    put32(end + 16, (unsigned long)(c - z));
-    return z;
+    return zip_of("AndroidManifest.xml", xml, xml_size, size);
 }
 
 /* an APK whose manifest names the package ../escaped: refused before anything is made of it, where its folders were
    android/escaped of the data folder, out of android/app */
-static void install_escape(void) {
+/* a temporary folder, with the data folder in it on every host */
+static char* temp_data(void) {
     char* tmp = snx_temp_dir(NULL);
     char* data = tmp ? snx_path_join(tmp, "data") : NULL;
-    char* path = tmp ? snx_path_join(tmp, "escape.apk") : NULL;
-    if (!path || !data || snx_mkdirs(data)) exit(2);
-    /* the data folder in the temporary one, on every host */
+    if (!data || snx_mkdirs(data)) exit(2);
 #ifdef _WIN32
+    /* _putenv keeps the string */
     char* variable = snx_format("APPDATA=%s", data);
     if (!variable || _putenv(variable)) exit(2);
 #else
     if (setenv("XDG_DATA_HOME", data, 1) || setenv("HOME", data, 1)) exit(2);
 #endif
+    free(data);
+    return tmp;
+}
+
+static void install_escape(void) {
+    char* tmp = temp_data();
+    char* path = snx_path_join(tmp, "escape.apk");
+    if (!path) exit(2);
     char* folder = snx_user_data_dir();
     char* escaped = folder ? snx_path_join(folder, "android/escaped") : NULL;
     free(folder);
@@ -300,11 +311,39 @@ static void install_escape(void) {
     free(file);
     free(escaped);
     free(path);
-    free(data);
     free(tmp);
-#ifdef _WIN32
-    free(variable);
-#endif
+}
+
+/* a bundle of one APK, into a data folder that has no android/app yet: its base APK is copied into the app's folder,
+   then a second install takes it from the stamp */
+static void install_bundle(void) {
+    char* tmp = temp_data();
+    char* path = snx_path_join(tmp, "app.xapk");
+    if (!path) exit(2);
+    size_t apk_size, size;
+    unsigned char* base = apk("com.example.bundle", &apk_size);
+    unsigned char* file = zip_of("com.example.bundle.apk", base, apk_size, &size);
+    if (snx_write_file(path, file, size)) exit(2);
+    for (int run = 0; run < 2; ++run) {
+        AndroidInstall app;
+        char error[512] = "";
+        bool installed = android_install(path, &app, error, sizeof error);
+        const char* what = run ? "a bundle installed is found from its stamp" : "a bundle installs into a new data folder";
+        check(installed, what, error);
+        if (!installed) break;
+        char* want = snx_path_join(app.app_dir, "base.apk");
+        if (!want) exit(2);
+        check(app.base && !strcmp(app.base, want) && snx_is_file(app.base) && !app.split_count &&
+                  !strcmp(app.package, "com.example.bundle"),
+              "the bundle's base APK is the app folder's base.apk", app.base ? app.base : "(none)");
+        free(want);
+        android_install_free(&app);
+    }
+    snx_remove_tree(tmp);
+    free(file);
+    free(base);
+    free(path);
+    free(tmp);
 }
 
 int main(void) {
@@ -312,6 +351,7 @@ int main(void) {
     documents();
     names();
     install_escape();
+    install_bundle();
     if (failures) {
         fprintf(stderr, "android_inputs: %d checks failed\n", failures);
         return 1;
