@@ -1359,6 +1359,12 @@ static int copy_beside(const char* from, const char* folder, const char* leaf) {
     char* to = snx_path_join(folder, leaf);
     int rc = 0;
     if (!to) return snx_error("cannot name the Vulkan driver %s in %s", leaf, folder);
+    /* a build tree's driver can be another name of this game's, a link to it: removing the game's first would take
+       the source away, and the game has the driver already */
+    if (snx_same_file(from, to)) {
+        free(to);
+        return 0;
+    }
     if (snx_is_file(to) && snx_remove_tree(to))
         rc = snx_error("cannot remove the Vulkan driver at %s: %s", to, snx_os_error(error, sizeof error));
     else if (snx_link_file(from, to) && snx_copy_file(from, to))
