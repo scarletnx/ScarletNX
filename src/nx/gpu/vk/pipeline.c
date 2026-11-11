@@ -2236,11 +2236,11 @@ VkPipeline vk_pipeline_wait(VkPipeline h, i64 ns, int* pending) {
     *pending = 0;
     if ((v & ~(u64)0xFFFFFFFFull) != PIPE_STANDIN) return h;
     u32 i = (u32)v - 1;
-    Pipe* p = g_pstand[i / PSTAND_PAGE][i % PSTAND_PAGE];
+    Pipe* p = g_pipeline.pstand[i / PSTAND_PAGE][i % PSTAND_PAGE];
     if (!__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE) && ns > 0) {
         u64 t0 = plat_ns();
         (void)pipe_wait(p, ns);
-        __atomic_add_fetch(&g_pipe_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&g_pipeline.pipe_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
     }
     if (__atomic_load_n(&p->ready, __ATOMIC_ACQUIRE)) return __atomic_load_n(&p->p, __ATOMIC_ACQUIRE);
     *pending = 1;
