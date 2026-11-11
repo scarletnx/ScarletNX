@@ -120,6 +120,8 @@ public class ContextWrapper extends Context {
     @Override public boolean isDeviceProtectedStorage() { return mBase.isDeviceProtectedStorage(); }
     @Override public Executor getMainExecutor() { return mBase.getMainExecutor(); }
     @Override public String getOpPackageName() { return mBase.getOpPackageName(); }
+    @Override public String getAttributionTag() { return mBase.getAttributionTag(); }
+    @Override public AttributionSource getAttributionSource() { return mBase.getAttributionSource(); }
     @Override public boolean isRestricted() { return mBase.isRestricted(); }
     @Override public Display getDisplay() { return mBase.getDisplay(); }
     @Override public void registerComponentCallbacks(ComponentCallbacks callback) { mBase.registerComponentCallbacks(callback); }

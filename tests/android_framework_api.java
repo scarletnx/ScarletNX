@@ -66,6 +66,11 @@ final class AndroidFrameworkApi {
         try (URLClassLoader loader = new URLClassLoader(new URL[] {jar}, ClassLoader.getPlatformClassLoader())) {
             framework = loader;
             links("android.net.LinkProperties", "getDhcpServerAddress", java.net.Inet4Address.class);
+            /* .NET MAUI's bindings, by JNI */
+            links("android.widget.TextView", "setJustificationMode", void.class, int.class);
+            links("android.widget.TextView", "getJustificationMode", int.class);
+            links("android.content.Context", "getAttributionSource", type("android.content.AttributionSource"));
+            links("android.content.ContextWrapper", "getAttributionSource", type("android.content.AttributionSource"));
             overridable("android.widget.ArrayAdapter", "addAll", Object[].class);
             overridable("android.view.KeyEvent", "getKeyData", type("android.view.KeyCharacterMap$KeyData"));
         }
