@@ -6,9 +6,10 @@
    back), the state loaded, a new recording made as a game makes them after a load, and the first recording presented
    again: the same frame as before the save, as g_nvn's record memory, which the state holds, keeps the first
    recording's block in use; and the window's textures come as they did, the pacer's clock going on from the save
-   though the saving process had run an hour longer. A save while a queue's work waits on the GPU is refused, and so
-   is the load of a state saved without NVN, or whose NVN state indexes past the runtime's tables. Runs alone
-   (SNX_TEST_NVN_CASE=savestate): a load replaces the process's guest memory */
+   though the saving process had run an hour longer. The load lets go of the buffer cache's entries and of nothing
+   else. A save while a queue's work waits on the GPU is refused, and so is the load of a state saved without NVN, or
+   whose NVN state indexes past the runtime's tables. Runs alone (SNX_TEST_NVN_CASE=savestate): a load replaces the
+   process's guest memory */
 #include "nx/runtime/state.h"
 #include "nx/runtime/state_io.h"
 #include "common/filesystem/tree.h"
@@ -222,6 +223,15 @@ static int check_nvn_savestate(const char* shot) {
     CHECK(back == given + 1); /* the premise: a block that the state's recording holds is free here */
     CHECK(!check_nvn_state_damage());
 
+    /* a range the game's draws read, in the buffer cache at the load: the load lets go of the cache's entries, and
+       entry 0 is none, memory that nothing ever wrote (the test runs with new memory filled, src/nx/CMakeLists.txt) */
+    VkBuffer kept;
+    u64 kept_at;
+    vk_lock();
+    int cached = vk_buf_get(gpu + 0x4000, 0x100, &kept, &kept_at);
+    vk_unlock();
+    CHECK(cached);
+
     /* the load as in a process that hasn't resolved them yet (a state loaded as the game starts) */
     for (u32 i = 0; i < 16; i++) code[i] = driver_code;
     memset(g_nvn.loader.resolved, 0, sizeof g_nvn.loader.resolved);
@@ -230,6 +240,16 @@ static int check_nvn_savestate(const char* shot) {
     int loaded = state_load(path, why, sizeof why);
     if (loaded) fprintf(stderr, "NVN state not loaded: %s\n", why);
     CHECK(!loaded);
+    /* the buffer cache as a load leaves it: none of its entries holds a buffer of its own */
+    u32 own = 0;
+    u64 own_bytes = 0;
+    vk_lock();
+    vk_buf_stats(&own, &own_bytes);
+    vk_unlock();
+    if (own || own_bytes)
+        fprintf(stderr, "the buffer cache after the load: %u buffers of its own, %llu bytes (0 and 0 wanted)\n", own,
+                (unsigned long long)own_bytes);
+    CHECK(!own && !own_bytes);
     /* what the renderer built from the queue's draw state is keyed by generations this process hands out */
     for (u32 g = 0; g < DS_GENS; g++) CHECK(g_nvn.replay.q[0].d.ds.gen[g] > before);
     /* the pacer's clock goes on from the save, and the window's next texture comes at once: its last present's slot

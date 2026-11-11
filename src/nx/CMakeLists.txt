@@ -399,9 +399,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_tests_properties(vulkan_headless_mesh PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # a save state of a game whose NVN the runtime runs, saved and loaded through state.c: the frame before the save
-    # comes back after the load (tests/vulkan_nvn_savestate.inc). Alone, as the load replaces the guest memory
+    # comes back after the load (tests/vulkan_nvn_savestate.inc). Alone, as the load replaces the guest memory. With
+    # new memory filled (jemalloc's junk, under either name of its options' variable, and glibc's MALLOC_PERTURB_):
+    # memory a load reads that nothing wrote, as the buffer cache's entry 0, isn't zero by chance
     add_test(NAME vulkan_nvn_savestate COMMAND snx-test-vulkan -H)
-    set_tests_properties(vulkan_nvn_savestate PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_NVN_CASE=savestate"
+    set_tests_properties(vulkan_nvn_savestate PROPERTIES TIMEOUT 60
+        ENVIRONMENT "SNX_TEST_NVN_CASE=savestate;MALLOC_CONF=junk:true;JE_MALLOC_CONF=junk:true;MALLOC_PERTURB_=90"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     add_test(NAME vulkan_storage_lookup COMMAND snx-test-vulkan -H --vk_memory=1 --bench-storage-lookup)
     set_tests_properties(vulkan_storage_lookup PROPERTIES TIMEOUT 60
