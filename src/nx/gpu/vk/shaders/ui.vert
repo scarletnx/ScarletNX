@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
-// The on-screen controls and the game's menu (gpu/vk/ui.c): an instance for each quad (ui.h's SnxUiQuad, as it is),
-// its six corners made here, so the CPU writes no vertices
+// The on-screen controls and the game's menu (gpu/vk/ui.c): an instance for each quad (ui.h's SnxUiQuad, 20 bytes,
+// as it is), its six corners made here, so the CPU writes no vertices
 #version 450
-layout(location = 0) in vec4 rect;    // x, y, w, h in the picture's pixels
-layout(location = 1) in uvec4 texels; // u, v, uw, vh: uw 0 draws nothing
-layout(location = 2) in vec4 color;   // R G B A bytes, as the menu's colours are written
-layout(location = 3) in uvec4 how;    // the quarter turns, the sample, the ink (ui.h's UI_ATLAS...) and the glyph
+layout(location = 0) in ivec2 at;     // x, y in quarters of the picture's pixels
+layout(location = 1) in uvec2 size;   // w, h in quarters
+layout(location = 2) in uvec4 texels; // u, v, uw, vh: uw 0 draws nothing
+layout(location = 3) in uint bits;    // ui.h's UI_Q_*: R5 G5 B5 A1, turns, backed, sample, ink, glyph
 layout(push_constant) uniform Picture {
     vec2 size;
     uint srgb;
@@ -32,17 +32,23 @@ vec2 corner(uint k) {
 void main() {
     // the two triangles' corners 0 1 2 and 0 2 3, a nibble each
     uint k = (0x320210u >> (4u * uint(gl_VertexIndex))) & 3u;
-    vec4 r = rect, c = color;
+    uint turn = (bits >> 16) & 3u, ink = (bits >> 21) & 7u, glyph = bits >> 24;
+    // each 5 bits widened as ui.c's from5: the top bits again under them; the alpha a fill's or a sprite's glyph byte,
+    // else A1
+    uvec3 c5 = uvec3(bits, bits >> 5, bits >> 10) & 31u;
+    vec4 r = vec4(vec2(at), vec2(size)) * 0.25,
+         c = vec4(vec3(c5 << 3 | c5 >> 2) / 255.0, ink <= 1u ? float(glyph) / 255.0 : float((bits >> 15) & 1u));
     uint height = 1u;
-    v_ink = how.z | (how.x & 4u) << 6;
-    v_glyph = how.w;
-    if (how.z == 4u) { // UI_RING: its slot's bar, as ui_drawn gives it
-        uint n = pc.ring >> 16, slot = how.w;
+    v_ink = ink | (bits >> 18 & 1u) << 8;
+    v_glyph = glyph;
+    if (ink == 4u) { // UI_RING: its slot's bar, as ui_drawn gives it, w / n wide over the graph
+        uint n = pc.ring >> 16, slot = glyph;
         height = n != 0u && slot < n ? (ring.heights[slot >> 2] >> ((slot & 3u) * 8u)) & 0xFFu : 0u;
         if (height != 0u) {
             uint age = ((pc.ring & 0xFFFFu) + n - slot) % n;
-            float h = r.w * float(height) / 255.0;
-            r.x -= float(age + 1u) * r.z;
+            float h = r.w * float(height) / 255.0, bw = r.z / float(n);
+            r.x += bw * float(n - 1u - age);
+            r.z = bw;
             r.y += r.w - h;
             r.w = h;
             if (height > pc.slow_from) c = unpackUnorm4x8(pc.slow);
@@ -56,7 +62,7 @@ void main() {
     }
     gl_Position = vec4((r.xy + corner(k) * r.zw) / pc.size * 2.0 - 1.0, 0.0, 1.0);
     // the texels turned: a quarter turn shows the bottom left one at the top left
-    v_uv = corner((k + 4u - (how.x & 3u)) & 3u) * vec2(texels.zw);
-    if (how.z == 0u) v_uv += vec2(texels.xy);
+    v_uv = corner((k + 4u - turn) & 3u) * vec2(texels.zw);
+    if (ink == 0u) v_uv += vec2(texels.xy);
     v_color = c;
 }

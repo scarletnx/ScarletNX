@@ -45,10 +45,9 @@ static int ui_quads(UiCheck* c, const int safe[4]) {
 }
 /* whether v is within a thousandth of a whole number */
 static int ui_on_edge(float v) { return fabsf(v - roundf(v)) < 1e-3f; }
-/* one quad blended into want as it is drawn (ui_drawn: a bar of the ring where it is, from its byte), sure where it
-   is */
-static void ui_blend_quad(UiCheck* c, const SnxUiQuad* from) {
-    SnxUiQuad at = ui_drawn(from), *q = &at;
+/* one quad blended into want as it is drawn (ui_drawn: a bar of the ring where it is, from its byte, and the place
+   and colour the quad holds), sure where it is */
+static void ui_blend_quad(UiCheck* c, const SnxUiQuadView* q) {
     float color[4] = {(float)(q->rgba & 0xFF) / 255.0f, (float)(q->rgba >> 8 & 0xFF) / 255.0f,
                       (float)(q->rgba >> 16 & 0xFF) / 255.0f, (float)(q->rgba >> 24) / 255.0f};
     int x0, y0, x1, y1, x, y, k;
@@ -66,7 +65,7 @@ static void ui_blend_quad(UiCheck* c, const SnxUiQuad* from) {
             tu = (float)q->u + (cx - q->x) / q->w * (float)q->uw;
             tv = (float)q->v + (cy - q->y) / q->h * (float)q->vh;
             if (fabsf(cx - q->x) < 1e-3f || fabsf(cx - q->x - q->w) < 1e-3f || fabsf(cy - q->y) < 1e-3f ||
-                fabsf(cy - q->y - q->h) < 1e-3f || q->sample != UI_SHARP || (q->turn & 3) || ui_on_edge(tu) ||
+                fabsf(cy - q->y - q->h) < 1e-3f || q->sample != UI_SHARP || q->turn || ui_on_edge(tu) ||
                 ui_on_edge(tv)) {
                 c->sure[y][x] = 0;
                 continue;
@@ -87,9 +86,9 @@ static void ui_blend(UiCheck* c, int n) {
             c->sure[y][x] = 1;
         }
     for (i = 0; i < n; ++i) {
-        SnxUiQuad ground;
+        SnxUiQuadView ground, drawn = ui_drawn(&c->quads[i]);
         if (ui_drawn_ground(&c->quads[i], &ground)) ui_blend_quad(c, &ground);
-        ui_blend_quad(c, &c->quads[i]);
+        ui_blend_quad(c, &drawn);
     }
 }
 /* a frame of the layer on the image, read back, against the CPU's blend, said when loud: the channels that differ,

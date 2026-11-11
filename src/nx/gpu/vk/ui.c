@@ -4,7 +4,7 @@
    (runtime/platform/prepare_screen.h) over a presented frame: the quads they give, blended onto the swapchain image
    in a pass of their own after the frame's blit. Nothing is recorded while none shows.
 
-   Each quad is an instance, its SnxUiQuad as it is, whose corners the vertex shader makes: the CPU writes no
+   Each quad is an instance, its SnxUiQuad (20 bytes) as it is, whose corners the vertex shader makes: the CPU writes no
    vertices. The instances stay in a buffer on the device from frame to frame, and a frame copies into it only the
    quads that differ from the ones it holds. The stats box and the debug line keep their layout and their quads in the
    same places (ui_cells), so a frame over the game sends a few letters and the graph's bars, or nothing */
@@ -125,10 +125,10 @@ static int pipeline_make(VkFormat format) {
                                               .pName = "main"}};
     /* a quad an instance, read as ui.h lays it out */
     VkVertexInputBindingDescription vb = {0, sizeof(SnxUiQuad), VK_VERTEX_INPUT_RATE_INSTANCE};
-    VkVertexInputAttributeDescription va[4] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(SnxUiQuad, x)},
-                                               {1, 0, VK_FORMAT_R16G16B16A16_UINT, offsetof(SnxUiQuad, u)},
-                                               {2, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(SnxUiQuad, rgba)},
-                                               {3, 0, VK_FORMAT_R8G8B8A8_UINT, offsetof(SnxUiQuad, turn)}};
+    VkVertexInputAttributeDescription va[4] = {{0, 0, VK_FORMAT_R16G16_SINT, offsetof(SnxUiQuad, x)},
+                                               {1, 0, VK_FORMAT_R16G16_UINT, offsetof(SnxUiQuad, w)},
+                                               {2, 0, VK_FORMAT_R16G16B16A16_UINT, offsetof(SnxUiQuad, u)},
+                                               {3, 0, VK_FORMAT_R32_UINT, offsetof(SnxUiQuad, bits)}};
     VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
                                                .vertexBindingDescriptionCount = 1,
                                                .pVertexBindingDescriptions = &vb,
@@ -489,9 +489,8 @@ static void quads_le(u8* to, int first, int end) {
     int i;
     for (i = first; i < end; ++i, to += sizeof(SnxUiQuad)) {
         SnxUiQuad q = g_quads[i];
-        snx_le32_array(&q.x, 4);
-        snx_le16_array(&q.u, 4);
-        q.rgba = snx_le32(q.rgba);
+        snx_le16_array(&q.x, 8); /* x, y, w, h, u, v, uw, vh */
+        q.bits = snx_le32(q.bits);
         memcpy(to, &q, sizeof q);
     }
 #else
@@ -561,10 +560,14 @@ static int instances_send(VkCommandBuffer cb, int n) {
 /* a quad whose pixels are its colour or nothing, which g_pipe[1] draws without blending: a fill, a letter, an icon or a
    bar (in the ring's slow colour too) of an opaque colour, a backed letter or icon on an opaque ground too */
 static int quad_opaque(const SnxUiQuad* q, u32 slow, u32 ground) {
-    if (q->rgba >> 24 != 0xFF) return 0;
-    if (q->ink == UI_GLYPH || q->ink == UI_ICON) return !(q->turn & UI_BACKED) || ground >> 24 == 0xFF;
-    return q->ink == UI_SOLID || (q->ink == UI_RING && slow >> 24 == 0xFF);
+    unsigned ink = ui_q_bits(q, UI_Q_INK, 3);
+    if (ink == UI_SOLID) return ui_q_bits(q, UI_Q_GLYPH, 8) == 0xFF; /* its alpha in the glyph's byte */
+    if (!ui_q_bits(q, 15, 1)) return 0;                               /* A1 */
+    if (ink == UI_GLYPH || ink == UI_ICON) return !ui_q_bits(q, UI_Q_BACKED, 1) || ground >> 24 == 0xFF;
+    return ink == UI_RING && slow >> 24 == 0xFF;
 }
+/* the quad's sample: its descriptor set */
+static unsigned quad_sample(int i) { return ui_q_bits(&g_quads[i], UI_Q_SAMPLE, 2); }
 void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
     SnxUiList list = {g_quads, 0, MAX_QUADS};
     int sw = (int)g_vk.sc_extent.width, sh = (int)g_vk.sc_extent.height, n, i, run, pipe, set;
@@ -634,15 +637,15 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
            instance, with the pipeline and the set bound where they change */
         for (i = 0, pipe = set = -1; i < n; i = run) {
             int opaque = quad_opaque(&g_quads[i], ring.slow, pc.ground);
-            for (run = i + 1; run < n && g_quads[run].sample == g_quads[i].sample &&
+            for (run = i + 1; run < n && quad_sample(run) == quad_sample(i) &&
                               quad_opaque(&g_quads[run], ring.slow, pc.ground) == opaque;
                  ++run)
                 continue;
-            if (g_quads[i].sample == UI_IMAGE && !g_image) continue; /* its upload failed */
+            if (quad_sample(i) == UI_IMAGE && !g_image) continue; /* its upload failed */
             if (pipe != opaque) rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe[pipe = opaque]);
-            if (set != g_quads[i].sample)
+            if (set != (int)quad_sample(i))
                 rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1,
-                                          &g_sets[set = g_quads[i].sample], 0, NULL);
+                                          &g_sets[set = (int)quad_sample(i)], 0, NULL);
             rec_CmdDraw(cb, 6, (u32)(run - i), 0, (u32)i);
         }
         rec_CmdEndRendering(cb);

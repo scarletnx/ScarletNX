@@ -8,16 +8,42 @@
 #define SNX_UI_H
 #include "common/cpu/aarch64/cpu.h"
 
-/* 32 bytes with no padding, which the renderer reads as they are (gpu/vk/ui.c): one instance of its quad each */
+/* A quad of the layer: 20 bytes with no padding, which the renderer reads as they are (gpu/vk/ui.c), an instance each.
+   Its place in quarters of the picture's pixels, x and y signed (a box can go past the picture's left or top): 8191
+   pixels at most either way. The atlas texels drawn there; uw 0 draws nothing (ui_cells' blank cell). Then one word
+   of bits from bit 0 (UI_Q_*): the colour R5 G5 B5 A1, the texels' quarter turns clockwise, UI_BACKED, the sample,
+   the ink and the glyph. A quad that draws no glyph (UI_ATLAS, UI_SOLID) has its colour's alpha in the glyph's byte,
+   all 8 bits of it, where a blend needs them (the controls' alpha, the menu's panels); a letter, an icon or a bar is
+   its colour or clear, A1. ui_quad makes one, ui_view reads it back */
 typedef struct {
-    float x, y, w, h; /* where, in the pixels of the picture drawn on */
-    u16 u, v, uw, vh; /* the atlas texels drawn there; uw 0: nothing drawn (ui_cells' blank cell) */
-    u32 rgba;         /* each texel times this colour, R G B A from the low byte */
-    u8 turn;          /* the texels turned this many quarters clockwise, and UI_BACKED */
-    u8 sample;        /* how: UI_BLEND, UI_SHARP or UI_IMAGE */
-    u8 ink;           /* what the renderer draws it with: one of UI_ATLAS, UI_SOLID, UI_GLYPH, UI_ICON */
-    u8 glyph;         /* UI_GLYPH's letter, UI_ICON's icon from GUI_ICON_FIRST, UI_RING's slot */
+    i16 x, y;
+    u16 w, h;
+    u16 u, v, uw, vh;
+    u32 bits;
 } SnxUiQuad;
+#define UI_Q_COLOR  0  /* 16 bits: R5 G5 B5 A1 */
+#define UI_Q_TURN   16 /* 2 bits */
+#define UI_Q_BACKED 18 /* 1 bit */
+#define UI_Q_SAMPLE 19 /* 2 bits */
+#define UI_Q_INK    21 /* 3 bits */
+#define UI_Q_GLYPH  24 /* 8 bits: the glyph, or the alpha */
+#define UI_Q_STEPS  4  /* a pixel's quarters */
+/* what a quad holds, in the producers' terms: the place in pixels, the colour R G B A from the low byte (each 5 bits
+   widened back to 8, the alpha the glyph byte's or A1's), turn with UI_BACKED in it as ui_quad takes it */
+typedef struct {
+    float x, y, w, h;
+    u16 u, v, uw, vh;
+    u32 rgba;
+    u8 turn, backed, sample, ink, glyph;
+} SnxUiQuadView;
+/* a quad of these: turn the quarter turns, UI_BACKED among them; glyph for UI_GLYPH, UI_ICON and UI_RING */
+SnxUiQuad ui_quad(float x, float y, float w, float h, int u, int v, int uw, int vh, u32 rgba, int turn, int sample,
+                  int ink, int glyph);
+SnxUiQuadView ui_view(const SnxUiQuad* q);
+/* the field of q's bits from bit at, n bits */
+static inline unsigned ui_q_bits(const SnxUiQuad* q, int at, int n) { return q->bits >> at & ((1u << n) - 1); }
+/* rgba as a quad keeps it: R, G and B to 5 bits and back; the alpha kept, which a letter's opaque one is */
+u32 ui_rgba(u32 rgba);
 /* the atlas blended, the atlas's nearest texel (the font at whole steps), or ui_image's picture blended, its texels
    in u, v, uw and vh */
 enum { UI_BLEND, UI_SHARP, UI_IMAGE };
@@ -26,8 +52,9 @@ enum { UI_BLEND, UI_SHARP, UI_IMAGE };
    or a letter of the 8x16 font or an icon of the menus, from their bits, a bit a pixel, with no atlas read. UI_RING
    is a bar of the ring (ui_ring), drawn as ui_drawn gives it */
 enum { UI_ATLAS, UI_SOLID, UI_GLYPH, UI_ICON, UI_RING };
-/* in turn, for a letter or an icon: its clear pixels in the ground's colour (ui_ground_set), where they are left out
-   otherwise. With an opaque colour and ground, it is an opaque cell, which the renderer draws without blending */
+/* in ui_quad's turn, for a letter or an icon (UI_Q_BACKED): its clear pixels in the ground's colour (ui_ground_set),
+   where they are left out otherwise. With an opaque colour and ground, it is an opaque cell, which the renderer draws
+   without blending */
 #define UI_BACKED 4
 /* the ground of every backed letter and icon, R G B A from the low byte: one for all, set by their maker (stats.c)
    each frame it draws them. Under ui_lock */
@@ -38,10 +65,9 @@ typedef struct {
     int n, max; /* quads past max are dropped */
 } SnxUiList;
 /* The ring of bars, one at most (stats.c's graph): n slots in a row that scrolls left, the newest's at the right, each
-   a byte, the bar's height in 255ths of the graph's. A UI_RING quad is a slot's bar, laid out once: x the row's right
-   edge, w a bar's width, y and h the graph's top and height, glyph its slot. A new bar writes its byte and moves the
-   head, and the quads stay as they are: the renderer sends the byte and the GPU draws the bar (ui.vert). Under
-   ui_lock */
+   a byte, the bar's height in 255ths of the graph's. A UI_RING quad is a slot's bar, laid out once over the whole
+   graph (x, y, w, h), glyph its slot: the bar is w / n wide. A new bar writes its byte and moves the head, and the
+   quads stay as they are: the renderer sends the byte and the GPU draws the bar (ui.vert). Under ui_lock */
 #define SNX_UI_RING_MAX 256
 typedef struct {
     u8 height[SNX_UI_RING_MAX];
@@ -50,13 +76,16 @@ typedef struct {
     u32 slow;     /* that colour, R G B A from the low byte */
 } SnxUiRing;
 void ui_ring_set(const u8* height, int n, int head, int slow_from, u32 slow);
+/* the ring's n bars' quads over the graph at x, y, w x h, a slot each from 0, in rgba below slow_from */
+void ui_ring_bars(SnxUiList* l, float x, float y, float w, float h, int n, u32 rgba);
 const SnxUiRing* ui_ring(void);
-/* q as it is drawn: a UI_RING quad as its slot's bar, a width left for each slot newer than it, its height's share of
-   h up from the graph's foot, in the slow colour past slow_from, and nothing (uw 0) at height 0; any other as it is */
-SnxUiQuad ui_drawn(const SnxUiQuad* q);
+/* q as it is drawn (ui_view's): a UI_RING quad as its slot's bar, w / n wide, a bar's width left of the graph's right
+   edge for each slot newer than it, its height's share of h up from the graph's foot, in the slow colour past
+   slow_from, and nothing (uw 0) at height 0; any other as it is */
+SnxUiQuadView ui_drawn(const SnxUiQuad* q);
 /* for a backed letter or icon (UI_BACKED), the fill of its ground under it, as one draws it before the letter where it
    can't draw both at once (the SDL renderer, the tests' CPU blend): 1 with it in *fill; 0 for any other quad */
-int ui_drawn_ground(const SnxUiQuad* q, SnxUiQuad* fill);
+int ui_drawn_ground(const SnxUiQuad* q, SnxUiQuadView* fill);
 
 /* a sprite of controls_atlas.h at alpha (0 to 255) */
 void ui_sprite(SnxUiList* l, int sprite, float x, float y, float w, float h, u32 alpha, int turn);
@@ -64,8 +93,6 @@ void ui_sprite(SnxUiList* l, int sprite, float x, float y, float w, float h, u32
 void ui_texels(SnxUiList* l, float x, float y, float w, float h, int u, int v, int uw, int vh, u32 rgba);
 /* a plain rectangle */
 void ui_fill(SnxUiList* l, float x, float y, float w, float h, u32 rgba);
-/* q, a quad kept from frame to frame, made that rectangle; one with no area draws nothing, and keeps its quad */
-void ui_fill_set(SnxUiQuad* q, float x, float y, float w, float h, u32 rgba);
 /* the picture of the user playing (common/utilities/users.h), side pixels square at x, y: drawn SNX_UI_PICTURE texels
    square in the YoRHa theme's [head] picture shape, square or round (the rest transparent); 0 when the theme shows
    none, which draws nothing */

@@ -71,7 +71,7 @@ static struct {
     u8 height[STATS_BARS];           /* the ring's bytes (ui.h) */
     unsigned head;                   /* the newest bar's slot */
     int full;                        /* every bar to be written: laid out since */
-    float gx, gw, gy, gh, bw;        /* the graph */
+    float gx, gw, gy, gh;            /* the graph */
     int fps10, ms10;                 /* what the cells show: the frame rate and the last frame's time in tenths */
     u32 measures;                    /* g_stats.measures */
     u64 frames;                      /* and the bars, g_stats.frames */
@@ -295,7 +295,6 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
     g_box.gw = box[2] - 2 * cw - STATS_AXIS * cw;
     g_box.gy = box[1] + STATS_LINES * ch + ch / 2;
     g_box.gh = STATS_GRAPH_LINES * ch;
-    g_box.bw = g_box.gw / (STATS_FRAMES - 1);
     ui_fill(&l, g_box.gx, g_box.gy, g_box.gw, g_box.gh, STATS_GROUND);
     for (j = 0; j < 2; ++j) {
         top = g_box.gy + g_box.gh - g_box.gh * guides[j].ms / STATS_TOP_MS;
@@ -303,11 +302,7 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
         ui_text_backed(&l, g_box.gx + g_box.gw + cw, top - ch / 2, scale, guides[j].label, STATS_GUIDE);
     }
     g_box.bars = l.n;
-    for (j = 0; j < STATS_BARS; ++j) { /* each in its slot, over the graph from its right edge: none yet */
-        ui_fill(&l, g_box.gx + g_box.gw, g_box.gy, g_box.bw, g_box.gh, STATS_TEXT);
-        l.q[l.n - 1].ink = UI_RING;
-        l.q[l.n - 1].glyph = (u8)j;
-    }
+    ui_ring_bars(&l, g_box.gx, g_box.gy, g_box.gw, g_box.gh, STATS_BARS, STATS_TEXT); /* none yet */
     memset(g_box.height, 0, sizeof g_box.height);
     /* the lines under it, a quarter line down, each after its icon as the lines above */
     for (j = 0; j < (unsigned)notes.n; ++j) {
