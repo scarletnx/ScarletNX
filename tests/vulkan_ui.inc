@@ -258,6 +258,22 @@ static int check_ui(void) {
         CHECK(changed > 0);
         g_settings.showcase = 0;
     }
+    /* the same on a GPU that renders in tiles (ui.c's tiler, by the vendor: ARM's here), whose sparse pipeline writes
+       a pixel it doesn't draw clear and blends it away in place of a discard: the same pixels */
+    {
+        static const i32 right[4] = {32767, 0, 0, 0};
+        u32 vendor = g_vk.props.vendorID;
+        g_vk.props.vendorID = 0x13B5;
+        g_settings.show_controls = 1;
+        CHECK(!ui_frame(c, safe, "the on-screen controls, blended", &changed));
+        g_settings.show_controls = 0;
+        g_settings.showcase = 1;
+        vpad_showcase_input(1u << 0 | 1u << 13 | 1u << 4, right);
+        CHECK(!ui_frame(c, safe, "showcase pressed, blended", &changed));
+        g_settings.showcase = 0;
+        g_vk.props.vendorID = vendor;
+        CHECK(!ui_frame(c, safe, "the box and the line, discarded again", &changed));
+    }
     vk_finish();
     vk_ui_swapchain_gone();
     vmaDestroyImage(g_vk.vma, c->img, c->mem);

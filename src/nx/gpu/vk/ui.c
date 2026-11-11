@@ -45,8 +45,24 @@ static VmaAllocation g_ring_mem;
 static u8 g_ring_sent[SNX_UI_RING_MAX];
 static VkDescriptorSetLayout g_dsl;
 static VkPipelineLayout g_layout;
-static VkPipeline g_pipe;
+/* ui.frag's two pipelines (its MODE): plain, for a quad that covers every pixel of its own (a fill, a bar, a backed
+   letter or icon), and sparse, for one that leaves its clear pixels alone (a shape, a letter, an icon, the atlas's
+   texels): discarded, or on a GPU that renders in tiles written clear and blended away */
+enum { UI_PLAIN, UI_SPARSE };
+static VkPipeline g_pipes[2];
 static VkFormat g_pipe_format;
+static int g_pipe_tiler; /* the sparse pipeline blends: made for a GPU that renders in tiles */
+typedef struct {
+    u32 mode, srgb;
+} UiSpec;
+/* a GPU that renders in tiles, by its vendor: ARM's Mali, Qualcomm's Adreno, Apple's, Imagination's PowerVR and
+   Broadcom's VideoCore, where a discard costs its tile's early tests */
+static int tiler(void) {
+    switch (g_vk.props.vendorID) {
+    case 0x13B5: case 0x5143: case 0x106B: case 0x1010: case 0x14E4: return 1;
+    default: return 0;
+    }
+}
 static VkDescriptorPool g_pool;
 /* by a quad's sample: the atlas blended (sprites), at its nearest texel (the font, fills), and the picture blended */
 static VkDescriptorSet g_sets[3];
@@ -77,7 +93,7 @@ static int layout_make(void) {
                                           .stageFlags = VK_SHADER_STAGE_VERTEX_BIT}};
     VkDescriptorSetLayoutCreateInfo dci = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 3, .pBindings = b};
-    VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 28};
+    VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 24};
     VkPipelineLayoutCreateInfo lci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                       .setLayoutCount = 1,
                                       .pSetLayouts = &g_dsl,
@@ -143,7 +159,8 @@ static int pipeline_make(VkFormat format) {
                                                  .lineWidth = 1};
     VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
-    /* no blending: nothing in the layer is translucent, a pixel is written opaque or not at all (ui.frag) */
+    /* nothing in the layer is translucent: a pixel is written opaque or not at all (ui.frag), with no blending but the
+       sparse pipeline's on a GPU that renders in tiles, which writes a pixel it doesn't draw clear (premultiplied) */
     VkPipelineColorBlendAttachmentState ba = {.colorWriteMask = 0xF};
     VkPipelineColorBlendStateCreateInfo cb = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &ba};
@@ -165,19 +182,45 @@ static int pipeline_make(VkFormat format) {
                                         .pColorBlendState = &cb,
                                         .pDynamicState = &ds,
                                         .layout = g_layout};
-    int ok;
-    if (g_pipe && g_pipe_format == format) return 1;
-    if (g_pipe) vkDestroyPipeline(g_vk.dev, g_pipe, NULL); /* vk_finish ran when the swapchain changed format */
-    g_pipe = VK_NULL_HANDLE;
+    /* ui.frag's MODE (0 plain, 1 sparse that discards, 2 sparse that blends) and SRGB */
+    UiSpec spec;
+    VkSpecializationMapEntry entries[2] = {{0, offsetof(UiSpec, mode), 4}, {1, offsetof(UiSpec, srgb), 4}};
+    VkSpecializationInfo si = {2, entries, sizeof spec, &spec};
+    /* premultiplied: a pixel written clear leaves the picture as it was */
+    const VkPipelineColorBlendAttachmentState blended = {.blendEnable = VK_TRUE,
+                                                         .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+                                                         .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                                                         .colorBlendOp = VK_BLEND_OP_ADD,
+                                                         .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+                                                         .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                                                         .alphaBlendOp = VK_BLEND_OP_ADD,
+                                                         .colorWriteMask = 0xF};
+    int ok, i, blend = tiler();
+    if (g_pipes[UI_PLAIN] && g_pipes[UI_SPARSE] && g_pipe_format == format && g_pipe_tiler == blend) return 1;
+    for (i = 0; i < 2; ++i) { /* vk_finish ran when the swapchain changed format */
+        if (g_pipes[i]) vkDestroyPipeline(g_vk.dev, g_pipes[i], NULL);
+        g_pipes[i] = VK_NULL_HANDLE;
+    }
     vs = vk_module_spv(snx_ui_vs_spv, (size_t)(snx_ui_vs_spv_size / 4));
     fs = vk_module_spv(snx_ui_fs_spv, (size_t)(snx_ui_fs_spv_size / 4));
     st[0].module = vs;
     st[1].module = fs;
-    ok = vs && fs && VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, &g_pipe));
+    st[1].pSpecializationInfo = &si;
+    ok = vs && fs;
+    for (i = 0; ok && i < 2; ++i) {
+        spec.mode = i == UI_PLAIN ? 0 : blend ? 2 : 1;
+        spec.srgb = (u32)g_vk.sc_srgb;
+        ba = i == UI_SPARSE && blend ? blended : (VkPipelineColorBlendAttachmentState){.colorWriteMask = 0xF};
+        ok = VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, &g_pipes[i]));
+    }
     if (vs) vkDestroyShaderModule(g_vk.dev, vs, NULL);
     if (fs) vkDestroyShaderModule(g_vk.dev, fs, NULL);
     g_pipe_format = format;
-    if (!ok) g_pipe = VK_NULL_HANDLE;
+    g_pipe_tiler = blend;
+    for (i = 0; i < 2 && !ok; ++i) {
+        if (g_pipes[i]) vkDestroyPipeline(g_vk.dev, g_pipes[i], NULL);
+        g_pipes[i] = VK_NULL_HANDLE;
+    }
     return ok;
 }
 
@@ -547,17 +590,25 @@ static unsigned quad_sample(int i) { return ui_q_bits(&g_quads[i], UI_Q_SAMPLE, 
 /* an outline shape (an unfilled circle, round box or cross with its edge), which ui.vert draws as UI_OUTLINE_PARTS
    quads over its edge and its label, so that its inside takes no fragment: the vertices an instance of it takes */
 #define UI_OUTLINE_PARTS 16 /* ui.vert's OUTLINE_PARTS */
+/* the pipeline a quad is drawn with: plain for a fill, a bar, a backed letter or icon, sparse for the rest */
+static int quad_pipe(int i) {
+    unsigned ink = ui_q_bits(&g_quads[i], UI_Q_INK, 3);
+    return ink == UI_SOLID || ink == UI_RING ||
+                   ((ink == UI_GLYPH || ink == UI_ICON) && ui_q_bits(&g_quads[i], UI_Q_BACKED, 1))
+               ? UI_PLAIN
+               : UI_SPARSE;
+}
 static u32 quad_vertices(int i) {
     const SnxUiQuad* q = &g_quads[i];
     int outline = ui_q_bits(q, UI_Q_INK, 3) == UI_SHAPE && !(q->uw & (UI_SHAPE_FILLED | UI_SHAPE_BARE)) &&
                   q->u <= UI_SHAPE_CROSS;
     return outline ? 6 * UI_OUTLINE_PARTS : 6;
 }
-/* ui.vert's Picture: the picture's size, its sRGB (only where the surface has no UNORM format), the ring's head and
-   its slots from bit 16, the bars' slow colour and its height, and the backed letters' ground */
+/* ui.vert's Picture: the picture's size, the ring's head and its slots from bit 16, the bars' slow colour and its
+   height, and the backed letters' ground */
 typedef struct {
     float w, h;
-    u32 srgb, ring, slow, slow_from, ground;
+    u32 ring, slow, slow_from, ground;
 } UiPicture;
 static UiPicture g_pc;
 /* the frame's layer, before a rendering pass: its quads made (the producers, under ui_lock) and what changed sent, the
@@ -588,8 +639,8 @@ static int ui_prepare(VkCommandBuffer cb, const int safe[4]) {
     }
     overlay_draw(&list, sw, sh, plat_ns());
     ring = *ui_ring();
-    g_pc = (UiPicture){(float)sw, (float)sh, (u32)g_vk.sc_srgb, (u32)ring.head | (u32)ring.n << 16, ring.slow,
-                              ring.slow_from, ui_ground()};
+    g_pc = (UiPicture){(float)sw, (float)sh, (u32)ring.head | (u32)ring.n << 16, ring.slow, ring.slow_from,
+                       ui_ground()};
     ui_unlock();
     n = list.n;
     if (!n || !g_atlas || !pipeline_make(g_vk.sc_format) || !glyphs_upload(cb)) return 0;
@@ -601,21 +652,24 @@ static void ui_record(VkCommandBuffer cb, int n) {
     VkViewport vp = {0, 0, g_pc.w, g_pc.h, 0, 1};
     VkRect2D sci = {{0, 0}, g_vk.sc_extent};
     VkDeviceSize vo = 0;
-    int i, run, set;
+    int i, run, set, pipe;
     vk_render_forget_state(); /* another pipeline and layout: a draw after it sets everything again */
     rec_CmdSetViewport(cb, 0, 1, &vp);
     rec_CmdSetScissor(cb, 0, 1, &sci);
     rec_CmdPushConstants(cb, g_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof g_pc,
                          &g_pc);
     rec_CmdBindVertexBuffers(cb, 0, 1, &g_inst, &vo);
-    /* runs of quads that sample the same way and take as many vertices, in their order: six corners for each quad, or
-       an outline shape's parts, the set bound where it changes */
-    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe);
-    for (i = 0, set = -1; i < n; i = run) {
+    /* runs of quads of one pipeline that sample the same way and take as many vertices, in their order: six corners
+       for each quad, or an outline shape's parts, the pipeline and the set bound where they change */
+    for (i = 0, set = pipe = -1; i < n; i = run) {
         u32 vertices = quad_vertices(i);
-        for (run = i + 1; run < n && quad_sample(run) == quad_sample(i) && quad_vertices(run) == vertices; ++run)
+        int which = quad_pipe(i);
+        for (run = i + 1; run < n && quad_sample(run) == quad_sample(i) && quad_vertices(run) == vertices &&
+                          quad_pipe(run) == which;
+             ++run)
             continue;
         if (quad_sample(i) == UI_IMAGE && !g_image) continue; /* its upload failed */
+        if (pipe != which) rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipes[pipe = which]);
         if (set != (int)quad_sample(i))
             rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1,
                                       &g_sets[set = (int)quad_sample(i)], 0, NULL);

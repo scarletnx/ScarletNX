@@ -1,9 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
-// The quad's texel (alpha premultiplied) times its colour, written over the picture, opaque or not at all. A fill
-// takes no texel; a letter of the font or an icon of the menus takes its bit, white or clear, from the glyphs' rows: no
-// atlas read for either
+// The on-screen layer's pixel (gpu/vk/ui.c), one of two pipelines by MODE, a specialization constant, so that each
+// takes only its own work. Nothing is translucent: a pixel is written opaque or not at all.
+// - MODE 0, plain: a quad that covers every pixel of its own (a fill, a bar, a backed letter or icon): its label's bit
+//   picks its colour or the ground (a fill's label, the full block, is all set). No discard, no texture, no branch.
+// - MODE 1 and 2, sparse: a shape, a letter or an icon that leaves its clear pixels alone, or the atlas's texels (the
+//   user's picture, hard at its round edge, a save state's thumbnail). A pixel not drawn is discarded (1), or on a GPU
+//   that renders in tiles, where a discard costs its tile's early tests, written clear and blended away (2: the blend
+//   is premultiplied, so a clear pixel leaves the picture as it was).
+// SRGB is set for a surface with no UNORM format, whose sRGB image encodes what is written to it: the bytes go in
+// decoded, and come out as they are.
 #version 450
+layout(constant_id = 0) const uint MODE = 0u;
+layout(constant_id = 1) const bool SRGB = false;
 layout(set = 0, binding = 0) uniform sampler2D atlas;
 // gui_vga_font's 256 letters, then each icon's halves (gui_icon_font), 16 rows of a byte each, four bytes a word
 layout(std430, set = 0, binding = 1) readonly buffer Glyphs {
@@ -11,84 +20,52 @@ layout(std430, set = 0, binding = 1) readonly buffer Glyphs {
 } glyphs;
 layout(push_constant) uniform Picture {
     vec2 size;
-    uint srgb;
     uint ring, slow, slow_from; // ui.vert's
     uint ground;                // a backed letter's clear pixels' colour
 } pc;
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec4 v_color;
-layout(location = 2) flat in uint v_ink; // ui.h's UI_ATLAS..., and from bit 8 UI_BACKED
-layout(location = 3) flat in uint v_glyph;
-layout(location = 4) flat in vec2 v_size;
-layout(location = 5) flat in uvec4 v_shape;
+layout(location = 2) flat in vec4 v_label;
+layout(location = 3) flat in uvec2 v_glyphs;
+layout(location = 4) flat in vec4 v_boxes;
+layout(location = 5) flat in vec4 v_shape;
+layout(location = 6) flat in uint v_flags;
 layout(location = 0) out vec4 o;
 // sRGB bytes to linear light
 vec3 decode(vec3 c) {
     return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
 }
-// a glyph's row of the font or the icons: g's row y, a byte
-uint glyph_row(uint g, uint y) {
-    uint k = g * 16u + y;
-    return (glyphs.rows[k >> 2] >> ((k & 3u) * 8u)) & 0xFFu;
+// the label's bit at p (ui.vert's v_label: its box from v_label.xy, v_label.z a cell's pixels, v_label.w glyphs of
+// eight columns): 0 outside it. The cell clamped into the label, so a pixel outside reads a row that is there
+uint label_bit(vec2 p) {
+    vec2 q = floor((p - v_label.xy) / v_label.z), last = vec2(max(8.0 * v_label.w - 1.0, 0.0), 15.0);
+    uvec2 cell = uvec2(clamp(q, vec2(0.0), last));
+    uint k = v_glyphs[cell.x >> 3] * 16u + cell.y;
+    uint bit = (glyphs.rows[k >> 2] >> ((k & 3u) * 8u + 7u - (cell.x & 7u))) & 1u;
+    return bit & uint(q == clamp(q, vec2(0.0), last)) & uint(v_label.w > 0.0); // bitwise: no branch for an &&
 }
-// a box's signed distance, half its size b, from its middle
+// a box's signed distance at p from its middle, half its size b
 float box_distance(vec2 p, vec2 b) {
     vec2 d = abs(p) - b;
     return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
 }
-// UI_SHAPE's (ui.h): its signed distance at p from its top left, below 0 inside
-float shape_distance(uint kind, vec2 p, vec2 size) {
-    vec2 c = p - size * 0.5;
-    float m = min(size.x, size.y);
-    if (kind == 0u) // a circle on the shorter side
-        return length(c) - m * 0.5;
-    if (kind == 1u) // a box with round corners a quarter of the shorter side
-        return box_distance(c, size * 0.5 - m * 0.25) - m * 0.25;
-    if (kind == 3u) // a box
-        return box_distance(c, size * 0.5);
-    // a cross, its arms a third of the shorter side wide
-    return min(box_distance(c, vec2(size.x * 0.5, m / 6.0)), box_distance(c, vec2(m / 6.0, size.y * 0.5)));
-}
-// the label's bit at p: its letters at the greatest whole scale in half the height and 0.6 of the width, in the middle;
-// none where they don't fit 0.8 of each at their own size
-bool label_bit(uint label, vec2 p, vec2 size) {
-    uint c0 = label & 0xFFu, c1 = label >> 8, n = c1 != 0u ? 2u : c0 != 0u ? 1u : 0u;
-    if (n == 0u || 16.0 > size.y * 0.8 || 8.0 * float(n) > size.x * 0.8) return false; // no room for it at 1
-    float s = max(1.0, floor(min(size.y * 0.5 / 16.0, size.x * 0.6 / (8.0 * float(n)))));
-    vec2 at = floor((size - vec2(8.0 * float(n), 16.0) * s) * 0.5), q = floor((p - at) / s);
-    if (q.x < 0.0 || q.y < 0.0 || q.x >= 8.0 * float(n) || q.y >= 16.0) return false;
-    uint x = uint(q.x);
-    return ((glyph_row(x < 8u ? c0 : c1, uint(q.y)) >> (7u - (x & 7u))) & 1u) != 0u;
-}
 void main() {
-    uint ink = v_ink & 0xFFu;
-    vec4 t = vec4(1.0), color = v_color;
-    if (ink == 2u || ink == 3u) { // UI_GLYPH, UI_ICON: the pixel's bit of its row
-        uvec2 p = min(uvec2(v_uv), uvec2(ink == 2u ? 7u : 15u, 15u));
-        uint g = ink == 2u ? v_glyph : 256u + 2u * v_glyph + (p.x >> 3);
-        uint k = g * 16u + p.y;
-        uint row = (glyphs.rows[k >> 2] >> ((k & 3u) * 8u)) & 0xFFu;
-        if (((row >> (7u - (p.x & 7u))) & 1u) == 0u) { // clear: the ground where backed, else nothing written
-            if ((v_ink >> 8) == 0u) discard;
-            color = unpackUnorm4x8(pc.ground);
-        }
-    } else if (ink == 5u) { // UI_SHAPE: hard, the pixel's middle in it or not
-        float d = shape_distance(v_shape.x, v_uv, v_size);
-        bool mark = label_bit(v_shape.y, v_uv, v_size);
-        if (d > 0.0) discard;
-        if ((v_shape.z & 1u) != 0u) { // filled: the label cut out
-            if (mark) discard;
-        } else if (!mark && ((v_shape.z & 2u) != 0u || d <= -float(v_shape.w)))
-            discard;
-    } else if (ink == 0u) // UI_ATLAS: unnormalized coordinates, in texels: a sample at level 0 named
-        t = textureLod(atlas, v_uv, 0.0);
-    // UI_SOLID and UI_RING: the colour alone
-    // nothing is translucent: a pixel under half covered is not written, and any other is opaque, its colour the
-    // texel's (alpha premultiplied) taken back out of the alpha (the user's picture, hard at its round edge)
-    vec4 c = t * vec4(color.rgb, 1.0) * color.a;
-    if (c.a < 0.5) discard;
-    c.rgb /= c.a;
-    // an sRGB picture encodes what is written to it: the bytes go in decoded, and come out as they are
-    if (pc.srgb != 0u) c.rgb = decode(c.rgb);
-    o = vec4(c.rgb, 1.0);
+    vec3 c = v_color.rgb;
+    bool drawn = true;
+    if (MODE == 0u) // plain: the colour on its bits, the ground on the others
+        c = mix(unpackUnorm4x8(pc.ground).rgb, c, float(label_bit(v_uv)));
+    else if ((v_flags & 2u) != 0u) { // the atlas's texels (alpha premultiplied) times the colour, at half or more
+        vec4 t = textureLod(atlas, v_uv, 0.0) * vec4(v_color.rgb, 1.0) * v_color.a;
+        drawn = t.a >= 0.5;
+        c = t.rgb / max(t.a, 1e-6);
+    } else { // in the shape, and the label (cut out when filled) or the edge
+        vec2 p = v_uv - v_shape.xy;
+        float d = min(box_distance(p, v_boxes.xy), box_distance(p, v_boxes.zw)) - v_shape.z;
+        // inside & ((label ^ filled) | edge), bitwise (no branch for an && or an ||): the same as inside it, then for a
+        // filled one its label cut out, else its label or its edge (the edge's width 0 when filled or bare)
+        drawn = (uint(!(d > 0.0)) & ((label_bit(v_uv) ^ (v_flags & 1u)) | uint(d > -v_shape.w))) != 0u;
+    }
+    if (SRGB) c = decode(c);
+    if (MODE == 1u && !drawn) discard;
+    o = vec4(c, 1.0) * (MODE == 2u ? float(drawn) : 1.0); // MODE 2: clear, blended away, when not drawn
 }
