@@ -21,6 +21,9 @@ GuestFn jit_resolve_or_add(u64 pc);
 /* the variant table's function for pc after checking the current bytes, else the JIT's code or wait for it; NULL only
    when neither can run pc */
 GuestFn jit_wait(u64 pc);
+/* the JIT's code for what is at pc now, past pc's dispatch slot and the variant table, waiting for its compile: for a
+   hooked function whose AOT code went stale (hook_original), as the slot holds the hook. NULL without a JIT */
+GuestFn jit_code_now(u64 pc);
 /* why jit_wait answered NULL: the pack has no code and the JIT failed or is unavailable */
 const char* jit_failure(void);
 /* Code the game maps while it runs (an NRO, hle/services/ldr.c), text_size bytes of text at base out of size: it is

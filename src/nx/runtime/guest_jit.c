@@ -283,6 +283,8 @@ GuestFn jit_resolve(u64 pc) {
     return g_jit ? snx_jit_resolve(g_jit, pc) : NULL;
 }
 
+GuestFn jit_code_now(u64 pc) { return g_jit ? snx_jit_wait(g_jit, pc) : NULL; }
+
 GuestFn jit_wait(u64 pc) {
     GuestFn code = variant_resolve(pc);
     if (code) return code;
@@ -477,6 +479,7 @@ static void fn_stale(u32 i) {
     for (; a < g_mod->nentries && g_mod->entry_addr[a] < hi; a++)
         if (__atomic_load_n(&entry_fn[a], __ATOMIC_RELAXED) == f) __atomic_store_n(&entry_fn[a], NULL, __ATOMIC_RELEASE);
     __atomic_store_n(&g_mod->stale[i], 1, __ATOMIC_RELEASE);
+    hook_orig_stale(f); /* a hooked function's own code is what the game put there now */
 }
 void jit_code_changed(u64 addr, u64 size) {
     u64 end = addr + size, from;

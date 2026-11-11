@@ -11,6 +11,7 @@
 #include "nx/loader/module_abi.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"
+#include "nx/runtime/guest_jit.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
@@ -291,7 +292,16 @@ void hook_restore(u64 addr, u64 size) {
 
 GuestFn hook_original(u64 addr) {
     int i = site_of(addr);
-    return i < 0 ? NULL : g_hle.hook.orig[i];
+    if (i < 0) return NULL;
+    if (!__atomic_load_n(&g_hle.hook.stale[i], __ATOMIC_ACQUIRE)) return g_hle.hook.orig[i];
+    return jit_code_now(addr);
+}
+
+void hook_orig_stale(GuestFn f) {
+    HleHook* h = &g_hle.hook;
+    u32 i;
+    for (i = 0; i < h->count; i++)
+        if (h->orig[i] == f) __atomic_store_n(&h->stale[i], 1, __ATOMIC_RELEASE);
 }
 
 void hook_run_original(CPU* c, u64 addr) {

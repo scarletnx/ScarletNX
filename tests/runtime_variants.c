@@ -160,6 +160,7 @@ void hook_restore(u64 addr, u64 size) {
     (void)addr;
     (void)size;
 }
+void hook_orig_stale(GuestFn f) { (void)f; }
 
 static int word(void* user, SnxU64 address, SnxU32* out) {
     (void)user;
