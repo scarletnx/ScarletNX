@@ -37,9 +37,9 @@ static int ui_quads(UiCheck* c, const int safe[4]) {
     SnxUiList l = {c->quads, 0, 4096};
     int px, py, scale;
     ui_lock();
-    vpad_draw(&l, safe);
-    vpad_showcase_draw(&l, safe, vpad_showcase_fps(g_vk_present, plat_ns()));
     overlay_place(UI_W, UI_H, &px, &py, &scale);
+    vpad_draw(&l, safe, scale);
+    vpad_showcase_draw(&l, safe, vpad_showcase_fps(g_vk_present, plat_ns()), scale);
     stats_draw(&l, safe, scale, plat_ns());
     hud_draw(&l, safe, scale);
     overlay_draw(&l, UI_W, UI_H, plat_ns());

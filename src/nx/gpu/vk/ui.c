@@ -587,9 +587,9 @@ static int ui_list(const int safe[4]) {
         prepare_screen_draw(&list, sw, sh, safe, overlay_display_percent());
     else {
         int px, py, scale;
-        vpad_draw(&list, safe);
-        vpad_showcase_draw(&list, safe, vpad_showcase_fps(g_vk_present, now));
         overlay_place(sw, sh, &px, &py, &scale); /* the menu's letters */
+        vpad_draw(&list, safe, scale);
+        vpad_showcase_draw(&list, safe, vpad_showcase_fps(g_vk_present, now), scale);
         stats_draw(&list, safe, scale, now);
     }
     {
