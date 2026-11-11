@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/ui.h"
-#include "nx/runtime/platform/controls_atlas.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/log.h"
 #include "common/utilities/endian.h"
@@ -23,9 +22,9 @@ static u8 g_image[SNX_UI_IMAGE_W * SNX_UI_IMAGE_H * 4];
 static int g_image_set;
 static u32 g_image_version;
 static int g_atlas_h; /* g_atlas's rows */
-#define UI_PICTURE_Y SNX_CONTROLS_ATLAS_HEIGHT /* the picture's first row, under the sprites' */
+#define UI_PICTURE_Y SNX_UI_PICTURE_Y
 #define UI_ROWS      (UI_PICTURE_Y + SNX_UI_PICTURE) /* the atlas's */
-_Static_assert(SNX_UI_ICONS_X + 16 * GUI_ICON_COUNT <= SNX_CONTROLS_ATLAS_WIDTH, "the icons fit beside the picture");
+_Static_assert(SNX_UI_ICONS_X + 16 * GUI_ICON_COUNT <= SNX_UI_ATLAS_W, "the icons fit beside the picture");
 /* the menu's look's shape for it, GuiPicture's: 0 none, 1 square, 2 round */
 #ifndef SNX_GUI_THEME_YORHA_PICTURE
 #error "the YoRHa theme names no [head] picture"
@@ -90,10 +89,6 @@ static void quad(SnxUiList* l, float x, float y, float w, float h, int u, int v,
     if (l->n >= l->max || w <= 0 || h <= 0) return;
     l->q[l->n++] = ui_quad(x, y, w, h, u, v, uw, vh, rgba, turn, sample, ink, glyph);
 }
-void ui_sprite(SnxUiList* l, int sprite, float x, float y, float w, float h, u32 alpha, int turn) {
-    const unsigned short* s = snx_controls_sprites[sprite];
-    if (alpha) quad(l, x, y, w, h, s[0], s[1], s[2], s[3], 0x00FFFFFFu | alpha << 24, turn, UI_BLEND, UI_ATLAS, 0);
-}
 int ui_picture(SnxUiList* l, float x, float y, float side) {
     if (!SNX_GUI_THEME_YORHA_PICTURE) return 0;
     quad(l, x, y, side, side, 0, UI_PICTURE_Y, SNX_UI_PICTURE, SNX_UI_PICTURE, 0xFFFFFFFFu, 0, UI_BLEND, UI_ATLAS, 0);
@@ -152,7 +147,7 @@ static void user_picture(u32* a, int w) {
 }
 void ui_fill(SnxUiList* l, float x, float y, float w, float h, u32 rgba) {
     /* the block's inner texels: a blend at its edge never reaches the transparent ones around it */
-    quad(l, x, y, w, h, SNX_CONTROLS_WHITE_X + 1, SNX_CONTROLS_WHITE_Y + 1, 2, 2, rgba, 0, UI_SHARP, UI_SOLID,
+    quad(l, x, y, w, h, SNX_UI_WHITE_X + 1, SNX_UI_WHITE_Y + 1, 2, 2, rgba, 0, UI_SHARP, UI_SOLID,
          0);
 }
 void ui_shape(SnxUiList* l, float x, float y, float w, float h, int kind, const char* label, int flags, int edge,
@@ -166,8 +161,8 @@ float ui_text(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba
     for (; *s; ++s, x += 8.0f * (float)scale) {
         u8 c = (u8)*s;
         if (c != ' ')
-            quad(l, x, y, 8.0f * (float)scale, 16.0f * (float)scale, SNX_CONTROLS_FONT_X + c % 16 * 8,
-                 SNX_CONTROLS_FONT_Y + c / 16 * 16, 8, 16, rgba, 0, UI_SHARP, UI_GLYPH, c);
+            quad(l, x, y, 8.0f * (float)scale, 16.0f * (float)scale, SNX_UI_FONT_X + c % 16 * 8,
+                 SNX_UI_FONT_Y + c / 16 * 16, 8, 16, rgba, 0, UI_SHARP, UI_GLYPH, c);
     }
     return x - x0;
 }
@@ -179,8 +174,8 @@ int ui_drawn_ground(const SnxUiQuad* q, SnxUiQuadView* fill) {
     unsigned ink = ui_q_bits(q, UI_Q_INK, 3);
     if ((ink != UI_GLYPH && ink != UI_ICON) || !ui_q_bits(q, UI_Q_BACKED, 1) || !q->uw) return 0;
     ground = *q; /* its place as it is, in quarters */
-    ground.u = SNX_CONTROLS_WHITE_X + 1;
-    ground.v = SNX_CONTROLS_WHITE_Y + 1;
+    ground.u = SNX_UI_WHITE_X + 1;
+    ground.v = SNX_UI_WHITE_Y + 1;
     ground.uw = ground.vh = 2;
     ground.bits = ui_quad(0, 0, 0, 0, 0, 0, 0, 0, g_ground, 0, UI_SHARP, UI_SOLID, 0).bits;
     *fill = ui_view(&ground);
@@ -192,8 +187,8 @@ float ui_text_backed(SnxUiList* l, float x, float y, int scale, const char* s, u
     for (; *s; ++s, x += 8.0f * (float)scale) {
         u8 c = (u8)*s;
         int n = l->n;
-        quad(l, x, y, 8.0f * (float)scale, 16.0f * (float)scale, SNX_CONTROLS_FONT_X + c % 16 * 8,
-             SNX_CONTROLS_FONT_Y + c / 16 * 16, 8, 16, rgba, 0, UI_SHARP, UI_GLYPH, c);
+        quad(l, x, y, 8.0f * (float)scale, 16.0f * (float)scale, SNX_UI_FONT_X + c % 16 * 8,
+             SNX_UI_FONT_Y + c / 16 * 16, 8, 16, rgba, 0, UI_SHARP, UI_GLYPH, c);
         if (l->n > n) l->q[n].bits |= 1u << UI_Q_BACKED;
     }
     return x - x0;
@@ -225,8 +220,8 @@ int ui_cells_set(SnxUiQuad* q, int n, const char* s) {
         u8 c = *s ? (u8)*s++ : ' ';
         int blank = c == ' ' && !ui_q_bits(&q[k], UI_Q_BACKED, 1);
         /* a blank's texels are none: the renderer draws nothing for it; a backed one is the space, the ground */
-        u16 u = blank ? 0 : (u16)(SNX_CONTROLS_FONT_X + c % 16 * 8);
-        u16 v = blank ? 0 : (u16)(SNX_CONTROLS_FONT_Y + c / 16 * 16);
+        u16 u = blank ? 0 : (u16)(SNX_UI_FONT_X + c % 16 * 8);
+        u16 v = blank ? 0 : (u16)(SNX_UI_FONT_Y + c / 16 * 16);
         if (q[k].u == u && q[k].v == v && q[k].uw == (blank ? 0 : 8)) continue;
         q[k].bits = (q[k].bits & ~(0xFFu << UI_Q_GLYPH)) | (u32)c << UI_Q_GLYPH;
         q[k].u = u;
@@ -268,7 +263,7 @@ const SnxUiRing* ui_ring(void) { return &g_ring; }
 void ui_ring_bars(SnxUiList* l, float x, float y, float w, float h, int n, u32 rgba) {
     int k;
     for (k = 0; k < n && l->n < l->max; ++k)
-        l->q[l->n++] = ui_quad(x, y, w, h, SNX_CONTROLS_WHITE_X + 1, SNX_CONTROLS_WHITE_Y + 1, 2, 2, rgba, 0, UI_SHARP,
+        l->q[l->n++] = ui_quad(x, y, w, h, SNX_UI_WHITE_X + 1, SNX_UI_WHITE_Y + 1, 2, 2, rgba, 0, UI_SHARP,
                                UI_RING, k);
 }
 SnxUiQuadView ui_drawn(const SnxUiQuad* q) {
@@ -318,29 +313,17 @@ const u8* ui_image_get(u32* version) {
     return g_image_set ? g_image : NULL;
 }
 
-/* premultiplied: a blend between a sprite's edge and the clear texels around it */
-static void premultiply(u32* to, const u32* from, size_t n) {
-    size_t i;
-    for (i = 0; i < n; ++i) {
-        u32 p = snx_le32(from[i]), al = p >> 24;
-        to[i] = ((p & 0xFFu) * al / 255) | ((p >> 8 & 0xFFu) * al / 255) << 8 | ((p >> 16 & 0xFFu) * al / 255) << 16 |
-                al << 24;
-    }
-}
-u32* ui_atlas_make(const u32* sprites, int w, int h, int* out_rows) {
-    int x, y, c, rows = UI_ROWS;
-    u32* a;
-    if (!sprites || w != SNX_CONTROLS_ATLAS_WIDTH || h != SNX_CONTROLS_ATLAS_HEIGHT) return NULL; /* not the header's */
-    a = (u32*)calloc((size_t)w * (size_t)rows, 4);
+u32* ui_atlas_make(int* out_rows) {
+    int x, y, c, w = SNX_UI_ATLAS_W, rows = UI_ROWS;
+    u32* a = (u32*)calloc((size_t)w * (size_t)rows, 4);
     if (!a) return NULL;
-    premultiply(a, sprites, (size_t)w * (size_t)h);
     for (c = 0; c < 256; ++c)
         for (y = 0; y < 16; ++y)
             for (x = 0; x < 8; ++x)
-                a[(SNX_CONTROLS_FONT_Y + c / 16 * 16 + y) * w + SNX_CONTROLS_FONT_X + c % 16 * 8 + x] =
+                a[(SNX_UI_FONT_Y + c / 16 * 16 + y) * w + SNX_UI_FONT_X + c % 16 * 8 + x] =
                     gui_vga_font[c * 16 + y] & (0x80 >> x) ? 0xFFFFFFFFu : 0;
     for (y = 0; y < 4; ++y)
-        for (x = 0; x < 4; ++x) a[(SNX_CONTROLS_WHITE_Y + y) * w + SNX_CONTROLS_WHITE_X + x] = 0xFFFFFFFFu;
+        for (x = 0; x < 4; ++x) a[(SNX_UI_WHITE_Y + y) * w + SNX_UI_WHITE_X + x] = 0xFFFFFFFFu;
     for (c = 0; c < GUI_ICON_COUNT; ++c) /* each icon's two halves side by side */
         for (y = 0; y < 16; ++y)
             for (x = 0; x < 16; ++x)
@@ -358,16 +341,16 @@ void ui_atlas_put(u32* atlas, int rows) {
     g_atlas_h = rows;
     ++g_version;
 }
-void ui_atlas_set(const u32* sprites, int w, int h) {
+void ui_atlas_build(void) {
     int rows = 0;
-    u32* a = ui_atlas_make(sprites, w, h, &rows);
+    u32* a = ui_atlas_make(&rows);
     if (!a) return;
     ui_lock();
     ui_atlas_put(a, rows);
     ui_unlock();
 }
 const u32* ui_atlas(int* w, int* h, u32* version) {
-    *w = SNX_CONTROLS_ATLAS_WIDTH;
+    *w = SNX_UI_ATLAS_W;
     *h = g_atlas_h ? g_atlas_h : UI_ROWS;
     *version = g_version;
     return g_atlas;

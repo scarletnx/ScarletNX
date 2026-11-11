@@ -13,7 +13,6 @@
    test traces shows the test as its debugger */
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/vpad.h"
-#include "nx/runtime/platform/controls_atlas.h"
 #include "nx/runtime/platform/plat.h"
 #include "gui/icons.h"
 #include "gui_theme_colors.h"
@@ -108,8 +107,8 @@ static const char* line_at(float x, float y, int cols) {
         for (i = 0; i < g_test.l.n; ++i)
             if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 && qv(&g_test.quads[i]).x == x + (float)k * cw &&
                 qv(&g_test.quads[i]).y == y)
-                g_test.line[k] = (char)((g_test.quads[i].v - SNX_CONTROLS_FONT_Y) / 16 * 16 +
-                                        (g_test.quads[i].u - SNX_CONTROLS_FONT_X) / 8);
+                g_test.line[k] = (char)((g_test.quads[i].v - SNX_UI_FONT_Y) / 16 * 16 +
+                                        (g_test.quads[i].u - SNX_UI_FONT_X) / 8);
         if (g_test.line[k] != ' ') end = k + 1;
     }
     g_test.line[end] = 0;
@@ -137,7 +136,7 @@ static unsigned icon_at(int k, int at) {
     stats_box(safe, s, box);
     for (i = 0; i < g_test.l.n; ++i) {
         const SnxUiQuadView q_v = qv(&g_test.quads[i]), *q = &q_v;
-        if (q->uw == 16 && q->vh == 16 && q->v == SNX_CONTROLS_ATLAS_HEIGHT && q->x == box[0] + (float)at * cw &&
+        if (q->uw == 16 && q->vh == 16 && q->v == SNX_UI_PICTURE_Y && q->x == box[0] + (float)at * cw &&
             q->y == box[1] + ch / 4 + (float)k * ch && q->w == 2 * cw && q->h == ch && q->rgba == ui_rgba(TEXT_RGBA) &&
             q->sample == UI_SHARP)
             return GUI_ICON_FIRST + (unsigned)(q->u - SNX_UI_ICONS_X) / 16;
@@ -160,7 +159,7 @@ static unsigned note_icon(int k, u32 rgba) {
     stats_box(safe, s, box);
     for (i = 0; i < g_test.l.n; ++i) {
         const SnxUiQuadView q_v = qv(&g_test.quads[i]), *q = &q_v;
-        if (q->uw == 16 && q->vh == 16 && q->v == SNX_CONTROLS_ATLAS_HEIGHT && q->x == box[0] + cw &&
+        if (q->uw == 16 && q->vh == 16 && q->v == SNX_UI_PICTURE_Y && q->x == box[0] + cw &&
             q->y == box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch && q->rgba == ui_rgba(rgba))
             return GUI_ICON_FIRST + (unsigned)(q->u - SNX_UI_ICONS_X) / 16;
     }
@@ -394,7 +393,7 @@ int main(void) {
             SnxUiQuad cells[4];
             SnxUiList kept = {cells, 0, 4};
             assert(ui_cells(&kept, 0, 0, 1, 5, TEXT_RGBA) == -1 && ui_cells(&kept, 0, 0, 1, 4, TEXT_RGBA) == 0);
-            assert(ui_cells_set(cells, 4, "abcdef") == 4 && cells[3].u == SNX_CONTROLS_FONT_X + 'd' % 16 * 8);
+            assert(ui_cells_set(cells, 4, "abcdef") == 4 && cells[3].u == SNX_UI_FONT_X + 'd' % 16 * 8);
             assert(ui_cells_set(cells, 4, "abcdef") == 0 && ui_cells_set(cells, 4, "a c") == 2);
             assert(cells[1].uw == 0 && cells[3].uw == 0 && cells[2].uw == 8 && qv(&cells[3]).x == 24 &&
                    qv(&cells[3]).w == 8);

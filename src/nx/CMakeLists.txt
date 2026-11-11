@@ -87,7 +87,6 @@ snx_hookgen(snx_gpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/nvn/nvn.hook" PREFIX n
 include("${PROJECT_SOURCE_DIR}/cmake/ship_walk.cmake")
 snx_ship_walk(gpu/shipped_pass.c)
 
-include("${PROJECT_SOURCE_DIR}/cmake/controls_atlas.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform/unattended.c
              runtime/platform/backend/sdl3.c runtime/platform/audio_downmix.c
@@ -97,8 +96,7 @@ set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform
              runtime/platform/touch.c
              runtime/platform/ui.c runtime/platform/vpad.c
              runtime/platform/fatal_screen.c
-             runtime/platform/prepare_screen.c runtime/platform/gpu_driver_load.c runtime/platform/resources.c
-             "${PROJECT_BINARY_DIR}/generated/controls_png.c")
+             runtime/platform/prepare_screen.c runtime/platform/gpu_driver_load.c runtime/platform/resources.c)
 if(WIN32)
     list(APPEND platform runtime/platform/plat_win32.c runtime/platform/profiler_win32.c)
 else()

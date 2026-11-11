@@ -10,7 +10,6 @@
 #include "nx/runtime/platform/touch.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/hotkeys.h"
-#include "nx/runtime/platform/controls_atlas.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/renderer.h"
 #include "common/utilities/font.h"
@@ -178,8 +177,8 @@ static int shows_as(const char* text, int any, u32 rgba) {
             int j, found = c == ' ';
             for (j = 0; j < list.n && !found; ++j)
                 found = qv(&list.q[j]).x == x + (float)k * step && qv(&list.q[j]).y == y &&
-                        list.q[j].u == SNX_CONTROLS_FONT_X + c % 16 * 8 &&
-                        list.q[j].v == SNX_CONTROLS_FONT_Y + c / 16 * 16 && (any ||
+                        list.q[j].u == SNX_UI_FONT_X + c % 16 * 8 &&
+                        list.q[j].v == SNX_UI_FONT_Y + c / 16 * 16 && (any ||
                             qv(&list.q[j]).rgba == ui_rgba(rgba));
             if (!found) break;
         }
@@ -199,7 +198,7 @@ static int glyph_at(int col, int row, u8 c) {
     int i;
     for (i = 0; i < list.n; ++i)
         if (qv(&list.q[i]).x == (float)(px + col * 8 * s) && qv(&list.q[i]).y == (float)(py + row * 16 * s) &&
-            list.q[i].u == SNX_CONTROLS_FONT_X + c % 16 * 8 && list.q[i].v == SNX_CONTROLS_FONT_Y + c / 16 * 16)
+            list.q[i].u == SNX_UI_FONT_X + c % 16 * 8 && list.q[i].v == SNX_UI_FONT_Y + c / 16 * 16)
             return i;
     return -1;
 }
@@ -209,7 +208,7 @@ static int icon_at(int col, int row, unsigned icon) {
     for (i = 0; i < list.n; ++i)
         if (qv(&list.q[i]).x == (float)(px + col * 8 * s) && qv(&list.q[i]).y == (float)(py + row * 16 * s) &&
             qv(&list.q[i]).w == (float)(16 * s) && qv(&list.q[i]).h == (float)(16 * s) &&
-            list.q[i].u == SNX_UI_ICONS_X + 16 * (icon - GUI_ICON_FIRST) && list.q[i].v == SNX_CONTROLS_ATLAS_HEIGHT &&
+            list.q[i].u == SNX_UI_ICONS_X + 16 * (icon - GUI_ICON_FIRST) && list.q[i].v == SNX_UI_PICTURE_Y &&
             list.q[i].uw == 16 && list.q[i].vh == 16 && qv(&list.q[i]).sample == UI_SHARP)
             return 1;
     return 0;
@@ -226,7 +225,7 @@ static int text_at(int col, int row, const char* text) {
 static int icon_drawn(unsigned icon) {
     int i;
     for (i = 0; i < list.n; ++i)
-        if (list.q[i].u == SNX_UI_ICONS_X + 16 * (icon - GUI_ICON_FIRST) && list.q[i].v == SNX_CONTROLS_ATLAS_HEIGHT)
+        if (list.q[i].u == SNX_UI_ICONS_X + 16 * (icon - GUI_ICON_FIRST) && list.q[i].v == SNX_UI_PICTURE_Y)
             return 1;
     return 0;
 }
@@ -277,8 +276,8 @@ static void keys_page(void) {
         right = qv(&list.q[0]).x + qv(&list.q[0]).w - 8.0f * (float)ns;
         for (i = 2; i < list.n; ++i) {
             const SnxUiQuadView q_v = qv(&list.q[i]), *q = &q_v;
-            int arrow = q->u == SNX_CONTROLS_FONT_X + 0x18 % 16 * 8 || q->u == SNX_CONTROLS_FONT_X + 0x19 % 16 * 8;
-            if (q->w == 8.0f * (float)ns && q->h == 16.0f * (float)ns && q->v >= SNX_CONTROLS_FONT_Y && !arrow)
+            int arrow = q->u == SNX_UI_FONT_X + 0x18 % 16 * 8 || q->u == SNX_UI_FONT_X + 0x19 % 16 * 8;
+            if (q->w == 8.0f * (float)ns && q->h == 16.0f * (float)ns && q->v >= SNX_UI_FONT_Y && !arrow)
                 assert(q->x + q->w <= right);
         }
         overlay_move(12);
@@ -486,10 +485,10 @@ static void prepare_row(const SnxUiList* l, float y, int s, char* out, int size)
     for (i = 0; i < l->n; ++i) {
         const SnxUiQuadView q_v = qv(&l->q[i]), *q = &q_v;
         int col = (int)(q->x / (8.0f * (float)s));
-        if (q->y != y || q->uw != 8 || q->vh != 16 || q->u < SNX_CONTROLS_FONT_X || q->v < SNX_CONTROLS_FONT_Y ||
+        if (q->y != y || q->uw != 8 || q->vh != 16 || q->u < SNX_UI_FONT_X || q->v < SNX_UI_FONT_Y ||
             col >= size - 1)
             continue;
-        out[col] = (char)((q->u - SNX_CONTROLS_FONT_X) / 8 + (q->v - SNX_CONTROLS_FONT_Y) / 16 * 16);
+        out[col] = (char)((q->u - SNX_UI_FONT_X) / 8 + (q->v - SNX_UI_FONT_Y) / 16 * 16);
         if (col >= end) end = col + 1;
     }
     out[end] = 0;
@@ -674,7 +673,7 @@ static void keyboard_box(void) {
     overlay_keyboard_show(&k);
     draw();
     for (i = 0, xs = 0; i < list.n; ++i)
-        xs += list.q[i].u == SNX_CONTROLS_FONT_X + 'x' % 16 * 8 && list.q[i].v == SNX_CONTROLS_FONT_Y + 'x' / 16 * 16;
+        xs += list.q[i].u == SNX_UI_FONT_X + 'x' % 16 * 8 && list.q[i].v == SNX_UI_FONT_Y + 'x' / 16 * 16;
     assert(shows("xEND\xDD") && shows("403 of 1024 characters.") && xs == 260);
     overlay_keyboard_hide(13);
 }
@@ -1234,41 +1233,34 @@ int main(void) {
     draw();
     assert(text_at(1, 0, "SCARLETNX  /  MENU"));
 
-    /* ui.c: the atlas with the font's glyphs, white where a glyph's bit is, and sprites' alpha premultiplied */
+    /* ui.c: the atlas with the font's glyphs, white where a glyph's bit is, the white block and the icons */
     {
-        u32* sprites = calloc((size_t)SNX_CONTROLS_ATLAS_WIDTH * SNX_CONTROLS_ATLAS_HEIGHT, 4);
         const u32* a;
         int w, h;
         u32 version;
-        assert(sprites);
-        sprites[0] = snx_le32(0x80FF8040u); /* half alpha, in the bytes R G B A as SDL's RGBA32 has them */
         assert(!ui_atlas(&w, &h, &version) && !version);
-        ui_atlas_set(sprites, 4, 4); /* not the atlas the header is for */
-        assert(!ui_atlas(&w, &h, &version));
-        ui_atlas_set(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
+        ui_atlas_build();
         a = ui_atlas(&w, &h, &version);
-        assert(a && version == 1 && w == SNX_CONTROLS_ATLAS_WIDTH && h == SNX_CONTROLS_ATLAS_HEIGHT + SNX_UI_PICTURE);
+        assert(a && version == 1 && w == SNX_UI_ATLAS_W && h == SNX_UI_PICTURE_Y + SNX_UI_PICTURE);
         /* no user read yet: the picture's rows are transparent */
         for (y = 0; y < SNX_UI_PICTURE; ++y)
-            for (x = 0; x < SNX_UI_PICTURE; ++x) assert(!a[(SNX_CONTROLS_ATLAS_HEIGHT + y) * w + x]);
-        assert(snx_le32(a[0]) == 0x80804020u); /* the texels are the GPU's bytes */
+            for (x = 0; x < SNX_UI_PICTURE; ++x) assert(!a[(SNX_UI_PICTURE_Y + y) * w + x]);
         /* every glyph, white where its bit is: 'A' has both */
         for (sc = 0; sc < 256; ++sc)
             for (y = 0; y < 16; ++y)
                 for (x = 0; x < 8; ++x)
-                    assert(a[(SNX_CONTROLS_FONT_Y + sc / 16 * 16 + y) * w + SNX_CONTROLS_FONT_X + sc % 16 * 8 + x] ==
+                    assert(a[(SNX_UI_FONT_Y + sc / 16 * 16 + y) * w + SNX_UI_FONT_X + sc % 16 * 8 + x] ==
                            (gui_vga_font[sc * 16 + y] & (0x80 >> x) ? 0xFFFFFFFFu : 0));
         assert(gui_vga_font['A' * 16 + 5] && gui_vga_font['A' * 16 + 5] != 0xFF);
-        assert(a[(SNX_CONTROLS_WHITE_Y + 1) * w + SNX_CONTROLS_WHITE_X + 1] == 0xFFFFFFFFu);
+        assert(a[(SNX_UI_WHITE_Y + 1) * w + SNX_UI_WHITE_X + 1] == 0xFFFFFFFFu);
         /* each icon beside the picture, white where its glyph's bit is (gui_icon_font: its halves, left then right) */
         for (sc = 0; sc < GUI_ICON_COUNT; ++sc)
             for (y = 0; y < 16; ++y)
                 for (x = 0; x < 16; ++x)
-                    assert(a[(SNX_CONTROLS_ATLAS_HEIGHT + y) * w + SNX_UI_ICONS_X + sc * 16 + x] ==
+                    assert(a[(SNX_UI_PICTURE_Y + y) * w + SNX_UI_ICONS_X + sc * 16 + x] ==
                            (gui_icon_font[(sc * 2 + x / 8) * 16 + y] & (0x80 >> x % 8) ? 0xFFFFFFFFu : 0));
         ui_atlas_done();
         assert(!ui_atlas(&w, &h, &version) && version == 1);
-        free(sprites);
     }
     /* a fatal error's panel: the menu's, centred on its own rows; the head, the game's name, the error in the
        failure's colour, its hint, then Share Log and Close at its foot, Close in focus. UTF-8 comes out in the font's
@@ -1435,25 +1427,24 @@ int main(void) {
         assert(!fatal_log_url("/tmp/a.log", NULL, 0));
     }
     /* the user playing on the head's band: Player, without users.ini, as the YoRHa theme has it (square), in the
-       atlas under the sprites: Wimsy (no picture= and no picture file), and its Mii's (Baguette's) with
+       atlas under the font: Wimsy (no picture= and no picture file), and its Mii's (Baguette's) with
        picture=mii; on the right of the band, its frame in the page colour
        and the nickname before it; none on a stopped game's panel */
     {
         char why[256];
-        u32* sprites = calloc((size_t)SNX_CONTROLS_ATLAS_WIDTH * SNX_CONTROLS_ATLAS_HEIGHT, 4);
         const u32* a;
         int w, h, i, pictures = 0, frames = 0, white = 0;
         u32 version;
         float right, band;
         SnxOverlayError e = panel_of("Game", "It stopped", "Look at the log", NULL, NULL);
-        assert(sprites && !snx_users_load("/nonexistent/users", 1, why, sizeof why));
+        assert(!snx_users_load("/nonexistent/users", 1, why, sizeof why));
         assert(g_user_count == 1 && !strcmp(snx_users_selected()->nickname, "Player"));
         assert(SNX_GUI_THEME_YORHA_PICTURE == 1); /* square: the frame is the fills' */
         assert(!snx_users_selected()->picture_mii && snx_users_selected()->mii == 0);
         g_users[0].picture_mii = 1; /* picture=mii: Baguette's face */
-        ui_atlas_set(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
+        ui_atlas_build();
         a = ui_atlas(&w, &h, &version);
-        assert(a && h == SNX_CONTROLS_ATLAS_HEIGHT + SNX_UI_PICTURE);
+        assert(a && h == SNX_UI_PICTURE_Y + SNX_UI_PICTURE);
         { /* texel for texel the Mii's picture (mii_model.h), R G B A from the low byte, opaque */
             static uint8_t rgba[SNX_UI_PICTURE * SNX_UI_PICTURE * 4];
             uint8_t charinfo[SNX_MII_CHARINFO];
@@ -1464,22 +1455,22 @@ int main(void) {
             for (y = 0; y < SNX_UI_PICTURE; ++y)
                 for (x = 0; x < SNX_UI_PICTURE; ++x) {
                     const uint8_t* p = rgba + 4 * (y * SNX_UI_PICTURE + x);
-                    assert(snx_le32(a[(SNX_CONTROLS_ATLAS_HEIGHT + y) * w + x]) ==
+                    assert(snx_le32(a[(SNX_UI_PICTURE_Y + y) * w + x]) ==
                            ((u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | 0xFF000000u));
                 }
         }
         ui_atlas_done();
         g_users[0].picture_mii = 0; /* the default again: no users/<uid>.jpg, Wimsy */
-        ui_atlas_set(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
+        ui_atlas_build();
         a = ui_atlas(&w, &h, &version);
-        assert(a && h == SNX_CONTROLS_ATLAS_HEIGHT + SNX_UI_PICTURE);
+        assert(a && h == SNX_UI_PICTURE_Y + SNX_UI_PICTURE);
         for (y = 0; y < SNX_UI_PICTURE; ++y)
             for (x = 0; x < SNX_UI_PICTURE; ++x) {
-                u32 p = snx_le32(a[(SNX_CONTROLS_ATLAS_HEIGHT + y) * w + x]); /* the GPU's bytes R G B A */
+                u32 p = snx_le32(a[(SNX_UI_PICTURE_Y + y) * w + x]); /* the GPU's bytes R G B A */
                 assert(p >> 24 == 0xFF);                                      /* square: every texel opaque */
                 white += p == 0xFFFFFFFFu;
             }
-        assert(a[SNX_CONTROLS_ATLAS_HEIGHT * w] == 0xFFFFFFFFu && white < SNX_UI_PICTURE * SNX_UI_PICTURE * 9 / 10);
+        assert(a[SNX_UI_PICTURE_Y * w] == 0xFFFFFFFFu && white < SNX_UI_PICTURE * SNX_UI_PICTURE * 9 / 10);
         { /* texel for texel the picture drawn ARGB, R G B A from the low byte: Wimsy has texels whose red and blue
              differ, which the order would swap */
             static u32 argb[SNX_UI_PICTURE * SNX_UI_PICTURE];
@@ -1490,13 +1481,12 @@ int main(void) {
                 for (x = 0; x < SNX_UI_PICTURE; ++x) {
                     u32 p = argb[y * SNX_UI_PICTURE + x];
                     unlike += (p >> 16 & 0xFFu) != (p & 0xFFu);
-                    assert(snx_le32(a[(SNX_CONTROLS_ATLAS_HEIGHT + y) * w + x]) ==
+                    assert(snx_le32(a[(SNX_UI_PICTURE_Y + y) * w + x]) ==
                            ((p & 0xFF00FF00u) | (p >> 16 & 0xFFu) | (p & 0xFFu) << 16));
                 }
             assert(unlike > 0);
         }
         ui_atlas_done();
-        free(sprites);
         if (!overlay_shown()) overlay_toggle();
         while (overlay_back() != OVERLAY_CLOSE) {} /* the first page */
         assert(overlay_shown());
@@ -1508,14 +1498,14 @@ int main(void) {
             float boxx = right - boxw;
             for (i = 0; i < list.n; ++i) {
                 const SnxUiQuadView q_v = qv(&list.q[i]), *q = &q_v;
-                if (q->v == SNX_CONTROLS_ATLAS_HEIGHT && q->uw == SNX_UI_PICTURE && q->vh == SNX_UI_PICTURE) {
+                if (q->v == SNX_UI_PICTURE_Y && q->uw == SNX_UI_PICTURE && q->vh == SNX_UI_PICTURE) {
                     ++pictures;
                     assert(q->y == band + 2 * edge && q->h == side && q->w == side && q->sample == UI_BLEND);
                     assert(q->x + q->w == right - 2 * edge);
                 }
                 frames += q->rgba == ui_rgba(LIGHT_RGBA) && q->sample == UI_SHARP && (q->w == edge || q->h == edge) &&
                           q->x >= boxx && q->x < right && q->y >= band && q->y < band + 16.0f * (float)s;
-                if (q->u == SNX_CONTROLS_FONT_X + 'P' % 16 * 8 && q->v == SNX_CONTROLS_FONT_Y + 'P' / 16 * 16 &&
+                if (q->u == SNX_UI_FONT_X + 'P' % 16 * 8 && q->v == SNX_UI_FONT_Y + 'P' / 16 * 16 &&
                     q->y == band && q->x > boxx)
                     assert(q->x == boxx + 8.0f * (float)s); /* the nickname a column into the box */
             }
@@ -1523,7 +1513,7 @@ int main(void) {
         assert(pictures == 1 && frames == 4 && shows("Player"));
         list.n = 0;
         overlay_error_draw(&list, SW, SH, &e);
-        for (i = 0, pictures = 0; i < list.n; ++i) pictures += list.q[i].v == SNX_CONTROLS_ATLAS_HEIGHT;
+        for (i = 0, pictures = 0; i < list.n; ++i) pictures += list.q[i].v == SNX_UI_PICTURE_Y;
         assert(!pictures && !shows("Player"));
     }
     /* a picture that does not draw: Wimsy shows, and the warning names the user by number, never by nickname, which
@@ -1532,10 +1522,9 @@ int main(void) {
         static const unsigned char broken[] = {0xFF, 0xD8, 'n', 'o', 't', 0xFF, 0xD9}; /* a JPEG's ends alone */
         static const char ini[] = "[user1]\nnickname=Wanda Maximoff\n";
         const uint64_t first[2] = {SNX_USERS_FIRST_UID0, SNX_USERS_FIRST_UID1};
-        u32* sprites = calloc((size_t)SNX_CONTROLS_ATLAS_WIDTH * SNX_CONTROLS_ATLAS_HEIGHT, 4);
         char why[256], uid[33], *jpg;
         snx_remove_tree("overlay_users");
-        assert(sprites && !snx_mkdirs("overlay_users"));
+        assert(!snx_mkdirs("overlay_users"));
         assert(!snx_write_file("overlay_users/users.ini", ini, sizeof ini - 1));
         snx_users_uid_text(first, uid);
         jpg = snx_format("overlay_users/%s.jpg", uid);
@@ -1543,11 +1532,10 @@ int main(void) {
         assert(!snx_users_load("overlay_users", 1, why, sizeof why));
         assert(!strcmp(snx_users_selected()->nickname, "Wanda Maximoff"));
         warned[0] = 0;
-        ui_atlas_set(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
+        ui_atlas_build();
         ui_atlas_done();
         assert(!strcmp(warned, "ui: user 1's picture could not be drawn, Wimsy shows in the menu\n"));
         free(jpg);
-        free(sprites);
         assert(!snx_users_load("/nonexistent/users", 1, why, sizeof why)); /* Player again */
         snx_remove_tree("overlay_users");
     }

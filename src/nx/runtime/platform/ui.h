@@ -1,9 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* What the renderer draws over the game's picture: the on-screen controls (vpad.c) and the game's menu (overlay.c),
-   as quads of one atlas blended over the frame. The atlas is dist/controls/controls.png with the menu's 8x16 font
-   and a white block for plain fills in the places its header keeps for them, and under it the picture of the user
-   playing, which the menu's head shows by their nickname */
+   as quads over the frame: shapes, letters, icons and fills drawn from their own bits and colours, and the user's
+   picture and a save state's thumbnail from their images */
 #ifndef SNX_UI_H
 #define SNX_UI_H
 #include "common/cpu/aarch64/cpu.h"
@@ -101,8 +100,6 @@ SnxUiQuadView ui_drawn(const SnxUiQuad* q);
    can't draw both at once (the SDL renderer, the tests' CPU blend): 1 with it in *fill; 0 for any other quad */
 int ui_drawn_ground(const SnxUiQuad* q, SnxUiQuadView* fill);
 
-/* a sprite of controls_atlas.h at alpha (0 to 255) */
-void ui_sprite(SnxUiList* l, int sprite, float x, float y, float w, float h, u32 alpha, int turn);
 /* a plain rectangle */
 void ui_fill(SnxUiList* l, float x, float y, float w, float h, u32 rgba);
 /* the picture of the user playing (common/utilities/users.h), side pixels square at x, y: drawn SNX_UI_PICTURE texels
@@ -146,14 +143,22 @@ void ui_image_set(const u8* rgba);
 /* the picture for the renderer, under ui_lock: its texels, NULL for none, and version counting the pictures given */
 const u8* ui_image_get(u32* version);
 
-/* The atlas, each texel the bytes R G B A (a little-endian u32) with alpha premultiplied, made from the sprites'
-   image when the window opens (sdl3.c decodes it to the same bytes, SDL's RGBA32), the users read by then, and freed
-   by ui_atlas_done once the renderer has it, both under ui_lock. It is the image's width and SNX_UI_PICTURE rows
-   taller. version counts the images given, 0 for none yet */
-void ui_atlas_set(const u32* sprites, int w, int h);
-/* ui_atlas_set in two: the atlas made (NULL for an image of another size), its rows into *rows; then put in under
-   ui_lock, which the caller holds (with what is drawn from it changing at once) */
-u32* ui_atlas_make(const u32* sprites, int w, int h, int* rows);
+/* The atlas, each texel the bytes R G B A (a little-endian u32) with alpha premultiplied, made when the window opens,
+   the users read by then, and freed by ui_atlas_done once the renderer has it, both under ui_lock: the 8x16 font's 256
+   letters (16 a row from SNX_UI_FONT_X, SNX_UI_FONT_Y), a white block for fills (SNX_UI_WHITE_X, SNX_UI_WHITE_Y, 4 x 4),
+   and from row SNX_UI_PICTURE_Y the picture of the user playing and the icons. The GPU draws the letters, the icons and
+   the fills from their bits and colours (ui.frag); the SDL renderer's fatal panel and the tests read the texels.
+   version counts the atlases made, 0 for none yet */
+#define SNX_UI_ATLAS_W    1024
+#define SNX_UI_FONT_X     0
+#define SNX_UI_FONT_Y     0
+#define SNX_UI_WHITE_X    128
+#define SNX_UI_WHITE_Y    0
+#define SNX_UI_PICTURE_Y  256
+void ui_atlas_build(void);
+/* ui_atlas_build in two: the atlas made (NULL without memory), its rows into *rows; then put in under ui_lock, which the
+   caller holds (with what is drawn from it changing at once) */
+u32* ui_atlas_make(int* rows);
 void ui_atlas_put(u32* atlas, int rows);
 const u32* ui_atlas(int* w, int* h, u32* version);
 void ui_atlas_done(void);
