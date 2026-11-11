@@ -214,6 +214,8 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     if (q->bound_count) {
         ir->bound = bound_at;
         ir->bound_user = q;
+    }
+    if (q->import_count) {
         ir->direct = imported;
         ir->direct_user = q;
     }

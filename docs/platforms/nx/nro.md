@@ -165,7 +165,8 @@ module's; each mapping starts from the module as it was made.
 An NRO calls the game's functions, and many of its own, through its PLT: a stub loads the function's address from a
 slot the game's linker (`nn::ro`) fills while the game runs, and branches to it. The recompile reads the NRO's PLT
 slots (`snx_module_plt` in `src/nx/loader/loader.c`) and binds each stub whose symbol names a function of the NRO
-itself, or one that a single module of the game exports. Such a stub compares the address it
+itself, or one that a single module of the game exports. Such a stub, and each `BL` or `B` to it, which runs the
+stub's instructions where the call is, compares the address it
 loaded with the one function it is bound to: equal, it calls that function, the NRO's own as any call inside the
 module, the game's through the module's import of it; anything else in the slot (the linker has not bound it yet,
 another module defines the symbol first) goes through `CPU.disp` as before. A module's imports are its

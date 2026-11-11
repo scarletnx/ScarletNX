@@ -6,7 +6,9 @@
    alone defines must call that function directly once its slot holds the function's address, whatever its dispatch
    slot holds, and go through CPU.disp while the slot holds anything else: the address the game's linker leaves there
    until the stub's first call, or another function. Two's stub, a stub of a function a hook names and every stub of a
-   recompile with --hook-direct-calls must call through the table.
+   recompile with --hook-direct-calls must call through the table. The call is made where the BL or B is (the IR of
+   the calling function calls the three functions itself), and goes to the stub's own function once the guest has
+   changed the stub's code.
      plt_calls SCARLETNX DATA */
 #include "common/utilities/common.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -108,8 +110,8 @@ enum {
     EXT_TAIL = 0x80
 };
 /* The main module: game_main (CALLER) calls the stubs of ext_add, own_add and two and ends in a branch to
-   ext_tail's, which another function (OTHER, never run) calls too; own_add adds 0x20 to x0 and its two 0x200. ext:
-   the name ext_add goes by */
+   ext_tail's, which another function (OTHER, never run) calls too; own_add copies x16 to x22 and adds 0x20 to x0,
+   and its two adds 0x200. ext: the name ext_add goes by */
 static void main_image(unsigned char* image, const char* ext) {
     const Symbol symbols[5] = {
         {"game_main", CALLER}, {"own_add", OWN_ADD}, {"two", MAIN_TWO}, {ext, 0}, {"ext_tail", 0}};
@@ -126,7 +128,8 @@ static void main_image(unsigned char* image, const char* ext) {
     put32(image, CALLER + 20, 0x14000000 | rel(CALLER + 20, STUB + 48));        /* b ext_tail's */
     put32(image, OTHER, 0x94000000 | rel(OTHER, STUB + 48));                    /* bl ext_tail's */
     put32(image, OTHER + 4, 0xD65F03C0);                                        /* ret */
-    put32(image, OWN_ADD, 0x91008000), put32(image, OWN_ADD + 4, 0xD65F03C0);   /* add x0, x0, #0x20; ret */
+    put32(image, OWN_ADD, 0xAA1003F6);                                          /* mov x22, x16 */
+    put32(image, OWN_ADD + 4, 0x91008000), put32(image, OWN_ADD + 8, 0xD65F03C0); /* add x0, x0, #0x20; ret */
     put32(image, MAIN_TWO, 0x91080000), put32(image, MAIN_TWO + 4, 0xD65F03C0); /* add x0, x0, #0x200; ret */
     for (i = 0; i < 4; ++i) {
         put32(image, STUB + 16 * i, 0xD0000010);                       /* adrp x16, 0x2000 */
@@ -136,16 +139,28 @@ static void main_image(unsigned char* image, const char* ext) {
     }
     dynamic(image, symbols, 5, slot, 4);
 }
-/* The SDK module: ext_add adds 5 to x0, its two 0x400 and ext_tail 3 */
+/* The SDK module: ext_add copies x16 and x17 to x20 and x21 and adds 5 to x0, its two adds 0x400 and ext_tail 3 */
 static void sdk_image(unsigned char* image, const char* ext) {
     const Symbol symbols[3] = {{ext, EXT_ADD}, {"two", SDK_TWO}, {"ext_tail", EXT_TAIL}};
     memset(image, 0, 0x3000);
     put32(image, 0, 0x14000004);
     put32(image, 0x10, 0xD65F03C0);
-    put32(image, EXT_ADD, 0x91001400), put32(image, EXT_ADD + 4, 0xD65F03C0);   /* add x0, x0, #5; ret */
+    put32(image, EXT_ADD, 0xAA1003F4), put32(image, EXT_ADD + 4, 0xAA1103F5);      /* mov x20, x16; mov x21, x17 */
+    put32(image, EXT_ADD + 8, 0x91001400), put32(image, EXT_ADD + 12, 0xD65F03C0); /* add x0, x0, #5; ret */
     put32(image, SDK_TWO, 0x91100000), put32(image, SDK_TWO + 4, 0xD65F03C0);   /* add x0, x0, #0x400; ret */
     put32(image, EXT_TAIL, 0x91000C00), put32(image, EXT_TAIL + 4, 0xD65F03C0); /* add x0, x0, #3; ret */
     dynamic(image, symbols, 3, NULL, 0);
+}
+
+/* Whether the function the recompile dumped the IR of (the setting ir_dump_pc, in the recompile's output text) calls
+   the function at callee itself */
+static int ir_calls(const char* text, unsigned long long callee) {
+    const char *from = text ? strstr(text, "IR before promotion:") : NULL, *hit;
+    const char* to = from ? strstr(from, "IR after promotion:") : NULL;
+    char call[40];
+    snprintf(call, sizeof call, "@F_%llX(", callee);
+    hit = from ? strstr(from, call) : NULL;
+    return hit && to && hit < to;
 }
 
 /* snx_run, its output with every line ended as this file writes them: Windows' text streams end a line with CR LF */
@@ -267,6 +282,45 @@ static void module_runs(const char* path, const unsigned char* main_bytes, const
         check(c.pc == 0x1000, "it returns to its caller");
         /* what the last stub run leaves: its slot's address and what the slot held */
         check(c.x[16] == a + 0x2018 && c.x[17] == slot[3], "x16 and x17 are as the stub leaves them");
+        if (how == BOUND && step == 1) /* ext_add and own_add ran, each called where its BL is */
+            check(c.x[20] == a + 0x2000 && c.x[21] == b + EXT_ADD && c.x[22] == a + 0x2008,
+                  "a function called directly finds x16 and x17 as its stub leaves them");
+        free(c.disp);
+    }
+    /* the guest changed the first stub's code (the runtime marks the function compiled from it stale): the call goes
+       to that function, which leaves for the code there now, with the return address set and nothing else run */
+    if (entry && memory && how == BOUND) {
+        CPU c = {0};
+        u64 slot[4] = {b + EXT_ADD, a + OWN_ADD, a + MAIN_TWO, b + EXT_TAIL};
+        u32 stub = m->nfns;
+        for (i = 0; i < m->nfns; ++i)
+            if (m->fn_lo[i] == a + STUB) stub = i;
+        check(stub < m->nfns && m->fn_len[stub] == 16, "the stub is a function of the module");
+        memcpy(memory + a, main_bytes, 0x3000);
+        memcpy(memory + b, sdk_bytes, 0x3000);
+        for (i = 0; i < 32; ++i) memory[a + 0x2000 + i] = (unsigned char)(slot[i / 8] >> (8 * (i % 8)));
+        rt.svc = svc;
+        rt.undef = undefined;
+        rt.poll = poll;
+        rt.miss = miss;
+        c.rt = &rt;
+        c.mem = memory;
+        c.disp = (GuestFn*)calloc((size_t)(m->code_hi - m->code_lo) / 4, sizeof(GuestFn));
+        c.code_lo = m->code_lo;
+        c.code_hi = m->code_hi;
+        for (i = 0; i < m->nentries; ++i) c.disp[(m->entry_addr[i] - m->code_lo) / 4] = m->entry_fn[i];
+        c.x[30] = 0x1000;
+        missed = 0;
+        if (stub < m->nfns) {
+            m->stale[stub] = 1;
+            entry(&c, a + CALLER);
+            m->stale[stub] = 0;
+            if (c.pc != a + STUB || c.x[0] || c.x[30] != a + CALLER + 8)
+                fprintf(stderr, "stale stub: pc = %llx, x0 = %llx, x30 = %llx\n", (unsigned long long)c.pc,
+                        (unsigned long long)c.x[0], (unsigned long long)c.x[30]);
+            check(c.pc == a + STUB && !c.x[0] && c.x[30] == a + CALLER + 8 && !missed,
+                  "a call of a stub whose code changed leaves for the stub's address");
+        }
         free(c.disp);
     }
     free(memory);
@@ -277,12 +331,14 @@ int main(int argc, char** argv) {
     static unsigned char file[0x3100], main_bytes[0x3000], sdk_bytes[0x3000];
     char *root, *game, *exefs, *path, *out, *module, *text = NULL;
     const char *args[16], *hooked = NULL;
+    char dump[40];
     const char* bound_line =
         "PLT: 4 calls through 3 stubs made direct, 1 stubs of their module's own functions and 2 of "
         "another module's\n";
     size_t r;
     int k, pass;
     if (argc != 3) return 2;
+    snprintf(dump, sizeof dump, "--ir_dump_pc=%llx", (unsigned long long)SNX_CODE_BASE + CALLER);
     root = snx_temp_dir(NULL);
     if (!root) return 1;
     game = snx_path_join(root, "Game"); /* the name its folder gives it */
@@ -318,6 +374,7 @@ int main(int argc, char** argv) {
         args[k++] = out;
         args[k++] = "--nce=0"; /* code made ahead of time, which an NCE recompile has none of */
         if (pass == 2) args[k++] = "--hook-direct-calls";
+        if (!pass) args[k++] = dump; /* the IR of the function that calls through the stubs, in the output */
         args[k] = NULL;
         if (run_cli(args, root, &text)) {
             fprintf(stderr, "%s\n", text ? text : "");
@@ -328,6 +385,14 @@ int main(int argc, char** argv) {
         check(text && (pass == 2 ? !strstr(text, "PLT: ") : strstr(text, bound_line) != NULL),
               pass == 2 ? "nothing is bound when every call goes through its dispatch slot"
                         : "the recompile says how many calls through the PLT it made direct");
+        if (!pass) { /* the call is made where the BL or B is, not in the stub's function */
+            const SnxU64 a = SNX_CODE_BASE, b = SNX_CODE_BASE + 0x4000;
+            check(ir_calls(text, a + CALLER), "the recompile prints the IR of the function that calls");
+            check(ir_calls(text, b + EXT_ADD) && ir_calls(text, a + OWN_ADD) && ir_calls(text, b + EXT_TAIL),
+                  "the calling function calls the three bound functions itself");
+            check(!ir_calls(text, a + MAIN_TWO) && !ir_calls(text, b + SDK_TWO),
+                  "and neither function of the symbol two modules define");
+        }
         free(text);
         text = NULL;
         module_runs(module, main_bytes, sdk_bytes, pass == 2 ? TABLE : pass ? ROUTED : BOUND);
