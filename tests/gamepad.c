@@ -168,6 +168,8 @@ int main(void) {
     CHECK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD));
     w = SDL_CreateWindow("gamepad", 64, 64, 0);
     CHECK(w != NULL && SDL_GetKeyboardFocus() == w);
+    /* players as each one's device names it, which the checks up to the console's way below count on */
+    CHECK(gamepad_ini("gamepad_assign", "0"));
 
     /* the SDL mappings of the launcher whose games/ the game is in, beside its settings.ini: a portable copy's
        config/gamecontrollerdb.txt. SDL takes a line of a file only with its own platform */
