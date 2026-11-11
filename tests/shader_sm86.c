@@ -3246,6 +3246,70 @@ static void test_global_two_bases(const char* dir) {
     CHECK(keep_module(dir, "global_two_bases", spv, count));
     free(spv);
 }
+/* An atomic whose operand and destination are one register, at an address that adds two bases (global_dynamic), as
+   one game's placement programs take a warp's first slot of a list: ATOMG.E.ADD R2, [UR4 + 0x10], R2 then STG
+   [UR4 + 0x14], R2. Word 4 of c[0][0x20]'s buffer goes from 5 to 8 (R2 is 3), and word 5 gets 5, what was there */
+static void test_global_atomic_same_register(const char* dir) {
+    u8 code[16 * 10] = {0};
+    u32 n = 0;
+    put(code, n++, ualu(0x082, 6, 0, 1));
+    put(code, n++, uldc64_to(8, 0, 0x20));
+    put(code, n++, uldc64_to(4, 1, 0));
+    Word imad = fix(0x2a5); /* UIMAD.WIDE.U32 UR4, UR6, UR8, UR4 */
+    set(&imad, 16, 6, 4);
+    set(&imad, 24, 6, 6);
+    set(&imad, 32, 6, 8);
+    set(&imad, 64, 6, 4);
+    set(&imad, 81, 3, 7);
+    set(&imad, 87, 1, 1);
+    set(&imad, 88, 4, 0xf);
+    put(code, n++, imad);
+    put(code, n++, mov_imm(2, 3));
+    put(code, n++, global_uniform(0x9a8, 2, 4, 0x10, 2, 0, 0));
+    put(code, n++, global_uniform(0x986, 0, 4, 0x14, 2, 4, 0));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "global atomic, one register: %s\n", si.first_unsupported);
+        return;
+    }
+    int at_c0 = -1, at_c1 = -1;
+    for (int k = 0; k < si.ngbuf; k++) {
+        if (si.gbuf_cbuf_off[k] == 0x20) at_c0 = k;
+        if (si.gbuf_cbuf_off[k] == 1u << 16) at_c1 = k;
+    }
+    CHECK(si.ngbuf == 2 && at_c0 >= 0 && at_c1 >= 0);
+    if (at_c0 < 0 || at_c1 < 0) {
+        free(spv);
+        return;
+    }
+    static u32 bank0[1024], bank1[64], buffer[64], other[4], log[2 * SH_WLOG_PART];
+    bank0[0x20 / 4] = 0x1000, bank0[0x28 / 4] = 0x100;
+    buffer[4] = 5;
+    SpvEvalEnv env = {0};
+    env.ubo[SNX_VKB_CB] = bank0;
+    env.ubo_words[SNX_VKB_CB] = 1024;
+    env.ubo[SNX_VKB_CB + 1] = bank1;
+    env.ubo_words[SNX_VKB_CB + 1] = 64;
+    env.ubo[SNX_VKB_SSBO + at_c0] = buffer;
+    env.ubo_words[SNX_VKB_SSBO + at_c0] = 64;
+    env.ubo[SNX_VKB_SSBO + at_c1] = other;
+    env.ubo_words[SNX_VKB_SSBO + at_c1] = 4;
+    env.ubo[SNX_VKB_WPAGES] = log;
+    env.ubo_words[SNX_VKB_WPAGES] = 2 * SH_WLOG_PART;
+    const char* why = spv_eval(spv, count, &env);
+    int ok = !why && buffer[4] == 8 && buffer[5] == 5 && !other[0];
+    CHECK(ok);
+    if (!ok)
+        fprintf(stderr, "global atomic, one register: %s, words %u %u\n", why ? why : "ran", buffer[4], buffer[5]);
+    CHECK(keep_module(dir, "global_atomic_same_register", spv, count));
+    free(spv);
+}
 
 /* The driver's tessellation control programs: a header with 6 TessFactor words, no outputs and 0 threads for each
    input primitive, and an EXIT. It runs no invocation: draws take the passthrough in its place, and the translator
@@ -3933,6 +3997,7 @@ int main(int argc, char** argv) {
     test_shading_rate(dir);
     test_atomic_fadd(dir);
     test_global_two_bases(dir);
+    test_global_atomic_same_register(dir);
     test_uniform_handle(dir);
     test_memory_eval();
     test_uldc_word_key(dir);
