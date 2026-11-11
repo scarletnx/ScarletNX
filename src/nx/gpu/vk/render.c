@@ -2286,9 +2286,16 @@ static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites*
     *e = (DescSetEntry){hash[0], hash[1], frame, set};
     return set;
 }
+/* The fragment program's texture slots a draw samples at the own pixel's centre by where its vertex stage puts the
+   generic they are sampled at (ShaderInfo.tex_screen_mask, tex_uv_mask), and the draw's viewport, which has to cover a
+   slot's target for it (screen_covers) */
+typedef struct {
+    VkViewport vp;
+    u64 slots;
+} ScreenSlots;
 static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
                                   u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images,
-                                  const VkViewport* screen, const XfbBind* xfb);
+                                  const ScreenSlots* screen, const XfbBind* xfb);
 /* Whether the viewport covers the target t whole, so a fragment's position mapped onto [0, 1] is its pixel's centre in
    t: x from 0 over t's width, y from 0 down (a positive height) or up from its bottom (negative), as render_draw
    matched the sign to the vertex program's */
@@ -2299,12 +2306,12 @@ static int screen_covers(const VkViewport* vp, const Surf* t) {
 }
 /* scaled: a bit for each texture slot bound to a scaled render target (shader_scaled_coords in shader/emit_texture.c),
    and in scaled[1] the ones of those whose target has the size of the draw's (own_size) */
-/* screen: the draw's viewport when its last stage maps the fragment program's screen generic onto it (render_draw), for
-   the samples at the own pixel's centre (ShaderInfo.tex_screen_mask).
+/* screen: the slots sampled at the own pixel's centre where the draw's viewport covers their target (render_draw), NULL
+   for none.
    xfb: the vertex stage's transform feedback stores (xfb_bind), NULL for none */
 static VkDescriptorSet stage_set(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro, u32* fb,
                                  u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images,
-                                 const VkViewport* screen, const XfbBind* xfb) {
+                                 const ScreenSlots* screen, const XfbBind* xfb) {
     SNX_ZONE(z, "stage set");
     VkDescriptorSet set = stage_set_(ds, stage, s, rt, zt, n, zt_ro, fb, scaled, res, draw, images, screen, xfb);
     SNX_ZONE_END(z);
@@ -2315,7 +2322,7 @@ static VkBuffer g_mesh_first;
 static u64 g_mesh_first_off;
 static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
                                   u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images,
-                                  const VkViewport* screen, const XfbBind* xfb) {
+                                  const ScreenSlots* screen, const XfbBind* xfb) {
     VkDescriptorSetLayout layout = g_vk_dslayout[s->indexed][shader_vk_set(s->stage)];
     VkDescriptorSet set = VK_NULL_HANDLE; /* the writes take it once their contents are known (desc_set_cached) */
     DescWrites d;
@@ -2467,7 +2474,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
            where the guest's texture reads see what was there before the draw: those read a copy */
         u32 slots = 0;
         if (t && fb && g_vk.has_feedback && t->layout != VK_IMAGE_LAYOUT_UNDEFINED &&
-            ((s->si.tex_own_pixel_mask >> i & 1) || ((s->si.tex_screen_mask >> i & 1) && screen_covers(screen, t))))
+            ((s->si.tex_own_pixel_mask >> i & 1) ||
+             (screen && (screen->slots >> i & 1) && screen_covers(&screen->vp, t))))
             for (u32 j = 0; j < n; j++)
                 if (rt[j] == t) slots |= 1u << j;
         if (slots) {
@@ -4370,19 +4378,24 @@ retry:
     }
     /* the fragment program's samples at a generic's (x / w, y / w) read the own pixel's centre when the vertex program,
        the last stage, writes that generic as the position mapped onto [0, 1] with the y of the viewport's sign:
-       stage_set_ checks the viewport covers the target. Not under a swizzle the program applies, which moves the
-       position and not the generic */
-    VkViewport screen_vp = {0};
-    int screen = fs && fs->si.tex_screen_mask && vs && !tcs && !tes && !sh.gs && !vs->si.writes_viewport &&
-                 ds->vp.transform_on && !sh.swizzle && (vs->si.screen_out_mask >> fs->si.screen_in & 1);
-    if (screen) {
-        screen_vp = vk_viewport_from(&ds->dyn, &ds->vp, 0);
-        screen = (vs->si.screen_out_yneg_mask >> fs->si.screen_in & 1) ? screen_vp.height < 0 : screen_vp.height > 0;
+       stage_set_ checks the viewport covers the target. Its samples at a generic's (x, y) do when the vertex program
+       writes its position from that generic, [0, 1] mapped onto the viewport with a w of 1, the y by the same sign.
+       Not under a swizzle the program applies, which moves the position and not the generic */
+    ScreenSlots screen = {0};
+    if (fs && vs && !tcs && !tes && !sh.gs && !vs->si.writes_viewport && ds->vp.transform_on && !sh.swizzle) {
+        int by_w = fs->si.tex_screen_mask && (vs->si.screen_out_mask >> fs->si.screen_in & 1);
+        int by_uv = fs->si.tex_uv_mask && (vs->si.uv_out_mask >> fs->si.uv_in & 1);
+        if (by_w || by_uv) screen.vp = vk_viewport_from(&ds->dyn, &ds->vp, 0);
+        if (by_w &&
+            ((vs->si.screen_out_yneg_mask >> fs->si.screen_in & 1) ? screen.vp.height < 0 : screen.vp.height > 0))
+            screen.slots |= fs->si.tex_screen_mask;
+        if (by_uv && ((vs->si.uv_out_yneg_mask >> fs->si.uv_in & 1) ? screen.vp.height < 0 : screen.vp.height > 0))
+            screen.slots |= fs->si.tex_uv_mask;
     }
     VkDescriptorSet vset =
         stage_set(ds, vs_bind, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images, NULL, &xfb_stores);
     VkDescriptorSet fset = fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, scaled, res, &storage, &images,
-                                          screen ? &screen_vp : NULL, NULL)
+                                          screen.slots ? &screen : NULL, NULL)
                               : VK_NULL_HANDLE;
     /* the sets of the stages between, at their stage's index (shader_vk_set) */
     between[0] = tcs;

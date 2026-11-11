@@ -4306,7 +4306,7 @@ static void feedback_screen_uv(void) {
     screen_uv_case(screen, 9, 0xaa00, 1, "TEX at a generic's x / w and y / w samples the own pixel's centre");
     screen_uv_case(screen_texs, 9, 0xaa00, 1, "TEXS 2D at a generic's x / w and y / w samples the own pixel's centre");
     screen_uv_case(passed, 7, 0xaa00, 1, "x, y and w read without the multiplier divide alike");
-    screen_uv_case(undivided, 9, 0xaa00, 0, "TEX at a generic's x and y, not divided by its w, reads elsewhere");
+    screen_uv_case(undivided, 9, 0xaa00, 0, "TEX at a generic's x and y, not divided by its w, is no sample at x / w");
     screen_uv_case(other_y, 9, 0xaaaa00, 0, "TEX whose y is another generic's over this one's w reads elsewhere");
     screen_uv_case(two_generics, 11, 0xaaaa00, 0, "TEX at one generic's x / w and another's y / w reads elsewhere");
     screen_uv_case(saturated_w, 7, 0xaa00, 0, "a w read saturated is not the position's w");
@@ -4645,6 +4645,188 @@ static void per_vertex_pass(void) {
         free(spv);
     }
 }
+
+/* ShaderInfo.tex_uv_mask: a plain 2D sample at a generic's x and y as the vertex program wrote them, read by IPA in
+   pass mode or multiplied by 1 / gl_FragCoord.w as the console's compiler reads a perspective input, reads the
+   fragment's own pixel's centre wherever the vertex program wrote its position from that generic; uv_in names the
+   generic. A generic constant over the primitive, another multiplier, a coordinate computed further, x and y of two
+   generics or swapped, a level bias, or a slot also sampled at x / w and y / w read other pixels */
+static void plain_uv_case(const u64* instructions, int count, u32 imap7, u64 uv, const char* what) {
+    size_t slots, words = 0;
+    u64* code = guest_program(instructions, count, NULL, &slots);
+    if (!code) return;
+    set_sph(code, 7, imap7); /* byte 0x18 + 5 on: generic 5's (and 6's) components, 2 bits each */
+    ShaderInfo info = {0};
+    u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 0, 1, 1, 1);
+    free(code);
+    check_translated(spv, &info, what);
+    int ok =
+        spv && info.tex_uv_mask == uv && !info.tex_own_pixel_mask && !info.tex_screen_mask && (!uv || info.uv_in == 5);
+    if (spv && !ok)
+        fprintf(stderr, "  uv mask %#llx (generic %u), screen %#llx, own pixel %#llx, expected uv %#llx\n",
+                (unsigned long long)info.tex_uv_mask, info.uv_in, (unsigned long long)info.tex_screen_mask,
+                (unsigned long long)info.tex_own_pixel_mask, (unsigned long long)uv);
+    check(ok, what);
+    free(spv);
+}
+static void feedback_plain_uv(void) {
+    const u64 ipa_w = SCREEN_IPA(0, 0x7c), rcp_w = SCREEN_RCP(0, 0), x = SCREEN_IPA_MUL(1, 0xd0, 0),
+              y = SCREEN_IPA_MUL(2, 0xd4, 0), tex = SCREEN_TEX(8, 1);
+    const u64 passed[] = {SCREEN_IPA(1, 0xd0), SCREEN_IPA(2, 0xd4), tex};
+    const u64 perspective[] = {ipa_w, rcp_w, x, y, tex};
+    const u64 texs[] = {ipa_w, rcp_w, x, y, OWN_TEXS(1, 1, 2)};
+    const u64 other_multiplier[] = {SCREEN_IPA(3, 0xdc), SCREEN_RCP(3, 3), SCREEN_IPA_MUL(1, 0xd0, 3),
+                                    SCREEN_IPA_MUL(2, 0xd4, 3), tex};
+    const u64 scaled[] = {SCREEN_IPA(1, 0xd0), SCREEN_IPA(2, 0xd4), SCREEN_FMUL(1, 1, 2), tex};
+    const u64 other_y[] = {SCREEN_IPA(1, 0xd0), SCREEN_IPA(2, 0xe4), tex};
+    const u64 swapped[] = {SCREEN_IPA(1, 0xd4), SCREEN_IPA(2, 0xd0), tex};
+    const u64 saturated[] = {SCREEN_IPA(1, 0xd0) | 1ull << 51, SCREEN_IPA(2, 0xd4), tex};
+    const u64 bias[] = {SCREEN_IPA(1, 0xd0), SCREEN_IPA(2, 0xd4), tex | 2ull << 55};
+    /* the same slot at the generic's x / w and y / w too, as feedback_screen_uv samples it */
+    const u64 both[] = {ipa_w,
+                        rcp_w,
+                        x,
+                        y,
+                        SCREEN_IPA_MUL(3, 0xdc, 0),
+                        SCREEN_RCP(3, 3),
+                        SCREEN_FMUL(4, 1, 3),
+                        SCREEN_FMUL(5, 2, 3),
+                        SCREEN_TEX(8, 4),
+                        SCREEN_TEX(12, 1)};
+    plain_uv_case(passed, 3, 0xaa00, 1, "TEX at a generic's x and y read in pass mode samples where the generic says");
+    plain_uv_case(perspective, 5, 0xaa00, 1, "TEX at a generic's x and y multiplied by 1 / gl_FragCoord.w does too");
+    plain_uv_case(texs, 5, 0xaa00, 1, "TEXS 2D at a generic's x and y does too");
+    plain_uv_case(passed, 3, 0xff00, 1, "a screen-linear generic's x and y do too");
+    plain_uv_case(passed, 3, 0x5500, 0, "a generic constant over the primitive is no place of a fragment");
+    plain_uv_case(other_multiplier, 5, 0xaa00, 0, "x and y multiplied by another reciprocal are not the generic's");
+    plain_uv_case(scaled, 4, 0xaa00, 0, "a coordinate computed from the generic's reads elsewhere");
+    plain_uv_case(other_y, 3, 0xaaaa00, 0, "TEX at one generic's x and another's y reads elsewhere");
+    plain_uv_case(swapped, 3, 0xaa00, 0, "TEX at a generic's y and x, swapped, reads elsewhere");
+    plain_uv_case(saturated, 3, 0xaa00, 0, "an x read saturated is not the generic's x");
+    plain_uv_case(bias, 3, 0xaa00, 0, "TEX.LB at a generic's x and y may read another level");
+    plain_uv_case(both, 10, 0xaa00, 0, "a slot sampled at x and y and at x / w and y / w needs both mappings");
+}
+
+/* ShaderInfo.uv_out_mask: the vertex program writes its position from generic 0's x and y, pos.x = x * 2 - 1 and
+   pos.y = y * -2 + 1 (the generic's bit in uv_out_yneg_mask) or y * 2 - 1, with the position's w never stored or the
+   constant 1: the generic's (x, y) at a fragment is then that fragment's place in [0, 1] of the viewport. Another
+   scale or offset, a w from an attribute (a perspective divide), the generic's x and y swapped or stored from other
+   values, or a saturated product leave the generic out. The program may drop a vertex
+   first: under a predicate made from the instance's number alone it writes a position outside the clip volume and
+   leaves, by a SYNC under that predicate to the stores. A predicate made from a vertex's attribute, a dropped
+   position inside the clip volume, a write or the SYNC under another guard, or a SYNC to before the stores may put
+   vertices of both kinds, or neither, in one triangle */
+#define UV_ALD(d, addr) ((0xefd9ff8000070000ull & ~(3ull << 47)) | (u64)(addr) << 20 | 0xff00ull | (u64)(d))
+#define UV_FFMA(d, a, c, scale, negc)                                                                                  \
+    (0x32a0000000070000ull | (u64)((scale) >> 12 & 0x7ffff) << 20 | (u64)((scale) >> 31) << 56 | (u64)(c) << 39 |      \
+     (u64)(negc) << 49 | (u64)(a) << 8 | (u64)(d))
+static void vertex_uv_out(void) {
+    const u32 two = 0x40000000u, minus_two = 0xc0000000u, one = 0x3f800000u;
+    const u64 u = UV_ALD(0, 0x80), v = UV_ALD(1, 0x84), r6 = mov32i(6, one);
+    const u64 x = UV_FFMA(4, 0, 6, two, 1), y_down = UV_FFMA(5, 1, 6, minus_two, 0), y_up = UV_FFMA(5, 1, 6, two, 1);
+    const u64 pos = SCREEN_AST(0x70, 4, 2), generic = SCREEN_AST(0x80, 0, 2);
+    /* SSY to the stores (word 29), the instance's number, @P0 the dropped vertex's outputs and SYNC, then the
+       others' */
+    const u64 ssy = 0xe290000000000000ull | 0x88ull << 20, instance = UV_ALD(0, 0x2f8),
+              isetp = 0x366b038000170007ull, /* ISETP P0, R0, 1 */
+        sync_p0 = 0xf0f800000000000full, sync = 0xf0f800000007000full;
+    const u64 far_x = 0x010c61c40000f004ull, far_y = 0x010c61c40000f005ull;   /* @P0 MOV32I R4 and R5, -10000.0 */
+    const u64 near_x = 0x0103f0000000f004ull;                                 /* @P0 MOV32I R4, 0.5 */
+    const u64 zero_u = 0x5c9807800ff00008ull, zero_v = 0x5c9807800ff00009ull; /* @P0 MOV R8 and R9, RZ */
+    const u64 u8_ = UV_ALD(8, 0x80), v9 = UV_ALD(9, 0x84), x8 = UV_FFMA(4, 8, 6, two, 1),
+              y9 = UV_FFMA(5, 9, 6, minus_two, 0), generic8 = SCREEN_AST(0x80, 8, 2);
+    struct {
+        u64 instructions[17];
+        int count;
+        u32 out, yneg;
+        const char* what;
+    } cases[] = {
+        {{u, v, r6, x, y_down, pos, generic},
+         7,
+         1,
+         1,
+         "x * 2 - 1 and y * -2 + 1: the generic mapped onto the viewport, y down"},
+        {{u, v, r6, x, y_up, pos, generic},
+         7,
+         1,
+         0,
+         "x * 2 - 1 and y * 2 - 1: the generic mapped onto the viewport, y up"},
+        {{u, v, r6, x, y_down, pos, generic, SCREEN_AST(0x7c, 6, 1)}, 8, 1, 1, "a w stored as the constant 1"},
+        {{u, v, r6, x, y_down, pos, generic, UV_ALD(3, 0x8c), SCREEN_AST(0x7c, 3, 1)},
+         9,
+         0,
+         0,
+         "a w from an attribute divides the position and not the generic"},
+        {{u, v, r6, UV_FFMA(4, 0, 6, two, 0), y_down, pos, generic}, 7, 0, 0, "x * 2 + 1 is an offset of a viewport"},
+        {{u, v, r6, UV_FFMA(4, 0, 6, one, 1), y_down, pos, generic}, 7, 0, 0, "x * 1 - 1 is half the viewport's scale"},
+        {{u, v, r6, UV_FFMA(4, 1, 6, two, 1), y_down, pos, generic}, 7, 0, 0, "a position's x from the generic's y"},
+        {{u, v, r6, x, y_down, pos, SCREEN_AST(0x80, 1, 2)},
+         7,
+         0,
+         0,
+         "a generic stored from other values than the position's"},
+        {{u, v, r6, x | 1ull << 50, y_down, pos, generic}, 7, 0, 0, "a saturated product is not x * 2 - 1"},
+        {{ssy, instance, isetp, far_x, far_y, zero_u, zero_v, sync_p0, u8_, v9, r6, x8, y9, sync, pos, generic8},
+         16,
+         1,
+         1,
+         "a vertex dropped by the instance's number, outside the clip volume, leaves the others' mapping"},
+        {{ssy, UV_ALD(0, 0x90), isetp, far_x, far_y, zero_u, zero_v, sync_p0, u8_, v9, r6, x8, y9, sync, pos, generic8},
+         16,
+         0,
+         0,
+         "a vertex dropped by an attribute of its own may share a triangle with one that isn't"},
+        {{ssy, instance, isetp, near_x, far_y, zero_u, zero_v, sync_p0, u8_, v9, r6, x8, y9, sync, pos, generic8},
+         16,
+         0,
+         0,
+         "a dropped vertex inside the clip volume is drawn"},
+        {{ssy, instance, isetp, far_x ^ 8ull << 16, far_y, zero_u, zero_v, sync_p0, u8_, v9, r6, x8, y9, sync, pos,
+          generic8},
+         16,
+         0,
+         0,
+         "a dropped vertex's x under another guard than the SYNC's"},
+        {{ssy, instance, isetp, far_x, far_y ^ 8ull << 16, zero_u, zero_v, sync_p0, u8_, v9, r6, x8, y9, sync, pos,
+          generic8},
+         16,
+         0,
+         0,
+         "a dropped vertex's y under another guard than its x"},
+        {{ssy, instance, isetp, far_x, far_y, zero_u, zero_v, sync_p0 ^ 8ull << 16, u8_, v9, r6, x8, y9, sync, pos,
+          generic8},
+         16,
+         0,
+         0,
+         "a SYNC under the predicate's other side takes away the vertices that wrote nothing"},
+        {{0xe290000000000000ull | 0x68ull << 20, instance, isetp, far_x, far_y, zero_u, zero_v, sync_p0, u8_, v9, r6,
+          x8, y9, sync, pos, generic8},
+         16,
+         0,
+         0,
+         "a SYNC that lands among the other vertices' instructions (word 25) runs some of them"},
+        /* @P1 BRA (word 12) to the dropped vertex's third write (word 19); the stores are at word 31 */
+        {{0xe290000000000000ull | 0x98ull << 20, 0xe24000000001000full | 48ull << 20, instance, isetp, far_x, far_y,
+          zero_u, zero_v, sync_p0, u8_, v9, r6, x8, y9, sync, pos, generic8},
+         17,
+         0,
+         0,
+         "a branch to among the dropped vertex's writes leaves its position unwritten"},
+    };
+    for (size_t k = 0; k < sizeof cases / sizeof *cases; k++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* spv = translate(cases[k].instructions, cases[k].count, ST_VS, &info, &words, 0);
+        check_translated(spv, &info, cases[k].what);
+        if (spv && (info.uv_out_mask != cases[k].out || info.uv_out_yneg_mask != cases[k].yneg))
+            fprintf(stderr, "  uv out %#x, y negated %#x, expected %#x and %#x\n", info.uv_out_mask,
+                    info.uv_out_yneg_mask, cases[k].out, cases[k].yneg);
+        check(spv && info.uv_out_mask == cases[k].out && info.uv_out_yneg_mask == cases[k].yneg, cases[k].what);
+        free(spv);
+    }
+}
+#undef UV_ALD
+#undef UV_FFMA
 #undef SCREEN_IPA
 #undef SCREEN_IPA_MUL
 #undef SCREEN_RCP
@@ -5374,6 +5556,8 @@ int main(int argc, char** argv) {
     texture_unread_slots();
     vertex_screen_out();
     vertex_position_out();
+    feedback_plain_uv();
+    vertex_uv_out();
     fragment_position_pass();
     per_vertex_pass();
     settled_when_translated();

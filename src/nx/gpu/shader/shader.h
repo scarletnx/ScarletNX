@@ -189,6 +189,15 @@ typedef struct {
        (screen_out_mask) and the draw's viewport covers the target (vk/render.c) */
     u64 tex_screen_mask;
     u32 screen_in;
+    /* FS: texture slots every read of which is a plain sample of a 2D texture at a generic's (x, y) as the vertex stage
+       wrote them (shader_direct_plain_uv), the generic uv_in for all of them, or reads the own pixel as above: the
+       fragment's own pixel's centre too when the vertex stage writes its position from that generic, mapping [0, 1]
+       onto the viewport with a w of 1 (uv_out_mask), and the draw's viewport covers the target (vk/render.c) */
+    u64 tex_uv_mask;
+    u32 uv_in;
+    /* VS: generic outputs whose (x, y) the program maps onto its position, pos.x = x * 2 - 1 and pos.y = y * 2 - 1,
+       with a w of 1, and of them in uv_out_yneg_mask those with pos.y = y * -2 + 1 (shader_direct_uv_out) */
+    u32 uv_out_mask, uv_out_yneg_mask;
     /* every stage: texture slots no instruction reads a texel of: TXQ and TMML alone name them, which ask a texture's
        size, its levels or a level of detail. A draw that renders to such a slot's texture binds its copy without the
        target's pixels brought into it (vk/render.c) */
