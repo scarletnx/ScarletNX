@@ -17,6 +17,12 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
     (void)max;
     return 0;
 }
+int own_hash(u64 addr, u64 size, u64* h) {
+    (void)addr;
+    (void)size;
+    (void)h;
+    return 0;
+}
 /* the GPU's reads of guest memory (gpu.c): every byte the CPU's */
 u32 own_stage(u64 addr, u64 size, u8* dst, OwnRange* out, u32 max) {
     (void)out;

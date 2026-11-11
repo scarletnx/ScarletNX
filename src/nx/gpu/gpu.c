@@ -165,11 +165,12 @@ u8* gmem_ptr(u64 gva, u64 size) {
 u32 gmem_r32(u64 gva) {
     /* the common read, a word the CPU alone wrote: no queued release, pending result or owner holds it, so guest
        memory has its bytes and the general path's checks and landing are skipped. A release's payload and a pending
-       result, over any guest memory, take the general path below */
-    u64 cpu = 0;
+       result, over any guest memory, take the general path below, and so does a word on a host page the GPU owns
+       bytes of: the page is trapped, and the caller may hold the renderer's lock, which its landing needs */
+    u64 cpu = 0, owners = 0;
     if (!g_cs_any && !g_gfx_any && !g_gfx_img_any && !g_uma_any &&
-        !__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) &&
-        !own_lookup(gva & ~(GMEM_PAGE - 1), GMEM_PAGE, NULL, 0) && gmmu_run(gva, 4, &cpu) == 4)
+        !__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) && gmmu_run(gva, 4, &cpu) == 4 &&
+        !own_hash(cpu, 4, &owners))
         return snx_ld_le32(GP(cpu));
     u8 b[4] = {0};
     gmem_read(gva, b, 4);
