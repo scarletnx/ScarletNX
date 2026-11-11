@@ -1720,7 +1720,9 @@ rebind:
     VkCommandBuffer cb;
     if (gfx) {
         /* textures from the compute engine's headers; texture handles from its texture constant buffer bank. Their
-           number types are what the program was keyed on (vk_tex_num), and depth textures aren't sampled here */
+           number types are what the program was keyed on (vk_tex_num). A depth target is sampled as a draw samples
+           it, its depth (or with a compare, the comparison) through a view of its depth aspect: one game's fog
+           lighting samples its sun's shadow cascades and another depth target, which read 0 as no texture */
         u64 tic_base = d->tex_pool, tsc_base = d->smp_pool;
         u32 tcb = d->tex_bank;
         int fmt_used = 0;
@@ -1766,8 +1768,7 @@ rebind:
                       : !((p->si.tex_int_mask >> i) & 1) ? 0
                       : ((p->si.tex_sint_mask >> i) & 1) ? 2
                                                          : 1;
-            VkImageView v = t && (!t->f.depth || vk_tic_reads_stencil(tic)) ? vk_tex_bind_view(t, want, tic, tsc, num)
-                                                                            : VK_NULL_HANDLE;
+            VkImageView v = t ? vk_tex_bind_view(t, want, tic, tsc, num) : VK_NULL_HANDLE;
             VkImageLayout sampled_layout =
                 p->si.nimg ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             const Surf* sampled = v ? t : NULL; /* the texture whose own view is bound, for the sampler */
