@@ -343,10 +343,16 @@ size_t snx_ctr_dsp_pipe_read(SnxCtrDsp* dsp, unsigned pipe, uint8_t* out, size_t
     return size;
 }
 
-/* The region with the higher frame counter is the one the application finished, unless the counter wrapped */
-static unsigned current_region(SnxCtrDsp* dsp) {
+uint32_t snx_ctr_dsp_frame_counters(SnxCtrDsp* dsp) {
     uint16_t counter[2] = {0, 0};
     for (unsigned i = 0; i < 2; ++i) (void)ram_read(dsp, region(i) + DSP_FRAME_COUNTER, &counter[i], 2);
+    return counter[0] | (uint32_t)counter[1] << 16;
+}
+
+/* The region with the higher frame counter is the one the application finished, unless the counter wrapped */
+static unsigned current_region(SnxCtrDsp* dsp) {
+    uint32_t both = snx_ctr_dsp_frame_counters(dsp);
+    const uint16_t counter[2] = {(uint16_t)both, (uint16_t)(both >> 16)};
     if (counter[0] == 0xffff && counter[1] != 0xfffe) return 1;
     if (counter[1] == 0xffff && counter[0] != 0xfffe) return 0;
     return counter[0] > counter[1] ? 0 : 1;

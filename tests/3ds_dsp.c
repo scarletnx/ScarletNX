@@ -405,6 +405,46 @@ static void service(void) {
     /* a frame due raises the audio pipe's interrupt */
     snx_ctr_dsp_frame(p, p->dsp.next_frame_ns);
     assert(p->objects[id].data.event.signaled);
+    /* Ten frames behind with the host clock standing still, each frame waits for the application's answer to the one
+       before (the other region written, its frame counter moved), so each raises an interrupt of its own: run back to
+       back, ten frames would have raised one */
+    const uint64_t frame_ns = SNX_CTR_DSP_FRAME_NS, now = p->dsp.frame_ns;
+    p->objects[id].data.event.signaled = 0;
+    p->dsp.next_frame_ns = now - 10 * frame_ns;
+    assert(snx_ctr_dsp_deadline(p) == now + frame_ns);
+    const uint64_t frames = p->dsp.frames, late = p->dsp.late, unanswered = p->dsp.unanswered;
+    const uint16_t first = (uint16_t)p->dsp.counters, second = (uint16_t)(p->dsp.counters >> 16);
+    unsigned signals = 0;
+    for (uint16_t counter = 1; counter <= 10; ++counter) {
+        counters(p->memory, (uint16_t)(first + counter), second);
+        assert(snx_ctr_dsp_deadline(p) == p->dsp.next_frame_ns && p->dsp.next_frame_ns <= now);
+        snx_ctr_dsp_frame(p, now);
+        signals += p->objects[id].data.event.signaled;
+        p->objects[id].data.event.signaled = 0; /* the application takes it */
+        assert(snx_ctr_dsp_deadline(p) == now + frame_ns);
+    }
+    /* caught up; the first nine ran more than a frame after they were due */
+    assert(signals == 10 && p->dsp.frames == frames + 10 && p->dsp.late == late + 9);
+    assert(p->dsp.unanswered == unanswered && p->dsp.next_frame_ns == now);
+    /* no answer: the next runs a frame after the last, and counts as run before the answer */
+    snx_ctr_dsp_frame(p, now + frame_ns);
+    assert(p->objects[id].data.event.signaled && p->dsp.unanswered == unanswered + 1);
+    p->objects[id].data.event.signaled = 0;
+    /* more than SNX_CTR_DSP_MAX_LATE_NS behind, the frames due up to now are dropped: 0.2 s is 41 frames, and the
+       frame that runs is the first of them */
+    counters(p->memory, (uint16_t)(first + 11), second);
+    const uint64_t later = now + 2 * frame_ns;
+    p->dsp.next_frame_ns = later - 200000000u;
+    const uint64_t dropped = p->dsp.dropped;
+    snx_ctr_dsp_frame(p, later);
+    assert(p->dsp.dropped == dropped + 40 && p->dsp.next_frame_ns == later + frame_ns);
+    /* the scheduler too: ten frames behind and no answer, two visits within a frame of each other run one frame */
+    p->objects[id].data.event.signaled = 0;
+    p->dsp.next_frame_ns = snx_ctr_now_ns() - 10 * frame_ns;
+    p->dsp.frame_ns = 0;
+    const uint64_t visited = p->dsp.frames, start = snx_ctr_now_ns();
+    assert(snx_ctr_schedule(p) == SNX_CTR_SCHED_RUN && snx_ctr_schedule(p) == SNX_CTR_SCHED_RUN);
+    assert(p->dsp.frames - visited >= 1 && p->dsp.frames - visited <= 1 + (snx_ctr_now_ns() - start) / frame_ns);
     const uint32_t flush[] = {0x00130082, DATA, 0x100, 0, CTR_PROCESS_HANDLE};
     ctr_call(p, dsp, flush, 5, SNX_CTR_SVC_RETURN, 0);
     assert(ctr_command_word(p, 0) == 0x00130040 && !ctr_command_word(p, 1));

@@ -35,6 +35,8 @@ const char* snx_ctr_dsp_pipe_write(SnxCtrDsp* dsp, unsigned pipe, const uint8_t*
 size_t snx_ctr_dsp_pipe_readable(const SnxCtrDsp* dsp, unsigned pipe);
 /* Moves up to size bytes out of the pipe, returning how many */
 size_t snx_ctr_dsp_pipe_read(SnxCtrDsp* dsp, unsigned pipe, uint8_t* out, size_t size);
+/* The two regions' frame counters, region 1's in the high half: the application moves one with each frame it writes */
+uint32_t snx_ctr_dsp_frame_counters(SnxCtrDsp* dsp);
 /* One audio frame. Returns whether the DSP was on and made one: then frame holds its stereo samples and the audio
    pipe's interrupt has been raised */
 bool snx_ctr_dsp_tick(SnxCtrDsp* dsp, int16_t frame[SNX_CTR_DSP_SAMPLES][2]);

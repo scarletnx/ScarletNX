@@ -374,7 +374,7 @@ SnxCtrSchedule snx_ctr_schedule(SnxCtrProcess* p) {
         uint64_t now = now_ns(), earliest = UINT64_MAX;
         snx_ctr_uds_poll(p);
         if (p->gsp.shared_object && now >= p->gsp.next_vblank_ns) snx_ctr_gsp_vblank(p);
-        if (p->dsp.core && now >= p->dsp.next_frame_ns) snx_ctr_dsp_frame(p, now);
+        if (p->dsp.core && now >= p->dsp.next_frame_ns && now >= snx_ctr_dsp_deadline(p)) snx_ctr_dsp_frame(p, now);
         if (p->y2r.done_ns && now >= p->y2r.done_ns) snx_ctr_y2r_done(p);
         if (now >= snx_ctr_hid_deadline(p)) snx_ctr_hid_update(p, now);
         if (now >= snx_ctr_irrst_deadline(p)) snx_ctr_irrst_update(p, now);
@@ -446,7 +446,7 @@ SnxCtrSchedule snx_ctr_schedule(SnxCtrProcess* p) {
         uint64_t deadline = earliest;
         if (p->uds && now + 1000000ull < deadline) deadline = now + 1000000ull;
         if (p->gsp.shared_object && p->gsp.next_vblank_ns < deadline) deadline = p->gsp.next_vblank_ns;
-        if (p->dsp.core && p->dsp.next_frame_ns < deadline) deadline = p->dsp.next_frame_ns;
+        if (snx_ctr_dsp_deadline(p) < deadline) deadline = snx_ctr_dsp_deadline(p);
         if (p->y2r.done_ns && p->y2r.done_ns < deadline) deadline = p->y2r.done_ns;
         if (snx_ctr_hid_deadline(p) < deadline) deadline = snx_ctr_hid_deadline(p);
         if (snx_ctr_irrst_deadline(p) < deadline) deadline = snx_ctr_irrst_deadline(p);

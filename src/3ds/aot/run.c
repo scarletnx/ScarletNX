@@ -12,6 +12,7 @@
 #include "3ds/gpu/present.h"
 #include "common/utilities/build_info.h"
 #include "3ds/audio/output.h"
+#include "3ds/services/dsp.h"
 #include "3ds/input/input.h"
 #include "common/platform/file.h"
 #include "common/platform/thread.h"
@@ -108,6 +109,10 @@ static void report_threads(SnxCtrProcess* p) {
     }
     printf("  idle: %.1f s in %" PRIu64 " waits for a deadline with no thread to run\n", (double)p->idle_ns / 1e9,
            p->idle_waits);
+    if (p->dsp.frames)
+        printf("  dsp: %" PRIu64 " audio frames, %" PRIu64 " of them run more than a frame late and %" PRIu64
+               " before the game answered the frame before; %" PRIu64 " dropped more than %u ms behind\n",
+               p->dsp.frames, p->dsp.late, p->dsp.unanswered, p->dsp.dropped, SNX_CTR_DSP_MAX_LATE_NS / 1000000u);
     /* the SVCs it made most */
     printf("  SVCs:");
     bool shown[256] = {false};

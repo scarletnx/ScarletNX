@@ -17,8 +17,6 @@
 #define DSP_MAX_EVENTS     6u
 #define DSP_ERR_TOO_MANY   0xc860a7ffu /* InvalidResultValue, DSP, OutOfResource, Status */
 #define DSP_ERR_HANDLE     0xd8e007f7u
-/* Past this much behind the host clock, the frames missed are dropped instead of being run back to back */
-#define DSP_MAX_LATE_NS    100000000u
 
 static void dsp_interrupt(void* context, unsigned pipe) {
     SnxCtrProcess* p = context;
@@ -38,12 +36,31 @@ void snx_ctr_dsp_close(SnxCtrProcess* p) {
     snx_ctr_dsp_free(p->dsp.core);
     p->dsp.core = NULL;
 }
+/* The application answers a frame by writing the other region, which moves its frame counter */
+static bool answered(SnxCtrProcess* p) { return snx_ctr_dsp_frame_counters(p->dsp.core) != p->dsp.counters; }
+uint64_t snx_ctr_dsp_deadline(SnxCtrProcess* p) {
+    if (!p->dsp.core) return UINT64_MAX;
+    uint64_t due = p->dsp.next_frame_ns, patience = p->dsp.frame_ns + SNX_CTR_DSP_FRAME_NS;
+    return due >= patience || answered(p) ? due : patience;
+}
 void snx_ctr_dsp_frame(SnxCtrProcess* p, uint64_t now_ns) {
-    if (!p->dsp.core) return;
-    p->dsp.next_frame_ns += SNX_CTR_DSP_FRAME_NS;
-    if (now_ns > p->dsp.next_frame_ns + DSP_MAX_LATE_NS) p->dsp.next_frame_ns = now_ns + SNX_CTR_DSP_FRAME_NS;
+    SnxCtrDspService* d = &p->dsp;
+    if (!d->core) return;
+    bool waited = !answered(p);
+    if (now_ns > d->next_frame_ns + SNX_CTR_DSP_FRAME_NS) ++d->late;
+    d->next_frame_ns += SNX_CTR_DSP_FRAME_NS;
+    if (now_ns > d->next_frame_ns + SNX_CTR_DSP_MAX_LATE_NS) {
+        d->dropped += (now_ns - d->next_frame_ns) / SNX_CTR_DSP_FRAME_NS + 1; /* those due up to now */
+        d->next_frame_ns = now_ns + SNX_CTR_DSP_FRAME_NS;
+    }
+    d->frame_ns = now_ns;
     int16_t frame[SNX_CTR_DSP_SAMPLES][2];
-    if (snx_ctr_dsp_tick(p->dsp.core, frame)) snx_ctr_audio_frame(frame);
+    if (snx_ctr_dsp_tick(d->core, frame)) {
+        ++d->frames;
+        if (waited) ++d->unanswered;
+        snx_ctr_audio_frame(frame);
+    }
+    d->counters = snx_ctr_dsp_frame_counters(d->core);
 }
 
 static void reply(SnxCtrIpc* c, unsigned normal, unsigned translated) {

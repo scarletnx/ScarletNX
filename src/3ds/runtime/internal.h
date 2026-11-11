@@ -152,6 +152,11 @@ typedef struct {
     uint32_t semaphore;        /* the semaphore event (retained), made at its first GetSemaphoreEventHandle */
     uint16_t semaphore_mask;
     uint64_t next_frame_ns; /* host monotonic deadline of the next audio frame */
+    uint64_t frame_ns;      /* host monotonic time the last frame ran */
+    uint32_t counters;      /* the regions' frame counters then (snx_ctr_dsp_frame_counters) */
+    /* for the exit report: frames run, those run more than a frame after they were due, those run before the
+       application answered the one before, and those dropped more than SNX_CTR_DSP_MAX_LATE_NS behind */
+    uint64_t frames, late, unanswered, dropped;
 } SnxCtrDspService;
 /* y2r:u: the Y2R engine's configuration as the application set it, and the conversion running (services/y2r.c) */
 typedef struct {
