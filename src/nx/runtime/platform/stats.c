@@ -12,7 +12,10 @@
 
 /* the menu's colours (gui_theme_colors.h, the YoRHa theme) as R G B A bytes */
 #define STATS_RGBA(rgb, a) ((u32)(a) << 24 | ((rgb) & 0xFFu) << 16 | ((rgb) & 0xFF00u) | ((rgb) >> 16 & 0xFFu))
-#define STATS_BACK         STATS_RGBA(SNX_GUI_THEME_YORHA_INK, 0xE0u)
+/* no box behind the lines: each letter and icon over its shadow, opaque, a step of its scale right and down, and the
+   graph on a plain ground. All of them opaque, which the renderer draws without blending (gpu/vk/ui.c) */
+#define STATS_SHADOW       STATS_RGBA(SNX_GUI_THEME_YORHA_INK, 0xFFu)
+#define STATS_GROUND       STATS_RGBA(SNX_GUI_THEME_YORHA_INK, 0xFFu)
 #define STATS_TEXT         STATS_RGBA(SNX_GUI_THEME_YORHA_PAGE, 0xFFu)
 #define STATS_GUIDE        STATS_RGBA(SNX_GUI_THEME_YORHA_SOFT, 0xFFu)
 #define STATS_SLOW         STATS_RGBA(SNX_GUI_THEME_YORHA_FAILURE, 0xFFu)
@@ -48,7 +51,8 @@ static struct {
 _Static_assert(STATS_BARS <= SNX_UI_RING_MAX, "the bars fit the ring, a slot each, which is a quad's glyph byte");
 /* the height past which a bar draws in the failure colour: a frame past 30 FPS's, STATS_30_MS of STATS_TOP_MS */
 #define STATS_SLOW_FROM ((int)(255.0f * STATS_30_MS / STATS_TOP_MS + 0.5f))
-#define STATS_QUADS     1536 /* its quads at most: the lines, the graph and three lines under it of 255 letters */
+#define STATS_QUADS     2560 /* its quads at most: the lines, the graph and three lines under it of 255 letters, each
+                                letter twice */
 #define STATS_CELLS     (STATS_COLS - 5) /* a line's cells: after the icon's three, to a letter before the right */
 #define STATS_CPU_CELLS (STATS_GPU_AT - 4)
 #define STATS_GPU_CELLS (STATS_COLS - 1 - (STATS_GPU_AT + 3))
@@ -252,6 +256,25 @@ static char* put_mib(char* at, u64 bytes) { return bytes ? ui_put_u(at, bytes >>
 /* tenths at at, at most 999.9: a field's letters are as many as it holds */
 static char* put_tenths(char* at, u64 tenths) { return ui_put_tenths(at, tenths < 9999 ? tenths : 9999); }
 
+/* s's letters at x, y over their shadow; an icon so; a field of n cells over the field of its shadows, the shadows'
+   first, and its letters into both (ui.h's ui_cells): the shadows' field's first cell, -1 for no room */
+static void text_shadowed(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba) {
+    ui_text(l, x + (float)scale, y + (float)scale, scale, s, STATS_SHADOW);
+    ui_text(l, x, y, scale, s, rgba);
+}
+static void icon_shadowed(SnxUiList* l, float x, float y, int scale, unsigned icon, u32 rgba) {
+    ui_icon(l, x + (float)scale, y + (float)scale, scale, icon, STATS_SHADOW);
+    ui_icon(l, x, y, scale, icon, rgba);
+}
+static int cells_shadowed(SnxUiList* l, float x, float y, int scale, int n, u32 rgba) {
+    int first = ui_cells(l, x + (float)scale, y + (float)scale, scale, n, STATS_SHADOW);
+    return first >= 0 && ui_cells(l, x, y, scale, n, rgba) >= 0 ? first : -1;
+}
+static void cells_write(int first, int n, const char* text) {
+    ui_cells_set(&g_box.q[first], n, text);
+    ui_cells_set(&g_box.q[first + n], n, text);
+}
+
 /* the box laid out for key, at the place stats_box gives it: the lines that change, the GPU's text and the bars left
    blank for stats_draw to write */
 static void box_layout(const int safe[4], int scale, const StatsKey* key) {
@@ -268,19 +291,18 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
     StatsNotes notes;
     unsigned j;
     box_notes(safe, scale, box, &notes);
-    ui_fill(&l, box[0], box[1], box[2], box[3], STATS_BACK);
     for (j = 0; j < STATS_LINES; ++j) { /* the icon's two cells and one, then the line, as the menu's items */
         float y = box[1] + ch / 4 + (float)j * ch;
-        ui_icon(&l, box[0] + cw, y, scale, icons[j], STATS_TEXT);
+        icon_shadowed(&l, box[0] + cw, y, scale, icons[j], STATS_TEXT);
         if (j + 1 < STATS_LINES)
             g_box.cells[j] =
-                ui_cells(&l, box[0] + 4 * cw, y, scale, j == 1 ? STATS_CPU_CELLS : STATS_CELLS, STATS_TEXT);
+                cells_shadowed(&l, box[0] + 4 * cw, y, scale, j == 1 ? STATS_CPU_CELLS : STATS_CELLS, STATS_TEXT);
         else
-            ui_text(&l, box[0] + 4 * cw, y, scale, "frame time", STATS_TEXT);
+            text_shadowed(&l, box[0] + 4 * cw, y, scale, "frame time", STATS_TEXT);
     }
-    ui_icon(&l, box[0] + STATS_GPU_AT * cw, box[1] + ch / 4 + ch, scale, GUI_ICON_GPU, STATS_TEXT);
+    icon_shadowed(&l, box[0] + STATS_GPU_AT * cw, box[1] + ch / 4 + ch, scale, GUI_ICON_GPU, STATS_TEXT);
     g_box.gpu =
-        ui_cells(&l, box[0] + (STATS_GPU_AT + 3) * cw, box[1] + ch / 4 + ch, scale, STATS_GPU_CELLS, STATS_TEXT);
+        cells_shadowed(&l, box[0] + (STATS_GPU_AT + 3) * cw, box[1] + ch / 4 + ch, scale, STATS_GPU_CELLS, STATS_TEXT);
     /* the graph: each frame's time a bar up from its foot, the newest at the right, over the two guides, each labelled
        with its time at the graph's right */
     g_box.gx = box[0] + cw;
@@ -288,10 +310,11 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
     g_box.gy = box[1] + STATS_LINES * ch + ch / 2;
     g_box.gh = STATS_GRAPH_LINES * ch;
     g_box.bw = g_box.gw / (STATS_FRAMES - 1);
+    ui_fill(&l, g_box.gx, g_box.gy, g_box.gw, g_box.gh, STATS_GROUND);
     for (j = 0; j < 2; ++j) {
         top = g_box.gy + g_box.gh - g_box.gh * guides[j].ms / STATS_TOP_MS;
         ui_fill(&l, g_box.gx, top, g_box.gw, (float)scale, STATS_GUIDE);
-        ui_text(&l, g_box.gx + g_box.gw + cw, top - ch / 2, scale, guides[j].label, STATS_GUIDE);
+        text_shadowed(&l, g_box.gx + g_box.gw + cw, top - ch / 2, scale, guides[j].label, STATS_GUIDE);
     }
     g_box.bars = l.n;
     for (j = 0; j < STATS_BARS; ++j) { /* each in its slot, over the graph from its right edge: none yet */
@@ -303,8 +326,8 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
     /* the lines under it, a quarter line down, each after its icon as the lines above */
     for (j = 0; j < (unsigned)notes.n; ++j) {
         float y = g_box.gy + g_box.gh + ch / 4 + (float)j * ch;
-        ui_icon(&l, box[0] + cw, y, scale, notes.icon[j], notes.rgba[j]);
-        ui_text(&l, box[0] + 4 * cw, y, scale, notes.text[j], notes.rgba[j]);
+        icon_shadowed(&l, box[0] + cw, y, scale, notes.icon[j], notes.rgba[j]);
+        text_shadowed(&l, box[0] + 4 * cw, y, scale, notes.text[j], notes.rgba[j]);
     }
     g_box.n = l.n;
     g_box.key = *key;
@@ -363,23 +386,23 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
         at = ui_put(at, " fps  ");
         at = g_box.ms10 >= 0 ? put_tenths(at, (u64)g_box.ms10) : ui_put(at, "?");
         *ui_put(at, " ms") = 0;
-        ui_cells_set(&g_box.q[g_box.cells[0]], STATS_CELLS, text);
+        cells_write(g_box.cells[0], STATS_CELLS, text);
         g_box.fps10 = g_stats.fps10;
     }
     if (g_box.measures != g_stats.measures) { /* once a second */
         const SnxStatsMeasure* m = &g_stats.shown;
         *put_percent(ui_put(text, "cpu "), m->cpu) = 0;
-        ui_cells_set(&g_box.q[g_box.cells[1]], STATS_CPU_CELLS, text);
+        cells_write(g_box.cells[1], STATS_CPU_CELLS, text);
         if (m->gpu >= 0) { /* the busy time a frame in tenths of a millisecond, as the frame's own */
             at = ui_put(put_percent(ui_put(text, "gpu "), m->gpu), "  ");
             *ui_put(put_tenths(at, (m->gpu_ns + 50000) / 100000), " ms") = 0;
         } else
             *ui_put(text, "gpu ?  ? ms") = 0;
-        ui_cells_set(&g_box.q[g_box.gpu], STATS_GPU_CELLS, text);
+        cells_write(g_box.gpu, STATS_GPU_CELLS, text);
         *ui_put(put_mib(ui_put(put_mib(ui_put(text, "ram "), m->memory), "/"), m->memory_total), " MiB") = 0;
-        ui_cells_set(&g_box.q[g_box.cells[2]], STATS_CELLS, text);
+        cells_write(g_box.cells[2], STATS_CELLS, text);
         *ui_put(put_mib(ui_put(put_mib(ui_put(text, "vram "), m->vram), "/"), m->vram_budget), " MiB") = 0;
-        ui_cells_set(&g_box.q[g_box.cells[3]], STATS_CELLS, text);
+        cells_write(g_box.cells[3], STATS_CELLS, text);
         g_box.measures = g_stats.measures;
     }
     ui_append(l, &(SnxUiList){g_box.q, g_box.n, STATS_QUADS});
