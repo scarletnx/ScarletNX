@@ -66,13 +66,14 @@ static struct {
     StatsKey key;
     SnxUiQuad q[STATS_QUADS];
     int n;
-    int cells[STATS_LINES - 1], gpu; /* the first cell of each line that changes, and of the GPU's text */
+    int cells[STATS_LINES], gpu; /* the first cell of each line, and of the GPU's text */
     int bars;                        /* the first of the bars, slot 0's */
     u8 height[STATS_BARS];           /* the ring's bytes (ui.h) */
     unsigned head;                   /* the newest bar's slot */
     int full;                        /* every bar to be written: laid out since */
     float gx, gw, gy, gh;            /* the graph */
     int fps10, ms10;                 /* what the cells show: the frame rate and the last frame's time in tenths */
+    int low10, peak10;               /* and the graph's quickest and slowest frames' times, in tenths */
     u32 measures;                    /* g_stats.measures */
     u64 frames;                      /* and the bars, g_stats.frames */
 } g_box;
@@ -268,10 +269,7 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
        graph's pulse */
     static const unsigned icons[STATS_LINES] = {GUI_ICON_GAUGE, GUI_ICON_CPU, GUI_ICON_MEMORY_STICK, GUI_ICON_LAYERS,
                                                 GUI_ICON_ACTIVITY};
-    static const struct {
-        float ms;
-        const char* label;
-    } guides[2] = {{STATS_60_MS, "16.7 ms"}, {STATS_30_MS, "33.3 ms"}};
+    static const float guides[2] = {STATS_60_MS, STATS_30_MS};
     SnxUiList l = {g_box.q, 0, STATS_QUADS};
     float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, box[4], top;
     StatsNotes notes;
@@ -280,33 +278,29 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
     for (j = 0; j < STATS_LINES; ++j) { /* the icon's two cells and one, then the line, as the menu's items */
         float y = box[1] + ch / 4 + (float)j * ch;
         icon_backed(&l, box[0] + cw, y, scale, icons[j], STATS_TEXT);
-        if (j + 1 < STATS_LINES)
-            g_box.cells[j] =
-                ui_cells_backed(&l, box[0] + 4 * cw, y, scale, j == 1 ? STATS_CPU_CELLS : STATS_CELLS, STATS_TEXT);
-        else
-            ui_text_backed(&l, box[0] + 4 * cw, y, scale, "frame time", STATS_TEXT);
+        g_box.cells[j] =
+            ui_cells_backed(&l, box[0] + 4 * cw, y, scale, j == 1 ? STATS_CPU_CELLS : STATS_CELLS, STATS_TEXT);
     }
     icon_backed(&l, box[0] + STATS_GPU_AT * cw, box[1] + ch / 4 + ch, scale, GUI_ICON_GPU, STATS_TEXT);
     g_box.gpu =
         ui_cells_backed(&l, box[0] + (STATS_GPU_AT + 3) * cw, box[1] + ch / 4 + ch, scale, STATS_GPU_CELLS, STATS_TEXT);
-    /* the graph: each frame's time a bar up from its foot, the newest at the right, over the two guides, each labelled
-       with its time at the graph's right */
+    /* the graph right under the lines, as wide as their bands (STATS_GRAPH_W): each frame's time a bar up from its
+       foot, the newest at the right, over the two guides; the last line says their quickest and slowest */
     g_box.gx = box[0] + cw;
-    g_box.gw = box[2] - 2 * cw - STATS_AXIS * cw;
-    g_box.gy = box[1] + STATS_LINES * ch + ch / 2;
+    g_box.gw = STATS_GRAPH_W * cw;
+    g_box.gy = box[1] + ch / 4 + STATS_LINES * ch;
     g_box.gh = STATS_GRAPH_LINES * ch;
     ui_fill(&l, g_box.gx, g_box.gy, g_box.gw, g_box.gh, STATS_GROUND);
     for (j = 0; j < 2; ++j) {
-        top = g_box.gy + g_box.gh - g_box.gh * guides[j].ms / STATS_TOP_MS;
+        top = g_box.gy + g_box.gh - g_box.gh * guides[j] / STATS_TOP_MS;
         ui_fill(&l, g_box.gx, top, g_box.gw, (float)scale, STATS_GUIDE);
-        ui_text_backed(&l, g_box.gx + g_box.gw + cw, top - ch / 2, scale, guides[j].label, STATS_GUIDE);
     }
     g_box.bars = l.n;
     ui_ring_bars(&l, g_box.gx, g_box.gy, g_box.gw, g_box.gh, STATS_BARS, STATS_TEXT); /* none yet */
     memset(g_box.height, 0, sizeof g_box.height);
-    /* the lines under it, a quarter line down, each after its icon as the lines above */
+    /* the lines under it, half a line down, each after its icon as the lines above */
     for (j = 0; j < (unsigned)notes.n; ++j) {
-        float y = g_box.gy + g_box.gh + ch / 4 + (float)j * ch;
+        float y = g_box.gy + g_box.gh + ch / 2 + (float)j * ch;
         icon_backed(&l, box[0] + cw, y, scale, notes.icon[j], notes.rgba[j]);
         ui_text_backed(&l, box[0] + 4 * cw, y, scale, notes.text[j], notes.rgba[j]);
     }
@@ -314,7 +308,7 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
     g_box.key = *key;
     g_box.laid = 1;
     /* nothing written yet: each value differs from these */
-    g_box.fps10 = g_box.ms10 = -2;
+    g_box.fps10 = g_box.ms10 = g_box.low10 = g_box.peak10 = -2;
     g_box.measures = g_stats.measures - 1;
     g_box.full = 1;
     g_box.head = 0;
@@ -360,6 +354,25 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
         if (ms10 != g_box.ms10) {
             g_box.ms10 = ms10;
             g_box.fps10 = -2; /* the first line written again below: no frame rate is -2 */
+        }
+        { /* the graph's quickest and slowest frames, in tenths of a millisecond, on its own line */
+            int low10 = -1, peak10 = -1;
+            for (j = 0; j < kept; ++j) {
+                int t10 = (int)(frame_ms(j) * 10 + 0.5f);
+                if (low10 < 0 || t10 < low10) low10 = t10;
+                if (t10 > peak10) peak10 = t10;
+            }
+            if (low10 != g_box.low10 || peak10 != g_box.peak10) {
+                at = ui_put(text, "frame time ");
+                if (kept) {
+                    at = ui_put(put_tenths(ui_put(put_tenths(at, (u64)low10), " to "), (u64)peak10), " ms");
+                } else
+                    at = ui_put(at, "?");
+                *at = 0;
+                ui_cells_set(&g_box.q[g_box.cells[4]], STATS_CELLS, text);
+                g_box.low10 = low10;
+                g_box.peak10 = peak10;
+            }
         }
     }
     if (g_box.fps10 != g_stats.fps10) {

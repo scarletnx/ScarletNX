@@ -3,8 +3,9 @@
 /* The stats box over the game (runtime/platform/stats.c): nothing while off; its letters a step below the menu's; each
    line after its icon, the GPU's beside the processor's; its lines as the frames and the measures say them, the
    longest inside the box; ? for what is not known; the GPU's share and time a frame from its busy time over a second,
-   ? where the renderer can't time it or wasn't at the second before; the graph's title and its guides' labels; the
-   graph's bars, a slow frame's in the failure colour; its corner, and beside
+   ? where the renderer can't time it or wasn't at the second before; the graph's title with its quickest and slowest
+   frames; the graph right under the lines, as wide as they are; its bars, a slow frame's in the failure colour; its
+   corner, and beside
    showcase's box in showcase's corner; a word that is no corner; and off forgetting what it had. Under the graph,
    while they apply: RenderDoc's lines (a capture can be taken; the last capture's file, ? where RenderDoc gave none, or
    its failure in the failure colour) and the debugger's, the box wider for a line that needs it and a file's name cut
@@ -128,15 +129,6 @@ static const char* gpu_text(void) {
     stats_box(safe, s, box);
     return line_at(box[0] + (STATS_GPU_AT + 3) * cw, box[1] + ch / 4 + ch, STATS_COLS - STATS_GPU_AT - 3);
 }
-/* the label at the graph's right of its guide of ms */
-static const char* guide_label(float ms) {
-    int s = stats_scale(g_test.menu);
-    float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s, gw, gy, gh = 3 * ch;
-    stats_box(safe, s, box);
-    gw = box[2] - 2 * cw - STATS_AXIS * cw;
-    gy = box[1] + STATS_LINES * ch + ch / 2;
-    return line_at(box[0] + cw + gw + cw, gy + gh - gh * ms / STATS_TOP_MS - ch / 2, STATS_AXIS);
-}
 /* the menus' icon drawn at the box's cell `at` of line k, two of its letters wide in the text's colour, sharp:
    GUI_ICON_NONE for none */
 static unsigned icon_at(int k, int at) {
@@ -256,9 +248,20 @@ int main(void) {
     assert(box[0] == 100 + 16 && box[1] == 50 + 16 && box[2] == STATS_COLS * 16 && box[3] == 8 * 32 + 24);
     draw(t);
     assert(!strcmp(text(0), "? fps  ? ms") && !strcmp(text(1), "cpu ?") && !strcmp(gpu_text(), "gpu ?  ? ms"));
-    assert(!strcmp(text(2), "ram ?/? MiB") && !strcmp(text(3), "vram ?/? MiB") && !strcmp(text(4), "frame time"));
-    /* the graph's guides labelled with their times at its right */
-    assert(!strcmp(guide_label(STATS_60_MS), "16.7 ms") && !strcmp(guide_label(STATS_30_MS), "33.3 ms"));
+    assert(!strcmp(text(2), "ram ?/? MiB") && !strcmp(text(3), "vram ?/? MiB") && !strcmp(text(4), "frame time ?"));
+    /* the graph's guides unlabelled: its title's line says its quickest and slowest frames, ? before two frames; the
+       graph right under the lines and as wide as their bands, from the icons' cell to the fields' ends */
+    assert(!strcmp(text(4), "frame time ?"));
+    {
+        float cw = 32.0f / 2;
+        int i, grounds = 0;
+        for (i = 0; i < g_test.l.n; ++i) {
+            SnxUiQuadView q = qv(&g_test.quads[i]);
+            grounds += q.ink == UI_SOLID && q.x == box[0] + cw && q.w == STATS_GRAPH_W * cw &&
+                       q.y == box[1] + 32.0f / 4 + STATS_LINES * 32.0f && q.h == 3 * 32.0f;
+        }
+        assert(grounds == 1);
+    }
     /* its letters a step below the menu's, 1 at least: the box and each letter at that scale, the lines where it puts
        them */
     assert(stats_scale(1) == 1 && stats_scale(2) == 1 && stats_scale(3) == 2 && stats_scale(4) == 3);
@@ -286,7 +289,7 @@ int main(void) {
     /* 30 frames in half a second: 60.0 frames a second, the last 16.7 ms; 29 bars under the 60 FPS guide */
     for (k = 1; k <= 30; ++k) stats_frame(at = t + (u64)k * 16666667ull, &g_test.gpu);
     draw(t + 500 * MS);
-    assert(!strcmp(text(0), "60.0 fps  16.7 ms"));
+    assert(!strcmp(text(0), "60.0 fps  16.7 ms") && !strcmp(text(4), "frame time 16.7 to 16.7 ms"));
     assert(bars(&newest) == 29 && newest->rgba != FAILURE && newest->h > gh * 16 / 50 && newest->h < gh * 17 / 50);
     /* the processor's share and the memory as measured, and ? for one not told */
     stats_measured(&(SnxStatsMeasure){.cpu = 25, .memory = 512ull << 20, .gpu = -1});
@@ -330,10 +333,12 @@ int main(void) {
     stats_frame(at += 40 * MS, &g_test.gpu);
     draw(t + 700 * MS);
     assert(strstr(text(0), "40.0 ms") && bars(&newest) == 30 && newest->rgba == FAILURE);
+    assert(!strcmp(text(4), "frame time 16.7 to 40.0 ms"));
     assert(newest->h > gh * 39 / 50 && newest->h < gh * 41 / 50);
     stats_frame(at += 80 * MS, &g_test.gpu);
     draw(t + 800 * MS);
     assert(strstr(text(0), "80.0 ms") && bars(&newest) == 31 && newest->h == gh);
+    assert(!strcmp(text(4), "frame time 16.7 to 80.0 ms"));
     /* no frame for half a second: 0.0 frames a second */
     draw(t + 1100 * MS); /* the window that counted the two slow frames */
     draw(t + 1700 * MS);
@@ -366,12 +371,11 @@ int main(void) {
         for (i = 0; i < SNX_UI_RING_MAX; ++i) rewritten += heights[i] != ui_ring()->height[i];
         assert(!moved && rewritten == 1);
         {
-            /* the newest bar where the GPU scrolls it: at the graph's right edge, a cell in and STATS_AXIS from the
-               box's */
+            /* the newest bar where the GPU scrolls it: at the graph's right edge, the lines' bands' */
             const SnxUiQuadView* newest_bar;
             float cw = 8.0f * (float)stats_scale(g_test.menu), right;
             stats_box(safe, stats_scale(g_test.menu), box);
-            right = box[0] + cw + (box[2] - 2 * cw - STATS_AXIS * cw);
+            right = box[0] + cw + STATS_GRAPH_W * cw;
             assert(bars(&newest_bar) == STATS_FRAMES - 1 && newest_bar->rgba == FAILURE);
             assert(fabsf(newest_bar->x + newest_bar->w - right) < 0.01f);
         }
