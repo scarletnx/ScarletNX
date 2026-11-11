@@ -927,7 +927,7 @@ static int hle_check(const Hle* h) {
     /* the shared memories the services write into */
     if (!id_ok(h, h->hid.shm, KO_SHMEM) || !id_ok(h, h->hid.xpad_shm, KO_SHMEM) ||
         !id_ok(h, h->hid.six_shm, KO_SHMEM) || !id_ok(h, h->hid.joysix_shm, KO_SHMEM) ||
-        !id_ok(h, h->time.shm, KO_SHMEM) || !id_ok(h, h->pl.shm, KO_SHMEM) || !id_ok(h, h->misc.irs_shm, KO_SHMEM))
+        !id_ok(h, h->pl.shm, KO_SHMEM) || !id_ok(h, h->misc.irs_shm, KO_SHMEM))
         return -1;
     /* the pointers, as unswz made them */
     for (i = 0; i < SVCOBJ_MAX; i++) {
