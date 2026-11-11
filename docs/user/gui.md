@@ -184,7 +184,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   package's box has **Use** and **Remove** (Del removes too), which asks first; one added is picked where packages
   load. **Download Driver** lists, from GitHub, the releases of the driver repositories Eden's driver fetcher lists
   (Mr. Purple Turnip, GameHub Adreno 8xx, KIMCHI Turnip, Weab-Chan Freedreno, Whitebelyash Turnip), fetched as it
-  opens, with the GPU and the driver Eden recommends for it; a repository that failed says why, and Enter fetches the
+  opens, with the GPU and the driver Eden recommends for it, but T30 on an Adreno 605 to 613 (EOL-24.3.4 gives
+  those Vulkan 1.0); a repository that failed says why, and Enter fetches the
   lists again. A release's box lists its downloads with their sizes, a GPU maker's own drivers (every GameHub one, and
   one named Qualcomm) marked *proprietary, no license*; the one picked is downloaded, its progress in the note, and
   added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an Adreno GPU (`/dev/kgsl-3d0`) or an
