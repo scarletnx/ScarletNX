@@ -25,6 +25,7 @@
 #include <direct.h>
 #include <io.h>
 #else
+#include <dirent.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -218,6 +219,12 @@ static void test_own_forms(void) {
     char* saved = NULL;
     expect_text("strtok_r's first word", (const char*)(uintptr_t)CALL("strtok_r", P(words), P(" "), P(&saved)), "x");
     expect_text("its second", (const char*)(uintptr_t)CALL("strtok_r", 0, P(" "), P(&saved)), "y");
+    char* part = (char*)(uintptr_t)CALL("strndup", P("abcdef"), 3);
+    expect_text("strndup takes n bytes", part ? part : "(null)", "abc");
+    free(part);
+    part = (char*)(uintptr_t)CALL("strndup", P("ab"), 5);
+    expect_text("and stops at the end", part ? part : "(null)", "ab");
+    free(part);
     FILE* f = fopen("android_bionic_seek.txt", "w+b");
     if (!f) {
         fprintf(stderr, "android_bionic: cannot write android_bionic_seek.txt in the working folder\n");
@@ -508,6 +515,11 @@ enum {
 #define SAID_ENOSYS(what, r)                                                                                           \
     (expect_int(what, (int64_t)(r), -1), expect_int(what " sets ENOSYS", *hle_errno_location(), 38))
 
+#ifndef _WIN32
+/* the host's dirfd, which test_files_second_batch's folder descriptor hides */
+static int stream_descriptor(DIR* stream) { return dirfd(stream); }
+#endif
+
 static void test_files_second_batch(void) {
     const char* path = "android_bionic_more.txt";
     const char* second = "android_bionic_more_2.txt";
@@ -577,6 +589,40 @@ static void test_files_second_batch(void) {
     SAID_ENOSYS("openat of a folder descriptor", CALL("openat", I32(7), P("relative"), 0, 0));
     SAID_ENOSYS("fchdir", CALL("fchdir", 0));
     SAID_ENOSYS("chown", CALL("chown", P(path), 0, 0));
+#endif
+
+    /* fstatat: the guest's struct stat (st_size at 48), of a path and of a descriptor itself (AT_EMPTY_PATH) */
+    unsigned char guest_stat[128];
+    uint64_t size = 0;
+    memset(guest_stat, 0, sizeof guest_stat);
+    expect_int("fstatat", (int64_t)CALL("fstatat", I32(G_AT_FDCWD), P(path), P(guest_stat), 0), 0);
+    memcpy(&size, guest_stat + 48, sizeof size);
+    expect_int("fstatat's size", (int64_t)size, 3);
+    expect_int("fstatat of nothing", (int64_t)CALL("fstatat", I32(G_AT_FDCWD), P("android_bionic_none"), P(guest_stat), 0),
+               -1);
+    expect_int("and ENOENT", *hle_errno_location(), 2);
+    expect_int("fstatat of a flag it lacks", (int64_t)CALL("fstatat", I32(G_AT_FDCWD), P(path), P(guest_stat), 1), -1);
+    expect_int("and EINVAL", *hle_errno_location(), 22);
+    fd = (int64_t)CALL("openat", I32(G_AT_FDCWD), P(path), 0, 0);
+    memset(guest_stat, 0, sizeof guest_stat);
+    expect_int("fstatat AT_EMPTY_PATH", (int64_t)CALL("fstatat64", I32(fd), P(""), P(guest_stat), 0x1000), 0);
+    memcpy(&size, guest_stat + 48, sizeof size);
+    expect_int("the descriptor's size", (int64_t)size, 3);
+    expect_int("an empty path without it", (int64_t)CALL("fstatat", I32(fd), P(""), P(guest_stat), 0), -1);
+    expect_int("is ENOENT", *hle_errno_location(), 2);
+    CALL("close", I32(fd));
+#ifndef _WIN32
+    DIR* folder_stream = opendir(".");
+    int stream_fd = folder_stream ? stream_descriptor(folder_stream) : -1;
+    expect_int("dirfd", (int64_t)CALL("dirfd", P(folder_stream)), stream_fd);
+    memset(guest_stat, 0, sizeof guest_stat);
+    expect_int("fstatat of a folder descriptor", (int64_t)CALL("fstatat", I32(stream_fd), P(path), P(guest_stat), 0x100),
+               0);
+    memcpy(&size, guest_stat + 48, sizeof size);
+    expect_int("its size", (int64_t)size, 3);
+    if (folder_stream) closedir(folder_stream);
+#else
+    SAID_ENOSYS("dirfd", CALL("dirfd", 0));
 #endif
 
     /* links: a hard link reads the same bytes, a second one is EEXIST */
@@ -663,6 +709,11 @@ static void test_pipe2_umask_session(void) {
     uint64_t old = CALL("umask", 077);
     expect_int("umask gives the one set before", (int64_t)CALL("umask", old), 077);
     expect_int("umask back", (int64_t)CALL("umask", old), (int64_t)old);
+    expect_int("__umask_chk is umask", (int64_t)CALL("__umask_chk", 077), (int64_t)old);
+    expect_int("and gives it back", (int64_t)CALL("__umask_chk", old), 077);
+#ifndef _WIN32
+    ABORTS("__umask_chk", "umask: called with invalid mask", 01777);
+#endif
 
 #ifdef _WIN32
     expect_int("getpgrp is the process", (int64_t)CALL("getpgrp"), (int64_t)host_pid());

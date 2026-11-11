@@ -1513,6 +1513,17 @@ static void g_basename(CPU* c, void* data) {
     (void)data;
     X(0) = (uint64_t)(uintptr_t)hle_basename(STR(0));
 }
+/* strndup(s, n): the first n bytes of s at most, terminated, in malloc's memory (Windows' CRT has no strndup) */
+static void g_strndup(CPU* c, void* data) {
+    (void)data;
+    size_t n = strnlen(STR(0), (size_t)X(1));
+    char* copy = malloc(n + 1);
+    if (copy) {
+        memcpy(copy, STR(0), n);
+        copy[n] = 0;
+    }
+    X(0) = (uint64_t)(uintptr_t)copy;
+}
 static void g_strsep(CPU* c, void* data) {
     (void)data;
     X(0) = (uint64_t)(uintptr_t)hle_strsep(PTR(0), STR(1));
@@ -1627,7 +1638,7 @@ const HleSymbol hle_libc[] = {
     P(strncpy), P(strpbrk), P(strrchr), P(strspn), P(strstr), P(strtok),
     P(strtoll), P(strtoull), P(atoi), P(atoll),
     {"strlcpy", g_strlcpy, NULL}, {"strerror_r", g_strerror_r, NULL}, {"basename", g_basename, NULL},
-    {"strsep", g_strsep, NULL}, {"strtok_r", g_strtok_r, NULL},
+    {"strsep", g_strsep, NULL}, {"strtok_r", g_strtok_r, NULL}, {"strndup", g_strndup, NULL},
 #ifdef _WIN32
     /* long is 32 bits on Windows, 64 in bionic */
     PH(strtol, strtoll), PH(strtoul, strtoull), PH(atol, atoll), PH(strtoll_l, strtoll), PH(strtoull_l, strtoull),

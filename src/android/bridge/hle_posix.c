@@ -594,9 +594,9 @@ static void put_stat(CPU* c, int r, uint64_t guest, const GnuHostStat* s) {
     }
     X(0) = wide_int(r);
 }
-/* stat of one of the app's own /proc files: true when it was one, its result in c */
-static bool proc_stat(CPU* c, GnuHostStat* s) {
-    int own = hle_proc_open(STR(0));
+/* stat of one of the app's own /proc files into the guest's buffer: true when path was one, its result in c */
+static bool proc_stat(CPU* c, const char* path, uint64_t guest, GnuHostStat* s) {
+    int own = hle_proc_open(path);
     if (own == -2) return false;
 #ifdef _WIN32
     int r = own < 0 ? -1 : _fstat64(own, s);
@@ -604,7 +604,7 @@ static bool proc_stat(CPU* c, GnuHostStat* s) {
     int r = own < 0 ? -1 : fstat(own, s);
 #endif
     if (own >= 0) host_close(own);
-    put_stat(c, r, X(1), s);
+    put_stat(c, r, guest, s);
     return true;
 }
 #ifdef _WIN32
@@ -641,7 +641,7 @@ static void g_readlink_proc(CPU* c, void* data) {
 static void g_stat(CPU* c, void* data) {
     (void)data;
     GnuHostStat s;
-    if (proc_stat(c, &s)) return;
+    if (proc_stat(c, STR(0), X(1), &s)) return;
 #ifdef _WIN32
     int r = _stat64(STR(0), &s);
 #else
@@ -652,7 +652,7 @@ static void g_stat(CPU* c, void* data) {
 static void g_lstat(CPU* c, void* data) {
     (void)data;
     GnuHostStat s;
-    if (proc_stat(c, &s)) return;
+    if (proc_stat(c, STR(0), X(1), &s)) return;
 #ifdef _WIN32
     int r = _stat64(STR(0), &s); /* the host follows its links itself */
 #else
@@ -999,6 +999,14 @@ static void g_umask_set(CPU* c, void* data) {
     X(0) = (uint32_t)umask((mode_t)X(0));
 }
 #endif
+/* __umask_chk(mode): umask for a call whose mode the compiler could not see, which aborts on a bit past 0777 */
+static void g_umask_chk(CPU* c, void* data) {
+    if (X(0) & ~(uint64_t)0777) {
+        fprintf(stderr, "scarletnx-android: FORTIFY: umask: called with invalid mask %llo\n", (unsigned long long)X(0));
+        abort();
+    }
+    g_umask_set(c, data);
+}
 
 static void g_faccessat(CPU* c, void* data) {
     (void)data;
@@ -1042,6 +1050,41 @@ static void g_unlinkat(CPU* c, void* data) {
     else
         X(0) = wide_int(unlinkat(at_dir(X(0)), STR(1), flags));
 #endif
+}
+
+/* fstatat(dirfd, path, buf, flags), newfstatat's: AT_SYMLINK_NOFOLLOW, AT_NO_AUTOMOUNT (which a host without
+   automounts has nothing to do for), and AT_EMPTY_PATH, the stat of dirfd itself */
+enum { L_AT_NO_AUTOMOUNT = 0x800, L_AT_EMPTY_PATH = 0x1000 };
+static void g_fstatat(CPU* c, void* data) {
+    (void)data;
+    uint64_t flags = X(3);
+    const char* path = STR(1);
+    GnuHostStat s;
+    if (flags & ~(uint64_t)(L_AT_SYMLINK_NOFOLLOW | L_AT_NO_AUTOMOUNT | L_AT_EMPTY_PATH)) {
+        fail_errno(c, GNU_EINVAL);
+        return;
+    }
+    if (!path[0]) {
+        if (!(flags & L_AT_EMPTY_PATH)) {
+            fail_errno(c, GNU_ENOENT);
+            return;
+        }
+#ifdef _WIN32
+        int r = at_is_cwd(X(0)) ? _stat64(".", &s) : _fstat64((int)X(0), &s);
+#else
+        int r = at_is_cwd(X(0)) ? stat(".", &s) : fstat((int)X(0), &s);
+#endif
+        put_stat(c, r, X(2), &s);
+        return;
+    }
+    if ((at_is_cwd(X(0)) || path[0] == '/') && proc_stat(c, path, X(2), &s)) return;
+#ifdef _WIN32
+    if (!win_at_ok(c, "fstatat", X(0), path)) return;
+    int r = _stat64(path, &s); /* the host follows its links itself */
+#else
+    int r = fstatat(at_dir(X(0)), path, &s, flags & L_AT_SYMLINK_NOFOLLOW ? AT_SYMLINK_NOFOLLOW : 0);
+#endif
+    put_stat(c, r, X(2), &s);
 }
 
 /* getpriority(which, who): the nice value, where the system call (141, as setpriority's 140) gives 20 minus it */
@@ -2464,6 +2507,7 @@ const HleSymbol hle_posix[] = {
 #endif
     A(stat, g_stat), A(lstat, g_lstat), A(fstat, g_fstat), A(fstat64, g_fstat), A(close, g_close),
     P(chmod), P(dup), P(dup2), P(isatty), P(rmdir), P(unlink), P(opendir), P(closedir),
+    A(fstatat, g_fstatat), A(fstatat64, g_fstatat), A(__umask_chk, g_umask_chk),
     /* the process's working folder, which the JVM's relative paths share, as Android's do */
     P(chdir),
 #if defined(_WIN32)
@@ -2472,13 +2516,14 @@ const HleSymbol hle_posix[] = {
     A(ftruncate, g_ftruncate), A(lseek, g_lseek), A(lseek64, g_lseek), A(mkdir, g_mkdir), A(pipe, g_pipe),
     A(pread, g_pread), A(read, g_read), A(readlink, g_readlink_proc), A(realpath, g_realpath), A(truncate, g_truncate),
     A(utime, g_utime), A(write, g_write), A(getcwd, g_getcwd), A(readdir, g_readdir),
+    A(dirfd, refused), /* MinGW's DIR keeps no descriptor */
     A(pread64, g_pread), A(ftruncate64, g_ftruncate), A(fdatasync, g_fsync), A(link, g_link), A(getpgrp, g_getpgrp),
     ABSENT_ENTRY(chown), ABSENT_ENTRY(fchdir), ABSENT_ENTRY(symlink),
 #else
     PH(pread64, pread), A(chown, g_chown), A(fchdir, g_fchdir), A(symlink, g_symlink), A(link, g_link),
     A(getpgrp, g_getpgrp), A(ftruncate64, g_ftruncate64), A(fdatasync, g_fdatasync),
     A(access, g_access_proc), P(fchmod), P(flock), P(fsync), P(ftruncate), P(lseek), P(mkdir), P(pipe), P(pread), P(read),
-    A(readlink, g_readlink_proc), P(realpath), P(truncate), P(utime), P(write), P(getcwd),
+    A(readlink, g_readlink_proc), P(realpath), P(truncate), P(utime), P(write), P(getcwd), P(dirfd),
 #if defined(__linux__)
     P(statfs), P(lseek64), P(readdir),
 #else
