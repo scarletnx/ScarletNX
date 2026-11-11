@@ -33,6 +33,7 @@
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/spirv_opt.h"
 #include <sys/stat.h>
 
 /* SH_CODE (vk.h), the bytes of a program vk_shader_get reads from its SPH. The SPH has no size, so shader_hash ends the
@@ -417,6 +418,9 @@ u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si
             free(result);
             return NULL;
         }
+        /* the shared optimizer, after the translator: the registers, predicates and flags that no later block reads,
+           and what was made only for them */
+        *words = spv_opt_dead_code(result, *words);
     }
     return result;
 }

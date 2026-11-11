@@ -11,6 +11,7 @@
 #include "nx/gpu/renderer.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/utilities/spirv_emit.h"
+#include "common/utilities/spirv_opt.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/extension_bans.h"
@@ -1769,6 +1770,34 @@ static int check_multisample_shader_gate(void) {
         vkDestroyShaderModule(g_vk.dev, module, NULL);
         free(spirv);
     }
+    return 0;
+}
+
+/* What vk_translate_spirv gives has been through the shared optimizer: a fragment program that writes a register
+   nothing reads (R5, by an IPA of a[0x7c]) comes out smaller than the translator writes it, with nothing left for the
+   pass to take out, and the device takes the module */
+static int check_translation_dead_code(void) {
+    u64 guest[14] = {0};
+    guest[10] = 0x001f8000fc0007e0ull; /* scheduler */
+    guest[11] = 0xe003ff87cff7ff05ull; /* IPA R5, a[0x7c] */
+    guest[12] = 0xe30000000007000full; /* EXIT */
+    ShaderInfo info = {0}, direct_info = {0};
+    size_t words = 0, direct_words = 0;
+    u32* spirv = vk_translate_spirv((const u8*)guest, sizeof guest, ST_FS, &info, &words, NULL, NULL);
+    u32* direct = shader_to_spirv((const u8*)guest, sizeof guest, ST_FS, &direct_info, &direct_words, g_vk_ftz,
+                                  g_vk_preserve_infnan, g_vk_preserve_infnan64,
+                                  (g_vk_subgroup_stages & VK_SHADER_STAGE_FRAGMENT_BIT) != 0);
+    if (!spirv || !direct || words >= direct_words)
+        fprintf(stderr, "dead code: the runtime's module has %zu words, the translator's %zu\n", words, direct_words);
+    CHECK(spirv && direct && words < direct_words);
+    CHECK(spv_opt_dead_code(spirv, words) == words);
+    VkShaderModuleCreateInfo smi = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * sizeof(u32), .pCode = spirv};
+    VkShaderModule module;
+    CHECK(vkCreateShaderModule(g_vk.dev, &smi, NULL, &module) == VK_SUCCESS);
+    vkDestroyShaderModule(g_vk.dev, module, NULL);
+    free(spirv);
+    free(direct);
     return 0;
 }
 
@@ -6524,6 +6553,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_alias_newer_target());
     CHECK(!check_sparse_while_submitting());
     CHECK(!check_multisample_shader_gate());
+    CHECK(!check_translation_dead_code());
     CHECK(!check_msaa());
     CHECK(!check_msaa_nvn());
     CHECK(!check_direct_spirv());

@@ -87,6 +87,7 @@ keeps audits and measurements as they were taken.
   - [Block linear surfaces and texture conversions on the GPU](layers/gpu/blocklinear.md)
   - [BCn without BCn: ETC2 and EAC on phone GPUs](layers/gpu/bcn.md)
   - [glslc](layers/gpu/glslc.md): GLSL ES into SPIR-V, for the backends that run OpenGL ES programs on Vulkan
+  - [The shared SPIR-V optimizer](layers/gpu/spirv-opt.md): the passes a layer runs on the module it translated
 - Video (`layers/media/`)
   - [VIC composition on the GPU](layers/media/vic.md)
 
