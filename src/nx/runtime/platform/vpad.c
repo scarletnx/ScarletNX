@@ -669,6 +669,14 @@ void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
     if (fps < 0) return;
     scale = (int)(h * 0.11f / 16 + 0.5f);
     if (scale < 1) scale = 1;
-    snprintf(text, sizeof text, "%d FPS", fps);
-    ui_text(l, x0 + (w - (float)(strlen(text) * 8 * (size_t)scale)) / 2, y0 + h / 25, scale, text, 0xFFFFFFFFu);
+    /* "999 FPS" at most, the number to the right of its three cells: a field whose place and quads stay, whatever it
+       says (ui_cells) */
+    {
+        char* at = text;
+        int digits = fps > 99 ? 3 : fps > 9 ? 2 : 1, first;
+        while (digits++ < 3) *at++ = ' ';
+        *ui_put(ui_put_u(at, (u64)(fps < 999 ? fps : 999)), " FPS") = 0;
+        first = ui_cells(l, x0 + (w - (float)(7 * 8 * scale)) / 2, y0 + h / 25, scale, 7, 0xFFFFFFFFu);
+        if (first >= 0) ui_cells_set(&l->q[first], 7, text);
+    }
 }
