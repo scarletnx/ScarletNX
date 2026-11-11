@@ -22,6 +22,7 @@
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/hook/hook.h"
+#include "nx/hle/sdk/nn_fs.h"
 #include "nx/hle/services/hid.h"
 #include "nx/runtime/guest_jit.h"
 #include "nx/runtime/nce/nce.h"
@@ -1455,7 +1456,8 @@ int snx_main(int argc, char** argv) {
     nce_init(); /* the patches of native code, before the hooks take their functions */
     kernel_load_symbols();
     linker_decide(); /* before the hooks: nn::ro's are installed only when the runtime links the game */
-    hook_install();  /* before NVN, which takes what a slot holds, and the JIT, which reads the slots */
+    nnfs_init();
+    hook_install(); /* before NVN, which takes what a slot holds, and the JIT, which reads the slots */
     nvn_loader_init();
     linker_init(); /* after the hooks and NVN, whose slots it leaves alone */
     entry = linker_entry(entry);

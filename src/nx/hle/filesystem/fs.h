@@ -69,6 +69,10 @@ void romfs_init(void);
 typedef int (*RomfsEach)(void* ctx, const char* name, u64 off, u64 size);
 int romfs_files(RomfsEach each, void* ctx);
 int romfs_peek(u64 off, void* dst, u64 size);
+/* size bytes of the RomFS image at off into guest memory at addr, as the game's own reads take them (logged, its
+   files opened as reached): 0, or -1 when the range is past the image, the buffer isn't writable guest memory, or part
+   couldn't be read from the host (that part zeroed) */
+int romfs_read_guest(u64 off, u64 addr, u64 size);
 /* ---- HLE state in g_hle (hle.h) */
 /* RomFS. With no romfs.bin, the image is made up from the romfs/ folder: its header and tables in memory (rmeta), the
    files' data read from the files themselves when the game reads that part of the image. With mods' romfs/ folders
@@ -116,6 +120,54 @@ typedef struct {
     char last[FS_TREE_PATH_MAX]; /* a name, not a node: the entry may be deleted or renamed meanwhile */
     int done;
 } DirData;
+/* The file system server's core, which the IPC handlers (fs.c) and the native nn::fs (hle/sdk/nn_fs.c) share: the
+   operations on a root folder, an open file and an open directory, with the arguments as values and the console's
+   Results. Each takes tree.lock held (fs_lock), as fs.c's dispatchers hold it around every command */
+void fs_lock(void);
+void fs_unlock(void);
+/* the root of the save of type (1 an account's, 4 temporary, 5 cache) for uid and index, made when it is not there,
+   retained: 0, or the Result. noted: an Account, Device or BCAT save, whose commits write its note. Takes the lock */
+u32 fs_save_root(u8 type, const u8 uid[16], u16 index, FsNode** root, int* noted);
+/* the SD card's root (the data folder's sdmc/), made when it is not there, retained. The card is always there.
+   Takes the lock */
+u32 fs_sd_root(FsNode** root);
+/* what opening the host's file system answers: a console has no host PC to reach */
+u32 fs_host_root_result(void);
+void fs_root_release(FsNode* root);
+u32 fs_root_create(FsNode* root, const char* path, i64 size, int dir);
+u32 fs_root_remove(FsNode* root, const char* path, int dir, int recursive, int clean);
+u32 fs_root_rename(FsNode* root, const char* from, const char* to, int dir);
+u32 fs_root_entry_type(FsNode* root, const char* path, u32* type); /* 0 a directory, 1 a file */
+void fs_root_commit(FsNode* root, int noted);
+/* the free (total 0) or total (1) space that a save reports, the same for every save */
+i64 fs_root_space(int total);
+/* a file opened in mode (1 read, 2 write, 4 allow append) into out, its node retained */
+u32 fs_file_open(FsNode* root, const char* path, u32 mode, FileData* out);
+void fs_file_close(FileData* f);
+/* size bytes at off into guest memory at addr, clamped to the end of the file: *n the bytes read */
+u32 fs_file_read(FileData* f, u64 off, u64 addr, u64 size, u64* n);
+/* size bytes of guest memory at addr to off. option bit 0 flushes */
+u32 fs_file_write(FileData* f, u32 option, u64 off, u64 addr, u64 size);
+u32 fs_file_flush(FileData* f);
+u32 fs_file_set_size(FileData* f, i64 size);
+u32 fs_dir_open(FsNode* root, const char* path, u32 mode, DirData* out);
+void fs_dir_close(DirData* d);
+/* up to max 0x310-byte DirectoryEntry records into guest memory at addr, after the last one listed: *count of them */
+u32 fs_dir_read(DirData* d, u64 addr, u64 max, u64* count);
+u64 fs_dir_count(const DirData* d);
+/* A data storage as OpenDataStorageByDataId opens it: a DLC read in place from its dump (aoc, its index), or the file
+   of a system archive or add-on content in the data folder, or the one the runtime makes (file, aoc -1). Each call
+   takes the locks it needs */
+typedef struct {
+    int aoc;
+    FileData file;
+} FsStorage;
+u32 fs_storage_open(u64 data_id, FsStorage* out);
+void fs_storage_close(FsStorage* st);
+u64 fs_storage_size(const FsStorage* st);
+/* size bytes at off into host memory (dst) or guest memory (addr): 0, or -1 past the end or when the host read fails */
+int fs_storage_read(FsStorage* st, u64 off, void* dst, u64 size);
+int fs_storage_read_guest(FsStorage* st, u64 off, u64 addr, u64 size);
 #define FS_FS_MAX   64 /* IFileSystems: one per mount (save data, the SD card, caches, BCAT), a few dozen at most */
 #define FS_FILE_MAX 1024 /* IFiles and IStorages: each is an object of the fsp-srv domain, which holds DOMAIN_OBJECTS */
 #define FS_DIR_MAX  128 /* IDirectories, 4 KB each: a game lists a few folders at a time, and closes each after */
