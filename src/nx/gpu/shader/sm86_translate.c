@@ -3457,8 +3457,11 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                                          cu(c, width)))
                               : spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_U_EXTRACT, c->t_u32, x, at, cu(c, width));
             }
-            u32 type = mode ? f64_type(c) : c->t_f32;
-            u32 v = is_signed ? spv_emit_unary(&c->e, SPV_OP_CONVERT_S_TO_F, type,
+            u32 type = mode ? f64_type(c) : c->t_f32, v;
+            if (!mode && src_size == 2 && (g_shader_i2f_nearest & (is_signed ? 1 : 2)))
+                v = spv_emit_int_to_f32_nearest(&c->e, x, is_signed);
+            else
+                v = is_signed ? spv_emit_unary(&c->e, SPV_OP_CONVERT_S_TO_F, type,
                                                spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, x))
                               : spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, type, x);
             if (mode) v = round_f64(c, mode, v);

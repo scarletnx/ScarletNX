@@ -625,6 +625,10 @@ static int create_device(void) {
     int flush_denorm = p12.shaderDenormFlushToZeroFloat32 &&
                        p12.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
     g_vk_flush_denorm = flush_denorm && !vk_ban("shaderDenormFlushToZeroFloat32", flush_denorm, ban_say);
+    /* a driver that truncates a 32-bit integer it converts to a float (Turnip on an Adreno 610): I2F.F32 converts the
+       integer's two halves, each exact, and adds them, which rounds to nearest even as the console does */
+    g_shader_i2f_nearest =
+        (vk_ban("OpConvertSToF", 1, ban_say) ? 1 : 0) | (vk_ban("OpConvertUToF", 1, ban_say) ? 2 : 0);
     /* without it, vk_pipeline_init measures whether the device flushes by itself (vk_ftz_native) */
     if (!g_vk_preserve_infnan) WARN("vulkan: FP32 signed-zero/Inf/NaN preservation unavailable on this GPU\n");
 

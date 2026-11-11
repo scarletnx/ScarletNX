@@ -66,6 +66,11 @@ shaderFloat16 | warn | amd-proprietary | * | any | * | gets FP16 math wrong from
 shaderDenormPreserveFloat16 | warn | nvidia | * | any | * | lets a DenormPreserve for 16 bits keep 32-bit denormals too, over a DenormFlushToZero for 32 bits | vkd3d-proton device.c:10180 | new:headless:one shader declaring both, its FP32 subnormals read back | never | -
 shaderInt64 | warn | qualcomm | * | any | * | has 64-bit integers and atomics turned off by Eden, which gives no reason | Eden PR 2732 (b389a72697, 2025-10-14) | new:edenprobe:64-bit integer arithmetic in a shader | never | -
 
+# Integer to float conversion (shader.h's g_shader_i2f_nearest: I2F.F32 of a 32-bit integer converts its two halves,
+# each exact, and adds them)
+OpConvertSToF | off | turnip | * | any | * | truncates a 32-bit signed integer it converts to a float, where the console rounds to nearest even (seen on an Adreno 610) | edenprobe's intmath suite on an Adreno 610 phone (2026-11-11) | edenprobe:intmath: a signed integer converts to the nearest float, ties to even | 2026-11-11 broken on 26.2.99 (Adreno 610) | -
+OpConvertUToF | off | turnip | * | any | * | truncates a 32-bit unsigned integer it converts to a float, where the console rounds to nearest even (seen on an Adreno 610) | edenprobe's intmath suite on an Adreno 610 phone (2026-11-11) | edenprobe:intmath: an unsigned integer converts to the nearest float, ties to even | 2026-11-11 broken on 26.2.99 (Adreno 610) | -
+
 # Presentation
 VK_KHR_present_id2 | off | nvidia | < 595.0.0 | any | * | hangs games at their first frames with present_id2 and present_wait2 (590.48, with Smooth Motion on) | DXVK dxvk_device_info.cpp:610, issue 5507 | new:edenprobe:a windowed run with frame_pacing=2 | never | -
 

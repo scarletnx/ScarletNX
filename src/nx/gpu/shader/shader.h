@@ -379,6 +379,10 @@ extern int g_shader_resource_min_lod;
 extern int g_shader_dynamic_texture_offsets;
 /* Exact native half conversion: bit0 controls16, bit1 also controls64 for linked host modes. */
 extern int g_shader_half_rounding;
+/* bit 0 for OpConvertSToF, bit 1 for OpConvertUToF: the driver's conversion of a 32-bit integer to a 32-bit float
+   truncates (extension_bans.txt), and I2F.F32 of a 32-bit integer converts its halves and adds them
+   (spv_emit_int_to_f32_nearest), rounding to nearest as the console does. 0 offline */
+extern int g_shader_i2f_nearest;
 /* shaderDrawParameters: a vertex program's instance ID is InstanceIndex less BaseInstance, which an indirect draw's
    arguments set on the GPU. 1 offline */
 extern int g_shader_draw_parameters;

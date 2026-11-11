@@ -140,6 +140,7 @@ int g_shader_float16 = 1;
 int g_shader_resource_min_lod = 1;
 int g_shader_dynamic_texture_offsets;
 int g_shader_half_rounding;
+int g_shader_i2f_nearest;
 int g_shader_draw_parameters = 1;
 int g_shader_quad = 1;
 int g_shader_quad_compute = 1;

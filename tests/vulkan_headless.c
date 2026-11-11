@@ -5917,6 +5917,8 @@ static int run_headless(int argc, char** argv) {
             result = check_indirect_dispatch_once();
         else if (!strcmp(name, "integer_half"))
             result = check_shader_integer_half_rounding();
+        else if (!strcmp(name, "integer_float"))
+            result = check_shader_integer_float_nearest();
         else if (!strcmp(name, "sample_locations"))
             result = check_custom_sample_locations();
         else if (!strcmp(name, "coverage_to_color"))
@@ -6151,6 +6153,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_mixed_coverage_portable());
     CHECK(!check_alpha_coverage());
     CHECK(!check_shader_integer_half_rounding());
+    CHECK(!check_shader_integer_float_nearest());
     CHECK(!check_draw_texture());
     CHECK(!check_descriptor_heaps());
     CHECK(!check_fragment_barrier_backend());
