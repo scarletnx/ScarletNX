@@ -124,6 +124,15 @@ static void nro(unsigned char* image, unsigned char id, unsigned add, unsigned l
     put32(image, 0x218, 0x91002210), put32(image, 0x21c, 0xD61F0220); /* add x16, x16, #8; br x17 */
     dynamic(image, "nro_own", 0x100, g_game_symbol, 1);
 }
+/* snx_run, its output with every line ended as this file writes them: Windows' text streams end a line with CR LF */
+static int run_cli(const char* const* args, const char* root, char** text) {
+    int rc = snx_run(args, root, NULL, text);
+    char *from, *to;
+    for (from = to = *text; from && *from; ++from)
+        if (*from != '\r') *to++ = *from;
+    if (to) *to = 0;
+    return rc;
+}
 static void hex(const unsigned char* hash, char* out) {
     int i;
     for (i = 0; i < 32; ++i) sprintf(out + 2 * i, "%02x", hash[i]);
@@ -332,7 +341,7 @@ int main(int argc, char** argv) {
         args[k++] = out;
         args[k++] = "--nce=0"; /* code made ahead of time, which an NCE recompile has none of */
         args[k] = NULL;
-        if (snx_run(args, root, NULL, &text)) {
+        if (run_cli(args, root, &text)) {
             fprintf(stderr, "%s\n", text ? text : "");
             check(0, "the game recompiles");
         }
@@ -427,7 +436,7 @@ int main(int argc, char** argv) {
         args[k++] = out;
         args[k++] = "--nce=0";
         args[k] = NULL;
-        if (snx_run(args, root, NULL, &text)) {
+        if (run_cli(args, root, &text)) {
             fprintf(stderr, "%s\n", text ? text : "");
             check(0, "the game recompiles with a hooked function");
         }
@@ -461,7 +470,7 @@ int main(int argc, char** argv) {
         args[k++] = "--nce=0";
         if (!pass) args[k++] = "--hook-direct-calls";
         args[k] = NULL;
-        if (snx_run(args, root, NULL, &text)) {
+        if (run_cli(args, root, &text)) {
             fprintf(stderr, "%s\n", text ? text : "");
             check(0, "the game recompiles again");
         }
