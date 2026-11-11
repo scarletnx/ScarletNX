@@ -156,6 +156,7 @@ static void scratch_put(Scratch* s, u8* p) {
 }
 #define STAGE_KEEP ((u64)64 << 20) /* g_own.stage's */
 #define SNAP_KEEP  ((u64)8 << 20)  /* g_own.snap's */
+#define HELD_KEEP  ((u64)1 << 20)  /* g_own.held's, a byte a page */
 
 /* ---------------------------------------------------------------- the entries, under g_own.lk */
 /* the first entry ending after a */
@@ -710,6 +711,29 @@ static void snap_pages(u64 lo, u64 hi, u64* page, u8* bytes, u32* n) {
     *n = w;
 }
 
+/* which host pages of [lo, hi) an entry is on, a byte each, into held: taken under the same hold of g_own.lk as the
+   caller's own entries go in */
+static void held_pages_nl(u64 lo, u64 hi, u8* held) {
+    for (u64 k = 0, p = lo; p < hi; p += g_own.page, k++) held[k] = (u8)page_owned_nl(p);
+}
+/* arms the pages of [lo, hi) no entry was on before the caller's (held, held_pages_nl): one an entry was on is armed,
+   and stays so. Arming it again lets it go first, as userfaultfd unregisters a range before it registers it, and a
+   thread that touches it between the two maps it with the bytes it had, the GPU's not landed. Under g_own.trap_lk */
+static int arm_new(u64 lo, u64 hi, const u8* held) {
+    u64 n = (hi - lo) / g_own.page;
+    for (u64 k = 0; k < n;) {
+        u64 e = k;
+        if (held[k]) {
+            k++;
+            continue;
+        }
+        while (e < n && !held[e]) e++;
+        if (plat_trap_arm(GP(lo + k * g_own.page), (e - k) * g_own.page)) return -1;
+        k = e;
+    }
+    return 0;
+}
+
 int own_begin(u64 addr, u64 size, void* res, u64 res_off) {
     u64 lo = addr & ~(g_own.page - 1), hi, end = addr + size, edge[2];
     MemPoolRun runs[16];
@@ -731,6 +755,8 @@ int own_begin(u64 addr, u64 size, void* res, u64 res_off) {
     }
     pm_lock(&g_own.lk);
     while (landing_nl(addr, end)) pc_wait(&g_own.cv, &g_own.lk, -1);
+    u8* held = scratch_get(&g_own.held, (hi - lo) / g_own.page, HELD_KEEP);
+    held_pages_nl(lo, hi, held);
     Own nw[16]; /* an entry a run of pool pages, so each has one place in the mirror */
     for (i = 0; i < n; i++) {
         u64 elo = runs[i].addr > addr ? runs[i].addr : addr;
@@ -749,8 +775,9 @@ int own_begin(u64 addr, u64 size, void* res, u64 res_off) {
     /* the pages trapped from now on: the CPU's bytes on them stay in the pool, the owned ones are stale there */
     pm_lock(&g_own.trap_lk);
     if (nedge) shadow_add_nl(edge, snap, nedge);
-    if (plat_trap_arm(GP(lo), hi - lo)) fatal("Could not trap guest memory at %llx", (unsigned long long)lo);
+    if (arm_new(lo, hi, held)) fatal("Could not trap guest memory at %llx", (unsigned long long)lo);
     pm_unlock(&g_own.trap_lk);
+    scratch_put(&g_own.held, held);
     if (snap) scratch_put(&g_own.snap, snap);
     return 0;
 }
@@ -921,6 +948,8 @@ int own_watch(u64 addr, u64 size) {
     }
     pm_lock(&g_own.lk);
     while (landing_nl(addr, end)) pc_wait(&g_own.cv, &g_own.lk, -1);
+    u8* held = scratch_get(&g_own.held, (hi - lo) / g_own.page, HELD_KEEP);
+    held_pages_nl(lo, hi, held);
     /* each run of pool pages, in the gaps between the owners on it: an older watch there is replaced */
     for (i = 0; i < n; i++) {
         u64 rlo = runs[i].addr > addr ? runs[i].addr : addr;
@@ -940,8 +969,9 @@ int own_watch(u64 addr, u64 size) {
     res_release(&rel);
     pm_lock(&g_own.trap_lk);
     if (nsnap) shadow_add_nl(snap_page, snap, nsnap);
-    if (plat_trap_arm(GP(lo), hi - lo)) fatal("Could not trap guest memory at %llx", (unsigned long long)lo);
+    if (arm_new(lo, hi, held)) fatal("Could not trap guest memory at %llx", (unsigned long long)lo);
     pm_unlock(&g_own.trap_lk);
+    scratch_put(&g_own.held, held);
     if (snap) scratch_put(&g_own.snap, snap);
     return 0;
 }
