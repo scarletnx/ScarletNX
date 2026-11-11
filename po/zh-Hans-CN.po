@@ -1606,13 +1606,13 @@ msgstr "F2: 侧栏."
 
 #: src/gui/main.c
 #, c-format
-msgid "user=%d is deprecated, and the Settings have no user_uid to write %s in"
-msgstr "user=%d 是旧的设置，而设置中没有可写入 %s 的 user_uid"
+msgid "user=%d is deprecated, and the Settings have no user_uid to write [user%d]'s uid in"
+msgstr "user=%d 是旧的设置，而设置中没有可写入 [user%d] 的 uid 的 user_uid"
 
 #: src/gui/main.c
 #, c-format
-msgid "user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"
-msgstr "user=%d 是旧的设置：由 user_uid=%s（[user%d] 的）取代"
+msgid "user=%d is deprecated: [user%d]'s user_uid replaces it"
+msgstr "user=%d 是旧的设置：由 [user%d] 的 user_uid 取代"
 
 #: src/gui/main.c
 #, c-format
@@ -5861,6 +5861,12 @@ msgstr "启动"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "LLVM 内部选项"
+
+#~ msgid "user=%d is deprecated, and the Settings have no user_uid to write %s in"
+#~ msgstr "user=%d 是旧的设置，而设置中没有可写入 %s 的 user_uid"
+
+#~ msgid "user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"
+#~ msgstr "user=%d 是旧的设置：由 user_uid=%s（[user%d] 的）取代"
 
 #~ msgid "The Compile tab's: R's, B's and a game's first. Full: every core. Gentle: half of them, at a low priority. Either goes gently while a game plays"
 #~ msgstr "「编译」标签页的任务：按 R 的、按 B 的，以及游戏首次启动时的编译。全速：使用全部核心。轻柔：使用一半核心，低优先级。游戏运行时，两者都会放慢"

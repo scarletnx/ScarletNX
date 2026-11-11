@@ -1606,13 +1606,13 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "user=%d is deprecated, and the Settings have no user_uid to write %s in"
-msgstr "user=%d está obsoleto, e as Configurações não têm user_uid para gravar %s"
+msgid "user=%d is deprecated, and the Settings have no user_uid to write [user%d]'s uid in"
+msgstr "user=%d está obsoleto, e as Configurações não têm user_uid para gravar o uid de [user%d]"
 
 #: src/gui/main.c
 #, c-format
-msgid "user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"
-msgstr "user=%d está obsoleto: user_uid=%s, o de [user%d], o substitui"
+msgid "user=%d is deprecated: [user%d]'s user_uid replaces it"
+msgstr "user=%d está obsoleto: o user_uid de [user%d] o substitui"
 
 #: src/gui/main.c
 #, c-format
@@ -5861,6 +5861,12 @@ msgstr "Inicialização"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "Internos do LLVM"
+
+#~ msgid "user=%d is deprecated, and the Settings have no user_uid to write %s in"
+#~ msgstr "user=%d está obsoleto, e as Configurações não têm user_uid para gravar %s"
+
+#~ msgid "user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"
+#~ msgstr "user=%d está obsoleto: user_uid=%s, o de [user%d], o substitui"
 
 #~ msgid "PgDown"
 #~ msgstr "PgDown"

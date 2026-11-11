@@ -1603,12 +1603,12 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "user=%d is deprecated, and the Settings have no user_uid to write %s in"
+msgid "user=%d is deprecated, and the Settings have no user_uid to write [user%d]'s uid in"
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"
+msgid "user=%d is deprecated: [user%d]'s user_uid replaces it"
 msgstr ""
 
 #: src/gui/main.c
