@@ -1232,20 +1232,57 @@ static int on_panel(float x, float y) {
     dialog_draw(NULL, picture[0], picture[1], &d, g_overlay.event_rows, &at);
     return overlay_error_hit(&at.box, x, y);
 }
-static u64 tap_id;   /* what went down on the panel or off the on-screen controls, */
-static int tap_down; /* whose lift taps the menu */
+static u64 tap_id;      /* what went down on the panel or off the on-screen controls, */
+static int tap_down;    /* whose lift taps the menu where it went down, */
+static float tap_at[2]; /* there, */
+static int tap_dragged; /* unless it went further than a finger's slip: then it scrolls the page, */
+static int tap_rows;    /* by this many rows so far */
 void overlay_pointer_down(u64 id, float x, float y, const int safe[4]) {
     /* on the panel a finger is the menu's, whatever control lies under it; off it a control's, but under the loading
        screen, where they aren't drawn (vk/ui.c) */
     if (!on_panel(x, y) && !prepare_screen_shown() && vpad_down(id, x, y, safe)) return;
     tap_id = id;
     tap_down = 1;
+    tap_at[0] = x;
+    tap_at[1] = y;
+    tap_dragged = tap_rows = 0;
 }
-void overlay_pointer_move(u64 id, float x, float y, const int safe[4]) { vpad_move(id, x, y, safe); }
+/* a drag's rows: the page goes by under the finger, the item in focus kept on it */
+static void page_scroll(int rows) {
+    int n = items();
+    changed();
+    listening = 0;
+    if (page == PAGE_KEYS) {
+        keys_scroll(rows);
+        return;
+    }
+    top = snx_clamp_int(top + rows, 0, n > visible() ? n - visible() : 0);
+    focus = snx_clamp_int(focus, top, top + visible() - 1);
+}
+void overlay_pointer_move(u64 id, float x, float y, const int safe[4]) {
+    /* a finger's slip: 8 pixels at the display's scale, as a tap a phone takes */
+    float slip = 8.0f * (float)__atomic_load_n(&display_percent, __ATOMIC_RELAXED) / 100.0f, dx, dy;
+    int row, rows;
+    if (!tap_down || id != tap_id) {
+        vpad_move(id, x, y, safe);
+        return;
+    }
+    dx = x - tap_at[0];
+    dy = y - tap_at[1];
+    if (!tap_dragged && dx * dx + dy * dy < slip * slip) return;
+    tap_dragged = 1;
+    if (!shown || page == PAGE_MAP || picture[1] <= 0) return;
+    row = item_h(place_scale(picture[0], picture[1]));
+    rows = (int)(-dy / (float)row); /* up a row, the page a row on */
+    if (rows != tap_rows) page_scroll(rows - tap_rows);
+    tap_rows = rows;
+}
 int overlay_pointer_up(u64 id, float x, float y, int sw, int sh) {
     if (vpad_up(id) || !tap_down || id != tap_id) return OVERLAY_NONE;
     tap_down = 0;
-    return overlay_tap(x, y, sw, sh);
+    (void)x;
+    (void)y;
+    return tap_dragged ? OVERLAY_NONE : overlay_tap(tap_at[0], tap_at[1], sw, sh);
 }
 void overlay_pointer_cancel(u64 id) {
     if (id == tap_id) tap_down = 0;
