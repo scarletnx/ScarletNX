@@ -32,8 +32,9 @@ all the measured ones or one for each in order (when their interfaces differ).
 
 - A fragment shader alone gets a built-in full-screen triangle with float `vec4` varyings at locations 0 to 7.
   Throughput is per pixel.
-- A vertex shader draws `--vertices` (65536 primitives' worth) with noise in each attribute's format, into
-  rasterizer discard unless `--fs` gives a fragment shader. Throughput is per vertex.
+- A vertex shader draws `--vertices` (65536 primitives' worth) with noise in each attribute's format (the input's
+  type, or `--attr LOC=FORMAT` for packed ones such as `rgba8_unorm` or `rgba16_sfloat`), into rasterizer discard
+  unless `--fs` gives a fragment shader. Throughput is per vertex.
 - A geometry shader gets the built-in vertex shader (the same varyings, with a full-screen triangle every 3
   vertices) unless `--vs` gives one, and its input primitive picks the topology unless `--topology` does
   (`lines_adj`, `triangles_adj` for adjacency). Shaders of one run must read the same primitive. Throughput is per

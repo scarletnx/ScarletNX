@@ -1837,6 +1837,27 @@ static bool make_graphics(Gpu* g) {
                     return false;
                 }
                 VkFormat vk = attr_format(v);
+                uint32_t loc = v->location + k;
+                if (loc < 32 && cfg->attr_formats[loc]) {
+                    /* --attr: the format the buffer holds, which the input fetch converts (unorm, snorm, half...) */
+                    const SpFormat* af = sp_format_find(cfg->attr_formats[loc]);
+                    VkFormatProperties fp = {0};
+                    if (af)
+                        vkGetPhysicalDeviceFormatProperties(g->phys, af->vk, &fp);
+                    bool int_fmt = af && (af->numeric == SP_UINT || af->numeric == SP_SINT);
+                    if (af && int_fmt != (v->scalar != SR_FLOAT)) {
+                        fprintf(stderr, "snx-shaderperf: --attr %u=%s: the input %s is %s, the format %s\n", loc,
+                                cfg->attr_formats[loc], v->name, v->scalar == SR_FLOAT ? "float" : "an integer",
+                                int_fmt ? "an integer one" : "a float one (float, norm or scaled)");
+                        return false;
+                    }
+                    if (!af || !(fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) {
+                        fprintf(stderr, "snx-shaderperf: --attr %u=%s: %s\n", loc, cfg->attr_formats[loc],
+                                af ? "the device has no vertex buffers of it" : "unknown format (--list-formats)");
+                        return false;
+                    }
+                    vk = af->vk;
+                }
                 const SpFormat* f = sp_format_vk(vk);
                 if (!f) {
                     fprintf(stderr, "snx-shaderperf: vertex input %s: no attribute format for %s%u x%u\n", v->name,

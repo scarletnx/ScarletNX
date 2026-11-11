@@ -56,6 +56,7 @@ typedef struct {
     uint32_t vertices, instances;
     const char* index; /* none, seq, random */
     const char* vertex_fill;
+    const char* attr_formats[32]; /* --attr: a vertex input location's format, NULL for the shader's type */
     /* resources */
     SpArg binds[SP_MAX_ARGS];
     size_t bind_count;
