@@ -14,6 +14,10 @@ rules that sessions get wrong, and it points to the skills that hold the procedu
   files use Simplified Technical English. The prompts to subagents and the final reports of subagents also use it.
   The `ste100` skill gives the rules. Its checker runs in hooks on each edit, prompt and report, and in the ctest
   `claude_ste100`.
+- **Keep messages concise, clear and simple, to use few tokens.** This holds for your messages to the user and for
+  your prompts and reports to a subagent. Say the result and the evidence. Do not restate the request, and do not
+  copy a log, a diff or a file into the message. Put code, logs and disassembly in a code block and quote only the
+  lines that matter.
 - **Nothing of the game goes into git or to a place outside this machine.** Keys, dumps (XCI, NSP, NCA), `work/`,
   `recompiled/` (code, data, saves, logs) and shader or texture dumps stay local. Commit messages and docs can quote
   addresses, symbol names and short disassembly, but never extracted files. `.claude/hooks/guard.py` blocks the

@@ -56,6 +56,8 @@ The checker cannot check the dictionary. You must use the approved words with th
 
 - A prompt to a subagent follows these rules. Give the goal, the files and the facts in short sentences and lists.
 - A report from a subagent follows these rules. Give the result first, then the evidence.
+- Keep the prompt and the report concise, clear and simple, to use few tokens. Give the facts that the reader needs,
+  and no more. A short message uses fewer tokens.
 - Quoted code, logs and disassembly are not text. Put them in code blocks, which the checker does not read.
 
 ## Check
