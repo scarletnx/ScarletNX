@@ -296,6 +296,9 @@ static int pb_samples_case(GpuChannel* ch, u64 target, u64 red, u64 green) {
     g_renderer->mem_may_have_changed();
     rt_clear(ch, target, 4, 4, 0, 1);
     vk_lock();
+    /* the targets the checks before drew, released first: a release publishes one the CPU read lately, which ends
+       the pass (vk_rt_publish_drawn) */
+    vk_rt_publish_drawn();
     g_renderer->samples_reset(owner);
     pb_stream(ch, red, PB_LEN);
     passes = g_vk_passes;

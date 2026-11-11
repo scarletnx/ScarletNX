@@ -1146,6 +1146,7 @@ static void own_land_all(void) {
     u32 n, i;
     while ((n = own_lookup(AS_BASE, AS_END - AS_BASE, r, 64)) != 0)
         for (i = 0; i < n && i < 64; i++) own_acquire(r[i].addr, r[i].size);
+    own_unwatch(AS_BASE, AS_END - AS_BASE); /* the targets' pixels under watches stay the renderer's, as without them */
 }
 /* VIDEO: host1x's IOVA table, then each open NVDEC or VIC fd's channel after its index + 1, and 0 */
 static int video_save(StateIo* io) {

@@ -35,14 +35,40 @@ memory in place (below).
 
 Render targets stay the renderer's: their pixels reach guest memory only when a consumer asks. Pitch-linear color
 targets are the exception, as a game draws into those to read the result on the CPU: each release publishes the ones
-drawn since the last (`vk_rt_publish_linear` in `vk/surface.c`), and storage images are published the same way
+drawn since the last (`vk_rt_publish_drawn` in `vk/surface.c`), and storage images are published the same way
 (`vk_surf_publish`): a dispatch's after it, a draw's at the release (`vk_surf_keep_begin` and `vk_surf_keep_end`), where
 the image's span is whole pages the CPU hasn't touched lately and write tracking answers for it. A publish takes the
 image's own texels and the targets it copied in, and leaves the bytes between its layers to their owners: a view of one
 level of a mip chain has the other levels there. A page the CPU writes
 between the draw and the release keeps the CPU's bytes. Any other draw's storage image keeps its write-back, which
-reads its bytes before the draw and merges them by the byte. A block linear target the CPU reads gets no write-back
-yet.
+reads its bytes before the draw and merges them by the byte.
+
+A block linear color target the CPU reads is rare, but it occurs: one game draws its save's thumbnail into a 320x180
+target, and its CPU code reads the texels from memory with no call to the GPU. To publish each block linear target at
+each release would copy tens of megabytes a frame. So a release *watches* the ones drawn since the last
+(`own_watch`, through `vk_own_watch`): a watch is an entry with no resource. Its pages are trapped as an owner's, but
+it holds no bytes. `own_lookup` and `own_stage` skip it, and its CPU bytes stay readable through the mirror (in place,
+`own_watch` copies each page it arms into a shadow). `own_hash` and `own_trapped` see it. A watch goes only into the
+gaps between real owners, and an owner that comes later (`own_begin`) replaces it. A target that the CPU read lately
+(`vk_own_cpu_read`), or that an owner already covers, is published at the release instead, as a pitch-linear one.
+
+The CPU's first access to a watched page lands it as any other. Before the landing marks an entry, with `vk_lock`
+held, it calls the renderer's `resolve` hook (`vk_rt_watch_hit`). That publishes the targets that are pending over the
+page (`vk_surf_publish`, which swizzles a block linear target on the GPU into its owner), and the owners that it made
+replace the watches. Then the watches that are left on the page go whole, and the landing lands the new owners. So the
+CPU reads the pixels with one wait for the GPU, and a target that the CPU never reads costs one trap at its first
+release and nothing more. A watch over memory that is freed or given to other data costs one fault, which finds no
+pending target and only drops the watch.
+
+The thread that held `vk_lock` before it touched a watched page (the GPU thread, which reads guest memory in a draw's
+setup) cannot wait for a publish. Its `own_acquire`, or its fault on a page with only watches on it, drops the watches
+and reads the CPU's bytes, as it did before there were watches. That is not fatal, as a fault on a real owner is. The
+readers that test for trapped pages before a direct read see watches: `gmem_r32` and the ASTC content hash through
+`own_hash`, `guest_held` and the staging ring choice through `own_trapped`. Both test whole host pages, so they also
+see the edge pages that an owner shares. When a target
+over watched bytes cannot be published, the write-back (`vk_surf_flush`) drops its watch before it writes memory. A
+thread that waits on the page then can read it before the write ends. That occurs only when the publish fails (no
+memory for its buffer).
 
 The trap model is Skyline's (read for the design only: its source is MPL-2.0 and was withdrawn at the console maker's
 request, so nothing is copied from it). The fault is taken differently on each host (below).

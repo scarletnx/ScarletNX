@@ -227,7 +227,7 @@ static void submit_through(u64 gate) {
 static void release(Release* r) {
     SNX_ZONE_V(z, "vk release queue", r->samples);
     vk_lock();
-    vk_rt_publish_linear();
+    vk_rt_publish_drawn();
     vk_gfx_image_put_aside();
     r->cgate = vk_compute_put_aside();
     /* the work before it: none when nothing is pending (a samples-passed report always waits for the GPU, its count

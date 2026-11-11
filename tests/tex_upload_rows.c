@@ -257,6 +257,10 @@ int own_hash(u64 addr, u64 size, u64* h) {
     if (g_astc_key.owner_over) *h ^= 1;
     return g_astc_key.owner_over;
 }
+int own_trapped(u64 addr, u64 size) {
+    (void)addr, (void)size;
+    return g_astc_key.owner_over != 0;
+}
 int vk_bc7_encode_image(VkCommandBuffer cb, VkImage src, VkImage dst, u32 level, u32 w, u32 h, u32 d, int is3d, u32 z,
                         u32 nz, u32 y, u32 rows) {
     (void)cb, (void)src, (void)dst, (void)level, (void)w, (void)h, (void)d, (void)is3d, (void)z, (void)nz, (void)y,

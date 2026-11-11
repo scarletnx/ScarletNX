@@ -895,6 +895,7 @@ typedef struct Surf {
     int in_drawn;  /* in surface.c's list of drawn targets, entered at drawn_from */
     int take_seen; /* render targets: vk_rt_drawn_in gave it to a texture's search since its last write */
     int in_linear; /* a pitch-linear color target in surface.c's list of those drawn since the last release */
+    int in_bl;     /* a block linear color target in surface.c's other list of those */
     u64 drawn_from;
     u64 draw_gw;    /* guest-memory generation at the first draw this present or since a full replacement */
     u64 draw_hash;  /* fallback guest-memory hash at that baseline */
@@ -1058,8 +1059,19 @@ int vk_surf_publish(Surf* s);
    NULL when they couldn't be read back) */
 int vk_surf_keep_begin(Surf* s, VkImageKeep* k);
 int vk_surf_keep_end(Surf* s, const VkImageKeep* k, u8** original);
-/* a release: the pitch-linear color targets drawn since the last one published, for the CPU to read */
-void vk_rt_publish_linear(void);
+/* a release: the pitch-linear color targets drawn since the last one published, for the CPU to read. The block linear
+   color targets drawn since then, which the CPU reads only now and then, are watched (own_watch): the CPU's first
+   access publishes them (vk_rt_watch_hit). One the CPU read lately is published at once, as the pitch-linear ones */
+void vk_rt_publish_drawn(void);
+/* own.c's resolve: the CPU touched watched guest memory [cpu, cpu + size): the targets pending there are published
+   over it (vk_lock held, by a thread that did not hold it before) */
+void vk_rt_watch_hit(u64 cpu, u64 size);
+/* the watches that releases armed over targets, the CPU accesses that published them, and the targets that releases
+   published at once because the CPU read them lately: the statistics, and the tests */
+typedef struct {
+    u64 arms, hits, publishes;
+} VkRtWatchStats;
+extern VkRtWatchStats g_vk_rt_watch;
 void vk_surf_wrote(Surf* s); /* its image changed: its copies are out of date (wgen), and it is the newest (wseq) */
 u32 vk_surf_gen(void);       /* a write generation no image has held yet */
 /* vk_surf_flush in two halves, the GPU not waited for: the bytes a write-back of s copies (0 for none), its copy
@@ -1194,6 +1206,9 @@ int vk_rec_unsafe(void);
 /* mirror.c: guest memory [cpu, cpu + size) landed from an owner: the mirror's shadow of its pages goes */
 void vk_mirror_landed(u64 cpu, u64 size);
 int vk_own_init(void);
+/* guest memory [cpu, cpu + size) watched for the CPU (own_watch), as vk_own_publish traps an owner's: 0, or -1 where it
+   can't be (no traps, memory an import holds, memory not in the pool). vk_lock held */
+int vk_own_watch(u64 cpu, u64 size);
 /* whether the CPU made GPU-owned bytes of guest memory [cpu, cpu + size) land within the last presents presents, or
    touched them under a draw's storage image kept on the GPU (vk_own_cpu_touched) */
 int vk_own_cpu_read(u64 cpu, u64 size, u32 presents);

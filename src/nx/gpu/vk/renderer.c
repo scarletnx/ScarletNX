@@ -86,7 +86,7 @@ static void alias_seen(void* ctx, u64 gva, u64 n) {
 static int guest_held(u64 a, u64 size) {
     u64 page = plat_vm_page(), lo = a & ~(page - 1), hi = (a + size + page - 1) & ~(page - 1);
     int mapped = 0;
-    if (pend_hit_guest(&g_pend_any, a, size) || own_lookup(lo, hi - lo, NULL, 0)) return 1;
+    if (pend_hit_guest(&g_pend_any, a, size) || own_trapped(lo, hi - lo)) return 1;
     gmmu_aliases(a, size, alias_seen, &mapped);
     return mapped;
 }
@@ -894,8 +894,11 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             vk_descriptors_stats();
             /* what the GPU engines keep on the GPU (docs/layers/gpu/ownership.md), and what the CPU had to wait for */
             LOG("vulkan: GPU-owned guest memory landed for the CPU %llu times, render targets written back for an "
-                "engine %llu times\n",
-                (unsigned long long)own_landings(), (unsigned long long)g_vk_rt_readbacks);
+                "engine %llu times; block linear targets watched %llu times, published for a CPU access %llu times "
+                "and at a release %llu times\n",
+                (unsigned long long)own_landings(), (unsigned long long)g_vk_rt_readbacks,
+                (unsigned long long)g_vk_rt_watch.arms, (unsigned long long)g_vk_rt_watch.hits,
+                (unsigned long long)g_vk_rt_watch.publishes);
         }
     }
     /* Offscreen frames still submit and advance the frame ring. g_last remains available for readback. */

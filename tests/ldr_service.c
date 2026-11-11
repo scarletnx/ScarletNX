@@ -148,6 +148,7 @@ void plat_alias_host_free(u8* p, u64 size) { (void)p, (void)size; }
 /* memory/own.c and the freeze its pages need: nothing is GPU-owned here */
 void own_acquire(u64 addr, u64 size) { (void)addr, (void)size; }
 void own_drop(u64 addr, u64 size) { (void)addr, (void)size; }
+void own_unwatch(u64 addr, u64 size) { (void)addr, (void)size; }
 u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) { /* nothing is the GPU's here */
     (void)addr, (void)size, (void)out, (void)max;
     return 0;

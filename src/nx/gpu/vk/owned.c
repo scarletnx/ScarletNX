@@ -381,7 +381,8 @@ int vk_own_init(void) {
                   .unlock = vk_unlock,
                   .landed = own_landed,
                   .writer = own_writer,
-                  .wait = own_wait};
+                  .wait = own_wait,
+                  .resolve = vk_rt_watch_hit};
     g_owned.traps = !own_init(&h);
     return g_owned.traps ? 0 : -1;
 }
@@ -390,6 +391,16 @@ void vk_own_res_wrote(VkOwnRes* r) {
     /* atomic: own_writer reads it on a thread without vk_lock */
     if (r->written < vk_submit_number()) __atomic_store_n(&r->written, vk_submit_number(), __ATOMIC_RELEASE);
     __atomic_store_n(&r->serial, __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
+}
+
+int vk_own_watch(u64 cpu, u64 size) {
+    /* an import reads and writes those pages in place: a trap would take them from it */
+    if (!g_owned.traps || !size || vk_uma_held(cpu, size)) return -1;
+    vk_uma_owning(cpu, size); /* what reads the pages in place runs and goes before the trap */
+    pend_lock();              /* as own_publish: a change of guest memory without vk_lock finds no entry there */
+    int r = own_watch(cpu, size);
+    pend_unlock();
+    return r;
 }
 
 static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {

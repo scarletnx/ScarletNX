@@ -5163,6 +5163,134 @@ static int check_targets_kept(void) {
     free(ch);
     return 0;
 }
+/* a 320 by 180 A8B8G8R8 block linear target at gva (blocks 16 GOBs high) cleared to color, inside rect (x0, y0, x1,
+   y1) when it is given (a scissored clear) */
+static void rt_clear_rect(GpuChannel* ch, u64 gva, const float color[4], const u32* rect) {
+    u32* r = ch->r3d;
+    r[0x487] = 1;
+    r[0x200] = (u32)(gva >> 32);
+    r[0x201] = (u32)gva;
+    r[0x202] = 320;
+    r[0x203] = 180;
+    r[0x204] = 0xD5;
+    r[0x205] = 4u << 4;
+    r[0x206] = 1;
+    r[0x207] = 0;
+    r[0x43E] = rect ? r[0x43E] | 0x100 : r[0x43E] & ~0x100u;
+    r[0x380] = rect ? 1 : 0;
+    if (rect) {
+        r[0x381] = rect[0] | rect[2] << 16;
+        r[0x382] = rect[1] | rect[3] << 16;
+    }
+    memcpy(&r[0x360], color, 16);
+    engine_clear(ch, 15 << 2);
+    vk_lock();
+    vk_render_end();
+    vk_unlock();
+}
+/* A block linear color target that the CPU reads from memory with no call to the GPU, as one game reads its save's
+   thumbnail: a release watches its bytes (own_watch), and the CPU's first read publishes it and lands it. The bytes
+   are those of the CPU reference (support/dma_ref.c) laying the same picture out over the same memory, padding
+   included. A target drawn over three releases and never read is armed once, never published, and lands nothing. One
+   that is watched can be sampled, and the GPU thread's reads of its memory see the CPU's bytes and do not fault */
+#define WATCH_A  (HEAP_BASE + 0x1000000)
+#define WATCH_GA 0x3A0000000ull
+static int check_rt_watch(void) {
+    const u64 span = 20ull * 2 * 512 * 16; /* 20 GOBs across, 2 blocks of 16 GOBs down: 327680 bytes */
+    const u64 t1 = 0, t2 = 0x80000, ref = 0x100000, src = 0x180000;
+    const float blue[4] = {0, 0, 1, 1}, red[4] = {1, 0, 0, 1}, green[4] = {0, 1, 0, 1}, white[4] = {1, 1, 1, 1};
+    const u32 r_red[4] = {0, 0, 96, 40}, r_green[4] = {200, 100, 320, 180}, r_white[4] = {50, 0, 51, 180};
+    if (!own_traps() || vk_uma()) {
+        puts("render target watch: needs traps and no unified memory, skipped");
+        return 0;
+    }
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    CHECK(mem_map(WATCH_A, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(WATCH_GA, WATCH_A, 0x200000);
+    memset(GP(WATCH_A), 0x11, 0x200000);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    vk_rt_publish_drawn(); /* the targets the tests before drew */
+    vk_unlock();
+    VkRtWatchStats w0 = g_vk_rt_watch;
+    u64 lands = own_landings();
+    /* drawn over three releases, never read: armed once */
+    for (int i = 0; i < 3; i++) {
+        rt_clear_rect(ch, WATCH_GA + t2, i & 1 ? red : blue, NULL);
+        vk_lock();
+        vk_rt_publish_drawn();
+        vk_unlock();
+    }
+    CHECK(g_vk_rt_watch.arms == w0.arms + 1 && g_vk_rt_watch.publishes == w0.publishes);
+    CHECK(g_vk_rt_watch.hits == w0.hits && own_landings() == lands);
+    CHECK(own_watched(WATCH_A + t2, span) && own_lookup(WATCH_A + t2, span, NULL, 0) == 0);
+    /* sampled, and read by the holder of vk_lock: the CPU's bytes, with no fault and the watch kept */
+    {
+        u8 got[64];
+        const u64 g = WATCH_GA + t2;
+        const u32 tic[8] = {0x08 | (2u << 7) | (2u << 10) | (2u << 13) | (2u << 16), (u32)g, (u32)(g >> 32) | 3u << 21,
+                            4u << 3, 319 | (7u << 23), 179, 0, 0};
+        vk_lock();
+        CHECK(vk_tex_from_tic(tic) != NULL);
+        CHECK(gmem_read(g, got, sizeof got) == 0 && all_bytes(got, sizeof got, 0x11));
+        CHECK(own_watched(WATCH_A + t2, span));
+        vk_unlock();
+        CHECK(g_vk_rt_watch.hits == w0.hits && own_landings() == lands);
+    }
+    /* a picture of four parts, released, then read on this thread, which does not hold vk_lock */
+    rt_clear_rect(ch, WATCH_GA + t1, blue, NULL);
+    rt_clear_rect(ch, WATCH_GA + t1, red, r_red);
+    rt_clear_rect(ch, WATCH_GA + t1, green, r_green);
+    rt_clear_rect(ch, WATCH_GA + t1, white, r_white);
+    vk_lock();
+    vk_rt_publish_drawn();
+    vk_unlock();
+    CHECK(g_vk_rt_watch.arms == w0.arms + 2 && own_watched(WATCH_A + t1, span));
+    /* the reference: the picture in pitch rows, laid out block linear over a copy of the same memory */
+    for (u32 y = 0; y < 180; y++)
+        for (u32 x = 0; x < 320; x++) {
+            const float* c = x >= 50 && x < 51 ? white : x < 96 && y < 40 ? red : x >= 200 && y >= 100 ? green : blue;
+            u8* p = GP(WATCH_A + src) + (u64)y * 1280 + x * 4;
+            for (int k = 0; k < 4; k++) p[k] = c[k] ? 255 : 0;
+        }
+    GpuDmaOp o;
+    memset(&o, 0, sizeof o);
+    o.multi = 1;
+    o.width = o.line_in = o.line_out = 1280;
+    o.lines = 180;
+    o.src = pitch_side(WATCH_GA + src, 1280);
+    o.dst = bl_side(WATCH_GA + ref, 1280, 180, 4, 0, 0);
+    dma_copy_ref(&o);
+    u8* got = malloc(span);
+    CHECK(got);
+    memcpy(got, GP(WATCH_A + t1), span); /* faults: published and landed */
+    CHECK(g_vk_rt_watch.hits >= w0.hits + 1 && own_landings() > lands);
+    int same = !memcmp(got, GP(WATCH_A + ref), span);
+    if (!same)
+        for (u64 i = 0; i < span; i++)
+            if (got[i] != GP(WATCH_A + ref)[i]) {
+                fprintf(stderr, "render target watch: byte %llu is %02x, the reference's %02x\n", (unsigned long long)i,
+                        got[i], GP(WATCH_A + ref)[i]);
+                break;
+            }
+    free(got);
+    CHECK(same);
+    CHECK(!own_watched(WATCH_A + t1, 1));
+    /* read lately: the next release publishes it at once */
+    rt_clear_rect(ch, WATCH_GA + t1, red, NULL);
+    vk_lock();
+    vk_rt_publish_drawn();
+    vk_unlock();
+    CHECK(g_vk_rt_watch.publishes == w0.publishes + 1 && !own_watched(WATCH_A + t1, 1));
+    CHECK(GP(WATCH_A + t1)[0] == 255 && GP(WATCH_A + t1)[2] == 0);
+    vk_lock();
+    vk_rt_before_write(WATCH_GA, 0x200000); /* the targets go back to memory before it does */
+    vk_unlock();
+    CHECK(mem_unmap(WATCH_A, 0x200000) == 0);
+    free(ch);
+    return 0;
+}
 static int check_rt_overlap(void) {
     GpuChannel* ch = calloc(1, sizeof *ch);
     GpuDmaOp o;
@@ -6453,6 +6581,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_logged_back());
     CHECK(!check_uma_page_changes());
     CHECK(!check_rt_overlap());
+    CHECK(!check_rt_watch());
     CHECK(!check_uma());
     CHECK(!check_uma_way());
     CHECK(!check_uma_migrate());

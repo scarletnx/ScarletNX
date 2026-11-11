@@ -2008,6 +2008,7 @@ int mem_restore_begin(void) {
        let go of the traps on all of it, page by page */
     while ((n = own_lookup(AS_BASE, AS_END - AS_BASE, own, 64)) != 0)
         for (i = 0; i < n && i < 64; i++) own_drop(own[i].addr, own[i].size);
+    own_unwatch(AS_BASE, AS_END - AS_BASE); /* own_lookup skips the watches */
     mem_lock();
     if (!g_pool_on) return -1;
     /* everything mapped goes but the modules' code, from the top so the indices below stay put */

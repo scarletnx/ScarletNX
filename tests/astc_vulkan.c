@@ -48,6 +48,10 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
     (void)addr; (void)size; (void)out; (void)max;
     return 0;
 }
+int own_trapped(u64 addr, u64 size) {
+    (void)addr; (void)size;
+    return 0;
+}
 
 /* Only the window/game and guest pipeline services are stubbed. cmd.c and
    vk/astc.c are linked unchanged, including staging flushes and frame reuse. */
