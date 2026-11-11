@@ -25,6 +25,7 @@
 #include "support/etc2.h"
 #include "support/bcn.h"
 #include "bc7_cpu.h"
+#include "bcn_etc2_cpu.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
@@ -220,6 +221,7 @@ static void init(void) {
     vkGetPhysicalDeviceFeatures(g_vk.phys, &have);
     g_vk.feat.sparseBinding = sparse_queue && have.sparseBinding;
     g_vk.feat.textureCompressionBC = have.textureCompressionBC; /* bc_native_case compares the device's decoding */
+    g_vk.feat.textureCompressionETC2 = have.textureCompressionETC2; /* etc2_case too, of the BCn it encodes again */
     g_vk.gfx_family = family;
     float priority = 1;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -1531,6 +1533,190 @@ static void bc_native_case(void) {
     fflush(stdout);
 }
 
+/* the ETC2 or EAC format a BCn kind is encoded again into where the device samples ETC2 and not BCn (format.c's TB),
+   and what it is decoded into elsewhere */
+static VkFormat etc2_of(int kind) {
+    static const VkFormat f[10] = {VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK,
+                                   VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK,
+                                   VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK,
+                                   VK_FORMAT_EAC_R11_UNORM_BLOCK,
+                                   VK_FORMAT_EAC_R11_SNORM_BLOCK,
+                                   VK_FORMAT_EAC_R11G11_UNORM_BLOCK,
+                                   VK_FORMAT_EAC_R11G11_SNORM_BLOCK,
+                                   VK_FORMAT_UNDEFINED,
+                                   VK_FORMAT_UNDEFINED,
+                                   VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK};
+    return f[kind];
+}
+static VkFormat decoded_of(int kind) {
+    static const VkFormat f[10] = {VK_FORMAT_R8G8B8A8_UNORM,      VK_FORMAT_R8G8B8A8_UNORM,
+                                   VK_FORMAT_R8G8B8A8_UNORM,      VK_FORMAT_R16_UNORM,
+                                   VK_FORMAT_R16_SNORM,           VK_FORMAT_R16G16_UNORM,
+                                   VK_FORMAT_R16G16_SNORM,        VK_FORMAT_R16G16B16A16_SFLOAT,
+                                   VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM};
+    return f[kind];
+}
+static int etc_kind_of(int kind) {
+    static const int k[10] = {ETC2_RGB_PTA, ETC2_RGBA,    ETC2_RGBA, EAC_R, EAC_R_SNORM,
+                              EAC_RG,       EAC_RG_SNORM, 0,         0,     ETC2_RGBA};
+    return k[kind];
+}
+/* bw x bh blocks of kind through texconv (vk_tc_convert) as f says, into a readback buffer of out_size bytes */
+static u8* tc_blocks(const VkFmt* f, const u8* blocks, u32 w, u32 bw, u32 bh, u64* out_size) {
+    u32 bb = f->bpp, pitch = (bw * bb + 15) / 16 * 16;
+    u64 at, cap;
+    VkBuffer staged, rb;
+    u8* p = vk_stage((u64)pitch * bh, vk_stage_align(), &staged, &at);
+    for (u32 y = 0; y < bh; y++) memcpy(p + (u64)y * pitch, blocks + (size_t)y * bw * bb, (size_t)bw * bb);
+    VkTcShape s = vk_tc_shape(f, w);
+    *out_size = vk_tc_out_size(&s, bh, 1);
+    VkBuffer scratch = vk_bl_scratch(*out_size, &cap);
+    u8* out = vk_readback_buffer(*out_size, &rb);
+    vk_bl_barrier(vk_cmd(), 1);
+    if (!vk_tc_convert(vk_cmd(), f, w, bh, 1, staged, at, pitch, scratch, 0)) fatal("conversion refused\n");
+    vk_bl_barrier(vk_cmd(), 0);
+    VkBufferCopy c = {0, 0, *out_size};
+    rec_CmdCopyBuffer(vk_cmd(), scratch, rb, 1, &c);
+    vk_finish();
+    vk_readback_ready();
+    return out;
+}
+/* where the device samples ETC2: its own decoding of the blocks the transcoder wrote (w x h, whole blocks), blitted
+   into RGBA32F, against tests/support/etc2.c's. ETC2's bytes are exact by the specification, EAC's 11 bits within half
+   a step of their 16 bit widening */
+static void etc2_native(int kind, const u8* etc, u32 w, u32 h) {
+    VkFormatProperties fp;
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, etc2_of(kind), &fp);
+    if (!g_vk.feat.textureCompressionETC2 || !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) {
+        printf("SKIP native ETC2 of BCn kind %d: the device doesn't sample it or can't blit from it\n", kind);
+        return;
+    }
+    u32 n = w / 4 * (h / 4), bb = bcn_block_bytes(kind);
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = etc2_of(kind),
+                            .extent = {w, h, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+    VkImage src, dst;
+    VmaAllocation src_mem, dst_mem;
+    if (!vk_image_create(&ii, &src, &src_mem)) fatal("cannot create an ETC2 image\n");
+    ii.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    if (!vk_image_create(&ii, &dst, &dst_mem)) fatal("cannot create an RGBA32F image\n");
+    u64 at;
+    VkBuffer staged, rb;
+    memcpy(vk_stage((u64)n * bb, vk_stage_align(), &staged, &at), etc, (size_t)n * bb);
+    barrier(src, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    barrier(dst, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkBufferImageCopy up = {
+        .bufferOffset = at, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+    rec_CmdCopyBufferToImage(vk_cmd(), staged, src, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &up);
+    barrier(src, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .srcOffsets = {{0, 0, 0}, {(i32)w, (i32)h, 1}},
+                        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .dstOffsets = {{0, 0, 0}, {(i32)w, (i32)h, 1}}};
+    rec_CmdBlitImage(vk_cmd(), src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                     &blit, VK_FILTER_NEAREST);
+    barrier(dst, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    float* got = (float*)vk_readback_buffer((u64)w * h * 16, &rb);
+    VkBufferImageCopy down = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+    rec_CmdCopyImageToBuffer(vk_cmd(), dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb, 1, &down);
+    vk_finish();
+    vk_readback_ready();
+    int ek = etc_kind_of(kind), sn = ek == EAC_R_SNORM || ek == EAC_RG_SNORM,
+        ch = ek == EAC_R || ek == EAC_R_SNORM ? 1 : 2;
+    u32 pb = etc2_pixel_bytes(ek), differ = 0;
+    u8* want = malloc((size_t)w * h * pb);
+    etc2_decode_image(etc, w, h, ek, want);
+    float step = ek <= ETC2_RGBA ? 0.5f / 255 : sn ? 1.5f / 32767 : 1.5f / 65535, worst = 0;
+    for (u32 i = 0; i < w * h; i++)
+        for (int c = 0; c < 4; c++) {
+            const u8* q = want + (size_t)i * pb;
+            float e = ek <= ETC2_RGBA ? q[c] / 255.0f
+                      : c >= ch       ? (c == 3 ? 1.0f : 0.0f)
+                      : sn            ? fmaxf((i16)snx_ld_le16(q + 2 * c) / 32767.0f, -1.0f)
+                                      : snx_ld_le16(q + 2 * c) / 65535.0f;
+            float d = fabsf(got[(size_t)i * 4 + c] - e);
+            if (d > worst) worst = d;
+            if (d > step && differ++ < 4)
+                fprintf(stderr, "native ETC2 of BCn kind %d: texel %u channel %d: the device %.9g, the CPU %.9g\n",
+                        kind, i, c, got[(size_t)i * 4 + c], e);
+        }
+    if (differ)
+        fatal("native ETC2 of BCn kind %d: %u channels differ from the CPU's by more than allowed\n", kind, differ);
+    printf("PASS native ETC2 of BCn kind %d (largest difference %.3g)\n", kind, worst);
+    free(want);
+    vk_image_destroy(src, src_mem);
+    vk_image_destroy(dst, dst_mem);
+}
+/* texconv.comp's ETC2 build on the device against the CPU's run of it (tests/glsl/bcn_etc2_cpu.cpp): random blocks of
+   every kind but BC6H, which has no ETC2 counterpart, in an image whose sides aren't multiples of 4, byte for byte;
+   then the device's own decoding of them, where it samples ETC2 */
+static void etc2_case(void) {
+    u32 w = 67, h = 37, bw = 17, bh = 10;
+    for (int kind = BCN_BC1; kind <= BCN_BC7; kind++) {
+        if (kind == BCN_BC6H_UF || kind == BCN_BC6H_SF) continue;
+        u32 bb = bcn_block_bytes(kind);
+        u8* blocks = malloc((size_t)bw * bh * bb);
+        bc_blocks(kind, blocks, bw * bh);
+        VkFmt f = {.vk = etc2_of(kind), .bpp = (u8)bb, .bw = 4, .bh = 4, .conv = (u8)(VKC_BC1 + kind)};
+        u64 out_size;
+        u8* out = tc_blocks(&f, blocks, w, bw, bh, &out_size);
+        u8* want = malloc((size_t)bw * bh * bb);
+        bcn_etc2_cpu(kind, blocks, bw, bh, 1, want);
+        if (out_size != (u64)bw * bh * bb)
+            fatal("texconv's ETC2 build: %llu bytes out, not %u\n", (unsigned long long)out_size, bw * bh * bb);
+        for (u32 i = 0; i < bw * bh; i++)
+            if (memcmp(out + (size_t)i * bb, want + (size_t)i * bb, bb))
+                fatal("texconv's ETC2 build: BCn kind %d block %u differs from the CPU's\n", kind, i);
+        etc2_native(kind, want, 64, 40);
+        free(blocks);
+        free(want);
+    }
+    puts("PASS texture conversions (BC1 to BC5 and BC7 encoded again as ETC2 and EAC)");
+    fflush(stdout);
+}
+/* --bench-etc2: a 2048x2048 level of random blocks of each kind decoded (as on a GPU that samples neither BCn nor
+   ETC2) and encoded again as ETC2 or EAC, the conversion's dispatch alone, runs times each; and the bytes each holds.
+   Random blocks take every candidate (no block of one alpha or one colour stops early): a game's take less */
+static void bench_etc2(int runs) {
+    const u32 w = 2048, h = 2048, bw = w / 4, bh = h / 4;
+    static const int kinds[5] = {BCN_BC1, BCN_BC3, BCN_BC4, BCN_BC5, BCN_BC7};
+    for (int ki = 0; ki < 5; ki++) {
+        int kind = kinds[ki];
+        u32 bb = bcn_block_bytes(kind);
+        u8* blocks = malloc((size_t)bw * bh * bb);
+        bc_blocks(kind, blocks, bw * bh);
+        for (int etc = 0; etc < 2; etc++) {
+            VkFmt f = {.vk = etc ? etc2_of(kind) : decoded_of(kind),
+                       .bpp = (u8)bb,
+                       .bw = 4,
+                       .bh = 4,
+                       .conv = (u8)(VKC_BC1 + kind)};
+            for (int r = 0; r < runs; r++) {
+                u64 out_size, t0 = plat_ns();
+                tc_blocks(&f, blocks, w, bw, bh, &out_size);
+                double ms = (plat_ns() - t0) / 1e6;
+                printf("BENCH BCn kind %d %ux%u %s: %.1f ms, %llu bytes held (%.2f bytes a texel)\n", kind, w, h,
+                       etc ? "encoded again as ETC2/EAC" : "decoded", ms, (unsigned long long)out_size,
+                       (double)out_size / ((double)w * h));
+                fflush(stdout);
+            }
+        }
+        free(blocks);
+    }
+}
+
 int main(int argc, char** argv) {
     int large = 0, upload_wait = 0;
     BenchSource bench_src = {NULL, 8, 8};
@@ -1545,11 +1731,17 @@ int main(int argc, char** argv) {
             upload_wait = 1;
         else if (!strcmp(argv[i], "--upload-retire"))
             upload_wait = 2;
+        else if (!strcmp(argv[i], "--bench-etc2"))
+            large = 3;
     init();
     /* every level as before (the fast build, the cache's whole levels): background_cases turns the quick encode on */
     g_settings.astc_quick_mtexels = 0;
     g_settings.astc_background = 0;
     if (upload_wait) return upload_wait_case(upload_wait == 2);
+    if (large == 3) {
+        bench_etc2(3);
+        return 0;
+    }
     if (large == 2) {
         bench(4096, 4096, 5, bench_src);
         bench(2040, 2040, 5, bench_src);
@@ -1592,6 +1784,7 @@ int main(int argc, char** argv) {
     tc_case();
     bc_case();
     bc_native_case();
+    etc2_case();
     /* Known solid color, independent of the CPU reference, catches its old
        11-bit header bug. The GPU is compared to this reference below. */
     const u8 solid[16] = {0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0x12, 0, 0x34, 0, 0x56, 0, 0x78};

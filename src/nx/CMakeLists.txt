@@ -161,6 +161,9 @@ snx_glsl_spirv(snx_vk SOURCE gpu/texture/bc7.comp NAME bc7_quick_spv HEADER nx/g
                DEFINES SNX_BC7_FAST=3)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/blocklinear.comp NAME blocklinear_spv HEADER nx/gpu/texture/blocklinear_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_spv HEADER nx/gpu/texture/texconv_spv.h)
+# its ETC2 build: BCn encoded again as ETC2 and EAC, for a GPU that samples those and not BCn (gpu/vk/texconv.c)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_etc2_spv HEADER nx/gpu/texture/texconv_spv.h
+               DEFINES SNX_TC_ETC2)
 snx_glsl_spirv(snx_vk SOURCE gpu/video/vic.comp NAME vic_spv HEADER nx/gpu/video/vic_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/video/vic.comp NAME vic_unaligned_spv HEADER nx/gpu/video/vic_spv.h
                DEFINES VIC_UNALIGNED)
@@ -568,10 +571,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         gpu/vk/cmd.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c
         gpu/vk/memory.c gpu/vk/resource_stats.c gpu/vk/record.c gpu/vk/checkpoints.c gpu/vk/vma.cpp ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c"
-        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/texconv_etc2_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/bc7_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/bc7_fast_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_mode6_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/bc7_quick_spv.c"
-        "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp")
+        "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_etc2_cpu.cpp")
     target_include_directories(snx-test-astc-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests/glsl")
     target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags scarletnx-filesystem snx_xxhash snx_vk_common
                                                       Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})

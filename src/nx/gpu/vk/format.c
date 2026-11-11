@@ -174,9 +174,10 @@ static VkFmt TC(VkFormat f, int bpp) { /* block compressed, 4x4 */
 /* which block formats the device samples as they are: textureCompressionASTC_LDR, textureCompressionETC2 and
    textureCompressionBC, which the native_astc, native_etc2 and native_bc settings turn on (vk_blocks_want). A texture
    in them takes the game's own bytes (a 12x12 ASTC one a 36th of RGBA8's); the others are decoded on the GPU as they
-   are uploaded. ASTC_AS_BC7: a decoded ASTC texture encoded again as BC7 (astc_mode's BC7, or its Auto, the default,
-   on a GPU of little memory, vk_astc_bc7), where the device samples BCn: vk_blocks_want turns textureCompressionBC on
-   for it, so BCn is sampled as it is only when native_bc says so as well */
+   are uploaded, but BCn where the GPU samples ETC2: encoded again as ETC2 and EAC, the same bytes a texel (TB).
+   ASTC_AS_BC7: a decoded ASTC texture encoded again as BC7 (astc_mode's BC7, or its Auto, the default, on a GPU of
+   little memory, vk_astc_bc7), where the device samples BCn: vk_blocks_want turns textureCompressionBC on for it, so
+   BCn is sampled as it is only when native_bc says so as well */
 enum { NATIVE_ASTC = 1, NATIVE_ETC2 = 2, NATIVE_BC = 4, ASTC_AS_BC7 = 8 };
 int vk_astc_bc7(void) { return snx_astc_bc7(g_settings.astc_mode, g_vk.astc_auto_bc7); }
 static u32 native_blocks(void) {
@@ -229,6 +230,15 @@ static VkFmt TA(int bw, int bh, int srgb, u32 native) {
 static VkFmt TE(VkFormat blocks, VkFormat f, int bpp, int conv, u32 native) {
     if (native) return TC(blocks, bpp);
     VkFmt r = {f, (u8)bpp, 4, 4, 0, 0, 0, 0};
+    r.conv = (u8)conv;
+    return r;
+}
+/* BCn 4x4 blocks: as they are where the device samples them (bc), else encoded again on upload as etc, the ETC2 or
+   EAC format of the same bytes a texel, where it samples ETC2 (etc2) and BCn has one (BC6H has none: UNDEFINED), else
+   decoded into f on upload */
+static VkFmt TB(VkFormat blocks, VkFormat etc, VkFormat f, int bpp, int conv, u32 bc, u32 etc2) {
+    if (bc) return TC(blocks, bpp);
+    VkFmt r = {etc2 && etc != VK_FORMAT_UNDEFINED ? etc : f, (u8)bpp, 4, 4, 0, 0, 0, 0};
     r.conv = (u8)conv;
     return r;
 }
@@ -312,30 +322,41 @@ static VkFmt tic_format(u32 w0, int srgb, u32 native) {
             PICK(VK_FORMAT_R8_UNORM, VK_FORMAT_R8_SNORM, VK_FORMAT_R8_UINT, VK_FORMAT_R8_SINT, VK_FORMAT_R8_UNORM, 1);
         case 0x20: return T(VK_FORMAT_E5B9G9R9_UFLOAT_PACK32, 4, 0, 0);
         case 0x21: return T(VK_FORMAT_B10G11R11_UFLOAT_PACK32, 4, 0, 0);
-        /* BCn to RGBA8; BC4 and BC5 to 16 bit channels and BC6H to half floats, so their interpolants keep the
-           precision a GPU decodes them in */
+        /* BCn as ETC2 and EAC where the GPU samples those (TB): BC1 as RGB8A1, whose punch-through alpha is BC1's
+           transparent black; BC2, BC3 and BC7 as RGBA8; BC4 and BC5 as R11 and RG11. Else to RGBA8, BC4 and BC5 to 16
+           bit channels and BC6H to half floats, so their interpolants keep the precision a GPU decodes them in */
         case 0x24:
-            return TE(srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK,
-                      srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 8, VKC_BC1, bc);
+            return TB(srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK,
+                      srgb ? VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK : VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK,
+                      srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 8, VKC_BC1, bc, etc2);
         case 0x25:
-            return TE(srgb ? VK_FORMAT_BC2_SRGB_BLOCK : VK_FORMAT_BC2_UNORM_BLOCK,
-                      srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 16, VKC_BC2, bc);
+            return TB(srgb ? VK_FORMAT_BC2_SRGB_BLOCK : VK_FORMAT_BC2_UNORM_BLOCK,
+                      srgb ? VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK : VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK,
+                      srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 16, VKC_BC2, bc, etc2);
         case 0x26:
-            return TE(srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK,
-                      srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 16, VKC_BC3, bc);
+            return TB(srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK,
+                      srgb ? VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK : VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK,
+                      srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 16, VKC_BC3, bc, etc2);
         case 0x27:
-            return sn ? TE(VK_FORMAT_BC4_SNORM_BLOCK, VK_FORMAT_R16_SNORM, 8, VKC_BC4_SNORM, bc)
-                      : TE(VK_FORMAT_BC4_UNORM_BLOCK, VK_FORMAT_R16_UNORM, 8, VKC_BC4, bc);
+            return sn ? TB(VK_FORMAT_BC4_SNORM_BLOCK, VK_FORMAT_EAC_R11_SNORM_BLOCK, VK_FORMAT_R16_SNORM, 8,
+                           VKC_BC4_SNORM, bc, etc2)
+                      : TB(VK_FORMAT_BC4_UNORM_BLOCK, VK_FORMAT_EAC_R11_UNORM_BLOCK, VK_FORMAT_R16_UNORM, 8, VKC_BC4,
+                           bc, etc2);
         case 0x28:
-            return sn ? TE(VK_FORMAT_BC5_SNORM_BLOCK, VK_FORMAT_R16G16_SNORM, 16, VKC_BC5_SNORM, bc)
-                      : TE(VK_FORMAT_BC5_UNORM_BLOCK, VK_FORMAT_R16G16_UNORM, 16, VKC_BC5, bc);
+            return sn ? TB(VK_FORMAT_BC5_SNORM_BLOCK, VK_FORMAT_EAC_R11G11_SNORM_BLOCK, VK_FORMAT_R16G16_SNORM, 16,
+                           VKC_BC5_SNORM, bc, etc2)
+                      : TB(VK_FORMAT_BC5_UNORM_BLOCK, VK_FORMAT_EAC_R11G11_UNORM_BLOCK, VK_FORMAT_R16G16_UNORM, 16,
+                           VKC_BC5, bc, etc2);
         case 0x17:
-            return TE(srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK,
-                      srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 16, VKC_BC7, bc);
+            return TB(srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK,
+                      srgb ? VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK : VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK,
+                      srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 16, VKC_BC7, bc, etc2);
         case 0x10:
-            return TE(VK_FORMAT_BC6H_SFLOAT_BLOCK, VK_FORMAT_R16G16B16A16_SFLOAT, 16, VKC_BC6H_SF, bc);
+            return TB(VK_FORMAT_BC6H_SFLOAT_BLOCK, VK_FORMAT_UNDEFINED, VK_FORMAT_R16G16B16A16_SFLOAT, 16, VKC_BC6H_SF,
+                      bc, etc2);
         case 0x11:
-            return TE(VK_FORMAT_BC6H_UFLOAT_BLOCK, VK_FORMAT_R16G16B16A16_SFLOAT, 16, VKC_BC6H_UF, bc);
+            return TB(VK_FORMAT_BC6H_UFLOAT_BLOCK, VK_FORMAT_UNDEFINED, VK_FORMAT_R16G16B16A16_SFLOAT, 16, VKC_BC6H_UF,
+                      bc, etc2);
         case 0x40: return TA(4, 4, srgb, native);
         case 0x50: return TA(5, 4, srgb, native);
         case 0x41: return TA(5, 5, srgb, native);
