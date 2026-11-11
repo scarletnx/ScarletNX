@@ -111,6 +111,20 @@ def fail_fast(step='watch', timeout=20, **env):
     )
 
 
+def gone(pid):
+    """pid ended: no such process, or a zombie, which an orphan stays where nothing reaps it (a CI container's first
+    process is tail -f /dev/null, no init)"""
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return True
+    try:
+        with open(f'/proc/{pid}/stat') as stat:
+            return stat.read().rsplit(')', 1)[1].split()[0] == 'Z'
+    except OSError:
+        return False
+
+
 def stop(pid):
     """a watch start left running, ended and gone before the next look of the fake GitHub"""
     try:
@@ -118,9 +132,7 @@ def stop(pid):
     except OSError:
         return
     for _ in range(100):
-        try:
-            os.kill(pid, 0)
-        except OSError:
+        if gone(pid):
             return
         time.sleep(0.05)
     failures.append(f'the watch {pid} outlived SIGTERM by 5 s')
