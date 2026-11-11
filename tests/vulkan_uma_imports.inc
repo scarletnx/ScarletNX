@@ -960,15 +960,34 @@ static int check_uma_placed_view(void) {
 
 /* vk_memory's auto (0) never moves guest memory into AHardwareBuffers: on a device that shares memory, takes them and
    has no VK_EXT_external_memory_host, it copies, and only vk_memory=2 moves. An import where it is stays auto's on such
-   a device, and 1 copies everywhere */
+   a device, and 1 copies everywhere. uma_memory picks between the two ways where guest memory is in place: 1 only
+   imports, so it copies where 0 would move, and 2 only moves, on a driver that imports and under auto as well; neither
+   puts guest memory in place where vk_memory copies */
 static int check_uma_way(void) {
-    CHECK(vk_uma_way(0, VK_MEM_UMA, 0, 1) == VK_UMA_WITH_NONE);
-    CHECK(vk_uma_way(2, VK_MEM_UMA, 0, 1) == VK_UMA_WITH_AHB);
-    CHECK(vk_uma_way(0, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_HOST && vk_uma_way(2, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_HOST);
-    CHECK(vk_uma_way(0, VK_MEM_REBAR, 1, 1) == VK_UMA_WITH_NONE &&
-          vk_uma_way(2, VK_MEM_REBAR, 1, 0) == VK_UMA_WITH_HOST);
-    CHECK(vk_uma_way(1, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_NONE && vk_uma_way(2, VK_MEM_UMA, 0, 0) == VK_UMA_WITH_NONE);
-    printf("in place: auto copies where only AHardwareBuffers would take guest memory; vk_memory=2 moves it there\n");
+    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 0, 1) == VK_UMA_WITH_NONE);
+    CHECK(vk_uma_way(2, 0, VK_MEM_UMA, 0, 1) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(0, 0, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_HOST &&
+          vk_uma_way(2, 0, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(0, 0, VK_MEM_REBAR, 1, 1) == VK_UMA_WITH_NONE &&
+          vk_uma_way(2, 0, VK_MEM_REBAR, 1, 0) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(1, 0, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_NONE &&
+          vk_uma_way(2, 0, VK_MEM_UMA, 0, 0) == VK_UMA_WITH_NONE);
+    /* imported only */
+    CHECK(vk_uma_way(2, 1, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_HOST &&
+          vk_uma_way(0, 1, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_HOST);
+    CHECK(vk_uma_way(2, 1, VK_MEM_UMA, 0, 1) == VK_UMA_WITH_NONE);
+    /* moved only */
+    CHECK(vk_uma_way(2, 2, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_AHB &&
+          vk_uma_way(0, 2, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(0, 2, VK_MEM_UMA, 0, 1) == VK_UMA_WITH_AHB &&
+          vk_uma_way(2, 2, VK_MEM_REBAR, 1, 1) == VK_UMA_WITH_AHB);
+    CHECK(vk_uma_way(2, 2, VK_MEM_UMA, 1, 0) == VK_UMA_WITH_NONE);
+    /* vk_memory's copy stays a copy */
+    CHECK(vk_uma_way(1, 1, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_NONE &&
+          vk_uma_way(1, 2, VK_MEM_UMA, 1, 1) == VK_UMA_WITH_NONE &&
+          vk_uma_way(0, 2, VK_MEM_REBAR, 1, 1) == VK_UMA_WITH_NONE);
+    printf("in place: auto copies where only AHardwareBuffers would take guest memory; vk_memory=2 moves it there; "
+           "uma_memory=1 only imports, uma_memory=2 only moves\n");
     return 0;
 }
 /* The migrate way (Android's: guest memory moves into AHardwareBuffers; elsewhere into memfd regions the driver imports
