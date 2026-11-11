@@ -145,6 +145,7 @@ typedef struct {
     u32 nfree;
     Scratch stage;       /* a landing's staging copy, in place */
     Scratch snap;        /* the pages own_watch and own_begin copy into shadows */
+    Scratch held;        /* own_begin's and own_watch's: the pages an entry was on before theirs (arm_new) */
     int said_unshadowed; /* atomic: a trapped page with no shadow was read as zero, and the log said so once */
 } OwnState;
 extern OwnState g_own;

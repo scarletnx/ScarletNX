@@ -843,6 +843,47 @@ static void* reader(void* arg) {
     }
     return NULL;
 }
+/* Readers that start while the publish a fault asked for arms the watched pages: each waits for the resolve, then a
+   spin longer than the one before, so that some reach a page while own_begin arms it. A page armed already must stay
+   armed through it: userfaultfd arms a page again by letting it go first (plat_trap_arm unregisters it before it
+   registers it), and a reader there maps the page with the bytes it had, the round before's. Each round's publish is
+   ready before its watch: a fault of the round before's readers can come late, and with none it would drop the watch */
+#define REARM_READERS 16
+static u64 g_rearm_at;
+static int g_rearm_round, g_rearm_seen, g_rearm_stale; /* g_rearm_stale atomic */
+static void* rearm_reader(void* arg) {
+    u32 k = (u32)(uintptr_t)arg;
+    while (__atomic_load_n(&g_resolves, __ATOMIC_ACQUIRE) == g_rearm_seen) {}
+    for (volatile u32 spin = 0; spin < k * 400; spin++) {}
+    for (u32 page = k % 4; page < 32; page += 4) {
+        u64 off = page * 0x1000 + 0x80 + k;
+        /* in place a page is open while the landing fills it, and its old byte can be read then (test_stress) */
+        if (GP(g_rearm_at)[off] != (u8)(g_rearm_round * 5 + off) && plat_alias_mirror())
+            __atomic_add_fetch(&g_rearm_stale, 1, __ATOMIC_RELAXED);
+    }
+    return NULL;
+}
+static void test_rearm(void) {
+    pthread_t t[REARM_READERS];
+    g_rearm_at = region(R0 + 0xE00000, 0x20000);
+    for (g_rearm_round = 1; g_rearm_round <= 40; g_rearm_round++) {
+        Res* r = res_new(0x20000, (u8)(g_rearm_round * 5));
+        g_resolve_res = r;
+        g_resolve_lo = g_rearm_at;
+        g_resolve_size = 0x20000;
+        g_rearm_seen = __atomic_load_n(&g_resolves, __ATOMIC_ACQUIRE);
+        CHECK(own_watch(g_rearm_at, 0x20000) == 0);
+        for (u32 i = 0; i < REARM_READERS; i++) pthread_create(&t[i], NULL, rearm_reader, (void*)(uintptr_t)i);
+        CHECK(GP(g_rearm_at)[0x7F] == (u8)(g_rearm_round * 5 + 0x7F)); /* the fault that asks for the publish */
+        for (u32 i = 0; i < REARM_READERS; i++) pthread_join(t[i], NULL);
+        g_resolve_res = NULL;
+        CHECK(refs(r) == 0 && !own_trapped(g_rearm_at, 0x20000));
+        res_free(r);
+    }
+    if (g_rearm_stale) fprintf(stderr, "rearm: %d reads of the round before's bytes in 40 rounds\n", g_rearm_stale);
+    CHECK(g_rearm_stale == 0);
+    CHECK(mem_unmap(g_rearm_at, 0x20000) == 0);
+}
 static void test_stress(void) {
     pthread_t t[THREADS];
     u64 i;
@@ -974,6 +1015,7 @@ int main(int argc, char** argv) {
     test_let_go_watched();
     test_watch();
     test_watch_many();
+    test_rearm();
     test_stress();
     CHECK(!own_any());
     printf("memory_own: %u checks passed (%d landings, %d bytes)\n", checks, g_lands, g_landed_bytes);
