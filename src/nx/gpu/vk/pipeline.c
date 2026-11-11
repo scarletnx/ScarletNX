@@ -473,11 +473,16 @@ VkDescriptorType vk_cbuf_type(u32 slot) {
 /* Each stage sees one set, with the 18 constant buffer slots and the uniform buffers of the renderer in it, and
    GeForce devices give a stage 15. The slots past what a device's limits hold are storage buffers, over the same
    memory, which those devices allow many more of */
+static VkDescriptorType binding_type(u32 i);
 static void cbufs_fit_limits(void) {
     const VkPhysicalDeviceLimits* l = &g_vk.props.limits;
     u32 fit = l->maxPerStageDescriptorUniformBuffers, set = l->maxDescriptorSetUniformBuffers / g_vk_stage_sets;
-    /* SNX_VKB_RS and SNX_VKB_FMT, and SNX_VKB_TEXFUNCS and SNX_VKB_TEXMAP with the texture arrays */
-    u32 own = g_shader_texture_arrays ? 4 : 2;
+    /* the uniform buffers past the constant buffers: SNX_VKB_RS, SNX_VKB_FMT and SNX_VKB_ROOT, and SNX_VKB_TEXFUNCS
+       and SNX_VKB_TEXMAP with the texture arrays */
+    u32 own = 0;
+    for (u32 i = SNX_VKB_SSBO; i < SNX_VKB_END; i++)
+        if (binding_type(i) == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && (i < SNX_VKB_TEXARRAY || g_shader_texture_arrays))
+            own++;
     if (set < fit) fit = set;
     fit = fit > own ? fit - own : 0;
     if (fit >= 18) return;
