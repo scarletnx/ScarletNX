@@ -7,12 +7,12 @@
    quad's top right corner) for a vertex draws a second triangle with red in it */
 
 /* a program at address of count instructions (a scheduling word before every three), a fragment program's header
-   taking a screen-linear RGBA input when fragment is set */
+   taking a screen-linear RGBA input when fragment is set, or one with perspective when it is 2 */
 static int index_program(u64 address, const u64* ops, u32 count, int fragment) {
     u64 code[64] = {0};
     u32 at = 10;
     if (fragment) {
-        code[3] = 0xff; /* screen-linear RGBA input */
+        code[3] = fragment == 2 ? 0xaa : 0xff; /* the RGBA input's interpolation */
         code[9] = 15;
     }
     for (u32 i = 0; i < count; i++) {
@@ -1021,15 +1021,23 @@ static int query_target_case(GpuChannel* channel, u64 target, u64 address) {
    swapped: every pixel ends as its own, swapped. Through a copy it does the same wherever the proof doesn't hold: a
    viewport a pixel to the right (each pixel takes its left neighbour's), a generic counted from the bottom under a
    viewport counted from the top (each row takes its mirror's), and a w stored from an attribute. The generic counted
-   from the bottom is in place again under a viewport of negative height */
+   from the bottom is in place again under a viewport of negative height. With clip set, the mapping is the fragment
+   program's (ShaderInfo.pos_out_mask, screen_ndc): the vertex program writes the generic as its position itself, and
+   the sample is at the generic's (x / w / 2 + 1/2, y / w / 2 + 1/2), or -y / w / 2 + 1/2 counted from the bottom. The
+   same rounds, the generic loaded apart from the position in place of the stored w */
 #define OWN_FFMA(d, a, c, scale, negc)                                                                                 \
     (0x32a0000000070000ull | (u64)((scale) >> 12 & 0x7ffff) << 20 | (u64)((scale) >> 31) << 56 | (u64)(c) << 39 |      \
      (u64)(negc) << 49 | (u64)(a) << 8 | (u64)(d))
 #define OWN_AST(addr, reg, count)                                                                                      \
     (0xeff0000000070000ull | (u64)((count) - 1) << 47 | (u64)(addr) << 20 | 0xff00ull | (u64)(reg))
-static int own_target_uv_case(GpuChannel* channel, u64 target, u64 address) {
-    const u64 programs = address + 0x5800, sample = address + 0x6400, pool = address + 0x1F000, samplers = pool + 0x100,
-              cbuf = pool + 0x200;
+#define OWN_ALD(d, addr)          (0xefd87f8000070000ull | (u64)(addr) << 20 | 0xff00ull | (u64)(d))
+#define OWN_IPA(d, addr)          (0xe000000000070000ull | (u64)(addr) << 28 | 0xff00ull | (u64)(d))
+#define OWN_IPA_MUL(d, addr, mul) (OWN_IPA(d, addr) | 1ull << 54 | (u64)(mul) << 20)
+#define OWN_RCP(d, a)             (0x5080000000470000ull | (u64)(a) << 8 | (u64)(d))
+#define OWN_FMUL(d, a, b)         (0x5c68000000070000ull | (u64)(b) << 20 | (u64)(a) << 8 | (u64)(d))
+static int own_target_case(GpuChannel* channel, u64 target, u64 address, int clip) {
+    const u64 programs = address + (clip ? 0x6800 : 0x5800), sample = address + (clip ? 0x7400 : 0x6400),
+              pool = address + 0x1F000, samplers = pool + 0x100, cbuf = pool + 0x200;
     const u32 half = 0x3f000000u, two = 0x40000000u;
     /* u = x / 2 + 1 / 2 and v = y / 2 + 1 / 2 (or 1 / 2 - y / 2, down) of the corner, then the position from them */
     u64 vertex[11] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
@@ -1047,6 +1055,18 @@ static int own_target_uv_case(GpuChannel* channel, u64 target, u64 address) {
                             0x5c98078000070000ull | 1ull << 20, /* MOV R0, R1 */
                             0x5c98078000070001ull | 4ull << 20, /* MOV R1, R4 */
                             0xe30000000007000full};
+    /* clip: the corner loaded a word at a time, stored as the position and as the generic; the generic's x stored
+       again from a load of its own where the proof must not hold (the 8th instruction) */
+    u64 clip_vertex[9] = {OWN_ALD(0, 0x80),    OWN_ALD(1, 0x84),      OWN_ALD(2, 0x88),
+                          OWN_ALD(3, 0x8c),    OWN_ALD(4, 0x80),      OWN_AST(0x70, 0, 4),
+                          OWN_AST(0x80, 0, 4), 0xe30000000007000full, 0xe30000000007000full};
+    /* the generic's x / w and y / w, each times 1/2 (y's -1/2, down) plus 1/2, then the sample as above */
+    u64 clip_fragment[16] = {OWN_IPA(0, 0x7c),           OWN_RCP(0, 0),
+                             OWN_IPA_MUL(1, 0x80, 0),    OWN_IPA_MUL(2, 0x84, 0),
+                             OWN_IPA_MUL(3, 0x8c, 0),    OWN_RCP(3, 3),
+                             OWN_FMUL(4, 1, 3),          OWN_FMUL(5, 2, 3),
+                             0x0103f00000071006ull, /* MOV32I R6, 0.5 */
+                             OWN_FFMA(8, 4, 6, half, 0), OWN_FFMA(9, 5, 6, half, 0)};
     const u32 tic[8] = {0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
                         (u32)target,
                         (u32)(target >> 32) | 3u << 21,
@@ -1055,10 +1075,13 @@ static int own_target_uv_case(GpuChannel* channel, u64 target, u64 address) {
                         3 | 1u << 31, /* height 4, depth 1, normalized */
                         0,
                         0};
-    static const char* const names[5] = {
-        "the generic mapped onto the whole viewport", "a viewport a pixel to the right",
-        "a generic counted from the bottom, a viewport from the top", "a w stored from an attribute",
-        "a generic counted from the bottom, a viewport of negative height"};
+    static const char* const names[2][5] = {
+        {"the generic mapped onto the whole viewport", "a viewport a pixel to the right",
+         "a generic counted from the bottom, a viewport from the top", "a w stored from an attribute",
+         "a generic counted from the bottom, a viewport of negative height"},
+        {"the position mapped from clip space onto the whole viewport", "clip space, a viewport a pixel to the right",
+         "clip space counted from the bottom, a viewport from the top", "the generic loaded apart from the position",
+         "clip space counted from the bottom, a viewport of negative height"}};
     u8 bytes[256] = {0}, initial[64], out[64];
     u32* r = channel->r3d;
     float kept[6];
@@ -1072,7 +1095,13 @@ static int own_target_uv_case(GpuChannel* channel, u64 target, u64 address) {
         const u8 color[4] = {(u8)(10 + 60 * (i & 3)), (u8)(20 + 50 * (i >> 2)), (u8)(100 + i), 255};
         memcpy(initial + i * 4, color, 4);
     }
-    CHECK(index_program(sample, fragment, 7, 1));
+    if (clip) {
+        memcpy(clip_fragment + 11, fragment + 2, 5 * sizeof *fragment);
+        CHECK(index_program(sample, clip_fragment, 16, 2));
+        clip_fragment[10] = OWN_FFMA(9, 5, 6, half ^ 0x80000000u, 0);
+        CHECK(index_program(sample + 0x200, clip_fragment, 16, 2));
+    } else
+        CHECK(index_program(sample, fragment, 7, 1));
     r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 3;
     r[0x557] = (u32)(samplers >> 32), r[0x558] = (u32)samplers, r[0x559] = 0;
     r[0x48D] = 0;
@@ -1090,11 +1119,12 @@ static int own_target_uv_case(GpuChannel* channel, u64 target, u64 address) {
         vertex[4] = down ? OWN_FFMA(9, 1, 6, half ^ 0x80000000u, 0) : OWN_FFMA(9, 1, 6, half, 0);
         vertex[6] = down ? OWN_FFMA(5, 9, 7, two ^ 0x80000000u, 0) : OWN_FFMA(5, 9, 7, two, 1);
         vertex[9] = round == 3 ? OWN_AST(0x7c, 3, 1) : 0xe30000000007000full;
-        ok = index_program(program, vertex, 11, 0);
+        clip_vertex[7] = round == 3 ? OWN_AST(0x80, 4, 1) : 0xe30000000007000full;
+        ok = clip ? index_program(program, clip_vertex, 9, 0) : index_program(program, vertex, 11, 0);
         if (!ok) break;
         memcpy(r + 0x280, transform, sizeof transform);
         r[0x811] = (u32)(program - address);
-        r[0x851] = (u32)(sample - address);
+        r[0x851] = (u32)(sample + (clip && down ? 0x200 : 0) - address);
         channel->ds.bind.cb_addr[4][2] = cbuf;
         channel->ds.bind.cb_size[4][2] = 256;
         vk_lock();
@@ -1140,10 +1170,10 @@ static int own_target_uv_case(GpuChannel* channel, u64 target, u64 address) {
         channel->ds.bind.cb_addr[4][2] = 0;
         channel->ds.bind.cb_size[4][2] = 0;
         if (ok && (in_place ? loops != 1 || written || through : loops || written != 1 || through != 1)) {
-            fprintf(stderr,
-                    "own target, %s: %llu draws in place, %llu through a copy, %llu copies written; expected %s\n",
-                    names[round], (unsigned long long)loops, (unsigned long long)through, (unsigned long long)written,
-                    in_place ? "1 in place and no copy" : "1 through a copy, written once");
+            fprintf(
+                stderr, "own target, %s: %llu draws in place, %llu through a copy, %llu copies written; expected %s\n",
+                names[clip][round], (unsigned long long)loops, (unsigned long long)through, (unsigned long long)written,
+                in_place ? "1 in place and no copy" : "1 through a copy, written once");
             ok = 0;
         }
         for (u32 i = 0; ok && i < 16; i++) {
@@ -1156,9 +1186,9 @@ static int own_target_uv_case(GpuChannel* channel, u64 target, u64 address) {
             memcpy(want, initial + from * 4, 4);
             if (!kept_pixel) want[0] = initial[from * 4 + 1], want[1] = initial[from * 4];
             if (memcmp(out + i * 4, want, 4)) {
-                fprintf(stderr, "own target, %s: pixel (%u, %u) is %u %u %u %u, expected %u %u %u %u\n", names[round],
-                        x, y, out[i * 4], out[i * 4 + 1], out[i * 4 + 2], out[i * 4 + 3], want[0], want[1], want[2],
-                        want[3]);
+                fprintf(stderr, "own target, %s: pixel (%u, %u) is %u %u %u %u, expected %u %u %u %u\n",
+                        names[clip][round], x, y, out[i * 4], out[i * 4 + 1], out[i * 4 + 2], out[i * 4 + 3], want[0],
+                        want[1], want[2], want[3]);
                 ok = 0;
             }
         }
@@ -1167,13 +1197,20 @@ static int own_target_uv_case(GpuChannel* channel, u64 target, u64 address) {
     r[0x811] = 0;
     r[0x851] = 0x10000; /* the harness's programs again */
     CHECK(ok);
-    printf("own target: a draw that samples its target at a generic its position is written from reads it %s\n",
-           g_vk.has_feedback ? "in place, and through a copy under another viewport, sign or w"
-                             : "through a copy (no attachment feedback loops)");
+    printf("own target: a draw that samples its target at a generic %s reads it %s\n",
+           clip ? "written as its position, mapped from clip space," : "its position is written from",
+           !g_vk.has_feedback ? "through a copy (no attachment feedback loops)"
+           : clip             ? "in place, and through a copy under another viewport, sign or generic"
+                              : "in place, and through a copy under another viewport, sign or w");
     return 0;
 }
 #undef OWN_FFMA
 #undef OWN_AST
+#undef OWN_ALD
+#undef OWN_IPA
+#undef OWN_IPA_MUL
+#undef OWN_RCP
+#undef OWN_FMUL
 
 static int check_index_draws(void) {
     const u64 address = 0x478000000ull, cpu = HEAP_BASE + 0x7A0000;
@@ -1252,7 +1289,8 @@ static int check_index_draws(void) {
     CHECK(!fragment_query_slots_case(channel, target, address));
     CHECK(!shadow_map_cases(channel, target, address));
     CHECK(!query_target_case(channel, target, address));
-    CHECK(!own_target_uv_case(channel, target, address));
+    CHECK(!own_target_case(channel, target, address, 0));
+    CHECK(!own_target_case(channel, target, address, 1));
     CHECK(!index_bound_cases(channel, target, indices, address + 0x1A000, address + 0x1C000));
     printf(
         "index draws: quads, widened and native 8-bit indices, restart indices and rewritten indices' bounds checked "
