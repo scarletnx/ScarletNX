@@ -30,9 +30,8 @@ implementation in ScarletNX, not a port of Atmosphere's GPL-2.0-only code.
 ## Implemented behavior
 
 - Charge the page-rounded loaded images, including data and BSS, and the main
-  thread's page-rounded stack instead of a fixed 256 MiB. ScarletNX's unmapped
-  guard pages are not physical allocations. Images are charged by the loader and
-  the main stack is charged before the guest main thread starts.
+  thread's page-rounded stack instead of a fixed 256 MiB. Images are charged by
+  the loader and the main stack is charged before the guest main thread starts.
 - For a single application with a private NPDM system resource, charge that
   reservation once. GetInfo 6/7 include it and 21/22 exclude it. This reservation
   is not the same quantity as the slab usage returned by GetInfo 17.

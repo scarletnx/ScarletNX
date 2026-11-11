@@ -194,9 +194,11 @@ A game module (`<id>_code.so`, `.dll` on Windows) is code the recompiler made fo
 
 Bump `SNX_ABI` for any change to the contract: a field of `CPU`, `RtAPI`, `SnxModule` or `SnxModInfo` added, removed,
 moved or resized; a helper's results; an `SNX_FP_*` number; `SNX_SVC_COUNT`; an RtAPI function's arguments. Bump it
-too for an addition the games should get though older modules would run without it (13's `snx_variants()` table). A
-change to the recompiler's own output for the same contract leaves it alone, and every game keeps its old code until
-it is recompiled (`-r`, or R in Games).
+too for an addition the games should get though older modules would run without it (13's `snx_variants()` table),
+and for a change of the addresses the guest's code lies at (18's modules one after another): a save state holds the
+guest's memory at the addresses it was saved with, and is refused by `SNX_ABI`. A change to the recompiler's own
+output for the same contract leaves it alone, and every game keeps its old code until it is recompiled (`-r`, or R in
+Games).
 
 The module's `snx_routes()` table (`SnxRoutes`, with its own `SNX_ROUTES_VERSION`) is read as optional and left
 `SNX_ABI` alone: it names the symbols whose calls the module sends through their dispatch slots
@@ -227,6 +229,7 @@ function's arguments, or a field added into a struct's tail padding: for those t
 | 15 | calls to an exported function go through its dispatch slot, which a hook of the runtime's may hold |
 | 16 | `stx`'s result for a store-exclusive whose range the armed monitor covers |
 | 17 | the FP helpers take FPCR by value and return their result with the FPSR flags they raised, and generated functions call `snx_fp_env` on entry |
+| 18 | a program's modules lie one after another, as the console's loader lays them (`src/nx/loader/loader.h`); the contract is as it was |
 
 #### Code the game patches
 
