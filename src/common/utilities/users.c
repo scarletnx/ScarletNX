@@ -656,20 +656,26 @@ int snx_users_set(const char* dir, int number, const char* key, const char* valu
     return 0;
 }
 const char* snx_users_notes(void) { return g_user_notes; }
-/* user i's Mii and picture from what users.ini said (NULL: nothing), a line in g_user_notes for each not taken as
-   read: the value read and the one in effect. Neither ever stops anything */
+/* user i's Mii and picture from what users.ini said (NULL: nothing), a line in g_user_notes for a user with a value
+   that is not taken: each such value as read and the one in effect. A value users.ini does not give leaves no line,
+   and neither ever stops anything */
 static void users_mii(int i, const char* mii, const char* picture) {
     SnxUser* u = &g_users[i];
     size_t at = strlen(g_user_notes);
     int found = mii ? snx_mii_db_find(mii) : -1,
         word = picture && (!strcmp(picture, "mii") || !strcmp(picture, "file"));
+    int no_mii = mii && found < 0, no_picture = picture && !word;
     u->mii = (uint8_t)(found < 0 ? 0 : found);
     u->picture_mii = word && !strcmp(picture, "mii"); /* the Mii's face only asked for: the file else, or Wimsy */
-    if (found >= 0 && word) return;
-    snprintf(g_user_notes + at, sizeof g_user_notes - at, "users: [user%d] mii=%s%s: %s; picture=%s%s: %s\n", i + 1,
-             mii ? mii : "(none)", mii && found < 0 ? ", no Mii of the database" : "", snx_mii_db_name(u->mii),
-             picture ? picture : "(none)", picture && !word ? ", neither mii nor file" : "",
-             u->picture_mii ? "mii" : "file");
+    if (!no_mii && !no_picture) return;
+    at += (size_t)snprintf(g_user_notes + at, sizeof g_user_notes - at, "users: [user%d]", i + 1);
+    if (at < sizeof g_user_notes && no_mii)
+        at += (size_t)snprintf(g_user_notes + at, sizeof g_user_notes - at, " mii=%s, no Mii of the database: %s%s",
+                               mii, snx_mii_db_name(u->mii), no_picture ? ";" : "");
+    if (at < sizeof g_user_notes && no_picture)
+        at += (size_t)snprintf(g_user_notes + at, sizeof g_user_notes - at, " picture=%s, neither mii nor file: %s",
+                               picture, u->picture_mii ? "mii" : "file");
+    if (at < sizeof g_user_notes) snprintf(g_user_notes + at, sizeof g_user_notes - at, "\n");
 }
 /* user 1 alone, as without users.ini: what a users.ini that is refused leaves */
 static void users_reset(void) {
