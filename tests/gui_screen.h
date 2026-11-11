@@ -130,22 +130,37 @@ static inline void icons_are(void) {
    of them) its block's corner, k * s, so a glyph is found at its corner alone; a half step's pixels, a pixel and two by
    turns, in their middle */
 static inline int font_px(int k, int half) { return half % 2 ? (2 * k + 1) * half / 4 : k * (half / 2); }
+/* the render's pixels w by h from x, y of the viewport, as SDL_RenderReadPixels(renderer, NULL) numbers the whole
+   viewport's (its rectangle is the target's, cut to the viewport): a check reads the part it looks at, not every
+   byte of the render */
+static inline SDL_Surface* read_px(App* app, int x, int y, int w, int h) {
+    SDL_Rect view, part;
+    assert(SDL_GetRenderViewport(app->renderer, &view));
+    part = (SDL_Rect){view.x + x, view.y + y, w, h};
+    return SDL_RenderReadPixels(app->renderer, &part);
+}
 /* n glyphs in color anywhere on the render: their ink pixels in color, the others not (a box's frame may cross the
    font's last row, which is empty); 1 and where they start, else 0. Their letters size times the text's, or at the
    half step app->half names while it is set */
 static inline int find_glyphs(App* app, const int* text, int n, SDL_Color color, int size, int* at_x, int* at_y) {
-    SDL_Surface *read = SDL_RenderReadPixels(app->renderer, NULL), *image;
+    /* the render's pixels as it holds them, a word each, which color is when its R, G and B bits are color's: no copy
+       into another format, as each look at the screen would be two of it (under the sanitizers, every byte of both
+       written into memory just mapped) */
+    SDL_Surface* image = SDL_RenderReadPixels(app->renderer, NULL);
+    const SDL_PixelFormatDetails* format = image ? SDL_GetPixelFormatDetails(image->format) : NULL;
+    const uint8_t* rows[256]; /* each glyph's font rows */
     int h = app->half && size == 1 ? app->half : 2 * app->scale * size, first = -1, fx = 0, fy = 0, found = 0, x, y;
-    assert(read);
-    image = SDL_ConvertSurface(read, SDL_PIXELFORMAT_RGBA32);
-    SDL_DestroySurface(read);
-    assert(image);
-#define SNX_AT(px, py) ((const Uint8*)image->pixels + (py) * image->pitch + (px) * 4)
-#define SNX_IS(c)      ((c)[0] == color.r && (c)[1] == color.g && (c)[2] == color.b)
+    Uint32 mask, want;
+    assert(image && format && n <= 256);
+    assert(format->bytes_per_pixel == 4 && format->Rbits == 8 && format->Gbits == 8 && format->Bbits == 8);
+    mask = format->Rmask | format->Gmask | format->Bmask;
+    want = SDL_MapRGB(format, NULL, color.r, color.g, color.b) & mask;
+    for (int i = 0; i < n; ++i) rows[i] = font_rows(text[i]);
+#define SNX_IS(px, py) ((((const Uint32*)((const Uint8*)image->pixels + (py) * image->pitch))[px] & mask) == want)
     for (int i = 0; i < n && first < 0; ++i) /* the first ink, to look for */
         for (int gy = 0; gy < 15 && first < 0; ++gy)
             for (int gx = 0; gx < 8 && first < 0; ++gx)
-                if (font_rows(text[i])[gy] & (0x80 >> gx)) {
+                if (rows[i][gy] & (0x80 >> gx)) {
                     first = i;
                     fx = font_px(i * 8 + gx, h);
                     fy = font_px(gy, h);
@@ -153,13 +168,13 @@ static inline int find_glyphs(App* app, const int* text, int n, SDL_Color color,
     assert(first >= 0);
     for (y = 0; !found && y + font_px(14, h) < image->h; ++y)
         for (x = 0; !found && x + font_px(n * 8 - 1, h) < image->w; ++x) {
-            if (!SNX_IS(SNX_AT(x + fx, y + fy))) continue;
+            if (!SNX_IS(x + fx, y + fy)) continue;
             found = 1;
             for (int i = 0; found && i < n; ++i)
                 for (int gy = 0; found && gy < 15; ++gy)
                     for (int gx = 0; found && gx < 8; ++gx) {
-                        int ink = (font_rows(text[i])[gy] & (0x80 >> gx)) != 0;
-                        found = ink == SNX_IS(SNX_AT(x + font_px(i * 8 + gx, h), y + font_px(gy, h)));
+                        int ink = (rows[i][gy] & (0x80 >> gx)) != 0;
+                        found = ink == SNX_IS(x + font_px(i * 8 + gx, h), y + font_px(gy, h));
                     }
             if (found) {
                 *at_x = x;
@@ -167,7 +182,6 @@ static inline int find_glyphs(App* app, const int* text, int n, SDL_Color color,
             }
         }
 #undef SNX_IS
-#undef SNX_AT
     SDL_DestroySurface(image);
     return found;
 }
