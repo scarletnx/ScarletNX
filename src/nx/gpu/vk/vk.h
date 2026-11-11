@@ -497,7 +497,7 @@ int vk_zt_load(struct StateIo* io);
 void vk_zt_forget(void);
 extern u64 g_vk_finishes, g_vk_finish_ns; /* statistics: vk_finish calls and their wait (the GPU thread idles) */
 void vk_frame_next(void);                 /* ends the frame (a present): the next records in the other slot */
-void vk_frame_check(void);                /* at the start of a draw or dispatch: ends a frame that has grown too big */
+void vk_frame_check(void); /* at the start of a draw or dispatch, between a copy's bands: ends a frame grown too big */
 u64 vk_ring_bytes(void);                  /* the rings' memory: the slots' chunks and big buffers, the pool's */
 u64 vk_ring_made(void);                   /* the rings' chunks and big buffers made since the start */
 /* a buffer for GPU -> host copies: record the copy into it, vk_finish(), vk_readback_ready(), then read */

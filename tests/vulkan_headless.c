@@ -4371,6 +4371,38 @@ static int check_dma_bands(void) {
     return 0;
 }
 
+/* A copy's bands are recorded with no draw between them, and vk_frame_check, which ends a frame once it has written
+   VK_FRAME_RING_CAPS allocations to its rings, ran only at a draw's start: the copy engine's upload of an 8192x8192
+   RGBA8 texture's levels wrote 1365 MiB to one frame's rings, and a phone's system ended the app. The frame ends
+   between two bands now: 896 lines of 512 bytes into block linear, 448 KiB of source and as much of the
+   destination's own bytes staged, with the cap lowered to 64 KiB (bands of 16 KiB of rows, a frame's rings 256 KiB),
+   go over several frames, the rings stay within the two slots' share, and the copy is the CPU's */
+static int check_dma_bands_frames(void) {
+    const u64 cap = g_vk.alloc_cap;
+    GpuDmaOp o = {0};
+    vk_finish();
+    vk_frame_next();
+    g_vk.alloc_cap = 64 << 10;
+    o.multi = 1;
+    o.width = o.line_in = o.line_out = 512;
+    o.lines = 896;
+    o.src = pitch_side(0x1000, 512);
+    o.dst = bl_side(0x80000, 512, 896, 1, 0, 0);
+    u64 frames = vk_frame_id(), rings = vk_ring_bytes(), copies, bands0, bands1, bytes;
+    vk_dma_stats(&copies, &bands0, &bytes);
+    int failed = dma_case(o);
+    vk_dma_stats(&copies, &bands1, &bytes);
+    u64 ended = vk_frame_id() - frames, grown = vk_ring_bytes() > rings ? vk_ring_bytes() - rings : 0;
+    g_vk.alloc_cap = cap;
+    vk_frame_next();
+    printf("dma bands across frames: %llu bands, %llu frames ended, the rings grew by %llu KiB\n",
+           (unsigned long long)(bands1 - bands0), (unsigned long long)ended, (unsigned long long)(grown >> 10));
+    CHECK(!failed && bands1 - bands0 >= 8);
+    CHECK(ended >= 2);
+    CHECK(grown <= (u64)(VK_FRAMES + 1) * VK_FRAME_RING_CAPS * (64 << 10));
+    return 0;
+}
+
 /* Targets bigger than one allocation (g_vk.alloc_cap, lowered to 64 KiB for the write-back) read back in parts: a
    block linear 256x128 RGBA8 one and a pitch linear one of the same size in bands of rows, a pitch linear array of
    12 layers of 64x32 two layers a part, and multisampled ones, block linear of 256x128 samples and pitch linear of
@@ -4632,15 +4664,22 @@ static int check_blit_bands(void) {
             (unsigned long long)asked, (unsigned long long)((512 << 10) / VK_PART_SHARE));
         failed = 1;
     }
+    /* and a frame ends between two bands once its rings hold VK_FRAME_RING_CAPS allocations (256 KiB here), as
+       between a copy engine's (check_dma_bands_frames): the three blits end 3 frames, and none ended without it */
+    vk_finish();
+    vk_frame_next();
     g_vk.alloc_cap = 64 << 10;
+    u64 frames = vk_frame_id();
     failed |= blit_case(bl_side(0x1000, 128 * 4, 256, 2, 0, 0), bl_side(0x80000, 128 * 4, 256, 1, 0, 0), 4, 9, 30, 100,
                         200, 128, 256, 0);
     failed |= blit_case(pitch_plane(0x101, 300, 75 * 4, 150), pitch_plane(0x60001, 520, 120 * 4, 240), 4, 3, 2, 110,
                         230, 75, 150, 0);
     failed |= blit_case(pitch_plane(0x3000, 64 * 16, 64 * 16, 100), bl_side(0x80000, 64 * 8, 128, 1, 0, 0), 16, 0, 5,
                         64, 120, 64, 100, GPU_BLIT_FLOAT(4, 4, 4, 2, 0));
+    u64 ended = vk_frame_id() - frames;
     g_vk.alloc_cap = cap;
-    CHECK(!failed);
+    printf("blit bands: %llu frames ended between bands\n", (unsigned long long)ended);
+    CHECK(!failed && ended >= 2);
     return 0;
 }
 
@@ -6203,6 +6242,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_dma());
     CHECK(!check_dma_owners());
     CHECK(!check_dma_bands());
+    CHECK(!check_dma_bands_frames());
     CHECK(!check_flush_parts());
     CHECK(!check_vic_bands());
     CHECK(!check_dma_texture());

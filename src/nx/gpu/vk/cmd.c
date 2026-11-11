@@ -1012,7 +1012,10 @@ void vk_frame_next(void) {
    one's work.
    A frame's chunks and big buffers come back only with its slot, so it also ends once it has written
    VK_FRAME_RING_CAPS allocations' worth to them: a game's load that drew without a present for 8 s kept every ring it
-   made, GPU memory went from 270 to 1062 MiB, and a phone's system ended the app at its 4 GiB limit */
+   made, GPU memory went from 270 to 1062 MiB, and a phone's system ended the app at its 4 GiB limit. The bands of a
+   copy too big for one allocation check too (dma.c, blit.c), as nothing is set up between two of them: the copy
+   engine's upload of an 8192x8192 RGBA8 texture's eight levels wrote 1365 MiB to one frame's rings before the next
+   draw ended it */
 /* the bytes this use of the frame has written to rings: in the chunks they hand out of, the ones they filled and its
    big buffers */
 static u64 frame_rings(const Frame* f) {
