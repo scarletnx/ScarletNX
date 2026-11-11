@@ -14,6 +14,10 @@ static struct {
     VkSampler sampler[2];
     struct { VkFormat format; VkPipeline pipeline; }* pipelines;
     u32 count, capacity;
+    /* the window's present's sets, one for each frame in flight, written each present (vk_present_quad_source): a
+       set from the frame's pool cost more than the rest of the present */
+    VkDescriptorPool pool;
+    VkDescriptorSet frames[VK_FRAMES];
 } g_present_quad;
 
 static int initialize(void) {
@@ -105,9 +109,37 @@ int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw
     VkImageView from;
     VkDescriptorSet set;
     if (!source || !initialize()) return 0;
-    set = vk_desc_alloc(g_present_quad.descriptors);
-    from = set ? view(source->img, raw ? vk_srgb_as(source->f.vk, 0) : source->f.vk, VK_IMAGE_USAGE_SAMPLED_BIT)
-               : VK_NULL_HANDLE;
+    if (raw && !g_present_quad.pool) { /* the window's: a set of its own for each frame in flight */
+        VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_FRAMES};
+        VkDescriptorPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                          .maxSets = VK_FRAMES,
+                                          .poolSizeCount = 1,
+                                          .pPoolSizes = &size};
+        VkDescriptorSetLayout layouts[VK_FRAMES];
+        VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                          .descriptorSetCount = VK_FRAMES,
+                                          .pSetLayouts = layouts};
+        for (u32 i = 0; i < VK_FRAMES; i++) layouts[i] = g_present_quad.descriptors;
+        if (!VK_OK(vkCreateDescriptorPool(g_vk.dev, &pci, NULL, &g_present_quad.pool))) {
+            g_present_quad.pool = VK_NULL_HANDLE;
+            return 0;
+        }
+        ai.descriptorPool = g_present_quad.pool;
+        if (!VK_OK(vkAllocateDescriptorSets(g_vk.dev, &ai, g_present_quad.frames))) {
+            vkDestroyDescriptorPool(g_vk.dev, g_present_quad.pool, NULL);
+            g_present_quad.pool = VK_NULL_HANDLE;
+            return 0;
+        }
+    }
+    /* the frame's own set, which the frame VK_FRAMES back used and vk_cmd waited for; else one from the frame's pool */
+    set = raw ? g_present_quad.frames[vk_frame_id() % VK_FRAMES] : vk_desc_alloc(g_present_quad.descriptors);
+    if (!set) return 0;
+    if (raw) { /* kept on the surface for the next present of it */
+        if (!source->present)
+            source->present = view(source->img, vk_srgb_as(source->f.vk, 0), VK_IMAGE_USAGE_SAMPLED_BIT);
+        from = source->present;
+    } else
+        from = view(source->img, source->f.vk, VK_IMAGE_USAGE_SAMPLED_BIT);
     if (!from) return 0;
     vk_surf_use(cb, source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
@@ -116,7 +148,7 @@ int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw
                                    .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                    .pImageInfo = &image};
     vkUpdateDescriptorSets(g_vk.dev, 1, &write, 0, NULL);
-    vk_defer_image(VK_NULL_HANDLE, NULL, from, VK_NULL_HANDLE);
+    if (!raw) vk_defer_image(VK_NULL_HANDLE, NULL, from, VK_NULL_HANDLE);
     *out = (SnxPresentSource){.surf = source, .set = set};
     return 1;
 }
