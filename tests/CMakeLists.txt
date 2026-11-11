@@ -1693,6 +1693,9 @@ if(Python3_Interpreter_FOUND)
         # the pull request's comment linking its builds (scripts/pr-builds.sh), against a fake gh; 77 without jq
         add_test(NAME pr_builds COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/pr_builds_test.py")
         set_tests_properties(pr_builds PROPERTIES SKIP_RETURN_CODE 77)
+        # LLVM's release source by its pinned SHA-256 (scripts/llvm-source.sh, which the LLVM scripts download
+        # through), against a fake curl
+        add_test(NAME llvm_source COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/llvm_source_test.py")
     endif()
 endif()
 

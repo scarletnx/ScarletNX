@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# LLVM's release sources that scripts/llvm-source.sh downloads, as sha256sum lists files: the SHA-256, two spaces, the
+# name. One line for each version the LLVM builds are run with: the scripts' default, and the LLVM of CI's Arch image
+# (the AppImage jobs' LLVM_VERSION). The hash is the digest the release's page shows for the file.
+819ecf7351f1a66f76b2d701d8942faaf5faeb324cb90c9d5b090de142434bb2  llvm-project-23.1.4.src.tar.xz
+fb50b1eac93ddeb3aa8dab4cfe324dff74f4a9c2bdee6160c9e36188f8d06a6e  llvm-project-23.1.5.src.tar.xz

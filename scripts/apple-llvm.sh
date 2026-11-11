@@ -7,9 +7,9 @@
 #
 #   scripts/apple-llvm.sh macos|ios|iossim PREFIX [SOURCE] [-- cmake args]
 #
-# SOURCE is an llvm-project folder or .tar.xz (default: the release named by LLVM_VERSION, downloaded). MACOS_VERSION
-# (default 13.0) and IOS_VERSION (default 16.0), the apps' oldest, are the oldest systems it runs on. Configure
-# ScarletNX with -DLLVM_DIR=PREFIX/lib/cmake/llvm afterwards.
+# SOURCE is an llvm-project folder or .tar.xz (default: the release named by LLVM_VERSION, which
+# scripts/llvm-source.sh downloads and checks). MACOS_VERSION (default 13.0) and IOS_VERSION (default 16.0), the apps'
+# oldest, are the oldest systems it runs on. Configure ScarletNX with -DLLVM_DIR=PREFIX/lib/cmake/llvm afterwards.
 set -eu
 [ $# -ge 2 ] || { sed -n '4,12p' "$0"; exit 2; }
 system=$1 prefix=$2
@@ -43,8 +43,7 @@ work=$prefix.build/$version
 mkdir -p "$work"
 if [ -z "$source" ]; then
     source=$work/llvm-project-$version.src.tar.xz
-    [ -f "$source" ] || curl -fL -o "$source" \
-        "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/llvm-project-$version.src.tar.xz"
+    "$(dirname "$0")/llvm-source.sh" "$version" "$source"
 fi
 if [ -f "$source" ]; then
     [ -d "$work/src/llvm" ] || { mkdir -p "$work/src"; tar -xJf "$source" -C "$work/src" --strip-components=1; }
