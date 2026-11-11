@@ -48,7 +48,7 @@ int gmem_read(u64 gva, void* dst, u64 size) {
     return 0;
 }
 /* nothing is GPU-owned here: vk_guest_read reads guest memory as gmem_read does, into staging */
-u32 g_nown;
+OwnState g_own;
 void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
     (void)buf, (void)at;
     gmem_read(gva, host, size);
@@ -1529,13 +1529,13 @@ int main(void) {
         CHECK(tex_upload(&b) && g_astc_key.keyed && memcmp(first, g_astc_key.content, sizeof first));
         guest[3 * b.layer_size + 77] ^= 0x10;
         /* owners elsewhere, none on the level's pages: the same key */
-        g_nown = 1;
+        g_own.nown = 1;
         stage_used = nregs = 0, astc_used = 0;
         CHECK(tex_upload(&b) && g_astc_key.keyed && !memcmp(first, g_astc_key.content, sizeof first));
         g_astc_key.owner_over = 1;
         stage_used = nregs = 0, astc_used = 0;
         CHECK(tex_upload(&b) && !g_astc_key.keyed);
-        g_nown = 0, g_astc_key.owner_over = 0;
+        g_own.nown = 0, g_astc_key.owner_over = 0;
         /* between frames: RGBA8 now, the key of each level kept, the same for the same bytes */
         Surf r = b;
         r.f.vk = VK_FORMAT_R8G8B8A8_UNORM;
@@ -1599,7 +1599,7 @@ int main(void) {
     {
         const u64 at = GVA + 0x20000, size = 4 * 4096;
         u64 plain = mem_hash(at, size), owned;
-        g_nown = 1;
+        g_own.nown = 1;
         owned = mem_hash(at, size);
         CHECK(owned == plain);
         guest[0x20000 + 4096 + 100] ^= 0x5A;
@@ -1613,7 +1613,7 @@ int main(void) {
         g_whole_tag = 0x1235;
         CHECK(mem_hash(at, size) != whole && g_peeks == 0);
         g_whole_tag = 0;
-        g_nown = 0;
+        g_own.nown = 0;
     }
     /* A clean scan does not advance the write clock. Its cached texture must
        still notice the very next stamp, including after several clean epochs. */
