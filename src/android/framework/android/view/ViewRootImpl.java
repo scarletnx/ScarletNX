@@ -63,6 +63,8 @@ public final class ViewRootImpl implements ViewParent {
     boolean offscreen() { return display.getDisplayId() != Display.DEFAULT_DISPLAY; }
 
     public View getView() { return view; }
+    /** the window's layout parameters, as setView gave them (null for none) */
+    public WindowManager.LayoutParams getWindowAttributes() { return attributes; }
     public void die() {
         dead = true;
         if (view != null && view.mAttachInfo != null) view.dispatchDetachedFromWindow();
