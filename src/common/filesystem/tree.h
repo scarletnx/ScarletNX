@@ -28,6 +28,7 @@ typedef struct FsNode {
     struct FsNode *parent, *children, *next;
     uint64_t size;
     int is_dir, is_virtual, readonly, attached;
+    int linked; /* a symbolic link at the data directory's top, followed: host is the folder it points at */
     uint8_t* virtual_data;
     /* fd >= 0: a RomFS/ExeFS file opened and mapped read-only and shared (plat_file_share) for the rest of the run,
        its contents at map (NULL when empty): at startup, or by fs_tree_map when it is first read. Such nodes are
@@ -36,7 +37,7 @@ typedef struct FsNode {
     int fd;
     const uint8_t* map;
     unsigned refs; /* open handles; attached nodes are additionally owned by the tree */
-    char* host;    /* a graft's top (fs_tree_graft): the host folder its subtree is in, else NULL */
+    char* host;    /* a graft's top (fs_tree_graft, a followed link): the host folder its subtree is in, else NULL */
 } FsNode;
 
 typedef struct {
@@ -51,7 +52,10 @@ typedef struct {
 
 /* Initialization is the only operation that enumerates or probes host entries. A failed scan leaves no tree.
    Symlinks, junctions, hardlinked regular files, and non-file/non-directory entries are rejected during scanning, and
-   where it stopped is kept in refused and why.
+   where it stopped is kept in refused and why. One link is followed: a symbolic link (or a junction) to a folder at the
+   data directory's own top, its sdmc/ or save/ kept elsewhere, indexed as a writable graft of the folder it points at
+   (linked). That folder is apart from the data directory and from every other link's and graft's, and no call removes
+   or renames the link or its folder: fs_tree_remove empties it.
    All other calls and direct node access require tree->lock to be held. Children are sorted by strcmp(name).
    Close open handles before destroy; retain/release keep removed entries alive while their handles exist. */
 FsTreeResult fs_tree_init(FsTree* tree, const char* directory);
