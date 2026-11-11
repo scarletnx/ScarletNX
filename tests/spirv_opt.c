@@ -91,7 +91,7 @@ static void begin(Module* m) {
     m->words[m->count++] = BOUND;
     m->words[m->count++] = 0;
     put(m, EXT_INST_IMPORT, 5, (uint32_t)GLSL, 0x4c534c47u, 0x6474732eu, 0x3035342eu, 0u); /* "GLSL.std.450" */
-    put(m, EXT_INST_IMPORT, 3, (uint32_t)OTHER, 0x6568746fu, 0x00000072u);                 /* "other" */
+    put(m, EXT_INST_IMPORT, 5, (uint32_t)OTHER, 0x4c534c47u, 0x6474732eu, 0x3135342eu, 0u); /* "GLSL.std.451" */
     put(m, TYPE_VOID, 1, (uint32_t)T);
     put(m, VARIABLE, 3, (uint32_t)T, (uint32_t)OUT, 3u);
 }
