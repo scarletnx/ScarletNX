@@ -63,10 +63,6 @@ void set_language_code(int lang, u8 code[8]); /* the 8-byte LanguageCode, en-US 
 SvcObj* new_set(void);
 SvcObj* new_setsys(void);
 
-/* ---- time.c */
-void time_init(void);
-SvcObj* new_time(void);      /* time:a and time:s */
-SvcObj* new_time_user(void); /* time:u, an application's: no write */
 
 /* ---- acc.c */
 SvcObj* new_acc(void);
@@ -480,28 +476,4 @@ typedef struct {
     PMutex lk;
 } HostSm;
 
-/* ---- time.c */
-#define TIME_OBJS 1024 /* time's objects: a service per session, and the clocks and time zone services it hands out */
-/* a time zone rule as time.c writes it into the game's nn::time::TimeZoneRule */
-typedef struct {
-    char magic[4];  /* "SNXZ" */
-    i32 utc_offset; /* seconds east of UTC */
-    char abbreviation[8];
-} TimeRule;
-/* each time object's: 1 for time:u's and what it hands out, which may write nothing */
-typedef struct {
-    u32 obj;
-    int read_only;
-} TimeObj;
-typedef struct {
-    u32 shm;
-    u8 source_id[16]; /* the steady clock's: the console makes a new one when its RTC resets */
-    i64 base_ns;      /* the steady clock at the guest clock's start */
-    /* every system clock's context: its offset, and the steady clock's time (s) it was taken at */
-    i64 context_offset, context_start;
-    TimeRule rule; /* the device's */
-    char location[0x24];
-    TimeObj objs[TIME_OBJS];
-    u32 obj_next;
-} HleTime;
 #endif

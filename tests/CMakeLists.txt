@@ -1395,12 +1395,13 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     endif()
     add_test(NAME misc_service COMMAND snx-test-misc-service)
 
-    # time.c's clocks, time zones and shared memory, with the guest clock and the kernel objects stubbed
-    add_executable(snx-test-time-service time_service.c)
-    snx_test_target(snx-test-time-service 23)
-    snx_service_swipc(snx-test-time-service hle/services/time.swipc)
-    target_link_libraries(snx-test-time-service PRIVATE OpenSSL::Crypto)
-    add_test(NAME time_service COMMAND snx-test-time-service)
+    # the native nn::time (nn/time.c): its handlers on a stand-in CPU, with the guest clock and the lock stubbed
+    add_executable(snx-test-nn-time nn_time.c)
+    snx_test_target(snx-test-nn-time 23)
+    snx_service_swipc(snx-test-nn-time)
+    snx_hookgen(snx-test-nn-time SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/time.hook")
+    target_link_libraries(snx-test-nn-time PRIVATE OpenSSL::Crypto)
+    add_test(NAME nn_time COMMAND snx-test-nn-time)
 endif()
 
 # Inline software keyboard protocol and applet completion events.
