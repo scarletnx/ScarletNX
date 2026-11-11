@@ -37,22 +37,22 @@ _Static_assert(SNX_UI_ICONS_X + 16 * GUI_ICON_COUNT <= SNX_CONTROLS_ATLAS_WIDTH,
 void ui_lock(void) { pm_lock(&g_lock); }
 void ui_unlock(void) { pm_unlock(&g_lock); }
 
+_Static_assert(sizeof(SnxUiQuad) == 32, "a quad is the renderer's instance, with no padding");
+
 static void quad(SnxUiList* l, float x, float y, float w, float h, int u, int v, int uw, int vh, u32 rgba, int turn,
                  int sample) {
-    SnxUiQuad* q;
     if (l->n >= l->max || w <= 0 || h <= 0) return;
-    q = &l->q[l->n++];
-    q->x = x;
-    q->y = y;
-    q->w = w;
-    q->h = h;
-    q->u = (u16)u;
-    q->v = (u16)v;
-    q->uw = (u16)uw;
-    q->vh = (u16)vh;
-    q->rgba = rgba;
-    q->turn = (u8)(turn & 3);
-    q->sample = (u8)sample;
+    l->q[l->n++] = (SnxUiQuad){.x = x,
+                               .y = y,
+                               .w = w,
+                               .h = h,
+                               .u = (u16)u,
+                               .v = (u16)v,
+                               .uw = (u16)uw,
+                               .vh = (u16)vh,
+                               .rgba = rgba,
+                               .turn = (u8)(turn & 3),
+                               .sample = (u8)sample};
 }
 void ui_sprite(SnxUiList* l, int sprite, float x, float y, float w, float h, u32 alpha, int turn) {
     const unsigned short* s = snx_controls_sprites[sprite];

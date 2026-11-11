@@ -500,6 +500,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     set_tests_properties(vulkan_headless_pipeline_library_whole PROPERTIES TIMEOUT 120 ENVIRONMENT "SNX_TEST_GPL=whole"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the on-screen layer's pass (gpu/vk/ui.c, tests/vulkan_ui.inc) under the validation layer when it is installed:
+    # quads as instances, sampled in texels, and the device's buffer given only the quads that changed
+    add_test(NAME vulkan_ui COMMAND snx-test-vulkan -H --vk_validation=1)
+    set_tests_properties(vulkan_ui PROPERTIES TIMEOUT 60
+        ENVIRONMENT "SNX_TEST_UI_ONLY=1;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with guest memory read in place where the device can import it (gpu/vk/uma.c)
     add_test(NAME vulkan_headless_uma COMMAND snx-test-vulkan -H --vk_memory=2)
     set_tests_properties(vulkan_headless_uma PROPERTIES TIMEOUT 120

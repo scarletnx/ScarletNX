@@ -2,13 +2,19 @@
    Copyright 2026 the ScarletNX contributors */
 /* The on-screen controls, the game's menu (runtime/platform/ui.h) and the shader loading screen before the game
    (runtime/platform/prepare_screen.h) over a presented frame: the quads they give, blended onto the swapchain image
-   in a pass of their own after the frame's blit. Nothing is recorded while none shows */
+   in a pass of their own after the frame's blit. Nothing is recorded while none shows.
+
+   Each quad is an instance, its SnxUiQuad as it is, whose corners the vertex shader makes: the CPU writes no
+   vertices. The instances stay in a buffer on the device from frame to frame, and a frame copies into it only the
+   quads that differ from the ones it holds */
 #include "nx/gpu/vk/descriptor_objects.h"
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/ui_spv.h"
+#include "common/utilities/endian.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/overlay.h"
@@ -18,11 +24,13 @@
 #include "nx/runtime/platform/vpad.h"
 
 #define MAX_QUADS 4096
-typedef struct {
-    float x, y, u, v;
-    u32 rgba;
-} Vertex;
+#define UI_COPIES 16 /* the runs of changed quads one frame copies at most: past them, one copy to the last */
+#define UI_GAP    4  /* unchanged quads between two changed ones that one copy takes rather than two */
 static SnxUiQuad g_quads[MAX_QUADS];
+static SnxUiQuad g_sent[MAX_QUADS]; /* what g_inst holds, as the device reads it */
+static int g_sent_n;                /* g_sent's quads that g_inst holds: none for a new buffer */
+static VkBuffer g_inst;
+static VmaAllocation g_inst_mem;
 static VkDescriptorSetLayout g_dsl;
 static VkPipelineLayout g_layout;
 static VkPipeline g_pipe;
@@ -35,7 +43,6 @@ static VkImage g_atlas;
 static VmaAllocation g_atlas_mem;
 static VkImageView g_atlas_view;
 static u32 g_atlas_version;
-static float g_atlas_w, g_atlas_h;
 static VkImage g_image; /* ui_image's picture */
 static VmaAllocation g_image_mem;
 static VkImageView g_image_view;
@@ -72,13 +79,15 @@ static int layout_make(void) {
     if (!VK_OK(vkAllocateDescriptorSets(g_vk.dev, &ai, g_sets))) return 0;
     for (i = 0; i < 2; ++i) {
         VkFilter f = i ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+        /* in texels, as the quads give them: no division by the image's size, on the CPU or in the shaders */
         VkSamplerCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                                    .magFilter = f,
                                    .minFilter = f,
                                    .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
                                    .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                                    .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                                   .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+                                   .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                   .unnormalizedCoordinates = VK_TRUE};
         if (!VK_OK(vk_sampler_create(g_vk.dev, &sci, NULL, &g_samplers[i]))) return 0;
     }
     return 1;
@@ -92,13 +101,16 @@ static int pipeline_make(VkFormat format) {
                                              {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                               .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
                                               .pName = "main"}};
-    VkVertexInputBindingDescription vb = {0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
-    VkVertexInputAttributeDescription va[3] = {
-        {0, 0, VK_FORMAT_R32G32_SFLOAT, 0}, {1, 0, VK_FORMAT_R32G32_SFLOAT, 8}, {2, 0, VK_FORMAT_R8G8B8A8_UNORM, 16}};
+    /* a quad an instance, read as ui.h lays it out */
+    VkVertexInputBindingDescription vb = {0, sizeof(SnxUiQuad), VK_VERTEX_INPUT_RATE_INSTANCE};
+    VkVertexInputAttributeDescription va[4] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(SnxUiQuad, x)},
+                                               {1, 0, VK_FORMAT_R16G16B16A16_UINT, offsetof(SnxUiQuad, u)},
+                                               {2, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(SnxUiQuad, rgba)},
+                                               {3, 0, VK_FORMAT_R8G8B8A8_UINT, offsetof(SnxUiQuad, turn)}};
     VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
                                                .vertexBindingDescriptionCount = 1,
                                                .pVertexBindingDescriptions = &vb,
-                                               .vertexAttributeDescriptionCount = 3,
+                                               .vertexAttributeDescriptionCount = 4,
                                                .pVertexAttributeDescriptions = va};
     VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                  .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
@@ -223,8 +235,6 @@ static void atlas_upload(VkCommandBuffer cb) {
         vkUpdateDescriptorSets(g_vk.dev, 1, &wr, 0, NULL);
     }
     g_atlas_version = version;
-    g_atlas_w = (float)w;
-    g_atlas_h = (float)h;
     ui_atlas_done();
     LOG("vulkan: the on-screen controls' atlas is %dx%d\n", w, h);
 }
@@ -317,21 +327,103 @@ void vk_ui_swapchain_gone(void) {
     }
 }
 
-static void vertex(Vertex* v, float x, float y, float u, float t, u32 rgba) {
-    v->x = x;
-    v->y = y;
-    v->u = u;
-    v->v = t;
-    v->rgba = rgba;
-    snx_le32_array(v, sizeof *v / 4); /* the device reads the words little-endian: the colour's low byte is R */
+/* the device's buffer of instances, made once */
+static int instances_make(void) {
+    VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                              .size = sizeof g_quads,
+                              .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    VmaAllocationInfo info;
+    if (g_inst) return 1;
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &ai, &g_inst, &g_inst_mem, &info))) {
+        g_inst = VK_NULL_HANDLE;
+        return 0;
+    }
+    vk_mem_track(g_inst_mem);
+    g_sent_n = 0;
+    return 1;
+}
+static int quad_same(int i) { return i < g_sent_n && !memcmp(&g_quads[i], &g_sent[i], sizeof *g_quads); }
+/* the quads from first to end as the device reads them, at to: little-endian words, and halves for the texels */
+static void quads_le(u8* to, int first, int end) {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    int i;
+    for (i = first; i < end; ++i, to += sizeof(SnxUiQuad)) {
+        SnxUiQuad q = g_quads[i];
+        snx_le32_array(&q.x, 4);
+        snx_le16_array(&q.u, 4);
+        q.rgba = snx_le32(q.rgba);
+        memcpy(to, &q, sizeof q);
+    }
+#else
+    memcpy(to, &g_quads[first], (size_t)(end - first) * sizeof(SnxUiQuad));
+#endif
+}
+/* the n quads into the device's buffer: only the runs that differ from what it holds, staged and copied after the
+   last frame's draws read it, before this one's. 0 when it holds none of them (no buffer, or no staging) */
+static int instances_send(VkCommandBuffer cb, int n) {
+    int start[UI_COPIES], end[UI_COPIES], runs = 0, quads = 0, i, k;
+    VkBufferCopy copy[UI_COPIES];
+    VkBufferMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .size = VK_WHOLE_SIZE};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &b};
+    VkBuffer buf;
+    u64 off;
+    u8* to;
+    if (!instances_make()) return 0;
+    for (i = 0; i < n;) {
+        int e = i + 1;
+        if (quad_same(i)) {
+            ++i;
+            continue;
+        }
+        /* a run from here to its last changed quad that has fewer than UI_GAP same ones before the next */
+        for (k = e; k < n && k < e + UI_GAP; ++k)
+            if (!quad_same(k)) e = k + 1;
+        if (runs == UI_COPIES) /* too many: the last one goes on over this one */
+            end[runs - 1] = e;
+        else {
+            start[runs] = i;
+            end[runs++] = e;
+        }
+        i = e;
+    }
+    if (!runs) return 1; /* it holds them all */
+    for (k = 0; k < runs; ++k) quads += end[k] - start[k];
+    to = vk_stage((u64)quads * sizeof(SnxUiQuad), 16, &buf, &off);
+    if (!to) return 0;
+    for (k = 0, quads = 0; k < runs; ++k) {
+        int count = end[k] - start[k];
+        quads_le(to + (size_t)quads * sizeof(SnxUiQuad), start[k], end[k]);
+        copy[k] = (VkBufferCopy){.srcOffset = off + (u64)quads * sizeof(SnxUiQuad),
+                                 .dstOffset = (u64)start[k] * sizeof(SnxUiQuad),
+                                 .size = (u64)count * sizeof(SnxUiQuad)};
+        memcpy(&g_sent[start[k]], &g_quads[start[k]], (size_t)count * sizeof(SnxUiQuad));
+        quads += count;
+    }
+    if (n > g_sent_n) g_sent_n = n; /* the quads past the old end were all sent */
+    /* the last frame's draws read it before the copy writes, and the copy writes before this frame's draws read */
+    b.buffer = g_inst;
+    rec_CmdPipelineBarrier2(cb, &d);
+    rec_CmdCopyBuffer(cb, buf, g_inst, (u32)runs, copy);
+    b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT;
+    b.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
+    rec_CmdPipelineBarrier2(cb, &d);
+    return 1;
 }
 void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
     SnxUiList list = {g_quads, 0, MAX_QUADS};
     int sw = (int)g_vk.sc_extent.width, sh = (int)g_vk.sc_extent.height, n, i, run;
     VkImageView view;
-    Vertex* v;
-    VkBuffer buf;
-    u64 off;
     struct {
         float w, h;
         u32 srgb, pad;
@@ -360,28 +452,7 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
     ui_unlock();
     n = list.n;
     if (!n || !g_atlas || !pipeline_make(g_vk.sc_format) || !(view = sc_view(sc))) return;
-    v = (Vertex*)vk_stage((u64)n * 6 * sizeof(Vertex), 4, &buf, &off);
-    if (!v) return;
-    for (i = 0; i < n; ++i) {
-        const SnxUiQuad* q = &g_quads[i];
-        /* the texels' corners, clockwise from the top left, turned: a quarter turn shows the bottom left one there */
-        float uu[4] = {q->u, q->u + q->uw, q->u + q->uw, q->u}, vv[4] = {q->v, q->v, q->v + q->vh, q->v + q->vh};
-        float px[4] = {q->x, q->x + q->w, q->x + q->w, q->x}, py[4] = {q->y, q->y, q->y + q->h, q->y + q->h};
-        float cu[4], cv[4];
-        int k;
-        float tw = q->sample == UI_IMAGE ? (float)SNX_UI_IMAGE_W : g_atlas_w,
-              th = q->sample == UI_IMAGE ? (float)SNX_UI_IMAGE_H : g_atlas_h;
-        for (k = 0; k < 4; ++k) {
-            cu[k] = uu[(k + 4 - q->turn) % 4] / tw;
-            cv[k] = vv[(k + 4 - q->turn) % 4] / th;
-        }
-        vertex(&v[i * 6 + 0], px[0], py[0], cu[0], cv[0], q->rgba);
-        vertex(&v[i * 6 + 1], px[1], py[1], cu[1], cv[1], q->rgba);
-        vertex(&v[i * 6 + 2], px[2], py[2], cu[2], cv[2], q->rgba);
-        vertex(&v[i * 6 + 3], px[0], py[0], cu[0], cv[0], q->rgba);
-        vertex(&v[i * 6 + 4], px[2], py[2], cu[2], cv[2], q->rgba);
-        vertex(&v[i * 6 + 5], px[3], py[3], cu[3], cv[3], q->rgba);
-    }
+    if (!instances_send(cb, n)) return;
     vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -399,21 +470,21 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
                               .pColorAttachments = &at};
         VkViewport vp = {0, 0, (float)sw, (float)sh, 0, 1};
         VkRect2D sci = {{0, 0}, g_vk.sc_extent};
-        VkDeviceSize vo = off;
+        VkDeviceSize vo = 0;
         rec_CmdBeginRendering(cb, &ri);
         vk_render_forget_state(); /* another pipeline and layout: a draw after it sets everything again */
         rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe);
         rec_CmdSetViewport(cb, 0, 1, &vp);
         rec_CmdSetScissor(cb, 0, 1, &sci);
         rec_CmdPushConstants(cb, g_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
-        rec_CmdBindVertexBuffers(cb, 0, 1, &buf, &vo);
-        /* runs of quads that sample the same way, in their order */
+        rec_CmdBindVertexBuffers(cb, 0, 1, &g_inst, &vo);
+        /* runs of quads that sample the same way, in their order: six corners for each instance */
         for (i = 0; i < n; i = run) {
             for (run = i + 1; run < n && g_quads[run].sample == g_quads[i].sample; ++run) continue;
             if (g_quads[i].sample == UI_IMAGE && !g_image) continue; /* its upload failed */
             rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1, &g_sets[g_quads[i].sample],
-                                    0, NULL);
-            rec_CmdDraw(cb, (u32)(run - i) * 6, 1, (u32)i * 6, 0);
+                                      0, NULL);
+            rec_CmdDraw(cb, 6, (u32)(run - i), 0, (u32)i);
         }
         rec_CmdEndRendering(cb);
     }
