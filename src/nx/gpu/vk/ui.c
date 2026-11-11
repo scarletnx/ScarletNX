@@ -28,21 +28,37 @@
 #include "nx/runtime/platform/vpad.h"
 
 #define MAX_QUADS 4096
-#define UI_COPIES 16 /* the runs of changed quads one frame copies at most: past them, one copy to the last */
-#define UI_GAP    4  /* unchanged quads between two changed ones that one copy takes rather than two */
 static SnxUiQuad g_quads[MAX_QUADS];
-static SnxUiQuad g_sent[MAX_QUADS]; /* what g_inst holds, as the device reads it */
-static int g_sent_n;                /* g_sent's quads that g_inst holds: none for a new buffer */
-static VkBuffer g_inst;
-static VmaAllocation g_inst_mem;
 /* the font's and the icons' bits, a byte a row (ui.frag's Glyphs): what letters and icons read, not the atlas */
 #define UI_GLYPHS_SIZE ((256 + 2 * GUI_ICON_COUNT) * 16)
 static VkBuffer g_glyphs;
 static VmaAllocation g_glyphs_mem;
-/* ui_ring's bytes on the device (ui.vert's Ring), and what it holds: a frame sends the bytes that changed, its bar's */
-static VkBuffer g_ring;
-static VmaAllocation g_ring_mem;
-static u8 g_ring_sent[SNX_UI_RING_MAX];
+/* The quads and the ring's bytes (ui.vert's Ring), a region for each frame in flight in one buffer the CPU writes and
+   the device reads as it is (host-visible, mapped): the ring's bytes, then the quads as instances. A frame writes into
+   its region the quads written since the region was last (the parts ui_dirty_end gives, from each frame since), and
+   the ring's bytes when they changed: no copy, no barrier. Its region is free, as vk_cmd waited for the frame two back
+   that read it */
+#define UI_RING_BYTES SNX_UI_RING_MAX
+static VkBuffer g_frames;
+static VmaAllocation g_frames_mem;
+static u8* g_frames_at;
+static u64 g_region; /* a region's bytes, a multiple of the device's least storage buffer offset */
+typedef struct {
+    int first, end; /* the quads written since this region was */
+    u32 ring;       /* the ring's version it holds */
+    int fresh;      /* none written into it yet */
+} UiSlot;
+static UiSlot g_slot[VK_FRAMES];
+static int g_slot_now; /* this frame's region */
+static u32 g_ring_version;
+static u8 g_ring_last[UI_RING_BYTES];
+/* the frame's runs of quads, each drawn with one call (ui_record), kept while no quad changes */
+typedef struct {
+    int first, count, set, pipe;
+    u32 vertices;
+} UiRun;
+static UiRun g_runs[MAX_QUADS];
+static int g_nruns, g_runs_n = -1; /* the quads they were made for, -1 for none */
 static VkDescriptorSetLayout g_dsl;
 static VkPipelineLayout g_layout;
 /* ui.frag's two pipelines (its MODE): plain, for a quad that covers every pixel of its own (a fill, a bar, a backed
@@ -88,7 +104,7 @@ static int layout_make(void) {
                                           .descriptorCount = 1,
                                           .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
                                          {.binding = 2,
-                                          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
                                           .descriptorCount = 1,
                                           .stageFlags = VK_SHADER_STAGE_VERTEX_BIT}};
     VkDescriptorSetLayoutCreateInfo dci = {
@@ -99,10 +115,11 @@ static int layout_make(void) {
                                       .pSetLayouts = &g_dsl,
                                       .pushConstantRangeCount = 1,
                                       .pPushConstantRanges = &pc};
-    VkDescriptorPoolSize size[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
-                                    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6}};
+    VkDescriptorPoolSize size[3] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
+                                    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
+                                    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 3}};
     VkDescriptorPoolCreateInfo pci = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 3, .poolSizeCount = 2, .pPoolSizes = size};
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 3, .poolSizeCount = 3, .pPoolSizes = size};
     VkDescriptorSetLayout layouts[3];
     VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorSetCount = 3};
     int i;
@@ -384,11 +401,10 @@ void vk_ui_swapchain_gone(void) {
     }
 }
 
-/* the glyphs' rows to the device, once: gui_vga_font's, then gui_icon_font's, each set's binding 1; and the ring's
-   bytes, all 0 (no bar), binding 2 */
+/* the glyphs' rows to the device, once: gui_vga_font's, then gui_icon_font's, each set's binding 1 */
 static int glyphs_upload(VkCommandBuffer cb) {
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                              .size = UI_GLYPHS_SIZE + SNX_UI_RING_MAX,
+                              .size = UI_GLYPHS_SIZE,
                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
@@ -396,122 +412,82 @@ static int glyphs_upload(VkCommandBuffer cb) {
     VkBufferMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                                 .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                                 .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                                .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                                                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                                 .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
                                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                 .size = VK_WHOLE_SIZE};
     VkDependencyInfo d = {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &b};
-    VkBufferCopy copy[2] = {{.size = UI_GLYPHS_SIZE}, {.dstOffset = 0, .size = SNX_UI_RING_MAX}};
+    VkBufferCopy copy = {.size = UI_GLYPHS_SIZE};
     VkBuffer buf;
     u64 off;
     u8* to;
     int i;
     if (g_glyphs) return 1;
-    to = vk_stage(UI_GLYPHS_SIZE + SNX_UI_RING_MAX, 16, &buf, &off);
+    to = vk_stage(UI_GLYPHS_SIZE, 16, &buf, &off);
     if (!to) return 0;
-    bci.size = UI_GLYPHS_SIZE;
     if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &ai, &g_glyphs, &g_glyphs_mem, &info))) {
         g_glyphs = VK_NULL_HANDLE;
         return 0;
     }
     vk_mem_track(g_glyphs_mem);
-    bci.size = SNX_UI_RING_MAX;
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &ai, &g_ring, &g_ring_mem, &info))) {
-        vk_mem_untrack(g_glyphs_mem);
-        vmaDestroyBuffer(g_vk.vma, g_glyphs, g_glyphs_mem);
-        g_glyphs = g_ring = VK_NULL_HANDLE;
-        return 0;
-    }
-    vk_mem_track(g_ring_mem);
     memcpy(to, gui_vga_font, 256 * 16); /* bytes: the device's words read them little-endian, as the shader takes */
     memcpy(to + 256 * 16, gui_icon_font, 2 * GUI_ICON_COUNT * 16);
-    memset(to + UI_GLYPHS_SIZE, 0, SNX_UI_RING_MAX);
-    memset(g_ring_sent, 0, sizeof g_ring_sent);
-    copy[0].srcOffset = off;
-    copy[1].srcOffset = off + UI_GLYPHS_SIZE;
-    rec_CmdCopyBuffer(cb, buf, g_glyphs, 1, &copy[0]);
-    rec_CmdCopyBuffer(cb, buf, g_ring, 1, &copy[1]);
+    copy.srcOffset = off;
+    rec_CmdCopyBuffer(cb, buf, g_glyphs, 1, &copy);
     b.buffer = g_glyphs;
     rec_CmdPipelineBarrier2(cb, &d);
-    b.buffer = g_ring;
-    rec_CmdPipelineBarrier2(cb, &d);
     for (i = 0; i < 3; ++i) {
-        VkDescriptorBufferInfo bi[2] = {{g_glyphs, 0, VK_WHOLE_SIZE}, {g_ring, 0, VK_WHOLE_SIZE}};
-        VkWriteDescriptorSet wr[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                       .dstSet = g_sets[i],
-                                       .dstBinding = 1,
-                                       .descriptorCount = 1,
-                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                       .pBufferInfo = &bi[0]},
-                                      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                       .dstSet = g_sets[i],
-                                       .dstBinding = 2,
-                                       .descriptorCount = 1,
-                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                       .pBufferInfo = &bi[1]}};
-        vkUpdateDescriptorSets(g_vk.dev, 2, wr, 0, NULL);
+        VkDescriptorBufferInfo bi = {g_glyphs, 0, VK_WHOLE_SIZE};
+        VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                   .dstSet = g_sets[i],
+                                   .dstBinding = 1,
+                                   .descriptorCount = 1,
+                                   .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                   .pBufferInfo = &bi};
+        vkUpdateDescriptorSets(g_vk.dev, 1, &wr, 0, NULL);
     }
     return 1;
 }
-/* the ring's bytes that differ from what the device holds, as one copy from the first to the last of them: a frame's
-   one bar, or all of them after the box is laid out. 0 when they could not be sent */
-static int ring_send(VkCommandBuffer cb, const SnxUiRing* r) {
-    VkBufferMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                                .srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-                                .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-                                .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                .size = VK_WHOLE_SIZE};
-    VkDependencyInfo d = {
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &b};
-    VkBufferCopy copy;
-    VkBuffer buf;
-    u64 off;
-    u8* to;
-    int first = 0, end = r->n;
-    while (first < end && r->height[first] == g_ring_sent[first]) ++first;
-    while (end > first && r->height[end - 1] == g_ring_sent[end - 1]) --end;
-    if (first == end) return 1;
-    to = vk_stage((u64)(end - first), 4, &buf, &off);
-    if (!to) return 0;
-    memcpy(to, r->height + first, (size_t)(end - first));
-    memcpy(g_ring_sent + first, r->height + first, (size_t)(end - first));
-    copy = (VkBufferCopy){.srcOffset = off, .dstOffset = (u64)first, .size = (u64)(end - first)};
-    /* the last frame's draws read it before the copy writes, and the copy writes before this frame's read */
-    b.buffer = g_ring;
-    rec_CmdPipelineBarrier2(cb, &d);
-    rec_CmdCopyBuffer(cb, buf, g_ring, 1, &copy);
-    b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
-    b.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-    rec_CmdPipelineBarrier2(cb, &d);
-    return 1;
-}
-
-/* the device's buffer of instances, made once */
-static int instances_make(void) {
+/* the frames' buffer, made once, each set's binding 2 its region's ring (the region an offset at each bind) */
+static int frames_make(void) {
+    u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment, region = UI_RING_BYTES + sizeof g_quads;
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                              .size = sizeof g_quads,
-                              .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                              .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    /* written in order and never read by the CPU: the device's own memory where the CPU can write it (a BAR), else
+       the host's */
+    VmaAllocationCreateInfo ai = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                           VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                  .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VmaAllocationInfo info;
-    if (g_inst) return 1;
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &ai, &g_inst, &g_inst_mem, &info))) {
-        g_inst = VK_NULL_HANDLE;
+    int i;
+    if (g_frames) return 1;
+    align = align < 64 ? 64 : align;
+    g_region = (region + align - 1) / align * align;
+    bci.size = g_region * VK_FRAMES;
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &ai, &g_frames, &g_frames_mem, &info)) || !info.pMappedData) {
+        if (g_frames) vmaDestroyBuffer(g_vk.vma, g_frames, g_frames_mem);
+        g_frames = VK_NULL_HANDLE;
         return 0;
     }
-    vk_mem_track(g_inst_mem);
-    g_sent_n = 0;
+    vk_mem_track(g_frames_mem);
+    g_frames_at = (u8*)info.pMappedData;
+    for (i = 0; i < VK_FRAMES; ++i) g_slot[i] = (UiSlot){.fresh = 1};
+    for (i = 0; i < 3; ++i) {
+        VkDescriptorBufferInfo bi = {g_frames, 0, UI_RING_BYTES};
+        VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                   .dstSet = g_sets[i],
+                                   .dstBinding = 2,
+                                   .descriptorCount = 1,
+                                   .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                                   .pBufferInfo = &bi};
+        vkUpdateDescriptorSets(g_vk.dev, 1, &wr, 0, NULL);
+    }
     return 1;
 }
-static int quad_same(int i) { return i < g_sent_n && !memcmp(&g_quads[i], &g_sent[i], sizeof *g_quads); }
-/* the quads from first to end as the device reads them, at to: little-endian words, and halves for the texels */
+/* the quads first to end, as the device reads them, at to: little-endian halves, and the word of bits */
 static void quads_le(u8* to, int first, int end) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
     int i;
@@ -525,65 +501,41 @@ static void quads_le(u8* to, int first, int end) {
     memcpy(to, &g_quads[first], (size_t)(end - first) * sizeof(SnxUiQuad));
 #endif
 }
-/* the n quads into the device's buffer: only the runs that differ from what it holds, staged and copied after the
-   last frame's draws read it, before this one's. 0 when it holds none of them (no buffer, or no staging) */
-static int instances_send(VkCommandBuffer cb, int n) {
-    int start[UI_COPIES], end[UI_COPIES], runs = 0, quads = 0, i, k;
-    VkBufferCopy copy[UI_COPIES];
-    VkBufferMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                                .srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
-                                .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-                                .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                .size = VK_WHOLE_SIZE};
-    VkDependencyInfo d = {
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &b};
-    VkBuffer buf;
-    u64 off;
-    u8* to;
-    if (!instances_make()) return 0;
-    for (i = 0; i < n;) {
-        int e = i + 1;
-        if (quad_same(i)) {
-            ++i;
-            continue;
-        }
-        /* a run from here to its last changed quad that has fewer than UI_GAP same ones before the next */
-        for (k = e; k < n && k < e + UI_GAP; ++k)
-            if (!quad_same(k)) e = k + 1;
-        if (runs == UI_COPIES) /* too many: the last one goes on over this one */
-            end[runs - 1] = e;
-        else {
-            start[runs] = i;
-            end[runs++] = e;
-        }
-        i = e;
+/* the quads written this frame (first to end) owed to every region */
+static void frames_owe(int first, int end) {
+    int k;
+    for (k = 0; k < VK_FRAMES && first < end; ++k) {
+        if (g_slot[k].first >= g_slot[k].end || first < g_slot[k].first) g_slot[k].first = first;
+        if (end > g_slot[k].end) g_slot[k].end = end;
     }
-    if (!runs) return 1; /* it holds them all */
-    for (k = 0; k < runs; ++k) quads += end[k] - start[k];
-    to = vk_stage((u64)quads * sizeof(SnxUiQuad), 16, &buf, &off);
-    if (!to) return 0;
-    for (k = 0, quads = 0; k < runs; ++k) {
-        int count = end[k] - start[k];
-        quads_le(to + (size_t)quads * sizeof(SnxUiQuad), start[k], end[k]);
-        copy[k] = (VkBufferCopy){.srcOffset = off + (u64)quads * sizeof(SnxUiQuad),
-                                 .dstOffset = (u64)start[k] * sizeof(SnxUiQuad),
-                                 .size = (u64)count * sizeof(SnxUiQuad)};
-        memcpy(&g_sent[start[k]], &g_quads[start[k]], (size_t)count * sizeof(SnxUiQuad));
-        quads += count;
+}
+/* the n quads and the ring into this frame's region, as much of them as it lacks: the region's number */
+static int frames_send(int n, const SnxUiRing* ring) {
+    int slot = (int)(vk_frame_id() % VK_FRAMES);
+    u8* at = g_frames_at + g_region * (u64)slot;
+    if (memcmp(g_ring_last, ring->height, sizeof g_ring_last)) {
+        memcpy(g_ring_last, ring->height, sizeof g_ring_last);
+        ++g_ring_version;
     }
-    if (n > g_sent_n) g_sent_n = n; /* the quads past the old end were all sent */
-    /* the last frame's draws read it before the copy writes, and the copy writes before this frame's draws read */
-    b.buffer = g_inst;
-    rec_CmdPipelineBarrier2(cb, &d);
-    rec_CmdCopyBuffer(cb, buf, g_inst, (u32)runs, copy);
-    b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT;
-    b.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
-    rec_CmdPipelineBarrier2(cb, &d);
-    return 1;
+    if (g_slot[slot].fresh) {
+        g_slot[slot].first = 0;
+        g_slot[slot].end = n;
+    }
+    if (g_slot[slot].end > n) g_slot[slot].end = n;
+    if (g_slot[slot].first < g_slot[slot].end) {
+        u64 off = UI_RING_BYTES + (u64)g_slot[slot].first * sizeof(SnxUiQuad);
+        quads_le(at + off, g_slot[slot].first, g_slot[slot].end);
+        vmaFlushAllocation(g_vk.vma, g_frames_mem, g_region * (u64)slot + off,
+                           (u64)(g_slot[slot].end - g_slot[slot].first) * sizeof(SnxUiQuad));
+    }
+    if (g_slot[slot].fresh || g_slot[slot].ring != g_ring_version) {
+        memcpy(at, g_ring_last, UI_RING_BYTES);
+        vmaFlushAllocation(g_vk.vma, g_frames_mem, g_region * (u64)slot, UI_RING_BYTES);
+        g_slot[slot].ring = g_ring_version;
+    }
+    g_slot[slot].first = g_slot[slot].end = 0;
+    g_slot[slot].fresh = 0;
+    return slot;
 }
 /* the quad's sample: its descriptor set */
 static unsigned quad_sample(int i) { return ui_q_bits(&g_quads[i], UI_Q_SAMPLE, 2); }
@@ -611,16 +563,17 @@ typedef struct {
     u32 ring, slow, slow_from, ground;
 } UiPicture;
 static UiPicture g_pc;
-/* the frame's layer, before a rendering pass: its quads made (the producers, under ui_lock) and what changed sent, the
-   push constants set; the quads to draw, 0 for none */
+/* the frame's layer, before a rendering pass: its quads made (the producers, under ui_lock), what changed written into
+   this frame's region, the push constants set; the quads to draw, 0 for none */
 static int ui_prepare(VkCommandBuffer cb, const int safe[4]) {
     SnxUiList list = {g_quads, 0, MAX_QUADS};
-    int sw = (int)g_vk.sc_extent.width, sh = (int)g_vk.sc_extent.height, n;
+    int sw = (int)g_vk.sc_extent.width, sh = (int)g_vk.sc_extent.height, n, first, end;
     SnxUiRing ring;
     if (!layout_make()) return 0;
     ui_lock();
     atlas_upload(cb);
     image_upload(cb);
+    ui_dirty_begin(g_quads);
     /* the screen before the game starts, under the menu, hides the on-screen controls: they aren't drawn under it,
        where they would take quads for nothing (nor do they take fingers then, sdl3.c's press_event) */
     if (prepare_screen_shown())
@@ -638,42 +591,56 @@ static int ui_prepare(VkCommandBuffer cb, const int safe[4]) {
         hud_draw(&list, safe, scale);
     }
     overlay_draw(&list, sw, sh, plat_ns());
+    ui_dirty_end(&first, &end);
     ring = *ui_ring();
     g_pc = (UiPicture){(float)sw, (float)sh, (u32)ring.head | (u32)ring.n << 16, ring.slow, ring.slow_from,
                        ui_ground()};
     ui_unlock();
     n = list.n;
-    if (!n || !g_atlas || !pipeline_make(g_vk.sc_format) || !glyphs_upload(cb)) return 0;
-    if (!instances_send(cb, n) || !ring_send(cb, &ring)) return 0;
+    frames_owe(first, end);
+    if (first < end || n != g_runs_n) g_runs_n = -1; /* a quad changed: the runs are made again */
+    if (!n || !g_atlas || !pipeline_make(g_vk.sc_format) || !glyphs_upload(cb) || !frames_make()) return 0;
+    g_slot_now = frames_send(n, &ring);
     return n;
 }
-/* the n quads ui_prepare made, into the rendering pass open on cb, over the whole picture */
+/* the runs of the n quads: of one pipeline, sampling the same way and taking as many vertices, in their order (six
+   corners for a quad, or an outline shape's parts) */
+static void runs_make(int n) {
+    int i, run;
+    for (i = 0, g_nruns = 0; i < n; i = run) {
+        UiRun r = {.first = i, .set = (int)quad_sample(i), .pipe = quad_pipe(i), .vertices = quad_vertices(i)};
+        for (run = i + 1; run < n && (int)quad_sample(run) == r.set && quad_vertices(run) == r.vertices &&
+                          quad_pipe(run) == r.pipe;
+             ++run)
+            continue;
+        r.count = run - i;
+        g_runs[g_nruns++] = r;
+    }
+    g_runs_n = n;
+}
+/* the n quads ui_prepare made, into the rendering pass open on cb, over the whole picture: from this frame's region,
+   each run with one call, the pipeline and the set bound where they change */
 static void ui_record(VkCommandBuffer cb, int n) {
     VkViewport vp = {0, 0, g_pc.w, g_pc.h, 0, 1};
     VkRect2D sci = {{0, 0}, g_vk.sc_extent};
-    VkDeviceSize vo = 0;
-    int i, run, set, pipe;
+    VkDeviceSize vo = g_region * (u64)g_slot_now + UI_RING_BYTES;
+    u32 ring_at = (u32)(g_region * (u64)g_slot_now);
+    int i, set = -1, pipe = -1;
+    if (g_runs_n != n) runs_make(n);
     vk_render_forget_state(); /* another pipeline and layout: a draw after it sets everything again */
     rec_CmdSetViewport(cb, 0, 1, &vp);
     rec_CmdSetScissor(cb, 0, 1, &sci);
     rec_CmdPushConstants(cb, g_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof g_pc,
                          &g_pc);
-    rec_CmdBindVertexBuffers(cb, 0, 1, &g_inst, &vo);
-    /* runs of quads of one pipeline that sample the same way and take as many vertices, in their order: six corners
-       for each quad, or an outline shape's parts, the pipeline and the set bound where they change */
-    for (i = 0, set = pipe = -1; i < n; i = run) {
-        u32 vertices = quad_vertices(i);
-        int which = quad_pipe(i);
-        for (run = i + 1; run < n && quad_sample(run) == quad_sample(i) && quad_vertices(run) == vertices &&
-                          quad_pipe(run) == which;
-             ++run)
-            continue;
-        if (quad_sample(i) == UI_IMAGE && !g_image) continue; /* its upload failed */
-        if (pipe != which) rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipes[pipe = which]);
-        if (set != (int)quad_sample(i))
-            rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1,
-                                      &g_sets[set = (int)quad_sample(i)], 0, NULL);
-        rec_CmdDraw(cb, vertices, (u32)(run - i), 0, (u32)i);
+    rec_CmdBindVertexBuffers(cb, 0, 1, &g_frames, &vo);
+    for (i = 0; i < g_nruns; ++i) {
+        const UiRun* r = &g_runs[i];
+        if (r->set == UI_IMAGE && !g_image) continue; /* its upload failed */
+        if (pipe != r->pipe) rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipes[pipe = r->pipe]);
+        if (set != r->set)
+            rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1, &g_sets[set = r->set], 1,
+                                      &ring_at);
+        rec_CmdDraw(cb, r->vertices, (u32)r->count, 0, (u32)r->first);
     }
 }
 /* a rendering pass on sc's view, cleared to black or loaded */
