@@ -16,6 +16,7 @@
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/gpu/renderer.h"
+#include "nx/runtime/platform/tracy.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/hle/services/nvdrv_ctrl_gpu.h"
 #include "nx/runtime/clock.h"
@@ -693,6 +694,9 @@ void nvn_QueuePresentTexture(CPU* c, u64 q, u64 w, i32 index) {
         o->shown_at[index] = period ? slot : 0;
     }
     __atomic_add_fetch(&g_frames, 1, __ATOMIC_RELAXED);
+    /* the frame on the trace's timeline: a game that presents through the queue (every NVN game) has no other
+       frame marked, so the "Frames" set would hold only vi's few */
+    SNX_FRAME_MARK();
 }
 
 /* ============================================================ window getters: what was set */
