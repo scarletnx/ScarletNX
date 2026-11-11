@@ -2141,6 +2141,20 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-vertex-input 99)
     target_link_libraries(snx-test-vk-vertex-input PRIVATE snx_nx_flags)
     add_test(NAME vk_vertex_input COMMAND snx-test-vk-vertex-input)
+    # the block texture formats a device is given (gpu/vk/format.c), with no GPU: a player's Mali-G52 from its vkjson
+    # (ASTC and ETC2 sampled as the games' blocks), a desktop GPU, native_bc=0 and the other settings at 0, and the
+    # log's line for each family
+    if(TARGET snx_vk_common)
+        add_executable(snx-test-vk-block-formats vk_block_formats.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/format.c"
+                       "${volk_SOURCE_DIR}/volk.c")
+        set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
+        # format.c's VkFmt initializers leave the last members to 0, as the renderer's flags allow
+        set_source_files_properties("${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/format.c" PROPERTIES COMPILE_OPTIONS
+                                    -Wno-missing-field-initializers)
+        snx_test_target(snx-test-vk-block-formats 23)
+        target_link_libraries(snx-test-vk-block-formats PRIVATE snx_nx_flags snx_vk_common)
+        add_test(NAME vk_block_formats COMMAND snx-test-vk-block-formats)
+    endif()
     # graphics pipeline libraries (gpu/vk/pipeline_parts.c): the choice from the setting and stand-in devices, each
     # condition that turns them off named, and the dynamic pre-rasterization state each device member gives where the
     # table of bans holds none for it

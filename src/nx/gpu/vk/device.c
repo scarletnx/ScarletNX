@@ -445,7 +445,7 @@ static void astc_choose(void) {
         LOG("vulkan: astc_mode=1 (Exact): ASTC textures are %s\n", exact);
         return;
     }
-    if (!g_vk.feat.textureCompressionBC) return; /* RGBA8, which the warning above says */
+    if (!g_vk.feat.textureCompressionBC) return; /* RGBA8, which vk_blocks_say's line says */
     vk_mem_use(&usage, &budget);
     g_vk.astc_auto_bc7 = g_shader_sm86 || snx_astc_auto_bc7(budget);
     g_vk.astc_at_load = g_settings.astc_mode == 3 || (g_settings.astc_mode == 0 && g_shader_sm86);
@@ -662,26 +662,12 @@ static int create_device(void) {
     WANT(occlusionQueryPrecise); /* samples-passed counts (query.c) are exact */
     WANT(sampleRateShading);
     WANT(alphaToOne); /* multisampled draws asking for it (pipeline.c) */
-    /* BCn, ASTC and ETC2 sampled as they are (format.c) where the settings ask for it and the device has them, else
-       decoded on the GPU as they are uploaded; ASTC decoded so is encoded again as BC7 where the GPU samples BCn,
-       unless astc_mode asks for exact RGBA8 (astc_choose says which, once the budget is known). With exact RGBA8 only
-       a texture with holes in its mapping is BC7 (texture.c). Thus BCn always where the device has it, which
-       native_bc decides the sampling of */
-    WANT(textureCompressionBC);
-    g_vk.astc_bc7_could = have.textureCompressionBC && !have.textureCompressionASTC_LDR;
-    if (g_settings.native_astc) WANT(textureCompressionASTC_LDR);
-    if (g_settings.native_etc2) WANT(textureCompressionETC2);
-    if (g_settings.native_bc && !want->textureCompressionBC)
-        WARN("vulkan: the GPU can't sample BCn textures: they are decoded on the GPU as they are loaded\n");
-    if (g_settings.native_astc && !want->textureCompressionASTC_LDR)
-        WARN("vulkan: native ASTC textures were asked for, but the GPU can't sample ASTC: they are decoded on the GPU "
-             "as they are loaded (astc_mode=%d)\n",
-             g_settings.astc_mode);
-    if (!want->textureCompressionASTC_LDR && !want->textureCompressionBC)
-        WARN("vulkan: the GPU samples neither ASTC nor BCn: ASTC textures are decoded to RGBA8, four times BC7's "
-             "memory\n");
-    if (g_settings.native_etc2 && !want->textureCompressionETC2)
-        WARN("vulkan: native ETC2 textures were asked for, but the GPU can't sample ETC2: they are decoded\n");
+    /* BCn, ASTC and ETC2 sampled as they are where the settings ask for it and the device has them, else decoded on
+       the GPU as they are uploaded; ASTC decoded is encoded again as BC7 where the GPU samples BCn, unless astc_mode
+       asks for exact RGBA8 (astc_choose says which, once the budget is known, and vk_blocks_say how each family is
+       held). With exact RGBA8 only a texture with holes in its mapping is BC7 (texture.c). Thus BCn always where the
+       device has it, which native_bc decides the sampling of */
+    vk_blocks_want(&have, want);
     WANT(vertexPipelineStoresAndAtomics);
     /* indirect draws (render.c's draw_indirect): several in one call, and a base instance from the GPU's arguments */
     WANT(multiDrawIndirect);
@@ -1761,6 +1747,7 @@ static int create_device(void) {
         g_vk.has_descriptor_heaps ? (g_vk.has_descriptor_buffers ? " with buffer fallback" : " with set fallback") : "");
     vk_uma_init();
     astc_choose();
+    vk_blocks_say();
     {
         /* which driver runs, by its own name: the system's, or a package's (gpu_driver) */
         VkPhysicalDeviceDriverProperties dp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};

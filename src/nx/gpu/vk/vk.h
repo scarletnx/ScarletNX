@@ -116,6 +116,8 @@ typedef struct {
     VkPhysicalDeviceFeatures feat;
     int has_divisor;    /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
     int astc_bc7_could; /* the GPU samples BCn but not ASTC: astc_mode=2 holds its ASTC textures as BC7 */
+    /* the block formats the device samples, whether turned on or not (vk_blocks_want): VK_BLOCKS_* bits */
+    u32 blocks_have;
     /* astc_mode's Auto holds the ASTC textures it decodes as BC7: the device started with a budget under
        SNX_ASTC_EXACT_MB (gpu/texture/astc_bc.h). vk_astc_bc7 says what the mode in effect holds them as */
     int astc_auto_bc7;
@@ -787,6 +789,15 @@ enum {
 VkFmt vk_rt_format(u32 fmt);
 VkFmt vk_zt_format(u32 fmt);
 VkFmt vk_tic_format(u32 w0, int srgb); /* bpp 0: not supported */
+/* g_vk.blocks_have's bits */
+enum { VK_BLOCKS_ASTC = 1, VK_BLOCKS_ETC2 = 2, VK_BLOCKS_BC = 4 };
+/* the block formats' features to turn on of those the device has (have): BCn wherever it has them, ASTC LDR and ETC2
+   where native_astc and native_etc2 ask as well */
+void vk_blocks_want(const VkPhysicalDeviceFeatures* have, VkPhysicalDeviceFeatures* want);
+/* the log's line for each family of block textures (ASTC, ETC2 and EAC, BCn): sampled as the games' blocks, encoded
+   again on the GPU, or decoded, and into what; a warning where a setting asks for what the GPU lacks. Once the device
+   is made and astc_mode chosen */
+void vk_blocks_say(void);
 /* the ASTC textures the GPU decodes are held as BC7: astc_mode's BC7, or its Auto on a device that started with little
    memory (gpu/texture/astc_bc.h) */
 int vk_astc_bc7(void);
