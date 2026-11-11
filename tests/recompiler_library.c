@@ -531,6 +531,38 @@ static void schedule64(struct snx_recompiler* r) {
     free(code);
 }
 
+/* snx_recompiler_set_live_code: the JIT compiles far as its bytes are when it is first reached, after the recompile
+   (here mov x0,#42 instead of #99), not as they were when the module was made; without it, the module's copy */
+static void live64(struct snx_recompiler* r, uint8_t* mem) {
+    const uint32_t mov99 = 0xd2800c60, mov42 = 0xd2800540;
+    for (int live = 0; live < 2; ++live) {
+        struct snx_recompiled* m;
+        RtAPI rt;
+        CPU cpu = {0};
+        Seen seen = {0};
+        snx_recompiler_set_live_code(r, live);
+        m = snx_recompile(r, CODE64, mem + CODE64, A64_SIZE);
+        check(m != NULL, "live code: a module");
+        if (!m) continue;
+        memcpy(mem + FAR, &mov42, 4);
+        snx_runtime_defaults(&rt);
+        rt.svc = svc64;
+        rt.undef = undef64;
+        rt.brk = brk64;
+        cpu.mem = mem;
+        cpu.rt = &rt;
+        cpu.thread = &seen;
+        check(snx_recompiled_bind(m, &cpu) == 0, "live code: bind");
+        cpu.x[30] = STOP;
+        snx_recompiled_run(m, &cpu, FAR, STOP);
+        check(seen.brks == 1 && cpu.x[0] == (live ? 42u : 99u),
+              live ? "live code: the JIT compiles far as it is now" : "a module's JIT compiles far from its copy");
+        memcpy(mem + FAR, &mov99, 4);
+        snx_recompiled_free(m);
+    }
+    snx_recompiler_set_live_code(r, 0);
+}
+
 int main(int argc, char** argv) {
     uint8_t* mem = (uint8_t*)calloc(MEMORY, 1);
     struct snx_recompiler* r;
@@ -564,6 +596,7 @@ int main(int argc, char** argv) {
         progress64(r, mem);
         schedule64(r);
         invalidate64(r, mem);
+        live64(r, mem);
 #ifndef _WIN32
         spin64(r, mem);
 #endif
