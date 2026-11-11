@@ -32,6 +32,8 @@ static const char list[] =
     "On-screen controls/Buttons\tcontrols_a_shown\t\tint\t0\t1\tA control drawn\tA\t0=Hidden|1=Shown\n"
     "On-screen controls/Buttons\tcontrols_b_shown\t\tint\t0\t1\tA control drawn\tB\t0=Hidden|1=Shown\n"
     "Controllers\tgamepad_rumble\t100\tint\t0\t100\tHow strongly\tVibration\t0=Off|50=50%|100=100%\n"
+    "Debug\ttracy_capture\t0\tint\t0\t1\tA capture of the run\tTracy capture\t0=Off|1=On\n"
+    "Debug\ttracy_port\t\ttext\t0\t0\tThe client's port\tTracy port\t\t\tneeds-build\n"
     "Debug\tslp_vectorizer\t0\tint\t0\t1\tLLVM's SLP vectorizer\tSLP vectorizer\t0=Off|1=On\n"
     "Debug\tlog\t1\tint\t0\t2\tLog detail\t\t0=0|1=1|2=2";
 
@@ -82,9 +84,8 @@ int main(int argc, char** argv) {
     /* the launcher's own and the recompiler's (settings.txt's launcher sections), then a row a setting in the list's
        order, the other line left out; a page's row and its All before its settings */
     int tracy = at(&s, "tracy_capture") >= 0; /* the row a runtime without SNX_TRACY does not list */
-    int opt = 4 + tracy;                      /* the optimization level's row, after it */
-    assert(s.own > 5 && s.count == s.own + 16 && !strcmp(s.keys[0].key, "GDB stub"));
-    assert(!tracy || at(&s, "tracy_capture") == 4); /* after Java home, before the optimization level */
+    int opt = 4;                              /* the optimization level's row, after the launcher's own four */
+    assert(s.own > 5 && s.count == s.own + 18 && !strcmp(s.keys[0].key, "GDB stub"));
     assert(!strcmp(s.keys[0].section, "Launch") && !strcmp(s.keys[0].about, "Enables gdbstub on port 1234") &&
            words(&s.keys[0]) == 2 && !strcmp(s.values[0].key, "gdbstub"));
     /* shown by its name, kept by its key */
@@ -99,8 +100,7 @@ int main(int argc, char** argv) {
     assert(gui_settings_set(&s, "java_home", "/opt/jdk") && gui_settings_java_home(&s, options) == 1 &&
            !strcmp(options[0], "--java-home=/opt/jdk") && !gui_settings_recompile(&s, 0, options) &&
            gui_settings_set(&s, "java_home", "") && !gui_settings_java_home(&s, options));
-    assert(!tracy || (!strcmp(s.keys[4].section, "Launch") && !strcmp(s.values[4].key, "tracy_capture") &&
-                      words(&s.keys[4]) == 2 && strstr(s.keys[4].about, "PATH")));
+    assert(!tracy || !strcmp(s.keys[at(&s, "tracy_capture")].section, "Debug")); /* with the profiler's other rows */
     assert(!gui_settings_extract(&s)); /* off: a dump read in place */
     /* the recompiler's: none passed at its default, then --key=value; the optimization level takes 0 to 3 and z, the
        LLVM batch full or ipo, the AOT threads a number (0 the cores), the unit size a number of instructions, the unit
@@ -409,17 +409,20 @@ int main(int argc, char** argv) {
                         }
                         assert(i == n);
                     }
-    /* the launcher's Tracy capture is passed to a run, never to the recompiler */
+    /* a row this build has none of what it needs: the menus show it greyed, and nothing sets it, so no run is passed
+       an option its runtime cannot honour */
+    assert(gui_settings_set(&s, "tracy_port", "8086") == 0 && !gui_settings_one(&s, "tracy_port", options));
+    /* the Debug section's Tracy capture is passed to a run as any other setting of it is, never to the recompiler, and
+       a build without the client lists no row for it at all */
     if (tracy) {
-        assert(gui_settings_set(&s, "tracy_capture", "on") && !gui_settings_recompile(&s, 0, options));
+        size_t i;
+        assert(gui_settings_set(&s, "tracy_capture", "1") && !gui_settings_recompile(&s, 0, options));
         tracy_n = gui_settings_options(&s, 1, options);
-        assert(tracy_n && !strcmp(options[tracy_n - 1], "--tracy-capture"));
-        assert(gui_settings_set(&s, "tracy_capture", "off"));
-        {
-            size_t i;
-            tracy_n = gui_settings_options(&s, 1, options);
-            for (i = 0; i < tracy_n; ++i) assert(strcmp(options[i], "--tracy-capture"));
-        }
+        for (i = 0; i < tracy_n && strcmp(options[i], "--tracy_capture=1"); ++i) continue;
+        assert(i < tracy_n); /* among the run's, where the .ini's other Debug rows are */
+        assert(gui_settings_set(&s, "tracy_capture", "0"));
+        tracy_n = gui_settings_options(&s, 1, options);
+        for (i = 0; i < tracy_n; ++i) assert(strcmp(options[i], "--tracy_capture=1"));
     }
     gui_settings_free(&s);
 

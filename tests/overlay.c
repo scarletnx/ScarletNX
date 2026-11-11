@@ -303,7 +303,10 @@ static void keys_page(void) {
     assert(!shows("capture a frame") && !shows("Debugger") && !shows("let the mouse go, hold it"));
     overlay_keys_mouse(1); /* a game holds the mouse: its key's row, Ctrl+G by default */
     draw();
+    for (i = 0; i < KEYS_TRACY_ROWS; ++i) overlay_scroll(1); /* the client's row is one further down */
+    draw();
     assert(shows_as("Ctrl+G", 0, light) && shows("let the mouse go, hold it"));
+    for (i = 0; i < KEYS_TRACY_ROWS; ++i) overlay_scroll(-1);
     overlay_keys_mouse(0);
     overlay_keys_extra(1, "gdb");
     draw();
@@ -320,8 +323,11 @@ static void keys_page(void) {
     /* the page kept from frame to frame is laid out again for RenderDoc found alone, and for a key set elsewhere (the
        .ini read again) with no call of the menu's between */
     overlay_keys_extra(1, "");
+    for (i = 0; i < KEYS_TRACY_ROWS; ++i) overlay_scroll(1); /* its row is one further down */
     draw();
     assert(shows("capture a frame"));
+    for (i = 0; i < KEYS_TRACY_ROWS; ++i) overlay_scroll(-1);
+    draw();
     overlay_keys_extra(0, "");
     draw();
     assert(!shows("capture a frame"));

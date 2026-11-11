@@ -1,18 +1,40 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # `scarletnx --settings`: every setting of the game's .ini, by section, a line each of ten fields, the help on one
-# line, the menus' name and values (runtime/options.c's ini_list), and where the setting does nothing the systems
-# it is for (ini_only), as the menu's Settings read them. Run by ctest as
-# runtime_settings_list
+# line, the menus' name and values (runtime/options.c's ini_list), where the setting does nothing the systems it is
+# for (ini_only), and, on the rows that need a build, that build. Run by ctest as runtime_settings_list
 execute_process(COMMAND "${RUNTIME}" --settings RESULT_VARIABLE result OUTPUT_VARIABLE list ERROR_VARIABLE errors)
 if(result OR NOT errors STREQUAL "")
     message(FATAL_ERROR "scarletnx --settings ended with ${result}: ${errors}")
 endif()
 set(field "[^\t\r\n]*")
-string(REGEX REPLACE "${field}\t${field}\t${field}\t(int|float|text)\t${field}\t${field}\t${field}\t${field}\t${field}\t${field}\r?\n"
+string(REGEX REPLACE "${field}\t${field}\t${field}\t(int|float|text)\t${field}\t${field}\t${field}\t${field}\t${field}\t${field}(\t${field})?\r?\n"
        "" rest "${list}")
 if(NOT rest STREQUAL "" OR list STREQUAL "")
-    message(FATAL_ERROR "lines of scarletnx --settings that are not ten fields:\n${rest}")
+    message(FATAL_ERROR "lines of scarletnx --settings that are not ten or eleven fields:\n${rest}")
+endif()
+# the rows this build has none of what they need, named: a menu shows them greyed and picks nothing
+set(needed)
+string(REGEX MATCHALL "\n[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\tneeds-build" rows "${list}")
+foreach(row IN LISTS rows)
+    string(REGEX REPLACE "^\n[^\t]*\t([^\t]*)\t.*" "\\1" key "${row}")
+    list(APPEND needed ${key})
+endforeach()
+# every row the profiler gates, by its key: a build with the client has none of them saying needs-build, and one
+# without it has every one of them saying so. The rows come from the list itself, so a row added takes the check with it
+string(REGEX MATCHALL "\n(Debug|Shortcuts)\t(tracy_[a-z_]+|hotkey_tracy)\t" gated "${list}")
+foreach(row ${gated})
+    string(REGEX REPLACE "^\n(Debug|Shortcuts)\t(tracy_[a-z_]+|hotkey_tracy)\t$" "\\2" key "${row}")
+    if(SNX_TRACY)
+        if(key IN_LIST needed)
+            message(FATAL_ERROR "scarletnx --settings: ${key} says it needs a build this one has")
+        endif()
+    elseif(NOT key IN_LIST needed)
+        message(FATAL_ERROR "scarletnx --settings: ${key} does not say that a build without the client has none of it")
+    endif()
+endforeach()
+if(NOT gated)
+    message(FATAL_ERROR "scarletnx --settings lists no Debug row the client gates")
 endif()
 # the game's menu's settings with its names and words, as the launcher shows them; a whole number of few values with
 # its numbers
