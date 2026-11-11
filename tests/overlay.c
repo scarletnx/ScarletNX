@@ -237,6 +237,16 @@ static int icon_drawn(unsigned icon) {
    on a band of ink in the page's colour, none in focus; Up/Down, the D-pad and the wheel go over its rows, each of
    which fits the narrowest panel; any other key, button or tap goes back to the game, F1 again too, and the other
    pages keep those keys as they were */
+/* the keys page's first screen: a build with the client holds its capture's row, which takes the last one's place */
+#if defined(SNX_TRACY)
+enum { KEYS_TRACY_ROWS = 1 };
+static const char* const KEYS_LAST = "Tracy, 60 s";
+static const char* const KEYS_UNDER = "quit the game"; /* under the fold, as its icon is */
+#else
+enum { KEYS_TRACY_ROWS = 0 };
+static const char* const KEYS_LAST = "quit the game";
+static const char* const KEYS_UNDER = NULL;
+#endif
 static void keys_page(void) {
     const u64 x_button = 1ull << 2, down = 1ull << 15;
     const i32 still[4] = {0, 0, 0, 0};
@@ -249,8 +259,9 @@ static void keys_page(void) {
     ink = qv(&list.q[1]).rgba;
     assert(shows("SCARLETNX  /  KEYS") && shows("Up/Down: the rest. Any other key or button: back to the game."));
     assert(shows_as("F2, Home", 0, light) && shows_as("the game's menu", 0, ink) && shows_as("F3", 0, light) &&
-           shows_as("a screenshot", 0, ink) && shows_as("F11, Alt+Return", 0, light) && shows("quit the game"));
-    assert(icon_drawn(GUI_ICON_APP_WINDOW) && icon_drawn(GUI_ICON_IMAGE) && icon_drawn(GUI_ICON_LOG_OUT));
+           shows_as("a screenshot", 0, ink) && shows_as("F11, Alt+Return", 0, light) && shows(KEYS_LAST));
+    assert(icon_drawn(GUI_ICON_APP_WINDOW) && icon_drawn(GUI_ICON_IMAGE) &&
+           icon_drawn(GUI_ICON_LOG_OUT) == !KEYS_UNDER);
     for (i = 2, n = 0; i < list.n; ++i) /* the widest keys' band: a pixel of the scale past them either side */
         n += qv(&list.q[i]).rgba == ui_rgba(ink) && qv(&list.q[i]).h == (float)(16 * s) &&
              qv(&list.q[i]).w == (float)(8 * s * (int)strlen("F11, Alt+Return") + 2 * s);
@@ -295,6 +306,8 @@ static void keys_page(void) {
     assert(shows_as("Ctrl+G", 0, light) && shows("let the mouse go, hold it"));
     overlay_keys_mouse(0);
     overlay_keys_extra(1, "gdb");
+    draw();
+    for (i = 0; i < KEYS_TRACY_ROWS; ++i) overlay_move(1); /* the capture's row takes the last one's place */
     draw();
     assert(shows_as("Ctrl+Shift+F12", 0, light) && shows("capture a frame") && !shows("Debugger"));
     for (i = 0; i < 40; ++i) overlay_move(1);

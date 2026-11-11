@@ -3787,7 +3787,7 @@ static int late_depth_supported(const DsState* ds, const DrawCall* dc, const Dra
     return viewport.minDepth == 0 && viewport.maxDepth == 1;
 }
 
-/* a draw as a profiler zone (SNX_TRACY builds), around its many ways out */
+/* a draw as a profiler zone, around its many ways out */
 void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     SNX_ZONE(z, "draw");
     int heaps = g_vk.has_descriptor_heaps;

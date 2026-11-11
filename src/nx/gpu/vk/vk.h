@@ -2095,7 +2095,6 @@ int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off);
 extern VkSemaphore g_vk_csem;  /* timeline semaphore the compute queue signals */
 extern u64 g_vk_cs_wait_value; /* the value graphics work waits for before reading compute results */
 extern u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns; /* statistics */
-#if defined(SNX_TRACY)
 extern u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because the CPU reads what they write */
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
 int vk_uma_choose(int has_import, int has_ahb, int has_placed);
@@ -2106,7 +2105,6 @@ u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
 void vk_uma_frame(void);
 void vk_uma_forget_all(void);
 
-#endif
 /* the dispatches skipped so far; why (size bytes) gets their reasons with each one's count, " (12 not translated, 3
    a texture not bound)", or "" when none was */
 u64 vk_cs_skipped(char* why, size_t size);
