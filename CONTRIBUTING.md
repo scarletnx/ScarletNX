@@ -62,9 +62,10 @@ workflow rewrites one comment on it, marked `<!-- scarletnx-builds -->`, that li
 Android builds of the head commit and names any job that did not build (`scripts/pr-builds.sh`). A pull request from a
 fork gets no comment, since its Build ran the fork's own workflow.
 
-A pull request, a draft as one ready for review, is built and tested on every platform: Linux on x86-64 and AArch64
-(with edenprobe, and ASan and UBSan), Windows, Android, macOS and iOS, and the cross-built AppImages (PowerPC64,
-RISC-V, LoongArch).
+A pull request, a draft as one ready for review, is built and tested on every platform: Linux on x86-64 (in its
+AppImage's job) and AArch64, with edenprobe, and ASan and UBSan on x86-64, Windows, Android, macOS and iOS, and the
+big-endian PowerPC64 AppImage, cross-built. The PowerPC64 LE, RISC-V and LoongArch AppImages are built for the
+nightlies alone, and the A64 differential runs on the cross build when a pull request changes the recompiler.
 
 A push to a pull request cancels the run of its commit before, and a pull request merged or closed cancels its runs
 still going (`.github/workflows/pr-closed.yml`, `scripts/cancel-pr-runs.py`), so no runner builds what nobody will

@@ -83,6 +83,13 @@ OPTIONAL = {
     'ScarletNX-macos-arm64.zip',
     'ScarletNX-ios-arm64.ipa',
 }
+# The packages only a run a nightly can come of builds (build.yml's appimage-cross): a pull request's notes leave them
+# out, where a nightly's say they were not built. tests/publish_builds_test.py holds them to build.yml
+NIGHTLY_ONLY = {
+    'ScarletNX-linux-ppc64le.AppImage',
+    'ScarletNX-linux-riscv64.AppImage',
+    'ScarletNX-linux-loongarch64.AppImage',
+}
 
 
 def published(release):
@@ -510,6 +517,7 @@ class Publisher(Hub):
         if not files:
             print(f'#{number}: nothing of {sha[:7]} was built, so its builds stay as they were')
             return
+        missing = [name for name in missing if name not in NIGHTLY_ONLY]
         tag = f'pr-{number}'
         title = f'PR #{number}: {pr["title"]}'
         sizes = {name: path.stat().st_size for name, path in files.items()}
