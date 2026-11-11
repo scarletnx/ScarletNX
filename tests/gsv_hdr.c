@@ -171,6 +171,21 @@ static void request(u8 out[12], u64 name, u32 group) {
     for (u32 i = 0; i < 8; i++) out[i] = (u8)(name >> (8 * i));
     for (u32 i = 0; i < 4; i++) out[8 + i] = (u8)(group >> (8 * i));
 }
+/* GetHdrStatus's reply as the SDK's proxy reads it from the wire: the format's 64 bits at the start of the raw data and
+   the peak's 16 bits at its byte 8. Laid out by alignment instead, the peak first, an HDR display's reply reads as
+   format 1600 there, which the SDK takes for an error and the game for an SDR display */
+static void status_wire(u64 name, u64 want_format, u32 want_peak) {
+    u8 r[12];
+    IpcCtx c;
+    request(r, name, 0);
+    memset(&c, 0, sizeof c);
+    c.cmd = 104;
+    c.tipc = 1;
+    c.raw = r;
+    c.raw_size = 8; /* the display's name alone */
+    CHECK(nn_vi2_IVi2Session_dispatch(NULL, &c) == 0);
+    CHECK(c.out_size >= 10 && snx_ld_le64(c.out) == want_format && snx_ld_le16(c.out + 8) == want_peak);
+}
 static void status(u64 name, int rc_ok, u64 want_format, u32 want_peak, u32 want_paper_white) {
     u8 r[12];
     u64 format = 99;
@@ -178,6 +193,7 @@ static void status(u64 name, int rc_ok, u64 want_format, u32 want_peak, u32 want
     request(r, name, 0);
     CHECK((nn_vi2_IVi2Session_GetHdrStatus(NULL, r, &format, &peak) == 0) == rc_ok);
     if (rc_ok) CHECK(format == want_format && peak == want_peak);
+    if (rc_ok) status_wire(name, want_format, want_peak);
     CHECK((nn_vi2_IVi2Session_GetHdrPaperWhite(NULL, r, &paper_white) == 0) == rc_ok);
     if (rc_ok) CHECK(paper_white == want_paper_white);
 }
