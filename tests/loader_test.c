@@ -1077,6 +1077,139 @@ static void test_plt(void) {
     puts("PASS a module's PLT slots, by their offsets, with the functions it defines");
 }
 
+/* One symbol of the table at 0x200 of exports_nro's image */
+static void symbol(unsigned char* nro, unsigned index, unsigned name, unsigned info, unsigned section, SnxU64 value) {
+    unsigned char* s = nro + 0x200 + 24 * index;
+    put32(s, name);
+    s[4] = (unsigned char)info;
+    s[6] = (unsigned char)section;
+    put64(s + 8, value);
+}
+/* A module of a two-module program, as an NRO: MOD0, a dynamic table and seven symbols by the names one, both, loc,
+   alias, obj, weak and dat. first: it defines one and alias (the same function), both, loc (a local symbol) and obj as
+   functions, imports weak, and has three PLT stubs, of weak, both and one, with a BL to the first, a B to the third
+   and a BL to a function. The other defines both, loc and weak (a weak symbol) as functions, obj and dat as objects,
+   and imports one */
+static void exports_nro(unsigned char* nro, int first) {
+    memset(nro, 0, 0x400);
+    put32(nro + 4, 0x80);
+    memcpy(nro + 0x10, "NRO0", 4);
+    put32(nro + 0x18, 0x400);
+    put32(nro + 0x24, 0x100);
+    put32(nro + 0x28, 0x100);
+    put32(nro + 0x2c, 0x280);
+    put32(nro + 0x30, 0x380);
+    put32(nro + 0x34, 0x80);
+    memcpy(nro + 0x80, "MOD0", 4);
+    put32(nro + 0x84, 0x80);
+    put32(nro + 0x88, 0x380);
+    put32(nro + 0x8c, 0x380);
+    put64(nro + 0x100, 6), put64(nro + 0x108, 0x200); /* DT_SYMTAB */
+    put64(nro + 0x110, 5), put64(nro + 0x118, 0x2a8); /* DT_STRTAB */
+    put64(nro + 0x120, 10), put64(nro + 0x128, 33);   /* DT_STRSZ */
+    memcpy(nro + 0x2a8, "\0one\0both\0loc\0alias\0obj\0weak\0dat", 33);
+    if (!first) {
+        symbol(nro, 1, 5, 0x12, 1, 0xe0);   /* both */
+        symbol(nro, 2, 10, 0x12, 1, 0xe4);  /* loc */
+        symbol(nro, 3, 24, 0x22, 1, 0xe8);  /* weak, a weak function */
+        symbol(nro, 4, 20, 0x11, 2, 0x3a0); /* obj, an object */
+        symbol(nro, 5, 1, 0x12, 0, 0);      /* one, imported */
+        symbol(nro, 6, 29, 0x11, 2, 0x3a8); /* dat, an object */
+        return;
+    }
+    symbol(nro, 1, 1, 0x12, 1, 0xe0);                  /* one */
+    symbol(nro, 2, 5, 0x12, 1, 0xe4);                  /* both */
+    symbol(nro, 3, 10, 0x02, 1, 0xe8);                 /* loc, local */
+    symbol(nro, 4, 14, 0x12, 1, 0xe0);                 /* alias: one's function by another name */
+    symbol(nro, 5, 20, 0x12, 1, 0xec);                 /* obj, here a function */
+    symbol(nro, 6, 24, 0x12, 0, 0);                    /* weak, imported */
+    put64(nro + 0x130, 23), put64(nro + 0x138, 0x2e0); /* DT_JMPREL */
+    put64(nro + 0x140, 2), put64(nro + 0x148, 72);     /* DT_PLTRELSZ */
+    /* the slots of one, weak and both */
+    put64(nro + 0x2e0, 0x3e8), put64(nro + 0x2e8, (1ull << 32) | 1026);
+    put64(nro + 0x2f8, 0x3f0), put64(nro + 0x300, (6ull << 32) | 1026);
+    put64(nro + 0x310, 0x3f8), put64(nro + 0x318, (2ull << 32) | 1026);
+    /* the stubs of weak, both and one: adrp x16, 0; ldr x17, [x16, #slot]; add x16, x16, #slot; br x17 */
+    put32(nro + 0xa0, 0x90000010), put32(nro + 0xa4, 0xF941FA11), put32(nro + 0xa8, 0x910FC210);
+    put32(nro + 0xb0, 0x90000010), put32(nro + 0xb4, 0xF941FE11), put32(nro + 0xb8, 0x910FE210);
+    put32(nro + 0xc0, 0x90000010), put32(nro + 0xc4, 0xF941F611), put32(nro + 0xc8, 0x910FA210);
+    put32(nro + 0xac, 0xD61F0220), put32(nro + 0xbc, 0xD61F0220), put32(nro + 0xcc, 0xD61F0220);
+    put32(nro + 0xd0, 0x97FFFFF4); /* bl 0xa0 */
+    put32(nro + 0xd4, 0x17FFFFFB); /* b 0xc0 */
+    put32(nro + 0xd8, 0x94000002); /* bl 0xe0 */
+}
+
+/* The functions a program's modules define once (snx_program_exports), and the PLT stubs of a module bound to them
+   (snx_module_bound), as a module of that program and as an NRO the program maps */
+static void test_exports(void) {
+    static unsigned char first[0x400], second[0x400];
+    const SnxU64 a = 0x9000000, b = 0x9001000;
+    SnxProgram one, other, two;
+    SnxModuleImage modules[2];
+    SnxNpdm npdm;
+    SnxExport* exports = (SnxExport*)1;
+    SnxBoundBranch* bound = (SnxBoundBranch*)1;
+    char error[256];
+    size_t count = 9, bound_count = 9, own = 9, sites = 9;
+    exports_nro(first, 1);
+    exports_nro(second, 0);
+    CHECK(!snx_parse_npdm(NULL, 0, &npdm, error, sizeof error));
+    CHECK(!snx_load_nro_at(first, sizeof first, "first.nro", a, &npdm, &one, error, sizeof error));
+    CHECK(!snx_load_nro_at(second, sizeof second, "second.nro", b, &npdm, &other, error, sizeof error));
+    memset(&two, 0, sizeof two);
+    modules[0] = one.modules[0];
+    modules[1] = other.modules[0];
+    two.modules = modules;
+    two.module_count = 2;
+    two.npdm = npdm;
+    /* the table the loader keeps has one name for a function (alias, the last of the table) */
+    CHECK(one.modules[0].symbol_count == 4);
+    CHECK(!snx_program_exports(&two, &exports, &count, error, sizeof error) && count == 4);
+    if (count == 4) {
+        /* by name: alias and one are the same function; loc is the second module's, the first's being local; weak is a
+           weak symbol's. both has two definitions, obj a function's and an object's, dat is no function */
+        CHECK(!strcmp(exports[0].name, "alias") && exports[0].address == a + 0xe0);
+        CHECK(!strcmp(exports[1].name, "loc") && exports[1].address == b + 0xe4);
+        CHECK(!strcmp(exports[2].name, "one") && exports[2].address == a + 0xe0);
+        CHECK(!strcmp(exports[3].name, "weak") && exports[3].address == b + 0xe8);
+    }
+    /* as a module of the program: weak's stub is bound to the other module's function and one's to its own; both's,
+       which the module defines itself, is not, as the other module defines it too */
+    CHECK(!snx_module_bound(&modules[0], exports, count, 0, &bound, &bound_count, &own, &sites, error, sizeof error));
+    CHECK(bound_count == 2 && own == 1 && sites == 2);
+    if (bound_count == 2) {
+        CHECK(bound[0].at == a + 0xac && bound[0].target == b + 0xe8 && !bound[0].game);
+        CHECK(bound[1].at == a + 0xcc && bound[1].target == a + 0xe0 && !bound[1].game);
+    }
+    free(bound);
+    /* as an NRO the program maps: its own functions whatever the program defines, and the program's as the game's */
+    CHECK(!snx_module_bound(&modules[0], exports, count, 1, &bound, &bound_count, &own, &sites, error, sizeof error));
+    CHECK(bound_count == 3 && own == 2 && sites == 2);
+    if (bound_count == 3) {
+        CHECK(bound[0].at == a + 0xac && bound[0].target == b + 0xe8 && bound[0].game == 1);
+        CHECK(bound[1].at == a + 0xbc && bound[1].target == a + 0xe4 && !bound[1].game);
+        CHECK(bound[2].at == a + 0xcc && bound[2].target == a + 0xe0 && !bound[2].game);
+    }
+    free(bound);
+    /* nothing to bind to, and a module without a PLT: none */
+    CHECK(!snx_module_bound(&modules[0], NULL, 0, 0, &bound, &bound_count, &own, &sites, error, sizeof error));
+    CHECK(!bound && !bound_count && !own && !sites);
+    CHECK(!snx_module_bound(&modules[1], exports, count, 0, &bound, &bound_count, &own, &sites, error, sizeof error));
+    CHECK(!bound && !bound_count && !own && !sites);
+    free(exports);
+    /* a 32-bit program's modules have no such stubs: none */
+    two.npdm.is64 = 0;
+    CHECK(!snx_program_exports(&two, &exports, &count, error, sizeof error) && !exports && !count);
+    two.npdm.is64 = 1;
+    /* strings that run past the image: refused, the module named */
+    put64(modules[1].image + 0x128, 0x1000);
+    CHECK(snx_program_exports(&two, &exports, &count, error, sizeof error) == -1 && !exports && !count);
+    CHECK(strstr(error, "second.nro") && strstr(error, "outside the image"));
+    snx_free_program(&one);
+    snx_free_program(&other);
+    puts("PASS the functions a program defines once, and the PLT stubs bound to them");
+}
+
 int main(void) {
     scratch = snx_temp_dir(NULL);
     CHECK(scratch != NULL);
@@ -1085,6 +1218,7 @@ int main(void) {
     test_nro_npdm();
     test_nro_slots();
     test_plt();
+    test_exports();
     test_program();
     test_large_bss();
     test_elf32();

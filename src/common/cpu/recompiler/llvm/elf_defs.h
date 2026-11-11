@@ -200,6 +200,7 @@ typedef struct {
 #define STT_NOTYPE 0
 #define STT_OBJECT 1
 #define STT_FUNC   2
+#define STT_FILE   4
 #define STT_TLS    6
 #define STT_GNU_IFUNC 10
 

@@ -150,6 +150,36 @@ typedef struct {
    into *slots, *count of them: none (NULL and 0) for a module without the table. 0, or -1 said in error for a table,
    a symbol or a name that lies outside the image */
 int snx_module_plt(const SnxModuleImage* module, SnxPltSlot** slots, size_t* count, char* error, size_t error_size);
+/* A function one module alone of a program defines by its name, at its guest address: what the program's linker binds
+   every import of that name to. name lies in its module's image, for as long as the program lives */
+typedef struct {
+    const char* name;
+    SnxU64 address;
+} SnxExport;
+/* The functions a 64-bit program's modules define once, in the order of their names (strcmp), malloc'd into *exports,
+   *count of them: none for a 32-bit program. A definition is what the program's linker takes for one: a dynamic symbol
+   with a section (not the common one), a binding other than local and a type other than a file's. A name with two
+   definitions, in one module or in two, is left out, as the linker picks between them by the modules' order; so is a
+   name whose one definition is no function in its module's text. 0, or -1 said in error for a table that lies outside
+   a module's image */
+int snx_program_exports(const SnxProgram* program, SnxExport** exports, size_t* count, char* error, size_t error_size);
+/* A branch through a register whose target is known once the program's linker has bound it: the BR that ends a PLT
+   stub (at, its guest address: ADRP x16, LDR x17 of the slot, ADD x16 and the BR) and the function its slot's symbol
+   names (target). game: the function is another module's (the game's, for an NRO's module), which the module reaches
+   through its import of it (snx_imports, nro_slots.h); else one of the module's own build */
+typedef struct {
+    SnxU64 at, target;
+    int game;
+} SnxBoundBranch;
+/* The bound branches of a 64-bit module, in the order of their addresses, malloc'd into *bound, *count of them: each
+   PLT stub of its text whose slot's symbol names one of exports. nro: the module is an NRO, outside the program
+   exports are of: a stub whose symbol the NRO defines itself, a function of its text, is bound to that function, and
+   one bound to an export has game set. Else the module is one of that program's: every stub is bound through exports
+   alone, whichever module defines its symbol, with game clear. *own: how many are bound to a function of the module
+   itself. *sites: the BL and B instructions of its text that go to those stubs. 0, or -1 said in error
+   (snx_module_plt's) */
+int snx_module_bound(const SnxModuleImage* module, const SnxExport* exports, size_t export_count, int nro,
+                     SnxBoundBranch** bound, size_t* count, size_t* own, size_t* sites, char* error, size_t error_size);
 /* An NRO's icon, the JPEG of its assets (ASET), the one Games shows: 0 with it in *icon (malloc'd) and *size, 1 when it
    has none, -1 said in error when the file is no NRO or cannot be read */
 int snx_nro_icon(const char* path, unsigned char** icon, size_t* size, char* error, size_t error_size);
