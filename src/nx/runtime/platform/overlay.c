@@ -17,7 +17,6 @@
 #include "common/utilities/common.h"
 #include "common/utilities/bits.h"
 #include <SDL3/SDL_keycode.h>
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -382,16 +381,6 @@ void overlay_press(int control) {
     map_swallow = 1;
     map_did(snx_pad_screen_press(&map, control));
 }
-/* a round part as strips: the font has no circles */
-static void disc(SnxUiList* l, float x, float y, float w, float h, u32 rgba) {
-    const int n = 6;
-    float r = w < h ? w / 2 : h / 2, cx = x + w / 2, cy = y + h / 2;
-    int k;
-    for (k = 0; k < n; ++k) {
-        float y0 = cy - r + 2 * r * (float)k / n, mid = y0 + r / n - cy, half = sqrtf(r * r - mid * mid);
-        ui_fill(l, cx - half, y0, 2 * half, 2 * r / n, rgba);
-    }
-}
 static void user_draw(SnxUiList* l, float left, float right, float y, int s);
 static void map_draw(SnxUiList* l, int sw, int sh) {
     const u32 box = UI_PANEL;
@@ -426,8 +415,9 @@ static void map_draw(SnxUiList* l, int sw, int sh) {
                     : p->style == SNX_PAD_STYLE_SOFT                                 ? UI_SOFT
                     : p->style == SNX_PAD_STYLE_NOTE                                 ? UI_FAILURE
                                                                                      : UI_INK);
-        else if (p->kind == SNX_PAD_SHAPE_DISC)
-            disc(l, p->x, p->y, p->w, p->h, p->style == SNX_PAD_STYLE_PLAIN ? UI_SOFT : fill);
+        else if (p->kind == SNX_PAD_SHAPE_DISC) /* a round part: a circle the fragment shader draws, filled */
+            ui_shape(l, p->x, p->y, p->w, p->h, UI_SHAPE_CIRCLE, NULL, UI_SHAPE_FILLED, 1,
+                     p->style == SNX_PAD_STYLE_PLAIN ? UI_SOFT : fill);
         else
             ui_fill(l, p->x, p->y, p->w, p->h,
                     p->kind == SNX_PAD_SHAPE_BAR && p->style == SNX_PAD_STYLE_PLAIN ? UI_SOFT : fill);

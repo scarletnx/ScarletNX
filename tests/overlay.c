@@ -1110,6 +1110,13 @@ int main(void) {
     pads_held[0] = 1u << SNX_PAD_RT;
     draw();
     assert(shows("SCARLETNX  /  BUTTON MAP") && !shows("By label") && shows("Xbox Wireless Controller"));
+    { /* its round parts, the two sticks and the four face buttons: each one circle (ui.h's ui_shape), filled */
+        int i, round = 0;
+        for (i = 0; i < list.n; ++i)
+            round += qv(&list.q[i]).ink == UI_SHAPE && list.q[i].u == UI_SHAPE_CIRCLE && !list.q[i].v &&
+                     list.q[i].uw == (0x8000 | UI_SHAPE_FILLED) && qv(&list.q[i]).w == qv(&list.q[i]).h;
+        assert(round == 6);
+    }
     assert(shows("LT sends ZL") && quads_of(FAILURE) > 0); /* RT held: lit */
     overlay_side(1);                                       /* LT's button, ZL, up one: ZR */
     assert(pads.own.bit[SNX_PAD_LT] == 9 && maps_stored == 1);
