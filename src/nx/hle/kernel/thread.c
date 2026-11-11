@@ -602,12 +602,13 @@ u32 kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core, KThrea
     R_SUCCEED();
 }
 
-/* An Ounce program's thread finds its own handle at 0x110 of its TLS, where the Ounce's kernel puts it: no code of the
-   program writes it there, and its SDK (22 on) takes a lock's owner from it (InternalCriticalSection::
-   IsLockedByCurrentThread), from the C library's first lock on. Left 0, it reads as the owner of every free lock, and
-   the first pthread_mutex_lock of a normal mutex aborts as a relock */
+/* A thread finds its own handle at 0x110 of its TLS, where the console's kernel puts it from 22.0.0 on, for every
+   program (as Eden's KProcess::Run and CreateThread do): no code of the program writes it there, and the SDK from 22 on,
+   the Switch's as the Ounce's, takes a lock's owner from it (InternalCriticalSection::IsLockedByCurrentThread), from
+   the C library's first lock on. Left 0, it reads as the owner of every free lock, and the first pthread_mutex_lock of
+   a normal mutex aborts as a relock. Older SDKs leave the word alone: the kernel's own words end at 0x10f */
 void kthread_set_own_handle(KThread* t, u32 h) {
-    if (g_ounce && t && t->tls) gw32(t->tls + 0x110, h);
+    if (t && t->tls) gw32(t->tls + 0x110, h);
 }
 
 /* the host thread's stack is thread_stack_mb's: the recompiled code makes each guest call a host call, so it has to

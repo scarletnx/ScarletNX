@@ -24,7 +24,7 @@ GuestFn* g_disp;
 u64 g_code_lo, g_code_hi, g_code_memory, g_main_stack_size;
 const RtAPI g_rtapi = {.cas128 = snx_runtime_cas128};
 const SnxArmModule* g_arm_mod; /* a 64-bit game */
-int g_ounce; /* main.c's: a Switch program, whose threads find no handle in their TLS (thread.c) */
+int g_ounce;                   /* main.c's: a Switch program unless a case says otherwise */
 const SnxArmRt g_arm_rt;
 void arm_thread_run(KThread* t) { (void)t; }
 /* gpu.c's, which kernel_init sets: the renderer calls it as a change of guest memory starts to wait for it */
@@ -671,6 +671,16 @@ int main(void) {
         u32 again = kthread_start(t);
         CHECK(again == SNX_RC_SVC_INVALID_STATE && starts == before + 1 && t->state == 1 && t->o.refs == 1,
               "started twice: %x, %d host threads, %d references", again, starts - before, t->o.refs);
+        /* its own handle at 0x110 of its TLS, where the kernel puts it from 22.0.0 on: a Switch program's thread
+           finds it there as an Ounce program's does, or its SDK takes every free lock for one it holds */
+        for (int ounce = 0; ounce < 2; ounce++) {
+            g_ounce = ounce;
+            gw32(t->tls + 0x110, 0);
+            kthread_set_own_handle(t, 0x8800du + (u32)ounce);
+            CHECK(gr32(t->tls + 0x110) == 0x8800du + (u32)ounce, "%s program's thread finds %#x at 0x110 of its TLS",
+                  ounce ? "an Ounce" : "a Switch", gr32(t->tls + 0x110));
+        }
+        g_ounce = 0;
     }
 
     /* a game pause: two threads running game code on one core both stop at a poll, the second once the first lets go
