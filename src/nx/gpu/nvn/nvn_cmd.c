@@ -51,6 +51,8 @@
    textures and uniform buffers; storage buffers taken to do the same) */
 #define NVN_STAGE_COMPUTE       5
 #define BIND_COST(stage, bytes) ((stage) == NVN_STAGE_COMPUTE ? 0u : (bytes))
+/* the fewest bytes the driver asks the game's callback for when command memory runs out */
+#define NVN_COMMAND_ASK_MIN     0x200u
 
 /* Runs the guest function fn(a0, a1, a2, a3) on this thread from inside an NVN call, as the driver calls the game's
    callbacks: its return (to the NVN call's own return address, which nothing else returns to) ends the run, and the
@@ -710,7 +712,8 @@ static u64 area_end(const NvnCmdBuf* o) {
 }
 
 /* the driver's bytes of a command (cost) taken from the game's memory: past it, the game's callback is asked for more,
-   as the driver asks it; with none added, the command counts nothing (0) */
+   as the driver asks it, for the command's bytes and never fewer than 0x200 (a callback may size what it adds by
+   that); with none added, the command counts nothing (0) */
 static int count(CPU* c, u64 cb, u32 cost) {
     NvnCmdBuf* o = CB(cb);
     if (o->used + cost > o->game_end - o->origin && o->callback) {
@@ -718,7 +721,8 @@ static int count(CPU* c, u64 cb, u32 cost) {
         if (!control || control->command_callback) {
             LOG_LIMIT(4, "nvn: command buffer %llx is out of command memory: the game's callback %llx adds more\n",
                       (unsigned long long)cb, (unsigned long long)o->callback);
-            guest_call(c, o->callback, cb, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY, cost, o->callback_data);
+            guest_call(c, o->callback, cb, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY,
+                       cost > NVN_COMMAND_ASK_MIN ? cost : NVN_COMMAND_ASK_MIN, o->callback_data);
         }
     }
     if (o->used + cost > o->game_end - o->origin) return 0;
