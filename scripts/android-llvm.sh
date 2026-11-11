@@ -7,10 +7,11 @@
 #   scripts/android-llvm.sh ABI PREFIX [SOURCE] [-- cmake args]
 #
 # ABI is x86_64 or arm64-v8a; SOURCE an llvm-project folder or .tar.xz (default: the release named by LLVM_VERSION,
-# downloaded). The NDK is ANDROID_NDK_ROOT, else the newest under ANDROID_HOME/ndk. ANDROID_API (default 21, the
-# app's minSdk) is the oldest Android it runs on. Configure ScarletNX with -DLLVM_DIR=PREFIX/lib/cmake/llvm afterwards.
+# which scripts/llvm-source.sh downloads and checks). The NDK is ANDROID_NDK_ROOT, else the newest under
+# ANDROID_HOME/ndk. ANDROID_API (default 21, the app's minSdk) is the oldest Android it runs on. Configure ScarletNX
+# with -DLLVM_DIR=PREFIX/lib/cmake/llvm afterwards.
 set -eu
-[ $# -ge 2 ] || { sed -n '4,11p' "$0"; exit 2; }
+[ $# -ge 2 ] || { sed -n '4,12p' "$0"; exit 2; }
 abi=$1 prefix=$2
 shift 2
 source=
@@ -29,8 +30,7 @@ work=$prefix.build/$version
 mkdir -p "$work"
 if [ -z "$source" ]; then
     source=$work/llvm-project-$version.src.tar.xz
-    [ -f "$source" ] || curl -fL -o "$source" \
-        "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/llvm-project-$version.src.tar.xz"
+    "$(dirname "$0")/llvm-source.sh" "$version" "$source"
 fi
 if [ -f "$source" ]; then
     [ -d "$work/src/llvm" ] || { mkdir -p "$work/src"; tar -xJf "$source" -C "$work/src" --strip-components=1; }

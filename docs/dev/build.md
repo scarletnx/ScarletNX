@@ -505,8 +505,11 @@ GITHUB_REPOSITORY=scarletnx/ScarletNX scripts/make-appimage.sh
 The AppImage links LLVM statically: `scripts/linux-llvm.sh ARCH PREFIX` builds the libraries the recompiler links and
 nothing else, with one code generator, the host's (a distribution's libLLVM is one library with every target). It
 takes the version in `LLVM_VERSION` (CI gives it the container's, whose `opt` prints the LLVM settings' pipelines),
-and with `SNX_SYSROOT` set it cross-builds for another architecture. `SNX_A64_DISASM=OFF` leaves out `scarletnx
---mcp`'s A64 disassembler, which is for working on the runtime.
+and with `SNX_SYSROOT` set it cross-builds for another architecture. `scripts/llvm-source.sh` downloads that version's
+source for it, as for the Android and Apple LLVM scripts, and checks it against the SHA-256 `scripts/llvm-source.sha256`
+pins: a version without a line there is refused, so a new LLVM in CI's image needs its line first, the hash taken from
+the digest on the release's page. `SNX_A64_DISASM=OFF` leaves out `scarletnx --mcp`'s A64 disassembler, which is for
+working on the runtime.
 
 `scarletnx` is every driver the build has (`src/multicall`): each driver is a library with no `main` of its own,
 and the program, whichever drivers are on (`SNX_BUILD_NX` among them), runs the one its name says, so LLVM, SDL and

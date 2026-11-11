@@ -11,9 +11,9 @@
 # Arch POWER's), mips64, mips64el (n64) or s390x. Another than this machine's is cross-built with Clang against the
 # system root SNX_SYSROOT, for the same CPU baseline and ABI as the linux-*-cross presets build the runtime
 # (cmake/cross.cmake), and LLVM builds the tablegens it runs here in a tree of their own. SOURCE is an llvm-project
-# folder or .tar.xz (default: the release named by LLVM_VERSION, downloaded). Configure ScarletNX with
-# -DLLVM_DIR=PREFIX/lib/cmake/llvm afterwards, and -DSNX_LLVM_CONFIG= with a cross preset, which names the system
-# root's llvm-config.
+# folder or .tar.xz (default: the release named by LLVM_VERSION, which scripts/llvm-source.sh downloads and checks).
+# Configure ScarletNX with -DLLVM_DIR=PREFIX/lib/cmake/llvm afterwards, and -DSNX_LLVM_CONFIG= with a cross preset,
+# which names the system root's llvm-config.
 set -eu
 [ $# -ge 2 ] || { sed -n '4,16p' "$0"; exit 2; }
 arch=$1 prefix=$2
@@ -56,8 +56,7 @@ work=$prefix.build/$version
 mkdir -p "$work"
 if [ -z "$source" ]; then
     source=$work/llvm-project-$version.src.tar.xz
-    [ -f "$source" ] || curl -fL -o "$source" \
-        "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/llvm-project-$version.src.tar.xz"
+    "$(dirname "$0")/llvm-source.sh" "$version" "$source"
 fi
 if [ -f "$source" ]; then
     [ -d "$work/src/llvm" ] || { mkdir -p "$work/src"; tar -xJf "$source" -C "$work/src" --strip-components=1; }
