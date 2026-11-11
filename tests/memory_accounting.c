@@ -262,6 +262,15 @@ u64 guest_ticks(void) { return 1; }
 int g_ounce; /* main.c's: a Switch program */
 int kthread_live_count(void) { return 1; }
 static KObj* test_handle; /* what handle 0x1234 names, for the shared memory test */
+/* the native SDK's mapping of a shared memory (kshmem_map_free) takes a handle, which no test here makes */
+u32 h_new(KObj* o) {
+    (void)o;
+    return 0;
+}
+int h_close(u32 h) {
+    (void)h;
+    return 0;
+}
 KObj* h_get_ref(u32 h, int type) {
     return h == 0x1234 && test_handle && test_handle->type == type ? test_handle : NULL;
 }
