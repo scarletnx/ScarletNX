@@ -1119,6 +1119,36 @@ static void test_prepo_reports(void) {
     request(&r, 10300);
     call(prepo, &r);
     CHECK(r.c.out_size == 4 && reply32(&r, 0) == 0);
+    /* SendReportWithUser (10500) as SDK 20.5's PlayReport::Send sends it: {flag, two u32 sizes, uid, pid}, 0x28 bytes,
+       the event's name in X and the report's transfer memory. Its context is done: its event is signaled, and Cancel
+       and GetResult succeed */
+    request(&r, 10500);
+    r.c.has_pid = 1;
+    r.c.nx = 1;
+    r.c.x[0].addr = 0x4000;
+    r.c.x[0].size = 8;
+    r.c.ncopy = 1;
+    r.c.copy_h[0] = 0x1234;
+    r.c.raw_size = 0x28;
+    call(prepo, &r);
+    CHECK(r.c.out_size == 0 && r.c.nout_objs == 1 && !r.c.nout_copy);
+    SvcObj* context = r.c.out_objs[0];
+    CHECK(!strcmp(context->name, "nn::prepo::detail::ipc::IAsyncContext"));
+    request(&r, 0);
+    call(context, &r);
+    CHECK(r.c.nout_copy == 1 && handle_object(r.c.out_copy[0])->type == KO_EVENT);
+    CHECK(((KEvent*)handle_object(r.c.out_copy[0]))->signaled);
+    for (u32 cmd = 1; cmd <= 2; cmd++) {
+        request(&r, cmd);
+        call(context, &r);
+        CHECK(r.c.out_size == 0);
+    }
+    svcobj_unref(context);
+    request(&r, 10500); /* without the transfer memory */
+    r.c.has_pid = 1;
+    r.c.nx = 1;
+    r.c.raw_size = 0x28;
+    CHECK(prepo->dispatch(prepo, &r.c) == RC(11, 420) && r.c.nout_objs == 0);
     svcobj_unref(prepo);
 }
 
