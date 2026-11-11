@@ -1218,8 +1218,7 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
-      # Android arm64 alone fetches libadrenotools and linkernsbypass: one cache for both ABIs, and the restore key
-      # carries a dependencies.cmake bump over
+      # One cache for both ABIs, and the restore key carries a dependencies.cmake bump over
       - uses: actions/cache@v5
         with:
           path: .cache/cpm

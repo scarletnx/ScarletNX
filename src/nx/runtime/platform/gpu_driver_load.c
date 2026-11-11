@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* gpu_driver_load.h. libadrenotools' call with its arguments as Eden's native.cpp (InitializeGpuDriver) makes it */
+/* gpu_driver_load.h. What a run checks of a package before it loads it, as Eden's native.cpp (InitializeGpuDriver)
+   does; the loading itself is gpu_driver_android.c's */
 #ifdef __ANDROID__
 #define VK_USE_PLATFORM_ANDROID_KHR /* before any Vulkan header: vkCreateAndroidSurfaceKHR's types */
 #endif
@@ -9,6 +10,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/gpu_driver.h"
 #include "nx/runtime/options.h"
+#include "nx/runtime/platform/gpu_driver_android.h"
 #include "nx/runtime/platform/log.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,13 +19,6 @@
 #include <dlfcn.h>
 #endif
 #include <vulkan/vulkan.h>
-
-/* libadrenotools' entry point and its flag for a custom driver (its include/adrenotools/driver.h and priv.h), declared
-   here as the library is opened by name, by the runs that ask for a package only */
-typedef void* (*AdrenotoolsOpen)(int mode, int features, const char* tmp_dir, const char* hook_dir,
-                                 const char* driver_dir, const char* driver_name, const char* redirect_dir,
-                                 void** mapping);
-#define SNX_ADRENOTOOLS_DRIVER_CUSTOM 1
 
 static struct {
     int opened;     /* gpu_driver_open ran */
@@ -87,28 +82,21 @@ void* gpu_driver_open(void) {
         meta.library);
 #if defined(__ANDROID__) && defined(__aarch64__)
     {
-        /* the hooks it loads by name are in the app's libraries folder, beside this one */
+        /* the loader's one library is in the app's libraries folder, beside this one */
         Dl_info self;
         char *hooks = dladdr((void*)gpu_driver_open, &self) && self.dli_fname ? snx_dirname(self.dli_fname) : NULL,
-             *tmp = snx_path_join(dirs, ".tmp"); /* the patched loader's copy, on API 28 only, which has no memfd */
-        void *module = dlopen("libadrenotools.so", RTLD_NOW | RTLD_LOCAL), *loader;
-        AdrenotoolsOpen open_libvulkan = module ? (AdrenotoolsOpen)dlsym(module, "adrenotools_open_libvulkan") : NULL;
-        char tmp_dir[1100];
-        if (!module) fatal("GPU driver %s did not load: libadrenotools.so did not open: %s", id, dlerror());
-        if (!open_libvulkan)
-            fatal("GPU driver %s did not load: libadrenotools.so has no adrenotools_open_libvulkan", id);
+             *tmp = host.api < 29 ? snx_path_join(dirs, ".tmp") : NULL; /* Android 9: a kernel with no memory files */
+        char said[1700];
+        void* loader;
         if (!hooks) fatal("GPU driver %s did not load: the app's libraries folder is not known (dladdr)", id);
-        snprintf(tmp_dir, sizeof tmp_dir, "%s/", tmp ? tmp : dirs);
-        if (tmp) snx_mkdirs(tmp);
-        loader = open_libvulkan(RTLD_NOW, SNX_ADRENOTOOLS_DRIVER_CUSTOM, tmp_dir, hooks, g_gpu_driver_load.dir,
-                                meta.library, NULL, NULL);
-        if (!loader)
-            fatal("GPU driver %s did not load: libadrenotools opened no Vulkan loader (the system log's adrenotools "
-                  "lines say why)",
-                  id);
+        if (tmp && snx_mkdirs(tmp))
+            fatal("GPU driver %s did not load: the folder %s, for a copy of Android's Vulkan loader, was not made", id,
+                  tmp);
+        loader = gpu_driver_android_open(hooks, g_gpu_driver_load.dir, meta.library, tmp, said, sizeof said);
+        if (!loader) fatal("GPU driver %s did not load: %s", id, said);
         g_gpu_driver_load.gipa = dlsym(loader, "vkGetInstanceProcAddr");
         if (!g_gpu_driver_load.gipa)
-            fatal("GPU driver %s did not load: its Vulkan loader has no vkGetInstanceProcAddr", id);
+            fatal("GPU driver %s did not load: its copy of Android's Vulkan loader has no vkGetInstanceProcAddr", id);
         free(hooks);
         free(tmp);
     }
@@ -123,6 +111,14 @@ void gpu_driver_check(void) {
     char* maps = NULL;
     size_t n = 0, room = 0, got;
     if (!g_gpu_driver_load.gipa) return;
+#if defined(__ANDROID__) && defined(__aarch64__)
+    {
+        char said[3400];
+        if (!gpu_driver_android_loaded(said, sizeof said))
+            fatal("GPU driver %s did not load: %s", g_settings.gpu_driver, said);
+        LOG("vulkan: GPU driver %s: %s\n", g_settings.gpu_driver, said);
+    }
+#endif
     f = fopen("/proc/self/maps", "r");
     if (!f)
         fatal("GPU driver %s: /proc/self/maps did not open, so whether it loaded is not known", g_settings.gpu_driver);
@@ -141,9 +137,8 @@ void gpu_driver_check(void) {
     maps[n] = 0;
     if (!snx_gpu_driver_mapped(maps, g_gpu_driver_load.dir)) {
         LOG("vulkan: no library of %s is mapped after vkCreateInstance\n", g_gpu_driver_load.dir);
-        fatal("GPU driver %s did not load: the system's driver took its place (the system log's hook_impl lines say "
-              "why)",
-              g_settings.gpu_driver);
+        fatal("GPU driver %s did not load: no library of its folder %s is mapped after the Vulkan instance was made",
+              g_settings.gpu_driver, g_gpu_driver_load.dir);
     }
     free(maps);
     LOG("vulkan: GPU driver %s runs: its libraries are mapped\n", g_settings.gpu_driver);

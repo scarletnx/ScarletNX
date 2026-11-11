@@ -117,7 +117,7 @@ int main(void) {
            snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_OLD_ANDROID);
     host.api = 34, host.built = 0;
     assert(!snx_gpu_driver_loads(&host, why, sizeof why) && has(why, "Xclipse GPU (") &&
-           has(why, "carries no libadrenotools") && snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_NOT_BUILT);
+           has(why, "carries no loader for custom drivers") && snx_gpu_driver_lack(&host) == SNX_GPU_DRIVER_NOT_BUILT);
     /* each other one, and what it is said to lack: another GPU by what its render node is, or by none */
     host.api = 36, host.built = 1, host.amdgpu = 0;
     snprintf(host.render, sizeof host.render, "%s", "/dev/dri/renderD128, kernel driver panfrost");
