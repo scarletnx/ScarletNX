@@ -52,6 +52,7 @@
 #else
 #include <arpa/inet.h>
 #include <dirent.h>
+#include <sched.h> /* sched_getcpu */
 #include <net/if.h>
 #include <netdb.h>
 #include <poll.h>
@@ -1085,6 +1086,19 @@ static void g_fstatat(CPU* c, void* data) {
     int r = fstatat(at_dir(X(0)), path, &s, flags & L_AT_SYMLINK_NOFOLLOW ? AT_SYMLINK_NOFOLLOW : 0);
 #endif
     put_stat(c, r, X(2), &s);
+}
+
+/* sched_getcpu: the CPU the thread runs on, which a guest takes to pick a slot of its own per CPU: the host's where it
+   tells, else 0 (any CPU number is right for a slot) */
+static void g_sched_getcpu(CPU* c, void* data) {
+    (void)data;
+#if defined(__linux__) || defined(__FreeBSD__)
+    X(0) = wide_int(sched_getcpu());
+#elif defined(_WIN32)
+    X(0) = GetCurrentProcessorNumber();
+#else
+    X(0) = 0;
+#endif
 }
 
 /* getpriority(which, who): the nice value, where the system call (141, as setpriority's 140) gives 20 minus it */
@@ -2506,6 +2520,7 @@ const HleSymbol hle_posix[] = {
     ABSENT_ENTRY(eventfd),
 #endif
     A(stat, g_stat), A(lstat, g_lstat), A(fstat, g_fstat), A(fstat64, g_fstat), A(close, g_close),
+    A(stat64, g_stat), A(lstat64, g_lstat), A(sched_getcpu, g_sched_getcpu),
     P(chmod), P(dup), P(dup2), P(isatty), P(rmdir), P(unlink), P(opendir), P(closedir),
     A(fstatat, g_fstatat), A(fstatat64, g_fstatat), A(__umask_chk, g_umask_chk),
     /* the process's working folder, which the JVM's relative paths share, as Android's do */
