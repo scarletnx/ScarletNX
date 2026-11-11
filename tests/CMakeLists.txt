@@ -2142,8 +2142,8 @@ if(NOT SNX_TOOLS_ONLY)
     target_link_libraries(snx-test-vk-vertex-input PRIVATE snx_nx_flags)
     add_test(NAME vk_vertex_input COMMAND snx-test-vk-vertex-input)
     # the block texture formats a device is given (gpu/vk/format.c), with no GPU: a player's Mali-G52 from its vkjson
-    # (ASTC and ETC2 sampled as the games' blocks), a desktop GPU, native_bc=0 and the other settings at 0, and the
-    # log's line for each family
+    # (ASTC and ETC2 sampled as the games' blocks, BCn encoded again as ETC2 and EAC), a desktop GPU, native_bc=0 and the
+    # other settings at 0, and the log's line for each family
     if(TARGET snx_vk_common)
         add_executable(snx-test-vk-block-formats vk_block_formats.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/format.c"
                        "${volk_SOURCE_DIR}/volk.c")
@@ -2725,6 +2725,13 @@ add_executable(snx-test-bc7-glsl glsl/bc7_glsl.cpp glsl/bc7_cpu.cpp support/bcn.
 snx_test_target(snx-test-bc7-glsl 23)
 target_include_directories(snx-test-bc7-glsl PRIVATE glsl)
 add_test(NAME bc7_glsl COMMAND snx-test-bc7-glsl)
+# the BCn to ETC2 and EAC transcoder's GLSL (texconv.glsl's ETC2 build) run on the CPU (tests/glsl/glsl.hpp), its blocks
+# decoded by the CPU references, the BCn pictures it is held to made by its own encoders and the BC7 one: no GPU needed
+add_executable(snx-test-bcn-etc2-glsl glsl/bcn_etc2_glsl.cpp glsl/bcn_etc2_cpu.cpp glsl/bc7_cpu.cpp support/etc2.c
+               support/bcn.c)
+snx_test_target(snx-test-bcn-etc2-glsl 23)
+target_include_directories(snx-test-bcn-etc2-glsl PRIVATE glsl)
+add_test(NAME bcn_etc2_glsl COMMAND snx-test-bcn-etc2-glsl)
 # the VIC shader's GLSL, both builds, run on the CPU against vic.c's composition of random jobs: no GPU needed
 add_executable(snx-test-vic-glsl glsl/vic_jobs.c glsl/vic_glsl.cpp support/vic_ref.c)
 snx_test_target(snx-test-vic-glsl 23)

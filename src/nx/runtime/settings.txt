@@ -969,8 +969,10 @@ setting Native BC
     startup
     words Off|On
     help 1 = BC1 to BC7 textures, which most games use, are sampled as the game's blocks where the GPU samples BCn
-    help (desktop GPUs and some phone ones). 0 = they are decoded on the GPU, as they are on GPUs without BCn (most
-    help phone ones, Mali among them), to compare the two on a desktop GPU
+    help (desktop GPUs and some phone ones). A GPU without BCn (most phone ones, Mali and Adreno's own driver among
+    help them) gets them encoded again on the GPU as ETC2 and EAC as they load, the same bytes a texel, where it samples
+    help those (native_etc2=1), BC6H decoded to half floats; else all decoded, four to eight times the memory. 0 =
+    help BCn takes that path on a GPU that samples BCn too, to compare the two on a desktop GPU
 setting Native ETC2
     key native_etc2
     int 0 1
@@ -978,8 +980,9 @@ setting Native ETC2
     startup
     words Off|On
     help 1 = ETC2 and EAC textures are sampled as the game's blocks where the GPU samples ETC2 (most phone and tablet
-    help GPUs), in a quarter to an eighth of the memory. 0 = they are decoded on the GPU, as they are on GPUs without
-    help ETC2 (most desktop ones), to compare the two. On such a GPU 1 is a warning at start
+    help GPUs), in a quarter to an eighth of the memory, and so are the BCn textures a GPU without BCn gets encoded
+    help again as ETC2 (native_bc). 0 = they are decoded on the GPU, as they are on GPUs without ETC2 (most desktop
+    help ones), and BCn too there, to compare the two. On such a GPU 1 is a warning at start
 setting CPU extensions
     key cpu_extensions
     int 0 1

@@ -663,10 +663,10 @@ static int create_device(void) {
     WANT(sampleRateShading);
     WANT(alphaToOne); /* multisampled draws asking for it (pipeline.c) */
     /* BCn, ASTC and ETC2 sampled as they are where the settings ask for it and the device has them, else decoded on
-       the GPU as they are uploaded; ASTC decoded is encoded again as BC7 where the GPU samples BCn, unless astc_mode
-       asks for exact RGBA8 (astc_choose says which, once the budget is known, and vk_blocks_say how each family is
-       held). With exact RGBA8 only a texture with holes in its mapping is BC7 (texture.c). Thus BCn always where the
-       device has it, which native_bc decides the sampling of */
+       the GPU as they are uploaded, BCn encoded again as ETC2 where the device samples that; ASTC decoded is encoded
+       again as BC7 where the GPU samples BCn, unless astc_mode asks for exact RGBA8 (astc_choose says which, once the
+       budget is known, and vk_blocks_say how each family is held). With exact RGBA8 only a texture with holes in its
+       mapping is BC7 (texture.c). Thus BCn always where the device has it, which native_bc decides the sampling of */
     vk_blocks_want(&have, want);
     WANT(vertexPipelineStoresAndAtomics);
     /* indirect draws (render.c's draw_indirect): several in one call, and a base instance from the GPU's arguments */
