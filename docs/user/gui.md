@@ -184,7 +184,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   package's box has **Use** and **Remove** (Del removes too), which asks first; one added is picked where packages
   load. **Download Driver** lists, from GitHub, the releases of the driver repositories Eden's driver fetcher lists
   (Mr. Purple Turnip, GameHub Adreno 8xx, KIMCHI Turnip, Weab-Chan Freedreno, Whitebelyash Turnip), fetched as it
-  opens, with the GPU and the driver Eden recommends for it; a repository that failed says why, and Enter fetches the
+  opens, with the GPU and the driver Eden recommends for it, but T30 on an Adreno 605 to 613 (EOL-24.3.4 gives
+  those Vulkan 1.0); a repository that failed says why, and Enter fetches the
   lists again. A release's box lists its downloads with their sizes, a GPU maker's own drivers (every GameHub one, and
   one named Qualcomm) marked *proprietary, no license*; the one picked is downloaded, its progress in the note, and
   added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an Adreno GPU (`/dev/kgsl-3d0`) or an
@@ -212,7 +213,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
 
   A row with nothing to do now is greyed, still there, and Enter on it says why: Clean Old Settings with nothing to
   clean, Move Old Files with nothing left, App's Reset to Defaults with every setting at its default, Folders' with
-  every folder its default.
+  every folder its default. So is a setting that does something on other systems alone, its row saying where beside
+  its value (*macOS only* for Vulkan driver, *Windows only* for Profiler, *Android only* for Haptics...): Enter and a
+  step leave the value, and Del still puts its default back.
 
   A row is its name, its folder (one too long for the row cut in its middle: its root and first folder, `...`, as
   many of its last folders as fit; the whole path under the boxes) and what it is. Data, Logs, Caches, Extractions and
@@ -519,10 +522,9 @@ cannot be read is named and the others still listed.
   *Small*, `small`: 8 by 3; *Large*, `large`: 16 by 6), then the **Side panel** of Settings > App (`side_box`, which
   F2 turns too). Enter, Left, Right or
   a click change the focused one,
-  kept in `app.ini` at once, and the list is read again by it; ESC or a click off the box closes it. On iOS Recent
-  Games and Dumps start *Off*, as a phone keeps the games made in the app's `recompiled/` and prepares a dump from the
-  Menu; the player turns them on there. An `app.ini` without them, an older version's, has these defaults, and a word
-  it does not know is named in the message with the one kept: `recent_games = maybe (it keeps on)`.
+  kept in `app.ini` at once, and the list is read again by it; ESC or a click off the box closes it. An `app.ini`
+  without them, an older version's, has these defaults, and a word it does not know is named in the message with the
+  one kept: `recent_games = maybe (it keeps on)`.
 - In the list, Up/Down go round the recent games and the page's files. Enter/Space opens one. A game no game of the
   recompiled library was made from yet (a dump, a package, a ROM) compiles first, through the queue of compiles R's
   goes through: the Compile tab shows it, and it plays once its compile ended if the tab still shows it; sent away

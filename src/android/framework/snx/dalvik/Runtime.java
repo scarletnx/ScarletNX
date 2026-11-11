@@ -9,10 +9,13 @@ public final class Runtime {
     /**
      * System.loadLibrary and Runtime.loadLibrary, which the translator sends here: lib{name}.so of the app's native
      * library folder, loaded by the native bridge (docs/platforms/android-apps/native.md), never by HotSpot's loader.
+     * A system library that the app does not carry (System.loadLibrary("log"), as .NET's runtime calls it) is the
+     * bridge's HLE, which has nothing to load.
      */
     public static void loadLibrary(String name) {
         if (name == null) throw new NullPointerException("libName == null");
         java.io.File file = new java.io.File(snx.android.Apk.libraryDir(), "lib" + name + ".so");
+        if (!file.isFile() && snx.android.nativebridge.NativeBridge.isSystemLibrary("lib" + name + ".so")) return;
         if (!file.isFile())
             throw new UnsatisfiedLinkError("dlopen failed: library \"lib" + name + ".so\" not found");
         load(file.getPath());

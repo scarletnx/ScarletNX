@@ -7,6 +7,7 @@
 * [Game](#game)
 * [Display](#display)
 * [Graphics](#graphics)
+  * [Vulkan Extensions](#vulkan-extensions)
 * [Performance](#performance)
 * [On-screen controls](#on-screen-controls)
 * [Controllers](#controllers)
@@ -28,7 +29,7 @@ Restart for `docked` (`Auto` follows the host's power while the game runs, and `
 **TV mode** change the mode for the run), `fullscreen`, `language`, `resolution`,
 `anisotropy`, `memory_gb`, `memory_fit_mode`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
 `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `pipeline_libraries`, `prepare_shaders`, `compress_shader_cache`,
-`compress_prepared_shaders`, `jit_threads`, `vertex_input_dynamic_state`, `astc_mode`, and
+`compress_prepared_shaders`, `jit_threads`, `vertex_input_dynamic_state`, `astc_mode`, every `vk_ext_*`, and
 the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
 `scarletnx --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
 type, range and help, tab-separated. Every setting, the recompiler's too, is described once in
@@ -80,6 +81,105 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `astc_background` | `2` | Who makes the better version of the levels `astc_quick_mtexels` encodes quickly. `2`, the GPU: a piece of 256 KiB of blocks after each present, in a submission of its own, the next once it is done. `1`, worker threads at the system's idle priority (`astc_background_threads`), which run the same decoder and encoder on the CPU and store the same bytes: for a game the GPU holds back, on a computer with cores to spare, as they take far longer (one game's arrays took them 10 minutes of CPU time where the GPU took 13 seconds). `0`, nobody: those levels keep the quick encode, and the next run encodes them quickly again |
 | `astc_background_threads` | `0` | The worker threads `astc_background=1` runs: `0` is a quarter of the computer's threads, one to eight, and `1` to `32` that many |
 
+### Vulkan Extensions
+
+Each Vulkan extension the Switch's renderer can use has a setting of its own in `[Graphics]`, its name in lowercase:
+`vk_ext_transform_feedback` for `VK_EXT_transform_feedback`, `vk_khr_maintenance5` for `VK_KHR_maintenance5`. The
+launcher's Graphics group shows them on its Vulkan Extensions page. Each is `auto` by default:
+
+| Value | Effect |
+| --- | --- |
+| `auto` | ScarletNX decides: the extension is used where the driver has it and no [driver ban](../dev/development.md#driver-bans) holds |
+| `on` | Used wherever the driver has it, over a ban: the log warns with the ban it goes over |
+| `off` | Never used: the extension leaves the device's list before the renderer reads it, so it does without |
+
+The driver says whether an extension is there: `on` can't add one it lacks. Turning off one ScarletNX can't run
+without on the device (`VK_KHR_swapchain` with a window, `VK_KHR_portability_subset` where the driver lists it, and on
+a Vulkan 1.2 device the extensions Vulkan 1.3 took in) stops the game, saying which and why; so does a value other
+than these three. An extension that is core in the Vulkan version the renderer runs the device at (its help says
+which it was promoted to) leaves only its name out when off. The settings are read when the game starts, and the
+log has a line for each, with its value in effect and why:
+
+```
+vulkan: VK_EXT_transform_feedback: off (vk_ext_transform_feedback=off)
+vulkan: VK_EXT_custom_border_color: on (auto: the driver has it, and no ban holds)
+vulkan: VK_KHR_cooperative_matrix: off (the driver has it not)
+```
+
+The settings, each with its extension and, where one took it in, the Vulkan version it was promoted to:
+
+| Key | Default | Extension |
+| --- | --- | --- |
+| `vk_android_external_memory_android_hardware_buffer` | `auto` | `VK_ANDROID_external_memory_android_hardware_buffer` |
+| `vk_ext_attachment_feedback_loop_dynamic_state` | `auto` | `VK_EXT_attachment_feedback_loop_dynamic_state` |
+| `vk_ext_attachment_feedback_loop_layout` | `auto` | `VK_EXT_attachment_feedback_loop_layout` |
+| `vk_ext_blend_operation_advanced` | `auto` | `VK_EXT_blend_operation_advanced` |
+| `vk_ext_calibrated_timestamps` | `auto` | `VK_EXT_calibrated_timestamps` |
+| `vk_ext_conditional_rendering` | `auto` | `VK_EXT_conditional_rendering` |
+| `vk_ext_conservative_rasterization` | `auto` | `VK_EXT_conservative_rasterization` |
+| `vk_ext_custom_border_color` | `auto` | `VK_EXT_custom_border_color` |
+| `vk_ext_depth_clip_control` | `auto` | `VK_EXT_depth_clip_control` |
+| `vk_ext_depth_range_unrestricted` | `auto` | `VK_EXT_depth_range_unrestricted` |
+| `vk_ext_descriptor_buffer` | `auto` | `VK_EXT_descriptor_buffer` |
+| `vk_ext_descriptor_heap` | `auto` | `VK_EXT_descriptor_heap` |
+| `vk_ext_device_fault` | `auto` | `VK_EXT_device_fault` |
+| `vk_ext_extended_dynamic_state` | `auto` | `VK_EXT_extended_dynamic_state`, promoted to Vulkan 1.3 |
+| `vk_ext_extended_dynamic_state2` | `auto` | `VK_EXT_extended_dynamic_state2`, promoted to Vulkan 1.3 |
+| `vk_ext_extended_dynamic_state3` | `auto` | `VK_EXT_extended_dynamic_state3` |
+| `vk_ext_external_memory_dma_buf` | `auto` | `VK_EXT_external_memory_dma_buf` |
+| `vk_ext_external_memory_host` | `auto` | `VK_EXT_external_memory_host` |
+| `vk_ext_fragment_shader_interlock` | `auto` | `VK_EXT_fragment_shader_interlock` |
+| `vk_ext_graphics_pipeline_library` | `auto` | `VK_EXT_graphics_pipeline_library` |
+| `vk_ext_index_type_uint8` | `auto` | `VK_EXT_index_type_uint8` |
+| `vk_ext_load_store_op_none` | `auto` | `VK_EXT_load_store_op_none` |
+| `vk_ext_map_memory_placed` | `auto` | `VK_EXT_map_memory_placed` |
+| `vk_ext_memory_budget` | `auto` | `VK_EXT_memory_budget` |
+| `vk_ext_mesh_shader` | `auto` | `VK_EXT_mesh_shader` |
+| `vk_ext_pipeline_creation_feedback` | `auto` | `VK_EXT_pipeline_creation_feedback`, promoted to Vulkan 1.3 |
+| `vk_ext_pipeline_robustness` | `auto` | `VK_EXT_pipeline_robustness`, promoted to Vulkan 1.4 |
+| `vk_ext_post_depth_coverage` | `auto` | `VK_EXT_post_depth_coverage` |
+| `vk_ext_present_timing` | `auto` | `VK_EXT_present_timing` |
+| `vk_ext_primitive_topology_list_restart` | `auto` | `VK_EXT_primitive_topology_list_restart` |
+| `vk_ext_provoking_vertex` | `auto` | `VK_EXT_provoking_vertex` |
+| `vk_ext_robustness2` | `auto` | `VK_EXT_robustness2` |
+| `vk_ext_sample_locations` | `auto` | `VK_EXT_sample_locations` |
+| `vk_ext_shader_atomic_float` | `auto` | `VK_EXT_shader_atomic_float` |
+| `vk_ext_shader_demote_to_helper_invocation` | `auto` | `VK_EXT_shader_demote_to_helper_invocation`, promoted to Vulkan 1.3 |
+| `vk_ext_transform_feedback` | `auto` | `VK_EXT_transform_feedback` |
+| `vk_ext_vertex_attribute_divisor` | `auto` | `VK_EXT_vertex_attribute_divisor` |
+| `vk_ext_vertex_input_dynamic_state` | `auto` | `VK_EXT_vertex_input_dynamic_state` |
+| `vk_google_display_timing` | `auto` | `VK_GOOGLE_display_timing` |
+| `vk_khr_calibrated_timestamps` | `auto` | `VK_KHR_calibrated_timestamps` |
+| `vk_khr_cooperative_matrix` | `auto` | `VK_KHR_cooperative_matrix` |
+| `vk_khr_dynamic_rendering` | `auto` | `VK_KHR_dynamic_rendering`, promoted to Vulkan 1.3 |
+| `vk_khr_dynamic_rendering_local_read` | `auto` | `VK_KHR_dynamic_rendering_local_read`, promoted to Vulkan 1.4 |
+| `vk_khr_extended_flags` | `auto` | `VK_KHR_extended_flags` |
+| `vk_khr_external_memory_fd` | `auto` | `VK_KHR_external_memory_fd` |
+| `vk_khr_format_feature_flags2` | `auto` | `VK_KHR_format_feature_flags2`, promoted to Vulkan 1.3 |
+| `vk_khr_index_type_uint8` | `auto` | `VK_KHR_index_type_uint8`, promoted to Vulkan 1.4 |
+| `vk_khr_load_store_op_none` | `auto` | `VK_KHR_load_store_op_none`, promoted to Vulkan 1.4 |
+| `vk_khr_maintenance4` | `auto` | `VK_KHR_maintenance4`, promoted to Vulkan 1.3 |
+| `vk_khr_maintenance5` | `auto` | `VK_KHR_maintenance5`, promoted to Vulkan 1.4 |
+| `vk_khr_maintenance8` | `auto` | `VK_KHR_maintenance8` |
+| `vk_khr_map_memory2` | `auto` | `VK_KHR_map_memory2`, promoted to Vulkan 1.4 |
+| `vk_khr_pipeline_library` | `auto` | `VK_KHR_pipeline_library` |
+| `vk_khr_portability_subset` | `auto` | `VK_KHR_portability_subset` |
+| `vk_khr_present_id` | `auto` | `VK_KHR_present_id` |
+| `vk_khr_present_id2` | `auto` | `VK_KHR_present_id2` |
+| `vk_khr_present_wait` | `auto` | `VK_KHR_present_wait` |
+| `vk_khr_present_wait2` | `auto` | `VK_KHR_present_wait2` |
+| `vk_khr_shader_clock` | `auto` | `VK_KHR_shader_clock` |
+| `vk_khr_shader_maximal_reconvergence` | `auto` | `VK_KHR_shader_maximal_reconvergence` |
+| `vk_khr_swapchain` | `auto` | `VK_KHR_swapchain` |
+| `vk_khr_synchronization2` | `auto` | `VK_KHR_synchronization2`, promoted to Vulkan 1.3 |
+| `vk_khr_video_decode_h264` | `auto` | `VK_KHR_video_decode_h264` |
+| `vk_khr_video_decode_queue` | `auto` | `VK_KHR_video_decode_queue` |
+| `vk_khr_video_queue` | `auto` | `VK_KHR_video_queue` |
+| `vk_nv_device_diagnostic_checkpoints` | `auto` | `VK_NV_device_diagnostic_checkpoints` |
+| `vk_nv_fragment_coverage_to_color` | `auto` | `VK_NV_fragment_coverage_to_color` |
+| `vk_nv_framebuffer_mixed_samples` | `auto` | `VK_NV_framebuffer_mixed_samples` |
+| `vk_valve_shader_mixed_float_dot_product` | `auto` | `VK_VALVE_shader_mixed_float_dot_product` |
+
 ## Performance
 
 | Key | Default | Effect |
@@ -111,8 +211,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `controls_<ID>` (ID one of `l`, `r`, `zl`, `zr`, `minus`, `plus`, `capture`, `home`, `l3`, `r3`, `dpad`, `stick_l`, `stick_r`, `a`, `b`, `x`, `y`) | empty | A control's place, written once it is moved or reset: `x y size`, its middle across the screen from 0 to 1 and its size in percent (50 to 200), as `controls_a=0.930 0.470 100` |
 | `controls_<ID>_shown` | `1` | `1` draws the control, `0` hides it; written once it is shown or hidden |
 | `controls` | `0` (Android `1`) | The [on-screen controls](usage.md#on-screen-controls) shown |
-| `controls_snap`, `controls_scale`, `controls_alpha`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics` | `0`, `50`, `50`, `1`, `1`, `1` | As [On-screen controls](usage.md#on-screen-controls) describes them. `controls_scale` runs from `0` to `100` for 50% to 150% |
-| `controls_skin` | `line` | Their look: `line` or `yorha`, ScarletNX's own (white lines after libretro's flat retropad; the launcher's yorha theme on the controls); empty for the built-in one; or the path of a RetroArch overlay's `.cfg` ([skins](../../dist/controls/skins/README.md)) |
+| `controls_snap`, `controls_scale`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics` | `0`, `50`, `1`, `1`, `1` | As [On-screen controls](usage.md#on-screen-controls) describes them. `controls_scale` runs from `0` to `100` for 50% to 150% |
 
 ## Controllers
 
@@ -189,8 +288,8 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 | `vk_mirror_past_limit` | `1` | `1` makes the GPU mirror of guest memory, where an Ounce game's programs read and write their storage, even where it is bigger than the device's maxBufferSize, as feat/ounce makes it: RADV (4 GiB) makes and runs it, though the validation layer calls it invalid. `0` makes it only where it fits; elsewhere the storage results land through the CPU, several times slower in one game. With `vk_validation` on it is made only where it fits, as the layer would report it. Temporary, to compare |
 | `vk_api` | `auto` | The Vulkan version the renderer runs at. `auto` takes the device's, up to 1.3: a device that has only 1.2 runs the 1.2 way where it has the extensions 1.3 took in (`VK_KHR_synchronization2`, `VK_KHR_dynamic_rendering`, the extended dynamic state 1 and 2, `VK_KHR_maintenance4`, `VK_KHR_format_feature_flags2`, demotion, pipeline creation feedback and store op NONE), and is refused, naming what it lacks, where it has not. `1.2` runs the 1.2 way on a 1.3 device too, to test it there: those extensions in place of the 1.3 core, shaders in SPIR-V 1.5, no Vulkan Video decode (FFmpeg's decoder needs 1.3). The log says the way and why (`vk_api=1.2 runs the Vulkan 1.2 way on this 1.3 device`); any value but `auto` and `1.2` stops the game, naming it and those two |
 | `native_astc` | `1` | `1` samples ASTC textures as the game's blocks where the GPU samples ASTC (most phone and tablet GPUs), in a quarter to a 36th of the memory. `0` decodes them to RGBA8 on the GPU, as on GPUs without ASTC (most desktop ones), to compare the two. On such a GPU `1` is a warning at start ([ASTC](../layers/gpu/astc.md)) |
-| `native_bc` | `1` | `1` samples BC1 to BC7 textures as the game's blocks where the GPU samples BCn (desktop GPUs and some phone ones). `0` decodes them on the GPU, as on GPUs without BCn (most phone ones), to compare the two on a desktop GPU |
-| `native_etc2` | `1` | `1` samples ETC2 and EAC textures as the game's blocks where the GPU samples ETC2 (most phone and tablet GPUs), in a quarter to an eighth of the memory. `0` decodes them on the GPU, as on GPUs without ETC2 (most desktop ones), to compare the two. On such a GPU `1` is a warning at start |
+| `native_bc` | `1` | `1` samples BC1 to BC7 textures as the game's blocks where the GPU samples BCn (desktop GPUs and some phone ones). A GPU without BCn (most phone ones, Mali and Adreno's own driver among them) gets them encoded again on the GPU as ETC2 and EAC as they load, the same bytes a texel, where it samples those (`native_etc2=1`), BC6H decoded to half floats; else all decoded, four to eight times the memory ([BCn without BCn](../layers/gpu/bcn.md)). `0` sends BCn down that path on a GPU that samples BCn too, to compare the two on a desktop GPU |
+| `native_etc2` | `1` | `1` samples ETC2 and EAC textures as the game's blocks where the GPU samples ETC2 (most phone and tablet GPUs), in a quarter to an eighth of the memory, and so are the BCn textures a GPU without BCn gets encoded again as ETC2 (`native_bc`). `0` decodes them on the GPU, as on GPUs without ETC2 (most desktop ones), and BCn too there, to compare the two. On such a GPU `1` is a warning at start |
 | `cpu_extensions` | `0` | `1` decodes LSE atomics, RCpc loads, and PAuth branches and signing with authentication off, as an Ounce game needs. It gives no pointer authentication protection. Recompile the game with the same value as each run |
 | `slp_vectorizer` | `0` | `1` runs LLVM's SLP vectorizer, which packs scalar instructions into SIMD ones, in the recompile and the JIT; the next recompile and the JIT's next run take it. Off while LLVM 23 can break a module with it and stop the recompile (llvm-project issue 231525). LLVM Internals' `llvm_slp_vectorization` leaves it running |
 | `fpsr_flags` | `1` | `1` keeps FPSR's cumulative flags (IOC, DZC, OFC, UFC, IXC and QC) as the console raises them, which costs every floating-point or saturating operation a test of its result. `0` keeps only the results exact; a game that never reads FPSR (few do) runs floating-point and saturating code faster. The next recompile and the JIT's next run take it |

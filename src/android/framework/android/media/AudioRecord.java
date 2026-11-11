@@ -43,4 +43,21 @@ public class AudioRecord {
     public int read(byte[] audioData, int offsetInBytes, int sizeInBytes) { return ERROR_INVALID_OPERATION; }
     public int read(short[] audioData, int offsetInShorts, int sizeInShorts) { return ERROR_INVALID_OPERATION; }
     public int read(ByteBuffer audioBuffer, int sizeInBytes) { return ERROR_INVALID_OPERATION; }
+    public int read(byte[] audioData, int offsetInBytes, int sizeInBytes, int readMode) { return ERROR_INVALID_OPERATION; }
+    public int read(short[] audioData, int offsetInShorts, int sizeInShorts, int readMode) { return ERROR_INVALID_OPERATION; }
+    public int read(float[] audioData, int offsetInFloats, int sizeInFloats, int readMode) { return ERROR_INVALID_OPERATION; }
+    public int read(ByteBuffer audioBuffer, int sizeInBytes, int readMode) { return ERROR_INVALID_OPERATION; }
+    public AudioFormat getFormat() {
+        AudioFormat.Builder b = new AudioFormat.Builder().setEncoding(audioFormat).setSampleRate(sampleRate);
+        if (channelConfig != 0) b.setChannelMask(channelConfig);
+        return b.build();
+    }
+    /** No input device to prefer or to aim */
+    public boolean setPreferredDevice(AudioDeviceInfo deviceInfo) { return deviceInfo == null; }
+    public AudioDeviceInfo getPreferredDevice() { return null; }
+    public boolean setPreferredMicrophoneDirection(int direction) { return false; }
+    public boolean setPreferredMicrophoneFieldDimension(float zoom) {
+        if (zoom < -1 || zoom > 1) throw new IllegalArgumentException("Argument must fall between -1 & 1 (inclusive)");
+        return false;
+    }
 }

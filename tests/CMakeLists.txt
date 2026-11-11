@@ -561,6 +561,17 @@ add_executable(snx-test-gpu-driver gpu_driver.c)
 snx_test_target(snx-test-gpu-driver 99)
 target_link_libraries(snx-test-gpu-driver PRIVATE scarletnx-common)
 add_test(NAME gpu_driver COMMAND snx-test-gpu-driver)
+# an ELF library's names written over and a loaded one's symbols found (common/utilities/elf_dynamic.c), on libraries
+# made in memory (elf_image.h) and on this process's own dynamic linker (elf_dynamic_host.c)
+add_executable(snx-test-elf-dynamic elf_dynamic.c elf_dynamic_host.c)
+snx_test_target(snx-test-elf-dynamic 11)
+target_link_libraries(snx-test-elf-dynamic PRIVATE scarletnx-common ${CMAKE_DL_LIBS})
+add_test(NAME elf_dynamic COMMAND snx-test-elf-dynamic)
+# a GPU driver package's libraries copied under names no library has (common/utilities/gpu_driver_stage.c)
+add_executable(snx-test-gpu-driver-stage gpu_driver_stage.c)
+snx_test_target(snx-test-gpu-driver-stage 11)
+target_link_libraries(snx-test-gpu-driver-stage PRIVATE scarletnx-common)
+add_test(NAME gpu_driver_stage COMMAND snx-test-gpu-driver-stage)
 # Run edenprobe's card and report (gui/probe.c)
 add_executable(snx-test-gui-probe gui_probe.c "${PROJECT_SOURCE_DIR}/src/gui/probe.c")
 snx_test_target(snx-test-gui-probe 99)
@@ -996,6 +1007,20 @@ add_executable(snx-test-a64-decode a64_decode_test.c)
 snx_test_target(snx-test-a64-decode 99)
 snx_decodetree_a64(snx-test-a64-decode)
 add_test(NAME a64_decode COMMAND snx-test-a64-decode)
+# a decoder of four rows (a64_decode_group/): a row whose body refuses a word hands it to the rows after it
+add_executable(snx-test-a64-decode-group a64_decode_group.c)
+snx_test_target(snx-test-a64-decode-group 99)
+snx_decodetree_a64(snx-test-a64-decode-group PROFILE "${CMAKE_CURRENT_SOURCE_DIR}/a64_decode_group/group.profile"
+                   DECODE "${CMAKE_CURRENT_SOURCE_DIR}/a64_decode_group/group.decode")
+add_test(NAME a64_decode_group COMMAND snx-test-a64-decode-group)
+# a function that is not rising over a field too wide to try whole: refused, with the span and the limit
+add_test(NAME a64_decode_unordered
+         COMMAND snx-decodetree --a64-profile "${CMAKE_CURRENT_SOURCE_DIR}/a64_decode_group/unordered.profile"
+                 --a64-header "${CMAKE_CURRENT_BINARY_DIR}/decodetree/unordered.h"
+                 --a64-decoder "${CMAKE_CURRENT_BINARY_DIR}/decodetree/unordered.inc"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/a64_decode_group/unordered.decode")
+set_tests_properties(a64_decode_unordered PROPERTIES PASS_REGULAR_EXPRESSION
+    "unordered.decode:7: %wide spans 0 to 2097151: !function=xor_2 is not rising, and a span is tried whole up to 1048576 values")
 
 
 # The QEMU reference (tests/qemu_ref/): hand-checked cases, the ported cases and the decoder's UNDEF sets under
@@ -1453,7 +1478,7 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/prepare_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
-        "${PROJECT_BINARY_DIR}/generated/controls_skins.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hotkeys.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
     snx_test_target(snx-test-overlay 11)
@@ -1463,24 +1488,12 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
 endif()
 
 add_executable(snx-test-vpad vpad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
-    "${PROJECT_BINARY_DIR}/generated/controls_skins.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-vpad 11)
 target_link_libraries(snx-test-vpad PRIVATE scarletnx-common snx_splash m)
 target_include_directories(snx-test-vpad PRIVATE "${PROJECT_BINARY_DIR}/generated") # ui.c's theme
 add_test(NAME vpad COMMAND snx-test-vpad)
-# a RetroArch overlay as the controls' skin, written by the test, then the shipped skins and the built-in art
-add_executable(snx-test-vpad-skin vpad_skin.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad_skin.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
-    "${PROJECT_BINARY_DIR}/generated/controls_skins.c" "${PROJECT_BINARY_DIR}/generated/controls_png.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
-snx_test_target(snx-test-vpad-skin 11)
-target_link_libraries(snx-test-vpad-skin PRIVATE scarletnx-common snx_splash SDL3::SDL3 m)
-target_include_directories(snx-test-vpad-skin PRIVATE "${PROJECT_BINARY_DIR}/generated") # ui.c's theme
-file(GLOB snx_vpad_skins CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/dist/controls/skins/*/*.cfg")
-add_test(NAME vpad_skin COMMAND snx-test-vpad-skin "${CMAKE_CURRENT_BINARY_DIR}/vpad-skin" ${snx_vpad_skins})
 
 add_executable(snx-test-hud hud.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hud.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c")
@@ -1506,7 +1519,7 @@ add_test(NAME help COMMAND snx-test-help)
 
 add_executable(snx-test-stats stats.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
-    "${PROJECT_BINARY_DIR}/generated/controls_skins.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-stats 11)
 target_link_libraries(snx-test-stats PRIVATE scarletnx-common snx_splash m)
@@ -1618,13 +1631,6 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME nvn_game_benchmark COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/bench_nvn_game_test.py")
     add_test(NAME pipeline_compile_probe_inputs COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/prepare_pipeline_probe_test.py")
     add_test(NAME gpu_descriptor_benchmark COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/bench_gpu_descriptors_test.py")
-    add_test(NAME controls_atlas_current
-        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-controls.py" --check)
-    add_test(NAME controls_skins_current
-        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-skins.py" --check)
-    add_test(NAME ui_shaders_current
-        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-ui-shaders.py" --check)
-    add_test(NAME generators_crlf COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/generators_crlf.py")
     # every 3D method that acts is marked in the fast path's table (engines.c g_m3d_group)
     add_test(NAME m3d_acts COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/m3d_acts_test.py")
     # no keys, dumps, stray binaries, piracy sites or the console maker's name in prose among the tracked files: the
@@ -1693,15 +1699,25 @@ if(Python3_Interpreter_FOUND)
         # the pull request's comment linking its builds (scripts/pr-builds.sh), against a fake gh; 77 without jq
         add_test(NAME pr_builds COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/pr_builds_test.py")
         set_tests_properties(pr_builds PROPERTIES SKIP_RETURN_CODE 77)
+        # LLVM's release source by its pinned SHA-256 (scripts/llvm-source.sh, which the LLVM scripts download
+        # through), against a fake curl
+        add_test(NAME llvm_source COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/llvm_source_test.py")
     endif()
 endif()
 
 # a package patched in the build tree from the cache's copy as released (cmake/patched_copy.cmake)
 add_test(NAME patched_copy COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/patched-copy-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/patched_copy_test.cmake")
+# the empty folder a failed download leaves in the CPM cache, which the next configure removes (cmake/cpm_cache.cmake)
+add_test(NAME cpm_cache COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DCPM=${CPM_FILE}"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpm-cache-test" "-DGENERATOR=${CMAKE_GENERATOR}"
+         "-DMAKE=${CMAKE_MAKE_PROGRAM}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cpm_cache_test.cmake")
 # the dependency cache's keys and how a build is published to it (cmake/deps_cache.cmake)
 add_test(NAME deps_cache COMMAND "${CMAKE_COMMAND}" "-DCC=${CMAKE_C_COMPILER}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/deps-cache-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/deps_cache_test.cmake")
+# CPM_USE_LOCAL_PACKAGES takes from the system the packages added with snx_cpm_local_package alone (cmake/cpm_local.cmake)
+add_test(NAME cpm_local COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DCPM=${cpm_file}"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpm-local-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/cpm_local_test.cmake")
 # where cmake/cross.cmake puts -mabi=elfv2: PowerPC64's compiles and links, no other processor's
 add_test(NAME cross_flags COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" -P
          "${CMAKE_CURRENT_SOURCE_DIR}/cross_flags_test.cmake")
@@ -2039,16 +2055,8 @@ if(SNX_TEST_VP9_VECTORS)
                           URL https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/${file}
                           URL_HASH SHA256=${sha256}
                           DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
-            # checked on every configure: CPM takes the empty folder a failed download leaves for a filled one
-            set(path "${${package}_SOURCE_DIR}/${file}")
-            set(have "")
-            if(EXISTS "${path}")
-                file(SHA256 "${path}" have)
-            endif()
-            if(NOT have STREQUAL sha256)
-                message(FATAL_ERROR "${path} is missing or is not the pinned file (SHA-256 ${sha256}): delete "
-                                    "${${package}_SOURCE_DIR} and configure again with the network")
-            endif()
+            # checked on every configure, as a package of one file is (cmake/cpm_cache.cmake)
+            snx_cpm_file_check("${${package}_SOURCE_DIR}" "${file}" ${sha256})
         endforeach()
         add_test(NAME nvdec_vp9_${short}
                  COMMAND snx-test-nvdec-vp9-vectors "${snx_vp9_${short}_SOURCE_DIR}/${name}"
@@ -2141,6 +2149,20 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-vertex-input 99)
     target_link_libraries(snx-test-vk-vertex-input PRIVATE snx_nx_flags)
     add_test(NAME vk_vertex_input COMMAND snx-test-vk-vertex-input)
+    # the block texture formats a device is given (gpu/vk/format.c), with no GPU: a player's Mali-G52 from its vkjson
+    # (ASTC and ETC2 sampled as the games' blocks, BCn encoded again as ETC2 and EAC), a desktop GPU, native_bc=0 and the
+    # other settings at 0, and the log's line for each family
+    if(TARGET snx_vk_common)
+        add_executable(snx-test-vk-block-formats vk_block_formats.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/format.c"
+                       "${volk_SOURCE_DIR}/volk.c")
+        set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
+        # format.c's VkFmt initializers leave the last members to 0, as the renderer's flags allow
+        set_source_files_properties("${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/format.c" PROPERTIES COMPILE_OPTIONS
+                                    -Wno-missing-field-initializers)
+        snx_test_target(snx-test-vk-block-formats 23)
+        target_link_libraries(snx-test-vk-block-formats PRIVATE snx_nx_flags snx_vk_common)
+        add_test(NAME vk_block_formats COMMAND snx-test-vk-block-formats)
+    endif()
     # graphics pipeline libraries (gpu/vk/pipeline_parts.c): the choice from the setting and stand-in devices, each
     # condition that turns them off named, and the dynamic pre-rasterization state each device member gives where the
     # table of bans holds none for it
@@ -2161,15 +2183,17 @@ if(NOT SNX_TOOLS_ONLY)
         target_link_libraries(snx-test-vk-bans PRIVATE snx_nx_flags snx_vk_common)
         add_test(NAME vk_extension_bans COMMAND snx-test-vk-bans)
     endif()
-    # the GPU driver a run asks for (nx/runtime/platform/gpu_driver_load.c) where none loads: Freedreno's variables set,
-    # a wrong one, a package asked for here and a folder name that is none stopping the run with why, a run a case
-    add_executable(snx-test-gpu-driver-load gpu_driver_load.c
-                   "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/gpu_driver_load.c")
-    snx_test_target(snx-test-gpu-driver-load 11)
-    target_link_libraries(snx-test-gpu-driver-load PRIVATE snx_nx_flags scarletnx-common)
-    foreach(case IN ITEMS env badenv here badid)
-        add_test(NAME gpu_driver_load_${case} COMMAND snx-test-gpu-driver-load ${case})
-    endforeach()
+    if(ANDROID)
+        # the GPU driver a run asks for (nx/runtime/platform/gpu_driver_load.c) where none loads: Freedreno's variables set,
+        # a wrong one, a package asked for here and a folder name that is none stopping the run with why, a run a case
+        add_executable(snx-test-gpu-driver-load gpu_driver_load.c
+                    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/gpu_driver_load.c")
+        snx_test_target(snx-test-gpu-driver-load 11)
+        target_link_libraries(snx-test-gpu-driver-load PRIVATE snx_nx_flags scarletnx-common)
+        foreach(case IN ITEMS env sets badenv here badid)
+            add_test(NAME gpu_driver_load_${case} COMMAND snx-test-gpu-driver-load ${case})
+        endforeach()
+    endif()
 endif()
 
 add_executable(snx_recompiler_test recompiler_native.c)
@@ -2711,6 +2735,13 @@ add_executable(snx-test-bc7-glsl glsl/bc7_glsl.cpp glsl/bc7_cpu.cpp support/bcn.
 snx_test_target(snx-test-bc7-glsl 23)
 target_include_directories(snx-test-bc7-glsl PRIVATE glsl)
 add_test(NAME bc7_glsl COMMAND snx-test-bc7-glsl)
+# the BCn to ETC2 and EAC transcoder's GLSL (texconv.glsl's ETC2 build) run on the CPU (tests/glsl/glsl.hpp), its blocks
+# decoded by the CPU references, the BCn pictures it is held to made by its own encoders and the BC7 one: no GPU needed
+add_executable(snx-test-bcn-etc2-glsl glsl/bcn_etc2_glsl.cpp glsl/bcn_etc2_cpu.cpp glsl/bc7_cpu.cpp support/etc2.c
+               support/bcn.c)
+snx_test_target(snx-test-bcn-etc2-glsl 23)
+target_include_directories(snx-test-bcn-etc2-glsl PRIVATE glsl)
+add_test(NAME bcn_etc2_glsl COMMAND snx-test-bcn-etc2-glsl)
 # the VIC shader's GLSL, both builds, run on the CPU against vic.c's composition of random jobs: no GPU needed
 add_executable(snx-test-vic-glsl glsl/vic_jobs.c glsl/vic_glsl.cpp support/vic_ref.c)
 snx_test_target(snx-test-vic-glsl 23)
@@ -3357,7 +3388,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         "${PROJECT_SOURCE_DIR}/src/common/utilities/spirv_emit.c")
     snx_test_target(snx-test-vk-tess-passthrough 11)
     target_include_directories(snx-test-vk-tess-passthrough PRIVATE "${volk_SOURCE_DIR}"
-        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+        "${snx_vma_include_dir}")
     target_link_libraries(snx-test-vk-tess-passthrough PRIVATE Vulkan::Headers)
     add_test(NAME vk_tess_passthrough COMMAND snx-test-vk-tess-passthrough)
     # the shader lookups' tables hold a frame's keys (src/nx/gpu/vk/lookup_ways.h)
@@ -3381,33 +3412,33 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-vk-descriptor-heaps vk_descriptor_heaps.c)
     snx_test_target(snx-test-vk-descriptor-heaps 11)
     target_include_directories(snx-test-vk-descriptor-heaps PRIVATE "${volk_SOURCE_DIR}"
-        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+        "${snx_vma_include_dir}")
     target_link_libraries(snx-test-vk-descriptor-heaps PRIVATE Vulkan::Headers)
     add_test(NAME vk_descriptor_heaps COMMAND snx-test-vk-descriptor-heaps)
     add_executable(snx-test-vk-descriptor-heap-batch vk_descriptor_heap_batch.c)
     snx_test_target(snx-test-vk-descriptor-heap-batch 11)
     target_include_directories(snx-test-vk-descriptor-heap-batch PRIVATE "${volk_SOURCE_DIR}"
-        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+        "${snx_vma_include_dir}")
     target_link_libraries(snx-test-vk-descriptor-heap-batch PRIVATE Vulkan::Headers)
     add_test(NAME vk_descriptor_heap_batch COMMAND snx-test-vk-descriptor-heap-batch)
     add_executable(snx-test-vk-descriptor-objects vk_descriptor_objects.c
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/descriptor_objects.c")
     snx_test_target(snx-test-vk-descriptor-objects 11)
     target_include_directories(snx-test-vk-descriptor-objects PRIVATE "${volk_SOURCE_DIR}"
-        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+        "${snx_vma_include_dir}")
     target_link_libraries(snx-test-vk-descriptor-objects PRIVATE Vulkan::Headers)
     add_test(NAME vk_descriptor_objects COMMAND snx-test-vk-descriptor-objects)
     add_executable(snx-test-vk-checkpoints vk_checkpoints.c)
     snx_test_target(snx-test-vk-checkpoints 11)
     target_include_directories(snx-test-vk-checkpoints PRIVATE "${volk_SOURCE_DIR}"
-        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+        "${snx_vma_include_dir}")
     target_link_libraries(snx-test-vk-checkpoints PRIVATE Vulkan::Headers)
     add_test(NAME vk_checkpoints COMMAND snx-test-vk-checkpoints)
     add_executable(snx-test-vk-descriptor-heap-setup vk_descriptor_heap_setup.c
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/descriptor_heaps.c")
     snx_test_target(snx-test-vk-descriptor-heap-setup 11)
     target_include_directories(snx-test-vk-descriptor-heap-setup PRIVATE "${volk_SOURCE_DIR}"
-        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+        "${snx_vma_include_dir}")
     target_link_libraries(snx-test-vk-descriptor-heap-setup PRIVATE Vulkan::Headers)
     add_test(NAME vk_descriptor_heap_setup COMMAND snx-test-vk-descriptor-heap-setup)
     add_executable(snx-test-vk-advanced-blend vk_advanced_blend.c)

@@ -19,6 +19,13 @@ public class ShapeDrawable extends Drawable {
     private Shape shape;
     private int alpha = 0xff, width = -1, height = -1;
     private Rect padding;
+    private ShaderFactory shaderFactory;
+
+    /** Makes the paint's shader for the drawable's size, each time its bounds change. */
+    public abstract static class ShaderFactory {
+        public ShaderFactory() {}
+        public abstract android.graphics.Shader resize(int width, int height);
+    }
 
     public ShapeDrawable() { this(null); }
     public ShapeDrawable(Shape s) {
@@ -32,6 +39,8 @@ public class ShapeDrawable extends Drawable {
         invalidateSelf();
     }
     public Paint getPaint() { return paint; }
+    public ShaderFactory getShaderFactory() { return shaderFactory; }
+    public void setShaderFactory(ShaderFactory factory) { shaderFactory = factory; }
     public void setPadding(int left, int top, int right, int bottom) { padding = (left | top | right | bottom) == 0 ? null : new Rect(left, top, right, bottom); }
     public void setPadding(Rect padding) { this.padding = padding == null ? null : new Rect(padding); }
     @Override public boolean getPadding(Rect out) {
@@ -61,7 +70,11 @@ public class ShapeDrawable extends Drawable {
         }
         paint.setAlpha(old);
     }
-    @Override protected void onBoundsChange(Rect bounds) { if (shape != null) shape.resize(bounds.width(), bounds.height()); }
+    @Override protected void onBoundsChange(Rect bounds) {
+        if (shape != null) shape.resize(bounds.width(), bounds.height());
+        if (shaderFactory != null) paint.setShader(shaderFactory.resize(bounds.width(), bounds.height()));
+        invalidateSelf();
+    }
     @Override public void setAlpha(int alpha) { this.alpha = alpha; invalidateSelf(); }
     @Override public int getAlpha() { return alpha; }
     @Override public void setColorFilter(ColorFilter colorFilter) { paint.setColorFilter(colorFilter); invalidateSelf(); }

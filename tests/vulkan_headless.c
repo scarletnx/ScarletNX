@@ -5325,6 +5325,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_shared_clamp.inc"
 #include "vulkan_index_draws.inc"
 #include "vulkan_pass_breaks.inc"
+#include "vulkan_ui.inc"
 #include "vulkan_storage_formats.inc"
 #include "vulkan_scaled_compute.inc"
 #include "vulkan_storage_atomics.inc"
@@ -5399,6 +5400,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_fragment_barrier.inc"
 #include "vulkan_capture_cap.inc"
 #include "vulkan_trim.inc"
+#include "vulkan_owned_page_reads.inc"
 
 /* key's row among the settings the runtime applies itself (options.c's), or NULL */
 static const IniOpt* setting_row(const char* key) {
@@ -5432,6 +5434,78 @@ static int check_map_lands_covered(void) {
     g_gpu_mapping_end();
     CHECK(!vk_buf_pending(gva, 0x1000));
     puts("A change of guest memory lands the buffer results over its pages, and only those");
+    return 0;
+}
+
+/* A change of backing tells the kernel that it waits for the renderer (g_gpu_mapping_waits) before the wait starts, and
+   at no other time: the thread in a memory SVC lets go of its core there (kernel/thread.c's core_leave_waiting), and
+   holds it through an SVC that waits for nothing, as on the console. Nothing waits where the renderer holds nothing
+   over the pages and its lock is free; a lock another thread holds is a wait, told while that thread still holds it,
+   and so is a result pending on the pages, which lands */
+static u32 g_map_waits, g_map_holder, g_map_told; /* the holder: 1 holds vk_lock, 2 let go of it */
+static void map_waits(void) {
+    __atomic_add_fetch(&g_map_waits, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&g_map_holder, __ATOMIC_SEQ_CST) != 1) return;
+    __atomic_store_n(&g_map_told, 1, __ATOMIC_SEQ_CST); /* the holder lets go now, and the change gets the lock */
+    plat_wake_word(&g_map_told);
+}
+static void map_holder(void* arg) {
+    u64 until = plat_ns() + 5000000000ull; /* a change that never tells gets the lock then, and fails its counts */
+    (void)arg;
+    vk_lock();
+    __atomic_store_n(&g_map_holder, 1, __ATOMIC_SEQ_CST);
+    plat_wake_word(&g_map_holder);
+    while (!__atomic_load_n(&g_map_told, __ATOMIC_SEQ_CST) && plat_ns() < until)
+        plat_wait_word(&g_map_told, 0, 10000000);
+    vk_unlock();
+    __atomic_store_n(&g_map_holder, 2, __ATOMIC_SEQ_CST);
+    plat_wake_word(&g_map_holder);
+}
+static int check_map_waits(void) {
+    const u64 gva = 0xac00000, cpu = HEAP_BASE + 0x5e00000;
+    void (*const kernel)(void) = g_gpu_mapping_waits;
+    VkBuffer out;
+    u64 at;
+    u32 told;
+    g_gpu_mapping_waits = map_waits;
+    /* fresh memory, as svcMapPhysicalMemory maps, where no check here maps the GPU's address space: the change takes
+       no lock of the renderer's */
+    g_gpu_mapping_begin(STACK_BASE + 0x3000000, 0x10000, GPU_MAPPING_GUEST_ONLY);
+    g_gpu_mapping_end();
+    CHECK(!g_map_waits);
+    /* a change of the GPU's address space lands nothing and waits only for the lock: not while this thread holds it,
+       which keeps out the renderer's own threads, whose hold of a moment is a wait and told as one */
+    vk_lock();
+    g_gpu_mapping_begin(gva + 0x100000, 0x1000, GPU_MAPPING_GMMU);
+    g_gpu_mapping_end();
+    vk_unlock();
+    CHECK(!g_map_waits);
+    CHECK(plat_thread(map_holder, NULL, 0) == 0);
+    while (!__atomic_load_n(&g_map_holder, __ATOMIC_SEQ_CST)) plat_wait_word(&g_map_holder, 0, -1);
+    g_gpu_mapping_begin(gva + 0x100000, 0x1000, GPU_MAPPING_GMMU); /* the same change, another thread's hold */
+    g_gpu_mapping_end();
+    CHECK(g_map_waits == 1 && g_map_told);
+    while (__atomic_load_n(&g_map_holder, __ATOMIC_SEQ_CST) != 2) plat_wait_word(&g_map_holder, 1, -1);
+    if (!vk_uma()) { /* a result pending on the page, as check_map_lands_covered's */
+        CHECK(mem_map(cpu, 0x1000, MS_NORMAL, PERM_RW) == 0);
+        gmmu_map(gva, cpu, 0x1000);
+        vk_lock();
+        CHECK(vk_buf_copy_writable(gva, 0x1000, &out, &at, 1));
+        vk_buf_writable_commit();
+        vk_unlock();
+        CHECK(vk_buf_pending(gva, 0x1000));
+        /* from here: the changes above are told too where an earlier check left the renderer something over the
+           pages. This thread's hold again, so that the landing alone is the wait */
+        told = g_map_waits;
+        vk_lock();
+        g_gpu_mapping_begin(cpu, 0x1000, GPU_MAPPING_GUEST_ONLY);
+        g_gpu_mapping_end();
+        vk_unlock();
+        CHECK(g_map_waits == told + 1);
+        CHECK(!vk_buf_pending(gva, 0x1000));
+    }
+    g_gpu_mapping_waits = kernel;
+    puts("A change of backing tells the kernel of a wait for the renderer's lock or a landing, and of no other");
     return 0;
 }
 
@@ -5819,6 +5893,8 @@ static int run_headless(int argc, char** argv) {
             result = check_cross_stage_image_alias();
         else if (!strcmp(name, "lone_lane"))
             result = check_lone_lane();
+        else if (!strcmp(name, "owned_page_reads"))
+            result = check_owned_page_reads();
         else if (!strcmp(name, "cross_stage_blend"))
             result = check_cross_stage_blend_snapshots();
         else if (!strcmp(name, "txd_uniform"))
@@ -5899,6 +5975,12 @@ static int run_headless(int argc, char** argv) {
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan resolution scale only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    if (getenv("SNX_TEST_UI_ONLY")) { /* vulkan_ui.inc's check alone: the on-screen layer's pass */
+        CHECK(!check_ui());
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan on-screen layer only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
     if (getenv("SNX_TEST_PASS_BREAKS_ONLY")) { /* vulkan_pass_breaks.inc's checks alone */
@@ -6085,6 +6167,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_pass_breaks());
     CHECK(!check_mesh_inputs());
     CHECK(!check_lone_lane());
+    CHECK(!check_owned_page_reads());
     CHECK(!check_frag_coord_origin());
     CHECK(!check_varying_passes());
     CHECK(!check_rt_other_layout());
@@ -6139,6 +6222,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_dma_untracked_source());
     CHECK(!check_dma_tiles());
     CHECK(!check_map_lands_covered());
+    CHECK(!check_map_waits());
     CHECK(!check_blit());
     CHECK(!check_blit_bands());
     CHECK(!check_take_after_writes());

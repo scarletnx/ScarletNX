@@ -179,6 +179,7 @@ typedef struct {
 #define DT_REL             17
 #define DT_RELSZ           18
 #define DT_RELENT          19
+#define DT_PLTREL          20
 #define DT_JMPREL          23
 #define DT_INIT_ARRAY      25
 #define DT_FINI_ARRAY      26
@@ -191,6 +192,8 @@ typedef struct {
 #define DT_RELR            36
 #define DT_RELRENT         37
 #define DT_GNU_HASH        0x6ffffef5
+#define DT_VERNEED         0x6ffffffe
+#define DT_VERNEEDNUM      0x6fffffff
 #define DF_SYMBOLIC        0x2
 
 #define STB_LOCAL  0
@@ -217,6 +220,15 @@ typedef struct {
 #define R_ARM_JUMP_SLOT 22
 #define R_ARM_RELATIVE  23
 
+/* a version need (the GNU symbol versions' .gnu.version_r): the library a file's versions are needed of, the next one
+   vn_next bytes on */
+typedef struct {
+    Elf64_Half vn_version;
+    Elf64_Half vn_cnt;
+    Elf64_Word vn_file; /* the library's name, in the dynamic string table */
+    Elf64_Word vn_aux;
+    Elf64_Word vn_next;
+} Elf64_Verneed;
 /* the generic ABI's sizes, which the objects' bytes are read with */
 typedef char snx_elf64_ehdr_size[sizeof(Elf64_Ehdr) == 64 ? 1 : -1];
 typedef char snx_elf64_shdr_size[sizeof(Elf64_Shdr) == 64 ? 1 : -1];
@@ -224,5 +236,6 @@ typedef char snx_elf64_sym_size[sizeof(Elf64_Sym) == 24 ? 1 : -1];
 typedef char snx_elf64_rela_size[sizeof(Elf64_Rela) == 24 ? 1 : -1];
 typedef char snx_elf64_phdr_size[sizeof(Elf64_Phdr) == 56 ? 1 : -1];
 typedef char snx_elf64_dyn_size[sizeof(Elf64_Dyn) == 16 ? 1 : -1];
+typedef char snx_elf64_verneed_size[sizeof(Elf64_Verneed) == 16 ? 1 : -1];
 
 #endif

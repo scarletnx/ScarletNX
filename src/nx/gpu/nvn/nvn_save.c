@@ -77,16 +77,27 @@ static int heap_put(StateIo* io, u32 kind, u32 slot, const void* p, u64 n) {
 int nvn_state_save(StateIo* io, char* why, size_t whysize) {
     const NvnObjectState* o = &g_nvn.object;
     Nvn* c;
-    u32 i;
+    u32 i, settling = 0;
     int r;
-    for (i = 0; i < NVN_JOBS; i++)
-        if (g_nvn.replay.jobs[i].queue) {
+    for (i = 0; i < NVN_JOBS; i++) {
+        u32 queue = g_nvn.replay.jobs[i].queue;
+        if (queue > NVN_QUEUES) { /* nvn_replay_finish_all's: named only when no queue's work waits */
+            settling = 1;
+            continue;
+        }
+        if (queue) {
             snprintf(why, whysize,
                      "the game's NVN queue %u has work waiting on the GPU for a sync, an event or another queue's "
                      "present, which states don't hold yet",
-                     g_nvn.replay.jobs[i].queue);
+                     queue);
             return -1;
         }
+    }
+    if (settling) {
+        snprintf(why, whysize,
+                 "the game waits on the GPU for all its NVN queues' submitted work, which states don't hold yet");
+        return -1;
+    }
     if (!(c = (Nvn*)malloc(sizeof *c))) {
         snprintf(why, whysize, "there is no memory for a copy of the game's NVN state (%zu bytes)", sizeof *c);
         return -1;

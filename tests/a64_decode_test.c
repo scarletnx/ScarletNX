@@ -535,7 +535,52 @@ static void simd_fp(void) {
     A(idx, 3), A(rm, 2), A(esz, 0);
 }
 
-/* the index (buckets on bits [31:21], split where crowded) finds what a scan of every row in order finds */
+/* every N and imms of a logical immediate, against the Arm ARM's DecodeBitMasks (J1.1.4): the element size is the
+   highest set bit of N:NOT(imms), at least 2 bits, and imms is not all ones within it; a 32-bit form has N 0 */
+static void logical_immediates(void) {
+    unsigned sf, n, imms;
+    for (sf = 0; sf < 2; sf++)
+        for (n = 0; n < 2; n++)
+            for (imms = 0; imms < 64; imms++) {
+                /* AND x0/w0, x1/w1, #imm with immr 5 */
+                uint32_t word = 0x12050020u | (uint32_t)sf << 31 | (uint32_t)n << 22 | (uint32_t)imms << 10;
+                unsigned x = n << 6 | (~imms & 63), levels;
+                int len = 6, valid;
+                while (len >= 0 && !((x >> len) & 1)) len--;
+                levels = len >= 1 ? (1u << len) - 1 : 0;
+                valid = len >= 1 && (imms & levels) != levels && (sf || !n);
+                dec(word, MAX, valid ? SNX_A64_OP_AND_i : SNX_A64_OP_UNDEF, __LINE__);
+                if (valid) eq(g_test.d.args.dbm, (long long)(n << 12 | 5u << 6 | imms), "dbm", __LINE__);
+            }
+}
+
+/* the arguments that reach furthest, at both ends: SnxA64Args gives each the narrowest type that holds it */
+static void argument_ends(void) {
+    /* B to the farthest targets: imm26 = -2^25 and 2^25 - 1, scaled by 4 (C6.2.26) */
+    DEC(0x16000000u, SW, B);
+    A(imm, -134217728);
+    DEC(0x15ffffffu, SW, B);
+    A(imm, 134217724);
+    /* AND x0, x1, #0xfffffffffffffffd: N=1 immr=111111 imms=111110, the greatest N:immr:imms that names a mask */
+    DEC(0x927ff820u, SW, AND_i);
+    A(dbm, 0x1ffe);
+    /* MOVI v0.16b, #0xff: a:b:c:d:e:f:g:h all ones */
+    DEC(0x4f07e7e0u, SW, Vimm);
+    A(abcdefgh, 255);
+    /* CBGT x0, #0, with the label 256 instructions back and 255 ahead: imm9 scaled by 4, FEAT_CMPBR */
+    DEC(0xf5002000u, MAX, CB_cond_imm);
+    A(imm9, -1024);
+    DEC(0xf5001fe0u, MAX, CB_cond_imm);
+    A(imm9, 1020);
+    /* LDUR x0, [x1, #-256] and #255: imm9 unscaled */
+    DEC(0xf8500020u, SW, LDR_i);
+    A(imm, -256);
+    DEC(0xf84ff020u, SW, LDR_i);
+    A(imm, 255);
+}
+
+/* the index (buckets on bits [31:21], split where crowded) finds what a scan of every row in order finds, each row
+   tried alone (snx_a64_row with no row after it), and fills the instruction the same; an UNDEF's is all zero */
 static void index_matches_scan(void) {
     static const uint64_t targets[2] = {SW, MAX};
     uint32_t x = 0x12345678u;
@@ -550,13 +595,13 @@ static void index_matches_scan(void) {
             SnxA64Insn a, b;
             SnxA64Op want = SNX_A64_OP_UNDEF;
             unsigned r;
+            memset(&a, 0xa5, sizeof a);
+            memset(&b, 0, sizeof b);
             for (r = 0; r < sizeof snx_a64_rows / sizeof snx_a64_rows[0]; r++) {
                 const SnxA64Row* row = &snx_a64_rows[r];
-                SnxA64Insn zero = {SNX_A64_OP_UNDEF, SNX_A64_FLOW_UNDEF, 0, 0, {0}};
+                uint16_t one = (uint16_t)r;
                 if ((word & row->mask) != row->value || (row->feature & ~targets[t])) continue;
-                b = zero;
-                b.feature = row->feature;
-                if (!snx_a64_body(row->body, word, targets[t], &b)) continue;
+                if (snx_a64_row(&one, &one + 1, word, targets[t], &b) == SNX_A64_OP_UNDEF) continue;
                 want = (SnxA64Op)row->op;
                 break;
             }
@@ -566,17 +611,26 @@ static void index_matches_scan(void) {
                 g_test.failures++;
                 return;
             }
+            /* both were zeroed whole before their fields were set, so the bytes compare */
+            if (memcmp(&a, &b, sizeof a)) {
+                fprintf(stderr, "a64_decode_test.c: 0x%08x (%s): the decode's instruction differs from its row's\n",
+                        (unsigned)word, snx_a64_op_name(want));
+                g_test.failures++;
+                return;
+            }
         }
     }
 }
 
 int main(void) {
     data_immediate();
+    logical_immediates();
     branches();
     hints();
     loads_stores();
     data_register();
     simd_fp();
+    argument_ends();
     index_matches_scan();
     eq(SNX_A64_DECODE_HASH != 0, 1, "SNX_A64_DECODE_HASH", __LINE__);
     if (g_test.failures) {

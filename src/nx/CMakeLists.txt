@@ -26,7 +26,7 @@ target_compile_options(snx_nx_flags INTERFACE
 target_compile_definitions(snx_nx_flags INTERFACE VK_NO_PROTOTYPES)
 target_link_libraries(snx_nx_flags INTERFACE Vulkan::Headers)
 target_include_directories(snx_nx_flags BEFORE INTERFACE "${volk_SOURCE_DIR}"
-                                                "${VulkanMemoryAllocator_SOURCE_DIR}/include" "${renderdoc_app_SOURCE_DIR}")
+                                                "${snx_vma_include_dir}" "${renderdoc_app_SOURCE_DIR}")
 
 function(snx_component name)
     add_library(snx_${name} OBJECT ${ARGN})
@@ -87,8 +87,6 @@ snx_hookgen(snx_gpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/nvn/nvn.hook" PREFIX n
 include("${PROJECT_SOURCE_DIR}/cmake/ship_walk.cmake")
 snx_ship_walk(gpu/shipped_pass.c)
 
-include("${PROJECT_SOURCE_DIR}/cmake/controls_atlas.cmake")
-include("${PROJECT_SOURCE_DIR}/cmake/controls_skins.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform/unattended.c
              runtime/platform/backend/sdl3.c runtime/platform/audio_downmix.c
@@ -96,14 +94,18 @@ set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform
              runtime/platform/help.c runtime/platform/hotkeys.c runtime/platform/hud.c runtime/platform/overlay.c
              runtime/platform/stats.c
              runtime/platform/touch.c
-             runtime/platform/ui.c runtime/platform/vpad.c runtime/platform/vpad_skin.c
+             runtime/platform/ui.c runtime/platform/vpad.c
              runtime/platform/fatal_screen.c
-             runtime/platform/prepare_screen.c runtime/platform/gpu_driver_load.c runtime/platform/resources.c
-             "${PROJECT_BINARY_DIR}/generated/controls_png.c" "${PROJECT_BINARY_DIR}/generated/controls_skins.c")
+             runtime/platform/prepare_screen.c runtime/platform/gpu_driver_load.c runtime/platform/resources.c)
 if(WIN32)
     list(APPEND platform runtime/platform/plat_win32.c runtime/platform/profiler_win32.c)
 else()
     list(APPEND platform runtime/platform/plat_posix.c)
+endif()
+if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
+    # a GPU driver package loaded in place of the system's driver (runtime/platform/gpu_driver_load.c), on the
+    # packages' one ABI
+    list(APPEND platform runtime/platform/gpu_driver_android.c)
 endif()
 if(SNX_TRACY)
     # the C++ client's connection id, which the C layer's GPU track keys its epochs on
@@ -156,6 +158,9 @@ snx_glsl_spirv(snx_vk SOURCE gpu/texture/bc7.comp NAME bc7_quick_spv HEADER nx/g
                DEFINES SNX_BC7_FAST=3)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/blocklinear.comp NAME blocklinear_spv HEADER nx/gpu/texture/blocklinear_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_spv HEADER nx/gpu/texture/texconv_spv.h)
+# its ETC2 build: BCn encoded again as ETC2 and EAC, for a GPU that samples those and not BCn (gpu/vk/texconv.c)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_etc2_spv HEADER nx/gpu/texture/texconv_spv.h
+               DEFINES SNX_TC_ETC2)
 snx_glsl_spirv(snx_vk SOURCE gpu/video/vic.comp NAME vic_spv HEADER nx/gpu/video/vic_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/video/vic.comp NAME vic_unaligned_spv HEADER nx/gpu/video/vic_spv.h
                DEFINES VIC_UNALIGNED)
@@ -171,6 +176,8 @@ snx_glsl_spirv(snx_vk SOURCE gpu/vk/query_compare.comp NAME query_compare_spv
                HEADER nx/gpu/vk/query_compare_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/ftz_probe.comp NAME ftz_probe_spv HEADER nx/gpu/vk/ftz_probe_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.vert NAME msaa_vert_spv HEADER nx/gpu/vk/msaa_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/ui.vert NAME snx_ui_vs_spv HEADER nx/gpu/vk/ui_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/ui.frag NAME snx_ui_fs_spv HEADER nx/gpu/vk/ui_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/present_quad.vert NAME present_quad_vert_spv HEADER nx/gpu/vk/present_quad_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/present_quad.frag NAME present_quad_frag_spv HEADER nx/gpu/vk/present_quad_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.frag NAME msaa_unpack_spv HEADER nx/gpu/vk/msaa_spv.h DEFINES MS_UNPACK)
@@ -198,6 +205,18 @@ if(ANDROID)
         target_link_options(scarletnx-run PRIVATE ${snx_jemalloc_exports})
     endif()
     install(TARGETS scarletnx-run RUNTIME DESTINATION lib/${ANDROID_ABI})
+    if(ANDROID_ABI STREQUAL "arm64-v8a")
+        # the two calls Android's Vulkan loader opens its driver with, for the copy of it a run with a GPU driver
+        # package loads (runtime/platform/gpu_driver_hook.h): -z global is what puts them before the system's
+        add_library(snx_gpu_driver_hook SHARED runtime/platform/gpu_driver_hook.c)
+        target_include_directories(snx_gpu_driver_hook PRIVATE "${PROJECT_SOURCE_DIR}/src")
+        target_compile_options(snx_gpu_driver_hook PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+        target_link_options(snx_gpu_driver_hook PRIVATE LINKER:-z,global)
+        set_target_properties(snx_gpu_driver_hook PROPERTIES OUTPUT_NAME scarletnx-gpu-hook)
+        install(TARGETS snx_gpu_driver_hook LIBRARY DESTINATION lib/${ANDROID_ABI})
+        include(GNUInstallDirs)
+        install(FILES runtime/platform/ADRENOTOOLS-NOTICE.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx)
+    endif()
 endif()
 list(TRANSFORM components PREPEND snx_)
 add_library(scarletnx-nx STATIC)
@@ -311,7 +330,7 @@ if(BUILD_TESTING)
         target_link_libraries(snx-test-shader-half-packing PRIVATE Threads::Threads m)
     endif()
     add_test(NAME shader_half_packing COMMAND $<TARGET_FILE:snx-test-shader-half-packing>)
-    foreach(fixture texture_limits alpha_coverage coverage_resolve blend_resolve known_bits capture_tiles fragment_mask mixed_coverage depth_stencil)
+    foreach(fixture texture_limits alpha_coverage coverage_resolve blend_resolve known_bits capture_tiles fragment_mask mixed_coverage depth_stencil cast_cache)
         string(REPLACE "_" "-" name "${fixture}")
         add_executable(snx-test-shader-${name} "${PROJECT_SOURCE_DIR}/tests/shader_${fixture}.c")
         snx_test_target(snx-test-shader-${name} 11)
@@ -329,7 +348,7 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME shader_shared_reach COMMAND $<TARGET_FILE:snx-test-shader-shared-reach>)
     add_test(NAME runtime_settings_list COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
-             -P "${PROJECT_SOURCE_DIR}/tests/settings_list.cmake")
+             -DAPPLE_HOST=$<BOOL:${APPLE}> -P "${PROJECT_SOURCE_DIR}/tests/settings_list.cmake")
     add_test(NAME runtime_unknown_option COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
              -P "${PROJECT_SOURCE_DIR}/tests/unknown_option.cmake")
     add_test(NAME runtime_recompile_settings COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
@@ -376,7 +395,8 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/spirv_emitter_fixture.c" "${PROJECT_SOURCE_DIR}/tests/support/nvdec_ref.c"
         "${PROJECT_SOURCE_DIR}/tests/support/vic_ref.c" "${PROJECT_SOURCE_DIR}/tests/support/dma_ref.c"
         "${PROJECT_SOURCE_DIR}/tests/support/fermi2d_ref.c" "${PROJECT_SOURCE_DIR}/tests/support/half.c"
-        "${PROJECT_SOURCE_DIR}/tests/support/sm86_ref.c" "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp")
+        "${PROJECT_SOURCE_DIR}/tests/support/sm86_ref.c" "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp"
+        "${PROJECT_SOURCE_DIR}/tests/support/ui_shape_ref.c")
     target_include_directories(snx-test-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests")
     target_link_libraries(snx-test-vulkan PRIVATE snx_nx_flags ${components} snx_driver FFmpeg::avutil Threads::Threads
                                                   ${CMAKE_DL_LIBS})
@@ -399,9 +419,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_tests_properties(vulkan_headless_mesh PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # a save state of a game whose NVN the runtime runs, saved and loaded through state.c: the frame before the save
-    # comes back after the load (tests/vulkan_nvn_savestate.inc). Alone, as the load replaces the guest memory
+    # comes back after the load (tests/vulkan_nvn_savestate.inc). Alone, as the load replaces the guest memory. With
+    # new memory filled (jemalloc's junk, under either name of its options' variable, and glibc's MALLOC_PERTURB_):
+    # memory a load reads that nothing wrote, as the buffer cache's entry 0, isn't zero by chance
     add_test(NAME vulkan_nvn_savestate COMMAND snx-test-vulkan -H)
-    set_tests_properties(vulkan_nvn_savestate PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_NVN_CASE=savestate"
+    set_tests_properties(vulkan_nvn_savestate PROPERTIES TIMEOUT 60
+        ENVIRONMENT "SNX_TEST_NVN_CASE=savestate;MALLOC_CONF=junk:true;JE_MALLOC_CONF=junk:true;MALLOC_PERTURB_=90"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     add_test(NAME vulkan_storage_lookup COMMAND snx-test-vulkan -H --vk_memory=1 --bench-storage-lookup)
     set_tests_properties(vulkan_storage_lookup PROPERTIES TIMEOUT 60
@@ -420,6 +443,14 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # keeping them on the GPU. A run that hangs fails at the timeout
     add_test(NAME vulkan_storage_buffer_keep COMMAND snx-test-vulkan -H --vk_memory=1)
     set_tests_properties(vulkan_storage_buffer_keep PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_BUFFER_KEEP_ONLY=1"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # guest memory read with the renderer's lock held on pages the GPU owns bytes of (tests/vulkan_owned_page_reads.inc),
+    # with guest buffers copied, as a discrete GPU and Android without host imports have them: the default run takes
+    # unified memory on lavapipe, whose reads take other paths. Traps by userfaultfd, and by page protection as Android's
+    add_test(NAME vulkan_owned_page_reads COMMAND snx-test-vulkan -H --vk_memory=1)
+    add_test(NAME vulkan_owned_page_reads_protection COMMAND snx-test-vulkan -H --vk_memory=1 --memory_traps=1)
+    set_tests_properties(vulkan_owned_page_reads vulkan_owned_page_reads_protection PROPERTIES TIMEOUT 60
+        ENVIRONMENT "SNX_TEST_NVN_CASE=owned_page_reads" SKIP_REGULAR_EXPRESSION "SKIP owned page reads"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the budget's trim alone (tests/vulkan_trim.inc): a trim that wants more than everything held would take what the
     # other checks hold
@@ -471,6 +502,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         ENVIRONMENT "SNX_TEST_GPL=linked;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     set_tests_properties(vulkan_headless_pipeline_library_whole PROPERTIES TIMEOUT 120 ENVIRONMENT "SNX_TEST_GPL=whole"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the on-screen layer's pass (gpu/vk/ui.c, tests/vulkan_ui.inc) under the validation layer when it is installed:
+    # quads as instances, sampled in texels, and the device's buffer given only the quads that changed
+    add_test(NAME vulkan_ui COMMAND snx-test-vulkan -H --vk_validation=1)
+    set_tests_properties(vulkan_ui PROPERTIES TIMEOUT 60
+        ENVIRONMENT "SNX_TEST_UI_ONLY=1;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with guest memory read in place where the device can import it (gpu/vk/uma.c)
     add_test(NAME vulkan_headless_uma COMMAND snx-test-vulkan -H --vk_memory=2)
@@ -540,10 +577,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         gpu/vk/cmd.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c
         gpu/vk/memory.c gpu/vk/resource_stats.c gpu/vk/record.c gpu/vk/checkpoints.c gpu/vk/vma.cpp ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c"
-        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/texconv_etc2_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/bc7_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/bc7_fast_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_mode6_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/bc7_quick_spv.c"
-        "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp")
+        "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_etc2_cpu.cpp")
     target_include_directories(snx-test-astc-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests/glsl")
     target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags scarletnx-filesystem snx_xxhash snx_vk_common
                                                       Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})

@@ -2,7 +2,6 @@
    Copyright 2026 the ScarletNX contributors */
 /* The on-screen controls (runtime/platform/vpad.c): what fingers on them press, edit mode, the .ini keys, the draw */
 #include "nx/runtime/platform/vpad.h"
-#include "nx/runtime/platform/controls_atlas.h"
 #include <assert.h>
 #include <stdarg.h>
 #include <math.h>
@@ -12,6 +11,9 @@
 
 /* ui.c's lock, without the platform layer */
 #include "nx/runtime/platform/plat.h"
+
+/* a quad as it holds it (ui.h's ui_view): its place in pixels, its colour widened back to 8 bits */
+static SnxUiQuadView qv(const SnxUiQuad* q) { return ui_view(q); }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 
@@ -68,12 +70,53 @@ static int draw(SnxUiList* l) {
     vpad_draw(l, safe);
     return l->n;
 }
-/* the quad drawn with that sprite's texels, or NULL */
-static const SnxUiQuad* drawn(const SnxUiList* l, int sprite) {
+/* the looks the tests ask for (vpad.c's built-in look, ui.h's ui_shape): a button by its label, idle (its edge) or
+   pressed (filled); the D-pad's cross, and an arm of it pressed, its turn the arm (0 up, 1 right, 2 down, 3 left); a
+   stick's ring, an unlabelled circle, and its knob, the one right after it, idle or pressed */
+enum {
+    LOOK_A,
+    LOOK_A_PRESSED,
+    LOOK_B,
+    LOOK_X,
+    LOOK_X_PRESSED,
+    LOOK_Y,
+    LOOK_HOME,
+    LOOK_CAPTURE,
+    LOOK_L3,
+    LOOK_R3,
+    LOOK_DPAD,
+    LOOK_DPAD_UP,
+    LOOK_STICK_RANGE,
+    LOOK_STICK,
+    LOOK_STICK_PRESSED
+};
+static int look_is(const SnxUiList* l, int i, int look) {
+    static const unsigned label[] = {'A', 'A', 'B', 'X', 'X', 'Y', 0x7F, 0x07, 'L' | '3' << 8, 'R' | '3' << 8};
+    SnxUiQuadView v = qv(&l->q[i]);
+    int filled = v.uw & UI_SHAPE_FILLED, knob;
+    if (v.ink != UI_SHAPE) return 0;
+    if (look <= LOOK_R3)
+        return v.u != UI_SHAPE_CROSS && v.u != UI_SHAPE_BOX && v.v == label[look] &&
+               !filled == (look != LOOK_A_PRESSED && look != LOOK_X_PRESSED);
+    if (look == LOOK_DPAD) return v.u == UI_SHAPE_CROSS;
+    if (look == LOOK_DPAD_UP) return v.u == UI_SHAPE_BOX && filled;
+    if (v.u != UI_SHAPE_CIRCLE || v.v) return 0;
+    knob = i > 0 && qv(&l->q[i - 1]).ink == UI_SHAPE && qv(&l->q[i - 1]).u == UI_SHAPE_CIRCLE && !qv(&l->q[i - 1]).v &&
+           qv(&l->q[i - 1]).w > v.w;
+    return look == LOOK_STICK_RANGE ? !knob : knob && !filled == (look == LOOK_STICK);
+}
+/* the first quad drawn with that look as it holds it (ui_view), or NULL; at the list's index in views, so that two
+   compare in their order */
+static const SnxUiQuadView* drawn(const SnxUiList* l, int look) {
+    static SnxUiQuadView views[512];
     int i;
-    for (i = 0; i < l->n; ++i)
-        if (l->q[i].u == snx_controls_sprites[sprite][0] && l->q[i].v == snx_controls_sprites[sprite][1])
-            return &l->q[i];
+    for (i = 0; i < l->n && i < 512; ++i)
+        if (look_is(l, i, look)) {
+            views[i] = qv(&l->q[i]);
+            if (look == LOOK_DPAD_UP) /* the arm by its arrow: up, right, down, left */
+                views[i].turn = (u8)(views[i].v == 0x1E ? 0 : views[i].v == 0x10 ? 1 : views[i].v == 0x1F ? 2 : 3);
+            return &views[i];
+        }
     return NULL;
 }
 
@@ -83,7 +126,7 @@ int main(void) {
     i32 st[4];
     vpad_set_store(store);
     vpad_defaults(&d);
-    assert(g_settings.controls_scale == 50 && g_settings.controls_alpha == 50 && g_settings.relative_stick_center &&
+    assert(g_settings.controls_scale == 50 && g_settings.relative_stick_center &&
            g_settings.d_pad_slide && g_settings.haptics && !g_settings.snap_to_grid);
     /* off, nothing is taken nor drawn */
     assert(vpad_ini("controls", "0") && !g_settings.show_controls && !vpad_shown());
@@ -141,10 +184,10 @@ int main(void) {
         vpad_ini("controls_dpad_slide", "1");
         vpad_move(8, x, y + half * 0.6f, safe);
         assert(buttons(NULL) == 1u << 15);
-        /* drawn as the up sprite turned half round, over the D-pad */
+        /* drawn as the D-pad's down arm filled, over its cross */
         draw(&l);
-        assert(drawn(&l, SNX_SPRITE_DPAD_UP) && drawn(&l, SNX_SPRITE_DPAD_UP)->turn == 2 &&
-               drawn(&l, SNX_SPRITE_DPAD) && drawn(&l, SNX_SPRITE_DPAD) < drawn(&l, SNX_SPRITE_DPAD_UP));
+        assert(drawn(&l, LOOK_DPAD_UP) && drawn(&l, LOOK_DPAD_UP)->turn == 2 &&
+               drawn(&l, LOOK_DPAD) && drawn(&l, LOOK_DPAD) < drawn(&l, LOOK_DPAD_UP));
         assert(vpad_up(8) && !buttons(NULL));
     }
 
@@ -178,25 +221,23 @@ int main(void) {
     vpad_ini("controls_x", "0.870 0.340 100 0");
     assert(!g_settings.control_shown[SNX_VPAD_X] && !vpad_down(10, mx(SNX_VPAD_X), my(SNX_VPAD_X), safe));
     draw(&l);
-    assert(!drawn(&l, SNX_SPRITE_X) && drawn(&l, SNX_SPRITE_Y));
-    assert(drawn(&l, SNX_SPRITE_Y)->rgba >> 24 == 153); /* 50 by default, 0.6 on the built-in look's curve */
+    assert(!drawn(&l, LOOK_X) && drawn(&l, LOOK_Y));
+    assert(drawn(&l, LOOK_Y)->rgba == 0xFFFFFFFFu); /* white, opaque */
     vpad_ini("controls_x", "0.870 0.340 100 1");
     assert(vpad_down(10, mx(SNX_VPAD_X), my(SNX_VPAD_X), safe) && buttons(NULL) == 4);
     draw(&l);
-    assert(drawn(&l, SNX_SPRITE_X_PRESSED) && !drawn(&l, SNX_SPRITE_X));
+    assert(drawn(&l, LOOK_X_PRESSED) && !drawn(&l, LOOK_X));
     vpad_release();
     assert(!buttons(NULL) && !vpad_up(10));
 
-    /* opacity and scale: the alpha of every sprite, the size of every control */
-    vpad_ini("controls_alpha", "30");
+    /* scale: the size of every control; white and opaque at any */
     draw(&l);
-    assert(drawn(&l, SNX_SPRITE_A)->rgba >> 24 == 105);                           /* 0.3 ^ SNX_VPAD_BUILTIN_CURVE */
-    assert(drawn(&l, SNX_SPRITE_A)->w > 109 && drawn(&l, SNX_SPRITE_A)->w < 111); /* 11% of 1000 at 100% */
+    assert(drawn(&l, LOOK_A)->rgba == 0xFFFFFFFFu);
+    assert(drawn(&l, LOOK_A)->w > 109 && drawn(&l, LOOK_A)->w < 111); /* 11% of 1000 at 100% */
     vpad_ini("controls_scale", "100");
     draw(&l);
-    assert(drawn(&l, SNX_SPRITE_A)->w > 164 && drawn(&l, SNX_SPRITE_A)->w < 166);
+    assert(drawn(&l, LOOK_A)->w > 164 && drawn(&l, LOOK_A)->w < 166);
     vpad_ini("controls_scale", "50");
-    vpad_ini("controls_alpha", "50");
 
     /* the .ini: a place read back clamped, a broken one ignored, others not taken */
     assert(vpad_ini("controls_b", "1.5 -2 900 1") && vpad_config()->at[SNX_VPAD_B].x == 1 &&
@@ -274,12 +315,12 @@ int main(void) {
         /* "[ + ]" and "[ Done ]": their glyphs are the font's, at the bar's row */
         y = (float)(8 * s);
         for (i = 0; i < bar.n; ++i)
-            if (bar.q[i].y == y && bar.q[i].u == SNX_CONTROLS_FONT_X + '+' % 16 * 8 &&
-                bar.q[i].v == SNX_CONTROLS_FONT_Y + '+' / 16 * 16)
-                plus_x = bar.q[i].x;
-            else if (bar.q[i].y == y && bar.q[i].u == SNX_CONTROLS_FONT_X + 'D' % 16 * 8 &&
-                     bar.q[i].v == SNX_CONTROLS_FONT_Y + 'D' / 16 * 16)
-                done_x = bar.q[i].x;
+            if (qv(&bar.q[i]).y == y && bar.q[i].u == SNX_UI_FONT_X + '+' % 16 * 8 &&
+                bar.q[i].v == SNX_UI_FONT_Y + '+' / 16 * 16)
+                plus_x = qv(&bar.q[i]).x;
+            else if (qv(&bar.q[i]).y == y && bar.q[i].u == SNX_UI_FONT_X + 'D' % 16 * 8 &&
+                     bar.q[i].v == SNX_UI_FONT_Y + 'D' / 16 * 16)
+                done_x = qv(&bar.q[i]).x;
         assert(plus_x > 0 && done_x > plus_x);
         stores = 0;
         assert(vpad_down(14, plus_x + 2, y + 2, safe) && vpad_up(14));
@@ -290,7 +331,7 @@ int main(void) {
     {
         static const i32 none[4], right[4] = {32767, 0, 0, 0}, up[4] = {0, 32767, 0, 0}, corner[4] = {32767, 32767};
         const IniOpt* where = ini_find(g_display_ini, "showcase_corner");
-        const SnxUiQuad *ring, *knob, *q;
+        const SnxUiQuadView *ring, *knob, *q;
         float box[4][2] = {{20, 20}, {1480, 20}, {20, 680}, {1480, 680}}; /* 300 high, 500 wide, 20 from the corner */
         int i, k, digits;
         assert(where && !strcmp(g_settings.showcase_corner, "br"));
@@ -303,16 +344,16 @@ int main(void) {
         g_settings.showcase = 1;
         vpad_showcase_input(0, none);
         vpad_showcase_draw(&l, safe, 60);
-        assert(l.n > 13 && drawn(&l, SNX_SPRITE_A) && !drawn(&l, SNX_SPRITE_A_PRESSED) && drawn(&l, SNX_SPRITE_DPAD));
-        /* 0.6 of the 230 it had on rEden's drawables, over the art made opaque: the same look */
-        assert(drawn(&l, SNX_SPRITE_A)->rgba >> 24 == 138);
-        assert(!drawn(&l, SNX_SPRITE_HOME) && !drawn(&l, SNX_SPRITE_CAPTURE) && !drawn(&l, SNX_SPRITE_L3) &&
-               !drawn(&l, SNX_SPRITE_R3) && !drawn(&l, SNX_SPRITE_STICK_PRESSED));
+        assert(l.n > 13 && drawn(&l, LOOK_A) && !drawn(&l, LOOK_A_PRESSED) && drawn(&l, LOOK_DPAD));
+        /* white, opaque, as the touch controls */
+        assert(drawn(&l, LOOK_A)->rgba == 0xFFFFFFFFu);
+        assert(!drawn(&l, LOOK_HOME) && !drawn(&l, LOOK_CAPTURE) && !drawn(&l, LOOK_L3) &&
+               !drawn(&l, LOOK_R3) && !drawn(&l, LOOK_STICK_PRESSED));
         /* "60 FPS" at the box's top, in the font */
         for (i = digits = 0; i < l.n; ++i)
-            if (l.q[i].v == SNX_CONTROLS_FONT_Y + '6' / 16 * 16 &&
-                (l.q[i].u == SNX_CONTROLS_FONT_X + '6' % 16 * 8 || l.q[i].u == SNX_CONTROLS_FONT_X + '0' % 16 * 8)) {
-                assert(l.q[i].y > 680 && l.q[i].y < 680 + 30);
+            if (l.q[i].v == SNX_UI_FONT_Y + '6' / 16 * 16 &&
+                (l.q[i].u == SNX_UI_FONT_X + '6' % 16 * 8 || l.q[i].u == SNX_UI_FONT_X + '0' % 16 * 8)) {
+                assert(qv(&l.q[i]).y > 680 && qv(&l.q[i]).y < 680 + 30);
                 ++digits;
             }
         assert(digits == 2);
@@ -323,12 +364,13 @@ int main(void) {
             l.n = 0;
             vpad_showcase_draw(&l, safe, -1);
             for (i = 0; i < l.n; ++i)
-                assert(l.q[i].x >= box[k][0] - 0.01f && l.q[i].x + l.q[i].w <= box[k][0] + 500.01f &&
-                       l.q[i].y >= box[k][1] - 0.01f && l.q[i].y + l.q[i].h <= box[k][1] + 300.01f);
-            assert(l.q[0].x == box[k][0] && l.q[0].y == box[k][1] && l.q[0].w == 500 && l.q[0].h == 300);
+                assert(qv(&l.q[i]).x >= box[k][0] - 0.13f && qv(&l.q[i]).x + qv(&l.q[i]).w <= box[k][0] + 500.13f &&
+                       qv(&l.q[i]).y >= box[k][1] - 0.13f && qv(&l.q[i]).y + qv(&l.q[i]).h <= box[k][1] + 300.13f);
+            assert(qv(&l.q[0]).x == box[k][0] && qv(&l.q[0]).y == box[k][1] && qv(&l.q[0]).w == 500 &&
+                   qv(&l.q[0]).h == 300);
             for (i = 0; i < l.n; ++i) /* no frames a second before the first half second */
-                assert(!(l.q[i].u == SNX_CONTROLS_FONT_X + 'F' % 16 * 8 &&
-                         l.q[i].v == SNX_CONTROLS_FONT_Y + 'F' / 16 * 16));
+                assert(!(l.q[i].u == SNX_UI_FONT_X + 'F' % 16 * 8 &&
+                         l.q[i].v == SNX_UI_FONT_Y + 'F' / 16 * 16));
         }
         ini_read(where, "tl");
         ini_read(where, "lt");
@@ -338,36 +380,36 @@ int main(void) {
         assert(!strcmp(g_settings.showcase_corner, "tl"));
         l.n = 0;
         vpad_showcase_draw(&l, safe, -1);
-        assert(l.q[0].x == 20 && l.q[0].y == 20);
+        assert(qv(&l.q[0]).x == 20 && qv(&l.q[0]).y == 20);
         /* pressed: A lit, the D-pad's up, the left stick's click and its knob at the ring's edge */
         vpad_showcase_input(1u << 0 | 1u << 13 | 1u << 4, right);
         l.n = 0;
         vpad_showcase_draw(&l, safe, -1);
-        assert(drawn(&l, SNX_SPRITE_A_PRESSED) && !drawn(&l, SNX_SPRITE_A) && drawn(&l, SNX_SPRITE_B));
-        assert((q = drawn(&l, SNX_SPRITE_DPAD_UP)) && q->turn == 0 && drawn(&l, SNX_SPRITE_DPAD) &&
-               drawn(&l, SNX_SPRITE_DPAD) < q);
-        ring = drawn(&l, SNX_SPRITE_STICK_RANGE);
-        knob = drawn(&l, SNX_SPRITE_STICK_PRESSED);
-        assert(ring && knob && drawn(&l, SNX_SPRITE_STICK)); /* the right stick's knob stays up */
-        assert(fabsf(knob->x + knob->w / 2 - (ring->x + ring->w)) < 0.01f);
-        assert(fabsf(knob->y + knob->h / 2 - (ring->y + ring->h / 2)) < 0.01f);
+        assert(drawn(&l, LOOK_A_PRESSED) && !drawn(&l, LOOK_A) && drawn(&l, LOOK_B));
+        assert((q = drawn(&l, LOOK_DPAD_UP)) && q->turn == 0 && drawn(&l, LOOK_DPAD) &&
+               drawn(&l, LOOK_DPAD) < q);
+        ring = drawn(&l, LOOK_STICK_RANGE);
+        knob = drawn(&l, LOOK_STICK_PRESSED);
+        assert(ring && knob && drawn(&l, LOOK_STICK)); /* the right stick's knob stays up */
+        assert(fabsf(knob->x + knob->w / 2 - (ring->x + ring->w)) < 0.3f);
+        assert(fabsf(knob->y + knob->h / 2 - (ring->y + ring->h / 2)) < 0.3f);
         vpad_showcase_input(1u << 14, up); /* up is positive, as the game reads it: the knob goes up the screen */
         l.n = 0;
         vpad_showcase_draw(&l, safe, -1);
-        assert((q = drawn(&l, SNX_SPRITE_DPAD_UP)) && q->turn == 1);
-        ring = drawn(&l, SNX_SPRITE_STICK_RANGE);
-        knob = drawn(&l, SNX_SPRITE_STICK);
-        assert(fabsf(knob->y + knob->h / 2 - ring->y) < 0.01f &&
-               fabsf(knob->x + knob->w / 2 - (ring->x + ring->w / 2)) < 0.01f);
+        assert((q = drawn(&l, LOOK_DPAD_UP)) && q->turn == 1);
+        ring = drawn(&l, LOOK_STICK_RANGE);
+        knob = drawn(&l, LOOK_STICK);
+        assert(fabsf(knob->y + knob->h / 2 - ring->y) < 0.3f &&
+               fabsf(knob->x + knob->w / 2 - (ring->x + ring->w / 2)) < 0.3f);
         vpad_showcase_input(0, corner); /* a square of keys: the knob stays on its ring */
         l.n = 0;
         vpad_showcase_draw(&l, safe, -1);
-        ring = drawn(&l, SNX_SPRITE_STICK_RANGE);
-        knob = drawn(&l, SNX_SPRITE_STICK);
+        ring = drawn(&l, LOOK_STICK_RANGE);
+        knob = drawn(&l, LOOK_STICK);
         {
             float dx = knob->x + knob->w / 2 - (ring->x + ring->w / 2),
                   dy = knob->y + knob->h / 2 - (ring->y + ring->h / 2);
-            assert(fabsf(sqrtf(dx * dx + dy * dy) - ring->w / 2) < 0.01f && dx > 0 && dy < 0);
+            assert(fabsf(sqrtf(dx * dx + dy * dy) - ring->w / 2) < 0.3f && dx > 0 && dy < 0);
         }
         /* the showcase is a part of the picture, whatever its pixels: on one twice the size every quad is twice as
            big and twice as far from the corner, the frames' letters too, from the first draw that gets that size
@@ -384,28 +426,32 @@ int main(void) {
             n = l.n;
             assert(n > 13 + 6);
             memcpy(one, l.q, (size_t)n * sizeof *one);
-            assert(one[0].w == 500 && one[0].h == 300);
+            assert(qv(&one[0]).w == 500 && qv(&one[0]).h == 300);
             for (turn = 0; turn < 2; ++turn) { /* a window pulled wider and back: no draw at the size before */
                 l.n = 0;
                 vpad_showcase_draw(&l, twice, 60);
-                assert(l.n == n && l.q[0].w == 1000 && l.q[0].h == 600);
+                assert(l.n == n && qv(&l.q[0]).w == 1000 && qv(&l.q[0]).h == 600);
                 for (i = 0; i < n; ++i)
-                    assert(fabsf(l.q[i].x - 2 * one[i].x) < 0.01f && fabsf(l.q[i].y - 2 * one[i].y) < 0.01f &&
-                           fabsf(l.q[i].w - 2 * one[i].w) < 0.01f && fabsf(l.q[i].h - 2 * one[i].h) < 0.01f &&
+                    assert(fabsf(qv(&l.q[i]).x - 2 * qv(&one[i]).x) < 0.4f &&
+                           fabsf(qv(&l.q[i]).y - 2 * qv(&one[i]).y) < 0.4f &&
+                           fabsf(qv(&l.q[i]).w - 2 * qv(&one[i]).w) < 0.4f &&
+                               fabsf(qv(&l.q[i]).h - 2 * qv(&one[i]).h) < 0.4f &&
                            l.q[i].u == one[i].u && l.q[i].v == one[i].v);
                 l.n = 0;
                 vpad_showcase_draw(&l, safe, 60);
                 assert(l.n == n);
                 for (i = 0; i < n; ++i)
-                    assert(l.q[i].x == one[i].x && l.q[i].y == one[i].y && l.q[i].w == one[i].w &&
-                           l.q[i].h == one[i].h);
+                    assert(qv(&l.q[i]).x == qv(&one[i]).x && qv(&l.q[i]).y == qv(&one[i]).y &&
+                           qv(&l.q[i]).w == qv(&one[i]).w &&
+                           qv(&l.q[i]).h == qv(&one[i]).h);
             }
             l.n = 0;
             vpad_showcase_draw(&l, barred, 60);
             assert(l.n == n);
             for (i = 0; i < n; ++i)
-                assert(fabsf(l.q[i].x - (one[i].x + 120)) < 0.01f && fabsf(l.q[i].y - (one[i].y + 40)) < 0.01f &&
-                       fabsf(l.q[i].w - one[i].w) < 0.01f && fabsf(l.q[i].h - one[i].h) < 0.01f);
+                assert(fabsf(qv(&l.q[i]).x - (qv(&one[i]).x + 120)) < 0.3f &&
+                       fabsf(qv(&l.q[i]).y - (qv(&one[i]).y + 40)) < 0.3f &&
+                       fabsf(qv(&l.q[i]).w - qv(&one[i]).w) < 0.3f && fabsf(qv(&l.q[i]).h - qv(&one[i]).h) < 0.3f);
         }
         ini_read(where, "tl");
         /* the frames a second: none until half a second is over, then the presents over the last half or more */

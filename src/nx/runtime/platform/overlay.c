@@ -45,8 +45,6 @@ enum {
     C_EDIT,
     C_SNAP,
     C_SCALE,
-    C_OPACITY,
-    C_SKIN,
     C_STICK,
     C_DPAD,
     C_HAPTICS,
@@ -62,8 +60,6 @@ static const char* const CONTROLS[C_COUNT] = {"controls",
                                               "Edit layout",
                                               "controls_snap",
                                               "controls_scale",
-                                              "controls_alpha",
-                                              "controls_skin",
                                               "controls_rel_center",
                                               "controls_dpad_slide",
                                               "controls_haptics",
@@ -113,6 +109,11 @@ static const struct {
             {GUI_ICON_JOYSTICK, -1, "W, A, S, D", "left stick"},
             {GUI_ICON_JOYSTICK, -1, "I, J, K, L", "right stick"}};
 enum { KEYS_COUNT = sizeof KEYS / sizeof *KEYS };
+/* counts the changes to what the menu and the keyboard's box show: each call below that takes input or sets their
+   state adds one, and the renderer lays them out again only when it, or what they read from elsewhere, changed
+   (overlay_draw) */
+static u32 g_changes;
+static void changed(void) { __atomic_add_fetch(&g_changes, 1, __ATOMIC_RELEASE); }
 /* RenderDoc in the process, which shows the capture key's row (overlay_keys_extra), and the debugger's name */
 static int keys_capture, keys_mouse; /* keys_mouse: a game holds the mouse (overlay_keys_mouse) */
 static char keys_debugger[32];
@@ -143,8 +144,13 @@ static int keys_at(int r) {
         if (keys_text(i, text, sizeof text) && !r--) return i;
     return -1;
 }
-void overlay_keys_mouse(int on) { keys_mouse = on != 0; }
+void overlay_keys_mouse(int on) {
+    if (keys_mouse == (on != 0)) return;
+    keys_mouse = on != 0;
+    changed();
+}
 void overlay_keys_extra(int capture, const char* debugger) {
+    changed();
     keys_capture = capture != 0;
     snprintf(keys_debugger, sizeof keys_debugger, "%s", debugger ? debugger : "");
 }
@@ -156,6 +162,7 @@ static int nslots = 1, slot_at, ask, slots_stale;
 static u32 slots_gen; /* counts the lists given: the picture is set again */
 static char toast[OVERLAY_COLS_MAX + 1];
 static u64 toast_until;
+static u32 toast_version; /* counts the toasts given */
 static int pad_player; /* the player the gamepads' page shows: 0 every player's, 1 to SNX_GAMEPADS */
 /* the Shortcuts page: its row in focus waits for a key, and what the last key given was refused for ("" none) */
 static int listening;
@@ -167,7 +174,8 @@ static char refused[2 * OVERLAY_COLS_MAX];
 #define SOFT                     SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_SOFT, 0xFFu)
 #define LIGHT                    SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_PAGE, 0xFFu)
 #define FAILURE                  SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_FAILURE, 0xFFu)
-#define PANEL                    SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_SOFT, 0x40u) /* the page a little darker */
+/* the page a little darker: the soft colour at 0x40 over it, opaque */
+#define PANEL SNX_OVERLAY_RGBA(ui_over(SNX_GUI_THEME_YORHA_SOFT, SNX_GUI_THEME_YORHA_PAGE, 0x40u), 0xFFu)
 
 /* a slot's page's items: the auto slot has no Save */
 static int slot_item(int i) { return slot_at ? i : i + 1; }
@@ -236,10 +244,7 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
     if (o) {
         char word[OVERLAY_COLS];
         snprintf(text, size, "%s", o->name);
-        if (o->type == INI_TEXT) /* the skin: the built-in look, a shipped skin, or a .cfg's file name */
-            snprintf(word, sizeof word, "%s", *(const char*)o->var ? snx_path_leaf((const char*)o->var) : "Built-in");
-        else
-            ini_word(o, *(const int*)o->var, word, sizeof word);
+        ini_word(o, *(const int*)o->var, word, sizeof word);
         snprintf(value, vsize, arrows(o) ? "< %s >" : "%s", word);
         return;
     }
@@ -364,6 +369,7 @@ static void shortcut_give(unsigned key, unsigned mods) {
 }
 void overlay_shortcut_key(unsigned key, unsigned mods) {
     if (!overlay_shortcut_listening() || hotkey_modifier(key)) return; /* a modifier waits for its key */
+    changed();
     listening = 0;
     if (key != SDLK_ESCAPE && key != SDLK_AC_BACK) shortcut_give(key, mods);
 }
@@ -372,12 +378,14 @@ int overlay_backspace(void) {
     char why[160];
     int a = page == PAGE_SHORTCUTS ? shortcut(focus) : -1;
     if (a < 0) return overlay_back();
+    changed();
     listening = 0;
     if (!hotkey_parse(hotkey_row(a)->def, &key, &mods, why, sizeof why)) shortcut_give(key, mods);
     return OVERLAY_NONE;
 }
 void overlay_press(int control) {
     if (!overlay_listening()) return;
+    changed();
     map_swallow = 1;
     map_did(snx_pad_screen_press(&map, control));
 }
@@ -439,19 +447,6 @@ static int act(int i, int step) {
     if (page == PAGE_MAIN && main_item(i) == M_TV_MODE) {
         /* a select or a tap steps on, as the key does; Left and Right either way */
         options_tv_mode_step(step < 0 ? -1 : 1, NULL, 0);
-        return OVERLAY_NONE;
-    }
-    if (o && o->type == INI_TEXT) { /* the skin: round the built-in look and the shipped skins; a .cfg's path goes to
-                                       the built-in look, or the last skin stepping down */
-        char names[8][64];
-        int n = 1, at = -1, k;
-        names[0][0] = 0;
-        while (n < 8 && vpad_skin_shipped(n - 1, names[n], sizeof names[n])) ++n;
-        for (k = 0; k < n; ++k)
-            if (!strcmp(names[k], (const char*)o->var)) at = k;
-        k = at < 0 ? (step < 0 ? n - 1 : 0) : (at + (step < 0 ? n - 1 : 1)) % n;
-        ini_read(o, names[k]);
-        vpad_store_opt(o);
         return OVERLAY_NONE;
     }
     if (o) {
@@ -554,22 +549,27 @@ void overlay_slots_set(const OverlaySlot* given, int n) {
     slots_stale = 0;
     ++slots_gen;
     keep_in_view();
+    changed();
 }
 void overlay_toast(const char* text, u64 now_ns) {
     snprintf(toast, sizeof toast, "%s", text);
     toast_until = now_ns + (u64)SNX_OVERLAY_TOAST_MS * 1000000u;
+    ++toast_version;
 }
 int overlay_toasting(u64 now_ns) { return toast[0] && now_ns < toast_until; }
 /* overlay_notice's line until the next draw takes it ("" none), under a lock of its own: its callers may hold ui_lock
    or not */
 static PMutex notice_lock = PMUTEX_INIT;
 static char notice[OVERLAY_COLS_MAX + 1];
+static int notice_given; /* a line waits: the draw takes the lock only then */
 void overlay_notice(const char* text) {
     pm_lock(&notice_lock);
     snprintf(notice, sizeof notice, "%s", text);
+    __atomic_store_n(&notice_given, 1, __ATOMIC_RELEASE);
     pm_unlock(&notice_lock);
 }
 void overlay_toggle(void) {
+    changed();
     if (!shown) page_open(PAGE_MAIN);
     __atomic_store_n(&shown, !shown, __ATOMIC_RELEASE);
 }
@@ -578,6 +578,7 @@ static int rows(void) { return FIRST + (items() < VISIBLE ? items() : VISIBLE) +
 static int display_percent = 100; /* set on the event thread, read by the renderer's */
 void overlay_set_display_scale(float scale) {
     __atomic_store_n(&display_percent, scale > 0.0f ? (int)(scale * 100.0f) : 100, __ATOMIC_RELAXED);
+    changed();
 }
 int overlay_display_percent(void) { return __atomic_load_n(&display_percent, __ATOMIC_RELAXED); }
 void overlay_place(int sw, int sh, int* x, int* y, int* scale) {
@@ -819,15 +820,18 @@ void overlay_keyboard_show(const OverlayKeyboard* k) {
     g_overlay.refused = 0;
     g_overlay.answer = KB_WAITING;
     __atomic_store_n(&g_overlay.kb_shown, 1, __ATOMIC_RELEASE);
+    changed();
 }
 void overlay_keyboard_hide(u32 ticket) {
     if (g_overlay.kb.ticket == ticket) __atomic_store_n(&g_overlay.kb_shown, 0, __ATOMIC_RELEASE);
+    changed();
 }
 int overlay_keyboard_shown(void) { return __atomic_load_n(&g_overlay.kb_shown, __ATOMIC_ACQUIRE); }
 void overlay_keyboard_type(const char* text) {
     if (!g_overlay.kb_shown) return;
     kb_add(text);
     g_overlay.refused = 0;
+    changed();
 }
 static int kb_answer(int answer) {
     g_overlay.answer = answer;
@@ -837,6 +841,7 @@ static int kb_answer(int answer) {
 int overlay_keyboard_key(int key) {
     size_t end, at;
     if (!g_overlay.kb_shown) return OVERLAY_NONE;
+    changed();
     if (key == OVERLAY_KEY_CANCEL) return kb_answer(KB_CANCELLED);
     if (key == OVERLAY_KEY_ENTER) {
         if (g_overlay.units >= g_overlay.kb.min) return kb_answer(KB_GIVEN);
@@ -941,7 +946,10 @@ int overlay_keyboard_typing(int sw, int sh, OverlayTyping* t) {
     return 1;
 }
 
-int overlay_select(void) { return page == PAGE_MAP ? map_key(SNX_PAD_KEY_SELECT) : act(focus, 0); }
+int overlay_select(void) {
+    changed();
+    return page == PAGE_MAP ? map_key(SNX_PAD_KEY_SELECT) : act(focus, 0);
+}
 /* F1's page rows on, back for a negative rows: its rows go by, none in focus, from the first to the last showing */
 static void keys_scroll(int rows) {
     int n = keys_rows();
@@ -949,6 +957,7 @@ static void keys_scroll(int rows) {
 }
 void overlay_move(int rows) {
     int n = items();
+    changed();
     listening = 0;
     if (page == PAGE_MAP) {
         map_key(rows < 0 ? SNX_PAD_KEY_UP : SNX_PAD_KEY_DOWN);
@@ -962,6 +971,7 @@ void overlay_move(int rows) {
     keep_in_view();
 }
 void overlay_scroll(int rows) {
+    changed();
     listening = 0;
     if (page == PAGE_MAP || page == PAGE_KEYS) {
         overlay_move(rows);
@@ -972,6 +982,7 @@ void overlay_scroll(int rows) {
 }
 /* the first page's settings take no side step but the TV mode row's, and that one only on a press */
 static int side(int step, int held) {
+    changed();
     listening = 0;
     if (page == PAGE_KEYS) return OVERLAY_CLOSE;
     if (page == PAGE_MAP)
@@ -983,6 +994,7 @@ static int side(int step, int held) {
 int overlay_side(int step) { return side(step, 0); }
 int overlay_side_held(int step) { return side(step, 1); }
 int overlay_keys(void) {
+    changed();
     if (page == PAGE_KEYS) return OVERLAY_CLOSE;
     page_open(PAGE_KEYS);
     return OVERLAY_NONE;
@@ -1033,6 +1045,7 @@ int overlay_controls(u64 buttons, const i32 sticks[4], u64 ms) {
 }
 int overlay_back(void) {
     int from = page;
+    changed();
     if (listening) { /* the wait for a key, cancelled */
         listening = 0;
         return OVERLAY_NONE;
@@ -1168,6 +1181,7 @@ int overlay_tap(float x, float y, int sw, int sh) {
     Dialog d;
     DialogDrawn at;
     int r, col;
+    changed();
     if (!shown && g_overlay.kb_shown) return kb_tap(x, y, sw, sh);
     if (listening) { /* a tap, no key: the wait cancelled */
         listening = 0;
@@ -1245,32 +1259,114 @@ static void aside_draw(SnxUiList* l, const SnxOverlayRect* r) {
                 slot >= 0 && slots[slot].when[0] ? "No image" : "Empty", SOFT);
     }
 }
-void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
+/* The menu's page or the keyboard's box as laid out last, kept from frame to frame as the controls are (vpad.c):
+   laid out again only when the overlay's count of its changes differs (g_changes), or the picture's size, or what
+   they read from elsewhere: the keys' and the gamepads' counts, the TV mode, whether a frame can be captured, the
+   users, and the settings the page's rows show, whose variables are watched (g_menu.watch) */
+enum { MENU_NONE, MENU_PAGE, MENU_KB };
+enum { MENU_QUADS = 4096, MENU_WATCH = SNX_VPAD_COUNT + VISIBLE + 1 };
+typedef struct {
+    int sw, sh, what, tv, capture, users;
+    u32 changes, hotkeys, pads;
+} MenuKey;
+static struct {
+    int laid;
+    MenuKey key;
+    const int* watch[MENU_WATCH];
+    int was[MENU_WATCH], watched;
+    SnxUiQuad q[MENU_QUADS];
+    int n;
+    u32 version;
+} g_menu;
+static struct {
+    SnxUiQuad q[2 * OVERLAY_COLS_MAX + 4];
+    int n, sw, sh, percent;
+    u32 given, version;
+} g_toast;
+static void watch(const void* var) {
+    if (g_menu.watched == MENU_WATCH) return;
+    g_menu.watch[g_menu.watched] = (const int*)var;
+    g_menu.was[g_menu.watched++] = *(const int*)var;
+}
+static int watched_same(void) {
+    int i;
+    for (i = 0; i < g_menu.watched; ++i)
+        if (*g_menu.watch[i] != g_menu.was[i]) return 0;
+    return 1;
+}
+static void menu_lay(int sw, int sh, const MenuKey* key) {
     static DialogRows rows_of; /* the renderer's */
     char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[2 * OVERLAY_COLS_MAX + 64];
+    SnxUiList l = {g_menu.q, 0, MENU_QUADS};
     Dialog d;
     DialogDrawn at;
-    pm_lock(&notice_lock);
-    if (notice[0]) overlay_toast(notice, now_ns);
-    notice[0] = 0;
-    pm_unlock(&notice_lock);
-    if (!shown) { /* the keyboard's box, which the menu goes over */
-        if (g_overlay.kb_shown) {
-            KbTexts t;
-            kb_dialog(&d, &t);
-            dialog_draw(l, sw, sh, &d, rows_of, &at);
-        }
-        if (overlay_toasting(now_ns)) toast_draw(l, sw, sh);
-        return;
+    int r;
+    g_menu.watched = 0;
+    if (key->what == MENU_KB) {
+        KbTexts t;
+        kb_dialog(&d, &t);
+        dialog_draw(&l, sw, sh, &d, rows_of, &at);
+    } else if (key->what == MENU_PAGE) {
+        menu_dialog(&d, text, value, pads, sizeof pads);
+        dialog_draw(&l, sw, sh, &d, rows_of, &at);
+        if (at.aside.w > 0) aside_draw(&l, &at.aside);
+        if (page != PAGE_KEYS)
+            for (r = 0; r < d.shown; ++r) {
+                const IniOpt* o = setting(d.top + r);
+                if (o) watch(o->var);
+            }
+        if (page == PAGE_BUTTONS)
+            for (r = 0; r < SNX_VPAD_COUNT; ++r) watch(&g_settings.control_shown[r]); /* All's */
+        if (page == PAGE_ASK) watch(&g_settings.save_state_backup);
     }
-    if (page == PAGE_MAP) {
+    g_menu.n = l.n;
+    g_menu.key = *key;
+    g_menu.laid = 1;
+    ++g_menu.version;
+}
+void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
+    MenuKey key;
+    if (__atomic_load_n(&notice_given, __ATOMIC_ACQUIRE)) {
+        pm_lock(&notice_lock);
+        if (notice[0]) overlay_toast(notice, now_ns);
+        notice[0] = 0;
+        __atomic_store_n(&notice_given, 0, __ATOMIC_RELAXED);
+        pm_unlock(&notice_lock);
+    }
+    if (shown && page == PAGE_MAP) { /* the button map's page shows what the pads hold as they hold it */
         map_draw(l, sw, sh);
+        g_menu.laid = 0;
         return;
     }
-    menu_dialog(&d, text, value, pads, sizeof pads);
-    dialog_draw(l, sw, sh, &d, rows_of, &at);
-    if (at.aside.w > 0) aside_draw(l, &at.aside);
-    if (overlay_toasting(now_ns)) toast_draw(l, sw, sh);
+    memset(&key, 0, sizeof key);
+    key.sw = sw;
+    key.sh = sh;
+    key.what = shown ? MENU_PAGE : g_overlay.kb_shown ? MENU_KB : MENU_NONE;
+    key.changes = __atomic_load_n(&g_changes, __ATOMIC_ACQUIRE);
+    if (key.what != MENU_NONE) {
+        key.hotkeys = hotkeys_version();
+        key.pads = gamepad_names_version();
+        key.tv = options_tv_mode_choice();
+        key.capture = g_renderer->capture(0);
+        key.users = g_user_count;
+        if (!g_menu.laid || memcmp(&key, &g_menu.key, sizeof key) || !watched_same()) menu_lay(sw, sh, &key);
+        ui_append_kept(l, &(SnxUiList){g_menu.q, g_menu.n, g_menu.n}, g_menu.version, &g_menu, NULL);
+    }
+    if (overlay_toasting(now_ns)) {
+        int percent = overlay_display_percent();
+        if (g_toast.given != toast_version || g_toast.sw != sw || g_toast.sh != sh || g_toast.percent != percent ||
+            !g_toast.version) {
+            SnxUiList t = {g_toast.q, 0, (int)(sizeof g_toast.q / sizeof *g_toast.q)};
+            toast_draw(&t, sw, sh);
+            g_toast.n = t.n;
+            g_toast.given = toast_version;
+            g_toast.sw = sw;
+            g_toast.sh = sh;
+            g_toast.percent = percent;
+            ++g_toast.version;
+        }
+        ui_append_kept(l, &(SnxUiList){g_toast.q, g_toast.n, g_toast.n}, g_toast.version, &g_toast, NULL);
+    }
 }
 int overlay_error_hit(const SnxOverlayRect* r, float x, float y) {
     return r && r->w > 0 && r->h > 0 && x >= r->x && x < r->x + r->w && y >= r->y && y < r->y + r->h;

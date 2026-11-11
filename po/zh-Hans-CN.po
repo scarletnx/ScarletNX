@@ -2936,7 +2936,7 @@ msgstr "它的 Mii：游戏把它当作该用户的 Mii，没有头像文件时�
 msgid "System driver"
 msgstr ""
 
-#: src/gui/main.c
+#: src/gui/main.c src/nx/runtime/ini.c
 msgid "Android only"
 msgstr ""
 
@@ -3484,6 +3484,11 @@ msgstr ""
 #, c-format
 msgid "%s is not a nickname: %s"
 msgstr "%s 不是有效的昵称：%s"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s. A game on this system runs the same whatever it says, and it stays %s"
+msgstr ""
 
 #: src/gui/main.c
 msgid "Paste one local folder's path"
@@ -5623,6 +5628,22 @@ msgstr "app.ini 中的 recompile_background =，full 或 gentle"
 #: src/common/utilities/setup.c
 msgid "background_recompile =, Auto by default: Gentle on battery, Full on the charger"
 msgstr "background_recompile =，默认为自动：用电池时轻柔，接充电器时全速"
+
+#: src/nx/runtime/ini.c
+msgid "macOS only"
+msgstr ""
+
+#: src/nx/runtime/ini.c
+msgid "Windows only"
+msgstr ""
+
+#: src/nx/runtime/ini.c
+msgid "Linux and Android only"
+msgstr ""
+
+#: src/nx/runtime/ini.c
+msgid "arm64 Linux and Android only"
+msgstr ""
 
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"

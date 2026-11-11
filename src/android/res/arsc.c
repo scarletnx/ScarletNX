@@ -327,39 +327,38 @@ typedef struct {
     uint32_t spec_flags;
     uint16_t density;
 } Found;
-static bool find_package(ArscAssets* a, uint32_t id, Found* f, const Package** package) {
-    for (uint32_t t = 0; t < a->table_count; ++t)
-        for (uint32_t p = 0; p < a->tables[t].package_count; ++p)
-            if (a->tables[t].packages[p].id == id) {
-                f->table = &a->tables[t];
-                f->cookie = (int32_t)t + 1;
-                *package = &a->tables[t].packages[p];
-                return true;
-            }
-    return false;
-}
+/* The entry of resid for the configuration, from every table's package of its ID: a configuration split's table (a
+   density's, a language's) holds the base's package with the entries of its configurations, which AssetManager2
+   takes as one package group. The best configuration wins; of equal ones, the table added first */
 static bool find_entry(ArscAssets* a, uint32_t resid, Found* f) {
     *f = (Found){0};
-    const Package* p;
-    if (!find_package(a, resid >> 24, f, &p)) return false;
     unsigned type = (resid >> 16) & 0xff;
     uint32_t index = resid & 0xffff;
-    const Type* t = &p->types[type];
+    const Type* best_type = NULL;
     Config best = {0};
-    for (uint32_t i = 0; i < t->chunk_count; ++i) {
-        const unsigned char* chunk = t->chunks[i];
-        Config k = chunk_config(chunk);
-        if (!matches(&k, &a->config)) continue;
-        uint32_t offset = entry_offset(chunk, index);
-        if (offset == NO_ENTRY) continue;
-        if (f->entry && !better(&k, &best, &a->config)) continue;
-        best = k;
-        f->chunk = chunk;
-        f->entry = chunk + offset;
-    }
+    for (uint32_t ti = 0; ti < a->table_count; ++ti)
+        for (uint32_t pi = 0; pi < a->tables[ti].package_count; ++pi) {
+            const Package* p = &a->tables[ti].packages[pi];
+            if (p->id != resid >> 24) continue;
+            const Type* t = &p->types[type];
+            for (uint32_t i = 0; i < t->chunk_count; ++i) {
+                const unsigned char* chunk = t->chunks[i];
+                Config k = chunk_config(chunk);
+                if (!matches(&k, &a->config)) continue;
+                uint32_t offset = entry_offset(chunk, index);
+                if (offset == NO_ENTRY) continue;
+                if (f->entry && !better(&k, &best, &a->config)) continue;
+                best = k;
+                best_type = t;
+                f->table = &a->tables[ti];
+                f->cookie = (int32_t)ti + 1;
+                f->package = p;
+                f->chunk = chunk;
+                f->entry = chunk + offset;
+            }
+        }
     if (!f->entry) return false;
-    f->package = p;
-    f->spec_flags = t->spec && index < t->spec_count ? snx_ld_le32(t->spec + 4 * index) : 0;
+    f->spec_flags = best_type->spec && index < best_type->spec_count ? snx_ld_le32(best_type->spec + 4 * index) : 0;
     f->density = best.density;
     return true;
 }

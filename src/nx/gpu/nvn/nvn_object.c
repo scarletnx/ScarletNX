@@ -804,8 +804,9 @@ void nvn_TexturePoolRegisterImage(CPU* c, u64 tp, i32 id, u64 t, u64 v) {
 /* A sampler descriptor written over another that the submitted work may still read. The game reuses a pool entry as
    soon as the console's GPU is past the work that read it, which the replay can still have ahead of it: its draws would
    read the new sampler (one game's bloom reuses an entry per mip level each frame, read other levels and went white).
-   So the write waits for the work submitted before it, and is recorded for the renderer's kept descriptors. The
-   descriptor the slot already holds changes nothing for that work: no wait */
+   So the write waits for the work submitted before it, as far as that goes without the game (a queue stopped at an
+   event the game signals after this call reads the new sampler behind that wait on the console too), and is recorded
+   for the renderer's kept descriptors. The descriptor the slot already holds changes nothing for that work: no wait */
 static void sampler_write(u64 slot, const u32 tsc[8]) {
     if (!memcmp(GP(slot), tsc, NVN_DESCRIPTOR_SIZE)) return;
     nvn_wait_begin();

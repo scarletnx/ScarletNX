@@ -14,11 +14,14 @@
 
    It writes two files, both derived from the .decode files (LGPL-2.1-or-later):
    - the header: the features and targets, SNX_A64_OPS(X) (the names), SnxA64Op, SnxA64Flow, SnxA64Args (every
-     argument of every row, as int) and SnxA64Insn
-   - the decoder: the rows (mask, value, features, op, body), each row's body (its fields, predicates and conditional
-     features) in one switch, a static index of 2048 buckets on bits [31:21] with a second level on a run of lower
-     bits for a bucket of more than 16 rows, and snx_a64_decode(word, features, insn). It ends with
-     SNX_A64_DECODE_HASH, the FNV-1a hash of everything before it. */
+     argument of every row, each of the narrowest integer type that holds what the rows give it) and SnxA64Insn
+   - the decoder: the rows (mask, value, features, op, body, flow, nop), a static index of 2048 buckets on bits
+     [31:21] with a second level on a run of lower bits for a bucket of more than 16 rows, and
+     snx_a64_decode(word, features, insn): it scans the word's bucket for the first row whose mask, value and features
+     fit and ends in snx_a64_row, a tail call, which fills insn from the row and runs the row's body (its fields,
+     predicates and conditional features, every body in one switch). A row whose body refuses the word hands the rows
+     after it to snx_a64_rest, which is kept out of line. It ends with SNX_A64_DECODE_HASH, the FNV-1a hash of
+     everything before it. */
 #include "decodetree.h"
 #include <ctype.h>
 #include <stdarg.h>
@@ -58,26 +61,28 @@ static const char* const flow_names[FLOW_COUNT] = {"UNDEF", "PLAIN", "B",   "BL"
 enum { OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE };
 static const char* const op_text[] = {"==", "!=", "<", "<=", ">", ">="};
 
-/* the !function= decodetree may name; @ stands for the field's value */
+/* the !function= decodetree may name; @ stands for the field's value. rising: a greater field gives a greater
+   value, so the ends of a field too wide to try whole give the ends of its values (field_range) */
 static const struct {
     const char* name;
     const char* expr;
+    int rising;
 } funcs[] = {
-    {"", "@"},
-    {"plus_1", "(@ + 1)"},
-    {"plus_2", "(@ + 2)"},
-    {"xor_2", "(@ ^ 2)"},
-    {"rsub_8", "(8 - @)"},
-    {"rsub_16", "(16 - @)"},
-    {"rsub_32", "(32 - @)"},
-    {"rsub_64", "(64 - @)"},
-    {"shl_12", "(@ * 4096)"},
-    {"times_4", "(@ * 4)"},
-    {"times_8", "(@ * 8)"},
+    {"", "@", 1},
+    {"plus_1", "(@ + 1)", 1},
+    {"plus_2", "(@ + 2)", 1},
+    {"xor_2", "(@ ^ 2)", 0},
+    {"rsub_8", "(8 - @)", 0},
+    {"rsub_16", "(16 - @)", 0},
+    {"rsub_32", "(32 - @)", 0},
+    {"rsub_64", "(64 - @)", 0},
+    {"shl_12", "(@ * 4096)", 1},
+    {"times_4", "(@ * 4)", 1},
+    {"times_8", "(@ * 8)", 1},
     /* the size of an MTE tag granule is 16 bytes */
-    {"scale_by_log2_tag_granule", "(@ * 16)"},
+    {"scale_by_log2_tag_granule", "(@ * 16)", 1},
     /* sz:3 below imm12, the immediate scaled by the access size */
-    {"uimm_scaled", "(int)(((unsigned)@ >> 3) << ((unsigned)@ & 7))"},
+    {"uimm_scaled", "(int)(((unsigned)@ >> 3) << ((unsigned)@ & 7))", 0},
 };
 #define NFUNCS ((int)(sizeof funcs / sizeof funcs[0]))
 
@@ -90,6 +95,8 @@ typedef struct {
     char name[A64_NAME];
     Sub sub[MAX_SUB];
     int nsub, func, file;
+    int ranged; /* lo and hi are set: the least and the greatest value it gives (field_range) */
+    long long lo, hi;
 } Field;
 
 typedef struct {
@@ -175,6 +182,7 @@ static struct {
     Name names[MAX_NAMES];
     int nnames;
     char args[MAX_ARGS][A64_NAME];
+    long long arg_lo[MAX_ARGS], arg_hi[MAX_ARGS]; /* the least and the greatest value the rows give each */
     int nargs;
     char feats[MAX_FEATS][A64_NAME];
     int nfeats;
@@ -819,7 +827,7 @@ static void build_body(Row* r) {
         int v = pred_fold(r, &nm->pred[i], cond, sizeof cond);
         if (v == 0) fail("%s (line %d) can never match: its predicate %d never holds", nm->name, r->p.line, i + 1);
         if (v < 0) {
-            sprintf(line, "        if (!(%s)) return 0;\n", cond);
+            sprintf(line, "        if (!(%s)) goto next;\n", cond);
             append(&text, &len, &cap, line);
         }
     }
@@ -835,7 +843,8 @@ static void build_body(Row* r) {
         append(&text, &len, &cap, line);
         conds++;
     }
-    append(&text, &len, &cap, conds ? "        return (insn->feature & ~features) == 0;\n" : "        return 1;\n");
+    append(&text, &len, &cap,
+           conds ? "        if (insn->feature & ~features) goto next;\n        break;\n" : "        break;\n");
     for (i = 0; i < g.nbodies; i++)
         if (!strcmp(g.bodies[i], text)) break;
     if (i == g.nbodies) {
@@ -875,6 +884,78 @@ static void check_overlaps(void) {
             fail("%s overlaps %s (%s:%d), outside an overlapping group", a->p.name, b->p.name, g.files[b->p.file],
                  b->p.line);
         }
+}
+
+/* ---- the arguments' types ---- */
+
+#define MAX_TRIED (1 << 20)
+
+/* the least and the greatest value a field can give, whatever the word: every value its parts can hold goes through
+   its function, up to MAX_TRIED of them; a wider field is ranged by its two ends, which a rising function allows */
+static void field_range(Field* f, long long* lo, long long* hi) {
+    long long l = 0, h = 0, x;
+    int i;
+    if (f->ranged) {
+        *lo = f->lo;
+        *hi = f->hi;
+        return;
+    }
+    for (i = 0; i < f->nsub; i++) {
+        const Sub* s = &f->sub[i];
+        long long top = 1ll << s->len;
+        int sign = s->sign && !s->ref;
+        l = l * top + (sign ? -(top / 2) : 0);
+        h = h * top + (sign ? top / 2 - 1 : top - 1);
+    }
+    if (l < -0x7FFFFFFFLL - 1 || h > 0x7FFFFFFFLL) fail("%%%s spans %lld to %lld, outside an int", f->name, l, h);
+    f->lo = apply_func(f->func, (int)l);
+    f->hi = apply_func(f->func, (int)h);
+    if (h - l >= MAX_TRIED) {
+        if (!funcs[f->func].rising)
+            fail("%%%s spans %lld to %lld: !function=%s is not rising, and a span is tried whole up to %d values",
+                 f->name, l, h, funcs[f->func].name, MAX_TRIED);
+    } else {
+        for (x = l; x <= h; x++) {
+            long long v = apply_func(f->func, (int)x);
+            if (v < f->lo) f->lo = v;
+            if (v > f->hi) f->hi = v;
+        }
+    }
+    f->ranged = 1;
+    *lo = f->lo;
+    *hi = f->hi;
+}
+
+/* every argument's range over the rows; an argument starts at 0, which is what a row that doesn't give it leaves */
+static void arg_ranges(void) {
+    int i, k;
+    for (i = 0; i < g.nrows; i++) {
+        g.where = g.files[g.rows[i].p.file];
+        g.line = g.rows[i].p.line;
+        for (k = 0; k < g.rows[i].p.nas; k++) {
+            const Assign* a = &g.rows[i].p.as[k];
+            long long lo = a->value, hi = a->value;
+            if (a->field) field_range(&g.fields[a->field - 1], &lo, &hi);
+            if (lo < g.arg_lo[a->arg]) g.arg_lo[a->arg] = lo;
+            if (hi > g.arg_hi[a->arg]) g.arg_hi[a->arg] = hi;
+        }
+    }
+    g.where = NULL;
+    g.line = 0;
+}
+
+/* the narrowest integer type that holds an argument's range, and its size. Each promotes to int, so code that reads
+   an argument computes with the value an int member would give it */
+static const char* arg_type(int arg, int* size) {
+    long long lo = g.arg_lo[arg], hi = g.arg_hi[arg];
+    *size = 1;
+    if (lo >= 0 && hi <= 0xFF) return "uint8_t";
+    if (lo >= -0x80 && hi <= 0x7F) return "int8_t";
+    *size = 2;
+    if (lo >= 0 && hi <= 0xFFFF) return "uint16_t";
+    if (lo >= -0x8000 && hi <= 0x7FFF) return "int16_t";
+    *size = 4;
+    return "int32_t";
 }
 
 /* ---- the index ---- */
@@ -953,8 +1034,12 @@ static unsigned long long fnv1a(const char* s, size_t n) {
     return h;
 }
 
+/* the widest first, so no padding comes between them, then by name */
 static int cmp_args(const void* a, const void* b) {
-    return strcmp(g.args[*(const int*)a], g.args[*(const int*)b]);
+    int x = *(const int*)a, y = *(const int*)b, sx, sy;
+    arg_type(x, &sx);
+    arg_type(y, &sy);
+    return sx != sy ? sy - sx : strcmp(g.args[x], g.args[y]);
 }
 
 /* a path's file name, for the outputs, which don't depend on where the build is */
@@ -1002,10 +1087,15 @@ static void write_header(const char* path) {
     out("/* what an instruction does to the flow: UNDEF when no row matches; BC is a conditional branch; EXC an\n"
         "   exception other than SVC and BRK (HVC, SMC, HLT) */\ntypedef enum {\n");
     for (i = 0; i < FLOW_COUNT; i++) out("    SNX_A64_FLOW_%s,\n", flow_names[i]);
-    out("} SnxA64Flow;\n\n/* every argument of every row; those a row doesn't give are 0 */\ntypedef struct {\n");
+    out("} SnxA64Flow;\n\n/* every argument of every row; those a row doesn't give are 0. Each has the narrowest type that\n"
+        "   holds every value the rows give it, the widest first: an instruction is zeroed whole at each decode */\n"
+        "typedef struct {\n");
     for (i = 0; i < g.nargs; i++) order[i] = i;
     qsort(order, (size_t)g.nargs, sizeof order[0], cmp_args);
-    for (i = 0; i < g.nargs; i++) out("    int %s;\n", g.args[order[i]]);
+    for (i = 0; i < g.nargs; i++) {
+        int size;
+        out("    %s %s;\n", arg_type(order[i], &size), g.args[order[i]]);
+    }
     out("} SnxA64Args;\n\n/* a decoded word: feature is what this instance needs */\ntypedef struct {\n"
         "    SnxA64Op op;\n    SnxA64Flow flow;\n    int nop;\n    uint64_t feature;\n    SnxA64Args args;\n"
         "} SnxA64Insn;\n\n#endif\n");
@@ -1042,27 +1132,47 @@ static void write_fields(void) {
     out("\n};\n#endif\n\n");
 }
 
+/* snx_a64_bitmask_ok: whether a logical immediate's N:immr:imms names a mask. The element size is the highest set
+   bit of N:NOT(imms), at least 2 bits, and imms must not be all ones within it. That depends on N and imms alone, so
+   the check runs here for each of them and the decoder tests a bit of the answer */
+static void write_bitmask_ok(void) {
+    unsigned long long ok[2] = {0, 0};
+    unsigned n, imms;
+    for (n = 0; n < 2; n++)
+        for (imms = 0; imms < 64; imms++) {
+            unsigned x = (n << 6) | (~imms & 63), levels;
+            int len = 6;
+            while (len >= 0 && !((x >> len) & 1)) len--;
+            if (len < 1) continue;
+            levels = (1u << len) - 1;
+            if ((imms & levels) != levels) ok[n] |= 1ull << imms;
+        }
+    out("/* whether a logical immediate's N:immr:imms names a mask: bit imms of the constant for its N */\n"
+        "static int snx_a64_bitmask_ok(int dbm) {\n"
+        "    return (int)((((unsigned)dbm & 0x1000 ? 0x%016llxull : 0x%016llxull) >> ((unsigned)dbm & 63)) & 1);\n"
+        "}\n\n",
+        ok[1], ok[0]);
+}
+
 static void write_decoder(const char* path) {
     unsigned long long hash;
     int i;
     notice("the A64 decoder, included by one C file after a64_decode.h");
-    out("#include <stddef.h>\n\n");
+    out("#include <stddef.h>\n#include <string.h>\n\n");
     out("typedef struct {\n    uint32_t mask, value;\n    uint64_t feature;\n    uint16_t op, body;\n"
-        "} SnxA64Row;\n\n");
+        "    uint8_t flow, nop;\n} SnxA64Row;\n\n");
     out("typedef struct {\n    uint16_t start;\n    uint8_t count, lo, bits;\n} SnxA64Bucket;\n\n");
     out("static const char* const snx_a64_op_names[SNX_A64_OP_COUNT] = {\n    \"UNDEF\",\n"
         "#define SNX_A64_OP_NAME(name) #name,\n    SNX_A64_OPS(SNX_A64_OP_NAME)\n#undef SNX_A64_OP_NAME\n};\n\n");
-    out("static const uint8_t snx_a64_op_flow[SNX_A64_OP_COUNT] = {\n    SNX_A64_FLOW_UNDEF,\n");
-    for (i = 0; i < g.nnames; i++)
-        out("    SNX_A64_FLOW_%s, /* %s */\n", flow_names[g.names[i].flow], g.names[i].name);
-    out("};\n\nstatic const uint8_t snx_a64_op_nop[SNX_A64_OP_COUNT] = {\n    0,");
-    for (i = 0; i < g.nnames; i++) out("%s%d,", i % 32 == 31 ? "\n    " : " ", g.names[i].nop);
-    out("\n};\n\n/* the rows, in the .decode files' order: mask, value, the features always needed, op, body */\n"
-        "static const SnxA64Row snx_a64_rows[%d] = {\n", g.nrows);
+    out("/* the rows, in the .decode files' order: mask, value, the features always needed, op, body, flow, nop */\n"
+        "static const SnxA64Row snx_a64_rows[%d] = {\n",
+        g.nrows);
     for (i = 0; i < g.nrows; i++) {
         const Row* r = &g.rows[i];
-        out("    {0x%08xu, 0x%08xu, 0x%llxull, SNX_A64_OP_%s, %d}, /* %s:%d */\n", r->p.fixmask, r->p.fixval, r->feat,
-            g.names[r->name].name, r->body, base_name(g.files[r->p.file]), r->p.line);
+        const Name* nm = &g.names[r->name];
+        out("    {0x%08xu, 0x%08xu, 0x%llxull, SNX_A64_OP_%s, %d, SNX_A64_FLOW_%s, %d}, /* %s:%d */\n", r->p.fixmask,
+            r->p.fixval, r->feat, nm->name, r->body, flow_names[nm->flow], nm->nop, base_name(g.files[r->p.file]),
+            r->p.line);
     }
     out("};\n\n");
     write_fields();
@@ -1079,32 +1189,41 @@ static void write_decoder(const char* path) {
         out("%s{%d, %d, 0, 0},", i % 6 == 0 ? "\n    " : " ", g.subs[i].start, g.subs[i].count);
     if (!g.nsubs_out) out("{0, 0, 0, 0}");
     out("\n};\n\n");
-    if (g.uses_bitmask)
-        out("/* a logical immediate's N:immr:imms names a mask: the element size is the highest set bit of N:NOT(imms),\n"
-            "   at least 2 bits, and imms must not be all ones within it */\n"
-            "static int snx_a64_bitmask_ok(int dbm) {\n"
-            "    unsigned imms = (unsigned)dbm & 63, x = (((unsigned)dbm >> 6) & 64) | (~imms & 63), levels;\n"
-            "    int len = 6;\n    while (len >= 0 && !((x >> len) & 1)) len--;\n    if (len < 1) return 0;\n"
-            "    levels = (1u << len) - 1;\n    return (imms & levels) != levels;\n}\n\n");
-    out("/* a row's arguments, predicates and conditional features; 0 when the row doesn't match after all */\n"
-        "static int snx_a64_body(unsigned body, uint32_t w, uint64_t features, SnxA64Insn* insn) {\n"
-        "    SnxA64Args* a = &insn->args;\n    (void)w;\n    (void)features;\n    switch (body) {\n");
+    if (g.uses_bitmask) write_bitmask_ok();
+    out("/* snx_a64_rest stays a call: inside snx_a64_row its loop would cost every row's body a wider frame */\n"
+        "#if defined(__GNUC__)\n#define SNX_A64_NOINLINE __attribute__((noinline))\n#else\n#define SNX_A64_NOINLINE\n"
+        "#endif\n\n"
+        "SNX_A64_NOINLINE static SnxA64Op snx_a64_rest(const uint16_t* at, const uint16_t* end, uint32_t w,\n"
+        "                                              uint64_t features, SnxA64Insn* insn);\n\n");
+    out("/* the row *at, whose mask, value and features fit the word and the target: fills insn (the row's op, flow, nop\n"
+        "   and features, its arguments, the others 0) and answers the op. A body's predicates and conditional features\n"
+        "   can still refuse the word: the answer is then that of the rows after it, up to end */\n"
+        "static SnxA64Op snx_a64_row(const uint16_t* at, const uint16_t* end, uint32_t w, uint64_t features,\n"
+        "                            SnxA64Insn* insn) {\n"
+        "    const SnxA64Row* r = &snx_a64_rows[*at];\n    SnxA64Args* a = &insn->args;\n"
+        "    memset(insn, 0, sizeof *insn);\n    insn->op = (SnxA64Op)r->op;\n    insn->flow = (SnxA64Flow)r->flow;\n"
+        "    insn->nop = r->nop;\n    insn->feature = r->feature;\n    switch (r->body) {\n");
     for (i = 0; i < g.nbodies; i++) out("    case %d:\n%s", i, g.bodies[i]);
-    out("    default:\n        return 0;\n    }\n}\n\n");
+    out("    default:\n        goto next;\n    }\n    return (SnxA64Op)r->op;\nnext:\n"
+        "    return snx_a64_rest(at + 1, end, w, features, insn);\n}\n\n");
+    out("/* the first row from at to end that matches the word, each tried alone, or UNDEF: SNX_A64_OP_UNDEF and\n"
+        "   SNX_A64_FLOW_UNDEF are 0, as is everything else of insn then */\n"
+        "SNX_A64_NOINLINE static SnxA64Op snx_a64_rest(const uint16_t* at, const uint16_t* end, uint32_t w,\n"
+        "                                              uint64_t features, SnxA64Insn* insn) {\n"
+        "    for (; at != end; at++) {\n        const SnxA64Row* r = &snx_a64_rows[*at];\n"
+        "        if ((w & r->mask) == r->value && !(r->feature & ~features) &&\n"
+        "            snx_a64_row(at, at + 1, w, features, insn) != SNX_A64_OP_UNDEF)\n            return insn->op;\n"
+        "    }\n    memset(insn, 0, sizeof *insn);\n    return SNX_A64_OP_UNDEF;\n}\n\n");
     out("/* decodes word for a target with these features (SNX_A64_FEAT_*, or a SNX_A64_TARGET_*): the op, or\n"
         "   SNX_A64_OP_UNDEF when no row matches, with insn filled in either way */\n"
         "static SnxA64Op snx_a64_decode(uint32_t word, uint64_t features, SnxA64Insn* insn) {\n"
-        "    static const SnxA64Insn undef = {SNX_A64_OP_UNDEF, SNX_A64_FLOW_UNDEF, 0, 0, {0}};\n"
-        "    const SnxA64Bucket* b = &snx_a64_buckets[word >> 21];\n    unsigned start = b->start, count = b->count, i;\n"
-        "    if (b->bits) {\n        b = &snx_a64_split[start + ((word >> b->lo) & ((1u << b->bits) - 1))];\n"
-        "        start = b->start;\n        count = b->count;\n    }\n"
-        "    for (i = 0; i < count; i++) {\n        const SnxA64Row* r = &snx_a64_rows[snx_a64_list[start + i]];\n"
-        "        if ((word & r->mask) != r->value || (r->feature & ~features)) continue;\n"
-        "        *insn = undef;\n        insn->feature = r->feature;\n"
-        "        if (!snx_a64_body(r->body, word, features, insn)) continue;\n"
-        "        insn->op = (SnxA64Op)r->op;\n        insn->flow = (SnxA64Flow)snx_a64_op_flow[r->op];\n"
-        "        insn->nop = snx_a64_op_nop[r->op];\n        return insn->op;\n    }\n"
-        "    *insn = undef;\n    return SNX_A64_OP_UNDEF;\n}\n\n");
+        "    const SnxA64Bucket* b = &snx_a64_buckets[word >> 21];\n    const uint16_t *at, *end;\n"
+        "    if (b->bits) b = &snx_a64_split[b->start + ((word >> b->lo) & ((1u << b->bits) - 1))];\n"
+        "    at = &snx_a64_list[b->start];\n"
+        "    for (end = at + b->count; at != end; at++) {\n        const SnxA64Row* r = &snx_a64_rows[*at];\n"
+        "        if ((word & r->mask) == r->value && !(r->feature & ~features))\n"
+        "            return snx_a64_row(at, end, word, features, insn);\n"
+        "    }\n    memset(insn, 0, sizeof *insn);\n    return SNX_A64_OP_UNDEF;\n}\n\n");
     out("static inline const char* snx_a64_op_name(SnxA64Op op) {\n"
         "    return (unsigned)op < SNX_A64_OP_COUNT ? snx_a64_op_names[op] : \"?\";\n}\n\n");
     hash = fnv1a(g.obuf, g.olen);
@@ -1153,6 +1272,7 @@ int a64_generate(const char* profile, const char* header, const char* decoder, i
     g.where = NULL;
     g.line = 0;
     check_overlaps();
+    arg_ranges();
     build_index();
     write_header(header);
     write_decoder(decoder);

@@ -118,6 +118,42 @@ static u8* guest_bytes(const u64* code, size_t bytes) {
     for (size_t i = 0; i < bytes / 8; i++) snx_st_le64(guest + i * 8, code[i]);
     return guest;
 }
+/* The OpBitcasts of a module that give a 32-bit float back from its own bits: OpBitcast %float of an OpBitcast (to
+   another type) of a value that is a float already. The translator keeps what a register holds as the float it was
+   written as, so every program this file translates has none (spirv_of) */
+static int float_round_trips(const u32* code, size_t words) {
+    u32 f32 = 0;
+    int found = 0;
+    for (size_t i = 5; i < words && !f32;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return -1;
+        if ((code[i] & 0xffff) == 22 && width == 3 && code[i + 2] == 32) f32 = code[i + 1];
+        i += width;
+    }
+    for (size_t i = 5; f32 && i < words;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return -1;
+        if ((code[i] & 0xffff) == 124 && width == 4 && code[i + 1] == f32)
+            for (size_t j = 5; j < words;) {
+                u32 inner = code[j] >> 16;
+                if (!inner || j + inner > words) return -1;
+                if ((code[j] & 0xffff) == 124 && inner == 4 && code[j + 2] == code[i + 3]) /* the bits it reads */
+                    for (size_t k = 5; k < words;) {
+                        u32 source = code[k] >> 16, op = code[k] & 0xffff;
+                        if (!source || k + source > words) return -1;
+                        /* what those bits were made from: a value of a function (after the types and constants,
+                           whose instructions carry no result type at this place) or a constant, of type float */
+                        if (source >= 3 && code[k + 2] == code[j + 3] && code[k + 1] == f32 &&
+                            (op == 43 || (op >= 61 && op != 62 && op != 71 && op != 72)))
+                            found++;
+                        k += source;
+                    }
+                j += inner;
+            }
+        i += width;
+    }
+    return found;
+}
 static u32* spirv_of(const u64* code, size_t bytes, int stage, ShaderInfo* info, size_t* words, int flush,
                      int can_preserve, int can_preserve_f64, int can_subgroup) {
     u8* guest = guest_bytes(code, bytes);
@@ -125,6 +161,11 @@ static u32* spirv_of(const u64* code, size_t bytes, int stage, ShaderInfo* info,
                                           can_subgroup)
                         : NULL;
     free(guest);
+    if (result) {
+        int trips = float_round_trips(result, *words);
+        if (trips) fprintf(stderr, "a module of %zu words has %d float round trips through its bits\n", *words, trips);
+        check(!trips, "no float is cast to its bits and back");
+    }
     return result;
 }
 static u32* compute_spirv_of(const u64* code, size_t bytes, ShaderInfo* info, size_t* words, int flush,
@@ -612,34 +653,40 @@ static int seeded_register_feeds(const u32* code, size_t words, u32 seed, u32 op
     return 0;
 }
 
+/* whether value is component of a vector that an explicit-gradient sample takes as its dx (gradient 0) or dy (1) */
+static int gradient_takes(const u32* code, size_t words, u32 value, u32 gradient, u32 component) {
+    for (size_t k = 5; k < words;) {
+        u32 construct_span = code[k] >> 16;
+        if (!construct_span || k + construct_span > words) return 0;
+        if ((code[k] & 0xffff) == 80 && construct_span > 3 + component && code[k + 3 + component] == value) {
+            u32 vector = code[k + 2];
+            for (size_t m = 5; m < words;) {
+                u32 sample_span = code[m] >> 16;
+                if (!sample_span || m + sample_span > words) return 0;
+                if ((code[m] & 0xffff) == 88 && sample_span > 6 + gradient && (code[m + 5] & ~8u) == 4 &&
+                    code[m + 6 + gradient] == vector)
+                    return 1;
+                m += sample_span;
+            }
+        }
+        k += construct_span;
+    }
+    return 0;
+}
+/* a register seeded with a constant is that gradient component: as its bits' bitcast, or as the float constant of
+   those bits, which a read in the block of its write takes */
 static int seeded_gradient_component(const u32* code, size_t words, u32 seed, u32 gradient, u32 component) {
     u32 values[64];
     size_t nvalues = seeded_values(code, words, seed, values, 64);
     for (size_t v = 0; v < nvalues; v++) {
         u32 loaded = values[v];
+        if (gradient_takes(code, words, loaded, gradient, component)) return 1;
         for (size_t j = 5; j < words;) {
             u32 span = code[j] >> 16;
             if (!span || j + span > words) return 0;
-            if ((code[j] & 0xffff) == 124 && span == 4 && code[j + 3] == loaded) {
-                u32 value = code[j + 2];
-                for (size_t k = 5; k < words;) {
-                    u32 construct_span = code[k] >> 16;
-                    if (!construct_span || k + construct_span > words) return 0;
-                    if ((code[k] & 0xffff) == 80 && construct_span > 3 + component &&
-                        code[k + 3 + component] == value) {
-                        u32 vector = code[k + 2];
-                        for (size_t m = 5; m < words;) {
-                            u32 sample_span = code[m] >> 16;
-                            if (!sample_span || m + sample_span > words) return 0;
-                            if ((code[m] & 0xffff) == 88 && sample_span > 6 + gradient && (code[m + 5] & ~8u) == 4 &&
-                                code[m + 6 + gradient] == vector)
-                                return 1;
-                            m += sample_span;
-                        }
-                    }
-                    k += construct_span;
-                }
-            }
+            if ((code[j] & 0xffff) == 124 && span == 4 && code[j + 3] == loaded &&
+                gradient_takes(code, words, code[j + 2], gradient, component))
+                return 1;
             j += span;
         }
     }
@@ -4699,6 +4746,207 @@ static void rendering_stage_features(const char* directory) {
     g_shader_stage_point_size = point_size_available;
 }
 
+/* whether the module has a 32-bit float constant of those bits */
+static int has_float_constant(const u32* code, size_t words, u32 bits) {
+    u32 f32 = 0;
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return 0;
+        if ((code[i] & 0xffff) == 22 && width == 3 && code[i + 2] == 32) f32 = code[i + 1];
+        if ((code[i] & 0xffff) == 43 && width == 4 && f32 && code[i + 1] == f32 && code[i + 3] == bits) return 1;
+        i += width;
+    }
+    return 0;
+}
+/* What the translator knows as it translates is settled there, not left for the driver's compiler: PT, the
+   predicate most instructions name, is the constant true; a constant a register holds is a constant of the type it
+   is read as; and a float a register holds is read back as that float, not through its bits */
+static void settled_when_translated(void) {
+    enum { SELECT = 169, BITCAST = 124, F_MIN = 37, F_MAX = 40, F_ABS = 4 };
+    const u64 pt = 7ull << 39, negated = 1ull << 42, a1_b2 = 1ull << 8 | 2ull << 20;
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code = translate(NULL, 0, ST_FS, &info, &words, 0);
+    check_translated(code, &info, "a program of an EXIT alone translates");
+    int selects = code ? count_opcode(code, words, SELECT, 0xffffffffu) : 0;
+    int bitcasts = code ? count_opcode(code, words, BITCAST, 0xffffffffu) : 0;
+    check(code && !has_glsl_instruction(code, words, F_MIN) && !has_glsl_instruction(code, words, F_MAX) &&
+              !has_glsl_instruction(code, words, F_ABS),
+          "a fragment program's epilogue has no minimum, maximum or absolute value of its own");
+    free(code);
+    /* FSETP P1, P2 = R1 < R2 combined with PT, !PT and P0: by AND, OR and XOR (bits 45-46) */
+    const u64 fsetp = 0x5BB0000000070000ull | 1ull << 48 | a1_b2 | 1ull << 3 | 2;
+    const struct {
+        u64 predicate;
+        int made; /* the ANDs, ORs or XORs written, one for each of the two predicates */
+    } combined[] = {{pt, 0}, {pt | negated, 0}, {0, 2}};
+    static const u32 combine[3] = {167, 166, 165}; /* OpLogicalAnd, OpLogicalOr, OpLogicalNotEqual */
+    for (u32 by = 0; by < 3; by++) {
+        code = translate(NULL, 0, ST_FS, &info, &words, 0);
+        int epilogue = code ? count_opcode(code, words, combine[by], 0xffffffffu) : 0;
+        free(code);
+        for (int i = 0; i < 3; i++) {
+            const u64 program[] = {fsetp | combined[i].predicate | (u64)by << 45};
+            code = translate(program, 1, ST_FS, &info, &words, 0);
+            check_translated(code, &info, "FSETP translates");
+            int made = code ? count_opcode(code, words, combine[by], 0xffffffffu) - epilogue : -1;
+            if (made != combined[i].made)
+                fprintf(stderr, "FSETP combined by %u with predicate form %d writes %d of opcode %u, not %d\n", by, i,
+                        made, combine[by], combined[i].made);
+            check(
+                made == combined[i].made,
+                "a comparison combined with PT or !PT is settled, and one combined with a predicate is written twice");
+            free(code);
+        }
+    }
+    /* PSETP P1, P2 = PT and P0, !PT and P0, each combined with PT: P0 and false, with no NOT of PT written */
+    code = translate(NULL, 0, ST_FS, &info, &words, 0);
+    int nots = code ? count_opcode(code, words, 168, 0xffffffffu) : 0;
+    free(code);
+    const u64 psetp[] = {0x5090000000070000ull | 7ull << 12 | pt | 1ull << 3 | 2};
+    code = translate(psetp, 1, ST_FS, &info, &words, 0);
+    check_translated(code, &info, "PSETP translates");
+    check(code && count_opcode(code, words, 168, 0xffffffffu) == nots,
+          "PSETP's second predicate takes !PT as the constant false, with no OpLogicalNot");
+    free(code);
+    /* FMNMX R4 = R1, R2 picked by PT (the minimum), !PT (the maximum) and P0 (either), then DMNMX, IMNMX and SEL */
+    const struct {
+        u64 word;
+        int minimum, maximum, selects;
+    } picked[] = {{0x5C60000000070000ull | pt, 1, 0, 2}, /* the two operands' NaN tests */
+                  {0x5C60000000070000ull | pt | negated, 0, 1, 2},
+                  {0x5C60000000070000ull, 1, 1, 3},
+                  {0x5C50000000070000ull | pt, 1, 0, 2}, /* DMNMX: as FMNMX, of doubles */
+                  {0x5C50000000070000ull | pt | negated, 0, 1, 2},
+                  {0x5C50000000070000ull, 1, 1, 5},
+                  {0x5C20000000070000ull | pt, 0, 0, 1}, /* IMNMX: the minimum's select */
+                  {0x5C20000000070000ull | pt | negated, 0, 0, 1},
+                  {0x5C20000000070000ull, 0, 0, 3},
+                  {0x5CA0000000070000ull | pt, 0, 0, 0}, /* SEL: R1 itself */
+                  {0x5CA0000000070000ull, 0, 0, 1}};
+    for (int i = 0; i < 11; i++) {
+        const u64 program[] = {picked[i].word | a1_b2 | 4};
+        code = translate(program, 1, ST_FS, &info, &words, 0);
+        check_translated(code, &info, "FMNMX, DMNMX, IMNMX and SEL translate");
+        if (code && count_opcode(code, words, SELECT, 0xffffffffu) != selects + picked[i].selects)
+            fprintf(stderr, "pick %d: %d OpSelect, not the epilogue's %d and its %d\n", i,
+                    count_opcode(code, words, SELECT, 0xffffffffu), selects, picked[i].selects);
+        check(code && has_glsl_instruction(code, words, F_MIN) == picked[i].minimum &&
+                  has_glsl_instruction(code, words, F_MAX) == picked[i].maximum &&
+                  count_opcode(code, words, SELECT, 0xffffffffu) == selects + picked[i].selects,
+              "PT or !PT picks one side as the program is translated: the other side and the select are not made");
+        free(code);
+    }
+    /* R4 = R1 * R2, R5 = R4 (MOV), R6 = R5 * R5: R1 and R2 are read as floats, and nothing else is cast */
+    const u64 copied[] = {0x5C68000000070000ull | a1_b2 | 4, 0x5C98078000070000ull | 4ull << 20 | 5,
+                          0x5C68000000070000ull | 5ull << 8 | 5ull << 20 | 6};
+    code = translate(copied, 3, ST_FS, &info, &words, 0);
+    check_translated(code, &info, "a float product copied and multiplied translates");
+    if (code && count_opcode(code, words, BITCAST, 0xffffffffu) != bitcasts + 2)
+        fprintf(stderr, "a copied float: %d OpBitcast, not the epilogue's %d and 2\n",
+                count_opcode(code, words, BITCAST, 0xffffffffu), bitcasts);
+    check(code && count_opcode(code, words, BITCAST, 0xffffffffu) == bitcasts + 2,
+          "a register copied from a float is read as that float, with no bitcast of its bits");
+    free(code);
+    /* R4 = 0.5's bits (MOV32I), R5 = R1 * R4: the factor is the float constant */
+    const u64 immediate[] = {mov32i(4, 0x3f000000u), 0x5C68000000070000ull | 1ull << 8 | 4ull << 20 | 5};
+    code = translate(immediate, 2, ST_FS, &info, &words, 0);
+    check_translated(code, &info, "a float product with a register's constant translates");
+    check(code && count_opcode(code, words, BITCAST, 0xffffffffu) == bitcasts + 1 &&
+              has_float_constant(code, words, 0x3f000000u),
+          "a register's constant read as a float is a float constant of its bits, not their bitcast");
+    free(code);
+    /* R4 = -1.0's bits, R5 = R1 + |R4| (FADD's bit 49): the constant's absolute value, 1.0, with no FAbs */
+    const u64 absolute[] = {mov32i(4, 0xbf800000u), 0x5C58000000070000ull | 1ull << 49 | 1ull << 8 | 4ull << 20 | 5};
+    code = translate(absolute, 2, ST_FS, &info, &words, 0);
+    check_translated(code, &info, "a float sum with a constant's absolute value translates");
+    check(code && !has_glsl_instruction(code, words, F_ABS) && has_float_constant(code, words, 0x3f800000u),
+          "a constant's absolute value is the constant 1.0 for -1.0, with no FAbs");
+    free(code);
+    /* Each program's bitcasts beyond the epilogue's. R5 = R1's bits (MOV), R4 = R1 * R5: those bits are cast once.
+       R4 = R1 * R2, R5 = PT ? R4 : R2 (SEL, R4's bits themselves), R6 = R5 * R5: R1, R2 and R4's bits for the SEL,
+       which R5 gives back as R4's float. R4 = floor(R1) (F2F), R5 = R4 * R4: R1 alone. R4 = c1[2]'s bits (MOV),
+       R5 = R1 * c1[2], R6 = R4 * R4: R1 and the constant buffer word, cast once. R4 = R1 * RZ: R1, RZ being the
+       constant 0.0. R5 = R4 < 0 ? R1 : 1.0 (FCMP with an immediate): R4, the immediate's bits being a constant.
+       R4 = floor(c1[2]) (F2F), R5 = R1 * c1[2]: R1 and the word, cast once for both */
+    const u64 fmul = 0x5C68000000070000ull, mov = 0x5C98078000070000ull, word = 1ull << 34 | 2ull << 20;
+    const u64 twice[] = {mov | 1ull << 20 | 5, fmul | 1ull << 8 | 5ull << 20 | 4};
+    const u64 back[] = {fmul | a1_b2 | 4, 0x5CA0000000070000ull | pt | 4ull << 8 | 2ull << 20 | 5,
+                        fmul | 5ull << 8 | 5ull << 20 | 6};
+    const u64 floored[] = {0x5CA8000000070000ull | 1ull << 42 | 1ull << 39 | 2ull << 10 | 2ull << 8 | 1ull << 20 | 4,
+                           fmul | 4ull << 8 | 4ull << 20 | 5};
+    const u64 buffer[] = {0x4C98078000070000ull | word | 4, 0x4C68000000070000ull | word | 1ull << 8 | 5,
+                          fmul | 4ull << 8 | 4ull << 20 | 6};
+    const u64 zero[] = {fmul | 1ull << 8 | 255ull << 20 | 4};
+    const u64 compared[] = {0x36A0000000070000ull | 4ull << 39 | 1ull << 48 | 1ull << 8 | 0x3f800ull << 20 | 5};
+    const u64 floored_word[] = {0x4CA8000000070000ull | 1ull << 42 | 1ull << 39 | 2ull << 10 | 2ull << 8 | word | 4,
+                                0x4C68000000070000ull | word | 1ull << 8 | 5};
+    const struct {
+        const u64* program;
+        int count, casts;
+        const char* what;
+    } cast[] = {{twice, 2, 1, "a register's bits copied to another are cast to a float once for both"},
+                {back, 3, 3, "bits made from a float and passed on are read back as that float"},
+                {floored, 2, 1, "a float conversion's result is kept as the float, its bits not made"},
+                {buffer, 3, 2, "a constant buffer word is cast to a float once for a register that holds it too"},
+                {zero, 1, 1, "RZ read as a float is the constant 0.0"},
+                {compared, 1, 1, "a float immediate taken as bits is the constant of its bits"},
+                {floored_word, 2, 2, "a constant buffer word a conversion reads is cast to a float once"}};
+    for (int i = 0; i < 7; i++) {
+        code = translate(cast[i].program, cast[i].count, ST_FS, &info, &words, 0);
+        check_translated(code, &info, cast[i].what);
+        int made = code ? count_opcode(code, words, BITCAST, 0xffffffffu) - bitcasts : -1;
+        if (made != cast[i].casts)
+            fprintf(stderr, "cast program %d writes %d OpBitcast beyond the epilogue's %d, not %d\n", i, made, bitcasts,
+                    cast[i].casts);
+        check(made == cast[i].casts, cast[i].what);
+        free(code);
+    }
+    /* R4 = R1 * R2, R5 = R4 (MOV), then an EXIT under P0, which ends the block: R4 and R5 are stored from one
+       bitcast of the product, after R1's and R2's; the program's two exits each have the epilogue */
+    const u64 stored[] = {fmul | a1_b2 | 4, mov | 4ull << 20 | 5, 0xE30000000000000Full};
+    code = translate(stored, 3, ST_FS, &info, &words, 0);
+    check_translated(code, &info, "a copied float stored at a block's end translates");
+    int stored_casts = code ? count_opcode(code, words, BITCAST, 0xffffffffu) - 2 * bitcasts : -1;
+    if (stored_casts != 3)
+        fprintf(stderr, "two registers of one float stored: %d OpBitcast beyond the epilogues' %d, not 3\n",
+                stored_casts, 2 * bitcasts);
+    check(stored_casts == 3, "two registers that hold one float are stored from one bitcast of it");
+    free(code);
+    /* Reads that spirv_of's check judges, each of a float the instruction before wrote: a product as FCMP's third
+       operand, as HADD2's two F32 operands, as TEXS.LL.DC's depth reference (R5), as TLD4's y (R5) and TLD4S.DC's
+       depth reference (R6), and the depth comparison's result (TEXS.LL.DC writes R0, TEX.DC R8) multiplied */
+    const u64 texs =
+        0xD000000000070000ull | 1ull << 59 | 5ull << 53 | 0x10ull << 36 | 0xffull << 28 | 4ull << 20 | 2ull << 8;
+    const u64 tex =
+        0xC000000000070000ull | 0x10ull << 36 | 7ull << 51 | 1ull << 50 | 1ull << 31 | 2ull << 28 | 0xffull << 20 | 8;
+    const u64 tld4 = 0xC800000000070000ull | 7ull << 51 | 0x10ull << 36 | 0xfull << 31 | 2ull << 28 | 4ull << 8;
+    const u64 judged[][2] = {
+        {fmul | a1_b2 | 4, 0x5BA0000000070000ull | 4ull << 39 | 1ull << 48 | a1_b2 | 5},
+        {fmul | a1_b2 | 4, 0x5D10000000070000ull | 1ull << 47 | 1ull << 28 | 4ull << 8 | 4ull << 20 | 5},
+        {fmul | a1_b2 | 5, texs},
+        {fmul | a1_b2 | 5, tld4 | 0xffull << 20},
+        {fmul | a1_b2 | 6, 0xDF00000000070000ull | 0x10ull << 36 | 1ull << 50 | 6ull << 20 | 2ull << 8},
+        {texs, fmul | 6},
+        {tex, fmul | 8ull << 8 | 8ull << 20 | 6}};
+    for (int i = 0; i < 7; i++) {
+        code = translate(judged[i], 2, ST_FS, &info, &words, 0);
+        check_translated(code, &info,
+                         "a float read by FCMP, HADD2, TEXS or TLD4, or after a depth comparison, translates");
+        free(code);
+    }
+    /* and the product as a color target's alpha (R3 of four components: the program header's word 18 is 15) */
+    u64 colored[16] = {0};
+    colored[9] = 15;
+    colored[10] = SCHED;
+    colored[11] = fmul | a1_b2 | 3;
+    colored[12] = EXIT;
+    ShaderInfo colored_info = {0};
+    code = spirv_of(colored, sizeof colored, ST_FS, &colored_info, &words, 0, 1, 1, 1);
+    check_translated(code, &colored_info, "a float product written as a color's alpha translates");
+    free(code);
+}
+
 int main(int argc, char** argv) {
     g_shader_clock_scopes = 3; /* Exercise both optional Vulkan clock scopes in offline SPIR-V fixtures. */
     if (argc != 1 && argc != 2) {
@@ -4879,6 +5127,7 @@ int main(int argc, char** argv) {
     vertex_position_out();
     fragment_position_pass();
     per_vertex_pass();
+    settled_when_translated();
     check(!g_fixtures.failed, "shader fixture paths allocated");
     for (size_t i = 0; i < g_fixtures.count; i++) free(g_fixtures.paths[i]);
     free(g_fixtures.paths);

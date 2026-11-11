@@ -18,6 +18,9 @@ public final class NativeBridge {
         loaded.add(path);
     }
 
+    /** Whether a library's file name ("liblog.so") is one of the system's, which the bridge's HLE is. */
+    public static native boolean isSystemLibrary(String name);
+
     /** null when the library loaded (and its JNI_OnLoad ran), else dlerror's text. */
     private static String nativeLoad(String path) { return nativeLoad(path, snx.android.Apk.libraryDir()); }
     private static native String nativeLoad(String path, String libraryDir);

@@ -61,6 +61,17 @@ setting Two hosts
     default 1
     default-if HOST_A 2
     default-if HOST_B 3
+setting One system
+    key one_system
+    int 0 1
+    default 0
+    startup
+    only macos
+setting Its kernel
+    key its_kernel
+    int 0 1
+    default 0
+    only arm64-linux
 setting ${long_name}
     key long
     text 4
@@ -80,11 +91,23 @@ setting @NoSuchOption
     help An ID this LLVM lacks, said and left out
 setting @FastISel
     key llvm_fast_isel
-section Test: g_test_ini
+table g_test_vk_ini vulkan
+setting @VK_EXT_core_one
+setting @VK_KHR_own_help
+    help Its own help first
+section Test: g_test_ini, g_test_vk_ini/Vulkan Extensions
 section Launch: g_test_llvm_ini/LLVM Internals    launcher
 ")
+# the Khronos registry as far as the vulkan table reads it: each extension's tag
+file(WRITE "${WORK}/vk.xml" "<registry><extensions>
+<extension name=\"VK_EXT_core_one\" number=\"7\" type=\"device\" promotedto=\"VK_VERSION_1_3\" supported=\"vulkan,vulkansc\">
+</extension>
+<extension name=\"VK_KHR_own_help\" number=\"8\" type=\"device\" deprecatedby=\"VK_KHR_newer\" supported=\"vulkan\"></extension>
+<extension name=\"VK_KHR_instance_one\" number=\"9\" type=\"instance\" supported=\"vulkan\"></extension>
+</extensions></registry>
+")
 execute_process(COMMAND "${SETTINGSGEN}" --out "${WORK}/out" --pipelines "${WORK}/pipelines.txt"
-                        --llvm-include "${WORK}/include" "${WORK}/settings.txt"
+                        --llvm-include "${WORK}/include" --vk-registry "${WORK}/vk.xml" "${WORK}/settings.txt"
                 RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
 if(result)
     message(FATAL_ERROR "settingsgen ended with ${result}: ${errors}")
@@ -114,6 +137,24 @@ foreach(what INIT DEF)
         message(FATAL_ERROR "SETTING_${what}_two_hosts is not HOST_A's, else HOST_B's, else the default:\n${text}")
     endif()
 endforeach()
+# a setting of one system alone: its row's flags name the system (ini.h's INI_ONLY_), after startup's; another row's
+# name none
+file(READ "${WORK}/out/settings_test.c" text)
+foreach(row "{\"one_system\", \"0\", NULL, INI_INT, INI_STARTUP | INI_ONLY_MACOS, &g_settings.one_system,"
+            "{\"its_kernel\", \"0\", NULL, INI_INT, 0 | INI_ONLY_ARM64_LINUX, &g_settings.its_kernel,"
+            "{\"plain\", \"0\", NULL, INI_INT, 0, &g_settings.plain,")
+    string(FIND "${text}" "${row}" at)
+    if(at LESS 0)
+        message(FATAL_ERROR "settings_test.c lacks the row ${row}:\n${text}")
+    endif()
+endforeach()
+# a system only does not know is refused with its line, the word and the systems it takes
+file(WRITE "${WORK}/unknown.txt" "table g_test_ini\nsetting Elsewhere\n    key elsewhere\n    int 0 1\n    default 0\n    only amiga\n")
+execute_process(COMMAND "${SETTINGSGEN}" --out "${WORK}/out" "${WORK}/unknown.txt"
+                RESULT_VARIABLE unknown_result OUTPUT_VARIABLE unknown_output ERROR_VARIABLE unknown_errors)
+if(NOT unknown_result OR NOT unknown_errors MATCHES "unknown.txt:6: only amiga: the systems are macos, windows, android, linux and arm64-linux\n$")
+    message(FATAL_ERROR "settingsgen took only amiga (${unknown_result}), or did not say which systems only takes:\n${unknown_errors}")
+endif()
 # each setter found, with its argument cast to the type the header declares, and the setting its @ID names
 foreach(line "LLVMPassBuilderOptionsSetLoopVectorization(options, (LLVMBool)s->loop_vectorization)"
              "LLVMPassBuilderOptionsSetSLPVectorization(options, (LLVMBool)s->llvm_slp_vectorization)"
@@ -203,3 +244,30 @@ endforeach()
 if(header MATCHES "no_such_option|not_in_this_llvm")
     message(FATAL_ERROR "snx_settings.h has a member for @NoSuchOption, which this LLVM lacks:\n${header}")
 endif()
+
+# the vulkan table: each extension a text setting keyed by its name in lowercase, auto by default, its help from the
+# registry after its own, and listed for the renderer with the version it is core in
+file(READ "${WORK}/out/settings_test_vk.c" vk)
+foreach(line "{\"vk_ext_core_one\", \"auto\", \"The Vulkan extension VK_EXT_core_one, the Khronos registry's number 7, promoted to Vulkan 1.3.\\nauto = "
+             "{\"vk_khr_own_help\", \"auto\", \"Its own help first\\nThe Vulkan extension VK_KHR_own_help, the Khronos registry's number 8, deprecated by VK_KHR_newer.\\n"
+             "INI_TEXT, INI_STARTUP, g_settings.vk_ext_core_one, 0, 0, NULL, \"VK_EXT_core_one\", \"auto=Auto|on=On|off=Off\""
+             "{\"VK_EXT_core_one\", g_settings.vk_ext_core_one, 13},"
+             "{\"VK_KHR_own_help\", g_settings.vk_khr_own_help, 0},"
+             "const int g_vk_extension_settings_count = 2;")
+    string(FIND "${vk}" "${line}" at)
+    if(at LESS 0)
+        message(FATAL_ERROR "settings_test_vk.c lacks ${line}:\n${vk}")
+    endif()
+endforeach()
+# a name the registry has not, and an instance's extension, are refused with their line
+foreach(bad "VK_EXT_no_such_one|is no extension of the Khronos registry" "VK_KHR_instance_one|not a device's")
+    string(REPLACE "|" ";" bad "${bad}")
+    list(GET bad 0 name)
+    list(GET bad 1 why)
+    file(WRITE "${WORK}/bad.txt" "table g_bad_ini vulkan\nsetting @${name}\n")
+    execute_process(COMMAND "${SETTINGSGEN}" --out "${WORK}/out" --vk-registry "${WORK}/vk.xml" "${WORK}/bad.txt"
+                    RESULT_VARIABLE result ERROR_VARIABLE errors)
+    if(NOT result OR NOT errors MATCHES "bad.txt:2: ${name} [^\n]*${why}")
+        message(FATAL_ERROR "settingsgen took @${name} (${result}): ${errors}")
+    endif()
+endforeach()

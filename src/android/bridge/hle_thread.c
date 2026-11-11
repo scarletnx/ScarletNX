@@ -222,6 +222,16 @@ static void g_setschedparam(CPU* c, void* data) {
     (void)data;
     X(0) = 0;
 }
+/* pthread_getschedparam(thread, policy, param): so, what every thread has on Android unless it asks for more:
+   SCHED_OTHER (0) and the priority 0 (struct sched_param is one int) */
+static void g_getschedparam(CPU* c, void* data) {
+    (void)data;
+    int* policy = PTR(1);
+    int* param = PTR(2);
+    if (policy) *policy = 0;
+    if (param) *param = 0;
+    X(0) = 0;
+}
 #endif
 
 /* ---- threads ---- */
@@ -374,9 +384,11 @@ const HleSymbol hle_thread[] = {
     A(pthread_attr_getscope, g_attr_getscope),
 #if defined(__linux__)
     P(pthread_getspecific), P(pthread_setname_np), P(pthread_setschedparam), P(pthread_setspecific),
+    P(pthread_getschedparam),
 #else
     A(pthread_getspecific, g_getspecific), A(pthread_setname_np, g_setname),
     A(pthread_setschedparam, g_setschedparam), A(pthread_setspecific, g_setspecific),
+    A(pthread_getschedparam, g_getschedparam),
 #endif
     {"", NULL, NULL},
 };

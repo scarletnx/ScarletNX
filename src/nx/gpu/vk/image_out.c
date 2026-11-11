@@ -5,6 +5,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/pending_pages.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/tracy.h"
@@ -46,6 +47,9 @@ static struct {
 } g_image_out;
 static _Thread_local int g_img_landing;
 _Atomic int g_gfx_img_any;
+/* the storage images' pages in g_pend_any, as the other pending results count theirs: a guest read over a page a
+   storage image covers answers pending, one elsewhere does not (before, any image answered yes for every page) */
+static PendPages g_img_pages = {.also = &g_pend_any};
 
 static int mem_run_cmp(const void* a, const void* b) {
     u64 x = ((const MemRun*)a)->cpu, y = ((const MemRun*)b)->cpu;
@@ -105,6 +109,7 @@ void vk_gfx_image_record(Surf* surf, u8* original, u32 size, u64 after, const Vk
                                                          .after = after,
                                                          .keep = k};
     g_gfx_img_any = 1;
+    pend_add(&g_img_pages, surf->gva, size, 1);
 }
 /* [cpu, cpu + n) meets the image's bytes: the first run ending past cpu starts before cpu + n */
 static int image_meets(const GfxImageOut* out, u64 cpu, u64 n) {
@@ -139,6 +144,7 @@ static int image_overlaps(const GfxImageOut* out, u64 gva, u64 size) {
     return 0;
 }
 static void image_remove(size_t index) {
+    pend_add(&g_img_pages, g_image_out.out[index].surf->gva, g_image_out.out[index].size, -1);
     if (g_image_out.out[index].keep.held) vk_own_res_unref(g_image_out.out[index].keep.held);
     free(g_image_out.out[index].original);
     free(g_image_out.out[index].runs);

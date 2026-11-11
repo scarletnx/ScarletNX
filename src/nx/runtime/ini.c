@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* the .ini's settings tables (ini.h): finding a key, reading a value into its variable, and writing it back */
 #include "nx/runtime/ini.h"
+#include "common/utilities/common.h" /* SNX_IOS */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -210,6 +211,40 @@ static void list_values(Listing* l, const IniOpt* o) {
         first = 0;
     }
 }
+#ifndef SNX_TR_NOOP
+#define SNX_TR_NOOP(s) s
+#endif
+const char* ini_only_words(int flags) {
+    switch (flags & INI_ONLY) {
+        case INI_ONLY_MACOS: return SNX_TR_NOOP("macOS only");
+        case INI_ONLY_WINDOWS: return SNX_TR_NOOP("Windows only");
+        case INI_ONLY_ANDROID: return SNX_TR_NOOP("Android only");
+        case INI_ONLY_LINUX: return SNX_TR_NOOP("Linux and Android only");
+        case INI_ONLY_ARM64_LINUX: return SNX_TR_NOOP("arm64 Linux and Android only");
+        default: return NULL;
+    }
+}
+/* whether this system is one of those only names */
+static int only_here(int only) {
+#if defined(__APPLE__) && !defined(SNX_IOS)
+    return only == INI_ONLY_MACOS;
+#elif defined(_WIN32)
+    return only == INI_ONLY_WINDOWS;
+#elif defined(__linux__)
+    if (only == INI_ONLY_LINUX) return 1;
+#if defined(__ANDROID__)
+    if (only == INI_ONLY_ANDROID) return 1;
+#endif
+#if defined(__aarch64__)
+    if (only == INI_ONLY_ARM64_LINUX) return 1;
+#endif
+    return 0;
+#else
+    (void)only;
+    return 0;
+#endif
+}
+const char* ini_only(const IniOpt* o) { return only_here(o->flags & INI_ONLY) ? NULL : ini_only_words(o->flags); }
 /* the help of a repeated setting's later instance (a player's), which only its first has: that of the row before it
    with its name, "" for none */
 static const char* repeated_help(const IniOpt* table, const IniOpt* o) {
@@ -247,7 +282,7 @@ size_t ini_list_text(const IniSection* sections, int count, char* out, size_t si
                 list_help(&l, help);
                 put(&l, "\t%s\t", o->name ? o->name : "");
                 list_values(&l, o);
-                put(&l, "\n");
+                put(&l, "\t%s\n", ini_only(o) ? ini_only(o) : "");
             }
         }
     return l.at;
@@ -275,7 +310,7 @@ static const struct {
                       {"lossless_scaling", "LSFG went with the OpenGL renderer"},
                       {"lossless_path", "LSFG went with the OpenGL renderer"},
                       {"touch_controls", "now controls"},
-                      {"touch_controls_opacity", "now controls_alpha"},
+                      {"touch_controls_opacity", "the on-screen controls are opaque"},
                       {"modo_tv", "now docked"},
                       {"idioma", "now language"},
                       {"resolucion", "now resolution"},
@@ -286,7 +321,9 @@ static const struct {
                       {"user", "now user_uid, the uid of the user it named"},
                       {"memory_fit", "now memory_fit_mode, whose 0 is Auto (memory_fit's 1) and 1 Off"},
                       {"astc_bc", "now astc_mode, whose 0 is Auto (astc_bc's 1), 1 Exact (RGBA8) and 2 BC7"},
-                      {"controls_opacity", "now controls_alpha: the built-in art is opaque, its 50 the old 100"},
+                      {"controls_opacity", "the on-screen controls are opaque"},
+                      {"controls_alpha", "the on-screen controls are opaque"},
+                      {"controls_skin", "the on-screen controls are white shapes, with no skin"},
                       {"vk_descriptors", "now vk_descriptors_mode, of the same values: the default a .ini wrote, 0 and "
                                          "later 3, is its Automatic"},
                       {NULL, NULL}};

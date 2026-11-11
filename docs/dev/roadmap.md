@@ -16,7 +16,8 @@ Implemented: Clang/CMake, Linux/Windows CI, SDL3/Vulkan, shader caches, componen
 - **GPU:** the NVN functions games call that the loader does not implement yet (the game stops and names each).
   Programs that write their own GPU command buffers (OpenGL games, homebrew) go through the Maxwell front end,
   which interprets every macro and has no macro HLE or JIT. 90-degree framebuffer rotation, attachment
-  feedback. Check the BCn fallback (decoded on the GPU) on a Mali device.
+  feedback. Check BCn encoded again as ETC2 and EAC (decoded where the GPU lacks ETC2) on a Mali device, and BC7's
+  quality there against an ASTC 4x4 encoder ([BCn without BCn](../layers/gpu/bcn.md)).
 - **CPU:** more SIMD/FP throughput with exact result bits and FPSR. Stateful helpers already implement NaN
   propagation, default NaNs and directed rounding, with guarded host fast paths. Thread suspension at WFE.
   32-bit games run (A32 and Thumb, `src/nx/runtime/arm.c`), checked only with the synthetic program

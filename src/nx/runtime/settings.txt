@@ -29,6 +29,9 @@
 #     default VALUE       its value until one is read, as the .ini writes it ("" or none for empty text)
 #     default-if MACRO V  its default where MACRO is defined (#if defined): up to four, the first that holds
 #     once                written to the .ini only once it is set (the default stays its value until then)
+#     only SYSTEM         it does something on SYSTEM alone: macos, windows, android, linux (Android too) or
+#                         arm64-linux (the same on arm64). On another system the launcher's Settings grey its row and
+#                         say which beside it (ini.h's ini_only); its value is read and written there as anywhere
 #     words W|W...        the menus' words (ini.h): an int's for LO, LO + step..., a text's value=word
 #     step N, shift N     the menus' step and shift (ini.h)
 #     label TEXT          the menus' name when it is not NAME (the game's menu shows a page's settings by it)
@@ -238,6 +241,7 @@ setting Vulkan Video decode
     help decode on the CPU
 setting Vulkan driver
     key vulkan_driver
+    only macos
     label Vulkan driver
     text 16
     default auto
@@ -453,6 +457,7 @@ setting Compress prepared shaders
     help made. What is packed is read either way
 setting NCE
     key nce
+    only arm64-linux
     int 0 1
     default 1
     startup
@@ -529,23 +534,6 @@ setting Controls scale
     step 10
     shift 50
     help Their size: 0 to 100, for 50% to 150%
-setting Controls alpha
-    key controls_alpha
-    int 0 100
-    default 50
-    label Opacity
-    words #%
-    step 10
-    help Their opacity, in percent
-setting Controls skin
-    key controls_skin
-    text 512
-    default line
-    label Skin
-    set vpad_skin_choose
-    help Their look: line (white lines) or yorha, ScarletNX's own; empty for the built-in one; or the path of a RetroArch
-    help overlay's .cfg (of its pages not named portrait, the one with the most controls). The game's menu goes round the
-    help built-in look and ScarletNX's own
 setting Relative stick center
     key controls_rel_center
     int 0 1
@@ -560,6 +548,7 @@ setting D-pad slide
     help 1 = a finger sliding on the D-pad changes its direction
 setting Haptics
     key controls_haptics
+    only android
     int 0 1
     default 1
     words Off|On
@@ -969,8 +958,10 @@ setting Native BC
     startup
     words Off|On
     help 1 = BC1 to BC7 textures, which most games use, are sampled as the game's blocks where the GPU samples BCn
-    help (desktop GPUs and some phone ones). 0 = they are decoded on the GPU, as they are on GPUs without BCn (most
-    help phone ones, Mali among them), to compare the two on a desktop GPU
+    help (desktop GPUs and some phone ones). A GPU without BCn (most phone ones, Mali and Adreno's own driver among
+    help them) gets them encoded again on the GPU as ETC2 and EAC as they load, the same bytes a texel, where it samples
+    help those (native_etc2=1), BC6H decoded to half floats; else all decoded, four to eight times the memory. 0 =
+    help BCn takes that path on a GPU that samples BCn too, to compare the two on a desktop GPU
 setting Native ETC2
     key native_etc2
     int 0 1
@@ -978,8 +969,9 @@ setting Native ETC2
     startup
     words Off|On
     help 1 = ETC2 and EAC textures are sampled as the game's blocks where the GPU samples ETC2 (most phone and tablet
-    help GPUs), in a quarter to an eighth of the memory. 0 = they are decoded on the GPU, as they are on GPUs without
-    help ETC2 (most desktop ones), to compare the two. On such a GPU 1 is a warning at start
+    help GPUs), in a quarter to an eighth of the memory, and so are the BCn textures a GPU without BCn gets encoded
+    help again as ETC2 (native_bc). 0 = they are decoded on the GPU, as they are on GPUs without ETC2 (most desktop
+    help ones), and BCn too there, to compare the two. On such a GPU 1 is a warning at start
 setting CPU extensions
     key cpu_extensions
     int 0 1
@@ -1071,6 +1063,7 @@ setting GDB JIT symbols
     help blocks compile one at a time) to a crawl. Each compile's object is also kept in memory for the whole run
 setting Alias pool
     key alias_pool
+    only linux
     int 0 1
     default 1
     startup
@@ -1123,6 +1116,7 @@ setting Host page size
 setting NCE foreign scan
     label NCE address scan
     key nce_foreign_scan
+    only arm64-linux
     int 0 3600
     default 0
     startup
@@ -1152,6 +1146,7 @@ setting Draw state check
     help a draw keeps
 setting Profiler
     key profile
+    only windows
     int 0 1
     default 0
     startup
@@ -1581,9 +1576,85 @@ setting Vita lockstep steps
     help With vita_lockstep, how many instruction groups are compared before the game runs on without Unicorn.
     help 0 = no limit
 
+# ---- the Vulkan extensions ----
+
+# One setting per Vulkan extension the Switch's renderer can use (gpu/vk/device.c), auto by default: ScarletNX decides
+# whether to use it (gpu/vk/extension_bans.c, by the extension bans), and the driver says whether it is there.
+# settingsgen checks each against the Khronos registry and makes its key, the name in lowercase, and help
+table g_vk_extensions_ini vulkan
+setting @VK_ANDROID_external_memory_android_hardware_buffer
+setting @VK_EXT_attachment_feedback_loop_dynamic_state
+setting @VK_EXT_attachment_feedback_loop_layout
+setting @VK_EXT_blend_operation_advanced
+setting @VK_EXT_calibrated_timestamps
+setting @VK_EXT_conditional_rendering
+setting @VK_EXT_conservative_rasterization
+setting @VK_EXT_custom_border_color
+setting @VK_EXT_depth_clip_control
+setting @VK_EXT_depth_range_unrestricted
+setting @VK_EXT_descriptor_buffer
+setting @VK_EXT_descriptor_heap
+setting @VK_EXT_device_fault
+setting @VK_EXT_extended_dynamic_state
+setting @VK_EXT_extended_dynamic_state2
+setting @VK_EXT_extended_dynamic_state3
+setting @VK_EXT_external_memory_dma_buf
+setting @VK_EXT_external_memory_host
+setting @VK_EXT_fragment_shader_interlock
+setting @VK_EXT_graphics_pipeline_library
+setting @VK_EXT_index_type_uint8
+setting @VK_EXT_load_store_op_none
+setting @VK_EXT_map_memory_placed
+setting @VK_EXT_memory_budget
+setting @VK_EXT_mesh_shader
+setting @VK_EXT_pipeline_creation_feedback
+setting @VK_EXT_pipeline_robustness
+setting @VK_EXT_post_depth_coverage
+setting @VK_EXT_present_timing
+setting @VK_EXT_primitive_topology_list_restart
+setting @VK_EXT_provoking_vertex
+setting @VK_EXT_robustness2
+setting @VK_EXT_sample_locations
+setting @VK_EXT_shader_atomic_float
+setting @VK_EXT_shader_demote_to_helper_invocation
+setting @VK_EXT_transform_feedback
+setting @VK_EXT_vertex_attribute_divisor
+setting @VK_EXT_vertex_input_dynamic_state
+setting @VK_GOOGLE_display_timing
+setting @VK_KHR_calibrated_timestamps
+setting @VK_KHR_cooperative_matrix
+setting @VK_KHR_dynamic_rendering
+setting @VK_KHR_dynamic_rendering_local_read
+setting @VK_KHR_extended_flags
+setting @VK_KHR_external_memory_fd
+setting @VK_KHR_format_feature_flags2
+setting @VK_KHR_index_type_uint8
+setting @VK_KHR_load_store_op_none
+setting @VK_KHR_maintenance4
+setting @VK_KHR_maintenance5
+setting @VK_KHR_maintenance8
+setting @VK_KHR_map_memory2
+setting @VK_KHR_pipeline_library
+setting @VK_KHR_portability_subset
+setting @VK_KHR_present_id
+setting @VK_KHR_present_id2
+setting @VK_KHR_present_wait
+setting @VK_KHR_present_wait2
+setting @VK_KHR_shader_clock
+setting @VK_KHR_shader_maximal_reconvergence
+setting @VK_KHR_swapchain
+setting @VK_KHR_synchronization2
+setting @VK_KHR_video_decode_h264
+setting @VK_KHR_video_decode_queue
+setting @VK_KHR_video_queue
+setting @VK_NV_device_diagnostic_checkpoints
+setting @VK_NV_fragment_coverage_to_color
+setting @VK_NV_framebuffer_mixed_samples
+setting @VK_VALVE_shader_mixed_float_dot_product
+
 section Game: g_game_ini
 section Display: g_display_ini
-section Graphics: g_graphics_ini
+section Graphics: g_graphics_ini, g_vk_extensions_ini/Vulkan Extensions
 section 3DS: g_ctr_display_ini
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend

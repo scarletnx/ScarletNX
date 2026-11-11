@@ -946,6 +946,106 @@ static void players_view(App* app) {
     app->player = 0;
     leave_editor(app);
 }
+/* A setting that does something on other systems alone (settings.txt's only, which the runtime lists last on its line
+   where this system is none of them): its row greyed with where beside its value, among the group's rows and beside
+   the groups; Enter and a step say why and leave its value; a pick a file had still shows, is still passed to a run,
+   and Del puts its default back. The same setting listed with no systems, as on its own system, is a row as any */
+static void only_rows(App* app) {
+    static const char elsewhere[] =
+        "Graphics\tvsync\t1\tint\t0\t1\tNo tearing\tVSync\t0=Off|1=On\t\n"
+        "Graphics\tvulkan_driver\tauto\ttext\t0\t0\tThe driver\tVulkan driver\tauto=Auto|moltenvk=MoltenVK\t"
+        "macOS only\n"
+        "Graphics\tanisotropy\t0\tint\t0\t16\tSharper\tAnisotropic filtering\t\tWindows only\n";
+    static const char here[] =
+        "Graphics\tvsync\t1\tint\t0\t1\tNo tearing\tVSync\t0=Off|1=On\t\n"
+        "Graphics\tvulkan_driver\tauto\ttext\t0\t0\tThe driver\tVulkan driver\tauto=Auto|moltenvk=MoltenVK\t\n";
+    const char* options[8];
+    UiRowInfo info = {0};
+    int group, row;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, elsewhere));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (group = 0; group < app->groups && strcmp(app->group_keys[group].key, "Graphics"); ++group) {}
+    assert(group < app->groups);
+    /* beside the groups, before its group opens: greyed there too */
+    app->editor.row = group;
+    render(app);
+    assert(app->form == GUI_FORM_SETTINGS && ui_form_side_rows_get_row_info(app, 1, 0, &info) &&
+           (info.attr & UI_ATTR_OFF) && strstr(info.label, "Vulkan driver") && strstr(info.label, "macOS only"));
+    info = (UiRowInfo){0};
+    assert(ui_form_side_rows_get_row_info(app, 0, 0, &info) && !(info.attr & UI_ATTR_OFF));
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_GROUP && gui_editor_rows(&app->editor) == 3);
+    row = row_of(app, setting_row(app, "vulkan_driver"));
+    assert(row == 1 && !form_row_off(app, &app->editor, 0) && form_row_off(app, &app->editor, 1) &&
+           form_row_off(app, &app->editor, 2));
+    info = (UiRowInfo){0};
+    assert(form_row_info(app, &app->editor, 1, form_labels(&app->editor), 0, &info) && (info.attr & UI_ATTR_OFF) &&
+           strstr(info.label, "Vulkan driver") && strstr(info.label, "Auto [default] macOS only"));
+    info = (UiRowInfo){0};
+    assert(form_row_info(app, &app->editor, 2, form_labels(&app->editor), 0, &info) && (info.attr & UI_ATTR_OFF) &&
+           strstr(info.label, "0 [default] Windows only")); /* a typed row's */
+    info = (UiRowInfo){0};
+    assert(form_row_info(app, &app->editor, 0, form_labels(&app->editor), 0, &info) && !(info.attr & UI_ATTR_OFF) &&
+           !strstr(info.label, "only"));
+    render(app); /* drawn: where it does something, in the greyed rows' soft colour */
+    shows(app, "macOS only", rgb(app->theme.soft));
+    /* Enter, Right and Left: why, with the value it stays at, and no pick; a typed row's Enter opens no dialog */
+    app->editor.row = 1;
+    key(app, SDLK_RETURN);
+    assert(!strcmp(app->editor.note, "Vulkan driver: macOS only. A game on this system runs the same whatever it says, "
+                                     "and it stays Auto [default]") &&
+           setting_is(app, "vulkan_driver", NULL));
+    app->editor.note[0] = 0;
+    key(app, SDLK_RIGHT);
+    assert(strstr(app->editor.note, "Vulkan driver: macOS only. ") && setting_is(app, "vulkan_driver", NULL));
+    app->editor.note[0] = 0;
+    key(app, SDLK_LEFT);
+    assert(strstr(app->editor.note, "Vulkan driver: macOS only. ") && setting_is(app, "vulkan_driver", NULL));
+    app->editor.row = 2;
+    key(app, SDLK_RETURN);
+    assert(!app->editor.typing && setting_is(app, "anisotropy", NULL) &&
+           strstr(app->editor.note, "Anisotropic filtering: Windows only. ") &&
+           strstr(app->editor.note, "and it stays 0 [default]"));
+    /* a pick from a file, as another system's or an older version's wrote it: shown with its mark, passed to a run,
+       left by Enter, which says it; Del puts the default back */
+    assert(gui_settings_set(&app->settings, "vulkan_driver", "moltenvk"));
+    info = (UiRowInfo){0};
+    assert(form_row_info(app, &app->editor, 1, form_labels(&app->editor), 0, &info) && (info.attr & UI_ATTR_OFF) &&
+           strstr(info.label, "MoltenVK " GUI_CHANGED_MARK " macOS only"));
+    assert(gui_settings_options(&app->settings, 0, options) == 1 && !strcmp(options[0], "--vulkan_driver=moltenvk"));
+    app->editor.row = 1;
+    key(app, SDLK_RETURN);
+    assert(strstr(app->editor.note, "and it stays MoltenVK") && setting_is(app, "vulkan_driver", "moltenvk"));
+    key(app, SDLK_DELETE);
+    assert(setting_is(app, "vulkan_driver", NULL));
+    /* a row of every system beside them: Enter steps it */
+    app->editor.row = 0;
+    app->editor.note[0] = 0;
+    key(app, SDLK_RETURN);
+    assert(setting_is(app, "vsync", "0") && !strstr(app->editor.note, "only"));
+    key(app, SDLK_DELETE);
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_SETTINGS);
+    /* on its own system the runtime lists it with no systems: a row as any, which Enter steps */
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, here));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    app->editor.row = group;
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_GROUP && !form_row_off(app, &app->editor, 1));
+    info = (UiRowInfo){0};
+    assert(form_row_info(app, &app->editor, 1, form_labels(&app->editor), 0, &info) && !(info.attr & UI_ATTR_OFF) &&
+           strstr(info.label, "Auto [default]") && !strstr(info.label, "only"));
+    app->editor.row = 1;
+    key(app, SDLK_RETURN);
+    assert(setting_is(app, "vulkan_driver", "moltenvk") && !app->editor.note[0]);
+    key(app, SDLK_DELETE);
+    key(app, SDLK_ESCAPE);
+    leave_editor(app);
+}
 /* Settings > Controllers > Button map: the pad drawn (pad_screen.h) with what each control sends, on SDL's virtual
    Xbox pad. No presets: each control the button in its place, gamepad_map over that, A and B as gamepad_swap_ab says;
    the keys, the pad's presses, its triggers and stick, a click and the wheel act on it, each change kept in the picks
@@ -1214,7 +1314,7 @@ static void icons_named(void) {
         ++sections;
         for (page = strchr(rest, '/'); page; page = strchr(page + 1, '/')) {
             char p[64];
-            assert(sscanf(page + 1, "%63[^,\t\n]", p) == 1);
+            assert(sscanf(page + 1, "%63[^,\t\r\n]", p) == 1);
             if (strstr(p, "  ")) *strstr(p, "  ") = 0; /* the section's words after its tables: backend, launcher */
             while (p[0] && p[strlen(p) - 1] == ' ') p[strlen(p) - 1] = 0;
             if (!strcmp(p, "Player")) continue;
@@ -1546,22 +1646,19 @@ static void view_box(App* app, const char* temporary) {
     hides(app, "Dumps", rgb(app->theme.soft)); /* a group's heading */
     hides(app, "dumps", rgb(app->theme.soft));
     shows(app, "recompiled", rgb(app->theme.soft));
-    /* read back as the menu opens; an app.ini without them, an older version's, has the defaults: on, iOS's off */
+    /* read back as the menu opens; an app.ini without them, an older version's, has the defaults: on */
     memset(app->options, 0, sizeof app->options);
     app->message[0] = 0;
     app_load(app);
     assert(!recent_on(app) && !dumps_on(app) && by_last_opened(app) && !app->message[0]);
     snprintf(expected, sizeof expected, "[app]\ntheme = %s\n", app->theme.id);
     assert(!snx_write_file(app->app_file, expected, strlen(expected)));
-    games_defaults(app, false);
+    games_defaults(app);
     app_load(app);
     assert(recent_on(app) && dumps_on(app) && !by_last_opened(app) && !app->message[0]);
     assert(app->options[GUI_OPTION_ICONS] == 1); /* Medium */
-    games_defaults(app, true);
-    app_load(app);
-    assert(!recent_on(app) && !dumps_on(app) && !by_last_opened(app) && !app->message[0]);
     /* a word it does not know: named with the word it keeps, the file's last it knows or the default's */
-    games_defaults(app, false);
+    games_defaults(app);
     {
         const char* broken =
             "[app]\nrecent_games = maybe\ngames_dumps = off\ngames_dumps = none\ngames_sort = newest\n";
@@ -1574,19 +1671,19 @@ static void view_box(App* app, const char* temporary) {
         assert(recent_on(app) && !dumps_on(app) && !by_last_opened(app) && !strcmp(app->message, expected));
         broken = "[app]\nrecent_games = maybe\nrecent_games = off\n"; /* the file's own after it, in use after it */
         assert(!snx_write_file(app->app_file, broken, strlen(broken)));
-        games_defaults(app, false);
+        games_defaults(app);
         app->message[0] = 0;
         app_load(app);
         snprintf(expected, sizeof expected, "Not used from %s: recent_games = maybe (it keeps off)", app->app_file);
         assert(!recent_on(app) && dumps_on(app) && !strcmp(app->message, expected));
         broken = "[app]\ngames_icons = large\ngames_icons = huge\n"; /* Icon size's three words */
         assert(!snx_write_file(app->app_file, broken, strlen(broken)));
-        games_defaults(app, false);
+        games_defaults(app);
         app->message[0] = 0;
         app_load(app);
         snprintf(expected, sizeof expected, "Not used from %s: games_icons = huge (it keeps large)", app->app_file);
         assert(app->options[GUI_OPTION_ICONS] == 2 && !strcmp(app->message, expected));
-        games_defaults(app, false);
+        games_defaults(app);
         app->message[0] = 0;
     }
     /* the pointer: over a row its focus, a click changes it; a click off the box closes it */
@@ -1611,7 +1708,7 @@ static void view_box(App* app, const char* temporary) {
         app->folders_library[0] = GUI_LIBRARY_DUMPS;
         app->folders_deep[0] = false;
         app->folder_count = 1;
-        games_defaults(app, false);
+        games_defaults(app);
         list_games(app);
         assert(strstr(app->message, "gone dumps"));
         app->options[GUI_OPTION_DUMPS] = 1;
@@ -1628,7 +1725,7 @@ static void view_box(App* app, const char* temporary) {
             if (!unreadable) snx_free_strings(names, count);
             list_games(app);
             assert(!app->message[0]);
-            games_defaults(app, false);
+            games_defaults(app);
             list_games(app);
             assert(!unreadable || strstr(app->message, dumps));
         }
@@ -1636,7 +1733,7 @@ static void view_box(App* app, const char* temporary) {
 #endif
         app->message[0] = 0;
     }
-    games_defaults(app, false);
+    games_defaults(app);
     { /* dumps/'s subfolders: their dumps listed with dumps_subfolders on, its default, not with it off; its Folders
          row says which */
         char *sub = snx_path_join(dumps, "more"), *deep = snx_path_join(sub, "deep dump.nsp");
@@ -2143,7 +2240,7 @@ static void grid_view(App* app, const char* temporary) {
         assert(grid_focused(app) == tile && g.grid_lists[UI_GAMES_GRID_TILES].first > first);
     }
     app->menu.text_size = was_size;
-    games_defaults(app, false);
+    games_defaults(app);
     app->recent = was_recent;
     app->recent_file = was_recent_file;
     app->folder_count = was_folders;
@@ -14590,6 +14687,7 @@ int main(int argc, char** argv) {
         leave_editor(&app);
     }
     players_view(&app);
+    only_rows(&app);
     icons_named();
     help_icons_named();
     step_line();

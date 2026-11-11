@@ -16,7 +16,8 @@ public class ProgressBar extends View {
     private int min, max = 100, progress, secondaryProgress;
     private boolean indeterminate, onlyIndeterminate;
     private Drawable progressDrawable, indeterminateDrawable;
-    private ColorStateList progressTint, indeterminateTint;
+    private ColorStateList progressTint, indeterminateTint, progressBackgroundTint, secondaryProgressTint;
+    private android.graphics.PorterDuff.Mode progressTintMode, progressBackgroundTintMode, indeterminateTintMode;
 
     public ProgressBar(Context context) { this(context, null); }
     public ProgressBar(Context context, AttributeSet attrs) { this(context, attrs, 0); }
@@ -64,6 +65,40 @@ public class ProgressBar extends View {
     }
     public void setProgressTintList(ColorStateList tint) { progressTint = tint; if (progressDrawable != null) progressDrawable.setTintList(tint); }
     public ColorStateList getProgressTintList() { return progressTint; }
+    public void setProgressTintMode(android.graphics.PorterDuff.Mode mode) {
+        progressTintMode = mode;
+        if (progressDrawable != null && mode != null) progressDrawable.setTintMode(mode);
+    }
+    public android.graphics.PorterDuff.Mode getProgressTintMode() { return progressTintMode; }
+    /** the track's tint and mode: the progress drawable's background layer, which a LayerDrawable names */
+    public void setProgressBackgroundTintList(ColorStateList tint) {
+        progressBackgroundTint = tint;
+        Drawable d = layer(ID_BACKGROUND);
+        if (d != null) d.setTintList(tint);
+    }
+    public ColorStateList getProgressBackgroundTintList() { return progressBackgroundTint; }
+    public void setProgressBackgroundTintMode(android.graphics.PorterDuff.Mode mode) {
+        progressBackgroundTintMode = mode;
+        Drawable d = layer(ID_BACKGROUND);
+        if (d != null && mode != null) d.setTintMode(mode);
+    }
+    public android.graphics.PorterDuff.Mode getProgressBackgroundTintMode() { return progressBackgroundTintMode; }
+    public void setSecondaryProgressTintList(ColorStateList tint) {
+        secondaryProgressTint = tint;
+        Drawable d = layer(ID_SECONDARY_PROGRESS);
+        if (d != null) d.setTintList(tint);
+    }
+    public ColorStateList getSecondaryProgressTintList() { return secondaryProgressTint; }
+    public void setIndeterminateTintMode(android.graphics.PorterDuff.Mode mode) {
+        indeterminateTintMode = mode;
+        if (indeterminateDrawable != null && mode != null) indeterminateDrawable.setTintMode(mode);
+    }
+    public android.graphics.PorterDuff.Mode getIndeterminateTintMode() { return indeterminateTintMode; }
+    /* android.R.id.background and secondaryProgress: the layers of a progress drawable */
+    private static final int ID_BACKGROUND = 0x01020000, ID_SECONDARY_PROGRESS = 0x0102000f;
+    private Drawable layer(int id) {
+        return progressDrawable instanceof android.graphics.drawable.LayerDrawable l ? l.findDrawableByLayerId(id) : null;
+    }
     public void setIndeterminateTintList(ColorStateList tint) { indeterminateTint = tint; if (indeterminateDrawable != null) indeterminateDrawable.setTintList(tint); }
     public ColorStateList getIndeterminateTintList() { return indeterminateTint; }
 

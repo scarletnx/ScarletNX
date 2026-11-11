@@ -6,15 +6,18 @@
    filled with what the LLVM being built against has: every pass of the pipelines its opt prints for -O0 to -Oz (a
    file of "<level> <pipeline>" lines, --pipelines), on unless turned off, and each option its C API sets on the pass
    builder (LLVMPassBuilderOptionsSet*) and the target machine (LLVMSetTargetMachine*) taking a bool or an integer,
-   read from its headers (--llvm-include), LLVM's own value until it is set. It is strict C99 and depends on nothing,
-   so a cross build can build it for the machine it runs on.
+   read from its headers (--llvm-include), LLVM's own value until it is set. A vulkan table's settings are the
+   Vulkan extensions its setting @NAME lines name, each auto, on or off, auto by default: checked against the Khronos
+   registry (vk.xml, --vk-registry), which gives each its help, and listed for the renderer
+   (g_vk_extension_settings). It is strict C99 and depends on nothing, so a cross build can build it for the machine
+   it runs on.
 
-   Usage: settingsgen --out DIR [--pipelines FILE] [--llvm-include DIR] SETTINGS
+   Usage: settingsgen --out DIR [--pipelines FILE] [--llvm-include DIR] [--vk-registry FILE] SETTINGS
    It writes DIR/snx_settings.h, settings.c (g_settings), a settings_<table>.c for each runtime-scope table (whose set
    functions the runtime defines) and settings_runtime.c (the .ini's sections), settings_launch.c (the launcher's and the recompiler's tables
    and sections) and settings_llvm.c (LLVM's pipelines, which pass each toggle turns off, and the options set), each
    only rewritten when it changes. Without --pipelines or --llvm-include, the llvm table has no passes or no options
-   of LLVM's. */
+   of LLVM's; without --vk-registry, a vulkan table's names go unchecked and its help says nothing of the registry. */
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -31,7 +34,7 @@
 #define LEVELS       "0123sz"
 
 enum { T_INT, T_FLOAT, T_TEXT };
-enum { S_RUNTIME, S_LAUNCHER, S_RECOMPILE, S_LLVM };
+enum { S_RUNTIME, S_LAUNCHER, S_RECOMPILE, S_LLVM, S_VULKAN };
 /* where an LLVM setting goes: none, a pass of the pipelines, an option of the pass builder or of the target machine */
 enum { L_NONE, L_PASS, L_BUILDER, L_MACHINE };
 
@@ -39,11 +42,15 @@ typedef struct {
     char *name, *member, *key, *label, *help, *words, *set, *lo, *hi, *def;
     char *def_if[DEF_IFS], *def_if_value[DEF_IFS]; /* default-if's, the first that holds taken */
     int def_ifs;
+    const char* only; /* the systems it does something on, where not every one: ini.h's INI_ONLY_ of them, else NULL */
     int type, size, once, startup, in_game, recompile, step, shift, list, repeat, block, table, line;
     /* LLVM's: its kind, its ID (a pass's name, a setter's suffix), the pipelines' levels a pass is in (bit per LEVELS
        character), the setter's argument type (LLVMBool, int or unsigned) */
     int llvm, levels;
     char *llvm_id, *llvm_type;
+    /* a vulkan table's: its extension's name, and the Vulkan version it was promoted to (13 for 1.3), 0 for none */
+    char* vk_id;
+    int vk_core;
 } Setting;
 
 typedef struct {
@@ -88,6 +95,10 @@ static const char* spec_path;
 static char* obuf;
 static size_t olen, ocap;
 
+/* the file read_file gave and its reader has not freed yet: fail() frees it as it ends the run, so a refusal leaks
+   nothing a leak checker reports */
+static char* reading;
+
 static void fail(int line, const char* fmt, ...) {
     va_list ap;
     if (line)
@@ -98,6 +109,7 @@ static void fail(int line, const char* fmt, ...) {
     vfprintf(stderr, fmt, ap);
     va_end(ap);
     fputc('\n', stderr);
+    free(reading);
     exit(1);
 }
 
@@ -210,10 +222,24 @@ static char* read_file(const char* path, int must) {
     if (fread(text, 1, (size_t)n, f) != (size_t)n) fail(0, "cannot read %s", path);
     text[n] = 0;
     fclose(f);
+    reading = text;
     return text;
+}
+/* a text read_file gave, freed by its reader */
+static void release(char* text) {
+    if (text == reading) reading = NULL;
+    free(text);
 }
 
 /* ============================================================ names */
+
+/* NAME lowercased: a Vulkan extension's key and member (VK_EXT_transform_feedback: vk_ext_transform_feedback) */
+static char* lower(const char* name) {
+    char* l = dup(name);
+    char* p;
+    for (p = l; *p; p++) *p = (char)tolower((unsigned char)*p);
+    return l;
+}
 
 /* NAME in snake_case: letters and digits lowercased, every other run an underscore, none at either end; a camel-case
    word split where its case changes (LoopVectorization, SLPVectorization: loop_vectorization, slp_vectorization) */
@@ -365,6 +391,7 @@ static int scope_of(const char* word, int line) {
     if (!strcmp(word, "launcher")) return S_LAUNCHER;
     if (!strcmp(word, "recompile")) return S_RECOMPILE;
     if (!strcmp(word, "llvm")) return S_LLVM;
+    if (!strcmp(word, "vulkan")) return S_VULKAN;
     fail(line, "unknown table scope %s", word);
     return 0;
 }
@@ -378,6 +405,19 @@ static void add_help(char** help, const char* text) {
     joined = cat3(*help, "\n", text);
     free(*help);
     *help = joined;
+}
+
+/* an only line's system as the flag ini.h has for it (" | INI_ONLY_MACOS"), NULL for a word that is none */
+static const char* only_of(const char* word) {
+    static const char* const systems[][2] = {{"macos", " | INI_ONLY_MACOS"},
+                                             {"windows", " | INI_ONLY_WINDOWS"},
+                                             {"android", " | INI_ONLY_ANDROID"},
+                                             {"linux", " | INI_ONLY_LINUX"},
+                                             {"arm64-linux", " | INI_ONLY_ARM64_LINUX"}};
+    size_t i;
+    for (i = 0; i < sizeof systems / sizeof *systems; i++)
+        if (!strcmp(word, systems[i][0])) return systems[i][1];
+    return NULL;
 }
 
 static void read_spec(const char* path) {
@@ -431,8 +471,30 @@ static void read_spec(const char* path) {
             o = NULL;
         } else if (!strcmp(word, "setting")) {
             if (table < 0) fail(number, "a setting before its table");
+            if (rest[0] == '@' && tables[table].scope == S_VULKAN) {
+                if (nsettings == MAX_SETTINGS) fail(number, "too many settings");
+                s = &settings[nsettings++];
+                s->vk_id = dup(rest + 1);
+                s->name = dup(rest + 1);
+                s->member = lower(rest + 1);
+                s->key = dup(s->member);
+                s->type = T_TEXT;
+                s->size = 8;
+                s->def = dup("auto");
+                s->words = dup("auto=Auto|on=On|off=Off");
+                s->startup = 1;
+                s->table = table;
+                s->list = -1;
+                s->line = number;
+                if (repeat) fail(number, "a vulkan table's setting inside a repeat");
+                if (strncmp(s->vk_id, "VK_", 3))
+                    fail(number, "setting @%s: a Vulkan extension's name starts VK_", s->vk_id);
+                o = NULL;
+                continue;
+            }
+            if (tables[table].scope == S_VULKAN) fail(number, "a vulkan table's settings are setting @NAME lines");
             if (rest[0] == '@') {
-                if (tables[table].scope != S_LLVM) fail(number, "setting @ID is an llvm table's");
+                if (tables[table].scope != S_LLVM) fail(number, "setting @ID is an llvm or vulkan table's");
                 if (noverrides == MAX_SETTINGS) fail(number, "too many @ID settings");
                 o = &overrides[noverrides++];
                 o->id = dup(rest + 1);
@@ -465,6 +527,8 @@ static void read_spec(const char* path) {
                 fail(number, "an @ID setting takes name, key, label and help");
         } else if (!s) {
             fail(number, "unknown line %s", word);
+        } else if (s->vk_id && strcmp(word, "help") && strcmp(word, "label")) {
+            fail(number, "a vulkan table's setting takes label and help");
         } else if (!strcmp(word, "key")) {
             s->key = dup(rest);
         } else if (!strcmp(word, "int") || !strcmp(word, "float")) {
@@ -485,6 +549,9 @@ static void read_spec(const char* path) {
             if (s->def_ifs == DEF_IFS) fail(number, "a setting takes at most %d default-if", DEF_IFS);
             s->def_if[s->def_ifs] = dup(macro);
             s->def_if_value[s->def_ifs++] = dup(strcmp(rest, "\"\"") ? rest : "");
+        } else if (!strcmp(word, "only")) {
+            s->only = only_of(rest);
+            if (!s->only) fail(number, "only %s: the systems are macos, windows, android, linux and arm64-linux", rest);
         } else if (!strcmp(word, "once")) {
             s->once = 1;
         } else if (!strcmp(word, "words")) {
@@ -513,7 +580,7 @@ static void read_spec(const char* path) {
             fail(number, "unknown line %s", word);
     }
     if (in_repeat) fail(number, "a repeat without its end");
-    free(text);
+    release(text);
     for (i = 0; i < nsettings; i++) {
         s = &settings[i];
         if (!s->key) fail(s->line, "%s has no key", s->name);
@@ -704,7 +771,7 @@ static void fill_options(int table, const char* header, const char* prefix, cons
         free(spaced);
         free(sn);
     }
-    free(text);
+    release(text);
 }
 
 static void read_pipelines(const char* path) {
@@ -721,7 +788,7 @@ static void read_pipelines(const char* path) {
         pipelines[l] = dup(trim(line + 2));
         if (!*pipelines[l]) pipelines[l] = NULL;
     }
-    free(text);
+    release(text);
 }
 
 /* the llvm tables filled, after what they declare; then every member and key checked unique */
@@ -763,12 +830,146 @@ static void fill_llvm(const char* include_dir) {
         }
 }
 
+/* ============================================================ the Vulkan extensions */
+
+/* the value of attribute name in the tag that starts at tag (up to its >), NULL for none */
+static char* tag_attribute(const char* tag, const char* name) {
+    size_t n = strlen(name);
+    const char* end = strchr(tag, '>');
+    const char* p;
+    for (p = tag; end && p < end; p++)
+        if (!strncmp(p, name, n) && p[n] == '=' && p[n + 1] == '"' && isspace((unsigned char)p[-1])) {
+            const char* v = p + n + 2;
+            const char* q = strchr(v, '"');
+            if (!q || q > end) return NULL;
+            return dup_n(v, (size_t)(q - v));
+        }
+    return NULL;
+}
+
+/* *text with a and b after it */
+static void append(char** text, const char* a, const char* b) {
+    char* joined = cat3(*text, a, b);
+    free(*text);
+    *text = joined;
+}
+
+/* whether word is one of list's comma-separated words */
+static int has_word(const char* list, const char* word) {
+    size_t n = strlen(word);
+    const char* p = list;
+    while (p && *p) {
+        const char* end = strchr(p, ',');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        if (len == n && !strncmp(p, word, n)) return 1;
+        p = end ? end + 1 : NULL;
+    }
+    return 0;
+}
+
+/* "Vulkan 1.3" for VK_VERSION_1_3, else the name as it is; *core 13 for VK_VERSION_1_3 */
+static char* version_text(const char* name, int* core) {
+    int major, minor;
+    char text[64];
+    if (sscanf(name, "VK_VERSION_%d_%d", &major, &minor) == 2) {
+        if (core) *core = major * 10 + minor;
+        sprintf(text, "Vulkan %d.%d", major, minor);
+        return dup(text);
+    }
+    return dup(name);
+}
+
+/* a vulkan table's settings checked against the registry (a device extension of Vulkan's, not Vulkan SC's alone),
+   and each one's help: what the registry says of it, then what each value does */
+static void fill_vulkan(const char* registry) {
+    char* text = registry ? read_file(registry, 1) : NULL;
+    int i, t, vulkan_tables = 0;
+    for (t = 0; t < ntables; t++) vulkan_tables += tables[t].scope == S_VULKAN;
+    if (vulkan_tables > 1) fail(0, "%s: one vulkan table at most, which g_vk_extension_settings lists", spec_path);
+    for (i = 0; i < nsettings; i++) {
+        Setting* st = &settings[i];
+        char *what = NULL, *own = st->help;
+        if (!st->vk_id) continue;
+        if (text) {
+            char* needle = cat3("<extension name=\"", st->vk_id, "\"");
+            const char* tag = strstr(text, needle);
+            char *type, *supported, *number, *promoted, *deprecated, *obsoleted;
+            free(needle);
+            if (!tag) fail(st->line, "%s is no extension of the Khronos registry (%s)", st->vk_id, registry);
+            type = tag_attribute(tag, "type");
+            supported = tag_attribute(tag, "supported");
+            number = tag_attribute(tag, "number");
+            promoted = tag_attribute(tag, "promotedto");
+            deprecated = tag_attribute(tag, "deprecatedby");
+            obsoleted = tag_attribute(tag, "obsoletedby");
+            if (!type || strcmp(type, "device"))
+                fail(st->line, "%s is an extension of type %s, not a device's", st->vk_id, type ? type : "none");
+            if (!supported || !has_word(supported, "vulkan"))
+                fail(st->line, "%s is not Vulkan's (the registry gives it to %s)", st->vk_id,
+                     supported ? supported : "none");
+            what = cat3("The Vulkan extension ", st->vk_id, ", the Khronos registry's number ");
+            append(&what, number ? number : "?", "");
+            if (promoted) {
+                char* v = version_text(promoted, &st->vk_core);
+                append(&what, ", promoted to ", v);
+                free(v);
+            }
+            if (deprecated && *deprecated) {
+                char* v = version_text(deprecated, NULL);
+                append(&what, ", deprecated by ", v);
+                free(v);
+            }
+            if (obsoleted && *obsoleted) {
+                char* v = version_text(obsoleted, NULL);
+                append(&what, ", obsoleted by ", v);
+                free(v);
+            }
+            free(type);
+            free(supported);
+            free(number);
+            free(promoted);
+            free(deprecated);
+            free(obsoleted);
+        } else
+            what = cat3("The Vulkan extension ", st->vk_id, "");
+        append(&what, ".", "");
+        st->help = NULL;
+        if (own) add_help(&st->help, own);
+        add_help(&st->help, what);
+        add_help(&st->help, "auto = ScarletNX uses it where the driver has it and no driver ban holds (the extension "
+                            "bans); on =");
+        add_help(&st->help, "wherever the driver has it, over a ban; off = never. The log says each extension's value "
+                            "in effect and");
+        add_help(&st->help, "why. Any other value stops the game, saying so");
+        free(what);
+        free(own);
+    }
+    release(text);
+}
+
+/* the vulkan table's extensions for the renderer: each one's name, its setting's value and the version it is core in */
+static void write_vk_extensions(int t) {
+    int i, n = 0;
+    outs("\nconst SettingsVkExtension g_vk_extension_settings[] = {\n");
+    for (i = 0; i < nsettings; i++) {
+        if (settings[i].table != t) continue;
+        outs("    {");
+        out_string(settings[i].vk_id);
+        out(", g_settings.%s, %d},\n", settings[i].member, settings[i].vk_core);
+        n++;
+    }
+    if (!n) outs("    {NULL, NULL, 0}\n");
+    out("};\nconst int g_vk_extension_settings_count = %d;\n", n);
+}
+
 /* ============================================================ the generated files */
 
 static const char* c_type(const Setting* s) { return s->type == T_FLOAT ? "float" : s->type == T_TEXT ? "char" : "int"; }
 static int count_of(const Setting* s) { return s->repeat ? s->repeat : s->list >= 0 ? lists[s->list].n : 0; }
 static int scope_of_setting(const Setting* s) { return tables[s->table].scope; }
-static int is_runtime(const Setting* s) { return scope_of_setting(s) == S_RUNTIME; }
+/* the game's .ini's: a runtime table's, and a vulkan table's */
+static int is_runtime_scope(int scope) { return scope == S_RUNTIME || scope == S_VULKAN; }
+static int is_runtime(const Setting* s) { return is_runtime_scope(scope_of_setting(s)); }
 static char* upper(const char* s) {
     char* u = dup(s);
     char* p;
@@ -810,6 +1011,11 @@ static void write_h(const char* dir) {
     for (t = 0; t < ntables; t++) out("extern const IniOpt %s[];\n", tables[t].name);
     outs("/* the game's settings the recompile takes too (recompile), in the recompiler's file */\n"
          "extern const IniOpt g_recompile_game_ini[];\n");
+    outs("/* the vulkan table's Vulkan extensions, in its order: each one's name, its setting's value (auto, on or "
+         "off) and\n   the Vulkan version it was promoted to (13 for 1.3), 0 for none */\n"
+         "typedef struct {\n    const char* name;\n    const char* value;\n    int core;\n} SettingsVkExtension;\n"
+         "extern const SettingsVkExtension g_vk_extension_settings[];\n"
+         "extern const int g_vk_extension_settings_count;\n");
     outs("/* the game's .ini's sections, in its order */\nextern const IniSection g_ini_sections[];\n"
          "extern const int g_ini_sections_count;\n");
     outs("/* the launcher's Settings' own groups: its rows and the recompiler's */\n"
@@ -907,7 +1113,7 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
         s->type == T_INT     ? "INI_INT"
         : s->type == T_FLOAT ? "INI_FLOAT"
                              : "INI_TEXT",
-        s->startup ? "INI_STARTUP" : "0", s->in_game ? " | INI_IN_GAME" : "", "");
+        s->startup ? "INI_STARTUP" : "0", s->in_game ? " | INI_IN_GAME" : "", s->only ? s->only : "");
     if (count_of(s)) {
         if (s->type == T_TEXT)
             out("g_settings.%s[%d]", s->member, index);
@@ -1043,9 +1249,10 @@ static void write_tables(const char* dir, int runtime) {
     if (runtime) {
         for (t = 0; t < ntables; t++) {
             char* file;
-            if (tables[t].scope != S_RUNTIME) continue;
+            if (!is_runtime_scope(tables[t].scope)) continue;
             table_head(1);
             write_table(t);
+            if (tables[t].scope == S_VULKAN) write_vk_extensions(t);
             file = table_file(tables[t].name);
             flush(dir, file);
             free(file);
@@ -1057,7 +1264,7 @@ static void write_tables(const char* dir, int runtime) {
     }
     table_head(0);
     for (t = 0; t < ntables; t++)
-        if (tables[t].scope != S_RUNTIME) write_table(t);
+        if (!is_runtime_scope(tables[t].scope)) write_table(t);
     write_recompile_game();
     write_sections("g_launch_sections", 1);
     flush(dir, "settings_launch.c");
@@ -1111,7 +1318,9 @@ static void write_llvm(const char* dir) {
 }
 
 int main(int argc, char** argv) {
-    const char *dir = NULL, *pipes = NULL, *include_dir = NULL;
+    const char *dir = NULL, *pipes = NULL, *include_dir = NULL, *registry = NULL;
+    const char* usage = "usage: settingsgen --out DIR [--pipelines FILE] [--llvm-include DIR] [--vk-registry FILE] "
+                        "SETTINGS";
     int i;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--out") && i + 1 < argc)
@@ -1120,14 +1329,17 @@ int main(int argc, char** argv) {
             pipes = argv[++i];
         else if (!strcmp(argv[i], "--llvm-include") && i + 1 < argc)
             include_dir = argv[++i];
+        else if (!strcmp(argv[i], "--vk-registry") && i + 1 < argc)
+            registry = argv[++i];
         else if (argv[i][0] == '-' || spec_path)
-            fail(0, "usage: settingsgen --out DIR [--pipelines FILE] [--llvm-include DIR] SETTINGS");
+            fail(0, "%s", usage);
         else
             spec_path = argv[i];
     }
-    if (!dir || !spec_path) fail(0, "usage: settingsgen --out DIR [--pipelines FILE] [--llvm-include DIR] SETTINGS");
+    if (!dir || !spec_path) fail(0, "%s", usage);
     read_spec(spec_path);
     if (pipes) read_pipelines(pipes);
+    fill_vulkan(registry);
     fill_llvm(include_dir);
     write_h(dir);
     write_c(dir);

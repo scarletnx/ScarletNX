@@ -49,15 +49,15 @@ typedef struct {
     u32 local, local_ptr, local_words; /* LDL and STL's memory: a Function array, made at the start */
     u32 in_attr[32], out_attr[32], position, point_size, fragcoord, color[8], depth;
     u32 vertex_index, instance_index, local_id, group_id, lane_id;
-    u32 num_groups, hmma_count; /* NumWorkgroups and the HMMAs so far, for hmma_zero */
-    int coop;                   /* HMMA takes hmma_coop (coop_wanted), and the module the Vulkan memory model */
+    u32 num_groups, hmma_count;  /* NumWorkgroups and the HMMAs so far, for hmma_zero */
+    int coop;                    /* HMMA takes hmma_coop (coop_wanted), and the module the Vulkan memory model */
     u32 coop_slots, subgroup_id; /* hmma_coop's slots (Workgroup) and SubgroupId */
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
     u32 centroid_mask;  /* the inputs decorated Centroid */
     u32 legacy_fs;      /* a fragment program's legacy varying groups (shader_legacy_group), read as generics 17-31 */
     u32 point_coord, front_facing;
     /* a fragment program at a resolution scale: SNX_VKB_RS's vec4 (scale_component) and the fragment stage's push
-       constants, whose uvec4 marks the textures bound to scaled render targets (scaled_slot) */
+       constants, whose uvec4s mark the textures bound to scaled render targets (scaled_slot) */
     u32 scale, scale_ptr, scaled_push;
     u32 tex[SH_MAXTEX], tex_sampled[SH_MAXTEX];
     /* an indexed slot's arrays on SNX_VKB_TEXARRAY and SNX_VKB_TEXDEPTH, by kind (its tex[] is the element of the
@@ -92,7 +92,7 @@ typedef struct {
     /* a task or mesh program's ISBE (isbe_var): a mesh program's attribute area and map (Workgroup), a task
        payload (TaskPayloadWorkgroupEXT), their words, and LocalInvocationIndex */
     u32 isbe_attr, isbe_map, payload, isbe_attr_words, isbe_map_words, payload_words, local_index;
-    u32 mesh_first; /* the uniform buffer of an indirect mesh draw's first group (workgroup_index) */
+    u32 mesh_first;                    /* the uniform buffer of an indirect mesh draw's first group (workgroup_index) */
     u32 vertex_words, primitive_words; /* the output words of a vertex and of a primitive (omap_words) */
     u32 prim_attr[32];                 /* a mesh program's per-primitive generic outputs */
     int soft_ftz;                      /* FTZ instructions flush their operands and results here (sm86_to_spirv_ftz) */
@@ -603,16 +603,19 @@ static u32 scale_component(Ctx* c, u32 k) {
     }
     return spv_emit_uniform_component(&c->e, c->scale_ptr, c->scale, c->zero, c->zero, cu(c, k), c->t_f32);
 }
-/* whether texture slot is bound to a scaled render target: its bit in the uvec4 after the fragment stage's vec4 at
-   push constant offset 16 (vk/render.c: x the slots 0 to 31, y 32 to 63), as a bool */
-static u32 scaled_slot(Ctx* c, int slot) {
+/* Whether texture slot is bound to a scaled render target: its bit in the uvec4 after the fragment stage's vec4 at
+   push constant offset 16 (vk/render.c: x the slots 0 to 31, y 32 to 63), as a bool. With own, whether that target
+   has the size of the one the draw renders to as well (render.c's own_size): its bit in the uvec4 at offset 96 */
+static u32 scaled_slot(Ctx* c, int slot, int own) {
     if (!c->scaled_push) {
-        u32 pointer;
-        c->scaled_push = spv_emit_push_vec4(&c->e, c->t_v4f, c->t_f32, 16, c->t_v4u, &pointer);
+        const u32 members[3] = {c->t_v4f, c->t_v4u, c->t_v4u}, offsets[3] = {16, 32, 96};
+        u32 block = spv_emit_type_struct(&c->e, members, offsets, 3);
+        spv_emit_decorate(&c->e, block, 2, NULL, 0);         /* Block */
+        c->scaled_push = spv_emit_variable(&c->e, 9, block); /* 9: PushConstant */
         add_interface(c, c->scaled_push);
     }
-    u32 bits = spv_emit_push_component_f32(&c->e, spv_emit_type_pointer(&c->e, 9, c->t_u32), c->scaled_push, cu(c, 1),
-                                           cu(c, slot >= 32), c->t_u32); /* 9: PushConstant */
+    u32 bits = spv_emit_push_component_f32(&c->e, spv_emit_type_pointer(&c->e, 9, c->t_u32), c->scaled_push,
+                                           cu(c, own ? 2 : 1), cu(c, slot >= 32), c->t_u32);
     u32 bit = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32,
                               spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, bits, cu(c, (u32)slot & 31)),
                               cu(c, 1));
@@ -628,19 +631,21 @@ static u32 frag_pixel(Ctx* c, u32 k) {
     return spv_emit_vec4_extract(&c->e, c->t_f32, spv_emit_load(&c->e, c->t_v4f, c->fragcoord), k);
 }
 /* A fragment program's 2D texel coordinates *x and *y (bits of signed integers) of texture slot, as the image has
-   them. The image of a scaled target has texel p from pixel p times the scale on, and of those the one that lies
-   where the fragment lies in its own guest pixel is fetched, as Eden's rescaling pass places it (SubScale): at a whole
-   scale a pass that fetches its own pixel reads that very pixel, not one for all the fragments of a guest pixel. It
-   stays within the texel's pixels, which at another scale end before a whole one. Another texture keeps p */
+   them. The image of a scaled target has texel p from pixel p times the scale on. Where the target has the size of
+   the one drawn to, the pixel that lies where the fragment lies in its own guest pixel is fetched, as Eden's
+   rescaling pass places it (SubScale): at a whole scale a pass that fetches its own pixel reads that very pixel, not
+   one for all the fragments of a guest pixel. It stays within the texel's pixels, which at another scale end before a
+   whole one. A target of another size (a table of a few texels, a smaller level) has no such pixel for the fragment,
+   and its place there would give a texel's value by the fragment's column and row: the pixel at the texel's centre
+   is fetched, as the Maxwell translator fetches it (shader_scaled_coords). Another texture keeps p */
 static void scaled_fetch(Ctx* c, int slot, u32* x, u32* y) {
-    u32 scaled = scaled_slot(c, slot), scale = scale_component(c, 2), over = scale_component(c, 0);
+    u32 scaled = scaled_slot(c, slot, 0), own = scaled_slot(c, slot, 1);
+    u32 scale = scale_component(c, 2), over = scale_component(c, 0);
     u32* v[2] = {x, y};
     for (u32 k = 0; k < 2; k++) {
-        u32 first =
-            nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32,
-                                          spv_emit_unary(&c->e, SPV_OP_CONVERT_S_TO_F, c->t_f32,
-                                                         spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, *v[k])),
-                                          scale));
+        u32 p = spv_emit_unary(&c->e, SPV_OP_CONVERT_S_TO_F, c->t_f32,
+                               spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, *v[k]));
+        u32 first = nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, p, scale));
         u32 next = fl(c, nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_ADD, c->t_f32, first, scale)));
         u32 last = spv_emit_glsl_binary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_MAX, fl(c, first),
                                         nocontract(c, op2(c, SPV_OP_F_SUB, c->t_f32, next, cf(c, 1.0f))));
@@ -653,6 +658,12 @@ static void scaled_fetch(Ctx* c, int slot, u32* x, u32* y) {
         u32 at = spv_emit_glsl_binary(
             &c->e, c->t_f32, c->glsl, SPV_GLSL_F_MIN,
             fl(c, nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_ADD, c->t_f32, first, place))), last);
+        u32 centre = fl(
+            c,
+            nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32,
+                                          nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_ADD, c->t_f32, p, cf(c, 0.5f))),
+                                          scale)));
+        at = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, own, at, centre);
         *v[k] = spv_emit_ternary(
             &c->e, SPV_OP_SELECT, c->t_u32, scaled,
             spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_u32, spv_emit_unary(&c->e, SPV_OP_CONVERT_F_TO_S, c->t_i32, at)),
@@ -663,7 +674,7 @@ static void scaled_fetch(Ctx* c, int slot, u32* x, u32* y) {
    renderer rounds a scaled size */
 static void scaled_size(Ctx* c, int slot, u32* x, u32* y) {
     u32 factor =
-        spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, scaled_slot(c, slot), scale_component(c, 0), cf(c, 1.0f));
+        spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, scaled_slot(c, slot, 0), scale_component(c, 0), cf(c, 1.0f));
     u32* v[2] = {x, y};
     for (u32 k = 0; k < 2; k++) {
         u32 f = nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32,
@@ -766,7 +777,8 @@ static u32 gbuf_slot(Ctx* c, u32 key, int write) {
         if (!c->coop) spv_emit_decorate(&c->e, c->gbuf[slot], 23 /* Coherent */, NULL, 0);
         add_interface(c, c->gbuf[slot]);
     }
-    if (write) c->si->gbuf_wmask |= 1u << slot;
+    if (write)
+        c->si->gbuf_wmask |= 1u << slot;
     else
         c->si->gbuf_rmask |= 1u << slot;
     return c->gbuf[slot];
@@ -1070,8 +1082,8 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
         else if (b->kind == SM86_SRC_UREG && b->reg < SM86_URZ)
             key = s->ukey[b->reg], exact = s->uexact[b->reg], dyn = s->udyn[b->reg], tab = s->utab[b->reg];
         found = 1;
-    } else if ((op == SM86_IADD3 || op == SM86_UIADD3 || op == SM86_IMAD || op == SM86_UIMAD ||
-                op == SM86_IMAD_WIDE || op == SM86_UIMAD_WIDE || op == SM86_LEA || op == SM86_ULEA) &&
+    } else if ((op == SM86_IADD3 || op == SM86_UIADD3 || op == SM86_IMAD || op == SM86_UIMAD || op == SM86_IMAD_WIDE ||
+                op == SM86_UIMAD_WIDE || op == SM86_LEA || op == SM86_ULEA) &&
                !sm86_field(in, 74, 1) && !((op == SM86_LEA || op == SM86_ULEA) && sm86_field(in, 80, 1))) {
         /* one source with a base: the result is that base at an offset. A constant buffer operand is a base
            itself, as in ptxas's LEA R0, P0, R2, c[0x0][0x60], 0x2. A constant buffer key comes before an indirect
@@ -1615,7 +1627,8 @@ static int flow_sources(Ctx* c) {
     for (u32 i = 0; i < n; i++) {
         const Sm86Insn* in = &c->in[i];
         if (sm86_never(in)) continue;
-        if (in->op == SM86_BRA) total++;
+        if (in->op == SM86_BRA)
+            total++;
         else if (is_brx(in->op))
             total += brx_targets(c, i, t, 64);
     }
@@ -1632,13 +1645,16 @@ static int flow_sources(Ctx* c) {
             const Sm86Insn* in = &c->in[i];
             if (sm86_never(in)) continue;
             u32 count = 0;
-            if (in->op == SM86_BRA) t[count++] = sm86_branch_target(in, i);
+            if (in->op == SM86_BRA)
+                t[count++] = sm86_branch_target(in, i);
             else if (is_brx(in->op))
                 count = brx_targets(c, i, t, 64);
             for (u32 k = 0; k < count; k++) {
                 if (t[k] >= n) continue;
-                if (pass == 0) first[t[k] + 1]++;
-                else from[first[t[k]] + fill[t[k]]++] = i;
+                if (pass == 0)
+                    first[t[k] + 1]++;
+                else
+                    from[first[t[k]] + fill[t[k]]++] = i;
             }
             if (pass == 0 && i + 1 == n)
                 for (u32 k = 0; k < n; k++) first[k + 1] += first[k];
@@ -1661,27 +1677,91 @@ static int may_write(const Sm86Insn* in, u32 r) {
         case SM86_RET:
         case SM86_CALL:
         case SM86_UBRA:
-        case SM86_BSSY: case SM86_BSYNC: case SM86_BREAK: case SM86_WARPSYNC: case SM86_KILL: case SM86_BAR:
-        case SM86_NOP: case SM86_ERRBAR: case SM86_DEPBAR: case SM86_NANOSLEEP: case SM86_MEMBAR: case SM86_CCTL:
-        case SM86_STG: case SM86_STG_NOU: case SM86_STL: case SM86_STL_NOU: case SM86_STS: case SM86_STS_NOU:
-        case SM86_RED: case SM86_AST: case SM86_SUST_P: case SM86_SUST_D: case SM86_SUST_P_B: case SM86_SUST_D_B:
-        case SM86_ULDC: case SM86_ULDC_IDX: case SM86_ULDCG: case SM86_S2UR: case SM86_R2UR: case SM86_PLOP3:
-        case SM86_UPLOP3: case SM86_UVOTE: case SM86_ISETP: case SM86_FSETP: case SM86_DSETP: case SM86_HSETP2:
-        case SM86_R2P: case SM86_BMOV_B: case SM86_BMOV_BI: case SM86_BMOV_BL: case SM86_ISBEWR:
-            return 0;
-        case SM86_TEX: case SM86_TEX_B: case SM86_TLD: case SM86_TLD_B: case SM86_TLD4: case SM86_TLD4_B:
-        case SM86_TMML: case SM86_TMML_B: case SM86_TXD: case SM86_TXD_B: case SM86_TXQ: case SM86_TXQ_B:
-        case SM86_TEX_U: case SM86_TLD_U: case SM86_TLD4_U: case SM86_TXQ_U: {
+        case SM86_BSSY:
+        case SM86_BSYNC:
+        case SM86_BREAK:
+        case SM86_WARPSYNC:
+        case SM86_KILL:
+        case SM86_BAR:
+        case SM86_NOP:
+        case SM86_ERRBAR:
+        case SM86_DEPBAR:
+        case SM86_NANOSLEEP:
+        case SM86_MEMBAR:
+        case SM86_CCTL:
+        case SM86_STG:
+        case SM86_STG_NOU:
+        case SM86_STL:
+        case SM86_STL_NOU:
+        case SM86_STS:
+        case SM86_STS_NOU:
+        case SM86_RED:
+        case SM86_AST:
+        case SM86_SUST_P:
+        case SM86_SUST_D:
+        case SM86_SUST_P_B:
+        case SM86_SUST_D_B:
+        case SM86_ULDC:
+        case SM86_ULDC_IDX:
+        case SM86_ULDCG:
+        case SM86_S2UR:
+        case SM86_R2UR:
+        case SM86_PLOP3:
+        case SM86_UPLOP3:
+        case SM86_UVOTE:
+        case SM86_ISETP:
+        case SM86_FSETP:
+        case SM86_DSETP:
+        case SM86_HSETP2:
+        case SM86_R2P:
+        case SM86_BMOV_B:
+        case SM86_BMOV_BI:
+        case SM86_BMOV_BL:
+        case SM86_ISBEWR: return 0;
+        case SM86_TEX:
+        case SM86_TEX_B:
+        case SM86_TLD:
+        case SM86_TLD_B:
+        case SM86_TLD4:
+        case SM86_TLD4_B:
+        case SM86_TMML:
+        case SM86_TMML_B:
+        case SM86_TXD:
+        case SM86_TXD_B:
+        case SM86_TXQ:
+        case SM86_TXQ_B:
+        case SM86_TEX_U:
+        case SM86_TLD_U:
+        case SM86_TLD4_U:
+        case SM86_TXQ_U: {
             u32 d1 = sm86_field(in, 64, 8);
             if (d1 < SM86_RZ && r >= d1 && r < d1 + 4) return 1;
             return in->dst < SM86_RZ && r >= in->dst && r < in->dst + 4u;
         }
-        case SM86_LDG: case SM86_LDG_NOU: case SM86_LDL: case SM86_LDS: case SM86_LDC: case SM86_LDC_BINDLESS:
-        case SM86_ALD: case SM86_ATOMG: case SM86_ATOMG_NOU: case SM86_ATOMG_CAS: case SM86_ATOMS: case SM86_ATOMS_NOU:
-        case SM86_ATOMS_CAS: case SM86_SULD_P: case SM86_SULD_P_B: case SM86_SULD_D: case SM86_SULD_D_B:
-        case SM86_SURED: case SM86_SURED_B: case SM86_SUATOM: case SM86_SUATOM_B: case SM86_SUATOM_CAS_B:
-        case SM86_HMMA: case SM86_LDSM:
-            return in->dst < SM86_RZ && r >= in->dst && r < in->dst + 4u;
+        case SM86_LDG:
+        case SM86_LDG_NOU:
+        case SM86_LDL:
+        case SM86_LDS:
+        case SM86_LDC:
+        case SM86_LDC_BINDLESS:
+        case SM86_ALD:
+        case SM86_ATOMG:
+        case SM86_ATOMG_NOU:
+        case SM86_ATOMG_CAS:
+        case SM86_ATOMS:
+        case SM86_ATOMS_NOU:
+        case SM86_ATOMS_CAS:
+        case SM86_SULD_P:
+        case SM86_SULD_P_B:
+        case SM86_SULD_D:
+        case SM86_SULD_D_B:
+        case SM86_SURED:
+        case SM86_SURED_B:
+        case SM86_SUATOM:
+        case SM86_SUATOM_B:
+        case SM86_SUATOM_CAS_B:
+        case SM86_HMMA:
+        case SM86_LDSM: return in->dst < SM86_RZ && r >= in->dst && r < in->dst + 4u;
         default: return in->dst < SM86_RZ && r >= in->dst && r < in->dst + 2u;
     }
 }
@@ -1784,8 +1864,11 @@ static u32 offset_vector(Ctx* c, int known, u32 value, u32 x, u32 dims, u32 used
     for (u32 k = 0; k < dims; k++)
         v[k] = k < used ? offset_part(c, known, value, x, k, bits) : spv_emit_constant_u32(&c->e, c->t_i32, 0);
     u32 type = spv_emit_type_vector(&c->e, c->t_i32, dims);
-    if (known) return dims == 2 ? spv_emit_constant_vec2(&c->e, type, v[0], v[1]) : spv_emit_constant_vec3(&c->e, type, v[0], v[1], v[2]);
-    return dims == 2 ? spv_emit_vec2_construct(&c->e, type, v[0], v[1]) : spv_emit_vec3_construct(&c->e, type, v[0], v[1], v[2]);
+    if (known)
+        return dims == 2 ? spv_emit_constant_vec2(&c->e, type, v[0], v[1])
+                         : spv_emit_constant_vec3(&c->e, type, v[0], v[1], v[2]);
+    return dims == 2 ? spv_emit_vec2_construct(&c->e, type, v[0], v[1])
+                     : spv_emit_vec3_construct(&c->e, type, v[0], v[1], v[2]);
 }
 
 /* the texture slot of a handle at byte offset off of a bank */
@@ -1999,8 +2082,8 @@ static void texture(Ctx* c, const Sm86Insn* in) {
        the operand list, as a constant buffer handle */
     int memory = in->op == SM86_TEX_U || in->op == SM86_TLD4_U;
     int bindless = in->op == SM86_TEX_B, op = bindless || in->op == SM86_TEX_U ? SM86_TEX
-                                              : in->op == SM86_TLD4_U       ? SM86_TLD4
-                                                                            : in->op;
+                                              : in->op == SM86_TLD4_U          ? SM86_TLD4
+                                                                               : in->op;
     u32 type, array, coords;
     if (!tex_dim(sm86_field(in, 61, 3), &type, &array, &coords)) {
         fail(c, "%s dimension 6", sm86_ops[op].name);
@@ -2062,17 +2145,18 @@ static void texture(Ctx* c, const Sm86Insn* in) {
         u32 comp = cu(c, sm86_field(in, 87, 2)), v[4];
         if (offset == 1) {
             u32 o = offset_vector(c, 0, 0, rd(c, off_reg), dims, used, 8);
-            result = spv_emit_image_gather_ex(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, comp, dref, o);
+            result =
+                spv_emit_image_gather_ex(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, comp, dref, o);
         } else {
             for (u32 k = 0; k < 4; k++) {
                 u32 word = rd(c, off_reg >= SM86_RZ ? off_reg : off_reg + k / 2);
                 u32 type2 = spv_emit_type_vector(&c->e, c->t_i32, 2);
                 u32 o = spv_emit_vec2_construct(&c->e, type2, offset_part(c, 0, 0, word, (k % 2) * 2, 8),
                                                 offset_part(c, 0, 0, word, (k % 2) * 2 + 1, 8));
-                v[k] = spv_emit_vec4_extract(&c->e, c->t_f32,
-                                             spv_emit_image_gather_ex(&c->e, c->t_v4f, c->tex_sampled[slot],
-                                                                      c->tex[slot], coord, comp, dref, o),
-                                             k);
+                v[k] = spv_emit_vec4_extract(
+                    &c->e, c->t_f32,
+                    spv_emit_image_gather_ex(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, comp, dref, o),
+                    k);
             }
             result = spv_emit_vec4_construct(&c->e, c->t_v4f, v);
         }
@@ -2115,10 +2199,9 @@ static void texture(Ctx* c, const Sm86Insn* in) {
                     spv_emit_capability(&c->e, SPV_CAPABILITY_IMAGE_QUERY);
                     at = spv_emit_glsl_unary(
                         &c->e, c->t_f32, c->glsl, SPV_GLSL_FLOOR,
-                        spv_emit_vec4_extract(&c->e, c->t_f32,
-                                              spv_emit_image_query_lod(&c->e, c->t_v2f, c->tex_sampled[slot],
-                                                                       c->tex[slot], coord),
-                                              0));
+                        spv_emit_vec4_extract(
+                            &c->e, c->t_f32,
+                            spv_emit_image_query_lod(&c->e, c->t_v2f, c->tex_sampled[slot], c->tex[slot], coord), 0));
                 }
                 spv_emit_capability(&c->e, SPV_CAPABILITY_IMAGE_QUERY);
                 u32 size = spv_emit_image_query_size_lod(&c->e, spv_emit_type_vector(&c->e, c->t_i32, dims + array),
@@ -2988,8 +3071,8 @@ static u32 mesh_entry(Ctx* c, u32 body) {
     u32 at = spv_emit_iadd_u32(e, c->t_u32, spv_emit_binary(e, SPV_OP_I_MUL, c->t_u32, p, cu(c, 3)), cu(c, 4)),
         index[3];
     for (u32 k = 0; k < 3; k++)
-        index[k] = isbe_load(c, map, SPV_STORAGE_WORKGROUP, c->isbe_map_words,
-                             spv_emit_iadd_u32(e, c->t_u32, at, cu(c, k)));
+        index[k] =
+            isbe_load(c, map, SPV_STORAGE_WORKGROUP, c->isbe_map_words, spv_emit_iadd_u32(e, c->t_u32, at, cu(c, k)));
     /* an index at or past the vertex count reads a vertex the program never wrote: some drivers hang on it (the
        Xid 109). Clamp to the last vertex, as the vertex count itself isn't written */
     u32 last_vertex = cu(c, m->max_vertices - 1);
@@ -4919,8 +5002,7 @@ static int mh_may_write(const Sm86Insn* in, int file, u32 r) {
 /* The one instruction whose write of value r of the file reaches instruction i on every path there, unguarded, as
    reaching_write finds a register's: -1 when that can't be shown, -2 for RZ, URZ and PT, which no one writes */
 static int mh_writer(Ctx* c, u32 i, int file, u32 r) {
-    if ((file == MH_R && r >= SM86_RZ) || (file == MH_UR && r >= SM86_URZ) || (file >= MH_P && r >= SM86_PT))
-        return -2;
+    if ((file == MH_R && r >= SM86_RZ) || (file == MH_UR && r >= SM86_URZ) || (file >= MH_P && r >= SM86_PT)) return -2;
     if (!flow_sources(c)) return -1;
     u32 n = c->n, *stack = malloc(((size_t)n + 1) * sizeof *stack), top = 0;
     u8* seen = calloc((size_t)n + 1, 1);
@@ -4941,7 +5023,9 @@ static int mh_writer(Ctx* c, u32 i, int file, u32 r) {
     return ok ? found : -1;
 }
 #undef MH_FLOW_PREDS
-static const char* mh_file_name(int file) { return file == MH_R ? "R" : file == MH_UR ? "UR" : file == MH_P ? "P" : "UP"; }
+static const char* mh_file_name(int file) {
+    return file == MH_R ? "R" : file == MH_UR ? "UR" : file == MH_P ? "P" : "UP";
+}
 /* why a handle's instructions can't be found, which memory_handles takes, the program going on */
 static int mh_fail(Ctx* c, const char* fmt, ...) {
     va_list ap;
@@ -4985,8 +5069,7 @@ static int mh_add(Ctx* c, u32 k, u32 reader) {
     if (c->mh_mark[k]) return 1;
     const Sm86Insn* in = &c->in[k];
     if (!sm86_eval_takes(in))
-        return mh_fail(c, "a texture handle from memory made with %s at %u (for %u)", sm86_ops[in->op].name, k,
-                       reader);
+        return mh_fail(c, "a texture handle from memory made with %s at %u (for %u)", sm86_ops[in->op].name, k, reader);
     if (c->nmh >= SH_MEMH_MAX)
         return mh_fail(c, "texture handles from memory made with more than %u instructions", SH_MEMH_MAX);
     c->nmh++;
@@ -5083,8 +5166,8 @@ static int mh_finish(Ctx* c) {
         const MhDep* x = &c->mh_dep[d];
         for (u32 j = x->writer + 1; j < x->at; j++)
             if (c->mh_mark[j] && mh_may_write(&c->in[j], (int)x->file, x->reg)) {
-                fail(c, "a texture handle from memory whose %s%u another of its instructions writes", mh_file_name((int)x->file),
-                     x->reg);
+                fail(c, "a texture handle from memory whose %s%u another of its instructions writes",
+                     mh_file_name((int)x->file), x->reg);
                 return 0;
             }
     }
@@ -5100,8 +5183,9 @@ static int tex_slot_memory(Ctx* c, u32 tex_probe, int smp, u32 smp_probe, u32 ty
     ShaderInfo* si = c->si;
     for (int i = 0; i < si->ntex; i++) {
         const ShTex* t = &si->tex[i];
-        if ((t->flags & SNX_TEX_MEMORY) && t->cbuf_off == tex_probe && t->bl2 == smp && (!smp || t->bl2_off == smp_probe) &&
-            t->type == type && t->array == array && t->shadow == shadow && !!(t->flags & 2) == !!ms)
+        if ((t->flags & SNX_TEX_MEMORY) && t->cbuf_off == tex_probe && t->bl2 == smp &&
+            (!smp || t->bl2_off == smp_probe) && t->type == type && t->array == array && t->shadow == shadow &&
+            !!(t->flags & 2) == !!ms)
             return i;
     }
     if (si->ntex >= SH_MAXTEX) {
@@ -5215,7 +5299,8 @@ static void memory_handles(Ctx* c) {
             } else {
                 u32 type, array, coords;
                 if (!tex_dim(sm86_field(in, 61, 3), &type, &array, &coords)) continue; /* refused where it's written */
-                u32 shadow = op == SM86_TLD_U ? 0 : sm86_field(in, 78, 1), ms = op == SM86_TLD_U && sm86_field(in, 78, 1);
+                u32 shadow = op == SM86_TLD_U ? 0 : sm86_field(in, 78, 1),
+                    ms = op == SM86_TLD_U && sm86_field(in, 78, 1);
                 slot = tex_slot_memory(c, tex, has_smp, smp, type, array, shadow, ms);
             }
             if (slot >= 0) c->handle[i].slot = (u32)slot + 1;

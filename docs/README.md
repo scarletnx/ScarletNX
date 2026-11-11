@@ -85,6 +85,7 @@ keeps audits and measurements as they were taken.
     and the optimized pipeline made after them
   - [ASTC compute uploads](layers/gpu/astc.md)
   - [Block linear surfaces and texture conversions on the GPU](layers/gpu/blocklinear.md)
+  - [BCn without BCn: ETC2 and EAC on phone GPUs](layers/gpu/bcn.md)
   - [glslc](layers/gpu/glslc.md): GLSL ES into SPIR-V, for the backends that run OpenGL ES programs on Vulkan
 - Video (`layers/media/`)
   - [VIC composition on the GPU](layers/media/vic.md)

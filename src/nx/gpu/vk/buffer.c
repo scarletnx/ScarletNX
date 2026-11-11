@@ -3837,7 +3837,7 @@ void vk_buf_frame(void) {
 void vk_buf_forget_all(void) {
     u32 i;
     vk_uma_forget_all();
-    for (i = 0; i < g_nvb; i++)
+    for (i = 1; i < g_nvb; i++) /* entry 0 is none: vb_new never writes it, and its bytes are what malloc gave */
         if (g_vb[i].len) {
             drop_own(i);
             vb_free(i);

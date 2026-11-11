@@ -738,8 +738,23 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public void setOnScrollChangeListener(OnScrollChangeListener l) { mOnScrollChangeListener = l; }
     public boolean canScrollHorizontally(int direction) { return false; }
     public boolean canScrollVertically(int direction) { return false; }
-    public void setVerticalScrollBarEnabled(boolean enabled) {}
-    public void setHorizontalScrollBarEnabled(boolean enabled) {}
+    /* The scroll bars' and fading edges' settings, kept and read back: neither is drawn */
+    private boolean mVerticalScrollBarEnabled, mHorizontalScrollBarEnabled, mScrollbarFading = true;
+    private boolean mVerticalFadingEdge, mHorizontalFadingEdge;
+    private int mFadingEdgeLength;
+    public void setVerticalScrollBarEnabled(boolean enabled) { mVerticalScrollBarEnabled = enabled; }
+    public boolean isVerticalScrollBarEnabled() { return mVerticalScrollBarEnabled; }
+    public void setHorizontalScrollBarEnabled(boolean enabled) { mHorizontalScrollBarEnabled = enabled; }
+    public boolean isHorizontalScrollBarEnabled() { return mHorizontalScrollBarEnabled; }
+    public void setScrollbarFadingEnabled(boolean fadeScrollbars) { mScrollbarFading = fadeScrollbars; }
+    public boolean isScrollbarFadingEnabled() { return mScrollbarFading; }
+    public void setVerticalFadingEdgeEnabled(boolean enabled) { mVerticalFadingEdge = enabled; }
+    public boolean isVerticalFadingEdgeEnabled() { return mVerticalFadingEdge; }
+    public void setHorizontalFadingEdgeEnabled(boolean enabled) { mHorizontalFadingEdge = enabled; }
+    public boolean isHorizontalFadingEdgeEnabled() { return mHorizontalFadingEdge; }
+    public void setFadingEdgeLength(int length) { mFadingEdgeLength = length; }
+    /** the length of a fading edge that is enabled, as Android's: 0 for one that is not */
+    public int getHorizontalFadingEdgeLength() { return mHorizontalFadingEdge ? mFadingEdgeLength : 0; }
     public void setScrollIndicators(int indicators) { mScrollIndicators = indicators; }
     public void setScrollIndicators(int indicators, int mask) { mScrollIndicators = (mScrollIndicators & ~mask) | (indicators & mask); }
     public int getScrollIndicators() { return mScrollIndicators; }
@@ -1151,9 +1166,16 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public int getNextFocusLeftId() { return mNextFocusLeftId; }
     public void setNextFocusRightId(int id) { mNextFocusRightId = id; }
     public int getNextFocusRightId() { return mNextFocusRightId; }
+    private int mNextFocusUpId = NO_ID, mNextFocusDownId = NO_ID, mNextFocusForwardId = NO_ID;
+    public void setNextFocusUpId(int id) { mNextFocusUpId = id; }
+    public int getNextFocusUpId() { return mNextFocusUpId; }
+    public void setNextFocusDownId(int id) { mNextFocusDownId = id; }
+    public int getNextFocusDownId() { return mNextFocusDownId; }
+    public void setNextFocusForwardId(int id) { mNextFocusForwardId = id; }
+    public int getNextFocusForwardId() { return mNextFocusForwardId; }
     /** no scroll bars are drawn: none to wake */
     protected boolean awakenScrollBars() { return false; }
-    public int getVerticalFadingEdgeLength() { return 0; }
+    public int getVerticalFadingEdgeLength() { return mVerticalFadingEdge ? mFadingEdgeLength : 0; }
     public void setFrameContentVelocity(float pixelsPerSecond) {}
     public WindowId getWindowId() { return mAttachInfo != null ? WindowId.of(getRootView()) : null; }
     public static View inflate(Context context, int resource, ViewGroup root) {

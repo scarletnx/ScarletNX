@@ -34,6 +34,11 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
   ([steps](#windows--msys2-clang64)). Bootstrap stages SHA-256-checked llvm-mingw/Clang, CMake, Ninja,
   NASM, Strawberry Perl and w64devkit in `deps/tools`. llvm-mingw has no LLVM libraries, so that route also needs a
   MinGW LLVM's `llvm-config` set with `-DSNX_LLVM_CONFIG=/path/to/llvm-config`. CMake fails without it.
+- **Shaders:** glslang's `glslangValidator` compiles them at build time (CMake fetches its pinned release on Linux
+  x86-64, Windows x86-64 and macOS; elsewhere it takes the system's `glslang`), and SPIRV-Tools' `spirv-opt` and
+  `spirv-val` optimize and validate them (`cmake/glsl.cmake`). Those two come from the system's `spirv-tools` package,
+  or on Windows outside MSYS2 from the LunarG Vulkan SDK; `-DSNX_SPIRV_OPT` and `-DSNX_SPIRV_VAL` name others. The
+  configure stops without them.
 - **Display:** a Vulkan 1.3 driver. Headless runs use Vulkan offscreen and skip SDL video initialization.
   SDL3 remains a required build dependency.
 - **Compiler cache (optional):** `ccache`, or `sccache` when `ccache` is not found, makes a cold build after a
@@ -56,7 +61,7 @@ system include; Fedora lists it below.
 
 ```sh
 sudo apt update
-sudo apt install build-essential git cmake ninja-build clang llvm-dev nasm pkg-config python3 \
+sudo apt install build-essential git cmake ninja-build clang llvm-dev nasm pkg-config python3 spirv-tools \
   libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
   libasound2-dev libpulse-dev libpipewire-0.3-dev
 ```
@@ -89,7 +94,7 @@ Vulkan-capable NVIDIA driver.
 ### Fedora
 
 ```sh
-sudo dnf install clang cmake ninja-build nasm make perl git pkgconf-pkg-config patch llvm-devel python3 \
+sudo dnf install clang cmake ninja-build nasm make perl git pkgconf-pkg-config patch llvm-devel python3 spirv-tools \
   libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXi-devel libXfixes-devel \
   libXScrnSaver-devel libXtst-devel alsa-lib-devel pulseaudio-libs-devel pipewire-devel
 ```
@@ -114,7 +119,7 @@ sudo dnf install wayland-devel libxkbcommon-devel wayland-protocols-devel libdec
 ### Arch Linux
 
 ```sh
-sudo pacman -Syu --needed base-devel git cmake ninja clang llvm nasm perl pkgconf python sdl3
+sudo pacman -Syu --needed base-devel git cmake ninja clang llvm nasm perl pkgconf python sdl3 spirv-tools
 ```
 
 ### FreeBSD
@@ -123,7 +128,7 @@ FreeBSD provides Clang in the base system. Install the remaining tools, the SDL3
 HIDAPI loads at run time to read controllers (an Xbox pad is only read that way):
 
 ```sh
-sudo pkg install git cmake ninja gmake nasm perl5 pkgconf python3 sdl3 llvm libusb
+sudo pkg install git cmake ninja gmake nasm perl5 pkgconf python3 sdl3 llvm libusb glslang spirv-tools
 ```
 
 The build uses that `sdl3` package by default (`SNX_SYSTEM_SDL3`, see [SDL3 troubleshooting](#sdl3-troubleshooting));
@@ -194,7 +199,7 @@ Install Xcode, then the build tools:
 
 ```sh
 xcode-select --install
-brew install cmake ninja
+brew install cmake ninja spirv-tools
 ```
 
 1. **LLVM's libraries**, once (about 10 minutes on an M1). The script builds the AArch64 code generator alone,
@@ -289,7 +294,7 @@ runtime must not mix with another LLVM build.
      mingw-w64-clang-x86_64-glslang
    ```
 
-   Python builds the menu's languages; spirv-tools is only for the `shader_direct` test. CI also installs ccache, which
+   Python builds the menu's languages; spirv-tools optimizes and validates the shaders. CI also installs ccache, which
    is optional here, as sccache is.
 3. Clone to a path without spaces:
 
@@ -340,6 +345,17 @@ The Switch runtime's shared font stand-ins download only when it is built ([Shar
 Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 uses CPM's system-package discovery with a pinned static
 source fallback. Use `-DCPM_DOWNLOAD_SDL3=ON` to request the bundled source build.
 
+`-DCPM_USE_LOCAL_PACKAGES=ON` (CPM's own option, OFF by default, also read from the environment) takes LZ4, the Vulkan
+headers and VulkanMemoryAllocator from the system when `find_package` finds their CMake package at the pinned version
+or newer (`lz4`, `VulkanHeaders` with its `share/vulkan/registry/vk.xml`, `VulkanMemoryAllocator`), and the pinned
+source otherwise. LZ4 then links as the system's library. The configure says where each came from:
+`CPM: Using local package lz4@1.10.0`, or `CPM: Adding package lz4@1.10.0 (...)` for the pinned source. Every other
+package keeps its pinned source with the option on ([cpm_local.cmake](../../cmake/cpm_local.cmake)): the build compiles
+it into a target of its own, with its own flags or a change of ours (FFmpeg, OpenSSL and the libcurl built on it,
+jemalloc, zstd, xxHash's x86 dispatcher, libdeflate, miniz, lunasvg and plutovg), or its package cannot be found this
+way (ENet installs none, yyjson's carries no version). For a package in a prefix of your own, add
+`-DCMAKE_PREFIX_PATH=/path/to/prefix`.
+
 FFmpeg, OpenSSL and jemalloc build with their own configure and make, in each build tree. With `SNX_DEPS_CACHE` (CMake
 or env) naming a folder, a tree reuses a finished build there whose inputs match (source, configure line, compiler, C
 headers and the cmake file that builds it, see [deps_cache.cmake](../../cmake/deps_cache.cmake)) and publishes the ones
@@ -377,6 +393,9 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
   tree's driver uses). `SNX_GAMES_DIR`, its name before, is still taken while it is empty, said as it configures. A
   tree whose value is the checkout's `games/`, the default before, is set back to empty.
 - `-DCPM_SOURCE_CACHE=/path`: override source-download cache.
+- `-DCPM_USE_LOCAL_PACKAGES=ON`: take LZ4, the Vulkan headers and VulkanMemoryAllocator from the system where it has
+  them at the pinned version or newer (default OFF: every package from its pinned source). See
+  [Rebuild, deploy, cache](#rebuild-deploy-cache).
 - `-DSNX_DEPS_CACHE=/path`: reuse and publish finished FFmpeg, OpenSSL and jemalloc builds there (default: the
   environment's `SNX_DEPS_CACHE`, else none).
 - `-DSNX_BUILD_NX=OFF`: omit the Switch runtime (default ON).
@@ -491,8 +510,11 @@ GITHUB_REPOSITORY=scarletnx/ScarletNX scripts/make-appimage.sh
 The AppImage links LLVM statically: `scripts/linux-llvm.sh ARCH PREFIX` builds the libraries the recompiler links and
 nothing else, with one code generator, the host's (a distribution's libLLVM is one library with every target). It
 takes the version in `LLVM_VERSION` (CI gives it the container's, whose `opt` prints the LLVM settings' pipelines),
-and with `SNX_SYSROOT` set it cross-builds for another architecture. `SNX_A64_DISASM=OFF` leaves out `scarletnx
---mcp`'s A64 disassembler, which is for working on the runtime.
+and with `SNX_SYSROOT` set it cross-builds for another architecture. `scripts/llvm-source.sh` downloads that version's
+source for it, as for the Android and Apple LLVM scripts, and checks it against the SHA-256 `scripts/llvm-source.sha256`
+pins: a version without a line there is refused, so a new LLVM in CI's image needs its line first, the hash taken from
+the digest on the release's page. `SNX_A64_DISASM=OFF` leaves out `scarletnx --mcp`'s A64 disassembler, which is for
+working on the runtime.
 
 `scarletnx` is every driver the build has (`src/multicall`): each driver is a library with no `main` of its own,
 and the program, whichever drivers are on (`SNX_BUILD_NX` among them), runs the one its name says, so LLVM, SDL and

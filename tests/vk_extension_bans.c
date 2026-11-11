@@ -379,6 +379,61 @@ static void check_filter(void) {
     CHECK(said_with("VK_EXT_e", NULL, NULL) >= 0, "a new device's lines are unclaimed again");
 }
 
+/* the extension settings (vk_extension_settings): off takes its extension out, on goes over its bans, auto leaves it to
+   them, and each is said with its value in effect and why; a value not auto, on or off, and off for a needed extension
+   the driver has, are refused */
+static void check_settings(void) {
+    static const char* const names[] = {"VK_KHR_swapchain", "VK_EXT_b", "VK_EXT_c", "VK_EXT_e", "VK_EXT_j", "VK_EXT_k"};
+    VkExtensionProperties list[6];
+    SnxVkExtensions e = {list, 6};
+    char err[512] = "";
+    for (int i = 0; i < 6; i++) snprintf(list[i].extensionName, sizeof list[i].extensionName, "%s", names[i]);
+    CHECK(vk_bans_load(g_table, err, sizeof err), err);
+    device(VK_DRIVER_ID_MESA_RADV, MESA(26u, 0u, 4u), 0x73bf, SNX_VK_BAN_LINUX);
+    const VkExtensionSetting settings[] = {{"VK_KHR_swapchain", "auto", 0}, {"VK_EXT_b", "on", 0},
+                                           {"VK_EXT_c", "auto", 13},        {"VK_EXT_e", "auto", 0},
+                                           {"VK_EXT_j", "auto", 0},         {"VK_EXT_k", "off", 0},
+                                           {"VK_EXT_z", "on", 0},           {"VK_EXT_y", "off", 0}};
+    const VkExtensionNeed need[] = {{"VK_KHR_swapchain", "the window is drawn with it"}, {"VK_EXT_y", "y is needed"}};
+    const VkExtensionSetting maybe[] = {{"VK_EXT_c", "maybe", 0}};
+    CHECK(!vk_extension_settings(&e, maybe, 1, NULL, 0, err, sizeof err) &&
+              !strcmp(err, "vk_ext_c=maybe is not auto, on or off"),
+          "a value not auto, on or off is refused, with the setting's key");
+    const VkExtensionSetting no_window[] = {{"VK_KHR_swapchain", "off", 0}};
+    CHECK(!vk_extension_settings(&e, no_window, 1, need, 2, err, sizeof err) &&
+              !strcmp(err, "vk_khr_swapchain=off turns off VK_KHR_swapchain, which ScarletNX can't run without on this "
+                           "device: the window is drawn with it") &&
+              e.count == 6,
+          "off for a needed extension the driver has is refused, the list left whole");
+    CHECK(vk_extension_settings(&e, settings, 8, need, 2, err, sizeof err), err);
+    CHECK(e.count == 5, "off takes VK_EXT_k out; off for a needed one the driver has not (VK_EXT_y) is no matter");
+    g_test.nsaid = 0;
+    CHECK(vk_bans_filter(&e, say) == 1 && e.count == 4, "the bans take out VK_EXT_j alone: on goes over VK_EXT_b's");
+    CHECK(vk_ban_find("VK_EXT_b") == 0, "and vk_ban_find finds no ban on it either");
+    g_test.nsaid = 0;
+    vk_extension_settings_say(&e, VK_API_VERSION_1_3, say);
+    CHECK(g_test.nsaid == 8, "a line for each setting");
+    CHECK(said_with("vulkan: VK_KHR_swapchain: on (auto: the driver has it, and no ban holds)", NULL, NULL) >= 0,
+          "auto with no ban: on");
+    int over = said_with("vulkan: VK_EXT_b: on (vk_ext_b=on goes over the ban: RADV from 25.0.3 to before 26.1 on "
+                         "Linux breaks b (src b; extension_bans.txt:4))",
+                         NULL, NULL);
+    CHECK(over >= 0 && g_test.warned[over], "on over a ban: a warning naming the ban");
+    CHECK(said_with("vulkan: VK_EXT_c: on (auto: the driver has it, and no ban holds; core in Vulkan 1.3, which the "
+                    "renderer runs this device at)",
+                    NULL, NULL) >= 0,
+          "an extension core in the device's version says so");
+    CHECK(said_with("vulkan: VK_EXT_e: on (auto, with a ban that e applies: ", "breaks e", NULL) >= 0,
+          "a ban another setting applies leaves the extension on, naming that setting");
+    CHECK(said_with("vulkan: VK_EXT_j: off (auto, as the ban holds: ", "breaks j", NULL) >= 0, "auto under a ban: off");
+    CHECK(said_with("vulkan: VK_EXT_k: off (vk_ext_k=off)", NULL, NULL) >= 0, "off: off");
+    CHECK(said_with("vulkan: VK_EXT_z: off (the driver has it not, which vk_ext_z=on can't change)", NULL, NULL) >= 0,
+          "on for one the driver has not: off");
+    CHECK(said_with("vulkan: VK_EXT_y: off (vk_ext_y=off, and the driver has it not)", NULL, NULL) >= 0,
+          "off for one the driver has not says both");
+    if (g_test.nsaid != 8) show_said();
+}
+
 /* the table the build carries, read whole, against the drivers its lines are about */
 static void check_shipped(void) {
     char err[512] = "", text[1200];
@@ -743,6 +798,7 @@ int main(int argc, char** argv) {
     check_versions();
     check_matching();
     check_filter();
+    check_settings();
     check_shipped();
     ini_set_say(say_ini);
     check_ignore();

@@ -54,11 +54,10 @@ static void vkr_before_write(u64 gva, u64 size) {
     vk_rt_before_write(gva, size);
     vk_unlock();
 }
-/* pending compute and graphics results and queued releases all count their pages in g_pend_any (pending_pages.h);
-   storage images don't, so any of them pending answers yes */
+/* pending compute and graphics results, storage images and queued releases all count their pages in g_pend_any
+   (pending_pages.h) */
 static int vkr_mem_pending(u64 gva, u64 size) {
     int hit;
-    if (g_gfx_img_any) return 1;
     /* the tables' lock, not vk_lock: the game's threads ask this of each read they make through the GPU's address
        space (gmem_read), and waited here for vk_lock while the GPU thread held it across its waits for the GPU */
     pend_lock();
@@ -74,23 +73,36 @@ static void vkr_gfx_mem_need(u64 gva, u64 size) {
 }
 /* the GPU range a mapping change is changing, from its begin to its end (size 0 for a change of guest memory) */
 static u64 g_mapping_gva, g_mapping_size;
-/* whether the renderer may hold anything over guest memory [a, a + size), with pend_lock held: pending results or
+/* whether the renderer holds anything over guest memory [a, a + size), with pend_lock held: pending results or
    GPU-owned memory on its host pages, which land there, or a GPU mapping of it, through which the renderer reads and
    writes it (gmmu_run, then the bytes, with vk_lock held). Storage images and render targets write back through their
-   GPU mapping too. Unified memory reads guest memory in place, and its imports aren't looked at here */
+   GPU mapping too */
 static void alias_seen(void* ctx, u64 gva, u64 n) {
     (void)gva;
     (void)n;
     *(int*)ctx = 1;
 }
-static int guest_covered(u64 a, u64 size) {
-    u64 page = plat_vm_page(), lo = a & ~(page - 1), hi;
+static int guest_held(u64 a, u64 size) {
+    u64 page = plat_vm_page(), lo = a & ~(page - 1), hi = (a + size + page - 1) & ~(page - 1);
     int mapped = 0;
-    if (vk_uma() || size == ~0ull || a + size < a) return 1;
-    hi = (a + size + page - 1) & ~(page - 1);
     if (pend_hit_guest(&g_pend_any, a, size) || own_lookup(lo, hi - lo, NULL, 0)) return 1;
     gmmu_aliases(a, size, alias_seen, &mapped);
     return mapped;
+}
+/* whether it may: unified memory reads guest memory in place, and its imports aren't looked at here */
+static int guest_covered(u64 a, u64 size) {
+    if (vk_uma() || size == ~0ull || a + size < a) return 1;
+    return guest_held(a, size);
+}
+/* whether a change that takes vk_lock waits for results of the GPU, in its begin or in mem.c's change, with pend_lock
+   held. A change of guest pages alone (GPU_MAPPING_GUEST_ONLY): when the renderer holds something over them. Another
+   change of guest memory lands what the GPU holds of other pages too (a view's source), so: when anything pends or is
+   owned at all. A change of the GPU's address space has its callers off their cores already */
+static int mapping_lands(u64 gva, u64 size, int kind) {
+    if (kind == GPU_MAPPING_GMMU) return 0;
+    if (kind == GPU_MAPPING_GUEST || size == ~0ull || gva + size < gva)
+        return g_pend_any.total || own_any() || g_gfx_img_any;
+    return guest_held(gva, size);
 }
 /* The brackets of this thread that skipped vk_lock, a bit each by depth: mem.c's brackets don't nest, the GMMU's
    may run inside one of the renderer's own (vk_lock held there already) */
@@ -109,12 +121,18 @@ static void vkr_mapping_begin(u64 gva, u64 size, int kind) {
         return;
     }
     t_mapping_quick &= ~bit;
+    int full = kind != GPU_MAPPING_GMMU;
+    int lands = mapping_lands(gva, size, kind);
     /* taken again after vk_lock, in order, and once what lands here has landed: a landing may wait for the GPU, and
        held pend_lock meanwhile, which the quick changes of other guest memory and the game's reads wait for. Each
        change of the tables takes it on its own until then */
     pend_unlock();
-    int full = kind != GPU_MAPPING_GMMU;
-    vk_lock();
+    /* the kernel hears of a wait before it starts (g_gpu_mapping_waits), and of none where the lock is free and
+       nothing lands: a thread in a memory SVC then keeps its core to the SVC's end, as on the console */
+    if (lands || !vk_trylock()) {
+        if (g_gpu_mapping_waits) g_gpu_mapping_waits();
+        vk_lock();
+    }
     g_mapping_gva = full ? 0 : gva;
     g_mapping_size = full ? 0 : size;
     if (full) {
@@ -435,7 +453,6 @@ static int is_srgb(VkFormat f) {
     return f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
 }
 
-static int g_sc_srgb; /* what the swapchain was asked for (the surface may not have it) */
 /* the window's surface: lost while the app is in the background (Android), made anew when it comes back */
 static u32 g_generation;
 static int g_lost;
@@ -485,7 +502,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
     SNX_ZONE(z_show, "vk show");
     if (transform & 4) { u32 w = fw; fw = fh; fh = w; }
     /* the size the swapchain was made for, not the extent the surface clamped it to: that can stay different */
-    int ww, wh, srgb = src ? is_srgb(src->f.vk) : g_sc_srgb, shown = backend_window_shown();
+    int ww, wh, shown = backend_window_shown();
     backend_window_size(&ww, &wh);
     if (shown && (g_lost || backend_window_generation() != g_generation)) {
         vk_finish();
@@ -496,17 +513,16 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
     int tried = 0; /* a create already ran this frame: one that failed waits for the next frame */
     /* a new vsync in the .ini takes a new swapchain, as a new size does */
     if (shown && ww > 0 && wh > 0 &&
-        (ww != g_vk.sc_win_w || wh != g_vk.sc_win_h || srgb != g_sc_srgb ||
+        (ww != g_vk.sc_win_w || wh != g_vk.sc_win_h ||
          __atomic_load_n(&g_settings.vsync, __ATOMIC_RELAXED) != g_vk.sc_vsync)) {
         vk_finish();
-        g_sc_srgb = srgb;
-        vk_swapchain_create(srgb);
+        vk_swapchain_create(0);
         tried = 1;
     }
     VkSemaphore wait = VK_NULL_HANDLE, signal = VK_NULL_HANDLE;
     u32 idx = 0;
     int recreate = 0;
-    if (shown && (src || !game) && (g_vk.swapchain || (!tried && vk_swapchain_create(srgb)))) {
+    if (shown && (src || !game) && (g_vk.swapchain || (!tried && vk_swapchain_create(0)))) {
         VkCommandBuffer cb = vk_cmd(); /* waits for this frame slot, so its acquire semaphore is free */
         VkSemaphore acq = g_acquired[vk_frame_id() % VK_FRAMES];
         /* no wait: vk_lock is held (guest threads mapping memory take it too), and the game's pace is present_pace's.
@@ -529,23 +545,12 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
             wait = acq;
             signal = g_vk.sc_done[idx];
             VkImage sc = g_vk.sc_images[idx];
-            if (src)
-                vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
-                            VK_ACCESS_2_TRANSFER_READ_BIT);
-            /* the submit waits for the acquire at the clear, the image's first use */
-            vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_CLEAR_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
-                       VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-            VkClearColorValue black = {{0, 0, 0, 1}};
-            VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-            rec_CmdClearColorImage(cb, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
-            vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
-                       VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
             /* letterbox: the largest rectangle of the frame's aspect that fits the window's part clear of the system's
                bars, centered there; the clear part scales with the extent the surface may have clamped */
             u32 sw = g_vk.sc_extent.width, sh = g_vk.sc_extent.height, cx = 0, cy = 0, cw = sw, ch = sh, dw, dh;
             int sx, sy, sww, swh;
+            VkRect2D crop = {0}, to = {0};
+            Surf* framed = NULL; /* src, where it has a frame to draw */
             backend_window_safe(&sx, &sy, &sww, &swh);
             if (g_vk.sc_win_w > 0 && g_vk.sc_win_h > 0 && sww > 0 && swh > 0 && sx + sww <= g_vk.sc_win_w &&
                 sy + swh <= g_vk.sc_win_h) {
@@ -562,28 +567,14 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                     dw = (u32)((u64)ch * fw / fh);
                 }
                 i32 dx = (i32)(cx + (cw - dw) / 2), dy = (i32)(cy + (ch - dh) / 2);
-                VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                    .srcOffsets = {{(i32)g_last_x, (i32)g_last_y, 0},
-                                                   {(i32)(g_last_x + g_last_w), (i32)(g_last_y + g_last_h), 1}},
-                                    .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                    .dstOffsets = {{dx, dy, 0}, {dx + (i32)dw, dy + (i32)dh, 1}}};
-                if (transform & 4) {
-                    VkRect2D crop = {{(i32)g_last_x, (i32)g_last_y}, {g_last_w, g_last_h}};
-                    VkRect2D destination = {{dx, dy}, {dw, dh}};
-                    vk_present_quad(src, sc, g_vk.sc_format, g_vk.sc_extent, crop, destination, transform, 1);
-                } else {
-                    flip_src(&blit, transform); /* render targets stay in guest order */
-                    rec_CmdBlitImage(cb, src->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc,
-                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
-                }
+                crop = (VkRect2D){{(i32)g_last_x, (i32)g_last_y}, {g_last_w, g_last_h}};
+                to = (VkRect2D){{dx, dy}, {dw, dh}};
+                framed = src;
             }
-            {
+            { /* one pass: black, the frame, the on-screen layer */
                 int safe[4] = {(int)cx, (int)cy, (int)cw, (int)ch};
-                vk_ui_draw(cb, sc, safe);
+                vk_ui_present(cb, sc, framed, crop, to, transform, safe);
             }
-            vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
-                       VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
         } else
             VK_OK(r);
     }
@@ -868,7 +859,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         }
     }
     /* Offscreen frames still submit and advance the frame ring. g_last remains available for readback. */
-    vk_submit(wait, VK_PIPELINE_STAGE_2_CLEAR_BIT, signal);
+    vk_submit(wait, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, signal); /* the window's pass, vk_ui_present */
     if (game) vk_renderdoc_present(g_vk_present);
     /* after the frame's submission, so that the GPU's piece of a background encode never holds up the present */
     vk_astc_background();
@@ -891,7 +882,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
     vk_tex_later_frame();
     if (recreate && !g_lost && !g_vk.sc_lost) { /* not when this frame's create found the surface lost */
         vk_finish();
-        vk_swapchain_create(srgb);
+        vk_swapchain_create(0);
     }
     if (g_vk.sc_lost) { /* a create found the surface lost: the next frame makes it anew */
         g_vk.sc_lost = 0;

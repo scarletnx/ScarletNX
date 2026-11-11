@@ -32,6 +32,12 @@ if(NOT cpm_have STREQUAL CPM_HASH)
     file(RENAME "${cpm_file}.part" "${cpm_file}")
 endif()
 include("${cpm_file}")
+# before the first package: a folder a failed download left in the cache is not taken for its package
+include("${PROJECT_SOURCE_DIR}/cmake/cpm_cache.cmake")
+snx_cpm_cache_sweep()
+
+# which packages CPM_USE_LOCAL_PACKAGES may take from the system: the ones added with snx_cpm_local_package
+include("${PROJECT_SOURCE_DIR}/cmake/cpm_local.cmake")
 
 # Packages whose headers a system may also have (Vulkan) are added without SYSTEM. The compiler searches every
 # -I folder before any -isystem one, so as -isystem they lost to an -I/usr/local/include in CFLAGS, usual on FreeBSD,
@@ -48,13 +54,18 @@ endfunction()
 # is built (BSD-2-Clause): the rest of LZ4 is its frame format, the HC compressor and the command-line program, none
 # of which an NSO uses
 if(SNX_BUILD_NX)
-    CPMAddPackage(NAME lz4 VERSION 1.10.0
-                  URL https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz
-                  URL_HASH SHA256=537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b
-                  DOWNLOAD_ONLY YES)
-    add_library(snx_lz4 STATIC "${lz4_SOURCE_DIR}/lib/lz4.c")
-    target_include_directories(snx_lz4 PUBLIC "${lz4_SOURCE_DIR}/lib")
-    snx_quiet(snx_lz4)
+    snx_cpm_local_package(NAME lz4 VERSION 1.10.0
+                          URL https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz
+                          URL_HASH SHA256=537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b
+                          DOWNLOAD_ONLY YES)
+    if(lz4_ADDED)
+        add_library(snx_lz4 STATIC "${lz4_SOURCE_DIR}/lib/lz4.c")
+        target_include_directories(snx_lz4 PUBLIC "${lz4_SOURCE_DIR}/lib")
+        snx_quiet(snx_lz4)
+    else() # the system's library (CPM_USE_LOCAL_PACKAGES)
+        add_library(snx_lz4 INTERFACE IMPORTED)
+        target_link_libraries(snx_lz4 INTERFACE LZ4::lz4)
+    endif()
 endif()
 
 # yyjson (MIT) for the driver's MCP server (src/nx/runtime/driver/mcp*.c) and, in every build, the GPU driver packages'
@@ -177,11 +188,9 @@ if(TARGET OpenSSL::SSL)
                   DOWNLOAD_ONLY YES)
     include("${PROJECT_SOURCE_DIR}/cmake/curl.cmake")
     set(snx_cacert_date 2026-10-20)
-    CPMAddPackage(NAME cacert VERSION 2026.10.20
-                  URL https://curl.se/ca/cacert-${snx_cacert_date}.pem
-                  URL_HASH SHA256=796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe
-                  DOWNLOAD_ONLY YES
-                  DOWNLOAD_NO_EXTRACT YES)
+    snx_cpm_file(cacert 2026.10.20
+                 https://curl.se/ca/cacert-${snx_cacert_date}.pem
+                 796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe)
     include("${PROJECT_SOURCE_DIR}/cmake/cacert.cmake")
 endif()
 
@@ -233,10 +242,17 @@ endif()
 
 if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
    (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
-    CPMAddPackage(NAME Vulkan-Headers VERSION 1.4.367
-                  URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.367.tar.gz
-                  URL_HASH SHA256=0df7d58b5df617e0a6a17dec521af459206719f9c7cb12d05d09275597c16f70
-                  EXCLUDE_FROM_ALL YES)
+    # the system's package is named VulkanHeaders
+    snx_cpm_local_package(NAME Vulkan-Headers VERSION 1.4.367 FIND_PACKAGE_ARGUMENTS "NAMES VulkanHeaders CONFIG"
+                          URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.367.tar.gz
+                          URL_HASH SHA256=0df7d58b5df617e0a6a17dec521af459206719f9c7cb12d05d09275597c16f70
+                          EXCLUDE_FROM_ALL YES)
+    if(Vulkan-Headers_ADDED)
+        set(snx_vulkan_include_dir "${Vulkan-Headers_SOURCE_DIR}/include")
+    else()
+        get_target_property(snx_vulkan_include_dir Vulkan::Headers INTERFACE_INCLUDE_DIRECTORIES)
+        snx_local_vulkan_registry(snx_vulkan_local_registry)
+    endif()
     # volk.c is compiled into the vk components, VMA is a header
     CPMAddPackage(NAME volk VERSION 1.4.363
                   URL https://github.com/zeux/volk/archive/refs/tags/vulkan-sdk-1.4.363.0.tar.gz
@@ -246,18 +262,15 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
     # B3n30/citra_system_archives makes (GPL-2.0-or-later), as the C arrays Azahar's source holds them in, each at the
     # commit that last changed it. The Mii data is ours (src/common/utilities/mii_model.c), made when a game opens it
     if(SNX_BUILD_3DS)
-        CPMAddPackage(NAME AzaharCountryList VERSION 2019
-                      URL https://raw.githubusercontent.com/azahar-emu/azahar/a1517612d37f17e673849e04673a0f3c146d6208/externals/open_source_archives/include/country_list.app.romfs.h
-                      URL_HASH SHA256=bd1c384c9788f99ed2cf9157727820c4c0000f6bbc01843ff8642a32e6f90651
-                      DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
-        CPMAddPackage(NAME AzaharSharedFont VERSION 2019
-                      URL https://raw.githubusercontent.com/azahar-emu/azahar/7f1303a8344724598015a3e48a4bc5aef77090fc/externals/open_source_archives/include/shared_font.app.romfs.h
-                      URL_HASH SHA256=316a05284c0746bcd1b5623c54ff770f2db736bdb90a592c2eda176e2c3ac6c1
-                      DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
-        CPMAddPackage(NAME AzaharBadWordList VERSION 2019
-                      URL https://raw.githubusercontent.com/azahar-emu/azahar/8a2c44be5688db1cea22ba7c485e8befc892e673/externals/open_source_archives/include/bad_word_list.app.romfs.h
-                      URL_HASH SHA256=fe040590fa035e2602c9ce25ba3cf6a208fcb72cb9d53945cbc5747610ad4e15
-                      DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
+        snx_cpm_file(AzaharCountryList 2019
+                     https://raw.githubusercontent.com/azahar-emu/azahar/a1517612d37f17e673849e04673a0f3c146d6208/externals/open_source_archives/include/country_list.app.romfs.h
+                     bd1c384c9788f99ed2cf9157727820c4c0000f6bbc01843ff8642a32e6f90651)
+        snx_cpm_file(AzaharSharedFont 2019
+                     https://raw.githubusercontent.com/azahar-emu/azahar/7f1303a8344724598015a3e48a4bc5aef77090fc/externals/open_source_archives/include/shared_font.app.romfs.h
+                     316a05284c0746bcd1b5623c54ff770f2db736bdb90a592c2eda176e2c3ac6c1)
+        snx_cpm_file(AzaharBadWordList 2019
+                     https://raw.githubusercontent.com/azahar-emu/azahar/8a2c44be5688db1cea22ba7c485e8befc892e673/externals/open_source_archives/include/bad_word_list.app.romfs.h
+                     fe040590fa035e2602c9ce25ba3cf6a208fcb72cb9d53945cbc5747610ad4e15)
         include("${PROJECT_SOURCE_DIR}/cmake/ctr_system_archives.cmake")
     endif()
     # volk.c and VMA's implementation (src/nx/gpu/vk/vma.cpp) compiled into a target of ours: no warnings, and not
@@ -322,21 +335,6 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
     include("${PROJECT_SOURCE_DIR}/cmake/ffmpeg.cmake")
 endif()
 
-# libadrenotools and liblinkernsbypass (BSD-2-Clause) for the GPU drivers a player adds on Android arm64, the only ABI
-# they build for (cmake/adrenotools.cmake). linkernsbypass is libadrenotools' submodule at that commit, which GitHub's
-# archives leave out
-if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a" AND SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
-    CPMAddPackage(NAME libadrenotools VERSION 2024.09.10
-                  URL https://github.com/bylaws/libadrenotools/archive/8fae8ce254dfc1344527e05301e43f37dea2df80.tar.gz
-                  URL_HASH SHA256=ceffce971676d4cfdf348a082df06fc92a1dca6d95bea892a480d63f200961cb
-                  DOWNLOAD_ONLY YES)
-    CPMAddPackage(NAME linkernsbypass VERSION 2024.09.10
-                  URL https://github.com/bylaws/liblinkernsbypass/archive/aa3975893d83ef1bc84c321ec60c65fbf1287887.tar.gz
-                  URL_HASH SHA256=da1128c8aa771c4d24766b53a47822d0717baa5c536ca8491220402942b80638
-                  DOWNLOAD_ONLY YES)
-    include("${PROJECT_SOURCE_DIR}/cmake/adrenotools.cmake")
-endif()
-
 # Extraction-only and tools-only builds do not contain the NX runtime or its graphics/media dependencies.
 if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     # the shared fonts' stand-ins (cmake/shared_fonts.cmake): Noto Sans subsets for the five text fonts, one per
@@ -352,26 +350,28 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         string(REPLACE " " ";" font "${font}")
         list(GET font 0 script)
         list(GET font 1 hash)
-        CPMAddPackage(NAME NotoSans${script}Subset VERSION 2026
-                      URL ${snx_noto_url}/NotoSans${script}-Subset.ttf
-                      URL_HASH SHA256=${hash}
-                      DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
+        snx_cpm_file(NotoSans${script}Subset 2026
+                     ${snx_noto_url}/NotoSans${script}-Subset.ttf
+                     ${hash})
     endforeach()
-    CPMAddPackage(NAME YuzuOSSExtension VERSION 2019
-                  URL https://raw.githubusercontent.com/eden-emulator/mirror/2b87305d319f0bd04da36fb96314934f37b12637/src/core/file_sys/system_archive/data/font_nintendo_extended.cpp
-                  URL_HASH SHA256=6fbbf5176ff4fd2024f9d150c889477f6b45ece4ac5e45d51286e32f8b13a6f2
-                  DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
+    snx_cpm_file(YuzuOSSExtension 2019
+                 https://raw.githubusercontent.com/eden-emulator/mirror/2b87305d319f0bd04da36fb96314934f37b12637/src/core/file_sys/system_archive/data/font_nintendo_extended.cpp
+                 6fbbf5176ff4fd2024f9d150c889477f6b45ece4ac5e45d51286e32f8b13a6f2)
     include("${PROJECT_SOURCE_DIR}/cmake/shared_fonts.cmake")
 
-    CPMAddPackage(NAME VulkanMemoryAllocator VERSION 3.5.0
-                  URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.5.0.tar.gz
-                  URL_HASH SHA256=c5f3db848fca9cb9726b41f256cc3007773321fa92a86d1e0902e66474e8a9e3
-                  DOWNLOAD_ONLY YES)
+    snx_cpm_local_package(NAME VulkanMemoryAllocator VERSION 3.5.0
+                          URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.5.0.tar.gz
+                          URL_HASH SHA256=c5f3db848fca9cb9726b41f256cc3007773321fa92a86d1e0902e66474e8a9e3
+                          DOWNLOAD_ONLY YES)
+    if(VulkanMemoryAllocator_ADDED)
+        set(snx_vma_include_dir "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+    else()
+        get_target_property(snx_vma_include_dir GPUOpen::VulkanMemoryAllocator INTERFACE_INCLUDE_DIRECTORIES)
+    endif()
     # RenderDoc's in-application API, one header (renderdoc, gpu/vk/renderdoc.c), from the release tag
-    CPMAddPackage(NAME renderdoc_app VERSION 1.46
-                  URL https://raw.githubusercontent.com/baldurk/renderdoc/v1.46/renderdoc/api/app/renderdoc_app.h
-                  URL_HASH SHA256=b7005e7dc34c3635046868bbd76d81b9b055aede0f56daa0bd39fedee0639ffb
-                  DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
+    snx_cpm_file(renderdoc_app 1.46
+                 https://raw.githubusercontent.com/baldurk/renderdoc/v1.46/renderdoc/api/app/renderdoc_app.h
+                 b7005e7dc34c3635046868bbd76d81b9b055aede0f56daa0bd39fedee0639ffb)
 
     # Tracy client, for SNX_TRACY development builds.
     if(SNX_TRACY)
@@ -473,10 +473,9 @@ if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
     target_include_directories(snx_harfbuzz SYSTEM PUBLIC "${harfbuzz_SOURCE_DIR}/src")
     set_target_properties(snx_harfbuzz PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
     snx_quiet(snx_harfbuzz)
-    CPMAddPackage(NAME NotoSansJPSubset VERSION 2026
-                  URL https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansJP-Subset.ttf
-                  URL_HASH SHA256=0941fc22edbe0b3b9e8306d4a2feae5e9c0fbd25942600564cc3edb69da88e62
-                  DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
+    snx_cpm_file(NotoSansJPSubset 2026
+                 https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansJP-Subset.ttf
+                 0941fc22edbe0b3b9e8306d4a2feae5e9c0fbd25942600564cc3edb69da88e62)
     # SQLite (public domain), the amalgamation, for android.database.sqlite (src/android/db/sqlite_jni.c). Its
     # options are the ones of Android's own build that apps can see: the FTS3, FTS4 and FTS5 modules, no extension
     # loading

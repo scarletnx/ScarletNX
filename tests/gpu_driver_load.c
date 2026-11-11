@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* nx/runtime/platform/gpu_driver_load.c away from Android: Freedreno's variables set before any driver reads them, and
    each run that asks for what it cannot have stopped, saying why, rather than going on with the system's driver. A run
-   opens its driver once, so each case is a run of this program: env, badenv, here, badid. With the system's driver a
+   opens its driver once, so each case is a run of this program: env, sets, badenv, here, badid. With the system's driver a
    run that finds no Vulkan device has nothing to say of a package */
 #include "nx/runtime/platform/gpu_driver_load.h"
 #include "nx/runtime/options.h"
@@ -52,12 +52,25 @@ int main(int argc, char** argv) {
         assert(!strcmp(getenv("TU_DEBUG"), "sysmem,nobin") && !strcmp(getenv("FD_RD_DUMP"), "enable"));
         assert(strstr(g_test.log, "freedreno: TU_DEBUG=sysmem,nobin\n") &&
                strstr(g_test.log, "freedreno: FD_RD_DUMP=enable\n"));
+        /* Turnip's fifth descriptor set, which the renderer's five stages take */
+        assert(!strcmp(getenv("tu_dont_reserve_descriptor_set"), "true"));
+        assert(strstr(g_test.log, "freedreno: tu_dont_reserve_descriptor_set=true, for the fifth descriptor set\n"));
         gpu_driver_check();
         assert(!gpu_driver_open()); /* once a run: the first one's answer */
         {
             char said[8] = "none";
             assert(!gpu_driver_no_device(said, sizeof said) && !strcmp(said, "none"));
         }
+    } else if (!strcmp(which, "sets")) {
+        /* a value of Turnip's set variable the environment has stays, and is said */
+#ifdef _WIN32
+        assert(!_putenv_s("tu_dont_reserve_descriptor_set", "false"));
+#else
+        assert(!setenv("tu_dont_reserve_descriptor_set", "false", 1));
+#endif
+        assert(run("", "", &gipa) && !gipa);
+        assert(!strcmp(getenv("tu_dont_reserve_descriptor_set"), "false"));
+        assert(strstr(g_test.log, "freedreno: tu_dont_reserve_descriptor_set=false, as the environment has it\n"));
     } else if (!strcmp(which, "badenv")) {
         /* a variable Freedreno does not read stops the run with its name, and nothing is set */
         assert(!run("", "TU_DEBUG=sysmem;LD_PRELOAD=/x.so", &gipa));
@@ -75,7 +88,7 @@ int main(int argc, char** argv) {
                        "gpu_driver=../escape is no driver's folder name: letters, digits, '.', '-' and '_', "
                        "96 at most"));
     } else {
-        fprintf(stderr, "usage: %s env|badenv|here|badid\n", argv[0]);
+        fprintf(stderr, "usage: %s env|sets|badenv|here|badid\n", argv[0]);
         return 2;
     }
     printf("gpu_driver_load %s: ok\n", which);

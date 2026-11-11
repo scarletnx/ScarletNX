@@ -3,8 +3,9 @@
 /* The stats box over the game (runtime/platform/stats.c): nothing while off; its letters a step below the menu's; each
    line after its icon, the GPU's beside the processor's; its lines as the frames and the measures say them, the
    longest inside the box; ? for what is not known; the GPU's share and time a frame from its busy time over a second,
-   ? where the renderer can't time it or wasn't at the second before; the graph's title and its guides' labels; the
-   graph's bars, a slow frame's in the failure colour; its corner, and beside
+   ? where the renderer can't time it or wasn't at the second before; the graph's title with its quickest and slowest
+   frames; the graph right under the lines, as wide as they are; its bars, a slow frame's in the failure colour; its
+   corner, and beside
    showcase's box in showcase's corner; a word that is no corner; and off forgetting what it had. Under the graph,
    while they apply: RenderDoc's lines (a capture can be taken; the last capture's file, ? where RenderDoc gave none, or
    its failure in the failure colour) and the debugger's, the box wider for a line that needs it and a file's name cut
@@ -12,11 +13,11 @@
    test traces shows the test as its debugger */
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/vpad.h"
-#include "nx/runtime/platform/controls_atlas.h"
 #include "nx/runtime/platform/plat.h"
 #include "gui/icons.h"
 #include "gui_theme_colors.h"
 #include <assert.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
 #define TRACED_CHILD 1
 /* the child asks to be traced by its parent; the parent lets it go on from a stop */
 #if defined(__linux__)
@@ -37,6 +39,9 @@
 #define TRACE_GO(pid) ptrace(PT_CONTINUE, (pid), (caddr_t)1, 0)
 #endif
 #endif
+
+/* a quad as it holds it (ui.h's ui_view): its place in pixels, its colour widened back to 8 bits */
+static SnxUiQuadView qv(const SnxUiQuad* q) { return ui_view(q); }
 
 /* ui.c's lock and log, and what vpad.c and the Display table name, without the platform layer */
 void pm_lock(PMutex* m) { (void)m; }
@@ -81,6 +86,9 @@ void logf_(int lvl, const char* fmt, ...) {
 #define TEXT_RGBA                                                                                                      \
     (0xFFu << 24 | (SNX_GUI_THEME_YORHA_PAGE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_PAGE & 0xFF00u) |                   \
      (SNX_GUI_THEME_YORHA_PAGE >> 16 & 0xFFu))
+#define GROUND_RGBA                                                                                                    \
+    (0xFFu << 24 | (SNX_GUI_THEME_YORHA_INK & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_INK & 0xFF00u) |                     \
+     (SNX_GUI_THEME_YORHA_INK >> 16 & 0xFFu))
 #define MS 1000000ull /* a millisecond, in ns */
 
 static const int safe[4] = {100, 50, 1280, 720};
@@ -98,10 +106,10 @@ static const char* line_at(float x, float y, int cols) {
     for (k = 0; k < cols; ++k) {
         g_test.line[k] = ' ';
         for (i = 0; i < g_test.l.n; ++i)
-            if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 && g_test.quads[i].x == x + (float)k * cw &&
-                g_test.quads[i].y == y)
-                g_test.line[k] = (char)((g_test.quads[i].v - SNX_CONTROLS_FONT_Y) / 16 * 16 +
-                                        (g_test.quads[i].u - SNX_CONTROLS_FONT_X) / 8);
+            if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 && qv(&g_test.quads[i]).x == x + (float)k * cw &&
+                qv(&g_test.quads[i]).y == y)
+                g_test.line[k] = (char)((g_test.quads[i].v - SNX_UI_FONT_Y) / 16 * 16 +
+                                        (g_test.quads[i].u - SNX_UI_FONT_X) / 8);
         if (g_test.line[k] != ' ') end = k + 1;
     }
     g_test.line[end] = 0;
@@ -121,15 +129,6 @@ static const char* gpu_text(void) {
     stats_box(safe, s, box);
     return line_at(box[0] + (STATS_GPU_AT + 3) * cw, box[1] + ch / 4 + ch, STATS_COLS - STATS_GPU_AT - 3);
 }
-/* the label at the graph's right of its guide of ms */
-static const char* guide_label(float ms) {
-    int s = stats_scale(g_test.menu);
-    float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s, gw, gy, gh = 3 * ch;
-    stats_box(safe, s, box);
-    gw = box[2] - 2 * cw - STATS_AXIS * cw;
-    gy = box[1] + STATS_LINES * ch + ch / 2;
-    return line_at(box[0] + cw + gw + cw, gy + gh - gh * ms / STATS_TOP_MS - ch / 2, STATS_AXIS);
-}
 /* the menus' icon drawn at the box's cell `at` of line k, two of its letters wide in the text's colour, sharp:
    GUI_ICON_NONE for none */
 static unsigned icon_at(int k, int at) {
@@ -137,9 +136,9 @@ static unsigned icon_at(int k, int at) {
     float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s;
     stats_box(safe, s, box);
     for (i = 0; i < g_test.l.n; ++i) {
-        const SnxUiQuad* q = &g_test.quads[i];
-        if (q->uw == 16 && q->vh == 16 && q->v == SNX_CONTROLS_ATLAS_HEIGHT && q->x == box[0] + (float)at * cw &&
-            q->y == box[1] + ch / 4 + (float)k * ch && q->w == 2 * cw && q->h == ch && q->rgba == TEXT_RGBA &&
+        const SnxUiQuadView q_v = qv(&g_test.quads[i]), *q = &q_v;
+        if (q->uw == 16 && q->vh == 16 && q->v == SNX_UI_PICTURE_Y && q->x == box[0] + (float)at * cw &&
+            q->y == box[1] + ch / 4 + (float)k * ch && q->w == 2 * cw && q->h == ch && q->rgba == ui_rgba(TEXT_RGBA) &&
             q->sample == UI_SHARP)
             return GUI_ICON_FIRST + (unsigned)(q->u - SNX_UI_ICONS_X) / 16;
     }
@@ -160,21 +159,22 @@ static unsigned note_icon(int k, u32 rgba) {
     float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s;
     stats_box(safe, s, box);
     for (i = 0; i < g_test.l.n; ++i) {
-        const SnxUiQuad* q = &g_test.quads[i];
-        if (q->uw == 16 && q->vh == 16 && q->v == SNX_CONTROLS_ATLAS_HEIGHT && q->x == box[0] + cw &&
-            q->y == box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch && q->rgba == rgba)
+        const SnxUiQuadView q_v = qv(&g_test.quads[i]), *q = &q_v;
+        if (q->uw == 16 && q->vh == 16 && q->v == SNX_UI_PICTURE_Y && q->x == box[0] + cw &&
+            q->y == box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch && q->rgba == ui_rgba(rgba))
             return GUI_ICON_FIRST + (unsigned)(q->u - SNX_UI_ICONS_X) / 16;
     }
     return GUI_ICON_NONE;
 }
-/* the letters of the line k under the graph drawn in rgba */
+/* the letters of the line k under the graph drawn in rgba, its spaces (backed: the ground) left out */
 static int note_letters(int k, u32 rgba) {
     int s = stats_scale(g_test.menu), i, n = 0;
     float box[4], ch = 16.0f * (float)s;
     stats_box(safe, s, box);
     for (i = 0; i < g_test.l.n; ++i)
-        if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 &&
-            g_test.quads[i].y == box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch && g_test.quads[i].rgba == rgba)
+        if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 && qv(&g_test.quads[i]).glyph != ' ' &&
+            qv(&g_test.quads[i]).y == box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch &&
+                qv(&g_test.quads[i]).rgba == ui_rgba(rgba))
             ++n;
     return n;
 }
@@ -185,33 +185,39 @@ static int past_margin(void) {
     stats_box(safe, s, box);
     for (i = 0; i < g_test.l.n; ++i)
         if (g_test.quads[i].vh == 16 &&
-            (g_test.quads[i].x < box[0] + cw || g_test.quads[i].x + g_test.quads[i].w > box[0] + box[2] - cw))
+            (qv(&g_test.quads[i]).x < box[0] + cw ||
+                qv(&g_test.quads[i]).x + qv(&g_test.quads[i]).w > box[0] + box[2] - cw))
             ++n;
     return n;
 }
-/* the scale the box and every letter in it were drawn at: the box's width in letters of it, and each letter's 8x16
-   texels drawn 8 by 16 times it; 0 where one differs */
+/* the scale every letter was drawn at, its 8x16 texels 8 by 16 times it, each backed (its clear pixels the ground,
+   ui.h's UI_BACKED, the ground the menu's ink): 0 where one differs */
 static int drawn_scale(void) {
-    int i, s = (int)g_test.quads[0].w / (STATS_COLS * 8);
-    if (g_test.quads[0].w != (float)(STATS_COLS * 8 * s)) return 0;
-    for (i = 1; i < g_test.l.n; ++i)
-        if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 &&
-            (g_test.quads[i].w != (float)(8 * s) || g_test.quads[i].h != (float)(16 * s)))
-            return 0;
+    int i, s = 0;
+    if (ui_ground() != GROUND_RGBA) return 0;
+    for (i = 0; i < g_test.l.n; ++i) {
+        const SnxUiQuadView q_v = qv(&g_test.quads[i]), *q = &q_v;
+        if (q->uw != 8 || q->vh != 16) continue;
+        if (!s) s = (int)q->w / 8;
+        if (q->w != (float)(8 * s) || q->h != (float)(16 * s) || !q->backed) return 0;
+    }
     return s;
 }
-/* the graph's bars: the plain fills narrower than it */
-static int bars(const SnxUiQuad** newest) {
-    float box[4];
+/* the graph's bars as they are drawn (ui_drawn: the ring's quads, a byte each): how many, and the newest, at the
+   right */
+static int bars(const SnxUiQuadView** newest) {
+    static SnxUiQuadView at_right;
     int i, n = 0;
-    stats_box(safe, stats_scale(g_test.menu), box);
     *newest = NULL;
-    for (i = 1; i < g_test.l.n; ++i)
-        if (g_test.quads[i].uw == 2 &&
-            g_test.quads[i].w < box[2] - (2 + STATS_AXIS) * 8.0f * (float)stats_scale(g_test.menu)) {
-            if (!*newest || g_test.quads[i].x > (*newest)->x) *newest = &g_test.quads[i];
-            ++n;
+    for (i = 0; i < g_test.l.n; ++i) {
+        SnxUiQuadView d = ui_drawn(&g_test.quads[i]);
+        if (d.ink != UI_RING || !d.uw) continue;
+        if (!*newest || d.x > at_right.x) {
+            at_right = d;
+            *newest = &at_right;
         }
+        ++n;
+    }
     return n;
 }
 /* n frames of ms each from at, the GPU busy for busy_ms of each, as the renderer reads it; the last frame's time */
@@ -227,7 +233,7 @@ static u64 frames(u64 at, int n, u64 ms, u64 busy_ms) {
 int main(void) {
     const IniOpt *corner = ini_find(g_display_ini, "stats_corner"),
                  *showcase = ini_find(g_display_ini, "showcase_corner");
-    const SnxUiQuad* newest;
+    const SnxUiQuadView* newest;
     float box[4], show[4], gh = 3 * 32;
     u64 t = 1000 * MS, at;
     int k;
@@ -242,9 +248,20 @@ int main(void) {
     assert(box[0] == 100 + 16 && box[1] == 50 + 16 && box[2] == STATS_COLS * 16 && box[3] == 8 * 32 + 24);
     draw(t);
     assert(!strcmp(text(0), "? fps  ? ms") && !strcmp(text(1), "cpu ?") && !strcmp(gpu_text(), "gpu ?  ? ms"));
-    assert(!strcmp(text(2), "ram ?/? MiB") && !strcmp(text(3), "vram ?/? MiB") && !strcmp(text(4), "frame time"));
-    /* the graph's guides labelled with their times at its right */
-    assert(!strcmp(guide_label(STATS_60_MS), "16.7 ms") && !strcmp(guide_label(STATS_30_MS), "33.3 ms"));
+    assert(!strcmp(text(2), "ram ?/? MiB") && !strcmp(text(3), "vram ?/? MiB") && !strcmp(text(4), "frame time ?"));
+    /* the graph's guides unlabelled: its title's line says its quickest and slowest frames, ? before two frames; the
+       graph right under the lines and as wide as their bands, from the icons' cell to the fields' ends */
+    assert(!strcmp(text(4), "frame time ?"));
+    {
+        float cw = 32.0f / 2;
+        int i, grounds = 0;
+        for (i = 0; i < g_test.l.n; ++i) {
+            SnxUiQuadView q = qv(&g_test.quads[i]);
+            grounds += q.ink == UI_SOLID && q.x == box[0] + cw && q.w == STATS_GRAPH_W * cw &&
+                       q.y == box[1] + 32.0f / 4 + STATS_LINES * 32.0f && q.h == 3 * 32.0f;
+        }
+        assert(grounds == 1);
+    }
     /* its letters a step below the menu's, 1 at least: the box and each letter at that scale, the lines where it puts
        them */
     assert(stats_scale(1) == 1 && stats_scale(2) == 1 && stats_scale(3) == 2 && stats_scale(4) == 3);
@@ -272,7 +289,7 @@ int main(void) {
     /* 30 frames in half a second: 60.0 frames a second, the last 16.7 ms; 29 bars under the 60 FPS guide */
     for (k = 1; k <= 30; ++k) stats_frame(at = t + (u64)k * 16666667ull, &g_test.gpu);
     draw(t + 500 * MS);
-    assert(!strcmp(text(0), "60.0 fps  16.7 ms"));
+    assert(!strcmp(text(0), "60.0 fps  16.7 ms") && !strcmp(text(4), "frame time 16.7 to 16.7 ms"));
     assert(bars(&newest) == 29 && newest->rgba != FAILURE && newest->h > gh * 16 / 50 && newest->h < gh * 17 / 50);
     /* the processor's share and the memory as measured, and ? for one not told */
     stats_measured(&(SnxStatsMeasure){.cpu = 25, .memory = 512ull << 20, .gpu = -1});
@@ -316,10 +333,12 @@ int main(void) {
     stats_frame(at += 40 * MS, &g_test.gpu);
     draw(t + 700 * MS);
     assert(strstr(text(0), "40.0 ms") && bars(&newest) == 30 && newest->rgba == FAILURE);
+    assert(!strcmp(text(4), "frame time 16.7 to 40.0 ms"));
     assert(newest->h > gh * 39 / 50 && newest->h < gh * 41 / 50);
     stats_frame(at += 80 * MS, &g_test.gpu);
     draw(t + 800 * MS);
     assert(strstr(text(0), "80.0 ms") && bars(&newest) == 31 && newest->h == gh);
+    assert(!strcmp(text(4), "frame time 16.7 to 80.0 ms"));
     /* no frame for half a second: 0.0 frames a second */
     draw(t + 1100 * MS); /* the window that counted the two slow frames */
     draw(t + 1700 * MS);
@@ -328,6 +347,61 @@ int main(void) {
     for (k = 0; k < 2 * STATS_FRAMES; ++k) stats_frame(at += 16 * MS, &g_test.gpu);
     draw(at);
     assert(bars(&newest) == STATS_FRAMES - 1);
+    /* the slow frames out of the graph's window: its quickest and slowest the 16 ms ones */
+    assert(!strcmp(text(4), "frame time 16.0 to 16.0 ms"));
+    /* the box laid out once: other values, and another frame, take the same quads at the same places, the lines'
+       letters and the bars' heights all that changes (ui_cells) */
+    {
+        static SnxUiQuad before[4096];
+        static u8 heights[SNX_UI_RING_MAX];
+        int n = g_test.l.n, moved = 0, rewritten = 0, i;
+        char line[32], *end;
+        memcpy(before, g_test.quads, (size_t)n * sizeof *before);
+        memcpy(heights, ui_ring()->height, sizeof heights);
+        stats_frame(at += 40 * MS, &g_test.gpu); /* before the measure: one it takes would go over it */
+        stats_measured(&(SnxStatsMeasure){.cpu = 100, .memory = 65535ull << 20, .gpu = 100, .gpu_ns = 99990000});
+        draw(at);
+        assert(g_test.l.n == n && !strcmp(text(1), "cpu 100%") && !strcmp(gpu_text(), "gpu 100%  100.0 ms"));
+        assert(strstr(text(0), "40.0 ms"));
+        for (i = 0; i < n; ++i) {
+            /* the bars' quads too: the ring's bytes are what changes */
+            const SnxUiQuad *q = &g_test.quads[i], *p = &before[i];
+            moved += q->x != p->x || q->w != p->w || q->y != p->y || q->h != p->h ||
+                     (ui_view(q).ink == UI_RING && memcmp(q, p, sizeof *q));
+        }
+        /* of the ring, only the new frame's byte */
+        for (i = 0; i < SNX_UI_RING_MAX; ++i) rewritten += heights[i] != ui_ring()->height[i];
+        assert(!moved && rewritten == 1);
+        {
+            /* the newest bar where the GPU scrolls it: at the graph's right edge, the lines' bands' */
+            const SnxUiQuadView* newest_bar;
+            float cw = 8.0f * (float)stats_scale(g_test.menu), right;
+            stats_box(safe, stats_scale(g_test.menu), box);
+            right = box[0] + cw + STATS_GRAPH_W * cw;
+            assert(bars(&newest_bar) == STATS_FRAMES - 1 && newest_bar->rgba == FAILURE);
+            assert(fabsf(newest_bar->x + newest_bar->w - right) < 0.01f);
+        }
+        /* the cells' letters without printf */
+        *ui_put_u(line, 0) = 0;
+        assert(!strcmp(line, "0"));
+        *ui_put_u(line, 18446744073709551615ull) = 0;
+        assert(!strcmp(line, "18446744073709551615"));
+        *ui_put_tenths(ui_put(line, "at "), 7) = 0;
+        assert(!strcmp(line, "at 0.7"));
+        end = ui_put_tenths(line, 12345);
+        *end = 0;
+        assert(!strcmp(line, "1234.5") && end == line + 6);
+        /* longer than its cells: cut at their end; a shorter one blanks the rest, which draw nothing */
+        {
+            SnxUiQuad cells[4];
+            SnxUiList kept = {cells, 0, 4};
+            assert(ui_cells(&kept, 0, 0, 1, 5, TEXT_RGBA) == -1 && ui_cells(&kept, 0, 0, 1, 4, TEXT_RGBA) == 0);
+            assert(ui_cells_set(cells, 4, "abcdef") == 4 && cells[3].u == SNX_UI_FONT_X + 'd' % 16 * 8);
+            assert(ui_cells_set(cells, 4, "abcdef") == 0 && ui_cells_set(cells, 4, "a c") == 2);
+            assert(cells[1].uw == 0 && cells[3].uw == 0 && cells[2].uw == 8 && qv(&cells[3]).x == 24 &&
+                   qv(&cells[3]).w == 8);
+        }
+    }
     /* the GPU's lines from what the renderer reads at each frame, measured once a second from the first frame: 12 ms
        busy in each 20 ms frame is 60% and 12.0 ms; the video memory as it reads it */
     g_settings.stats = 0;

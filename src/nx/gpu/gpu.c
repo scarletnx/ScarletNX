@@ -52,6 +52,7 @@ void (*g_gpu_before_write)(u64 gva, u64 size);
 int g_gpu_releases;
 void (*g_gpu_mapping_begin)(u64 gva, u64 size, int kind);
 void (*g_gpu_mapping_end)(void);
+void (*g_gpu_mapping_waits)(void);
 
 /* ------------------------------------------------------------ guest memory through the GPU's address space */
 #define GMEM_PAGE           0x1000u /* the granule unmapped memory and memory states are walked in: a 4 KiB page */
@@ -163,6 +164,15 @@ u8* gmem_ptr(u64 gva, u64 size) {
     return gmem_ptr_untracked(gva, size);
 }
 u32 gmem_r32(u64 gva) {
+    /* the common read, a word the CPU alone wrote: no queued release, pending result or owner holds it, so guest
+       memory has its bytes and the general path's checks and landing are skipped. A release's payload and a pending
+       result, over any guest memory, take the general path below, and so does a word on a host page the GPU owns
+       bytes of: the page is trapped, and the caller may hold the renderer's lock, which its landing needs */
+    u64 cpu = 0, owners = 0;
+    if (!g_cs_any && !g_gfx_any && !g_gfx_img_any && !g_uma_any &&
+        !__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) && gmmu_run(gva, 4, &cpu) == 4 &&
+        !own_hash(cpu, 4, &owners))
+        return snx_ld_le32(GP(cpu));
     u8 b[4] = {0};
     gmem_read(gva, b, 4);
     return snx_ld_le32(b);

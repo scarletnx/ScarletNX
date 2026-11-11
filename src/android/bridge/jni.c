@@ -245,28 +245,47 @@ static void jni_generic(CPU* c, void* data) {
     hle_call(c, ((void**)*env)[i], functions[i].kind, jni_params(functions[i].name));
 }
 
-/* GetMethodID and GetStaticMethodID: the ID's signature recorded for the calls with variable arguments */
-/* Class.forName(String) loads with its caller's loader, which for a JNI call is the loader of the native method that
-   runs: on Android the app's own class, here NativeBridge's (the framework's). The guest gets
-   snx.dalvik.Runtime.forName(String) in its place, which loads with the app's loader, by GetStaticMethodID or by
-   FromReflectedMethod of the Method (as Unity's ReflectionHelper finds it) */
+/* Static methods of the JDK that behave otherwise on Android, which the guest gets snx.dalvik.Runtime's of the same
+   name and signature in place of, by GetStaticMethodID or by FromReflectedMethod of the Method (as Unity's
+   ReflectionHelper finds it); translate.c sends DEX code's calls of them there too.
+   - Class.forName(String) loads with its caller's loader, which for a JNI call is the loader of the native method
+     that runs: on Android the app's own class, here NativeBridge's (the framework's). Runtime's loads with the app's.
+   - System.loadLibrary and System.load must load the app's native libraries through the native bridge, not
+     HotSpot's loader (.NET's runtime loads its own libraries so) */
+static const struct {
+    const char *owner, *name, *sig;
+} remaps[] = {
+    {"java/lang/Class", "forName", "(Ljava/lang/String;)Ljava/lang/Class;"},
+    {"java/lang/System", "loadLibrary", "(Ljava/lang/String;)V"},
+    {"java/lang/System", "load", "(Ljava/lang/String;)V"},
+};
+enum { REMAP_COUNT = sizeof remaps / sizeof *remaps };
 static jmethodID remap_method(JNIEnv* env, jmethodID id) {
-    static jmethodID for_name, replacement;
+    static jmethodID from[REMAP_COUNT], to[REMAP_COUNT];
+    static int ready;
     if (!id) return id;
-    if (!__atomic_load_n(&replacement, __ATOMIC_ACQUIRE)) {
-        jclass class_class = (*env)->FindClass(env, "java/lang/Class");
+    if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE)) {
         jclass runtime = (*env)->FindClass(env, "snx/dalvik/Runtime");
-        const char* sig = "(Ljava/lang/String;)Ljava/lang/Class;";
-        jmethodID a = class_class ? (*env)->GetStaticMethodID(env, class_class, "forName", sig) : NULL;
-        jmethodID b = runtime ? (*env)->GetStaticMethodID(env, runtime, "forName", sig) : NULL;
-        if (!a || !b) {
-            (*env)->ExceptionClear(env);
-            return id;
+        jmethodID a[REMAP_COUNT], b[REMAP_COUNT];
+        for (unsigned i = 0; i < REMAP_COUNT; ++i) {
+            jclass owner = runtime ? (*env)->FindClass(env, remaps[i].owner) : NULL;
+            a[i] = owner ? (*env)->GetStaticMethodID(env, owner, remaps[i].name, remaps[i].sig) : NULL;
+            b[i] = a[i] ? (*env)->GetStaticMethodID(env, runtime, remaps[i].name, remaps[i].sig) : NULL;
+            if (owner) (*env)->DeleteLocalRef(env, owner);
+            if (!b[i]) {
+                (*env)->ExceptionClear(env);
+                return id;
+            }
         }
-        __atomic_store_n(&for_name, a, __ATOMIC_RELAXED);
-        __atomic_store_n(&replacement, b, __ATOMIC_RELEASE);
+        for (unsigned i = 0; i < REMAP_COUNT; ++i) {
+            __atomic_store_n(&from[i], a[i], __ATOMIC_RELAXED);
+            __atomic_store_n(&to[i], b[i], __ATOMIC_RELAXED);
+        }
+        __atomic_store_n(&ready, 1, __ATOMIC_RELEASE);
     }
-    return id == __atomic_load_n(&for_name, __ATOMIC_RELAXED) ? replacement : id;
+    for (unsigned i = 0; i < REMAP_COUNT; ++i)
+        if (id == __atomic_load_n(&from[i], __ATOMIC_RELAXED)) return __atomic_load_n(&to[i], __ATOMIC_RELAXED);
+    return id;
 }
 
 /* GetMethodID and GetStaticMethodID: the ID's signature recorded for the calls with variable arguments */
@@ -704,6 +723,16 @@ static bool elf32(const char* path) {
     return n == sizeof ident && !memcmp(ident, "\177ELF", 4) && ident[4] == 1;
 }
 
+/* isSystemLibrary(name): whether a library's file name ("liblog.so") is one of the system's, which the HLE is */
+static jboolean JNICALL is_system_library(JNIEnv* env, jclass unused, jstring name) {
+    (void)unused;
+    const char* n = (*env)->GetStringUTFChars(env, name, NULL);
+    if (!n) return JNI_FALSE;
+    bool system = hle_is_system_library(n) || hle_dl_is_system(n);
+    (*env)->ReleaseStringUTFChars(env, name, n);
+    return system ? JNI_TRUE : JNI_FALSE;
+}
+
 static jstring JNICALL native_load(JNIEnv* env, jclass unused, jstring path, jstring library_dir) {
     (void)unused;
     if (!start(env, library_dir)) return (*env)->NewStringUTF(env, "dlopen failed: the native bridge doesn't start");
@@ -914,6 +943,7 @@ bool android_bridge_register(JNIEnv* env) {
         {(char*)"allocateGuest", (char*)"(I[J)Ljava/nio/ByteBuffer;", (void*)allocate_guest},
         {(char*)"freeGuest", (char*)"(J)V", (void*)free_guest},
         {(char*)"nativeLoad", (char*)"(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", (void*)native_load},
+        {(char*)"isSystemLibrary", (char*)"(Ljava/lang/String;)Z", (void*)is_system_library},
         {(char*)"invokeJ", (char*)"(Ljava/lang/String;Ljava/lang/Object;[J[Ljava/lang/Object;)J", (void*)invoke_j},
         {(char*)"invokeL",
          (char*)"(Ljava/lang/String;Ljava/lang/Object;[J[Ljava/lang/Object;)Ljava/lang/Object;", (void*)invoke_l},

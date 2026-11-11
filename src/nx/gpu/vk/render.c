@@ -19,6 +19,7 @@
 #include "nx/gpu/shader/sm86.h"
 #include "nx/gpu/shader/advanced_blend_spirv.h"
 #include "nx/hle/services/nvdrv.h"
+#include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/pipeline_parts.h"
@@ -1286,8 +1287,12 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
                   handle, b->tex_max, b->smp_max);
         return;
     }
+    /* a pending storage image over this texture's own memory invalidates it; one elsewhere does not. The global flag
+       alone dropped every memo once any fragment program's storage image was pending, so a race that draws its
+       targets and writes storage images in the same frame re-resolved every texture of every draw */
     if (m && m->surf_epoch == vk_surf_epoch_at(m->t_gva) && tex_memo_unwritten(m, tic_at, tsc_at, epoch, now) &&
-        !g_gfx_img_any && tex_memo_unpended(m, tic_at, tsc_at, adds) &&
+        !(g_gfx_img_any && vk_gfx_image_pending(m->t->gva, vk_surf_guest_size(m->t))) &&
+        tex_memo_unpended(m, tic_at, tsc_at, adds) &&
         (m->gw == gw || (!gpu_mem_dirty_since(m->gw, tic_at, 32) && !gpu_mem_dirty_since(m->gw, tsc_at, 32)))) {
         m->gw = gw;
         m->used = ++g_tex_memo.use;
@@ -1760,7 +1765,22 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
         *off = e->off;
         return 1;
     }
-    if (!(a ? vk_buf_get_uniform(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off))) return 0;
+    /* a constant buffer's bytes are usually the CPU's, in one run: copy them straight into staging. The general buffer
+       path (the mirror, the cache, the hash) runs only where a result holds them, the mirror has them, the run isn't
+       whole, unified memory reads them in place, or the GPU owns some of them (memory/own.c): that path copies those
+       from their owner on the GPU. The CPU's bytes on a page the GPU owns others of are trapped, and this thread holds
+       the renderer's lock, which their landing needs: own_stage reads them through the pool's mirror */
+    u64 cpu = 0;
+    if (a && !pending && !vk_uma() && !vk_mirror_pending(a, sz) && !vk_mirror_holds(a, sz) &&
+        gmmu_run(a, sz, &cpu) == sz) {
+        u8* p = vk_stage_upload(sz, vk_stage_align(), buf, off);
+        if (!p) return 0;
+        if (!own_any())
+            memcpy(p, GP(cpu), sz);
+        else if (own_stage(cpu, sz, p, NULL, 0) && !vk_buf_get_uniform(a, sz, buf, off))
+            return 0;
+    } else if (!(a ? vk_buf_get_uniform(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off)))
+        return 0;
     if (pending) {
         e->a = 0;
         return 1;
@@ -1941,6 +1961,18 @@ static void shadow_map_sampled(const Surf* t) {
     target->compared_at = g_vk_present;
 }
 static int shadow_map(const Surf* zt) { return zt->compared && g_vk_present - zt->compared_at <= SHADOW_MAP_FRAMES; }
+/* Whether texture t's target is one a draw to rt and zt may fetch its own pixel of: of the size of the draw's first
+   target, where a guest pixel of the one is a guest texel of the other and so are their images' pixels. A header on a
+   part of a target (dynamic resolution) counts by the target's size. Any other (a table a few texels long, a level of
+   another size) has no pixel of its own for the fragment */
+static int own_size(const Surf* t, Surf** rt, const Surf* zt, u32 n) {
+    const Surf* drawn = zt;
+    for (u32 i = n; i-- > 0;)
+        if (rt[i]) drawn = rt[i];
+    const Surf* whole = t->is_rt ? vk_rt_find(t->gva) : NULL;
+    if (!whole) whole = t;
+    return drawn && whole->w == drawn->w && whole->h == drawn->h;
+}
 static int is_target(Surf* s, Surf** rt, Surf* zt, u32 n) {
     if (s == zt) return 1;
     for (u32 i = 0; i < n; i++)
@@ -2265,7 +2297,8 @@ static int screen_covers(const VkViewport* vp, const Surf* t) {
     return vp && vp->x == 0.0f && vp->width == w &&
            (vp->height > 0 ? vp->y == 0.0f && vp->height == h : vp->y == h && vp->height == -h);
 }
-/* scaled: a bit for each texture slot bound to a scaled render target (shader_scaled_coords in shader/emit_texture.c) */
+/* scaled: a bit for each texture slot bound to a scaled render target (shader_scaled_coords in shader/emit_texture.c),
+   and in scaled[1] the ones of those whose target has the size of the draw's (own_size) */
 /* screen: the draw's viewport when its last stage maps the fragment program's screen generic onto it (render_draw), for
    the samples at the own pixel's centre (ShaderInfo.tex_screen_mask).
    xfb: the vertex stage's transform feedback stores (xfb_bind), NULL for none */
@@ -2457,7 +2490,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
         const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */
         if (sampled && st->shadow && !g_settings.shadows) shadow_map_sampled(sampled);
-        if (scaled && sampled && (sampled->sw != sampled->w || sampled->sh != sampled->h)) *scaled |= 1ull << i;
+        if (scaled && sampled && (sampled->sw != sampled->w || sampled->sh != sampled->h)) {
+            scaled[0] |= 1ull << i;
+            if (own_size(sampled, rt, zt, n)) scaled[1] |= 1ull << i;
+        }
         if (view && depth_ro) {
             *zt_ro = 1; /* render_begin moves it to the read-only layout */
             layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
@@ -4318,7 +4354,7 @@ retry:
     }
     int zt_ro = 0;
     u32 fb = 0;
-    u64 scaled = 0;
+    u64 scaled[2] = {0};
     DrawImages images = {0};
     for (u32 i = 0; i < VK_DRAW_STAGES; i++)
         if (staged[i] && staged[i]->si.nimg) images.sampled_general = 1;
@@ -4343,9 +4379,9 @@ retry:
     }
     VkDescriptorSet vset =
         stage_set(ds, vs_bind, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images, NULL, &xfb_stores);
-    VkDescriptorSet fset =
-        fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, res, &storage, &images, screen ? &screen_vp : NULL, NULL)
-           : VK_NULL_HANDLE;
+    VkDescriptorSet fset = fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, scaled, res, &storage, &images,
+                                          screen ? &screen_vp : NULL, NULL)
+                              : VK_NULL_HANDLE;
     /* the sets of the stages between, at their stage's index (shader_vk_set) */
     between[0] = tcs;
     between[1] = tes;
@@ -4856,8 +4892,12 @@ retry:
     pc[5] = (float)ds->dyn.alpha_func;
     memcpy(&pc[6], &ds->dyn.alpha_ref, 4);
     pc[7] = ds->dyn.sprite_origin == ((ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0) ? 1.0f : 0.0f;
-    u32 scaled_words[2] = {(u32)scaled, (u32)(scaled >> 32)};
+    u32 scaled_words[2] = {(u32)scaled[0], (u32)(scaled[0] >> 32)};
     memcpy(&pc[8], scaled_words, sizeof scaled_words);
+    /* and of those the ones whose target has the draw's size, in the uvec4 at byte 96: the one at byte 80 holds a
+       texture draw's rectangle and a varying pass's viewport */
+    u32 own_words[2] = {(u32)scaled[1], (u32)(scaled[1] >> 32)};
+    memcpy(&pc[24], own_words, sizeof own_words);
     u32 origin_words[2] = {(ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0, ds->dyn.clip_height};
     memcpy(&pc[10], origin_words, sizeof origin_words);
     float point_size = (dc->state_flags & DS_DRAW_POINT_SIZE) ? dc->point_size : 1.0f;
@@ -4881,7 +4921,7 @@ retry:
         pc[23] = viewport[0].height;
     }
     rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0,
-                         g_vk.has_descriptor_heaps && capture ? sizeof pc : (varying ? 24 : 20) * sizeof pc[0], pc);
+                         g_vk.has_descriptor_heaps && capture ? sizeof pc : 28 * sizeof pc[0], pc);
     if (texture) {
         Surf* source = fres[0].t;
         if (!source || !rt[0]) {

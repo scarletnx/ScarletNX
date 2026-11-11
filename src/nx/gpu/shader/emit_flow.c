@@ -408,12 +408,13 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 int signed_color = !!(si->rt_sint_mask & (1u << rt));
                 u32 color_type = integer ? signed_color ? vec4_i32 : vec4_u32 : vec4;
                 for (u32 k = 0; k < 4; k++, reg++) {
-                    u32 raw = mask & (1u << k) ? reg_read(c, reg) : c->zero;
+                    /* a float target takes the register as the float it holds, with no bits made on the way */
+                    u32 on = mask & (1u << k), raw = integer && on ? reg_read(c, reg) : c->zero;
                     components[k] = integer
                                         ? signed_color ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, raw) : raw
-                                    : mask & (1u << k) ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, raw)
-                                                       : zero_f;
-                    if (rt == 0 && k == 3) alpha = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type, raw);
+                                    : on ? reg_read_as(c, reg, c->f32_type)
+                                         : zero_f;
+                    if (rt == 0 && k == 3) alpha = on ? reg_read_as(c, reg, c->f32_type) : zero_f;
                 }
                 /* Tests and sample coverage keep the original Location0 alpha. Alpha-to-one precedes ratio-one
                    color modulation. Integer outputs retain their bits; an integer primary disables alpha-to-one. */

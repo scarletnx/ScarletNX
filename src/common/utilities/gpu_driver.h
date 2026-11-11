@@ -14,7 +14,8 @@
 #define SNX_GPU_DRIVER_META_MAX 500000
 /* the folder each package's folder is in, under the user's data folder (snx_gpu_drivers_dir) */
 #define SNX_GPU_DRIVERS_DIR     "gpu_drivers"
-/* the oldest Android libadrenotools loads a driver on: 9, API 28, whose linker namespaces linkernsbypass reaches */
+/* the oldest Android a package loads on: 9, API 28, whose linker has in its own symbol table the namespace functions
+   the loader calls (nx/runtime/platform/gpu_driver_android.h) */
 #define SNX_GPU_DRIVER_MIN_API  28
 
 /* a package's meta.json: name, libraryName and minApi it must have, the rest as it has them ("" when not) */
@@ -52,7 +53,7 @@ typedef struct {
                            Xclipse GPU's (Samsung's sgpu answers by it) */
     char render[96];    /* that node and its driver, "/dev/dri/renderD128, kernel driver amdgpu"; without one, the
                            first render node there is with its driver, or with why it did not answer; "" for none */
-    int built;          /* the build carries libadrenotools: Android arm64 */
+    int built;          /* the build carries the packages' loader: Android arm64 */
 } SnxGpuDriverHost;
 /* this device's; on Android with no Adreno, its render nodes asked too (snx_gpu_driver_render_node) */
 void snx_gpu_driver_host(SnxGpuDriverHost* host);
@@ -62,11 +63,11 @@ void snx_gpu_driver_render_node(SnxGpuDriverHost* host);
 /* what a device that loads no package lacks, for the few words a row has; SNX_GPU_DRIVER_LOADS when it loads them */
 typedef enum {
     SNX_GPU_DRIVER_LOADS,
-    SNX_GPU_DRIVER_NOT_ANDROID, /* another system: libadrenotools hooks Android's Vulkan loader */
-    SNX_GPU_DRIVER_NOT_ARM64,   /* the only ABI libadrenotools builds for */
+    SNX_GPU_DRIVER_NOT_ANDROID, /* another system: a package takes the place of Android's Vulkan loader's driver */
+    SNX_GPU_DRIVER_NOT_ARM64,   /* the packages' only ABI */
     SNX_GPU_DRIVER_NO_GPU,      /* neither an Adreno nor an Xclipse: no package drives the GPU */
     SNX_GPU_DRIVER_OLD_ANDROID, /* under SNX_GPU_DRIVER_MIN_API */
-    SNX_GPU_DRIVER_NOT_BUILT    /* this build carries no libadrenotools */
+    SNX_GPU_DRIVER_NOT_BUILT    /* this build carries no loader for them */
 } SnxGpuDriverLack;
 SnxGpuDriverLack snx_gpu_driver_lack(const SnxGpuDriverHost* host);
 /* 1 when host loads packages (snx_gpu_driver_lack); what says so either way, with its values: "This device: Android

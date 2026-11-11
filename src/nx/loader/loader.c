@@ -24,7 +24,6 @@
 #define NRO_HEADER_SIZE  0x80
 #define ASET_HEADER_SIZE 0x38
 #define MOD0_SIZE        0x18
-#define GUARD_SIZE       SNX_PAGE_SIZE
 /* where each kind of program's code region ends */
 #define CODE_END64 0x2000000000ull
 #define CODE_END32 ((SnxU64)0x40000000UL)
@@ -394,7 +393,7 @@ static int relocate(Parse* p, SnxU64 target, int explicit_addend, SnxU64 addend)
     return 0;
 }
 
-/* DT_RELA or DT_REL (words: 3 or 2 per entry). DT_JMPREL isn't read: its JUMP_SLOTs point at imports */
+/* DT_RELA or DT_REL (words: 3 or 2 per entry) */
 static int read_relocations(Parse* p, const Dynamic* d, unsigned table, unsigned size_tag, unsigned entry_tag,
                             unsigned words, const char* kind) {
     SnxModuleImage* m = p->m;
@@ -411,6 +410,27 @@ static int read_relocations(Parse* p, const Dynamic* d, unsigned table, unsigned
         type = p->is64 ? info & 0xFFFFFFFFUL : info & 0xFF;
         if (type != relative) continue;
         if (relocate(p, word_at(p, at), words == 3, words == 3 ? word_at(p, at + 2 * p->word) : 0)) return -1;
+    }
+    return 0;
+}
+
+/* DT_JMPREL, the imports' JUMP_SLOTs (RELA or REL, as DT_PLTREL says). Until the game's linker binds an import, its
+   slot holds the module's own code that calls the linker (the PLT's first entry), which nothing else points at: a
+   seed, as a relative relocation's code address is */
+static int read_jump_slots(Parse* p, const Dynamic* d) {
+    SnxModuleImage* m = p->m;
+    unsigned words = d->have[DT_PLTREL] ? (d->value[DT_PLTREL] == DT_RELA ? 3u : 2u) : p->is64 ? 3u : 2u;
+    SnxU64 entry = (SnxU64)words * p->word, size, at, info, type;
+    unsigned slot = p->is64 ? R_AARCH64_JUMP_SLOT : R_ARM_JUMP_SLOT;
+    if (!d->have[DT_JMPREL]) return 0;
+    size = d->have[DT_PLTRELSZ] ? d->value[DT_PLTRELSZ] : 0;
+    if (size % entry) return fail(p->error, p->error_size, snx_format("%s: invalid JMPREL entry size", m->path));
+    if (!inside(d->value[DT_JMPREL], size, m->image_size))
+        return fail(p->error, p->error_size, snx_format("%s: the JMPREL table lies outside the image", m->path));
+    for (at = d->value[DT_JMPREL]; at < d->value[DT_JMPREL] + size; at += entry) {
+        info = word_at(p, at + p->word);
+        type = p->is64 ? info & 0xFFFFFFFFUL : info & 0xFF;
+        if (type == slot && relocate(p, word_at(p, at), 0, 0)) return -1;
     }
     return 0;
 }
@@ -664,7 +684,8 @@ static int read_metadata(SnxModuleImage* m, int is64, const char* npdm, char* er
     if (m->has_mod0)
         rc = read_dynamic(&p, &d) || read_symbols(&p, &d) ||
              read_relocations(&p, &d, DT_RELA, DT_RELASZ, DT_RELAENT, 3, "RELA") ||
-             read_relocations(&p, &d, DT_REL, DT_RELSZ, DT_RELENT, 2, "REL") || read_relr(&p, &d);
+             read_relocations(&p, &d, DT_REL, DT_RELSZ, DT_RELENT, 2, "REL") || read_relr(&p, &d) ||
+             read_jump_slots(&p, &d);
     /* ELF32 modules unwind with .ARM.exidx, which MOD0 doesn't point at */
     if (!rc && is64) {
         read_unwind(&p);
@@ -1200,7 +1221,6 @@ static int load_modules(const SnxExefsReader* exefs, const char* where, SnxProgr
         }
         m->base = cursor;
         cursor += m->size;
-        cursor = end - cursor >= GUARD_SIZE ? cursor + GUARD_SIZE : end;
     }
     free(npdm);
     return rc;
@@ -1281,6 +1301,20 @@ int snx_load_program_mods(const char* entry, char* const* names, char* const* pa
         rc = load_exefs_program(entry, names, paths, count, program, error, error_size);
     if (rc) snx_free_program(program);
     return rc;
+}
+
+size_t snx_program_unguard_addresses(const SnxProgram* program, SnxU64* addresses, size_t count) {
+    size_t i, k, n = 0;
+    for (k = 0; k < count; ++k)
+        for (i = 0; i < program->module_count; ++i) {
+            const SnxModuleImage* m = &program->modules[i];
+            SnxU64 up = (SnxU64)i * SNX_PAGE_SIZE;
+            if (addresses[k] >= m->base + up && addresses[k] - m->base - up < m->size) {
+                addresses[n++] = addresses[k] - up;
+                break;
+            }
+        }
+    return n;
 }
 
 void snx_free_program(SnxProgram* program) {

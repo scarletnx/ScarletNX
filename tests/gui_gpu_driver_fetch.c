@@ -66,7 +66,9 @@ int main(void) {
     assert(gui_adreno_model("Adreno (TM) 610") == 610 && !gui_adreno_model("Mali-G78") &&
            !gui_adreno_model("Adreno (TM) 6xx") && !gui_adreno_model("Turnip Adreno (TM) 830"));
     assert(!strcmp(gui_driver_recommended(830), "GameHub Adreno 8xx") &&
-           !strcmp(gui_driver_recommended(610), "Mr. Purple EOL-24.3.4") &&
+           !strcmp(gui_driver_recommended(610), "Mr. Purple T30") &&
+           !strcmp(gui_driver_recommended(613), "Mr. Purple T30") &&
+           !strcmp(gui_driver_recommended(618), "Mr. Purple EOL-24.3.4") &&
            !strcmp(gui_driver_recommended(740), "Mr. Purple T23") &&
            !strcmp(gui_driver_recommended(32), "KIMCHI Latest") && !strcmp(gui_driver_recommended(0), "Unsupported") &&
            !strcmp(gui_driver_recommended(950), "Unsupported"));
@@ -84,7 +86,10 @@ int main(void) {
             " {\"tag_name\": \"v25.2.0-rc.05\", \"name\": \"05152025\", \"prerelease\": false, \"assets\": []}]";
         assert(gui_driver_releases_parse(purple_json, strlen(purple_json), purple, &r, why, sizeof why));
         assert(gui_driver_recommended_release(740, 0, &r) == 1 && gui_driver_recommended_release(650, 0, &r) == 2);
-        assert(gui_driver_recommended_release(610, 0, &r) == -1); /* EOL-24.3.4, not listed */
+        assert(gui_driver_recommended_release(618, 0, &r) == -1); /* EOL-24.3.4, not listed */
+        /* a low A6xx, which EOL-24.3.4 gives Vulkan 1.0: T30 */
+        assert(gui_driver_recommended_release(610, 0, &r) >= 0 &&
+               !strcmp(r.releases[gui_driver_recommended_release(610, 0, &r)].tag, "vturnip_mrpurple_T30"));
         assert(gui_driver_recommended_release(830, 0, &r) == -1 && gui_driver_recommended_release(950, 0, &r) == -1);
         gui_driver_releases_free(&r);
         assert(gui_driver_releases_parse(kimchi_json, strlen(kimchi_json), kimchi, &r, why, sizeof why));

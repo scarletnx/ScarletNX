@@ -51,30 +51,82 @@ static void land_sharing(VkBufferCreateInfo* bi, u32 fam[2]) {
     bi->pQueueFamilyIndices = fam;
 }
 
+/* Freed result buffers, pooled for reuse. An owned resource's buffer is made for its bytes and destroyed when the CPU
+   lands them: one buffer per published storage image, about 24 a frame in an Ounce game's race, and each allocation of
+   its own (the largest dedicated). Pooled, a publish takes the nearest freed buffer instead of allocating, and a landing
+   returns it instead of destroying. The pool is small and low-contention: it is taken on the GPU thread (vk_own_res_new)
+   and returned at the frame's recycle (vk_defer_call), which the GPU thread runs. */
+#define OWN_POOL_MAX 512
+typedef struct {
+    VkBuffer buf;
+    VmaAllocation mem;
+    u64 cap; /* the buffer's bytes, at least the resource's */
+} OwnPoolEntry;
+static OwnPoolEntry g_pool[OWN_POOL_MAX];
+static u32 g_pool_n;
+static PMutex g_pool_lk = PMUTEX_INIT;
+static void own_pool_put_locked(VkBuffer buf, VmaAllocation mem, u64 cap) {
+    if (g_pool_n < OWN_POOL_MAX)
+        g_pool[g_pool_n++] = (OwnPoolEntry){buf, mem, cap};
+    else { /* the pool is full: free it, as it was before the pool */
+        vk_mem_untrack(mem);
+        vmaDestroyBuffer(g_vk.vma, buf, mem);
+    }
+}
+static void own_pool_return(void* arg) {
+    OwnPoolEntry* e = (OwnPoolEntry*)arg;
+    pm_lock(&g_pool_lk);
+    own_pool_put_locked(e->buf, e->mem, e->cap);
+    pm_unlock(&g_pool_lk);
+    free(e);
+}
+/* the smallest pooled buffer of at least size bytes, removed: buf is VK_NULL_HANDLE when there is none */
+static OwnPoolEntry own_pool_take(u64 size) {
+    OwnPoolEntry e = {0};
+    i32 best = -1;
+    pm_lock(&g_pool_lk);
+    for (u32 i = 0; i < g_pool_n; i++)
+        if (g_pool[i].cap >= size && (best < 0 || g_pool[i].cap < g_pool[best].cap)) best = (i32)i;
+    if (best >= 0) {
+        e = g_pool[best];
+        g_pool[best] = g_pool[--g_pool_n];
+    }
+    pm_unlock(&g_pool_lk);
+    return e;
+}
+
 VkOwnRes* vk_own_res_new(u64 size) {
     VkOwnRes* r = (VkOwnRes*)calloc(1, sizeof *r);
-    u32 fam[2];
-    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                             .size = size ? size : 16,
-                             /* bound where it is for whatever reads the bytes it holds: a draw's vertices, indices and
-                                buffers (buffer.c buf_get_owned), a dispatch's (compute.c res_bind), VIC's job words;
-                                and what draws write there, transform feedback's captures too (buffer.c keep_new) */
-                             .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                      VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
-                                      VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                      (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
-                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    u64 want = size ? size : 16;
     if (!r) return NULL;
-    land_sharing(&bi, fam);
-    if (size > g_vk.alloc_cap || !VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &r->buf, &r->mem, NULL))) {
-        free(r);
-        return NULL;
+    OwnPoolEntry e = own_pool_take(want);
+    if (e.buf) {
+        r->buf = e.buf;
+        r->mem = e.mem;
+        r->size = e.cap;
+    } else {
+        u32 fam[2];
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                 .size = want,
+                                 /* bound where it is for whatever reads the bytes it holds: a draw's vertices, indices and
+                                    buffers (buffer.c buf_get_owned), a dispatch's (compute.c res_bind), VIC's job words;
+                                    and what draws write there, transform feedback's captures too (buffer.c keep_new) */
+                                 .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                          VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+                                          VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                          VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                          (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
+                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        land_sharing(&bi, fam);
+        if (size > g_vk.alloc_cap || !VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &r->buf, &r->mem, NULL))) {
+            free(r);
+            return NULL;
+        }
+        vk_mem_track(r->mem);
+        r->size = want;
     }
-    vk_mem_track(r->mem);
-    r->size = size;
     r->refs = 1;
     r->serial = __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED);
     return r;
@@ -98,7 +150,16 @@ static void res_release(void* res) {
         return;
     }
     vk_lock();
-    vk_defer_buffer(r->buf, r->mem); /* the frame recording may still copy from it */
+    /* the frame recording may still copy from it: return it to the pool at the frame's recycle, as a destroy was
+       deferred there before */
+    OwnPoolEntry* e = (OwnPoolEntry*)malloc(sizeof *e);
+    if (e) {
+        e->buf = r->buf;
+        e->mem = r->mem;
+        e->cap = r->size;
+        vk_defer_call(own_pool_return, e);
+    } else
+        vk_defer_buffer(r->buf, r->mem);
     vk_unlock();
     free(r);
 }

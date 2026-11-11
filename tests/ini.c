@@ -195,6 +195,57 @@ int main(void) {
         folder[0] = 0;
         assert(ini_changed(changed, INI_CHANGED_DEFAULT, list, sizeof list) == 0 && !strcmp(list, ""));
     }
+    /* a setting of some systems alone (settings.txt's only): where it does something as a greyed row says it, said on
+       every system but those and listed last on its line for the launcher; one of every system says nothing */
+    {
+        static int v;
+        static const IniOpt rows[] = {
+            {"mac", "0", "Help", INI_INT, INI_STARTUP | INI_ONLY_MACOS, &v, 0, 1, NULL, "Mac", "Off|On", 0, 0, 0},
+            {"win", "0", "Help", INI_INT, INI_ONLY_WINDOWS, &v, 0, 1, NULL, "Win", "Off|On", 0, 0, 0},
+            {"phone", "0", "Help", INI_INT, INI_ONLY_ANDROID, &v, 0, 1, NULL, "Phone", "Off|On", 0, 0, 0},
+            {"kernel", "0", "Help", INI_INT, INI_ONLY_LINUX, &v, 0, 1, NULL, "Kernel", "Off|On", 0, 0, 0},
+            {"nce", "0", "Help", INI_INT, INI_ONLY_ARM64_LINUX, &v, 0, 1, NULL, "NCE", "Off|On", 0, 0, 0},
+            {"all", "0", "Help", INI_INT, INI_STARTUP, &v, 0, 1, NULL, "All", "Off|On", 0, 0, 0},
+            {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+        static const IniSection sections[] = {{"Test", 1, {rows, NULL, NULL}, {NULL, NULL, NULL}}};
+        const char *mac = "macOS only", *win = "Windows only", *phone = "Android only";
+        const char *kernel = "Linux and Android only", *nce = "arm64 Linux and Android only";
+        char list[1024], want[1024];
+        assert(!strcmp(ini_only_words(INI_STARTUP | INI_ONLY_MACOS), "macOS only") && !ini_only_words(INI_STARTUP));
+        assert(!strcmp(ini_only_words(INI_ONLY_WINDOWS), win) && !strcmp(ini_only_words(INI_ONLY_ANDROID), phone));
+        assert(!strcmp(ini_only_words(INI_ONLY_LINUX), kernel) && !strcmp(ini_only_words(INI_ONLY_ARM64_LINUX), nce));
+        assert(!ini_only_words(INI_ONLY)); /* no system's: a setting of every one */
+        assert(!ini_only(&rows[5]));
+        /* this system's are said by no row: the others' by each */
+#if defined(__APPLE__) && !defined(SNX_IOS)
+        mac = "";
+#elif defined(_WIN32)
+        win = "";
+#elif defined(__linux__)
+        kernel = "";
+#if defined(__ANDROID__)
+        phone = "";
+#endif
+#if defined(__aarch64__)
+        nce = "";
+#endif
+#endif
+        assert(!ini_only(&rows[0]) == !mac[0] && (!mac[0] || !strcmp(ini_only(&rows[0]), mac)));
+        assert(!ini_only(&rows[1]) == !win[0] && !ini_only(&rows[2]) == !phone[0]);
+        assert(!ini_only(&rows[3]) == !kernel[0] && !ini_only(&rows[4]) == !nce[0]);
+        snprintf(want, sizeof want,
+                 "Test\tmac\t0\tint\t0\t1\tHelp\tMac\t0=Off|1=On\t%s\n"
+                 "Test\twin\t0\tint\t0\t1\tHelp\tWin\t0=Off|1=On\t%s\n"
+                 "Test\tphone\t0\tint\t0\t1\tHelp\tPhone\t0=Off|1=On\t%s\n"
+                 "Test\tkernel\t0\tint\t0\t1\tHelp\tKernel\t0=Off|1=On\t%s\n"
+                 "Test\tnce\t0\tint\t0\t1\tHelp\tNCE\t0=Off|1=On\t%s\n"
+                 "Test\tall\t0\tint\t0\t1\tHelp\tAll\t0=Off|1=On\t\n",
+                 mac, win, phone, kernel, nce);
+        assert(ini_list_text(sections, 1, list, sizeof list) == strlen(want) && !strcmp(list, want));
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ANDROID__) /* a Linux PC: all but the kernel's greyed */
+        assert(mac[0] && win[0] && phone[0] && !kernel[0] && nce[0]);
+#endif
+    }
     /* the game's Debug table: log_max past its default is said at the top of the picture ("Debug on: ...") and in the
        log's header, as every Debug setting not at its default */
     {

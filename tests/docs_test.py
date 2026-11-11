@@ -279,6 +279,26 @@ class Settings(unittest.TestCase):
                 ['docs/user/settings.md:12: `docked_old` is no key of src/nx/runtime/settings.txt'],
             )
 
+    def test_a_vulkan_table_keys_each_extension_by_its_name_in_lowercase_auto(self):
+        settings = SETTINGS.replace(
+            'section Game: g_game_ini\n',
+            'table g_vk_ini vulkan\nsetting @VK_EXT_transform_feedback\nsetting @VK_KHR_maintenance5\n'
+            '    help Its own help\nsection Game: g_game_ini, g_vk_ini/Vulkan Extensions\n',
+        )
+        rows = '| `vk_ext_transform_feedback` | `auto` | An extension |\n| `vk_khr_maintenance5` | `auto` | Another |\n'
+        with self.checkout(DOC + rows, settings) as c:
+            self.assertEqual(c.failures('settings'), [])
+        with self.checkout(DOC + '| `vk_khr_maintenance5` | `on` | Another |\n', settings) as c:
+            self.assertEqual(
+                c.failures('settings'),
+                [
+                    'docs/user/settings.md:12: `vk_khr_maintenance5` says the default is `on`; '
+                    'src/nx/runtime/settings.txt:36 makes it `auto`',
+                    'src/nx/runtime/settings.txt:35: `vk_ext_transform_feedback` (default `auto`) has no row in '
+                    'docs/user/settings.md',
+                ],
+            )
+
     def test_a_default_the_code_does_not_have(self):
         doc = DOC.replace('`1`, `0` (iOS `1`)', '`0`, `0`')
         with self.checkout(doc) as c:

@@ -233,6 +233,9 @@ typedef struct {
     u32 preempt_max_by[NCORES];
     /* how often a thread stopped with its disable count raised ran on (core_switch), under core_lk */
     u64 kept;
+    /* how often a thread in a memory SVC let go of its core to wait for the renderer (core_leave_waiting), under
+       core_lk */
+    u64 waits_off_core;
     /* kernel_core_watch's, on the frontend's thread: the flag time it last told of per core, and its lines so far */
     u64 preempt_said[NCORES];
     u32 preempt_lines;

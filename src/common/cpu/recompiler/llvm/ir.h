@@ -77,6 +77,8 @@ typedef struct {
     unsigned arm_crc : 1;                /* AArch64 CRC32 extension */
     unsigned ppc : 1, ppc_vsx : 1;       /* PowerPC64 target, and its VSX: AltiVec alone flushes single-precision
                                             denormals and has no vector double arithmetic */
+    unsigned ppc_fsqrt : 1;              /* and its fsqrt: without it (the e5500, the baseline new_ir takes for a
+                                            CPU LLVM names none) llvm.sqrt is a call to libm, which no module links */
     unsigned riscv : 1, riscv_v : 1;     /* RISC-V target, and the V extension: per-lane variable shifts, gathers */
     unsigned loongarch : 1, la_lsx : 1;  /* LoongArch target, and LSX: 128-bit vectors */
     unsigned mips64 : 1, mips_msa : 1;   /* MIPS64 target, and MSA: 128-bit vectors (not "mips", which GNU C on

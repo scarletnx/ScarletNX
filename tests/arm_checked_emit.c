@@ -66,6 +66,23 @@ int main(int argc, char** argv) {
             LLVMGetNamedFunction(mod, "bad_thumb"))
             return 1;
     }
+    /* A hosted block has a noalias cpu and no entry checks, and SETEND BE stops it. The AGB's ARM7TDMI is not hosted. */
+    {
+        SnxArmCodegenOptions hosted = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_HOSTED};
+        SnxArmCodegenOptions agb = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM7TDMI, SNX_ARM_MEMORY_HOSTED};
+        uint32_t arm[2] = {0xe1a00000, 0xf1010200};
+        uint16_t thumb[2] = {0x46c0, 0x46c0};
+        size_t n = 0;
+        LLVMValueRef a = snx_arm_llvm_block_ex(mod, "hosted_arm", arm, 2, 0x1000, &n, &hosted);
+        LLVMValueRef t = snx_thumb_llvm_block_ex(mod, "hosted_thumb", thumb, 2, 0x2000, &n, &hosted);
+        unsigned noalias = LLVMGetEnumAttributeKindForName("noalias", 7);
+        if (!a || !t || !LLVMGetEnumAttributeAtIndex(a, 1 /* first parameter */, noalias) ||
+            !LLVMGetEnumAttributeAtIndex(t, 1 /* first parameter */, noalias))
+            return 1;
+        n = 123;
+        if (snx_arm_llvm_block_ex(mod, "hosted_agb", arm, 1, 0, &n, &agb) || n || LLVMGetNamedFunction(mod, "hosted_agb"))
+            return 1;
+    }
     if (LLVMVerifyModule(mod, LLVMReturnStatusAction, &error)) goto fail;
     LLVMDisposeMessage(error);
     error = NULL;

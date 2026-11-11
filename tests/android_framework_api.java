@@ -66,6 +66,28 @@ final class AndroidFrameworkApi {
         try (URLClassLoader loader = new URLClassLoader(new URL[] {jar}, ClassLoader.getPlatformClassLoader())) {
             framework = loader;
             links("android.net.LinkProperties", "getDhcpServerAddress", java.net.Inet4Address.class);
+            /* .NET MAUI's bindings, by JNI */
+            links("android.widget.TextView", "setJustificationMode", void.class, int.class);
+            links("android.widget.TextView", "getJustificationMode", int.class);
+            links("android.widget.TextView", "getPaintFlags", int.class);
+            links("android.widget.TextView", "setPaintFlags", void.class, int.class);
+            links("android.graphics.drawable.PaintDrawable", "setCornerRadius", void.class, float.class);
+            links("android.graphics.drawable.ShapeDrawable", "setShaderFactory", void.class,
+                  type("android.graphics.drawable.ShapeDrawable$ShaderFactory"));
+            links("android.view.OrientationEventListener", "canDetectOrientation", boolean.class);
+            links("android.view.View", "isVerticalScrollBarEnabled", boolean.class);
+            links("android.view.View", "setNextFocusForwardId", void.class, int.class);
+            links("android.widget.TextView", "setTextKeepState", void.class, CharSequence.class);
+            links("android.widget.TextView", "getShowSoftInputOnFocus", boolean.class);
+            links("android.widget.ProgressBar", "setProgressBackgroundTintList", void.class,
+                  type("android.content.res.ColorStateList"));
+            links("android.graphics.drawable.GradientDrawable", "setColors", void.class, int[].class, float[].class);
+            links("android.widget.AbsListView", "invalidateViews", void.class);
+            links("android.media.AudioRecord", "read", int.class, float[].class, int.class, int.class, int.class);
+            links("android.media.AudioManager", "requestAudioFocus", int.class, type("android.media.AudioFocusRequest"));
+            links("android.media.AudioFormat$Builder", "setSampleRate", type("android.media.AudioFormat$Builder"), int.class);
+            links("android.content.Context", "getAttributionSource", type("android.content.AttributionSource"));
+            links("android.content.ContextWrapper", "getAttributionSource", type("android.content.AttributionSource"));
             overridable("android.widget.ArrayAdapter", "addAll", Object[].class);
             overridable("android.view.KeyEvent", "getKeyData", type("android.view.KeyCharacterMap$KeyData"));
         }

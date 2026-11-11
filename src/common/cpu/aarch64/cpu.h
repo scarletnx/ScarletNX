@@ -54,8 +54,11 @@ typedef double f64;
       load-exclusive stores (and returns 0), where every build before made it fail and return 1, so a game's retry
       loop never ended: both the generated code and the interpreter's helper emit the new comparison.
   17: the FP helpers take FPCR by value and return their result with the FPSR flags they raised instead of writing
-      the CPU structure, and generated functions normalize the host FP environment they use (snx_fp_env). */
-#define SNX_ABI 17
+      the CPU structure, and generated functions normalize the host FP environment they use (snx_fp_env).
+  18: a program's modules lie one after another, with no page left free between two (nx/loader/loader.h). The
+      contract is as it was: the number rises so that every game is made again with its modules where the console
+      puts them, and a save state, which holds the guest's memory at the old addresses, is refused by its reason. */
+#define SNX_ABI 18
 
 #if defined(_WIN32)
 #define SNX_EXPORT __declspec(dllexport)

@@ -43,10 +43,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | HarfBuzz 15.0.0 (the Android driver's text shaping, `src/android/hwui/text.c`) | MIT ("Old MIT") |
 | SQLite 3.54.1 (the Android driver's `android.database.sqlite`, `src/android/db/sqlite_jni.c`) | Public domain |
 | OpenJDK (the JVM that the Android driver loads at run time from the installed JDK, not shipped) | GPL-2.0 with the Classpath Exception |
-| libadrenotools / liblinkernsbypass (the GPU drivers a player adds on Android arm64, `cmake/adrenotools.cmake`) | BSD-2-Clause |
 | lunasvg / plutovg (the splash's SVGs and the user's picture) | MIT / MIT, with FreeType's rasterizer and stroker (FreeType License) and stb (MIT or public domain) |
-| The on-screen controls' line skin (`dist/controls/skins/line`), drawn for ScarletNX by `scripts/build-skins.py` after the look of libretro common-overlays' flat retropad (CC-BY-4.0; none of its files are used) | GPL-3.0-or-later |
-| The on-screen controls' yorha skin (`dist/controls/skins/yorha`), drawn for ScarletNX by `scripts/build-skins.py` in the launcher's `yorha` theme's colours and lines, with the menus' font (SeaBIOS `vgafont16`, below) | GPL-3.0-or-later |
 | GUI menu icons (`src/gui/icons.hex`), drawn after Lucide 1.61.0's (some derived from Feather) | GPL-3.0-or-later, after Lucide's ISC and Feather's MIT (in `src/gui/FONT-NOTICE.txt`) |
 | GUI VGA BIOS font (SeaBIOS `vgafont16`, originally Joseph Gil's font collection) | Public domain |
 | GUI Latin letters past CP437 (GNU Unifont 18.0.01's 8x16 glyphs, `src/gui/unifont-latin.hex`, fitted to the VGA font) | GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1 |
@@ -57,8 +54,7 @@ The GUI fonts' notices and pinned sources are preserved in
 [`src/gui/FONT-NOTICE.txt`](../src/gui/FONT-NOTICE.txt).
 
 Code ported into the repository, and assets taken from other projects. In these places, the files whose header names
-a source keep that source's copyright lines and license, most with the revision they came from; the drawables of
-`dist/controls/` have theirs in [its README](../dist/controls/README.md):
+a source keep that source's copyright lines and license, most with the revision they came from:
 
 | Where | From | License |
 | --- | --- | --- |
@@ -103,19 +99,20 @@ a source keep that source's copyright lines and license, most with the revision 
 | `src/nx/hle/services/nvdrv.c`, `nvdrv.h` and the `nvdrv_*.h` headers (the nvhost devices' commands and argument layouts, the ioctl encoding, the GMMU and VA layout, the syncpoint manager) | Eden and yuzu (`core/hle/service/nvdrv/`: `nvdata.h`, `core/syncpoint_manager.h`, `devices/nvmap`, `nvhost_as_gpu`, `nvhost_ctrl`, `nvhost_ctrl_gpu`, `nvhost_gpu`; `video_core/memory_manager.h`), with Skyline's parts as Eden carries them | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/nx/hle/svc/hos.svc` (the SVC declarations and type sizes) and `tools/svcgen/svcgen.c` (their parsing and register allocation) | Eden and yuzu (`tools/svc_generator.py`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/nx/hle/services/misc.c` (the six default Miis, from Eden's `mii/types/raw_data.cpp`, and StoreData's checksums, from Ryubing's `Mii/Helper.cs` and `Mii/Types/StoreData.cs`) | Ryujinx (the defaults as Eden carries them) | MIT ([text](../dist/licenses/Ryujinx/LICENSE.txt)) |
+| `src/nx/hle/services/audio.c` (hwopus's work buffer sizes, from `Ryujinx.Horizon/Sdk/Codec/Detail/HardwareOpusDecoderManager.cs`) | Ryujinx | MIT ([text](../dist/licenses/Ryujinx/LICENSE.txt)) |
 | `src/common/network/`, `src/nx/hle/services/network/` | Eden and yuzu | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/common/network/net_room.c` (an Eden room's protocol) | Eden, yuzu and Citra (`src/network/room.cpp`, `room_member.cpp`, `packet.cpp`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/nx/gpu/video/vp9_rebuild.cpp`, `src/nx/gpu/video/vic.comp` and `vic_compose.glsl` (compiled into SPIR-V at build time) | Eden and yuzu | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/nx/gpu/texture/astc.comp` (the ASTC decoder shader, compiled into `astc_spv.h`) | Eden and yuzu (`astc_decoder.comp`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/nx/gpu/texture/astc_cpu.c` and `astc_cpu.h` (the CPU ASTC decoder the tests check the shader against, which the background BC7 encodes on the CPU run) | Eden and yuzu (`textures/astc.cpp`), with the University of North Carolina at Chapel Hill's FasTC decoder in it | GPL-3.0-or-later, GPL-2.0-or-later, Apache 2.0 |
 | `tests/ipc_message.c` (the HIPC, CMIF and TIPC request builders) | libnx | ISC |
-| `src/common/utilities/gpu_driver.c`, `src/gui/gpu_driver.c`, `src/gui/gpu_driver_fetch.c` and `src/nx/runtime/platform/gpu_driver_load.c` (GPU driver packages: meta.json's fields and size, the zip checked before it is unpacked, the devices that load one, libadrenotools' call; Freedreno Settings' presets; Download Driver's repositories, their releases and the recommendation by Adreno model) | Eden and yuzu (`src/android/app/src/main/java/org/yuzu/yuzu_emu/utils/GpuDriverHelper.kt`, `GpuDriverMetadata.kt`, `NativeFreedrenoConfig.kt`, `fragments/DriverFetcherFragment.kt`, `jni/native.cpp`'s `InitializeGpuDriver` and `SupportsCustomDriver`), the model only | GPL-3.0-or-later, GPL-2.0-or-later |
+| `src/common/utilities/gpu_driver.c`, `src/gui/gpu_driver.c`, `src/gui/gpu_driver_fetch.c` and `src/nx/runtime/platform/gpu_driver_load.c` (GPU driver packages: meta.json's fields and size, the zip checked before it is unpacked, the devices that load one, what a run checks of one before it loads it; Freedreno Settings' presets; Download Driver's repositories, their releases and the recommendation by Adreno model) | Eden and yuzu (`src/android/app/src/main/java/org/yuzu/yuzu_emu/utils/GpuDriverHelper.kt`, `GpuDriverMetadata.kt`, `NativeFreedrenoConfig.kt`, `fragments/DriverFetcherFragment.kt`, `jni/native.cpp`'s `InitializeGpuDriver` and `SupportsCustomDriver`), the model only | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/common/utilities/gpu_driver.c` (an Xclipse GPU known by the render node RADV opens, one whose kernel driver DRM names `amdgpu`) | [radv-xclipse](https://github.com/JimVulkan/radv-xclipse), Mesa's RADV for Xclipse GPUs (`src/amd/vulkan/radv_physical_device.c`), the model only | MIT |
+| `src/nx/runtime/platform/gpu_driver_android.c` and `gpu_driver_hook.c` (a GPU driver package loaded on Android: the linker namespaces a second copy of the system's Vulkan loader and the package's driver load in, and the library that takes that copy's two driver-opening calls; notice in [`src/nx/runtime/platform/ADRENOTOOLS-NOTICE.txt`](../src/nx/runtime/platform/ADRENOTOOLS-NOTICE.txt)) | [libadrenotools](https://github.com/bylaws/libadrenotools) and its [liblinkernsbypass](https://github.com/bylaws/liblinkernsbypass), by Billy Laws (`src/driver.cpp`, `src/hook/hook_impl.cpp`, `src/hook/main_hook.c`, `android_linker_ns.cpp`, `elf_soname_patcher.cpp`), the model only | BSD-2-Clause |
 | `src/gui/i18n.c` (`snx_mo_lookup`, the reader of the menu's catalogs; notice in [`src/gui/MUSL-NOTICE.txt`](../src/gui/MUSL-NOTICE.txt)) | musl (`src/locale/__mo_lookup.c`) | MIT |
 | The files of `src/android/framework/` whose header names the Android Open Source Project (exception messages, and parts of method bodies) | The Android Open Source Project's source of the same classes, as the Android SDK's sources for API level 36 carry it | Apache 2.0 ([text](../dist/licenses/AOSP/LICENSE.txt), [notice](../dist/licenses/AOSP/NOTICE.txt)) |
 | `src/android/framework/android/icu/text/PluralRules.java` (each language's cardinal plural rules) | Unicode CLDR (`common/supplemental/plurals.xml`, version 47, as OpenJDK carries it) | Unicode License v3 ([text](../dist/licenses/Unicode/LICENSE.txt)) |
 | `src/android/framework/org/xmlpull/v1/XmlPullParserException.java` (the message its constructor makes) | XmlPull's API (Stefan Haustein and Aleksander Slominski), as the Android Open Source Project carries it | Public domain |
-| `dist/controls/*.xml`, and `controls.png` made from them | yuzu's Android overlay, as Eden and rEden carry it | GPL-3.0-or-later |
 
 Dynarmic (0BSD) and its GPL-3.0-or-later fork were consulted for the recompiler's instruction semantics. No code was
 ported from them.

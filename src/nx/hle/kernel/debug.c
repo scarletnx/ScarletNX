@@ -383,6 +383,9 @@ void kernel_core_report(void) {
         LOG("kernel:   %llu times a thread stopped with its disable count raised ran on, to its "
             "svcSynchronizePreemptionState\n",
             (unsigned long long)g_host.thread.kept);
+    if (g_host.thread.waits_off_core)
+        LOG("kernel:   %llu times a thread in a memory SVC let go of its core to wait for the renderer\n",
+            (unsigned long long)g_host.thread.waits_off_core);
     for (k = 0; k < NCORES; k++) { /* each core's main holders: who the waiters waited behind */
         const KThread* h[3] = {0};
         for (i = 0; i < KTHREAD_MAX; i++) {

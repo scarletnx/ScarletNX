@@ -128,12 +128,14 @@ int gui_adreno_model(const char* gpu_name) {
     return *p && *p != ' ' ? 0 : model;
 }
 /* Eden's picks by model (DriverFetcherFragment.kt), each as the repository its release is in and a part of that
-   release's tag, NULL for the repository's latest */
+   release's tag, NULL for the repository's latest. 605 to 613 have no multiview in hardware: EOL-24.3.4 then says
+   Vulkan 1.0, short of what ScarletNX needs, and T30 emulates it and says 1.4 */
 static const struct {
     int lo, hi;
     const char *driver, *repo, *tag;
 } g_recommended[] = {{10, 99, "KIMCHI Latest", "K11MCH1/AdrenoToolsDrivers", NULL},
-                     {600, 639, "Mr. Purple EOL-24.3.4", "MrPurple666/purple-turnip", "EOL-24.3.4"},
+                     {600, 613, "Mr. Purple T30", "MrPurple666/purple-turnip", "T30"},
+                     {614, 639, "Mr. Purple EOL-24.3.4", "MrPurple666/purple-turnip", "EOL-24.3.4"},
                      {640, 699, "Mr. Purple T19", "MrPurple666/purple-turnip", "T19"},
                      {700, 710, "KIMCHI 25.2.0_r5", "K11MCH1/AdrenoToolsDrivers", "v25.2.0-rc.05"},
                      {711, 799, "Mr. Purple T23", "MrPurple666/purple-turnip", "T23"},

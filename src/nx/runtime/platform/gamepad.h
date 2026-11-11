@@ -54,6 +54,8 @@ int gamepad_layout(int i, int labels[4], int* symmetric);
 unsigned gamepad_held(int i);
 /* the open gamepads' names, from 0 on: NULL past the last. Under ui_lock */
 const char* gamepad_name(int i);
+/* counts the changes to those names (a gamepad joined or left), for the menu's page that names them */
+u32 gamepad_names_version(void);
 /* the i that slot's gamepad (its player's) is in the three above, -1 for none. Under ui_lock */
 int gamepad_of_player(int slot);
 /* their tables (settings.h): g_gamepad_ini, keys gamepad_*; g_gamepad_map_ini, gamepad_map, the player's map that

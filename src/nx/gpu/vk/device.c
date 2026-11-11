@@ -445,7 +445,7 @@ static void astc_choose(void) {
         LOG("vulkan: astc_mode=1 (Exact): ASTC textures are %s\n", exact);
         return;
     }
-    if (!g_vk.feat.textureCompressionBC) return; /* RGBA8, which the warning above says */
+    if (!g_vk.feat.textureCompressionBC) return; /* RGBA8, which vk_blocks_say's line says */
     vk_mem_use(&usage, &budget);
     g_vk.astc_auto_bc7 = g_shader_sm86 || snx_astc_auto_bc7(budget);
     g_vk.astc_at_load = g_settings.astc_mode == 3 || (g_settings.astc_mode == 0 && g_shader_sm86);
@@ -470,6 +470,35 @@ static void ban_say(const char* line, int warn) {
         WARN("%s\n", line);
     else
         LOG("%s\n", line);
+}
+
+/* the extension settings (settings.txt's g_vk_extensions_ini) applied to e, the device's list: a value not auto, on or
+   off, or off for an extension the renderer can't run without here, stops the game, as vulkan_ban_ignore's unknown key
+   does. Those are the swapchain of a window, a portability driver's subset, which Vulkan has turned on wherever a
+   driver lists it, and on a 1.2 device what 1.3 took in (vk12_extensions, and one of the store op NONE's two) */
+static void apply_extension_settings(SnxVkExtensions* e, int core13) {
+    static VkExtensionSetting settings[160];
+    VkExtensionNeed need[VK12_EXTENSIONS + 4];
+    u32 count = 0, needs = 0;
+    char err[512];
+    for (int i = 0; i < g_vk_extension_settings_count && count < sizeof settings / sizeof *settings; i++)
+        settings[count++] = (VkExtensionSetting){g_vk_extension_settings[i].name, g_vk_extension_settings[i].value,
+                                                 g_vk_extension_settings[i].core};
+    if (!g_opt_headless)
+        need[needs++] = (VkExtensionNeed){VK_KHR_SWAPCHAIN_EXTENSION_NAME, "the window is drawn with it"};
+    need[needs++] = (VkExtensionNeed){"VK_KHR_portability_subset",
+                                      "Vulkan has a portability driver's subset on wherever the driver lists it"};
+    if (!core13) {
+        static const char why[] = "the device has Vulkan 1.2, where ScarletNX needs it for what Vulkan 1.3 took in";
+        for (u32 i = 0; i < VK12_EXTENSIONS; i++) need[needs++] = (VkExtensionNeed){vk12_extensions[i], why};
+        /* the store op NONE: one of the two, the other where only one is listed */
+        int khr = snx_vk_extensions_has(e, VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME),
+            ext = snx_vk_extensions_has(e, VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME);
+        if (khr != ext) need[needs++] = (VkExtensionNeed){khr ? VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME
+                                                              : VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME,
+                                                          why};
+    }
+    if (!vk_extension_settings(e, settings, count, need, needs, err, sizeof err)) fatal("settings: %s", err);
 }
 
 /* the stages whose programs the translator gives subgroup operations, and what VOTE and SHFL do in the others */
@@ -633,26 +662,12 @@ static int create_device(void) {
     WANT(occlusionQueryPrecise); /* samples-passed counts (query.c) are exact */
     WANT(sampleRateShading);
     WANT(alphaToOne); /* multisampled draws asking for it (pipeline.c) */
-    /* BCn, ASTC and ETC2 sampled as they are (format.c) where the settings ask for it and the device has them, else
-       decoded on the GPU as they are uploaded; ASTC decoded so is encoded again as BC7 where the GPU samples BCn,
-       unless astc_mode asks for exact RGBA8 (astc_choose says which, once the budget is known). With exact RGBA8 only
-       a texture with holes in its mapping is BC7 (texture.c). Thus BCn always where the device has it, which
-       native_bc decides the sampling of */
-    WANT(textureCompressionBC);
-    g_vk.astc_bc7_could = have.textureCompressionBC && !have.textureCompressionASTC_LDR;
-    if (g_settings.native_astc) WANT(textureCompressionASTC_LDR);
-    if (g_settings.native_etc2) WANT(textureCompressionETC2);
-    if (g_settings.native_bc && !want->textureCompressionBC)
-        WARN("vulkan: the GPU can't sample BCn textures: they are decoded on the GPU as they are loaded\n");
-    if (g_settings.native_astc && !want->textureCompressionASTC_LDR)
-        WARN("vulkan: native ASTC textures were asked for, but the GPU can't sample ASTC: they are decoded on the GPU "
-             "as they are loaded (astc_mode=%d)\n",
-             g_settings.astc_mode);
-    if (!want->textureCompressionASTC_LDR && !want->textureCompressionBC)
-        WARN("vulkan: the GPU samples neither ASTC nor BCn: ASTC textures are decoded to RGBA8, four times BC7's "
-             "memory\n");
-    if (g_settings.native_etc2 && !want->textureCompressionETC2)
-        WARN("vulkan: native ETC2 textures were asked for, but the GPU can't sample ETC2: they are decoded\n");
+    /* BCn, ASTC and ETC2 sampled as they are where the settings ask for it and the device has them, else decoded on
+       the GPU as they are uploaded, BCn encoded again as ETC2 where the device samples that; ASTC decoded is encoded
+       again as BC7 where the GPU samples BCn, unless astc_mode asks for exact RGBA8 (astc_choose says which, once the
+       budget is known, and vk_blocks_say how each family is held). With exact RGBA8 only a texture with holes in its
+       mapping is BC7 (texture.c). Thus BCn always where the device has it, which native_bc decides the sampling of */
+    vk_blocks_want(&have, want);
     WANT(vertexPipelineStoresAndAtomics);
     /* indirect draws (render.c's draw_indirect): several in one call, and a base instance from the GPU's arguments */
     WANT(multiDrawIndirect);
@@ -724,8 +739,12 @@ static int create_device(void) {
     {
         SnxVkExtensions e;
         snx_vk_device_extensions(g_vk.phys, &e);
+        /* the extension settings (vk_ext_*) first: an off one leaves the list, an on one goes over its bans */
+        apply_extension_settings(&e, core13);
         /* the extensions a driver is banned from leave the list before anything below reads it */
         vk_bans_filter(&e, ban_say);
+        /* each setting's extension, on or off in the list, and why */
+        vk_extension_settings_say(&e, g_vk.api, ban_say);
         store_none_ext = vk12_store_none(&e);
         /* again on this list, which the bans took out of (each said above): a 1.2 device banned from one of them is
            refused by its name, as one without it */
@@ -1728,6 +1747,7 @@ static int create_device(void) {
         g_vk.has_descriptor_heaps ? (g_vk.has_descriptor_buffers ? " with buffer fallback" : " with set fallback") : "");
     vk_uma_init();
     astc_choose();
+    vk_blocks_say();
     {
         /* which driver runs, by its own name: the system's, or a package's (gpu_driver) */
         VkPhysicalDeviceDriverProperties dp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
@@ -1929,7 +1949,7 @@ int vk_swapchain_create(int srgb) {
                                    .imageColorSpace = fmt.colorSpace,
                                    .imageExtent = ext,
                                    .imageArrayLayers = 1,
-                                   .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                   .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, /* ui.c's pass draws it all */
                                    .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
                                    .preTransform = transform,
                                    .compositeAlpha = alpha,

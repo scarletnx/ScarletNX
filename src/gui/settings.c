@@ -98,7 +98,7 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
     own_end = text + own;
     memset(s->values, 0, n * sizeof *s->values);
     for (line = text; *line; line = next) {
-        char* field[9];
+        char* field[10];
         if (line >= own_end && !s->own) s->own = s->count; /* the launcher's rows end there */
         const char **words = NULL, **values = NULL;
         int f = 1;
@@ -106,9 +106,9 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
         if (*next) *next++ = 0;
         line[strcspn(line, "\r")] = 0;
         field[0] = line;
-        while (f < 9 && (field[f] = strchr(field[f - 1], '\t')) != NULL) *field[f++]++ = 0;
-        if (f < 7) continue;                               /* not a setting: another line the runtime printed */
-        for (; f < 9; ++f) field[f] = line + strlen(line); /* an older runtime's: no name, no words */
+        while (f < 10 && (field[f] = strchr(field[f - 1], '\t')) != NULL) *field[f++]++ = 0;
+        if (f < 7) continue;                                /* not a setting: another line the runtime printed */
+        for (; f < 10; ++f) field[f] = line + strlen(line); /* an older runtime's: no name, no words, no systems */
         if (page && strcmp(page, field[0])) page = NULL;
         if (!page && strchr(field[0], '/')) { /* a page: its row in the section, and its All first on it */
             page = field[0];
@@ -128,6 +128,7 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
         v = row(s, field[0], field[1], field[7], field[6], words, words ? GUI_KEY_WORD : GUI_KEY_TEXT);
         v->values = values;
         v->type_text = !strcmp(field[3], "text");
+        v->only = *field[9] ? field[9] : NULL;
         if (!words && (field[3][0] == 'i' || field[3][0] == 'f')) { /* typed, not picked: a number of its range */
             GuiThemeKey* k = &s->keys[s->count - 1];
             k->numeric = 1;
