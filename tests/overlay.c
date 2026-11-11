@@ -342,7 +342,7 @@ static void keys_page(void) {
     for (i = 0; i < 40; ++i) assert(overlay_pad(down) == OVERLAY_NONE);
     draw();
     assert(shows("right stick") && shows_as("I, J, K, L", 0, light) && icon_drawn(GUI_ICON_JOYSTICK));
-    assert(shows_as("Ctrl+D", 0, light) && shows("TV docked/handheld/auto"));
+    assert(shows_as("Ctrl+D", 0, light) && shows("TV/handheld/auto"));
     /* the last runtime keys, after the TV mode's */
     assert(shows_as("Ctrl+U", 0, light) && shows("upscaler") && shows_as("Ctrl+Shift+A", 0, light) &&
            shows("anti-aliasing"));
