@@ -506,25 +506,6 @@ interface nn::btm::IBtmUserCore {
     [33] AcquireBleMtuConfigEvent() -> (b8 success, handle<copy, event> event);
 }
 
-# ================================================================ ngc:u and ngct:u: the profanity filter, with no word
-# lists, so nothing is found in a text and it comes back as it was sent. ngc:u takes the lists to look in (a
-# nn::ngc::ProfanityFilterPatternList) and the filter's options; ngct:u (9.0.0+) has one list
-type nn::ngc::detail::ProfanityFilterOption = bytes<0x20, 4>;
-interface nn::ngc::detail::IService is ngc:u {
-    [0] GetContentVersion() -> u32 version;
-    [1] Check(u32 languages, nn::ngc::detail::ProfanityFilterOption option, buffer<u8, 5> text) -> u32 found;
-    [2] Mask(u32 languages, nn::ngc::detail::ProfanityFilterOption option, buffer<u8, 5> text,
-             buffer<u8, 6> masked) -> u32 count;
-    [3] Reload();
-    [4] Check2(u32 languages, nn::ngc::detail::ProfanityFilterOption option, buffer<u8, 5> text) -> u32 found;
-    [5] Mask2(u32 languages, nn::ngc::detail::ProfanityFilterOption option, buffer<u8, 5> text,
-              buffer<u8, 6> masked) -> u32 count;
-}
-interface nn::ngct::detail::IService is ngct:u {
-    [0] Match(buffer<u8, 9> text) -> b8 matched;
-    [1] Filter(buffer<u8, 9> text, buffer<u8, 0xa> filtered);
-}
-
 # ================================================================ olsc:u: the save data cloud
 # each user's backup setting for the game, and the license check before a game turns backups on, which needs the
 # online service: never there (misc.c's olsc). The layouts are the SDK's nn::olsc client's
