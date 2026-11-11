@@ -1911,16 +1911,22 @@ char* snx_temp_dir(const char* parent) {
     wchar_t sddl[256];
     wchar_t* user = NULL;
     HANDLE token = NULL;
+    char why[512] = "";
     if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
         union {
             TOKEN_USER user;
             unsigned char bytes[256];
         } info;
         DWORD size = 0;
-        if (GetTokenInformation(token, TokenUser, &info, sizeof(info), &size))
-            ConvertSidToStringSidW(info.user.User.Sid, &user);
+        if (!GetTokenInformation(token, TokenUser, &info, sizeof(info), &size) ||
+            !ConvertSidToStringSidW(info.user.User.Sid, &user))
+            snx_os_error(why, sizeof why);
         CloseHandle(token);
-    }
+    } else
+        snx_os_error(why, sizeof why);
+    if (!user)
+        snx_error("cannot read the user's SID (%s): the temp folder names the owner (OW), which Wine cannot apply",
+                  why);
     swprintf(sddl, 256, L"D:P(A;OICI;FA;;;%ls)(A;OICI;FA;;;SY)", user ? user : L"OW");
     if (user) LocalFree(user);
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &descriptor, NULL)) {
