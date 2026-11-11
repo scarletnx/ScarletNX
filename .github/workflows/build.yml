@@ -1909,7 +1909,8 @@ jobs:
   # edenprobe's probes (docs/dev/edenprobe.md), a release of scarletnx/edenprobe pinned by its sha256, recompiled by the
   # Linux x86-64 install and run on lavapipe: a case of tests/edenprobe/linux-x86_64.txt, the ones that passed before,
   # that no longer passes fails the job. Another release or other mode words want that file written again. The install
-  # is the linux job's, or on a pull request the appimage job's, which builds a pull request's x86-64 alone
+  # is the linux job's, or on a pull request the appimage job's, which builds a pull request's x86-64 alone. Its
+  # scarletnx-android then runs edenprobe's APK, pinned apart, against tests/edenprobe/android-x86_64.txt the same way
   edenprobe:
     name: edenprobe (Linux x86_64, lavapipe)
     needs: [linux, appimage]
@@ -1926,6 +1927,10 @@ jobs:
       # its suites write their own GPU command buffers, left out while the runtime had no Maxwell front end, and not
       # added back since it returned (docs/dev/edenprobe.md)
       EDENPROBE_MODE: quick notime cpu fs video display kernel audio
+      # the APK (edenprobe's Android build) of a release of its own: its words run every family it has
+      EDENPROBE_APK_VERSION: v0.11.0
+      EDENPROBE_APK_SHA256: 589c89a42ec5cda6e61ec18f9da68ab0d2fcc174dae1e52c3bc85351b55b5769
+      EDENPROBE_APK_MODE: quick
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -1934,12 +1939,13 @@ jobs:
         env:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
-      # The libraries the install links, and lavapipe; each pacman install tried 3 times, as in the Linux job
+      # The libraries the install links, lavapipe, and the JVM of the build's JDK, which scarletnx-android loads; each
+      # pacman install tried 3 times, as in the Linux job
       - name: Install the runtime's libraries and lavapipe
         run: |
           for try in 1 2 3; do
             pacman -Syu --noconfirm --needed python llvm-libs sdl3 vulkan-icd-loader vulkan-swrast spirv-tools \
-              github-cli && break
+              github-cli jre21-openjdk-headless && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -1999,6 +2005,33 @@ jobs:
           python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx --nro edenprobe-main.nro \
             --mode "$EDENPROBE_MODE" --out edenprobe-main --advisory edenprobe/report.jsonl \
             --summary "$GITHUB_STEP_SUMMARY"
+      # The APK on the install's scarletnx-android, whatever the NRO's runs ended as: its notice goes on the same line
+      # of the pull request's comment
+      - name: Fetch edenprobe's APK
+        id: apk
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for try in 1 2 3; do
+            gh release download "$EDENPROBE_APK_VERSION" -R scarletnx/edenprobe -p edenprobe.apk --clobber && break
+            [ "$try" = 3 ] && exit 1
+            sleep 30
+          done
+          echo "$EDENPROBE_APK_SHA256  edenprobe.apk" | sha256sum -c -
+      - name: Run edenprobe's APK on the Android layer
+        if: ${{ !cancelled() && steps.apk.outcome == 'success' }}
+        run: |
+          chmod +x stage/bin/*
+          status=0
+          python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx --apk edenprobe.apk \
+            --mode "$EDENPROBE_APK_MODE" --out edenprobe-android --baseline tests/edenprobe/android-x86_64.txt \
+            --summary "$GITHUB_STEP_SUMMARY" || status=$?
+          if [ -f edenprobe-android/summary.md ]; then
+            result=$(head -n 1 edenprobe-android/summary.md | cut -c5-)
+            echo "::notice title=edenprobe::${result//%/%25}"
+          fi
+          exit "$status"
       # The report, the failures' pictures, the logs and this run's baseline.txt; not the recompiled game. Each attempt
       # its own: a run takes one artifact of a name, and a job run again keeps the earlier attempt's to compare
       - uses: actions/upload-artifact@v7
@@ -2010,5 +2043,7 @@ jobs:
             !edenprobe/work
             edenprobe-main
             !edenprobe-main/work
+            edenprobe-android
+            !edenprobe-android/work
       - *fail-fast-file
       - *fail-fast-mark

@@ -153,6 +153,13 @@ with tempfile.TemporaryDirectory() as temporary:
         ),
         text,
     )
+    apk = "edenprobe v0.11.0's APK: 640 passed, 13 failed, 0 skipped, 0 crashed"
+    text = comment(run_jobs=jobs(*WHOLE), notice=notice + [{'title': 'edenprobe', 'message': apk}])
+    check(
+        "the NRO's and the APK's notices on edenprobe's line, in the order the job left them",
+        f'\n\n[{TITLE}; {apk}]({RUN}): every case of the baseline passes\n' in text,
+        text,
+    )
     text = comment(run_jobs=jobs(*DRAFT), notice=[{'title': 'edenprobe', 'message': TITLE}])
     check(
         "a draft's: the jobs skipped whole named in build.yml's order, edenprobe's failure with its notice",

@@ -9,11 +9,11 @@
 #
 # PR may be empty: then it is the open pull request whose head is SHA, and with none there is nothing to link. A job of
 # the run that did not succeed gets a line, by its id in build.yml, but edenprobe, which builds nothing: its line is its
-# result, the notice its job leaves, linked to the run's summary (docs/dev/edenprobe.md). The checks of a package as
-# installed, the sanitizers' build, the A64 differential's QEMU reference, the job that says whether a pull request
-# needs it and the scheduled run's Nightly due make no package, so they get none. NEEDS, when set, stands for the run's jobs, in
-# the shape of toJSON(needs). --print writes the comment to stdout and posts nothing. gh needs a token that may read
-# the run's artifacts, jobs and checks, and write on pull requests.
+# results, the notices its job leaves (the NRO's and the APK's), linked to the run's summary (docs/dev/edenprobe.md).
+# The checks of a package as installed, the sanitizers' build, the A64 differential's QEMU reference, the job that says
+# whether a pull request needs it and the scheduled run's Nightly due make no package, so they get none. NEEDS, when
+# set, stands for the run's jobs, in the shape of toJSON(needs). --print writes the comment to stdout and posts nothing.
+# gh needs a token that may read the run's artifacts, jobs and checks, and write on pull requests.
 set -euo pipefail
 
 if [ $# -lt 4 ] || [ $# -gt 5 ] || { [ $# -eq 5 ] && [ "$5" != --print ]; }; then
@@ -75,8 +75,9 @@ if [ -z "${NEEDS:-}" ]; then
         from_entries' <<<"$jobs")
     probe_job=$(jq -r '.edenprobe | select(.result == "success" or .result == "failure") | .job // empty' <<<"$needs")
     if [ -n "$probe_job" ]; then
+        # one notice a run of it: the NRO's, then the APK's
         notice=$(gh api "repos/$repo/check-runs/$probe_job/annotations" |
-            jq -r '[.[] | select(.title == "edenprobe")][0].message // empty')
+            jq -r '[.[] | select(.title == "edenprobe") | .message] | join("; ")')
         needs=$(jq --arg notice "$notice" 'if $notice != "" then .edenprobe.outputs.result = $notice else . end' <<<"$needs")
     fi
 else
