@@ -6,9 +6,12 @@
 #include <string.h>
 
 /* the layer's colours (ui_colors.h): the ink behind, the page's for the letters, the failure colour for the lead */
-/* the box, the lead and a letter for each of the list's: laid out when the list, the place or the scale changes, and
-   kept for the frames after */
-#define HUD_QUADS (1 + HUD_DEBUG_MAX + sizeof HUD_DEBUG_LEAD)
+/* The lines' quads: laid out when the list, the place or the scale changes, and kept for the frames after. A line is a
+   blank cell, a cell for each of its letters and a fill to its band's end: its letters and two. A line and the one
+   after it hold a line's room of letters less one at the least (the first item of the second did not fit the first),
+   and a line has room for 18 letters or more, so the lines are at most 2 for each 17 letters and one more: the quads
+   under 5 for each 4 letters, and 2, and the two strips of the margin */
+#define HUD_QUADS ((HUD_DEBUG_MAX + sizeof HUD_DEBUG_LEAD) * 5 / 4 + 4)
 static struct {
     char debug[HUD_DEBUG_MAX];
     u32 gen; /* the lists set */
@@ -63,18 +66,23 @@ static void hud_layout(SnxUiList* l, const int safe[4], int scale) {
         n = line_of(s, lines ? cols : cols - lead, &next) + (lines ? 0 : lead);
         if (n > longest) longest = n;
     }
+    /* The box as it looks, a letter's gap at either side of the longest line and a quarter line above and under the
+       lines, with no fill behind the letters: each line is a band of the layer's ground made of a blank cell, its
+       letters, backed (ui.h's UI_BACKED), and a fill of the ink from them to the box's right; the margins are a strip
+       of the ink each. Nothing is drawn under a letter, and all of it is the plain pipeline's */
     x = (float)safe[0] + ((float)safe[2] - (float)(longest + 2) * cw) / 2;
     y = (float)safe[1] + ch / 2;
-    ui_fill(l, x, y, (float)(longest + 2) * cw, (float)lines * ch + ch / 2, UI_INK);
-    x += cw;
+    ui_fill(l, x, y, (float)(longest + 2) * cw, ch / 4, UI_INK);
+    ui_fill(l, x, y + ch / 4 + (float)lines * ch, (float)(longest + 2) * cw, ch / 4, UI_INK);
     y += ch / 4;
     for (s = g_hud.debug, lines = 0; *s; s = next, ++lines) {
-        float at = x;
+        float row = y + (float)lines * ch, at = x + ui_text_backed(l, x, row, scale, " ", UI_PAGE);
         n = line_of(s, lines ? cols : cols - lead, &next);
         memcpy(line, s, n);
         line[n] = 0;
-        if (!lines) at += ui_text(l, at, y, scale, HUD_DEBUG_LEAD, UI_FAILURE);
-        ui_text(l, at, y + (float)lines * ch, scale, line, UI_PAGE);
+        if (!lines) at += ui_text_backed(l, at, row, scale, HUD_DEBUG_LEAD, UI_FAILURE);
+        at += ui_text_backed(l, at, row, scale, line, UI_PAGE);
+        ui_fill(l, at, row, x + (float)(longest + 2) * cw - at, ch, UI_INK);
     }
 }
 void hud_draw(SnxUiList* l, const int safe[4], int scale) {
