@@ -23,6 +23,7 @@
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/hook/hook.h"
 #include "nx/nn/fs.h"
+#include "nx/nn/time.h"
 #include "nx/hle/services/hid.h"
 #include "nx/runtime/guest_jit.h"
 #include "nx/runtime/nce/nce.h"
@@ -1457,6 +1458,7 @@ int snx_main(int argc, char** argv) {
     kernel_load_symbols();
     linker_decide(); /* before the hooks: nn::ro's are installed only when the runtime links the game */
     nnfs_init();
+    nntime_init();
     hook_install(); /* before NVN, which takes what a slot holds, and the JIT, which reads the slots */
     nvn_loader_init();
     linker_init(); /* after the hooks and NVN, whose slots it leaves alone */
