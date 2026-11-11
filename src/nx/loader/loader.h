@@ -119,6 +119,10 @@ void snx_exefs_mods(SnxExefsMods* mods, const SnxExefsReader* under, char* const
 int snx_load_program_mods(const char* entry, char* const* names, char* const* paths, size_t count, SnxProgram* program,
                           char* error, size_t error_size);
 void snx_free_program(SnxProgram* program);
+/* Code addresses recorded while a page lay free after each of program's modules, as it did before SNX_ABI 18, each
+   moved to where that code lies now: module i lay i pages higher then. An address that was in no module then is left
+   out. In place, in their order: how many are left */
+size_t snx_program_unguard_addresses(const SnxProgram* program, SnxU64* addresses, size_t count);
 int snx_load_nso(const char* path, const char* name, SnxModuleImage* module, char* error, size_t error_size);
 /* An NSO of a 32-bit program: an ELF32 dynamic table, 16-byte symbols, REL and RELA relocations. Code addresses among
    its functions and relptrs keep bit 0 when it marks Thumb code */

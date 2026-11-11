@@ -1303,6 +1303,20 @@ int snx_load_program_mods(const char* entry, char* const* names, char* const* pa
     return rc;
 }
 
+size_t snx_program_unguard_addresses(const SnxProgram* program, SnxU64* addresses, size_t count) {
+    size_t i, k, n = 0;
+    for (k = 0; k < count; ++k)
+        for (i = 0; i < program->module_count; ++i) {
+            const SnxModuleImage* m = &program->modules[i];
+            SnxU64 up = (SnxU64)i * SNX_PAGE_SIZE;
+            if (addresses[k] >= m->base + up && addresses[k] - m->base - up < m->size) {
+                addresses[n++] = addresses[k] - up;
+                break;
+            }
+        }
+    return n;
+}
+
 void snx_free_program(SnxProgram* program) {
     size_t i;
     for (i = 0; i < program->module_count; ++i) snx_free_module(&program->modules[i]);

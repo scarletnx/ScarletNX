@@ -871,7 +871,7 @@ static void test_program(void) {
 /* A program's modules lie one after another from its code region's start, each where the one before it ends, whatever
    their sizes, as the console's loader lays them: no page is left free between two, so a main module whose rtld is
    one page starts a page into the region, where the program's own code may look for it. A 32-bit program's lie the
-   same from its region's start */
+   same from its region's start. Addresses recorded with a page free after each module move to where that code lies */
 static void test_layout(void) {
     static const char* const names[4] = {"rtld", "main", "subsdk0", "sdk"};
     static const SnxU32 bss[4] = {0x40, 0x2040, 0x1040, 0x40}; /* images of one, three, two and one pages */
@@ -910,6 +910,18 @@ static void test_layout(void) {
         at += program.modules[i].size;
     }
     CHECK(program.modules[1].base == SNX_CODE_BASE + 0x1000 && at == SNX_CODE_BASE + 0x7000);
+    {
+        /* addresses recorded with a page free after each module: rtld's stay, main's were a page up, subsdk0's two
+           and sdk's three, in their order; the free pages then (the first one, where main starts now, and the one
+           before sdk) and an address past the last module held no code */
+        SnxU64 was[9] = {SNX_CODE_BASE + 0x7004, SNX_CODE_BASE + 0x20,   SNX_CODE_BASE + 0x1000,
+                         SNX_CODE_BASE + 0x2000, SNX_CODE_BASE + 0x4ffc, SNX_CODE_BASE + 0x9000,
+                         SNX_CODE_BASE + 0x8010, SNX_CODE_BASE + 0xa000, SNX_CODE_BASE + 0x6008};
+        static const SnxU64 now[6] = {SNX_CODE_BASE + 0x5004, SNX_CODE_BASE + 0x20,   SNX_CODE_BASE + 0x1000,
+                                      SNX_CODE_BASE + 0x3ffc, SNX_CODE_BASE + 0x6000, SNX_CODE_BASE + 0x4008};
+        CHECK(snx_program_unguard_addresses(&program, was, 9) == 6 && !memcmp(was, now, sizeof now));
+        CHECK(snx_program_unguard_addresses(&program, was, 0) == 0);
+    }
     snx_free_program(&program);
     free(dir);
     dir = snx_path_join(scratch, "layout32");
@@ -917,6 +929,10 @@ static void test_layout(void) {
     CHECK(!snx_load_program(dir, &program, error, sizeof error));
     CHECK(!program.npdm.is64 && program.module_count == 2 && program.modules[0].base == SNX_CODE_BASE32);
     CHECK(program.modules[1].base == SNX_CODE_BASE32 + program.modules[0].size);
+    {
+        SnxU64 thumb = program.modules[1].base + 0x1000 + 0x41; /* the Thumb bit moves with its address */
+        CHECK(snx_program_unguard_addresses(&program, &thumb, 1) == 1 && thumb == program.modules[1].base + 0x41);
+    }
     snx_free_program(&program);
     free(dir);
     puts("PASS a program's modules one after another from its code region's start, 64-bit and 32-bit");
