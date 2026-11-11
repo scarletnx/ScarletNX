@@ -1136,8 +1136,10 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
                 /* an added region being removed has none: its arrays stay until users is 0 */
                 Region* r = region_of(s, address);
                 if (!r) continue;
+                /* a GONE pc was invalidated before this batch read its code (the epoch is unchanged since): the code
+                   is what memory holds now, and is published like any other. Left with its slot empty, discovery
+                   would take it for code nobody compiled, and every later batch that calls it would compile it again */
                 Entry* e = add(s, address, DONE);
-                if (e && e->state == GONE) continue; /* invalidated while this batch compiled */
                 GuestFn expected = NULL;
                 __atomic_compare_exchange_n(slot(r, address), &expected, code, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
                 /* a queued pc this batch compiled is done (its queue skips it); one another batch compiles is that

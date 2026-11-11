@@ -13,7 +13,8 @@
    compiles in flight, forgets its code, so the different code mapped at the same place later is what runs. Then the
    cache: a second service on the same file loads the first one's units instead of compiling them, refuses a unit whose
    code changed (and compiles the new code), and reads the records before one a run left unfinished. A change in the
-   middle of a function drops its whole unit */
+   middle of a function drops its whole unit, and a callee invalidated then compiled again by a later caller's batch is
+   published, so the batches after it don't compile it again */
 #include "common/cpu/recompiler/llvm/jit_service.h"
 #include "common/cpu/recompiler/llvm/jit_cache.h"
 #include <pthread.h>
@@ -587,6 +588,64 @@ static void test_invalidate_middle(void) {
     snx_jit_service_free(service);
 }
 
+/* A callee invalidated (its code changed, and the unit of its first caller went with it), then compiled again by the
+   batch of a second caller, as one of its callees: that batch publishes it, so a third caller's batch finds it
+   compiled and calls it through its slot. Left GONE with an empty slot, it read as code nobody compiled, and the batch
+   of every later caller compiled it again */
+#define CALLEE 0x5000
+static void test_invalidated_callee(void) {
+    static const u32 callee[] = {0x91001C00, 0xD65F03C0}; /* add x0, x0, #7; ret */
+    static const u32 changed = 0x91002400;                /* add x0, x0, #9 */
+    static const u64 callers[] = {0x5100, 0x5200, 0x5300};
+    /* stp x29, x30, [sp, #-16]!; bl CALLEE; ldp x29, x30, [sp], #16; ret */
+    u32 caller[] = {0xA9BF7BFD, 0, 0xA8C17BFD, 0xD65F03C0};
+    SnxJitStats before, after;
+    unsigned before_misses;
+    size_t i;
+    CPU c;
+    put(CALLEE, callee, 2);
+    for (i = 0; i < 3; ++i) {
+        caller[1] = 0x94000000u | ((u32)((i64)(CALLEE - (callers[i] + 4)) / 4) & 0x3FFFFFFu);
+        put(callers[i], caller, 4);
+    }
+    service = start(0, 1);
+    if (!service) {
+        ++failures;
+        return;
+    }
+    /* the first caller's batch compiles the callee with it */
+    cpu_init(&c, 0xF000);
+    run(&c, callers[0]);
+    CHECK(c.x[0] == 7 && c.pc == RETURN);
+    snx_jit_drain(service);
+    CHECK(get(CALLEE) != NULL);
+    /* the callee changes, and its line is invalidated: its unit goes, its entry GONE */
+    put(CALLEE, &changed, 1);
+    snx_jit_invalidate(service, CALLEE, 4);
+    CHECK(get(CALLEE) == NULL && get(callers[0]) == NULL);
+    /* the second caller's batch compiles the new callee with it, and publishes both */
+    cpu_init(&c, 0xF000);
+    run(&c, callers[1]);
+    CHECK(c.x[0] == 9 && c.pc == RETURN);
+    snx_jit_drain(service);
+    CHECK(get(CALLEE) != NULL);
+    /* the third caller's batch has the caller alone: its call reaches the published callee without a miss */
+    snx_jit_stats(service, &before);
+    before_misses = misses;
+    cpu_init(&c, 0xF000);
+    run(&c, callers[2]);
+    CHECK(c.x[0] == 9 && c.pc == RETURN);
+    snx_jit_drain(service);
+    snx_jit_stats(service, &after);
+    printf("invalidated callee: the third caller's batch compiled %lu functions, %lu instructions, with %u misses\n",
+           after.functions - before.functions, after.instructions - before.instructions, misses - before_misses);
+    CHECK(after.functions - before.functions == 1 && after.instructions - before.instructions == 4);
+    CHECK(misses - before_misses == 1);
+    /* its entry is DONE: a lookup finds the code and queues nothing */
+    CHECK(get(CALLEE) && snx_jit_resolve(service, CALLEE) == get(CALLEE));
+    snx_jit_service_free(service);
+}
+
 /* an invalidation of another range while a pc compiles: the batch read code that may be stale, so it publishes nothing
    and its pcs go back to their queue. Before, they were left GONE with their pending bit set, which snx_jit_resolve's
    fast path reads as "queued, wait for it": nothing queued them again, and the pc was never compiled (rt_miss's fatal,
@@ -976,6 +1035,7 @@ int main(int argc, char** argv) {
     test_cache();
     test_invalidate();
     test_invalidate_middle();
+    test_invalidated_callee();
     test_invalidate_in_flight();
     test_image_map();
     test_region_limit(0);
