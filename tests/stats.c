@@ -29,8 +29,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/* a quad as it holds it (ui.h's ui_view): its place in pixels, its colour widened back to 8 bits */
-static SnxUiQuadView qv(const SnxUiQuad* q) { return ui_view(q); }
 #define TRACED_CHILD 1
 /* the child asks to be traced by its parent; the parent lets it go on from a stop */
 #if defined(__linux__)
@@ -41,6 +39,9 @@ static SnxUiQuadView qv(const SnxUiQuad* q) { return ui_view(q); }
 #define TRACE_GO(pid) ptrace(PT_CONTINUE, (pid), (caddr_t)1, 0)
 #endif
 #endif
+
+/* a quad as it holds it (ui.h's ui_view): its place in pixels, its colour widened back to 8 bits */
+static SnxUiQuadView qv(const SnxUiQuad* q) { return ui_view(q); }
 
 /* ui.c's lock and log, and what vpad.c and the Display table name, without the platform layer */
 void pm_lock(PMutex* m) { (void)m; }
