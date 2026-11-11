@@ -119,6 +119,9 @@ interface nn::am::service::ISelfController {
     @stub [110] SetApplicationAlbumUserData(buffer<u8, 0x21> data);
     @stub [120] SaveCurrentScreenshot(i32 option);
     [2000] GetGraphicsSupervisor() -> handle<copy, session> session;
+    # the Ounce's: whether a chat's screen sharing carries the game's audio, which the host has no use for. Switchbrew's
+    # name. The b8 is the argument of the other Set...Enabled commands, which the stub doesn't read
+    @stub [2400] SetRtcScreenSharingAudioEnabled(b8 enabled);
 }
 
 interface nn::am::service::IWindowController {

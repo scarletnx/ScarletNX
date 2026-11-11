@@ -161,6 +161,9 @@ interface nn::hid::IHidServer is hid {
                              handle<copy, transfer_memory> tmem);
     [3140] SetNmousePointerPosition(i32 x, i32 y, aruid aruid, u64 handle);
     [3141] EnableNmousePointer(b8 enable, aruid aruid, u64 handle);
+    # 21.0.0+, Switchbrew's name and no more: the mouse library's version, told to hid at its start. A setter, whose
+    # request the stub doesn't read
+    @stub [3150] SetMouseLibraryVersion();
 }
 
 interface nn::hid::IAppletResource {
