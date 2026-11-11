@@ -374,6 +374,43 @@ static uint32_t direct_call(SnxArmCPU* cpu, uint32_t import) {
     return t->state == VITA_THREAD_READY && p->current == t && !t->call.redirected && !p->exited &&
            t->cpu.exit == SNX_ARM_OK;
 }
+/* The stubs trampolines() wrote into the runtime page, run without a block. A run-time compiler would compile them like
+   any guest code, but with none (no run-time compiler, only the module's blocks) nothing else holds them, and a
+   guest function an import called returning to VITA_CALL_RETURN found no code. They are A32 and only svc, bx lr,
+   blx r1, b and nop, so one instruction is carried out as a block would: an SVC leaves r15 after itself first. False
+   when pc is not one of those */
+static bool runtime_page_step(VitaProcess* p, VitaThread* t, uint32_t pc) {
+    SnxArmCPU* c = &t->cpu;
+    uint32_t word = vita_read32(p, pc);
+    if ((word & 0xff000000u) == 0xef000000u) { /* svc */
+        c->r[15] = pc + 4;
+        return svc(p, t, word & 0xffffffu);
+    }
+    if ((word & 0xfffffff0u) == 0xe12fff10u) { /* bx rm */
+        uint32_t target = c->r[word & 15];
+        c->r[15] = target & ~1u;
+        c->cpsr = (c->cpsr & ~SNX_ARM_T) | (target & 1 ? SNX_ARM_T : 0);
+        return true;
+    }
+    if ((word & 0xfffffff0u) == 0xe12fff30u) { /* blx rm */
+        uint32_t target = c->r[word & 15];
+        c->r[14] = pc + 4;
+        c->r[15] = target & ~1u;
+        c->cpsr = (c->cpsr & ~SNX_ARM_T) | (target & 1 ? SNX_ARM_T : 0);
+        return true;
+    }
+    if ((word & 0xff000000u) == 0xea000000u) { /* b */
+        uint32_t offset = (word & 0xffffffu) << 2;
+        if (offset & 0x2000000u) offset |= 0xfc000000u;
+        c->r[15] = pc + 8 + offset;
+        return true;
+    }
+    if (word == 0xe320f000u) { /* nop */
+        c->r[15] = pc + 4;
+        return true;
+    }
+    return false;
+}
 int vita_run(VitaProcess* p, double seconds) {
     char why[256];
     if (!(p->jit = vita_jit_new(p, why, sizeof why))) printf("No run-time compiler (%s): only the module's blocks run\n", why);
@@ -449,6 +486,15 @@ int vita_run(VitaProcess* p, double seconds) {
                 goto done;
             }
             if (checked == VITA_LOCKSTEP_RAN) continue;
+            if (!p->jit && !thumb && pc >= VITA_RUNTIME_PAGE && pc < VITA_RUNTIME_PAGE + 0x40u && !(pc & 3)) {
+                if (!runtime_page_step(p, t, pc)) {
+                    report_fault(p, t, "no code at", pc);
+                    result = 1;
+                    goto done;
+                }
+                if (p->exited) break;
+                continue;
+            }
             SnxArmBlock block = block_at(p, pc, thumb);
             if (!block) {
                 report_fault(p, t, "no code at", pc);
