@@ -44,19 +44,6 @@ set(snx_settings_out "${PROJECT_BINARY_DIR}/settingsgen")
 file(MAKE_DIRECTORY "${snx_settings_out}")
 set(snx_settings_source "${PROJECT_SOURCE_DIR}/src/nx/runtime/settings.txt")
 set(snx_settings_spec "${snx_settings_source}")
-# Leave the Tracy rows out when the runtime has no profiler.
-if(NOT SNX_TRACY)
-    file(READ "${snx_settings_source}" snx_settings_text)
-    foreach(snx_tracy_marker SNX_TRACY SNX_TRACY_DEBUG)
-        string(REGEX REPLACE "# ${snx_tracy_marker}_BEGIN[^#]*# ${snx_tracy_marker}_END\r?\n" "" snx_settings_text
-                             "${snx_settings_text}")
-    endforeach()
-    if(snx_settings_text MATCHES "SNX_TRACY[^\n]*_BEGIN")
-        message(FATAL_ERROR "settings.txt: a Tracy block has no end marker")
-    endif()
-    set(snx_settings_spec "${snx_settings_out}/settings.txt")
-    file(WRITE "${snx_settings_spec}" "${snx_settings_text}")
-endif()
 # A phone's JIT compiles at O0 (guest_jit.c): any other level breaks it there, so its level is no setting of a phone's
 # and the spec has no row or key for it
 if(ANDROID OR IOS)
@@ -165,9 +152,19 @@ add_library(snx_settings STATIC "${snx_settings_out}/settings.c" "${snx_settings
 set_target_properties(snx_settings PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON) # ini.c: __atomic
 target_compile_options(snx_settings PRIVATE -Wall -Wextra -Werror=missing-prototypes -Werror=missing-variable-declarations)
 target_include_directories(snx_settings PUBLIC "${snx_settings_out}" "${PROJECT_SOURCE_DIR}/src")
+# the tables' rows a needs block gates resolve by the build's own macros (ini.h's INI_NEEDS_): the library that compiles
+# them needs the same definitions the runtime and the launcher take, so the flag is set exactly where the feature is
+# absent. Private: only this library's own compile resolves it, and a consumer that reads the tables' rows (the launcher,
+# a test) takes the flag from the text the runtime prints rather than from a definition. Nothing here links the client.
+if(SNX_TRACY)
+    target_compile_definitions(snx_settings PRIVATE SNX_TRACY=1)
+endif()
 add_dependencies(snx_settings snx_settings_generated)
 # a library, so a program links only the tables it uses (a test, one module's), and their set functions
 add_library(snx_settings_runtime STATIC ${snx_settings_runtime_files})
 set_target_properties(snx_settings_runtime PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
+if(SNX_TRACY)
+    target_compile_definitions(snx_settings_runtime PRIVATE SNX_TRACY=1)
+endif()
 target_link_libraries(snx_settings_runtime PUBLIC snx_settings)
 set(SNX_SETTINGS_LLVM "${snx_settings_out}/settings_llvm.c")

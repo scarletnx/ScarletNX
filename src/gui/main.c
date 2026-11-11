@@ -11641,10 +11641,12 @@ static int clean_left(App* app) {
 }
 /* a row of App, Folders, GPU Drivers or a group of settings with nothing to do now, greyed, whose Enter says why
    (#614): nothing to clean or move, every setting at its default, no folder picked, a library's Main off it, a GPU
-   driver package where none loads, a setting that does something on other systems alone */
+   driver package where none loads, a setting that does something on other systems alone, a setting this build
+   cannot do */
 static bool form_row_off(App* app, const GuiEditor* e, int r) {
     int picked = 0, setting = form_setting(app, e, r);
-    if (setting >= 0) return app->settings.values[setting].only != NULL;
+    if (setting >= 0)
+        return app->settings.values[setting].only != NULL || app->settings.values[setting].needs_build;
     if (e->keys == app->drivers_keys) return driver_row_off(app, r);
     if (e->keys == app_keys)
         return (r == GUI_APP_MOVE && !app->lefts) || (r == GUI_APP_CLEAN && !clean_left(app)) ||

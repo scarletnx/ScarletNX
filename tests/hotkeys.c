@@ -45,8 +45,9 @@ int main(void) {
     char name[64];
     const IniOpt* o;
     int a, rows = 0;
-    /* a row an action, each read by hotkey_set, its default today's key: Tracy's only in a build with it */
-    for (o = g_hotkeys_ini; o->key; ++o) ++rows;
+    /* a row an action, each read by hotkey_set, its default today's key: Tracy's is listed in every build and only
+       one with the client takes it, as the settings' rows a build has none of what they need are */
+    for (o = g_hotkeys_ini; o->key; ++o) rows += !(o->flags & INI_NEEDS_BUILD);
     for (a = 0; a < HOTKEY_COUNT; ++a) {
         o = hotkey_row(a);
         if (!o) {

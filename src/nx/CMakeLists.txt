@@ -348,7 +348,8 @@ if(BUILD_TESTING)
         target_link_libraries(snx-test-shader-shared-reach PRIVATE Threads::Threads m)
     endif()
     add_test(NAME shader_shared_reach COMMAND $<TARGET_FILE:snx-test-shader-shared-reach>)
-    add_test(NAME runtime_settings_list COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
+    add_test(NAME runtime_settings_list COMMAND "${CMAKE_COMMAND}" "-DSNX_TRACY=${SNX_TRACY}"
+             -DRUNTIME=$<TARGET_FILE:scarletnx>
              -DAPPLE_HOST=$<BOOL:${APPLE}> -P "${PROJECT_SOURCE_DIR}/tests/settings_list.cmake")
     add_test(NAME runtime_unknown_option COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
              -P "${PROJECT_SOURCE_DIR}/tests/unknown_option.cmake")

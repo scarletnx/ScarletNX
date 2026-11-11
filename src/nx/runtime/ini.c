@@ -282,7 +282,9 @@ size_t ini_list_text(const IniSection* sections, int count, char* out, size_t si
                 list_help(&l, help);
                 put(&l, "\t%s\t", o->name ? o->name : "");
                 list_values(&l, o);
-                put(&l, "\t%s\n", ini_only(o) ? ini_only(o) : "");
+                put(&l, "\t%s", ini_only(o) ? ini_only(o) : "");
+                if (o->flags & INI_NEEDS_BUILD) put(&l, "\tneeds-build");
+                put(&l, "\n");
             }
         }
     return l.at;

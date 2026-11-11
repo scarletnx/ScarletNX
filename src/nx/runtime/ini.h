@@ -17,7 +17,19 @@ enum {
 #define INI_STARTUP 1 /* read when the game starts: a reload while it runs leaves it alone (options.c's sections) */
 /* the game's own, set in its menu (a control's place) or by the driver (its dump): the launcher's Settings leave it
    out */
-#define INI_IN_GAME 2
+#define INI_IN_GAME     2
+/* the row does nothing in this build (the client the profiler rows need is a profiler build's): the menus show it
+   greyed and pick nothing, and the runtime reads it and changes nothing. The generated tables set it for the rows a
+   needs block names, resolving to 0 where the build has what they need */
+#define INI_NEEDS_BUILD 4
+
+/* a row a needs FEATURE block names: 0 where the build has FEATURE, INI_NEEDS_BUILD where it has none. One macro per
+   feature, resolved by the build that compiles the table (settingsgen writes the block's feature in its place) */
+#if defined(SNX_TRACY)
+#define INI_NEEDS_TRACY 0
+#else
+#define INI_NEEDS_TRACY INI_NEEDS_BUILD
+#endif
 
 /* the systems a setting does something on, where not every one (settings.txt's only): one of these in flags, macOS
    without iOS, Linux the kernel (Android too), arm64 Linux the same on arm64 (NCE's hosts, nce_host.h). On another
