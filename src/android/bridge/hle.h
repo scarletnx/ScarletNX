@@ -57,6 +57,13 @@ bool hle_android_is_texture_window(uint64_t window);
 /* bionic's functions that are guest code (hle_code.c): written into the code window once, after bridge_init */
 void hle_code_init(void);
 uint64_t hle_code_symbol(const char* name);
+/* Android's ICU, libicuuc.so and libicui18n.so, which apps open with dlopen (hle_icu.c): whether the host's ICU is
+   there for it, and the guest address of one of its functions by the versioned name (u_strlen_76), 0 for another */
+bool hle_icu_available(void);
+uint64_t hle_icu_symbol(const char* name);
+/* that version (0 without ICU), and the HLE's entry of a versioned name, NULL for another */
+int hle_icu_version(void);
+const HleSymbol* hle_icu_find(const char* name);
 /* whether a library's name (a path's last part) is a system library that the HLE is (hle_dl.c) */
 bool hle_dl_is_system(const char* name);
 /* the copies of the host C library's objects that bionic exports (environ, timezone), and Windows' Winsock started:
