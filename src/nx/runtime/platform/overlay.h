@@ -83,8 +83,9 @@ int overlay_backspace(void);
 int overlay_tap(float x, float y, int sw, int sh);
 /* a finger or the mouse (touch.h's SNX_TOUCH_MOUSE) on the open menu, at x, y in the picture's pixels: down off the
    panel on an on-screen control it is the controls', whose presses move the menu (overlay_controls); else, on the
-   panel whatever control lies under it, its lift taps the menu where it lifts (what that did). Reset forgets the
-   one down, which lifts without a tap; cancel forgets id's */
+   panel whatever control lies under it, its lift taps the menu where it went down (what that did), or, moved
+   further than a finger slips, it scrolls the page as it goes and taps nothing. Reset forgets the one down, which
+   lifts without a tap; cancel forgets id's */
 void overlay_pointer_down(u64 id, float x, float y, const int safe[4]);
 void overlay_pointer_move(u64 id, float x, float y, const int safe[4]);
 int overlay_pointer_up(u64 id, float x, float y, int sw, int sh);

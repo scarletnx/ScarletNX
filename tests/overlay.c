@@ -768,6 +768,34 @@ static void finger_rows(void) {
     assert(overlay_tap(x + 40, first + 60, SW, SH) == OVERLAY_NONE);
     draw();
     assert(items_shown() == 7 && !shows("\xFE Back"));
+    /* a finger that slips less than a finger's slip (8 pixels at the scale, 20.8) taps the row it went down on, though
+       it lifts on the next: Snap to grid switches, Scale under it keeps its value. One dragged up four rows scrolls the
+       page four items on, Back into view, and acts on none; dragged down again, the page comes back */
+    {
+        const int area[4] = {0, 0, SW, SH};
+        int snap = g_settings.snap_to_grid, scale = g_settings.controls_scale;
+        float y0 = first + 2 * 125 + 120, y1 = first + 6 * 125 + 60;
+        overlay_pointer_down(12, x + 40, y0, area);
+        overlay_pointer_move(12, x + 40, y0 + 12, area);
+        assert(overlay_pointer_up(12, x + 40, y0 + 12, SW, SH) == OVERLAY_NONE);
+        draw();
+        assert(g_settings.snap_to_grid == !snap && g_settings.controls_scale == scale);
+        g_settings.snap_to_grid = snap;
+        overlay_pointer_down(13, x + 40, y1, area);
+        overlay_pointer_move(13, x + 40, y1 - 2 * 125, area);
+        overlay_pointer_move(13, x + 40, y1 - 4 * 125 - 10, area);
+        assert(overlay_pointer_up(13, x + 40, y1 - 4 * 125 - 10, SW, SH) == OVERLAY_NONE);
+        draw();
+        assert(shows("SCARLETNX  /  CONTROLS") && items_shown() == 7 && shows("\xFE Back"));
+        assert(g_settings.snap_to_grid == snap && g_settings.controls_scale == scale);
+        overlay_pointer_down(14, x + 40, first + 60, area);
+        overlay_pointer_move(14, x + 40, first + 60 + 4 * 125 + 10, area);
+        assert(overlay_pointer_up(14, x + 40, first + 60 + 4 * 125 + 10, SW, SH) == OVERLAY_NONE);
+        draw();
+        assert(items_shown() == 7 && !shows("\xFE Back") && shows("\xFE Show controls"));
+        assert((band = focus_band(ink)) && qv(band).y == first + 4 * 125); /* the focus kept on the page */
+        overlay_move(-4);                                                  /* back to the first item */
+    }
     overlay_move(-1);
     draw();
     assert(items_shown() == 7 && shows("\xFE Back") && (band = focus_band(ink)) && qv(band).h == 125);
