@@ -17,5 +17,14 @@ static inline uint64_t vk_uma_budget(uint64_t driver, uint64_t usage, uint64_t a
 /* the system's memory kept free of the caches: an eighth of it, 1390 of that phone's 11122 MB, where the low memory
    killer ended background apps from 1925 MB available and the game at 683 */
 static inline uint64_t vk_uma_reserve(uint64_t system) { return system / 8; }
+/* the bytes a frame writes to its rings before it ends (cmd.c's frame_check) where they are memory the caches budget:
+   caps, its VK_FRAME_RING_CAPS allocations, and no more than an eighth of the budget, so that the two frames in flight
+   hold a quarter of it at most; floor at least, so that a budget squeezed by the game's own memory ends a frame no
+   earlier than a loading burst's staging does. The copy engine's upload of an 8192x8192 RGBA8 texture writes 1365 MiB
+   to one frame's rings, and a phone with 1037 MB available ran out of memory within 5 s of it */
+static inline uint64_t vk_uma_ring_cap(uint64_t caps, uint64_t budget, uint64_t floor) {
+    uint64_t share = budget / 8 > floor ? budget / 8 : floor;
+    return share < caps ? share : caps;
+}
 
 #endif

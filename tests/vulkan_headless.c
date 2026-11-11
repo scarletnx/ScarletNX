@@ -433,6 +433,49 @@ static int check_rings_without_present(void) {
     return 0;
 }
 
+/* On a GPU that shares the system's memory the rings are memory the caches budget, and a frame without a present ends
+   once its rings hold an eighth of the budget, when that is less than VK_FRAME_RING_CAPS allocations: with
+   allocations of 1 MiB and a budget of 24 MiB, every 3 MiB rather than every 4 (64 draws of a megabyte each end 21
+   frames, the allocations alone 15), and the copies still read their uploads. A phone ran out of memory within 5 s of
+   the upload of an 8192x8192 texture, which writes 1365 MiB to one frame's rings */
+static int check_rings_budget_share(void) {
+    const u32 draws = 64;
+    u64 saved_cap = g_vk.alloc_cap, saved_budget, first;
+    VkBuffer rb;
+    u8* result;
+    if (g_vk.mem_model != VK_MEM_UMA) {
+        printf("skip: the rings' share of the budget holds on a GPU that shares the system's memory\n");
+        return 0;
+    }
+    vk_finish();
+    vk_frame_next();
+    g_vk.alloc_cap = 1u << 20;
+    saved_budget = vk_mem_budget_cap(24u << 20);
+    first = vk_frame_id();
+    result = vk_readback_buffer(draws * 16, &rb);
+    CHECK(result);
+    for (u32 i = 0; i < draws; i++) {
+        VkBuffer buffer;
+        u64 offset;
+        vk_frame_check(); /* a draw's start */
+        u8* data = vk_stage_upload(g_vk.alloc_cap, 16, &buffer, &offset);
+        CHECK(data);
+        memset(data, (int)(i + 1), 16);
+        VkBufferCopy copy = {offset, i * 16ull, 16};
+        rec_CmdCopyBuffer(vk_cmd(), buffer, rb, 1, &copy);
+    }
+    vk_finish();
+    vk_readback_ready();
+    u64 frames = vk_frame_id() - first;
+    vk_mem_budget_cap(saved_budget);
+    g_vk.alloc_cap = saved_cap;
+    vk_frame_next();
+    for (u32 i = 0; i < draws * 16; i++) CHECK(result[i] == i / 16 + 1);
+    printf("%u draws of 1 MiB under a 24 MiB budget: %llu frames\n", draws, (unsigned long long)frames);
+    CHECK(frames >= draws / 3 - 1);
+    return 0;
+}
+
 /* A frame that ended at its limit of submissions leaves its slot's counts as they were until the slot is used again:
    vk_frame_check on that slot, fresh after a present, keeps it rather than ending a frame that recorded nothing and
    moving on to the slot whose work was just submitted */
@@ -6194,6 +6237,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_tex_view_refusal());
     CHECK(!check_staging_overflow()); /* first: it counts the staging blocks of a fresh device */
     CHECK(!check_rings_without_present());
+    CHECK(!check_rings_budget_share());
     CHECK(!check_fresh_frame_kept());
     CHECK(!check_stats_gpu_time());
     CHECK(!check_staging_burst());
