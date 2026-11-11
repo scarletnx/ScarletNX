@@ -716,7 +716,7 @@ jobs:
   # container of that image, whose / holds the runtime, and made on the build machine. The build container is
   # pkgforge's x86-64 image with the workspace at /src; platform is Docker's name of the architecture (loong64 for
   # LoongArch). Big-endian ppc64's has every runtime (the 3DS one builds there but isn't ported to a big-endian host):
-  # Arch POWER's glibc there is ELFv2, not Debian ports' ELFv1, which the linux-ppc64 job tests. No POWER, RISC-V or
+  # Arch POWER's glibc there is ELFv2, not Debian ports' ELFv1, which no job builds or tests. No POWER, RISC-V or
   # LoongArch machine has run the AppImages yet, so like the macOS and iOS jobs they may fail without failing the run
   # (scripts/publish-builds.py, OPTIONAL)
   appimage-cross:

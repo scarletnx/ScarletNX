@@ -18,9 +18,9 @@ passes under qemu-user, and Super Haxagon, recompiled under qemu, played a level
 lavapipe as the Vulkan driver. No real POWER machine has run it yet. CI cross-builds its AppImage for the nightlies, not
 for pull requests
 (`ScarletNX-linux-ppc64le.AppImage`, the `appimage-cross` job in `.github/workflows/build.yml`) against an Arch POWER
-system root and runs it under qemu as installed; the test suite's job, `linux-ppc64le`, is commented out.
-The big-endian port has a job of its own, `linux-ppc64`, which builds the Linux runtime and runs its tests under
-qemu-ppc64.
+system root and runs it under qemu as installed; no job runs the test suite. The big-endian AppImage
+(`ScarletNX-linux-ppc64.AppImage`, ELFv2) is cross-built the same way for pull requests and nightlies alike. No job
+builds or tests the ELFv1 port (`linux-ppc64-cross`, Debian ports' glibc).
 
 On a big-endian host the Linux runtime runs AArch64 and 32-bit Arm programs, with Debian ports' glibc
 (`linux-ppc64-cross`, ELFv1) and with Arch POWER's (`linux-ppc64-elfv2-cross`, ELFv2): under qemu-ppc64, an
@@ -153,9 +153,8 @@ cmake --build --preset linux-ppc64-cross --target scarletnx
 
 `scarletnx` is then the Linux runtime alone, and `scarletnx-gnuabi` a link to it.
 
-CI's `linux-ppc64` job builds it this way against that system root, made weekly, and runs the Linux runtime's tests
-(`gnuabi_*`, `endian`, `cas128`) under qemu-ppc64. Debian ports' unstable can break for a day, so the job may fail
-without failing the run.
+No CI job builds it. Its tests, the Linux runtime's (`gnuabi_*`, `endian`, `cas128`), run under qemu-ppc64 with
+`ctest --preset linux-ppc64-cross`.
 
 Arch POWER's big-endian glibc is ELFv2, as LLD links it. Its preset (`linux-ppc64-elfv2-cross`, `SNX_PPC64_ELFV2`)
 builds for ELFv2 with `-mabi=elfv2` and the Linux runtime alone. Its system root is pkgforge's Arch image of the
