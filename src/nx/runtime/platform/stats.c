@@ -312,7 +312,11 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
     StatsNotes notes;
     unsigned j;
     box_notes(safe, scale, box, &notes);
-    memcpy(g_box.at, box, sizeof g_box.at);
+    /* what shows of it: its first column, a margin, draws nothing */
+    g_box.at[0] = box[0] + cw;
+    g_box.at[1] = box[1];
+    g_box.at[2] = box[2] - cw;
+    g_box.at[3] = box[3];
     for (j = 0; j < STATS_LINES; ++j) { /* the icon's two cells and one, then the line, as the menu's items */
         float y = box[1] + ch / 4 + (float)j * ch;
         icon_backed(&l, box[0] + cw, y, scale, icons[j], UI_PAGE);

@@ -1396,6 +1396,13 @@ int main(void) {
         stats_corner_set(corner, "tl");
         stats_draw(&box_quads, all, s, 1000);
         assert(stats_box_drawn(box) && box[0] < cw + 16 * cw && box[1] < 2 * ch);
+        { /* the box from its first quad that draws, the notification's band lined up with it */
+            float left = box[0] + 1000;
+            int k;
+            for (k = 0; k < box_quads.n; ++k)
+                if (qv(&box_quads.q[k]).x < left) left = qv(&box_quads.q[k]).x;
+            assert(left == box[0]);
+        }
         draw();
         assert(list.n == (int)strlen("Saved to slot 2") + 2 && shows("Saved to slot 2"));
         assert(qv(&list.q[0]).x == box[0] && qv(&list.q[0]).y == box[1] + box[3] + ch / 2);
