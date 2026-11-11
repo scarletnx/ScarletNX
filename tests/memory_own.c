@@ -769,7 +769,15 @@ static void test_watch(void) {
     CHECK(own_lookup(a + 0xA000, 0x2000, o, 4) == 1 && o[0].addr == a + 0xB400 && o[0].size == 0x800);
     CHECK(own_watched(a + 0xA800, 0xC00) && !own_watched(a + 0xA800, 0xD00) && !own_watched(a + 0xBC00, 0x200));
     CHECK(GP(a)[0xB500] == (u8)(0xA0 + 0x100));
-    CHECK(refs(r) == 0 && g_resolves == resolves + 3 && !own_trapped(a + 0xA000, 0x2000));
+    {
+        int left = refs(r), asked = g_resolves - resolves, trapped = own_trapped(a + 0xA000, 0x2000);
+        if (left || asked != 3 || trapped)
+            fprintf(stderr, "watch beside an owner: %d references left, %d resolves, pages trapped %d (A %d, B %d)\n",
+                    left, asked, trapped, own_trapped(a + 0xA000, 0x1000), own_trapped(a + 0xB000, 0x1000));
+        CHECK(left == 0);
+        CHECK(asked == 3);
+        CHECK(!trapped);
+    }
     CHECK(GP(a)[0xA900] == (u8)(0x11 + 0xA900) && GP(a)[0xBD00] == (u8)(0x11 + 0xBD00));
     /* a later owner over a watch replaces it; mem_unmap drops what is left */
     CHECK(own_watch(a + 0xD000, 0x2000) == 0 && own_begin(a + 0xD800, 0x800, r, 0) == 0);
