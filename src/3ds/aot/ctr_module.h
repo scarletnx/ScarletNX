@@ -4,12 +4,12 @@
 #define SNX_CTR_MODULE_H
 #include "3ds/runtime/ctr_process.h"
 #define SNX_CTR_MODULE_MAGIC         0x31525443584e5353ull
-#define SNX_CTR_MODULE_ABI           2u /* 2: checked VFP transfers of up to 128 bytes */
+#define SNX_CTR_MODULE_ABI           3u /* 2: checked VFP transfers of up to 128 bytes; 3: hosted blocks */
 #define SNX_CTR_MODULE_CODEGEN_ABI   1u
 #define SNX_CTR_MODULE_CHECKED_MODE  1u
-#define SNX_CTR_MODULE_FLAT_MODE     0u
-/* the memory model a module of this host is compiled for: the flat space where the host has one (memory/host.h),
-   the checked bus elsewhere */
+#define SNX_CTR_MODULE_HOSTED_MODE   2u
+/* the memory model a module of this host is compiled for: the hosted flat space where the host has one
+   (memory/host.h, SNX_ARM_MEMORY_HOSTED), the checked bus elsewhere */
 unsigned snx_ctr_module_memory(void);
 /* Offline compilation bounds, NOT a general title-support guarantee. Tiny
    images retain exhaustive entries; larger images use conservative static CFG

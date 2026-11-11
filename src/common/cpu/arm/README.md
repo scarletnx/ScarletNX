@@ -67,6 +67,16 @@ snx_arm_llvm_block_ex(module, name, words, count, pc, &consumed, &options);
 ```
 
 ISA and memory mode are independent. NULL options preserve the original API.
+
+`SNX_ARM_MEMORY_HOSTED` is flat memory for a runtime that owns the whole process (the 3DS and the Vita). Its blocks
+have no range check (the window is 2^32 addresses with guard pages after it), a `noalias` cpu, and no entry checks:
+the dispatch loop sees to r15, CPSR.T, ITSTATE (`snx_arm_itstate`) and exit. They never set CPSR.E: SETEND BE and an
+MSR that sets E stop with `SNX_ARM_ENDIAN_UNSUPPORTED`. `llvm.h` gives the full contract.
+
+`SNX_ARM_MEMORY_HOSTED` is flat memory for a runtime that owns the whole process (the 3DS and the Vita). Its blocks
+have no range check (the window is 2^32 addresses with guard pages after it), a `noalias` cpu, and no entry checks:
+the dispatch loop sees to r15, CPSR.T, ITSTATE (`snx_arm_itstate`) and exit. They never set CPSR.E: SETEND BE and an
+MSR that sets E stop with `SNX_ARM_ENDIAN_UNSUPPORTED`. `llvm.h` gives the full contract.
 Invalid option versions/enums are refused without modifying the LLVM module.
 `snx_a32_decode_profile` / `snx_thumb_decode_profile` are LLVM-independent.
 

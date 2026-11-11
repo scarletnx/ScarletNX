@@ -478,16 +478,18 @@ LLVMValueRef snx_thumb_llvm_block_ex(LLVMModuleRef module, const char* name, con
     if (options) { a.profile = options->profile; a.memory = options->memory; }
     a.thumb = 1;
     block_begin(&a, module, name, pc);
-    require(&a, cmp(&a, LLVMIntNE, band(&a, GET(&a, cpsr), c32(&a, SNX_ARM_T)), c32(&a, 0)), SNX_ARM_BAD_ENTRY,
-            c32(&a, halfwords[0]));
-    {
-        LLVMValueRef cpsr = GET(&a, cpsr);
-        LLVMValueRef itstate = bor(&a, band(&a, lsr(&a, cpsr, 25), c32(&a, 3)),
-                                   band(&a, lsr(&a, cpsr, 8), c32(&a, 0xFC)));
-        require(&a, cmp(&a, LLVMIntEQ, itstate, c32(&a, 0)), SNX_ARM_IT_ENTRY, itstate);
+    if (!hosted(&a)) {
+        require(&a, cmp(&a, LLVMIntNE, band(&a, GET(&a, cpsr), c32(&a, SNX_ARM_T)), c32(&a, 0)), SNX_ARM_BAD_ENTRY,
+                c32(&a, halfwords[0]));
+        {
+            LLVMValueRef cpsr = GET(&a, cpsr);
+            LLVMValueRef itstate = bor(&a, band(&a, lsr(&a, cpsr, 25), c32(&a, 3)),
+                                       band(&a, lsr(&a, cpsr, 8), c32(&a, 0xFC)));
+            require(&a, cmp(&a, LLVMIntEQ, itstate, c32(&a, 0)), SNX_ARM_IT_ENTRY, itstate);
+        }
+        require(&a, cmp(&a, LLVMIntEQ, band(&a, GET(&a, cpsr), c32(&a, SNX_ARM_E)), c32(&a, 0)),
+                SNX_ARM_ENDIAN_UNSUPPORTED, c32(&a, halfwords[0]));
     }
-    require(&a, cmp(&a, LLVMIntEQ, band(&a, GET(&a, cpsr), c32(&a, SNX_ARM_E)), c32(&a, 0)), SNX_ARM_ENDIAN_UNSUPPORTED,
-            c32(&a, halfwords[0]));
     memory_entry(&a);
     while (used < count) {
         SnxThumb t;

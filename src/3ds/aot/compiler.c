@@ -20,7 +20,7 @@
 
 _Static_assert(SNX_ARM_CODEGEN_OPTIONS_ABI == SNX_CTR_MODULE_CODEGEN_ABI, "codegen ABI");
 _Static_assert(SNX_ARM_MEMORY_CHECKED == SNX_CTR_MODULE_CHECKED_MODE, "memory ABI");
-_Static_assert(SNX_ARM_MEMORY_FLAT == SNX_CTR_MODULE_FLAT_MODE, "memory ABI");
+_Static_assert(SNX_ARM_MEMORY_HOSTED == SNX_CTR_MODULE_HOSTED_MODE, "memory ABI");
 #define CHUNK_ENTRIES 512u
 #define OBJECT_LIMIT  (1024u * 1024u * 1024u) /* a commercial title's 330000 blocks take about 300 MiB */
 #define MODULE_LIMIT  (1024u * 1024u * 1024u)

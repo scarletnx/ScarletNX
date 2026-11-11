@@ -30,8 +30,18 @@ LLVMValueRef snx_thumb_llvm_block(LLVMModuleRef module, const char* name, const 
    changed bytes report CODE_CHANGED without executing the stale instruction.
    The runtime must return to its dispatcher on either exit, never re-enter
    stale code or silently compile at runtime. ARM11 VFPv2 emission is pending.
-   ARM7TDMI takes flat memory only: its bus hook reads cpu->io and cpu->mem. */
-typedef enum { SNX_ARM_MEMORY_FLAT, SNX_ARM_MEMORY_CHECKED } SnxArmMemoryMode;
+   ARM7TDMI takes flat memory only: its bus hook reads cpu->io and cpu->mem.
+   HOSTED is flat memory for a runtime that owns the whole process, as the 3DS and Vita runtimes do. A block of this
+   mode assumes three things, and a block of the other modes assumes none of them:
+   - the mapping covers all 2^32 guest addresses and is followed by pages that fault on the host (at least 256 bytes
+     of them), so an access that leaves the mapping is a host fault and gets no range check;
+   - while a block runs, the SnxArmCPU is reached only through the pointer the block got, so LLVM keeps registers and
+     flags in host registers across guest loads and stores (the cpu argument is noalias);
+   - the dispatch loop has seen to the entry state: r15 is the block's address, CPSR.T is its instruction set, ITSTATE
+     is clear (snx_arm_itstate), and exit is SNX_ARM_OK. The block checks and clears none of these.
+   CPSR.E is never set by a hosted block: SETEND BE and an MSR that sets E stop with SNX_ARM_ENDIAN_UNSUPPORTED
+   instead, so no entry has to look at it. */
+typedef enum { SNX_ARM_MEMORY_FLAT, SNX_ARM_MEMORY_CHECKED, SNX_ARM_MEMORY_HOSTED } SnxArmMemoryMode;
 #define SNX_ARM_CODEGEN_OPTIONS_ABI 1u
 typedef struct {
     uint32_t abi;

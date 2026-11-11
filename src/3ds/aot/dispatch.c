@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-unsigned snx_ctr_module_memory(void) { return ctr_host_flat() ? SNX_CTR_MODULE_FLAT_MODE : SNX_CTR_MODULE_CHECKED_MODE; }
+unsigned snx_ctr_module_memory(void) { return ctr_host_flat() ? SNX_CTR_MODULE_HOSTED_MODE : SNX_CTR_MODULE_CHECKED_MODE; }
 bool snx_ctr_module_compatible(const SnxCtrModule* m, const SnxCtrImage* image) {
     return snx_ctr_module_fields(m, image) && m->arm_blocks && m->thumb_blocks;
 }
@@ -103,6 +103,16 @@ SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, 
             cpu->exit = SNX_ARM_BACKEND_UNSUPPORTED;
             cpu->syndrome = pc;
             return SNX_CTR_RUN_UNSUPPORTED;
+        }
+        /* a hosted block (SNX_ARM_MEMORY_HOSTED, llvm.h) takes its entry state from this loop: r15 and CPSR.T chose the
+           block, exit and syndrome are clear (the context of a thread that blocked in an SVC comes back with them
+           set), and no IT block is under way, which an SVC inside one or a stop at a changed instruction leaves */
+        cpu->exit = SNX_ARM_OK;
+        cpu->syndrome = 0;
+        if (thumb && snx_arm_itstate(cpu->cpsr)) {
+            cpu->exit = SNX_ARM_IT_ENTRY;
+            cpu->syndrome = snx_arm_itstate(cpu->cpsr);
+            return SNX_CTR_RUN_FAULT;
         }
         block(cpu);
         ++*executed;
