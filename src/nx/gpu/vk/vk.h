@@ -100,6 +100,8 @@ typedef struct {
     int sc_srgb;            /* its format is sRGB: what presented frames in sRGB formats are blitted to */
     u32 sc_space;           /* what its images take (gpu/hdr_output.h): SNX_HDR_SPACE_SRGB unless it was made for a
                                game's HDR frames, whose values the present's pass then writes as they are */
+    u32 sc_made;            /* the swapchains made so far: what one was given (its HDR metadata) is the next one's
+                               to be given again */
     VkFormat sc_format;     /* its images' format, which the on-screen controls draw to (gpu/vk/ui.c) */
     int sc_vsync;  /* the vsync setting it was made for (1: FIFO; 0 is FIFO too on a surface with nothing else) */
     int sc_turned; /* upright on a display held another way: Android calls each present suboptimal for it */

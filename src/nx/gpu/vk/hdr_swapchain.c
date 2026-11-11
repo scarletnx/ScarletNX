@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/gpu/vk/hdr_swapchain.h"
 #include "common/gpu/vk/swapchain.h"
+#include <math.h>
 
 int vk_hdr_surface_format(u32 space, const VkSurfaceFormatKHR* formats, u32 n, VkSurfaceFormatKHR* out) {
     static const VkFormat pq[] = {VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_FORMAT_A2R10G10B10_UNORM_PACK32,
@@ -37,4 +38,28 @@ int vk_hdr_display(int setting, int has_colorspace, int has_metadata, const VkSu
                ? "the window's surface lists no scRGB (extended linear sRGB) half float format"
                : NULL;
     return !*why;
+}
+
+int vk_hdr_metadata(const SnxHdrFrame* frame, VkHdrMetadataEXT* out) {
+    const f32* m = frame->metadata;
+    for (u32 i = 0; i < 12; i++)
+        if (!isfinite(m[i]) || m[i] < 0 || (i < 8 && m[i] > 1)) return 0;
+    if (m[9] <= m[8]) return 0;
+    *out = (VkHdrMetadataEXT){.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT,
+                              .displayPrimaryRed = {m[0], m[1]},
+                              .displayPrimaryGreen = {m[2], m[3]},
+                              .displayPrimaryBlue = {m[4], m[5]},
+                              .whitePoint = {m[6], m[7]},
+                              .maxLuminance = m[9],
+                              .minLuminance = m[8],
+                              .maxContentLightLevel = m[10],
+                              .maxFrameAverageLightLevel = m[11]};
+    return 1;
+}
+
+int vk_hdr_metadata_set(VkDevice device, VkSwapchainKHR swapchain, const SnxHdrFrame* frame) {
+    VkHdrMetadataEXT metadata;
+    if (!vk_hdr_metadata(frame, &metadata)) return 0;
+    vkSetHdrMetadataEXT(device, 1, &swapchain, &metadata);
+    return 1;
 }

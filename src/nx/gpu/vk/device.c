@@ -2103,6 +2103,7 @@ int vk_swapchain_create(int kind) {
     g_vk.sc_win_h = wh;
     g_vk.sc_srgb = fmt.format == VK_FORMAT_B8G8R8A8_SRGB || fmt.format == VK_FORMAT_R8G8B8A8_SRGB;
     g_vk.sc_space = space;
+    g_vk.sc_made++;
     g_vk.sc_format = fmt.format;
     g_vk.sc_turned = transform != caps.currentTransform;
     g_vk.sc_vsync = vsync;
