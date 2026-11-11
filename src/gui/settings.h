@@ -32,6 +32,7 @@ typedef struct {
     int plain;            /* a word row whose words are its values alone, no .ini's: its default's is no pick */
     int always;           /* plain, and passed to every run, its start too (gui_settings_always) */
     int type_text;        /* the .ini's value is a text, often a folder: gui_settings_debug says its key alone */
+    int needs_build;      /* the build this row needs, which this one has none of: shown, picked by nothing */
     int first, count;     /* the rows a page opens, an All steps */
 } GuiSetting;
 typedef struct {
@@ -42,9 +43,10 @@ typedef struct {
 } GuiSettings;
 /* the launcher's own rows and the recompiler's (g_launch_sections, listed by ini_list_text), then the runtime's list of
    the game's settings, a line each (section[/page], key, default, int | float | text, lowest, highest, help, name, the
-   values value=word between '|', where it does something when not on this system, tabs between); another line is
-   left out. A page's rows are listed after its
-   section's others, one page a section. 0, else nonzero when out of memory */
+   values value=word between '|', where it does something when not on this system, what the build needs, tabs
+   between); another line is left out. A row this build has none of what it needs is kept and marked, picked by
+   nothing. A page's rows are listed after its section's others, one page a section. 0, else nonzero when out of
+   memory */
 int gui_settings_read(GuiSettings* settings, const char* runtime);
 void gui_settings_free(GuiSettings* settings);
 /* the row of key set to value, a word or a text as the row takes: 1 when it did */

@@ -506,6 +506,10 @@ static void flip_src(VkImageBlit* b, u32 transform) {
     }
 }
 
+/* a frame image's size: small enough that a trace holds a frame's pictures, large enough to read a scene */
+#define FRAME_IMAGE_W 320
+#define FRAME_IMAGE_H 180
+static void frame_image(void); /* after surf_read, whose readback it asks for */
 #if defined(SNX_TRACY)
 /* The heap the caches manage, as vk_mem_use reads it for their own trimming, in bytes (the plot is a Memory one). */
 static void gpu_memory_plots(void) {
@@ -639,6 +643,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
 #if defined(SNX_TRACY)
             gpu_memory_plots();
             host_memory_plots();
+            frame_image();
             /* what the CPU has put in the queues and the GPU hasn't got through: the CPU running ahead of the GPU
                (a submit backlog), and the compute batches waiting to land */
             {
@@ -1099,6 +1104,20 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
     vk_mem_untrack(tmem);
     vmaDestroyImage(g_vk.vma, tmp, tmem);
     return p;
+}
+/* the frame's picture on the trace's timeline (tracy_frame_images' seconds): a readback of what was just
+   presented, which stops the frame it lands in, so a default run pays none of it */
+static void frame_image(void) {
+    static u64 last;
+    u32 secs = g_settings.tracy_frame_images;
+    const u8* px;
+    u64 now;
+    if (!secs || !g_last) return;
+    now = plat_ns();
+    if (last && now - last < (u64)secs * 1000000000ull) return;
+    last = now;
+    px = surf_read(g_last, g_last_x, g_last_y, g_last_w, g_last_h, g_last_transform, FRAME_IMAGE_W, FRAME_IMAGE_H);
+    if (px) snx_tracy_frame_image(px, FRAME_IMAGE_W, FRAME_IMAGE_H);
 }
 /* a part of a surface, blitted to RGBA8 and read back: its hash, and a .ppm at path if given */
 static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const char* path) {

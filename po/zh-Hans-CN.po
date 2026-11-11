@@ -5687,14 +5687,6 @@ msgid "The JDK, 21 or later, that Android apps run on: the folder that holds its
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "Tracy capture"
-msgstr "Tracy 捕获"
-
-#: src/nx/runtime/settings.txt
-msgid "Records Switch runs to captures/ beside the game, and opens the trace in the profiler when the run ends. Off, the client does not start; F10 starts a 60-second capture. tracy-capture must be on PATH, and the runtime must be built with SNX_TRACY"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
 msgid "Optimization level"
 msgstr "优化级别"
 
@@ -5861,6 +5853,9 @@ msgstr "启动"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "LLVM 内部选项"
+
+#~ msgid "Tracy capture"
+#~ msgstr "Tracy 捕获"
 
 #~ msgid "user=%d is deprecated, and the Settings have no user_uid to write %s in"
 #~ msgstr "user=%d 是旧的设置，而设置中没有可写入 %s 的 user_uid"

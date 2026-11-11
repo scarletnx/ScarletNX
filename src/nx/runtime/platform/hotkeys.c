@@ -35,7 +35,8 @@ static struct {
 uint32_t hotkeys_version(void) { return __atomic_load_n(&g_hotkeys.version, __ATOMIC_ACQUIRE); }
 
 const IniOpt* hotkey_row(int action) {
-    return action >= 0 && action < HOTKEY_COUNT ? ini_find(g_hotkeys_ini, KEYS[action]) : NULL;
+    const IniOpt* o = action >= 0 && action < HOTKEY_COUNT ? ini_find(g_hotkeys_ini, KEYS[action]) : NULL;
+    return o && (o->flags & INI_NEEDS_BUILD) ? NULL : o;
 }
 const char* hotkey_text(int action) {
     const IniOpt* o = hotkey_row(action);
