@@ -2057,16 +2057,8 @@ if(SNX_TEST_VP9_VECTORS)
                           URL https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/${file}
                           URL_HASH SHA256=${sha256}
                           DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
-            # checked on every configure: CPM takes the empty folder a failed download leaves for a filled one
-            set(path "${${package}_SOURCE_DIR}/${file}")
-            set(have "")
-            if(EXISTS "${path}")
-                file(SHA256 "${path}" have)
-            endif()
-            if(NOT have STREQUAL sha256)
-                message(FATAL_ERROR "${path} is missing or is not the pinned file (SHA-256 ${sha256}): delete "
-                                    "${${package}_SOURCE_DIR} and configure again with the network")
-            endif()
+            # checked on every configure, as a package of one file is (cmake/cpm_cache.cmake)
+            snx_cpm_file_check("${${package}_SOURCE_DIR}" "${file}" ${sha256})
         endforeach()
         add_test(NAME nvdec_vp9_${short}
                  COMMAND snx-test-nvdec-vp9-vectors "${snx_vp9_${short}_SOURCE_DIR}/${name}"

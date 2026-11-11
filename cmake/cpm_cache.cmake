@@ -38,3 +38,31 @@ function(snx_cpm_cache_sweep)
         file(LOCK "${parent}/cmake.lock" RELEASE)
     endforeach()
 endfunction()
+
+#   snx_cpm_file(<package> <version> <url> <sha256>)
+#
+# CPMAddPackage for a package that is one file, kept as downloaded in <package>_SOURCE_DIR under the URL's last part,
+# and that file checked against its SHA-256 on every configure. CPM checks a download and then copies it into the
+# cache: a copy cut short (a full disk, a configure stopped) stays there, in a folder CPM takes for the package from
+# then on.
+macro(snx_cpm_file package version url sha256)
+    CPMAddPackage(NAME ${package} VERSION ${version} URL ${url} URL_HASH SHA256=${sha256}
+                  DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
+    snx_cpm_file_check("${${package}_SOURCE_DIR}" "${url}" ${sha256})
+endmacro()
+
+# snx_cpm_file's check alone, for a package added without it (the tests' vectors, which have no version)
+function(snx_cpm_file_check folder url sha256)
+    get_filename_component(name "${url}" NAME)
+    if(NOT EXISTS "${folder}/${name}")
+        set(found "${folder} has no ${name}")
+    else()
+        file(SHA256 "${folder}/${name}" have)
+        if(have STREQUAL sha256)
+            return()
+        endif()
+        set(found "${folder}/${name} has the SHA-256 ${have}")
+    endif()
+    message(FATAL_ERROR "${found}, and the pinned file ${sha256}: a copy into the CPM cache that was cut short. "
+                        "Delete ${folder} and configure again, which downloads it.")
+endfunction()
