@@ -36,6 +36,9 @@ include("${cpm_file}")
 include("${PROJECT_SOURCE_DIR}/cmake/cpm_cache.cmake")
 snx_cpm_cache_sweep()
 
+# which packages CPM_USE_LOCAL_PACKAGES may take from the system: the ones added with snx_cpm_local_package
+include("${PROJECT_SOURCE_DIR}/cmake/cpm_local.cmake")
+
 # Packages whose headers a system may also have (Vulkan) are added without SYSTEM. The compiler searches every
 # -I folder before any -isystem one, so as -isystem they lost to an -I/usr/local/include in CFLAGS, usual on FreeBSD,
 # and the build mixed in the system's copies. Third-party code builds with its own flags and stays out of the warning
@@ -51,13 +54,18 @@ endfunction()
 # is built (BSD-2-Clause): the rest of LZ4 is its frame format, the HC compressor and the command-line program, none
 # of which an NSO uses
 if(SNX_BUILD_NX)
-    CPMAddPackage(NAME lz4 VERSION 1.10.0
-                  URL https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz
-                  URL_HASH SHA256=537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b
-                  DOWNLOAD_ONLY YES)
-    add_library(snx_lz4 STATIC "${lz4_SOURCE_DIR}/lib/lz4.c")
-    target_include_directories(snx_lz4 PUBLIC "${lz4_SOURCE_DIR}/lib")
-    snx_quiet(snx_lz4)
+    snx_cpm_local_package(NAME lz4 VERSION 1.10.0
+                          URL https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz
+                          URL_HASH SHA256=537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b
+                          DOWNLOAD_ONLY YES)
+    if(lz4_ADDED)
+        add_library(snx_lz4 STATIC "${lz4_SOURCE_DIR}/lib/lz4.c")
+        target_include_directories(snx_lz4 PUBLIC "${lz4_SOURCE_DIR}/lib")
+        snx_quiet(snx_lz4)
+    else() # the system's library (CPM_USE_LOCAL_PACKAGES)
+        add_library(snx_lz4 INTERFACE IMPORTED)
+        target_link_libraries(snx_lz4 INTERFACE LZ4::lz4)
+    endif()
 endif()
 
 # yyjson (MIT) for the driver's MCP server (src/nx/runtime/driver/mcp*.c) and, in every build, the GPU driver packages'
@@ -234,10 +242,17 @@ endif()
 
 if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
    (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
-    CPMAddPackage(NAME Vulkan-Headers VERSION 1.4.367
-                  URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.367.tar.gz
-                  URL_HASH SHA256=0df7d58b5df617e0a6a17dec521af459206719f9c7cb12d05d09275597c16f70
-                  EXCLUDE_FROM_ALL YES)
+    # the system's package is named VulkanHeaders
+    snx_cpm_local_package(NAME Vulkan-Headers VERSION 1.4.367 FIND_PACKAGE_ARGUMENTS "NAMES VulkanHeaders CONFIG"
+                          URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.367.tar.gz
+                          URL_HASH SHA256=0df7d58b5df617e0a6a17dec521af459206719f9c7cb12d05d09275597c16f70
+                          EXCLUDE_FROM_ALL YES)
+    if(Vulkan-Headers_ADDED)
+        set(snx_vulkan_include_dir "${Vulkan-Headers_SOURCE_DIR}/include")
+    else()
+        get_target_property(snx_vulkan_include_dir Vulkan::Headers INTERFACE_INCLUDE_DIRECTORIES)
+        snx_local_vulkan_registry(snx_vulkan_local_registry)
+    endif()
     # volk.c is compiled into the vk components, VMA is a header
     CPMAddPackage(NAME volk VERSION 1.4.363
                   URL https://github.com/zeux/volk/archive/refs/tags/vulkan-sdk-1.4.363.0.tar.gz
@@ -359,10 +374,15 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
                  6fbbf5176ff4fd2024f9d150c889477f6b45ece4ac5e45d51286e32f8b13a6f2)
     include("${PROJECT_SOURCE_DIR}/cmake/shared_fonts.cmake")
 
-    CPMAddPackage(NAME VulkanMemoryAllocator VERSION 3.5.0
-                  URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.5.0.tar.gz
-                  URL_HASH SHA256=c5f3db848fca9cb9726b41f256cc3007773321fa92a86d1e0902e66474e8a9e3
-                  DOWNLOAD_ONLY YES)
+    snx_cpm_local_package(NAME VulkanMemoryAllocator VERSION 3.5.0
+                          URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.5.0.tar.gz
+                          URL_HASH SHA256=c5f3db848fca9cb9726b41f256cc3007773321fa92a86d1e0902e66474e8a9e3
+                          DOWNLOAD_ONLY YES)
+    if(VulkanMemoryAllocator_ADDED)
+        set(snx_vma_include_dir "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+    else()
+        get_target_property(snx_vma_include_dir GPUOpen::VulkanMemoryAllocator INTERFACE_INCLUDE_DIRECTORIES)
+    endif()
     # RenderDoc's in-application API, one header (renderdoc, gpu/vk/renderdoc.c), from the release tag
     snx_cpm_file(renderdoc_app 1.46
                  https://raw.githubusercontent.com/baldurk/renderdoc/v1.46/renderdoc/api/app/renderdoc_app.h
