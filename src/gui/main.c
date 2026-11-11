@@ -3733,7 +3733,8 @@ static void users_migrate(App* app, int old) {
     snx_users_uid_text(snx_users_selected()->uid, uid);
     if (!gui_settings_set(settings, "user_uid", uid)) {
         snprintf(app->message, sizeof app->message,
-                 snx_tr("user=%d is deprecated, and the Settings have no user_uid to write %s in"), old, uid);
+                 snx_tr("user=%d is deprecated, and the Settings have no user_uid to write [user%d]'s uid in"), old,
+                 old);
         return;
     }
     gui_settings_sync(settings);
@@ -3742,10 +3743,10 @@ static void users_migrate(App* app, int old) {
         say_failure(app, app->message);
         return;
     }
-    /* the uid and the number, not the nickname: the launcher's log takes this, and players attach it to public
-       reports */
-    snprintf(app->message, sizeof app->message, snx_tr("user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"),
-             old, uid, old);
+    /* the user's number, neither the uid nor the nickname: the launcher's log takes this, and players attach it to
+       public reports, where a uid ties one player's reports together */
+    snprintf(app->message, sizeof app->message, snx_tr("user=%d is deprecated: [user%d]'s user_uid replaces it"), old,
+             old);
 }
 /* the users of users_dir, for the head: the one games play as (Settings' user_uid, the deprecated user's number while
    it names none, written as user_uid then), or none with why in the message */

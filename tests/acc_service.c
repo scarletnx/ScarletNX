@@ -32,11 +32,10 @@ int fs_user_saves_take(const u64 uid[2], char (*paths)[FS_TREE_PATH_MAX], int ma
     for (i = 0; i < test_saves_count && i < max; i++) memcpy(paths[i], test_saves[i], FS_TREE_PATH_MAX);
     return i;
 }
-/* the runtime's users.c reads the deprecated user through options.c, which this test doesn't compile */
-const char* ini_deprecated_value(const char* key) {
-    (void)key;
-    return NULL;
-}
+/* the runtime's users.c reads the deprecated user through options.c, which this test doesn't compile: the .ini's
+   user= is test_old_user here, NULL for an .ini without one */
+static const char* test_old_user;
+const char* ini_deprecated_value(const char* key) { return !strcmp(key, "user") ? test_old_user : NULL; }
 char g_exedir[1024];
 static unsigned test_checks, test_objects;
 
@@ -50,9 +49,15 @@ static void test_fail(const char* expression, int line) {
         if (!(expr)) test_fail(#expr, __LINE__);                                                                       \
     } while (0)
 
+/* what the code under test logged since test_said was emptied, as much as fits */
+static char test_said[2048];
 void logf_(int level, const char* format, ...) {
+    size_t at = strlen(test_said);
+    va_list args;
     (void)level;
-    (void)format;
+    va_start(args, format);
+    vsnprintf(test_said + at, sizeof test_said - at, format, args);
+    va_end(args);
 }
 void fatal(const char* format, ...) {
     va_list args;
@@ -778,6 +783,31 @@ static void test_choose(void) {
     puts("PASS the one playing by user_uid's uid, the deprecated user's number without one, else user 1");
 }
 
+/* an .ini of an older version, user=2 and no user_uid: user 2 plays, and the log names them by that number alone.
+   Players attach the log to public reports, where a uid ties one player's reports together */
+static void test_deprecated_user_log(void) {
+    put_ini("[user1]\nnickname=Aogo\n[user2]\nuid=" UID2 "\nnickname=Xuji\n");
+    g_settings.user_uid[0] = 0;
+    test_old_user = "2";
+    test_said[0] = 0;
+    users_init(DIR);
+    CHECK(snx_users_selected_number() == 2 && !strcmp(g_host.acc.users_dir, DIR));
+    CHECK(strstr(test_said, "settings: user=2 is deprecated: [user2]'s user_uid replaces it (the launcher's Current "
+                            "user writes it)\n"));
+    CHECK(strstr(test_said, "acc: 2 users, playing as user 2\n"));
+    CHECK(!strstr(test_said, UID2) && !strstr(test_said, "Xuji"));
+    /* with user_uid the deprecated key says nothing */
+    snprintf(g_settings.user_uid, sizeof g_settings.user_uid, "%s", UID2);
+    test_said[0] = 0;
+    users_init(DIR);
+    CHECK(snx_users_selected_number() == 2 && !strstr(test_said, "deprecated") && !strstr(test_said, UID2));
+    g_settings.user_uid[0] = 0;
+    test_old_user = NULL;
+    g_host.acc.users_dir[0] = 0;
+    gone("users.ini");
+    puts("PASS the deprecated user= said by the user's number, the uid out of the log");
+}
+
 /* user 1 has the uid users.ini gives it (a setup's random one), and the fixed one only when it gives none */
 static void test_first_uid(void) {
     static u8 memory[0x400];
@@ -1488,6 +1518,7 @@ int main(void) {
     test_account_command_replies();
     test_users();
     test_choose();
+    test_deprecated_user_log();
     test_registration();
     test_profile_editor();
     test_delete_user();
