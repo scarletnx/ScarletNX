@@ -49,8 +49,7 @@ static const HleSymbol* find(const char* name) {
 
 /* name called as a guest calls it: the integer arguments x (from the ninth on the stack) and the floating ones d, with
    the guest's errno taken around it as the bridge takes it. Its x0 */
-static uint64_t call(const char* name, const uint64_t* x, size_t nx, const double* d, size_t nd) {
-    const HleSymbol* s = find(name);
+static uint64_t call_symbol(const HleSymbol* s, const uint64_t* x, size_t nx, const double* d, size_t nd) {
     g_t.cpu = (CPU){0};
     memset(g_t.stack, 0, sizeof g_t.stack);
     for (size_t i = 0; i < nx; ++i) {
@@ -65,6 +64,9 @@ static uint64_t call(const char* name, const uint64_t* x, size_t nx, const doubl
     s->handler(&g_t.cpu, s->data);
     hle_errno_end();
     return g_t.cpu.x[0];
+}
+static uint64_t call(const char* name, const uint64_t* x, size_t nx, const double* d, size_t nd) {
+    return call_symbol(find(name), x, nx, d, nd);
 }
 #define P(p)            ((uint64_t)(uintptr_t)(p))
 #define I32(v)          ((uint64_t)(uint32_t)(int32_t)(v)) /* an int as a guest passes it: w, the upper half zero */
@@ -997,6 +999,53 @@ static void test_localhost(void) {
     CALL("freeaddrinfo", P(list));
 }
 
+/* ---- ICU, the host's (hle_icu.c) ---- */
+
+/* an ICU function by its name with the host's version's suffix, as .NET finds it; NULL with the failure said */
+static const HleSymbol* icu_function(const char* name) {
+    char versioned[64];
+    snprintf(versioned, sizeof versioned, "%s_%d", name, hle_icu_version());
+    const HleSymbol* s = hle_icu_find(versioned);
+    if (!s) {
+        fprintf(stderr, "android_bionic: ICU has no %s\n", versioned);
+        g_t.failures++;
+    }
+    return s;
+}
+static void test_icu(void) {
+    int version = hle_icu_version();
+    if (!version) {
+        puts("android_bionic: this host has no ICU for the guest, so its checks are skipped");
+        return;
+    }
+    char name[64];
+    snprintf(name, sizeof name, "u_strlen_%d", version + 1);
+    expect_int("ICU has no other version's names", hle_icu_find(name) == NULL, 1);
+    expect_int("nor a name without the suffix", hle_icu_find("u_strlen") == NULL, 1);
+    static const uint16_t text[] = {'h', 'e', 'l', 'l', 'o', 0};
+    const HleSymbol* s = icu_function("u_strlen");
+    if (s) expect_int("u_strlen", (int64_t)call_symbol(s, (uint64_t[]){P(text)}, 1, NULL, 0), 5);
+    /* a UDate result, in v0 */
+    s = icu_function("ucal_getNow");
+    if (s) {
+        call_symbol(s, (uint64_t[]){0}, 0, NULL, 0);
+        double now;
+        memcpy(&now, &g_t.cpu.v[0].df[0], sizeof now);
+        double want = (double)time(NULL) * 1000;
+        expect_int("ucal_getNow is now, in milliseconds", now > want - 60000 && now < want + 60000, 1);
+    }
+    /* a UBool result, its byte */
+    const HleSymbol* nfc = icu_function("unorm2_getNFCInstance");
+    s = icu_function("unorm2_isNormalized");
+    if (nfc && s) {
+        int32_t status = 0;
+        uint64_t normalizer = call_symbol(nfc, (uint64_t[]){P(&status)}, 1, NULL, 0);
+        expect_int("unorm2_getNFCInstance", normalizer != 0 && status <= 0, 1);
+        expect_int("unorm2_isNormalized",
+                   (int64_t)call_symbol(s, (uint64_t[]){normalizer, P(text), 5, P(&status)}, 4, NULL, 0), 1);
+    }
+}
+
 int main(void) {
     hle_posix_init(); /* as the HLE's first lookup does */
     test_printf_signed();
@@ -1018,6 +1067,7 @@ int main(void) {
     test_guest_locale();
     test_getpriority();
     test_multibyte_strings();
+    test_icu();
     if (g_t.failures) {
         fprintf(stderr, "android_bionic: %d failed\n", g_t.failures);
         return 1;
