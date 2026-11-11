@@ -5646,6 +5646,7 @@ static int check_video_decode_gate(void) {
 #include "vulkan_storage_atomics.inc"
 #include "vulkan_surface_loads.inc"
 #include "vulkan_rect_textures.inc"
+#include "vulkan_compute_depth.inc"
 #include "vulkan_owned_readback.inc"
 #include "vulkan_lock_waits.inc"
 #include "vulkan_guest_staging.inc"
@@ -6495,6 +6496,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_volume_surface_atomics());
     CHECK(!check_layered_surface_loads());
     CHECK(!check_rect_textures());
+    CHECK(!check_compute_depth_texture());
     CHECK(!check_viewport_orientation());
     CHECK(!check_index_draws());
     CHECK(!check_pass_breaks());
