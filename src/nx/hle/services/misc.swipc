@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The smaller services (misc.c): apm, lm, friend, ns, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, nim, aoc,
+# The smaller services (misc.c): apm, lm, friend, ns, psm, fatal, csrng, mm, nfp, caps, bcat, nim, aoc,
 # irs, mii, ectx, spl, btm, audin, olsc. Names and argument types from Switchbrew, libnx and the SDK's own symbols
 
 # ================================================================ apm
@@ -145,38 +145,7 @@ interface nn::ns::detail::IServiceGetterInterface is ns:am2, ns:ec, ns:rid, ns:r
 @fallback(quiet_ok) interface nn::ns::detail::IContentManagementInterface {}
 @fallback(quiet_ok) interface nn::ns::detail::IDocumentInterface {}
 
-# ================================================================ prepo, caps, ectx: nothing served
-# play reports, which the console uploads to its maker: kept nowhere here (Switchbrew's "Play Report services")
-interface nn::prepo::detail::ipc::IPrepoService is prepo:u, prepo:a, prepo:a2 {
-    # a play report, kept nowhere: the event's name and its MessagePack report, each firmware's command for it the
-    # same. With a user, the user's id and then the process's, with no pid placeholder word before them (a game's
-    # request: 0x10 raw bytes)
-    @stub [10100] SaveReportOld(pid, buffer<u8, 9> event_id, buffer<u8, 5> report);
-    @stub [10101] SaveReportWithUserOld(bytes<0x10, 8> uid, pid, buffer<u8, 9> event_id, buffer<u8, 5> report);
-    @stub [10102] SaveReportOld2(pid, buffer<u8, 9> event_id, buffer<u8, 5> report);
-    @stub [10103] SaveReportWithUserOld2(bytes<0x10, 8> uid, pid, buffer<u8, 9> event_id, buffer<u8, 5> report);
-    @stub [10104] SaveReportOld3(pid, buffer<u8, 9> event_id, buffer<u8, 5> report);
-    @stub [10105] SaveReportWithUserOld3(bytes<0x10, 8> uid, pid, buffer<u8, 9> event_id, buffer<u8, 5> report);
-    @stub [10106] SaveReport(pid, buffer<u8, 9> event_id, buffer<u8, 5> report);
-    @stub [10107] SaveReportWithUser(bytes<0x10, 8> uid, pid, buffer<u8, 9> event_id, buffer<u8, 5> report);
-    @stub [10200] RequestImmediateTransmission();
-    [10300] GetTransmissionStatus() -> i32 status;
-    @stub [10400] GetSystemSessionId() -> u64 id;
-    # 15.0.0+, Switchbrew's name: a report sent now, not queued. Its layout is the client's of SDK 20.5 (PlayReport::Send).
-    # The flag is bit 0 of a byte of the report's. The transfer memory holds the report, the first u32 its size and the
-    # second a size the SDK keeps beside it. The buffer is the event's name with its NUL. A failed result doesn't abort
-    # the SDK, which hands it to the game in the context
-    [10500] SendReportWithUser(u8 flag, u32 memory_size, u32 report_size, bytes<0x10, 8> uid, pid,
-                               buffer<u8, 9> event_id, handle<copy, transfer_memory> report)
-        -> object<nn::prepo::detail::ipc::IAsyncContext> context;
-}
-
-# what SendReportWithUser gives: the send, done at once and succeeded. The SDK waits on the event with no auto clear
-interface nn::prepo::detail::ipc::IAsyncContext {
-    [0] GetSystemEvent() -> handle<copy, event> event;
-    @stub [1] Cancel();
-    @stub [2] GetResult();
-}
+# ================================================================ caps, ectx: nothing served
 # caps:u, caps:a and caps:ss are three interfaces on the console
 interface nn::capsrv::sf::IAlbumApplicationService is caps:u, caps:a, caps:ss {
 }

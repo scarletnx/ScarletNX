@@ -98,7 +98,6 @@ SvcObj* new_chat(void);
 SvcObj* new_ntc(void);
 SvcObj* new_stpl(void);
 SvcObj* new_ns(void);
-SvcObj* new_prepo(void);
 SvcObj* new_psm(void);
 SvcObj* new_fatal(void);
 SvcObj* new_csrng(void);
