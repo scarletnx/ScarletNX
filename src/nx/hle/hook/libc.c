@@ -4,7 +4,8 @@
    range is the host range at the same offset. The functions' behavior is the C standard's, which leaves nothing for
    the guest's own code to differ on but a copy between overlapping ranges, undefined for memcpy: memmove gives the
    bytes as they were before the copy, which is what a game that overlaps them (by mistake) most plausibly meant.
-   A range the game hasn't mapped faults here as it would in the guest's code (crash.c reports it) */
+   A range the game hasn't mapped faults here as it would in the guest's code (crash.c reports it, with the call's
+   range and where the fault lies in it: debug.c's kernel_dump_libc_fault) */
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
 

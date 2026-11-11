@@ -166,6 +166,7 @@ void crash_report(void* host_pc, void* fault, int sig) {
     fs_save_report(); /* a save a newer version wrote, which a game often crashes on */
     if (t) {
         WARN("  thread %llu (%s)\n", (unsigned long long)t->id, t->name);
+        if (fault && in_guest) kernel_dump_libc_fault(&t->cpu, guest); /* a copy the runtime ran for the game */
         kernel_dump_regs(&t->cpu);
     } else
         WARN("  on one of the runtime's threads, not the game's\n");
