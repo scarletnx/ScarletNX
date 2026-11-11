@@ -141,7 +141,7 @@ endforeach()
 # name none
 file(READ "${WORK}/out/settings_test.c" text)
 foreach(row "{\"one_system\", \"0\", NULL, INI_INT, INI_STARTUP | INI_ONLY_MACOS, &g_settings.one_system,"
-            "{\"its_kernel\", \"0\", NULL, INI_INT, 0 | INI_ONLY_ARM64_LINUX, &g_settings.its_kernel,"
+            "{\"its_kernel\", \"0\", NULL, INI_INT, INI_ONLY_ARM64_LINUX, &g_settings.its_kernel,"
             "{\"plain\", \"0\", NULL, INI_INT, 0, &g_settings.plain,")
     string(FIND "${text}" "${row}" at)
     if(at LESS 0)

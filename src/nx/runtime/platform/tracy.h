@@ -72,6 +72,9 @@ typedef struct {
    thread that named itself before the client started is named again when it attaches */
 #define SNX_THREAD_NAME(name) snx_tracy_thread_name(name)
 
+/* A frame's picture on the timeline: w x h RGBA8 pixels, at the moment they were read back. The client copies them,
+   so the buffer is only read here. Costs a readback of the presented frame, so the caller asks at its own cadence */
+void snx_tracy_frame_image(const void* image, uint16_t width, uint16_t height);
 /* The GPU track: a context per queue, the zones' query ids paired with their timestamps at the read-back, the two
    clocks' calibration. A query id of 0 means the emission did not go out: the caller keeps the pair and sends only
    what it got. The context is announced at the caller's first read-back (snx_tracy_gpu_context, which returns 1
@@ -125,6 +128,10 @@ void snx_tracy_lock_try(SnxTracyLock* l, int acquired);
 /* the thread's name for the system: the "threads:" line of the log (main.c), a debugger and a crash report name the
    threads by it */
 #define SNX_THREAD_NAME(name) snx_thread_name(name)
+/* the gate: no client, so nothing is in flight and no caller enters one */
+static inline int snx_tracy_enter(void) { return 0; }
+static inline void snx_tracy_leave(void) {}
+static inline int snx_tracy_attached(void) { return 0; }
 static inline int snx_tracy_gpu_context(int ctx, int64_t gpu_time, float period, int calibrated,
                                         const char* name) {
     (void)ctx, (void)gpu_time, (void)period, (void)calibrated, (void)name;
@@ -145,6 +152,9 @@ static inline void snx_tracy_gpu_time(int64_t gpu_time, uint16_t query, int ctx,
 static inline void snx_tracy_gpu_sync(int64_t gpu_time, int ctx) { (void)gpu_time, (void)ctx; }
 static inline void snx_tracy_gpu_calibrate(int64_t gpu_time, int64_t cpu_delta, int ctx) {
     (void)gpu_time, (void)cpu_delta, (void)ctx;
+}
+static inline void snx_tracy_frame_image(const void* image, uint16_t width, uint16_t height) {
+    (void)image, (void)width, (void)height;
 }
 static inline void snx_tracy_gpu_cal_announce(SnxTracyGpuCal* c, int calibrated, int64_t cpu) {
     c->calibrated = calibrated;
@@ -173,7 +183,6 @@ static inline int64_t snx_tracy_gpu_cal_delta(SnxTracyGpuCal* c, int64_t cpu) {
     c->cpu_prev = cpu;
     return d;
 }
-static inline int snx_tracy_attached(void) { return 0; }
 static inline int snx_tracy_gate_open(void) { return 0; }
 typedef struct SnxTracyLock SnxTracyLock;
 static inline SnxTracyLock* snx_tracy_lock_make(const char* name) {
