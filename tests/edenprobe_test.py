@@ -68,7 +68,7 @@ if step.get('lines') is not None:
             time.sleep(step.get('slow', 0))
 if step.get('hang'):
     (scenario.parent / 'hung.pid').write_text(str(os.getpid()))
-    time.sleep(60)
+    time.sleep(3600)
 if step.get('signal'):
     os.kill(os.getpid(), step['signal'])
 sys.exit(step.get('exit', 0))
@@ -390,11 +390,14 @@ with tempfile.TemporaryDirectory() as temporary:
     status, text, out, calls = run([{'lines': WHOLE, 'signal': 11}])
     check('a crash after the summary fails', status == 1 and 'ended with exit -11 after its summary' in text, text)
 
-    status, text, out, calls = run([{'lines': WHOLE, 'hang': True}], extra=['--timeout', '3'])
+    # the fake writes its summary as it starts, then blocks: 30 quiet seconds, which no runner takes to start it, so
+    # the kill can only come after the summary
+    status, text, out, calls = run([{'lines': WHOLE, 'hang': True}], extra=['--timeout', '30'])
     check(
-        'a launch killed after its summary fails',
+        'a launch killed after its summary fails, as that and after one launch',
         status == 1
-        and 'launch 1 wrote its summary and did not end: killed after 3 s with no new line (--timeout 3)' in text,
+        and 'launch 1 wrote its summary and did not end: killed after 30 s with no new line (--timeout 30)' in text
+        and len(calls) == 2,
         text,
     )
 
