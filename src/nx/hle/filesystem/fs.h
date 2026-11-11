@@ -122,7 +122,7 @@ typedef struct {
     char last[FS_TREE_PATH_MAX]; /* a name, not a node: the entry may be deleted or renamed meanwhile */
     int done;
 } DirData;
-/* The file system server's core, which the native nn::fs (hle/sdk/nn_fs.c) calls: the operations on a root folder, an
+/* The file system server's core, which the native nn::fs (nn/fs.c) calls: the operations on a root folder, an
    open file and an open directory, with the arguments as values and the console's Results. Each takes tree.lock held
    (fs_lock) */
 void fs_lock(void);
