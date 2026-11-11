@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / 'tools/game_tag.py'
 GAME = '0100F00D00042000'  # no game's ID
+NEXT = '0400F00D00062000'  # nor this one, of the console's next generation
 KEY1 = b'\x11' * 32
 POSIX = os.name == 'posix'
 
@@ -93,6 +94,29 @@ class GameTag(unittest.TestCase):
     def test_gba_code_in_any_case(self):
         self.assertEqual(self.tags('gba:zzze', 'GBA:ZZZE'), [expected(KEY1, 'gba:ZZZE')] * 2)
 
+    def test_next_generation_id_has_a_prefix_of_its_own(self):
+        want = expected(KEY1, f'nx2:{NEXT}')
+        self.assertEqual(self.run_tool('tag', NEXT), (0, want, ''))
+        ids = ['0400F00D00062800', '0400F00D00063001', '0400F00D00063FFF', '0x0400f00d00062000', f'nx2:{NEXT}']
+        self.assertEqual(self.tags(*ids), [want] * 5)  # the update and the DLCs by the Switch's rule
+        # the digits of a Switch game under 04, and the next 04 game, are games of their own
+        self.assertEqual(
+            self.tags('0400F00D00042000', '0400F00D00064000'),
+            [expected(KEY1, 'nx2:0400F00D00042000'), expected(KEY1, 'nx2:0400F00D00064000')],
+        )
+        self.assertEqual(len({want, self.base, *self.tags('0400F00D00042000', '0400F00D00064000')}), 4)
+
+    def test_tags_from_before_the_next_generation_stand(self):
+        self.assertEqual(
+            self.tags(GAME, '0004000000ABCD00', 'gba:AFRE'), ['game-ffa1e7c1', 'game-df553f4c', 'game-6ad636c7']
+        )
+
+    def test_id_of_no_system_names_the_ones_known(self):
+        rc, out, err = self.run_tool('tag', '0500000000010000')
+        self.assertEqual((rc, out), (2, ''))
+        for prefix in ("'0500000000010000'", '(01...)', '(04...)', '(0004...)'):
+            self.assertIn(prefix, err)
+
     def test_bad_ids_are_refused_with_their_value(self):
         bad_ids = [
             '0100F00D0004200',  # 15 digits
@@ -101,6 +125,9 @@ class GameTag(unittest.TestCase):
             '0200000000000000',  # no system's
             '0100000000000809',  # a system title
             'nx:0004000000ABCD00',  # a 3DS ID under the Switch's prefix
+            '0400000000000809',  # a next-generation system title
+            f'nx2:{GAME}',  # a Switch ID under the next generation's prefix
+            f'nx:{NEXT}',  # and the other way
         ]
         for bad in bad_ids:
             with self.subTest(bad):
@@ -253,6 +280,25 @@ class GameTag(unittest.TestCase):
         self.assertEqual(out.split('\n')[0], f'{self.base} nx:{GAME} Fake Quest Deluxe')
         self.assertTrue(out.split('\n')[1].startswith(f'{saga} not found (the tags of 1 IDs under '))
 
+    def test_which_finds_next_generation_games(self):
+        made, dumps = self.t / 'recompiled', self.t / 'dumps'
+        self.nacp(made / NEXT / f'{NEXT}_data/control.nacp', 'Fake Kart Sequel', 0)
+        (made / '0400000000001000').mkdir()  # a system title's folder
+        dumps.mkdir()
+        (dumps / 'Fake Sequel Saga [0400BEEF00050000][v0].nsp').write_bytes(b'')
+        (dumps / 'Fake Sequel Saga 0400BEEF00050800 v1.0.1.nsp').write_bytes(b'')
+        kart, saga = self.tags(NEXT, '0400BEEF00050000')
+        rc, out, err = self.run_tool('which', '--games', made, '--games', dumps, kart, saga, 'game-00000000')
+        self.assertEqual(
+            out.split('\n'),
+            [
+                f'{kart} nx2:{NEXT} Fake Kart Sequel',
+                f'{saga} nx2:0400BEEF00050000 Fake Sequel Saga',  # the name before a bare ID too
+                f'game-00000000 not found (the tags of 2 IDs under {made}, {dumps} were tried)',
+            ],
+        )
+        self.assertEqual((rc, err), (1, ''))
+
     def test_which_refusals(self):
         made, _ = self.games()
         rc, out, err = self.run_tool('which', '--games', made, 'game-XYZ')
@@ -284,6 +330,7 @@ class GameTag(unittest.TestCase):
             'clean.md',
             'A clean report: game-0123abcd hangs at boot, 0x0100000000000809 is the system version archive.\n'
             f'No ID in x{GAME}, g{GAME} or {GAME}ab, nor in Robots, the game or Homebrew Fake Probe.\n'
+            f'Nor in 0400000000000809, x{NEXT} or {NEXT}ab.\n'
             'Inner Fake Thing is no name here.\n',
         )
         self.assertEqual(self.scan(clean), (0, '', ''))
@@ -295,6 +342,14 @@ class GameTag(unittest.TestCase):
         self.assertIn('1 title ID(s) or game name(s) in 1 file(s)', err)
         rc, out, _ = self.run_tool('scan', '-', stdin=path.read_text(encoding='utf-8'))
         self.assertEqual((rc, out), (1, f'-:2: {self.base} 0x0100f00d00042800'))
+
+    def test_scan_finds_a_next_generation_id_and_name(self):
+        made = self.t / 'next'
+        self.nacp(made / NEXT / f'{NEXT}_data/control.nacp', 'Fake Kart Sequel', 0)
+        path = self.text('next.md', 'boots\n\nthe DLC [0x0400f00d00063001] hangs, and so does fake kart sequel\n')
+        kart = expected(KEY1, f'nx2:{NEXT}')
+        rc, out, _ = self.run_tool('scan', '--games', made, path)
+        self.assertEqual((rc, out), (1, f'{path}:3: {kart} 0x0400f00d00063001\n{path}:3: {kart} "fake kart sequel"'))
 
     def test_scan_finds_names(self):
         fakeonia, racer, ctr = self.tags('0100CAFE00020000', 'gba:AFRE', '0004000000ABCD00')
