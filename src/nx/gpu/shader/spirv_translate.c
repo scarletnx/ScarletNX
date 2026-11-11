@@ -137,6 +137,7 @@ int g_shader_geometry = 1;
 int g_shader_geometry_streams = 1;
 int g_shader_geometry_streams_lines_triangles = 1;
 int g_shader_float16 = 1;
+int g_shader_float64 = 1;
 int g_shader_resource_min_lod = 1;
 int g_shader_dynamic_texture_offsets;
 int g_shader_half_rounding;
