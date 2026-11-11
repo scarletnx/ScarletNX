@@ -4370,6 +4370,55 @@ static void texture_unread_slots(void) {
 }
 #undef UNREAD_TEXS
 
+/* ShaderInfo.screen_ndc: the program maps a generic's x / w and y / w from clip space onto [0, 1] itself, x / w / 2 +
+   1/2 and +-y / w / 2 + 1/2, each an FFMA by an immediate +-1/2 with 1/2 in a register: the own pixel's centre wherever
+   the vertex program wrote that generic as its position itself. Another factor or addend, a saturation, x mirrored,
+   or a slot also sampled at the unmapped x / w and y / w reads elsewhere */
+#define SCREEN_FFMA_HALF(d, a, c, neg)                                                                                 \
+    (0x3280000000070000ull | (u64)(neg) << 56 | (u64)(c) << 39 | 0x3f000ull << 20 | (u64)(a) << 8 | (u64)(d))
+static void screen_ndc_case(const u64* instructions, int count, u64 screen, u32 ndc, const char* what) {
+    size_t slots, words = 0;
+    u64* code = guest_program(instructions, count, NULL, &slots);
+    if (!code) return;
+    set_sph(code, 7, 0xaa00);
+    ShaderInfo info;
+    memset(&info, 0, sizeof info);
+    u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 0, 1, 1, 1);
+    free(code);
+    check_translated(spv, &info, what);
+    int ok = spv && info.tex_screen_mask == screen && !info.tex_own_pixel_mask &&
+             (!screen || (info.screen_in == 5 && info.screen_ndc == ndc));
+    if (spv && !ok)
+        fprintf(stderr, "  screen mask %#llx (generic %u, mapping %u), own pixel %#llx, expected %#llx (mapping %u)\n",
+                (unsigned long long)info.tex_screen_mask, info.screen_in, info.screen_ndc,
+                (unsigned long long)info.tex_own_pixel_mask, (unsigned long long)screen, ndc);
+    check(ok, what);
+    free(spv);
+}
+static void feedback_screen_ndc(void) {
+    const u64 ipa_w = SCREEN_IPA(0, 0x7c), rcp_w = SCREEN_RCP(0, 0), x = SCREEN_IPA_MUL(1, 0xd0, 0),
+              y = SCREEN_IPA_MUL(2, 0xd4, 0), w = SCREEN_IPA_MUL(3, 0xdc, 0), rcp = SCREEN_RCP(3, 3),
+              ux = SCREEN_FMUL(4, 1, 3), uy = SCREEN_FMUL(5, 2, 3), half = mov32i(6, 0x3f000000u),
+              quarter = mov32i(6, 0x3e800000u), tex = SCREEN_TEX(8, 4);
+    const u64 mx = SCREEN_FFMA_HALF(4, 4, 6, 0), my_down = SCREEN_FFMA_HALF(5, 5, 6, 1),
+              my_up = SCREEN_FFMA_HALF(5, 5, 6, 0);
+    const u64 down[] = {ipa_w, rcp_w, x, y, w, rcp, ux, uy, half, mx, my_down, tex};
+    const u64 up[] = {ipa_w, rcp_w, x, y, w, rcp, ux, uy, half, mx, my_up, tex};
+    const u64 mirrored[] = {ipa_w, rcp_w, x, y, w, rcp, ux, uy, half, SCREEN_FFMA_HALF(4, 4, 6, 1), my_down, tex};
+    const u64 addend[] = {ipa_w, rcp_w, x, y, w, rcp, ux, uy, quarter, mx, my_down, tex};
+    const u64 mx_quarter = (mx & ~(0x7ffffull << 20)) | 0x3e800ull << 20; /* x / w times 1/4 */
+    const u64 factor[] = {ipa_w, rcp_w, x, y, w, rcp, ux, uy, half, mx_quarter, my_down, tex};
+    const u64 saturated[] = {ipa_w, rcp_w, x, y, w, rcp, ux, uy, half, mx | 1ull << 50, my_down, tex};
+    const u64 mixed[] = {ipa_w, rcp_w, x, y, w, rcp, ux, uy, SCREEN_TEX(12, 4), half, mx, my_down, tex};
+    screen_ndc_case(down, 12, 1, 2, "TEX at x / w / 2 + 1/2 and -y / w / 2 + 1/2 samples the own pixel's centre");
+    screen_ndc_case(up, 12, 1, 1, "TEX at x / w / 2 + 1/2 and y / w / 2 + 1/2 samples the own pixel's centre");
+    screen_ndc_case(mirrored, 12, 0, 0, "TEX at -x / w / 2 + 1/2 reads elsewhere");
+    screen_ndc_case(addend, 12, 0, 0, "an addend of 1/4 reads elsewhere");
+    screen_ndc_case(factor, 12, 0, 0, "a factor of 1/4 reads elsewhere");
+    screen_ndc_case(saturated, 12, 0, 0, "a saturated mapping reads elsewhere");
+    screen_ndc_case(mixed, 13, 0, 0, "a slot sampled at the mapped and the unmapped x / w and y / w reads elsewhere");
+}
+
 /* ShaderInfo.screen_out_mask: the vertex program writes generic 5 as its position mapped onto [0, 1],
    ((w + x) / 2, (w - y) / 2, -, w), the y's sign in screen_out_yneg_mask, each word stored once with no guard, from
    x, y, z and w loaded one register each. Half of x - w, w from another register, a quarter, a guarded or second
@@ -5554,6 +5603,7 @@ int main(int argc, char** argv) {
     feedback_own_pixel();
     feedback_screen_uv();
     texture_unread_slots();
+    feedback_screen_ndc();
     vertex_screen_out();
     vertex_position_out();
     feedback_plain_uv();

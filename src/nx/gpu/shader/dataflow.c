@@ -816,6 +816,44 @@ int shader_direct_screen_uv(const ShFlow* f, u32 index, u32 x, u32 y) {
     int g = x < 255 ? direct_over_w(f, index, x, 0, 0) : -1;
     return g >= 0 && y < 255 && direct_over_w(f, index, y, 1, 0) == g ? g : -1;
 }
+/* reg at index holds a generic's component c divided by its w (direct_over_w) times +-1/2 plus 1/2: an FFMA with no
+   saturation, its factor 1/2 or -1/2 (an immediate, or a register a MOV32I sets) and its addend 1/2 (a register a
+   MOV32I sets), as a program maps the position itself from clip space onto [0, 1]. The generic's index, with *neg
+   set for the factor -1/2, or -1 */
+#define HALF_BITS 0x3f000000u
+static int direct_over_w_half(const ShFlow* f, u32 index, u32 reg, u32 c, int* neg, int depth) {
+    const u64* insn = f->insn;
+    int j = depth > 4 ? -1 : direct_reaching_def(f, index, reg);
+    if (j < 0) return -1;
+    u64 w = insn[j];
+    int op = decode(w)->id;
+    if (op == O_MOV_R) return direct_over_w_half(f, (u32)j, B(w, 20, 8), c, neg, depth + 1);
+    u32 factor, addend, d = B(w, 0, 8);
+    if (op == O_FFMA_I) {
+        factor = (u32)(B(w, 20, 19) << 12 | B(w, 56, 1) << 31) ^ (u32)B(w, 48, 1) << 31;
+        if (B(w, 50, 1) || B(w, 49, 1) || !shader_direct_track_const(f, (u32)j, B(w, 39, 8), &addend, 0)) return -1;
+    } else if (op == O_FFMA_R) {
+        if (B(w, 50, 1) || B(w, 49, 1) || !shader_direct_track_const(f, (u32)j, B(w, 20, 8), &factor, 0) ||
+            !shader_direct_track_const(f, (u32)j, B(w, 39, 8), &addend, 0))
+            return -1;
+        factor ^= (u32)B(w, 48, 1) << 31;
+    } else if (op == O_FFMA32I) { /* the addend is the destination register's value before it */
+        factor = (u32)B(w, 20, 32) ^ (u32)B(w, 56, 1) << 31;
+        if (B(w, 55, 1) || B(w, 57, 1) || !shader_direct_track_const(f, (u32)j, d, &addend, 0)) return -1;
+    } else
+        return -1;
+    if (addend != HALF_BITS || (factor & 0x7fffffffu) != HALF_BITS) return -1;
+    *neg = (int)(factor >> 31);
+    return direct_over_w(f, (u32)j, B(w, 8, 8), c, 0);
+}
+/* The texture read at index samples at (x, y) = a generic's (x / w / 2 + 1/2, +-y / w / 2 + 1/2), the same generic for
+   both (direct_over_w_half): the fragment's own pixel's centre when the vertex stage wrote that generic as its
+   position itself (ShaderInfo.pos_out_mask), the draw's viewport covers the target, and its height has the sign that
+   maps y / w the way the program does (vk/render.c). The generic's index, with *yneg set for -y, or -1 */
+int shader_direct_screen_ndc_uv(const ShFlow* f, u32 index, u32 x, u32 y, int* yneg) {
+    int xneg = 1, g = x < 255 ? direct_over_w_half(f, index, x, 0, &xneg, 0) : -1;
+    return g >= 0 && !xneg && y < 255 && direct_over_w_half(f, index, y, 1, yneg, 0) == g ? g : -1;
+}
 
 /* reg at index holds a generic's component c (0 x, 1 y) as the vertex stage wrote it, where the position's w is 1:
    IPA of that word, not indexed nor saturated, in pass mode, or multiplied by the reciprocal of the position's

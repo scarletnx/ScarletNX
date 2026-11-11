@@ -197,6 +197,7 @@ u32 shader_sparse_predicate(u64 w, int op);
 /* dataflow.c */
 int shader_direct_own_pixel_fetch(const ShFlow* f, u32 index);
 int shader_direct_screen_uv(const ShFlow* f, u32 index, u32 x, u32 y);
+int shader_direct_screen_ndc_uv(const ShFlow* f, u32 index, u32 x, u32 y, int* yneg);
 u32 shader_direct_screen_out(const ShFlow* f, u32* yneg);
 int shader_direct_plain_uv(const ShFlow* f, u32 index, u32 x, u32 y);
 u32 shader_direct_uv_out(const ShFlow* f, u32* yneg);

@@ -4380,15 +4380,18 @@ retry:
        the last stage, writes that generic as the position mapped onto [0, 1] with the y of the viewport's sign:
        stage_set_ checks the viewport covers the target. Its samples at a generic's (x, y) do when the vertex program
        writes its position from that generic, [0, 1] mapped onto the viewport with a w of 1, the y by the same sign.
-       Not under a swizzle the program applies, which moves the position and not the generic */
+       Samples at the x / w and y / w the fragment program maps onto [0, 1] itself (screen_ndc) do when the vertex
+       program writes the generic as the position itself, its y mapped the same way: (w - y) / 2 and -y / w / 2 + 1/2
+       are one value. Not under a swizzle the program applies, which moves the position and not the generic */
     ScreenSlots screen = {0};
     if (fs && vs && !tcs && !tes && !sh.gs && !vs->si.writes_viewport && ds->vp.transform_on && !sh.swizzle) {
-        int by_w = fs->si.tex_screen_mask && (vs->si.screen_out_mask >> fs->si.screen_in & 1);
+        u32 ndc = fs->si.screen_ndc;
+        int by_w =
+            fs->si.tex_screen_mask && ((ndc ? vs->si.pos_out_mask : vs->si.screen_out_mask) >> fs->si.screen_in & 1);
         int by_uv = fs->si.tex_uv_mask && (vs->si.uv_out_mask >> fs->si.uv_in & 1);
+        int yneg = ndc ? ndc == 2 : (int)(vs->si.screen_out_yneg_mask >> fs->si.screen_in & 1);
         if (by_w || by_uv) screen.vp = vk_viewport_from(&ds->dyn, &ds->vp, 0);
-        if (by_w &&
-            ((vs->si.screen_out_yneg_mask >> fs->si.screen_in & 1) ? screen.vp.height < 0 : screen.vp.height > 0))
-            screen.slots |= fs->si.tex_screen_mask;
+        if (by_w && (yneg ? screen.vp.height < 0 : screen.vp.height > 0)) screen.slots |= fs->si.tex_screen_mask;
         if (by_uv && ((vs->si.uv_out_yneg_mask >> fs->si.uv_in & 1) ? screen.vp.height < 0 : screen.vp.height > 0))
             screen.slots |= fs->si.tex_uv_mask;
     }
