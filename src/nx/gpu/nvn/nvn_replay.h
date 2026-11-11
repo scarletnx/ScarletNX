@@ -39,13 +39,15 @@ void nvn_replay_finish(u32 queue);
 void nvn_replay_finish_all(void);
 /* A window texture to show: its storage's GPU address (0: black), size, the vi pixel format and layout of its bytes
    (block height log2 for a block-linear one, row pitch for a pitch-linear one), the crop (left, top, right, bottom;
-   all 0 for the whole texture), its flips as vi takes them (FlipV 2), and for the renderer's display times and holds
-   (renderer.h present_buffer) when the game was given the texture to draw the frame in and the game's pace (0 none) */
+   all 0 for the whole texture), its flips as vi takes them (FlipV 2), for the renderer's display times and holds
+   (renderer.h present_buffer) when the game was given the texture to draw the frame in and the game's pace (0 none),
+   and what its pixels hold with its window's HDR metadata (renderer.h present_hdr) */
 typedef struct {
     u64 gva;
     u32 w, h, fmt, linear, bhl, pitch, transform;
     i32 crop[4];
     u64 released_ns, period_ns;
+    SnxHdrFrame hdr;
 } NvnReplayPresent;
 /* shown once the work before it is replayed. Returns the value the queue's syncpoint reaches once it is shown, and in
    *shown the value nvn_replay_shown_syncpt reaches once it is on the display (or known never to be) */

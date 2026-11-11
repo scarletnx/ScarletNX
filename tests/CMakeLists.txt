@@ -3383,6 +3383,14 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         snx_test_target(snx-test-vk-present-mode 11)
         target_link_libraries(snx-test-vk-present-mode PRIVATE snx_vk_common)
         add_test(NAME vk_present_mode COMMAND snx-test-vk-present-mode)
+        # a game's own HDR output: what a window's frames hold by its textures' format, and the swapchain image for
+        # each kind from a surface's formats
+        add_executable(snx-test-hdr-output hdr_output.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/hdr_swapchain.c"
+            "${volk_SOURCE_DIR}/volk.c")
+        snx_test_target(snx-test-hdr-output 11)
+        target_include_directories(snx-test-hdr-output PRIVATE "${PROJECT_SOURCE_DIR}/src")
+        target_link_libraries(snx-test-hdr-output PRIVATE snx_vk_common)
+        add_test(NAME hdr_output COMMAND snx-test-hdr-output)
         # the submission ring's uploads run before the recording they belong to, on whatever device there is
         add_executable(snx-test-vk-ring-uploads vk_ring_uploads.c "${volk_SOURCE_DIR}/volk.c")
         snx_test_target(snx-test-vk-ring-uploads 11)
