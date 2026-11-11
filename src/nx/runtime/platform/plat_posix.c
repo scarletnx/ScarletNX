@@ -2053,6 +2053,8 @@ static int context_write(void* ctx) {
     ucontext_t* uc = (ucontext_t*)ctx;
 #if defined(__linux__) && defined(__x86_64__)
     return (uc->uc_mcontext.gregs[REG_ERR] & 2) != 0; /* the page fault's error code: W/R */
+#elif defined(__FreeBSD__) && defined(__x86_64__)
+    return (uc->uc_mcontext.mc_err & 2) != 0; /* the same error code, as FreeBSD's trap frame keeps it */
 #elif defined(__linux__) && defined(__aarch64__)
     /* the ESR record among the signal frame's extra records: WnR, of a data abort */
     const struct _aarch64_ctx* h = (const struct _aarch64_ctx*)(const void*)uc->uc_mcontext.__reserved;
