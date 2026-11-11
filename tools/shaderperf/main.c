@@ -46,7 +46,8 @@ static const char* const k_help[] = {
     "  --size WxH[xD]            compute grid in invocations, or framebuffer (default 1920x1080x1)\n"
     "  --dispatch X,Y,Z          workgroups, in place of --size for compute\n"
     "  --samples N               MSAA samples of the render targets (default 1)\n"
-    "  --rt LOC=FORMAT           render target format of an output location (default rgba8_unorm, r..rgba32 int)\n"
+    "  --rt LOC=FORMAT           render target format of an output location (default rgba8_unorm, r..rgba32 int)\n"    "  --attr LOC=FORMAT         vertex attribute format of an input location (default the input's type: float\n"
+    "                            vec4 is rgba32_sfloat; give rgba8_unorm, rgba16_sfloat... for packed vertices)\n"
     "  --depth FORMAT            a depth attachment; --depth-test, --depth-write turn its test and writes on\n"
     "  --clear                   clear the attachments on each pass (default: don't care)\n"
     "  --blend none|alpha|add    blending on every render target (default none)\n"
@@ -294,6 +295,10 @@ static int parse_args(int argc, char** argv, SpConfig* c, Mode* mode) {
             if (!split_arg(v, &pa) || atoi(pa.target) < 0 || atoi(pa.target) >= SP_MAX_RTS)
                 return usage_error("--rt %s: LOC=FORMAT, LOC 0 to 7", v);
             c->rt_formats[atoi(pa.target)] = pa.value;
+        } else if (VALUE("--attr")) {
+            if (!split_arg(v, &pa) || atoi(pa.target) < 0 || atoi(pa.target) >= 32)
+                return usage_error("--attr %s: LOC=FORMAT, LOC 0 to 31", v);
+            c->attr_formats[atoi(pa.target)] = pa.value;
         } else if (VALUE("--depth")) {
             c->depth_format = v;
         } else if (FLAG("--depth-test")) {
