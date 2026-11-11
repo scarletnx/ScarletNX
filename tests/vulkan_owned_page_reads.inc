@@ -3,7 +3,8 @@
 /* Guest memory the renderer reads with its lock held, on a page the GPU owns bytes of (a result kept on the GPU, as a
    dispatch's storage buffer is: compute.c res_publish). The CPU touching a trapped page there can't be answered and ends
    the process (memory/own.c own_fault): a read takes the owned bytes from their owner on the GPU, the CPU's on such a
-   page through the pool's mirror, and lands nothing. No extracted shaders or game data are used */
+   page through the pool's mirror, and lands nothing. The NVN replay reads a recording without that lock: a fault there
+   lands what the GPU holds of the page. No extracted shaders or game data are used */
 
 /* the memory of the draws' and the word's cases, mapped by check_owned_page_reads */
 #define OPR_GVA 0x8da000000ull
@@ -195,6 +196,59 @@ static int owned_astc_key(void) {
     return 0;
 }
 
+/* An NVN recording on a page an owner takes 16 bytes of after the submission and before the GPU thread replays it (a
+   copy's result beside the game's command memory). The replay reads the record there without the renderer's lock, so
+   the trap lands the owner and the record runs: its event is written, the owner's bytes are in guest memory */
+static int g_opr_go; /* atomic: the replay's lane waits behind opr_gate while it is 0 */
+static int opr_gate(void* arg) {
+    (void)arg;
+    return __atomic_load_n(&g_opr_go, __ATOMIC_ACQUIRE);
+}
+static int owned_nvn_record(void) {
+    const u64 rec = OPR_CPU + 0xa000, handles = OPR_CPU + 0xb000, own = rec + 0x800, event = OPR_GVA + 0xc000;
+    const u8 fill = 0x4d;
+    u8 bytes[16];
+    memset(bytes, 0, sizeof bytes);
+    CHECK(!gmem_write(event, bytes, 4));
+    const NvnRecHdr signal = {OP_SIGNAL_EVENT | NVN_REC_LAST, 8 + sizeof(NvnPSignalEvent)};
+    const NvnPSignalEvent value = {event, NVN_EVENT_SIGNAL_MODE_WRITE, 0x2468ace0};
+    memcpy(GP(rec), &signal, sizeof signal);
+    memcpy(GP(rec + 8), &value, sizeof value);
+    memcpy(GP(handles), &rec, sizeof rec);
+    u32 q = nvn_replay_queue(), shown = 0;
+    u64 ready = 0;
+    __atomic_store_n(&g_opr_go, 0, __ATOMIC_RELEASE);
+    gpu_call_poll(opr_gate, NULL, q - 1); /* the queue's lane (nvn_replay.c): its submission waits behind it */
+    nvn_replay_submit(q, 1, handles, &ready, &shown);
+    vk_lock();
+    VkOwnRes* owner = vk_own_res_new(16);
+    CHECK(owner && !owned_test_fill(owner->buf, 0, 16, fill));
+    vk_own_publish_owned(own, 16, owner, 0);
+    CHECK(own_lookup(own, 16, NULL, 0) == 1);
+    vk_unlock();
+    u64 lands = own_landings();
+    __atomic_store_n(&g_opr_go, 1, __ATOMIC_RELEASE);
+    gpu_kick();
+    nvn_replay_finish(q);
+    int kept = own_lookup(own, 16, NULL, 0) != 0, landed = own_landings() != lands;
+    CHECK(!gmem_read(event, bytes, 4));
+    u32 written = snx_ld_le32(bytes);
+    CHECK(!gmem_read(OPR_GVA + 0xa800, bytes, sizeof bytes));
+    int same = 1;
+    for (u32 i = 0; i < sizeof bytes; i++) same &= bytes[i] == fill;
+    nvn_replay_queue_free(q);
+    vk_lock();
+    own_acquire(own, 16);
+    vk_own_res_unref(owner);
+    vk_unlock();
+    if (written != 0x2468ace0 || kept || !landed || !same)
+        fprintf(stderr, "owned page reads, an NVN record: event %08x (expected 2468ace0), owner %s, %s, its bytes %s\n",
+                written, kept ? "kept" : "gone", landed ? "landed" : "nothing landed", same ? "there" : "not there");
+    CHECK(written == 0x2468ace0 && !kept && landed && same);
+    puts("owned page reads: an NVN record replayed off a page an owner took after its submission, which landed");
+    return 0;
+}
+
 static int check_owned_page_reads(void) {
     if (!own_traps()) {
         puts("SKIP owned page reads: the host has no memory traps, so nothing is owned");
@@ -205,6 +259,8 @@ static int check_owned_page_reads(void) {
     CHECK(!owned_word());
     CHECK(!owned_astc_key());
     CHECK(!owned_constant_buffers());
-    printf("PASS owned page reads, with %s guest buffers: nothing landed\n", vk_uma() ? "unified" : "copied");
+    CHECK(!owned_nvn_record());
+    printf("PASS owned page reads, with %s guest buffers: none landed under the lock, the NVN replay's page did\n",
+           vk_uma() ? "unified" : "copied");
     return 0;
 }
