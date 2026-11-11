@@ -74,6 +74,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+/* last: from here the renderer's draws, by SDL's names, are a frame's list (drawn.h) */
+#include "gui/drawn.h"
 /* the checkout the drivers were built from and its build tree, where an older version kept games/ and work/ */
 #ifdef SNX_SOURCE_DIR
 #define GUI_CHECKOUT SNX_SOURCE_DIR
@@ -13236,6 +13238,7 @@ static void render_help(App* app) {
     }
 }
 static void render(App* app) {
+    gui_drawn_begin(app->renderer); /* its draws listed until its present, which draws them only when they changed */
     layout(app);
     app->slider_bar = gui_rect(0, 0, 0, 0); /* none until a screen with UI scale's draws it */
     app->nbars = 0;
@@ -17645,6 +17648,7 @@ static bool SDLCALL lifecycle(void* data, SDL_Event* e) {
     App* app = (App*)data;
     if (e->type == SDL_EVENT_DID_ENTER_BACKGROUND) app->hidden = true;
     if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) { /* the game, if any, behind */
+        gui_drawn_stale();                           /* the window shows nothing of the menu's yet */
         app->played = app->playing;
         app->hidden = app->playing = false;
     }
@@ -17819,6 +17823,10 @@ static bool pointer_leaves(const SDL_Event* e) {
 }
 static void event_take(App* app, const SDL_Event* e);
 static void event(App* app, const SDL_Event* e) {
+    /* the app's, a display's or the window's event (uncovered, resized, moved to another display, back from behind
+       other apps), or the renderer's: what the window shows may be gone, so the next frame is drawn */
+    if (e->type < SDL_EVENT_KEY_DOWN || (e->type >= SDL_EVENT_RENDER_TARGETS_RESET && e->type < SDL_EVENT_PRIVATE0))
+        gui_drawn_stale();
     if (input_seen(app, e) || pads_event(app, e)) return;
     event_take(app, e);
     if (pointer_leaves(e)) pad_drive(app, false);
@@ -18459,6 +18467,7 @@ static void forget(App* app) {
     SDL_DestroyTexture(app->font);
     SDL_free(app->glyphs);
     SDL_DestroyRenderer(app->renderer);
+    gui_drawn_free();
     SDL_DestroyWindow(app->window);
 }
 static void cleanup(App* app) {
