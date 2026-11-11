@@ -16,6 +16,7 @@
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/texture/astc_bc.h"
 #include "nx/gpu/vk/extension_bans.h"
+#include "nx/gpu/vk/hdr_swapchain.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/utilities/bits.h"
@@ -1901,7 +1902,39 @@ int vk_window_release(void) {
     return 1;
 }
 
-int vk_swapchain_create(int srgb) {
+/* The surface's formats read for a game's HDR output: whether a game is told the display is HDR (g_vk.hdr_display,
+   said in the log with hdr_game on, each time it changes), and for frames of an HDR space the image that takes them.
+   0 when there is none, and for an SDR frame */
+static int hdr_surface(u32 space, VkSurfaceFormatKHR* fmt) {
+    static int said = -1;
+    VkSurfaceFormatKHR* formats = NULL;
+    const char* why;
+    u32 n = 0;
+    int on, found;
+    if (g_settings.game_hdr && g_vk.has_swapchain_colorspace && g_vk.has_hdr_metadata &&
+        vkGetPhysicalDeviceSurfaceFormatsKHR(g_vk.phys, g_vk.surface, &n, NULL) == VK_SUCCESS && n) {
+        formats = calloc(n, sizeof *formats);
+        if (!formats || vkGetPhysicalDeviceSurfaceFormatsKHR(g_vk.phys, g_vk.surface, &n, formats) < 0) n = 0;
+    }
+    on = vk_hdr_display(g_settings.game_hdr, g_vk.has_swapchain_colorspace, g_vk.has_hdr_metadata, formats, n, &why);
+    if (g_settings.game_hdr && on != said) {
+        if (on)
+            LOG("vulkan: hdr_game=1: a game is told the display is HDR, and its HDR10 and scRGB frames are shown as "
+                "they are\n");
+        else
+            LOG("vulkan: hdr_game=1, and a game is told the display is SDR: %s\n", why);
+        said = on;
+    }
+    __atomic_store_n(&g_vk.hdr_display, on, __ATOMIC_RELAXED);
+    found = on && vk_hdr_surface_format(space, formats, n, fmt);
+    if (space != SNX_HDR_SPACE_SRGB && !on) /* on: the surface lists both spaces' formats */
+        LOG_LIMIT(4, "vulkan: %s frames are shown on an SDR swapchain, their values as they are: %s\n",
+                  space == SNX_HDR_SPACE_PQ ? "HDR10" : "scRGB", why);
+    free(formats);
+    return found;
+}
+
+int vk_swapchain_create(int kind) {
     if (g_opt_headless) return 0; /* no WSI calls, even on a resize/recreate path */
     VkSurfaceCapabilitiesKHR caps;
     VkResult cr = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps);
@@ -1921,12 +1954,18 @@ int vk_swapchain_create(int srgb) {
     if (!ext.width || !ext.height) return 0;
 
     /* 8-bit, in the encoding of the frames presented: a blit from an sRGB target to a UNORM image decodes the bytes,
-       where the console's display shows them as they are */
+       where the console's display shows them as they are. A game's HDR frames have an image of their own space, where
+       the display takes them (hdr_surface) */
     static const VkFormat srgb_formats[] = {VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_SRGB};
     static const VkFormat unorm_formats[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
     VkSurfaceFormatKHR fmt;
-    if (!(srgb && snx_vk_surface_format(g_vk.phys, g_vk.surface, srgb_formats, 2, &fmt)))
-        snx_vk_surface_format(g_vk.phys, g_vk.surface, unorm_formats, 2, &fmt);
+    u32 space = kind == VK_SC_PQ ? SNX_HDR_SPACE_PQ : kind == VK_SC_SCRGB ? SNX_HDR_SPACE_SCRGB : SNX_HDR_SPACE_SRGB;
+    int srgb = kind == VK_SC_SRGB;
+    if (!hdr_surface(space, &fmt)) {
+        space = SNX_HDR_SPACE_SRGB;
+        if (!(srgb && snx_vk_surface_format(g_vk.phys, g_vk.surface, srgb_formats, 2, &fmt)))
+            snx_vk_surface_format(g_vk.phys, g_vk.surface, unorm_formats, 2, &fmt);
+    }
     if (srgb && fmt.format != VK_FORMAT_B8G8R8A8_SRGB && fmt.format != VK_FORMAT_R8G8B8A8_SRGB) {
         LOG_LIMIT(1, "vulkan: the window has no sRGB format: frames in sRGB show darker\n");
     }
@@ -2063,6 +2102,7 @@ int vk_swapchain_create(int srgb) {
     g_vk.sc_win_w = ww;
     g_vk.sc_win_h = wh;
     g_vk.sc_srgb = fmt.format == VK_FORMAT_B8G8R8A8_SRGB || fmt.format == VK_FORMAT_R8G8B8A8_SRGB;
+    g_vk.sc_space = space;
     g_vk.sc_format = fmt.format;
     g_vk.sc_turned = transform != caps.currentTransform;
     g_vk.sc_vsync = vsync;
@@ -2070,7 +2110,10 @@ int vk_swapchain_create(int srgb) {
     vkGetSwapchainImagesKHR(g_vk.dev, sc, &g_vk.sc_count, g_vk.sc_images);
     memcpy(g_vk.sc_done, done, sizeof done[0] * nimg);
     LOG("vulkan: swapchain %ux%u, %u images%s%s, %s\n", ext.width, ext.height, g_vk.sc_count,
-        g_vk.sc_srgb ? ", sRGB" : "",
+        g_vk.sc_srgb                           ? ", sRGB"
+        : g_vk.sc_space == SNX_HDR_SPACE_PQ    ? ", HDR10 (PQ, BT.2020)"
+        : g_vk.sc_space == SNX_HDR_SPACE_SCRGB ? ", scRGB (linear, 1.0 at 80 nits)"
+                                               : "",
         g_vk.sc_hold    ? ", presents timed and held until they are due"
         : g_vk.sc_clock ? ", presents timed"
                         : "",

@@ -24,3 +24,17 @@ int vk_hdr_surface_takes(const VkSurfaceFormatKHR* formats, u32 n) {
     return vk_hdr_surface_format(SNX_HDR_SPACE_PQ, formats, n, &found) &&
            vk_hdr_surface_format(SNX_HDR_SPACE_SCRGB, formats, n, &found);
 }
+
+int vk_hdr_display(int setting, int has_colorspace, int has_metadata, const VkSurfaceFormatKHR* formats, u32 n,
+                   const char** why) {
+    VkSurfaceFormatKHR found;
+    *why = !setting          ? "hdr_game=0"
+           : !has_colorspace ? "the Vulkan instance has no VK_EXT_swapchain_colorspace"
+           : !has_metadata   ? "the device has no VK_EXT_hdr_metadata"
+           : !vk_hdr_surface_format(SNX_HDR_SPACE_PQ, formats, n, &found)
+               ? "the window's surface lists no HDR10 (ST 2084) format of 10 bits or half floats"
+           : !vk_hdr_surface_format(SNX_HDR_SPACE_SCRGB, formats, n, &found)
+               ? "the window's surface lists no scRGB (extended linear sRGB) half float format"
+               : NULL;
+    return !*why;
+}

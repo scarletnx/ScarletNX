@@ -15,4 +15,9 @@
 int vk_hdr_surface_format(u32 space, const VkSurfaceFormatKHR* formats, u32 n, VkSurfaceFormatKHR* out);
 /* 1 where the surface takes both HDR spaces: a game is told the display is HDR before it says which one it draws */
 int vk_hdr_surface_takes(const VkSurfaceFormatKHR* formats, u32 n);
+/* Whether a game is told the display is HDR: the hdr_game setting on, the instance with VK_EXT_swapchain_colorspace,
+   the device with VK_EXT_hdr_metadata, and a surface that takes both spaces. 0 with *why naming the first of them
+   that fails, 1 with *why NULL */
+int vk_hdr_display(int setting, int has_colorspace, int has_metadata, const VkSurfaceFormatKHR* formats, u32 n,
+                   const char** why);
 #endif

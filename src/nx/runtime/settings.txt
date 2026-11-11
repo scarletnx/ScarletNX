@@ -229,6 +229,25 @@ setting Anisotropic filtering
     startup
     words Game's|#x
     help 0 = textures filtered as the game asks, 2 to 16 = sharper surfaces seen at an angle
+setting Game HDR
+    key hdr_game
+    label Game HDR output
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = a game that asks is told the display is HDR, and the HDR10 (PQ, BT.2020) or scRGB frames it then draws
+    help are shown as they are, with the metadata of its window, where the window's display takes both kinds. Where
+    help it does not, and with 0, the game is told the display is SDR and draws for that. The log says which, and why
+setting HDR paper white
+    key hdr_paperwhite
+    label Paper white (nits)
+    int 0 480
+    default 0
+    startup
+    step 10
+    help With Game HDR output: the light of white a game is told to draw its SDR parts at, which the menu and the
+    help on-screen controls are drawn at too, in nits. 0 = BT.2408's reference white of 203 nits
 setting Vulkan Video decode
     key vulkan_video
     label Vulkan Video decode (experimental)

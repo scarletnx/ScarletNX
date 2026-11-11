@@ -2,11 +2,13 @@
    Copyright 2026 the ScarletNX contributors */
 /* A game's own HDR output, each step on values of the test's own: what a window's frames hold by the format of its
    textures, as the Ounce's NVN driver decides it (gpu/nvn/nvn_obj.h nvn_window_space), and the swapchain image that
-   takes each kind as it is from the formats a surface lists (gpu/vk/hdr_swapchain.h) */
+   takes each kind as it is from the formats a surface lists, and when a game is told the display is HDR
+   (gpu/vk/hdr_swapchain.h) */
 #include "nx/gpu/nvn/nvn_obj.h"
 #include "nx/gpu/vk/hdr_swapchain.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static int checks;
 #define CHECK(cond)                                                                                                    \
@@ -103,9 +105,28 @@ static void surface_formats(void) {
     CHECK(!vk_hdr_surface_takes(NULL, 0));
 }
 
+/* a game is told the display is HDR with the setting on, both extensions and a surface of both kinds, and only then:
+   each one missing is named */
+static void display_rule(void) {
+    static const VkSurfaceFormatKHR hdr[] = {{VK_FORMAT_B8G8R8A8_UNORM, SDR},
+                                             {VK_FORMAT_A2B10G10R10_UNORM_PACK32, PQ},
+                                             {VK_FORMAT_R16G16B16A16_SFLOAT, SCRGB}};
+    const char* why = "unset";
+    CHECK(vk_hdr_display(1, 1, 1, hdr, 3, &why) && !why);
+    CHECK(!vk_hdr_display(0, 1, 1, hdr, 3, &why) && !strcmp(why, "hdr_game=0"));
+    CHECK(!vk_hdr_display(1, 0, 1, hdr, 3, &why) && strstr(why, "VK_EXT_swapchain_colorspace"));
+    CHECK(!vk_hdr_display(1, 1, 0, hdr, 3, &why) && strstr(why, "VK_EXT_hdr_metadata"));
+    CHECK(!vk_hdr_display(1, 1, 1, hdr, 1, &why) && strstr(why, "HDR10"));
+    CHECK(!vk_hdr_display(1, 1, 1, hdr, 2, &why) && strstr(why, "scRGB"));
+    CHECK(!vk_hdr_display(1, 1, 1, NULL, 0, &why) && strstr(why, "HDR10"));
+    /* off whatever the display has: the default */
+    CHECK(!vk_hdr_display(0, 0, 0, NULL, 0, &why) && !strcmp(why, "hdr_game=0"));
+}
+
 int main(void) {
     window_spaces();
     surface_formats();
+    display_rule();
     printf("hdr output: %d checks\n", checks);
     return 0;
 }

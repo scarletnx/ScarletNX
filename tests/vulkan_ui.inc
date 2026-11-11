@@ -28,6 +28,7 @@ typedef struct {
     SnxUiQuad quads[4096];
     float want[UI_H][UI_W][4]; /* the blend, 0 to 1 */
     u8 sure[UI_H][UI_W];
+    u8 drawn[UI_H][UI_W];     /* a quad wrote the pixel: the layer's colour, which an HDR picture takes encoded */
     u8 last[UI_H * UI_W * 4]; /* the frame before's pixels */
 } UiCheck;
 
@@ -70,8 +71,10 @@ static void ui_blend_quad(UiCheck* c, const SnxUiQuadView* q) {
                 if (in < 0 || fabsf(cx - q->x) < 1e-3f || fabsf(cx - q->x - q->w) < 1e-3f || fabsf(cy - q->y) < 1e-3f ||
                     fabsf(cy - q->y - q->h) < 1e-3f)
                     c->sure[y][x] = 0;
-                else if (in)
+                else if (in) {
                     for (k = 0; k < 4; ++k) c->want[y][x][k] = color[k];
+                    c->drawn[y][x] = 1;
+                }
                 continue;
             }
             tu = (float)q->u + (cx - q->x) / q->w * (float)q->uw;
@@ -94,6 +97,7 @@ static void ui_blend_quad(UiCheck* c, const SnxUiQuadView* q) {
             if (src[3] < 0.5f) continue;
             for (k = 0; k < 3; ++k) c->want[y][x][k] = src[k] / src[3];
             c->want[y][x][3] = 1;
+            c->drawn[y][x] = 1;
         }
 }
 /* the CPU's blend of n quads over the back colour: want, and sure where it is. A backed letter over its ground */
@@ -103,11 +107,31 @@ static void ui_blend(UiCheck* c, int n) {
         for (x = 0; x < UI_W; ++x) {
             for (k = 0; k < 4; ++k) c->want[y][x][k] = (float)ui_back[k] / 255.0f;
             c->sure[y][x] = 1;
+            c->drawn[y][x] = 0;
         }
     for (i = 0; i < n; ++i) {
         SnxUiQuadView ground, drawn = ui_drawn(&c->quads[i]);
         if (ui_drawn_ground(&c->quads[i], &ground)) ui_blend_quad(c, &ground);
         ui_blend_quad(c, &drawn);
+    }
+}
+/* The layer's colour (sRGB bytes, 0 to 1) as ui.frag writes it to the swapchain of a game's HDR frames, on this
+   image's 8 bits: PQ codes in BT.2020's primaries with white at SNX_HDR_PAPER_WHITE nits (SMPTE ST 2084, BT.2087's
+   matrix), or scRGB, 1.0 at 80 nits, which the image clamps at 1 */
+static void ui_hdr_encode(u32 space, float rgb[3]) {
+    static const double to_2020[3][3] = {{0.6274, 0.3293, 0.0433}, {0.0691, 0.9195, 0.0114}, {0.0164, 0.0880, 0.8956}};
+    double l[3], out[3];
+    int k;
+    for (k = 0; k < 3; ++k) l[k] = rgb[k] <= 0.04045 ? rgb[k] / 12.92 : pow((rgb[k] + 0.055) / 1.055, 2.4);
+    for (k = 0; k < 3; ++k) {
+        if (space == SNX_HDR_SPACE_PQ) {
+            double p = pow((to_2020[k][0] * l[0] + to_2020[k][1] * l[1] + to_2020[k][2] * l[2]) *
+                               (SNX_HDR_PAPER_WHITE / 10000.0),
+                           0.1593017578125);
+            out[k] = pow((0.8359375 + 18.8515625 * p) / (1.0 + 18.6875 * p), 78.84375);
+        } else
+            out[k] = l[k] * ((double)SNX_HDR_PAPER_WHITE / SNX_HDR_SCRGB_UNIT);
+        rgb[k] = (float)(out[k] > 1.0 ? 1.0 : out[k]);
     }
 }
 /* a frame of the layer on the image, read back, against the CPU's blend, said when loud: the channels that differ,
@@ -147,6 +171,7 @@ static int ui_frame_once(UiCheck* c, const int safe[4], const char* what, int* c
             const u8* p = px + ((size_t)y * UI_W + (size_t)x) * 4;
             *changed += memcmp(p, c->last + (p - px), 4) != 0;
             if (!c->sure[y][x]) continue;
+            if (g_vk.sc_space != SNX_HDR_SPACE_SRGB && c->drawn[y][x]) ui_hdr_encode(g_vk.sc_space, c->want[y][x]);
             for (k = 0; k < 4; ++k) {
                 int want = (int)lroundf(c->want[y][x][k] * 255.0f);
                 if (abs(want - p[k]) > 1 && bad++ < 4 && loud)
@@ -292,6 +317,24 @@ static int check_ui(void) {
         g_settings.showcase = 0;
         g_vk.props.vendorID = vendor;
         CHECK(!ui_frame(c, safe, "the box and the line, discarded again", &changed));
+    }
+    /* the swapchain of a game's HDR frames (gpu/hdr_output.h), on the same 8-bit image: the layer's colours as PQ
+       codes and as scRGB, its white at the paper white (a white letter's byte 148 as PQ, where 255 would be 10000
+       nits), and as bytes again */
+    {
+        int paper_white = g_settings.hdr_paper_white;
+        g_settings.hdr_paper_white = 0;
+        g_settings.show_controls = 1;
+        g_vk.sc_space = SNX_HDR_SPACE_PQ;
+        CHECK(!ui_frame(c, safe, "the box, the line and the controls, as PQ", &changed));
+        CHECK(changed > 100);
+        g_vk.sc_space = SNX_HDR_SPACE_SCRGB;
+        CHECK(!ui_frame(c, safe, "the box, the line and the controls, as scRGB", &changed));
+        CHECK(changed > 100);
+        g_vk.sc_space = SNX_HDR_SPACE_SRGB;
+        CHECK(!ui_frame(c, safe, "the box, the line and the controls, as bytes again", &changed));
+        g_settings.show_controls = 0;
+        g_settings.hdr_paper_white = paper_white;
     }
     /* the notification with nothing else on: its backed letters, whose ground no other maker has to give */
     g_settings.stats = 0;
