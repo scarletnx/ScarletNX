@@ -24,6 +24,7 @@
 #include "nx/nn/fs.h"
 #include "nx/nn/time.h"
 #include "nx/nn/pl.h"
+#include "nx/nn/prepo.h"
 #include "nx/hle/services/hid.h"
 #include "nx/runtime/guest_jit.h"
 #include "nx/runtime/nce/nce.h"
@@ -1239,6 +1240,7 @@ int snx_main(int argc, char** argv) {
     kernel_load_symbols();
     nnfs_init();
     nntime_init();
+    nnprepo_init();
     hook_install(); /* before NVN, which takes what a slot holds, and the JIT, which reads the slots */
     nvn_loader_init();
     /* after NVN, which says whether calls must go through the slots it takes. The JIT compiles A64: a 32-bit

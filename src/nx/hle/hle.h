@@ -29,6 +29,7 @@
 #include "nx/nn/fs.h"
 #include "nx/nn/time.h"
 #include "nx/nn/pl.h"
+#include "nx/nn/prepo.h"
 #include "nx/hle/pool.h"
 
 typedef struct {
@@ -63,6 +64,7 @@ typedef struct {
     HleNnfs nnfs; /* the native nn::fs (nn/fs.c) */
     HleTime time; /* the native nn::time (nn/time.c) */
     HlePl pl;     /* the native nn::pl (nn/pl.c) */
+    HlePrepo prepo; /* the native nn::prepo (nn/prepo.c) */
     /* the game's functions the runtime runs natively */
     HleHook hook;
 } Hle;

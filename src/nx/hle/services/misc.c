@@ -13,7 +13,7 @@
    src/core/hle/service/mii/types/raw_data.cpp, and StoreData's checksums from Ryubing's
    src/Ryujinx.HLE/HOS/Services/Mii/Helper.cs and Types/StoreData.cs:
    SPDX-FileCopyrightText: Ryujinx Team and Contributors (MIT) */
-/* The smaller services: apm, lm, friend, ns, prepo, caps, ectx, psm, fatal, csrng, spl, mm, nfp, nfc, bcat,
+/* The smaller services: apm, lm, friend, ns, caps, ectx, psm, fatal, csrng, spl, mm, nfp, nfc, bcat,
    nim, aoc, irs, mii, btm, audin and olsc, each as a console offline, with no NFC device or microphone, and the add-on
    content the data folder holds */
 #include "nx/hle/services/services_int.h"
@@ -1446,13 +1446,6 @@ static int nn_btm_IBtmUserCore_AcquireBleMtuConfigEvent(SvcObj* self, u8* succes
     return btm_event(success, event, "btm BLE MTU config");
 }
 
-/* prepo's queue has nothing to send: the console's status when it is empty, as Eden answers */
-static int nn_prepo_detail_ipc_IPrepoService_GetTransmissionStatus(SvcObj* self, i32* status) {
-    (void)self;
-    *status = 0;
-    R_SUCCEED();
-}
-
 /* ============================================================ olsc:u: no online service */
 /* a command for a user, on a session Initialize was called on (u[0]) */
 static int olsc_check(const SvcObj* self, const nn_account_Uid* uid) {
@@ -1518,7 +1511,6 @@ SvcObj* new_chat(void) { return nn_chat_IUserService_new(); }
 SvcObj* new_ntc(void) { return nn_ntc_detail_service_IStaticService_new(); }
 SvcObj* new_stpl(void) { return nn_streamplay_IUserService_new(); }
 SvcObj* new_ns(void) { return nn_ns_detail_IServiceGetterInterface_new(); }
-SvcObj* new_prepo(void) { return nn_prepo_detail_ipc_IPrepoService_new(); }
 SvcObj* new_psm(void) { return nn_psm_IPsmServer_new(); }
 SvcObj* new_fatal(void) { return nn_fatalsrv_IService_new(); }
 SvcObj* new_csrng(void) { return nn_spl_detail_IRandomInterface_new(); }

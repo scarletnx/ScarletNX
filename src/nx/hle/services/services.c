@@ -91,7 +91,6 @@ void svc_core_init(void) {
     nn_ntc_detail_service_IStaticService_register(new_ntc);
     nn_streamplay_IUserService_register(new_stpl);
     nn_ns_detail_IServiceGetterInterface_register(new_ns);
-    nn_prepo_detail_ipc_IPrepoService_register(new_prepo);
     nn_capsrv_sf_IAlbumApplicationService_register(new_caps);
     nn_capsrv_sf_IScreenShotApplicationService_register(new_capssu);
     nn_err_context_IWriterForApplication_register(new_ectx);

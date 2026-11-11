@@ -1033,33 +1033,6 @@ static void test_account_replies(void) {
     CHECK(nn_account_IAccountServiceForApplication_IsUserAccountSwitchLocked(NULL, &value) == 0 && value == 1);
 }
 
-/* prepo's play reports, each firmware's command {uid,} pid, X event, A report: kept nowhere, and succeeded, and
-   refused without the pid */
-static void test_prepo_reports(void) {
-    SvcObj* prepo = new_prepo();
-    Request r;
-    for (u32 cmd = 10100; cmd <= 10107; cmd++) {
-        request(&r, cmd);
-        r.c.has_pid = 1;
-        r.c.nx = 1;
-        r.c.x[0].addr = 0x4000;
-        r.c.x[0].size = 8;
-        r.c.na = 1;
-        r.c.a[0].addr = 0x5000;
-        r.c.a[0].size = 0x20;
-        r.c.raw_size = cmd & 1 ? 0x18 : 8;
-        call(prepo, &r);
-        CHECK(r.c.out_size == 0);
-        r.c.has_pid = 0; /* declared, so held to its declaration: no pid is a bad request */
-        CHECK(prepo->dispatch(prepo, &r.c) == RC(11, 420));
-    }
-    /* GetTransmissionStatus: nothing is queued, so the status is 0, as Eden answers */
-    request(&r, 10300);
-    call(prepo, &r);
-    CHECK(r.c.out_size == 4 && reply32(&r, 0) == 0);
-    svcobj_unref(prepo);
-}
-
 /* nfp's StartDetectionWithFilter (25, 23.0.0+) answers what StartDetection (3) does for the same device, before and
    after Initialize {aruid, pid, buffer}; the filter word after the device is not read */
 static void test_nfp_filter(void) {
@@ -1808,7 +1781,6 @@ int main(void) {
     test_mii_own();
     test_mii_user();
     test_acc_resource_cache();
-    test_prepo_reports();
     test_mii_latest();
     test_nim();
     test_friend_blocked_and_presence();
