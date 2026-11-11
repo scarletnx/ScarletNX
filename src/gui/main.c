@@ -14383,7 +14383,8 @@ static void themes_moved(App* app, int was) {
         (size_t)app->picks.focus < app->themes.count)
         theme_load(app, app->themes.ids[app->picks.focus], false);
 }
-/* the box's question into out and its tab: how the logs go, or the Folders row's name and its folder from home */
+/* the box's question into out and its tab: what Share Zip and Share Log each take, or the Folders row's name and its
+   folder from home */
 static void picks_question(App* app, char* out, size_t size, const char** tab) {
     char home[512];
     const char* path;
@@ -14415,8 +14416,11 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
                  i >= 0 ? app->packages[i].meta.driver_version : "");
         return;
     }
-    if (app->picks_of == GUI_PICKS_SHARE) {
-        snprintf(out, size, "%s", snx_tr("How to share the logs?"));
+    if (app->picks_of == GUI_PICKS_SHARE) { /* what each takes, before it goes: the zip names every game played */
+        snprintf(out, size,
+                 snx_tr("Share Zip: the launcher's logs and every game's of the last %d days. Share Log: the last "
+                        "run's log and the end of the launcher's, in one file."),
+                 GUI_LOG_DAYS);
         return;
     }
     path = folder_row_path(app, app->pick_row);

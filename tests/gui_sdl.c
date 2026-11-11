@@ -92,10 +92,17 @@ static void key(App* app, SDL_Keycode code) {
     while (SDL_PollEvent(&e)) event(app, &e);
 }
 /* a finger down at pixel x, y of the render and lifted at to_x, to_y, as SDL gives it: 0 to 1 across the window */
-/* Share Log pressed on the menu, and choice i of its box taken: 0 the zip, 1 the log, 2 the logs' folder */
+/* Share Log pressed on the menu, and choice i of its box taken: 0 the zip, 1 the log, 2 the logs' folder. The box
+   says what the zip and the log each take before either goes: the zip holds every game played in GUI_LOG_DAYS days */
 static void share_pick(App* app, int i) {
+    char question[640];
+    const char* tab;
     key(app, SDLK_RETURN);
     assert(app->picks_shown && app->picks_of == GUI_PICKS_SHARE && app->picks.count == 3 && !app->picks.focus);
+    picks_question(app, question, sizeof question, &tab);
+    assert(GUI_LOG_DAYS == 14 && !strcmp(tab, "Share Log") &&
+           !strcmp(question, "Share Zip: the launcher's logs and every game's of the last 14 days. Share Log: the "
+                             "last run's log and the end of the launcher's, in one file."));
     for (int k = 0; k < i; ++k) key(app, SDLK_DOWN);
     key(app, SDLK_RETURN);
     assert(!app->picks_shown);
