@@ -133,6 +133,18 @@ public class TextView extends View {
 
     // ---- text ----
     public void setText(CharSequence text) { setText(text, BufferType.NORMAL); }
+    /** setText that keeps the selection, cut to the new text's length */
+    public final void setTextKeepState(CharSequence text) { setTextKeepState(text, BufferType.NORMAL); }
+    public final void setTextKeepState(CharSequence text, BufferType type) {
+        int start = getSelectionStart(), end = getSelectionEnd();
+        setText(text, type);
+        if ((start >= 0 || end >= 0) && this.text instanceof Spannable s)
+            Selection.setSelection(s, Math.max(0, Math.min(start, s.length())), Math.max(0, Math.min(end, s.length())));
+    }
+    /** whether focus shows the soft keyboard; kept: there is no soft keyboard to show */
+    private boolean showSoftInputOnFocus = true;
+    public final void setShowSoftInputOnFocus(boolean show) { showSoftInputOnFocus = show; }
+    public final boolean getShowSoftInputOnFocus() { return showSoftInputOnFocus; }
     public void setText(CharSequence text, BufferType type) {
         if (text == null) text = "";
         for (InputFilter f : filters) {
