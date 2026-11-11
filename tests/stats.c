@@ -17,6 +17,7 @@
 #include "gui/icons.h"
 #include "gui_theme_colors.h"
 #include <assert.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -200,18 +201,21 @@ static int drawn_scale(void) {
             return 0;
     return s;
 }
-/* the graph's bars: the plain fills narrower than it */
+/* the graph's bars as they are drawn (ui_drawn: the ring's quads, a byte each): how many, and the newest, at the
+   right */
 static int bars(const SnxUiQuad** newest) {
-    float box[4];
+    static SnxUiQuad at_right;
     int i, n = 0;
-    stats_box(safe, stats_scale(g_test.menu), box);
     *newest = NULL;
-    for (i = 1; i < g_test.l.n; ++i)
-        if (g_test.quads[i].uw == 2 &&
-            g_test.quads[i].w < box[2] - (2 + STATS_AXIS) * 8.0f * (float)stats_scale(g_test.menu)) {
-            if (!*newest || g_test.quads[i].x > (*newest)->x) *newest = &g_test.quads[i];
-            ++n;
+    for (i = 0; i < g_test.l.n; ++i) {
+        SnxUiQuad d = ui_drawn(&g_test.quads[i]);
+        if (g_test.quads[i].ink != UI_RING || !d.uw) continue;
+        if (!*newest || d.x > at_right.x) {
+            at_right = d;
+            *newest = &at_right;
         }
+        ++n;
+    }
     return n;
 }
 /* n frames of ms each from at, the GPU busy for busy_ms of each, as the renderer reads it; the last frame's time */
@@ -332,9 +336,11 @@ int main(void) {
        letters and the bars' heights all that changes (ui_cells) */
     {
         static SnxUiQuad before[4096];
-        int n = g_test.l.n, moved = 0, i;
+        static u8 heights[SNX_UI_RING_MAX];
+        int n = g_test.l.n, moved = 0, rewritten = 0, i;
         char line[32], *end;
         memcpy(before, g_test.quads, (size_t)n * sizeof *before);
+        memcpy(heights, ui_ring()->height, sizeof heights);
         stats_frame(at += 40 * MS, &g_test.gpu); /* before the measure: one it takes would go over it */
         stats_measured(&(SnxStatsMeasure){.cpu = 100, .memory = 65535ull << 20, .gpu = 100, .gpu_ns = 99990000});
         draw(at);
@@ -342,10 +348,23 @@ int main(void) {
         assert(strstr(text(0), "40.0 ms"));
         for (i = 0; i < n; ++i) {
             const SnxUiQuad *q = &g_test.quads[i], *p = &before[i];
-            /* a fill's top and height can change: the bars' */
-            moved += q->x != p->x || q->w != p->w || (q->uw != 2 && (q->y != p->y || q->h != p->h));
+            /* the bars' quads too: the ring's bytes are what changes */
+            moved += q->x != p->x || q->w != p->w || q->y != p->y || q->h != p->h ||
+                     (q->ink == UI_RING && memcmp(q, p, sizeof *q));
         }
-        assert(!moved);
+        /* of the ring, only the new frame's byte */
+        for (i = 0; i < SNX_UI_RING_MAX; ++i) rewritten += heights[i] != ui_ring()->height[i];
+        assert(!moved && rewritten == 1);
+        {
+            /* the newest bar where the GPU scrolls it: at the graph's right edge, a cell in and STATS_AXIS from the
+               box's */
+            const SnxUiQuad* newest_bar;
+            float cw = 8.0f * (float)stats_scale(g_test.menu), right;
+            stats_box(safe, stats_scale(g_test.menu), box);
+            right = box[0] + cw + (box[2] - 2 * cw - STATS_AXIS * cw);
+            assert(bars(&newest_bar) == STATS_FRAMES - 1 && newest_bar->rgba == FAILURE);
+            assert(fabsf(newest_bar->x + newest_bar->w - right) < 0.01f);
+        }
         /* the cells' letters without printf */
         *ui_put_u(line, 0) = 0;
         assert(!strcmp(line, "0"));

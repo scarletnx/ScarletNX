@@ -16,19 +16,37 @@ typedef struct {
     u8 turn;          /* the texels turned this many quarters clockwise */
     u8 sample;        /* how: UI_BLEND, UI_SHARP or UI_IMAGE */
     u8 ink;           /* what the renderer draws it with: one of UI_ATLAS, UI_SOLID, UI_GLYPH, UI_ICON */
-    u8 glyph;         /* UI_GLYPH's letter, UI_ICON's icon from GUI_ICON_FIRST */
+    u8 glyph;         /* UI_GLYPH's letter, UI_ICON's icon from GUI_ICON_FIRST, UI_RING's slot */
 } SnxUiQuad;
 /* the atlas blended, the atlas's nearest texel (the font at whole steps), or ui_image's picture blended, its texels
    in u, v, uw and vh */
 enum { UI_BLEND, UI_SHARP, UI_IMAGE };
 /* What the GPU reads for a quad's texels, which are in the atlas all the same (the SDL renderer's fatal panel draws
    them from there): the atlas's or the picture's texels; none, the colour alone (a fill: the atlas's white block);
-   or a letter of the 8x16 font or an icon of the menus, from their bits, a bit a pixel, with no atlas read */
-enum { UI_ATLAS, UI_SOLID, UI_GLYPH, UI_ICON };
+   or a letter of the 8x16 font or an icon of the menus, from their bits, a bit a pixel, with no atlas read. UI_RING
+   is a bar of the ring (ui_ring), drawn as ui_drawn gives it */
+enum { UI_ATLAS, UI_SOLID, UI_GLYPH, UI_ICON, UI_RING };
 typedef struct {
     SnxUiQuad* q;
     int n, max; /* quads past max are dropped */
 } SnxUiList;
+/* The ring of bars, one at most (stats.c's graph): n slots in a row that scrolls left, the newest's at the right, each
+   a byte, the bar's height in 255ths of the graph's. A UI_RING quad is a slot's bar, laid out once: x the row's right
+   edge, w a bar's width, y and h the graph's top and height, glyph its slot. A new bar writes its byte and moves the
+   head, and the quads stay as they are: the renderer sends the byte and the GPU draws the bar (ui.vert). Under
+   ui_lock */
+#define SNX_UI_RING_MAX 256
+typedef struct {
+    u8 height[SNX_UI_RING_MAX];
+    u16 head, n;  /* the newest's slot and the slots; n 0 for no ring */
+    u8 slow_from; /* a height past it draws in the slow colour (a frame past 30 FPS's) */
+    u32 slow;     /* that colour, R G B A from the low byte */
+} SnxUiRing;
+void ui_ring_set(const u8* height, int n, int head, int slow_from, u32 slow);
+const SnxUiRing* ui_ring(void);
+/* q as it is drawn: a UI_RING quad as its slot's bar, a width left for each slot newer than it, its height's share of
+   h up from the graph's foot, in the slow colour past slow_from, and nothing (uw 0) at height 0; any other as it is */
+SnxUiQuad ui_drawn(const SnxUiQuad* q);
 
 /* a sprite of controls_atlas.h at alpha (0 to 255) */
 void ui_sprite(SnxUiList* l, int sprite, float x, float y, float w, float h, u32 alpha, int turn);

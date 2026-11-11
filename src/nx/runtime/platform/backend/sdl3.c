@@ -685,7 +685,8 @@ static void ui_draw_sdl(SDL_Renderer* r, SDL_Texture* atlas, int aw, int ah, con
     static const int corners[6] = {0, 1, 2, 0, 2, 3};
     int i;
     for (i = 0; i < l->n; ++i) {
-        const SnxUiQuad* q = &l->q[i];
+        SnxUiQuad drawn = ui_drawn(&l->q[i]); /* a bar of the ring where it is */
+        const SnxUiQuad* q = &drawn;
         float a = (float)(q->rgba >> 24) / 255.0f;
         if (!q->uw) continue; /* a blank cell (ui_cells): nothing drawn */
         SDL_FColor c = {(float)(q->rgba & 0xFF) / 255.0f * a, (float)(q->rgba >> 8 & 0xFF) / 255.0f * a,

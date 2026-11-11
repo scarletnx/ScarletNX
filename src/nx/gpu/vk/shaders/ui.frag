@@ -11,6 +11,7 @@ layout(std430, set = 0, binding = 1) readonly buffer Glyphs {
 layout(push_constant) uniform Picture {
     vec2 size;
     uint srgb;
+    uint ring, slow, slow_from; // ui.vert's
 } pc;
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec4 v_color;
@@ -23,9 +24,9 @@ vec3 decode(vec3 c) {
 }
 void main() {
     vec4 t;
-    if (v_ink == 1u) // UI_SOLID
+    if (v_ink == 1u || v_ink == 4u) // UI_SOLID, UI_RING
         t = vec4(1.0);
-    else if (v_ink >= 2u) { // UI_GLYPH, UI_ICON: the pixel's bit of its row
+    else if (v_ink == 2u || v_ink == 3u) { // UI_GLYPH, UI_ICON: the pixel's bit of its row
         uvec2 p = min(uvec2(v_uv), uvec2(v_ink == 2u ? 7u : 15u, 15u));
         uint g = v_ink == 2u ? v_glyph : 256u + 2u * v_glyph + (p.x >> 3);
         uint k = g * 16u + p.y;
