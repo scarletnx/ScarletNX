@@ -621,7 +621,7 @@ setting Pair Joy-Cons
 setting Controller assignment
     key gamepad_assign
     int 0 1
-    default 0
+    default 1
     label Assignment
     words Manual|Console
     help 0 = each player's controller as gamepad_p<N>_device names it, the next to connect where it names none;
