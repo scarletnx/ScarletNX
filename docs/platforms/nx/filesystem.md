@@ -61,7 +61,10 @@ Opening a save whose note names a newer version of the same game, by the content
 else by the numbers of the display versions, warns once with both, and the crash, svcBreak and BRK reports repeat the
 line (`fs_save_report`).
 
-Init rejects scan/stat errors, symlinks/junctions, regular-file hardlinks, special files and invalid names.
+Init rejects scan/stat errors, symlinks/junctions, regular-file hardlinks, special files and invalid names, and the
+game stops with the path it stopped at and why in the line before (`fs: could not index the game's files in ...:
+.../sdmc is a symbolic link, which the index doesn't follow`). A mod's RomFS refused so is left out, the line saying
+why.
 Tree limits: 4096-byte path buffers including NUL, 256 directory levels below the data root.
 IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.
 
