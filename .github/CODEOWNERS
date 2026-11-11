@@ -12,6 +12,7 @@
 /scripts/pr-* @DraChimeraVee
 /scripts/area-labels.py @DraChimeraVee
 /scripts/trim-caches.py @DraChimeraVee
+/scripts/fail-fast.py @DraChimeraVee
 /scripts/publish-builds.py @DraChimeraVee
 /scripts/nightly-notes.py @DraChimeraVee
 /scripts/game-reports.py @DraChimeraVee

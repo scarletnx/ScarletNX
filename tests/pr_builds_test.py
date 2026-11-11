@@ -23,6 +23,8 @@ ARTIFACTS = {
          'expires_at': '2026-11-01T00:00:00Z'},
         {'id': 3, 'name': 'edenprobe-abc1234-1', 'size_in_bytes': 1 << 20, 'expired': False,
          'expires_at': '2026-11-01T00:00:00Z'},
+        {'id': 4, 'name': 'fail-fast-1', 'size_in_bytes': 1 << 10, 'expired': False,
+         'expires_at': '2026-11-01T00:00:00Z'},
     ]
 }  # fmt: skip
 RUN = 'https://github.com/owner/repo/actions/runs/7'
@@ -117,10 +119,11 @@ with tempfile.TemporaryDirectory() as temporary:
     built = {'linux': {'result': 'success', 'outputs': {}}, 'windows': {'result': 'success', 'outputs': {}}}
     text = comment(built | {'edenprobe': {'result': 'success', 'outputs': {'result': TITLE}}})
     check(
-        "the builds linked, the halves of the APK and edenprobe's report left out",
+        "the builds linked, the halves of the APK, edenprobe's report and a failed job's mark left out",
         f'- [ScarletNX-windows-x86_64-abc1234]({RUN}/artifacts/2), 3 MiB' in text
         and '-stage' not in text
-        and 'edenprobe-abc1234' not in text,
+        and 'edenprobe-abc1234' not in text
+        and 'fail-fast' not in text,
         text,
     )
     check('kept until the first to expire', 'Builds of abc1234, kept until 2026-11-01:' in text, text)
