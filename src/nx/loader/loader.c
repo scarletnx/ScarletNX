@@ -1020,6 +1020,173 @@ int snx_module_plt(const SnxModuleImage* module, SnxPltSlot** slots, size_t* cou
     return 0;
 }
 
+/* A definition of a name in one of a program's modules, as the program's linker looks one up */
+typedef struct {
+    const char* name;
+    SnxU64 address;
+    int function; /* a function in its module's text */
+} Definition;
+static int definition_order(const void* a, const void* b) {
+    return strcmp(((const Definition*)a)->name, ((const Definition*)b)->name);
+}
+static int export_order(const void* a, const void* b) {
+    return strcmp(((const SnxExport*)a)->name, ((const SnxExport*)b)->name);
+}
+int snx_program_exports(const SnxProgram* program, SnxExport** exports, size_t* count, char* error, size_t error_size) {
+    Definition* all = NULL;
+    SnxExport* out;
+    size_t m, n = 0, cap = 0, kept = 0, i, j;
+    *exports = NULL;
+    *count = 0;
+    for (m = 0; program->npdm.is64 && m < program->module_count; ++m) {
+        const SnxModuleImage* module = &program->modules[m];
+        Parse p = {0};
+        Dynamic d;
+        SnxU64 symtab, strtab, strsz, symbols, k;
+        if (!module->has_mod0) continue;
+        p.m = (SnxModuleImage*)module; /* read only */
+        p.is64 = 1;
+        p.word = 8;
+        p.error = error;
+        p.error_size = error_size;
+        if (read_dynamic(&p, &d)) goto failed;
+        if (!d.have[DT_SYMTAB] || !d.have[DT_STRTAB]) continue;
+        symtab = d.value[DT_SYMTAB];
+        strtab = d.value[DT_STRTAB];
+        strsz = d.have[DT_STRSZ] ? d.value[DT_STRSZ] : 0;
+        if (symbol_count(&p, &d, 24, &symbols)) goto failed;
+        if (!inside(strtab, strsz, module->image_size) || symbols > module->image_size ||
+            !inside(symtab, symbols * 24, module->image_size)) {
+            fail(error, error_size,
+                 snx_format("%s: the symbol table or its strings lie outside the image", module->path));
+            goto failed;
+        }
+        if (n + symbols > cap) {
+            cap = n + (size_t)symbols;
+            all = (Definition*)snx_realloc(all, cap * sizeof(*all));
+        }
+        for (k = 0; k < symbols; ++k) {
+            const unsigned char* s = module->image + symtab + k * 24;
+            SnxU32 name = snx_ld_le32(s);
+            unsigned shndx = snx_ld_le16(s + 6), type = ELF64_ST_TYPE(s[4]);
+            SnxU64 value = snx_ld_le64(s + 8);
+            if (!name || shndx == SHN_UNDEF || shndx == SHN_COMMON || type == STT_FILE ||
+                ELF64_ST_BIND(s[4]) == STB_LOCAL)
+                continue;
+            if (name >= strsz || !memchr(module->image + strtab + name, 0, (size_t)(strsz - name))) {
+                fail(error, error_size,
+                     snx_format("%s: symbol %llu: symbol name outside the string table", module->path,
+                                (unsigned long long)k));
+                goto failed;
+            }
+            all[n].name = (const char*)module->image + strtab + name;
+            all[n].address = module->base + value;
+            all[n].function = type == STT_FUNC && code_address(&p, value);
+            ++n;
+        }
+    }
+    if (!n) {
+        free(all);
+        return 0;
+    }
+    qsort(all, n, sizeof(*all), definition_order);
+    out = (SnxExport*)snx_alloc(n * sizeof(*out));
+    for (i = 0; i < n; i = j) {
+        for (j = i + 1; j < n && !strcmp(all[i].name, all[j].name); ++j) continue;
+        if (j != i + 1 || !all[i].function) continue;
+        out[kept].name = all[i].name;
+        out[kept++].address = all[i].address;
+    }
+    free(all);
+    *exports = out;
+    *count = kept;
+    return 0;
+failed:
+    free(all);
+    return -1;
+}
+
+int snx_module_bound(const SnxModuleImage* module, const SnxExport* exports, size_t export_count, int nro,
+                     SnxBoundBranch** bound, size_t* count, size_t* own, size_t* sites, char* error,
+                     size_t error_size) {
+    SnxPltSlot* slots = NULL;
+    SnxBoundBranch* out = NULL;
+    size_t slot_count = 0, n = 0;
+    SnxU64 pc, end = (SnxU64)module->text_off + module->text_size;
+    *bound = NULL;
+    *count = *own = *sites = 0;
+    if (snx_module_plt(module, &slots, &slot_count, error, error_size)) return -1;
+    if (!slot_count) return 0;
+    out = (SnxBoundBranch*)snx_alloc(slot_count * sizeof(*out));
+    /* each stub: adrp x16 / ldr x17,[x16,#slot] / add x16 / br x17 */
+    for (pc = module->text_off; n < slot_count && end - pc >= 16; pc += 4) {
+        SnxU32 adrp = snx_ld_le32(module->image + pc), ldr = snx_ld_le32(module->image + pc + 4);
+        SnxU64 page, slot, target = 0;
+        size_t lo = 0, hi = slot_count;
+        int game = 0;
+        if (snx_ld_le32(module->image + pc + 12) != 0xD61F0220UL || (adrp & 0x9F00001FUL) != 0x90000010UL ||
+            (ldr & 0xFFC003FFUL) != 0xF9400211UL ||
+            (snx_ld_le32(module->image + pc + 8) & 0xFFC003FFUL) != 0x91000210UL)
+            continue;
+        page = ((SnxU64)((adrp >> 5) & 0x7FFFF) << 2 | ((adrp >> 29) & 3)) << 12;
+        if (page & ((SnxU64)1 << 32)) page |= ~(SnxU64)0 << 33; /* a page before this one */
+        slot = (pc & ~(SnxU64)0xFFF) + page + (SnxU64)((ldr >> 10) & 0xFFF) * 8;
+        while (lo < hi) {
+            size_t middle = lo + (hi - lo) / 2;
+            if (slots[middle].slot < slot)
+                lo = middle + 1;
+            else
+                hi = middle;
+        }
+        if (lo == slot_count || slots[lo].slot != slot) continue;
+        if (nro && slots[lo].value) { /* the NRO's own function */
+            if (!(slots[lo].value & 3) && slots[lo].value >= module->text_off && slots[lo].value < end)
+                target = module->base + slots[lo].value;
+        } else {
+            SnxExport key;
+            const SnxExport* found;
+            key.name = slots[lo].name;
+            key.address = 0;
+            found = export_count
+                        ? (const SnxExport*)bsearch(&key, exports, export_count, sizeof(*exports), export_order)
+                        : NULL;
+            if (found) target = found->address, game = nro;
+        }
+        if (!target) continue;
+        out[n].at = module->base + pc + 12;
+        out[n].target = target;
+        out[n].game = game;
+        *own += target >= module->base + module->text_off && target < module->base + end;
+        ++n;
+    }
+    /* the calls of them: every BL and B of the text whose target is such a stub (its BR 12 bytes on) */
+    for (pc = module->text_off; n && pc < end; pc += 4) {
+        SnxU32 word = snx_ld_le32(module->image + pc);
+        SnxU64 to;
+        size_t lo = 0, hi = n;
+        if ((word & 0x7C000000UL) != 0x14000000UL) continue;
+        to = pc + ((SnxU64)(word & 0x3FFFFFFUL) << 2);
+        if (word & 0x2000000UL) to -= (SnxU64)1 << 28;
+        to += module->base + 12;
+        while (lo < hi) {
+            size_t middle = lo + (hi - lo) / 2;
+            if (out[middle].at < to)
+                lo = middle + 1;
+            else
+                hi = middle;
+        }
+        *sites += lo < n && out[lo].at == to;
+    }
+    free(slots);
+    if (!n) {
+        free(out);
+        return 0;
+    }
+    *bound = out;
+    *count = n;
+    return 0;
+}
+
 int snx_load_nro_at(const unsigned char* data, size_t size, const char* name, SnxU64 base, const SnxNpdm* npdm,
                     SnxProgram* program, char* error, size_t error_size) {
     SnxModuleImage* m;
