@@ -87,6 +87,10 @@ SNX_RECOMPILER_API void snx_recompiler_set_jobs(struct snx_recompiler* r, unsign
 typedef void (*snx_progress_fn)(void* user, unsigned long long weight_done, unsigned long long weight_total,
                                 unsigned long long functions_done, unsigned long long functions_total);
 SNX_RECOMPILER_API void snx_recompiler_set_progress(struct snx_recompiler* r, snx_progress_fn fn, void* user);
+/* The modules' JIT reads the code ranges where the caller has them instead of a copy made at recompile time, so code the
+   guest changes later (and reports with IC IVAU, RtAPI.code_changed) is compiled as it is then. The ranges must outlive
+   the modules. Off by default */
+SNX_RECOMPILER_API void snx_recompiler_set_live_code(struct snx_recompiler* r, int enabled);
 /* Route calls between recompiled functions through CPU.disp so code invalidation can retire callees safely */
 SNX_RECOMPILER_API void snx_recompiler_set_hook_direct_calls(struct snx_recompiler* r, int enabled);
 /* Progress lines on stdout, as the scarletnx command prints them; off by default */

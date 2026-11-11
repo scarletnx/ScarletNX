@@ -134,7 +134,10 @@ exploration does not reach is not lost: the module keeps a copy of its code rang
 its JIT (`jit_service.c`, started by the first miss) compiles any address of them the
 dispatch table has no function for when a CPU reaches it, which waits for the compile.
 An address it can't compile (outside the ranges, or on a host without the JIT) is an
-undefined instruction. `snx_recompiled_functions` reports what was recompiled, and
+undefined instruction. With `snx_recompiler_set_live_code` the module keeps no copy: the
+JIT reads the caller's ranges where they are, so code the guest patches after the recompile
+(a game's own hooks, reported with IC IVAU) is compiled as it then is, and the ranges must
+outlive the module. `snx_recompiled_functions` reports what was recompiled, and
 `snx_recompiled_fallbacks` is always 0: an instruction without an emitter fails the build.
 
 The contract between the generated code and the caller is `cpu.h` (the `CPU` state,

@@ -83,6 +83,7 @@ struct snx_recompiler {
     int hook_direct_calls;
     snx_progress_fn progress; /* told as each code unit finishes, NULL for nobody */
     void* progress_user;
+    int live_code; /* the modules' JIT reads the caller's code ranges in place, not a copy */
     char* keep_ir;
     char* cache; /* folder of linked modules by the hash of what they were made from (LLVM), NULL for none */
     char error[1024];
@@ -237,6 +238,9 @@ void snx_recompiler_set_progress(struct snx_recompiler* r, snx_progress_fn fn, v
     if (!r) return;
     r->progress = fn;
     r->progress_user = user;
+}
+void snx_recompiler_set_live_code(struct snx_recompiler* r, int enabled) {
+    if (r) r->live_code = enabled != 0;
 }
 void snx_recompiler_set_hook_direct_calls(struct snx_recompiler* r, int enabled) {
     if (r) r->hook_direct_calls = enabled != 0;
@@ -1107,6 +1111,7 @@ static int keep_code(struct snx_recompiler* r, struct snx_recompiled* m, const s
         fail(r, "the code ranges are too large");
         return -1;
     }
+    if (r->live_code) total = 0; /* no copy: the views are the caller's bytes, which outlive the module */
     m->views = (SnxCodeImage*)calloc(1, count * sizeof(SnxCodeImage) + total);
     if (!m->views) {
         fail(r, "out of memory for a copy of the code");
@@ -1115,12 +1120,16 @@ static int keep_code(struct snx_recompiler* r, struct snx_recompiled* m, const s
     unsigned char* bytes = (unsigned char*)(m->views + count);
     size_t at = 0;
     for (size_t i = 0; i < count; ++i) {
-        memcpy(bytes + at, ranges[i].code, ranges[i].size);
-        m->views[i].image = bytes + at;
+        if (r->live_code)
+            m->views[i].image = (const unsigned char*)ranges[i].code;
+        else {
+            memcpy(bytes + at, ranges[i].code, ranges[i].size);
+            m->views[i].image = bytes + at;
+            at += ranges[i].size;
+        }
         m->views[i].image_size = ranges[i].size;
         m->views[i].base = ranges[i].address;
         m->views[i].text_size = ranges[i].size;
-        at += ranges[i].size;
     }
     m->view_count = count;
     return 0;
