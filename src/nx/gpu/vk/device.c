@@ -1962,7 +1962,7 @@ int vk_swapchain_create(int srgb) {
                                    .imageColorSpace = fmt.colorSpace,
                                    .imageExtent = ext,
                                    .imageArrayLayers = 1,
-                                   .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                   .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, /* ui.c's pass draws it all */
                                    .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
                                    .preTransform = transform,
                                    .compositeAlpha = alpha,

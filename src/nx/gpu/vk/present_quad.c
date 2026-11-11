@@ -101,58 +101,75 @@ static VkImageView view(VkImage image, VkFormat format, VkImageUsageFlags usage)
     VkImageView result = VK_NULL_HANDLE;
     return VK_OK(vk_image_view_create(g_vk.dev, &info, NULL, &result)) ? result : VK_NULL_HANDLE;
 }
-int vk_present_quad(Surf* source, VkImage destination, VkFormat format, VkExtent2D extent,
-                    VkRect2D source_rect, VkRect2D destination_rect, u32 transform, int linear) {
-    if (!source || !source_rect.extent.width || !source_rect.extent.height ||
-        !destination_rect.extent.width || !destination_rect.extent.height) return 0;
-    VkPipeline p = pipeline(format);
-    if (!p) return 0;
-    VkDescriptorSet set = vk_desc_alloc(g_present_quad.descriptors);
-    if (!set) return 0;
-    VkImageView from = view(source->img, source->f.vk, VK_IMAGE_USAGE_SAMPLED_BIT);
-    VkImageView to = view(destination, format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-    if (!from || !to) {
-        if (from) vk_image_view_destroy(g_vk.dev, from, NULL);
-        if (to) vk_image_view_destroy(g_vk.dev, to, NULL);
-        return 0;
-    }
-    vk_render_end();
-    VkCommandBuffer cb = vk_cmd();
+int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw, SnxPresentSource* out) {
+    VkImageView from;
+    VkDescriptorSet set;
+    if (!source || !initialize()) return 0;
+    set = vk_desc_alloc(g_present_quad.descriptors);
+    from = set ? view(source->img, raw ? vk_srgb_as(source->f.vk, 0) : source->f.vk, VK_IMAGE_USAGE_SAMPLED_BIT)
+               : VK_NULL_HANDLE;
+    if (!from) return 0;
     vk_surf_use(cb, source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-    vk_barrier(cb, destination, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-               VK_ACCESS_2_MEMORY_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
-               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     VkDescriptorImageInfo image = {g_present_quad.sampler[!!linear], from, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0,
                                    .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                    .pImageInfo = &image};
     vkUpdateDescriptorSets(g_vk.dev, 1, &write, 0, NULL);
+    vk_defer_image(VK_NULL_HANDLE, NULL, from, VK_NULL_HANDLE);
+    *out = (SnxPresentSource){.surf = source, .set = set};
+    return 1;
+}
+int vk_present_quad_draw(VkCommandBuffer cb, const SnxPresentSource* s, VkFormat format, VkRect2D source_rect,
+                         VkRect2D destination_rect, u32 transform) {
+    VkPipeline p = pipeline(format);
+    if (!p || !source_rect.extent.width || !source_rect.extent.height || !destination_rect.extent.width ||
+        !destination_rect.extent.height)
+        return 0;
+    VkViewport viewport = {(float)destination_rect.offset.x, (float)destination_rect.offset.y,
+                            (float)destination_rect.extent.width, (float)destination_rect.extent.height, 0, 1};
+    struct { float crop[4]; u32 flags[4]; } push = {
+        {(float)source_rect.offset.x / s->surf->sw, (float)source_rect.offset.y / s->surf->sh,
+         (float)source_rect.extent.width / s->surf->sw, (float)source_rect.extent.height / s->surf->sh},
+        {transform & 7, 0, 0, 0}};
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+    rec_CmdSetViewport(cb, 0, 1, &viewport);
+    rec_CmdSetScissor(cb, 0, 1, &destination_rect);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_present_quad.layout, 0, 1, &s->set, 0, NULL);
+    rec_CmdPushConstants(cb, g_present_quad.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof push, &push);
+    rec_CmdDraw(cb, 3, 1, 0, 0);
+    return 1;
+}
+int vk_present_quad(Surf* source, VkImage destination, VkFormat format, VkExtent2D extent,
+                    VkRect2D source_rect, VkRect2D destination_rect, u32 transform, int linear) {
+    SnxPresentSource from;
+    if (!source || !source_rect.extent.width || !source_rect.extent.height ||
+        !destination_rect.extent.width || !destination_rect.extent.height || !pipeline(format)) return 0;
+    VkImageView to = view(destination, format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    if (!to) return 0;
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    if (!vk_present_quad_source(cb, source, linear, 0, &from)) {
+        vk_image_view_destroy(g_vk.dev, to, NULL);
+        return 0;
+    }
+    vk_barrier(cb, destination, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+               VK_ACCESS_2_MEMORY_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     VkRenderingAttachmentInfo attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = to,
                                             .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                             .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkRenderingInfo rendering = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, extent},
                                   .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &attachment};
-    VkViewport viewport = {(float)destination_rect.offset.x, (float)destination_rect.offset.y,
-                            (float)destination_rect.extent.width, (float)destination_rect.extent.height, 0, 1};
-    struct { float crop[4]; u32 flags[4]; } push = {
-        {(float)source_rect.offset.x / source->sw, (float)source_rect.offset.y / source->sh,
-         (float)source_rect.extent.width / source->sw, (float)source_rect.extent.height / source->sh},
-        {transform & 7, 0, 0, 0}};
     rec_CmdBeginRendering(cb, &rendering);
-    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
-    rec_CmdSetViewport(cb, 0, 1, &viewport);
-    rec_CmdSetScissor(cb, 0, 1, &destination_rect);
-    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_present_quad.layout, 0, 1, &set, 0, NULL);
-    rec_CmdPushConstants(cb, g_present_quad.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof push, &push);
-    rec_CmdDraw(cb, 3, 1, 0, 0);
+    vk_present_quad_draw(cb, &from, format, source_rect, destination_rect, transform);
     rec_CmdEndRendering(cb);
     vk_render_forget_state();
     vk_barrier(cb, destination, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    vk_defer_image(VK_NULL_HANDLE, NULL, from, to);
+    vk_defer_image(VK_NULL_HANDLE, NULL, VK_NULL_HANDLE, to);
     return 1;
 }
