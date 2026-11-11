@@ -5525,6 +5525,7 @@ static int check_video_decode_gate(void) {
 #include "vulkan_storage_logged.inc"
 #include "vulkan_mirror.inc"
 #include "vulkan_pending_index.inc"
+#include "vulkan_unmapped_tail.inc"
 #include "vulkan_draw_storage_stages.inc"
 #include "vulkan_mesh_inputs.inc"
 #include "vulkan_shader_stage_images.inc"
@@ -6309,6 +6310,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_need_unlocked());
     CHECK(!check_mirror());
     CHECK(!check_pending_index());
+    CHECK(!check_unmapped_tail());
     CHECK(!check_draw_storage_stages());
     CHECK(!bench_nvn_storage(0, 32, 1));
     CHECK(!bench_nvn_storage(1, 32, 1));
