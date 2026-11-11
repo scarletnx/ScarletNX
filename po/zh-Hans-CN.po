@@ -4163,7 +4163,8 @@ msgid "Each theme shows as the focus reaches it: Enter keeps it, ESC goes back t
 msgstr "焦点到哪个主题就显示哪个：Enter 保留，ESC 回到 %s"
 
 #: src/gui/main.c
-msgid "How to share the logs?"
+#, c-format
+msgid "Share Zip: the launcher's logs and every game's of the last %d days. Share Log: the last run's log and the end of the launcher's, in one file."
 msgstr ""
 
 #: src/gui/main.c
