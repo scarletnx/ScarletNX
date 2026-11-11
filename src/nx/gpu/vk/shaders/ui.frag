@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
-// The quad's texel (alpha premultiplied) times its colour, blended over the picture. A fill takes no texel; a letter
-// of the font or an icon of the menus takes its bit, white or clear, from the glyphs' rows: no atlas read for either
+// The quad's texel (alpha premultiplied) times its colour, written over the picture, opaque or not at all. A fill
+// takes no texel; a letter of the font or an icon of the menus takes its bit, white or clear, from the glyphs' rows: no
+// atlas read for either
 #version 450
 layout(set = 0, binding = 0) uniform sampler2D atlas;
 // gui_vga_font's 256 letters, then each icon's halves (gui_icon_font), 16 rows of a byte each, four bytes a word
@@ -82,9 +83,12 @@ void main() {
     } else if (ink == 0u) // UI_ATLAS: unnormalized coordinates, in texels: a sample at level 0 named
         t = textureLod(atlas, v_uv, 0.0);
     // UI_SOLID and UI_RING: the colour alone
+    // nothing is translucent: a pixel under half covered is not written, and any other is opaque, its colour the
+    // texel's (alpha premultiplied) taken back out of the alpha (the user's picture, hard at its round edge)
     vec4 c = t * vec4(color.rgb, 1.0) * color.a;
+    if (c.a < 0.5) discard;
+    c.rgb /= c.a;
     // an sRGB picture encodes what is written to it: the bytes go in decoded, and come out as they are
-    if (pc.srgb != 0u && c.a > 0.0)
-        c.rgb = decode(c.rgb / c.a) * c.a;
-    o = c;
+    if (pc.srgb != 0u) c.rgb = decode(c.rgb);
+    o = vec4(c.rgb, 1.0);
 }

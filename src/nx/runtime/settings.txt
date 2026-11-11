@@ -534,14 +534,6 @@ setting Controls scale
     step 10
     shift 50
     help Their size: 0 to 100, for 50% to 150%
-setting Controls alpha
-    key controls_alpha
-    int 0 100
-    default 50
-    label Opacity
-    words #%
-    step 10
-    help Their opacity, in percent
 setting Relative stick center
     key controls_rel_center
     int 0 1

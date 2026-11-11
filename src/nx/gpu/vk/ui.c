@@ -44,9 +44,7 @@ static VmaAllocation g_ring_mem;
 static u8 g_ring_sent[SNX_UI_RING_MAX];
 static VkDescriptorSetLayout g_dsl;
 static VkPipelineLayout g_layout;
-/* blended (the atlas's texels and any colour not opaque), and opaque: a fill, a letter, an icon or a bar of an opaque
-   colour, whose pixels are its colour or nothing (a letter's clear bit is discarded), drawn without blending */
-static VkPipeline g_pipe[2];
+static VkPipeline g_pipe;
 static VkFormat g_pipe_format;
 static VkDescriptorPool g_pool;
 /* by a quad's sample: the atlas blended (sprites), at its nearest texel (the font, fills), and the picture blended */
@@ -144,15 +142,8 @@ static int pipeline_make(VkFormat format) {
                                                  .lineWidth = 1};
     VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
-    /* alpha premultiplied: the atlas is, and the shader multiplies the colour's in */
-    VkPipelineColorBlendAttachmentState ba = {.blendEnable = VK_TRUE, /* off for g_pipe[1] */
-                                              .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
-                                              .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                                              .colorBlendOp = VK_BLEND_OP_ADD,
-                                              .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-                                              .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                                              .alphaBlendOp = VK_BLEND_OP_ADD,
-                                              .colorWriteMask = 0xF};
+    /* no blending: nothing in the layer is translucent, a pixel is written opaque or not at all (ui.frag) */
+    VkPipelineColorBlendAttachmentState ba = {.colorWriteMask = 0xF};
     VkPipelineColorBlendStateCreateInfo cb = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &ba};
     VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
@@ -173,26 +164,19 @@ static int pipeline_make(VkFormat format) {
                                         .pColorBlendState = &cb,
                                         .pDynamicState = &ds,
                                         .layout = g_layout};
-    int ok, i;
-    if (g_pipe[0] && g_pipe[1] && g_pipe_format == format) return 1;
-    for (i = 0; i < 2; ++i) { /* vk_finish ran when the swapchain changed format */
-        if (g_pipe[i]) vkDestroyPipeline(g_vk.dev, g_pipe[i], NULL);
-        g_pipe[i] = VK_NULL_HANDLE;
-    }
+    int ok;
+    if (g_pipe && g_pipe_format == format) return 1;
+    if (g_pipe) vkDestroyPipeline(g_vk.dev, g_pipe, NULL); /* vk_finish ran when the swapchain changed format */
+    g_pipe = VK_NULL_HANDLE;
     vs = vk_module_spv(snx_ui_vs_spv, (size_t)(snx_ui_vs_spv_size / 4));
     fs = vk_module_spv(snx_ui_fs_spv, (size_t)(snx_ui_fs_spv_size / 4));
     st[0].module = vs;
     st[1].module = fs;
-    ok = vs && fs && VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, &g_pipe[0]));
-    ba.blendEnable = VK_FALSE;
-    ok = ok && VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, &g_pipe[1]));
+    ok = vs && fs && VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, &g_pipe));
     if (vs) vkDestroyShaderModule(g_vk.dev, vs, NULL);
     if (fs) vkDestroyShaderModule(g_vk.dev, fs, NULL);
     g_pipe_format = format;
-    for (i = 0; i < 2 && !ok; ++i) {
-        if (g_pipe[i]) vkDestroyPipeline(g_vk.dev, g_pipe[i], NULL);
-        g_pipe[i] = VK_NULL_HANDLE;
-    }
+    if (!ok) g_pipe = VK_NULL_HANDLE;
     return ok;
 }
 
@@ -557,20 +541,11 @@ static int instances_send(VkCommandBuffer cb, int n) {
     rec_CmdPipelineBarrier2(cb, &d);
     return 1;
 }
-/* a quad whose pixels are its colour or nothing, which g_pipe[1] draws without blending: a fill, a letter, an icon or a
-   bar (in the ring's slow colour too) of an opaque colour, a backed letter or icon on an opaque ground too */
-static int quad_opaque(const SnxUiQuad* q, u32 slow, u32 ground) {
-    unsigned ink = ui_q_bits(q, UI_Q_INK, 3);
-    if (ink == UI_SOLID) return ui_q_bits(q, UI_Q_GLYPH, 8) == 0xFF; /* its alpha in the glyph's byte */
-    if (!ui_q_bits(q, 15, 1)) return 0;                               /* A1 */
-    if (ink == UI_GLYPH || ink == UI_ICON) return !ui_q_bits(q, UI_Q_BACKED, 1) || ground >> 24 == 0xFF;
-    return ink == UI_RING && slow >> 24 == 0xFF;
-}
 /* the quad's sample: its descriptor set */
 static unsigned quad_sample(int i) { return ui_q_bits(&g_quads[i], UI_Q_SAMPLE, 2); }
 void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
     SnxUiList list = {g_quads, 0, MAX_QUADS};
-    int sw = (int)g_vk.sc_extent.width, sh = (int)g_vk.sc_extent.height, n, i, run, pipe, set;
+    int sw = (int)g_vk.sc_extent.width, sh = (int)g_vk.sc_extent.height, n, i, run, set;
     VkImageView view;
     /* ui.vert's Picture: the ring's head and its slots from bit 16, the bars' slow colour and its height, and the
        backed letters' ground */
@@ -633,16 +608,12 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
         rec_CmdSetScissor(cb, 0, 1, &sci);
         rec_CmdPushConstants(cb, g_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
         rec_CmdBindVertexBuffers(cb, 0, 1, &g_inst, &vo);
-        /* runs of quads that sample the same way and are opaque or not, in their order: six corners for each
-           instance, with the pipeline and the set bound where they change */
-        for (i = 0, pipe = set = -1; i < n; i = run) {
-            int opaque = quad_opaque(&g_quads[i], ring.slow, pc.ground);
-            for (run = i + 1; run < n && quad_sample(run) == quad_sample(i) &&
-                              quad_opaque(&g_quads[run], ring.slow, pc.ground) == opaque;
-                 ++run)
-                continue;
+        /* runs of quads that sample the same way, in their order: six corners for each instance, the set bound where
+           it changes */
+        rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe);
+        for (i = 0, set = -1; i < n; i = run) {
+            for (run = i + 1; run < n && quad_sample(run) == quad_sample(i); ++run) continue;
             if (quad_sample(i) == UI_IMAGE && !g_image) continue; /* its upload failed */
-            if (pipe != opaque) rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe[pipe = opaque]);
             if (set != (int)quad_sample(i))
                 rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1,
                                           &g_sets[set = (int)quad_sample(i)], 0, NULL);

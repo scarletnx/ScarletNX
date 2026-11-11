@@ -126,7 +126,7 @@ int main(void) {
     i32 st[4];
     vpad_set_store(store);
     vpad_defaults(&d);
-    assert(g_settings.controls_scale == 50 && g_settings.controls_alpha == 50 && g_settings.relative_stick_center &&
+    assert(g_settings.controls_scale == 50 && g_settings.relative_stick_center &&
            g_settings.d_pad_slide && g_settings.haptics && !g_settings.snap_to_grid);
     /* off, nothing is taken nor drawn */
     assert(vpad_ini("controls", "0") && !g_settings.show_controls && !vpad_shown());
@@ -230,16 +230,14 @@ int main(void) {
     vpad_release();
     assert(!buttons(NULL) && !vpad_up(10));
 
-    /* opacity and scale: every control white and opaque at any opacity, the size of every control */
-    vpad_ini("controls_alpha", "30");
+    /* scale: the size of every control; white and opaque at any */
     draw(&l);
-    assert(drawn(&l, LOOK_A)->rgba == 0xFFFFFFFFu);                         /* opaque at any opacity */
+    assert(drawn(&l, LOOK_A)->rgba == 0xFFFFFFFFu);
     assert(drawn(&l, LOOK_A)->w > 109 && drawn(&l, LOOK_A)->w < 111); /* 11% of 1000 at 100% */
     vpad_ini("controls_scale", "100");
     draw(&l);
     assert(drawn(&l, LOOK_A)->w > 164 && drawn(&l, LOOK_A)->w < 166);
     vpad_ini("controls_scale", "50");
-    vpad_ini("controls_alpha", "50");
 
     /* the .ini: a place read back clamped, a broken one ignored, others not taken */
     assert(vpad_ini("controls_b", "1.5 -2 900 1") && vpad_config()->at[SNX_VPAD_B].x == 1 &&

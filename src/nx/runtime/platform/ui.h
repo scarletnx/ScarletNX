@@ -100,6 +100,15 @@ SnxUiQuadView ui_drawn(const SnxUiQuad* q);
    can't draw both at once (the SDL renderer, the tests' CPU blend): 1 with it in *fill; 0 for any other quad */
 int ui_drawn_ground(const SnxUiQuad* q, SnxUiQuadView* fill);
 
+/* top, a theme's 0xRRGGBB, at a (0 to 255) over under, as a blend would have made it: the opaque colour that stands
+   for it, nothing in the layer being translucent */
+static inline u32 ui_over(u32 top, u32 under, unsigned a) {
+    u32 rgb = 0;
+    int k;
+    for (k = 0; k < 24; k += 8)
+        rgb |= ((top >> k & 0xFFu) * a + (under >> k & 0xFFu) * (255 - a) + 127) / 255 << k;
+    return rgb;
+}
 /* a plain rectangle */
 void ui_fill(SnxUiList* l, float x, float y, float w, float h, u32 rgba);
 /* the picture of the user playing (common/utilities/users.h), side pixels square at x, y: drawn SNX_UI_PICTURE texels

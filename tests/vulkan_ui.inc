@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The on-screen layer's pass (gpu/vk/ui.c) on an image of its own as the swapchain's: each quad an instance whose
+/* The on-screen layer's pass (gpu/vk/ui.c) on an image of its own as the swapchain's, opaque or not written: each quad an instance whose
    corners the vertex shader makes, the atlas sampled in texels, and the device's buffer of instances given only the
    quads that changed since the frame before. Each frame's pixels against the CPU's blend of the same quads, the stats
    box and the debug line (stats.c, hud.c), where they are sure: a pixel whose centre or texel falls on an edge, or
@@ -85,7 +85,14 @@ static void ui_blend_quad(UiCheck* c, const SnxUiQuadView* q) {
             for (k = 0; k < 4; ++k) tex[k] = (float)t[k] / 255.0f;
             for (k = 0; k < 3; ++k) src[k] = tex[k] * color[k] * color[3];
             src[3] = tex[3] * color[3];
-            for (k = 0; k < 4; ++k) c->want[y][x][k] = src[k] + c->want[y][x][k] * (1 - src[3]);
+            /* ui.frag's: opaque, or not written under half */
+            if (fabsf(src[3] - 0.5f) < 1e-3f) {
+                c->sure[y][x] = 0;
+                continue;
+            }
+            if (src[3] < 0.5f) continue;
+            for (k = 0; k < 3; ++k) c->want[y][x][k] = src[k] / src[3];
+            c->want[y][x][3] = 1;
         }
 }
 /* the CPU's blend of n quads over the back colour: want, and sure where it is. A backed letter over its ground */

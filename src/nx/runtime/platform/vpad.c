@@ -62,7 +62,7 @@ typedef char vpad_order_count[ORDER_COUNT == SNX_VPAD_COUNT ? 1 : -1];
 #define DEADZONE   0.5f  /* of the D-pad's half: rEden's */
 
 #define DEF_SIZE    100 /* a control's, in percent */
-#define FIRST_PLACE 7   /* g_vpad_ini's first place row (settings.txt) */
+#define FIRST_PLACE 6   /* g_vpad_ini's first place row (settings.txt) */
 
 /* the layout the settings' places read into (their values in g_settings) */
 static SnxVpadConfig g_vpad;
@@ -444,7 +444,7 @@ static void outline(SnxUiList* l, const float r[4], float t, u32 rgba) {
     ui_fill(l, r[0] + r[2], r[1], t, r[3], rgba);
 }
 static void edit_draw(SnxUiList* l, const int safe[4]) {
-    const u32 ink = 0xF03A4145u, page = 0xFFBED6DAu, line = 0x40FFFFFFu;
+    const u32 ink = 0xFF3A4145u, page = 0xFFBED6DAu, line = 0xFFFFFFFFu; /* all opaque: the grid's lines white */
     float b[BAR_COUNT][4], r[4], g = grid(safe), v;
     int s = bar_scale(safe);
     char label[32];
@@ -567,7 +567,7 @@ void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
     y0 = box[1];
     w = box[2];
     h = box[3];
-    ui_fill(l, x0, y0, w, h, 0x80000000u);
+    ui_fill(l, x0, y0, w, h, 0xFF000000u); /* black, opaque */
     for (c = 0; c < SNX_VPAD_COUNT; ++c) {
         float side = SHOWCASE[c][2] * h, aspect = INFO[c].aspect;
         if (side <= 0) continue;

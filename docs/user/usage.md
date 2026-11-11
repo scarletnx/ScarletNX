@@ -837,11 +837,11 @@ screenshot). Fingers press them, the mouse's left button too; a finger that land
 touch screen. They are on by default on Android and off elsewhere.
 
 The game's menu (Back on Android, Home on a gamepad, F2) has their page: show them, *Edit layout* (drag a control;
-tap one and size it with the bar on top; *Done* or Back ends it), snap to a grid, scale and opacity, the buttons
+tap one and size it with the bar on top; *Done* or Back ends it), snap to a grid, scale, the buttons
 shown, a stick's middle where the finger lands, a D-pad a finger slides on, a buzz on each press (Android), the touch
 screen, and *Reset layout*. Each control is a white shape drawn hard over the game, its edge and its label; a pressed
 one is filled, its label cut out. The
-game's `.ini` keeps them: `controls`, `controls_scale`, `controls_alpha`,
+game's `.ini` keeps them: `controls`, `controls_scale`,
 `controls_snap`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics`, a control's place once it
 was moved (`controls_a=0.930 0.470 100`: its middle across the screen and its size in percent), and whether it is
 shown once that changed (`controls_a_shown=0`). The launcher's Settings have the same, but the layout.
