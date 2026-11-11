@@ -83,6 +83,108 @@ static void tables(void) {
     free(t);
 }
 
+/* a UTF-8 string pool of n strings at out: its size */
+static size_t string_pool(unsigned char* out, const char* const* strings, unsigned n) {
+    size_t at = 28 + 4 * (size_t)n;
+    for (unsigned i = 0; i < n; ++i) {
+        size_t len = strlen(strings[i]);
+        put32(out + 28 + 4 * i, at - 28 - 4 * n);
+        out[at] = (unsigned char)len;     /* UTF-16 units */
+        out[at + 1] = (unsigned char)len; /* bytes */
+        memcpy(out + at + 2, strings[i], len + 1);
+        at += len + 3;
+    }
+    at = (at + 3) & ~(size_t)3;
+    put16(out, 0x0001);
+    put16(out + 2, 28);
+    put32(out + 4, at);
+    put32(out + 8, n);
+    put32(out + 16, 0x100); /* UTF-8 */
+    put32(out + 20, 28 + 4 * n);
+    return at;
+}
+
+/* a resource table of one package, 0x7f "app", whose type 1 (drawable) has entries keyed "a" and "b": count of
+   them, values as TYPE_INT_DEC, for the configuration of density (0 for any) */
+static unsigned char* package_table(unsigned density, const unsigned long* values, unsigned count, size_t* size) {
+    unsigned char* t = calloc(1, 2048);
+    if (!t) exit(2);
+    static const char* const types[] = {"drawable"};
+    static const char* const keys[] = {"a", "b"};
+    unsigned char* p = t + 12;
+    size_t at = 288;
+    put32(p + 268, at);
+    at += string_pool(p + at, types, 1);
+    put32(p + 276, at);
+    at += string_pool(p + at, keys, 2);
+    /* the type's chunk: its header with the configuration (64 bytes), the entries' offsets, the entries */
+    unsigned char* c = p + at;
+    enum { HEADER = 20 + 64, ENTRY = 16 };
+    size_t chunk = HEADER + 4 * count + ENTRY * count;
+    put16(c, 0x0201);
+    put16(c + 2, HEADER);
+    put32(c + 4, chunk);
+    c[8] = 1;
+    put32(c + 12, count);
+    put32(c + 16, HEADER + 4 * count);
+    put32(c + 20, 64);
+    put16(c + 20 + 14, density);
+    for (unsigned i = 0; i < count; ++i) {
+        put32(c + HEADER + 4 * i, ENTRY * i);
+        unsigned char* e = c + HEADER + 4 * count + ENTRY * i;
+        put16(e, 8);
+        put32(e + 4, i); /* the key */
+        put16(e + 8, 8);
+        e[11] = 0x10; /* TYPE_INT_DEC */
+        put32(e + 12, values[i]);
+    }
+    at += chunk;
+    put16(p, 0x0200);
+    put16(p + 2, 288);
+    put32(p + 4, at);
+    put32(p + 8, 0x7f);
+    put16(p + 12, 'a');
+    put16(p + 14, 'p');
+    put16(p + 16, 'p');
+    *size = 12 + at;
+    put16(t, 0x0002);
+    put16(t + 2, 12);
+    put32(t + 4, *size);
+    put32(t + 8, 1);
+    return t;
+}
+
+/* a configuration split's table, which holds the base's package with its density's entries: a lookup takes the best
+   configuration of both tables, and a name from the table that has the entry */
+static void package_group(void) {
+    char error[128] = "", got[160];
+    size_t base_size, split_size;
+    unsigned char* base = package_table(0, (const unsigned long[]){1, 10}, 2, &base_size);
+    unsigned char* split = package_table(480, (const unsigned long[]){2}, 1, &split_size);
+    ArscAssets* a = arsc_create();
+    int32_t first = arsc_add(a, base, base_size, error, sizeof error);
+    int32_t second = arsc_add(a, split, split_size, error, sizeof error);
+    snprintf(got, sizeof got, "%d, %d, \"%s\"", (int)first, (int)second, error);
+    check(first == 1 && second == 2, "a base's table and a split's are read", got);
+    ArscConfig config = {.density = 480, .sdk = 36};
+    arsc_set_config(a, &config);
+    ArscValue v = {0};
+    bool found = arsc_get(a, 0x7f010000, &v);
+    snprintf(got, sizeof got, "%s, %u from cookie %d", found ? "found" : "none", (unsigned)v.value.data, (int)v.cookie);
+    check(found && v.value.data == 2 && v.cookie == 2, "the split's density entry is the best one", got);
+    found = arsc_get(a, 0x7f010001, &v);
+    snprintf(got, sizeof got, "%s, %u from cookie %d", found ? "found" : "none", (unsigned)v.value.data, (int)v.cookie);
+    check(found && v.value.data == 10 && v.cookie == 1, "an entry the split lacks is the base's", got);
+    char package[32], type[32], entry[32];
+    found = arsc_name(a, 0x7f010000, package, sizeof package, type, sizeof type, entry, sizeof entry);
+    snprintf(got, sizeof got, "%s %s:%s/%s", found ? "named" : "unnamed", package, type, entry);
+    check(found && !strcmp(package, "app") && !strcmp(type, "drawable") && !strcmp(entry, "a"),
+          "the split's entry is named app:drawable/a", got);
+    arsc_destroy(a);
+    free(split);
+    free(base);
+}
+
 /* a binary XML document: a resource map chunk of map_size bytes whose header says map_header, with the id 0x01010003
    past that header when it fits, then a start tag with one attribute whose name is string name. In a buffer of its
    exact size */
@@ -348,6 +450,7 @@ static void install_bundle(void) {
 
 int main(void) {
     tables();
+    package_group();
     documents();
     names();
     install_escape();

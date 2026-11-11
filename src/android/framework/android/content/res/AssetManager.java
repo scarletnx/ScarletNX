@@ -25,11 +25,18 @@ public final class AssetManager implements AutoCloseable {
         handle = nativeCreate();
     }
 
-    /** The app's APK: its resources.arsc, its cookie 1. */
+    /**
+     * The app's APKs: the base's resources.arsc, its cookie 1, then each split's that has one. A configuration split's
+     * (a density's, a language's) holds the base's package with its configurations' entries, which a lookup takes
+     * with the base's (arsc.c).
+     */
     public static AssetManager forApk() {
         AssetManager a = new AssetManager();
-        byte[] table = Apk.read("resources.arsc");
-        if (table != null) synchronized (a) { nativeAddTable(a.handle, table); }
+        int apks = 1 + Apk.splitPaths().length;
+        for (int i = 0; i < apks; ++i) {
+            byte[] table = Apk.readFrom(i, "resources.arsc");
+            if (table != null) synchronized (a) { nativeAddTable(a.handle, table); }
+        }
         return a;
     }
 
