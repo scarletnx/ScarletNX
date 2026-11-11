@@ -723,6 +723,16 @@ static bool elf32(const char* path) {
     return n == sizeof ident && !memcmp(ident, "\177ELF", 4) && ident[4] == 1;
 }
 
+/* isSystemLibrary(name): whether a library's file name ("liblog.so") is one of the system's, which the HLE is */
+static jboolean JNICALL is_system_library(JNIEnv* env, jclass unused, jstring name) {
+    (void)unused;
+    const char* n = (*env)->GetStringUTFChars(env, name, NULL);
+    if (!n) return JNI_FALSE;
+    bool system = hle_is_system_library(n) || hle_dl_is_system(n);
+    (*env)->ReleaseStringUTFChars(env, name, n);
+    return system ? JNI_TRUE : JNI_FALSE;
+}
+
 static jstring JNICALL native_load(JNIEnv* env, jclass unused, jstring path, jstring library_dir) {
     (void)unused;
     if (!start(env, library_dir)) return (*env)->NewStringUTF(env, "dlopen failed: the native bridge doesn't start");
@@ -933,6 +943,7 @@ bool android_bridge_register(JNIEnv* env) {
         {(char*)"allocateGuest", (char*)"(I[J)Ljava/nio/ByteBuffer;", (void*)allocate_guest},
         {(char*)"freeGuest", (char*)"(J)V", (void*)free_guest},
         {(char*)"nativeLoad", (char*)"(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", (void*)native_load},
+        {(char*)"isSystemLibrary", (char*)"(Ljava/lang/String;)Z", (void*)is_system_library},
         {(char*)"invokeJ", (char*)"(Ljava/lang/String;Ljava/lang/Object;[J[Ljava/lang/Object;)J", (void*)invoke_j},
         {(char*)"invokeL",
          (char*)"(Ljava/lang/String;Ljava/lang/Object;[J[Ljava/lang/Object;)Ljava/lang/Object;", (void*)invoke_l},
