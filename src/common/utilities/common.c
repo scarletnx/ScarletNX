@@ -1905,9 +1905,25 @@ char* snx_temp_dir(const char* parent) {
     PSECURITY_DESCRIPTOR descriptor = NULL;
     path = parent ? snx_strdup(parent) : snx_temp_root();
     if (!path) return NULL;
-    /* Key material must remain private even when the selected temp parent is shared. */
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)", SDDL_REVISION_1,
-                                                              &descriptor, NULL)) {
+    /* Key material must remain private even when the selected temp parent is shared. The folder is the user's and
+       the system's alone. The user is named by its own SID: Wine cannot apply the owner-rights SID (OW), makes the
+       folder with no rights at all and answers Access denied; OW stays as the fallback if the SID cannot be read. */
+    wchar_t sddl[256];
+    wchar_t* user = NULL;
+    HANDLE token = NULL;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        union {
+            TOKEN_USER user;
+            unsigned char bytes[256];
+        } info;
+        DWORD size = 0;
+        if (GetTokenInformation(token, TokenUser, &info, sizeof(info), &size))
+            ConvertSidToStringSidW(info.user.User.Sid, &user);
+        CloseHandle(token);
+    }
+    swprintf(sddl, 256, L"D:P(A;OICI;FA;;;%ls)(A;OICI;FA;;;SY)", user ? user : L"OW");
+    if (user) LocalFree(user);
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &descriptor, NULL)) {
         free(path);
         return NULL;
     }
