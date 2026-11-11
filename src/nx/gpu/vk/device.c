@@ -1353,6 +1353,7 @@ static int create_device(void) {
     /* shaders pick an indexed texture per invocation from an array (SNX_VKB_TEXARRAY) */
     g_shader_texture_arrays = q12.shaderSampledImageArrayNonUniformIndexing != 0;
     g_shader_float16 = q12.shaderFloat16 != 0;
+    g_shader_float64 = have.shaderFloat64 != 0;
     /* its f16 vectors are Float16's, so shaderFloat16 too */
     g_shader_mixed_dot = has_mixed_dot && qmixdot.shaderMixedFloatDotProductFloat16AccFloat32 && g_shader_float16;
     g_shader_float_atomic_add = has_atomic_float && qatomic_float.shaderBufferFloat32AtomicAdd;
