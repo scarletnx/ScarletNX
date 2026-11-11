@@ -614,7 +614,6 @@ foreach(suite ${snx_fs_suites})
 endforeach()
 if(TARGET hactool_internals)
     target_compile_options(snx-test-fs-service PRIVATE -Wno-unused-parameter)
-    snx_swipc(snx-test-fs-service ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc hle/filesystem/fs.swipc)
     # fs.c reads a game's dump in place through the driver's container.c and hactool
     target_sources(snx-test-fs-service PRIVATE "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/container.c"
 )
