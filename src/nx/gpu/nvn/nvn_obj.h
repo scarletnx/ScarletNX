@@ -24,6 +24,7 @@
 #ifndef SNX_NVN_OBJ_H
 #define SNX_NVN_OBJ_H
 #include "common/cpu/aarch64/cpu.h"
+#include "nx/gpu/hdr_output.h"
 #include "nx/gpu/nvn/nvn.h"
 #include <stddef.h>
 
@@ -375,6 +376,19 @@ NVN_FITS(NvnWindow, 0x148);
 /* the Ounce's window (API 231): the builder's color space and HDR metadata, past NvnWindow */
 #define NVN_WIN_HDR(w) NVN_OBJ(NvnWindowBuilderHdr, (w) + 0x148)
 typedef char nvn_fits_NvnWindowHdr[sizeof(NvnWindowBuilderHdr) <= 0x180 - 0x148 ? 1 : -1];
+/* What the frames of a window hold (gpu/hdr_output.h), from the format of its textures: the Ounce's driver (API 231)
+   picks its native window's color space by that format alone when it makes the window, PQ in BT.2020's primaries for
+   RGB10A2 and scRGB for the two half float formats, and never reads the color space the builder was given
+   (nvnWindowBuilderSetColorSpace's value only comes back from its getter). An older driver's window is SDR */
+static inline u32 nvn_window_space(u32 api, i32 format) {
+    if (api < 231u << 16) return SNX_HDR_SPACE_SRGB;
+    switch (format) {
+        case NVN_FORMAT_RGB10A2: return SNX_HDR_SPACE_PQ;
+        case NVN_FORMAT_RGBA16F:
+        case NVN_FORMAT_RGBX16F: return SNX_HDR_SPACE_SCRGB;
+        default: return SNX_HDR_SPACE_SRGB;
+    }
+}
 
 /* ---- command buffers ---- */
 /* cur: where the next record goes (a guest address). begin: the recording's first record, its handle; last: its last

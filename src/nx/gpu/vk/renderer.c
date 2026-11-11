@@ -909,7 +909,14 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
     Surf* src = NULL;
     if (w && h && w <= g_vk.props.limits.maxImageDimension2D && h <= g_vk.props.limits.maxImageDimension2D) {
         src = vk_rt_for_cpu(cpu_addr, w, h);
-        if (!src || src->f.is_int) src = cpu_frame(cpu_addr, w, h, pitch, layout, bhl, fmt);
+        if (src && !src->f.is_int) {
+        } else if (fmt == RENDERER_FORMAT_RGBA_1010102 || fmt == RENDERER_FORMAT_RGBA_FP16) {
+            /* cpu_frame converts vi's 8-bit and 16-bit formats to RGBA8, which holds neither of these */
+            LOG_LIMIT(4, "vulkan: a %ux%u frame of format %#x with no render target over its buffer is shown black\n",
+                      w, h, fmt);
+            src = NULL;
+        } else
+            src = cpu_frame(cpu_addr, w, h, pitch, layout, bhl, fmt);
     }
     /* the part of the buffer shown: vi's crop, or all of it */
     u32 x0 = 0, y0 = 0, x1 = w, y1 = h;

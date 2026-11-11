@@ -445,10 +445,11 @@ static int run(void* arg) {
             if (j->present_order != g_nvn.replay.present_walked + 1) return 0;
             const NvnReplayPresent* p = &j->present;
             u64 cpu = p->gva ? gmmu_translate(p->gva) : 0;
-            if (g_renderer_up && cpu)
+            if (g_renderer_up && cpu) {
+                if (g_renderer->present_hdr) g_renderer->present_hdr(&p->hdr);
                 g_renderer->present_buffer(cpu, p->w, p->h, p->pitch, p->linear ? 0 : 3, p->bhl, p->fmt, p->crop,
                                            p->transform, p->released_ns, p->period_ns, g_nvn.replay.shown);
-            else if (g_renderer_up) /* nothing to show: black, which still ends the renderer's frame */
+            } else if (g_renderer_up) /* nothing to show: black, which still ends the renderer's frame */
                 g_renderer->present_buffer(0, 0, 0, 0, 0, 0, 0, p->crop, 0, p->released_ns, p->period_ns,
                                            g_nvn.replay.shown);
             else /* no display to reach */

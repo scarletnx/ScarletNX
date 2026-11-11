@@ -6,6 +6,12 @@
 #define SNX_RENDERER_H
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/hdr_output.h"
+
+/* present_buffer's fmt for the frames of an HDR window (Android's pixel formats, as vi's are): 10 bits a channel with
+   2 of alpha, and four half floats. Shown from the render target over the buffer alone, never from its bytes */
+#define RENDERER_FORMAT_RGBA_FP16    0x16
+#define RENDERER_FORMAT_RGBA_1010102 0x2B
 
 /* What the renderer makes before the game draws, for the screen main.c shows while it does: the shader programs the
    game ships in its RomFS and executables, found and translated, and the pipelines of earlier runs. done once the
@@ -185,6 +191,9 @@ typedef struct Renderer {
        won't be (not shown, or no display clock to say), the frames in the order they were given (0: none) */
     void (*present_buffer)(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
                            u32 transform, u64 released_ns, u64 period_ns, u32 shown_syncpt);
+    /* What the next present_buffer's frame holds, and its window's HDR metadata (gpu/hdr_output.h): on the presenting
+       thread, before that present. A present without it is an SDR frame's. NULL: every frame is shown as SDR */
+    void (*present_hdr)(const SnxHdrFrame* frame);
     /* the display's clock, before the game is given a buffer for its next frame at its own pace: waits until the
        game's frames presented have been displayed (all but one where the display doesn't hold them until their
        refresh, and one more when deadline_ns has passed already), or until deadline_ns (plat_ns), and sets
