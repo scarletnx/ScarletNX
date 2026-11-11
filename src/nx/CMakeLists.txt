@@ -512,9 +512,9 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again with graphics descriptors in heaps (vk_descriptors_mode=2), which the default, Automatic, takes
     # only on a GPU that shares the system's memory: a discrete GPU runs the default with sets. A device without
-    # VK_EXT_descriptor_heap runs buffers or sets again
+    # VK_EXT_descriptor_heap skips it, as the buffers' tests do without VK_EXT_descriptor_buffer
     add_test(NAME vulkan_headless_descriptor_heaps COMMAND snx-test-vulkan -H --vk_descriptors_mode=2)
-    set_tests_properties(vulkan_headless_descriptor_heaps PROPERTIES TIMEOUT 120
+    set_tests_properties(vulkan_headless_descriptor_heaps PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # every check again the Vulkan 1.2 way on a newer device, as a game's .ini with vk_api=1.2 asks (gpu/vk/device.c
     # vk12_extensions): the 1.3 commands by their extensions' names, shaders in SPIR-V 1.5, under the validation layer
