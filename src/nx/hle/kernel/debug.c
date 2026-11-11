@@ -192,17 +192,18 @@ static void dump_pointees(int lvl, const char* reg, const u64* r, int nr, int wo
         logf_(lvl, "  mem %s%d %llx:%s\n", reg, i, (unsigned long long)a, line);
     }
 }
-/* the last 40 SVCs (the ring svc.c's dispatch fills) and 32 IPC requests, oldest first. Each ring's count is read
-   once: other threads go on filling them */
+/* the last 40 SVCs (the ring svc.c's dispatch fills), each with its thread, and 32 IPC requests, oldest first. Each
+   ring's count is read once: other threads go on filling them */
 static void dump_rings(int lvl) {
     u32 n = __atomic_load_n(&g_hle.kernel.svc_ring_n, __ATOMIC_RELAXED), i, first;
     first = n > 40 ? n - 40 : 0;
     logf_(lvl, "  last SVCs:\n");
     for (i = first; i < n; i++) {
         const SvcRec* r = &g_hle.kernel.svc_ring[i & 63];
-        logf_(lvl, "    svc %02x (%llx %llx %llx %llx) -> %x, %llx  lr=%llx\n", r->imm, (unsigned long long)r->a[0],
-              (unsigned long long)r->a[1], (unsigned long long)r->a[2], (unsigned long long)r->a[3], r->res,
-              (unsigned long long)r->o1, (unsigned long long)r->lr);
+        logf_(lvl, "    svc %02x (%llx %llx %llx %llx) -> %x, %llx  lr=%llx  thread %llu\n", r->imm,
+              (unsigned long long)r->a[0], (unsigned long long)r->a[1], (unsigned long long)r->a[2],
+              (unsigned long long)r->a[3], r->res, (unsigned long long)r->o1, (unsigned long long)r->lr,
+              (unsigned long long)r->tid);
     }
     n = ipc_ring_count();
     first = n > 32 ? n - 32 : 0;

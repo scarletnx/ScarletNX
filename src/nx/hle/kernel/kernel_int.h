@@ -18,10 +18,11 @@
 #define H_CUR_PROC   0xFFFF8001u /* pseudo-handles */
 #define H_CUR_THREAD 0xFFFF8000u
 
-/* one SVC as the trace ring records it: number, result, caller, the first arguments and an output */
+/* one SVC as the trace ring records it: number, result, caller, the first arguments, an output and the id of the
+   thread that made it */
 typedef struct {
     u32 imm, res;
-    u64 lr, a[4], o1;
+    u64 lr, a[4], o1, tid;
 } SvcRec;
 
 /* ---- kernel.c: handles, waiting, events. _nl: the caller holds g_klock */

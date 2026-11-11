@@ -1469,6 +1469,12 @@ add_executable(snx-test-ipc-message ipc_message.c)
 snx_test_target(snx-test-ipc-message 23)
 add_test(NAME ipc_message COMMAND snx-test-ipc-message)
 
+# the crash report's lines about a thread (hle/kernel/debug.c, included by the test): the last SVCs with the thread
+# of each, with guest memory and the log stubbed
+add_executable(snx-test-kernel-dump kernel_dump.c)
+snx_test_target(snx-test-kernel-dump 23)
+add_test(NAME kernel_dump COMMAND snx-test-kernel-dump)
+
 if(SNX_BUILD_NX)
 add_test(NAME llvm_dependency COMMAND "${CMAKE_COMMAND}"
     "-DSNX_SOURCE_DIR=${PROJECT_SOURCE_DIR}" "-DSNX_TEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/llvm-dependency"

@@ -554,6 +554,7 @@ static u32 svc_begin(KThread* t, SvcRec* in, u32 imm, int flags) {
     in->imm = imm;
     in->res = 0;
     in->o1 = 0;
+    in->tid = t->id;
     if (!(flags & SVC_QUIET)) {
         n = __atomic_fetch_add(&g_hle.kernel.svc_ring_n, 1, __ATOMIC_RELAXED);
         g_hle.kernel.svc_ring[n & 63] = *in;
