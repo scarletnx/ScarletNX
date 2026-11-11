@@ -1478,7 +1478,7 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/prepare_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
-        "${PROJECT_BINARY_DIR}/generated/controls_skins.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hotkeys.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
     snx_test_target(snx-test-overlay 11)
@@ -1488,24 +1488,12 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
 endif()
 
 add_executable(snx-test-vpad vpad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
-    "${PROJECT_BINARY_DIR}/generated/controls_skins.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-vpad 11)
 target_link_libraries(snx-test-vpad PRIVATE scarletnx-common snx_splash m)
 target_include_directories(snx-test-vpad PRIVATE "${PROJECT_BINARY_DIR}/generated") # ui.c's theme
 add_test(NAME vpad COMMAND snx-test-vpad)
-# a RetroArch overlay as the controls' skin, written by the test, then the shipped skins and the built-in art
-add_executable(snx-test-vpad-skin vpad_skin.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad_skin.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
-    "${PROJECT_BINARY_DIR}/generated/controls_skins.c" "${PROJECT_BINARY_DIR}/generated/controls_png.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
-snx_test_target(snx-test-vpad-skin 11)
-target_link_libraries(snx-test-vpad-skin PRIVATE scarletnx-common snx_splash SDL3::SDL3 m)
-target_include_directories(snx-test-vpad-skin PRIVATE "${PROJECT_BINARY_DIR}/generated") # ui.c's theme
-file(GLOB snx_vpad_skins CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/dist/controls/skins/*/*.cfg")
-add_test(NAME vpad_skin COMMAND snx-test-vpad-skin "${CMAKE_CURRENT_BINARY_DIR}/vpad-skin" ${snx_vpad_skins})
 
 add_executable(snx-test-hud hud.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hud.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c")
@@ -1531,7 +1519,7 @@ add_test(NAME help COMMAND snx-test-help)
 
 add_executable(snx-test-stats stats.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
-    "${PROJECT_BINARY_DIR}/generated/controls_skins.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-stats 11)
 target_link_libraries(snx-test-stats PRIVATE scarletnx-common snx_splash m)
@@ -1643,13 +1631,6 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME nvn_game_benchmark COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/bench_nvn_game_test.py")
     add_test(NAME pipeline_compile_probe_inputs COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/prepare_pipeline_probe_test.py")
     add_test(NAME gpu_descriptor_benchmark COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/bench_gpu_descriptors_test.py")
-    add_test(NAME controls_atlas_current
-        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-controls.py" --check)
-    add_test(NAME controls_skins_current
-        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-skins.py" --check)
-    add_test(NAME ui_shaders_current
-        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-ui-shaders.py" --check)
-    add_test(NAME generators_crlf COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/generators_crlf.py")
     # every 3D method that acts is marked in the fast path's table (engines.c g_m3d_group)
     add_test(NAME m3d_acts COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/m3d_acts_test.py")
     # no keys, dumps, stray binaries, piracy sites or the console maker's name in prose among the tracked files: the
@@ -2168,6 +2149,20 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-vertex-input 99)
     target_link_libraries(snx-test-vk-vertex-input PRIVATE snx_nx_flags)
     add_test(NAME vk_vertex_input COMMAND snx-test-vk-vertex-input)
+    # the block texture formats a device is given (gpu/vk/format.c), with no GPU: a player's Mali-G52 from its vkjson
+    # (ASTC and ETC2 sampled as the games' blocks, BCn encoded again as ETC2 and EAC), a desktop GPU, native_bc=0 and the
+    # other settings at 0, and the log's line for each family
+    if(TARGET snx_vk_common)
+        add_executable(snx-test-vk-block-formats vk_block_formats.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/format.c"
+                       "${volk_SOURCE_DIR}/volk.c")
+        set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
+        # format.c's VkFmt initializers leave the last members to 0, as the renderer's flags allow
+        set_source_files_properties("${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/format.c" PROPERTIES COMPILE_OPTIONS
+                                    -Wno-missing-field-initializers)
+        snx_test_target(snx-test-vk-block-formats 23)
+        target_link_libraries(snx-test-vk-block-formats PRIVATE snx_nx_flags snx_vk_common)
+        add_test(NAME vk_block_formats COMMAND snx-test-vk-block-formats)
+    endif()
     # graphics pipeline libraries (gpu/vk/pipeline_parts.c): the choice from the setting and stand-in devices, each
     # condition that turns them off named, and the dynamic pre-rasterization state each device member gives where the
     # table of bans holds none for it
@@ -2194,7 +2189,7 @@ if(NOT SNX_TOOLS_ONLY)
                    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/gpu_driver_load.c")
     snx_test_target(snx-test-gpu-driver-load 11)
     target_link_libraries(snx-test-gpu-driver-load PRIVATE snx_nx_flags scarletnx-common)
-    foreach(case IN ITEMS env badenv here badid)
+    foreach(case IN ITEMS env sets badenv here badid)
         add_test(NAME gpu_driver_load_${case} COMMAND snx-test-gpu-driver-load ${case})
     endforeach()
 endif()
@@ -2738,6 +2733,13 @@ add_executable(snx-test-bc7-glsl glsl/bc7_glsl.cpp glsl/bc7_cpu.cpp support/bcn.
 snx_test_target(snx-test-bc7-glsl 23)
 target_include_directories(snx-test-bc7-glsl PRIVATE glsl)
 add_test(NAME bc7_glsl COMMAND snx-test-bc7-glsl)
+# the BCn to ETC2 and EAC transcoder's GLSL (texconv.glsl's ETC2 build) run on the CPU (tests/glsl/glsl.hpp), its blocks
+# decoded by the CPU references, the BCn pictures it is held to made by its own encoders and the BC7 one: no GPU needed
+add_executable(snx-test-bcn-etc2-glsl glsl/bcn_etc2_glsl.cpp glsl/bcn_etc2_cpu.cpp glsl/bc7_cpu.cpp support/etc2.c
+               support/bcn.c)
+snx_test_target(snx-test-bcn-etc2-glsl 23)
+target_include_directories(snx-test-bcn-etc2-glsl PRIVATE glsl)
+add_test(NAME bcn_etc2_glsl COMMAND snx-test-bcn-etc2-glsl)
 # the VIC shader's GLSL, both builds, run on the CPU against vic.c's composition of random jobs: no GPU needed
 add_executable(snx-test-vic-glsl glsl/vic_jobs.c glsl/vic_glsl.cpp support/vic_ref.c)
 snx_test_target(snx-test-vic-glsl 23)

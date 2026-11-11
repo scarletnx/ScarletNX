@@ -29,7 +29,10 @@ static struct {
     unsigned key[HOTKEY_COUNT], mods[HOTKEY_COUNT];
     int started;
     uint64_t quit_by; /* a second press of the quit key before this quits */
+    uint32_t version; /* the changes to a key's text */
 } g_hotkeys;
+
+uint32_t hotkeys_version(void) { return __atomic_load_n(&g_hotkeys.version, __ATOMIC_ACQUIRE); }
 
 const IniOpt* hotkey_row(int action) {
     return action >= 0 && action < HOTKEY_COUNT ? ini_find(g_hotkeys_ini, KEYS[action]) : NULL;
@@ -138,6 +141,7 @@ void hotkey_set(const IniOpt* o, const char* v) {
         WARN("settings: %s=%s: %s: it keeps %s\n", o->key, v, why, now[0] ? now : "\"\" (no key)");
     }
     hotkey_name(g_hotkeys.key[a], g_hotkeys.mods[a], (char*)o->var, o->size);
+    __atomic_add_fetch(&g_hotkeys.version, 1, __ATOMIC_RELEASE);
 }
 
 int hotkey_assign(int action, unsigned key, unsigned mods, int* owner) {
@@ -154,6 +158,7 @@ int hotkey_assign(int action, unsigned key, unsigned mods, int* owner) {
     g_hotkeys.key[action] = key;
     g_hotkeys.mods[action] = mods;
     hotkey_name(key, mods, (char*)o->var, o->size);
+    __atomic_add_fetch(&g_hotkeys.version, 1, __ATOMIC_RELEASE);
     return 0;
 }
 

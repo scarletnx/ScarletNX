@@ -166,9 +166,11 @@ void kevent_clear(KEvent* e);
 
 KThread* kthread_cur(void);
 /* Taking and releasing the thread's core. core_poll is where RtAPI's poll gives it up to a waiting thread, when
-   generated code finds CPU.poll set at a backward branch (a loop with no SVC) */
+   generated code finds CPU.poll set at a backward branch (a loop with no SVC). core_leave_waiting is the calling
+   thread's, as a change of guest memory in its SVC starts to wait for the renderer (gpu.h's g_gpu_mapping_waits) */
 void core_enter(KThread* t);
 void core_leave(KThread* t);
+void core_leave_waiting(void);
 void core_poll(KThread* t);
 /* A game pause (pause.c): kernel_hold stops every guest thread where it runs nothing (at a hold point, or blocked in a
    wait), 0 once they all are, -1 (after logging the late thread, and letting the others go again) when one isn't within

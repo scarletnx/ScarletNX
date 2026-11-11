@@ -95,6 +95,10 @@ static const char* spec_path;
 static char* obuf;
 static size_t olen, ocap;
 
+/* the file read_file gave and its reader has not freed yet: fail() frees it as it ends the run, so a refusal leaks
+   nothing a leak checker reports */
+static char* reading;
+
 static void fail(int line, const char* fmt, ...) {
     va_list ap;
     if (line)
@@ -105,6 +109,7 @@ static void fail(int line, const char* fmt, ...) {
     vfprintf(stderr, fmt, ap);
     va_end(ap);
     fputc('\n', stderr);
+    free(reading);
     exit(1);
 }
 
@@ -217,7 +222,13 @@ static char* read_file(const char* path, int must) {
     if (fread(text, 1, (size_t)n, f) != (size_t)n) fail(0, "cannot read %s", path);
     text[n] = 0;
     fclose(f);
+    reading = text;
     return text;
+}
+/* a text read_file gave, freed by its reader */
+static void release(char* text) {
+    if (text == reading) reading = NULL;
+    free(text);
 }
 
 /* ============================================================ names */
@@ -569,7 +580,7 @@ static void read_spec(const char* path) {
             fail(number, "unknown line %s", word);
     }
     if (in_repeat) fail(number, "a repeat without its end");
-    free(text);
+    release(text);
     for (i = 0; i < nsettings; i++) {
         s = &settings[i];
         if (!s->key) fail(s->line, "%s has no key", s->name);
@@ -760,7 +771,7 @@ static void fill_options(int table, const char* header, const char* prefix, cons
         free(spaced);
         free(sn);
     }
-    free(text);
+    release(text);
 }
 
 static void read_pipelines(const char* path) {
@@ -777,7 +788,7 @@ static void read_pipelines(const char* path) {
         pipelines[l] = dup(trim(line + 2));
         if (!*pipelines[l]) pipelines[l] = NULL;
     }
-    free(text);
+    release(text);
 }
 
 /* the llvm tables filled, after what they declare; then every member and key checked unique */
@@ -933,7 +944,7 @@ static void fill_vulkan(const char* registry) {
         free(what);
         free(own);
     }
-    free(text);
+    release(text);
 }
 
 /* the vulkan table's extensions for the renderer: each one's name, its setting's value and the version it is core in */

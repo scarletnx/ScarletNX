@@ -24,7 +24,6 @@
 #define NRO_HEADER_SIZE  0x80
 #define ASET_HEADER_SIZE 0x38
 #define MOD0_SIZE        0x18
-#define GUARD_SIZE       SNX_PAGE_SIZE
 /* where each kind of program's code region ends */
 #define CODE_END64 0x2000000000ull
 #define CODE_END32 ((SnxU64)0x40000000UL)
@@ -1222,7 +1221,6 @@ static int load_modules(const SnxExefsReader* exefs, const char* where, SnxProgr
         }
         m->base = cursor;
         cursor += m->size;
-        cursor = end - cursor >= GUARD_SIZE ? cursor + GUARD_SIZE : end;
     }
     free(npdm);
     return rc;
@@ -1303,6 +1301,20 @@ int snx_load_program_mods(const char* entry, char* const* names, char* const* pa
         rc = load_exefs_program(entry, names, paths, count, program, error, error_size);
     if (rc) snx_free_program(program);
     return rc;
+}
+
+size_t snx_program_unguard_addresses(const SnxProgram* program, SnxU64* addresses, size_t count) {
+    size_t i, k, n = 0;
+    for (k = 0; k < count; ++k)
+        for (i = 0; i < program->module_count; ++i) {
+            const SnxModuleImage* m = &program->modules[i];
+            SnxU64 up = (SnxU64)i * SNX_PAGE_SIZE;
+            if (addresses[k] >= m->base + up && addresses[k] - m->base - up < m->size) {
+                addresses[n++] = addresses[k] - up;
+                break;
+            }
+        }
+    return n;
 }
 
 void snx_free_program(SnxProgram* program) {

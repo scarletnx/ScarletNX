@@ -8,7 +8,9 @@
 
    One shader for every conversion, the mode a push constant: a dispatch converts one level of one format, so the
    branches on it never diverge, and one pipeline is compiled instead of fifteen (on lavapipe each is an LLVM
-   compile) for code that is mostly the same loads and stores. */
+   compile) for code that is mostly the same loads and stores. Built a second time with SNX_TC_ETC2, its BCn decoders
+   followed by etc2_encode.glsl: BCn blocks encoded again as ETC2 and EAC for a GPU that samples those and not BCn, a
+   pipeline of its own so the encoder's registers don't weigh on the other conversions. */
 
 #include "texconv_modes.glsl"
 

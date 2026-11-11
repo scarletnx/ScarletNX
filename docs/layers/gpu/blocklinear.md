@@ -59,7 +59,9 @@ not pass through the CPU's `bl_land` padding check. No two invocations own one r
 (A becomes 1.0), packed depth and stencil (into a depth aspect and a stencil aspect, the float for
 `D32_SFLOAT_S8_UINT` when D24S8 isn't supported), ETC2 and EAC blocks (`tests/support/etc2.c` is the reference), BC1
 to BC7 blocks where the device lacks `textureCompressionBC` or the `native_bc` setting is 0 (`tests/support/bcn.c` is the
-reference; RGBA8 out, 16 bit channels for BC4 and BC5, RGBA16F for BC6H), and vi's pixel formats. An invocation owns whole output words (a pair of 2 byte texels, a texel, four depth texels whose
+reference; RGBA8 out, 16 bit channels for BC4 and BC5, RGBA16F for BC6H), and vi's pixel formats. Its ETC2 build
+(`SNX_TC_ETC2`, a pipeline of its own) encodes BCn blocks again as ETC2 and EAC where the device samples those
+([BCn without BCn](bcn.md)). An invocation owns whole output words (a pair of 2 byte texels, a texel, four depth texels whose
 stencil bytes make one word, or a block), and output rows are padded to them, so no two invocations write one word.
 The copies into the image take the padding through `bufferRowLength`.
 
@@ -130,12 +132,15 @@ conversion. Otherwise each row is copied into rows that do.
   Disabling the partial-run mask fails both this test and `vulkan_headless`'s selected-mip writeback test.
   The second checks every 2 byte texel and vi pixel, every 24 bit
   depth, RGB32F, depth and stencil rows, and random ETC2, EAC and BCn blocks of every kind against `etc2.c` and
-  `bcn.c` (`tests/support/`). `bcn_decode` checks `bcn.c` itself on blocks built by hand.
+  `bcn.c` (`tests/support/`). `bcn_decode` checks `bcn.c` itself on blocks built by hand. `bcn_etc2_glsl` runs the
+  ETC2 build ([BCn without BCn](bcn.md#tests)).
 - `tex_upload_rows` runs `texture.c` with a CPU model of the dispatches, which checks the barriers' order, and checks
   every copied byte against the layout. It covers each strip mode, a converted format, and a sparse texture's rows of
   whole tiles.
 - `astc_vulkan` (with `SNX_TEST_VULKAN`, on lavapipe) runs the SPIR-V: moves both ways for a range of shapes, banded
   and by slice, a swizzle landed with `bl_land` over other memory, ASTC fed from block linear blocks, and conversions.
   Where the device samples BCn it also compares the device's own decoding of random BCn blocks with `bcn.c`: BC6H and
-  BC7 exactly, BC1 to BC5 within two steps, the rounding the specification leaves to the device.
+  BC7 exactly, BC1 to BC5 within two steps, the rounding the specification leaves to the device. The ETC2 build's
+  blocks match the CPU's run of it byte for byte, and where the device samples ETC2 its decoding of them matches
+  `etc2.c` (llvmpipe has no ETC2, so on the CI that check is skipped).
   `vulkan_headless` converts packed depth and stencil on the device.

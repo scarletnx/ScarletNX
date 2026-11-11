@@ -888,6 +888,8 @@ void vk_tex_later_stats(VkLaterStats* s) {
 static void tex_image_swap(Surf* t, VkImage img, VmaAllocation mem, u64 bytes, VkFormat fmt, int copied) {
     for (int i = 0; i < t->nsv; i++) vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, t->sv[i].v, VK_NULL_HANDLE);
     t->nsv = 0;
+    if (t->present) vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, t->present, VK_NULL_HANDLE); /* the old image's */
+    t->present = VK_NULL_HANDLE;
     vk_defer_image(t->img, t->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
     vk_defer_bytes(t->bytes);
     t->img = img;

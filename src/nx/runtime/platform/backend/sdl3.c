@@ -40,7 +40,6 @@
 #ifdef SDL_PLATFORM_IOS
 #include "gui/apple.h" /* gui_apple_share: the share sheet of the app, which the iOS app links */
 #endif
-#include "nx/runtime/platform/controls_png.h"
 #include "common/utilities/build_info.h"
 #ifdef __APPLE__
 #include <dlfcn.h>
@@ -412,39 +411,8 @@ void backend_keyboard_hide(u32 ticket) {
     ui_unlock();
 }
 
-/* the on-screen controls' sprites, decoded from the PNG compiled in (malloc'd, w x h), NULL when they can't be */
-static u32* controls_sprites(int* w, int* h) {
-    SDL_Surface* png = SDL_LoadPNG_IO(SDL_IOFromConstMem(snx_controls_png, snx_controls_png_size), true);
-    SDL_Surface* rgba = png ? SDL_ConvertSurface(png, SDL_PIXELFORMAT_RGBA32) : NULL;
-    u32* px = rgba ? malloc((size_t)rgba->w * (size_t)rgba->h * 4) : NULL;
-    if (px) {
-        for (int y = 0; y < rgba->h; y++)
-            memcpy(px + (size_t)y * (size_t)rgba->w, (const u8*)rgba->pixels + (size_t)y * (size_t)rgba->pitch,
-                   (size_t)rgba->w * 4);
-        *w = rgba->w;
-        *h = rgba->h;
-    } else
-        WARN("input: the on-screen controls' image could not be read: %s\n", SDL_GetError());
-    SDL_DestroySurface(rgba);
-    SDL_DestroySurface(png);
-    return px;
-}
-/* the atlas the renderer uploads, from the sprites and the skin's rows as they are */
-static void controls_atlas(void) {
-    int w = 0, h = 0;
-    u32* px = controls_sprites(&w, &h);
-    if (px) ui_atlas_set(px, w, h);
-    free(px);
-}
-/* controls_skin's skin, its atlas and its controls: when the window opens, and on the main thread each time the
-   setting changes (the game's menu, a reload of the .ini) */
-static void controls_skin(void) {
-    int w = 0, h = 0;
-    u32* px = controls_sprites(&w, &h);
-    vpad_skin_changed();
-    vpad_skin_apply(px, w, h);
-    free(px);
-}
+/* the atlas the renderer uploads: when the window opens, and again for the fatal panel */
+static void controls_atlas(void) { ui_atlas_build(); }
 /* Android's vibrator, which SDL lists as VIBRATOR_SERVICE; a gamepad's motors are no buzz for a finger */
 static void buzzer_open(void) {
 #ifdef __ANDROID__
@@ -562,7 +530,7 @@ void video_init(const char* title, const char* addons) {
     if (!g_win) fatal("SDL could not open a Vulkan window: %s", SDL_GetError());
     snx_window_icon(g_win);
     overlay_set_display_scale(SDL_GetWindowDisplayScale(g_win));
-    controls_skin();
+    controls_atlas();
     vpad_set_store(ini_set);
     buzzer_open();
     SDL_GetWindowSizeInPixels(g_win, &w, &h);
@@ -681,21 +649,27 @@ static char* g_fatal_left; /* an error another thread left for the main thread t
 static int g_fatal_taken;  /* the main thread is showing it */
 
 /* ui.h's quads, as the Vulkan renderer draws them (gpu/vk/ui.c): the atlas's premultiplied texels times their colour */
-static void ui_draw_sdl(SDL_Renderer* r, SDL_Texture* atlas, int aw, int ah, const SnxUiList* l) {
+/* one quad as it is drawn (ui_drawn: a bar of the ring where it is) */
+static void ui_draw_quad_sdl(SDL_Renderer* r, SDL_Texture* atlas, int aw, int ah, const SnxUiQuadView* q) {
     static const int corners[6] = {0, 1, 2, 0, 2, 3};
+    float a = (float)(q->rgba >> 24) / 255.0f;
+    if (!q->uw || q->ink == UI_SHAPE) return; /* a blank cell (ui_cells): nothing drawn; no shape on the panel */
+    SDL_FColor c = {(float)(q->rgba & 0xFF) / 255.0f * a, (float)(q->rgba >> 8 & 0xFF) / 255.0f * a,
+                    (float)(q->rgba >> 16 & 0xFF) / 255.0f * a, a};
+    float u0 = (float)q->u / (float)aw, v0 = (float)q->v / (float)ah;
+    float u1 = (float)(q->u + q->uw) / (float)aw, v1 = (float)(q->v + q->vh) / (float)ah;
+    SDL_Vertex v[4] = {{{q->x, q->y}, c, {u0, v0}},
+                       {{q->x + q->w, q->y}, c, {u1, v0}},
+                       {{q->x + q->w, q->y + q->h}, c, {u1, v1}},
+                       {{q->x, q->y + q->h}, c, {u0, v1}}};
+    SDL_RenderGeometry(r, atlas, v, 4, corners, 6);
+}
+static void ui_draw_sdl(SDL_Renderer* r, SDL_Texture* atlas, int aw, int ah, const SnxUiList* l) {
     int i;
     for (i = 0; i < l->n; ++i) {
-        const SnxUiQuad* q = &l->q[i];
-        float a = (float)(q->rgba >> 24) / 255.0f;
-        SDL_FColor c = {(float)(q->rgba & 0xFF) / 255.0f * a, (float)(q->rgba >> 8 & 0xFF) / 255.0f * a,
-                        (float)(q->rgba >> 16 & 0xFF) / 255.0f * a, a};
-        float u0 = (float)q->u / (float)aw, v0 = (float)q->v / (float)ah;
-        float u1 = (float)(q->u + q->uw) / (float)aw, v1 = (float)(q->v + q->vh) / (float)ah;
-        SDL_Vertex v[4] = {{{q->x, q->y}, c, {u0, v0}},
-                           {{q->x + q->w, q->y}, c, {u1, v0}},
-                           {{q->x + q->w, q->y + q->h}, c, {u1, v1}},
-                           {{q->x, q->y + q->h}, c, {u0, v1}}};
-        SDL_RenderGeometry(r, atlas, v, 4, corners, 6);
+        SnxUiQuadView ground, drawn = ui_drawn(&l->q[i]);
+        if (ui_drawn_ground(&l->q[i], &ground)) ui_draw_quad_sdl(r, atlas, aw, ah, &ground); /* a backed letter's */
+        ui_draw_quad_sdl(r, atlas, aw, ah, &drawn);
     }
 }
 /* 0 when no box could be shown (no window, the renderer didn't let go, no renderer or atlas here) */
@@ -779,6 +753,37 @@ static int fatal_at(const SnxOverlayError* panel, float x, float y) {
         if (overlay_error_hit(&panel->items[i], x, y)) return i;
     return FATAL_OUT;
 }
+/* the box's renderer (Vulkan first: the window was made for it) and its atlas, the panel's sprites as a texture of it;
+   either made again when *r or *atlas is NULL. 0, with nothing left made, when one can't be */
+static int fatal_draw_make(SDL_Renderer** r, SDL_Texture** atlas, int* aw, int* ah) {
+    const u32* px;
+    u32 version;
+    if (!*r) *r = SDL_CreateRenderer(g_win, "vulkan");
+    if (!*r) *r = SDL_CreateRenderer(g_win, NULL);
+    if (!*r) {
+        LOG("video: no renderer for the error's box: %s\n", SDL_GetError());
+        return 0;
+    }
+    if (*atlas) return 1;
+    controls_atlas(); /* the renderer freed its copy once it had it */
+    ui_lock();
+    px = ui_atlas(aw, ah, &version);
+    if (px) {
+        SDL_Surface* image = SDL_CreateSurfaceFrom(*aw, *ah, SDL_PIXELFORMAT_RGBA32, (void*)px, *aw * 4);
+        if (image) *atlas = SDL_CreateTextureFromSurface(*r, image);
+        SDL_DestroySurface(image);
+    }
+    ui_unlock();
+    if (!*atlas) {
+        LOG("video: no atlas for the error's box: %s\n", SDL_GetError());
+        SDL_DestroyRenderer(*r);
+        *r = NULL;
+        return 0;
+    }
+    SDL_SetTextureBlendMode(*atlas, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
+    SDL_SetTextureScaleMode(*atlas, SDL_SCALEMODE_NEAREST);
+    return 1;
+}
 static int fatal_screen(const char* msg) {
 #ifdef __ANDROID__
     static const char* const how = "Share Log sends the game's log, which has what ran last.";
@@ -792,38 +797,14 @@ static int fatal_screen(const char* msg) {
     SnxOverlayError panel;
     SDL_FingerID finger = 0;
     int pointer = 0, pressed = FATAL_OUT, button = -1; /* pointer: 1 the left button, 2 a finger, 3 another button */
-    SDL_Renderer* r;
+    SDL_Renderer* r = NULL;
     SDL_Texture* atlas = NULL;
-    const u32* px;
     int aw = 0, ah = 0, done = 0, i;
-    u32 version;
     Uint64 since;
     if (!g_win) return 0;
     __atomic_store_n(&g_given_up, 1, __ATOMIC_RELEASE);
     if (g_renderer_up && g_renderer->release_window && !g_renderer->release_window()) return 0;
-    /* Vulkan first: the window was made for it */
-    r = SDL_CreateRenderer(g_win, "vulkan");
-    if (!r) r = SDL_CreateRenderer(g_win, NULL);
-    if (!r) {
-        LOG("video: no renderer for the error's box: %s\n", SDL_GetError());
-        return 0;
-    }
-    controls_atlas(); /* the renderer freed its copy once it had it */
-    ui_lock();
-    px = ui_atlas(&aw, &ah, &version);
-    if (px) {
-        SDL_Surface* image = SDL_CreateSurfaceFrom(aw, ah, SDL_PIXELFORMAT_RGBA32, (void*)px, aw * 4);
-        if (image) atlas = SDL_CreateTextureFromSurface(r, image);
-        SDL_DestroySurface(image);
-    }
-    ui_unlock();
-    if (!atlas) {
-        LOG("video: no atlas for the error's box: %s\n", SDL_GetError());
-        SDL_DestroyRenderer(r);
-        return 0;
-    }
-    SDL_SetTextureBlendMode(atlas, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
-    SDL_SetTextureScaleMode(atlas, SDL_SCALEMODE_NEAREST);
+    if (!fatal_draw_make(&r, &atlas, &aw, &ah)) return 0;
     for (i = 0; g_title[i] && i < (int)sizeof name - 1; ++i)
         name[i] = g_title[i] >= 'a' && g_title[i] <= 'z' ? (char)(g_title[i] - 32) : g_title[i];
     name[i] = 0;
@@ -926,6 +907,23 @@ static int fatal_screen(const char* msg) {
                         item = at;
                     pointer = 0;
                     pressed = FATAL_OUT;
+                    break;
+                /* SDL made the renderer's device again and freed its textures' data (Android's Vulkan renderer does so
+                   as the app comes back to the foreground): the next draw reads the atlas, which is made again first.
+                   A device lost for good takes a renderer of its own as well; when one can't be made, SDL's own box
+                   shows the error */
+                case SDL_EVENT_RENDER_DEVICE_RESET:
+                case SDL_EVENT_RENDER_DEVICE_LOST:
+                    LOG("video: the error's box makes its %s again (SDL's %s)\n",
+                        e.type == SDL_EVENT_RENDER_DEVICE_LOST ? "renderer and atlas" : "atlas",
+                        e.type == SDL_EVENT_RENDER_DEVICE_LOST ? "device lost" : "device reset");
+                    SDL_DestroyTexture(atlas);
+                    atlas = NULL;
+                    if (e.type == SDL_EVENT_RENDER_DEVICE_LOST) {
+                        SDL_DestroyRenderer(r);
+                        r = NULL;
+                    }
+                    if (!fatal_draw_make(&r, &atlas, &aw, &ah)) return 0;
                     break;
                 case SDL_EVENT_FINGER_CANCELED:
                     if (pointer == 2 && e.tfinger.fingerID == finger) {
@@ -1594,7 +1592,6 @@ void video_poll(void) {
         if (!fatal_screen(left)) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", left, g_win);
         plat_exit_now(1);
     }
-    if (g_win && vpad_skin_changed()) controls_skin(); /* controls_skin set again since the last poll */
     /* the menu, or the keyboard's box, had the controls when this poll began: the press that closes it (B, or A that
        gives the box's line) is in this poll's state */
     int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown();

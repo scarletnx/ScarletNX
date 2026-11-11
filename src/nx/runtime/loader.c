@@ -187,7 +187,7 @@ static int load_module(const SnxModInfo* mi) {
         WARN("Cannot set the permissions of %s\n", mi->name);
         return -1;
     }
-    /* the whole mapping counts as the process's code memory (the guard pages between modules don't) */
+    /* the whole mapping counts as the process's code memory */
     g_code_memory += mi->size;
     LOG("Loaded %s at 0x%llx\n", mi->name, (unsigned long long)mi->base);
     return 0;

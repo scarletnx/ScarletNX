@@ -66,7 +66,7 @@ int main(void) {
     mods[0].image = main_image;
     mods[0].image_size = sizeof main_image;
     mods[0].text_size = sizeof main_image;
-    mods[0].base = 0x8005000;
+    mods[0].base = 0x8004000;
     mods[0].symbols = main_syms;
     mods[0].symbol_count = 1;
     mods[0].functions = main_functions;
@@ -92,7 +92,7 @@ int main(void) {
     assert(st.ambiguous == 1);  /* the twins' code in main */
     assert(st.repeated == 2);   /* generic_fn's two copies */
     assert(n == 1);
-    assert(found[0].addr == 0x8005000 + 0x40 && found[0].words == FN_WORDS);
+    assert(found[0].addr == 0x8004000 + 0x40 && found[0].words == FN_WORDS);
     assert(!strcmp(sdk_syms[found[0].symbol].name, "found_fn"));
     free(found);
     puts("PASS a copy named under its shortest alias; shared code, a short function, a constructor, a repeated one, a "

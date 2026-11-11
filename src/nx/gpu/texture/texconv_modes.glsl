@@ -79,5 +79,10 @@
 #define TC_RESTRIDE 38u
 /* Nearest gather with normalized, packed or floating-point component conversion (pixel_format.h descriptors). */
 #define TC_BLIT_CONVERT 39u
+/* the ETC2 build (texconv.comp with SNX_TC_ETC2, a pipeline of its own: vk/texconv.c): BC1 to BC7 blocks, in TC_BC1 to
+   TC_BC7's order from here, decoded and encoded again a block an invocation (etc2_encode.glsl): BC1 as ETC2 RGB8A1,
+   BC2, BC3 and BC7 as ETC2 RGBA8, BC4 and BC5 as EAC R11 and RG11, unsigned or signed. BC6H's two places are unused:
+   it has no ETC2 counterpart */
+#define TC_BCN_ETC2 40u
 
 #endif

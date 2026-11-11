@@ -235,6 +235,51 @@ static SnxU64* read_hints(const char* base, int is64, size_t* count) {
     free(path);
     return hints;
 }
+/* the SNX_ABI the game at base was made with, the number its stamp starts with (<base>.abi): 0 without a stamp */
+static unsigned stamp_abi(const char* base) {
+    char* path = snx_format("%s.abi", base);
+    size_t size = 0, i;
+    unsigned char* text = snx_read_file(path, &size);
+    unsigned abi = 0;
+    for (i = 0; text && i < size && i < 6 && isdigit(text[i]); ++i) abi = abi * 10 + (unsigned)(text[i] - '0');
+    free(text);
+    free(path);
+    return abi;
+}
+/* The hints of a game made before SNX_ABI 18 (made_by, 0 for a game with no stamp, whose hints stay), when its modules
+   each lay a page past the one before: moved to where that code lies now, in hints and in the file, which the
+   runtime's JIT starts from too. Else each would name code a page or more from the function it was recorded for, in
+   every recompile from now on. An NCE recompile lays the modules its own way, then as now. 0, or an error, said */
+static int move_hints(const char* base, unsigned made_by, const SnxProgram* program, SnxU64* hints, size_t* count,
+                      int quiet) {
+    char *path, *nce = snx_format("%s.nce", base), *tmp, why[256];
+    size_t before = *count, i;
+    int was_nce = snx_is_file(nce), failed;
+    FILE* f;
+    free(nce);
+    if (!made_by || made_by >= 18 || was_nce || !before || program->module_count < 2) return 0;
+    *count = snx_program_unguard_addresses(program, hints, before);
+    path = snx_format("%s.hints", base);
+    tmp = snx_format("%s.tmp", path);
+    f = snx_fopen(tmp, "w");
+    failed = !f;
+    for (i = 0; f && i < *count; ++i)
+        if (fprintf(f, "%llx\n", (unsigned long long)hints[i]) < 0) failed = 1;
+    if (f && fclose(f)) failed = 1;
+    if (!failed && plat_replace_file(tmp, path)) failed = 1;
+    if (failed) {
+        snx_os_error(why, sizeof why);
+        snx_error("cannot write %s, the game's %zu hints at the addresses its modules lie at now: %s", path, *count,
+                  why);
+        remove(tmp);
+    } else if (!quiet)
+        printf("Hints: the %zu of %s were recorded by a game made with SNX_ABI %u, a page left free after each "
+               "module: %zu moved to where that code lies now, %zu lay in no module and are left out\n",
+               before, path, made_by, *count, before - *count);
+    free(tmp);
+    free(path);
+    return failed;
+}
 /* an ExeFS file of a dump read in place (SnxExefsReader) */
 static int dump_read(void* source, const char* name, unsigned char** data, size_t* size) {
     SnxHacFs* fs = (SnxHacFs*)source;
@@ -499,6 +544,8 @@ static int make_program(const MakeArgs* a, int index) {
     char **mod_names = NULL, **mod_files = NULL, *own_mods = NULL;
     size_t mod_count = 0, found = 0;
     char error[1024], why[256], reason[256];
+    SnxU64* hints;
+    unsigned made_by = 0;
     int i, rc = 1;
     memset(&program, 0, sizeof(program));
     memset(&llvm, 0, sizeof(llvm));
@@ -593,7 +640,9 @@ static int make_program(const MakeArgs* a, int index) {
        or module. Failed recompilation must never leave a trusted checkpoint. */
     if (!no_build) {
         char* stamp = snx_format("%s.abi", base);
-        int failed = snx_is_file(stamp) && snx_remove_tree(stamp);
+        int failed;
+        made_by = stamp_abi(base); /* before it goes: what the game's hints were recorded with */
+        failed = snx_is_file(stamp) && snx_remove_tree(stamp);
         free(stamp);
         if (failed) goto done;
     }
@@ -604,7 +653,8 @@ static int make_program(const MakeArgs* a, int index) {
     }
     gen.title = title;
     gen.jit_cache = jit_cache;
-    gen.hints = read_hints(base, program.npdm.is64, &gen.hint_count);
+    gen.hints = hints = read_hints(base, program.npdm.is64, &gen.hint_count);
+    if (move_hints(base, made_by, &program, hints, &gen.hint_count, compile.quiet)) goto done;
     if (!compile.quiet && index)
         printf("Recompiling %s, program %d of %d (%zu modules)\n", title, index, a->programs, program.module_count);
     else if (!compile.quiet)

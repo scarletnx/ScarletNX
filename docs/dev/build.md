@@ -34,6 +34,11 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
   ([steps](#windows--msys2-clang64)). Bootstrap stages SHA-256-checked llvm-mingw/Clang, CMake, Ninja,
   NASM, Strawberry Perl and w64devkit in `deps/tools`. llvm-mingw has no LLVM libraries, so that route also needs a
   MinGW LLVM's `llvm-config` set with `-DSNX_LLVM_CONFIG=/path/to/llvm-config`. CMake fails without it.
+- **Shaders:** glslang's `glslangValidator` compiles them at build time (CMake fetches its pinned release on Linux
+  x86-64, Windows x86-64 and macOS; elsewhere it takes the system's `glslang`), and SPIRV-Tools' `spirv-opt` and
+  `spirv-val` optimize and validate them (`cmake/glsl.cmake`). Those two come from the system's `spirv-tools` package,
+  or on Windows outside MSYS2 from the LunarG Vulkan SDK; `-DSNX_SPIRV_OPT` and `-DSNX_SPIRV_VAL` name others. The
+  configure stops without them.
 - **Display:** a Vulkan 1.3 driver. Headless runs use Vulkan offscreen and skip SDL video initialization.
   SDL3 remains a required build dependency.
 - **Compiler cache (optional):** `ccache`, or `sccache` when `ccache` is not found, makes a cold build after a
@@ -56,7 +61,7 @@ system include; Fedora lists it below.
 
 ```sh
 sudo apt update
-sudo apt install build-essential git cmake ninja-build clang llvm-dev nasm pkg-config python3 \
+sudo apt install build-essential git cmake ninja-build clang llvm-dev nasm pkg-config python3 spirv-tools \
   libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
   libasound2-dev libpulse-dev libpipewire-0.3-dev
 ```
@@ -89,7 +94,7 @@ Vulkan-capable NVIDIA driver.
 ### Fedora
 
 ```sh
-sudo dnf install clang cmake ninja-build nasm make perl git pkgconf-pkg-config patch llvm-devel python3 \
+sudo dnf install clang cmake ninja-build nasm make perl git pkgconf-pkg-config patch llvm-devel python3 spirv-tools \
   libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXi-devel libXfixes-devel \
   libXScrnSaver-devel libXtst-devel alsa-lib-devel pulseaudio-libs-devel pipewire-devel
 ```
@@ -114,7 +119,7 @@ sudo dnf install wayland-devel libxkbcommon-devel wayland-protocols-devel libdec
 ### Arch Linux
 
 ```sh
-sudo pacman -Syu --needed base-devel git cmake ninja clang llvm nasm perl pkgconf python sdl3
+sudo pacman -Syu --needed base-devel git cmake ninja clang llvm nasm perl pkgconf python sdl3 spirv-tools
 ```
 
 ### FreeBSD
@@ -123,7 +128,7 @@ FreeBSD provides Clang in the base system. Install the remaining tools, the SDL3
 HIDAPI loads at run time to read controllers (an Xbox pad is only read that way):
 
 ```sh
-sudo pkg install git cmake ninja gmake nasm perl5 pkgconf python3 sdl3 llvm libusb
+sudo pkg install git cmake ninja gmake nasm perl5 pkgconf python3 sdl3 llvm libusb glslang spirv-tools
 ```
 
 The build uses that `sdl3` package by default (`SNX_SYSTEM_SDL3`, see [SDL3 troubleshooting](#sdl3-troubleshooting));
@@ -194,7 +199,7 @@ Install Xcode, then the build tools:
 
 ```sh
 xcode-select --install
-brew install cmake ninja
+brew install cmake ninja spirv-tools
 ```
 
 1. **LLVM's libraries**, once (about 10 minutes on an M1). The script builds the AArch64 code generator alone,
@@ -289,7 +294,7 @@ runtime must not mix with another LLVM build.
      mingw-w64-clang-x86_64-glslang
    ```
 
-   Python builds the menu's languages; spirv-tools is only for the `shader_direct` test. CI also installs ccache, which
+   Python builds the menu's languages; spirv-tools optimizes and validates the shaders. CI also installs ccache, which
    is optional here, as sccache is.
 3. Clone to a path without spaces:
 

@@ -310,7 +310,7 @@ static const struct {
                       {"lossless_scaling", "LSFG went with the OpenGL renderer"},
                       {"lossless_path", "LSFG went with the OpenGL renderer"},
                       {"touch_controls", "now controls"},
-                      {"touch_controls_opacity", "now controls_alpha"},
+                      {"touch_controls_opacity", "the on-screen controls are opaque"},
                       {"modo_tv", "now docked"},
                       {"idioma", "now language"},
                       {"resolucion", "now resolution"},
@@ -321,7 +321,9 @@ static const struct {
                       {"user", "now user_uid, the uid of the user it named"},
                       {"memory_fit", "now memory_fit_mode, whose 0 is Auto (memory_fit's 1) and 1 Off"},
                       {"astc_bc", "now astc_mode, whose 0 is Auto (astc_bc's 1), 1 Exact (RGBA8) and 2 BC7"},
-                      {"controls_opacity", "now controls_alpha: the built-in art is opaque, its 50 the old 100"},
+                      {"controls_opacity", "the on-screen controls are opaque"},
+                      {"controls_alpha", "the on-screen controls are opaque"},
+                      {"controls_skin", "the on-screen controls are white shapes, with no skin"},
                       {"vk_descriptors", "now vk_descriptors_mode, of the same values: the default a .ini wrote, 0 and "
                                          "later 3, is its Automatic"},
                       {NULL, NULL}};
