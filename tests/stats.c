@@ -82,6 +82,9 @@ void logf_(int lvl, const char* fmt, ...) {
 #define TEXT_RGBA                                                                                                      \
     (0xFFu << 24 | (SNX_GUI_THEME_YORHA_PAGE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_PAGE & 0xFF00u) |                   \
      (SNX_GUI_THEME_YORHA_PAGE >> 16 & 0xFFu))
+#define SHADOW_RGBA                                                                                                    \
+    (0xFFu << 24 | (SNX_GUI_THEME_YORHA_INK & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_INK & 0xFF00u) |                     \
+     (SNX_GUI_THEME_YORHA_INK >> 16 & 0xFFu))
 #define MS 1000000ull /* a millisecond, in ns */
 
 static const int safe[4] = {100, 50, 1280, 720};
@@ -179,26 +182,35 @@ static int note_letters(int k, u32 rgba) {
             ++n;
     return n;
 }
-/* the icons and letters drawn past a cell in from the box's sides: 0 when they all keep it */
+/* the icons and letters drawn past a cell in from the box's sides: 0 when they all keep it. Their shadows, a step of
+   their scale right and down, go that step into it */
 static int past_margin(void) {
     int s = stats_scale(g_test.menu), i, n = 0;
     float box[4], cw = 8.0f * (float)s;
     stats_box(safe, s, box);
     for (i = 0; i < g_test.l.n; ++i)
-        if (g_test.quads[i].vh == 16 &&
+        if (g_test.quads[i].vh == 16 && g_test.quads[i].rgba != SHADOW_RGBA &&
             (g_test.quads[i].x < box[0] + cw || g_test.quads[i].x + g_test.quads[i].w > box[0] + box[2] - cw))
             ++n;
     return n;
 }
-/* the scale the box and every letter in it were drawn at: the box's width in letters of it, and each letter's 8x16
-   texels drawn 8 by 16 times it; 0 where one differs */
+/* the scale every letter was drawn at, its 8x16 texels 8 by 16 times it, and each letter over its shadow, a step of
+   it right and down: 0 where one differs */
 static int drawn_scale(void) {
-    int i, s = (int)g_test.quads[0].w / (STATS_COLS * 8);
-    if (g_test.quads[0].w != (float)(STATS_COLS * 8 * s)) return 0;
-    for (i = 1; i < g_test.l.n; ++i)
-        if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 &&
-            (g_test.quads[i].w != (float)(8 * s) || g_test.quads[i].h != (float)(16 * s)))
-            return 0;
+    int i, k, s = 0;
+    for (i = 0; i < g_test.l.n; ++i) {
+        const SnxUiQuad* q = &g_test.quads[i];
+        int shadowed = 0;
+        if (q->uw != 8 || q->vh != 16) continue;
+        if (!s) s = (int)q->w / 8;
+        if (q->w != (float)(8 * s) || q->h != (float)(16 * s)) return 0;
+        if (q->rgba == SHADOW_RGBA) continue;
+        for (k = 0; k < i; ++k)
+            shadowed |= g_test.quads[k].rgba == SHADOW_RGBA && g_test.quads[k].u == q->u &&
+                        g_test.quads[k].v == q->v && g_test.quads[k].x == q->x + (float)s &&
+                        g_test.quads[k].y == q->y + (float)s;
+        if (!shadowed) return 0;
+    }
     return s;
 }
 /* the graph's bars as they are drawn (ui_drawn: the ring's quads, a byte each): how many, and the newest, at the

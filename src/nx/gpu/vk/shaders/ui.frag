@@ -31,7 +31,9 @@ void main() {
         uint g = v_ink == 2u ? v_glyph : 256u + 2u * v_glyph + (p.x >> 3);
         uint k = g * 16u + p.y;
         uint row = (glyphs.rows[k >> 2] >> ((k & 3u) * 8u)) & 0xFFu;
-        t = vec4(float((row >> (7u - (p.x & 7u))) & 1u));
+        if (((row >> (7u - (p.x & 7u))) & 1u) == 0u) // clear: nothing written, blended or not (an opaque one isn't)
+            discard;
+        t = vec4(1.0);
     } else // unnormalized coordinates, in texels: a sample at level 0 named
         t = textureLod(atlas, v_uv, 0.0);
     vec4 c = t * vec4(v_color.rgb, 1.0) * v_color.a;
