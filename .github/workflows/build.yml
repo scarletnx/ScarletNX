@@ -27,7 +27,7 @@ on:
   schedule:
     - cron: '23 */3 * * *'
 
-# Jobs only read the repository, and a pull request's failed job has the rest of its run cancelled (cancel-run). A
+# Jobs only read the repository, and a failed job has the rest of its run cancelled (scripts/fail-fast.py). A
 # push to main, a scheduled run or a run of main by hand that builds everywhere becomes a nightly, and a pull request's
 # run a prerelease, in scarletnx/nightly: publish.yml does it once this workflow ends
 permissions:
@@ -48,6 +48,9 @@ concurrency:
 env:
   SNX_TEST_OPTIONS: -DSNX_TEST_VP9_VECTORS=ON -DSNX_TEST_ARM_DIFF=ON -DSNX_TEST_LLVM_SWEEP=ON
   SNX_HEADLESS_OPTIONS: -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON -DSNX_TEST_AV1_VECTORS=ON
+  # the jobs that may fail without failing the run (continue-on-error), whose failure cancels nothing
+  # (scripts/fail-fast.py; tests/fail_fast_test.py holds the two to each other)
+  SNX_OPTIONAL_JOBS: '^(macOS and iOS \(arm64\)|Linux AppImage \((ppc64le|ppc64|riscv64|loongarch64)\)(, as installed)?)$'
 
 # Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development, and its LLVM 23 for the
 # recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 so Clang, the MinGW/UCRT runtime
@@ -60,7 +63,8 @@ env:
 # trimmed to what the run used, and a pull request's run saves none: it reads main's (the linux job says why).
 # The artifacts are what `cmake --install` puts in place: the binaries with the licenses that go with them.
 jobs:
-  # A scheduled run of a commit that has its nightly already: the run cancels itself
+  # A scheduled run of a commit that has its nightly already: the run cancels itself, this job with it, which fails
+  # nothing
   nightly-due:
     name: Nightly due
     if: github.event_name == 'schedule'
@@ -71,7 +75,6 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           latest=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
             "$GITHUB_API_URL/repos/scarletnx/nightly/releases/latest" | python3 -c 'import json, sys; print(json.load(sys.stdin)["tag_name"])')
@@ -79,8 +82,7 @@ jobs:
           case $latest in
           *-"${GITHUB_SHA::7}")
             curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
-              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/cancel-run.yml/dispatches" \
-              -d "{\"ref\": \"$BRANCH\", \"inputs\": {\"run\": \"$GITHUB_RUN_ID\"}}" ;;
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" ;;
           esac
   linux:
     name: Linux (${{ matrix.arch }})
@@ -137,6 +139,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
+      # it cancels the run once another of its jobs has failed (scripts/fail-fast.py), so the run stops at once
+      - &fail-fast-watch
+        name: Cancel the run when another job fails
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/fail-fast.py start
       # Each architecture's cache: x86-64 fetches glslang-tools, and AArch64 uses the system's glslangValidator
       # (cmake/glsl.cmake), so the two sets differ. The appimage job of that host and the x86-64 sanitizer job restore
       # it alone; a bump restores the cache before it, which downloads only the packages that changed
@@ -260,23 +268,22 @@ jobs:
         with:
           name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}-install
           path: stage
-      # a pull request's run stops at its first failed job: the jobs done keep their results, and the others are
-      # cancelled instead of building for nothing. cancel-run.yml cancels the run once this job has ended failed: a
-      # job that cancels its own run ends cancelled, which hides what failed. Not in a job that may fail
-      # (continue-on-error), and a fork's token can't start it, so a fork's run goes on
-      - &cancel-run
-        name: Cancel the rest of the run
-        if: >-
-          failure() && github.event_name == 'pull_request'
-          && github.event.pull_request.head.repo.full_name == github.repository
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BRANCH: ${{ github.event.repository.default_branch }}
-        run: >-
-          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json'
-          "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/cancel-run.yml/dispatches"
-          -d "{\"ref\": \"$BRANCH\", \"inputs\": {\"run\": \"$GITHUB_RUN_ID\"}}"
+      # A run stops at its first failed job, whatever its event: the jobs done keep their results, and the others are
+      # cancelled instead of building for nothing. A failed job marks its run with this artifact, and the jobs still
+      # running cancel the run once this one has ended (scripts/fail-fast.py), so it keeps its failure: a job that
+      # cancels its own run ends cancelled, which hides what failed. Not in a job that may fail (SNX_OPTIONAL_JOBS).
+      # The file is the event's payload, which the runner writes for every job before its first step, the workspace
+      # (before the checkout) and a container's alike: nothing of it is read
+      - &fail-fast-mark
+        name: Mark the run failed
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fail-fast-${{ github.run_attempt }}
+          path: ../../_temp/_github_workflow/event.json
+          overwrite: true
+          retention-days: 1
+          if-no-files-found: error
 
   # A pull request runs the A64 differential on the cross builds (qemu-reference's recording, appimage-cross's run of
   # it) only when it changes what the differential tests or how it is built there: the A64 front end and the
@@ -312,6 +319,7 @@ jobs:
             echo "None of the $count files changed is one the A64 differential tests: the cross builds run without it"
             echo "differential=false" >> "$GITHUB_OUTPUT"
           fi
+      - *fail-fast-mark
 
   # The cross jobs (appimage-cross) can't run qemu-aarch64 beside a host binary that qemu-user runs: the QEMU side of
   # the A64 differential is recorded here, once, and handed over as an artifact. A job of its own, so the cross jobs
@@ -389,7 +397,7 @@ jobs:
         with:
           name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
           path: build/llvm_qemu_reference.bin
-      - *cancel-run
+      - *fail-fast-mark
 
   # x86-64 with ASan and UBSan (SNX_TEST_SANITIZERS): every test, and the programs and libraries of ours it runs or
   # links, built with them (runtime_architecture names any left out), so our code reading memory after it was freed or
@@ -440,6 +448,7 @@ jobs:
           path: /var/cache/pacman/pkg
           key: ${{ steps.pacman.outputs.cache-primary-key }}
       - uses: actions/checkout@v7
+      - *fail-fast-watch
       - uses: actions/cache/restore@v5
         with:
           path: .cache/cpm
@@ -484,7 +493,7 @@ jobs:
           key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Test under the sanitizers
         run: ctest --test-dir build/sanitizers --output-on-failure --parallel 4
-      - *cancel-run
+      - *fail-fast-mark
 
   appimage:
     name: Linux AppImage (${{ matrix.arch }})
@@ -588,6 +597,7 @@ jobs:
             sleep 5
           done
           get-debloated-pkgs mesa-nano opus-mini icu-mini
+      - *fail-fast-watch
       # Saved once a week, by its first run: what it installed, without the versions nothing installs any more. The
       # other runs of the week download only what changed since
       - name: Keep the installed packages
@@ -710,7 +720,7 @@ jobs:
       - name: Test native tooling and indexed filesystems
         if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
         run: *native-tests
-      - *cancel-run
+      - *fail-fast-mark
 
   # The AppImages of hosts no GitHub runner is: cross-built on x86-64 with their linux-<arch>-cross preset
   # (cmake/cross.cmake) against the system root of pkgforge's Arch image of the architecture, then bundled in a
@@ -760,6 +770,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - *fail-fast-watch
       # The qemu-reference job's recorded QEMU side of the A64 differential, run here against the cross-built test
       - if: needs.qemu-reference.result == 'success'
         uses: actions/download-artifact@v8
@@ -1097,6 +1108,12 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
+      # as the other jobs' fail-fast-watch, with the runner's Python: MSYS2's comes later
+      - name: Cancel the run when another job fails
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/fail-fast.py start
       # Git for Windows checks out with the core.autocrlf of its own system config (true), which MSYS2's git, the
       # build's, does not read: every text file would read as changed to it, and the build line say -dirty
       - name: Keep the checkout's line ends for MSYS2's git
@@ -1298,7 +1315,7 @@ jobs:
           name: ScarletNX-windows-x86_64-${{ steps.commit.outputs.short }}
           path: stage
           if-no-files-found: error
-      - *cancel-run
+      - *fail-fast-mark
 
   # The Android app (docs/hosts/android-app.md), both ABIs on one runner, with the runner's Gradle and JDK. LLVM's libraries for an
   # ABI take most of an hour, so they are kept until the script that builds them changes (both cold: about two hours).
@@ -1318,6 +1335,7 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
+      - *fail-fast-watch
       # One cache for both ABIs, and the restore key carries a dependencies.cmake bump over
       - uses: actions/cache@v5
         with:
@@ -1504,7 +1522,7 @@ jobs:
       # Java and the icon there. Last, so a test that fails fails the job and still leaves the APKs to try
       - name: Test the app's Java
         run: JAVA_HOME=$JAVA_HOME_21_X64 gradle -p dist/android testDebugUnitTest -Pscarletnx.stage="$PWD/stage"
-      - *cancel-run
+      - *fail-fast-mark
 
   # macOS and iOS (docs/hosts/apple.md), both on one Apple silicon runner with Xcode's Clang and SDKs; FFmpeg, OpenSSL and
   # SDL3 are built from the pinned sources as everywhere. Until both have built green once, a failure here does not
@@ -1530,6 +1548,7 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
+      - *fail-fast-watch
       # macOS and iOS fetch the same sources (SDL3's among them, which Linux takes from its package): one cache, and
       # the restore key carries a dependencies.cmake bump over
       - uses: actions/cache@v5
@@ -1728,7 +1747,7 @@ jobs:
         run: |
           chmod +x dist/*.AppImage
           scripts/check-package.sh dist/*.AppImage
-      - *cancel-run
+      - *fail-fast-mark
 
   # The cross-built AppImage as installed, as the appimage-check job runs its own: qemu's binfmt handlers run it, and
   # everything it starts, as a machine of that architecture would
@@ -1862,7 +1881,7 @@ jobs:
           path: package
       - name: Run the zip's scarletnx.exe as a user would
         run: bash source/scripts/check-package.sh package/bin/scarletnx.exe
-      - *cancel-run
+      - *fail-fast-mark
 
   # edenprobe's probes (docs/dev/edenprobe.md), a release of scarletnx/edenprobe pinned by its sha256, recompiled by the
   # Linux x86-64 install and run on lavapipe: a case of tests/edenprobe/linux-x86_64.txt, the ones that passed before,
@@ -1968,4 +1987,4 @@ jobs:
             !edenprobe/work
             edenprobe-main
             !edenprobe-main/work
-      - *cancel-run
+      - *fail-fast-mark

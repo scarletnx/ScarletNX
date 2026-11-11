@@ -1708,6 +1708,9 @@ if(Python3_Interpreter_FOUND)
                  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/publish_builds_test.py")
         # edenprobe's runs held against a baseline (scripts/edenprobe.py), with a fake runtime and game
         add_test(NAME edenprobe_script COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/edenprobe_test.py")
+        # a Build run cancelled once a job of it failed, by the jobs still running (scripts/fail-fast.py), against a
+        # fake GitHub, and build.yml's jobs held to it
+        add_test(NAME fail_fast COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fail_fast_test.py")
         # the pull request's comment linking its builds (scripts/pr-builds.sh), against a fake gh; 77 without jq
         add_test(NAME pr_builds COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/pr_builds_test.py")
         set_tests_properties(pr_builds PROPERTIES SKIP_RETURN_CODE 77)

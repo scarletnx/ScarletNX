@@ -67,8 +67,10 @@ AppImage's job) and AArch64, with edenprobe, and ASan and UBSan on x86-64, Windo
 big-endian PowerPC64 AppImage, cross-built. The PowerPC64 LE, RISC-V and LoongArch AppImages are built for the
 nightlies alone, and the A64 differential runs on the cross build when a pull request changes the recompiler.
 
-A push to a pull request cancels the run of its commit before, and a pull request merged or closed cancels its runs
-still going (`.github/workflows/pr-closed.yml`, `scripts/cancel-pr-runs.py`), so no runner builds what nobody will
+A job of the Build that fails cancels the rest of its run once it has ended, a pull request's or main's
+(`scripts/fail-fast.py`); the macOS and iOS job and the cross-built AppImages, which may fail without failing the run,
+cancel nothing. A push to a pull request cancels the run of its commit before, and a pull request merged or closed
+cancels its runs still going (`.github/workflows/pr-closed.yml`, `scripts/cancel-pr-runs.py`), so no runner builds what nobody will
 merge.
 
 GitHub asks the owners of the files a pull request changes for their review once it is out of draft:
