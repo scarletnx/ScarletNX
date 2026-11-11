@@ -13,6 +13,7 @@ layout(push_constant) uniform Picture {
     uint ring;      // the ring's newest slot, and its slots from bit 16 (ui.h's SnxUiRing)
     uint slow;      // the colour of a bar past slow_from, R G B A bytes
     uint slow_from; // the height past which a bar is slow
+    uint ground;    // the backed letters' ground, R G B A bytes (ui.h's UI_BACKED)
 } pc;
 // the ring's bytes, a bar's height in 255ths of the graph's for each slot, four a word
 layout(std430, set = 0, binding = 2) readonly buffer Ring {
@@ -22,7 +23,7 @@ layout(std430, set = 0, binding = 2) readonly buffer Ring {
 // top left, 8x16 or 16x16
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) out vec4 v_color;
-layout(location = 2) flat out uint v_ink;
+layout(location = 2) flat out uint v_ink; // and from bit 8, UI_BACKED
 layout(location = 3) flat out uint v_glyph;
 // the corner of a quad, clockwise from the top left: x 0 1 1 0, y 0 0 1 1
 vec2 corner(uint k) {
@@ -33,7 +34,7 @@ void main() {
     uint k = (0x320210u >> (4u * uint(gl_VertexIndex))) & 3u;
     vec4 r = rect, c = color;
     uint height = 1u;
-    v_ink = how.z;
+    v_ink = how.z | (how.x & 4u) << 6;
     v_glyph = how.w;
     if (how.z == 4u) { // UI_RING: its slot's bar, as ui_drawn gives it
         uint n = pc.ring >> 16, slot = how.w;

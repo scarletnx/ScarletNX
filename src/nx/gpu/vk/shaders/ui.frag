@@ -12,10 +12,11 @@ layout(push_constant) uniform Picture {
     vec2 size;
     uint srgb;
     uint ring, slow, slow_from; // ui.vert's
+    uint ground;                // a backed letter's clear pixels' colour
 } pc;
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec4 v_color;
-layout(location = 2) flat in uint v_ink;
+layout(location = 2) flat in uint v_ink; // ui.h's UI_ATLAS..., and from bit 8 UI_BACKED
 layout(location = 3) flat in uint v_glyph;
 layout(location = 0) out vec4 o;
 // sRGB bytes to linear light
@@ -23,20 +24,21 @@ vec3 decode(vec3 c) {
     return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
 }
 void main() {
-    vec4 t;
-    if (v_ink == 1u || v_ink == 4u) // UI_SOLID, UI_RING
-        t = vec4(1.0);
-    else if (v_ink == 2u || v_ink == 3u) { // UI_GLYPH, UI_ICON: the pixel's bit of its row
-        uvec2 p = min(uvec2(v_uv), uvec2(v_ink == 2u ? 7u : 15u, 15u));
-        uint g = v_ink == 2u ? v_glyph : 256u + 2u * v_glyph + (p.x >> 3);
+    uint ink = v_ink & 0xFFu;
+    vec4 t = vec4(1.0), color = v_color;
+    if (ink == 2u || ink == 3u) { // UI_GLYPH, UI_ICON: the pixel's bit of its row
+        uvec2 p = min(uvec2(v_uv), uvec2(ink == 2u ? 7u : 15u, 15u));
+        uint g = ink == 2u ? v_glyph : 256u + 2u * v_glyph + (p.x >> 3);
         uint k = g * 16u + p.y;
         uint row = (glyphs.rows[k >> 2] >> ((k & 3u) * 8u)) & 0xFFu;
-        if (((row >> (7u - (p.x & 7u))) & 1u) == 0u) // clear: nothing written, blended or not (an opaque one isn't)
-            discard;
-        t = vec4(1.0);
-    } else // unnormalized coordinates, in texels: a sample at level 0 named
+        if (((row >> (7u - (p.x & 7u))) & 1u) == 0u) { // clear: the ground where backed, else nothing written
+            if ((v_ink >> 8) == 0u) discard;
+            color = unpackUnorm4x8(pc.ground);
+        }
+    } else if (ink == 0u) // UI_ATLAS: unnormalized coordinates, in texels: a sample at level 0 named
         t = textureLod(atlas, v_uv, 0.0);
-    vec4 c = t * vec4(v_color.rgb, 1.0) * v_color.a;
+    // UI_SOLID and UI_RING: the colour alone
+    vec4 c = t * vec4(color.rgb, 1.0) * color.a;
     // an sRGB picture encodes what is written to it: the bytes go in decoded, and come out as they are
     if (pc.srgb != 0u && c.a > 0.0)
         c.rgb = decode(c.rgb / c.a) * c.a;

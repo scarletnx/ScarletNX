@@ -78,7 +78,7 @@ static int layout_make(void) {
                                           .stageFlags = VK_SHADER_STAGE_VERTEX_BIT}};
     VkDescriptorSetLayoutCreateInfo dci = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 3, .pBindings = b};
-    VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 24};
+    VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 28};
     VkPipelineLayoutCreateInfo lci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                       .setLayoutCount = 1,
                                       .pSetLayouts = &g_dsl,
@@ -559,20 +559,22 @@ static int instances_send(VkCommandBuffer cb, int n) {
     return 1;
 }
 /* a quad whose pixels are its colour or nothing, which g_pipe[1] draws without blending: a fill, a letter, an icon or a
-   bar (in the ring's slow colour too) of an opaque colour */
-static int quad_opaque(const SnxUiQuad* q, u32 slow) {
+   bar (in the ring's slow colour too) of an opaque colour, a backed letter or icon on an opaque ground too */
+static int quad_opaque(const SnxUiQuad* q, u32 slow, u32 ground) {
     if (q->rgba >> 24 != 0xFF) return 0;
-    return q->ink == UI_SOLID || q->ink == UI_GLYPH || q->ink == UI_ICON || (q->ink == UI_RING && slow >> 24 == 0xFF);
+    if (q->ink == UI_GLYPH || q->ink == UI_ICON) return !(q->turn & UI_BACKED) || ground >> 24 == 0xFF;
+    return q->ink == UI_SOLID || (q->ink == UI_RING && slow >> 24 == 0xFF);
 }
 void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
     SnxUiList list = {g_quads, 0, MAX_QUADS};
     int sw = (int)g_vk.sc_extent.width, sh = (int)g_vk.sc_extent.height, n, i, run, pipe, set;
     VkImageView view;
-    /* ui.vert's Picture: the ring's head and its slots from bit 16, and the bars' slow colour and its height */
+    /* ui.vert's Picture: the ring's head and its slots from bit 16, the bars' slow colour and its height, and the
+       backed letters' ground */
     struct {
         float w, h;
-        u32 srgb, ring, slow, slow_from;
-    } pc = {(float)sw, (float)sh, (u32)g_vk.sc_srgb, 0, 0, 0};
+        u32 srgb, ring, slow, slow_from, ground;
+    } pc = {(float)sw, (float)sh, (u32)g_vk.sc_srgb, 0, 0, 0, 0};
     SnxUiRing ring;
     if (!layout_make()) return;
     ui_lock();
@@ -596,6 +598,7 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
     }
     overlay_draw(&list, sw, sh, plat_ns());
     ring = *ui_ring();
+    pc.ground = ui_ground();
     ui_unlock();
     n = list.n;
     pc.ring = (u32)ring.head | (u32)ring.n << 16;
@@ -630,9 +633,9 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
         /* runs of quads that sample the same way and are opaque or not, in their order: six corners for each
            instance, with the pipeline and the set bound where they change */
         for (i = 0, pipe = set = -1; i < n; i = run) {
-            int opaque = quad_opaque(&g_quads[i], ring.slow);
+            int opaque = quad_opaque(&g_quads[i], ring.slow, pc.ground);
             for (run = i + 1; run < n && g_quads[run].sample == g_quads[i].sample &&
-                              quad_opaque(&g_quads[run], ring.slow) == opaque;
+                              quad_opaque(&g_quads[run], ring.slow, pc.ground) == opaque;
                  ++run)
                 continue;
             if (g_quads[i].sample == UI_IMAGE && !g_image) continue; /* its upload failed */
