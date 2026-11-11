@@ -147,6 +147,7 @@ typedef struct {
     u16 hook[HOOK_SITES];     /* its hook, in the generated table */
     u64 addr[HOOK_SITES];     /* the function's guest address */
     GuestFn orig[HOOK_SITES]; /* its recompiled code, which its slot held */
+    u8 stale[HOOK_SITES];     /* atomic: the game changed the function's code (a mod's patch), so orig is stale */
     GuestFn fn[HOOK_SITES];   /* what its slot holds now: the hook's adapter, or verify mode's check */
     /* verify mode: which scratch slots are taken (bit i, atomic), and each site's calls that agreed, differed and
        were skipped (atomic) */
@@ -172,12 +173,15 @@ void hook_restore(u64 addr, u64 size);
    long as the game runs; NULL when addr isn't hooked */
 GuestFn hook_function(u64 addr);
 /* the recompiled code of the function at addr when it is hooked, for a handler that hands a case back to it with the
-   CPU as the function's call left it; NULL when addr isn't hooked */
+   CPU as the function's call left it; NULL when addr isn't hooked. Once the game changed the function's code, the
+   JIT's code of what is there now: the AOT code is stale, and leaves for the dispatch slot, which holds the hook */
 GuestFn hook_original(u64 addr);
 /* the symbol of the function hooked at addr, and the name of the runtime's handler that runs it in *handler; NULL when
    addr isn't hooked. Reads only the sites hook_install wrote before the game's first thread, so the crash report may
    call it (debug.c) */
 const char* hook_at(u64 addr, const char** handler);
+/* the AOT function f went stale (guest_jit.c): the sites whose own code it was run what the game put there instead */
+void hook_orig_stale(GuestFn f);
 /* where the hook of symbol (a symbol, or an address hook's key as hookgen writes it, BUILDID:OFFSET) was installed:
    the function's guest address, the first one for a symbol several modules export; 0 when it wasn't */
 u64 hook_site(const char* symbol);
