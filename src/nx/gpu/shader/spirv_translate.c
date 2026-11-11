@@ -246,12 +246,19 @@ static const u8 mixed_invariant_ops[O__COUNT] = {
 };
 
 /* A fragment program's plain 2D sample (no offset, depth reference or level other than 0) at a perspective generic's
-   (x / w, y / w), the same generic as the program's other such samples (*screen_in, -1 before the first): it reads the
-   fragment's own pixel's centre where the vertex stage and the viewport map that generic onto the target (vk/render.c) */
-static int screen_sample(const ShFlow* f, u32 i, const u32* sph, int plain, u32 x, u32 y, int* screen_in) {
-    int g = plain ? shader_direct_screen_uv(f, i, x, y) : -1;
-    if (g < 0 || shader_ipa_interpolation(sph, (u32)g) != 2 || (*screen_in >= 0 && *screen_in != g)) return 0;
+   (x / w, y / w), or at those mapped onto [0, 1] as clip space maps (ShaderInfo.screen_ndc), the same generic and
+   mapping as the program's other such samples (*screen_in, -1 before the first, and *ndc): it reads the fragment's own
+   pixel's centre where the vertex stage and the viewport map that generic onto the target (vk/render.c) */
+static int screen_sample(const ShFlow* f, u32 i, const u32* sph, int plain, u32 x, u32 y, int* screen_in, int* ndc) {
+    int yneg = 0, g = plain ? shader_direct_screen_uv(f, i, x, y) : -1, mode = 0;
+    if (g < 0 && plain) {
+        g = shader_direct_screen_ndc_uv(f, i, x, y, &yneg);
+        mode = 1 + yneg;
+    }
+    if (g < 0 || shader_ipa_interpolation(sph, (u32)g) != 2 || (*screen_in >= 0 && (*screen_in != g || *ndc != mode)))
+        return 0;
     *screen_in = g;
+    *ndc = mode;
     return 1;
 }
 /* A fragment program's plain 2D sample at a generic's (x, y) as the vertex stage wrote them, a generic that isn't
@@ -337,7 +344,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     u64 tex_read = 0, tex_elsewhere = 0; /* slots read, and of them read elsewhere than the fragment's own pixel */
     u64 tex_asked = 0;                   /* slots TXQ or TMML name: their size, levels or level of detail asked */
     u64 tex_screen = 0; /* slots sampled at the own pixel's centre, if the draw agrees (screen_sample) */
-    int screen_in = -1;
+    int screen_in = -1, screen_ndc = 0;
     u64 tex_uv = 0; /* slots sampled at a generic's (x, y), the own pixel's centre if the draw agrees (uv_sample) */
     int uv_in = -1;
     u64 tex_query = 0;                   /* slots a TXQ alone names: their type is the key's hint, or 2D */
@@ -969,7 +976,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             }
             tex_read |= 1ull << slot;
             if (stage == ST_FS && screen_sample(flow, i, sph, encoding == 1 || encoding == 2, a,
-                                                shader_texs_y(encoding, a, b), &screen_in))
+                                                shader_texs_y(encoding, a, b), &screen_in, &screen_ndc))
                 tex_screen |= 1ull << slot;
             else if (stage == ST_FS &&
                      uv_sample(flow, i, sph, encoding == 1 || encoding == 2, a, shader_texs_y(encoding, a, b), &uv_in))
@@ -1236,7 +1243,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             tex_read |= 1ull << read_slot;
             u32 coordinate = a + (array || clamp), dimensions = type == 0 ? 1 : type >= 2 ? 3 : 2;
             int plain = type == 1 && !array && !shadow && !offset_enabled && !clamp && mode <= 1;
-            if (stage == ST_FS && screen_sample(flow, i, sph, plain, a, a < 254 ? a + 1 : 255, &screen_in))
+            if (stage == ST_FS && screen_sample(flow, i, sph, plain, a, a < 254 ? a + 1 : 255, &screen_in, &screen_ndc))
                 tex_screen |= 1ull << read_slot;
             else if (stage == ST_FS && uv_sample(flow, i, sph, plain, a, a < 254 ? a + 1 : 255, &uv_in))
                 tex_uv |= 1ull << read_slot;
@@ -2976,6 +2983,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     next.tex_own_pixel_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & ~tex_screen & ~tex_uv : 0;
     next.tex_screen_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & tex_screen : 0;
     next.screen_in = next.tex_screen_mask ? (u32)screen_in : 0;
+    next.screen_ndc = next.tex_screen_mask ? (u32)screen_ndc : 0;
     next.tex_uv_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & tex_uv : 0;
     next.uv_in = next.tex_uv_mask ? (u32)uv_in : 0;
     next.tex_unread_mask = tex_asked & ~tex_read;

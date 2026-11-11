@@ -184,11 +184,16 @@ typedef struct {
        renders to them (vk/render.c), each fragment reading what earlier draws left at its pixel */
     u64 tex_own_pixel_mask;
     /* FS: texture slots every read of which is a plain sample of a 2D texture at a perspective generic's (x / w, y / w)
-       (shader_direct_screen_uv), the generic screen_in for all of them, or reads the own pixel as above: the fragment's
-       own pixel's centre too when the vertex stage writes that generic as its position mapped onto [0, 1]
-       (screen_out_mask) and the draw's viewport covers the target (vk/render.c) */
+       (shader_direct_screen_uv), or at its x / w and y / w mapped onto [0, 1] (screen_ndc), the generic screen_in for all
+       of them, or reads the own pixel as above: the fragment's own pixel's centre too when the vertex stage writes that
+       generic as its position mapped onto [0, 1] (screen_out_mask), or as the position itself for screen_ndc
+       (pos_out_mask), and the draw's viewport covers the target (vk/render.c) */
     u64 tex_screen_mask;
     u32 screen_in;
+    /* FS: how those samples take screen_in: 0 at its (x / w, y / w), the vertex stage mapping it (screen_out_mask); 1
+       at (x / w / 2 + 1/2, y / w / 2 + 1/2) and 2 at (x / w / 2 + 1/2, -y / w / 2 + 1/2), the program mapping the
+       position itself (pos_out_mask) from clip space (shader_direct_screen_ndc_uv) */
+    u32 screen_ndc;
     /* FS: texture slots every read of which is a plain sample of a 2D texture at a generic's (x, y) as the vertex stage
        wrote them (shader_direct_plain_uv), the generic uv_in for all of them, or reads the own pixel as above: the
        fragment's own pixel's centre too when the vertex stage writes its position from that generic, mapping [0, 1]
