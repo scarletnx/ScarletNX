@@ -1031,7 +1031,7 @@ static int nn_nim_detail_IShopServiceAccessServer_CreateAccessorInterface(SvcObj
 
 /* ============================================================ aoc:u: the add-on content in system/archives */
 /* the running game's from its control.nacp (am_aoc_base_id), another application's as the SDK numbers them */
-static u64 aoc_base_id(u64 application_id) {
+u64 aoc_base_id(u64 application_id) {
     return application_id == g_hle.kernel.title_id ? am_aoc_base_id() : snx_nacp_aoc_base(NULL, 0, application_id);
 }
 /* An add-on content is installed when its RomFS image is in the data folder as system/archives/<data id>.romfs, the
