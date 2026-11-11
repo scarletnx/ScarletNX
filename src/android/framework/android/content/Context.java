@@ -169,6 +169,11 @@ public abstract class Context {
     public Executor getMainExecutor() { Handler h = new Handler(getMainLooper()); return h::post; }
     public String getOpPackageName() { return getPackageName(); }
     public String getAttributionTag() { return null; }
+    /** the app's own uid, package and attribution tag (API level 31) */
+    public AttributionSource getAttributionSource() {
+        return new AttributionSource.Builder(android.os.Process.myUid()).setPackageName(getOpPackageName())
+            .setAttributionTag(getAttributionTag()).build();
+    }
     public Context createAttributionContext(String attributionTag) { return this; }
     public Context createContext(Object contextParams) { return this; }
     public Context createWindowContext(int type, Bundle options) { return this; }

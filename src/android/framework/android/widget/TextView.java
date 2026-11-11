@@ -65,7 +65,7 @@ public class TextView extends View {
     private boolean singleLine, allCaps, includePad = true, linksClickable = true, horizontallyScrolling;
     private TextUtils.TruncateAt ellipsize;
     private float spacingAdd, spacingMult = 1;
-    private int breakStrategy, hyphenationFrequency, highlightColor = 0x6633B5E5;
+    private int breakStrategy, hyphenationFrequency, justificationMode, highlightColor = 0x6633B5E5;
     private InputFilter[] filters = NO_FILTERS;
     private TransformationMethod transformation;
     private KeyListener keyListener;
@@ -428,6 +428,9 @@ public class TextView extends View {
     public int getBreakStrategy() { return breakStrategy; }
     public void setHyphenationFrequency(int hyphenationFrequency) { this.hyphenationFrequency = hyphenationFrequency; textChanged(); }
     public int getHyphenationFrequency() { return hyphenationFrequency; }
+    /** Layout.JUSTIFICATION_MODE_*: kept and given to the layout, which lays lines out unjustified */
+    public void setJustificationMode(int justificationMode) { this.justificationMode = justificationMode; textChanged(); }
+    public int getJustificationMode() { return justificationMode; }
     public void setHorizontallyScrolling(boolean whether) { horizontallyScrolling = whether; textChanged(); }
     public final boolean isHorizontallyScrollable() { return horizontallyScrolling; }
     /** The top padding becomes what puts the first baseline at this distance from the top. */
@@ -578,7 +581,8 @@ public class TextView extends View {
         };
         StaticLayout.Builder b = StaticLayout.Builder.obtain(t, 0, t.length(), paint, Math.max(0, width))
             .setAlignment(align).setLineSpacing(spacingAdd, spacingMult).setIncludePad(includePad)
-            .setBreakStrategy(breakStrategy).setHyphenationFrequency(hyphenationFrequency);
+            .setBreakStrategy(breakStrategy).setHyphenationFrequency(hyphenationFrequency)
+            .setJustificationMode(justificationMode);
         if (maxLines != Integer.MAX_VALUE) b.setMaxLines(maxLines);
         if (ellipsize != null) b.setEllipsize(ellipsize).setEllipsizedWidth(width);
         return b.build();
