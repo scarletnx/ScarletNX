@@ -46,7 +46,8 @@ typedef struct {
 typedef struct {
     uint32_t location, component;
     uint8_t scalar, width, vec;
-    uint32_t locations; /* locations it takes: matrix columns, array elements */
+    uint32_t locations; /* locations it takes: matrix columns, array elements (not a geometry shader's per-vertex
+                           array of its inputs, which takes none) */
     bool flat, builtin;
     char name[64];
 } SrVarying;
@@ -79,6 +80,10 @@ typedef struct {
     SrVarying *inputs, *outputs;
     size_t input_count, output_count;
     uint32_t local[3];       /* workgroup size, 1,1,1 for other stages */
+    /* a geometry shader: invocations a primitive (1 without the mode), the input primitive's vertices (1 points,
+       2 lines, 4 lines with adjacency, 3 triangles, 6 triangles with adjacency; 0 when not declared), the output
+       vertices it may emit at most and the output primitive (0 points, 1 line strip, 3 triangle strip) */
+    uint32_t gs_invocations, gs_input_vertices, gs_max_vertices, gs_output;
     uint32_t local_spec[3];  /* the SpecId that gives each, UINT32_MAX when a literal does */
     bool depth_replacing, early_tests, origin_lower_left;
     char** capabilities;     /* names of OpCapability values the reflector knows, else "Capability N" */
