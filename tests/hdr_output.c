@@ -2,10 +2,12 @@
    Copyright 2026 the ScarletNX contributors */
 /* A game's own HDR output, each step on values of the test's own: what a window's frames hold by the format of its
    textures, as the Ounce's NVN driver decides it (gpu/nvn/nvn_obj.h nvn_window_space), and the swapchain image that
-   takes each kind as it is from the formats a surface lists, and when a game is told the display is HDR
-   (gpu/vk/hdr_swapchain.h) */
+   takes each kind as it is from the formats a surface lists, when a game is told the display is HDR, and the window's
+   metadata as vkSetHdrMetadataEXT is given it (gpu/vk/hdr_swapchain.h) */
 #include "nx/gpu/nvn/nvn_obj.h"
 #include "nx/gpu/vk/hdr_swapchain.h"
+#include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -123,10 +125,75 @@ static void display_rule(void) {
     CHECK(!vk_hdr_display(0, 0, 0, NULL, 0, &why) && !strcmp(why, "hdr_game=0"));
 }
 
+/* vkSetHdrMetadataEXT, stood in for: what the swapchain was given */
+static struct {
+    int calls;
+    VkDevice device;
+    uint32_t count;
+    VkSwapchainKHR swapchain;
+    VkHdrMetadataEXT metadata;
+} g_set;
+static VKAPI_ATTR void VKAPI_CALL set_hdr_metadata(VkDevice device, uint32_t count, const VkSwapchainKHR* swapchains,
+                                                   const VkHdrMetadataEXT* metadata) {
+    g_set.calls++;
+    g_set.device = device;
+    g_set.count = count;
+    g_set.swapchain = swapchains[0];
+    g_set.metadata = metadata[0];
+}
+/* the window's twelve values, in the order of the NVN setters' arguments, reach vkSetHdrMetadataEXT each in its own
+   field (the minimum luminance comes before the maximum in NVN's, after it in Vulkan's), and values that describe no
+   display are not sent */
+static void metadata(void) {
+    /* BT.2020's primaries and D65, a display of 0.005 to 1000 nits, content of at most 800 nits and 180 on average */
+    SnxHdrFrame frame = {
+        SNX_HDR_SPACE_PQ,
+        {0.708f, 0.292f, 0.170f, 0.797f, 0.131f, 0.046f, 0.3127f, 0.3290f, 0.005f, 1000.0f, 800.0f, 180.0f}};
+    /* a window builder's defaults in the Ounce's driver: Rec. 709's primaries, 0.03 to 1000 nits, 200 and 60 */
+    SnxHdrFrame defaults = {SNX_HDR_SPACE_SCRGB,
+                            {0.64f, 0.33f, 0.3f, 0.6f, 0.15f, 0.06f, 0.3127f, 0.329f, 0.03f, 1000.0f, 200.0f, 60.0f}};
+    VkDevice device = (VkDevice)(uintptr_t)0x1234;
+    VkSwapchainKHR swapchain = (VkSwapchainKHR)(uintptr_t)0x5678;
+    VkHdrMetadataEXT m;
+    vkSetHdrMetadataEXT = set_hdr_metadata;
+    CHECK(vk_hdr_metadata_set(device, swapchain, &frame) && g_set.calls == 1);
+    CHECK(g_set.device == device && g_set.count == 1 && g_set.swapchain == swapchain);
+    m = g_set.metadata;
+    CHECK(m.sType == VK_STRUCTURE_TYPE_HDR_METADATA_EXT && !m.pNext);
+    CHECK(m.displayPrimaryRed.x == 0.708f && m.displayPrimaryRed.y == 0.292f);
+    CHECK(m.displayPrimaryGreen.x == 0.170f && m.displayPrimaryGreen.y == 0.797f);
+    CHECK(m.displayPrimaryBlue.x == 0.131f && m.displayPrimaryBlue.y == 0.046f);
+    CHECK(m.whitePoint.x == 0.3127f && m.whitePoint.y == 0.3290f);
+    CHECK(m.minLuminance == 0.005f && m.maxLuminance == 1000.0f);
+    CHECK(m.maxContentLightLevel == 800.0f && m.maxFrameAverageLightLevel == 180.0f);
+    CHECK(vk_hdr_metadata_set(device, swapchain, &defaults) && g_set.calls == 2);
+    CHECK(g_set.metadata.displayPrimaryRed.x == 0.64f && g_set.metadata.minLuminance == 0.03f);
+    CHECK(g_set.metadata.maxContentLightLevel == 200.0f && g_set.metadata.maxFrameAverageLightLevel == 60.0f);
+    /* content levels of 0 say "not known", and are sent */
+    frame.metadata[10] = frame.metadata[11] = 0;
+    CHECK(vk_hdr_metadata_set(device, swapchain, &frame) && g_set.calls == 3 &&
+          g_set.metadata.maxContentLightLevel == 0);
+    /* no display: a maximum not over the minimum, a negative light, a primary outside the diagram, no number */
+    {
+        static const struct {
+            u32 at;
+            f32 value;
+        } bad[] = {{9, 0.005f}, {9, 0.0f}, {8, -1.0f}, {10, -5.0f}, {0, 1.5f}, {7, -0.1f}, {3, NAN}, {9, INFINITY}};
+        for (u32 i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+            SnxHdrFrame f = defaults;
+            VkHdrMetadataEXT kept = {.maxLuminance = 42.0f};
+            f.metadata[bad[i].at] = bad[i].value;
+            CHECK(!vk_hdr_metadata(&f, &kept) && kept.maxLuminance == 42.0f);
+            CHECK(!vk_hdr_metadata_set(device, swapchain, &f) && g_set.calls == 3);
+        }
+    }
+}
+
 int main(void) {
     window_spaces();
     surface_formats();
     display_rule();
+    metadata();
     printf("hdr output: %d checks\n", checks);
     return 0;
 }

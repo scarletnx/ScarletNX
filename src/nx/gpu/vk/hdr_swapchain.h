@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The window's image for a game's HDR frames (gpu/hdr_output.h): which of a surface's formats takes them as they are.
-   Nothing here asks the device, so tests/hdr_output.c holds each choice to a list of its own */
+/* The window's image for a game's HDR frames (gpu/hdr_output.h): which of a surface's formats takes them as they are,
+   and their window's metadata as the swapchain is given it. Nothing here asks the device, so tests/hdr_output.c holds
+   each choice to a list of its own */
 #ifndef SNX_VK_HDR_SWAPCHAIN_H
 #define SNX_VK_HDR_SWAPCHAIN_H
 #include <volk.h>
@@ -20,4 +21,10 @@ int vk_hdr_surface_takes(const VkSurfaceFormatKHR* formats, u32 n);
    that fails, 1 with *why NULL */
 int vk_hdr_display(int setting, int has_colorspace, int has_metadata, const VkSurfaceFormatKHR* formats, u32 n,
                    const char** why);
+/* The frame's window metadata as VK_EXT_hdr_metadata names it. 0 when a display can't be what it describes (a value
+   that is no number or below 0, a primary or white point outside the chromaticity diagram's square, or a maximum
+   luminance not over the minimum): *out is then untouched, and nothing should be sent */
+int vk_hdr_metadata(const SnxHdrFrame* frame, VkHdrMetadataEXT* out);
+/* The metadata given to the swapchain (vkSetHdrMetadataEXT). 0, and nothing sent, where vk_hdr_metadata refuses it */
+int vk_hdr_metadata_set(VkDevice device, VkSwapchainKHR swapchain, const SnxHdrFrame* frame);
 #endif

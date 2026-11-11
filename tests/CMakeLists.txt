@@ -3389,7 +3389,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
             "${volk_SOURCE_DIR}/volk.c")
         snx_test_target(snx-test-hdr-output 11)
         target_include_directories(snx-test-hdr-output PRIVATE "${PROJECT_SOURCE_DIR}/src")
-        target_link_libraries(snx-test-hdr-output PRIVATE snx_vk_common)
+        target_link_libraries(snx-test-hdr-output PRIVATE snx_vk_common m)
         add_test(NAME hdr_output COMMAND snx-test-hdr-output)
         # the submission ring's uploads run before the recording they belong to, on whatever device there is
         add_executable(snx-test-vk-ring-uploads vk_ring_uploads.c "${volk_SOURCE_DIR}/volk.c")

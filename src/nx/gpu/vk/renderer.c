@@ -26,6 +26,7 @@
 #include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/hdr_swapchain.h"
 #include "nx/gpu/vk/resource_stats.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
@@ -464,6 +465,26 @@ static int frame_kind(const SnxHdrFrame* hdr) {
 static u32 g_generation;
 static int g_lost;
 static u64 g_shown_ns; /* when the game last gave the window a frame (atomic: vkr_refresh reads it unlocked) */
+/* The HDR metadata of the game's window, given to the swapchain made for its frames: once the swapchain is made,
+   and again whenever the game's window names other values */
+static void hdr_metadata(const SnxHdrFrame* hdr) {
+    static u32 told; /* the swapchain (g_vk.sc_made) that has sent */
+    static f32 sent[12];
+    const f32* m = hdr->metadata;
+    int given;
+    if (g_vk.sc_space == SNX_HDR_SPACE_SRGB || hdr->space != g_vk.sc_space) return;
+    if (told == g_vk.sc_made && !memcmp(sent, m, sizeof sent)) return;
+    told = g_vk.sc_made;
+    memcpy(sent, m, sizeof sent);
+    pm_lock(&g_vk.sc_lock);
+    given = vk_hdr_metadata_set(g_vk.dev, g_vk.swapchain, hdr);
+    pm_unlock(&g_vk.sc_lock);
+    LOG_LIMIT(16,
+              "vulkan: the window's HDR metadata %s: red %g,%g green %g,%g blue %g,%g white %g,%g, %g to %g nits, "
+              "content up to %g nits and %g a frame on average\n",
+              given ? "given to the swapchain" : "names no display, and the swapchain is given none", m[0], m[1], m[2],
+              m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]);
+}
 /* a blit's source flipped as the frame's Android transform says (FlipH 1, FlipV 2): the endpoints swapped */
 static void flip_src(VkImageBlit* b, u32 transform) {
     if (transform & 1) {
@@ -533,6 +554,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
     u32 idx = 0;
     int recreate = 0;
     if (shown && (src || !game) && (g_vk.swapchain || (!tried && vk_swapchain_create(kind)))) {
+        if (src) hdr_metadata(hdr);
         VkCommandBuffer cb = vk_cmd(); /* waits for this frame slot, so its acquire semaphore is free */
         VkSemaphore acq = g_acquired[vk_frame_id() % VK_FRAMES];
         /* no wait: vk_lock is held (guest threads mapping memory take it too), and the game's pace is present_pace's.
