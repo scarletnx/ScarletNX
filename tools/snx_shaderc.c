@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Translate a captured shader corpus directly to SPIR-V and optionally validate the modules. */
 #include "nx/gpu/shader/shader.h"
+#include "nx/gpu/shader/sm86.h"
 #include "common/utilities/endian.h"
 #include <dirent.h>
 #include <stdio.h>
@@ -53,16 +54,18 @@ int main(int argc, char** argv) {
             dispatch_reconverge = 1;
         else if (!strcmp(argv[i], "--no-flush")) /* a device without DenormFlushToZero: FTZ done per instruction */
             flush = 0;
+        else if (!strcmp(argv[i], "--sm86")) /* an Ounce game's programs, which the SM86 frontend reads */
+            g_shader_sm86 = 1;
         else if (!strcmp(argv[i], "--direct")) { /* accepted for older corpus commands */
         } else if (argv[i][0] != '-' && !dir)
             dir = argv[i];
         else {
-            fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush] [--dispatch-reconverge]\n", argv[0]);
+            fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush] [--sm86] [--dispatch-reconverge]\n", argv[0]);
             return 2;
         }
     }
     if (!dir) {
-        fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush] [--dispatch-reconverge]\n", argv[0]);
+        fprintf(stderr, "usage: %s CORPUS_DIR [--out DIR] [--validate] [--verbose] [--no-flush] [--sm86] [--dispatch-reconverge]\n", argv[0]);
         return 2;
     }
     /* Match a renderer with non-uniform sampled image array indexing. Otherwise indexed
@@ -107,7 +110,29 @@ int main(int argc, char** argv) {
             u32 hlen = 0;
             printf("%s: hash %016llx stage %d\n", base, (unsigned long long)shader_hash(code, max_bytes, &hlen), stage);
         }
-        u32* spv = shader_to_spirv(code, max_bytes, stage, &info, &words, flush, 1, 1, 1);
+        /* an Ounce program has a header of its own, which the corpus does not keep: a compute program has none, so
+           the ones this translates are the compute stages. The corpus window starts at the program's section, so the
+           program itself is the first one found in it */
+        u32* spv;
+        if (g_shader_sm86 && stage != ST_CS) {
+            free(code);
+            unsupported++;
+            if (verbose) printf("%s: an SM86 %s program needs its header, which the corpus does not keep\n", base,
+                                stage == ST_FS ? "fragment" : "graphics");
+            continue;
+        }
+        if (g_shader_sm86) {
+            Sm86Program found[1];
+            if (sm86_find_programs(code, max_bytes, found, 1) != 1 || !found[0].complete ||
+                found[0].stage != ST_CS) {
+                free(code);
+                unsupported++;
+                if (verbose) printf("%s: no complete SM86 compute program in the window\n", base);
+                continue;
+            }
+            spv = sm86_to_spirv(code + found[0].code, found[0].size - found[0].code, ST_CS, NULL, &info, &words);
+        } else
+            spv = shader_to_spirv(code, max_bytes, stage, &info, &words, flush, 1, 1, 1);
         free(code);
         if (!spv) {
             unsupported++;
