@@ -278,11 +278,50 @@ jobs:
           "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/cancel-run.yml/dispatches"
           -d "{\"ref\": \"$BRANCH\", \"inputs\": {\"run\": \"$GITHUB_RUN_ID\"}}"
 
+  # A pull request runs the A64 differential on the cross builds (qemu-reference's recording, appimage-cross's run of
+  # it) only when it changes what the differential tests or how it is built there: the A64 front end and the
+  # recompiler, the differential and its reference, LLVM's build for the target, or this workflow. A push, a nightly
+  # and a run by hand run it whatever changed, and every Linux job's tests run it on their own host
+  recompiler-changes:
+    name: Recompiler changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      differential: ${{ steps.changed.outputs.differential }}
+    steps:
+      # the pull request's merge commit and the base it is diffed against
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      # grep's 1 is no file matched; anything else it or git returns fails the step
+      - name: Look for what the A64 differential tests
+        id: changed
+        run: |
+          paths='^(src/common/cpu/|tests/(llvm_qemu_|llvm_steps\.c$|qemu_ref/)|'
+          paths+='cmake/(cross|decodetree|llvm|llvm_components|qemu_ref)\.cmake$|'
+          paths+='scripts/(linux-llvm\.sh$|llvm-libraries/)|\.github/workflows/build\.yml$)'
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          matched=$(grep -E "$paths" <<<"$changed") || [ $? = 1 ]
+          if [ -n "$matched" ]; then
+            printf 'The cross builds run the A64 differential, for:\n%s\n' "$matched"
+            echo "differential=true" >> "$GITHUB_OUTPUT"
+          else
+            count=0
+            [ -z "$changed" ] || count=$(wc -l <<<"$changed")
+            echo "None of the $count files changed is one the A64 differential tests: the cross builds run without it"
+            echo "differential=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # The cross jobs (appimage-cross) can't run qemu-aarch64 beside a host binary that qemu-user runs: the QEMU side of
   # the A64 differential is recorded here, once, and handed over as an artifact. A job of its own, so the cross jobs
   # wait for these two targets and not for the linux job's tests. The caches are the linux job's, restored and not saved
   qemu-reference:
     name: A64 differential's QEMU reference
+    needs: recompiler-changes
+    if: >-
+      ${{ !cancelled() && (github.event_name != 'pull_request' || needs.recompiler-changes.outputs.differential == 'true')
+      }}
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     container: archlinux:latest
@@ -683,6 +722,9 @@ jobs:
   appimage-cross:
     name: Linux AppImage (${{ matrix.arch }})
     needs: qemu-reference
+    # without a reference to run against (a pull request that changes nothing the differential tests), the AppImage alone
+    if: >-
+      ${{ !cancelled() && (needs.qemu-reference.result == 'success' || needs.qemu-reference.result == 'skipped') }}
     runs-on: ubuntu-26.04
     # LLVM's cross build (scripts/linux-llvm.sh) adds about half an hour where its cache misses
     timeout-minutes: 180
@@ -718,7 +760,8 @@ jobs:
         with:
           fetch-depth: 0
       # The qemu-reference job's recorded QEMU side of the A64 differential, run here against the cross-built test
-      - uses: actions/download-artifact@v8
+      - if: needs.qemu-reference.result == 'success'
+        uses: actions/download-artifact@v8
         with:
           name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
           path: reference
@@ -948,6 +991,7 @@ jobs:
       # The A64 differential against the qemu-reference job's recording: the cross build's tests are off, so the
       # one test is configured and built alone, then run here through qemu-user, with and without the generic path
       - name: Run the A64 differential against the recorded QEMU reference
+        if: needs.qemu-reference.result == 'success'
         run: |
           docker exec -i -e CCACHE_DIR=/src/.cache/ccache -e CCACHE_BASEDIR=/src -e CCACHE_NOHASHDIR=true \
             -e SNX_DEPS_CACHE=/src/.cache/deps build sh -s <<'EOF'
@@ -1690,6 +1734,8 @@ jobs:
   appimage-cross-check:
     name: Linux AppImage (${{ matrix.arch }}), as installed
     needs: appimage-cross
+    # by its own need alone: a qemu-reference a pull request skipped would skip this job too
+    if: ${{ !cancelled() && needs.appimage-cross.result == 'success' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     continue-on-error: true

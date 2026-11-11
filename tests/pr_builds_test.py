@@ -3,8 +3,8 @@
 # Copyright 2026 the ScarletNX contributors
 """scripts/pr-builds.sh --print against a fake gh that has a run's artifacts and jobs: the builds linked, the APK's
 halves and edenprobe's report left out, the jobs that did not succeed named by their id in build.yml, the checks as
-installed and the sanitizers' build never among them, and edenprobe's line, its notice linked to the run. Then the
-pull request found from the commit when none is given. Offline."""
+installed, the sanitizers' build and the A64 differential's QEMU reference never among them, and edenprobe's line, its
+notice linked to the run. Then the pull request found from the commit when none is given. Offline."""
 
 import json
 import os
@@ -155,6 +155,14 @@ with tempfile.TemporaryDirectory() as temporary:
             f'\n\n[{TITLE}]({RUN}): failed, see its summary\n\nNot built: appimage-cross (skipped), windows (failure), '
             'apple (skipped)\n'
         ),
+        text,
+    )
+    text = comment(
+        run_jobs=jobs(('Recompiler changes', 'success'), ("A64 differential's QEMU reference", 'skipped'), *WHOLE[1:2])
+    )
+    check(
+        'a pull request that skips the A64 differential: its QEMU reference and the job that skips it never named',
+        'Not built' not in text,
         text,
     )
     text = comment(run_jobs=jobs(*WHOLE[:2], ('Lint the shaders', 'failure')))
