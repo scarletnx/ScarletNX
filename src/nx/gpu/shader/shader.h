@@ -189,6 +189,10 @@ typedef struct {
        (screen_out_mask) and the draw's viewport covers the target (vk/render.c) */
     u64 tex_screen_mask;
     u32 screen_in;
+    /* every stage: texture slots no instruction reads a texel of: TXQ and TMML alone name them, which ask a texture's
+       size, its levels or a level of detail. A draw that renders to such a slot's texture binds its copy without the
+       target's pixels brought into it (vk/render.c) */
+    u64 tex_unread_mask;
     /* VS: generic outputs written as the position mapped onto [0, 1], ((pos.w + pos.x) / 2, (pos.w + pos.y) / 2, -,
        pos.w), and of them in screen_out_yneg_mask those whose y is (pos.w - pos.y) / 2 */
     u32 screen_out_mask, screen_out_yneg_mask;

@@ -325,6 +325,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     ShTex textures[SH_MAXTEX] = {0};
     int texture_count = 0;
     u64 tex_read = 0, tex_elsewhere = 0; /* slots read, and of them read elsewhere than the fragment's own pixel */
+    u64 tex_asked = 0;                   /* slots TXQ or TMML name: their size, levels or level of detail asked */
     u64 tex_screen = 0; /* slots sampled at the own pixel's centre, if the draw agrees (screen_sample) */
     int screen_in = -1;
     u64 tex_query = 0;                   /* slots a TXQ alone names: their type is the key's hint, or 2D */
@@ -1248,9 +1249,10 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                 bindless ? shader_direct_track_image_handle_pair(flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
             if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, b);
             if (handle_count == 1) indexed = shader_direct_indexed_handle(flow, i, b, stage, &ldc);
-            if (shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless, bank,
-                                             handle_count, bank2, off2, indexed, ldc) < 0)
-                return direct_reject(si, "texture descriptor count");
+            int asked_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless,
+                                                          bank, handle_count, bank2, off2, indexed, ldc);
+            if (asked_slot < 0) return direct_reject(si, "texture descriptor count");
+            tex_asked |= 1ull << asked_slot;
             for (u32 k = 0; k < array + (type == 0 ? 1 : type == 1 ? 2 : 3); k++)
                 if (a + k < 255) used[a + k] = 1;
             if (bindless && b < 255) used[b] = 1;
@@ -1310,6 +1312,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                                                  handle_count, bank2, off2, indexed, ldc);
             if (qslot < 0) return direct_reject(si, "texture descriptor count");
             if (guessed) tex_query |= 1ull << qslot;
+            tex_asked |= 1ull << qslot;
             needs_image_query = 1;
             if (a < 255) used[a] = 1;
             if (bindless && a + 1 < 255) used[a + 1] = 1;
@@ -2955,6 +2958,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     next.tex_own_pixel_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & ~tex_screen : 0;
     next.tex_screen_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & tex_screen : 0;
     next.screen_in = next.tex_screen_mask ? (u32)screen_in : 0;
+    next.tex_unread_mask = tex_asked & ~tex_read;
     if (stage == ST_VS) next.screen_out_mask = shader_direct_screen_out(flow, &next.screen_out_yneg_mask);
     if (stage == ST_VS) next.pos_out_mask = shader_direct_position_out(flow);
     if (stage == ST_FS && !ipa_indexed && !legacy_fs) next.smooth_in_mask = smooth_in & ~si->in_unfed_mask;

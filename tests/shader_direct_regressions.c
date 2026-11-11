@@ -4316,6 +4316,60 @@ static void feedback_screen_uv(void) {
     screen_uv_case(both, 10, 0xaa00, 0, "a slot also sampled at a generic's x and y reads elsewhere");
 }
 
+/* ShaderInfo.tex_unread_mask: a slot only TXQ or TMML names is asked its size, its levels or a level of detail, and no
+   texel of it is read, in any stage: a draw that renders to its texture needs no pixels in the copy it binds. Each
+   instruction that reads texels (TEXS, TLDS, TLD, TEX, TXD, TLD4, a 2D SULD) takes the slot of a TXQ of its handle
+   out, and leaves a TXQ of another handle in */
+#define UNREAD_TEXS(off) (OWN_TEXS(2, 0, 1) ^ (0x10ull ^ (u64)(off)) << 36) /* TEXS 2D.LZ R0, R0, R1 */
+static void texture_unread_slots(void) {
+    const u64 txq = 0xdf48010200470500ull; /* TXQ.DIMENSION R0, R5 of the handle at 0x40: the depth */
+    const u64 tmml = 0xdf58000000000000ull | 3ull << 31 | 2ull << 28 | 0x10ull << 36 | 4ull << 20 | 7ull << 16 |
+                     8ull << 8; /* TMML R0, R8 on a 2D texture */
+    const u64 texs = UNREAD_TEXS(0x10), tlds = UNREAD_TEXS(0x10) | 1ull << 57;
+    const u64 tld = 0xdc00000000000004ull | 7ull << 51 | 0xfull << 31 | 2ull << 28 | 0x10ull << 36 | 0xffull << 20 |
+                    7ull << 16; /* TLD.LZ R4, R0 on a 2D texture */
+    const u64 tex = SCREEN_TEX(0, 0);
+    const u64 txd = 0xde00000000000000ull | 7ull << 51 | 0x10ull << 36 | 0xfull << 31 | 2ull << 28 | 8ull << 20 |
+                    7ull << 16 | 4ull << 8; /* TXD R0, R4, R8 on a 2D texture */
+    const u64 tld4 = 0xc800000000000000ull | 7ull << 51 | 0xfull << 31 | 0x10ull << 36 | 4ull << 20 | 7ull << 16 |
+                     2ull << 8; /* TLD4 R0, R2 on a 1D texture */
+    const u64 with_texs[] = {txq, texs}, with_tlds[] = {txq, tlds}, with_tld[] = {txq, tld}, with_tex[] = {txq, tex};
+    const u64 suld = 0xeb00000000000000ull | 1ull << 51 | 0x10ull << 36 | 3ull << 33 | 0xfull << 20 | 7ull << 16 |
+                     8ull << 8; /* SULD.P R0..3, R8 of a 2D surface: a texel fetch in a fragment program */
+    const u64 with_txd[] = {txq, txd}, with_tld4[] = {txq, tld4}, with_suld[] = {txq, suld};
+    const u64 asked_other[] = {txq, UNREAD_TEXS(0x11)};
+    struct {
+        const u64* instructions;
+        int count, stage, slots;
+        u64 unread;
+        const char* what;
+    } cases[] = {{&txq, 1, ST_FS, 1, 1, "a fragment program's slot only TXQ names has no texel read"},
+                 {&txq, 1, ST_VS, 1, 1, "a vertex program's slot only TXQ names has no texel read"},
+                 {&tmml, 1, ST_FS, 1, 1, "a slot only TMML names has no texel read"},
+                 {with_texs, 2, ST_FS, 1, 0, "a slot TXQ asks and TEXS samples has its texels read"},
+                 {with_tlds, 2, ST_FS, 1, 0, "a slot TXQ asks and TLDS fetches has its texels read"},
+                 {with_tld, 2, ST_FS, 1, 0, "a slot TXQ asks and TLD fetches has its texels read"},
+                 {with_tex, 2, ST_FS, 1, 0, "a slot TXQ asks and TEX samples has its texels read"},
+                 {with_txd, 2, ST_FS, 1, 0, "a slot TXQ asks and TXD samples has its texels read"},
+                 {with_tld4, 2, ST_FS, 1, 0, "a slot TXQ asks and TLD4 gathers has its texels read"},
+                 {with_suld, 2, ST_FS, 1, 0, "a slot TXQ asks and a 2D SULD loads has its texels read"},
+                 {asked_other, 2, ST_FS, 2, 1, "a TXQ's slot stays unread beside another handle's TEXS"}};
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(cases[i].instructions, cases[i].count, cases[i].stage, &info, &words, 0);
+        check_translated(code, &info, cases[i].what);
+        if (code) {
+            if (info.ntex != cases[i].slots || info.tex_unread_mask != cases[i].unread)
+                fprintf(stderr, "  %d slots, unread mask %#llx, expected %d and %#llx\n", info.ntex,
+                        (unsigned long long)info.tex_unread_mask, cases[i].slots, (unsigned long long)cases[i].unread);
+            check(info.ntex == cases[i].slots && info.tex_unread_mask == cases[i].unread, cases[i].what);
+        }
+        free(code);
+    }
+}
+#undef UNREAD_TEXS
+
 /* ShaderInfo.screen_out_mask: the vertex program writes generic 5 as its position mapped onto [0, 1],
    ((w + x) / 2, (w - y) / 2, -, w), the y's sign in screen_out_yneg_mask, each word stored once with no guard, from
    x, y, z and w loaded one register each. Half of x - w, w from another register, a quarter, a guarded or second
@@ -5317,6 +5371,7 @@ int main(int argc, char** argv) {
     fragment_flow_derivatives();
     feedback_own_pixel();
     feedback_screen_uv();
+    texture_unread_slots();
     vertex_screen_out();
     vertex_position_out();
     fragment_position_pass();
