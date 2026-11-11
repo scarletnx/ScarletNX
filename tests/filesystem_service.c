@@ -172,7 +172,9 @@ static char test_fs_text[1024];    /* the last warning of fs.c's own, "fs: ..." 
 static char test_report_text[1024]; /* the last warning of a report's, indented: "  ..." */
 static char test_romfs_text[1024]; /* the last warning about the RomFS, "RomFS: ..." */
 static char test_mod_link_text[2048]; /* every warning about a mod that is a symbolic link */
-static unsigned test_mod_links;
+#if !defined(_WIN32)
+static unsigned test_mod_links; /* their count, which only the systems with symbolic links check */
+#endif
 void logf_(int level, const char* format, ...) {
     char text[1024];
     va_list args;
@@ -186,7 +188,9 @@ void logf_(int level, const char* format, ...) {
     if (!level && strstr(text, "which mods aren't read through")) { /* kept apart from the last warning */
         size_t said = strlen(test_mod_link_text);
         snprintf(test_mod_link_text + said, sizeof test_mod_link_text - said, "%s", text);
+#if !defined(_WIN32)
         test_mod_links++;
+#endif
     } else if (!level && !strncmp(text, "fs: ", 4))
         snprintf(test_fs_text, sizeof test_fs_text, "%s", text);
     if (!level && !strncmp(text, "  ", 2)) snprintf(test_report_text, sizeof test_report_text, "%s", text);
