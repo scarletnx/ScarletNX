@@ -108,6 +108,10 @@ VK_EXT_blend_operation_advanced | off | qualcomm | * | any | 0x6020200,0x7000201
 VK_EXT_custom_border_color | warn | qualcomm | * | any | * | crashed creating samplers with custom border colours in a game (2023); Eden lifted the ban | yuzu b2aeb50229 (2023-04-01); lifted in Eden PR 3042 (f7f6a4cde4, 2025-11-21) | new:edenprobe:samplers with custom border colours of every format | never | -
 VK_EXT_custom_border_color | warn | turnip | * | any | * | crashed creating samplers with custom border colours in a game (2023); Eden lifted the ban | yuzu b2aeb50229 (2023-04-01); lifted in Eden PR 3042 (f7f6a4cde4, 2025-11-21) | new:edenprobe:samplers with custom border colours of every format | never | -
 
+# Block formats (format.c: native_astc=1, the default, samples ASTC as the game's blocks where the device has it, and
+# 0 decodes it on the GPU)
+textureCompressionASTC_LDR | warn | turnip | * | any | * | decodes an illegal or HDR ASTC block as transparent black where the specification says opaque magenta, and sRGB ASTC texels up to 2 steps off (seen on an Adreno 610); native_astc=0 decodes them as the specification says but for a step of sRGB | #1655 | edenprobe:astc: an illegal block is the error colour | 2026-11-11 broken on 26.2.99 (Adreno 610) | -
+
 # Core parts the renderer has no way around: said so a report from such a driver starts from them
 timelineSemaphore | warn | qualcomm | * | any | * | does not run timeline semaphores properly on all of its drivers | yuzu 1462db4694 (2023-07-03) | new:headless:timeline waits and signals across the two queues | never | -
 timelineSemaphore | warn | turnip | * | any | * | has timeline semaphore problems on some devices (a ZTE handset's Snapdragon 870) | yuzu 1462db4694 (2023-07-03) | new:headless:timeline waits and signals across the two queues | never | -
