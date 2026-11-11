@@ -97,6 +97,10 @@ CASES = [
 WHOLE = START + CASES + [summary(2, 1, 1)]
 BASELINE = '# build: abc1234\n# mode: quick notime cpu\ncpu: adds\n'
 MISSING = 'missing'
+# the quiet seconds of a launch that is not meant to be killed: what it proves ends by itself, so no verdict may turn
+# on how long a loaded runner takes to start the fake or to end a crashed one (its core dump); ctest's timeout bounds a
+# hang. The two cases about the clock itself pass their own --timeout
+QUIET = '300'
 
 
 with tempfile.TemporaryDirectory() as temporary:
@@ -119,13 +123,13 @@ with tempfile.TemporaryDirectory() as temporary:
         steps = [step if isinstance(step, dict) else {'lines': step} for step in launches]
         (test / 'scenario.json').write_text(json.dumps({'launches': steps, **plan}))
         command = [sys.executable, str(SCRIPT), 'run', '--runtime', str(runtime), '--nro', str(nro), '--mode', mode]
-        command += ['--out', str(test / 'out'), '--summary', str(test / 'summary.md'), '--timeout', '10', *extra]
+        command += ['--out', str(test / 'out'), '--summary', str(test / 'summary.md'), '--timeout', QUIET, *extra]
         if baseline is not None:
             if baseline != MISSING:
                 (test / 'baseline.txt').write_text(baseline)
             command += ['--baseline', str(test / 'baseline.txt')]
         env = dict(os.environ, FAKE_SCENARIO=str(test / 'scenario.json'))
-        done = subprocess.run(command, env=env, capture_output=True, text=True, timeout=60, check=False)
+        done = subprocess.run(command, env=env, capture_output=True, text=True, check=False)
         log = test / 'scenario.json.log'
         calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
         return done.returncode, done.stdout + done.stderr, test / 'out', calls
