@@ -723,6 +723,62 @@ static SvcObj* offline_page(const char* page) {
     CHECK(((StorageData*)out->data)->size == 0x1010);
     return out;
 }
+/* a web applet run with the CommonArguments of an SDK of version (LaVersion at 8) and a WebArgHeader of shim, with one
+   InitialURL entry: its answer */
+static SvcObj* web_page(u32 id, u32 version, u32 shim) {
+    u8 common[0x20] = {1, 0, 0, 0, 0x20}, arg[0x2000] = {0};
+    SvcObj *in[2], *out;
+    put32(common + 8, version);
+    arg[0] = 1;
+    put32(arg + 4, shim);
+    arg[8] = 1; /* InitialURL */
+    arg[10] = sizeof "https://example.com/";
+    memcpy(arg + 16, "https://example.com/", sizeof "https://example.com/");
+    in[0] = am_storage_new(sizeof common, common);
+    in[1] = am_storage_new(sizeof arg, arg);
+    out = run_applet(id, in, 2);
+    svcobj_unref(in[0]);
+    svcobj_unref(in[1]);
+    return out;
+}
+/* the TLV of type in a web applet's output, walked as the SDK's WebPageReturnValue getters walk it (each entry right
+   after the last one's data): its data, NULL without one */
+static const u8* web_tlv(SvcObj* out, u16 type) {
+    const u8* d = ((StorageData*)out->data)->d;
+    u32 at = 8, i, count = snx_ld_le16(d);
+    for (i = 0; i < count && at + 8 <= ((StorageData*)out->data)->size; i++) {
+        if (snx_ld_le16(d + at) == type) return d + at + 8;
+        at += 8 + snx_ld_le16(d + at + 2);
+    }
+    return NULL;
+}
+/* A version 8.0.0 SDK's ShowWebPage and ShowYouTubeVideo, and a 3.0.0 one's ShowSharePage, read 0x2000 bytes of TLVs
+   or abort; an older ShowWebPage, ShowLobbyPage and ShowOfflineHtmlPage read a WebCommonReturnValue */
+static void test_web_versions(void) {
+    SvcObj* out = web_page(0x13, 0x80000, 5);
+    const u8* exit_reason = web_tlv(out, 1);
+    CHECK(((StorageData*)out->data)->size == 0x2000);
+    CHECK(snx_ld_le16(((StorageData*)out->data)->d) == 1 && get32(((StorageData*)out->data)->d + 4) == 5);
+    CHECK(exit_reason && snx_ld_le16(exit_reason - 6) == 4 && get32(exit_reason) == 0);
+    CHECK(web_tlv(out, 2) == NULL); /* no page shown, no last URL */
+    CHECK(log_has("am: web applet 0x13 (shim 5, version 0x80000): its page closed by the player's X, exit reason 0\n"));
+    svcobj_unref(out);
+    out = web_page(0x18, 0x30000, 4); /* the share page */
+    CHECK(((StorageData*)out->data)->size == 0x2000 && get32(((StorageData*)out->data)->d + 4) == 4);
+    CHECK(web_tlv(out, 1) && get32(web_tlv(out, 1)) == 0);
+    svcobj_unref(out);
+    out = web_page(0x13, 0x30000, 5); /* an older SDK's web page */
+    CHECK(((StorageData*)out->data)->size == 0x1010 && get32(((StorageData*)out->data)->d) == 0);
+    svcobj_unref(out);
+    out = web_page(0x18, 0x80000, 7); /* the lobby page */
+    CHECK(((StorageData*)out->data)->size == 0x1010);
+    svcobj_unref(out);
+    out = web_page(0x17, 0x80000, 3); /* an offline page that names no document */
+    CHECK(((StorageData*)out->data)->size == 0x1010);
+    svcobj_unref(out);
+    test_log[0] = 0;
+    close_handles();
+}
 static void test_applets(void) {
     u8 arg[0x40] = {2};
     SvcObj *in[2], *out;
@@ -954,6 +1010,7 @@ int main(void) {
     test_cpu_boost();
     test_am_command_replies();
     test_applets();
+    test_web_versions();
     CHECK(test_objects == 0 && test_kobjs == 0);
     test_messages();
     test_display_mode_changed();
