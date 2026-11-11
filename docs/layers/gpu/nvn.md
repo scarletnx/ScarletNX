@@ -274,7 +274,12 @@ The GPU address of a cursor is chunk GPU base + (cursor - chunk CPU base). Game 
 Command functions are all inlined copies with no shared reserve helper. Each checks whether cursor + n*4 exceeds the
 limit (game A checks only when the command buffer's byte `+0x6d` is set) and if so calls a slow path (game A `0xd141f20`, game B `0xd15a754`). The slow path calls the memory callback
 (event 0 for command memory, 1 for control memory), expects it to call `AddCommandMemory` or `AddControlMemory`, and
-asserts if the space is still short.
+asserts if the space is still short. Its third argument is the least the callback must add: the bytes the function
+checked for and never fewer than `0x200` for command memory, `0x100` for control memory (the drivers of NVN SDK
+4.5, 9.3 and 16.2 alike). The bytes checked for are the most the function may write, not what it writes: every state
+bind (color, channel mask, depth-stencil, polygon, multisample, vertex attributes) checks for `0xc4` bytes and a
+vertex stream bind for `0x100`, so on the console the callback runs while that many bytes are not free. The runtime
+asks only once the bytes a command writes do not fit, with the same third argument.
 
 The control stream:
 
