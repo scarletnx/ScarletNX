@@ -18,6 +18,7 @@
 #include "nx/gpu/vk/extension_bans.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/spirv_emit.h"
 
 int g_vk_preserve_infnan;
@@ -217,8 +218,16 @@ static int create_instance(void) {
     return 1;
 }
 
-/* the queue family that decodes H.264 with Vulkan Video, other than the graphics and compute ones; ~0u when none */
-static u32 video_decode_family(void) {
+/* the codecs Vulkan Video decodes for the runtime (the vulkan_video setting), each with its extension */
+static const struct {
+    VkVideoCodecOperationFlagsKHR op;
+    const char *name, *ext;
+} video_codecs[] = {{VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR, "H.264", VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME},
+                    {VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR, "AV1", VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME}};
+/* the queue family that decodes with Vulkan Video, other than the graphics and compute ones: the one that decodes the
+   most of want's codecs (VK_VIDEO_CODEC_OPERATION_DECODE_*), the first of those, *codecs the ones it does; ~0u when
+   none decodes any */
+static u32 video_decode_family(VkVideoCodecOperationFlagsKHR want, VkVideoCodecOperationFlagsKHR* codecs) {
     u32 n = 0, found = ~0u;
     vkGetPhysicalDeviceQueueFamilyProperties2(g_vk.phys, &n, NULL);
     VkQueueFamilyProperties2* q = calloc(n ? n : 1, sizeof *q);
@@ -230,11 +239,15 @@ static u32 video_decode_family(void) {
         q[i].pNext = &v[i];
     }
     vkGetPhysicalDeviceQueueFamilyProperties2(g_vk.phys, &n, q);
-    for (u32 i = 0; i < n && found == ~0u; i++)
-        if ((q[i].queueFamilyProperties.queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) &&
-            (v[i].videoCodecOperations & VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR) && i != g_vk.gfx_family &&
-            i != g_vk.compute_family)
+    *codecs = 0;
+    for (u32 i = 0; i < n; i++) {
+        VkVideoCodecOperationFlagsKHR has = v[i].videoCodecOperations & want;
+        if ((q[i].queueFamilyProperties.queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) && i != g_vk.gfx_family &&
+            i != g_vk.compute_family && snx_popcount64(has) > snx_popcount64(*codecs)) {
             found = i;
+            *codecs = has;
+        }
+    }
     free(q);
     free(v);
     return found;
@@ -716,6 +729,7 @@ static int create_device(void) {
     int has_pipeline_robustness = 0, has_robustness2 = 0;
     u32 next = 0;
     int has_shader_clock = 0, has_feedback_dynamic = 0, has_cond = 0, has_provoking = 0, video_exts = 0;
+    VkVideoCodecOperationFlagsKHR video_codec_exts = 0; /* the codecs whose decode extension the device has */
     int has_list_restart = 0;
     int has_barycentric = 0;
     int has_portability = 0, has_reconvergence = 0;
@@ -816,8 +830,9 @@ static int create_device(void) {
         if (has_portability) ext[next++] = "VK_KHR_portability_subset";
         g_vk.has_portability = has_portability;
         video_exts = snx_vk_extensions_has(&e, VK_KHR_VIDEO_QUEUE_EXTENSION_NAME) +
-                     snx_vk_extensions_has(&e, VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME) +
-                     snx_vk_extensions_has(&e, VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME);
+                     snx_vk_extensions_has(&e, VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME);
+        for (u32 i = 0; i < sizeof video_codecs / sizeof *video_codecs; i++)
+            if (snx_vk_extensions_has(&e, video_codecs[i].ext)) video_codec_exts |= video_codecs[i].op;
         if (snx_vk_extensions_has(&e, VK_KHR_INDEX_TYPE_UINT8_EXTENSION_NAME))
             index8_ext = VK_KHR_INDEX_TYPE_UINT8_EXTENSION_NAME;
         else if (snx_vk_extensions_has(&e, VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME))
@@ -889,18 +904,31 @@ static int create_device(void) {
             ext[next++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
     }
     /* FFmpeg's Vulkan decoder loads the 1.3 commands by their core names */
-    g_vk.video_family = g_settings.vulkan_video_decode && video_exts == 3 && core13 ? video_decode_family() : ~0u;
+    g_vk.video_codecs = 0;
+    g_vk.video_family = g_settings.vulkan_video_decode && video_exts == 2 && video_codec_exts && core13
+                            ? video_decode_family(video_codec_exts, &g_vk.video_codecs)
+                            : ~0u;
     if (g_vk.video_family != ~0u) {
         ext[next++] = VK_KHR_VIDEO_QUEUE_EXTENSION_NAME;
         ext[next++] = VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME;
-        ext[next++] = VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME;
-        LOG("vulkan: H.264 movies decode with Vulkan Video, on queue family %u (experimental)\n", g_vk.video_family);
+        for (u32 i = 0; i < sizeof video_codecs / sizeof *video_codecs; i++)
+            if (g_vk.video_codecs & video_codecs[i].op) {
+                ext[next++] = video_codecs[i].ext;
+                LOG("vulkan: %s movies decode with Vulkan Video, on queue family %u (experimental)\n",
+                    video_codecs[i].name, g_vk.video_family);
+            } else if (video_codec_exts & video_codecs[i].op)
+                LOG("vulkan: %s movies decode on the CPU: queue family %u, which Vulkan Video decodes on, doesn't "
+                    "decode %s\n",
+                    video_codecs[i].name, g_vk.video_family, video_codecs[i].name);
+            else
+                LOG("vulkan: %s movies decode on the CPU: %s is off (its line above says why)\n", video_codecs[i].name,
+                    video_codecs[i].ext);
     } else if (g_settings.vulkan_video_decode && !core13)
         WARN("vulkan: Vulkan Video decode was asked for, but FFmpeg's Vulkan decoder needs Vulkan 1.3 and this device "
              "runs 1.2: FFmpeg decodes movies on the CPU\n");
     else if (g_settings.vulkan_video_decode)
-        WARN("vulkan: Vulkan Video decode was asked for, but the device has no H.264 decode queue: FFmpeg decodes "
-             "movies on the CPU\n");
+        WARN("vulkan: Vulkan Video decode was asked for, but the device has no H.264 or AV1 decode queue: FFmpeg "
+             "decodes movies on the CPU\n");
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT fdiv = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT};
     VkPhysicalDeviceCustomBorderColorFeaturesEXT fbc = {

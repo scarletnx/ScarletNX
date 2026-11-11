@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The Ounce's native video service (native_video.h): the decoder contexts the graphics supervisor opens, their codec
-   sessions, and the video image pools. FFmpeg decodes on the CPU, and the GPU writes a picture into the image the
-   client acquires next, in the order of the fences RegisterImage and ReleaseImage gave. Then the codec's
+   sessions, and the video image pools. FFmpeg decodes (native_video_decoder.c: on the CPU, or AV1 with Vulkan Video
+   when the vulkan_video setting asks for it), and the GPU writes a picture into the image the client acquires next, in
+   the order of the fences RegisterImage and ReleaseImage gave. Then the codec's
    syncpoint reaches the image's fence, and the game reads the image (ReadDecoderOutputImageNv12, or its GPU mapping).
    Every command takes g_host.native_video.lock. The structure and the command set follow closed PR #1009, which
    implemented the same protocol in another layout of the runtime, checked against the game's SDK */
@@ -10,7 +11,9 @@
 #include "nx/hle/services/native_video.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
+#include "nx/gpu/video/host1x.h" /* ffmpeg_log_init */
 #include "nx/gpu/video/vic_regs.h"
+#include "nx/runtime/options.h"
 #include <libavcodec/avcodec.h>
 #include <limits.h>
 #include <math.h>
@@ -158,10 +161,9 @@ static u32 codec_index(const NativeVideoCodec* s) { return (u32)(s - NV->codecs)
 #define HOST(s) (&g_host.native_video.codecs[codec_index(s)])
 
 static void host_free(NativeVideoCodec* s) {
-    avcodec_free_context(&HOST(s)->decoder);
+    nvideo_decoder_close(&HOST(s)->decoder);
     av_frame_free(&HOST(s)->frame);
     for (u32 i = 0; i < NVIDEO_INPUTS; i++) av_packet_free(&HOST(s)->packets[i]);
-    av_frame_free(&HOST(s)->black);
     HOST(s)->nblack = 0;
 }
 /* back to a codec that was just made: its decoder, syncpoint, memory and event let go */
@@ -204,9 +206,10 @@ static void rgb_matrix(VicSlot* s, const AVFrame* f) {
     s->clamp_hi = 1023;
 }
 /* the picture written into its image on the GPU, as NVDEC's pictures are (the renderer's nvdec_write, pitch linear):
-   FFmpeg's planar rows are staged, the GPU interleaves the chroma, and the image is published over guest memory, which
-   the game's CPU reads (ReadDecoderOutputImageNv12) land. 1 when written */
-static int image_write(const NativeVideoPool* p, u32 id, const AVFrame* f) {
+   FFmpeg's planar rows are staged and the GPU interleaves the chroma, or a picture Vulkan Video decoded is copied out
+   of its GPU image, and the image is published over guest memory, which the game's CPU reads
+   (ReadDecoderOutputImageNv12) land. 1 when written */
+int native_video_image_write(const NativeVideoPool* p, u32 id, const AVFrame* f) {
     const NativeVideoLayout* l = &p->layout;
     u32 w = (u32)f->width, h = (u32)f->height;
     u64 cpu = p->cpu + (u64)(id - p->first) * l->image_bytes;
@@ -225,7 +228,8 @@ static int image_write(const NativeVideoPool* p, u32 id, const AVFrame* f) {
                     .pitch_c = pitch,
                     .surf_h = l->rows,
                     .pitch_linear = 1};
-    if ((f->format != AV_PIX_FMT_YUV420P && f->format != AV_PIX_FMT_YUVJ420P) ||
+    int hw = f->format == AV_PIX_FMT_VULKAN; /* 8 bit 4:2:0 too: the decoder takes no other from Vulkan Video */
+    if ((!hw && f->format != AV_PIX_FMT_YUV420P && f->format != AV_PIX_FMT_YUVJ420P) ||
         (!nv12 && ext_y + ext_c > l->image_bytes) || w > (l->extent & 0xffff) + 1u || h > (l->extent >> 16) + 1u) {
         WARN_LIMIT(4, "gsv: a %ux%u picture (format %d) doesn't fit video image %u (kind %u, extent %#x)\n", w, h,
                    f->format, id, l->kind, l->extent);
@@ -239,10 +243,13 @@ static int image_write(const NativeVideoPool* p, u32 id, const AVFrame* f) {
         WARN_LIMIT(4, "gsv: a video picture before the renderer started, dropped\n");
         return 0;
     }
-    for (int i = 0; i < 3; i++) { /* Y, U, V */
-        pic.plane[i] = f->data[i];
-        pic.stride[i] = f->linesize[i];
-    }
+    if (hw)
+        pic.hw = f;
+    else
+        for (int i = 0; i < 3; i++) { /* Y, U, V */
+            pic.plane[i] = f->data[i];
+            pic.stride[i] = f->linesize[i];
+        }
     if (!g_renderer->nvdec_write(&pic)) return 0;
     if (nv12) return 1;
     if (!g_renderer->vic_compose) {
@@ -281,8 +288,9 @@ static void codec_output(NativeVideoCodec* s, NativeVideoImage* image, const AVF
     if (image->wait_id < SYNCPT_IDS && !syncpt_wait(image->wait_id, image->wait_value, 200000000))
         WARN_LIMIT(4, "gsv: video image %u: the game's fence %u on syncpoint %u isn't reached, written anyway\n",
                    image->id, image->wait_value, image->wait_id);
-    if (f && p && !(f == HOST(s)->black && painted_black(s, image->id))) {
-        if (image_write(p, image->id, f) && f == HOST(s)->black && HOST(s)->nblack < NVIDEO_IMAGES)
+    int black = HOST(s)->decoder.way == NVIDEO_DECODER_BLACK; /* f is the stand-in's picture then */
+    if (f && p && !(black && painted_black(s, image->id))) {
+        if (native_video_image_write(p, image->id, f) && black && HOST(s)->nblack < NVIDEO_IMAGES)
             HOST(s)->black_images[HOST(s)->nblack++] = image->id;
     } else if (f && !p)
         WARN_LIMIT(4, "gsv: video image %u has no pool: its picture is dropped\n", image->id);
@@ -295,28 +303,11 @@ static void codec_output(NativeVideoCodec* s, NativeVideoImage* image, const AVF
        and CPU reads of the image then follow */
     syncpt_add(s->syncpoint, nvideo_image_fill(s, image, props));
 }
-/* An AV1 stream in a build without dav1d (cmake/dav1d.cmake: not built for its target, or turned off), whose FFmpeg has
-   no AV1 decoder that decodes in software: each input comes out as a black picture with the input's timestamp, and the
-   end of the stream as it is, so the game plays the movie through, black, and goes on */
-static void standin_pump(NativeVideoCodec* s) {
-    NativeVideoImage* image;
-    while (s->started && s->input_count && (image = nvideo_image_next(s))) {
-        NativeVideoInput* in = &s->inputs[s->input_head];
-        codec_output(s, image, in->eos ? NULL : HOST(s)->black, in->timestamp);
-        av_packet_unref(HOST(s)->packets[s->input_head]);
-        nvideo_input_pop(s);
-    }
-}
 /* the decoder fed and its pictures written while images are queued */
 static void codec_pump(NativeVideoCodec* s) {
-    AVCodecContext* dec = HOST(s)->decoder;
+    NativeVideoDecoder* dec = &HOST(s)->decoder;
     AVFrame* frame = HOST(s)->frame;
-    if (HOST(s)->black) {
-        standin_pump(s);
-        submission_event(s);
-        return;
-    }
-    while (dec && s->started) {
+    while (dec->way != NVIDEO_DECODER_NONE && s->started) {
         NativeVideoImage* image;
         if (frame->buf[0]) {
             if (!(image = nvideo_image_next(s))) break;
@@ -328,18 +319,18 @@ static void codec_pump(NativeVideoCodec* s) {
             if (!(image = nvideo_image_next(s))) break;
             codec_output(s, image, NULL, s->eos_timestamp);
             /* the stream ended: the decoder starts the next one (a movie that loops) from nothing */
-            avcodec_flush_buffers(dec);
+            nvideo_decoder_flush(dec);
             s->eos = 0;
             continue;
         }
-        int r = avcodec_receive_frame(dec, frame);
+        int r = nvideo_decoder_receive(dec, frame);
         if (!r) continue;
         if (r == AVERROR_EOF) {
             if (s->eos == 1) {
                 s->eos = 2;
                 continue;
             }
-            avcodec_flush_buffers(dec);
+            nvideo_decoder_flush(dec);
             break;
         }
         if (r != AVERROR(EAGAIN)) {
@@ -349,7 +340,7 @@ static void codec_pump(NativeVideoCodec* s) {
         if (!s->input_count) break;
         NativeVideoInput* in = &s->inputs[s->input_head];
         AVPacket* pkt = HOST(s)->packets[s->input_head];
-        r = avcodec_send_packet(dec, in->eos ? NULL : pkt);
+        r = nvideo_decoder_send(dec, in->eos ? NULL : pkt);
         if (r == AVERROR(EAGAIN)) break;
         if (r < 0 && r != AVERROR_EOF) WARN_LIMIT(8, "gsv: the video decoder refused a packet (%d)\n", r);
         if (in->eos) {
@@ -429,36 +420,16 @@ static int nn_gsv_INativeVideoCodec_Configure(SvcObj* self, IpcBuf mime, const n
         R_THROW(NVIDEO_BAD_ARGUMENT);
     }
     R_UNLESS(cfg->width && cfg->height && cfg->width <= 8192 && cfg->height <= 8192, NVIDEO_BAD_ARGUMENT);
-    /* AV1: dav1d's decoder, the only one this FFmpeg has for it, or the black stand-in in a build without it */
-    const AVCodec* codec = avcodec_find_decoder(id);
-    int av1 = id == AV_CODEC_ID_AV1 && !codec;
-    AVCodecContext* dec = codec ? avcodec_alloc_context3(codec) : NULL;
-    int ok = dec != NULL || av1;
-    if (av1 && (HOST(s)->black = av_frame_alloc())) { /* the stand-in's picture: limited range black */
-        AVFrame* f = HOST(s)->black;
-        f->format = AV_PIX_FMT_YUV420P;
-        f->width = (int)cfg->width;
-        f->height = (int)cfg->height;
-        ok = av_frame_get_buffer(f, 0) >= 0;
-        for (int i = 0; i < 3 && ok; i++)
-            memset(f->data[i], i ? 128 : 16, (size_t)f->linesize[i] * (size_t)(i ? (f->height + 1) / 2 : f->height));
-        if (ok)
-            WARN("gsv: video codec %u: an AV1 stream, which this build has no decoder for: its pictures come out black\n",
-                 codec_index(s));
-    } else if (av1)
-        ok = 0;
-    if (dec) {
-        dec->thread_count = 4;
-        dec->thread_type = FF_THREAD_SLICE; /* no frame threads: each packet's picture comes out at once */
-        if (id == AV_CODEC_ID_AV1) dec->flags |= AV_CODEC_FLAG_LOW_DELAY; /* dav1d's frame delay 1, for the same */
-        dec->pkt_timebase = (AVRational){1, 1000000};
-        if (h264_config && (dec->extradata = av_mallocz((size_t)mime.size + AV_INPUT_BUFFER_PADDING_SIZE))) {
-            memcpy(dec->extradata, GP(mime.addr), (size_t)mime.size);
-            dec->extradata_size = (int)mime.size;
-        }
-        ok = avcodec_open2(dec, codec, NULL) >= 0;
-    }
-    HOST(s)->decoder = dec;
+    /* AV1 with Vulkan Video where the vulkan_video setting asks for it and the renderer has a decode queue for it */
+    void* hw = NULL;
+    const char* no_hw = "vulkan_video=0";
+    if (id == AV_CODEC_ID_AV1 && g_settings.vulkan_video_decode &&
+        !(g_renderer_up && g_renderer->nvdec_hw_device && (hw = g_renderer->nvdec_hw_device(NVDEC_HW_AV1))))
+        no_hw = "vulkan_video=1, but the renderer has no AV1 decode queue for FFmpeg";
+    ffmpeg_log_init();
+    int ok =
+        nvideo_decoder_open(&HOST(s)->decoder, codec_index(s), h264_config ? NVIDEO_MIME_H264 : kind, cfg->width,
+                            cfg->height, h264_config ? GP(mime.addr) : NULL, h264_config ? mime.size : 0, hw, no_hw);
     HOST(s)->frame = ok ? av_frame_alloc() : NULL;
     ok = ok && HOST(s)->frame;
     for (u32 i = 0; i < NVIDEO_INPUTS && ok; i++) ok = (HOST(s)->packets[i] = av_packet_alloc()) != NULL;
@@ -476,7 +447,7 @@ static int nn_gsv_INativeVideoCodec_Configure(SvcObj* self, IpcBuf mime, const n
     s->state = NVIDEO_CONFIGURED;
     submission_event(s);
     LOG("gsv: video codec %u configured: %s %ux%u at %u FPS, inputs of %u bytes at most\n", codec_index(s),
-        codec ? codec->name : "av1 (black stand-in)", s->width, s->height, s->frame_rate, s->capacity);
+        nvideo_decoder_name(&HOST(s)->decoder), s->width, s->height, s->frame_rate, s->capacity);
     R_SUCCEED();
 }
 static int nn_gsv_INativeVideoCodec_GetSubmissionEvent(SvcObj* self, u32* event) {
@@ -546,7 +517,7 @@ static int nn_gsv_INativeVideoCodec_Flush(SvcObj* self) {
 static int nn_gsv_INativeVideoCodec_Stop(SvcObj* self) {
     NativeVideoCodec* s = self->data;
     R_UNLESS(s->state == NVIDEO_CONFIGURED, NVIDEO_BAD_STATE);
-    if (HOST(s)->decoder) avcodec_flush_buffers(HOST(s)->decoder);
+    nvideo_decoder_flush(&HOST(s)->decoder);
     av_frame_unref(HOST(s)->frame);
     while (s->input_count) {
         av_packet_unref(HOST(s)->packets[s->input_head]);

@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* An NVDEC picture laid out in its surfaces on the GPU, and kept there (docs/layers/gpu/ownership.md). FFmpeg decodes on the
-   CPU, and its planes' rows are staged as they are; or, with the vulkan_video setting (experimental, untested), FFmpeg
-   decodes H.264 with Vulkan Video on this device, and its picture's planes are copied out of its image on the GPU.
+   CPU, and its planes' rows are staged as they are; or, with the vulkan_video setting (experimental), FFmpeg decodes
+   H.264 and the native video service's AV1 with Vulkan Video on this device, and its picture's planes are copied out of
+   its image on the GPU.
    The rest is the GPU's: each surface (its current contents: the guest's bytes, or what the GPU holds of them) is
    deswizzled into rows, the picture's rows are copied over them (exactly its width: the bytes after it in a row's last
    16 keep their values, as the hardware leaves them), a CPU picture's U and V interleaved into NV12's chroma first
@@ -224,12 +225,16 @@ static void queue_unlock(AVHWDeviceContext* c, uint32_t family, uint32_t index) 
     }
     vk_unlock();
 }
-void* vk_nvdec_hw_device(void) {
+void* vk_nvdec_hw_device(u32 codec) {
     AVBufferRef* ref;
     AVHWDeviceContext* dc;
     AVVulkanDeviceContext* v;
     int n = 0;
-    if (g_vk.video_family == ~0u || !(ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VULKAN))) return NULL;
+    VkVideoCodecOperationFlagsKHR op = codec == NVDEC_HW_H264  ? VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR
+                                       : codec == NVDEC_HW_AV1 ? VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR
+                                                               : 0;
+    /* video_codecs is 0 without the decode queue */
+    if (!(g_vk.video_codecs & op) || !(ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VULKAN))) return NULL;
     dc = (AVHWDeviceContext*)ref->data;
     v = dc->hwctx;
     v->get_proc_addr = vkGetInstanceProcAddr;
@@ -249,7 +254,7 @@ void* vk_nvdec_hw_device(void) {
     v->qf[n++] = (AVVulkanDeviceQueueFamily){.idx = (int)g_vk.video_family,
                                              .num = 1,
                                              .flags = VK_QUEUE_VIDEO_DECODE_BIT_KHR,
-                                             .video_caps = VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR};
+                                             .video_caps = (VkVideoCodecOperationFlagBitsKHR)g_vk.video_codecs};
     v->nb_qf = n;
 #if FF_API_VULKAN_SYNC_QUEUES
 #pragma clang diagnostic push

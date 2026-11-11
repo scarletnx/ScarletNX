@@ -81,11 +81,13 @@ typedef struct {
     u32 gfx_family, compute_family;
     VkQueue gfx, compute;
     u32 gfx_queues; /* the queues made of the graphics family (2 when compute is the second) */
-    /* Vulkan Video's H.264 decode queue, of a family of its own (~0u without one), made when the vulkan_video setting
-       asks for it (experimental): FFmpeg's Vulkan decoder decodes on it (vk/nvdec.c), told of the device by the
-       extensions and features enabled */
+    /* Vulkan Video's decode queue, of a family of its own (~0u without one), made when the vulkan_video setting asks
+       for it (experimental), and the codecs it decodes of H.264 and AV1 (VK_VIDEO_CODEC_OPERATION_DECODE_*), each with
+       its extension enabled: FFmpeg's Vulkan decoder decodes on it (vk/nvdec.c), told of the device by the extensions
+       and features enabled */
     u32 video_family;
-    const char* dev_ext[65]; /* create_device enables 65 at most, were every one it can enable there */
+    VkVideoCodecOperationFlagsKHR video_codecs;
+    const char* dev_ext[66]; /* create_device enables 66 at most, were every one it can enable there */
     u32 dev_ext_n;
     VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained (to 1.2 on a 1.2 device) */
     VkPhysicalDeviceVulkan11Features feat11;
@@ -1409,7 +1411,7 @@ int vk_vic_compose(const VicJob* j);
    or a Vulkan Video picture's planes copied out of its image, both planes swizzled there, the surfaces published
    (vk_own_publish). 1 when written; takes vk_lock. vk_nvdec_hw_device: the renderer's nvdec_hw_device */
 int vk_nvdec_write(const NvdecPic* p);
-void* vk_nvdec_hw_device(void);
+void* vk_nvdec_hw_device(u32 codec);
 /* dma.c: a launch of the DMA copy engine on the GPU (gpu.h's GpuDmaOp), its destination published: 1 when done, 0
    when it could not be (said, with the bytes it lacked). A launch bigger than one allocation, or whose scratch is
    bigger than VK_PART_SHARE of one, goes in bands of lines. Takes vk_lock. vk_dma_stats: the launches so far, the

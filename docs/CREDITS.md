@@ -11,6 +11,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | zlib 1.3.2 (in FFmpeg's PNG decoder and encoder, `cmake/dependencies.cmake`) | zlib |
 | dav1d (FFmpeg's AV1 decoder for the Ounce's movies) | BSD-2-Clause |
 | libvpx's VP9 test vectors (the WebM project's test data, downloaded for the `nvdec_vp9_*` tests, not shipped) | BSD-3-Clause |
+| libaom's AV1 test vectors (AOMedia's test data, downloaded for the `vulkan_video_av1` test, not shipped) | BSD-2-Clause, libaom's: the test data carries no licence of its own |
 | jsmolka's gba-tests (test ROMs, downloaded for the `agb_gba_*` tests, not shipped) | MIT |
 | hactool / ConvertUTF (`src/nx/runtime/driver/hactool`, with ScarletNX's changes) | ISC / Unicode license |
 | yyjson (the MCP server's JSON and the GPU driver packages' meta.json) | MIT |

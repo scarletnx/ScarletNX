@@ -48,7 +48,7 @@ snx_component(kernel hle/hle.c hle/kernel/kernel.c hle/kernel/thread.c hle/kerne
 # the SVC dispatch, generated from hle/svc/hos.svc
 include("${PROJECT_SOURCE_DIR}/cmake/svcgen.cmake")
 snx_svcgen(snx_kernel)
-snx_component(hle hle/services/services.c hle/services/audren.c hle/services/audren_dsp.c hle/services/pl.c hle/services/pl_font.c hle/services/sm.c hle/services/am.c hle/services/gsv.c hle/services/native_video.c hle/services/native_video_core.c hle/services/set.c hle/services/time.c hle/services/acc.c hle/services/users.c hle/services/audio.c
+snx_component(hle hle/services/services.c hle/services/audren.c hle/services/audren_dsp.c hle/services/pl.c hle/services/pl_font.c hle/services/sm.c hle/services/am.c hle/services/gsv.c hle/services/native_video.c hle/services/native_video_core.c hle/services/native_video_decoder.c hle/services/set.c hle/services/time.c hle/services/acc.c hle/services/users.c hle/services/audio.c
               hle/services/misc.c hle/services/ldr.c hle/services/network/bsd.c hle/services/network/dns.c
               hle/services/network/nifm.c hle/services/network/ssl.c hle/services/network/ldn.c hle/services/network/room.c hle/filesystem/fs.c hle/services/hid.c hle/services/hid_motion.c hle/services/hid_touch.c hle/services/vi.c hle/services/nvdrv.c
               hle/hook/hook.c hle/hook/libc.c hle/hook/diag.c hle/hook/codec.c hle/hook/audio_stream.c hle/hook/verify.c hle/hook/version.c)
@@ -429,6 +429,48 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_storage_lookup COMMAND snx-test-vulkan -H --vk_memory=1 --bench-storage-lookup)
     set_tests_properties(vulkan_storage_lookup PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    if(SNX_TEST_AV1_VECTORS)
+        # the native video service's AV1 decoder on AOMedia's test vectors, each picture against the MD5 its list gives
+        # (tests/vulkan_video_av1.inc): with Vulkan Video where the device decodes AV1, on the CPU elsewhere, and a
+        # monochrome vector that Vulkan Video refuses on any device. The vectors and their lists come from libaom's
+        # test data, downloaded once into CPM_SOURCE_CACHE: a vector's name, then the SHA-256 of the vector and of its
+        # list. Off by default, as the VP9 vectors are (tests/CMakeLists.txt)
+        set(snx_av1_vectors
+            av1-1-b8-01-size-66x66.ivf 5f9285cbc417b0457c806df9154a1898f0f9ca09066abfdfd828cb3b2ba0371b
+                c9e5553ef735c82723595ce9317d55e54e0a8c916902960e65a644090fbf5653
+            av1-1-b8-05-mv.ivf 222a9050059b254dab17cfb802ff829c778e3f93af18961a622c8268576c1395
+                76eeebe50c438619b4cadce90fc194010c50c4a5a876441444d726d12de58c50
+            av1-1-b8-23-film_grain-50.ivf ba3edd82a58414f009e1c821b947ec8de4e0420f33803ca7bfea39af6aeea155
+                8996cc98e68102e60620d28208246009601b2906f05e1d1cc0da74479c828ac9
+            av1-1-b8-24-monochrome.ivf 3dcc2a3c181f74788bd9575d94f0862d9e914415ac358a4da4ed7d904f0535b7
+                01658b28fc7b6760de63602b472c3732af5debef53059b0a3b6f237437afe652)
+        set(snx_av1_paths "")
+        while(snx_av1_vectors)
+            list(POP_FRONT snx_av1_vectors name vector_sha256 list_sha256)
+            string(REGEX REPLACE "^av1-1-|\\.ivf$" "" short "${name}")
+            foreach(file "${name}" "${name}.md5")
+                if(file STREQUAL name)
+                    set(sha256 ${vector_sha256})
+                    set(package snx_av1_${short})
+                else()
+                    set(sha256 ${list_sha256})
+                    set(package snx_av1_${short}_md5)
+                endif()
+                CPMAddPackage(NAME ${package}
+                              URL https://storage.googleapis.com/aom-test-data/${file}
+                              URL_HASH SHA256=${sha256}
+                              DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
+                # checked on every configure, as a package of one file is (cmake/cpm_cache.cmake)
+                snx_cpm_file_check("${${package}_SOURCE_DIR}" "${file}" ${sha256})
+                string(APPEND snx_av1_paths "${${package}_SOURCE_DIR}/${file}\n")
+            endforeach()
+        endwhile()
+        file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/vulkan_video_av1.txt" "${snx_av1_paths}")
+        add_test(NAME vulkan_video_av1 COMMAND snx-test-vulkan -H)
+        set_tests_properties(vulkan_video_av1 PROPERTIES TIMEOUT 60
+            ENVIRONMENT "SNX_TEST_AV1_VECTORS=${CMAKE_CURRENT_BINARY_DIR}/vulkan_video_av1.txt"
+            FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    endif()
     # 120 as its variants: the aarch64 runner's lavapipe takes 55 to 58 s for it
     set_tests_properties(vulkan_headless PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")

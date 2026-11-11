@@ -89,10 +89,11 @@ typedef struct Renderer {
     int (*vic_compose)(const VicJob* j);
     /* an NVDEC picture laid out in its surfaces on the GPU, kept there as VIC's picture is: 0 when it couldn't be */
     int (*nvdec_write)(const NvdecPic* p);
-    /* a new reference to an FFmpeg device (an AVBufferRef of an AVHWDeviceContext) that decodes H.264 with Vulkan
-       Video on this renderer's GPU, for NVDEC's decoder, whose pictures then reach nvdec_write as GPU images: NULL when
-       the GPU has no decode queue or the vulkan_video setting is off */
-    void* (*nvdec_hw_device)(void);
+    /* a new reference to an FFmpeg device (an AVBufferRef of an AVHWDeviceContext) that decodes codec (NVDEC_HW_*)
+       with Vulkan Video on this renderer's GPU, for NVDEC's H.264 decoder and the native video service's AV1 one, whose
+       pictures then reach nvdec_write as GPU images: NULL when the GPU has no decode queue for that codec or the
+       vulkan_video setting is off */
+    void* (*nvdec_hw_device)(u32 codec);
     /* a launch of the DMA copy engine on the GPU, its destination kept there: 0 when it couldn't be. It takes over
        o->snap_id's memory, used or not */
     int (*dma_copy)(const GpuDmaOp* o);
