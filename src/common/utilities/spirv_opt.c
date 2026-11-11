@@ -103,13 +103,16 @@ static void operand_ids(uint32_t op, uint32_t* literal, uint32_t* more) {
 }
 
 size_t spv_opt_dead_code(uint32_t* module, size_t words) {
+    /* "GLSL.std.450" as a module's words hold it, four characters a word from the low byte, on any host */
+    static const uint32_t glsl_name[] = {0x4c534c47, 0x6474732e, 0x3035342e, 0};
     if (words <= SPV_OPT_HEADER) return words;
     uint32_t bound = module[3], glsl = 0;
     size_t first = 0; /* the first OpFunction: what comes before it is the module's declarations */
     for (size_t i = SPV_OPT_HEADER; i < words; i += module[i] >> 16) {
         uint32_t width = module[i] >> 16, op = module[i] & 0xffff;
         assert(width && width <= words - i);
-        if (op == SPV_OP_EXT_INST_IMPORT && width >= 3 && !strcmp((const char*)(module + i + 2), "GLSL.std.450"))
+        if (op == SPV_OP_EXT_INST_IMPORT && width == 2 + sizeof glsl_name / sizeof *glsl_name &&
+            !memcmp(module + i + 2, glsl_name, sizeof glsl_name))
             glsl = module[i + 1];
         if (op == SPV_OP_FUNCTION && !first) first = i;
     }

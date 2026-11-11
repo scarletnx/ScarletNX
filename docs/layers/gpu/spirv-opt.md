@@ -41,7 +41,8 @@ It walks the functions backwards, so an instruction's operands are looked at aft
 whose last read goes after the stores that follow that read were passed takes one more walk, 16 at most.
 
 It never takes out a store to anything but such a variable, a call, an atomic, an image write, a volatile load, a
-branch, or anything outside a function (a type, a constant or a global variable nothing uses stays).
+branch, or anything outside a function (a type, a constant or a global variable nothing uses stays). Values that only
+feed each other around a loop (a phi and its own increment) stay too.
 
 On the Maxwell translator's modules it removes the registers, predicates and flags a block stores for later blocks
 that never read them.
