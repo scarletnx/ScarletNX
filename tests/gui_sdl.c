@@ -4708,6 +4708,82 @@ int main(int argc, char** argv) {
     render(&app);
     shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NSP/XCI/NRO", yellow);
     assert(!app.menu.activated);
+    { /* A frame is the list of its draws (drawn.h). The menu at rest gives the list the window shows, which draws
+         nothing and presents nothing, the window as it was; so does a clock that moves with nothing on the screen
+         showing it. A key that changes the screen gets a frame drawn, once; so does a window uncovered, a texture
+         written, and a draw made outside a frame, each with the same list */
+        Uint64 clock = app.clock;
+        unsigned drawn, kept;
+        SDL_Event uncovered = {0};
+        app.clock = 5000;
+        render(&app);
+        drawn = gui_drawn_drawn();
+        kept = gui_drawn_kept();
+        render(&app);
+        app.clock += 16;
+        render(&app);
+        assert(gui_drawn_drawn() == drawn && gui_drawn_kept() == kept + 2);
+        shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NSP/XCI/NRO", yellow);
+        key(&app, SDLK_DOWN);
+        render(&app);
+        render(&app);
+        assert(gui_drawn_drawn() == drawn + 1 && gui_drawn_kept() == kept + 3);
+        shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NSP/XCI/NRO", normal);
+        key(&app, SDLK_UP);
+        render(&app);
+        assert(gui_drawn_drawn() == drawn + 2);
+        shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NSP/XCI/NRO", yellow);
+        uncovered.type = SDL_EVENT_WINDOW_EXPOSED;
+        event(&app, &uncovered);
+        render(&app);
+        render(&app);
+        assert(gui_drawn_drawn() == drawn + 3 && gui_drawn_kept() == kept + 4);
+        assert(SDL_SetTextureScaleMode(app.font, SDL_SCALEMODE_NEAREST)); /* a texture set: its picture may differ */
+        render(&app);
+        assert(gui_drawn_drawn() == drawn + 4);
+        assert(SDL_SetRenderDrawColor(app.renderer, 1, 2, 3, 255) && SDL_RenderClear(app.renderer)); /* outside one */
+        render(&app);
+        render(&app);
+        assert(gui_drawn_drawn() == drawn + 5 && gui_drawn_kept() == kept + 5);
+        shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NSP/XCI/NRO", yellow);
+        { /* a texture freed in the frame that drew with it (the theme editor's preview frees its pictures so): the
+             frame's draws so far are made before it goes, not at the present, when it is no more */
+            static const Uint8 green[16] = {0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255};
+            static const Uint8 red[16] = {255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255};
+            SDL_Texture* once = SDL_CreateTexture(app.renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, 2, 2);
+            SDL_FRect at = {0, 0, 2, 2};
+            SDL_Rect view;
+            SDL_Surface *read, *rgba;
+            assert(once && SDL_UpdateTexture(once, NULL, green, 8) && SDL_GetRenderViewport(app.renderer, &view));
+            /* and one written after a draw with it, as the font's slot of a wide letter given to another: that draw
+               shows what it held then */
+            view.w = view.h = 1;
+            gui_drawn_begin(app.renderer);
+            assert(SDL_RenderTexture(app.renderer, once, NULL, &at));
+            assert(SDL_UpdateTexture(once, NULL, red, 8));
+            assert(SDL_RenderPresent(app.renderer));
+            read = SDL_RenderReadPixels(app.renderer, &view);
+            assert(read && (rgba = SDL_ConvertSurface(read, SDL_PIXELFORMAT_RGBA32)));
+            assert(!memcmp(rgba->pixels, green, 4));
+            SDL_DestroySurface(rgba);
+            SDL_DestroySurface(read);
+            assert(SDL_UpdateTexture(once, NULL, green, 8));
+            gui_drawn_begin(app.renderer);
+            assert(SDL_RenderTexture(app.renderer, once, NULL, &at));
+            SDL_DestroyTexture(once);
+            assert(SDL_RenderPresent(app.renderer));
+            read = SDL_RenderReadPixels(app.renderer, &view);
+            assert(read && (rgba = SDL_ConvertSurface(read, SDL_PIXELFORMAT_RGBA32)));
+            assert(!memcmp(rgba->pixels, green, 4));
+            SDL_DestroySurface(rgba);
+            SDL_DestroySurface(read);
+            drawn = gui_drawn_drawn();
+            render(&app); /* drawn again after it, whatever its list */
+            assert(gui_drawn_drawn() == drawn + 1);
+            shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NSP/XCI/NRO", yellow);
+        }
+        app.clock = clock;
+    }
     key(&app, SDLK_DOWN);
     key(&app, SDLK_RIGHT);
     assert(app.menu.selected == GUI_3DS);
