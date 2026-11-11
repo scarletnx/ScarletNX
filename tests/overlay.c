@@ -742,6 +742,28 @@ static void finger_rows(void) {
     /* Stats is the sixth item: a finger near its row's foot, far under its letters, switches it */
     assert(overlay_tap(x + 40, first + 5 * 125 + 118, SW, SH) == OVERLAY_NONE && g_settings.stats == !stats);
     assert(overlay_tap(x + 40, first + 5 * 125 + 3, SW, SH) == OVERLAY_NONE && g_settings.stats == stats);
+    /* the panel covers most of the picture now, an on-screen control under some of its rows (the D-pad, as a phone
+       lays them out): a finger on it there is the menu's, not the control's, and its lift takes the row it is on */
+    {
+        const int area[4] = {0, 0, SW, SH};
+        const SnxVpadConfig* v = vpad_config();
+        const SnxOverlayRect panel = {qv(&list.q[0]).x, qv(&list.q[0]).y, qv(&list.q[0]).w, qv(&list.q[0]).h};
+        float dx = v->at[SNX_VPAD_DPAD].x * SW, dy = v->at[SNX_VPAD_DPAD].y * SH;
+        int row = (int)((dy - first) / 125);
+        u64 b;
+        i32 st[4];
+        assert(vpad_ini("controls", "1") && overlay_error_hit(&panel, dx, dy) && row > 0 && row < 7);
+        overlay_move(-5); /* to the first item, away from the row */
+        overlay_pointer_down(11, dx, dy, area);
+        vpad_state(&b, st);
+        assert(!b);
+        assert(overlay_pointer_up(11, dx, dy, SW, SH) != OVERLAY_CLOSE);
+        draw();
+        assert((band = focus_band(ink)) && qv(band).y == first + 125 * (float)row);
+        if (row == 5) assert(g_settings.stats == !stats); /* Stats, switched */
+        g_settings.stats = stats;
+        assert(vpad_ini("controls", "0"));
+    }
     /* On-screen controls' page has eleven items: seven show, and Back, the last, comes into view when in focus */
     assert(overlay_tap(x + 40, first + 60, SW, SH) == OVERLAY_NONE);
     draw();
