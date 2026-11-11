@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nn::fs, native (nn_fs.hook). The SDK's public file system functions, answered from the runtime's own back end with
+/* nn::fs, native (fs.hook). The SDK's public file system functions, answered from the runtime's own back end with
    no fsp-srv session, as nvn/ answers NVN with no nvhost channel. The behavior is that of a clean-room spec of the
    SDK's functions (their checks, their order, their results and which results stop the game), never the SDK's code.
    What a save's back end answers (a file that exists, a write past the end) is the file system server's, the core in
@@ -17,7 +17,7 @@
    them. The mounts, files and directories are g_hle.nnfs's and g_hle.fs's slots, which a save state holds.
 
    Locks: g_nnfs.lock guards the tables, and is taken before fs_lock (the tree's) when both are held. */
-#include "nx/hle/sdk/nn_fs.h"
+#include "nx/nn/fs.h"
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
 #include "nx/hle/filesystem/fs.h"

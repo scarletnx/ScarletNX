@@ -26,7 +26,7 @@
 #include "nx/hle/services/network/network.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/hook/hook.h"
-#include "nx/hle/sdk/nn_fs.h"
+#include "nx/nn/fs.h"
 #include "nx/hle/pool.h"
 
 typedef struct {
@@ -60,7 +60,7 @@ typedef struct {
     HleSsl ssl;
     /* the file system */
     HleFs fs;
-    HleNnfs nnfs; /* the native nn::fs (hle/sdk/nn_fs.c) */
+    HleNnfs nnfs; /* the native nn::fs (nn/fs.c) */
     /* the hooks' guest memory (hook.h); the functions hooked are the process's, in g_host */
     HleHook hook;
 } Hle;
