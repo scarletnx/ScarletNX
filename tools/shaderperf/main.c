@@ -503,8 +503,13 @@ static void js_module(FILE* f, const char* path, const SrModule* m) {
         js_str(f, m->entries[i].name);
         fprintf(f, ", \"stage\": \"%s\"}", sr_stage_name(m->entries[i].stage));
     }
-    fprintf(f, "],\n   \"local_size\": [%u, %u, %u], \"local_size_spec_ids\": [", m->local[0], m->local[1],
-            m->local[2]);
+    if (m->entry.stage == VK_SHADER_STAGE_GEOMETRY_BIT)
+        fprintf(f, "],\n   \"geometry\": {\"invocations\": %u, \"input_vertices\": %u, \"max_vertices\": %u, "
+                   "\"output\": \"%s\"}",
+                m->gs_invocations, m->gs_input_vertices, m->gs_max_vertices,
+                m->gs_output == 0 ? "points" : m->gs_output == 1 ? "line_strip" : "triangle_strip");
+    fprintf(f, "%s\n   \"local_size\": [%u, %u, %u], \"local_size_spec_ids\": [",
+            m->entry.stage == VK_SHADER_STAGE_GEOMETRY_BIT ? "," : "],", m->local[0], m->local[1], m->local[2]);
     for (int i = 0; i < 3; i++) {
         if (m->local_spec[i] == UINT32_MAX)
             fprintf(f, "%snull", i ? ", " : "");

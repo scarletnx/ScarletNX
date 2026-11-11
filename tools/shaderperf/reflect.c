@@ -25,7 +25,10 @@ enum {
 };
 enum { SC_UNIFORM_CONSTANT = 0, SC_INPUT = 1, SC_UNIFORM = 2, SC_OUTPUT = 3, SC_PUSH_CONSTANT = 9, SC_STORAGE = 12 };
 enum {
-    EM_ORIGIN_LOWER_LEFT = 8, EM_EARLY_TESTS = 9, EM_DEPTH_REPLACING = 12, EM_LOCAL_SIZE = 17, EM_LOCAL_SIZE_ID = 38,
+    EM_INVOCATIONS = 0, EM_ORIGIN_LOWER_LEFT = 8, EM_EARLY_TESTS = 9, EM_DEPTH_REPLACING = 12, EM_LOCAL_SIZE = 17,
+    EM_INPUT_POINTS = 19, EM_INPUT_LINES = 20, EM_INPUT_LINES_ADJACENCY = 21, EM_TRIANGLES = 22,
+    EM_INPUT_TRIANGLES_ADJACENCY = 23, EM_OUTPUT_VERTICES = 26, EM_OUTPUT_POINTS = 27, EM_OUTPUT_LINE_STRIP = 28,
+    EM_OUTPUT_TRIANGLE_STRIP = 29, EM_LOCAL_SIZE_ID = 38,
 };
 #define BUILTIN_WORKGROUP_SIZE 25
 #define NONE UINT32_MAX
@@ -571,6 +574,7 @@ bool sr_reflect(const uint32_t* words, size_t size, const char* entry, SrModule*
     uint32_t ep_id = ep[2];
     bool all_globals = out->version >= 0x00010400u;
     out->local[0] = out->local[1] = out->local[2] = 1;
+    out->gs_invocations = 1;
     out->local_spec[0] = out->local_spec[1] = out->local_spec[2] = NONE;
     size_t bind_cap = 0, in_cap = 0, out_cap = 0, spec_cap = 0;
     /* pass 2: execution modes, variables, spec constants */
@@ -583,6 +587,22 @@ bool sr_reflect(const uint32_t* words, size_t size, const char* entry, SrModule*
             case EM_ORIGIN_LOWER_LEFT: out->origin_lower_left = true; break;
             case EM_EARLY_TESTS: out->early_tests = true; break;
             case EM_DEPTH_REPLACING: out->depth_replacing = true; break;
+            case EM_INVOCATIONS:
+                if (wc >= 4)
+                    out->gs_invocations = in[3];
+                break;
+            case EM_INPUT_POINTS: out->gs_input_vertices = 1; break;
+            case EM_INPUT_LINES: out->gs_input_vertices = 2; break;
+            case EM_INPUT_LINES_ADJACENCY: out->gs_input_vertices = 4; break;
+            case EM_TRIANGLES: out->gs_input_vertices = 3; break;
+            case EM_INPUT_TRIANGLES_ADJACENCY: out->gs_input_vertices = 6; break;
+            case EM_OUTPUT_VERTICES:
+                if (wc >= 4)
+                    out->gs_max_vertices = in[3];
+                break;
+            case EM_OUTPUT_POINTS: out->gs_output = 0; break;
+            case EM_OUTPUT_LINE_STRIP: out->gs_output = 1; break;
+            case EM_OUTPUT_TRIANGLE_STRIP: out->gs_output = 3; break;
             case EM_LOCAL_SIZE:
                 if (wc >= 6)
                     for (int i = 0; i < 3; i++)
@@ -636,6 +656,13 @@ bool sr_reflect(const uint32_t* words, size_t size, const char* entry, SrModule*
             if (!listed)
                 continue;
             SrVarying v;
+            /* a geometry shader's inputs are arrays of one element a vertex of the primitive: the element is what
+               a location holds */
+            if (sc == SC_INPUT && out->entry.stage == VK_SHADER_STAGE_GEOMETRY_BIT) {
+                const uint32_t* d = def(&c, type);
+                if (d && (d[0] & 0xffffu) == OP_TYPE_ARRAY)
+                    type = d[2];
+            }
             varying(&c, var, type, &v);
             if (sc == SC_INPUT) {
                 out->inputs = grow(out->inputs, &in_cap, out->input_count, sizeof v);
