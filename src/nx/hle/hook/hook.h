@@ -8,8 +8,9 @@
 
    A hook takes the function's slot in the dispatch table (g_disp), which every call to a hooked function goes
    through: the game's calls into another of its modules (through the PLT and GOT the game's dynamic linker fills),
-   its calls through function pointers, its direct calls within a module (the recompiler calls a function whose symbol
-   a hook names through its slot, snx_codegen_routed and nx/loader/hook_routes.h) and the runtime JIT's calls
+   its calls through function pointers, its direct calls within a module and its calls through a PLT stub bound to
+   the function (the recompiler calls a function whose symbol a hook names through its slot, snx_codegen_routed and
+   nx/loader/hook_routes.h) and the runtime JIT's calls
    (jit_service.c calls an AOT function directly only while its slot still holds it). Hooks are installed once the game's executables are loaded, before its first
    thread, and stay for the whole run. A hook may hold only for some versions of the SDK that built the module
    exporting its function, and its handler may read guest structs through the layout for that version
@@ -151,7 +152,8 @@ typedef struct {
 void hook_install(void);
 /* whether the module calls the function of symbol name through its dispatch slot: its route list (main.h's g_routes)
    names it, or the module has no list (it routes every function it exports) or routes every call (--hook-direct-calls).
-   When not, a hook in the slot sees only the calls through the PLT and function pointers */
+   When not, a hook in the slot sees only the calls through function pointers and the PLT stubs the module did not
+   bind (loader.h's SnxBoundBranch) */
 int hook_routed(const char* name);
 /* puts the hooks in [addr, addr + size) back in their slots after the JIT dropped what was compiled there
    (jit_code_invalidate), where the function is still executable code */

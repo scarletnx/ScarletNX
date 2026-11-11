@@ -798,6 +798,19 @@ static int make_program(const MakeArgs* a, int index) {
             i = update_nros(folder, input, owner, index, &key_paths, compile.quiet, &nros);
         if (i) goto done;
     }
+    /* the calls through the modules' PLT stubs made direct where one module alone defines the stub's function
+       (loader.h's SnxBoundBranch). With every call through its dispatch slot (--hook-direct-calls) none is */
+    if (program.npdm.is64 && !gen.interp_only && !gen.hook_direct_calls) {
+        SnxBoundBranch* bound = NULL;
+        size_t own = 0, sites = 0;
+        if (snx_program_bound(&program, &bound, &gen.bound_count, &own, &sites, error, sizeof error))
+            printf("PLT: %s: the modules' calls through their PLT stubs go through the dispatch table\n", error);
+        else if (!compile.quiet)
+            printf("PLT: %zu calls through %zu stubs made direct, %zu stubs of their module's own functions and %zu of "
+                   "another module's\n",
+                   sites, gen.bound_count, own, gen.bound_count - own);
+        gen.bound = bound;
+    }
     if (snx_nros_place(&nros, &program, compile.quiet)) goto done;
     gen.nros = nros.places;
     gen.nro_count = nros.count;
@@ -914,6 +927,7 @@ done:
     free(mods_off);
     free(mods_stamp);
     free((void*)gen.hints);
+    free((void*)gen.bound);
     free((void*)llvm.layout);
     free(title);
     free(game);

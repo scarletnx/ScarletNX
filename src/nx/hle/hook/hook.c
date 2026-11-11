@@ -183,8 +183,9 @@ static int hook_put(int k, u64 addr, const char* name, const unsigned char verif
     jit_slot_taken(addr, h->fn[h->count]);
     h->count++;
     if (!hook_routed(hook_symbol[k]))
-        WARN("hooks: %s at %llx runs %s only for the calls through the PLT and function pointers: the module's "
-             "route list doesn't name it, so its direct calls run its own code. Recompile the game for them\n",
+        WARN("hooks: %s at %llx runs %s only for the calls through function pointers and the PLT stubs the module "
+             "did not bind: the module's route list doesn't name it, so its direct calls run its own code. Recompile "
+             "the game for them\n",
              name, (unsigned long long)addr, hook_handler[k]);
     return 0;
 }

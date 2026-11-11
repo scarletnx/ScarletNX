@@ -136,6 +136,18 @@ the game's image read from that image.
   does, so a loop without SVCs gives its core to a waiting thread of higher priority. A backward branch's poll then
   leaves the function: it calls the function itself at the branch's target, which its entry and `D_` send to the
   target's label. The call is not in the loop, so `ir_promote.c` reloads no register after it inside the loop.
+- A module calls another module's functions, and some of its own, through its PLT: a stub (`adrp x16`, `ldr x17` of
+  its slot, `add x16`, `br x17`) branches to the address the game's linker puts in the slot at the stub's first call.
+  The recompile binds each stub whose symbol one module alone of the program defines as a function
+  (`snx_program_exports` and `snx_module_bound` in `src/nx/loader/loader.c`, from each module's dynamic symbols as the
+  game's linker reads them: a symbol with a section, not local; the recompile's `PLT:` line counts them). A bound stub
+  compares the address it loaded with that function's: equal, it calls the function as a `BL` to it would; anything
+  else in the slot (the linker has not bound it yet, a mod wrote another function there) goes through `CPU.disp` as
+  before. A symbol two modules define is the linker's to pick, and its stub stays as it was; so does every stub with
+  `--hook-direct-calls`, and the stub of a function a hook names calls through the function's slot
+  ([Hooks](../platforms/nx/hooks.md#how-a-call-reaches-a-hook)). An NRO's module binds its stubs the same way
+  ([NRO](../platforms/nx/nro.md)). `ctest -R plt_calls` (`tests/plt_calls.c`) recompiles a game of two modules and
+  runs its calls with each slot unbound, bound and holding another function.
 - The LLVM backend's speed: guest memory and the CPU structure are separate alias scopes (registers stay in host
   registers). Guest accesses are unaligned, and volatile only when `volatile_memory` is enabled (off by default).
   Logical immediates and SIMD

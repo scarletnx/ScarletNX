@@ -443,7 +443,7 @@ void nvn_loader_init(void) {
     g_nvn.loader.flag = kernel_find_symbol_exact("nvnPrivate0");
     if (!hook_routed("nvnBootstrapLoader"))
         WARN("nvn: the module's route list doesn't name nvnBootstrapLoader, so nvn sees only its calls through "
-             "the PLT and function pointers. Recompile the game for its direct calls\n");
+             "function pointers and the PLT stubs the module did not bind. Recompile the game for its direct calls\n");
     *slot = bootstrap; /* before any guest thread runs */
     nce_slot_taken(entry, "nvn loader");
     g_nvn.loader.active = 1;
