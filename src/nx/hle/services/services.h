@@ -19,6 +19,10 @@ void am_display_version(char version[16]);
 /* the sizes of the game's save data of a type (nn::fs::SaveDataType: 1 an account's, 3 the device's), as the system made
    it: what ExtendSaveData gave it, else the NACP's, 64 MiB each without a NACP. 0 and 0 for another type with a NACP */
 void am_save_data_size(u8 type, i64* normal_size, i64* journal_size);
+/* ExtendSaveData's sizes for the account's (type 1) or the device's (3) save, which am_save_data_size gives after */
+void am_save_data_extend(u8 type, i64 normal_size, i64 journal_size);
+/* the first add-on content's data id less 1 of application_id: data id = base id + index */
+u64 aoc_base_id(u64 application_id);
 /* whether the game's control.nacp sets user_account_switch_lock, which acc answers for the SDK (0 without one) */
 int am_user_account_switch_lock(void);
 /* the ID the running game's add-on content is numbered from: AddOnContentBaseId in its control.nacp, which a game
