@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The on-screen layer's pass (gpu/vk/ui.c) on an image of its own as the swapchain's, opaque or not written: each quad an instance whose
-   corners the vertex shader makes, the atlas sampled in texels, and the device's buffer of instances given only the
-   quads that changed since the frame before. Each frame's pixels against the CPU's blend of the same quads, the stats
-   box and the debug line (stats.c, hud.c), where they are sure: a pixel whose centre or texel falls on an edge, or
-   that a linear sample covers, is not compared. The frames change some of the box's letters, none, the line's length,
-   the box's corner, and take the box away and back, so the device's buffer holds every kind of change */
+/* The on-screen layer's pass (gpu/vk/ui.c, vk_ui_draw) on an image of its own as the swapchain's, each pixel opaque or
+   not written: each quad an instance whose corners the vertex shader makes, the atlas sampled in texels, and the
+   device's buffer of instances given only the quads that changed since the frame before. Each frame's pixels against
+   the CPU's blend of the same quads, the stats box and the debug line (stats.c, hud.c), where they are sure: a pixel
+   whose centre or texel falls on an edge, or that a linear sample covers, is not compared. The frames change some of
+   the box's letters, none, the line's length, the box's corner, and take the box away and back, so the device's buffer
+   holds every kind of change */
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/stats.h"

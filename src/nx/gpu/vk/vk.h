@@ -2081,6 +2081,11 @@ void vk_pass_ends_log(void);
 /* the on-screen controls and the game's menu over a swapchain image in TRANSFER_DST_OPTIMAL, which it stays in;
    safe is the picture's part clear of the system's bars (gpu/vk/ui.c) */
 void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]);
+/* The window's one pass over sc, which the acquire waits for at the colour output: cleared to black, src's crop drawn
+   at to (transform's flips, then its quarter turn), and the on-screen layer over it; sc ends ready to present. src is
+   sampled through its bytes' view into a UNORM swapchain, so nothing converts sRGB; NULL for black alone */
+void vk_ui_present(VkCommandBuffer cb, VkImage sc, Surf* src, VkRect2D crop, VkRect2D to, u32 transform,
+                   const int safe[4]);
 void vk_ui_swapchain_gone(void); /* its images' views go before the swapchain does */
 void vk_render_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o);
 /* viewport index of a draw's state with the resolution scale, and the draw's facing */

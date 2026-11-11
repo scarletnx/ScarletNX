@@ -1,19 +1,20 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The on-screen controls, the game's menu (runtime/platform/ui.h) and the shader loading screen before the game
-   (runtime/platform/prepare_screen.h) over a presented frame: the quads they give, blended onto the swapchain image
-   in a pass of their own after the frame's blit. Nothing is recorded while none shows.
+   (runtime/platform/prepare_screen.h) over a presented frame: the quads they give, drawn opaque in the window's one
+   pass (vk_ui_present), after the frame's own quad and before the present. Nothing is recorded while none shows.
 
    Each quad is an instance, its SnxUiQuad (20 bytes) as it is, whose corners the vertex shader makes: the CPU writes no
    vertices. The instances stay in a buffer on the device from frame to frame, and a frame copies into it only the
    quads that differ from the ones it holds. The stats box and the debug line keep their layout and their quads in the
-   same places (ui_cells), so a frame over the game sends a few letters and the graph's bars, or nothing */
+   same places (ui_cells), so a frame over the game sends a few letters and a byte of the graph's ring, or nothing */
 #include "nx/gpu/vk/descriptor_objects.h"
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/present_quad.h"
 #include "nx/gpu/vk/ui_spv.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/font.h"
@@ -543,18 +544,20 @@ static int instances_send(VkCommandBuffer cb, int n) {
 }
 /* the quad's sample: its descriptor set */
 static unsigned quad_sample(int i) { return ui_q_bits(&g_quads[i], UI_Q_SAMPLE, 2); }
-void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
+/* ui.vert's Picture: the picture's size, its sRGB (only where the surface has no UNORM format), the ring's head and
+   its slots from bit 16, the bars' slow colour and its height, and the backed letters' ground */
+typedef struct {
+    float w, h;
+    u32 srgb, ring, slow, slow_from, ground;
+} UiPicture;
+static UiPicture g_pc;
+/* the frame's layer, before a rendering pass: its quads made (the producers, under ui_lock) and what changed sent, the
+   push constants set; the quads to draw, 0 for none */
+static int ui_prepare(VkCommandBuffer cb, const int safe[4]) {
     SnxUiList list = {g_quads, 0, MAX_QUADS};
-    int sw = (int)g_vk.sc_extent.width, sh = (int)g_vk.sc_extent.height, n, i, run, set;
-    VkImageView view;
-    /* ui.vert's Picture: the ring's head and its slots from bit 16, the bars' slow colour and its height, and the
-       backed letters' ground */
-    struct {
-        float w, h;
-        u32 srgb, ring, slow, slow_from, ground;
-    } pc = {(float)sw, (float)sh, (u32)g_vk.sc_srgb, 0, 0, 0, 0};
+    int sw = (int)g_vk.sc_extent.width, sh = (int)g_vk.sc_extent.height, n;
     SnxUiRing ring;
-    if (!layout_make()) return;
+    if (!layout_make()) return 0;
     ui_lock();
     atlas_upload(cb);
     image_upload(cb);
@@ -576,52 +579,85 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
     }
     overlay_draw(&list, sw, sh, plat_ns());
     ring = *ui_ring();
-    pc.ground = ui_ground();
+    g_pc = (UiPicture){(float)sw, (float)sh, (u32)g_vk.sc_srgb, (u32)ring.head | (u32)ring.n << 16, ring.slow,
+                              ring.slow_from, ui_ground()};
     ui_unlock();
     n = list.n;
-    pc.ring = (u32)ring.head | (u32)ring.n << 16;
-    pc.slow = ring.slow;
-    pc.slow_from = ring.slow_from;
-    if (!n || !g_atlas || !pipeline_make(g_vk.sc_format) || !(view = sc_view(sc)) || !glyphs_upload(cb)) return;
-    if (!instances_send(cb, n) || !ring_send(cb, &ring)) return;
+    if (!n || !g_atlas || !pipeline_make(g_vk.sc_format) || !glyphs_upload(cb)) return 0;
+    if (!instances_send(cb, n) || !ring_send(cb, &ring)) return 0;
+    return n;
+}
+/* the n quads ui_prepare made, into the rendering pass open on cb, over the whole picture */
+static void ui_record(VkCommandBuffer cb, int n) {
+    VkViewport vp = {0, 0, g_pc.w, g_pc.h, 0, 1};
+    VkRect2D sci = {{0, 0}, g_vk.sc_extent};
+    VkDeviceSize vo = 0;
+    int i, run, set;
+    vk_render_forget_state(); /* another pipeline and layout: a draw after it sets everything again */
+    rec_CmdSetViewport(cb, 0, 1, &vp);
+    rec_CmdSetScissor(cb, 0, 1, &sci);
+    rec_CmdPushConstants(cb, g_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof g_pc,
+                         &g_pc);
+    rec_CmdBindVertexBuffers(cb, 0, 1, &g_inst, &vo);
+    /* runs of quads that sample the same way, in their order: six corners for each instance, the set bound where it
+       changes */
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe);
+    for (i = 0, set = -1; i < n; i = run) {
+        for (run = i + 1; run < n && quad_sample(run) == quad_sample(i); ++run) continue;
+        if (quad_sample(i) == UI_IMAGE && !g_image) continue; /* its upload failed */
+        if (set != (int)quad_sample(i))
+            rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1,
+                                      &g_sets[set = (int)quad_sample(i)], 0, NULL);
+        rec_CmdDraw(cb, 6, (u32)(run - i), 0, (u32)i);
+    }
+}
+/* a rendering pass on sc's view, cleared to black or loaded */
+static void ui_pass_begin(VkCommandBuffer cb, VkImageView view, int clear) {
+    VkRenderingAttachmentInfo at = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                    .imageView = view,
+                                    .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                    .loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+                                    .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                    .clearValue = {.color = {{0, 0, 0, 1}}}};
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                          .renderArea = {{0, 0}, g_vk.sc_extent},
+                          .layerCount = 1,
+                          .colorAttachmentCount = 1,
+                          .pColorAttachments = &at};
+    rec_CmdBeginRendering(cb, &ri);
+}
+void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
+    int n = ui_prepare(cb, safe);
+    VkImageView view;
+    if (!n || !(view = sc_view(sc))) return;
     vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    {
-        VkRenderingAttachmentInfo at = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                                        .imageView = view,
-                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-                                        .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-        VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                              .renderArea = {{0, 0}, g_vk.sc_extent},
-                              .layerCount = 1,
-                              .colorAttachmentCount = 1,
-                              .pColorAttachments = &at};
-        VkViewport vp = {0, 0, (float)sw, (float)sh, 0, 1};
-        VkRect2D sci = {{0, 0}, g_vk.sc_extent};
-        VkDeviceSize vo = 0;
-        rec_CmdBeginRendering(cb, &ri);
-        vk_render_forget_state(); /* another pipeline and layout: a draw after it sets everything again */
-        rec_CmdSetViewport(cb, 0, 1, &vp);
-        rec_CmdSetScissor(cb, 0, 1, &sci);
-        rec_CmdPushConstants(cb, g_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
-        rec_CmdBindVertexBuffers(cb, 0, 1, &g_inst, &vo);
-        /* runs of quads that sample the same way, in their order: six corners for each instance, the set bound where
-           it changes */
-        rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe);
-        for (i = 0, set = -1; i < n; i = run) {
-            for (run = i + 1; run < n && quad_sample(run) == quad_sample(i); ++run) continue;
-            if (quad_sample(i) == UI_IMAGE && !g_image) continue; /* its upload failed */
-            if (set != (int)quad_sample(i))
-                rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1,
-                                          &g_sets[set = (int)quad_sample(i)], 0, NULL);
-            rec_CmdDraw(cb, 6, (u32)(run - i), 0, (u32)i);
-        }
-        rec_CmdEndRendering(cb);
-    }
+    ui_pass_begin(cb, view, 0);
+    ui_record(cb, n);
+    rec_CmdEndRendering(cb);
     vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+}
+void vk_ui_present(VkCommandBuffer cb, VkImage sc, Surf* src, VkRect2D crop, VkRect2D to, u32 transform,
+                   const int safe[4]) {
+    SnxPresentSource from;
+    int n = ui_prepare(cb, safe), framed = src && vk_present_quad_source(cb, src, 1, !g_vk.sc_srgb, &from);
+    VkImageView view = sc_view(sc);
+    /* the acquire's wait is at the colour output (renderer.c's submit): the image's first use */
+    vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+               VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    if (view) {
+        ui_pass_begin(cb, view, 1);
+        if (framed) vk_present_quad_draw(cb, &from, g_vk.sc_format, crop, to, transform);
+        if (n) ui_record(cb, n);
+        rec_CmdEndRendering(cb);
+        vk_render_forget_state();
+    }
+    vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
