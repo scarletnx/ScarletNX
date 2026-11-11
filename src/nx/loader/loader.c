@@ -1187,6 +1187,45 @@ int snx_module_bound(const SnxModuleImage* module, const SnxExport* exports, siz
     return 0;
 }
 
+static int bound_order(const void* a, const void* b) {
+    const SnxBoundBranch *x = (const SnxBoundBranch*)a, *y = (const SnxBoundBranch*)b;
+    return x->at < y->at ? -1 : x->at > y->at;
+}
+int snx_program_bound(const SnxProgram* program, SnxBoundBranch** bound, size_t* count, size_t* own, size_t* sites,
+                      char* error, size_t error_size) {
+    SnxExport* exports = NULL;
+    SnxBoundBranch* all = NULL;
+    size_t export_count = 0, n = 0, m;
+    int rc;
+    *bound = NULL;
+    *count = *own = *sites = 0;
+    rc = snx_program_exports(program, &exports, &export_count, error, error_size);
+    for (m = 0; !rc && export_count && m < program->module_count; ++m) {
+        SnxBoundBranch* one = NULL;
+        size_t one_count = 0, one_own = 0, one_sites = 0;
+        rc = snx_module_bound(&program->modules[m], exports, export_count, 0, &one, &one_count, &one_own, &one_sites,
+                              error, error_size);
+        if (one_count) {
+            all = (SnxBoundBranch*)snx_realloc(all, (n + one_count) * sizeof(*all));
+            memcpy(all + n, one, one_count * sizeof(*all));
+            n += one_count;
+            *own += one_own;
+            *sites += one_sites;
+        }
+        free(one);
+    }
+    free(exports);
+    if (rc) {
+        free(all);
+        *own = *sites = 0;
+        return -1;
+    }
+    if (n) qsort(all, n, sizeof(*all), bound_order);
+    *bound = all;
+    *count = n;
+    return 0;
+}
+
 int snx_load_nro_at(const unsigned char* data, size_t size, const char* name, SnxU64 base, const SnxNpdm* npdm,
                     SnxProgram* program, char* error, size_t error_size) {
     SnxModuleImage* m;

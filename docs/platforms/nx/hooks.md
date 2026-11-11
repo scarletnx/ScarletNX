@@ -23,7 +23,9 @@ function (below).
 Every call to a hooked function goes through its slot in the dispatch table, `g_disp` (`snx_lookup` in `cpu.h`):
 
 - a call into another of the game's modules, through the PLT stub and the GOT the game's own dynamic linker fills
-  (the main executable's `memcpy` is the SDK module's);
+  (the main executable's `memcpy` is the SDK module's). The recompiler binds a stub to the function its symbol names
+  when one module alone of the game defines it ([Recompiler](../../dev/architecture.md#recompiler--module-abi)), and a
+  stub bound to a function whose symbol a hook names keeps calling through the slot;
 - a call through a function pointer or a virtual call (`BLR`), NVN's procedure table among them;
 - a direct call (`BL`, or a tail call's `B`) within a module to a function whose symbol a hook names: the recompiler
   compiles it as a call through the slot (`snx_codegen_routed`, `ir_codegen.c`'s `call`), so LLVM never inlines that
@@ -44,10 +46,10 @@ again. The frame time did not change there, because the GPU thread set it.
 
 Each module carries the list it was recompiled with (`snx_routes()`, `SnxRoutes` in `module_abi.h`): the hash of the
 list and the hash of each symbol. `hook_install` logs the module's list. When it installs a hook whose symbol the
-module's list doesn't name, it warns that the hook sees only the calls through the PLT and function pointers, and
-that a recompile gives it the direct calls too. The NVN loader (`nvn_loader.c`) does the same for
-`nvnBootstrapLoader`. A module made before the list has no `snx_routes`, and routes every function it exports, so it
-works with this runtime unchanged.
+module's list doesn't name, it warns that the hook sees only the calls through function pointers and the PLT stubs
+the module did not bind, and that a recompile gives it the direct calls too. The NVN loader (`nvn_loader.c`) does the
+same for `nvnBootstrapLoader`. A module made before the list has no `snx_routes`, and routes every function it
+exports, so it works with this runtime unchanged.
 The list doesn't change `SNX_ABI`: a hook's handler keeps the guest's data as its function does, so a direct call
 that runs the function's own code is still correct, only not accelerated.
 

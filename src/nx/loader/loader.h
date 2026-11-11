@@ -180,6 +180,11 @@ typedef struct {
    (snx_module_plt's) */
 int snx_module_bound(const SnxModuleImage* module, const SnxExport* exports, size_t export_count, int nro,
                      SnxBoundBranch** bound, size_t* count, size_t* own, size_t* sites, char* error, size_t error_size);
+/* The bound branches of every module of a 64-bit program (snx_module_bound, each as a module of the program, bound
+   through snx_program_exports), in the order of their addresses, malloc'd into *bound, *count of them, with the sums
+   of the modules' *own and *sites: none for a 32-bit program. 0, or -1 said in error */
+int snx_program_bound(const SnxProgram* program, SnxBoundBranch** bound, size_t* count, size_t* own, size_t* sites,
+                      char* error, size_t error_size);
 /* An NRO's icon, the JPEG of its assets (ASET), the one Games shows: 0 with it in *icon (malloc'd) and *size, 1 when it
    has none, -1 said in error when the file is no NRO or cannot be read */
 int snx_nro_icon(const char* path, unsigned char** icon, size_t* size, char* error, size_t error_size);
