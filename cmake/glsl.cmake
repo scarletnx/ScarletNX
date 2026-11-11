@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# GLSL shaders compiled into SPIR-V at build time, with glslang's glslangValidator, so no compiled shader is checked in.
+# GLSL shaders compiled into SPIR-V at build time, with glslang's glslangValidator, so no compiled shader is checked in,
+# then optimized by SPIRV-Tools' spirv-opt and validated by its spirv-val, as a step of their own: the optimizations do
+# not hang on whether the glslang at hand was built with SPIRV-Tools, which glslang's own -O needs.
 #
 # The compiler is SNX_GLSLANG when it is set. Otherwise it is KhronosGroup's glslang release for the host, a CPM package
 # pinned by its SHA-256 like the libraries (cmake/dependencies.cmake), on the hosts it publishes builds for (Linux
@@ -40,10 +42,33 @@ if(NOT SNX_GLSLANG)
         "glslangValidator to compile shaders with (empty: the pinned release, or PATH)" FORCE)
 endif()
 
+# spirv-opt and spirv-val: SNX_SPIRV_OPT and SNX_SPIRV_VAL when set, else the ones on PATH, from the system's
+# SPIRV-Tools package (spirv-tools), which no glslang release carries. spirv-val is looked for beside spirv-opt first
+set(SNX_SPIRV_OPT "" CACHE FILEPATH "spirv-opt to optimize shaders with (empty: the one on PATH)")
+set(SNX_SPIRV_VAL "" CACHE FILEPATH "spirv-val to validate shaders with (empty: the one beside spirv-opt, or on PATH)")
+if(NOT SNX_SPIRV_OPT)
+    find_program(snx_spirv_opt_path NAMES spirv-opt)
+    if(NOT snx_spirv_opt_path)
+        message(FATAL_ERROR "spirv-opt not found: install SPIRV-Tools (the spirv-tools package), or set SNX_SPIRV_OPT")
+    endif()
+    set(SNX_SPIRV_OPT "${snx_spirv_opt_path}" CACHE FILEPATH
+        "spirv-opt to optimize shaders with (empty: the one on PATH)" FORCE)
+endif()
+if(NOT SNX_SPIRV_VAL)
+    get_filename_component(snx_spirv_tools_dir "${SNX_SPIRV_OPT}" DIRECTORY)
+    find_program(snx_spirv_val_path NAMES spirv-val HINTS "${snx_spirv_tools_dir}")
+    if(NOT snx_spirv_val_path)
+        message(FATAL_ERROR "spirv-val not found: install SPIRV-Tools (the spirv-tools package), or set SNX_SPIRV_VAL")
+    endif()
+    set(SNX_SPIRV_VAL "${snx_spirv_val_path}" CACHE FILEPATH
+        "spirv-val to validate shaders with (empty: the one beside spirv-opt, or on PATH)" FORCE)
+endif()
+
 # snx_glsl_spirv(target SOURCE file.comp NAME symbol HEADER include/path.h [DEFINES MACRO[=value]...])
-# Compiles SOURCE (its #includes followed through glslang's depfile) for Vulkan 1.1, optimized, validated and without
-# debug information, into a C file added to target: `const u32 NAME[]` and `const u64 NAME_size` (bytes), as HEADER,
-# which the C file includes, declares them. DEFINES are predefined macros, for another build of the same source
+# Compiles SOURCE (its #includes followed through glslang's depfile) for Vulkan 1.1 without debug information,
+# optimizes it for speed with spirv-opt -O, validates the result with spirv-val, and puts it into a C file added to
+# target: `const u32 NAME[]` and `const u64 NAME_size` (bytes), as HEADER, which the C file includes, declares them.
+# DEFINES are predefined macros, for another build of the same source
 function(snx_glsl_spirv target)
     cmake_parse_arguments(arg "" "SOURCE;NAME;HEADER" "DEFINES" ${ARGN})
     set(defines "")
@@ -52,23 +77,27 @@ function(snx_glsl_spirv target)
     endforeach()
     get_filename_component(source "${arg_SOURCE}" ABSOLUTE)
     set(dir "${PROJECT_BINARY_DIR}/generated/spirv")
-    set(words "${dir}/${arg_NAME}.inc")
+    set(spv "${dir}/${arg_NAME}.spv")
+    set(opt "${dir}/${arg_NAME}.opt.spv")
     set(out "${dir}/${arg_NAME}.c")
     file(MAKE_DIRECTORY "${dir}")
     file(RELATIVE_PATH shown "${PROJECT_SOURCE_DIR}" "${source}")
-    # two steps, so that glslang's depfile names its command's output (the .inc), as the Makefile generators need it
-    # to (they make it a rule for the file it names). DEPENDS rather than MAIN_DEPENDENCY: a source can be built twice
-    add_custom_command(OUTPUT "${words}"
-        COMMAND "${SNX_GLSLANG}" -V --target-env vulkan1.1 -g0 --spirv-val -x ${defines}
-                --depfile "${words}.d" -o "${words}" "${source}"
+    # two steps, so that glslang's depfile names its command's output (the .spv), as the Makefile generators need it
+    # to (they make it a rule for the file it names). DEPENDS rather than MAIN_DEPENDENCY: a source can be built twice.
+    # spirv-opt validates what it is given before it optimizes, and spirv-val what it gave
+    add_custom_command(OUTPUT "${spv}"
+        COMMAND "${SNX_GLSLANG}" -V --target-env vulkan1.1 -g0 ${defines} --depfile "${spv}.d" -o "${spv}" "${source}"
         DEPENDS "${source}"
-        DEPFILE "${words}.d"
+        DEPFILE "${spv}.d"
         COMMENT "Compiling ${shown} to SPIR-V (${arg_NAME})"
         VERBATIM)
     add_custom_command(OUTPUT "${out}"
-        COMMAND "${CMAKE_COMMAND}" -DWORDS=${words} -DOUT=${out} -DNAME=${arg_NAME} -DHEADER=${arg_HEADER}
+        COMMAND "${SNX_SPIRV_OPT}" -O --target-env=vulkan1.1 "${spv}" -o "${opt}"
+        COMMAND "${SNX_SPIRV_VAL}" --target-env vulkan1.1 "${opt}"
+        COMMAND "${CMAKE_COMMAND}" -DWORDS=${opt} -DOUT=${out} -DNAME=${arg_NAME} -DHEADER=${arg_HEADER}
                 -DSOURCE=${shown} -P "${PROJECT_SOURCE_DIR}/cmake/spirv_source.cmake"
-        DEPENDS "${words}" "${PROJECT_SOURCE_DIR}/cmake/spirv_source.cmake"
+        DEPENDS "${spv}" "${PROJECT_SOURCE_DIR}/cmake/spirv_source.cmake"
+        COMMENT "Optimizing ${shown}'s SPIR-V (${arg_NAME})"
         VERBATIM)
     target_sources(${target} PRIVATE "${out}")
 endfunction()
