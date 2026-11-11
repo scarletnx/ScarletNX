@@ -107,10 +107,14 @@ MISSING = 'missing'
 # on how long a loaded runner takes to start the fake or to end a crashed one (its core dump); ctest's timeout bounds a
 # hang. The two cases about the clock itself pass their own --timeout
 QUIET = '300'
+# the APK's runs go in a folder of /tmp: edenprobe takes a folder of 160 characters at most for its own, and the APK's
+# is deep under --out, past that limit in macOS's temporary folder
+SHORT = '/tmp' if os.name != 'nt' and os.path.isdir('/tmp') else None
 
 
-with tempfile.TemporaryDirectory() as temporary:
+with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory(dir=SHORT) as short:
     root = Path(temporary).resolve()  # the script resolves its paths: /tmp is a link on macOS
+    apks = Path(short).resolve()
     runtime = root / 'bin' / 'scarletnx'
     runtime.parent.mkdir()
     runtime.write_text(f'#!{sys.executable}\n{FAKE}')
@@ -131,8 +135,9 @@ with tempfile.TemporaryDirectory() as temporary:
         test.mkdir()
         steps = [step if isinstance(step, dict) else {'lines': step} for step in launches]
         (test / 'scenario.json').write_text(json.dumps({'launches': steps, **plan}))
+        out = apks / f'test-{number}' if probe[0] == '--apk' else test / 'out'
         command = [sys.executable, str(SCRIPT), 'run', '--runtime', str(runtime), *probe, '--mode', mode]
-        command += ['--out', str(test / 'out'), '--summary', str(test / 'summary.md'), '--timeout', QUIET, *extra]
+        command += ['--out', str(out), '--summary', str(test / 'summary.md'), '--timeout', QUIET, *extra]
         if baseline is not None:
             if baseline != MISSING:
                 (test / 'baseline.txt').write_text(baseline)
@@ -141,7 +146,7 @@ with tempfile.TemporaryDirectory() as temporary:
         done = subprocess.run(command, env=env, capture_output=True, text=True, check=False)
         log = test / 'scenario.json.log'
         calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
-        return done.returncode, done.stdout + done.stderr, test / 'out', calls
+        return done.returncode, done.stdout + done.stderr, out, calls
 
     status, text, out, calls = run([WHOLE])
     check('a clean run passes', status == 0, text)
@@ -478,7 +483,7 @@ with tempfile.TemporaryDirectory() as temporary:
     )
     check(
         "the words in the app's mode file with machine=scarletnx-android@<the runtime's commit>",
-        (out.parent / 'mode.seen').read_text() == 'quick notime cpu machine=scarletnx-android@1a2b3c4\n',
+        (root / f'test-{number}' / 'mode.seen').read_text() == 'quick notime cpu machine=scarletnx-android@1a2b3c4\n',
         text,
     )
     check(
@@ -494,7 +499,7 @@ with tempfile.TemporaryDirectory() as temporary:
     status, text, out, calls = run([WHOLE], probe=android, mode='quick notime cpu machine=android@16', baseline=None)
     check(
         'APK words that name a machine keep theirs',
-        (out.parent / 'mode.seen').read_text() == 'quick notime cpu machine=android@16\n',
+        (root / f'test-{number}' / 'mode.seen').read_text() == 'quick notime cpu machine=android@16\n',
         text,
     )
     status, text, out, calls = run(
