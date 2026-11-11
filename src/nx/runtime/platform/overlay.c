@@ -10,7 +10,7 @@
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/renderer.h"
-#include "gui_theme_colors.h"
+#include "nx/runtime/platform/ui_colors.h"
 #include "gui/icons.h"
 #include "common/utilities/pad_screen.h"
 #include "common/utilities/users.h"
@@ -167,15 +167,8 @@ static int pad_player; /* the player the gamepads' page shows: 0 every player's,
 /* the Shortcuts page: its row in focus waits for a key, and what the last key given was refused for ("" none) */
 static int listening;
 static char refused[2 * OVERLAY_COLS_MAX];
-/* the YoRHa menu's colours, from its theme.ini (gui_theme_colors.h), as R G B A bytes; the page hides the game under
-   it, whose text would show through its letters */
-#define SNX_OVERLAY_RGBA(rgb, a) ((u32)(a) << 24 | ((rgb) & 0xFFu) << 16 | ((rgb) & 0xFF00u) | ((rgb) >> 16 & 0xFFu))
-#define INK                      SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_INK, 0xFFu)
-#define SOFT                     SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_SOFT, 0xFFu)
-#define LIGHT                    SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_PAGE, 0xFFu)
-#define FAILURE                  SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_FAILURE, 0xFFu)
-/* the page a little darker: the soft colour at 0x40 over it, opaque */
-#define PANEL SNX_OVERLAY_RGBA(ui_over(SNX_GUI_THEME_YORHA_SOFT, SNX_GUI_THEME_YORHA_PAGE, 0x40u), 0xFFu)
+/* the menu in the layer's colours (ui_colors.h); its page hides the game under it, whose text would show through
+   its letters */
 
 /* a slot's page's items: the auto slot has no Save */
 static int slot_item(int i) { return slot_at ? i : i + 1; }
@@ -401,7 +394,7 @@ static void disc(SnxUiList* l, float x, float y, float w, float h, u32 rgba) {
 }
 static void user_draw(SnxUiList* l, float left, float right, float y, int s);
 static void map_draw(SnxUiList* l, int sw, int sh) {
-    const u32 box = PANEL;
+    const u32 box = UI_PANEL;
     int px, py, s, i;
     float cw, ch, x, y, w, h;
     overlay_place(sw, sh, &px, &py, &s);
@@ -412,32 +405,32 @@ static void map_draw(SnxUiList* l, int sw, int sh) {
     w = (float)sw - 2 * cw;
     h = (float)sh - 2 * ch;
     map_pad();
-    ui_fill(l, x, y, w, h, LIGHT); /* the whole picture */
-    ui_fill(l, x, y, w, ch, INK);
+    ui_fill(l, x, y, w, h, UI_PAGE); /* the whole picture */
+    ui_fill(l, x, y, w, ch, UI_INK);
     {
         char title[48];
         if (pad_player) /* the player's own */
             snprintf(title, sizeof title, "SCARLETNX  /  PLAYER %d  /  BUTTON MAP", pad_player);
         else
             snprintf(title, sizeof title, "SCARLETNX  /  BUTTON MAP");
-        ui_text(l, x + cw, y, s, title, LIGHT);
+        ui_text(l, x + cw, y, s, title, UI_PAGE);
         user_draw(l, x + cw * (float)(strlen(title) + 2), x + w - cw, y, s);
     }
     snx_pad_screen_lay(&map, x, y + ch, w, h - ch, cw, ch, &map_drawing);
     for (i = 0; i < map_drawing.n; ++i) {
         const SnxPadShape* p = &map_drawing.shape[i];
-        u32 fill = p->style == SNX_PAD_STYLE_FOCUS ? INK : p->style == SNX_PAD_STYLE_LIT ? FAILURE : box;
+        u32 fill = p->style == SNX_PAD_STYLE_FOCUS ? UI_INK : p->style == SNX_PAD_STYLE_LIT ? UI_FAILURE : box;
         if (p->kind == SNX_PAD_SHAPE_TEXT)
             ui_text(l, p->x, p->y, s, p->text,
-                    p->style == SNX_PAD_STYLE_FOCUS || p->style == SNX_PAD_STYLE_LIT ? LIGHT
-                    : p->style == SNX_PAD_STYLE_SOFT                                 ? SOFT
-                    : p->style == SNX_PAD_STYLE_NOTE                                 ? FAILURE
-                                                                                     : INK);
+                    p->style == SNX_PAD_STYLE_FOCUS || p->style == SNX_PAD_STYLE_LIT ? UI_PAGE
+                    : p->style == SNX_PAD_STYLE_SOFT                                 ? UI_SOFT
+                    : p->style == SNX_PAD_STYLE_NOTE                                 ? UI_FAILURE
+                                                                                     : UI_INK);
         else if (p->kind == SNX_PAD_SHAPE_DISC)
-            disc(l, p->x, p->y, p->w, p->h, p->style == SNX_PAD_STYLE_PLAIN ? SOFT : fill);
+            disc(l, p->x, p->y, p->w, p->h, p->style == SNX_PAD_STYLE_PLAIN ? UI_SOFT : fill);
         else
             ui_fill(l, p->x, p->y, p->w, p->h,
-                    p->kind == SNX_PAD_SHAPE_BAR && p->style == SNX_PAD_STYLE_PLAIN ? SOFT : fill);
+                    p->kind == SNX_PAD_SHAPE_BAR && p->style == SNX_PAD_STYLE_PLAIN ? UI_SOFT : fill);
     }
 }
 /* the item i done, or its value stepped (step -1 or 1; 0 for a select, which steps up) */
@@ -645,11 +638,11 @@ static void user_draw(SnxUiList* l, float left, float right, float y, int s) {
     }
     if (x < left) return;
     ui_picture(l, right - 2 * edge - side, y + 2 * edge, side);
-    if (*name) ui_text(l, x + cw, y, s, name, LIGHT);
-    ui_fill(l, x, y, box, edge, LIGHT);
-    ui_fill(l, x, y + ch - edge, box, edge, LIGHT);
-    ui_fill(l, x, y, edge, ch, LIGHT);
-    ui_fill(l, x + box - edge, y, edge, ch, LIGHT);
+    if (*name) ui_text(l, x + cw, y, s, name, UI_PAGE);
+    ui_fill(l, x, y, box, edge, UI_PAGE);
+    ui_fill(l, x, y + ch - edge, box, edge, UI_PAGE);
+    ui_fill(l, x, y, edge, ch, UI_PAGE);
+    ui_fill(l, x + box - edge, y, edge, ch, UI_PAGE);
 }
 /* the rows paragraphs wrap into: each thread that lays a dialog out has its own */
 typedef char DialogRows[DIALOG_PARAS][DIALOG_LINES][FATAL_ROW];
@@ -720,9 +713,9 @@ static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRow
     out->cols = cols;
     out->scale = s;
     if (l) {
-        ui_fill(l, x, y, w, ch * (float)total, LIGHT);
-        ui_fill(l, x, y, w, ch, INK);
-        ui_text(l, x + cw, y, s, d->title, LIGHT);
+        ui_fill(l, x, y, w, ch * (float)total, UI_PAGE);
+        ui_fill(l, x, y, w, ch, UI_INK);
+        ui_text(l, x + cw, y, s, d->title, UI_PAGE);
         if (d->user) user_draw(l, x + cw * (float)(strlen(d->title) + 2), x + w - cw, y, s);
     }
     row = 1;
@@ -735,7 +728,7 @@ static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRow
             out->field.y = y + ch * (float)row;
             out->field.w = w - cw;
             out->field.h = ch * (float)n[k];
-            if (l) ui_fill(l, out->field.x, out->field.y, out->field.w, out->field.h, PANEL);
+            if (l) ui_fill(l, out->field.x, out->field.y, out->field.w, out->field.h, UI_PANEL);
         }
         for (i = 0; i < n[k]; ++i, ++row) {
             float width, at = y + ch * (float)row;
@@ -760,29 +753,30 @@ static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRow
         at->w = w;
         at->h = ch;
         if (!l) continue;
-        if (on) ui_fill(l, x, at->y, w, ch, INK);
+        if (on) ui_fill(l, x, at->y, w, ch, UI_INK);
         if (d->key[i]) { /* the marker, the icon, the keys on a band as the launcher's F1 box draws them, the label */
-            ui_text(l, x + cw, at->y, s, "\xFE", on ? LIGHT : INK);
-            ui_icon(l, x + 3 * cw, at->y, s, d->icon[i], on ? LIGHT : INK);
+            ui_text(l, x + cw, at->y, s, "\xFE", on ? UI_PAGE : UI_INK);
+            ui_icon(l, x + 3 * cw, at->y, s, d->icon[i], on ? UI_PAGE : UI_INK);
             ui_fill(l, x + 6 * cw - (float)s, at->y, cw * (float)strlen(d->key[i]) + 2.0f * (float)s, ch,
-                    on ? LIGHT : INK);
-            ui_text(l, x + 6 * cw, at->y, s, d->key[i], on ? INK : LIGHT);
-            ui_text(l, x + cw * (float)(6 + d->keys + 2), at->y, s, d->label[i], on ? LIGHT : INK);
+                    on ? UI_PAGE : UI_INK);
+            ui_text(l, x + 6 * cw, at->y, s, d->key[i], on ? UI_INK : UI_PAGE);
+            ui_text(l, x + cw * (float)(6 + d->keys + 2), at->y, s, d->label[i], on ? UI_PAGE : UI_INK);
         } else if (d->icon[i]) { /* the marker, the icon's two cells and one, then the label */
-            ui_text(l, x + cw, at->y, s, "\xFE", on ? LIGHT : INK);
-            ui_icon(l, x + 3 * cw, at->y, s, d->icon[i], on ? LIGHT : INK);
-            ui_text(l, x + 6 * cw, at->y, s, d->label[i], on ? LIGHT : INK);
+            ui_text(l, x + cw, at->y, s, "\xFE", on ? UI_PAGE : UI_INK);
+            ui_icon(l, x + 3 * cw, at->y, s, d->icon[i], on ? UI_PAGE : UI_INK);
+            ui_text(l, x + 6 * cw, at->y, s, d->label[i], on ? UI_PAGE : UI_INK);
         } else {
             snprintf(line, sizeof line, "\xFE %s", d->label[i]);
-            ui_text(l, x + cw, at->y, s, line, on ? LIGHT : INK);
+            ui_text(l, x + cw, at->y, s, line, on ? UI_PAGE : UI_INK);
         }
         if (d->value[i])
-            ui_text(l, x + cw * (float)(cols - 1 - (int)strlen(d->value[i])), at->y, s, d->value[i], on ? LIGHT : INK);
+            ui_text(l, x + cw * (float)(cols - 1 - (int)strlen(d->value[i])), at->y, s, d->value[i],
+                    on ? UI_PAGE : UI_INK);
     }
     /* more above or under: the font's arrows at the edge */
-    if (l && d->shown && d->top) ui_text(l, x + cw * (float)(cols - 1), out->item[0].y, s, "\x18", SOFT);
+    if (l && d->shown && d->top) ui_text(l, x + cw * (float)(cols - 1), out->item[0].y, s, "\x18", UI_SOFT);
     if (l && d->shown && d->top + d->shown < d->items)
-        ui_text(l, x + cw * (float)(cols - 1), out->item[d->shown - 1].y, s, "\x19", SOFT);
+        ui_text(l, x + cw * (float)(cols - 1), out->item[d->shown - 1].y, s, "\x19", UI_SOFT);
 }
 
 /* ---- the software keyboard's box ---- */
@@ -901,12 +895,12 @@ static void kb_dialog(Dialog* d, KbTexts* t) {
     {
         /* on a short picture the hint gives up its rows first, then the guide, the sub and the header text; never the
            line or its count */
-        const DialogPara para[DIALOG_PARAS] = {{k->header, INK, 0, 0, 4, 0},
-                                               {k->sub, SOFT, 0, 1, 3, 0},
-                                               {k->guide, SOFT, 0, 0, 2, 0},
-                                               {t->line, INK, 0, 0, 0, 1},
-                                               {t->count, g_overlay.refused ? FAILURE : SOFT, 0, 1, 0, 0},
-                                               {t->hint, SOFT, 0, 0, 1, 0}};
+        const DialogPara para[DIALOG_PARAS] = {{k->header, UI_INK, 0, 0, 4, 0},
+                                               {k->sub, UI_SOFT, 0, 1, 3, 0},
+                                               {k->guide, UI_SOFT, 0, 0, 2, 0},
+                                               {t->line, UI_INK, 0, 0, 0, 1},
+                                               {t->count, g_overlay.refused ? UI_FAILURE : UI_SOFT, 0, 1, 0, 0},
+                                               {t->hint, UI_SOFT, 0, 0, 1, 0}};
         memcpy(d->para, para, sizeof para);
     }
     d->paras = DIALOG_PARAS;
@@ -1094,10 +1088,10 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
         d->title = "SCARLETNX  /  KEYS";
         d->user = 1;
         d->para[0].text = "Up/Down: the rest. Any other key or button: back to the game.";
-        d->para[0].rgba = SOFT;
+        d->para[0].rgba = UI_SOFT;
         d->para[1].text = "The game's buttons by where the keys sit on a US keyboard. A controller's A, B, X and Y sit "
                           "where the console has them (gamepad_swap_ab=1 swaps A and B).";
-        d->para[1].rgba = SOFT;
+        d->para[1].rgba = UI_SOFT;
         d->para[1].cut = 1; /* a short picture's rows go to the keys */
         d->paras = 2;
         d->items = n;
@@ -1125,7 +1119,7 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
     d->title = page < PAGE_SLOT ? titles[page] : title;
     d->user = 1;
     d->para[0].text = page == PAGE_PADS ? pads_hint(pads, size / 2) : page < PAGE_SLOT ? hints[page] : pads;
-    d->para[0].rgba = SOFT;
+    d->para[0].rgba = UI_SOFT;
     d->paras = 1;
     if (page == PAGE_SHORTCUTS && listening && shortcut(focus) >= 0) {
         snprintf(pads, size / 2, "Press the key for %s. Esc or B cancels.", hotkey_row(shortcut(focus))->name);
@@ -1133,7 +1127,7 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
     }
     if (page == PAGE_SHORTCUTS && refused[0]) { /* why the last key given isn't the row's */
         d->para[1].text = refused;
-        d->para[1].rgba = FAILURE;
+        d->para[1].rgba = UI_FAILURE;
         d->para[1].on = 1;
         d->paras = 2;
     }
@@ -1156,7 +1150,7 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
             snprintf(pads, size / 2, "%s", sl->when[0] ? sl->when : "Empty.");
         if (page == PAGE_SLOT && sl->why[0]) { /* why it can't load, under its date */
             d->para[1].text = sl->why;
-            d->para[1].rgba = FAILURE;
+            d->para[1].rgba = UI_FAILURE;
             d->para[1].on = 1;
             d->paras = 2;
         }
@@ -1238,8 +1232,8 @@ static void toast_draw(SnxUiList* l, int sw, int sh) {
     cw = 8.0f * (float)s;
     ch = 16.0f * (float)s;
     w = cw * (float)(strlen(toast) + 2);
-    ui_fill(l, cw, ch, w, ch, INK);
-    ui_text(l, 2 * cw, ch, s, toast, LIGHT);
+    ui_fill(l, cw, ch, w, ch, UI_INK);
+    ui_text(l, 2 * cw, ch, s, toast, UI_PAGE);
 }
 /* the slot whose thumbnail shows beside the save states' pages: the one in focus on the list, or the page's */
 static void aside_draw(SnxUiList* l, const SnxOverlayRect* r) {
@@ -1252,11 +1246,11 @@ static void aside_draw(SnxUiList* l, const SnxOverlayRect* r) {
         at = slot;
         gen = slots_gen;
     }
-    ui_fill(l, r->x - e, r->y - e, r->w + 2 * e, r->h + 2 * e, INK);
+    ui_fill(l, r->x - e, r->y - e, r->w + 2 * e, r->h + 2 * e, UI_INK);
     if (!ui_image(l, r->x, r->y, r->w, r->h)) {
-        ui_fill(l, r->x, r->y, r->w, r->h, LIGHT);
+        ui_fill(l, r->x, r->y, r->w, r->h, UI_PAGE);
         ui_text(l, r->x + (r->w - 8.0f * 8 * e) / 2, r->y + (r->h - 16 * e) / 2, (int)e,
-                slot >= 0 && slots[slot].when[0] ? "No image" : "Empty", SOFT);
+                slot >= 0 && slots[slot].when[0] ? "No image" : "Empty", UI_SOFT);
     }
 }
 /* The menu's page or the keyboard's box as laid out last, kept from frame to frame as the controls are (vpad.c):
@@ -1377,8 +1371,8 @@ void overlay_error_draw(SnxUiList* l, int sw, int sh, SnxOverlayError* e) {
     /* on a short picture the log's label gives up rows first, then the hint, the log and the error; never the game's
        name or what Share Log or Copy path did. The log goes right under its label */
     const DialogPara para[] = {
-        {e->name, SOFT, 0, 0, 0, 0}, {e->msg, FAILURE, 0, 0, 4, 0}, {fatal_hint(e->msg), INK, 0, 0, 2, 0},
-        {e->how, SOFT, 0, 0, 1, 0},  {e->log, INK, 1, 1, 3, 0},     {e->said, SOFT, 0, 0, 0, 0}};
+        {e->name, UI_SOFT, 0, 0, 0, 0}, {e->msg, UI_FAILURE, 0, 0, 4, 0}, {fatal_hint(e->msg), UI_INK, 0, 0, 2, 0},
+        {e->how, UI_SOFT, 0, 0, 1, 0},  {e->log, UI_INK, 1, 1, 3, 0},     {e->said, UI_SOFT, 0, 0, 0, 0}};
     Dialog d;
     DialogDrawn at;
     int i;

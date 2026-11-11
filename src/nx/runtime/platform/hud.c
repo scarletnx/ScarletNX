@@ -1,17 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/hud.h"
-#include "gui_theme_colors.h"
+#include "nx/runtime/platform/ui_colors.h"
 #include <stdio.h>
 #include <string.h>
 
-/* the menu's colours (gui_theme_colors.h, the YoRHa theme) as R G B A bytes, opaque: its ink behind, its page's
-   letters, and its failure colour for the lead */
-#define HUD_RGBA(rgb, a) ((u32)(a) << 24 | ((rgb) & 0xFFu) << 16 | ((rgb) & 0xFF00u) | ((rgb) >> 16 & 0xFFu))
-#define HUD_BACK         HUD_RGBA(SNX_GUI_THEME_YORHA_INK, 0xFFu)
-#define HUD_TEXT         HUD_RGBA(SNX_GUI_THEME_YORHA_PAGE, 0xFFu)
-#define HUD_WARN         HUD_RGBA(SNX_GUI_THEME_YORHA_FAILURE, 0xFFu)
-
+/* the layer's colours (ui_colors.h): the ink behind, the page's for the letters, the failure colour for the lead */
 /* the box, the lead and a letter for each of the list's: laid out when the list, the place or the scale changes, and
    kept for the frames after */
 #define HUD_QUADS (1 + HUD_DEBUG_MAX + sizeof HUD_DEBUG_LEAD)
@@ -71,7 +65,7 @@ static void hud_layout(SnxUiList* l, const int safe[4], int scale) {
     }
     x = (float)safe[0] + ((float)safe[2] - (float)(longest + 2) * cw) / 2;
     y = (float)safe[1] + ch / 2;
-    ui_fill(l, x, y, (float)(longest + 2) * cw, (float)lines * ch + ch / 2, HUD_BACK);
+    ui_fill(l, x, y, (float)(longest + 2) * cw, (float)lines * ch + ch / 2, UI_INK);
     x += cw;
     y += ch / 4;
     for (s = g_hud.debug, lines = 0; *s; s = next, ++lines) {
@@ -79,8 +73,8 @@ static void hud_layout(SnxUiList* l, const int safe[4], int scale) {
         n = line_of(s, lines ? cols : cols - lead, &next);
         memcpy(line, s, n);
         line[n] = 0;
-        if (!lines) at += ui_text(l, at, y, scale, HUD_DEBUG_LEAD, HUD_WARN);
-        ui_text(l, at, y + (float)lines * ch, scale, line, HUD_TEXT);
+        if (!lines) at += ui_text(l, at, y, scale, HUD_DEBUG_LEAD, UI_FAILURE);
+        ui_text(l, at, y + (float)lines * ch, scale, line, UI_PAGE);
     }
 }
 void hud_draw(SnxUiList* l, const int safe[4], int scale) {
