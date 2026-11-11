@@ -201,7 +201,7 @@ float ui_text(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba
     }
     return x - x0;
 }
-u32 ui_ground(void) { return UI_INK; }
+u32 ui_ground(void) { return ui_rgba(UI_INK); }
 int ui_drawn_ground(const SnxUiQuad* q, SnxUiQuadView* fill) {
     SnxUiQuad ground;
     unsigned ink = ui_q_bits(q, UI_Q_INK, 3);
@@ -212,7 +212,6 @@ int ui_drawn_ground(const SnxUiQuad* q, SnxUiQuadView* fill) {
     ground.uw = ground.vh = 2;
     ground.bits = ui_quad(0, 0, 0, 0, 0, 0, 0, 0, UI_INK, 0, UI_SHARP, UI_SOLID, 0).bits;
     *fill = ui_view(&ground);
-    fill->rgba = UI_INK; /* as the GPU takes it, from a push constant: all 8 bits */
     return 1;
 }
 float ui_text_backed(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba) {

@@ -67,7 +67,8 @@ enum { UI_SHAPE_CIRCLE, UI_SHAPE_ROUND, UI_SHAPE_CROSS, UI_SHAPE_BOX };
    without blending */
 #define UI_BACKED       4
 /* the ground of every backed letter and icon, R G B A from the low byte: one for all that is drawn over the game (the
-   stats, the debug line, the notification), the layer's ink (ui_colors.h), whoever draws and whoever doesn't */
+   stats, the debug line, the notification), the layer's ink (ui_colors.h) as a quad holds it (ui_rgba), so a fill of
+   the ink beside a backed letter is the same pixel; whoever draws and whoever doesn't */
 u32 ui_ground(void);
 typedef struct {
     SnxUiQuad* q;

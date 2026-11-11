@@ -1250,7 +1250,7 @@ int main(void) {
         const u32 page = 0xFF000000u | (SNX_GUI_THEME_YORHA_PAGE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_PAGE & 0xFF00u) |
                          (SNX_GUI_THEME_YORHA_PAGE >> 16 & 0xFFu);
         int i;
-        assert(list.n == (int)strlen(said) + 2 && ui_ground() == ink);
+        assert(list.n == (int)strlen(said) + 2 && ui_ground() == ui_rgba(ink));
         for (i = 0; i < list.n; ++i) {
             SnxUiQuadView q = qv(&list.q[i]);
             assert(q.ink == UI_GLYPH && q.backed && q.glyph == (u8)(i && i < list.n - 1 ? said[i - 1] : ' '));
