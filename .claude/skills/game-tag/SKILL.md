@@ -24,6 +24,8 @@ tools/game_tag.py scan [--games <DIR>] <FILE>...    # the title IDs and the game
 `<ID>` is one of these:
 
 - A Switch title ID (16 hex digits that start with `01`). An update and a DLC give the tag of their game.
+- A title ID of the Switch's next generation (16 hex digits that start with `04`). An update and a DLC give the tag of
+  their game.
 - A 3DS title ID (16 hex digits that start with `0004`). An update and a DLC give the tag of their game.
 - `gba:` and the 4 characters of the game code in the header of a GBA ROM.
 
