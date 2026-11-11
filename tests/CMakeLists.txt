@@ -748,6 +748,12 @@ if(NOT SNX_BUILD_NX AND NOT SNX_BUILD_GNUABI)
     return()
 endif()
 
+# the shared SPIR-V optimizer's passes on modules the test writes word by word
+add_executable(snx-test-spirv-opt spirv_opt.c "${PROJECT_SOURCE_DIR}/src/common/utilities/spirv_opt.c")
+snx_test_target(snx-test-spirv-opt 99)
+target_include_directories(snx-test-spirv-opt PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME spirv_opt COMMAND snx-test-spirv-opt)
+
 # Validate the direct writer against SPIRV-Tools when the system tools are installed.
 if(SNX_BUILD_NX)
     find_program(SNX_SPIRV_VAL spirv-val)
