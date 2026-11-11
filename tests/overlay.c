@@ -1243,6 +1243,22 @@ int main(void) {
     overlay_toggle();
     draw();
     assert(!overlay_shown() && shows("Saved to slot 2"));
+    /* over the game it is its letters and a blank cell at either end, a row from the corner, each backed by the
+       layer's ground, the menu's ink, in its page's colour: a band of cells side by side with no fill under them */
+    {
+        static const char said[] = "Saved to slot 2";
+        const u32 page = 0xFF000000u | (SNX_GUI_THEME_YORHA_PAGE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_PAGE & 0xFF00u) |
+                         (SNX_GUI_THEME_YORHA_PAGE >> 16 & 0xFFu);
+        int i;
+        assert(list.n == (int)strlen(said) + 2 && ui_ground() == ink);
+        for (i = 0; i < list.n; ++i) {
+            SnxUiQuadView q = qv(&list.q[i]);
+            assert(q.ink == UI_GLYPH && q.backed && q.glyph == (u8)(i && i < list.n - 1 ? said[i - 1] : ' '));
+            assert(q.uw == 8 && q.vh == 16 && q.rgba == ui_rgba(page));
+            assert(q.x == (float)(8 * s * (1 + i)) && q.y == (float)(16 * s));
+            assert(q.w == (float)(8 * s) && q.h == (float)(16 * s));
+        }
+    }
     overlay_toast("", 0); /* none */
     /* a notice from any thread (RenderDoc's): the notification once the next frame draws it, the last given before
        then, and taken once */

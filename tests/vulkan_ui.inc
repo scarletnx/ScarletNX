@@ -274,6 +274,18 @@ static int check_ui(void) {
         g_vk.props.vendorID = vendor;
         CHECK(!ui_frame(c, safe, "the box and the line, discarded again", &changed));
     }
+    /* the notification with nothing else on: its backed letters, whose ground no other maker has to give */
+    g_settings.stats = 0;
+    hud_debug_set("");
+    ui_lock();
+    overlay_toast("Saved to slot 2", plat_ns());
+    ui_unlock();
+    CHECK(!ui_frame(c, safe, "the notification alone", &changed));
+    CHECK(changed > 0);
+    ui_lock();
+    overlay_toast("", 0);
+    ui_unlock();
+    CHECK(!ui_frame(c, safe, "nothing", &changed));
     vk_finish();
     vk_ui_swapchain_gone();
     vmaDestroyImage(g_vk.vma, c->img, c->mem);

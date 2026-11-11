@@ -1224,16 +1224,17 @@ static const char* pads_hint(char* out, size_t size) {
         snprintf(out, size, "%s", gamepad_name(0));
     return out;
 }
-/* the notification: a band of one row in the picture's top left corner */
+/* the notification: a band of one row in the picture's top left corner, which is its letters, backed (ui.h's
+   UI_BACKED) by the layer's ink, between a blank cell at either end: nothing is drawn under them */
 static void toast_draw(SnxUiList* l, int sw, int sh) {
     int px, py, s;
-    float cw, ch, w;
+    float cw, ch, x;
     overlay_place(sw, sh, &px, &py, &s);
     cw = 8.0f * (float)s;
     ch = 16.0f * (float)s;
-    w = cw * (float)(strlen(toast) + 2);
-    ui_fill(l, cw, ch, w, ch, UI_INK);
-    ui_text(l, 2 * cw, ch, s, toast, UI_PAGE);
+    x = cw + ui_text_backed(l, cw, ch, s, " ", UI_PAGE);
+    x += ui_text_backed(l, x, ch, s, toast, UI_PAGE);
+    ui_text_backed(l, x, ch, s, " ", UI_PAGE);
 }
 /* the slot whose thumbnail shows beside the save states' pages: the one in focus on the list, or the page's */
 static void aside_draw(SnxUiList* l, const SnxOverlayRect* r) {

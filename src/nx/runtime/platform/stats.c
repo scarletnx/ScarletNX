@@ -448,5 +448,4 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
     }
     ui_append_kept(l, &(SnxUiList){g_box.q, g_box.n, STATS_QUADS}, g_box.version, &g_box, &g_box.changed);
     ui_ring_set(g_box.height, STATS_BARS, (int)g_box.head, STATS_SLOW_FROM, UI_FAILURE, g_box.ring_version);
-    ui_ground_set(UI_INK);
 }
