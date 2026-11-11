@@ -575,8 +575,8 @@ static const SnxModule* nro_module_load(long place, u64 base, u64 size, const u8
         name[2 * i + 1] = digits[g_nros->slots[place].hash[i] & 15];
     }
     name[64] = 0;
-#if defined(_WIN32)
-    snprintf(path, sizeof path, "%s%s" SNX_NROS_FOLDER "/%s.dll", g_exedir, g_exename, name);
+#if defined(_WIN32) /* a backslash, as the system's loader asks of a path */
+    snprintf(path, sizeof path, "%s%s" SNX_NROS_FOLDER "\\%s.dll", g_exedir, g_exename, name);
 #else
     snprintf(path, sizeof path, "%s%s" SNX_NROS_FOLDER "/%s.so", g_exedir, g_exename, name);
 #endif
