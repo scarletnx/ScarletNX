@@ -1446,55 +1446,6 @@ static int nn_btm_IBtmUserCore_AcquireBleMtuConfigEvent(SvcObj* self, u8* succes
     return btm_event(success, event, "btm BLE MTU config");
 }
 
-/* ============================================================ ngc:u and ngct:u: no word lists */
-/* the lists' version: there are none here, and reden answers 1 for its own empty ones */
-#define NGC_CONTENT_VERSION 1u
-/* a text back as it was sent, as much of it as the buffer for it holds */
-static void ngc_back(IpcBuf text, IpcBuf out) {
-    u64 n = text.size < out.size ? text.size : out.size;
-    if (n) memmove(GP(out.addr), GP(text.addr), (size_t)n);
-}
-static int nn_ngc_detail_IService_GetContentVersion(SvcObj* self, u32* version) {
-    (void)self;
-    *version = NGC_CONTENT_VERSION;
-    R_SUCCEED();
-}
-static int nn_ngc_detail_IService_Check(SvcObj* self, u32 languages, const nn_ngc_detail_ProfanityFilterOption* option,
-                                        IpcBuf text, u32* found) {
-    (void)self, (void)languages, (void)option, (void)text;
-    *found = 0;
-    R_SUCCEED();
-}
-static int nn_ngc_detail_IService_Mask(SvcObj* self, u32 languages, const nn_ngc_detail_ProfanityFilterOption* option,
-                                       IpcBuf text, IpcBuf masked, u32* count) {
-    (void)self, (void)languages, (void)option;
-    ngc_back(text, masked);
-    *count = 0;
-    R_SUCCEED();
-}
-static int nn_ngc_detail_IService_Reload(SvcObj* self) {
-    (void)self;
-    R_SUCCEED();
-}
-static int nn_ngc_detail_IService_Check2(SvcObj* self, u32 languages, const nn_ngc_detail_ProfanityFilterOption* option,
-                                         IpcBuf text, u32* found) {
-    return nn_ngc_detail_IService_Check(self, languages, option, text, found);
-}
-static int nn_ngc_detail_IService_Mask2(SvcObj* self, u32 languages, const nn_ngc_detail_ProfanityFilterOption* option,
-                                        IpcBuf text, IpcBuf masked, u32* count) {
-    return nn_ngc_detail_IService_Mask(self, languages, option, text, masked, count);
-}
-static int nn_ngct_detail_IService_Match(SvcObj* self, IpcBuf text, u8* matched) {
-    (void)self, (void)text;
-    *matched = 0;
-    R_SUCCEED();
-}
-static int nn_ngct_detail_IService_Filter(SvcObj* self, IpcBuf text, IpcBuf filtered) {
-    (void)self;
-    ngc_back(text, filtered);
-    R_SUCCEED();
-}
-
 /* prepo's queue has nothing to send: the console's status when it is empty, as Eden answers */
 static int nn_prepo_detail_ipc_IPrepoService_GetTransmissionStatus(SvcObj* self, i32* status) {
     (void)self;
@@ -1597,8 +1548,6 @@ SvcObj* new_mii(void) { return nn_mii_detail_IStaticService_new(); }
 SvcObj* new_ectx(void) { return nn_err_context_IWriterForApplication_new(); }
 SvcObj* new_spl(void) { return nn_spl_detail_IGeneralInterface_new(); }
 SvcObj* new_btmu(void) { return nn_btm_IBtmUser_new(); }
-SvcObj* new_ngc(void) { return nn_ngc_detail_IService_new(); }
-SvcObj* new_ngct(void) { return nn_ngct_detail_IService_new(); }
 SvcObj* new_olsc(void) { return nn_olsc_srv_IOlscServiceForApplication_new(); }
 /* the functions a save state may hold of this file (state_fns.h) */
 STATE_FN_TABLE(g_misc_state_fns,
