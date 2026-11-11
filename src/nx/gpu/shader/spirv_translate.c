@@ -1446,13 +1446,16 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     if (!has_exit) return direct_reject(si, "missing exit");
     if (has_pexit && has_conditional_exit) return direct_reject(si, "conditional EXIT with PEXIT token");
     if (needs_subgroup && !can_subgroup) return direct_reject(si, "subgroup ballot/shuffle unavailable");
-    if (has_flow && needs_derivatives && !can_subgroup)
-        return direct_reject(si, "fragment derivative convergence unavailable");
     if (needs_f64 && !can_preserve_f64) return direct_reject(si, "FP64 float controls unavailable");
     /* The flow loop runs one block per iteration, so lanes that took the two sides of a branch reach the join on
        different iterations, and VOTE, SHFL and BAR would see part of the warp. Each iteration runs only the lanes
        at the subgroup's lowest pc, as the hardware reconverges: lanes ahead wait for the others to reach them. */
     converge = has_flow && can_subgroup && (needs_subgroup || has_barrier || needs_derivatives);
+    /* Without subgroups in the fragment stage nothing holds a lane of that loop for its quad, and a derivative taken
+       after a join would read registers of lanes that are elsewhere in the program. Such a program is translated only
+       as structured flow, where a quad's lanes meet again at each construct's merge on any device, as every
+       compiled fragment shader's ifs and loops need them to */
+    int quad_flow = has_flow && needs_derivatives && !can_subgroup;
     /* FTZ per instruction: without the execution mode, or with it where some FADD, FMUL or FFMA keeps subnormals (the
        mode is the whole module's). Never on a device that flushes by itself, which also flushes those that keep them:
        the flush would change no bit */
@@ -1727,8 +1730,69 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     /* a capture's push constants have their own third vector */
     if (needs_frag_ndc && (si->advanced_blend_mask & SH_CAPTURE_SOURCE))
         return direct_reject_with_buffers(si, "a varying pass in a capture's fragment program", pop_targets, gb_at);
+    /* the program's blocks and its structure, before the module is started: a refusal here has nothing to undo */
+    u32 *case_labels = NULL, *case_literals = NULL;
+    u8* block_start = NULL;
+    size_t case_count = 0;
+    ShStructure* structure = NULL;
+    if (has_flow) {
+        /* one case for each instruction, and the case of lanes waiting to reconverge */
+        case_labels = calloc(n + 1, sizeof *case_labels + sizeof *case_literals + 1);
+        if (!case_labels) abort();
+        case_literals = case_labels + n + 1;
+        block_start = (u8*)(case_literals + n + 1);
+        block_start[11] = 1;
+        int unknown_brx = 0;
+        for (u32 i = 11; i < n; i++) {
+            if (!IDX_OK(i)) continue;
+            int id = flow->op[i]->id;
+            if ((id == O_CAL && B(insn[i], 5, 1)) || id == O_JCAL || id == O_JMP || id == O_JMX) unknown_brx = 1;
+            if (id == O_BRX) {
+                u32 targets[64];
+                int count = shader_brx_targets(insn, i, n, targets, 64);
+                if (count < 0)
+                    unknown_brx = 1;
+                else
+                    for (int k = 0; k < count; k++) block_start[targets[k]] = 1;
+            }
+            if (id == O_BRA || (id == O_CAL && !B(insn[i], 5, 1)) || id == O_PRET || id == O_PEXIT || id == O_SSY ||
+                id == O_PBK || id == O_PCNT)
+                block_start[bra_target(insn[i], i)] = 1;
+            if (!dynamic_stack && (id == O_SYNC || id == O_BRK || id == O_CONT)) block_start[pop_targets[i]] = 1;
+            if (id == O_BRA || id == O_CAL || id == O_JCAL || id == O_JMP || id == O_JMX || id == O_RET ||
+                id == O_BRX || id == O_SYNC || id == O_BRK || id == O_CONT || id == O_EXIT) {
+                u32 next = shader_next_instruction(i, n);
+                if (next < n) block_start[next] = 1;
+            }
+        }
+        /* Unknown jump tables retain a case for every possible instruction target. */
+        if (unknown_brx)
+            for (u32 i = 11; i < n; i++)
+                if (IDX_OK(i)) block_start[i] = 1;
+        /* The program's own branches and loops as structured constructs, where its control flow allows them: the
+           dispatch loop below makes every register live around one big loop, and costs a driver as much to compile
+           again as the program's code. Lanes that must reconverge for subgroup operations, barriers or derivatives
+           take them where the device reconverges them at each construct's merge (MaximallyReconvergesKHR), as the
+           hardware does at its SYNC targets, and keep the loop otherwise, which runs the lowest pc first */
+        if (!advanced_blend && !dynamic_stack && !has_calls && (!converge || g_shader_maximal_reconvergence) &&
+            !unknown_brx)
+            structure = shader_structure(insn, n, block_start, pop_targets);
+        if (quad_flow && !structure) {
+            const char* with = advanced_blend  ? "advanced blend"
+                               : dynamic_stack ? "a run-time control stack"
+                               : has_calls     ? "calls"
+                               : unknown_brx   ? "indirect jumps"
+                                               : "flow without a structure";
+            char why[sizeof si->first_unsupported];
+            snprintf(why, sizeof why, "derivatives after flow, without fragment subgroups, in a program with %s", with);
+            free(case_labels);
+            return direct_reject_with_buffers(si, why, pop_targets, gb_at);
+        }
+    }
     DirectCtx* c = calloc(1, sizeof *c);
     if (!c) {
+        free(case_labels);
+        free(structure);
         free(gb_at);
         free(pop_targets);
         return NULL;
@@ -2470,54 +2534,10 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     u32 default_point_size = 0;
     u32 pc = 0, loop_header = 0, loop_dispatch = 0, dispatch_default = 0, dispatch_merge = 0, loop_continue = 0,
         loop_merge = 0;
-    u32 *case_labels = NULL, *case_literals = NULL;
-    u8* block_start = NULL;
-    size_t case_count = 0;
-    ShStructure* structure = NULL;
     StructEmit se = {0};
     if (has_flow) {
-        /* one case for each instruction, and the case of lanes waiting to reconverge */
-        case_labels = calloc(n + 1, sizeof *case_labels + sizeof *case_literals + 1);
-        if (!case_labels) abort();
-        case_literals = case_labels + n + 1;
-        block_start = (u8*)(case_literals + n + 1);
-        block_start[11] = 1;
-        int unknown_brx = 0;
-        for (u32 i = 11; i < n; i++) {
-            if (!IDX_OK(i)) continue;
-            int id = flow->op[i]->id;
-            if ((id == O_CAL && B(insn[i], 5, 1)) || id == O_JCAL || id == O_JMP || id == O_JMX) unknown_brx = 1;
-            if (id == O_BRX) {
-                u32 targets[64];
-                int count = shader_brx_targets(insn, i, n, targets, 64);
-                if (count < 0)
-                    unknown_brx = 1;
-                else
-                    for (int k = 0; k < count; k++) block_start[targets[k]] = 1;
-            }
-            if (id == O_BRA || (id == O_CAL && !B(insn[i], 5, 1)) || id == O_PRET || id == O_PEXIT || id == O_SSY ||
-                id == O_PBK || id == O_PCNT)
-                block_start[bra_target(insn[i], i)] = 1;
-            if (!dynamic_stack && (id == O_SYNC || id == O_BRK || id == O_CONT)) block_start[pop_targets[i]] = 1;
-            if (id == O_BRA || id == O_CAL || id == O_JCAL || id == O_JMP || id == O_JMX || id == O_RET ||
-                id == O_BRX || id == O_SYNC || id == O_BRK || id == O_CONT || id == O_EXIT) {
-                u32 next = shader_next_instruction(i, n);
-                if (next < n) block_start[next] = 1;
-            }
-        }
-        /* Unknown jump tables retain a case for every possible instruction target. */
-        if (unknown_brx)
-            for (u32 i = 11; i < n; i++)
-                if (IDX_OK(i)) block_start[i] = 1;
-        /* The program's own branches and loops as structured constructs, where its control flow allows them: the
-           dispatch loop below makes every register live around one big loop, and costs a driver as much to compile
-           again as the program's code. Lanes that must reconverge for subgroup operations, barriers or derivatives
-           take them where the device reconverges them at each construct's merge (MaximallyReconvergesKHR), as the
-           hardware does at its SYNC targets, and keep the loop otherwise, which runs the lowest pc first */
-        if (!advanced_blend && !dynamic_stack && !has_calls && (!converge || g_shader_maximal_reconvergence) &&
-            !unknown_brx)
-            structure = shader_structure(insn, n, block_start, pop_targets);
-        if (structure && converge) { /* the guarantee those lanes need */
+        /* the guarantee those lanes need, and the one a quad's have for derivatives where the device gives it */
+        if (structure && (converge || (quad_flow && g_shader_maximal_reconvergence))) {
             spv_emit_extension(&c->emit, "SPV_KHR_maximal_reconvergence");
             spv_emit_execution_mode(&c->emit, fn, 6023, 0, 0); /* MaximallyReconvergesKHR */
         }

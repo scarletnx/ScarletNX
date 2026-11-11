@@ -5390,6 +5390,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_nvn_coverage.inc"
 #include "vulkan_mesh_draw.inc"
 #include "vulkan_texture_limits.inc"
+#include "vulkan_fragment_flow_lod.inc"
 #include "vulkan_nvn_blend_resolve.inc"
 #include "vulkan_nvn_blend_capture.inc"
 #include "vulkan_late_depth_shadow.inc"
@@ -5893,6 +5894,8 @@ static int run_headless(int argc, char** argv) {
             result = check_cross_stage_image_alias();
         else if (!strcmp(name, "lone_lane"))
             result = check_lone_lane();
+        else if (!strcmp(name, "fragment_flow_lod"))
+            result = check_fragment_flow_lod();
         else if (!strcmp(name, "owned_page_reads"))
             result = check_owned_page_reads();
         else if (!strcmp(name, "cross_stage_blend"))
@@ -6167,6 +6170,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_pass_breaks());
     CHECK(!check_mesh_inputs());
     CHECK(!check_lone_lane());
+    CHECK(!check_fragment_flow_lod());
     CHECK(!check_owned_page_reads());
     CHECK(!check_frag_coord_origin());
     CHECK(!check_varying_passes());

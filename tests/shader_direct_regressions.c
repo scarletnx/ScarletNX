@@ -4758,6 +4758,131 @@ static int has_float_constant(const u32* code, size_t words, u32 bits) {
     }
     return 0;
 }
+/* the word of instruction i as guest_program lays a program out: a scheduling word before every third */
+static u32 flow_word(u32 i) { return 11 + i + i / 3; }
+/* BRA from instruction from to instruction to, on predicate (7: always) */
+static u64 flow_bra(u32 from, u32 to, u32 predicate) {
+    u32 bytes = (flow_word(to) - (flow_word(from) + 1)) * 8;
+    return 0xe24000000000000full | (u64)(bytes & 0xffffff) << 20 | (u64)predicate << 16;
+}
+/* a fragment program on a device with fragment subgroups or without, with MaximallyReconvergesKHR or without, and
+   with an advanced blend equation or none */
+static u32* flow_lod_spirv(const u64* instructions, int count, int can_subgroup, int reconverges, u64 blend,
+                           ShaderInfo* info, size_t* words) {
+    size_t slots;
+    u64* code = guest_program(instructions, count, NULL, &slots);
+    if (!code) return NULL;
+    memset(info, 0, sizeof *info);
+    info->advanced_blend = blend;
+    if (blend) set_sph(code, 18, 15); /* the equation blends render target 0's RGBA */
+    int device = g_shader_maximal_reconvergence;
+    g_shader_maximal_reconvergence = reconverges;
+    u32* result = spirv_of(code, slots * sizeof *code, ST_FS, info, words, 1, 1, 1, can_subgroup);
+    g_shader_maximal_reconvergence = device;
+    free(code);
+    return result;
+}
+/* A fragment program with flow and a sample that takes its level from derivatives, on a device whose subgroups leave
+   the fragment stage out (Turnip on an Adreno 610 lists compute only, llvmpipe's have 8 lanes): the program's own
+   branches and loops as structured constructs, with no subgroup operation and no dispatch loop, and
+   MaximallyReconvergesKHR where the device has it. Such a program was refused whole. One the structure can't take (a
+   call, an indirect jump, a control stack kept at run time, an advanced blend equation, flow shader_structure gives
+   no structure for) is still refused there, with the reason, and still translated with fragment subgroups */
+static void fragment_flow_derivatives(void) {
+    /* TEX R0, R4, R5: a 2D texture by the handle at c[2][0x128], the level its derivatives give */
+    const u64 tex = 0xc038000000000000ull | 74ull << 36 | 7ull << 51 | 1ull << 31 | 2ull << 28 | 7ull << 16 | 4ull << 8;
+    const u64 nop = 0x50B0000000070F00ull;
+    const u64 branch[] = {flow_bra(0, 2, 0), nop, tex};                    /* @P0 BRA over a NOP, then the sample */
+    const u64 loop[] = {nop, flow_bra(1, 0, 0), tex};                      /* @P0 BRA back, then the sample */
+    const u64 explicit_lod[] = {flow_bra(0, 2, 0), nop, tex | 1ull << 55}; /* TEX.LZ: no derivative */
+    const struct {
+        const u64* instructions;
+        const char* what;
+    } structured[] = {{branch, "a sample after a branch"}, {loop, "a sample after a loop"}};
+    ShaderInfo info;
+    size_t words = 0;
+    char what[160];
+    int switches;
+    for (size_t f = 0; f < sizeof structured / sizeof *structured; f++)
+        for (int reconverges = 0; reconverges < 2; reconverges++) {
+            u32* code = flow_lod_spirv(structured[f].instructions, 3, 0, reconverges, 0, &info, &words);
+            snprintf(what, sizeof what, "%s translates without fragment subgroups", structured[f].what);
+            check_translated(code, &info, what);
+            if (code) {
+                snprintf(what, sizeof what, "%s is structured flow without fragment subgroups: no dispatch loop",
+                         structured[f].what);
+                check(switch_cases(code, words, &switches) == 0 && switches == 0 &&
+                          count_opcode(code, words, 246, 0xffffffffu) >= 1,
+                      what);
+                snprintf(what, sizeof what, "%s uses no subgroup and keeps its implicit level", structured[f].what);
+                check(no_subgroup(code, words) && count_opcode(code, words, 87, 0xffffffffu) == 1, what);
+                snprintf(what, sizeof what, "%s declares MaximallyReconvergesKHR only where the device has it",
+                         structured[f].what);
+                check(count_opcode(code, words, 16, 6023) == reconverges, what);
+            }
+            free(code);
+        }
+    /* with fragment subgroups the program is what it was: the dispatch loop on the subgroup's lowest pc, or
+       structured flow where the device reconverges */
+    u32* code = flow_lod_spirv(branch, 3, 1, 0, 0, &info, &words);
+    check_translated(code, &info, "a sample after a branch translates with fragment subgroups");
+    if (code)
+        check(switch_selects_current_pc(code, words) && !no_subgroup(code, words) &&
+                  count_opcode(code, words, 16, 6023) == 0,
+              "with fragment subgroups and no MaximallyReconvergesKHR the lanes wait in the dispatch loop");
+    free(code);
+    code = flow_lod_spirv(branch, 3, 1, 1, 0, &info, &words);
+    check_translated(code, &info, "a sample after a branch translates on a device that reconverges");
+    if (code)
+        check(switch_cases(code, words, &switches) == 0 && switches == 0 && count_opcode(code, words, 16, 6023) == 1,
+              "with fragment subgroups and MaximallyReconvergesKHR the program is structured");
+    free(code);
+    /* flow without a derivative never needed the subgroup */
+    code = flow_lod_spirv(explicit_lod, 3, 0, 0, 0, &info, &words);
+    check_translated(code, &info, "a sample of level 0 after a branch translates without fragment subgroups");
+    free(code);
+    /* what the structure can't take */
+    const u64 calls[] = {0xe260000000070040ull | (u64)((flow_word(4) - flow_word(1)) * 8) << 20, /* CAL 4 */
+                         tex, EXIT, nop, 0xe32000000007000full};                                 /* RET */
+    const u64 jump[] = {flow_bra(0, 2, 0), nop, tex, 0xe250000000070d0full}; /* a BRX with no table to read */
+    const u64 stack[] = {0xe23000000007000full | (u64)((flow_word(2) - flow_word(1)) * 8) << 20, /* PEXIT 2 */
+                         nop, tex};
+    /* a loop entered at two places: @P0 BRA 2 into its second block, which branches back to its first */
+    const u64 irreducible[] = {flow_bra(0, 2, 0), nop, flow_bra(2, 1, 1), tex};
+    const struct {
+        const u64* instructions;
+        int count;
+        u64 blend;
+        const char *with, *what;
+    } refused[] = {{calls, 5, 0, "calls", "a call"},
+                   {jump, 4, 0, "indirect jumps", "an indirect jump"},
+                   {stack, 3, 0, "a run-time control stack", "a control stack kept at run time"},
+                   {branch, 3, 5ull << 37, "advanced blend", "an advanced blend equation"},
+                   {irreducible, 4, 0, "flow without a structure", "irreducible flow"}};
+    for (size_t f = 0; f < sizeof refused / sizeof *refused; f++) {
+        char reason[96];
+        snprintf(reason, sizeof reason, "derivatives after flow, without fragment subgroups, in a program with %s",
+                 refused[f].with);
+        for (int reconverges = 0; reconverges < 2; reconverges++) {
+            code = flow_lod_spirv(refused[f].instructions, refused[f].count, 0, reconverges, refused[f].blend, &info,
+                                  &words);
+            snprintf(what, sizeof what, "a sample after flow with %s is refused without fragment subgroups, by name",
+                     refused[f].what);
+            check_refused(code, &info, reason, what);
+            check(strlen(info.first_unsupported) == strlen(reason), "the refusal's reason is whole");
+            free(code);
+        }
+        code = flow_lod_spirv(refused[f].instructions, refused[f].count, 1, 0, refused[f].blend, &info, &words);
+        snprintf(what, sizeof what, "a sample after flow with %s translates with fragment subgroups", refused[f].what);
+        check_translated(code, &info, what);
+        if (code) {
+            snprintf(what, sizeof what, "a sample after flow with %s waits in the dispatch loop", refused[f].what);
+            check(switch_cases(code, words, &switches) > 0 && !no_subgroup(code, words), what);
+        }
+        free(code);
+    }
+}
+
 /* What the translator knows as it translates is settled there, not left for the driver's compiler: PT, the
    predicate most instructions name, is the constant true; a constant a register holds is a constant of the type it
    is read as; and a float a register holds is read back as that float, not through its bits */
@@ -5121,6 +5246,7 @@ int main(int argc, char** argv) {
     shfl_quad_forms();
     shfl_predicate();
     lone_lane_forms();
+    fragment_flow_derivatives();
     feedback_own_pixel();
     feedback_screen_uv();
     vertex_screen_out();
