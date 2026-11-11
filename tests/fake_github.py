@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""A fake gh (a small GitHub kept in a JSON file: releases and tags, pull requests and their turn into a draft, issues
-and their comments, the users' permissions, Build runs, their jobs and their cancel, files of a branch) and a fake
-Discord (a local HTTP server keeping each webhook's messages), for tests/publish_builds_test.py,
-tests/cancel_pr_runs_test.py and tests/pr_ready_test.py. Offline."""
+"""A fake gh (a small GitHub kept in a JSON file: releases and tags, pull requests, issues and their comments, the
+users' permissions, Build runs, their jobs and their cancel, files of a branch) and a fake Discord (a local HTTP server
+keeping each webhook's messages), for tests/publish_builds_test.py and tests/cancel_pr_runs_test.py. Offline."""
 
 import http.server
 import json
@@ -44,17 +43,6 @@ method = args[args.index('-X') + 1] if '-X' in args else 'GET'
 target = [a for a in args[1:] if not a.startswith('-') and a not in ('GET', 'POST', 'PATCH', 'PUT', 'DELETE')][0]
 if target == 'graphql':  # the links of a pull request or an issue, as GitHub's GraphQL gives them
     asked = next(a for a in args if a.startswith('query='))
-    if 'convertPullRequestToDraft' in asked:  # a pull request turned into a draft, by its node id
-        if s.pop('fail_convert_once', None):
-            save()
-            stop('GraphQL: Resource not accessible by integration (convertPullRequestToDraft)')
-        node = next(a for a in args if a.startswith('id='))[len('id='):]
-        pull = (next((p for p in s['pulls'] if p.get('node_id') == node), None)
-                or stop(f"GraphQL: Could not resolve to a node with the global id of '{node}'"))
-        pull['draft'] = True
-        save()
-        out({'data': {'convertPullRequestToDraft': {'pullRequest': {'isDraft': True}}}})
-        sys.exit(0)
     number = re.search(r'number:(\d+)', asked).group(1)
     field, refs = (('pullRequest', 'closingIssuesReferences') if 'pullRequest(' in asked
                    else ('issue', 'closedByPullRequestsReferences'))
