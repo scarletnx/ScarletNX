@@ -55,6 +55,12 @@ _Static_assert(STATS_BARS <= SNX_UI_RING_MAX, "the bars fit the ring, a slot eac
 #define STATS_CELLS     (STATS_COLS - 5) /* a line's cells: after the icon's three, to a letter before the right */
 #define STATS_CPU_CELLS (STATS_GPU_AT - 4)
 #define STATS_GPU_CELLS (STATS_COLS - 1 - (STATS_GPU_AT + 3))
+/* a window's queue of the frames' times (stats_draw's quickest and slowest): its first the window's greatest */
+typedef struct {
+    u64 at[STATS_BARS + 1];
+    int v[STATS_BARS + 1];
+    unsigned head, n;
+} StatsWindow;
 typedef struct {
     int safe[4], scale, corner, showcase;
     float show[4];
@@ -75,6 +81,11 @@ static struct {
     int fps10, ms10;                 /* what the cells show: the frame rate and the last frame's time in tenths */
     int low10, peak10;               /* and the graph's quickest and slowest frames' times, in tenths */
     u32 measures;                    /* g_stats.measures */
+    u32 version;                     /* counts the changes to the quads (ui_append_kept) */
+    SnxUiSpan changed;               /* and the quads changed since they went into the renderer's list */
+    /* the frames' times in the graph's window, the quickest's and the slowest's (negated, so both keep the greatest
+       first): each a queue whose first is the window's, a later frame's dropping the ones it beats */
+    StatsWindow low, peak;
     u64 frames;                      /* and the bars, g_stats.frames */
 } g_box;
 
@@ -262,6 +273,26 @@ static void icon_backed(SnxUiList* l, float x, float y, int scale, unsigned icon
     ui_text_backed(l, x + 16.0f * (float)scale, y, scale, " ", rgba);
 }
 
+/* the letters of text into the n cells from first of the kept quads, the version counted up when one changed */
+static void cells(int first, int n, const char* text) {
+    if (!ui_cells_set(&g_box.q[first], n, text)) return;
+    ++g_box.version;
+    ui_span_add(&g_box.changed, first, first + n);
+}
+/* frame at's time v into a window's queue, and the frames before first out of it (stats_draw's quickest and slowest) */
+#define WINDOW (STATS_BARS + 1)
+static void window_push(StatsWindow* w, u64 at, int v) {
+    while (w->n && w->v[(w->head + w->n - 1) % WINDOW] <= v) --w->n;
+    w->at[(w->head + w->n) % WINDOW] = at;
+    w->v[(w->head + w->n) % WINDOW] = v;
+    ++w->n;
+}
+static void window_drop(StatsWindow* w, u64 first) {
+    while (w->n && w->at[w->head] < first) {
+        w->head = (w->head + 1) % WINDOW;
+        --w->n;
+    }
+}
 /* the box laid out for key, at the place stats_box gives it: the lines that change, the GPU's text and the bars left
    blank for stats_draw to write */
 static void box_layout(const int safe[4], int scale, const StatsKey* key) {
@@ -311,6 +342,8 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
     g_box.fps10 = g_box.ms10 = g_box.low10 = g_box.peak10 = -2;
     g_box.measures = g_stats.measures - 1;
     g_box.full = 1;
+    ++g_box.version;
+    ui_span_add(&g_box.changed, 0, g_box.n);
     g_box.head = 0;
 }
 /* the bar of a frame of t ms into its slot of the ring: its height in 255ths of the graph's, rounded */
@@ -347,21 +380,29 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
            last draw, or all after a layout */
         unsigned kept = g_stats.count ? g_stats.count - 1 : 0, fresh = kept;
         if (!g_box.full && g_stats.frames - g_box.frames < kept) fresh = (unsigned)(g_stats.frames - g_box.frames);
-        for (j = 0; j < fresh; ++j) bar_set((unsigned)((g_stats.frames - 2 - j) % STATS_BARS), frame_ms(j));
-        if (kept) g_box.head = (unsigned)((g_stats.frames - 2) % STATS_BARS);
+        if (g_box.full) g_box.low.n = g_box.peak.n = 0;
+        for (j = fresh; j-- > 0;) { /* oldest first, each into the ring and the quickest and slowest's windows */
+            u64 at_frame = g_stats.frames - 2 - j;
+            float t = frame_ms(j);
+            int t10 = (int)(t * 10 + 0.5f);
+            bar_set((unsigned)(at_frame % STATS_BARS), t);
+            window_push(&g_box.low, at_frame, -t10);
+            window_push(&g_box.peak, at_frame, t10);
+        }
+        if (kept) {
+            g_box.head = (unsigned)((g_stats.frames - 2) % STATS_BARS);
+            window_drop(&g_box.low, g_stats.frames - 1 - kept);
+            window_drop(&g_box.peak, g_stats.frames - 1 - kept);
+        }
         g_box.frames = g_stats.frames;
         g_box.full = 0;
         if (ms10 != g_box.ms10) {
             g_box.ms10 = ms10;
             g_box.fps10 = -2; /* the first line written again below: no frame rate is -2 */
         }
-        { /* the graph's quickest and slowest frames, in tenths of a millisecond, on its own line */
-            int low10 = -1, peak10 = -1;
-            for (j = 0; j < kept; ++j) {
-                int t10 = (int)(frame_ms(j) * 10 + 0.5f);
-                if (low10 < 0 || t10 < low10) low10 = t10;
-                if (t10 > peak10) peak10 = t10;
-            }
+        { /* the graph's quickest and slowest frames, in tenths of a millisecond, on its own line: each window's
+             first */
+            int low10 = kept ? -g_box.low.v[g_box.low.head] : -1, peak10 = kept ? g_box.peak.v[g_box.peak.head] : -1;
             if (low10 != g_box.low10 || peak10 != g_box.peak10) {
                 at = ui_put(text, "frame time ");
                 if (kept) {
@@ -369,7 +410,7 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
                 } else
                     at = ui_put(at, "?");
                 *at = 0;
-                ui_cells_set(&g_box.q[g_box.cells[4]], STATS_CELLS, text);
+                cells(g_box.cells[4], STATS_CELLS, text);
                 g_box.low10 = low10;
                 g_box.peak10 = peak10;
             }
@@ -380,26 +421,26 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
         at = ui_put(at, " fps  ");
         at = g_box.ms10 >= 0 ? put_tenths(at, (u64)g_box.ms10) : ui_put(at, "?");
         *ui_put(at, " ms") = 0;
-        ui_cells_set(&g_box.q[g_box.cells[0]], STATS_CELLS, text);
+        cells(g_box.cells[0], STATS_CELLS, text);
         g_box.fps10 = g_stats.fps10;
     }
     if (g_box.measures != g_stats.measures) { /* once a second */
         const SnxStatsMeasure* m = &g_stats.shown;
         *put_percent(ui_put(text, "cpu "), m->cpu) = 0;
-        ui_cells_set(&g_box.q[g_box.cells[1]], STATS_CPU_CELLS, text);
+        cells(g_box.cells[1], STATS_CPU_CELLS, text);
         if (m->gpu >= 0) { /* the busy time a frame in tenths of a millisecond, as the frame's own */
             at = ui_put(put_percent(ui_put(text, "gpu "), m->gpu), "  ");
             *ui_put(put_tenths(at, (m->gpu_ns + 50000) / 100000), " ms") = 0;
         } else
             *ui_put(text, "gpu ?  ? ms") = 0;
-        ui_cells_set(&g_box.q[g_box.gpu], STATS_GPU_CELLS, text);
+        cells(g_box.gpu, STATS_GPU_CELLS, text);
         *ui_put(put_mib(ui_put(put_mib(ui_put(text, "ram "), m->memory), "/"), m->memory_total), " MiB") = 0;
-        ui_cells_set(&g_box.q[g_box.cells[2]], STATS_CELLS, text);
+        cells(g_box.cells[2], STATS_CELLS, text);
         *ui_put(put_mib(ui_put(put_mib(ui_put(text, "vram "), m->vram), "/"), m->vram_budget), " MiB") = 0;
-        ui_cells_set(&g_box.q[g_box.cells[3]], STATS_CELLS, text);
+        cells(g_box.cells[3], STATS_CELLS, text);
         g_box.measures = g_stats.measures;
     }
-    ui_append(l, &(SnxUiList){g_box.q, g_box.n, STATS_QUADS});
+    ui_append_kept(l, &(SnxUiList){g_box.q, g_box.n, STATS_QUADS}, g_box.version, &g_box, &g_box.changed);
     ui_ring_set(g_box.height, STATS_BARS, (int)g_box.head, STATS_SLOW_FROM, STATS_SLOW);
     ui_ground_set(STATS_GROUND);
 }

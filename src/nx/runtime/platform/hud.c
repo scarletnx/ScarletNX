@@ -24,6 +24,7 @@ static struct {
     } laid; /* what the quads are laid out for; gen 0: nothing yet */
     SnxUiQuad q[HUD_QUADS];
     int n;
+    u32 version;
 } g_hud;
 
 int hud_debug_set(const char* text) {
@@ -92,6 +93,7 @@ void hud_draw(SnxUiList* l, const int safe[4], int scale) {
         memcpy(g_hud.laid.safe, safe, sizeof g_hud.laid.safe);
         g_hud.laid.scale = scale;
         g_hud.laid.gen = g_hud.gen;
+        ++g_hud.version;
     }
-    ui_append(l, &(SnxUiList){g_hud.q, g_hud.n, (int)HUD_QUADS});
+    ui_append_kept(l, &(SnxUiList){g_hud.q, g_hud.n, (int)HUD_QUADS}, g_hud.version, &g_hud, NULL);
 }

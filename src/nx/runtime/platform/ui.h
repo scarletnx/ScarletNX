@@ -136,6 +136,22 @@ char* ui_put_u(char* at, u64 v);
 char* ui_put_tenths(char* at, u64 tenths);
 /* the quads of from after l's, as many as fit */
 void ui_append(SnxUiList* l, const SnxUiList* from);
+/* A part's quads kept from frame to frame (stats.c's box, vpad.c's controls; who any address of its own), appended as
+   ui_append does, but not copied into the renderer's list (ui_dirty_begin's) where its last frame had them, the same
+   version (which the part counts up at each change), at the same place: as each frame's list is made from its start,
+   they are still there. There, of a new version only the quads changed (NULL: all) are copied, which the part marks
+   from its last append to the renderer's list, and which this then empties. Into any other list they are copied */
+typedef struct {
+    int first, end; /* the part's quads changed, an empty span for none */
+} SnxUiSpan;
+/* first to end into span, which grows to take it */
+void ui_span_add(SnxUiSpan* span, int first, int end);
+void ui_append_kept(SnxUiList* l, const SnxUiList* from, u32 version, const void* who, SnxUiSpan* changed);
+/* The quads written into one list (the renderer's) from ui_dirty_begin to ui_dirty_end: its first and one past its
+   last, an empty span (first >= end) for none, so that the renderer looks at no other. Every ui_ function that writes
+   a quad marks it; under ui_lock */
+void ui_dirty_begin(const SnxUiQuad* list);
+void ui_dirty_end(int* first, int* end);
 /* an icon of the menus' (gui/icons.h), two of the font's cells at a whole scale, as the launcher draws it beside a
    label; returns the width drawn, 0 for GUI_ICON_NONE. Its texels are in the atlas beside the picture, on its rows:
    icon i's 16x16 from x SNX_UI_ICONS_X + 16 * i */

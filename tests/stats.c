@@ -347,6 +347,8 @@ int main(void) {
     for (k = 0; k < 2 * STATS_FRAMES; ++k) stats_frame(at += 16 * MS, &g_test.gpu);
     draw(at);
     assert(bars(&newest) == STATS_FRAMES - 1);
+    /* the slow frames out of the graph's window: its quickest and slowest the 16 ms ones */
+    assert(!strcmp(text(4), "frame time 16.0 to 16.0 ms"));
     /* the box laid out once: other values, and another frame, take the same quads at the same places, the lines'
        letters and the bars' heights all that changes (ui_cells) */
     {
