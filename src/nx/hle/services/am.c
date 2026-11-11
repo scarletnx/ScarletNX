@@ -916,6 +916,117 @@ static int nn_am_service_IApplicationFunctions_GetUnknownEvent210(SvcObj* self, 
     return new_event(event, "am:unknown 210", 0);
 }
 
+/* ============================================================ the movie maker */
+/* nn::album's movie maker (InitializeMovieMaker): am's IMovieMaker gives grc's and the offscreen layer am made for it,
+   whose buffer queue (vi's, never shown) the game draws the movie in through grc's video proxy. The SDK aborts unless
+   all of that answers as the console does. The movie itself is the album's, which this runtime can't make: a
+   recording is refused with capsrv's NotSupported, which StartMovieMaker hands the game, and the game says it
+   couldn't make the video */
+static int nn_am_service_IApplicationFunctions_CreateMovieMaker(SvcObj* self, u64 size, u32 transfer_memory,
+                                                                SvcObj** movie_maker) {
+    KTmem* t = (KTmem*)h_get_ref(transfer_memory, KO_TMEM);
+    (void)self, (void)size;
+    R_UNLESS(t, SNX_RC_SVC_INVALID_HANDLE);
+    kobj_unref(&t->o); /* its work memory: no movie is encoded in it */
+    pm_lock(&g_host.am.lock);
+    g_hle.am.movie_layer = g_hle.am.next_layer++;
+    pm_unlock(&g_host.am.lock);
+    *movie_maker = nn_am_service_IMovieMaker_new();
+    R_SUCCEED();
+}
+static int nn_am_service_IMovieMaker_GetGrcMovieMaker(SvcObj* self, SvcObj** movie_maker) {
+    (void)self;
+    *movie_maker = nn_grcsrv_IMovieMaker_new();
+    R_SUCCEED();
+}
+static int nn_am_service_IMovieMaker_GetLayerHandle(SvcObj* self, u64* layer_handle) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    *layer_handle = g_hle.am.movie_layer;
+    pm_unlock(&g_host.am.lock);
+    R_SUCCEED();
+}
+static int nn_grcsrv_IMovieMaker_CreateVideoProxy(SvcObj* self, SvcObj** proxy) {
+    (void)self;
+    *proxy = vi_binder_driver_new();
+    R_SUCCEED();
+}
+static int nn_grcsrv_IMovieMaker_SetAlbumShimLibraryVersion(SvcObj* self, u64 version) {
+    (void)self, (void)version;
+    R_SUCCEED();
+}
+static int nn_grcsrv_IMovieMaker_OpenOffscreenLayer(SvcObj* self, u64 layer_handle, i32* binder_id) {
+    (void)self;
+    *binder_id = vi_offscreen_layer_open(layer_handle);
+    if (*binder_id) R_SUCCEED();
+    WARN("am: no place of vi's %d layers is free for the movie maker's layer %llu: OpenOffscreenLayer answers %#x\n",
+         VI_LAYERS, (unsigned long long)layer_handle, SNX_RC_VI_OPERATION_FAILED);
+    R_THROW(SNX_RC_VI_OPERATION_FAILED);
+}
+static int nn_grcsrv_IMovieMaker_CloseOffscreenLayer(SvcObj* self, u64 layer_handle) {
+    (void)self;
+    vi_offscreen_layer_close(layer_handle);
+    R_SUCCEED();
+}
+/* a command of a recording, none of which is made here: refused, the command and the layer said */
+static int am_movie_refused(const char* command, u64 layer_handle) {
+    WARN_LIMIT(4, "am: no movie is recorded here: %s of layer %llu answers capsrv's NotSupported (%#x)\n", command,
+               (unsigned long long)layer_handle, SNX_RC_CAPSRV_NOT_SUPPORTED);
+    R_THROW(SNX_RC_CAPSRV_NOT_SUPPORTED);
+}
+static int nn_grcsrv_IMovieMaker_StartOffscreenRecording(SvcObj* self, u64 layer_handle) {
+    (void)self;
+    return am_movie_refused("StartOffscreenRecording", layer_handle);
+}
+static int nn_grcsrv_IMovieMaker_StartOffscreenRecordingEx(SvcObj* self, u64 layer_handle,
+                                                           const nn_grcsrv_OffscreenRecordingParameter* parameter) {
+    (void)self, (void)parameter;
+    return am_movie_refused("StartOffscreenRecordingEx", layer_handle);
+}
+static int nn_grcsrv_IMovieMaker_AbortOffscreenRecording(SvcObj* self, u64 layer_handle) {
+    (void)self;
+    return am_movie_refused("AbortOffscreenRecording", layer_handle);
+}
+static int nn_grcsrv_IMovieMaker_RequestOffscreenRecordingFinishReady(SvcObj* self, u64 layer_handle) {
+    (void)self;
+    return am_movie_refused("RequestOffscreenRecordingFinishReady", layer_handle);
+}
+static int nn_grcsrv_IMovieMaker_CompleteOffscreenRecordingFinish(SvcObj* self, u64 layer_handle, IpcBuf data) {
+    (void)self, (void)data;
+    return am_movie_refused("CompleteOffscreenRecordingFinish", layer_handle);
+}
+static int nn_grcsrv_IMovieMaker_CompleteOffscreenRecordingFinishEx0(SvcObj* self, u64 layer_handle, IpcBuf data,
+                                                                     IpcBuf thumbnail, i32 thumbnail_width,
+                                                                     i32 thumbnail_height) {
+    (void)self, (void)data, (void)thumbnail, (void)thumbnail_width, (void)thumbnail_height;
+    return am_movie_refused("CompleteOffscreenRecordingFinishEx0", layer_handle);
+}
+static int nn_grcsrv_IMovieMaker_CompleteOffscreenRecordingFinishEx1(SvcObj* self, u64 layer_handle, IpcBuf data,
+                                                                     IpcBuf thumbnail, i32 thumbnail_width,
+                                                                     i32 thumbnail_height, u8* entry) {
+    (void)self, (void)data, (void)thumbnail, (void)thumbnail_width, (void)thumbnail_height, (void)entry;
+    return am_movie_refused("CompleteOffscreenRecordingFinishEx1", layer_handle);
+}
+static int nn_grcsrv_IMovieMaker_EncodeOffscreenLayerAudioSample(SvcObj* self, u64 layer_handle, IpcBuf sample,
+                                                                 u64* encoded_size) {
+    (void)self, (void)sample, (void)encoded_size;
+    return am_movie_refused("EncodeOffscreenLayerAudioSample", layer_handle);
+}
+/* the layer's error: none, with no recording to fail */
+static int nn_grcsrv_IMovieMaker_GetOffscreenLayerError(SvcObj* self, u64 layer_handle) {
+    (void)self, (void)layer_handle;
+    R_SUCCEED();
+}
+static int nn_grcsrv_IMovieMaker_GetOffscreenLayerRecordingFinishReadyEvent(SvcObj* self, u64 layer_handle,
+                                                                            u32* event) {
+    (void)self, (void)layer_handle;
+    return new_event(event, "am:movie finish ready", 0);
+}
+static int nn_grcsrv_IMovieMaker_GetOffscreenLayerAudioEncodeReadyEvent(SvcObj* self, u64 layer_handle, u32* event) {
+    (void)self, (void)layer_handle;
+    return new_event(event, "am:movie audio encode ready", 0);
+}
+
 /* ============================================================ library applets */
 /* AM_IN_DATA and AM_OUT_DATA, the storages an applet holds, and the LibApplet: services_int.h */
 
