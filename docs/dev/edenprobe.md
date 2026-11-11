@@ -128,6 +128,11 @@ of its `XDG_DATA_HOME`, with `machine=scarletnx-android@<the runtime's commit>` 
 the APK has. edenprobe takes a folder of 160 characters at most, so an `--out` that makes it longer is refused. The
 launches, the report and the baseline are the NRO's.
 
+In CI the `edenprobe` job runs it after the NRO, on the same install with the JRE of the build's JDK, as
+`EDENPROBE_APK_VERSION` pinned by `EDENPROBE_APK_SHA256` with the words of `EDENPROBE_APK_MODE`, against
+`tests/edenprobe/android-x86_64.txt`, written as the NRO's is. Its notice follows the NRO's on edenprobe's line of the
+pull request's comment, and its files are under `edenprobe-android/` in the job's artifact.
+
 ## A case from a game report
 
 A game report whose failure a maintainer understands gets the label `status: confirmed`, and the Game reports
