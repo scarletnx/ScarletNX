@@ -2,8 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* Stats (settings.txt's stats): the game's frames a second and its last frame's time, the processor's share the
    process takes beside the GPU's busy share and time a frame, the memory it takes of the machine's, the video memory it
-   uses of the driver's budget, and a graph of the times of its last STATS_FRAMES frames under its title, its guides
-   labelled, in stats_corner's corner over the game; in showcase's own corner
+   uses of the driver's budget, the quickest and slowest of its last STATS_FRAMES frames' times, and under them a graph
+   of those times with a guide at 60 and 30 FPS's, as wide as the lines and right under them, in stats_corner's corner
+   over the game; in showcase's own corner
    beside showcase's box, toward the picture's middle. Under the graph, while they apply: RenderDoc's lines, that a
    capture can be taken (the capture key, hotkey_capture) and the captures written with the last one's file, and the
    debugger tracing the game. On every system: a value it does not tell shows as ? */
@@ -14,9 +15,9 @@
 
 #define STATS_FRAMES 120   /* the frames the graph shows */
 #define STATS_COLS   36    /* the box's width, in letters: a line's icon and space take three */
-#define STATS_LINES  5     /* its lines of text, each after its icon, the last the graph's title */
+#define STATS_LINES  5     /* its lines of text, each after its icon, the last the graph's title with its times */
 #define STATS_GPU_AT 14    /* the letter the GPU's icon starts at, beside the processor's line */
-#define STATS_AXIS   8     /* the letters at the graph's right for its guides' labels */
+#define STATS_GRAPH_W (STATS_COLS - 2) /* the graph's width in letters: the lines', from the icons to their ends */
 #define STATS_TOP_MS 50.0f /* the graph's top; a longer frame reaches it */
 /* the graph's two guides, a frame of a 60 FPS game and of a 30 FPS one; a frame past the second draws in the failure
    colour */
