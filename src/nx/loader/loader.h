@@ -11,7 +11,9 @@
 #include <stddef.h>
 
 /* Where the first module goes: a 64-bit process's code region, and a 32-bit one's (mem.h's AS32_CODE_BASE). Each
-   further module follows the previous one after a guard page */
+   further module starts where the one before it ends, as the console's loader lays them: a program's own code reads
+   the addresses that gives (a module that takes its game's main module to start right after rtld). A change of this
+   layout needs a new SNX_ABI: save states and hints hold addresses of the layout they were made with */
 #define SNX_CODE_BASE   0x08000000UL
 #define SNX_CODE_BASE32 0x00200000UL
 #define SNX_PAGE_SIZE   0x1000UL
@@ -117,6 +119,10 @@ void snx_exefs_mods(SnxExefsMods* mods, const SnxExefsReader* under, char* const
 int snx_load_program_mods(const char* entry, char* const* names, char* const* paths, size_t count, SnxProgram* program,
                           char* error, size_t error_size);
 void snx_free_program(SnxProgram* program);
+/* Code addresses recorded while a page lay free after each of program's modules, as it did before SNX_ABI 18, each
+   moved to where that code lies now: module i lay i pages higher then. An address that was in no module then is left
+   out. In place, in their order: how many are left */
+size_t snx_program_unguard_addresses(const SnxProgram* program, SnxU64* addresses, size_t count);
 int snx_load_nso(const char* path, const char* name, SnxModuleImage* module, char* error, size_t error_size);
 /* An NSO of a 32-bit program: an ELF32 dynamic table, 16-byte symbols, REL and RELA relocations. Code addresses among
    its functions and relptrs keep bit 0 when it marks Thumb code */

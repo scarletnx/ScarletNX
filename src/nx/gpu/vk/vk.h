@@ -116,6 +116,8 @@ typedef struct {
     VkPhysicalDeviceFeatures feat;
     int has_divisor;    /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
     int astc_bc7_could; /* the GPU samples BCn but not ASTC: astc_mode=2 holds its ASTC textures as BC7 */
+    /* the block formats the device samples, whether turned on or not (vk_blocks_want): VK_BLOCKS_* bits */
+    u32 blocks_have;
     /* astc_mode's Auto holds the ASTC textures it decodes as BC7: the device started with a budget under
        SNX_ASTC_EXACT_MB (gpu/texture/astc_bc.h). vk_astc_bc7 says what the mode in effect holds them as */
     int astc_auto_bc7;
@@ -787,6 +789,15 @@ enum {
 VkFmt vk_rt_format(u32 fmt);
 VkFmt vk_zt_format(u32 fmt);
 VkFmt vk_tic_format(u32 w0, int srgb); /* bpp 0: not supported */
+/* g_vk.blocks_have's bits */
+enum { VK_BLOCKS_ASTC = 1, VK_BLOCKS_ETC2 = 2, VK_BLOCKS_BC = 4 };
+/* the block formats' features to turn on of those the device has (have): BCn wherever it has them, ASTC LDR and ETC2
+   where native_astc and native_etc2 ask as well */
+void vk_blocks_want(const VkPhysicalDeviceFeatures* have, VkPhysicalDeviceFeatures* want);
+/* the log's line for each family of block textures (ASTC, ETC2 and EAC, BCn): sampled as the games' blocks, encoded
+   again on the GPU, or decoded, and into what; a warning where a setting asks for what the GPU lacks. Once the device
+   is made and astc_mode chosen */
+void vk_blocks_say(void);
 /* the ASTC textures the GPU decodes are held as BC7: astc_mode's BC7, or its Auto on a device that started with little
    memory (gpu/texture/astc_bc.h) */
 int vk_astc_bc7(void);
@@ -844,6 +855,10 @@ typedef struct Surf {
     VmaAllocation mem;
     VkImageView att;        /* level 0: the attachment */
     VkImageView att_linear; /* same storage without sRGB conversion */
+    VkImageView present;    /* level 0's layer 0 as its bytes (its sRGB twin's UNORM), sampled: the window's present
+                               (present_quad.c), made at its first */
+    u32 present_serial;     /* that view's number among all made, which a set holding it is known by: unlike its
+                               handle, never another view's */
     VkImageLayout layout;   /* the whole image is kept in one layout */
     VkPipelineStageFlags2 stage;
     VkAccessFlags2 access;
@@ -2070,6 +2085,11 @@ void vk_pass_ends_log(void);
 /* the on-screen controls and the game's menu over a swapchain image in TRANSFER_DST_OPTIMAL, which it stays in;
    safe is the picture's part clear of the system's bars (gpu/vk/ui.c) */
 void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]);
+/* The window's one pass over sc, which the acquire waits for at the colour output: cleared to black, src's crop drawn
+   at to (transform's flips, then its quarter turn), and the on-screen layer over it; sc ends ready to present. src is
+   sampled through its bytes' view into a UNORM swapchain, so nothing converts sRGB; NULL for black alone */
+void vk_ui_present(VkCommandBuffer cb, VkImage sc, Surf* src, VkRect2D crop, VkRect2D to, u32 transform,
+                   const int safe[4]);
 void vk_ui_swapchain_gone(void); /* its images' views go before the swapchain does */
 void vk_render_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o);
 /* viewport index of a draw's state with the resolution scale, and the draw's facing */

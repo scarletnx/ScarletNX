@@ -23,6 +23,7 @@
 
 static SDL_Gamepad* g_pads[SNX_GAMEPADS];
 static char g_names[SNX_GAMEPADS][64]; /* theirs, for the game's menu, which the renderer draws on its thread */
+static u32 g_names_version;            /* their changes, under ui_lock */
 static int g_labels[SNX_GAMEPADS][4], g_symmetric[SNX_GAMEPADS]; /* and how its button map screen draws them */
 static unsigned g_held[SNX_GAMEPADS]; /* the controls each holds, a bit each, as last polled */
 static int g_left_type[SNX_GAMEPADS]; /* gamepad_assign=1: the type of the pad a player is kept for (connect.h) */
@@ -154,6 +155,7 @@ unsigned gamepad_held(int i) {
             return __atomic_load_n(&g_held[k], __ATOMIC_RELAXED);
     return held;
 }
+u32 gamepad_names_version(void) { return g_names_version; }
 const char* gamepad_name(int i) {
     int k;
     for (k = 0; k < SNX_GAMEPADS; k++)
@@ -354,6 +356,7 @@ void gamepad_open(u32 id) {
     ui_lock();
     snprintf(g_names[i], sizeof g_names[i], "%s",
              SDL_GetGamepadName(g_pads[i]) ? SDL_GetGamepadName(g_pads[i]) : "Gamepad");
+    ++g_names_version;
     snx_pad_labels(g_pads[i], g_labels[i]);
     g_symmetric[i] = snx_pad_symmetric(g_pads[i]);
     if (g_settings.controller_assignment) { /* as Eden's hints: which controller joined, and as which player */
@@ -378,6 +381,7 @@ void gamepad_close(u32 id) {
                 overlay_toast(said, plat_ns());
             }
             g_names[i][0] = 0;
+            ++g_names_version;
             ui_unlock();
         }
     gamepad_open_waiting();

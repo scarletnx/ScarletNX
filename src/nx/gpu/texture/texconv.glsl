@@ -367,11 +367,24 @@ void bc6_block(uint b[4], bool sf, uint o0, uint u) {
    index bits and the second indices' bits. Modes 0, 3, 6 and 7 have a p-bit an endpoint, mode 1 one a subset */
 const uint BC7_MODE[8] = {0x03040043u, 0x03060062u, 0x02050063u, 0x02070062u,
                           0x32651201u, 0x22870201u, 0x04770001u, 0x02550062u};
+#ifdef SNX_TC_ETC2
+/* the ETC2 build's decoded block, which etc2_encode.glsl encodes again: RGBA8 texels row by row */
+uint tx_px[16];
+#endif
+/* texel i (row by row) of the block at column u of blocks whose four rows of RGBA8 pixels start at word o0: into the
+   output, or into tx_px in the ETC2 build */
+void bc_put(uint o0, uint u, uint i, uint c) {
+#ifdef SNX_TC_ETC2
+    tx_px[i] = c;
+#else
+    dst[o0 + (i >> 2) * out_pitch + 4u * u + (i & 3u)] = c;
+#endif
+}
 /* a BC7 block b into four rows of RGBA8 pixels from word o0, at column u of blocks. A block without a mode (its
    first byte 0) is transparent black */
 void bc7_block(uint b[4], uint o0, uint u) {
     if ((b[0] & 255u) == 0u) {
-        for (uint i = 0u; i < 16u; i++) dst[o0 + (i >> 2) * out_pitch + 4u * u + (i & 3u)] = 0u;
+        for (uint i = 0u; i < 16u; i++) bc_put(o0, u, i, 0u);
         return;
     }
     uint mode = uint(findLSB(b[0] & 255u)), mw = BC7_MODE[mode];
@@ -421,7 +434,7 @@ void bc7_block(uint b[4], uint o0, uint u) {
             px[3] = px[rot - 1u];
             px[rot - 1u] = t;
         }
-        dst[o0 + (i >> 2) * out_pitch + 4u * u + (i & 3u)] = tc_rgba(px[0], px[1], px[2], uint(px[3]));
+        bc_put(o0, u, i, tc_rgba(px[0], px[1], px[2], uint(px[3])));
     }
 }
 
@@ -571,6 +584,7 @@ uint tc_index(uint j) {
     return j;
 }
 
+#ifndef SNX_TC_ETC2
 void main() {
     uint u = gl_GlobalInvocationID.x;
     if (u >= units) return;
@@ -750,3 +764,60 @@ void main() {
         }
     }
 }
+#else
+#include "etc2_encode.glsl"
+/* The ETC2 build: a block an invocation, a BCn block of the kind mode names (TC_BCN_ETC2 on from TC_BC1's place)
+   decoded and encoded again, at column u of blocks of row of blocks gl_GlobalInvocationID.y of slice z. Input as the
+   BCn modes read it; output rows of blocks out_pitch words apart, each block's 8 byte halves big-endian as ETC2 and
+   EAC store them */
+void main() {
+    uint u = gl_GlobalInvocationID.x;
+    if (u >= units) return;
+    uint kind = mode - TC_BCN_ETC2 + TC_BC1, words = kind == TC_BC1 || kind == TC_BC4 || kind == TC_BC4_SNORM ? 2u : 4u;
+    uint row = gl_GlobalInvocationID.z * rows + gl_GlobalInvocationID.y;
+    uint at = in_bias + row * in_pitch + u * words, o = out_bias + row * out_pitch + u * words;
+    uint b[4];
+    for (uint w = 0u; w < 4u; w++) {
+        b[w] = 0u;
+        if (w < words) b[w] = src[at + w];
+    }
+    if (kind >= TC_BC4 && kind <= TC_BC5_SNORM) {
+        /* BC4 and BC5's channels as EAC's 11 bits, the 16 bit values the BCn modes decode them to rounded */
+        bool sn = kind == TC_BC4_SNORM || kind == TC_BC5_SNORM;
+        for (uint h = 0u; h < words / 2u; h++) {
+            for (uint i = 0u; i < 16u; i++) {
+                uint v = bc4_value(b[2u * h + 1u], b[2u * h], sn, i);
+                tx_v[i] = sn ? ex_round((v >= 0x8000u ? int(v) - 65536 : int(v)) * 1023, 32767)
+                             : int((v * 2047u + 32767u) / 65535u);
+            }
+            ex_encode(sn ? EX_R11S : EX_R11);
+            dst[o + 2u * h] = tc_bswap(tx_hi);
+            dst[o + 2u * h + 1u] = tc_bswap(tx_lo);
+        }
+        return;
+    }
+    if (kind == TC_BC7) {
+        bc7_block(b, 0u, 0u);
+    } else {
+        for (uint i = 0u; i < 16u; i++) {
+            uint a = kind == TC_BC2 ? (((i < 8u ? b[0] : b[1]) >> (4u * (i & 7u))) & 15u) * 17u : bc3_alpha(b[1], b[0], i);
+            tx_px[i] = kind == TC_BC1 ? bc1_pixel(b[0], b[1], true, i)
+                                      : (bc1_pixel(b[2], b[3], false, i) & 0xFFFFFFu) | (a << 24);
+        }
+    }
+    if (kind == TC_BC1) {
+        et_encode(true);
+        dst[o] = tc_bswap(tx_hi);
+        dst[o + 1u] = tc_bswap(tx_lo);
+        return;
+    }
+    /* an EAC alpha block, then an ETC2 RGB one */
+    for (uint i = 0u; i < 16u; i++) tx_v[i] = int(tx_px[i] >> 24);
+    ex_encode(EX_ALPHA);
+    dst[o] = tc_bswap(tx_hi);
+    dst[o + 1u] = tc_bswap(tx_lo);
+    et_encode(false);
+    dst[o + 2u] = tc_bswap(tx_hi);
+    dst[o + 3u] = tc_bswap(tx_lo);
+}
+#endif

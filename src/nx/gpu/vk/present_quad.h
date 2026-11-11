@@ -7,4 +7,14 @@
    The GPU samples and converts the image. No host pixel conversion or image readback occurs here. */
 int vk_present_quad(Surf* source, VkImage destination, VkFormat format, VkExtent2D extent,
                     VkRect2D source_rect, VkRect2D destination_rect, u32 transform, int linear);
+/* vk_present_quad in two, for a pass that draws more (the window's, with the on-screen layer: gpu/vk/ui.c): source made
+   ready to sample, outside a rendering pass (raw: through the view of its bytes, its sRGB twin's UNORM, which
+   converts nothing); then its crop drawn into the pass open on cb, whose attachment has format. 0 when it can't be */
+typedef struct {
+    Surf* surf;
+    VkDescriptorSet set;
+} SnxPresentSource;
+int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw, SnxPresentSource* out);
+int vk_present_quad_draw(VkCommandBuffer cb, const SnxPresentSource* s, VkFormat format, VkRect2D source_rect,
+                         VkRect2D destination_rect, u32 transform);
 #endif

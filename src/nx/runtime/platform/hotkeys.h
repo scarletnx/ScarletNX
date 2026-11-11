@@ -41,6 +41,8 @@ enum { HOTKEY_CTRL = 1, HOTKEY_ALT = 2, HOTKEY_SHIFT = 4, HOTKEY_GUI = 8 };
 const IniOpt* hotkey_row(int action);
 /* action's key as its setting holds it, SDL's name after the modifiers' (Ctrl+Shift+F12); "" for none */
 const char* hotkey_text(int action);
+/* counts the changes to the keys (hotkey_set, hotkey_assign), for the menu's pages that name them */
+uint32_t hotkeys_version(void);
 /* text as a key (SDL_Keycode) and the modifiers held with it: 0, "" giving no key (0); else -1 with why into why (n
    bytes): a name SDL doesn't know, a modifier where the key goes, or nothing after the modifiers */
 int hotkey_parse(const char* text, unsigned* key, unsigned* mods, char* why, size_t n);

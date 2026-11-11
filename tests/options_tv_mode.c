@@ -5,9 +5,8 @@
    and on no other update, a change only when the watcher marks one, the 15 s query of a host with no watcher, and
    Off and On never asking the host; the steps round On, Off and Auto of hotkey_tv_mode and the game's menu. And a key the .ini gives twice: the last line's value, and a line that names the
    key and both values; and memory_fit, deprecated, read from an old .ini as memory_fit_mode while the file gives that
-   one none, and the file written with memory_fit_mode and memory_fit under [Deprecated]. And controls_skin: a .ini
-   without it opens with line, its default, and one that gives it empty keeps the built-in look. And controls_opacity,
-   deprecated, read from an old .ini as the controls_alpha of the same look. And vk_descriptors, deprecated: the
+   one none, and the file written with memory_fit_mode and memory_fit under [Deprecated]. And controls_opacity and
+   controls_alpha, deprecated, kept under [Deprecated]. And vk_descriptors, deprecated: the
    default an older version wrote in every game's .ini is no pick, so the game runs Automatic and nothing is said over
    its picture; a pick is carried to vk_descriptors_mode, and --vk_descriptors=N is this run's */
 #include "common/utilities/common.h"
@@ -52,8 +51,6 @@ static struct {
     char logged[256];
     char said[4096]; /* every line, one after the other */
     int write;       /* plat_replace_file replaces the file: ini_open writes it */
-    char skin[64];   /* the controls_skin backend_ini was given, which the on-screen controls read (vpad_ini) */
-    char alpha[16];  /* the controls_alpha it was given */
 } g_test;
 
 int plat_power_on_charger(void) {
@@ -108,8 +105,8 @@ int plat_replace_file(const char* tmp, const char* dst) {
 #endif
 }
 int backend_ini(const char* k, const char* v) {
-    if (!strcmp(k, "controls_skin")) snprintf(g_test.skin, sizeof g_test.skin, "%s", v);
-    if (!strcmp(k, "controls_alpha")) snprintf(g_test.alpha, sizeof g_test.alpha, "%s", v);
+    (void)k;
+    (void)v;
     return 0;
 }
 int hud_debug_set(const char* text) {
@@ -132,7 +129,6 @@ void options_old_environment_say(void) {}
 NO_SET(vpad_showcase_corner_set)
 NO_SET(stats_corner_set)
 NO_SET(vpad_on_set)
-NO_SET(vpad_skin_choose)
 NO_SET(vpad_place_set)
 NO_SET(backend_touch_mode_set)
 NO_SET(gamepad_background_set)
@@ -400,67 +396,16 @@ static void test_settings_line(void) {
     CHECK(!strstr(list, "astc_mode"));
 }
 
-/* controls_skin, the on-screen controls' look: a .ini without it opens with line, its default, and is written with it; a
-   .ini that gives it empty keeps the built-in look, and the file keeps it empty */
-static void test_controls_skin(void) {
+
+/* controls_opacity and controls_alpha, deprecated (the on-screen controls are opaque): an old .ini keeps both under
+   [Deprecated], neither read */
+static void test_controls_opacity_old(void) {
     char* text;
     g_test.write = 1;
-    snprintf(g_test.skin, sizeof g_test.skin, "%s", "not given");
-    text = open_ini("[On-screen controls]\ncontrols=1\n");
-    CHECK(!strcmp(g_test.skin, "line") && text && strstr(text, "\ncontrols_skin=line\n"));
-    free(text);
-    snprintf(g_test.skin, sizeof g_test.skin, "%s", "not given");
-    text = open_ini("[On-screen controls]\ncontrols=1\ncontrols_skin=\n");
-    CHECK(!g_test.skin[0] && text && strstr(text, "\ncontrols_skin=\n"));
-    free(text);
-    g_test.write = 0;
-}
-
-/* controls_opacity, deprecated, in an old .ini: read while controls_alpha has no value, as the value that draws the
-   built-in look as it was (the art opaque now, on SNX_VPAD_BUILTIN_CURVE), said once; the file written with controls_alpha and
-   controls_opacity under [Deprecated]. 50, the default it had last, and a value that is not a whole number leave
-   controls_alpha its default, said */
-static void test_controls_opacity_old(void) {
-    char *text, *again;
-    CHECK(options_controls_opacity_old("100") == 50 && options_controls_opacity_old("75") == 34 &&
-          options_controls_opacity_old("0") == 0 && options_controls_opacity_old("150") == 50 &&
-          options_controls_opacity_old("-3") == 0 && options_controls_opacity_old("40") == 14);
-    CHECK(options_controls_opacity_old("50") == -1); /* the default the .ini files made since it was had written */
-    CHECK(options_controls_opacity_old("most") == -2 && options_controls_opacity_old("50.5") == -2 &&
-          options_controls_opacity_old("") == -2);
-    g_test.write = 1;
-    text = open_ini("[On-screen controls]\ncontrols=1\ncontrols_opacity=100\n");
-    CHECK(!strcmp(g_test.alpha, "50"));
-    CHECK(strstr(g_test.said,
-                 "settings: controls_opacity=100, deprecated, is controls_alpha=50 now, the same look: the "
-                 "built-in controls' art is opaque (docs/user/deprecations.md)\n"));
-    CHECK(text && strstr(text, "\ncontrols_alpha=50\n") && strstr(text, "\n[Deprecated]\n") &&
-          strstr(text, "\n[Deprecated]\n") < strstr(text, "\ncontrols_opacity=100\n"));
-    snprintf(g_test.alpha, sizeof g_test.alpha, "%s", "not given");
-    again = open_ini(text); /* the next run: controls_alpha given, controls_opacity not read again */
-    CHECK(!strstr(g_test.said, "settings: controls_opacity=") && !strcmp(g_test.alpha, "50"));
-    free(again);
-    free(text);
-    text = open_ini("[On-screen controls]\ncontrols_opacity=30\n");
-    CHECK(!strcmp(g_test.alpha, "10") && strstr(g_test.said, "settings: controls_opacity=30, deprecated, is "
-                                                             "controls_alpha=10 now"));
-    free(text);
-    /* 50, controls_opacity's last default, which a new game's .ini wrote: controls_alpha its own, 50, not 25 */
-    snprintf(g_test.alpha, sizeof g_test.alpha, "%s", "not given");
-    text = open_ini("[On-screen controls]\ncontrols_opacity=50\n");
-    CHECK(!strcmp(g_test.alpha, "50"));
-    CHECK(strstr(g_test.said, "settings: controls_opacity=50, deprecated, was its default: controls_alpha takes its "
-                              "own, 50 (docs/user/deprecations.md)\n"));
-    CHECK(text && strstr(text, "\ncontrols_alpha=50\n") && strstr(text, "\ncontrols_opacity=50\n"));
-    free(text);
-    text = open_ini("[On-screen controls]\ncontrols_opacity=most\n");
-    CHECK(!strcmp(g_test.alpha, "50"));
-    CHECK(strstr(g_test.said, "settings: controls_opacity=most, deprecated, is not a whole number: controls_alpha "
-                              "takes its default, 50 (docs/user/deprecations.md)\n"));
-    free(text);
-    /* the new key given, the old one is not read */
-    text = open_ini("[On-screen controls]\ncontrols_opacity=100\ncontrols_alpha=80\n");
-    CHECK(!strstr(g_test.said, "settings: controls_opacity=") && !strcmp(g_test.alpha, "80"));
+    text = open_ini("[On-screen controls]\ncontrols=1\ncontrols_opacity=100\ncontrols_alpha=80\n");
+    CHECK(text && strstr(text, "\n[Deprecated]\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\ncontrols_opacity=100\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\ncontrols_alpha=80\n"));
     free(text);
     g_test.write = 0;
 }
@@ -584,7 +529,6 @@ int main(int argc, char** argv) {
     test_settings_line();
     test_memory_fit_old();
     test_astc_bc_old();
-    test_controls_skin();
     test_controls_opacity_old();
     test_vk_descriptors_old_default();
     test_vk_descriptors_old();

@@ -13,8 +13,10 @@ import time
 from pathlib import Path
 
 
-def make_nro(code=None):
-    image = bytearray(0x200)
+def make_nro(code=None, text=0x100):
+    """an NRO of text bytes of code (its words from 0x80 on), then 0x80 of .rodata, which the marker starts, and
+    0x80 of .data"""
+    image = bytearray(text + 0x100)
 
     def word(offset, value):
         struct.pack_into('<I', image, offset, value)
@@ -22,10 +24,10 @@ def make_nro(code=None):
     word(0, 0x14000020)  # B +0x80, skipping NRO headers.
     image[0x10:0x14] = b'NRO0'
     word(0x18, len(image))
-    for offset, value in ((0x20, 0), (0x24, 0x100), (0x28, 0x100), (0x2C, 0x80), (0x30, 0x180), (0x34, 0x80)):
+    for offset, value in ((0x20, 0), (0x24, text), (0x28, text), (0x2C, 0x80), (0x30, text + 0x80), (0x34, 0x80)):
         word(offset, value)
     marker = b'NX runtime smoke\n'
-    image[0x100 : 0x100 + len(marker)] = marker
+    image[text : text + len(marker)] = marker
     for i, value in enumerate((code or smoke_code)(len(marker))):
         word(0x80 + 4 * i, value)
     return image
@@ -55,6 +57,54 @@ def null_call_code(length):
         NULL_CALL_LR,  # NOP, where it would return.
         0xD40000E1,  # SVC #7: ExitProcess.
         0xD4200000,  # BRK.
+    )
+
+
+def core_order_code(length):
+    """the main thread starts a thread on its own core at its own priority, gives it the time to line up there, then
+    makes an SVC that changes memory: the thread has not run when the SVC returns, as on the console, and has once
+    the main thread waited for it. The marker and the exit only then, a BRK otherwise. For make_nro's text=0x180"""
+    return (
+        0xD10403F4,  # SUB X20, SP, #0x100: the thread's word, in the main thread's stack.
+        0xF900029F,  # STR XZR, [X20].
+        0x52900001,  # MOV W1, #0x8000.
+        0x72BFFFE1,  # MOVK W1, #0xFFFF, LSL #16: the current thread.
+        0xD4000181,  # SVC #0xC: GetThreadPriority, into W1.
+        0x2A0103E4,  # MOV W4, W1.
+        0x10000401,  # ADR X1, +0x80 (the thread's code).
+        0xAA1403E2,  # MOV X2, X20.
+        0xD14007E3,  # SUB X3, SP, #0x1000: its stack, which it never uses.
+        0x12800025,  # MOV W5, #-2: the process's core, the main thread's.
+        0xD4000101,  # SVC #8: CreateThread, the handle into W1.
+        0x35000340,  # CBNZ W0, +0x68 (the BRK).
+        0xB9000A81,  # STR W1, [X20, #8].
+        0x2A0103E0,  # MOV W0, W1.
+        0xD4000121,  # SVC #9: StartThread.
+        0x350002C0,  # CBNZ W0, +0x58 (the BRK).
+        0xD40003C1,  # SVC #0x1E: GetSystemTick.
+        0xAA0003EA,  # MOV X10, X0.
+        0xD40003C1,  # SVC #0x1E: GetSystemTick, until 2^20 ticks (55 ms) passed: the thread's host thread has
+        0xCB0A0009,  # SUB X9, X0, X10      started by then, and it is lined up behind the main thread, which keeps
+        0xD354FD29,  # LSR X9, X9, #20      the core through these SVCs.
+        0xB4FFFFA9,  # CBZ X9, -0xC.
+        0xD2A20000,  # MOV X0, #0x10000000.
+        0xD2A00401,  # MOV X1, #0x200000.
+        0xD4000581,  # SVC #0x2C: MapPhysicalMemory (refused, a homebrew has no system resource).
+        0xF9400288,  # LDR X8, [X20].
+        0xB5000168,  # CBNZ X8, +0x2C (the BRK): the thread ran during the SVC.
+        0x91002281,  # ADD X1, X20, #8.
+        0x52800022,  # MOV W2, #1.
+        0x92800003,  # MOV X3, #-1.
+        0xD4000301,  # SVC #0x18: WaitSynchronization, until the thread ends.
+        0xF9400288,  # LDR X8, [X20].
+        0xB40000A8,  # CBZ X8, +0x14 (the BRK): it never ran.
+        0x100003E0,  # ADR X0, +0x7C (the marker in .rodata).
+        0xD2800001 | length << 5,  # MOV X1, marker length.
+        0xD40004E1,  # SVC #0x27: OutputDebugString.
+        0xD40000E1,  # SVC #7: ExitProcess.
+        0xD4200000,  # BRK.
+        0xF9000000,  # The thread: STR X0, [X0], its word no longer zero.
+        0xD4000141,  # SVC #0xA: ExitThread.
     )
 
 
@@ -151,9 +201,21 @@ def main():
             lacks = null_call(text)
             if not code or lacks:
                 raise RuntimeError(f'a call to 0 returned {code}, and its log lacks {lacks}')
+            fixture = scratch / 'core order.nro'
+            fixture.write_bytes(make_nro(core_order_code, text=0x180))
+            folder = recompile(runtime, repo, fixture, 'NX Core Order', output, scratch, env, args.timeout)
+            code, text = run(
+                folder, 'NX Core Order', ['--prepare_shaders=0', *args.runtime_arg], scratch, env, args.timeout
+            )
+            if code or '[game] NX runtime smoke' not in text or 'The game exited (code 0)' not in text:
+                raise RuntimeError(
+                    f"a thread lined up on its starter's core ran during the starter's svcMapPhysicalMemory, or"
+                    f' never ran: the run returned {code}'
+                )
             print(
                 'Synthetic NRO recompiled and ran Horizon OutputDebugString/ExitProcess with headless Vulkan, '
-                'with each prepare_shaders mode; a call to 0 stopped with its caller in the report.'
+                'with each prepare_shaders mode; a call to 0 stopped with its caller in the report; a thread lined '
+                "up on its starter's core ran only once the starter waited, not during its memory SVC."
             )
             return 0
         except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:

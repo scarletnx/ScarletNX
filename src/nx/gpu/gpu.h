@@ -431,6 +431,10 @@ enum {
    manager's own lock */
 extern void (*g_gpu_mapping_begin)(u64 gva, u64 size, int kind);
 extern void (*g_gpu_mapping_end)(void);
+/* begin is about to wait for the renderer, which the console's change of memory never does: for its lock, which another
+   thread holds, or for results of the GPU to land in the pages changed. The kernel's side (core_leave_waiting), set
+   when it starts: a thread in a memory SVC holds its core until this is called */
+extern void (*g_gpu_mapping_waits)(void);
 
 /* ---- engines.c: the 3D engine's methods and the report semaphores */
 u64 gpu_ticks(void); /* the GPU's timestamp: 614.4 MHz ticks of the guest clock */

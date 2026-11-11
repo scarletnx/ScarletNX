@@ -8,7 +8,8 @@ The program is compiled for AArch32 with Clang, linked here (no ARM linker is ne
 independent, -fropi, and the few relocations between its sections are applied below), and packed into an ExeFS: an
 NSO with MOD0, an ELF32 dynamic table, a symbol and a REL relocation, and a 32-bit NPDM. The runtime must run it to
 its svcExitProcess, logging each step, and record the indirect call target the recompiler couldn't find in the hints
-file, which the next recompile then compiles ahead of time. No game assets.
+file, which the next recompile then compiles ahead of time. A game of two modules made with SNX_ABI 17 has its hints
+moved to where its code lies now (hints_move). No game assets.
 
     nx_arm32_smoke.py --runtime build/scarletnx [--cc clang]
 """
@@ -301,6 +302,48 @@ def smoke(args, runtime, repo, source, scratch, mode):
             raise RuntimeError(f'{mode}: run 1: nx_arm32_thrice is not in the hints file')
         if attempt == 2 and late in log:
             raise RuntimeError(f"{mode}: run 2: the recompile with the hints file didn't compile nx_arm32_thrice")
+    hints_move(args, runtime, repo, make_nso(text, symbols), thrice, scratch, env, mode)
+
+
+def hints_move(args, runtime, repo, nso, thrice, scratch, env, mode):
+    """A game of two modules made with SNX_ABI 17, when a page lay free after each module, and its hints: the
+    recompile moves the second module's hint down that page, leaves the first module's where it is and the one in
+    the free page out, and writes the file so, which the runtime's JIT starts from; the game is stamped as made now"""
+    exefs = scratch / 'exefs2'
+    exefs.mkdir()
+    for module in ('main', 'subsdk0'):
+        (exefs / module).write_bytes(nso)
+    (exefs / 'main.npdm').write_bytes(make_npdm())
+    name = f'ARM32 Hints {mode}'
+    recompile = [str(runtime), '--repo', str(repo), '-r', str(exefs), name, '--runtime', str(runtime), '--jobs', '2']
+    recompile += ['--outdir', str(scratch / 'output')]
+    folder = scratch / 'output' / name
+    compiled = run(recompile, scratch, env, args.timeout, 'compile-hints1', scratch)
+    if compiled.returncode or b'Hints:' in compiled.stdout:
+        raise RuntimeError(f'{mode}: two modules: the recompilation returned {compiled.returncode}, or moved hints')
+    stamp = folder / f'{name}.abi'
+    made = stamp.read_text()
+    abi = made.split(maxsplit=1)[0]
+    stamp.write_text('17' + made[len(abi) :])
+    # the module's image: its text, a page of read-only data and a page of data (make_nso)
+    second = 0x200000 + len(nso) - 0x100 - 0x400 - 16 + 0x2000
+    hints = folder / f'{name}.hints'
+    hints.write_text(f'{thrice:x}\n{second + 0x1000 + (thrice - 0x200000):x}\n{second + 0x10:x}\n')
+    compiled = run(recompile, scratch, env, args.timeout, 'compile-hints2', scratch)
+    said = compiled.stdout.decode('utf-8', errors='replace')
+    if compiled.returncode:
+        raise RuntimeError(f'{mode}: a game made with SNX_ABI 17: the recompilation returned {compiled.returncode}')
+    for part in ('Hints: the 3 of ', ' SNX_ABI 17, ', ': 2 moved to where that code lies now, 1 lay in no module'):
+        if part not in said:
+            raise RuntimeError(f'{mode}: a game made with SNX_ABI 17: the recompile did not say "{part}"')
+    now = hints.read_text().split()
+    if now != [f'{thrice:x}', f'{second + (thrice - 0x200000):x}']:
+        raise RuntimeError(f'{mode}: a game made with SNX_ABI 17: its hints are {now} after the recompile')
+    if stamp.read_text().split(maxsplit=1)[0] != abi:
+        raise RuntimeError(f'{mode}: the game recompiled is not stamped SNX_ABI {abi}: {stamp.read_text()!r}')
+    compiled = run(recompile, scratch, env, args.timeout, 'compile-hints3', scratch)
+    if compiled.returncode or b'Hints:' in compiled.stdout or hints.read_text().split() != now:
+        raise RuntimeError(f'{mode}: a game made with SNX_ABI {abi}: its hints moved again: {hints.read_text()!r}')
 
 
 def main():
@@ -318,7 +361,10 @@ def main():
         try:
             for mode in ('arm', 'thumb'):
                 smoke(args, runtime, repo, source, scratch / mode, mode)
-            print('Synthetic 32-bit program recompiled and ran: SVCs, Thumb thread, coprocessor registers, hints.')
+            print(
+                'Synthetic 32-bit program recompiled and ran: SVCs, Thumb thread, coprocessor registers, hints; '
+                'the hints of a game made with a page free after each module moved to where its code lies now.'
+            )
             return 0
         except (OSError, RuntimeError, AssertionError, subprocess.SubprocessError) as error:
             artifacts.mkdir(parents=True, exist_ok=True)
