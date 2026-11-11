@@ -4940,8 +4940,9 @@ retry:
         pc[22] = viewport[0].width;
         pc[23] = viewport[0].height;
     }
-    rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0,
-                         g_vk.has_descriptor_heaps && capture ? sizeof pc : 28 * sizeof pc[0], pc);
+    /* the whole block: a Maxwell fragment program declares every member up to the capture's at byte 112
+       (spirv_translate.c), and with descriptor heaps the validation layer wants each declared member pushed */
+    rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, sizeof pc, pc);
     if (texture) {
         Surf* source = fres[0].t;
         if (!source || !rt[0]) {
