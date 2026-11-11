@@ -4,22 +4,24 @@
 """edenprobe (https://github.com/scarletnx/edenprobe), a homebrew program of hardware probes, recompiled and run
 headless, its report held against a baseline: how each case ended before. docs/dev/edenprobe.md has the how and why.
 
-    scripts/edenprobe.py run --runtime SCARLETNX --nro edenprobe.nro --mode WORDS --out DIR
-                             [--baseline FILE | --advisory REPORT] [--summary FILE] [--timeout SECONDS]
-                             [--launches N] [--jobs N]
+    scripts/edenprobe.py run --runtime SCARLETNX (--nro edenprobe.nro | --apk edenprobe.apk [--java-home DIR])
+                             --mode WORDS --out DIR [--baseline FILE | --advisory REPORT] [--summary FILE]
+                             [--timeout SECONDS] [--launches N] [--jobs N]
     scripts/edenprobe.py baseline BASELINE... -o FILE
 
 run recompiles the NRO into DIR/work, writes WORDS to its sdmc:/edenprobe/mode, with machine=scarletnx@<the runtime's
 commit> beside them for edenprobe's ban list when the NRO knows the word and WORDS name no machine, and runs it with -H
-and its XDG folders in DIR/work. A launch that ends before the report's summary, crashed or killed after --timeout seconds without
-a new report line, is followed by another, which edenprobe goes on from after the case the last one ended inside
-(reported as crashed), until the summary, a launch that adds no case, or --launches. DIR then holds report.jsonl, the
-failures' images/, the recompile's and each launch's log, baseline.txt (this run's passing cases, those edenprobe's ban
-list skipped as banned, and those the --baseline expects to end otherwise that did) and summary.md, which --summary FILE
-also appends to (CI: $GITHUB_STEP_SUMMARY). With --baseline, a case of it that does not end as its line says (pass, or
-the RESULT of a "[RESULT] suite: name" line) is a regression: run exits 1 and names it; a passing case it lacks is
-listed, to be added. A run that never reached its summary exits 1 too, as does one whose program crashed or had to be
-killed after it.
+and its XDG folders in DIR/work. --apk takes edenprobe's Android build instead: nothing is recompiled, the runtime runs
+it as scarletnx-android --headless (--java-home DIR the JDK it runs on), and the words go to the mode file in the app's
+files under DIR/work, with machine=scarletnx-android@<commit>. A launch that ends before the report's summary, crashed
+or killed after --timeout seconds without a new report line, is followed by another, which edenprobe goes on from
+after the case the last one ended inside (reported as crashed), until the summary, a launch that adds no case, or
+--launches. DIR then holds report.jsonl, the failures' images/, the recompile's and each launch's log, baseline.txt
+(this run's passing cases, those edenprobe's ban list skipped as banned, and those the --baseline expects to end
+otherwise that did) and summary.md, which --summary FILE also appends to (CI: $GITHUB_STEP_SUMMARY). With --baseline,
+a case of it that does not end as its line says (pass, or the RESULT of a "[RESULT] suite: name" line) is a
+regression: run exits 1 and names it; a passing case it lacks is listed, to be added. A run that never reached its
+summary exits 1 too, as does one whose program crashed or had to be killed after it.
 
 With --advisory REPORT, the pinned release's report.jsonl, the NRO is another build (edenprobe's main) and the run never
 fails: its cases REPORT lacks that do not pass, REPORT's passing cases that it does not pass, and what would have failed
@@ -46,6 +48,11 @@ EXE = '.exe' if os.name == 'nt' else ''
 MOST = 60
 # a case edenprobe's ban list skips on this machine: the same in every run of one build, so baseline.txt keeps it
 BANNED = 'skip (banned)'
+# where the APK, the package org.scarletnx.edenprobe, keeps its sdmc:/edenprobe under XDG_DATA_HOME: the Android layer's
+# data folder of the package (src/android/runtime/install.c), whose external/files is getExternalFilesDir's
+APP = Path('scarletnx', 'android', 'data', 'org.scarletnx.edenprobe', 'external', 'files', NAME)
+# the longest folder edenprobe takes for its own (RUNNER_ROOT_MAX of its source/runner.h): the APK refuses a longer one
+ROOT_MAX = 160
 
 
 class Failed(Exception):
@@ -218,17 +225,21 @@ def warn(text):
     print(f'::warning title=edenprobe main::{text}')
 
 
-def machine_word(runtime, nro, mode):
-    """machine=scarletnx@<commit> for edenprobe's ban list, the commit from the build line the runtime carries
+def machine_word(runtime, nro, mode, machine='scarletnx'):
+    """machine=<machine>@<commit> for edenprobe's ban list, the commit from the build line the runtime carries
     ("ScarletNX <branch> <commit>, committed ..."), and what to say about it; None when the words name a machine or the
-    probe predates the word (its NRO carries no "machine=")"""
-    if re.search(r'(?:^|\s)machine=', mode, re.IGNORECASE) or b'machine=' not in nro.read_bytes():
+    probe predates the word: an NRO that carries no "machine=" (nro None, the APK: every one edenprobe released knows
+    it)"""
+    if re.search(r'(?:^|\s)machine=', mode, re.IGNORECASE) or (nro and b'machine=' not in nro.read_bytes()):
         return None, None
     found = re.search(rb'ScarletNX \S+ ([0-9a-f]{7,}[^,\s]*), committed', runtime.read_bytes())
     commit = found[1].decode() if found else ''
     if re.fullmatch(r'[A-Za-z0-9._-]{1,32}', commit):
-        return f'machine=scarletnx@{commit}', None
-    return 'machine=scarletnx', f'machine=scarletnx with no version: {runtime} carries no "ScarletNX <branch> <commit>"'
+        return f'machine={machine}@{commit}', None
+    return (
+        f'machine={machine}',
+        f'machine={machine} with no version: {runtime} carries no "ScarletNX <branch> <commit>"',
+    )
 
 
 def report_of(sdmc):
@@ -247,13 +258,13 @@ def stop(process):
     process.wait()
 
 
-def launch(game, log, env, sdmc, quiet, settings):
-    """the game's exit status, or None when it was killed after quiet seconds without a new line in its report: a
+def launch(command, cwd, log, env, sdmc, quiet):
+    """the program's exit status, or None when it was killed after quiet seconds without a new line in its report: a
     slow machine goes on as long as cases end"""
     with open(log, 'wb') as out:
         process = subprocess.Popen(
-            [str(game), '-H', *(f'--{s}' for s in settings)],
-            cwd=game.parent,
+            command,
+            cwd=cwd,
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=out,
@@ -279,13 +290,10 @@ def launch(game, log, env, sdmc, quiet, settings):
             raise
 
 
-def play(args, out):
-    """recompile and launch until the summary: what went wrong, what each step took, the report and its file"""
-    work = out / 'work'
-    xdg = {f'XDG_{kind.upper()}_HOME': str(work / 'xdg' / kind) for kind in ('data', 'config', 'state', 'cache')}
-    env = dict(os.environ, **xdg)
-    env.pop('SNX_GAME', None)
-    games = work / 'games'
+def recompile(args, out, env):
+    """the NRO recompiled into the work folder: what went wrong, the steps, and the game's command, folder and
+    sdmc:/edenprobe"""
+    games = out / 'work' / 'games'
     games.mkdir(parents=True)
     began = time.monotonic()
     command = [str(args.runtime.resolve()), '-r', str(args.nro.resolve()), NAME, '--outdir', str(games)]
@@ -297,11 +305,34 @@ def play(args, out):
     game = games / NAME / f'{NAME}{EXE}'
     if recompiled.returncode or not game.is_file():
         made = '' if game.is_file() else f' without making {game.name}'
-        return [f'the recompile exited {recompiled.returncode}{made}: recompile.log'], steps, None, None
-    sdmc = games / NAME / f'{NAME}_data' / 'sdmc' / 'edenprobe'
+        return [f'the recompile exited {recompiled.returncode}{made}: recompile.log'], steps, None
+    command = [str(game), '-H', *(f'--{s}' for s in args.setting)]
+    return [], steps, (command, game.parent, games / NAME / f'{NAME}_data' / 'sdmc' / 'edenprobe')
+
+
+def play(args, out):
+    """recompile, or take the APK as it is, and launch until the summary: what went wrong, what each step took, the
+    report and its file"""
+    work = out / 'work'
+    xdg = {f'XDG_{kind.upper()}_HOME': str(work / 'xdg' / kind) for kind in ('data', 'config', 'state', 'cache')}
+    env = dict(os.environ, **xdg)
+    env.pop('SNX_GAME', None)
+    runtime = args.runtime.resolve()
+    if args.apk:
+        # the driver's name first, as the launcher runs it on Windows: the program needs no link of that name
+        command = [str(runtime), 'scarletnx-android', '--headless', *(f'--{s}' for s in args.setting)]
+        if args.java_home:
+            command.append(f'--java-home={args.java_home.resolve()}')
+        steps, game = [], (command + [str(args.apk.resolve())], work, Path(xdg['XDG_DATA_HOME']) / APP)
+        machine, said = machine_word(runtime, None, args.mode, 'scarletnx-android')
+    else:
+        problems, steps, game = recompile(args, out, env)
+        if problems:
+            return problems, steps, None, None
+        machine, said = machine_word(runtime, args.nro.resolve(), args.mode)
+    command, cwd, sdmc = game
     sdmc.mkdir(parents=True, exist_ok=True)
     mode = ' '.join(args.mode.split())
-    machine, said = machine_word(args.runtime.resolve(), args.nro.resolve(), mode)
     if said:
         print(said, flush=True)
     (sdmc / 'mode').write_text(f'{mode} {machine}\n' if machine else f'{mode}\n', encoding='utf-8')
@@ -309,7 +340,7 @@ def play(args, out):
     report, cases = None, -1
     for number in range(1, args.launches + 1):
         began = time.monotonic()
-        status = launch(game, out / f'launch-{number}.log', env, sdmc, args.timeout, args.setting)
+        status = launch(command, cwd, out / f'launch-{number}.log', env, sdmc, args.timeout)
         ended = f'killed after {args.timeout:g} s with no new line' if status is None else f'exit {status}'
         steps.append(f'launch {number}: {ended}, {time.monotonic() - began:.0f} s')
         print(steps[-1], flush=True)
@@ -334,8 +365,18 @@ def play(args, out):
 
 def run(args):
     out = args.out.resolve()
-    if not args.nro.is_file():
+    if args.nro and not args.nro.is_file():
         sys.exit(f'no NRO at {args.nro}')
+    if args.apk and not args.apk.is_file():
+        sys.exit(f'no APK at {args.apk}')
+    if args.java_home and not args.apk:
+        sys.exit("--java-home is the JDK of the APK's run: it goes with --apk")
+    root = out / 'work' / 'xdg' / 'data' / APP
+    if args.apk and len(str(root)) > ROOT_MAX:
+        sys.exit(
+            f'the APK would keep its files in {root}, {len(str(root))} characters, and edenprobe takes {ROOT_MAX} at '
+            'most: name a shorter --out'
+        )
     if not os.access(args.runtime, os.X_OK):
         sys.exit(f'{args.runtime} is not an executable')
     if 'quick' not in words(args.mode):
@@ -391,6 +432,8 @@ def run(args):
             problems.append(f'{args.advisory}: {error}')
 
     title = f'edenprobe {report.build if report else "(no report)"}'
+    if args.apk:
+        title += "'s APK"
     if report and report.summary:
         title += ': ' + ', '.join(
             f'{report.summary.get(count, "?")} {count}' for count in ('passed', 'failed', 'skipped', 'crashed')
@@ -449,8 +492,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest='command', required=True)
     runs = commands.add_parser('run', help='recompile, run and check edenprobe')
-    runs.add_argument('--runtime', type=Path, required=True, help='the scarletnx driver')
-    runs.add_argument('--nro', type=Path, required=True)
+    runs.add_argument('--runtime', type=Path, required=True, help='the scarletnx program')
+    probe = runs.add_mutually_exclusive_group(required=True)
+    probe.add_argument('--nro', type=Path, help="edenprobe's console build, recompiled")
+    probe.add_argument('--apk', type=Path, help="edenprobe's Android build, run by scarletnx-android")
+    runs.add_argument('--java-home', type=Path, help="with --apk, the JDK to run it on, in place of the build's")
     runs.add_argument('--mode', required=True, help='the mode file\'s words, "quick" among them')
     runs.add_argument('--out', type=Path, required=True, help="emptied, then the run's files")
     against = runs.add_mutually_exclusive_group()

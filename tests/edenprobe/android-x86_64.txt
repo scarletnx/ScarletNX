@@ -1,0 +1,720 @@
+# edenprobe cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/dev/edenprobe.md)
+# build: v0.11.0
+# mode: quick
+bionic: /proc/self shows the package, the library and app_process64
+bionic: a SIGUSR1 handler runs on raise, and a blocked signal waits as pending
+bionic: a failed open sets errno, and strerror words errors as bionic does
+bionic: dlopen and dlsym find libc's strlen, and missing names fail with an error
+bionic: mmap, mprotect, MADV_DONTNEED and munmap behave as on Linux
+bionic: ro.build.version.sdk is the SDK level Java sees
+bionic: snprintf words a negative NaN -nan and 1.0 in %a 0x1p+0, as bionic does
+bionic: the C library's locale is UTF-8 from the start
+framework: AtomicFile reads a leftover .bak as the last whole write
+framework: AtomicFile.finishWrite leaves the last write in the base file alone
+framework: LinkProperties.getDhcpServerAddress is the SDK's Inet4Address method, null on a new object
+framework: Log.isLoggable is false for DEBUG and true for INFO by default
+framework: MediaPlayer.setDataSource of a missing file throws FileNotFoundException
+framework: Parcel lays out an int, a string and a long as Android does
+framework: PdfDocument.writeTo writes what the page's canvas drew
+framework: SQLite sums groups and reports the column types
+framework: SharedPreferences.commit writes shared_prefs/NAME.xml in Android's XML
+framework: Uri.parse splits and decodes scheme, authority, path, query and fragment
+framework: a Handler runs the front of the queue, then posted, then delayed messages
+framework: org.json keeps insertion order and escapes the slash
+gles: EGL initializes at 1.4 or newer with ES2 and ES3 pbuffer configs
+gles: a 2 by 2 texture sampled nearest lands in its four quadrants
+gles: a GLES 2 clear reads back in both corners
+gles: a GLES 3 context renders integer shader math into a texture framebuffer
+gles: a bad shader fails to compile with a log, a bad enum is GL_INVALID_ENUM once
+gles: a triangle covers the pixels inside it and no others
+gles: half-alpha white over black blends to half grey
+jni: Call*Method passes mixed arguments in variadic and array forms
+jni: FindClass finds an app class from a Java thread, not from an attached one
+jni: GetStringUTFChars gives a supplementary character and NUL as ART encodes them
+jni: GetVersion is JNI 1.6
+jni: JNI_OnLoad runs once, RegisterNatives and JNI names both bind
+jni: array elements copy back, a critical region writes, direct buffers both ways
+jni: exceptions cross JNI both ways with their class and message
+libc: gmtime_r and strftime write a fixed time in the C locale
+libc: libm is within 1 ulp of the correctly rounded results
+libc: qsort orders sixteen integers and bsearch finds each
+libc: setjmp returns twice, with longjmp's value, and 1 for 0
+libc: snprintf formats integers with widths, precisions and flags
+libc: snprintf rounds floats to their precision, and words infinities and NaNs as C says
+libc: sscanf reads an int, a double, a word, hex and the count
+libc: strtod and strtol read hex floats, overflow with ERANGE and take base 0's prefixes
+libc: the string functions compare, copy, search, span and move overlapping bytes
+net: a Java socket echoes over loopback
+net: a connection to a closed loopback port is refused in Java
+net: a name under .invalid does not resolve in Java or in C
+net: localhost resolves to 127.0.0.1 alone
+reference: 0x3a equals 0x5a under the compare mask 0x1f and not without it
+reference: 13/32 lands at least 3/16 of a texel from a boundary on every level
+reference: 4-bit weights 7, 8 and 13 unquantize to 29, 35 and 56
+reference: 5-bit weights 3 and 21 unquantize to 6 and 44
+reference: EAC indices run down each column
+reference: ETC2 RGBA alpha is base plus modifier times multiplier, clamped
+reference: a 3-level weight is 0, 32 or 64
+reference: a 4x4 BC4 array's levels are one gob each and a layer is three
+reference: a 64x64 BC4 array uses two-gob tiles on level 0 and one-gob tiles below
+reference: a BC4 block one down and one across sits 24 bytes into its gob
+reference: a PEM certificate decodes to the DER openssl writes for it
+reference: a bearer token's alphabet, and two id lists compared as sets
+reference: a blend case catches the alpha equation taken from the colour one
+reference: a blend case catches the alpha source factor taken from the colour one
+reference: a centre exactly a margin away is still judged
+reference: a counter clockwise triangle's face under each viewport of the fixed suite
+reference: a draw texture from texel -2 carries 0xffffe000 as its source x
+reference: a draw texture of 16 by 16 at (40, 24) is twelve words from 0x420
+reference: a flipped, layered, scaled or padded copy puts each texel where worked out by hand
+reference: a friend profile is read at the offsets the guest reads it at
+reference: a line loop's closing side is judged drawn, a line strip's clear, and a quad's diagonal clear when drawn as lines
+reference: a margin holds back the pixels an edge runs through
+reference: a missed restart in the topology suite's strips and fans draws pixels the cases judge clear
+reference: a moved rectangle lands at its offset and nothing else changes
+reference: a pixel well outside is called outside
+reference: a point on an edge that is neither top nor left is not covered
+reference: a point on the left edge is covered
+reference: a point on the top edge is covered
+reference: a profile slot is judged by its id as well as its fields
+reference: a quarter, a half, three quarters and all read table entries 3, 7, 11, 15
+reference: a rectangle lands where each viewport of the fixed suite puts it
+reference: a rectangle moved down or up over itself keeps every source row
+reference: a rectangle moved over itself reads each source texel before it goes
+reference: a rectangle not wholly inside is refused and changes nothing
+reference: a rectangle past a pixel covers every one of eight
+reference: a rectangle to a pixel's centre covers 0x2 of the standard two
+reference: a rectangle to a pixel's centre covers 0x3a of the standard eight
+reference: a rectangle to a pixel's centre covers 0x5 of the standard four
+reference: a region's pixels sample the texel whose centre they sit on
+reference: a render enable is 0x20030554, the address high word first, the mode
+reference: a result code reads as the platform prints it
+reference: a see-through ETC2 punch-through block has no modifier at index 0
+reference: a self-signed root names itself as issuer and the certificate it signed does not
+reference: a serialised addrinfo list reads back entry by entry to its sentinel
+reference: a serialised hostent reads back as its name and addresses
+reference: a shared edge is drawn exactly once
+reference: a solid BC4 block is its value twice and sixteen nought indices
+reference: a status document says nothing is wrong only with both lists empty
+reference: a triangle with no area covers nothing
+reference: a wrong nsd expansion says whether the name came back as asked, with another environment, or with the placeholder left in
+reference: account ids and dotted addresses are read whole or refused
+reference: adding the source at full weight to nothing gives the source back
+reference: alpha to coverage with alpha to one is the inline word 0x8011054f
+reference: an EAC multiplier of nought adds the bare modifier
+reference: an EAC texel is base * 8 + 4 plus modifier * multiplier * 8, clamped
+reference: an ETC2 H mode distance index takes its last bit from the base order
+reference: an ETC2 T mode paint colour is base 2 plus the distance, clamped
+reference: an ETC2 block's own bytes sampled as RGBA8 read as an upload of the block
+reference: an ETC2 planar block starts from its origin colour
+reference: an HTTP response head says where its body is and when it is whole
+reference: an RGBA8 texel read as R32_Uint and rotated is its word least significant first
+reference: an address length recvfrom left unset is not answered with
+reference: an aliased move writes what the alias shader writes
+reference: an alpha of 0.5 at three references tells the eight alpha tests apart
+reference: an exterior point is not covered
+reference: an index limit goes high word first
+reference: an index list splits at its restart index, and indexed triangles add the vertex offset
+reference: an inline wait for idle is 0x80000044
+reference: an interior point is covered
+reference: an offset in a level's own texels reads another texel than one in level nought's on levels 1 to 3
+reference: an offset viewport moves the rectangle
+reference: an snorm round trip returns every half but 0x8000, which becomes 0x8001
+reference: an svc case's line names a kernel result and gives a code it does not know
+reference: audio: a sine is read back at its amplitude
+reference: audio: a tone keeps the level the conversion's table gives it
+reference: audio: a tone reads as nothing at another tone's frequency
+reference: audio: each probe tone fills a frame with whole periods
+reference: audio: frames split back into their channels
+reference: audio: mode 0's two answers are the rule's level and the two-step one
+reference: audio: the conversion tables' formula gives the renderer's values
+reference: audio: the hiss is white noise with its low end taken off
+reference: audio: the limiter rule brings a sine to the threshold times pi over two
+reference: audio: the limiter rule holds a steady input at its threshold
+reference: audio: the listening signals stay inside their level and start at rest
+reference: audio: the sweep starts and ends at its frequencies
+reference: audio: the two-step reciprocal's estimate and its steps
+reference: audio: two tones mixed read back each at its own level
+reference: binder: a reply in no known layout fails with its bytes
+reference: binder: both of reden's layouts pass, and a history must be newest first
+reference: binder: the cases run with no frame, 3 and 10, asking for nought, 8 and 8
+reference: blit2d: a case passes on any answer's image and its line names the answers
+reference: blit2d: a write outside the window and a third rule fail with their texels
+reference: blit2d: every case under every answer is the image the script works out
+reference: blit2d: the 2D engine's words are the script's, from NVIDIA's offsets
+reference: blit2d: the copy kept in a cache fails on the raw read, with both named
+reference: blit2d: the note says Q1 and Q2 from passing cases, else from the copies
+reference: blit2d: the source and the filled destination are the script's
+reference: clamping to the edge folds every index onto a texel
+reference: clip space minus y is the bottom of the target
+reference: clip space origin is the middle of the target
+reference: clip space plus y is the top of the target
+reference: clz of each 16-bit lane the cpu suite uses
+reference: clz of each 32-bit lane the cpu suite uses
+reference: clz of each 8-bit lane the cpu suite uses
+reference: depth bounds keep a stored 0.5 at either end and reject it outside
+reference: each astc block and astcimage picture says its texels are astcenc's where a hash pins them, the specification's otherwise
+reference: each blend case's sentence is the arithmetic the reference does
+reference: each stencil op leaves its own byte at 0xa5 and at 0x5a
+reference: edge distance is the perpendicular one in pixels
+reference: every byte survives the trip through a normalised float
+reference: every edge where the topology suite's colour changes keeps a twentieth of a pixel from every pixel centre
+reference: every float budget is the one the tables give
+reference: every float budget's reason begins with the number it is
+reference: every float budget's reason fits the note that carries it
+reference: every float mode has its budget written down here
+reference: every float operand and argument is exactly representable
+reference: every format packs the pixels worked out from its name
+reference: every format's fields fit its pixel and the mask is exactly them
+reference: every modulated channel is a whole byte with room under an eight bit factor
+reference: every normalised value times its largest code is a code in single precision
+reference: every packed component is at least a 256th of a code from a half
+reference: every sample at the centre leaves a pixel cut a quarter in uncovered
+reference: every {size} in a picture url becomes the size asked for
+reference: fcvtzs and fcvtzu's lanes the cpu suite uses
+reference: fmax, fmin, fmaxnm and fminnm order hand-worked NaNs and noughts
+reference: four quadrants take their own green, and each lag the green that far back
+reference: frecpe, frsqrte and frecpx give hand-worked singles and flags
+reference: frintx and frinta's roundings the cpu suite uses
+reference: game: a frame's image has the texture, the fill and the cells where they belong
+reference: game: a quarter's hash is FNV-1a over its pixels, row by row
+reference: game: each frame's fill leaves the nearest quad, which is not the last drawn
+reference: game: frame times sum up to a mean, a 99th percentile, the longest and the hitches
+reference: game: the audio thread stops once its tone settled, or 5000 ms after the frames
+reference: game: the file thread reads the whole file in 1024 frames, each chunk's hash the pattern's
+reference: game: the timed cases carry each measure past the warm-up, in order
+reference: game: the timing notes say the warm-up, each measure and the hitches by number
+reference: game: the world steps and bounces as worked out by hand
+reference: gradients of one, two, four and eight texels give lambdas 0 to 3 exactly
+reference: half of 0xa0 is 0x50 and half of 0x81 is refused
+reference: half precision under AHP and DN gives hand-worked values and flags
+reference: incr stops at 0xff and incr_wrap goes to nought; decr stops at nought and decr_wrap goes to 0xff
+reference: inverting 0x0f through the write mask 0xf0 gives 0xff
+reference: lambda 1.25 blends level 1's 1019 and level 2's 2001 to 1264.5, a float exactly
+reference: line loops close, line strips do not, and quads and polygons drawn as lines show their outlines alone
+reference: lists, strips, fans, quads, quad strips and polygons make the triangles and provoking vertices OpenGL's table gives
+reference: md5: RFC 1321's "" whole and in pieces
+reference: md5: RFC 1321's "123456789012345678901234..." whole and in pieces
+reference: md5: RFC 1321's "ABCDEFGHIJKLMNOPQRSTUVWX..." whole and in pieces
+reference: md5: RFC 1321's "a" whole and in pieces
+reference: md5: RFC 1321's "abc" whole and in pieces
+reference: md5: RFC 1321's "abcdefghijklmnopqrstuvwx..." whole and in pieces
+reference: md5: RFC 1321's "message digest" whole and in pieces
+reference: md5: a million a's
+reference: mirroring folds every index onto a texel
+reference: nearest mip filtering keeps level 0 up to lambda one half and stops at the last level
+reference: no ETC2 block's decoded colours read as an upload of its bytes
+reference: no blend case asks for an alpha destination factor of its own
+reference: no blend case lands near the halfway point between two bytes
+reference: no coherence pattern texel is the sentinel
+reference: no ordinary float case produces an infinity or a nan
+reference: no two coherence patterns agree at any texel
+reference: no two texels of one coherence pattern are the same
+reference: nsd is expected to answer a rewrite, then the placeholder, else the name
+reference: one texel along x and four along y give lambda 2
+reference: one texture across the target puts sixteen pixels on each texel
+reference: pad: a button pressed again counts, and the window closes on time
+reference: pad: a press is what goes down in its first tenth of a second
+reference: pad: a stick direction is not a press, and nothing for 10 s times out
+reference: pad: a stick's distance is the integer square root
+reference: pad: a stick's edge is full scale within 2%, and its shape is named
+reference: pad: each controller's press is the slots that went down together
+reference: pad: every connected slot needs a style, and one must be connected
+reference: pad: player 1 with the full key style passes, and nothing else does
+reference: pad: sixteen buttons are asked for, each once and by one bit
+reference: pad: sticks at rest pass only at nought
+reference: pad: the bits are named low first, and a short buffer stays whole
+reference: pad: the controller answers first, the style case after every button
+reference: pad: the styles and the ids are named as the service names them
+reference: pad: up answers yes, down no, both or neither nothing
+reference: painting cells covers exactly the cells in the mask
+reference: points of size 1, 3, 4 and 8 cover their squares of pixels
+reference: repeating folds every index onto a texel
+reference: sampling a region one texel per pixel moves the texture to its corner
+reference: sched: a case that could not run says why, and the note adds the cases up
+reference: sched: a step keeps its first place and time, and one not taken comes last
+reference: sched: inheritance passes on the console's order and names what stalled
+reference: sched: migration passes on an idle core and fails behind the spinner
+reference: sched: preemption gives the time the core changed hands, or that it never did
+reference: sched: svcSleepThread(0) must keep the core, and the cores answer Q2 and Q3
+reference: sched: the chain passes when its end runs at 44, and fails one level deep
+reference: sched: the owner's drop back is read from the order, and Q1 from its priority
+reference: service: a closed decoder passes only when the next one opens
+reference: service: acc-app passes every user qualified and a thumbnail checked
+reference: service: account passes 52 answering what 51 answers
+reference: service: am passes a save size that reads back as ExtendSaveData asked
+reference: service: am-audio passes volumes read back as set
+reference: service: am-channel passes a user channel that keeps what is unpopped
+reference: service: am-functions passes a desired language set lists
+reference: service: am-functions passes every start event handed out
+reference: service: am-functions passes two empty channels refused as empty
+reference: service: am-lock passes a lock taken, held and freed, and its event
+reference: service: am-mode passes VR mode as turned and a normal boot
+reference: service: am-self passes a setting read back as set
+reference: service: am-state passes 3D VR mode on, then off
+reference: service: am-state passes a mode with its own resolution
+reference: service: am-state passes an application in focus
+reference: service: am-state passes message 95 after 130
+reference: service: am-state passes the region Global
+reference: service: am-storage passes a storage that keeps its size and its end
+reference: service: aoc passes a prepare of a missing index answered with success
+reference: service: aoc passes an empty end and no record past it
+reference: service: aoc passes none listed, lists that fit their room and the base id
+reference: service: apm passes a configuration kept per mode and the boost mode's
+reference: service: auddev passes a volume read back as set
+reference: service: auddev passes the active output among those listed
+reference: service: audout passes one output opened, buffers held and given back
+reference: service: bsd-local passes the answers of a BSD stack
+reference: service: csrng passes two buffers written whole and apart
+reference: service: every case is under a suite of the service family, once
+reference: service: fs-file passes files resized, renamed, cleaned, dated and space
+reference: service: fsdir passes a directory gone with what it held
+reference: service: fsdir passes a directory renamed with what it holds
+reference: service: fsdir passes the one file listed once
+reference: service: fsp passes a temporary storage whose last marker is gone
+reference: service: hid passes npad entries doubled and one apart
+reference: service: hwopus passes 24 decoders and the 25th refused out of decoders
+reference: service: ipc passes the controller's answers and a Close
+reference: service: ldn passes a monitor that comes and takes this process
+reference: service: ldn passes a station with nothing near and nothing to join
+reference: service: ldn passes advertise data of 384 carried and 385 refused
+reference: service: ldn passes an event signaled when a network comes and goes
+reference: service: ldn passes each step's state, and None or Error outside them
+reference: service: ldn passes every command out of its state refused as BadState
+reference: service: ldn passes node 0's connection read once, into one to eight
+reference: service: ldn passes the address in host order and the network's config
+reference: service: ldn passes the network asked, with this console as node 0
+reference: service: mii passes the six default Miis
+reference: service: nfp passes 25 answering what 3 answers
+reference: service: ngc passes a clean name found clean and given back
+reference: service: pl passes six loaded fonts behind the decrypted magic
+reference: service: pl passes the six in order of priority, each as told
+reference: service: profile passes a 256x256 JPEG of the size told
+reference: service: profile passes one base twice, of the user, by a name
+reference: service: profile passes the user found and nobody made up
+reference: service: renderer passes a renderer stopped, started and stopped
+reference: service: renderer passes its parameters and two settings kept
+reference: service: set passes reden's language codes and fails what strays from them
+reference: service: set-sys passes settings read back as set and flags put back
+reference: service: time passes ToPosixTime giving the known time back
+reference: service: time passes a steady clock one or two seconds on
+reference: service: time passes a user clock its context's offset past steady
+reference: service: time passes the device's rule dating as the service's own
+reference: service: time passes the epoch and the known time dated under UTC
+reference: service: time-perm passes every write time:u asks refused
+reference: service: time-snap passes a snapshot of the user clock and its span
+reference: service: time-zone passes names listed, the location and a date back
+reference: service: vi passes the default display, the scaling table and the rounding
+reference: sfdnsres is expected to answer loopback only for a session's own names
+reference: six triangle list vertices from vertex 6 are the word 0x40060006
+reference: sm4's inputs are the standard's key, FK and CK
+reference: sqdmlal, sqdmlsl and sqdmull lanes worked out by hand
+reference: sqrshl and uqrshl lanes worked out by hand
+reference: sqrshrn, uqrshrn and sqrshrun scalars worked out by hand
+reference: sqshlu's lanes and saturation the cpu suite uses
+reference: tex8k's ASTC texels are the picture's, from the block their tile shifts in
+reference: tex8k's ASTC tiles and frames take other blocks of the picture
+reference: tex8k's BC1 blocks are one colour, the bytes and texels Pillow decodes
+reference: tex8k's BC1 takes either way a five or six bit code becomes eight
+reference: tex8k's BC7 bound a region is the worst texel measured there
+reference: tex8k's BC7 mode 6 blocks are the bytes and texels Pillow decodes
+reference: tex8k's RGBA8 texels are their place and salt, filled a word at a time
+reference: tex8k's percentile is numpy's and its distance the worst channel's
+reference: tex8k's raw copies into the BC7 texture cover the blocks its judge expects
+reference: tex8k's regions, levels, samples and copy-out sit where its judge says
+reference: tex8k's textures are tried with no vram word or 4096 MiB, and with less say what the machine has
+reference: the 11-bit value 2047 is 255 either way
+reference: the 16-bit texel 0x7f80 is 127 either way to eight bits
+reference: the 16-bit texel 0x8000 is 128 either way to eight bits
+reference: the 16-bit texel 0x8101 is 128 from FP16 and 129 the other two ways
+reference: the 16-bit upper lanes hold answers a lost half cannot give
+reference: the ETC2 builders make the blocks the etc2 suite samples
+reference: the account nobody knows is one no line names
+reference: the alpha tests' names read as the fixed suite's cases do
+reference: the answer the console never gives is refused and named at every pixel
+reference: the bit count agrees with a table of nibbles
+reference: the bit scans agree with counting leading and trailing noughts
+reference: the bitfield modes agree with masks and shifts and see negative fields
+reference: the block linear rule gives each texel of the suite's texture its own four bytes
+reference: the block linear rule puts hand worked bytes where a gob keeps them
+reference: the certificate a handshake hands back is found in either form
+reference: the clear and the drawn value differ in every stored channel
+reference: the coherence pattern is the four sums, modulo 256
+reference: the copy suite's channels of nought and full become the bytes each format holds them in
+reference: the copy suite's pictures give every texel a value of its own, and the full texels every combination of nought and full
+reference: the coverage suite's own four split a pixel at its centre as 0x3
+reference: the division agrees with a long division done a bit at a time
+reference: the edge operands are where their budgets say
+reference: the eight stencil compares pass the three bands in eight different ways
+reference: the estimate tables and the unsigned estimates give hand-worked values
+reference: the fill rule triangles are the two halves of a whole pixel square
+reference: the fixed suite's points put no pixel centre on an edge
+reference: the float edge reference matches the values worked out by hand
+reference: the float judge takes the console's answer, noughts by their sign
+reference: the format conversions invert over every code and round at the ends
+reference: the format quad covers exactly its rectangle, no centre near its edges
+reference: the format table has the sixty renderable colour formats
+reference: the fragment coordinate reference carries the half pixel
+reference: the grid pattern splits even columns as 0x3 and odd ones as 0xc in both rows
+reference: the grown integer reference matches the values worked out by hand
+reference: the half patterns raise exponent nought and quiet nothing else
+reference: the half precision patterns agree with the format reference both ways
+reference: the header of one instanced array draw word is 0x20010485
+reference: the header that writes the two index limit words is 0x200205f4
+reference: the integer reference matches the arithmetic worked out by hand
+reference: the integer to float conversions agree with the processor's own
+reference: the linear layout asks for exactly half of each of two texels
+reference: the logarithm's operand stays where one budget covers it
+reference: the minimum is always one of its two operands
+reference: the minimum, maximum and clamps agree with 64 bit comparisons
+reference: the mixed value overflows and wraps
+reference: the net file is read a line at a time
+reference: the net file's report line, and whether it says the machine is online
+reference: the offset viewport halves the triangle and moves it
+reference: the placeholder is replaced everywhere, and a name that will not fit is refused
+reference: the power of two's allowance grows with its argument
+reference: the reference decodes the ETC2 H-high block as Mesa does
+reference: the reference decodes the ETC2 H-low block as Mesa does
+reference: the reference decodes the ETC2 T block as Mesa does
+reference: the reference decodes the ETC2 differential block as Mesa does
+reference: the reference decodes the ETC2 individual block as Mesa does
+reference: the reference decodes the ETC2 planar block as Mesa does
+reference: the reference decodes the ETC2 pta-diff block as Mesa does
+reference: the reference decodes the ETC2 pta-planar block as Mesa does
+reference: the reference decodes the ETC2 pta-t block as Mesa does
+reference: the reference decodes the ETC2 rgba block as Mesa does
+reference: the reference decodes the dual block as ARM's decoder does
+reference: the reference decodes the error block as ARM's decoder does
+reference: the reference decodes the hdrfirst block as ARM's decoder does
+reference: the reference decodes the infill12 block as ARM's decoder does
+reference: the reference decodes the infill8 block as ARM's decoder does
+reference: the reference decodes the part2 block as ARM's decoder does
+reference: the reference decodes the part3 block as ARM's decoder does
+reference: the reference decodes the part4 block as ARM's decoder does
+reference: the reference decodes the picture's 12x12 blocks to FP16 as ARM's decoder does
+reference: the reference decodes the picture's 12x12 blocks to eight bits as ARM's decoder does
+reference: the reference decodes the picture's 4x4 blocks to FP16 as ARM's decoder does
+reference: the reference decodes the picture's 4x4 blocks to eight bits as ARM's decoder does
+reference: the reference decodes the picture's 4x4srgb blocks as ARM's decoder does
+reference: the reference decodes the picture's 6x6 blocks to FP16 as ARM's decoder does
+reference: the reference decodes the picture's 6x6 blocks to eight bits as ARM's decoder does
+reference: the reference decodes the picture's 8x8 blocks to FP16 as ARM's decoder does
+reference: the reference decodes the picture's 8x8 blocks to eight bits as ARM's decoder does
+reference: the reference decodes the picture's 8x8srgb blocks as ARM's decoder does
+reference: the reference decodes the q16 block as ARM's decoder does
+reference: the reference decodes the q32even block as ARM's decoder does
+reference: the reference decodes the q32odd block as ARM's decoder does
+reference: the reference decodes the quinte block as ARM's decoder does
+reference: the reference decodes the quintw block as ARM's decoder does
+reference: the reference decodes the trite block as ARM's decoder does
+reference: the reference decodes the tritw block as ARM's decoder does
+reference: the reference decodes the void block as ARM's decoder does
+reference: the reference's addition is the one a float would have done
+reference: the reference's multiplication is the one a float would have done
+reference: the reference's multiply and add rounds once, not twice
+reference: the runtime's transcendentals give the answers written down here
+reference: the shifts clamp their count to 32 and the sweep reaches past it
+reference: the sign-in wait ends only on the answer a signed in session gives
+reference: the signed division's operands keep a float reciprocal exact
+reference: the sine and cosine angles stay inside minus pi to pi
+reference: the slanted triangle lands on whole pixel boundaries
+reference: the standard four put sample 2 inside a pixel cut a quarter in
+reference: the standard four samples sit at (6,2) (14,6) (2,10) (10,14) sixteenths
+reference: the status request is one GET that asks the server to close
+reference: the stream cases skip only when the machine refuses a stream socket and says its network is off
+reference: the svc suite's kernel results are the codes the console returns
+reference: the tight limit of six 16-bit indices at 0x1000 is 0x100b
+reference: the topology suite's quads, quad strip, polygon and fan cover exactly their rectangles
+reference: the triangle whose left edge it is takes the shared centres
+reference: the two right shifts differ exactly on the values with the top bit set
+reference: the vertex suite's layouts give hand-worked floats and its vertices read where worked out by hand
+reference: three copies across the target still miss every texel boundary
+reference: touch: a lifted finger is followed by states with no touch for half a second
+reference: touch: a prompt waits out a finger already down, then takes the next tap
+reference: touch: a tap passes within 48 pixels of its target, judged where it lifted
+reference: touch: the first prompt tells a touch from a docked console, a silent screen and nobody there
+reference: touch: the note gives every touch's diameter and angle range and the ids
+reference: touch: the screen answers, then four corners and the middle, two fingers, the drag and its lift
+reference: touch: two fingers need two ids, and a drag one finger, one id, going right
+reference: vic: a failure names the first wrong byte, or that nothing was written
+reference: vic: a one-slot job's command words are tools/vic-expect.py's
+reference: vic: a pass says which answers fit, and either where both do
+reference: vic: every case packs the structures tools/vic-expect.py packs
+reference: vic: the BT.601 colours, truncated and rounded, are the table asked for
+reference: vic: the judge passes each case's own model under each of its answers
+reference: vic: the passthrough job's structure holds the words vic40.h's layout gives
+reference: vic: the run's note adds up the answers and names a disagreement
+reference: vic: the shift before the constant gives 128s, after it 255, 26, 255
+reference: vic: the soft clamp at 64..940 holds white at 235 and black at 16
+reference: vic: two slots and an NV12 output add their methods as the script does
+reference: vic: vic_alpha_opaque expects what the script expects
+reference: vic: vic_background expects what the script expects
+reference: vic: vic_background_ring expects what the script expects
+reference: vic: vic_chroma_order expects what the script expects
+reference: vic: vic_clamp_nomatrix expects what the script expects
+reference: vic: vic_matrix_601 expects what the script expects
+reference: vic: vic_matrix_shift expects what the script expects
+reference: vic: vic_nv12_out expects what the script expects
+reference: vic: vic_order_argb expects what the script expects
+reference: vic: vic_order_x8 expects what the script expects
+reference: vic: vic_passthrough expects what the script expects
+reference: vic: vic_pitch expects what the script expects
+reference: vic: vic_planar_alpha expects what the script expects
+reference: vic: vic_soft_clamp expects what the script expects
+reference: vic: vic_source_crop expects what the script expects
+reference: vic: vic_target_clip expects what the script expects
+reference: vic: vic_target_clip_matrix expects what the script expects
+reference: vic: vic_target_odd expects what the script expects
+reference: vic: vic_two_slots expects what the script expects
+reference: viewport 0's y scale of 32 is the words 0x20010281 0x42000000
+reference: vp9: a case's line counts its images and names the first wrong one
+reference: vp9: a job's command words, word by word
+reference: vp9: a picture written block linear reads back as its planes' MD5s
+reference: vp9: command words that do not fit are none
+reference: vp9: every job fits the buffer and its surface is the setup's
+reference: vp9: surfaces are read as nvtegra's copy walks them
+reference: vp9: surfaces are rows of 64 bytes, heights of 32, chroma after luma
+reference: vp9: the B forms change only LastShowFrame, or the chroma deltas
+reference: vp9: the next job reads what the one before wrote
+reference: vp9: the patches rebuild the tables tools/vp9-jobs.py wrote
+reference: vp9: two cases are built both ways, the others once
+reference: vp9: two forms say which decodes, and the note adds the cases up
+reference: winding does not change which pixels are covered
+reference: with no margin every pixel is judged
+reference: z of -1, -0.5, 0 and 0.5 are depths 0, 0.25, 0.5 and 0.75 from minus one
+resources: English plurals through a configuration context
+resources: a binary XML resource walked with its parser
+resources: a layout inflates into its views with their attributes
+resources: a raw resource, the assets, and openFd of a compressed asset refused
+resources: strings with format arguments and aapt2 escapes, and arrays
+resources: typed values: a color's type and data, dimensions, integer, bool, fraction
+selfcheck: absolute tolerance accepts within
+selfcheck: absolute tolerance is symmetric
+selfcheck: absolute tolerance never accepts a nan
+selfcheck: absolute tolerance rejects beyond
+selfcheck: and the seventh is outside it
+selfcheck: channel threshold accepts within
+selfcheck: channel threshold rejects beyond
+selfcheck: integer arithmetic
+selfcheck: nan never compares equal
+selfcheck: no budget is large enough to accept a nan
+selfcheck: signed zeroes compare equal
+selfcheck: the ulp measure counts one between neighbours
+selfcheck: three units above a power of two is three representable values
+selfcheck: three units below a power of two is six representable values
+selfcheck: ulp neighbours are one apart
+selfcheck: ulp zero tolerance rejects a neighbour
+socket: a TCP socket listens on loopback, connects and echoes
+socket: a UDP datagram goes over loopback and comes back
+socket: a connection to a closed loopback port is refused
+support: Y and X in one edge change nothing, and A in that edge still begins
+support: a ban comes after a crash in this run and before the crash list
+support: a ban's versions are every one, a list, or bounds on dotted numbers
+support: a case a runner stopped the program inside is skipped as timeout, with the limit and how long it ran
+support: a case banned on this machine is skipped as banned, its line said, until unban
+support: a case inherits neither another case's samples nor a pass's leftovers
+support: a case known to hang is skipped until hang asks, and retry does not run it
+support: a case name becomes the file name it reads like
+support: a case named after another's expected picture does not land on it
+support: a case on the crash list is skipped as crashed until retry asks for it
+support: a case reads the work it has done so far, outside the timed passes too
+support: a case that ended this run is skipped even under retry
+support: a case that ended without starting, or started over another, is counted
+support: a case that ends the program runs with no word, and only a crash skips it
+support: a case that put nothing on the graphics unit reports no time
+support: a case that says where its expected value comes from says it after its tier
+support: a case the program ended inside is counted apart and in a colour of its own
+support: a case with no detail is only said to have passed when it did
+support: a case with no picture reports the line it always did
+support: a case with no pictures opens on its whole detail
+support: a case with pictures names them at the end of its own line
+support: a case's number is the smallest of its samples
+support: a colour picture keeps no raw file beside it
+support: a copy that never arrived is counted apart
+support: a detailed launch asks before going on, and starting over keeps the crash
+support: a drawing case opens on its pictures
+support: a failed case shouts its verdict on the heading and a passing one does not
+support: a frame is owed until one is drawn, and not again until something moves
+support: a frame too small for the screens gets one line and nothing past its edge
+support: a group marks every case in its result's colour
+support: a group of hundreds of failures still draws its bar inside its row
+support: a group shows the selected case's detail under its list, wrapped
+support: a held direction repeats after a delay, and only after a press that counted
+support: a hundred cases spelling one name never share a file
+support: a journal record too long for its buffer is not written in part
+support: a journal's last line with no newline is left unread
+support: a kept case holds what a reader of its line gets back, and no more
+support: a label in the mode file names the run's folder, and a bad one is refused
+support: a late copy is counted, with the longest wait rounded up
+support: a launch a runner stopped at its limit leaves a timeout, not a crash
+support: a launch goes on with a run only for the same build, the same words and its report
+support: a line that is not a whole journal record is not read as one
+support: a line too big for its buffer comes back whole or not at all
+support: a line written to the card is whole in the file before the next starts
+support: a list longer than the overview says there is more, whole, where there is
+support: a long group scrolls to keep the selected case on screen
+support: a name with no room for its number gives characters up instead
+support: a name with nothing usable in it still names a file
+support: a new run says how many ban lines hold for its machine, with the version
+support: a passing case leaves no picture unless one was asked for
+support: a perf line says what the summary says, or nothing at all
+support: a picture is written where the line says it is
+support: a picture of bit patterns keeps the bytes beside it
+support: a pixel no judge looked at is not drawn as one it accepted
+support: a press before the pad has settled is not a press
+support: a readback slot is filled with the preset and nothing past it
+support: a rehearsal knows each case's name from the pass before it
+support: a rehearsal leaves no count and no picture behind
+support: a root as long as one can be still reads back what it wrote
+support: a root that fits is taken
+support: a root too long to hold whole is refused and nothing is written
+support: a run the start screen chose goes on after a crash in the mode it chose
+support: a run under way says its report is still open
+support: a run whose copies all landed by the idle says nothing
+support: a run's counts come back from the journal where it stopped
+support: a scaled up pixel is one colour and not an average
+support: a skip is its own result and the summary counts it apart
+support: a skip says why in one word of a few, beside the sentence
+support: a slot has arrived once any of its bytes is not the preset
+support: a slot of no bytes has nothing to wait for
+support: a start whose newline an abort took is the case the program ended inside
+support: a suite skip= names is skipped as asked, after a crash in this run and before hang, unban and the crash list
+support: a suite that timed nothing sums up to nothing
+support: a suite's summary counts, adds and orders its cases' times
+support: a tap is one finger down after the screen settled, counted when lifted
+support: a time with no room on its line is left off, never cut
+support: a timed line is the untimed line with its time last
+support: all four colours of a verdict are named under the pictures
+support: all runs every family but pad and nvn, which named beside it add theirs
+support: and not the other way round either
+support: baseline: a case line reads back as written, quotes and all
+support: baseline: a case reported twice in a run is held by its last time
+support: baseline: a case that runs at two speeds gets one and a half its spread
+support: baseline: a case with more than 64 samples is held to its newest, and said
+support: baseline: a file cut short gets its line end before the next sample
+support: baseline: a line cut short is no case, and hides no slower run
+support: baseline: a line cut short or not this program's is no line of a sample
+support: baseline: a made-up timed suite's case that draws
+support: baseline: a made-up timed suite's case that draws nothing
+support: baseline: a made-up timed suite's case that draws twice
+support: baseline: a missing file is made, and each run adds the next sample
+support: baseline: a mode line too long for a note says where it was cut
+support: baseline: a move under the floor is none, whatever its percentage
+support: baseline: a name a file cannot carry is refused and said
+support: baseline: a name cut by the file's limit is dropped
+support: baseline: a name with a tab, quotes, a line end or past the cut is found
+support: baseline: a name's word cut just before its sign is dropped, not unknown
+support: baseline: a run that timed no case adds no sample, and says so
+support: baseline: a run that went on after the program ended is compared, not added
+support: baseline: a run with both words is held to the samples before it, then added
+support: baseline: a run with notime compares and adds nothing, and says both
+support: baseline: a run within its samples moves nothing
+support: baseline: a sample short of the cases it opened with is left out, and said
+support: baseline: a slower case, a faster one and one with no samples are told apart
+support: baseline: a timed suite's verdict pass alone is kept, at its lines' times
+support: baseline: every case compared gets its line, a same one too
+support: baseline: of two middle samples the reference is the lower
+support: baseline: samples of more than one build say how many and the first two
+support: baseline: samples that agree get the threshold, around their median
+support: baseline: the line that opens a sample reads back its number, build and cases
+support: baseline: the names stay out of the key, and the start screen keeps them
+support: baseline: the report's line for a case held to its samples
+support: baseline: the report's line that sums a comparison up
+support: baseline: the run checks take their file away again
+support: baseline: the slow speed is no move, past it is
+support: baseline: the two names among the words, and the mode line
+support: baseline: this check takes its file away again
+support: baseline: two names a file cannot tell apart are one case, and said
+support: cases the screens could not hold are counted and the overview says so
+support: every button means one thing, and everything at once still quits
+support: every case the run has reported is on record for the screens, or none is
+support: every journal record reads back as it was written
+support: every screen leaves the countdown its rows and names its buttons
+support: every suite a run reports is shown under its own family
+support: holding the button asks for the detailed mode and never cancels it
+support: left and right move between families on the overview and groups inside
+support: libc, jni and framework are words, and each frontend runs its own families
+support: machine= names the run's machine and its version, and a bad one says the machine in effect
+support: on the results a tapped row is the cursor's, then opened; the bar's boxes do what they say
+support: on the start and resume screens a tapped row is the cursor's, then chosen
+support: only the verdict pass hands a time to a line
+support: punctuation and case leave the file name alone
+support: quit leaves from every level, and a run that kept nothing can leave
+support: several lines written forward are the file, with nothing missing between
+support: skip= names the suites a run leaves out, and a bad one says the suites in effect
+support: source/bans.txt's lines are whole, and the two runs' lines are there
+support: stepping through a group's cases comes round to where it started
+support: the checks that record a crash for this run take it back
+support: the crash list reads the cases it names and nothing else
+support: the crash list writes back what it holds
+support: the detailed screen leaves by itself when nothing is pressed
+support: the diff carries the judge's verdict, not a comparison of two images
+support: the diff panel puts the judge's colours where the pixels were
+support: the diff picture is three colours deep and no more
+support: the expected picture holds what the judge expected
+support: the failure jumps skip every pass and skip and come round
+support: the journal keeps the words that change a report, in one order
+support: the journal says which case the program ended inside, and no other
+support: the launch after an abort ends the open line before its own records
+support: the listening screen leaves the countdown its rows and names its buttons
+support: the listening screen names the part, the take and what to listen for, and its buttons are not the results screens'
+support: the listening screen shows its steps done in a bar, as the running screen
+support: the log line before a rehearsed case names the suite, pass and case
+support: the longest line a case can make still fits the buffer it is given
+support: the median is the middle value, or between the two middle ones
+support: the mode file is read a whole word at a time
+support: the note is cut to its buffer, never past it
+support: the overview marks failed groups red, skipped ones amber, and the cursor
+support: the pad family runs only when named, and the start screen has its row
+support: the pad is waited for until it answers and then not at all
+support: the pad screen shows the prompt large, what the controller sends and the prompt before in its colour
+support: the pad screen's question takes yes or no on the bar, and only then
+support: the perf line sums up the times the verdict pass reported
+support: the picture holds the bytes the readback handed over
+support: the picture parses back as the image its header claims
+support: the preset is not the zero a cleared pixel holds
+support: the raw file is every byte the target held and nothing more
+support: the report says what the mode file was and what was not understood
+support: the report tells its watcher each case's start and end, and no one else
+support: the resume screen goes on unless start over is chosen, and a mask chooses nothing
+support: the resume screen shows where it stopped and which choice the cursor is on
+support: the runner names its files under a frontend's root, and refuses one too long
+support: the running screen draws twice a second and counts a step's cases by pass
+support: the running screen shows the step, the case and the steps done in proportion
+support: the screens gather the cases into their suites, families in the order the run met them
+support: the start screen asks only with something to choose, X for the crash list
+support: the start screen draws the cursor's row, each box and icon, and no warning for an empty crash list
+support: the start screen keeps the video, kernel, display and service families the file names, which have no row
+support: the start screen opens on begin the run, every row as the mode file says
+support: the start screen says nvn's window case is skipped in a run begun there, when the mode file names nvn
+support: the start screen waits ten seconds for a person, and a press keeps it
+support: the start screen warns exactly while the crash list's choice is on
+support: the start screen's menu turns the row under the cursor, listen with audio
+support: the three colours of a verdict are named under the pictures
+support: the time comes after the pictures a case names
+support: the time is the smallest sample, rounded to the microsecond
+support: the touch screen draws each target where its case aims and writes over none
+support: the two panels show two pictures and not one twice
+support: the view cycles only on a case that kept pictures
+support: the walk from the overview to a case and back lands where it should
+support: the widest mode goes into the journal whole and a launch goes on in it
+support: the word fatal changes nothing, and the mode line says so once
+support: the word hang asks for the cases that hang, and only beside retry for both
+support: the word listen asks for the listening sequence and the audio family
+support: the word noprogress turns the running screen off and nothing else
+support: the word notime turns the timing passes off and says so
+support: the word stress, and nothing else, asks for the stress cases
+support: the word vram=<MiB> says the machine's graphics memory, and a bad number says the one it keeps
+support: the words game and frames=<n> run the scene and set its frames, and a bad number says the one it keeps
+support: the words retry and nojournal ask for what they say and nothing else
+support: the words the start screen saves and the journal keeps read back the same
+support: there is a corner of the memory card to write in and read back
+support: this suite takes its own files away again
+support: times round to the nearest microsecond, never below one
+support: two case names that spell one file name get a file each
+support: two names that agree for longer than a stem still get one each
+support: untimed suites report no time
+support: what repeats is the direction pressed, whatever else is held
+support: what the start screen chooses is the run's mode, the label the file's
+system: four threads add under one mutex, a key's destructor runs for each, each keeps its own thread-local
+system: the monotonic clock moves forward over a 20 ms sleep

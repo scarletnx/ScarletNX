@@ -9,6 +9,7 @@
 * [The mode words](#the-mode-words)
 * [In CI](#in-ci)
 * [The baseline](#the-baseline)
+* [On the Android layer](#on-the-android-layer)
 * [A case from a game report](#a-case-from-a-game-report)
 
 [edenprobe](https://github.com/scarletnx/edenprobe) is a homebrew program of hardware probes: suites of cases, each
@@ -107,6 +108,25 @@ they come through:
 ```sh
 python3 scripts/edenprobe.py baseline run1/baseline.txt run2/baseline.txt -o tests/edenprobe/linux-x86_64.txt
 ```
+
+## On the Android layer
+
+Each release also carries `edenprobe.apk`, edenprobe's Android build: the judge's suites and the libc family in
+Android's C library, with cases of its own for bionic, GLES, the network, JNI, the framework and resources, each passing
+on Android 16. `--apk` runs it on `scarletnx-android` ([Android apps](../platforms/android-apps/README.md)) with
+nothing recompiled:
+
+```sh
+python3 scripts/edenprobe.py run --runtime build/scarletnx --apk edenprobe.apk --mode quick --out /tmp/edenprobe-apk \
+    [--java-home DIR] [--baseline tests/edenprobe/android-x86_64.txt]
+```
+
+The runtime runs it as `scarletnx-android --headless`, on the JDK the build found or `--java-home`'s, with the
+framework's jar and `android-fonts/` beside the program, where the build and an install put them. The words go to the
+mode file in the app's files under `work/`, `scarletnx/android/data/org.scarletnx.edenprobe/external/files/edenprobe/`
+of its `XDG_DATA_HOME`, with `machine=scarletnx-android@<the runtime's commit>` beside them; `quick` runs every family
+the APK has. edenprobe takes a folder of 160 characters at most, so an `--out` that makes it longer is refused. The
+launches, the report and the baseline are the NRO's.
 
 ## A case from a game report
 
