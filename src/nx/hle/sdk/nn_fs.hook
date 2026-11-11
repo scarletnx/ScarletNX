@@ -9,8 +9,15 @@
 # the SDK's own code
 family nn_fs
 hook _ZN2nn2fs8MountRomEPKcPvm(const char* name, addr cache, u64 cache_size) -> u32 = nnfs_mount_rom
+hook _ZN2nn2fs8MountRomEPKc(const char* name) -> u32 = nnfs_mount_rom_name
 hook _ZN2nn2fs22QueryMountRomCacheSizeEPm(u64* size) -> u32 = nnfs_query_mount_rom_cache_size
 hook _ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE(const char* name, addr uid) -> u32 = nnfs_mount_save_data
+hook _ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE(const char* name, u64 application, addr uid) -> u32 = nnfs_mount_save_data_read_only
+hook _ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_3ncm13ApplicationIdENS0_6UserIdE(const char* name, u64 application, u64 uid_lo, u64 uid_hi) -> u32 = nnfs_mount_save_data_read_only_user
+hook _ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE(u64 application, addr uid) -> bool = nnfs_is_save_data_existing
+hook _ZN2nn2fs18IsSaveDataExistingERKNS_7account3UidE(addr uid) -> bool = nnfs_is_own_save_data_existing
+hook _ZN2nn2fs18IsSaveDataExistingEPbNS_13ApplicationIdERKNS_7account3UidE(addr out, u64 application, addr uid) -> u32 = nnfs_is_save_data_existing_result
+hook _ZN2nn2fs18IsSaveDataExistingEPbRKNS_7account3UidE(addr out, addr uid) -> u32 = nnfs_is_own_save_data_existing_result
 hook _ZN2nn2fs17MountCacheStorageEPKc(const char* name) -> u32 = nnfs_mount_cache_storage
 hook _ZN2nn2fs17MountCacheStorageEPKci(const char* name, i32 index) -> u32 = nnfs_mount_cache_storage_index
 hook _ZN2nn2fs21MountTemporaryStorageEPKc(const char* name) -> u32 = nnfs_mount_temporary_storage
