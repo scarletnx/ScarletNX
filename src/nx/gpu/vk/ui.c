@@ -544,6 +544,15 @@ static int instances_send(VkCommandBuffer cb, int n) {
 }
 /* the quad's sample: its descriptor set */
 static unsigned quad_sample(int i) { return ui_q_bits(&g_quads[i], UI_Q_SAMPLE, 2); }
+/* an outline shape (an unfilled circle, round box or cross with its edge), which ui.vert draws as UI_OUTLINE_PARTS
+   quads over its edge and its label, so that its inside takes no fragment: the vertices an instance of it takes */
+#define UI_OUTLINE_PARTS 16 /* ui.vert's OUTLINE_PARTS */
+static u32 quad_vertices(int i) {
+    const SnxUiQuad* q = &g_quads[i];
+    int outline = ui_q_bits(q, UI_Q_INK, 3) == UI_SHAPE && !(q->uw & (UI_SHAPE_FILLED | UI_SHAPE_BARE)) &&
+                  q->u <= UI_SHAPE_CROSS;
+    return outline ? 6 * UI_OUTLINE_PARTS : 6;
+}
 /* ui.vert's Picture: the picture's size, its sRGB (only where the surface has no UNORM format), the ring's head and
    its slots from bit 16, the bars' slow colour and its height, and the backed letters' ground */
 typedef struct {
@@ -599,16 +608,18 @@ static void ui_record(VkCommandBuffer cb, int n) {
     rec_CmdPushConstants(cb, g_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof g_pc,
                          &g_pc);
     rec_CmdBindVertexBuffers(cb, 0, 1, &g_inst, &vo);
-    /* runs of quads that sample the same way, in their order: six corners for each instance, the set bound where it
-       changes */
+    /* runs of quads that sample the same way and take as many vertices, in their order: six corners for each quad, or
+       an outline shape's parts, the set bound where it changes */
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe);
     for (i = 0, set = -1; i < n; i = run) {
-        for (run = i + 1; run < n && quad_sample(run) == quad_sample(i); ++run) continue;
+        u32 vertices = quad_vertices(i);
+        for (run = i + 1; run < n && quad_sample(run) == quad_sample(i) && quad_vertices(run) == vertices; ++run)
+            continue;
         if (quad_sample(i) == UI_IMAGE && !g_image) continue; /* its upload failed */
         if (set != (int)quad_sample(i))
             rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_layout, 0, 1,
                                       &g_sets[set = (int)quad_sample(i)], 0, NULL);
-        rec_CmdDraw(cb, 6, (u32)(run - i), 0, (u32)i);
+        rec_CmdDraw(cb, vertices, (u32)(run - i), 0, (u32)i);
     }
 }
 /* a rendering pass on sc's view, cleared to black or loaded */
