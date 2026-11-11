@@ -143,7 +143,8 @@ int snx_nros_place(SnxNroSet* set, const SnxProgram* program, int quiet) {
 }
 
 /* A function a module of the game exports, by its name: what an NRO's import of that name is bound to when one
-   module alone defines it. Functions a hook names are left out, their calls go through their dispatch slots */
+   module alone defines it. One a hook names too: the runtime binds the import to what answers the address, the
+   hook's handler in the function's place (guest_jit.c's nro_imports_bind) */
 typedef struct {
     const char* name;
     SnxU64 address;
@@ -163,18 +164,9 @@ static Export* exports_of(const SnxProgram* program, size_t* count) {
         const SnxModuleImage* module = &program->modules[m];
         for (k = 0; k < module->symbol_count; ++k) {
             const SnxSymbol* s = &module->symbols[k];
-            size_t lo = 0, hi = module->routed_count;
             if (s->type != 2 /* STT_FUNC */ || (s->value & 3) || s->value < module->text_off ||
                 s->value - module->text_off >= module->text_size)
                 continue;
-            while (lo < hi) {
-                size_t middle = lo + (hi - lo) / 2;
-                if (module->routed[middle] < s->value)
-                    lo = middle + 1;
-                else
-                    hi = middle;
-            }
-            if (lo < module->routed_count && module->routed[lo] == s->value) continue;
             all[n].name = s->name;
             all[n++].address = module->base + s->value;
         }

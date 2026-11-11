@@ -11,6 +11,7 @@
 #include "common/utilities/common.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/platform/dl.h"
+#include "nx/loader/hook_routes.h"
 #include "nx/loader/loader.h"
 #include "nx/loader/module_abi.h"
 #include <openssl/evp.h>
@@ -51,7 +52,7 @@ static void dynamic(unsigned char* image, const char* first, unsigned long long 
     put32(image, 0x100c, 0x2000);
     put64(image, at, 6), put64(image, at + 8, 0x1200), at += 16; /* DT_SYMTAB */
     put64(image, at, 5), put64(image, at + 8, 0x1260), at += 16; /* DT_STRTAB */
-    put64(image, at, 10), put64(image, at + 8, 0x40), at += 16;  /* DT_STRSZ */
+    put64(image, at, 10), put64(image, at + 8, 0x80), at += 16;  /* DT_STRSZ */
     if (slots) {
         put64(image, at, 23), put64(image, at + 8, 0x1300), at += 16; /* DT_JMPREL */
         put64(image, at, 2), put64(image, at + 8, 48);                /* DT_PLTRELSZ */
@@ -66,8 +67,10 @@ static void dynamic(unsigned char* image, const char* first, unsigned long long 
     }
 }
 /* the game's one module: text, rodata and data of a page each, stored as they are, a page of BSS. It exports one
-   function, game_add at 0x40, which adds 5 to x0 */
+   function at 0x40, which adds 5 to x0, by the name g_game_symbol: game_add, then a symbol a hook of the runtime's
+   names */
 #define GAME_ADD (SNX_CODE_BASE + 0x40)
+static const char* g_game_symbol = "game_add";
 static size_t nso(unsigned char* file) {
     unsigned i;
     memset(file, 0, 0x3100);
@@ -84,7 +87,7 @@ static size_t nso(unsigned char* file) {
     put32(file, 0x110, 0xD65F03C0); /* ret */
     put32(file, 0x140, 0x91001400); /* game_add: add x0, x0, #5 */
     put32(file, 0x144, 0xD65F03C0); /* ret */
-    dynamic(file + 0x100, "game_add", 0x40, NULL, 0);
+    dynamic(file + 0x100, g_game_symbol, 0x40, NULL, 0);
     return 0x3100;
 }
 /* an NRO of three pages and bss bytes of BSS, its module ID id thirty-two times: 0 branches to 0x80, which leaves
@@ -119,7 +122,7 @@ static void nro(unsigned char* image, unsigned char id, unsigned add, unsigned l
     put32(image, 0x208, 0x91000210), put32(image, 0x20c, 0xD61F0220); /* add x16, x16, #0; br x17 */
     put32(image, 0x210, 0xD0000010), put32(image, 0x214, 0xF9400611); /* adrp x16, 0x2000; ldr x17, [x16, #8] */
     put32(image, 0x218, 0x91002210), put32(image, 0x21c, 0xD61F0220); /* add x16, x16, #8; br x17 */
-    dynamic(image, "nro_own", 0x100, "game_add", 1);
+    dynamic(image, "nro_own", 0x100, g_game_symbol, 1);
 }
 static void hex(const unsigned char* hash, char* out) {
     int i;
@@ -143,6 +146,12 @@ static void miss(CPU* c, u64 pc) {
 static void game_add(CPU* c, u64 pc) {
     (void)pc;
     c->x[0] += 5;
+    c->pc = c->x[30];
+}
+/* what the runtime puts in the game's function's place, a hook's handler or NVN's implementation: it adds 7 */
+static void override_add(CPU* c, u64 pc) {
+    if (pc != GAME_ADD) c->x[0] += 100000; /* it is called as the function at the address it answers */
+    c->x[0] += 7;
     c->pc = c->x[30];
 }
 static void poll(CPU* c) { c->poll = 0; }
@@ -170,7 +179,7 @@ static void module_runs(const char* path, u64 base, u64 size, unsigned char id, 
     ImportsFn get_imports;
     const SnxModule* m;
     const SnxNroImports* imports = NULL;
-    GuestFn entry = NULL, bound = game_add;
+    GuestFn entry = NULL, bound = game_add, override = override_add;
     unsigned char ids[32], *memory;
     u32 i;
     int step;
@@ -200,8 +209,9 @@ static void module_runs(const char* path, u64 base, u64 size, unsigned char id, 
         check(imports->function[0] == imports->dynamic && imports->dynamic, "an import starts as the table's lookup");
     }
     memory = (unsigned char*)calloc(1, (size_t)base + 0x4000);
-    /* 0: as made. With calls, 1: the import bound; 2: the game's slot holds another function; 3: the NRO's own does */
-    for (step = 0; entry && memory && step < (image ? 4 : 1); ++step) {
+    /* 0: as made. With calls, 1: the import bound; 2: the game's slot holds another function; 3: the NRO's own does;
+       4: the import bound to the runtime's function in the game's place */
+    for (step = 0; entry && memory && step < (image ? 5 : 1); ++step) {
         CPU c = {0};
         u64 want = base + 0x84 + add, slot[2];
         slot[0] = step == 2 ? 0x7000 : GAME_ADD;
@@ -209,8 +219,8 @@ static void module_runs(const char* path, u64 base, u64 size, unsigned char id, 
         if (image) {
             memcpy(memory + base, image, 0x3000);
             for (i = 0; i < 16; ++i) memory[base + 0x2000 + i] = (unsigned char)(slot[i / 8] >> (8 * (i % 8)));
-            if (step) memcpy(&imports->function[0], &bound, sizeof bound);
-            want += (step == 1 || step == 3 ? 5 : 1000) + (step == 3 ? 1000 : 0x20);
+            if (step) memcpy(&imports->function[0], step == 4 ? &override : &bound, sizeof bound);
+            want += (step == 4 ? 7 : step == 1 || step == 3 ? 5 : 1000) + (step == 3 ? 1000 : 0x20);
         }
         rt.svc = svc;
         rt.undef = undefined;
@@ -231,10 +241,12 @@ static void module_runs(const char* path, u64 base, u64 size, unsigned char id, 
         check(c.x[0] == want, !image      ? "the NRO's code runs as code at its place"
                               : !step     ? "an unbound import calls through the table"
                               : step == 1 ? "a bound import and the NRO's own function are called directly"
+                              : step == 4 ? "an import bound to the runtime's function in the game's place calls it"
                                           : "a slot that holds another address goes through the table");
         /* through the table: the game's function unbound or replaced (steps 0, 2), the NRO's own replaced (3) */
-        check(c.pc == RETURN && missed <= (image && step != 1 ? 2 : 1), "it returns to its caller, outside the NRO");
-        if (image) check(missed >= (step == 1 ? 0 : 1), "a call through the table reaches the miss");
+        check(c.pc == RETURN && missed <= (image && step != 1 && step != 4 ? 2 : 1),
+              "it returns to its caller, outside the NRO");
+        if (image) check(missed >= (step == 1 || step == 4 ? 0 : 1), "a call through the table reaches the miss");
         free(c.disp);
     }
     free(memory);
@@ -379,6 +391,56 @@ int main(int argc, char** argv) {
         free(path);
         check(!snx_path_exists(stale), "an earlier recompile's module is removed");
         check(snx_is_file(other), "a file that is no module stays");
+    }
+    /* The game's function by a name a hook of the runtime's names (the shortest symbol of the route list), which the
+       game module calls through its dispatch slot: the NRO's stub of it is bound all the same, to the import the
+       runtime gives the hook's handler */
+    {
+        const char* hooked = NULL;
+        unsigned char renamed[32];
+        size_t r;
+        for (r = 0; r < snx_hook_route_count(); ++r) {
+            const char* candidate = snx_hook_route_name(r);
+            if (strchr(candidate, ':') || (hooked && strlen(candidate) >= strlen(hooked))) continue;
+            hooked = candidate;
+        }
+        check(hooked && strlen(hooked) < 100 && snx_hook_routed(hooked), "the route list names a symbol");
+        g_game_symbol = hooked ? hooked : "game_add";
+        path = snx_path_join(exefs, "main");
+        check(!snx_write_file(path, file, nso(file)), "write the game's module, its function by a hooked name");
+        free(path);
+        nro(a, 0xA1, 1, 0x1000, 1);
+        path = snx_path_join(sub, "a.nro");
+        check(!snx_write_file(path, a, sizeof a), "write the NRO that imports it");
+        free(path);
+        path = snx_path_join(romfs, "A-again.NRO");
+        check(!snx_write_file(path, a, sizeof a), "write it again");
+        free(path);
+        check(EVP_Digest(a, sizeof a, renamed, NULL, EVP_sha256(), NULL), "its hash");
+        k = 0;
+        args[k++] = argv[1];
+        args[k++] = "--data";
+        args[k++] = argv[2];
+        args[k++] = "-r";
+        args[k++] = game;
+        args[k++] = "--outdir";
+        args[k++] = out;
+        args[k++] = "--nce=0";
+        args[k] = NULL;
+        if (snx_run(args, root, NULL, &text)) {
+            fprintf(stderr, "%s\n", text ? text : "");
+            check(0, "the game recompiles with a hooked function");
+        }
+        check(text && strstr(text, "; 2 calls through 2 PLT stubs made direct, 1 stubs of the NROs' own functions and "
+                                   "1 of the game's\n"),
+              "a stub of a function a hook names is bound");
+        free(text);
+        text = NULL;
+        hex(renamed, line);
+        strcpy(line + 64, SUFFIX);
+        path = snx_path_join(folder, line);
+        module_runs(path, SNX_CODE_BASE + 0x5000, 0x4000, 0xA1, 1, a);
+        free(path);
     }
     /* with every call sent through its dispatch slot no stub is bound, and a function two of the game's modules
        export is no stub's: the game's linker picks between them */

@@ -165,15 +165,18 @@ module's; each mapping starts from the module as it was made.
 An NRO calls the game's functions, and many of its own, through its PLT: a stub loads the function's address from a
 slot the game's linker (`nn::ro`) fills while the game runs, and branches to it. The recompile reads the NRO's PLT
 slots (`snx_module_plt` in `src/nx/loader/loader.c`) and binds each stub whose symbol names a function of the NRO
-itself, or one that a single module of the game exports and no hook names. Such a stub compares the address it
+itself, or one that a single module of the game exports. Such a stub compares the address it
 loaded with the one function it is bound to: equal, it calls that function, the NRO's own as any call inside the
 module, the game's through the module's import of it; anything else in the slot (the linker has not bound it yet,
 another module defines the symbol first) goes through `CPU.disp` as before. A module's imports are its
 `snx_imports()` table (`nro_slots.h`): each pointer starts as the module's own lookup in `CPU.disp`, and the runtime
-puts the game module's function there when it has one for the address and its dispatch slot holds that function
-(`nro_imports_bind` in `guest_jit.c`); a slot a hook took keeps the call in the table, and a slot given another
-function later, as NVN's implementation of a function the game resolves while it runs, takes the import back to the
-table (`jit_slot_taken`). A recompile with `--hook-direct-calls` binds none.
+puts there the function that answers the address (`nro_imports_bind` in `guest_jit.c`): what its dispatch slot
+holds, when that is the game module's function, or the function the runtime gave the slot in its place, a hook's
+handler or NVN's implementation, which wins over the game's own. A slot given such a function later, as NVN's
+implementation of a function the game resolves while it runs, has the import bound to it then (`jit_slot_taken`).
+A slot that holds anything else stays a call through the table, as its content can change again without a word:
+code the JIT made, a profile pack's variant, or nothing (a function gone stale, or never compiled). A recompile
+with `--hook-direct-calls` binds none.
 
 An update's NROs are found in its RomFS over its game's: the recompile of an update's dump reads it together with
 the game's dump, the one the game's settings record (`source=`). Without that dump, a game made from an extracted
