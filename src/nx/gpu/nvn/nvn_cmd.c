@@ -1105,7 +1105,7 @@ void nvn_CommandBufferReportValue(CPU* c, u64 cb, u32 value, u64 address) {
     r->v = value;
 }
 void nvn_CommandBufferResetCounter(CPU* c, u64 cb, i32 type) {
-    *(u64*)(void*)GP(rec(c, cb, OP_RESET_COUNTER, 8, COST_RECORD)) = (u64)(u32)type;
+    *(u64*)(void*)GP(rec(c, cb, OP_RESET_COUNTER, 8, 8)) = (u64)(u32)type;
 }
 
 /* a copy the GPU makes, in order with the queue's work: phase 2's */
@@ -1394,7 +1394,8 @@ void nvn_CommandBufferSetViewportSwizzles(CPU* c, u64 cb, i32 first, i32 n, u64 
         for (k = 0; k < 4; k++) r->sw[i][k] = (u8)((gr32(swizzles + 4 * (u64)(4 * i + k)) ^ (u32)(2 * k)) & 7);
 }
 void nvn_CommandBufferSetPrimitiveRestart(CPU* c, u64 cb, int on, i32 index) {
-    NvnPPrimRestart* r = REC(c, cb, OP_PRIM_RESTART, NvnPPrimRestart, COST_RECORD);
+    /* the driver writes the switch, and the index only when it is on */
+    NvnPPrimRestart* r = REC(c, cb, OP_PRIM_RESTART, NvnPPrimRestart, on ? 12 : 4);
     r->on = on != 0;
     r->index = (u32)index;
 }
@@ -1410,8 +1411,9 @@ void nvn_CommandBufferSetDepthRange(CPU* c, u64 cb, f32 n, f32 f) {
     r->n = n;
     r->f = f;
 }
+/* the driver writes one word for each face named (front 1, back 2) */
 static void stencil(CPU* c, u64 cb, i32 face, i32 value, int which) {
-    NvnPStencil* r = REC(c, cb, OP_STENCIL, NvnPStencil, COST_RECORD);
+    NvnPStencil* r = REC(c, cb, OP_STENCIL, NvnPStencil, 4u * (u32)((face & 1) + (face >> 1 & 1)));
     r->face = face;
     r->which = which;
     if (which == 0)
@@ -1428,7 +1430,7 @@ void nvn_CommandBufferSetBlendColor(CPU* c, u64 cb, u64 rgba) {
     memcpy(REC(c, cb, OP_BLEND_COLOR, NvnPBlendColor, 20)->rgba, GP(rgba), 16);
 }
 void nvn_CommandBufferSetRasterizerDiscard(CPU* c, u64 cb, int on) {
-    REC(c, cb, OP_RAST_DISCARD, NvnPRastDiscard, COST_RECORD)->on = on != 0;
+    REC(c, cb, OP_RAST_DISCARD, NvnPRastDiscard, 4)->on = on != 0;
 }
 void nvn_CommandBufferSetLineWidth(CPU* c, u64 cb, f32 width) {
     memcpy(GP(rec(c, cb, OP_LINE_WIDTH, 4, 12)), &width, 4);
@@ -1620,11 +1622,11 @@ void nvn_CommandBufferSetProgramSubroutines(CPU* c, u64 cb, u64 program, i32 sta
 
 void nvn_CommandBufferDiscardColor(CPU* c, u64 cb, i32 index) {
     if (index < 0 || index >= DS_TARGETS_MAX) return;
-    NvnPDiscard* r = REC(c, cb, OP_DISCARD, NvnPDiscard, COST_RECORD);
+    NvnPDiscard* r = REC(c, cb, OP_DISCARD, NvnPDiscard, 4);
     *r = (NvnPDiscard){1u << (u32)index, 0};
 }
 void nvn_CommandBufferDiscardDepthStencil(CPU* c, u64 cb) {
-    NvnPDiscard* r = REC(c, cb, OP_DISCARD, NvnPDiscard, COST_RECORD);
+    NvnPDiscard* r = REC(c, cb, OP_DISCARD, NvnPDiscard, 4);
     *r = (NvnPDiscard){1u << 8, 0};
 }
 /* ZCull's stencil criteria: what the hardware's coarse culling may assume of the stencil test, which only speeds it
