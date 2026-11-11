@@ -237,6 +237,14 @@ static int check_nvn_savestate(const char* shot) {
     memset(g_nvn.loader.resolved, 0, sizeof g_nvn.loader.resolved);
     g_nvn.loader.getproc_original = NULL;
     u64 before = ds_generation_next();
+    if (!mem_pool_active()) { /* a load is refused by name, before the game is touched, where there is no alias pool */
+        CHECK(state_load(path, why, sizeof why) == -1);
+        if (!strstr(why, "no alias pool")) fprintf(stderr, "NVN state load refused: %s\n", why);
+        CHECK(strstr(why, "no alias pool") != NULL);
+        remove(path);
+        puts("SKIP NVN save state's load: guest memory has no alias pool here, and the load is refused by name");
+        return 0;
+    }
     int loaded = state_load(path, why, sizeof why);
     if (loaded) fprintf(stderr, "NVN state not loaded: %s\n", why);
     CHECK(!loaded);
