@@ -33,22 +33,19 @@
 /* the backward edges the blocks a slice chains through may take, which ends it when they run out */
 #define SLICE_EDGES  2048
 #define VBLANK_NS    16683333u /* 59.94 Hz */
-#define CACHE_SLOTS  65536u
 
-typedef struct {
-    uint32_t key;
-    SnxArmBlock block;
-} Cached;
-static Cached cache[CACHE_SLOTS];
+/* the blocks entered by address, which the chained blocks look indirect branches up in as well */
+static VitaLookup cache[VITA_LOOKUP_SLOTS];
+static VitaProcess* g_process;
 
 /* the block at pc: the module's, else one compiled now */
 static SnxArmBlock block_at(VitaProcess* p, uint32_t pc, bool thumb) {
     uint32_t key = pc | thumb;
-    Cached* c = &cache[(key >> 1) & (CACHE_SLOTS - 1)];
+    VitaLookup* c = &cache[(key >> 1) & (VITA_LOOKUP_SLOTS - 1)];
     if (c->key == key && c->block) return c->block;
     SnxArmBlock block = vita_module_block(p->module, key);
     if (!block && p->jit) block = vita_jit_block(p->jit, pc, thumb);
-    if (block) *c = (Cached){key, block};
+    if (block) *c = (VitaLookup){key, block};
     return block;
 }
 
@@ -367,6 +364,16 @@ static bool svc(VitaProcess* p, VitaThread* t, uint32_t imm) {
         default: report_fault(p, t, "unknown SVC", imm); return false;
     }
 }
+/* An import called from its stub's block, which then goes on to the stub's bx lr without leaving compiled code. 0
+   sends the block back to this loop, which carries on from r15 as it does after any SVC, so a call that waited,
+   redirected to guest code or ended the game is handled as before */
+static uint32_t direct_call(SnxArmCPU* cpu, uint32_t import) {
+    VitaProcess* p = g_process;
+    VitaThread* t = (VitaThread*)cpu;
+    vita_hle_call(p, t, import);
+    return t->state == VITA_THREAD_READY && p->current == t && !t->call.redirected && !p->exited &&
+           t->cpu.exit == SNX_ARM_OK;
+}
 int vita_run(VitaProcess* p, double seconds) {
     char why[256];
     if (!(p->jit = vita_jit_new(p, why, sizeof why))) printf("No run-time compiler (%s): only the module's blocks run\n", why);
@@ -375,6 +382,9 @@ int vita_run(VitaProcess* p, double seconds) {
     bool closed = false;
     p->display.next_ns = plat_ns() + VBLANK_NS;
     VitaThread* volatile running = NULL;
+    g_process = p;
+    /* lockstep checks one instruction group at a time, which chained blocks would run past */
+    const bool fast = g_settings.vita_lockstep < 0;
     VitaThread* last = NULL; /* the thread that ran the last slice */
     if (!svc_index_make(p)) {
         result = 1;
@@ -428,7 +438,9 @@ int vita_run(VitaProcess* p, double seconds) {
         fault_armed = 1;
 #endif
         t->poll = SLICE_EDGES;
-        for (unsigned n = 0; n < SLICE_BLOCKS && p->current == t && t->poll > 0; ++n) {
+        t->lookup = fast ? cache : NULL;
+        t->direct = fast ? direct_call : NULL;
+        for (unsigned n = 0; n < SLICE_BLOCKS && p->current == t && t->poll > 0 && !p->exited; ++n) {
             uint32_t pc = t->cpu.r[15];
             bool thumb = !!(t->cpu.cpsr & SNX_ARM_T);
             VitaLockstep checked = vita_lockstep_step(p, t);

@@ -17,10 +17,21 @@
    multiplies, 3 TBH, 4 no flags from 16-bit data processing in an IT block, 5 a 16-bit LDM loading its base, 6 the
    A9 profile (stores with writeback into the register they store), 7 blocks that go on to the next by a tail call
    and count their backward edges at VITA_POLL_OFFSET from the cpu, 8 hosted blocks (llvm.h): the run loop sees to
-   their entry state and they keep the cpu in host registers between guest accesses */
-#define VITA_MODULE_ABI   8u
+   their entry state and they keep the cpu in host registers between guest accesses, 9 blocks that take an indirect
+   branch through the runtime's block table and import stubs that call the runtime directly */
+#define VITA_MODULE_ABI   9u
 /* where a chained block finds the thread's poll count, right after the cpu (VitaThread) */
 #define VITA_POLL_OFFSET  sizeof(SnxArmCPU)
+/* then the block table indirect branches look their target up in, and the function a stub calls its import through.
+   Either is null while the blocks must leave to the run loop */
+#define VITA_LOOKUP_OFFSET (VITA_POLL_OFFSET + sizeof(void*))
+#define VITA_DIRECT_OFFSET (VITA_POLL_OFFSET + 2 * sizeof(void*))
+/* the table has this many slots, a power of two, picked by the target's address shifted right once */
+#define VITA_LOOKUP_SLOTS 65536u
+typedef struct {
+    uint32_t key; /* the address, with bit 0 set for Thumb */
+    SnxArmBlock block;
+} VitaLookup;
 #ifdef _WIN32
 #define VITA_MODULE_SUFFIX "_code.dll"
 #else

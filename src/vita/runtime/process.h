@@ -101,6 +101,9 @@ typedef struct VitaThread {
     SnxArmCPU cpu;
     /* backward edges the chained blocks may still take this slice, counted down by the blocks themselves */
     int32_t poll;
+    /* the block table and the import call the chained blocks reach through the thread, set before each slice */
+    const VitaLookup* lookup;
+    uint32_t (*direct)(SnxArmCPU* cpu, uint32_t import);
     uint32_t state, uid;
     char name[32];
     uint32_t entry, priority, attr, stack, stack_size, stack_block, tls;
@@ -130,7 +133,10 @@ typedef struct VitaThread {
     /* when the scheduler first saw it ready, 0 while it is not, for the guard against starving a thread */
     uint64_t ready_ns;
 } VitaThread;
+_Static_assert(offsetof(VitaThread, cpu) == 0, "a block's cpu pointer is its thread's");
 _Static_assert(offsetof(VitaThread, poll) == VITA_POLL_OFFSET, "the blocks find the poll count by this offset");
+_Static_assert(offsetof(VitaThread, lookup) == VITA_LOOKUP_OFFSET, "the blocks find the block table by this offset");
+_Static_assert(offsetof(VitaThread, direct) == VITA_DIRECT_OFFSET, "the stubs find the import call by this offset");
 
 enum {
     VITA_OBJ_FREE,
