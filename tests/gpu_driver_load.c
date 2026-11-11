@@ -63,7 +63,11 @@ int main(int argc, char** argv) {
         }
     } else if (!strcmp(which, "sets")) {
         /* a value of Turnip's set variable the environment has stays, and is said */
+#ifdef _WIN32
+        assert(!_putenv_s("tu_dont_reserve_descriptor_set", "false"));
+#else
         assert(!setenv("tu_dont_reserve_descriptor_set", "false", 1));
+#endif
         assert(run("", "", &gipa) && !gipa);
         assert(!strcmp(getenv("tu_dont_reserve_descriptor_set"), "false"));
         assert(strstr(g_test.log, "freedreno: tu_dont_reserve_descriptor_set=false, as the environment has it\n"));
