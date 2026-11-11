@@ -223,6 +223,11 @@ u64 kernel_find_symbol_exact(const char* name); /* 0 when no loaded module expor
 /* the i-th exported function, in address order: its address and its name (NULL when unreadable); 0 past the last */
 int kernel_symbol(u32 i, u64* addr, const char** name);
 void kernel_dump_regs(CPU* c);
+/* For the crash report of a fault at guest address fault: the thread's last call, when it went to the game's memcpy,
+   memmove or memset (the runtime's libc hooks run them) and the fault lies in the range it copies or fills, with that
+   range and where in it the fault is. The call is the one before c's lr, and its arguments x0 to x2, which the hook
+   reads and leaves as they were: a fault in the hook, or in the game's code right after it, finds them there */
+void kernel_dump_libc_fault(const CPU* c, u64 fault);
 void kernel_dump_threads(void);
 /* the guest thread of slot ix (kt_ix): its id, and its name into out as the dump gives it (the SDK's, else the
    kernel's, "" for none); 0 for a slot with no thread. Read without the locks, as the dump reads them */

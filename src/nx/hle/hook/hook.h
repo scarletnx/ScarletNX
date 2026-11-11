@@ -159,6 +159,10 @@ void hook_restore(u64 addr, u64 size);
 /* the recompiled code of the function at addr when it is hooked, for a handler that hands a case back to it with the
    CPU as the function's call left it; NULL when addr isn't hooked */
 GuestFn hook_original(u64 addr);
+/* the symbol of the function hooked at addr, and the name of the runtime's handler that runs it in *handler; NULL when
+   addr isn't hooked. Reads only the sites hook_install wrote before the game's first thread, so the crash report may
+   call it (debug.c) */
+const char* hook_at(u64 addr, const char** handler);
 /* where the hook of symbol (a symbol, or an address hook's key as hookgen writes it, BUILDID:OFFSET) was installed:
    the function's guest address, the first one for a symbol several modules export; 0 when it wasn't */
 u64 hook_site(const char* symbol);

@@ -294,6 +294,13 @@ GuestFn hook_original(u64 addr) {
     return i < 0 ? NULL : g_hle.hook.orig[i];
 }
 
+const char* hook_at(u64 addr, const char** handler) {
+    int i = site_of(addr);
+    if (i < 0) return NULL;
+    *handler = hook_handler[g_hle.hook.hook[i]];
+    return hook_symbol[g_hle.hook.hook[i]];
+}
+
 void hook_run_original(CPU* c, u64 addr) {
     GuestFn own = hook_original(addr);
     u64 ret = c->x[30], sp = c->x[31];

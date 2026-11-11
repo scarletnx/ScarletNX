@@ -5,8 +5,8 @@
    SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
    SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
    SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project */
-/* the dumps: a thread's registers with a backtrace named from the game's symbols, the last SVCs and IPC requests, and
-   every thread's state (threads.txt, F5) */
+/* the dumps: a thread's registers with a backtrace named from the game's symbols, the last SVCs and IPC requests, the
+   copy or fill of a hooked libc call a fault lies in, and every thread's state (threads.txt, F5) */
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/hle/hle.h"
 #include "nx/runtime/arm.h"
@@ -258,6 +258,66 @@ void kernel_dump_regs(CPU* c) {
         dump_pointees(0, "x", c->x, 31, 4);
     }
     dump_rings(0);
+}
+
+/* ============================================================ a fault in the range of a libc hook's call */
+/* The hooked function the call before c's lr went to: the target of that BL, or of that BLR by the register it read,
+   then of the PLT stub (adrp x16; ldr x17, [x16, #off]; add x16, x16, #off; br x17, the static linker's) or plain
+   branch found there, up to 4 of them. Its symbol, with its handler's name (hook.h's hook_at); NULL when the
+   instruction before lr is no such call, its code can't be read or it leads to no hook */
+static const char* hooked_call(const CPU* c, const char** handler) {
+    u64 lr = c->x[30], t;
+    u32 insn;
+    int hop;
+    if ((lr & 3) || lr < 4 || !readable(lr - 4, 4)) return NULL;
+    insn = gr32(lr - 4);
+    if ((insn & 0xFC000000u) == 0x94000000u) /* BL */
+        t = lr - 4 + (u64)snx_sext64((u64)(insn & 0x3FFFFFFu) << 2, 28);
+    else if ((insn & 0xFFFFFC1Fu) == 0xD63F0000u && ((insn >> 5) & 31) != 30) /* BLR, not by x30 the call replaced */
+        t = c->x[(insn >> 5) & 31];
+    else
+        return NULL;
+    for (hop = 0; hop <= 4; hop++) {
+        const char* symbol = hook_at(t, handler);
+        u32 i0, i1;
+        if (symbol) return symbol;
+        if (hop == 4 || (t & 3) || !readable(t, 16)) return NULL;
+        i0 = gr32(t), i1 = gr32(t + 4);
+        if ((i0 & 0xFC000000u) == 0x14000000u) /* B */
+            t += (u64)snx_sext64((u64)(i0 & 0x3FFFFFFu) << 2, 28);
+        else if ((i0 & 0x9F00001Fu) == 0x90000010u && (i1 & 0xFFC003FFu) == 0xF9400211u &&
+                 gr32(t + 8) == (0x91000210u | ((i1 >> 10) & 0xFFFu) << 13) && gr32(t + 12) == 0xD61F0220u) {
+            u64 page = (u64)snx_sext64((u64)((i0 >> 5) & 0x7FFFFu) << 14 | (u64)((i0 >> 29) & 3u) << 12, 33);
+            u64 got = (t & ~0xFFFull) + page + (u64)((i1 >> 10) & 0xFFFu) * 8;
+            if (!readable(got, 8)) return NULL;
+            t = gr64(got);
+        } else
+            return NULL;
+    }
+    return NULL;
+}
+void kernel_dump_libc_fault(const CPU* c, u64 fault) {
+    u64 dst = c->x[0], src = c->x[1], n = c->x[2], at = c->x[30] - 4;
+    const char *handler = NULL, *symbol, *range;
+    char from[200];
+    int copy, in_dst, in_src;
+    if (g_arm_mod || !(symbol = hooked_call(c, &handler))) return;
+    copy = !strcmp(handler, "hook_memmove");
+    if (!copy && strcmp(handler, "hook_memset")) return;
+    in_dst = fault - dst < n; /* fault in [dst, dst + n), with no sum that overflows */
+    in_src = copy && fault - src < n;
+    if (!in_dst && !in_src) return;
+    range = !in_src ? "destination" : in_dst ? "source and the destination" : "source";
+    sym_name(at, from, sizeof from);
+    if (!from[0]) snprintf(from, sizeof from, "%llx", (unsigned long long)at);
+    if (copy)
+        WARN("  its last call: %s (the runtime's %s) at %s, 0x%llx bytes from %llx to %llx; the fault is in the %s, "
+             "0x%llx bytes in\n",
+             symbol, handler, from, (unsigned long long)n, (unsigned long long)src, (unsigned long long)dst, range,
+             (unsigned long long)(fault - (in_src ? src : dst)));
+    else
+        WARN("  its last call: %s (the runtime's %s) at %s, 0x%llx bytes at %llx; the fault is 0x%llx bytes in\n",
+             symbol, handler, from, (unsigned long long)n, (unsigned long long)dst, (unsigned long long)(fault - dst));
 }
 
 /* ============================================================ threads */
