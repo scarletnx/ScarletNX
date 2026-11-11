@@ -33,7 +33,7 @@ static struct {
    the environment). A value the environment has already stays */
 #define SNX_TURNIP_SETS_VAR "tu_dont_reserve_descriptor_set"
 static void turnip_sets(void) {
-    const char* had = getenv(SNX_TURNIP_SETS_VAR);
+    const char* had = getenv("tu_dont_reserve_descriptor_set");
     if (had) {
         LOG("freedreno: %s=%s, as the environment has it\n", SNX_TURNIP_SETS_VAR, had);
         return;
