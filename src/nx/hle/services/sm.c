@@ -37,13 +37,13 @@ static const char* stand_in_name(const char* name) {
 }
 static SvcObj* sm_stand_in(const char* name) { return svcobj_new(stand_in_name(name), stub_ok); }
 
-/* the services the runtime answers in the SDK's own functions (hle/sdk/), with no session: a game that still asks
+/* the services the runtime answers in the SDK's own functions (nn/), with no session: a game that still asks
    for one called a function there that is not native yet, and a stand-in would give its SDK objects with nothing
    behind them */
 static const char* const g_native_only[][2] = {
-    {"fsp-srv", "nn::fs (hle/sdk/nn_fs.c)"},
-    {"fsp-pr", "nn::fs (hle/sdk/nn_fs.c)"},
-    {"fsp-ldr", "nn::fs (hle/sdk/nn_fs.c)"},
+    {"fsp-srv", "nn::fs (nn/fs.c)"},
+    {"fsp-pr", "nn::fs (nn/fs.c)"},
+    {"fsp-ldr", "nn::fs (nn/fs.c)"},
 };
 static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_sm_ServiceName* name, u32* session) {
     char s[9];

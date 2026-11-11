@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors
    Ported from Eden (src/core/file_sys/fsmitm_romfsbuild.cpp, system_archive/mii_model.cpp):
    SPDX-FileCopyrightText: Copyright 2018, 2019 yuzu Emulator Project */
-/* The file system server's core over the game's indexed data folder, which the native nn::fs (hle/sdk/nn_fs.c) calls: the RomFS (a romfs.bin, an image made up from the romfs/ folder, or
+/* The file system server's core over the game's indexed data folder, which the native nn::fs (nn/fs.c) calls: the RomFS (a romfs.bin, an image made up from the romfs/ folder, or
    the game's dump read in place), save data, the SD card and the system archives */
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/filesystem/fs_tree.h"

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 #
-# The native nn::fs (nn_fs.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
+# The native nn::fs (fs.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
 # nn::fs: the file system API of the SDK, run natively on the runtime's own back end, with no fsp-srv
 # session. A mount that the native layer made answers natively. Every other mount name and every handle that the SDK
 # made run the function's own code, so the mount kinds move over one at a time. The functions that take a path or a
