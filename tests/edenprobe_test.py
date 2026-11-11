@@ -4,8 +4,8 @@
 """scripts/edenprobe.py against a fake runtime that recompiles into a fake game, whose launches write report lines as
 each test asks: a clean run, a regression, a case not run, a new pass, a crash and a hang each followed by another
 launch, a baseline line that expects a crash, a case the ban list skips, launches that add nothing, no report, an exit
-after the summary, words edenprobe ignored, a baseline of another build or mode or none, broken lines; then the baseline
-of several runs. Offline, no GPU."""
+after the summary, words edenprobe ignored, a baseline of another build or mode or none, broken lines; the APK, run by
+the same runtime as scarletnx-android with nothing recompiled; then the baseline of several runs. Offline, no GPU."""
 
 import json
 import os
@@ -30,7 +30,9 @@ def check(what, ok, detail=''):
 
 # The runtime: "-r NRO NAME --outdir DIR --jobs N" copies itself to DIR/NAME/NAME, the game; the game, run with -H,
 # plays the next launch of $FAKE_SCENARIO: appends its lines to the report under sdmc:/edenprobe/runs/<build>, then
-# exits with its status, kills itself with its signal, or hangs. Each call is logged to $FAKE_SCENARIO.log
+# exits with its status, kills itself with its signal, or hangs. "scarletnx-android ... APK" plays it the same, the
+# APK's sdmc:/edenprobe in the app's files under XDG_DATA_HOME, as the Android layer keeps them. Each call is logged to
+# $FAKE_SCENARIO.log
 FAKE = """
 # the build line a runtime carries: ScarletNX main 1a2b3c4, committed 2026-11-08 (clang 22.1.8, Linux x86_64)
 import json, os, shutil, signal, sys, time
@@ -46,7 +48,11 @@ if sys.argv[1] == '-r':
     if plan.get('game', True):
         shutil.copy(sys.argv[0], folder / sys.argv[3])
     sys.exit(plan.get('recompile', 0))
-edenprobe = Path(os.getcwd()) / f'{Path(sys.argv[0]).name}_data' / 'sdmc' / 'edenprobe'
+if sys.argv[1] == 'scarletnx-android':
+    files = ('scarletnx', 'android', 'data', 'org.scarletnx.edenprobe', 'external', 'files')
+    edenprobe = Path(os.environ['XDG_DATA_HOME'], *files, 'edenprobe')
+else:
+    edenprobe = Path(os.getcwd()) / f'{Path(sys.argv[0]).name}_data' / 'sdmc' / 'edenprobe'
 count = edenprobe / 'launches'
 number = int(count.read_text()) if count.exists() else 0
 count.write_text(str(number + 1))
@@ -111,18 +117,21 @@ with tempfile.TemporaryDirectory() as temporary:
     runtime.chmod(0o755)
     nro = root / 'edenprobe.nro'
     nro.write_bytes(b'NRO0')
+    apk = root / 'edenprobe.apk'
+    apk.write_bytes(b'PK\x03\x04')
     number = 0
 
-    def run(launches, baseline=BASELINE, mode=MODE, extra=(), **plan):
+    def run(launches, baseline=BASELINE, mode=MODE, extra=(), probe=('--nro', str(nro)), **plan):
         """the script's exit status, its output, its folder, and the fake's log; the plan's launches are lists of
-        lines, or dicts with lines and exit, signal or hang. baseline None: no --baseline; MISSING: one not there"""
+        lines, or dicts with lines and exit, signal or hang. baseline None: no --baseline; MISSING: one not there.
+        probe: the probe's option and file"""
         global number
         number += 1
         test = root / f'test-{number}'
         test.mkdir()
         steps = [step if isinstance(step, dict) else {'lines': step} for step in launches]
         (test / 'scenario.json').write_text(json.dumps({'launches': steps, **plan}))
-        command = [sys.executable, str(SCRIPT), 'run', '--runtime', str(runtime), '--nro', str(nro), '--mode', mode]
+        command = [sys.executable, str(SCRIPT), 'run', '--runtime', str(runtime), *probe, '--mode', mode]
         command += ['--out', str(test / 'out'), '--summary', str(test / 'summary.md'), '--timeout', QUIET, *extra]
         if baseline is not None:
             if baseline != MISSING:
@@ -448,6 +457,76 @@ with tempfile.TemporaryDirectory() as temporary:
     check('a failed recompile', status == 1 and 'the recompile exited 5' in text and len(calls) == 1, text)
     status, text, out, calls = run([WHOLE], game=False)
     check('a recompile that makes no game', status == 1 and 'exited 0 without making edenprobe' in text, text)
+
+    # the APK: the runtime runs it as scarletnx-android, nothing recompiled, the mode in the app's files
+    jdk = root / 'jdk'
+    jdk.mkdir()
+    android = ('--apk', str(apk))
+    status, text, out, calls = run([WHOLE], probe=android, extra=['--java-home', str(jdk), '--setting', 'vk_memory=2'])
+    check('a clean run of the APK passes', status == 0 and len(calls) == 1, text)
+    launched = (calls + [{'argv': [], 'cwd': '', 'xdg': {}}])[0]
+    check(
+        'the APK run headless by the runtime as scarletnx-android, its settings and JDK given, from the work folder',
+        launched['argv'] == ['scarletnx-android', '--headless', '--vk_memory=2', f'--java-home={jdk}', str(apk)]
+        and launched['cwd'] == str(out / 'work'),
+        launched,
+    )
+    check(
+        'its XDG folders in the work folder',
+        len(launched['xdg']) == 4 and all(v.startswith(str(out / 'work' / 'xdg')) for v in launched['xdg'].values()),
+        launched['xdg'],
+    )
+    check(
+        "the words in the app's mode file with machine=scarletnx-android@<the runtime's commit>",
+        (out.parent / 'mode.seen').read_text() == 'quick notime cpu machine=scarletnx-android@1a2b3c4\n',
+        text,
+    )
+    check(
+        "the summary names the APK's build and the counts",
+        (out / 'summary.md').read_text().startswith("### edenprobe abc1234's APK: 2 passed, 1 failed, 1 skipped"),
+        text,
+    )
+    check(
+        "the APK run's baseline.txt as the NRO's, and no recompile",
+        (out / 'baseline.txt').read_text().endswith('# mode: cpu notime quick\ncpu: adds\ncpu: multiplies\n')
+        and not (out / 'recompile.log').exists(),
+    )
+    status, text, out, calls = run([WHOLE], probe=android, mode='quick notime cpu machine=android@16', baseline=None)
+    check(
+        'APK words that name a machine keep theirs',
+        (out.parent / 'mode.seen').read_text() == 'quick notime cpu machine=android@16\n',
+        text,
+    )
+    status, text, out, calls = run(
+        [{'lines': crash, 'signal': 6}, resumed + [summary(2, 0, 1, 1)]],
+        probe=android,
+        baseline=BASELINE + 'cpu: multiplies\n',
+    )
+    check(
+        'an APK launch that dies inside a case, then the one that goes on',
+        status == 0 and len(calls) == 2 and 'launch 1: exit -6' in text and 'launch 2: exit 0' in text,
+        text,
+    )
+    status, text, out, calls = run([WHOLE], probe=android, baseline=BASELINE + 'cpu: divides\n')
+    check(
+        'an APK case of the baseline that fails is a regression',
+        status == 1 and '- `cpu: divides: fail: got 3, wanted 4`' in text,
+        text,
+    )
+    status, text, out, calls = run([WHOLE], probe=('--apk', str(root / MISSING)))
+    check('an APK named and missing', status == 1 and 'no APK at' in text and not calls, text)
+    deep = root / ('x' * 80)
+    status, text, out, calls = run([WHOLE], probe=android, extra=['--out', str(deep)])
+    files = deep / 'work' / 'xdg' / 'data' / 'scarletnx/android/data/org.scarletnx.edenprobe/external/files/edenprobe'
+    check(
+        "an --out that makes the app's folder longer than edenprobe takes, refused with its length",
+        status == 1 and f'{len(str(files))} characters, and edenprobe takes 160' in text and not calls,
+        text,
+    )
+    status, text, out, calls = run([WHOLE], extra=['--java-home', str(jdk)])
+    check('--java-home without --apk refused', status == 1 and 'it goes with --apk' in text and not calls, text)
+    status, text, out, calls = run([WHOLE], probe=('--nro', str(nro), '--apk', str(apk)))
+    check('--nro and --apk are one or the other', status == 2 and not calls, text)
 
     # the baseline of several runs: what each passed
     first, second, other = root / 'one.txt', root / 'two.txt', root / 'other.txt'
