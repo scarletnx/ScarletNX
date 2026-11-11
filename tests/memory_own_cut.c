@@ -80,17 +80,17 @@ static void land_resources(const OwnRange* r, u8* const* dst, u32 n) {
 }
 
 static void verify_regions(void) {
-    for (u64 region = 0; region < g_own_nregion; region++) {
+    for (u64 region = 0; region < g_own.nregion; region++) {
         u32 count = 0;
-        for (u32 i = 0; i < g_nown; i++)
-            count += g_own[i].lo >> OWN_REGION_SHIFT <= region && (g_own[i].hi - 1) >> OWN_REGION_SHIFT >= region;
-        CHECK(g_own_region[region] == count);
+        for (u32 i = 0; i < g_own.nown; i++)
+            count += g_own.ent[i].lo >> OWN_REGION_SHIFT <= region && (g_own.ent[i].hi - 1) >> OWN_REGION_SHIFT >= region;
+        CHECK(g_own.region[region] == count);
     }
 }
 static void reset_map(void) {
-    for (u32 i = 0; i < g_nown; i++) release_resource(g_own[i].res);
-    g_nown = 0;
-    memset(g_own_region, 0, sizeof *g_own_region * (size_t)g_own_nregion);
+    for (u32 i = 0; i < g_own.nown; i++) release_resource(g_own.ent[i].res);
+    g_own.nown = 0;
+    memset(g_own.region, 0, sizeof *g_own.region * (size_t)g_own.nregion);
 }
 static u32 random_word(u32* state) {
     *state = *state * 1664525u + 1013904223u;
@@ -108,20 +108,20 @@ static void differential_cuts(void) {
             u64 gap = random_word(&seed) % 64, size = random_word(&seed) % 96 + 1;
             Own o = {at + gap, at + gap + size, at + gap + 19, &resources[i], i * 100, 0};
             retain_resource(o.res);
-            insert_nl(g_nown, &o);
+            insert_nl(g_own.nown, &o);
             at = o.hi;
         }
-        u64 lo = g_own[0].lo + random_word(&seed) % (u32)(at - g_own[0].lo + 1);
+        u64 lo = g_own.ent[0].lo + random_word(&seed) % (u32)(at - g_own.ent[0].lo + 1);
         u64 hi = lo + random_word(&seed) % (u32)(at - lo + 1);
         /* Include exact endpoints, full cuts, empty cuts, and single-owner splits. */
-        if (trial % 8 == 0) lo = g_own[0].lo, hi = at;
-        if (trial % 8 == 1) lo = hi = g_own[64].lo;
-        if (trial % 8 == 2) lo = g_own[32].lo, hi = g_own[96].hi;
-        if (trial % 8 == 3) lo = g_own[32].lo + 1, hi = g_own[32].hi - 1;
+        if (trial % 8 == 0) lo = g_own.ent[0].lo, hi = at;
+        if (trial % 8 == 1) lo = hi = g_own.ent[64].lo;
+        if (trial % 8 == 2) lo = g_own.ent[32].lo, hi = g_own.ent[96].hi;
+        if (trial % 8 == 3) lo = g_own.ent[32].lo + 1, hi = g_own.ent[32].hi - 1;
         if (hi < lo) hi = lo;
         u32 count = 0;
-        for (u32 i = 0; i < g_nown; i++) {
-            Own o = g_own[i];
+        for (u32 i = 0; i < g_own.nown; i++) {
+            Own o = g_own.ent[i];
             if (hi <= lo || o.hi <= lo || o.lo >= hi) {
                 expected[count++] = o;
                 continue;
@@ -140,11 +140,11 @@ static void differential_cuts(void) {
         ResList rel = {0};
         if (hi > lo) cut_nl(lo, hi, &rel);
         res_release(&rel);
-        CHECK(g_nown == count);
+        CHECK(g_own.nown == count);
         for (u32 i = 0; i < count; i++) {
-            CHECK(g_own[i].lo == expected[i].lo && g_own[i].hi == expected[i].hi);
-            CHECK(g_own[i].pool == expected[i].pool && g_own[i].res == expected[i].res);
-            CHECK(g_own[i].res_off == expected[i].res_off && !g_own[i].landing);
+            CHECK(g_own.ent[i].lo == expected[i].lo && g_own.ent[i].hi == expected[i].hi);
+            CHECK(g_own.ent[i].pool == expected[i].pool && g_own.ent[i].res == expected[i].res);
+            CHECK(g_own.ent[i].res_off == expected[i].res_off && !g_own.ent[i].landing);
         }
         for (u32 r = 0; r < 128; r++) {
             u32 refs = 0;
@@ -159,18 +159,18 @@ static void differential_cuts(void) {
 static void land_and_replace(void) {
     Resource r = {0}, replacement = {0};
     for (u32 i = 0; i < 256; i++) CHECK(own_begin(0x1000 + i * 64, 32, &r, i * 32) == 0);
-    CHECK(r.refs == 256 && g_nown == 256);
+    CHECK(r.refs == 256 && g_own.nown == 256);
     own_acquire(0x1000, 0x1000);
-    CHECK(landed == 64 && r.refs == 192 && g_nown == 192);
-    CHECK(g_own[0].lo == 0x2000 && g_own[0].res_off == 64 * 32);
+    CHECK(landed == 64 && r.refs == 192 && g_own.nown == 192);
+    CHECK(g_own.ent[0].lo == 0x2000 && g_own.ent[0].res_off == 64 * 32);
     verify_regions();
     CHECK(own_begin(0x2001, 0x1ffe, &replacement, 51) == 0);
-    CHECK(r.refs == 65 && replacement.refs == 1 && g_nown == 66);
-    CHECK(g_own[0].lo == 0x2000 && g_own[0].hi == 0x2001 && g_own[0].res_off == 64 * 32);
-    CHECK(g_own[1].lo == 0x2001 && g_own[1].hi == 0x3fff && g_own[1].res_off == 51);
+    CHECK(r.refs == 65 && replacement.refs == 1 && g_own.nown == 66);
+    CHECK(g_own.ent[0].lo == 0x2000 && g_own.ent[0].hi == 0x2001 && g_own.ent[0].res_off == 64 * 32);
+    CHECK(g_own.ent[1].lo == 0x2001 && g_own.ent[1].hi == 0x3fff && g_own.ent[1].res_off == 51);
     verify_regions();
     own_drop(0x1000, 0x5000);
-    CHECK(!g_nown && !r.refs && !replacement.refs);
+    CHECK(!g_own.nown && !r.refs && !replacement.refs);
     verify_regions();
 }
 
@@ -190,27 +190,27 @@ static void benchmark(void) {
         for (u32 i = 0; i < count * 2; i++) {
             Own o = {0x1000 + i * 64, 0x1020 + i * 64, 0x1000 + i * 64, &r, i * 32, 0};
             retain_resource(&r);
-            insert_nl(g_nown, &o);
+            insert_nl(g_own.nown, &o);
         }
-        memcpy(original, g_own, sizeof *original * count * 2);
+        memcpy(original, g_own.ent, sizeof *original * count * 2);
         u64 elapsed = 0;
         for (u32 round = 0; round < rounds; round++) {
             ResList rel = {0};
             u64 start = now_ns();
             cut_nl(original[0].lo, original[count - 1].hi, &rel);
             elapsed += now_ns() - start;
-            CHECK(g_nown == count && rel.n == count);
+            CHECK(g_own.nown == count && rel.n == count);
             for (u32 i = 0; i < count; i++)
-                CHECK(g_own[i].lo == original[count + i].lo && g_own[i].res_off == original[count + i].res_off);
+                CHECK(g_own.ent[i].lo == original[count + i].lo && g_own.ent[i].res_off == original[count + i].res_off);
             res_release(&rel);
             CHECK(r.refs == count);
             reset_map();
             CHECK(r.refs == 0);
             if (round + 1 < rounds) {
-                memcpy(g_own, original, sizeof *original * count * 2);
-                g_nown = count * 2;
+                memcpy(g_own.ent, original, sizeof *original * count * 2);
+                g_own.nown = count * 2;
                 r.refs = count * 2;
-                for (u32 i = 0; i < g_nown; i++) cover_nl(&g_own[i], 1);
+                for (u32 i = 0; i < g_own.nown; i++) cover_nl(&g_own.ent[i], 1);
             }
         }
         printf("GPU_HOTPATH_BENCH workload=owner_cut_%u operations=%u ns=%llu exact=1 results=%u bytes=%zu\n",
@@ -229,8 +229,8 @@ int main(int argc, char** argv) {
     if (argc == 2 && !strcmp(argv[1], "--bench")) benchmark();
     else CHECK(argc == 1);
     printf("memory_own_cut: %u checks passed\n", checks);
-    free(g_own);
-    free(g_own_region);
+    free(g_own.ent);
+    free(g_own.region);
     free(g_mem);
     return 0;
 }

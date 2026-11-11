@@ -5,6 +5,7 @@
 #ifndef SNX_MEMORY_OWN_H
 #define SNX_MEMORY_OWN_H
 #include "common/cpu/aarch64/cpu.h"
+#include "common/platform/thread.h"
 
 /* guest bytes [addr, addr + size) whose contents are in the producer's resource res, from res_off on */
 typedef struct {
@@ -88,9 +89,66 @@ void own_drop(u64 addr, u64 size);
 /* landings so far (each a wait for the GPU: the statistics count them), and whether own_init found traps */
 u64 own_landings(void);
 int own_traps(void);
-/* the entries own.c holds, changed under its lock with __atomic_store_n */
-extern u32 g_nown;
+/* own.c's state. Other files read only nown (own_any) */
+typedef struct {
+    u64 lo, hi;  /* guest bytes */
+    u64 pool;    /* the pool offset of lo */
+    void* res;   /* the producer's copy, lo at res_off: NULL for a watch (own_watch) */
+    u64 res_off;
+    int landing; /* being landed by some thread: the others wait */
+} Own;
+/* The CPU's bytes of a trapped page, where there is no mirror to read them through: its bytes as they were when it was
+   first armed with CPU bytes on it (an owner's edge page, or a watch's page). While the page is armed no CPU write can
+   change them: a write lands it first. They go when it is let go. The bytes are slots of one slab, a page each, and an
+   entry names its slot: a watch arms tens of pages at once, and an allocation for each page took a heap call per page
+   and a page fault on Windows for each new one. A slot let go goes on the free list for the next. The slab moves when
+   it grows, so its bytes are read under trap_lk only, and it goes when no shadow is left */
+typedef struct {
+    u64 page;
+    u32 slot;
+} Shadow;
+/* A buffer kept for the next use: a fresh allocation of megabytes takes a page fault per page on Windows. Its users run
+   one at a time under the producer's lock, but a test's may not: a second one at once gets an allocation of its own */
+typedef struct {
+    u8* p;
+    u64 cap;
+    int busy; /* atomic */
+} Scratch;
+typedef struct {
+    OwnHooks hooks;
+    int traps;  /* own_init found traps */
+    u64 page;   /* the host's page, which traps are armed in */
+    u8* mirror; /* the pool's mirror, which landings write through; NULL where they land in place */
+    u64 lands;  /* atomic: landings so far, for the statistics */
+    PMutex lk;  /* the entries' lock */
+    /* arming pages and the check that lets them go, one at a time: a page let go just as an entry lands on it stays
+       trapped (taken before lk) */
+    PMutex trap_lk;
+    PCond cv; /* a landing's marks let go */
+    Own* ent; /* the entries, sorted by lo, apart, under lk */
+    u32 nown; /* how many: changed under lk with __atomic_store_n, and read without it (own_any) */
+    u32 capown;
+    /* The entries on each 4 MB region of guest memory, changed with them under lk and read without it: the GPU thread
+       reads guest memory through copy_runs, which asked under the lock whether any entry was on each run it read, and
+       with storage buffers kept on the GPU there almost always is one somewhere. Those lock round trips were about 2%
+       of the GPU thread in one game's underground scene. A count of 0 answers for the region without the lock; a
+       reader racing an entry being made finds it or not, as one taking the lock first or second would. NULL: the lock
+       always */
+    u32* region;
+    u64 nregion;
+    Shadow* shadow; /* sorted by page, under trap_lk */
+    u32 nshadow, capshadow;
+    u8* slab; /* nslot slots of page bytes */
+    u32 nslot;
+    u32 slot_top;   /* slots [0, slot_top) were handed out at least once */
+    u32* slot_free; /* the free ones of those, nslot of room */
+    u32 nfree;
+    Scratch stage;       /* a landing's staging copy, in place */
+    Scratch snap;        /* the pages own_watch and own_begin copy into shadows */
+    int said_unshadowed; /* atomic: a trapped page with no shadow was read as zero, and the log said so once */
+} OwnState;
+extern OwnState g_own;
 /* whether anything is owned: the common case's test, without a lock */
-static inline int own_any(void) { return __atomic_load_n(&g_nown, __ATOMIC_ACQUIRE) != 0; }
+static inline int own_any(void) { return __atomic_load_n(&g_own.nown, __ATOMIC_ACQUIRE) != 0; }
 
 #endif

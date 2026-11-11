@@ -41,7 +41,7 @@ static unsigned errors;
 /* uma.c isn't here: no guest memory read in place for cmd.c's draws to settle */
 void vk_uma_settle(u64 ended) { (void)ended; }
 /* Synthetic upload sources have no guest GPU mappings, ownership or pending in-place writes. */
-u32 g_nown;
+OwnState g_own;
 int vk_uma_pending(u64 gva, u64 size) { (void)gva; (void)size; return 0; }
 u64 gmmu_run(u64 gva, u64 size, u64* cpu) { (void)gva; (void)size; *cpu = 0; return 0; }
 u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
