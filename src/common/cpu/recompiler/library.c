@@ -48,12 +48,14 @@
 extern const unsigned char snx_rtlib_bitcode[];
 extern const unsigned long snx_rtlib_bitcode_size;
 
-/* instructions per code unit (an LLVM module): whole functions until a unit reaches it, as the
-   game workflow's default splits them (the setting unit_instructions) */
+/* weighted instructions (function_weight) per code unit (an LLVM module): whole functions until a unit reaches it.
+   Smaller than the game workflow's default (the setting unit_instructions): a cold recompile of a large program on
+   several threads finishes sooner when no unit is long enough to run alone at the end, and LLVM compiles a smaller
+   module with less CPU per instruction */
 #ifdef __ANDROID__
 #define CHUNK_INSTRUCTIONS 20000
 #else
-#define CHUNK_INSTRUCTIONS 90000
+#define CHUNK_INSTRUCTIONS 30000
 #endif
 /* the dispatch table holds a pointer per instruction slot of the code range: a range this wide is not a program */
 #define MAX_CODE_SPAN ((uint64_t)1 << 30)
@@ -389,14 +391,18 @@ static SnxCodeImage* images(struct snx_recompiler* r, const struct snx_code_rang
     return views;
 }
 
+/* A function's share of a unit: its instructions plus four per leader (basic block start). LLVM's time grows with the
+   blocks as well as the instructions, so a function of many small blocks weighs more than its instruction count */
+static size_t function_weight(const SnxFunction* f) { return f->count + f->leader_count * 4; }
+
 /* chunks of whole functions: units[i] = first function of unit i, units[count] = function_count */
 static size_t* chunks(const SnxCodegen* codegen, unsigned jobs, size_t* count) {
     size_t first, last, total = 0;
     size_t* units = (size_t*)calloc(codegen->function_count + 2, sizeof(*units));
     if (!units) return NULL;
     /* a small program (a just-in-time step) is still split between the jobs, down to units of a few thousand
-       instructions, below which a unit's fixed cost is more than its share of the work */
-    for (first = 0; first < codegen->function_count; ++first) total += codegen->functions[first].count;
+       weighted instructions, below which a unit's fixed cost is more than its share of the work */
+    for (first = 0; first < codegen->function_count; ++first) total += function_weight(&codegen->functions[first]);
     if (!jobs) jobs = snx_cpu_count();
     size_t unit = jobs > 1 ? total / jobs + 1 : CHUNK_INSTRUCTIONS;
     if (unit < 4000) unit = 4000;
@@ -404,10 +410,10 @@ static size_t* chunks(const SnxCodegen* codegen, unsigned jobs, size_t* count) {
     size_t n = 0;
     for (first = 0; first < codegen->function_count; first = last) {
         last = first;
-        size_t instructions = 0;
+        size_t weight = 0;
         do {
-            instructions += codegen->functions[last++].count;
-        } while (last < codegen->function_count && instructions < unit);
+            weight += function_weight(&codegen->functions[last++]);
+        } while (last < codegen->function_count && weight < unit);
         units[n++] = first;
     }
     units[n] = codegen->function_count;
@@ -598,7 +604,7 @@ static int load_descriptor(struct snx_recompiler* r, struct snx_recompiled* m, c
 
 typedef struct {
     size_t first, last; /* functions */
-    size_t weight;      /* its functions' instructions, for the progress callback */
+    size_t weight;      /* its functions' function_weight: the units start largest first, and progress counts it */
     unsigned char* object;
     size_t size;
 } Unit;
@@ -630,6 +636,13 @@ static int llvm_unit(Queue* q, size_t index, char* error, size_t error_size) {
     if (!rc) rc = snx_ir_object(ir, q->r->opt, &u->object, &u->size, error, error_size);
     snx_ir_free(ir);
     return rc;
+}
+
+static int compare_unit_weight(const void* a, const void* b) {
+    const Unit* x = (const Unit*)a;
+    const Unit* y = (const Unit*)b;
+    if (x->weight != y->weight) return x->weight < y->weight ? 1 : -1;
+    return x->first < y->first ? -1 : x->first > y->first;
 }
 
 static void worker(void* arg) {
@@ -984,9 +997,11 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
     for (i = 0; i < count; ++i) {
         q.units[i].first = units[i];
         q.units[i].last = units[i + 1];
-        for (size_t j = units[i]; j < units[i + 1]; ++j) q.units[i].weight += codegen->functions[j].count;
+        for (size_t j = units[i]; j < units[i + 1]; ++j) q.units[i].weight += function_weight(&codegen->functions[j]);
         q.weight_total += q.units[i].weight;
     }
+    /* largest first, so the unit that finishes last is a small one and not a large one that started last */
+    qsort(q.units, count, sizeof(*q.units), compare_unit_weight);
     q.count = count;
     q.r = r;
     q.codegen = codegen;
