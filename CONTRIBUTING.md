@@ -66,11 +66,6 @@ A pull request, a draft as one ready for review, is built and tested on every pl
 (with edenprobe, and ASan and UBSan), Windows, Android, macOS and iOS, and the cross-built AppImages (PowerPC64,
 RISC-V, LoongArch).
 
-A pull request leaves draft when someone with write access to the repository marks it ready for review. One opened,
-reopened or marked ready by anyone else goes back to a draft, with one comment saying so, unless a maintainer marked it
-ready before (`.github/workflows/pr-ready.yml`, `scripts/pr-ready.py`). Say in a comment when yours is ready, and a
-maintainer marks it.
-
 A push to a pull request cancels the run of its commit before, and a pull request merged or closed cancels its runs
 still going (`.github/workflows/pr-closed.yml`, `scripts/cancel-pr-runs.py`), so no runner builds what nobody will
 merge.
