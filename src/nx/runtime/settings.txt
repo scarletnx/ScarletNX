@@ -236,8 +236,8 @@ setting Vulkan Video decode
     default 0
     startup
     words Off|On
-    help 1 = H.264 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver
-    help have an H.264 decode queue. Experimental and untested. 0 = FFmpeg decodes them on the CPU. VP9 movies always
+    help 1 = H.264 and AV1 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), each where the GPU and
+    help its driver have a decode queue for it. Experimental. 0 = FFmpeg decodes them on the CPU. VP9 movies always
     help decode on the CPU
 setting Vulkan driver
     key vulkan_driver
@@ -1657,6 +1657,7 @@ setting @VK_KHR_shader_clock
 setting @VK_KHR_shader_maximal_reconvergence
 setting @VK_KHR_swapchain
 setting @VK_KHR_synchronization2
+setting @VK_KHR_video_decode_av1
 setting @VK_KHR_video_decode_h264
 setting @VK_KHR_video_decode_queue
 setting @VK_KHR_video_queue

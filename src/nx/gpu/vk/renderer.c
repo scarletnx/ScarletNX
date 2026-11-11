@@ -325,7 +325,7 @@ static int vkr_blit_filter(const Surf2D* s, const Surf2D* d, int dx, int dy, int
 }
 static int vkr_vic_compose(const VicJob* j) { return vk_vic_compose(j); } /* it takes vk_lock */
 static int vkr_nvdec_write(const NvdecPic* p) { return vk_nvdec_write(p); }   /* it takes vk_lock */
-static void* vkr_nvdec_hw_device(void) { return vk_nvdec_hw_device(); }
+static void* vkr_nvdec_hw_device(u32 codec) { return vk_nvdec_hw_device(codec); }
 static int vkr_dma_copy(const GpuDmaOp* o) { return vk_dma_copy(o); }         /* it takes vk_lock */
 static int vkr_blit_mem(const GpuBlit* b) { return vk_blit_mem(b); }          /* it takes vk_lock */
 static void vkr_rt_flush(u64 gva) {

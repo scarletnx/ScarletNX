@@ -5320,6 +5320,67 @@ static int check_uma_page_changes(void) {
     return 0;
 }
 
+/* Vulkan Video's gate, held to the device's own answers. The queue family it decodes on is the first, of those that
+   are neither the graphics nor the compute one, to decode the most of H.264 and AV1, counting a codec when the device
+   lists its extension, VK_KHR_video_queue and VK_KHR_video_decode_queue with none of their settings off (no extension
+   ban is on them). It is made exactly when vulkan_video is on, the renderer runs Vulkan 1.3 and it decodes one; a
+   codec it decodes then has its extension enabled and a device for FFmpeg, and no other has either */
+static int check_video_decode_gate(void) {
+    static const struct {
+        u32 codec;
+        VkVideoCodecOperationFlagsKHR op;
+        const char *name, *ext;
+    } codecs[] = {{NVDEC_HW_H264, VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR, "H.264", "VK_KHR_video_decode_h264"},
+                  {NVDEC_HW_AV1, VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR, "AV1", "VK_KHR_video_decode_av1"}};
+    const char* names[4] = {"VK_KHR_video_queue", "VK_KHR_video_decode_queue", codecs[0].ext, codecs[1].ext};
+    int listed[4];
+    SnxVkExtensions e;
+    VkQueueFamilyProperties2 q[16];
+    VkQueueFamilyVideoPropertiesKHR v[16];
+    VkVideoCodecOperationFlagsKHR have = 0, best = 0;
+    u32 n = 16, family = ~0u;
+    CHECK(snx_vk_device_extensions(g_vk.phys, &e));
+    for (u32 i = 0; i < 4; i++) {
+        listed[i] = snx_vk_extensions_has(&e, names[i]);
+        for (int k = 0; k < g_vk_extension_settings_count; k++)
+            if (!strcmp(g_vk_extension_settings[k].name, names[i]) && !strcmp(g_vk_extension_settings[k].value, "off"))
+                listed[i] = 0;
+    }
+    snx_vk_extensions_free(&e);
+    for (u32 i = 0; i < 2; i++)
+        if (listed[0] && listed[1] && listed[2 + i]) have |= codecs[i].op;
+    for (u32 i = 0; i < 16; i++) {
+        v[i] = (VkQueueFamilyVideoPropertiesKHR){.sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_VIDEO_PROPERTIES_KHR};
+        q[i] = (VkQueueFamilyProperties2){.sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2, .pNext = &v[i]};
+    }
+    vkGetPhysicalDeviceQueueFamilyProperties2(g_vk.phys, &n, q);
+    for (u32 i = 0; i < n; i++) {
+        VkVideoCodecOperationFlagsKHR decodes = v[i].videoCodecOperations & have;
+        if (!(q[i].queueFamilyProperties.queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) || i == g_vk.gfx_family ||
+            i == g_vk.compute_family)
+            continue;
+        if (!!(decodes & codecs[0].op) + !!(decodes & codecs[1].op) > !!(best & codecs[0].op) + !!(best & codecs[1].op))
+            best = decodes, family = i;
+    }
+    if (!g_settings.vulkan_video_decode || g_vk.api < VK_API_VERSION_1_3) best = 0, family = ~0u;
+    CHECK(g_vk.video_family == family && g_vk.video_codecs == best);
+    for (u32 i = 0; i < 2; i++) {
+        int want = (best & codecs[i].op) != 0, on = 0;
+        for (u32 k = 0; k < g_vk.dev_ext_n; k++) on |= !strcmp(g_vk.dev_ext[k], codecs[i].ext);
+        AVBufferRef* device = g_renderer->nvdec_hw_device(codecs[i].codec);
+        int given = device != NULL;
+        av_buffer_unref(&device);
+        if (on != want || given != want) {
+            fprintf(stderr,
+                    "Vulkan Video's gate: %s %s on queue family %u, but %s is %s and FFmpeg %s a device for it\n",
+                    codecs[i].name, want ? "decodes" : "doesn't decode", family, codecs[i].ext,
+                    on ? "enabled" : "not enabled", given ? "gets" : "gets no");
+            return 1;
+        }
+        printf("Vulkan Video: %s %s\n", codecs[i].name, want ? "decodes on the GPU" : "decodes on the CPU");
+    }
+    return 0;
+}
 #include "vulkan_shader_invalidate.inc"
 #include "vulkan_shader_windows.inc"
 #include "vulkan_shared_clamp.inc"
@@ -5378,6 +5439,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_nvn_events.inc"
 #include "vulkan_nvn_subroutines.inc"
 #include "vulkan_nvn_savestate.inc"
+#include "vulkan_video_av1.inc"
 #include "vulkan_nvn_tess.inc"
 #include "vulkan_nvn_blend.inc"
 #include "vulkan_nvn_advanced_native.inc"
@@ -5974,6 +6036,14 @@ static int run_headless(int argc, char** argv) {
         printf("PASS headless Vulkan trim only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
+    if (getenv("SNX_TEST_AV1_VECTORS")) { /* vulkan_video_av1.inc's checks, which need AOMedia's vectors */
+        int result = check_video_av1(getenv("SNX_TEST_AV1_VECTORS"));
+        if (result) return result;
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan AV1 video only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_SCALED_ONLY")) { /* the resolution scale's checks alone, for their mutants */
         CHECK(!check_scaled_compute());
         CHECK(!check_scaled_fragment());
@@ -6277,10 +6347,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(split);
     }
 #endif
-    /* FFmpeg takes the device for Vulkan Video exactly when it has the decode queue */
-    AVBufferRef* video_device = g_renderer->nvdec_hw_device();
-    CHECK(!video_device == (g_vk.video_family == ~0u));
-    av_buffer_unref(&video_device);
+    CHECK(!check_video_decode_gate());
     CHECK(g_renderer->method_barrier);
     u32 epoch = vk_ww_epoch();
     u64 finishes = g_vk_finishes;

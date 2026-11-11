@@ -217,6 +217,7 @@ typedef struct VicJob {
    wide, whole blocks high) are ext_y and ext_c bytes. Only the picture's bytes are written: in a row's last 16
    bytes, those past its width keep their values. A picture Vulkan Video decoded (the vulkan_video setting) is FFmpeg's
    AVFrame of format AV_PIX_FMT_VULKAN in hw instead, its NV12 planes in a GPU image, and plane is unused */
+enum { NVDEC_HW_H264, NVDEC_HW_AV1 }; /* the codecs Vulkan Video decodes (Renderer.nvdec_hw_device) */
 typedef struct NvdecPic {
     const u8* plane[3]; /* Y, U, V */
     int stride[3];

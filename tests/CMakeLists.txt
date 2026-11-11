@@ -10,6 +10,12 @@ option(SNX_TEST_VP9_VECTORS
 if(SNX_TEST_VP9_VECTORS AND SNX_TOOLS_ONLY)
     message(FATAL_ERROR "SNX_TEST_VP9_VECTORS=ON needs the runtime's FFmpeg, which SNX_TOOLS_ONLY=ON leaves out")
 endif()
+option(SNX_TEST_AV1_VECTORS
+       "Run the native video service's AV1 decoder on AOMedia's test vectors (configure downloads 8 files from it)" OFF)
+if(SNX_TEST_AV1_VECTORS AND NOT SNX_TEST_VULKAN)
+    message(FATAL_ERROR "SNX_TEST_AV1_VECTORS=ON needs SNX_TEST_VULKAN=ON too: the offscreen Vulkan test runs them "
+                        "(vulkan_video_av1)")
+endif()
 # the in-tree libraries the tests exercise and the programs they run: an overflow in them shows only in code built
 # with the sanitizers. src/nx doesn't deploy a sanitized runtime. A tool made by a host build (cross-compiling) is
 # that build's
