@@ -1,15 +1,42 @@
 ---
 name: code-audit
-description: "This skill audits uncommitted changes, branches or PRs for bugs, edge cases, SOLID/DRY/SRP, architecture, security, performance and CLAUDE.md violations. Then it automatically fixes ALL the issues and audits again in a loop until the result is clean. Use it for: audit, review, code review, review this PR, check code, look over this, inspect code, or any variation."
+description: "This skill audits uncommitted changes, branches or PRs for bugs, edge cases, SOLID/DRY/SRP, architecture, security, performance and CLAUDE.md violations. It has two modes. The light audit reads the most critical part of the change, 10 lines or less, inline, with no agent, and it is the default. The full loop audits in passes, fixes ALL the issues, and audits again until clean, and it runs only when the user asks for it. Use it for: audit, review, code review, review this PR, check code, look over this, inspect code, or any variation."
 ---
 
 # Code Audit
 
-**This skill is a LOOP in two phases (see "PHASE SPLIT" below). Phase A audits read-only, pass after pass, until a full pass adds no new findings. Then Phase B fixes ALL the findings (each severity) one time and reads the files again from disk. Then it does confirmation rounds until one round comes back clean. If you stop after one pass, or if you fix code during Phase A, you do not obey the instructions.**
+## Choose the mode first
+
+The user's request decides the mode. The full loop is expensive in time and tokens, and the reviewer agents cost
+tokens too. Run it only when the user asks for the full audit, or for the `code-audit` loop. Otherwise, use the light
+audit. A user request such as "open the pull request" is not a request for the full loop.
+
+| Mode | When it runs | What it does |
+| --- | --- | --- |
+| Light, the default | The user asks for a review, or the change needs a check | You read the most critical part of the change, 10 lines or less, inline. No agent, no state file, no pass. |
+| Full | The user asks for the full audit, or calls `/code-audit` | All the text below: the phases, the passes, the reviewer agents and the state file. |
+
+A call of `/code-audit` by the user is a request for the full loop. If the skill loads by itself, use the light audit.
+
+## Light audit
+
+1. Get the change: `git diff`, `git diff main...HEAD`, or the files that the user names.
+2. Find the most critical sector. It is the place where a wrong value breaks the runtime. Look for a pointer, a
+   handle or a length that the code keeps. Other places are an arithmetic that can overflow, a reply that the guest
+   reads, a lock and a bounds check.
+3. Read 10 lines of it or less. Read them yourself, and dispatch no agent.
+4. Report the finding in one line: the file, the line and the defect. Fix it, and say what you checked. If you find
+   no defect, say which lines you read, and stop.
+
+The light audit is one look and one report. It does not write `.claude/audit-state.json`, and it does not loop.
+
+## Full loop
+
+**This mode is a LOOP in two phases (see "PHASE SPLIT" below). Phase A audits read-only, pass after pass, until a full pass adds no new findings. Then Phase B fixes ALL the findings (each severity) one time and reads the files again from disk. Then it does confirmation rounds until one round comes back clean. If you stop after one pass, or if you fix code during Phase A, you do not obey the instructions.**
 
 ---
 
-## RULE 0: DO NOT YIELD (MANDATORY, read this before all other text)
+## RULE 0: DO NOT YIELD (FULL MODE, MANDATORY, read this before all other text)
 
 After the loop starts, **if you end your turn before step 12, that is a violation.** It is not a judgement call and not a courtesy. It is a violation, in the same category as a skipped file.
 
@@ -96,7 +123,7 @@ File Inventory (N files in scope):
 Total: N files, M lines.
 ```
 
-### 1.6 Audit State File (MANDATORY)
+### 1.6 Audit State File (FULL MODE, MANDATORY)
 
 Write `.claude/audit-state.json` immediately after the inventory. The path is relative to the repository root (the cwd). Use this exact path, so that the Stop hook can find the file. **Update the file at the end of each pass, before step 9**:
 

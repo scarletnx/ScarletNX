@@ -182,14 +182,17 @@ The skills in `.claude/skills/`:
   fewer fetches, workgroup structure). It also tells how to prove that they give the bytes of the CPU reference.
 - `record-lesson`: where a lesson goes, so that the next session finds it.
 - `code-audit`: the audit and fix loop in many passes, with the `snx-*-reviewer` agents in `.claude/agents/review/`.
+  The loop is expensive, so run it only on the user's request. Without that request, audit the most critical part of
+  the change in 10 lines or less, yourself and with no agent.
 - `ste100`: the ASD-STE100 rules for the Claude files and for agent prompts and reports, and the checker that the
   hooks run.
 - `game-tag`: the opaque tag that stands for a game in a commit message, an issue or a doc (`tools/game_tag.py`). It
   also checks a text for titles and title IDs.
 
-Audit a branch before you show it. Run `code-audit` in read-only passes until a pass finds nothing new. Fix each
-finding, build, and run the tests. Then run one more pass over the files that changed. The findings, and the runs that
-proved the fixes, go into the pull request body.
+Run the full `code-audit` loop only when the user asks for it. The loop is expensive in time and tokens. Without the
+request, read the most critical part of the change in 10 lines or less. Do this yourself, and dispatch no agent for
+it. Fix each finding of a full audit, build, and run the tests. The findings, and the runs that proved the fixes, go
+into the pull request body.
 
 The agents in `.claude/agents/` keep disassembly and logs out of the main context:
 
