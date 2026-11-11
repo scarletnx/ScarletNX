@@ -20,6 +20,7 @@
 * [Constant buffer banks](#constant-buffer-banks)
 * [Maxwell methods and macros observed](#maxwell-methods-and-macros-observed)
 * [NVN formats](#nvn-formats)
+  * [A window's color space (API 231)](#a-windows-color-space-api-231)
 * [Per-device and per-submission state](#per-device-and-per-submission-state)
 * [Techniques and pitfalls](#techniques-and-pitfalls)
 * [References](#references)
@@ -425,6 +426,25 @@ each confirmed in at least one title:
 
 Also seen, without their enum values recorded: R8, RG8, R16F, D16, D32F, D24S8, BC1, BC2, BC3 and BC4. An sRGB view of
 RGBA8 storage (game C) is a format reinterpretation of one image, not a second image.
+
+### A window's color space (API 231)
+
+The Ounce's driver takes a window's color space from the format of its first texture, in the function that makes its
+native window, and from nothing else. `nvnWindowBuilderSetColorSpace` stores its value in the builder for the getter,
+and `nvnWindowInitialize` never reads it. One game's driver (SDK 19.3.3) makes a window of nine formats:
+
+| NVN | Format | Native window color space |
+| --- | --- | --- |
+| `0x25`, `0x38`, `0x37`, `0x6d`, `0x9a`, `0x9c` | RGBA8, RGBX8 and BGRA8, sRGB or not | 0: SDR |
+| `0x3d` | RGB10A2 | 1: PQ (SMPTE ST 2084) in BT.2020's primaries |
+| `0x29`, `0x71` | RGBA16F, RGBX16F | 2: scRGB, linear light with `1.0` at 80 nits |
+
+For the last three it then gives the display the window's HDR metadata, the builder's defaults unless the game set
+others, and again on every `nvnWindowSetHdrDisplayMetadata` and `nvnWindowSetHdrContentMetadata`. That game calls none
+of the color space or metadata functions: it asks the display session whether the display is HDR (`GetHdrStatus`: 1 SDR,
+2 HDR, with the display's peak in nits; command 105 is the paper white), and makes its window RGB10A2 or RGBA16F when
+it is. `nvn_window_space` (gpu/nvn/nvn_obj.h) is that table, and [`hdr_game`](../../user/settings.md) what the game is
+told.
 
 ## Per-device and per-submission state
 

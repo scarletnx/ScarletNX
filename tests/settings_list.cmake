@@ -65,10 +65,11 @@ endif()
 if(list MATCHES "\nOn-screen controls/Buttons\t[^\n]*\nOn-screen controls\t") # a page after its section's others
     message(FATAL_ERROR "scarletnx --settings lists a page's settings before its section's last")
 endif()
-# a game's HDR output, off until asked for, and the paper white it is told: the launcher's Settings and a game's menu
-# show both (gpu/vk/hdr_swapchain.c)
+# a game's HDR output, off until asked for, and the paper white and the peak it is told: the launcher's Settings and
+# a game's menu show them (gpu/vk/hdr_swapchain.c, hle/services/gsv.c)
 foreach(row "Graphics\thdr_game\t0\tint\t0\t1\t" "\tGame HDR output\t0=Off|1=On\t\n"
-            "Graphics\thdr_paperwhite\t0\tint\t0\t480\t" "\tPaper white (nits)\t\t\n")
+            "Graphics\thdr_paperwhite\t0\tint\t0\t480\t" "\tPaper white (nits)\t\t\n"
+            "Graphics\thdr_peak\t1000\tint\t400\t4000\t" "\tPeak light (nits)\t\t\n")
     string(FIND "${list}" "${row}" at)
     if(at LESS 0)
         message(FATAL_ERROR "scarletnx --settings has no \"${row}\"")

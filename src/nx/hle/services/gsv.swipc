@@ -150,8 +150,8 @@ interface nn::vi2::IVi2Session {
     [51] ConfigureRequestGroups(bytes<0x4> request);
     [101] OpenDisplay(bytes<0xc> request);
     [102] CloseDisplay(bytes<0x8> request);
-    [104] GetHdrStatus(bytes<0x8> request) -> (u64 format, u32 reserved);
-    [105] GetDisplayState105(bytes<0x8> request) -> u32 value;
+    [104] GetHdrStatus(bytes<0x8> request) -> (u64 format, u32 peak);
+    [105] GetHdrPaperWhite(bytes<0x8> request) -> u32 paper_white;
     [106] GetBufferMaxResolution(bytes<0x8> request) -> u64 resolution;
     [107] GetDisplayState107(bytes<0x8> request) -> (u64 a, u64 b, u64 c);
     [111] OpenEndpoint(bytes<0x18> request);

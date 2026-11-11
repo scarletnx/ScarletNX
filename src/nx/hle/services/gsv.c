@@ -575,6 +575,8 @@ static u32 vi2_event;            /* the notification event's kobj id */
 static u32 vi2_notifications[32]; /* the notification bitmask */
 static u32 vi2_group_events[8];  /* the request group events' kobj ids */
 static u32 vi2_group_vsync[8];   /* 1 while a group is registered for the display's vsync (kind 0) */
+static u32 vi2_group_hdr[8];     /* 1 while a group is registered for the display's HDR status (kind 2) */
+static int vi2_hdr_told = -1;    /* what vi2_hdr said when the HDR status groups were last signaled, -1 never */
 static Vi2Client vi2_clients[VI2_CLIENTS];
 static u32 vi2_client_slots;
 
@@ -700,17 +702,30 @@ static int nn_vi2_IVi2Session_CloseDisplay(SvcObj* self, const u8* request) {
     d->refs--;
     R_SUCCEED();
 }
-static int nn_vi2_IVi2Session_GetHdrStatus(SvcObj* self, const u8* request, u64* format, u32* reserved) {
+/* What a game is told of the display's HDR, as the renderer has it (renderer.h hdr_display): 1 with the peak and the
+   paper white in nits, each of which the SDK reads as 16 bits; 0 with neither for an SDR display */
+static int vi2_hdr(u32* peak, u32* paper_white) {
+    *peak = *paper_white = 0;
+    return g_renderer && g_renderer->hdr_display && g_renderer->hdr_display(peak, paper_white);
+}
+/* The SDK (nn::vi2's QueryDisplayHdrStatus) takes format 1 as SDR and 2 as HDR, and any other as an error; the 16
+   bits after it are the display's maximum luminance in nits, which a game clamps its own peak to */
+static int nn_vi2_IVi2Session_GetHdrStatus(SvcObj* self, const u8* request, u64* format, u32* peak) {
     u64 name = snx_ld_le64(request);
+    u32 paper_white;
     (void)self;
     R_UNLESS(vi2_display(name), SNX_RC_VI2_NOT_FOUND);
-    *format = 1; /* SDR only */
-    *reserved = 0;
+    *format = vi2_hdr(peak, &paper_white) ? 2 : 1;
     R_SUCCEED();
 }
-static int nn_vi2_IVi2Session_GetDisplayState105(SvcObj* self, const u8* request, u32* value) {
-    (void)self, (void)request;
-    *value = 0;
+/* nn::vi2's QueryDisplayHdrPaperWhite: the light of the display's SDR white in nits, 16 bits, which a game asks for
+   after the status. 0 for an SDR display, as before a game could be told of an HDR one */
+static int nn_vi2_IVi2Session_GetHdrPaperWhite(SvcObj* self, const u8* request, u32* paper_white) {
+    u64 name = snx_ld_le64(request);
+    u32 peak;
+    (void)self;
+    R_UNLESS(vi2_display(name), SNX_RC_VI2_NOT_FOUND);
+    vi2_hdr(&peak, paper_white);
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_GetBufferMaxResolution(SvcObj* self, const u8* request, u64* resolution) {
@@ -865,13 +880,15 @@ static int vi2_register_monitor(const u8* request, int kind) {
         vi2_group_vsync[group] = 1;
     else
         ev_signal(vi2_group_events[group]);
+    if (kind == 2) vi2_group_hdr[group] = 1;
     R_SUCCEED();
 }
-static int vi2_unregister_monitor(const u8* request) {
+static int vi2_unregister_monitor(const u8* request, int kind) {
     u64 name = snx_ld_le64(request);
     u32 group = snx_ld_le32(request + 8);
     R_UNLESS(group < 8 && vi2_display(name), SNX_RC_VI2_NOT_FOUND);
     vi2_group_vsync[group] = 0;
+    if (kind == 2) vi2_group_hdr[group] = 0;
     R_SUCCEED();
 }
 static int nn_vi2_IVi2Session_RegisterDisplayEventMonitor(SvcObj* self, const u8* request) {
@@ -880,7 +897,7 @@ static int nn_vi2_IVi2Session_RegisterDisplayEventMonitor(SvcObj* self, const u8
 }
 static int nn_vi2_IVi2Session_UnregisterDisplayEventMonitor(SvcObj* self, const u8* request) {
     (void)self;
-    return vi2_unregister_monitor(request);
+    return vi2_unregister_monitor(request, 0);
 }
 static int nn_vi2_IVi2Session_RegisterDisplayMonitor263(SvcObj* self, const u8* request) {
     (void)self;
@@ -888,7 +905,7 @@ static int nn_vi2_IVi2Session_RegisterDisplayMonitor263(SvcObj* self, const u8* 
 }
 static int nn_vi2_IVi2Session_UnregisterDisplayMonitor264(SvcObj* self, const u8* request) {
     (void)self;
-    return vi2_unregister_monitor(request);
+    return vi2_unregister_monitor(request, 1);
 }
 static int nn_vi2_IVi2Session_RegisterHdrStatusMonitor(SvcObj* self, const u8* request) {
     (void)self;
@@ -896,7 +913,7 @@ static int nn_vi2_IVi2Session_RegisterHdrStatusMonitor(SvcObj* self, const u8* r
 }
 static int nn_vi2_IVi2Session_UnregisterHdrStatusMonitor(SvcObj* self, const u8* request) {
     (void)self;
-    return vi2_unregister_monitor(request);
+    return vi2_unregister_monitor(request, 2);
 }
 static int nn_vi2_IVi2Session_RegisterDisplayMonitor267(SvcObj* self, const u8* request) {
     (void)self;
@@ -904,7 +921,7 @@ static int nn_vi2_IVi2Session_RegisterDisplayMonitor267(SvcObj* self, const u8* 
 }
 static int nn_vi2_IVi2Session_UnregisterDisplayMonitor268(SvcObj* self, const u8* request) {
     (void)self;
-    return vi2_unregister_monitor(request);
+    return vi2_unregister_monitor(request, 3);
 }
 static int nn_vi2_IVi2Session_RegisterBufferMaxResolutionMonitor(SvcObj* self, const u8* request) {
     (void)self;
@@ -912,7 +929,7 @@ static int nn_vi2_IVi2Session_RegisterBufferMaxResolutionMonitor(SvcObj* self, c
 }
 static int nn_vi2_IVi2Session_UnregisterBufferMaxResolutionMonitor(SvcObj* self, const u8* request) {
     (void)self;
-    return vi2_unregister_monitor(request);
+    return vi2_unregister_monitor(request, 4);
 }
 static int nn_vi2_IVi2Session_RegisterDisplayMonitor271(SvcObj* self, const u8* request) {
     (void)self;
@@ -920,13 +937,20 @@ static int nn_vi2_IVi2Session_RegisterDisplayMonitor271(SvcObj* self, const u8* 
 }
 static int nn_vi2_IVi2Session_UnregisterDisplayMonitor272(SvcObj* self, const u8* request) {
     (void)self;
-    return vi2_unregister_monitor(request);
+    return vi2_unregister_monitor(request, 5);
 }
-/* the display's 60 Hz vsync, from the frontend loop (vi_vsync_tick): signals every group registered for it */
+/* the display's 60 Hz vsync, from the frontend loop (vi_vsync_tick): signals every group registered for it, and the
+   groups registered for the HDR status when the display's changed (the window on another display, or its HDR turned
+   on or off), as the console's does when a TV is plugged in: the SDK asks for the status again only after its event */
 void gsv_vsync_tick(void) {
-    u32 i;
+    u32 i, peak, paper_white;
+    int hdr = vi2_hdr(&peak, &paper_white);
     for (i = 0; i < 8; i++)
         if (vi2_group_vsync[i] && vi2_group_events[i]) ev_signal(vi2_group_events[i]);
+    if (hdr == vi2_hdr_told) return;
+    for (i = 0; i < 8 && vi2_hdr_told >= 0; i++)
+        if (vi2_group_hdr[i] && vi2_group_events[i]) ev_signal(vi2_group_events[i]);
+    vi2_hdr_told = hdr;
 }
 static int nn_vi2_IVi2Session_SetDisplayParameter301(SvcObj* self, const u8* request) {
     (void)self, (void)request;

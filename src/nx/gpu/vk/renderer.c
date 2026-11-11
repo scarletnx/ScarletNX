@@ -984,6 +984,13 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
 }
 /* the presenting thread's, before its present: nothing else reads g_next_hdr */
 static void vkr_present_hdr(const SnxHdrFrame* frame) { g_next_hdr = *frame; }
+/* what the display session tells a game (vi2's GetHdrStatus and GetHdrPaperWhite), any thread */
+static int vkr_hdr_display(u32* peak, u32* paper_white) {
+    if (!__atomic_load_n(&g_vk.hdr_display, __ATOMIC_RELAXED)) return 0;
+    *peak = (u32)g_settings.hdr_peak;
+    *paper_white = snx_hdr_paper_white(g_settings.hdr_paper_white);
+    return 1;
+}
 
 /* whether the window needs its picture drawn again though the game gave no frame: the on-screen layer is another
    (vk_ui_changed), or the window is: its surface, its size or the .ini's vsync (what show makes a swapchain for), or an
@@ -1251,6 +1258,7 @@ const Renderer vk_renderer = {
     .stream_end = vk_release_submit,
     .present_buffer = vkr_present_buffer,
     .present_hdr = vkr_present_hdr,
+    .hdr_display = vkr_hdr_display,
     .display_wait = vk_display_wait,
     .screenshot = vkr_screenshot,
     .capture = vk_renderdoc_capture,
