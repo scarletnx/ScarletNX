@@ -2609,7 +2609,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         u32 index = shader_u32(c, clip);
         u32 ptr = stage == ST_TCS
             ? spv_emit_interface_scalar_pointer(&c->emit, 3, c->f32_type, clip_output,
-                 spv_emit_load(&c->emit, c->u32_type, invocation_id), index)
+                 shader_input(c, c->u32_type, invocation_id), index)
             : spv_emit_output_element_pointer(&c->emit, c->f32_type, clip_output, index);
         spv_emit_store(&c->emit, ptr, zero_f);
     }
