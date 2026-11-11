@@ -20,6 +20,7 @@
 #include "nx/hle/pool.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/renderer.h"
+#include "nx/memory/own.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
@@ -58,6 +59,7 @@ static void walk(u64 p, RecordFn fn, void* ctx, int depth, int sync_only) {
     for (;;) {
         NvnRecHdr h;
         u32 op;
+        if (own_any()) own_acquire(p, sizeof h); /* GPU thread holds the renderer: land any owners before reading the record */
         memcpy(&h, GP(p), sizeof h);
         __atomic_thread_fence(__ATOMIC_ACQUIRE); /* a JUMP's target is written before its header (nvn_cmd.c) */
         op = NVN_REC_OP(h.op);
@@ -283,11 +285,13 @@ static int wait_over(const NvnJob* j, u32 op, u64 pc, u32 size, NvnReplayWait* s
     *sync = (NvnReplayWait){0};
     if (op == OP_WAIT_SYNC) {
         if (!j->snapshot || size < sizeof(NvnRecHdr) + sizeof *sync) fatal("nvn: invalid captured sync wait");
+        if (own_any()) own_acquire(pc + 8, sizeof *sync);
         memcpy(sync, GP(pc + 8), sizeof *sync);
         return sync_over(sync);
     }
     if (size < sizeof(NvnRecHdr) + sizeof(NvnPWaitEvent)) fatal("nvn: truncated event wait");
     NvnPWaitEvent event;
+    if (own_any()) own_acquire(pc + 8, sizeof event);
     memcpy(&event, GP(pc + 8), sizeof event);
     /* A preceding signal in this recording must be submitted before its wait can see it. Other NVN
        queues can then signal the event while this job stays at its cursor. */
@@ -315,6 +319,7 @@ static int replay_records(NvnJob* j, NvnReplayQueue* q) {
                 continue;
             }
             NvnRecHdr h;
+            if (own_any()) own_acquire(pc, sizeof h);
             memcpy(&h, GP(pc), sizeof h);
             __atomic_thread_fence(__ATOMIC_ACQUIRE);
             u32 op = NVN_REC_OP(h.op);
@@ -394,6 +399,7 @@ static int settled(void) {
         else {
             u64 pc = w->cursor[w->depth - 1].pc;
             NvnRecHdr h;
+            if (own_any()) own_acquire(pc, sizeof h);
             memcpy(&h, GP(pc), sizeof h);
             over = wait_over(w, NVN_REC_OP(h.op), pc, h.size, &sync);
         }
