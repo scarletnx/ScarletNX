@@ -15,7 +15,8 @@ vec3 decode(vec3 c) {
     return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
 }
 void main() {
-    vec4 c = texture(atlas, v_uv) * vec4(v_color.rgb, 1.0) * v_color.a;
+    // unnormalized coordinates, in texels: a sample at level 0 named
+    vec4 c = textureLod(atlas, v_uv, 0.0) * vec4(v_color.rgb, 1.0) * v_color.a;
     // an sRGB picture encodes what is written to it: the bytes go in decoded, and come out as they are
     if (pc.srgb != 0u && c.a > 0.0)
         c.rgb = decode(c.rgb / c.a) * c.a;

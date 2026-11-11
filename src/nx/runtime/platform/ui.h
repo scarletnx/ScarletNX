@@ -8,12 +8,14 @@
 #define SNX_UI_H
 #include "common/cpu/aarch64/cpu.h"
 
+/* 32 bytes with no padding, which the renderer reads as they are (gpu/vk/ui.c): one instance of its quad each */
 typedef struct {
     float x, y, w, h; /* where, in the pixels of the picture drawn on */
-    u16 u, v, uw, vh; /* the atlas texels drawn there */
+    u16 u, v, uw, vh; /* the atlas texels drawn there; uw 0: nothing drawn */
     u32 rgba;         /* each texel times this colour, R G B A from the low byte */
     u8 turn;          /* the texels turned this many quarters clockwise */
     u8 sample;        /* how: UI_BLEND, UI_SHARP or UI_IMAGE */
+    u8 spare[2];      /* 0 */
 } SnxUiQuad;
 /* the atlas blended, the atlas's nearest texel (the font at whole steps), or ui_image's picture blended, its texels
    in u, v, uw and vh */
