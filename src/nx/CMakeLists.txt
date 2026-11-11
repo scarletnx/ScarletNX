@@ -161,6 +161,9 @@ snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_spv HEADER nx
 # its ETC2 build: BCn encoded again as ETC2 and EAC, for a GPU that samples those and not BCn (gpu/vk/texconv.c)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_etc2_spv HEADER nx/gpu/texture/texconv_spv.h
                DEFINES SNX_TC_ETC2)
+# and its ASTC build: BC2, BC3 and BC7 encoded again as ASTC 4x4, for a GPU that samples that and not BCn
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_astc_spv HEADER nx/gpu/texture/texconv_spv.h
+               DEFINES SNX_TC_ASTC)
 snx_glsl_spirv(snx_vk SOURCE gpu/video/vic.comp NAME vic_spv HEADER nx/gpu/video/vic_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/video/vic.comp NAME vic_unaligned_spv HEADER nx/gpu/video/vic_spv.h
                DEFINES VIC_UNALIGNED)
@@ -620,10 +623,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         gpu/vk/memory.c gpu/vk/resource_stats.c gpu/vk/record.c gpu/vk/checkpoints.c gpu/vk/vma.cpp ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/texconv_etc2_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/bc7_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/bc7_fast_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_mode6_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/bc7_quick_spv.c"
-        "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_etc2_cpu.cpp")
+        "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_etc2_cpu.cpp"
+        "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_astc_cpu.cpp")
     target_include_directories(snx-test-astc-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests/glsl")
     target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags scarletnx-filesystem snx_xxhash snx_vk_common
                                                       Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})

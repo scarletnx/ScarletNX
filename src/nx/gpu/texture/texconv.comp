@@ -10,9 +10,24 @@
    branches on it never diverge, and one pipeline is compiled instead of fifteen (on lavapipe each is an LLVM
    compile) for code that is mostly the same loads and stores. Built a second time with SNX_TC_ETC2, its BCn decoders
    followed by etc2_encode.glsl: BCn blocks encoded again as ETC2 and EAC for a GPU that samples those and not BCn, a
-   pipeline of its own so the encoder's registers don't weigh on the other conversions. */
+   pipeline of its own so the encoder's registers don't weigh on the other conversions; and a third with SNX_TC_ASTC,
+   astc_encode.glsl after the decoders: BC2, BC3 and BC7 blocks as ASTC 4x4 where the GPU samples that. */
 
 #include "texconv_modes.glsl"
+
+#ifdef SNX_TC_ASTC
+/* astc_encode.glsl's numbers: small integers in floats of relaxed precision, which a GPU with 16 bit floats computes
+   in those (the file says why the blocks are the same either way). AE_PRECISION is the bench's, to time highp */
+#ifndef AE_PRECISION
+#define AE_PRECISION mediump
+#endif
+#define AE_F AE_PRECISION float
+#define AE_V AE_PRECISION vec4
+#define ae_f float
+#define ae_v vec4
+#define ae_vs vec4
+#define ae_u uint
+#endif
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 

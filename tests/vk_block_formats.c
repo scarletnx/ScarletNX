@@ -6,7 +6,7 @@
    MC2 (Arm's driver r49p1, Vulkan 1.3), from its vkjson: ASTC LDR and ETC2 sampled, BCn not. Its ASTC and ETC2
    textures are sampled as the games' blocks, its BCn ones encoded again as ETC2 and EAC (BC6H, which has none,
    decoded); then a desktop GPU (BCn alone), one without ETC2 either, a device of all three with native_bc=0 (as
-   llvmpipe's tests run), and each setting at 0 on the Mali */
+   llvmpipe's tests run), and each setting at 0 on the Mali: without ETC2, BC2, BC3 and BC7 are ASTC 4x4 */
 #include "nx/gpu/vk/vk.h"
 #include "nx/runtime/platform/log.h"
 #include <stdarg.h>
@@ -104,11 +104,12 @@ static const VkFormat mali_formats[] = {VK_FORMAT_R8G8B8A8_UNORM,
                                         VK_FORMAT_EAC_R11G11_UNORM_BLOCK,
                                         VK_FORMAT_EAC_R11G11_SNORM_BLOCK,
                                         VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
+                                        VK_FORMAT_ASTC_4x4_SRGB_BLOCK,
                                         VK_FORMAT_ASTC_8x8_UNORM_BLOCK,
                                         VK_FORMAT_ASTC_12x12_SRGB_BLOCK};
 static const VkFormatFeatureFlags mali_features[] = {0x6dd83, 0x6dd83, 0xdd83, 0xdd83, 0xcd83, 0xcd83, 0x6dd83,
                                                      0xd401,  0xd401,  0xd401, 0xd401, 0xd401, 0xd401, 0xd401,
-                                                     0xd401,  0xd401,  0xd401, 0xd401, 0xd401, 0xd401};
+                                                     0xd401,  0xd401,  0xd401, 0xd401, 0xd401, 0xd401, 0xd401};
 
 /* a stand-in device: its compression features and the settings' native_* as the run has them, then device.c's choice
    of features (vk_blocks_want) as g_vk.feat, and the log's lines from vk_blocks_say */
@@ -164,6 +165,7 @@ int main(void) {
     takes(0x27, 1, 0, VK_FORMAT_EAC_R11_SNORM_BLOCK, VKC_BC4_SNORM, "Mali BC4 snorm");
     takes(0x28, 0, 0, VK_FORMAT_EAC_R11G11_UNORM_BLOCK, VKC_BC5, "Mali BC5");
     takes(0x28, 1, 0, VK_FORMAT_EAC_R11G11_SNORM_BLOCK, VKC_BC5_SNORM, "Mali BC5 snorm");
+    takes(0x17, 0, 0, VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK, VKC_BC7, "Mali BC7");
     takes(0x17, 0, 1, VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK, VKC_BC7, "Mali BC7 sRGB");
     takes(0x11, 0, 0, VK_FORMAT_R16G16B16A16_SFLOAT, VKC_BC6H_UF, "Mali BC6H");
     /* a 3D BCn texture, which no device here takes as ETC2, is decoded */
@@ -174,23 +176,37 @@ int main(void) {
             "ASTC");
     line(1, "vulkan: ETC2 and EAC textures (native_etc2=1, the GPU samples ETC2): sampled as the game's blocks: ETC2 "
             "RGB, ETC2 RGB8A1, ETC2 RGBA8, EAC R11, EAC RG11");
-    line(2, "W vulkan: BCn textures (native_bc=1, the GPU samples no BCn, ETC2 sampled): encoded again on the GPU: BC1 "
-            "as ETC2 RGB8A1, BC2 as ETC2 RGBA8, BC3 as ETC2 RGBA8, BC4 as EAC R11, BC5 as EAC RG11, BC7 as ETC2 RGBA8; "
-            "decoded on the GPU: BC6H to RGBA16F");
+    line(2,
+         "W vulkan: BCn textures (native_bc=1, the GPU samples no BCn, ETC2 sampled, ASTC sampled): encoded again on "
+         "the GPU: BC1 as ETC2 RGB8A1, BC2 as ETC2 RGBA8, BC3 as ETC2 RGBA8, BC4 as EAC R11, BC5 as EAC RG11, BC7 as "
+         "ETC2 RGBA8; decoded on the GPU: BC6H to RGBA16F");
     CHECK(g_test.n == 3, "Mali: %d log lines, not 3", g_test.n);
 
-    /* native_etc2=0 on it: ETC2 isn't turned on, so ETC2 and BCn are decoded */
+    /* native_etc2=0 on it: ETC2 isn't turned on, so ETC2 is decoded, and BCn but the kinds ASTC 4x4 holds in their
+       bytes, BC2, BC3 and BC7 */
     device(1, 1, 0, 1, 0, 1);
     takes(0x24, 0, 0, VK_FORMAT_R8G8B8A8_UNORM, VKC_BC1, "Mali native_etc2=0 BC1");
     takes(0x27, 0, 0, VK_FORMAT_R16_UNORM, VKC_BC4, "Mali native_etc2=0 BC4");
+    takes(0x25, 0, 1, VK_FORMAT_ASTC_4x4_SRGB_BLOCK, VKC_BC2, "Mali native_etc2=0 BC2 sRGB");
+    takes(0x26, 0, 0, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, VKC_BC3, "Mali native_etc2=0 BC3");
+    takes(0x17, 0, 0, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, VKC_BC7, "Mali native_etc2=0 BC7");
+    CHECK(g_test.n == 3, "Mali native_etc2=0: %d log lines, not 3", g_test.n);
     takes(0x0B, 0, 0, VK_FORMAT_R8G8B8A8_UNORM, VKC_ETC2_RGBA, "Mali native_etc2=0 ETC2 RGBA8");
     line(1, "vulkan: ETC2 and EAC textures (native_etc2=0, the GPU samples ETC2): decoded on the GPU: ETC2 RGB to "
             "RGBA8, ETC2 RGB8A1 to RGBA8, ETC2 RGBA8 to RGBA8, EAC R11 to R16, EAC RG11 to RG16");
-    line(2, "W vulkan: BCn textures (native_bc=1, the GPU samples no BCn, ETC2 not sampled): decoded on the GPU: BC1 "
-            "to RGBA8, BC2 to RGBA8, BC3 to RGBA8, BC4 to R16, BC5 to RG16, BC6H to RGBA16F, BC7 to RGBA8");
+    line(2,
+         "W vulkan: BCn textures (native_bc=1, the GPU samples no BCn, ETC2 not sampled, ASTC sampled): encoded again "
+         "on the GPU: BC2 as ASTC 4x4, BC3 as ASTC 4x4, BC7 as ASTC 4x4; decoded on the GPU: BC1 to RGBA8, BC4 to R16, "
+         "BC5 to RG16, BC6H to RGBA16F");
     /* native_astc=0: ASTC decoded to RGBA8, no warning (it is what was asked) */
     device(1, 1, 0, 0, 1, 1);
     takes(0x40, 0, 0, VK_FORMAT_R8G8B8A8_UNORM, VKC_ASTC, "Mali native_astc=0 ASTC 4x4");
+    takes(0x17, 0, 1, VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK, VKC_BC7, "Mali native_astc=0 BC7 sRGB");
+    CHECK(g_test.n == 3, "Mali native_astc=0: %d log lines, not 3", g_test.n);
+    line(2,
+         "W vulkan: BCn textures (native_bc=1, the GPU samples no BCn, ETC2 sampled, ASTC not sampled): encoded again "
+         "on the GPU: BC1 as ETC2 RGB8A1, BC2 as ETC2 RGBA8, BC3 as ETC2 RGBA8, BC4 as EAC R11, BC5 as EAC RG11, BC7 "
+         "as ETC2 RGBA8; decoded on the GPU: BC6H to RGBA16F");
     line(0, "vulkan: ASTC textures (native_astc=0, the GPU samples ASTC, astc_mode=1): decoded on the GPU: ASTC to "
             "RGBA8");
 
@@ -203,8 +219,9 @@ int main(void) {
          "RGBA8");
     line(1, "W vulkan: ETC2 and EAC textures (native_etc2=1, the GPU samples no ETC2): decoded on the GPU: ETC2 RGB to "
             "RGBA8, ETC2 RGB8A1 to RGBA8, ETC2 RGBA8 to RGBA8, EAC R11 to R16, EAC RG11 to RG16");
-    line(2, "vulkan: BCn textures (native_bc=1, the GPU samples BCn, ETC2 not sampled): sampled as the game's blocks: "
-            "BC1, BC2, BC3, BC4, BC5, BC6H, BC7");
+    line(2,
+         "vulkan: BCn textures (native_bc=1, the GPU samples BCn, ETC2 not sampled, ASTC not sampled): sampled as the "
+         "game's blocks: BC1, BC2, BC3, BC4, BC5, BC6H, BC7");
     /* astc_mode=2 there: ASTC decoded, then encoded again as BC7 */
     g_settings.astc_mode = 2;
     g_test.n = 0;
@@ -212,12 +229,14 @@ int main(void) {
     line(0, "W vulkan: ASTC textures (native_astc=1, the GPU samples no ASTC, astc_mode=2): encoded again on the GPU: "
             "ASTC as BC7");
 
-    /* a device of all three with native_bc=0 (llvmpipe's tests): BCn takes the ETC2 path a phone's GPU does */
+    /* a device of all three with native_bc=0 (llvmpipe's tests): BCn takes the paths a phone's GPU does */
     device(1, 1, 1, 1, 1, 0);
     takes(0x26, 0, 0, VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK, VKC_BC3, "native_bc=0 BC3");
-    line(2, "vulkan: BCn textures (native_bc=0, the GPU samples BCn, ETC2 sampled): encoded again on the GPU: BC1 as "
-            "ETC2 RGB8A1, BC2 as ETC2 RGBA8, BC3 as ETC2 RGBA8, BC4 as EAC R11, BC5 as EAC RG11, BC7 as ETC2 RGBA8; "
-            "decoded on the GPU: BC6H to RGBA16F");
+    takes(0x17, 0, 0, VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK, VKC_BC7, "native_bc=0 BC7");
+    line(2,
+         "vulkan: BCn textures (native_bc=0, the GPU samples BCn, ETC2 sampled, ASTC sampled): encoded again on the "
+         "GPU: BC1 as ETC2 RGB8A1, BC2 as ETC2 RGBA8, BC3 as ETC2 RGBA8, BC4 as EAC R11, BC5 as EAC RG11, BC7 as ETC2 "
+         "RGBA8; decoded on the GPU: BC6H to RGBA16F");
 
     /* a GPU of none of them (a software rasterizer without them): everything decoded */
     device(0, 0, 0, 1, 1, 1);

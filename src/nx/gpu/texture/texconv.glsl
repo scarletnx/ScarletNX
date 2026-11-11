@@ -367,14 +367,15 @@ void bc6_block(uint b[4], bool sf, uint o0, uint u) {
    index bits and the second indices' bits. Modes 0, 3, 6 and 7 have a p-bit an endpoint, mode 1 one a subset */
 const uint BC7_MODE[8] = {0x03040043u, 0x03060062u, 0x02050063u, 0x02070062u,
                           0x32651201u, 0x22870201u, 0x04770001u, 0x02550062u};
-#ifdef SNX_TC_ETC2
-/* the ETC2 build's decoded block, which etc2_encode.glsl encodes again: RGBA8 texels row by row */
+#if defined(SNX_TC_ETC2) || defined(SNX_TC_ASTC)
+/* the ETC2 and ASTC builds' decoded block, which etc2_encode.glsl or astc_encode.glsl encodes again: RGBA8 texels row
+   by row */
 uint tx_px[16];
 #endif
 /* texel i (row by row) of the block at column u of blocks whose four rows of RGBA8 pixels start at word o0: into the
-   output, or into tx_px in the ETC2 build */
+   output, or into tx_px in the ETC2 and ASTC builds */
 void bc_put(uint o0, uint u, uint i, uint c) {
-#ifdef SNX_TC_ETC2
+#if defined(SNX_TC_ETC2) || defined(SNX_TC_ASTC)
     tx_px[i] = c;
 #else
     dst[o0 + (i >> 2) * out_pitch + 4u * u + (i & 3u)] = c;
@@ -584,7 +585,7 @@ uint tc_index(uint j) {
     return j;
 }
 
-#ifndef SNX_TC_ETC2
+#if !defined(SNX_TC_ETC2) && !defined(SNX_TC_ASTC)
 void main() {
     uint u = gl_GlobalInvocationID.x;
     if (u >= units) return;
@@ -764,7 +765,7 @@ void main() {
         }
     }
 }
-#else
+#elif defined(SNX_TC_ETC2)
 #include "etc2_encode.glsl"
 /* The ETC2 build: a block an invocation, a BCn block of the kind mode names (TC_BCN_ETC2 on from TC_BC1's place)
    decoded and encoded again, at column u of blocks of row of blocks gl_GlobalInvocationID.y of slice z. Input as the
@@ -819,5 +820,48 @@ void main() {
     et_encode(false);
     dst[o + 2u] = tc_bswap(tx_hi);
     dst[o + 3u] = tc_bswap(tx_lo);
+}
+#else
+#include "astc_encode.glsl"
+/* The ASTC build: a block an invocation, a BC2, BC3 or BC7 block (mode: TC_BCN_ASTC on from TC_BC1's place) decoded
+   and encoded again as an ASTC 4x4 block, at column u of blocks of row of blocks gl_GlobalInvocationID.y of slice z.
+   Input as the BCn modes read it; output rows of blocks out_pitch words apart, a block's four words as they are */
+void main() {
+    uint u = gl_GlobalInvocationID.x;
+    if (u >= units) return;
+    uint kind = mode - TC_BCN_ASTC + TC_BC1;
+    uint row = gl_GlobalInvocationID.z * rows + gl_GlobalInvocationID.y;
+    uint at = in_bias + row * in_pitch + u * 4u, o = out_bias + row * out_pitch + u * 4u;
+    uint b[4];
+    for (uint w = 0u; w < 4u; w++) b[w] = src[at + w];
+    /* what the block says of itself (ax_encode): BC2 and BC3 keep alpha apart */
+    uint part = 0u, seed = 0u, own = 3u;
+    if (kind == TC_BC7) {
+        bc7_block(b, 0u, 0u);
+        own = 4u;
+        if ((b[0] & 255u) != 0u) {
+            uint m = uint(findLSB(b[0] & 255u)), ns = BC7_MODE[m] & 15u;
+            uint p = bc_bits(b, m + 1u, (BC7_MODE[m] >> 4) & 15u);
+            if (ns > 1u) {
+                uint t = ns == 2u ? AX_PART2[p] : AX_PART3[p];
+                seed = t & 1023u;
+                part = t >> 10;
+            }
+            /* modes 4 and 5 rotate a channel into alpha's place, whose indices are its own; mode 7's two subsets
+               carry alpha, which two partitions of RGB ends cannot */
+            if (m == 4u || m == 5u) {
+                uint rot = bc_bits(b, m + 1u, 2u);
+                own = rot == 0u ? 3u : rot - 1u;
+            }
+            if (m == 7u) own = 3u;
+        }
+    } else {
+        for (uint i = 0u; i < 16u; i++) {
+            uint a = kind == TC_BC2 ? (((i < 8u ? b[0] : b[1]) >> (4u * (i & 7u))) & 15u) * 17u : bc3_alpha(b[1], b[0], i);
+            tx_px[i] = (bc1_pixel(b[2], b[3], false, i) & 0xFFFFFFu) | (a << 24);
+        }
+    }
+    ax_encode(part, seed, own);
+    for (uint w = 0u; w < 4u; w++) dst[o + w] = ax_w[w];
 }
 #endif

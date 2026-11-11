@@ -32,7 +32,8 @@
 //   memoryBarrierShared() are WorkgroupInvocation's: there each invocation runs on a thread of its own, and they
 //   meet at a std::barrier, so a body that races on shared memory races in the test too (ThreadSanitizer sees it).
 //   As in GLSL, every invocation reaches each barrier();
-// - no images, samplers or floating point: the layer covers the integer compute shaders the tests need.
+// - no images or samplers, and floating point only where its results are the same at any precision (below): the
+//   layer covers the integer compute shaders the tests need, and those whose floats hold small integers.
 //
 // A buffer is the device's memory, which is little-endian (the GPU's order) on any host: the test's struct declares
 // a buffer's array as leuint (or leuvec4) rather than uint, each word held in the device's byte order and converted
@@ -43,6 +44,7 @@
 #include "common/utilities/bits.h"
 #include <barrier>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <thread>
 #include <type_traits>
@@ -276,6 +278,80 @@ template <class T, int N> vec<T, N> max(vec<T, N> a, T b) { return max(a, vec<T,
 template <class T, int N> vec<T, N> clamp(const vec<T, N>& v, T lo, T hi) { return min(max(v, lo), hi); }
 template <class T, int N> vec<T, N> clamp(const vec<T, N>& v, const vec<T, N>& lo, const vec<T, N>& hi) {
     return min(max(v, lo), hi);
+}
+
+// Floating point. A body's floats are of relaxed precision where a GPU may compute them in 16 bits, so it declares
+// them through macros of its own (astc_encode.glsl's AE_F and AE_V) and a test runs it twice, with float and with
+// half, a float every operation of which rounds to IEEE binary16 (to nearest, ties to even: what such a GPU
+// computes), and compares the bytes: a body whose results hang on the precision fails there. Literals are written as
+// GLSL's (0.25), which C++ reads as double: half and the vector operators below take them.
+inline double round_binary16(double v) {
+    double a = std::fabs(v);
+    if (std::isnan(v) || std::isinf(v) || a == 0) return v;
+    // the midpoint of the largest value, 65504, and 2^16, which ties to the even one, out of range
+    if (a >= 65520.0) return v < 0 ? -HUGE_VAL : HUGE_VAL;
+    int e;
+    (void)std::frexp(a, &e); // a in [2^(e - 1), 2^e): 11 bits from there, or the subnormals' 2^-24
+    e = e - 1 < -14 ? -14 : e - 1;
+    double u = std::ldexp(1.0, e - 10), q = a / u, f = std::floor(q), d = q - f;
+    if (d > 0.5 || (d == 0.5 && std::fmod(f, 2.0) != 0)) f += 1;
+    return std::copysign(f * u, v);
+}
+struct half {
+    double v; // a binary16 value
+    half() = default;
+    half(double d) : v(round_binary16(d)) {} // not explicit: a body's literals and float(x) become half
+    explicit operator uint() const { return uint(v); }
+    explicit operator int() const { return int(v); }
+    explicit operator double() const { return v; }
+    explicit operator float() const { return float(v); }
+};
+// the sum, difference or product of two binary16 values is exact in a double but for its last place far below
+// binary16's, so rounding it is rounding the exact result
+inline half operator+(half a, half b) { return half(a.v + b.v); }
+inline half operator-(half a, half b) { return half(a.v - b.v); }
+inline half operator*(half a, half b) { return half(a.v * b.v); }
+inline half operator-(half a) { return half(-a.v); }
+inline bool operator==(half a, half b) { return a.v == b.v; }
+inline bool operator!=(half a, half b) { return a.v != b.v; }
+inline bool operator<(half a, half b) { return a.v < b.v; }
+inline bool operator>(half a, half b) { return a.v > b.v; }
+inline bool operator<=(half a, half b) { return a.v <= b.v; }
+inline bool operator>=(half a, half b) { return a.v >= b.v; }
+inline half min(half a, half b) { return b < a ? b : a; }
+inline half max(half a, half b) { return a < b ? b : a; }
+inline half clamp(half v, half lo, half hi) { return min(max(v, lo), hi); }
+inline float floor(float a) { return std::floor(a); }
+inline half floor(half a) { return half(std::floor(a.v)); }
+inline float abs(float a) { return std::fabs(a); }
+inline half abs(half a) { return half(std::fabs(a.v)); }
+inline float sign(float a) { return float((a > 0) - (a < 0)); }
+inline half sign(half a) { return half(double((a.v > 0) - (a.v < 0))); }
+inline float step(float edge, float x) { return x < edge ? 0.0f : 1.0f; }
+inline half step(half edge, half x) { return half(x < edge ? 0.0 : 1.0); }
+template <class T> inline constexpr bool is_real = std::is_same_v<T, float> || std::is_same_v<T, half>;
+#define SNX_GLSL_REAL1(name)                                                                                           \
+    template <class T, int N, class = std::enable_if_t<is_real<T>>> vec<T, N> name(vec<T, N> a) {                      \
+        for (int i = 0; i < N; i++) a[i] = name(a[i]);                                                                 \
+        return a;                                                                                                      \
+    }
+SNX_GLSL_REAL1(floor)
+SNX_GLSL_REAL1(abs)
+SNX_GLSL_REAL1(sign)
+#undef SNX_GLSL_REAL1
+template <class T, int N, class = std::enable_if_t<is_real<T>>> vec<T, N> step(const vec<T, N>& edge, vec<T, N> x) {
+    for (int i = 0; i < N; i++) x[i] = step(edge[i], x[i]);
+    return x;
+}
+template <class T, int N, class = std::enable_if_t<is_real<T>>> T dot(const vec<T, N>& a, const vec<T, N>& b) {
+    T sum = a[0] * b[0];
+    for (int i = 1; i < N; i++) sum = sum + a[i] * b[i];
+    return sum;
+}
+// a vector times a literal
+template <class T, int N, class = std::enable_if_t<is_real<T>>> vec<T, N> operator*(vec<T, N> a, double b) {
+    for (int i = 0; i < N; i++) a[i] = a[i] * T(b);
+    return a;
 }
 
 // the built-in inputs of a compute invocation

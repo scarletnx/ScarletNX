@@ -26,6 +26,7 @@
 #include "support/bcn.h"
 #include "bc7_cpu.h"
 #include "bcn_etc2_cpu.h"
+#include "bcn_astc_cpu.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
@@ -222,6 +223,7 @@ static void init(void) {
     g_vk.feat.sparseBinding = sparse_queue && have.sparseBinding;
     g_vk.feat.textureCompressionBC = have.textureCompressionBC; /* bc_native_case compares the device's decoding */
     g_vk.feat.textureCompressionETC2 = have.textureCompressionETC2; /* etc2_case too, of the BCn it encodes again */
+    g_vk.feat.textureCompressionASTC_LDR = have.textureCompressionASTC_LDR; /* and bcn_astc_case, of its ASTC blocks */
     g_vk.gfx_family = family;
     float priority = 1;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -1686,19 +1688,131 @@ static void etc2_case(void) {
     puts("PASS texture conversions (BC1 to BC5 and BC7 encoded again as ETC2 and EAC)");
     fflush(stdout);
 }
+/* where the device samples ASTC: its own decoding of the 4x4 blocks the transcoder wrote (w x h, whole blocks),
+   blitted into RGBA32F, against the runtime's decoder (astc_cpu.c), whose bytes are the 16 bits a block decodes to
+   rounded to 8: within half a step of them, and a half float's last place */
+static void astc_native(int kind, const u8* astc, u32 w, u32 h) {
+    VkFormatProperties fp;
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, &fp);
+    if (!g_vk.feat.textureCompressionASTC_LDR || !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) {
+        printf("SKIP native ASTC of BCn kind %d: the device doesn't sample it or can't blit from it\n", kind);
+        return;
+    }
+    u32 n = w / 4 * (h / 4);
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
+                            .extent = {w, h, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+    VkImage src, dst;
+    VmaAllocation src_mem, dst_mem;
+    if (!vk_image_create(&ii, &src, &src_mem)) fatal("cannot create an ASTC 4x4 image\n");
+    ii.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    if (!vk_image_create(&ii, &dst, &dst_mem)) fatal("cannot create an RGBA32F image\n");
+    u64 at;
+    VkBuffer staged, rb;
+    memcpy(vk_stage((u64)n * 16, vk_stage_align(), &staged, &at), astc, (size_t)n * 16);
+    barrier(src, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    barrier(dst, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkBufferImageCopy up = {
+        .bufferOffset = at, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+    rec_CmdCopyBufferToImage(vk_cmd(), staged, src, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &up);
+    barrier(src, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .srcOffsets = {{0, 0, 0}, {(i32)w, (i32)h, 1}},
+                        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .dstOffsets = {{0, 0, 0}, {(i32)w, (i32)h, 1}}};
+    rec_CmdBlitImage(vk_cmd(), src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                     &blit, VK_FILTER_NEAREST);
+    barrier(dst, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    float* got = (float*)vk_readback_buffer((u64)w * h * 16, &rb);
+    VkBufferImageCopy down = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+    rec_CmdCopyImageToBuffer(vk_cmd(), dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb, 1, &down);
+    vk_finish();
+    vk_readback_ready();
+    u8* want = malloc((size_t)w * h * 4);
+    astc_decode_image(astc, w, h, 4, 4, want, 0);
+    /* half a step of 8 bits, and what the device's 16 bit float holds of a 16 bit value past it (a device decodes
+       ASTC into half floats unless told otherwise: an Intel one gave 1353/2048 where the 16 bits round to 169/255) */
+    const float step = 0.5f / 255 + 1.0f / 2048;
+    float worst = 0;
+    u32 differ = 0;
+    for (u32 i = 0; i < w * h * 4; i++) {
+        float d = fabsf(got[i] - want[i] / 255.0f);
+        if (d > worst) worst = d;
+        if (d > step && differ++ < 4)
+            fprintf(stderr, "native ASTC of BCn kind %d: texel %u channel %u: the device %.9g, the CPU %u of 255\n",
+                    kind, i / 4, i % 4, got[i], want[i]);
+    }
+    if (differ)
+        fatal("native ASTC of BCn kind %d: %u channels differ from the CPU's by more than half a step\n", kind, differ);
+    printf("PASS native ASTC of BCn kind %d (largest difference %.3g of a step of 8 bits)\n", kind, worst * 255);
+    free(want);
+    vk_image_destroy(src, src_mem);
+    vk_image_destroy(dst, dst_mem);
+}
+/* texconv.comp's ASTC build on the device against the CPU's run of it (tests/glsl/bcn_astc_cpu.cpp, its floats 32
+   bits wide and with every operation rounded to 16: one of the two is what the device computes its relaxed precision
+   in, and the blocks are to be the same): random BC2, BC3 and BC7 blocks in an image whose sides aren't multiples of
+   4, byte for byte; then the device's own decoding of them, where it samples ASTC */
+static void bcn_astc_case(void) {
+    u32 w = 67, h = 37, bw = 17, bh = 10;
+    static const int kinds[3] = {BCN_BC2, BCN_BC3, BCN_BC7};
+    for (int ki = 0; ki < 3; ki++) {
+        int kind = kinds[ki];
+        u8* blocks = malloc((size_t)bw * bh * 16);
+        bc_blocks(kind, blocks, bw * bh);
+        VkFmt f = {.vk = VK_FORMAT_ASTC_4x4_UNORM_BLOCK, .bpp = 16, .bw = 4, .bh = 4, .conv = (u8)(VKC_BC1 + kind)};
+        u64 out_size;
+        u8* out = tc_blocks(&f, blocks, w, bw, bh, &out_size);
+        u8* want = malloc((size_t)bw * bh * 16);
+        u8* narrow = malloc((size_t)bw * bh * 16);
+        bcn_astc_cpu(kind, blocks, bw, bh, 1, 0, want);
+        bcn_astc_cpu(kind, blocks, bw, bh, 1, 1, narrow);
+        if (out_size != (u64)bw * bh * 16)
+            fatal("texconv's ASTC build: %llu bytes out, not %u\n", (unsigned long long)out_size, bw * bh * 16);
+        for (u32 i = 0; i < bw * bh; i++) {
+            if (memcmp(want + (size_t)i * 16, narrow + (size_t)i * 16, 16))
+                fatal("texconv's ASTC build on the CPU: BCn kind %d block %u differs between 32 and 16 bit floats\n",
+                      kind, i);
+            if (memcmp(out + (size_t)i * 16, want + (size_t)i * 16, 16))
+                fatal("texconv's ASTC build: BCn kind %d block %u differs from the CPU's\n", kind, i);
+        }
+        astc_native(kind, want, 64, 40);
+        free(blocks);
+        free(want);
+        free(narrow);
+    }
+    puts("PASS texture conversions (BC2, BC3 and BC7 encoded again as ASTC 4x4)");
+    fflush(stdout);
+}
 /* --bench-etc2: a 2048x2048 level of random blocks of each kind decoded (as on a GPU that samples neither BCn nor
-   ETC2) and encoded again as ETC2 or EAC, the conversion's dispatch alone, runs times each; and the bytes each holds.
-   Random blocks take every candidate (no block of one alpha or one colour stops early): a game's take less */
+   ETC2) and encoded again as ETC2 or EAC, and BC3 and BC7 as ASTC 4x4 too: the conversion from staging to the bytes
+   read back, runs times each; and the bytes each holds. Random blocks take every candidate (no block of one alpha
+   or one colour stops early): a game's take less */
 static void bench_etc2(int runs) {
     const u32 w = 2048, h = 2048, bw = w / 4, bh = h / 4;
     static const int kinds[5] = {BCN_BC1, BCN_BC3, BCN_BC4, BCN_BC5, BCN_BC7};
+    static const char* const into[3] = {"decoded", "encoded again as ETC2/EAC", "encoded again as ASTC 4x4"};
     for (int ki = 0; ki < 5; ki++) {
         int kind = kinds[ki];
         u32 bb = bcn_block_bytes(kind);
         u8* blocks = malloc((size_t)bw * bh * bb);
         bc_blocks(kind, blocks, bw * bh);
-        for (int etc = 0; etc < 2; etc++) {
-            VkFmt f = {.vk = etc ? etc2_of(kind) : decoded_of(kind),
+        for (int to = 0; to < (kind == BCN_BC3 || kind == BCN_BC7 ? 3 : 2); to++) {
+            VkFmt f = {.vk = to == 2 ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK
+                             : to    ? etc2_of(kind)
+                                     : decoded_of(kind),
                        .bpp = (u8)bb,
                        .bw = 4,
                        .bh = 4,
@@ -1708,8 +1822,7 @@ static void bench_etc2(int runs) {
                 tc_blocks(&f, blocks, w, bw, bh, &out_size);
                 double ms = (plat_ns() - t0) / 1e6;
                 printf("BENCH BCn kind %d %ux%u %s: %.1f ms, %llu bytes held (%.2f bytes a texel)\n", kind, w, h,
-                       etc ? "encoded again as ETC2/EAC" : "decoded", ms, (unsigned long long)out_size,
-                       (double)out_size / ((double)w * h));
+                       into[to], ms, (unsigned long long)out_size, (double)out_size / ((double)w * h));
                 fflush(stdout);
             }
         }
@@ -1785,6 +1898,7 @@ int main(int argc, char** argv) {
     bc_case();
     bc_native_case();
     etc2_case();
+    bcn_astc_case();
     /* Known solid color, independent of the CPU reference, catches its old
        11-bit header bug. The GPU is compared to this reference below. */
     const u8 solid[16] = {0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0x12, 0, 0x34, 0, 0x56, 0, 0x78};

@@ -174,7 +174,8 @@ static VkFmt TC(VkFormat f, int bpp) { /* block compressed, 4x4 */
 /* which block formats the device samples as they are: textureCompressionASTC_LDR, textureCompressionETC2 and
    textureCompressionBC, which the native_astc, native_etc2 and native_bc settings turn on (vk_blocks_want). A texture
    in them takes the game's own bytes (a 12x12 ASTC one a 36th of RGBA8's); the others are decoded on the GPU as they
-   are uploaded, but BCn where the GPU samples ETC2: encoded again as ETC2 and EAC, the same bytes a texel (TB).
+   are uploaded, but BCn where the GPU samples ETC2 or ASTC: encoded again as ETC2, EAC and ASTC 4x4, the same bytes a
+   texel (TB).
    ASTC_AS_BC7: a decoded ASTC texture encoded again as BC7 (astc_mode's BC7, or its Auto, the default, on a GPU of
    little memory, vk_astc_bc7), where the device samples BCn: vk_blocks_want turns textureCompressionBC on for it, so
    BCn is sampled as it is only when native_bc says so as well */
@@ -233,12 +234,12 @@ static VkFmt TE(VkFormat blocks, VkFormat f, int bpp, int conv, u32 native) {
     r.conv = (u8)conv;
     return r;
 }
-/* BCn 4x4 blocks: as they are where the device samples them (bc), else encoded again on upload as etc, the ETC2 or
-   EAC format of the same bytes a texel, where it samples ETC2 (etc2) and BCn has one (BC6H has none: UNDEFINED), else
-   decoded into f on upload */
-static VkFmt TB(VkFormat blocks, VkFormat etc, VkFormat f, int bpp, int conv, u32 bc, u32 etc2) {
+/* BCn 4x4 blocks: as they are where the device samples them (bc), else encoded again on upload as again, a block
+   format of the same bytes a texel the device samples (tic_format picks it; UNDEFINED: none), else decoded into f on
+   upload */
+static VkFmt TB(VkFormat blocks, VkFormat again, VkFormat f, int bpp, int conv, u32 bc) {
     if (bc) return TC(blocks, bpp);
-    VkFmt r = {etc2 && etc != VK_FORMAT_UNDEFINED ? etc : f, (u8)bpp, 4, 4, 0, 0, 0, 0};
+    VkFmt r = {again != VK_FORMAT_UNDEFINED ? again : f, (u8)bpp, 4, 4, 0, 0, 0, 0};
     r.conv = (u8)conv;
     return r;
 }
@@ -258,6 +259,15 @@ static VkFmt tic_format(u32 w0, int srgb, u32 native) {
     u32 f = w0 & 0x7F, ct = (w0 >> 7) & 7;
     int flt = ct == 7, sn = ct == 1, ui = ct == 4, si = ct == 3;
     u32 etc2 = native & NATIVE_ETC2, bc = native & NATIVE_BC; /* sampled as blocks (TE) */
+/* a block format's UNORM or SRGB twin by the header's sRGB bit, and an ETC2 one where the device samples ETC2 */
+#define SRB(f) (srgb ? f##_SRGB_BLOCK : f##_UNORM_BLOCK)
+#define ETC(f) (etc2 ? SRB(f) : VK_FORMAT_UNDEFINED)
+    const VkFormat rgba8 = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    /* what BC2, BC3 and BC7 are encoded again into (TB): ETC2 RGBA8 and ASTC 4x4, where the device samples each */
+    const VkFormat rgba8_etc2 = ETC(VK_FORMAT_ETC2_R8G8B8A8);
+    const VkFormat astc4 = !(native & NATIVE_ASTC) ? VK_FORMAT_UNDEFINED
+                           : srgb                  ? VK_FORMAT_ASTC_4x4_SRGB_BLOCK
+                                                   : VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
 #define PICK(F_, SN_, UI_, SI_, UN_, bpp_)                                                                             \
     return flt  ? T(F_, bpp_, 0, 0)                                                                                    \
            : sn ? T(SN_, bpp_, 0, 0)                                                                                   \
@@ -322,41 +332,32 @@ static VkFmt tic_format(u32 w0, int srgb, u32 native) {
             PICK(VK_FORMAT_R8_UNORM, VK_FORMAT_R8_SNORM, VK_FORMAT_R8_UINT, VK_FORMAT_R8_SINT, VK_FORMAT_R8_UNORM, 1);
         case 0x20: return T(VK_FORMAT_E5B9G9R9_UFLOAT_PACK32, 4, 0, 0);
         case 0x21: return T(VK_FORMAT_B10G11R11_UFLOAT_PACK32, 4, 0, 0);
-        /* BCn as ETC2 and EAC where the GPU samples those (TB): BC1 as RGB8A1, whose punch-through alpha is BC1's
-           transparent black; BC2, BC3 and BC7 as RGBA8; BC4 and BC5 as R11 and RG11. Else to RGBA8, BC4 and BC5 to 16
-           bit channels and BC6H to half floats, so their interpolants keep the precision a GPU decodes them in */
-        case 0x24:
-            return TB(srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK,
-                      srgb ? VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK : VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK,
-                      srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 8, VKC_BC1, bc, etc2);
-        case 0x25:
-            return TB(srgb ? VK_FORMAT_BC2_SRGB_BLOCK : VK_FORMAT_BC2_UNORM_BLOCK,
-                      srgb ? VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK : VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK,
-                      srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 16, VKC_BC2, bc, etc2);
-        case 0x26:
-            return TB(srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK,
-                      srgb ? VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK : VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK,
-                      srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 16, VKC_BC3, bc, etc2);
+        /* BCn encoded again where the GPU samples no BCn but other blocks of the same bytes a texel (TB): BC1 as
+           ETC2 RGB8A1, whose punch-through alpha is BC1's transparent black (ASTC 4x4 would take twice its bytes);
+           BC4 and BC5 as EAC R11 and RG11; BC2, BC3 and BC7 as ETC2 RGBA8, whose alpha is a block of its own as
+           theirs is, or as ASTC 4x4 where ETC2 isn't sampled and ASTC is (docs/layers/gpu/bcn.md has the numbers).
+           Else to RGBA8, BC4 and BC5 to 16 bit channels and BC6H to half floats, so their interpolants keep the
+           precision a GPU decodes them in */
+        case 0x24: return TB(SRB(VK_FORMAT_BC1_RGBA), ETC(VK_FORMAT_ETC2_R8G8B8A1), rgba8, 8, VKC_BC1, bc);
+        case 0x25: return TB(SRB(VK_FORMAT_BC2), etc2 ? rgba8_etc2 : astc4, rgba8, 16, VKC_BC2, bc);
+        case 0x26: return TB(SRB(VK_FORMAT_BC3), etc2 ? rgba8_etc2 : astc4, rgba8, 16, VKC_BC3, bc);
         case 0x27:
-            return sn ? TB(VK_FORMAT_BC4_SNORM_BLOCK, VK_FORMAT_EAC_R11_SNORM_BLOCK, VK_FORMAT_R16_SNORM, 8,
-                           VKC_BC4_SNORM, bc, etc2)
-                      : TB(VK_FORMAT_BC4_UNORM_BLOCK, VK_FORMAT_EAC_R11_UNORM_BLOCK, VK_FORMAT_R16_UNORM, 8, VKC_BC4,
-                           bc, etc2);
+            return sn ? TB(VK_FORMAT_BC4_SNORM_BLOCK, etc2 ? VK_FORMAT_EAC_R11_SNORM_BLOCK : VK_FORMAT_UNDEFINED,
+                           VK_FORMAT_R16_SNORM, 8, VKC_BC4_SNORM, bc)
+                      : TB(VK_FORMAT_BC4_UNORM_BLOCK, etc2 ? VK_FORMAT_EAC_R11_UNORM_BLOCK : VK_FORMAT_UNDEFINED,
+                           VK_FORMAT_R16_UNORM, 8, VKC_BC4, bc);
         case 0x28:
-            return sn ? TB(VK_FORMAT_BC5_SNORM_BLOCK, VK_FORMAT_EAC_R11G11_SNORM_BLOCK, VK_FORMAT_R16G16_SNORM, 16,
-                           VKC_BC5_SNORM, bc, etc2)
-                      : TB(VK_FORMAT_BC5_UNORM_BLOCK, VK_FORMAT_EAC_R11G11_UNORM_BLOCK, VK_FORMAT_R16G16_UNORM, 16,
-                           VKC_BC5, bc, etc2);
-        case 0x17:
-            return TB(srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK,
-                      srgb ? VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK : VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK,
-                      srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 16, VKC_BC7, bc, etc2);
+            return sn ? TB(VK_FORMAT_BC5_SNORM_BLOCK, etc2 ? VK_FORMAT_EAC_R11G11_SNORM_BLOCK : VK_FORMAT_UNDEFINED,
+                           VK_FORMAT_R16G16_SNORM, 16, VKC_BC5_SNORM, bc)
+                      : TB(VK_FORMAT_BC5_UNORM_BLOCK, etc2 ? VK_FORMAT_EAC_R11G11_UNORM_BLOCK : VK_FORMAT_UNDEFINED,
+                           VK_FORMAT_R16G16_UNORM, 16, VKC_BC5, bc);
+        case 0x17: return TB(SRB(VK_FORMAT_BC7), etc2 ? rgba8_etc2 : astc4, rgba8, 16, VKC_BC7, bc);
         case 0x10:
             return TB(VK_FORMAT_BC6H_SFLOAT_BLOCK, VK_FORMAT_UNDEFINED, VK_FORMAT_R16G16B16A16_SFLOAT, 16, VKC_BC6H_SF,
-                      bc, etc2);
+                      bc);
         case 0x11:
             return TB(VK_FORMAT_BC6H_UFLOAT_BLOCK, VK_FORMAT_UNDEFINED, VK_FORMAT_R16G16B16A16_SFLOAT, 16, VKC_BC6H_UF,
-                      bc, etc2);
+                      bc);
         case 0x40: return TA(4, 4, srgb, native);
         case 0x50: return TA(5, 4, srgb, native);
         case 0x41: return TA(5, 5, srgb, native);
@@ -393,6 +394,8 @@ static VkFmt tic_format(u32 w0, int srgb, u32 native) {
         case 0x3A: return vk_zt_format(0x13);
     }
 #undef PICK
+#undef SRB
+#undef ETC
     static u32 said[8];
     if (first_time(said, f)) WARN("vulkan: unsupported texture format %x, header word 0 %08x (not drawn)\n", f, w0);
     VkFmt r = {0};
@@ -413,8 +416,8 @@ VkFmt vk_tic_format_3d(u32 w0, int srgb) {
     return tic_format(w0, srgb, 0);
 }
 
-/* the name the log gives a format the block textures are held in, the BC7 and ETC2 blocks they are encoded again into
-   or what they are decoded to */
+/* the name the log gives a format the block textures are held in, the BC7, ETC2 and ASTC blocks they are encoded again
+   into or what they are decoded to */
 static const char* held_name(VkFormat f) {
     switch (f) {
         case VK_FORMAT_R8G8B8A8_UNORM:
@@ -434,6 +437,8 @@ static const char* held_name(VkFormat f) {
         case VK_FORMAT_EAC_R11_SNORM_BLOCK: return "EAC R11";
         case VK_FORMAT_EAC_R11G11_UNORM_BLOCK:
         case VK_FORMAT_EAC_R11G11_SNORM_BLOCK: return "EAC RG11";
+        case VK_FORMAT_ASTC_4x4_UNORM_BLOCK:
+        case VK_FORMAT_ASTC_4x4_SRGB_BLOCK: return "ASTC 4x4";
         default: return NULL;
     }
 }
@@ -482,8 +487,9 @@ void vk_blocks_say(void) {
     family_say("ASTC", why, g_settings.native_astc && !astc_has, astc, astc_names, 1);
     snprintf(why, sizeof why, "native_etc2=%d, the GPU samples %sETC2", g_settings.native_etc2, etc2_has ? "" : "no ");
     family_say("ETC2 and EAC", why, g_settings.native_etc2 && !etc2_has, etc, etc_names, 5);
-    snprintf(why, sizeof why, "native_bc=%d, the GPU samples %sBCn, ETC2 %s", g_settings.native_bc,
-             bc_has ? "" : "no ", g_vk.feat.textureCompressionETC2 ? "sampled" : "not sampled");
+    snprintf(why, sizeof why, "native_bc=%d, the GPU samples %sBCn, ETC2 %s, ASTC %s", g_settings.native_bc,
+             bc_has ? "" : "no ", g_vk.feat.textureCompressionETC2 ? "sampled" : "not sampled",
+             g_vk.feat.textureCompressionASTC_LDR ? "sampled" : "not sampled");
     family_say("BCn", why, g_settings.native_bc && !bc_has, bcn, bcn_names, 7);
 }
 

@@ -2771,6 +2771,13 @@ add_executable(snx-test-bcn-etc2-glsl glsl/bcn_etc2_glsl.cpp glsl/bcn_etc2_cpu.c
 snx_test_target(snx-test-bcn-etc2-glsl 23)
 target_include_directories(snx-test-bcn-etc2-glsl PRIVATE glsl)
 add_test(NAME bcn_etc2_glsl COMMAND snx-test-bcn-etc2-glsl)
+# the BCn to ASTC transcoder's GLSL (texconv.glsl's ASTC build) run on the CPU the same way, its floats 32 bits wide
+# and with every operation rounded to 16, its blocks decoded by the runtime's ASTC decoder: no GPU needed
+add_executable(snx-test-bcn-astc-glsl glsl/bcn_astc_glsl.cpp glsl/bcn_astc_cpu.cpp glsl/bcn_etc2_cpu.cpp glsl/bc7_cpu.cpp
+               support/etc2.c support/bcn.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/astc_cpu.c")
+snx_test_target(snx-test-bcn-astc-glsl 23)
+target_include_directories(snx-test-bcn-astc-glsl PRIVATE glsl)
+add_test(NAME bcn_astc_glsl COMMAND snx-test-bcn-astc-glsl)
 # the VIC shader's GLSL, both builds, run on the CPU against vic.c's composition of random jobs: no GPU needed
 add_executable(snx-test-vic-glsl glsl/vic_jobs.c glsl/vic_glsl.cpp support/vic_ref.c)
 snx_test_target(snx-test-vic-glsl 23)

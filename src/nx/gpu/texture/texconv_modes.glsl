@@ -84,5 +84,9 @@
    BC2, BC3 and BC7 as ETC2 RGBA8, BC4 and BC5 as EAC R11 and RG11, unsigned or signed. BC6H's two places are unused:
    it has no ETC2 counterpart */
 #define TC_BCN_ETC2 40u
+/* the ASTC build (texconv.comp with SNX_TC_ASTC, a pipeline of its own too): BC2, BC3 and BC7 blocks, in TC_BC1 to
+   TC_BC7's order from here as well, decoded and encoded again a block an invocation as ASTC 4x4 (astc_encode.glsl).
+   The other kinds' places are unused: BC1 as ASTC would take twice its bytes, BC4 and BC5 are EAC's, BC6H is HDR */
+#define TC_BCN_ASTC 50u
 
 #endif

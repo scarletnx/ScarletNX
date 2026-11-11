@@ -1,35 +1,37 @@
-# BCn without BCn: ETC2 and EAC on phone GPUs
+# BCn without BCn: ETC2, EAC and ASTC on phone GPUs
 
 ## Index
 
 * [The encoder](#the-encoder)
+* [The ASTC encoder](#the-astc-encoder)
 * [What it costs](#what-it-costs)
 * [Tests](#tests)
 
 Most games' textures are BC1 to BC7. Desktop GPUs sample them as they are; most phone GPUs (Mali, Adreno with
 Qualcomm's own driver, PowerVR) sample ETC2, EAC and ASTC instead, and not BCn. There ScarletNX encodes each BCn level
 again on the GPU as it loads, into the ETC2 or EAC format of the same bytes a texel, where decoding it would take four
-to eight times the memory.
+to eight times the memory. BC2, BC3 and BC7 are ASTC 4x4 where the GPU samples that and not ETC2.
 
 | BCn | where the GPU samples ETC2 | bytes a texel | decoded (no ETC2 either) | bytes a texel |
 | --- | --- | --- | --- | --- |
 | BC1 | ETC2 RGB8A1 (punch-through alpha: BC1's transparent black) | 0.5 | RGBA8 | 4 |
-| BC2, BC3, BC7 | ETC2 RGBA8 (an EAC alpha block, then an ETC2 RGB one) | 1 | RGBA8 | 4 |
+| BC2, BC3, BC7 | ETC2 RGBA8 (an EAC alpha block, then an ETC2 RGB one); ASTC 4x4 without ETC2 | 1 | RGBA8 | 4 |
 | BC4 | EAC R11, unsigned or signed | 0.5 | R16 | 2 |
 | BC5 | EAC RG11, unsigned or signed | 1 | RG16 | 4 |
 | BC6H | none (ETC2 has no HDR): decoded | 8 | RGBA16F | 8 |
 
 `format.c` picks it (`TB`), from the features `vk_blocks_want` turns on: `textureCompressionBC` and the `native_bc`
-setting for BCn as it is, else `textureCompressionETC2` with `native_etc2` for ETC2. A 3D BCn texture is decoded
-where the device makes no 3D image of the ETC2 format. As the device starts, the log says how each family is held,
+setting for BCn as it is, else `textureCompressionETC2` with `native_etc2` for ETC2, else, for BC2, BC3 and BC7,
+`textureCompressionASTC_LDR` with `native_astc` for ASTC 4x4 as they load. A 3D BCn texture is decoded where the
+device makes no 3D image of the ETC2 format. As the device starts, the log says how each family is held,
 from the formats `vk_tic_format` picks (`vk_blocks_say`), on a Mali-G52 for instance:
 
 ```
 vulkan: ASTC textures (native_astc=1, the GPU samples ASTC, astc_mode=0): sampled as the game's blocks: ASTC
 vulkan: ETC2 and EAC textures (native_etc2=1, the GPU samples ETC2): sampled as the game's blocks: ETC2 RGB, ...
-vulkan: BCn textures (native_bc=1, the GPU samples no BCn, ETC2 sampled): encoded again on the GPU: BC1 as ETC2
-RGB8A1, BC2 as ETC2 RGBA8, BC3 as ETC2 RGBA8, BC4 as EAC R11, BC5 as EAC RG11, BC7 as ETC2 RGBA8; decoded on the
-GPU: BC6H to RGBA16F
+vulkan: BCn textures (native_bc=1, the GPU samples no BCn, ETC2 sampled, ASTC sampled): encoded again on the GPU:
+BC1 as ETC2 RGB8A1, BC2 as ETC2 RGBA8, BC3 as ETC2 RGBA8, BC4 as EAC R11, BC5 as EAC RG11, BC7 as ETC2 RGBA8;
+decoded on the GPU: BC6H to RGBA16F
 ```
 
 ## The encoder
@@ -55,6 +57,62 @@ multipliers around the one that spans the block's values, the base that centres 
 way; an alpha the same throughout is written at once. Integer arithmetic only, so the tests run the same file on the
 CPU (`tests/glsl/glsl.hpp`) and get the GPU's bytes.
 
+## The ASTC encoder
+
+`texconv.comp` built a third time with `SNX_TC_ASTC` runs `gpu/texture/astc_encode.glsl` after the BCn decoders,
+a block an invocation. It does not search: a BCn block says what it is, and the ASTC block follows it.
+
+| the block | the ASTC 4x4 block | ends | weights |
+| --- | --- | --- | --- |
+| one colour | a void extent block, exact | 16 bits a channel | none |
+| colours on a line, alpha 255 | one partition, RGB | 192 levels | 16 levels |
+| colours and alpha on a line (BC7's mode 6 with alpha; one colour under an alpha that moves) | one partition, RGBA | 192 levels | 8 levels |
+| colours on a line under one alpha, in a block that keeps alpha apart (BC2, BC3) | one partition, RGBA | 256 levels, the alpha exact | 4 levels, BC1's four colours |
+| a channel with indices of its own that moves while others do (BC2's and BC3's alpha, what BC7's modes 4 and 5 rotate out, mode 7's alpha) | two planes, RGBA | 48 levels | 4 levels each |
+| two or three subsets without alpha (BC7's modes 0 to 3) | two partitions, RGB | 40 levels | 4 levels |
+
+The ends' ranges are not chosen: the format gives the bits the weights leave to the largest range that fits. ASTC
+draws its partitions from a hash of a 10 bit seed, not from BC7's tables, so two tables name the seed nearest each
+BC7 shape and the texels of its second partition: 30 of BC7's 64 two subset shapes exist as they are, the other 34
+are 2 texels off on average, and three subsets become one alone and the other two together.
+
+A subset's ends are the corners of its texels' bounding box, which a BCn subset's texels lie between: the channel
+that moves most says which texels are the line's first and last, and every other channel takes its low or its high
+value at the first as it has there. Each end is stored as its nearest level, and a texel's weight is its place
+between the two ends as stored.
+
+A block that says more than "one line" is built as one line first, whose ends and weights have the most levels. If
+the line holds the texels within a level a channel on average (`AX_NEAR`), that is the block: an encoder takes
+subsets and planes for precision too, on texels one ASTC line holds better (most of a photograph's BC7 blocks).
+Else the source's way is built as well, and kept unless the line is nearer. How far a block is from its texels is
+measured with the weights taken as evenly spaced, a sum of whole numbers, not by decoding.
+
+The numbers are small integers in floats of relaxed precision (`mediump`), which a phone's GPU computes in 16 bits,
+several at a time. A 16 bit float holds every integer up to 2048, so sums and products that stay within it are the
+same in 16 bits as in 32: the bounding box, the ends' corners, a texel's place (2040 at most). Three products do
+round, each a multiplication by a constant that is then floored, and each was proved to give the integer result on
+every input, in 16 bit floats and in 32 bit ones, with [ucas](https://github.com/scarletnx/ucas) (its `f16` type):
+
+```
+rank48(w: u8 in 0..127) = (1512 * u32(w) + 4347) >> 13
+rank48h(w: u8 in 0..127) = u32(floor((f16(w) + f16(2.875)) * f16(0.1845703125)))
+equiv rank48h rank48          # equal on the domain (exhaustive); the same with f32
+third(k: u8 in 0..23) = k / 3
+thirdh(k: u8 in 0..23) = u8(floor(f16(k) * f16(0.33349609375)))
+equiv thirdh third            # equal (exhaustive), f16 and f32
+rank40h(w: u8 in 0..127) = u32(floor((f16(w) + f16(4)) * f16(0.152587890625)))    # = (625 * (w + 4)) >> 12
+fifthh(k: u8 in 0..19) = u8(floor(f16(k) * f16(0.2001953125)))                      # = k / 5
+```
+
+The first is the rank of the level of 48 nearest a value, the second splits it into the trit and the bits the
+format stores; the last two are the same for 40 levels. So the blocks do not depend on the width a GPU computes
+in. A texel's weight is one 16 bit integer multiplication (below 65536, `range`), and the comparison of two
+candidates is in 32 bit floats, whole numbers below 2^24.
+
+Each of the encoder's bodies is called from one place, a loop over a block's passes, as `etc2_encode.glsl`'s are:
+the compilers inline every call, and the encoder written a call a kind took an Intel driver 90 s to compile where
+this one takes 7.6 s.
+
 ## What it costs
 
 Measured against the BCn blocks decoded, which is what a GPU without BCn showed before, on three 512x512 photographs
@@ -68,13 +126,43 @@ and two 256x256 icons with alpha, made BCn by the test's own encoders and the BC
 | BC4, BC5 | 46.5 to 63.6 | | |
 | BC7 | 35.8 to 48.4 | 50.2 to 53.5 | 5.5 to 11 dB |
 
-BC7 loses most: ETC2 RGBA8 holds less than BC7's partitions and 4 bit weights do. ASTC 4x4, the same bytes a texel
-and sampled by the same GPUs, would hold more with an encoder of its own, which isn't written yet.
+BC7 loses most: ETC2 RGBA8 holds less than BC7's partitions and 4 bit weights do.
 
-Time, `snx-test-astc-vulkan --bench-etc2` on llvmpipe (a 12-core x86 CPU, other work running), a 2048x2048 level of
-random blocks, the dispatch alone: BC1 7 ms decoded, 105 ms encoded again; BC3 9 and 95; BC4 5 and 35; BC5 10 and 65;
-BC7 26 and 117. Random blocks take every candidate; a game's blocks of one colour or one alpha stop earlier. The
-pipeline is compiled the first time a BCn texture loads (1.3 s on llvmpipe), and kept in the pipeline cache.
+The same pictures as ASTC 4x4 (`snx-test-bcn-astc-glsl --image`), colours in dB and the SSIM of their luma against
+the BCn blocks decoded. The three photographs are opaque; the two icons' alpha moves in 228 to 518 of their 4096
+blocks, where a block of two planes has four levels a plane:
+
+| picture | BC3 as ETC2 | BC3 as ASTC | BC7 as ETC2 | BC7 as ASTC |
+| --- | --- | --- | --- | --- |
+| photograph 1 | 49.10, 0.99602 | 60.14, 0.99967 | 48.42, 0.99492 | 53.38, 0.99835 |
+| photograph 2 | 37.24, 0.98912 | 53.76, 0.99974 | 35.82, 0.98234 | 41.80, 0.99655 |
+| photograph 3 | 46.64, 0.99641 | 59.43, 0.99993 | 47.40, 0.99675 | 54.92, 0.99933 |
+| icon 1 | 42.87, alpha 58.58 | 59.23, alpha 41.14 | 42.41, alpha 53.51 | 55.27, alpha 40.93 |
+| icon 2 | 41.63, alpha 54.67 | 55.71, alpha 38.78 | 37.45, alpha 50.16 | 38.68, alpha 42.74 |
+
+Time on an Intel HD Graphics 620 (Mesa 26.1.8), which samples all three families: the conversion's dispatch alone
+by the GPU's timestamps, a 2048x2048 level (262144 blocks) of a photograph's blocks, the median of 7, each block
+compared with the CPU's run of the shader and the same:
+
+| blocks | decoded | as ETC2 RGBA8 | as ASTC 4x4 | a block as ASTC |
+| --- | --- | --- | --- | --- |
+| BC7, a photograph | 8.2 ms | 291 ms | 137 ms | 522 ns |
+| BC7, an icon | 6.8 ms | 262 ms | 74 ms | 283 ns |
+| BC7, random (every block two candidates) | 8.6 ms | 368 ms | 172 ms | 656 ns |
+| BC3, a photograph | 5.1 ms | 278 ms | 38 ms | 143 ns |
+| BC3, random | 5.5 ms | 344 ms | 84 ms | 322 ns |
+
+Where a BC7 block's time goes there: decoding it into the texels the encoder reads, 212 ns (the plain build, which
+writes each texel as it is decoded, takes 31: the array the texels wait in is the cost); their bounding box, under
+1; one line's ends, weights and bits, 70; and the source's own way where the line isn't near enough, 240 a block of
+the photograph's on average. BC3 decodes in 14 ns and encodes in 130. 32 bit floats in place of relaxed precision
+make no difference on that GPU, which has no 16 bit ones; a phone's has, and is not measured yet.
+
+The pipelines are compiled the first time each is used, and kept in the pipeline cache: on that driver the plain
+build takes 3.9 s, the ASTC build 7.6 s and the ETC2 build 34 s; on llvmpipe 0.3, 0.2 and 1.4 to 2.2 s.
+
+On llvmpipe (a 12-core x86 CPU with other work running), the same dispatches of the same blocks: a photograph's
+BC7 level 23 ms decoded, 124 as ETC2 and 60 as ASTC; its BC3 level 4, 105 and 15; random BC7 blocks 36, 153 and 63.
 
 ## Tests
 
@@ -85,8 +173,16 @@ pipeline is compiled the first time a BCn texture loads (1.3 s on llvmpipe), and
   the decoder clamps (241 with one walk of the planar levels around the fit); BC1's transparent texels
   stay transparent; images whose sides aren't multiples of 4, of several slices, transcode block for block as one
   block alone; and each kind holds the PSNR it reached on a picture of gradients, edges, noise and alpha.
-- `astc_vulkan` runs the SPIR-V: random blocks of every kind against the CPU's run, byte for byte, and, where the
-  device samples ETC2, the device's own decoding of them against `etc2.c`. llvmpipe samples no ETC2, so on the CI the
-  second is skipped; a phone runs it.
-- `vk_block_formats` runs `vk_blocks_want`, `vk_tic_format` and `vk_blocks_say` on stand-in devices, the first a
-  player's Mali-G52 MC2 from its vkjson (ASTC and ETC2 sampled, BCn not).
+- `bcn_astc_glsl` runs the ASTC encoder on the CPU twice, with 32 bit floats and with every operation rounded to 16
+  bits (`glsl.hpp`'s `half`), and every block has to be the same bytes both ways. Its blocks are decoded by the
+  runtime's ASTC decoder: each level stored for a value is its range's nearest and decodes to what the encoder
+  reckons with; a block of one colour and lines the decoder makes of two levels come back as they were, in every
+  kind of block; a table's texels for a seed are the ones the decoder draws; random BC2, BC3 and BC7 blocks of every
+  mode decode near what they held and never to the error colour; and each kind holds the PSNR it reached on the
+  picture.
+- `astc_vulkan` runs the SPIR-V: random blocks of every kind against the CPU's run, byte for byte (the ETC2 build
+  and the ASTC build), and, where the device samples ETC2 or ASTC, the device's own decoding of them against
+  `etc2.c` and `astc_cpu.c`. llvmpipe samples neither, so on the CI those are skipped; a phone runs them, and an
+  Intel GPU.
+- `vk_block_formats` runs `vk_blocks_want`, `vk_tic_format` and `vk_blocks_say` on stand-in
+  devices, the first a player's Mali-G52 MC2 from its vkjson (ASTC and ETC2 sampled, BCn not).
