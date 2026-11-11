@@ -136,7 +136,9 @@ static LLVMValueRef emit(LLVMModuleRef module, const VitaImage* image, uint32_t 
     if (!code || count > available) return NULL;
     void* input = units_of(code, count, thumb);
     if (!input) return NULL;
-    const SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_FLAT};
+    /* hosted (llvm.h): the run loop is the only caller, and the guest's 4 GiB window is followed by pages that fault
+       (VITA_SPACE) */
+    const SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_HOSTED};
     LLVMValueRef fn = thumb ? snx_thumb_llvm_block_ex(module, name, input, count, key & ~1u, consumed, &options)
                             : snx_arm_llvm_block_ex(module, name, input, count, key & ~1u, consumed, &options);
     free(input);
@@ -303,6 +305,9 @@ static void chain_block(SnxIr* ir, LLVMModuleRef mod, LLVMValueRef fn, uint32_t 
         if (!target) {
             target = LLVMAddFunction(mod, name, block_type);
             LLVMSetVisibility(target, LLVMHiddenVisibility);
+            /* a must-tail call keeps the caller's parameter attributes, and a hosted block's cpu is noalias */
+            LLVMAddAttributeAtIndex(target, 1 /* first parameter */,
+                                    LLVMCreateEnumAttribute(ir->ctx, LLVMGetEnumAttributeKindForName("noalias", 7), 0));
         }
         LLVMValueRef site = LLVMBuildCall2(ir->b, block_type, target, &cpu, 1, "");
         LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);

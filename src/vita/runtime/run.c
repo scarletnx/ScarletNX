@@ -443,8 +443,16 @@ int vita_run(VitaProcess* p, double seconds) {
                 result = 1;
                 goto done;
             }
-            block(&t->cpu);
-            g_history[g_history_at++ % HISTORY] = pc | thumb;
+            /* a hosted block leaves its entry state to this loop (llvm.h): r15 and CPSR.T chose it, exit is clear
+               after an SVC, and no IT block may be under way, which an SVC inside one leaves */
+            uint32_t itstate = thumb ? snx_arm_itstate(t->cpu.cpsr) : 0;
+            if (itstate) {
+                t->cpu.exit = SNX_ARM_IT_ENTRY;
+                t->cpu.syndrome = itstate;
+            } else {
+                block(&t->cpu);
+                g_history[g_history_at++ % HISTORY] = pc | thumb;
+            }
             if (t->cpu.exit == SNX_ARM_OK) continue;
             if (t->cpu.exit == SNX_ARM_SVC) {
                 t->cpu.exit = SNX_ARM_OK;
