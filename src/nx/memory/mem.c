@@ -612,7 +612,7 @@ static void aliases_build_nl(void) {
     for (i = 0; i < g_nblk; i++)
         if (g_blk[i].pool && g_blk[i].state != MS_FREE)
             g_alias.r[n++] = (AliasRange){g_blk[i].addr, g_blk[i].size, g_blk[i].pool - 1};
-    qsort(g_alias.r, n, sizeof *g_alias.r, alias_by_off);
+    if (n) qsort(g_alias.r, n, sizeof *g_alias.r, alias_by_off);
     /* the size's top bit marks a run another one overlaps in the pool */
     for (i = 0; i < n; i++)
         for (j = i + 1; j < n && g_alias.r[j].off < g_alias.r[i].off + (g_alias.r[i].size & ~(1ull << 63)); j++) {
@@ -628,7 +628,7 @@ static void aliases_build_nl(void) {
                                  __ATOMIC_RELAXED);
             k++;
         }
-    qsort(g_alias.r, k, sizeof *g_alias.r, alias_by_addr);
+    if (k) qsort(g_alias.r, k, sizeof *g_alias.r, alias_by_addr);
     __atomic_store_n(&g_alias.n, k, __ATOMIC_RELAXED);
     __atomic_store_n(&g_alias.built, gen, __ATOMIC_RELEASE);
 }
