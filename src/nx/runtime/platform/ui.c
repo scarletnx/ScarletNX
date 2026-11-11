@@ -121,6 +121,19 @@ void ui_fill(SnxUiList* l, float x, float y, float w, float h, u32 rgba) {
     /* the block's inner texels: a blend at its edge never reaches the transparent ones around it */
     quad(l, x, y, w, h, SNX_CONTROLS_WHITE_X + 1, SNX_CONTROLS_WHITE_Y + 1, 2, 2, rgba, 0, UI_SHARP);
 }
+void ui_fill_set(SnxUiQuad* q, float x, float y, float w, float h, u32 rgba) {
+    int shown = w > 0 && h > 0;
+    *q = (SnxUiQuad){.x = x,
+                     .y = y,
+                     .w = w,
+                     .h = h,
+                     .u = SNX_CONTROLS_WHITE_X + 1,
+                     .v = SNX_CONTROLS_WHITE_Y + 1,
+                     .uw = (u16)(shown ? 2 : 0),
+                     .vh = (u16)(shown ? 2 : 0),
+                     .rgba = rgba,
+                     .sample = UI_SHARP};
+}
 float ui_text(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba) {
     float x0 = x;
     for (; *s; ++s, x += 8.0f * (float)scale) {
@@ -130,6 +143,59 @@ float ui_text(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba
                  SNX_CONTROLS_FONT_Y + c / 16 * 16, 8, 16, rgba, 0, UI_SHARP);
     }
     return x - x0;
+}
+int ui_cells(SnxUiList* l, float x, float y, int scale, int n, u32 rgba) {
+    int first = l->n, k;
+    if (n < 0 || n > l->max - l->n) return -1;
+    for (k = 0; k < n; ++k)
+        l->q[l->n++] = (SnxUiQuad){.x = x + 8.0f * (float)(scale * k),
+                                   .y = y,
+                                   .w = 8.0f * (float)scale,
+                                   .h = 16.0f * (float)scale,
+                                   .rgba = rgba,
+                                   .sample = UI_SHARP};
+    return first;
+}
+int ui_cells_set(SnxUiQuad* q, int n, const char* s) {
+    int k, changed = 0;
+    for (k = 0; k < n; ++k) {
+        u8 c = *s ? (u8)*s++ : ' ';
+        int blank = c == ' ';
+        /* a blank's texels are none: the renderer draws nothing for it */
+        u16 u = blank ? 0 : (u16)(SNX_CONTROLS_FONT_X + c % 16 * 8);
+        u16 v = blank ? 0 : (u16)(SNX_CONTROLS_FONT_Y + c / 16 * 16);
+        if (q[k].u == u && q[k].v == v && q[k].uw == (blank ? 0 : 8)) continue;
+        q[k].u = u;
+        q[k].v = v;
+        q[k].uw = blank ? 0 : 8;
+        q[k].vh = blank ? 0 : 16;
+        ++changed;
+    }
+    return changed;
+}
+char* ui_put(char* at, const char* s) {
+    while (*s) *at++ = *s++;
+    return at;
+}
+char* ui_put_u(char* at, u64 v) {
+    char d[20];
+    int n = 0;
+    do d[n++] = (char)('0' + v % 10);
+    while (v /= 10);
+    while (n) *at++ = d[--n];
+    return at;
+}
+char* ui_put_tenths(char* at, u64 tenths) {
+    at = ui_put_u(at, tenths / 10);
+    *at++ = '.';
+    *at++ = (char)('0' + tenths % 10);
+    return at;
+}
+void ui_append(SnxUiList* l, const SnxUiList* from) {
+    int n = from->n < l->max - l->n ? from->n : l->max - l->n;
+    if (n <= 0) return;
+    memcpy(l->q + l->n, from->q, (size_t)n * sizeof *l->q);
+    l->n += n;
 }
 float ui_icon(SnxUiList* l, float x, float y, int scale, unsigned icon, u32 rgba) {
     if (icon < GUI_ICON_FIRST || icon >= GUI_ICON_END) return 0;

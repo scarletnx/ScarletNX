@@ -72,7 +72,9 @@ void stats_debugger(const char* name);
    least, so the numbers over the game hide less of it than the menu that stops it */
 int stats_scale(int menu_scale);
 /* the box over a picture whose safe area is safe (x, y, w, h), in stats_scale's letters for the menu's menu_scale, at
-   now_ns: nothing while stats is off. Under ui_lock */
+   now_ns: nothing while stats is off. It is laid out only when its place, its scale or the lines under the graph
+   change: a frame writes the letters of the values that changed into fixed fields of cells (ui_cells), and the bars'
+   heights, the same quads each frame. Under ui_lock */
 void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns);
 /* the box's place for that in letters of scale (stats_scale's): x, y, w, h into box. STATS_COLS letters wide, or
    wider for a line under the graph that needs it, up to the safe area's width */

@@ -687,7 +687,7 @@ static void ui_draw_sdl(SDL_Renderer* r, SDL_Texture* atlas, int aw, int ah, con
     for (i = 0; i < l->n; ++i) {
         const SnxUiQuad* q = &l->q[i];
         float a = (float)(q->rgba >> 24) / 255.0f;
-        if (!q->uw) continue; /* nothing drawn (ui.h) */
+        if (!q->uw) continue; /* a blank cell (ui_cells): nothing drawn */
         SDL_FColor c = {(float)(q->rgba & 0xFF) / 255.0f * a, (float)(q->rgba >> 8 & 0xFF) / 255.0f * a,
                         (float)(q->rgba >> 16 & 0xFF) / 255.0f * a, a};
         float u0 = (float)q->u / (float)aw, v0 = (float)q->v / (float)ah;

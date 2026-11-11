@@ -6,7 +6,8 @@
 
    Each quad is an instance, its SnxUiQuad as it is, whose corners the vertex shader makes: the CPU writes no
    vertices. The instances stay in a buffer on the device from frame to frame, and a frame copies into it only the
-   quads that differ from the ones it holds */
+   quads that differ from the ones it holds. The stats box and the debug line keep their layout and their quads in the
+   same places (ui_cells), so a frame over the game sends a few letters and the graph's bars, or nothing */
 #include "nx/gpu/vk/descriptor_objects.h"
 #include <stddef.h>
 #include <stdlib.h>
