@@ -8,6 +8,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+char* fatal_shown(const char* text) {
+    size_t shown = 0;
+    return snx_logscan_tilde(text, strlen(text), &shown);
+}
+
 int fatal_share_log(const char* folder, const char* build, const char* msg, const char* game_log, char* saved,
                     size_t size) {
     enum { TAIL = 4 << 20 };
