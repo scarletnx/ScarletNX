@@ -4763,7 +4763,8 @@ int main(int argc, char** argv) {
             assert(SDL_UpdateTexture(once, NULL, red, 8));
             assert(SDL_RenderPresent(app.renderer));
             read = SDL_RenderReadPixels(app.renderer, &view);
-            assert(read && (rgba = SDL_ConvertSurface(read, SDL_PIXELFORMAT_RGBA32)));
+            rgba = read ? SDL_ConvertSurface(read, SDL_PIXELFORMAT_RGBA32) : NULL;
+            assert(rgba);
             assert(!memcmp(rgba->pixels, green, 4));
             SDL_DestroySurface(rgba);
             SDL_DestroySurface(read);
@@ -4773,7 +4774,8 @@ int main(int argc, char** argv) {
             SDL_DestroyTexture(once);
             assert(SDL_RenderPresent(app.renderer));
             read = SDL_RenderReadPixels(app.renderer, &view);
-            assert(read && (rgba = SDL_ConvertSurface(read, SDL_PIXELFORMAT_RGBA32)));
+            rgba = read ? SDL_ConvertSurface(read, SDL_PIXELFORMAT_RGBA32) : NULL;
+            assert(rgba);
             assert(!memcmp(rgba->pixels, green, 4));
             SDL_DestroySurface(rgba);
             SDL_DestroySurface(read);
