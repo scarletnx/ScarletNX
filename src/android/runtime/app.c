@@ -200,13 +200,15 @@ static jstring JNICALL library_dir(JNIEnv* env, jclass unused) {
     (void)unused;
     return (*env)->NewStringUTF(env, app.install->library_dir);
 }
-static jbyteArray JNICALL apk_read(JNIEnv* env, jclass unused, jstring name) {
-    (void)unused;
+/* a member's bytes, of the APK that holds it first (apk -1) or of one APK (0 the base, then each split's) */
+static jbyteArray read_member(JNIEnv* env, jint apk, jstring name) {
     const char* text = (*env)->GetStringUTFChars(env, name, NULL);
     if (!text) return NULL;
     uint32_t index;
     jbyteArray result = NULL;
-    SnxZip* zip = find(text, &index);
+    SnxZip* zip = apk < 0                         ? find(text, &index)
+                  : (unsigned)apk < app.zip_count && snx_zip_find(app.zips[apk], text, &index) ? app.zips[apk]
+                                                                                                : NULL;
     if (zip) {
         char error[512];
         size_t size;
@@ -221,6 +223,14 @@ static jbyteArray JNICALL apk_read(JNIEnv* env, jclass unused, jstring name) {
     }
     (*env)->ReleaseStringUTFChars(env, name, text);
     return result;
+}
+static jbyteArray JNICALL apk_read(JNIEnv* env, jclass unused, jstring name) {
+    (void)unused;
+    return read_member(env, -1, name);
+}
+static jbyteArray JNICALL apk_read_from(JNIEnv* env, jclass unused, jint apk, jstring name) {
+    (void)unused;
+    return apk < 0 ? NULL : read_member(env, apk, name);
 }
 /* whether a member is stored, not compressed: what a file descriptor can read in place */
 static jboolean JNICALL apk_stored(JNIEnv* env, jclass unused, jstring name) {
@@ -260,6 +270,7 @@ bool android_app_register(JNIEnv* env) {
     static const JNINativeMethod apk[] = {
         {(char*)"path", (char*)"()Ljava/lang/String;", (void*)apk_path},
         {(char*)"nativeRead", (char*)"(Ljava/lang/String;)[B", (void*)apk_read},
+        {(char*)"nativeReadFrom", (char*)"(ILjava/lang/String;)[B", (void*)apk_read_from},
         {(char*)"nativeList", (char*)"()[Ljava/lang/String;", (void*)apk_list},
         {(char*)"nativeStored", (char*)"(Ljava/lang/String;)Z", (void*)apk_stored},
         {(char*)"splitPaths", (char*)"()[Ljava/lang/String;", (void*)split_paths},
