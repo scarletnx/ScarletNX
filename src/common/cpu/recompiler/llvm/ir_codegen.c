@@ -170,13 +170,28 @@ static void poll(SnxIr* ir, const SnxU64* resume) {
     LLVMPositionBuilderAtEnd(B, no);
 }
 
+/* The function a BL or B to target calls when target is a PLT stub the call can run in its own place: a function of
+   the codegen that is ADRP x16, LDR x17, [x16, #n], ADD x16, x16, #n and a BR x17 that is bound (bound_function). 0
+   for any other target */
+static SnxU64 stub_function(SnxIr* ir, SnxCodegen* codegen, SnxU64 target);
+/* A BL or B to the PLT stub at stub, bound to the function bound, in the stub's place: the stub's ADRP, LDR and ADD
+   as at their own addresses, then if(x17==<bound>) F_bound(c,bound); else F_stub(c,stub); and with tail each returns.
+   The slot is read at each call: the program's linker binds it at the stub's first call, and anything may write
+   another function there. Whatever else it holds is the stub's own function's to branch to, as before: it loads the
+   slot again and looks the address up (CALLDYN). A stub whose code the guest changed is stale as a function: its
+   instructions are not run here, and its function's entry leaves for the code there now */
+static void call_stub(SnxIr* ir, SnxCodegen* codegen, SnxU64 stub, SnxU64 bound, int tail);
+
 /* branch(): goto L_target inside the function (polling first when it goes backward), a tail call outside it */
-static void branch(SnxIr* ir, const SnxCodegen* codegen, const SnxFunction* function, LLVMBasicBlockRef* labels,
+static void branch(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function, LLVMBasicBlockRef* labels,
                    SnxU64 address, SnxU64 target) {
+    SnxU64 bound;
     if (snx_function_contains(function, target)) {
         if (target <= address) poll(ir, &target);
         LLVMBuildBr(B, labels[index_of(function, target)]);
-    } else
+    } else if ((bound = stub_function(ir, codegen, target)) != 0)
+        call_stub(ir, codegen, target, bound, 1);
+    else
         call(ir, codegen, target, 1);
 }
 
@@ -313,6 +328,59 @@ static SnxA64Flow decode(SnxU32 word, SnxU64 features, SnxA64Insn* insn) {
     return SNX_A64_FLOW_UNDEF;
 }
 
+/* The function the BR at address reaches once the program's linker has bound it (ir->bound), when call() calls it
+   without a lookup: a function of the codegen, or one the module imports (ir->direct), that the module does not send
+   through its dispatch slot (a hook names it, or every call goes through the table). 0 for any other BR */
+static SnxU64 bound_function(SnxIr* ir, const SnxCodegen* codegen, SnxU64 address) {
+    SnxU64 bound = ir->bound ? ir->bound(ir->bound_user, address) : 0;
+    if (!bound || codegen->hook_direct_calls || snx_codegen_routed(codegen, bound)) return 0;
+    if (snx_codegen_function(codegen, bound)) return bound;
+    return ir->direct && ir->direct(ir->direct_user, bound) != 0 ? bound : 0;
+}
+
+static SnxU64 stub_function(SnxIr* ir, SnxCodegen* codegen, SnxU64 target) {
+    SnxU32 word[4] = {0, 0, 0, 0};
+    unsigned i;
+    if (!ir->bound || !snx_codegen_function(codegen, target)) return 0;
+    for (i = 0; i < 4; ++i)
+        if (!snx_codegen_word(codegen, target + 4 * i, &word[i])) return 0;
+    if ((word[0] & 0x9F00001FUL) != 0x90000010UL || (word[1] & 0xFFC003FFUL) != 0xF9400211UL ||
+        (word[2] & 0xFFC003FFUL) != 0x91000210UL || word[3] != 0xD61F0220UL)
+        return 0;
+    return bound_function(ir, codegen, target + 12);
+}
+
+static void call_stub(SnxIr* ir, SnxCodegen* codegen, SnxU64 stub, SnxU64 bound, int tail) {
+    LLVMBasicBlockRef live = ir->stale ? ir_block(ir, "live_stub") : NULL;
+    LLVMBasicBlockRef is = ir_block(ir, "bound"), other = ir_block(ir, "unbound");
+    LLVMBasicBlockRef join = tail ? NULL : ir_block(ir, "called");
+    SnxA64Insn insn;
+    SnxU32 word = 0;
+    unsigned i;
+    if (ir->stale) {
+        size_t own = ir->stale_index;
+        ir->stale_index = (size_t)(snx_codegen_function(codegen, stub) - codegen->functions);
+        if (ir->stats.enabled) ++ir->stats.stale_checks;
+        ir_unlikely(ir, LLVMBuildCondBr(B, stale_flag(ir), other, live));
+        ir->stale_index = own;
+        LLVMPositionBuilderAtEnd(B, live);
+    }
+    for (i = 0; i < 3; ++i) {
+        (void)snx_codegen_word(codegen, stub + 4 * i, &word);
+        (void)decode(word, codegen->features, &insn);
+        plain(ir, word, stub + 4 * i, &insn);
+    }
+    LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntEQ, ir_x(ir, 17), ir_i64(ir, bound), ""), is, other);
+    LLVMPositionBuilderAtEnd(B, is);
+    call(ir, codegen, bound, tail);
+    if (!tail) LLVMBuildBr(B, join);
+    LLVMPositionBuilderAtEnd(B, other);
+    call(ir, codegen, stub, tail);
+    if (tail) return;
+    LLVMBuildBr(B, join);
+    LLVMPositionBuilderAtEnd(B, join);
+}
+
 void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
     LLVMValueRef fn = snx_ir_guest_function(ir, function->start), sw;
     LLVMBasicBlockRef dispatch_block = NULL;
@@ -390,12 +458,17 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
                 LLVMPositionBuilderAtEnd(B, fall);
                 break;
             }
-            case SNX_A64_FLOW_BL:
+            case SNX_A64_FLOW_BL: {
+                SnxU64 bound;
                 target = snx_a64_branch_target(&insn, address);
                 ir_set_x(ir, 30, ir_i64(ir, next));
-                call(ir, codegen, target, 0);
+                if ((bound = stub_function(ir, codegen, target)) != 0)
+                    call_stub(ir, codegen, target, bound, 0);
+                else
+                    call(ir, codegen, target, 0);
                 check_return(ir, next);
                 break;
+            }
             case SNX_A64_FLOW_BLR: {
                 LLVMValueRef t = flow_operand(ir, &insn);
                 ir_set_x(ir, 30, ir_i64(ir, next));
@@ -406,10 +479,9 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
             case SNX_A64_FLOW_BR: {
                 LLVMValueRef t = flow_operand(ir, &insn);
                 /* if(t==<bound>){ F_bound(c,bound); return; }: a PLT stub whose slot holds the function its symbol
-                   names. A target inside a function of the codegen, not at its start, has no function to call */
-                SnxU64 bound = ir->bound ? ir->bound(ir->bound_user, address) : 0;
-                const SnxFunction* to = bound ? snx_codegen_function(codegen, bound) : NULL;
-                if (bound && (!to || to->start == bound)) {
+                   names, entered as a function (through a pointer, or by a call that does not run it in place) */
+                SnxU64 bound = bound_function(ir, codegen, address);
+                if (bound) {
                     LLVMBasicBlockRef is = ir_block(ir, "bound"), other = ir_block(ir, "unbound");
                     LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntEQ, t, ir_i64(ir, bound), ""), is, other);
                     LLVMPositionBuilderAtEnd(B, is);

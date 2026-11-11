@@ -196,7 +196,9 @@ typedef struct SnxIr {
     void* direct_user;
     /* the function the BR at address reaches once the program's linker has bound it (a PLT stub's), 0 for a BR
        nothing is known of: the code compares the register with it, calls it as a BL to it would be called when they
-       are equal, and goes through CPU.disp when they are not. NULL: every BR through CPU.disp */
+       are equal, and goes through CPU.disp when they are not. A BL or B to such a stub runs the stub's instructions
+       in its own place with that compare, and calls the stub when they are not equal (ir_codegen.c's call_stub).
+       NULL: every BR through CPU.disp */
     SnxU64 (*bound)(void* user, SnxU64 address);
     void* bound_user;
     /* the AOT build's (snx_ir_stale_checks): snx_stale, the module's byte per function, which each function reads
