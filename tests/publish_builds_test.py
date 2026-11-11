@@ -10,8 +10,10 @@ download with its size and say what changed: the changes since the last one, a p
 commit it stands on; a version's message, each download. No card is posted, a nightly's or a pull request's: those are
 ReiWimsy's (scarletnx/wimsy-core). The fake GitHub and Discord are tests/fake_github.py's. Offline."""
 
+import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -41,6 +43,9 @@ ZSYNC = [
     'ScarletNX-linux-riscv64.AppImage.zsync',
     'ScarletNX-linux-loongarch64.AppImage.zsync',
 ]
+# what a pull request's run builds: the cross AppImages but big-endian PowerPC64's are a nightly's alone
+NIGHTLY_ONLY = ('ppc64le', 'riscv64', 'loongarch64')
+PR_FILES = [name for name in FILES + ZSYNC if not any(f'-{arch}.' in name for arch in NIGHTLY_ONLY)]
 failures = []
 
 
@@ -514,7 +519,8 @@ with tempfile.TemporaryDirectory() as temporary:
         }
 
     def pr_files(head, name, run_id, skip=()):
-        return ['--run', run_id, '--sha', head, '--pr', '7', '--artifacts', str(artifacts(name, head, skip))]
+        made = artifacts(name, head, (*NIGHTLY_ONLY, *skip))
+        return ['--run', run_id, '--sha', head, '--pr', '7', '--artifacts', str(made)]
 
     head1, head2 = 'a' * 40, 'b' * 40
     base_sha = 'e' * 40
@@ -537,8 +543,15 @@ with tempfile.TemporaryDirectory() as temporary:
         and '| **Windows** | x86-64 | not built, [see the run](https://github.com/owner/repo/actions/runs/50) |  |'
         in pre['body']
         and '- **Windows**' not in pre['body']
-        and len(pre['assets']) == len(FILES + ZSYNC) - 1,
+        and len(pre['assets']) == len(PR_FILES) - 1,
         pre,
+    )
+    check(
+        'no row for what only a nightly builds, a row for the big-endian PowerPC64 a pull request builds',
+        pre
+        and all(f'| {arch} |' not in pre['body'] for arch in ('PowerPC64 LE', 'RISC-V 64', 'LoongArch64'))
+        and '| **Linux** | PowerPC64 BE | [AppImage (Linux programs)]' in pre['body'],
+        pre and pre['body'],
     )
     check(
         'its notes: the pull request, its author, its commit and the main commit it stands on, its commits by subject',
@@ -573,7 +586,7 @@ with tempfile.TemporaryDirectory() as temporary:
     check(
         'the push replaces it',
         pre
-        and len(pre['assets']) == len(FILES + ZSYNC)
+        and sorted(a['name'] for a in pre['assets']) == sorted(PR_FILES)
         and head2[:7] in pre['body']
         and 'not built' not in pre['body'],
         pre,
@@ -672,6 +685,23 @@ with tempfile.TemporaryDirectory() as temporary:
     )
 
 server.shutdown()
+
+# the packages a pull request's notes leave out are those build.yml's appimage-cross makes for a nightly's run alone
+spec = importlib.util.spec_from_file_location('publish_builds', SCRIPT)
+publish_builds = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(publish_builds)
+workflow = (SCRIPT.parent.parent / '.github' / 'workflows' / 'build.yml').read_text()
+cross = workflow[workflow.index('\n  appimage-cross:\n') :]
+legs = re.search(r"github\.event_name == 'pull_request' && '(\[.*?\])' \|\| '(\[.*?\])'", cross, re.S)
+check("build.yml's appimage-cross has a pull request's legs and the others", legs, cross[:400])
+if legs:
+    pull_arches, every_arch = ({leg['arch'] for leg in json.loads(text)} for text in legs.groups())
+    expected = {f'ScarletNX-linux-{arch}.AppImage' for arch in every_arch - pull_arches}
+    check(
+        "NIGHTLY_ONLY is what build.yml's appimage-cross builds for a nightly's run and not a pull request's",
+        getattr(publish_builds, 'NIGHTLY_ONLY', None) == expected and set(NIGHTLY_ONLY) == every_arch - pull_arches,
+        f'NIGHTLY_ONLY {sorted(getattr(publish_builds, "NIGHTLY_ONLY", ()))}, build.yml {sorted(expected)}',
+    )
 for failure in failures:
     print('FAIL:', failure)
 print('publish-builds:', 'FAILED' if failures else 'ok')

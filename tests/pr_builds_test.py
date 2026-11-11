@@ -3,8 +3,8 @@
 # Copyright 2026 the ScarletNX contributors
 """scripts/pr-builds.sh --print against a fake gh that has a run's artifacts and jobs: the builds linked, the APK's
 halves and edenprobe's report left out, the jobs that did not succeed named by their id in build.yml, the checks as
-installed, the sanitizers' build and the A64 differential's QEMU reference never among them, and edenprobe's line, its
-notice linked to the run. Then the pull request found from the commit when none is given. Offline."""
+installed, the sanitizers' build, the A64 differential's QEMU reference and Nightly due never among them, and
+edenprobe's line, its notice linked to the run. Then the pull request found from the commit when none is given. Offline."""
 
 import json
 import os
@@ -57,6 +57,8 @@ WHOLE = [
     ('Linux AppImage (riscv64), as installed', 'skipped'),
     ('Windows zip, as installed', 'success'),
     ('edenprobe (Linux x86_64, lavapipe)', 'success'),
+    # the scheduled run's check, which every other event skips
+    ('Nightly due', 'skipped'),
 ]
 # a draft's: the cross AppImages skipped whole, under their name before the matrix filled it in, and macOS's
 DRAFT = [
