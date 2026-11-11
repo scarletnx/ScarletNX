@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The native nn::prepo (prepo.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
+# nn::prepo: the play reports, with no prepo:u session. The report is built in the game's buffer by the SDK's own
+# code. Save and RequestImmediateTransmission are what reach the service. The report's layout is that of the two
+# SDKs read (7.7.0 and 20.5): a version between them has no hook and keeps its own code
+family nn_prepo
+struct nn::prepo::PlayReport @version(< 8.0.0) { addr buffer @0x20; u64 capacity @0x28; u64 used @0x30 } size 0x38
+struct nn::prepo::PlayReport @version(>= 20.0.0) { addr buffer @0x28; u64 capacity @0x30; u64 used @0x38 } size 0x40
+@version(< 8.0.0) hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = nnprepo_save_unlimited uses nn::prepo::PlayReport
+@version(>= 20.0.0) hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = nnprepo_save uses nn::prepo::PlayReport
+@version(< 8.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user_unlimited uses nn::prepo::PlayReport
+@version(>= 20.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user uses nn::prepo::PlayReport
+hook _ZN2nn5prepo28RequestImmediateTransmissionEv() -> u32 = nnprepo_request_immediate_transmission

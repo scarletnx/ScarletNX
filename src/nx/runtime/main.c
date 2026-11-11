@@ -25,6 +25,7 @@
 #include "nx/nn/fs.h"
 #include "nx/nn/time.h"
 #include "nx/nn/pl.h"
+#include "nx/nn/prepo.h"
 #include "nx/hle/services/hid.h"
 #include "nx/runtime/guest_jit.h"
 #include "nx/runtime/nce/nce.h"
@@ -1460,6 +1461,7 @@ int snx_main(int argc, char** argv) {
     linker_decide(); /* before the hooks: nn::ro's are installed only when the runtime links the game */
     nnfs_init();
     nntime_init();
+    nnprepo_init();
     hook_install(); /* before NVN, which takes what a slot holds, and the JIT, which reads the slots */
     nvn_loader_init();
     linker_init(); /* after the hooks and NVN, whose slots it leaves alone */
