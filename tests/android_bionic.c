@@ -600,6 +600,16 @@ static void test_files_second_batch(void) {
     expect_int("fstatat", (int64_t)CALL("fstatat", I32(G_AT_FDCWD), P(path), P(guest_stat), 0), 0);
     memcpy(&size, guest_stat + 48, sizeof size);
     expect_int("fstatat's size", (int64_t)size, 3);
+    memset(guest_stat, 0, sizeof guest_stat);
+    expect_int("stat64", (int64_t)CALL("stat64", P(path), P(guest_stat)), 0);
+    memcpy(&size, guest_stat + 48, sizeof size);
+    expect_int("stat64's size", (int64_t)size, 3);
+    memset(guest_stat, 0, sizeof guest_stat);
+    expect_int("lstat64", (int64_t)CALL("lstat64", P(path), P(guest_stat)), 0);
+    memcpy(&size, guest_stat + 48, sizeof size);
+    expect_int("lstat64's size", (int64_t)size, 3);
+    int64_t cpu = (int64_t)CALL("sched_getcpu");
+    expect_int("sched_getcpu is a CPU", cpu >= 0 && cpu < 4096, 1);
     expect_int("fstatat of nothing", (int64_t)CALL("fstatat", I32(G_AT_FDCWD), P("android_bionic_none"), P(guest_stat), 0),
                -1);
     expect_int("and ENOENT", *hle_errno_location(), 2);
