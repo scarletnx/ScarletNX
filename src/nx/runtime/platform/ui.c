@@ -22,12 +22,9 @@ static u32 g_version;
 static u8 g_image[SNX_UI_IMAGE_W * SNX_UI_IMAGE_H * 4];
 static int g_image_set;
 static u32 g_image_version;
-static u32* g_skin; /* a skin's rows, R G B A bytes, straight alpha */
-static int g_skin_rows;
-static int g_atlas_h;                          /* g_atlas's rows: the skin's when it was made */
+static int g_atlas_h; /* g_atlas's rows */
 #define UI_PICTURE_Y SNX_CONTROLS_ATLAS_HEIGHT /* the picture's first row, under the sprites' */
-#define UI_SKIN_Y    (UI_PICTURE_Y + SNX_UI_PICTURE)
-#define UI_ROWS_MAX  4096
+#define UI_ROWS      (UI_PICTURE_Y + SNX_UI_PICTURE) /* the atlas's */
 _Static_assert(SNX_UI_ICONS_X + 16 * GUI_ICON_COUNT <= SNX_CONTROLS_ATLAS_WIDTH, "the icons fit beside the picture");
 /* the menu's look's shape for it, GuiPicture's: 0 none, 1 square, 2 round */
 #ifndef SNX_GUI_THEME_YORHA_PICTURE
@@ -96,9 +93,6 @@ static void quad(SnxUiList* l, float x, float y, float w, float h, int u, int v,
 void ui_sprite(SnxUiList* l, int sprite, float x, float y, float w, float h, u32 alpha, int turn) {
     const unsigned short* s = snx_controls_sprites[sprite];
     if (alpha) quad(l, x, y, w, h, s[0], s[1], s[2], s[3], 0x00FFFFFFu | alpha << 24, turn, UI_BLEND, UI_ATLAS, 0);
-}
-void ui_texels(SnxUiList* l, float x, float y, float w, float h, int u, int v, int uw, int vh, u32 rgba) {
-    if (rgba >> 24) quad(l, x, y, w, h, u, v, uw, vh, rgba, 0, UI_BLEND, UI_ATLAS, 0);
 }
 int ui_picture(SnxUiList* l, float x, float y, float side) {
     if (!SNX_GUI_THEME_YORHA_PICTURE) return 0;
@@ -324,14 +318,6 @@ const u8* ui_image_get(u32* version) {
     return g_image_set ? g_image : NULL;
 }
 
-int ui_skin_y(void) { return UI_SKIN_Y; }
-int ui_skin_room(void) { return UI_ROWS_MAX - UI_SKIN_Y; }
-void ui_skin_set(u32* texels, int rows) {
-    free(g_skin);
-    g_skin = texels && rows > 0 && rows <= ui_skin_room() ? texels : NULL;
-    g_skin_rows = g_skin ? rows : 0;
-    if (texels && !g_skin) free(texels);
-}
 /* premultiplied: a blend between a sprite's edge and the clear texels around it */
 static void premultiply(u32* to, const u32* from, size_t n) {
     size_t i;
@@ -342,13 +328,12 @@ static void premultiply(u32* to, const u32* from, size_t n) {
     }
 }
 u32* ui_atlas_make(const u32* sprites, int w, int h, int* out_rows) {
-    int x, y, c, rows = h + SNX_UI_PICTURE + g_skin_rows;
+    int x, y, c, rows = UI_ROWS;
     u32* a;
     if (!sprites || w != SNX_CONTROLS_ATLAS_WIDTH || h != SNX_CONTROLS_ATLAS_HEIGHT) return NULL; /* not the header's */
     a = (u32*)calloc((size_t)w * (size_t)rows, 4);
     if (!a) return NULL;
     premultiply(a, sprites, (size_t)w * (size_t)h);
-    if (g_skin) premultiply(a + (size_t)w * UI_SKIN_Y, g_skin, (size_t)w * (size_t)g_skin_rows);
     for (c = 0; c < 256; ++c)
         for (y = 0; y < 16; ++y)
             for (x = 0; x < 8; ++x)
@@ -383,7 +368,7 @@ void ui_atlas_set(const u32* sprites, int w, int h) {
 }
 const u32* ui_atlas(int* w, int* h, u32* version) {
     *w = SNX_CONTROLS_ATLAS_WIDTH;
-    *h = g_atlas_h ? g_atlas_h : UI_SKIN_Y;
+    *h = g_atlas_h ? g_atlas_h : UI_ROWS;
     *version = g_version;
     return g_atlas;
 }

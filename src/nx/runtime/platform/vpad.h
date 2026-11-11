@@ -6,7 +6,6 @@
 #ifndef SNX_VPAD_H
 #define SNX_VPAD_H
 #include "nx/runtime/platform/ui.h"
-#include "nx/runtime/platform/vpad_skin.h"
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
 
@@ -55,16 +54,7 @@ SnxVpadConfig* vpad_config(void);
    their own look; log 0.6 / log 0.5. A skin is drawn at p / 100 */
 #define SNX_VPAD_BUILTIN_CURVE 0.7369655941662062
 
-void vpad_defaults(SnxVpadConfig* c); /* the default layout: the skin's places (vpad_skin.h), else the built-in ones */
-/* the skin's controls (vpad_skin_read), copied, under ui_lock: those with pieces take its look, hit area and default
-   place, which the places no .ini key set move to, and every finger lets go; NULL for the built-in look */
-void vpad_skin_set(const SnxSkinControl at[SNX_VPAD_COUNT]);
-/* controls_skin was read since the last call: 1 once, for the backend to apply it (vpad_skin_apply) */
-int vpad_skin_changed(void);
-/* the shipped skins' names (dist/controls/skins, compiled in), i from 0: 1 with the name in out, 0 past the last */
-int vpad_skin_shipped(int i, char* out, size_t n);
-/* a control's look from the skin, NULL for the built-in one */
-const SnxSkinControl* vpad_skin(int control);
+void vpad_defaults(SnxVpadConfig* c); /* the default layout */
 const char* vpad_name(int control); /* a control's name, as edit mode shows it: "A", "D-pad" */
 /* places, sizes and the shown ones back to their defaults, kept */
 void vpad_reset_layout(void);

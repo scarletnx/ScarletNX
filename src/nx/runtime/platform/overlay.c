@@ -46,7 +46,6 @@ enum {
     C_SNAP,
     C_SCALE,
     C_OPACITY,
-    C_SKIN,
     C_STICK,
     C_DPAD,
     C_HAPTICS,
@@ -63,7 +62,6 @@ static const char* const CONTROLS[C_COUNT] = {"controls",
                                               "controls_snap",
                                               "controls_scale",
                                               "controls_alpha",
-                                              "controls_skin",
                                               "controls_rel_center",
                                               "controls_dpad_slide",
                                               "controls_haptics",
@@ -236,10 +234,7 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
     if (o) {
         char word[OVERLAY_COLS];
         snprintf(text, size, "%s", o->name);
-        if (o->type == INI_TEXT) /* the skin: the built-in look, a shipped skin, or a .cfg's file name */
-            snprintf(word, sizeof word, "%s", *(const char*)o->var ? snx_path_leaf((const char*)o->var) : "Built-in");
-        else
-            ini_word(o, *(const int*)o->var, word, sizeof word);
+        ini_word(o, *(const int*)o->var, word, sizeof word);
         snprintf(value, vsize, arrows(o) ? "< %s >" : "%s", word);
         return;
     }
@@ -439,19 +434,6 @@ static int act(int i, int step) {
     if (page == PAGE_MAIN && main_item(i) == M_TV_MODE) {
         /* a select or a tap steps on, as the key does; Left and Right either way */
         options_tv_mode_step(step < 0 ? -1 : 1, NULL, 0);
-        return OVERLAY_NONE;
-    }
-    if (o && o->type == INI_TEXT) { /* the skin: round the built-in look and the shipped skins; a .cfg's path goes to
-                                       the built-in look, or the last skin stepping down */
-        char names[8][64];
-        int n = 1, at = -1, k;
-        names[0][0] = 0;
-        while (n < 8 && vpad_skin_shipped(n - 1, names[n], sizeof names[n])) ++n;
-        for (k = 0; k < n; ++k)
-            if (!strcmp(names[k], (const char*)o->var)) at = k;
-        k = at < 0 ? (step < 0 ? n - 1 : 0) : (at + (step < 0 ? n - 1 : 1)) % n;
-        ini_read(o, names[k]);
-        vpad_store_opt(o);
         return OVERLAY_NONE;
     }
     if (o) {

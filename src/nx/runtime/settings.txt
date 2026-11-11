@@ -542,15 +542,6 @@ setting Controls alpha
     words #%
     step 10
     help Their opacity, in percent
-setting Controls skin
-    key controls_skin
-    text 512
-    default line
-    label Skin
-    set vpad_skin_choose
-    help Their look: line (white lines) or yorha, ScarletNX's own; empty for the built-in one; or the path of a RetroArch
-    help overlay's .cfg (of its pages not named portrait, the one with the most controls). The game's menu goes round the
-    help built-in look and ScarletNX's own
 setting Relative stick center
     key controls_rel_center
     int 0 1

@@ -429,20 +429,11 @@ static u32* controls_sprites(int* w, int* h) {
     SDL_DestroySurface(png);
     return px;
 }
-/* the atlas the renderer uploads, from the sprites and the skin's rows as they are */
+/* the atlas the renderer uploads, from the sprites: when the window opens, and again for the fatal panel */
 static void controls_atlas(void) {
     int w = 0, h = 0;
     u32* px = controls_sprites(&w, &h);
     if (px) ui_atlas_set(px, w, h);
-    free(px);
-}
-/* controls_skin's skin, its atlas and its controls: when the window opens, and on the main thread each time the
-   setting changes (the game's menu, a reload of the .ini) */
-static void controls_skin(void) {
-    int w = 0, h = 0;
-    u32* px = controls_sprites(&w, &h);
-    vpad_skin_changed();
-    vpad_skin_apply(px, w, h);
     free(px);
 }
 /* Android's vibrator, which SDL lists as VIBRATOR_SERVICE; a gamepad's motors are no buzz for a finger */
@@ -562,7 +553,7 @@ void video_init(const char* title, const char* addons) {
     if (!g_win) fatal("SDL could not open a Vulkan window: %s", SDL_GetError());
     snx_window_icon(g_win);
     overlay_set_display_scale(SDL_GetWindowDisplayScale(g_win));
-    controls_skin();
+    controls_atlas();
     vpad_set_store(ini_set);
     buzzer_open();
     SDL_GetWindowSizeInPixels(g_win, &w, &h);
@@ -1624,7 +1615,6 @@ void video_poll(void) {
         if (!fatal_screen(left)) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", left, g_win);
         plat_exit_now(1);
     }
-    if (g_win && vpad_skin_changed()) controls_skin(); /* controls_skin set again since the last poll */
     /* the menu, or the keyboard's box, had the controls when this poll began: the press that closes it (B, or A that
        gives the box's line) is in this poll's state */
     int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown();
