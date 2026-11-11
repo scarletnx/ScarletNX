@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The native nn::fs (nn_fs.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
+# nn::fs: the file system API of the SDK, run natively on the runtime's own back end, with no fsp-srv
+# session. A mount that the native layer made answers natively. Every other mount name and every handle that the SDK
+# made run the function's own code, so the mount kinds move over one at a time. The functions that take a path or a
+# handle are all here, the ones the game does not import too, because a native mount name or handle must never reach
+# the SDK's own code
+family nn_fs
+hook _ZN2nn2fs8MountRomEPKcPvm(const char* name, addr cache, u64 cache_size) -> u32 = nnfs_mount_rom
+hook _ZN2nn2fs22QueryMountRomCacheSizeEPm(u64* size) -> u32 = nnfs_query_mount_rom_cache_size
+hook _ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE(const char* name, addr uid) -> u32 = nnfs_mount_save_data
+hook _ZN2nn2fs17MountCacheStorageEPKc(const char* name) -> u32 = nnfs_mount_cache_storage
+hook _ZN2nn2fs17MountCacheStorageEPKci(const char* name, i32 index) -> u32 = nnfs_mount_cache_storage_index
+hook _ZN2nn2fs21MountTemporaryStorageEPKc(const char* name) -> u32 = nnfs_mount_temporary_storage
+hook _ZN2nn2fs7UnmountEPKc(const char* name) = nnfs_unmount
+hook _ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci(addr handle, const char* path, i32 mode) -> u32 = nnfs_open_file
+hook _ZN2nn2fs9CloseFileENS0_10FileHandleE(u64 h) = nnfs_close_file
+hook _ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm(u64* read, u64 h, i64 offset, addr buffer, u64 size) -> u32 = nnfs_read_file
+hook _ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvmRKNS0_10ReadOptionE(u64* read, u64 h, i64 offset, addr buffer, u64 size, addr option) -> u32 = nnfs_read_file_option
+hook _ZN2nn2fs8ReadFileENS0_10FileHandleElPvm(u64 h, i64 offset, addr buffer, u64 size) -> u32 = nnfs_read_file_exact
+hook _ZN2nn2fs8ReadFileENS0_10FileHandleElPvmRKNS0_10ReadOptionE(u64 h, i64 offset, addr buffer, u64 size, addr option) -> u32 = nnfs_read_file_exact_option
+hook _ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE(u64 h, i64 offset, addr buffer, u64 size, addr option) -> u32 = nnfs_write_file
+hook _ZN2nn2fs9FlushFileENS0_10FileHandleE(u64 h) -> u32 = nnfs_flush_file
+hook _ZN2nn2fs11SetFileSizeENS0_10FileHandleEl(u64 h, i64 size) -> u32 = nnfs_set_file_size
+hook _ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE(i64* size, u64 h) -> u32 = nnfs_get_file_size
+hook _ZN2nn2fs15GetFileOpenModeENS0_10FileHandleE(u64 h) -> i32 = nnfs_get_file_open_mode
+hook _ZN2nn2fs10QueryRangeEPNS0_14QueryRangeInfoENS0_10FileHandleEll(addr info, u64 h, i64 offset, i64 size) -> u32 = nnfs_query_range
+hook _ZN2nn2fs15InvalidateCacheENS0_10FileHandleE(u64 h) -> u32 = nnfs_invalidate_cache
+hook _ZN2nn2fs14MountRomOnFileEPKcNS0_10FileHandleEPvm(const char* name, u64 h, addr cache, u64 cache_size) -> u32 = nnfs_mount_rom_on_file
+hook _ZN2nn2fs28QueryMountRomOnFileCacheSizeEPmNS0_10FileHandleE(u64* size, u64 h) -> u32 = nnfs_query_mount_rom_on_file_cache_size
+hook _ZN2nn2fs20QueryUnpreparedRangeEPNS0_5RangeENS0_10FileHandleE(addr range, u64 h) -> u32 = nnfs_query_unprepared_range
+hook _ZN2nn2fs26QueryUnpreparedRangeDetailEPNS0_19UnpreparedRangeInfoENS0_10FileHandleE(addr info, u64 h) -> u32 = nnfs_query_unprepared_range_detail
+hook _ZN2nn2fs27QueryLazyLoadCompletionRateEPiNS0_10FileHandleEi(i32* rate, u64 h, i32 unknown) -> u32 = nnfs_query_lazy_load_completion_rate
+hook _ZN2nn2fs33ReadyLazyLoadFileForciblyForDebugENS0_10FileHandleEll(u64 h, i64 offset, i64 size) -> u32 = nnfs_ready_lazy_load_file
+hook _ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci(addr handle, const char* path, i32 mode) -> u32 = nnfs_open_directory
+hook _ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl(i64* count, addr entries, u64 h, i64 max) -> u32 = nnfs_read_directory
+hook _ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE(i64* count, u64 h) -> u32 = nnfs_get_directory_entry_count
+hook _ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE(u64 h) = nnfs_close_directory
+hook _ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc(addr type, const char* path) -> u32 = nnfs_get_entry_type
+hook _ZN2nn2fs10CreateFileEPKcl(const char* path, i64 size) -> u32 = nnfs_create_file
+hook _ZN2nn2fs10CreateFileEPKcli(const char* path, i64 size, i32 option) -> u32 = nnfs_create_file_option
+hook _ZN2nn2fs10DeleteFileEPKc(const char* path) -> u32 = nnfs_delete_file
+hook _ZN2nn2fs15CreateDirectoryEPKc(const char* path) -> u32 = nnfs_create_directory
+hook _ZN2nn2fs15DeleteDirectoryEPKc(const char* path) -> u32 = nnfs_delete_directory
+hook _ZN2nn2fs26DeleteDirectoryRecursivelyEPKc(const char* path) -> u32 = nnfs_delete_directory_recursively
+hook _ZN2nn2fs25CleanDirectoryRecursivelyEPKc(const char* path) -> u32 = nnfs_clean_directory_recursively
+hook _ZN2nn2fs10RenameFileEPKcS2_(const char* from, const char* to) -> u32 = nnfs_rename_file
+hook _ZN2nn2fs15RenameDirectoryEPKcS2_(const char* from, const char* to) -> u32 = nnfs_rename_directory
+hook _ZN2nn2fs16GetFreeSpaceSizeEPlPKc(i64* size, const char* path) -> u32 = nnfs_get_free_space_size
+hook _ZN2nn2fs17GetTotalSpaceSizeEPlPKc(i64* size, const char* path) -> u32 = nnfs_get_total_space_size
+hook _ZN2nn2fs6CommitEPKc(const char* name) -> u32 = nnfs_commit
+hook _ZN2nn2fs6CommitEPKcRKNS0_12CommitOptionE(const char* name, addr option) -> u32 = nnfs_commit_option
+hook _ZN2nn2fs14CommitSaveDataEPKc(const char* name) -> u32 = nnfs_commit_save_data
+hook _ZN2nn2fs17MountAddOnContentEPKciPvm(const char* name, i32 index, addr cache, u64 cache_size) -> u32 = nnfs_mount_add_on_content
+hook _ZN2nn2fs31QueryMountAddOnContentCacheSizeEPmi(u64* size, i32 index) -> u32 = nnfs_query_mount_add_on_content_cache_size
+hook _ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE(addr uid) -> u32 = nnfs_ensure_save_data
+hook _ZN2nn2fs14ExtendSaveDataERKNS_7account3UidEll(addr uid, i64 size, i64 journal_size) -> u32 = nnfs_extend_save_data
+hook _ZN2nn2fs15GetSaveDataSizeEPlS1_RKNS_7account3UidE(i64* size, i64* journal_size, addr uid) -> u32 = nnfs_get_save_data_size
+hook _ZN2nn2fs18CreateCacheStorageEill(i32 index, i64 size, i64 journal_size) -> u32 = nnfs_create_cache_storage
+hook _ZN2nn2fs18DeleteCacheStorageEi(i32 index) -> u32 = nnfs_delete_cache_storage
+hook _ZN2nn2fs19GetCacheStorageSizeEPlS1_i(i64* size, i64* journal_size, i32 index) -> u32 = nnfs_get_cache_storage_size
+hook _ZN2nn2fs20OpenCacheStorageListEPNS0_22CacheStorageListHandleE(addr handle) -> u32 = nnfs_open_cache_storage_list
+hook _ZN2nn2fs20ReadCacheStorageListEPiPNS0_16CacheStorageInfoENS0_22CacheStorageListHandleEi(i32* count, addr infos, u64 h, i32 max) -> u32 = nnfs_read_cache_storage_list
+hook _ZN2nn2fs21CloseCacheStorageListENS0_22CacheStorageListHandleE(u64 h) = nnfs_close_cache_storage_list
+hook _ZN2nn2fs6detail18IsEnabledAccessLogEv() -> bool = nnfs_is_enabled_access_log
+hook _ZN2nn2fs6detail18IsEnabledAccessLogEj(u32 mask) -> bool = nnfs_is_enabled_access_log_mask
+hook _ZN2nn2fs16IsSdCardInsertedEv() -> bool = nnfs_is_sd_card_inserted
+hook _ZN2nn2fs11MountSdCardEPKc(const char* name) -> u32 = nnfs_mount_sd_card
+hook _ZN2nn2fs13MountHostRootEv() -> u32 = nnfs_mount_host_root
+hook _ZN2nn2fs13MountHostRootERKNS0_15MountHostOptionE(addr option) -> u32 = nnfs_mount_host_root_option
