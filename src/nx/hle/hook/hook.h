@@ -156,6 +156,9 @@ int hook_routed(const char* name);
 /* puts the hooks in [addr, addr + size) back in their slots after the JIT dropped what was compiled there
    (jit_code_invalidate), where the function is still executable code */
 void hook_restore(u64 addr, u64 size);
+/* what the dispatch slot of addr holds for a hooked function, its handler's adapter or verify mode's check, for as
+   long as the game runs; NULL when addr isn't hooked */
+GuestFn hook_function(u64 addr);
 /* the recompiled code of the function at addr when it is hooked, for a handler that hands a case back to it with the
    CPU as the function's call left it; NULL when addr isn't hooked */
 GuestFn hook_original(u64 addr);

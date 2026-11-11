@@ -180,7 +180,7 @@ static int hook_put(int k, u64 addr, const char* name, const unsigned char verif
     h->fn[h->count] = verify[hook_family[k]] && hook_verify[k].pure ? verify_fn : hook_fn[k];
     __atomic_store_n(slot, h->fn[h->count], __ATOMIC_RELEASE);
     nce_slot_taken(addr, hook_family_name[hook_family[k]]);
-    jit_slot_taken(addr);
+    jit_slot_taken(addr, h->fn[h->count]);
     h->count++;
     if (!hook_routed(hook_symbol[k]))
         WARN("hooks: %s at %llx runs %s only for the calls through the PLT and function pointers: the module's "
@@ -289,6 +289,11 @@ void hook_restore(u64 addr, u64 size) {
         if (block.state == MS_FREE || !(block.perm & PERM_X)) continue; /* no longer code: the hook goes with it */
         __atomic_store_n(&g_disp[(a - g_code_lo) >> 2], h->fn[i], __ATOMIC_RELEASE);
     }
+}
+
+GuestFn hook_function(u64 addr) {
+    int i = site_of(addr);
+    return i < 0 ? NULL : g_hle.hook.fn[i];
 }
 
 GuestFn hook_original(u64 addr) {

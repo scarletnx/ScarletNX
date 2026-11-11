@@ -508,16 +508,18 @@ static NroModule* g_nro_modules;
 /* An import of an NRO's module that has no function of the game's to call: through the dispatch table, where a hook,
    the JIT's code or RtAPI.miss answers for the address */
 static void nro_import_dynamic(CPU* c, u64 pc) { snx_lookup(c, pc)(c, pc); }
-/* The NRO module's imports (its snx_imports, nro_slots.h) each bound to the game module's function for its address:
-   the entry the module has there, when its dispatch slot holds that very function. A slot that holds anything else (a
-   hook, NVN's implementation) keeps the call going through the table, and one that is given another function later
-   takes the import back to it (jit_slot_taken). Said: how many are direct. Under g_fn_lock */
+/* The NRO module's imports (its snx_imports, nro_slots.h) each bound to the function that answers its address: what
+   its dispatch slot holds, when that is the game module's entry there, or the function the runtime gave the slot in
+   its place, a hook's or NVN's, which wins over the game's own. One given such a function later is bound to it then
+   (jit_slot_taken). A slot that holds anything else can change again without a word, and keeps the call going through
+   the table: code the JIT made, a profile pack's variant, or nothing (a function gone stale, or never compiled).
+   Said: how many are direct, and how many of those the runtime's own. Under g_fn_lock */
 static const SnxNroImports* nro_imports_bind(void* library, u64 base) {
     typedef const SnxNroImports* (*ImportsFn)(void);
     const SnxNroImports* im;
     ImportsFn get;
     void* sym = plat_dl_sym(library, "snx_imports");
-    u32 i, direct = 0;
+    u32 i, direct = 0, own = 0;
     if (!sym) return NULL;
     memcpy(&get, &sym, sizeof get);
     im = get();
@@ -529,7 +531,7 @@ static const SnxNroImports* nro_imports_bind(void* library, u64 base) {
     }
     for (i = 0; i < im->count; i++) {
         u64 a = im->address[i];
-        GuestFn f = nro_import_dynamic, entry;
+        GuestFn f = nro_import_dynamic, entry = NULL, held = NULL;
         size_t lo = 0, hi = g_mod->nentries;
         while (lo < hi) {
             size_t middle = lo + (hi - lo) / 2;
@@ -538,16 +540,23 @@ static const SnxNroImports* nro_imports_bind(void* library, u64 base) {
             else
                 hi = middle;
         }
-        if (lo < g_mod->nentries && g_mod->entry_addr[lo] == a && a >= g_code_lo && a < g_code_hi &&
-            (entry = __atomic_load_n(&g_mod->entry_fn[lo], __ATOMIC_ACQUIRE)) != NULL &&
-            __atomic_load_n(&g_disp[(a - g_code_lo) >> 2], __ATOMIC_ACQUIRE) == entry) {
-            f = entry;
+        if (lo < g_mod->nentries && g_mod->entry_addr[lo] == a)
+            entry = __atomic_load_n(&g_mod->entry_fn[lo], __ATOMIC_ACQUIRE);
+        if (a >= g_code_lo && a < g_code_hi && !(a & 3))
+            held = __atomic_load_n(&g_disp[(a - g_code_lo) >> 2], __ATOMIC_ACQUIRE);
+        if (held && held == entry) {
+            f = held;
             direct++;
+        } else if (held && (held == hook_function(a) || nvn_loader_handler(held))) {
+            f = held;
+            direct++;
+            own++;
         }
         __atomic_store_n((GuestFn*)&im->function[i], f, __ATOMIC_RELEASE);
     }
-    LOG("jit: the NRO at %llx calls %u of the %u functions of the game its module imports directly\n",
-        (unsigned long long)base, (unsigned)direct, (unsigned)im->count);
+    LOG("jit: the NRO at %llx calls %u of the %u functions of the game its module imports directly, %u of them the "
+        "runtime's own in the game's place (hooks, NVN)\n",
+        (unsigned long long)base, (unsigned)direct, (unsigned)im->count, (unsigned)own);
     return im;
 }
 
@@ -645,10 +654,10 @@ int jit_nro_added(const u8* hash, u64 base, u64 size, const u8* id, u32* entries
     return m ? 0 : refused ? -1 : 1;
 }
 
-void jit_slot_taken(u64 addr) {
+void jit_slot_taken(u64 addr, GuestFn fn) {
     u32 k;
     if (!g_nros) return;
-    /* after the slot's store: a bind that read the slot before it is under this lock, and is undone here */
+    /* after the slot's store: a bind that read the slot before it is under this lock, and is made again here */
     pm_lock(&g_fn_lock);
     for (k = 0; g_nro_modules && k < g_nros->count; k++) {
         const SnxNroImports* im = g_nro_modules[k].imports;
@@ -661,7 +670,7 @@ void jit_slot_taken(u64 addr) {
                 hi = middle;
         }
         if (im && lo < im->count && im->address[lo] == addr)
-            __atomic_store_n((GuestFn*)&im->function[lo], nro_import_dynamic, __ATOMIC_RELEASE);
+            __atomic_store_n((GuestFn*)&im->function[lo], fn, __ATOMIC_RELEASE);
     }
     pm_unlock(&g_fn_lock);
 }
