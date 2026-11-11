@@ -56,6 +56,21 @@ static void store(const char* key, const char* value) {
     snprintf(stored_value, sizeof stored_value, "%s", value);
     ++stores;
 }
+/* whether edit mode's bar on l, at scale s, says text in its middle part: 18 cells side by side from where bar() puts
+   it (5 + 2 columns after the bar's start, the bar 42 columns wide in the middle across), a blank one drawing nothing */
+static int bar_says(const SnxUiList* l, int s, const char* text) {
+    float x = (float)safe[0] + ((float)safe[2] - (float)(42 * 8 * s)) / 2 + (float)(7 * 8 * s), y = (float)(8 * s);
+    int i, k;
+    for (i = 0; i + 18 <= l->n; ++i) {
+        for (k = 0; k < 18; ++k) {
+            SnxUiQuadView q = ui_view(&l->q[i + k]);
+            if (q.ink != UI_GLYPH || q.x != x + (float)(k * 8 * s) || q.y != y || q.w != (float)(8 * s)) break;
+            if (text[k] == ' ' ? q.uw != 0 : q.uw != 8 || q.glyph != (u8)text[k]) break;
+        }
+        if (k == 18) return 1;
+    }
+    return 0;
+}
 /* a control's middle on safe, as box() puts it */
 static float mx(int c) { return (float)safe[0] + vpad_config()->at[c].x * (float)safe[2]; }
 static float my(int c) { return (float)safe[1] + vpad_config()->at[c].y * (float)safe[3]; }
@@ -334,8 +349,26 @@ int main(void) {
         }
         assert(inked == 1);
         stores = 0;
+        assert(bar_says(&bar, s, "      A 100%      "));
         assert(vpad_down(14, plus_x + 2, y + 2, safe) && vpad_up(14));
         assert(vpad_config()->at[SNX_VPAD_A].size == 110 && stores == 1);
+        /* the bar's middle is a field of 18 cells, the control's name and size in its middle: another size and another
+           control write other letters in the same quads, as many whatever the name's length, and only the sized
+           control and the four sides of its frame move */
+        {
+            SnxUiQuad was[512];
+            int k, moved = 0, n = bar.n;
+            memcpy(was, bar.q, (size_t)n * sizeof *was);
+            draw(&bar);
+            assert(bar.n == n && bar_says(&bar, s, "      A 110%      "));
+            for (k = 0; k < n; ++k)
+                moved += was[k].x != bar.q[k].x || was[k].y != bar.q[k].y || was[k].w != bar.q[k].w ||
+                         was[k].h != bar.q[k].h;
+            assert(moved == 5);
+            assert(vpad_down(16, mx(SNX_VPAD_STICK_R), my(SNX_VPAD_STICK_R), safe) && vpad_up(16));
+            draw(&bar);
+            assert(bar.n == n && bar_says(&bar, s, " Right stick 100% "));
+        }
         assert(vpad_down(15, done_x + 2, y + 2, safe) && !vpad_editing());
     }
     /* the showcase: player 1's controller as the game got it, in showcase_corner's corner, the frames a second over it */

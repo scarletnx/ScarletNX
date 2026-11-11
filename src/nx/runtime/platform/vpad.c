@@ -256,7 +256,8 @@ static void stick_at(int c, float x, float y, const int safe[4]) {
 
 /* edit mode's bar on top: less, the selected control's size, more, done; in cells of 8x16 at a whole scale */
 enum { BAR_LESS, BAR_SIZE, BAR_MORE, BAR_DONE, BAR_COUNT };
-static const int BAR_COLS[BAR_COUNT] = {5, 18, 5, 8};
+enum { BAR_COLS_SIZE = 18 }; /* the middle part's cells: the longest name, a space and "200%" fit */
+static const int BAR_COLS[BAR_COUNT] = {5, BAR_COLS_SIZE, 5, 8};
 static int bar_scale(const int safe[4]) {
     int s = (safe[2] < safe[3] ? safe[2] : safe[3]) / 360;
     return s < 1 ? 1 : s;
@@ -463,8 +464,9 @@ static void outline(SnxUiList* l, const float r[4], float t, u32 rgba) {
 }
 static void edit_draw(SnxUiList* l, const int safe[4]) {
     float b[BAR_COUNT][4], r[4], g = grid(safe), v;
-    int s = bar_scale(safe);
-    char label[32];
+    int s = bar_scale(safe), first, n = 0, k;
+    char said[BAR_COLS_SIZE + 24], label[BAR_COLS_SIZE + 1]; /* said: a name cut to the field, a space, a size, % */
+    const char* name = g_selected >= 0 ? INFO[g_selected].name : "Tap a control";
     if (g_settings.snap_to_grid && g > 0) {
         for (v = (float)safe[0]; v <= (float)(safe[0] + safe[2]); v += g)
             ui_fill(l, v, (float)safe[1], 1, (float)safe[3], UI_WHITE);
@@ -479,12 +481,22 @@ static void edit_draw(SnxUiList* l, const int safe[4]) {
     ui_fill(l, b[0][0] - (float)(8 * s), b[0][1] - (float)(4 * s),
             b[BAR_DONE][0] + b[BAR_DONE][2] - b[0][0] + (float)(16 * s), (float)(24 * s), UI_INK);
     ui_text(l, b[BAR_LESS][0], b[BAR_LESS][1], s, "[ - ]", UI_PAGE);
-    if (g_selected >= 0)
-        snprintf(label, sizeof label, "%s %d%%", INFO[g_selected].name, g_vpad.at[g_selected].size);
-    else
-        snprintf(label, sizeof label, "Tap a control");
-    ui_text(l, b[BAR_SIZE][0] + (b[BAR_SIZE][2] - (float)(strlen(label) * 8 * (size_t)s)) / 2, b[BAR_SIZE][1], s, label,
-            UI_PAGE);
+    /* the picked control's name and size, or what to do: a field of cells (ui_cells) over the bar's middle part, which
+       takes the same quads at the same places whatever it says, so that a size stepped or another control picked
+       changes its letters and moves nothing after it. In its middle by whole cells, written without printf */
+    while (name[n] && n < BAR_COLS_SIZE) said[n] = name[n], ++n;
+    if (g_selected >= 0) {
+        said[n++] = ' ';
+        n = (int)(ui_put_u(said + n, (u64)g_vpad.at[g_selected].size) - said);
+        said[n++] = '%';
+    }
+    if (n > BAR_COLS_SIZE) n = BAR_COLS_SIZE;
+    k = (BAR_COLS_SIZE - n) / 2;
+    memset(label, ' ', (size_t)k);
+    memcpy(label + k, said, (size_t)n);
+    label[k + n] = 0;
+    first = ui_cells(l, b[BAR_SIZE][0], b[BAR_SIZE][1], s, BAR_COLS_SIZE, UI_PAGE);
+    if (first >= 0) ui_cells_set(&l->q[first], BAR_COLS_SIZE, label);
     ui_text(l, b[BAR_MORE][0], b[BAR_MORE][1], s, "[ + ]", UI_PAGE);
     ui_text(l, b[BAR_DONE][0], b[BAR_DONE][1], s, "[ Done ]", UI_PAGE);
 }
