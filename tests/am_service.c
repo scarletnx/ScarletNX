@@ -8,6 +8,8 @@
 #include "nx/hle/services/am.c"
 #include "nx/hle/hle.c"
 
+extern u64 g_test_offscreen_opened, g_test_offscreen_closed; /* am_service_stubs.c */
+
 u8* g_mem;
 static unsigned test_checks, test_objects, test_kobjs;
 static u32 test_next_handle = 0x100;
@@ -168,10 +170,13 @@ SvcObj* ipc_in_obj(IpcCtx* c, int index) {
     return NULL;
 }
 void kevent_clear(KEvent* e) { e->signaled = 0; }
+/* the game's transfer memory behind handle TEST_TMEM_HANDLE, the only handle a lookup finds */
+#define TEST_TMEM_HANDLE 0x77
+static KTmem test_tmem = {.o = {.type = KO_TMEM, .refs = 1}, .addr = 0x10000000, .size = 0x6000000};
 KObj* h_get_ref(u32 h, int type) {
-    (void)h;
-    (void)type;
-    return NULL;
+    if (h != TEST_TMEM_HANDLE || type != KO_TMEM) return NULL;
+    kobj_ref(&test_tmem.o);
+    return &test_tmem.o;
 }
 volatile int g_quit;
 void set_language_code(int lang, u8 code[8]) {
@@ -900,6 +905,69 @@ static void test_mii_edit(void) {
     close_handles();
     CHECK(test_objects == 0 && test_kobjs == 0);
 }
+/* one command through o's dispatcher, with raw_size bytes of raw and copy (0: none) as its copy handle, as the SDK's
+   client sends it: its result, the reply in c */
+static int movie_call(SvcObj* o, IpcCtx* c, u32 cmd, const u8* raw, u32 raw_size, u32 copy) {
+    memset(c, 0, sizeof *c);
+    c->cmd = cmd;
+    c->raw = raw;
+    c->raw_size = raw_size;
+    c->ncopy = copy != 0;
+    c->copy_h[0] = copy;
+    return o->dispatch(o, c);
+}
+/* nn::album's movie maker as InitializeMovieMaker and StartMovieMaker drive it: CreateMovieMaker over the game's
+   transfer memory gives am's IMovieMaker, whose grc movie maker opens the layer am made in vi (with the binder id vi
+   gives it) and gives the video proxy and the layer's two events, as the SDK needs or it aborts. Every recording is
+   refused with capsrv's NotSupported, said; each movie maker has its own layer */
+static void test_movie_maker(void) {
+    SvcObj *functions = nn_am_service_IApplicationFunctions_new(), *maker, *grc;
+    u8 raw[0x88] = {0};
+    IpcCtx c;
+    u64 layer;
+    char line[160];
+    g_hle.am.next_layer = 1;     /* as am_init starts it */
+    snx_st_le64(raw, 0x6000000); /* the SDK's work memory's size */
+    CHECK(movie_call(functions, &c, 1000, raw, 8, 0x99) == RC(1, 114) && !c.out_objs[0]); /* not a transfer memory */
+    CHECK(movie_call(functions, &c, 1000, raw, 8, TEST_TMEM_HANDLE) == 0 && c.nout_objs == 1 && c.out_objs[0]);
+    maker = c.out_objs[0];
+    CHECK(!strcmp(maker->name, "nn::am::service::IMovieMaker") && test_tmem.o.refs == 1);
+    CHECK(movie_call(maker, &c, 1, NULL, 0, 0) == 0 && c.out_size == 8);
+    layer = snx_ld_le64(c.out);
+    CHECK(layer != 0);
+    CHECK(movie_call(maker, &c, 0, NULL, 0, 0) == 0 && c.nout_objs == 1 && c.out_objs[0]);
+    grc = c.out_objs[0];
+    CHECK(!strcmp(grc->name, "nn::grcsrv::IMovieMaker"));
+    CHECK(movie_call(grc, &c, 2, NULL, 0, 0) == 0 && c.nout_objs == 1 && c.out_objs[0]);
+    CHECK(!strcmp(c.out_objs[0]->name, "nns::hosbinder::IHOSBinderDriver"));
+    svcobj_unref(c.out_objs[0]);
+    snx_st_le64(raw, 0x80000); /* SetAlbumShimLibraryVersion */
+    CHECK(movie_call(grc, &c, 9, raw, 8, 0) == 0);
+    snx_st_le64(raw, layer);
+    CHECK(movie_call(grc, &c, 10, raw, 8, 0) == 0 && c.out_size == 4 && get32(c.out) == 2);
+    CHECK(g_test_offscreen_opened == layer);
+    CHECK(movie_call(grc, &c, 50, raw, 8, 0) == 0 && c.nout_copy == 1); /* the finish ready event */
+    CHECK(movie_call(grc, &c, 52, raw, 8, 0) == 0 && c.nout_copy == 1); /* the audio encode ready event */
+    CHECK(movie_call(grc, &c, 24, raw, 0x88, 0) == RC(206, 1023));      /* StartOffscreenRecordingEx */
+    snprintf(line, sizeof line,
+             "am: no movie is recorded here: StartOffscreenRecordingEx of layer %llu answers capsrv's NotSupported "
+             "(0x7fece)\n",
+             (unsigned long long)layer);
+    CHECK(log_has(line));
+    CHECK(movie_call(grc, &c, 20, raw, 8, 0) == RC(206, 1023)); /* StartOffscreenRecording */
+    CHECK(movie_call(grc, &c, 30, raw, 8, 0) == 0);             /* the layer has no error */
+    CHECK(movie_call(grc, &c, 11, raw, 8, 0) == 0 && g_test_offscreen_closed == layer);
+    svcobj_unref(grc);
+    svcobj_unref(maker);
+    snx_st_le64(raw, 0x6000000);
+    CHECK(movie_call(functions, &c, 1000, raw, 8, TEST_TMEM_HANDLE) == 0 && c.nout_objs == 1 && c.out_objs[0]);
+    maker = c.out_objs[0];
+    CHECK(movie_call(maker, &c, 1, NULL, 0, 0) == 0 && snx_ld_le64(c.out) != layer);
+    svcobj_unref(maker);
+    svcobj_unref(functions);
+    test_log[0] = 0;
+    close_handles();
+}
 /* ICommonStateGetter: 130 queues the start-up logo's message, 95, behind the focus and performance ones at startup;
    1000 to 1002 keep 3D VR mode; 300 says the platform region is Global */
 static void test_state_getter(void) {
@@ -1011,6 +1079,7 @@ int main(void) {
     test_am_command_replies();
     test_applets();
     test_web_versions();
+    test_movie_maker();
     CHECK(test_objects == 0 && test_kobjs == 0);
     test_messages();
     test_display_mode_changed();

@@ -21,6 +21,16 @@ int ipc_unknown(SvcObj* obj, IpcCtx* c) {
 }
 SvcObj* new_gsv_session(void) { return svcobj_new("nn::gsv::UserSession", ipc_unknown); }
 
+/* vi's offscreen layers (vi.c), which am's movie maker opens: the layer opened and closed last, and the binder id */
+extern u64 g_test_offscreen_opened, g_test_offscreen_closed;
+u64 g_test_offscreen_opened, g_test_offscreen_closed;
+int vi_offscreen_layer_open(u64 layer_id) {
+    g_test_offscreen_opened = layer_id;
+    return 2;
+}
+void vi_offscreen_layer_close(u64 layer_id) { g_test_offscreen_closed = layer_id; }
+SvcObj* vi_binder_driver_new(void) { return svcobj_new("nns::hosbinder::IHOSBinderDriver", ipc_unknown); }
+
 extern const u8* g_test_nacp;
 extern u64 g_test_nacp_size;
 const u8* g_test_nacp;

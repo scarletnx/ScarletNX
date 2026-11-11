@@ -55,6 +55,11 @@ SvcObj* new_appletoe(void);
 SvcObj* new_appletae(void);
 SvcObj* new_gsv_session(void); /* the TIPC graphics supervisor session that am returns */
 
+/* ---- vi.c: grc's offscreen layers, which am's movie maker opens */
+int vi_offscreen_layer_open(u64 layer_id); /* its binder id, 0 when no layer is free */
+void vi_offscreen_layer_close(u64 layer_id);
+SvcObj* vi_binder_driver_new(void); /* an IHOSBinderDriver: the video proxy the layers are reached through */
+
 /* ---- users.c: the console's users (common/utilities/users.h) */
 void snx_users_init(void); /* snx_users_load of the data folder's users/, the game stopped if it says no */
 
@@ -238,7 +243,8 @@ typedef struct {
     u32 msgs[AM_MESSAGES];
     u32 head, count;
     int preselected_popped; /* the preselected user launch parameter is given once */
-    u64 next_layer;         /* CreateManagedDisplayLayer's ids, from 1 */
+    u64 next_layer;         /* CreateManagedDisplayLayer's ids, from 1, and the movie makers' layers' */
+    u64 movie_layer;        /* the offscreen layer of the movie maker CreateMovieMaker made last */
     u32 idle_extension;     /* ISelfController's two settings a game reads back, as it made them */
     u8 auto_sleep_disabled;
     u8 vr_mode_3d;          /* on between BeginVrMode3d and EndVrMode3d */
