@@ -1294,9 +1294,9 @@ void plat_gpu_buffer_free(int fd, void* handle, u64 size) {
 #endif
 }
 
-#if defined(__linux__)
-/* the alias pool's memfd, whose name its mappings carry in /proc/self/maps */
+/* the alias pool's memfd, whose name its mappings carry in Linux's /proc/self/maps */
 #define ALIAS_NAME "snx-alias"
+#if defined(__linux__)
 #define ALIAS_MAPS "/memfd:" ALIAS_NAME " (deleted)"
 /* Each whole line of the maps read from fd, to line(line, ctx), which stops the reading by returning nonzero. 0 at the
    end of the file or when line stopped it; -1 when a read fails (errno), which says nothing of what follows: the
@@ -1396,11 +1396,14 @@ int plat_vm_foreign(u64 lo, u64 hi, int (*own)(u64 a, u64 b), char* out, size_t 
 #endif
 }
 
-/* The alias pool (Linux and Android): one memfd, as large as asked and sparse, whose pages mem.c maps at guest
-   addresses with MAP_SHARED, so two addresses of the reservation (and a service's mapping outside it) are the same
-   pages, and a freed range is punched out so it reads zero when handed out again. The other systems here keep mem.c's
-   copies: the pool is untested there (FreeBSD has memfd_create and, from 14, fspacectl to free a range; Apple has
-   shm_open, whose descriptors can't be read or written, and no way to free part of one) */
+/* The alias pool (Linux, Android and FreeBSD from 14): one memfd, as large as asked and sparse, whose pages mem.c maps
+   at guest addresses with MAP_SHARED, so two addresses of the reservation (and a service's mapping outside it) are the
+   same pages, and a freed range is punched out so it reads zero when handed out again: fallocate's
+   FALLOC_FL_PUNCH_HOLE, and FreeBSD's fspacectl SPACECTL_DEALLOC. The other systems here keep mem.c's copies: the pool
+   is untested there (Apple has shm_open, whose descriptors can't be read or written, and no way to free part of one) */
+#if defined(__FreeBSD__) && defined(SPACECTL_DEALLOC) && defined(MFD_CLOEXEC)
+#define SNX_ALIAS_FREEBSD 1
+#endif
 static int g_alias = -1;
 static u64 g_alias_size;
 
@@ -1413,6 +1416,16 @@ int plat_alias_init(u64 size) {
         return -1;
     }
     g_alias = (int)fd; /* mem_init, before any other thread */
+    g_alias_size = size;
+    return 0;
+#elif defined(SNX_ALIAS_FREEBSD)
+    int fd = memfd_create(ALIAS_NAME, MFD_CLOEXEC);
+    if (fd < 0) return -1;
+    if (ftruncate(fd, (off_t)size)) {
+        close(fd);
+        return -1;
+    }
+    g_alias = fd; /* mem_init, before any other thread */
     g_alias_size = size;
     return 0;
 #else
@@ -1498,6 +1511,12 @@ void plat_alias_free(u64 off, u64 size) {
 #if defined(__linux__) && defined(FALLOC_FL_PUNCH_HOLE)
     if (g_alias >= 0 && fallocate(g_alias, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, (off_t)off, (off_t)size))
         fatal("Could not free %llu KiB of the alias pool (error %d)", (unsigned long long)(size >> 10), errno);
+#elif defined(SNX_ALIAS_FREEBSD)
+    /* fspacectl can stop short of the range, with what is left in its last argument */
+    struct spacectl_range range = {(off_t)off, (off_t)size};
+    while (g_alias >= 0 && range.r_len > 0)
+        if (fspacectl(g_alias, SPACECTL_DEALLOC, &range, 0, &range) && errno != EINTR)
+            fatal("Could not free %llu KiB of the alias pool (error %d)", (unsigned long long)(size >> 10), errno);
 #else
     (void)off;
     (void)size;
