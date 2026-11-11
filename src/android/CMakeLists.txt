@@ -151,6 +151,11 @@ add_custom_command(OUTPUT "${PROJECT_BINARY_DIR}/android-fonts/NotoSansJP-Subset
                    DEPENDS "${NotoSansJPSubset_SOURCE_DIR}/NotoSansJP-Subset.ttf")
 add_custom_target(snx_android_fonts DEPENDS "${PROJECT_BINARY_DIR}/android-fonts/NotoSansJP-Subset.ttf")
 add_dependencies(snx_android_program snx_android_fonts)
+# an install's scarletnx-android looks for both beside the program (runtime/main.c), as the build's does; their
+# licenses go with the rest (the top-level CMakeLists.txt)
+include(GNUInstallDirs)
+install_jar(snx_android_framework DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY "${PROJECT_BINARY_DIR}/android-fonts" DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # bionic's mutexes, conditions, rwlocks, barriers and semaphores (bridge/bionic_sync.c) on the GNU ABI kernel's futex
 if(BUILD_TESTING AND NOT WIN32)

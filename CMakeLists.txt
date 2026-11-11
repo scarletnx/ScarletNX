@@ -342,6 +342,13 @@ endif()
 if(TARGET CURL::libcurl)
     install(FILES "${curl_SOURCE_DIR}/COPYING" DESTINATION ${licenses}/curl)
 endif()
+# the Android app driver's framework jar, which follows the AOSP's source and CLDR's plural rules in places
+# (docs/CREDITS.md), and the text shaping its program links
+if(TARGET snx_android_framework)
+    install(FILES dist/licenses/AOSP/LICENSE.txt dist/licenses/AOSP/NOTICE.txt DESTINATION ${licenses}/AOSP)
+    install(FILES dist/licenses/Unicode/LICENSE.txt DESTINATION ${licenses}/Unicode)
+    install(FILES "${harfbuzz_SOURCE_DIR}/COPYING" DESTINATION ${licenses}/HarfBuzz)
+endif()
 if(APPLE) # the app's own files, its signature and CPack's package of it
     include(cmake/apple_package.cmake)
 endif()
