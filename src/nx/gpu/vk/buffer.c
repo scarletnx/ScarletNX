@@ -1466,6 +1466,106 @@ static int out_take_into_submit(GfxOut* m) {
     }
     return 1;
 }
+static u64 g_absorbed, g_absorbed_bytes;
+/* o, a result of one run of guest memory, holds all of [gva, gva + len) at the same address */
+static int out_holds(const GfxOut* o, u64 gva, u64 len) {
+    return o->cpu != ~0ull && gva >= o->addr && len <= o->size && gva - o->addr <= o->size - len;
+}
+/* n, a later result than h, is inside h at the same address and through the same guest memory, and h's buffer can
+   take its bytes: both of this frame's staging (a kept one is in its owner), n's guest bytes not written since either
+   was snapshotted */
+static int out_absorbable(const GfxOut* h, const GfxOut* n) {
+    u64 local[16], *rmap = NULL;
+    /* composed over h, so its staging holds guest bytes where its draw wrote none (a write-only one holds zeros
+       there), and its original bytes known now (not a GPU baseline still to come). Not one the draw being set up
+       writes in place: its stamp is ahead of the writes recorded (gfx_gpu_src), and its log goes to it at the
+       commit (g_pw) */
+    if (n->keep || !n->composed || n->no_input || n->initial || n->written > g_buffer.order.writes ||
+        n->frame_id != vk_frame_id() || !out_holds(h, n->addr, n->size) || n->cpu == ~0ull ||
+        n->cpu - h->cpu != n->addr - h->addr)
+        return 0;
+    for (u32 i = 0; i < g_npw; i++)
+        if (g_pw[i].o == n) return 0;
+    int ok = out_still_copyable(n, n->addr, n->size, &rmap, local) &&
+             out_still_copyable(h, n->addr, n->size, &rmap, local);
+    if (rmap && rmap != local) free(rmap);
+    return ok;
+}
+/* A binding that several pending results cover, inside one of them (h): the later results' bytes are copied into h's
+   buffer on the GPU, those results dropped, and h, taken into this submission, holds the range's bytes alone, for this
+   binding and the next ones to use in place. One game writes a storage range of 384 KB whole with a draw, then 16
+   bytes in it at an address a binding offset can't have (4 past a multiple of 16) with another, each a result of its
+   own composed from the first, and reads it in windows of 4 KB that hold those bytes: each read composed all of them
+   again, and ended the rendering pass to copy them (133 times a frame). Merged once, the reads after it bind h.
+   h compares with its original bytes when it lands (a logged one lands only its writers' bytes, and those of the
+   dropped results would be lost), and the dropped results' bytes are its own then: their guest bytes held h's
+   original ones, as both were still copyable. The result h, or NULL when no result can hold them */
+static GfxOut* out_absorb(u64 gva, u64 len) {
+    RangePages q;
+    OutList l;
+    GfxOut* h = NULL;
+    range_pages(gva, len, &q);
+    out_near(&l, gva, len, &q);
+    for (u32 i = l.n; i-- && !h;) /* the newest that holds the range */
+        if (out_holds(l.v[i], gva, len)) h = l.v[i];
+    out_list_free(&l);
+    if (!h || h->keep || !h->org || h->no_input || h->initial || h->frame_id != vk_frame_id()) return NULL;
+    /* every later result with bytes of h goes into it, or none does: h, the newest then, must hold all of theirs */
+    u64 local[16], *rmap = NULL;
+    u32 n = 0;
+    int ok = 1;
+    range_pages(h->addr, h->size, &q);
+    out_near(&l, h->addr, h->size, &q);
+    for (u32 i = 0; i < l.n && ok; i++) {
+        GfxOut* o = l.v[i];
+        if (o->seq <= h->seq || !out_meets(o, h->addr, h->size, &q, &rmap, local)) continue;
+        ok = out_absorbable(h, o);
+        l.v[n++] = o;
+    }
+    for (GfxOut* o = g_prep; o && ok; o = o->next) /* the draw being set up writes it: not yet recorded */
+        ok = !out_meets(o, h->addr, h->size, &q, &rmap, local);
+    if (rmap && rmap != local) free(rmap);
+    if (!ok || !n) {
+        out_list_free(&l);
+        return NULL;
+    }
+    /* the later results leave the lists and indexes unlanded (h lands their bytes), and h comes into this submission,
+       which no later result meets now, before anything is recorded */
+    for (u32 i = 0; i < n; i++) {
+        GfxOut* o = l.v[i];
+        GfxOut** pp = &g_out;
+        while (*pp != o) pp = &(*pp)->next;
+        *pp = o->next;
+        outx_result(o, -1);
+        out_pages(o, -1);
+    }
+    g_out_tail = NULL;
+    for (GfxOut* o = g_out; o; o = o->next) g_out_tail = o;
+    if (h->frame < vk_submit_number() && !out_take_into_submit(h))
+        fatal("vulkan: a storage result that took the later ones' bytes could not be written in this submission");
+    /* After every earlier read or write of h's buffer (it is read in place, as a vertex or index buffer too), and
+       after the later results' writes. In g_out's order: a newer result's bytes over an older one's */
+    CopyBatch c;
+    memset(&c, 0, sizeof c);
+    c.dst = h->buf;
+    vk_render_end();
+    copy_barrier(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, out_access(), VK_PIPELINE_STAGE_2_COPY_BIT,
+                 VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    c.started = 1;
+    for (u32 i = 0; i < n; i++) {
+        GfxOut* o = l.v[i];
+        copy_add(&c, o->buf, o->off, h->off + (o->addr - h->addr), o->size);
+        if (o->written > h->written) h->written = o->written;
+        if (copy_stats_on()) {
+            g_absorbed++;
+            g_absorbed_bytes += o->size;
+        }
+    }
+    copy_end(&c);
+    for (u32 i = 0; i < n; i++) out_free(l.v[i]); /* their staging stays until the frame is done */
+    out_list_free(&l);
+    return h;
+}
 /* A draw or dispatch can read an earlier one's storage result without a round trip through guest RAM. Returns 1 with
    that result's buffer itself in *buf, *off when the newest result over the range covers all of it, unchanged since,
    at an offset that is a multiple of align: from this submit when the reader writes it (its copy back for landing was
@@ -1537,6 +1637,13 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     out_list_free(&l);
     if (rmap && rmap != local) free(rmap);
     if (!count) return 0;
+    if (count > 1) { /* the later ones inside an earlier one: into its buffer once, for this binding and the next */
+        GfxOut* h = out_absorb(gva, len);
+        if (h) {
+            match = h;
+            count = 1;
+        }
+    }
     if (before) vk_frame_hold(vk_frame_id() - 1);
     if (count == 1 && gva >= match->addr && gva + len <= match->addr + match->size &&
         !((match->off + (gva - match->addr)) & (align - 1)) &&
@@ -3786,7 +3893,7 @@ static void buf_frame(void) {
         g_buffer.order.parallel_writes = g_buffer.order.explicit_barriers = 0;
         stage_report();
         vk_stage_report();
-        LOG("vulkan: buffer waits: draw=%llu/%llums read=%llu/%llums write=%llu/%llums signal=%llu/%llums syncwait=%llu/%llums map=%llu/%llums draw_landed=old_frame:%llu changed:%llu composed=%llu+%llu\n",
+        LOG("vulkan: buffer waits: draw=%llu/%llums read=%llu/%llums write=%llu/%llums signal=%llu/%llums syncwait=%llu/%llums map=%llu/%llums draw_landed=old_frame:%llu changed:%llu composed=%llu+%llu absorbed=%llu/%lluB\n",
             (unsigned long long)g_wb_reason[WB_DRAW], (unsigned long long)(g_wb_reason_ns[WB_DRAW] / 1000000),
             (unsigned long long)g_wb_reason[WB_READ], (unsigned long long)(g_wb_reason_ns[WB_READ] / 1000000),
             (unsigned long long)g_wb_reason[WB_WRITE], (unsigned long long)(g_wb_reason_ns[WB_WRITE] / 1000000),
@@ -3794,7 +3901,9 @@ static void buf_frame(void) {
             (unsigned long long)g_wb_reason[WB_SYNCWAIT], (unsigned long long)(g_wb_reason_ns[WB_SYNCWAIT] / 1000000),
             (unsigned long long)g_wb_reason[WB_MAP], (unsigned long long)(g_wb_reason_ns[WB_MAP] / 1000000),
             (unsigned long long)g_wb_draw_miss[0], (unsigned long long)g_wb_draw_miss[2],
-            (unsigned long long)g_wb_draw_miss[1], (unsigned long long)g_wb_draw_miss[3]);
+            (unsigned long long)g_wb_draw_miss[1], (unsigned long long)g_wb_draw_miss[3],
+            (unsigned long long)g_absorbed, (unsigned long long)g_absorbed_bytes);
+        g_absorbed = g_absorbed_bytes = 0;
         LOG("vulkan: writable storage over 600 presents: %llu bytes copied before the draws, %llu read back, %llu "
             "results merged, %llu bindings kept on the GPU\n",
             (unsigned long long)(g_buffer.wstat.copied - g_buffer.wstat_seen.copied),
