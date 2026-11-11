@@ -1,20 +1,37 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
-   Ported from Eden (src/core/hle/service/ns/platform_service_manager.cpp):
+   The fonts' placement in the shared memory is ported from Eden (src/core/hle/service/ns/platform_service_manager.cpp),
+   through the runtime's pl:u service that this file replaces:
    SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
    SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project (GPL-2.0-or-later) */
-/* pl:u and pl:s, the shared fonts: six TrueType fonts in one shared memory, each behind the 8 byte header the SDK
-   reads its size from. A font comes from the game folder's fonts/<Name>.bfttf (the console's file, decrypted here)
-   or fonts/<Name>.ttf, and otherwise from the stand-ins compiled in (cmake/shared_fonts.cmake): Noto Sans JP, SC,
-   TC and KR, one per script the six slots name, and yuzu's controller button glyphs for FontNintendoExtended. Each
-   Noto subset covers its script's standard character set (JIS X 0208, GB 2312, Big5, KS X 1001) and ASCII, so the
-   five together stay inside the 0x1100000 bytes the SDK maps */
-#include "nx/hle/services/services_int.h"
+/* nn::pl, native (pl.hook): the shared fonts, with no pl:u session. The behavior is that of a clean-room spec of the
+   SDK's functions, never the SDK's code. Six TrueType fonts are in one shared memory, each behind the 8 byte header
+   the SDK's font engine reads its size from. A font comes from the game folder's fonts/<Name>.bfttf (the console's
+   file, decrypted here) or fonts/<Name>.ttf, and otherwise from the stand-ins compiled in (cmake/shared_fonts.cmake):
+   Noto Sans JP, SC, TC and KR, one per script the six slots name, and yuzu's controller button glyphs for
+   FontNintendoExtended. Each Noto subset covers its script's standard character set (JIS X 0208, GB 2312, Big5,
+   KS X 1001) and ASCII, so the five together stay inside the 0x1100000 bytes the SDK maps.
+
+   The SDK maps that memory read only, once, at the first function that gives an address, and keeps the base for the
+   life of the process. The hooks do the same through the kernel (kshmem_map_free). Every font is loaded from the
+   start. The SDK stops the game on any failure of the service, so no function here returns one.
+
+   A later SDK than the three games' asks pl:u for built-in fonts (commands 2000 and 2010, which the service answered
+   with this same memory and each font's offset and size). No function of these SDKs sends them, so no hook stands
+   for them yet: a game that does stops in sm, which names nn::pl */
+#include "nx/nn/pl.h"
+#include "nx/nn/pl_font.h"
+#include "nx/hle/hook/hook.h"
+#include "hle/hook/hooks.hook.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/filesystem/fs.h"
-#include "nx/hle/services/pl_font.h"
-
-#include "hle/services/pl.swipc.inc"
+#include "nx/hle/kernel/kernel.h"
+#include "nx/runtime/platform/log.h"
+#include "common/platform/thread.h"
+#include "common/utilities/endian.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 extern const unsigned char snx_font_japanese[], snx_font_chinese_simplified[], snx_font_chinese_traditional[],
     snx_font_korean[], snx_font_extended[];
@@ -142,92 +159,91 @@ static void fonts_fill(u8* shm, u32 shm_size) {
     }
 }
 
-static SvcObj* pl_new(void) { return nn_pl_detail_IPlatformServiceManager_new(); }
-void svc_pl_init(void) {
+/* the host's side, which a save state never holds */
+static struct {
+    PMutex lock; /* the first mapping */
+} g_nnpl;
+
+void nnpl_init(void) {
+    pm_init(&g_nnpl.lock);
     g_hle.pl.shm = kobj_id(&kshmem_new(PL_SHM_SIZE, "shared fonts")->o);
-    kobj_ref(kobj_at(g_hle.pl.shm)); /* the service's, for as long as the process runs */
-    fonts_fill(shm_ptr(g_hle.pl.shm), PL_SHM_SIZE);
-    nn_pl_detail_IPlatformServiceManager_register(pl_new);
+    kobj_ref(kobj_at(g_hle.pl.shm)); /* the fonts', for as long as the process runs */
+    fonts_fill(kshmem_ptr((KShmem*)kobj_at(g_hle.pl.shm)), PL_SHM_SIZE);
 }
 
-/* ============================================================ IPlatformServiceManager */
-/* every font is loaded from the start */
-static int nn_pl_detail_IPlatformServiceManager_RequestLoad(SvcObj* self, u32 font_type) {
-    (void)self, (void)font_type;
-    R_SUCCEED();
-}
-static int nn_pl_detail_IPlatformServiceManager_GetLoadState(SvcObj* self, u32 font_type, u32* state) {
-    (void)self, (void)font_type;
-    *state = PL_LOADED;
-    R_SUCCEED();
-}
-static int nn_pl_detail_IPlatformServiceManager_GetSize(SvcObj* self, u32 font_type, u32* size) {
-    (void)self;
-    *size = font_type < PL_FONTS ? g_hle.pl.font_size[font_type] : 0;
-    R_SUCCEED();
-}
-static int nn_pl_detail_IPlatformServiceManager_GetSharedMemoryAddressOffset(SvcObj* self, u32 font_type,
-                                                                              u32* offset) {
-    (void)self;
-    *offset = font_type < PL_FONTS ? g_hle.pl.font_off[font_type] : 0;
-    R_SUCCEED();
-}
-static int nn_pl_detail_IPlatformServiceManager_GetSharedMemoryNativeHandle(SvcObj* self, u32* shared_memory) {
-    (void)self;
-    *shared_memory = h_new(kobj_at(g_hle.pl.shm));
-    R_UNLESS(*shared_memory, SNX_RC_SVC_OUT_OF_HANDLES);
-    R_SUCCEED();
-}
-/* every font, in the order of their types whatever the language, as Eden does: up to 6, or as many as the buffers
-   hold */
-static int pl_in_order(IpcBuf codes, IpcBuf offsets, IpcBuf sizes, u8* loaded, u32* count) {
-    u64 n = PL_FONTS, i;
-    if (codes.size / 4 < n) n = codes.size / 4;
-    if (offsets.size / 4 < n) n = offsets.size / 4;
-    if (sizes.size / 4 < n) n = sizes.size / 4;
-    for (i = 0; i < n; i++) {
-        gw32(codes.addr + 4 * i, (u32)i);
-        gw32(offsets.addr + 4 * i, g_hle.pl.font_off[i]);
-        gw32(sizes.addr + 4 * i, g_hle.pl.font_size[i]);
+/* ============================================================ the hooks */
+
+/* the guest address of the fonts' memory, mapped read only at the first ask */
+static u64 fonts_base(void) {
+    u64 base = __atomic_load_n(&g_hle.pl.base, __ATOMIC_ACQUIRE);
+    if (base) return base;
+    pm_lock(&g_nnpl.lock);
+    base = g_hle.pl.base;
+    if (!base) {
+        base = kshmem_map_free((KShmem*)kobj_at(g_hle.pl.shm), PERM_R);
+        if (!base) {
+            pm_unlock(&g_nnpl.lock);
+            fatal("nn::pl: no free guest pages for the shared fonts' 0x%x bytes", PL_SHM_SIZE);
+        }
+        __atomic_store_n(&g_hle.pl.base, base, __ATOMIC_RELEASE);
+        LOG("pl: the shared fonts are at 0x%llx in the game, read only\n", (unsigned long long)base);
     }
-    *loaded = 1;
-    *count = (u32)n;
-    R_SUCCEED();
+    pm_unlock(&g_nnpl.lock);
+    return base;
 }
-static int nn_pl_detail_IPlatformServiceManager_GetSharedFontInOrderOfPriority(
-    SvcObj* self, const nn_settings_LanguageCode* language_code, IpcBuf font_codes, IpcBuf offsets, IpcBuf sizes,
-    u8* loaded, u32* count) {
-    (void)self, (void)language_code;
-    return pl_in_order(font_codes, offsets, sizes, loaded, count);
+/* a font type's place and size: none for a type past the six, as the service answered (what the console answers is
+   not known, and the SDK has no check of its own) */
+static u32 font_off(i32 type) { return (u32)type < PL_FONTS ? g_hle.pl.font_off[type] : 0; }
+static u32 font_size(i32 type) { return (u32)type < PL_FONTS ? g_hle.pl.font_size[type] : 0; }
+
+void nnpl_request_shared_font_load(CPU* c, i32 type) { (void)c, (void)type; }
+i32 nnpl_get_shared_font_load_state(CPU* c, i32 type) {
+    (void)c, (void)type;
+    return PL_LOADED;
 }
-static int nn_pl_detail_IPlatformServiceManager_GetSharedFontInOrderOfPriorityForSystem(
-    SvcObj* self, const nn_settings_LanguageCode* language_code, IpcBuf font_codes, IpcBuf offsets, IpcBuf sizes,
-    u8* loaded, u32* count) {
-    (void)self, (void)language_code;
-    return pl_in_order(font_codes, offsets, sizes, loaded, count);
+u64 nnpl_get_shared_font_size(CPU* c, i32 type) {
+    (void)c;
+    return font_size(type);
 }
-/* The built-in fonts a later SDK asks for (nn::pl::GetBuiltInFontData): the shared fonts, each already a plain TrueType
-   font past its header, so the same memory answers. The SDK takes that memory itself, once, with this command at the
-   first font it is told of, maps it and stops when the command fails */
-static int nn_pl_detail_IPlatformServiceManager_GetBuiltInFontSharedMemory(SvcObj* self, u32* size,
-                                                                           u32* shared_memory) {
-    (void)self;
-    *size = PL_SHM_SIZE;
-    *shared_memory = h_new(kobj_at(g_hle.pl.shm));
-    R_UNLESS(*shared_memory, SNX_RC_SVC_OUT_OF_HANDLES);
-    R_SUCCEED();
+u64 nnpl_get_shared_font_address(CPU* c, i32 type) {
+    (void)c;
+    return fonts_base() + font_off(type);
 }
-/* where a font is in that memory. The SDK reads data as a u64 at 4 of the reply and a u32 at 12, and fills the caller's
-   font only when found is 1: the base of the memory it mapped (2000) plus the offset at 4 of data, and the size at 8.
-   It copies data's first two bytes to the caller's font too: the first is 1, the value one game ran with, and what
-   they mean is not known */
-static int nn_pl_detail_IPlatformServiceManager_GetBuiltInFontData(SvcObj* self, u8 font_type, u8 flag, u8* found,
-                                                                   u8* data) {
-    (void)self, (void)flag;
-    if (font_type >= PL_FONTS || !g_hle.pl.font_size[font_type]) R_SUCCEED(); /* found stays 0 */
-    *found = 1;
-    data[0] = 1;
-    snx_st_le32(data + 4, g_hle.pl.font_off[font_type]);
-    snx_st_le32(data + 8, g_hle.pl.font_size[font_type]);
-    R_SUCCEED();
+
+/* every font, in the order of their types whatever the language, as Eden does. The count is all of them, the
+   entries as many as max allows. Each entry: its type, its address and its size, by the SDK's three arrays or its
+   SharedFontData (0x18 bytes: the type at 0, the address at 8, the size at 0x10, the padding left) */
+static void in_order(CPU* c, u64 count, i32 max, u64 types, u64 addresses, u64 sizes, u64 data) {
+    snx_st_le32(hook_host(c, count), PL_FONTS);
+    u64 base = fonts_base();
+    for (i32 i = 0; i < max && i < PL_FONTS; i++) {
+        u64 address = base + g_hle.pl.font_off[i], size = g_hle.pl.font_size[i];
+        if (data) {
+            u8* d = hook_host(c, data + (u64)i * 0x18);
+            snx_st_le32(d, (u32)i);
+            snx_st_le64(d + 8, address);
+            snx_st_le64(d + 0x10, size);
+            continue;
+        }
+        snx_st_le32(hook_host(c, types + (u64)i * 4), (u32)i);
+        snx_st_le64(hook_host(c, addresses + (u64)i * 8), address);
+        snx_st_le64(hook_host(c, sizes + (u64)i * 8), size);
+    }
+}
+int nnpl_get_shared_font_in_order_of_priority(CPU* c, u64 count, u64 types, u64 addresses, u64 sizes, i32 max,
+                                              u64 language) {
+    (void)language;
+    in_order(c, count, max, types, addresses, sizes, 0);
+    return 1;
+}
+int nnpl_get_shared_font_in_order_of_priority_for_system(CPU* c, u64 count, u64 types, u64 addresses, u64 sizes,
+                                                         i32 max, u64 language) {
+    (void)language;
+    in_order(c, count, max, types, addresses, sizes, 0);
+    return 1;
+}
+int nnpl_get_shared_font(CPU* c, u64 count, u64 data, i32 max, u64 language) {
+    (void)language;
+    in_order(c, count, max, 0, 0, 0, data);
+    return 1;
 }

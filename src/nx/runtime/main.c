@@ -24,6 +24,7 @@
 #include "nx/hle/hook/hook.h"
 #include "nx/nn/fs.h"
 #include "nx/nn/time.h"
+#include "nx/nn/pl.h"
 #include "nx/hle/services/hid.h"
 #include "nx/runtime/guest_jit.h"
 #include "nx/runtime/nce/nce.h"
@@ -1485,7 +1486,7 @@ int snx_main(int argc, char** argv) {
     }
     svc_hid_init();
     svc_vi_init();
-    svc_pl_init();
+    nnpl_init();
     nv_init();
     romfs_init();
     gpu_init();

@@ -28,6 +28,7 @@
 #include "nx/hle/hook/hook.h"
 #include "nx/nn/fs.h"
 #include "nx/nn/time.h"
+#include "nx/nn/pl.h"
 #include "nx/hle/pool.h"
 
 typedef struct {
@@ -50,7 +51,6 @@ typedef struct {
     HleMisc misc;
     HleNvdrv nvdrv;
     HleNativeVideo native_video;
-    HlePl pl;
     HleSet set;
     HleSm sm;
     HleVi vi;
@@ -62,6 +62,7 @@ typedef struct {
     HleFs fs;
     HleNnfs nnfs; /* the native nn::fs (nn/fs.c) */
     HleTime time; /* the native nn::time (nn/time.c) */
+    HlePl pl;     /* the native nn::pl (nn/pl.c) */
     /* the hooks' guest memory (hook.h); the functions hooked are the process's, in g_host */
     HleHook hook;
 } Hle;

@@ -457,12 +457,6 @@ typedef struct {
     PMutex irs_lock;
 } HostMisc;
 
-/* ---- pl.c */
-#define PL_FONTS 6
-typedef struct {
-    u32 shm;
-    u32 font_off[PL_FONTS], font_size[PL_FONTS]; /* where each font starts (past its header), and its size */
-} HlePl;
 
 /* ---- set.c */
 /* the system settings set:sys keeps for the run, each at first as on a console fresh from the factory (Eden's

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The shared fonts' stand-ins compiled into the runtime (hle/services/pl.c, which uses them when a game folder has no
+# The shared fonts' stand-ins compiled into the runtime (nn/pl.c, which uses them when a game folder has no
 # fonts/ of its own): one Noto Sans subset per script the six slots name, U+E000..U+E1FF blanked by pl_font.c, and
 # yuzu's controller button glyphs for FontNintendoExtended, as Eden carries them. cmake/dependencies.cmake fetches the
 # Noto subsets (their generation and licenses are described in docs/platforms/nx/filesystem.md and docs/CREDITS.md) and the
