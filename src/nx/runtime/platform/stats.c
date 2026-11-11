@@ -65,7 +65,8 @@ typedef struct {
 } StatsKey;
 static u32 g_layout; /* the corner's changes (stats_corner_set, on the main thread) */
 static struct {
-    int laid; /* the quads are laid out for key */
+    int laid;    /* the quads are laid out for key */
+    float at[4]; /* the box they are laid out in: x, y, w, h */
     StatsKey key;
     char shortcut[sizeof g_settings.render_doc_capture_shortcut]; /* the capture key RenderDoc's line names */
     SnxUiQuad q[STATS_QUADS];
@@ -250,6 +251,11 @@ void stats_box(const int safe[4], int scale, float box[4]) {
     StatsNotes notes;
     box_notes(safe, scale, box, &notes);
 }
+int stats_box_drawn(float box[4]) {
+    if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED) || !g_box.laid) return 0;
+    memcpy(box, g_box.at, sizeof g_box.at);
+    return 1;
+}
 
 /* the time between the frame j back from the newest and the one before it, in ms; j below count - 1 */
 static float frame_ms(unsigned j) {
@@ -306,6 +312,7 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
     StatsNotes notes;
     unsigned j;
     box_notes(safe, scale, box, &notes);
+    memcpy(g_box.at, box, sizeof g_box.at);
     for (j = 0; j < STATS_LINES; ++j) { /* the icon's two cells and one, then the line, as the menu's items */
         float y = box[1] + ch / 4 + (float)j * ch;
         icon_backed(&l, box[0] + cw, y, scale, icons[j], UI_PAGE);

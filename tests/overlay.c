@@ -3,6 +3,7 @@
 /* The game's menu (runtime/platform/overlay.c): where it goes, its pages, what a tap, a move or a step does, its look;
    and ui.c's atlas and text */
 #include "nx/runtime/platform/overlay.h"
+#include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/fatal_screen.h"
 #include "nx/runtime/platform/backend.h"
@@ -1265,6 +1266,44 @@ int main(void) {
             assert(q.x == (float)(8 * s * (1 + i)) && q.y == (float)(16 * s));
             assert(q.w == (float)(8 * s) && q.h == (float)(16 * s));
         }
+    }
+    /* the stats' box in that corner too: the band goes under it, from the box's left, half a line apart; back in its
+       corner with the box in another, or off; and in the picture's top right where there is no room under the box */
+    {
+        static const int all[4] = {0, 0, SW, SH};
+        static SnxUiQuad kept[1024];
+        SnxUiList box_quads = {kept, 0, 1024};
+        const IniOpt* corner = ini_find(g_display_ini, "stats_corner");
+        float box[4], cw = (float)(8 * s), ch = (float)(16 * s);
+        int short_s, short_x, short_y, h;
+        assert(corner && !stats_box_drawn(box));
+        g_settings.stats = 1;
+        stats_corner_set(corner, "tl");
+        stats_draw(&box_quads, all, s, 1000);
+        assert(stats_box_drawn(box) && box[0] < cw + 16 * cw && box[1] < 2 * ch);
+        draw();
+        assert(list.n == (int)strlen("Saved to slot 2") + 2 && shows("Saved to slot 2"));
+        assert(qv(&list.q[0]).x == box[0] && qv(&list.q[0]).y == box[1] + box[3] + ch / 2);
+        h = (int)(box[1] + box[3]) + 4; /* a picture that ends four pixels under the box */
+        overlay_place(SW, h, &short_x, &short_y, &short_s);
+        list.n = 0;
+        overlay_draw(&list, SW, h, 0);
+        assert(list.n == (int)strlen("Saved to slot 2") + 2);
+        assert(qv(&list.q[0]).y == (float)(16 * short_s) &&
+               qv(&list.q[list.n - 1]).x + qv(&list.q[list.n - 1]).w == (float)(SW - 8 * short_s));
+        stats_corner_set(corner, "br");
+        box_quads.n = 0;
+        stats_draw(&box_quads, all, s, 1000);
+        draw();
+        assert(qv(&list.q[0]).x == cw && qv(&list.q[0]).y == ch);
+        stats_corner_set(corner, "tl");
+        box_quads.n = 0;
+        stats_draw(&box_quads, all, s, 1000);
+        draw();
+        assert(qv(&list.q[0]).x == box[0] && qv(&list.q[0]).y == box[1] + box[3] + ch / 2);
+        g_settings.stats = 0;
+        draw();
+        assert(qv(&list.q[0]).x == cw && qv(&list.q[0]).y == ch);
     }
     overlay_toast("", 0); /* none */
     /* a notice from any thread (RenderDoc's): the notification once the next frame draws it, the last given before
