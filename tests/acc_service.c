@@ -1462,7 +1462,9 @@ static void test_mii(void) {
     gone(UID1 ".jpg");
     CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
     CHECK(g_users[0].mii == 0 && g_users[0].picture_mii == 0);
-    CHECK(strstr(snx_users_notes(), "[user1] mii=(none): Baguette; picture=(none): file") != NULL);
+    CHECK(!snx_users_notes()[0]);        /* nothing given, nothing refused: no line */
+    put_ini("[user1]\nmii=Leek Girl\n"); /* nor for one value given and taken */
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_users[0].mii == 1 && !snx_users_notes()[0]);
     /* a name from the database, as written; one it does not hold is the first, said with what was read */
     put_ini("[user1]\nmii=Leek Girl\npicture=mii\n[user2]\nuid=" UID2 "\nnickname=Second\nmii=Bogus Name\n"
             "picture=photo\n");
@@ -1471,14 +1473,21 @@ static void test_mii(void) {
     if (strstr(snx_users_notes(), "[user1]")) fprintf(stderr, "notes: %s", snx_users_notes());
     CHECK(g_users[0].mii == 1 && g_users[0].picture_mii == 1 && !strstr(snx_users_notes(), "[user1]"));
     CHECK(g_users[1].mii == 0 && g_users[1].picture_mii == 0);
-    CHECK(strstr(snx_users_notes(), "[user2] mii=Bogus Name, no Mii of the database: Baguette; "
-                                    "picture=photo, neither mii nor file: file") != NULL);
+    CHECK(!strcmp(snx_users_notes(), "users: [user2] mii=Bogus Name, no Mii of the database: Baguette; "
+                                     "picture=photo, neither mii nor file: file\n"));
     /* picture=file without a file is Wimsy's, picture=mii with one the Mii's; a case other than the name's is none */
     put_ini("[user1]\nmii=phone girl\npicture=file\n[user2]\nuid=" UID2 "\nnickname=Second\nmii=Phone Girl\n"
             "picture=mii\n");
     CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
     CHECK(g_users[0].mii == 0 && g_users[0].picture_mii == 0 && g_users[1].mii == 2 && g_users[1].picture_mii == 1);
-    CHECK(strstr(snx_users_notes(), "[user1] mii=phone girl, no Mii of the database: Baguette; picture=file: file"));
+    /* the line holds the value not taken alone: picture=file, taken, is not in it */
+    CHECK(!strcmp(snx_users_notes(), "users: [user1] mii=phone girl, no Mii of the database: Baguette\n"));
+    put_ini("[user1]\npicture=photo\n"); /* a picture not taken, and no mii= to say */
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_users[0].mii == 0 && g_users[0].picture_mii == 0);
+    CHECK(!strcmp(snx_users_notes(), "users: [user1] picture=photo, neither mii nor file: file\n"));
+    put_ini("[user1]\nmii=phone girl\npicture=file\n[user2]\nuid=" UID2 "\nnickname=Second\nmii=Phone Girl\n"
+            "picture=mii\n");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
     /* set: the line written over the old one, the rest as it was; a name not in the database refused with it */
     CHECK(snx_users_set(DIR, 1, "mii", "Phone Girl", why, sizeof why) == 0 && g_users[0].mii == 2);
     CHECK(snx_users_set(DIR, 2, "picture", "file", why, sizeof why) == 0 && g_users[1].picture_mii == 0);
