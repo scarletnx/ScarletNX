@@ -4814,6 +4814,50 @@ static int check_dma_untracked_source(void) {
     return 0;
 }
 
+/* A copy engine's source of 512 KiB, past PATCH_MIN, takes a buffer of its own at once where writes are tracked, so
+   that changes patch it (dma_reused_source), but not past a sixty-fourth of the memory budget, lowered to 16 MiB here:
+   a texture's upload reads its source once, and an 8192x8192 RGBA8 texture's levels took 760 MiB of them that nothing
+   read again. Such a source takes one once it stayed the same, the third copy of it, as every other range does */
+static int check_dma_source_kept_when_stable(void) {
+    const u64 size = 0x80000, src = HEAP_BASE + 0x21000000, dst = src + size, gsrc = 0xb30000000ull,
+              gdst = 0xb40000000ull;
+    u64 had[4];
+    u32 n;
+    GpuDmaOp o;
+    CHECK(mem_map(src, 2 * size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gsrc, src, size);
+    gmmu_map(gdst, dst, size);
+    vk_lock();
+    int tracking = vk_written_since(gmem_host(gsrc, size), size, 0) >= 0;
+    vk_unlock();
+    if (!tracking) {
+        printf("skip: a copy source's buffer of its own at once needs write tracking\n");
+        return 0;
+    }
+    memset(&o, 0, sizeof o);
+    o.width = o.line_in = o.line_out = (u32)size;
+    o.lines = 1;
+    o.src = pitch_side(gsrc, 0);
+    o.dst = pitch_side(gdst, 0);
+    memset(GP(src), 0x33, size);
+    g_renderer->mem_may_have_changed();
+    u64 budget = vk_mem_budget_cap(16u << 20);
+    vk_buf_stats(&n, &had[0]);
+    for (int i = 1; i <= 3; i++) {
+        CHECK(g_renderer->dma_copy(&o));
+        guest_done(dst, (u32)size);
+        CHECK(all_bytes(GP(dst), (u32)size, 0x33));
+        memset(GP(dst), 0, size);
+        vk_buf_stats(&n, &had[i]);
+    }
+    vk_mem_budget_cap(budget);
+    printf("dma: a 512 KiB source's own buffers after each of three copies: %llu, %llu, %llu KiB\n",
+           (unsigned long long)((had[1] - had[0]) >> 10), (unsigned long long)((had[2] - had[0]) >> 10),
+           (unsigned long long)((had[3] - had[0]) >> 10));
+    CHECK(had[1] == had[0] && had[2] == had[0] && had[3] >= had[0] + size);
+    return 0;
+}
+
 /* A job's checks see the CPU's writes from before it began (vk_ww_stream), not those a later submission makes while it
    runs: those are the later job's to see. The program writes a range both jobs read (a big buffer bound whole, each
    job reading its own part) and submits again while the first runs, which checks the range after the write: the
@@ -6381,6 +6425,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_resident_texture_in_flight());
     CHECK(!check_sparse_pieces_batched());
     CHECK(!check_dma_untracked_source());
+    CHECK(!check_dma_source_kept_when_stable());
     CHECK(!check_dma_tiles());
     CHECK(!check_map_lands_covered());
     CHECK(!check_map_waits());
