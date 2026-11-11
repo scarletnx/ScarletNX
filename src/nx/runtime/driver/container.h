@@ -77,6 +77,12 @@ int snx_nca_keys(const SnxDump* dump, const SnxNcaRef* nca, const char* what);
 void snx_size_text(SnxU64 bytes, char* text, size_t size);
 /* a file of a RomFS read in place, by its path (control.nacp in the Control NCA's), malloc'd, or NULL */
 unsigned char* snx_romfs_file(SnxHacFs* fs, const char* name, size_t* size);
+/* every file of a RomFS read in place whose name ends in suffix, whatever its case: each(context, name, offset, size)
+   with its name without its folders, and where its bytes lie in the RomFS image (snx_hac_fs_read_romfs), until one
+   answers nonzero, which is then the answer. 0 once all were given, also for no RomFS; -1 for a RomFS whose file table
+   cannot be read */
+typedef int (*SnxRomfsEach)(void* context, const char* name, SnxU64 offset, SnxU64 size);
+int snx_romfs_each(SnxHacFs* fs, const char* suffix, SnxRomfsEach each, void* context);
 /* the Control NCA's control.nacp, malloc'd, or NULL with why in *why */
 unsigned char* snx_dump_nacp(SnxDump* dump, size_t* size, const char** why);
 /* the Control NCA's icon, a JPEG (icon_<language>.dat, the first of control.nacp's languages it has), malloc'd, or

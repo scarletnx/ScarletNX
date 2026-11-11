@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/ui_colors.h"
 #include "common/utilities/bits.h"
 #include <math.h>
 #include <stdio.h>
@@ -255,13 +256,11 @@ static void stick_at(int c, float x, float y, const int safe[4]) {
 
 /* edit mode's bar on top: less, the selected control's size, more, done; in cells of 8x16 at a whole scale */
 enum { BAR_LESS, BAR_SIZE, BAR_MORE, BAR_DONE, BAR_COUNT };
-static const int BAR_COLS[BAR_COUNT] = {5, 18, 5, 8};
-static int bar_scale(const int safe[4]) {
-    int s = (safe[2] < safe[3] ? safe[2] : safe[3]) / 360;
-    return s < 1 ? 1 : s;
-}
+enum { BAR_COLS_SIZE = 18 }; /* the middle part's cells: the longest name, a space and "200%" fit */
+static const int BAR_COLS[BAR_COUNT] = {5, BAR_COLS_SIZE, 5, 8};
+static int g_scale = 1; /* the menu's letters' scale as vpad_draw last had it: the bar's, drawn and pressed */
 static void bar(const int safe[4], float r[BAR_COUNT][4]) {
-    int i, s = bar_scale(safe), total = 0;
+    int i, s = g_scale, total = 0;
     float x;
     for (i = 0; i < BAR_COUNT; ++i) total += BAR_COLS[i] + (i ? 2 : 0);
     x = (float)safe[0] + ((float)safe[2] - (float)(total * 8 * s)) / 2;
@@ -412,13 +411,12 @@ int vpad_shown(void) { return g_settings.show_controls || g_edit; }
 
 /* The built-in look: each control a shape (ui.h's ui_shape), white, its edge a 32nd of its shorter side (a pixel at
    least) and its label on it; pressed, the shape filled with its label cut out */
-#define WHITE 0xFFFFFFFFu
 static int edge_of(const float r[4]) {
     int e = (int)((r[2] < r[3] ? r[2] : r[3]) / 32);
     return e < 1 ? 1 : e;
 }
 static void button_draw(SnxUiList* l, int c, const float r[4], int held) {
-    ui_shape(l, r[0], r[1], r[2], r[3], INFO[c].shape, INFO[c].label, held ? UI_SHAPE_FILLED : 0, edge_of(r), WHITE);
+    ui_shape(l, r[0], r[1], r[2], r[3], INFO[c].shape, INFO[c].label, held ? UI_SHAPE_FILLED : 0, edge_of(r), UI_WHITE);
 }
 /* the D-pad on r: its cross's edge, and in each arm its arrow; the arms pressed (dpad, DPAD_ bits) filled, their arrows
    cut out. The arms are a third of the shorter side wide, as the cross's (ui.frag) */
@@ -433,18 +431,18 @@ static void dpad_draw(SnxUiList* l, const float r[4], u32 dpad) {
                              {cx - a / 2, cy + a / 2, a, down},
                              {r[0], cy - a / 2, across, a}};
     int t, e = edge_of(r);
-    ui_shape(l, r[0], r[1], r[2], r[3], UI_SHAPE_CROSS, NULL, 0, e, WHITE);
+    ui_shape(l, r[0], r[1], r[2], r[3], UI_SHAPE_CROSS, NULL, 0, e, UI_WHITE);
     for (t = 0; t < 4; ++t)
         ui_shape(l, arm[t][0], arm[t][1], arm[t][2], arm[t][3], UI_SHAPE_BOX, arrow[t],
-                 dpad & dir[t] ? UI_SHAPE_FILLED : UI_SHAPE_BARE, e, WHITE);
+                 dpad & dir[t] ? UI_SHAPE_FILLED : UI_SHAPE_BARE, e, UI_WHITE);
 }
 /* a stick's ring on r, its knob ax, ay (-1 to 1 right and down) from the middle, filled when pressed */
 static void knob_draw(SnxUiList* l, const float r[4], float ax, float ay, int pressed) {
     float kw = r[2] / STICK_KNOB, kh = r[3] / STICK_KNOB;
     float mx = r[0] + r[2] / 2 + ax * r[2] / 2, my = r[1] + r[3] / 2 + ay * r[3] / 2;
     int e = edge_of(r);
-    ui_shape(l, r[0], r[1], r[2], r[3], UI_SHAPE_CIRCLE, NULL, 0, e, WHITE);
-    ui_shape(l, mx - kw / 2, my - kh / 2, kw, kh, UI_SHAPE_CIRCLE, NULL, pressed ? UI_SHAPE_FILLED : 0, e, WHITE);
+    ui_shape(l, r[0], r[1], r[2], r[3], UI_SHAPE_CIRCLE, NULL, 0, e, UI_WHITE);
+    ui_shape(l, mx - kw / 2, my - kh / 2, kw, kh, UI_SHAPE_CIRCLE, NULL, pressed ? UI_SHAPE_FILLED : 0, e, UI_WHITE);
 }
 static void stick_draw(SnxUiList* l, int c, float r[4], const int safe[4]) {
     int s = stick_of(c), held = g_held >> c & 1;
@@ -462,32 +460,42 @@ static void outline(SnxUiList* l, const float r[4], float t, u32 rgba) {
     ui_fill(l, r[0] + r[2], r[1], t, r[3], rgba);
 }
 static void edit_draw(SnxUiList* l, const int safe[4]) {
-    const u32 ink = 0xFF3A4145u, page = 0xFFBED6DAu, line = 0xFFFFFFFFu; /* all opaque: the grid's lines white */
     float b[BAR_COUNT][4], r[4], g = grid(safe), v;
-    int s = bar_scale(safe);
-    char label[32];
+    int s = g_scale, first, n = 0, k;
+    char said[BAR_COLS_SIZE + 24], label[BAR_COLS_SIZE + 1]; /* said: a name cut to the field, a space, a size, % */
+    const char* name = g_selected >= 0 ? INFO[g_selected].name : "Tap a control";
     if (g_settings.snap_to_grid && g > 0) {
         for (v = (float)safe[0]; v <= (float)(safe[0] + safe[2]); v += g)
-            ui_fill(l, v, (float)safe[1], 1, (float)safe[3], line);
+            ui_fill(l, v, (float)safe[1], 1, (float)safe[3], UI_WHITE);
         for (v = (float)safe[1]; v <= (float)(safe[1] + safe[3]); v += g)
-            ui_fill(l, (float)safe[0], v, (float)safe[2], 1, line);
+            ui_fill(l, (float)safe[0], v, (float)safe[2], 1, UI_WHITE);
     }
     if (g_selected >= 0) {
         box(g_selected, safe, r);
-        outline(l, r, (float)(2 * s), 0xFF00C8FFu);
+        outline(l, r, (float)(2 * s), UI_PICKED);
     }
     bar(safe, b);
     ui_fill(l, b[0][0] - (float)(8 * s), b[0][1] - (float)(4 * s),
-            b[BAR_DONE][0] + b[BAR_DONE][2] - b[0][0] + (float)(16 * s), (float)(24 * s), ink);
-    ui_text(l, b[BAR_LESS][0], b[BAR_LESS][1], s, "[ - ]", page);
-    if (g_selected >= 0)
-        snprintf(label, sizeof label, "%s %d%%", INFO[g_selected].name, g_vpad.at[g_selected].size);
-    else
-        snprintf(label, sizeof label, "Tap a control");
-    ui_text(l, b[BAR_SIZE][0] + (b[BAR_SIZE][2] - (float)(strlen(label) * 8 * (size_t)s)) / 2, b[BAR_SIZE][1], s, label,
-            page);
-    ui_text(l, b[BAR_MORE][0], b[BAR_MORE][1], s, "[ + ]", page);
-    ui_text(l, b[BAR_DONE][0], b[BAR_DONE][1], s, "[ Done ]", page);
+            b[BAR_DONE][0] + b[BAR_DONE][2] - b[0][0] + (float)(16 * s), (float)(24 * s), UI_INK);
+    ui_text(l, b[BAR_LESS][0], b[BAR_LESS][1], s, "[ - ]", UI_PAGE);
+    /* the picked control's name and size, or what to do: a field of cells (ui_cells) over the bar's middle part, which
+       takes the same quads at the same places whatever it says, so that a size stepped or another control picked
+       changes its letters and moves nothing after it. In its middle by whole cells, written without printf */
+    while (name[n] && n < BAR_COLS_SIZE) said[n] = name[n], ++n;
+    if (g_selected >= 0) {
+        said[n++] = ' ';
+        n = (int)(ui_put_u(said + n, (u64)g_vpad.at[g_selected].size) - said);
+        said[n++] = '%';
+    }
+    if (n > BAR_COLS_SIZE) n = BAR_COLS_SIZE;
+    k = (BAR_COLS_SIZE - n) / 2;
+    memset(label, ' ', (size_t)k);
+    memcpy(label + k, said, (size_t)n);
+    label[k + n] = 0;
+    first = ui_cells(l, b[BAR_SIZE][0], b[BAR_SIZE][1], s, BAR_COLS_SIZE, UI_PAGE);
+    if (first >= 0) ui_cells_set(&l->q[first], BAR_COLS_SIZE, label);
+    ui_text(l, b[BAR_MORE][0], b[BAR_MORE][1], s, "[ + ]", UI_PAGE);
+    ui_text(l, b[BAR_DONE][0], b[BAR_DONE][1], s, "[ Done ]", UI_PAGE);
 }
 /* The controls' quads, and showcase's, kept from frame to frame: made again only when what they show changes (counted
    by each call that changes it, g_version and g_show_version) or the picture's safe area does, and appended to the
@@ -501,16 +509,21 @@ static struct {
     u32 version;
 } g_drawn;
 static struct {
-    int laid, safe[4], fps;
+    int laid, safe[4], fps, scale;
     u32 drawn; /* g_show_version they show */
     SnxUiQuad q[64];
     int n;
     u32 version;
 } g_shown;
 static void controls_draw(SnxUiList* l, const int safe[4]);
-static void showcase_draw(SnxUiList* l, const int safe[4], int fps);
-void vpad_draw(SnxUiList* l, const int safe[4]) {
+static void showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale);
+void vpad_draw(SnxUiList* l, const int safe[4], int scale) {
     placed();
+    if (scale < 1) scale = 1;
+    if (scale != g_scale) { /* the bar's letters another size: laid out again */
+        g_scale = scale;
+        ++g_version;
+    }
     if (!g_settings.show_controls && !g_edit) return;
     if (!g_drawn.laid || g_drawn.drawn != g_version || memcmp(g_drawn.safe, safe, sizeof g_drawn.safe)) {
         SnxUiList kept = {g_drawn.q, 0, KEPT_QUADS};
@@ -611,32 +624,33 @@ int vpad_showcase_box(const int safe[4], float box[4]) {
     box[3] = h;
     return corner;
 }
-void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
+void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale) {
     float box[4];
     if (vpad_showcase_box(safe, box) < 0) return;
-    if (!g_shown.laid || g_shown.drawn != g_show_version || g_shown.fps != fps ||
+    if (!g_shown.laid || g_shown.drawn != g_show_version || g_shown.fps != fps || g_shown.scale != scale ||
         memcmp(g_shown.safe, safe, sizeof g_shown.safe)) {
         SnxUiList kept = {g_shown.q, 0, (int)(sizeof g_shown.q / sizeof g_shown.q[0])};
-        showcase_draw(&kept, safe, fps);
+        showcase_draw(&kept, safe, fps, scale);
         g_shown.n = kept.n;
         memcpy(g_shown.safe, safe, sizeof g_shown.safe);
         g_shown.fps = fps;
+        g_shown.scale = scale;
         g_shown.drawn = g_show_version;
         g_shown.laid = 1;
         ++g_shown.version;
     }
     ui_append_kept(l, &(SnxUiList){g_shown.q, g_shown.n, g_shown.n}, g_shown.version, &g_shown, NULL);
 }
-static void showcase_draw(SnxUiList* l, const int safe[4], int fps) {
+static void showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale) {
     float box[4], x0, y0, w, h, r[4];
-    int c, scale;
+    int c;
     char text[24];
     if (vpad_showcase_box(safe, box) < 0) return;
     x0 = box[0];
     y0 = box[1];
     w = box[2];
     h = box[3];
-    ui_fill(l, x0, y0, w, h, 0xFF000000u); /* black, opaque */
+    ui_fill(l, x0, y0, w, h, UI_INK); /* the layer's ground, as the stats' */
     for (c = 0; c < SNX_VPAD_COUNT; ++c) {
         float side = SHOWCASE[c][2] * h, aspect = INFO[c].aspect;
         if (side <= 0) continue;
@@ -654,16 +668,19 @@ static void showcase_draw(SnxUiList* l, const int safe[4], int fps) {
             button_draw(l, c, r, (int)(g_show_buttons >> INFO[c].bit & 1));
     }
     if (fps < 0) return;
-    scale = (int)(h * 0.11f / 16 + 0.5f);
+    /* in the menu's letters, as the other lines over the game; a step smaller while they would not keep above the row
+       under them (a quarter of the box's height), which keeps the seven cells between the shoulder buttons too: the
+       box is 5 by 3 */
     if (scale < 1) scale = 1;
+    while (scale > 1 && (float)(16 * scale) + h / 25 > h * 0.24f) --scale;
     /* "999 FPS" at most, the number to the right of its three cells: a field whose place and quads stay, whatever it
-       says (ui_cells) */
+       says (ui_cells), each cell backed by the ground the box is filled with: no pixel of a letter left out */
     {
         char* at = text;
         int digits = fps > 99 ? 3 : fps > 9 ? 2 : 1, first;
         while (digits++ < 3) *at++ = ' ';
         *ui_put(ui_put_u(at, (u64)(fps < 999 ? fps : 999)), " FPS") = 0;
-        first = ui_cells(l, x0 + (w - (float)(7 * 8 * scale)) / 2, y0 + h / 25, scale, 7, 0xFFFFFFFFu);
+        first = ui_cells_backed(l, x0 + (w - (float)(7 * 8 * scale)) / 2, y0 + h / 25, scale, 7, UI_WHITE);
         if (first >= 0) ui_cells_set(&l->q[first], 7, text);
     }
 }

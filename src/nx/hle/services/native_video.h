@@ -98,16 +98,32 @@ typedef struct {
 struct AVCodecContext;
 struct AVFrame;
 struct AVPacket;
+/* a codec's decoder (native_video_decoder.c): how it decodes, and for AV1 with Vulkan Video the packets it took since
+   its last picture, which the CPU's decoder starts from when the Vulkan one refuses the stream */
+enum { NVIDEO_DECODER_NONE, NVIDEO_DECODER_CPU, NVIDEO_DECODER_VULKAN, NVIDEO_DECODER_BLACK };
+#define NVIDEO_REPLAY NVIDEO_INPUTS
+typedef struct {
+    struct AVCodecContext* ctx; /* FFmpeg's decoder: NULL for the black stand-in */
+    u32 way;                    /* NVIDEO_DECODER_* */
+    u32 index;                  /* the codec's, for the log */
+    u32 width, height;          /* the configured size, the stand-in's pictures' */
+    u32 pictures;               /* out since it was opened or flushed */
+    struct AVPacket* replay[NVIDEO_REPLAY];
+    u32 nreplay, replayed; /* the packets kept, and those of them the decoder that took over has taken */
+    /* the stand-in: its picture, the timestamp of the input one is due for, and the end of the stream sent */
+    struct AVFrame* black;
+    i64 black_pts;
+    u32 black_due, black_end;
+} NativeVideoDecoder;
 /* the host's side, which a save state never holds: the lock over every command, and each codec's FFmpeg objects (the
    same index as g_hle's codecs) */
 typedef struct {
     PMutex lock;
     struct {
-        struct AVCodecContext* decoder;
+        NativeVideoDecoder decoder;
         struct AVFrame* frame; /* a picture received and not yet written: frame->buf[0] set */
         struct AVPacket* packets[NVIDEO_INPUTS];
-        struct AVFrame* black; /* an AV1 stream's picture: no decoder for it, each input comes out black */
-        u32 black_images[NVIDEO_IMAGES], nblack; /* the images painted black already, which stay so */
+        u32 black_images[NVIDEO_IMAGES], nblack; /* the images the stand-in painted black already, which stay so */
     } codecs[NVIDEO_CODECS];
 } HostNativeVideo;
 extern const StateFnTable g_native_video_state_fns; /* the functions a save state may hold of native_video.c */
@@ -145,6 +161,19 @@ void nvideo_input_pop(NativeVideoCodec* c);
    nanoseconds and the end of the stream */
 void nvideo_props(u32 props[NVIDEO_PROPS], u32 image, u32 width, u32 height, u32 pic_w, u32 pic_h, u64 timestamp_us,
                   int eos);
+/* ---- native_video_decoder.c */
+/* the decoder for a MIME type's codec (NVIDEO_MIME_*) at the configured size, d written whole: 1, or 0 when FFmpeg's
+   couldn't be opened. config: H.264's stream configuration (NULL for none). hw_device: for AV1, the renderer's device
+   for Vulkan Video (Renderer.nvdec_hw_device, taken over), or NULL with no_hw saying why there is none, for the log */
+int nvideo_decoder_open(NativeVideoDecoder* d, u32 index, u32 mime, u32 width, u32 height, const u8* config,
+                        u64 config_size, void* hw_device, const char* no_hw);
+void nvideo_decoder_close(NativeVideoDecoder* d);
+/* avcodec_send_packet (NULL: the end of the stream), avcodec_receive_frame and avcodec_flush_buffers on the decoder in
+   use. An AV1 stream the Vulkan decoder refuses goes on with the CPU's inside them, from the packets kept */
+int nvideo_decoder_send(NativeVideoDecoder* d, const struct AVPacket* pkt);
+int nvideo_decoder_receive(NativeVideoDecoder* d, struct AVFrame* frame);
+void nvideo_decoder_flush(NativeVideoDecoder* d);
+const char* nvideo_decoder_name(const NativeVideoDecoder* d); /* for the log: FFmpeg's name, or the way */
 /* ---- native_video.c, for gsv.c's commands */
 int native_video_service(int encoder, int enable);                            /* 901, 903, 1001, 1003 */
 int native_video_open(int encoder, u32* session);                             /* 902, 905, 1002 */
@@ -157,6 +186,9 @@ int native_video_query(u32 image, u64 d[16]);                                   
 int native_video_gpu_query(u32 image, u64 d[16]);                                      /* 428 */
 int native_video_gpu_map(u32 image, u32 address_space, u64* first, u64* last, u64 d[16]); /* 426 */
 int native_video_gpu_unmap(u32 image, u32 address_space, u64 first, u64 last);           /* 427 */
+/* FFmpeg's picture f (4:2:0 planes of 8 bits, or a GPU image Vulkan Video decoded into) written into image id of pool
+   p, as a codec writes its output: 1 when written. The codecs', and tests/vulkan_video_av1.inc's */
+int native_video_image_write(const NativeVideoPool* p, u32 id, const struct AVFrame* f);
 /* a codec is open: a save state can't hold FFmpeg's pictures */
 int native_video_busy(void);
 

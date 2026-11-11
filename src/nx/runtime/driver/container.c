@@ -954,6 +954,48 @@ unsigned char* snx_romfs_file(SnxHacFs* fs, const char* name, size_t* size) {
     return NULL;
 }
 
+/* The file table whole, its entries one after another as the RomFS's builder wrote them: each 0x20 bytes, then its
+   name, padded to 4 */
+int snx_romfs_each(SnxHacFs* fs, const char* suffix, SnxRomfsEach each, void* context) {
+    unsigned char header[0x50], *entries;
+    SnxU64 total = snx_hac_fs_romfs_size(fs), table, table_size, files, start, length, at = 0;
+    SnxU32 name_size;
+    char name[0x300 + 1];
+    int rc = 0;
+    if (!total) return 0;
+    if (total < sizeof header || snx_hac_fs_read_romfs(fs, 0, header, sizeof header)) return -1;
+    table = le_bytes(header + 0x38, 8);
+    table_size = le_bytes(header + 0x40, 8);
+    files = le_bytes(header + 0x48, 8);
+    if (table > total || table_size > total - table || files > total || table_size > 0x40000000UL) return -1;
+    if (!table_size) return 0;
+    entries = (unsigned char*)malloc((size_t)table_size);
+    if (!entries || snx_hac_fs_read_romfs(fs, table, entries, (size_t)table_size)) {
+        free(entries);
+        return -1;
+    }
+    while (!rc && table_size - at >= 0x20) {
+        name_size = (SnxU32)le_bytes(entries + at + 0x1c, 4);
+        if (name_size > 0x300 || name_size > table_size - at - 0x20) {
+            rc = -1;
+            break;
+        }
+        memcpy(name, entries + at + 0x20, name_size);
+        name[name_size] = 0;
+        start = le_bytes(entries + at + 8, 8);
+        length = le_bytes(entries + at + 0x10, 8);
+        if (has_suffix(name, suffix)) {
+            if (start > total - files || length > total - files - start)
+                rc = -1;
+            else
+                rc = each(context, name, files + start, length);
+        }
+        at += 0x20 + (((SnxU64)name_size + 3) & ~(SnxU64)3);
+    }
+    free(entries);
+    return rc;
+}
+
 /* the Control NCA's RomFS, or NULL with why in *why */
 static SnxHacFs* control_fs(SnxDump* dump, const char** why) {
     SnxHacFs* fs;

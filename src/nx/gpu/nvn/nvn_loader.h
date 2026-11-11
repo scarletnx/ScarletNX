@@ -40,6 +40,10 @@ typedef struct {
 void nvn_loader_init(void);
 /* 1 once nvn_loader_init took the game's NVN loader: the NVN functions the game resolves are the runtime's */
 int nvn_loader_active(void);
+/* 1 when fn is a function the loader puts in a dispatch slot in the driver's place: an NVN function's
+   implementation, the handler of one the runtime has not, or the wrappers of the driver's two lookups. A slot keeps
+   one until the loader gives it another, which it tells of (guest_jit.h's jit_slot_taken) */
+int nvn_loader_handler(GuestFn fn);
 /* The driver's code fn, recompiled for its function at (whose slot the loader took), run on c from inside an NVN
    call with the arguments a0 to a2, as the driver runs a callback: its return to the NVN call's return address ends
    the run. Its x0 */

@@ -80,4 +80,8 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns);
 /* the box's place for that in letters of scale (stats_scale's): x, y, w, h into box. STATS_COLS letters wide, or
    wider for a line under the graph that needs it, up to the safe area's width */
 void stats_box(const int safe[4], int scale, float box[4]);
+/* the box as stats_draw last laid it out (x, y, w, h into box), from its first cell that draws: stats_box's less
+   its first column, a margin. 1, or 0 while stats is off or was never drawn. For what else shows over the game and
+   keeps clear of it or lines up with it (overlay.c's notification). Under ui_lock */
+int stats_box_drawn(float box[4]);
 #endif

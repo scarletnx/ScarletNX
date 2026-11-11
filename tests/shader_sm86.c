@@ -2686,6 +2686,64 @@ static void test_global_table(const char* dir) {
     free(spv);
 }
 
+/* A pointer in the memory a table's word points to, as one game's culling programs reach the instances of a kind of
+   plant: LDC.64 R2, c[4][R0] (0x5_0000_1100), MOV R8, R2 and R9, R3, LDG.64 R4, [R8] (cell 0 of that record:
+   0x7_0000_9010), LDG R6, [R4 + 4], STG [R2 + 8], R6. The program names cell 0 (ShaderInfo.table_cells), and with the
+   record in window 0 (0x5_0000_1000) and the instances in window 1 (0x7_0000_9000) the STG puts the word at
+   0x7_0000_9014 (0xdef) at 0x5_0000_1108. A pointer loaded at the word plus 0x10, an offset the IADD3 adds, names no
+   cell: only the record's own cells are read as the dispatch binds */
+static Word iadd3_imm(u32 dst, u32 a, u32 imm);
+static void test_global_table_cells(const char* dir) {
+    u8 code[16 * 10] = {0};
+    u32 n = 0;
+    put(code, n++, mov_imm(0, 0x20));
+    put(code, n++, ldc(2, 0, 4, 0, 5));
+    put(code, n++, mov_if(8, 2, 7, 0));
+    put(code, n++, mov_if(9, 3, 7, 0));
+    put(code, n++, ldg_nou(4, 8, 0, 5));
+    put(code, n++, ldg_nou(6, 4, 4, 4));
+    put(code, n++, stg_nou(2, 8, 6));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "global table cells: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(si.table_cells == 1);
+    static u32 bank4[1024], windows[64], a[256], b[64], log[16 * SH_WLOG_PART];
+    bank4[0x20 / 4] = 0x1100, bank4[0x24 / 4] = 5;
+    windows[0] = 0x1000, windows[1] = 5, windows[2] = 0x400;
+    windows[4] = 0x9000, windows[5] = 7, windows[6] = 0x100;
+    a[0x40] = 0x9010, a[0x41] = 7;
+    b[5] = 0xdef;
+    SpvEvalEnv env = {0};
+    env.ubo[SNX_VKB_CB + 4] = bank4;
+    env.ubo_words[SNX_VKB_CB + 4] = 1024;
+    env.ubo[SNX_VKB_MBASE] = windows;
+    env.ubo_words[SNX_VKB_MBASE] = 64;
+    env.ubo[SNX_VKB_SSBO] = a;
+    env.ubo_words[SNX_VKB_SSBO] = 256;
+    env.ubo[SNX_VKB_SSBO + 1] = b;
+    env.ubo_words[SNX_VKB_SSBO + 1] = 64;
+    env.ubo[SNX_VKB_WPAGES] = log;
+    env.ubo_words[SNX_VKB_WPAGES] = 16 * SH_WLOG_PART;
+    const char* why = spv_eval(spv, count, &env);
+    CHECK(!why && a[0x42] == 0xdef);
+    if (why || a[0x42] != 0xdef) fprintf(stderr, "global table cells: %s, word %x\n", why ? why : "ran", a[0x42]);
+    CHECK(keep_module(dir, "global_table_cells", spv, count));
+    free(spv);
+    put(code, 2, iadd3_imm(8, 2, 0x10));
+    si = (ShaderInfo){0};
+    spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL && si.table_cells == 0);
+    free(spv);
+}
+
 /* TEX, TLD, TLD4 and TXQ with the handle in a uniform register (0xf60, 0xf66, 0xf63, 0xf6f), as CuAssembler's sm_86
    records encode "TEX.SCR.LL.DC R34, R8, R2, R6, UR4, 2D", "TLD.SCR.LZ R4, R14, R6, UR4, 2D", "TLD4.SCR.A
    R16, R2, R48, UR4, 2D" and "TXQ R35, R20, UR12, TEX_HEADER_DIMENSION, 0x2": the register at 40-45. A handle that
@@ -3110,6 +3168,146 @@ static void test_atomic_fadd(const char* dir) {
     size_t count = 0;
     u32* spv = sm86_to_spirv(code, 4 * 16, ST_CS, NULL, &si, &count);
     CHECK(!spv && strstr(si.first_unsupported, "RED of type 3, operation 1"));
+    free(spv);
+}
+/* ULDC.64 ud, c[bank][off] */
+static Word uldc64_to(u32 ud, u32 bank, u32 off) {
+    Word x = uldc64(0);
+    set(&x, 16, 6, ud);
+    cbuf(&x, bank, off);
+    return x;
+}
+/* An address at the sum of two constant buffer pairs, as one game's programs that sum a texture's light into a
+   buffer form it: UMOV UR6, 1, ULDC.64 UR8, c[0][0x20] (the buffer, 0x1000), ULDC.64 UR4, c[1][0] (an offset, 0),
+   UIMAD.WIDE.U32 UR4, UR6, UR8, UR4, then RED.E.ADD.F32.FTZ.RN [UR4 + 0x10], R2. Each of the two may be the base: the
+   program binds both, and the add lands in the one that holds the address, word 4 of c[0][0x20]'s buffer, 1.0 + 2.5.
+   With the offset 0x40000 the sum is in neither, and nothing changes */
+static void test_global_two_bases(const char* dir) {
+    u8 code[16 * 9] = {0};
+    u32 n = 0;
+    put(code, n++, ualu(0x082, 6, 0, 1));
+    put(code, n++, uldc64_to(8, 0, 0x20));
+    put(code, n++, uldc64_to(4, 1, 0));
+    Word imad = fix(0x2a5); /* UIMAD.WIDE.U32 UR4, UR6, UR8, UR4 */
+    set(&imad, 16, 6, 4);
+    set(&imad, 24, 6, 6);
+    set(&imad, 32, 6, 8);
+    set(&imad, 64, 6, 4);
+    set(&imad, 81, 3, 7);
+    set(&imad, 87, 1, 1);
+    set(&imad, 88, 4, 0xf);
+    put(code, n++, imad);
+    put(code, n++, mov_imm(2, f2u(2.5f)));
+    put(code, n++, global_uniform(0x98e, 0, 4, 0x10, 2, 3, 0));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "global two bases: %s\n", si.first_unsupported);
+        return;
+    }
+    int at_c0 = -1, at_c1 = -1;
+    for (int k = 0; k < si.ngbuf; k++) {
+        if (si.gbuf_cbuf_off[k] == 0x20) at_c0 = k;
+        if (si.gbuf_cbuf_off[k] == 1u << 16) at_c1 = k;
+    }
+    CHECK(si.ngbuf == 2 && at_c0 >= 0 && at_c1 >= 0);
+    if (at_c0 < 0 || at_c1 < 0) {
+        free(spv);
+        return;
+    }
+    for (u32 offset = 0; offset <= 0x40000; offset += 0x40000) {
+        static u32 bank0[1024], bank1[64], buffer[64], other[4], log[2 * SH_WLOG_PART];
+        memset(buffer, 0, sizeof buffer);
+        memset(other, 0, sizeof other);
+        bank0[0x20 / 4] = 0x1000, bank0[0x28 / 4] = 0x100;
+        bank1[0] = offset;
+        buffer[4] = f2u(1.0f);
+        SpvEvalEnv env = {0};
+        env.ubo[SNX_VKB_CB] = bank0;
+        env.ubo_words[SNX_VKB_CB] = 1024;
+        env.ubo[SNX_VKB_CB + 1] = bank1;
+        env.ubo_words[SNX_VKB_CB + 1] = 64;
+        env.ubo[SNX_VKB_SSBO + at_c0] = buffer;
+        env.ubo_words[SNX_VKB_SSBO + at_c0] = 64;
+        env.ubo[SNX_VKB_SSBO + at_c1] = other;
+        env.ubo_words[SNX_VKB_SSBO + at_c1] = 4;
+        env.ubo[SNX_VKB_WPAGES] = log;
+        env.ubo_words[SNX_VKB_WPAGES] = 2 * SH_WLOG_PART;
+        const char* why = spv_eval(spv, count, &env);
+        int ok = !why && buffer[4] == f2u(offset ? 1.0f : 3.5f) && !other[0] && !other[1] && !other[2] && !other[3];
+        CHECK(ok);
+        if (!ok) fprintf(stderr, "global two bases (offset %x): %s, word %08x\n", offset, why ? why : "ran", buffer[4]);
+    }
+    CHECK(keep_module(dir, "global_two_bases", spv, count));
+    free(spv);
+}
+/* An atomic whose operand and destination are one register, at an address that adds two bases (global_dynamic), as
+   one game's placement programs take a warp's first slot of a list: ATOMG.E.ADD R2, [UR4 + 0x10], R2 then STG
+   [UR4 + 0x14], R2. Word 4 of c[0][0x20]'s buffer goes from 5 to 8 (R2 is 3), and word 5 gets 5, what was there */
+static void test_global_atomic_same_register(const char* dir) {
+    u8 code[16 * 10] = {0};
+    u32 n = 0;
+    put(code, n++, ualu(0x082, 6, 0, 1));
+    put(code, n++, uldc64_to(8, 0, 0x20));
+    put(code, n++, uldc64_to(4, 1, 0));
+    Word imad = fix(0x2a5); /* UIMAD.WIDE.U32 UR4, UR6, UR8, UR4 */
+    set(&imad, 16, 6, 4);
+    set(&imad, 24, 6, 6);
+    set(&imad, 32, 6, 8);
+    set(&imad, 64, 6, 4);
+    set(&imad, 81, 3, 7);
+    set(&imad, 87, 1, 1);
+    set(&imad, 88, 4, 0xf);
+    put(code, n++, imad);
+    put(code, n++, mov_imm(2, 3));
+    put(code, n++, global_uniform(0x9a8, 2, 4, 0x10, 2, 0, 0));
+    put(code, n++, global_uniform(0x986, 0, 4, 0x14, 2, 4, 0));
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "global atomic, one register: %s\n", si.first_unsupported);
+        return;
+    }
+    int at_c0 = -1, at_c1 = -1;
+    for (int k = 0; k < si.ngbuf; k++) {
+        if (si.gbuf_cbuf_off[k] == 0x20) at_c0 = k;
+        if (si.gbuf_cbuf_off[k] == 1u << 16) at_c1 = k;
+    }
+    CHECK(si.ngbuf == 2 && at_c0 >= 0 && at_c1 >= 0);
+    if (at_c0 < 0 || at_c1 < 0) {
+        free(spv);
+        return;
+    }
+    static u32 bank0[1024], bank1[64], buffer[64], other[4], log[2 * SH_WLOG_PART];
+    bank0[0x20 / 4] = 0x1000, bank0[0x28 / 4] = 0x100;
+    buffer[4] = 5;
+    SpvEvalEnv env = {0};
+    env.ubo[SNX_VKB_CB] = bank0;
+    env.ubo_words[SNX_VKB_CB] = 1024;
+    env.ubo[SNX_VKB_CB + 1] = bank1;
+    env.ubo_words[SNX_VKB_CB + 1] = 64;
+    env.ubo[SNX_VKB_SSBO + at_c0] = buffer;
+    env.ubo_words[SNX_VKB_SSBO + at_c0] = 64;
+    env.ubo[SNX_VKB_SSBO + at_c1] = other;
+    env.ubo_words[SNX_VKB_SSBO + at_c1] = 4;
+    env.ubo[SNX_VKB_WPAGES] = log;
+    env.ubo_words[SNX_VKB_WPAGES] = 2 * SH_WLOG_PART;
+    const char* why = spv_eval(spv, count, &env);
+    int ok = !why && buffer[4] == 8 && buffer[5] == 5 && !other[0];
+    CHECK(ok);
+    if (!ok)
+        fprintf(stderr, "global atomic, one register: %s, words %u %u\n", why ? why : "ran", buffer[4], buffer[5]);
+    CHECK(keep_module(dir, "global_atomic_same_register", spv, count));
     free(spv);
 }
 
@@ -3792,11 +3990,14 @@ int main(int argc, char** argv) {
     test_global_pointer(dir);
     test_global_indirect(dir);
     test_global_table(dir);
+    test_global_table_cells(dir);
     test_f2ip(dir);
     test_uldc_small(dir);
     test_shfl_creg(dir);
     test_shading_rate(dir);
     test_atomic_fadd(dir);
+    test_global_two_bases(dir);
+    test_global_atomic_same_register(dir);
     test_uniform_handle(dir);
     test_memory_eval();
     test_uldc_word_key(dir);

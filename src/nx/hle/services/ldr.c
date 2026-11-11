@@ -2,13 +2,16 @@
    Copyright 2026 the ScarletNX contributors */
 /* ldr:ro / ro:1, IRoInterface. Behavioral reference: Eden's service/ro/ro.cpp and
    cmif_serialization.h (see docs/platforms/nx/nro.md). The guest nn::ro linker, not this service, resolves symbols,
-   applies relocations and calls constructors. NRO code is the runtime JIT's (runtime/guest_jit.c: its text joins the
-   JIT's images while it is mapped), and the interpreter's without a JIT; fixed-address AOT functions cannot safely be
-   rebased by changing their dispatch entries. */
+   applies relocations and calls constructors. An NRO the recompiler found in the game's RomFS has its code made ahead
+   of time for one guest address (g_nros, nx/loader/nro_slots.h): it is mapped there, found by the SHA-256 of its image,
+   and its own AOT module runs it (runtime/guest_jit.c's jit_nro_added). Any other NRO, and one whose address is in
+   use, is mapped where there is room and its code is the runtime JIT's (its text joins the JIT's images while it is
+   mapped): AOT functions made for one address cannot be rebased by changing their dispatch entries. */
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "hle/services/ldr.swipc.inc"
 #include "nx/runtime/guest_jit.h"
+#include "nx/runtime/loader.h"
 #include <openssl/evp.h>
 #include "nx/runtime/nce/nce.h"
 #include "common/utilities/endian.h"
@@ -77,7 +80,12 @@ static int ro_unregister_nrr(RoState* s, u64 a) {
     }
     R_THROW(SNX_RC_RO_NOT_REGISTERED);
 }
-static int ro_validate_nro(RoState* s, const MemCodeMap* m, u32* text, u32* ro, u32* data) {
+static void ro_hash(const u8* image, u64 size, u8* hash) {
+    if (!EVP_Digest(image, (size_t)size, hash, NULL, EVP_sha256(), NULL))
+        fatal("ldr: SHA-256 failed (out of memory)\n");
+}
+/* hash: the SHA-256 of the image as it is mapped, which an NRR must hold */
+static int ro_validate_nro(RoState* s, const MemCodeMap* m, u32* text, u32* ro, u32* data, u8* hash) {
     const u8* h = GP(m->base);
     *text = snx_ld_le32(h + 0x24);
     *ro = snx_ld_le32(h + 0x2c);
@@ -87,8 +95,7 @@ static int ro_validate_nro(RoState* s, const MemCodeMap* m, u32* text, u32* ro, 
         snx_ld_le32(h + 0x20) || snx_ld_le32(h + 0x28) != *text || snx_ld_le32(h + 0x30) != (u64)*text + *ro ||
         (u64)*text + *ro + *data != m->size)
         R_THROW(SNX_RC_RO_INVALID_NRO_IMAGE);
-    u8 hash[32];
-    if (!EVP_Digest(h, (size_t)m->size, hash, NULL, EVP_sha256(), NULL)) fatal("ldr: SHA-256 failed (out of memory)\n");
+    ro_hash(h, m->size, hash);
     int authorized = 0;
     for (int i = 0; i < RO_LIMIT && !authorized; i++)
         for (u32 j = 0; j < s->nrr[i].count; j++)
@@ -114,13 +121,34 @@ static int ro_load_nro(RoState* s, u64 source, u64 size, u64 bss, u64 bss_size, 
             break;
         }
     R_UNLESS(slot, SNX_RC_RO_TOO_MANY_NRO);
-    r = mem_map_code(&m);
+    /* The address the recompiler made this NRO's code for, by the hash of its image where the game holds it: the view
+       goes there, and nowhere else in the addresses kept for such NROs. When that address is in use (the NRO mapped
+       twice at once, through another session, or other memory the game put there), this mapping goes where there is
+       room and the JIT runs it */
+    u8 held[32], hash[32];
+    long place = -1;
+    u64 taken = 0;
+    if (g_nros && m.size >= 0x80 && ro_readable(m.source, m.size)) {
+        ro_hash(GP(m.source), m.size, held);
+        place = snx_nro_slot(g_nros, held);
+        if (place >= 0 && g_nros->slots[place].size != m.size + m.bss_size) place = -1;
+    }
+    if (place >= 0) {
+        m.base = g_nros->slots[place].base;
+        r = mem_map_code(&m);
+        if (r == MEM_LIMIT) {
+            taken = m.base;
+            m.base = 0;
+            r = mem_map_code(&m);
+        }
+    } else
+        r = mem_map_code(&m);
     if (r)
         R_THROW(r == MEM_LIMIT      ? SNX_RC_RO_OUT_OF_ADDRESS_SPACE
                 : r == MEM_BADSTATE ? SNX_RC_RO_INVALID_MEMORY_STATE
                                     : SNX_RC_RO_INTERNAL_ERROR);
     u32 text, ro, data;
-    r = ro_validate_nro(s, &m, &text, &ro, &data);
+    r = ro_validate_nro(s, &m, &text, &ro, &data, hash);
     if (R_SUCCEEDED(r)) {
         if (mem_set_state(m.base, text, MS_ALIASCODE, PERM_RX) ||
             (ro && mem_set_state(m.base + text, ro, MS_ALIASCODE, PERM_R)) ||
@@ -142,9 +170,25 @@ static int ro_load_nro(RoState* s, u64 source, u64 size, u64 bss, u64 bss_size, 
     memcpy(slot->id, GP(m.base + 0x40), 32);
     nce_code_added(m.base, text); /* before the game runs it: an SVC would be a system call of the host */
     *address = m.base;
-    LOG("ldr:ro: mapped NRO at %llx (%llu bytes, %s)\n", (unsigned long long)m.base,
-        (unsigned long long)(m.size + m.bss_size),
-        jit_code_added(m.base, text, m.size) ? "no AOT variants" : "AOT variants");
+    /* its own AOT module, when the image mapped at its address is the one that was hashed (the game may have written
+       its heap since); then the JIT, for the code that module lacks, or all of it */
+    u32 entries = 0;
+    int own = place >= 0 && !taken && !memcmp(hash, held, 32) &&
+              !jit_nro_added(hash, m.base, m.size + m.bss_size, slot->id, &entries);
+    int jit = jit_code_added(m.base, text, m.size);
+    if (taken) {
+        char name[65];
+        for (int i = 0; i < 32; i++) snprintf(name + 2 * i, 3, "%02x", held[i]);
+        WARN("ldr:ro: the NRO %s is mapped at %llx and the JIT runs it: %llx, the address its AOT module is made for, "
+             "is in use\n",
+             name, (unsigned long long)m.base, (unsigned long long)taken);
+    }
+    if (own)
+        LOG("ldr:ro: mapped NRO at %llx (%llu bytes, its AOT module, %u entries)\n", (unsigned long long)m.base,
+            (unsigned long long)(m.size + m.bss_size), (unsigned)entries);
+    else
+        LOG("ldr:ro: mapped NRO at %llx (%llu bytes, %s)\n", (unsigned long long)m.base,
+            (unsigned long long)(m.size + m.bss_size), jit ? "no AOT variants" : "AOT variants");
     R_SUCCEED();
 }
 static int ro_unload_nro(RoState* s, u64 base) {
@@ -153,6 +197,7 @@ static int ro_unload_nro(RoState* s, u64 base) {
         RoNro* n = &s->nro[i];
         if (!n->map.base || n->map.base != base) continue;
         jit_code_removed(base); /* before its memory goes: a hash may be reading it */
+        jit_nro_removed(base);
         R_UNLESS(!mem_unmap_code(&n->map), SNX_RC_RO_INVALID_MEMORY_STATE);
         memset(n, 0, sizeof *n);
         R_SUCCEED();
@@ -209,6 +254,7 @@ static void ro_destroy(SvcObj* o) {
     for (int i = 0; i < RO_LIMIT; i++) {
         free(s->nrr[i].hashes);
         if (s->nro[i].map.base) jit_code_removed(s->nro[i].map.base);
+        if (s->nro[i].map.base) jit_nro_removed(s->nro[i].map.base);
         if (s->nro[i].map.base && mem_unmap_code(&s->nro[i].map))
             WARN("ldr:ro: the NRO at %#llx (%#llx bytes) is no longer mapped as its code: it stays\n",
                  (unsigned long long)s->nro[i].map.base, (unsigned long long)s->nro[i].map.size);

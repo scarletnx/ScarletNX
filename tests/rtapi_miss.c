@@ -76,6 +76,7 @@ void jit_code_changed(u64 addr, u64 size) {
 Hle g_hle;
 u8* g_mem;
 u64 g_code_lo = 0x8000000ull, g_code_hi = 0x8001000ull;
+const SnxNros* g_nros; /* main.c's: a game module without NROs of its own */
 void (*const g_svc64[SNX_SVC_COUNT])(CPU* c, u32 imm);
 void snx_svc(CPU* c, u32 imm) {
     (void)c;

@@ -140,6 +140,7 @@ int g_shader_float16 = 1;
 int g_shader_resource_min_lod = 1;
 int g_shader_dynamic_texture_offsets;
 int g_shader_half_rounding;
+int g_shader_i2f_nearest;
 int g_shader_draw_parameters = 1;
 int g_shader_quad = 1;
 int g_shader_quad_compute = 1;
@@ -253,6 +254,16 @@ static int screen_sample(const ShFlow* f, u32 i, const u32* sph, int plain, u32 
     *screen_in = g;
     return 1;
 }
+/* A fragment program's plain 2D sample at a generic's (x, y) as the vertex stage wrote them, a generic that isn't
+   constant over the primitive and the same one as the program's other such samples (*uv_in, -1 before the first): it
+   reads the fragment's own pixel's centre where the vertex stage wrote its position from that generic and the viewport
+   maps it onto the target (vk/render.c) */
+static int uv_sample(const ShFlow* f, u32 i, const u32* sph, int plain, u32 x, u32 y, int* uv_in) {
+    int g = plain ? shader_direct_plain_uv(f, i, x, y) : -1;
+    if (g < 0 || shader_ipa_interpolation(sph, (u32)g) == 1 || (*uv_in >= 0 && *uv_in != g)) return 0;
+    *uv_in = g;
+    return 1;
+}
 
 static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage, ShaderInfo* si, size_t* word_count,
                       int can_flush, int can_preserve, int can_preserve_f64, int can_subgroup, u32 legacy_fs,
@@ -324,8 +335,11 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     ShTex textures[SH_MAXTEX] = {0};
     int texture_count = 0;
     u64 tex_read = 0, tex_elsewhere = 0; /* slots read, and of them read elsewhere than the fragment's own pixel */
+    u64 tex_asked = 0;                   /* slots TXQ or TMML name: their size, levels or level of detail asked */
     u64 tex_screen = 0; /* slots sampled at the own pixel's centre, if the draw agrees (screen_sample) */
     int screen_in = -1;
+    u64 tex_uv = 0; /* slots sampled at a generic's (x, y), the own pixel's centre if the draw agrees (uv_sample) */
+    int uv_in = -1;
     u64 tex_query = 0;                   /* slots a TXQ alone names: their type is the key's hint, or 2D */
     ShaderInfo image_info = {0};
     int needs_fragcoord = stage == ST_FS && (si->advanced_blend_mask & SH_ALPHA_COVERAGE_DITHER);
@@ -957,6 +971,9 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             if (stage == ST_FS && screen_sample(flow, i, sph, encoding == 1 || encoding == 2, a,
                                                 shader_texs_y(encoding, a, b), &screen_in))
                 tex_screen |= 1ull << slot;
+            else if (stage == ST_FS &&
+                     uv_sample(flow, i, sph, encoding == 1 || encoding == 2, a, shader_texs_y(encoding, a, b), &uv_in))
+                tex_uv |= 1ull << slot;
             else
                 tex_elsewhere |= 1ull << slot;
             if (!B(insn[i], 59, 1)) needs_glsl = 1;
@@ -1218,10 +1235,11 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             if (read_slot < 0) return direct_reject(si, "texture descriptor count");
             tex_read |= 1ull << read_slot;
             u32 coordinate = a + (array || clamp), dimensions = type == 0 ? 1 : type >= 2 ? 3 : 2;
-            if (stage == ST_FS &&
-                screen_sample(flow, i, sph, type == 1 && !array && !shadow && !offset_enabled && !clamp && mode <= 1, a,
-                              a < 254 ? a + 1 : 255, &screen_in))
+            int plain = type == 1 && !array && !shadow && !offset_enabled && !clamp && mode <= 1;
+            if (stage == ST_FS && screen_sample(flow, i, sph, plain, a, a < 254 ? a + 1 : 255, &screen_in))
                 tex_screen |= 1ull << read_slot;
+            else if (stage == ST_FS && uv_sample(flow, i, sph, plain, a, a < 254 ? a + 1 : 255, &uv_in))
+                tex_uv |= 1ull << read_slot;
             else
                 tex_elsewhere |= 1ull << read_slot;
             if ((array || clamp) && a < 255) used[a] = 1;
@@ -1247,9 +1265,10 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                 bindless ? shader_direct_track_image_handle_pair(flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
             if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, b);
             if (handle_count == 1) indexed = shader_direct_indexed_handle(flow, i, b, stage, &ldc);
-            if (shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless, bank,
-                                             handle_count, bank2, off2, indexed, ldc) < 0)
-                return direct_reject(si, "texture descriptor count");
+            int asked_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless,
+                                                          bank, handle_count, bank2, off2, indexed, ldc);
+            if (asked_slot < 0) return direct_reject(si, "texture descriptor count");
+            tex_asked |= 1ull << asked_slot;
             for (u32 k = 0; k < array + (type == 0 ? 1 : type == 1 ? 2 : 3); k++)
                 if (a + k < 255) used[a + k] = 1;
             if (bindless && b < 255) used[b] = 1;
@@ -1309,6 +1328,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                                                  handle_count, bank2, off2, indexed, ldc);
             if (qslot < 0) return direct_reject(si, "texture descriptor count");
             if (guessed) tex_query |= 1ull << qslot;
+            tex_asked |= 1ull << qslot;
             needs_image_query = 1;
             if (a < 255) used[a] = 1;
             if (bindless && a + 1 < 255) used[a + 1] = 1;
@@ -1446,13 +1466,16 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     if (!has_exit) return direct_reject(si, "missing exit");
     if (has_pexit && has_conditional_exit) return direct_reject(si, "conditional EXIT with PEXIT token");
     if (needs_subgroup && !can_subgroup) return direct_reject(si, "subgroup ballot/shuffle unavailable");
-    if (has_flow && needs_derivatives && !can_subgroup)
-        return direct_reject(si, "fragment derivative convergence unavailable");
     if (needs_f64 && !can_preserve_f64) return direct_reject(si, "FP64 float controls unavailable");
     /* The flow loop runs one block per iteration, so lanes that took the two sides of a branch reach the join on
        different iterations, and VOTE, SHFL and BAR would see part of the warp. Each iteration runs only the lanes
        at the subgroup's lowest pc, as the hardware reconverges: lanes ahead wait for the others to reach them. */
     converge = has_flow && can_subgroup && (needs_subgroup || has_barrier || needs_derivatives);
+    /* Without subgroups in the fragment stage nothing holds a lane of that loop for its quad, and a derivative taken
+       after a join would read registers of lanes that are elsewhere in the program. Such a program is translated only
+       as structured flow, where a quad's lanes meet again at each construct's merge on any device, as every
+       compiled fragment shader's ifs and loops need them to */
+    int quad_flow = has_flow && needs_derivatives && !can_subgroup;
     /* FTZ per instruction: without the execution mode, or with it where some FADD, FMUL or FFMA keeps subnormals (the
        mode is the whole module's). Never on a device that flushes by itself, which also flushes those that keep them:
        the flush would change no bit */
@@ -1727,8 +1750,69 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     /* a capture's push constants have their own third vector */
     if (needs_frag_ndc && (si->advanced_blend_mask & SH_CAPTURE_SOURCE))
         return direct_reject_with_buffers(si, "a varying pass in a capture's fragment program", pop_targets, gb_at);
+    /* the program's blocks and its structure, before the module is started: a refusal here has nothing to undo */
+    u32 *case_labels = NULL, *case_literals = NULL;
+    u8* block_start = NULL;
+    size_t case_count = 0;
+    ShStructure* structure = NULL;
+    if (has_flow) {
+        /* one case for each instruction, and the case of lanes waiting to reconverge */
+        case_labels = calloc(n + 1, sizeof *case_labels + sizeof *case_literals + 1);
+        if (!case_labels) abort();
+        case_literals = case_labels + n + 1;
+        block_start = (u8*)(case_literals + n + 1);
+        block_start[11] = 1;
+        int unknown_brx = 0;
+        for (u32 i = 11; i < n; i++) {
+            if (!IDX_OK(i)) continue;
+            int id = flow->op[i]->id;
+            if ((id == O_CAL && B(insn[i], 5, 1)) || id == O_JCAL || id == O_JMP || id == O_JMX) unknown_brx = 1;
+            if (id == O_BRX) {
+                u32 targets[64];
+                int count = shader_brx_targets(insn, i, n, targets, 64);
+                if (count < 0)
+                    unknown_brx = 1;
+                else
+                    for (int k = 0; k < count; k++) block_start[targets[k]] = 1;
+            }
+            if (id == O_BRA || (id == O_CAL && !B(insn[i], 5, 1)) || id == O_PRET || id == O_PEXIT || id == O_SSY ||
+                id == O_PBK || id == O_PCNT)
+                block_start[bra_target(insn[i], i)] = 1;
+            if (!dynamic_stack && (id == O_SYNC || id == O_BRK || id == O_CONT)) block_start[pop_targets[i]] = 1;
+            if (id == O_BRA || id == O_CAL || id == O_JCAL || id == O_JMP || id == O_JMX || id == O_RET ||
+                id == O_BRX || id == O_SYNC || id == O_BRK || id == O_CONT || id == O_EXIT) {
+                u32 next = shader_next_instruction(i, n);
+                if (next < n) block_start[next] = 1;
+            }
+        }
+        /* Unknown jump tables retain a case for every possible instruction target. */
+        if (unknown_brx)
+            for (u32 i = 11; i < n; i++)
+                if (IDX_OK(i)) block_start[i] = 1;
+        /* The program's own branches and loops as structured constructs, where its control flow allows them: the
+           dispatch loop below makes every register live around one big loop, and costs a driver as much to compile
+           again as the program's code. Lanes that must reconverge for subgroup operations, barriers or derivatives
+           take them where the device reconverges them at each construct's merge (MaximallyReconvergesKHR), as the
+           hardware does at its SYNC targets, and keep the loop otherwise, which runs the lowest pc first */
+        if (!advanced_blend && !dynamic_stack && !has_calls && (!converge || g_shader_maximal_reconvergence) &&
+            !unknown_brx)
+            structure = shader_structure(insn, n, block_start, pop_targets);
+        if (quad_flow && !structure) {
+            const char* with = advanced_blend  ? "advanced blend"
+                               : dynamic_stack ? "a run-time control stack"
+                               : has_calls     ? "calls"
+                               : unknown_brx   ? "indirect jumps"
+                                               : "flow without a structure";
+            char why[sizeof si->first_unsupported];
+            snprintf(why, sizeof why, "derivatives after flow, without fragment subgroups, in a program with %s", with);
+            free(case_labels);
+            return direct_reject_with_buffers(si, why, pop_targets, gb_at);
+        }
+    }
     DirectCtx* c = calloc(1, sizeof *c);
     if (!c) {
+        free(case_labels);
+        free(structure);
         free(gb_at);
         free(pop_targets);
         return NULL;
@@ -2470,54 +2554,10 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     u32 default_point_size = 0;
     u32 pc = 0, loop_header = 0, loop_dispatch = 0, dispatch_default = 0, dispatch_merge = 0, loop_continue = 0,
         loop_merge = 0;
-    u32 *case_labels = NULL, *case_literals = NULL;
-    u8* block_start = NULL;
-    size_t case_count = 0;
-    ShStructure* structure = NULL;
     StructEmit se = {0};
     if (has_flow) {
-        /* one case for each instruction, and the case of lanes waiting to reconverge */
-        case_labels = calloc(n + 1, sizeof *case_labels + sizeof *case_literals + 1);
-        if (!case_labels) abort();
-        case_literals = case_labels + n + 1;
-        block_start = (u8*)(case_literals + n + 1);
-        block_start[11] = 1;
-        int unknown_brx = 0;
-        for (u32 i = 11; i < n; i++) {
-            if (!IDX_OK(i)) continue;
-            int id = flow->op[i]->id;
-            if ((id == O_CAL && B(insn[i], 5, 1)) || id == O_JCAL || id == O_JMP || id == O_JMX) unknown_brx = 1;
-            if (id == O_BRX) {
-                u32 targets[64];
-                int count = shader_brx_targets(insn, i, n, targets, 64);
-                if (count < 0)
-                    unknown_brx = 1;
-                else
-                    for (int k = 0; k < count; k++) block_start[targets[k]] = 1;
-            }
-            if (id == O_BRA || (id == O_CAL && !B(insn[i], 5, 1)) || id == O_PRET || id == O_PEXIT || id == O_SSY ||
-                id == O_PBK || id == O_PCNT)
-                block_start[bra_target(insn[i], i)] = 1;
-            if (!dynamic_stack && (id == O_SYNC || id == O_BRK || id == O_CONT)) block_start[pop_targets[i]] = 1;
-            if (id == O_BRA || id == O_CAL || id == O_JCAL || id == O_JMP || id == O_JMX || id == O_RET ||
-                id == O_BRX || id == O_SYNC || id == O_BRK || id == O_CONT || id == O_EXIT) {
-                u32 next = shader_next_instruction(i, n);
-                if (next < n) block_start[next] = 1;
-            }
-        }
-        /* Unknown jump tables retain a case for every possible instruction target. */
-        if (unknown_brx)
-            for (u32 i = 11; i < n; i++)
-                if (IDX_OK(i)) block_start[i] = 1;
-        /* The program's own branches and loops as structured constructs, where its control flow allows them: the
-           dispatch loop below makes every register live around one big loop, and costs a driver as much to compile
-           again as the program's code. Lanes that must reconverge for subgroup operations, barriers or derivatives
-           take them where the device reconverges them at each construct's merge (MaximallyReconvergesKHR), as the
-           hardware does at its SYNC targets, and keep the loop otherwise, which runs the lowest pc first */
-        if (!advanced_blend && !dynamic_stack && !has_calls && (!converge || g_shader_maximal_reconvergence) &&
-            !unknown_brx)
-            structure = shader_structure(insn, n, block_start, pop_targets);
-        if (structure && converge) { /* the guarantee those lanes need */
+        /* the guarantee those lanes need, and the one a quad's have for derivatives where the device gives it */
+        if (structure && (converge || (quad_flow && g_shader_maximal_reconvergence))) {
             spv_emit_extension(&c->emit, "SPV_KHR_maximal_reconvergence");
             spv_emit_execution_mode(&c->emit, fn, 6023, 0, 0); /* MaximallyReconvergesKHR */
         }
@@ -2931,10 +2971,16 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     next.tex_dc_color_funcs = si->tex_dc_color_funcs;
     next.in_unfed_mask = si->in_unfed_mask;
     next.ntex = texture_count;
-    next.tex_own_pixel_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & ~tex_screen : 0;
+    /* a slot sampled both ways would need both of the vertex stage's mappings: it reads elsewhere */
+    tex_elsewhere |= tex_screen & tex_uv;
+    next.tex_own_pixel_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & ~tex_screen & ~tex_uv : 0;
     next.tex_screen_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & tex_screen : 0;
     next.screen_in = next.tex_screen_mask ? (u32)screen_in : 0;
+    next.tex_uv_mask = stage == ST_FS ? tex_read & ~tex_elsewhere & tex_uv : 0;
+    next.uv_in = next.tex_uv_mask ? (u32)uv_in : 0;
+    next.tex_unread_mask = tex_asked & ~tex_read;
     if (stage == ST_VS) next.screen_out_mask = shader_direct_screen_out(flow, &next.screen_out_yneg_mask);
+    if (stage == ST_VS) next.uv_out_mask = shader_direct_uv_out(flow, &next.uv_out_yneg_mask);
     if (stage == ST_VS) next.pos_out_mask = shader_direct_position_out(flow);
     if (stage == ST_FS && !ipa_indexed && !legacy_fs) next.smooth_in_mask = smooth_in & ~si->in_unfed_mask;
     next.varying = si->varying;

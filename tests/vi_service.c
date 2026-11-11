@@ -197,6 +197,19 @@ int main(void) {
         CHECK(kev(g_hle.vi.hotplug)->signaled && kev(g_hle.vi.mode_changed)->signaled);
     }
 
+    /* grc's offscreen layer (a movie maker's): never in the shown place, even while that place is free; opened again,
+       the same; closed, its place is free. The video proxy is vi's binder driver */
+    CHECK(vi_offscreen_layer_open(0x40) == 2 && g_hle.vi.layer[1].layer_id == 0x40 && !g_hle.vi.layer[0].layer_id);
+    CHECK(vi_offscreen_layer_open(0x40) == 2);
+    vi_offscreen_layer_close(0x40);
+    CHECK(!g_hle.vi.layer[1].layer_id);
+    {
+        SvcObj* proxy = vi_binder_driver_new();
+        CHECK(!strcmp(proxy->name, "nns::hosbinder::IHOSBinderDriver"));
+        CHECK(proxy->dispatch == nns_hosbinder_IHOSBinderDriver_dispatch);
+        svcobj_unref(proxy);
+    }
+
     /* the native window: a parcel with one flattened binder, id 1 */
     memset(&name, 0, sizeof name);
     memcpy(name.v, "Default", 8);

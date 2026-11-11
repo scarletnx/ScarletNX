@@ -92,10 +92,17 @@ static void key(App* app, SDL_Keycode code) {
     while (SDL_PollEvent(&e)) event(app, &e);
 }
 /* a finger down at pixel x, y of the render and lifted at to_x, to_y, as SDL gives it: 0 to 1 across the window */
-/* Share Log pressed on the menu, and choice i of its box taken: 0 the zip, 1 the log, 2 the logs' folder */
+/* Share Log pressed on the menu, and choice i of its box taken: 0 the zip, 1 the log, 2 the logs' folder. The box
+   says what the zip and the log each take before either goes: the zip holds every game played in GUI_LOG_DAYS days */
 static void share_pick(App* app, int i) {
+    char question[640];
+    const char* tab;
     key(app, SDLK_RETURN);
     assert(app->picks_shown && app->picks_of == GUI_PICKS_SHARE && app->picks.count == 3 && !app->picks.focus);
+    picks_question(app, question, sizeof question, &tab);
+    assert(GUI_LOG_DAYS == 14 && !strcmp(tab, "Share Log") &&
+           !strcmp(question, "Share Zip: the launcher's logs and every game's of the last 14 days. Share Log: the "
+                             "last run's log and the end of the launcher's, in one file."));
     for (int k = 0; k < i; ++k) key(app, SDLK_DOWN);
     key(app, SDLK_RETURN);
     assert(!app->picks_shown);
@@ -202,15 +209,15 @@ static void pick(App* app, const char* uri) {
     while (SDL_PollEvent(&e)) event(app, &e);
 }
 static void colored_text_on(App* app, int col, int row, const char* prompt, SDL_Color color, SDL_Color back) {
-    /* Verify the exact text, its glyph color and what is behind it in the real renderer. */
-    SDL_Surface* image = SDL_RenderReadPixels(app->renderer, NULL);
+    /* Verify the exact text, its glyph color and what is behind it in the real renderer: its cells read alone */
+    SDL_Surface* image = read_px(app, col * 8 * app->scale, row * 16 * app->scale, (int)strlen(prompt) * 8 * app->scale,
+                                 16 * app->scale);
     assert(image);
     for (int i = 0; prompt[i]; ++i)
         for (int y = 0; y < 16; ++y)
             for (int x = 0; x < 8; ++x) {
                 Uint8 r, g, b, a;
-                assert(SDL_ReadSurfacePixel(image, ((i + col) * 8 + x) * app->scale, (row * 16 + y) * app->scale, &r,
-                                            &g, &b, &a));
+                assert(SDL_ReadSurfacePixel(image, (i * 8 + x) * app->scale, y * app->scale, &r, &g, &b, &a));
                 bool ink = (gui_vga_font[(unsigned char)prompt[i] * 16 + y] & (0x80 >> x)) != 0;
                 SDL_Color want = ink ? color : back;
                 assert(r == want.r && g == want.g && b == want.b);
@@ -218,10 +225,10 @@ static void colored_text_on(App* app, int col, int row, const char* prompt, SDL_
     SDL_DestroySurface(image);
 }
 static SDL_Color pixel(App* app, float x, float y) {
-    SDL_Surface* image = SDL_RenderReadPixels(app->renderer, NULL);
+    SDL_Surface* image = read_px(app, (int)x, (int)y, 1, 1);
     Uint8 r = 0, g = 0, b = 0, a = 0; /* mingw's assert returns, as far as the compiler knows */
     SDL_Color out;
-    assert(image && SDL_ReadSurfacePixel(image, (int)x, (int)y, &r, &g, &b, &a));
+    assert(image && SDL_ReadSurfacePixel(image, 0, 0, &r, &g, &b, &a));
     SDL_DestroySurface(image);
     out.r = r;
     out.g = g;
@@ -365,10 +372,14 @@ static int row_marked(App* app, int r) {
     return n > 2 && !strcmp(line + n - 2, " *");
 }
 static void text_px_is_at(int line, App* app, int x0, int y0, const char* text, SDL_Color color, SDL_Color back) {
-    SDL_Surface* image = SDL_RenderReadPixels(app->renderer, NULL);
     int half = app->half ? app->half : 2 * app->scale; /* the letters' size, in halves of a cell */
+    SDL_Rect view;
+    SDL_Surface* image;
     const char *at = text, *was = text;
     uint32_t point;
+    /* the band the text's row of letters is in, from x0 to the viewport's right edge */
+    assert(SDL_GetRenderViewport(app->renderer, &view));
+    image = read_px(app, x0, y0, view.w - x0, font_px(15, half) + 1);
     assert(image);
     /* i: the column, a wide letter's or an icon's halves two; a byte no UTF-8 character starts with is CP437's own
        ("\xfe", which the menu draws for U+25A0) */
@@ -380,7 +391,7 @@ static void text_px_is_at(int line, App* app, int x0, int y0, const char* text, 
                 for (int x = 0; x < 8; ++x) {
                     Uint8 r, g, b, a;
                     int px = x0 + font_px(i * 8 + x, half), py = y0 + font_px(y, half);
-                    assert(SDL_ReadSurfacePixel(image, px, py, &r, &g, &b, &a));
+                    assert(SDL_ReadSurfacePixel(image, px - x0, py - y0, &r, &g, &b, &a));
                     bool ink = (font_rows(c + half_of)[y] & (0x80 >> x)) != 0;
                     SDL_Color want = ink ? color : back;
                     if ((y == 15 && !ink) || (r == want.r && g == want.g && b == want.b)) continue;
@@ -4708,6 +4719,84 @@ int main(int argc, char** argv) {
     render(&app);
     shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NSP/XCI/NRO", yellow);
     assert(!app.menu.activated);
+    { /* A frame is the list of its draws (drawn.h). The menu at rest gives the list the window shows, which draws
+         nothing and presents nothing, the window as it was; so does a clock that moves with nothing on the screen
+         showing it. A key that changes the screen gets a frame drawn, once; so does a window uncovered, a texture
+         written, and a draw made outside a frame, each with the same list */
+        Uint64 clock = app.clock;
+        unsigned drawn, kept;
+        SDL_Event uncovered = {0};
+        app.clock = 5000;
+        render(&app);
+        drawn = gui_drawn_drawn();
+        kept = gui_drawn_kept();
+        render(&app);
+        app.clock += 16;
+        render(&app);
+        assert(gui_drawn_drawn() == drawn && gui_drawn_kept() == kept + 2);
+        shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NSP/XCI/NRO", yellow);
+        key(&app, SDLK_DOWN);
+        render(&app);
+        render(&app);
+        assert(gui_drawn_drawn() == drawn + 1 && gui_drawn_kept() == kept + 3);
+        shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NSP/XCI/NRO", normal);
+        key(&app, SDLK_UP);
+        render(&app);
+        assert(gui_drawn_drawn() == drawn + 2);
+        shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NSP/XCI/NRO", yellow);
+        uncovered.type = SDL_EVENT_WINDOW_EXPOSED;
+        event(&app, &uncovered);
+        render(&app);
+        render(&app);
+        assert(gui_drawn_drawn() == drawn + 3 && gui_drawn_kept() == kept + 4);
+        assert(SDL_SetTextureScaleMode(app.font, SDL_SCALEMODE_NEAREST)); /* a texture set: its picture may differ */
+        render(&app);
+        assert(gui_drawn_drawn() == drawn + 4);
+        assert(SDL_SetRenderDrawColor(app.renderer, 1, 2, 3, 255) && SDL_RenderClear(app.renderer)); /* outside one */
+        render(&app);
+        render(&app);
+        assert(gui_drawn_drawn() == drawn + 5 && gui_drawn_kept() == kept + 5);
+        shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NSP/XCI/NRO", yellow);
+        { /* a texture freed in the frame that drew with it (the theme editor's preview frees its pictures so): the
+             frame's draws so far are made before it goes, not at the present, when it is no more */
+            static const Uint8 green[16] = {0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255};
+            static const Uint8 red[16] = {255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255};
+            SDL_Texture* once = SDL_CreateTexture(app.renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, 2, 2);
+            SDL_FRect at = {0, 0, 2, 2};
+            SDL_Rect view;
+            SDL_Surface *read, *rgba;
+            assert(once && SDL_UpdateTexture(once, NULL, green, 8) && SDL_GetRenderViewport(app.renderer, &view));
+            /* and one written after a draw with it, as the font's slot of a wide letter given to another: that draw
+               shows what it held then */
+            view.w = view.h = 1;
+            gui_drawn_begin(app.renderer);
+            assert(SDL_RenderTexture(app.renderer, once, NULL, &at));
+            assert(SDL_UpdateTexture(once, NULL, red, 8));
+            assert(SDL_RenderPresent(app.renderer));
+            read = SDL_RenderReadPixels(app.renderer, &view);
+            rgba = read ? SDL_ConvertSurface(read, SDL_PIXELFORMAT_RGBA32) : NULL;
+            assert(rgba);
+            assert(!memcmp(rgba->pixels, green, 4));
+            SDL_DestroySurface(rgba);
+            SDL_DestroySurface(read);
+            assert(SDL_UpdateTexture(once, NULL, green, 8));
+            gui_drawn_begin(app.renderer);
+            assert(SDL_RenderTexture(app.renderer, once, NULL, &at));
+            SDL_DestroyTexture(once);
+            assert(SDL_RenderPresent(app.renderer));
+            read = SDL_RenderReadPixels(app.renderer, &view);
+            rgba = read ? SDL_ConvertSurface(read, SDL_PIXELFORMAT_RGBA32) : NULL;
+            assert(rgba);
+            assert(!memcmp(rgba->pixels, green, 4));
+            SDL_DestroySurface(rgba);
+            SDL_DestroySurface(read);
+            drawn = gui_drawn_drawn();
+            render(&app); /* drawn again after it, whatever its list */
+            assert(gui_drawn_drawn() == drawn + 1);
+            shows(&app, "- " ICON_GAMEPAD_2 " Load Switch NSP/XCI/NRO", yellow);
+        }
+        app.clock = clock;
+    }
     key(&app, SDLK_DOWN);
     key(&app, SDLK_RIGHT);
     assert(app.menu.selected == GUI_3DS);
@@ -13373,8 +13462,9 @@ int main(int argc, char** argv) {
                 assert(!kept || !strstr(kept, "user_uid="));
                 free(kept);
                 /* settings.ini of an older version, user=2 (the deprecated number) and no user_uid: Xuji plays, and
-                   user_uid is written in its place once, said by the uid and the number, never the nickname, for the
-                   launcher's log takes it and players attach that to public reports; read again, user_uid names them */
+                   user_uid is written in its place once, said by the user's number, never the uid nor the nickname, for
+                   the launcher's log takes it and players attach that to public reports; read again, user_uid names
+                   them */
                 {
                     FILE* f = fopen(app.settings_file, "ab");
                     assert(f && fputs("\n[User]\nuser=2\n", f) >= 0 && !fclose(f));
@@ -13383,9 +13473,8 @@ int main(int argc, char** argv) {
                     users_read(&app);
                     assert(app.user == 2 && !strcmp(app.user_name, "Xuji"));
                     assert(!strstr(app.message, "Xuji"));
-                    assert(!strcmp(
-                        app.message,
-                        "user=2 is deprecated: user_uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e, [user2]'s, replaces it"));
+                    assert(!strcmp(app.message, "user=2 is deprecated: [user2]'s user_uid replaces it"));
+                    assert(!strstr(app.message, "5f3c0d9e8a7b41c2963e0f1a2b3c4d5e"));
                     kept = (char*)snx_read_file(app.settings_file, &size);
                     assert(kept && strstr(kept, "user_uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e"));
                     free(kept);

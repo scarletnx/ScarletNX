@@ -10,6 +10,12 @@ option(SNX_TEST_VP9_VECTORS
 if(SNX_TEST_VP9_VECTORS AND SNX_TOOLS_ONLY)
     message(FATAL_ERROR "SNX_TEST_VP9_VECTORS=ON needs the runtime's FFmpeg, which SNX_TOOLS_ONLY=ON leaves out")
 endif()
+option(SNX_TEST_AV1_VECTORS
+       "Run the native video service's AV1 decoder on AOMedia's test vectors (configure downloads 8 files from it)" OFF)
+if(SNX_TEST_AV1_VECTORS AND NOT SNX_TEST_VULKAN)
+    message(FATAL_ERROR "SNX_TEST_AV1_VECTORS=ON needs SNX_TEST_VULKAN=ON too: the offscreen Vulkan test runs them "
+                        "(vulkan_video_av1)")
+endif()
 # the in-tree libraries the tests exercise and the programs they run: an overflow in them shows only in code built
 # with the sanitizers. src/nx doesn't deploy a sanitized runtime. A tool made by a host build (cross-compiling) is
 # that build's
@@ -380,8 +386,10 @@ if(TARGET snx_ctr_board)
         # reports fails the test, such as a missing barrier (a synchronization hazard), a dispatch, barrier or image
         # transition inside a draw's open rendering, or a command recorded into a buffer that a submission ended
         set(snx_vk_validation_tests 3ds_vk_draw_present_validation 3ds_vk_draw_after_draw_validation
-            3ds_vk_draw_texture_after_draw_validation 3ds_vk_draw_index_copy_validation 3ds_vk_draw_async_validation)
-        set(snx_vk_validation_modes --present --after-draw --texture-after-draw --draw-after-index-copy --async)
+            3ds_vk_draw_texture_after_draw_validation 3ds_vk_draw_index_copy_validation 3ds_vk_draw_async_validation
+            3ds_vk_draw_shadow_validation)
+        set(snx_vk_validation_modes --present --after-draw --texture-after-draw --draw-after-index-copy --async
+            --shadow)
         foreach(snx_test snx_mode IN ZIP_LISTS snx_vk_validation_tests snx_vk_validation_modes)
             add_test(NAME ${snx_test}
                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
@@ -1407,14 +1415,14 @@ endif()
 # Inline software keyboard protocol and applet completion events.
 add_executable(snx-test-am-service am_service.c am_service_stubs.c)
 snx_test_target(snx-test-am-service 23)
-snx_service_swipc(snx-test-am-service hle/services/am.swipc)
+snx_service_swipc(snx-test-am-service hle/services/am.swipc hle/services/vi.swipc) # vi: grc's video proxy
 target_link_libraries(snx-test-am-service PRIVATE snx_test_common) # snx_nacp_aoc_base
 add_test(NAME am_service COMMAND snx-test-am-service)
 
 # am.c with a control.nacp: the desired language against its supported languages, its version and save sizes
 add_executable(snx-test-am-nacp am_nacp.c am_service_stubs.c)
 snx_test_target(snx-test-am-nacp 23)
-snx_service_swipc(snx-test-am-nacp hle/services/am.swipc)
+snx_service_swipc(snx-test-am-nacp hle/services/am.swipc hle/services/vi.swipc)
 target_link_libraries(snx-test-am-nacp PRIVATE snx_test_common) # snx_nacp_aoc_base
 add_test(NAME am_nacp COMMAND snx-test-am-nacp)
 
@@ -1466,6 +1474,13 @@ add_test(NAME nvdrv_service COMMAND snx-test-nvdrv-service)
 add_executable(snx-test-ipc-message ipc_message.c)
 snx_test_target(snx-test-ipc-message 23)
 add_test(NAME ipc_message COMMAND snx-test-ipc-message)
+
+# the crash report's lines about a thread (hle/kernel/debug.c, included by the test): the last SVCs with the thread
+# of each, and its last call when it went to a hooked memcpy, memmove or memset, with guest memory, the hooks' sites
+# and the log stubbed
+add_executable(snx-test-kernel-dump kernel_dump.c)
+snx_test_target(snx-test-kernel-dump 23)
+add_test(NAME kernel_dump COMMAND snx-test-kernel-dump)
 
 if(SNX_BUILD_NX)
 add_test(NAME llvm_dependency COMMAND "${CMAKE_COMMAND}"
@@ -2349,7 +2364,15 @@ endif()
 add_executable(snx-test-runtime-variants runtime_variants.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/guest_jit.c")
 snx_test_target(snx-test-runtime-variants 11)
 target_link_libraries(snx-test-runtime-variants PRIVATE scarletnx-common scarletnx-filesystem snx_settings)
-add_test(NAME runtime_variants COMMAND snx-test-runtime-variants)
+# an NRO's own AOT module (nro_module_fixture.c, a descriptor and two functions by hand), which guest_jit.c loads for
+# the NRO mapped at the address it was made for: runtime_variants copies it under the names the NROs' hashes give
+add_library(snx-test-nro-module MODULE nro_module_fixture.c)
+set_target_properties(snx-test-nro-module PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(snx-test-nro-module PRIVATE -Wall -Wextra -Werror)
+target_include_directories(snx-test-nro-module PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_test_sanitize(snx-test-nro-module) # loaded into the test's process, which is built with them
+add_dependencies(snx-test-runtime-variants snx-test-nro-module)
+add_test(NAME runtime_variants COMMAND snx-test-runtime-variants --nro-module=$<TARGET_FILE:snx-test-nro-module>)
 # a hand-edited jit_opt the JIT does not take, a letter and an empty value
 add_test(NAME runtime_variants_jit_opt_letter COMMAND snx-test-runtime-variants --jit-opt=x)
 add_test(NAME runtime_variants_jit_opt_empty COMMAND snx-test-runtime-variants --jit-opt=)
@@ -2565,6 +2588,11 @@ add_test(NAME llvm_fp_store COMMAND snx-test-llvm-fp-store)
 add_executable(snx-test-llvm-module llvm_module.c llvm_steps.c)
 snx_test_target(snx-test-llvm-module 11)
 target_link_libraries(snx-test-llvm-module PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+# the NROs of a game's RomFS made ahead of time: the game module's table of where they go, and each one's own module
+add_executable(snx-test-nro-modules nro_modules.c)
+snx_test_target(snx-test-nro-modules 11)
+target_link_libraries(snx-test-nro-modules PRIVATE snx_llvm snx_driver OpenSSL::Crypto ${CMAKE_DL_LIBS})
+add_test(NAME nro_modules COMMAND snx-test-nro-modules $<TARGET_FILE:scarletnx> "${CMAKE_CURRENT_BINARY_DIR}/nro-modules-data")
 add_test(NAME llvm_module COMMAND snx-test-llvm-module $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}")
 add_test(NAME llvm_module_stats COMMAND snx-test-llvm-module $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}" --stats)
 # the recompiler as a library (snx_recompiler.h): A64 on every backend built, A32, from code in memory
@@ -3454,7 +3482,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
 endif()
 # these recompile with --repo of the checkout, which keeps the code units (nx/loader/unit_cache.c) in the user's cache
 # folder: a folder of the build tree's instead, where XDG names it
-foreach(snx_test native_recompiler llvm_module nx_runtime_homebrew nx_runtime_homebrew_64k_pages)
+foreach(snx_test native_recompiler llvm_module nro_modules nx_runtime_homebrew nx_runtime_homebrew_64k_pages)
     if(TEST ${snx_test})
         set_property(TEST ${snx_test} APPEND PROPERTY ENVIRONMENT "XDG_CACHE_HOME=${CMAKE_CURRENT_BINARY_DIR}/xdg-cache")
     endif()

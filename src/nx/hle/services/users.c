@@ -8,24 +8,29 @@
 #include "nx/runtime/ini.h"
 #include "nx/hle/hle.h"
 
-void snx_users_init(void) {
-    char why[512], uid[33], *dir = snx_users_dir(g_exedir[0] ? g_exedir : ".");
+/* the users of dir, the one playing chosen and said: snx_users_init's, on a folder given */
+static void users_init(const char* dir) {
+    char why[512];
     int old;
-    if (!dir) fatal("Out of memory finding the users folder");
     if (snx_users_choose(dir, g_settings.user_uid, g_settings.user_uid[0] ? NULL : ini_deprecated_value("user"), &old,
                          why, sizeof why))
         fatal("The console's users: %s", why);
-    if (old) { /* the uid, not the nickname: it names no one */
-        snx_users_uid_text(snx_users_selected()->uid, uid);
-        WARN("settings: user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it (the launcher's Current user "
-             "writes it)\n",
-             old, uid, old);
-    }
+    /* the user's number, neither the uid nor the nickname: players attach the log to public reports, where a uid
+       ties one player's reports together and a nickname can name them */
+    if (old)
+        WARN("settings: user=%d is deprecated: [user%d]'s user_uid replaces it (the launcher's Current user writes "
+             "it)\n",
+             old, old);
     if (strlen(dir) >= sizeof g_host.acc.users_dir) fatal("The users folder %s is a path too long to write in", dir);
     memcpy(g_host.acc.users_dir, dir, strlen(dir) + 1); /* where acc:su writes users.ini */
     /* neither the folder nor the nickname: players attach the log to public reports, and both can name them */
     LOG("acc: %d user%s, playing as user %d\n", g_user_count, g_user_count == 1 ? "" : "s", snx_users_selected_number());
     /* each user's Mii and picture not taken as users.ini says them: what it says and what is in effect */
     if (snx_users_notes()[0]) LOG("%s", snx_users_notes());
+}
+void snx_users_init(void) {
+    char* dir = snx_users_dir(g_exedir[0] ? g_exedir : ".");
+    if (!dir) fatal("Out of memory finding the users folder");
+    users_init(dir);
     free(dir);
 }

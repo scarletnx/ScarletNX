@@ -7,17 +7,17 @@
 #include "nx/runtime/platform/hotkeys.h"
 #include "nx/runtime/platform/plat.h" /* the notices' lock */
 #include "nx/runtime/platform/prepare_screen.h"
+#include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/renderer.h"
-#include "gui_theme_colors.h"
+#include "nx/runtime/platform/ui_colors.h"
 #include "gui/icons.h"
 #include "common/utilities/pad_screen.h"
 #include "common/utilities/users.h"
 #include "common/utilities/common.h"
 #include "common/utilities/bits.h"
 #include <SDL3/SDL_keycode.h>
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -167,15 +167,8 @@ static int pad_player; /* the player the gamepads' page shows: 0 every player's,
 /* the Shortcuts page: its row in focus waits for a key, and what the last key given was refused for ("" none) */
 static int listening;
 static char refused[2 * OVERLAY_COLS_MAX];
-/* the YoRHa menu's colours, from its theme.ini (gui_theme_colors.h), as R G B A bytes; the page hides the game under
-   it, whose text would show through its letters */
-#define SNX_OVERLAY_RGBA(rgb, a) ((u32)(a) << 24 | ((rgb) & 0xFFu) << 16 | ((rgb) & 0xFF00u) | ((rgb) >> 16 & 0xFFu))
-#define INK                      SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_INK, 0xFFu)
-#define SOFT                     SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_SOFT, 0xFFu)
-#define LIGHT                    SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_PAGE, 0xFFu)
-#define FAILURE                  SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_FAILURE, 0xFFu)
-/* the page a little darker: the soft colour at 0x40 over it, opaque */
-#define PANEL SNX_OVERLAY_RGBA(ui_over(SNX_GUI_THEME_YORHA_SOFT, SNX_GUI_THEME_YORHA_PAGE, 0x40u), 0xFFu)
+/* the menu in the layer's colours (ui_colors.h); its page hides the game under it, whose text would show through
+   its letters */
 
 /* a slot's page's items: the auto slot has no Save */
 static int slot_item(int i) { return slot_at ? i : i + 1; }
@@ -212,9 +205,46 @@ static void page_open(int p) {
     refused[0] = 0;
     if (p == PAGE_STATES) slots_stale = 1;
 }
+static int display_percent = 100; /* set on the event thread, read by the renderer's */
+/* A screen of fingers, as the backend says (a phone's): an item's row is a finger's high at the least, the launcher's
+   48 pixels (src/gui's GUI_FINGER_ROW) at the display's scale, its letters in its middle, and a page shows as many
+   items at once as the picture has room for. picture: its size as overlay_place last had it */
+enum { FINGER_ROW = 48 };
+static int fingers, picture[2];
+void overlay_set_fingers(int on) {
+    fingers = on != 0;
+    changed();
+}
+/* the letters' scale on a picture sw by sh (overlay_place's) */
+static int place_scale(int sw, int sh) {
+    /* the tallest page sets the scale, so the letters keep their size from page to page: half the picture, or twice
+       the display's scale as the menu's UI scale Auto (src/gui) if that is more, within three quarters of it. A
+       phone's short picture held its letters at 2x by the half alone */
+    int w = OVERLAY_COLS * 8, h = OVERLAY_ROWS * 16;
+    int s = sw / 2 / w < sh / 2 / h ? sw / 2 / w : sh / 2 / h;
+    int dense = 2 * __atomic_load_n(&display_percent, __ATOMIC_RELAXED) / 100;
+    if (dense > s) s = dense;
+    if (s > sw * 3 / 4 / w) s = sw * 3 / 4 / w;
+    if (s > sh * 3 / 4 / h) s = sh * 3 / 4 / h;
+    return s < 1 ? 1 : s;
+}
+/* an item's row in pixels, its letters at scale s */
+static int item_h(int s) {
+    int finger = (FINGER_ROW * __atomic_load_n(&display_percent, __ATOMIC_RELAXED) + 50) / 100;
+    return fingers && finger > 16 * s ? finger : 16 * s;
+}
+/* the items a page shows at once: VISIBLE, or on a screen of fingers as many of their rows as the picture holds with
+   the page's rows around them, one at the least */
+static int visible(void) {
+    int s, fit;
+    if (!fingers || picture[1] <= 0) return VISIBLE;
+    s = place_scale(picture[0], picture[1]);
+    fit = (picture[1] - (FIRST + 1) * 16 * s) / item_h(s);
+    return fit < 1 ? 1 : fit > VISIBLE ? VISIBLE : fit;
+}
 static void keep_in_view(void) {
     if (focus < top) top = focus;
-    if (focus >= top + VISIBLE) top = focus - VISIBLE + 1;
+    if (focus >= top + visible()) top = focus - visible() + 1;
 }
 static int all_shown(void) {
     int c;
@@ -389,19 +419,9 @@ void overlay_press(int control) {
     map_swallow = 1;
     map_did(snx_pad_screen_press(&map, control));
 }
-/* a round part as strips: the font has no circles */
-static void disc(SnxUiList* l, float x, float y, float w, float h, u32 rgba) {
-    const int n = 6;
-    float r = w < h ? w / 2 : h / 2, cx = x + w / 2, cy = y + h / 2;
-    int k;
-    for (k = 0; k < n; ++k) {
-        float y0 = cy - r + 2 * r * (float)k / n, mid = y0 + r / n - cy, half = sqrtf(r * r - mid * mid);
-        ui_fill(l, cx - half, y0, 2 * half, 2 * r / n, rgba);
-    }
-}
 static void user_draw(SnxUiList* l, float left, float right, float y, int s);
 static void map_draw(SnxUiList* l, int sw, int sh) {
-    const u32 box = PANEL;
+    const u32 box = UI_PANEL;
     int px, py, s, i;
     float cw, ch, x, y, w, h;
     overlay_place(sw, sh, &px, &py, &s);
@@ -412,32 +432,33 @@ static void map_draw(SnxUiList* l, int sw, int sh) {
     w = (float)sw - 2 * cw;
     h = (float)sh - 2 * ch;
     map_pad();
-    ui_fill(l, x, y, w, h, LIGHT); /* the whole picture */
-    ui_fill(l, x, y, w, ch, INK);
+    ui_fill(l, x, y, w, h, UI_PAGE); /* the whole picture */
+    ui_fill(l, x, y, w, ch, UI_INK);
     {
         char title[48];
         if (pad_player) /* the player's own */
             snprintf(title, sizeof title, "SCARLETNX  /  PLAYER %d  /  BUTTON MAP", pad_player);
         else
             snprintf(title, sizeof title, "SCARLETNX  /  BUTTON MAP");
-        ui_text(l, x + cw, y, s, title, LIGHT);
+        ui_text(l, x + cw, y, s, title, UI_PAGE);
         user_draw(l, x + cw * (float)(strlen(title) + 2), x + w - cw, y, s);
     }
     snx_pad_screen_lay(&map, x, y + ch, w, h - ch, cw, ch, &map_drawing);
     for (i = 0; i < map_drawing.n; ++i) {
         const SnxPadShape* p = &map_drawing.shape[i];
-        u32 fill = p->style == SNX_PAD_STYLE_FOCUS ? INK : p->style == SNX_PAD_STYLE_LIT ? FAILURE : box;
+        u32 fill = p->style == SNX_PAD_STYLE_FOCUS ? UI_INK : p->style == SNX_PAD_STYLE_LIT ? UI_FAILURE : box;
         if (p->kind == SNX_PAD_SHAPE_TEXT)
             ui_text(l, p->x, p->y, s, p->text,
-                    p->style == SNX_PAD_STYLE_FOCUS || p->style == SNX_PAD_STYLE_LIT ? LIGHT
-                    : p->style == SNX_PAD_STYLE_SOFT                                 ? SOFT
-                    : p->style == SNX_PAD_STYLE_NOTE                                 ? FAILURE
-                                                                                     : INK);
-        else if (p->kind == SNX_PAD_SHAPE_DISC)
-            disc(l, p->x, p->y, p->w, p->h, p->style == SNX_PAD_STYLE_PLAIN ? SOFT : fill);
+                    p->style == SNX_PAD_STYLE_FOCUS || p->style == SNX_PAD_STYLE_LIT ? UI_PAGE
+                    : p->style == SNX_PAD_STYLE_SOFT                                 ? UI_SOFT
+                    : p->style == SNX_PAD_STYLE_NOTE                                 ? UI_FAILURE
+                                                                                     : UI_INK);
+        else if (p->kind == SNX_PAD_SHAPE_DISC) /* a round part: a circle the fragment shader draws, filled */
+            ui_shape(l, p->x, p->y, p->w, p->h, UI_SHAPE_CIRCLE, NULL, UI_SHAPE_FILLED, 1,
+                     p->style == SNX_PAD_STYLE_PLAIN ? UI_SOFT : fill);
         else
             ui_fill(l, p->x, p->y, p->w, p->h,
-                    p->kind == SNX_PAD_SHAPE_BAR && p->style == SNX_PAD_STYLE_PLAIN ? SOFT : fill);
+                    p->kind == SNX_PAD_SHAPE_BAR && p->style == SNX_PAD_STYLE_PLAIN ? UI_SOFT : fill);
     }
 }
 /* the item i done, or its value stepped (step -1 or 1; 0 for a select, which steps up) */
@@ -574,24 +595,16 @@ void overlay_toggle(void) {
     __atomic_store_n(&shown, !shown, __ATOMIC_RELEASE);
 }
 /* the panel's rows: the page's items under the head, a blank row under them */
-static int rows(void) { return FIRST + (items() < VISIBLE ? items() : VISIBLE) + 1; }
-static int display_percent = 100; /* set on the event thread, read by the renderer's */
+static int rows(void) { return FIRST + (items() < visible() ? items() : visible()) + 1; }
 void overlay_set_display_scale(float scale) {
     __atomic_store_n(&display_percent, scale > 0.0f ? (int)(scale * 100.0f) : 100, __ATOMIC_RELAXED);
     changed();
 }
 int overlay_display_percent(void) { return __atomic_load_n(&display_percent, __ATOMIC_RELAXED); }
 void overlay_place(int sw, int sh, int* x, int* y, int* scale) {
-    /* the tallest page sets the scale, so the letters keep their size from page to page: half the picture, or twice
-       the display's scale as the menu's UI scale Auto (src/gui) if that is more, within three quarters of it. A
-       phone's short picture held its letters at 2x by the half alone */
-    int w = OVERLAY_COLS * 8, h = OVERLAY_ROWS * 16;
-    int s = sw / 2 / w < sh / 2 / h ? sw / 2 / w : sh / 2 / h;
-    int dense = 2 * __atomic_load_n(&display_percent, __ATOMIC_RELAXED) / 100;
-    if (dense > s) s = dense;
-    if (s > sw * 3 / 4 / w) s = sw * 3 / 4 / w;
-    if (s > sh * 3 / 4 / h) s = sh * 3 / 4 / h;
-    *scale = s < 1 ? 1 : s;
+    picture[0] = sw;
+    picture[1] = sh;
+    *scale = place_scale(sw, sh);
     *x = (sw - overlay_cols(sw, *scale) * 8 * *scale) / 2;
     *y = (sh - rows() * 16 * *scale) / 2;
 }
@@ -645,11 +658,11 @@ static void user_draw(SnxUiList* l, float left, float right, float y, int s) {
     }
     if (x < left) return;
     ui_picture(l, right - 2 * edge - side, y + 2 * edge, side);
-    if (*name) ui_text(l, x + cw, y, s, name, LIGHT);
-    ui_fill(l, x, y, box, edge, LIGHT);
-    ui_fill(l, x, y + ch - edge, box, edge, LIGHT);
-    ui_fill(l, x, y, edge, ch, LIGHT);
-    ui_fill(l, x + box - edge, y, edge, ch, LIGHT);
+    if (*name) ui_text(l, x + cw, y, s, name, UI_PAGE);
+    ui_fill(l, x, y, box, edge, UI_PAGE);
+    ui_fill(l, x, y + ch - edge, box, edge, UI_PAGE);
+    ui_fill(l, x, y, edge, ch, UI_PAGE);
+    ui_fill(l, x + box - edge, y, edge, ch, UI_PAGE);
 }
 /* the rows paragraphs wrap into: each thread that lays a dialog out has its own */
 typedef char DialogRows[DIALOG_PARAS][DIALOG_LINES][FATAL_ROW];
@@ -668,8 +681,8 @@ static struct {
    a blank row, the items and a blank row; overlay_cols wide, in the middle */
 static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRows rows_of, DialogDrawn* out) {
     char line[OVERLAY_COLS_MAX + 4];
-    int px, py, s, cols, n[DIALOG_PARAS], k, i, total, room, row, last, aside = 0;
-    float cw, ch, x, y, w;
+    int px, py, s, cols, n[DIALOG_PARAS], k, i, total, row, last, aside = 0, taller;
+    float cw, ch, x, y, w, rh, into;
     memset(out, 0, sizeof *out);
     overlay_place(sw, sh, &px, &py, &s);
     cols = overlay_cols(sw, s);
@@ -692,7 +705,11 @@ static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRow
             n[k] = fatal_wrap(d->para[k].text, cols - 2, rows_of[k], DIALOG_LINES);
         if (n[k] > DIALOG_LINES) n[k] = DIALOG_LINES;
     }
-    room = sh / (int)ch;
+    /* an item's row, a finger's on a screen of fingers, its letters into pixels down it; taller: what the items'
+       rows add to the box's rows of letters */
+    rh = (float)item_h(s);
+    into = (rh - ch) / 2;
+    taller = d->shown * (int)(rh - ch);
     for (;;) {
         int pick = -1;
         total = 1 + 1 + d->shown + 1;
@@ -702,11 +719,11 @@ static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRow
             last = k;
             if (d->para[k].cut && (pick < 0 || d->para[k].cut < d->para[pick].cut)) pick = k;
         }
-        if (total <= room || pick < 0) break;
+        if (total * (int)ch + taller <= sh || pick < 0) break;
         --n[pick];
     }
     x = (float)((sw - cols * 8 * s - aside) / 2);
-    y = (float)((sh - total * (int)ch) / 2);
+    y = (float)((sh - total * (int)ch - taller) / 2);
     if (aside) {
         out->aside.x = x + w + (float)(8 * s);
         out->aside.y = y;
@@ -716,13 +733,13 @@ static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRow
     out->box.x = x;
     out->box.y = y;
     out->box.w = w;
-    out->box.h = ch * (float)total;
+    out->box.h = ch * (float)total + (float)taller;
     out->cols = cols;
     out->scale = s;
     if (l) {
-        ui_fill(l, x, y, w, ch * (float)total, LIGHT);
-        ui_fill(l, x, y, w, ch, INK);
-        ui_text(l, x + cw, y, s, d->title, LIGHT);
+        ui_fill(l, x, y, w, ch * (float)total + (float)taller, UI_PAGE);
+        ui_fill(l, x, y, w, ch, UI_INK);
+        ui_text(l, x + cw, y, s, d->title, UI_PAGE);
         if (d->user) user_draw(l, x + cw * (float)(strlen(d->title) + 2), x + w - cw, y, s);
     }
     row = 1;
@@ -735,7 +752,7 @@ static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRow
             out->field.y = y + ch * (float)row;
             out->field.w = w - cw;
             out->field.h = ch * (float)n[k];
-            if (l) ui_fill(l, out->field.x, out->field.y, out->field.w, out->field.h, PANEL);
+            if (l) ui_fill(l, out->field.x, out->field.y, out->field.w, out->field.h, UI_PANEL);
         }
         for (i = 0; i < n[k]; ++i, ++row) {
             float width, at = y + ch * (float)row;
@@ -755,34 +772,37 @@ static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRow
     for (i = 0; i < d->shown; ++i) {
         SnxOverlayRect* at = &out->item[i];
         int on = d->top + i == d->focus;
+        float ty; /* its letters' row, in the middle of its own */
         at->x = x;
-        at->y = y + ch * (float)(total - 1 - d->shown + i);
+        at->y = y + ch * (float)(total - 1 - d->shown) + rh * (float)i;
         at->w = w;
-        at->h = ch;
+        at->h = rh;
+        ty = at->y + into;
         if (!l) continue;
-        if (on) ui_fill(l, x, at->y, w, ch, INK);
+        if (on) ui_fill(l, x, at->y, w, rh, UI_INK);
         if (d->key[i]) { /* the marker, the icon, the keys on a band as the launcher's F1 box draws them, the label */
-            ui_text(l, x + cw, at->y, s, "\xFE", on ? LIGHT : INK);
-            ui_icon(l, x + 3 * cw, at->y, s, d->icon[i], on ? LIGHT : INK);
-            ui_fill(l, x + 6 * cw - (float)s, at->y, cw * (float)strlen(d->key[i]) + 2.0f * (float)s, ch,
-                    on ? LIGHT : INK);
-            ui_text(l, x + 6 * cw, at->y, s, d->key[i], on ? INK : LIGHT);
-            ui_text(l, x + cw * (float)(6 + d->keys + 2), at->y, s, d->label[i], on ? LIGHT : INK);
+            ui_text(l, x + cw, ty, s, "\xFE", on ? UI_PAGE : UI_INK);
+            ui_icon(l, x + 3 * cw, ty, s, d->icon[i], on ? UI_PAGE : UI_INK);
+            ui_fill(l, x + 6 * cw - (float)s, ty, cw * (float)strlen(d->key[i]) + 2.0f * (float)s, ch,
+                    on ? UI_PAGE : UI_INK);
+            ui_text(l, x + 6 * cw, ty, s, d->key[i], on ? UI_INK : UI_PAGE);
+            ui_text(l, x + cw * (float)(6 + d->keys + 2), ty, s, d->label[i], on ? UI_PAGE : UI_INK);
         } else if (d->icon[i]) { /* the marker, the icon's two cells and one, then the label */
-            ui_text(l, x + cw, at->y, s, "\xFE", on ? LIGHT : INK);
-            ui_icon(l, x + 3 * cw, at->y, s, d->icon[i], on ? LIGHT : INK);
-            ui_text(l, x + 6 * cw, at->y, s, d->label[i], on ? LIGHT : INK);
+            ui_text(l, x + cw, ty, s, "\xFE", on ? UI_PAGE : UI_INK);
+            ui_icon(l, x + 3 * cw, ty, s, d->icon[i], on ? UI_PAGE : UI_INK);
+            ui_text(l, x + 6 * cw, ty, s, d->label[i], on ? UI_PAGE : UI_INK);
         } else {
             snprintf(line, sizeof line, "\xFE %s", d->label[i]);
-            ui_text(l, x + cw, at->y, s, line, on ? LIGHT : INK);
+            ui_text(l, x + cw, ty, s, line, on ? UI_PAGE : UI_INK);
         }
         if (d->value[i])
-            ui_text(l, x + cw * (float)(cols - 1 - (int)strlen(d->value[i])), at->y, s, d->value[i], on ? LIGHT : INK);
+            ui_text(l, x + cw * (float)(cols - 1 - (int)strlen(d->value[i])), ty, s, d->value[i],
+                    on ? UI_PAGE : UI_INK);
     }
     /* more above or under: the font's arrows at the edge */
-    if (l && d->shown && d->top) ui_text(l, x + cw * (float)(cols - 1), out->item[0].y, s, "\x18", SOFT);
+    if (l && d->shown && d->top) ui_text(l, x + cw * (float)(cols - 1), out->item[0].y + into, s, "\x18", UI_SOFT);
     if (l && d->shown && d->top + d->shown < d->items)
-        ui_text(l, x + cw * (float)(cols - 1), out->item[d->shown - 1].y, s, "\x19", SOFT);
+        ui_text(l, x + cw * (float)(cols - 1), out->item[d->shown - 1].y + into, s, "\x19", UI_SOFT);
 }
 
 /* ---- the software keyboard's box ---- */
@@ -901,12 +921,12 @@ static void kb_dialog(Dialog* d, KbTexts* t) {
     {
         /* on a short picture the hint gives up its rows first, then the guide, the sub and the header text; never the
            line or its count */
-        const DialogPara para[DIALOG_PARAS] = {{k->header, INK, 0, 0, 4, 0},
-                                               {k->sub, SOFT, 0, 1, 3, 0},
-                                               {k->guide, SOFT, 0, 0, 2, 0},
-                                               {t->line, INK, 0, 0, 0, 1},
-                                               {t->count, g_overlay.refused ? FAILURE : SOFT, 0, 1, 0, 0},
-                                               {t->hint, SOFT, 0, 0, 1, 0}};
+        const DialogPara para[DIALOG_PARAS] = {{k->header, UI_INK, 0, 0, 4, 0},
+                                               {k->sub, UI_SOFT, 0, 1, 3, 0},
+                                               {k->guide, UI_SOFT, 0, 0, 2, 0},
+                                               {t->line, UI_INK, 0, 0, 0, 1},
+                                               {t->count, g_overlay.refused ? UI_FAILURE : UI_SOFT, 0, 1, 0, 0},
+                                               {t->hint, UI_SOFT, 0, 0, 1, 0}};
         memcpy(d->para, para, sizeof para);
     }
     d->paras = DIALOG_PARAS;
@@ -953,7 +973,7 @@ int overlay_select(void) {
 /* F1's page rows on, back for a negative rows: its rows go by, none in focus, from the first to the last showing */
 static void keys_scroll(int rows) {
     int n = keys_rows();
-    top = snx_clamp_int(top + rows, 0, n > VISIBLE ? n - VISIBLE : 0);
+    top = snx_clamp_int(top + rows, 0, n > visible() ? n - visible() : 0);
 }
 void overlay_move(int rows) {
     int n = items();
@@ -1094,16 +1114,16 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
         d->title = "SCARLETNX  /  KEYS";
         d->user = 1;
         d->para[0].text = "Up/Down: the rest. Any other key or button: back to the game.";
-        d->para[0].rgba = SOFT;
+        d->para[0].rgba = UI_SOFT;
         d->para[1].text = "The game's buttons by where the keys sit on a US keyboard. A controller's A, B, X and Y sit "
                           "where the console has them (gamepad_swap_ab=1 swaps A and B).";
-        d->para[1].rgba = SOFT;
+        d->para[1].rgba = UI_SOFT;
         d->para[1].cut = 1; /* a short picture's rows go to the keys */
         d->paras = 2;
         d->items = n;
         d->top = top;
         d->focus = -1;
-        d->shown = n - top < VISIBLE ? n - top : VISIBLE;
+        d->shown = n - top < visible() ? n - top : visible();
         for (r = 0; r < KEYS_COUNT; ++r) /* the widest keys of every row that shows, the ones scrolled away too */
             if (keys_text(r, *text, sizeof *text))
                 d->keys = (int)strlen(*text) > d->keys ? (int)strlen(*text) : d->keys;
@@ -1125,7 +1145,7 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
     d->title = page < PAGE_SLOT ? titles[page] : title;
     d->user = 1;
     d->para[0].text = page == PAGE_PADS ? pads_hint(pads, size / 2) : page < PAGE_SLOT ? hints[page] : pads;
-    d->para[0].rgba = SOFT;
+    d->para[0].rgba = UI_SOFT;
     d->paras = 1;
     if (page == PAGE_SHORTCUTS && listening && shortcut(focus) >= 0) {
         snprintf(pads, size / 2, "Press the key for %s. Esc or B cancels.", hotkey_row(shortcut(focus))->name);
@@ -1133,7 +1153,7 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
     }
     if (page == PAGE_SHORTCUTS && refused[0]) { /* why the last key given isn't the row's */
         d->para[1].text = refused;
-        d->para[1].rgba = FAILURE;
+        d->para[1].rgba = UI_FAILURE;
         d->para[1].on = 1;
         d->paras = 2;
     }
@@ -1156,7 +1176,7 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
             snprintf(pads, size / 2, "%s", sl->when[0] ? sl->when : "Empty.");
         if (page == PAGE_SLOT && sl->why[0]) { /* why it can't load, under its date */
             d->para[1].text = sl->why;
-            d->para[1].rgba = FAILURE;
+            d->para[1].rgba = UI_FAILURE;
             d->para[1].on = 1;
             d->paras = 2;
         }
@@ -1165,7 +1185,7 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
     d->items = n;
     d->top = top;
     d->focus = focus;
-    d->shown = n - top < VISIBLE ? n - top : VISIBLE;
+    d->shown = n - top < visible() ? n - top : visible();
     for (r = 0; r < d->shown; ++r) {
         static const unsigned main_icons[M_COUNT] = {GUI_ICON_POINTER,  GUI_ICON_GAMEPAD_2, GUI_ICON_SAVE,
                                                      GUI_ICON_KEYBOARD, GUI_ICON_MONITOR,   GUI_ICON_ACTIVITY,
@@ -1201,19 +1221,68 @@ int overlay_tap(float x, float y, int sw, int sh) {
     if (arrows(setting(focus))) return act(focus, col < at.cols - 5 ? -1 : 1);
     return act(focus, 0);
 }
-static u64 tap_id;   /* what went down off the on-screen controls, */
-static int tap_down; /* whose lift taps the menu */
+/* whether x, y lies on the open menu's panel on the picture overlay_place last had: a page, not the button map's or
+   F1's, which a tap anywhere answers */
+static int on_panel(float x, float y) {
+    char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[2 * OVERLAY_COLS_MAX + 64];
+    Dialog d;
+    DialogDrawn at;
+    if (!shown || page == PAGE_MAP || page == PAGE_KEYS || picture[0] <= 0 || picture[1] <= 0) return 0;
+    menu_dialog(&d, text, value, pads, sizeof pads);
+    dialog_draw(NULL, picture[0], picture[1], &d, g_overlay.event_rows, &at);
+    return overlay_error_hit(&at.box, x, y);
+}
+static u64 tap_id;      /* what went down on the panel or off the on-screen controls, */
+static int tap_down;    /* whose lift taps the menu where it went down, */
+static float tap_at[2]; /* there, */
+static int tap_dragged; /* unless it went further than a finger's slip: then it scrolls the page, */
+static int tap_rows;    /* by this many rows so far */
 void overlay_pointer_down(u64 id, float x, float y, const int safe[4]) {
-    /* the on-screen controls take no finger under the loading screen, where they aren't drawn (vk/ui.c) */
-    if (!prepare_screen_shown() && vpad_down(id, x, y, safe)) return;
+    /* on the panel a finger is the menu's, whatever control lies under it; off it a control's, but under the loading
+       screen, where they aren't drawn (vk/ui.c) */
+    if (!on_panel(x, y) && !prepare_screen_shown() && vpad_down(id, x, y, safe)) return;
     tap_id = id;
     tap_down = 1;
+    tap_at[0] = x;
+    tap_at[1] = y;
+    tap_dragged = tap_rows = 0;
 }
-void overlay_pointer_move(u64 id, float x, float y, const int safe[4]) { vpad_move(id, x, y, safe); }
+/* a drag's rows: the page goes by under the finger, the item in focus kept on it */
+static void page_scroll(int rows) {
+    int n = items();
+    changed();
+    listening = 0;
+    if (page == PAGE_KEYS) {
+        keys_scroll(rows);
+        return;
+    }
+    top = snx_clamp_int(top + rows, 0, n > visible() ? n - visible() : 0);
+    focus = snx_clamp_int(focus, top, top + visible() - 1);
+}
+void overlay_pointer_move(u64 id, float x, float y, const int safe[4]) {
+    /* a finger's slip: 8 pixels at the display's scale, as a tap a phone takes */
+    float slip = 8.0f * (float)__atomic_load_n(&display_percent, __ATOMIC_RELAXED) / 100.0f, dx, dy;
+    int row, rows;
+    if (!tap_down || id != tap_id) {
+        vpad_move(id, x, y, safe);
+        return;
+    }
+    dx = x - tap_at[0];
+    dy = y - tap_at[1];
+    if (!tap_dragged && dx * dx + dy * dy < slip * slip) return;
+    tap_dragged = 1;
+    if (!shown || page == PAGE_MAP || picture[1] <= 0) return;
+    row = item_h(place_scale(picture[0], picture[1]));
+    rows = (int)(-dy / (float)row); /* up a row, the page a row on */
+    if (rows != tap_rows) page_scroll(rows - tap_rows);
+    tap_rows = rows;
+}
 int overlay_pointer_up(u64 id, float x, float y, int sw, int sh) {
     if (vpad_up(id) || !tap_down || id != tap_id) return OVERLAY_NONE;
     tap_down = 0;
-    return overlay_tap(x, y, sw, sh);
+    (void)x;
+    (void)y;
+    return tap_dragged ? OVERLAY_NONE : overlay_tap(tap_at[0], tap_at[1], sw, sh);
 }
 void overlay_pointer_cancel(u64 id) {
     if (id == tap_id) tap_down = 0;
@@ -1230,16 +1299,30 @@ static const char* pads_hint(char* out, size_t size) {
         snprintf(out, size, "%s", gamepad_name(0));
     return out;
 }
-/* the notification: a band of one row in the picture's top left corner */
-static void toast_draw(SnxUiList* l, int sw, int sh) {
+/* the notification: a band of one row in the picture's top left corner, which is its letters, backed (ui.h's
+   UI_BACKED) by the layer's ink, between a blank cell at either end: nothing is drawn under them */
+static void toast_draw(SnxUiList* l, int sw, int sh, const float* stats) {
     int px, py, s;
-    float cw, ch, w;
+    float cw, ch, x, y, w;
     overlay_place(sw, sh, &px, &py, &s);
     cw = 8.0f * (float)s;
     ch = 16.0f * (float)s;
+    x = cw;
+    y = ch;
     w = cw * (float)(strlen(toast) + 2);
-    ui_fill(l, cw, ch, w, ch, INK);
-    ui_text(l, 2 * cw, ch, s, toast, LIGHT);
+    /* the stats' box (x, y, w, h; NULL for none) in that corner too: the band goes under it, from its left, half a
+       line apart, where it would lie on it; in the picture's top right corner when there is no room under the box */
+    if (stats && x < stats[0] + stats[2] && x + w > stats[0] && y < stats[1] + stats[3] && y + ch > stats[1]) {
+        x = stats[0];
+        y = stats[1] + stats[3] + ch / 2;
+        if (y + ch > (float)sh) {
+            x = (float)sw - cw - w;
+            y = ch;
+        }
+    }
+    x += ui_text_backed(l, x, y, s, " ", UI_PAGE);
+    x += ui_text_backed(l, x, y, s, toast, UI_PAGE);
+    ui_text_backed(l, x, y, s, " ", UI_PAGE);
 }
 /* the slot whose thumbnail shows beside the save states' pages: the one in focus on the list, or the page's */
 static void aside_draw(SnxUiList* l, const SnxOverlayRect* r) {
@@ -1252,11 +1335,11 @@ static void aside_draw(SnxUiList* l, const SnxOverlayRect* r) {
         at = slot;
         gen = slots_gen;
     }
-    ui_fill(l, r->x - e, r->y - e, r->w + 2 * e, r->h + 2 * e, INK);
+    ui_fill(l, r->x - e, r->y - e, r->w + 2 * e, r->h + 2 * e, UI_INK);
     if (!ui_image(l, r->x, r->y, r->w, r->h)) {
-        ui_fill(l, r->x, r->y, r->w, r->h, LIGHT);
+        ui_fill(l, r->x, r->y, r->w, r->h, UI_PAGE);
         ui_text(l, r->x + (r->w - 8.0f * 8 * e) / 2, r->y + (r->h - 16 * e) / 2, (int)e,
-                slot >= 0 && slots[slot].when[0] ? "No image" : "Empty", SOFT);
+                slot >= 0 && slots[slot].when[0] ? "No image" : "Empty", UI_SOFT);
     }
 }
 /* The menu's page or the keyboard's box as laid out last, kept from frame to frame as the controls are (vpad.c):
@@ -1280,7 +1363,8 @@ static struct {
 } g_menu;
 static struct {
     SnxUiQuad q[2 * OVERLAY_COLS_MAX + 4];
-    int n, sw, sh, percent;
+    int n, sw, sh, percent, boxed;
+    float stats[4]; /* the stats' box it was placed for, when boxed */
     u32 given, version;
 } g_toast;
 static void watch(const void* var) {
@@ -1354,10 +1438,14 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     }
     if (overlay_toasting(now_ns)) {
         int percent = overlay_display_percent();
+        float stats[4] = {0};
+        int boxed = stats_box_drawn(stats); /* the stats' box, which it keeps clear of */
         if (g_toast.given != toast_version || g_toast.sw != sw || g_toast.sh != sh || g_toast.percent != percent ||
-            !g_toast.version) {
+            g_toast.boxed != boxed || memcmp(g_toast.stats, stats, sizeof stats) || !g_toast.version) {
             SnxUiList t = {g_toast.q, 0, (int)(sizeof g_toast.q / sizeof *g_toast.q)};
-            toast_draw(&t, sw, sh);
+            toast_draw(&t, sw, sh, boxed ? stats : NULL);
+            g_toast.boxed = boxed;
+            memcpy(g_toast.stats, stats, sizeof stats);
             g_toast.n = t.n;
             g_toast.given = toast_version;
             g_toast.sw = sw;
@@ -1377,8 +1465,8 @@ void overlay_error_draw(SnxUiList* l, int sw, int sh, SnxOverlayError* e) {
     /* on a short picture the log's label gives up rows first, then the hint, the log and the error; never the game's
        name or what Share Log or Copy path did. The log goes right under its label */
     const DialogPara para[] = {
-        {e->name, SOFT, 0, 0, 0, 0}, {e->msg, FAILURE, 0, 0, 4, 0}, {fatal_hint(e->msg), INK, 0, 0, 2, 0},
-        {e->how, SOFT, 0, 0, 1, 0},  {e->log, INK, 1, 1, 3, 0},     {e->said, SOFT, 0, 0, 0, 0}};
+        {e->name, UI_SOFT, 0, 0, 0, 0}, {e->msg, UI_FAILURE, 0, 0, 4, 0}, {fatal_hint(e->msg), UI_INK, 0, 0, 2, 0},
+        {e->how, UI_SOFT, 0, 0, 1, 0},  {e->log, UI_INK, 1, 1, 3, 0},     {e->said, UI_SOFT, 0, 0, 0, 0}};
     Dialog d;
     DialogDrawn at;
     int i;

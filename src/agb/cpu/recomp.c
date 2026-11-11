@@ -96,12 +96,18 @@ static void index_build(AgbRecomp* recomp) {
     for (size_t i = 1; i <= recomp->count; ++i) index_put(recomp, i);
 }
 
+/* whether block is the one at pc in that ISA: every search compares through here, which counts it (compared) */
+static int block_is(AgbRecomp* recomp, const AgbBlock* block, uint32_t pc, int thumb) {
+    ++recomp->compared;
+    return block->pc == pc && block->thumb == (uint8_t)thumb;
+}
+
 static AgbBlock* find(AgbRecomp* recomp, uint32_t pc, int thumb) {
     if (!recomp->capacity) return NULL;
     const uint32_t* slot = slots(recomp);
     for (size_t at = slot_of(recomp, pc, thumb); slot[at]; at = (at + 1) & (recomp->capacity * 2 - 1)) {
         AgbBlock* block = &recomp->blocks[slot[at]];
-        if (block->pc == pc && block->thumb == (uint8_t)thumb) return block;
+        if (block_is(recomp, block, pc, thumb)) return block;
     }
     return NULL;
 }

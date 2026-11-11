@@ -20,7 +20,11 @@ int loader_load(void);
 typedef int (*LoaderSegEach)(void* ctx, const char* name, size_t name_len, const u8* bytes, u64 gva, u64 size,
                              int writable);
 void loader_segments(LoaderSegEach each, void* ctx);
-/* The guest code range g_disp covers */
+/* The guest code range g_disp covers: the modules' code (g_mod's code_lo to code_hi) and, behind it, the addresses
+   of g_nros */
 extern u64 g_code_lo, g_code_hi;
+/* Where the NROs the game maps while it runs go, from the module's snx_nros() (nro_slots.h, main.c's load_module):
+   NULL for a module without the table, and where the game's code is not the module's (NCE, a 32-bit game) */
+extern const SnxNros* g_nros;
 
 #endif

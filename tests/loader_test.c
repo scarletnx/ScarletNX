@@ -968,12 +968,123 @@ static void test_mutations(void) {
     puts("PASS deterministic malformed MOD0/dynamic/unwind mutations");
 }
 
+/* The NROs a program maps while it runs, as the recompiler places them (snx_nro_slots_place) and loads each at its
+   address (snx_load_nro_at) */
+static void test_nro_slots(void) {
+    SnxNroSlot slots[4];
+    SnxProgram program;
+    SnxNpdm npdm;
+    SnxU64 end = 0;
+    char error[256];
+    size_t count = 4, size;
+    memset(slots, 0, sizeof slots);
+    slots[0].hash[0] = 0x80, slots[0].size = 0x3000; /* given last of three, after a guard page each */
+    slots[1].hash[0] = 0x10, slots[1].size = 0x1800; /* whole pages: 0x2000 */
+    slots[2].hash[0] = 0x80, slots[2].size = 0x3000; /* the same NRO under another name: one place */
+    slots[3].hash[0] = 0x10, slots[3].hash[31] = 1, slots[3].size = 0x1000;
+    CHECK(!snx_nro_slots_place(slots, &count, 0x8123456, &end, error, sizeof error) && count == 3);
+    CHECK(slots[0].hash[0] == 0x10 && !slots[0].hash[31] && slots[0].base == 0x8125000 && slots[0].size == 0x2000);
+    CHECK(slots[1].hash[31] == 1 && slots[1].base == 0x8128000 && slots[1].size == 0x1000);
+    CHECK(slots[2].hash[0] == 0x80 && slots[2].base == 0x812a000 && slots[2].size == 0x3000 && end == 0x812d000);
+    /* the same set in another order gets the same addresses */
+    {
+        SnxNroSlot again[3];
+        size_t n = 3;
+        SnxU64 end2 = 0;
+        memset(again, 0, sizeof again);
+        again[0] = slots[2], again[1] = slots[0], again[2] = slots[1];
+        again[0].base = again[1].base = again[2].base = 0;
+        CHECK(!snx_nro_slots_place(again, &n, 0x8123456, &end2, error, sizeof error) && n == 3 && end2 == end);
+        CHECK(!memcmp(again, slots, sizeof again));
+    }
+    /* past what a module's 32-bit entry offsets reach: refused, the addresses named */
+    count = 2;
+    slots[1].size = 0xfff00000ul;
+    CHECK(snx_nro_slots_place(slots, &count, 0x8123456, &end, error, sizeof error) == -1);
+    CHECK(strstr(error, "0x108000000") && strstr(error, "0x8123456") && strstr(error, "4293918720 bytes"));
+    /* an NRO as a program of its own at its address, with the NPDM of the program that maps it */
+    size = build_nro();
+    CHECK(!snx_parse_npdm(NULL, 0, &npdm, error, sizeof error));
+    npdm.title_id = 0x0100000000002000ull;
+    CHECK(!snx_load_nro_at(file_bytes, size, "romfs's sample.nro", 0x9000000, &npdm, &program, error, sizeof error));
+    CHECK(program.module_count == 1 && program.modules[0].is_nro && program.modules[0].base == 0x9000000);
+    CHECK(program.modules[0].image_size == 0x400 && program.modules[0].size == 0x1000 && !program.romfs_size);
+    CHECK(program.npdm.title_id == 0x0100000000002000ull && !program.entry_path);
+    snx_free_program(&program);
+    CHECK(snx_load_nro_at(file_bytes, size, "sample.nro", 0x9000800, &npdm, &program, error, sizeof error) == -1);
+    CHECK(strstr(error, "0x9000800") && strstr(error, "4096 bytes") && !program.modules);
+    npdm.is64 = 0;
+    CHECK(snx_load_nro_at(file_bytes, size, "sample.nro", 0x9000000, &npdm, &program, error, sizeof error) == -1);
+    CHECK(strstr(error, "32-bit") && !program.modules);
+    CHECK(snx_load_nro_at(file_bytes, 0x10, "sample.nro", 0x9000000, &npdm, &program, error, sizeof error) == -1);
+    CHECK(strstr(error, "not an NRO") && !program.modules);
+    puts("PASS NROs placed behind the modules and loaded at their addresses");
+}
+
+/* A module's PLT slots (snx_module_plt): an NRO with MOD0, a dynamic table, two symbols (one it defines, a function,
+   one it imports) and a JMPREL table of a JUMP_SLOT for each, given out of order, and a relocation of another type */
+static void test_plt(void) {
+    static unsigned char nro[0x400];
+    SnxProgram program;
+    SnxNpdm npdm;
+    SnxPltSlot* slots = (SnxPltSlot*)1;
+    char error[256];
+    size_t count = 9;
+    memset(nro, 0, sizeof nro);
+    put32(nro + 4, 0x80);
+    memcpy(nro + 0x10, "NRO0", 4);
+    put32(nro + 0x18, 0x400);
+    put32(nro + 0x24, 0x100);
+    put32(nro + 0x28, 0x100);
+    put32(nro + 0x2c, 0x280);
+    put32(nro + 0x30, 0x380);
+    put32(nro + 0x34, 0x80);
+    memcpy(nro + 0x80, "MOD0", 4);
+    put32(nro + 0x84, 0x80);  /* the dynamic table, at 0x100 */
+    put32(nro + 0x88, 0x380); /* an empty BSS at the image's end */
+    put32(nro + 0x8c, 0x380);
+    put64(nro + 0x100, 6), put64(nro + 0x108, 0x200);                                   /* DT_SYMTAB */
+    put64(nro + 0x110, 5), put64(nro + 0x118, 0x248);                                   /* DT_STRTAB */
+    put64(nro + 0x120, 10), put64(nro + 0x128, 9);                                      /* DT_STRSZ */
+    put64(nro + 0x130, 23), put64(nro + 0x138, 0x2c0);                                  /* DT_JMPREL */
+    put64(nro + 0x140, 2), put64(nro + 0x148, 72);                                      /* DT_PLTRELSZ */
+    put32(nro + 0x218, 1), nro[0x21c] = 0x12, nro[0x21e] = 1, put64(nro + 0x220, 0x40); /* own: a function at 0x40 */
+    put32(nro + 0x230, 5), nro[0x234] = 0x12, put64(nro + 0x238, 0x77); /* ext: undefined, whatever its value says */
+    memcpy(nro + 0x248, "\0own\0ext", 9);
+    put64(nro + 0x2c0, 0x3f8), put64(nro + 0x2c8, (2ull << 32) | 1026); /* ext's slot */
+    put64(nro + 0x2d8, 0x3e8), put64(nro + 0x2e0, (1ull << 32) | 1025); /* a GLOB_DAT: no PLT slot */
+    put64(nro + 0x2f0, 0x3f0), put64(nro + 0x2f8, (1ull << 32) | 1026); /* own's slot */
+    CHECK(!snx_parse_npdm(NULL, 0, &npdm, error, sizeof error));
+    CHECK(!snx_load_nro_at(nro, sizeof nro, "plt.nro", 0x9000000, &npdm, &program, error, sizeof error));
+    CHECK(!snx_module_plt(&program.modules[0], &slots, &count, error, sizeof error) && count == 2);
+    CHECK(slots[0].slot == 0x3f0 && slots[0].value == 0x40 && !strcmp(slots[0].name, "own"));
+    CHECK(slots[1].slot == 0x3f8 && slots[1].value == 0 && !strcmp(slots[1].name, "ext"));
+    free(slots);
+    /* a table that is no whole number of entries, and an entry naming a symbol outside the image: refused, said */
+    put64(program.modules[0].image + 0x148, 71);
+    CHECK(snx_module_plt(&program.modules[0], &slots, &count, error, sizeof error) == -1 && !slots && !count);
+    CHECK(strstr(error, "71 bytes at 0x2c0"));
+    put64(program.modules[0].image + 0x148, 72);
+    put64(program.modules[0].image + 0x2c8, (0x1000ull << 32) | 1026);
+    CHECK(snx_module_plt(&program.modules[0], &slots, &count, error, sizeof error) == -1 && !slots);
+    CHECK(strstr(error, "0x2c0") && strstr(error, "symbol 4096"));
+    snx_free_program(&program);
+    /* no MOD0, so no dynamic table: none */
+    put32(nro + 4, 0);
+    CHECK(!snx_load_nro_at(nro, sizeof nro, "plain.nro", 0x9000000, &npdm, &program, error, sizeof error));
+    CHECK(!snx_module_plt(&program.modules[0], &slots, &count, error, sizeof error) && !slots && !count);
+    snx_free_program(&program);
+    puts("PASS a module's PLT slots, by their offsets, with the functions it defines");
+}
+
 int main(void) {
     scratch = snx_temp_dir(NULL);
     CHECK(scratch != NULL);
     test_nso();
     test_hash_lz4();
     test_nro_npdm();
+    test_nro_slots();
+    test_plt();
     test_program();
     test_large_bss();
     test_elf32();

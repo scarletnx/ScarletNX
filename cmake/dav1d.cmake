@@ -3,7 +3,8 @@
 #
 # dav1d's libdav1d as a static library (target dav1d::dav1d), for FFmpeg's libdav1d decoder: the AV1 movies of the
 # Ounce's games, which the native video service decodes (src/nx/hle/services/native_video.c). FFmpeg's own AV1 decoder
-# only parses the stream for a hardware decoder, so a software decode needs dav1d. It builds from the release in
+# only parses the stream for a hardware decoder (Vulkan Video's, with the vulkan_video setting: cmake/ffmpeg.cmake), so
+# a software decode needs dav1d. It builds from the release in
 # cmake/dependencies.cmake with meson and ninja, which it has instead of a CMake build: only the library, at 8 and 16
 # bits a sample (8- and 10-bit streams), with its assembly (NASM's on x86-64). Built on Linux, the BSDs and Windows (MSYS2's
 # meson, as its CI builds), not in a cross build yet (meson would need a cross file of its own); a runtime without it plays

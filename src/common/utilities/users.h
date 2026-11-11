@@ -49,8 +49,8 @@ const SnxUser* snx_users_find(const uint64_t uid[2]);                        /* 
 const SnxUser* snx_users_selected(void);                                     /* the user playing (the .ini's user) */
 int snx_users_selected_number(void);                                         /* and its number, 1 to g_user_count */
 const unsigned char* snx_users_picture(const SnxUser* user, uint32_t* size); /* the JPEG, or NULL and 0 */
-/* the last load's lines about a user's mii= and picture=, each the value read (or none) and the one in effect, a
-   line a user: "" when every user had both, as they are taken */
+/* the last load's lines about a user's mii= and picture= that are not taken, each the value read and the one in
+   effect, a line a user: "" when users.ini gave none, or only ones taken as they are */
 const char* snx_users_notes(void);
 /* user number's (1-based) key= in dir's users.ini set to value, its other lines as they were; with no users.ini, user
    1's starts it. mii takes a database Mii's name, picture mii or file: 0, or -1 with why */

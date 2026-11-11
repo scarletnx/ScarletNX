@@ -452,7 +452,7 @@ static int dec_open(NvdecCtx* d, u32 app) {
     /* H.264 with Vulkan Video on the renderer's GPU when the vulkan_video setting asks for it (experimental). FFmpeg
        decodes a stream its Vulkan decoder can't take on the CPU, as it does without */
     if (app == NVDEC_CODEC_H264 && g_renderer_up && g_renderer && g_renderer->nvdec_hw_device &&
-        (d->dec->hw_device_ctx = g_renderer->nvdec_hw_device()))
+        (d->dec->hw_device_ctx = g_renderer->nvdec_hw_device(NVDEC_HW_H264)))
         LOG_LIMIT(1, "video: H.264 decodes with Vulkan Video (experimental)\n");
     if ((r = avcodec_open2(d->dec, codec, NULL)) < 0) {
         ff_warn("cannot open its decoder", r);

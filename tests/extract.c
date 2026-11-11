@@ -110,12 +110,16 @@ static blob_t ticket(void) {
 
 static blob_t program(uint64_t title, int with_main) {
     blob_t code = text_blob("synthetic main"), npdm_file = npdm(), data = text_blob("synthetic romfs data");
+    blob_t first = text_blob("first nro"), second = text_blob("the second NRO");
     romfs_file_t exefs[2] = {{"main.npdm", npdm_file}, {"main", code}};
-    romfs_file_t romfs[1] = {{"data.bin", data}};
-    blob_t nca = dnca_build(NCACONTENTTYPE_PROGRAM, title, exefs, with_main ? 2 : 1, romfs, 1);
+    /* two files a recompile takes for NROs by their names (driver/nros.c), among others */
+    romfs_file_t romfs[4] = {{"boot.nro", first}, {"data.bin", data}, {"Second.NRO", second}, {"nro.txt", data}};
+    blob_t nca = dnca_build(NCACONTENTTYPE_PROGRAM, title, exefs, with_main ? 2 : 1, romfs, 4);
     free(code.data);
     free(npdm_file.data);
     free(data.data);
+    free(first.data);
+    free(second.data);
     return nca;
 }
 
@@ -269,6 +273,23 @@ static void programs(const char* scratch) {
     printf("PASS a collection's programs read in place by their index, each its own Control\n");
 }
 
+/* snx_romfs_each's files as in_place takes them: each name, and its bytes read from where it says they lie */
+typedef struct {
+    SnxHacFs* fs;
+    unsigned count, stop;
+    char names[64];
+    char bytes[64];
+} Walk;
+static int walk_file(void* context, const char* name, SnxU64 offset, SnxU64 size) {
+    Walk* w = (Walk*)context;
+    char buffer[32];
+    CHECK(size < sizeof buffer && !snx_hac_fs_read_romfs(w->fs, offset, buffer, (size_t)size));
+    buffer[size] = 0;
+    snprintf(w->names + strlen(w->names), sizeof w->names - strlen(w->names), "%s;", name);
+    snprintf(w->bytes + strlen(w->bytes), sizeof w->bytes - strlen(w->bytes), "%s;", buffer);
+    return ++w->count == w->stop ? 7 : 0;
+}
+
 /* Extract dump off: the dump read in place, as the runtime and -r read it (container.h), mapped (here read
    into memory) for the file systems to read from: the ExeFS's files, a file of the RomFS and the control.nacp. Nothing
    is written. 0, or 1 after saying what differed */
@@ -308,6 +329,15 @@ static int in_place(const char* base, const SnxPaths* paths) {
     CHECK(got && size == 20 && !memcmp(got, "synthetic romfs data", 20));
     free(got);
     CHECK(snx_romfs_file(fs, "missing.bin", &size) == NULL);
+    { /* the files a suffix names, whatever its case, each with its bytes; a nonzero answer ends the walk with it */
+        Walk walk = {0}, one = {0}, none = {0};
+        walk.fs = one.fs = none.fs = fs;
+        one.stop = 1;
+        CHECK(!snx_romfs_each(fs, ".nro", walk_file, &walk) && walk.count == 2);
+        CHECK(!strcmp(walk.names, "boot.nro;Second.NRO;") && !strcmp(walk.bytes, "first nro;the second NRO;"));
+        CHECK(snx_romfs_each(fs, ".nro", walk_file, &one) == 7 && one.count == 1);
+        CHECK(!snx_romfs_each(fs, ".nso", walk_file, &none) && !none.count);
+    }
     got = snx_dump_nacp(&dump, &size, &why);
     CHECK(got && size == want.size && !memcmp(got, want.data, want.size));
     free(got);

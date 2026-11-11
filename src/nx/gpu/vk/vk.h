@@ -81,11 +81,13 @@ typedef struct {
     u32 gfx_family, compute_family;
     VkQueue gfx, compute;
     u32 gfx_queues; /* the queues made of the graphics family (2 when compute is the second) */
-    /* Vulkan Video's H.264 decode queue, of a family of its own (~0u without one), made when the vulkan_video setting
-       asks for it (experimental): FFmpeg's Vulkan decoder decodes on it (vk/nvdec.c), told of the device by the
-       extensions and features enabled */
+    /* Vulkan Video's decode queue, of a family of its own (~0u without one), made when the vulkan_video setting asks
+       for it (experimental), and the codecs it decodes of H.264 and AV1 (VK_VIDEO_CODEC_OPERATION_DECODE_*), each with
+       its extension enabled: FFmpeg's Vulkan decoder decodes on it (vk/nvdec.c), told of the device by the extensions
+       and features enabled */
     u32 video_family;
-    const char* dev_ext[65]; /* create_device enables 65 at most, were every one it can enable there */
+    VkVideoCodecOperationFlagsKHR video_codecs;
+    const char* dev_ext[66]; /* create_device enables 66 at most, were every one it can enable there */
     u32 dev_ext_n;
     VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained (to 1.2 on a 1.2 device) */
     VkPhysicalDeviceVulkan11Features feat11;
@@ -334,8 +336,9 @@ static inline void vk_mem_untrack(VmaAllocation a) { (void)a; }
    VK_ANDROID_external_memory_android_hardware_buffer) */
 enum { VK_UMA_WITH_NONE, VK_UMA_WITH_HOST, VK_UMA_WITH_AHB };
 int vk_uma_choose(int has_import, int has_ahb, int has_placed);
-/* what vk_uma_choose takes for vk_memory want (0 auto, 1 copy, 2 UMA) on a device of model VK_MEM_*: VK_UMA_WITH_* */
-int vk_uma_way(int want, int model, int has_import, int has_ahb);
+/* what vk_uma_choose takes for vk_memory want (0 auto, 1 copy, 2 UMA) and uma_memory how (0 auto, 1 imported only, 2
+   moved only) on a device of model VK_MEM_*: VK_UMA_WITH_* */
+int vk_uma_way(int want, int how, int model, int has_import, int has_ahb);
 void vk_uma_init(void); /* after it */
 int vk_uma(void);       /* guest ranges are read in place where they can be */
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
@@ -975,7 +978,9 @@ static inline VkSampleCountFlagBits vk_surf_samples(const Surf* s) {
 int vk_ms_supported(VkFormat f, VkImageUsageFlags usage, VkImageCreateFlags flags, u32 msaa);
 Surf* vk_rt_find(u64 gva);
 int vk_rt_same_layout(const Surf* s, u32 w, u32 h, int bl, u32 bh, u32 pitch); /* a header with s's pixels */
-Surf* vk_rt_snapshot(Surf* rt);                  /* copy a target so a draw can sample its contents while writing it */
+/* a copy of a target, for a draw that samples it while writing it. pixels: the target's pixels are brought into the
+   copy; 0 for a program that only asks the texture's size or levels, which takes the copy as it is */
+Surf* vk_rt_snapshot(Surf* rt, int pixels);
 Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest presents from that memory */
 /* a render target read where its guest memory is (a texture, a present): reload it if the GPU wrote its memory */
 void vk_rt_note_read(Surf* s);
@@ -1409,7 +1414,7 @@ int vk_vic_compose(const VicJob* j);
    or a Vulkan Video picture's planes copied out of its image, both planes swizzled there, the surfaces published
    (vk_own_publish). 1 when written; takes vk_lock. vk_nvdec_hw_device: the renderer's nvdec_hw_device */
 int vk_nvdec_write(const NvdecPic* p);
-void* vk_nvdec_hw_device(void);
+void* vk_nvdec_hw_device(u32 codec);
 /* dma.c: a launch of the DMA copy engine on the GPU (gpu.h's GpuDmaOp), its destination published: 1 when done, 0
    when it could not be (said, with the bytes it lacked). A launch bigger than one allocation, or whose scratch is
    bigger than VK_PART_SHARE of one, goes in bands of lines. Takes vk_lock. vk_dma_stats: the launches so far, the
@@ -2091,6 +2096,12 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]);
 void vk_ui_present(VkCommandBuffer cb, VkImage sc, Surf* src, VkRect2D crop, VkRect2D to, u32 transform,
                    const int safe[4]);
 void vk_ui_swapchain_gone(void); /* its images' views go before the swapchain does */
+/* Whether the on-screen layer is another than the one the last pass drew: its parts are made as a frame makes them
+   (what they write is kept for the next pass, which sends it), and 1 when a quad was written, their number or what the
+   shaders take beside them changed, the atlas or the picture is a newer one, or no pass drew it on this swapchain yet;
+   1 from then until a pass draws it. For the refresh of a game that shows nothing new (renderer.c), which draws the
+   window again only for a layer that changed. Under the Vulkan lock */
+int vk_ui_changed(void);
 void vk_render_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o);
 /* viewport index of a draw's state with the resolution scale, and the draw's facing */
 VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index);
@@ -2172,8 +2183,9 @@ extern u64 g_vk_draw_kept, g_vk_draw_checked;
 extern u64 g_vk_targets_kept;
 /* draws that sampled a color target they render to in place, the barriers ordering them within a pass, the passes
    begun again for them (a target's layout, or ordering without those barriers), and draws that sampled a target
-   through a copy instead (gpu/vk/render.c) */
-extern u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies;
+   through a copy instead (gpu/vk/render.c); the times a target's pixels were copied into a copy of it, for those draws
+   and for textures that read a target as another size or format (gpu/vk/texture.c) */
+extern u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies, g_vk_rt_copy_writes;
 /* rendering passes begun; clears recorded as vkCmdClearAttachments; attachments a pass began by clearing (its load
    op) and by loading as DONT_CARE */
 extern u64 g_vk_passes, g_vk_clear_cmds, g_vk_clear_loads, g_vk_dontcare_loads;

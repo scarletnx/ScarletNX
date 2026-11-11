@@ -18,9 +18,21 @@
 #include "common/cpu/recompiler/image.h"
 #include "common/cpu/recompiler/variants.h"
 #include "common/cpu/recompiler/llvm/jit_service.h"
+#include "common/platform/dl.h"
+#include "common/utilities/common.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+/* an NRO's own AOT module is a library the system loads, which iOS loads none of but the app's: the JIT runs every
+   NRO there (a pack of an NRO's objects, as the game's code is one, is not made) */
+#if defined(__APPLE__) && TARGET_OS_IOS
+#define NRO_MODULES 0
+#else
+#define NRO_MODULES 1
+#endif
 
 static SnxJitService* g_jit;
 static char g_jit_error[512];      /* why there is no JIT, for the fatal error of the first miss */
@@ -457,10 +469,10 @@ static int fn_order(void) {
 /* AOT function i goes stale. Its dispatch slots and its entries the JIT calls it through (SnxModule.entry_fn, the
    module's own table, which it filled at load) go first, so a thread that reads its byte set finds no code for the
    entry it was called at, and the lookup compiles the code there now. An inlined copy reads the same byte */
-static void fn_stale(u32 i) {
-    GuestFn f = g_mod->fn[i], *entry_fn = (GuestFn*)(uintptr_t)g_mod->entry_fn;
-    u64 lo = g_mod->fn_lo[i], hi = lo + g_mod->fn_len[i], pc;
-    size_t a = 0, b = g_mod->nentries, m;
+static void fn_stale(const SnxModule* mod, u32 i) {
+    GuestFn f = mod->fn[i], *entry_fn = (GuestFn*)(uintptr_t)mod->entry_fn;
+    u64 lo = mod->fn_lo[i], hi = lo + mod->fn_len[i], pc;
+    size_t a = 0, b = mod->nentries, m;
     for (pc = lo; pc < hi; pc += 4)
         if (pc >= g_code_lo && pc < g_code_hi) {
             GuestFn expected = f;
@@ -469,18 +481,221 @@ static void fn_stale(u32 i) {
         }
     while (a < b) {
         m = a + (b - a) / 2;
-        if (g_mod->entry_addr[m] < lo)
+        if (mod->entry_addr[m] < lo)
             a = m + 1;
         else
             b = m;
     }
-    for (; a < g_mod->nentries && g_mod->entry_addr[a] < hi; a++)
+    for (; a < mod->nentries && mod->entry_addr[a] < hi; a++)
         if (__atomic_load_n(&entry_fn[a], __ATOMIC_RELAXED) == f) __atomic_store_n(&entry_fn[a], NULL, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_mod->stale[i], 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&mod->stale[i], 1, __ATOMIC_RELEASE);
+}
+
+/* The NROs' own AOT modules, by their place in g_nros (nro_slots.h): each loaded when its NRO is first mapped at its
+   address, and kept for its next mapping, as a thread may still be in its code when the NRO is unmapped (the JIT
+   frees none either). mapped: its entries are in the dispatch table. refused: its file is no module of that NRO, said
+   once. Under g_fn_lock */
+typedef const SnxModule* (*NroModuleFn)(void);
+typedef struct {
+    void* library;
+    NroModuleFn get;
+    const SnxModule* module;
+    const SnxNroImports* imports; /* NULL for a module that imports nothing */
+    int mapped, refused;
+} NroModule;
+static NroModule* g_nro_modules;
+
+/* An import of an NRO's module that has no function of the game's to call: through the dispatch table, where a hook,
+   the JIT's code or RtAPI.miss answers for the address */
+static void nro_import_dynamic(CPU* c, u64 pc) { snx_lookup(c, pc)(c, pc); }
+/* The NRO module's imports (its snx_imports, nro_slots.h) each bound to the function that answers its address: what
+   its dispatch slot holds, when that is the game module's entry there, or the function the runtime gave the slot in
+   its place, a hook's or NVN's, which wins over the game's own. One given such a function later is bound to it then
+   (jit_slot_taken). A slot that holds anything else can change again without a word, and keeps the call going through
+   the table: code the JIT made, a profile pack's variant, or nothing (a function gone stale, or never compiled).
+   Said: how many are direct, and how many of those the runtime's own. Under g_fn_lock */
+static const SnxNroImports* nro_imports_bind(void* library, u64 base) {
+    typedef const SnxNroImports* (*ImportsFn)(void);
+    const SnxNroImports* im;
+    ImportsFn get;
+    void* sym = plat_dl_sym(library, "snx_imports");
+    u32 i, direct = 0, own = 0;
+    if (!sym) return NULL;
+    memcpy(&get, &sym, sizeof get);
+    im = get();
+    if (!im || im->version != SNX_NRO_IMPORTS_VERSION) {
+        WARN("jit: the NRO at %llx has an AOT module whose imports are of version %u, where this runtime reads %u: its "
+             "calls of the game's functions go through the dispatch table\n",
+             (unsigned long long)base, im ? (unsigned)im->version : 0u, (unsigned)SNX_NRO_IMPORTS_VERSION);
+        return NULL;
+    }
+    for (i = 0; i < im->count; i++) {
+        u64 a = im->address[i];
+        GuestFn f = nro_import_dynamic, entry = NULL, held = NULL;
+        size_t lo = 0, hi = g_mod->nentries;
+        while (lo < hi) {
+            size_t middle = lo + (hi - lo) / 2;
+            if (g_mod->entry_addr[middle] < a)
+                lo = middle + 1;
+            else
+                hi = middle;
+        }
+        if (lo < g_mod->nentries && g_mod->entry_addr[lo] == a)
+            entry = __atomic_load_n(&g_mod->entry_fn[lo], __ATOMIC_ACQUIRE);
+        if (a >= g_code_lo && a < g_code_hi && !(a & 3))
+            held = __atomic_load_n(&g_disp[(a - g_code_lo) >> 2], __ATOMIC_ACQUIRE);
+        if (held && held == entry) {
+            f = held;
+            direct++;
+        } else if (held && (held == hook_function(a) || nvn_loader_handler(held))) {
+            f = held;
+            direct++;
+            own++;
+        }
+        __atomic_store_n((GuestFn*)&im->function[i], f, __ATOMIC_RELEASE);
+    }
+    LOG("jit: the NRO at %llx calls %u of the %u functions of the game its module imports directly, %u of them the "
+        "runtime's own in the game's place (hooks, NVN)\n",
+        (unsigned long long)base, (unsigned)direct, (unsigned)im->count, (unsigned)own);
+    return im;
+}
+
+/* the module of the NRO at place, loaded, or NULL: no file (said nothing, the JIT's line follows), or refused */
+static const SnxModule* nro_module_load(long place, u64 base, u64 size, const u8* id, int* refused) {
+    static const char digits[] = "0123456789abcdef";
+    NroModule* n = &g_nro_modules[place];
+    const SnxModule* m;
+    const SnxModInfo* info;
+    char path[1400], name[65];
+    void* sym;
+    size_t i;
+    if (n->refused) return NULL;
+    for (i = 0; i < 32; i++) {
+        name[2 * i] = digits[g_nros->slots[place].hash[i] >> 4];
+        name[2 * i + 1] = digits[g_nros->slots[place].hash[i] & 15];
+    }
+    name[64] = 0;
+#if defined(_WIN32) /* a backslash, as the system's loader asks of a path */
+    snprintf(path, sizeof path, "%s%s" SNX_NROS_FOLDER "\\%s.dll", g_exedir, g_exename, name);
+#else
+    snprintf(path, sizeof path, "%s%s" SNX_NROS_FOLDER "/%s.so", g_exedir, g_exename, name);
+#endif
+    if (!n->library) {
+        if (!snx_is_file(path)) return NULL;
+        n->library = plat_dl_open(path);
+        if (!n->library) {
+            WARN("jit: the NRO at %llx has an AOT module that could not be loaded (%s): the JIT runs its code\n",
+                 (unsigned long long)base, plat_dl_error());
+            LOG("jit: that module is %s\n", path);
+            *refused = n->refused = 1;
+            return NULL;
+        }
+        sym = plat_dl_sym(n->library, "snx_module");
+        if (sym) memcpy(&n->get, &sym, sizeof n->get); /* ISO C has no conversion from an object pointer */
+    }
+    /* each mapping starts from the module as it was made: its entries filled again, none of its functions stale */
+    m = n->get ? n->get() : NULL;
+    info = m && m->abi == SNX_ABI && m->nmods == 1 ? &m->mods[0] : NULL;
+    if (!info || info->base != base || info->size != size || memcmp(info->build_id, id, 32) || m->code_lo < base ||
+        m->code_hi > base + size) {
+        if (!m || m->abi != SNX_ABI)
+            WARN("jit: the NRO at %llx has an AOT module of ABI %u, where this runtime runs %u: the JIT runs its code "
+                 "until the game is recompiled\n",
+                 (unsigned long long)base, m ? (unsigned)m->abi : 0u, (unsigned)SNX_ABI);
+        else if (!info || info->base != base || info->size != size || m->code_lo < base || m->code_hi > base + size)
+            WARN("jit: the NRO at %llx (%llu bytes) has an AOT module made for %llx (%llu bytes, %u modules): the JIT "
+                 "runs its code until the game is recompiled\n",
+                 (unsigned long long)base, (unsigned long long)size, info ? (unsigned long long)info->base : 0ull,
+                 info ? (unsigned long long)info->size : 0ull, (unsigned)m->nmods);
+        else
+            WARN("jit: the NRO at %llx has an AOT module made from another NRO (module ID %02x%02x%02x%02x..., where "
+                 "the mapped one's is %02x%02x%02x%02x...): the JIT runs its code until the game is recompiled\n",
+                 (unsigned long long)base, info->build_id[0], info->build_id[1], info->build_id[2], info->build_id[3],
+                 id[0], id[1], id[2], id[3]);
+        LOG("jit: that module is %s\n", path);
+        plat_dl_close(n->library);
+        n->library = NULL;
+        n->get = NULL;
+        n->module = NULL;
+        n->imports = NULL;
+        *refused = n->refused = 1;
+        return NULL;
+    }
+    if (m->nfns) memset(m->stale, 0, m->nfns);
+    n->imports = nro_imports_bind(n->library, base);
+    n->module = m;
+    return m;
+}
+
+int jit_nro_added(const u8* hash, u64 base, u64 size, const u8* id, u32* entries) {
+    long place = snx_nro_slot(g_nros, hash);
+    const SnxModule* m;
+    int refused = 0;
+    u32 i, n = 0;
+    *entries = 0;
+    if (!NRO_MODULES || place < 0 || g_nros->slots[place].base != base || g_nros->slots[place].size != size) return 1;
+    if (!g_disp || base < g_code_lo || size > g_code_hi - base) return 1;
+    pm_lock(&g_fn_lock);
+    if (!g_nro_modules) g_nro_modules = (NroModule*)calloc(g_nros->count, sizeof *g_nro_modules);
+    m = g_nro_modules ? nro_module_load(place, base, size, id, &refused) : NULL;
+    if (m) {
+        /* a slot something holds already (a hook, code the JIT made while the NRO had no module) keeps it */
+        for (i = 0; i < m->nentries; i++) {
+            u64 a = m->entry_addr[i];
+            GuestFn expected = NULL;
+            if (a < base || a >= base + size || (a & 3) || !m->entry_fn[i]) continue;
+            n += (u32)__atomic_compare_exchange_n(&g_disp[(a - g_code_lo) >> 2], &expected, m->entry_fn[i], 0,
+                                                  __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+        }
+        g_nro_modules[place].mapped = 1;
+        *entries = n;
+    }
+    pm_unlock(&g_fn_lock);
+    return m ? 0 : refused ? -1 : 1;
+}
+
+void jit_slot_taken(u64 addr, GuestFn fn) {
+    u32 k;
+    if (!g_nros) return;
+    /* after the slot's store: a bind that read the slot before it is under this lock, and is made again here */
+    pm_lock(&g_fn_lock);
+    for (k = 0; g_nro_modules && k < g_nros->count; k++) {
+        const SnxNroImports* im = g_nro_modules[k].imports;
+        size_t lo = 0, hi = im ? im->count : 0;
+        while (lo < hi) {
+            size_t middle = lo + (hi - lo) / 2;
+            if (im->address[middle] < addr)
+                lo = middle + 1;
+            else
+                hi = middle;
+        }
+        if (im && lo < im->count && im->address[lo] == addr)
+            __atomic_store_n((GuestFn*)&im->function[lo], fn, __ATOMIC_RELEASE);
+    }
+    pm_unlock(&g_fn_lock);
+}
+
+void jit_nro_removed(u64 base) {
+    u32 k, i;
+    pm_lock(&g_fn_lock);
+    for (k = 0; g_nro_modules && k < g_nros->count; k++) {
+        const SnxModule* m = g_nro_modules[k].module;
+        if (!g_nro_modules[k].mapped || g_nros->slots[k].base != base) continue;
+        for (i = 0; i < m->nentries; i++) {
+            u64 a = m->entry_addr[i];
+            GuestFn expected = m->entry_fn[i];
+            if (a < g_code_lo || a >= g_code_hi || (a & 3) || !expected) continue;
+            __atomic_compare_exchange_n(&g_disp[(a - g_code_lo) >> 2], &expected, NULL, 0, __ATOMIC_RELEASE,
+                                        __ATOMIC_RELAXED);
+        }
+        g_nro_modules[k].mapped = 0;
+    }
+    pm_unlock(&g_fn_lock);
 }
 void jit_code_changed(u64 addr, u64 size) {
     u64 end = addr + size, from;
     size_t a = 0, b, m;
+    u32 k;
     pm_lock(&g_fn_lock);
     if (g_mod->nfns && !fn_order()) {
         from = addr > g_fn_span ? addr - g_fn_span : 0;
@@ -496,9 +711,26 @@ void jit_code_changed(u64 addr, u64 size) {
             u32 i = g_fn_order[a];
             if (g_mod->fn_lo[i] + g_mod->fn_len[i] <= addr || __atomic_load_n(&g_mod->stale[i], __ATOMIC_RELAXED))
                 continue;
-            fn_stale(i);
+            fn_stale(g_mod, i);
             LOG_LIMIT(64, "jit: the game changed its code at %llx, compiled into its function from %llx: compiled again\n",
                       (unsigned long long)addr, (unsigned long long)g_mod->fn_lo[i]);
+        }
+    }
+    /* the same for a mapped NRO's own module: its functions one by one, as few games change an NRO's code */
+    for (k = 0; g_nro_modules && k < g_nros->count; k++) {
+        const SnxModule* m = g_nro_modules[k].module;
+        u32 i;
+        if (!g_nro_modules[k].mapped || g_nros->slots[k].base >= end ||
+            g_nros->slots[k].base + g_nros->slots[k].size <= addr)
+            continue;
+        for (i = 0; i < m->nfns; i++) {
+            if (m->fn_lo[i] >= end || m->fn_lo[i] + m->fn_len[i] <= addr ||
+                __atomic_load_n(&m->stale[i], __ATOMIC_RELAXED))
+                continue;
+            fn_stale(m, i);
+            LOG_LIMIT(64,
+                      "jit: the game changed its code at %llx, compiled into its function from %llx: compiled again\n",
+                      (unsigned long long)addr, (unsigned long long)m->fn_lo[i]);
         }
     }
     pm_unlock(&g_fn_lock);

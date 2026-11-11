@@ -232,7 +232,8 @@ void nvn_device_driver(u64 func) {
     if (g_nvn.loader.a32 && !arm_code_range(&lo, &hi)) return;
     r.func = func;
     loader_segments(ro_after, &r);
-    hi = r.end ? r.end : g_nvn.loader.a32 ? hi : g_code_hi;
+    /* the modules' code, not the addresses of the NROs behind it, which hold memory only while one is mapped */
+    hi = r.end ? r.end : g_nvn.loader.a32 ? hi : g_nros ? g_nros->lo : g_code_hi;
     u32 i, n = 0;
     memcpy(g_nvn.object.info, device_info, sizeof device_info);
     for (i = 0; i < NVN_DEVICE_INFO_ITEMS; i++) n += (u32)info(g_mem, lo, hi, func, i, &g_nvn.object.info[i]);

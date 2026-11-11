@@ -44,6 +44,7 @@ typedef struct {
     VkPhysicalDeviceMemoryProperties memory_properties;
     bool index8, logic_op; /* VK_EXT_index_type_uint8; the logicOp feature */
     bool clip_distance;    /* shaderClipDistance */
+    bool fragment_stores;  /* fragmentStoresAndAtomics: a shadow pass's storage image */
     bool anisotropic;      /* samplerAnisotropy */
     float anisotropy;      /* the samplers' anisotropy, snx_ctr_vk_anisotropy's: 0 for none */
     bool preserve_infnan;  /* shaderSignedZeroInfNanPreserveFloat32: the generated shaders keep infinities and NaNs */

@@ -194,7 +194,7 @@ static int past_margin(void) {
    ui.h's UI_BACKED, the ground the menu's ink): 0 where one differs */
 static int drawn_scale(void) {
     int i, s = 0;
-    if (ui_ground() != GROUND_RGBA) return 0;
+    if (ui_ground() != ui_rgba(GROUND_RGBA)) return 0;
     for (i = 0; i < g_test.l.n; ++i) {
         const SnxUiQuadView q_v = qv(&g_test.quads[i]), *q = &q_v;
         if (q->uw != 8 || q->vh != 16) continue;
@@ -257,8 +257,9 @@ int main(void) {
         int i, grounds = 0;
         for (i = 0; i < g_test.l.n; ++i) {
             SnxUiQuadView q = qv(&g_test.quads[i]);
+            /* in the lines' ground, to the last bit: the ink as a quad holds it, which the backed letters' is */
             grounds += q.ink == UI_SOLID && q.x == box[0] + cw && q.w == STATS_GRAPH_W * cw &&
-                       q.y == box[1] + 32.0f / 4 + STATS_LINES * 32.0f && q.h == 3 * 32.0f;
+                       q.y == box[1] + 32.0f / 4 + STATS_LINES * 32.0f && q.h == 3 * 32.0f && q.rgba == ui_ground();
         }
         assert(grounds == 1);
     }

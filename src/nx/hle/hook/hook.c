@@ -11,6 +11,7 @@
 #include "nx/loader/module_abi.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"
+#include "nx/runtime/guest_jit.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
@@ -179,6 +180,7 @@ static int hook_put(int k, u64 addr, const char* name, const unsigned char verif
     h->fn[h->count] = verify[hook_family[k]] && hook_verify[k].pure ? verify_fn : hook_fn[k];
     __atomic_store_n(slot, h->fn[h->count], __ATOMIC_RELEASE);
     nce_slot_taken(addr, hook_family_name[hook_family[k]]);
+    jit_slot_taken(addr, h->fn[h->count]);
     h->count++;
     if (!hook_routed(hook_symbol[k]))
         WARN("hooks: %s at %llx runs %s only for the calls through the PLT and function pointers: the module's "
@@ -289,9 +291,21 @@ void hook_restore(u64 addr, u64 size) {
     }
 }
 
+GuestFn hook_function(u64 addr) {
+    int i = site_of(addr);
+    return i < 0 ? NULL : g_hle.hook.fn[i];
+}
+
 GuestFn hook_original(u64 addr) {
     int i = site_of(addr);
     return i < 0 ? NULL : g_hle.hook.orig[i];
+}
+
+const char* hook_at(u64 addr, const char** handler) {
+    int i = site_of(addr);
+    if (i < 0) return NULL;
+    *handler = hook_handler[g_hle.hook.hook[i]];
+    return hook_symbol[g_hle.hook.hook[i]];
 }
 
 void hook_run_original(CPU* c, u64 addr) {

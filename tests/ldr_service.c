@@ -99,6 +99,25 @@ void jit_code_removed(u64 base) {
     jit_removed_base = base;
     ++jit_removed;
 }
+/* main.c's table of the NROs the recompiler gave an address (nro_slots.h), and guest_jit.c's loading of an NRO's own
+   AOT module: nro_answer is what it says of the next one (0 loaded, 1 none, -1 refused) */
+const SnxNros* g_nros;
+static u64 nro_base, nro_size, nro_removed_base;
+static u8 nro_hash[32], nro_id[32];
+static int nro_added, nro_removed, nro_answer;
+int jit_nro_added(const u8* hash, u64 base, u64 size, const u8* id, u32* entries) {
+    memcpy(nro_hash, hash, 32);
+    memcpy(nro_id, id, 32);
+    nro_base = base;
+    nro_size = size;
+    ++nro_added;
+    *entries = nro_answer ? 0 : 7;
+    return nro_answer;
+}
+void jit_nro_removed(u64 base) {
+    nro_removed_base = base;
+    ++nro_removed;
+}
 /* no alias pool here: views are copies (memory_alias tests the pool) */
 int plat_alias_init(u64 size) {
     (void)size;
@@ -147,9 +166,15 @@ void gpu_mem_changed(u64 a, u64 size) {
     (void)a;
     (void)size;
 }
+/* the service's last two lines, for the checks of what it says of an NRO's mapping */
+static char said[2][512];
 void logf_(int level, const char* fmt, ...) {
+    va_list ap;
     (void)level;
-    (void)fmt;
+    memcpy(said[0], said[1], sizeof said[0]);
+    va_start(ap, fmt);
+    vsnprintf(said[1], sizeof said[1], fmt, ap);
+    va_end(ap);
 }
 void fatal(const char* fmt, ...) {
     va_list ap;
@@ -383,6 +408,113 @@ static void limits(void) {
     svcobj_unref(o);
     CHECK(!mem_heap_set(0x10000, 0x200000));
 }
+/* NROs the recompiler gave an address (g_nros, nro_slots.h), as main.c hands them over: the fixture's at SLOT, in a
+   range kept from AS_BASE on, the lowest addresses, where an NRO without a place would otherwise go */
+#define SLOTS_END (AS_BASE + 0x100000)
+#define SLOT      (AS_BASE + 0x6000)
+static void aot_slots(void) {
+    static SnxNroSlot slots[2];
+    static SnxNros table = {SNX_NROS_VERSION, 2, 0, 0, slots};
+    char hex[65], at[64], other[96];
+    u8 second[32];
+    u64 base, elsewhere;
+    fixture();
+    /* a second NRO, authorized but with no place in the table: the first with another module ID */
+    GP(SRC2 + 0x40)[0] = 0x43;
+    gw32(NRR + 0x344, 2);
+    CHECK(EVP_Digest(GP(SRC2), 0x3000, GP(NRR + 0x370), NULL, EVP_sha256(), NULL));
+    memcpy(second, GP(NRR + 0x370), 32);
+    /* the table, in the order of the hashes: the fixture's, and one no NRO here has */
+    memset(slots, 0, sizeof slots);
+    memcpy(slots[1].hash, GP(NRR + 0x350), 32);
+    slots[1].base = SLOT, slots[1].size = 0x4000;
+    slots[0].base = AS_BASE + 0x1000, slots[0].size = 0x4000;
+    CHECK(memcmp(slots[0].hash, slots[1].hash, 32) < 0);
+    table.lo = AS_BASE;
+    table.hi = SLOTS_END;
+    g_nros = &table;
+    mem_code_slots(table.lo, table.hi);
+    for (int i = 0; i < 32; i++) snprintf(hex + 2 * i, 3, "%02x", slots[1].hash[i]);
+    SvcObj* o = new_ldr();
+    initialize(o);
+    request(2, NRR, 0x1000, 0, 0);
+    CHECK(!call(o));
+    /* by its hash, at its address, its own module asked for with what is mapped, and the JIT told for the rest */
+    nro_added = nro_removed = jit_added = jit_removed = nro_answer = 0;
+    base = load(o);
+    CHECK(base == SLOT && nro_added == 1 && nro_base == SLOT && nro_size == 0x4000 && jit_added == 1 &&
+          jit_base == SLOT);
+    CHECK(!memcmp(nro_hash, slots[1].hash, 32) && nro_id[0] == 0x42 && nro_id[31] == 0x42);
+    snprintf(at, sizeof at, "mapped NRO at %llx ", (unsigned long long)SLOT);
+    CHECK(strstr(said[1], at) && strstr(said[1], "its AOT module, 7 entries"));
+    block_is(SLOT, MS_ALIASCODE, PERM_RX, 0);
+    block_is(SLOT - 0x1000, MS_FREE, PERM_NONE, 0);
+    CHECK(gr32(SLOT + 0x80) == 0xd2800540);
+    /* unmapped, its module's entries go first; mapped again, it is at the same address */
+    request(1, base, 0, 0, 0);
+    CHECK(!call(o) && nro_removed == 1 && nro_removed_base == SLOT && jit_removed == 1);
+    block_is(SLOT, MS_FREE, PERM_NONE, 0);
+    CHECK(load(o) == SLOT && nro_added == 2);
+    /* an NRO with no place goes outside the kept addresses, free as they are, and has no module */
+    request(0, SRC2, 0x3000, SRC2 + 0x3000, 0x1000);
+    CHECK(!call(o));
+    elsewhere = output();
+    CHECK(elsewhere >= SLOTS_END && nro_added == 2 && jit_added == 3 && strstr(said[1], "no AOT variants"));
+    request(1, elsewhere, 0, 0, 0);
+    CHECK(!call(o) && nro_removed == 2 && nro_removed_base == elsewhere);
+    request(1, SLOT, 0, 0, 0);
+    CHECK(!call(o));
+    /* its address in use (other memory the game put there): mapped where there is room, for the JIT alone, and said
+       with the hash and both addresses. Once the address is free it goes there again */
+    CHECK(!mem_map(SLOT + 0x1000, 0x1000, MS_NORMAL, PERM_RW));
+    nro_added = 0;
+    base = load(o);
+    CHECK(base >= SLOTS_END && !nro_added);
+    snprintf(at, sizeof at, "mapped at %llx ", (unsigned long long)base);
+    snprintf(other, sizeof other, " %llx, the address its AOT module is made for, is in use", (unsigned long long)SLOT);
+    CHECK(strstr(said[0], hex) && strstr(said[0], at) && strstr(said[0], other) && strstr(said[0], "the JIT runs it"));
+    CHECK(strstr(said[1], "no AOT variants"));
+    request(1, base, 0, 0, 0);
+    CHECK(!call(o));
+    CHECK(!mem_unmap(SLOT + 0x1000, 0x1000));
+    CHECK(load(o) == SLOT && nro_added == 1);
+    request(1, SLOT, 0, 0, 0);
+    CHECK(!call(o));
+    /* a guard page short of free is in use too */
+    CHECK(!mem_map(SLOT + 0x4000, 0x1000, MS_NORMAL, PERM_RW));
+    CHECK(load(o) >= SLOTS_END);
+    request(1, output(), 0, 0, 0);
+    CHECK(!call(o));
+    CHECK(!mem_unmap(SLOT + 0x4000, 0x1000));
+    /* no module file, or one that is refused: at its address all the same, where the JIT compiles into the game's
+       own dispatch table */
+    for (nro_answer = 1; nro_answer >= -1; nro_answer -= 2) {
+        nro_added = 0;
+        CHECK(load(o) == SLOT && nro_added == 1 && strstr(said[1], "no AOT variants"));
+        request(1, SLOT, 0, 0, 0);
+        CHECK(!call(o));
+    }
+    nro_answer = 0;
+    /* a place made for another size (the table of another version of the NRO's BSS): not this mapping's */
+    slots[1].size = 0x5000;
+    nro_added = 0;
+    CHECK(load(o) >= SLOTS_END && !nro_added);
+    request(1, output(), 0, 0, 0);
+    CHECK(!call(o));
+    slots[1].size = 0x4000;
+    /* a place the address space has no code room at (in the heap region, a smaller layout's): as one in use */
+    slots[1].base = HEAP_BASE + 0x100000;
+    nro_added = 0;
+    base = load(o);
+    CHECK(base >= SLOTS_END && (base < HEAP_BASE || base >= HEAP_BASE + HEAP_SIZE) && !nro_added);
+    CHECK(strstr(said[0], hex) && strstr(said[0], "is in use"));
+    slots[1].base = SLOT;
+    svcobj_unref(o);
+    block_is(base, MS_FREE, PERM_NONE, 0);
+    block_is(SRC, MS_NORMAL, PERM_RW, 0);
+    g_nros = NULL;
+    mem_code_slots(0, 0);
+}
 /* fn is g_ldr_state_fns' entry of that name: a save state names an ldr:ro object's dispatcher and destructor by it,
    and can't save a function no table names */
 static int state_named(StateFnPtr fn, const char* name) {
@@ -550,6 +682,7 @@ int main(int argc, char** argv) {
     block_is(base, MS_FREE, PERM_NONE, 0);
     short_request();
     concurrency();
+    aot_slots();
     limits();
     CHECK(!mem_heap_set(0, 0x10000));
     CHECK(!munmap(g_mem, AS_SIZE));

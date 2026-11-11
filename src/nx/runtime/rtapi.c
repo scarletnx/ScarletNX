@@ -103,7 +103,8 @@ static void rt_miss(CPU* c, u64 pc) {
         if (t) core_enter(t);
         if (!f) rt_missed_report(c, pc, jit_failure());
     }
-    if (pc - g_code_lo < g_code_hi - g_code_lo) hints_add(pc);
+    /* the modules' own code: an NRO's address behind it is the next recompile's to give */
+    if (pc - g_code_lo < g_code_hi - g_code_lo && !(g_nros && pc >= g_nros->lo)) hints_add(pc);
     f(c, pc);
 }
 /* IC IVAU: what was compiled from the line goes, AOT functions and JIT code alike (guest_jit.c), when the line is

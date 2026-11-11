@@ -22,6 +22,9 @@ void fatal_cp437(const char* text, char* out, size_t size);
    percent encoded. Returns 0, leaving an empty string, if it will not fit or
    the path is relative. Windows drive and UNC paths use forward slashes. */
 int fatal_log_url(const char* path, char* out, size_t size);
+/* text as the error's screen shows it (the message, the log's path, what Share Log and Copy path did): each home
+   folder as ~ (snx_logscan_tilde), since a photo of the screen would name the player. malloc'd, NULL out of memory */
+char* fatal_shown(const char* text);
 /* Share Log's file, as the launcher's: the build, the error and the game's log (its last 4 MiB from the first line that
    starts in them, or a line saying it is missing), each home folder as ~ (snx_logscan_tilde) since the paths name the
    player, written to scarletnx.log in folder. 0 when written, its path in saved; else nonzero, and in saved the path

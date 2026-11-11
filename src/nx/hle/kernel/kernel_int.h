@@ -18,10 +18,11 @@
 #define H_CUR_PROC   0xFFFF8001u /* pseudo-handles */
 #define H_CUR_THREAD 0xFFFF8000u
 
-/* one SVC as the trace ring records it: number, result, caller, the first arguments and an output */
+/* one SVC as the trace ring records it: number, result, caller, the first arguments, an output and the id of the
+   thread that made it */
 typedef struct {
     u32 imm, res;
-    u64 lr, a[4], o1;
+    u64 lr, a[4], o1, tid;
 } SvcRec;
 
 /* ---- kernel.c: handles, waiting, events. _nl: the caller holds g_klock */
@@ -76,7 +77,7 @@ int kthread_live_count(void);
 /* a thread with no reference: the first handle takes one, as its host thread does from its start to its exit. 0, or
    the result svcCreateThread answers, with *out NULL */
 u32 kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core, KThread** out);
-/* h, the thread's own handle, where an Ounce program's thread finds it in its TLS (thread.c) */
+/* h, the thread's own handle, where the thread finds it in its TLS (thread.c) */
 void kthread_set_own_handle(KThread* t, u32 h);
 /* 0, or InvalidState for a thread that has started already: only one call starts it */
 u32 kthread_start(KThread* t);

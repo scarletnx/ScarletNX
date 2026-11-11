@@ -11,6 +11,7 @@
 
 /* ui.c's lock, without the platform layer */
 #include "nx/runtime/platform/plat.h"
+#include "gui_theme_colors.h"
 
 /* a quad as it holds it (ui.h's ui_view): its place in pixels, its colour widened back to 8 bits */
 static SnxUiQuadView qv(const SnxUiQuad* q) { return ui_view(q); }
@@ -45,6 +46,8 @@ void logf_(int lvl, const char* fmt, ...) {
     va_end(ap);
 }
 
+/* a theme's 0xRRGGBB as a quad's colour, R G B A from the low byte, opaque */
+#define THEME(rgb) (0xFF000000u | ((rgb) & 0xFFu) << 16 | ((rgb) & 0xFF00u) | ((rgb) >> 16 & 0xFFu))
 static const int safe[4] = {0, 0, 2000, 1000};
 static char stored_key[64], stored_value[64];
 static int stores;
@@ -52,6 +55,21 @@ static void store(const char* key, const char* value) {
     snprintf(stored_key, sizeof stored_key, "%s", key);
     snprintf(stored_value, sizeof stored_value, "%s", value);
     ++stores;
+}
+/* whether edit mode's bar on l, at scale s, says text in its middle part: 18 cells side by side from where bar() puts
+   it (5 + 2 columns after the bar's start, the bar 42 columns wide in the middle across), a blank one drawing nothing */
+static int bar_says(const SnxUiList* l, int s, const char* text) {
+    float x = (float)safe[0] + ((float)safe[2] - (float)(42 * 8 * s)) / 2 + (float)(7 * 8 * s), y = (float)(8 * s);
+    int i, k;
+    for (i = 0; i + 18 <= l->n; ++i) {
+        for (k = 0; k < 18; ++k) {
+            SnxUiQuadView q = ui_view(&l->q[i + k]);
+            if (q.ink != UI_GLYPH || q.x != x + (float)(k * 8 * s) || q.y != y || q.w != (float)(8 * s)) break;
+            if (text[k] == ' ' ? q.uw != 0 : q.uw != 8 || q.glyph != (u8)text[k]) break;
+        }
+        if (k == 18) return 1;
+    }
+    return 0;
 }
 /* a control's middle on safe, as box() puts it */
 static float mx(int c) { return (float)safe[0] + vpad_config()->at[c].x * (float)safe[2]; }
@@ -67,7 +85,7 @@ static int draw(SnxUiList* l) {
     l->q = quads;
     l->n = 0;
     l->max = 512;
-    vpad_draw(l, safe);
+    vpad_draw(l, safe, 2); /* the menu's letters at 2 */
     return l->n;
 }
 /* the looks the tests ask for (vpad.c's built-in look, ui.h's ui_shape): a button by its label, idle (its edge) or
@@ -309,7 +327,7 @@ int main(void) {
     {
         SnxUiList bar;
         float plus_x = 0, done_x = 0, y;
-        int i, s = 1000 / 360;
+        int i, inked, s = 1000 / 360;
         assert(vpad_down(13, mx(SNX_VPAD_A), my(SNX_VPAD_A), safe) && vpad_up(13));
         draw(&bar);
         /* "[ + ]" and "[ Done ]": their glyphs are the font's, at the bar's row */
@@ -322,9 +340,52 @@ int main(void) {
                      bar.q[i].v == SNX_UI_FONT_Y + 'D' / 16 * 16)
                 done_x = qv(&bar.q[i]).x;
         assert(plus_x > 0 && done_x > plus_x);
+        /* in the menu's colours as its theme.ini has them, not a copy: its page's letters on a fill of its ink */
+        for (i = 0, inked = 0; i < bar.n; ++i) {
+            SnxUiQuadView q = qv(&bar.q[i]);
+            if (q.y == y && q.x == plus_x) assert(q.rgba == ui_rgba(THEME(SNX_GUI_THEME_YORHA_PAGE)));
+            inked += q.ink == UI_SOLID && q.x < plus_x && q.x + q.w > done_x && q.y < y && q.y + q.h > y + 16 * s &&
+                     q.rgba == ui_rgba(THEME(SNX_GUI_THEME_YORHA_INK));
+        }
+        assert(inked == 1);
         stores = 0;
+        assert(bar_says(&bar, s, "      A 100%      "));
         assert(vpad_down(14, plus_x + 2, y + 2, safe) && vpad_up(14));
         assert(vpad_config()->at[SNX_VPAD_A].size == 110 && stores == 1);
+        /* the bar's middle is a field of 18 cells, the control's name and size in its middle: another size and another
+           control write other letters in the same quads, as many whatever the name's length, and only the sized
+           control and the four sides of its frame move */
+        {
+            SnxUiQuad was[512];
+            int k, moved = 0, n = bar.n;
+            memcpy(was, bar.q, (size_t)n * sizeof *was);
+            draw(&bar);
+            assert(bar.n == n && bar_says(&bar, s, "      A 110%      "));
+            for (k = 0; k < n; ++k)
+                moved += was[k].x != bar.q[k].x || was[k].y != bar.q[k].y || was[k].w != bar.q[k].w ||
+                         was[k].h != bar.q[k].h;
+            assert(moved == 5);
+            assert(vpad_down(16, mx(SNX_VPAD_STICK_R), my(SNX_VPAD_STICK_R), safe) && vpad_up(16));
+            draw(&bar);
+            assert(bar.n == n && bar_says(&bar, s, " Right stick 100% "));
+        }
+        /* the bar in the menu's letters, whatever the picture's size: at 3 its row is 24 pixels down and its letters
+           24 by 48, and a press lands on it where it was last drawn */
+        {
+            SnxUiList big = {quads, 0, 512};
+            float at = 0;
+            vpad_draw(&big, safe, 3);
+            for (i = 0; i < big.n; ++i)
+                if (qv(&big.q[i]).ink == UI_GLYPH && qv(&big.q[i]).glyph == '+' && qv(&big.q[i]).y == 24) {
+                    assert(qv(&big.q[i]).w == 24 && qv(&big.q[i]).h == 48);
+                    at = qv(&big.q[i]).x;
+                }
+            assert(at > 0);
+            stores = 0;
+            assert(vpad_down(17, at + 2, 24 + 40, safe) && vpad_up(17) && stores == 1);
+            assert(vpad_config()->at[SNX_VPAD_STICK_R].size == 110);
+            draw(&bar); /* at 2 again */
+        }
         assert(vpad_down(15, done_x + 2, y + 2, safe) && !vpad_editing());
     }
     /* the showcase: player 1's controller as the game got it, in showcase_corner's corner, the frames a second over it */
@@ -339,12 +400,29 @@ int main(void) {
         l.max = 512;
         l.n = 0;
         g_settings.showcase = 0;
-        vpad_showcase_draw(&l, safe, 60);
+        vpad_showcase_draw(&l, safe, 60, 2);
         assert(!l.n);
         g_settings.showcase = 1;
         vpad_showcase_input(0, none);
-        vpad_showcase_draw(&l, safe, 60);
+        vpad_showcase_draw(&l, safe, 60, 2);
         assert(l.n > 13 && drawn(&l, LOOK_A) && !drawn(&l, LOOK_A_PRESSED) && drawn(&l, LOOK_DPAD));
+        /* the frames a second, its seven cells last, in the menu's letters as the other lines over the game: at 2
+           here, 16 by 32; and at the greatest that keeps them above the row under them (a quarter of the box's 300,
+           less the gap above), 3, when the menu's are larger */
+        for (k = l.n - 7; k < l.n; ++k)
+            assert(qv(&l.q[k]).ink == UI_GLYPH && qv(&l.q[k]).w == 16 && qv(&l.q[k]).h == 32);
+        /* on the layer's ground, the menu's ink, which the box is filled with and each of the cells is backed by
+           (ui.h's UI_BACKED), a blank one too; the letters white as the controls */
+        assert(qv(&l.q[0]).ink == UI_SOLID && qv(&l.q[0]).rgba == ui_rgba(THEME(SNX_GUI_THEME_YORHA_INK)) &&
+               qv(&l.q[0]).rgba == ui_ground());
+        for (k = l.n - 7; k < l.n; ++k) assert(qv(&l.q[k]).backed && l.q[k].uw == 8 && qv(&l.q[k]).rgba == 0xFFFFFFFFu);
+        l.n = 0;
+        vpad_showcase_draw(&l, safe, 60, 9);
+        for (k = l.n - 7; k < l.n; ++k)
+            assert(qv(&l.q[k]).ink == UI_GLYPH && qv(&l.q[k]).w == 24 && qv(&l.q[k]).h == 48);
+        assert(qv(&l.q[l.n - 7]).x == qv(&l.q[0]).x + (500 - 7 * 24) / 2.0f);
+        l.n = 0;
+        vpad_showcase_draw(&l, safe, 60, 2);
         /* white, opaque, as the touch controls */
         assert(drawn(&l, LOOK_A)->rgba == 0xFFFFFFFFu);
         assert(!drawn(&l, LOOK_HOME) && !drawn(&l, LOOK_CAPTURE) && !drawn(&l, LOOK_L3) &&
@@ -362,7 +440,7 @@ int main(void) {
             static const char* const name[4] = {"tl", "tr", "bl", "br"};
             ini_read(where, name[k]);
             l.n = 0;
-            vpad_showcase_draw(&l, safe, -1);
+            vpad_showcase_draw(&l, safe, -1, 2);
             for (i = 0; i < l.n; ++i)
                 assert(qv(&l.q[i]).x >= box[k][0] - 0.13f && qv(&l.q[i]).x + qv(&l.q[i]).w <= box[k][0] + 500.13f &&
                        qv(&l.q[i]).y >= box[k][1] - 0.13f && qv(&l.q[i]).y + qv(&l.q[i]).h <= box[k][1] + 300.13f);
@@ -379,12 +457,12 @@ int main(void) {
         ini_read(where, "top"); /* longer than the setting holds: ini.c's own refusal, the corner the same */
         assert(!strcmp(g_settings.showcase_corner, "tl"));
         l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
+        vpad_showcase_draw(&l, safe, -1, 2);
         assert(qv(&l.q[0]).x == 20 && qv(&l.q[0]).y == 20);
         /* pressed: A lit, the D-pad's up, the left stick's click and its knob at the ring's edge */
         vpad_showcase_input(1u << 0 | 1u << 13 | 1u << 4, right);
         l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
+        vpad_showcase_draw(&l, safe, -1, 2);
         assert(drawn(&l, LOOK_A_PRESSED) && !drawn(&l, LOOK_A) && drawn(&l, LOOK_B));
         assert((q = drawn(&l, LOOK_DPAD_UP)) && q->turn == 0 && drawn(&l, LOOK_DPAD) &&
                drawn(&l, LOOK_DPAD) < q);
@@ -395,7 +473,7 @@ int main(void) {
         assert(fabsf(knob->y + knob->h / 2 - (ring->y + ring->h / 2)) < 0.3f);
         vpad_showcase_input(1u << 14, up); /* up is positive, as the game reads it: the knob goes up the screen */
         l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
+        vpad_showcase_draw(&l, safe, -1, 2);
         assert((q = drawn(&l, LOOK_DPAD_UP)) && q->turn == 1);
         ring = drawn(&l, LOOK_STICK_RANGE);
         knob = drawn(&l, LOOK_STICK);
@@ -403,7 +481,7 @@ int main(void) {
                fabsf(knob->x + knob->w / 2 - (ring->x + ring->w / 2)) < 0.3f);
         vpad_showcase_input(0, corner); /* a square of keys: the knob stays on its ring */
         l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
+        vpad_showcase_draw(&l, safe, -1, 2);
         ring = drawn(&l, LOOK_STICK_RANGE);
         knob = drawn(&l, LOOK_STICK);
         {
@@ -422,31 +500,30 @@ int main(void) {
             ini_read(where, name[k]);
             vpad_showcase_input(1u << 0, right);
             l.n = 0;
-            vpad_showcase_draw(&l, safe, 60);
+            vpad_showcase_draw(&l, safe, 60, 2);
             n = l.n;
             assert(n > 13 + 6);
             memcpy(one, l.q, (size_t)n * sizeof *one);
             assert(qv(&one[0]).w == 500 && qv(&one[0]).h == 300);
             for (turn = 0; turn < 2; ++turn) { /* a window pulled wider and back: no draw at the size before */
                 l.n = 0;
-                vpad_showcase_draw(&l, twice, 60);
+                vpad_showcase_draw(&l, twice, 60, 4);
                 assert(l.n == n && qv(&l.q[0]).w == 1000 && qv(&l.q[0]).h == 600);
                 for (i = 0; i < n; ++i)
                     assert(fabsf(qv(&l.q[i]).x - 2 * qv(&one[i]).x) < 0.4f &&
                            fabsf(qv(&l.q[i]).y - 2 * qv(&one[i]).y) < 0.4f &&
                            fabsf(qv(&l.q[i]).w - 2 * qv(&one[i]).w) < 0.4f &&
-                               fabsf(qv(&l.q[i]).h - 2 * qv(&one[i]).h) < 0.4f &&
-                           l.q[i].u == one[i].u && l.q[i].v == one[i].v);
+                           fabsf(qv(&l.q[i]).h - 2 * qv(&one[i]).h) < 0.4f && l.q[i].u == one[i].u &&
+                           l.q[i].v == one[i].v);
                 l.n = 0;
-                vpad_showcase_draw(&l, safe, 60);
+                vpad_showcase_draw(&l, safe, 60, 2);
                 assert(l.n == n);
                 for (i = 0; i < n; ++i)
                     assert(qv(&l.q[i]).x == qv(&one[i]).x && qv(&l.q[i]).y == qv(&one[i]).y &&
-                           qv(&l.q[i]).w == qv(&one[i]).w &&
-                           qv(&l.q[i]).h == qv(&one[i]).h);
+                           qv(&l.q[i]).w == qv(&one[i]).w && qv(&l.q[i]).h == qv(&one[i]).h);
             }
             l.n = 0;
-            vpad_showcase_draw(&l, barred, 60);
+            vpad_showcase_draw(&l, barred, 60, 2);
             assert(l.n == n);
             for (i = 0; i < n; ++i)
                 assert(fabsf(qv(&l.q[i]).x - (qv(&one[i]).x + 120)) < 0.3f &&

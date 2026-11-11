@@ -421,6 +421,9 @@ Test options, read when `BUILD_TESTING` is on (CTest's default), all OFF by defa
 - `-DSNX_TEST_VP9_VECTORS=ON`: add the `nvdec_vp9_*` tests, which run NVDEC's VP9 jobs on libvpx's test vectors;
   configure downloads the 32 files from the WebM project into `CPM_SOURCE_CACHE` once. CI's Linux, ASan, Windows and
   macOS jobs run them.
+- `-DSNX_TEST_AV1_VECTORS=ON`, with `-DSNX_TEST_VULKAN=ON`: add `vulkan_video_av1`, which runs the native video
+  service's AV1 decoder on four of AOMedia's test vectors, with Vulkan Video where the device decodes AV1 and on the
+  CPU elsewhere; configure downloads the 8 files into `CPM_SOURCE_CACHE` once. CI's headless Vulkan step runs it.
 - `-DSNX_TEST_A64_FP_DIFF=ON`: add the AArch64 FP differential test, which needs Python unicorn 2.1.4 and a native
   Linux host.
 - `-DSNX_TEST_ARM_AOT=ON`, `-DSNX_TEST_ARM_DIFF=ON`: the 3DS ARM11 witnesses and the A32 unicorn comparison, see

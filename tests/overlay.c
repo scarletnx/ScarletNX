@@ -3,6 +3,7 @@
 /* The game's menu (runtime/platform/overlay.c): where it goes, its pages, what a tap, a move or a step does, its look;
    and ui.c's atlas and text */
 #include "nx/runtime/platform/overlay.h"
+#include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/fatal_screen.h"
 #include "nx/runtime/platform/backend.h"
@@ -694,6 +695,121 @@ static void keyboard_box(void) {
     assert(shows("xEND\xDD") && shows("403 of 1024 characters.") && xs == 260);
     overlay_keyboard_hide(13);
 }
+/* the band behind the item in focus: the widest fill of the ink that is not the head's (the first quads are the page
+   and the head), or NULL */
+static const SnxUiQuad* focus_band(u32 ink) {
+    const SnxUiQuad* band = NULL;
+    int i;
+    for (i = 2; i < list.n; ++i)
+        if (qv(&list.q[i]).ink == UI_SOLID && qv(&list.q[i]).rgba == ui_rgba(ink) &&
+            (!band || qv(&list.q[i]).w > qv(band).w))
+            band = &list.q[i];
+    return band;
+}
+/* the markers of the items showing (the font's square, a quad each) */
+static int items_shown(void) {
+    int i, n = 0;
+    for (i = 0; i < list.n; ++i) n += qv(&list.q[i]).ink == UI_GLYPH && qv(&list.q[i]).glyph == 0xFE;
+    return n;
+}
+/* A screen of fingers (overlay_set_fingers, a phone's 2424 by 1080 at a display scale of 2.6, the menu's letters at
+   3): an item's row is 48 pixels at the display's scale, 125, where its letters' is 48, the letters in its middle;
+   a finger anywhere in a row takes that row's item; and a page shows the items the picture has room for, seven,
+   scrolling to the one in focus. Off, the rows are the letters' again */
+static void finger_rows(void) {
+    const u32 ink = 0xFF3A4145u;
+    const SnxUiQuad* band;
+    float first, x;
+    int stats = g_settings.stats, i, marked = 0;
+    if (overlay_shown()) overlay_toggle();
+    overlay_set_display_scale(2.6f);
+    overlay_toggle();
+    draw();
+    assert(s == 3 && (band = focus_band(ink)) && qv(band).h == 48 && items_shown() == 7);
+    overlay_set_fingers(1);
+    draw();
+    assert(s == 3 && (band = focus_band(ink)) && qv(band).h == 125 && items_shown() == 7);
+    first = qv(band).y;
+    x = qv(band).x;
+    assert(qv(&list.q[0]).h == 4 * 48 + 7 * 125); /* the page: the head, the hint, a blank row, the items, a blank */
+    assert(qv(&list.q[0]).y + qv(&list.q[0]).h <= SH);
+    for (i = 0; i < list.n; ++i) /* each marker 38.5 pixels down its row, a row of 125 apart */
+        if (qv(&list.q[i]).ink == UI_GLYPH && qv(&list.q[i]).glyph == 0xFE) {
+            assert(qv(&list.q[i]).y == first + 125 * (float)marked + (125 - 48) / 2.0f && qv(&list.q[i]).h == 48);
+            ++marked;
+        }
+    assert(marked == 7);
+    /* Stats is the sixth item: a finger near its row's foot, far under its letters, switches it */
+    assert(overlay_tap(x + 40, first + 5 * 125 + 118, SW, SH) == OVERLAY_NONE && g_settings.stats == !stats);
+    assert(overlay_tap(x + 40, first + 5 * 125 + 3, SW, SH) == OVERLAY_NONE && g_settings.stats == stats);
+    /* the panel covers most of the picture now, an on-screen control under some of its rows (the D-pad, as a phone
+       lays them out): a finger on it there is the menu's, not the control's, and its lift takes the row it is on */
+    {
+        const int area[4] = {0, 0, SW, SH};
+        const SnxVpadConfig* v = vpad_config();
+        const SnxOverlayRect panel = {qv(&list.q[0]).x, qv(&list.q[0]).y, qv(&list.q[0]).w, qv(&list.q[0]).h};
+        float dx = v->at[SNX_VPAD_DPAD].x * SW, dy = v->at[SNX_VPAD_DPAD].y * SH;
+        int row = (int)((dy - first) / 125);
+        u64 b;
+        i32 st[4];
+        assert(vpad_ini("controls", "1") && overlay_error_hit(&panel, dx, dy) && row > 0 && row < 7);
+        overlay_move(-5); /* to the first item, away from the row */
+        overlay_pointer_down(11, dx, dy, area);
+        vpad_state(&b, st);
+        assert(!b);
+        assert(overlay_pointer_up(11, dx, dy, SW, SH) != OVERLAY_CLOSE);
+        draw();
+        assert((band = focus_band(ink)) && qv(band).y == first + 125 * (float)row);
+        if (row == 5) assert(g_settings.stats == !stats); /* Stats, switched */
+        g_settings.stats = stats;
+        assert(vpad_ini("controls", "0"));
+    }
+    /* On-screen controls' page has eleven items: seven show, and Back, the last, comes into view when in focus */
+    assert(overlay_tap(x + 40, first + 60, SW, SH) == OVERLAY_NONE);
+    draw();
+    assert(items_shown() == 7 && !shows("\xFE Back"));
+    /* a finger that slips less than a finger's slip (8 pixels at the scale, 20.8) taps the row it went down on, though
+       it lifts on the next: Snap to grid switches, Scale under it keeps its value. One dragged up four rows scrolls the
+       page four items on, Back into view, and acts on none; dragged down again, the page comes back */
+    {
+        const int area[4] = {0, 0, SW, SH};
+        int snap = g_settings.snap_to_grid, scale = g_settings.controls_scale;
+        float y0 = first + 2 * 125 + 120, y1 = first + 6 * 125 + 60;
+        overlay_pointer_down(12, x + 40, y0, area);
+        overlay_pointer_move(12, x + 40, y0 + 12, area);
+        assert(overlay_pointer_up(12, x + 40, y0 + 12, SW, SH) == OVERLAY_NONE);
+        draw();
+        assert(g_settings.snap_to_grid == !snap && g_settings.controls_scale == scale);
+        g_settings.snap_to_grid = snap;
+        overlay_pointer_down(13, x + 40, y1, area);
+        overlay_pointer_move(13, x + 40, y1 - 2 * 125, area);
+        overlay_pointer_move(13, x + 40, y1 - 4 * 125 - 10, area);
+        assert(overlay_pointer_up(13, x + 40, y1 - 4 * 125 - 10, SW, SH) == OVERLAY_NONE);
+        draw();
+        assert(shows("SCARLETNX  /  CONTROLS") && items_shown() == 7 && shows("\xFE Back"));
+        assert(g_settings.snap_to_grid == snap && g_settings.controls_scale == scale);
+        overlay_pointer_down(14, x + 40, first + 60, area);
+        overlay_pointer_move(14, x + 40, first + 60 + 4 * 125 + 10, area);
+        assert(overlay_pointer_up(14, x + 40, first + 60 + 4 * 125 + 10, SW, SH) == OVERLAY_NONE);
+        draw();
+        assert(items_shown() == 7 && !shows("\xFE Back") && shows("\xFE Show controls"));
+        assert((band = focus_band(ink)) && qv(band).y == first + 4 * 125); /* the focus kept on the page */
+        overlay_move(-4);                                                  /* back to the first item */
+    }
+    overlay_move(-1);
+    draw();
+    assert(items_shown() == 7 && shows("\xFE Back") && (band = focus_band(ink)) && qv(band).h == 125);
+    assert(qv(band).y + qv(band).h <= SH && qv(&list.q[0]).y >= 0);
+    overlay_set_fingers(0);
+    overlay_move(1); /* round to the first: the page from its top */
+    draw();
+    assert(items_shown() == 11 && (band = focus_band(ink)) && qv(band).h == 48);
+    overlay_toggle();
+    overlay_set_display_scale(1.0f);
+    draw();
+    assert(!overlay_shown() && s == 2);
+}
+
 int main(void) {
     const u32 ink = 0xFF3A4145u;
     int x, y, sc;
@@ -1110,6 +1226,13 @@ int main(void) {
     pads_held[0] = 1u << SNX_PAD_RT;
     draw();
     assert(shows("SCARLETNX  /  BUTTON MAP") && !shows("By label") && shows("Xbox Wireless Controller"));
+    { /* its round parts, the two sticks and the four face buttons: each one circle (ui.h's ui_shape), filled */
+        int i, round = 0;
+        for (i = 0; i < list.n; ++i)
+            round += qv(&list.q[i]).ink == UI_SHAPE && list.q[i].u == UI_SHAPE_CIRCLE && !list.q[i].v &&
+                     list.q[i].uw == (0x8000 | UI_SHAPE_FILLED) && qv(&list.q[i]).w == qv(&list.q[i]).h;
+        assert(round == 6);
+    }
     assert(shows("LT sends ZL") && quads_of(FAILURE) > 0); /* RT held: lit */
     overlay_side(1);                                       /* LT's button, ZL, up one: ZR */
     assert(pads.own.bit[SNX_PAD_LT] == 9 && maps_stored == 1);
@@ -1243,6 +1366,67 @@ int main(void) {
     overlay_toggle();
     draw();
     assert(!overlay_shown() && shows("Saved to slot 2"));
+    /* over the game it is its letters and a blank cell at either end, a row from the corner, each backed by the
+       layer's ground, the menu's ink, in its page's colour: a band of cells side by side with no fill under them */
+    {
+        static const char said[] = "Saved to slot 2";
+        const u32 page = 0xFF000000u | (SNX_GUI_THEME_YORHA_PAGE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_PAGE & 0xFF00u) |
+                         (SNX_GUI_THEME_YORHA_PAGE >> 16 & 0xFFu);
+        int i;
+        assert(list.n == (int)strlen(said) + 2 && ui_ground() == ui_rgba(ink));
+        for (i = 0; i < list.n; ++i) {
+            SnxUiQuadView q = qv(&list.q[i]);
+            assert(q.ink == UI_GLYPH && q.backed && q.glyph == (u8)(i && i < list.n - 1 ? said[i - 1] : ' '));
+            assert(q.uw == 8 && q.vh == 16 && q.rgba == ui_rgba(page));
+            assert(q.x == (float)(8 * s * (1 + i)) && q.y == (float)(16 * s));
+            assert(q.w == (float)(8 * s) && q.h == (float)(16 * s));
+        }
+    }
+    /* the stats' box in that corner too: the band goes under it, from the box's left, half a line apart; back in its
+       corner with the box in another, or off; and in the picture's top right where there is no room under the box */
+    {
+        static const int all[4] = {0, 0, SW, SH};
+        static SnxUiQuad kept[1024];
+        SnxUiList box_quads = {kept, 0, 1024};
+        const IniOpt* corner = ini_find(g_display_ini, "stats_corner");
+        float box[4], cw = (float)(8 * s), ch = (float)(16 * s);
+        int short_s, short_x, short_y, h;
+        assert(corner && !stats_box_drawn(box));
+        g_settings.stats = 1;
+        stats_corner_set(corner, "tl");
+        stats_draw(&box_quads, all, s, 1000);
+        assert(stats_box_drawn(box) && box[0] < cw + 16 * cw && box[1] < 2 * ch);
+        { /* the box from its first quad that draws, the notification's band lined up with it */
+            float left = box[0] + 1000;
+            int k;
+            for (k = 0; k < box_quads.n; ++k)
+                if (qv(&box_quads.q[k]).x < left) left = qv(&box_quads.q[k]).x;
+            assert(left == box[0]);
+        }
+        draw();
+        assert(list.n == (int)strlen("Saved to slot 2") + 2 && shows("Saved to slot 2"));
+        assert(qv(&list.q[0]).x == box[0] && qv(&list.q[0]).y == box[1] + box[3] + ch / 2);
+        h = (int)(box[1] + box[3]) + 4; /* a picture that ends four pixels under the box */
+        overlay_place(SW, h, &short_x, &short_y, &short_s);
+        list.n = 0;
+        overlay_draw(&list, SW, h, 0);
+        assert(list.n == (int)strlen("Saved to slot 2") + 2);
+        assert(qv(&list.q[0]).y == (float)(16 * short_s) &&
+               qv(&list.q[list.n - 1]).x + qv(&list.q[list.n - 1]).w == (float)(SW - 8 * short_s));
+        stats_corner_set(corner, "br");
+        box_quads.n = 0;
+        stats_draw(&box_quads, all, s, 1000);
+        draw();
+        assert(qv(&list.q[0]).x == cw && qv(&list.q[0]).y == ch);
+        stats_corner_set(corner, "tl");
+        box_quads.n = 0;
+        stats_draw(&box_quads, all, s, 1000);
+        draw();
+        assert(qv(&list.q[0]).x == box[0] && qv(&list.q[0]).y == box[1] + box[3] + ch / 2);
+        g_settings.stats = 0;
+        draw();
+        assert(qv(&list.q[0]).x == cw && qv(&list.q[0]).y == ch);
+    }
     overlay_toast("", 0); /* none */
     /* a notice from any thread (RenderDoc's): the notification once the next frame draws it, the last given before
        then, and taken once */
@@ -1571,6 +1755,7 @@ int main(void) {
     }
     keys_page();
     keyboard_box();
+    finger_rows();
     puts(
         "overlay: placing, pages, taps, keys, values, scrolling, look, the error's panel, the atlas, the user, a picture "
         "that does not draw, F1's page and the keyboard's box passed");

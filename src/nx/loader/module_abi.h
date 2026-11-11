@@ -8,6 +8,7 @@
 #define SNX_NX_MODULE_ABI_H
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/arm/arm.h"
+#include "nx/loader/nro_slots.h"
 #include <stddef.h>
 
 /* One module as it was recompiled. The runtime maps it at base and checks the file it loads is this one */
@@ -100,6 +101,12 @@ SNX_ABI_CHECK(module_fns, offsetof(SnxModule, nfns) == 92 && offsetof(SnxModule,
 SNX_ABI_CHECK(routes_size, sizeof(SnxRoutes) == 32);
 SNX_ABI_CHECK(routes_fields,
               offsetof(SnxRoutes, list) == 8 && offsetof(SnxRoutes, names) == 16 && offsetof(SnxRoutes, all) == 24);
+SNX_ABI_CHECK(nro_slot,
+              sizeof(SnxNroSlot) == 48 && offsetof(SnxNroSlot, base) == 32 && offsetof(SnxNroSlot, size) == 40);
+SNX_ABI_CHECK(nros, sizeof(SnxNros) == 32 && offsetof(SnxNros, lo) == 8 && offsetof(SnxNros, hi) == 16 &&
+                        offsetof(SnxNros, slots) == 24);
+SNX_ABI_CHECK(nro_imports, sizeof(SnxNroImports) == 32 && offsetof(SnxNroImports, address) == 8 &&
+                               offsetof(SnxNroImports, function) == 16 && offsetof(SnxNroImports, dynamic) == 24);
 SNX_ABI_CHECK(arm_size, sizeof(SnxArmModule) == 80 && offsetof(SnxArmModule, poll_offset) == 72);
 SNX_ABI_CHECK(arm_entries, offsetof(SnxArmModule, entry_addr) == 24 && offsetof(SnxArmModule, entry_fn) == 32);
 SNX_ABI_CHECK(arm_title, offsetof(SnxArmModule, title) == 40 && offsetof(SnxArmModule, title_id) == 48);

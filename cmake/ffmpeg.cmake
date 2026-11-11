@@ -103,9 +103,11 @@ else()
     set(snx_ffmpeg_depends "")
 endif()
 if((WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND NOT ANDROID)
-    # the H.264 decoder's Vulkan Video path, which the vulkan_video setting turns on (src/nx/gpu/vk/nvdec.c). FFmpeg
-    # loads Vulkan's functions through the runtime's device (no link to the loader); only the headers are needed
-    list(APPEND snx_ffmpeg_args --enable-vulkan --enable-hwaccel=h264_vulkan
+    # the H.264 decoder's Vulkan Video path, which the vulkan_video setting turns on (src/nx/gpu/vk/nvdec.c), and
+    # AV1's (src/nx/hle/services/native_video_decoder.c), which brings FFmpeg's own AV1 decoder in: it parses the
+    # stream for a hardware decoder and decodes nothing itself. FFmpeg loads Vulkan's functions through the runtime's
+    # device (no link to the loader); only the headers are needed
+    list(APPEND snx_ffmpeg_args --enable-vulkan --enable-hwaccel=h264_vulkan,av1_vulkan
          "--extra-cflags=-I${snx_vulkan_include_dir}")
 endif()
 if(WIN32 OR CMAKE_CROSSCOMPILING)

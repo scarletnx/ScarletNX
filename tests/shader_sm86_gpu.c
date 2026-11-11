@@ -1539,6 +1539,10 @@ int main(void) {
     printf("device: %s\n", g.name);
     int ok = run_program(&g, "integer", integer_program);
     ok &= run_program(&g, "float", float_program);
+    /* and I2F.S32's integer converted in halves, as for a driver whose conversions truncate (g_shader_i2f_nearest) */
+    g_shader_i2f_nearest = 3;
+    ok &= run_program(&g, "float, I2F in halves", float_program);
+    g_shader_i2f_nearest = 0;
     ok &= run_program(&g, "flow", flow_program);
     ok &= run_program(&g, "wide", wide_program);
     ok &= run_program(&g, "stores", stores_program);

@@ -145,6 +145,10 @@ typedef struct {
     int fp32_flush, fp32_preserve;
     u32 gbuf_cbuf_off[16]; /* the global buffers found, by where a constant buffer holds their address (SH_GBUF_*) */
     int ngbuf;
+    /* the cells (bit k: the 8 bytes at 8 * k) of the memory a pointer table's words point to (SH_GBUF_TABLE) that the
+       program loads a pointer from and then reaches memory through: the renderer binds the memory those pointers
+       point to as the table's own (vk/compute.c's table_windows) */
+    u32 table_cells;
     int unsupported;            /* instructions or forms translation refused */
     char first_unsupported[96]; /* the longest: an untracked handle with its writer's constant (93 bytes) */
     u32 cs_local[3];
@@ -185,6 +189,19 @@ typedef struct {
        (screen_out_mask) and the draw's viewport covers the target (vk/render.c) */
     u64 tex_screen_mask;
     u32 screen_in;
+    /* FS: texture slots every read of which is a plain sample of a 2D texture at a generic's (x, y) as the vertex stage
+       wrote them (shader_direct_plain_uv), the generic uv_in for all of them, or reads the own pixel as above: the
+       fragment's own pixel's centre too when the vertex stage writes its position from that generic, mapping [0, 1]
+       onto the viewport with a w of 1 (uv_out_mask), and the draw's viewport covers the target (vk/render.c) */
+    u64 tex_uv_mask;
+    u32 uv_in;
+    /* VS: generic outputs whose (x, y) the program maps onto its position, pos.x = x * 2 - 1 and pos.y = y * 2 - 1,
+       with a w of 1, and of them in uv_out_yneg_mask those with pos.y = y * -2 + 1 (shader_direct_uv_out) */
+    u32 uv_out_mask, uv_out_yneg_mask;
+    /* every stage: texture slots no instruction reads a texel of: TXQ and TMML alone name them, which ask a texture's
+       size, its levels or a level of detail. A draw that renders to such a slot's texture binds its copy without the
+       target's pixels brought into it (vk/render.c) */
+    u64 tex_unread_mask;
     /* VS: generic outputs written as the position mapped onto [0, 1], ((pos.w + pos.x) / 2, (pos.w + pos.y) / 2, -,
        pos.w), and of them in screen_out_yneg_mask those whose y is (pos.w - pos.y) / 2 */
     u32 screen_out_mask, screen_out_yneg_mask;
@@ -379,6 +396,10 @@ extern int g_shader_resource_min_lod;
 extern int g_shader_dynamic_texture_offsets;
 /* Exact native half conversion: bit0 controls16, bit1 also controls64 for linked host modes. */
 extern int g_shader_half_rounding;
+/* bit 0 for OpConvertSToF, bit 1 for OpConvertUToF: the driver's conversion of a 32-bit integer to a 32-bit float
+   truncates (extension_bans.txt), and I2F.F32 of a 32-bit integer converts its halves and adds them
+   (spv_emit_int_to_f32_nearest), rounding to nearest as the console does. 0 offline */
+extern int g_shader_i2f_nearest;
 /* shaderDrawParameters: a vertex program's instance ID is InstanceIndex less BaseInstance, which an indirect draw's
    arguments set on the GPU. 1 offline */
 extern int g_shader_draw_parameters;

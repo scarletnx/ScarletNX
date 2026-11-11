@@ -47,6 +47,9 @@ char* backend_exit_reason(long long pid, long long started);
 u64 backend_display_refresh_ns(void);
 /* changes whenever the surface comes back, so the renderer knows to make a new Vulkan surface */
 u32 backend_window_generation(void);
+/* a count of the events of the app, the displays and the window (uncovered, moved, resized, shown again): after one,
+   what the window shows may be gone, and a renderer that draws only what changed draws it again */
+u32 backend_window_changes(void);
 /* The software keyboard's box over the game (overlay.h), from any thread: 0 shown, in place of one that shows, or -1
    with no window to show it in (headless). The main thread turns the window's text input on while it shows, and hands
    its answer to am_keyboard_answered (services.h). Hide takes the box of that ticket away unanswered */
