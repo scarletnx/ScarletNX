@@ -457,6 +457,28 @@ static void one_alpha_colours() {
                     pass ? "PASS" : "FAIL", alpha, db[0], db[1]);
         if (!pass) failures++;
     }
+    // a BC7 block that rotates a colour channel out, that channel still and its alpha one value below 255: the line
+    // goes through the colours that move, never along the alpha, which says nothing of them
+    for (uint32_t own = 0; own < 3; own++) {
+        uint32_t px[16], dec[16], worst = 0;
+        uint8_t out[16];
+        for (uint32_t i = 0; i < 16; i++) {
+            uint32_t c[4] = {40 + 12 * i, 200 - 9 * i, 30 + 6 * i, 128};
+            c[own] = 77;
+            px[i] = rgba(c[0], c[1], c[2], c[3]);
+        }
+        encode(px, 0, 0, own, out);
+        decode(out, dec);
+        for (int i = 0; i < 16; i++)
+            for (int c = 0; c < 4; c++) {
+                int off = int(px[i] >> (8 * c) & 255) - int(dec[i] >> (8 * c) & 255);
+                worst = std::max(worst, (uint32_t)std::abs(off));
+            }
+        CHECK(stored_kind(out) == KIND_RGBA && worst <= 14,
+              "a gradient under one alpha of 128, channel %u still and told as the block's own: kind %d, a texel's "
+              "channel %u off (14 at most)",
+              own, stored_kind(out), worst);
+    }
 }
 
 // ---- which textures are made ASTC: the ones whose alpha is one value within every block (bcn_astc.h)
@@ -494,6 +516,11 @@ static void alpha_fixed() {
             if (kind == BC2 && way >= 3) {
                 for (int k = 0; k < 8; k++) b[k] = (uint8_t)((b[0] & 15) * 17);
                 shown = true;
+                if (way == 5) { // one texel's alpha off again, each of the sixteen in turn: not one alpha
+                    uint32_t texel = i / 6 % 16;
+                    b[texel / 2] ^= (uint8_t)(1 << (4 * (texel % 2)));
+                    shown = false;
+                }
             } else if (kind == BC3 && way == 3) { // one index throughout
                 for (int k = 1; k < 16; k++) put(16 + 3 * k, 3, get(16, 3));
                 shown = true;
@@ -584,7 +611,7 @@ static void alpha_fixed() {
 // red, green or blue), and for two and three subsets the seed the tables give the block's partition
 static void bc7_said() {
     static const uint32_t subsets[8] = {3, 2, 3, 2, 1, 1, 1, 2}, partition_bits[8] = {4, 6, 6, 6, 0, 0, 0, 6};
-    uint32_t planes[4] = {0, 0, 0, 0}, seeds[2] = {0, 0};
+    uint32_t planes[4] = {0, 0, 0, 0}, seeds[2] = {0, 0}, mode7 = 0;
     for (uint32_t i = 0; i < 12000; i++) {
         uint8_t b[16], astc[16];
         for (auto& x : b) x = (uint8_t)random_word();
@@ -605,12 +632,22 @@ static void bc7_said() {
                   p, bits(astc, 13, 22), seed);
             seeds[subsets[mode] - 2]++;
         }
+        // mode 7's alpha is the channel that may take a plane of its own
+        if (mode == 7 && kind == KIND_DUAL) {
+            CHECK(bits(astc, 62, 63) == 3, "a BC7 block of mode 7: the second plane is channel %u, not alpha",
+                  bits(astc, 62, 63));
+            mode7++;
+        }
         // mode 7's two subsets carry alpha: never two partitions, whose ends hold none
         if (mode == 7) CHECK(kind != KIND_TWO || bits(b, 74, 93) == 0xFFFFF, "a BC7 block of mode 7 as two partitions");
     }
-    CHECK(planes[0] > 50 && planes[1] > 50 && planes[2] > 50 && planes[3] > 50 && seeds[0] > 500 && seeds[1] > 500,
-          "BC7 blocks stored the source's way: planes of R %u, G %u, B %u, A %u; seeds of two subsets %u, of three %u",
-          planes[0], planes[1], planes[2], planes[3], seeds[0], seeds[1]);
+    CHECK(planes[0] > 50 && planes[1] > 50 && planes[2] > 50 && planes[3] > 50 && seeds[0] > 500 && seeds[1] > 500 &&
+              mode7 > 500,
+          "BC7 blocks stored the source's way: planes of R %u, G %u, B %u, A %u, of mode 7's alpha %u; seeds of two "
+          "subsets %u, of three %u",
+          planes[0], planes[1], planes[2], planes[3], mode7, seeds[0], seeds[1]);
+    std::printf("BC7 as its source says: planes of R %u, G %u, B %u, A %u, of mode 7's alpha %u; seeds %u and %u\n",
+                planes[0], planes[1], planes[2], planes[3], mode7, seeds[0], seeds[1]);
 }
 
 // an image whose sides aren't multiples of 4, of three slices, transcodes block for block as each block alone: the

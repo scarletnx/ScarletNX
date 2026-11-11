@@ -1456,8 +1456,11 @@ static void check_astc_between_frames(void) {
     vkGetPhysicalDeviceFormatProperties = no_format_properties;
     g_vk.alloc_cap = 256ull << 20;
     copy_bpp = 16, copy_bw = copy_bh = 4;
-    /* every 16 bytes of its memory a BC7 block of mode 0, which holds no alpha: one alpha a block */
+    /* every 16 bytes of its memory a BC7 block of mode 0, which holds no alpha: one alpha a block. fill's bytes come
+       round every 128 KiB, which each level's place is a multiple of: these don't, so a level read from another's
+       place shows */
     fill();
+    for (u32 i = 0; i < GUEST; i++) guest[i] ^= (u8)(i >> 17);
     for (u32 i = 0; i < GUEST; i += 16) guest[i] |= 1;
     Surf t = bc7_etc2();
     /* sampled in one present short of VK_ASTC_LATER_READS: not looked at, and the frames after do nothing */
