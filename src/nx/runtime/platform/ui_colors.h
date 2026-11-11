@@ -18,7 +18,6 @@
 /* a panel on the page, a little darker: the soft colour at 0x40 over it */
 #define UI_PANEL    UI_RGB(ui_over(SNX_GUI_THEME_YORHA_SOFT, SNX_GUI_THEME_YORHA_PAGE, 0x40u))
 #define UI_WHITE    0xFFFFFFFFu /* the on-screen controls, whatever the theme */
-#define UI_BLACK    0xFF000000u /* showcase's ground */
 /* the control picked in edit mode, which has to show over any picture and beside the white controls */
 #define UI_PICKED   0xFF00C8FFu
 #endif
