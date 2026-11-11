@@ -393,13 +393,13 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME shader_sm86_gpu COMMAND snx-test-shader-sm86-gpu)
     set_tests_properties(shader_sm86_gpu PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
     # the BC7 encoder run on the CPU (tests/glsl/bc7_cpu.cpp): what the encoder's blocks between frames are held to
-    # (tests/vulkan_astc_later.inc)
+    # (tests/vulkan_astc_later.inc), and the BCn to ASTC one (bcn_astc_cpu.cpp, tests/vulkan_bcn_later.inc)
     add_executable(snx-test-vulkan "${PROJECT_SOURCE_DIR}/tests/vulkan_headless.c"
         "${PROJECT_SOURCE_DIR}/tests/spirv_emitter_fixture.c" "${PROJECT_SOURCE_DIR}/tests/support/nvdec_ref.c"
         "${PROJECT_SOURCE_DIR}/tests/support/vic_ref.c" "${PROJECT_SOURCE_DIR}/tests/support/dma_ref.c"
         "${PROJECT_SOURCE_DIR}/tests/support/fermi2d_ref.c" "${PROJECT_SOURCE_DIR}/tests/support/half.c"
         "${PROJECT_SOURCE_DIR}/tests/support/sm86_ref.c" "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp"
-        "${PROJECT_SOURCE_DIR}/tests/support/ui_shape_ref.c")
+        "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_astc_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/support/ui_shape_ref.c")
     target_include_directories(snx-test-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests")
     target_link_libraries(snx-test-vulkan PRIVATE snx_nx_flags ${components} snx_driver FFmpeg::avutil Threads::Threads
                                                   ${CMAKE_DL_LIBS})

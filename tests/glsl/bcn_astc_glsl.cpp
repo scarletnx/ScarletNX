@@ -14,6 +14,8 @@
 //   subset shapes are an ASTC seed's and the rest as near as the tables say;
 // - random BC2, BC3 and BC7 blocks (every mode, partition and rotation) decode near what they held, none to the
 //   decoder's error colour, and a BC7 block stored the source's way has the source's own plane or partition;
+// - which textures are made ASTC (bcn_astc.h): a block said to have one alpha has one by the reference decoder, in
+//   every kind and mode, the encoder keeps that alpha exact, and the picture's see-through region is no such texture;
 // - images whose sides aren't multiples of 4, of several slices, transcode block for block as one block alone does;
 // - the picture of bcn_picture.hpp, made BC2, BC3 and BC7, comes back no worse than the PSNR each is held to (against
 //   the BCn blocks decoded, which is what the GPU showed before). No GPU is needed.
@@ -33,6 +35,7 @@
 #include "bcn_etc2_cpu.h"
 #include "bcn_picture.hpp"
 #include "glsl.hpp"
+#include "nx/gpu/texture/bcn_astc.h"
 // astc_cpu.h's and tests/support/etc2.h's (their headers bring the recompiler's C helpers, which C++ warns about)
 extern "C" void astc_decode_image(const uint8_t* src, uint32_t w, uint32_t h, uint32_t bw, uint32_t bh, uint8_t* dst,
                                   int srgb);
@@ -456,6 +459,126 @@ static void one_alpha_colours() {
     }
 }
 
+// ---- which textures are made ASTC: the ones whose alpha is one value within every block (bcn_astc.h)
+
+// the alpha of a block's sixteen texels, by the reference decoder: one value?
+static bool alpha_one(int kind, const uint8_t b[16]) {
+    uint8_t dec[64];
+    bcn_decode_image(b, 4, 4, kind, dec);
+    for (int i = 1; i < 16; i++)
+        if (dec[4 * i + 3] != dec[3]) return false;
+    return true;
+}
+static int alpha_kind(int kind) { return kind == BC2 ? SNX_ALPHA_BC2 : kind == BC3 ? SNX_ALPHA_BC3 : SNX_ALPHA_BC7; }
+// Blocks of every shape, random and made to have one alpha in each way a block can: a block said to have one alpha
+// has one (never the other way round, which would send a texture of soft alpha to ASTC), the ways the blocks' bytes
+// show are all found, and the encoder's block of such a block keeps its alpha: exact for BC2 and BC3, and for BC7 at 0
+// and 255, which are levels of every range, else the nearest of 192 levels, one off at most (of 48, three off, in a
+// block whose second plane is a colour channel's, a BC7 mode 4 or 5 block that rotates one in)
+static void alpha_fixed() {
+    for (int kind : {BC2, BC3, BC7}) {
+        uint32_t said = 0, wrong = 0, missed = 0, one = 0, lost = 0, shown_missed = 0, seen[9] = {0}, off = 0;
+        const uint32_t n = 24000;
+        for (uint32_t i = 0; i < n; i++) {
+            uint8_t b[16];
+            for (auto& x : b) x = (uint8_t)random_word();
+            uint32_t way = i % 6;
+            bool shown = false; // made so that the bytes show its one alpha
+            auto put = [&](int at, int bits_, uint32_t v) {
+                for (int k = 0; k < bits_; k++) {
+                    b[(at + k) / 8] &= (uint8_t)~(1 << ((at + k) % 8));
+                    if (v >> k & 1) b[(at + k) / 8] |= (uint8_t)(1 << ((at + k) % 8));
+                }
+            };
+            auto get = [&](int at, int bits_) { return bits(b, at, at + bits_ - 1); };
+            if (kind == BC2 && way >= 3) {
+                for (int k = 0; k < 8; k++) b[k] = (uint8_t)((b[0] & 15) * 17);
+                shown = true;
+            } else if (kind == BC3 && way == 3) { // one index throughout
+                for (int k = 1; k < 16; k++) put(16 + 3 * k, 3, get(16, 3));
+                shown = true;
+            } else if (kind == BC3 && way == 4) { // equal ends, indices between them
+                b[1] = b[0];
+                for (int k = 0; k < 16; k++) put(16 + 3 * k, 3, get(16 + 3 * k, 3) % 6);
+                shown = true;
+            } else if (kind == BC3 && way == 5) { // equal ends, but an index that is 0 or 255: not one alpha
+                b[1] = b[0] = (uint8_t)(1 + b[0] % 254);
+                put(16 + 3 * (int)(i % 16), 3, 6 + i % 2);
+                put(16 + 3 * (int)((i + 1) % 16), 3, 2);
+            } else if (kind == BC7) {
+                uint32_t mode = i / 6 % 9; // 8: a block without a mode
+                b[0] = mode == 8 ? 0 : (uint8_t)((b[0] | 1) << mode);
+                if (way >= 3 && mode == 4) {
+                    uint32_t rot = get(5, 2), at = rot ? 8 + 10 * (rot - 1) : 38, w = rot ? 5 : 6;
+                    put((int)(at + w), (int)w, get((int)at, (int)w));
+                } else if (way >= 3 && mode == 5) {
+                    uint32_t rot = get(6, 2), at = rot ? 8 + 14 * (rot - 1) : 50, w = rot ? 7 : 8;
+                    put((int)(at + w), (int)w, get((int)at, (int)w));
+                } else if (way >= 3 && mode == 6) {
+                    put(56, 7, get(49, 7)), put(64, 1, get(63, 1));
+                } else if (way >= 3 && mode == 7) {
+                    for (int k = 1; k < 4; k++) put(74 + 5 * k, 5, get(74, 5)), put(94 + k, 1, get(94, 1));
+                }
+                shown = way >= 3 || mode < 4 || mode == 8;
+                if (way == 5 && mode >= 4 && mode < 8) {
+                    // one bit of the ends off again: alpha's (or the rotated channel's) second end, or a p-bit
+                    uint32_t rot = mode == 4 ? get(5, 2) : mode == 5 ? get(6, 2) : 0;
+                    int at = mode == 4   ? (int)(rot ? 8 + 10 * (rot - 1) + 5 : 44)
+                             : mode == 5 ? (int)(rot ? 8 + 14 * (rot - 1) + 7 : 58)
+                             : mode == 6 ? (i % 12 < 6 ? 56 : 64)
+                                         : (i % 12 < 6 ? 79 + 5 * (int)(i % 3) : 95 + (int)(i % 3));
+                    put(at, 1, get(at, 1) ^ 1);
+                    shown = false;
+                }
+                seen[mode] += snx_bcn_alpha_fixed(SNX_ALPHA_BC7, b);
+            }
+            bool fixed = snx_bcn_alpha_fixed(alpha_kind(kind), b) != 0, truth = alpha_one(kind, b);
+            said += fixed, one += truth, wrong += fixed && !truth, missed += truth && !fixed;
+            shown_missed += shown && !fixed;
+            if (fixed) {
+                // the encoder's block of it: its alpha as it was
+                uint8_t astc[16], a[64], d[64];
+                transcode(kind, b, 1, 1, 1, astc);
+                bcn_decode_image(b, 4, 4, kind, a);
+                astc_decode_image(astc, 4, 4, 4, 4, d, 0);
+                // 256 levels where the block keeps alpha apart, which BC2 and BC3 do: exact
+                uint32_t most = stored_kind(astc) == KIND_DUAL ? 3 : kind == BC7 ? 1 : 0;
+                for (int t = 0; t < 16; t++) {
+                    uint32_t x = a[4 * t + 3], y = d[4 * t + 3], gap = x > y ? x - y : y - x;
+                    lost += gap > ((x == 0 || x == 255) ? 0 : most);
+                    off = std::max(off, gap);
+                }
+            }
+        }
+        bool modes = kind != BC7 ||
+                     (seen[0] && seen[1] && seen[2] && seen[3] && seen[4] && seen[5] && seen[6] && seen[7] && seen[8]);
+        bool pass = wrong == 0 && shown_missed == 0 && lost == 0 && said > n / 4 && modes;
+        std::printf("%s %s one alpha a block: %u of %u blocks said so, %u of them wrongly, %u made so missed; the "
+                    "encoder's blocks of them: %u texels' alpha past its level (the farthest %u off); %u more have one "
+                    "alpha that the bytes don't show\n",
+                    pass ? "PASS" : "FAIL", kind_name(kind), said, n, wrong, shown_missed, lost, off, missed);
+        if (!pass) failures++;
+    }
+    // the picture's opaque regions are textures of one alpha a block, its see-through one (a soft ramp and a hard
+    // shape) is not, in any kind: that one stays ETC2
+    for (int kind : {BC2, BC3, BC7})
+        for (int r = 0; r < 4; r++) {
+            std::vector<uint32_t> pic(64 * 64);
+            for (uint32_t y = 0; y < 64; y++)
+                for (uint32_t x = 0; x < 64; x++) pic[y * 64 + x] = picture((r & 1) * 64 + x, (r >> 1) * 64 + y);
+            std::vector<uint8_t> blocks = bc_image(kind, pic, 64, 64);
+            int fixed = snx_bcn_alpha_all_fixed(alpha_kind(kind), blocks.data(), blocks.size() / 16);
+            uint32_t moving = 0;
+            for (size_t i = 0; i < blocks.size(); i += 16) moving += !snx_bcn_alpha_fixed(alpha_kind(kind), &blocks[i]);
+            CHECK(fixed == (r != 3) && (r == 3) == (moving != 0),
+                  "%s picture region %d: every block of one alpha %d, %u blocks whose alpha moves", kind_name(kind), r,
+                  fixed, moving);
+            // the soft ramp's blocks are found, not a stray one: half the region is ramp
+            if (r == 3)
+                CHECK(moving >= 64, "%s see-through region: only %u blocks' alpha moves", kind_name(kind), moving);
+        }
+}
+
 // what the transcoder tells the encoder of a BC7 block: random blocks of each mode, and where the block it stores
 // follows the source's way, it is the source's own: the plane of the channel modes 4 and 5 rotate out (alpha, or
 // red, green or blue), and for two and three subsets the seed the tables give the block's partition
@@ -600,6 +723,11 @@ static int image(const char* file, uint32_t w, uint32_t h, const char* dump) {
         std::vector<uint8_t> astc(blocks.size());
         bcn_astc_cpu(kind, blocks.data(), bw, bh, 1, 0, astc.data());
         for (size_t i = 0; i < astc.size(); i += 16) seen[stored_kind(&astc[i])]++;
+        uint32_t moving = 0;
+        for (size_t i = 0; i < blocks.size(); i += 16) moving += !snx_bcn_alpha_fixed(alpha_kind(kind), &blocks[i]);
+        std::printf("%s %s: %s (%u blocks' alpha moves)\n", file, kind_name(kind),
+                    moving ? "stays ETC2 RGBA8, its alpha moves within a block" : "made ASTC 4x4, one alpha a block",
+                    moving);
         std::printf("%s %s: ASTC 4x4 %.2f dB, alpha %.2f dB; ETC2 RGBA8 %.2f dB, alpha %.2f dB; of %u blocks RGB %u, "
                     "RGBA %u, RGBA of 2 bit weights %u, two planes %u, two partitions %u, one colour %u\n",
                     file, kind_name(kind), m[0].rgb, m[0].alpha, m[1].rgb, m[1].alpha, bw * bh, seen[KIND_RGB],
@@ -641,6 +769,7 @@ int main(int argc, char** argv) {
     partitions();
     random_blocks();
     one_alpha_colours();
+    alpha_fixed();
     bc7_said();
     layout();
     picture_psnr();

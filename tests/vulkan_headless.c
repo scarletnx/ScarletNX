@@ -5551,6 +5551,7 @@ static int check_video_decode_gate(void) {
 #include "vulkan_write_tracking.inc"
 #include "vulkan_tex_partial.inc"
 #include "vulkan_astc_later.inc"
+#include "vulkan_bcn_later.inc"
 
 #include "vulkan_descriptor_bench.inc"
 #include "vulkan_pipeline_probe.inc"
@@ -6422,6 +6423,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_resident_astc());
     CHECK(!check_astc_array_levels());
     CHECK(!check_astc_later());
+    CHECK(!check_bcn_astc_later());
     CHECK(!check_resident_texture_in_flight());
     CHECK(!check_sparse_pieces_batched());
     CHECK(!check_dma_untracked_source());

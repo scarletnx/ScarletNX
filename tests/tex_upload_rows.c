@@ -7,7 +7,10 @@
    levels, a level read through gmem_read, a pitch-linear level, a converted format, and a sparse texture's levels
    whose rows are whole tiles. No level takes a buffer of its size on the CPU. Levels past the allocation cap go in
    strips, each region checked where it lands, and an ASTC level's block rows reach vk_astc_upload strip by strip,
-   deswizzled */
+   deswizzled. Then the ASTC encoder between frames (astc_later_*): a BC7 texture held as ETC2 RGBA8 is queued only
+   once sampled in VK_ASTC_LATER_READS presents and only where its alpha is one value a block, its blocks go from guest
+   memory through the conversion's ASTC build into an image of its own, a frame's blocks at most a frame, which takes
+   the texture's place once whole; a write drops it, and one of the ASTC image makes it ETC2 again */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -118,12 +121,13 @@ static u8* mem_of(VkBuffer b) { return b == STAGE_BUF ? stage : b == SCRATCH_BUF
 /* the copies into the image, with the bytes each copies taken when it is recorded (the scratch buffer is reused):
    a region's bufferOffset is where its bytes start in copied */
 static VkBufferImageCopy regs[1024];
+static VkImage regs_img[1024];               /* the image each region is copied into */
 static u32 nregs, regs_bars[1024], all_bars; /* each region's count of vk_all_barrier before it */
 static u8 copied[16u << 20];
 static u64 copied_used;
 static void VKAPI_CALL copy_to_image(VkCommandBuffer cb, VkBuffer b, VkImage img, VkImageLayout l, uint32_t n,
                                      const VkBufferImageCopy* r) {
-    (void)cb, (void)img, (void)l;
+    (void)cb, (void)l;
     for (u32 i = 0; i < n && nregs < 1024; i++) {
         VkBufferImageCopy c = r[i];
         u32 bpp = c.imageSubresource.aspectMask == VK_IMAGE_ASPECT_STENCIL_BIT ? 1 : copy_bpp;
@@ -135,6 +139,7 @@ static void VKAPI_CALL copy_to_image(VkCommandBuffer cb, VkBuffer b, VkImage img
         c.bufferOffset = copied_used;
         copied_used += size;
         regs_bars[nregs] = all_bars;
+        regs_img[nregs] = img;
         regs[nregs++] = c;
     }
 }
@@ -200,9 +205,11 @@ int vk_ok_(VkResult r, const char* what, const char* file, int line) {
 }
 VkCommandBuffer vk_cmd(void) { return (VkCommandBuffer)(uintptr_t)0xCB; }
 /* the BC7 encoder between frames (texture.c vk_tex_later_frame), which no case here runs: the textures are RGBA8 or
-   held as such. They link at every level, and abort if a case ever reaches them */
-int vk_cmd_ready(void) { abort(); }
-void vk_submit_recorded(void) { abort(); }
+   held as such. Its calls link at every level, and abort if a case ever reaches them. The ASTC encoder of the same
+   frames runs (check_astc_between_frames): its submissions are counted */
+static u32 g_submits;
+int vk_cmd_ready(void) { return 1; }
+void vk_submit_recorded(void) { g_submits++; }
 /* the BC7 cache: the key texture.c handed the last vk_astc_upload or vk_astc_upload_layers (keyed 0: none); takes,
    whether vk_astc_cached takes a level; owner_over, an owner on the pages of every range own_hash is asked about */
 static struct {
@@ -397,16 +404,33 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
     return 1;
 }
 int vk_tc_converts(const VkFmt* f) { return f->conv != VKC_NONE && f->conv != VKC_ASTC; }
+/* the mark the model's conversion of a BC7 block leaves on each of its bytes: one for the blocks it is encoded again
+   into, ETC2 RGBA8 or ASTC 4x4 */
+static u8 bc7_mark(VkFormat f) { return f == VK_FORMAT_ASTC_4x4_UNORM_BLOCK ? 0xA5 : 0x5A; }
+static u32 g_conv_blocks; /* BC7 blocks the model converted */
 VkTcShape vk_tc_shape(const VkFmt* f, u32 w) {
+    if (f->conv == VKC_BC7) /* a row of blocks into a row of blocks, 16 bytes each (texconv.c's tc_shape) */
+        return (VkTcShape){
+            .units = (w + 3) / 4, .out_texels = (w + 3) / 4 * 4, .out_bpp = 4, .out_rows = 1, .in_align = 16};
     CHECK(f->conv == VKC_RGBA4);
     return (VkTcShape){.units = (w + 1) / 2, .out_texels = (w + 1) / 2 * 2, .out_bpp = 4, .out_rows = 1, .in_align = 16};
 }
 u64 vk_tc_out_size(const VkTcShape* s, u32 rows, u32 slices) { return (u64)s->out_texels * 4 * rows * slices; }
 int vk_tc_convert(VkCommandBuffer cb, const VkFmt* f, u32 w, u32 rows, u32 slices, VkBuffer in, u64 in_at,
                   u32 in_pitch, VkBuffer out, u64 out_at) {
-    (void)cb, (void)f;
+    (void)cb;
     u32 ow = (w + 1) / 2 * 2;
     CHECK(mem_of(in) && mem_of(out) && (bar_state == 2 || (bar_state == 1 && !batch_moves)));
+    if (f->conv == VKC_BC7) {
+        const u32 cx = (w + 3) / 4;
+        for (u32 y = 0; y < rows * slices; y++)
+            for (u32 k = 0; k < cx * 16; k++)
+                mem_of(out)[out_at + (u64)y * cx * 16 + k] =
+                    mem_of(in)[in_at + (u64)y * in_pitch + k] ^ bc7_mark(f->vk);
+        g_conv_blocks += cx * rows * slices;
+        convs++;
+        return 1;
+    }
     for (u32 y = 0; y < rows * slices; y++)
         for (u32 x = 0; x < w; x++) {
             const u8* t = mem_of(in) + in_at + (u64)y * in_pitch + x * 2;
@@ -594,9 +618,28 @@ VkResult vmaCreateImage(VmaAllocator a, const VkImageCreateInfo* ii, const VmaAl
     (void)a, (void)ii, (void)ai, (void)img, (void)mem, (void)info;
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 }
+/* no image is made but while g_images says so: then one a call, its handle the count of them past 0x1000 */
+static struct {
+    int ok;
+    u32 made;
+    VkFormat format;
+} g_images;
 int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u64* bytes) {
-    (void)ii, (void)img, (void)mem, (void)bytes;
-    return 0;
+    (void)mem;
+    if (!g_images.ok) return 0;
+    g_images.format = ii->format;
+    *img = (VkImage)(uintptr_t)(0x1000 + ++g_images.made);
+    *bytes = 1;
+    return 1;
+}
+static VKAPI_ATTR void VKAPI_CALL no_format_properties(VkPhysicalDevice pd, VkFormat f, VkFormatProperties* p) {
+    (void)pd, (void)f;
+    memset(p, 0, sizeof *p);
+}
+/* format.c's, as it is there: a BC7 texture held as ETC2 RGBA8 is made ASTC 4x4 */
+VkFormat vk_bcn_astc_later(const VkFmt* f) {
+    return f->conv == VKC_BC7 && f->vk == VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK
+                                                                              : VK_FORMAT_UNDEFINED;
 }
 /* images with memory only where it is bound: of the shape g_res.shape gives (none while its block is 0 texels), their
    pages bound as vk_image_resident is asked, each 64 KiB, those it gives memory marked 2 as memory.c marks them */
@@ -1363,6 +1406,152 @@ static void check_hash_runs(void) {
     g_map.count = 0;
 }
 
+/* a 1024x1024 BC7 texture of 3 levels held as ETC2 RGBA8, blocks 1 GOB high: 65536, 16384 and 4096 blocks */
+static Surf bc7_etc2(void) {
+    Surf t = tex(1024, 1024, 1, 3, 16, 0, 0, 1);
+    t.f = (VkFmt){.vk = VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK, .bpp = 16, .bw = 4, .bh = 4, .conv = VKC_BC7};
+    t.astc_later = 1;
+    t.upload_valid = 1;
+    t.size = 0;
+    for (u32 l = 0; l < 3; l++) {
+        u32 lbh, lbd;
+        t.size += bl_level_size(1024, 1024, 1, &t.f, 0, 0, 0, l, &lbh, &lbd);
+    }
+    t.layer_size = t.size;
+    return t;
+}
+/* n presents that sample t */
+static void sampled(Surf* t, u32 n) {
+    for (u32 i = 0; i < n; i++) {
+        g_vk_present++;
+        astc_later_read(t);
+        astc_later_read(t); /* twice a present counts once */
+    }
+}
+/* the regions copied since the counts were reset: all into img, each block the guest's at its place in the layout
+   with the conversion's mark for the format; the blocks they hold */
+static u32 bc7_regions(const Surf* t, VkImage img, VkFormat format) {
+    u32 blocks = 0;
+    for (u32 i = 0; i < nregs; i++) {
+        const VkBufferImageCopy* r = &regs[i];
+        const u32 l = r->imageSubresource.mipLevel, lw = 1024u >> l, cx = lw / 4;
+        u64 at = 0;
+        u32 lbh = 0, lbd = 0;
+        for (u32 k = 0; k < l; k++) at += bl_level_size(1024, 1024, 1, &t->f, 0, 0, 0, k, &lbh, &lbd);
+        bl_level_size(1024, 1024, 1, &t->f, 0, 0, 0, l, &lbh, &lbd);
+        CHECK(regs_img[i] == img && r->imageOffset.x == 0 && r->imageExtent.width == lw && r->bufferRowLength == lw);
+        for (u32 y = 0; y < r->imageExtent.height / 4; y++)
+            for (u32 k = 0; k < cx * 16; k += 5) { /* every fifth byte: each block's, and each of its places in turn */
+                const u32 by = (u32)r->imageOffset.y / 4 + y;
+                const u8 want = guest[at + bl_offset(k, by, 0, cx * 16, lw / 4, lbh, 0)] ^ bc7_mark(format);
+                CHECK(copied[r->bufferOffset + (u64)y * cx * 16 + k] == want);
+            }
+        blocks += cx * r->imageExtent.height / 4;
+    }
+    return blocks;
+}
+static void check_astc_between_frames(void) {
+    const VkImage etc2 = (VkImage)(uintptr_t)0x1A6;
+    VkAstcLaterStats st;
+    vkGetPhysicalDeviceFormatProperties = no_format_properties;
+    g_vk.alloc_cap = 256ull << 20;
+    copy_bpp = 16, copy_bw = copy_bh = 4;
+    /* every 16 bytes of its memory a BC7 block of mode 0, which holds no alpha: one alpha a block */
+    fill();
+    for (u32 i = 0; i < GUEST; i += 16) guest[i] |= 1;
+    Surf t = bc7_etc2();
+    /* sampled in one present short of VK_ASTC_LATER_READS: not looked at, and the frames after do nothing */
+    sampled(&t, VK_ASTC_LATER_READS - 1);
+    nregs = 0, g_submits = 0;
+    vk_tex_later_frame();
+    CHECK(!t.astc.queued && !t.astc_settled && t.astc_reads == VK_ASTC_LATER_READS - 1 && !nregs && !g_submits);
+    /* a write (its pieces) counts its presents from none */
+    astc_later_wrote(&t);
+    sampled(&t, VK_ASTC_LATER_READS - 1);
+    CHECK(!t.astc.queued && t.astc_reads == VK_ASTC_LATER_READS - 1);
+    /* the next present queues it. No image for it yet: it waits, still ETC2 */
+    sampled(&t, 1);
+    vk_tex_astc_later_stats(&st);
+    CHECK(t.astc.queued && st.waiting == 1 && !st.kept);
+    vk_tex_later_frame();
+    CHECK(t.astc.queued && !t.astc.img && !nregs && t.img == etc2);
+    /* with one: 4096 blocks a frame, 16 rows of level 0's 256 (its layout's blocks are 8 rows high: rows of two of
+       them), each frame its own submission; then level 1, 32 rows a frame of its 128, and level 2 whole. The blocks
+       are the guest's, through the conversion's ASTC build, into the new image */
+    g_images.ok = 1;
+    u32 frames = 0, total = 0;
+    while (t.astc.queued && frames < 32) {
+        stage_used = copied_used = nregs = 0;
+        g_conv_blocks = 0, g_submits = 0;
+        vk_tex_later_frame();
+        const VkImage making = (VkImage)(uintptr_t)0x1001;
+        CHECK(g_images.made == 1 && g_images.format == VK_FORMAT_ASTC_4x4_UNORM_BLOCK && g_submits == 1);
+        const u32 blocks = bc7_regions(&t, making, VK_FORMAT_ASTC_4x4_UNORM_BLOCK);
+        CHECK(blocks == g_conv_blocks && blocks == VK_ASTC_LATER_BLOCKS);
+        /* the game's image is the ETC2 one until the last frame */
+        CHECK(t.astc.queued ? t.img == etc2 && t.f.vk == VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK : t.img == making);
+        total += blocks;
+        frames++;
+    }
+    vk_tex_astc_later_stats(&st);
+    CHECK(frames == 21 && total == 65536 + 16384 + 4096 && st.made == 1 && st.blocks == total && !st.waiting);
+    CHECK(t.f.vk == VK_FORMAT_ASTC_4x4_UNORM_BLOCK && t.astc_settled && !t.astc.img);
+    /* done with: more presents queue nothing */
+    sampled(&t, 2 * VK_ASTC_LATER_READS);
+    CHECK(!t.astc.queued);
+    /* written whole now: an ETC2 RGBA8 image again, which the load fills as the first did, and its presents from none */
+    stage_used = copied_used = nregs = 0;
+    CHECK(tex_upload(&t) && t.f.vk == VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK && t.img == (VkImage)(uintptr_t)0x1002);
+    CHECK(bc7_regions(&t, t.img, VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK) == total && !t.astc_settled && !t.astc_reads);
+    vk_tex_astc_later_stats(&st);
+    CHECK(st.undone == 1);
+    /* queued again, and written two frames into its encode: what was made goes, and it is out of the queue */
+    sampled(&t, VK_ASTC_LATER_READS);
+    vk_tex_later_frame();
+    vk_tex_later_frame();
+    CHECK(t.astc.queued && t.astc.img == (VkImage)(uintptr_t)0x1003 && t.astc.row == 32);
+    stage_used = copied_used = nregs = 0;
+    CHECK(tex_upload(&t) && !t.astc.queued && !t.astc.img && t.img == (VkImage)(uintptr_t)0x1002);
+    vk_tex_astc_later_stats(&st);
+    CHECK(st.restarted == 1 && !st.waiting && st.made == 1);
+    nregs = 0;
+    vk_tex_later_frame();
+    CHECK(!nregs);
+    /* one block whose alpha moves (mode 6, its two alpha ends apart), in level 1: looked at once, left as ETC2 */
+    u32 lbh, lbd;
+    const u64 level1 = bl_level_size(1024, 1024, 1, &t.f, 0, 0, 0, 0, &lbh, &lbd);
+    u8* block = guest + level1 + 16 * 1000;
+    u8 saved[16];
+    memcpy(saved, block, 16);
+    memset(block, 0, 16);
+    block[0] = 0x40;
+    block[7] = 0x7F; /* bits 56 to 62: the second alpha end */
+    Surf moving = bc7_etc2();
+    sampled(&moving, VK_ASTC_LATER_READS);
+    vk_tex_astc_later_stats(&st);
+    CHECK(!moving.astc.queued && moving.astc_settled && st.kept == 1 && !st.waiting);
+    sampled(&moving, VK_ASTC_LATER_READS);
+    vk_tex_astc_later_stats(&st);
+    CHECK(!moving.astc.queued && st.kept == 1);
+    /* written with one alpha a block again, it is looked at again and queued; freed, it leaves the queue */
+    memcpy(block, saved, 16);
+    astc_later_wrote(&moving);
+    sampled(&moving, VK_ASTC_LATER_READS);
+    CHECK(moving.astc.queued);
+    vk_tex_later_frame();
+    CHECK(moving.astc.img);
+    vk_tex_later_forget(&moving);
+    vk_tex_astc_later_stats(&st);
+    CHECK(!moving.astc.queued && !moving.astc.img && !st.waiting);
+    /* a texture that isn't such a one is never looked at */
+    Surf plain = bc7_etc2();
+    plain.astc_later = 0;
+    sampled(&plain, 2 * VK_ASTC_LATER_READS);
+    CHECK(!plain.astc.queued && !plain.astc_reads);
+    g_images.ok = 0;
+    copy_bpp = 4, copy_bw = copy_bh = 1;
+    fill();
+}
 int main(void) {
     fill();
     check_take_skip();
@@ -1770,6 +1959,7 @@ int main(void) {
     check_resident_layers();
     check_resident_astc();
     check_hash_runs();
+    check_astc_between_frames();
     printf("tex_upload_rows: %u checks passed\n", checks);
     return 0;
 }

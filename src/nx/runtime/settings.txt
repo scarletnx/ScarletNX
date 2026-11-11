@@ -948,9 +948,9 @@ setting Native ASTC
     startup
     words Off|On
     help 1 = ASTC textures are sampled as the game's blocks where the GPU samples ASTC (most phone and tablet GPUs),
-    help in a quarter to a 36th of the memory, and so are the BC2, BC3 and BC7 textures a GPU without BCn or ETC2
-    help gets encoded again as ASTC 4x4 (native_bc). 0 = they are decoded to RGBA8 on the GPU, as they are on GPUs
-    help without ASTC (most desktop ones), to compare the two. On such a GPU 1 is a warning at start
+    help in a quarter to a 36th of the memory, and so are the BC2, BC3 and BC7 textures a GPU without BCn makes ASTC
+    help 4x4 (native_bc). 0 = they are decoded to RGBA8 on the GPU, as they are on GPUs without ASTC (most desktop
+    help ones), to compare the two, and those stay ETC2. On such a GPU 1 is a warning at start
 setting Native BC
     label Native BCn
     key native_bc
@@ -961,9 +961,11 @@ setting Native BC
     help 1 = BC1 to BC7 textures, which most games use, are sampled as the game's blocks where the GPU samples BCn
     help (desktop GPUs and some phone ones). A GPU without BCn (most phone ones, Mali and Adreno's own driver among
     help them) gets them encoded again on the GPU as ETC2 and EAC as they load, the same bytes a texel, where it samples
-    help those (native_etc2=1), BC6H decoded to half floats; else decoded, four to eight times the memory, but BC2,
-    help BC3 and BC7 where it samples ASTC (native_astc=1): encoded again as ASTC 4x4. 0 = BCn takes that path on a
-    help GPU that samples BCn too, to compare the two on a desktop GPU
+    help those (native_etc2=1), BC6H decoded to half floats; else decoded, four to eight times the memory. Where it
+    help samples ASTC too (native_astc=1), a BC2, BC3 or BC7 texture sampled for a while whose alpha is one value in
+    help every block is then made ASTC 4x4 between frames, nearer the game's colours; without ETC2 those three are
+    help ASTC 4x4 as they load. 0 = BCn takes that path on a GPU that samples BCn too, to compare the two on a desktop
+    help GPU
 setting Native ETC2
     key native_etc2
     int 0 1

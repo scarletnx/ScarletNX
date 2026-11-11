@@ -783,6 +783,15 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                         (unsigned long long)later.blocks, (unsigned long long)later.restarted, later.waiting,
                         (unsigned long long)(later.waiting_bytes >> 20), later.hot, (unsigned long long)later.went_hot,
                         (unsigned long long)later.cooled);
+                VkAstcLaterStats astc_later;
+                vk_tex_astc_later_stats(&astc_later);
+                if (astc_later.made || astc_later.kept || astc_later.waiting)
+                    LOG("vulkan: %llu BCn textures held as ETC2 RGBA8 made ASTC 4x4 between frames (%llu blocks encoded, "
+                        "%llu encodes started over for a write, %llu made ETC2 again for one); %llu left as ETC2 for an "
+                        "alpha that moves within a block; %u waiting\n",
+                        (unsigned long long)astc_later.made, (unsigned long long)astc_later.blocks,
+                        (unsigned long long)astc_later.restarted, (unsigned long long)astc_later.undone,
+                        (unsigned long long)astc_later.kept, astc_later.waiting);
                 VkAstcBackground bg;
                 vk_astc_background_stats(&bg);
                 if (bg.quick || bg.hits)

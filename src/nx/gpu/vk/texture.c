@@ -8,6 +8,7 @@
 #include "nx/gpu/vk/descriptor_objects.h"
 #include "common/utilities/bits.h"
 #include "nx/gpu/texture/descriptor.h"
+#include "nx/gpu/texture/bcn_astc.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -299,6 +300,10 @@ typedef struct {
 typedef struct {
     VkCommandBuffer cb;
     Surf* t;
+    /* another image to load than t's own, in TRANSFER_DST_OPTIMAL, and the format it is converted into (the ASTC image
+       made between frames, astc_later_encode); VK_NULL_HANDLE: t's image and format */
+    VkImage into;
+    VkFormat as;
     VkBuffer scratch;
     u64 cap, used;
     int open;        /* the barrier before the batch's dispatches is recorded */
@@ -311,7 +316,8 @@ typedef struct {
 } Upload;
 /* the buffer a batch records into now: staging can submit, which ends the one the batch was opened on */
 static VkCommandBuffer up_cb(Upload* u) {
-    VkCommandBuffer cb = upload_cb(u->t, u->cb);
+    /* another image keeps its layout from one buffer to the next; t's own is put back in its transfer use */
+    VkCommandBuffer cb = u->into ? vk_cmd() : upload_cb(u->t, u->cb);
     if (cb != u->cb) {
         u->cb = cb;
         u->open = 0; /* the batch's barriers ended with the buffer that held them */
@@ -328,15 +334,18 @@ static int up_flush(Upload* u) {
     up_cb(u);
     if (u->moves) vk_bl_barrier(u->cb, 0);
     if (u->nconv) {
+        VkFmt f = u->t->f;
+        if (u->into) f.vk = u->as;
         up_open(u);
         for (u32 i = 0; i < u->nconv && ok; i++)
-            ok = vk_tc_convert(u->cb, &u->t->f, u->conv[i].w, u->conv[i].rows, u->conv[i].slices, u->conv[i].in,
+            ok = vk_tc_convert(u->cb, &f, u->conv[i].w, u->conv[i].rows, u->conv[i].slices, u->conv[i].in,
                                u->conv[i].in_at, u->conv[i].in_pitch, u->scratch, u->conv[i].out_at);
         vk_bl_barrier(u->cb, 0);
     }
     for (u32 i = 0, j; i < u->nreg; i = j) {
         for (j = i + 1; j < u->nreg && u->src[j] == u->src[i];) j++;
-        rec_CmdCopyBufferToImage(u->cb, u->src[i], u->t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, j - i, u->reg + i);
+        rec_CmdCopyBufferToImage(u->cb, u->src[i], u->into ? u->into : u->t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 j - i, u->reg + i);
     }
     u->open = 0;
     u->moves = u->nconv = u->nreg = 0;
@@ -832,7 +841,9 @@ static void later_unqueue(Surf* s) {
     later_drop_image(s);
     s->bc7.queued = 0;
 }
+static void astc_later_unqueue(Surf* t);
 void vk_tex_later_forget(Surf* s) {
+    astc_later_unqueue(s);
     later_unqueue(s);
     if (s->bc7_hot) g_later.hot--;
     s->bc7_hot = 0;
@@ -989,7 +1000,248 @@ static u32 later_encode(VkCommandBuffer cb, Surf* t, u32 left) {
         vk_surf_use(cb, t, was, stage, access);
     return used;
 }
+/* ------------------------------------------------------------ BCn held as ETC2, made ASTC 4x4 between frames */
+/* A BC2, BC3 or BC7 texture on a GPU that samples ETC2 and ASTC but not BCn loads as ETC2 RGBA8 (format.c), which the
+   game samples at once. One that is then sampled in VK_ASTC_LATER_READS presents without being written, and whose
+   alpha is one value within every block (bcn_astc.h, read off its blocks in guest memory), is made ASTC 4x4 after the
+   frames' presents: its blocks read from guest memory again, a strip of a level's rows at a time, VK_ASTC_LATER_BLOCKS
+   blocks a frame, and encoded by texconv.comp's ASTC build (astc_encode.glsl) into an image of its own, which takes
+   the ETC2 one's place once whole. ASTC holds such a texture's colours 5 to 16 dB nearer the game's; one whose alpha
+   moves within a block stays ETC2, whose alpha is a block of its own. A write of the texture drops what the encoder
+   made and counts its presents from none, so one written every few frames stays as it loaded; one written whole when
+   it is ASTC already is made ETC2 again first, as it loaded. Block linear 2D textures and arrays whose memory is all
+   mapped: the others stay ETC2 */
+static struct {
+    Surf** q;
+    u32 n, cap;
+    VkAstcLaterStats stats;
+} g_astc_later;
+static int is_astc4(VkFormat f) { return f == VK_FORMAT_ASTC_4x4_UNORM_BLOCK || f == VK_FORMAT_ASTC_4x4_SRGB_BLOCK; }
+/* the ETC2 RGBA8 format a texture made ASTC 4x4 loaded as: the same sRGB */
+static VkFormat astc_later_etc2(VkFormat astc) {
+    return astc == VK_FORMAT_ASTC_4x4_SRGB_BLOCK ? VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK
+                                                 : VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+}
+void vk_tex_astc_later_stats(VkAstcLaterStats* s) {
+    *s = g_astc_later.stats;
+    s->waiting = g_astc_later.n;
+}
+/* the ASTC image made so far for t goes once the frames that wrote it are done */
+static void astc_later_drop_image(Surf* t) {
+    if (t->astc.img) {
+        vk_defer_image(t->astc.img, t->astc.mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        vk_defer_bytes(t->astc.bytes);
+    }
+    t->astc.img = VK_NULL_HANDLE;
+    t->astc.mem = VK_NULL_HANDLE;
+    t->astc.bytes = 0;
+    t->astc.layer = t->astc.level = t->astc.row = 0;
+}
+/* t out of the queue, and the ASTC image being made for it with it */
+static void astc_later_unqueue(Surf* t) {
+    if (!t->astc.queued) return;
+    u32 i = 0;
+    while (i < g_astc_later.n && g_astc_later.q[i] != t) i++;
+    if (i < g_astc_later.n) {
+        memmove(g_astc_later.q + i, g_astc_later.q + i + 1, (size_t)(g_astc_later.n - i - 1) * sizeof *g_astc_later.q);
+        g_astc_later.n--;
+    }
+    astc_later_drop_image(t);
+    t->astc.queued = 0;
+}
+/* t written (a whole load, or pieces): what the encoder made of the bytes before goes, and its presents count from
+   none */
+static void astc_later_wrote(Surf* t) {
+    if (!t->astc_later) return;
+    if (t->astc.img) g_astc_later.stats.restarted++;
+    astc_later_unqueue(t);
+    t->astc_reads = 0;
+    t->astc_settled = 0;
+}
+/* every block of t's memory has one alpha for sure (bcn_astc.h), its bytes as the CPU has them now, 4 KiB at a time:
+   a block linear layout moves 16 byte blocks whole, so its blocks are the 16 bytes at each multiple of 16, in an order
+   that does not matter here; what lies between its levels is the game's, and counts against it if its alpha moves.
+   Bytes the GPU holds read as their owner's mark (vk_guest_peek), which seldom is a block of one alpha: such a texture
+   stays ETC2 */
+static int astc_later_alpha_fixed(const Surf* t) {
+    const int kind = t->f.conv == VKC_BC2 ? SNX_ALPHA_BC2 : t->f.conv == VKC_BC3 ? SNX_ALPHA_BC3 : SNX_ALPHA_BC7;
+    u8 piece[4096];
+    const u8* p = own_any() ? NULL : gmem_ptr(t->gva, t->size);
+    for (u64 o = 0; o < t->size; o += sizeof piece) {
+        const u64 n = t->size - o < sizeof piece ? t->size - o : sizeof piece;
+        if (!p) vk_guest_peek(t->gva + o, piece, n);
+        if (!snx_bcn_alpha_all_fixed(kind, p ? p + o : piece, n / 16)) return 0;
+    }
+    return 1;
+}
+/* t sampled in this present: at VK_ASTC_LATER_READS of them since its last write it is looked at once, and queued for
+   the encoder where its alpha is one value a block; else it stays ETC2 until it is written again */
+static void astc_later_read(Surf* t) {
+    if (!t->astc_later || t->astc_settled || t->astc.queued || !t->upload_valid || t->astc_read == g_vk_present + 1)
+        return;
+    t->astc_read = g_vk_present + 1;
+    if (++t->astc_reads < VK_ASTC_LATER_READS) return;
+    if (!astc_later_alpha_fixed(t)) {
+        t->astc_settled = 1;
+        g_astc_later.stats.kept++;
+        return;
+    }
+    if (g_astc_later.n == g_astc_later.cap) {
+        const u32 cap = g_astc_later.cap ? g_astc_later.cap * 2 : 256;
+        Surf** q = realloc(g_astc_later.q, (size_t)cap * sizeof *q);
+        if (!q) {
+            LOG_LIMIT(
+                4,
+                "vulkan: no memory to queue a %ux%ux%u BCn texture for the ASTC encoder: it stays ETC2 RGBA8 until "
+                "it is sampled again\n",
+                t->w, t->h, t->layers);
+            t->astc_reads = 0;
+            return;
+        }
+        g_astc_later.q = q;
+        g_astc_later.cap = cap;
+    }
+    g_astc_later.q[g_astc_later.n++] = t;
+    t->astc.queued = 1;
+    t->astc.layer = t->astc.level = t->astc.row = 0;
+}
+/* t, made ASTC 4x4 and loaded whole again: an ETC2 RGBA8 image in place of its ASTC one, which the load fills as its
+   first did. 0 when no memory was found for it: the texture is left out until a check finds some */
+static int astc_later_etc2_again(Surf* t) {
+    VkImageCreateInfo ii;
+    VkViewFormats vf;
+    VkImage img;
+    VmaAllocation mem;
+    u64 bytes;
+    int storage;
+    const VkFormat etc2 = astc_later_etc2(t->f.vk);
+    tex_info(t, etc2, &ii, &vf, &storage);
+    if (!vk_cache_image_create(&ii, &img, &mem, &bytes)) {
+        LOG_LIMIT(4,
+                  "vulkan: no memory for the ETC2 RGBA8 image (%llu MB) a %ux%ux%u BCn texture made ASTC 4x4 is loaded "
+                  "again into: it is left out until a check finds some\n",
+                  (unsigned long long)(bytes >> 20), t->w, t->h, t->layers);
+        return 0;
+    }
+    tex_image_swap(t, img, mem, bytes, etc2, 0);
+    g_astc_later.stats.undone++;
+    return 1;
+}
+/* level l of a layer of t, a block linear texture of 4x4 blocks: what an upload's strips of it share, its bytes in
+   guest memory (from *at in the layer) and its layout's block height and depth */
+static UpLevel astc_later_level(const Surf* t, u32 layer, u32 l, u64* at, u64* lsz, u32* lbh, u32* lbd) {
+    const VkFmt* f = &t->f;
+    u64 off = 0, size = 0;
+    for (u32 k = 0; k <= l; k++) {
+        off += size;
+        size = bl_level_size(t->w, t->h, 1, f, t->bh, t->bd, t->tile_w, k, lbh, lbd);
+    }
+    const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
+    UpLevel lv = {l, layer, lw, lh, 1, (lw + 3) / 4 * f->bpp, (lh + 3) / 4, 1};
+    u32 align = bl_lin_align(f->bpp);
+    lv.tc = vk_tc_shape(f, lw);
+    if (lv.tc.in_align > align) align = lv.tc.in_align;
+    lv.pitch = (lv.rowb + align - 1) / align * align;
+    lv.gobs_x = bl_level_gobs_x(lv.rowb, lv.th, 1, t->bh, t->bd, t->tile_w);
+    *at = off;
+    *lsz = size;
+    return lv;
+}
+/* encodes t's ASTC image on from where the encoder got, up to left blocks: rows of blocks of a level, one at least,
+   read from guest memory as an upload reads them (the layout's blocks they lie in staged whole, the rows alone
+   deswizzled) and encoded by the conversion's ASTC build. The blocks it took; 0 when staging or memory ran out, which
+   the next frame tries again */
+static u32 astc_later_encode(Surf* t, u32 left) {
+    Upload u = {.cb = vk_cmd(), .t = t, .into = t->astc.img, .as = vk_bcn_astc_later(&t->f)};
+    const int first = !t->astc.layer && !t->astc.level && !t->astc.row;
+    u32 used = 0;
+    /* the ASTC image's copies after the last frame's into it (from nothing when the encoder starts on it) */
+    vk_barrier(u.cb, t->astc.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+               first ? 0 : VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               first ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+               VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    while (t->astc.layer < t->layers && (!used || used < left)) {
+        u64 at, lsz;
+        u32 lbh, lbd;
+        const UpLevel lv = astc_later_level(t, t->astc.layer, t->astc.level, &at, &lsz, &lbh, &lbd);
+        const u32 cx = lv.rowb / 16, room = left > used ? left - used : 1;
+        u32 n = room / cx ? room / cx : 1;
+        if (n > lv.th - t->astc.row) n = lv.th - t->astc.row;
+        VkBlMove m = {lv.rowb, lv.th, lbh, lbd, t->astc.row, n, 0, 1, lv.pitch, lv.gobs_x};
+        VkBuffer staged;
+        u64 staged_at;
+        if (!stage_bl(&m, t->gva + (u64)t->astc.layer * t->layer_size + at, lsz, &staged, &staged_at) ||
+            !up_move(&u, &lv, &m, staged, staged_at, 0, t->astc.row))
+            break;
+        used += cx * n;
+        if ((t->astc.row += n) == lv.th) {
+            t->astc.row = 0;
+            if (++t->astc.level == t->levels) {
+                t->astc.level = 0;
+                t->astc.layer++;
+            }
+        }
+    }
+    if (!up_flush(&u)) {
+        /* strips recorded above may not have been encoded: the image is made again from its first row */
+        t->astc.layer = t->astc.level = t->astc.row = 0;
+        return 0;
+    }
+    return used;
+}
+/* the ASTC encoder's share of a frame after its present (vk_tex_later_frame): the queue's first texture on. One
+   written since it was queued is no longer in it (astc_later_wrote) */
+static void astc_later_frame(void) {
+    u32 left = VK_ASTC_LATER_BLOCKS;
+    int recorded = 0;
+    SNX_ZONE(z, "vk ASTC later");
+    while (left && g_astc_later.n) {
+        Surf* t = g_astc_later.q[0];
+        if (!t->astc.img) {
+            VkImageCreateInfo ii;
+            VkViewFormats vf;
+            int storage;
+            tex_info(t, vk_bcn_astc_later(&t->f), &ii, &vf, &storage);
+            vk_surf_touch(t); /* used now: the trim that makes room for the image leaves t */
+            if (!vk_cache_image_create(&ii, &t->astc.img, &t->astc.mem, &t->astc.bytes)) {
+                LOG_LIMIT(4,
+                          "vulkan: no memory for the ASTC 4x4 image (%llu MB) of a %ux%ux%u BCn texture: it stays ETC2 "
+                          "RGBA8, and the encoder tries again in the next frame\n",
+                          (unsigned long long)(t->astc.bytes >> 20), t->w, t->h, t->layers);
+                t->astc.img = VK_NULL_HANDLE;
+                t->astc.mem = VK_NULL_HANDLE;
+                t->astc.bytes = 0;
+                break;
+            }
+        }
+        if (!recorded) vk_render_end(); /* copies and dispatches happen outside rendering passes */
+        recorded = 1;
+        const u32 used = astc_later_encode(t, left);
+        g_astc_later.stats.blocks += used;
+        if (!used) break;
+        left = used < left ? left - used : 0;
+        if (t->astc.layer < t->layers) continue;
+        /* whole: in the ETC2 image's place, in the layout that one was sampled in */
+        const VkImageLayout was = t->layout;
+        const VkPipelineStageFlags2 stage = t->stage;
+        const VkAccessFlags2 access = t->access;
+        const VkImage img = t->astc.img;
+        const VmaAllocation mem = t->astc.mem;
+        const u64 bytes = t->astc.bytes;
+        const VkFormat astc = vk_bcn_astc_later(&t->f);
+        t->astc.img = VK_NULL_HANDLE; /* the texture's own from here: unqueued without dropping it */
+        astc_later_unqueue(t);
+        tex_image_swap(t, img, mem, bytes, astc, 1);
+        if (was == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || was == VK_IMAGE_LAYOUT_GENERAL)
+            vk_surf_use(vk_cmd(), t, was, stage, access);
+        t->astc_settled = 1;
+        g_astc_later.stats.made++;
+    }
+    if (recorded) vk_submit_recorded(); /* its own submission, after the present's */
+}
+
 void vk_tex_later_frame(void) {
+    if (g_astc_later.n && vk_cmd_ready()) astc_later_frame();
     if (!g_later.n || !vk_cmd_ready()) return;
     VkCommandBuffer cb = VK_NULL_HANDLE;
     u32 left = VK_BC7_LATER_BLOCKS;
@@ -1073,6 +1325,7 @@ static int tex_upload_(Surf* t) {
     g_tex_loads.uploads++;
     if (!t->bricks) g_tex_loads.bytes += t->size; /* a brick at a time for the others */
     if (t->upload_valid || !t->bc7_wrote) later_wrote(t); /* the first load, or a write: not a failed one tried again */
+    astc_later_wrote(t);
     t->upload_valid = 0;
     t->wgen = vk_surf_gen(); /* even a new texture at a reused address invalidates an old target's copy */
     t->took_drawn = 0;       /* memory's own texels again, until tex_take_drawn copies targets in */
@@ -1082,6 +1335,8 @@ static int tex_upload_(Surf* t) {
     if (t->bricks) return t->upload_valid = resident_upload(t);
     /* held as BC7 and whole: RGBA8 again, made BC7 again between frames */
     if (t->bc7_later && is_bc7(f->vk) && !later_rgba8_again(t)) return t->upload_valid = 0;
+    /* made ASTC 4x4 and whole: ETC2 RGBA8 again, as it loaded */
+    if (t->astc_later && is_astc4(f->vk) && !astc_later_etc2_again(t)) return t->upload_valid = 0;
     t->bc7.keyed = 0; /* the BC7 cache's keys of the bytes loaded now, below */
     /* a sparse texture: the levels guest memory maps get memory first, and only they are copied */
     int bound = !t->sparse || tex_bind(t) >= 0;
@@ -1484,6 +1739,10 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
         t->f.vk = later_rgba8(f.vk);
         tex_info(t, t->f.vk, &ii, &vf, &t->storage_capable);
     }
+    /* held as ETC2 RGBA8 and made ASTC 4x4 between frames (vk_tex_later_frame): a block linear 2D texture or array
+       whose memory is all mapped, which the encoder reads a strip of rows at a time */
+    t->astc_later = vk_bcn_astc_later(&f) != VK_FORMAT_UNDEFINED && bl && !holes && !sparse && !msaa &&
+                    type != VK_IMAGE_VIEW_TYPE_3D;
     if (sparse && vk_image_create_sparse(&ii, &t->img))
         t->sparse = 1;
     else if (!vk_cache_image_create(&ii, &t->img, &t->mem, &t->bytes)) {
@@ -2046,6 +2305,7 @@ static int tex_patch(Surf* t, const TexPieces* p) {
     SNX_ZONE_V(z, "texture pieces", sum);
     g_tex_loads.uploads++;
     later_wrote(t);
+    astc_later_wrote(t);
     t->wgen = vk_surf_gen(); /* an image that changed, as an upload's */
     t->hash = 0;             /* no longer the image's: a check by contents loads all of it */
     VkCommandBuffer cb = vk_cmd();
@@ -2212,6 +2472,7 @@ static void tex_settle(Surf* t, u64 gva, int changed, int count) {
 static Surf* tex_check(Surf* t, u64 gva) {
     vk_surf_touch(t);
     later_cool(t);
+    astc_later_read(t);
     /* an upload that ran out of memory or staging (here, or a re-upload below) is tried again once a frame. A
        texture is only returned whole */
     if (!t->upload_valid) {

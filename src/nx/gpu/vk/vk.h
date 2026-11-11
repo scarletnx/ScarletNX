@@ -807,6 +807,9 @@ void vk_blocks_say(void);
 int vk_astc_bc7(void);
 /* vk_tic_format for a 3D image: ASTC and ETC2 blocks decoded where the device can't make 3D images of them */
 VkFmt vk_tic_format_3d(u32 w0, int srgb);
+/* the ASTC 4x4 format a texture of f is made between frames (texture.c vk_tex_later_frame): a BC2, BC3 or BC7 one held
+   as ETC2 RGBA8 where the device samples ASTC too; VK_FORMAT_UNDEFINED for any other */
+VkFormat vk_bcn_astc_later(const VkFmt* f);
 /* The device and optimal-tiling format both support writes without a shader format. */
 int vk_format_storage_write(VkFormat f);
 /* whether a sampler may take the least or greatest of the texels its linear filter reads of f (min/max reduction) */
@@ -959,6 +962,20 @@ typedef struct Surf {
         u32 keyed;
         u64 key[VK_TEX_MAX_LEVELS][2];
     } bc7;
+    /* textures: a BC2, BC3 or BC7 one held as ETC2 RGBA8 that texture.c makes ASTC 4x4 between frames once it was
+       sampled a while (astc_later), the presents it was sampled in since it was last written and the last of them,
+       plus one; settled: looked at since that write, and made ASTC or left as ETC2 for an alpha that moves in a block */
+    u8 astc_later, astc_settled;
+    u32 astc_reads, astc_read;
+    /* that ASTC image while it is made (VK_NULL_HANDLE before the encoder starts on it), its memory, and how far the
+       encoder got: layer, level and row of blocks. queued: in the encoder's queue, which a write takes it out of */
+    struct {
+        VkImage img;
+        VmaAllocation mem;
+        u64 bytes;
+        u32 layer, level, row;
+        int queued;
+    } astc;
 } Surf;
 enum { VK_LRU_NONE, VK_LRU_TEX, VK_LRU_RT };
 /* resolution= in the .ini: render targets are made this much bigger (read once, at startup) */
@@ -1521,7 +1538,22 @@ void vk_tex_later_frame(void);
 /* the encoder's blocks a frame: 3.3 ms of an RX 6700 XT, which encodes 10 million a second (docs/layers/gpu/astc.md), a tenth of
    a frame at 30 fps */
 #define VK_BC7_LATER_BLOCKS (1u << 15)
-/* s goes: its place in the queue and the BC7 image being made for it with it (surface.c surf_free) */
+/* The same frames' other encoder: BC2, BC3 and BC7 textures held as ETC2 RGBA8 where the GPU samples ASTC too are made
+   ASTC 4x4 from the game's blocks, VK_ASTC_LATER_BLOCKS blocks a frame (rows of a level's blocks, one row at least),
+   once sampled in VK_ASTC_LATER_READS presents since they were last written and only where their alpha is one value
+   within every block (gpu/texture/bcn_astc.h). 4096 blocks a frame are 0.6 ms (BC3) to 2.2 ms (BC7) of an Intel HD
+   620, which encodes 1.9 to 7 million a second (docs/layers/gpu/bcn.md): a 1024x1024 texture and its mip levels
+   are 22 frames. 60 presents are a second or two of a game, past what a texture written every few frames reaches */
+#define VK_ASTC_LATER_BLOCKS (1u << 12)
+#define VK_ASTC_LATER_READS  60u
+/* its statistics since the start: textures made ASTC, the blocks encoded, encodes started over for a write, textures
+   left as ETC2 for an alpha that moves in a block, those made ETC2 again for a write; and now: textures waiting */
+typedef struct {
+    u64 made, blocks, restarted, kept, undone;
+    u32 waiting;
+} VkAstcLaterStats;
+void vk_tex_astc_later_stats(VkAstcLaterStats* s);
+/* s goes: its place in the queues and the BC7 or ASTC image being made for it with it (surface.c surf_free) */
 void vk_tex_later_forget(Surf* s);
 /* statistics since the start: textures made BC7, the RGBA8 bytes that freed, encodes started over for a write or
    given up, blocks encoded, textures held Exact for their writes and made BC7 again after; and now: textures waiting,

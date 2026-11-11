@@ -335,9 +335,10 @@ static VkFmt tic_format(u32 w0, int srgb, u32 native) {
         /* BCn encoded again where the GPU samples no BCn but other blocks of the same bytes a texel (TB): BC1 as
            ETC2 RGB8A1, whose punch-through alpha is BC1's transparent black (ASTC 4x4 would take twice its bytes);
            BC4 and BC5 as EAC R11 and RG11; BC2, BC3 and BC7 as ETC2 RGBA8, whose alpha is a block of its own as
-           theirs is, or as ASTC 4x4 where ETC2 isn't sampled and ASTC is (docs/layers/gpu/bcn.md has the numbers).
-           Else to RGBA8, BC4 and BC5 to 16 bit channels and BC6H to half floats, so their interpolants keep the
-           precision a GPU decodes them in */
+           theirs is, or as ASTC 4x4 where ETC2 isn't sampled and ASTC is. Where both are, texture.c makes the ones
+           whose alpha is one value a block ASTC 4x4 between frames (vk_bcn_astc_later; docs/layers/gpu/bcn.md has
+           the numbers). Else to RGBA8, BC4 and BC5 to 16 bit channels and BC6H to half floats, so their interpolants
+           keep the precision a GPU decodes them in */
         case 0x24: return TB(SRB(VK_FORMAT_BC1_RGBA), ETC(VK_FORMAT_ETC2_R8G8B8A1), rgba8, 8, VKC_BC1, bc);
         case 0x25: return TB(SRB(VK_FORMAT_BC2), etc2 ? rgba8_etc2 : astc4, rgba8, 16, VKC_BC2, bc);
         case 0x26: return TB(SRB(VK_FORMAT_BC3), etc2 ? rgba8_etc2 : astc4, rgba8, 16, VKC_BC3, bc);
@@ -403,6 +404,15 @@ static VkFmt tic_format(u32 w0, int srgb, u32 native) {
 }
 
 VkFmt vk_tic_format(u32 w0, int srgb) { return tic_format(w0, srgb, native_blocks()); }
+/* the ASTC 4x4 format a texture of f is made between frames (texture.c): a BC2, BC3 or BC7 one held as ETC2 RGBA8,
+   where the device samples ASTC too. UNDEFINED for any other */
+VkFormat vk_bcn_astc_later(const VkFmt* f) {
+    if (!g_vk.feat.textureCompressionASTC_LDR || (f->conv != VKC_BC2 && f->conv != VKC_BC3 && f->conv != VKC_BC7))
+        return VK_FORMAT_UNDEFINED;
+    return f->vk == VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK  ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK
+           : f->vk == VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK ? VK_FORMAT_ASTC_4x4_SRGB_BLOCK
+                                                         : VK_FORMAT_UNDEFINED;
+}
 /* only 2D images are sure to take the block formats the device samples (the features promise no more) */
 VkFmt vk_tic_format_3d(u32 w0, int srgb) {
     VkFmt f = vk_tic_format(w0, srgb);
@@ -491,6 +501,12 @@ void vk_blocks_say(void) {
              bc_has ? "" : "no ", g_vk.feat.textureCompressionETC2 ? "sampled" : "not sampled",
              g_vk.feat.textureCompressionASTC_LDR ? "sampled" : "not sampled");
     family_say("BCn", why, g_settings.native_bc && !bc_has, bcn, bcn_names, 7);
+    VkFmt bc7 = vk_tic_format(0x17, 0);
+    if (vk_bcn_astc_later(&bc7) != VK_FORMAT_UNDEFINED)
+        LOG("vulkan: BC2, BC3 and BC7 textures held as ETC2 RGBA8 are made ASTC 4x4 between frames, %u blocks a frame at "
+            "most, once sampled in %u presents since they were written, where their alpha is one value within every "
+            "block (the GPU samples ASTC and ETC2, native_astc=%d)\n",
+            VK_ASTC_LATER_BLOCKS, VK_ASTC_LATER_READS, g_settings.native_astc);
 }
 
 VkFormat vk_srgb_as(VkFormat f, int srgb) {
