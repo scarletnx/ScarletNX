@@ -695,6 +695,71 @@ static void keyboard_box(void) {
     assert(shows("xEND\xDD") && shows("403 of 1024 characters.") && xs == 260);
     overlay_keyboard_hide(13);
 }
+/* the band behind the item in focus: the widest fill of the ink that is not the head's (the first quads are the page
+   and the head), or NULL */
+static const SnxUiQuad* focus_band(u32 ink) {
+    const SnxUiQuad* band = NULL;
+    int i;
+    for (i = 2; i < list.n; ++i)
+        if (qv(&list.q[i]).ink == UI_SOLID && qv(&list.q[i]).rgba == ui_rgba(ink) &&
+            (!band || qv(&list.q[i]).w > qv(band).w))
+            band = &list.q[i];
+    return band;
+}
+/* the markers of the items showing (the font's square, a quad each) */
+static int items_shown(void) {
+    int i, n = 0;
+    for (i = 0; i < list.n; ++i) n += qv(&list.q[i]).ink == UI_GLYPH && qv(&list.q[i]).glyph == 0xFE;
+    return n;
+}
+/* A screen of fingers (overlay_set_fingers, a phone's 2424 by 1080 at a display scale of 2.6, the menu's letters at
+   3): an item's row is 48 pixels at the display's scale, 125, where its letters' is 48, the letters in its middle;
+   a finger anywhere in a row takes that row's item; and a page shows the items the picture has room for, seven,
+   scrolling to the one in focus. Off, the rows are the letters' again */
+static void finger_rows(void) {
+    const u32 ink = 0xFF3A4145u;
+    const SnxUiQuad* band;
+    float first, x;
+    int stats = g_settings.stats, i, marked = 0;
+    if (overlay_shown()) overlay_toggle();
+    overlay_set_display_scale(2.6f);
+    overlay_toggle();
+    draw();
+    assert(s == 3 && (band = focus_band(ink)) && qv(band).h == 48 && items_shown() == 7);
+    overlay_set_fingers(1);
+    draw();
+    assert(s == 3 && (band = focus_band(ink)) && qv(band).h == 125 && items_shown() == 7);
+    first = qv(band).y;
+    x = qv(band).x;
+    assert(qv(&list.q[0]).h == 4 * 48 + 7 * 125); /* the page: the head, the hint, a blank row, the items, a blank */
+    assert(qv(&list.q[0]).y + qv(&list.q[0]).h <= SH);
+    for (i = 0; i < list.n; ++i) /* each marker 38.5 pixels down its row, a row of 125 apart */
+        if (qv(&list.q[i]).ink == UI_GLYPH && qv(&list.q[i]).glyph == 0xFE) {
+            assert(qv(&list.q[i]).y == first + 125 * (float)marked + (125 - 48) / 2.0f && qv(&list.q[i]).h == 48);
+            ++marked;
+        }
+    assert(marked == 7);
+    /* Stats is the sixth item: a finger near its row's foot, far under its letters, switches it */
+    assert(overlay_tap(x + 40, first + 5 * 125 + 118, SW, SH) == OVERLAY_NONE && g_settings.stats == !stats);
+    assert(overlay_tap(x + 40, first + 5 * 125 + 3, SW, SH) == OVERLAY_NONE && g_settings.stats == stats);
+    /* On-screen controls' page has eleven items: seven show, and Back, the last, comes into view when in focus */
+    assert(overlay_tap(x + 40, first + 60, SW, SH) == OVERLAY_NONE);
+    draw();
+    assert(items_shown() == 7 && !shows("\xFE Back"));
+    overlay_move(-1);
+    draw();
+    assert(items_shown() == 7 && shows("\xFE Back") && (band = focus_band(ink)) && qv(band).h == 125);
+    assert(qv(band).y + qv(band).h <= SH && qv(&list.q[0]).y >= 0);
+    overlay_set_fingers(0);
+    overlay_move(1); /* round to the first: the page from its top */
+    draw();
+    assert(items_shown() == 11 && (band = focus_band(ink)) && qv(band).h == 48);
+    overlay_toggle();
+    overlay_set_display_scale(1.0f);
+    draw();
+    assert(!overlay_shown() && s == 2);
+}
+
 int main(void) {
     const u32 ink = 0xFF3A4145u;
     int x, y, sc;
@@ -1633,6 +1698,7 @@ int main(void) {
     }
     keys_page();
     keyboard_box();
+    finger_rows();
     puts(
         "overlay: placing, pages, taps, keys, values, scrolling, look, the error's panel, the atlas, the user, a picture "
         "that does not draw, F1's page and the keyboard's box passed");

@@ -35,6 +35,10 @@ void overlay_set_display_scale(float scale);
 int overlay_display_percent(void); /* that scale, in percent */
 /* where the panel goes on a picture of sw x sh pixels: its corner and the whole number it is scaled by */
 void overlay_place(int sw, int sh, int* x, int* y, int* scale);
+/* a screen of fingers (a phone's), as the backend knows it: an item's row is then a finger's row high at the least
+   (48 pixels at the display's scale, as the launcher's rows), its letters the same in its middle, and a page shows as
+   many items at once as the picture holds. Off until it is said */
+void overlay_set_fingers(int on);
 int overlay_select(void);      /* the focused item's action: a page, a setting changed, or an OVERLAY_ for the caller */
 void overlay_move(int rows);   /* the focus up (-1) or down (1), round the page */
 void overlay_scroll(int rows); /* the mouse's wheel: the same, stopping at the ends */
