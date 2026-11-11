@@ -92,8 +92,9 @@ void vpad_edit(int on);
 int vpad_editing(void);
 int vpad_shown(void); /* drawn: on, or in edit mode */
 
-/* safe in the pixels of the picture drawn on */
-void vpad_draw(SnxUiList* l, const int safe[4]);
+/* safe in the pixels of the picture drawn on; scale the menu's letters' (overlay.h's overlay_place), which edit mode's
+   bar is written in, and taken where it was last drawn */
+void vpad_draw(SnxUiList* l, const int safe[4], int scale);
 
 /* Showcase (settings.txt's showcase): player 1's buttons (HidNpadButton bits) and sticks (-32767 to 32767, up
    positive) as the game got them, drawn with these controls' sprites in showcase_corner's corner of safe, and the
@@ -102,7 +103,9 @@ void vpad_showcase_input(u64 buttons, const i32 sticks[4]);
 /* the frames a second the showcase shows: the game's presents (a count that only grows) over the last half second or
    more, at now_ns; -1 until the first half second is over */
 int vpad_showcase_fps(u32 presents, u64 now_ns);
-void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps);
+/* scale: the menu's letters' (overlay_place), the frames a second's too, a step smaller while they would not keep
+   above the box's row under them */
+void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale);
 /* the showcase's box on safe (x, y, w, h into box) and its corner, 0 top left, 1 top right, 2 bottom left, 3 bottom
    right; -1 while it is off */
 int vpad_showcase_box(const int safe[4], float box[4]);
