@@ -912,6 +912,9 @@ static void global_dynamic(Ctx* c, const Sm86Insn* in, int kind, u32 opcode, int
             address = op2(c, SPV_OP_I_ADD, u64_type(c), address, pair64(c, urd(c, ur), uhi));
         }
     }
+    /* the atomic's operand, read before the destination is cleared: the two may be one register, as in one game's
+       ATOMG.E.ADD R11, [UR4], R11, where a warp takes its first slot of a list */
+    u32 data = kind == DYN_ATOMIC ? rd(c, sm86_field(in, 32, 8)) : 0;
     int returns = kind == DYN_LOAD || (kind == DYN_ATOMIC && op != SM86_RED);
     /* an atomic's data before its destination is cleared: they may be one register */
     u32 data = kind == DYN_ATOMIC ? rd(c, sm86_field(in, 32, 8)) : 0;
