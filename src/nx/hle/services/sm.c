@@ -37,11 +37,24 @@ static const char* stand_in_name(const char* name) {
 }
 static SvcObj* sm_stand_in(const char* name) { return svcobj_new(stand_in_name(name), stub_ok); }
 
+/* the services the runtime answers in the SDK's own functions (hle/sdk/), with no session: a game that still asks
+   for one called a function there that is not native yet, and a stand-in would give its SDK objects with nothing
+   behind them */
+static const char* const g_native_only[][2] = {
+    {"fsp-srv", "nn::fs (hle/sdk/nn_fs.c)"},
+    {"fsp-pr", "nn::fs (hle/sdk/nn_fs.c)"},
+    {"fsp-ldr", "nn::fs (hle/sdk/nn_fs.c)"},
+};
 static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_sm_ServiceName* name, u32* session) {
     char s[9];
     SvcObj* o;
     (void)self;
     R_UNLESS(sm_name(name, s), SNX_RC_SM_INVALID_SERVICE_NAME);
+    for (size_t i = 0; i < sizeof g_native_only / sizeof g_native_only[0]; i++)
+        if (!strcmp(s, g_native_only[i][0]))
+            fatal("sm: the game opened %s, which the runtime answers natively in %s: a function it called there is "
+                  "not native yet (the log's last nn::fs lines)",
+                  s, g_native_only[i][1]);
     o = svc_open(s);
     if (!o) {
         WARN("sm: %s is not implemented, its commands answer without doing anything\n", s);

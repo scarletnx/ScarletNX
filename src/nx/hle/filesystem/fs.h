@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The game's files as the runtime itself reads them (the loader, shared fonts, the control data, the shader programs
-   the game ships for gpu/shipped_pass.c), beside the fsp-srv service in fs.c */
+   the game ships for gpu/shipped_pass.c), beside the file system core in fs.c that the native nn::fs calls */
 #ifndef SNX_FS_H
 #define SNX_FS_H
 #include "nx/runtime/state_fns.h"
@@ -42,9 +42,11 @@ int fs_aoc_has(u64 id);
 /* the checked DLCs the game plays with, those found extracted or read from their dumps, in addons= order, into *ids:
    their count */
 size_t fs_dlcs(const u64** ids);
-/* the programs of this program's application, as its dump read in place says them (GetProgramIndexForAccessLog's
-   count when it knows it): -1 when no dump says */
+/* the programs of this program's application, as its dump read in place says them: -1 when no dump says */
 int fs_program_count(void);
+/* a game's read of [off, off + sz) of a storage (a RomFS image), once it is done: one that goes on where the thread's
+   last read of that storage ended waits a console's time for its bytes (fs.c's fs_pace_ns) */
+void fs_pace_read(const void* storage, u64 off, u64 sz);
 u8* fs_read_file(const char* path, u64* size);    /* malloc'd, or NULL */
 /* a file of the game's HtmlDocument content (the pages its web applet shows), by its path under html-document/,
    malloc'd: NULL when the game has no dump open, or the dump no such content or file */
@@ -94,9 +96,9 @@ typedef struct {
     FILE* f;
     u64 used; /* the clock when it was last read */
 } ROpen;
-/* The service objects' data, each in a pool (ipc.c's lock guards them, svcobj_new_data). obj is the object's pool
-   index + 1, which ipc.c writes */
-/* an IFileSystem's root folder, retained */
+/* An open root folder, file and directory: slots of g_hle.fs (fss, files, dirs), which the native nn::fs takes and a
+   save state finds again by path. obj is not 0 in a slot that is taken */
+/* a root folder, retained */
 typedef struct {
     u32 obj;
     FsNode* root;
@@ -105,14 +107,14 @@ typedef struct {
        folder, beside its last commit, 0 (fs.c's "A save's commit") */
     u32 journaled;
 } FsData;
-/* an IFile, or a system archive's IStorage (the RomFS's has no data). f is NULL for a node held in memory */
+/* an open file. f is NULL for a node held in memory */
 typedef struct {
     u32 obj;
     FILE* f;
     FsNode* node;
     u32 mode; /* OpenMode: 1 read, 2 write, 4 allow append */
 } FileData;
-/* an IDirectory: the entries filter picks (1 folders, 2 files), after the name last listed, until done */
+/* an open directory: the entries filter picks (1 folders, 2 files), after the name last listed, until done */
 typedef struct {
     u32 obj;
     FsNode* node;
@@ -120,9 +122,9 @@ typedef struct {
     char last[FS_TREE_PATH_MAX]; /* a name, not a node: the entry may be deleted or renamed meanwhile */
     int done;
 } DirData;
-/* The file system server's core, which the IPC handlers (fs.c) and the native nn::fs (hle/sdk/nn_fs.c) share: the
-   operations on a root folder, an open file and an open directory, with the arguments as values and the console's
-   Results. Each takes tree.lock held (fs_lock), as fs.c's dispatchers hold it around every command */
+/* The file system server's core, which the native nn::fs (hle/sdk/nn_fs.c) calls: the operations on a root folder, an
+   open file and an open directory, with the arguments as values and the console's Results. Each takes tree.lock held
+   (fs_lock) */
 void fs_lock(void);
 void fs_unlock(void);
 /* the root of the save of type (1 an account's, 4 temporary, 5 cache) for uid and index, made when it is not there,
@@ -169,7 +171,7 @@ u64 fs_storage_size(const FsStorage* st);
 int fs_storage_read(FsStorage* st, u64 off, void* dst, u64 size);
 int fs_storage_read_guest(FsStorage* st, u64 off, u64 addr, u64 size);
 #define FS_FS_MAX   64 /* IFileSystems: one per mount (save data, the SD card, caches, BCAT), a few dozen at most */
-#define FS_FILE_MAX 1024 /* IFiles and IStorages: each is an object of the fsp-srv domain, which holds DOMAIN_OBJECTS */
+#define FS_FILE_MAX 1024 /* the save files the native nn::fs has open */
 #define FS_DIR_MAX  128 /* IDirectories, 4 KB each: a game lists a few folders at a time, and closes each after */
 /* a DLC read in place: its dump, mapped, and its Data NCA's RomFS image */
 typedef struct {
@@ -245,7 +247,6 @@ typedef struct {
     u64 next;            /* the offset just past it */
 } TlsFs;
 /* all zero: fs_init sets the tree up */
-extern const StateFnTable g_fs_state_fns; /* the functions a save state may hold of fs.c */
 /* a load's: the state's open file systems, files and folders found by path in this process's tree and opened, files as
    the loaded fs (loaded, the state's g_hle.fs) had them, before anything of the running game changes (NULL, with
    why, when one isn't there any more), then put in place in g_hle once it is the state's, or let go of when the load
