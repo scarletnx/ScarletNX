@@ -83,6 +83,11 @@ static float g_axis[2][2];   /* each stick, -1 to 1 right and down */
 static float g_middle[2][2]; /* each stick's middle while held, 0 to 1 across the clear part as places are */
 static unsigned g_actions;
 static int g_edit, g_selected = -1;
+/* counts the changes to what the controls draw (vpad_draw keeps their quads while it is the same), and to what showcase
+   draws and to its place */
+static u32 g_version, g_show_version, g_show_place;
+void vpad_changed(void) { ++g_version; }
+u32 vpad_showcase_place_version(void) { return g_show_place; }
 
 static void default_place(int c, SnxVpadPlace* p) {
     p->x = INFO[c].x;
@@ -114,6 +119,7 @@ void vpad_defaults(SnxVpadConfig* c) {
     for (i = 0; i < SNX_VPAD_COUNT; ++i) default_place(i, &c->at[i]);
 }
 void vpad_reset_layout(void) {
+    ++g_version;
     SnxVpadConfig d;
     int c;
     vpad_defaults(&d);
@@ -130,11 +136,13 @@ void vpad_reset_layout(void) {
    runs stays where it is until the game starts again: it has no default the reload could put back */
 typedef char vpad_ini_places[SETTINGS_CONTROLS_COUNT == SNX_VPAD_COUNT ? 1 : -1];
 void vpad_on_set(const IniOpt* o, const char* v) {
+    ++g_version;
     (void)o;
     (void)v;
     if (!g_settings.show_controls) vpad_release();
 }
-void vpad_place_set(const IniOpt* o, const char* v) { /* x y size, and shown in an older version's */
+void vpad_place_set(const IniOpt* o, const char* v) {
+    ++g_version; /* x y size, and shown in an older version's */
     int c = (int)(o - g_vpad_ini) - FIRST_PLACE, i;
     double f[4];
     char* end;
@@ -149,6 +157,7 @@ void vpad_place_set(const IniOpt* o, const char* v) { /* x y size, and shown in 
     if (i == 4) g_settings.control_shown[c] = f[3] != 0;
 }
 int vpad_ini(const char* key, const char* value) {
+    ++g_version;
     const IniOpt* o = ini_find(g_vpad_ini, key);
     if (!o) o = ini_find(g_vpad_shown_ini, key);
     if (!o) return 0;
@@ -158,6 +167,7 @@ int vpad_ini(const char* key, const char* value) {
 }
 void vpad_set_store(void (*store)(const char* key, const char* value)) { g_store = store; }
 void vpad_store(const int* setting) {
+    ++g_version;
     const IniOpt* o;
     for (o = g_vpad_ini; o < g_vpad_ini + FIRST_PLACE; ++o)
         if (o->var == setting) {
@@ -166,11 +176,13 @@ void vpad_store(const int* setting) {
         }
 }
 void vpad_store_opt(const IniOpt* o) {
+    ++g_version;
     char v[64];
     ini_format(o, v, sizeof v);
     if (g_store) g_store(o->key, v);
 }
 void vpad_store_control(int control) {
+    ++g_version;
     char v[64];
     const SnxVpadPlace* p;
     if (control < 0 || control >= SNX_VPAD_COUNT) return;
@@ -179,6 +191,7 @@ void vpad_store_control(int control) {
     if (g_store) g_store(g_vpad_ini[FIRST_PLACE + control].key, v);
 }
 void vpad_store_shown(int control) {
+    ++g_version;
     if (control >= 0 && control < SNX_VPAD_COUNT && g_store)
         g_store(g_vpad_shown_ini[control].key, g_settings.control_shown[control] ? "1" : "0");
 }
@@ -300,6 +313,7 @@ static void edit_move(Finger* f, float x, float y, const int safe[4]) {
 }
 
 int vpad_down(u64 id, float x, float y, const int safe[4]) {
+    ++g_version;
     Finger* f;
     int c;
     placed();
@@ -331,6 +345,7 @@ int vpad_down(u64 id, float x, float y, const int safe[4]) {
     return 1;
 }
 void vpad_move(u64 id, float x, float y, const int safe[4]) {
+    ++g_version;
     Finger* f = finger(id);
     if (!f) return;
     if (g_edit)
@@ -357,12 +372,14 @@ static void lift(Finger* f) {
     buzz();
 }
 int vpad_up(u64 id) {
+    ++g_version;
     Finger* f = finger(id);
     if (!f) return 0;
     lift(f);
     return 1;
 }
 void vpad_release(void) {
+    ++g_version;
     while (g_nfingers) lift(&g_fingers[0]);
     g_held = g_dpad = 0;
     g_tapped = 0;
@@ -385,6 +402,7 @@ unsigned vpad_actions(void) {
     return a;
 }
 void vpad_edit(int on) {
+    ++g_version;
     vpad_release();
     g_edit = on;
     g_selected = -1;
@@ -471,32 +489,20 @@ static void edit_draw(SnxUiList* l, const int safe[4]) {
     ui_text(l, b[BAR_MORE][0], b[BAR_MORE][1], s, "[ + ]", page);
     ui_text(l, b[BAR_DONE][0], b[BAR_DONE][1], s, "[ Done ]", page);
 }
-/* The controls' quads, and showcase's, kept from frame to frame: made again only when what they show changes (a key of
-   it, its bytes compared, its padding zeroed), and appended to the renderer's list where they are still from the
-   frame before (ui_append_kept) */
+/* The controls' quads, and showcase's, kept from frame to frame: made again only when what they show changes (counted
+   by each call that changes it, g_version and g_show_version) or the picture's safe area does, and appended to the
+   renderer's list where they are still from the frame before (ui_append_kept) */
 #define KEPT_QUADS 2048 /* edit mode's grid of lines and its bar, and the controls' shapes */
-typedef struct {
-    int safe[4], shown, edit, selected, snap, scale, control_shown[SNX_VPAD_COUNT];
-    SnxVpadConfig at;
-    u32 held, dpad;
-    float axis[2][2], middle[2][2];
-} DrawKey;
-typedef struct {
-    int safe[4], corner, fps;
-    float box[4];
-    u64 buttons;
-    float axis[2][2];
-} ShowcaseKey;
 static struct {
-    int laid;
-    DrawKey key;
+    int laid, safe[4];
+    u32 drawn; /* g_version they show */
     SnxUiQuad q[KEPT_QUADS];
     int n;
     u32 version;
 } g_drawn;
 static struct {
-    int laid;
-    ShowcaseKey key;
+    int laid, safe[4], fps;
+    u32 drawn; /* g_show_version they show */
     SnxUiQuad q[64];
     int n;
     u32 version;
@@ -504,27 +510,14 @@ static struct {
 static void controls_draw(SnxUiList* l, const int safe[4]);
 static void showcase_draw(SnxUiList* l, const int safe[4], int fps);
 void vpad_draw(SnxUiList* l, const int safe[4]) {
-    DrawKey k;
     placed();
     if (!g_settings.show_controls && !g_edit) return;
-    memset(&k, 0, sizeof k);
-    memcpy(k.safe, safe, sizeof k.safe);
-    k.shown = g_settings.show_controls;
-    k.edit = g_edit;
-    k.selected = g_selected;
-    k.snap = g_settings.snap_to_grid;
-    k.scale = g_settings.controls_scale;
-    memcpy(k.control_shown, g_settings.control_shown, sizeof k.control_shown);
-    k.at = g_vpad;
-    k.held = g_held;
-    k.dpad = g_dpad;
-    memcpy(k.axis, g_axis, sizeof k.axis);
-    memcpy(k.middle, g_middle, sizeof k.middle);
-    if (!g_drawn.laid || memcmp(&k, &g_drawn.key, sizeof k)) {
+    if (!g_drawn.laid || g_drawn.drawn != g_version || memcmp(g_drawn.safe, safe, sizeof g_drawn.safe)) {
         SnxUiList kept = {g_drawn.q, 0, KEPT_QUADS};
         controls_draw(&kept, safe);
         g_drawn.n = kept.n;
-        g_drawn.key = k;
+        memcpy(g_drawn.safe, safe, sizeof g_drawn.safe);
+        g_drawn.drawn = g_version;
         g_drawn.laid = 1;
         ++g_drawn.version;
     }
@@ -571,6 +564,8 @@ int vpad_corner(const char* word) {
 }
 const char* vpad_corner_word(int corner) { return CORNERS[corner & 3]; }
 void vpad_showcase_corner_set(const IniOpt* o, const char* v) {
+    ++g_show_version;
+    ++g_show_place;
     int i = vpad_corner(v);
     if (i >= 0) {
         __atomic_store_n(&g_corner, i, __ATOMIC_RELAXED); /* the renderer's thread reads it */
@@ -581,6 +576,7 @@ void vpad_showcase_corner_set(const IniOpt* o, const char* v) {
     snprintf((char*)o->var, o->size, "%s", CORNERS[i]);
 }
 void vpad_showcase_input(u64 buttons, const i32 sticks[4]) {
+    ++g_show_version;
     int s;
     g_show_buttons = buttons;
     for (s = 0; s < 2; ++s) {
@@ -616,18 +612,16 @@ int vpad_showcase_box(const int safe[4], float box[4]) {
     return corner;
 }
 void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
-    ShowcaseKey k;
-    memset(&k, 0, sizeof k);
-    if ((k.corner = vpad_showcase_box(safe, k.box)) < 0) return;
-    memcpy(k.safe, safe, sizeof k.safe);
-    k.fps = fps;
-    k.buttons = g_show_buttons;
-    memcpy(k.axis, g_show_axis, sizeof k.axis);
-    if (!g_shown.laid || memcmp(&k, &g_shown.key, sizeof k)) {
+    float box[4];
+    if (vpad_showcase_box(safe, box) < 0) return;
+    if (!g_shown.laid || g_shown.drawn != g_show_version || g_shown.fps != fps ||
+        memcmp(g_shown.safe, safe, sizeof g_shown.safe)) {
         SnxUiList kept = {g_shown.q, 0, (int)(sizeof g_shown.q / sizeof g_shown.q[0])};
         showcase_draw(&kept, safe, fps);
         g_shown.n = kept.n;
-        g_shown.key = k;
+        memcpy(g_shown.safe, safe, sizeof g_shown.safe);
+        g_shown.fps = fps;
+        g_shown.drawn = g_show_version;
         g_shown.laid = 1;
         ++g_shown.version;
     }

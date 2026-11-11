@@ -51,6 +51,11 @@ SnxVpadConfig* vpad_config(void);
 #define SNX_VPAD_SIZE_MAX      200
 
 void vpad_defaults(SnxVpadConfig* c); /* the default layout */
+/* a setting the controls show changed outside vpad.c's own calls (the menu's buttons page): drawn anew. vpad.c's own
+   calls that change what they draw count it themselves */
+void vpad_changed(void);
+/* counts the changes to showcase's place (its corner): what stats' box beside it lays out by */
+u32 vpad_showcase_place_version(void);
 const char* vpad_name(int control); /* a control's name, as edit mode shows it: "A", "D-pad" */
 /* places, sizes and the shown ones back to their defaults, kept */
 void vpad_reset_layout(void);
