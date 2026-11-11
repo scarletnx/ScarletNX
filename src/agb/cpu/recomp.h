@@ -30,6 +30,9 @@ typedef struct {
     /* the module file's size and time as this run loaded or linked it: one another process recompiled since numbers
        its functions its own way */
     unsigned long long module_size, module_time;
+    /* the blocks a search compared with the pc it looked for: a dispatch's cost, which the index keeps to a slot or two
+       however many blocks there are (tests/agb_cpu.c) */
+    uint64_t compared;
 } AgbRecomp;
 
 void agb_recomp_init(AgbRecomp* recomp, const char* base);

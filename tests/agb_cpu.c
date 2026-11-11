@@ -10,7 +10,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
+/* the most blocks a lookup compares with its pc through the index: the slot its pc hashes to and the few after it,
+   with at most half of the slots taken */
+#define AGB_LOOKUP_COMPARES 4
 #define CHECK(expression)                                                                                              \
     do {                                                                                                               \
         if (!(expression)) {                                                                                           \
@@ -474,15 +476,16 @@ int main(void) {
     }
     {
         /* finding a block costs the same however many the map names: one named after 32768 others, as a run that once
-           went through 32 MiB of zeros left, against the same one named first, each found 200000 times. A scan of the
-           blocks took thousands of times longer for the one named last */
-        clock_t took[2] = {0, 0};
+           went through 32 MiB of zeros left, against the same one named first, each found 1000 times. A search of the
+           index compares the pc with the block or two its slots name, where a scan of the blocks compared it with
+           every block before it: 32768 for the one named last. Counted, not timed, so a loaded machine changes
+           nothing */
+        uint64_t compared[2] = {0, 0};
         for (int last = 0; last < 2; ++last) {
             AgbRecomp many;
             FILE *from = fopen("agb_cpu_test.code.map", "r"), *to = fopen("agb_cpu_index.code.map", "w");
             char header[128];
             const AgbBlock* block;
-            clock_t start;
             result = !from || !to || !fgets(header, sizeof header, from) || fputs(header, to) < 0;
             if (!result && !last) result = fputs("080000C0 0 1 0 -\n", to) < 0;
             for (uint32_t i = 0; !result && i < 32768; ++i)
@@ -495,20 +498,20 @@ int main(void) {
             CHECK(!agb_recomp_load_map(&many, &board, error, sizeof error) && many.count == 32769);
             block = agb_recomp_lookup(&many, &board, 0x080000C0, 0, error, sizeof error); /* compiled here, once */
             result = !block;
-            start = clock();
-            for (int i = 0; !result && i < 200000; ++i)
+            many.compared = 0;
+            for (int i = 0; !result && i < 1000; ++i)
                 result = agb_recomp_lookup(&many, &board, 0x080000C0, 0, error, sizeof error) != block;
-            took[last] = clock() - start;
+            compared[last] = many.compared;
             agb_recomp_free(&many);
             CHECK(!result);
         }
         remove("agb_cpu_index.code.map");
         result = 1;
-        if (took[1] > took[0] * 8 + CLOCKS_PER_SEC / 50) {
+        if (compared[0] > 1000 * AGB_LOOKUP_COMPARES || compared[1] > 1000 * AGB_LOOKUP_COMPARES) {
             fprintf(stderr,
-                    "agb_cpu: 200000 lookups took %ld ms for the block named after 32768 others, %ld ms named "
-                    "first\n",
-                    (long)(took[1] * 1000 / CLOCKS_PER_SEC), (long)(took[0] * 1000 / CLOCKS_PER_SEC));
+                    "agb_cpu: 1000 lookups compared the pc with %llu blocks for the block named after 32768 others, "
+                    "%llu named first: more than %d a lookup\n",
+                    (unsigned long long)compared[1], (unsigned long long)compared[0], AGB_LOOKUP_COMPARES);
             goto done;
         }
     }
