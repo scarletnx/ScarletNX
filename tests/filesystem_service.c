@@ -171,6 +171,8 @@ void plat_ww_close(u8* p, u64 size) { (void)p, (void)size; }
 static char test_fs_text[1024];    /* the last warning of fs.c's own, "fs: ..." */
 static char test_report_text[1024]; /* the last warning of a report's, indented: "  ..." */
 static char test_romfs_text[1024]; /* the last warning about the RomFS, "RomFS: ..." */
+static char test_mod_link_text[2048]; /* every warning about a mod that is a symbolic link */
+static unsigned test_mod_links;
 void logf_(int level, const char* format, ...) {
     char text[1024];
     va_list args;
@@ -181,7 +183,12 @@ void logf_(int level, const char* format, ...) {
         test_left_said++;
         snprintf(test_left_text, sizeof test_left_text, "%s", text);
     }
-    if (!level && !strncmp(text, "fs: ", 4)) snprintf(test_fs_text, sizeof test_fs_text, "%s", text);
+    if (!level && strstr(text, "which mods aren't read through")) { /* kept apart from the last warning */
+        size_t said = strlen(test_mod_link_text);
+        snprintf(test_mod_link_text + said, sizeof test_mod_link_text - said, "%s", text);
+        test_mod_links++;
+    } else if (!level && !strncmp(text, "fs: ", 4))
+        snprintf(test_fs_text, sizeof test_fs_text, "%s", text);
     if (!level && !strncmp(text, "  ", 2)) snprintf(test_report_text, sizeof test_report_text, "%s", text);
     if (!level && !strncmp(text, "RomFS: ", 7)) snprintf(test_romfs_text, sizeof test_romfs_text, "%s", text);
 }
@@ -1496,6 +1503,16 @@ static void test_mods(SvcObj* proxy, int image, int stale) {
               strstr(g_hle.fs.patches[1], "frames.pchtxt"));
     }
     free(data);
+#if !defined(_WIN32)
+    /* the two played mods a symbolic link keeps out are said, each with its path; the one turned off is not */
+    if (test_mod_links != 2) fprintf(stderr, "said of the mods that are links:\n%s", test_mod_link_text);
+    CHECK(test_mod_links == 2);
+    CHECK(strstr(test_mod_link_text, "/mods/4 linked is a symbolic link, which mods aren't read through: it is left "
+                                     "out\n") &&
+          strstr(test_mod_link_text, "fs: the mod's ") &&
+          strstr(test_mod_link_text, "/mods/5 part/romfs is a symbolic link, which mods aren't read through: it is "
+                                     "left out\n"));
+#endif
     data = fs_read_file("exefs/main.npdm", &size);
     CHECK(data && size == 15 && !memcmp(data, "the game's npdm", 15));
     free(data);
@@ -1589,12 +1606,17 @@ static void mods_write(int image, int stale) {
     }
 #if !defined(_WIN32)
     CHECK(!snx_symlink("a.bin", "mods-data/0100000000AB0000_data/mods/3 off/romfs/link"));
+    /* a mod that is a link, one whose romfs/ is one, and one turned off that is one: none is played */
+    CHECK(!snx_symlink("1 first", "mods-data/0100000000AB0000_data/mods/4 linked") &&
+          !snx_mkdirs("mods-data/0100000000AB0000_data/mods/5 part") &&
+          !snx_symlink("../1 first/romfs", "mods-data/0100000000AB0000_data/mods/5 part/romfs") &&
+          !snx_symlink("1 first", "mods-data/0100000000AB0000_data/mods/6 off"));
 #endif
     strcpy(g_exedir, "mods-data/");
     strcpy(g_exename, "0100000000AB0000");
     strcpy(g_gamename, "0100000000AB0000");
     strcpy(g_confdir, "mods-data/");
-    strcpy(g_settings.game_mods_off, "3 off");
+    strcpy(g_settings.game_mods_off, "3 off/6 off");
     mods = snx_mods_folder("mods-data/0100000000AB0000_data");
     stamp = snx_mods_stamp(mods, g_settings.game_mods_off);
     CHECK(strlen(stamp) == 16);
@@ -2627,37 +2649,53 @@ int main(int argc, char** argv) {
                cut ? "that can't be read to its end is said at start" : "bigger than the dump, all there, is not");
         return 0;
     }
-    /* a data folder whose sdmc/ is a symbolic link: the game stops at start, the line before naming the link's path and
-       why, the stop's own text free of paths; the folder it points at is left as it is */
+    /* a data folder whose sdmc/ is a symbolic link to a folder: the game plays with that folder's files as its card's,
+       a file made in sdmc/ is made there, and removing the game's data folder takes the link and leaves the folder. A
+       link below the top (one in that folder) stops the game at start, the line before naming the link's path and why,
+       the stop's own text free of paths */
     if (argc == 4 && !strcmp(argv[3], "data-link")) {
         jmp_buf jump;
         char *real, *said;
         CHECK(!snx_mkdirs("link-data/Game_data/exefs") && !snx_mkdirs("link-data/card"));
         CHECK(!snx_write_file("link-data/Game_data/exefs/main", "main", 4) &&
               !snx_write_file("link-data/card/a.bin", "card", 4));
-        CHECK(!snx_symlink("../card", "link-data/Game_data/sdmc"));
-        real = realpath("link-data/Game_data", NULL);
+        CHECK(!snx_symlink("../card", "link-data/Game_data/sdmc") && !snx_symlink("a.bin", "link-data/card/deep"));
+        real = realpath("link-data/card", NULL);
         CHECK(real != NULL);
-        said = snx_format("fs: could not index the game's files in link-data/Game_data/: %s/sdmc is a symbolic link, "
-                          "which the index doesn't follow\n",
+        said = snx_format("fs: could not index the game's files in link-data/Game_data/: %s/deep is a symbolic link, "
+                          "which the index follows only as a folder at the top of the game's data folder\n",
                           real);
         strcpy(g_datadir, "link-data/Game_data/");
         test_fs_text[0] = test_fatal_text[0] = 0;
         test_fatal_jump = &jump;
         if (!setjmp(jump)) {
             fs_init(NULL, NULL);
-            CHECK(!"a data folder with a link in it did not stop the game");
+            CHECK(!"a link below the data folder's top did not stop the game");
         }
         test_fatal_jump = NULL;
         if (strcmp(test_fs_text, said)) fprintf(stderr, "said:     %sexpected: %s", test_fs_text, said);
         CHECK(!strcmp(test_fs_text, said));
-        CHECK(!strcmp(test_fatal_text, "Could not index the game's files, as one is a symbolic link, which the index "
-                                       "doesn't follow: the line before says which"));
+        CHECK(!strcmp(test_fatal_text,
+                      "Could not index the game's files, as one is a symbolic link, which the index follows only as a "
+                      "folder at the top of the game's data folder: the line before says which"));
         CHECK(snx_is_file("link-data/card/a.bin") && g_hle.fs.tree.root == NULL);
-        free(real);
         free(said);
+        CHECK(!remove("link-data/card/deep"));
+        strcpy(g_datadir, "link-data/Game_data/");
+        fs_init(NULL, NULL);
+        test_scans_allowed = 0;
+        CHECK(tree_has("sdmc/a.bin") && !tree_has("sdmc/deep"));
+        pm_lock(&g_hle.fs.tree.lock);
+        CHECK(fs_tree_create(&g_hle.fs.tree, NULL, "sdmc/b.bin", 0, 3, NULL) == FS_TREE_OK);
+        pm_unlock(&g_hle.fs.tree.lock);
+        CHECK(snx_is_file("link-data/card/b.bin"));
+        cleanup_service();
+        CHECK(!snx_remove_tree(g_datadir) && !snx_path_exists("link-data/Game_data"));
+        CHECK(snx_is_dir(real) && snx_is_file("link-data/card/a.bin") && snx_is_file("link-data/card/b.bin"));
+        free(real);
         free(g_mem);
-        printf("PASS %u checks: a link in the data folder stops the game, the line before naming it\n", test_checks);
+        printf("PASS %u checks: a linked sdmc/ is the game's card, and stays when the game's folder goes\n",
+               test_checks);
         return 0;
     }
     /* a game read from its dump that finds none: where it looked, its .ini and the link an older version made */

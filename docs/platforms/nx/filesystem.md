@@ -63,8 +63,19 @@ line (`fs_save_report`).
 
 Init rejects scan/stat errors, symlinks/junctions, regular-file hardlinks, special files and invalid names, and the
 game stops with the path it stopped at and why in the line before (`fs: could not index the game's files in ...:
-.../sdmc is a symbolic link, which the index doesn't follow`). A mod's RomFS refused so is left out, the line saying
-why.
+.../sdmc/shared is a symbolic link, which the index follows only as a folder at the top of the game's data folder`).
+A mod's RomFS refused so is left out, the line saying why.
+
+One link is followed: a symbolic link (on Windows a junction too) to a folder at the top of the data folder, such as
+an `sdmc/` or a `save/` kept on another disk or shared with another program. The folder it points at is indexed in its
+place as a writable graft (`link_folder`), so the game reads and changes the files where they are. Still refused: a
+link anywhere below the top, in the data folder or in the folder a link points at (nothing scanned can lead back, so
+there is no cycle to detect), a link to a file, a link to nothing, and a link to a folder the index already holds, to
+one in it or around it (the data folder, another link's folder, a save's or the RomFS's graft): two names for one file
+would each keep a size of their own, which is why hard links are refused. Nothing removes or renames the link or the
+folder it points at: `fs_tree_remove` on it empties the folder, and removing the game's folder (`snx_remove_tree`)
+takes the link and leaves the folder. `mods/` is read apart from the index: as a link it is read through, but a mod
+that is a link, or whose `exefs/` or `romfs/` is one, is left out, a line in the log naming it.
 Tree limits: 4096-byte path buffers including NUL, 256 directory levels below the data root.
 IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.
 

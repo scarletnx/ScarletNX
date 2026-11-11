@@ -312,12 +312,36 @@ static void dlcs_open(const char* keys, const char* title_keys) {
     free(ids);
 }
 
+/* The mods of folder (NULL for none) a symbolic link keeps out, said: a mod not turned off that is one, or whose
+   exefs/ or romfs/ is one. common/utilities/mods.c reads none through a link, and said nothing */
+static void mods_links(const char* folder) {
+    static const char* const parts[] = {"exefs", "romfs"};
+    char** names = NULL;
+    size_t count = 0;
+    if (!folder || !snx_is_dir(folder) || snx_list_dir(folder, &names, &count)) return;
+    for (size_t i = 0; i < count; i++) {
+        char* mod = snx_path_join(folder, names[i]);
+        if (names[i][0] != '.' && snx_is_dir(mod) && !snx_mod_off(g_settings.game_mods_off, names[i])) {
+            if (snx_is_link(mod))
+                WARN("fs: the mod %s is a symbolic link, which mods aren't read through: it is left out\n", mod);
+            for (size_t k = 0; k < 2 && !snx_is_link(mod); k++) {
+                char* part = snx_path_join(mod, parts[k]);
+                if (snx_is_dir(part) && snx_is_link(part))
+                    WARN("fs: the mod's %s is a symbolic link, which mods aren't read through: it is left out\n", part);
+                free(part);
+            }
+        }
+        free(mod);
+    }
+    snx_free_strings(names, count);
+}
+
 /* The mods played (common/utilities/mods.h), from the game's mods folder, which the data folder's index leaves out:
    the files of their exefs/ that the game's program was recompiled with, read in place of its own, and their romfs/
    folders grafted as mods.0, mods.1... in the order they are laid, which romfs_init lays over the game's RomFS. A
    program recompiled with other mods' files (what its stamp, <program>.abi, records after " mods ") keeps its own
-   ExeFS, which its code was made from, a line saying so. A mod whose files can't be indexed is left out, said. At
-   startup, under tree.lock */
+   ExeFS, which its code was made from, a line saying so. A mod whose files can't be indexed is left out, said, and
+   so is one that is a symbolic link (mods_links). At startup, under tree.lock */
 static void mods_open(void) {
     char *folder = snx_mods_folder(g_datadir), **romfs;
     char* own = snx_program_own_mods(g_exedir[0] ? g_exedir : ".", g_gamename, g_program); /* Eden's load/<its ID>/ */
@@ -355,6 +379,8 @@ static void mods_open(void) {
             WARN("fs: the mod's RomFS %s is left out: %s %s\n", romfs[i], tree_at(romfs[i]), tree_why(r));
     }
     snx_free_strings(romfs, count);
+    mods_links(folder);
+    mods_links(own);
     free(built);
     free(stamp);
     free(own);
