@@ -734,6 +734,35 @@ typedef int (*Scan)(const char*, const char*, ...);
 enum { SCAN_MOST = 24 };
 /* the pointers a scanf format stores through: one for each conversion but %% and the suppressed (%*d), %n's too, or
    the highest of their positions (%2$d). Only those are read: the guest's stack can end right after the last one */
+/* one conversion of a scanf format, from past its '%' (not a "%%"): its position (%2$d, 0 for none), whether it stores,
+   and its text without the position, from spec to end */
+typedef struct {
+    unsigned position;
+    bool stores;
+    const char *spec, *end;
+} ScanConversion;
+static ScanConversion scan_conversion(const char* f) {
+    ScanConversion v = {0, true, f, f};
+    while (*f >= '0' && *f <= '9') ++f;
+    if (*f == '$' && f > v.spec) {
+        v.position = (unsigned)strtoul(v.spec, NULL, 10);
+        v.spec = ++f;
+    } else
+        f = v.spec;
+    v.stores = *f != '*';
+    if (!v.stores) ++f;
+    while (*f >= '0' && *f <= '9') ++f;
+    while (*f && strchr("hlLjztqm", *f)) ++f;
+    if (*f == '[') { /* a set, which can hold ']' first and '%' anywhere */
+        ++f;
+        if (*f == '^') ++f;
+        if (*f == ']') ++f;
+        while (*f && *f != ']') ++f;
+    }
+    if (*f) ++f;
+    v.end = f;
+    return v;
+}
 static unsigned scan_count(const char* f) {
     unsigned count = 0, highest = 0;
     while (*f) {
@@ -742,29 +771,35 @@ static unsigned scan_count(const char* f) {
             ++f;
             continue;
         }
-        const char* digits = f;
-        unsigned position = 0;
-        while (*f >= '0' && *f <= '9') ++f;
-        if (*f == '$' && f > digits) {
-            position = (unsigned)strtoul(digits, NULL, 10);
-            ++f;
-        } else
-            f = digits;
-        bool stores = *f != '*';
-        if (!stores) ++f;
-        while (*f >= '0' && *f <= '9') ++f;
-        while (*f && strchr("hlLjztqm", *f)) ++f;
-        if (*f == '[') { /* a set, which can hold ']' first and '%' anywhere */
-            ++f;
-            if (*f == '^') ++f;
-            if (*f == ']') ++f;
-            while (*f && *f != ']') ++f;
-        }
-        if (*f) ++f;
-        if (stores && !position) ++count;
-        if (stores && position > highest) highest = position;
+        ScanConversion v = scan_conversion(f);
+        f = v.end;
+        if (v.stores && !v.position) ++count;
+        if (v.stores && v.position > highest) highest = v.position;
     }
     return count > highest ? count : highest;
+}
+/* A format with positions as one without, out (as long as f), and the pointer each storing conversion takes in turn,
+   which the host's scanf takes then in order: FreeBSD's reads no positions, and the conversions match in the format's
+   order either way. The number of those conversions, or -1 past SCAN_MOST */
+static int scan_unpositioned(const char* f, char* out, unsigned order[SCAN_MOST]) {
+    int n = 0;
+    while (*f) {
+        if ((*out++ = *f++) != '%') continue;
+        if (*f == '%') {
+            *out++ = *f++;
+            continue;
+        }
+        ScanConversion v = scan_conversion(f);
+        memcpy(out, v.spec, (size_t)(v.end - v.spec));
+        out += v.end - v.spec;
+        f = v.end;
+        if (!v.stores) continue;
+        if (n == SCAN_MOST) return -1;
+        order[n] = v.position ? v.position - 1 : (unsigned)n;
+        ++n;
+    }
+    *out = 0;
+    return n;
 }
 static int scan_pointers(const char* in, const char* format, GuestArgs* a) {
     unsigned count = scan_count(format);
@@ -777,6 +812,21 @@ static int scan_pointers(const char* in, const char* format, GuestArgs* a) {
     }
     uint64_t p[SCAN_MOST] = {0};
     for (unsigned i = 0; i < count; ++i) p[i] = args_int(a);
+    if (strchr(format, '$')) {
+        char* plain = malloc(strlen(format) + 1);
+        unsigned order[SCAN_MOST];
+        int n = plain ? scan_unpositioned(format, plain, order) : -1;
+        if (n < 0) {
+            free(plain);
+            return EOF;
+        }
+        uint64_t q[SCAN_MOST] = {0};
+        for (int i = 0; i < n; ++i) q[i] = order[i] < count ? p[order[i]] : 0;
+        int r = sscanf(in, plain, q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7], q[8], q[9], q[10], q[11], q[12],
+                       q[13], q[14], q[15], q[16], q[17], q[18], q[19], q[20], q[21], q[22], q[23]);
+        free(plain);
+        return r;
+    }
     return sscanf(in, format, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13],
                   p[14], p[15], p[16], p[17], p[18], p[19], p[20], p[21], p[22], p[23]);
 }
