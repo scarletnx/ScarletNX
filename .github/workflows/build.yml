@@ -690,7 +690,8 @@ jobs:
         if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
         run: *unicorn
       # The linux job's test options on the same tree, and its headless tree with this job's LLVM: the A64 disassembler
-      # stays out, as in the AppImage, so its tests run in the sanitizers' job alone on a pull request
+      # stays out, as in the AppImage, so on a pull request its tests run on x86-64 in the sanitizers' job alone, and
+      # on AArch64 in the linux job
       - name: Build the tests and the headless Vulkan tree
         if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
         run: |
