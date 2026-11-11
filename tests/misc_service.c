@@ -1604,43 +1604,6 @@ static void test_mii_latest(void) {
 }
 
 
-/* pctl's play timer display, GetPlayTimerRemainingTimeDisplayInfo (1459) and 1460 {u8}: NotConfigured (7) in the
-   first of 0x18 bytes, the rest zero */
-static void test_pctl_play_timer(void) {
-    SvcObj* factory = new_pctl();
-    Request r;
-    request(&r, 0);
-    argument64(&r, 0, 0);
-    r.c.has_pid = 1;
-    call(factory, &r);
-    CHECK(r.c.nout_objs == 1);
-    SvcObj* pctl = r.c.out_objs[0];
-    for (u32 cmd = 1459; cmd <= 1460; cmd++) {
-        request(&r, cmd);
-        call(pctl, &r);
-        CHECK(r.c.out_size == 0x18 && r.c.out[0] == 7);
-        for (u32 i = 1; i < 0x18; i++) CHECK(r.c.out[i] == 0);
-    }
-    svcobj_unref(pctl);
-    svcobj_unref(factory);
-}
-
-/* pctl's IsFreeCommunicationAvailable (1018), no arguments: success, no restriction set */
-static void test_pctl_free_communication(void) {
-    SvcObj *factory = new_pctl(), *pctl;
-    Request r;
-    request(&r, 0);
-    r.c.has_pid = 1;
-    call(factory, &r);
-    CHECK(r.c.nout_objs == 1);
-    pctl = r.c.out_objs[0];
-    request(&r, 1018);
-    call(pctl, &r);
-    CHECK(r.c.out_size == 0);
-    svcobj_unref(pctl);
-    svcobj_unref(factory);
-}
-
 /* IFriendService's GetBlockedUserListIds (10400) {i32 offset, uid at 8, a C buffer of ids}: nobody, the count 0 and
    the buffer as it was; DeclareOpenOnlinePlaySession (10600) and DeclareCloseOnlinePlaySession (10601) {uid};
    CheckFriendListAvailability (10120) {uid}: the list there to read, 1; GetPlayHistoryRegistrationKey (10700) {b8
@@ -1910,9 +1873,7 @@ int main(void) {
     test_acc_resource_cache();
     test_prepo_reports();
     test_mii_latest();
-    test_pctl_play_timer();
     test_nim();
-    test_pctl_free_communication();
     test_friend_blocked_and_presence();
     test_caps();
     test_olsc();

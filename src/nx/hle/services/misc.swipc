@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The smaller services (misc.c): apm, lm, pctl, friend, ns, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, nim, aoc,
+# The smaller services (misc.c): apm, lm, friend, ns, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, nim, aoc,
 # irs, mii, ectx, spl, btm, audin, olsc. Names and argument types from Switchbrew, libnx and the SDK's own symbols
 
 # ================================================================ apm
@@ -27,34 +27,6 @@ interface nn::lm::ILogService is lm {
 @fallback(quiet_ok)
 interface nn::lm::ILogger {
     [0] Log(buffer<u8, 0x21> message);
-}
-
-# ================================================================ pctl
-type nn::pctl::PlayTimerRemainingTimeDisplayInfo = bytes<0x18, 8>;
-
-interface nn::pctl::detail::ipc::IParentalControlServiceFactory is pctl, pctl:a, pctl:s, pctl:r {
-    [0] CreateService(pid) -> object<nn::pctl::detail::ipc::IParentalControlService> service;
-    [1] CreateServiceWithoutInitialize(pid) -> object<nn::pctl::detail::ipc::IParentalControlService> service;
-}
-interface nn::pctl::detail::ipc::IParentalControlService {
-    @stub [1] Initialize();
-    @stub [1001] CheckFreeCommunicationPermission();
-    @stub [1002] ConfirmLaunchApplicationPermission(nn::ncm::ApplicationId application_id,
-                                                    array<i8, 9> restriction_bitset, b8 nacp_flag);
-    @stub [1004] ConfirmSnsPostPermission();
-    # success: no restriction keeps the game from talking to strangers
-    @stub [1018] IsFreeCommunicationAvailable();
-    @stub [1031] IsRestrictionEnabled() -> b8 enabled;
-    @stub [1032] GetSafetyLevel() -> i32 safety_level;
-    @stub [1039] GetFreeCommunicationApplicationListCount() -> i32 count;
-    [1065] IsStereoVisionPermitted() -> b8 permitted;
-    @stub [1403] IsPairingActive() -> b8 active;
-    [1432] GetSynchronizationEvent() -> handle<copy, event> event;
-    @stub [1453] IsPlayTimerEnabled() -> b8 enabled;
-    [1457] GetPlayTimerEventToRequestSuspension() -> handle<copy, event> event;
-    [1459] GetPlayTimerRemainingTimeDisplayInfo() -> nn::pctl::PlayTimerRemainingTimeDisplayInfo info;
-    [1460] Unknown1460(u8 unknown) -> nn::pctl::PlayTimerRemainingTimeDisplayInfo info;
-    [1473] GetUnlinkedEvent() -> handle<copy, event> event;
 }
 
 # ================================================================ friend
