@@ -7,7 +7,6 @@
 #include "hle/services/sm.swipc.h"
 #include "hle/services/am.swipc.h"
 #include "hle/services/set.swipc.h"
-#include "hle/services/time.swipc.h"
 #include "hle/services/acc.swipc.h"
 #include "hle/services/audio.swipc.h"
 #include "hle/services/misc.swipc.h"
@@ -56,7 +55,6 @@ void svc_core_init(void) {
     snx_users_init(); /* before am: its launch parameter names the user */
     am_init();
     audio_init();
-    time_init();
     network_init();
     network_room_init(); /* after the users: the room knows this console by the nickname of the one playing */
 
@@ -65,8 +63,6 @@ void svc_core_init(void) {
     nn_am_service_IAllSystemAppletProxiesService_register(new_appletae);
     nn_settings_ISettingsServer_register(new_set);
     nn_settings_ISystemSettingsServer_register(new_setsys);
-    nn_timesrv_detail_service_IStaticService_register(new_time);
-    svc_register("time:u", new_time_user);
     nn_account_IAccountServiceForApplication_register(new_acc);
     nn_account_IAccountServiceForSystemService_register(new_acc_system);
     nn_account_IAccountServiceForAdministrator_register(new_acc_admin);

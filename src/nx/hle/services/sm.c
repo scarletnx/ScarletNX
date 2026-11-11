@@ -44,6 +44,11 @@ static const char* const g_native_only[][2] = {
     {"fsp-srv", "nn::fs (nn/fs.c)"},
     {"fsp-pr", "nn::fs (nn/fs.c)"},
     {"fsp-ldr", "nn::fs (nn/fs.c)"},
+    {"time:u", "nn::time (nn/time.c)"},
+    {"time:a", "nn::time (nn/time.c)"},
+    {"time:s", "nn::time (nn/time.c)"},
+    {"time:r", "nn::time (nn/time.c)"},
+    {"time:su", "nn::time (nn/time.c)"},
 };
 static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_sm_ServiceName* name, u32* session) {
     char s[9];
@@ -53,7 +58,7 @@ static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_s
     for (size_t i = 0; i < sizeof g_native_only / sizeof g_native_only[0]; i++)
         if (!strcmp(s, g_native_only[i][0]))
             fatal("sm: the game opened %s, which the runtime answers natively in %s: a function it called there is "
-                  "not native yet (the log's last nn::fs lines)",
+                  "not native yet (the log's backtrace and its last lines name it)",
                   s, g_native_only[i][1]);
     o = svc_open(s);
     if (!o) {

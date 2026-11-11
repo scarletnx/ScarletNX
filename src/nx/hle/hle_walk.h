@@ -54,7 +54,6 @@
     X(NvEventTable, (h).nvdrv.ctrl_evt[0])                                                                             \
     X(NvFile, (h).nvdrv.nvf[0])                                                                                        \
     X(NvSeen, (h).nvdrv.seen[0])                                                                                       \
-    X(TimeObj, (h).time.objs[0])                                                                                       \
     X(ViLayer, (h).vi.layer[0])                                                                                        \
     X(Bsd, (h).bsd.bsds[0])                                                                                            \
     X(Ldn, (h).ldn.ldn[0])                                                                                             \
