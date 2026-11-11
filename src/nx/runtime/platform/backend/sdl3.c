@@ -93,6 +93,7 @@ static struct {
 } g_press;
 static SDL_Haptic* g_buzzer; /* the phone's vibrator, for the on-screen controls' taps (Android) */
 static u32 g_generation;     /* the window's surface came back this many times */
+static u32 g_window_changes; /* the app's, the displays' and the window's events (backend_window_changes) */
 
 struct PAudio {
     SDL_AudioStream* stream;
@@ -393,6 +394,7 @@ int backend_window_shown(void) {
            !__atomic_load_n(&g_minimized, __ATOMIC_ACQUIRE) && !__atomic_load_n(&g_given_up, __ATOMIC_ACQUIRE);
 }
 u32 backend_window_generation(void) { return __atomic_load_n(&g_generation, __ATOMIC_ACQUIRE); }
+u32 backend_window_changes(void) { return __atomic_load_n(&g_window_changes, __ATOMIC_ACQUIRE); }
 void backend_window_size(int* w, int* h) {
     u64 s = g_opt_headless ? 0 : __atomic_load_n(&g_wsize, __ATOMIC_RELAXED);
     *w = (int)(u32)s;
@@ -1598,6 +1600,8 @@ void video_poll(void) {
     if (!g_opt_headless) mouse_hold_update();
     while (!g_opt_headless && SDL_PollEvent(&e)) {
         int action = e.type == SDL_EVENT_KEY_DOWN ? key_action(&e.key) : -1; /* the runtime key it is */
+        /* SDL numbers the app's, the displays' and the window's events under the keyboard's */
+        if (e.type < SDL_EVENT_KEY_DOWN) __atomic_add_fetch(&g_window_changes, 1, __ATOMIC_RELEASE);
         if (press_event(&e, action)) continue;
         if (overlay_event(&e, action)) continue;
         switch (e.type) {

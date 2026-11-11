@@ -209,6 +209,25 @@ static int check_ui(void) {
     CHECK(changed > 100);
     CHECK(!ui_frame(c, safe, "no change", &changed));
     CHECK(!changed);
+    /* the refresh's question (vk_ui_changed), which makes the parts as a frame does: no, however often it is asked,
+       while the layer is the one drawn; yes from a change until a pass draws it, and that pass draws what the
+       question's own making of the parts wrote, though it writes nothing itself */
+    CHECK(!vk_ui_changed() && !vk_ui_changed());
+    hud_debug_set("log=2, vk_validation=1, gdbstub");
+    CHECK(vk_ui_changed() && vk_ui_changed());
+    CHECK(!ui_frame(c, safe, "the line changed, asked before it was drawn", &changed));
+    CHECK(changed > 0 && !vk_ui_changed());
+    hud_debug_set("log=2, vk_validation=1");
+    CHECK(vk_ui_changed());
+    CHECK(!ui_frame(c, safe, "the line as it was", &changed));
+    CHECK(changed > 0 && !vk_ui_changed());
+    /* a letter of it another, the quads as many: yes again when asked again, though the second making wrote nothing */
+    hud_debug_set("log=3, vk_validation=1");
+    CHECK(vk_ui_changed() && vk_ui_changed());
+    CHECK(!ui_frame(c, safe, "a letter of the line changed", &changed));
+    CHECK(changed > 0 && !vk_ui_changed());
+    hud_debug_set("log=2, vk_validation=1");
+    CHECK(!ui_frame(c, safe, "the line as it was again", &changed));
     stats_measured(&(SnxStatsMeasure){.cpu = -1, .gpu = -1});
     CHECK(!ui_frame(c, safe, "the values unknown again", &changed));
     /* the line longer and shorter: the quads after the box's more and fewer */
