@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#ifndef SNX_NX_HLE_SDK_NN_FS_H
-#define SNX_NX_HLE_SDK_NN_FS_H
+#ifndef SNX_NX_NN_FS_H
+#define SNX_NX_NN_FS_H
 #include "common/cpu/aarch64/cpu.h"
 
 /* The native nn::fs's state that the game sees (g_hle.nnfs, which a save state holds): its mounts, open files and
    open directories, by index. A save's root, file or directory is a slot of g_hle.fs (fss, files, dirs), which fs.c's
-   save state finds again by path. A RomFS image's tables are the host's (nn_fs.c), read again after a load */
+   save state finds again by path. A RomFS image's tables are the host's (fs.c), read again after a load */
 #define NNFS_MOUNTS 32
 #define NNFS_FILES  1024
 #define NNFS_DIRS   256
@@ -35,7 +35,7 @@ typedef struct {
     u32 slot;   /* a save's file: its slot in g_hle.fs.files */
     u64 data;   /* a RomFS file: the image's offset of its data */
     u64 size;   /* and its size */
-    u32 wstate; /* the write state, as the SDK's file accessor keeps it (nn_fs.c's WRITE_*) */
+    u32 wstate; /* the write state, as the SDK's file accessor keeps it (fs.c's WRITE_*) */
     u32 sticky; /* a failed write's Result, which every later operation on the file returns */
 } NnfsFile;
 typedef struct {
@@ -55,6 +55,6 @@ typedef struct {
     NnfsDir dirs[NNFS_DIRS];
 } HleNnfs;
 
-/* the native nn::fs (nn_fs.hook's family), before hook_install */
+/* the native nn::fs (fs.hook's nn_fs family), before hook_install */
 void nnfs_init(void);
 #endif

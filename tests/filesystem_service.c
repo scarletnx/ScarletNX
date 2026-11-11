@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Exercise the file system server's core (fs.h), as hle/sdk/nn_fs.c calls it, with a small guest address space. */
+/* Exercise the file system server's core (fs.h), as nn/fs.c calls it, with a small guest address space. */
 #include "nx/hle/filesystem/fs.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
@@ -210,7 +210,7 @@ void fatal(const char* format, ...) {
 }
 void frontend_frame(void) {}
 
-/* The test's handles: slots of g_hle.fs's pools, as hle/sdk/nn_fs.c keeps its mounts, files and directories (obj set
+/* The test's handles: slots of g_hle.fs's pools, as nn/fs.c keeps its mounts, files and directories (obj set
    while one is open), so that the save states find them (fs_state_save) */
 typedef struct {
     u32 slot;
@@ -221,7 +221,7 @@ typedef struct {
 typedef struct {
     u32 slot;
 } TDir;
-/* a storage: the game's RomFS (romfs_read_guest) or a data storage (fs_storage_open), as nn_fs.c's MountRom reads them */
+/* a storage: the game's RomFS (romfs_read_guest) or a data storage (fs_storage_open), as nn/fs.c's MountRom reads them */
 typedef struct {
     int game;
     FsStorage st;
@@ -299,7 +299,7 @@ static TFs mount_user_save(const u64* uid) {
     return fs;
 }
 
-/* ---- the operations on a root, under the tree's lock as nn_fs.c takes it */
+/* ---- the operations on a root, under the tree's lock as nn/fs.c takes it */
 enum { CREATE_FILE, DELETE_FILE, CREATE_DIR, DELETE_DIR, DELETE_TREE, CLEAN_TREE, ENTRY_TYPE };
 static const char* const root_op_names[] = {"CreateFile",          "DeleteFile",        "CreateDirectory",
                                             "DeleteDirectory",     "DeleteTree",        "CleanDirectory",
@@ -552,7 +552,7 @@ static void test_file_services(TFs fs) {
     puts("PASS HLE create/open/write/read/truncate/rename/delete and shared cached size");
 }
 
-/* The checks of the file server's core, which nn_fs.c calls with the game's arguments as they are: a range past
+/* The checks of the file server's core, which nn/fs.c calls with the game's arguments as they are: a range past
    INT64_MAX fails before the open mode is checked, an empty transfer skips the end-of-file and mode checks, a buffer
    the guest has not mapped writable fails, and a negative size fails before the mode and the path */
 static void test_file_contracts(TFs fs) {
@@ -566,7 +566,7 @@ static void test_file_contracts(TFs fs) {
     } cases[] = {
         {INT64_MAX, 1, RC(2, 3005)}, /* overflow wins over permission */
         {INT64_MAX - 1, 2, RC(2, 3005)},
-        {1, UINT64_MAX, RC(2, 3005)}, /* nn_fs.c refuses a negative offset itself */
+        {1, UINT64_MAX, RC(2, 3005)}, /* nn/fs.c refuses a negative offset itself */
         {INT64_MAX, 0, 0}, /* empty transfers skip EOF and mode checks */
         {UINT64_MAX, 0, 0},
         {0, 0, 0},

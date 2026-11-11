@@ -42,11 +42,11 @@ function(snx_hook_patches var)
     set(${var} ${found} PARENT_SCOPE)
 endfunction()
 
-# snx_hook_sdk(<var>): the SDK functions that the runtime answers natively, src/nx/hle/sdk/*.hook in name order, one
-# spec for each SDK library whose handlers are the .c files beside them (nn_fs.hook, nn_fs.c). A new file reconfigures
+# snx_hook_sdk(<var>): the SDK functions that the runtime answers natively, src/nx/nn/*.hook in name order, one
+# spec for each SDK library whose handlers are the .c files beside them (fs.hook, fs.c). A new file reconfigures
 # the build
 function(snx_hook_sdk var)
-    file(GLOB found CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/nx/hle/sdk/*.hook")
+    file(GLOB found CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/nx/nn/*.hook")
     list(SORT found)
     set(${var} ${found} PARENT_SCOPE)
 endfunction()
@@ -54,7 +54,7 @@ endfunction()
 # snx_hookgen(<target> [SPEC <file>...] [PREFIX <name>] [NAME <path>] [A32]): generates NAME.h (the handlers' declarations,
 # and the hooked functions' PFN...PROC types for a spec with an include line, which hookgen finds under src/) and
 # NAME.inc (the adapters and the table, which hle/hook/hook.c includes for the hooks) into the build folder and
-# gives <target> their include root. SPEC is src/nx/hle/hook/hooks.hook, the native SDK's (src/nx/hle/sdk/*.hook,
+# gives <target> their include root. SPEC is src/nx/hle/hook/hooks.hook, the native SDK's (src/nx/nn/*.hook,
 # snx_hook_sdk) and the game patches' address hooks (src/nx/patches/*.hook, snx_hook_patches) unless a test names its own, NAME is hle/hook/hooks.hook, and PREFIX (hook)
 # names the tables: gpu/nvn/nvn.hook, the NVN functions the runtime implements, is a second spec with its own. A32 adds
 # the adapters for a 32-bit program (hookgen --a32)

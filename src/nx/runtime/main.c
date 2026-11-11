@@ -21,7 +21,7 @@
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/hook/hook.h"
-#include "nx/hle/sdk/nn_fs.h"
+#include "nx/nn/fs.h"
 #include "nx/hle/services/hid.h"
 #include "nx/runtime/guest_jit.h"
 #include "nx/runtime/nce/nce.h"
