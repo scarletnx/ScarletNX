@@ -411,6 +411,11 @@ int main(void) {
            less the gap above), 3, when the menu's are larger */
         for (k = l.n - 7; k < l.n; ++k)
             assert(qv(&l.q[k]).ink == UI_GLYPH && qv(&l.q[k]).w == 16 && qv(&l.q[k]).h == 32);
+        /* on the layer's ground, the menu's ink, which the box is filled with and each of the cells is backed by
+           (ui.h's UI_BACKED), a blank one too; the letters white as the controls */
+        assert(qv(&l.q[0]).ink == UI_SOLID && qv(&l.q[0]).rgba == ui_rgba(THEME(SNX_GUI_THEME_YORHA_INK)) &&
+               qv(&l.q[0]).rgba == ui_ground());
+        for (k = l.n - 7; k < l.n; ++k) assert(qv(&l.q[k]).backed && l.q[k].uw == 8 && qv(&l.q[k]).rgba == 0xFFFFFFFFu);
         l.n = 0;
         vpad_showcase_draw(&l, safe, 60, 9);
         for (k = l.n - 7; k < l.n; ++k)

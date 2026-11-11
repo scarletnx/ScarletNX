@@ -650,7 +650,7 @@ static void showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale) {
     y0 = box[1];
     w = box[2];
     h = box[3];
-    ui_fill(l, x0, y0, w, h, UI_BLACK);
+    ui_fill(l, x0, y0, w, h, UI_INK); /* the layer's ground, as the stats' */
     for (c = 0; c < SNX_VPAD_COUNT; ++c) {
         float side = SHOWCASE[c][2] * h, aspect = INFO[c].aspect;
         if (side <= 0) continue;
@@ -674,13 +674,13 @@ static void showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale) {
     if (scale < 1) scale = 1;
     while (scale > 1 && (float)(16 * scale) + h / 25 > h * 0.24f) --scale;
     /* "999 FPS" at most, the number to the right of its three cells: a field whose place and quads stay, whatever it
-       says (ui_cells) */
+       says (ui_cells), each cell backed by the ground the box is filled with: no pixel of a letter left out */
     {
         char* at = text;
         int digits = fps > 99 ? 3 : fps > 9 ? 2 : 1, first;
         while (digits++ < 3) *at++ = ' ';
         *ui_put(ui_put_u(at, (u64)(fps < 999 ? fps : 999)), " FPS") = 0;
-        first = ui_cells(l, x0 + (w - (float)(7 * 8 * scale)) / 2, y0 + h / 25, scale, 7, UI_WHITE);
+        first = ui_cells_backed(l, x0 + (w - (float)(7 * 8 * scale)) / 2, y0 + h / 25, scale, 7, UI_WHITE);
         if (first >= 0) ui_cells_set(&l->q[first], 7, text);
     }
 }
