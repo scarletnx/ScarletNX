@@ -95,8 +95,9 @@ static int ui_frame(UiCheck* c, const int safe[4], const char* what, int* change
     CHECK(px);
     vk_render_end();
     cb = vk_cmd();
-    vk_barrier(cb, c->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
-               VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vk_barrier(cb, c->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+               VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     rec_CmdClearColorImage(cb, c->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &back, 1, &all);
     /* as the frame's blit leaves the swapchain's image */
     vk_barrier(cb, c->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,

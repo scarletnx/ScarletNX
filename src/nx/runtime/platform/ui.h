@@ -15,11 +15,16 @@ typedef struct {
     u32 rgba;         /* each texel times this colour, R G B A from the low byte */
     u8 turn;          /* the texels turned this many quarters clockwise */
     u8 sample;        /* how: UI_BLEND, UI_SHARP or UI_IMAGE */
-    u8 spare[2];      /* 0 */
+    u8 ink;           /* what the renderer draws it with: one of UI_ATLAS, UI_SOLID, UI_GLYPH, UI_ICON */
+    u8 glyph;         /* UI_GLYPH's letter, UI_ICON's icon from GUI_ICON_FIRST */
 } SnxUiQuad;
 /* the atlas blended, the atlas's nearest texel (the font at whole steps), or ui_image's picture blended, its texels
    in u, v, uw and vh */
 enum { UI_BLEND, UI_SHARP, UI_IMAGE };
+/* What the GPU reads for a quad's texels, which are in the atlas all the same (the SDL renderer's fatal panel draws
+   them from there): the atlas's or the picture's texels; none, the colour alone (a fill: the atlas's white block);
+   or a letter of the 8x16 font or an icon of the menus, from their bits, a bit a pixel, with no atlas read */
+enum { UI_ATLAS, UI_SOLID, UI_GLYPH, UI_ICON };
 typedef struct {
     SnxUiQuad* q;
     int n, max; /* quads past max are dropped */

@@ -38,9 +38,10 @@ void ui_lock(void) { pm_lock(&g_lock); }
 void ui_unlock(void) { pm_unlock(&g_lock); }
 
 _Static_assert(sizeof(SnxUiQuad) == 32, "a quad is the renderer's instance, with no padding");
+_Static_assert(GUI_ICON_COUNT <= 256, "an icon is a quad's glyph byte");
 
 static void quad(SnxUiList* l, float x, float y, float w, float h, int u, int v, int uw, int vh, u32 rgba, int turn,
-                 int sample) {
+                 int sample, int ink, int glyph) {
     if (l->n >= l->max || w <= 0 || h <= 0) return;
     l->q[l->n++] = (SnxUiQuad){.x = x,
                                .y = y,
@@ -52,18 +53,20 @@ static void quad(SnxUiList* l, float x, float y, float w, float h, int u, int v,
                                .vh = (u16)vh,
                                .rgba = rgba,
                                .turn = (u8)(turn & 3),
-                               .sample = (u8)sample};
+                               .sample = (u8)sample,
+                               .ink = (u8)ink,
+                               .glyph = (u8)glyph};
 }
 void ui_sprite(SnxUiList* l, int sprite, float x, float y, float w, float h, u32 alpha, int turn) {
     const unsigned short* s = snx_controls_sprites[sprite];
-    if (alpha) quad(l, x, y, w, h, s[0], s[1], s[2], s[3], 0x00FFFFFFu | alpha << 24, turn, UI_BLEND);
+    if (alpha) quad(l, x, y, w, h, s[0], s[1], s[2], s[3], 0x00FFFFFFu | alpha << 24, turn, UI_BLEND, UI_ATLAS, 0);
 }
 void ui_texels(SnxUiList* l, float x, float y, float w, float h, int u, int v, int uw, int vh, u32 rgba) {
-    if (rgba >> 24) quad(l, x, y, w, h, u, v, uw, vh, rgba, 0, UI_BLEND);
+    if (rgba >> 24) quad(l, x, y, w, h, u, v, uw, vh, rgba, 0, UI_BLEND, UI_ATLAS, 0);
 }
 int ui_picture(SnxUiList* l, float x, float y, float side) {
     if (!SNX_GUI_THEME_YORHA_PICTURE) return 0;
-    quad(l, x, y, side, side, 0, UI_PICTURE_Y, SNX_UI_PICTURE, SNX_UI_PICTURE, 0xFFFFFFFFu, 0, UI_BLEND);
+    quad(l, x, y, side, side, 0, UI_PICTURE_Y, SNX_UI_PICTURE, SNX_UI_PICTURE, 0xFFFFFFFFu, 0, UI_BLEND, UI_ATLAS, 0);
     return 1;
 }
 /* the user's Mii (users.ini's picture=mii) as its picture at at, w texels a row, R G B A from the low byte with the
@@ -119,7 +122,8 @@ static void user_picture(u32* a, int w) {
 }
 void ui_fill(SnxUiList* l, float x, float y, float w, float h, u32 rgba) {
     /* the block's inner texels: a blend at its edge never reaches the transparent ones around it */
-    quad(l, x, y, w, h, SNX_CONTROLS_WHITE_X + 1, SNX_CONTROLS_WHITE_Y + 1, 2, 2, rgba, 0, UI_SHARP);
+    quad(l, x, y, w, h, SNX_CONTROLS_WHITE_X + 1, SNX_CONTROLS_WHITE_Y + 1, 2, 2, rgba, 0, UI_SHARP, UI_SOLID,
+         0);
 }
 void ui_fill_set(SnxUiQuad* q, float x, float y, float w, float h, u32 rgba) {
     int shown = w > 0 && h > 0;
@@ -132,7 +136,8 @@ void ui_fill_set(SnxUiQuad* q, float x, float y, float w, float h, u32 rgba) {
                      .uw = (u16)(shown ? 2 : 0),
                      .vh = (u16)(shown ? 2 : 0),
                      .rgba = rgba,
-                     .sample = UI_SHARP};
+                     .sample = UI_SHARP,
+                     .ink = UI_SOLID};
 }
 float ui_text(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba) {
     float x0 = x;
@@ -140,7 +145,7 @@ float ui_text(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba
         u8 c = (u8)*s;
         if (c != ' ')
             quad(l, x, y, 8.0f * (float)scale, 16.0f * (float)scale, SNX_CONTROLS_FONT_X + c % 16 * 8,
-                 SNX_CONTROLS_FONT_Y + c / 16 * 16, 8, 16, rgba, 0, UI_SHARP);
+                 SNX_CONTROLS_FONT_Y + c / 16 * 16, 8, 16, rgba, 0, UI_SHARP, UI_GLYPH, c);
     }
     return x - x0;
 }
@@ -153,7 +158,8 @@ int ui_cells(SnxUiList* l, float x, float y, int scale, int n, u32 rgba) {
                                    .w = 8.0f * (float)scale,
                                    .h = 16.0f * (float)scale,
                                    .rgba = rgba,
-                                   .sample = UI_SHARP};
+                                   .sample = UI_SHARP,
+                                   .ink = UI_GLYPH};
     return first;
 }
 int ui_cells_set(SnxUiQuad* q, int n, const char* s) {
@@ -165,6 +171,7 @@ int ui_cells_set(SnxUiQuad* q, int n, const char* s) {
         u16 u = blank ? 0 : (u16)(SNX_CONTROLS_FONT_X + c % 16 * 8);
         u16 v = blank ? 0 : (u16)(SNX_CONTROLS_FONT_Y + c / 16 * 16);
         if (q[k].u == u && q[k].v == v && q[k].uw == (blank ? 0 : 8)) continue;
+        q[k].glyph = c;
         q[k].u = u;
         q[k].v = v;
         q[k].uw = blank ? 0 : 8;
@@ -200,12 +207,12 @@ void ui_append(SnxUiList* l, const SnxUiList* from) {
 float ui_icon(SnxUiList* l, float x, float y, int scale, unsigned icon, u32 rgba) {
     if (icon < GUI_ICON_FIRST || icon >= GUI_ICON_END) return 0;
     quad(l, x, y, 16.0f * (float)scale, 16.0f * (float)scale, SNX_UI_ICONS_X + 16 * (int)(icon - GUI_ICON_FIRST),
-         UI_PICTURE_Y, 16, 16, rgba, 0, UI_SHARP);
+         UI_PICTURE_Y, 16, 16, rgba, 0, UI_SHARP, UI_ICON, (int)(icon - GUI_ICON_FIRST));
     return 16.0f * (float)scale;
 }
 int ui_image(SnxUiList* l, float x, float y, float w, float h) {
     if (!g_image_set) return 0;
-    quad(l, x, y, w, h, 0, 0, SNX_UI_IMAGE_W, SNX_UI_IMAGE_H, 0xFFFFFFFFu, 0, UI_IMAGE);
+    quad(l, x, y, w, h, 0, 0, SNX_UI_IMAGE_W, SNX_UI_IMAGE_H, 0xFFFFFFFFu, 0, UI_IMAGE, UI_ATLAS, 0);
     return 1;
 }
 void ui_image_set(const u8* rgba) {

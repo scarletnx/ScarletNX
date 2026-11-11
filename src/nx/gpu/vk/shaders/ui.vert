@@ -6,13 +6,17 @@
 layout(location = 0) in vec4 rect;    // x, y, w, h in the picture's pixels
 layout(location = 1) in uvec4 texels; // u, v, uw, vh: uw 0 draws nothing
 layout(location = 2) in vec4 color;   // R G B A bytes, as the menu's colours are written
-layout(location = 3) in uvec4 how;    // the quarter turns, the sample, two spare
+layout(location = 3) in uvec4 how;    // the quarter turns, the sample, the ink (ui.h's UI_ATLAS...) and the glyph
 layout(push_constant) uniform Picture {
     vec2 size;
     uint srgb;
 } pc;
-layout(location = 0) out vec2 v_uv; // in texels: the samplers take unnormalized coordinates
+// UI_ATLAS: the atlas's texel, as the samplers take it (unnormalized); a glyph's or an icon's: its own pixel from its
+// top left, 8x16 or 16x16
+layout(location = 0) out vec2 v_uv;
 layout(location = 1) out vec4 v_color;
+layout(location = 2) flat out uint v_ink;
+layout(location = 3) flat out uint v_glyph;
 // the corner of a quad, clockwise from the top left: x 0 1 1 0, y 0 0 1 1
 vec2 corner(uint k) {
     return vec2(float((6u >> k) & 1u), float(k >> 1));
@@ -20,6 +24,8 @@ vec2 corner(uint k) {
 void main() {
     // the two triangles' corners 0 1 2 and 0 2 3, a nibble each
     uint k = (0x320210u >> (4u * uint(gl_VertexIndex))) & 3u;
+    v_ink = how.z;
+    v_glyph = how.w;
     if (texels.z == 0u) { // a blank cell: every corner on one point, which draws nothing
         gl_Position = vec4(-2.0, -2.0, 0.0, 1.0);
         v_uv = vec2(0.0);
@@ -28,6 +34,7 @@ void main() {
     }
     gl_Position = vec4((rect.xy + corner(k) * rect.zw) / pc.size * 2.0 - 1.0, 0.0, 1.0);
     // the texels turned: a quarter turn shows the bottom left one at the top left
-    v_uv = vec2(texels.xy) + corner((k + 4u - (how.x & 3u)) & 3u) * vec2(texels.zw);
+    v_uv = corner((k + 4u - (how.x & 3u)) & 3u) * vec2(texels.zw);
+    if (how.z == 0u) v_uv += vec2(texels.xy);
     v_color = color;
 }
