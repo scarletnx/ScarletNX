@@ -53,6 +53,12 @@ static u32 tree_result(FsTreeResult r) {
     }
 }
 
+/* where the tree's last index, graft or overlay that failed stopped, for a log line: the host path, folder (the one it
+   was given) when it stopped at none; then why, the phrase after it ("is a symbolic link, which the index doesn't
+   follow"), which a fatal's text, kept free of paths, says alone */
+static const char* tree_at(const char* folder) { return g_hle.fs.tree.refused[0] ? g_hle.fs.tree.refused : folder; }
+static const char* tree_why(FsTreeResult r) { return fs_tree_why(&g_hle.fs.tree, r); }
+
 /* Extract to tmpfs (the launcher's setting): a data folder without a RomFS of its own reads the one its extraction
    keeps in snx_tmpfs_work, by the title ID of its main.npdm. The driver extracts it there again, from the dump the
    game's folder links to, when the system has emptied it. Under tree.lock, at startup */
@@ -74,7 +80,7 @@ static void romfs_from_tmpfs(void) {
         if (r == FS_TREE_OK)
             LOG("fs: RomFS from %s\n", romfs);
         else
-            WARN("fs: could not index the RomFS in %s (error %d)\n", romfs, r);
+            WARN("fs: could not index the RomFS in %s: %s %s\n", romfs, tree_at(romfs), tree_why(r));
     }
     free(romfs);
     free(work);
@@ -148,7 +154,12 @@ static void folder_open(const char* folder) {
             continue;
         }
         r = fs_tree_graft(&g_hle.fs.tree, names[i], part);
-        if (r != FS_TREE_OK) fatal("Could not index %s, the game's %s (error %d)", part, i ? "RomFS" : "ExeFS", r);
+        if (r != FS_TREE_OK) {
+            WARN("fs: could not index %s, the game's %s: %s %s\n", part, i ? "RomFS" : "ExeFS", tree_at(part),
+                 tree_why(r));
+            fatal("Could not index the game's %s, as one of its files %s: the line before says which",
+                  i ? "RomFS" : "ExeFS", tree_why(r));
+        }
         free(part);
     }
     LOG("fs: ExeFS and RomFS read from the folder %s\n", folder);
@@ -341,9 +352,7 @@ static void mods_open(void) {
             g_hle.fs.nmromfs++;
             LOG("fs: the mod's RomFS %s laid over the game's\n", romfs[i]);
         } else
-            WARN("fs: the mod's RomFS %s can't be indexed (error %d), and is left out: a link or a name the system "
-                 "can't take\n",
-                 romfs[i], r);
+            WARN("fs: the mod's RomFS %s is left out: %s %s\n", romfs[i], tree_at(romfs[i]), tree_why(r));
     }
     snx_free_strings(romfs, count);
     free(built);
@@ -427,7 +436,10 @@ static void overlays(void) {
         snx_title_text(ids[i].id, text);
         folder = snx_format("%s%s_%s_data/", g_exedir, g_gamename, text);
         r = snx_is_dir(folder) ? fs_tree_overlay(&g_hle.fs.tree, folder, whole, merged) : FS_TREE_OK;
-        if (r != FS_TREE_OK) fatal("Could not index the DLC's files %s (error %d)", folder, r);
+        if (r != FS_TREE_OK) {
+            WARN("fs: could not index the DLC's files in %s: %s %s\n", folder, tree_at(folder), tree_why(r));
+            fatal("Could not index the DLC's files, as one %s: the line before says which", tree_why(r));
+        }
         free(folder);
     }
     free(ids);
@@ -442,8 +454,12 @@ static void overlays(void) {
     }
     if ((g_addon || g_program) && snx_is_dir(g_addondir)) { /* the update's or the program's, on top */
         r = fs_tree_overlay(&g_hle.fs.tree, g_addondir, whole, merged);
-        if (r != FS_TREE_OK)
-            fatal("Could not index the %s's files %s (error %d)", g_addon ? "update" : "program", g_addondir, r);
+        if (r != FS_TREE_OK) {
+            WARN("fs: could not index the %s's files in %s: %s %s\n", g_addon ? "update" : "program", g_addondir,
+                 tree_at(g_addondir), tree_why(r));
+            fatal("Could not index the %s's files, as one %s: the line before says which",
+                  g_addon ? "update" : "program", tree_why(r));
+        }
     }
 }
 
@@ -454,7 +470,10 @@ static int dump_has_exefs(const char* path) { return g_hle.fs.dfs && !strncmp(pa
 void fs_init(const char* keys, const char* title_keys) {
     static const char* const apart[] = {"mods", NULL}; /* mods_open's */
     FsTreeResult r = fs_tree_init_skipping(&g_hle.fs.tree, g_datadir, apart);
-    if (r != FS_TREE_OK) fatal("Could not index game filesystem %s (error %d)", g_datadir, r);
+    if (r != FS_TREE_OK) {
+        WARN("fs: could not index the game's files in %s: %s %s\n", g_datadir, tree_at(g_datadir), tree_why(r));
+        fatal("Could not index the game's files, as one %s: the line before says which", tree_why(r));
+    }
     size_t n = strlen(g_hle.fs.tree.base);
     if (n + 2 > sizeof g_datadir) fatal("Game filesystem path is too long");
     memcpy(g_datadir, g_hle.fs.tree.base, n);
@@ -2101,7 +2120,10 @@ void fs_saves_init(const char* root) {
             a.type = types[i - g_user_count];
         if (!save_global(&a, name, sizeof name, host, sizeof host, sub, sizeof sub) || !snx_is_dir(host)) continue;
         FsTreeResult r = fs_tree_graft_writable(&g_hle.fs.tree, name, host);
-        if (r != FS_TREE_OK && r != FS_TREE_EXISTS) fatal("Could not index the saves in %s (error %d)", host, r);
+        if (r != FS_TREE_OK && r != FS_TREE_EXISTS) {
+            WARN("fs: could not index the saves in %s: %s %s\n", host, tree_at(host), tree_why(r));
+            fatal("Could not index the saves, as one %s: the line before says which", tree_why(r));
+        }
     }
     pm_unlock(&g_hle.fs.tree.lock);
 }
@@ -2196,7 +2218,7 @@ static u32 save_folder(const nn_fs_SaveDataAttribute* attribute, char* p, size_t
         free(parent);
         FsTreeResult r = fs_tree_graft_new(&g_hle.fs.tree, name, host);
         if (r != FS_TREE_OK) {
-            WARN("fs: could not make %s for this game's %s save (error %d)\n", host, kind, r);
+            WARN("fs: could not make %s for this game's %s save: %s %s\n", host, kind, tree_at(host), tree_why(r));
             return tree_result(r);
         }
     }

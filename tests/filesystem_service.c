@@ -2627,6 +2627,39 @@ int main(int argc, char** argv) {
                cut ? "that can't be read to its end is said at start" : "bigger than the dump, all there, is not");
         return 0;
     }
+    /* a data folder whose sdmc/ is a symbolic link: the game stops at start, the line before naming the link's path and
+       why, the stop's own text free of paths; the folder it points at is left as it is */
+    if (argc == 4 && !strcmp(argv[3], "data-link")) {
+        jmp_buf jump;
+        char *real, *said;
+        CHECK(!snx_mkdirs("link-data/Game_data/exefs") && !snx_mkdirs("link-data/card"));
+        CHECK(!snx_write_file("link-data/Game_data/exefs/main", "main", 4) &&
+              !snx_write_file("link-data/card/a.bin", "card", 4));
+        CHECK(!snx_symlink("../card", "link-data/Game_data/sdmc"));
+        real = realpath("link-data/Game_data", NULL);
+        CHECK(real != NULL);
+        said = snx_format("fs: could not index the game's files in link-data/Game_data/: %s/sdmc is a symbolic link, "
+                          "which the index doesn't follow\n",
+                          real);
+        strcpy(g_datadir, "link-data/Game_data/");
+        test_fs_text[0] = test_fatal_text[0] = 0;
+        test_fatal_jump = &jump;
+        if (!setjmp(jump)) {
+            fs_init(NULL, NULL);
+            CHECK(!"a data folder with a link in it did not stop the game");
+        }
+        test_fatal_jump = NULL;
+        if (strcmp(test_fs_text, said)) fprintf(stderr, "said:     %sexpected: %s", test_fs_text, said);
+        CHECK(!strcmp(test_fs_text, said));
+        CHECK(!strcmp(test_fatal_text, "Could not index the game's files, as one is a symbolic link, which the index "
+                                       "doesn't follow: the line before says which"));
+        CHECK(snx_is_file("link-data/card/a.bin") && g_hle.fs.tree.root == NULL);
+        free(real);
+        free(said);
+        free(g_mem);
+        printf("PASS %u checks: a link in the data folder stops the game, the line before naming it\n", test_checks);
+        return 0;
+    }
     /* a game read from its dump that finds none: where it looked, its .ini and the link an older version made */
     if (argc == 4 && (!strcmp(argv[3], "dump-none") || !strcmp(argv[3], "dump-gone"))) {
         int gone = !strcmp(argv[3], "dump-gone");

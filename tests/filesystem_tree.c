@@ -431,13 +431,56 @@ static void test_failed_initialization(const char* scratch) {
     CHECK(fs_tree_init(&invalid, path) == FS_TREE_INVALID);
     scans_allowed = 0;
     CHECK(invalid.root == NULL && invalid.base == NULL);
+    /* where it stopped, and why, for the caller's message: either name of the file */
+    CHECK(strstr(invalid.refused, "/hardlinks/alias.bin") || strstr(invalid.refused, "/hardlinks/original.bin"));
+    CHECK(!strcmp(invalid.why, "is a file of 2 names (hard links), and the index takes a file of one name only"));
+    CHECK(fs_tree_why(&invalid, FS_TREE_INVALID) == invalid.why);
     CHECK(snprintf(path, sizeof path, "%s/no-such-directory", scratch) < (int)sizeof path);
     scans_allowed = 1;
     CHECK(fs_tree_init(&invalid, path) != FS_TREE_OK);
     scans_allowed = 0;
     CHECK(invalid.root == NULL && invalid.base == NULL);
-    puts("PASS failed scans discard the index and initial hardlinks are rejected");
+    CHECK(strstr(invalid.refused, "no-such-directory") && !strncmp(invalid.why, "can't be read (", 15));
+    puts("PASS failed scans discard the index, say where they stopped, and initial hardlinks are rejected");
 }
+
+#if !defined(_WIN32) /* a link: Windows makes one only with the right to */
+/* A symbolic link in the data directory stops its index there, and so does a data directory or a graft that is one,
+   each saying the link's path and why; a graft that succeeds or stops at no path says nothing */
+static void test_links(const char* scratch) {
+    static const char* const why = "is a symbolic link, which the index doesn't follow";
+    char data[FS_TREE_PATH_MAX], card[FS_TREE_PATH_MAX], link[FS_TREE_PATH_MAX], alias[FS_TREE_PATH_MAX];
+    char expected[FS_TREE_PATH_MAX], *real;
+    FsTree other;
+    CHECK(snprintf(data, sizeof data, "%s/links", scratch) < (int)sizeof data && !plat_mkdir(data));
+    CHECK(snprintf(data, sizeof data, "%s/links/data", scratch) < (int)sizeof data && !plat_mkdir(data));
+    CHECK(snprintf(card, sizeof card, "%s/links/card", scratch) < (int)sizeof card && !plat_mkdir(card));
+    CHECK(snprintf(link, sizeof link, "%s/sdmc", data) < (int)sizeof link && !symlink(card, link));
+    CHECK(snprintf(alias, sizeof alias, "%s/links/alias", scratch) < (int)sizeof alias && !symlink(data, alias));
+    real = realpath(data, NULL);
+    CHECK(real && snprintf(expected, sizeof expected, "%s/sdmc", real) < (int)sizeof expected);
+    free(real);
+    scans_allowed = 1;
+    CHECK(fs_tree_init(&other, data) == FS_TREE_INVALID);
+    CHECK(other.root == NULL && other.base == NULL);
+    CHECK(!strcmp(other.refused, expected) && !strcmp(other.why, why));
+    CHECK(fs_tree_init(&other, alias) == FS_TREE_INVALID);
+    CHECK(!strcmp(other.refused, alias) && !strcmp(other.why, why));
+    CHECK(!unlink(link));
+    OK(fs_tree_init(&other, data));
+    pm_lock(&other.lock);
+    CHECK(fs_tree_graft(&other, "sdmc", alias) == FS_TREE_INVALID);
+    CHECK(!strcmp(other.refused, alias) && !strcmp(other.why, why));
+    OK(fs_tree_graft(&other, "sdmc", card));
+    CHECK(!other.refused[0] && !other.why[0]);
+    CHECK(fs_tree_graft(&other, "sdmc", card) == FS_TREE_EXISTS && !other.refused[0]);
+    CHECK(!strcmp(fs_tree_why(&other, FS_TREE_EXISTS), "is in the index already"));
+    scans_allowed = 0;
+    fs_tree_destroy(&other);
+    pm_unlock(&other.lock);
+    puts("PASS a symbolic link stops the index, which says its path and why");
+}
+#endif
 
 /* fs_tree_graft: a folder elsewhere as a readonly child of the data directory (the RomFS of Extract to tmpfs), its
    host paths in that folder and every other in the data directory */
@@ -664,6 +707,9 @@ int main(int argc, char** argv) {
     pm_unlock(&tree.lock);
     test_missing_root(argv[1]);
     test_failed_initialization(argv[1]);
+#if !defined(_WIN32)
+    test_links(argv[1]);
+#endif
     test_graft(argv[1]);
     test_graft_writable(argv[1]);
     test_forget(argv[1]);
