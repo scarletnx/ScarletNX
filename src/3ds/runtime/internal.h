@@ -89,6 +89,7 @@ typedef struct {
             void* host;        /* FILE* for CTR_FILE_HOST */
             void* node;        /* FsNode*, retained for the file's lifetime */
             uint32_t dlc_view; /* CTR_FILE_VIEW: 1 + the dlc_views entry it reads (a DLC's), 0 for the game's own */
+            uint32_t update_view; /* CTR_FILE_VIEW: reads update_romfs, the update's RomFS, not the game's */
         } file;
         struct {
             /* physical: a service block's FCRAM pages (font, GSP, HID); 0 for a block the application made */
@@ -241,6 +242,7 @@ typedef struct {
 } SnxCtrHid;
 struct SnxCtrProcess {
     SnxCtrRomfs* romfs; /* runtime-owned immutable host filesystem view */
+    SnxCtrRomfs* update_romfs;  /* the update's RomFS (SelfNCCH's path type 5); NULL without an update that has one */
     const SnxCtrSource* source; /* the game read where it lies, with its DLC files, which romfs reads too: the
                                    caller's, open while the process is; NULL for an extraction */
     struct {

@@ -2,14 +2,17 @@
    Copyright 2026 the ScarletNX contributors */
 /* A game read where it lies against its extraction (tests/3ds_container.py): snx_ctr_source_open accepts what the
    extraction accepts, and its ExeFS files, its image identity and every RomFS file read through the guest's view of
-   the mapped CIA's level 3 are the extraction's bytes. Usage: probe CIA [EXTRACTED], or probe GAME --update UPDATE,
-   which prints what the game with the update laid over it reads. Exit 0, or 20 + the open's SnxCtrExtractResult
-   when it refused */
+   the mapped CIA's level 3 are the extraction's bytes. Usage: probe CIA [EXTRACTED], or probe GAME --update UPDATE
+   STATE, which prints what the game with the update laid over it reads, the RomFS SelfNCCH serves included (STATE:
+   an empty folder for the process's tree). Exit 0, or 20 + the open's SnxCtrExtractResult when it refused */
 #include "3ds/loader/ctr_loader.h"
 #include "3ds/loader/ctr_image.h"
+#include "3ds/runtime/internal.h"
+#include "3ds/ipc/ctr_ipc.h"
 #include "3ds/services/romfs.h"
 #include "common/filesystem/tree.h"
 #include "common/utilities/common.h"
+#include "support/3ds_guest.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -164,8 +167,8 @@ static void compare(const SnxCtrSource* game, const char* extracted) {
     fs_tree_destroy(&tree);
     pm_destroy(&tree.lock);
 }
-/* what the game with an update reads: its ExHeader name, the ExHeader's title, and whether the RomFS holds the file
-   the update names (UTF-16LE) and the one the base names */
+/* what the game with an update reads: its ExHeader name, the ExHeader's title, and which files its RomFS and its
+   update's RomFS hold: the one the update names (UTF-16LE), the one the base names */
 static bool has_name(const unsigned char* image, uint64_t size, const char* name) {
     size_t n = strlen(name);
     for (uint64_t at = 0; at + n * 2 <= size; ++at) {
@@ -175,7 +178,41 @@ static bool has_name(const unsigned char* image, uint64_t size, const char* name
     }
     return false;
 }
-static int with_update(const char* game_path, const char* update_path) {
+static const char* holder(const unsigned char* image, uint64_t size) {
+    bool update = image && has_name(image, size, "patched.txt"), base = image && has_name(image, size, "hello.txt");
+    return update ? (base ? "both" : "update") : base ? "base" : "none";
+}
+/* the RomFS file SelfNCCH's path type (0 or 5) opens, as an updated game opens it at boot (FSUSER
+   OpenFileDirectly), read whole through a link to it (FSFILE OpenLinkFile), which reads as the file does: which files
+   it holds, or the open's result */
+static const char* self_romfs(SnxCtrProcess* p, uint32_t fs, uint32_t type, char* text, size_t text_size) {
+    const unsigned char path[12] = {(unsigned char)type};
+    assert(snx_ctr_write_ram(p->space, 0x300040, path, sizeof path) == SNX_CTR_MEM_OK);
+    uint32_t open[] = {0x8030204, 0, 3, 1, 1, 2, 12, 1, 0, 0x4802, 0x300020, 0x30002, 0x300040};
+    ctr_call(p, fs, open, 13, SNX_CTR_SVC_RETURN, 0);
+    if (ctr_command_word(p, 1)) {
+        snprintf(text, text_size, "result-%08x", ctr_command_word(p, 1));
+        return text;
+    }
+    uint32_t file = ctr_command_word(p, 3), link[] = {0x80c0000};
+    ctr_call(p, file, link, 1, SNX_CTR_SVC_RETURN, 0);
+    assert(!ctr_command_word(p, 1));
+    uint32_t linked = ctr_command_word(p, 3), size_request[] = {0x8040000};
+    ctr_call(p, linked, size_request, 1, SNX_CTR_SVC_RETURN, 0);
+    assert(!ctr_command_word(p, 1));
+    uint32_t size = ctr_command_word(p, 2);
+    assert(size && size <= 0x1000);
+    uint32_t read[] = {0x80200c2, 0, 0, size, (size << 4) | 12, 0x301000};
+    ctr_call(p, linked, read, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(!ctr_command_word(p, 1) && ctr_command_word(p, 2) == size);
+    unsigned char* image = malloc(size);
+    assert(image && snx_ctr_read_ram(p->space, 0x301000, image, size) == SNX_CTR_MEM_OK);
+    snprintf(text, text_size, "%s", holder(image, size));
+    free(image);
+    assert(!snx_ctr_handle_close(p, linked) && !snx_ctr_handle_close(p, file));
+    return text;
+}
+static int with_update(const char* game_path, const char* update_path, const char* state) {
     char error[512];
     SnxCtrSource* game = NULL;
     SnxCtrExtractResult result = snx_ctr_source_open(game_path, &game, error, sizeof error);
@@ -192,19 +229,33 @@ static int with_update(const char* game_path, const char* update_path) {
         printf("refused: %s\n", error);
         return 20 + (int)result;
     }
-    uint64_t size;
+    uint64_t size, update_size, icon;
     const unsigned char* image = snx_ctr_source_romfs(game, &size);
+    const unsigned char* update = snx_ctr_source_update_romfs(game, &update_size);
     const unsigned char* exheader = snx_ctr_source_exheader(game);
-    uint64_t icon;
-    printf("title %016llx name %.8s exheader %016llx update-file %d base-file %d icon %d\n",
+    printf("title %016llx name %.8s exheader %016llx romfs %s update-romfs %s icon %d\n",
            (unsigned long long)snx_ctr_source_title(game), (const char*)exheader,
-           (unsigned long long)le64(exheader + 0x200), image && has_name(image, size, "patched.txt"),
-           image && has_name(image, size, "hello.txt"), snx_ctr_source_exefs(game, "icon", &icon) != NULL);
+           (unsigned long long)le64(exheader + 0x200), holder(image, size), holder(update, update_size),
+           snx_ctr_source_exefs(game, "icon", &icon) != NULL);
+    /* the game run with them: SelfNCCH's RomFS (path type 0) and its update RomFS (path type 5) */
+    unsigned char code[0x3000] = {0};
+    SnxCtrImage process_image = ctr_image(code, sizeof code, 0x3000);
+    SnxCtrProcess* p = snx_ctr_process_new(&process_image, SNX_CTR_OLD);
+    assert(p && snx_ctr_process_mount_source(p, state, game));
+    uint32_t fs;
+    assert(!snx_ctr_session_create(p, SNX_CTR_SERVICE_FS, &fs));
+    uint32_t init[] = {0x8010002, 0x20, 0xffffffff};
+    ctr_call(p, fs, init, 3, SNX_CTR_SVC_RETURN, 0);
+    assert(!ctr_command_word(p, 1));
+    char self[32], self_update[32];
+    printf("self romfs %s update-romfs %s\n", self_romfs(p, fs, 0, self, sizeof self),
+           self_romfs(p, fs, 5, self_update, sizeof self_update));
+    snx_ctr_process_free(p);
     snx_ctr_source_close(game);
     return 0;
 }
 int main(int argc, char** argv) {
-    if (argc == 4 && !strcmp(argv[2], "--update")) return with_update(argv[1], argv[3]);
+    if (argc == 5 && !strcmp(argv[2], "--update")) return with_update(argv[1], argv[3], argv[4]);
     if (argc < 2 || argc > 3) return 2;
     char error[512];
     SnxCtrSource* game = NULL;

@@ -461,7 +461,7 @@ if(TARGET snx_ctr_board)
 
     # the loader's probe of a game read where it lies, and a standalone update laid over its game
     if(Python3_Interpreter_FOUND)
-        add_executable(snx-test-3ds-container 3ds_container.c)
+        add_executable(snx-test-3ds-container 3ds_container.c support/3ds_guest.c)
         snx_test_target(snx-test-3ds-container 11)
         target_link_libraries(snx-test-3ds-container PRIVATE snx_ctr_process)
         add_test(NAME 3ds_update COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_update.py"

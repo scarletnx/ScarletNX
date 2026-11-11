@@ -106,6 +106,7 @@ void snx_ctr_process_free(SnxCtrProcess* p) {
     for (unsigned i = 0; i < CTR_SELF_ARCHIVES; ++i)
         if (p->self_archives[i].root) fs_tree_release(p->self_archives[i].root);
     snx_ctr_romfs_free(p->romfs);
+    snx_ctr_romfs_free(p->update_romfs);
     for (unsigned i = 0; i < p->dlc_view_count; ++i) snx_ctr_romfs_free(p->dlc_views[i].view);
     if (p->tree) {
         fs_tree_destroy(p->tree);
@@ -292,6 +293,9 @@ static bool mount(SnxCtrProcess* p, const char* directory, const SnxCtrSource* g
         const unsigned char* image = snx_ctr_source_romfs(game, &size);
         /* a CIA without a RomFS reads as an empty one, as its extraction's empty romfs/ folder does */
         ok = ok && snx_ctr_romfs_open_image(image, size, snx_ctr_source_mtime(game), &p->romfs);
+        /* the update's, which an updated game opens apart (services/fs.c, SelfNCCH's path type 5) */
+        image = snx_ctr_source_update_romfs(game, &size);
+        ok = ok && (!image || snx_ctr_romfs_open_image(image, size, snx_ctr_source_mtime(game), &p->update_romfs));
         /* the ExeFS files SelfNCCH serves (services/fs.c), in the tree as an extraction's exefs/ has them: copies of
            the CIA's sections, read-only and never on the host */
         static const char* const sections[] = {"icon", "logo", "banner"};
@@ -315,7 +319,8 @@ static bool mount(SnxCtrProcess* p, const char* directory, const SnxCtrSource* g
     }
     if (!ok) { /* leave no partial mount behind; the process itself stays the caller's */
         snx_ctr_romfs_free(p->romfs);
-        p->romfs = NULL;
+        snx_ctr_romfs_free(p->update_romfs);
+        p->romfs = p->update_romfs = NULL;
         fs_tree_destroy(p->tree);
         pm_destroy(&p->tree->lock);
         free(p->tree);

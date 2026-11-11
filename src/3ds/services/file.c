@@ -10,9 +10,10 @@
 #include "services/file.swipc.inc"
 #include <stdlib.h>
 #include <string.h>
-/* the RomFS a view file reads: a DLC content's, else the game's own */
+/* the RomFS a view file reads: a DLC content's, the update's, else the game's own */
 static SnxCtrRomfs* view_of(const SnxCtrProcess* p, const CtrObject* object) {
-    return object->data.file.dlc_view ? p->dlc_views[object->data.file.dlc_view - 1].view : p->romfs;
+    if (object->data.file.dlc_view) return p->dlc_views[object->data.file.dlc_view - 1].view;
+    return object->data.file.update_view ? p->update_romfs : p->romfs;
 }
 static uint32_t snx_ctr_file_wire_GetSize(SnxCtrIpc* c, uint64_t* size) {
     CtrObject* object = &c->process->objects[c->object];
@@ -170,7 +171,9 @@ static void open_link(SnxCtrIpc* c, CtrObject* object) {
         return;
     }
     p->objects[snx_ctr_handle_object(p, c->out[3])].data.file.priority = priority;
-    p->objects[snx_ctr_handle_object(p, c->out[3])].data.file.dlc_view = object->data.file.dlc_view;
+    CtrObject* link = &p->objects[snx_ctr_handle_object(p, c->out[3])];
+    link->data.file.dlc_view = object->data.file.dlc_view;
+    link->data.file.update_view = object->data.file.update_view;
 }
 void snx_ctr_file_dispatch(SnxCtrIpc* c) {
     SnxCtrProcess* p = c->process;
