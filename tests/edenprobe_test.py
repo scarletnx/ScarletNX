@@ -390,6 +390,14 @@ with tempfile.TemporaryDirectory() as temporary:
     status, text, out, calls = run([{'lines': WHOLE, 'signal': 11}])
     check('a crash after the summary fails', status == 1 and 'ended with exit -11 after its summary' in text, text)
 
+    status, text, out, calls = run([{'lines': WHOLE, 'hang': True}], extra=['--timeout', '3'])
+    check(
+        'a launch killed after its summary fails',
+        status == 1
+        and 'launch 1 wrote its summary and did not end: killed after 3 s with no new line (--timeout 3)' in text,
+        text,
+    )
+
     ignored = [note('mode: quick, from the mode file; 1 unknown word ignored: grpahics')]
     status, text, out, calls = run([START[:2] + ignored + CASES + [summary(2, 1, 1)]])
     check('words edenprobe ignored fail the run', status == 1 and 'ignored words of the mode: 1 unknown' in text, text)
