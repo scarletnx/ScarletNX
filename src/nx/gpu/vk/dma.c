@@ -9,7 +9,7 @@
    (texconv.comp), exactly a line's bytes each, so what surrounds them keeps its bytes. The destination's rows go back
    into its layout, and the buffer is published over the runs it was read from.
    A launch bigger than one allocation, or whose scratch is bigger than a quarter of one, goes in bands of lines, each
-   a copy of its own (dma_bands).
+   a copy of its own (dma_bands), and the frame may end between two bands, as at a draw's start (vk_frame_check).
    Under vk_lock, in the frame's command buffer: the semaphore after the copy is the renderer's queued release, which
    comes after it */
 #include <stdlib.h>
@@ -394,6 +394,7 @@ static int dma_bands(const GpuDmaOp* o) {
         DmaNeeds n = dma_needs(&b);
         if (!dma(&b, &n, o->fill || o->src.bl ? 0 : (u64)y * o->src.pitch)) return 0;
         if (lines < o->lines) g_dma.bands++;
+        if (y + lines < o->lines) vk_frame_check(); /* the next band may record in the other slot (cmd.c) */
     }
     return 1;
 }

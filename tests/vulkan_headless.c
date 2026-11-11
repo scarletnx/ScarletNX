@@ -433,6 +433,49 @@ static int check_rings_without_present(void) {
     return 0;
 }
 
+/* On a GPU that shares the system's memory the rings are memory the caches budget, and a frame without a present ends
+   once its rings hold an eighth of the budget, when that is less than VK_FRAME_RING_CAPS allocations: with
+   allocations of 1 MiB and a budget of 24 MiB, every 3 MiB rather than every 4 (64 draws of a megabyte each end 21
+   frames, the allocations alone 15), and the copies still read their uploads. A phone ran out of memory within 5 s of
+   the upload of an 8192x8192 texture, which writes 1365 MiB to one frame's rings */
+static int check_rings_budget_share(void) {
+    const u32 draws = 64;
+    u64 saved_cap = g_vk.alloc_cap, saved_budget, first;
+    VkBuffer rb;
+    u8* result;
+    if (g_vk.mem_model != VK_MEM_UMA) {
+        printf("skip: the rings' share of the budget holds on a GPU that shares the system's memory\n");
+        return 0;
+    }
+    vk_finish();
+    vk_frame_next();
+    g_vk.alloc_cap = 1u << 20;
+    saved_budget = vk_mem_budget_cap(24u << 20);
+    first = vk_frame_id();
+    result = vk_readback_buffer(draws * 16, &rb);
+    CHECK(result);
+    for (u32 i = 0; i < draws; i++) {
+        VkBuffer buffer;
+        u64 offset;
+        vk_frame_check(); /* a draw's start */
+        u8* data = vk_stage_upload(g_vk.alloc_cap, 16, &buffer, &offset);
+        CHECK(data);
+        memset(data, (int)(i + 1), 16);
+        VkBufferCopy copy = {offset, i * 16ull, 16};
+        rec_CmdCopyBuffer(vk_cmd(), buffer, rb, 1, &copy);
+    }
+    vk_finish();
+    vk_readback_ready();
+    u64 frames = vk_frame_id() - first;
+    vk_mem_budget_cap(saved_budget);
+    g_vk.alloc_cap = saved_cap;
+    vk_frame_next();
+    for (u32 i = 0; i < draws * 16; i++) CHECK(result[i] == i / 16 + 1);
+    printf("%u draws of 1 MiB under a 24 MiB budget: %llu frames\n", draws, (unsigned long long)frames);
+    CHECK(frames >= draws / 3 - 1);
+    return 0;
+}
+
 /* A frame that ended at its limit of submissions leaves its slot's counts as they were until the slot is used again:
    vk_frame_check on that slot, fresh after a present, keeps it rather than ending a frame that recorded nothing and
    moving on to the slot whose work was just submitted */
@@ -4371,6 +4414,38 @@ static int check_dma_bands(void) {
     return 0;
 }
 
+/* A copy's bands are recorded with no draw between them, and vk_frame_check, which ends a frame once it has written
+   VK_FRAME_RING_CAPS allocations to its rings, ran only at a draw's start: the copy engine's upload of an 8192x8192
+   RGBA8 texture's levels wrote 1365 MiB to one frame's rings, and a phone's system ended the app. The frame ends
+   between two bands now: 896 lines of 512 bytes into block linear, 448 KiB of source and as much of the
+   destination's own bytes staged, with the cap lowered to 64 KiB (bands of 16 KiB of rows, a frame's rings 256 KiB),
+   go over several frames, the rings stay within the two slots' share, and the copy is the CPU's */
+static int check_dma_bands_frames(void) {
+    const u64 cap = g_vk.alloc_cap;
+    GpuDmaOp o = {0};
+    vk_finish();
+    vk_frame_next();
+    g_vk.alloc_cap = 64 << 10;
+    o.multi = 1;
+    o.width = o.line_in = o.line_out = 512;
+    o.lines = 896;
+    o.src = pitch_side(0x1000, 512);
+    o.dst = bl_side(0x80000, 512, 896, 1, 0, 0);
+    u64 frames = vk_frame_id(), rings = vk_ring_bytes(), copies, bands0, bands1, bytes;
+    vk_dma_stats(&copies, &bands0, &bytes);
+    int failed = dma_case(o);
+    vk_dma_stats(&copies, &bands1, &bytes);
+    u64 ended = vk_frame_id() - frames, grown = vk_ring_bytes() > rings ? vk_ring_bytes() - rings : 0;
+    g_vk.alloc_cap = cap;
+    vk_frame_next();
+    printf("dma bands across frames: %llu bands, %llu frames ended, the rings grew by %llu KiB\n",
+           (unsigned long long)(bands1 - bands0), (unsigned long long)ended, (unsigned long long)(grown >> 10));
+    CHECK(!failed && bands1 - bands0 >= 8);
+    CHECK(ended >= 2);
+    CHECK(grown <= (u64)(VK_FRAMES + 1) * VK_FRAME_RING_CAPS * (64 << 10));
+    return 0;
+}
+
 /* Targets bigger than one allocation (g_vk.alloc_cap, lowered to 64 KiB for the write-back) read back in parts: a
    block linear 256x128 RGBA8 one and a pitch linear one of the same size in bands of rows, a pitch linear array of
    12 layers of 64x32 two layers a part, and multisampled ones, block linear of 256x128 samples and pitch linear of
@@ -4632,15 +4707,22 @@ static int check_blit_bands(void) {
             (unsigned long long)asked, (unsigned long long)((512 << 10) / VK_PART_SHARE));
         failed = 1;
     }
+    /* and a frame ends between two bands once its rings hold VK_FRAME_RING_CAPS allocations (256 KiB here), as
+       between a copy engine's (check_dma_bands_frames): the three blits end 3 frames, and none ended without it */
+    vk_finish();
+    vk_frame_next();
     g_vk.alloc_cap = 64 << 10;
+    u64 frames = vk_frame_id();
     failed |= blit_case(bl_side(0x1000, 128 * 4, 256, 2, 0, 0), bl_side(0x80000, 128 * 4, 256, 1, 0, 0), 4, 9, 30, 100,
                         200, 128, 256, 0);
     failed |= blit_case(pitch_plane(0x101, 300, 75 * 4, 150), pitch_plane(0x60001, 520, 120 * 4, 240), 4, 3, 2, 110,
                         230, 75, 150, 0);
     failed |= blit_case(pitch_plane(0x3000, 64 * 16, 64 * 16, 100), bl_side(0x80000, 64 * 8, 128, 1, 0, 0), 16, 0, 5,
                         64, 120, 64, 100, GPU_BLIT_FLOAT(4, 4, 4, 2, 0));
+    u64 ended = vk_frame_id() - frames;
     g_vk.alloc_cap = cap;
-    CHECK(!failed);
+    printf("blit bands: %llu frames ended between bands\n", (unsigned long long)ended);
+    CHECK(!failed && ended >= 2);
     return 0;
 }
 
@@ -4729,6 +4811,50 @@ static int check_dma_untracked_source(void) {
     CHECK(all_bytes(GP(dst), (u32)size, 0x22));
     mem_alias_end(src, size);
     puts("dma: a source written past the write tracking is copied as it is now");
+    return 0;
+}
+
+/* A copy engine's source of 512 KiB, past PATCH_MIN, takes a buffer of its own at once where writes are tracked, so
+   that changes patch it (dma_reused_source), but not past a sixty-fourth of the memory budget, lowered to 16 MiB here:
+   a texture's upload reads its source once, and an 8192x8192 RGBA8 texture's levels took 760 MiB of them that nothing
+   read again. Such a source takes one once it stayed the same, the third copy of it, as every other range does */
+static int check_dma_source_kept_when_stable(void) {
+    const u64 size = 0x80000, src = HEAP_BASE + 0x21000000, dst = src + size, gsrc = 0xb30000000ull,
+              gdst = 0xb40000000ull;
+    u64 had[4];
+    u32 n;
+    GpuDmaOp o;
+    CHECK(mem_map(src, 2 * size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gsrc, src, size);
+    gmmu_map(gdst, dst, size);
+    vk_lock();
+    int tracking = vk_written_since(gmem_host(gsrc, size), size, 0) >= 0;
+    vk_unlock();
+    if (!tracking) {
+        printf("skip: a copy source's buffer of its own at once needs write tracking\n");
+        return 0;
+    }
+    memset(&o, 0, sizeof o);
+    o.width = o.line_in = o.line_out = (u32)size;
+    o.lines = 1;
+    o.src = pitch_side(gsrc, 0);
+    o.dst = pitch_side(gdst, 0);
+    memset(GP(src), 0x33, size);
+    g_renderer->mem_may_have_changed();
+    u64 budget = vk_mem_budget_cap(16u << 20);
+    vk_buf_stats(&n, &had[0]);
+    for (int i = 1; i <= 3; i++) {
+        CHECK(g_renderer->dma_copy(&o));
+        guest_done(dst, (u32)size);
+        CHECK(all_bytes(GP(dst), (u32)size, 0x33));
+        memset(GP(dst), 0, size);
+        vk_buf_stats(&n, &had[i]);
+    }
+    vk_mem_budget_cap(budget);
+    printf("dma: a 512 KiB source's own buffers after each of three copies: %llu, %llu, %llu KiB\n",
+           (unsigned long long)((had[1] - had[0]) >> 10), (unsigned long long)((had[2] - had[0]) >> 10),
+           (unsigned long long)((had[3] - had[0]) >> 10));
+    CHECK(had[1] == had[0] && had[2] == had[0] && had[3] >= had[0] + size);
     return 0;
 }
 
@@ -6155,6 +6281,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_tex_view_refusal());
     CHECK(!check_staging_overflow()); /* first: it counts the staging blocks of a fresh device */
     CHECK(!check_rings_without_present());
+    CHECK(!check_rings_budget_share());
     CHECK(!check_fresh_frame_kept());
     CHECK(!check_stats_gpu_time());
     CHECK(!check_staging_burst());
@@ -6280,6 +6407,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_dma());
     CHECK(!check_dma_owners());
     CHECK(!check_dma_bands());
+    CHECK(!check_dma_bands_frames());
     CHECK(!check_flush_parts());
     CHECK(!check_vic_bands());
     CHECK(!check_dma_texture());
@@ -6297,6 +6425,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_resident_texture_in_flight());
     CHECK(!check_sparse_pieces_batched());
     CHECK(!check_dma_untracked_source());
+    CHECK(!check_dma_source_kept_when_stable());
     CHECK(!check_dma_tiles());
     CHECK(!check_map_lands_covered());
     CHECK(!check_map_waits());

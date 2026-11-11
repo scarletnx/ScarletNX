@@ -1035,6 +1035,13 @@ int vk_mem_heap(void) {
     if (g_heap < 0) heap_find();
     return g_heap;
 }
+u64 vk_mem_budget_cap(u64 bytes) {
+    u64 had;
+    if (g_heap < 0) heap_find(); /* which reads vk_budget_mb once */
+    had = g_budget_cap;
+    g_budget_cap = bytes;
+    return had;
+}
 
 /* Without the extension VMA's numbers are its own guess, not the driver's: its blocks for the use, 80% of the heap's
    size for the budget. The stats box shows ? for them then, as for any value the device does not tell */
