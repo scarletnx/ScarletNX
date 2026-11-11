@@ -172,11 +172,11 @@ static VkFmt TC(VkFormat f, int bpp) { /* block compressed, 4x4 */
     return r;
 }
 /* which block formats the device samples as they are: textureCompressionASTC_LDR, textureCompressionETC2 and
-   textureCompressionBC, which the native_astc, native_etc2 and native_bc settings turn on (device.c). A texture in
-   them takes the game's own bytes (a 12x12 ASTC one a 36th of RGBA8's); the others are decoded on the GPU as they
+   textureCompressionBC, which the native_astc, native_etc2 and native_bc settings turn on (vk_blocks_want). A texture
+   in them takes the game's own bytes (a 12x12 ASTC one a 36th of RGBA8's); the others are decoded on the GPU as they
    are uploaded. ASTC_AS_BC7: a decoded ASTC texture encoded again as BC7 (astc_mode's BC7, or its Auto, the default,
-   on a GPU of little memory, vk_astc_bc7), where the device samples BCn: device.c turns textureCompressionBC on for it,
-   so BCn is sampled as it is only when native_bc says so as well */
+   on a GPU of little memory, vk_astc_bc7), where the device samples BCn: vk_blocks_want turns textureCompressionBC on
+   for it, so BCn is sampled as it is only when native_bc says so as well */
 enum { NATIVE_ASTC = 1, NATIVE_ETC2 = 2, NATIVE_BC = 4, ASTC_AS_BC7 = 8 };
 int vk_astc_bc7(void) { return snx_astc_bc7(g_settings.astc_mode, g_vk.astc_auto_bc7); }
 static u32 native_blocks(void) {
@@ -184,6 +184,18 @@ static u32 native_blocks(void) {
            (g_vk.feat.textureCompressionETC2 ? NATIVE_ETC2 : 0) |
            (g_vk.feat.textureCompressionBC && g_settings.native_bc ? NATIVE_BC : 0) |
            (g_vk.feat.textureCompressionBC && vk_astc_bc7() ? ASTC_AS_BC7 : 0);
+}
+/* textureCompressionBC is turned on wherever the device has it (ASTC's BC7 may want it), ASTC LDR and ETC2 where the
+   native_astc and native_etc2 settings ask as well; a setting at 1 the device can't meet is a warning, in the line of
+   its textures' family (vk_blocks_say) */
+void vk_blocks_want(const VkPhysicalDeviceFeatures* have, VkPhysicalDeviceFeatures* want) {
+    g_vk.blocks_have = (have->textureCompressionASTC_LDR ? VK_BLOCKS_ASTC : 0u) |
+                       (have->textureCompressionETC2 ? VK_BLOCKS_ETC2 : 0u) |
+                       (have->textureCompressionBC ? VK_BLOCKS_BC : 0u);
+    want->textureCompressionBC = have->textureCompressionBC;
+    want->textureCompressionASTC_LDR = g_settings.native_astc && have->textureCompressionASTC_LDR;
+    want->textureCompressionETC2 = g_settings.native_etc2 && have->textureCompressionETC2;
+    g_vk.astc_bc7_could = have->textureCompressionBC && !have->textureCompressionASTC_LDR;
 }
 static int is_native_block(VkFormat f) {
     return (f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK) ||
@@ -378,6 +390,80 @@ VkFmt vk_tic_format_3d(u32 w0, int srgb) {
             VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, &p) == VK_SUCCESS)
         return f;
     return tic_format(w0, srgb, 0);
+}
+
+/* the name the log gives a format the block textures are held in, the BC7 and ETC2 blocks they are encoded again into
+   or what they are decoded to */
+static const char* held_name(VkFormat f) {
+    switch (f) {
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SRGB: return "RGBA8";
+        case VK_FORMAT_R16_UNORM:
+        case VK_FORMAT_R16_SNORM: return "R16";
+        case VK_FORMAT_R16G16_UNORM:
+        case VK_FORMAT_R16G16_SNORM: return "RG16";
+        case VK_FORMAT_R16G16B16A16_SFLOAT: return "RGBA16F";
+        case VK_FORMAT_BC7_UNORM_BLOCK:
+        case VK_FORMAT_BC7_SRGB_BLOCK: return "BC7";
+        case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:
+        case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK: return "ETC2 RGB8A1";
+        case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
+        case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK: return "ETC2 RGBA8";
+        case VK_FORMAT_EAC_R11_UNORM_BLOCK:
+        case VK_FORMAT_EAC_R11_SNORM_BLOCK: return "EAC R11";
+        case VK_FORMAT_EAC_R11G11_UNORM_BLOCK:
+        case VK_FORMAT_EAC_R11G11_SNORM_BLOCK: return "EAC RG11";
+        default: return NULL;
+    }
+}
+/* the log's line for a family of block textures: each of its formats (texture header word 0, name) as vk_tic_format
+   holds it now, sampled as the game's blocks, encoded again on the GPU into other blocks, or decoded, and into what.
+   why: what the settings say and the GPU has; warn: a setting asks for what the GPU lacks */
+static void family_say(const char* family, const char* why, int warn, const u32* tic, const char* const* names, int n) {
+    static const char* const heads[3] = {
+        " sampled as the game's blocks:", " encoded again on the GPU:", " decoded on the GPU:"};
+    char line[640];
+    int at = snprintf(line, sizeof line, "vulkan: %s textures (%s):", family, why);
+    for (int kind = 0, groups = 0; kind < 3; kind++)
+        for (int i = 0, first = 1; i < n && at < (int)sizeof line; i++) {
+            VkFmt f = vk_tic_format(tic[i], 0);
+            int k = !f.conv ? 0 : is_native_block(f.vk) ? 1 : 2;
+            if (k != kind) continue;
+            if (first) at += snprintf(line + at, sizeof line - at, "%s%s", groups++ ? ";" : "", heads[kind]);
+            const char* name = held_name(f.vk);
+            at += snprintf(line + at, sizeof line - at, "%s %s", first ? "" : ",", names[i]);
+            if (kind && at < (int)sizeof line && name)
+                at += snprintf(line + at, sizeof line - at, " %s %s", kind == 1 ? "as" : "to", name);
+            else if (kind && at < (int)sizeof line)
+                at += snprintf(line + at, sizeof line - at, " %s Vulkan format %d", kind == 1 ? "as" : "to", (int)f.vk);
+            first = 0;
+        }
+    if (warn)
+        WARN("%s\n", line);
+    else
+        LOG("%s\n", line);
+}
+/* The log says once, as the device starts, how each family of the games' block textures is held, from what
+   vk_tic_format picks: so any player's log answers whether their GPU samples ASTC, ETC2 and BCn as the games' blocks,
+   and what the rest become. ASTC encoded again as BC7 is astc_mode's (its own line says when: between frames, or as
+   each texture loads) */
+void vk_blocks_say(void) {
+    static const u32 astc[1] = {0x40}, etc[5] = {0x06, 0x0A, 0x0B, 0x19, 0x1A},
+                     bcn[7] = {0x24, 0x25, 0x26, 0x27, 0x28, 0x11, 0x17};
+    static const char* const astc_names[1] = {"ASTC"};
+    static const char* const etc_names[5] = {"ETC2 RGB", "ETC2 RGB8A1", "ETC2 RGBA8", "EAC R11", "EAC RG11"};
+    static const char* const bcn_names[7] = {"BC1", "BC2", "BC3", "BC4", "BC5", "BC6H", "BC7"};
+    char why[160];
+    u32 astc_has = g_vk.blocks_have & VK_BLOCKS_ASTC, etc2_has = g_vk.blocks_have & VK_BLOCKS_ETC2;
+    u32 bc_has = g_vk.blocks_have & VK_BLOCKS_BC;
+    snprintf(why, sizeof why, "native_astc=%d, the GPU samples %sASTC, astc_mode=%d", g_settings.native_astc,
+             astc_has ? "" : "no ", g_settings.astc_mode);
+    family_say("ASTC", why, g_settings.native_astc && !astc_has, astc, astc_names, 1);
+    snprintf(why, sizeof why, "native_etc2=%d, the GPU samples %sETC2", g_settings.native_etc2, etc2_has ? "" : "no ");
+    family_say("ETC2 and EAC", why, g_settings.native_etc2 && !etc2_has, etc, etc_names, 5);
+    snprintf(why, sizeof why, "native_bc=%d, the GPU samples %sBCn, ETC2 %s", g_settings.native_bc,
+             bc_has ? "" : "no ", g_vk.feat.textureCompressionETC2 ? "sampled" : "not sampled");
+    family_say("BCn", why, g_settings.native_bc && !bc_has, bcn, bcn_names, 7);
 }
 
 VkFormat vk_srgb_as(VkFormat f, int srgb) {
