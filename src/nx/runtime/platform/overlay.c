@@ -1221,11 +1221,23 @@ int overlay_tap(float x, float y, int sw, int sh) {
     if (arrows(setting(focus))) return act(focus, col < at.cols - 5 ? -1 : 1);
     return act(focus, 0);
 }
-static u64 tap_id;   /* what went down off the on-screen controls, */
+/* whether x, y lies on the open menu's panel on the picture overlay_place last had: a page, not the button map's or
+   F1's, which a tap anywhere answers */
+static int on_panel(float x, float y) {
+    char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[2 * OVERLAY_COLS_MAX + 64];
+    Dialog d;
+    DialogDrawn at;
+    if (!shown || page == PAGE_MAP || page == PAGE_KEYS || picture[0] <= 0 || picture[1] <= 0) return 0;
+    menu_dialog(&d, text, value, pads, sizeof pads);
+    dialog_draw(NULL, picture[0], picture[1], &d, g_overlay.event_rows, &at);
+    return overlay_error_hit(&at.box, x, y);
+}
+static u64 tap_id;   /* what went down on the panel or off the on-screen controls, */
 static int tap_down; /* whose lift taps the menu */
 void overlay_pointer_down(u64 id, float x, float y, const int safe[4]) {
-    /* the on-screen controls take no finger under the loading screen, where they aren't drawn (vk/ui.c) */
-    if (!prepare_screen_shown() && vpad_down(id, x, y, safe)) return;
+    /* on the panel a finger is the menu's, whatever control lies under it; off it a control's, but under the loading
+       screen, where they aren't drawn (vk/ui.c) */
+    if (!on_panel(x, y) && !prepare_screen_shown() && vpad_down(id, x, y, safe)) return;
     tap_id = id;
     tap_down = 1;
 }
