@@ -84,10 +84,45 @@ SnxUiQuadView ui_view(const SnxUiQuad* q) {
                            .ink = (u8)ink,
                            .glyph = (u8)(alpha_glyph ? 0 : byte)};
 }
+/* the renderer's list (ui_dirty_begin), the span of it written since, and the parts kept in it (ui_append_kept) this
+   frame and the one before */
+#define UI_PARTS 16
+typedef struct {
+    const void* who;
+    u32 version;
+    int at, n;
+} UiPart;
+static struct {
+    const SnxUiQuad* list;
+    const SnxUiQuad* was; /* the list of the frame before */
+    int first, end;
+    UiPart part[2][UI_PARTS];
+    int parts[2], now;
+} g_dirty;
+void ui_dirty_begin(const SnxUiQuad* list) {
+    g_dirty.now ^= 1;
+    g_dirty.parts[g_dirty.now] = 0;
+    if (list != g_dirty.was) g_dirty.parts[g_dirty.now ^ 1] = 0; /* another list: nothing in it is known */
+    g_dirty.list = g_dirty.was = list;
+    g_dirty.first = g_dirty.end = 0;
+}
+void ui_dirty_end(int* first, int* end) {
+    *first = g_dirty.first;
+    *end = g_dirty.end;
+    g_dirty.list = NULL;
+}
+/* l's quads first to end written */
+static void dirty(const SnxUiList* l, int first, int end) {
+    if (l->q != g_dirty.list || first >= end) return;
+    if (g_dirty.first >= g_dirty.end || first < g_dirty.first) g_dirty.first = first;
+    if (end > g_dirty.end) g_dirty.end = end;
+}
 static void quad(SnxUiList* l, float x, float y, float w, float h, int u, int v, int uw, int vh, u32 rgba, int turn,
                  int sample, int ink, int glyph) {
     if (l->n >= l->max || w <= 0 || h <= 0) return;
-    l->q[l->n++] = ui_quad(x, y, w, h, u, v, uw, vh, rgba, turn, sample, ink, glyph);
+    l->q[l->n] = ui_quad(x, y, w, h, u, v, uw, vh, rgba, turn, sample, ink, glyph);
+    dirty(l, l->n, l->n + 1);
+    ++l->n;
 }
 int ui_picture(SnxUiList* l, float x, float y, float side) {
     if (!SNX_GUI_THEME_YORHA_PICTURE) return 0;
@@ -212,6 +247,7 @@ int ui_cells(SnxUiList* l, float x, float y, int scale, int n, u32 rgba) {
     for (k = 0; k < n; ++k)
         l->q[l->n++] = ui_quad(x + 8.0f * (float)(scale * k), y, 8.0f * (float)scale, 16.0f * (float)scale, 0, 0, 0, 0,
                                rgba, 0, UI_SHARP, UI_GLYPH, ' ');
+    dirty(l, first, l->n);
     return first;
 }
 int ui_cells_set(SnxUiQuad* q, int n, const char* s) {
@@ -261,10 +297,11 @@ void ui_ring_set(const u8* height, int n, int head, int slow_from, u32 slow) {
 }
 const SnxUiRing* ui_ring(void) { return &g_ring; }
 void ui_ring_bars(SnxUiList* l, float x, float y, float w, float h, int n, u32 rgba) {
-    int k;
+    int k, first = l->n;
     for (k = 0; k < n && l->n < l->max; ++k)
         l->q[l->n++] = ui_quad(x, y, w, h, SNX_UI_WHITE_X + 1, SNX_UI_WHITE_Y + 1, 2, 2, rgba, 0, UI_SHARP,
                                UI_RING, k);
+    dirty(l, first, l->n);
 }
 SnxUiQuadView ui_drawn(const SnxUiQuad* q) {
     SnxUiQuadView d = ui_view(q);
@@ -290,6 +327,36 @@ void ui_append(SnxUiList* l, const SnxUiList* from) {
     int n = from->n < l->max - l->n ? from->n : l->max - l->n;
     if (n <= 0) return;
     memcpy(l->q + l->n, from->q, (size_t)n * sizeof *l->q);
+    dirty(l, l->n, l->n + n);
+    l->n += n;
+}
+void ui_span_add(SnxUiSpan* span, int first, int end) {
+    if (first >= end) return;
+    if (span->first >= span->end || first < span->first) span->first = first;
+    if (end > span->end) span->end = end;
+}
+void ui_append_kept(SnxUiList* l, const SnxUiList* from, u32 version, const void* who, SnxUiSpan* changed) {
+    int n = from->n < l->max - l->n ? from->n : l->max - l->n, k, was_here = 0, same = 0, first = 0, end = n;
+    if (n <= 0) return;
+    if (l->q == g_dirty.list) { /* where the frame before had them: the same part, place and length, and version */
+        const UiPart* was = g_dirty.part[g_dirty.now ^ 1];
+        for (k = 0; k < g_dirty.parts[g_dirty.now ^ 1] && !was_here; ++k)
+            if (was[k].who == who && was[k].at == l->n && was[k].n == n) {
+                was_here = 1;
+                same = was[k].version == version;
+            }
+        if (g_dirty.parts[g_dirty.now] < UI_PARTS)
+            g_dirty.part[g_dirty.now][g_dirty.parts[g_dirty.now]++] = (UiPart){who, version, l->n, n};
+        if (was_here && changed) { /* only what changed since */
+            first = changed->first < 0 ? 0 : changed->first;
+            end = changed->end > n ? n : changed->end;
+        }
+        if (changed) *changed = (SnxUiSpan){0, 0};
+    }
+    if (!same && first < end) {
+        memcpy(l->q + l->n + first, from->q + first, (size_t)(end - first) * sizeof *l->q);
+        dirty(l, l->n + first, l->n + end);
+    }
     l->n += n;
 }
 float ui_icon(SnxUiList* l, float x, float y, int scale, unsigned icon, u32 rgba) {

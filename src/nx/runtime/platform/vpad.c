@@ -471,11 +471,68 @@ static void edit_draw(SnxUiList* l, const int safe[4]) {
     ui_text(l, b[BAR_MORE][0], b[BAR_MORE][1], s, "[ + ]", page);
     ui_text(l, b[BAR_DONE][0], b[BAR_DONE][1], s, "[ Done ]", page);
 }
+/* The controls' quads, and showcase's, kept from frame to frame: made again only when what they show changes (a key of
+   it, its bytes compared, its padding zeroed), and appended to the renderer's list where they are still from the
+   frame before (ui_append_kept) */
+#define KEPT_QUADS 2048 /* edit mode's grid of lines and its bar, and the controls' shapes */
+typedef struct {
+    int safe[4], shown, edit, selected, snap, scale, control_shown[SNX_VPAD_COUNT];
+    SnxVpadConfig at;
+    u32 held, dpad;
+    float axis[2][2], middle[2][2];
+} DrawKey;
+typedef struct {
+    int safe[4], corner, fps;
+    float box[4];
+    u64 buttons;
+    float axis[2][2];
+} ShowcaseKey;
+static struct {
+    int laid;
+    DrawKey key;
+    SnxUiQuad q[KEPT_QUADS];
+    int n;
+    u32 version;
+} g_drawn;
+static struct {
+    int laid;
+    ShowcaseKey key;
+    SnxUiQuad q[64];
+    int n;
+    u32 version;
+} g_shown;
+static void controls_draw(SnxUiList* l, const int safe[4]);
+static void showcase_draw(SnxUiList* l, const int safe[4], int fps);
 void vpad_draw(SnxUiList* l, const int safe[4]) {
-    int c;
-    float r[4];
+    DrawKey k;
     placed();
     if (!g_settings.show_controls && !g_edit) return;
+    memset(&k, 0, sizeof k);
+    memcpy(k.safe, safe, sizeof k.safe);
+    k.shown = g_settings.show_controls;
+    k.edit = g_edit;
+    k.selected = g_selected;
+    k.snap = g_settings.snap_to_grid;
+    k.scale = g_settings.controls_scale;
+    memcpy(k.control_shown, g_settings.control_shown, sizeof k.control_shown);
+    k.at = g_vpad;
+    k.held = g_held;
+    k.dpad = g_dpad;
+    memcpy(k.axis, g_axis, sizeof k.axis);
+    memcpy(k.middle, g_middle, sizeof k.middle);
+    if (!g_drawn.laid || memcmp(&k, &g_drawn.key, sizeof k)) {
+        SnxUiList kept = {g_drawn.q, 0, KEPT_QUADS};
+        controls_draw(&kept, safe);
+        g_drawn.n = kept.n;
+        g_drawn.key = k;
+        g_drawn.laid = 1;
+        ++g_drawn.version;
+    }
+    ui_append_kept(l, &(SnxUiList){g_drawn.q, g_drawn.n, KEPT_QUADS}, g_drawn.version, &g_drawn, NULL);
+}
+static void controls_draw(SnxUiList* l, const int safe[4]) {
+    int c;
+    float r[4];
     if (g_edit) edit_draw(l, safe);
     for (c = 0; c < SNX_VPAD_COUNT; ++c) {
         if (!g_settings.control_shown[c]) continue;
@@ -559,6 +616,24 @@ int vpad_showcase_box(const int safe[4], float box[4]) {
     return corner;
 }
 void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
+    ShowcaseKey k;
+    memset(&k, 0, sizeof k);
+    if ((k.corner = vpad_showcase_box(safe, k.box)) < 0) return;
+    memcpy(k.safe, safe, sizeof k.safe);
+    k.fps = fps;
+    k.buttons = g_show_buttons;
+    memcpy(k.axis, g_show_axis, sizeof k.axis);
+    if (!g_shown.laid || memcmp(&k, &g_shown.key, sizeof k)) {
+        SnxUiList kept = {g_shown.q, 0, (int)(sizeof g_shown.q / sizeof g_shown.q[0])};
+        showcase_draw(&kept, safe, fps);
+        g_shown.n = kept.n;
+        g_shown.key = k;
+        g_shown.laid = 1;
+        ++g_shown.version;
+    }
+    ui_append_kept(l, &(SnxUiList){g_shown.q, g_shown.n, g_shown.n}, g_shown.version, &g_shown, NULL);
+}
+static void showcase_draw(SnxUiList* l, const int safe[4], int fps) {
     float box[4], x0, y0, w, h, r[4];
     int c, scale;
     char text[24];
