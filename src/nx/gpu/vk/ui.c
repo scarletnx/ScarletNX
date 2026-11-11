@@ -16,6 +16,8 @@
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/ui_spv.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/font.h"
+#include "gui/icons.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/overlay.h"
@@ -32,6 +34,10 @@ static SnxUiQuad g_sent[MAX_QUADS]; /* what g_inst holds, as the device reads it
 static int g_sent_n;                /* g_sent's quads that g_inst holds: none for a new buffer */
 static VkBuffer g_inst;
 static VmaAllocation g_inst_mem;
+/* the font's and the icons' bits, a byte a row (ui.frag's Glyphs): what letters and icons read, not the atlas */
+#define UI_GLYPHS_SIZE ((256 + 2 * GUI_ICON_COUNT) * 16)
+static VkBuffer g_glyphs;
+static VmaAllocation g_glyphs_mem;
 static VkDescriptorSetLayout g_dsl;
 static VkPipelineLayout g_layout;
 static VkPipeline g_pipe;
@@ -52,21 +58,26 @@ static VkImage g_sc_img[VK_SC_MAX];
 static VkImageView g_sc_view[VK_SC_MAX];
 
 static int layout_make(void) {
-    VkDescriptorSetLayoutBinding b = {.binding = 0,
-                                      .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                      .descriptorCount = 1,
-                                      .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT};
+    VkDescriptorSetLayoutBinding b[2] = {{.binding = 0,
+                                          .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                          .descriptorCount = 1,
+                                          .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+                                         {.binding = 1,
+                                          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                          .descriptorCount = 1,
+                                          .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}};
     VkDescriptorSetLayoutCreateInfo dci = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b};
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = b};
     VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16};
     VkPipelineLayoutCreateInfo lci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                       .setLayoutCount = 1,
                                       .pSetLayouts = &g_dsl,
                                       .pushConstantRangeCount = 1,
                                       .pPushConstantRanges = &pc};
-    VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3};
+    VkDescriptorPoolSize size[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
+                                    {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}};
     VkDescriptorPoolCreateInfo pci = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 3, .poolSizeCount = 1, .pPoolSizes = &size};
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 3, .poolSizeCount = 2, .pPoolSizes = size};
     VkDescriptorSetLayout layouts[3];
     VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorSetCount = 3};
     int i;
@@ -328,6 +339,56 @@ void vk_ui_swapchain_gone(void) {
     }
 }
 
+/* the glyphs' rows to the device, once: gui_vga_font's, then gui_icon_font's, each set's binding 1 */
+static int glyphs_upload(VkCommandBuffer cb) {
+    VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                              .size = UI_GLYPHS_SIZE,
+                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    VmaAllocationInfo info;
+    VkBufferMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .size = VK_WHOLE_SIZE};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &b};
+    VkBufferCopy copy = {.size = UI_GLYPHS_SIZE};
+    VkBuffer buf;
+    u64 off;
+    u8* to;
+    int i;
+    if (g_glyphs) return 1;
+    to = vk_stage(UI_GLYPHS_SIZE, 16, &buf, &off);
+    if (!to) return 0;
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &ai, &g_glyphs, &g_glyphs_mem, &info))) {
+        g_glyphs = VK_NULL_HANDLE;
+        return 0;
+    }
+    vk_mem_track(g_glyphs_mem);
+    memcpy(to, gui_vga_font, 256 * 16); /* bytes: the device's words read them little-endian, as the shader takes */
+    memcpy(to + 256 * 16, gui_icon_font, 2 * GUI_ICON_COUNT * 16);
+    copy.srcOffset = off;
+    rec_CmdCopyBuffer(cb, buf, g_glyphs, 1, &copy);
+    b.buffer = g_glyphs;
+    rec_CmdPipelineBarrier2(cb, &d);
+    for (i = 0; i < 3; ++i) {
+        VkDescriptorBufferInfo bi = {g_glyphs, 0, VK_WHOLE_SIZE};
+        VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                   .dstSet = g_sets[i],
+                                   .dstBinding = 1,
+                                   .descriptorCount = 1,
+                                   .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                   .pBufferInfo = &bi};
+        vkUpdateDescriptorSets(g_vk.dev, 1, &wr, 0, NULL);
+    }
+    return 1;
+}
+
 /* the device's buffer of instances, made once */
 static int instances_make(void) {
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -452,7 +513,7 @@ void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]) {
     overlay_draw(&list, sw, sh, plat_ns());
     ui_unlock();
     n = list.n;
-    if (!n || !g_atlas || !pipeline_make(g_vk.sc_format) || !(view = sc_view(sc))) return;
+    if (!n || !g_atlas || !pipeline_make(g_vk.sc_format) || !(view = sc_view(sc)) || !glyphs_upload(cb)) return;
     if (!instances_send(cb, n)) return;
     vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
