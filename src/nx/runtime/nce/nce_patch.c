@@ -151,11 +151,19 @@ static int after_terminal(Text* texts, size_t n, SnxU64 a, SnxU64 features) {
            flow == SNX_A64_FLOW_UNDEF;
 }
 
+/* whether the word before a is an SVC: the analysis makes the word after each SVC a leader (where a save state's
+   thread starts again, codegen.c), which adds nothing to the flow, as it goes on past a reached SVC, and after a
+   literal or a table entry that decodes as one would start it in data */
+static int after_svc(Text* texts, size_t n, SnxU64 a, SnxU64 features) {
+    Text* t = text_of(texts, n, a - 4);
+    return t && snx_a64_flow(word_at(t, a - 4), features) == SNX_A64_FLOW_SVC;
+}
+
 /* where the flow starts: each function's start, and its leaders (jump tables' cases, calls' returns). With texts, a
    leader whose address an ADR takes is left out: the analysis makes one of each ADR (a callback, codegen.c's
    taken_address), and one inside a function that its flow never reaches is a table, not code. So is a leader just
    after a word that ends the flow, which the analysis makes of each such word in an FDE's range: the flow proves
-   nothing there (the words may still be patched as unproven) */
+   nothing there (the words may still be patched as unproven). So is one after an SVC (after_svc) */
 static void seed(const SnxCodegen* cg, Stack* todo, Text* texts, size_t n) {
     for (size_t i = 0; i < cg->function_count; i++) {
         const SnxFunction* f = &cg->functions[i];
@@ -163,7 +171,8 @@ static void seed(const SnxCodegen* cg, Stack* todo, Text* texts, size_t n) {
         for (size_t k = 0; f->leaders && k < f->count; k++) {
             SnxU64 a = snx_function_address(f, k);
             Text* t = texts ? text_of(texts, n, a) : NULL;
-            if (f->leaders[k] && !(t && (t->taken[(a - t->lo) >> 2] || after_terminal(texts, n, a, cg->features))))
+            if (f->leaders[k] && !(t && (t->taken[(a - t->lo) >> 2] || after_terminal(texts, n, a, cg->features) ||
+                                         after_svc(texts, n, a, cg->features))))
                 push(todo, a);
         }
     }
