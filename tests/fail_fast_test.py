@@ -111,6 +111,21 @@ def fail_fast(step='watch', timeout=20, **env):
     )
 
 
+def stop(pid):
+    """a watch start left running, ended and gone before the next look of the fake GitHub"""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    for _ in range(100):
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return
+        time.sleep(0.05)
+    failures.append(f'the watch {pid} outlived SIGTERM by 5 s')
+
+
 RUNNING = [job('Linux (aarch64)', 'in_progress'), job('macOS and iOS (arm64)', conclusion='failure')]
 FAILED = [job('Linux (aarch64)', conclusion='failure'), job('macOS and iOS (arm64)', conclusion='failure')]
 
@@ -198,7 +213,7 @@ with tempfile.TemporaryDirectory() as temporary:
             STATE['asked'][:3],
         )
         if alive:
-            os.kill(int(pid.group(1)), signal.SIGTERM)
+            stop(int(pid.group(1)))
         check('its log where start said', Path(pid.group(2)) == Path(temporary) / 'fail-fast.log')
     reset(broken=1, mark_after=10**9)
     done = fail_fast('start', RUNNER_TEMP=temporary)
@@ -209,10 +224,7 @@ with tempfile.TemporaryDirectory() as temporary:
     )
     pid = re.search(r'process (\d+)', done.stdout)
     if pid:
-        try:
-            os.kill(int(pid.group(1)), signal.SIGTERM)
-        except OSError:
-            pass
+        stop(int(pid.group(1)))
 server.shutdown()
 
 # ---- build.yml: who marks a failure, who may fail
@@ -241,9 +253,46 @@ for block in blocks:
         check(f'{name_id}: SNX_OPTIONAL_JOBS matches {names}', all(optional.search(n) for n in names), names)
     else:
         check(f'{name_id}, which may not fail, marks its failure', marks)
+        file_at = max(block.find('*fail-fast-file'), block.find('&fail-fast-file'))
+        mark_at = max(block.find('*fail-fast-mark'), block.find('&fail-fast-mark'))
+        check(f"{name_id} writes the mark's file before it uploads it", 0 <= file_at < mark_at, (file_at, mark_at))
         check(f'{name_id}: SNX_OPTIONAL_JOBS leaves out {names}', not any(optional.search(n) for n in names), names)
 check("build.yml's jobs read: fewer means this test no longer reads the file as it is", seen >= 14, seen)
 check('no job dispatches a workflow to cancel its run', 'cancel-run.yml' not in text)
+# upload-artifact refuses a path with a . or .. in it ("Relative pathing '.' and '..' is not allowed"): the mark of
+# 2c12f69 named ../../_temp/_github_workflow/event.json, and no failed job marked its run
+lines = text.splitlines()
+uploads = 0
+for at, line in enumerate(lines):
+    if 'uses: actions/upload-artifact@' not in line:
+        continue
+    uploads += 1
+    # the step's keys sit where uses: is, past a "- " that opens the step on its line
+    key = len(line) - len(line.lstrip()) + (2 if line.lstrip().startswith('- ') else 0)
+    paths, inside = [], False
+    for following in lines[at + 1 :]:
+        indent = len(following) - len(following.lstrip())
+        if following.strip() and indent < key:
+            break
+        value = following.strip()
+        if value.startswith('path:'):
+            inside = value == 'path: |'
+            if not inside:
+                paths.append(value[len('path:') :].strip())
+        elif inside and value and not re.match(r'[\w-]+:', value):
+            paths.append(value)
+        elif inside:
+            inside = False
+    for path in paths:
+        parts = path.lstrip('!').replace('\\', '/').split('/')
+        check(f"upload-artifact's path {path} (line {at + 1}) has no . or .. in it", not {'.', '..'} & set(parts))
+check("build.yml's uploads read", uploads >= 10, uploads)
+mark_file = re.search(r'run: echo "\$GITHUB_JOB" > (\S+)', text)
+check(
+    'the mark uploads the file its step before writes',
+    mark_file and f'          path: {mark_file.group(1)}\n          overwrite: true' in text,
+    mark_file and mark_file.group(1),
+)
 
 for failure in failures:
     print('FAIL:', failure)

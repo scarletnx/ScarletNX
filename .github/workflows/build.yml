@@ -272,15 +272,21 @@ jobs:
       # cancelled instead of building for nothing. A failed job marks its run with this artifact, and the jobs still
       # running cancel the run once this one has ended (scripts/fail-fast.py), so it keeps its failure: a job that
       # cancels its own run ends cancelled, which hides what failed. Not in a job that may fail (SNX_OPTIONAL_JOBS).
-      # The file is the event's payload, which the runner writes for every job before its first step, the workspace
-      # (before the checkout) and a container's alike: nothing of it is read
+      # The mark's file is written in the workspace, which every job has before its checkout too: upload-artifact takes
+      # no path with a . or .. in it, and the workspace is the one place a host's and a container's step both reach by a
+      # relative path. Git Bash on Windows, where MSYS2's shell may not be set up yet
+      - &fail-fast-file
+        name: Name the failed job for the mark
+        if: failure()
+        shell: bash
+        run: echo "$GITHUB_JOB" > fail-fast-mark.txt
       - &fail-fast-mark
         name: Mark the run failed
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: fail-fast-${{ github.run_attempt }}
-          path: ../../_temp/_github_workflow/event.json
+          path: fail-fast-mark.txt
           overwrite: true
           retention-days: 1
           if-no-files-found: error
@@ -319,6 +325,7 @@ jobs:
             echo "None of the $count files changed is one the A64 differential tests: the cross builds run without it"
             echo "differential=false" >> "$GITHUB_OUTPUT"
           fi
+      - *fail-fast-file
       - *fail-fast-mark
 
   # The cross jobs (appimage-cross) can't run qemu-aarch64 beside a host binary that qemu-user runs: the QEMU side of
@@ -397,6 +404,7 @@ jobs:
         with:
           name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
           path: build/llvm_qemu_reference.bin
+      - *fail-fast-file
       - *fail-fast-mark
 
   # x86-64 with ASan and UBSan (SNX_TEST_SANITIZERS): every test, and the programs and libraries of ours it runs or
@@ -493,6 +501,7 @@ jobs:
           key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Test under the sanitizers
         run: ctest --test-dir build/sanitizers --output-on-failure --parallel 4
+      - *fail-fast-file
       - *fail-fast-mark
 
   appimage:
@@ -720,6 +729,7 @@ jobs:
       - name: Test native tooling and indexed filesystems
         if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
         run: *native-tests
+      - *fail-fast-file
       - *fail-fast-mark
 
   # The AppImages of hosts no GitHub runner is: cross-built on x86-64 with their linux-<arch>-cross preset
@@ -1315,6 +1325,7 @@ jobs:
           name: ScarletNX-windows-x86_64-${{ steps.commit.outputs.short }}
           path: stage
           if-no-files-found: error
+      - *fail-fast-file
       - *fail-fast-mark
 
   # The Android app (docs/hosts/android-app.md), both ABIs on one runner, with the runner's Gradle and JDK. LLVM's libraries for an
@@ -1522,6 +1533,7 @@ jobs:
       # Java and the icon there. Last, so a test that fails fails the job and still leaves the APKs to try
       - name: Test the app's Java
         run: JAVA_HOME=$JAVA_HOME_21_X64 gradle -p dist/android testDebugUnitTest -Pscarletnx.stage="$PWD/stage"
+      - *fail-fast-file
       - *fail-fast-mark
 
   # macOS and iOS (docs/hosts/apple.md), both on one Apple silicon runner with Xcode's Clang and SDKs; FFmpeg, OpenSSL and
@@ -1747,6 +1759,7 @@ jobs:
         run: |
           chmod +x dist/*.AppImage
           scripts/check-package.sh dist/*.AppImage
+      - *fail-fast-file
       - *fail-fast-mark
 
   # The cross-built AppImage as installed, as the appimage-check job runs its own: qemu's binfmt handlers run it, and
@@ -1881,6 +1894,7 @@ jobs:
           path: package
       - name: Run the zip's scarletnx.exe as a user would
         run: bash source/scripts/check-package.sh package/bin/scarletnx.exe
+      - *fail-fast-file
       - *fail-fast-mark
 
   # edenprobe's probes (docs/dev/edenprobe.md), a release of scarletnx/edenprobe pinned by its sha256, recompiled by the
@@ -1987,4 +2001,5 @@ jobs:
             !edenprobe/work
             edenprobe-main
             !edenprobe-main/work
+      - *fail-fast-file
       - *fail-fast-mark
