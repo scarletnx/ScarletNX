@@ -29,7 +29,7 @@ static const char* const k_help[] = {
     "  --fs FILE[#entry]         fragment shader for vertex or geometry shaders, or one each (default: rasterizer\n"
     "                            discard)\n"
     "  --reflect                 print each shader's reflected interface as JSON and exit (no GPU)\n"
-    "  --print-vs                print a GLSL full-screen vertex shader that feeds the fragment shader's inputs\n"
+    "  --print-vs                print a GLSL vertex shader that feeds the fragment or geometry shader's inputs\n"
     "                            (integer ones too) and exit: glslc -fshader-stage=vert it, then --vs\n"
     "\n",
     "Device:\n"
@@ -50,8 +50,10 @@ static const char* const k_help[] = {
     "  --depth FORMAT            a depth attachment; --depth-test, --depth-write turn its test and writes on\n"
     "  --clear                   clear the attachments on each pass (default: don't care)\n"
     "  --blend none|alpha|add    blending on every render target (default none)\n"
-    "  --vertices N --instances N  vertices and instances a draw (vertex shaders: 196608 x 1)\n"
-    "  --topology points|lines|linestrip|triangles|strip|fan (default triangles)\n"
+    "  --vertices N --instances N  vertices and instances a draw (vertex and geometry shaders: 65536 primitives\n"
+    "                            x 1)\n"
+    "  --topology points|lines|linestrip|triangles|strip|fan|lines_adj|triangles_adj (default triangles, or a\n"
+    "                            geometry shader's input primitive)\n"
     "  --index none|seq|random   an index buffer (vertex cache behavior)\n"
     "  --vertex-fill PATTERN     vertex attribute data: noise, gradient, zero, solid:R,G,B,A (default noise)\n"
     "\n",
@@ -202,7 +204,6 @@ static int parse_args(int argc, char** argv, SpConfig* c, Mode* mode) {
     c->height = 1080;
     c->depth = 1;
     c->samples = 1;
-    c->topology = "triangles";
     c->instances = 1;
     c->default_buffer = 16u << 20;
     c->runtime_count = 1;
@@ -640,13 +641,13 @@ static int print_vs(const SpConfig* c) {
     SrModule m;
     if (!reflect_file(c->shaders[0], c->entry, &m))
         return 1;
-    if (m.entry.stage != VK_SHADER_STAGE_FRAGMENT_BIT) {
-        fprintf(stderr, "snx-shaderperf: --print-vs wants a fragment shader, %s is a %s one\n", c->shaders[0],
-                sr_stage_name(m.entry.stage));
+    if (m.entry.stage != VK_SHADER_STAGE_FRAGMENT_BIT && m.entry.stage != VK_SHADER_STAGE_GEOMETRY_BIT) {
+        fprintf(stderr, "snx-shaderperf: --print-vs wants a fragment or geometry shader, %s is a %s one\n",
+                c->shaders[0], sr_stage_name(m.entry.stage));
         sr_free(&m);
         return 1;
     }
-    printf("#version 450\n// a full-screen triangle for %s (snx-shaderperf --print-vs); draw 3 vertices\n",
+    printf("#version 450\n// a full-screen triangle every 3 vertices for %s (snx-shaderperf --print-vs)\n",
            c->shaders[0]);
     int status = 0;
     for (size_t i = 0; i < m.input_count; i++) {
@@ -725,6 +726,8 @@ static const char* stage_unit(VkShaderStageFlagBits stage, bool plural) {
         return plural ? "invocations" : "invocation";
     if (stage == VK_SHADER_STAGE_FRAGMENT_BIT)
         return plural ? "pixels" : "pixel";
+    if (stage == VK_SHADER_STAGE_GEOMETRY_BIT)
+        return plural ? "primitive invocations" : "primitive invocation";
     return plural ? "vertices" : "vertex";
 }
 
@@ -746,9 +749,14 @@ static void text_report(FILE* f, const SpBench* b, const SpCompare* cmp) {
                 c->samples, c->samples > 1 ? "s" : "",
                 c->vs_count > 1 ? "one --vs each" : c->vs_count ? c->vs[0] : "built-in full-screen",
                 c->gs_count > 1 ? ", one --gs each" : c->gs_count ? ", a --gs" : "");
-        else
-        fprintf(f, "workload: vertex, %u vertices x %u instances, %s\n", c->vertices, c->instances,
+    else if (stage == VK_SHADER_STAGE_GEOMETRY_BIT)
+        fprintf(f, "workload: geometry, %u vertices x %u instances of %s, %s vertex shader, %s\n", c->vertices,
+                c->instances, c->topology, c->vs_count > 1 ? "one --vs each" : c->vs_count ? c->vs[0] : "built-in",
                 c->fs_count > 1 ? "one --fs each" : c->fs_count ? c->fs[0] : "rasterizer discard");
+    else
+        fprintf(f, "workload: vertex, %u vertices x %u instances, %s%s\n", c->vertices, c->instances,
+                c->fs_count > 1 ? "one --fs each" : c->fs_count ? c->fs[0] : "rasterizer discard",
+                c->gs_count > 1 ? ", one --gs each" : c->gs_count ? ", a --gs" : "");
     fprintf(f, "sampling: %u repetitions a sample%s, %s barriers between them, outliers %s, %.0f ms in all\n", b->reps,
             c->reps_auto ? " (auto)" : "", c->overlap ? "no" : "with",
             c->outliers == SP_OUTLIERS_IQR ? "iqr" : c->outliers == SP_OUTLIERS_MAD ? "mad" : "kept", b->elapsed_ms);

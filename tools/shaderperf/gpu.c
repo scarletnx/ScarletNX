@@ -624,6 +624,9 @@ static bool make_device(Gpu* g, const SpConfig* cfg) {
                         VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT |
                         VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT |
                         VK_QUERY_PIPELINE_STATISTIC_COMPUTE_SHADER_INVOCATIONS_BIT;
+        if (f2.features.geometryShader)
+            g->stat_flags |= VK_QUERY_PIPELINE_STATISTIC_GEOMETRY_SHADER_INVOCATIONS_BIT |
+                             VK_QUERY_PIPELINE_STATISTIC_GEOMETRY_SHADER_PRIMITIVES_BIT;
         if (g->family == UINT32_MAX)
             g->stat_flags = 0;
     } else if (cfg->pipeline_stats) {
@@ -1690,13 +1693,37 @@ static bool parse_topology(const char* s, VkPrimitiveTopology* out) {
         VkPrimitiveTopology t;
     } k[] = {{"points", VK_PRIMITIVE_TOPOLOGY_POINT_LIST},       {"lines", VK_PRIMITIVE_TOPOLOGY_LINE_LIST},
              {"linestrip", VK_PRIMITIVE_TOPOLOGY_LINE_STRIP},    {"triangles", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST},
-             {"strip", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP},     {"fan", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN}};
+             {"strip", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP},     {"fan", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN},
+             {"lines_adj", VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY},
+             {"triangles_adj", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY}};
     for (size_t i = 0; i < sizeof k / sizeof k[0]; i++)
         if (ieq(s, k[i].name)) {
             *out = k[i].t;
             return true;
         }
     return false;
+}
+
+/* vertices of one primitive in a list of the topology, 1 for the strips and fans past their first */
+static uint32_t prim_vertices(VkPrimitiveTopology t) {
+    switch (t) {
+    case VK_PRIMITIVE_TOPOLOGY_POINT_LIST: return 1;
+    case VK_PRIMITIVE_TOPOLOGY_LINE_LIST: return 2;
+    case VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY: return 4;
+    case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY: return 6;
+    case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: return 3;
+    default: return 1;
+    }
+}
+
+/* the primitives a draw of n vertices makes */
+static uint64_t primitives(VkPrimitiveTopology t, uint32_t n) {
+    switch (t) {
+    case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP: return n >= 2 ? n - 1 : 0;
+    case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP:
+    case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN: return n >= 3 ? n - 2 : 0;
+    default: return n / prim_vertices(t);
+    }
 }
 
 /* render targets, vertex buffers and the index buffer of a graphics pipeline */
@@ -1724,12 +1751,35 @@ static bool make_graphics(Gpu* g) {
             }
         }
     }
+    /* a geometry shader's input primitive picks the topology unless --topology does */
+    const SrModule* gs = stage_mod(g, ST_GS, 0);
+    if (!cfg->topology) {
+        static const char* const by_input[7] = {"triangles", "points", "lines", "triangles", "lines_adj", "triangles",
+                                                "triangles_adj"};
+        cfg->topology = gs && gs->gs_input_vertices <= 6 ? by_input[gs->gs_input_vertices] : "triangles";
+    }
     if (!parse_topology(cfg->topology, &g->topology)) {
-        fprintf(stderr, "snx-shaderperf: --topology %s: points lines linestrip triangles strip fan\n", cfg->topology);
+        fprintf(stderr, "snx-shaderperf: --topology %s: points lines linestrip triangles strip fan lines_adj "
+                        "triangles_adj\n", cfg->topology);
         return false;
     }
+    for (size_t v = 0; v < g->b->shader_count; v++) {
+        /* every geometry shader of the run reads the primitive the topology makes */
+        const SrModule* m = stage_mod(g, ST_GS, v);
+        uint32_t want = g->topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP       ? 2
+                        : g->topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP ? 3
+                        : g->topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN   ? 3
+                                                                               : prim_vertices(g->topology);
+        if (m && m->gs_input_vertices && m->gs_input_vertices != want) {
+            fprintf(stderr,
+                    "snx-shaderperf: %s: the geometry shader reads primitives of %u vertices and --topology %s makes "
+                    "them of %u: run geometry shaders of one input primitive together\n",
+                    g->b->shaders[v].label, m->gs_input_vertices, cfg->topology, want);
+            return false;
+        }
+    }
     if (!cfg->vertices)
-        cfg->vertices = g->stage == VK_SHADER_STAGE_VERTEX_BIT ? 3u * 65536u : 3u;
+        cfg->vertices = g->stage == VK_SHADER_STAGE_FRAGMENT_BIT ? 3u : prim_vertices(g->topology) * 65536u;
     if (fs) {
         for (size_t i = 0; i < fs->output_count; i++) {
             const SrVarying* v = &fs->outputs[i];
@@ -3257,8 +3307,8 @@ bool sp_gpu_run(SpBench* b) {
     bool ok = false;
     g->stage = b->shaders[0].mod.entry.stage;
     if (g->stage != VK_SHADER_STAGE_COMPUTE_BIT && g->stage != VK_SHADER_STAGE_FRAGMENT_BIT &&
-        g->stage != VK_SHADER_STAGE_VERTEX_BIT) {
-        fprintf(stderr, "snx-shaderperf: %s shaders are not supported: compute, fragment and vertex are\n",
+        g->stage != VK_SHADER_STAGE_VERTEX_BIT && g->stage != VK_SHADER_STAGE_GEOMETRY_BIT) {
+        fprintf(stderr, "snx-shaderperf: %s shaders are not supported: compute, vertex, geometry and fragment are\n",
                 sr_stage_name(g->stage));
         goto out;
     }
@@ -3385,6 +3435,9 @@ bool sp_gpu_run(SpBench* b) {
                               local[2];
         } else if (g->stage == VK_SHADER_STAGE_FRAGMENT_BIT) {
             sh->invocations = (uint64_t)cfg->width * cfg->height * (g->fullscreen ? 1 : cfg->instances);
+        } else if (g->stage == VK_SHADER_STAGE_GEOMETRY_BIT) {
+            /* an invocation a primitive, times the shader's invocations mode */
+            sh->invocations = primitives(g->topology, cfg->vertices) * cfg->instances * sh->mod.gs_invocations;
         } else {
             sh->invocations = (uint64_t)cfg->vertices * cfg->instances;
         }

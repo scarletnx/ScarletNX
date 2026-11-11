@@ -2,7 +2,7 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # snx-shaderperf
 
-Times SPIR-V shaders (compute, fragment, vertex) on the GPU and compares them. It is made to be driven by an agent:
+Times SPIR-V shaders (compute, vertex, geometry, fragment) on the GPU and compares them. It is made to be driven by an agent:
 every input is an option, defaults come from the shader's reflection, and `--json` gives every number.
 
 The tool stands alone. It opens the Vulkan loader at run time and needs only Vulkan's headers to build. It does not
@@ -25,9 +25,27 @@ tools. `snx-shaderperf --help` lists every option.
 
 3. Read `comparisons[].verdict`, `ratio_of_medians` and its interval, and `outputs_match` in the JSON.
 
-A fragment shader alone gets a built-in full-screen triangle with float `vec4` varyings at locations 0 to 7. A shader
-with integer or other inputs needs a vertex shader: `--print-vs a.spv > a.vert`, `glslc a.vert -o a.vert.spv`, then
-`--vs a.vert.spv`. Give one `--vs` for each shader when their inputs differ.
+## Graphics stages
+
+The measured shaders are one stage; `--vs`, `--gs` and `--fs` give the others of the pipeline, each one shader for
+all the measured ones or one for each in order (when their interfaces differ).
+
+- A fragment shader alone gets a built-in full-screen triangle with float `vec4` varyings at locations 0 to 7.
+  Throughput is per pixel.
+- A vertex shader draws `--vertices` (65536 primitives' worth) with noise in each attribute's format, into
+  rasterizer discard unless `--fs` gives a fragment shader. Throughput is per vertex.
+- A geometry shader gets the built-in vertex shader (the same varyings, with a full-screen triangle every 3
+  vertices) unless `--vs` gives one, and its input primitive picks the topology unless `--topology` does
+  (`lines_adj`, `triangles_adj` for adjacency). Shaders of one run must read the same primitive. Throughput is per
+  primitive invocation (primitives times the `invocations` mode); the pipeline statistics count its invocations and
+  the primitives it emits.
+
+A fragment or geometry shader with integer or other inputs needs a vertex shader: `--print-vs a.spv > a.vert`,
+`glslc a.vert -o a.vert.spv`, then `--vs a.vert.spv`.
+
+What the other stages are changes the measured one's time: the render target formats (`--rt`, bytes a pixel and
+blending), the vertex attribute formats and the varyings the stages pass, the primitives a geometry shader emits and
+whether anything is rasterized. Keep them the same between shaders you compare.
 
 ## Inputs
 
