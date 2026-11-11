@@ -12,15 +12,28 @@
 #define HUD_TEXT         HUD_RGBA(SNX_GUI_THEME_YORHA_PAGE, 0xFFu)
 #define HUD_WARN         HUD_RGBA(SNX_GUI_THEME_YORHA_FAILURE, 0xFFu)
 
+/* the box, the lead and a letter for each of the list's: laid out when the list, the place or the scale changes, and
+   kept for the frames after */
+#define HUD_QUADS (1 + HUD_DEBUG_MAX + sizeof HUD_DEBUG_LEAD)
 static struct {
     char debug[HUD_DEBUG_MAX];
+    u32 gen; /* the lists set */
+    struct {
+        int safe[4], scale;
+        u32 gen;
+    } laid; /* what the quads are laid out for; gen 0: nothing yet */
+    SnxUiQuad q[HUD_QUADS];
+    int n;
 } g_hud;
 
 int hud_debug_set(const char* text) {
     int changed;
     ui_lock();
     changed = strcmp(g_hud.debug, text) != 0;
-    snprintf(g_hud.debug, sizeof g_hud.debug, "%s", text);
+    if (changed) {
+        snprintf(g_hud.debug, sizeof g_hud.debug, "%s", text);
+        if (!++g_hud.gen) g_hud.gen = 1;
+    }
     ui_unlock();
     return changed;
 }
@@ -43,7 +56,7 @@ static size_t line_of(const char* s, size_t room, const char** next) {
     return end;
 }
 
-void hud_draw(SnxUiList* l, const int safe[4], int scale) {
+static void hud_layout(SnxUiList* l, const int safe[4], int scale) {
     float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, x, y;
     size_t lead = strlen(HUD_DEBUG_LEAD), cols = (size_t)((float)safe[2] / cw), longest = 0, lines = 0, n;
     const char *s, *next;
@@ -68,4 +81,17 @@ void hud_draw(SnxUiList* l, const int safe[4], int scale) {
         if (!lines) at += ui_text(l, at, y, scale, HUD_DEBUG_LEAD, HUD_WARN);
         ui_text(l, at, y + (float)lines * ch, scale, line, HUD_TEXT);
     }
+}
+void hud_draw(SnxUiList* l, const int safe[4], int scale) {
+    if (!g_hud.debug[0]) return;
+    if (g_hud.laid.gen != g_hud.gen || g_hud.laid.scale != scale ||
+        memcmp(g_hud.laid.safe, safe, sizeof g_hud.laid.safe)) {
+        SnxUiList kept = {g_hud.q, 0, (int)HUD_QUADS};
+        hud_layout(&kept, safe, scale);
+        g_hud.n = kept.n;
+        memcpy(g_hud.laid.safe, safe, sizeof g_hud.laid.safe);
+        g_hud.laid.scale = scale;
+        g_hud.laid.gen = g_hud.gen;
+    }
+    ui_append(l, &(SnxUiList){g_hud.q, g_hud.n, (int)HUD_QUADS});
 }
