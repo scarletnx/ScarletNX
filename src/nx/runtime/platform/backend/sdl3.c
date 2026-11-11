@@ -681,11 +681,9 @@ static char* g_fatal_left; /* an error another thread left for the main thread t
 static int g_fatal_taken;  /* the main thread is showing it */
 
 /* ui.h's quads, as the Vulkan renderer draws them (gpu/vk/ui.c): the atlas's premultiplied texels times their colour */
-/* one quad, as it is drawn (ui_drawn: a bar of the ring where it is) */
-static void ui_draw_quad_sdl(SDL_Renderer* r, SDL_Texture* atlas, int aw, int ah, const SnxUiQuad* at) {
+/* one quad as it is drawn (ui_drawn: a bar of the ring where it is) */
+static void ui_draw_quad_sdl(SDL_Renderer* r, SDL_Texture* atlas, int aw, int ah, const SnxUiQuadView* q) {
     static const int corners[6] = {0, 1, 2, 0, 2, 3};
-    SnxUiQuad drawn = ui_drawn(at);
-    const SnxUiQuad* q = &drawn;
     float a = (float)(q->rgba >> 24) / 255.0f;
     if (!q->uw) return; /* a blank cell (ui_cells): nothing drawn */
     SDL_FColor c = {(float)(q->rgba & 0xFF) / 255.0f * a, (float)(q->rgba >> 8 & 0xFF) / 255.0f * a,
@@ -701,9 +699,9 @@ static void ui_draw_quad_sdl(SDL_Renderer* r, SDL_Texture* atlas, int aw, int ah
 static void ui_draw_sdl(SDL_Renderer* r, SDL_Texture* atlas, int aw, int ah, const SnxUiList* l) {
     int i;
     for (i = 0; i < l->n; ++i) {
-        SnxUiQuad ground;
+        SnxUiQuadView ground, drawn = ui_drawn(&l->q[i]);
         if (ui_drawn_ground(&l->q[i], &ground)) ui_draw_quad_sdl(r, atlas, aw, ah, &ground); /* a backed letter's */
-        ui_draw_quad_sdl(r, atlas, aw, ah, &l->q[i]);
+        ui_draw_quad_sdl(r, atlas, aw, ah, &drawn);
     }
 }
 /* 0 when no box could be shown (no window, the renderer didn't let go, no renderer or atlas here) */

@@ -28,6 +28,9 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+/* a quad as it holds it (ui.h's ui_view): its place in pixels, its colour widened back to 8 bits */
+static SnxUiQuadView qv(const SnxUiQuad* q) { return ui_view(q); }
 #define TRACED_CHILD 1
 /* the child asks to be traced by its parent; the parent lets it go on from a stop */
 #if defined(__linux__)
@@ -102,8 +105,8 @@ static const char* line_at(float x, float y, int cols) {
     for (k = 0; k < cols; ++k) {
         g_test.line[k] = ' ';
         for (i = 0; i < g_test.l.n; ++i)
-            if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 && g_test.quads[i].x == x + (float)k * cw &&
-                g_test.quads[i].y == y)
+            if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 && qv(&g_test.quads[i]).x == x + (float)k * cw &&
+                qv(&g_test.quads[i]).y == y)
                 g_test.line[k] = (char)((g_test.quads[i].v - SNX_CONTROLS_FONT_Y) / 16 * 16 +
                                         (g_test.quads[i].u - SNX_CONTROLS_FONT_X) / 8);
         if (g_test.line[k] != ' ') end = k + 1;
@@ -141,9 +144,9 @@ static unsigned icon_at(int k, int at) {
     float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s;
     stats_box(safe, s, box);
     for (i = 0; i < g_test.l.n; ++i) {
-        const SnxUiQuad* q = &g_test.quads[i];
+        const SnxUiQuadView q_v = qv(&g_test.quads[i]), *q = &q_v;
         if (q->uw == 16 && q->vh == 16 && q->v == SNX_CONTROLS_ATLAS_HEIGHT && q->x == box[0] + (float)at * cw &&
-            q->y == box[1] + ch / 4 + (float)k * ch && q->w == 2 * cw && q->h == ch && q->rgba == TEXT_RGBA &&
+            q->y == box[1] + ch / 4 + (float)k * ch && q->w == 2 * cw && q->h == ch && q->rgba == ui_rgba(TEXT_RGBA) &&
             q->sample == UI_SHARP)
             return GUI_ICON_FIRST + (unsigned)(q->u - SNX_UI_ICONS_X) / 16;
     }
@@ -164,9 +167,9 @@ static unsigned note_icon(int k, u32 rgba) {
     float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s;
     stats_box(safe, s, box);
     for (i = 0; i < g_test.l.n; ++i) {
-        const SnxUiQuad* q = &g_test.quads[i];
+        const SnxUiQuadView q_v = qv(&g_test.quads[i]), *q = &q_v;
         if (q->uw == 16 && q->vh == 16 && q->v == SNX_CONTROLS_ATLAS_HEIGHT && q->x == box[0] + cw &&
-            q->y == box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch && q->rgba == rgba)
+            q->y == box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch && q->rgba == ui_rgba(rgba))
             return GUI_ICON_FIRST + (unsigned)(q->u - SNX_UI_ICONS_X) / 16;
     }
     return GUI_ICON_NONE;
@@ -177,8 +180,9 @@ static int note_letters(int k, u32 rgba) {
     float box[4], ch = 16.0f * (float)s;
     stats_box(safe, s, box);
     for (i = 0; i < g_test.l.n; ++i)
-        if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 && g_test.quads[i].glyph != ' ' &&
-            g_test.quads[i].y == box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch && g_test.quads[i].rgba == rgba)
+        if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 && qv(&g_test.quads[i]).glyph != ' ' &&
+            qv(&g_test.quads[i]).y == box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch &&
+                qv(&g_test.quads[i]).rgba == ui_rgba(rgba))
             ++n;
     return n;
 }
@@ -189,7 +193,8 @@ static int past_margin(void) {
     stats_box(safe, s, box);
     for (i = 0; i < g_test.l.n; ++i)
         if (g_test.quads[i].vh == 16 &&
-            (g_test.quads[i].x < box[0] + cw || g_test.quads[i].x + g_test.quads[i].w > box[0] + box[2] - cw))
+            (qv(&g_test.quads[i]).x < box[0] + cw ||
+                qv(&g_test.quads[i]).x + qv(&g_test.quads[i]).w > box[0] + box[2] - cw))
             ++n;
     return n;
 }
@@ -199,22 +204,22 @@ static int drawn_scale(void) {
     int i, s = 0;
     if (ui_ground() != GROUND_RGBA) return 0;
     for (i = 0; i < g_test.l.n; ++i) {
-        const SnxUiQuad* q = &g_test.quads[i];
+        const SnxUiQuadView q_v = qv(&g_test.quads[i]), *q = &q_v;
         if (q->uw != 8 || q->vh != 16) continue;
         if (!s) s = (int)q->w / 8;
-        if (q->w != (float)(8 * s) || q->h != (float)(16 * s) || !(q->turn & UI_BACKED)) return 0;
+        if (q->w != (float)(8 * s) || q->h != (float)(16 * s) || !q->backed) return 0;
     }
     return s;
 }
 /* the graph's bars as they are drawn (ui_drawn: the ring's quads, a byte each): how many, and the newest, at the
    right */
-static int bars(const SnxUiQuad** newest) {
-    static SnxUiQuad at_right;
+static int bars(const SnxUiQuadView** newest) {
+    static SnxUiQuadView at_right;
     int i, n = 0;
     *newest = NULL;
     for (i = 0; i < g_test.l.n; ++i) {
-        SnxUiQuad d = ui_drawn(&g_test.quads[i]);
-        if (g_test.quads[i].ink != UI_RING || !d.uw) continue;
+        SnxUiQuadView d = ui_drawn(&g_test.quads[i]);
+        if (d.ink != UI_RING || !d.uw) continue;
         if (!*newest || d.x > at_right.x) {
             at_right = d;
             *newest = &at_right;
@@ -236,7 +241,7 @@ static u64 frames(u64 at, int n, u64 ms, u64 busy_ms) {
 int main(void) {
     const IniOpt *corner = ini_find(g_display_ini, "stats_corner"),
                  *showcase = ini_find(g_display_ini, "showcase_corner");
-    const SnxUiQuad* newest;
+    const SnxUiQuadView* newest;
     float box[4], show[4], gh = 3 * 32;
     u64 t = 1000 * MS, at;
     int k;
@@ -352,10 +357,10 @@ int main(void) {
         assert(g_test.l.n == n && !strcmp(text(1), "cpu 100%") && !strcmp(gpu_text(), "gpu 100%  100.0 ms"));
         assert(strstr(text(0), "40.0 ms"));
         for (i = 0; i < n; ++i) {
-            const SnxUiQuad *q = &g_test.quads[i], *p = &before[i];
             /* the bars' quads too: the ring's bytes are what changes */
+            const SnxUiQuad *q = &g_test.quads[i], *p = &before[i];
             moved += q->x != p->x || q->w != p->w || q->y != p->y || q->h != p->h ||
-                     (q->ink == UI_RING && memcmp(q, p, sizeof *q));
+                     (ui_view(q).ink == UI_RING && memcmp(q, p, sizeof *q));
         }
         /* of the ring, only the new frame's byte */
         for (i = 0; i < SNX_UI_RING_MAX; ++i) rewritten += heights[i] != ui_ring()->height[i];
@@ -363,7 +368,7 @@ int main(void) {
         {
             /* the newest bar where the GPU scrolls it: at the graph's right edge, a cell in and STATS_AXIS from the
                box's */
-            const SnxUiQuad* newest_bar;
+            const SnxUiQuadView* newest_bar;
             float cw = 8.0f * (float)stats_scale(g_test.menu), right;
             stats_box(safe, stats_scale(g_test.menu), box);
             right = box[0] + cw + (box[2] - 2 * cw - STATS_AXIS * cw);
@@ -387,7 +392,8 @@ int main(void) {
             assert(ui_cells(&kept, 0, 0, 1, 5, TEXT_RGBA) == -1 && ui_cells(&kept, 0, 0, 1, 4, TEXT_RGBA) == 0);
             assert(ui_cells_set(cells, 4, "abcdef") == 4 && cells[3].u == SNX_CONTROLS_FONT_X + 'd' % 16 * 8);
             assert(ui_cells_set(cells, 4, "abcdef") == 0 && ui_cells_set(cells, 4, "a c") == 2);
-            assert(cells[1].uw == 0 && cells[3].uw == 0 && cells[2].uw == 8 && cells[3].x == 24 && cells[3].w == 8);
+            assert(cells[1].uw == 0 && cells[3].uw == 0 && cells[2].uw == 8 && qv(&cells[3]).x == 24 &&
+                   qv(&cells[3]).w == 8);
         }
     }
     /* the GPU's lines from what the renderer reads at each frame, measured once a second from the first frame: 12 ms

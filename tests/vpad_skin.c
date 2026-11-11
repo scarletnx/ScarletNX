@@ -19,6 +19,9 @@
 
 /* ui.c's lock, without the platform layer */
 #include "nx/runtime/platform/plat.h"
+
+/* a quad as it holds it (ui.h's ui_view): its place in pixels, its colour widened back to 8 bits */
+static SnxUiQuadView qv(const SnxUiQuad* q) { return ui_view(q); }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 /* vpad.c's check of settings.txt's keys against its controls: a mismatch fails the test */
@@ -65,11 +68,15 @@ static void draw(void) {
     g_test.list.max = 512;
     vpad_draw(&g_test.list, safe);
 }
-/* the quad drawn with those texels, or NULL */
-static const SnxUiQuad* drawn(int u, int v) {
+/* the quad drawn with those texels as it holds it (ui_view), or NULL */
+static const SnxUiQuadView* drawn(int u, int v) {
+    static SnxUiQuadView view;
     int i;
     for (i = 0; i < g_test.list.n; ++i)
-        if (g_test.quads[i].u == u && g_test.quads[i].v == v) return &g_test.quads[i];
+        if (g_test.quads[i].u == u && g_test.quads[i].v == v) {
+            view = qv(&g_test.quads[i]);
+            return &view;
+        }
     return NULL;
 }
 /* not near: a Windows header makes that a macro */
@@ -205,7 +212,7 @@ static int load(const char* path) {
 }
 static void test_skin(void) {
     const SnxSkinControl *a, *b, *d, *st;
-    const SnxUiQuad* q;
+    const SnxUiQuadView* q;
     i32 sticks[4];
     int i, w, h;
     u32 version;
@@ -325,7 +332,7 @@ static void test_skin(void) {
     draw();
     for (i = 0; i < g_test.list.n; ++i)
         if (g_test.quads[i].u == d->piece[0].u && g_test.quads[i].v == d->piece[0].v)
-            assert(g_test.quads[i].rgba >> 24 == (close_to(g_test.quads[i].y, 300) ? 204u : 102u));
+            assert(qv(&g_test.quads[i]).rgba >> 24 == (close_to(qv(&g_test.quads[i]).y, 300) ? 204u : 102u));
     vpad_ini("controls_alpha", "100");
     assert(vpad_up(5));
     buttons(NULL);
@@ -544,7 +551,7 @@ static int red_at(const SDL_Surface* atlas, float x, float y) {
     float out = 0;
     int i;
     for (i = 0; i < g_test.list.n; ++i) {
-        const SnxUiQuad* q = &g_test.quads[i];
+        const SnxUiQuadView q_v = qv(&g_test.quads[i]), *q = &q_v;
         const u8* t;
         float k;
         if (q->sample != UI_BLEND || x < q->x || y < q->y || x >= q->x + q->w || y >= q->y + q->h) continue;

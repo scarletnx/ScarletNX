@@ -8,6 +8,9 @@
 #include <stdio.h>
 #include <string.h>
 
+/* a quad as it holds it (ui.h's ui_view): its place in pixels, its colour widened back to 8 bits */
+static SnxUiQuadView qv(const SnxUiQuad* q) { return ui_view(q); }
+
 /* ui.c's lock and log, without the platform layer */
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
@@ -35,8 +38,8 @@ static int rows(const SnxUiList* l) {
     int i, n = 0;
     float last = -1;
     for (i = 1; i < l->n; ++i)
-        if (quads[i].y != last) {
-            last = quads[i].y;
+        if (qv(&quads[i]).y != last) {
+            last = qv(&quads[i]).y;
             ++n;
         }
     return n;
@@ -58,17 +61,18 @@ int main(void) {
     l = drawn(wide, 2);
     assert(l.n == 1 + letters(HUD_DEBUG_LEAD) + letters(list));
     assert(rows(&l) == 1);
-    assert(quads[0].w == (float)(strlen(HUD_DEBUG_LEAD) + strlen(list) + 2) * 16);
-    assert(quads[0].x + quads[0].w / 2 == (float)wide[0] + (float)wide[2] / 2);
-    assert(quads[0].y == (float)wide[1] + 16 && quads[0].h == 32 + 16);
-    for (i = 1; i < l.n; ++i) assert(quads[i].x >= quads[0].x && quads[i].x + quads[i].w <= quads[0].x + quads[0].w);
+    assert(qv(&quads[0]).w == (float)(strlen(HUD_DEBUG_LEAD) + strlen(list) + 2) * 16);
+    assert(qv(&quads[0]).x + qv(&quads[0]).w / 2 == (float)wide[0] + (float)wide[2] / 2);
+    assert(qv(&quads[0]).y == (float)wide[1] + 16 && qv(&quads[0]).h == 32 + 16);
+    for (i = 1; i < l.n; ++i) assert(qv(&quads[i]).x >= qv(&quads[0]).x &&
+                                     qv(&quads[i]).x + qv(&quads[i]).w <= qv(&quads[0]).x + qv(&quads[0]).w);
     /* 23 letters across a narrow one: "Debug on: log=2," then "vk_validation=1," then "shader_corpus, gdbstub", none
        of them cut, all of them inside it */
     l = drawn(narrow, 1);
     assert(l.n == 1 + letters(HUD_DEBUG_LEAD) + letters(list));
-    assert(rows(&l) == 3 && quads[0].h == 3 * 16 + 8);
-    assert(quads[0].w == (float)(22 + 2) * 8);
-    for (i = 0; i < l.n; ++i) assert(quads[i].x >= 0 && quads[i].x + quads[i].w <= (float)narrow[2]);
+    assert(rows(&l) == 3 && qv(&quads[0]).h == 3 * 16 + 8);
+    assert(qv(&quads[0]).w == (float)(22 + 2) * 8);
+    for (i = 0; i < l.n; ++i) assert(qv(&quads[i]).x >= 0 && qv(&quads[i]).x + qv(&quads[i]).w <= (float)narrow[2]);
     /* an item longer than a line goes on over the next ones, a letter each still */
     assert(hud_debug_set(longer));
     l = drawn(narrow, 1);
@@ -76,7 +80,7 @@ int main(void) {
     /* a picture too narrow for the lead and eight letters: the box goes past its sides, and shows it all */
     l = drawn(tiny, 1);
     assert(l.n == 1 + letters(HUD_DEBUG_LEAD) + letters(longer));
-    assert(quads[0].w == (float)(strlen(HUD_DEBUG_LEAD) + 8 + 2) * 8 && quads[0].x < (float)tiny[0]);
+    assert(qv(&quads[0]).w == (float)(strlen(HUD_DEBUG_LEAD) + 8 + 2) * 8 && qv(&quads[0]).x < (float)tiny[0]);
     assert(hud_debug_set("") && (l = drawn(wide, 1), l.n == 0));
     puts("hud passed");
     return 0;
