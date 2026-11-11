@@ -12,6 +12,7 @@
    On Windows (platform/plat_win32.c) the traps are page protection and a vectored exception handler on the
    reservation's own pages, with no pool: landings write in place, a view is a copy, and ReadFile or WriteFile over an
    owned page fails with ERROR_NOACCESS until it is acquired */
+#include "common/utilities/common.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/memory/own.h"
@@ -820,9 +821,14 @@ int main(int argc, char** argv) {
         test_busy(self, 1, 0);
     }
 #else
-    test_busy("/proc/self/exe", 0, 0);
-    test_busy("/proc/self/exe", 1, 0);
-    test_busy("/proc/self/exe", 0, 1);
+    { /* the system's name for this program: /proc/self/exe is Linux's, and FreeBSD mounts no /proc of itself */
+        char* self = snx_executable(argv[0]);
+        CHECK(self != NULL);
+        test_busy(self, 0, 0);
+        test_busy(self, 1, 0);
+        test_busy(self, 0, 1);
+        free(self);
+    }
 #endif
     test_release_order();
     test_republish_after_landing();
