@@ -98,16 +98,16 @@ enum {
 };
 
 #define PATH_MAX_LEN   0x300 /* a longer path after normalization is R_PATH_TOO_LONG */
-#define MOUNT_NAME_MAX 15
+#define MOUNT_NAME_MAX NNFS_NAME
 #define ENTRY_SIZE     0x310 /* nn::fs::DirectoryEntry: name[0x301], type (s8) at 0x304, size (s64) at 0x308 */
 #define ROM_NONE       0xFFFFFFFFu
 #define ROM_DIR_FIXED  24 /* parent, sibling, first child directory, first file, hash, name length */
 #define ROM_FILE_FIXED 32 /* parent, sibling, data offset (u64), size (u64), hash, name length */
 #define DIR_NO_SIZE    0x40000000u /* OpenDirectory's flag: the entries need no file size */
 
-#define NMOUNTS  32
-#define NFILES   1024
-#define NDIRS    256
+#define NMOUNTS  NNFS_MOUNTS
+#define NFILES   NNFS_FILES
+#define NDIRS    NNFS_DIRS
 #define TAG_FILE ((u64)1 << 63)
 #define TAG_DIR  ((u64)3 << 62)
 #define TAG_MASK ((u64)3 << 62)
@@ -117,11 +117,12 @@ enum { SAVE_ACCOUNT = 1, SAVE_TEMPORARY = 4, SAVE_CACHE = 5 };
 /* the write state of an open file, as the SDK's file accessor keeps it */
 enum { WRITE_CLEAN, WRITE_NEEDS_FLUSH, WRITE_FAILED };
 
-/* A RomFS image: the game's (fs.c's image, roms[0]) or a data storage's, an add-on content's (st), with its directory
-   and file tables read once when it is mounted */
+/* A RomFS image's tables, the host's: the game's (fs.c's image) or a data storage's, an add-on content's (st), read once
+   when it is mounted, and again after a save state's load (rom_at). g_hle.nnfs.roms says which image each one is */
 typedef struct {
     int used;
     int game;
+    u64 data_id;
     FsStorage st;
     u8* dirs;
     u64 dirs_size;
@@ -131,46 +132,17 @@ typedef struct {
     u8 header[0x50];
 } NRom;
 
-enum { MOUNT_FREE, MOUNT_ROM, MOUNT_SAVE };
-typedef struct {
-    int kind;
-    char name[MOUNT_NAME_MAX + 1];
-    u32 opens;    /* files and directories open on it */
-    u32 rom;      /* a RomFS mount's image in roms */
-    FsNode* root; /* a save's folder, retained */
-    int noted;    /* its commits write its note (fs_root_commit) */
-    int read_only; /* MountSaveDataReadOnly's: no write mode and no change of its tree */
-} NMount;
-typedef struct {
-    int used;
-    u32 gen; /* in the handle, so a closed handle is refused */
-    u32 mount;
-    u32 mode;    /* the OpenMode: 1 read, 2 write, 4 allow append */
-    u32 rom;     /* a RomFS file: its image in roms */
-    u64 data;    /* the image's offset of its data */
-    u64 size;    /* and its size */
-    FileData fd; /* a save's file: the server's open file */
-    u32 wstate;  /* WRITE_* */
-    u32 sticky;  /* a failed write's Result, which every later operation on the file returns */
-} NFile;
-typedef struct {
-    int used;
-    u32 gen;
-    u32 mount;
-    u32 filter;    /* 1 directories, 2 files */
-    u32 dir;       /* a RomFS directory: its entry in the directory table */
-    u32 next_dir;  /* the next child directory to list, or ROM_NONE */
-    u32 next_file; /* then the next file */
-    DirData dd;    /* a save's directory: the server's open directory */
-} NDir;
+enum { MOUNT_FREE = NNFS_MOUNT_FREE, MOUNT_ROM = NNFS_MOUNT_ROM, MOUNT_SAVE = NNFS_MOUNT_SAVE };
+typedef NnfsMount NMount;
+typedef NnfsFile NFile;
+typedef NnfsDir NDir;
 
+/* the host's side, which a save state never holds */
 static struct {
     PMutex lock;
-    int game_rom_tried; /* roms[0], the game's, read at the first MountRom: the image never changes in a run */
+    int game_rom; /* the game's RomFS: 0 not looked at yet, 1 its tables read, -1 none to read (the image never changes
+                     in a run) */
     NRom roms[NMOUNTS];
-    NMount mounts[NMOUNTS];
-    NFile files[NFILES];
-    NDir dirs[NDIRS];
 } g_nnfs;
 
 void nnfs_init(void) { pm_init(&g_nnfs.lock); }
@@ -220,8 +192,8 @@ static void put_u32(CPU* c, u64 a, u32 v) { snx_st_le32(hook_host(c, a), v); }
 /* the native mount named by the first n bytes of name, or -1 (lock held) */
 static int mount_find(const char* name, size_t n) {
     for (int i = 0; i < NMOUNTS; i++)
-        if (g_nnfs.mounts[i].kind != MOUNT_FREE && strlen(g_nnfs.mounts[i].name) == n &&
-            !memcmp(g_nnfs.mounts[i].name, name, n))
+        if (g_hle.nnfs.mounts[i].kind != MOUNT_FREE && strlen(g_hle.nnfs.mounts[i].name) == n &&
+            !memcmp(g_hle.nnfs.mounts[i].name, name, n))
             return i;
     return -1;
 }
@@ -250,8 +222,8 @@ static int mount_new(const char* name, int kind, int reserved, u32* r) {
         return -1;
     }
     for (int i = 0; i < NMOUNTS; i++)
-        if (g_nnfs.mounts[i].kind == MOUNT_FREE) {
-            NMount* m = &g_nnfs.mounts[i];
+        if (g_hle.nnfs.mounts[i].kind == MOUNT_FREE) {
+            NMount* m = &g_hle.nnfs.mounts[i];
             *m = (NMount){0};
             m->kind = kind;
             snprintf(m->name, sizeof m->name, "%s", name);
@@ -345,26 +317,71 @@ static int rom_tables(NRom* rm, const char* what) {
     rm->data = snx_ld_le64(h + 72);
     return 0;
 }
-static void rom_free(NRom* rm) { /* lock held */
+static void rom_drop(NRom* rm) { /* lock held */
+    if (!rm->used) return;
     free(rm->dirs);
     free(rm->files);
     if (!rm->game) fs_storage_close(&rm->st);
     *rm = (NRom){0};
 }
+/* the image, the game's or data_id's storage, its tables read into rm (lock held): 0, or the Result */
+static u32 rom_load(NRom* rm, int game, u64 data_id) {
+    char what[48];
+    *rm = (NRom){0};
+    rm->game = game;
+    rm->data_id = data_id;
+    if (game)
+        snprintf(what, sizeof what, "the game's RomFS");
+    else {
+        snprintf(what, sizeof what, "the add-on content %016llx", (unsigned long long)data_id);
+        u32 r = fs_storage_open(data_id, &rm->st);
+        if (r) {
+            *rm = (NRom){0};
+            return r;
+        }
+    }
+    if (rom_tables(rm, what)) {
+        if (!game) fs_storage_close(&rm->st);
+        *rm = (NRom){0};
+        return R_OUT_OF_RANGE; /* a storage the SDK's RomFS cannot read either */
+    }
+    rm->used = 1;
+    return 0;
+}
+/* image i's tables (lock held), read again when the host's are not of the image g_hle.nnfs.roms[i] names, as after a
+   save state's load */
+static NRom* rom_at(u32 i) {
+    const NnfsRom* ref = &g_hle.nnfs.roms[i];
+    NRom* rm = &g_nnfs.roms[i];
+    if (rm->used && rm->game == (int)ref->game && rm->data_id == ref->data_id) return rm;
+    rom_drop(rm);
+    if (rom_load(rm, (int)ref->game, ref->data_id))
+        fatal("nn::fs: the RomFS image %u that a mount had can't be read again after the save state's load", i);
+    return rm;
+}
+/* image i (not the game's, which stays for a new mount) no longer mounted */
+static void rom_release(u32 i) {
+    g_hle.nnfs.roms[i] = (NnfsRom){0};
+    rom_drop(&g_nnfs.roms[i]);
+}
 /* roms[0], the game's RomFS (lock held): 0, or -1 when the game has none the tables can be read from, and the SDK's
    own code mounts it */
 static int game_rom(void) {
+    if (g_nnfs.game_rom < 0) return -1;
+    NnfsRom* ref = &g_hle.nnfs.roms[0];
+    *ref = (NnfsRom){.used = 1, .game = 1};
     NRom* rm = &g_nnfs.roms[0];
-    if (g_nnfs.game_rom_tried) return rm->used ? 0 : -1;
-    g_nnfs.game_rom_tried = 1;
-    rm->game = 1;
-    if (rom_tables(rm, "the game's RomFS")) {
-        *rm = (NRom){0};
+    if (rm->used && rm->game) return 0;
+    rom_drop(rm);
+    if (rom_load(rm, 1, 0)) {
+        g_nnfs.game_rom = -1;
+        *ref = (NnfsRom){0};
         return -1;
     }
-    rm->used = 1;
-    LOG("nn::fs: the RomFS mounts natively (tables of %llu and %llu bytes)\n", (unsigned long long)rm->dirs_size,
-        (unsigned long long)rm->files_size);
+    if (!g_nnfs.game_rom)
+        LOG("nn::fs: the RomFS mounts natively (tables of %llu and %llu bytes)\n", (unsigned long long)rm->dirs_size,
+            (unsigned long long)rm->files_size);
+    g_nnfs.game_rom = 1;
     return 0;
 }
 /* the directory entry at off: its field i (a u32), or ROM_NONE past the table */
@@ -440,13 +457,13 @@ static u64 rom_cache_size(const NRom* rm) {
 static int file_of(u64 h) { /* lock held: the native file of h, or -1 */
     if ((h & TAG_MASK) != TAG_FILE) return -1;
     u32 i = (u32)(h & 0xffffffffu), gen = (u32)(h >> 32) & 0x3fffffffu;
-    if (i >= NFILES || !g_nnfs.files[i].used || g_nnfs.files[i].gen != gen) return -1;
+    if (i >= NFILES || !g_hle.nnfs.files[i].used || g_hle.nnfs.files[i].gen != gen) return -1;
     return (int)i;
 }
 static int dir_of(u64 h) {
     if ((h & TAG_MASK) != TAG_DIR) return -1;
     u32 i = (u32)(h & 0xffffffffu), gen = (u32)(h >> 32) & 0x3fffffffu;
-    if (i >= NDIRS || !g_nnfs.dirs[i].used || g_nnfs.dirs[i].gen != gen) return -1;
+    if (i >= NDIRS || !g_hle.nnfs.dirs[i].used || g_hle.nnfs.dirs[i].gen != gen) return -1;
     return (int)i;
 }
 static int is_native(u64 h) { return (h & TAG_FILE) != 0; }
@@ -461,15 +478,36 @@ static NFile* file_take(const char* function, u64 h) {
     pm_lock(&g_nnfs.lock);
     int i = file_of(h);
     if (i < 0) stale(function, h);
-    return &g_nnfs.files[i];
+    return &g_hle.nnfs.files[i];
 }
 static NDir* dir_take(const char* function, u64 h) {
     pm_lock(&g_nnfs.lock);
     int i = dir_of(h);
     if (i < 0) stale(function, h);
-    return &g_nnfs.dirs[i];
+    return &g_hle.nnfs.dirs[i];
 }
-static int is_save(const NFile* f) { return g_nnfs.mounts[f->mount].kind == MOUNT_SAVE; }
+static int is_save(const NFile* f) { return g_hle.nnfs.mounts[f->mount].kind == MOUNT_SAVE; }
+/* a save's root, file and directory: the slots of g_hle.fs that fs.c's save state finds again by path. obj marks one
+   taken */
+static FsNode* mount_root(int m) { return g_hle.fs.fss[g_hle.nnfs.mounts[m].fss].root; }
+static FileData* file_data(const NFile* f) { return &g_hle.fs.files[f->slot]; }
+static DirData* dir_data(const NDir* d) { return &g_hle.fs.dirs[d->slot]; }
+/* a free slot of g_hle.fs's tables, whose obj is 0 (fs's lock held) */
+static u32 fss_slot(void) {
+    for (u32 i = 0; i < FS_FS_MAX; i++)
+        if (!g_hle.fs.fss[i].obj) return i;
+    fatal("nn::fs: more than %d saves mounted natively", FS_FS_MAX);
+}
+static u32 file_slot(void) {
+    for (u32 i = 0; i < FS_FILE_MAX; i++)
+        if (!g_hle.fs.files[i].obj) return i;
+    fatal("nn::fs: more than %d save files open natively", FS_FILE_MAX);
+}
+static u32 dir_slot(void) {
+    for (u32 i = 0; i < FS_DIR_MAX; i++)
+        if (!g_hle.fs.dirs[i].obj) return i;
+    fatal("nn::fs: more than %d save directories open natively", FS_DIR_MAX);
+}
 /* the file's state after a write, flush or size change: ok on success, else failed, with the Result kept for every
    later operation unless it is one of space */
 static void after_change(NFile* f, u32 r, u32 ok) {
@@ -486,14 +524,14 @@ static void after_change(NFile* f, u32 r, u32 ok) {
 /* a RomFS image (roms[rom], its tables read) mounted as name, its tables copied into the game's cache as the SDK keeps
    them there: 0, or the Result (lock held). A mount that fails leaves the image as it was */
 static u32 mount_image(CPU* c, const char* function, u64 name, u64 cache, u64 cache_size, u32 rom) {
-    NRom* rm = &g_nnfs.roms[rom];
+    NRom* rm = rom_at(rom);
     const char* s = name ? gstr(c, name) : NULL;
     u32 r = check_mount_name(s, 0);
     if (!r && !cache) r = R_NULL_ARGUMENT;
     if (!r && cache_size < rom_cache_size(rm)) r = R_CACHE_TOO_SMALL;
     int m = r ? -1 : mount_new(s, MOUNT_ROM, 0, &r);
     if (m < 0) return r;
-    g_nnfs.mounts[m].rom = rom;
+    g_hle.nnfs.mounts[m].rom = rom;
     u64 at = cache; /* the four tables in the header's order */
     for (int t = 0; t < 4; t++) {
         u64 off = snx_ld_le64(rm->header + 8 + 16 * t), size = snx_ld_le64(rm->header + 16 + 16 * t);
@@ -537,7 +575,7 @@ u32 nnfs_query_mount_rom_cache_size(CPU* c, u64 size) {
         pm_unlock(&g_nnfs.lock);
         return (u32)sdk_own(c, SYM_QUERY_ROM_CACHE);
     }
-    u64 n = rom_cache_size(&g_nnfs.roms[0]);
+    u64 n = rom_cache_size(rom_at(0));
     pm_unlock(&g_nnfs.lock);
     if (!size) return done("QueryMountRomCacheSize", R_NULL_ARGUMENT);
     put_u64(c, size, n);
@@ -550,21 +588,13 @@ u32 nnfs_query_mount_rom_cache_size(CPU* c, u64 size) {
 static int aoc_image(i32 index, u32* r) {
     int rom = -1;
     for (int i = 1; i < NMOUNTS && rom < 0; i++)
-        if (!g_nnfs.roms[i].used) rom = i;
+        if (!g_hle.nnfs.roms[i].used) rom = i;
     if (rom < 0) fatal("nn::fs: more than %d RomFS images mounted natively", NMOUNTS - 1);
-    NRom* rm = &g_nnfs.roms[rom];
     u64 id = aoc_base_id(g_hle.kernel.title_id) + (u64)(u32)index;
-    char what[48];
-    snprintf(what, sizeof what, "the add-on content %016llx", (unsigned long long)id);
-    *r = fs_storage_open(id, &rm->st);
+    rom_drop(&g_nnfs.roms[rom]); /* an image of a state from before a load */
+    *r = rom_load(&g_nnfs.roms[rom], 0, id);
     if (*r) return -1;
-    if (rom_tables(rm, what)) {
-        fs_storage_close(&rm->st);
-        *rm = (NRom){0};
-        *r = R_OUT_OF_RANGE; /* a storage the SDK's RomFS cannot read either */
-        return -1;
-    }
-    rm->used = 1;
+    g_hle.nnfs.roms[rom] = (NnfsRom){.used = 1, .data_id = id};
     return rom;
 }
 
@@ -574,7 +604,7 @@ u32 nnfs_mount_add_on_content(CPU* c, u64 name, i32 index, u64 cache, u64 cache_
     int rom = aoc_image(index, &r);
     if (rom >= 0) {
         r = mount_image(c, "MountAddOnContent", name, cache, cache_size, (u32)rom);
-        if (r) rom_free(&g_nnfs.roms[rom]);
+        if (r) rom_release((u32)rom);
     }
     pm_unlock(&g_nnfs.lock);
     return done("MountAddOnContent", r);
@@ -589,8 +619,8 @@ u32 nnfs_query_mount_add_on_content_cache_size(CPU* c, u64 size, i32 index) {
     else {
         int rom = aoc_image(index, &r);
         if (rom >= 0) {
-            n = rom_cache_size(&g_nnfs.roms[rom]);
-            rom_free(&g_nnfs.roms[rom]);
+            n = rom_cache_size(rom_at((u32)rom));
+            rom_release((u32)rom);
         }
     }
     pm_unlock(&g_nnfs.lock);
@@ -598,6 +628,14 @@ u32 nnfs_query_mount_add_on_content_cache_size(CPU* c, u64 size, i32 index) {
     return done("QueryMountAddOnContentCacheSize", r);
 }
 
+/* mount m's root folder (retained), in a slot of g_hle.fs.fss */
+static void mount_root_set(int m, FsNode* root, int noted) {
+    fs_lock();
+    u32 i = fss_slot();
+    g_hle.fs.fss[i] = (FsData){.obj = 1, .root = root, .noted = (u32)noted};
+    fs_unlock();
+    g_hle.nnfs.mounts[m].fss = i;
+}
 /* a save of type for uid (16 bytes) and index, mounted as name, read only when read_only */
 static u32 mount_save(CPU* c, const char* function, u64 name, const u8 uid[16], u8 type, u16 index, int read_only) {
     pm_lock(&g_nnfs.lock);
@@ -609,11 +647,10 @@ static u32 mount_save(CPU* c, const char* function, u64 name, const u8 uid[16], 
         int noted;
         r = fs_save_root(type, uid, index, &root, &noted);
         if (r)
-            g_nnfs.mounts[m] = (NMount){0};
+            g_hle.nnfs.mounts[m] = (NMount){0};
         else {
-            g_nnfs.mounts[m].root = root;
-            g_nnfs.mounts[m].noted = noted;
-            g_nnfs.mounts[m].read_only = read_only;
+            mount_root_set(m, root, noted);
+            g_hle.nnfs.mounts[m].read_only = (u32)read_only;
             LOG("nn::fs: %s(\"%s\") native\n", function, s);
         }
     }
@@ -689,14 +726,15 @@ void nnfs_unmount(CPU* c, u64 name) {
         sdk_own(c, SYM_UNMOUNT);
         return;
     }
-    NMount* mt = &g_nnfs.mounts[m];
+    NMount* mt = &g_hle.nnfs.mounts[m];
     if (mt->opens) stop("Unmount", R_UNMOUNT_OPEN);
-    if (mt->root) {
+    if (mt->kind == MOUNT_SAVE) {
         fs_lock();
-        fs_root_release(mt->root);
+        fs_root_release(g_hle.fs.fss[mt->fss].root);
+        g_hle.fs.fss[mt->fss] = (FsData){0};
         fs_unlock();
     }
-    if (mt->kind == MOUNT_ROM && mt->rom) rom_free(&g_nnfs.roms[mt->rom]); /* the game's image stays for a new mount */
+    if (mt->kind == MOUNT_ROM && mt->rom) rom_release(mt->rom); /* the game's image stays for a new mount */
     *mt = (NMount){0};
     pm_unlock(&g_nnfs.lock);
 }
@@ -714,10 +752,10 @@ u32 nnfs_open_file(CPU* c, u64 handle, u64 path, i32 mode) {
     }
     if (!r && !handle) r = R_NULL_ARGUMENT;
     if (!r && ((u32)mode > 7 || !(mode & 3))) r = R_BAD_OPEN_MODE;
-    NMount* mt = &g_nnfs.mounts[m];
+    NMount* mt = &g_hle.nnfs.mounts[m];
     NFile opened = {0};
     if (!r && mt->kind == MOUNT_ROM) {
-        const NRom* rm = &g_nnfs.roms[mt->rom];
+        const NRom* rm = rom_at(mt->rom);
         int is_dir = 0;
         u32 e = 0;
         if (mode != 1) r = R_BAD_OPEN_MODE; /* the RomFS opens for reading only */
@@ -732,15 +770,17 @@ u32 nnfs_open_file(CPU* c, u64 handle, u64 path, i32 mode) {
         r = R_BAD_OPEN_MODE; /* HYPOTHESIS: a read-only save refuses a write mode as the RomFS does */
     } else if (!r) {
         fs_lock();
-        r = fs_file_open(mt->root, p, (u32)mode, &opened.fd);
+        opened.slot = file_slot();
+        r = fs_file_open(mount_root(m), p, (u32)mode, &g_hle.fs.files[opened.slot]);
+        if (!r) g_hle.fs.files[opened.slot].obj = 1;
         fs_unlock();
     }
     if (!r) {
         int i = -1;
         for (int k = 0; k < NFILES && i < 0; k++)
-            if (!g_nnfs.files[k].used) i = k;
+            if (!g_hle.nnfs.files[k].used) i = k;
         if (i < 0) fatal("nn::fs: more than %d files open natively", NFILES);
-        NFile* f = &g_nnfs.files[i];
+        NFile* f = &g_hle.nnfs.files[i];
         u32 gen = (f->gen + 1) & 0x3fffffffu;
         *f = opened;
         f->used = 1;
@@ -763,10 +803,11 @@ void nnfs_close_file(CPU* c, u64 h) {
     if (f->wstate == WRITE_NEEDS_FLUSH && !f->sticky) stop("CloseFile", R_UNFLUSHED_CLOSE);
     if (is_save(f)) {
         fs_lock();
-        fs_file_close(&f->fd);
+        fs_file_close(file_data(f));
+        *file_data(f) = (FileData){0};
         fs_unlock();
     }
-    g_nnfs.mounts[f->mount].opens--;
+    g_hle.nnfs.mounts[f->mount].opens--;
     u32 gen = f->gen;
     *f = (NFile){0};
     f->gen = gen;
@@ -796,14 +837,14 @@ static u32 file_read(const char* function, u64 h, u64 read_out, int want_read, i
     }
     if (is_save(f)) {
         fs_lock();
-        r = fs_file_read(&f->fd, (u64)offset, buffer, size, n);
+        r = fs_file_read(file_data(f), (u64)offset, buffer, size, n);
         fs_unlock();
         pm_unlock(&g_nnfs.lock);
         return r;
     }
     /* a RomFS never changes, and its image stays while a file is open on it (Unmount stops the game first): read it
        with no lock held */
-    NRom* rm = &g_nnfs.roms[f->rom];
+    NRom* rm = rom_at(f->rom);
     u64 data = f->data, total = f->size;
     pm_unlock(&g_nnfs.lock);
     if ((u64)offset > total) return R_OUT_OF_RANGE; /* at the end reads nothing, past it is an error */
@@ -857,7 +898,7 @@ u32 nnfs_write_file(CPU* c, u64 h, i64 offset, u64 buffer, u64 size, u64 option)
     if (!r && !size) {
         if (opt & 1) {
             fs_lock();
-            r = fs_file_flush(&f->fd);
+            r = fs_file_flush(file_data(f));
             fs_unlock();
             after_change(f, r, WRITE_CLEAN);
         }
@@ -872,7 +913,7 @@ u32 nnfs_write_file(CPU* c, u64 h, i64 offset, u64 buffer, u64 size, u64 option)
             r = R_OUT_OF_RANGE;
         if (!r) {
             fs_lock();
-            r = fs_file_write(&f->fd, opt, (u64)offset, buffer, size);
+            r = fs_file_write(file_data(f), opt, (u64)offset, buffer, size);
             fs_unlock();
             after_change(f, r, (opt & 1) ? WRITE_CLEAN : WRITE_NEEDS_FLUSH);
         }
@@ -886,7 +927,7 @@ u32 nnfs_flush_file(CPU* c, u64 h) {
     u32 r = f->sticky;
     if (!r && is_save(f)) {
         fs_lock();
-        r = fs_file_flush(&f->fd);
+        r = fs_file_flush(file_data(f));
         fs_unlock();
         after_change(f, r, WRITE_CLEAN);
     }
@@ -901,7 +942,7 @@ u32 nnfs_set_file_size(CPU* c, u64 h, i64 size) {
     if (!r && !is_save(f)) r = R_READ_ONLY;
     if (!r) {
         fs_lock();
-        r = fs_file_set_size(&f->fd, size);
+        r = fs_file_set_size(file_data(f), size);
         fs_unlock();
         after_change(f, r, f->wstate);
     }
@@ -917,7 +958,7 @@ u32 nnfs_get_file_size(CPU* c, u64 size, u64 h) {
         u64 n = f->size;
         if (is_save(f)) {
             fs_lock();
-            n = f->fd.node->size;
+            n = file_data(f)->node->size;
             fs_unlock();
         }
         put_u64(c, size, n);
@@ -982,11 +1023,11 @@ u32 nnfs_open_directory(CPU* c, u64 handle, u64 path, i32 mode) {
     u32 um = (u32)mode;
     if (!r && !handle) r = R_NULL_ARGUMENT;
     if (!r && (!(um & 3) || (um & 0x3ffffffcu) || (um >> 30) > 2)) r = R_BAD_DIR_MODE;
-    NMount* mt = &g_nnfs.mounts[m];
+    NMount* mt = &g_hle.nnfs.mounts[m];
     NDir opened = {0};
     opened.filter = um & 3;
     if (!r && mt->kind == MOUNT_ROM) {
-        const NRom* rm = &g_nnfs.roms[mt->rom];
+        const NRom* rm = rom_at(mt->rom);
         int is_dir = 0;
         u32 e = 0;
         r = rom_lookup(rm, p, &is_dir, &e);
@@ -999,15 +1040,18 @@ u32 nnfs_open_directory(CPU* c, u64 handle, u64 path, i32 mode) {
     } else if (!r) {
         /* the server takes the flag for no file sizes as its bit 31 */
         fs_lock();
-        r = fs_dir_open(mt->root, p, (um & 3) | ((um & DIR_NO_SIZE) ? 0x80000000u : 0), &opened.dd);
+        opened.slot = dir_slot();
+        r = fs_dir_open(mount_root(m), p, (um & 3) | ((um & DIR_NO_SIZE) ? 0x80000000u : 0),
+                        &g_hle.fs.dirs[opened.slot]);
+        if (!r) g_hle.fs.dirs[opened.slot].obj = 1;
         fs_unlock();
     }
     if (!r) {
         int i = -1;
         for (int k = 0; k < NDIRS && i < 0; k++)
-            if (!g_nnfs.dirs[k].used) i = k;
+            if (!g_hle.nnfs.dirs[k].used) i = k;
         if (i < 0) fatal("nn::fs: more than %d directories open natively", NDIRS);
-        NDir* d = &g_nnfs.dirs[i];
+        NDir* d = &g_hle.nnfs.dirs[i];
         u32 gen = (d->gen + 1) & 0x3fffffffu;
         *d = opened;
         d->used = 1;
@@ -1023,7 +1067,7 @@ u32 nnfs_open_directory(CPU* c, u64 handle, u64 path, i32 mode) {
 /* writes the next RomFS entry of d to the guest at out, when out is not 0 (lock held): 1, or 0 at the end. The child
    directories come first, then the files, each in the table's order */
 static int rom_dir_next(CPU* c, NDir* d, u64 out) {
-    const NRom* rm = &g_nnfs.roms[g_nnfs.mounts[d->mount].rom];
+    const NRom* rm = rom_at(g_hle.nnfs.mounts[d->mount].rom);
     int is_dir;
     u32 e, len;
     const char* name;
@@ -1062,10 +1106,10 @@ u32 nnfs_read_directory(CPU* c, u64 count, u64 entries, u64 h, i64 max) {
         r = R_NULL_ARGUMENT;
     else if (max < 0)
         r = R_NEGATIVE_COUNT;
-    else if (g_nnfs.mounts[d->mount].kind == MOUNT_SAVE) {
+    else if (g_hle.nnfs.mounts[d->mount].kind == MOUNT_SAVE) {
         u64 n;
         fs_lock();
-        r = fs_dir_read(&d->dd, entries, (u64)max, &n);
+        r = fs_dir_read(dir_data(d), entries, (u64)max, &n);
         fs_unlock();
         if (!r) put_u64(c, count, n);
     } else {
@@ -1083,13 +1127,13 @@ u32 nnfs_get_directory_entry_count(CPU* c, u64 count, u64 h) {
     u32 r = 0;
     if (!count)
         r = R_NULL_ARGUMENT;
-    else if (g_nnfs.mounts[d->mount].kind == MOUNT_SAVE) {
+    else if (g_hle.nnfs.mounts[d->mount].kind == MOUNT_SAVE) {
         fs_lock();
-        u64 n = fs_dir_count(&d->dd);
+        u64 n = fs_dir_count(dir_data(d));
         fs_unlock();
         put_u64(c, count, n);
     } else {
-        const NRom* rm = &g_nnfs.roms[g_nnfs.mounts[d->mount].rom];
+        const NRom* rm = rom_at(g_hle.nnfs.mounts[d->mount].rom);
         NDir all = *d; /* a copy from the start, which the listing does not move */
         all.next_dir = rom_dir_field(rm, all.dir, 2);
         all.next_file = rom_dir_field(rm, all.dir, 3);
@@ -1107,12 +1151,13 @@ void nnfs_close_directory(CPU* c, u64 h) {
         return;
     }
     NDir* d = dir_take("CloseDirectory", h);
-    if (g_nnfs.mounts[d->mount].kind == MOUNT_SAVE) {
+    if (g_hle.nnfs.mounts[d->mount].kind == MOUNT_SAVE) {
         fs_lock();
-        fs_dir_close(&d->dd);
+        fs_dir_close(dir_data(d));
+        *dir_data(d) = (DirData){0};
         fs_unlock();
     }
-    g_nnfs.mounts[d->mount].opens--;
+    g_hle.nnfs.mounts[d->mount].opens--;
     u32 gen = d->gen;
     *d = (NDir){0};
     d->gen = gen;
@@ -1135,8 +1180,8 @@ u32 nnfs_get_entry_type(CPU* c, u64 type, u64 path) {
     int m = path_take(c, path, p, &r);
     if (m < 0) return (u32)sdk_own(c, SYM_ENTRY_TYPE);
     if (!r && !type) r = R_NULL_ARGUMENT;
-    if (!r && g_nnfs.mounts[m].kind == MOUNT_ROM) {
-        const NRom* rm = &g_nnfs.roms[g_nnfs.mounts[m].rom];
+    if (!r && g_hle.nnfs.mounts[m].kind == MOUNT_ROM) {
+        const NRom* rm = rom_at(g_hle.nnfs.mounts[m].rom);
         int is_dir = 0;
         u32 e;
         r = rom_lookup(rm, p, &is_dir, &e);
@@ -1144,7 +1189,7 @@ u32 nnfs_get_entry_type(CPU* c, u64 type, u64 path) {
     } else if (!r) {
         u32 t;
         fs_lock();
-        r = fs_root_entry_type(g_nnfs.mounts[m].root, p, &t);
+        r = fs_root_entry_type(mount_root(m), p, &t);
         fs_unlock();
         if (!r) put_u32(c, type, t);
     }
@@ -1160,9 +1205,9 @@ static u32 change(CPU* c, const char* symbol, const char* function, u64 path, in
     int m = path_take(c, path, p, &r);
     if (m < 0) return (u32)sdk_own(c, symbol);
     if (!r && what == CHANGE_CREATE_FILE && size < 0) r = R_NEGATIVE_SIZE;
-    if (!r && (g_nnfs.mounts[m].kind == MOUNT_ROM || g_nnfs.mounts[m].read_only)) r = R_READ_ONLY;
+    if (!r && (g_hle.nnfs.mounts[m].kind == MOUNT_ROM || g_hle.nnfs.mounts[m].read_only)) r = R_READ_ONLY;
     if (!r) {
-        FsNode* root = g_nnfs.mounts[m].root;
+        FsNode* root = mount_root(m);
         fs_lock();
         switch (what) {
         case CHANGE_CREATE_FILE: r = fs_root_create(root, p, size, 0); break;
@@ -1211,10 +1256,10 @@ static u32 rename_entry(CPU* c, const char* symbol, const char* function, u64 fr
     }
     if (!r) r = r2;
     if (!r && m != m2) r = R_DIFFERENT_MOUNTS;
-    if (!r && (g_nnfs.mounts[m].kind == MOUNT_ROM || g_nnfs.mounts[m].read_only)) r = R_READ_ONLY;
+    if (!r && (g_hle.nnfs.mounts[m].kind == MOUNT_ROM || g_hle.nnfs.mounts[m].read_only)) r = R_READ_ONLY;
     if (!r) {
         fs_lock();
-        r = fs_root_rename(g_nnfs.mounts[m].root, p, q, dir);
+        r = fs_root_rename(mount_root(m), p, q, dir);
         fs_unlock();
     }
     pm_unlock(&g_nnfs.lock);
@@ -1238,7 +1283,7 @@ static u32 space(CPU* c, const char* symbol, const char* function, u64 out, u64 
         m = path_mount(s, p, &r);
         if (m >= 0 && !r && strcmp(p, "/")) r = R_NULL_ARGUMENT;
     }
-    int kind = m >= 0 ? g_nnfs.mounts[m].kind : MOUNT_FREE;
+    int kind = m >= 0 ? g_hle.nnfs.mounts[m].kind : MOUNT_FREE;
     pm_unlock(&g_nnfs.lock);
     if (m < 0) return (u32)sdk_own(c, symbol);
     if (!r && !out) r = R_NULL_ARGUMENT;
@@ -1261,9 +1306,9 @@ static u32 commit(CPU* c, const char* symbol, u64 name) {
         pm_unlock(&g_nnfs.lock);
         return (u32)sdk_own(c, symbol);
     }
-    if (g_nnfs.mounts[m].kind == MOUNT_SAVE) {
+    if (g_hle.nnfs.mounts[m].kind == MOUNT_SAVE) {
         fs_lock();
-        fs_root_commit(g_nnfs.mounts[m].root, g_nnfs.mounts[m].noted);
+        fs_root_commit(mount_root(m), (int)g_hle.fs.fss[g_hle.nnfs.mounts[m].fss].noted);
         fs_unlock();
     }
     pm_unlock(&g_nnfs.lock);
@@ -1359,9 +1404,9 @@ u32 nnfs_mount_sd_card(CPU* c, u64 name) {
         FsNode* root;
         r = fs_sd_root(&root);
         if (r)
-            g_nnfs.mounts[m] = (NMount){0};
+            g_hle.nnfs.mounts[m] = (NMount){0};
         else {
-            g_nnfs.mounts[m].root = root;
+            mount_root_set(m, root, 0);
             LOG("nn::fs: MountSdCard(\"%s\") native\n", s);
         }
     }
