@@ -1761,7 +1761,7 @@ FSQRT_s            aarch64   guarded  snx_fp_host_unary
 FSQRT_s            generic   helper   snx_fp_host_unary
 FSQRT_s            la64-lsx  guarded  snx_fp_host_unary
 FSQRT_s            mips-msa  helper   snx_fp_host_unary
-FSQRT_s            ppc64le   guarded  snx_fp_host_unary
+FSQRT_s            ppc64le   helper   snx_fp_host_unary
 FSQRT_s            riscv64-v guarded  snx_fp_host_unary
 FSQRT_s            x86       guarded  snx_fp_host_unary
 FSQRT_s            x86-avx2  guarded  snx_fp_host_unary
