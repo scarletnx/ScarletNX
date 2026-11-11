@@ -334,8 +334,9 @@ static inline void vk_mem_untrack(VmaAllocation a) { (void)a; }
    VK_ANDROID_external_memory_android_hardware_buffer) */
 enum { VK_UMA_WITH_NONE, VK_UMA_WITH_HOST, VK_UMA_WITH_AHB };
 int vk_uma_choose(int has_import, int has_ahb, int has_placed);
-/* what vk_uma_choose takes for vk_memory want (0 auto, 1 copy, 2 UMA) on a device of model VK_MEM_*: VK_UMA_WITH_* */
-int vk_uma_way(int want, int model, int has_import, int has_ahb);
+/* what vk_uma_choose takes for vk_memory want (0 auto, 1 copy, 2 UMA) and uma_memory how (0 auto, 1 imported only, 2
+   moved only) on a device of model VK_MEM_*: VK_UMA_WITH_* */
+int vk_uma_way(int want, int how, int model, int has_import, int has_ahb);
 void vk_uma_init(void); /* after it */
 int vk_uma(void);       /* guest ranges are read in place where they can be */
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);

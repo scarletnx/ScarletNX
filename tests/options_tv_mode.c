@@ -287,16 +287,18 @@ static void test_cycle(void) {
 }
 
 /* vk_memory at the top, in no section, and again in [Debug]: the second line's 0 is taken, and a line says so with
-   both values, as the runtime writes the file back with that one line */
+   both values, as the runtime writes the file back with that one line. uma_memory, a startup setting of [Debug] as it
+   is, takes the file's 2 on this first open, from its default 0 */
 static void test_key_twice(void) {
-    static const char text[] = "vk_memory=2\n[Debug]\nvk_memory=0\n";
+    static const char text[] = "vk_memory=2\n[Debug]\nvk_memory=0\numa_memory=2\n";
     char *dir = snx_temp_dir(NULL), *path;
     CHECK(dir);
     path = snx_path_join(dir, "game.ini");
     CHECK(path && !snx_write_file(path, text, sizeof text - 1));
     g_test.said[0] = 0;
+    CHECK(g_settings.guest_memory_in_place == 0);
     ini_open(path);
-    CHECK(g_settings.guest_memory == 0);
+    CHECK(g_settings.guest_memory == 0 && g_settings.guest_memory_in_place == 2);
     CHECK(strstr(g_test.said, "settings: vk_memory is in the file twice, vk_memory=2 and then vk_memory=0: it takes 0, "
                               "the last, and the file keeps that line only\n"));
     CHECK(!snx_remove_tree(dir));

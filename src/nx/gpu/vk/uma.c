@@ -15,7 +15,8 @@
 
    Where the driver can't import host memory but takes buffers of a kind of its own in place, guest memory moves into
    them instead with vk_memory=2 (the migrate way: Android, whose drivers all take an AHardwareBuffer, and Qualcomm's
-   has no VK_EXT_external_memory_host); auto copies there, as no phone has measured the moves yet (vk_uma_way). The
+   has no VK_EXT_external_memory_host); auto copies there, as no phone has measured the moves yet (vk_uma_way).
+   uma_memory compares the two ways on a device that has both: 1 only imports, 2 only moves. The
    windows a range touches become a region: a buffer imported once, which the pages then move into with their bytes,
    mapped where they were (mem.c's mem_migrate); the regions it meets move on into it, so one region of their union
    holds them, once the writes in place pending in them have landed (the move copies what their pages hold). A region
@@ -233,22 +234,32 @@ static int mem_model(void) {
 #else
 #define UMA_NO_IMPORT "no VK_EXT_external_memory_host"
 #endif
-/* The moves into AHardwareBuffers are taken only when asked for (want 2): auto keeps copying where the device has no
-   VK_EXT_external_memory_host, as no phone has measured them yet */
-int vk_uma_way(int want, int model, int has_import, int has_ahb) {
+/* The moves into AHardwareBuffers are taken only when asked for (want 2, or how 2): auto keeps copying where the device
+   has no VK_EXT_external_memory_host, as no phone has measured them yet. how is uma_memory, which compares the two ways
+   on one device: 1 never moves, 2 never imports guest memory where it is */
+int vk_uma_way(int want, int how, int model, int has_import, int has_ahb) {
     if (want != 2 && (want != 0 || model != VK_MEM_UMA)) return VK_UMA_WITH_NONE;
+    if (how == 2) return has_ahb ? VK_UMA_WITH_AHB : VK_UMA_WITH_NONE;
     if (has_import) return VK_UMA_WITH_HOST;
-    return want == 2 && has_ahb ? VK_UMA_WITH_AHB : VK_UMA_WITH_NONE;
+    return how == 0 && want == 2 && has_ahb ? VK_UMA_WITH_AHB : VK_UMA_WITH_NONE;
 }
 int vk_uma_choose(int has_import, int has_ahb, int has_placed) {
-    int want = g_settings.guest_memory, with;
+    int want = g_settings.guest_memory, how = g_settings.guest_memory_in_place, with;
     g_vk.mem_model = mem_model();
-    with = vk_uma_way(want, g_vk.mem_model, has_import, has_ahb);
-    int ahb_held = with == VK_UMA_WITH_NONE && want == 0 && g_vk.mem_model == VK_MEM_UMA && has_ahb;
+    with = vk_uma_way(want, how, g_vk.mem_model, has_import, has_ahb);
+    int ahb_held = with == VK_UMA_WITH_NONE && how == 0 && want == 0 && g_vk.mem_model == VK_MEM_UMA && has_ahb;
     g_vk.mem_path = with == VK_UMA_WITH_NONE ? VK_MEM_PATH_COPY : VK_MEM_PATH_UMA;
-    if (with == VK_UMA_WITH_NONE && !ahb_held && (want == 2 || (want == 0 && g_vk.mem_model == VK_MEM_UMA)))
-        WARN("vulkan: guest memory in place was asked for, but the device has " UMA_NO_IMPORT
-             ": guest memory is copied\n");
+    if (with == VK_UMA_WITH_NONE && !ahb_held && (want == 2 || (want == 0 && g_vk.mem_model == VK_MEM_UMA))) {
+        if (how == 1 && !has_import)
+            WARN("vulkan: guest memory in place was asked for, imported only (uma_memory=1), but the device has no "
+                 "VK_EXT_external_memory_host: guest memory is copied\n");
+        else if (how == 2)
+            WARN("vulkan: guest memory in place was asked for, moved only (uma_memory=2), but the device has no "
+                 "VK_ANDROID_external_memory_android_hardware_buffer: guest memory is copied\n");
+        else
+            WARN("vulkan: guest memory in place was asked for, but the device has " UMA_NO_IMPORT
+                 ": guest memory is copied\n");
+    }
     g_uma.migrate = with == VK_UMA_WITH_AHB;
     /* placed maps: a whole chunk mapped at an address of a window's alignment, given back reserved. Linux's and
        Android's, whose reservation plat_alias_unmap gives back */
@@ -266,7 +277,7 @@ int vk_uma_choose(int has_import, int has_ahb, int has_placed) {
                           p.minPlacedMemoryMapAlignment <= MEM_PLACED;
     }
 #endif
-    LOG("vulkan: the device %s; guest buffers %s (vk_memory=%s%s); VK_EXT_external_memory_host %s, "
+    LOG("vulkan: the device %s; guest buffers %s (vk_memory=%s%s), uma_memory=%s; VK_EXT_external_memory_host %s, "
         "VK_EXT_map_memory_placed %s\n",
         model_name(g_vk.mem_model),
         g_vk.mem_path != VK_MEM_PATH_UMA ? "copied"
@@ -276,8 +287,11 @@ int vk_uma_choose(int has_import, int has_ahb, int has_placed) {
         : want == 2 ? "uma"
                     : "auto",
         want == 2 && g_vk.mem_model != VK_MEM_UMA ? ", forced: the GPU reads them across the bus"
-        : ahb_held                                ? ": AHardwareBuffers only with vk_memory=2"
+        : ahb_held                                ? ": AHardwareBuffers only with vk_memory=2 or uma_memory=2"
                                                   : "",
+        how == 1   ? "import"
+        : how == 2 ? "move"
+                   : "auto",
         has_import ? "yes" : "no",
         !has_placed       ? "no"
         : g_uma.can_place ? "yes (the heap off it until vk_uma_placed)"

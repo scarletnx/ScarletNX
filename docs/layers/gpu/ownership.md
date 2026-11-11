@@ -225,8 +225,12 @@ The `[Debug]` setting `vk_memory` (also `--vk_memory=N`) chooses the path for gu
 UMA, copied otherwise), 1 copy, 2 in place. In place needs `VK_EXT_external_memory_host`, or on Android with 2
 `VK_ANDROID_external_memory_android_hardware_buffer` ([below](#android-guest-memory-moved-into-ahardwarebuffers)).
 Without either the log warns and the path is the copy. Auto with the second alone copies, and the log says
-`(vk_memory=auto: AHardwareBuffers only with vk_memory=2)`. On a discrete GPU, 2 works but the GPU reads guest memory
-across the bus: it is for testing correctness there, not for speed.
+`(vk_memory=auto: AHardwareBuffers only with vk_memory=2 or uma_memory=2)`. On a discrete GPU, 2 works but the GPU
+reads guest memory across the bus: it is for testing correctness there, not for speed.
+
+On a device with both extensions, the `[Debug]` setting `uma_memory` compares the two ways where guest memory is in
+place: 0 auto (imported, and moved only without the first extension and with `vk_memory=2`), 1 imported only (copied
+without the first), 2 moved into AHardwareBuffers only, under auto as well (copied without the second).
 
 With resizable BAR, the staging ring of streamed uploads goes in device-local memory that the CPU maps
 (`vk_stage_upload`, within the heap's budget): the CPU's sequential writes cross the bus once, and every draw that
@@ -352,8 +356,9 @@ more per MiB imported in one import, from 16 MiB to 512 MiB, and 7.2 us per MiB 
 Every Android driver takes AHardwareBuffers (`VK_ANDROID_external_memory_android_hardware_buffer`), and Qualcomm's has
 no `VK_EXT_external_memory_host`. Where a device has the first and not the second, `vk_memory=2` moves guest memory
 into AHardwareBuffers instead of importing it where it is (`vk_uma_way`; the migrate way in `uma.c`), and auto copies,
-as no phone has measured the moves yet (`check_uma_way`). The windows a range touches become a region, a buffer of its
-own that Vulkan imports once, and their pages then move into it with their bytes, mapped where they were
+as no phone has measured the moves yet (`check_uma_way`); `uma_memory=2` moves it on any driver that takes them. The
+windows a range touches become a region, a buffer of its own that Vulkan imports once, and their pages then move into
+it with their bytes, mapped where they were
 (`mem_migrate`: a copy, then the buffer's dma-buf mapped over the range, writers held off by `plat_freeze`). A region
 that a range reaches moves on into one region of their union, once the writes in place pending in it have landed, as
 the move copies what its pages hold (`check_uma_region_merge`). A region is 256 MiB at most: on an Adreno 830
