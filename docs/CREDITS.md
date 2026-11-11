@@ -54,8 +54,7 @@ The GUI fonts' notices and pinned sources are preserved in
 [`src/gui/FONT-NOTICE.txt`](../src/gui/FONT-NOTICE.txt).
 
 Code ported into the repository, and assets taken from other projects. In these places, the files whose header names
-a source keep that source's copyright lines and license, most with the revision they came from; the drawables of
-`dist/controls/` have theirs in [its README](../dist/controls/README.md):
+a source keep that source's copyright lines and license, most with the revision they came from:
 
 | Where | From | License |
 | --- | --- | --- |
@@ -114,7 +113,6 @@ a source keep that source's copyright lines and license, most with the revision 
 | The files of `src/android/framework/` whose header names the Android Open Source Project (exception messages, and parts of method bodies) | The Android Open Source Project's source of the same classes, as the Android SDK's sources for API level 36 carry it | Apache 2.0 ([text](../dist/licenses/AOSP/LICENSE.txt), [notice](../dist/licenses/AOSP/NOTICE.txt)) |
 | `src/android/framework/android/icu/text/PluralRules.java` (each language's cardinal plural rules) | Unicode CLDR (`common/supplemental/plurals.xml`, version 47, as OpenJDK carries it) | Unicode License v3 ([text](../dist/licenses/Unicode/LICENSE.txt)) |
 | `src/android/framework/org/xmlpull/v1/XmlPullParserException.java` (the message its constructor makes) | XmlPull's API (Stefan Haustein and Aleksander Slominski), as the Android Open Source Project carries it | Public domain |
-| `dist/controls/*.xml`, and `controls.png` made from them | yuzu's Android overlay, as Eden and rEden carry it | GPL-3.0-or-later |
 
 Dynarmic (0BSD) and its GPL-3.0-or-later fork were consulted for the recompiler's instruction semantics. No code was
 ported from them.

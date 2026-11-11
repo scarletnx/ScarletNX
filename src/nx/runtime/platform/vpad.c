@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/vpad.h"
-#include "nx/runtime/platform/controls_atlas.h"
 #include "nx/runtime/platform/log.h"
 #include "common/utilities/bits.h"
 #include <math.h>

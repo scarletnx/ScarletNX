@@ -6,7 +6,6 @@
    box and the debug line (stats.c, hud.c), where they are sure: a pixel whose centre or texel falls on an edge, or
    that a linear sample covers, is not compared. The frames change some of the box's letters, none, the line's length,
    the box's corner, and take the box away and back, so the device's buffer holds every kind of change */
-#include "nx/runtime/platform/controls_atlas.h"
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/stats.h"
@@ -82,7 +81,7 @@ static void ui_blend_quad(UiCheck* c, const SnxUiQuadView* q) {
                 c->sure[y][x] = 0;
                 continue;
             }
-            t = (const u8*)&c->atlas[(size_t)floorf(tv) * SNX_CONTROLS_ATLAS_WIDTH + (size_t)floorf(tu)];
+            t = (const u8*)&c->atlas[(size_t)floorf(tv) * SNX_UI_ATLAS_W + (size_t)floorf(tu)];
             for (k = 0; k < 4; ++k) tex[k] = (float)t[k] / 255.0f;
             for (k = 0; k < 3; ++k) src[k] = tex[k] * color[k] * color[3];
             src[3] = tex[3] * color[3];
@@ -161,7 +160,6 @@ static int ui_frame(UiCheck* c, const int safe[4], const char* what, int* change
 static int check_ui(void) {
     static const int safe[4] = {0, 0, UI_W, UI_H};
     UiCheck* c = calloc(1, sizeof *c);
-    u32* sprites = calloc((size_t)SNX_CONTROLS_ATLAS_WIDTH * SNX_CONTROLS_ATLAS_HEIGHT, 4);
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
                             .format = VK_FORMAT_R8G8B8A8_UNORM,
@@ -178,12 +176,12 @@ static int check_ui(void) {
     int srgb = g_vk.sc_srgb, changed, stats = g_settings.stats, controls = g_settings.show_controls,
         showcase = g_settings.showcase;
     const IniOpt* corner = ini_find(g_display_ini, "stats_corner");
-    CHECK(c && sprites && corner);
+    CHECK(c && corner);
     CHECK(vmaCreateImage(g_vk.vma, &ii, &device, &c->img, &c->mem, NULL) == VK_SUCCESS);
-    /* the atlas from sprites all clear: the font, the white block and the icons ui_atlas_make draws into it */
-    c->atlas = ui_atlas_make(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT, &c->atlas_h);
+    /* the atlas: the font, the white block and the icons */
+    c->atlas = ui_atlas_make(&c->atlas_h);
     CHECK(c->atlas);
-    ui_atlas_set(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
+    ui_atlas_build();
     g_vk.sc_extent = (VkExtent2D){UI_W, UI_H};
     g_vk.sc_format = VK_FORMAT_R8G8B8A8_UNORM;
     g_vk.sc_srgb = 0;
@@ -264,6 +262,5 @@ static int check_ui(void) {
     g_vk.sc_srgb = srgb;
     free(c->atlas);
     free(c);
-    free(sprites);
     return 0;
 }

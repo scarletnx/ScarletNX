@@ -40,7 +40,6 @@
 #ifdef SDL_PLATFORM_IOS
 #include "gui/apple.h" /* gui_apple_share: the share sheet of the app, which the iOS app links */
 #endif
-#include "nx/runtime/platform/controls_png.h"
 #include "common/utilities/build_info.h"
 #ifdef __APPLE__
 #include <dlfcn.h>
@@ -412,30 +411,8 @@ void backend_keyboard_hide(u32 ticket) {
     ui_unlock();
 }
 
-/* the on-screen controls' sprites, decoded from the PNG compiled in (malloc'd, w x h), NULL when they can't be */
-static u32* controls_sprites(int* w, int* h) {
-    SDL_Surface* png = SDL_LoadPNG_IO(SDL_IOFromConstMem(snx_controls_png, snx_controls_png_size), true);
-    SDL_Surface* rgba = png ? SDL_ConvertSurface(png, SDL_PIXELFORMAT_RGBA32) : NULL;
-    u32* px = rgba ? malloc((size_t)rgba->w * (size_t)rgba->h * 4) : NULL;
-    if (px) {
-        for (int y = 0; y < rgba->h; y++)
-            memcpy(px + (size_t)y * (size_t)rgba->w, (const u8*)rgba->pixels + (size_t)y * (size_t)rgba->pitch,
-                   (size_t)rgba->w * 4);
-        *w = rgba->w;
-        *h = rgba->h;
-    } else
-        WARN("input: the on-screen controls' image could not be read: %s\n", SDL_GetError());
-    SDL_DestroySurface(rgba);
-    SDL_DestroySurface(png);
-    return px;
-}
-/* the atlas the renderer uploads, from the sprites: when the window opens, and again for the fatal panel */
-static void controls_atlas(void) {
-    int w = 0, h = 0;
-    u32* px = controls_sprites(&w, &h);
-    if (px) ui_atlas_set(px, w, h);
-    free(px);
-}
+/* the atlas the renderer uploads: when the window opens, and again for the fatal panel */
+static void controls_atlas(void) { ui_atlas_build(); }
 /* Android's vibrator, which SDL lists as VIBRATOR_SERVICE; a gamepad's motors are no buzz for a finger */
 static void buzzer_open(void) {
 #ifdef __ANDROID__

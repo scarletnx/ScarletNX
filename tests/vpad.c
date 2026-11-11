@@ -2,7 +2,6 @@
    Copyright 2026 the ScarletNX contributors */
 /* The on-screen controls (runtime/platform/vpad.c): what fingers on them press, edit mode, the .ini keys, the draw */
 #include "nx/runtime/platform/vpad.h"
-#include "nx/runtime/platform/controls_atlas.h"
 #include <assert.h>
 #include <stdarg.h>
 #include <math.h>
@@ -318,11 +317,11 @@ int main(void) {
         /* "[ + ]" and "[ Done ]": their glyphs are the font's, at the bar's row */
         y = (float)(8 * s);
         for (i = 0; i < bar.n; ++i)
-            if (qv(&bar.q[i]).y == y && bar.q[i].u == SNX_CONTROLS_FONT_X + '+' % 16 * 8 &&
-                bar.q[i].v == SNX_CONTROLS_FONT_Y + '+' / 16 * 16)
+            if (qv(&bar.q[i]).y == y && bar.q[i].u == SNX_UI_FONT_X + '+' % 16 * 8 &&
+                bar.q[i].v == SNX_UI_FONT_Y + '+' / 16 * 16)
                 plus_x = qv(&bar.q[i]).x;
-            else if (qv(&bar.q[i]).y == y && bar.q[i].u == SNX_CONTROLS_FONT_X + 'D' % 16 * 8 &&
-                     bar.q[i].v == SNX_CONTROLS_FONT_Y + 'D' / 16 * 16)
+            else if (qv(&bar.q[i]).y == y && bar.q[i].u == SNX_UI_FONT_X + 'D' % 16 * 8 &&
+                     bar.q[i].v == SNX_UI_FONT_Y + 'D' / 16 * 16)
                 done_x = qv(&bar.q[i]).x;
         assert(plus_x > 0 && done_x > plus_x);
         stores = 0;
@@ -354,8 +353,8 @@ int main(void) {
                !drawn(&l, LOOK_R3) && !drawn(&l, LOOK_STICK_PRESSED));
         /* "60 FPS" at the box's top, in the font */
         for (i = digits = 0; i < l.n; ++i)
-            if (l.q[i].v == SNX_CONTROLS_FONT_Y + '6' / 16 * 16 &&
-                (l.q[i].u == SNX_CONTROLS_FONT_X + '6' % 16 * 8 || l.q[i].u == SNX_CONTROLS_FONT_X + '0' % 16 * 8)) {
+            if (l.q[i].v == SNX_UI_FONT_Y + '6' / 16 * 16 &&
+                (l.q[i].u == SNX_UI_FONT_X + '6' % 16 * 8 || l.q[i].u == SNX_UI_FONT_X + '0' % 16 * 8)) {
                 assert(qv(&l.q[i]).y > 680 && qv(&l.q[i]).y < 680 + 30);
                 ++digits;
             }
@@ -372,8 +371,8 @@ int main(void) {
             assert(qv(&l.q[0]).x == box[k][0] && qv(&l.q[0]).y == box[k][1] && qv(&l.q[0]).w == 500 &&
                    qv(&l.q[0]).h == 300);
             for (i = 0; i < l.n; ++i) /* no frames a second before the first half second */
-                assert(!(l.q[i].u == SNX_CONTROLS_FONT_X + 'F' % 16 * 8 &&
-                         l.q[i].v == SNX_CONTROLS_FONT_Y + 'F' / 16 * 16));
+                assert(!(l.q[i].u == SNX_UI_FONT_X + 'F' % 16 * 8 &&
+                         l.q[i].v == SNX_UI_FONT_Y + 'F' / 16 * 16));
         }
         ini_read(where, "tl");
         ini_read(where, "lt");
