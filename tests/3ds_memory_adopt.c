@@ -144,6 +144,11 @@ int main(void) {
     /* a view the host cannot protect says so, at the 1st, 2nd and 4th failure: the VRAM page's view taken away behind
        the memory's back, which mprotect refuses as the dma-buf's views refuse once the process has too many mappings */
     munmap(base + 0x1f000000, 4096);
+#ifdef PROT_MAX
+    /* FreeBSD's mprotect protects a hole without a word: there, a page at most executable refuses reads and writes */
+    assert(mmap(base + 0x1f000000, 4096, PROT_MAX(PROT_EXEC), MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) ==
+           base + 0x1f000000);
+#endif
     errno = 0;
     assert(mprotect(base + 0x1f000000, 4096, PROT_READ) && errno);
     int refusal = errno;
