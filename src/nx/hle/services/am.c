@@ -1519,6 +1519,10 @@ static SvcObj* am_mii_edit(LibApplet* a) {
    data of the first entry of type, or NULL */
 #define WEB_ARG_DOCUMENT_PATH 0x6 /* the SDK's ShowOfflinePageArgDetail::SetDocumentPath */
 #define WEB_ARG_DOCUMENT_KIND 0x7 /* u32: 1 an offline page of the game's HtmlDocument content (SetDocumentKind) */
+#define WEB_SHIM_SHARE        4   /* the WebArgHeader's ShimKind of nn::web::ShowSharePage */
+#define WEB_SHIM_WEB          5   /* and of ShowWebPage and ShowYouTubeVideo */
+#define WEB_TLV_SIZE          0x2000
+#define WEB_OUT_EXIT_REASON   0x1 /* the output TLV of the WebExitReason, a u32 */
 static const u8* am_web_arg(LibApplet* a, u16 type, u16* size) {
     int i;
     for (i = 0; i < a->nin; i++) {
@@ -1538,6 +1542,31 @@ static const u8* am_web_arg(LibApplet* a, u16 type, u16* size) {
         }
     }
     return NULL;
+}
+/* The online web page's and the share page's answer from a version 8.0.0 SDK on (3.0.0 for the share page): no
+   WebCommonReturnValue but a WebArgHeader and output TLVs, WEB_TLV_SIZE bytes, which the SDK reads whole or aborts
+   (JoinAndFinishLibraryApplet). Its TLVs follow one another with no padding, as GetWebExitReason walks them. The page
+   is closed as the player's X closes it (WebExitReason 0) and nothing else is answered: no page was shown, so there is
+   no last URL. NULL for the applets that answer a WebCommonReturnValue */
+static SvcObj* am_web_tlv_reply(LibApplet* a) {
+    u32 version = 0, shim = 0;
+    SvcObj* out;
+    u8* d;
+    if (a->nin > 0 && ((StorageData*)a->in[0]->data)->size >= 12) /* CommonArguments: version, size, LaVersion */
+        version = snx_ld_le32(am_storage_bytes(a->in[0]) + 8);
+    if (a->nin > 1 && ((StorageData*)a->in[1]->data)->size >= 8) /* WebArgHeader: count, padding, ShimKind */
+        shim = snx_ld_le32(am_storage_bytes(a->in[1]) + 4);
+    if (!(shim == WEB_SHIM_WEB && version >= 0x80000) && !(shim == WEB_SHIM_SHARE && version >= 0x30000)) return NULL;
+    out = am_storage_new(WEB_TLV_SIZE, NULL);
+    d = am_storage_bytes(out);
+    snx_st_le16(d, 1);
+    am_put32(d + 4, shim);
+    snx_st_le16(d + 8, WEB_OUT_EXIT_REASON);
+    snx_st_le16(d + 10, 4);
+    am_put32(d + 16, 0); /* EndButtonPressed */
+    LOG_LIMIT(4, "am: web applet %#x (shim %u, version %#x): its page closed by the player's X, exit reason 0\n",
+              a->applet_id, shim, version);
+    return out;
 }
 /* the text of a quoted string at s (' or "), copied into out (cap bytes with its 0): its end, or NULL */
 static const char* am_js_string(const char* s, char* out, size_t cap) {
@@ -1685,7 +1714,7 @@ static int nn_am_service_ILibraryAppletAccessor_PopOutData(SvcObj* self, SvcObj*
     case AM_APPLET_SHOP:
     case AM_APPLET_OFFLINE_WEB:
     case AM_APPLET_LOGIN_SHARE:
-    case AM_APPLET_WEB_AUTH: { /* WebCommonReturnValue: the page was closed (0), no last URL */
+    case AM_APPLET_WEB_AUTH: { /* WebCommonReturnValue (or a newer SDK's TLVs): the page was closed (0), no last URL */
         /* An offline page of the game's own is answered as the player pressing A on it: the URL its A button sends
            it to, which ends the applet with CallbackUrl (3) when it is a callback URL. One game's online agreement
            page sends Accept to http://localhost/?ret=Yes, and the game takes nothing else (exit reason 3 and that
@@ -1694,6 +1723,7 @@ static int nn_am_service_ILibraryAppletAccessor_PopOutData(SvcObj* self, SvcObj*
         const u8* path = a->applet_id == AM_APPLET_OFFLINE_WEB ? am_web_arg(a, WEB_ARG_DOCUMENT_PATH, &n) : NULL;
         const u8* kind = path ? am_web_arg(a, WEB_ARG_DOCUMENT_KIND, &k) : NULL;
         char page[0x301], url[0x1000];
+        if ((*storage = am_web_tlv_reply(a)) != NULL) break;
         *storage = am_storage_new(0x1010, NULL);
         d = am_storage_bytes(*storage);
         if (!path || !kind || k < 4 || snx_ld_le32(kind) != 1) break;
