@@ -540,7 +540,12 @@ uint16_t snx_tracy_gpu_zone_begin(const char* name, uint32_t color, int ctx, uin
 uint16_t snx_tracy_gpu_zone_end(uint16_t query, int ctx, uint64_t ep) {
     uint16_t q = 0;
     /* the gate first: the connection's id reads the client's data, which a run that never started it has none of */
-    if (!query || !gpu_ctx_ok(ctx) || !snx_tracy_enter() || ep != snx_tracy_connection_id()) return 0;
+    if (!query || !gpu_ctx_ok(ctx) || !snx_tracy_enter()) return 0;
+    /* a pair from another connection is dropped, and leaves as it enters: the count is the shutdown's wait */
+    if (ep != snx_tracy_connection_id()) {
+        snx_tracy_leave();
+        return q;
+    }
     if (TracyCIsConnected && g_gpu_sent[ctx]) {
         uint16_t id = (uint16_t)(g_gpu_query[ctx] + 1);
         if (!id) id = 1;
@@ -554,7 +559,11 @@ uint16_t snx_tracy_gpu_zone_end(uint16_t query, int ctx, uint64_t ep) {
 }
 
 void snx_tracy_gpu_time(int64_t gpu_time, uint16_t query, int ctx, uint64_t ep) {
-    if (!query || !gpu_ctx_ok(ctx) || !snx_tracy_enter() || ep != snx_tracy_connection_id()) return;
+    if (!query || !gpu_ctx_ok(ctx) || !snx_tracy_enter()) return;
+    if (ep != snx_tracy_connection_id()) {
+        snx_tracy_leave();
+        return;
+    }
     if (TracyCIsConnected && g_gpu_sent[ctx]) {
         struct ___tracy_gpu_time_data t = {gpu_time, query, (uint8_t)ctx};
         ___tracy_emit_gpu_time_serial(t);
