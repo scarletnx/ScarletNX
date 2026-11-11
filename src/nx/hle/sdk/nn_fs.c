@@ -30,6 +30,7 @@
 #include <string.h>
 
 #define SYM_MOUNT_ROM          "_ZN2nn2fs8MountRomEPKcPvm"
+#define SYM_MOUNT_ROM_NAME     "_ZN2nn2fs8MountRomEPKc"
 #define SYM_QUERY_ROM_CACHE    "_ZN2nn2fs22QueryMountRomCacheSizeEPm"
 #define SYM_UNMOUNT            "_ZN2nn2fs7UnmountEPKc"
 #define SYM_OPEN_FILE          "_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci"
@@ -78,6 +79,7 @@
 enum {
     R_PATH_NOT_FOUND = FSR(1),
     R_MOUNT_EXISTS = FSR(60),
+    R_TARGET_NOT_FOUND = FSR(1002), /* a save that is not there: another application's */
     R_OUT_OF_RANGE = FSR(3005),
     R_CACHE_TOO_SMALL = FSR(6000), /* MountRom's cache buffer is smaller than QueryMountRomCacheSize's */
     R_NEGATIVE_COUNT = FSR(6001),
@@ -137,6 +139,7 @@ typedef struct {
     u32 rom;      /* a RomFS mount's image in roms */
     FsNode* root; /* a save's folder, retained */
     int noted;    /* its commits write its note (fs_root_commit) */
+    int read_only; /* MountSaveDataReadOnly's: no write mode and no change of its tree */
 } NMount;
 typedef struct {
     int used;
@@ -225,10 +228,11 @@ static int mount_find(const char* name, size_t n) {
 static int mount_named(const char* name) { return name ? mount_find(name, strnlen(name, MOUNT_NAME_MAX + 1)) : -1; }
 
 /* CheckMountName: 0, R_NULL_ARGUMENT or R_BAD_MOUNT_NAME. 1 to 15 bytes of well-formed UTF-8 with no '/' or ':', not
-   one ASCII letter (a drive), and not a reserved name (one that starts with '@') */
-static u32 check_mount_name(const char* name) {
+   one ASCII letter (a drive), and not a reserved name (one that starts with '@') unless reserved (the name-only
+   MountRom's CheckMountNameAcceptingReservedMountName) */
+static u32 check_mount_name(const char* name, int reserved) {
     if (!name) return R_NULL_ARGUMENT;
-    if (name[0] == '@') return R_BAD_MOUNT_NAME;
+    if (name[0] == '@' && !reserved) return R_BAD_MOUNT_NAME;
     size_t n = strnlen(name, MOUNT_NAME_MAX + 1);
     if (!n || n > MOUNT_NAME_MAX) return R_BAD_MOUNT_NAME;
     if (n == 1 && ((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z'))) return R_BAD_MOUNT_NAME;
@@ -238,8 +242,8 @@ static u32 check_mount_name(const char* name) {
 }
 
 /* a new mount of kind named name (lock held): its index, or -1 with *r the Result */
-static int mount_new(const char* name, int kind, u32* r) {
-    *r = check_mount_name(name);
+static int mount_new(const char* name, int kind, int reserved, u32* r) {
+    *r = check_mount_name(name, reserved);
     if (*r) return -1;
     if (mount_find(name, strlen(name)) >= 0) {
         *r = R_MOUNT_EXISTS;
@@ -484,10 +488,10 @@ static void after_change(NFile* f, u32 r, u32 ok) {
 static u32 mount_image(CPU* c, const char* function, u64 name, u64 cache, u64 cache_size, u32 rom) {
     NRom* rm = &g_nnfs.roms[rom];
     const char* s = name ? gstr(c, name) : NULL;
-    u32 r = check_mount_name(s);
+    u32 r = check_mount_name(s, 0);
     if (!r && !cache) r = R_NULL_ARGUMENT;
     if (!r && cache_size < rom_cache_size(rm)) r = R_CACHE_TOO_SMALL;
-    int m = r ? -1 : mount_new(s, MOUNT_ROM, &r);
+    int m = r ? -1 : mount_new(s, MOUNT_ROM, 0, &r);
     if (m < 0) return r;
     g_nnfs.mounts[m].rom = rom;
     u64 at = cache; /* the four tables in the header's order */
@@ -507,6 +511,22 @@ u32 nnfs_mount_rom(CPU* c, u64 name, u64 cache, u64 cache_size) {
         return (u32)sdk_own(c, SYM_MOUNT_ROM);
     }
     u32 r = mount_image(c, "MountRom", name, cache, cache_size, 0);
+    pm_unlock(&g_nnfs.lock);
+    return done("MountRom", r);
+}
+
+/* MountRom(name): the SDK allocates its cache itself (SetAllocator's allocator) and frees it at Unmount; the native
+   layer keeps the tables, so nothing of the game's memory is taken. The name may be a reserved one */
+u32 nnfs_mount_rom_name(CPU* c, u64 name) {
+    pm_lock(&g_nnfs.lock);
+    if (game_rom()) {
+        pm_unlock(&g_nnfs.lock);
+        return (u32)sdk_own(c, SYM_MOUNT_ROM_NAME);
+    }
+    u32 r;
+    const char* s = name ? gstr(c, name) : NULL;
+    int m = mount_new(s, MOUNT_ROM, 1, &r);
+    if (m >= 0) LOG("nn::fs: MountRom(\"%s\") native\n", s);
     pm_unlock(&g_nnfs.lock);
     return done("MountRom", r);
 }
@@ -578,12 +598,12 @@ u32 nnfs_query_mount_add_on_content_cache_size(CPU* c, u64 size, i32 index) {
     return done("QueryMountAddOnContentCacheSize", r);
 }
 
-/* a save of type for uid (16 bytes) and index, mounted as name */
-static u32 mount_save(CPU* c, const char* function, u64 name, const u8 uid[16], u8 type, u16 index) {
+/* a save of type for uid (16 bytes) and index, mounted as name, read only when read_only */
+static u32 mount_save(CPU* c, const char* function, u64 name, const u8 uid[16], u8 type, u16 index, int read_only) {
     pm_lock(&g_nnfs.lock);
     u32 r;
     const char* s = name ? gstr(c, name) : NULL;
-    int m = mount_new(s, MOUNT_SAVE, &r);
+    int m = mount_new(s, MOUNT_SAVE, 0, &r);
     if (m >= 0) {
         FsNode* root;
         int noted;
@@ -593,6 +613,7 @@ static u32 mount_save(CPU* c, const char* function, u64 name, const u8 uid[16], 
         else {
             g_nnfs.mounts[m].root = root;
             g_nnfs.mounts[m].noted = noted;
+            g_nnfs.mounts[m].read_only = read_only;
             LOG("nn::fs: %s(\"%s\") native\n", function, s);
         }
     }
@@ -603,16 +624,61 @@ static const u8 g_nobody[16]; /* the user of a save that no account owns */
 u32 nnfs_mount_save_data(CPU* c, u64 name, u64 uid) {
     u8 id[16];
     memcpy(id, hook_host(c, uid), sizeof id); /* nn::account::Uid, two u64: the fs UserId is the same bytes */
-    return mount_save(c, "MountSaveData", name, id, SAVE_ACCOUNT, 0);
+    return mount_save(c, "MountSaveData", name, id, SAVE_ACCOUNT, 0, 0);
+}
+/* The saves of an application: the game's own are here, and no other game's are. Its own id's save of a user is made
+   when it is opened (fs_save_root), as the console makes it at the game's start, so it is there */
+static int own_application(u64 id) { return id == g_hle.kernel.title_id; }
+/* MountSaveDataReadOnly: MountSaveData's checks and save, opened read only (command 53 on the console); another
+   application's save is not found */
+static u32 mount_save_read_only(CPU* c, u64 name, u64 application, const u8 uid[16]) {
+    if (!own_application(application)) {
+        u32 r = check_mount_name(name ? gstr(c, name) : NULL, 0);
+        return done("MountSaveDataReadOnly", r ? r : R_TARGET_NOT_FOUND);
+    }
+    return mount_save(c, "MountSaveDataReadOnly", name, uid, SAVE_ACCOUNT, 0, 1);
+}
+u32 nnfs_mount_save_data_read_only(CPU* c, u64 name, u64 application, u64 uid) {
+    u8 id[16];
+    memcpy(id, hook_host(c, uid), sizeof id);
+    return mount_save_read_only(c, name, application, id);
+}
+u32 nnfs_mount_save_data_read_only_user(CPU* c, u64 name, u64 application, u64 uid_lo, u64 uid_hi) {
+    u8 id[16];
+    snx_st_le64(id, uid_lo);
+    snx_st_le64(id + 8, uid_hi);
+    return mount_save_read_only(c, name, application, id);
+}
+/* IsSaveDataExisting: the game's own account save is there, another application's is not (the console's open of it
+   answers 2-1002, which the SDK turns into false) */
+int nnfs_is_save_data_existing(CPU* c, u64 application, u64 uid) {
+    (void)c, (void)uid;
+    return own_application(application);
+}
+int nnfs_is_own_save_data_existing(CPU* c, u64 uid) {
+    (void)c, (void)uid;
+    return 1;
+}
+u32 nnfs_is_save_data_existing_result(CPU* c, u64 out, u64 application, u64 uid) {
+    (void)uid;
+    if (!out) return done("IsSaveDataExisting", R_NEGATIVE_COUNT);
+    *(u8*)hook_host(c, out) = (u8)own_application(application);
+    return 0;
+}
+u32 nnfs_is_own_save_data_existing_result(CPU* c, u64 out, u64 uid) {
+    (void)uid;
+    if (!out) return done("IsSaveDataExisting", R_NEGATIVE_COUNT);
+    *(u8*)hook_host(c, out) = 1;
+    return 0;
 }
 u32 nnfs_mount_cache_storage(CPU* c, u64 name) {
-    return mount_save(c, "MountCacheStorage", name, g_nobody, SAVE_CACHE, 0);
+    return mount_save(c, "MountCacheStorage", name, g_nobody, SAVE_CACHE, 0, 0);
 }
 u32 nnfs_mount_cache_storage_index(CPU* c, u64 name, i32 index) {
-    return mount_save(c, "MountCacheStorage", name, g_nobody, SAVE_CACHE, (u16)index);
+    return mount_save(c, "MountCacheStorage", name, g_nobody, SAVE_CACHE, (u16)index, 0);
 }
 u32 nnfs_mount_temporary_storage(CPU* c, u64 name) {
-    return mount_save(c, "MountTemporaryStorage", name, g_nobody, SAVE_TEMPORARY, 0);
+    return mount_save(c, "MountTemporaryStorage", name, g_nobody, SAVE_TEMPORARY, 0, 0);
 }
 
 void nnfs_unmount(CPU* c, u64 name) {
@@ -662,6 +728,8 @@ u32 nnfs_open_file(CPU* c, u64 handle, u64 path, i32 mode) {
             opened.data = rm->data + rom_file_u64(rm, e, 8);
             opened.size = rom_file_u64(rm, e, 16);
         }
+    } else if (!r && mt->read_only && (mode & 2)) {
+        r = R_BAD_OPEN_MODE; /* HYPOTHESIS: a read-only save refuses a write mode as the RomFS does */
     } else if (!r) {
         fs_lock();
         r = fs_file_open(mt->root, p, (u32)mode, &opened.fd);
@@ -1092,7 +1160,7 @@ static u32 change(CPU* c, const char* symbol, const char* function, u64 path, in
     int m = path_take(c, path, p, &r);
     if (m < 0) return (u32)sdk_own(c, symbol);
     if (!r && what == CHANGE_CREATE_FILE && size < 0) r = R_NEGATIVE_SIZE;
-    if (!r && g_nnfs.mounts[m].kind == MOUNT_ROM) r = R_READ_ONLY;
+    if (!r && (g_nnfs.mounts[m].kind == MOUNT_ROM || g_nnfs.mounts[m].read_only)) r = R_READ_ONLY;
     if (!r) {
         FsNode* root = g_nnfs.mounts[m].root;
         fs_lock();
@@ -1143,7 +1211,7 @@ static u32 rename_entry(CPU* c, const char* symbol, const char* function, u64 fr
     }
     if (!r) r = r2;
     if (!r && m != m2) r = R_DIFFERENT_MOUNTS;
-    if (!r && g_nnfs.mounts[m].kind == MOUNT_ROM) r = R_READ_ONLY;
+    if (!r && (g_nnfs.mounts[m].kind == MOUNT_ROM || g_nnfs.mounts[m].read_only)) r = R_READ_ONLY;
     if (!r) {
         fs_lock();
         r = fs_root_rename(g_nnfs.mounts[m].root, p, q, dir);
@@ -1286,7 +1354,7 @@ u32 nnfs_mount_sd_card(CPU* c, u64 name) {
     pm_lock(&g_nnfs.lock);
     u32 r;
     const char* s = name ? gstr(c, name) : NULL;
-    int m = mount_new(s, MOUNT_SAVE, &r);
+    int m = mount_new(s, MOUNT_SAVE, 0, &r);
     if (m >= 0) {
         FsNode* root;
         r = fs_sd_root(&root);
