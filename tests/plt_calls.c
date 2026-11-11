@@ -47,7 +47,7 @@ typedef struct {
     unsigned value;
 } Symbol;
 /* MOD0 at 0x1000 of an image and its dynamic table at 0x1100: the symbols at 0x1200 (the first is the table's
-   second: index 1), their names at 0x1290 and, with slots, a JUMP_SLOT at 0x2000 + 8 i for the symbol of index
+   second: index 1), their names at 0x12a8 and, with slots, a JUMP_SLOT at 0x2000 + 8 i for the symbol of index
    slot[i], in a JMPREL table at 0x1400 */
 static void dynamic(unsigned char* image, const Symbol* symbols, unsigned count, const unsigned* slot, unsigned slots) {
     size_t at = 0x1100, name = 1;
@@ -58,8 +58,8 @@ static void dynamic(unsigned char* image, const Symbol* symbols, unsigned count,
     put32(image, 0x1008, 0x2000); /* an empty BSS at 0x3000 */
     put32(image, 0x100c, 0x2000);
     put64(image, at, 6), put64(image, at + 8, 0x1200), at += 16; /* DT_SYMTAB */
-    put64(image, at, 5), put64(image, at + 8, 0x1290), at += 16; /* DT_STRTAB: six symbols before it */
-    put64(image, at, 10), put64(image, at + 8, 0x170), at += 16; /* DT_STRSZ */
+    put64(image, at, 5), put64(image, at + 8, 0x12a8), at += 16; /* DT_STRTAB: seven symbols before it */
+    put64(image, at, 10), put64(image, at + 8, 0x158), at += 16; /* DT_STRSZ */
     if (slots) {
         put64(image, at, 23), put64(image, at + 8, 0x1400), at += 16; /* DT_JMPREL */
         put64(image, at, 2), put64(image, at + 8, 24ull * slots);     /* DT_PLTRELSZ */
@@ -74,7 +74,7 @@ static void dynamic(unsigned char* image, const Symbol* symbols, unsigned count,
         image[s + 4] = 0x12; /* a global function */
         image[s + 6] = symbols[i].value ? 1 : 0;
         put64(image, s + 8, symbols[i].value);
-        memcpy(image + 0x1290 + name, symbols[i].name, n);
+        memcpy(image + 0x12a8 + name, symbols[i].name, n);
         name += n;
     }
 }
@@ -110,11 +110,12 @@ enum {
     EXT_TAIL = 0x80
 };
 /* The main module: game_main (CALLER) calls the stubs of ext_add, own_add and two and ends in a branch to
-   ext_tail's, which another function (OTHER, never run) calls too; own_add copies x16 to x22 and adds 0x20 to x0,
-   and its two adds 0x200. ext: the name ext_add goes by */
+   ext_tail's, which another function (OTHER, never run) calls too and a symbol names (tail_stub), so that the branch
+   leaves game_main; own_add copies x16 to x22 and adds 0x20 to x0, and its two adds 0x200. ext: the name ext_add
+   goes by */
 static void main_image(unsigned char* image, const char* ext) {
-    const Symbol symbols[5] = {
-        {"game_main", CALLER}, {"own_add", OWN_ADD}, {"two", MAIN_TWO}, {ext, 0}, {"ext_tail", 0}};
+    const Symbol symbols[6] = {{"game_main", CALLER}, {"own_add", OWN_ADD},    {"two", MAIN_TWO}, {ext, 0},
+                               {"ext_tail", 0},       {"tail_stub", STUB + 48}};
     const unsigned slot[4] = {4, 2, 3, 5}; /* the stubs' symbols: ext_add, own_add, two, ext_tail */
     unsigned i;
     memset(image, 0, 0x3000);
@@ -137,7 +138,7 @@ static void main_image(unsigned char* image, const char* ext) {
         put32(image, STUB + 16 * i + 8, 0x91000210 | ((8 * i) << 10)); /* add x16, x16, #8 i */
         put32(image, STUB + 16 * i + 12, 0xD61F0220);                  /* br x17 */
     }
-    dynamic(image, symbols, 5, slot, 4);
+    dynamic(image, symbols, 6, slot, 4);
 }
 /* The SDK module: ext_add copies x16 and x17 to x20 and x21 and adds 5 to x0, its two adds 0x400 and ext_tail 3 */
 static void sdk_image(unsigned char* image, const char* ext) {
@@ -287,6 +288,35 @@ static void module_runs(const char* path, const unsigned char* main_bytes, const
                   "a function called directly finds x16 and x17 as its stub leaves them");
         free(c.disp);
     }
+    /* a stub entered as a function, as a pointer to it reaches it, with its slot bound: its own branch calls the
+       function directly too */
+    if (memory && how == BOUND) {
+        CPU c = {0};
+        GuestFn stub = NULL;
+        u64 slot = b + EXT_ADD;
+        for (i = 0; i < m->nentries; ++i)
+            if (m->entry_addr[i] == a + STUB) stub = m->entry_fn[i];
+        check(stub != NULL, "the stub is an entry");
+        memcpy(memory + a, main_bytes, 0x3000);
+        memcpy(memory + b, sdk_bytes, 0x3000);
+        for (i = 0; i < 8; ++i) memory[a + 0x2000 + i] = (unsigned char)(slot >> (8 * i));
+        rt.svc = svc;
+        rt.undef = undefined;
+        rt.poll = poll;
+        rt.miss = miss;
+        c.rt = &rt;
+        c.mem = memory;
+        c.disp = (GuestFn*)calloc((size_t)(m->code_hi - m->code_lo) / 4, sizeof(GuestFn));
+        c.code_lo = m->code_lo;
+        c.code_hi = m->code_hi;
+        for (i = 0; i < m->nentries; ++i) c.disp[(m->entry_addr[i] - m->code_lo) / 4] = m->entry_fn[i];
+        c.disp[(b + EXT_ADD - m->code_lo) / 4] = override_add;
+        c.x[30] = 0x1000;
+        missed = 0;
+        if (stub) stub(&c, a + STUB);
+        check(c.x[0] == 5 && c.pc == 0x1000 && !missed, "a stub entered as a function calls its function directly");
+        free(c.disp);
+    }
     /* the guest changed the first stub's code (the runtime marks the function compiled from it stale): the call goes
        to that function, which leaves for the code there now, with the return address set and nothing else run */
     if (entry && memory && how == BOUND) {
@@ -392,6 +422,8 @@ int main(int argc, char** argv) {
                   "the calling function calls the three bound functions itself");
             check(!ir_calls(text, a + MAIN_TWO) && !ir_calls(text, b + SDK_TWO),
                   "and neither function of the symbol two modules define");
+            /* its last branch too, which keeps the call of the stub for a slot that holds another address */
+            check(ir_calls(text, a + STUB + 48), "the branch to a stub is run in the stub's place");
         }
         free(text);
         text = NULL;
