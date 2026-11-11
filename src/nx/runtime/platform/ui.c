@@ -149,6 +149,38 @@ float ui_text(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba
     }
     return x - x0;
 }
+static u32 g_ground;
+void ui_ground_set(u32 rgba) { g_ground = rgba; }
+u32 ui_ground(void) { return g_ground; }
+int ui_drawn_ground(const SnxUiQuad* q, SnxUiQuad* fill) {
+    if ((q->ink != UI_GLYPH && q->ink != UI_ICON) || !(q->turn & UI_BACKED) || !q->uw) return 0;
+    ui_fill_set(fill, q->x, q->y, q->w, q->h, g_ground);
+    return 1;
+}
+float ui_text_backed(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba) {
+    float x0 = x;
+    for (; *s; ++s, x += 8.0f * (float)scale) {
+        u8 c = (u8)*s;
+        int n = l->n;
+        quad(l, x, y, 8.0f * (float)scale, 16.0f * (float)scale, SNX_CONTROLS_FONT_X + c % 16 * 8,
+             SNX_CONTROLS_FONT_Y + c / 16 * 16, 8, 16, rgba, 0, UI_SHARP, UI_GLYPH, c);
+        if (l->n > n) l->q[n].turn |= UI_BACKED;
+    }
+    return x - x0;
+}
+float ui_icon_backed(SnxUiList* l, float x, float y, int scale, unsigned icon, u32 rgba) {
+    int n = l->n;
+    float w = ui_icon(l, x, y, scale, icon, rgba);
+    if (l->n > n) l->q[n].turn |= UI_BACKED;
+    return w;
+}
+int ui_cells_backed(SnxUiList* l, float x, float y, int scale, int n, u32 rgba) {
+    int first = ui_cells(l, x, y, scale, n, rgba), k;
+    if (first < 0) return -1;
+    for (k = 0; k < n; ++k) l->q[first + k].turn = UI_BACKED;
+    ui_cells_set(&l->q[first], n, ""); /* blank: the ground */
+    return first;
+}
 int ui_cells(SnxUiList* l, float x, float y, int scale, int n, u32 rgba) {
     int first = l->n, k;
     if (n < 0 || n > l->max - l->n) return -1;
@@ -166,8 +198,8 @@ int ui_cells_set(SnxUiQuad* q, int n, const char* s) {
     int k, changed = 0;
     for (k = 0; k < n; ++k) {
         u8 c = *s ? (u8)*s++ : ' ';
-        int blank = c == ' ';
-        /* a blank's texels are none: the renderer draws nothing for it */
+        int blank = c == ' ' && !(q[k].turn & UI_BACKED);
+        /* a blank's texels are none: the renderer draws nothing for it; a backed one is the space, the ground */
         u16 u = blank ? 0 : (u16)(SNX_CONTROLS_FONT_X + c % 16 * 8);
         u16 v = blank ? 0 : (u16)(SNX_CONTROLS_FONT_Y + c / 16 * 16);
         if (q[k].u == u && q[k].v == v && q[k].uw == (blank ? 0 : 8)) continue;

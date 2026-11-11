@@ -82,7 +82,7 @@ void logf_(int lvl, const char* fmt, ...) {
 #define TEXT_RGBA                                                                                                      \
     (0xFFu << 24 | (SNX_GUI_THEME_YORHA_PAGE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_PAGE & 0xFF00u) |                   \
      (SNX_GUI_THEME_YORHA_PAGE >> 16 & 0xFFu))
-#define SHADOW_RGBA                                                                                                    \
+#define GROUND_RGBA                                                                                                    \
     (0xFFu << 24 | (SNX_GUI_THEME_YORHA_INK & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_INK & 0xFF00u) |                     \
      (SNX_GUI_THEME_YORHA_INK >> 16 & 0xFFu))
 #define MS 1000000ull /* a millisecond, in ns */
@@ -171,45 +171,38 @@ static unsigned note_icon(int k, u32 rgba) {
     }
     return GUI_ICON_NONE;
 }
-/* the letters of the line k under the graph drawn in rgba */
+/* the letters of the line k under the graph drawn in rgba, its spaces (backed: the ground) left out */
 static int note_letters(int k, u32 rgba) {
     int s = stats_scale(g_test.menu), i, n = 0;
     float box[4], ch = 16.0f * (float)s;
     stats_box(safe, s, box);
     for (i = 0; i < g_test.l.n; ++i)
-        if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 &&
+        if (g_test.quads[i].uw == 8 && g_test.quads[i].vh == 16 && g_test.quads[i].glyph != ' ' &&
             g_test.quads[i].y == box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch && g_test.quads[i].rgba == rgba)
             ++n;
     return n;
 }
-/* the icons and letters drawn past a cell in from the box's sides: 0 when they all keep it. Their shadows, a step of
-   their scale right and down, go that step into it */
+/* the icons and letters drawn past a cell in from the box's sides: 0 when they all keep it */
 static int past_margin(void) {
     int s = stats_scale(g_test.menu), i, n = 0;
     float box[4], cw = 8.0f * (float)s;
     stats_box(safe, s, box);
     for (i = 0; i < g_test.l.n; ++i)
-        if (g_test.quads[i].vh == 16 && g_test.quads[i].rgba != SHADOW_RGBA &&
+        if (g_test.quads[i].vh == 16 &&
             (g_test.quads[i].x < box[0] + cw || g_test.quads[i].x + g_test.quads[i].w > box[0] + box[2] - cw))
             ++n;
     return n;
 }
-/* the scale every letter was drawn at, its 8x16 texels 8 by 16 times it, and each letter over its shadow, a step of
-   it right and down: 0 where one differs */
+/* the scale every letter was drawn at, its 8x16 texels 8 by 16 times it, each backed (its clear pixels the ground,
+   ui.h's UI_BACKED, the ground the menu's ink): 0 where one differs */
 static int drawn_scale(void) {
-    int i, k, s = 0;
+    int i, s = 0;
+    if (ui_ground() != GROUND_RGBA) return 0;
     for (i = 0; i < g_test.l.n; ++i) {
         const SnxUiQuad* q = &g_test.quads[i];
-        int shadowed = 0;
         if (q->uw != 8 || q->vh != 16) continue;
         if (!s) s = (int)q->w / 8;
-        if (q->w != (float)(8 * s) || q->h != (float)(16 * s)) return 0;
-        if (q->rgba == SHADOW_RGBA) continue;
-        for (k = 0; k < i; ++k)
-            shadowed |= g_test.quads[k].rgba == SHADOW_RGBA && g_test.quads[k].u == q->u &&
-                        g_test.quads[k].v == q->v && g_test.quads[k].x == q->x + (float)s &&
-                        g_test.quads[k].y == q->y + (float)s;
-        if (!shadowed) return 0;
+        if (q->w != (float)(8 * s) || q->h != (float)(16 * s) || !(q->turn & UI_BACKED)) return 0;
     }
     return s;
 }

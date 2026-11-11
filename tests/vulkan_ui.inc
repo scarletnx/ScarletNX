@@ -45,7 +45,40 @@ static int ui_quads(UiCheck* c, const int safe[4]) {
 }
 /* whether v is within a thousandth of a whole number */
 static int ui_on_edge(float v) { return fabsf(v - roundf(v)) < 1e-3f; }
-/* the CPU's blend of n quads over the back colour: want, and sure where it is */
+/* one quad blended into want as it is drawn (ui_drawn: a bar of the ring where it is, from its byte), sure where it
+   is */
+static void ui_blend_quad(UiCheck* c, const SnxUiQuad* from) {
+    SnxUiQuad at = ui_drawn(from), *q = &at;
+    float color[4] = {(float)(q->rgba & 0xFF) / 255.0f, (float)(q->rgba >> 8 & 0xFF) / 255.0f,
+                      (float)(q->rgba >> 16 & 0xFF) / 255.0f, (float)(q->rgba >> 24) / 255.0f};
+    int x0, y0, x1, y1, x, y, k;
+    if (!q->uw) return; /* a blank cell, or no bar */
+    x0 = (int)floorf(q->x) - 1;
+    y0 = (int)floorf(q->y) - 1;
+    x1 = (int)ceilf(q->x + q->w) + 1;
+    y1 = (int)ceilf(q->y + q->h) + 1;
+    for (y = y0 < 0 ? 0 : y0; y < y1 && y < UI_H; ++y)
+        for (x = x0 < 0 ? 0 : x0; x < x1 && x < UI_W; ++x) {
+            float cx = (float)x + 0.5f, cy = (float)y + 0.5f, tu, tv, tex[4], src[4];
+            const u8* t;
+            if (cx < q->x - 1e-3f || cx > q->x + q->w + 1e-3f || cy < q->y - 1e-3f || cy > q->y + q->h + 1e-3f)
+                continue;
+            tu = (float)q->u + (cx - q->x) / q->w * (float)q->uw;
+            tv = (float)q->v + (cy - q->y) / q->h * (float)q->vh;
+            if (fabsf(cx - q->x) < 1e-3f || fabsf(cx - q->x - q->w) < 1e-3f || fabsf(cy - q->y) < 1e-3f ||
+                fabsf(cy - q->y - q->h) < 1e-3f || q->sample != UI_SHARP || (q->turn & 3) || ui_on_edge(tu) ||
+                ui_on_edge(tv)) {
+                c->sure[y][x] = 0;
+                continue;
+            }
+            t = (const u8*)&c->atlas[(size_t)floorf(tv) * SNX_CONTROLS_ATLAS_WIDTH + (size_t)floorf(tu)];
+            for (k = 0; k < 4; ++k) tex[k] = (float)t[k] / 255.0f;
+            for (k = 0; k < 3; ++k) src[k] = tex[k] * color[k] * color[3];
+            src[3] = tex[3] * color[3];
+            for (k = 0; k < 4; ++k) c->want[y][x][k] = src[k] + c->want[y][x][k] * (1 - src[3]);
+        }
+}
+/* the CPU's blend of n quads over the back colour: want, and sure where it is. A backed letter over its ground */
 static void ui_blend(UiCheck* c, int n) {
     int x, y, i, k;
     for (y = 0; y < UI_H; ++y)
@@ -54,35 +87,9 @@ static void ui_blend(UiCheck* c, int n) {
             c->sure[y][x] = 1;
         }
     for (i = 0; i < n; ++i) {
-        SnxUiQuad at = ui_drawn(&c->quads[i]), *q = &at; /* a bar of the ring where it is, from its byte */
-        int x0, y0, x1, y1;
-        float color[4] = {(float)(q->rgba & 0xFF) / 255.0f, (float)(q->rgba >> 8 & 0xFF) / 255.0f,
-                          (float)(q->rgba >> 16 & 0xFF) / 255.0f, (float)(q->rgba >> 24) / 255.0f};
-        if (!q->uw) continue; /* a blank cell, or no bar */
-        x0 = (int)floorf(q->x) - 1;
-        y0 = (int)floorf(q->y) - 1;
-        x1 = (int)ceilf(q->x + q->w) + 1;
-        y1 = (int)ceilf(q->y + q->h) + 1;
-        for (y = y0 < 0 ? 0 : y0; y < y1 && y < UI_H; ++y)
-            for (x = x0 < 0 ? 0 : x0; x < x1 && x < UI_W; ++x) {
-                float cx = (float)x + 0.5f, cy = (float)y + 0.5f, tu, tv, tex[4], src[4];
-                const u8* t;
-                if (cx < q->x - 1e-3f || cx > q->x + q->w + 1e-3f || cy < q->y - 1e-3f || cy > q->y + q->h + 1e-3f)
-                    continue;
-                tu = (float)q->u + (cx - q->x) / q->w * (float)q->uw;
-                tv = (float)q->v + (cy - q->y) / q->h * (float)q->vh;
-                if (fabsf(cx - q->x) < 1e-3f || fabsf(cx - q->x - q->w) < 1e-3f || fabsf(cy - q->y) < 1e-3f ||
-                    fabsf(cy - q->y - q->h) < 1e-3f || q->sample != UI_SHARP || q->turn || ui_on_edge(tu) ||
-                    ui_on_edge(tv)) {
-                    c->sure[y][x] = 0;
-                    continue;
-                }
-                t = (const u8*)&c->atlas[(size_t)floorf(tv) * SNX_CONTROLS_ATLAS_WIDTH + (size_t)floorf(tu)];
-                for (k = 0; k < 4; ++k) tex[k] = (float)t[k] / 255.0f;
-                for (k = 0; k < 3; ++k) src[k] = tex[k] * color[k] * color[3];
-                src[3] = tex[3] * color[3];
-                for (k = 0; k < 4; ++k) c->want[y][x][k] = src[k] + c->want[y][x][k] * (1 - src[3]);
-            }
+        SnxUiQuad ground;
+        if (ui_drawn_ground(&c->quads[i], &ground)) ui_blend_quad(c, &ground);
+        ui_blend_quad(c, &c->quads[i]);
     }
 }
 /* a frame of the layer on the image, read back, against the CPU's blend, said when loud: the channels that differ,

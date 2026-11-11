@@ -13,7 +13,7 @@ typedef struct {
     float x, y, w, h; /* where, in the pixels of the picture drawn on */
     u16 u, v, uw, vh; /* the atlas texels drawn there; uw 0: nothing drawn (ui_cells' blank cell) */
     u32 rgba;         /* each texel times this colour, R G B A from the low byte */
-    u8 turn;          /* the texels turned this many quarters clockwise */
+    u8 turn;          /* the texels turned this many quarters clockwise, and UI_BACKED */
     u8 sample;        /* how: UI_BLEND, UI_SHARP or UI_IMAGE */
     u8 ink;           /* what the renderer draws it with: one of UI_ATLAS, UI_SOLID, UI_GLYPH, UI_ICON */
     u8 glyph;         /* UI_GLYPH's letter, UI_ICON's icon from GUI_ICON_FIRST, UI_RING's slot */
@@ -26,6 +26,13 @@ enum { UI_BLEND, UI_SHARP, UI_IMAGE };
    or a letter of the 8x16 font or an icon of the menus, from their bits, a bit a pixel, with no atlas read. UI_RING
    is a bar of the ring (ui_ring), drawn as ui_drawn gives it */
 enum { UI_ATLAS, UI_SOLID, UI_GLYPH, UI_ICON, UI_RING };
+/* in turn, for a letter or an icon: its clear pixels in the ground's colour (ui_ground_set), where they are left out
+   otherwise. With an opaque colour and ground, it is an opaque cell, which the renderer draws without blending */
+#define UI_BACKED 4
+/* the ground of every backed letter and icon, R G B A from the low byte: one for all, set by their maker (stats.c)
+   each frame it draws them. Under ui_lock */
+void ui_ground_set(u32 rgba);
+u32 ui_ground(void);
 typedef struct {
     SnxUiQuad* q;
     int n, max; /* quads past max are dropped */
@@ -47,6 +54,9 @@ const SnxUiRing* ui_ring(void);
 /* q as it is drawn: a UI_RING quad as its slot's bar, a width left for each slot newer than it, its height's share of
    h up from the graph's foot, in the slow colour past slow_from, and nothing (uw 0) at height 0; any other as it is */
 SnxUiQuad ui_drawn(const SnxUiQuad* q);
+/* for a backed letter or icon (UI_BACKED), the fill of its ground under it, as one draws it before the letter where it
+   can't draw both at once (the SDL renderer, the tests' CPU blend): 1 with it in *fill; 0 for any other quad */
+int ui_drawn_ground(const SnxUiQuad* q, SnxUiQuad* fill);
 
 /* a sprite of controls_atlas.h at alpha (0 to 255) */
 void ui_sprite(SnxUiList* l, int sprite, float x, float y, float w, float h, u32 alpha, int turn);
@@ -63,11 +73,15 @@ void ui_fill_set(SnxUiQuad* q, float x, float y, float w, float h, u32 rgba);
 int ui_picture(SnxUiList* l, float x, float y, float side);
 /* ASCII text, 0xFE the font's square, in 8x16 glyphs at a whole scale; returns the width drawn */
 float ui_text(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba);
+/* the same, backed (UI_BACKED): a quad for each letter, a space too, which shows the ground */
+float ui_text_backed(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba);
 /* A field of n letter cells from x, y in 8x16 glyphs at a whole scale, all blank: a text that changes in a box kept
    from frame to frame (stats.c). ui_cells_set writes its letters later and moves nothing, so the field is laid out
    once. A blank cell (a space, or past the text) keeps its quad, which draws nothing: the field takes the same quads
    and the same time to draw whatever it shows. The first cell's index in l, -1 when l has no room for all n */
 int ui_cells(SnxUiList* l, float x, float y, int scale, int n, u32 rgba);
+/* the same, backed (UI_BACKED): a blank cell shows the ground, so the field is a band of it whatever it says */
+int ui_cells_backed(SnxUiList* l, float x, float y, int scale, int n, u32 rgba);
 /* the letters of s into the n cells from q, blank after its end and the end cut off past n: the cells changed */
 int ui_cells_set(SnxUiQuad* q, int n, const char* s);
 /* letters for the cells without printf: s, the decimal digits of v, and v / 10 with its tenth (12.3), each at at; the
@@ -82,6 +96,7 @@ void ui_append(SnxUiList* l, const SnxUiList* from);
    icon i's 16x16 from x SNX_UI_ICONS_X + 16 * i */
 #define SNX_UI_ICONS_X SNX_UI_PICTURE
 float ui_icon(SnxUiList* l, float x, float y, int scale, unsigned icon, u32 rgba);
+float ui_icon_backed(SnxUiList* l, float x, float y, int scale, unsigned icon, u32 rgba); /* backed (UI_BACKED) */
 /* One picture apart from the atlas, SNX_UI_IMAGE_W x SNX_UI_IMAGE_H: the menu's save state thumbnail. ui_image draws it
    at x, y, w x h: 0 while there is none, which draws nothing */
 #define SNX_UI_IMAGE_W 320
