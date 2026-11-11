@@ -80,7 +80,8 @@ public class Activity extends ContextThemeWrapper
         window.setCallback(this);
         /* the activity makes the views that its factories leave (a FragmentActivity's fragment containers) */
         window.getLayoutInflater().setPrivateFactory(this);
-        window.setWindowManager(wm, null, info.name);
+        /* the activity's token: its windows' (its dialogs take it, as WindowManager's sub-windows of it) */
+        window.setWindowManager(wm, new android.os.Binder(), info.name);
         windowManager = wm;
         if (info.softInputMode != 0) window.setSoftInputMode(info.softInputMode);
         ((android.window.OnBackInvokedDispatcher.Default) window.getOnBackInvokedDispatcher()).setFallback(this::onBackPressed);
@@ -256,6 +257,7 @@ public class Activity extends ContextThemeWrapper
     public final void makeVisible() {
         if (windowAdded || !visible) return;
         windowAdded = true;
+        window.getAttributes().type = WindowManager.LayoutParams.TYPE_BASE_APPLICATION;
         windowManager.addView(window.getDecorView(), window.getAttributes());
     }
     public final void performPause() {

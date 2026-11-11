@@ -4,13 +4,15 @@ package snx.android.ui;
 
 import android.graphics.RenderNode;
 import android.view.ViewRootImpl;
+import android.view.WindowManager;
 import java.util.ArrayList;
 import java.util.HashMap;
 
 /**
- * The host window the process's windows show in, one over the other: the last attached gets the input. A frame is
- * every root's last recording, the first attached at the bottom, as Android's compositor stacks an app's windows. It
- * is flattened (Frame) and drawn by the runtime's Vulkan renderer; without a window the frames are counted.
+ * The host window the process's windows show in, one over the other, stacked as attach orders them: the top one gets
+ * the input. A frame is every root's last recording, the bottom one first, as Android's compositor stacks an app's
+ * windows. It is flattened (Frame) and drawn by the runtime's Vulkan renderer; without a window the frames are
+ * counted.
  */
 public final class Host {
     private static final ArrayList<ViewRootImpl> roots = new ArrayList<>();
@@ -20,8 +22,20 @@ public final class Host {
 
     private Host() {}
 
+    /**
+     * A window goes over the others, except an activity's own window: under the windows of its token that it already
+     * has (a dialog its onCreate showed), as WindowManager stacks a token's base window below its other windows.
+     */
     public static synchronized void attach(ViewRootImpl root) {
-        roots.add(root);
+        int at = roots.size();
+        WindowManager.LayoutParams a = root.getWindowAttributes();
+        if (a != null && a.type == WindowManager.LayoutParams.TYPE_BASE_APPLICATION && a.token != null) {
+            for (int i = 0; i < roots.size() && at == roots.size(); ++i) {
+                WindowManager.LayoutParams b = roots.get(i).getWindowAttributes();
+                if (b != null && b.token == a.token) at = i;
+            }
+        }
+        roots.add(at, root);
         if (TRACE) android.util.Log.d("snx", "window " + root + " attached, " + roots.size() + " now");
     }
     /** A root gone: the roots left drawn again, without it. */
