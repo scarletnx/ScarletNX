@@ -287,9 +287,10 @@ char* ui_put_tenths(char* at, u64 tenths) {
     return at;
 }
 static SnxUiRing g_ring;
-void ui_ring_set(const u8* height, int n, int head, int slow_from, u32 slow) {
+void ui_ring_set(const u8* height, int n, int head, int slow_from, u32 slow, u32 version) {
     n = n < 0 ? 0 : n > SNX_UI_RING_MAX ? SNX_UI_RING_MAX : n;
-    memcpy(g_ring.height, height, (size_t)n);
+    if (version != g_ring.version || n != g_ring.n) memcpy(g_ring.height, height, (size_t)n);
+    g_ring.version = version;
     g_ring.n = (u16)n;
     g_ring.head = (u16)(n ? head % n : 0);
     g_ring.slow_from = (u8)slow_from;

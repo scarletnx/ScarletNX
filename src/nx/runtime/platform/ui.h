@@ -87,8 +87,9 @@ typedef struct {
     u16 head, n;  /* the newest's slot and the slots; n 0 for no ring */
     u8 slow_from; /* a height past it draws in the slow colour (a frame past 30 FPS's) */
     u32 slow;     /* that colour, R G B A from the low byte */
+    u32 version;  /* the ring's maker's count of the changes to its bytes: the same, they are not copied again */
 } SnxUiRing;
-void ui_ring_set(const u8* height, int n, int head, int slow_from, u32 slow);
+void ui_ring_set(const u8* height, int n, int head, int slow_from, u32 slow, u32 version);
 /* the ring's n bars' quads over the graph at x, y, w x h, a slot each from 0, in rgba below slow_from */
 void ui_ring_bars(SnxUiList* l, float x, float y, float w, float h, int n, u32 rgba);
 const SnxUiRing* ui_ring(void);
