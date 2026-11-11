@@ -5399,6 +5399,7 @@ static int check_uma_page_changes(void) {
 #include "vulkan_fragment_barrier.inc"
 #include "vulkan_capture_cap.inc"
 #include "vulkan_trim.inc"
+#include "vulkan_owned_page_reads.inc"
 
 /* key's row among the settings the runtime applies itself (options.c's), or NULL */
 static const IniOpt* setting_row(const char* key) {
@@ -5819,6 +5820,8 @@ static int run_headless(int argc, char** argv) {
             result = check_cross_stage_image_alias();
         else if (!strcmp(name, "lone_lane"))
             result = check_lone_lane();
+        else if (!strcmp(name, "owned_page_reads"))
+            result = check_owned_page_reads();
         else if (!strcmp(name, "cross_stage_blend"))
             result = check_cross_stage_blend_snapshots();
         else if (!strcmp(name, "txd_uniform"))
@@ -6085,6 +6088,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_pass_breaks());
     CHECK(!check_mesh_inputs());
     CHECK(!check_lone_lane());
+    CHECK(!check_owned_page_reads());
     CHECK(!check_frag_coord_origin());
     CHECK(!check_varying_passes());
     CHECK(!check_rt_other_layout());
