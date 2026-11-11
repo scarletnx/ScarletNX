@@ -78,9 +78,9 @@ their submissions drew nothing and each case waited for memory that the GPU woul
 
 ## In CI
 
-The `edenprobe` job of `.github/workflows/build.yml` takes the Linux x86-64 install and runs the release
-`EDENPROBE_VERSION` of edenprobe, pinned by `EDENPROBE_SHA256`, on lavapipe with the words of `EDENPROBE_MODE`, against
-`tests/edenprobe/linux-x86_64.txt`. The result goes in the run's summary and in the pull request's comment of builds;
+The `edenprobe` job of `.github/workflows/build.yml` takes the Linux x86-64 install (on a pull request, the x86-64
+AppImage build's) and runs the release `EDENPROBE_VERSION` of edenprobe, pinned by `EDENPROBE_SHA256`, on lavapipe with
+the words of `EDENPROBE_MODE`, against `tests/edenprobe/linux-x86_64.txt`. The result goes in the run's summary and in the pull request's comment of builds;
 the artifact `edenprobe-<commit>-<attempt>` holds the report, pictures, logs and `baseline.txt`.
 
 A regression there fails the Build run, and a run that failed publishes nothing: neither the nightly nor a version.

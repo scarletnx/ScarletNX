@@ -43,6 +43,12 @@ concurrency:
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
+# The Linux x86-64 and AArch64 tests' options: the linux job's, and the appimage job's, which builds a pull request's
+# x86-64 alone. SNX_TEST_OPTIONS go on the default tree, SNX_HEADLESS_OPTIONS make the headless Vulkan tree
+env:
+  SNX_TEST_OPTIONS: -DSNX_TEST_VP9_VECTORS=ON -DSNX_TEST_ARM_DIFF=ON -DSNX_TEST_LLVM_SWEEP=ON
+  SNX_HEADLESS_OPTIONS: -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON -DSNX_TEST_AV1_VECTORS=ON
+
 # Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development, and its LLVM 23 for the
 # recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 so Clang, the MinGW/UCRT runtime
 # and LLVM's development libraries come from one compatible toolchain. FFmpeg, OpenSSL, Vulkan and SDL3 are built from
@@ -84,8 +90,10 @@ jobs:
     container: ${{ matrix.arch == 'aarch64' && 'ghcr.io/pkgforge-dev/archlinux:latest' || 'archlinux:latest' }}
     strategy:
       fail-fast: false
+      # A pull request builds AArch64's alone: x86-64's tests run in the appimage job, on the build its AppImage is
+      # made of, and edenprobe takes that job's install
       matrix:
-        arch: [x86_64, aarch64]
+        arch: ${{ fromJSON(github.event_name == 'pull_request' && '["aarch64"]' || '["x86_64", "aarch64"]') }}
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -168,7 +176,7 @@ jobs:
       # Unicorn 2.1.4, the A32 and Thumb differentials' reference (SNX_TEST_ARM_DIFF), in a venv: Arch's Python takes no
       # pip install of its own. PyPI drops a connection now and then, so it is tried 3 times, 5 s apart
       - name: Install Unicorn
-        run: |
+        run: &unicorn |
           python -m venv --system-site-packages .cache/unicorn
           for try in 1 2 3; do
             .cache/unicorn/bin/pip install --quiet unicorn==2.1.4 && break
@@ -177,9 +185,8 @@ jobs:
           done
       - name: Build the runtime
         run: |
-          cmake --preset default -DSNX_TEST_VP9_VECTORS=ON -DSNX_TEST_ARM_DIFF=ON -DSNX_TEST_LLVM_SWEEP=ON \
-            -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python" -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --preset default ${{ env.SNX_TEST_OPTIONS }} -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
           cmake --install build/default --prefix stage
       # The fallback is CMake's (cmake/dependencies.cmake pins SDL3) and the Windows job builds the same SDL3 from
@@ -204,8 +211,7 @@ jobs:
           cmake --build build/sdl-fallback --target scarletnx --parallel "$(getconf _NPROCESSORS_ONLN)"
       - name: Build SDL3 with headless Vulkan tests
         run: |
-          cmake --preset default -B build/headless -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON \
-            -DSNX_TEST_AV1_VECTORS=ON \
+          cmake --preset default -B build/headless ${{ env.SNX_HEADLESS_OPTIONS }} \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/headless --parallel "$(getconf _NPROCESSORS_ONLN)"
       # Only what this run used is kept, so the cache saved is one build's worth
@@ -240,12 +246,12 @@ jobs:
       # it is the plain run), descriptor_heaps (heaps are lavapipe's default already), libraries (the plain run under
       # the validation layer, which pipeline_library_linked has) and descriptor_buffers_uma (each of its two alone)
       - name: Test headless Vulkan and NX runtime
-        run: ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|vulkan_headless_pipeline_library_whole|vulkan_headless_pipeline_library_linked|vulkan_headless_libraries_off|vulkan_headless_vk12|vulkan_headless_descriptor_buffers|vulkan_headless_vertex_input_off|vulkan_headless_uma|vulkan_headless_hot|vulkan_recorder|vulkan_tex_partial|vulkan_video_av1|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|vulkan_storage_buffer_keep|vulkan_nvn_savestate|vulkan_owned_page_reads|vulkan_owned_page_reads_protection)$' --output-on-failure
+        run: &headless-tests ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|vulkan_headless_pipeline_library_whole|vulkan_headless_pipeline_library_linked|vulkan_headless_libraries_off|vulkan_headless_vk12|vulkan_headless_descriptor_buffers|vulkan_headless_vertex_input_off|vulkan_headless_uma|vulkan_headless_hot|vulkan_recorder|vulkan_tex_partial|vulkan_video_av1|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|vulkan_storage_buffer_keep|vulkan_nvn_savestate|vulkan_owned_page_reads|vulkan_owned_page_reads_protection)$' --output-on-failure
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
-        run: clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
+        run: &abi-helpers clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
       - name: Test native tooling and indexed filesystems
-        run: ctest --test-dir build/default --output-on-failure --parallel 4
+        run: &native-tests ctest --test-dir build/default --output-on-failure --parallel 4
       - name: Check optional Python diagnostics
         run: |
           python -m compileall -q tools
@@ -616,6 +622,54 @@ jobs:
           path: |
             dist/*.AppImage*
             dist/appinfo
+      # A pull request's x86-64 build is this one alone (the linux job builds AArch64's): its install goes to edenprobe,
+      # and the linux job's x86-64 tests run on it, each step after the AppImage is made, so the AppImage is the one a
+      # push makes. The install is the AppImage's runtime as it was built
+      - name: Stage the install for edenprobe
+        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        run: |
+          # out of /usr first: the tests run as the linux job's do, with no copy of ScarletNX installed there
+          xargs -d '\n' rm -f -- < build/default/install_manifest.txt
+          cmake --install build/default --prefix stage
+      - if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}-install
+          path: stage
+      # The linux job's test tools this image lacks, and Arch's own Mesa back, which the linux job tests lavapipe with:
+      # the debloated one is for the AppImage alone. Each pacman install is tried 3 times, as in the linux job
+      - name: Install the test tools
+        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        run: |
+          for try in 1 2 3; do
+            pacman -S --noconfirm mesa && pacman -S --noconfirm --needed lld qemu-user pkgconf libxtst libxrandr \
+              libxss vulkan-swrast vulkan-validation-layers gdb jq && break
+            [ "$try" = 3 ] && exit 1
+            sleep 5
+          done
+      - name: Install Unicorn
+        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        run: *unicorn
+      # The linux job's test options on the same tree, and its headless tree with this job's LLVM: the A64 disassembler
+      # stays out, as in the AppImage, so its tests run in the sanitizers' job alone on a pull request
+      - name: Build the tests and the headless Vulkan tree
+        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        run: |
+          cmake build/default ${{ env.SNX_TEST_OPTIONS }} -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python"
+          cmake --build build/default --parallel "$(getconf _NPROCESSORS_ONLN)"
+          cmake --preset default -B build/headless ${{ env.SNX_HEADLESS_OPTIONS }} \
+            -DLLVM_DIR="$PWD/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm" -DSNX_A64_DISASM=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build/headless --parallel "$(getconf _NPROCESSORS_ONLN)"
+      - name: Test headless Vulkan and NX runtime
+        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        run: *headless-tests
+      - name: Check the ABI helpers compile
+        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        run: *abi-helpers
+      - name: Test native tooling and indexed filesystems
+        if: matrix.arch == 'x86_64' && github.event_name == 'pull_request'
+        run: *native-tests
       - *cancel-run
 
   # The AppImages of hosts no GitHub runner is: cross-built on x86-64 with their linux-<arch>-cross preset
@@ -1764,11 +1818,15 @@ jobs:
       - *cancel-run
 
   # edenprobe's probes (docs/dev/edenprobe.md), a release of scarletnx/edenprobe pinned by its sha256, recompiled by the
-  # Linux install and run on lavapipe: a case of tests/edenprobe/linux-x86_64.txt, the ones that passed before, that no
-  # longer passes fails the job. Another release or other mode words want that file written again
+  # Linux x86-64 install and run on lavapipe: a case of tests/edenprobe/linux-x86_64.txt, the ones that passed before,
+  # that no longer passes fails the job. Another release or other mode words want that file written again. The install
+  # is the linux job's, or on a pull request the appimage job's, which builds a pull request's x86-64 alone
   edenprobe:
     name: edenprobe (Linux x86_64, lavapipe)
-    needs: linux
+    needs: [linux, appimage]
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'pull_request' && needs.appimage.result == 'success' ||
+      github.event_name != 'pull_request' && needs.linux.result == 'success') }}
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     container: archlinux:latest
