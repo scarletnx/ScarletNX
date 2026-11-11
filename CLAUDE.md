@@ -225,6 +225,9 @@ flourishes. This rule does not apply to code comments. The Claude files follow A
 
 ## Lessons that cost a session
 
+- A driver that crashes on a call of the runtime reports no frame of the runtime, only its own. Run the game with
+  `vk_validation=1`, and the validation layer names the call and the rule it breaks. It found a pipeline library part
+  made on a device without `VK_EXT_graphics_pipeline_library`, which no log line named.
 - The stream library of NVIDIA has tables of 128 entries, one entry for each syncpoint
   (`NvRmChannelNumSyncPoints` is a stub that fails). Each syncpoint comes from `syncpt_alloc()` in
   `hle/services/nvdrv.c`.

@@ -180,6 +180,14 @@ a grid in world space, then the cell's list, in a loop) is bound as no texture, 
 indexed on the GPU would sample them, but the renderer would have to make each texture such a handle can name, which
 no draw tells it.
 
+A program whose FADD, FMUL, FFMA or I2F has a directed rounding mode is translated through f64, which keeps the
+rounding exact. Apple's GPUs have no `shaderFloat64`, and the runtime skipped each such program: one game's title
+sequence drew black, and 10 of its compute programs never ran. `g_shader_float64` is the device's capability now, and
+the translator keeps those operations in f32, as rounds to nearest, where it is 0. A float scale of FMUL is a power
+of two, so it stays exact. The same game then ran its compute programs, and KosmicKrisp's Metal compiler failed on
+one of them (an XPC error in the compiler service, on every retry) where MoltenVK compiled it: that game shows its
+title menu with `vulkan_driver=moltenvk`.
+
 ## Surfaces
 
 An Ounce game's block linear surfaces use another GOB: bits 5 and 6 of a byte's offset in it are swapped, so x
