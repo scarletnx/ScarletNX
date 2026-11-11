@@ -106,7 +106,7 @@ if((WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND NOT ANDROID)
     # the H.264 decoder's Vulkan Video path, which the vulkan_video setting turns on (src/nx/gpu/vk/nvdec.c). FFmpeg
     # loads Vulkan's functions through the runtime's device (no link to the loader); only the headers are needed
     list(APPEND snx_ffmpeg_args --enable-vulkan --enable-hwaccel=h264_vulkan
-         "--extra-cflags=-I${Vulkan-Headers_SOURCE_DIR}/include")
+         "--extra-cflags=-I${snx_vulkan_include_dir}")
 endif()
 if(WIN32 OR CMAKE_CROSSCOMPILING)
     # configure guesses the target from the machine doing the build, so a cross build names it. CMake names the

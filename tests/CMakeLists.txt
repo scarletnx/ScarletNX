@@ -1720,6 +1720,9 @@ add_test(NAME cpm_cache COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
 # the dependency cache's keys and how a build is published to it (cmake/deps_cache.cmake)
 add_test(NAME deps_cache COMMAND "${CMAKE_COMMAND}" "-DCC=${CMAKE_C_COMPILER}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/deps-cache-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/deps_cache_test.cmake")
+# CPM_USE_LOCAL_PACKAGES takes from the system the packages added with snx_cpm_local_package alone (cmake/cpm_local.cmake)
+add_test(NAME cpm_local COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DCPM=${cpm_file}"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpm-local-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/cpm_local_test.cmake")
 # where cmake/cross.cmake puts -mabi=elfv2: PowerPC64's compiles and links, no other processor's
 add_test(NAME cross_flags COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" -P
          "${CMAKE_CURRENT_SOURCE_DIR}/cross_flags_test.cmake")
@@ -3367,7 +3370,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         "${PROJECT_SOURCE_DIR}/src/common/utilities/spirv_emit.c")
     snx_test_target(snx-test-vk-tess-passthrough 11)
     target_include_directories(snx-test-vk-tess-passthrough PRIVATE "${volk_SOURCE_DIR}"
-        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+        "${snx_vma_include_dir}")
     target_link_libraries(snx-test-vk-tess-passthrough PRIVATE Vulkan::Headers)
     add_test(NAME vk_tess_passthrough COMMAND snx-test-vk-tess-passthrough)
     # the shader lookups' tables hold a frame's keys (src/nx/gpu/vk/lookup_ways.h)
@@ -3391,33 +3394,33 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-vk-descriptor-heaps vk_descriptor_heaps.c)
     snx_test_target(snx-test-vk-descriptor-heaps 11)
     target_include_directories(snx-test-vk-descriptor-heaps PRIVATE "${volk_SOURCE_DIR}"
-        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+        "${snx_vma_include_dir}")
     target_link_libraries(snx-test-vk-descriptor-heaps PRIVATE Vulkan::Headers)
     add_test(NAME vk_descriptor_heaps COMMAND snx-test-vk-descriptor-heaps)
     add_executable(snx-test-vk-descriptor-heap-batch vk_descriptor_heap_batch.c)
     snx_test_target(snx-test-vk-descriptor-heap-batch 11)
     target_include_directories(snx-test-vk-descriptor-heap-batch PRIVATE "${volk_SOURCE_DIR}"
-        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+        "${snx_vma_include_dir}")
     target_link_libraries(snx-test-vk-descriptor-heap-batch PRIVATE Vulkan::Headers)
     add_test(NAME vk_descriptor_heap_batch COMMAND snx-test-vk-descriptor-heap-batch)
     add_executable(snx-test-vk-descriptor-objects vk_descriptor_objects.c
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/descriptor_objects.c")
     snx_test_target(snx-test-vk-descriptor-objects 11)
     target_include_directories(snx-test-vk-descriptor-objects PRIVATE "${volk_SOURCE_DIR}"
-        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+        "${snx_vma_include_dir}")
     target_link_libraries(snx-test-vk-descriptor-objects PRIVATE Vulkan::Headers)
     add_test(NAME vk_descriptor_objects COMMAND snx-test-vk-descriptor-objects)
     add_executable(snx-test-vk-checkpoints vk_checkpoints.c)
     snx_test_target(snx-test-vk-checkpoints 11)
     target_include_directories(snx-test-vk-checkpoints PRIVATE "${volk_SOURCE_DIR}"
-        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+        "${snx_vma_include_dir}")
     target_link_libraries(snx-test-vk-checkpoints PRIVATE Vulkan::Headers)
     add_test(NAME vk_checkpoints COMMAND snx-test-vk-checkpoints)
     add_executable(snx-test-vk-descriptor-heap-setup vk_descriptor_heap_setup.c
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/descriptor_heaps.c")
     snx_test_target(snx-test-vk-descriptor-heap-setup 11)
     target_include_directories(snx-test-vk-descriptor-heap-setup PRIVATE "${volk_SOURCE_DIR}"
-        "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+        "${snx_vma_include_dir}")
     target_link_libraries(snx-test-vk-descriptor-heap-setup PRIVATE Vulkan::Headers)
     add_test(NAME vk_descriptor_heap_setup COMMAND snx-test-vk-descriptor-heap-setup)
     add_executable(snx-test-vk-advanced-blend vk_advanced_blend.c)
