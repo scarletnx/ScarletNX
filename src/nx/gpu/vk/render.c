@@ -5002,8 +5002,13 @@ retry:
         rec_CmdBeginTransformFeedbackEXT(cb, 0, xcount, from, counter_offs);
     }
     rec_draw_tag(vs ? vs->hash : 0, fs ? fs->hash : 0); /* the vertex or mesh program, the fragment program */
-    /* outside the predication: a predicated region writes no timestamp */
+    /* outside the predication: a predicated region writes no timestamp. Only a Tracy client times a draw
+       (gpuprof.c), so a build without Tracy makes no call per draw */
+#if defined(SNX_TRACY)
     int zoned = vk_gpuprof_op_begin(cb, VK_OP_DRAW, (vs ? vs->hash : 0) * 31 + (fs ? fs->hash : 0), 0);
+#else
+    const int zoned = 0;
+#endif
     pred_begin(cb, o->pred);
     if (mesh && dc->indirect)
         rec_CmdDrawMeshTasksIndirect(cb, abuf, aoff);
