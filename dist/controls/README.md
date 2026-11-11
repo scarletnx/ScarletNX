@@ -10,6 +10,3 @@ that gives 0.6 at `controls_alpha`'s 50 (`SNX_VPAD_BUILTIN_CURVE`, vpad.h), the 
 atlas with room for the game menu's font and a white block. The script also writes
 `src/nx/runtime/platform/controls_atlas.h`, the sprites' places, and `--check` (a test) fails when either is not what
 these files make. After changing a drawable, run the script and commit the three together.
-
-These are the controls' built-in look; the default is a skin, `line`. Skins, RetroArch overlays, are in
-[skins/](skins/README.md).

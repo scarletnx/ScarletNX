@@ -88,7 +88,6 @@ include("${PROJECT_SOURCE_DIR}/cmake/ship_walk.cmake")
 snx_ship_walk(gpu/shipped_pass.c)
 
 include("${PROJECT_SOURCE_DIR}/cmake/controls_atlas.cmake")
-include("${PROJECT_SOURCE_DIR}/cmake/controls_skins.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform/unattended.c
              runtime/platform/backend/sdl3.c runtime/platform/audio_downmix.c
@@ -96,10 +95,10 @@ set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform
              runtime/platform/help.c runtime/platform/hotkeys.c runtime/platform/hud.c runtime/platform/overlay.c
              runtime/platform/stats.c
              runtime/platform/touch.c
-             runtime/platform/ui.c runtime/platform/vpad.c runtime/platform/vpad_skin.c
+             runtime/platform/ui.c runtime/platform/vpad.c
              runtime/platform/fatal_screen.c
              runtime/platform/prepare_screen.c runtime/platform/gpu_driver_load.c runtime/platform/resources.c
-             "${PROJECT_BINARY_DIR}/generated/controls_png.c" "${PROJECT_BINARY_DIR}/generated/controls_skins.c")
+             "${PROJECT_BINARY_DIR}/generated/controls_png.c")
 if(WIN32)
     list(APPEND platform runtime/platform/plat_win32.c runtime/platform/profiler_win32.c)
 else()
