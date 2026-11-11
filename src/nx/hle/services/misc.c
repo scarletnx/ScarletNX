@@ -1548,6 +1548,19 @@ static int nn_prepo_detail_ipc_IPrepoService_GetTransmissionStatus(SvcObj* self,
     R_SUCCEED();
 }
 
+/* the report goes nowhere: a context whose send is done and succeeded, as acc's async contexts are */
+static int nn_prepo_detail_ipc_IPrepoService_SendReportWithUser(SvcObj* self, u8 flag, u32 memory_size, u32 report_size,
+                                                                const u8* uid, u64 pid, IpcBuf event_id, u32 report,
+                                                                SvcObj** context) {
+    (void)self, (void)flag, (void)memory_size, (void)report_size, (void)uid, (void)pid, (void)event_id, (void)report;
+    *context = nn_prepo_detail_ipc_IAsyncContext_new();
+    R_SUCCEED();
+}
+static int nn_prepo_detail_ipc_IAsyncContext_GetSystemEvent(SvcObj* self, u32* event) {
+    (void)self;
+    return new_event(event, "prepo async context", 1);
+}
+
 /* ============================================================ olsc:u: no online service */
 /* a command for a user, on a session Initialize was called on (u[0]) */
 static int olsc_check(const SvcObj* self, const nn_account_Uid* uid) {
