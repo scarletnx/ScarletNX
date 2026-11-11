@@ -1408,6 +1408,18 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     target_include_directories(snx-test-nn-pctl PRIVATE "${PROJECT_SOURCE_DIR}/src")
     snx_hookgen(snx-test-nn-pctl SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/pctl.hook")
     add_test(NAME nn_pctl COMMAND snx-test-nn-pctl)
+    # the native nn::nsd (nn/nsd.c): the names of the servers in the retail environment
+    add_executable(snx-test-nn-nsd nn_nsd.c)
+    snx_test_target(snx-test-nn-nsd 23)
+    target_include_directories(snx-test-nn-nsd PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    snx_hookgen(snx-test-nn-nsd SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/nsd.hook")
+    add_test(NAME nn_nsd COMMAND snx-test-nn-nsd)
+    # the native nn::ngc (nn/ngc.c): the profanity filter's checks, with no word lists
+    add_executable(snx-test-nn-ngc nn_ngc.c)
+    snx_test_target(snx-test-nn-ngc 23)
+    target_include_directories(snx-test-nn-ngc PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    snx_hookgen(snx-test-nn-ngc SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/ngc.hook")
+    add_test(NAME nn_ngc COMMAND snx-test-nn-ngc)
 endif()
 
 # Inline software keyboard protocol and applet completion events.
