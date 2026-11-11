@@ -8,7 +8,7 @@
 /* A draw's constant buffer. Two buffers: one whose bound bytes hold an owner's 16, one with an owner on its page past
    the bytes the draw reads. A vertex program stores c[0][0x100] where the descriptor at c[0][0x130] points */
 #define CBOWN_GVA 0x8da000000ull
-#define CBOWN_CPU (HEAP_BASE + 0x11c40000)
+#define CBOWN_CPU (HEAP_BASE + 0x11f00000)
 
 /* the vertex program at the code's base: c[0][0x100] stored through c[0][0x130]'s descriptor, one point at the origin */
 static int cbown_program(void) {
