@@ -376,12 +376,13 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     # Tracy client, for SNX_TRACY development builds.
     if(SNX_TRACY)
         # The sampler and the callstacks it needs are on; the zones take no callstacks of their own, so it costs
-        # nothing per zone. The wait stacks are off: they walk the stack at every context switch. The zones' own
-        # validation is off: it queues a ZoneValidation next to every zone begin, end, text and value, which in a
-        # build whose whole purpose is to observe zones doubles the queue traffic they cost.
+        # nothing per zone. The wait stacks are off: they walk the stack at every context switch, and they need
+        # root and tracefs. The zones' own validation is on: it queues a ZoneValidation next to every zone begin,
+        # end, text and value, doubled per zone and only while a server is attached, which is the price of a run
+        # that says when this runtime's zone pairs are unbalanced. The code the zones are in and the pictures of the
+        # presented frame are on too: both cost nothing until a GUI asks for them.
         set(snx_tracy_options "TRACY_ENABLE ON" "TRACY_ON_DEMAND ON" "TRACY_NO_CRASH_HANDLER ON" "TRACY_STATIC ON"
-                              "TRACY_MANUAL_LIFETIME ON" "TRACY_NO_CODE_TRANSFER ON" "TRACY_NO_FRAME_IMAGE ON"
-                              "TRACY_NO_WAIT_STACKS ON" "TRACY_NO_VERIFY ON")
+                              "TRACY_MANUAL_LIFETIME ON" "TRACY_NO_WAIT_STACKS ON")
         if(NOT ANDROID)
             list(APPEND snx_tracy_options "TRACY_ONLY_LOCALHOST ON" "TRACY_NO_BROADCAST ON")
         endif()
