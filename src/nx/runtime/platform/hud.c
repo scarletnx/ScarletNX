@@ -1,20 +1,17 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/hud.h"
-#include "gui_theme_colors.h"
+#include "nx/runtime/platform/ui_colors.h"
 #include <stdio.h>
 #include <string.h>
 
-/* the menu's colours (gui_theme_colors.h, the YoRHa theme) as R G B A bytes, opaque: its ink behind, its page's
-   letters, and its failure colour for the lead */
-#define HUD_RGBA(rgb, a) ((u32)(a) << 24 | ((rgb) & 0xFFu) << 16 | ((rgb) & 0xFF00u) | ((rgb) >> 16 & 0xFFu))
-#define HUD_BACK         HUD_RGBA(SNX_GUI_THEME_YORHA_INK, 0xFFu)
-#define HUD_TEXT         HUD_RGBA(SNX_GUI_THEME_YORHA_PAGE, 0xFFu)
-#define HUD_WARN         HUD_RGBA(SNX_GUI_THEME_YORHA_FAILURE, 0xFFu)
-
-/* the box, the lead and a letter for each of the list's: laid out when the list, the place or the scale changes, and
-   kept for the frames after */
-#define HUD_QUADS (1 + HUD_DEBUG_MAX + sizeof HUD_DEBUG_LEAD)
+/* the layer's colours (ui_colors.h): the ink behind, the page's for the letters, the failure colour for the lead */
+/* The lines' quads: laid out when the list, the place or the scale changes, and kept for the frames after. A line is a
+   blank cell, a cell for each of its letters and a fill to its band's end: its letters and two. A line and the one
+   after it hold a line's room of letters less one at the least (the first item of the second did not fit the first),
+   and a line has room for 18 letters or more, so the lines are at most 2 for each 17 letters and one more: the quads
+   under 5 for each 4 letters, and 2, and the two strips of the margin */
+#define HUD_QUADS ((HUD_DEBUG_MAX + sizeof HUD_DEBUG_LEAD) * 5 / 4 + 4)
 static struct {
     char debug[HUD_DEBUG_MAX];
     u32 gen; /* the lists set */
@@ -69,18 +66,23 @@ static void hud_layout(SnxUiList* l, const int safe[4], int scale) {
         n = line_of(s, lines ? cols : cols - lead, &next) + (lines ? 0 : lead);
         if (n > longest) longest = n;
     }
+    /* The box as it looks, a letter's gap at either side of the longest line and a quarter line above and under the
+       lines, with no fill behind the letters: each line is a band of the layer's ground made of a blank cell, its
+       letters, backed (ui.h's UI_BACKED), and a fill of the ink from them to the box's right; the margins are a strip
+       of the ink each. Nothing is drawn under a letter, and all of it is the plain pipeline's */
     x = (float)safe[0] + ((float)safe[2] - (float)(longest + 2) * cw) / 2;
     y = (float)safe[1] + ch / 2;
-    ui_fill(l, x, y, (float)(longest + 2) * cw, (float)lines * ch + ch / 2, HUD_BACK);
-    x += cw;
+    ui_fill(l, x, y, (float)(longest + 2) * cw, ch / 4, UI_INK);
+    ui_fill(l, x, y + ch / 4 + (float)lines * ch, (float)(longest + 2) * cw, ch / 4, UI_INK);
     y += ch / 4;
     for (s = g_hud.debug, lines = 0; *s; s = next, ++lines) {
-        float at = x;
+        float row = y + (float)lines * ch, at = x + ui_text_backed(l, x, row, scale, " ", UI_PAGE);
         n = line_of(s, lines ? cols : cols - lead, &next);
         memcpy(line, s, n);
         line[n] = 0;
-        if (!lines) at += ui_text(l, at, y, scale, HUD_DEBUG_LEAD, HUD_WARN);
-        ui_text(l, at, y + (float)lines * ch, scale, line, HUD_TEXT);
+        if (!lines) at += ui_text_backed(l, at, row, scale, HUD_DEBUG_LEAD, UI_FAILURE);
+        at += ui_text_backed(l, at, row, scale, line, UI_PAGE);
+        ui_fill(l, at, row, x + (float)(longest + 2) * cw - at, ch, UI_INK);
     }
 }
 void hud_draw(SnxUiList* l, const int safe[4], int scale) {

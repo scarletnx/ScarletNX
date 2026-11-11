@@ -817,6 +817,42 @@ int shader_direct_screen_uv(const ShFlow* f, u32 index, u32 x, u32 y) {
     return g >= 0 && y < 255 && direct_over_w(f, index, y, 1, 0) == g ? g : -1;
 }
 
+/* reg at index holds a generic's component c (0 x, 1 y) as the vertex stage wrote it, where the position's w is 1:
+   IPA of that word, not indexed nor saturated, in pass mode, or multiplied by the reciprocal of the position's
+   interpolated 1 / w (MUFU.RCP of IPA's pass-through read of a[0x7c], no absolute value, negation or saturation), the
+   way the compiler reads a perspective input. The generic's index, or -1 */
+static int direct_plain_generic(const ShFlow* f, u32 index, u32 reg, u32 c, int depth) {
+    const u64* insn = f->insn;
+    int j = depth > 4 ? -1 : direct_reaching_def(f, index, reg);
+    if (j < 0) return -1;
+    u64 w = insn[j];
+    int op = decode(w)->id;
+    if (op == O_MOV_R) return direct_plain_generic(f, (u32)j, B(w, 20, 8), c, depth + 1);
+    u32 addr = B(w, 30, 8) * 4;
+    if (op != O_IPA || B(w, 38, 1) || B(w, 51, 1) || B(w, 54, 2) > 1 || addr < 0x80 || addr >= 0x280 ||
+        (addr & 15) != c * 4)
+        return -1;
+    if (B(w, 54, 2) == 1) {
+        int k = direct_reaching_def(f, (u32)j, B(w, 20, 8));
+        if (k < 0) return -1;
+        u64 r = insn[k];
+        if (decode(r)->id != O_MUFU || B(r, 20, 4) != 4 || B(r, 46, 1) || B(r, 48, 1) || B(r, 50, 1)) return -1;
+        int m = direct_reaching_def(f, (u32)k, B(r, 8, 8));
+        if (m < 0) return -1;
+        u64 v = insn[m];
+        if (decode(v)->id != O_IPA || B(v, 38, 1) || B(v, 51, 1) || B(v, 54, 2) || B(v, 30, 8) * 4 != 0x7c) return -1;
+    }
+    return (int)((addr - 0x80) >> 4);
+}
+/* The texture read at index samples at (x, y) = a generic's (x, y) as the vertex stage wrote them, the same generic
+   for both: the fragment's own pixel's centre when the vertex stage wrote its position from that generic, mapping
+   [0, 1] onto the viewport with a w of 1 (ShaderInfo.uv_out_mask), and the draw's viewport covers the target the
+   texture is (vk/render.c). The generic's index, or -1 */
+int shader_direct_plain_uv(const ShFlow* f, u32 index, u32 x, u32 y) {
+    int g = x < 255 ? direct_plain_generic(f, index, x, 0, 0) : -1;
+    return g >= 0 && y < 255 && direct_plain_generic(f, index, y, 1, 0) == g ? g : -1;
+}
+
 /* reg's value at index past full register moves: the instruction that makes it times 256 plus the register it
    writes, as one instruction may write several (ALD.128, a texture read). -1 when no single one reaches it */
 static int direct_value_def(const ShFlow* f, u32 index, u32 reg) {
@@ -953,6 +989,161 @@ u32 shader_direct_position_out(const ShFlow* f) {
         if (direct_output_def(f, store, at) == px && direct_output_def(f, store, at + 4) == py &&
             direct_output_def(f, store, at + 12) == pw)
             mask |= 1u << g;
+    }
+    return mask;
+}
+
+/* The value (direct_value_def) is another's, src, mapped from [0, 1] onto clip space's [-1, 1]: FFMA by an immediate
+   with a constant addend, unguarded and unsaturated. 1 for src * 2 - 1, 2 for src * -2 + 1 (the y of a viewport of
+   negative height), 0 when it is neither: any other scale or offset puts the value elsewhere than its own pixel */
+static int direct_clip_of(const ShFlow* f, int value, int src) {
+    const u64* insn = f->insn;
+    if (value < 0 || src < 0) return 0;
+    u32 def = (u32)value / 256, addend;
+    u64 w = insn[def];
+    if (decode(w)->id != O_FFMA_I || B(w, 16, 4) != 7 || B(w, 50, 1) || direct_value_def(f, def, B(w, 8, 8)) != src ||
+        !shader_direct_track_const(f, def, B(w, 39, 8), &addend, 0))
+        return 0;
+    u32 scale = ((B(w, 20, 19) << 12) | (B(w, 56, 1) << 31)) ^ (B(w, 48, 1) << 31);
+    addend ^= B(w, 49, 1) << 31;
+    return scale == 0x40000000u && addend == 0xbf800000u ? 1 : scale == 0xc0000000u && addend == 0x3f800000u ? 2 : 0;
+}
+/* The value the vertex program's output word at addr ends with, as direct_output_def gives it, or, where two writes
+   of its register reach its store, the unguarded one's (the later of the two), with the guarded one in *early: the
+   shape of a program that begins by writing its outputs for a vertex it drops, under a predicate, and leaves
+   (direct_early_out says whether it is that). *early is -1 for the one value; the result -1 for anything else */
+static int direct_output_or_early(const ShFlow* f, const int store[0x280 / 4], u32 addr, int* early) {
+    const u64* insn = f->insn;
+    int k = store[addr / 4], value = direct_output_def(f, store, addr);
+    *early = -1;
+    if (value >= 0 || k < 0) return value;
+    u64 w = insn[k];
+    u32 reg = B(w, 0, 8) + (addr - B(w, 20, 10)) / 4, defs[63], ndefs, last = 0, unguarded = 0, guarded = 0;
+    if (B(w, 16, 4) != 7 || B(w, 8, 8) != 255 || reg >= 255 || !direct_once_to_end(f, (u32)k)) return -1;
+    u64 reach = direct_reaching_writes(f, (u32)k, reg, defs, &ndefs);
+    for (u32 d = 0; d < ndefs; d++) {
+        if (!(reach >> d & 1)) continue;
+        if (B(insn[defs[d]], 0, 8) != reg) return -1;
+        if (B(insn[defs[d]], 16, 4) == 7) {
+            last = defs[d];
+            unguarded++;
+        } else {
+            *early = (int)defs[d];
+            guarded++;
+        }
+    }
+    if (unguarded != 1 || guarded != 1 || (u32)*early > last) return -1;
+    return (int)(last * 256 + reg);
+}
+/* Whether the guarded writes in early (the position's x first) and the unguarded ones from first to last
+   (direct_output_or_early) are the two ways of a program that drops some vertices before the stores at use: under one
+   predicate it writes the outputs of a dropped vertex and leaves by a SYNC under that predicate, which lands past
+   last (nothing may arrive before) and no later than use (direct_once_to_end, of the stores), and every other vertex
+   runs first to last whole. A dropped vertex is outside the clip volume, its x a constant
+   beyond 1 with a w of 1, so the choice has to be one for a primitive's vertices, or a triangle of both kinds would
+   interpolate between them: nothing a vertex differs by is read before the branch (an attribute load other than the
+   instance's number), so every vertex of an instance takes the same way */
+static int direct_early_out(const ShFlow* f, const int early[4], u32 first, u32 last, u32 use) {
+    const u64* insn = f->insn;
+    u32 guard = B(insn[early[0]], 16, 4), lo = (u32)early[0], hi = lo, branch = 0, x;
+    float fx;
+    if (f->bad < f->n || use > f->known_to) return 0;
+    for (int e = 0; e < 4; e++) {
+        if (B(insn[early[e]], 16, 4) != guard) return 0;
+        if ((u32)early[e] < lo) lo = (u32)early[e];
+        if ((u32)early[e] > hi) hi = (u32)early[e];
+    }
+    x = B(insn[early[0]], 20, 32);
+    memcpy(&fx, &x, sizeof fx);
+    if (f->op[early[0]]->id != O_MOV32I || !(fx > 1.0f || fx < -1.0f)) return 0;
+    /* the guarded writes, then the SYNC under their guard, in one run with the predicate kept */
+    for (u32 k = lo + 1; k < first && !branch; k++) {
+        if (!IDX_OK(k)) continue;
+        int id = f->op[k]->id;
+        if (shader_direct_pred_writes(insn[k], id) >> (guard & 7) & 1) return 0;
+        if (k > hi && id == O_SYNC && B(insn[k], 16, 4) == guard && B(insn[k], 0, 5) == 15)
+            branch = k;
+        else if (id == O_BRA || id == O_BRX || id == O_JMP || id == O_CAL || id == O_JCAL || id == O_RET ||
+                 id == O_PRET || id == O_PEXIT || id == O_SYNC || id == O_BRK || id == O_CONT || id == O_EXIT ||
+                 id == O_KIL || id == O_SSY || id == O_PBK || id == O_PCNT)
+            return 0;
+    }
+    if (!branch) return 0;
+    /* everything from the SYNC to last runs whole for a vertex that goes on: nothing leaves on the way */
+    for (u32 k = branch + 1; k < last; k++) {
+        if (!IDX_OK(k)) continue;
+        int id = f->op[k]->id;
+        if (id == O_BRA || id == O_BRX || id == O_JMP || id == O_CAL || id == O_JCAL || id == O_RET || id == O_PRET ||
+            id == O_PEXIT || id == O_SYNC || id == O_BRK || id == O_CONT || id == O_EXIT || id == O_KIL)
+            return 0;
+    }
+    for (u32 k = 11; k < use; k++) {
+        const u32* targets;
+        const u8* elsewhere;
+        if (!IDX_OK(k)) continue;
+        int id = f->op[k]->id;
+        /* before the SYNC: no input a vertex differs by, and no way around it */
+        if (k < branch && (id == O_AL2P || (id == O_ALD && (B(insn[k], 8, 8) != 255 || B(insn[k], 47, 2) ||
+                                                            B(insn[k], 31, 1) || B(insn[k], 20, 10) != 0x2f8))))
+            return 0;
+        if (k < lo && (id == O_BRX || id == O_JMP || id == O_CAL || id == O_JCAL || id == O_RET || id == O_PRET ||
+                       id == O_PEXIT || id == O_SYNC || id == O_BRK || id == O_CONT))
+            return 0;
+        int count = direct_flow_targets(f, k, &targets, &elsewhere);
+        if (count < 0) return 0;
+        for (int t = 0; t < count; t++) {
+            if (elsewhere[t]) return 0;
+            /* nothing arrives between the guarded writes and last but by falling from one to the next: not the
+               SYNC's own vertices either, which the SSY before the writes sends past last */
+            if (targets[t] > lo && targets[t] <= last) return 0;
+            /* a branch from before the guarded writes to past them misses both ways; an SSY only names a place */
+            if (k < lo && targets[t] > last && id != O_SSY && id != O_PBK && id != O_PCNT) return 0;
+            if (k > branch && targets[t] <= k) return 0; /* and nothing comes back */
+        }
+    }
+    return 1;
+}
+/* The generic outputs whose (x, y) the vertex program maps onto its position: pos.x = x * 2 - 1, pos.y = y * 2 - 1 or
+   y * -2 + 1 (its bit in *yneg), computed from the very values the generic's x and y end with (direct_clip_of), with
+   the position's w 1, never stored or stored as that constant; each word written once, or once for a vertex the
+   program drops and once for the others (direct_early_out). With a w of 1 the generic interpolates as the position
+   does, so a fragment's (x, y) of one is the centre of its own pixel in [0, 1] of the viewport, which vk/render.c
+   checks covers the target with the y this sign maps */
+u32 shader_direct_uv_out(const ShFlow* f, u32* yneg) {
+    const u64* insn = f->insn;
+    int store[0x280 / 4], early[4];
+    u32 mask = 0;
+    *yneg = 0;
+    direct_output_stores(f, store);
+    if (store[0x7c / 4] >= 0) {
+        int pw = direct_output_def(f, store, 0x7c);
+        if (pw < 0 || f->op[pw / 256]->id != O_MOV32I || B(insn[pw / 256], 20, 32) != 0x3f800000u ||
+            B(insn[pw / 256], 16, 4) != 7)
+            return 0;
+    }
+    int px = direct_output_or_early(f, store, 0x70, &early[0]), py = direct_output_or_early(f, store, 0x74, &early[1]);
+    if (px < 0 || py < 0) return 0;
+    for (u32 g = 0; g < 32; g++) {
+        u32 at = 0x80 + g * 16;
+        int gx = direct_output_or_early(f, store, at, &early[2]),
+            gy = direct_output_or_early(f, store, at + 4, &early[3]);
+        int sign = direct_clip_of(f, px, gx) == 1 ? direct_clip_of(f, py, gy) : 0;
+        int guarded = (early[0] >= 0) + (early[1] >= 0) + (early[2] >= 0) + (early[3] >= 0);
+        if (!sign || (guarded && guarded != 4)) continue;
+        if (guarded) {
+            const int value[4] = {px, py, gx, gy};
+            u32 first = (u32)px / 256, last = first, use = (u32)store[0x70 / 4];
+            for (int v = 1; v < 4; v++) {
+                if ((u32)value[v] / 256 < first) first = (u32)value[v] / 256;
+                if ((u32)value[v] / 256 > last) last = (u32)value[v] / 256;
+            }
+            const u32 stores[3] = {(u32)store[0x74 / 4], (u32)store[at / 4], (u32)store[(at + 4) / 4]};
+            for (int v = 0; v < 3; v++)
+                if (stores[v] < use) use = stores[v];
+            if (!direct_early_out(f, early, first, last, use)) continue;
+        }
+        mask |= 1u << g;
+        if (sign == 2) *yneg |= 1u << g;
     }
     return mask;
 }

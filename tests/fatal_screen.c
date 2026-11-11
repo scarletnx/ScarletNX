@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* What a fatal error's box says (runtime/platform/fatal_screen.c): the hint for each known error, the text cut into
    the box's rows at spaces, a long word cut, UTF-8 counted as characters, those in the font's bytes, and Share Log's
-   file, its homes as ~ */
+   file and the box's own text, their homes as ~ */
 #include "nx/runtime/platform/fatal_screen.h"
 #include "common/utilities/common.h"
 #include <assert.h>
@@ -149,6 +149,20 @@ int main(void) {
                    !strstr(text, "some one"));
             free(text);
         }
+        /* the screen's own text the same: the message, the log's path under each system's home, and Share Log's
+           line, so a photo of the screen names no account; a path outside a home is as it was */
+        text = fatal_shown("Cannot open /home/some one/.local/share/scarletnx/keys");
+        assert(text && !strcmp(text, "Cannot open ~/.local/share/scarletnx/keys"));
+        free(text);
+        text = fatal_shown("C:\\Users\\Some One\\AppData\\Roaming\\scarletnx\\games\\game\\game.log");
+        assert(text && !strcmp(text, "~\\AppData\\Roaming\\scarletnx\\games\\game\\game.log"));
+        free(text);
+        text = fatal_shown("Log saved to /home/player/.local/state/scarletnx/games/game/scarletnx.log.");
+        assert(text && !strcmp(text, "Log saved to ~/.local/state/scarletnx/games/game/scarletnx.log."));
+        free(text);
+        text = fatal_shown("Path copied: /mnt/games/game/game.log");
+        assert(text && !strcmp(text, "Path copied: /mnt/games/game/game.log"));
+        free(text);
         free(log);
         log = snx_path_join(root, "no/such/folder");
         text = snx_path_join("no", "such/folder"); /* in the system's separators, as the folder said is */

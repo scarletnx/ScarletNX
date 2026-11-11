@@ -372,6 +372,21 @@ static void image_upload(VkCommandBuffer cb) {
                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     g_image_version = version;
 }
+/* ui.vert's Picture: the picture's size, the ring's head and its slots from bit 16, the bars' slow colour and its
+   height, and the backed letters' ground */
+typedef struct {
+    float w, h;
+    u32 ring, slow, slow_from, ground;
+} UiPicture;
+static UiPicture g_pc;
+/* The layer the window shows, as the last pass drew it: its safe area, its quads' number (-1: none drawn yet, or
+   another swapchain since) and what ui.vert took beside them; and whether the list has moved on from it (a quad
+   written, their number or those words another), which stays so until a pass draws it */
+static struct {
+    int safe[4], n;
+    UiPicture pc;
+    int changed;
+} g_shown = {.n = -1, .changed = 1};
 
 /* the swapchain image's view, made once per image */
 static VkImageView sc_view(VkImage sc) {
@@ -398,6 +413,7 @@ void vk_ui_swapchain_gone(void) {
         g_sc_view[i] = VK_NULL_HANDLE;
         g_sc_img[i] = VK_NULL_HANDLE;
     }
+    g_shown.n = -1; /* the next swapchain's images show nothing of it */
 }
 
 /* the glyphs' rows to the device, once: gui_vga_font's, then gui_icon_font's, each set's binding 1 */
@@ -557,24 +573,13 @@ static u32 quad_vertices(int i) {
                   q->u <= UI_SHAPE_CROSS;
     return outline ? 6 * UI_OUTLINE_PARTS : 6;
 }
-/* ui.vert's Picture: the picture's size, the ring's head and its slots from bit 16, the bars' slow colour and its
-   height, and the backed letters' ground */
-typedef struct {
-    float w, h;
-    u32 ring, slow, slow_from, ground;
-} UiPicture;
-static UiPicture g_pc;
-/* the frame's layer, before a rendering pass: its quads made (the producers, under ui_lock), what changed written into
-   this frame's region, the push constants set; the quads to draw, 0 for none */
-static int ui_prepare(VkCommandBuffer cb, const int safe[4]) {
+/* the parts' quads into the renderer's list as a frame makes them, the span of it they wrote owed to every region and
+   g_pc set: their number. Under ui_lock */
+static int ui_list(const int safe[4]) {
     SnxUiList list = {g_quads, 0, MAX_QUADS};
-    int sw = (int)g_vk.sc_extent.width, sh = (int)g_vk.sc_extent.height, n, first, end;
+    int sw = (int)g_vk.sc_extent.width, sh = (int)g_vk.sc_extent.height, first, end;
     const SnxUiRing* ring = ui_ring(); /* the renderer's thread's alone, which writes it in stats_draw */
     u64 now = plat_ns();               /* the frame's time, for every part */
-    if (!layout_make()) return 0;
-    ui_lock();
-    atlas_upload(cb);
-    image_upload(cb);
     ui_dirty_begin(g_quads);
     /* the screen before the game starts, under the menu, hides the on-screen controls: they aren't drawn under it,
        where they would take quads for nothing (nor do they take fingers then, sdl3.c's press_event) */
@@ -582,9 +587,9 @@ static int ui_prepare(VkCommandBuffer cb, const int safe[4]) {
         prepare_screen_draw(&list, sw, sh, safe, overlay_display_percent());
     else {
         int px, py, scale;
-        vpad_draw(&list, safe);
-        vpad_showcase_draw(&list, safe, vpad_showcase_fps(g_vk_present, now));
         overlay_place(sw, sh, &px, &py, &scale); /* the menu's letters */
+        vpad_draw(&list, safe, scale);
+        vpad_showcase_draw(&list, safe, vpad_showcase_fps(g_vk_present, now), scale);
         stats_draw(&list, safe, scale, now);
     }
     {
@@ -594,15 +599,42 @@ static int ui_prepare(VkCommandBuffer cb, const int safe[4]) {
     }
     overlay_draw(&list, sw, sh, now);
     ui_dirty_end(&first, &end);
-    g_pc = (UiPicture){(float)sw, (float)sh, (u32)ring->head | (u32)ring->n << 16, ring->slow, ring->slow_from,
-                       ui_ground()};
-    ui_unlock();
-    n = list.n;
+    g_pc = (UiPicture){(float)sw,  (float)sh,       (u32)ring->head | (u32)ring->n << 16,
+                       ring->slow, ring->slow_from, ui_ground()};
     frames_owe(first, end);
-    if (first < end || n != g_runs_n) g_runs_n = -1; /* a quad changed: the runs are made again */
+    if (first < end || list.n != g_runs_n) g_runs_n = -1; /* a quad changed: the runs are made again */
+    if (first < end || list.n != g_shown.n || memcmp(&g_pc, &g_shown.pc, sizeof g_pc)) g_shown.changed = 1;
+    return list.n;
+}
+/* the frame's layer, before a rendering pass: its quads made (the producers, under ui_lock), what changed written into
+   this frame's region, the push constants set; the quads to draw, 0 for none. It is the layer shown from here */
+static int ui_prepare(VkCommandBuffer cb, const int safe[4]) {
+    int n;
+    if (!layout_make()) return 0;
+    ui_lock();
+    atlas_upload(cb);
+    image_upload(cb);
+    n = ui_list(safe);
+    ui_unlock();
+    memcpy(g_shown.safe, safe, sizeof g_shown.safe);
+    g_shown.n = n;
+    g_shown.pc = g_pc;
+    g_shown.changed = 0;
     if (!n || !g_atlas || !pipeline_make(g_vk.sc_format) || !glyphs_upload(cb) || !frames_make()) return 0;
-    g_slot_now = frames_send(n, ring);
+    g_slot_now = frames_send(n, ui_ring());
     return n;
+}
+int vk_ui_changed(void) {
+    int w, h;
+    u32 version;
+    if (g_shown.n < 0 || !layout_make()) return 1;
+    ui_lock();
+    /* an atlas or a picture the device has not taken yet is another layer too */
+    if (ui_atlas(&w, &h, &version) && version != g_atlas_version) g_shown.changed = 1;
+    if (ui_image_get(&version) && version != g_image_version) g_shown.changed = 1;
+    ui_list(g_shown.safe);
+    ui_unlock();
+    return g_shown.changed;
 }
 /* the runs of the n quads: of one pipeline, sampling the same way and taking as many vertices, in their order (six
    corners for a quad, or an outline shape's parts) */

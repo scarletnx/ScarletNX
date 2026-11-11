@@ -545,9 +545,56 @@ void emit_float(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 value = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, negate_abs,
                                          spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type, c->zero, value), value);
             }
-            result = is_signed ? spv_emit_unary(&c->emit, SPV_OP_CONVERT_S_TO_F, target_type,
-                                                spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, value))
-                               : spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, target_type, value);
+            /* a 16-bit or narrower integer is exact in a float, and the finite F16 ones in an F32 */
+            if (size == 2 && dst_format == 2 && (g_shader_i2f_nearest & (is_signed ? 1 : 2)))
+                result = spv_emit_int_to_f32_nearest(&c->emit, value, is_signed);
+            else
+                result = is_signed ? spv_emit_unary(&c->emit, SPV_OP_CONVERT_S_TO_F, target_type,
+                                                    spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, value))
+                                   : spv_emit_unary(&c->emit, SPV_OP_CONVERT_U_TO_F, target_type, value);
+            u32 mode = B(w, 39, 2);
+            if (size == 2 && dst_format == 2 && mode) {
+                /* RM, RP or RZ: the nearest float steps a unit toward the mode where it lies on the wrong side of the
+                   integer, which it converts back to exactly; 2^31 and 2^32 lie above every 32-bit integer. The mode
+                   rounds the value after neg, as an F16 result's does: RM of a negated integer is RP of the integer
+                   (the most negative one, which neg leaves, is exact) */
+                if (negate && mode != 3) mode ^= 3;
+                u32 itype = is_signed ? i32_type : c->u32_type;
+                u32 x = is_signed ? spv_emit_unary(&c->emit, SPV_OP_BITCAST, i32_type, value) : value;
+                u32 top = SPV(&c->emit, SPV_OP_F_ORD_GREATER_THAN_EQUAL, c->bool_type, result,
+                              spv_emit_constant_f32(&c->emit, c->f32_type, is_signed ? 2147483648.0f : 4294967296.0f));
+                u32 back =
+                    spv_emit_unary(&c->emit, is_signed ? SPV_OP_CONVERT_F_TO_S : SPV_OP_CONVERT_F_TO_U, itype, result);
+                /* exact, both ways: a driver may fold the conversion back of a conversion to the integer it began as */
+                spv_emit_no_contraction(&c->emit, result);
+                spv_emit_no_contraction(&c->emit, back);
+                u32 above = spv_emit_bool_binary(
+                    &c->emit, c->bool_type, 1, top,
+                    SPV(&c->emit, is_signed ? SPV_OP_S_GREATER_THAN : SPV_OP_U_GREATER_THAN, c->bool_type, back, x));
+                u32 below = spv_emit_bool_binary(
+                    &c->emit, c->bool_type, 0, spv_emit_unary(&c->emit, SPV_OP_LOGICAL_NOT, c->bool_type, top),
+                    SPV(&c->emit, is_signed ? SPV_OP_S_LESS_THAN : SPV_OP_U_LESS_THAN, c->bool_type, back, x));
+                /* a step toward zero takes a unit off the bits, away from zero adds one */
+                u32 negative = is_signed ? SPV(&c->emit, SPV_OP_S_LESS_THAN, c->bool_type, x,
+                                               spv_emit_constant_u32(&c->emit, i32_type, 0))
+                                         : 0;
+                u32 cond =
+                    mode == 3
+                        ? (negative ? spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->bool_type, negative, below, above)
+                                    : above)
+                    : mode == 1 ? above
+                                : below;
+                u32 down = shader_u32(c, 0xffffffffu), up = shader_u32(c, 1);
+                u32 step = mode == 3   ? down
+                           : negative  ? spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->u32_type, negative,
+                                                          mode == 1 ? up : down, mode == 1 ? down : up)
+                           : mode == 1 ? down
+                                       : up;
+                u32 bits = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, result);
+                u32 stepped = spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->f32_type,
+                                             SPV(&c->emit, SPV_OP_I_ADD, c->u32_type, bits, step));
+                result = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type, cond, stepped, result);
+            }
         }
         if (negate) {
             u32 negated = spv_emit_unary(&c->emit, SPV_OP_F_NEGATE, target_type, result);

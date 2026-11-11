@@ -916,6 +916,117 @@ static int nn_am_service_IApplicationFunctions_GetUnknownEvent210(SvcObj* self, 
     return new_event(event, "am:unknown 210", 0);
 }
 
+/* ============================================================ the movie maker */
+/* nn::album's movie maker (InitializeMovieMaker): am's IMovieMaker gives grc's and the offscreen layer am made for it,
+   whose buffer queue (vi's, never shown) the game draws the movie in through grc's video proxy. The SDK aborts unless
+   all of that answers as the console does. The movie itself is the album's, which this runtime can't make: a
+   recording is refused with capsrv's NotSupported, which StartMovieMaker hands the game, and the game says it
+   couldn't make the video */
+static int nn_am_service_IApplicationFunctions_CreateMovieMaker(SvcObj* self, u64 size, u32 transfer_memory,
+                                                                SvcObj** movie_maker) {
+    KTmem* t = (KTmem*)h_get_ref(transfer_memory, KO_TMEM);
+    (void)self, (void)size;
+    R_UNLESS(t, SNX_RC_SVC_INVALID_HANDLE);
+    kobj_unref(&t->o); /* its work memory: no movie is encoded in it */
+    pm_lock(&g_host.am.lock);
+    g_hle.am.movie_layer = g_hle.am.next_layer++;
+    pm_unlock(&g_host.am.lock);
+    *movie_maker = nn_am_service_IMovieMaker_new();
+    R_SUCCEED();
+}
+static int nn_am_service_IMovieMaker_GetGrcMovieMaker(SvcObj* self, SvcObj** movie_maker) {
+    (void)self;
+    *movie_maker = nn_grcsrv_IMovieMaker_new();
+    R_SUCCEED();
+}
+static int nn_am_service_IMovieMaker_GetLayerHandle(SvcObj* self, u64* layer_handle) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    *layer_handle = g_hle.am.movie_layer;
+    pm_unlock(&g_host.am.lock);
+    R_SUCCEED();
+}
+static int nn_grcsrv_IMovieMaker_CreateVideoProxy(SvcObj* self, SvcObj** proxy) {
+    (void)self;
+    *proxy = vi_binder_driver_new();
+    R_SUCCEED();
+}
+static int nn_grcsrv_IMovieMaker_SetAlbumShimLibraryVersion(SvcObj* self, u64 version) {
+    (void)self, (void)version;
+    R_SUCCEED();
+}
+static int nn_grcsrv_IMovieMaker_OpenOffscreenLayer(SvcObj* self, u64 layer_handle, i32* binder_id) {
+    (void)self;
+    *binder_id = vi_offscreen_layer_open(layer_handle);
+    if (*binder_id) R_SUCCEED();
+    WARN("am: no place of vi's %d layers is free for the movie maker's layer %llu: OpenOffscreenLayer answers %#x\n",
+         VI_LAYERS, (unsigned long long)layer_handle, SNX_RC_VI_OPERATION_FAILED);
+    R_THROW(SNX_RC_VI_OPERATION_FAILED);
+}
+static int nn_grcsrv_IMovieMaker_CloseOffscreenLayer(SvcObj* self, u64 layer_handle) {
+    (void)self;
+    vi_offscreen_layer_close(layer_handle);
+    R_SUCCEED();
+}
+/* a command of a recording, none of which is made here: refused, the command and the layer said */
+static int am_movie_refused(const char* command, u64 layer_handle) {
+    WARN_LIMIT(4, "am: no movie is recorded here: %s of layer %llu answers capsrv's NotSupported (%#x)\n", command,
+               (unsigned long long)layer_handle, SNX_RC_CAPSRV_NOT_SUPPORTED);
+    R_THROW(SNX_RC_CAPSRV_NOT_SUPPORTED);
+}
+static int nn_grcsrv_IMovieMaker_StartOffscreenRecording(SvcObj* self, u64 layer_handle) {
+    (void)self;
+    return am_movie_refused("StartOffscreenRecording", layer_handle);
+}
+static int nn_grcsrv_IMovieMaker_StartOffscreenRecordingEx(SvcObj* self, u64 layer_handle,
+                                                           const nn_grcsrv_OffscreenRecordingParameter* parameter) {
+    (void)self, (void)parameter;
+    return am_movie_refused("StartOffscreenRecordingEx", layer_handle);
+}
+static int nn_grcsrv_IMovieMaker_AbortOffscreenRecording(SvcObj* self, u64 layer_handle) {
+    (void)self;
+    return am_movie_refused("AbortOffscreenRecording", layer_handle);
+}
+static int nn_grcsrv_IMovieMaker_RequestOffscreenRecordingFinishReady(SvcObj* self, u64 layer_handle) {
+    (void)self;
+    return am_movie_refused("RequestOffscreenRecordingFinishReady", layer_handle);
+}
+static int nn_grcsrv_IMovieMaker_CompleteOffscreenRecordingFinish(SvcObj* self, u64 layer_handle, IpcBuf data) {
+    (void)self, (void)data;
+    return am_movie_refused("CompleteOffscreenRecordingFinish", layer_handle);
+}
+static int nn_grcsrv_IMovieMaker_CompleteOffscreenRecordingFinishEx0(SvcObj* self, u64 layer_handle, IpcBuf data,
+                                                                     IpcBuf thumbnail, i32 thumbnail_width,
+                                                                     i32 thumbnail_height) {
+    (void)self, (void)data, (void)thumbnail, (void)thumbnail_width, (void)thumbnail_height;
+    return am_movie_refused("CompleteOffscreenRecordingFinishEx0", layer_handle);
+}
+static int nn_grcsrv_IMovieMaker_CompleteOffscreenRecordingFinishEx1(SvcObj* self, u64 layer_handle, IpcBuf data,
+                                                                     IpcBuf thumbnail, i32 thumbnail_width,
+                                                                     i32 thumbnail_height, u8* entry) {
+    (void)self, (void)data, (void)thumbnail, (void)thumbnail_width, (void)thumbnail_height, (void)entry;
+    return am_movie_refused("CompleteOffscreenRecordingFinishEx1", layer_handle);
+}
+static int nn_grcsrv_IMovieMaker_EncodeOffscreenLayerAudioSample(SvcObj* self, u64 layer_handle, IpcBuf sample,
+                                                                 u64* encoded_size) {
+    (void)self, (void)sample, (void)encoded_size;
+    return am_movie_refused("EncodeOffscreenLayerAudioSample", layer_handle);
+}
+/* the layer's error: none, with no recording to fail */
+static int nn_grcsrv_IMovieMaker_GetOffscreenLayerError(SvcObj* self, u64 layer_handle) {
+    (void)self, (void)layer_handle;
+    R_SUCCEED();
+}
+static int nn_grcsrv_IMovieMaker_GetOffscreenLayerRecordingFinishReadyEvent(SvcObj* self, u64 layer_handle,
+                                                                            u32* event) {
+    (void)self, (void)layer_handle;
+    return new_event(event, "am:movie finish ready", 0);
+}
+static int nn_grcsrv_IMovieMaker_GetOffscreenLayerAudioEncodeReadyEvent(SvcObj* self, u64 layer_handle, u32* event) {
+    (void)self, (void)layer_handle;
+    return new_event(event, "am:movie audio encode ready", 0);
+}
+
 /* ============================================================ library applets */
 /* AM_IN_DATA and AM_OUT_DATA, the storages an applet holds, and the LibApplet: services_int.h */
 
@@ -1519,6 +1630,10 @@ static SvcObj* am_mii_edit(LibApplet* a) {
    data of the first entry of type, or NULL */
 #define WEB_ARG_DOCUMENT_PATH 0x6 /* the SDK's ShowOfflinePageArgDetail::SetDocumentPath */
 #define WEB_ARG_DOCUMENT_KIND 0x7 /* u32: 1 an offline page of the game's HtmlDocument content (SetDocumentKind) */
+#define WEB_SHIM_SHARE        4   /* the WebArgHeader's ShimKind of nn::web::ShowSharePage */
+#define WEB_SHIM_WEB          5   /* and of ShowWebPage and ShowYouTubeVideo */
+#define WEB_TLV_SIZE          0x2000
+#define WEB_OUT_EXIT_REASON   0x1 /* the output TLV of the WebExitReason, a u32 */
 static const u8* am_web_arg(LibApplet* a, u16 type, u16* size) {
     int i;
     for (i = 0; i < a->nin; i++) {
@@ -1538,6 +1653,31 @@ static const u8* am_web_arg(LibApplet* a, u16 type, u16* size) {
         }
     }
     return NULL;
+}
+/* The online web page's and the share page's answer from a version 8.0.0 SDK on (3.0.0 for the share page): no
+   WebCommonReturnValue but a WebArgHeader and output TLVs, WEB_TLV_SIZE bytes, which the SDK reads whole or aborts
+   (JoinAndFinishLibraryApplet). Its TLVs follow one another with no padding, as GetWebExitReason walks them. The page
+   is closed as the player's X closes it (WebExitReason 0) and nothing else is answered: no page was shown, so there is
+   no last URL. NULL for the applets that answer a WebCommonReturnValue */
+static SvcObj* am_web_tlv_reply(LibApplet* a) {
+    u32 version = 0, shim = 0;
+    SvcObj* out;
+    u8* d;
+    if (a->nin > 0 && ((StorageData*)a->in[0]->data)->size >= 12) /* CommonArguments: version, size, LaVersion */
+        version = snx_ld_le32(am_storage_bytes(a->in[0]) + 8);
+    if (a->nin > 1 && ((StorageData*)a->in[1]->data)->size >= 8) /* WebArgHeader: count, padding, ShimKind */
+        shim = snx_ld_le32(am_storage_bytes(a->in[1]) + 4);
+    if (!(shim == WEB_SHIM_WEB && version >= 0x80000) && !(shim == WEB_SHIM_SHARE && version >= 0x30000)) return NULL;
+    out = am_storage_new(WEB_TLV_SIZE, NULL);
+    d = am_storage_bytes(out);
+    snx_st_le16(d, 1);
+    am_put32(d + 4, shim);
+    snx_st_le16(d + 8, WEB_OUT_EXIT_REASON);
+    snx_st_le16(d + 10, 4);
+    am_put32(d + 16, 0); /* EndButtonPressed */
+    LOG_LIMIT(4, "am: web applet %#x (shim %u, version %#x): its page closed by the player's X, exit reason 0\n",
+              a->applet_id, shim, version);
+    return out;
 }
 /* the text of a quoted string at s (' or "), copied into out (cap bytes with its 0): its end, or NULL */
 static const char* am_js_string(const char* s, char* out, size_t cap) {
@@ -1685,7 +1825,7 @@ static int nn_am_service_ILibraryAppletAccessor_PopOutData(SvcObj* self, SvcObj*
     case AM_APPLET_SHOP:
     case AM_APPLET_OFFLINE_WEB:
     case AM_APPLET_LOGIN_SHARE:
-    case AM_APPLET_WEB_AUTH: { /* WebCommonReturnValue: the page was closed (0), no last URL */
+    case AM_APPLET_WEB_AUTH: { /* WebCommonReturnValue (or a newer SDK's TLVs): the page was closed (0), no last URL */
         /* An offline page of the game's own is answered as the player pressing A on it: the URL its A button sends
            it to, which ends the applet with CallbackUrl (3) when it is a callback URL. One game's online agreement
            page sends Accept to http://localhost/?ret=Yes, and the game takes nothing else (exit reason 3 and that
@@ -1694,6 +1834,7 @@ static int nn_am_service_ILibraryAppletAccessor_PopOutData(SvcObj* self, SvcObj*
         const u8* path = a->applet_id == AM_APPLET_OFFLINE_WEB ? am_web_arg(a, WEB_ARG_DOCUMENT_PATH, &n) : NULL;
         const u8* kind = path ? am_web_arg(a, WEB_ARG_DOCUMENT_KIND, &k) : NULL;
         char page[0x301], url[0x1000];
+        if ((*storage = am_web_tlv_reply(a)) != NULL) break;
         *storage = am_storage_new(0x1010, NULL);
         d = am_storage_bytes(*storage);
         if (!path || !kind || k < 4 || snx_ld_le32(kind) != 1) break;

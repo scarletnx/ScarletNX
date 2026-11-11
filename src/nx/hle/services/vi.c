@@ -56,12 +56,13 @@ enum {
 enum { SLOT_FREE, SLOT_DEQUEUED, SLOT_QUEUED };
 
 /* ============================================================ layers */
-/* the layer with this id, made on its first open: the binder id is its index + 1. Under the lock */
-static int vi_layer_open(u64 layer_id) {
+/* the layer with this id, made on its first open in the first free place from first on: the binder id is its index
+   + 1. Under the lock */
+static int vi_layer_open(u64 layer_id, int first) {
     int i, free_i = -1;
     for (i = 0; i < VI_LAYERS; i++) {
         if (g_hle.vi.layer[i].layer_id == layer_id) return i + 1;
-        if (!g_hle.vi.layer[i].layer_id && free_i < 0) free_i = i;
+        if (!g_hle.vi.layer[i].layer_id && free_i < 0 && i >= first) free_i = i;
     }
     if (free_i < 0) return 0;
     if (!g_hle.vi.layer[free_i].event) {
@@ -484,6 +485,24 @@ static int nns_hosbinder_IHOSBinderDriver_GetNativeHandle(SvcObj* self, i32 bind
     R_SUCCEED();
 }
 
+/* ============================================================ offscreen layers */
+/* grc's: a movie maker's layer (am.c), whose buffer queue the game draws the movie in, never in the shown place. Its
+   binder id, 0 when every other place is taken */
+int vi_offscreen_layer_open(u64 layer_id) {
+    int binder;
+    pm_lock(&g_host.vi.lock);
+    binder = vi_layer_open(layer_id, VI_SHOWN + 1);
+    pm_unlock(&g_host.vi.lock);
+    return binder;
+}
+void vi_offscreen_layer_close(u64 layer_id) {
+    pm_lock(&g_host.vi.lock);
+    vi_layer_close(layer_id);
+    pm_unlock(&g_host.vi.lock);
+}
+/* grc's video proxy: the binder the offscreen layers are reached through */
+SvcObj* vi_binder_driver_new(void) { return nns_hosbinder_IHOSBinderDriver_new(); }
+
 /* ============================================================ root services */
 static SvcObj* vi_display_service(void) { return nn_visrv_sf_IApplicationDisplayService_new(); }
 static int nn_visrv_sf_IApplicationRootService_GetDisplayServiceWithWorkaround(SvcObj* self, u32 policy,
@@ -598,7 +617,7 @@ static int nn_visrv_sf_IApplicationDisplayService_OpenLayer(SvcObj* self, const 
     (void)self, (void)aruid;
     R_TRY(vi_display_id(display_name, &display));
     pm_lock(&g_host.vi.lock);
-    binder = vi_layer_open(layer_id);
+    binder = vi_layer_open(layer_id, VI_SHOWN);
     pm_unlock(&g_host.vi.lock);
     return vi_native_window(native_window, binder, native_window_size);
 }
@@ -623,7 +642,7 @@ static int nn_visrv_sf_IApplicationDisplayService_CreateStrayLayer(SvcObj* self,
     (void)self, (void)layer_flags, (void)display_id;
     pm_lock(&g_host.vi.lock);
     *layer_id = VI_STRAY_ID + g_hle.vi.next_stray++;
-    binder = vi_layer_open(*layer_id);
+    binder = vi_layer_open(*layer_id, VI_SHOWN);
     pm_unlock(&g_host.vi.lock);
     return vi_native_window(native_window, binder, native_window_size);
 }

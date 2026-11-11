@@ -26,6 +26,7 @@
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"
+#include "nx/runtime/guest_jit.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
@@ -64,6 +65,8 @@ static void getproc32(SnxArmCPU* a);
 static void bootstrap32(SnxArmCPU* a);
 
 int nvn_loader_active(void) { return __atomic_load_n(&g_nvn.loader.active, __ATOMIC_ACQUIRE); }
+static int ours(GuestFn fn);
+int nvn_loader_handler(GuestFn fn) { return fn == getproc || fn == bootstrap || ours(fn); }
 
 static u32 resolved_hash(u64 addr) { return (u32)((addr >> 2) * 2654435761u) & (NVN_RESOLVED_SLOTS - 1); }
 static const NvnResolved* resolved_find(u64 addr) {
@@ -215,6 +218,7 @@ static void take(u64 addr, const char* name, u32 len) {
         snprintf(family, sizeof family, "nvn unimplemented");
     nce_slot_taken(addr, family);
     pm_unlock(&g_nvn.loader.lock);
+    jit_slot_taken(addr, fn); /* an NRO's module that called the driver's function there directly calls fn */
 }
 
 /* The driver's lookup runs with no device. Given one, it reads the driver's own state in it, which the runtime's
@@ -305,6 +309,7 @@ static void wrap_getproc(u64 addr) {
         g_nvn.loader.getproc_original = own;
         __atomic_store_n(slot, getproc, __ATOMIC_RELEASE);
         nce_slot_taken(addr, "nvn loader");
+        jit_slot_taken(addr, getproc);
     }
     note(addr, "nvnDeviceGetProcAddress", 0, 0);
     pm_unlock(&g_nvn.loader.lock);

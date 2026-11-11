@@ -486,6 +486,10 @@ static void check_shipped(void) {
         {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0, SNX_VK_BAN_ANDROID,
          "VK_SHADER_STAGE_GEOMETRY_BIT", 0, NULL},
         {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0, SNX_VK_BAN_LINUX, "VK_SHADER_STAGE_GEOMETRY_BIT", 0, NULL},
+        {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 2u, 99u), 0, SNX_VK_BAN_ANDROID, "OpConvertSToF", 1, "Turnip"},
+        {VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 2u, 99u), 0, SNX_VK_BAN_ANDROID, "OpConvertUToF", 1, "Turnip"},
+        {VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u), 0, SNX_VK_BAN_ANDROID, "OpConvertSToF", 0, NULL},
+        {VK_DRIVER_ID_MESA_RADV, MESA(26u, 2u, 6u), 0, SNX_VK_BAN_LINUX, "OpConvertUToF", 0, NULL},
     };
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         char what[400];
@@ -529,6 +533,24 @@ static void check_shipped(void) {
                         "wrong ballot and shuffle results", "Eden PR 4344 (b846577037") >= 0,
               "the line says the stage, the device, the driver's version and why");
         if (said_with("VK_SHADER_STAGE_GEOMETRY_BIT", NULL, NULL) < 0) show_said();
+    }
+    /* native ASTC on Turnip: a warning at the filter with the device, its version and the way around, nothing off */
+    {
+        VkExtensionProperties list[1] = {{"VK_KHR_swapchain", 1}};
+        SnxVkExtensions e = {list, 1};
+        VkBanDevice d = {"Turnip Adreno (TM) 610", "turnip Mesa driver", "Mesa 26.3.0-devel",
+                         VK_DRIVER_ID_MESA_TURNIP, MESA(26u, 2u, 99u),   0x6010001,
+                         SNX_VK_BAN_ANDROID};
+        vk_bans_device(&d);
+        g_test.nsaid = 0;
+        CHECK(vk_bans_filter(&e, say) == 0 && e.count == 1, "a warn line takes no extension out");
+        int w = said_with("vulkan: a known problem the extension bans do not turn off: textureCompressionASTC_LDR on "
+                          "Turnip Adreno (TM) 610 (turnip Mesa driver, Mesa 26.3.0-devel, driver version 26.2.99): "
+                          "Turnip decodes an illegal or HDR ASTC block as transparent black",
+                          "native_astc=0", "#1655");
+        CHECK(w >= 0 && g_test.warned[w], "native ASTC on Turnip is a warning naming native_astc=0 and the issue");
+        if (w < 0) show_said();
+        CHECK(vk_ban_find("textureCompressionASTC_LDR") == 0, "and turns native ASTC off nowhere");
     }
     /* this machine's drivers, RADV and lavapipe: no "off" line holds; RADV's warnings are the lifted bans */
     static const struct {

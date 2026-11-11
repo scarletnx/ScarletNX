@@ -74,6 +74,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+/* last: from here the renderer's draws, by SDL's names, are a frame's list (drawn.h) */
+#include "gui/drawn.h"
 /* the checkout the drivers were built from and its build tree, where an older version kept games/ and work/ */
 #ifdef SNX_SOURCE_DIR
 #define GUI_CHECKOUT SNX_SOURCE_DIR
@@ -3731,7 +3733,8 @@ static void users_migrate(App* app, int old) {
     snx_users_uid_text(snx_users_selected()->uid, uid);
     if (!gui_settings_set(settings, "user_uid", uid)) {
         snprintf(app->message, sizeof app->message,
-                 snx_tr("user=%d is deprecated, and the Settings have no user_uid to write %s in"), old, uid);
+                 snx_tr("user=%d is deprecated, and the Settings have no user_uid to write [user%d]'s uid in"), old,
+                 old);
         return;
     }
     gui_settings_sync(settings);
@@ -3740,10 +3743,10 @@ static void users_migrate(App* app, int old) {
         say_failure(app, app->message);
         return;
     }
-    /* the uid and the number, not the nickname: the launcher's log takes this, and players attach it to public
-       reports */
-    snprintf(app->message, sizeof app->message, snx_tr("user=%d is deprecated: user_uid=%s, [user%d]'s, replaces it"),
-             old, uid, old);
+    /* the user's number, neither the uid nor the nickname: the launcher's log takes this, and players attach it to
+       public reports, where a uid ties one player's reports together */
+    snprintf(app->message, sizeof app->message, snx_tr("user=%d is deprecated: [user%d]'s user_uid replaces it"), old,
+             old);
 }
 /* the users of users_dir, for the head: the one games play as (Settings' user_uid, the deprecated user's number while
    it names none, written as user_uid then), or none with why in the message */
@@ -13236,6 +13239,7 @@ static void render_help(App* app) {
     }
 }
 static void render(App* app) {
+    gui_drawn_begin(app->renderer); /* its draws listed until its present, which draws them only when they changed */
     layout(app);
     app->slider_bar = gui_rect(0, 0, 0, 0); /* none until a screen with UI scale's draws it */
     app->nbars = 0;
@@ -14383,7 +14387,8 @@ static void themes_moved(App* app, int was) {
         (size_t)app->picks.focus < app->themes.count)
         theme_load(app, app->themes.ids[app->picks.focus], false);
 }
-/* the box's question into out and its tab: how the logs go, or the Folders row's name and its folder from home */
+/* the box's question into out and its tab: what Share Zip and Share Log each take, or the Folders row's name and its
+   folder from home */
 static void picks_question(App* app, char* out, size_t size, const char** tab) {
     char home[512];
     const char* path;
@@ -14415,8 +14420,11 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
                  i >= 0 ? app->packages[i].meta.driver_version : "");
         return;
     }
-    if (app->picks_of == GUI_PICKS_SHARE) {
-        snprintf(out, size, "%s", snx_tr("How to share the logs?"));
+    if (app->picks_of == GUI_PICKS_SHARE) { /* what each takes, before it goes: the zip names every game played */
+        snprintf(out, size,
+                 snx_tr("Share Zip: the launcher's logs and every game's of the last %d days. Share Log: the last "
+                        "run's log and the end of the launcher's, in one file."),
+                 GUI_LOG_DAYS);
         return;
     }
     path = folder_row_path(app, app->pick_row);
@@ -17645,6 +17653,7 @@ static bool SDLCALL lifecycle(void* data, SDL_Event* e) {
     App* app = (App*)data;
     if (e->type == SDL_EVENT_DID_ENTER_BACKGROUND) app->hidden = true;
     if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) { /* the game, if any, behind */
+        gui_drawn_stale();                           /* the window shows nothing of the menu's yet */
         app->played = app->playing;
         app->hidden = app->playing = false;
     }
@@ -17819,6 +17828,10 @@ static bool pointer_leaves(const SDL_Event* e) {
 }
 static void event_take(App* app, const SDL_Event* e);
 static void event(App* app, const SDL_Event* e) {
+    /* the app's, a display's or the window's event (uncovered, resized, moved to another display, back from behind
+       other apps), or the renderer's: what the window shows may be gone, so the next frame is drawn */
+    if (e->type < SDL_EVENT_KEY_DOWN || (e->type >= SDL_EVENT_RENDER_TARGETS_RESET && e->type < SDL_EVENT_PRIVATE0))
+        gui_drawn_stale();
     if (input_seen(app, e) || pads_event(app, e)) return;
     event_take(app, e);
     if (pointer_leaves(e)) pad_drive(app, false);
@@ -18459,6 +18472,7 @@ static void forget(App* app) {
     SDL_DestroyTexture(app->font);
     SDL_free(app->glyphs);
     SDL_DestroyRenderer(app->renderer);
+    gui_drawn_free();
     SDL_DestroyWindow(app->window);
 }
 static void cleanup(App* app) {

@@ -28,6 +28,18 @@ const char* jit_failure(void);
 int jit_code_added(u64 base, u64 text_size, u64 size);
 /* before the memory at base is unmapped: forget its image */
 void jit_code_removed(u64 base);
+/* The NRO of hash (the SHA-256 ldr:ro made of its image) is mapped at base, size bytes with its BSS, its module ID
+   id: when that is the address g_nros gives it (nro_slots.h), its own AOT module, <hash>.so in <Game>_nro beside the
+   game module, is loaded (once: it stays for the NRO's next mapping), checked to be that NRO's for that address, and
+   its entries go into the dispatch table, *entries of them. 0; 1 when the NRO has no place in g_nros, is mapped
+   elsewhere or has no module file, so the JIT runs it; -1 for a module that is refused, said why once */
+int jit_nro_added(const u8* hash, u64 base, u64 size, const u8* id, u32* entries);
+/* before the NRO at base is unmapped: its module's entries leave the dispatch table */
+void jit_nro_removed(u64 base);
+/* The dispatch slot of addr was given fn, which answers every call of that address from now on in the game module's
+   place (a hook, NVN's implementation of a function the game resolved): an NRO's module that calls the function at
+   addr directly, through its import of it, calls fn from now on. Called once the slot holds fn */
+void jit_slot_taken(u64 addr, GuestFn fn);
 /* a mapping, permission or write-back change under [addr, addr+size) (mem_set_code_invalidate): the dispatch slots in
    the range are cleared, the JIT's code is invalidated, and a block the game mapped that is no longer executable loses
    its image */

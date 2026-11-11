@@ -556,30 +556,44 @@ static void cs_land(void) {
     cs_any_update();
 }
 
-/* Window w of the windows a dispatch binds for a pointer table in constant buffer bank (SH_GBUF_TABLE): the bank's
-   64-bit words that map are its pointers, and each run of memory mapped from the lowest pointer not in an earlier run
-   (at most 16 MiB, as vk_gbuf_desc binds a bare address) holds those below its end. With more runs than windows, the
-   two runs closest together are bound as one, the memory between them too, until they fit: copy_runs reads what
-   isn't mapped as zero. *base 0 for a window the table has no run for, with the 16 bytes an unbound buffer gets. One
-   game's culling programs keep 20 pointers in cbuf 4, in 11 runs over two stretches of about 2 MiB, and one of them
-   has 9 buffer slots left for them */
+/* The windows a dispatch binds for a pointer table in constant buffer bank (SH_GBUF_TABLE), base[w] and len[w] for
+   each of windows: the bank's 64-bit words that map are its pointers, and so are the 64-bit words at the cells
+   (ShaderInfo.table_cells, bit k: the 8 bytes at 8 * k) of the memory each of them points to, which the program loads
+   pointers from. Each run of memory mapped from the lowest pointer not in an earlier run (at most 16 MiB, as
+   vk_gbuf_desc binds a bare address) holds those below its end. With more runs than windows, the two runs closest
+   together are bound as one, the memory between them too, until they fit: copy_runs reads what isn't mapped as zero.
+   A window the table has no run for has base 0, with the 16 bytes an unbound buffer gets. One game's culling programs
+   keep 20 pointers in cbuf 4, in 11 runs over two stretches of about 2 MiB, and one of them has 9 buffer slots left
+   for them. Four of those pointers are to records whose first 8 bytes point to the instances of a kind of plant,
+   which the program reads through them */
 static int u64_order(const void* a, const void* b) {
     u64 x = *(const u64*)a, y = *(const u64*)b;
     return x < y ? -1 : x > y;
 }
-static void table_window(u32 bank, u32 w, u32 windows, u64* base, u32* len) {
+static int table_pointer(u64 x) { return x && !(x & 3) && !(x >> 40); } /* the GPU's addresses have 40 bits */
+static void table_windows(u32 bank, u32 cells, u32 windows, u64* base, u32* len) {
     u64 v[512], from[64], to[64];
     u32 n = 0, runs = 0, unused;
-    *base = 0;
-    *len = 16;
+    for (u32 w = 0; w < windows; w++) base[w] = 0, len[w] = 16;
     if (bank >= QMD_NUM_CONST_BUFFERS) return;
     /* a bank a pending write in place covers isn't in g_cb yet (g_cb_later): the windows are made of its words, so it
        is read now, after the write, or they would be the table an earlier dispatch left there */
     cs_cb_read(bank, 0, &unused);
     for (u32 o = 0; o + 8 <= g_cbn[bank] && n < 512; o += 8) {
         u64 x = snx_ld_le32(g_cb[bank] + o) | (u64)snx_ld_le32(g_cb[bank] + o + 4) << 32;
-        if (x && !(x & 3) && !(x >> 40)) v[n++] = x; /* the GPU's addresses have 40 bits */
+        if (table_pointer(x)) v[n++] = x;
     }
+    /* the pointers at the cells of what the bank's words point to, read as the program would: results pending there
+       land first */
+    for (u32 i = 0, words = n; cells && i < words; i++)
+        for (u32 k = 0; k < 32 && n < 512; k++) {
+            u32 q[2];
+            u64 cpu = 0;
+            if (!(cells >> k & 1) || gmmu_run(v[i] + 8 * k, 8, &cpu) < 8) continue;
+            gmem_read(v[i] + 8 * k, q, 8);
+            u64 x = snx_le32(q[0]) | (u64)snx_le32(q[1]) << 32;
+            if (table_pointer(x)) v[n++] = x;
+        }
     qsort(v, n, sizeof *v, u64_order);
     for (u32 i = 0; i < n && runs < 64;) {
         u64 cpu = 0, run = gmmu_run(v[i], 16u << 20, &cpu) & ~3ull;
@@ -601,14 +615,14 @@ static void table_window(u32 bank, u32 w, u32 windows, u64* base, u32* len) {
         for (u32 k = best + 1; k + 1 < runs; k++) from[k] = from[k + 1], to[k] = to[k + 1];
         runs--;
     }
-    if (runs > windows && !w)
+    if (runs > windows)
         LOG_LIMIT(1,
                   "vulkan: a compute program's pointer table in constant buffer %u has %u runs of mapped memory "
                   "that its %u windows can't hold: the pointers in the others read 0\n",
                   bank, runs, windows);
-    if (w < runs) {
-        *base = from[w];
-        *len = (u32)(to[w] - from[w]);
+    for (u32 w = 0; w < runs && w < windows; w++) {
+        base[w] = from[w];
+        len[w] = (u32)(to[w] - from[w]);
     }
 }
 /* A descriptor can fail after its inputs were copied into the arena. No command references those inputs yet. */
@@ -1384,14 +1398,22 @@ void vk_dispatch(const DispatchState* d) {
     int ng = p->si.ngbuf > 16 ? 16 : p->si.ngbuf;
     u64 need = 0;
     int tables = 0;
+    u32 table_bank = ~0u; /* the bank whose windows tw_base and tw_len hold */
+    u64 tw_base[SH_GBUF_TABLE_MAX];
+    u32 tw_len[SH_GBUF_TABLE_MAX];
     for (int i = 0; i < ng; i++) {
         if (SH_GBUF_TABLE(p->si.gbuf_cbuf_off[i])) { /* a pointer table's window, whose base the program reads */
-            u32 windows = 0;
-            for (int j = 0; j < ng; j++)
-                windows += SH_GBUF_TABLE(p->si.gbuf_cbuf_off[j]) &&
-                           SH_GBUF_BANK(p->si.gbuf_cbuf_off[j]) == SH_GBUF_BANK(p->si.gbuf_cbuf_off[i]);
-            table_window(SH_GBUF_BANK(p->si.gbuf_cbuf_off[i]), SH_GBUF_TABLE_WINDOW(p->si.gbuf_cbuf_off[i]), windows,
-                         &sa[i], &ss[i]);
+            u32 bank = SH_GBUF_BANK(p->si.gbuf_cbuf_off[i]), w = SH_GBUF_TABLE_WINDOW(p->si.gbuf_cbuf_off[i]);
+            if (bank != table_bank) {
+                u32 windows = 0;
+                for (int j = 0; j < ng; j++)
+                    windows += SH_GBUF_TABLE(p->si.gbuf_cbuf_off[j]) && SH_GBUF_BANK(p->si.gbuf_cbuf_off[j]) == bank;
+                table_windows(bank, p->si.table_cells, windows < SH_GBUF_TABLE_MAX ? windows : SH_GBUF_TABLE_MAX,
+                              tw_base, tw_len);
+                table_bank = bank;
+            }
+            sa[i] = tw_base[w];
+            ss[i] = tw_len[w];
             need += ss[i] + vk_stage_align();
             tables = 1;
             continue;

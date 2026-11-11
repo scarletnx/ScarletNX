@@ -787,6 +787,73 @@ static void f2i_modifiers(void) {
     }
 }
 
+/* the instruction in a function whose result is id: its offset in code, 0 for none. A value is made before an
+   instruction without a result names it in the same word (OpStore's object), as blocks come in dominance order */
+static size_t defined_at(const u32* code, size_t words, u32 id) {
+    int in_function = 0;
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return 0;
+        in_function |= (code[i] & 0xffff) == 54; /* OpFunction */
+        if (in_function && width >= 3 && code[i + 2] == id) return i;
+        i += width;
+    }
+    return 0;
+}
+/* the module's OpConvertSToF and OpConvertUToF: in halves, those whose operand is an OpBitwiseAnd with 0xffff0000 or
+   0xffff (through an OpBitcast or not), a value with 16 significant bits at most, which every driver converts exactly;
+   in whole, the others */
+static void count_conversions(const u32* code, size_t words, int* halves, int* whole) {
+    *halves = *whole = 0;
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16, op = code[i] & 0xffff;
+        if (!width || i + width > words) return;
+        if ((op == 111 || op == 112) && width == 4) {
+            size_t at = defined_at(code, words, code[i + 3]);
+            if (at && (code[at] & 0xffff) == 124 /* OpBitcast */) at = defined_at(code, words, code[at + 3]);
+            int masked = at && (code[at] & 0xffff) == 199 /* OpBitwiseAnd */ && (code[at] >> 16) == 5 &&
+                         (is_constant_value(code, words, code[at + 4], 0xffff0000u) ||
+                          is_constant_value(code, words, code[at + 4], 0xffffu));
+            ++*(masked ? halves : whole);
+        }
+        i += width;
+    }
+}
+
+/* I2F.F32 of a 32-bit integer where the driver's conversions truncate (g_shader_i2f_nearest, a Turnip on an Adreno
+   610): no conversion is left a value with more than 16 significant bits, so the only rounding is the OpFAdd's, to
+   nearest even as the console's. A 16-bit integer converts exactly, and as it did */
+static void i2f_by_halves(void) {
+    int was = g_shader_i2f_nearest;
+    for (u32 size = 1; size < 3; size++)
+        for (u32 is_signed = 0; is_signed < 2; is_signed++)
+            for (int nearest = 0; nearest < 2; nearest++) {
+                g_shader_i2f_nearest = nearest ? 3 : 0;
+                /* I2F.F32.{U,S}{16,32} R9, R9 */
+                const u64 program[] = {(0x5cb8000000970209ull | (u64)size << 10 | (u64)is_signed << 13)};
+                ShaderInfo info;
+                size_t words = 0;
+                u32* code = translate(program, 1, ST_FS, &info, &words, 1);
+                char what[96];
+                snprintf(what, sizeof what, "I2F.F32.%c%u with i2f_nearest %d translates", is_signed ? 'S' : 'U',
+                         8u << size, g_shader_i2f_nearest);
+                check_translated(code, &info, what);
+                if (!code) continue;
+                int halves, whole;
+                count_conversions(code, words, &halves, &whole);
+                int split = size == 2 && nearest;
+                if (halves != (split ? 2 : 0) || whole != (split ? 0 : 1))
+                    fprintf(stderr, "I2F.F32.%c%u i2f_nearest %d: %d conversions of halves, %d of a whole value\n",
+                            is_signed ? 'S' : 'U', 8u << size, g_shader_i2f_nearest, halves, whole);
+                snprintf(what, sizeof what, "I2F.F32.%c%u with i2f_nearest %d converts %s", is_signed ? 'S' : 'U',
+                         8u << size, g_shader_i2f_nearest, split ? "two halves" : "the whole value");
+                check(halves == (split ? 2 : 0) && whole == (split ? 0 : 1), what);
+                if (split) check(count_opcode(code, words, 129, 0xffffffffu) == 1, "one OpFAdd sums the halves");
+                free(code);
+            }
+    g_shader_i2f_nearest = was;
+}
+
 static u64 mov32i(u32 reg, u32 value) { return 0x0100000000000000ull | ((u64)value << 20) | 0x71000ull | reg; }
 
 /* R2P and P2R transfer the condition flags too (bit 40): the flags are variables of their own (z, s, c, o), read
@@ -4239,7 +4306,7 @@ static void feedback_screen_uv(void) {
     screen_uv_case(screen, 9, 0xaa00, 1, "TEX at a generic's x / w and y / w samples the own pixel's centre");
     screen_uv_case(screen_texs, 9, 0xaa00, 1, "TEXS 2D at a generic's x / w and y / w samples the own pixel's centre");
     screen_uv_case(passed, 7, 0xaa00, 1, "x, y and w read without the multiplier divide alike");
-    screen_uv_case(undivided, 9, 0xaa00, 0, "TEX at a generic's x and y, not divided by its w, reads elsewhere");
+    screen_uv_case(undivided, 9, 0xaa00, 0, "TEX at a generic's x and y, not divided by its w, is no sample at x / w");
     screen_uv_case(other_y, 9, 0xaaaa00, 0, "TEX whose y is another generic's over this one's w reads elsewhere");
     screen_uv_case(two_generics, 11, 0xaaaa00, 0, "TEX at one generic's x / w and another's y / w reads elsewhere");
     screen_uv_case(saturated_w, 7, 0xaa00, 0, "a w read saturated is not the position's w");
@@ -4248,6 +4315,60 @@ static void feedback_screen_uv(void) {
     screen_uv_case(screen, 9, 0xff00, 0, "a screen-linear generic's x / w and y / w is not the position's");
     screen_uv_case(both, 10, 0xaa00, 0, "a slot also sampled at a generic's x and y reads elsewhere");
 }
+
+/* ShaderInfo.tex_unread_mask: a slot only TXQ or TMML names is asked its size, its levels or a level of detail, and no
+   texel of it is read, in any stage: a draw that renders to its texture needs no pixels in the copy it binds. Each
+   instruction that reads texels (TEXS, TLDS, TLD, TEX, TXD, TLD4, a 2D SULD) takes the slot of a TXQ of its handle
+   out, and leaves a TXQ of another handle in */
+#define UNREAD_TEXS(off) (OWN_TEXS(2, 0, 1) ^ (0x10ull ^ (u64)(off)) << 36) /* TEXS 2D.LZ R0, R0, R1 */
+static void texture_unread_slots(void) {
+    const u64 txq = 0xdf48010200470500ull; /* TXQ.DIMENSION R0, R5 of the handle at 0x40: the depth */
+    const u64 tmml = 0xdf58000000000000ull | 3ull << 31 | 2ull << 28 | 0x10ull << 36 | 4ull << 20 | 7ull << 16 |
+                     8ull << 8; /* TMML R0, R8 on a 2D texture */
+    const u64 texs = UNREAD_TEXS(0x10), tlds = UNREAD_TEXS(0x10) | 1ull << 57;
+    const u64 tld = 0xdc00000000000004ull | 7ull << 51 | 0xfull << 31 | 2ull << 28 | 0x10ull << 36 | 0xffull << 20 |
+                    7ull << 16; /* TLD.LZ R4, R0 on a 2D texture */
+    const u64 tex = SCREEN_TEX(0, 0);
+    const u64 txd = 0xde00000000000000ull | 7ull << 51 | 0x10ull << 36 | 0xfull << 31 | 2ull << 28 | 8ull << 20 |
+                    7ull << 16 | 4ull << 8; /* TXD R0, R4, R8 on a 2D texture */
+    const u64 tld4 = 0xc800000000000000ull | 7ull << 51 | 0xfull << 31 | 0x10ull << 36 | 4ull << 20 | 7ull << 16 |
+                     2ull << 8; /* TLD4 R0, R2 on a 1D texture */
+    const u64 with_texs[] = {txq, texs}, with_tlds[] = {txq, tlds}, with_tld[] = {txq, tld}, with_tex[] = {txq, tex};
+    const u64 suld = 0xeb00000000000000ull | 1ull << 51 | 0x10ull << 36 | 3ull << 33 | 0xfull << 20 | 7ull << 16 |
+                     8ull << 8; /* SULD.P R0..3, R8 of a 2D surface: a texel fetch in a fragment program */
+    const u64 with_txd[] = {txq, txd}, with_tld4[] = {txq, tld4}, with_suld[] = {txq, suld};
+    const u64 asked_other[] = {txq, UNREAD_TEXS(0x11)};
+    struct {
+        const u64* instructions;
+        int count, stage, slots;
+        u64 unread;
+        const char* what;
+    } cases[] = {{&txq, 1, ST_FS, 1, 1, "a fragment program's slot only TXQ names has no texel read"},
+                 {&txq, 1, ST_VS, 1, 1, "a vertex program's slot only TXQ names has no texel read"},
+                 {&tmml, 1, ST_FS, 1, 1, "a slot only TMML names has no texel read"},
+                 {with_texs, 2, ST_FS, 1, 0, "a slot TXQ asks and TEXS samples has its texels read"},
+                 {with_tlds, 2, ST_FS, 1, 0, "a slot TXQ asks and TLDS fetches has its texels read"},
+                 {with_tld, 2, ST_FS, 1, 0, "a slot TXQ asks and TLD fetches has its texels read"},
+                 {with_tex, 2, ST_FS, 1, 0, "a slot TXQ asks and TEX samples has its texels read"},
+                 {with_txd, 2, ST_FS, 1, 0, "a slot TXQ asks and TXD samples has its texels read"},
+                 {with_tld4, 2, ST_FS, 1, 0, "a slot TXQ asks and TLD4 gathers has its texels read"},
+                 {with_suld, 2, ST_FS, 1, 0, "a slot TXQ asks and a 2D SULD loads has its texels read"},
+                 {asked_other, 2, ST_FS, 2, 1, "a TXQ's slot stays unread beside another handle's TEXS"}};
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(cases[i].instructions, cases[i].count, cases[i].stage, &info, &words, 0);
+        check_translated(code, &info, cases[i].what);
+        if (code) {
+            if (info.ntex != cases[i].slots || info.tex_unread_mask != cases[i].unread)
+                fprintf(stderr, "  %d slots, unread mask %#llx, expected %d and %#llx\n", info.ntex,
+                        (unsigned long long)info.tex_unread_mask, cases[i].slots, (unsigned long long)cases[i].unread);
+            check(info.ntex == cases[i].slots && info.tex_unread_mask == cases[i].unread, cases[i].what);
+        }
+        free(code);
+    }
+}
+#undef UNREAD_TEXS
 
 /* ShaderInfo.screen_out_mask: the vertex program writes generic 5 as its position mapped onto [0, 1],
    ((w + x) / 2, (w - y) / 2, -, w), the y's sign in screen_out_yneg_mask, each word stored once with no guard, from
@@ -4524,6 +4645,188 @@ static void per_vertex_pass(void) {
         free(spv);
     }
 }
+
+/* ShaderInfo.tex_uv_mask: a plain 2D sample at a generic's x and y as the vertex program wrote them, read by IPA in
+   pass mode or multiplied by 1 / gl_FragCoord.w as the console's compiler reads a perspective input, reads the
+   fragment's own pixel's centre wherever the vertex program wrote its position from that generic; uv_in names the
+   generic. A generic constant over the primitive, another multiplier, a coordinate computed further, x and y of two
+   generics or swapped, a level bias, or a slot also sampled at x / w and y / w read other pixels */
+static void plain_uv_case(const u64* instructions, int count, u32 imap7, u64 uv, const char* what) {
+    size_t slots, words = 0;
+    u64* code = guest_program(instructions, count, NULL, &slots);
+    if (!code) return;
+    set_sph(code, 7, imap7); /* byte 0x18 + 5 on: generic 5's (and 6's) components, 2 bits each */
+    ShaderInfo info = {0};
+    u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 0, 1, 1, 1);
+    free(code);
+    check_translated(spv, &info, what);
+    int ok =
+        spv && info.tex_uv_mask == uv && !info.tex_own_pixel_mask && !info.tex_screen_mask && (!uv || info.uv_in == 5);
+    if (spv && !ok)
+        fprintf(stderr, "  uv mask %#llx (generic %u), screen %#llx, own pixel %#llx, expected uv %#llx\n",
+                (unsigned long long)info.tex_uv_mask, info.uv_in, (unsigned long long)info.tex_screen_mask,
+                (unsigned long long)info.tex_own_pixel_mask, (unsigned long long)uv);
+    check(ok, what);
+    free(spv);
+}
+static void feedback_plain_uv(void) {
+    const u64 ipa_w = SCREEN_IPA(0, 0x7c), rcp_w = SCREEN_RCP(0, 0), x = SCREEN_IPA_MUL(1, 0xd0, 0),
+              y = SCREEN_IPA_MUL(2, 0xd4, 0), tex = SCREEN_TEX(8, 1);
+    const u64 passed[] = {SCREEN_IPA(1, 0xd0), SCREEN_IPA(2, 0xd4), tex};
+    const u64 perspective[] = {ipa_w, rcp_w, x, y, tex};
+    const u64 texs[] = {ipa_w, rcp_w, x, y, OWN_TEXS(1, 1, 2)};
+    const u64 other_multiplier[] = {SCREEN_IPA(3, 0xdc), SCREEN_RCP(3, 3), SCREEN_IPA_MUL(1, 0xd0, 3),
+                                    SCREEN_IPA_MUL(2, 0xd4, 3), tex};
+    const u64 scaled[] = {SCREEN_IPA(1, 0xd0), SCREEN_IPA(2, 0xd4), SCREEN_FMUL(1, 1, 2), tex};
+    const u64 other_y[] = {SCREEN_IPA(1, 0xd0), SCREEN_IPA(2, 0xe4), tex};
+    const u64 swapped[] = {SCREEN_IPA(1, 0xd4), SCREEN_IPA(2, 0xd0), tex};
+    const u64 saturated[] = {SCREEN_IPA(1, 0xd0) | 1ull << 51, SCREEN_IPA(2, 0xd4), tex};
+    const u64 bias[] = {SCREEN_IPA(1, 0xd0), SCREEN_IPA(2, 0xd4), tex | 2ull << 55};
+    /* the same slot at the generic's x / w and y / w too, as feedback_screen_uv samples it */
+    const u64 both[] = {ipa_w,
+                        rcp_w,
+                        x,
+                        y,
+                        SCREEN_IPA_MUL(3, 0xdc, 0),
+                        SCREEN_RCP(3, 3),
+                        SCREEN_FMUL(4, 1, 3),
+                        SCREEN_FMUL(5, 2, 3),
+                        SCREEN_TEX(8, 4),
+                        SCREEN_TEX(12, 1)};
+    plain_uv_case(passed, 3, 0xaa00, 1, "TEX at a generic's x and y read in pass mode samples where the generic says");
+    plain_uv_case(perspective, 5, 0xaa00, 1, "TEX at a generic's x and y multiplied by 1 / gl_FragCoord.w does too");
+    plain_uv_case(texs, 5, 0xaa00, 1, "TEXS 2D at a generic's x and y does too");
+    plain_uv_case(passed, 3, 0xff00, 1, "a screen-linear generic's x and y do too");
+    plain_uv_case(passed, 3, 0x5500, 0, "a generic constant over the primitive is no place of a fragment");
+    plain_uv_case(other_multiplier, 5, 0xaa00, 0, "x and y multiplied by another reciprocal are not the generic's");
+    plain_uv_case(scaled, 4, 0xaa00, 0, "a coordinate computed from the generic's reads elsewhere");
+    plain_uv_case(other_y, 3, 0xaaaa00, 0, "TEX at one generic's x and another's y reads elsewhere");
+    plain_uv_case(swapped, 3, 0xaa00, 0, "TEX at a generic's y and x, swapped, reads elsewhere");
+    plain_uv_case(saturated, 3, 0xaa00, 0, "an x read saturated is not the generic's x");
+    plain_uv_case(bias, 3, 0xaa00, 0, "TEX.LB at a generic's x and y may read another level");
+    plain_uv_case(both, 10, 0xaa00, 0, "a slot sampled at x and y and at x / w and y / w needs both mappings");
+}
+
+/* ShaderInfo.uv_out_mask: the vertex program writes its position from generic 0's x and y, pos.x = x * 2 - 1 and
+   pos.y = y * -2 + 1 (the generic's bit in uv_out_yneg_mask) or y * 2 - 1, with the position's w never stored or the
+   constant 1: the generic's (x, y) at a fragment is then that fragment's place in [0, 1] of the viewport. Another
+   scale or offset, a w from an attribute (a perspective divide), the generic's x and y swapped or stored from other
+   values, or a saturated product leave the generic out. The program may drop a vertex
+   first: under a predicate made from the instance's number alone it writes a position outside the clip volume and
+   leaves, by a SYNC under that predicate to the stores. A predicate made from a vertex's attribute, a dropped
+   position inside the clip volume, a write or the SYNC under another guard, or a SYNC to before the stores may put
+   vertices of both kinds, or neither, in one triangle */
+#define UV_ALD(d, addr) ((0xefd9ff8000070000ull & ~(3ull << 47)) | (u64)(addr) << 20 | 0xff00ull | (u64)(d))
+#define UV_FFMA(d, a, c, scale, negc)                                                                                  \
+    (0x32a0000000070000ull | (u64)((scale) >> 12 & 0x7ffff) << 20 | (u64)((scale) >> 31) << 56 | (u64)(c) << 39 |      \
+     (u64)(negc) << 49 | (u64)(a) << 8 | (u64)(d))
+static void vertex_uv_out(void) {
+    const u32 two = 0x40000000u, minus_two = 0xc0000000u, one = 0x3f800000u;
+    const u64 u = UV_ALD(0, 0x80), v = UV_ALD(1, 0x84), r6 = mov32i(6, one);
+    const u64 x = UV_FFMA(4, 0, 6, two, 1), y_down = UV_FFMA(5, 1, 6, minus_two, 0), y_up = UV_FFMA(5, 1, 6, two, 1);
+    const u64 pos = SCREEN_AST(0x70, 4, 2), generic = SCREEN_AST(0x80, 0, 2);
+    /* SSY to the stores (word 29), the instance's number, @P0 the dropped vertex's outputs and SYNC, then the
+       others' */
+    const u64 ssy = 0xe290000000000000ull | 0x88ull << 20, instance = UV_ALD(0, 0x2f8),
+              isetp = 0x366b038000170007ull, /* ISETP P0, R0, 1 */
+        sync_p0 = 0xf0f800000000000full, sync = 0xf0f800000007000full;
+    const u64 far_x = 0x010c61c40000f004ull, far_y = 0x010c61c40000f005ull;   /* @P0 MOV32I R4 and R5, -10000.0 */
+    const u64 near_x = 0x0103f0000000f004ull;                                 /* @P0 MOV32I R4, 0.5 */
+    const u64 zero_u = 0x5c9807800ff00008ull, zero_v = 0x5c9807800ff00009ull; /* @P0 MOV R8 and R9, RZ */
+    const u64 u8_ = UV_ALD(8, 0x80), v9 = UV_ALD(9, 0x84), x8 = UV_FFMA(4, 8, 6, two, 1),
+              y9 = UV_FFMA(5, 9, 6, minus_two, 0), generic8 = SCREEN_AST(0x80, 8, 2);
+    struct {
+        u64 instructions[17];
+        int count;
+        u32 out, yneg;
+        const char* what;
+    } cases[] = {
+        {{u, v, r6, x, y_down, pos, generic},
+         7,
+         1,
+         1,
+         "x * 2 - 1 and y * -2 + 1: the generic mapped onto the viewport, y down"},
+        {{u, v, r6, x, y_up, pos, generic},
+         7,
+         1,
+         0,
+         "x * 2 - 1 and y * 2 - 1: the generic mapped onto the viewport, y up"},
+        {{u, v, r6, x, y_down, pos, generic, SCREEN_AST(0x7c, 6, 1)}, 8, 1, 1, "a w stored as the constant 1"},
+        {{u, v, r6, x, y_down, pos, generic, UV_ALD(3, 0x8c), SCREEN_AST(0x7c, 3, 1)},
+         9,
+         0,
+         0,
+         "a w from an attribute divides the position and not the generic"},
+        {{u, v, r6, UV_FFMA(4, 0, 6, two, 0), y_down, pos, generic}, 7, 0, 0, "x * 2 + 1 is an offset of a viewport"},
+        {{u, v, r6, UV_FFMA(4, 0, 6, one, 1), y_down, pos, generic}, 7, 0, 0, "x * 1 - 1 is half the viewport's scale"},
+        {{u, v, r6, UV_FFMA(4, 1, 6, two, 1), y_down, pos, generic}, 7, 0, 0, "a position's x from the generic's y"},
+        {{u, v, r6, x, y_down, pos, SCREEN_AST(0x80, 1, 2)},
+         7,
+         0,
+         0,
+         "a generic stored from other values than the position's"},
+        {{u, v, r6, x | 1ull << 50, y_down, pos, generic}, 7, 0, 0, "a saturated product is not x * 2 - 1"},
+        {{ssy, instance, isetp, far_x, far_y, zero_u, zero_v, sync_p0, u8_, v9, r6, x8, y9, sync, pos, generic8},
+         16,
+         1,
+         1,
+         "a vertex dropped by the instance's number, outside the clip volume, leaves the others' mapping"},
+        {{ssy, UV_ALD(0, 0x90), isetp, far_x, far_y, zero_u, zero_v, sync_p0, u8_, v9, r6, x8, y9, sync, pos, generic8},
+         16,
+         0,
+         0,
+         "a vertex dropped by an attribute of its own may share a triangle with one that isn't"},
+        {{ssy, instance, isetp, near_x, far_y, zero_u, zero_v, sync_p0, u8_, v9, r6, x8, y9, sync, pos, generic8},
+         16,
+         0,
+         0,
+         "a dropped vertex inside the clip volume is drawn"},
+        {{ssy, instance, isetp, far_x ^ 8ull << 16, far_y, zero_u, zero_v, sync_p0, u8_, v9, r6, x8, y9, sync, pos,
+          generic8},
+         16,
+         0,
+         0,
+         "a dropped vertex's x under another guard than the SYNC's"},
+        {{ssy, instance, isetp, far_x, far_y ^ 8ull << 16, zero_u, zero_v, sync_p0, u8_, v9, r6, x8, y9, sync, pos,
+          generic8},
+         16,
+         0,
+         0,
+         "a dropped vertex's y under another guard than its x"},
+        {{ssy, instance, isetp, far_x, far_y, zero_u, zero_v, sync_p0 ^ 8ull << 16, u8_, v9, r6, x8, y9, sync, pos,
+          generic8},
+         16,
+         0,
+         0,
+         "a SYNC under the predicate's other side takes away the vertices that wrote nothing"},
+        {{0xe290000000000000ull | 0x68ull << 20, instance, isetp, far_x, far_y, zero_u, zero_v, sync_p0, u8_, v9, r6,
+          x8, y9, sync, pos, generic8},
+         16,
+         0,
+         0,
+         "a SYNC that lands among the other vertices' instructions (word 25) runs some of them"},
+        /* @P1 BRA (word 12) to the dropped vertex's third write (word 19); the stores are at word 31 */
+        {{0xe290000000000000ull | 0x98ull << 20, 0xe24000000001000full | 48ull << 20, instance, isetp, far_x, far_y,
+          zero_u, zero_v, sync_p0, u8_, v9, r6, x8, y9, sync, pos, generic8},
+         17,
+         0,
+         0,
+         "a branch to among the dropped vertex's writes leaves its position unwritten"},
+    };
+    for (size_t k = 0; k < sizeof cases / sizeof *cases; k++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* spv = translate(cases[k].instructions, cases[k].count, ST_VS, &info, &words, 0);
+        check_translated(spv, &info, cases[k].what);
+        if (spv && (info.uv_out_mask != cases[k].out || info.uv_out_yneg_mask != cases[k].yneg))
+            fprintf(stderr, "  uv out %#x, y negated %#x, expected %#x and %#x\n", info.uv_out_mask,
+                    info.uv_out_yneg_mask, cases[k].out, cases[k].yneg);
+        check(spv && info.uv_out_mask == cases[k].out && info.uv_out_yneg_mask == cases[k].yneg, cases[k].what);
+        free(spv);
+    }
+}
+#undef UV_ALD
+#undef UV_FFMA
 #undef SCREEN_IPA
 #undef SCREEN_IPA_MUL
 #undef SCREEN_RCP
@@ -4758,6 +5061,131 @@ static int has_float_constant(const u32* code, size_t words, u32 bits) {
     }
     return 0;
 }
+/* the word of instruction i as guest_program lays a program out: a scheduling word before every third */
+static u32 flow_word(u32 i) { return 11 + i + i / 3; }
+/* BRA from instruction from to instruction to, on predicate (7: always) */
+static u64 flow_bra(u32 from, u32 to, u32 predicate) {
+    u32 bytes = (flow_word(to) - (flow_word(from) + 1)) * 8;
+    return 0xe24000000000000full | (u64)(bytes & 0xffffff) << 20 | (u64)predicate << 16;
+}
+/* a fragment program on a device with fragment subgroups or without, with MaximallyReconvergesKHR or without, and
+   with an advanced blend equation or none */
+static u32* flow_lod_spirv(const u64* instructions, int count, int can_subgroup, int reconverges, u64 blend,
+                           ShaderInfo* info, size_t* words) {
+    size_t slots;
+    u64* code = guest_program(instructions, count, NULL, &slots);
+    if (!code) return NULL;
+    memset(info, 0, sizeof *info);
+    info->advanced_blend = blend;
+    if (blend) set_sph(code, 18, 15); /* the equation blends render target 0's RGBA */
+    int device = g_shader_maximal_reconvergence;
+    g_shader_maximal_reconvergence = reconverges;
+    u32* result = spirv_of(code, slots * sizeof *code, ST_FS, info, words, 1, 1, 1, can_subgroup);
+    g_shader_maximal_reconvergence = device;
+    free(code);
+    return result;
+}
+/* A fragment program with flow and a sample that takes its level from derivatives, on a device whose subgroups leave
+   the fragment stage out (Turnip on an Adreno 610 lists compute only, llvmpipe's have 8 lanes): the program's own
+   branches and loops as structured constructs, with no subgroup operation and no dispatch loop, and
+   MaximallyReconvergesKHR where the device has it. Such a program was refused whole. One the structure can't take (a
+   call, an indirect jump, a control stack kept at run time, an advanced blend equation, flow shader_structure gives
+   no structure for) is still refused there, with the reason, and still translated with fragment subgroups */
+static void fragment_flow_derivatives(void) {
+    /* TEX R0, R4, R5: a 2D texture by the handle at c[2][0x128], the level its derivatives give */
+    const u64 tex = 0xc038000000000000ull | 74ull << 36 | 7ull << 51 | 1ull << 31 | 2ull << 28 | 7ull << 16 | 4ull << 8;
+    const u64 nop = 0x50B0000000070F00ull;
+    const u64 branch[] = {flow_bra(0, 2, 0), nop, tex};                    /* @P0 BRA over a NOP, then the sample */
+    const u64 loop[] = {nop, flow_bra(1, 0, 0), tex};                      /* @P0 BRA back, then the sample */
+    const u64 explicit_lod[] = {flow_bra(0, 2, 0), nop, tex | 1ull << 55}; /* TEX.LZ: no derivative */
+    const struct {
+        const u64* instructions;
+        const char* what;
+    } structured[] = {{branch, "a sample after a branch"}, {loop, "a sample after a loop"}};
+    ShaderInfo info;
+    size_t words = 0;
+    char what[160];
+    int switches;
+    for (size_t f = 0; f < sizeof structured / sizeof *structured; f++)
+        for (int reconverges = 0; reconverges < 2; reconverges++) {
+            u32* code = flow_lod_spirv(structured[f].instructions, 3, 0, reconverges, 0, &info, &words);
+            snprintf(what, sizeof what, "%s translates without fragment subgroups", structured[f].what);
+            check_translated(code, &info, what);
+            if (code) {
+                snprintf(what, sizeof what, "%s is structured flow without fragment subgroups: no dispatch loop",
+                         structured[f].what);
+                check(switch_cases(code, words, &switches) == 0 && switches == 0 &&
+                          count_opcode(code, words, 246, 0xffffffffu) >= 1,
+                      what);
+                snprintf(what, sizeof what, "%s uses no subgroup and keeps its implicit level", structured[f].what);
+                check(no_subgroup(code, words) && count_opcode(code, words, 87, 0xffffffffu) == 1, what);
+                snprintf(what, sizeof what, "%s declares MaximallyReconvergesKHR only where the device has it",
+                         structured[f].what);
+                check(count_opcode(code, words, 16, 6023) == reconverges, what);
+            }
+            free(code);
+        }
+    /* with fragment subgroups the program is what it was: the dispatch loop on the subgroup's lowest pc, or
+       structured flow where the device reconverges */
+    u32* code = flow_lod_spirv(branch, 3, 1, 0, 0, &info, &words);
+    check_translated(code, &info, "a sample after a branch translates with fragment subgroups");
+    if (code)
+        check(switch_selects_current_pc(code, words) && !no_subgroup(code, words) &&
+                  count_opcode(code, words, 16, 6023) == 0,
+              "with fragment subgroups and no MaximallyReconvergesKHR the lanes wait in the dispatch loop");
+    free(code);
+    code = flow_lod_spirv(branch, 3, 1, 1, 0, &info, &words);
+    check_translated(code, &info, "a sample after a branch translates on a device that reconverges");
+    if (code)
+        check(switch_cases(code, words, &switches) == 0 && switches == 0 && count_opcode(code, words, 16, 6023) == 1,
+              "with fragment subgroups and MaximallyReconvergesKHR the program is structured");
+    free(code);
+    /* flow without a derivative never needed the subgroup */
+    code = flow_lod_spirv(explicit_lod, 3, 0, 0, 0, &info, &words);
+    check_translated(code, &info, "a sample of level 0 after a branch translates without fragment subgroups");
+    free(code);
+    /* what the structure can't take */
+    const u64 calls[] = {0xe260000000070040ull | (u64)((flow_word(4) - flow_word(1)) * 8) << 20, /* CAL 4 */
+                         tex, EXIT, nop, 0xe32000000007000full};                                 /* RET */
+    const u64 jump[] = {flow_bra(0, 2, 0), nop, tex, 0xe250000000070d0full}; /* a BRX with no table to read */
+    const u64 stack[] = {0xe23000000007000full | (u64)((flow_word(2) - flow_word(1)) * 8) << 20, /* PEXIT 2 */
+                         nop, tex};
+    /* a loop entered at two places: @P0 BRA 2 into its second block, which branches back to its first */
+    const u64 irreducible[] = {flow_bra(0, 2, 0), nop, flow_bra(2, 1, 1), tex};
+    const struct {
+        const u64* instructions;
+        int count;
+        u64 blend;
+        const char *with, *what;
+    } refused[] = {{calls, 5, 0, "calls", "a call"},
+                   {jump, 4, 0, "indirect jumps", "an indirect jump"},
+                   {stack, 3, 0, "a run-time control stack", "a control stack kept at run time"},
+                   {branch, 3, 5ull << 37, "advanced blend", "an advanced blend equation"},
+                   {irreducible, 4, 0, "flow without a structure", "irreducible flow"}};
+    for (size_t f = 0; f < sizeof refused / sizeof *refused; f++) {
+        char reason[96];
+        snprintf(reason, sizeof reason, "derivatives after flow, without fragment subgroups, in a program with %s",
+                 refused[f].with);
+        for (int reconverges = 0; reconverges < 2; reconverges++) {
+            code = flow_lod_spirv(refused[f].instructions, refused[f].count, 0, reconverges, refused[f].blend, &info,
+                                  &words);
+            snprintf(what, sizeof what, "a sample after flow with %s is refused without fragment subgroups, by name",
+                     refused[f].what);
+            check_refused(code, &info, reason, what);
+            check(strlen(info.first_unsupported) == strlen(reason), "the refusal's reason is whole");
+            free(code);
+        }
+        code = flow_lod_spirv(refused[f].instructions, refused[f].count, 1, 0, refused[f].blend, &info, &words);
+        snprintf(what, sizeof what, "a sample after flow with %s translates with fragment subgroups", refused[f].what);
+        check_translated(code, &info, what);
+        if (code) {
+            snprintf(what, sizeof what, "a sample after flow with %s waits in the dispatch loop", refused[f].what);
+            check(switch_cases(code, words, &switches) > 0 && !no_subgroup(code, words), what);
+        }
+        free(code);
+    }
+}
+
 /* What the translator knows as it translates is settled there, not left for the driver's compiler: PT, the
    predicate most instructions name, is the constant true; a constant a register holds is a constant of the type it
    is read as; and a float a register holds is read back as that float, not through its bits */
@@ -5069,6 +5497,7 @@ int main(int argc, char** argv) {
     cbuf_integer_loads();
     unsupported_names_word();
     f2i_modifiers();
+    i2f_by_halves();
     flag_transfers();
     global_buffers();
     compute_write_log();
@@ -5121,10 +5550,14 @@ int main(int argc, char** argv) {
     shfl_quad_forms();
     shfl_predicate();
     lone_lane_forms();
+    fragment_flow_derivatives();
     feedback_own_pixel();
     feedback_screen_uv();
+    texture_unread_slots();
     vertex_screen_out();
     vertex_position_out();
+    feedback_plain_uv();
+    vertex_uv_out();
     fragment_position_pass();
     per_vertex_pass();
     settled_when_translated();

@@ -23,29 +23,6 @@ enum {
 /* LightingSampler: the LUT each input reads */
 enum { D0 = 0, D1 = 1, FR = 3, RB = 4, RG = 5, RR = 6, SP = 8, DA = 16 };
 
-/* Pica::Float<M, E>::FromRaw for the 16- and 20-bit formats: denormals renormalized, an all-ones exponent inf/NaN */
-static float pica_float(uint32_t hex, unsigned m, unsigned e) {
-    int bias = 127 - ((1 << (e - 1)) - 1), exponent = (int)((hex >> m) & ((1u << e) - 1));
-    uint32_t mantissa = hex & ((1u << m) - 1), sign = ((hex >> (e + m)) & 1) << 31, bits;
-    float f;
-    if (!exponent && !mantissa)
-        bits = sign;
-    else if (!exponent) {
-        exponent = bias + 1;
-        while (!(mantissa & (1u << m))) {
-            --exponent;
-            mantissa <<= 1;
-        }
-        mantissa &= (1u << m) - 1;
-        bits = sign | ((uint32_t)exponent << 23) | (mantissa << (23 - m));
-    } else if (exponent == (1 << e) - 1)
-        bits = sign | (0xffu << 23) | (mantissa << (23 - m));
-    else
-        bits = sign | ((uint32_t)(bias + exponent) << 23) | (mantissa << (23 - m));
-    memcpy(&f, &bits, 4);
-    return f;
-}
-
 static void color(uint32_t c, float out[3]) {
     out[0] = (float)((c >> 20) & 0x3ff) / 255.f;
     out[1] = (float)((c >> 10) & 0x3ff) / 255.f;
@@ -177,8 +154,8 @@ void snx_ctr_lighting(const SnxCtrPica* p, const float quat[4], const float view
         unsigned num = (regs[LIGHT_ENABLE] >> (li * 4)) & 7;
         const uint32_t* l = &regs[LIGHT + num * 16];
         c.light = l;
-        float position[3] = {pica_float(l[4] & 0xffff, 10, 5), pica_float(l[4] >> 16, 10, 5),
-                             pica_float(l[5] & 0xffff, 10, 5)};
+        float position[3] = {snx_ctr_pica_float(l[4] & 0xffff, 10, 5), snx_ctr_pica_float(l[4] >> 16, 10, 5),
+                             snx_ctr_pica_float(l[5] & 0xffff, 10, 5)};
         for (unsigned k = 0; k < 3; ++k) c.light_vector[k] = l[9] & 1 ? position[k] : position[k] + view[k];
         float length = normalize(c.light_vector);
         memcpy(c.norm_view, view, sizeof c.norm_view);
@@ -186,7 +163,7 @@ void snx_ctr_lighting(const SnxCtrPica* p, const float quat[4], const float view
         for (unsigned k = 0; k < 3; ++k) c.half[k] = c.norm_view[k] + c.light_vector[k];
         float dist_atten = 1.0f;
         if (!((c1 >> 24) & (1u << num))) {
-            float scale = pica_float(l[11] & 0xfffff, 12, 7), bias = pica_float(l[10] & 0xfffff, 12, 7);
+            float scale = snx_ctr_pica_float(l[11] & 0xfffff, 12, 7), bias = snx_ctr_pica_float(l[10] & 0xfffff, 12, 7);
             float s = scale * length + bias;
             s = s < 0 ? 0 : s > 1 ? 1 : s;
             float f = floorf(s * 256.0f);

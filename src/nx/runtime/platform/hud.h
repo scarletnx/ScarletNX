@@ -13,7 +13,7 @@
    before. On the main thread; it takes ui_lock */
 int hud_debug_set(const char* text);
 /* over a picture whose safe area is safe (x, y, w, h), in letters of scale times the 8x16 font (the menu's,
-   overlay_place): HUD_DEBUG_LEAD and the list, cut between its items onto as many lines as it takes, in a box at the
-   top's middle; nothing for none. Under ui_lock */
+   overlay_place): HUD_DEBUG_LEAD and the list, cut between its items onto as many lines as it takes, in a box of the
+   layer's ground at the top's middle; nothing for none. Under ui_lock */
 void hud_draw(SnxUiList* l, const int safe[4], int scale);
 #endif

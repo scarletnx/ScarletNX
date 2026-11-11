@@ -3442,6 +3442,12 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, 
 /* inplace: IN_NO, the range is copied; IN_TRY, read in place in guest memory where it can be (uma.c), else copied;
    IN_ONLY, in place or 0 (a window is copied instead) */
 enum { IN_NO, IN_TRY, IN_ONLY };
+/* the biggest copy engine's source that takes a buffer of its own at once (buf_get): a sixty-fourth of the budget */
+static u64 copy_src_at_once(void) {
+    u64 usage, budget;
+    vk_mem_use(&usage, &budget);
+    return budget / 64;
+}
 static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align, int inplace) {
     int pending;
     u32 i = 0, epoch = vk_ww_epoch(); /* before anything is checked or read */
@@ -3641,8 +3647,12 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             if (!(staged = vk_stage_upload(len, vk_stage_align(), &sb, &so))) return 0;
             memcpy(staged, src, len);
         }
-        /* a big range takes its own buffer at once when writes are tracked: changes then patch it (patch_own) */
-        if (ncounts || !((e->stable >= 2 || (len >= PATCH_MIN && g_ww > 0)) && make_own(i, sb, so))) {
+        /* a big range takes its own buffer at once when writes are tracked: changes then patch it (patch_own). Not a
+           copy engine's source past a sixty-fourth of the memory budget: a texture's upload reads its source once,
+           and an 8192x8192 RGBA8 texture's levels took 760 MiB of them that nothing read again, where a phone had
+           1 GB available. Such a source takes one once it stays the same, as every other range does */
+        int at_once = len >= PATCH_MIN && g_ww > 0 && (strict != 2 || len <= copy_src_at_once());
+        if (ncounts || !((e->stable >= 2 || at_once) && make_own(i, sb, so))) {
             /* changing (or new) data: read from this frame's staging ring */
             e->buf = sb;
             e->off = so;

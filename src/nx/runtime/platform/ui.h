@@ -62,13 +62,13 @@ enum { UI_ATLAS, UI_SOLID, UI_GLYPH, UI_ICON, UI_RING, UI_SHAPE };
 enum { UI_SHAPE_CIRCLE, UI_SHAPE_ROUND, UI_SHAPE_CROSS, UI_SHAPE_BOX };
 #define UI_SHAPE_FILLED 1 /* the shape filled, its label cut out */
 #define UI_SHAPE_BARE   2 /* no edge: the label alone, a mark on a shape drawn beside it */
-/* in ui_quad's turn, for a letter or an icon (UI_Q_BACKED): its clear pixels in the ground's colour (ui_ground_set),
+/* in ui_quad's turn, for a letter or an icon (UI_Q_BACKED): its clear pixels in the ground's colour (ui_ground),
    where they are left out otherwise. With an opaque colour and ground, it is an opaque cell, which the renderer draws
    without blending */
-#define UI_BACKED 4
-/* the ground of every backed letter and icon, R G B A from the low byte: one for all, set by their maker (stats.c)
-   each frame it draws them. Under ui_lock */
-void ui_ground_set(u32 rgba);
+#define UI_BACKED       4
+/* the ground of every backed letter and icon, R G B A from the low byte: one for all that is drawn over the game (the
+   stats, the debug line, the notification), the layer's ink (ui_colors.h) as a quad holds it (ui_rgba), so a fill of
+   the ink beside a backed letter is the same pixel; whoever draws and whoever doesn't */
 u32 ui_ground(void);
 typedef struct {
     SnxUiQuad* q;

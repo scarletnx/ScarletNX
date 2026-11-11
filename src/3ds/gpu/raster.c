@@ -31,6 +31,7 @@ enum {
     DEPTHMAP_ENABLE = 0x06d,
     TEX_MAIN = 0x080,
     TEX_CUBE = 0x086, /* 5 face addresses after +X */
+    TEX_SHADOW = 0x08b,
     TEX0_FORMAT = 0x08e,
     TEV_STAGES = 0x0c0,
     FOG_MODE = 0x0e0,
@@ -51,6 +52,7 @@ enum {
     FB_DEPTH_ADDR = 0x11c,
     FB_COLOR_ADDR = 0x11d,
     FB_SIZE = 0x11e,
+    FB_SHADOW = 0x130,
     LIGHTING_DISABLE = 0x1c6
 };
 static const uint32_t tex_config[3] = {0x081, 0x091, 0x099}, tex_format[3] = {0x08e, 0x096, 0x09e};
@@ -167,8 +169,9 @@ static int32_t wrap(unsigned mode, int32_t v, uint32_t size) {
     }
 }
 
-/* ConvertCubeCoord: the face and its coordinates for a cube map's direction */
-static void cube(const SnxCtrPica* p, float u, float v, float w, float* s, float* t, uint32_t* address) {
+/* ConvertCubeCoord: the face, its coordinates and the major axis' magnitude (a shadow cube's depth) for a cube
+   map's direction */
+static void cube(const SnxCtrPica* p, float u, float v, float w, float* s, float* t, float* depth, uint32_t* address) {
     float au = fabsf(u), av = fabsf(v), aw = fabsf(w), x, y, z;
     unsigned face;
     if (au > av && au > aw) {
@@ -193,6 +196,17 @@ static void cube(const SnxCtrPica* p, float u, float v, float w, float* s, float
     *address = a * 8;
     *s = mul(x / z, 0.5f) + 0.5f;
     *t = mul(y / z, 0.5f) + 0.5f;
+    *depth = fabsf(z);
+}
+
+/* a shadow map's texel against the fragment's depth z: the texel is RGBA8, its word depth << 8 | strength
+   (DecodeD24S8Shadow). Every channel becomes the strength where the map is not nearer than z less the bias, else 0 */
+static void shadow_compare(const SnxCtrPica* p, float z, uint8_t texel[4]) {
+    int32_t bias = (int32_t)(((R(TEX_SHADOW) >> 1) & 0x7fffff) << 1);
+    int32_t z_int = (int32_t)((z < 1.0f ? z : 1.0f) * (float)0xffffff) - bias;
+    int32_t z_ref = texel[3] << 16 | texel[2] << 8 | texel[1];
+    uint8_t strength = z_ref >= z_int ? texel[0] : 0;
+    for (unsigned k = 0; k < 4; ++k) texel[k] = strength;
 }
 
 static void texture_color(const SnxCtrPica* p, SnxCtrMemory* m, float uv[3][2], float tc0_w, uint8_t out[4][4]) {
@@ -207,28 +221,35 @@ static void texture_color(const SnxCtrPica* p, SnxCtrMemory* m, float uv[3][2], 
             continue;
         }
         unsigned coord = i == 2 && ((R(TEX_MAIN) >> 13) & 1) ? 1 : i;
-        float u = uv[coord][0], v = uv[coord][1];
-        if (i == 0) {      /* only unit 0 has a texture type */
-            if (type == 1) /* TextureCube */
-                cube(p, u, v, tc0_w, &u, &v, &address);
+        float u = uv[coord][0], v = uv[coord][1], shadow_z = 0.0f;
+        if (i == 0) {                   /* only unit 0 has a texture type */
+            if (type == 1 || type == 4) /* TextureCube, ShadowCube */
+                cube(p, u, v, tc0_w, &u, &v, &shadow_z, &address);
             else if (type == 3) { /* Projection2D */
                 u /= tc0_w;
                 v /= tc0_w;
+            } else if (type == 2) {         /* Shadow2D */
+                if (!(R(TEX_SHADOW) & 1)) { /* perspective */
+                    u /= tc0_w;
+                    v /= tc0_w;
+                }
+                shadow_z = fabsf(tc0_w);
             } else if (type == 5) /* Disabled */
                 continue;
         }
         int32_t s = to_s32(mul(u, (float)width)), t = to_s32(mul(v, (float)height));
         bool border = (wrap_s == 1 && (s < 0 || s >= (int32_t)width)) || (wrap_s == 5 && s >= (int32_t)width) ||
                       (wrap_t == 1 && (t < 0 || t >= (int32_t)height)) || (wrap_t == 5 && t >= (int32_t)height);
-        if (border) {
+        if (border)
             for (unsigned k = 0; k < 4; ++k) out[i][k] = (uint8_t)(c[0] >> (k * 8));
-            continue;
+        else {
+            if (!width || !height) continue; /* a modulo by zero in Azahar: nothing sensible to sample */
+            /* textures are stored bottom to top */
+            s = wrap(wrap_s, s, width);
+            t = (int32_t)height - 1 - wrap(wrap_t, t, height);
+            (void)snx_ctr_texel(m, address, width, R(tex_format[i]) & 15, (unsigned)s, (unsigned)t, out[i]);
         }
-        if (!width || !height) continue; /* a modulo by zero in Azahar: nothing sensible to sample */
-        /* textures are stored bottom to top */
-        s = wrap(wrap_s, s, width);
-        t = (int32_t)height - 1 - wrap(wrap_t, t, height);
-        (void)snx_ctr_texel(m, address, width, R(tex_format[i]) & 15, (unsigned)s, (unsigned)t, out[i]);
+        if (i == 0 && (type == 2 || type == 4)) shadow_compare(p, shadow_z, out[0]);
     }
 }
 
@@ -439,6 +460,30 @@ static void set_stencil(const SnxCtrPica* p, SnxCtrMemory* m, unsigned x, unsign
     if ((R(FB_DEPTH_FORMAT) & 3) == 3) depth_write(p, m, x, y, b, 3, 1);
 }
 
+/* DrawShadowMapPixel: the shadow map's word at a pixel keeps the nearest depth and the least strength. Only a fragment
+   with no strength writes its depth. One with strength writes it scaled by 1 / (constant + linear * depth / the map's
+   depth), FB_SHADOW's two float16 values */
+static void shadow_pixel(const SnxCtrPica* p, SnxCtrMemory* m, unsigned x, unsigned y, uint32_t depth,
+                         uint8_t strength) {
+    uint32_t at = (R(FB_COLOR_ADDR) & 0x0fffffff) * 8 + pixel_offset(p, x, y, 4);
+    unsigned char b[4];
+    if (snx_ctr_phys_read(m, at, b, 4) != SNX_CTR_MEM_OK) return;
+    uint32_t ref_z = (uint32_t)b[0] << 16 | (uint32_t)b[1] << 8 | b[2];
+    if (depth >= ref_z) return;
+    if (!strength) {
+        b[0] = (unsigned char)(depth >> 16);
+        b[1] = (unsigned char)(depth >> 8);
+        b[2] = (unsigned char)depth;
+        (void)snx_ctr_phys_write(m, at, b, 3);
+        return;
+    }
+    float constant = snx_ctr_pica_float(R(FB_SHADOW) & 0xffff, 10, 5);
+    float linear = snx_ctr_pica_float(R(FB_SHADOW) >> 16, 10, 5);
+    float scaled = (float)strength / (constant + mul(linear, (float)depth / (float)ref_z));
+    uint8_t s = (uint8_t)(scaled > 0.0f ? (scaled < 255.0f ? scaled : 255.0f) : 0.0f); /* NaN is 0 */
+    if (s < b[3]) (void)snx_ctr_phys_write(m, at + 3, &s, 1);
+}
+
 static uint8_t stencil_action(unsigned action, uint8_t old, uint8_t ref) {
     switch (action & 7) {
         case 0: return old;
@@ -639,6 +684,10 @@ static void process(const SnxCtrPica* p, SnxCtrMemory* m, const Vertex* v0, cons
             }
 #undef INTERP
             tev(p, textures, primary, fragment, secondary, combined);
+            if ((R(OM_MODE) & 3) == 3) { /* a shadow pass: the depth and the green channel go to the map */
+                shadow_pixel(p, m, x >> 4, y >> 4, (uint32_t)(depth * (float)0xffffff), combined[1]);
+                continue;
+            }
             uint32_t at_reg = R(OM_ALPHA_TEST);
             if ((at_reg & 1) && !compare(at_reg >> 4, combined[3], (at_reg >> 8) & 0xff)) continue;
             fog(p, depth, combined);
@@ -652,9 +701,6 @@ static void process(const SnxCtrPica* p, SnxCtrMemory* m, const Vertex* v0, cons
 
 const char* snx_ctr_raster_check(const SnxCtrPica* p) {
     if ((R(TEX_MAIN) >> 10) & 1) return "procedural textures are not ported yet";
-    unsigned type0 = (R(tex_config[0] + 2) >> 28) & 7;
-    if ((R(TEX_MAIN) & 1) && (type0 == 2 || type0 == 4)) return "shadow textures are not ported yet";
-    if ((R(OM_MODE) & 3) == 3) return "shadow rendering is not ported yet";
     return NULL;
 }
 

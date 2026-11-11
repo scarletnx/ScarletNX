@@ -90,10 +90,6 @@ typedef struct {
 } SnxCtrFsConfig;
 
 void snx_ctr_fs_config(const SnxCtrPica* pica, SnxCtrFsConfig* config);
-/* NULL, or why the config needs what the renderer does not do yet: shadow rendering (the generator writes it, but it
-   needs the shadow_buffer storage image and a pass without colour attachments). The caller then stops the draw with
-   that reason */
-const char* snx_ctr_fs_unsupported(const SnxCtrFsConfig* config);
 /* the fragment shader's SPIR-V module (the caller frees *words). preserve_infnan declares SPV_KHR_float_controls'
    SignedZeroInfNanPreserve for 32-bit floats */
 void snx_ctr_fs_spirv(const SnxCtrFsConfig* config, bool preserve_infnan, uint32_t** words, size_t* count);

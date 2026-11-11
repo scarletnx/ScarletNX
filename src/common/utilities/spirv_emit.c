@@ -296,6 +296,15 @@ uint32_t spv_emit_int_convert(SpvEmitter* e, uint32_t type, uint32_t value, int 
     return id;
 }
 
+uint32_t spv_emit_int_to_f32_nearest(SpvEmitter* e, uint32_t value, int is_signed) {
+    uint32_t u32 = spv_emit_type_u32(e), f32 = spv_emit_type_f32(e);
+    uint32_t high = spv_emit_binary(e, SPV_OP_BITWISE_AND, u32, value, spv_emit_constant_u32(e, u32, 0xffff0000u));
+    uint32_t low = spv_emit_binary(e, SPV_OP_BITWISE_AND, u32, value, spv_emit_constant_u32(e, u32, 0xffffu));
+    high = is_signed ? spv_emit_unary(e, SPV_OP_CONVERT_S_TO_F, f32,
+                                      spv_emit_unary(e, SPV_OP_BITCAST, spv_emit_type_i32(e), high))
+                     : spv_emit_unary(e, SPV_OP_CONVERT_U_TO_F, f32, high);
+    return spv_emit_binary(e, SPV_OP_F_ADD, f32, high, spv_emit_unary(e, SPV_OP_CONVERT_U_TO_F, f32, low));
+}
 
 
 

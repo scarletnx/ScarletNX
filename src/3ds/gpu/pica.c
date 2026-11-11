@@ -40,6 +40,28 @@ float snx_ctr_f24(uint32_t hex) {
     return f;
 }
 
+float snx_ctr_pica_float(uint32_t hex, unsigned m, unsigned e) {
+    int bias = 127 - ((1 << (e - 1)) - 1), exponent = (int)((hex >> m) & ((1u << e) - 1));
+    uint32_t mantissa = hex & ((1u << m) - 1), sign = ((hex >> (e + m)) & 1) << 31, bits;
+    float f;
+    if (!exponent && !mantissa)
+        bits = sign;
+    else if (!exponent) {
+        exponent = bias + 1;
+        while (!(mantissa & (1u << m))) {
+            --exponent;
+            mantissa <<= 1;
+        }
+        mantissa &= (1u << m) - 1;
+        bits = sign | ((uint32_t)exponent << 23) | (mantissa << (23 - m));
+    } else if (exponent == (1 << e) - 1)
+        bits = sign | (0xffu << 23) | (mantissa << (23 - m));
+    else
+        bits = sign | ((uint32_t)(bias + exponent) << 23) | (mantissa << (23 - m));
+    memcpy(&f, &bits, 4);
+    return f;
+}
+
 float snx_ctr_pica_mul(float a, float b) {
     float r = a * b;
     if (isnan(r) && !isnan(a) && !isnan(b)) r = 0.0f;

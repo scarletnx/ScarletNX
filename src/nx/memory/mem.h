@@ -146,8 +146,12 @@ int mem_unmap(u64 addr, u64 size);
 int mem_map_physical(u64 addr, u64 size, u64 budget);
 int mem_unmap_physical(u64 addr, u64 size);
 int mem_heap_set(u64 size, u64 budget);
-/* maps m's view at a free base it fills in, MEM_LIMIT when no code space is left */
+/* maps m's view at a free base it fills in, MEM_LIMIT when no code space is left. With m->base given, the view goes
+   there or nowhere: MEM_LIMIT when that range, or a guard page around it, is not free code space */
 int mem_map_code(MemCodeMap* m);
+/* [lo, hi) is kept for the views whose base their caller names (ldr:ro's NROs with code made for a fixed address):
+   a view that names none is placed outside it. lo == hi: nothing kept */
+void mem_code_slots(u64 lo, u64 hi);
 int mem_unmap_code(const MemCodeMap* m);
 void mem_query(u64 addr, MemBlock* out);
 /* the bytes of [addr, addr + size) still mapped, up to the first free or inaccessible page: what a GPU mapping older

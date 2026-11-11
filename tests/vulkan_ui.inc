@@ -37,9 +37,9 @@ static int ui_quads(UiCheck* c, const int safe[4]) {
     SnxUiList l = {c->quads, 0, 4096};
     int px, py, scale;
     ui_lock();
-    vpad_draw(&l, safe);
-    vpad_showcase_draw(&l, safe, vpad_showcase_fps(g_vk_present, plat_ns()));
     overlay_place(UI_W, UI_H, &px, &py, &scale);
+    vpad_draw(&l, safe, scale);
+    vpad_showcase_draw(&l, safe, vpad_showcase_fps(g_vk_present, plat_ns()), scale);
     stats_draw(&l, safe, scale, plat_ns());
     hud_draw(&l, safe, scale);
     overlay_draw(&l, UI_W, UI_H, plat_ns());
@@ -209,6 +209,25 @@ static int check_ui(void) {
     CHECK(changed > 100);
     CHECK(!ui_frame(c, safe, "no change", &changed));
     CHECK(!changed);
+    /* the refresh's question (vk_ui_changed), which makes the parts as a frame does: no, however often it is asked,
+       while the layer is the one drawn; yes from a change until a pass draws it, and that pass draws what the
+       question's own making of the parts wrote, though it writes nothing itself */
+    CHECK(!vk_ui_changed() && !vk_ui_changed());
+    hud_debug_set("log=2, vk_validation=1, gdbstub");
+    CHECK(vk_ui_changed() && vk_ui_changed());
+    CHECK(!ui_frame(c, safe, "the line changed, asked before it was drawn", &changed));
+    CHECK(changed > 0 && !vk_ui_changed());
+    hud_debug_set("log=2, vk_validation=1");
+    CHECK(vk_ui_changed());
+    CHECK(!ui_frame(c, safe, "the line as it was", &changed));
+    CHECK(changed > 0 && !vk_ui_changed());
+    /* a letter of it another, the quads as many: yes again when asked again, though the second making wrote nothing */
+    hud_debug_set("log=3, vk_validation=1");
+    CHECK(vk_ui_changed() && vk_ui_changed());
+    CHECK(!ui_frame(c, safe, "a letter of the line changed", &changed));
+    CHECK(changed > 0 && !vk_ui_changed());
+    hud_debug_set("log=2, vk_validation=1");
+    CHECK(!ui_frame(c, safe, "the line as it was again", &changed));
     stats_measured(&(SnxStatsMeasure){.cpu = -1, .gpu = -1});
     CHECK(!ui_frame(c, safe, "the values unknown again", &changed));
     /* the line longer and shorter: the quads after the box's more and fewer */
@@ -274,6 +293,18 @@ static int check_ui(void) {
         g_vk.props.vendorID = vendor;
         CHECK(!ui_frame(c, safe, "the box and the line, discarded again", &changed));
     }
+    /* the notification with nothing else on: its backed letters, whose ground no other maker has to give */
+    g_settings.stats = 0;
+    hud_debug_set("");
+    ui_lock();
+    overlay_toast("Saved to slot 2", plat_ns());
+    ui_unlock();
+    CHECK(!ui_frame(c, safe, "the notification alone", &changed));
+    CHECK(changed > 0);
+    ui_lock();
+    overlay_toast("", 0);
+    ui_unlock();
+    CHECK(!ui_frame(c, safe, "nothing", &changed));
     vk_finish();
     vk_ui_swapchain_gone();
     vmaDestroyImage(g_vk.vma, c->img, c->mem);

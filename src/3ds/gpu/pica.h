@@ -175,6 +175,9 @@ SnxCtrPicaResult snx_ctr_pica_write(SnxCtrPica* pica, SnxCtrMemory* memory, uint
 /* PICA float24 (sign, 7-bit exponent, 16-bit mantissa) as the host float Azahar computes with: denormals
    renormalized losslessly, an all-ones exponent infinity or NaN (pica_types.h Float::FromRaw) */
 float snx_ctr_f24(uint32_t raw);
+/* Pica::Float<M, E>::FromRaw for the 16- and 20-bit formats (m mantissa bits, e exponent bits): denormals
+   renormalized, an all-ones exponent infinity or NaN */
+float snx_ctr_pica_float(uint32_t hex, unsigned m, unsigned e);
 /* PICA multiplication: infinity times zero is zero, not NaN */
 float snx_ctr_pica_mul(float a, float b);
 #endif

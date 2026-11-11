@@ -523,7 +523,8 @@ int main(void) {
         check(g_cb.calls == 0 && nvn_CommandBufferGetCommandMemoryUsed(&cpu, cb4) == 40, "two binds fill 40 bytes");
         nvn_CommandBufferDrawElements(&cpu, cb4, 4, 2, 36, 0x605660140ull);
         h4 = nvn_CommandBufferEndRecording(&cpu, cb4);
-        check(g_cb.calls == 1 && g_cb.size == 24, "the draw's 24 bytes call the callback once");
+        check(g_cb.calls == 1 && g_cb.size == 0x200,
+              "the draw's 24 bytes call the callback once, asked for the driver's 0x200 at least");
         check(nvn_CommandBufferGetCommandMemoryUsed(&cpu, cb4) == 24 &&
                   nvn_CommandBufferGetCommandMemorySize(&cpu, cb4) == 0x100,
               "the draw counts in the memory the callback added");
@@ -854,6 +855,52 @@ int main(void) {
               "at log level 2 the sixth bind of a program not initialized yet is said too");
         g_settings.log_level = 1;
         cpu.x[30] = 0x1234;
+    }
+    /* one game records each pipeline's state into command memory of a fixed size, and its callback stops the game:
+       the state commands count the driver's bytes (a stencil value one word for each face named, the primitive
+       restart one word and two more with its index, the rasterizer discard, a target's discard and the depth-stencil's
+       one word each, a counter's reset two), so memory that holds them on the console holds them here. Past it
+       the callback is asked for the driver's 0x200 bytes at least, and for a longer command's own */
+    {
+        const u64 cbq = 0x4e000, data = 0x4e800;
+        const u64 used = 8 + 4 + 4 + 0 + 4 + 12 + 4 + 4 + 4 + 8;
+        Walk w;
+        int calls = g_cb.calls;
+        nvn_CommandBufferInitialize(&cpu, cbq, 0);
+        nvn_CommandBufferSetMemoryCallback(&cpu, cbq, CALLBACK_PC);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbq, 1, 0x2e000, used);
+        nvn_CommandBufferBeginRecording(&cpu, cbq);
+        nvn_CommandBufferSetStencilValueMask(&cpu, cbq, NVN_FACE_FRONT_AND_BACK, 0xff);
+        nvn_CommandBufferSetStencilMask(&cpu, cbq, NVN_FACE_FRONT, 0x0f);
+        nvn_CommandBufferSetStencilRef(&cpu, cbq, NVN_FACE_BACK, 3);
+        nvn_CommandBufferSetStencilRef(&cpu, cbq, NVN_FACE_NONE, 5);
+        nvn_CommandBufferSetPrimitiveRestart(&cpu, cbq, 0, 0);
+        nvn_CommandBufferSetPrimitiveRestart(&cpu, cbq, 1, 0xffff);
+        nvn_CommandBufferSetRasterizerDiscard(&cpu, cbq, 1);
+        nvn_CommandBufferDiscardColor(&cpu, cbq, 2);
+        nvn_CommandBufferDiscardDepthStencil(&cpu, cbq);
+        nvn_CommandBufferResetCounter(&cpu, cbq, 0);
+        check(g_cb.calls == calls, "a pipeline's state in the memory the driver's bytes fill calls no callback");
+        check(nvn_CommandBufferGetCommandMemoryUsed(&cpu, cbq) == used &&
+                  nvn_CommandBufferGetCommandMemoryFree(&cpu, cbq) == 0,
+              "the state commands count the driver's 52 bytes");
+        nvn_CommandBufferSetStencilRef(&cpu, cbq, NVN_FACE_FRONT_AND_BACK, 7);
+        check(g_cb.calls == calls + 1 && g_cb.event == NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY &&
+                  g_cb.size == 0x200,
+              "past the memory, a command of 8 bytes asks the callback for the driver's 0x200");
+        check(nvn_CommandBufferGetCommandMemoryUsed(&cpu, cbq) == 8, "and counts in the memory it added");
+        nvn_CommandBufferUpdateUniformBuffer(&cpu, cbq, 0x605640000ull, 0x1000, 0, 0x300, data);
+        check(g_cb.calls == calls + 2 && g_cb.size == 36 + 0x300,
+              "a command longer than 0x200 bytes asks for its own 0x324");
+        walk(nvn_CommandBufferEndRecording(&cpu, cbq), &w);
+        check(w.n == 12 && w.op[0] == OP_STENCIL && w.op[3] == OP_STENCIL && w.op[4] == OP_PRIM_RESTART &&
+                  w.op[5] == OP_PRIM_RESTART && w.op[6] == OP_RAST_DISCARD && w.op[7] == OP_DISCARD &&
+                  w.op[8] == OP_DISCARD && w.op[9] == OP_RESET_COUNTER && w.op[10] == OP_STENCIL &&
+                  w.op[11] == OP_UPDATE_UB,
+              "the recording replays whole, in order");
+        check(snx_ld_le32(GP(w.at[5] + 8 + offsetof(NvnPPrimRestart, index))) == 0xffff &&
+                  snx_ld_le32(GP(w.at[10] + 8 + offsetof(NvnPStencil, ref))) == 7,
+              "with the values recorded");
     }
     if (failures) return 1;
     puts("nvn_commands: ok");

@@ -178,11 +178,6 @@ void snx_ctr_fs_config(const SnxCtrPica* p, SnxCtrFsConfig* c) {
     }
 }
 
-const char* snx_ctr_fs_unsupported(const SnxCtrFsConfig* c) {
-    if (c->shadow_rendering) return "shadow rendering";
-    return NULL;
-}
-
 /* ---- the generator (glsl_fs_shader_gen.cpp), written as SPIR-V ---- */
 
 /* Azahar's GLSL operation by operation, as glslang translates each: its mutable variables are SSA values here
@@ -1385,30 +1380,8 @@ void snx_ctr_fs_spirv(const SnxCtrFsConfig* c, bool preserve_infnan, uint32_t** 
 
 /* ---- uniforms (rasterizer_accelerated.cpp SyncDrawUniforms) ---- */
 
-/* Pica::Float<M, E>::FromRaw: denormals renormalized, an all-ones exponent infinity or NaN */
-static float pica_float(uint32_t hex, unsigned m, unsigned e) {
-    int bias = 127 - ((1 << (e - 1)) - 1), exponent = (int)((hex >> m) & ((1u << e) - 1));
-    uint32_t mantissa = hex & ((1u << m) - 1), sign = ((hex >> (e + m)) & 1) << 31, out;
-    float f;
-    if (!exponent && !mantissa)
-        out = sign;
-    else if (!exponent) {
-        exponent = bias + 1;
-        while (!(mantissa & (1u << m))) {
-            --exponent;
-            mantissa <<= 1;
-        }
-        mantissa &= (1u << m) - 1;
-        out = sign | ((uint32_t)exponent << 23) | (mantissa << (23 - m));
-    } else if (exponent == (1 << e) - 1)
-        out = sign | (0xffu << 23) | (mantissa << (23 - m));
-    else
-        out = sign | ((uint32_t)(bias + exponent) << 23) | (mantissa << (23 - m));
-    memcpy(&f, &out, 4);
-    return f;
-}
-static float f16(uint32_t raw) { return pica_float(raw & 0xffff, 10, 5); }
-static float f20(uint32_t raw) { return pica_float(raw & 0xfffff, 12, 7); }
+static float f16(uint32_t raw) { return snx_ctr_pica_float(raw & 0xffff, 10, 5); }
+static float f20(uint32_t raw) { return snx_ctr_pica_float(raw & 0xfffff, 12, 7); }
 
 static void rgba8(uint32_t c, float out[4]) {
     for (unsigned i = 0; i < 4; ++i) out[i] = (float)snx_bits(c, i * 8, 8) / 255.0f;

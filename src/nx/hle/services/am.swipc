@@ -198,6 +198,40 @@ interface nn::am::service::IApplicationFunctions {
     @stub [170] SetHdcpAuthenticationActivated(b8 activated);
     # 20.0.0+, unnamed on Switchbrew; Eden's Unknown210 gives an event
     [210] GetUnknownEvent210() -> handle<copy, event> event;
+    # nn::album::InitializeMovieMaker's: the movie maker, over its work memory
+    [1000] CreateMovieMaker(u64 size, handle<copy, transfer_memory> transfer_memory)
+        -> object<nn::am::service::IMovieMaker> movie_maker;
+}
+
+# CreateMovieMaker's: grc's movie maker, and the offscreen layer am made for the game to draw the movie in
+interface nn::am::service::IMovieMaker {
+    [0] GetGrcMovieMaker() -> object<nn::grcsrv::IMovieMaker> movie_maker;
+    [1] GetLayerHandle() -> u64 layer_handle;
+}
+
+# grc's movie maker: the album's movie of what the game draws in an offscreen layer, a buffer queue of vi's that is
+# never shown, reached through the video proxy's binder. The commands are read from the SDK's nn::grcsrv client. This
+# runtime records no movie: a recording is refused (am.c)
+type nn::grcsrv::OffscreenRecordingParameter = bytes<0x80, 8>;
+interface nn::grcsrv::IMovieMaker {
+    [2] CreateVideoProxy() -> object<nns::hosbinder::IHOSBinderDriver> proxy;
+    [9] SetAlbumShimLibraryVersion(u64 version);
+    [10] OpenOffscreenLayer(u64 layer_handle) -> i32 binder_id;
+    [11] CloseOffscreenLayer(u64 layer_handle);
+    [20] StartOffscreenRecording(u64 layer_handle);
+    [21] AbortOffscreenRecording(u64 layer_handle);
+    [22] RequestOffscreenRecordingFinishReady(u64 layer_handle);
+    [23] CompleteOffscreenRecordingFinish(u64 layer_handle, buffer<u8, 5> data);
+    [24] StartOffscreenRecordingEx(u64 layer_handle, nn::grcsrv::OffscreenRecordingParameter parameter);
+    [25] CompleteOffscreenRecordingFinishEx0(u64 layer_handle, buffer<u8, 5> data, buffer<u8, 5> thumbnail,
+                                             i32 thumbnail_width, i32 thumbnail_height);
+    # the movie's nn::capsrv::ApplicationAlbumEntry
+    [26] CompleteOffscreenRecordingFinishEx1(u64 layer_handle, buffer<u8, 5> data, buffer<u8, 5> thumbnail,
+                                             i32 thumbnail_width, i32 thumbnail_height) -> bytes<0x20, 8> entry;
+    [30] GetOffscreenLayerError(u64 layer_handle);
+    [41] EncodeOffscreenLayerAudioSample(u64 layer_handle, buffer<u8, 5> sample) -> u64 encoded_size;
+    [50] GetOffscreenLayerRecordingFinishReadyEvent(u64 layer_handle) -> handle<copy, event> event;
+    [52] GetOffscreenLayerAudioEncodeReadyEvent(u64 layer_handle) -> handle<copy, event> event;
 }
 
 interface nn::am::service::ILibraryAppletCreator {

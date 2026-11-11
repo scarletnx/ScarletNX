@@ -84,6 +84,8 @@ typedef struct {
     u32* addr_key;
     u32 dyn_keys[16], ndyn_keys; /* the keys an address may be one of where they met (track_conflict) */
     u32 table_banks;             /* the banks whose pointer tables (SH_GBUF_TABLE) addresses come from */
+    u32 table_cells;             /* ShaderInfo.table_cells */
+    u32 pairs[8][2], npairs; /* the two constant buffer bases of an address that adds both (track_step) */
     u32* jump_first; /* by instruction, the first of the BRAs and BRX that go to it in jump_from (n + 1 words), and */
     u32* jump_from;  /* those instructions: made the first time reg_const_at needs them (flow_sources) */
     u32 cur;         /* the instruction being written */
@@ -917,8 +919,10 @@ static void global_dynamic(Ctx* c, const Sm86Insn* in, int kind, u32 opcode, int
         for (u32 k = 0; k < words && in->dst + k < SM86_RZ; k++) wr(c, in->dst + k, c->zero);
     /* the program's buffers, each key once, in the order of their first access, then the candidates of addresses
        that met */
-    u32 keys[16], nkeys = 0;
-    for (u32 i = 0; i < c->n + c->ndyn_keys; i++) {
+    u32 keys[16], nkeys = 0, pair = c->addr_key[3 * (c->n + 1) + c->cur];
+    for (u32 k = 0; pair && k < 2; k++)
+        if (SH_GBUF_BANK(SH_GBUF_PARENT(c->pairs[pair - 1][k] - 1)) < 18) keys[nkeys++] = c->pairs[pair - 1][k] - 1;
+    for (u32 i = 0; !pair && i < c->n + c->ndyn_keys; i++) {
         u32 key = i < c->n ? c->addr_key[i] : c->dyn_keys[i - c->n] + 1, seen = 0;
         if (!key || SH_GBUF_BANK(SH_GBUF_PARENT(key - 1)) >= 18) continue;
         for (u32 k = 0; k < nkeys; k++) seen |= keys[k] == key - 1;
@@ -963,14 +967,20 @@ static void global_dynamic(Ctx* c, const Sm86Insn* in, int kind, u32 opcode, int
 /* what track_globals follows at an instruction: each register's key (a global buffer's SH_GBUF_* + 1, 0 for none),
    whether it holds that buffer's base itself with nothing added (where the program loads a pointer from, an
    indirect buffer's cell), and whether its value came from memory (a pointer the program loaded, through moves and
-   arithmetic: global_dynamic's), and the bank + 1 of the pointer table it came from (SH_GBUF_TABLE), then the opcode
-   that last wrote it (for the message of an address without a key). The keys and flags first: the flow settles on
-   them */
+   arithmetic: global_dynamic's), and the bank + 1 of the pointer table it came from (SH_GBUF_TABLE), whether it holds
+   one of the table's words itself (moved, nothing added), and the cells of the memory a table's word points to that
+   it was loaded from (bit k: the 8 bytes at 8 * k, through arithmetic, ShaderInfo.table_cells), then the opcode that
+   last wrote it (for the message of an address without a key), and whether it holds the constant 1 (a MOV of it). The
+   keys and flags first: the flow settles on them */
 typedef struct {
     u32 rkey[256], ukey[64];
     u8 rexact[256], uexact[64];
     u8 rdyn[256], udyn[64];
     u8 rtab[256], utab[64];
+    u8 rtabx[256], utabx[64];
+    u32 rcell[256], ucell[64];
+    u8 rone[256], uone[64];
+    u8 rpair[256], upair[64];
     u16 rsrc[256], usrc[64];
 } TrackState;
 #define TRACK_KEYS offsetof(TrackState, rsrc)
@@ -1003,6 +1013,22 @@ static u32 src_tab(const TrackState* s, const Sm86Src* x) {
            : x->kind == SM86_SRC_UREG && x->reg < SM86_URZ ? s->utab[x->reg]
                                                            : 0;
 }
+static u32 src_pair(const TrackState* s, const Sm86Src* x) {
+    return x->kind == SM86_SRC_REG && x->reg < SM86_RZ     ? s->rpair[x->reg]
+           : x->kind == SM86_SRC_UREG && x->reg < SM86_URZ ? s->upair[x->reg]
+                                                           : 0;
+}
+static int src_one(const TrackState* s, const Sm86Src* x) {
+    return x->kind == SM86_SRC_IMM                         ? x->value == 1
+           : x->kind == SM86_SRC_REG && x->reg < SM86_RZ   ? s->rone[x->reg]
+           : x->kind == SM86_SRC_UREG && x->reg < SM86_URZ ? s->uone[x->reg]
+                                                           : 0;
+}
+static u32 src_cell(const TrackState* s, const Sm86Src* x) {
+    return x->kind == SM86_SRC_REG && x->reg < SM86_RZ     ? s->rcell[x->reg]
+           : x->kind == SM86_SRC_UREG && x->reg < SM86_URZ ? s->ucell[x->reg]
+                                                           : 0;
+}
 /* a register (uniform when u) takes a key: a guarded write over an indirect key, or of one over another key, leaves it
    as either, a candidate pair for global_dynamic */
 static void track_write(Ctx* c, TrackState* s, int u, u32 d, u32 key, int exact, int dyn, u16 op, int always) {
@@ -1013,6 +1039,8 @@ static void track_write(Ctx* c, TrackState* s, int u, u32 d, u32 key, int exact,
         key = 0, exact = 0, dyn = 1;
     }
     keys[d] = key;
+    (u ? s->uone : s->rone)[d] = 0;
+    (u ? s->upair : s->rpair)[d] = 0;
     (u ? s->uexact : s->rexact)[d] = (u8)exact;
     (u ? s->udyn : s->rdyn)[d] = (u8)dyn;
     (u ? s->usrc : s->rsrc)[d] = op;
@@ -1033,8 +1061,15 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
         c->addr_key[n1 + i] = ur < SM86_URZ && s->ukey[ur] ? s->usrc[ur] : reg < SM86_RZ ? s->rsrc[reg] : 0;
         if (!k && ur < SM86_URZ && !s->ukey[ur] && s->usrc[ur]) c->addr_key[n1 + i] = s->usrc[ur];
         c->addr_key[2 * n1 + i] = (ur < SM86_URZ && s->udyn[ur]) || (reg < SM86_RZ && s->rdyn[reg]);
+        c->addr_key[3 * n1 + i] = ur < SM86_URZ && s->upair[ur] ? s->upair[ur] : reg < SM86_RZ ? s->rpair[reg] : 0;
         u32 tab = ur < SM86_URZ && s->utab[ur] ? s->utab[ur] : reg < SM86_RZ ? s->rtab[reg] : 0;
         if (tab) c->table_banks |= 1u << (tab - 1);
+        /* an address loaded from the memory a table's word points to: the renderer binds where those cells point
+           too (ShaderInfo.table_cells) */
+        c->table_cells |= (ur < SM86_URZ ? s->ucell[ur] : 0) | (reg < SM86_RZ ? s->rcell[reg] : 0);
+        /* the address is one of the table's words itself, plus the offset: the pairs an LDG.64 or .128 loads there
+           are its target's cells */
+        int table_word = ur < SM86_URZ ? reg >= SM86_RZ && s->utabx[ur] : reg < SM86_RZ && s->rtabx[reg];
         if (op == SM86_LDG || op == SM86_LDG_NOU || op == SM86_ATOMG || op == SM86_ATOMG_NOU) {
             /* the words loaded are data: one, or two or four for an LDG.64 or .128, from memory */
             u32 type = sm86_field(in, 73, 3), words = op == SM86_ATOMG || op == SM86_ATOMG_NOU ? 1
@@ -1050,10 +1085,14 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
             if (words >= 2 && (op == SM86_LDG || op == SM86_LDG_NOU) && k && !key_indirect(k) && exact &&
                 SH_GBUF_PARENT(k - 1) == k - 1 && !(imm & 7) && imm + 8 * (words / 2 - 1) <= SH_GBUF_CELL_MAX)
                 cell = (k - 1) | 1u << 31 | imm / 8 << 21;
+            int cells = table_word && words >= 2 && (op == SM86_LDG || op == SM86_LDG_NOU) && !(imm & 7) &&
+                        imm + 8 * (words / 2 - 1) < 8 * 32;
             for (u32 w = 0; w < words && in->dst + w < SM86_RZ; w++) {
                 u32 key = cell && !(w & 1) ? (cell + (w / 2 << 21)) + 1 : 0;
                 track_write(c, s, 0, in->dst + w, key, key != 0, !key, (u16)op, always);
-                s->rtab[in->dst + w] = 0;
+                s->rtab[in->dst + w] = cells ? (u8)tab : 0;
+                s->rtabx[in->dst + w] = 0;
+                s->rcell[in->dst + w] = cells ? 1u << (imm + 4 * (w & ~1u)) / 8 : 0;
             }
         }
         return;
@@ -1062,11 +1101,11 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
         u32 type = sm86_field(in, 73, 3), words = type == 5 ? 2 : type == 6 ? 4 : 1;
         for (u32 w = 0; w < words && in->dst + w < SM86_RZ; w++) {
             track_write(c, s, 0, in->dst + w, 0, 0, 1, (u16)op, always);
-            s->rtab[in->dst + w] = 0;
+            s->rtab[in->dst + w] = 0, s->rtabx[in->dst + w] = 0, s->rcell[in->dst + w] = 0;
         }
         return;
     }
-    u32 key = 0, tab = 0;
+    u32 key = 0, tab = 0, tabx = 0, cellm = 0, pair = 0;
     int found = 0, exact = 0, dyn = 0;
     if (op == SM86_ULDC || (op == SM86_LDC && sm86_field(in, 24, 8) == SM86_RZ))
         key = (sm86_field(in, 54, 5) << 16 | sm86_field(in, 38, 16)) + 1, found = 1, exact = 1;
@@ -1074,13 +1113,17 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
         const Sm86Src* b = &in->b;
         if (op == SM86_R2UR) {
             u32 r = sm86_field(in, 24, 8) & 255;
-            key = s->rkey[r], exact = s->rexact[r], dyn = s->rdyn[r], tab = s->rtab[r];
+            if (r < SM86_RZ)
+                key = s->rkey[r], exact = s->rexact[r], dyn = s->rdyn[r], tab = s->rtab[r], tabx = s->rtabx[r],
+                cellm = s->rcell[r], pair = s->rpair[r];
         } else if (b->kind == SM86_SRC_CBUF && !b->bindless)
             key = (u32)(b->bank << 16 | b->value) + 1, exact = 1;
         else if (b->kind == SM86_SRC_REG && b->reg < SM86_RZ)
-            key = s->rkey[b->reg], exact = s->rexact[b->reg], dyn = s->rdyn[b->reg], tab = s->rtab[b->reg];
+            key = s->rkey[b->reg], exact = s->rexact[b->reg], dyn = s->rdyn[b->reg], tab = s->rtab[b->reg],
+            tabx = s->rtabx[b->reg], cellm = s->rcell[b->reg], pair = s->rpair[b->reg];
         else if (b->kind == SM86_SRC_UREG && b->reg < SM86_URZ)
-            key = s->ukey[b->reg], exact = s->uexact[b->reg], dyn = s->udyn[b->reg], tab = s->utab[b->reg];
+            key = s->ukey[b->reg], exact = s->uexact[b->reg], dyn = s->udyn[b->reg], tab = s->utab[b->reg],
+            tabx = s->utabx[b->reg], cellm = s->ucell[b->reg], pair = s->upair[b->reg];
         found = 1;
     } else if ((op == SM86_IADD3 || op == SM86_UIADD3 || op == SM86_IMAD || op == SM86_UIMAD || op == SM86_IMAD_WIDE ||
                 op == SM86_UIMAD_WIDE || op == SM86_LEA || op == SM86_ULEA) &&
@@ -1090,8 +1133,9 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
            one, which a pointer the program loaded has: one of each is the constant buffer's, as before there were
            indirect keys */
         const Sm86Src* s3[3] = {&in->a, &in->b, &in->c};
-        u32 count = 0, first = 0, last = 3, indirect = 0, nindirect = 0;
-        if (op == SM86_IMAD || op == SM86_UIMAD || op == SM86_IMAD_WIDE || op == SM86_UIMAD_WIDE)
+        u32 count = 0, first = 0, last = 3, indirect = 0, nindirect = 0, bases[3];
+        int imad = op == SM86_IMAD || op == SM86_UIMAD || op == SM86_IMAD_WIDE || op == SM86_UIMAD_WIDE;
+        if (imad)
             first = 2; /* a product is an offset: only the sum's c can be the base */
         else if (op == SM86_LEA || op == SM86_ULEA)
             first = 1, last = 2; /* the shifted a is an offset: only b */
@@ -1100,7 +1144,24 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
             if (key_indirect(v))
                 indirect = v, nindirect++;
             else if (v)
-                key = v, count++;
+                key = v, bases[count++] = v;
+        }
+        /* but a product by 1 is its other factor, which may be the base: one game's program adds the address that
+           c[0][0x20] holds to the offset in c[1][0] with UIMAD.WIDE UR4, UR6, UR8, UR4, UR6 1 */
+        if (imad && (src_one(s, &in->a) || src_one(s, &in->b))) {
+            u32 v = src_key(s, src_one(s, &in->a) ? &in->b : &in->a);
+            if (v && !key_indirect(v)) key = v, bases[count++] = v;
+        }
+        if (count >= 2) {
+            /* two bases, one of them an offset: the accesses at the sum compare their address with each of the two as
+               the program runs (global_dynamic), and with no other buffer */
+            for (u32 k = 0; k < c->npairs && !pair; k++)
+                if (c->pairs[k][0] == bases[0] && c->pairs[k][1] == bases[1]) pair = k + 1;
+            if (!pair && c->npairs < 8) {
+                c->pairs[c->npairs][0] = bases[0], c->pairs[c->npairs][1] = bases[1];
+                pair = ++c->npairs;
+            }
+            dyn = 1;
         }
         if (count != 1) key = !count && nindirect == 1 ? indirect : 0;
         found = 1;
@@ -1117,6 +1178,8 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
         case SM86_ULOP3:
             dyn |= src_dyn(s, &in->c);
             if (!tab) tab = src_tab(s, &in->c);
+            cellm |= src_cell(s, &in->c);
+            if (!pair) pair = src_pair(s, &in->c);
             /* fall through */
         case SM86_LEA:
         case SM86_ULEA:
@@ -1124,11 +1187,14 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
         case SM86_USEL:
             dyn |= src_dyn(s, &in->a) || src_dyn(s, &in->b);
             if (!tab) tab = src_tab(s, &in->a) ? src_tab(s, &in->a) : src_tab(s, &in->b);
+            cellm |= src_cell(s, &in->a) | src_cell(s, &in->b);
+            if (!pair) pair = src_pair(s, &in->a) ? src_pair(s, &in->a) : src_pair(s, &in->b);
             break;
         case SM86_SHF:
         case SM86_USHF:
             dyn |= src_dyn(s, &in->a) || src_dyn(s, &in->c);
             if (!tab) tab = src_tab(s, &in->a) ? src_tab(s, &in->a) : src_tab(s, &in->c);
+            cellm |= src_cell(s, &in->a) | src_cell(s, &in->c);
             break;
         default: break;
     }
@@ -1136,7 +1202,7 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
        windows the addresses made from it are compared with (track_globals adds them once the flow settles) */
     if (op == SM86_LDC && sm86_field(in, 24, 8) < SM86_RZ && sm86_field(in, 73, 3) == 5 && c->stage == ST_CS &&
         sm86_field(in, 54, 5) < 18)
-        dyn = 1, tab = sm86_field(in, 54, 5) + 1;
+        dyn = 1, tab = sm86_field(in, 54, 5) + 1, tabx = 1;
     /* the destination: the key, or none for any other write (the high word of a pair takes none either) */
     u32 d = uniform || op == SM86_ULDC || op == SM86_UMOV || op == SM86_R2UR ? sm86_field(in, 16, 6) : in->dst;
     int to_uniform = uniform || op == SM86_ULDC || op == SM86_R2UR || op == SM86_S2UR || op == SM86_ULDC_IDX;
@@ -1146,17 +1212,24 @@ static void track_step(Ctx* c, u32 i, TrackState* s) {
     int wide = ((op == SM86_ULDC || op == SM86_LDC) && sm86_field(in, 73, 3) == 5) || op == SM86_IMAD_WIDE ||
                op == SM86_UIMAD_WIDE;
     if (!found) key = 0, exact = 0;
+    int one = (op == SM86_MOV || op == SM86_UMOV) && src_one(s, &in->b);
     if (to_uniform) {
         track_write(c, s, 1, d, key, exact, dyn, (u16)op, always);
-        if (d < SM86_URZ) s->utab[d] = (u8)tab;
+        if (d < SM86_URZ)
+            s->utab[d] = (u8)tab, s->utabx[d] = (u8)tabx, s->ucell[d] = cellm, s->uone[d] = (u8)one,
+                      s->upair[d] = (u8)pair;
         if (wide && d + 1 < SM86_URZ)
-            s->ukey[d + 1] = 0, s->uexact[d + 1] = 0, s->udyn[d + 1] = (u8)dyn, s->utab[d + 1] = (u8)tab;
+            s->ukey[d + 1] = 0, s->uexact[d + 1] = 0, s->udyn[d + 1] = (u8)dyn, s->utab[d + 1] = (u8)tab,
+                      s->utabx[d + 1] = 0, s->ucell[d + 1] = cellm, s->uone[d + 1] = 0, s->upair[d + 1] = (u8)pair;
     } else if ((sm86_ops[op].kind == SM86_K_ALU || op == SM86_LDC || op == SM86_S2R || op == SM86_CS2R) &&
                op != SM86_FSETP && op != SM86_ISETP && op != SM86_DSETP && op != SM86_HSETP2 && op != SM86_R2P) {
         track_write(c, s, 0, d, key, exact, dyn, (u16)op, always);
-        if (d < SM86_RZ) s->rtab[d] = (u8)tab;
+        if (d < SM86_RZ)
+            s->rtab[d] = (u8)tab, s->rtabx[d] = (u8)tabx, s->rcell[d] = cellm, s->rone[d] = (u8)one,
+                      s->rpair[d] = (u8)pair;
         if (wide && d + 1 < SM86_RZ)
-            s->rkey[d + 1] = 0, s->rexact[d + 1] = 0, s->rdyn[d + 1] = (u8)dyn, s->rtab[d + 1] = (u8)tab;
+            s->rkey[d + 1] = 0, s->rexact[d + 1] = 0, s->rdyn[d + 1] = (u8)dyn, s->rtab[d + 1] = (u8)tab,
+                      s->rtabx[d + 1] = 0, s->rcell[d + 1] = cellm, s->rone[d + 1] = 0, s->rpair[d + 1] = (u8)pair;
     }
 }
 /* BRX, and BRXU, which takes its index from a uniform register */
@@ -1169,10 +1242,15 @@ static int flow_sources(Ctx* c);
    reached predecessors end with where they agree, until no block's end changes. In program order, a jump table's
    cases wrote over a register that the code after them had from before them, on every path */
 /* where two paths meet: the keys they agree on, exact where both are; dyn where either is, or where an indirect key
-   meets another (track_conflict) */
-static void track_meet(Ctx* c, u32* key, u8* exact, u8* dyn, u8* tab, const u32* key2, const u8* exact2, const u8* dyn2,
-                       const u8* tab2, u32 n) {
+   meets another (track_conflict); a table's word itself where both have it, the cells either came from */
+static void track_meet(Ctx* c, u32* key, u8* exact, u8* dyn, u8* tab, u8* tabx, u32* cell, u8* one, u8* pair,
+                       const u32* key2, const u8* exact2, const u8* dyn2, const u8* tab2, const u8* tabx2,
+                       const u32* cell2, const u8* one2, const u8* pair2, u32 n) {
     for (u32 r = 0; r < n; r++) {
+        one[r] &= one2[r];
+        if (pair[r] != pair2[r]) pair[r] = 0; /* then compared with every buffer */
+        tabx[r] &= tabx2[r] & (tab[r] == tab2[r]);
+        cell[r] |= cell2[r];
         if (!tab[r]) tab[r] = tab2[r]; /* a pointer from a table on either path; two tables keep the first */
         if (key[r] != key2[r]) {
             if (key_indirect(key[r]) || key_indirect(key2[r])) {
@@ -1187,7 +1265,7 @@ static void track_meet(Ctx* c, u32* key, u8* exact, u8* dyn, u8* tab, const u32*
 }
 static int track_globals(Ctx* c) {
     u32 n = c->n, nb = 0;
-    c->addr_key = calloc(3 * ((size_t)n + 1), sizeof *c->addr_key);
+    c->addr_key = calloc(4 * ((size_t)n + 1), sizeof *c->addr_key);
     if (!c->addr_key || !flow_sources(c)) return 0;
     if (c->failed) return 1;
     u32* start = malloc(((size_t)n + 1) * sizeof *start);
@@ -1232,10 +1310,12 @@ static int track_globals(Ctx* c) {
                     *s = out[p];
                     continue;
                 }
-                track_meet(c, s->rkey, s->rexact, s->rdyn, s->rtab, out[p].rkey, out[p].rexact, out[p].rdyn,
-                           out[p].rtab, 256);
-                track_meet(c, s->ukey, s->uexact, s->udyn, s->utab, out[p].ukey, out[p].uexact, out[p].udyn,
-                           out[p].utab, 64);
+                track_meet(c, s->rkey, s->rexact, s->rdyn, s->rtab, s->rtabx, s->rcell, s->rone, s->rpair,
+                           out[p].rkey, out[p].rexact, out[p].rdyn, out[p].rtab, out[p].rtabx, out[p].rcell,
+                           out[p].rone, out[p].rpair, 256);
+                track_meet(c, s->ukey, s->uexact, s->udyn, s->utab, s->utabx, s->ucell, s->uone, s->upair,
+                           out[p].ukey, out[p].uexact, out[p].udyn, out[p].utab, out[p].utabx, out[p].ucell,
+                           out[p].uone, out[p].upair, 64);
             }
             if (!preds) continue; /* nothing reaches it yet */
             for (u32 i = first; i < start[b + 1]; i++) track_step(c, i, s);
@@ -1244,11 +1324,38 @@ static int track_globals(Ctx* c) {
             reached[b] = 1;
         }
     }
+    /* an address at the sum of two bases (track_step's pairs) binds both of them. Where that would take the program
+       past its 16 buffer slots, the base is the product's factor, the 64-bit address of a pair of constant buffer
+       words: the other is the offset in every program of one game that adds two (c[1][0] or c[1][8], 0 as it runs) */
+    if (ok && c->npairs) {
+        u32 seen[24], nseen = 0;
+        for (u32 i = 0; i < n + c->ndyn_keys + 2 * c->npairs; i++) {
+            u32 key = i < n                   ? c->addr_key[i]
+                      : i < n + c->ndyn_keys ? c->dyn_keys[i - n] + 1
+                                              : c->pairs[(i - n - c->ndyn_keys) / 2][(i - n - c->ndyn_keys) & 1],
+                dup = 0;
+            if (!key) continue;
+            for (u32 k = 0; k < nseen; k++) dup |= seen[k] == key;
+            if (!dup && nseen < 24) seen[nseen++] = key;
+        }
+        if (nseen > 16)
+            for (u32 i = 0; i < n; i++) {
+                u32 p = c->addr_key[3 * (n + 1) + i];
+                if (!p || c->addr_key[i]) continue;
+                c->addr_key[i] = c->pairs[p - 1][1];
+                c->addr_key[2 * (n + 1) + i] = 0;
+                c->addr_key[3 * (n + 1) + i] = 0;
+            }
+    }
     /* each pointer table's windows: the buffer slots the program's other buffers leave, shared among its tables */
     if (ok && c->table_banks) {
+        c->si->table_cells = c->table_cells;
         u32 others[16], nothers = 0, ntables = snx_popcount64(c->table_banks);
-        for (u32 i = 0; i < n + c->ndyn_keys; i++) {
-            u32 key = i < n ? c->addr_key[i] : c->dyn_keys[i - n] + 1, seen = 0;
+        for (u32 i = 0; i < n + c->ndyn_keys + 2 * c->npairs; i++) {
+            u32 key = i < n                   ? c->addr_key[i]
+                      : i < n + c->ndyn_keys ? c->dyn_keys[i - n] + 1
+                                              : c->pairs[(i - n - c->ndyn_keys) / 2][(i - n - c->ndyn_keys) & 1],
+                seen = 0;
             if (!key) continue;
             for (u32 k = 0; k < nothers; k++) seen |= others[k] == key;
             if (!seen && nothers < 16) others[nothers++] = key;
@@ -3457,8 +3564,11 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                                          cu(c, width)))
                               : spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_U_EXTRACT, c->t_u32, x, at, cu(c, width));
             }
-            u32 type = mode ? f64_type(c) : c->t_f32;
-            u32 v = is_signed ? spv_emit_unary(&c->e, SPV_OP_CONVERT_S_TO_F, type,
+            u32 type = mode ? f64_type(c) : c->t_f32, v;
+            if (!mode && src_size == 2 && (g_shader_i2f_nearest & (is_signed ? 1 : 2)))
+                v = spv_emit_int_to_f32_nearest(&c->e, x, is_signed);
+            else
+                v = is_signed ? spv_emit_unary(&c->e, SPV_OP_CONVERT_S_TO_F, type,
                                                spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, x))
                               : spv_emit_unary(&c->e, SPV_OP_CONVERT_U_TO_F, type, x);
             if (mode) v = round_f64(c, mode, v);

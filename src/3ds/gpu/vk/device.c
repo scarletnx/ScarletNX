@@ -108,6 +108,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     v->index8 = index8 && index_features.indexTypeUint8;
     v->logic_op = features.features.logicOp;
     v->clip_distance = features.features.shaderClipDistance;
+    v->fragment_stores = features.features.fragmentStoresAndAtomics;
     v->anisotropic = features.features.samplerAnisotropy;
     v->import_host = host;
     v->export_dmabuf = dmabuf;
@@ -543,12 +544,13 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
     v->anisotropy = snx_ctr_vk_anisotropy(g_settings.anisotropic_filtering, v->anisotropic,
                                           v->properties.limits.maxSamplerAnisotropy, said, sizeof said);
     if (said[0]) fprintf(stderr, "3ds gpu: %s\n", said);
-    /* a recording's sets: a draw takes two (three uniform blocks, three LUTs and three textures), a compute dispatch
-       one; running out finishes the recording early (vk/render.c) */
+    /* a recording's sets: a draw takes two (three uniform blocks, three LUTs and eight textures, tex0's six for a
+       shadow cube's faces) and a shadow pass one more, a compute dispatch one; running out finishes the recording
+       early (vk/render.c) */
     VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8192},
                                     {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 * 4096},
                                     {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4096},
-                                    {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 * 4096},
+                                    {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 * 4096},
                                     {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 3 * 4096}};
     VkDescriptorPoolCreateInfo dp = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                      .maxSets = 12288,

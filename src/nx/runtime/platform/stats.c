@@ -5,24 +5,19 @@
 #include "nx/runtime/platform/vpad.h"
 #include "common/utilities/common.h"
 #include "gui/icons.h"
-#include "gui_theme_colors.h"
+#include "nx/runtime/platform/ui_colors.h"
 #include "snx_settings.h"
 #include <stdio.h>
 #include <string.h>
 
-/* the menu's colours (gui_theme_colors.h, the YoRHa theme) as R G B A bytes */
-#define STATS_RGBA(rgb, a) ((u32)(a) << 24 | ((rgb) & 0xFFu) << 16 | ((rgb) & 0xFF00u) | ((rgb) >> 16 & 0xFFu))
 /* no box behind the lines: each letter and icon backed (ui.h's UI_BACKED), its clear pixels in the ground's colour,
    a line a band of it from its icon to its field's end, and the graph on the same ground. All of them opaque, which
-   the renderer draws without blending (gpu/vk/ui.c) */
-#define STATS_GROUND       STATS_RGBA(SNX_GUI_THEME_YORHA_INK, 0xFFu)
-#define STATS_TEXT         STATS_RGBA(SNX_GUI_THEME_YORHA_PAGE, 0xFFu)
-#define STATS_GUIDE        STATS_RGBA(SNX_GUI_THEME_YORHA_SOFT, 0xFFu)
-#define STATS_SLOW         STATS_RGBA(SNX_GUI_THEME_YORHA_FAILURE, 0xFFu)
-#define STATS_SPAN_NS      500000000ull  /* the frame rate is over the last half second */
-#define STATS_SAMPLE_NS    1000000000ull /* the processor and the memory are measured once a second */
-#define STATS_GRAPH_LINES  3             /* the graph's height, in lines */
-#define STATS_NOTE_MAX     256           /* a line's letters under the graph at most, with its NUL */
+   the renderer draws without blending (gpu/vk/ui.c). The layer's colours (ui_colors.h): the ground its ink, the
+   letters and the bars its page's, the guides soft, a slow frame's bar and a failure's line in the failure colour */
+#define STATS_SPAN_NS     500000000ull  /* the frame rate is over the last half second */
+#define STATS_SAMPLE_NS   1000000000ull /* the processor and the memory are measured once a second */
+#define STATS_GRAPH_LINES 3             /* the graph's height, in lines */
+#define STATS_NOTE_MAX    256           /* a line's letters under the graph at most, with its NUL */
 
 static struct {
     u64 at[STATS_FRAMES]; /* the presents of the game's last frames, a ring that next writes on */
@@ -70,7 +65,8 @@ typedef struct {
 } StatsKey;
 static u32 g_layout; /* the corner's changes (stats_corner_set, on the main thread) */
 static struct {
-    int laid; /* the quads are laid out for key */
+    int laid;    /* the quads are laid out for key */
+    float at[4]; /* the box they are laid out in: x, y, w, h */
     StatsKey key;
     char shortcut[sizeof g_settings.render_doc_capture_shortcut]; /* the capture key RenderDoc's line names */
     SnxUiQuad q[STATS_QUADS];
@@ -219,17 +215,17 @@ static void notes_make(StatsNotes* s, size_t room) {
             snprintf(lead, sizeof lead, "RenderDoc: %s captures", g_settings.render_doc_capture_shortcut);
         else
             snprintf(lead, sizeof lead, "RenderDoc: Capture frame in the menu");
-        note(s, GUI_ICON_IMAGE, STATS_TEXT, room, lead, "");
+        note(s, GUI_ICON_IMAGE, UI_PAGE, room, lead, "");
     }
     if (g_stats.capture.failed) {
         snprintf(lead, sizeof lead, "capture %u failed", g_stats.capture.taken + 1);
-        note(s, GUI_ICON_SAVE, STATS_SLOW, room, lead, "");
+        note(s, GUI_ICON_SAVE, UI_FAILURE, room, lead, "");
     } else if (g_stats.capture.taken) {
         const char* name = snx_path_leaf(g_stats.capture.path);
         snprintf(lead, sizeof lead, "capture %u: ", g_stats.capture.taken);
-        note(s, GUI_ICON_SAVE, STATS_TEXT, room, lead, *name ? name : "?");
+        note(s, GUI_ICON_SAVE, UI_PAGE, room, lead, *name ? name : "?");
     }
-    if (g_stats.debugger[0]) note(s, GUI_ICON_BUG, STATS_TEXT, room, "debugger attached: ", g_stats.debugger);
+    if (g_stats.debugger[0]) note(s, GUI_ICON_BUG, UI_PAGE, room, "debugger attached: ", g_stats.debugger);
 }
 /* stats_box's, with the lines under the graph it is made for */
 static void box_notes(const int safe[4], int scale, float box[4], StatsNotes* notes) {
@@ -254,6 +250,11 @@ static void box_notes(const int safe[4], int scale, float box[4], StatsNotes* no
 void stats_box(const int safe[4], int scale, float box[4]) {
     StatsNotes notes;
     box_notes(safe, scale, box, &notes);
+}
+int stats_box_drawn(float box[4]) {
+    if (!__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED) || !g_box.laid) return 0;
+    memcpy(box, g_box.at, sizeof g_box.at);
+    return 1;
 }
 
 /* the time between the frame j back from the newest and the one before it, in ms; j below count - 1 */
@@ -311,28 +312,33 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
     StatsNotes notes;
     unsigned j;
     box_notes(safe, scale, box, &notes);
+    /* what shows of it: its first column, a margin, draws nothing */
+    g_box.at[0] = box[0] + cw;
+    g_box.at[1] = box[1];
+    g_box.at[2] = box[2] - cw;
+    g_box.at[3] = box[3];
     for (j = 0; j < STATS_LINES; ++j) { /* the icon's two cells and one, then the line, as the menu's items */
         float y = box[1] + ch / 4 + (float)j * ch;
-        icon_backed(&l, box[0] + cw, y, scale, icons[j], STATS_TEXT);
+        icon_backed(&l, box[0] + cw, y, scale, icons[j], UI_PAGE);
         g_box.cells[j] =
-            ui_cells_backed(&l, box[0] + 4 * cw, y, scale, j == 1 ? STATS_CPU_CELLS : STATS_CELLS, STATS_TEXT);
+            ui_cells_backed(&l, box[0] + 4 * cw, y, scale, j == 1 ? STATS_CPU_CELLS : STATS_CELLS, UI_PAGE);
     }
-    icon_backed(&l, box[0] + STATS_GPU_AT * cw, box[1] + ch / 4 + ch, scale, GUI_ICON_GPU, STATS_TEXT);
+    icon_backed(&l, box[0] + STATS_GPU_AT * cw, box[1] + ch / 4 + ch, scale, GUI_ICON_GPU, UI_PAGE);
     g_box.gpu =
-        ui_cells_backed(&l, box[0] + (STATS_GPU_AT + 3) * cw, box[1] + ch / 4 + ch, scale, STATS_GPU_CELLS, STATS_TEXT);
+        ui_cells_backed(&l, box[0] + (STATS_GPU_AT + 3) * cw, box[1] + ch / 4 + ch, scale, STATS_GPU_CELLS, UI_PAGE);
     /* the graph right under the lines, as wide as their bands (STATS_GRAPH_W): each frame's time a bar up from its
        foot, the newest at the right, over the two guides; the last line says their quickest and slowest */
     g_box.gx = box[0] + cw;
     g_box.gw = STATS_GRAPH_W * cw;
     g_box.gy = box[1] + ch / 4 + STATS_LINES * ch;
     g_box.gh = STATS_GRAPH_LINES * ch;
-    ui_fill(&l, g_box.gx, g_box.gy, g_box.gw, g_box.gh, STATS_GROUND);
+    ui_fill(&l, g_box.gx, g_box.gy, g_box.gw, g_box.gh, UI_INK);
     for (j = 0; j < 2; ++j) {
         top = g_box.gy + g_box.gh - g_box.gh * guides[j] / STATS_TOP_MS;
-        ui_fill(&l, g_box.gx, top, g_box.gw, (float)scale, STATS_GUIDE);
+        ui_fill(&l, g_box.gx, top, g_box.gw, (float)scale, UI_SOFT);
     }
     g_box.bars = l.n;
-    ui_ring_bars(&l, g_box.gx, g_box.gy, g_box.gw, g_box.gh, STATS_BARS, STATS_TEXT); /* none yet */
+    ui_ring_bars(&l, g_box.gx, g_box.gy, g_box.gw, g_box.gh, STATS_BARS, UI_PAGE); /* none yet */
     memset(g_box.height, 0, sizeof g_box.height);
     ++g_box.ring_version;
     /* the lines under it, half a line down, each after its icon as the lines above */
@@ -452,6 +458,5 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
         g_box.measures = g_stats.measures;
     }
     ui_append_kept(l, &(SnxUiList){g_box.q, g_box.n, STATS_QUADS}, g_box.version, &g_box, &g_box.changed);
-    ui_ring_set(g_box.height, STATS_BARS, (int)g_box.head, STATS_SLOW_FROM, STATS_SLOW, g_box.ring_version);
-    ui_ground_set(STATS_GROUND);
+    ui_ring_set(g_box.height, STATS_BARS, (int)g_box.head, STATS_SLOW_FROM, UI_FAILURE, g_box.ring_version);
 }

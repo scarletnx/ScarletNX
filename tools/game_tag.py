@@ -12,11 +12,13 @@
 A tag is `game-` and the first 8 hex digits of HMAC-SHA256(key, the game's ID in its normal form):
   - Switch: 16 hex digits from 01 (0x, any case and nx: allowed), cut to its application's base ID, so that the
     update (base + 0x800), the DLCs (base + 0x1000 + n) and the game's other programs share its tag: nx:<base>;
+  - the console's next generation: 16 hex digits from 04 (nx2: allowed), cut to its base ID by the Switch's rule:
+    nx2:<base>;
   - 3DS: 16 hex digits from 0004 (3ds: allowed), an update (0004000E...) or a DLC (0004008C...) taken to its
     application (00040000...): 3ds:<id>;
   - GBA: gba: and the 4-character game code of the cartridge header, in upper case: gba:<code>.
 The system prefix keeps two systems from ever sharing a tag. A Switch system title (010000000000xxxx) is no game:
-tag refuses one, and scan lets one pass.
+tag refuses one, and scan lets one pass; 040000000000xxxx is taken the same way.
 
 The key is 32 random bytes in game-tag.key of the user's config folder ($XDG_CONFIG_HOME/scarletnx or
 ~/.config/scarletnx, ~/Library/Application Support/scarletnx on macOS, %APPDATA%\\scarletnx on Windows); --key FILE
@@ -58,9 +60,10 @@ KEY_NAME = 'game-tag.key'
 KEY_BYTES = 32
 GAME_FILES = ('.nsp', '.xci', '.nsz', '.xcz', '.cia', '.3ds', '.cci')
 NX_FIRST_GAME = 0x0100000000010000  # below it, the console's own titles
+NX2_FIRST_GAME = 0x0400000000010000  # taken as the Switch's
 NX_BASE_MASK = ~0x1FFF  # an application ID has its low 13 bits clear; updates, DLCs and other programs set them
 CTR_GAMES = {0x00040000: 0x00040000, 0x00040002: 0x00040002, 0x0004000E: 0x00040000, 0x0004008C: 0x00040000}
-ID_FOLDER = re.compile(r'(01[0-9A-Fa-f]{14}|0004[0-9A-Fa-f]{12})(-|$)')
+ID_FOLDER = re.compile(r'(0[14][0-9A-Fa-f]{14}|0004[0-9A-Fa-f]{12})(-|$)')
 TAG = re.compile(r'game-[0-9a-f]{8}')
 WORD = re.compile(r'[0-9A-Za-z]+')
 NACP_TITLES = 16  # language entries of 0x300 bytes, each a 0x200-byte UTF-8 name then the publisher
@@ -79,9 +82,9 @@ def note(text):
 
 
 def normal(raw):
-    """The normal form of a title ID or game code (nx:..., 3ds:..., gba:...), or TagError naming it."""
+    """The normal form of a title ID or game code (nx:..., nx2:..., 3ds:..., gba:...), or TagError naming it."""
     s, system = raw.strip(), None
-    for prefix in ('nx', '3ds', 'gba'):
+    for prefix in ('nx', 'nx2', '3ds', 'gba'):
         if s.lower().startswith(prefix + ':'):
             system, s = prefix, s[len(prefix) + 1 :]
             break
@@ -91,18 +94,32 @@ def normal(raw):
         return 'gba:' + s.upper()
     h = s[2:] if s[:2] in ('0x', '0X') else s
     if not re.fullmatch(r'[0-9A-Fa-f]{16}', h):
-        raise TagError(f"'{raw}' is not a title ID: 16 hex digits (01... Switch, 0004... 3DS) or gba:CODE")
+        raise TagError(
+            f"'{raw}' is not a title ID: 16 hex digits (01... Switch, 04... its next generation, 0004... 3DS) "
+            f'or gba:CODE'
+        )
     v = int(h, 16)
     if system is None:
-        system = 'nx' if v >> 56 == 0x01 else '3ds' if v >> 48 == 0x0004 else None
+        system = 'nx' if v >> 56 == 0x01 else 'nx2' if v >> 56 == 0x04 else '3ds' if v >> 48 == 0x0004 else None
         if system is None:
-            raise TagError(f"'{raw}' is neither a Switch (01...) nor a 3DS (0004...) title ID")
+            raise TagError(
+                f"'{raw}' is no title ID of a system known here: Switch (01...), its next generation (04...) or "
+                f'3DS (0004...)'
+            )
     if system == 'nx':
         if v >> 56 != 0x01:
             raise TagError(f"'{raw}' is not a Switch title ID: 01 and 14 more hex digits")
         if v < NX_FIRST_GAME:
             raise TagError(f"'{raw}' is a Switch system title (below 0100000000010000), not a game: it takes no tag")
         return f'nx:{v & NX_BASE_MASK:016X}'
+    if system == 'nx2':
+        if v >> 56 != 0x04:
+            raise TagError(f"'{raw}' is not a next-generation title ID: 04 and 14 more hex digits")
+        if v < NX2_FIRST_GAME:
+            raise TagError(
+                f"'{raw}' is a next-generation system title (below 0400000000010000), not a game: it takes no tag"
+            )
+        return f'nx2:{v & NX_BASE_MASK:016X}'
     if v >> 48 != 0x0004:
         raise TagError(f"'{raw}' is not a 3DS title ID: 0004 and 12 more hex digits")
     high = v >> 32
@@ -119,7 +136,8 @@ def find_ids(text):
             if len(h) != 16 or not re.fullmatch(r'[0-9A-Fa-f]{16}', h):
                 continue
             v = int(h, 16)
-            if (v >> 56 == 0x01 and v >= NX_FIRST_GAME) or (v >> 32) in CTR_GAMES:
+            nx_game = (v >> 56 == 0x01 and v >= NX_FIRST_GAME) or (v >> 56 == 0x04 and v >= NX2_FIRST_GAME)
+            if nx_game or (v >> 32) in CTR_GAMES:
                 out.append((n, t, normal(h)))
     return out
 
@@ -240,7 +258,7 @@ def id_folder(path, name, found):
 
 def file_name(stem):
     """The game's name in a dump's file name: what comes before the first [ or ID, without a version or region."""
-    name = re.split(r'\[|(?<![0-9A-Za-z])(?:01[0-9A-Fa-f]{14}|0004[0-9A-Fa-f]{12})(?![0-9A-Za-z])', stem)[0]
+    name = re.split(r'\[|(?<![0-9A-Za-z])(?:0[14][0-9A-Fa-f]{14}|0004[0-9A-Fa-f]{12})(?![0-9A-Za-z])', stem)[0]
     name = re.sub(r'\s+v\d+(\.\d+)*$', '', name.strip())
     name = re.sub(r'\s+(usa|us|eur|eu|jpn|jp)$', '', name, flags=re.IGNORECASE).strip()
     return name or None

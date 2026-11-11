@@ -8,6 +8,7 @@
 
 #include "common/utilities/common.h"
 #include "common/cpu/recompiler/image.h"
+#include "nx/loader/nro_slots.h"
 #include <stddef.h>
 
 /* Where the first module goes: a 64-bit process's code region, and a 32-bit one's (mem.h's AS32_CODE_BASE). Each
@@ -128,6 +129,27 @@ int snx_load_nso(const char* path, const char* name, SnxModuleImage* module, cha
    its functions and relptrs keep bit 0 when it marks Thumb code */
 int snx_load_nso32(const char* path, const char* name, SnxModuleImage* module, char* error, size_t error_size);
 int snx_load_nro(const char* path, SnxModuleImage* module, char* error, size_t error_size);
+/* An NRO a program maps while it runs (ldr:ro), as a program of that one module at base, from its file's bytes: what
+   a recompile of its code for that address reads. name names it in messages. The NPDM's fields are npdm's, the
+   program's that maps it. No assets are read and no path is set */
+int snx_load_nro_at(const unsigned char* data, size_t size, const char* name, SnxU64 base, const SnxNpdm* npdm,
+                    SnxProgram* program, char* error, size_t error_size);
+/* Where the NROs a program maps while it runs go: slots[0..*count), each with its hash and its size in bytes, put in
+   the order of their hashes, one left of two with the same hash, and each given its size in whole pages and its base,
+   one after another from after (the end of the program's last module), a guard page before each. *end is the end of
+   the last one. 0, or -1 said in error when they pass the addresses a module's entries reach */
+int snx_nro_slots_place(SnxNroSlot* slots, size_t* count, SnxU64 after, SnxU64* end, char* error, size_t error_size);
+/* One slot of a 64-bit module's PLT: where its JUMP_SLOT lies in the module, its symbol's name (in the module's image,
+   for as long as the module lives), and the symbol's value in the module when the module defines it, 0 when it
+   imports it */
+typedef struct {
+    SnxU64 slot, value;
+    const char* name;
+} SnxPltSlot;
+/* The module's PLT slots (the R_AARCH64_JUMP_SLOT entries of its DT_JMPREL) in the order of their offsets, malloc'd
+   into *slots, *count of them: none (NULL and 0) for a module without the table. 0, or -1 said in error for a table,
+   a symbol or a name that lies outside the image */
+int snx_module_plt(const SnxModuleImage* module, SnxPltSlot** slots, size_t* count, char* error, size_t error_size);
 /* An NRO's icon, the JPEG of its assets (ASET), the one Games shows: 0 with it in *icon (malloc'd) and *size, 1 when it
    has none, -1 said in error when the file is no NRO or cannot be read */
 int snx_nro_icon(const char* path, unsigned char** icon, size_t* size, char* error, size_t error_size);

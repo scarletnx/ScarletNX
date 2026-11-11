@@ -405,6 +405,17 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
             }
             case SNX_A64_FLOW_BR: {
                 LLVMValueRef t = flow_operand(ir, &insn);
+                /* if(t==<bound>){ F_bound(c,bound); return; }: a PLT stub whose slot holds the function its symbol
+                   names. A target inside a function of the codegen, not at its start, has no function to call */
+                SnxU64 bound = ir->bound ? ir->bound(ir->bound_user, address) : 0;
+                const SnxFunction* to = bound ? snx_codegen_function(codegen, bound) : NULL;
+                if (bound && (!to || to->start == bound)) {
+                    LLVMBasicBlockRef is = ir_block(ir, "bound"), other = ir_block(ir, "unbound");
+                    LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntEQ, t, ir_i64(ir, bound), ""), is, other);
+                    LLVMPositionBuilderAtEnd(B, is);
+                    call(ir, codegen, bound, 1);
+                    LLVMPositionBuilderAtEnd(B, other);
+                }
                 if (dispatch) {
                     ir_set_pc(ir, t);
                     LLVMBuildBr(B, dispatch_block);

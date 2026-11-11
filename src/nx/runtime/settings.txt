@@ -236,8 +236,8 @@ setting Vulkan Video decode
     default 0
     startup
     words Off|On
-    help 1 = H.264 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver
-    help have an H.264 decode queue. Experimental and untested. 0 = FFmpeg decodes them on the CPU. VP9 movies always
+    help 1 = H.264 and AV1 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), each where the GPU and
+    help its driver have a decode queue for it. Experimental. 0 = FFmpeg decodes them on the CPU. VP9 movies always
     help decode on the CPU
 setting Vulkan driver
     key vulkan_driver
@@ -621,7 +621,7 @@ setting Pair Joy-Cons
 setting Controller assignment
     key gamepad_assign
     int 0 1
-    default 0
+    default 1
     label Assignment
     words Manual|Console
     help 0 = each player's controller as gamepad_p<N>_device names it, the next to connect where it names none;
@@ -1226,8 +1226,21 @@ setting Guest memory
     help where they are in guest memory (VK_EXT_external_memory_host; on Android without it, guest memory moves into
     help AHardwareBuffers), as the console's GPU does: for a GPU that shares system memory. On a discrete GPU it goes
     help across the bus, which is slow, but it shows that the path is correct. 0 = 2 on a GPU that shares system memory,
-    help but never the moves into AHardwareBuffers, else 1. A 3DS game takes it too, for the board's RAM: 1 = the GPU
-    help works on a copy of it in its own memory, 2 = on the RAM in place (docs/platforms/3ds/README.md)
+    help but never the moves into AHardwareBuffers (unless uma_memory=2), else 1. A 3DS game takes it too, for the
+    help board's RAM: 1 = the GPU works on a copy of it in its own memory, 2 = on the RAM in place
+    help (docs/platforms/3ds/README.md)
+setting Guest memory in place
+    key uma_memory
+    int 0 2
+    default 0
+    startup
+    only android
+    words Auto|Import|Move
+    help Where vk_memory has the GPU read guest memory in place, how it reaches it, to compare the two ways on one
+    help device. 0 = imported where it is (VK_EXT_external_memory_host), and without that moved into AHardwareBuffers
+    help when vk_memory=2. 1 = imported only: without VK_EXT_external_memory_host guest memory is copied. 2 = moved
+    help into AHardwareBuffers only, on a driver that imports too and with vk_memory=0 as well; elsewhere than
+    help Android there are none, and guest memory is copied
 setting Buffer copy stats
     key vk_buffer_stats
     int 0 1
@@ -1644,6 +1657,7 @@ setting @VK_KHR_shader_clock
 setting @VK_KHR_shader_maximal_reconvergence
 setting @VK_KHR_swapchain
 setting @VK_KHR_synchronization2
+setting @VK_KHR_video_decode_av1
 setting @VK_KHR_video_decode_h264
 setting @VK_KHR_video_decode_queue
 setting @VK_KHR_video_queue

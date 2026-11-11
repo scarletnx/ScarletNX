@@ -93,6 +93,7 @@ static struct {
 } g_press;
 static SDL_Haptic* g_buzzer; /* the phone's vibrator, for the on-screen controls' taps (Android) */
 static u32 g_generation;     /* the window's surface came back this many times */
+static u32 g_window_changes; /* the app's, the displays' and the window's events (backend_window_changes) */
 
 struct PAudio {
     SDL_AudioStream* stream;
@@ -393,6 +394,7 @@ int backend_window_shown(void) {
            !__atomic_load_n(&g_minimized, __ATOMIC_ACQUIRE) && !__atomic_load_n(&g_given_up, __ATOMIC_ACQUIRE);
 }
 u32 backend_window_generation(void) { return __atomic_load_n(&g_generation, __ATOMIC_ACQUIRE); }
+u32 backend_window_changes(void) { return __atomic_load_n(&g_window_changes, __ATOMIC_ACQUIRE); }
 void backend_window_size(int* w, int* h) {
     u64 s = g_opt_headless ? 0 : __atomic_load_n(&g_wsize, __ATOMIC_RELAXED);
     *w = (int)(u32)s;
@@ -530,6 +532,9 @@ void video_init(const char* title, const char* addons) {
     if (!g_win) fatal("SDL could not open a Vulkan window: %s", SDL_GetError());
     snx_window_icon(g_win);
     overlay_set_display_scale(SDL_GetWindowDisplayScale(g_win));
+#if defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
+    overlay_set_fingers(1); /* a screen of fingers, as the launcher's SNX_TOUCH_UI: the menu's rows a finger's */
+#endif
     controls_atlas();
     vpad_set_store(ini_set);
     buzzer_open();
@@ -744,6 +749,13 @@ static void fatal_copy(const char* path, char* said, size_t size) {
     else
         snprintf(said, size, "The path could not be copied: %s", SDL_GetError());
 }
+/* said, Share Log's or Copy path's line, as the screen shows it (fatal_shown): the path it names is the whole one in
+   the file's name and on the clipboard, and ~ for its home folder here. Out of memory it stays as it is */
+static void fatal_said_shown(char* said, size_t size) {
+    char* shown = fatal_shown(said);
+    if (shown) snprintf(said, size, "%s", shown);
+    free(shown);
+}
 enum { FATAL_LINK = SNX_OVERLAY_ERROR_ITEMS, FATAL_OUT }; /* past the items: the log's link, and the rest */
 /* what a press at x, y is on: an item, the link or the rest */
 static int fatal_at(const SnxOverlayError* panel, float x, float y) {
@@ -794,6 +806,7 @@ static int fatal_screen(const char* msg) {
     static SnxUiQuad quads[4096]; /* as many as the renderer's list: a long message's rows on a wide window */
     SnxUiList l = {quads, 0, 4096};
     char name[256], what[1400], log_path[1200], said[1400], saved[1300] = "", *full;
+    char *shown_msg, *shown_log; /* fatal_shown's; NULL out of memory: the text as it is, rather than none */
     SnxOverlayError panel;
     SDL_FingerID finger = 0;
     int pointer = 0, pressed = FATAL_OUT, button = -1; /* pointer: 1 the left button, 2 a finger, 3 another button */
@@ -805,12 +818,13 @@ static int fatal_screen(const char* msg) {
     __atomic_store_n(&g_given_up, 1, __ATOMIC_RELEASE);
     if (g_renderer_up && g_renderer->release_window && !g_renderer->release_window()) return 0;
     if (!fatal_draw_make(&r, &atlas, &aw, &ah)) return 0;
+    shown_msg = fatal_shown(msg);
     for (i = 0; g_title[i] && i < (int)sizeof name - 1; ++i)
         name[i] = g_title[i] >= 'a' && g_title[i] <= 'z' ? (char)(g_title[i] - 32) : g_title[i];
     name[i] = 0;
     memset(&panel, 0, sizeof panel);
     panel.name = name;
-    panel.msg = msg;
+    panel.msg = shown_msg ? shown_msg : msg;
     panel.how = what;
     panel.focus = SNX_OVERLAY_ERROR_CLOSE;
     /* the log log.c writes, in the state folder. Beside the game that is argv[0]'s folder, which may be relative (./
@@ -819,6 +833,7 @@ static int fatal_screen(const char* msg) {
     full = snx_absolute(log_path);
     if (full && strlen(full) < sizeof log_path) memcpy(log_path, full, strlen(full) + 1);
     free(full);
+    shown_log = fatal_shown(log_path); /* the link opens log_url and Copy path takes log_path, both whole */
 #ifdef __ANDROID__
     snprintf(what, sizeof what, "%s", how);
 #else
@@ -826,9 +841,9 @@ static int fatal_screen(const char* msg) {
        none, and the path stays plain text */
     if (snx_is_file(log_path) && fatal_log_url(log_path, log_url, sizeof log_url)) {
         snprintf(what, sizeof what, "%s", how);
-        panel.log = log_path;
+        panel.log = shown_log ? shown_log : log_path;
     } else
-        snprintf(what, sizeof what, "%s%s", how, log_path);
+        snprintf(what, sizeof what, "%s%s", how, shown_log ? shown_log : log_path);
 #endif
     if (g_win) SDL_SetWindowRelativeMouseMode(g_win, false); /* the panel is clicked */
     since = SDL_GetTicks();
@@ -923,7 +938,11 @@ static int fatal_screen(const char* msg) {
                         SDL_DestroyRenderer(r);
                         r = NULL;
                     }
-                    if (!fatal_draw_make(&r, &atlas, &aw, &ah)) return 0;
+                    if (!fatal_draw_make(&r, &atlas, &aw, &ah)) {
+                        free(shown_msg);
+                        free(shown_log);
+                        return 0;
+                    }
                     break;
                 case SDL_EVENT_FINGER_CANCELED:
                     if (pointer == 2 && e.tfinger.fingerID == finger) {
@@ -939,6 +958,7 @@ static int fatal_screen(const char* msg) {
                     fatal_share(msg, log_path, saved, sizeof saved, said, sizeof said);
                 else
                     fatal_copy(saved[0] ? saved : log_path, said, sizeof said);
+                fatal_said_shown(said, sizeof said);
                 panel.said = said;
             }
             item = -1;
@@ -952,6 +972,8 @@ static int fatal_screen(const char* msg) {
     }
     SDL_DestroyTexture(atlas);
     SDL_DestroyRenderer(r);
+    free(shown_msg);
+    free(shown_log);
     return 1;
 }
 /* log.c's fatal error: the screen above on the main thread, which owns the window; SDL's box when it can't be drawn.
@@ -1598,6 +1620,8 @@ void video_poll(void) {
     if (!g_opt_headless) mouse_hold_update();
     while (!g_opt_headless && SDL_PollEvent(&e)) {
         int action = e.type == SDL_EVENT_KEY_DOWN ? key_action(&e.key) : -1; /* the runtime key it is */
+        /* SDL numbers the app's, the displays' and the window's events under the keyboard's */
+        if (e.type < SDL_EVENT_KEY_DOWN) __atomic_add_fetch(&g_window_changes, 1, __ATOMIC_RELEASE);
         if (press_event(&e, action)) continue;
         if (overlay_event(&e, action)) continue;
         switch (e.type) {
