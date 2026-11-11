@@ -204,7 +204,7 @@ VkCommandBuffer vk_cmd(void) { return (VkCommandBuffer)(uintptr_t)0xCB; }
 int vk_cmd_ready(void) { abort(); }
 void vk_submit_recorded(void) { abort(); }
 /* the BC7 cache: the key texture.c handed the last vk_astc_upload or vk_astc_upload_layers (keyed 0: none); takes,
-   whether vk_astc_cached takes a level; owner_over, an owner over every range own_lookup is asked about */
+   whether vk_astc_cached takes a level; owner_over, an owner on the pages of every range own_hash is asked about */
 static struct {
     int keyed, takes, owner_over;
     u64 content[2];
@@ -244,16 +244,17 @@ int vk_bc7_capture_level(VkCommandBuffer cb, VkImage img, const u64 key[2], u32 
     (void)cb, (void)img, (void)key, (void)level, (void)w, (void)h, (void)slices, (void)is3d;
     abort();
 }
-/* the GPU's page table maps the guest's bytes at the same offset (GP(cpu) is guest + cpu), and an owner is over every
-   range asked while g_astc_key.owner_over is set */
+/* the GPU's page table maps the guest's bytes at the same offset (GP(cpu) is guest + cpu), and an owner is on the pages
+   of every range asked while g_astc_key.owner_over is set */
 u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
     if (gva < GVA || gva >= guest_end) return 0;
     *cpu = gva - GVA;
     return guest_end - gva < max ? guest_end - gva : max;
 }
 void gmem_need(u64 gva, u64 size) { (void)gva, (void)size; }
-u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
-    (void)addr, (void)size, (void)out, (void)max;
+int own_hash(u64 addr, u64 size, u64* h) {
+    (void)addr, (void)size;
+    if (g_astc_key.owner_over) *h ^= 1;
     return g_astc_key.owner_over;
 }
 int vk_bc7_encode_image(VkCommandBuffer cb, VkImage src, VkImage dst, u32 level, u32 w, u32 h, u32 d, int is3d, u32 z,
@@ -1523,7 +1524,7 @@ int main(void) {
         stage_used = nregs = 0, astc_used = 0;
         CHECK(tex_upload(&b) && g_astc_key.keyed && memcmp(first, g_astc_key.content, sizeof first));
         guest[3 * b.layer_size + 77] ^= 0x10;
-        /* owners elsewhere, none over the level's bytes: the same key */
+        /* owners elsewhere, none on the level's pages: the same key */
         g_nown = 1;
         stage_used = nregs = 0, astc_used = 0;
         CHECK(tex_upload(&b) && g_astc_key.keyed && !memcmp(first, g_astc_key.content, sizeof first));

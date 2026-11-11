@@ -202,9 +202,10 @@ typedef struct {
     int layers;
 } LevelSource;
 /* The part of an ASTC level's BC7 key (vk_bc7_level_key) that its guest bytes make: the words that lay its blocks out
-   in guest memory, and those bytes as the CPU has them, of each of nlayers layers. 0 when the GPU holds any of them
-   (they are not here to hash: an owner's pages hold another's bytes until they land) or memory maps them not all. What
-   is pending over them lands first, as a change check's hash has it, which can submit the frame's command buffer */
+   in guest memory, and those bytes as the CPU has them, of each of nlayers layers. 0 when the GPU holds any byte on
+   their pages (an owner's bytes are not here to hash, and its pages are trapped: this thread holds the renderer's
+   lock, which their landing needs) or memory maps them not all. What is pending over them lands first, as a change
+   check's hash has it, which can submit the frame's command buffer, and can leave GPU-owned bytes there */
 static int astc_content(const LevelSource* l, u32 nlayers, u64 content[2]) {
     const Surf* t = l->t;
     const u32 layout[8] = {(u32)t->bl, t->bl ? 0 : t->pitch, l->rowb, l->th, l->lbh, l->lbd, l->gobs_x, nlayers};
@@ -213,9 +214,10 @@ static int astc_content(const LevelSource* l, u32 nlayers, u64 content[2]) {
     for (u32 k = 0; k < nlayers; k++) {
         const u64 gva = l->gva + (u64)k * t->layer_size;
         for (u64 o = 0; o < l->lsz;) {
-            u64 cpu = 0, n = gmmu_run(gva + o, l->lsz - o, &cpu);
-            if (!n || (own_any() && own_lookup(cpu, n, NULL, 0))) return 0;
+            u64 cpu = 0, owners = 0, n = gmmu_run(gva + o, l->lsz - o, &cpu);
+            if (!n) return 0;
             gmem_need(gva + o, n);
+            if (own_hash(cpu, n, &owners)) return 0;
             vk_bc7_content(content, GP(cpu), n);
             o += n;
         }

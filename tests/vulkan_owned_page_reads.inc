@@ -100,11 +100,77 @@ static int owned_constant_buffers(void) {
     return 0;
 }
 
+/* An ASTC level's BC7 key (texture.c astc_content), hashed from the guest's bytes as the texture goes up, where the GPU
+   samples BCn and not ASTC: an owner of 16 bytes at the start of the page the texture begins 512 bytes into. Its first
+   level goes up unkeyed (its bytes aren't hashed), a later one on pages of its own is keyed, and the owner stays */
+/* the texture's memory and address in vulkan_astc_later.inc's layout, apart from its cases' */
+#define OPR_ASTC_INDEX 12
+#define OPR_BC7_PATH "vulkan_headless_owned_reads.vkbc7"
+static int owned_astc_key(void) {
+    static const AlCase c = {"ASTC 8x8 256x256 beside an owner", NVN_FORMAT_RGBA_ASTC_8x8, 256, 256, 1, 0};
+    const int had = g_settings.astc_mode;
+    AlTex x;
+    memset(&x, 0, sizeof x);
+    x.c = &c;
+    const u64 base = AL_CPU + OPR_ASTC_INDEX * AL_SPAN, gbase = AL_GVA + OPR_ASTC_INDEX * AL_GVA_STEP;
+    x.cpu = base + 0x200;
+    x.rng = 0x9e3779b9u;
+    x.tex.d.target = NVN_TEXTURE_TARGET_2D;
+    x.tex.d.format = c.format;
+    x.tex.d.levels = (u8)(32u - snx_clz32(c.w));
+    x.tex.d.width = c.w;
+    x.tex.d.height = c.h;
+    x.tex.d.depth = 1;
+    x.tex.gpu = gbase + 0x200;
+    nvn_tex_layout(&x.tex.d, &x.lay);
+    g_settings.astc_mode = 2;
+    CHECK(nvn_tic_encode(&x.tex, NULL, 0, 0, x.tic));
+    const VkFmt f = vk_tic_format(x.tic[0], 0);
+    if (f.conv != VKC_ASTC || f.vk != VK_FORMAT_BC7_UNORM_BLOCK) {
+        printf("owned page reads: no ASTC key case, as the GPU %s\n",
+               f.conv != VKC_ASTC ? "samples ASTC as it is" : "holds no ASTC texture as BC7");
+        g_settings.astc_mode = had;
+        return 0;
+    }
+    const u64 own = base; /* before the texture's bytes, on their first page */
+    CHECK(x.lay.size <= AL_SPAN - 0x200 && !mem_map(base, AL_SPAN, MS_NORMAL, PERM_RW));
+    al_fill(&x);
+    gmmu_map(gbase, base, AL_SPAN);
+    later_drain(); /* what the checks before left to the encoder */
+    remove(OPR_BC7_PATH);
+    vk_astc_cache_open(OPR_BC7_PATH); /* the keys are made only where a cache takes the levels */
+    vk_lock();
+    VkOwnRes* owner = vk_own_res_new(16);
+    CHECK(owner && !owned_test_fill(owner->buf, 0, 16, 0x3c));
+    vk_own_publish_owned(own, 16, owner, 0);
+    CHECK(own_lookup(own, 16, NULL, 0) == 1);
+    u64 lands = own_landings();
+    Surf* t = vk_tex_from_tic(x.tic);
+    const u32 all = (1u << x.tex.d.levels) - 1, keyed = t ? t->bc7.keyed : 0;
+    int made = t && t->upload_valid, kept = own_lookup(own, 16, NULL, 0) == 1, landed = own_landings() != lands;
+    own_acquire(own, 16);
+    vk_own_res_unref(owner);
+    vk_unlock();
+    if (!made || (keyed & 1) || !keyed || !kept || landed)
+        fprintf(stderr, "owned page reads, %s: made %d, levels keyed %#x of %#x, owner %s, %s\n", c.name, made, keyed,
+                all, kept ? "kept" : "gone", landed ? "landed" : "nothing landed");
+    later_drain();
+    vk_bc7_cache_close();
+    remove(OPR_BC7_PATH);
+    gmmu_space_unmap(gbase, AL_SPAN);
+    mem_unmap(base, AL_SPAN);
+    g_settings.astc_mode = had;
+    CHECK(made && !(keyed & 1) && keyed && kept && !landed);
+    printf("owned page reads: an ASTC texture went up beside an owner, levels %#x of %#x keyed\n", keyed, all);
+    return 0;
+}
+
 static int check_owned_page_reads(void) {
     if (!own_traps()) {
         puts("SKIP owned page reads: the host has no memory traps, so nothing is owned");
         return 0;
     }
+    CHECK(!owned_astc_key());
     CHECK(!owned_constant_buffers());
     printf("PASS owned page reads, with %s guest buffers: nothing landed\n", vk_uma() ? "unified" : "copied");
     return 0;
