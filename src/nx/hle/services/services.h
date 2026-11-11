@@ -13,7 +13,6 @@ void svc_core_exit(void); /* at exit, what the others hear of this console leavi
 void svc_fs_init(void);
 void svc_hid_init(void);
 void svc_vi_init(void);
-void svc_pl_init(void);
 /* the game's display version from its control.nacp ("1.0.0" without one), terminated, for the log's header */
 void am_display_version(char version[16]);
 /* the sizes of the game's save data of a type (nn::fs::SaveDataType: 1 an account's, 3 the device's), as the system made

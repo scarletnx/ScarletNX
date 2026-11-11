@@ -13,7 +13,7 @@
    keeps its own cmap and is not touched.
    The new entries are a new cmap table appended to the font: the table directory's cmap record, its checksum, and
    head's checkSumAdjustment are updated, and the font grows by that table. */
-#include "nx/hle/services/pl_font.h"
+#include "nx/nn/pl_font.h"
 #include "common/utilities/endian.h"
 #include <stdlib.h>
 #include <string.h>

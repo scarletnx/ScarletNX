@@ -93,6 +93,15 @@ static int changed(u64 a, u64 size) {
 
 /* handle 0x1234 names test_handle; references are counted */
 static KObj* test_handle;
+/* the native SDK's mapping of a shared memory (kshmem_map_free) takes a handle, which no test here makes */
+u32 h_new(KObj* o) {
+    (void)o;
+    return 0;
+}
+int h_close(u32 h) {
+    (void)h;
+    return 0;
+}
 KObj* h_get_ref(u32 h, int type) {
     if (h != 0x1234 || !test_handle || test_handle->type != type) return NULL;
     kobj_ref(test_handle);

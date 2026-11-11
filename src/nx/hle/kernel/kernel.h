@@ -216,6 +216,7 @@ void ipc_stats_log(u64 now_ns);
 
 KShmem* kshmem_new(u64 size, const char* name);
 u8* kshmem_ptr(KShmem* s);
+u64 kshmem_map_free(KShmem* s, u32 perm); /* mapped where the game's own code would: the address, or 0 (svc_mem.c) */
 
 /* once the game's modules are loaded, for the dumps and kernel_find_symbol_exact */
 void kernel_load_symbols(void);
