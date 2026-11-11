@@ -184,6 +184,7 @@ static int blit_bands(const GpuBlit* b) {
         if (most > bands.cap) return blit_fail(b, y, n, "needs more than an allocation may be:", most);
         BlitNeeds k = blit_needs(b, y, n);
         if (!blit(b, y, n, &k)) return 0;
+        if (y + n < rows) vk_frame_check(); /* the next band may record in the other slot (cmd.c) */
     }
     return 1;
 }
