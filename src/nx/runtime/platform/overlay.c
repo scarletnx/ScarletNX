@@ -98,7 +98,7 @@ static const struct {
             {GUI_ICON_IMAGE, HOTKEY_CAPTURE, NULL, "capture a frame"}, /* while RenderDoc is in the process */
             {GUI_ICON_POINTER, HOTKEY_MOUSE, NULL, "let the mouse go, hold it"},
             {GUI_ICON_LOG_OUT, HOTKEY_QUIT, NULL, "quit the game"},
-            {GUI_ICON_MONITOR, HOTKEY_TV_MODE, NULL, "TV docked/handheld/auto"},
+            {GUI_ICON_MONITOR, HOTKEY_TV_MODE, NULL, "TV/handheld/auto"},
             {GUI_ICON_GAMEPAD, -1, "X, Space", "A"},
             {GUI_ICON_GAMEPAD, -1, "Z, C, V", "B, X, Y"},
             {GUI_ICON_GAMEPAD, -1, "Q, E", "L, R"},
