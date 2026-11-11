@@ -7,6 +7,7 @@
 #include "nx/runtime/platform/hotkeys.h"
 #include "nx/runtime/platform/plat.h" /* the notices' lock */
 #include "nx/runtime/platform/prepare_screen.h"
+#include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/renderer.h"
@@ -1216,15 +1217,28 @@ static const char* pads_hint(char* out, size_t size) {
 }
 /* the notification: a band of one row in the picture's top left corner, which is its letters, backed (ui.h's
    UI_BACKED) by the layer's ink, between a blank cell at either end: nothing is drawn under them */
-static void toast_draw(SnxUiList* l, int sw, int sh) {
+static void toast_draw(SnxUiList* l, int sw, int sh, const float* stats) {
     int px, py, s;
-    float cw, ch, x;
+    float cw, ch, x, y, w;
     overlay_place(sw, sh, &px, &py, &s);
     cw = 8.0f * (float)s;
     ch = 16.0f * (float)s;
-    x = cw + ui_text_backed(l, cw, ch, s, " ", UI_PAGE);
-    x += ui_text_backed(l, x, ch, s, toast, UI_PAGE);
-    ui_text_backed(l, x, ch, s, " ", UI_PAGE);
+    x = cw;
+    y = ch;
+    w = cw * (float)(strlen(toast) + 2);
+    /* the stats' box (x, y, w, h; NULL for none) in that corner too: the band goes under it, from its left, half a
+       line apart, where it would lie on it; in the picture's top right corner when there is no room under the box */
+    if (stats && x < stats[0] + stats[2] && x + w > stats[0] && y < stats[1] + stats[3] && y + ch > stats[1]) {
+        x = stats[0];
+        y = stats[1] + stats[3] + ch / 2;
+        if (y + ch > (float)sh) {
+            x = (float)sw - cw - w;
+            y = ch;
+        }
+    }
+    x += ui_text_backed(l, x, y, s, " ", UI_PAGE);
+    x += ui_text_backed(l, x, y, s, toast, UI_PAGE);
+    ui_text_backed(l, x, y, s, " ", UI_PAGE);
 }
 /* the slot whose thumbnail shows beside the save states' pages: the one in focus on the list, or the page's */
 static void aside_draw(SnxUiList* l, const SnxOverlayRect* r) {
@@ -1265,7 +1279,8 @@ static struct {
 } g_menu;
 static struct {
     SnxUiQuad q[2 * OVERLAY_COLS_MAX + 4];
-    int n, sw, sh, percent;
+    int n, sw, sh, percent, boxed;
+    float stats[4]; /* the stats' box it was placed for, when boxed */
     u32 given, version;
 } g_toast;
 static void watch(const void* var) {
@@ -1339,10 +1354,14 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     }
     if (overlay_toasting(now_ns)) {
         int percent = overlay_display_percent();
+        float stats[4] = {0};
+        int boxed = stats_box_drawn(stats); /* the stats' box, which it keeps clear of */
         if (g_toast.given != toast_version || g_toast.sw != sw || g_toast.sh != sh || g_toast.percent != percent ||
-            !g_toast.version) {
+            g_toast.boxed != boxed || memcmp(g_toast.stats, stats, sizeof stats) || !g_toast.version) {
             SnxUiList t = {g_toast.q, 0, (int)(sizeof g_toast.q / sizeof *g_toast.q)};
-            toast_draw(&t, sw, sh);
+            toast_draw(&t, sw, sh, boxed ? stats : NULL);
+            g_toast.boxed = boxed;
+            memcpy(g_toast.stats, stats, sizeof stats);
             g_toast.n = t.n;
             g_toast.given = toast_version;
             g_toast.sw = sw;
