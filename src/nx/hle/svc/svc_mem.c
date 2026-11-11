@@ -736,6 +736,29 @@ u32 svc_map_shm(u32 h, u64 addr, u64 size, u32 perm) {
     kobj_unref(&s->o);
     return r;
 }
+/* A shared memory mapped for the runtime's native SDK (nn/), as the SDK's own nn::os::MapSharedMemory would map it:
+   at free pages where shared memory may go (outside the heap and alias regions), through svcMapSharedMemory with a
+   handle that lives for the call. Another thread can take the pages between the search and the map, so a refusal
+   for them searches again. The guest address, or 0 */
+u64 kshmem_map_free(KShmem* s, u32 perm) {
+    u64 size = (s->size + 0xFFF) & ~0xFFFull; /* the object's whole pages */
+    /* the address space less the heap and alias regions: the gaps before, between and after them */
+    int heap_first = HEAP_BASE < ALIAS_BASE;
+    u64 first = heap_first ? HEAP_BASE : ALIAS_BASE, first_end = first + (heap_first ? HEAP_SIZE : ALIAS_SIZE);
+    u64 second = heap_first ? ALIAS_BASE : HEAP_BASE, second_end = second + (heap_first ? ALIAS_SIZE : HEAP_SIZE);
+    const u64 lo[3] = {AS_BASE, first_end, second_end}, hi[3] = {first, second, AS_END};
+    u32 h = h_new(&s->o);
+    if (!h) return 0;
+    u64 at = 0;
+    for (int tries = 0; tries < 8 && !at; tries++)
+        for (int i = 0; i < 3 && !at; i++) {
+            if (hi[i] <= lo[i] || hi[i] - lo[i] < size) continue;
+            u64 a = mem_find_free(lo[i], hi[i], size, 0x1000);
+            if (a && R_SUCCEEDED(svc_map_shm(h, a, size, perm))) at = a;
+        }
+    h_close(h);
+    return at;
+}
 /* svcUnmapSharedMemory: only where the object is mapped (InvalidCurrentMemory elsewhere), all of what was mapped.
    With the pool, a mapping larger than the object goes with the size the game gives (at least the object's) */
 u32 svc_unmap_shm(u32 h, u64 addr, u64 size) {
