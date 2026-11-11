@@ -395,6 +395,9 @@ extern int g_shader_geometry_streams;
 extern int g_shader_geometry_streams_lines_triangles;
 /* shaderFloat16, which fp16 texture results need. 1 offline */
 extern int g_shader_float16;
+/* shaderFloat64, which SM86's directed rounding keeps its exactness with. 1 offline: a device without doubles rounds
+   those operations as its floats do, as Round to Nearest, and the shader still runs (Apple's GPUs have no doubles) */
+extern int g_shader_float64;
 /* shaderResourceMinLod: fragment TEX.LC uses the MinLod image operand. 1 offline. */
 extern int g_shader_resource_min_lod;
 /* maintenance8 permits a runtime Offset operand on texture samples. 0 for portable offline output. */

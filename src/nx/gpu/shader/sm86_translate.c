@@ -439,13 +439,25 @@ static u32 round_sum(Ctx* c, u32 mode, u32 p, u32 q) {
                     op2(c, SPV_OP_LOGICAL_AND, c->t_bool, tie, op2(c, SPV_OP_F_ORD_LESS_THAN, c->t_bool, err, zero)));
     return directed(c, mode, r, above, below);
 }
-/* FADD: x + y in mode */
+/* FADD: x + y in mode. A device without doubles (g_shader_float64) rounds to nearest, as its floats do */
 static u32 float_add(Ctx* c, u32 mode, u32 x, u32 y) {
+    if (!g_shader_float64) mode = 0;
     if (mode == 0) return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_ADD, c->t_f32, x, y));
     return round_sum(c, mode, widen(c, x), widen(c, y));
 }
 /* FMUL: x * y * 2^(scale - 4) in mode. The product of two floats is exact in a double */
 static u32 float_mul(Ctx* c, u32 mode, u32 scale, u32 x, u32 y) {
+    if (!g_shader_float64) {
+        /* 2^(scale - 4) is a power of two, exact in a float, so the scale keeps its exactness without a double */
+        u32 v = nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, y));
+        if (scale != 4) {
+            float factor = (float)(scale - 4 > 0 ? (1u << (scale - 4)) : 1) /
+                           (float)(scale - 4 < 0 ? (1u << (4 - scale)) : 1); /* 2^(scale - 4), scale 1 to 7 */
+            v = nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, v,
+                                              spv_emit_constant_f32(&c->e, c->t_f32, factor)));
+        }
+        return v;
+    }
     if (mode == 0 && scale == 4) return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, y));
     u32 f64 = f64_type(c);
     u32 d = nocontract(c, op2(c, SPV_OP_F_MUL, f64, widen(c, x), widen(c, y)));
@@ -458,6 +470,7 @@ static u32 float_mul(Ctx* c, u32 mode, u32 scale, u32 x, u32 y) {
 /* FFMA: x * y + z in mode. To nearest, a float FMA, as spirv_translate.c writes it. A directed mode rounds the
    exact sum of the product (exact in a double) and z */
 static u32 float_fma(Ctx* c, u32 mode, u32 x, u32 y, u32 z) {
+    if (!g_shader_float64) mode = 0;
     if (mode == 0) return spv_emit_glsl_ternary(&c->e, c->t_f32, c->glsl, SPV_GLSL_FMA, x, y, z);
     u32 product = nocontract(c, op2(c, SPV_OP_F_MUL, f64_type(c), widen(c, x), widen(c, y)));
     return round_sum(c, mode, product, widen(c, z));
@@ -3564,6 +3577,9 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                                          cu(c, width)))
                               : spv_emit_ternary(&c->e, SPV_OP_BIT_FIELD_U_EXTRACT, c->t_u32, x, at, cu(c, width));
             }
+            /* a device without doubles converts to a float, which a 32-bit integer keeps no more exactly: it rounds
+               to nearest, as the mode 0 conversion does */
+            if (!g_shader_float64) mode = 0;
             u32 type = mode ? f64_type(c) : c->t_f32, v;
             if (!mode && src_size == 2 && (g_shader_i2f_nearest & (is_signed ? 1 : 2)))
                 v = spv_emit_int_to_f32_nearest(&c->e, x, is_signed);
