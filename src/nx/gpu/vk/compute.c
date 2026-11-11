@@ -574,8 +574,7 @@ static int table_pointer(u64 x) { return x && !(x & 3) && !(x >> 40); } /* the G
 static void table_windows(u32 bank, u32 cells, u32 windows, u64* base, u32* len) {
     u64 v[512], from[64], to[64];
     u32 n = 0, runs = 0, unused;
-    *base = 0;
-    *len = 16;
+    for (u32 w = 0; w < windows; w++) base[w] = 0, len[w] = 16;
     if (bank >= QMD_NUM_CONST_BUFFERS) return;
     /* a bank a pending write in place covers isn't in g_cb yet (g_cb_later): the windows are made of its words, so it
        is read now, after the write, or they would be the table an earlier dispatch left there */
