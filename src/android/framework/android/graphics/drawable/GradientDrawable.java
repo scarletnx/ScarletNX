@@ -31,6 +31,7 @@ public class GradientDrawable extends Drawable {
     private int shape = RECTANGLE, gradientType = LINEAR_GRADIENT, width = -1, height = -1, alpha = 0xff, baseColor;
     private Orientation orientation = Orientation.TOP_BOTTOM;
     private int[] colors;
+    private float[] offsets; /* each color's position from 0 to 1, null for evenly spaced */
     private ColorStateList solid;
     private float radius, gradientRadius = 0.5f;
     private float[] radii;
@@ -152,6 +153,7 @@ public class GradientDrawable extends Drawable {
                 d.gradientRadius = gradientRadius;
                 d.centerX = centerX;
                 d.centerY = centerY;
+                d.offsets = offsets != null ? offsets.clone() : null;
                 d.padding = padding != null ? new Rect(padding) : null;
                 d.strokeColors = strokeColors;
                 if (stroke != null) {
@@ -175,12 +177,16 @@ public class GradientDrawable extends Drawable {
     public void setColor(ColorStateList colorStateList) {
         solid = colorStateList;
         colors = null;
+        offsets = null;
         shaderDirty = true;
         invalidateSelf();
     }
     public ColorStateList getColor() { return solid; }
-    public void setColors(int[] colors) {
+    public void setColors(int[] colors) { setColors(colors, null); }
+    /** the gradient's colors, and each one's position from 0 to 1 (null for evenly spaced) */
+    public void setColors(int[] colors, float[] offsets) {
         this.colors = colors;
+        this.offsets = offsets;
         solid = null;
         shaderDirty = true;
         invalidateSelf();
@@ -192,6 +198,10 @@ public class GradientDrawable extends Drawable {
     public int getGradientType() { return gradientType; }
     public void setGradientRadius(float gradientRadius) { this.gradientRadius = gradientRadius; shaderDirty = true; invalidateSelf(); }
     public float getGradientRadius() { return gradientRadius; }
+    /** the center of a radial or sweep gradient, as fractions of the bounds */
+    public void setGradientCenter(float x, float y) { centerX = x; centerY = y; shaderDirty = true; invalidateSelf(); }
+    public float getGradientCenterX() { return centerX; }
+    public float getGradientCenterY() { return centerY; }
     public void setCornerRadius(float radius) {
         this.radius = Math.max(0, radius);
         radii = null;
@@ -221,9 +231,9 @@ public class GradientDrawable extends Drawable {
         if (colors == null || colors.length < 2) return null;
         switch (gradientType) {
             case RADIAL_GRADIENT:
-                return new RadialGradient(r.left + centerX * r.width(), r.top + centerY * r.height(), Math.max(gradientRadius < 1 ? gradientRadius * Math.min(r.width(), r.height()) : gradientRadius, 1e-3f), colors, null, Shader.TileMode.CLAMP);
+                return new RadialGradient(r.left + centerX * r.width(), r.top + centerY * r.height(), Math.max(gradientRadius < 1 ? gradientRadius * Math.min(r.width(), r.height()) : gradientRadius, 1e-3f), colors, offsets, Shader.TileMode.CLAMP);
             case SWEEP_GRADIENT:
-                return new SweepGradient(r.left + centerX * r.width(), r.top + centerY * r.height(), colors, null);
+                return new SweepGradient(r.left + centerX * r.width(), r.top + centerY * r.height(), colors, offsets);
             default: {
                 float x0, y0, x1, y1;
                 switch (orientation) {
@@ -236,7 +246,7 @@ public class GradientDrawable extends Drawable {
                     case TL_BR: x0 = r.left; y0 = r.top; x1 = r.right; y1 = r.bottom; break;
                     default: x0 = r.left; y0 = r.top; x1 = r.left; y1 = r.bottom; break;
                 }
-                return new LinearGradient(x0, y0, x1, y1, colors, null, Shader.TileMode.CLAMP);
+                return new LinearGradient(x0, y0, x1, y1, colors, offsets, Shader.TileMode.CLAMP);
             }
         }
     }

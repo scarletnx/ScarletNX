@@ -79,4 +79,6 @@ public interface MenuItem {
     default android.content.res.ColorStateList getIconTintList() { return null; }
     default MenuItem setIconTintMode(android.graphics.PorterDuff.Mode tintMode) { return this; }
     default android.graphics.PorterDuff.Mode getIconTintMode() { return null; }
+    default MenuItem setIconTintBlendMode(android.graphics.BlendMode blendMode) { return this; }
+    default android.graphics.BlendMode getIconTintBlendMode() { return null; }
 }
