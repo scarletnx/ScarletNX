@@ -2087,6 +2087,9 @@ u64 vk_cs_skipped(char* why, size_t size);
    stats every 600 presents name (vk_pass_ends_log): what splits a frame into many passes */
 void vk_render_end_at(const char* file, int line);
 #define vk_render_end() vk_render_end_at(__FILE__, __LINE__)
+/* the guest's fragment barrier (NVN's ORDER_FRAGMENTS or INVALIDATE_TEXTURE, the 3D engine's): the open pass's later
+   draws in a feedback loop see what its earlier draws wrote (feedback_order) */
+void vk_render_fragment_barrier(void);
 void vk_pass_ends_log(void);
 /* the on-screen controls and the game's menu over a swapchain image in TRANSFER_DST_OPTIMAL, which it stays in;
    safe is the picture's part clear of the system's bars (gpu/vk/ui.c) */
