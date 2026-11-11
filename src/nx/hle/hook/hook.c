@@ -306,7 +306,16 @@ GuestFn hook_function(u64 addr) {
 
 GuestFn hook_original(u64 addr) {
     int i = site_of(addr);
-    return i < 0 ? NULL : g_hle.hook.orig[i];
+    if (i < 0) return NULL;
+    if (!__atomic_load_n(&g_hle.hook.stale[i], __ATOMIC_ACQUIRE)) return g_hle.hook.orig[i];
+    return jit_code_now(addr);
+}
+
+void hook_orig_stale(GuestFn f) {
+    HleHook* h = &g_hle.hook;
+    u32 i;
+    for (i = 0; i < h->count; i++)
+        if (h->orig[i] == f) __atomic_store_n(&h->stale[i], 1, __ATOMIC_RELEASE);
 }
 
 const char* hook_at(u64 addr, const char** handler) {
