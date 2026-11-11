@@ -80,7 +80,6 @@ void svc_core_init(void) {
     svc_register("bsd:s", new_bsd_s);
     nn_bsdsocket_cfg_ServerInterface_register(new_bsdcfg);
     nn_socket_resolver_IResolver_register(new_sfdnsres);
-    nn_nsd_detail_IManager_register(new_nsd);
     nn_nifm_detail_IStaticService_register(new_nifm);
     nn_ssl_sf_ISslService_register(new_ssl);
     nn_ssl_sf_ISslServiceForSystem_register(new_ssl_system);
@@ -111,8 +110,6 @@ void svc_core_init(void) {
     nn_ldn_detail_IUserServiceCreator_register(new_ldn);
     nn_btm_IBtmUser_register(new_btmu);
     nn_audio_detail_IAudioInManager_register(new_audin);
-    nn_ngc_detail_IService_register(new_ngc);
-    nn_ngct_detail_IService_register(new_ngct);
     nn_olsc_srv_IOlscServiceForApplication_register(new_olsc);
 
     /* the audio renderer's 5 ms frames and the audio outs' buffers (audio.c), from the start as on the console */

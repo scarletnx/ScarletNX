@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The network services, on the stack in src/common/network: bsd (bsd.c), sfdnsres and nsd (dns.c), nifm (nifm.c),
+/* The network services, on the stack in src/common/network: bsd (bsd.c), sfdnsres (dns.c), nifm (nifm.c),
    ssl (ssl.c), ldn (ldn.c) */
 #ifndef SNX_HLE_NETWORK_H
 #define SNX_HLE_NETWORK_H
@@ -34,7 +34,6 @@ void bsd_set_bind_address(const u8* ip, const u8* bcast);
 
 /* dns.c */
 SvcObj* new_sfdnsres(void);
-SvcObj* new_nsd(void);
 
 /* nifm.c */
 SvcObj* new_nifm(void);

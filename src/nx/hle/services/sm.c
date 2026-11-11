@@ -55,6 +55,10 @@ static const char* const g_native_only[][2] = {
     {"pctl:a", "nn::pctl (nn/pctl.c)"},
     {"pctl:s", "nn::pctl (nn/pctl.c)"},
     {"pctl:r", "nn::pctl (nn/pctl.c)"},
+    {"nsd:u", "nn::nsd (nn/nsd.c)"},
+    {"nsd:a", "nn::nsd (nn/nsd.c)"},
+    {"ngc:u", "nn::ngc (nn/ngc.c)"},
+    {"ngct:u", "nn::ngc (nn/ngc.c)"},
 };
 static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_sm_ServiceName* name, u32* session) {
     char s[9];

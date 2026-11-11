@@ -756,68 +756,6 @@ static void test_hid(void) {
     for (int i = 0; i < 10; i++) kobj_unref(&kev(g_hle.hid.style_ev[i])->o);
 }
 
-/* ngc:u's Check (1) and Mask (2) {languages, options} of a text, and ngct:u's Match (0) and Filter (1): nothing found
-   or masked, the text back as sent and no byte past the room for it; GetContentVersion (0) 1 */
-typedef struct {
-    IpcCtx c;
-    u8 raw[0x40];
-} NgcRequest;
-static IpcCtx* ngc_request(NgcRequest* r, u32 cmd) {
-    memset(r, 0, sizeof *r);
-    r->c.cmd = cmd;
-    r->c.raw = r->raw;
-    r->c.raw_size = sizeof r->raw;
-    return &r->c;
-}
-static void test_ngc(void) {
-    static const char text[] = "edenprobe player";
-    SvcObj* ngc = new_ngc();
-    SvcObj* ngct = new_ngct();
-    NgcRequest r;
-    u32 cmd, v;
-    memcpy(g_mem + 0x100, text, sizeof text);
-    ngc_request(&r, 0);
-    CHECK(ngc->dispatch(ngc, &r.c) == 0 && r.c.out_size == 4);
-    v = snx_ld_le32(r.c.out);
-    CHECK(v == 1);
-    for (cmd = 1; cmd <= 5; cmd++) {
-        if (cmd == 3) continue;
-        ngc_request(&r, cmd);
-        snx_st_le32(r.raw, 2); /* American English */
-        r.c.na = 1;
-        r.c.a[0].addr = 0x100;
-        r.c.a[0].size = sizeof text;
-        if (cmd == 2 || cmd == 5) {
-            memset(g_mem + 0x200, 0xEE, 0x40);
-            r.c.nb = 1;
-            r.c.b[0].addr = 0x200;
-            r.c.b[0].size = sizeof text - 4; /* room for less than the text */
-        }
-        CHECK(ngc->dispatch(ngc, &r.c) == 0 && r.c.out_size == 4);
-        v = snx_ld_le32(r.c.out);
-        CHECK(v == 0);
-        if (cmd == 2 || cmd == 5)
-            CHECK(!memcmp(g_mem + 0x200, text, sizeof text - 4) && g_mem[0x200 + sizeof text - 4] == 0xEE);
-    }
-    ngc_request(&r, 0);
-    r.c.nx = 1;
-    r.c.x[0].addr = 0x100;
-    r.c.x[0].size = sizeof text;
-    CHECK(ngct->dispatch(ngct, &r.c) == 0 && r.c.out_size == 4 && r.c.out[0] == 0);
-    ngc_request(&r, 1);
-    memset(g_mem + 0x200, 0xEE, 0x40);
-    r.c.nx = 1;
-    r.c.x[0].addr = 0x100;
-    r.c.x[0].size = sizeof text;
-    r.c.nc = 1;
-    r.c.c[0].addr = 0x200;
-    r.c.c[0].size = 0x40;
-    CHECK(ngct->dispatch(ngct, &r.c) == 0 && !memcmp(g_mem + 0x200, text, sizeof text) &&
-          g_mem[0x200 + sizeof text] == 0xEE);
-    svcobj_unref(ngct);
-    svcobj_unref(ngc);
-}
-
 /* apm: Get (1) and Set (0) {mode, configuration} on a session, one configuration per mode, Config7 for both at
    first; one that is not a configuration, or a mode past Boost, kept out; SetCpuBoostMode's modes for Boost */
 static u32 apm_get(SvcObj* s, u32 mode) {
@@ -1899,7 +1837,6 @@ int main(void) {
     test_acc_thumbnail();
     test_apm();
     test_ntc();
-    test_ngc();
     test_mm_full();
     test_nfp();
     test_acc_select();
