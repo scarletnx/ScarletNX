@@ -177,8 +177,8 @@ void prepare_screen_draw(SnxUiList* l, int sw, int sh, const int safe[4], int di
     if (!g_prepare_screen.rows) return;
     /* the page over the whole window, the rest within its safe part */
     ui_fill(l, 0, 0, (float)sw, (float)sh, rgba(t->page, 0xFFu));
-    if (t->texture) /* the launcher's faint lines, white at 14 of 255, every four pixels */
-        for (y = 3; y < (float)sh; y += 4) ui_fill(l, 0, y, (float)sw, 1, rgba(0xFFFFFFu, 14));
+    if (t->texture) /* the launcher's faint lines, white at 14 of 255 over the page (opaque), every four pixels */
+        for (y = 3; y < (float)sh; y += 4) ui_fill(l, 0, y, (float)sw, 1, rgba(ui_over(0xFFFFFFu, t->page, 14), 0xFFu));
     for (i = 0; i < g_prepare_screen.rows; ++i)
         if (!g_prepare_screen.row[i].done) {
             all_done = 0;

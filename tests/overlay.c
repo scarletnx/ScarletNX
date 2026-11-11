@@ -26,9 +26,8 @@
     (0xFFu << 24 | (SNX_GUI_THEME_YORHA_PAGE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_PAGE & 0xFF00u) |                   \
      (SNX_GUI_THEME_YORHA_PAGE >> 16 & 0xFFu))
 /* a panel in a dialog (the keyboard's line): the soft colour over the page at a quarter */
-#define PANEL_RGBA                                                                                                     \
-    (0x40u << 24 | (SNX_GUI_THEME_YORHA_SOFT & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_SOFT & 0xFF00u) |                   \
-     (SNX_GUI_THEME_YORHA_SOFT >> 16 & 0xFFu))
+#define PANEL_RGB ui_over(SNX_GUI_THEME_YORHA_SOFT, SNX_GUI_THEME_YORHA_PAGE, 0x40u) /* the soft colour over the page */
+#define PANEL_RGBA (0xFFu << 24 | (PANEL_RGB & 0xFFu) << 16 | (PANEL_RGB & 0xFF00u) | (PANEL_RGB >> 16 & 0xFFu))
 /* the menu's colour of a held control, as R G B A bytes */
 #define FAILURE                                                                                                        \
     (0xFFu << 24 | (SNX_GUI_THEME_YORHA_FAILURE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_FAILURE & 0xFF00u) |             \
@@ -853,12 +852,12 @@ int main(void) {
     assert(tap(0, 3) == OVERLAY_NONE);
     draw();
     assert(text_at(1, 0, "SCARLETNX  /  CONTROLS") && text_at(1, 3, "\xFE Show controls"));
-    assert(qv(&list.q[0]).h == 16 * 32 && text_at(C - 2, 12, ">")); /* eleven items; Buttons opens a page */
+    assert(qv(&list.q[0]).h == 15 * 32 && text_at(C - 2, 11, ">")); /* ten items; Buttons opens a page */
     /* named as the .ini's rows name them, in the launcher's order, the game's own actions among them */
     assert(text_at(1, 4, "\xFE Edit layout") && text_at(1, 5, "\xFE Snap to grid") &&
-           text_at(1, 8, "\xFE Relative stick center"));
-    assert(text_at(1, 11, "\xFE Touch screen") && text_at(1, 12, "\xFE Buttons") &&
-           text_at(1, 13, "\xFE Reset layout"));
+           text_at(1, 7, "\xFE Relative stick center"));
+    assert(text_at(1, 10, "\xFE Touch screen") && text_at(1, 11, "\xFE Buttons") &&
+           text_at(1, 12, "\xFE Reset layout"));
     g_settings.show_controls = 0;
     draw();
     assert(text_at(C - 4, 3, "Off"));
@@ -877,32 +876,27 @@ int main(void) {
     for (x = 0; x < 9; ++x) tap(3, C - 9);
     assert(g_settings.controls_scale == 0);
     g_settings.controls_scale = 50;
-    /* the keys: down from Scale to Opacity, left steps it */
-    overlay_move(1);
-    overlay_side(-1);
-    assert(g_settings.controls_alpha == 40 && !strcmp(stored, "controls_alpha"));
-    overlay_side(1);
     /* the toggles; the touch screen goes round its three */
     tap(2, 3);
     assert(g_settings.snap_to_grid && !strcmp(stored, "controls_snap"));
     tap(2, 3);
-    tap(5, 3);
+    tap(4, 3);
     assert(!g_settings.relative_stick_center && !strcmp(stored, "controls_rel_center"));
-    tap(5, 3);
-    tap(8, 3);
+    tap(4, 3);
+    tap(7, 3);
     assert(touch == 2);
     draw();
-    assert(text_at(C - 1 - (int)strlen("Fingers and mouse"), 11, "Fingers and mouse"));
-    tap(8, 3);
+    assert(text_at(C - 1 - (int)strlen("Fingers and mouse"), 10, "Fingers and mouse"));
+    tap(7, 3);
     assert(touch == 0);
     draw();
-    assert(text_at(C - 4, 11, "Off"));
-    tap(8, 3);
+    assert(text_at(C - 4, 10, "Off"));
+    tap(7, 3);
     /* Edit layout is the caller's to do */
     assert(tap(1, 3) == OVERLAY_EDIT);
 
     /* the buttons' page: one hidden and kept, All shows them again; it scrolls to its last item */
-    assert(tap(9, 3) == OVERLAY_NONE);
+    assert(tap(8, 3) == OVERLAY_NONE);
     draw();
     assert(text_at(1, 0, "SCARLETNX  /  BUTTONS") && text_at(1, 4, "\xFE L"));
     log_[0] = 0;

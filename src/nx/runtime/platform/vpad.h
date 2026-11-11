@@ -40,7 +40,7 @@ typedef struct {
     int size;   /* percent of its own default size */
 } SnxVpadPlace;
 /* the controls' layout, read from their places (controls_a...). Their other settings are g_settings' (settings.txt):
-   show_controls, controls_scale (rEden's 0 to 100: every control at (scale + 50)%), controls_alpha, snap_to_grid,
+   show_controls, controls_scale (rEden's 0 to 100: every control at (scale + 50)%), snap_to_grid,
    relative_stick_center, d_pad_slide, haptics, and control_shown[SNX_VPAD_] */
 typedef struct {
     SnxVpadPlace at[SNX_VPAD_COUNT];
@@ -49,10 +49,6 @@ typedef struct {
 SnxVpadConfig* vpad_config(void);
 #define SNX_VPAD_SIZE_MIN      50
 #define SNX_VPAD_SIZE_MAX      200
-/* the built-in look's opacity: controls_alpha's p percent draws its art at (p / 100) ^ this, 0.6 at 50 and opaque at
-   100, as the art is rEden's drawables made opaque (scripts/build-controls.py: they are 0.6 opaque at most), so 50 is
-   their own look; log 0.6 / log 0.5. A skin is drawn at p / 100 */
-#define SNX_VPAD_BUILTIN_CURVE 0.7369655941662062
 
 void vpad_defaults(SnxVpadConfig* c); /* the default layout */
 const char* vpad_name(int control); /* a control's name, as edit mode shows it: "A", "D-pad" */

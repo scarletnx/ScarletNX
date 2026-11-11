@@ -5,10 +5,10 @@
 #include <stdio.h>
 #include <string.h>
 
-/* the menu's colours (gui_theme_colors.h, the YoRHa theme) as R G B A bytes: its ink behind, its page's letters, and
-   its failure colour for the lead */
+/* the menu's colours (gui_theme_colors.h, the YoRHa theme) as R G B A bytes, opaque: its ink behind, its page's
+   letters, and its failure colour for the lead */
 #define HUD_RGBA(rgb, a) ((u32)(a) << 24 | ((rgb) & 0xFFu) << 16 | ((rgb) & 0xFF00u) | ((rgb) >> 16 & 0xFFu))
-#define HUD_BACK         HUD_RGBA(SNX_GUI_THEME_YORHA_INK, 0xE0u)
+#define HUD_BACK         HUD_RGBA(SNX_GUI_THEME_YORHA_INK, 0xFFu)
 #define HUD_TEXT         HUD_RGBA(SNX_GUI_THEME_YORHA_PAGE, 0xFFu)
 #define HUD_WARN         HUD_RGBA(SNX_GUI_THEME_YORHA_FAILURE, 0xFFu)
 

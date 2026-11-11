@@ -45,7 +45,6 @@ enum {
     C_EDIT,
     C_SNAP,
     C_SCALE,
-    C_OPACITY,
     C_STICK,
     C_DPAD,
     C_HAPTICS,
@@ -61,7 +60,6 @@ static const char* const CONTROLS[C_COUNT] = {"controls",
                                               "Edit layout",
                                               "controls_snap",
                                               "controls_scale",
-                                              "controls_alpha",
                                               "controls_rel_center",
                                               "controls_dpad_slide",
                                               "controls_haptics",
@@ -165,7 +163,8 @@ static char refused[2 * OVERLAY_COLS_MAX];
 #define SOFT                     SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_SOFT, 0xFFu)
 #define LIGHT                    SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_PAGE, 0xFFu)
 #define FAILURE                  SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_FAILURE, 0xFFu)
-#define PANEL                    SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_SOFT, 0x40u) /* the page a little darker */
+/* the page a little darker: the soft colour at 0x40 over it, opaque */
+#define PANEL SNX_OVERLAY_RGBA(ui_over(SNX_GUI_THEME_YORHA_SOFT, SNX_GUI_THEME_YORHA_PAGE, 0x40u), 0xFFu)
 
 /* a slot's page's items: the auto slot has no Save */
 static int slot_item(int i) { return slot_at ? i : i + 1; }
