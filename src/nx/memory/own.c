@@ -88,14 +88,24 @@ static int region_owned(u64 lo, u64 hi) {
 
 /* ---------------------------------------------------------------- in place (no mirror) */
 /* The CPU's bytes of a trapped page, where there is no mirror to read them through: its bytes as they were when it was
-   first armed with CPU bytes on it (an owner's edge page), sorted by page, under g_trap_lk. While the page is armed no
-   CPU write can change them: a write lands it first. They go when it is let go */
+   first armed with CPU bytes on it (an owner's edge page, or a watch's page), sorted by page, under g_trap_lk. While the
+   page is armed no CPU write can change them: a write lands it first. They go when it is let go.
+
+   The bytes are slots of one slab, a page each, and an entry names its slot: a watch arms tens of pages at once, and
+   an allocation for each page took a heap call per page and a page fault on Windows for each new one. A slot let go
+   goes on the free list for the next. The slab moves when it grows, so its bytes are read under g_trap_lk only, and it
+   goes when no shadow is left */
 typedef struct {
     u64 page;
-    u8* bytes;
+    u32 slot;
 } Shadow;
 static Shadow* g_shadow;
 static u32 g_nshadow, g_capshadow;
+static u8* g_slab;        /* g_nslot slots of g_page bytes */
+static u32 g_nslot;
+static u32 g_slot_top;    /* slots [0, g_slot_top) were handed out at least once */
+static u32* g_slot_free;  /* the free ones of those, g_nslot of room */
+static u32 g_nfree;
 static u32 shadow_at_nl(u64 page) {
     u32 lo = 0, hi = g_nshadow;
     while (lo < hi) {
@@ -107,64 +117,99 @@ static u32 shadow_at_nl(u64 page) {
     }
     return lo;
 }
+static u8* slot_bytes(u32 slot) { return g_slab + (size_t)slot * g_page; }
 static const u8* shadow_get_nl(u64 page) {
     u32 i = shadow_at_nl(page);
-    return i < g_nshadow && g_shadow[i].page == page ? g_shadow[i].bytes : NULL;
+    return i < g_nshadow && g_shadow[i].page == page ? slot_bytes(g_shadow[i].slot) : NULL;
 }
-/* bytes (g_page of them, malloc's) as page's shadow, unless it has one: an older one, from when it was first armed */
-static void shadow_add_nl(u64 page, u8* bytes) {
-    u32 i = shadow_at_nl(page);
-    if (i < g_nshadow && g_shadow[i].page == page) {
-        free(bytes);
-        return;
+static u32 slot_take_nl(void) {
+    if (g_nfree) return g_slot_free[--g_nfree];
+    if (g_slot_top == g_nslot) {
+        u32 cap = g_nslot ? g_nslot * 2 : 64;
+        u8* slab = (u8*)realloc(g_slab, (size_t)cap * g_page);
+        if (!slab) fatal("Out of memory for the map of GPU-owned memory");
+        g_slab = slab;
+        u32* free_list = (u32*)realloc(g_slot_free, sizeof *free_list * (size_t)cap);
+        if (!free_list) fatal("Out of memory for the map of GPU-owned memory");
+        g_slot_free = free_list;
+        g_nslot = cap;
     }
-    if (g_nshadow == g_capshadow) {
-        u32 cap = g_capshadow ? g_capshadow * 2 : 64;
-        Shadow* n = (Shadow*)realloc(g_shadow, sizeof *n * (size_t)cap);
-        if (!n) fatal("Out of memory for the map of GPU-owned memory");
-        g_shadow = n;
+    return g_slot_top++;
+}
+/* the n pages page[] (sorted, apart), with bytes[i * g_page] as page[i]'s, as their shadows: a page with one keeps it,
+   from when it was first armed. One pass over the table, as a watch adds its pages at once */
+static void shadow_add_nl(const u64* page, const u8* bytes, u32 n) {
+    u32 fresh = 0, i = 0;
+    for (u32 j = 0; j < n; j++) {
+        while (i < g_nshadow && g_shadow[i].page < page[j]) i++;
+        if (i == g_nshadow || g_shadow[i].page != page[j]) fresh++;
+    }
+    if (!fresh) return;
+    if (g_nshadow + fresh > g_capshadow) {
+        u32 cap = g_capshadow ? g_capshadow : 64;
+        while (cap < g_nshadow + fresh) cap *= 2;
+        Shadow* t = (Shadow*)realloc(g_shadow, sizeof *t * (size_t)cap);
+        if (!t) fatal("Out of memory for the map of GPU-owned memory");
+        g_shadow = t;
         g_capshadow = cap;
     }
-    memmove(&g_shadow[i + 1], &g_shadow[i], sizeof *g_shadow * (size_t)(g_nshadow - i));
-    g_shadow[i].page = page;
-    g_shadow[i].bytes = bytes;
-    g_nshadow++;
+    /* merged from the end, so no entry moves twice */
+    u32 k = g_nshadow + fresh;
+    i = g_nshadow;
+    for (u32 j = n; j-- > 0;) {
+        while (i && g_shadow[i - 1].page > page[j]) g_shadow[--k] = g_shadow[--i];
+        if (i && g_shadow[i - 1].page == page[j]) continue;
+        u32 slot = slot_take_nl();
+        memcpy(slot_bytes(slot), bytes + (size_t)j * g_page, (size_t)g_page);
+        g_shadow[--k] = (Shadow){.page = page[j], .slot = slot};
+    }
+    g_nshadow += fresh;
 }
-/* the pages [lo, hi) let go: their shadows go */
+/* the pages [lo, hi) let go: their shadows go, and their slots are free */
 static void shadow_drop_nl(u64 lo, u64 hi) {
     u32 i = shadow_at_nl(lo), j = i;
-    while (j < g_nshadow && g_shadow[j].page < hi) free(g_shadow[j++].bytes);
+    while (j < g_nshadow && g_shadow[j].page < hi) g_slot_free[g_nfree++] = g_shadow[j++].slot;
     memmove(&g_shadow[i], &g_shadow[j], sizeof *g_shadow * (size_t)(g_nshadow - j));
     g_nshadow -= j - i;
+    if (g_nshadow) return;
+    free(g_slab); /* none left: the slab goes, as a burst of watches made it big */
+    free(g_slot_free);
+    g_slab = NULL;
+    g_slot_free = NULL;
+    g_nslot = g_slot_top = g_nfree = 0;
 }
-/* A landing's staging copy, kept for the next one up to STAGE_KEEP bytes: a fresh allocation of a landing's megabytes
-   takes a page fault per page on Windows. Landings run one at a time under the producer's lock, but a test's may not:
-   a second one at once gets an allocation of its own */
-#define STAGE_KEEP ((u64)64 << 20)
-static u8* g_stage;
-static u64 g_stage_cap;
-static int g_stage_busy; /* atomic */
-static u8* stage_get(u64 size) {
-    int none = 0;
+/* A buffer kept for the next use up to keep bytes: a fresh allocation of megabytes takes a page fault per page on
+   Windows. Its users run one at a time under the producer's lock, but a test's may not: a second one at once gets an
+   allocation of its own */
+typedef struct {
     u8* p;
-    if (size <= STAGE_KEEP && __atomic_compare_exchange_n(&g_stage_busy, &none, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
-        if (size <= g_stage_cap) return g_stage;
-        free(g_stage);
-        g_stage = (u8*)malloc((size_t)size);
-        g_stage_cap = g_stage ? size : 0;
-        if (g_stage) return g_stage;
-        __atomic_store_n(&g_stage_busy, 0, __ATOMIC_RELEASE);
+    u64 cap;
+    int busy; /* atomic */
+} Scratch;
+static u8* scratch_get(Scratch* s, u64 size, u64 keep) {
+    int none = 0;
+    if (size <= keep && __atomic_compare_exchange_n(&s->busy, &none, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        if (size <= s->cap) return s->p;
+        free(s->p);
+        s->p = (u8*)malloc((size_t)size);
+        s->cap = s->p ? size : 0;
+        if (s->p) return s->p;
+        __atomic_store_n(&s->busy, 0, __ATOMIC_RELEASE);
     }
-    p = (u8*)malloc((size_t)(size ? size : 1));
-    if (!p) fatal("Out of memory landing GPU-owned memory (%llu KiB)", (unsigned long long)(size >> 10));
+    u8* p = (u8*)malloc((size_t)(size ? size : 1));
+    if (!p) fatal("Out of memory for GPU-owned memory (%llu KiB)", (unsigned long long)(size >> 10));
     return p;
 }
-static void stage_put(u8* p) {
-    if (p && p == g_stage && __atomic_load_n(&g_stage_busy, __ATOMIC_RELAXED))
-        __atomic_store_n(&g_stage_busy, 0, __ATOMIC_RELEASE);
+static void scratch_put(Scratch* s, u8* p) {
+    if (p && p == s->p && __atomic_load_n(&s->busy, __ATOMIC_RELAXED))
+        __atomic_store_n(&s->busy, 0, __ATOMIC_RELEASE);
     else
         free(p);
 }
+#define STAGE_KEEP ((u64)64 << 20)
+static Scratch g_stage; /* a landing's staging copy, in place */
+#define SNAP_KEEP ((u64)8 << 20)
+static Scratch g_snap; /* the pages own_watch and own_begin copy into shadows */
 
 /* ---------------------------------------------------------------- the entries, under g_own_lk */
 /* the first entry ending after a */
@@ -535,7 +580,8 @@ static void land_pages(u64 lo, u64 hi) {
     dst = (u8**)malloc(sizeof *dst * n);
     if (!r || !dst) fatal("Out of memory landing GPU-owned memory");
     for (i = 0; i < n; i++) total += g_own[first + i].hi - g_own[first + i].lo;
-    if (!mirror) stage = stage_get(total); /* in place: the GPU's bytes wait there while the pages stay trapped */
+    /* in place: the GPU's bytes wait there while the pages stay trapped */
+    if (!mirror) stage = scratch_get(&g_stage, total, STAGE_KEEP);
     for (i = 0, at = 0; i < n; i++) {
         Own* o = &g_own[first + i];
         o->landing = 1;
@@ -572,7 +618,7 @@ static void land_pages(u64 lo, u64 hi) {
     pm_unlock(&g_own_lk);
     free(r);
     free(dst);
-    stage_put(stage);
+    scratch_put(&g_stage, stage);
     /* the pages go before the resources: no page is left armed with no entry on it past this landing (own_stage
        reads such a page directly) */
     let_go(elo & ~(g_page - 1), (ehi + g_page - 1) & ~(g_page - 1));
@@ -678,11 +724,34 @@ int own_init(const OwnHooks* h) {
     return 0;
 }
 
+/* In place: the pages of [lo, hi) that no entry arms yet (so readable), appended to page[] from *n on, with page[i]'s
+   bytes at bytes + i * g_page. Read without faulting: the caller holds the producer's lock, which a landing the trap's
+   thread may be in needs. Each run of such pages is one read. A page that can't be read was armed since (by an
+   own_begin with no producer's lock: a test's) and keeps what it has */
+static void snap_pages(u64 lo, u64 hi, u64* page, u8* bytes, u32* n) {
+    u32 from = *n, w = from;
+    pm_lock(&g_own_lk);
+    for (u64 p = lo; p < hi; p += g_page)
+        if (!page_owned_nl(p)) page[(*n)++] = p;
+    pm_unlock(&g_own_lk);
+    for (u32 i = from; i < *n;) {
+        u32 e = i + 1;
+        while (e < *n && page[e] == page[e - 1] + g_page) e++;
+        if (!plat_vm_read(GP(page[i]), bytes + (size_t)w * g_page, (u64)(e - i) * g_page))
+            for (u32 k = i; k < e; k++) page[w++] = page[k];
+        else /* one of them armed meanwhile: page by page, the readable ones */
+            for (u32 k = i; k < e; k++)
+                if (!plat_vm_read(GP(page[k]), bytes + (size_t)w * g_page, g_page)) page[w++] = page[k];
+        i = e;
+    }
+    *n = w;
+}
+
 int own_begin(u64 addr, u64 size, void* res, u64 res_off) {
     u64 lo = addr & ~(g_page - 1), hi, end = addr + size, edge[2];
     MemPoolRun runs[16];
     ResList rel = {0};
-    u8* snap[2];
+    u8* snap = NULL;
     u32 i, n, nedge = 0;
     if (!g_traps || !size || addr >= AS_SIZE || size > AS_SIZE - addr) return -1;
     hi = (end + g_page - 1) & ~(g_page - 1);
@@ -692,24 +761,10 @@ int own_begin(u64 addr, u64 size, void* res, u64 res_off) {
        own_stage. One armed already has its copy from then, or none to keep (the older owners' bytes are the GPU's) */
     if (!g_mirror) {
         u64 last = hi - g_page;
-        pm_lock(&g_own_lk);
-        if ((addr > lo || (last == lo && end < hi)) && !page_owned_nl(lo)) edge[nedge++] = lo;
-        if (last != lo && end < hi && !page_owned_nl(last)) edge[nedge++] = last;
-        pm_unlock(&g_own_lk);
-        /* read without faulting: this thread holds the producer's lock, which a landing the trap's thread may be in
-           needs. A page that can't be read is armed already (an owner's): it keeps the copy it has */
-        u32 kept = 0;
-        for (i = 0; i < nedge; i++) {
-            u8* b = (u8*)malloc((size_t)g_page);
-            if (!b) fatal("Out of memory for the map of GPU-owned memory");
-            if (plat_vm_read(GP(edge[i]), b, g_page)) {
-                free(b);
-                continue;
-            }
-            edge[kept] = edge[i];
-            snap[kept++] = b;
-        }
-        nedge = kept;
+        int first_edge = addr > lo || (last == lo && end < hi), last_edge = last != lo && end < hi;
+        if (first_edge || last_edge) snap = scratch_get(&g_snap, 2 * g_page, SNAP_KEEP);
+        if (first_edge) snap_pages(lo, lo + g_page, edge, snap, &nedge);
+        if (last_edge) snap_pages(last, hi, edge, snap, &nedge);
     }
     pm_lock(&g_own_lk);
     while (landing_nl(addr, end)) pc_wait(&g_own_cv, &g_own_lk, -1);
@@ -730,9 +785,10 @@ int own_begin(u64 addr, u64 size, void* res, u64 res_off) {
     res_release(&rel);
     /* the pages trapped from now on: the CPU's bytes on them stay in the pool, the owned ones are stale there */
     pm_lock(&g_trap_lk);
-    for (i = 0; i < nedge; i++) shadow_add_nl(edge[i], snap[i]);
+    if (nedge) shadow_add_nl(edge, snap, nedge);
     if (plat_trap_arm(GP(lo), hi - lo)) fatal("Could not trap guest memory at %llx", (unsigned long long)lo);
     pm_unlock(&g_trap_lk);
+    if (snap) scratch_put(&g_snap, snap);
     return 0;
 }
 
@@ -887,33 +943,19 @@ int own_watch(u64 addr, u64 size) {
     u64 lo = addr & ~(g_page - 1), hi, end = addr + size;
     MemPoolRun runs[16];
     ResList rel = {0};
-    u64* shadow_page = NULL;
-    u8** shadow = NULL;
-    u32 i, n, nshadow = 0;
+    u64* snap_page = NULL;
+    u8* snap = NULL;
+    u32 i, n, nsnap = 0;
     if (!g_traps || !size || addr >= AS_SIZE || size > AS_SIZE - addr) return -1;
     hi = (end + g_page - 1) & ~(g_page - 1);
     if (mem_own_prepare(lo, hi - lo, runs, sizeof runs / sizeof *runs, &n)) return -1;
     /* in place: each page armed by no entry yet keeps a copy of its bytes, all of them the CPU's, for own_stage. Read
        without faulting, as own_begin's edges: a page that can't be read is armed already and keeps what it has */
-    if (!g_mirror) {
+    if (!g_mirror) { /* the pages' bytes, then the list of them, in one buffer kept for the next */
         u64 pages = (hi - lo) / g_page;
-        shadow_page = (u64*)malloc(sizeof *shadow_page * (size_t)pages);
-        shadow = (u8**)malloc(sizeof *shadow * (size_t)pages);
-        if (!shadow_page || !shadow) fatal("Out of memory for the map of GPU-owned memory");
-        for (u64 p = lo; p < hi; p += g_page) {
-            pm_lock(&g_own_lk);
-            int armed = page_owned_nl(p);
-            pm_unlock(&g_own_lk);
-            if (armed) continue;
-            u8* b = (u8*)malloc((size_t)g_page);
-            if (!b) fatal("Out of memory for the map of GPU-owned memory");
-            if (plat_vm_read(GP(p), b, g_page)) {
-                free(b);
-                continue;
-            }
-            shadow_page[nshadow] = p;
-            shadow[nshadow++] = b;
-        }
+        snap = scratch_get(&g_snap, pages * (g_page + sizeof *snap_page), SNAP_KEEP);
+        snap_page = (u64*)(void*)(snap + pages * g_page);
+        snap_pages(lo, hi, snap_page, snap, &nsnap);
     }
     pm_lock(&g_own_lk);
     while (landing_nl(addr, end)) pc_wait(&g_own_cv, &g_own_lk, -1);
@@ -935,11 +977,10 @@ int own_watch(u64 addr, u64 size) {
     pm_unlock(&g_own_lk);
     res_release(&rel);
     pm_lock(&g_trap_lk);
-    for (i = 0; i < nshadow; i++) shadow_add_nl(shadow_page[i], shadow[i]);
+    if (nsnap) shadow_add_nl(snap_page, snap, nsnap);
     if (plat_trap_arm(GP(lo), hi - lo)) fatal("Could not trap guest memory at %llx", (unsigned long long)lo);
     pm_unlock(&g_trap_lk);
-    free(shadow_page);
-    free(shadow);
+    if (snap) scratch_put(&g_snap, snap);
     return 0;
 }
 
