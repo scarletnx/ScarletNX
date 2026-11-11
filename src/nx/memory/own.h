@@ -36,6 +36,11 @@ typedef struct {
        the producer's lock as before, and finds that work done. Optional */
     u64 (*writer)(void* res);
     void (*wait)(u64 writer);
+    /* a CPU access of a watched page [addr, addr + size) (own_watch): the producer publishes what it holds of those
+       bytes over them now (own_begin), and the access then lands that. Called with the producer's lock held and no lock
+       or mark of own.c's, on a thread that did not hold the producer's lock before. The watches left over the bytes
+       after it go. Optional: without it, a watch only goes */
+    void (*resolve)(u64 addr, u64 size);
 } OwnHooks;
 
 /* 0 when the host can trap guest memory (plat_trap_init): own_begin can work from then on. -1: producers land their
@@ -45,6 +50,22 @@ int own_init(const OwnHooks* h);
    when the range can't be trapped (no traps, memory that isn't mapped or is mapped somewhere else too): the producer
    then lands it itself. The caller holds the producer's lock (the renderer's, which host memory changes take) */
 int own_begin(u64 addr, u64 size, void* res, u64 res_off);
+/* A watch over [addr, addr + size): its pages are trapped as an owner's, but no resource holds the bytes. The producer
+   holds a result for them that it did not publish yet (a render target drawn since the last release). The first CPU
+   access asks the producer for it (OwnHooks' resolve), and lands what it publishes. A watch holds no bytes: own_lookup
+   and own_stage skip it, and its CPU bytes stay readable through the mirror (or, in place, a shadow of each page). It
+   never cuts a real owner: it goes into the gaps between them, over older watches. A thread that held the producer's
+   lock before it touched a watched page drops the watch and goes on with the CPU's bytes: it cannot wait for a publish.
+   0, or -1 as own_begin. The caller holds the producer's lock */
+int own_watch(u64 addr, u64 size);
+/* 1 when watches cover every byte of [addr, addr + size) */
+int own_watched(u64 addr, u64 size);
+/* the watches over [addr, addr + size) go (clipped to it), and their pages open where no entry is left. Nothing lands.
+   The caller holds the producer's lock */
+void own_unwatch(u64 addr, u64 size);
+/* 1 when an owner or a watch is on a host page of [addr, addr + size): the pages are trapped, and a direct read of
+   them faults. own_lookup counts only owners, and only their bytes */
+int own_trapped(u64 addr, u64 size);
 /* the owned parts of [addr, addr + size), in address order and clipped to it, into out: how many there are (more
    than max when they didn't all fit). With the producer's lock held, as the resources live while it is */
 u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max);
@@ -54,7 +75,7 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max);
    nothing was copied then. With the producer's lock held, as own_lookup */
 u32 own_stage(u64 addr, u64 size, u8* dst, OwnRange* out, u32 max);
 /* change detection over [addr, addr + size) without touching it: 1 when GPU-owned bytes are on its pages, which must
-   then not be read (they are trapped), with the owners' identity mixed into *h (FNV-1a steps). A new owner changes
+   then not be read (they are trapped), with the owners' identity (and the watches') mixed into *h (FNV-1a steps). A new owner changes
    it, and so does the CPU touching the bytes (which ends the ownership). 0, *h unchanged, when nothing is owned there */
 int own_hash(u64 addr, u64 size, u64* h);
 /* the CPU is about to touch [addr, addr + size): what the GPU holds of the pages it is on lands now, and they are the

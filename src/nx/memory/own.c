@@ -27,7 +27,13 @@
    page it opens lands with it (close_pages_nl), as a page opened with an entry left on it would show that entry's stale
    bytes. The CPU's bytes on a trapped page can't be read through a mirror either: an edge page's are copied when it is
    first armed (its shadow, which own_stage reads), and a page with none (bytes own_drop uncovered on a page that stays
-   trapped) lands before own_stage reads it */
+   trapped) lands before own_stage reads it.
+
+   A watch (own_watch) is an entry with no resource (res NULL): its pages are trapped, but it holds no bytes. A landing
+   that finds watches on its pages asks the producer to publish its result there first (OwnHooks' resolve), with the
+   producer's lock held and no mark taken. Then the watches left there go, and the owners the publish made land as any
+   other. The thread that held the producer's lock before cannot wait for that publish: it drops the watches and reads
+   the CPU's bytes, as it would with no watch. In place, a watch's pages each get a shadow when it arms them */
 #include "common/utilities/bits.h"
 #include <stdlib.h>
 #include <string.h>
@@ -40,7 +46,7 @@
 typedef struct {
     u64 lo, hi;   /* guest bytes */
     u64 pool;     /* the pool offset of lo */
-    void* res;    /* the producer's copy, lo at res_off */
+    void* res;    /* the producer's copy, lo at res_off: NULL for a watch (own_watch) */
     u64 res_off;
     int landing;  /* being landed by some thread: the others wait */
 } Own;
@@ -204,6 +210,7 @@ typedef struct {
     u32 n, cap;
 } ResList;
 static void res_push(ResList* l, void* res) {
+    if (!res) return; /* a watch's */
     if (l->n == l->cap) {
         u32 cap = l->cap ? l->cap * 2 : 8;
         void** r = (void**)realloc(l->res, sizeof *r * (size_t)cap);
@@ -232,7 +239,7 @@ static void cut_nl(u64 lo, u64 hi, ResList* rel) {
             cover_nl(o, (u32)-1);
             o->hi = lo;
             cover_nl(o, 1);
-            g_hooks.retain(right.res);
+            if (right.res) g_hooks.retain(right.res);
             insert_nl(i + 1, &right);
             return;
         }
@@ -284,7 +291,7 @@ static void own_replace(u64 lo, u64 hi, const Own* nw, u32 n, ResList* rel) {
         cover_nl(o, (u32)-1);
         o->hi = lo;
         cover_nl(o, 1);
-        g_hooks.retain(up.res); /* the upper part keeps the resource beside the lower one */
+        if (up.res) g_hooks.retain(up.res); /* the upper part keeps the resource beside the lower one */
         from = to = i + 1;      /* nothing removed: the new entries follow the lower part */
         added = n + 1;
     } else {
@@ -374,6 +381,58 @@ static void producer_unlock(void) {
     if (g_hooks.unlock) g_hooks.unlock();
 }
 
+/* ---------------------------------------------------------------- watches (res NULL) */
+/* the first entry at or after i that is a real owner */
+static u32 next_real_nl(u32 i) {
+    while (i < g_nown && !g_own[i].res) i++;
+    return i;
+}
+/* whether a watch is on [lo, hi) */
+static int watched_nl(u64 lo, u64 hi) {
+    for (u32 i = first_after_nl(lo); i < g_nown && g_own[i].lo < hi; i++)
+        if (!g_own[i].res) return 1;
+    return 0;
+}
+/* the watches on [lo, hi) go, one at a time: whole when whole is set, else only their bytes in [lo, hi). Their pages
+   open where no entry is left, now, or with keep the caller's landing's let_go opens them: the pages widen [*keep,
+   keep[1]). In place, opening a page wakes every thread that waits in a trap, and one on a page the landing fills
+   then can read it half written (plat_trap_fill). Never under a lock of own.c's */
+static void unwatch(u64 lo, u64 hi, int whole, u64* keep) {
+    for (u64 c = lo; c < hi;) {
+        ResList rel = {0};
+        pm_lock(&g_own_lk);
+        u32 i = first_after_nl(c);
+        while (i < g_nown && g_own[i].lo < hi && g_own[i].res) i++;
+        if (i >= g_nown || g_own[i].lo >= hi) {
+            pm_unlock(&g_own_lk);
+            return;
+        }
+        u64 a = g_own[i].lo, b = g_own[i].hi;
+        if (!whole) {
+            if (a < c) a = c;
+            if (b > hi) b = hi;
+        }
+        cut_nl(a, b, &rel); /* the watch's bytes alone: no other entry is on them */
+        pm_unlock(&g_own_lk);
+        u64 plo = a & ~(g_page - 1), phi = (b + g_page - 1) & ~(g_page - 1);
+        if (!keep)
+            let_go(plo, phi);
+        else {
+            if (plo < keep[0]) keep[0] = plo;
+            if (phi > keep[1]) keep[1] = phi;
+        }
+        res_release(&rel);
+        c = b;
+    }
+}
+/* the watches on [lo, hi), found by a landing with the producer's lock held and no mark taken: the producer publishes
+   its result over them (unless this thread held its lock before, busy), then every watch on [lo, hi) goes whole. Its
+   pages widen keep, which the landing lets go of when it is done (unwatch) */
+static void watch_hit(u64 lo, u64 hi, int busy, u64* keep) {
+    if (!busy && g_hooks.resolve) g_hooks.resolve(lo, hi - lo);
+    unwatch(lo, hi, 1, keep);
+}
+
 /* In place (no mirror): every entry on the pages of the entries [*first, *first + *n) joins them, until no page they
    are on holds another, so the pages the landing opens hold no entry it leaves behind. 0 when one of those is being
    landed (by a thread without the producer's lock: a test's), to be waited for */
@@ -402,22 +461,27 @@ static void land_pages(u64 lo, u64 hi) {
     u8* stage = NULL;
     u64 elo = lo, ehi = hi, writer = 0, total = 0, at;
     u32 i, first, n = 0;
-    int any;
+    int any, real = 0;
     ResList rel = {0};
+    u64 kept[2] = {~0ull, 0}; /* the pages of the watches it dropped, let go of at its end */
     if (!region_owned(lo, hi)) return;
+    /* asked before the producer's lock is taken: after it, every thread holds it */
+    int busy = g_hooks.busy_tid && g_hooks.busy_tid() == plat_tid();
     pm_lock(&g_own_lk);
     any = owned_nl(lo, hi);
-    if (any && g_hooks.writer)
-        for (i = first_after_nl(lo); i < g_nown && g_own[i].lo < hi; i++) {
-            u64 w = g_hooks.writer(g_own[i].res);
-            if (w > writer) writer = w;
-        }
+    for (i = first_after_nl(lo); any && i < g_nown && g_own[i].lo < hi; i++) {
+        if (!g_own[i].res) continue; /* a watch: no GPU work of its own */
+        real = 1;
+        if (!g_hooks.writer) break;
+        u64 w = g_hooks.writer(g_own[i].res);
+        if (w > writer) writer = w;
+    }
     pm_unlock(&g_own_lk);
     if (!any) return;
     /* the GPU's work first, with no lock held: under the producer's lock, every thread that takes it waited too
        (in one game's menus a landing held it 7.9 s, waiting for a draw's pipeline, and the GPU thread and the
        game's memory thread with it). Once: an entry published again meanwhile lands under the lock, as before */
-    if (g_hooks.wait) {
+    if (real && g_hooks.wait) {
         g_hooks.wait(writer);
         if (!region_owned(lo, hi)) return;
         pm_lock(&g_own_lk);
@@ -429,10 +493,18 @@ static void land_pages(u64 lo, u64 hi) {
     pm_lock(&g_own_lk);
     for (;;) {
         while (landing_nl(lo, hi)) pc_wait(&g_own_cv, &g_own_lk, -1);
+        /* watches first, before any mark: the producer's publish over them may wait for marks (own_begin) */
+        if (watched_nl(lo, hi)) {
+            pm_unlock(&g_own_lk);
+            watch_hit(lo, hi, busy, kept);
+            pm_lock(&g_own_lk);
+            continue;
+        }
         first = first_after_nl(lo);
         for (n = 0, i = first; i < g_nown && g_own[i].lo < hi; i++) n++;
         if (!n) {
             pm_unlock(&g_own_lk);
+            if (kept[1]) let_go(kept[0], kept[1]);
             producer_unlock();
             return;
         }
@@ -445,7 +517,18 @@ static void land_pages(u64 lo, u64 hi) {
                g_own[first + n].lo == g_own[first + n - 1].hi && !g_own[first + n].landing)
             n++;
         /* no mirror (Windows): every entry on the pages being opened lands with them */
-        if (mirror || close_pages_nl(&first, &n)) break;
+        if (mirror) break;
+        if (close_pages_nl(&first, &n)) {
+            /* a watch among them, on a page that an owner here shares: answered as one on [lo, hi) */
+            u32 w = first;
+            while (w < first + n && g_own[w].res) w++;
+            if (w == first + n) break;
+            u64 wlo = g_own[w].lo & ~(g_page - 1), whi = (g_own[w].hi + g_page - 1) & ~(g_page - 1);
+            pm_unlock(&g_own_lk);
+            watch_hit(wlo, whi, busy, kept);
+            pm_lock(&g_own_lk);
+            continue;
+        }
         pc_wait(&g_own_cv, &g_own_lk, -1);
     }
     r = (OwnRange*)malloc(sizeof *r * n);
@@ -493,6 +576,7 @@ static void land_pages(u64 lo, u64 hi) {
     /* the pages go before the resources: no page is left armed with no entry on it past this landing (own_stage
        reads such a page directly) */
     let_go(elo & ~(g_page - 1), (ehi + g_page - 1) & ~(g_page - 1));
+    if (kept[1]) let_go(kept[0], kept[1]);
     res_release(&rel);
     producer_unlock();
 }
@@ -550,6 +634,15 @@ static void own_fault(u8* p, int write, u32 tid) {
     if (tid && g_hooks.busy_tid && tid == g_hooks.busy_tid()) {
         int fault_state = plat_thread_in_fault(tid);
         if (fault_state != 0) {
+            /* only watches there: they go, and the thread reads the CPU's bytes, as with no watch (own_watch) */
+            pm_lock(&g_own_lk);
+            u32 i = next_real_nl(first_after_nl(page));
+            int real = i < g_nown && g_own[i].lo < page + g_page;
+            pm_unlock(&g_own_lk);
+            if (!real) {
+                unwatch(page, page + g_page, 1, NULL);
+                return;
+            }
             report_owned_fault(a, write, tid, fault_state);
             fatal("Thread %u touched GPU-owned guest memory at %llx while it held the renderer: the runtime must call "
                   "own_acquire first",
@@ -648,7 +741,7 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
     u32 i, n = 0;
     if (!own_any() || !region_owned(addr, end)) return 0;
     pm_lock(&g_own_lk);
-    for (i = first_after_nl(addr); i < g_nown && g_own[i].lo < end; i++, n++)
+    for (i = next_real_nl(first_after_nl(addr)); i < g_nown && g_own[i].lo < end; i = next_real_nl(i + 1), n++)
         if (n < max) {
             const Own* o = &g_own[i];
             u64 lo = o->lo > addr ? o->lo : addr, hi = o->hi < end ? o->hi : end;
@@ -705,7 +798,7 @@ static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
    on its first and last pages: an entry on a page within it would be in it. Under g_trap_lk and g_own_lk */
 static int unshadowed_nl(u64 addr, u64 end, u64* at) {
     u64 c = addr;
-    u32 i = first_after_nl(addr);
+    u32 i = next_real_nl(first_after_nl(addr)); /* a watch's bytes are the CPU's: a gap's */
     for (;;) {
         u64 next = i < g_nown && g_own[i].lo < end ? (g_own[i].lo > addr ? g_own[i].lo : addr) : end;
         if (next > c) {
@@ -720,7 +813,8 @@ static int unshadowed_nl(u64 addr, u64 end, u64* at) {
             }
         }
         if (next >= end || g_own[i].hi >= end) return 0;
-        c = g_own[i++].hi;
+        c = g_own[i].hi;
+        i = next_real_nl(i + 1);
     }
 }
 
@@ -785,6 +879,96 @@ int own_hash(u64 addr, u64 size, u64* h) {
         for (u32 k = 0; k < 4; k++) *h = snx_fnv_step(*h, v[k]);
         any = 1;
     }
+    pm_unlock(&g_own_lk);
+    return any;
+}
+
+int own_watch(u64 addr, u64 size) {
+    u64 lo = addr & ~(g_page - 1), hi, end = addr + size;
+    MemPoolRun runs[16];
+    ResList rel = {0};
+    u64* shadow_page = NULL;
+    u8** shadow = NULL;
+    u32 i, n, nshadow = 0;
+    if (!g_traps || !size || addr >= AS_SIZE || size > AS_SIZE - addr) return -1;
+    hi = (end + g_page - 1) & ~(g_page - 1);
+    if (mem_own_prepare(lo, hi - lo, runs, sizeof runs / sizeof *runs, &n)) return -1;
+    /* in place: each page armed by no entry yet keeps a copy of its bytes, all of them the CPU's, for own_stage. Read
+       without faulting, as own_begin's edges: a page that can't be read is armed already and keeps what it has */
+    if (!g_mirror) {
+        u64 pages = (hi - lo) / g_page;
+        shadow_page = (u64*)malloc(sizeof *shadow_page * (size_t)pages);
+        shadow = (u8**)malloc(sizeof *shadow * (size_t)pages);
+        if (!shadow_page || !shadow) fatal("Out of memory for the map of GPU-owned memory");
+        for (u64 p = lo; p < hi; p += g_page) {
+            pm_lock(&g_own_lk);
+            int armed = page_owned_nl(p);
+            pm_unlock(&g_own_lk);
+            if (armed) continue;
+            u8* b = (u8*)malloc((size_t)g_page);
+            if (!b) fatal("Out of memory for the map of GPU-owned memory");
+            if (plat_vm_read(GP(p), b, g_page)) {
+                free(b);
+                continue;
+            }
+            shadow_page[nshadow] = p;
+            shadow[nshadow++] = b;
+        }
+    }
+    pm_lock(&g_own_lk);
+    while (landing_nl(addr, end)) pc_wait(&g_own_cv, &g_own_lk, -1);
+    /* each run of pool pages, in the gaps between the owners on it: an older watch there is replaced */
+    for (i = 0; i < n; i++) {
+        u64 rlo = runs[i].addr > addr ? runs[i].addr : addr;
+        u64 rhi = runs[i].addr + runs[i].size < end ? runs[i].addr + runs[i].size : end;
+        for (u64 c = rlo; c < rhi;) {
+            u32 j = next_real_nl(first_after_nl(c));
+            u64 gap = j < g_nown && g_own[j].lo < rhi ? g_own[j].lo : rhi;
+            u64 next = gap < rhi ? g_own[j].hi : rhi; /* before the replace moves the entries */
+            if (gap > c) {
+                Own w = {.lo = c, .hi = gap, .pool = runs[i].pool + (c - runs[i].addr), .res = NULL};
+                own_replace(c, gap, &w, 1, &rel);
+            }
+            c = next;
+        }
+    }
+    pm_unlock(&g_own_lk);
+    res_release(&rel);
+    pm_lock(&g_trap_lk);
+    for (i = 0; i < nshadow; i++) shadow_add_nl(shadow_page[i], shadow[i]);
+    if (plat_trap_arm(GP(lo), hi - lo)) fatal("Could not trap guest memory at %llx", (unsigned long long)lo);
+    pm_unlock(&g_trap_lk);
+    free(shadow_page);
+    free(shadow);
+    return 0;
+}
+
+int own_watched(u64 addr, u64 size) {
+    u64 c = addr, end = addr + size;
+    int all = 1;
+    if (!size || !own_any() || !region_owned(addr, end)) return 0;
+    pm_lock(&g_own_lk);
+    for (u32 i = first_after_nl(addr); c < end; i++) {
+        if (i >= g_nown || g_own[i].lo > c || g_own[i].res) {
+            all = 0;
+            break;
+        }
+        c = g_own[i].hi;
+    }
+    pm_unlock(&g_own_lk);
+    return all;
+}
+
+void own_unwatch(u64 addr, u64 size) {
+    if (size && own_any() && region_owned(addr, addr + size)) unwatch(addr, addr + size, 0, NULL);
+}
+
+int own_trapped(u64 addr, u64 size) {
+    u64 lo = addr & ~(g_page - 1), hi = (addr + size + g_page - 1) & ~(g_page - 1);
+    int any;
+    if (!size || !own_any() || !region_owned(lo, hi)) return 0;
+    pm_lock(&g_own_lk);
+    any = owned_nl(lo, hi);
     pm_unlock(&g_own_lk);
     return any;
 }

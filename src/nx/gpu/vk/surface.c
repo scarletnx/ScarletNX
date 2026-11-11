@@ -1882,35 +1882,124 @@ static u64 rt_mem_hash(const Surf* s) {
    mostly for, and they are few: one game draws its ambient light's spherical harmonics into seven 8x8 RGBA32F targets
    and reads them after a fence, and lit its scenes with the old bytes there, values up to 1e31. A release publishes
    them, GPU-owned (vk_surf_publish): the GPU copies them over their guest bytes, and they land only if the CPU
-   touches those. A block linear target the CPU reads still gets no write-back */
-static Surf** g_linear;
-static u32 g_nlinear, g_caplinear;
-static void linear_note(Surf* s) {
-    if (s->bl || s->f.depth || s->in_linear) return;
-    if (g_nlinear == g_caplinear) {
-        u32 cap = g_caplinear ? g_caplinear * 2 : 16;
-        Surf** n = realloc(g_linear, (size_t)cap * sizeof *n);
+   touches those.
+
+   Block linear color targets drawn since the last release are the second list. Most are never read on the CPU, and
+   to publish each one at each release would copy tens of megabytes a frame. But a game also reads one now and then:
+   one game draws its save's thumbnail into a 320x180 target, and reads its texels from memory with no call to the GPU.
+   A release watches their bytes (own_watch): the pages are trapped with no copy of the GPU's, and the CPU's first
+   access publishes the targets pending there (vk_rt_watch_hit) and lands them. A target that the CPU read lately
+   (vk_own_cpu_read), or that an owner already covers, is published at the release, as a pitch-linear one */
+typedef struct {
+    Surf** s;
+    u32 n, cap;
+} DrawnList;
+static DrawnList g_linear, g_bl;
+VkRtWatchStats g_vk_rt_watch;
+static void drawn_push(DrawnList* l, Surf* s, int* in) {
+    if (*in) return;
+    if (l->n == l->cap) {
+        u32 cap = l->cap ? l->cap * 2 : 16;
+        Surf** n = realloc(l->s, (size_t)cap * sizeof *n);
         if (!n) return;
-        g_linear = n;
-        g_caplinear = cap;
+        l->s = n;
+        l->cap = cap;
     }
-    g_linear[g_nlinear++] = s;
-    s->in_linear = 1;
+    l->s[l->n++] = s;
+    *in = 1;
+}
+static void drawn_pull(DrawnList* l, const Surf* s, int* in) {
+    u32 i = 0;
+    if (!*in) return;
+    while (i < l->n && l->s[i] != s) i++;
+    if (i < l->n) l->s[i] = l->s[--l->n];
+    *in = 0;
+}
+static void linear_note(Surf* s) {
+    if (s->f.depth) return;
+    if (s->bl)
+        drawn_push(&g_bl, s, &s->in_bl);
+    else
+        drawn_push(&g_linear, s, &s->in_linear);
 }
 static void linear_drop(Surf* s) {
-    u32 i = 0;
-    if (!s->in_linear) return;
-    while (i < g_nlinear && g_linear[i] != s) i++;
-    if (i < g_nlinear) g_linear[i] = g_linear[--g_nlinear];
-    s->in_linear = 0;
+    drawn_pull(&g_linear, s, &s->in_linear);
+    drawn_pull(&g_bl, s, &s->in_bl);
 }
-void vk_rt_publish_linear(void) {
-    /* publishing can submit and land, which leaves the list alone: it is taken whole first */
-    while (g_nlinear) {
-        Surf* s = g_linear[--g_nlinear];
-        s->in_linear = 0;
-        if (!(s->gva >> 63) && flush_bytes(s) && !vk_surf_publish(s)) vk_surf_flush(s, NULL);
+static void rt_publish_now(Surf* s) {
+    if (!vk_surf_publish(s)) vk_surf_flush(s, NULL);
+}
+/* a block linear target s drawn since the last release, its pixels newer than memory: watched, or published */
+static void rt_watch(Surf* s) {
+    u64 size = rt_bytes(s);
+    int publish = 0, armed = 0;
+    if (!own_traps()) return; /* no traps: left as before, as a publish would land at once, a readback a release */
+    /* read lately, or an owner over it (one this publish made at a release before, or another engine's): the owner's
+       bytes are older than its pixels, and a watch never replaces an owner */
+    for (u64 off = 0; off < size && !publish;) {
+        u64 cpu = 0, n = gmmu_run(s->gva + off, size - off, &cpu);
+        if (!n) {
+            n = 0x1000 - ((s->gva + off) & 0xFFF);
+            if (n > size - off) n = size - off;
+        } else if (vk_own_cpu_read(cpu, n, KEEP_CPU_PRESENTS) || own_lookup(cpu, n, NULL, 0))
+            publish = 1;
+        off += n;
     }
+    if (publish) {
+        if (g_vk_rt_watch.publishes++ < 4)
+            LOG("vulkan: the %ux%u render target at %llx (%llu bytes) published at a release: the CPU read it lately, or "
+                "an owner is over it\n",
+                s->w, s->h, (unsigned long long)s->gva, (unsigned long long)size);
+        rt_publish_now(s);
+        return;
+    }
+    for (u64 off = 0; off < size;) {
+        u64 cpu = 0, n = gmmu_run(s->gva + off, size - off, &cpu);
+        if (!n) {
+            n = 0x1000 - ((s->gva + off) & 0xFFF);
+            if (n > size - off) n = size - off;
+        } else if (!own_watched(cpu, n)) {
+            /* memory an import holds (unified memory): the publish copies in place, with no trap */
+            if (vk_own_watch(cpu, n) && vk_uma_held(cpu, n)) {
+                rt_publish_now(s);
+                return;
+            }
+            armed = 1;
+        }
+        off += n;
+    }
+    if (armed) g_vk_rt_watch.arms++;
+}
+void vk_rt_publish_drawn(void) {
+    /* publishing can submit and land, which leaves the lists alone: each is taken whole first */
+    while (g_linear.n) {
+        Surf* s = g_linear.s[--g_linear.n];
+        s->in_linear = 0;
+        if (!(s->gva >> 63) && flush_bytes(s)) rt_publish_now(s);
+    }
+    while (g_bl.n) {
+        Surf* s = g_bl.s[--g_bl.n];
+        s->in_bl = 0;
+        if (!(s->gva >> 63) && flush_bytes(s)) rt_watch(s); /* pending: drawn since memory last had it */
+    }
+}
+void vk_rt_watch_hit(u64 cpu, u64 size) {
+    Surf* local[16];
+    RtPendingList pending = {local, 0, 16};
+    vk_lock();
+    gmmu_aliases(cpu, size, rt_pending_alias, &pending);
+    /* each published over its whole span: its watch goes with the owner that replaces it. One that can't be is
+       written back, and its watch goes as the write-back's own_acquire finds it */
+    for (u32 i = 0; i < pending.count; i++) {
+        Surf* s = pending.surfaces[i];
+        if (g_vk_rt_watch.hits++ < 4)
+            LOG("vulkan: the CPU touched guest memory %llx, a page of the %ux%u render target at %llx (%llu bytes), "
+                "watched: published\n",
+                (unsigned long long)cpu, s->w, s->h, (unsigned long long)s->gva, (unsigned long long)rt_bytes(s));
+        rt_publish_now(s);
+    }
+    if (pending.surfaces != local) free(pending.surfaces);
+    vk_unlock();
 }
 static u64 g_drawn_max; /* the biggest span a listed target has: how far before an address one over it can start */
 /* Whether every byte of s's span was drawn over after s last changed, by targets drawn later, each over its own span:

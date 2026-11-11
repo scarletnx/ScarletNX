@@ -751,7 +751,7 @@ u8* vk_stage_guest_input(u64 gva, u64 source_size, u64 bytes, VkBuffer* buf, u64
         for (u64 o = 0; o < source_size;) {
             u64 cpu = 0, n = gmmu_run(gva + o, source_size - o, &cpu);
             if (n) {
-                if (own_lookup(cpu, n, NULL, 0)) {
+                if (own_trapped(cpu, n)) {
                     gpu = 1;
                     break;
                 }

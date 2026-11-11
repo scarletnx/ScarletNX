@@ -17,6 +17,15 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
     (void)max;
     return 0;
 }
+int own_trapped(u64 addr, u64 size) {
+    (void)addr;
+    (void)size;
+    return 0;
+}
+void own_unwatch(u64 addr, u64 size) {
+    (void)addr;
+    (void)size;
+}
 int own_hash(u64 addr, u64 size, u64* h) {
     (void)addr;
     (void)size;
