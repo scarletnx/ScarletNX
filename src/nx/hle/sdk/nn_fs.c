@@ -3,16 +3,18 @@
 /* nn::fs, native (nn_fs.hook). The SDK's public file system functions, answered from the runtime's own back end with
    no fsp-srv session, as nvn/ answers NVN with no nvhost channel. The behavior is that of a clean-room spec of the
    SDK's functions (their checks, their order, their results and which results stop the game), never the SDK's code.
-   What a save's back end answers (a file that exists, a write past the end) is the file system server's, which fs.c
-   keeps for its IPC handlers too: this file calls that core (fs.h), so both sides answer alike.
+   What a save's back end answers (a file that exists, a write past the end) is the file system server's, the core in
+   fs.c (fs.h), which this file calls.
 
    The layer keeps its own mount table and handles. A mount it made answers here. A mount name it does not know, and a
    handle it did not make, run the function's own code (hook_run_original) with the registers as the call left them,
-   so the SDK's table and its fsp-srv session still serve them: the mount kinds move over one at a time. Its handles
+   so the SDK's own mounts (one a mod made through the SDK's code) still work. The runtime has no fsp-srv: a function
+   that reaches the server stops the game in sm, which names it (hle/services/sm.c). Its handles
    have bit 63 set, which no guest address has, so a handle tells which side made it.
 
-   Mount kinds here: the game's RomFS (MountRom), read through fs.c's image, and the account's save, cache storage and
-   temporary storage (MountSaveData, MountCacheStorage, MountTemporaryStorage), on the host folders fs.c gives them.
+   Mount kinds here: the game's RomFS (MountRom) and an add-on content's, read through fs.c's images, and the
+   account's save (also read only), cache storage, temporary storage and the SD card, on the host folders fs.c gives
+   them. The mounts, files and directories are g_hle.nnfs's and g_hle.fs's slots, which a save state holds.
 
    Locks: g_nnfs.lock guards the tables, and is taken before fs_lock (the tree's) when both are held. */
 #include "nx/hle/sdk/nn_fs.h"
@@ -166,7 +168,7 @@ static int abort_needed(u32 r) {
     if ((r & 0x1ff) != 2) return 1;
     return ((r >> 9) & 0x1fff) >= 1000;
 }
-__attribute__((noreturn)) static void stop(const char* function, u32 r) {
+SNX_NORETURN static void stop(const char* function, u32 r) {
     fatal("nn::fs::%s failed with result 0x%x (error %04u-%04u), which the SDK stops the game on", function, r,
           2000 + (r & 0x1ff), (r >> 9) & 0x1fff);
 }
@@ -470,7 +472,7 @@ static int is_native(u64 h) { return (h & TAG_FILE) != 0; }
 
 /* a native handle that no live object has: the game passed a closed one, which the SDK's own code would read freed
    memory for */
-__attribute__((noreturn)) static void stale(const char* function, u64 h) {
+SNX_NORETURN static void stale(const char* function, u64 h) {
     fatal("nn::fs::%s: the game passed the handle %llx, which is closed", function, (unsigned long long)h);
 }
 /* the native file of h, with the lock taken: the caller unlocks */
@@ -852,6 +854,9 @@ static u32 file_read(const char* function, u64 h, u64 read_out, int want_read, i
     if (rm->game ? romfs_read_guest(data + (u64)offset, buffer, count)
                  : fs_storage_read_guest(&rm->st, data + (u64)offset, buffer, count))
         return R_OUT_OF_RANGE;
+    /* the game's RomFS is one storage whatever mount reads it (the SDK read it through one IStorage); another
+       image is its own */
+    fs_pace_read(rm->game ? (const void*)&g_hle.fs : (const void*)&rm->st, data + (u64)offset, count);
     *n = count;
     return 0;
 }

@@ -27,6 +27,15 @@ void logf_(int level, const char* format, ...) {
     (void)level;
     (void)format;
 }
+/* log.c's: the stop of a game that opened a service the runtime answers only natively, which no check here asks */
+void fatal(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+    test_fail("fatal", __LINE__);
+    exit(1);
+}
 /* the runtime has one service here, "set" */
 int svc_registered(const char* name) { return !strcmp(name, "set"); }
 SvcObj* svc_open(const char* name) { return svc_registered(name) ? &test_service : NULL; }
