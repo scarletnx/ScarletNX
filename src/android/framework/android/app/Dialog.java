@@ -56,7 +56,10 @@ public class Dialog implements DialogInterface, Window.Callback, KeyEvent.Callba
         a.width = ViewGroup.LayoutParams.WRAP_CONTENT;
         a.height = ViewGroup.LayoutParams.WRAP_CONTENT;
         a.type = WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG;
-        if (context instanceof Activity a2) owner = a2;
+        for (Context c = context; owner == null && c != null; c = c instanceof android.content.ContextWrapper w ? w.getBaseContext() : null)
+            if (c instanceof Activity activity) owner = activity;
+        /* a dialog of an activity is a window of the activity's token, which shows above the activity's own window */
+        if (owner != null && owner.getWindow() != null) a.token = owner.getWindow().getAttributes().token;
         ((android.window.OnBackInvokedDispatcher.Default) window.getOnBackInvokedDispatcher()).setFallback(this::onBackPressed);
     }
     protected Dialog(Context context, boolean cancelable, OnCancelListener cancelListener) {

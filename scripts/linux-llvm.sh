@@ -26,7 +26,12 @@ case $arch in
     x86_64) target=X86 triple=x86_64-linux-gnu ;;
     aarch64) target=AArch64 triple=aarch64-linux-gnu ;;
     ppc64le) target=PowerPC triple=powerpc64le-linux-gnu flags=-mcpu=power8 ;;
-    ppc64) target=PowerPC triple=powerpc64-unknown-linux-gnu flags="-mcpu=power8 -mabi=elfv2" ;;
+    # big-endian for every 64-bit PowerPC, as cmake/cross.cmake builds the runtime: no AltiVec, square root or
+    # estimates. A POWER8 LLVM stops in its static constructors on a PowerMac G5
+    ppc64) target=PowerPC triple=powerpc64-unknown-linux-gnu flags="-mcpu=ppc64 -mno-altivec -mabi=elfv2"
+           for feature in fsqrt fres frsqrte frsqrtes fre stfiwx; do
+               flags="$flags -Xclang -target-feature -Xclang -$feature"
+           done ;;
     riscv64) target=RISCV triple=riscv64-linux-gnu flags=-march=rv64gc ;;
     loongarch64) target=LoongArch triple=loongarch64-linux-gnu flags=-march=la64v1.0 ;;
     mips64) target=Mips triple=mips64-unknown-linux-gnu flags=-march=mips64r2 ;;

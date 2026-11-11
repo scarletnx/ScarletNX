@@ -25,6 +25,7 @@
 #include <direct.h>
 #include <io.h>
 #else
+#include <dirent.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -48,8 +49,7 @@ static const HleSymbol* find(const char* name) {
 
 /* name called as a guest calls it: the integer arguments x (from the ninth on the stack) and the floating ones d, with
    the guest's errno taken around it as the bridge takes it. Its x0 */
-static uint64_t call(const char* name, const uint64_t* x, size_t nx, const double* d, size_t nd) {
-    const HleSymbol* s = find(name);
+static uint64_t call_symbol(const HleSymbol* s, const uint64_t* x, size_t nx, const double* d, size_t nd) {
     g_t.cpu = (CPU){0};
     memset(g_t.stack, 0, sizeof g_t.stack);
     for (size_t i = 0; i < nx; ++i) {
@@ -64,6 +64,9 @@ static uint64_t call(const char* name, const uint64_t* x, size_t nx, const doubl
     s->handler(&g_t.cpu, s->data);
     hle_errno_end();
     return g_t.cpu.x[0];
+}
+static uint64_t call(const char* name, const uint64_t* x, size_t nx, const double* d, size_t nd) {
+    return call_symbol(find(name), x, nx, d, nd);
 }
 #define P(p)            ((uint64_t)(uintptr_t)(p))
 #define I32(v)          ((uint64_t)(uint32_t)(int32_t)(v)) /* an int as a guest passes it: w, the upper half zero */
@@ -218,6 +221,12 @@ static void test_own_forms(void) {
     char* saved = NULL;
     expect_text("strtok_r's first word", (const char*)(uintptr_t)CALL("strtok_r", P(words), P(" "), P(&saved)), "x");
     expect_text("its second", (const char*)(uintptr_t)CALL("strtok_r", 0, P(" "), P(&saved)), "y");
+    char* part = (char*)(uintptr_t)CALL("strndup", P("abcdef"), 3);
+    expect_text("strndup takes n bytes", part ? part : "(null)", "abc");
+    free(part);
+    part = (char*)(uintptr_t)CALL("strndup", P("ab"), 5);
+    expect_text("and stops at the end", part ? part : "(null)", "ab");
+    free(part);
     FILE* f = fopen("android_bionic_seek.txt", "w+b");
     if (!f) {
         fprintf(stderr, "android_bionic: cannot write android_bionic_seek.txt in the working folder\n");
@@ -508,6 +517,11 @@ enum {
 #define SAID_ENOSYS(what, r)                                                                                           \
     (expect_int(what, (int64_t)(r), -1), expect_int(what " sets ENOSYS", *hle_errno_location(), 38))
 
+#ifndef _WIN32
+/* the host's dirfd, which test_files_second_batch's folder descriptor hides */
+static int stream_descriptor(DIR* stream) { return dirfd(stream); }
+#endif
+
 static void test_files_second_batch(void) {
     const char* path = "android_bionic_more.txt";
     const char* second = "android_bionic_more_2.txt";
@@ -577,6 +591,50 @@ static void test_files_second_batch(void) {
     SAID_ENOSYS("openat of a folder descriptor", CALL("openat", I32(7), P("relative"), 0, 0));
     SAID_ENOSYS("fchdir", CALL("fchdir", 0));
     SAID_ENOSYS("chown", CALL("chown", P(path), 0, 0));
+#endif
+
+    /* fstatat: the guest's struct stat (st_size at 48), of a path and of a descriptor itself (AT_EMPTY_PATH) */
+    unsigned char guest_stat[128];
+    uint64_t size = 0;
+    memset(guest_stat, 0, sizeof guest_stat);
+    expect_int("fstatat", (int64_t)CALL("fstatat", I32(G_AT_FDCWD), P(path), P(guest_stat), 0), 0);
+    memcpy(&size, guest_stat + 48, sizeof size);
+    expect_int("fstatat's size", (int64_t)size, 3);
+    memset(guest_stat, 0, sizeof guest_stat);
+    expect_int("stat64", (int64_t)CALL("stat64", P(path), P(guest_stat)), 0);
+    memcpy(&size, guest_stat + 48, sizeof size);
+    expect_int("stat64's size", (int64_t)size, 3);
+    memset(guest_stat, 0, sizeof guest_stat);
+    expect_int("lstat64", (int64_t)CALL("lstat64", P(path), P(guest_stat)), 0);
+    memcpy(&size, guest_stat + 48, sizeof size);
+    expect_int("lstat64's size", (int64_t)size, 3);
+    int64_t cpu = (int64_t)CALL("sched_getcpu");
+    expect_int("sched_getcpu is a CPU", cpu >= 0 && cpu < 4096, 1);
+    expect_int("fstatat of nothing", (int64_t)CALL("fstatat", I32(G_AT_FDCWD), P("android_bionic_none"), P(guest_stat), 0),
+               -1);
+    expect_int("and ENOENT", *hle_errno_location(), 2);
+    expect_int("fstatat of a flag it lacks", (int64_t)CALL("fstatat", I32(G_AT_FDCWD), P(path), P(guest_stat), 1), -1);
+    expect_int("and EINVAL", *hle_errno_location(), 22);
+    fd = (int64_t)CALL("openat", I32(G_AT_FDCWD), P(path), 0, 0);
+    memset(guest_stat, 0, sizeof guest_stat);
+    expect_int("fstatat AT_EMPTY_PATH", (int64_t)CALL("fstatat64", I32(fd), P(""), P(guest_stat), 0x1000), 0);
+    memcpy(&size, guest_stat + 48, sizeof size);
+    expect_int("the descriptor's size", (int64_t)size, 3);
+    expect_int("an empty path without it", (int64_t)CALL("fstatat", I32(fd), P(""), P(guest_stat), 0), -1);
+    expect_int("is ENOENT", *hle_errno_location(), 2);
+    CALL("close", I32(fd));
+#ifndef _WIN32
+    DIR* folder_stream = opendir(".");
+    int stream_fd = folder_stream ? stream_descriptor(folder_stream) : -1;
+    expect_int("dirfd", (int64_t)CALL("dirfd", P(folder_stream)), stream_fd);
+    memset(guest_stat, 0, sizeof guest_stat);
+    expect_int("fstatat of a folder descriptor", (int64_t)CALL("fstatat", I32(stream_fd), P(path), P(guest_stat), 0x100),
+               0);
+    memcpy(&size, guest_stat + 48, sizeof size);
+    expect_int("its size", (int64_t)size, 3);
+    if (folder_stream) closedir(folder_stream);
+#else
+    SAID_ENOSYS("dirfd", CALL("dirfd", 0));
 #endif
 
     /* links: a hard link reads the same bytes, a second one is EEXIST */
@@ -663,6 +721,11 @@ static void test_pipe2_umask_session(void) {
     uint64_t old = CALL("umask", 077);
     expect_int("umask gives the one set before", (int64_t)CALL("umask", old), 077);
     expect_int("umask back", (int64_t)CALL("umask", old), (int64_t)old);
+    expect_int("__umask_chk is umask", (int64_t)CALL("__umask_chk", 077), (int64_t)old);
+    expect_int("and gives it back", (int64_t)CALL("__umask_chk", old), 077);
+#ifndef _WIN32
+    ABORTS("__umask_chk", "umask: called with invalid mask", 01777);
+#endif
 
 #ifdef _WIN32
     expect_int("getpgrp is the process", (int64_t)CALL("getpgrp"), (int64_t)host_pid());
@@ -946,6 +1009,53 @@ static void test_localhost(void) {
     CALL("freeaddrinfo", P(list));
 }
 
+/* ---- ICU, the host's (hle_icu.c) ---- */
+
+/* an ICU function by its name with the host's version's suffix, as .NET finds it; NULL with the failure said */
+static const HleSymbol* icu_function(const char* name) {
+    char versioned[64];
+    snprintf(versioned, sizeof versioned, "%s_%d", name, hle_icu_version());
+    const HleSymbol* s = hle_icu_find(versioned);
+    if (!s) {
+        fprintf(stderr, "android_bionic: ICU has no %s\n", versioned);
+        g_t.failures++;
+    }
+    return s;
+}
+static void test_icu(void) {
+    int version = hle_icu_version();
+    if (!version) {
+        puts("android_bionic: this host has no ICU for the guest, so its checks are skipped");
+        return;
+    }
+    char name[64];
+    snprintf(name, sizeof name, "u_strlen_%d", version + 1);
+    expect_int("ICU has no other version's names", hle_icu_find(name) == NULL, 1);
+    expect_int("nor a name without the suffix", hle_icu_find("u_strlen") == NULL, 1);
+    static const uint16_t text[] = {'h', 'e', 'l', 'l', 'o', 0};
+    const HleSymbol* s = icu_function("u_strlen");
+    if (s) expect_int("u_strlen", (int64_t)call_symbol(s, (uint64_t[]){P(text)}, 1, NULL, 0), 5);
+    /* a UDate result, in v0 */
+    s = icu_function("ucal_getNow");
+    if (s) {
+        call_symbol(s, (uint64_t[]){0}, 0, NULL, 0);
+        double now;
+        memcpy(&now, &g_t.cpu.v[0].df[0], sizeof now);
+        double want = (double)time(NULL) * 1000;
+        expect_int("ucal_getNow is now, in milliseconds", now > want - 60000 && now < want + 60000, 1);
+    }
+    /* a UBool result, its byte */
+    const HleSymbol* nfc = icu_function("unorm2_getNFCInstance");
+    s = icu_function("unorm2_isNormalized");
+    if (nfc && s) {
+        int32_t status = 0;
+        uint64_t normalizer = call_symbol(nfc, (uint64_t[]){P(&status)}, 1, NULL, 0);
+        expect_int("unorm2_getNFCInstance", normalizer != 0 && status <= 0, 1);
+        expect_int("unorm2_isNormalized",
+                   (int64_t)call_symbol(s, (uint64_t[]){normalizer, P(text), 5, P(&status)}, 4, NULL, 0), 1);
+    }
+}
+
 int main(void) {
     hle_posix_init(); /* as the HLE's first lookup does */
     test_printf_signed();
@@ -967,6 +1077,7 @@ int main(void) {
     test_guest_locale();
     test_getpriority();
     test_multibyte_strings();
+    test_icu();
     if (g_t.failures) {
         fprintf(stderr, "android_bionic: %d failed\n", g_t.failures);
         return 1;

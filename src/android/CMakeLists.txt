@@ -89,7 +89,7 @@ add_library(snx_android_bridge STATIC bridge/bridge.c bridge/host.c bridge/linke
                                       bridge/hle_android.c bridge/hle_vulkan.c
                                       bridge/hle_egl.c bridge/gles_vk.c bridge/hle_gles.c bridge/gles2.c
                                       bridge/gles2_object.c bridge/gles2_program.c bridge/gles2_draw.c
-                                      bridge/hle_zlib.c)
+                                      bridge/hle_zlib.c bridge/hle_icu.c)
 # the 32-bit bridge (bridge/arm32.h) takes bionic's ILP32 layouts from the host's POSIX ones: on Windows, which has
 # none of them, arm32_none.c refuses an app's 32-bit libraries instead
 if(WIN32)

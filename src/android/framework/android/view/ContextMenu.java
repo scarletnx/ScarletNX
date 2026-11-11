@@ -6,5 +6,9 @@ package android.view;
 public interface ContextMenu extends Menu {
     interface ContextMenuInfo {}
     ContextMenu setHeaderTitle(CharSequence title);
+    ContextMenu setHeaderTitle(int titleRes);
+    ContextMenu setHeaderIcon(int iconRes);
+    ContextMenu setHeaderIcon(android.graphics.drawable.Drawable icon);
+    ContextMenu setHeaderView(View view);
     void clearHeader();
 }

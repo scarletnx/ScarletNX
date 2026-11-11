@@ -31,11 +31,12 @@ void snx_arm_exec_free(SnxArmExec* exec);
 SnxArmBlock snx_arm_exec_block(SnxArmExec* exec, const SnxArmExecRange* ranges, size_t range_count, uint32_t pc,
                                int thumb, const unsigned char* base);
 /* A block compiled now from the code given (count A32 words, or Thumb halfwords when thumb is set, as host integers)
-   for the profile, its memory checked (checked.h) when checked is set: the caller's to look up and keep, never cached
-   here, each compile a new copy. *consumed is how many it compiled. NULL when the compiler fails. Not thread-safe:
-   callers serialize */
+   for the profile and memory mode (a SnxArmMemoryMode of llvm.h: 0 flat, 1 checked (checked.h), 2 hosted): the
+   caller's to look up and keep, never cached here, each compile a new copy. A hosted block leaves the checks of its
+   entry to the caller. *consumed is how many it compiled. NULL when the compiler fails. Not thread-safe: callers
+   serialize */
 SnxArmBlock snx_arm_exec_compile(SnxArmExec* exec, const void* code, size_t count, uint32_t pc, int thumb,
-                                 SnxArmProfile profile, int checked, size_t* consumed);
+                                 SnxArmProfile profile, int memory, size_t* consumed);
 /* Runs from cpu->r[15] until the process exits (cpu->exit set by a trap or the
    syscall handler). code_ranges bound block compilation. Returns cpu->exit. */
 int snx_arm_exec_run(SnxArmExec* exec, SnxArmCPU* cpu, const SnxArmExecRange* ranges, size_t range_count,

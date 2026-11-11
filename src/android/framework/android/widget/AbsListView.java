@@ -150,6 +150,13 @@ public abstract class AbsListView extends AdapterView<ListAdapter> implements Te
         return firstPosition > 0 || getChildAt(0).getTop() < getPaddingTop();
     }
     public void smoothScrollToPosition(int position) { setSelection(position); }
+    public void smoothScrollToPositionFromTop(int position, int offset) { setSelectionFromTop(position, offset); }
+    public void smoothScrollToPositionFromTop(int position, int offset, int duration) { setSelectionFromTop(position, offset); }
+    /** every child rebuilt from the adapter, at the next layout */
+    public void invalidateViews() {
+        requestLayout();
+        invalidate();
+    }
     public void smoothScrollBy(int distance, int duration) { scrollListBy(distance); }
     public void setSelectionFromTop(int position, int y) { setSelection(position); }
     abstract void scrollContentBy(int dy);

@@ -19,13 +19,15 @@ static void set_error(const char* text) {
     dl_error_set = true;
 }
 
-/* a system library's handle: an address in this table, which no guest library has */
+/* a system library's handle: an address in this table, which no guest library has. ICU's two (hle_icu.c) are the
+   last, there when the host has ICU */
 static const char* const systems[] = {"libc.so", "libm.so", "libdl.so", "liblog.so", "libandroid.so", "libz.so",
                                       "libEGL.so", "libGLESv1_CM.so", "libGLESv2.so", "libGLESv3.so", "libvulkan.so",
                                       "libOpenSLES.so", "libaaudio.so", "libmediandk.so", "libnativewindow.so",
                                       "libjnigraphics.so", "libsync.so", "libstdc++.so", "ld-android.so",
-                                      "libdl_android.so"};
-static unsigned char system_handles[sizeof systems / sizeof *systems];
+                                      "libdl_android.so", "libicuuc.so", "libicui18n.so"};
+enum { SYSTEM_COUNT = sizeof systems / sizeof *systems, ICU_FIRST = SYSTEM_COUNT - 2 };
+static unsigned char system_handles[SYSTEM_COUNT];
 
 static const char* base_name(const char* path) {
     const char* slash = strrchr(path, '/');
@@ -35,8 +37,9 @@ static const char* base_name(const char* path) {
 /* a system library's handle, 0 for another name */
 static uint64_t system_handle(const char* path) {
     const char* name = base_name(path);
-    for (size_t i = 0; i < sizeof systems / sizeof *systems; ++i)
-        if (!strcmp(systems[i], name)) return (uint64_t)(uintptr_t)&system_handles[i];
+    for (size_t i = 0; i < SYSTEM_COUNT; ++i)
+        if (!strcmp(systems[i], name) && (i < ICU_FIRST || hle_icu_available()))
+            return (uint64_t)(uintptr_t)&system_handles[i];
     return 0;
 }
 bool hle_dl_is_system(const char* name) { return system_handle(name) != 0; }
@@ -115,6 +118,7 @@ static void g_dlsym(CPU* c, void* data) {
     uint64_t systems_lo = (uint64_t)(uintptr_t)system_handles;
     if (handle == 0) a = linker_symbol(NULL, name);                         /* RTLD_DEFAULT */
     else if (handle == UINT64_MAX) a = linker_next_symbol(X(30), name);     /* RTLD_NEXT */
+    else if (handle >= systems_lo + ICU_FIRST && handle < systems_lo + sizeof system_handles) a = hle_icu_symbol(name);
     else if (handle >= systems_lo && handle < systems_lo + sizeof system_handles) a = hle_symbol(name);
     else a = linker_symbol((GuestLibrary*)(uintptr_t)handle, name);
     if (!a) {

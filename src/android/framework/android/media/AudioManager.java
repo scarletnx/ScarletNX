@@ -93,6 +93,18 @@ public class AudioManager {
         return (flags & GET_DEVICES_OUTPUTS) != 0 ? new AudioDeviceInfo[] { SPEAKER } : new AudioDeviceInfo[0];
     }
 
+    /**
+     * The devices never change here: a callback is told the ones there are once, as Android tells a new one, on the
+     * handler's looper (the main one without a handler).
+     */
+    public void registerAudioDeviceCallback(AudioDeviceCallback callback, android.os.Handler handler) {
+        if (callback == null) throw new IllegalArgumentException("Illegal null AudioDeviceCallback argument");
+        android.os.Handler h = handler != null ? handler : new android.os.Handler(android.os.Looper.getMainLooper());
+        AudioDeviceInfo[] devices = getDevices(GET_DEVICES_ALL);
+        h.post(() -> callback.onAudioDevicesAdded(devices));
+    }
+    public void unregisterAudioDeviceCallback(AudioDeviceCallback callback) {}
+
     public String getParameters(String keys) { return ""; }
     public void setParameters(String keyValuePairs) {}
 
@@ -128,6 +140,22 @@ public class AudioManager {
 
     @Deprecated public int requestAudioFocus(OnAudioFocusChangeListener l, int streamType, int durationHint) { return AUDIOFOCUS_REQUEST_GRANTED; }
     public int abandonAudioFocus(OnAudioFocusChangeListener l) { return AUDIOFOCUS_REQUEST_GRANTED; }
+    /** No other app plays here: focus is always granted, and never lost */
+    public int requestAudioFocus(AudioFocusRequest focusRequest) {
+        if (focusRequest == null) throw new NullPointerException("Illegal null AudioFocusRequest");
+        return AUDIOFOCUS_REQUEST_GRANTED;
+    }
+    public int abandonAudioFocusRequest(AudioFocusRequest focusRequest) {
+        if (focusRequest == null) throw new IllegalArgumentException("Illegal null AudioFocusRequest");
+        return AUDIOFOCUS_REQUEST_GRANTED;
+    }
+    /** The speaker is no communication device: a call's route stays where it is */
+    public boolean setCommunicationDevice(AudioDeviceInfo device) {
+        if (device == null) throw new NullPointerException("Illegal null AudioDeviceInfo");
+        return false;
+    }
+    public AudioDeviceInfo getCommunicationDevice() { return null; }
+    public void clearCommunicationDevice() {}
 
     @Deprecated public void registerMediaButtonEventReceiver(ComponentName eventReceiver) {}
     @Deprecated public void registerMediaButtonEventReceiver(PendingIntent eventReceiver) {}

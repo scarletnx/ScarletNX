@@ -39,8 +39,12 @@ static int options_valid(const SnxArmCodegenOptions* o) {
                   (o->profile == SNX_ARM_PROFILE_A57 || o->profile == SNX_ARM_PROFILE_ARM11 ||
                    o->profile == SNX_ARM_PROFILE_A9 ||
                    (o->profile == SNX_ARM_PROFILE_ARM7TDMI && o->memory == SNX_ARM_MEMORY_FLAT)) &&
-                  (o->memory == SNX_ARM_MEMORY_FLAT || o->memory == SNX_ARM_MEMORY_CHECKED));
+                  (o->memory == SNX_ARM_MEMORY_FLAT || o->memory == SNX_ARM_MEMORY_CHECKED ||
+                   o->memory == SNX_ARM_MEMORY_HOSTED));
 }
+/* llvm.h: flat memory in a window of 2^32 guest addresses with a guard after it, the cpu private to the running block,
+   and the entry state seen to by the dispatch loop */
+static int hosted(const ArmIR* a) { return a->memory == SNX_ARM_MEMORY_HOSTED; }
 /* the AGB board's rules (arm.h's SNX_ARM_PROFILE_ARM7TDMI), which no other profile follows */
 static int arm7tdmi(const ArmIR* a) { return a->profile == SNX_ARM_PROFILE_ARM7TDMI; }
 static LLVMValueRef host_order(ArmIR* a, LLVMValueRef v, unsigned bytes);
@@ -226,7 +230,8 @@ static LLVMValueRef arithmetic(ArmIR* a, LLVMValueRef x, LLVMValueRef y, LLVMVal
     LLVMValueRef wide = add(a, add(a, z64(a, x), z64(a, y)), z64(a, cin));
     LLVMValueRef result = LLVMBuildTrunc(a->b, wide, a->i32, "");
     if (flags) {
-        LLVMValueRef c = LLVMBuildTrunc(a->b, LLVMBuildLShr(a->b, wide, c64(a, 32), ""), a->i32, "");
+        /* masked, so LLVM sees that no other bit of the flags word comes from it and a branch on Z needs no flags word */
+        LLVMValueRef c = band(a, LLVMBuildTrunc(a->b, LLVMBuildLShr(a->b, wide, c64(a, 32), ""), a->i32, ""), c32(a, 1));
         LLVMValueRef v = lsr(a, band(a, LLVMBuildNot(a->b, bxor(a, x, y), ""), bxor(a, x, result)), 31);
         nz(a, result, c, v);
     }
@@ -287,6 +292,7 @@ static void data(ArmIR* a) {
 static void bounds(ArmIR* a, LLVMValueRef addr, unsigned bytes, unsigned alignment) {
     if (alignment > 1)
         require(a, cmp(a, LLVMIntEQ, band(a, addr, c32(a, alignment - 1)), c32(a, 0)), SNX_ARM_ALIGNMENT, addr);
+    if (hosted(a)) return; /* past the window is a host fault: the guard pages after it */
     LLVMValueRef end = add(a, z64(a, addr), c64(a, bytes));
     LLVMValueRef size = get(a, offsetof(SnxArmCPU, mem_size), a->i64);
     /* the AGB board's window runs past 4 GiB by a guard (agb/cpu/memmap.c): an access the console's bus wraps, an LDM
@@ -314,7 +320,7 @@ static void bus_access(ArmIR* a, unsigned operation, LLVMValueRef addr, unsigned
             operation == SNX_ARM_ACCESS_FETCH ? SNX_ARM_PREFETCH_ABORT : SNX_ARM_DATA_ABORT, addr);
 }
 static void memory_entry(ArmIR* a) {
-    if (a->memory == SNX_ARM_MEMORY_FLAT) {
+    if (a->memory != SNX_ARM_MEMORY_CHECKED) {
         a->mem = get(a, offsetof(SnxArmCPU, mem), a->ptr);
         return;
     }
@@ -333,7 +339,7 @@ static void instruction_fetch(ArmIR* a, uint32_t encoded, unsigned bytes) {
     require(a, cmp(a, LLVMIntEQ, value, LLVMConstInt(type, encoded, 0)), SNX_ARM_CODE_CHANGED, c32(a, a->pc));
 }
 static void transfer_begin(ArmIR* a, LLVMValueRef addr, unsigned bytes, unsigned alignment, int write, int multi) {
-    if (a->memory == SNX_ARM_MEMORY_FLAT) {
+    if (a->memory != SNX_ARM_MEMORY_CHECKED) {
         bounds(a, addr, bytes, alignment);
         return;
     }
@@ -455,11 +461,18 @@ static LLVMValueRef readmem(ArmIR* a, LLVMValueRef addr, unsigned bytes, int sig
    elsewhere, as a compiler's spill to the stack between LDREXD and STREXD, keeps the reservation: clearing it there
    fails that STREXD every time, and the loop around it never ends */
 static void store_monitor(ArmIR* a, LLVMValueRef addr, unsigned bytes) {
+    /* nearly every store runs with no reservation held, which is the one test it costs */
+    LLVMBasicBlockRef held = block(a, "held"), done = block(a, "unheld");
+    LLVMValueRef valid = GET(a, exclusive_valid);
+    LLVMBuildCondBr(a->b, cmp(a, LLVMIntNE, valid, c32(a, 0)), held, done);
+    LLVMPositionBuilderAtEnd(a->b, held);
     LLVMValueRef base = GET(a, exclusive_address);
     /* two ranges overlap when either starts inside the other, in the 32-bit arithmetic the addresses wrap in */
     LLVMValueRef overlap = bor(a, cmp(a, LLVMIntULT, sub(a, addr, base), GET(a, exclusive_size)),
                                cmp(a, LLVMIntULT, sub(a, base, addr), c32(a, bytes)));
-    PUT(a, exclusive_valid, LLVMBuildSelect(a->b, overlap, c32(a, 0), GET(a, exclusive_valid), ""));
+    PUT(a, exclusive_valid, LLVMBuildSelect(a->b, overlap, c32(a, 0), valid, ""));
+    LLVMBuildBr(a->b, done);
+    LLVMPositionBuilderAtEnd(a->b, done);
 }
 static void writemem(ArmIR* a, LLVMValueRef addr, unsigned bytes, LLVMValueRef value) {
     LLVMTypeRef type = LLVMIntTypeInContext(a->ctx, bytes * 8);
@@ -1119,6 +1132,9 @@ static void miscellaneous(ArmIR* a, SnxA32Kind kind) {
         LLVMValueRef unused;
         uint32_t mask = (n & 8 ? 0xf8000000u : 0) | (n & 4 ? 0x000f0000u : 0) | (n & 2 ? SNX_ARM_E : 0);
         r = w & (1u << 25) ? operand2(a, w, &unused) : x;
+        if (hosted(a) && (mask & SNX_ARM_E))
+            require(a, cmp(a, LLVMIntEQ, band(a, r, c32(a, SNX_ARM_E)), c32(a, 0)), SNX_ARM_ENDIAN_UNSUPPORTED,
+                    c32(a, w));
         PUT(a, cpsr, bor(a, band(a, GET(a, cpsr), c32(a, ~mask)), band(a, r, c32(a, mask))));
         return;
     }
@@ -1147,8 +1163,14 @@ static void block_begin(ArmIR* a, LLVMModuleRef module, const char* name, uint32
     if (strstr(triple, "windows") || strstr(triple, "mingw"))
         LLVMAddAttributeAtIndex(a->fn, LLVMAttributeFunctionIndex,
                                 LLVMCreateStringAttribute(a->ctx, "no-stack-arg-probe", 18, "", 0));
+    /* a hosted block is the only code that reaches its cpu while it runs, so LLVM keeps registers and flags across
+       guest loads and stores instead of reloading them */
+    if (hosted(a))
+        LLVMAddAttributeAtIndex(a->fn, 1 /* first parameter */,
+                                LLVMCreateEnumAttribute(a->ctx, LLVMGetEnumAttributeKindForName("noalias", 7), 0));
     a->cpu = LLVMGetParam(a->fn, 0);
     LLVMPositionBuilderAtEnd(a->b, block(a, "entry"));
+    if (hosted(a)) return; /* the dispatch loop saw to the entry state (llvm.h) */
     PUT(a, exit, c32(a, SNX_ARM_OK));
     PUT(a, syndrome, c32(a, 0));
     require(a, cmp(a, LLVMIntEQ, get(a, offsetof(SnxArmCPU, r) + 60, a->i32), c32(a, pc)), SNX_ARM_BAD_ENTRY,
@@ -1220,6 +1242,15 @@ static int instruction(ArmIR* a, SnxA32Kind kind) {
         case SNX_A32_CRC32: media(a, kind); break;
         case SNX_A32_SETEND:
         case SNX_A32_MSR:
+            if (hosted(a)) { /* E is never set, so no entry looks at it and no block has to end to be entered with it */
+                if (kind == SNX_A32_MSR)
+                    miscellaneous(a, kind);
+                else if (w & SNX_ARM_E) {
+                    trap(a, SNX_ARM_ENDIAN_UNSUPPORTED, c32(a, w));
+                    return 1;
+                }
+                break;
+            }
             /* A block checks E only on entry: one that may have changed it ends here */
             if (kind == SNX_A32_SETEND)
                 media(a, kind);
@@ -1263,10 +1294,12 @@ LLVMValueRef snx_arm_llvm_block_ex(LLVMModuleRef module, const char* name, const
         a.memory = options->memory;
     }
     block_begin(&a, module, name, pc);
-    require(&a, cmp(&a, LLVMIntEQ, band(&a, GET(&a, cpsr), c32(&a, SNX_ARM_T)), c32(&a, 0)), SNX_ARM_BAD_ENTRY,
-            c32(&a, words[0]));
-    require(&a, cmp(&a, LLVMIntEQ, band(&a, GET(&a, cpsr), c32(&a, SNX_ARM_E)), c32(&a, 0)), SNX_ARM_ENDIAN_UNSUPPORTED,
-            c32(&a, words[0]));
+    if (!hosted(&a)) {
+        require(&a, cmp(&a, LLVMIntEQ, band(&a, GET(&a, cpsr), c32(&a, SNX_ARM_T)), c32(&a, 0)), SNX_ARM_BAD_ENTRY,
+                c32(&a, words[0]));
+        require(&a, cmp(&a, LLVMIntEQ, band(&a, GET(&a, cpsr), c32(&a, SNX_ARM_E)), c32(&a, 0)),
+                SNX_ARM_ENDIAN_UNSUPPORTED, c32(&a, words[0]));
+    }
     memory_entry(&a);
     for (i = 0; i < count; ++i) {
         LLVMBasicBlockRef execute = block(&a, "execute"), skip = block(&a, "skip"), next = block(&a, "next");

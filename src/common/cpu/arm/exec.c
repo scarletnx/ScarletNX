@@ -63,9 +63,8 @@ static int reserve(SnxArmExec* e) {
 }
 
 SnxArmBlock snx_arm_exec_compile(SnxArmExec* e, const void* code, size_t count, uint32_t pc, int thumb,
-                                 SnxArmProfile profile, int checked, size_t* consumed) {
-    SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, profile,
-                                    checked ? SNX_ARM_MEMORY_CHECKED : SNX_ARM_MEMORY_FLAT};
+                                 SnxArmProfile profile, int memory, size_t* consumed) {
+    SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, profile, (SnxArmMemoryMode)memory};
     size_t size = 0;
     char name[48], error[512];
     *consumed = 0;

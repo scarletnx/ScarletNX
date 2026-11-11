@@ -89,7 +89,7 @@ static SnxArmBlock compile(void* context, uint32_t pc, bool thumb, bool stale) {
     size_t consumed = 0;
     SnxArmBlock block = snx_arm_exec_compile(j->exec, thumb ? (const void*)halves : (const void*)words, count, pc,
                                              thumb, SNX_ARM_PROFILE_ARM11,
-                                             snx_ctr_module_memory() == SNX_CTR_MODULE_CHECKED_MODE, &consumed);
+                                             (int)snx_ctr_module_memory(), &consumed);
     if (!block) {
         fprintf(stderr, "3ds jit: cannot compile the %s block at 0x%08x\n", thumb ? "Thumb" : "ARM", pc);
         return NULL;

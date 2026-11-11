@@ -255,6 +255,14 @@ channel), client depth and stencil texels for a 24-bit depth texture, ETC2 and A
 allocator, when the guest gives one, is called through the bridge. Windows' `uLong` is 32 bits, so Windows has no
 zlib for the guest yet.
 
+`libicuuc.so` and `libicui18n.so` are the host's own ICU (`hle_icu.c`), loaded when the guest opens them. They are
+not NDK libraries: an app reaches them by `dlopen` and `dlsym`, as .NET's `System.Globalization.Native` does, which
+looks for `u_strlen` with each version's suffix (`u_strlen_76`) and then takes every function by that suffix. The
+guest gets the host's version, and where the host's ICU was built without the suffixes (FreeBSD's) each name is
+looked up without it. ICU's C API takes and returns integers, pointers and `UDate` doubles, which pass in registers
+as they are; a `UBool` argument is extended and a `UBool` result cut to its byte. Windows passes arguments by
+position, which would need each function's signature, so there the guest finds no ICU (and .NET stops).
+
 ## Hosts
 
 bionic's numbers and layouts are Linux's, so on Linux most of libc passes to the host as it is. The bridge also

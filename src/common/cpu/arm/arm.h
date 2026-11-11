@@ -13,6 +13,8 @@
 #define SNX_ARM_ABI 5
 #define SNX_ARM_T   (1u << 5)
 #define SNX_ARM_E   (1u << 9)
+/* the ITSTATE a CPSR holds (IT[1:0] in bits 26:25, IT[7:2] in bits 15:10), zero outside an IT block */
+static inline uint32_t snx_arm_itstate(uint32_t cpsr) { return (cpsr >> 25 & 3u) | (cpsr >> 8 & 0xFCu); }
 #define SNX_ARM_FPSCR_LEN_STRIDE   0x00370000u /* LEN (18:16) and STRIDE (21:20) */
 #define SNX_ARM_FPSCR_TRAP_ENABLES 0x00009f00u /* IOE, DZE, OFE, UFE, IXE and IDE */
 

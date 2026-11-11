@@ -127,6 +127,8 @@ static inline int host_fp_vec(SnxIr* ir) {
     return ir->features->x86 || ir->features->aarch64 || (ir->features->ppc && ir->features->ppc_vsx) ||
            (ir->features->riscv && ir->features->riscv_v) || (ir->features->loongarch && ir->features->la_lsx);
 }
+/* The host's scalar square root: llvm.sqrt is a libm call on a PowerPC64 CPU without fsqrt */
+static inline int host_sqrt(SnxIr* ir) { return host_fp(ir) && (!ir->features->ppc || ir->features->ppc_fsqrt); }
 static inline int host_fma_scalar(SnxIr* ir) {
     return (ir->features->x86 && ir->features->fma) || ir->features->aarch64 || ir->features->ppc ||
            ir->features->riscv || ir->features->loongarch;

@@ -30,7 +30,7 @@ static SnxArmBlock aot_block(SnxArmExec* aot, const unsigned char* code, uint32_
     size_t consumed;
     for (uint32_t i = 0; i < count; ++i) words[i] = snx_ld_le32(code + offset + i * 4);
     SnxArmBlock block = snx_arm_exec_compile(aot, words, count, TEXT_ADDRESS + offset, false, SNX_ARM_PROFILE_ARM11,
-                                             snx_ctr_module_memory() == SNX_CTR_MODULE_CHECKED_MODE, &consumed);
+                                             (int)snx_ctr_module_memory(), &consumed);
     assert(block);
     return block;
 }
