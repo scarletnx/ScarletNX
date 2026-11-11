@@ -61,20 +61,24 @@ typedef struct {
     int v[STATS_BARS + 1];
     unsigned head, n;
 } StatsWindow;
+/* what the box is laid out by, a few words compared each frame: the safe area, the scale, whether showcase shows and
+   where (vpad.c counts its corner's changes), and the changes to the box's corner and to the lines under the graph,
+   counted */
 typedef struct {
-    int safe[4], scale, corner, showcase;
-    float show[4];
-    u32 notes; /* g_stats.notes */
-    char shortcut[sizeof g_settings.render_doc_capture_shortcut];
+    int safe[4], scale, showcase;
+    u32 place, layout;
 } StatsKey;
+static u32 g_layout; /* the corner's changes (stats_corner_set, on the main thread) */
 static struct {
     int laid; /* the quads are laid out for key */
     StatsKey key;
+    char shortcut[sizeof g_settings.render_doc_capture_shortcut]; /* the capture key RenderDoc's line names */
     SnxUiQuad q[STATS_QUADS];
     int n;
     int cells[STATS_LINES], gpu; /* the first cell of each line, and of the GPU's text */
     int bars;                        /* the first of the bars, slot 0's */
     u8 height[STATS_BARS];           /* the ring's bytes (ui.h) */
+    u32 ring_version;                /* counts their changes */
     unsigned head;                   /* the newest bar's slot */
     int full;                        /* every bar to be written: laid out since */
     float gx, gw, gy, gh;            /* the graph */
@@ -93,6 +97,7 @@ void stats_corner_set(const IniOpt* o, const char* v) {
     int i = vpad_corner(v);
     if (i >= 0) {
         __atomic_store_n(&g_stats.corner, i, __ATOMIC_RELAXED); /* the renderer's thread reads it */
+        __atomic_add_fetch(&g_layout, 1, __ATOMIC_RELAXED);
         return;
     }
     i = __atomic_load_n(&g_stats.corner, __ATOMIC_RELAXED);
@@ -329,6 +334,7 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
     g_box.bars = l.n;
     ui_ring_bars(&l, g_box.gx, g_box.gy, g_box.gw, g_box.gh, STATS_BARS, STATS_TEXT); /* none yet */
     memset(g_box.height, 0, sizeof g_box.height);
+    ++g_box.ring_version;
     /* the lines under it, half a line down, each after its icon as the lines above */
     for (j = 0; j < (unsigned)notes.n; ++j) {
         float y = g_box.gy + g_box.gh + ch / 2 + (float)j * ch;
@@ -337,6 +343,7 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
     }
     g_box.n = l.n;
     g_box.key = *key;
+    snprintf(g_box.shortcut, sizeof g_box.shortcut, "%s", g_settings.render_doc_capture_shortcut);
     g_box.laid = 1;
     /* nothing written yet: each value differs from these */
     g_box.fps10 = g_box.ms10 = g_box.low10 = g_box.peak10 = -2;
@@ -348,7 +355,9 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
 }
 /* the bar of a frame of t ms into its slot of the ring: its height in 255ths of the graph's, rounded */
 static void bar_set(unsigned slot, float t) {
-    g_box.height[slot] = (u8)(255.0f * (t < STATS_TOP_MS ? t : STATS_TOP_MS) / STATS_TOP_MS + 0.5f);
+    u8 h = (u8)(255.0f * (t < STATS_TOP_MS ? t : STATS_TOP_MS) / STATS_TOP_MS + 0.5f);
+    if (g_box.height[slot] != h) ++g_box.ring_version;
+    g_box.height[slot] = h;
 }
 void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
     int scale = stats_scale(menu_scale);
@@ -369,11 +378,13 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
     memset(&key, 0, sizeof key);
     memcpy(key.safe, safe, sizeof key.safe);
     key.scale = scale;
-    key.corner = __atomic_load_n(&g_stats.corner, __ATOMIC_RELAXED);
-    key.showcase = vpad_showcase_box(safe, key.show);
-    key.notes = g_stats.notes;
-    memcpy(key.shortcut, g_settings.render_doc_capture_shortcut, sizeof key.shortcut);
-    if (!g_box.laid || memcmp(&key, &g_box.key, sizeof key)) box_layout(safe, scale, &key);
+    key.showcase = __atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED);
+    key.place = vpad_showcase_place_version();
+    key.layout = __atomic_load_n(&g_layout, __ATOMIC_RELAXED) + g_stats.notes;
+    /* the capture key only while RenderDoc's line names it */
+    if (!g_box.laid || memcmp(&key, &g_box.key, sizeof key) ||
+        (g_stats.capture.ready && strcmp(g_box.shortcut, g_settings.render_doc_capture_shortcut)))
+        box_layout(safe, scale, &key);
     if (g_box.full || g_box.frames != g_stats.frames) { /* frames kept: the last one's time, and the new bars */
         int ms10 = g_stats.count >= 2 ? (int)(frame_ms(0) * 10 + 0.5f) : -1;
         /* the times kept, frame j back from the newest in slot (frames - 2 - j) mod STATS_BARS: the frames since the
@@ -441,6 +452,6 @@ void stats_draw(SnxUiList* l, const int safe[4], int menu_scale, u64 now_ns) {
         g_box.measures = g_stats.measures;
     }
     ui_append_kept(l, &(SnxUiList){g_box.q, g_box.n, STATS_QUADS}, g_box.version, &g_box, &g_box.changed);
-    ui_ring_set(g_box.height, STATS_BARS, (int)g_box.head, STATS_SLOW_FROM, STATS_SLOW);
+    ui_ring_set(g_box.height, STATS_BARS, (int)g_box.head, STATS_SLOW_FROM, STATS_SLOW, g_box.ring_version);
     ui_ground_set(STATS_GROUND);
 }

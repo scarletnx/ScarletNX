@@ -50,8 +50,7 @@ typedef struct {
 } UiSlot;
 static UiSlot g_slot[VK_FRAMES];
 static int g_slot_now; /* this frame's region */
-static u32 g_ring_version;
-static u8 g_ring_last[UI_RING_BYTES];
+static int g_frames_coherent; /* its memory host-coherent: what the CPU writes needs no flush */
 /* the frame's runs of quads, each drawn with one call (ui_record), kept while no quad changes */
 typedef struct {
     int first, count, set, pipe;
@@ -474,6 +473,11 @@ static int frames_make(void) {
     }
     vk_mem_track(g_frames_mem);
     g_frames_at = (u8*)info.pMappedData;
+    {
+        VkMemoryPropertyFlags flags = 0;
+        vmaGetAllocationMemoryProperties(g_vk.vma, g_frames_mem, &flags);
+        g_frames_coherent = (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+    }
     for (i = 0; i < VK_FRAMES; ++i) g_slot[i] = (UiSlot){.fresh = 1};
     for (i = 0; i < 3; ++i) {
         VkDescriptorBufferInfo bi = {g_frames, 0, UI_RING_BYTES};
@@ -513,10 +517,6 @@ static void frames_owe(int first, int end) {
 static int frames_send(int n, const SnxUiRing* ring) {
     int slot = (int)(vk_frame_id() % VK_FRAMES);
     u8* at = g_frames_at + g_region * (u64)slot;
-    if (memcmp(g_ring_last, ring->height, sizeof g_ring_last)) {
-        memcpy(g_ring_last, ring->height, sizeof g_ring_last);
-        ++g_ring_version;
-    }
     if (g_slot[slot].fresh) {
         g_slot[slot].first = 0;
         g_slot[slot].end = n;
@@ -525,13 +525,14 @@ static int frames_send(int n, const SnxUiRing* ring) {
     if (g_slot[slot].first < g_slot[slot].end) {
         u64 off = UI_RING_BYTES + (u64)g_slot[slot].first * sizeof(SnxUiQuad);
         quads_le(at + off, g_slot[slot].first, g_slot[slot].end);
-        vmaFlushAllocation(g_vk.vma, g_frames_mem, g_region * (u64)slot + off,
-                           (u64)(g_slot[slot].end - g_slot[slot].first) * sizeof(SnxUiQuad));
+        if (!g_frames_coherent)
+            vmaFlushAllocation(g_vk.vma, g_frames_mem, g_region * (u64)slot + off,
+                               (u64)(g_slot[slot].end - g_slot[slot].first) * sizeof(SnxUiQuad));
     }
-    if (g_slot[slot].fresh || g_slot[slot].ring != g_ring_version) {
-        memcpy(at, g_ring_last, UI_RING_BYTES);
-        vmaFlushAllocation(g_vk.vma, g_frames_mem, g_region * (u64)slot, UI_RING_BYTES);
-        g_slot[slot].ring = g_ring_version;
+    if (g_slot[slot].fresh || g_slot[slot].ring != ring->version) { /* its maker's count of its changes */
+        memcpy(at, ring->height, UI_RING_BYTES);
+        if (!g_frames_coherent) vmaFlushAllocation(g_vk.vma, g_frames_mem, g_region * (u64)slot, UI_RING_BYTES);
+        g_slot[slot].ring = ring->version;
     }
     g_slot[slot].first = g_slot[slot].end = 0;
     g_slot[slot].fresh = 0;
@@ -568,7 +569,8 @@ static UiPicture g_pc;
 static int ui_prepare(VkCommandBuffer cb, const int safe[4]) {
     SnxUiList list = {g_quads, 0, MAX_QUADS};
     int sw = (int)g_vk.sc_extent.width, sh = (int)g_vk.sc_extent.height, n, first, end;
-    SnxUiRing ring;
+    const SnxUiRing* ring = ui_ring(); /* the renderer's thread's alone, which writes it in stats_draw */
+    u64 now = plat_ns();               /* the frame's time, for every part */
     if (!layout_make()) return 0;
     ui_lock();
     atlas_upload(cb);
@@ -581,26 +583,25 @@ static int ui_prepare(VkCommandBuffer cb, const int safe[4]) {
     else {
         int px, py, scale;
         vpad_draw(&list, safe);
-        vpad_showcase_draw(&list, safe, vpad_showcase_fps(g_vk_present, plat_ns()));
+        vpad_showcase_draw(&list, safe, vpad_showcase_fps(g_vk_present, now));
         overlay_place(sw, sh, &px, &py, &scale); /* the menu's letters */
-        stats_draw(&list, safe, scale, plat_ns());
+        stats_draw(&list, safe, scale, now);
     }
     {
         int px, py, scale;
         overlay_place(sw, sh, &px, &py, &scale); /* the menu's letters */
         hud_draw(&list, safe, scale);
     }
-    overlay_draw(&list, sw, sh, plat_ns());
+    overlay_draw(&list, sw, sh, now);
     ui_dirty_end(&first, &end);
-    ring = *ui_ring();
-    g_pc = (UiPicture){(float)sw, (float)sh, (u32)ring.head | (u32)ring.n << 16, ring.slow, ring.slow_from,
+    g_pc = (UiPicture){(float)sw, (float)sh, (u32)ring->head | (u32)ring->n << 16, ring->slow, ring->slow_from,
                        ui_ground()};
     ui_unlock();
     n = list.n;
     frames_owe(first, end);
     if (first < end || n != g_runs_n) g_runs_n = -1; /* a quad changed: the runs are made again */
     if (!n || !g_atlas || !pipeline_make(g_vk.sc_format) || !glyphs_upload(cb) || !frames_make()) return 0;
-    g_slot_now = frames_send(n, &ring);
+    g_slot_now = frames_send(n, ring);
     return n;
 }
 /* the runs of the n quads: of one pipeline, sampling the same way and taking as many vertices, in their order (six
