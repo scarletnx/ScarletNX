@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/ui.h"
+#include "nx/runtime/platform/ui_colors.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/log.h"
 #include "common/utilities/endian.h"
@@ -10,7 +11,6 @@
 #include "common/utilities/mii_model.h"
 #include "gui/icons.h"
 #include "gui/splash.h"
-#include "gui_theme_colors.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -201,9 +201,7 @@ float ui_text(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba
     }
     return x - x0;
 }
-static u32 g_ground;
-void ui_ground_set(u32 rgba) { g_ground = rgba; }
-u32 ui_ground(void) { return g_ground; }
+u32 ui_ground(void) { return UI_INK; }
 int ui_drawn_ground(const SnxUiQuad* q, SnxUiQuadView* fill) {
     SnxUiQuad ground;
     unsigned ink = ui_q_bits(q, UI_Q_INK, 3);
@@ -212,9 +210,9 @@ int ui_drawn_ground(const SnxUiQuad* q, SnxUiQuadView* fill) {
     ground.u = SNX_UI_WHITE_X + 1;
     ground.v = SNX_UI_WHITE_Y + 1;
     ground.uw = ground.vh = 2;
-    ground.bits = ui_quad(0, 0, 0, 0, 0, 0, 0, 0, g_ground, 0, UI_SHARP, UI_SOLID, 0).bits;
+    ground.bits = ui_quad(0, 0, 0, 0, 0, 0, 0, 0, UI_INK, 0, UI_SHARP, UI_SOLID, 0).bits;
     *fill = ui_view(&ground);
-    fill->rgba = g_ground; /* as the GPU takes it, from a push constant: all 8 bits */
+    fill->rgba = UI_INK; /* as the GPU takes it, from a push constant: all 8 bits */
     return 1;
 }
 float ui_text_backed(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba) {
