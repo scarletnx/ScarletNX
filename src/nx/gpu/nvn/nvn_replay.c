@@ -59,7 +59,8 @@ static void walk(u64 p, RecordFn fn, void* ctx, int depth, int sync_only) {
     for (;;) {
         NvnRecHdr h;
         u32 op;
-        if (own_any()) own_acquire(p, sizeof h); /* GPU thread holds the renderer: land any owners before reading the record */
+        /* the submitting game thread, without the renderer's lock: what the GPU holds of the record lands first */
+        if (own_any()) own_acquire(p, sizeof h);
         memcpy(&h, GP(p), sizeof h);
         __atomic_thread_fence(__ATOMIC_ACQUIRE); /* a JUMP's target is written before its header (nvn_cmd.c) */
         op = NVN_REC_OP(h.op);
