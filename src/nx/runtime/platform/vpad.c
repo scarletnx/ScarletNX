@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/ui_colors.h"
 #include "common/utilities/bits.h"
 #include <math.h>
 #include <stdio.h>
@@ -412,13 +413,12 @@ int vpad_shown(void) { return g_settings.show_controls || g_edit; }
 
 /* The built-in look: each control a shape (ui.h's ui_shape), white, its edge a 32nd of its shorter side (a pixel at
    least) and its label on it; pressed, the shape filled with its label cut out */
-#define WHITE 0xFFFFFFFFu
 static int edge_of(const float r[4]) {
     int e = (int)((r[2] < r[3] ? r[2] : r[3]) / 32);
     return e < 1 ? 1 : e;
 }
 static void button_draw(SnxUiList* l, int c, const float r[4], int held) {
-    ui_shape(l, r[0], r[1], r[2], r[3], INFO[c].shape, INFO[c].label, held ? UI_SHAPE_FILLED : 0, edge_of(r), WHITE);
+    ui_shape(l, r[0], r[1], r[2], r[3], INFO[c].shape, INFO[c].label, held ? UI_SHAPE_FILLED : 0, edge_of(r), UI_WHITE);
 }
 /* the D-pad on r: its cross's edge, and in each arm its arrow; the arms pressed (dpad, DPAD_ bits) filled, their arrows
    cut out. The arms are a third of the shorter side wide, as the cross's (ui.frag) */
@@ -433,18 +433,18 @@ static void dpad_draw(SnxUiList* l, const float r[4], u32 dpad) {
                              {cx - a / 2, cy + a / 2, a, down},
                              {r[0], cy - a / 2, across, a}};
     int t, e = edge_of(r);
-    ui_shape(l, r[0], r[1], r[2], r[3], UI_SHAPE_CROSS, NULL, 0, e, WHITE);
+    ui_shape(l, r[0], r[1], r[2], r[3], UI_SHAPE_CROSS, NULL, 0, e, UI_WHITE);
     for (t = 0; t < 4; ++t)
         ui_shape(l, arm[t][0], arm[t][1], arm[t][2], arm[t][3], UI_SHAPE_BOX, arrow[t],
-                 dpad & dir[t] ? UI_SHAPE_FILLED : UI_SHAPE_BARE, e, WHITE);
+                 dpad & dir[t] ? UI_SHAPE_FILLED : UI_SHAPE_BARE, e, UI_WHITE);
 }
 /* a stick's ring on r, its knob ax, ay (-1 to 1 right and down) from the middle, filled when pressed */
 static void knob_draw(SnxUiList* l, const float r[4], float ax, float ay, int pressed) {
     float kw = r[2] / STICK_KNOB, kh = r[3] / STICK_KNOB;
     float mx = r[0] + r[2] / 2 + ax * r[2] / 2, my = r[1] + r[3] / 2 + ay * r[3] / 2;
     int e = edge_of(r);
-    ui_shape(l, r[0], r[1], r[2], r[3], UI_SHAPE_CIRCLE, NULL, 0, e, WHITE);
-    ui_shape(l, mx - kw / 2, my - kh / 2, kw, kh, UI_SHAPE_CIRCLE, NULL, pressed ? UI_SHAPE_FILLED : 0, e, WHITE);
+    ui_shape(l, r[0], r[1], r[2], r[3], UI_SHAPE_CIRCLE, NULL, 0, e, UI_WHITE);
+    ui_shape(l, mx - kw / 2, my - kh / 2, kw, kh, UI_SHAPE_CIRCLE, NULL, pressed ? UI_SHAPE_FILLED : 0, e, UI_WHITE);
 }
 static void stick_draw(SnxUiList* l, int c, float r[4], const int safe[4]) {
     int s = stick_of(c), held = g_held >> c & 1;
@@ -462,32 +462,31 @@ static void outline(SnxUiList* l, const float r[4], float t, u32 rgba) {
     ui_fill(l, r[0] + r[2], r[1], t, r[3], rgba);
 }
 static void edit_draw(SnxUiList* l, const int safe[4]) {
-    const u32 ink = 0xFF3A4145u, page = 0xFFBED6DAu, line = 0xFFFFFFFFu; /* all opaque: the grid's lines white */
     float b[BAR_COUNT][4], r[4], g = grid(safe), v;
     int s = bar_scale(safe);
     char label[32];
     if (g_settings.snap_to_grid && g > 0) {
         for (v = (float)safe[0]; v <= (float)(safe[0] + safe[2]); v += g)
-            ui_fill(l, v, (float)safe[1], 1, (float)safe[3], line);
+            ui_fill(l, v, (float)safe[1], 1, (float)safe[3], UI_WHITE);
         for (v = (float)safe[1]; v <= (float)(safe[1] + safe[3]); v += g)
-            ui_fill(l, (float)safe[0], v, (float)safe[2], 1, line);
+            ui_fill(l, (float)safe[0], v, (float)safe[2], 1, UI_WHITE);
     }
     if (g_selected >= 0) {
         box(g_selected, safe, r);
-        outline(l, r, (float)(2 * s), 0xFF00C8FFu);
+        outline(l, r, (float)(2 * s), UI_PICKED);
     }
     bar(safe, b);
     ui_fill(l, b[0][0] - (float)(8 * s), b[0][1] - (float)(4 * s),
-            b[BAR_DONE][0] + b[BAR_DONE][2] - b[0][0] + (float)(16 * s), (float)(24 * s), ink);
-    ui_text(l, b[BAR_LESS][0], b[BAR_LESS][1], s, "[ - ]", page);
+            b[BAR_DONE][0] + b[BAR_DONE][2] - b[0][0] + (float)(16 * s), (float)(24 * s), UI_INK);
+    ui_text(l, b[BAR_LESS][0], b[BAR_LESS][1], s, "[ - ]", UI_PAGE);
     if (g_selected >= 0)
         snprintf(label, sizeof label, "%s %d%%", INFO[g_selected].name, g_vpad.at[g_selected].size);
     else
         snprintf(label, sizeof label, "Tap a control");
     ui_text(l, b[BAR_SIZE][0] + (b[BAR_SIZE][2] - (float)(strlen(label) * 8 * (size_t)s)) / 2, b[BAR_SIZE][1], s, label,
-            page);
-    ui_text(l, b[BAR_MORE][0], b[BAR_MORE][1], s, "[ + ]", page);
-    ui_text(l, b[BAR_DONE][0], b[BAR_DONE][1], s, "[ Done ]", page);
+            UI_PAGE);
+    ui_text(l, b[BAR_MORE][0], b[BAR_MORE][1], s, "[ + ]", UI_PAGE);
+    ui_text(l, b[BAR_DONE][0], b[BAR_DONE][1], s, "[ Done ]", UI_PAGE);
 }
 /* The controls' quads, and showcase's, kept from frame to frame: made again only when what they show changes (counted
    by each call that changes it, g_version and g_show_version) or the picture's safe area does, and appended to the
@@ -636,7 +635,7 @@ static void showcase_draw(SnxUiList* l, const int safe[4], int fps) {
     y0 = box[1];
     w = box[2];
     h = box[3];
-    ui_fill(l, x0, y0, w, h, 0xFF000000u); /* black, opaque */
+    ui_fill(l, x0, y0, w, h, UI_BLACK);
     for (c = 0; c < SNX_VPAD_COUNT; ++c) {
         float side = SHOWCASE[c][2] * h, aspect = INFO[c].aspect;
         if (side <= 0) continue;
@@ -663,7 +662,7 @@ static void showcase_draw(SnxUiList* l, const int safe[4], int fps) {
         int digits = fps > 99 ? 3 : fps > 9 ? 2 : 1, first;
         while (digits++ < 3) *at++ = ' ';
         *ui_put(ui_put_u(at, (u64)(fps < 999 ? fps : 999)), " FPS") = 0;
-        first = ui_cells(l, x0 + (w - (float)(7 * 8 * scale)) / 2, y0 + h / 25, scale, 7, 0xFFFFFFFFu);
+        first = ui_cells(l, x0 + (w - (float)(7 * 8 * scale)) / 2, y0 + h / 25, scale, 7, UI_WHITE);
         if (first >= 0) ui_cells_set(&l->q[first], 7, text);
     }
 }

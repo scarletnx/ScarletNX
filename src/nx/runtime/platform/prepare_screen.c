@@ -3,7 +3,7 @@
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/fatal_screen.h"
 #include "nx/gpu/renderer.h"
-#include "gui_theme_colors.h"
+#include "nx/runtime/platform/ui_colors.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -101,7 +101,6 @@ int prepare_screen_steps(const RendererPrepare* p, SnxPrepareStep* st, u64 began
     return n;
 }
 
-static u32 rgba(u32 rgb, u32 a) { return (u32)a << 24 | (rgb & 0xFFu) << 16 | (rgb & 0xFF00u) | (rgb >> 16 & 0xFFu); }
 /* text in the font's bytes into out, capitals when upper (as the launcher's loading screen writes the game's name and
    a step's detail), at most cols glyphs: a longer one cut, ending in "..." as the launcher cuts a row. Its glyphs */
 static int screen_line(const char* text, int upper, int cols, char* out, size_t size) {
@@ -122,7 +121,7 @@ static int screen_line(const char* text, int upper, int cols, char* out, size_t 
 static float screen_text(SnxUiList* l, float x, float y, int s, const char* text, int upper, int cols, u32 rgb) {
     char line[SNX_PREPARE_NOTE_SIZE];
     screen_line(text, upper, cols, line, sizeof line);
-    return ui_text(l, x, y, s, line, rgba(rgb, 0xFFu));
+    return ui_text(l, x, y, s, line, UI_RGB(rgb));
 }
 /* a step's progress as the theme's [run] progress says, as the launcher's (steps.c gui_step_progress): "3 / 6",
    "50%", "01:23 left" */
@@ -176,9 +175,11 @@ void prepare_screen_draw(SnxUiList* l, int sw, int sh, const int safe[4], int di
     float top = (float)y0;
     if (!g_prepare_screen.rows) return;
     /* the page over the whole window, the rest within its safe part */
-    ui_fill(l, 0, 0, (float)sw, (float)sh, rgba(t->page, 0xFFu));
-    if (t->texture) /* the launcher's faint lines, white at 14 of 255 over the page (opaque), every four pixels */
-        for (y = 3; y < (float)sh; y += 4) ui_fill(l, 0, y, (float)sw, 1, rgba(ui_over(0xFFFFFFu, t->page, 14), 0xFFu));
+    ui_fill(l, 0, 0, (float)sw, (float)sh, UI_RGB(t->page));
+    if (t->texture) { /* the launcher's faint lines, white at 14 of 255 over the page (opaque), every four pixels */
+        const u32 faint = UI_RGB(ui_over(0xFFFFFFu, t->page, 14));
+        for (y = 3; y < (float)sh; y += 4) ui_fill(l, 0, y, (float)sw, 1, faint);
+    }
     for (i = 0; i < g_prepare_screen.rows; ++i)
         if (!g_prepare_screen.row[i].done) {
             all_done = 0;
@@ -234,16 +235,16 @@ void prepare_screen_draw(SnxUiList* l, int sw, int sh, const int safe[4], int di
         int filled = (percent * SEGMENTS + 50) / 100;
         float span = (float)(cols - 8) * cw, gap = 2.0f * (float)s, seg = (span - gap * (SEGMENTS - 1)) / SEGMENTS;
         float sy = top + ch * (float)(rows - 3) + ch * 0.3f, sh4 = ch * 0.4f;
-        ui_fill(l, left, top + ch * (float)(rows - 4) + ch / 2, (float)(cols - 2) * cw, (float)s, rgba(t->dim, 0xFFu));
+        ui_fill(l, left, top + ch * (float)(rows - 4) + ch / 2, (float)(cols - 2) * cw, (float)s, UI_RGB(t->dim));
         for (k = 0; k < SEGMENTS; ++k) {
             float sx = left + (float)k * (seg + gap);
             if (k < filled)
-                ui_fill(l, sx, sy, seg, sh4, rgba(t->ink, 0xFFu));
+                ui_fill(l, sx, sy, seg, sh4, UI_RGB(t->ink));
             else { /* framed in the dim colour */
-                ui_fill(l, sx, sy, seg, (float)s, rgba(t->dim, 0xFFu));
-                ui_fill(l, sx, sy + sh4 - (float)s, seg, (float)s, rgba(t->dim, 0xFFu));
-                ui_fill(l, sx, sy, (float)s, sh4, rgba(t->dim, 0xFFu));
-                ui_fill(l, sx + seg - (float)s, sy, (float)s, sh4, rgba(t->dim, 0xFFu));
+                ui_fill(l, sx, sy, seg, (float)s, UI_RGB(t->dim));
+                ui_fill(l, sx, sy + sh4 - (float)s, seg, (float)s, UI_RGB(t->dim));
+                ui_fill(l, sx, sy, (float)s, sh4, UI_RGB(t->dim));
+                ui_fill(l, sx + seg - (float)s, sy, (float)s, sh4, UI_RGB(t->dim));
             }
         }
         snprintf(line, sizeof line, "%3d%%", percent);
@@ -263,7 +264,7 @@ void prepare_screen_draw(SnxUiList* l, int sw, int sh, const int safe[4], int di
         }
         for (k = from; k < g_prepare_screen.notes; ++k) {
             screen_line(g_prepare_screen.note[k], 0, cols - 4, line, sizeof line);
-            ui_text(l, (float)x0 + 3 * cw, top + ch * (float)(first + k - from), s, line, rgba(t->soft, 0xFFu));
+            ui_text(l, (float)x0 + 3 * cw, top + ch * (float)(first + k - from), s, line, UI_RGB(t->soft));
         }
     }
 }

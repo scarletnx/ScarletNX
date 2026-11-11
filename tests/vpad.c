@@ -11,6 +11,7 @@
 
 /* ui.c's lock, without the platform layer */
 #include "nx/runtime/platform/plat.h"
+#include "gui_theme_colors.h"
 
 /* a quad as it holds it (ui.h's ui_view): its place in pixels, its colour widened back to 8 bits */
 static SnxUiQuadView qv(const SnxUiQuad* q) { return ui_view(q); }
@@ -45,6 +46,8 @@ void logf_(int lvl, const char* fmt, ...) {
     va_end(ap);
 }
 
+/* a theme's 0xRRGGBB as a quad's colour, R G B A from the low byte, opaque */
+#define THEME(rgb) (0xFF000000u | ((rgb) & 0xFFu) << 16 | ((rgb) & 0xFF00u) | ((rgb) >> 16 & 0xFFu))
 static const int safe[4] = {0, 0, 2000, 1000};
 static char stored_key[64], stored_value[64];
 static int stores;
@@ -309,7 +312,7 @@ int main(void) {
     {
         SnxUiList bar;
         float plus_x = 0, done_x = 0, y;
-        int i, s = 1000 / 360;
+        int i, inked, s = 1000 / 360;
         assert(vpad_down(13, mx(SNX_VPAD_A), my(SNX_VPAD_A), safe) && vpad_up(13));
         draw(&bar);
         /* "[ + ]" and "[ Done ]": their glyphs are the font's, at the bar's row */
@@ -322,6 +325,14 @@ int main(void) {
                      bar.q[i].v == SNX_UI_FONT_Y + 'D' / 16 * 16)
                 done_x = qv(&bar.q[i]).x;
         assert(plus_x > 0 && done_x > plus_x);
+        /* in the menu's colours as its theme.ini has them, not a copy: its page's letters on a fill of its ink */
+        for (i = 0, inked = 0; i < bar.n; ++i) {
+            SnxUiQuadView q = qv(&bar.q[i]);
+            if (q.y == y && q.x == plus_x) assert(q.rgba == ui_rgba(THEME(SNX_GUI_THEME_YORHA_PAGE)));
+            inked += q.ink == UI_SOLID && q.x < plus_x && q.x + q.w > done_x && q.y < y && q.y + q.h > y + 16 * s &&
+                     q.rgba == ui_rgba(THEME(SNX_GUI_THEME_YORHA_INK));
+        }
+        assert(inked == 1);
         stores = 0;
         assert(vpad_down(14, plus_x + 2, y + 2, safe) && vpad_up(14));
         assert(vpad_config()->at[SNX_VPAD_A].size == 110 && stores == 1);
