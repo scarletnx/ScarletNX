@@ -685,7 +685,7 @@ static int g_fatal_taken;  /* the main thread is showing it */
 static void ui_draw_quad_sdl(SDL_Renderer* r, SDL_Texture* atlas, int aw, int ah, const SnxUiQuadView* q) {
     static const int corners[6] = {0, 1, 2, 0, 2, 3};
     float a = (float)(q->rgba >> 24) / 255.0f;
-    if (!q->uw) return; /* a blank cell (ui_cells): nothing drawn */
+    if (!q->uw || q->ink == UI_SHAPE) return; /* a blank cell (ui_cells): nothing drawn; no shape on the panel */
     SDL_FColor c = {(float)(q->rgba & 0xFF) / 255.0f * a, (float)(q->rgba >> 8 & 0xFF) / 255.0f * a,
                     (float)(q->rgba >> 16 & 0xFF) / 255.0f * a, a};
     float u0 = (float)q->u / (float)aw, v0 = (float)q->v / (float)ah;

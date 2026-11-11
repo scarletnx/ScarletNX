@@ -161,6 +161,12 @@ void ui_fill(SnxUiList* l, float x, float y, float w, float h, u32 rgba) {
     quad(l, x, y, w, h, SNX_CONTROLS_WHITE_X + 1, SNX_CONTROLS_WHITE_Y + 1, 2, 2, rgba, 0, UI_SHARP, UI_SOLID,
          0);
 }
+void ui_shape(SnxUiList* l, float x, float y, float w, float h, int kind, const char* label, int flags, int edge,
+              u32 rgba) {
+    unsigned c0 = label && label[0] ? (u8)label[0] : 0, c1 = c0 && label[1] ? (u8)label[1] : 0;
+    quad(l, x, y, w, h, kind, (int)(c0 | c1 << 8), 0x8000 | flags, edge < 1 ? 1 : edge, rgba, 0, UI_SHARP, UI_SHAPE,
+         0);
+}
 float ui_text(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba) {
     float x0 = x;
     for (; *s; ++s, x += 8.0f * (float)scale) {

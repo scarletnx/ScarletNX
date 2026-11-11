@@ -13,36 +13,44 @@
 enum { KIND_BUTTON, KIND_DPAD, KIND_STICK };
 typedef struct {
     const char* name;
-    int sprite, kind;
+    int shape;         /* its look (ui.h's ui_shape): a UI_SHAPE_ kind, */
+    const char* label; /* the font's letters on it, */
+    float aspect;      /* and its width over its height */
+    int kind;
     int bit;    /* its HidNpadButton bit, -1 for none */
     float size; /* its longer side, of the clear part's shorter one, as rEden sizes it */
     float x, y; /* where it starts: the console's controllers, the left one's on the left */
 } Info;
+/* a control's look, the art's shapes: a shoulder button's box as wide as the art's (367 x 148), a stick's button's as
+   tall (157 x 168) */
+#define LOOK(shape, label, aspect) shape, label, aspect
+#define WIDE                       (367.0f / 148)
+#define TALL                       (157.0f / 168)
 /* each control: its SNX_VPAD_ name, its .ini key, then its Info. INFO is made from this list, its order is checked
    against vpad.h's enum, and the keys of settings.txt's list controls against its keys on first use */
 #define VPAD_CONTROLS(ROW)                                                                                             \
-    ROW(L, "l", "L", SNX_SPRITE_L, KIND_BUTTON, 6, 0.26f, 0.09f, 0.21f)                                                \
-    ROW(R, "r", "R", SNX_SPRITE_R, KIND_BUTTON, 7, 0.26f, 0.91f, 0.21f)                                                \
-    ROW(ZL, "zl", "ZL", SNX_SPRITE_ZL, KIND_BUTTON, 8, 0.26f, 0.09f, 0.08f)                                            \
-    ROW(ZR, "zr", "ZR", SNX_SPRITE_ZR, KIND_BUTTON, 9, 0.26f, 0.91f, 0.08f)                                            \
-    ROW(MINUS, "minus", "-", SNX_SPRITE_MINUS, KIND_BUTTON, 11, 0.07f, 0.25f, 0.07f)                                   \
-    ROW(PLUS, "plus", "+", SNX_SPRITE_PLUS, KIND_BUTTON, 10, 0.07f, 0.75f, 0.07f)                                      \
-    ROW(CAPTURE, "capture", "Capture", SNX_SPRITE_CAPTURE, KIND_BUTTON, -1, 0.07f, 0.36f, 0.90f)                       \
-    ROW(HOME, "home", "Home", SNX_SPRITE_HOME, KIND_BUTTON, -1, 0.07f, 0.64f, 0.90f)                                   \
-    ROW(L3, "l3", "L3", SNX_SPRITE_L3, KIND_BUTTON, 4, 0.155f, 0.25f, 0.36f)                                           \
-    ROW(R3, "r3", "R3", SNX_SPRITE_R3, KIND_BUTTON, 5, 0.155f, 0.64f, 0.62f)                                           \
-    ROW(DPAD, "dpad", "D-pad", SNX_SPRITE_DPAD, KIND_DPAD, -1, 0.25f, 0.23f, 0.78f)                                    \
-    ROW(STICK_L, "stick_l", "Left stick", SNX_SPRITE_STICK_RANGE, KIND_STICK, -1, 0.30f, 0.12f, 0.47f)                 \
-    ROW(STICK_R, "stick_r", "Right stick", SNX_SPRITE_STICK_RANGE, KIND_STICK, -1, 0.30f, 0.77f, 0.78f)                \
-    ROW(A, "a", "A", SNX_SPRITE_A, KIND_BUTTON, 0, 0.11f, 0.93f, 0.47f)                                                \
-    ROW(B, "b", "B", SNX_SPRITE_B, KIND_BUTTON, 1, 0.11f, 0.87f, 0.60f)                                                \
-    ROW(X, "x", "X", SNX_SPRITE_X, KIND_BUTTON, 2, 0.11f, 0.87f, 0.34f)                                                \
-    ROW(Y, "y", "Y", SNX_SPRITE_Y, KIND_BUTTON, 3, 0.11f, 0.81f, 0.47f)
-#define INFO_ROW(id, key, name, sprite, kind, bit, size, x, y) {name, sprite, kind, bit, size, x, y},
+    ROW(L, "l", "L", LOOK(UI_SHAPE_ROUND, "L", WIDE), KIND_BUTTON, 6, 0.26f, 0.09f, 0.21f)                             \
+    ROW(R, "r", "R", LOOK(UI_SHAPE_ROUND, "R", WIDE), KIND_BUTTON, 7, 0.26f, 0.91f, 0.21f)                             \
+    ROW(ZL, "zl", "ZL", LOOK(UI_SHAPE_ROUND, "ZL", WIDE), KIND_BUTTON, 8, 0.26f, 0.09f, 0.08f)                         \
+    ROW(ZR, "zr", "ZR", LOOK(UI_SHAPE_ROUND, "ZR", WIDE), KIND_BUTTON, 9, 0.26f, 0.91f, 0.08f)                         \
+    ROW(MINUS, "minus", "-", LOOK(UI_SHAPE_CIRCLE, "-", 1), KIND_BUTTON, 11, 0.07f, 0.25f, 0.07f)                      \
+    ROW(PLUS, "plus", "+", LOOK(UI_SHAPE_CIRCLE, "+", 1), KIND_BUTTON, 10, 0.07f, 0.75f, 0.07f)                        \
+    ROW(CAPTURE, "capture", "Capture", LOOK(UI_SHAPE_ROUND, "\x07", 1), KIND_BUTTON, -1, 0.07f, 0.36f, 0.90f)          \
+    ROW(HOME, "home", "Home", LOOK(UI_SHAPE_CIRCLE, "\x7f", 1), KIND_BUTTON, -1, 0.07f, 0.64f, 0.90f)                  \
+    ROW(L3, "l3", "L3", LOOK(UI_SHAPE_CIRCLE, "L3", TALL), KIND_BUTTON, 4, 0.155f, 0.25f, 0.36f)                       \
+    ROW(R3, "r3", "R3", LOOK(UI_SHAPE_CIRCLE, "R3", TALL), KIND_BUTTON, 5, 0.155f, 0.64f, 0.62f)                       \
+    ROW(DPAD, "dpad", "D-pad", LOOK(UI_SHAPE_CROSS, "", 1), KIND_DPAD, -1, 0.25f, 0.23f, 0.78f)                        \
+    ROW(STICK_L, "stick_l", "Left stick", LOOK(UI_SHAPE_CIRCLE, "", 1), KIND_STICK, -1, 0.30f, 0.12f, 0.47f)           \
+    ROW(STICK_R, "stick_r", "Right stick", LOOK(UI_SHAPE_CIRCLE, "", 1), KIND_STICK, -1, 0.30f, 0.77f, 0.78f)          \
+    ROW(A, "a", "A", LOOK(UI_SHAPE_CIRCLE, "A", 1), KIND_BUTTON, 0, 0.11f, 0.93f, 0.47f)                               \
+    ROW(B, "b", "B", LOOK(UI_SHAPE_CIRCLE, "B", 1), KIND_BUTTON, 1, 0.11f, 0.87f, 0.60f)                               \
+    ROW(X, "x", "X", LOOK(UI_SHAPE_CIRCLE, "X", 1), KIND_BUTTON, 2, 0.11f, 0.87f, 0.34f)                               \
+    ROW(Y, "y", "Y", LOOK(UI_SHAPE_CIRCLE, "Y", 1), KIND_BUTTON, 3, 0.11f, 0.81f, 0.47f)
+#define INFO_ROW(id, key, name, look, kind, bit, size, x, y) {name, look, kind, bit, size, x, y},
 static const Info INFO[SNX_VPAD_COUNT] = {VPAD_CONTROLS(INFO_ROW)};
-#define ORDER_INDEX(id, key, name, sprite, kind, bit, size, x, y) ORDER_##id,
+#define ORDER_INDEX(id, key, name, look, kind, bit, size, x, y) ORDER_##id,
 enum { VPAD_CONTROLS(ORDER_INDEX) ORDER_COUNT };
-#define ORDER_CHECK(id, key, name, sprite, kind, bit, size, x, y)                                                      \
+#define ORDER_CHECK(id, key, name, look, kind, bit, size, x, y)                                                      \
     typedef char vpad_order_##id[SNX_VPAD_##id == ORDER_##id ? 1 : -1];
 VPAD_CONTROLS(ORDER_CHECK)
 typedef char vpad_order_count[ORDER_COUNT == SNX_VPAD_COUNT ? 1 : -1];
@@ -85,7 +93,7 @@ static void default_place(int c, SnxVpadPlace* p) {
     p->y = k ? k->y : INFO[c].y;
     p->size = DEF_SIZE;
 }
-#define KEY_ROW(id, key, name, sprite, kind, bit, size, x, y) "controls_" key,
+#define KEY_ROW(id, key, name, look, kind, bit, size, x, y) "controls_" key,
 static const char* const KEYS[SNX_VPAD_COUNT] = {VPAD_CONTROLS(KEY_ROW)};
 static void placed(void) {
     if (!g_placed) {
@@ -210,15 +218,15 @@ void vpad_store_shown(int control) {
         g_store(g_vpad_shown_ini[control].key, g_settings.control_shown[control] ? "1" : "0");
 }
 
-/* a control's rectangle (x, y, w, h) on a clear part of safe: its sprite's shape, or its skin's box */
+/* a control's rectangle (x, y, w, h) on a clear part of safe: its look's shape, its longer side size, or its skin's
+   box */
 static void box(int c, const int safe[4], float r[4]) {
-    const unsigned short* s = snx_controls_sprites[INFO[c].sprite];
     const SnxSkinControl* k = vpad_skin(c);
-    float shorter = (float)(safe[2] < safe[3] ? safe[2] : safe[3]), big = (float)(s[2] > s[3] ? s[2] : s[3]);
+    float shorter = (float)(safe[2] < safe[3] ? safe[2] : safe[3]), aspect = INFO[c].aspect;
     float scale = shorter * (float)(g_settings.controls_scale + 50) / 100 * (float)g_vpad.at[c].size / 100;
     float side = INFO[c].size * scale;
-    r[2] = k ? k->w * scale : side * (float)s[2] / big;
-    r[3] = k ? k->h * scale : side * (float)s[3] / big;
+    r[2] = k ? k->w * scale : aspect >= 1 ? side : side * aspect;
+    r[3] = k ? k->h * scale : aspect >= 1 ? side / aspect : side;
     r[0] = (float)safe[0] + g_vpad.at[c].x * (float)safe[2] - r[2] / 2;
     r[1] = (float)safe[1] + g_vpad.at[c].y * (float)safe[3] - r[3] / 2;
 }
@@ -436,31 +444,41 @@ void vpad_edit(int on) {
 int vpad_editing(void) { return g_edit; }
 int vpad_shown(void) { return g_settings.show_controls || g_edit; }
 
-/* the D-pad, and pressed (dpad, DPAD_ bits) its pressed look over it: one direction is the up sprite turned, two the
-   up-left one. The pressed drawables are a dark cross, which alone sank into a dark game, its middle first */
-static void dpad_draw(SnxUiList* l, const float r[4], u32 alpha, u32 dpad) {
-    static const u32 one[4] = {DPAD_UP, DPAD_RIGHT, DPAD_DOWN, DPAD_LEFT};
-    static const u32 two[4] = {DPAD_UP | DPAD_LEFT, DPAD_UP | DPAD_RIGHT, DPAD_DOWN | DPAD_RIGHT,
-                               DPAD_DOWN | DPAD_LEFT};
-    int t;
-    ui_sprite(l, SNX_SPRITE_DPAD, r[0], r[1], r[2], r[3], alpha, 0);
-    for (t = 0; t < 4; ++t) {
-        if (dpad == one[t]) {
-            ui_sprite(l, SNX_SPRITE_DPAD_UP, r[0], r[1], r[2], r[3], alpha, t);
-            return;
-        }
-        if (dpad == two[t]) {
-            ui_sprite(l, SNX_SPRITE_DPAD_UP_LEFT, r[0], r[1], r[2], r[3], alpha, t);
-            return;
-        }
-    }
+/* The built-in look: each control a shape (ui.h's ui_shape), white, its edge a 32nd of its shorter side (a pixel at
+   least) and its label on it; pressed, the shape filled with its label cut out */
+#define WHITE 0xFFFFFFFFu
+static int edge_of(const float r[4]) {
+    int e = (int)((r[2] < r[3] ? r[2] : r[3]) / 32);
+    return e < 1 ? 1 : e;
 }
-/* a stick's ring on r, its knob ax, ay (-1 to 1 right and down) from the middle, the pressed one when pressed */
-static void knob_draw(SnxUiList* l, const float r[4], float ax, float ay, int pressed, u32 alpha) {
+static void button_draw(SnxUiList* l, int c, const float r[4], int held) {
+    ui_shape(l, r[0], r[1], r[2], r[3], INFO[c].shape, INFO[c].label, held ? UI_SHAPE_FILLED : 0, edge_of(r), WHITE);
+}
+/* the D-pad on r: its cross's edge, and in each arm its arrow; the arms pressed (dpad, DPAD_ bits) filled, their arrows
+   cut out. The arms are a third of the shorter side wide, as the cross's (ui.frag) */
+static void dpad_draw(SnxUiList* l, const float r[4], u32 dpad) {
+    static const u32 dir[4] = {DPAD_UP, DPAD_RIGHT, DPAD_DOWN, DPAD_LEFT};
+    /* the font's triangles: up, right, down, left */
+    static const char* const arrow[4] = {"\x1e", "\x10", "\x1f", "\x11"};
+    float a = (r[2] < r[3] ? r[2] : r[3]) / 3, cx = r[0] + r[2] / 2, cy = r[1] + r[3] / 2;
+    float across = (r[2] - a) / 2, down = (r[3] - a) / 2;
+    const float arm[4][4] = {{cx - a / 2, r[1], a, down},
+                             {cx + a / 2, cy - a / 2, across, a},
+                             {cx - a / 2, cy + a / 2, a, down},
+                             {r[0], cy - a / 2, across, a}};
+    int t, e = edge_of(r);
+    ui_shape(l, r[0], r[1], r[2], r[3], UI_SHAPE_CROSS, NULL, 0, e, WHITE);
+    for (t = 0; t < 4; ++t)
+        ui_shape(l, arm[t][0], arm[t][1], arm[t][2], arm[t][3], UI_SHAPE_BOX, arrow[t],
+                 dpad & dir[t] ? UI_SHAPE_FILLED : UI_SHAPE_BARE, e, WHITE);
+}
+/* a stick's ring on r, its knob ax, ay (-1 to 1 right and down) from the middle, filled when pressed */
+static void knob_draw(SnxUiList* l, const float r[4], float ax, float ay, int pressed) {
     float kw = r[2] / STICK_KNOB, kh = r[3] / STICK_KNOB;
     float mx = r[0] + r[2] / 2 + ax * r[2] / 2, my = r[1] + r[3] / 2 + ay * r[3] / 2;
-    ui_sprite(l, SNX_SPRITE_STICK_RANGE, r[0], r[1], r[2], r[3], alpha, 0);
-    ui_sprite(l, pressed ? SNX_SPRITE_STICK_PRESSED : SNX_SPRITE_STICK, mx - kw / 2, my - kh / 2, kw, kh, alpha, 0);
+    int e = edge_of(r);
+    ui_shape(l, r[0], r[1], r[2], r[3], UI_SHAPE_CIRCLE, NULL, 0, e, WHITE);
+    ui_shape(l, mx - kw / 2, my - kh / 2, kw, kh, UI_SHAPE_CIRCLE, NULL, pressed ? UI_SHAPE_FILLED : 0, e, WHITE);
 }
 /* a skin's control: each piece on the box, its pressed look where lit has its bits (SNX_SKIN_LIT_HELD for held, the
    D-pad's directions), the knob moved by ax, ay (-1 to 1 right and down) */
@@ -479,10 +497,8 @@ static void skin_draw(SnxUiList* l, const SnxSkinControl* k, const float r[4], u
                   0x00FFFFFFu | (u32)a << 24);
     }
 }
-/* a built-in control's alpha at percent (0 to 100) of controls_alpha: SNX_VPAD_BUILTIN_CURVE's, 153 at 50 */
-static u32 builtin_alpha(int percent) { return (u32)(pow(percent / 100.0, SNX_VPAD_BUILTIN_CURVE) * 255 + 0.5); }
-/* alpha a skin's control's, builtin the built-in look's */
-static void stick_draw(SnxUiList* l, int c, float r[4], const int safe[4], u32 alpha, u32 builtin) {
+/* alpha a skin's control's */
+static void stick_draw(SnxUiList* l, int c, float r[4], const int safe[4], u32 alpha) {
     const SnxSkinControl* k = vpad_skin(c);
     int s = stick_of(c), held = g_held >> c & 1;
     if (held && !g_edit) { /* the ring where the finger landed, the knob where it is */
@@ -491,11 +507,11 @@ static void stick_draw(SnxUiList* l, int c, float r[4], const int safe[4], u32 a
         if (k)
             skin_draw(l, k, r, SNX_SKIN_LIT_HELD, g_axis[s][0], g_axis[s][1], alpha);
         else
-            knob_draw(l, r, g_axis[s][0], g_axis[s][1], 1, builtin);
+            knob_draw(l, r, g_axis[s][0], g_axis[s][1], 1);
     } else if (k)
         skin_draw(l, k, r, 0, 0, 0, alpha);
     else
-        knob_draw(l, r, 0, 0, 0, builtin);
+        knob_draw(l, r, 0, 0, 0);
 }
 static void outline(SnxUiList* l, const float r[4], float t, u32 rgba) {
     ui_fill(l, r[0] - t, r[1] - t, r[2] + 2 * t, t, rgba);
@@ -534,14 +550,13 @@ static void edit_draw(SnxUiList* l, const int safe[4]) {
 void vpad_draw(SnxUiList* l, const int safe[4]) {
     int c;
     float r[4];
-    u32 alpha, builtin;
+    u32 alpha;
     int percent;
     placed();
     if (!g_settings.show_controls && !g_edit) return;
-    /* in edit mode even a clear pad shows where its controls are */
+    /* a skin's: in edit mode even a clear pad shows where its controls are */
     percent = snx_clamp_int(g_edit && g_settings.controls_alpha < 50 ? 50 : g_settings.controls_alpha, 0, 100);
     alpha = (u32)percent * 255 / 100;
-    builtin = builtin_alpha(percent);
     if (g_edit) edit_draw(l, safe);
     for (c = 0; c < SNX_VPAD_COUNT; ++c) {
         const SnxSkinControl* k = vpad_skin(c);
@@ -551,11 +566,11 @@ void vpad_draw(SnxUiList* l, const int safe[4]) {
         if (k && INFO[c].kind != KIND_STICK)
             skin_draw(l, k, r, INFO[c].kind == KIND_DPAD ? g_dpad | held : held, 0, 0, alpha);
         else if (INFO[c].kind == KIND_DPAD)
-            dpad_draw(l, r, builtin, g_dpad);
+            dpad_draw(l, r, g_dpad);
         else if (INFO[c].kind == KIND_STICK)
-            stick_draw(l, c, r, safe, alpha, builtin);
+            stick_draw(l, c, r, safe, alpha);
         else
-            ui_sprite(l, INFO[c].sprite + (int)(g_held >> c & 1), r[0], r[1], r[2], r[3], builtin, 0);
+            button_draw(l, c, r, (int)(g_held >> c & 1));
     }
 }
 
@@ -629,7 +644,7 @@ int vpad_showcase_box(const int safe[4], float box[4]) {
     return corner;
 }
 void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
-    const u32 alpha = 138; /* 230 on rEden's drawables, 0.6 opaque at most, which the built-in art makes opaque */
+    const u32 alpha = 138; /* a skin's: 230 on rEden's drawables, 0.6 opaque at most */
     float box[4], x0, y0, w, h, r[4];
     int c, scale;
     char text[24];
@@ -641,11 +656,10 @@ void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
     h = box[3];
     ui_fill(l, x0, y0, w, h, 0x80000000u);
     for (c = 0; c < SNX_VPAD_COUNT; ++c) {
-        const unsigned short* sp = snx_controls_sprites[INFO[c].sprite];
-        float big = (float)(sp[2] > sp[3] ? sp[2] : sp[3]), side = SHOWCASE[c][2] * h;
+        float side = SHOWCASE[c][2] * h, aspect = INFO[c].aspect;
         if (side <= 0) continue;
-        r[2] = side * (float)sp[2] / big;
-        r[3] = side * (float)sp[3] / big;
+        r[2] = aspect >= 1 ? side : side * aspect;
+        r[3] = aspect >= 1 ? side / aspect : side;
         r[0] = x0 + SHOWCASE[c][0] * w - r[2] / 2;
         r[1] = y0 + SHOWCASE[c][1] * h - r[3] / 2;
         if ((k = vpad_skin(c))) { /* the skin the touch controls wear, as they draw it */
@@ -658,13 +672,13 @@ void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
             } else
                 skin_draw(l, k, r, g_show_buttons >> INFO[c].bit & 1 ? SNX_SKIN_LIT_HELD : 0, 0, 0, alpha);
         } else if (INFO[c].kind == KIND_DPAD)
-            dpad_draw(l, r, alpha, (u32)g_show_buttons & (DPAD_LEFT | DPAD_UP | DPAD_RIGHT | DPAD_DOWN));
+            dpad_draw(l, r, (u32)g_show_buttons & (DPAD_LEFT | DPAD_UP | DPAD_RIGHT | DPAD_DOWN));
         else if (INFO[c].kind == KIND_STICK) {
             int s = stick_of(c);
             knob_draw(l, r, g_show_axis[s][0], g_show_axis[s][1],
-                      (int)(g_show_buttons >> INFO[s ? SNX_VPAD_R3 : SNX_VPAD_L3].bit & 1), alpha);
+                      (int)(g_show_buttons >> INFO[s ? SNX_VPAD_R3 : SNX_VPAD_L3].bit & 1));
         } else
-            ui_sprite(l, INFO[c].sprite + (int)(g_show_buttons >> INFO[c].bit & 1), r[0], r[1], r[2], r[3], alpha, 0);
+            button_draw(l, c, r, (int)(g_show_buttons >> INFO[c].bit & 1));
     }
     if (fps < 0) return;
     scale = (int)(h * 0.11f / 16 + 0.5f);

@@ -12,6 +12,8 @@
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/vpad.h"
+#include "nx/gpu/vk/vk.h"
+#include "support/ui_shape_ref.h"
 #include <math.h>
 
 #define UI_W 640
@@ -36,6 +38,7 @@ static int ui_quads(UiCheck* c, const int safe[4]) {
     int px, py, scale;
     ui_lock();
     vpad_draw(&l, safe);
+    vpad_showcase_draw(&l, safe, vpad_showcase_fps(g_vk_present, plat_ns()));
     overlay_place(UI_W, UI_H, &px, &py, &scale);
     stats_draw(&l, safe, scale, plat_ns());
     hud_draw(&l, safe, scale);
@@ -62,6 +65,15 @@ static void ui_blend_quad(UiCheck* c, const SnxUiQuadView* q) {
             const u8* t;
             if (cx < q->x - 1e-3f || cx > q->x + q->w + 1e-3f || cy < q->y - 1e-3f || cy > q->y + q->h + 1e-3f)
                 continue;
+            if (q->ink == UI_SHAPE) { /* drawn from its place alone, its colour where it is */
+                int in = ui_shape_ref(q->u, q->v, q->uw & 0x7FFFu, q->vh, q->w, q->h, cx - q->x, cy - q->y);
+                if (in < 0 || fabsf(cx - q->x) < 1e-3f || fabsf(cx - q->x - q->w) < 1e-3f || fabsf(cy - q->y) < 1e-3f ||
+                    fabsf(cy - q->y - q->h) < 1e-3f)
+                    c->sure[y][x] = 0;
+                else if (in)
+                    for (k = 0; k < 4; ++k) c->want[y][x][k] = color[k];
+                continue;
+            }
             tu = (float)q->u + (cx - q->x) / q->w * (float)q->uw;
             tv = (float)q->v + (cy - q->y) / q->h * (float)q->vh;
             if (fabsf(cx - q->x) < 1e-3f || fabsf(cx - q->x - q->w) < 1e-3f || fabsf(cy - q->y) < 1e-3f ||
@@ -224,6 +236,21 @@ static int check_ui(void) {
             stats_frame(at += (u64)(10 + 15 * k) * 1000000ull, &gpu);
             CHECK(!ui_frame(c, safe, "a bar a frame", &changed));
         }
+    }
+    /* the on-screen controls and showcase's box: shapes with no texels (ui_shape), each an edge and its label; pressed,
+       filled with the label cut out. A, the D-pad's up and the left stick's click, the stick right */
+    {
+        static const i32 none[4], right[4] = {32767, 0, 0, 0};
+        g_settings.show_controls = 1;
+        CHECK(!ui_frame(c, safe, "the on-screen controls", &changed));
+        g_settings.show_controls = 0;
+        g_settings.showcase = 1;
+        vpad_showcase_input(1u << 0 | 1u << 13 | 1u << 4, right);
+        CHECK(!ui_frame(c, safe, "showcase, pressed", &changed));
+        vpad_showcase_input(0, none);
+        CHECK(!ui_frame(c, safe, "showcase, let go", &changed));
+        CHECK(changed > 0);
+        g_settings.showcase = 0;
     }
     vk_finish();
     vk_ui_swapchain_gone();

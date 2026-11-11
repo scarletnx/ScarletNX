@@ -25,6 +25,8 @@ layout(location = 0) out vec2 v_uv;
 layout(location = 1) out vec4 v_color;
 layout(location = 2) flat out uint v_ink; // and from bit 8, UI_BACKED
 layout(location = 3) flat out uint v_glyph;
+layout(location = 4) flat out vec2 v_size;   // UI_SHAPE: its size in pixels, v_uv its pixel from the top left
+layout(location = 5) flat out uvec4 v_shape; // and its kind, label, flags and edge (ui.h's ui_shape)
 // the corner of a quad, clockwise from the top left: x 0 1 1 0, y 0 0 1 1
 vec2 corner(uint k) {
     return vec2(float((6u >> k) & 1u), float(k >> 1));
@@ -41,6 +43,7 @@ void main() {
     uint height = 1u;
     v_ink = ink | (bits >> 18 & 1u) << 8;
     v_glyph = glyph;
+    v_shape = texels;
     if (ink == 4u) { // UI_RING: its slot's bar, as ui_drawn gives it, w / n wide over the graph
         uint n = pc.ring >> 16, slot = glyph;
         height = n != 0u && slot < n ? (ring.heights[slot >> 2] >> ((slot & 3u) * 8u)) & 0xFFu : 0u;
@@ -57,12 +60,17 @@ void main() {
     if (texels.z == 0u || height == 0u) { // a blank cell, or no bar: every corner on one point, which draws nothing
         gl_Position = vec4(-2.0, -2.0, 0.0, 1.0);
         v_uv = vec2(0.0);
+        v_size = vec2(0.0);
         v_color = vec4(0.0);
         return;
     }
     gl_Position = vec4((r.xy + corner(k) * r.zw) / pc.size * 2.0 - 1.0, 0.0, 1.0);
     // the texels turned: a quarter turn shows the bottom left one at the top left
-    v_uv = corner((k + 4u - turn) & 3u) * vec2(texels.zw);
+    v_size = r.zw;
+    if (ink == 5u) // UI_SHAPE: no texels, its own pixels
+        v_uv = corner(k) * r.zw;
+    else
+        v_uv = corner((k + 4u - turn) & 3u) * vec2(texels.zw);
     if (ink == 0u) v_uv += vec2(texels.xy);
     v_color = c;
 }
