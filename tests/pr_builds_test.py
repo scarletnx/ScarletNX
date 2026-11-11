@@ -154,9 +154,9 @@ with tempfile.TemporaryDirectory() as temporary:
         text,
     )
     apk = "edenprobe v0.11.0's APK: 640 passed, 13 failed, 0 skipped, 0 crashed"
-    text = comment(run_jobs=jobs(*WHOLE), notice=notice + [{'title': 'edenprobe', 'message': apk}])
+    text = comment(run_jobs=jobs(*WHOLE), notice=[{'title': 'edenprobe', 'message': apk}] + notice)
     check(
-        "the NRO's and the APK's notices on edenprobe's line, in the order the job left them",
+        "the NRO's and the APK's notices on edenprobe's line, the NRO's first whatever order the API gives",
         f'\n\n[{TITLE}; {apk}]({RUN}): every case of the baseline passes\n' in text,
         text,
     )
