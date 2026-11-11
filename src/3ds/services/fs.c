@@ -171,19 +171,20 @@ static void open_host(SnxCtrIpc* c, FsNode* root, uint32_t flags, uint32_t fixed
     }
     if (!snx_ctr_fs_file_object(c, CTR_FILE_HOST, !!(flags & 2), fixed, host, node)) fclose(host);
 }
-/* SelfNCCH's 12-byte file path: its type, then an ExeFS file's name (Azahar's SelfNCCHFilePath). 0 is the RomFS;
-   2 an ExeFS file, of which Azahar serves the icon, logo and banner (exefs/ in the tree: the extraction's files, or
-   the CIA's sections, process.c); the code (1) is not for this archive; 5, an update's RomFS, finds none, as no update
-   is loaded */
+/* SelfNCCH's 12-byte file path: its type, then an ExeFS file's name (Azahar's SelfNCCHFilePath). 0 is the base
+   game's RomFS; 5 the update's, the base's when no update has one (Azahar's ReadUpdateRomFS); 2 an ExeFS file, of
+   which Azahar serves the icon, logo and banner (exefs/ in the tree: the extraction's files, or the CIA's sections,
+   process.c); the code (1) is not for this archive */
 static void open_self(SnxCtrIpc* c, const unsigned char path[12]) {
     SnxCtrProcess* p = c->process;
     uint32_t type = snx_ld_le32(path);
     if (type == 0 || type == 5) {
-        if (type == 5 || !p->romfs) {
+        if (!p->romfs) {
             snx_ctr_ipc_error_reply(c, 0xc8804464u); /* RomFSNotFound */
             return;
         }
-        snx_ctr_fs_file_object(c, CTR_FILE_VIEW, 0, 0, NULL, NULL);
+        if (snx_ctr_fs_file_object(c, CTR_FILE_VIEW, 0, 0, NULL, NULL))
+            p->objects[snx_ctr_handle_object(p, c->out[3])].data.file.update_view = type == 5 && p->update_romfs;
         return;
     }
     if (type != 2) {

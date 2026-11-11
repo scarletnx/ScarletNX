@@ -655,8 +655,8 @@ static void ncch(SnxCtrProcess* p, uint32_t fs, bool absent) {
     ctr_call(p, file, close, 1, SNX_CTR_SVC_RETURN, 0);
     assert(!ctr_command_word(p, 1) && !snx_ctr_handle_close(p, file));
 }
-/* SelfNCCH's other file types: an ExeFS file (the extraction's exefs/icon), one it lacks, an unknown name, the code
-   and an update's RomFS */
+/* SelfNCCH's other file types: an ExeFS file (the extraction's exefs/icon), one it lacks, an unknown name, the code,
+   and the update's RomFS, which is the game's when no update has one (an extraction plays with none) */
 static void self_exefs(SnxCtrProcess* p, uint32_t fs) {
     uint32_t a[] = {0x80c00c2, 3, 1, 1, 0x4002, 0x300020};
     ctr_call(p, fs, a, 6, SNX_CTR_SVC_RETURN, 0);
@@ -666,7 +666,7 @@ static void self_exefs(SnxCtrProcess* p, uint32_t fs) {
         uint32_t type;
         char name[9];
         uint32_t result;
-    } cases[] = {{2, "banner", 0xc8804637}, {2, ".code", 0xe0e046be}, {1, "", 0xd9004676}, {5, "", 0xc8804464}};
+    } cases[] = {{2, "banner", 0xc8804637}, {2, ".code", 0xe0e046be}, {1, "", 0xd9004676}};
     unsigned char path[12] = {2, 0, 0, 0, 'i', 'c', 'o', 'n'};
     uint32_t open[] = {0x80201c2, 0, lo, hi, 2, 12, 1, 0, 0x30002, 0x300000};
     for (unsigned i = 0; i < sizeof cases / sizeof *cases; ++i) {
@@ -676,6 +676,14 @@ static void self_exefs(SnxCtrProcess* p, uint32_t fs) {
         ctr_call(p, fs, open, 10, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_command_word(p, 1) == cases[i].result);
     }
+    static const unsigned char update_path[12] = {5};
+    assert(snx_ctr_write_ram(p->space, 0x300000, update_path, sizeof update_path) == SNX_CTR_MEM_OK);
+    ctr_call(p, fs, open, 10, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x8020042 && !ctr_command_word(p, 1) && !p->update_romfs);
+    uint32_t update = ctr_command_word(p, 3), size_request[] = {0x8040000};
+    ctr_call(p, update, size_request, 1, SNX_CTR_SVC_RETURN, 0);
+    assert(!ctr_command_word(p, 1) && ctr_command_word(p, 2) == (uint32_t)snx_ctr_romfs_size(p->romfs));
+    assert(!snx_ctr_handle_close(p, update));
     assert(snx_ctr_write_ram(p->space, 0x300000, path, sizeof path) == SNX_CTR_MEM_OK);
     ctr_call(p, fs, open, 10, SNX_CTR_SVC_RETURN, 0);
     assert(ctr_command_word(p, 0) == 0x8020042 && !ctr_command_word(p, 1));

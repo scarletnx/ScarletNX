@@ -181,14 +181,18 @@ const unsigned char* snx_ctr_source_exefs(const SnxCtrSource* c, const char* nam
     *size = 0;
     return NULL;
 }
-const unsigned char* snx_ctr_source_romfs(const SnxCtrSource* c, uint64_t* size) {
-    if (c->update) {
-        const unsigned char* image = snx_ctr_source_romfs(c->update, size);
-        if (image) return image;
-    }
-    const CtrNcch* n = game_ncch(c);
+static const unsigned char* level3(const SnxCtrSource* c, const CtrNcch* n, uint64_t* size) {
     *size = n->level3.size;
     return *size ? c->map + c->base + n->level3.offset : NULL;
+}
+const unsigned char* snx_ctr_source_romfs(const SnxCtrSource* c, uint64_t* size) {
+    return level3(c, &c->source.base, size);
+}
+const unsigned char* snx_ctr_source_update_romfs(const SnxCtrSource* c, uint64_t* size) {
+    if (c->update) return snx_ctr_source_romfs(c->update, size);
+    if (c->source.overlay) return level3(c, &c->source.over, size);
+    *size = 0;
+    return NULL;
 }
 SnxCtrExtractResult snx_ctr_source_add_dlc(SnxCtrSource* game, const char* input, char* error, size_t error_size) {
     SnxCtrSource* dlc = NULL;

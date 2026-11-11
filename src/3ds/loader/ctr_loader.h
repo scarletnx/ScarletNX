@@ -40,8 +40,8 @@ void snx_ctr_source_close(SnxCtrSource* source);
 SnxCtrExtractResult snx_ctr_source_identify(const char* input, uint64_t* title, int32_t* version, char* error,
                                             size_t error_size);
 /* The game with its standalone update (a CIA of title type 0x0004000E, or a bare update NCCH) laid over it, read
-   where it lies: the update's ExHeader, code and RomFS are the game's, and its ExeFS files, then the base's, answer by
-   name, as the console runs an installed update. The update must be this game's (its title ID's low half under
+   where it lies: the update's ExHeader and code are the game's, its ExeFS files, then the base's, answer by name, as
+   the console runs an installed update, and its RomFS is read apart (snx_ctr_source_update_romfs). The update must be this game's (its title ID's low half under
    0x0004000E), else it is refused; a second one is refused too. An update given to snx_ctr_source_open as the game
    is refused */
 SnxCtrExtractResult snx_ctr_source_set_update(SnxCtrSource* game, const char* update, char* error, size_t error_size);
@@ -75,14 +75,19 @@ uint64_t snx_ctr_source_title(const SnxCtrSource* source);
 /* the game file's modification time, UTC Unix milliseconds, 0 when the host can't say */
 uint64_t snx_ctr_source_mtime(const SnxCtrSource* source);
 /* the game's ExHeader (0x800 bytes, as exheader.bin holds it), its .code expanded to its segments' pages (as
-   exefs/.code holds it), its ExeFS files and its RomFS: the update NCCH's when a cartridge carries an update, as
-   the console runs the update title's, while snx_ctr_source_title stays the base NCCH's, as the card is one game */
+   exefs/.code holds it) and its ExeFS files: the update NCCH's when a cartridge carries an update, as the console
+   runs the update title's, while snx_ctr_source_title stays the base NCCH's, as the card is one game */
 const unsigned char* snx_ctr_source_exheader(const SnxCtrSource* source);
 const unsigned char* snx_ctr_source_code(const SnxCtrSource* source, size_t* size);
 /* an ExeFS file as the game stores it, in the mapping; NULL with *size 0 for none by that name */
 const unsigned char* snx_ctr_source_exefs(const SnxCtrSource* source, const char* name, uint64_t* size);
-/* the RomFS's level 3, the image the guest reads, in the mapping; NULL with *size 0 without a RomFS */
+/* the base game's RomFS level 3, the image the guest reads as SelfNCCH's RomFS (path type 0), in the mapping; NULL
+   with *size 0 without a RomFS. An update's never takes its place: the game opens that one apart (path type 5), as
+   Azahar's ReadRomFS and ReadUpdateRomFS tell them apart */
 const unsigned char* snx_ctr_source_romfs(const SnxCtrSource* source, uint64_t* size);
+/* the update's RomFS level 3 (SelfNCCH's path type 5): the standalone update's, else the one a cartridge carries;
+   NULL with *size 0 when no update is laid over the game or the update has no RomFS */
+const unsigned char* snx_ctr_source_update_romfs(const SnxCtrSource* source, uint64_t* size);
 /* An encrypted game made into the decrypted one the loader reads: a CIA's contents under the ticket's title key and
    their NCCHs under the primary and secondary keys, or a cartridge image's NCCHs. keys is an aes_keys.txt in
    Azahar's format (the generator constant, the KeyX of slots 0x2C, 0x3D and the secondary key's, the common KeyYs).
