@@ -209,15 +209,15 @@ static void pick(App* app, const char* uri) {
     while (SDL_PollEvent(&e)) event(app, &e);
 }
 static void colored_text_on(App* app, int col, int row, const char* prompt, SDL_Color color, SDL_Color back) {
-    /* Verify the exact text, its glyph color and what is behind it in the real renderer. */
-    SDL_Surface* image = SDL_RenderReadPixels(app->renderer, NULL);
+    /* Verify the exact text, its glyph color and what is behind it in the real renderer: its cells read alone */
+    SDL_Surface* image = read_px(app, col * 8 * app->scale, row * 16 * app->scale, (int)strlen(prompt) * 8 * app->scale,
+                                 16 * app->scale);
     assert(image);
     for (int i = 0; prompt[i]; ++i)
         for (int y = 0; y < 16; ++y)
             for (int x = 0; x < 8; ++x) {
                 Uint8 r, g, b, a;
-                assert(SDL_ReadSurfacePixel(image, ((i + col) * 8 + x) * app->scale, (row * 16 + y) * app->scale, &r,
-                                            &g, &b, &a));
+                assert(SDL_ReadSurfacePixel(image, (i * 8 + x) * app->scale, y * app->scale, &r, &g, &b, &a));
                 bool ink = (gui_vga_font[(unsigned char)prompt[i] * 16 + y] & (0x80 >> x)) != 0;
                 SDL_Color want = ink ? color : back;
                 assert(r == want.r && g == want.g && b == want.b);
@@ -225,10 +225,10 @@ static void colored_text_on(App* app, int col, int row, const char* prompt, SDL_
     SDL_DestroySurface(image);
 }
 static SDL_Color pixel(App* app, float x, float y) {
-    SDL_Surface* image = SDL_RenderReadPixels(app->renderer, NULL);
+    SDL_Surface* image = read_px(app, (int)x, (int)y, 1, 1);
     Uint8 r = 0, g = 0, b = 0, a = 0; /* mingw's assert returns, as far as the compiler knows */
     SDL_Color out;
-    assert(image && SDL_ReadSurfacePixel(image, (int)x, (int)y, &r, &g, &b, &a));
+    assert(image && SDL_ReadSurfacePixel(image, 0, 0, &r, &g, &b, &a));
     SDL_DestroySurface(image);
     out.r = r;
     out.g = g;
@@ -372,10 +372,14 @@ static int row_marked(App* app, int r) {
     return n > 2 && !strcmp(line + n - 2, " *");
 }
 static void text_px_is_at(int line, App* app, int x0, int y0, const char* text, SDL_Color color, SDL_Color back) {
-    SDL_Surface* image = SDL_RenderReadPixels(app->renderer, NULL);
     int half = app->half ? app->half : 2 * app->scale; /* the letters' size, in halves of a cell */
+    SDL_Rect view;
+    SDL_Surface* image;
     const char *at = text, *was = text;
     uint32_t point;
+    /* the band the text's row of letters is in, from x0 to the viewport's right edge */
+    assert(SDL_GetRenderViewport(app->renderer, &view));
+    image = read_px(app, x0, y0, view.w - x0, font_px(15, half) + 1);
     assert(image);
     /* i: the column, a wide letter's or an icon's halves two; a byte no UTF-8 character starts with is CP437's own
        ("\xfe", which the menu draws for U+25A0) */
@@ -387,7 +391,7 @@ static void text_px_is_at(int line, App* app, int x0, int y0, const char* text, 
                 for (int x = 0; x < 8; ++x) {
                     Uint8 r, g, b, a;
                     int px = x0 + font_px(i * 8 + x, half), py = y0 + font_px(y, half);
-                    assert(SDL_ReadSurfacePixel(image, px, py, &r, &g, &b, &a));
+                    assert(SDL_ReadSurfacePixel(image, px - x0, py - y0, &r, &g, &b, &a));
                     bool ink = (font_rows(c + half_of)[y] & (0x80 >> x)) != 0;
                     SDL_Color want = ink ? color : back;
                     if ((y == 15 && !ink) || (r == want.r && g == want.g && b == want.b)) continue;
