@@ -314,10 +314,10 @@ typedef struct {
     float voice_drop; /* as the game set it, read back: no voice is dropped here */
     u32 manual;       /* OpenAudioRendererForManualExecution: no system event */
 } AudRen;
-/* an IAudioDevice's system, input and output events */
+/* an IAudioDevice's system, input and output events, and its input and output device notifications */
 typedef struct {
     u32 obj;
-    u32 ev[3];
+    u32 ev[5];
 } AudDevice;
 /* a hwopus decoder (audio.c) */
 typedef struct {
