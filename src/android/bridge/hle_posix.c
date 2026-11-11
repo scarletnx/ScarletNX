@@ -434,17 +434,19 @@ static uint64_t guest_flags(int host) {
 #endif
 }
 #endif
-/* open of the host with Linux's error for a link that O_NOFOLLOW refuses: ELOOP. FreeBSD and DragonFly give EMLINK
-   there, and NetBSD EFTYPE */
-static int open_host(const char* path, int flags, int mode) {
-    int fd = open(path, flags, mode);
+/* an open of the host's, open's or openat's, with Linux's error for a link that O_NOFOLLOW refuses: ELOOP. FreeBSD and
+   DragonFly give EMLINK there, and NetBSD EFTYPE */
+static int nofollow_error(int fd, int flags) {
 #if defined(__FreeBSD__) || defined(__DragonFly__)
     if (fd < 0 && errno == EMLINK && (flags & O_NOFOLLOW)) errno = ELOOP;
 #elif defined(__NetBSD__)
     if (fd < 0 && errno == EFTYPE && (flags & O_NOFOLLOW)) errno = ELOOP;
+#else
+    (void)flags;
 #endif
     return fd;
 }
+static int open_host(const char* path, int flags, int mode) { return nofollow_error(open(path, flags, mode), flags); }
 static void g_open(CPU* c, void* data) {
     (void)data;
     int own = hle_proc_open(STR(0));
@@ -913,7 +915,8 @@ static int64_t open_at(CPU* c, uint64_t dirfd, const char* path, uint64_t flags,
     return open(path, open_flags(flags), (int)mode);
 #else
     (void)c;
-    return openat(at_dir(dirfd), path, open_flags(flags), (mode_t)mode);
+    int host = open_flags(flags);
+    return nofollow_error(openat(at_dir(dirfd), path, host, (mode_t)mode), host);
 #endif
 }
 static void g_openat(CPU* c, void* data) {
