@@ -1713,6 +1713,10 @@ endif()
 # a package patched in the build tree from the cache's copy as released (cmake/patched_copy.cmake)
 add_test(NAME patched_copy COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/patched-copy-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/patched_copy_test.cmake")
+# the empty folder a failed download leaves in the CPM cache, which the next configure removes (cmake/cpm_cache.cmake)
+add_test(NAME cpm_cache COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DCPM=${CPM_FILE}"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpm-cache-test" "-DGENERATOR=${CMAKE_GENERATOR}"
+         "-DMAKE=${CMAKE_MAKE_PROGRAM}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cpm_cache_test.cmake")
 # the dependency cache's keys and how a build is published to it (cmake/deps_cache.cmake)
 add_test(NAME deps_cache COMMAND "${CMAKE_COMMAND}" "-DCC=${CMAKE_C_COMPILER}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/deps-cache-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/deps_cache_test.cmake")
