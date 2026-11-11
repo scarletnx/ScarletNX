@@ -35,7 +35,7 @@ def scan(text):
 HEADER = """[   0.00] ScarletNX - Some Game
 [   0.00] build: ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)
 [   0.00] system: Some Linux 1.0 (Linux 6.1.0), Some CPU 9000, 12 threads, 32 GB RAM
-[   0.05] module main     at 0008005000 (71.8 MB)
+[   0.05] module main     at 0008004000 (71.8 MB)
 [   0.27] vulkan: Some GPU 3000, Vulkan 1.4.351, driver 99d38200, graphics queue family 0, compute 2 (separate family)
 [   0.30] game: 0100aaaabbbb0000, version 1.2.3
 [   1.00]   [undeclared] nn::audio::detail::IAudioDevice cmd 7 -> ok

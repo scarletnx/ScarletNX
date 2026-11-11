@@ -11,7 +11,9 @@
 #include <stddef.h>
 
 /* Where the first module goes: a 64-bit process's code region, and a 32-bit one's (mem.h's AS32_CODE_BASE). Each
-   further module follows the previous one after a guard page */
+   further module starts where the one before it ends, as the console's loader lays them: a program's own code reads
+   the addresses that gives (a module that takes its game's main module to start right after rtld). A change of this
+   layout needs a new SNX_ABI: save states and hints hold addresses of the layout they were made with */
 #define SNX_CODE_BASE   0x08000000UL
 #define SNX_CODE_BASE32 0x00200000UL
 #define SNX_PAGE_SIZE   0x1000UL

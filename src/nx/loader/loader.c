@@ -24,7 +24,6 @@
 #define NRO_HEADER_SIZE  0x80
 #define ASET_HEADER_SIZE 0x38
 #define MOD0_SIZE        0x18
-#define GUARD_SIZE       SNX_PAGE_SIZE
 /* where each kind of program's code region ends */
 #define CODE_END64 0x2000000000ull
 #define CODE_END32 ((SnxU64)0x40000000UL)
@@ -1222,7 +1221,6 @@ static int load_modules(const SnxExefsReader* exefs, const char* where, SnxProgr
         }
         m->base = cursor;
         cursor += m->size;
-        cursor = end - cursor >= GUARD_SIZE ? cursor + GUARD_SIZE : end;
     }
     free(npdm);
     return rc;
