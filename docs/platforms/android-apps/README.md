@@ -63,7 +63,7 @@ installed first, as Android's package manager installs one: its APKs into `andro
 folder (`base.apk`, `split_<name>.apk`), with the native libraries of `arm64-v8a` in its `lib/arm64/`, or those of
 `armeabi-v7a` or `armeabi` in its `lib/arm/` when the app has no 64-bit ones ([Native bridge](native.md#32-bit-libraries)).
 The app's data folder has a `lib` link to them, as Android's has. A stamp keeps
-the bundle's path and size, so the next run starts at once. The app's own data is in `android/data/<package>/`. The build puts the framework's jar and the font beside the program. `-J OPTION` gives the JVM
+the bundle's path and size, so the next run starts at once. The app's own data is in `android/data/<package>/`. The build and an install put the framework's jar and the font beside the program. `-J OPTION` gives the JVM
 an option, as these system properties:
 
 | Property | Meaning |
