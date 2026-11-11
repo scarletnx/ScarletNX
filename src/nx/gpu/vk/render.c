@@ -19,6 +19,7 @@
 #include "nx/gpu/shader/sm86.h"
 #include "nx/gpu/shader/advanced_blend_spirv.h"
 #include "nx/hle/services/nvdrv.h"
+#include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/pipeline_parts.h"
@@ -1766,14 +1767,17 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
     }
     /* a constant buffer's bytes are usually the CPU's, in one run: copy them straight into staging. The general buffer
        path (the mirror, the cache, the hash) runs only where a result holds them, the mirror has them, the run isn't
-       whole, or unified memory reads them in place */
-    if (a && !pending && !vk_uma() && !vk_mirror_pending(a, sz) && !vk_mirror_holds(a, sz)) {
-        const u8* src = gmem_host(a, sz);
-        if (src) {
-            u8* p = vk_stage_upload(sz, vk_stage_align(), buf, off);
-            if (!p) return 0;
-            memcpy(p, src, sz);
-        } else if (!vk_buf_get_uniform(a, sz, buf, off))
+       whole, unified memory reads them in place, or the GPU owns some of them (memory/own.c): that path copies those
+       from their owner on the GPU. The CPU's bytes on a page the GPU owns others of are trapped, and this thread holds
+       the renderer's lock, which their landing needs: own_stage reads them through the pool's mirror */
+    u64 cpu = 0;
+    if (a && !pending && !vk_uma() && !vk_mirror_pending(a, sz) && !vk_mirror_holds(a, sz) &&
+        gmmu_run(a, sz, &cpu) == sz) {
+        u8* p = vk_stage_upload(sz, vk_stage_align(), buf, off);
+        if (!p) return 0;
+        if (!own_any())
+            memcpy(p, GP(cpu), sz);
+        else if (own_stage(cpu, sz, p, NULL, 0) && !vk_buf_get_uniform(a, sz, buf, off))
             return 0;
     } else if (!(a ? vk_buf_get_uniform(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off)))
         return 0;

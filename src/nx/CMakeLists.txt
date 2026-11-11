@@ -441,6 +441,14 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_storage_buffer_keep COMMAND snx-test-vulkan -H --vk_memory=1)
     set_tests_properties(vulkan_storage_buffer_keep PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_BUFFER_KEEP_ONLY=1"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # guest memory read with the renderer's lock held on pages the GPU owns bytes of (tests/vulkan_owned_page_reads.inc),
+    # with guest buffers copied, as a discrete GPU and Android without host imports have them: the default run takes
+    # unified memory on lavapipe, whose reads take other paths. Traps by userfaultfd, and by page protection as Android's
+    add_test(NAME vulkan_owned_page_reads COMMAND snx-test-vulkan -H --vk_memory=1)
+    add_test(NAME vulkan_owned_page_reads_protection COMMAND snx-test-vulkan -H --vk_memory=1 --memory_traps=1)
+    set_tests_properties(vulkan_owned_page_reads vulkan_owned_page_reads_protection PROPERTIES TIMEOUT 60
+        ENVIRONMENT "SNX_TEST_NVN_CASE=owned_page_reads" SKIP_REGULAR_EXPRESSION "SKIP owned page reads"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the budget's trim alone (tests/vulkan_trim.inc): a trim that wants more than everything held would take what the
     # other checks hold
     add_test(NAME vulkan_trim COMMAND snx-test-vulkan -H)
