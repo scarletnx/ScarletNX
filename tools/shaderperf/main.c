@@ -22,10 +22,12 @@ static const char* const k_help[] = {
     "\n",
     "Shaders:\n"
     "  --entry NAME              entry point of every shader (or SHADER.spv#NAME)\n"
-    "  --vs FILE[#entry]         vertex shader for the fragment shaders, or one --vs for each shader in order\n"
-    "                            (default: a built-in full-screen triangle\n"
+    "  --vs FILE[#entry]         vertex shader for geometry or fragment shaders, or one --vs for each shader in\n"
+    "                            order (default: a built-in one, a full-screen triangle for a fragment shader,\n"
     "                            giving float vec4 varyings at locations 0-7: r,g = screen uv, b = loc/8, a = 1)\n"
-    "  --fs FILE[#entry]         fragment shader for a vertex shader (default: rasterizer discard)\n"
+    "  --gs FILE[#entry]         geometry shader between them, or one each (default: none)\n"
+    "  --fs FILE[#entry]         fragment shader for vertex or geometry shaders, or one each (default: rasterizer\n"
+    "                            discard)\n"
     "  --reflect                 print each shader's reflected interface as JSON and exit (no GPU)\n"
     "  --print-vs                print a GLSL full-screen vertex shader that feeds the fragment shader's inputs\n"
     "                            (integer ones too) and exit: glslc -fshader-stage=vert it, then --vs\n"
@@ -244,8 +246,14 @@ static int parse_args(int argc, char** argv, SpConfig* c, Mode* mode) {
             if (c->vs_count >= SP_MAX_SHADERS)
                 return usage_error("too many --vs: %s", v);
             c->vs[c->vs_count++] = v;
+        } else if (VALUE("--gs")) {
+            if (c->gs_count >= SP_MAX_SHADERS)
+                return usage_error("too many --gs: %s", v);
+            c->gs[c->gs_count++] = v;
         } else if (VALUE("--fs")) {
-            c->fs = v;
+            if (c->fs_count >= SP_MAX_SHADERS)
+                return usage_error("too many --fs: %s", v);
+            c->fs[c->fs_count++] = v;
         } else if (VALUE("--device")) {
             c->device = v;
         } else if (VALUE("--loader")) {
@@ -734,12 +742,13 @@ static void text_report(FILE* f, const SpBench* b, const SpCompare* cmp) {
                 b->shaders[0].dispatch[1], b->shaders[0].dispatch[2], b->shaders[0].mod.local[0],
                 b->shaders[0].mod.local[1], b->shaders[0].mod.local[2]);
     else if (stage == VK_SHADER_STAGE_FRAGMENT_BIT)
-        fprintf(f, "workload: fragment, %u x %u framebuffer, %u sample%s, %s vertex shader\n", c->width, c->height,
+        fprintf(f, "workload: fragment, %u x %u framebuffer, %u sample%s, %s vertex shader%s\n", c->width, c->height,
                 c->samples, c->samples > 1 ? "s" : "",
-                c->vs_count > 1 ? "one --vs each" : c->vs_count ? c->vs[0] : "built-in full-screen");
+                c->vs_count > 1 ? "one --vs each" : c->vs_count ? c->vs[0] : "built-in full-screen",
+                c->gs_count > 1 ? ", one --gs each" : c->gs_count ? ", a --gs" : "");
         else
         fprintf(f, "workload: vertex, %u vertices x %u instances, %s\n", c->vertices, c->instances,
-                c->fs ? c->fs : "rasterizer discard");
+                c->fs_count > 1 ? "one --fs each" : c->fs_count ? c->fs[0] : "rasterizer discard");
     fprintf(f, "sampling: %u repetitions a sample%s, %s barriers between them, outliers %s, %.0f ms in all\n", b->reps,
             c->reps_auto ? " (auto)" : "", c->overlap ? "no" : "with",
             c->outliers == SP_OUTLIERS_IQR ? "iqr" : c->outliers == SP_OUTLIERS_MAD ? "mad" : "kept", b->elapsed_ms);
