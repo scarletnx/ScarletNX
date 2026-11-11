@@ -1013,6 +1013,168 @@ static int query_target_case(GpuChannel* channel, u64 target, u64 address) {
     return 0;
 }
 
+/* A fragment program that samples the target it draws to at a generic's (x, y) reads its own pixel when the vertex
+   program writes its position from that generic, [0, 1] onto the viewport with a w of 1, and the viewport covers the
+   target (ShaderInfo.uv_out_mask, tex_uv_mask): the draw samples in place where the device has feedback loops, with
+   no copy of the target. One game composes a full-size target over itself so, once a frame. Here each pixel of the
+   4x4 target holds its own color, and the fragment program writes back the texel it samples with red and green
+   swapped: every pixel ends as its own, swapped. Through a copy it does the same wherever the proof doesn't hold: a
+   viewport a pixel to the right (each pixel takes its left neighbour's), a generic counted from the bottom under a
+   viewport counted from the top (each row takes its mirror's), and a w stored from an attribute. The generic counted
+   from the bottom is in place again under a viewport of negative height */
+#define OWN_FFMA(d, a, c, scale, negc)                                                                                 \
+    (0x32a0000000070000ull | (u64)((scale) >> 12 & 0x7ffff) << 20 | (u64)((scale) >> 31) << 56 | (u64)(c) << 39 |      \
+     (u64)(negc) << 49 | (u64)(a) << 8 | (u64)(d))
+#define OWN_AST(addr, reg, count)                                                                                      \
+    (0xeff0000000070000ull | (u64)((count) - 1) << 47 | (u64)(addr) << 20 | 0xff00ull | (u64)(reg))
+static int own_target_uv_case(GpuChannel* channel, u64 target, u64 address) {
+    const u64 programs = address + 0x5800, sample = address + 0x6400, pool = address + 0x1F000, samplers = pool + 0x100,
+              cbuf = pool + 0x200;
+    const u32 half = 0x3f000000u, two = 0x40000000u;
+    /* u = x / 2 + 1 / 2 and v = y / 2 + 1 / 2 (or 1 / 2 - y / 2, down) of the corner, then the position from them */
+    u64 vertex[11] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
+                      0x0103f00000071006ull, /* MOV32I R6, 0.5 */
+                      0x0103f80000071007ull, /* MOV32I R7, 1.0 */
+                      OWN_FFMA(8, 0, 6, half, 0), OWN_FFMA(9, 1, 6, half, 0), OWN_FFMA(4, 8, 7, two, 1),
+                      OWN_FFMA(5, 9, 7, two, 1),  OWN_AST(0x70, 4, 2),        OWN_AST(0x80, 8, 2),
+                      0xe30000000007000full,      0xe30000000007000full};
+    const u64 fragment[] = {0xe000000000070000ull | 0x20ull << 30 | 8, /* IPA R8, a[0x80] */
+                            0xe000000000070000ull | 0x21ull << 30 | 9, /* IPA R9, a[0x84] */
+                            /* TEX R0..3, R8, 2D, the handle at 0x7C: the target */
+                            0xc000000000000000ull | 0x1full << 36 | 0xfull << 31 | 2ull << 28 | 0xffull << 20 |
+                                7ull << 16 | 8ull << 8,
+                            0x5c98078000070004ull,              /* MOV R4, R0 */
+                            0x5c98078000070000ull | 1ull << 20, /* MOV R0, R1 */
+                            0x5c98078000070001ull | 4ull << 20, /* MOV R1, R4 */
+                            0xe30000000007000full};
+    const u32 tic[8] = {0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                        (u32)target,
+                        (u32)(target >> 32) | 3u << 21,
+                        0,
+                        3 | 1u << 23, /* width 4, 2D */
+                        3 | 1u << 31, /* height 4, depth 1, normalized */
+                        0,
+                        0};
+    static const char* const names[5] = {
+        "the generic mapped onto the whole viewport", "a viewport a pixel to the right",
+        "a generic counted from the bottom, a viewport from the top", "a w stored from an attribute",
+        "a generic counted from the bottom, a viewport of negative height"};
+    u8 bytes[256] = {0}, initial[64], out[64];
+    u32* r = channel->r3d;
+    float kept[6];
+    for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+    CHECK(!gmem_write(pool + 96, bytes, 32));
+    memset(bytes, 0, sizeof bytes);
+    CHECK(!gmem_write(samplers, bytes, 32));
+    snx_st_le32(bytes + 0x7C, 3); /* the handle at 0x7C: header 3, sampler 0 */
+    CHECK(!gmem_write(cbuf, bytes, 256));
+    for (u32 i = 0; i < 16; i++) {
+        const u8 color[4] = {(u8)(10 + 60 * (i & 3)), (u8)(20 + 50 * (i >> 2)), (u8)(100 + i), 255};
+        memcpy(initial + i * 4, color, 4);
+    }
+    CHECK(index_program(sample, fragment, 7, 1));
+    r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 3;
+    r[0x557] = (u32)(samplers >> 32), r[0x558] = (u32)samplers, r[0x559] = 0;
+    r[0x48D] = 0;
+    r[0x982] = 2;
+    memcpy(kept, r + 0x280, sizeof kept);
+    DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    int ok = 1;
+    for (u32 round = 0; ok && round < 5; round++) {
+        float transform[6];
+        int down = round == 2 || round == 4, in_place = (round == 0 || round == 4) && g_vk.has_feedback;
+        u64 program = programs + round * 0x200;
+        memcpy(transform, kept, sizeof transform);
+        if (round == 1) transform[3] += 1.0f;         /* the translation's x: the viewport from x = 1 */
+        if (round == 4) transform[1] = -transform[1]; /* the scale's y: a viewport of negative height */
+        vertex[4] = down ? OWN_FFMA(9, 1, 6, half ^ 0x80000000u, 0) : OWN_FFMA(9, 1, 6, half, 0);
+        vertex[6] = down ? OWN_FFMA(5, 9, 7, two ^ 0x80000000u, 0) : OWN_FFMA(5, 9, 7, two, 1);
+        vertex[9] = round == 3 ? OWN_AST(0x7c, 3, 1) : 0xe30000000007000full;
+        ok = index_program(program, vertex, 11, 0);
+        if (!ok) break;
+        memcpy(r + 0x280, transform, sizeof transform);
+        r[0x811] = (u32)(program - address);
+        r[0x851] = (u32)(sample - address);
+        channel->ds.bind.cb_addr[4][2] = cbuf;
+        channel->ds.bind.cb_size[4][2] = 256;
+        vk_lock();
+        rt_clear(channel, target, 4, 4, 0, 1);
+        channel->r3d_dirty = ~0u; /* the registers were set directly */
+        mx_draw_state_sync(channel);
+        Surf* surface = vk_rt_find(target);
+        VkBuffer upload, readback;
+        u64 offset;
+        u8* staged = surface ? vk_stage(sizeof initial, 4, &upload, &offset) : NULL;
+        u8* data = NULL;
+        u64 loops = g_vk_fb_draws, written = g_vk_rt_copy_writes, through = g_vk_rt_copies, drawn = g_vk_drawn;
+        ok = staged != NULL;
+        if (ok) {
+            memcpy(staged, initial, sizeof initial);
+            vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                        VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            VkBufferImageCopy region = {.bufferOffset = offset,
+                                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                        .imageExtent = {4, 4, 1}};
+            rec_CmdCopyBufferToImage(vk_cmd(), upload, surface->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            vk_surf_wrote(surface);
+            vk_rt_drawn(surface);
+            vk_surf_touch(surface);
+            vk_render_draw(&channel->ds, &call, &channel->owner);
+            loops = g_vk_fb_draws - loops, written = g_vk_rt_copy_writes - written, through = g_vk_rt_copies - through;
+            ok = g_vk_drawn == drawn + 1;
+            vk_render_end();
+            data = vk_readback_buffer(64, &readback);
+        }
+        if (ok && data) {
+            vk_surf_use(vk_cmd(), surface, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                        VK_ACCESS_2_TRANSFER_READ_BIT);
+            VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                      .imageExtent = {4, 4, 1}};
+            rec_CmdCopyImageToBuffer(vk_cmd(), surface->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+            vk_finish();
+            vk_readback_ready();
+            memcpy(out, data, sizeof out);
+        } else
+            ok = 0;
+        vk_unlock();
+        channel->ds.bind.cb_addr[4][2] = 0;
+        channel->ds.bind.cb_size[4][2] = 0;
+        if (ok && (in_place ? loops != 1 || written || through : loops || written != 1 || through != 1)) {
+            fprintf(stderr,
+                    "own target, %s: %llu draws in place, %llu through a copy, %llu copies written; expected %s\n",
+                    names[round], (unsigned long long)loops, (unsigned long long)through, (unsigned long long)written,
+                    in_place ? "1 in place and no copy" : "1 through a copy, written once");
+            ok = 0;
+        }
+        for (u32 i = 0; ok && i < 16; i++) {
+            u32 x = i & 3, y = i >> 2;
+            /* the texel a pixel samples: its own, its left neighbour's (none for the first column, which the viewport
+               leaves as it was), or its row's mirror */
+            int kept_pixel = round == 1 && !x;
+            u32 from = kept_pixel ? i : round == 1 ? i - 1 : round == 2 ? (3 - y) * 4 + x : i;
+            u8 want[4];
+            memcpy(want, initial + from * 4, 4);
+            if (!kept_pixel) want[0] = initial[from * 4 + 1], want[1] = initial[from * 4];
+            if (memcmp(out + i * 4, want, 4)) {
+                fprintf(stderr, "own target, %s: pixel (%u, %u) is %u %u %u %u, expected %u %u %u %u\n", names[round],
+                        x, y, out[i * 4], out[i * 4 + 1], out[i * 4 + 2], out[i * 4 + 3], want[0], want[1], want[2],
+                        want[3]);
+                ok = 0;
+            }
+        }
+    }
+    memcpy(r + 0x280, kept, sizeof kept);
+    r[0x811] = 0;
+    r[0x851] = 0x10000; /* the harness's programs again */
+    CHECK(ok);
+    printf("own target: a draw that samples its target at a generic its position is written from reads it %s\n",
+           g_vk.has_feedback ? "in place, and through a copy under another viewport, sign or w"
+                             : "through a copy (no attachment feedback loops)");
+    return 0;
+}
+#undef OWN_FFMA
+#undef OWN_AST
+
 static int check_index_draws(void) {
     const u64 address = 0x478000000ull, cpu = HEAP_BASE + 0x7A0000;
     const u64 positions = address + 0x12000, colors = address + 0x13000, indices = address + 0x14000,
@@ -1090,6 +1252,7 @@ static int check_index_draws(void) {
     CHECK(!fragment_query_slots_case(channel, target, address));
     CHECK(!shadow_map_cases(channel, target, address));
     CHECK(!query_target_case(channel, target, address));
+    CHECK(!own_target_uv_case(channel, target, address));
     CHECK(!index_bound_cases(channel, target, indices, address + 0x1A000, address + 0x1C000));
     printf(
         "index draws: quads, widened and native 8-bit indices, restart indices and rewritten indices' bounds checked "

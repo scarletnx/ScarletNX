@@ -198,6 +198,8 @@ u32 shader_sparse_predicate(u64 w, int op);
 int shader_direct_own_pixel_fetch(const ShFlow* f, u32 index);
 int shader_direct_screen_uv(const ShFlow* f, u32 index, u32 x, u32 y);
 u32 shader_direct_screen_out(const ShFlow* f, u32* yneg);
+int shader_direct_plain_uv(const ShFlow* f, u32 index, u32 x, u32 y);
+u32 shader_direct_uv_out(const ShFlow* f, u32* yneg);
 u32 shader_direct_position_out(const ShFlow* f);
 int shader_direct_track_const(const ShFlow* f, u32 index, u32 reg, u32* value, int depth);
 /* Proven register bits at index: (runtime & *known)==*value, with *value masked by *known. Unknown is0/0.
