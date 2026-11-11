@@ -156,8 +156,8 @@ static int pipeline_make(VkFormat format) {
     if (g_pipe && g_pipe_format == format) return 1;
     if (g_pipe) vkDestroyPipeline(g_vk.dev, g_pipe, NULL); /* vk_finish ran when the swapchain changed format */
     g_pipe = VK_NULL_HANDLE;
-    vs = vk_module_spv(snx_ui_vs_spv, sizeof snx_ui_vs_spv / 4);
-    fs = vk_module_spv(snx_ui_fs_spv, sizeof snx_ui_fs_spv / 4);
+    vs = vk_module_spv(snx_ui_vs_spv, (size_t)(snx_ui_vs_spv_size / 4));
+    fs = vk_module_spv(snx_ui_fs_spv, (size_t)(snx_ui_fs_spv_size / 4));
     st[0].module = vs;
     st[1].module = fs;
     ok = vs && fs && VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, &g_pipe));

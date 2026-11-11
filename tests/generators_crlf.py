@@ -12,13 +12,9 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 TEXT = [
     'scripts/build-controls.py',
-    'scripts/build-ui-shaders.py',
     'scripts/build-skins.py',
     'src/common/utilities/font.c',
     'src/nx/runtime/platform/controls_atlas.h',
-    'src/nx/gpu/vk/ui_spv.h',
-    'src/nx/gpu/vk/shaders/ui.vert',
-    'src/nx/gpu/vk/shaders/ui.frag',
 ]
 
 
@@ -33,7 +29,7 @@ def main():
         shutil.copy(ROOT / 'dist/controls/controls.png', copy / 'dist/controls/controls.png')
         for png in skins.rglob('*.png'):
             shutil.copy(png, copy / png.relative_to(ROOT))
-        for script in ('scripts/build-controls.py', 'scripts/build-ui-shaders.py', 'scripts/build-skins.py'):
+        for script in ('scripts/build-controls.py', 'scripts/build-skins.py'):
             subprocess.run([sys.executable, str(copy / script), '--check'], check=True)
     print('the generators check a CR LF checkout as an LF one')
 
