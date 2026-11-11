@@ -230,6 +230,15 @@ static void check_jit_opt(const char* given, char default_level) {
    it: found by the hash's name in <exedir><exename>_nro, checked to be that NRO's for that address, its entries put
    in the dispatch table and taken out again, its functions made stale by a change of their code, and each mapping
    starting from the module as it was made. A module of another ABI or another address is refused, said once */
+/* an NRO's module as the runtime names it on this system (guest_jit.c: <hash>.dll on Windows, .so elsewhere), and
+   the separator the game's folder ends with */
+#ifdef _WIN32
+#define NRO_SUFFIX    ".dll"
+#define NRO_SEPARATOR "\\"
+#else
+#define NRO_SUFFIX    ".so"
+#define NRO_SEPARATOR "/"
+#endif
 typedef struct {
     u32 abi;
     u64 base;
@@ -293,12 +302,12 @@ static void nro_modules(const char* path) {
     memset(slots[0].hash, 0x11, 32), slots[0].base = 0x1000, slots[0].size = 0x1000;
     memset(slots[1].hash, 0x22, 32), slots[1].base = 0x2000, slots[1].size = 0x1000;
     memset(slots[2].hash, 0x33, 32), slots[2].base = 0x2000, slots[2].size = 0x1000;
-    snprintf(g_exedir, sizeof g_exedir, "%s/", root);
-    folder = snx_format("%s/%s" SNX_NROS_FOLDER, root, g_exename);
+    snprintf(g_exedir, sizeof g_exedir, "%s" NRO_SEPARATOR, root);
+    folder = snx_format("%s" NRO_SEPARATOR "%s" SNX_NROS_FOLDER, root, g_exename);
     CHECK(!snx_mkdirs(folder));
     for (k = 0; k < 3; k++) {
         memset(name, "123"[k], 64);
-        strcpy(name + 64, ".so");
+        strcpy(name + 64, NRO_SUFFIX);
         file[k] = snx_path_join(folder, name);
     }
     memset(g_disp, 0, sizeof g_dispatch);
