@@ -10,9 +10,14 @@
 //   is premultiplied, so a clear pixel leaves the picture as it was).
 // SRGB is set for a surface with no UNORM format, whose sRGB image encodes what is written to it: the bytes go in
 // decoded, and come out as they are.
+// SPACE is what the picture takes when it is the swapchain of a game's HDR frames (gpu/hdr_output.h): 1 PQ codes in
+// BT.2020's primaries, 2 scRGB, linear light with 1.0 at 80 nits. The layer's colours are then written as that, their
+// white at WHITE nits; 0, the bytes as above.
 #version 450
 layout(constant_id = 0) const uint MODE = 0u;
 layout(constant_id = 1) const bool SRGB = false;
+layout(constant_id = 2) const uint SPACE = 0u;
+layout(constant_id = 3) const float WHITE = 203.0;
 layout(set = 0, binding = 0) uniform sampler2D atlas;
 // gui_vga_font's 256 letters, then each icon's halves (gui_icon_font), 16 rows of a byte each, four bytes a word
 layout(std430, set = 0, binding = 1) readonly buffer Glyphs {
@@ -34,6 +39,13 @@ layout(location = 0) out vec4 o;
 // sRGB bytes to linear light
 vec3 decode(vec3 c) {
     return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+}
+// linear light in BT.709's primaries, 1.0 at 10000 nits, to SMPTE ST 2084's code in BT.2020's (BT.2087's matrix, by
+// columns)
+vec3 pq(vec3 l) {
+    vec3 p = pow(max(mat3(0.6274, 0.0691, 0.0164, 0.3293, 0.9195, 0.0880, 0.0433, 0.0114, 0.8956) * l, vec3(0.0)),
+                 vec3(0.1593017578125));
+    return pow((0.8359375 + 18.8515625 * p) / (1.0 + 18.6875 * p), vec3(78.84375));
 }
 // the label's bit at p (ui.vert's v_label: its box from v_label.xy, v_label.z a cell's pixels, v_label.w glyphs of
 // eight columns): 0 outside it. The cell clamped into the label, so a pixel outside reads a row that is there
@@ -66,6 +78,8 @@ void main() {
         drawn = (uint(!(d > 0.0)) & ((label_bit(v_uv) ^ (v_flags & 1u)) | uint(d > -v_shape.w))) != 0u;
     }
     if (SRGB) c = decode(c);
+    if (SPACE == 1u) c = pq(decode(c) * (WHITE / 10000.0));
+    if (SPACE == 2u) c = decode(c) * (WHITE / 80.0);
     if (MODE == 1u && !drawn) discard;
     o = vec4(c, 1.0) * (MODE == 2u ? float(drawn) : 1.0); // MODE 2: clear, blended away, when not drawn
 }

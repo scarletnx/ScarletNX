@@ -98,6 +98,8 @@ typedef struct {
     VkExtent2D sc_extent;
     int sc_win_w, sc_win_h; /* the window size it was made for (sc_extent: that as the surface takes it) */
     int sc_srgb;            /* its format is sRGB: what presented frames in sRGB formats are blitted to */
+    u32 sc_space;           /* what its images take (gpu/hdr_output.h): SNX_HDR_SPACE_SRGB unless it was made for a
+                               game's HDR frames, whose values the present's pass then writes as they are */
     VkFormat sc_format;     /* its images' format, which the on-screen controls draw to (gpu/vk/ui.c) */
     int sc_vsync;  /* the vsync setting it was made for (1: FIFO; 0 is FIFO too on a surface with nothing else) */
     int sc_turned; /* upright on a display held another way: Android calls each present suboptimal for it */
@@ -218,6 +220,10 @@ typedef struct {
        the light level its metadata names */
     int has_swapchain_colorspace;
     int has_hdr_metadata;
+    /* A game is told the display is HDR, and its HDR frames get a swapchain of their own space: the hdr_game setting
+       with both extensions on a surface that lists both HDR spaces (hdr_swapchain.h vk_hdr_display), as the last
+       vk_swapchain_create found it. Atomic: the display session's thread reads it */
+    int hdr_display;
     u32 gfx_timestamp_bits;  /* the graphics queue family's timestampValidBits: 0 where it writes no timestamps */
     /* VK_EXT_memory_budget: the driver tells each heap's use and budget (VMA reads them, and guesses without it) */
     int has_budget;
@@ -247,11 +253,13 @@ u32 vk_1_2_missing(const SnxVkExtensions* e, char* out, size_t size);
 /* the vk_api setting's text as the most Vulkan version the renderer takes, *cap (0 for auto, the device's up to 1.3):
    1, or 0 with why (n bytes) naming the value and the ones it takes */
 int vk_api_setting(const char* text, u32* cap, char* why, size_t n);
-/* (re)creates the swapchain at the window's size, in an sRGB format when srgb is set and the surface has one, with
-   the present mode the vsync setting asks for, recorded in sc_vsync (show() makes a new one when the setting moves).
-   0 while the window has no area (minimized) or its surface can't be queried, the old swapchain staying, or when the
-   create failed: then there is none. A lost surface sets sc_lost; the next present tries again */
-int vk_swapchain_create(int srgb);
+/* (re)creates the swapchain at the window's size, of a kind: 8 bits a channel in a UNORM format, or in an sRGB one
+   where the surface has one, or for a game's HDR10 or scRGB frames where hdr_display holds (else the UNORM one, said
+   in the log), with the present mode the vsync setting asks for, recorded in sc_vsync (show() makes a new one when the
+   setting moves). 0 while the window has no area (minimized) or its surface can't be queried, the old swapchain
+   staying, or when the create failed: then there is none. A lost surface sets sc_lost; the next present tries again */
+enum { VK_SC_UNORM, VK_SC_SRGB, VK_SC_PQ, VK_SC_SCRGB };
+int vk_swapchain_create(int kind);
 int vk_surface_recreate(void);
 int vk_window_release(void); /* Renderer.release_window */
 /* logs a failed call with where it happened; evaluates to 1 on success */

@@ -460,6 +460,13 @@ static int is_srgb(VkFormat f) {
     return f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
 }
 
+static int g_sc_kind; /* the VK_SC_ kind the swapchain was asked for (the surface may not have it) */
+/* what the next present's frame holds (vkr_present_hdr), and what the last frame shown does, for its refreshes */
+static SnxHdrFrame g_next_hdr, g_last_hdr;
+/* the swapchain for a frame: an HDR frame's own kind, else the 8-bit one every other frame's bytes go to as they are */
+static int frame_kind(const SnxHdrFrame* hdr) {
+    return hdr->space == SNX_HDR_SPACE_PQ ? VK_SC_PQ : hdr->space == SNX_HDR_SPACE_SCRGB ? VK_SC_SCRGB : VK_SC_UNORM;
+}
 /* the window's surface: lost while the app is in the background (Android), made anew when it comes back */
 static u32 g_generation;
 static int g_lost;
@@ -503,13 +510,14 @@ static void host_memory_plots(void) {
    black alone, with the on-screen controls and the game's menu over it; then the frame's commands are submitted and
    the image presented. A game's frame (game, which the game released at released_ns, 0 unknown, at its pace of a
    frame every period_ns, 0 none) also moves the per-present bookkeeping, and without src shows nothing; its
-   shown_syncpt (0 none) goes up once it is displayed, or known not to be (renderer.h). Under vk_lock */
-static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 released_ns, u64 period_ns,
-                 u32 shown_syncpt) {
+   shown_syncpt (0 none) goes up once it is displayed, or known not to be (renderer.h). hdr says what src holds
+   (g_last_hdr). Under vk_lock */
+static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transform, int game, u64 released_ns,
+                 u64 period_ns, u32 shown_syncpt) {
     SNX_ZONE(z_show, "vk show");
     if (transform & 4) { u32 w = fw; fw = fh; fh = w; }
     /* the size the swapchain was made for, not the extent the surface clamped it to: that can stay different */
-    int ww, wh, shown = backend_window_shown();
+    int ww, wh, kind = src ? frame_kind(hdr) : g_sc_kind, shown = backend_window_shown();
     backend_window_size(&ww, &wh);
     if (shown && (g_lost || backend_window_generation() != g_generation)) {
         vk_finish();
@@ -518,18 +526,20 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
     }
     shown = shown && !g_lost;
     int tried = 0; /* a create already ran this frame: one that failed waits for the next frame */
-    /* a new vsync in the .ini takes a new swapchain, as a new size does */
+    /* a new vsync in the .ini takes a new swapchain, as a new size does, and a frame of another kind: a game's HDR
+       frames after its SDR ones, or back */
     if (shown && ww > 0 && wh > 0 &&
-        (ww != g_vk.sc_win_w || wh != g_vk.sc_win_h ||
+        (ww != g_vk.sc_win_w || wh != g_vk.sc_win_h || kind != g_sc_kind ||
          __atomic_load_n(&g_settings.vsync, __ATOMIC_RELAXED) != g_vk.sc_vsync)) {
         vk_finish();
-        vk_swapchain_create(0);
+        g_sc_kind = kind;
+        vk_swapchain_create(kind);
         tried = 1;
     }
     VkSemaphore wait = VK_NULL_HANDLE, signal = VK_NULL_HANDLE;
     u32 idx = 0;
     int recreate = 0;
-    if (shown && (src || !game) && (g_vk.swapchain || (!tried && vk_swapchain_create(0)))) {
+    if (shown && (src || !game) && (g_vk.swapchain || (!tried && vk_swapchain_create(kind)))) {
         VkCommandBuffer cb = vk_cmd(); /* waits for this frame slot, so its acquire semaphore is free */
         VkSemaphore acq = g_acquired[vk_frame_id() % VK_FRAMES];
         /* no wait: vk_lock is held (guest threads mapping memory take it too), and the game's pace is present_pace's.
@@ -890,7 +900,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
     vk_tex_later_frame();
     if (recreate && !g_lost && !g_vk.sc_lost) { /* not when this frame's create found the surface lost */
         vk_finish();
-        vk_swapchain_create(0);
+        vk_swapchain_create(kind);
     }
     if (g_vk.sc_lost) { /* a create found the surface lost: the next frame makes it anew */
         g_vk.sc_lost = 0;
@@ -935,18 +945,23 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
             y1 = h < src->h ? h : src->h;
         }
     }
+    SnxHdrFrame hdr = g_next_hdr; /* this present's alone: the next one's is an SDR frame's until it is said */
+    g_next_hdr = (SnxHdrFrame){0};
     if (src) { /* in its pixels: targets are scaled */
         g_last = src;
+        g_last_hdr = hdr;
         g_last_transform = transform;
         g_last_x = (u32)((u64)src->sw * x0 / src->w);
         g_last_y = (u32)((u64)src->sh * y0 / src->h);
         g_last_w = (u32)((u64)src->sw * x1 / src->w) - g_last_x;
         g_last_h = (u32)((u64)src->sh * y1 / src->h) - g_last_y;
     }
-    show(src, x1 - x0, y1 - y0, transform, 1, released_ns, period_ns, shown_syncpt);
+    show(src, &hdr, x1 - x0, y1 - y0, transform, 1, released_ns, period_ns, shown_syncpt);
     __atomic_store_n(&g_shown_ns, plat_ns(), __ATOMIC_RELAXED);
     vk_unlock();
 }
+/* the presenting thread's, before its present: nothing else reads g_next_hdr */
+static void vkr_present_hdr(const SnxHdrFrame* frame) { g_next_hdr = *frame; }
 
 /* whether the window needs its picture drawn again though the game gave no frame: the on-screen layer is another
    (vk_ui_changed), or the window is: its surface, its size or the .ini's vsync (what show makes a swapchain for), or an
@@ -976,7 +991,7 @@ static void vkr_refresh(void) {
     last = now;
     if (refresh_due()) {
         vk_render_end();
-        show(g_last, g_last_w, g_last_h, g_last_transform, 0, 0, 0, 0);
+        show(g_last, &g_last_hdr, g_last_w, g_last_h, g_last_transform, 0, 0, 0, 0);
     }
     vk_unlock();
 }
@@ -1213,6 +1228,7 @@ const Renderer vk_renderer = {
     .samples_report = vkr_samples_report,
     .stream_end = vk_release_submit,
     .present_buffer = vkr_present_buffer,
+    .present_hdr = vkr_present_hdr,
     .display_wait = vk_display_wait,
     .screenshot = vkr_screenshot,
     .capture = vk_renderdoc_capture,

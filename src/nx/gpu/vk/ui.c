@@ -19,6 +19,7 @@
 #include "common/utilities/endian.h"
 #include "common/utilities/font.h"
 #include "gui/icons.h"
+#include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/overlay.h"
@@ -66,9 +67,11 @@ static VkPipelineLayout g_layout;
 enum { UI_PLAIN, UI_SPARSE };
 static VkPipeline g_pipes[2];
 static VkFormat g_pipe_format;
+static u32 g_pipe_space; /* what the pipelines' picture takes (g_vk.sc_space): half floats are both HDR spaces' */
 static int g_pipe_tiler; /* the sparse pipeline blends: made for a GPU that renders in tiles */
 typedef struct {
-    u32 mode, srgb;
+    u32 mode, srgb, space;
+    f32 white;
 } UiSpec;
 /* a GPU that renders in tiles, by its vendor: ARM's Mali, Qualcomm's Adreno, Apple's, Imagination's PowerVR and
    Broadcom's VideoCore, where a discard costs its tile's early tests */
@@ -198,10 +201,14 @@ static int pipeline_make(VkFormat format) {
                                         .pColorBlendState = &cb,
                                         .pDynamicState = &ds,
                                         .layout = g_layout};
-    /* ui.frag's MODE (0 plain, 1 sparse that discards, 2 sparse that blends) and SRGB */
+    /* ui.frag's MODE (0 plain, 1 sparse that discards, 2 sparse that blends) and SRGB, and for the swapchain of a
+       game's HDR frames its SPACE (gpu/hdr_output.h's) and WHITE, the light the layer's white is drawn at there */
     UiSpec spec;
-    VkSpecializationMapEntry entries[2] = {{0, offsetof(UiSpec, mode), 4}, {1, offsetof(UiSpec, srgb), 4}};
-    VkSpecializationInfo si = {2, entries, sizeof spec, &spec};
+    VkSpecializationMapEntry entries[4] = {{0, offsetof(UiSpec, mode), 4},
+                                           {1, offsetof(UiSpec, srgb), 4},
+                                           {2, offsetof(UiSpec, space), 4},
+                                           {3, offsetof(UiSpec, white), 4}};
+    VkSpecializationInfo si = {4, entries, sizeof spec, &spec};
     /* premultiplied: a pixel written clear leaves the picture as it was */
     const VkPipelineColorBlendAttachmentState blended = {.blendEnable = VK_TRUE,
                                                          .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
@@ -212,7 +219,9 @@ static int pipeline_make(VkFormat format) {
                                                          .alphaBlendOp = VK_BLEND_OP_ADD,
                                                          .colorWriteMask = 0xF};
     int ok, i, blend = tiler();
-    if (g_pipes[UI_PLAIN] && g_pipes[UI_SPARSE] && g_pipe_format == format && g_pipe_tiler == blend) return 1;
+    if (g_pipes[UI_PLAIN] && g_pipes[UI_SPARSE] && g_pipe_format == format && g_pipe_space == g_vk.sc_space &&
+        g_pipe_tiler == blend)
+        return 1;
     for (i = 0; i < 2; ++i) { /* vk_finish ran when the swapchain changed format */
         if (g_pipes[i]) vkDestroyPipeline(g_vk.dev, g_pipes[i], NULL);
         g_pipes[i] = VK_NULL_HANDLE;
@@ -226,12 +235,15 @@ static int pipeline_make(VkFormat format) {
     for (i = 0; ok && i < 2; ++i) {
         spec.mode = i == UI_PLAIN ? 0 : blend ? 2 : 1;
         spec.srgb = (u32)g_vk.sc_srgb;
+        spec.space = g_vk.sc_space;
+        spec.white = (f32)snx_hdr_paper_white(g_settings.hdr_paper_white);
         ba = i == UI_SPARSE && blend ? blended : (VkPipelineColorBlendAttachmentState){.colorWriteMask = 0xF};
         ok = VK_OK(vkCreateGraphicsPipelines(g_vk.dev, vk_pipeline_cache(), 1, &gci, NULL, &g_pipes[i]));
     }
     if (vs) vkDestroyShaderModule(g_vk.dev, vs, NULL);
     if (fs) vkDestroyShaderModule(g_vk.dev, fs, NULL);
     g_pipe_format = format;
+    g_pipe_space = g_vk.sc_space;
     g_pipe_tiler = blend;
     for (i = 0; i < 2 && !ok; ++i) {
         if (g_pipes[i]) vkDestroyPipeline(g_vk.dev, g_pipes[i], NULL);
