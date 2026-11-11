@@ -18,7 +18,8 @@ failures' images/, the recompile's and each launch's log, baseline.txt (this run
 list skipped as banned, and those the --baseline expects to end otherwise that did) and summary.md, which --summary FILE
 also appends to (CI: $GITHUB_STEP_SUMMARY). With --baseline, a case of it that does not end as its line says (pass, or
 the RESULT of a "[RESULT] suite: name" line) is a regression: run exits 1 and names it; a passing case it lacks is
-listed, to be added. A run that never reached its summary exits 1 too.
+listed, to be added. A run that never reached its summary exits 1 too, as does one whose program crashed or had to be
+killed after it.
 
 With --advisory REPORT, the pinned release's report.jsonl, the NRO is another build (edenprobe's main) and the run never
 fails: its cases REPORT lacks that do not pass, REPORT's passing cases that it does not pass, and what would have failed
@@ -320,6 +321,9 @@ def play(args, out):
         except Failed as error:
             return [str(error)], steps, None, path
         if report.summary:
+            if status is None:
+                quiet = f'killed after {args.timeout:g} s with no new line (--timeout {args.timeout:g})'
+                return [f'launch {number} wrote its summary and did not end: {quiet}'], steps, report, path
             return [f'the program ended with {ended} after its summary'] if status else [], steps, report, path
         if len(report.cases) <= cases:
             problem = f'launch {number} ({ended}) added no case: edenprobe would only end the same way again'
