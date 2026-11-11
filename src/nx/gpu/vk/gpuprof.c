@@ -57,17 +57,11 @@ typedef struct {
     VkCommandBuffer cb;
 } GpSub;
 typedef struct {
-    VkQueryPool pool;
-    u32 used; /* timestamps written in this slot since its reset */
-    int reset; /* the reset is recorded for this use of the slot */
-    u32 npass, nsub, ndisp;
+    GpOps ops;
+    u32 npass, nsub;
     GpPass pass[GP_QUERIES / 2];
     GpSub sub[GP_SUBS];
-    struct {
-        u32 qi;   /* its begin's timestamp, its end's the one after */
-        u32 kind; /* VK_OP_* */
-        u64 key, bytes;
-    } disp[GP_DISP];
+    GpOp op[GP_DISP];
 } GpSlot;
 typedef struct {
     u64 gva;
@@ -80,6 +74,7 @@ static GpSlot* g_slot[VK_FRAMES];
 static GpKey g_key[GP_KEYS];
 static u64 g_pass_ns, g_span_ns, g_frames, g_lost;
 static u64 g_draws_at_begin;
+static void gp_ops_done(GpOps* o, const u64* ts, double period, int ctx);
 /* the gaps between passes by what was recorded in them: dispatches, else copies, else barriers, else nothing (the
    GPU waiting for the next submission or a semaphore) */
 static const char* const g_gap_name[4] = {"with dispatches", "with copies", "with barriers only", "with nothing"};
@@ -166,6 +161,13 @@ static int gp_on(void) {
     return g_on;
 }
 int vk_gpuprof_timed(void) { return g_vk.gfx_timestamp_bits && !g_dead; }
+static int gp_attached(void) {
+#if defined(SNX_TRACY)
+    return snx_tracy_attached();
+#else
+    return 0;
+#endif
+}
 u64 vk_gpuprof_busy_ns(void) { return __atomic_load_n(&g_stats_busy.ns, __ATOMIC_RELAXED); }
 /* the frame's command buffers timed: for the profile (gp_on), or for the stats box, which shows */
 static int gp_timed(void) {
@@ -182,11 +184,14 @@ static GpSlot* gp_slot(void) {
         VkQueryPoolCreateInfo qi = {
             .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = GP_QUERIES};
         GpSlot* g = calloc(1, sizeof *g);
-        if (!g || !VK_OK(vkCreateQueryPool(g_vk.dev, &qi, NULL, &g->pool))) {
+        if (!g || !VK_OK(vkCreateQueryPool(g_vk.dev, &qi, NULL, &g->ops.pool))) {
             free(g);
             g_dead = 1;
             return NULL;
         }
+        g->ops.op = g->op;
+        g->ops.cap = GP_DISP;
+        g->ops.queries = GP_QUERIES;
         g_slot[s] = g;
     }
     return g_slot[s];
@@ -195,10 +200,10 @@ static GpSlot* gp_slot(void) {
 static GpSlot* gp_slot_reset(VkCommandBuffer cb, int on) {
     GpSlot* g;
     if (!on || !(g = gp_slot())) return NULL;
-    if (!g->reset) {
-        rec_CmdResetQueryPool(cb, g->pool, 0, GP_QUERIES);
-        g->reset = 1;
-        g->used = g->npass = g->nsub = g->ndisp = 0;
+    if (!g->ops.reset) {
+        rec_CmdResetQueryPool(cb, g->ops.pool, 0, GP_QUERIES);
+        g->ops.reset = 1;
+        g->ops.used = g->npass = g->nsub = g->ops.nop = 0;
     }
     return g;
 }
@@ -206,13 +211,13 @@ static GpSlot* gp_slot_reset(VkCommandBuffer cb, int on) {
 void vk_gpuprof_cb_begin(VkCommandBuffer cb) {
     GpSlot* g = gp_slot_reset(cb, gp_timed());
     if (!g) return;
-    if (g->used + 1 > GP_QUERIES || g->nsub >= GP_SUBS) {
+    if (g->ops.used + 1 > GP_QUERIES || g->nsub >= GP_SUBS) {
         g_lost++;
         return;
     }
     g->sub[g->nsub] =
-        (GpSub){.q0 = g->used, .passes = g->npass, .dispatches = (u32)g_dispatched, .xfers = g_rec_xfers, .cb = cb};
-    gp_stamp(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->pool, g->used++);
+        (GpSub){.q0 = g->ops.used, .passes = g->npass, .dispatches = (u32)g_dispatched, .xfers = g_rec_xfers, .cb = cb};
+    gp_stamp(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->ops.pool, g->ops.used++);
     g->nsub++;
     g_cur_cb = cb;
 }
@@ -220,13 +225,13 @@ void vk_gpuprof_cb_begin(VkCommandBuffer cb) {
 void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value) {
     GpSlot* g = gp_timed() ? g_slot[vk_frame_slot()] : NULL;
     GpSub* s;
-    if (!g || !g->reset || !g->nsub || (s = &g->sub[g->nsub - 1])->q1 || s->cb != cb) return;
-    if (g->used + 1 > GP_QUERIES) {
+    if (!g || !g->ops.reset || !g->nsub || (s = &g->sub[g->nsub - 1])->q1 || s->cb != cb) return;
+    if (g->ops.used + 1 > GP_QUERIES) {
         g_lost++;
         g->nsub--; /* no end: its begin is never read */
         return;
     }
-    s->q1 = g->used;
+    s->q1 = g->ops.used;
     s->passes = g->npass - s->passes;
     s->dispatches = (u32)g_dispatched - s->dispatches;
     s->xfers = g_rec_xfers - s->xfers;
@@ -234,31 +239,75 @@ void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value) {
     s->cpu = gp_host_ns();
     s->value = value;
     s->why = why;
-    gp_stamp(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->pool, g->used++);
+    gp_stamp(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->ops.pool, g->ops.used++);
 }
+static struct {
+    VkCommandBuffer cb;
+    GpOps* ops;
+} g_cq;
 void vk_gpuprof_tag(u64 key) { g_tag = key; }
-int vk_gpuprof_profiled(VkCommandBuffer cb) { return cb && cb == g_cur_cb; }
+int vk_gpuprof_profiled(VkCommandBuffer cb) {
+    return cb && (cb == g_cur_cb || (cb == g_cq.cb && g_cq.ops));
+}
+static GpOps* gp_ops(VkCommandBuffer cb, int* ctx) {
+    if (!cb) return NULL;
+    if (cb == g_cur_cb) {
+        GpSlot* g = g_slot[vk_frame_slot()];
+        if (!g || !g->ops.reset) return NULL;
+        *ctx = VK_GPU_CTX_GRAPHICS;
+        return &g->ops;
+    }
+    if (cb == g_cq.cb && g_cq.ops) {
+        *ctx = VK_GPU_CTX_COMPUTE;
+        return g_cq.ops;
+    }
+    return NULL;
+}
+#if defined(SNX_TRACY)
+static const char* const g_op_name[VK_OP_N] = {"dispatch", "buffer copy", "buffer to image copy", "buffer copy",
+                                               "image copy", "draw"};
+#endif
 int vk_gpuprof_op_begin(VkCommandBuffer cb, u32 kind, u64 key, u64 bytes) {
-    if (cb != g_cur_cb || !cb) return 0; /* another queue's, or no frame command buffer is profiled */
+    GpOp* x;
+    int ctx = 0;
+    GpOps* o;
+    if (kind == VK_OP_DRAW && !gp_attached()) return 0; /* a draw's time has no sum: only a client's track */
+    if (cb == g_cur_cb && !gp_slot_reset(cb, gp_on())) return 0;
+    o = gp_ops(cb, &ctx);
+    if (!o) return 0;
     if (kind == VK_OP_DISPATCH) g_dispatched++;
-    GpSlot* g = gp_slot_reset(cb, gp_on());
-    if (!g) return 0;
-    if (g->used + 2 > GP_QUERIES || g->ndisp >= GP_DISP) {
-        g_lost++;
+    if (o->used + 2 > o->queries || o->nop >= o->cap) {
+        if (ctx == VK_GPU_CTX_GRAPHICS) g_lost++;
         return 0;
     }
-    g->disp[g->ndisp].qi = g->used;
-    g->disp[g->ndisp].kind = kind;
-    g->disp[g->ndisp].key = key;
-    g->disp[g->ndisp].bytes = bytes;
-    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->pool, g->used);
+    x = &o->op[o->nop];
+    x->qi = o->used;
+    x->kind = kind;
+    x->key = key;
+    x->bytes = bytes;
+    x->q0 = x->q1 = 0;
+    gp_stamp(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, o->pool, o->used);
+#if defined(SNX_TRACY)
+    if (snx_tracy_attached()) {
+        char name[64];
+        snprintf(name, sizeof name, "gpu %s %llx", g_op_name[kind], (unsigned long long)key);
+        x->q0 = snx_tracy_gpu_zone_begin(name, 0x3d8f4a, ctx, &x->ep);
+    }
+#endif
     return 1;
 }
 void vk_gpuprof_op_end(VkCommandBuffer cb) {
-    GpSlot* g = g_slot[vk_frame_slot()];
-    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->pool, g->used + 1);
-    g->used += 2;
-    g->ndisp++;
+    int ctx = 0;
+    GpOps* o = gp_ops(cb, &ctx);
+    if (!o) return;
+    gp_stamp(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, o->pool, o->used + 1);
+    o->used += 2;
+#if defined(SNX_TRACY)
+    GpOp* x = &o->op[o->nop];
+    /* the end goes out whenever the begin did: a dropped pair never reaches the server apart */
+    if (x->q0) x->q1 = snx_tracy_gpu_zone_end(x->q0, ctx, x->ep);
+#endif
+    o->nop++;
 }
 int vk_gpuprof_dispatch_begin(VkCommandBuffer cb) {
     u64 key = g_tag;
@@ -266,6 +315,78 @@ int vk_gpuprof_dispatch_begin(VkCommandBuffer cb) {
     return vk_gpuprof_op_begin(cb, VK_OP_DISPATCH, key, 0);
 }
 void vk_gpuprof_dispatch_end(VkCommandBuffer cb) { vk_gpuprof_op_end(cb); }
+void vk_gpuprof_compute_begin(GpOps* o, VkCommandBuffer cb) {
+    g_cq.cb = cb;
+    g_cq.ops = gp_on() ? o : NULL;
+    o->used = o->nop = 0;
+    o->span0 = o->span1 = 0;
+    if (!g_cq.ops) return;
+    if (!o->pool) {
+        VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                                    .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                                    .queryCount = VK_GP_QUERIES};
+        if (!VK_OK(vkCreateQueryPool(g_vk.dev, &qi, NULL, &o->pool))) {
+            g_dead = 1;
+            g_cq.ops = NULL;
+            return;
+        }
+    }
+    rec_CmdResetQueryPool(cb, o->pool, 0, VK_GP_QUERIES);
+    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, o->pool, 0);
+    o->used = 2;
+#if defined(SNX_TRACY)
+    if (snx_tracy_attached())
+        o->span0 = snx_tracy_gpu_zone_begin("gpu compute batch", 0x2f9e8f, VK_GPU_CTX_COMPUTE, &o->span_ep);
+#endif
+}
+void vk_gpuprof_compute_submit(GpOps* o, VkCommandBuffer cb) {
+    if (!o->used) return;
+    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, o->pool, 1);
+#if defined(SNX_TRACY)
+    /* the end goes out whenever the begin did: a dropped pair never reaches the server apart */
+    if (o->span0) o->span1 = snx_tracy_gpu_zone_end(o->span0, VK_GPU_CTX_COMPUTE, o->span_ep);
+#endif
+}
+#if defined(SNX_TRACY)
+static SnxTracyGpuCal g_ccs_cal; /* the compute context's anchor, and the connection it belongs to */
+static void gpc_times(const u64* ts, u32 n, u16 span0, u16 span1, u64 ep) {
+    i64 last = (i64)ts[n - 1], cpu = 0, gpu = 0;
+    int cal, have;
+    if (!snx_tracy_attached()) return;
+    cal = vk_gpuprof_calibrated();
+    have = cal && vk_gpuprof_clock(&cpu, &gpu);
+    snx_tracy_gpu_cal_reconnect(&g_ccs_cal);
+    /* A context is announced calibrated only with a pair in hand: without one the server has no anchor and
+       applies no calibration to the times sent after it, which shows as times far from the CPU's. The flag
+       latches at the announcement, so a context announced without one is never sent calibration events: the
+       server would assert on a context it was told is uncalibrated. */
+    if (snx_tracy_gpu_context(VK_GPU_CTX_COMPUTE, have ? gpu : last, g_vk.props.limits.timestampPeriod, have,
+                              "compute")) {
+        snx_tracy_gpu_cal_announce(&g_ccs_cal, have, have ? cpu : 0); /* the anchor is the announcement's pair */
+    }
+    if (have) {
+        i64 delta = snx_tracy_gpu_cal_delta(&g_ccs_cal, cpu);
+        if (delta > 0) snx_tracy_gpu_calibrate(gpu, delta, VK_GPU_CTX_COMPUTE);
+    } else
+        snx_tracy_gpu_sync(last, VK_GPU_CTX_COMPUTE);
+    if (span0 && span1) {
+        snx_tracy_gpu_time((i64)ts[0], span0, VK_GPU_CTX_COMPUTE, ep);
+        snx_tracy_gpu_time((i64)ts[1], span1, VK_GPU_CTX_COMPUTE, ep);
+    }
+}
+#endif
+void vk_gpuprof_compute_land(GpOps* o) {
+    static u64 ts[VK_GP_QUERIES];
+    if (!o->pool || !o->used) return;
+    /* no wait: the batch is done, and a failed read leaves its batch out of the sums */
+    if (!VK_OK(vkGetQueryPoolResults(g_vk.dev, o->pool, 0, o->used, o->used * sizeof *ts, ts, 8,
+                                     VK_QUERY_RESULT_64_BIT)))
+        return;
+#if defined(SNX_TRACY)
+    gpc_times(ts, o->used, o->span0, o->span1, o->span_ep);
+#endif
+    gp_ops_done(o, ts, g_vk.props.limits.timestampPeriod, VK_GPU_CTX_COMPUTE);
+}
 const void* vk_gpuprof_base(void) { return (const void*)vk_gpuprof_tag; }
 static GpDKey* gp_dkey(u32 kind, u64 key) {
     u64 h = key ^ (key >> 29) ^ kind;
@@ -289,13 +410,13 @@ void vk_gpuprof_waited(u64 value, int kind) {
 void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt) {
     GpSlot* g = gp_slot_reset(cb, gp_on());
     if (!g) return;
-    if (g->used + 2 > GP_QUERIES || g->npass >= GP_QUERIES / 2) {
+    if (g->ops.used + 2 > GP_QUERIES || g->npass >= GP_QUERIES / 2) {
         g_lost++;
         return;
     }
     const Surf* s = rt ? rt : zt;
     GpPass* p = &g->pass[g->npass];
-    p->qi = g->used;
+    p->qi = g->ops.used;
     p->gva = s ? s->gva : 0;
     p->w = s ? s->w : 0;
     p->h = s ? s->h : 0;
@@ -305,7 +426,8 @@ void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt) {
     p->dispatches = (u32)(g_vk_dispatches - g_d_at_end);
     for (int i = 0; i < 3; i++) p->kind[i] = (u32)(g_rec_xfer_kind[i] - g_k_at_end[i]);
     p->bytes = g_rec_buf_bytes - g_bytes_at_end;
-    gp_stamp(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->pool, g->used);
+    gp_stamp(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->ops.pool, g->ops.used);
+    g->ops.used += 2; /* its two, kept for the end */
     g_draws_at_begin = g_vk_drawn;
     g_in_pass = 1;
 #if defined(SNX_TRACY)
@@ -326,8 +448,7 @@ void vk_gpuprof_pass_end(VkCommandBuffer cb) {
     if (!(g = gp_slot())) return;
     p = &g->pass[g->npass];
     p->draws = (u32)(g_vk_drawn - g_draws_at_begin);
-    gp_stamp(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->pool, g->used + 1);
-    g->used += 2;
+    gp_stamp(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->ops.pool, p->qi + 1);
     g->npass++;
     g_x_at_end = g_rec_xfers;
     g_b_at_end = g_rec_barriers;
@@ -424,24 +545,49 @@ static void gp_busy(const GpSlot* g, const u64* ts) {
     }
     __atomic_add_fetch(&g_stats_busy.ns, (u64)((double)ticks * g_vk.props.limits.timestampPeriod), __ATOMIC_RELAXED);
 }
+static void gp_ops_done(GpOps* o, const u64* ts, double period, int ctx) {
+    (void)ctx;
+    for (u32 i = 0; i < o->nop; i++) {
+        GpOp* x = &o->op[i];
+        u64 ns = (u64)((double)(ts[x->qi + 1] - ts[x->qi]) * period);
+        GpDKey* k;
+        if (x->kind != VK_OP_DRAW) { /* a pass's sum has its draws in it already */
+            k = gp_dkey(x->kind, x->key);
+            g_disp_ns += ns;
+            g_disps++;
+            if (k) {
+                k->ns += ns;
+                k->n++;
+                k->bytes += x->bytes;
+            }
+        }
+#if defined(SNX_TRACY)
+        if (x->q0 && x->q1) {
+            snx_tracy_gpu_time((i64)ts[x->qi], x->q0, ctx, x->ep);
+            snx_tracy_gpu_time((i64)ts[x->qi + 1], x->q1, ctx, x->ep);
+        }
+#endif
+    }
+    o->nop = 0;
+}
 /* the slot's work is done (frame_recycle, before the slot records again): its times into the sums */
 void vk_gpuprof_frame_done(u32 slot) {
     GpSlot* g = g_slot[slot];
     int profile;
     /* a use not timed, or not read, comes between: the next spans don't continue from the last end */
-    if (!g || !g->reset) {
+    if (!g || !g->ops.reset) {
         g_stats_busy.ended = 0;
         return;
     }
     /* its reset goes in again at the next use timed even when timing went off in this one: that use's timestamps
        would otherwise follow this one's in the pool, and be read with them */
-    g->reset = 0;
+    g->ops.reset = 0;
     profile = gp_on();
     static u64 ts[GP_QUERIES];
     /* no wait: the slot's submissions are done (frame_recycle waited for them), and a failed one's results aren't
        there, which leaves its frame out */
-    if (!g->used || !gp_timed() ||
-        vkGetQueryPoolResults(g_vk.dev, g->pool, 0, g->used, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) {
+    if (!g->ops.used || !gp_timed() ||
+        vkGetQueryPoolResults(g_vk.dev, g->ops.pool, 0, g->ops.used, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) {
         g_stats_busy.ended = 0;
         return;
     }
@@ -461,7 +607,7 @@ void vk_gpuprof_frame_done(u32 slot) {
            applies no calibration to the times sent after it, which shows as times far from the CPU's. The flag
            latches at the announcement, so a context announced without one is never sent calibration events:
            the server would assert on a context it was told is uncalibrated. */
-        if (snx_tracy_gpu_context(VK_GPU_CTX_GRAPHICS, have ? gpu : (i64)ts[g->used - 1],
+        if (snx_tracy_gpu_context(VK_GPU_CTX_GRAPHICS, have ? gpu : (i64)ts[g->ops.used - 1],
                                   g_vk.props.limits.timestampPeriod, have, "graphics")) {
             snx_tracy_gpu_cal_announce(&g_cal, have, have ? cpu : 0); /* the anchor is the announcement's pair */
         }
@@ -469,7 +615,7 @@ void vk_gpuprof_frame_done(u32 slot) {
             i64 delta = snx_tracy_gpu_cal_delta(&g_cal, cpu);
             if (delta > 0) snx_tracy_gpu_calibrate(gpu, delta, VK_GPU_CTX_GRAPHICS);
         } else
-            snx_tracy_gpu_sync((i64)ts[g->used - 1], VK_GPU_CTX_GRAPHICS);
+            snx_tracy_gpu_sync((i64)ts[g->ops.used - 1], VK_GPU_CTX_GRAPHICS);
         for (u32 i = 0; i < g->npass; i++) {
             const GpPass* p = &g->pass[i];
             if (!p->q0 || !p->q1) continue;
@@ -479,17 +625,7 @@ void vk_gpuprof_frame_done(u32 slot) {
     }
 #endif
     double period = g_vk.props.limits.timestampPeriod;
-    for (u32 i = 0; i < g->ndisp; i++) {
-        u64 ns = (u64)((double)(ts[g->disp[i].qi + 1] - ts[g->disp[i].qi]) * period);
-        GpDKey* k = gp_dkey(g->disp[i].kind, g->disp[i].key);
-        g_disp_ns += ns;
-        g_disps++;
-        if (!k) continue;
-        k->ns += ns;
-        k->n++;
-        k->bytes += g->disp[i].bytes;
-    }
-    g->ndisp = 0;
+    gp_ops_done(&g->ops, ts, period, VK_GPU_CTX_GRAPHICS);
     for (u32 i = 0; i < g->npass; i++) {
         const GpPass* p = &g->pass[i];
         u64 ns = (u64)((double)(ts[p->qi + 1] - ts[p->qi]) * period);
@@ -515,7 +651,7 @@ void vk_gpuprof_frame_done(u32 slot) {
             g_mix_n[m] += p->kind[0] + p->kind[1] + p->kind[2];
         }
     }
-    g_span_ns += (u64)((double)(ts[g->used - 1] - ts[0]) * period);
+    g_span_ns += (u64)((double)(ts[g->ops.used - 1] - ts[0]) * period);
     g_frames++;
     static u64 last;
     u64 now = plat_ns();
@@ -681,7 +817,7 @@ static void gp_report(void) {
         memcpy(ds, g_dkey, sizeof ds);
         qsort(ds, GP_DKEYS, sizeof *ds, dkey_cmp);
         static const char* const kinds[VK_OP_N] = {"dispatch", "buffer copy", "buffer to image copy",
-                                                   "image to buffer copy", "image copy"};
+                                                   "image to buffer copy", "image copy", "draw"};
         LOG("vulkan: GPU   dispatches and copies: %.2f ms a frame, %llu of them timed\n",
             (double)g_disp_ns / 1e6 / (double)g_frames, (unsigned long long)g_disps);
         for (int i = 0; i < 16 && ds[i].n; i++) {
