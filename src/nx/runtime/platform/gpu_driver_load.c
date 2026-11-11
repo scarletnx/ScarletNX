@@ -27,6 +27,25 @@ static struct {
     char dir[1100]; /* the package's folder, a '/' at its end */
 } g_gpu_driver_load;
 
+/* Turnip keeps one of an Adreno 6xx's five hardware descriptor sets for dynamic buffer offsets, which the renderer never
+   uses, and reports four bound sets; the renderer's layout takes a set for each of five stages, and tessellation and
+   geometry draws need the fifth. Mesa's tu_dont_reserve_descriptor_set gives it back (Mesa reads a drirc option from
+   the environment). A value the environment has already stays */
+#define SNX_TURNIP_SETS_VAR "tu_dont_reserve_descriptor_set"
+static void turnip_sets(void) {
+    const char* had = getenv(SNX_TURNIP_SETS_VAR);
+    if (had) {
+        LOG("freedreno: %s=%s, as the environment has it\n", SNX_TURNIP_SETS_VAR, had);
+        return;
+    }
+#ifdef _WIN32
+    int failed = _putenv_s(SNX_TURNIP_SETS_VAR, "true") != 0;
+#else
+    int failed = setenv(SNX_TURNIP_SETS_VAR, "true", 0) != 0;
+#endif
+    if (failed) fatal("freedreno: %s=true could not be set", SNX_TURNIP_SETS_VAR);
+    LOG("freedreno: %s=true, for the fifth descriptor set\n", SNX_TURNIP_SETS_VAR);
+}
 /* freedreno_env's variables in the environment, before any driver reads them */
 static void freedreno_env(void) {
     SnxFreedrenoVar vars[SNX_FREEDRENO_MAX];
@@ -53,6 +72,7 @@ void* gpu_driver_open(void) {
     size_t size = 0;
     if (g_gpu_driver_load.opened) return g_gpu_driver_load.gipa;
     g_gpu_driver_load.opened = 1;
+    turnip_sets();
     freedreno_env();
     if (!id[0]) return NULL;
     if (!snx_gpu_driver_id_valid(id))
