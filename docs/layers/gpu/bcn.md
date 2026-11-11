@@ -197,11 +197,28 @@ Where a BC7 block's time goes there: decoding it into the texels the encoder rea
 writes each texel as it is decoded, takes 31: the array the texels wait in is the cost); their bounding box, under
 1; one line's ends, weights and bits, 70; and the source's own way where the line isn't near enough, 240 a block of
 the photograph's on average. BC3 decodes in 14 ns and encodes in 130. 32 bit floats in place of relaxed precision
-make no difference on that GPU, which has no 16 bit ones; a phone's has, and is not measured yet. Between frames,
-4096 blocks are 3.2 to 3.9 ms of a frame there, the CPU's staging and the submission with them.
+make no difference on that GPU, which has no 16 bit ones. Between frames, 4096 blocks are 3.2 to 3.9 ms of a frame
+there, the CPU's staging and the submission with them.
+
+On a phone, an Adreno 610 (its 2021 driver, 512.502.0), the same dispatches by the GPU's timestamps, the median of
+7, every block the CPU's again and the GPU's own decoding of the ASTC blocks within one step of `astc_cpu.c`'s:
+
+| blocks | a block as ETC2 RGBA8 | a block as ASTC 4x4 | with 32 bit floats | 262144 blocks as ASTC |
+| --- | --- | --- | --- | --- |
+| BC7, a photograph | 26979 ns | 3520 ns | 3703 ns | 923 ms |
+| BC7, random | 32768 ns | 4977 ns | 5215 ns | 1305 ms |
+| BC3, a photograph | 25599 ns | 1009 ns | 1112 ns | 265 ms |
+
+There the ASTC build is 6.6 to 25 times the ETC2 build's speed a block, and relaxed precision 5 to 9% faster than
+32 bit floats. A BC7 block of the photograph's decodes in 1478 ns, its box takes 27, the line 775 and the source's
+own way 1240; a BC3 one 166, 21, 760 and 62. The ETC2 column is from dispatches of 16384 blocks (0.42 to 0.54 s):
+that phone's kernel driver ends a dispatch about 2 s long, as the ETC2 build's of a 2048x2048 level is, 7 s at
+that rate. A dispatch of 4096 blocks, a frame's share between frames, is 11 to 28 ms there, more than a frame at
+60 Hz: `VK_ASTC_LATER_BLOCKS` suits the Intel GPU, not that phone.
 
 The pipelines are compiled the first time each is used, and kept in the pipeline cache: on that driver the plain
-build takes 3.9 s, the ASTC build 7.6 s and the ETC2 build 34 s; on llvmpipe 0.3, 0.2 and 1.4 to 2.2 s.
+build takes 3.9 s, the ASTC build 7.6 s and the ETC2 build 34 s; on llvmpipe 0.3, 0.2 and 1.4 to 2.2 s; on the
+Adreno 610 the ASTC build 2.1 s and the ETC2 build 4.3 s.
 
 On llvmpipe (a 12-core x86 CPU with other work running), the same dispatches of the same blocks: a photograph's
 BC7 level 23 ms decoded, 124 as ETC2 and 60 as ASTC; its BC3 level 4, 105 and 15; random BC7 blocks 36, 153 and 63.
