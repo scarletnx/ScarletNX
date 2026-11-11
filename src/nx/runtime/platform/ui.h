@@ -51,7 +51,18 @@ enum { UI_BLEND, UI_SHARP, UI_IMAGE };
    them from there): the atlas's or the picture's texels; none, the colour alone (a fill: the atlas's white block);
    or a letter of the 8x16 font or an icon of the menus, from their bits, a bit a pixel, with no atlas read. UI_RING
    is a bar of the ring (ui_ring), drawn as ui_drawn gives it */
-enum { UI_ATLAS, UI_SOLID, UI_GLYPH, UI_ICON, UI_RING };
+enum { UI_ATLAS, UI_SOLID, UI_GLYPH, UI_ICON, UI_RING, UI_SHAPE };
+/* UI_SHAPE: a simple shape the fragment shader draws from its place alone, with no texels, hard (each pixel's middle in
+   it or not) and in its colour: in u its kind, in v its label (up to two of the 8x16 font's letters, the first in the
+   low byte, 0 for none), in uw UI_SHAPE_* flags with bit 15 set, in vh its edge's width in pixels. Unfilled, the edge
+   and the label are drawn; filled, the whole shape but the label, which the picture shows through. The label is the
+   font's letters at the greatest whole scale that fits half the shape's height and 0.6 of its width, in its middle;
+   none on a shape too small for them at their own size (0.8 of its height and width).
+   A circle fits the shorter side; a round box has corners a quarter of the shorter side; a cross (the D-pad) has arms
+   a third of the shorter side wide; a box is the quad */
+enum { UI_SHAPE_CIRCLE, UI_SHAPE_ROUND, UI_SHAPE_CROSS, UI_SHAPE_BOX };
+#define UI_SHAPE_FILLED 1 /* the shape filled, its label cut out */
+#define UI_SHAPE_BARE   2 /* no edge: the label alone, a mark on a shape drawn beside it */
 /* in ui_quad's turn, for a letter or an icon (UI_Q_BACKED): its clear pixels in the ground's colour (ui_ground_set),
    where they are left out otherwise. With an opaque colour and ground, it is an opaque cell, which the renderer draws
    without blending */
@@ -64,6 +75,9 @@ typedef struct {
     SnxUiQuad* q;
     int n, max; /* quads past max are dropped */
 } SnxUiList;
+/* a UI_SHAPE quad of kind (UI_SHAPE_*), its label (NULL or "" for none) and flags, its edge's width in pixels */
+void ui_shape(SnxUiList* l, float x, float y, float w, float h, int kind, const char* label, int flags, int edge,
+              u32 rgba);
 /* The ring of bars, one at most (stats.c's graph): n slots in a row that scrolls left, the newest's at the right, each
    a byte, the bar's height in 255ths of the graph's. A UI_RING quad is a slot's bar, laid out once over the whole
    graph (x, y, w, h), glyph its slot: the bar is w / n wide. A new bar writes its byte and moves the head, and the

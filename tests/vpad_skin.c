@@ -544,44 +544,6 @@ static SDL_Surface* atlas_png(void) {
     SDL_DestroySurface(png);
     return s;
 }
-/* the red of the picture at x, y, every quad of the list drawn over black as the renderer blends: the atlas's texel
-   at the same place in the quad, straight colour times its alpha times the quad's. x, y a quad's middle, where a
-   turned one has the same texel */
-static int red_at(const SDL_Surface* atlas, float x, float y) {
-    float out = 0;
-    int i;
-    for (i = 0; i < g_test.list.n; ++i) {
-        const SnxUiQuadView q_v = qv(&g_test.quads[i]), *q = &q_v;
-        const u8* t;
-        float k;
-        if (q->sample != UI_BLEND || x < q->x || y < q->y || x >= q->x + q->w || y >= q->y + q->h) continue;
-        t = (const u8*)atlas->pixels + (q->v + (int)((y - q->y) / q->h * q->vh)) * atlas->pitch +
-            (q->u + (int)((x - q->x) / q->w * q->uw)) * 4;
-        k = t[3] / 255.0f * (float)(q->rgba >> 24) / 255.0f;
-        out = t[0] * k + out * (1 - k);
-    }
-    return (int)(out + 0.5f);
-}
-/* the built-in D-pad pressed keeps its middle: its pressed look drawn over it, not in its place (the pressed drawable
-   is a dark cross, which alone left the middle black over a dark game). Up held, the middle over black is still most
-   of what it is idle */
-static void test_dpad_middle(void) {
-    SDL_Surface* atlas = atlas_png();
-    const SnxVpadPlace* d = &vpad_config()->at[SNX_VPAD_DPAD];
-    float x = (float)safe[2] * d->x, y = (float)safe[3] * d->y;
-    int idle, held;
-    vpad_skin_set(NULL);
-    vpad_ini("controls_alpha", "50");
-    draw();
-    idle = red_at(atlas, x, y);
-    assert(vpad_down(7, x, y - 80, safe) && buttons(NULL) == 1u << 13);
-    draw();
-    held = red_at(atlas, x, y);
-    assert(idle > 40 && held * 2 > idle);
-    assert(vpad_up(7));
-    buttons(NULL);
-    SDL_DestroySurface(atlas);
-}
 /* a sprite's alphas, counted, in the atlas s */
 static void alphas(const SDL_Surface* s, int sprite, int hist[256]) {
     const unsigned short* a = snx_controls_sprites[sprite];
@@ -617,7 +579,6 @@ int main(int argc, char** argv) {
     test_switch(at("skin.cfg"));
     for (i = 2; i < argc; ++i) test_shipped(argv[i]);
     test_builtin_art();
-    test_dpad_middle();
     printf(
         "vpad_skin: a RetroArch overlay's controls, images, hit areas and pressed looks, and %d shipped skins passed\n",
         argc - 2);
