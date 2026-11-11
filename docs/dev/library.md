@@ -105,7 +105,8 @@ snx_recompiler_free(r);
 The recompiler also takes the `-O` level (`snx_recompiler_set_optimization`, `2` by
 default), how many code units compile at once (`snx_recompiler_set_jobs`, on
 threads),
-progress lines (`snx_recompiler_set_verbose`) and a folder to save the generated
+progress lines (`snx_recompiler_set_verbose`), a callback with how far a recompile is,
+for a progress bar (`snx_recompiler_set_progress`), and a folder to save the generated
 code's text in (`snx_recompiler_set_keep_ir`). `snx_recompiler_set_hook_direct_calls`
 routes calls between discovered functions through the CPU's dispatch table. Enable it
 when the runtime can invalidate guest code, so callers do not retain direct pointers to

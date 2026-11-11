@@ -420,6 +420,42 @@ static void run32(struct snx_recompiler* r, uint8_t* mem) {
     snx_recompiled32_free(m);
 }
 
+/* snx_recompiler_set_progress: the totals first with nothing done, then each unit's work as it finishes, ending at the
+   totals; nothing once the callback is cleared */
+typedef struct {
+    int calls, ordered;
+    unsigned long long first_done, first_total, done, total, functions_done, functions_total;
+} Progress;
+static void progress(void* user, unsigned long long weight_done, unsigned long long weight_total,
+                     unsigned long long functions_done, unsigned long long functions_total) {
+    Progress* p = (Progress*)user;
+    if (!p->calls++) {
+        p->first_done = weight_done | functions_done;
+        p->first_total = weight_total;
+    } else if (weight_done < p->done || weight_total != p->total || functions_total != p->functions_total)
+        p->ordered = 0;
+    p->done = weight_done;
+    p->total = weight_total;
+    p->functions_done = functions_done;
+    p->functions_total = functions_total;
+}
+static void progress64(struct snx_recompiler* r, uint8_t* mem) {
+    Progress p = {0, 1, 0, 0, 0, 0, 0, 0};
+    snx_recompiler_set_progress(r, progress, &p);
+    struct snx_recompiled* m = snx_recompile(r, CODE64, mem + CODE64, A64_SIZE);
+    check(m != NULL, "progress: a module");
+    check(p.calls >= 2 && p.first_done == 0 && p.first_total > 0, "progress: the totals first, nothing done");
+    check(p.ordered && p.done == p.total && p.total == p.first_total, "progress: the work grows to the totals");
+    check(m && p.functions_done == p.functions_total && p.functions_total == snx_recompiled_functions(m),
+          "progress: every function counted");
+    snx_recompiled_free(m);
+    int calls = p.calls;
+    snx_recompiler_set_progress(r, NULL, NULL);
+    m = snx_recompile(r, CODE64, mem + CODE64, A64_SIZE);
+    check(m != NULL && p.calls == calls, "progress: nothing reported once cleared");
+    snx_recompiled_free(m);
+}
+
 int main(int argc, char** argv) {
     uint8_t* mem = (uint8_t*)calloc(MEMORY, 1);
     struct snx_recompiler* r;
@@ -450,6 +486,7 @@ int main(int argc, char** argv) {
               "the Switch and max A64 targets");
         snx_recompiler_set_jobs(r, 2);
         run64(r, "llvm", mem, keep_ir);
+        progress64(r, mem);
         invalidate64(r, mem);
 #ifndef _WIN32
         spin64(r, mem);

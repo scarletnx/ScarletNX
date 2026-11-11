@@ -79,6 +79,8 @@ struct snx_recompiler {
     unsigned jobs;
     int verbose;
     int hook_direct_calls;
+    snx_progress_fn progress; /* told as each code unit finishes, NULL for nobody */
+    void* progress_user;
     char* keep_ir;
     char* cache; /* folder of linked modules by the hash of what they were made from (LLVM), NULL for none */
     char error[1024];
@@ -229,6 +231,11 @@ int snx_recompiler_set_a64_target(struct snx_recompiler* r, int target) {
 }
 
 void snx_recompiler_set_jobs(struct snx_recompiler* r, unsigned jobs) { r->jobs = jobs; }
+void snx_recompiler_set_progress(struct snx_recompiler* r, snx_progress_fn fn, void* user) {
+    if (!r) return;
+    r->progress = fn;
+    r->progress_user = user;
+}
 void snx_recompiler_set_hook_direct_calls(struct snx_recompiler* r, int enabled) {
     if (r) r->hook_direct_calls = enabled != 0;
 }
@@ -591,6 +598,7 @@ static int load_descriptor(struct snx_recompiler* r, struct snx_recompiled* m, c
 
 typedef struct {
     size_t first, last; /* functions */
+    size_t weight;      /* its functions' instructions, for the progress callback */
     unsigned char* object;
     size_t size;
 } Unit;
@@ -600,6 +608,7 @@ typedef struct {
     SnxCodegen* codegen;
     Unit* units;
     size_t count, next, done;
+    unsigned long long weight_done, weight_total, functions_done, functions_total; /* the progress callback's */
     int failed;
     char error[1024];
     SnxWorkLock lock;
@@ -643,10 +652,16 @@ static void worker(void* arg) {
             q->failed = 1;
             snprintf(q->error, sizeof(q->error), "%s", error);
         }
-        if (!rc)
+        if (!rc) {
+            q->weight_done += q->units[i].weight;
+            q->functions_done += q->units[i].last - q->units[i].first;
+            if (q->r->progress)
+                q->r->progress(q->r->progress_user, q->weight_done, q->weight_total, q->functions_done,
+                               q->functions_total);
             report(q->r, "  compiled unit %lu/%lu: functions %lu-%lu (%.1f s)\n", (unsigned long)q->done,
                    (unsigned long)q->count, (unsigned long)q->units[i].first, (unsigned long)q->units[i].last,
                    snx_seconds() - start);
+        }
         snx_work_unlock(&q->lock);
     }
 }
@@ -969,10 +984,14 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
     for (i = 0; i < count; ++i) {
         q.units[i].first = units[i];
         q.units[i].last = units[i + 1];
+        for (size_t j = units[i]; j < units[i + 1]; ++j) q.units[i].weight += codegen->functions[j].count;
+        q.weight_total += q.units[i].weight;
     }
     q.count = count;
     q.r = r;
     q.codegen = codegen;
+    q.functions_total = units[count];
+    if (r->progress) r->progress(r->progress_user, 0, q.weight_total, 0, q.functions_total);
     report(r, "LLVM: %lu code unit%s and the descriptor\n", (unsigned long)count, count == 1 ? "" : "s");
     if (count) run_queue(&q, r->jobs);
     if (q.failed) {
