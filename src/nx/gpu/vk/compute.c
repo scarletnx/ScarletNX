@@ -84,11 +84,8 @@ typedef struct {
     int nout, gfx;
     VkWriteLog** logs; /* its dispatches' own references to their logs, dropped once it is done */
     u32 nlogs, caplogs;
-#if defined(SNX_TRACY)
-    VkQueryPool qpool; /* the batch's span on the GPU track, its two timestamps read back when it lands */
-    u16 q0, q1;
-    u64 ep; /* the connection the begin went out on: an end or a time from another one is dropped */
-#endif
+    GpOps ops;
+    GpOp op[VK_GP_OPS];
 } CsBatch;
 #define CS_PENDING 3
 static CsBatch g_pend[CS_PENDING];
@@ -292,56 +289,13 @@ static u64 arena_alloc(u64 size) {
     return at;
 }
 
+static GpOp g_op[VK_GP_OPS];
+static GpOps g_ops = {.op = g_op, .cap = VK_GP_OPS, .queries = VK_GP_QUERIES};
 /* submits the batch without waiting; it signals g_vk_csem with the next value */
-#if defined(SNX_TRACY)
-/* the batch's span on the GPU track (VK_GPU_CTX_COMPUTE): a timestamp at each end of its command buffer, with its
-   own two-query pool, so a landed batch's results survive the batches recorded after it */
-static VkQueryPool g_cqpool;
-static u16 g_cq0, g_cq1;
-static u64 g_cq_ep;             /* the connection the batch's begin went out on */
-static SnxTracyGpuCal g_cs_cal; /* the announcement's anchor, and the connection it belongs to */
-/* the landed batch's timestamps onto the track: the context announced at its first read-back (with the calibration
-   clock's pair for its anchor when it has one), then calibrated or anchored, then the pair of timestamps its zone
-   went out with */
-static void cs_times(VkQueryPool pool, u16 q0, u16 q1, u64 ep) {
-    i64 ts2[2];
-    if (!pool) return;
-    if (!VK_OK(vkGetQueryPoolResults(g_vk.dev, pool, 0, 2, sizeof ts2, ts2, 8, VK_QUERY_RESULT_64_BIT))) return;
-    if (!snx_tracy_attached()) return;
-    int cal = vk_gpuprof_calibrated();
-    i64 cpu = 0, gpu = 0;
-    int have = cal && vk_gpuprof_clock(&cpu, &gpu);
-    snx_tracy_gpu_cal_reconnect(&g_cs_cal);
-    /* A context is announced calibrated only with a pair in hand: without one the server has no anchor and
-       applies no calibration to the times sent after it, which shows as times far from the CPU's. The flag
-       latches at the announcement, so a context announced without one is never sent calibration events: the
-       server would assert on a context it was told is uncalibrated. */
-    if (snx_tracy_gpu_context(VK_GPU_CTX_COMPUTE, have ? gpu : ts2[1], g_vk.props.limits.timestampPeriod, have,
-                              "compute")) {
-        snx_tracy_gpu_cal_announce(&g_cs_cal, have, have ? cpu : 0); /* the anchor is the announcement's pair */
-    }
-    if (have) {
-        i64 delta = snx_tracy_gpu_cal_delta(&g_cs_cal, cpu);
-        if (delta > 0) snx_tracy_gpu_calibrate(gpu, delta, VK_GPU_CTX_COMPUTE);
-    } else
-        snx_tracy_gpu_sync(ts2[1], VK_GPU_CTX_COMPUTE);
-    if (q0 && q1) {
-        snx_tracy_gpu_time(ts2[0], q0, VK_GPU_CTX_COMPUTE, ep);
-        snx_tracy_gpu_time(ts2[1], q1, VK_GPU_CTX_COMPUTE, ep);
-    }
-}
-#endif
-
 static void cs_submit(void) {
     if (!g_recording) return;
     vmaFlushAllocation(g_vk.vma, g_ar_mem, 0, VK_WHOLE_SIZE); /* the arena may not be host coherent */
-#if defined(SNX_TRACY)
-    if (g_cqpool && g_cq0) { /* a begin recorded at the buffer's begin: its end, and the timestamp to pair */
-        rec_CmdWriteTimestamp2(g_ccb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g_cqpool, 1);
-        /* the end goes out whenever the begin did: a dropped pair never reaches the server apart */
-        g_cq1 = snx_tracy_gpu_zone_end(g_cq0, VK_GPU_CTX_COMPUTE, g_cq_ep);
-    }
-#endif
+    vk_gpuprof_compute_submit(&g_ops, g_ccb);
     VK_OK(vkEndCommandBuffer(g_ccb));
     VkCommandBufferSubmitInfo c = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = g_ccb};
     VkSemaphoreSubmitInfo sig = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
@@ -431,9 +385,7 @@ static void cs_land_oldest(void) {
     int was = g_landing;
     cs_wait(b->cval);
     g_landing = 1;
-#if defined(SNX_TRACY)
-    cs_times(b->qpool, b->q0, b->q1, b->ep);
-#endif
+    vk_gpuprof_compute_land(&b->ops);
     cs_write_back(b->ar_mem, b->ar_ptr, b->org, b->out, b->nout);
     logs_unref(b->logs, &b->nlogs);
     g_landing = was;
@@ -454,9 +406,7 @@ static void cs_put_aside(void) {
     VkDescriptorPool dp;
     u8* org;
     u64 org_cap;
-#if defined(SNX_TRACY)
     VkQueryPool qp;
-#endif
     if (!g_recording) return;
     SNX_ZONE(z, "vk compute put aside");
     cs_submit();
@@ -468,20 +418,16 @@ static void cs_put_aside(void) {
                                           .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
                                           .commandBufferCount = 1};
         VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &b->cb));
-#if defined(SNX_TRACY)
-        VkQueryPoolCreateInfo qi = {
-            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 2};
-        VK_OK(vkCreateQueryPool(g_vk.dev, &qi, NULL, &b->qpool));
-#endif
+        b->ops.op = b->op;
+        b->ops.cap = VK_GP_OPS;
+        b->ops.queries = VK_GP_QUERIES;
         b->dpool = vk_desc_pool_new(0);
     }
     cb = b->cb;
     dp = b->dpool;
     org = b->org;
     org_cap = b->org_cap;
-#if defined(SNX_TRACY)
-    qp = b->qpool;
-#endif
+    qp = b->ops.pool;
     b->cb = g_ccb;
     b->dpool = g_dpool;
     b->ar = g_ar;
@@ -492,15 +438,15 @@ static void cs_put_aside(void) {
     b->org_cap = g_org_cap;
     b->cval = g_cval;
     b->gfx = g_ar_gfx;
-#if defined(SNX_TRACY)
-    /* the batch's track pool and zone ids swap with its command buffer: the next batch records into this slot's */
-    b->qpool = g_cqpool;
-    b->q0 = g_cq0;
-    b->q1 = g_cq1;
-    b->ep = g_cq0 ? g_cq_ep : 0;
-    g_cq0 = g_cq1 = 0;
-    g_cqpool = qp;
-#endif
+    /* its pool outlives the reset the next batch records */
+    b->ops.pool = g_ops.pool;
+    b->ops.used = g_ops.used;
+    b->ops.nop = g_ops.nop;
+    b->ops.span0 = g_ops.span0;
+    b->ops.span1 = g_ops.span1;
+    b->ops.span_ep = g_ops.span_ep;
+    memcpy(b->op, g_op, (size_t)g_ops.nop * sizeof g_op[0]);
+    g_ops.pool = qp;
     memcpy(b->out, g_out, (size_t)g_nout * sizeof g_out[0]);
     b->nout = g_nout;
     { /* the logs' references swap lists too: the batch's, empty since it landed, is the next one's */
@@ -535,10 +481,7 @@ static void cs_land(void) {
     cs_submit();
     cs_wait(g_cval);
     g_inflight = 0;
-#if defined(SNX_TRACY)
-    cs_times(g_cqpool, g_cq0, g_cq1, g_cq0 ? g_cq_ep : 0);
-    g_cq0 = g_cq1 = 0;
-#endif
+    vk_gpuprof_compute_land(&g_ops);
     cs_write_back(g_ar_mem, g_ar_ptr, g_org, g_out, g_nout);
     logs_unref(g_logs, &g_nlogs);
     outs_pages(g_out, g_nout, -1);
@@ -2059,23 +2002,7 @@ rebind:
                                           .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
             VK_OK(vkBeginCommandBuffer(g_ccb, &b));
             g_recording = 1;
-#if defined(SNX_TRACY)
-            /* the batch's span on the GPU track: the pool's reset, a timestamp at the top, and the zone's begin,
-               whose id its end and the read-back pair with */
-            if (snx_tracy_attached() && g_vk.props.limits.timestampComputeAndGraphics) {
-                if (!g_cqpool) {
-                    VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
-                                                .queryType = VK_QUERY_TYPE_TIMESTAMP,
-                                                .queryCount = 2};
-                    vkCreateQueryPool(g_vk.dev, &qi, NULL, &g_cqpool);
-                }
-                if (g_cqpool) {
-                    rec_CmdResetQueryPool(g_ccb, g_cqpool, 0, 2);
-                    rec_CmdWriteTimestamp2(g_ccb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g_cqpool, 0);
-                    g_cq0 = snx_tracy_gpu_zone_begin("gpu compute batch", 0x2f9e8f, VK_GPU_CTX_COMPUTE, &g_cq_ep);
-                }
-            }
-#endif
+            vk_gpuprof_compute_begin(&g_ops, g_ccb);
         }
         cb = g_ccb;
     }

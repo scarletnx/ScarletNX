@@ -2254,11 +2254,33 @@ int vk_gpuprof_dispatch_begin(VkCommandBuffer cb);
 void vk_gpuprof_dispatch_end(VkCommandBuffer cb);
 void vk_gpuprof_tag(u64 key);
 /* any operation the same way: kind VK_OP_*, key what it is (a copy's: where it was recorded, from vk_gpuprof_base) */
-enum { VK_OP_DISPATCH, VK_OP_COPY, VK_OP_TO_IMAGE, VK_OP_TO_BUFFER, VK_OP_IMAGE, VK_OP_N };
+enum { VK_OP_DISPATCH, VK_OP_COPY, VK_OP_TO_IMAGE, VK_OP_TO_BUFFER, VK_OP_IMAGE, VK_OP_DRAW, VK_OP_N };
+typedef struct {
+    u32 qi;
+    u32 kind; /* VK_OP_* */
+    u64 key, bytes;
+    u16 q0, q1;
+    u64 ep;
+} GpOp;
+/* a batch lands after the frame slot that would hold it may be reused: it has a pool of its own */
+typedef struct {
+    GpOp* op;
+    u32 cap, nop;
+    VkQueryPool pool;
+    u32 queries, used;
+    int reset;
+    u16 span0, span1;
+    u64 span_ep;
+} GpOps;
+#define VK_GP_OPS 256
+#define VK_GP_QUERIES (2 + 2 * VK_GP_OPS)
+void vk_gpuprof_compute_begin(GpOps* o, VkCommandBuffer cb);
+void vk_gpuprof_compute_submit(GpOps* o, VkCommandBuffer cb);
+void vk_gpuprof_compute_land(GpOps* o);
 int vk_gpuprof_op_begin(VkCommandBuffer cb, u32 kind, u64 key, u64 bytes);
 void vk_gpuprof_op_end(VkCommandBuffer cb);
 const void* vk_gpuprof_base(void);
-int vk_gpuprof_profiled(VkCommandBuffer cb); /* cb is the frame's command buffer the profile times */
+int vk_gpuprof_profiled(VkCommandBuffer cb); /* cb is one of the command buffers the profile times */
 /* the renderer's own compute pipelines, a tag each, which gpuprof.c names: small numbers, which no program's key is in
    practice. A dispatch recorded with no tag counts as VK_PROF_NONE */
 enum {

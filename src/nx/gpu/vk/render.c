@@ -5001,8 +5001,10 @@ retry:
         rec_CmdBindTransformFeedbackBuffersEXT(cb, 0, xcount, xbuf, xoff, xsize);
         rec_CmdBeginTransformFeedbackEXT(cb, 0, xcount, from, counter_offs);
     }
-    pred_begin(cb, o->pred);
     rec_draw_tag(vs ? vs->hash : 0, fs ? fs->hash : 0); /* the vertex or mesh program, the fragment program */
+    /* outside the predication: a predicated region writes no timestamp */
+    int zoned = vk_gpuprof_op_begin(cb, VK_OP_DRAW, (vs ? vs->hash : 0) * 31 + (fs ? fs->hash : 0), 0);
+    pred_begin(cb, o->pred);
     if (mesh && dc->indirect)
         rec_CmdDrawMeshTasksIndirect(cb, abuf, aoff);
     else if (mesh)
@@ -5016,6 +5018,7 @@ retry:
     } else
         rec_CmdDraw(cb, count, instances, first, base_instance);
     pred_end(cb, o->pred);
+    if (zoned) vk_gpuprof_op_end(cb);
     rec_draw_tag(0, 0); /* the runtime's own draws after it (clears, blits) name no program */
     if (xcount) {
         rec_CmdEndTransformFeedbackEXT(cb, 0, xcount, counters, counter_offs);
