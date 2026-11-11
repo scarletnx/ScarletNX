@@ -2416,12 +2416,21 @@ static Surf* tex_from_tic(const u32* tic, int raw, int use) {
         /* a header of another texel size covers other memory than the target's pixels (depth is read through its
            own aspect, whatever the host format's size) */
         if (f.bpp == rt->f.bpp || f.depth || rt->f.depth) {
-            /* A smaller header is a corner of the target only where its pixels lie at the same bytes (dynamic
-               resolution). One laid out otherwise is another texture in memory the target once had, which it doesn't
-               read, and which neither keeps the target alive nor loads it again. One game's 256x1 ramp, at the address
-               of a 2048x4096 depth target gone by, took that target's corner, and its sky stayed white until it was
-               started again */
-            if (!rt->msaa && (rt->w != w || rt->h != h) && !vk_rt_same_layout(rt, w, h, bl, bh, pitch)) {
+            /* A smaller header is a corner of the target where its pixels lie at the same bytes (dynamic resolution).
+               One laid out otherwise is another texture in memory the target once had, which it doesn't read, and
+               which neither keeps the target alive nor loads it again. One game's 256x1 ramp, at the address of a
+               2048x4096 depth target gone by, took that target's corner, and its sky stayed white until it was started
+               again.
+               A color header of the target's texel size over a block linear target that memory hasn't replaced since
+               its last draw is the corner too, whatever its rows. One game makes a texture of each size of its dynamic
+               resolution over the storage of its 1920x1080 frame targets, draws the full-size one and samples the
+               frame through the one of the frame's size (1611x906 to 1919x1079). Its NVN driver gives that one rows of
+               fewer GOBs (101 for 1611 texels, the target's being 120), and no wider tile width, yet the console shows
+               the frame: the target's bytes read through those rows were a mosaic of it in a run. Loaded from memory,
+               the texture showed older frames, as the target's pixels weren't there: a black screen or a mosaic
+               after each door */
+            if (!rt->msaa && (rt->w != w || rt->h != h) && !vk_rt_same_layout(rt, w, h, bl, bh, pitch) &&
+                !(!storage && bl && rt->bl && !f.depth && !rt->f.depth && f.bpp == rt->f.bpp && vk_rt_drawn_fresh(rt))) {
                 LOG_LIMIT(
                     30,
                     "vulkan: a %ux%u texture (%u bytes a texel, depth %d) at the address of the %ux%u render target "

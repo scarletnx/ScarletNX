@@ -216,6 +216,7 @@ static int check_rt_other_layout(void) {
     /* 2D, one level: 16x1 pitch linear in rows of 64 bytes (header 2), 60x32 block linear in blocks one GOB tall (3) */
     const u32 pitch_tic[8] = {rgba8, (u32)target, (u32)(target >> 32) | 2u << 21, 64 >> 5, 15 | 1u << 23, 0, 0, 0};
     const u32 bl_tic[8] = {rgba8, (u32)target, (u32)(target >> 32) | 3u << 21, 0, 59 | 1u << 23, 31, 0, 0};
+    const u32 narrow_tic[8] = {rgba8, (u32)target, (u32)(target >> 32) | 3u << 21, 0, 39 | 1u << 23, 31, 0, 0};
     u8 bytes[512];
     GpuChannel* channel = calloc(1, sizeof *channel);
     CHECK(channel);
@@ -251,8 +252,22 @@ static int check_rt_other_layout(void) {
     /* a header in the target's own layout, narrower: a corner of it, which a dynamic resolution samples */
     Surf* corner = vk_tex_from_tic(bl_tic);
     CHECK(corner && corner->is_rt && corner->w == 60 && corner->h == 32); /* rt_crop: sampled as a target */
+    /* a block linear color header of rows fewer GOBs wide (40 texels, 3 GOBs; the target's 64, 4): memory written over
+       the target since its draw holds the texture, and the target drawn again is the header's corner, as one game
+       samples its frame targets through the texture of its dynamic resolution's size */
+    Surf* other = vk_tex_from_tic(narrow_tic);
+    CHECK(other && !other->is_rt && other->w == 40 && other->h == 32);
     vk_unlock();
-    printf("rt other layout: a pitch linear texture over a block linear target is loaded from memory\n");
+    g_vk_present++; /* the next frame's draw: a new baseline for memory's writes */
+    rt_clear_format(channel, target, 64, 64, 0, 1, 0xD5);
+    rt = vk_rt_find(target);
+    CHECK(rt && rt->w == 64 && rt->bl);
+    vk_lock();
+    Surf* narrow = vk_tex_from_tic(narrow_tic);
+    CHECK(narrow && narrow->is_rt && narrow->w == 40 && narrow->h == 32);
+    vk_unlock();
+    printf("rt other layout: a pitch linear texture over a block linear target is loaded from memory, a narrower block "
+           "linear one is the corner of a target drawn since memory's write\n");
     free(channel);
     return 0;
 }
