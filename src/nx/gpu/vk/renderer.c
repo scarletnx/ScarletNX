@@ -255,8 +255,9 @@ static int vkr_samples_report(u32 owner, u64 gva, u32 len, u64 ticks) {
 }
 static void vkr_method_barrier(int kind)
 {
-	/* a fragment barrier makes earlier draws' writes visible to texture reads (vk_rt_snapshot) */
-	if (kind == 0) __atomic_add_fetch(&g_vk_texture_epoch, 1, __ATOMIC_RELAXED);
+	/* a fragment barrier, and the 3D engine's texture data cache invalidation (kind 2), make earlier draws' writes
+	 * visible to texture reads (vk_rt_snapshot) */
+	if (kind == 0 || kind == 2) __atomic_add_fetch(&g_vk_texture_epoch, 1, __ATOMIC_RELAXED);
 	VkMemoryBarrier2 mb = {
 		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
 		.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,

@@ -1775,7 +1775,8 @@ void vk_release_samples(u64 gva, u32 len, u32 counter, u64 first, u64 end, u64 t
 void vk_release_queued(u64* n, u64* gate, u64* cgate); /* the queue's length and its oldest's gates (any thread) */
 void vk_release_submit(void); /* the GPFIFO submission ended or waits: a release gated on the recording submits */
 /* Counts the points after which a draw must see in its textures what earlier draws wrote: the guest's texture barriers
-   (NVN's INVALIDATE_TEXTURE, renderer.c's barrier kind 0), the end or a wait of a GPFIFO submission, and each present.
+   (NVN's INVALIDATE_TEXTURE, renderer.c's barrier kind 0), the 3D engine's texture data cache invalidation (kind 2),
+   the end or a wait of a GPFIFO submission, and each present.
    Between two of them the console's texture caches may still hold what was there before, so a snapshot of a target a
    draw samples while rendering to it (vk_rt_snapshot) is reused. Atomic */
 extern u64 g_vk_texture_epoch;
