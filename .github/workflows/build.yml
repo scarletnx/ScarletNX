@@ -89,9 +89,7 @@ jobs:
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
     timeout-minutes: 60
     # Arch's image is x86-64 only; pkgforge's (the AppImage's) is Arch Linux ARM on AArch64, with the same LLVM
-    # pkgforge's image is pinned by digest: its build of 2026-11-12 ~14:00 UTC carries openssl 4 while Arch Linux ARM's
-    # repo has 3.6.5, so Python has no ssl module and pacman refuses openssl; move the pin once the two agree again
-    container: ${{ matrix.arch == 'aarch64' && 'ghcr.io/pkgforge-dev/archlinux@sha256:0187eff73b5a04bfaea16caef5124aed10976dd5ced9a0429caab124ba1393e5' || 'archlinux:latest' }}
+    container: ${{ matrix.arch == 'aarch64' && 'ghcr.io/pkgforge-dev/archlinux:latest' || 'archlinux:latest' }}
     strategy:
       fail-fast: false
       # A pull request builds AArch64's alone: x86-64's tests run in the appimage job, on the build its AppImage is
@@ -119,11 +117,13 @@ jobs:
           restore-keys: pacman-linux-${{ matrix.arch }}-
       # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) builds with
       # llvm: llvm-config and LLVM-C for the recompiler (llvm-libs alone has no headers). gdb: the gdbserver gdbstub_native drives. jq: scripts/pr-builds.sh, which pr_builds tests. Mirrors drop a connection now
-      # and then (pkgforge's for aarch64 most), so each pacman install is tried 3 times, 5 s apart
+      # and then (pkgforge's for aarch64 most), so each pacman install is tried 3 times, 5 s apart. -Syuu, not -Syu: an
+      # image can be built ahead of its repo (pkgforge's of 2026-11-12 had openssl 4 against Arch Linux ARM's 3.6.5,
+      # so Python lost ssl and pacman refused openssl), and the second u takes every package to the repo's version
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang spirv-tools jdk21-openjdk && break
+            pacman -Syuu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang spirv-tools jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -516,7 +516,7 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
     # pkgforge's Arch image and tools (https://github.com/pkgforge-dev/Anylinux-AppImages), see scripts/make-appimage.sh
-    container: ghcr.io/pkgforge-dev/archlinux@sha256:0187eff73b5a04bfaea16caef5124aed10976dd5ced9a0429caab124ba1393e5
+    container: ghcr.io/pkgforge-dev/archlinux:latest
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -536,11 +536,12 @@ jobs:
           key: pacman-appimage-${{ matrix.arch }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-appimage-${{ matrix.arch }}-
       # Before the checkout: without git, actions/checkout downloads the files without the history, and the AppImage's
-      # version (git describe) is unknown. Each pacman install is tried 3 times, as in the linux job
+      # version (git describe) is unknown. Each pacman install is tried 3 times, as in the linux job, and the first is
+      # -Syuu for the same reason: the packaging tools below install from the repo, which the image may be ahead of
       - name: Install git
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed git && break
+            pacman -Syuu --noconfirm --needed git && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -859,14 +860,14 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/pacman"
           docker run --detach --name build --volume "$PWD:/src" --volume "$RUNNER_TEMP/pacman:/var/cache/pacman/pkg" \
-            --workdir /src ghcr.io/pkgforge-dev/archlinux@sha256:0187eff73b5a04bfaea16caef5124aed10976dd5ced9a0429caab124ba1393e5 sleep infinity
+            --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
           docker run --detach --name target --platform linux/${{ matrix.platform }} \
-            --volume "$PWD:/src" --workdir /src ghcr.io/pkgforge-dev/archlinux@sha256:0187eff73b5a04bfaea16caef5124aed10976dd5ced9a0429caab124ba1393e5 sleep infinity
+            --volume "$PWD:/src" --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
       - name: Unpack the ${{ matrix.arch }} system root
         if: steps.sysroot.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          image=ghcr.io/pkgforge-dev/archlinux@sha256:0187eff73b5a04bfaea16caef5124aed10976dd5ced9a0429caab124ba1393e5
+          image=ghcr.io/pkgforge-dev/archlinux:latest
           docker pull --platform linux/${{ matrix.platform }} "$image"
           docker exec build mkdir -p /src/sysroot
           docker export "$(docker create --platform linux/${{ matrix.platform }} "$image")" | docker exec -i build tar -x -C /src/sysroot
@@ -891,7 +892,8 @@ jobs:
           # unless its openssl-3 comes along; a port still on OpenSSL 3 has no such package
           retry pacman -Sy --noconfirm
           if pacman -Si openssl-3 >/dev/null 2>&1; then libraries="$libraries openssl-3"; fi
-          retry pacman -Su --noconfirm --needed $libraries
+          # -Suu: the image may also be ahead of the port's repo (the linux job's Install tools says how)
+          retry pacman -Suu --noconfirm --needed $libraries
           curl -fsSL --retry 15 --retry-delay 20 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/quick-sharun "$QUICK_SHARUN"
           curl -fsSL --retry 15 --retry-delay 20 --retry-all-errors --connect-timeout 30 -o /usr/local/bin/get-debloated-pkgs "$DEBLOATED_PACKAGES"
           chmod +x /usr/local/bin/quick-sharun /usr/local/bin/get-debloated-pkgs
