@@ -228,20 +228,21 @@ static void least_squares() {
                 worst, fits);
 }
 
-// a block of one colour, alpha included, whose four channels share their low bit: mode 6 holds it exactly (both ends
-// the colour, each channel 2 e + p under the one p-bit an end has)
+// a block of one colour comes back exact whatever the colour (the encoder's Solid: mode 5, with no search): every
+// value of each channel beside every value's complement and two others, so each of the 256 in each channel, with
+// channels of 0 beside channels of 255, which mode 6's shared p-bits cannot hold; then random colours
 static void constant_blocks() {
-    std::vector<glsl::leuint> texels(16 * 64);
+    std::vector<glsl::leuint> texels(16 * 320);
     uint32_t s = 0x2545F491u;
-    for (uint32_t b = 0; b < 64; b++) {
+    for (uint32_t b = 0; b < 320; b++) {
         s ^= s << 13;
         s ^= s >> 17;
         s ^= s << 5;
-        const uint32_t colour = (s & 0xFEFEFEFEu) | (b & 1 ? 0x01010101u : 0u);
-        for (uint32_t t = 0; t < 16; t++) texels[(size_t)(t / 4) * 256 + b * 4 + t % 4] = colour;
+        const uint32_t v = b & 255, colour = b < 256 ? v | (255 - v) << 8 | (v ^ 0x55) << 16 | (v * 7 & 255) << 24 : s;
+        for (uint32_t t = 0; t < 16; t++) texels[(size_t)(t / 4) * 1280 + b * 4 + t % 4] = colour;
     }
-    const auto blocks = encode(texels, 256, 4, 1);
-    const auto got = decode(blocks.data(), 256, 4);
+    const auto blocks = encode(texels, 1280, 4, 1);
+    const auto got = decode(blocks.data(), 1280, 4);
     known_modes(blocks, "constant blocks", nullptr);
     for (size_t i = 0; i < texels.size(); i++)
         for (uint32_t c = 0; c < 4; c++)
@@ -251,7 +252,7 @@ static void constant_blocks() {
                 failures++;
                 return;
             }
-    std::puts("PASS 64 blocks of one colour each come back exact");
+    std::puts("PASS 320 blocks of one colour each come back exact, every value of every channel among them");
 }
 
 // texels that are exactly what mode 6 interpolates between two ends it holds (one end's channels even, the other's
@@ -380,14 +381,26 @@ static void picture_psnr() {
                     fast_modes[6], modes[6]);
         failures++;
     }
-    if (mode6_modes[6] != 32 * 32) {
-        std::printf("FAIL the build of mode 6 alone wrote %u blocks of the picture in mode 6 of 1024\n",
-                    mode6_modes[6]);
+    // every block but those of one colour, which take mode 5 with no search in every build
+    uint32_t one_colour = 0;
+    for (uint32_t b = 0; b < 32 * 32; b++) {
+        bool same = true;
+        for (uint32_t t = 1; t < 16; t++)
+            same = same && texels[(size_t)(b / 32 * 4 + t / 4) * 128 + b % 32 * 4 + t % 4] ==
+                               texels[(size_t)(b / 32 * 4) * 128 + b % 32 * 4];
+        one_colour += same;
+    }
+    if (mode6_modes[6] != 32 * 32 - one_colour || mode6_modes[5] != one_colour) {
+        std::printf("FAIL the build of mode 6 alone wrote %u blocks of the picture in mode 6 and %u in mode 5: %u of "
+                    "the 1024 are of one colour\n",
+                    mode6_modes[6], mode6_modes[5], one_colour);
         failures++;
     }
     known_modes(quick_blocks, "picture in the quick build", quick_modes);
-    if (quick_modes[6] != 32 * 32) {
-        std::printf("FAIL the quick build wrote %u blocks of the picture in mode 6 of 1024\n", quick_modes[6]);
+    if (quick_modes[6] != 32 * 32 - one_colour || quick_modes[5] != one_colour) {
+        std::printf("FAIL the quick build wrote %u blocks of the picture in mode 6 and %u in mode 5: %u of the 1024 "
+                    "are of one colour\n",
+                    quick_modes[6], quick_modes[5], one_colour);
         failures++;
     }
     static const struct {
@@ -670,7 +683,7 @@ static void same_blocks() {
                                                 encode(opaque, 64, 64, 1), encode_without_45(any, 64, 64)};
     uint64_t h = 0xCBF29CE484222325ull;
     for (const auto& r : runs) h = fnv1a(h, r.data(), r.size() * sizeof r[0]);
-    const uint64_t want = 0xCF713CD3243FCE94ull;
+    const uint64_t want = 0x093A3DE6F427626Cull; // 0xCF713CD3243FCE94 before one-colour blocks took Solid
     std::printf("%s the encoder's blocks: digest %016llx, %016llx expected\n", h == want ? "PASS" : "FAIL",
                 (unsigned long long)h, (unsigned long long)want);
     if (h != want) failures++;

@@ -23,6 +23,8 @@ struct Encoder : Invocation {
 // and unchanged-weight exits keep the same candidates and bytes as that search.
 #undef SNX_BC7_GOOD_ENOUGH
 #define SNX_BC7_GOOD_ENOUGH 0
+#undef SNX_BC7_SOLID
+#define SNX_BC7_SOLID 0 // nor a one-colour block's closed form
 struct EncoderWhole : Invocation {
     uint width, height, blocks_x, blocks_y;
     const leuint* rgba;
@@ -44,6 +46,8 @@ struct EncoderWithout45 : Invocation {
 // the full build
 #undef SNX_BC7_MODES_4_5
 #define SNX_BC7_MODES_4_5 1
+#undef SNX_BC7_SOLID
+#define SNX_BC7_SOLID 1
 #undef SNX_BC7_GOOD_ENOUGH
 #define SNX_BC7_GOOD_ENOUGH 16
 #undef SNX_BC7_FAST
