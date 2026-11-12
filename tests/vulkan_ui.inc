@@ -44,7 +44,7 @@ static int ui_quads(UiCheck* c, const int safe[4]) {
     stats_draw(&l, safe, scale, plat_ns());
     {
         float stats[4];
-        hud_draw(&l, safe, stats_scale(scale), stats_box_drawn(stats) ? stats : NULL);
+        hud_draw(&l, safe, stats_scale(scale), stats_box_drawn(stats) ? stats : NULL, plat_ns() / 1000000u);
     }
     overlay_draw(&l, UI_W, UI_H, plat_ns());
     ui_unlock();
