@@ -3,9 +3,10 @@
 /* hook_install on a 32-bit game (src/nx/hle/hook/hook.c), over tests/hook/a32_marked.hook, with the runtime stubbed to
    a symbol list and a code table of slots: a hook of the 32-bit program's table (one declared a32, or for a 32-bit
    program alone) takes its function's slot, an A32 function's and a Thumb one's alike, and its adapter runs the
-   handler with the arguments AAPCS32 gives it; one not declared a32, a symbol no hook names, a versioned hook and a
-   family that hooks_off names keep their slots. The two tables: a symbol declared again for a 32-bit program alone
-   has each program's handler in its table, and one only a 32-bit program has is in no other */
+   handler with the arguments AAPCS32 gives it; one not declared a32, a symbol no hook names and a family that
+   hooks_off names keep their slots. A versioned hook takes the slot of a function whose module's SDK label holds
+   its version, and none in a module with no label. The two tables: a symbol declared again for a 32-bit program
+   alone has each program's handler in its table, and one only a 32-bit program has is in no other */
 #include "nx/hle/hook/hook.c"
 #include <assert.h>
 #include <stdio.h>
@@ -31,10 +32,16 @@ u32 test_save(CPU* c, const HookLayout_Report32* l, u64 report, u64 size) {
 static const struct {
     const char* name;
     u64 addr; /* bit 0 set for a Thumb function */
-} symbols[] = {{"answer", 0x1000},     {"wide", 0x1010},
-               {"unhooked", 0x1020},   {"thumb_answer", 0x2001},
-               {"off_answer", 0x1030}, {"now", 0x1040},
-               {"save_j", 0x1050},     {"answer", 0x100001000ull /* outside a 32-bit game's addresses */}};
+} symbols[] = {{"answer", 0x1000},
+               {"wide", 0x1010},
+               {"unhooked", 0x1020},
+               {"thumb_answer", 0x2001},
+               {"off_answer", 0x1030},
+               {"now", 0x1040},
+               {"save_j", 0x1050},
+               {"save_j", 0x2011 /* in the module with no SDK label */},
+               {"answer", 0x3000 /* in no module */},
+               {"answer", 0x100001000ull /* outside a 32-bit game's addresses */}};
 int kernel_symbol(u32 i, u64* addr, const char** name) {
     if (i >= sizeof symbols / sizeof symbols[0]) return 0;
     *addr = symbols[i].addr, *name = symbols[i].name;
@@ -47,7 +54,13 @@ SnxArmBlock* arm_slot(u32 addr, int thumb) {
     if (thumb) return addr >= 0x2000 && addr < 0x2080 ? &thumb_slots[(addr - 0x2000) / 2] : NULL;
     return addr >= 0x1000 && addr < 0x1100 ? &a32_slots[(addr - 0x1000) / 4] : NULL;
 }
-static SnxArmModule module;
+/* the game's modules: the first, with the A32 functions, has the label of SDK 1.2.3 in its read-only data; the
+   second, with the Thumb ones, has none */
+static u8 guest[0x4000];
+static const SnxModInfo modules[2] = {
+    {.name = "sdk", .base = 0x1000, .size = 0x1000, .ro_off = 0x800, .ro_size = 0x100},
+    {.name = "main", .base = 0x2000, .size = 0x1000}};
+static SnxArmModule module = {.nmods = 2, .mods = modules};
 const SnxArmModule* g_arm_mod = &module;
 const SnxModule* g_mod;
 GuestFn* g_disp;
@@ -113,6 +126,8 @@ int main(void) {
     assert(!strcmp(hook32_layouts[entry(&hook32_table, "save_j", 0x20000)], "Report32 of line 14"));
 
     for (unsigned i = 0; i < 0x40; i++) a32_slots[i] = thumb_slots[i] = own_block;
+    g_mem = guest;
+    strcpy((char*)guest + 0x1810, "SDK MW+Nintendo+NintendoSdk_nnSdk-1_2_3-Release");
     g_settings.native_hooks = 1;
     snprintf(g_settings.hook_families_off, sizeof g_settings.hook_families_off, "switched_off");
     hook_install();
@@ -122,7 +137,9 @@ int main(void) {
     assert(a32_slots[8] == own_block);          /* no hook names it */
     assert(a32_slots[12] == own_block);         /* its family is off */
     assert(a32_slots[16] == hook32_fn[now]);    /* the 32-bit program's declaration of a symbol with two */
-    assert(a32_slots[20] == own_block);         /* versioned: the module's version isn't read */
+    /* versioned: the hook for the SDK its module's label names, and none where the module has no label */
+    assert(a32_slots[20] == hook32_fn[entry(&hook32_table, "save_j", 0x10203)]);
+    assert(a32_slots[20] != hook32_fn[entry(&hook32_table, "save_j", 0x20000)]);
     for (unsigned i = 1; i < 0x40; i++) assert(thumb_slots[i] == own_block);
 
     /* the adapter: r0 and r1 to the handler, its answer in r0, back to lr */

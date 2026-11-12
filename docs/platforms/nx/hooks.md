@@ -100,7 +100,8 @@ hook memcpy(void* dst, const void* src, u64 size) -> void* = hook_memmove
   `_lo`, `_hi` and `_layouts`: the hooks marked `a32` and the ones for a 32-bit game alone, which are in no other
   table and name no route (a 32-bit game's every call goes through its code table). The runtime's own spec is
   generated this way, and for a 32-bit game `hook_install` puts each adapter of that table in its function's slot
-  of the code table (`arm_slot`); every other SDK function runs its own code there.
+  of the code table (`arm_slot`), a versioned one by the SDK label of the module that exports the function, as for
+  a 64-bit game; every other SDK function runs its own code there.
 - A pointer is a type followed by `*`, each `*` optionally followed by `const`, after an optional `const`:
   `const NVNtexture* const* textures`. It points to `void`, `char`, one of the types above, or a type of the C header
   that the spec's `include` line names (`include "nx/gpu/nvn/nvn.h"`, found in the folders that `-I` gives hookgen).

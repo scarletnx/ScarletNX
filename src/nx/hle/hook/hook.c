@@ -38,18 +38,19 @@ static int family_listed(const char* list, const char* family) {
 #define HOOK_MODULES 32
 
 /* the module whose mapping holds addr, -1 for none */
-static int module_of(u64 addr) {
+/* the one of the game's nmods modules that addr is in; -1 for none */
+static int module_of(const SnxModInfo* mods, u32 nmods, u64 addr) {
     u32 i;
-    for (i = 0; i < g_mod->nmods; i++)
-        if (addr >= g_mod->mods[i].base && addr - g_mod->mods[i].base < g_mod->mods[i].size) return (int)i;
+    for (i = 0; i < nmods; i++)
+        if (addr >= mods[i].base && addr - mods[i].base < mods[i].size) return (int)i;
     return -1;
 }
 
 /* each module's nnSdk version, from the SDK's label in its read-only data, logged */
-static void module_versions(u32 sdk[HOOK_MODULES]) {
+static void module_versions(const SnxModInfo* mods, u32 nmods, u32 sdk[HOOK_MODULES]) {
     u32 i;
-    for (i = 0; i < g_mod->nmods && i < HOOK_MODULES; i++) {
-        const SnxModInfo* mi = &g_mod->mods[i];
+    for (i = 0; i < nmods && i < HOOK_MODULES; i++) {
+        const SnxModInfo* mi = &mods[i];
         char text[32];
         sdk[i] = 0;
         if (mi->ro_size && mi->ro_off <= mi->size && mi->ro_size <= mi->size - mi->ro_off)
@@ -57,8 +58,8 @@ static void module_versions(u32 sdk[HOOK_MODULES]) {
         hook_version_text(text, sizeof text, HOOK_SDK, sdk[i]);
         LOG("hooks: module %s, SDK %s%s\n", mi->name, text, sdk[i] ? "" : " (its versioned hooks aren't installed)");
     }
-    if (g_mod->nmods > HOOK_MODULES)
-        WARN("hooks: %u modules, so the SDK versions of those past %d are unknown\n", g_mod->nmods, HOOK_MODULES);
+    if (nmods > HOOK_MODULES)
+        WARN("hooks: %u modules, so the SDK versions of those past %d are unknown\n", nmods, HOOK_MODULES);
 }
 
 /* the site of the hooked function at addr; -1 for none */
@@ -231,28 +232,48 @@ u64 hook_site(const char* symbol) {
 
 /* A 32-bit game: its code is arm.c's blocks, and the hooks of its own table (hookgen --a32-marked: those declared
    a32, whose arguments and what their handlers read are the same under AAPCS32 and in the 32-bit SDK's layouts, and
-   those declared for a 32-bit program alone) take their functions' blocks in the code table. The module's SDK version
-   isn't read there, so a versioned hook takes none; no hook is verified */
+   those declared for a 32-bit program alone) take their functions' blocks in the code table, a versioned one by the
+   SDK version of the module that exports its function, as a 64-bit game's; no hook is verified */
 static void install_a32(void) {
+    const SnxModInfo* mods = g_arm_mod->mods;
     const char* name;
     u64 addr;
-    u32 i, count = 0;
-    unsigned char off[HOOK_FAMILIES + 1] = {0};
+    u32 i, count = 0, nmods = g_arm_mod->nmods, sdk[HOOK_MODULES];
+    unsigned char off[HOOK_FAMILIES + 1] = {0}, missed[HOOK32_COUNT + 1] = {0}, said[HOOK32_COUNT + 1] = {0};
     for (i = 0; i < HOOK_FAMILIES; i++)
         if ((off[i] = (unsigned char)family_listed(g_settings.hook_families_off, hook_family_name[i])) != 0)
             LOG("hooks: the %s family is off (hooks_off)\n", hook_family_name[i]);
+    module_versions(mods, nmods, sdk);
     for (i = 0; kernel_symbol(i, &addr, &name); i++) {
         u32 versions[HOOK_KEYS] = {0};
         SnxArmBlock* slot;
-        int first, k;
-        if (!name || addr >> 32) continue;
+        int m, first, k;
+        char range[96];
+        if (!name || addr >> 32 || hook_select(&hook32_table, name, versions, &first) == -1 ||
+            (m = module_of(mods, nmods, addr & ~1ull)) < 0)
+            continue;
+        versions[HOOK_SDK] = m < HOOK_MODULES ? sdk[m] : 0;
         k = hook_select(&hook32_table, name, versions, &first);
+        if (k == -2 && !missed[first]) {
+            char text[32];
+            missed[first] = 1;
+            hook_version_text(text, sizeof text, hook32_key[first], versions[hook32_key[first]]);
+            LOG("hooks: %s in %s isn't hooked: no declaration for a 32-bit game holds for its version (%s)\n", name,
+                mods[m].name, text);
+        }
         if (k < 0 || off[hook32_family[k]]) continue;
         slot = arm_slot((u32)addr & ~1u, (int)(addr & 1));
         if (!slot || *slot == hook32_fn[k]) continue;
         __atomic_store_n(slot, hook32_fn[k], __ATOMIC_RELEASE);
         count++;
-        LOG("hook: %s at %llx runs %s (32-bit)\n", name, (unsigned long long)addr, hook32_handler[k]);
+        if (hook32_key[k] == HOOK_ANY || said[k]) {
+            LOG("hook: %s at %llx runs %s (32-bit)\n", name, (unsigned long long)addr, hook32_handler[k]);
+            continue;
+        }
+        said[k] = 1; /* a versioned hook's versions and layouts, the first time it is installed */
+        hook_range_text(range, sizeof range, hook32_key[k], hook32_lo[k], hook32_hi[k]);
+        LOG("hook: %s at %llx runs %s (32-bit), the hook for %s%s%s\n", name, (unsigned long long)addr,
+            hook32_handler[k], range, *hook32_layouts[k] ? ", with the layouts " : "", hook32_layouts[k]);
     }
     LOG("hooks: %u of the 32-bit game's functions run the runtime's handlers; a function of the SDK that no hook "
         "takes for a 32-bit game yet runs its own code\n",
@@ -290,13 +311,14 @@ void hook_install(void) {
         LOG("hooks: verify mode for the pure hooks of the families hooks_verify names, with %u KiB of scratch at %llx\n",
             (HOOK_VERIFY_SLOTS * HOOK_VERIFY_SLOT) >> 10, (unsigned long long)g_hle.hook.verify_base);
     }
-    module_versions(sdk);
+    module_versions(g_mod->mods, g_mod->nmods, sdk);
     for (i = 0; kernel_symbol(i, &addr, &name); i++) {
         u32 versions[HOOK_KEYS] = {0};
         int m, first, k;
         char range[96];
         if (!name || addr < g_code_lo || addr >= g_code_hi || (addr & 3) ||
-            hook_select(&hook_table, name, versions, &first) == -1 || (m = module_of(addr)) < 0 || site_of(addr) >= 0)
+            hook_select(&hook_table, name, versions, &first) == -1 ||
+            (m = module_of(g_mod->mods, g_mod->nmods, addr)) < 0 || site_of(addr) >= 0)
             continue;
         /* the versions of the module that exports it; the NVN API version isn't read yet, so it is unknown */
         versions[HOOK_SDK] = m < HOOK_MODULES ? sdk[m] : 0;
