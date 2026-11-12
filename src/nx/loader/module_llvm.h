@@ -16,7 +16,10 @@ typedef struct {
        own machine. NULL: a module for this host */
     const char* triple;
     char opt;           /* -O letter */
-    unsigned jobs;
+    unsigned jobs;      /* the threads compiling the units */
+    /* jobs is the most: the units start on 1 thread and more open while the memory holds them, as measured from the
+       units themselves (the setting aot_threads left at 0, Auto; common.h's SnxAotGovernor) */
+    int jobs_open;
     int quiet;
     const char* keep_ir; /* when set, each unit's IR is saved there as .ll */
     const struct SnxIrTuning* tuning; /* the game code's LLVM settings (snx_llvm_tuning), NULL for LLVM's own */

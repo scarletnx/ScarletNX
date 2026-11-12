@@ -3,6 +3,7 @@
 #include "nx/loader/module_ir.h"
 #include "nx/loader/module_variants.h"
 #include "common/cpu/recompiler/codegen.h"
+#include "common/cpu/recompiler/auto_workers.h"
 #include "common/cpu/recompiler/compile_thread.h"
 #include "nx/loader/codegen_view.h"
 #include "common/cpu/recompiler/llvm/ir.h"
@@ -51,6 +52,10 @@ typedef struct {
     Unit* units;
     size_t* rank; /* per function: its place in the --layout order, or NO_RANK. NULL without one */
     size_t count, next, done;
+    /* for the control of threads left open (auto_workers.h): the units under way, and the bytes of code the finished
+       ones keep in memory */
+    unsigned active;
+    SnxU64 held;
     int failed;
     char error[1024];
 #ifdef _WIN32
@@ -265,6 +270,7 @@ static void worker(Queue* q) {
             return;
         }
         i = q->next++;
+        ++q->active;
         unlock(q);
         error[0] = 0;
         start = snx_seconds();
@@ -273,6 +279,8 @@ static void worker(Queue* q) {
         label = rc || q->build->quiet ? NULL : snx_chunk_label(q->codegen, q->units[i].first, q->units[i].last);
         lock(q);
         ++q->done;
+        --q->active;
+        if (q->units[i].object) q->held += q->units[i].size;
         if (rc && !q->failed) {
             q->failed = 1;
             snprintf(q->error, sizeof(q->error), "%s", error);
@@ -314,7 +322,20 @@ static void* thread_main(void* p) {
 }
 #endif
 
-static void run(Queue* q, unsigned jobs) {
+/* the queue as the control of threads left open reads it */
+static void queue_state(void* arg, SnxAotReading* r) {
+    Queue* q = (Queue*)arg;
+    lock(q);
+    r->active = q->active;
+    r->done = q->done;
+    r->left = q->failed ? 0 : q->count - q->next;
+    r->held = q->held;
+    unlock(q);
+}
+static void queue_worker(void* arg) { worker((Queue*)arg); }
+
+/* jobs threads, or with open set as many of them as the memory holds, opened as the units are measured */
+static void run(Queue* q, unsigned jobs, int open) {
     unsigned i, created = 0;
 #ifdef _WIN32
     HANDLE* threads;
@@ -325,6 +346,21 @@ static void run(Queue* q, unsigned jobs) {
 #endif
     if (jobs > q->count) jobs = (unsigned)q->count;
     if (jobs < 1) jobs = 1;
+    if (open) {
+        SnxAutoWorkers w = {0};
+        w.worker = queue_worker;
+        w.state = queue_state;
+        w.arg = q;
+        w.most = jobs;
+        w.quiet = q->build->quiet;
+        snx_run_workers_auto(&w);
+#ifdef _WIN32
+        DeleteCriticalSection(&q->lock);
+#else
+        pthread_mutex_destroy(&q->lock);
+#endif
+        return;
+    }
     threads = snx_alloc(jobs * sizeof(*threads));
     for (i = 1; i < jobs; ++i) {
 #ifdef _WIN32
@@ -868,7 +904,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     }
     if (!options->quiet)
         printf("LLVM: %lu code unit%s and the module descriptor\n", (unsigned long)q.count, q.count == 1 ? "" : "s");
-    if (q.count) run(&q, build->jobs);
+    if (q.count) run(&q, build->jobs, build->jobs_open);
     if (q.failed) {
         snx_error("LLVM backend: %s", q.error);
         goto done;

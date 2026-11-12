@@ -272,6 +272,48 @@ unsigned snx_cpu_count(void);
    system says them, else the processors, capped at 75% of that (a reserve of one whole core, or a quarter), so a
    part of the computer stays free; at least 1, never more than snx_cpu_count() */
 unsigned snx_build_threads(void);
+/* A game's recompile whose threads are left open (the setting aot_threads at 0, Auto) opens them as it goes. Every
+   thread compiles a code unit at once, and what a unit takes follows the game, the unit's size and the optimization
+   level, so no table says it: the recompile starts on 1 thread, measures what its own units take while they compile,
+   and each tick opens one thread more while the memory holds it, up to what the cores give (snx_build_threads). It
+   only stops opening: a unit under way is never ended.
+   The memory holds one more when what the system can still give covers what the threads already open may still take,
+   the new thread's unit, and a unit more, since a unit can be larger than any seen yet. No thread opens before the
+   first unit has ended, when what a whole unit takes is first known, nor while the system says memory is short
+   (snx_memory_pressure). Where the system says neither what the process takes nor what it can still give, the cores
+   alone decide, as before the memory counted.
+   A second a tick: a unit compiles for 12 to 90 s at -O2 (20000 instructions on a phone's core, 90000 on a desktop's),
+   so its memory is seen growing, and the threads the cores give are all open that many seconds after the first unit */
+#define SNX_AOT_TICK_MS 1000
+/* what a tick reads */
+typedef struct {
+    SnxU64 footprint;    /* what the process is charged for now (snx_footprint), 0 when the system does not tell */
+    SnxU64 held;         /* of it, the finished units' code kept until the module is linked */
+    SnxU64 available;    /* what the system can still give (snx_memory_available) */
+    int available_known; /* whether it told */
+    int pressure;        /* snx_memory_pressure's answer */
+    unsigned active;     /* the units being compiled now */
+    size_t done;         /* the units finished */
+    size_t left;         /* the units no thread has taken yet */
+} SnxAotReading;
+typedef struct {
+    unsigned most;    /* the threads the cores give */
+    unsigned threads; /* the threads open */
+    SnxU64 base;      /* the footprint before the first unit: the recompile's own, with no unit under way */
+    SnxU64 unit;      /* the most a unit under way was seen to take: the units' memory over the units under way */
+    int said;         /* why the last tick opened none, so each reason is said once: 0 none, 1 no room, 2 pressure */
+} SnxAotGovernor;
+/* Starts the control on 1 thread of most, with the footprint before the first unit and the words of the system's
+   pressure signal (snx_memory_pressure's), and writes its first line into line, without a newline */
+void snx_aot_governor_start(SnxAotGovernor* g, unsigned most, SnxU64 footprint, const char* pressure, char* line,
+                            size_t size);
+/* A tick: 1 when one more thread opens (g->threads counts it already), 0 when none does. line gets what was decided
+   and the numbers it came from, without a newline: every thread opened, and a reason not to open the first tick it
+   holds; "" when there is nothing new to say. pressure is the words of r->pressure */
+int snx_aot_governor_tick(SnxAotGovernor* g, const SnxAotReading* r, const char* pressure, char* line, size_t size);
+/* The system's part of a reading (footprint, available, available_known, pressure) and the words of its pressure
+   signal into pressure */
+void snx_aot_read(SnxAotReading* r, char* pressure, size_t size);
 /* plat_ns in seconds, for durations */
 double snx_seconds(void);
 /* A run that cannot be killed (the driver on a thread of the app, where an app may start no process) is stopped by
@@ -332,6 +374,23 @@ int snx_threads(SnxThreadInfo* out, int max);
    it, the memory available on Linux and Android (MemAvailable), on macOS (free, inactive and purgeable pages), on
    FreeBSD (free and inactive pages) and on Windows (available physical memory); whether the system told it */
 int snx_memory_available(SnxU64* bytes);
+/* Whether the system says memory is short now: 1 it does, 0 it does not, -1 it gives this process no such signal.
+   words gets the signal and what it said, or why there is none. Linux: the pressure stall information's "some" line
+   (/proc/pressure/memory), short from SNX_PSI_SHORT; Android lets no app read it. Windows: the low memory resource
+   notification. macOS: the pressure level (kern.memorystatus_vm_pressure_level) at warning or critical. The others
+   have none */
+int snx_memory_pressure(char* words, size_t size);
+/* The avg10 of a pressure stall file's "some" line from which memory is short, in hundredths of a percent: the
+   system's tasks waiting for memory a tenth of the time, the share the runtime's low memory watch warns at
+   (plat_posix.c's trigger, 0.2 s of 2 s). Any stall at all is not it: a desktop with 12 GiB still to give read 0.36
+   while a 3 GB file was read, 37 ms of waiting, and took 45 s to read 0.00 again */
+#define SNX_PSI_SHORT 1000u
+/* The "some" line of a pressure stall file's text: its avg10 in hundredths of a percent and its total in microseconds.
+   1 when text holds one */
+int snx_psi_some(const char* text, unsigned* avg10, SnxU64* total);
+/* Whether a pressure stall file's text says memory is short: 1 with its avg10 at SNX_PSI_SHORT or more, 0 under it,
+   -1 when it holds no "some" line. *avg10 gets the line's, in hundredths of a percent */
+int snx_psi_short(const char* text, unsigned* avg10);
 /* the machine's physical memory, in bytes, into *bytes: what the system counts as installed (sysconf's _SC_PHYS_PAGES
    on Linux, Android, FreeBSD, macOS and iOS, GlobalMemoryStatusEx on Windows); whether the system told it */
 int snx_memory_total(SnxU64* bytes);
