@@ -532,9 +532,10 @@ and the fast build took a Radeon 890M 92 ms a strip of two layers: the frame too
 had reset the GPU, amdgpu's job timeout being 2 seconds: the upload's wait once 256 thousand blocks are queued, above,
 keeps every submission well under that.) The rules above count one layer (1.9 megatexels), and the levels were past
 what the cache took, so every run paid it again. A level held as BC7 at load (`astc_mode=3`, or Auto for an Ounce
-game: one made BC7 between frames goes up as RGBA8 first, above) of `astc_quick_mtexels` megatexels or more (8 by
-default: a 4096x2048 level, or two layers of 2048x2048), every layer of a 2D array and every slice of a 3D level
-counted, now goes another way:
+game: one made BC7 between frames goes up as RGBA8 first, above) of the very large size or more, every layer of a 2D
+array and every slice of a 3D level counted, now goes another way. The size starts at `astc_quick_mtexels`
+megatexels (8 by default: a 4096x2048 level, or two layers of 2048x2048) and then follows the encoder's speed here
+([The size from the encoder's time](#the-size-from-the-encoders-time)):
 
 - **Now:** the frame that needs it takes the quick build, `bc7_quick_spv` (`SNX_BC7_FAST` 3): mode 6 from its first
   line alone, the bounding box pulled in, where mode 6 alone also tries the box and two least squares fits. The two
@@ -604,6 +605,27 @@ its index, 32 bytes each in memory).
 | The quick build on edenprobe's astcimage picture | Gradients | Edges | Noise | Alpha |
 | --- | --- | --- | --- | --- |
 | PSNR, against mode 6 alone | 42.7 dB (43.2) | 23.1 (26.2) | 24.7 (25.2) | 32.4 (40.0) |
+
+#### The size from the encoder's time
+
+The stall a very large level saves is the fast build's time over it, and that time is the GPU's: 25 ns a texel on the
+Radeon 890M above, 65 to 1400 megatexels a second on a GeForce RTX 2080 by the blocks (a game's normal maps to its
+albedo). So `astc_quick_mtexels` stands for a time, what that many megatexels take the 890M (8: 0.21 s), and the size is
+the one this GPU encodes in that time (`gpu/texture/astc_bc.h`'s `snx_astc_quick_texels`): the setting's own until the
+fast build has been timed over as many texels, then that time over the cost a texel measured. Every transcode of the
+fast build (its two passes) of a megatexel or more goes between a pair of timestamps on the graphics queue, each after
+all the work before it (`astc.c`'s `bc7_time_begin`, 32 pairs at once, the rest untimed), and each pair's time goes into
+the sums once its submission is done (`vk_astc_frame_done`). The sums are of the game's own blocks, so the cost is
+theirs. A smaller dispatch is timed not: its time is the latency of its slowest blocks more than the encoder's
+throughput, which is what a very large level's strips cost (`SNX_ASTC_QUICK_TIMED_TEXELS`, with the numbers that
+measured it). The levels encoded between frames go in strips of 32768 blocks at most, half a megatexel, so a game whose
+ASTC textures are made BC7 between frames times none, and its size stays the setting's: only the levels held as BC7 at
+load are ever very large. A queue that writes no timestamps keeps the setting's size, and the log says why. The log says
+the size once it comes from the time measured (with the cost a texel, the megatexels timed and the time the setting
+stands for), and with the stats of every 600 presents where anything was timed or a texture is held as BC7 at load, what
+the size is and where it came from. On an RX 6700 XT (RADV) the fast build of random blocks of every mode took 4.5 ns a
+texel in a 1024x1024 level and 5.1 in a 1536x768 one (the tests below), so 8 is about 40 megatexels there; lavapipe took
+27 to 41 ns, so 8 is 5 to 7 there.
 
 ## Textures bigger than one allocation
 
@@ -742,11 +764,14 @@ separate SPIRV-Tools is needed.
   straight to BC7 for a block and whole as RGBA8 for 55296 blocks; a texture written 3 frames after its write before
   queued, 2 after held Exact out of the queue, and queued again once read 30 frames unwritten, not 29; pieces of a BC7
   one, straight to BC7 3 frames after its write before and whole as RGBA8, held Exact, the next frame; and a texture
-  freed while it is made. It also follows Auto: a texture loads RGBA8 with room, a trim under a budget lowered to the
+  freed while it is made. It also times the encoder: a 1024x1024 texture held as BC7 at load adds its first level,
+  one dispatch of a megatexel, to the sums once its submission is done, where the queue writes timestamps, and its
+  smaller levels nothing; and it follows Auto: a texture loads RGBA8 with room, a trim under a budget lowered to the
   caches' use turns the next one BC7 and opens the game's BC7 cache, and the budget back turns the third RGBA8 again.
   `astc_bc_suggest` (ctest, no GPU) holds the modes and Auto with budgets given: BC7 from a trim, Exact again only
-  past the band, a trim never bringing it back by itself over a grid of uses and frees, and one switch over 200 trims
-  of a sawtooth where no band makes 399.
+  past the band, a trim never bringing it back by itself over a grid of uses and frees, one switch over 200 trims of a
+  sawtooth where no band makes 399, and the size from the times given (the start until as many texels are timed, five
+  times faster five times bigger, sums of unlike costs).
 - `astc_vulkan` and `astc_vulkan_pieces` also upload very large levels (`astc_quick_mtexels=1` there, a megatexel):
   bands of block rows of 4x4 and 6x6 blocks (whose bands step 3 rows) and pieces of several layers, once with the
   background on the CPU and once on the GPU. The first upload's image is the quick build of the CPU decoder's texels,
@@ -755,7 +780,10 @@ separate SPIRV-Tools is needed.
   the CPU's and the GPU's pieces are the same. A hit out of time (`g_vk_astc_hit_ns` 0) encodes quickly and loads the
   pieces into the image after it. An image kept alive while the background runs ends up with the fast build too, from
   the pieces it copied into it. On the GPU, a background stopped after one piece leaves it in the cache, and the next
-  makes only the others.
+  makes only the others. These cases keep the setting's size (`vk_astc_quick_measure(0)`). Then a 1536x768 level
+  with the quick encode off adds its one dispatch of the fast build to the sums; with 2 megatexels the start, another
+  takes the fast build while the setting's size holds, and the quick build once times of a GPU twice as slow as the
+  890M make the size a megatexel, its quick strip and its background's pieces adding nothing to the sums.
 
 The CPU decoder was also compared with ARM's astcenc 5.7.0 (`astcenc -dl` and `-dH`, Apache-2.0, a release binary
 used only as a tool), on the same kind of random blocks for every footprint. Every texel agreed within one step of

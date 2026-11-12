@@ -236,6 +236,7 @@ static void init(void) {
     while (family < n && !(families[family].queueFlags & VK_QUEUE_COMPUTE_BIT)) family++;
     if (family == n) fatal("no compute queue\n");
     int sparse_queue = (families[family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) != 0;
+    g_vk.gfx_timestamp_bits = families[family].timestampValidBits; /* the encoder's timing, as device.c sets it */
     free(families);
     VkPhysicalDeviceFeatures have;
     vkGetPhysicalDeviceFeatures(g_vk.phys, &have);
@@ -1178,10 +1179,87 @@ out:
 }
 static void background_cases(void) {
     g_vk_astc_hit_ns = ~0ull; /* the test's frame never ends, so its hits' time adds up: unbounded but where 0 */
+    vk_astc_quick_measure(0); /* the levels sit just past the setting's megatexel, whatever this GPU's speed */
     static const CacheCase cases[] = {
         {4, 4, 0, 1030, 1030, 1, 1}, {6, 6, 1, 1540, 700, 1, 1}, {4, 4, 1, 260, 260, 1, 16}};
     for (u32 i = 0; i < sizeof cases / sizeof cases[0]; i++)
         background_case(&cases[i]);
+    vk_astc_quick_measure(1);
+}
+
+/* The size from which a level held as BC7 at load is very large follows the encoder's time here (astc_quick_mtexels,
+   gpu/texture/astc_bc.h snx_astc_quick_texels). A 1536x768 level (1.125 megatexels) with the quick encode off (0)
+   takes the fast build, one transcode, timed between two timestamps where the queue writes them: its texels go into
+   the sums. With 2 megatexels the setting's start, another takes the fast build at once while the setting's size
+   holds (vk_astc_quick_measure(0)), and the quick build once the times say the GPU is twice as slow as the Radeon 890M
+   the setting stands for (50 ns a texel over 2^50 texels, past all the GPU's own): the size is a megatexel then. Its
+   quick strip and its background's pieces, each under a megatexel, add nothing to the sums */
+static void quick_timed_case(void) {
+    static const CacheCase c = {4, 4, 0, 1536, 768, 1, 1};
+    u8* blocks = blocks_new(c.w, c.h, 1, c.bw, c.bh);
+    u64 ns0, texels0, ns, texels, took;
+    VkAstcBackground b0, b;
+    remove(CACHE_PATH);
+    vk_astc_cache_open(CACHE_PATH);
+    g_settings.astc_quick_mtexels = 0;
+    g_settings.astc_background = 1;
+    vk_astc_quick_texels(&ns0, &texels0);
+    u8* got = cache_upload(&c, blocks, &took, 1);
+    if (!got) {
+        printf("SKIP very large levels by the time measured: the device has no such BC7 image\n");
+        goto out;
+    }
+    free(got);
+    vk_astc_quick_texels(&ns, &texels);
+    /* one transcode for the level where its RGBA8 measure fits the encoder's scratch (astc.c's astc_upload); under a
+       smaller allocation cap (astc_vulkan_pieces' 4 MB) it goes in strips each under a megatexel, which go untimed */
+    const int one_strip = (u64)c.w * c.h * 4 <= vk_bc7_strip_blocks() * 16;
+    const u64 want = g_vk.gfx_timestamp_bits && one_strip ? (u64)c.w * c.h : 0;
+    if (texels - texels0 != want || (want && ns <= ns0))
+        fatal("very large levels: a %ux%u level's fast build timed over %llu texels in %llu ns\n", c.w, c.h,
+              (unsigned long long)(texels - texels0), (unsigned long long)(ns - ns0));
+    printf("very large levels: a %ux%u level's fast build, %s, took %.2f ms of the GPU, %.2f ns a texel\n", c.w, c.h,
+           one_strip ? "one transcode" : "in strips under a megatexel, untimed", (double)(ns - ns0) / 1e6,
+           texels > texels0 ? (double)(ns - ns0) / (double)(texels - texels0) : 0.0);
+    g_settings.astc_quick_mtexels = 2;
+    vk_astc_quick_measure(0);
+    blocks[5] ^= 0x40; /* another level each time: no hit of the one before */
+    vk_astc_background_stats(&b0);
+    free(cache_upload(&c, blocks, &took, 1));
+    vk_astc_background_stats(&b);
+    if (b.quick != b0.quick)
+        fatal("very large levels: a %ux%u level under the setting's 2 megatexels was encoded quickly\n", c.w, c.h);
+    vk_astc_quick_measure(1);
+    vk_astc_quick_timed(50ull << 50, 1ull << 50);
+    const u64 size = vk_astc_quick_texels(&ns, &texels);
+    if (size != snx_astc_quick_texels(2, ns, texels) || size > (1ull << 20) + (1ull << 10) ||
+        size < (1ull << 20) - (1ull << 10))
+        fatal("very large levels: %llu texels at %llu ns over %llu texels, not about a megatexel\n",
+              (unsigned long long)size, (unsigned long long)ns, (unsigned long long)texels);
+    blocks[7] ^= 0x10;
+    vk_astc_background_stats(&b0);
+    vk_astc_quick_texels(&ns0, &texels0);
+    free(cache_upload(&c, blocks, &took, 1));
+    vk_astc_background_stats(&b);
+    vk_astc_quick_texels(&ns, &texels);
+    if (b.quick != b0.quick + 1 || b.made != b0.made + 1)
+        fatal("very large levels: the %ux%u level past the %llu texels measured was %llu quick, %llu to the "
+              "background\n",
+              c.w, c.h, (unsigned long long)size, (unsigned long long)(b.quick - b0.quick),
+              (unsigned long long)(b.made - b0.made));
+    if (texels != texels0)
+        fatal("very large levels: the quick build and the background's pieces of a %ux%u level were timed over %llu "
+              "texels, none of them the fast build of a megatexel\n",
+              c.w, c.h, (unsigned long long)(texels - texels0));
+    printf("PASS very large levels by the time measured: a %ux%u level the fast build at 2 megatexels as set, the "
+           "quick build at the %.2f megatexels the times give\n",
+           c.w, c.h, (double)size / (1 << 20));
+out:
+    g_settings.astc_quick_mtexels = 0;
+    g_settings.astc_background = 0;
+    vk_bc7_cache_close();
+    remove(CACHE_PATH);
+    free(blocks);
 }
 
 /* --bench: the BC7 cache's costs for one w x h level of random 8x8 blocks: an encode with its blocks read back and
@@ -2046,6 +2124,7 @@ int main(int argc, char** argv) {
     g_batch_layers = 0;
     cache_cases();
     background_cases();
+    quick_timed_case();
     /* a region uploaded again: inside the level, at its right and bottom edges, as BC7 and as RGBA8, footprints that
        step 1, 2 and 4 blocks to a 4x4 BC7 block, and a BC7 region off those blocks */
     run_region(4, 4, 1, 97, 61, 2, 1, 3, 2);

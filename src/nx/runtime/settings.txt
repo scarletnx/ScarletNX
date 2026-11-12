@@ -394,8 +394,10 @@ setting ASTC quick Mtexels
     help this many megatexels or more, all its layers counted (8 = 4096x2048, or two layers of 2048x2048), is encoded
     help quickly where the game first needs it, with softer edges, and its better version is made in the background
     help (ASTC background): it replaces the quick one as it comes and is kept in the BC7 cache, which the next run loads.
-    help 0 = never: every level takes the better encode at once, which can stop the game for seconds on a big texture
-    help array
+    help The value is where the run starts: it stands for the time its better encode takes a Radeon 890M (8 = 0.21 s),
+    help and once the encoder has been timed on this GPU over as many texels, the size is the one this GPU encodes in
+    help that time, bigger on a faster one; the log says the size in use and where it came from. 0 = never: every level
+    help takes the better encode at once, which can stop the game for seconds on a big texture array
 setting ASTC background
     label Better ASTC textures made by
     key astc_background

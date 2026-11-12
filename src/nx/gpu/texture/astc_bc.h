@@ -3,7 +3,8 @@
 /* How a GPU that samples BCn but not ASTC holds the ASTC textures it decodes (astc_mode, settings.txt): Exact (1) as
    RGBA8, BC7 (2) encoded again as BC7 between frames, a quarter of RGBA8's memory, close to the game's blocks but not
    the same, and Auto (0, the default) one of the two by the room the GPU's memory has as the game runs. Then when the
-   log suggests BC7 to a run that holds them as RGBA8 */
+   log suggests BC7 to a run that holds them as RGBA8, and from what size a level held as BC7 at load is encoded
+   quickly */
 #ifndef SNX_TEXTURE_ASTC_BC_H
 #define SNX_TEXTURE_ASTC_BC_H
 
@@ -58,6 +59,29 @@ enum { SNX_ASTC_SHORT_NONE, SNX_ASTC_SHORT_NO_MEMORY, SNX_ASTC_SHORT_PAST_BUDGET
    images ran short (why) */
 static inline int snx_astc_bc_suggest(int bc7, int bc, int astc, unsigned long long astc_bytes, int why) {
     return why != SNX_ASTC_SHORT_NONE && !bc7 && bc && !astc && astc_bytes;
+}
+
+/* A level held as BC7 at load is encoded quickly (astc.c's quick build) from astc_quick_mtexels megatexels, every layer
+   counted, at the start; the BC7 encoder's fast build timed on this GPU (ns of its time over the texels of the
+   dispatches timed) then sets the size. The setting stands for a time: the fast build's 25 ns a texel on the Radeon
+   890M where it was measured (d8c8bd08e: two 1365x1365x90 arrays in 10.1 s), so 8 is a 0.21 s encode. Once the
+   dispatches timed here cover as many texels as the start, the size is the one this GPU encodes in that time, at the
+   cost a texel measured over the game's own blocks (65 to 1400 megatexels a second on one GPU, a game's normal maps to
+   its albedo, astc.c): bigger on a faster GPU, smaller on a slower one. The size in texels, 0 (never) for a setting of
+   0 */
+#define SNX_ASTC_QUICK_REF_NS       25.0
+/* The dispatches timed for it: the fast build's of a megatexel or more, the unit the setting counts in, and as big as
+   the strips a very large level is encoded in. A smaller one is the latency of its slowest blocks more than the
+   encoder's throughput: on an RX 6700 XT a 256x256 texture's nine levels took 4.42 ms, 50 ns a texel, where a
+   1024x1024 level of the same blocks took 4.83 ms, 4.61 ns a texel; timing them all, one game's run read 36.80 ns, a
+   GPU slower than the 890M's 25 */
+#define SNX_ASTC_QUICK_TIMED_TEXELS (1ull << 20)
+static inline unsigned long long snx_astc_quick_texels(int mtexels, unsigned long long ns, unsigned long long texels) {
+    const unsigned long long start = mtexels > 0 ? (unsigned long long)mtexels << 20 : 0;
+    double size;
+    if (!start || !ns || texels < start) return start;
+    size = (double)start * (double)texels * SNX_ASTC_QUICK_REF_NS / (double)ns;
+    return size >= 9.0e18 ? 9000000000000000000ull : size < 1.0 ? 1ull : (unsigned long long)(size + 0.5);
 }
 
 /* The blocks the BC7 encoder may have queued on the GPU before an upload waits for it to do them (bc7_queue, in

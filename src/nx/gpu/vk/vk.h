@@ -1558,6 +1558,19 @@ typedef struct {
 } VkAstcBackground;
 void vk_astc_background_stats(VkAstcBackground* s);
 extern u64 g_vk_astc_hit_ns;
+/* The size from which a level held as BC7 at load is very large (astc_quick_mtexels, gpu/texture/astc_bc.h
+   snx_astc_quick_texels): the encoder's fast build is timed on the GPU, a pair of timestamps around a dispatch,
+   up to VK_BC7_TIMED at once, and each pair's time goes in when its submission is done (vk_astc_frame_done).
+   vk_astc_quick_timed: a dispatch of the fast build took ns of the GPU's time over texels (the landing's, or a test's
+   own times). vk_astc_quick_texels: the size in effect, in texels (0: never), and the times summed so far.
+   vk_astc_quick_say: the size and where it came from, for the stats of the last 600 presents.
+   vk_astc_quick_measure(0) keeps the setting's size whatever was timed and times nothing, for the tests whose levels
+   are made to sit on either side of it, and 1 goes back to the times (the default); it gives what it had */
+#define VK_BC7_TIMED 32
+void vk_astc_quick_timed(u64 ns, u64 texels);
+u64 vk_astc_quick_texels(u64* ns, u64* texels);
+void vk_astc_quick_say(void);
+int vk_astc_quick_measure(int on);
 /* Internal ASTC, BC7, block-linear, conversion, multisample and depth-packing pipelines, apart from guest shaders.
    Both functions run under vk_lock. Cumulative time is in nanoseconds, including time inside the driver. */
 void vk_texture_pipeline_made(u64 ns);
