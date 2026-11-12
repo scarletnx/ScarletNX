@@ -5,6 +5,7 @@
 #include "common/platform/file.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/spirv_emit.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,10 +20,16 @@ struct SnxVkShaderBinary {
 static const char magic[8] = {'S', 'N', 'X', 'V', 'K', 'S', 'B', '1'};
 enum { HEAD = 8 + VK_UUID_SIZE + 4 + 4, ENTRY = 8 + 4 + 4 };
 
-uint64_t snx_vk_shader_key(VkShaderStageFlagBits stage, const uint32_t* words, size_t count) {
-    uint32_t s = (uint32_t)stage;
-    uint64_t h = snx_fnv1a(SNX_FNV_BASIS, &s, sizeof s);
-    return snx_fnv1a(h, words, count * sizeof *words);
+uint64_t snx_vk_shader_key(const VkShaderCreateInfoEXT* info) {
+    uint32_t head[4] = {(uint32_t)info->stage, (uint32_t)info->nextStage, (uint32_t)info->codeType,
+                        info->setLayoutCount};
+    uint64_t h = snx_fnv1a(SNX_FNV_BASIS, head, sizeof head);
+    for (uint32_t i = 0; i < info->pushConstantRangeCount; ++i) {
+        const VkPushConstantRange* r = &info->pPushConstantRanges[i];
+        uint32_t range[3] = {(uint32_t)r->stageFlags, r->offset, r->size};
+        h = snx_fnv1a(h, range, sizeof range);
+    }
+    return snx_fnv1a(h, info->pCode, info->codeSize);
 }
 
 void snx_vk_shader_binaries_init(SnxVkShaderBinaries* b, const uint8_t uuid[VK_UUID_SIZE], uint32_t version) {
@@ -182,6 +189,46 @@ VkResult snx_vk_shader_object(VkDevice dev, SnxVkShaderBinaries* b, uint64_t key
     *compiled = true;
     if (b) (void)snx_vk_shader_binaries_keep(b, dev, key, *out);
     return VK_SUCCESS;
+}
+
+uint32_t* snx_vk_spirv_preserve_infnan(const uint32_t* words, size_t count, size_t* out_count) {
+    static const char name[] = "SPV_KHR_float_controls";
+    const uint32_t name_words = (uint32_t)(sizeof name + 3) / 4;
+    size_t capabilities_end = 5, entry_end = 0;
+    uint32_t entry = 0;
+    for (size_t at = 5; at < count;) {
+        uint32_t op = words[at] & 0xffff, n = words[at] >> 16;
+        if (!n || at + n > count) return NULL;
+        if (op == SPV_OP_CAPABILITY) capabilities_end = at + n;
+        if (op == SPV_OP_ENTRY_POINT && n > 2) {
+            entry = words[at + 2];
+            entry_end = at + n;
+        }
+        at += n;
+    }
+    if (!entry_end) return NULL;
+    size_t total = count + 2 + 1 + name_words + 4;
+    uint32_t* out = malloc(total * sizeof *out);
+    if (!out) return NULL;
+    size_t o = 0;
+    memcpy(out, words, capabilities_end * sizeof *out);
+    o = capabilities_end;
+    out[o++] = 2u << 16 | SPV_OP_CAPABILITY;
+    out[o++] = SPV_CAPABILITY_SIGNED_ZERO_INF_NAN_PRESERVE;
+    out[o++] = (1 + name_words) << 16 | SPV_OP_EXTENSION;
+    memset(out + o, 0, name_words * sizeof *out);
+    memcpy(out + o, name, sizeof name);
+    o += name_words;
+    memcpy(out + o, words + capabilities_end, (entry_end - capabilities_end) * sizeof *out);
+    o += entry_end - capabilities_end;
+    out[o++] = 4u << 16 | SPV_OP_EXECUTION_MODE;
+    out[o++] = entry;
+    out[o++] = SPV_MODE_SIGNED_ZERO_INF_NAN_PRESERVE;
+    out[o++] = 32;
+    memcpy(out + o, words + entry_end, (count - entry_end) * sizeof *out);
+    o += count - entry_end;
+    *out_count = o;
+    return out;
 }
 
 void snx_vk_shader_object_defaults(VkCommandBuffer cb) {

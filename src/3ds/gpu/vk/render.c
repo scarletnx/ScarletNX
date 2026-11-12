@@ -13,6 +13,7 @@
 #include "3ds/gpu/vk/fsgen.h"
 #include "3ds/gpu/vk/shaders/color_spv.h"
 #include "3ds/gpu/vk/shaders/depth_spv.h"
+#include "3ds/gpu/vk/shaders/standin_spv.h"
 #include "3ds/gpu/vk/shaders/texture_spv.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vsgen.h"
@@ -202,6 +203,31 @@ typedef struct {
     VkShaderEXT object;
     uint8_t state; /* under g.job_lock */
 } PipeJob;
+/* The stand-in fragment shader's push constants (shaders/standin.frag): a fragment config's stages, switches and
+   lighting, packed as the shader's comment says, for a draw whose own shader is still being made */
+typedef struct {
+    uint32_t sources[6], modifiers[6], ops[6], scales[6];
+    uint32_t flags, borders;
+    uint32_t lights[3], luts[2], lighting;
+} StandIn;
+_Static_assert(sizeof(StandIn) == 128, "standin.frag's push constants");
+/* The vertex stand-in's push constants (shaders/standin.vert), after the fragment one's: a vertex config's entry, its
+   output registers' attribute indices (a byte each), its semantic map, its inputs' sizes (four bits each) and whether
+   the CPU made the vertex */
+typedef struct {
+    uint32_t main_offset, num_outputs, output_map[4], attributes[7], total, input_sizes[2], switches;
+} StandInVertex;
+_Static_assert(sizeof(StandInVertex) == 68, "standin.vert's push constants");
+#define PROGRAM_WORDS (4096 + 128) /* standin.vert's program: the code, then the operand descriptors */
+_Static_assert(offsetof(SnxCtrFsUniforms, fog_lut_offset) == 40 && offsetof(SnxCtrFsUniforms, fog_color) == 176 &&
+                   offsetof(SnxCtrFsUniforms, lighting_lut_offset) == 80 &&
+                   offsetof(SnxCtrFsUniforms, lighting_global_ambient) == 224 &&
+                   offsetof(SnxCtrFsUniforms, light_src) == 240 && sizeof(SnxCtrFsLight) == 112,
+               "standin.frag's fs_data offsets");
+_Static_assert(offsetof(SnxCtrFsUniforms, alphatest_ref) == 4 && offsetof(SnxCtrFsUniforms, depth_scale) == 8 &&
+                   offsetof(SnxCtrFsUniforms, scissor_x1) == 24 && offsetof(SnxCtrFsUniforms, const_color) == 1136 &&
+                   offsetof(SnxCtrFsUniforms, tev_combiner_buffer_color) == 1232,
+               "standin.frag's fs_data offsets");
 /* the state a draw with shader objects sets: what a pipeline would hold of its key (vs and fs 0, as the shaders are
    bound apart), and the viewport, scissor and blend constants. The next draw of the recording sets only the groups
    that differ */
@@ -210,6 +236,7 @@ typedef struct {
     VkViewport viewport;
     VkRect2D scissor;
     float constants[4];
+    uint8_t scaled, pad[3]; /* the vertex stand-in's: integer attributes in scaled formats, which it reads as floats */
 } ObjectState;
 
 typedef struct {
@@ -221,6 +248,10 @@ static struct {
     SnxCtrVkCompute color, depth, texture;
     VkDescriptorSetLayout set0, set1, set2;
     VkDescriptorSetLayout set_layouts[3]; /* the three, for the shader objects that take them */
+    /* the stand-ins' push constants (the fragment one's, and the vertex one's where the device has room for them),
+       in the layout and every shader object, for their sets to agree */
+    VkPushConstantRange push[2];
+    uint32_t push_count;
     VkPipelineLayout layout;
     VkFormat depth_format;
     bool depth_float;
@@ -287,6 +318,16 @@ static struct {
     SDL_Condition *job_queued, *job_done;
     PipeJob jobs[PIPE_JOBS];
     uint64_t skipped; /* the draws skipped while their pipeline or shader objects were made */
+    /* with shader objects: the stand-in fragment and vertex shaders (VK_NULL_HANDLE when ctr_stand_in leaves them out
+       or the device refuses them), and the draws each drew while their own shaders were made */
+    VkShaderEXT stand_in, stand_in_vertex;
+    uint64_t stood_in, stood_in_vertex;
+    /* the device takes the scaled formats of every integer attribute as vertex input: the vertex stand-in can run */
+    bool scaled_inputs;
+    /* the program the vertex stand-in runs, uploaded into the open recording's part of the ring (program_hash's) */
+    bool program_uploaded;
+    uint64_t program_uploaded_hash;
+    VkDeviceSize program_at;
     int low_refused;  /* a worker's low priority was refused, which the first one refused says (atomic) */
     /* the driver's pipelines kept between runs (snx_ctr_vk_pipeline_cache_open): the cache every pipeline is made
        with, its file, whether a pipeline went into it since it was written and when the last one did (atomic: the
@@ -306,6 +347,7 @@ static struct {
 } g;
 
 static VkDevice device(void) { return snx_ctr_vk()->device; }
+static void stand_in_make(void);
 
 /* ---- images ---- */
 
@@ -453,22 +495,22 @@ static bool made(void) {
         g.depth_float = true;
     } else
         return false;
-    VkDescriptorSetLayoutBinding set0[6] = {
+    VkDescriptorSetLayoutBinding set0[7] = {
         {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, NULL},
         {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, NULL},
         {2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
         {3, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
         {4, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
-        {5, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL}};
+        {5, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+        {6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, NULL}}; /* the vertex stand-in's */
     VkDescriptorSetLayoutBinding set1[3];
     for (uint32_t i = 0; i < 3; ++i)
         set1[i] = (VkDescriptorSetLayoutBinding){i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                                                  VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
     set1[0].descriptorCount = TEX0_DESCRIPTORS;
     VkDescriptorSetLayoutBinding set2 = {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
-    VkDescriptorSetLayoutCreateInfo si = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                          .bindingCount = 6,
-                                          .pBindings = set0};
+    VkDescriptorSetLayoutCreateInfo si = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 7, .pBindings = set0};
     if (vkCreateDescriptorSetLayout(v->device, &si, NULL, &g.set0) != VK_SUCCESS) return false;
     si.bindingCount = 3;
     si.pBindings = set1;
@@ -479,12 +521,20 @@ static bool made(void) {
     g.set_layouts[0] = g.set0;
     g.set_layouts[1] = g.set1;
     g.set_layouts[2] = g.set2;
-    VkPipelineLayoutCreateInfo li = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 3, .pSetLayouts = g.set_layouts};
+    g.push[0] = (VkPushConstantRange){VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(StandIn)};
+    g.push_count = 1;
+    if (v->properties.limits.maxPushConstantsSize >= sizeof(StandIn) + sizeof(StandInVertex))
+        g.push[g.push_count++] =
+            (VkPushConstantRange){VK_SHADER_STAGE_VERTEX_BIT, sizeof(StandIn), sizeof(StandInVertex)};
+    VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                     .setLayoutCount = 3,
+                                     .pSetLayouts = g.set_layouts,
+                                     .pushConstantRangeCount = g.push_count,
+                                     .pPushConstantRanges = g.push};
     if (vkCreatePipelineLayout(v->device, &li, NULL, &g.layout) != VK_SUCCESS) return false;
     if (!buffer_new(RING_SIZE,
                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
-                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &g.ring,
                     &g.ring_memory) ||
         vkMapMemory(v->device, g.ring_memory, 0, VK_WHOLE_SIZE, 0, (void**)&g.ring_map) != VK_SUCCESS)
@@ -493,6 +543,7 @@ static bool made(void) {
     g.align = 256;
     if (l->minUniformBufferOffsetAlignment > g.align) g.align = l->minUniformBufferOffsetAlignment;
     if (l->minTexelBufferOffsetAlignment > g.align) g.align = l->minTexelBufferOffsetAlignment;
+    if (l->minStorageBufferOffsetAlignment > g.align) g.align = l->minStorageBufferOffsetAlignment;
     /* the samplers of disabled textures: transparent black */
     VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (!image_new(VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 1, usage, &g.dummy) ||
@@ -506,6 +557,7 @@ static bool made(void) {
     snx_ctr_vk_barrier(snx_ctr_vk_commands());
     g.failed = false;
     g.made = true;
+    stand_in_make();
     return true;
 }
 
@@ -1207,7 +1259,9 @@ static VkShaderCreateInfoEXT object_info(VkShaderStageFlagBits stage, const uint
                                    .pCode = words,
                                    .pName = "main",
                                    .setLayoutCount = 3,
-                                   .pSetLayouts = g.set_layouts};
+                                   .pSetLayouts = g.set_layouts,
+                                   .pushConstantRangeCount = g.push_count,
+                                   .pPushConstantRanges = g.push};
 }
 /* a shader object made: when the cache was last used, for its write (snx_ctr_vk_pipeline_cache_save) */
 static void compiled_now(void) {
@@ -1232,7 +1286,8 @@ static bool object_queue(ShaderObject* o) {
    that no compile holds up the draw; else compiled now, its binary kept for the next run. *why when the device refuses
    it */
 static void object_new(ShaderObject* o, VkShaderStageFlagBits stage, uint32_t* words, size_t count, const char** why) {
-    *o = (ShaderObject){.stage = stage, .key = snx_vk_shader_key(stage, words, count)};
+    VkShaderCreateInfoEXT info = object_info(stage, words, count);
+    *o = (ShaderObject){.stage = stage, .key = snx_vk_shader_key(&info)};
     size_t size;
     if (!snx_vk_shader_binary(&g.binaries, o->key, &size) && g_settings.async_pipelines && pipe_workers()) {
         o->words = words;
@@ -1240,7 +1295,6 @@ static void object_new(ShaderObject* o, VkShaderStageFlagBits stage, uint32_t* w
         (void)object_queue(o);
         return;
     }
-    VkShaderCreateInfoEXT info = object_info(stage, words, count);
     bool compiled = false;
     if (snx_vk_shader_object(device(), g.binaries_open ? &g.binaries : NULL, o->key, &info, &o->object, &compiled) !=
         VK_SUCCESS)
@@ -1336,6 +1390,15 @@ static VkFormat attribute_format(unsigned code) {
         VK_FORMAT_R32_SFLOAT,    VK_FORMAT_R32G32_SFLOAT,   VK_FORMAT_R32G32B32_SFLOAT,    VK_FORMAT_R32G32B32A32_SFLOAT,
         VK_FORMAT_R32G32B32A32_SFLOAT};
     return formats[code];
+}
+/* the same, with the integer formats scaled (read as floats), for the vertex stand-in */
+static VkFormat attribute_format_scaled(unsigned code) {
+    static const VkFormat formats[12] = {
+        VK_FORMAT_R8_SSCALED,       VK_FORMAT_R8G8_SSCALED,         VK_FORMAT_R8G8B8A8_SSCALED,
+        VK_FORMAT_R8G8B8A8_SSCALED, VK_FORMAT_R8_USCALED,           VK_FORMAT_R8G8_USCALED,
+        VK_FORMAT_R8G8B8A8_USCALED, VK_FORMAT_R8G8B8A8_USCALED,     VK_FORMAT_R16_SSCALED,
+        VK_FORMAT_R16G16_SSCALED,   VK_FORMAT_R16G16B16A16_SSCALED, VK_FORMAT_R16G16B16A16_SSCALED};
+    return code < 12 ? formats[code] : attribute_format(code);
 }
 static VkBlendFactor blend_factor(uint32_t f) {
     static const VkBlendFactor factors[16] = {
@@ -1857,6 +1920,143 @@ static void draw_reads(const PipeKey* k, const uint32_t binding_pa[12], uint32_t
             gpu_uses(binding_pa[n], size < 64 ? 64 : size, false);
         }
 }
+/* Whether the stand-in draws a fragment config as its own shader would: no gas, procedural texture or shadow
+   rendering, and on unit 0 a 2D or projection texture or none */
+static bool stand_in_draws(const SnxCtrFsConfig* c) {
+    return !c->proctex.enable && c->fog_mode != 7 && !c->shadow_rendering &&
+           (c->texture0_type == SNX_CTR_FS_TEX_2D || c->texture0_type == SNX_CTR_FS_TEX_PROJECTION ||
+            c->texture0_type == SNX_CTR_FS_TEX_DISABLED);
+}
+/* c as the stand-in's push constants */
+static StandIn stand_in_of(const SnxCtrFsConfig* c) {
+    StandIn s = {0};
+    memcpy(s.sources, c->tev_sources, sizeof s.sources);
+    memcpy(s.modifiers, c->tev_modifiers, sizeof s.modifiers);
+    memcpy(s.ops, c->tev_ops, sizeof s.ops);
+    memcpy(s.scales, c->tev_scales, sizeof s.scales);
+    s.flags = (uint32_t)(c->alpha_test_func & 7) | (uint32_t)(c->texture0_type & 7) << 3 |
+              (uint32_t)(c->texture2_use_coord1 & 1) << 6 | (uint32_t)c->combiner_buffer_input << 8 |
+              (uint32_t)(c->depthmap_enable & 1) << 16 | (uint32_t)(c->scissor_mode & 3) << 17 |
+              (uint32_t)(c->fog_mode == 5) << 19 | (uint32_t)(c->fog_flip & 1) << 20;
+    for (unsigned i = 0; i < 3; ++i)
+        s.borders |= (uint32_t)(c->border_s[i] & 1) << i | (uint32_t)(c->border_t[i] & 1) << (3 + i);
+    if (!c->lighting.enable) return s;
+    for (unsigned i = 0; i < 8; ++i) {
+        uint32_t bits = (uint32_t)(c->lighting.lights[i].num & 7) |
+                        (uint32_t)(c->lighting.lights[i].directional & 1) << 3 |
+                        (uint32_t)(c->lighting.lights[i].two_sided_diffuse & 1) << 4 |
+                        (uint32_t)(c->lighting.lights[i].dist_atten & 1) << 5 |
+                        (uint32_t)(c->lighting.lights[i].spot_atten & 1) << 6 |
+                        (uint32_t)(c->lighting.lights[i].geometric_factor_0 & 1) << 7 |
+                        (uint32_t)(c->lighting.lights[i].geometric_factor_1 & 1) << 8 |
+                        (uint32_t)(c->lighting.lights[i].shadow & 1) << 9;
+        s.lights[i / 3] |= bits << (i % 3 * 10);
+    }
+    for (unsigned i = 0; i < 7; ++i) {
+        uint32_t bits = (uint32_t)(c->lighting.lut[i].enable & 1) | (uint32_t)(c->lighting.lut[i].abs_input & 1) << 1 |
+                        (uint32_t)(c->lighting.lut[i].type & 7) << 2 | (uint32_t)(c->lighting.lut[i].scale & 7) << 5;
+        s.luts[i / 4] |= bits << (i % 4 * 8);
+    }
+    s.lighting = 1u | (uint32_t)(c->lighting.src_num & 15) << 1 | (uint32_t)(c->lighting.bump_mode & 3) << 5 |
+                 (uint32_t)(c->lighting.bump_selector & 3) << 7 | (uint32_t)(c->lighting.bump_renorm & 1) << 9 |
+                 (uint32_t)(c->lighting.clamp_highlights & 1) << 10 | (uint32_t)(c->lighting.config & 15) << 11 |
+                 (uint32_t)(c->lighting.enable_primary_alpha & 1) << 15 |
+                 (uint32_t)(c->lighting.enable_secondary_alpha & 1) << 16 |
+                 (uint32_t)(c->lighting.enable_shadow & 1) << 17 | (uint32_t)(c->lighting.shadow_primary & 1) << 18 |
+                 (uint32_t)(c->lighting.shadow_secondary & 1) << 19 | (uint32_t)(c->lighting.shadow_invert & 1) << 20 |
+                 (uint32_t)(c->lighting.shadow_alpha & 1) << 21 | (uint32_t)(c->lighting.shadow_selector & 3) << 22;
+    return s;
+}
+/* The stand-in made, once, where ctr_stand_in asks for it: with async_pipelines=1 (a draw waits for its shaders
+   otherwise), or for every draw it draws with ctr_stand_in=2. A device that refuses it skips the draws instead */
+/* a stand-in shader object of glslang's words, SignedZeroInfNanPreserve declared where the device keeps them as the
+   generated shaders declare it. VK_NULL_HANDLE when the device refuses it */
+static VkShaderEXT stand_in_object(VkShaderStageFlagBits stage, const uint32_t* words, size_t count) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    uint32_t* declared = NULL;
+    if (v->preserve_infnan) {
+        declared = snx_vk_spirv_preserve_infnan(words, count, &count);
+        if (!declared) return VK_NULL_HANDLE;
+        words = declared;
+    }
+    VkShaderCreateInfoEXT info = object_info(stage, words, count);
+    VkShaderEXT object = VK_NULL_HANDLE;
+    bool compiled;
+    if (snx_vk_shader_object(device(), g.binaries_open ? &g.binaries : NULL, snx_vk_shader_key(&info), &info, &object,
+                             &compiled) != VK_SUCCESS)
+        object = VK_NULL_HANDLE;
+    free(declared);
+    return object;
+}
+/* whether the device takes the scaled format of each integer attribute format as vertex input */
+static bool scaled_inputs(void) {
+    static const VkFormat formats[9] = {
+        VK_FORMAT_R8_SSCALED,  VK_FORMAT_R8G8_SSCALED,   VK_FORMAT_R8G8B8A8_SSCALED,
+        VK_FORMAT_R8_USCALED,  VK_FORMAT_R8G8_USCALED,   VK_FORMAT_R8G8B8A8_USCALED,
+        VK_FORMAT_R16_SSCALED, VK_FORMAT_R16G16_SSCALED, VK_FORMAT_R16G16B16A16_SSCALED};
+    for (unsigned i = 0; i < 9; ++i) {
+        VkFormatProperties p;
+        vkGetPhysicalDeviceFormatProperties(snx_ctr_vk()->phys, formats[i], &p);
+        if (!(p.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) return false;
+    }
+    return true;
+}
+static void stand_in_make(void) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    if (!v->shader_object || g.stand_in ||
+        !(g_settings.ctr_stand_in == 2 || (g_settings.ctr_stand_in == 1 && g_settings.async_pipelines)))
+        return;
+    g.stand_in = stand_in_object(VK_SHADER_STAGE_FRAGMENT_BIT, snx_ctr_standin_frag_spv,
+                                 (size_t)snx_ctr_standin_frag_spv_size / 4);
+    if (!g.stand_in) fprintf(stderr, "3ds gpu: the device refuses the fragment stand-in: draws wait for their own\n");
+    /* the vertex stand-in: its config in push constants after the fragment one's, its inputs as floats */
+    g.scaled_inputs = scaled_inputs();
+    if (g.push_count < 2 || !g.scaled_inputs) {
+        fprintf(stderr, "3ds gpu: no vertex stand-in: the device has %s\n",
+                g.push_count < 2 ? "too few push constants" : "no scaled vertex formats");
+        return;
+    }
+    g.stand_in_vertex = v->clip_distance ? stand_in_object(VK_SHADER_STAGE_VERTEX_BIT, snx_ctr_standin_vert_clip_spv,
+                                                           (size_t)snx_ctr_standin_vert_clip_spv_size / 4)
+                                         : stand_in_object(VK_SHADER_STAGE_VERTEX_BIT, snx_ctr_standin_vert_spv,
+                                                           (size_t)snx_ctr_standin_vert_spv_size / 4);
+    if (!g.stand_in_vertex)
+        fprintf(stderr, "3ds gpu: the device refuses the vertex stand-in: draws wait for their own\n");
+}
+/* vs as the vertex stand-in's push constants */
+static StandInVertex stand_in_vertex_of(const SnxCtrVsConfig* vs) {
+    StandInVertex s = {0};
+    s.main_offset = vs->main_offset;
+    s.num_outputs = vs->num_outputs;
+    for (unsigned r = 0; r < 16; ++r) s.output_map[r / 4] |= (uint32_t)vs->output_map[r] << (r % 4 * 8);
+    memcpy(s.attributes, vs->vs_output_attributes, sizeof s.attributes);
+    s.total = vs->vs_output_total;
+    for (unsigned r = 0; r < 16; ++r) s.input_sizes[r / 8] |= (uint32_t)(vs->input_size[r] & 15) << (r % 8 * 4);
+    s.switches = vs->passthrough;
+    return s;
+}
+/* the program the vertex stand-in runs, in the ring, and set 0's binding 6 pointing at it: uploaded again only when
+   another program is drawn in the recording */
+static bool stand_in_program(const SnxCtrPica* p, uint64_t hash, VkDescriptorSet set) {
+    if (!g.program_uploaded || g.program_uploaded_hash != hash) {
+        VkDeviceSize at;
+        if (!ring(PROGRAM_WORDS * 4, &at)) return false;
+        memcpy(g.ring_map + at, p->vs.code, 4096 * 4);
+        memcpy(g.ring_map + at + 4096 * 4, p->vs.swizzle, 128 * 4);
+        g.program_at = at;
+        g.program_uploaded_hash = hash;
+        g.program_uploaded = true;
+    }
+    VkDescriptorBufferInfo program = {g.ring, g.program_at, PROGRAM_WORDS * 4};
+    VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                  .dstSet = set,
+                                  .dstBinding = 6,
+                                  .descriptorCount = 1,
+                                  .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                  .pBufferInfo = &program};
+    vkUpdateDescriptorSets(device(), 1, &write, 0, NULL);
+    return true;
+}
 /* A draw with shader objects: vs and fs bound, and the state a pipeline of s's key would hold set, with the viewport,
    scissor and blend constants. In the open recording only what differs from the last draw's is set: the vertex input,
    the rasterizer's, the depth and stencil's, the colour's, the viewport and scissor, and the constants, each a group */
@@ -1871,8 +2071,8 @@ static void object_bind(VkCommandBuffer cb, VkShaderEXT vs, VkShaderEXT fs, cons
         g.bound[0] = vs;
         g.bound[1] = fs;
     }
-    if (!was || was->binding_mask != k->binding_mask || memcmp(was->stride, k->stride, sizeof k->stride) ||
-        memcmp(was->attribute, k->attribute, sizeof k->attribute)) {
+    if (!was || g.object_state.scaled != s->scaled || was->binding_mask != k->binding_mask ||
+        memcmp(was->stride, k->stride, sizeof k->stride) || memcmp(was->attribute, k->attribute, sizeof k->attribute)) {
         VkVertexInputBindingDescription2EXT bindings[13];
         VkVertexInputAttributeDescription2EXT attributes[16];
         uint32_t binding_count = 0;
@@ -1889,7 +2089,8 @@ static void object_bind(VkCommandBuffer cb, VkShaderEXT vs, VkShaderEXT fs, cons
                 .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT,
                 .location = i,
                 .binding = k->attribute[i].binding,
-                .format = attribute_format(k->attribute[i].format),
+                .format = s->scaled ? attribute_format_scaled(k->attribute[i].format)
+                                    : attribute_format(k->attribute[i].format),
                 .offset = k->attribute[i].offset};
         vkCmdSetVertexInputEXT(cb, binding_count, bindings, 16, attributes);
     }
@@ -2023,19 +2224,24 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     k.topology = (uint8_t)(source == TRIANGLES ? 0 : r[SNX_PICA_TOPOLOGY] >> 8 & 3); /* the triangles made: a list */
     k.cull = (uint8_t)(r[CULL_MODE] & 3);
     k.shadow = fs.shadow_rendering;
-    bool objects = snx_ctr_vk()->shader_object;
+    bool objects = snx_ctr_vk()->shader_object, stand_in = false, stand_in_vertex = false;
     VkPipeline pipe = VK_NULL_HANDLE;
     if (objects) {
         /* async_pipelines: drawn once the workers have made both shaders */
         VsShader* vsh = &g.vs[k.vs];
         FsShader* fsh = &g.fs[k.fs];
-        bool pending = object_pending(&vsh->so, &vsh->why);
-        pending = object_pending(&fsh->so, &fsh->why) || pending;
-        if (pending) {
+        bool vs_pending = object_pending(&vsh->so, &vsh->why), fs_pending = object_pending(&fsh->so, &fsh->why);
+        /* a shader still being made: a stand-in draws in its place, where it draws it as it would (ctr_stand_in=2: in
+           place of every shader it draws) */
+        bool every = g_settings.ctr_stand_in == 2;
+        stand_in_vertex = g.stand_in_vertex && (vs_pending || every);
+        stand_in = g.stand_in && (fs_pending || every) && stand_in_draws(&fs);
+        if ((vs_pending && !stand_in_vertex) || (fs_pending && !stand_in)) {
             ++g.skipped;
             return SNX_CTR_PICA_OK;
         }
-        if (!vsh->so.object || !fsh->so.object) return stop(p, "the device refuses a draw's shader object");
+        if ((!stand_in_vertex && !vsh->so.object) || (!stand_in && !fsh->so.object))
+            return stop(p, "the device refuses a draw's shader object");
     } else {
         bool pending;
         pipe = pipeline(&k, &pending);
@@ -2078,6 +2284,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
     VkDeviceSize defaults;
     result = descriptors(p, &fs, key.scale, sets, &defaults);
     if (result != SNX_CTR_PICA_OK) return result;
+    if (stand_in_vertex && !stand_in_program(p, source == TRIANGLES ? 0 : g.program_hash, sets[0])) return AGAIN;
     if (k.shadow) {
         sets[2] = snx_ctr_vk_set(g.set2);
         if (!sets[2]) return AGAIN;
@@ -2141,7 +2348,19 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
         state.viewport = viewport;
         state.scissor = scissor;
         memcpy(state.constants, constants, sizeof constants);
-        object_bind(cb, g.vs[k.vs].so.object, g.fs[k.fs].so.object, &state);
+        state.scaled = stand_in_vertex;
+        object_bind(cb, stand_in_vertex ? g.stand_in_vertex : g.vs[k.vs].so.object,
+                    stand_in ? g.stand_in : g.fs[k.fs].so.object, &state);
+        if (stand_in) {
+            StandIn constants = stand_in_of(&fs);
+            vkCmdPushConstants(cb, g.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof constants, &constants);
+            ++g.stood_in;
+        }
+        if (stand_in_vertex) {
+            StandInVertex constants = stand_in_vertex_of(&vs);
+            vkCmdPushConstants(cb, g.layout, VK_SHADER_STAGE_VERTEX_BIT, sizeof(StandIn), sizeof constants, &constants);
+            ++g.stood_in_vertex;
+        }
     } else {
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
         vkCmdSetViewport(cb, 0, 1, &viewport);
@@ -2256,6 +2475,7 @@ void snx_ctr_vk_render_begin(unsigned slot) {
     /* a new recording has no shaders bound and no state set */
     g.bound[0] = g.bound[1] = VK_NULL_HANDLE;
     g.object_set = false;
+    g.program_uploaded = false;
 }
 void snx_ctr_vk_render_close(void) { end_rendering(); }
 void snx_ctr_vk_render_retire(unsigned slot, uint64_t serial) {
@@ -2432,6 +2652,12 @@ void snx_ctr_vk_render_free(void) {
         fprintf(stderr, "3ds gpu: async_pipelines=%d skipped %llu draw%s while their %s made\n",
                 g_settings.async_pipelines, (unsigned long long)g.skipped, g.skipped == 1 ? "" : "s",
                 snx_ctr_vk()->shader_object ? "shaders were" : "pipelines were");
+    if (g.stood_in || g.stood_in_vertex)
+        fprintf(stderr,
+                "3ds gpu: the stand-ins drew %llu draw%s with their fragment shader and %llu with their vertex "
+                "shader while %s\n",
+                (unsigned long long)g.stood_in, g.stood_in == 1 ? "" : "s", (unsigned long long)g.stood_in_vertex,
+                g_settings.ctr_stand_in == 2 ? "ctr_stand_in=2 gave them every draw they draw" : "their own were made");
     vkDeviceWaitIdle(d);
     for (unsigned s = 0; s < SNX_CTR_VK_SLOTS; ++s) {
         for (size_t i = 0; i < g.view_count[s]; ++i) vkDestroyBufferView(d, g.views[s][i], NULL);
@@ -2454,6 +2680,8 @@ void snx_ctr_vk_render_free(void) {
         if (g.fs[i].so.object) vkDestroyShaderEXT(d, g.fs[i].so.object, NULL);
         free(g.fs[i].so.words);
     }
+    if (g.stand_in) vkDestroyShaderEXT(d, g.stand_in, NULL);
+    if (g.stand_in_vertex) vkDestroyShaderEXT(d, g.stand_in_vertex, NULL);
     snx_vk_shader_binaries_free(&g.binaries);
     for (unsigned i = 0; i < g.sampler_count; ++i) vkDestroySampler(d, g.samplers[i].sampler, NULL);
     image_free(&g.dummy);

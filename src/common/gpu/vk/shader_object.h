@@ -15,7 +15,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* the binaries of one device's shaders, by the key of their stage and SPIR-V (snx_vk_shader_key). Not locked: one
+/* the binaries of one device's shaders, by the key of their create info (snx_vk_shader_key). Not locked: one
    thread uses it at a time */
 typedef struct {
     uint8_t uuid[VK_UUID_SIZE];
@@ -29,8 +29,10 @@ typedef struct {
     bool dirty; /* a binary added since the last load or save */
 } SnxVkShaderBinaries;
 
-/* the key a shader's binary is kept by: its stage and its SPIR-V's words */
-uint64_t snx_vk_shader_key(VkShaderStageFlagBits stage, const uint32_t* words, size_t count);
+/* the key a shader's binary is kept by: what of its create info a binary depends on and a later run gives the same,
+   its stage and next stage, its code, its count of set layouts and its push constant ranges (the set layouts are
+   handles, which a run makes anew: a renderer keeps them the same between runs) */
+uint64_t snx_vk_shader_key(const VkShaderCreateInfoEXT* info);
 /* b, empty, for the device of uuid and version (VkPhysicalDeviceShaderObjectPropertiesEXT) */
 void snx_vk_shader_binaries_init(SnxVkShaderBinaries* b, const uint8_t uuid[VK_UUID_SIZE], uint32_t version);
 /* the binaries the file at path holds for b's device added to b: their bytes in *loaded, 0 for a file that is not
@@ -51,6 +53,12 @@ void snx_vk_shader_binaries_free(SnxVkShaderBinaries* b);
    call), and the caller keeps the binary later (snx_vk_shader_binaries_keep) */
 VkResult snx_vk_shader_object(VkDevice dev, SnxVkShaderBinaries* b, uint64_t key, const VkShaderCreateInfoEXT* info,
                               VkShaderEXT* out, bool* compiled);
+
+/* words, a SPIR-V module of one entry point, with SignedZeroInfNanPreserve for 32-bit floats declared
+   (SPV_KHR_float_controls), as a generated shader declares it where the device keeps infinities and NaNs: glslang
+   declares it for no GLSL. A copy the caller frees, *count its words; NULL when the host is out of memory or the module
+   has no entry point */
+uint32_t* snx_vk_spirv_preserve_infnan(const uint32_t* words, size_t count, size_t* out_count);
 
 /* The dynamic state a draw with shader objects must set that the console layers draw only one way: filled polygons
    of one sample, all of its samples written, no alpha to coverage, depth clamp, depth bias or depth bounds, no

@@ -45,6 +45,14 @@ foreach(shader fill display_transfer texture_copy present texture color depth y2
     snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/${shader}.comp NAME snx_ctr_${shader}_spv
                    HEADER 3ds/gpu/vk/shaders/${shader}_spv.h)
 endforeach()
+# the stand-in shaders a draw takes while its own are made (gpu/vk/render.c): the fragment one, and the vertex one
+# without and with clip distances
+snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/standin.frag NAME snx_ctr_standin_frag_spv
+               HEADER 3ds/gpu/vk/shaders/standin_spv.h)
+snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/standin.vert NAME snx_ctr_standin_vert_spv
+               HEADER 3ds/gpu/vk/shaders/standin_spv.h)
+snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/standin.vert NAME snx_ctr_standin_vert_clip_spv
+               HEADER 3ds/gpu/vk/shaders/standin_spv.h DEFINES CLIP)
 # the PICA's software renderer, ported from Azahar's: the CPU reference the GPU's draws are tested against, which the
 # runtime does not draw with. Its shader units and vertex processing (gpu/shader.c, gpu/draw.c) are the runtime's, which
 # runs a draw with a geometry shader there
