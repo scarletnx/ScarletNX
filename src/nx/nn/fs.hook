@@ -77,6 +77,10 @@ hook _ZN2nn2fs16GetFreeSpaceSizeEPlPKc(i64* size, const char* path) -> u32 = nnf
 @version(< 1.0.0) a32 hook _ZN2nn2fs16GetFreeSpaceSizeEPxPKc(i64* size, const char* path) -> u32 = nnfs_get_free_space_size
 hook _ZN2nn2fs17GetTotalSpaceSizeEPlPKc(i64* size, const char* path) -> u32 = nnfs_get_total_space_size
 @version(< 1.0.0) a32 hook _ZN2nn2fs17GetTotalSpaceSizeEPxPKc(i64* size, const char* path) -> u32 = nnfs_get_total_space_size
+# a file's time stamps, which take a path: a native mount's must not reach the SDK's code, whose table has no such
+# mount. No 32-bit SDK read has them
+hook _ZN2nn2fs24GetFileTimeStampForDebugEPNS0_13FileTimeStampEPKc(addr stamp, const char* path) -> u32 = nnfs_get_file_time_stamp
+hook _ZN2nn2fs27GetFileTimeStampRawForDebugEPNS0_16FileTimeStampRawEPKc(addr stamp, const char* path) -> u32 = nnfs_get_file_time_stamp_raw
 # what the SDK's C library asks of a path before it opens it (SDK 16 on; read in 16.2, 18.3, 19.3 and 20.5)
 hook _ZN2nn2fs13IsPathMountedEPKc(const char* path) -> bool = nnfs_is_path_mounted
 hook _ZN2nn2fs16GetPathLengthMaxEPmPKc(u64* out, const char* path) -> u32 = nnfs_get_path_length_max
