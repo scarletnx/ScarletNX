@@ -57,8 +57,50 @@ const uint ANCHORS[64] = {
     0x6F2u, 0xF38u, 0x8F2u, 0xF52u, 0x3F2u, 0x6FFu, 0x6FFu, 0x8F6u,
     0xF36u, 0x3F2u, 0xF56u, 0xF58u, 0xF5Fu, 0xF8Fu, 0xF52u, 0xFA2u,
     0xF5Fu, 0xFAFu, 0xF8Fu, 0xFDFu, 0x3FFu, 0xFC2u, 0xF32u, 0x83Fu};
+/* SNX_NO_ARRAYS 1: a build that keeps no array, for the passes most blocks of a texture take on GPUs that are slow
+   with an array a shader indexes by a value (texconv.glsl's ASTC build's second pass). The texels are 16 words,
+   read through PX and written by name or through PX_SET; a loop over them is then for the compiler to unroll, which
+   leaves each read the word itself */
+#ifndef SNX_NO_ARRAYS
+#define SNX_NO_ARRAYS 0
+#endif
 /* the block's texels, RGBA8 words (R in the low byte), row by row */
+#undef PX
+#undef PX_SET
+#if SNX_NO_ARRAYS
+uint px_0, px_1, px_2, px_3, px_4, px_5, px_6, px_7, px_8, px_9, px_10, px_11, px_12, px_13, px_14, px_15;
+uint Px(uint k) {
+    const bool b0 = (k & 1u) != 0u, b1 = (k & 2u) != 0u, b2 = (k & 4u) != 0u;
+    const uint q0 = b1 ? (b0 ? px_3 : px_2) : (b0 ? px_1 : px_0), q1 = b1 ? (b0 ? px_7 : px_6) : (b0 ? px_5 : px_4);
+    const uint q2 = b1 ? (b0 ? px_11 : px_10) : (b0 ? px_9 : px_8);
+    const uint q3 = b1 ? (b0 ? px_15 : px_14) : (b0 ? px_13 : px_12);
+    return (k & 8u) != 0u ? (b2 ? q3 : q2) : (b2 ? q1 : q0);
+}
+void PxSet(uint k, uint v) {
+    px_0 = k == 0u ? v : px_0;
+    px_1 = k == 1u ? v : px_1;
+    px_2 = k == 2u ? v : px_2;
+    px_3 = k == 3u ? v : px_3;
+    px_4 = k == 4u ? v : px_4;
+    px_5 = k == 5u ? v : px_5;
+    px_6 = k == 6u ? v : px_6;
+    px_7 = k == 7u ? v : px_7;
+    px_8 = k == 8u ? v : px_8;
+    px_9 = k == 9u ? v : px_9;
+    px_10 = k == 10u ? v : px_10;
+    px_11 = k == 11u ? v : px_11;
+    px_12 = k == 12u ? v : px_12;
+    px_13 = k == 13u ? v : px_13;
+    px_14 = k == 14u ? v : px_14;
+    px_15 = k == 15u ? v : px_15;
+}
+#define PX(k) Px(k)
+#define PX_SET(k, v) PxSet(k, v)
+#else
 uint px[16];
+#define PX(k) px[k]
+#define PX_SET(k, v) px[k] = (v)
+#endif
 
 /* the shape being tried: its subsets, partition, bits an end's colour channel, whether alpha is stored (else 255),
    p-bits (0 none, 1 one shared by a subset's two ends, 2 one an end), index bits */
@@ -202,7 +244,9 @@ void SetShape(uint ns, uint part) {
         v = (v | (v << 2u)) & 0x33333333u;
         v = (v | (v << 1u)) & 0x55555555u;
         sh_pbits = v;
+#if !SNX_ASTC_ENC /* an ASTC block has no anchors */
         sh_anchor1 = ANCHORS[part] & 15u;
+#endif
     } else {
         sh_pbits = P3[part];
         const uint an = ANCHORS[part];
@@ -356,17 +400,34 @@ uint Eval(uint s, uint q0, uint q1, bool near) {
     cur_hi = 0u;
     for (uint k = 0u; k < 16u; k++) {
         if (SubsetOf(k) != s) continue;
-        const uint p = px[k] & m, pp = Dot4(p, p);
+        const uint p = PX(k) & m, pp = Dot4(p, p);
         uint i = 0u;
         if (dd > 0) {
             /* the texel's place along the line, 0 to 64, then the nearest weight */
             const int t = clamp(int(Dot4(p, b)) - int(Dot4(p, a)) - along, 0, dd);
             const int n = t * 64 + dd / 2;
-            int q = int(float(n) * rd);
-            const int r = n - q * dd;
-            q += r >= dd ? 1 : r < 0 ? -1 : 0;
-            /* t <= dd keeps q <= 64 ((64 dd + dd / 2) / dd = 64), so (q top + 32) / 64 <= top: no min */
-            i = (uint(q) * top + 32u) >> 6u;
+#if SNX_NO_ARRAYS
+            /* No division and no floating point in this build, whose lines have weights of 2 or 3 bits (mobile GPUs
+               convert between integers and floats slowly; on a GT 1030 the reciprocal below is 3% the faster, which
+               is why the other builds keep it). (q top + 32) >> 6 is how many of a few quotients q = n / dd reaches
+               (11, 32 and 54 for 2 bits), and q reaches Q where n reaches Q dd: comparisons. For 3 bits they are 5,
+               14, 23, 32, 42, 51 and 60, halved three times: the index's top bit, then the next, then the last,
+               whose quotient is a byte of the word by the two above it. The same index as the division's */
+            if (sh_ib == 2u) {
+                i = (n >= 11 * dd ? 1u : 0u) + (n >= 32 * dd ? 1u : 0u) + (n >= 54 * dd ? 1u : 0u);
+            } else if (sh_ib == 3u) {
+                i = n >= 32 * dd ? 4u : 0u;
+                i |= n >= (i != 0u ? 51 : 14) * dd ? 2u : 0u;
+                i |= n >= int((0x3C2A1705u >> (i * 4u)) & 255u) * dd ? 1u : 0u;
+            } else
+#endif
+            {
+                int q = int(float(n) * rd);
+                const int r = n - q * dd;
+                q += r >= dd ? 1 : r < 0 ? -1 : 0;
+                /* t <= dd keeps q <= 64 ((64 dd + dd / 2) / dd = 64), so (q top + 32) / 64 <= top: no min */
+                i = (uint(q) * top + 32u) >> 6u;
+            }
         }
         uint bi = i;
         uint be = LineError(p, pp, ae, ao, de, dx, Weight(i));
@@ -403,8 +464,8 @@ uint PAllowed(uint s) {
     uint lo = 255u, hi = 0u;
     for (uint k = 0u; k < 16u; k++) {
         if (SubsetOf(k) != s) continue;
-        lo = min(lo, Ch(px[k], 3u));
-        hi = max(hi, Ch(px[k], 3u));
+        lo = min(lo, Ch(PX(k), 3u));
+        hi = max(hi, Ch(PX(k), 3u));
     }
     return lo == 255u ? 2u : hi == 0u ? 1u : 3u;
 }
@@ -481,7 +542,7 @@ int Solve(uint s, uint c, uint side, int det) {
     for (uint k = 0u; k < 16u; k++) {
         if (SubsetOf(k) != s) continue;
         const int w = int(Weight(Index(fit_lo, fit_hi, k)));
-        const int x = int(Ch(px[k], c));
+        const int x = int(Ch(PX(k), c));
         v += x;
         wv += w * x;
     }
@@ -496,7 +557,7 @@ void FitSubset(uint s) {
     int s0 = 0, s1 = 0, s2 = 0, s3 = 0, n = 0;
     for (uint k = 0u; k < 16u; k++) {
         if (SubsetOf(k) != s) continue;
-        const uint p = px[k];
+        const uint p = PX(k);
         lo0 = min(lo0, int(Ch(p, 0u)));
         lo1 = min(lo1, int(Ch(p, 1u)));
         lo2 = min(lo2, int(Ch(p, 2u)));
@@ -527,7 +588,7 @@ void FitSubset(uint s) {
     int c0 = 0, c1 = 0, c2 = 0, c3 = 0;
     for (uint k = 0u; k < 16u; k++) {
         if (SubsetOf(k) != s) continue;
-        const uint p = px[k];
+        const uint p = PX(k);
         const int vw = n * int(Ch(p, wide)) - sw;
         c0 += (n * int(Ch(p, 0u)) - s0) * vw;
         c1 += (n * int(Ch(p, 1u)) - s1) * vw;
@@ -570,7 +631,7 @@ void FitSubset(uint s) {
             for (uint k = 0u; k < 16u; k++) {
                 if (SubsetOf(k) != s) continue;
                 const int w = int(Weight(Index(fit_lo, fit_hi, k)));
-                const uint p = px[k];
+                const uint p = PX(k);
                 fit_n++;
                 fit_w += w;
                 fit_w2 += w * w;
@@ -634,8 +695,8 @@ void Rotate(uint rot) {
     if (rot == 0u) return;
     const uint sh = (rot - 1u) * 8u;
     for (uint k = 0u; k < 16u; k++) {
-        const uint p = px[k];
-        px[k] = (p & ~(0xFF000000u | (0xFFu << sh))) | ((p >> 24u) << sh) | (((p >> sh) & 0xFFu) << 24u);
+        const uint p = PX(k);
+        PX_SET(k, (p & ~(0xFF000000u | (0xFFu << sh))) | ((p >> 24u) << sh) | (((p >> sh) & 0xFFu) << 24u));
     }
 }
 
@@ -695,7 +756,7 @@ void BlockSums() {
     blk_b = 0;
     blk_a = 0;
     for (uint k = 0u; k < 16u; k++) {
-        const uint p = px[k];
+        const uint p = PX(k);
         const int vr = int(Ch(p, 0u)), vg = int(Ch(p, 1u)), vb = int(Ch(p, 2u)), va = int(Ch(p, 3u));
         blk_q += vr * vr + vg * vg + vb * vb;
         blk_qa += va * va;
@@ -719,7 +780,7 @@ uint Spread(uint ns, uint part, uint alpha) {
     for (uint k = 0u; k < 16u; k++) {
         const uint sub = SubsetOf(k);
         if (sub == 0u) continue;
-        const uint p = px[k];
+        const uint p = PX(k);
         const int vr = int(Ch(p, 0u)), vg = int(Ch(p, 1u)), vb = int(Ch(p, 2u));
         const int va = alpha != 0u ? int(Ch(p, 3u)) : 0;
         const int q = vr * vr + vg * vg + vb * vb + va * va;
@@ -751,8 +812,16 @@ bool opaque;
 uvec4 enc;
 void Put(uint pos, uint value, uint count) {
     const uint w = pos >> 5u, b = pos & 31u;
+#if SNX_NO_ARRAYS
+    const uint lo = value << b, hi = b + count > 32u ? value >> (32u - b) : 0u;
+    enc.x |= w == 0u ? lo : 0u;
+    enc.y |= w == 1u ? lo : w == 0u ? hi : 0u;
+    enc.z |= w == 2u ? lo : w == 1u ? hi : 0u;
+    enc.w |= w == 3u ? lo : w == 2u ? hi : 0u;
+#else
     enc[w] |= value << b;
     if (b + count > 32u) enc[w + 1u] |= value >> (32u - b);
+#endif
 }
 
 uvec4 Pack() {
@@ -888,11 +957,11 @@ uvec4 Encode() {
     opaque = true;
     bool solid = true;
     for (uint k = 0u; k < 16u; k++) {
-        opaque = opaque && Ch(px[k], 3u) == 255u;
-        solid = solid && px[k] == px[0];
+        opaque = opaque && Ch(PX(k), 3u) == 255u;
+        solid = solid && PX(k) == PX(0);
     }
     enc_more = false;
-    if (SNX_BC7_SOLID != 0 && solid) return Solid(px[0]);
+    if (SNX_BC7_SOLID != 0 && solid) return Solid(PX(0));
     best_err = 0xFFFFFFFFu;
     /* The shapes tried, in turn, one call of TryShape and one of TryDual for all of them (see FitSubset):
        job 0, mode 6: one subset, RGBA, 7 bits and a p-bit an end, 4-bit weights. Unless it is exact, then the two

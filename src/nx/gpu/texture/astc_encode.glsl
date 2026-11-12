@@ -65,8 +65,10 @@
 #endif
 bool as_more;
 uint as_hint;
-uint as_h0[2];
-uint as_h1[2];
+uint as_h0a; /* subset 0's ends */
+uint as_h1a;
+uint as_h0b; /* subset 1's */
+uint as_h1b;
 uint as_hplane;
 uint as_hpart;
 uint as_hib;
@@ -79,8 +81,10 @@ uint as_np;
 uint as_cem;
 uint as_enc;
 uint as_ib;
-uint as_s0[2];
-uint as_s1[2];
+uint as_s0a; /* subset 0's ends */
+uint as_s1a;
+uint as_s0b; /* subset 1's */
+uint as_s1b;
 uint as_lo;
 uint as_hi;
 uint as_dual;
@@ -115,8 +119,8 @@ void AsKeepOne(uint cem, uint ib, uint range) {
     as_cem = cem;
     as_enc = range;
     as_ib = ib;
-    as_s0[0] = fit_s0;
-    as_s1[0] = fit_s1;
+    as_s0a = fit_s0;
+    as_s1a = fit_s1;
     as_lo = fit_lo;
     as_hi = fit_hi;
     as_dual = 0u;
@@ -138,8 +142,8 @@ void AsTryDual(uint plane, bool hinted, bool rgb) {
     AsShape(1u, 0u, 2u, range, rgb ? 0u : 1u, 15u ^ (1u << plane));
     if (hinted) {
         fit_err = 0xFFFFFFFFu;
-        Try(0u, 1u, true, AsC(as_h0[0], 0u), AsC(as_h0[0], 1u), AsC(as_h0[0], 2u), AsC(as_h0[0], 3u), AsC(as_h1[0], 0u),
-            AsC(as_h1[0], 1u), AsC(as_h1[0], 2u), AsC(as_h1[0], 3u));
+        Try(0u, 1u, true, AsC(as_h0a, 0u), AsC(as_h0a, 1u), AsC(as_h0a, 2u), AsC(as_h0a, 3u), AsC(as_h1a, 0u),
+            AsC(as_h1a, 1u), AsC(as_h1a, 2u), AsC(as_h1a, 3u));
     } else {
         FitSubset(0u);
     }
@@ -149,8 +153,8 @@ void AsTryDual(uint plane, bool hinted, bool rgb) {
     if (hinted) {
         uint least = 255u, most = 0u;
         for (uint k = 0u; k < 16u; k++) {
-            least = min(least, Ch(px[k], plane));
-            most = max(most, Ch(px[k], plane));
+            least = min(least, Ch(PX(k), plane));
+            most = max(most, Ch(PX(k), plane));
         }
         fit_err = 0xFFFFFFFFu;
         Try(0u, 1u, true, int(least), int(least), int(least), int(least), int(most), int(most), int(most), int(most));
@@ -163,8 +167,8 @@ void AsTryDual(uint plane, bool hinted, bool rgb) {
     as_cem = cem;
     as_enc = range;
     as_ib = 2u;
-    as_s0[0] = (s0 & ~own) | (fit_s0 & own);
-    as_s1[0] = (s1 & ~own) | (fit_s1 & own);
+    as_s0a = (s0 & ~own) | (fit_s0 & own);
+    as_s1a = (s1 & ~own) | (fit_s1 & own);
     as_lo = lo;
     as_hi = hi;
     as_dual = 1u;
@@ -180,7 +184,7 @@ void AsTryTwo(uint part, bool hinted) {
     uint err = 0u, lo = 0u, hi = 0u, s00 = 0u, s01 = 0u;
     for (uint s = 0u; s < 2u; s++) {
         if (hinted) {
-            const uint a = s == 0u ? as_h0[0] : as_h0[1], b = s == 0u ? as_h1[0] : as_h1[1];
+            const uint a = s == 0u ? as_h0a : as_h0b, b = s == 0u ? as_h1a : as_h1b;
             fit_err = 0xFFFFFFFFu;
             Try(s, 1u, true, AsC(a, 0u), AsC(a, 1u), AsC(a, 2u), 255, AsC(b, 0u), AsC(b, 1u), AsC(b, 2u), 255);
         } else {
@@ -200,10 +204,10 @@ void AsTryTwo(uint part, bool hinted) {
     as_cem = 8u;
     as_enc = AS_Q3;
     as_ib = 2u;
-    as_s0[0] = s00;
-    as_s1[0] = s01;
-    as_s0[1] = fit_s0;
-    as_s1[1] = fit_s1;
+    as_s0a = s00;
+    as_s1a = s01;
+    as_s0b = fit_s0;
+    as_s1b = fit_s1;
     as_lo = lo;
     as_hi = hi;
     as_dual = 0u;
@@ -214,25 +218,41 @@ void AsTryTwo(uint part, bool hinted) {
 uvec4 as_w;
 void PutW(uint pos, uint value, uint count) {
     const uint w = pos >> 5u, b = pos & 31u;
-    as_w[w] |= value << b;
-    if (b + count > 32u) as_w[w + 1u] |= value >> (32u - b);
+    const uint lo = value << b, hi = b + count > 32u ? value >> (32u - b) : 0u;
+    as_w.x |= w == 0u ? lo : 0u;
+    as_w.y |= w == 1u ? lo : w == 0u ? hi : 0u;
+    as_w.z |= w == 2u ? lo : w == 1u ? hi : 0u;
+    as_w.w |= w == 3u ? lo : w == 2u ? hi : 0u;
 }
 
-/* the colour values of the block, in the order the endpoint modes read them, and how many */
-uint as_v[12];
+/* the colour values of the block, in the order the endpoint modes read them, a byte each of three words (12 at most:
+   two partitions of RGB ends), and how many */
+uint as_v0;
+uint as_v1;
+uint as_v2;
 uint as_nv;
+uint AsV(uint k) {
+    return ((k < 4u ? as_v0 : k < 8u ? as_v1 : as_v2) >> ((k & 3u) * 8u)) & 255u;
+}
 /* a subset's ends as mode 8's or 12's values: red of both ends, then green, blue and (12) alpha. The decoder takes
    the second end for the one whose red, green and blue sum higher, and swaps them (with a blue contraction this
    encoder has no use for) otherwise: 1 when the ends go in the other way round, the subset's weights then turned */
 bool AsEnds(uint s) {
-    const uint a = as_s0[s], b = as_s1[s];
+    const uint a = s == 0u ? as_s0a : as_s0b, b = s == 0u ? as_s1a : as_s1b;
     const bool turn = Ch(b, 0u) + Ch(b, 1u) + Ch(b, 2u) < Ch(a, 0u) + Ch(a, 1u) + Ch(a, 2u);
     const uint e0 = turn ? b : a, e1 = turn ? a : b;
-    for (uint c = 0u; c < (as_cem == 12u ? 4u : 3u); c++) {
-        as_v[as_nv] = Ch(e0, c);
-        as_v[as_nv + 1u] = Ch(e1, c);
-        as_nv += 2u;
+    /* red of both ends, then green, blue and alpha: 6 or 8 bytes, after the as_nv there are (0 or 6) */
+    const uint lo = (e0 & 255u) | ((e1 & 255u) << 8u) | ((e0 & 0xFF00u) << 8u) | ((e1 & 0xFF00u) << 16u);
+    const uint hi = ((e0 >> 16u) & 255u) | ((e1 >> 8u) & 0xFF00u) |
+                    (as_cem == 12u ? ((e0 >> 8u) & 0xFF0000u) | (e1 & 0xFF000000u) : 0u);
+    if (as_nv == 0u) {
+        as_v0 = lo;
+        as_v1 = hi;
+    } else {
+        as_v1 |= lo << 16u;
+        as_v2 = (lo >> 16u) | (hi << 16u);
     }
+    as_nv += as_cem == 12u ? 8u : 6u;
     return turn;
 }
 
@@ -242,7 +262,7 @@ bool AsEnds(uint s) {
    values is cut short: its missing digits are 0, which leaves the cut bits 0 */
 void AsColours(uint pos) {
     if (as_enc == AS_B8) {
-        for (uint k = 0u; k < as_nv; k++) Put(pos + 8u * k, as_v[k], 8u);
+        for (uint k = 0u; k < as_nv; k++) Put(pos + 8u * k, AsV(k), 8u);
         return;
     }
     const bool trits = (as_enc & 1u) == 0u;
@@ -250,7 +270,7 @@ void AsColours(uint pos) {
     for (uint g = 0u; g * group < as_nv; g++) {
         uint m0 = 0u, m1 = 0u, m2 = 0u, m3 = 0u, m4 = 0u, d0 = 0u, d1 = 0u, d2 = 0u, d3 = 0u, d4 = 0u;
         for (uint k = 0u; k < group; k++) {
-            const uint code = g * group + k < as_nv ? AsQuant(as_enc, as_v[g * group + k]) >> 8u : 0u;
+            const uint code = g * group + k < as_nv ? AsQuant(as_enc, AsV(g * group + k)) >> 8u : 0u;
             const uint m = code & ((1u << b) - 1u), digit = code >> b;
             if (k == 0u) m0 = m, d0 = digit;
             if (k == 1u) m1 = m, d1 = digit;
@@ -288,6 +308,9 @@ uvec4 AsPack() {
     enc = uvec4(0u);
     as_w = uvec4(0u);
     as_nv = 0u;
+    as_v0 = 0u;
+    as_v1 = 0u;
+    as_v2 = 0u;
     /* the block mode: a 4x4 grid of weights, of 2, 3 or 4 bits (the last with the mode's precision bit), two planes */
     Put(0u, (as_ib == 2u ? 0x042u : as_ib == 3u ? 0x053u : 0x242u) | (as_dual << 10u), 11u);
     Put(11u, as_np - 1u, 2u);
@@ -331,14 +354,14 @@ uvec4 AsPack() {
 uvec4 AstcEncode() {
     bool all_opaque = true, solid = true;
     for (uint k = 0u; k < 16u; k++) {
-        all_opaque = all_opaque && Ch(px[k], 3u) == 255u;
-        solid = solid && px[k] == px[0];
+        all_opaque = all_opaque && Ch(PX(k), 3u) == 255u;
+        solid = solid && PX(k) == PX(0);
     }
     as_err = 0xFFFFFFFFu;
     as_more = false;
     if (solid) {
         /* a void extent with no extent (its coordinates all ones): the colour, each channel 16 bits */
-        const uint c = px[0];
+        const uint c = PX(0);
         as_err = 0u;
         return uvec4(0xFFFFFDFCu, 0xFFFFFFFFu, (Ch(c, 0u) * 257u) | ((Ch(c, 1u) * 257u) << 16u),
                      (Ch(c, 2u) * 257u) | ((Ch(c, 3u) * 257u) << 16u));
@@ -359,8 +382,8 @@ uvec4 AstcEncode() {
                 const uint range = all_opaque ? (as_hib < 4u ? AS_B8 : AS_T6) : v == 0u ? AS_T6 : AS_T4;
                 AsShape(1u, 0u, ib, range, all_opaque ? 0u : 1u, 15u);
                 fit_err = 0xFFFFFFFFu;
-                Try(0u, 1u, true, AsC(as_h0[0], 0u), AsC(as_h0[0], 1u), AsC(as_h0[0], 2u), AsC(as_h0[0], 3u),
-                    AsC(as_h1[0], 0u), AsC(as_h1[0], 1u), AsC(as_h1[0], 2u), AsC(as_h1[0], 3u));
+                Try(0u, 1u, true, AsC(as_h0a, 0u), AsC(as_h0a, 1u), AsC(as_h0a, 2u), AsC(as_h0a, 3u),
+                    AsC(as_h1a, 0u), AsC(as_h1a, 1u), AsC(as_h1a, 2u), AsC(as_h1a, 3u));
                 AsKeepOne(all_opaque ? 8u : 12u, ib, range);
             }
         }

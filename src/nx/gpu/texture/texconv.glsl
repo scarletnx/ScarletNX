@@ -392,7 +392,7 @@ void bc_put(uint o0, uint u, uint i, uint c) {
 #ifdef SNX_TC_ETC2
     tx_px[i] = c;
 #elif defined(SNX_TC_ASTC)
-    px[i] = c;
+    PX_SET(i, c);
 #else
     dst[o0 + (i >> 2) * out_pitch + 4u * u + (i & 3u)] = c;
 #endif
@@ -450,8 +450,13 @@ void bc7_block(uint b[4], uint o0, uint u) {
                 h0 = (h0 & keep) | ((h0 >> 24) << sh) | (((h0 >> sh) & 0xFFu) << 24);
                 h1 = (h1 & keep) | ((h1 >> 24) << sh) | (((h1 >> sh) & 0xFFu) << 24);
             }
-            as_h0[s] = h0;
-            as_h1[s] = h1;
+            if (s == 0u) {
+                as_h0a = h0;
+                as_h1a = h1;
+            } else {
+                as_h0b = h0;
+                as_h1b = h1;
+            }
         }
         as_hint = ns == 2u ? 3u : mode == 6u ? 1u : 2u;
         as_hpart = p;
@@ -729,20 +734,20 @@ void main() {
             bool clear = false;
             for (uint i = 0u; i < 16u; i++) {
                 if (kind == TC_BC1) {
-                    px[i] = bc1_pixel(ce, ci, true, i);
-                    clear = clear || px[i] < 0x80000000u;
+                    PX_SET(i, bc1_pixel(ce, ci, true, i));
+                    clear = clear || PX(i) < 0x80000000u;
                 } else {
                     uint a = kind == TC_BC2 ? (((i < 8u ? b0 : b1) >> (4u * (i & 7u))) & 15u) * 17u
                                             : bc3_alpha(b1, b0, i);
-                    px[i] = (bc1_pixel(ce, ci, false, i) & 0xFFFFFFu) | (a << 24);
+                    PX_SET(i, (bc1_pixel(ce, ci, false, i) & 0xFFFFFFu) | (a << 24));
                 }
             }
             /* a colour line (BC1's two ends) beside the alpha: two planes, alpha apart, which AstcEncode takes as one
                line of 2 bit weights where every alpha is 255. A BC1 block of three colours has its third halfway,
                which 3 bit weights come nearest, and with a transparent texel (black, off the line) nothing to say */
             uint e0 = ce & 0xFFFFu, e1 = ce >> 16;
-            as_h0[0] = tc_rgba(bc_expand(e0 >> 11, 5u), bc_expand((e0 >> 5) & 63u, 6u), bc_expand(e0 & 31u, 5u), 255u);
-            as_h1[0] = tc_rgba(bc_expand(e1 >> 11, 5u), bc_expand((e1 >> 5) & 63u, 6u), bc_expand(e1 & 31u, 5u), 255u);
+            as_h0a = tc_rgba(bc_expand(e0 >> 11, 5u), bc_expand((e0 >> 5) & 63u, 6u), bc_expand(e0 & 31u, 5u), 255u);
+            as_h1a = tc_rgba(bc_expand(e1 >> 11, 5u), bc_expand((e1 >> 5) & 63u, 6u), bc_expand(e1 & 31u, 5u), 255u);
             as_hint = clear ? 0u : 2u;
             as_hplane = 3u;
             as_hib = kind == TC_BC1 && e0 <= e1 ? 3u : 2u;
