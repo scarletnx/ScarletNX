@@ -485,6 +485,10 @@ static int check_vertex_input_file_key(void) {
     g_vk.vertex_input_dynamic = was;
     CHECK(gwith && gwithout && (gwith != gwithout || memcmp(with, without, gwith)));
     CHECK(!strcmp(with + gwith, without + gwithout));
+    /* the records' version, the first word of the guest part: 7 since a PipeKey holds the fragment module's
+       specialization constants. A file of 6 has pipelines whose alpha function and origin were pushed, in no key */
+    if (strncmp(with, "guest=7 ", 8)) fprintf(stderr, "file key: the guest part is %.*s, not guest=7\n", 8, with);
+    CHECK(!strncmp(with, "guest=7 ", 8) && !strncmp(without, "guest=7 ", 8));
     printf("vertex input file key: with the layout dynamic %.*s\n", (int)gwith, with);
     printf("vertex input file key: with it in the key %.*s\n", (int)gwithout, without);
     return 0;
