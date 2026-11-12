@@ -21,6 +21,11 @@
 #define DM_OWN_SHARE 4u
 #define DM_SMALL_HEAP (1ull << 30)  /* a heap of this size or less has blocks of an eighth of it at most */
 #define DM_REFETCH   30u           /* requests between two questions to the driver about its budgets */
+/* What stays unused of the driver's budget for the GPU's own heap, on a GPU with memory of its own. The budget is
+   what the driver thinks this process can take, with nothing left: with the heap filled to it, the kernel logged
+   the desktop's compositor failing to get video memory while one game ran, and what the game then asked for went to
+   system memory, which the GPU reads across the bus */
+#define DM_MARGIN    (256ull << 20)
 
 /* device memory from the driver: a block that is handed out in ranges (space.h), or the memory of one allocation
    (own) */
@@ -58,6 +63,7 @@ static struct {
        one game */
     u64 full_frame[VK_MAX_MEMORY_TYPES], full_gave[VK_MAX_MEMORY_TYPES];
     u64 gave[VK_MAX_MEMORY_HEAPS];
+    int main_heap; /* the largest heap of the GPU's own memory: the one DM_MARGIN is kept free of */
     int coherent;  /* every memory type the CPU maps is coherent: a flush has nothing to do */
     u32 since;     /* requests since the driver's budgets were asked */
     u64 block_bytes[VK_MAX_MEMORY_HEAPS], allocated[VK_MAX_MEMORY_HEAPS];
@@ -68,10 +74,13 @@ static struct {
 
 const VkPhysicalDeviceMemoryProperties* vk_devmem_props(void) { return &g_devmem.mp; }
 
-/* a heap's budget: the driver's, or 4/5 of the heap without one (lock held). Keeping 768 MiB of it unused was tried
-   against one game's GPU stops (Xid 109) and did not prevent one */
+/* whether heap h is the GPU's own on a GPU that does not share the system's memory: the heap that is capped */
+static int heap_capped(u32 h) { return (int)h == g_devmem.main_heap && g_vk.mem_model != VK_MEM_UMA; }
+/* a heap's budget: the driver's, or 4/5 of the heap without one, less DM_MARGIN in the capped heap (lock held) */
 static u64 heap_budget(u32 h) {
-    return g_vk.has_budget ? g_devmem.drv_budget[h] : g_devmem.mp.memoryHeaps[h].size / 5 * 4;
+    u64 budget = g_vk.has_budget ? g_devmem.drv_budget[h] : g_devmem.mp.memoryHeaps[h].size / 5 * 4;
+    if (heap_capped(h)) budget = budget > 2 * DM_MARGIN ? budget - DM_MARGIN : budget / 2;
+    return budget;
 }
 /* a heap's use by every process: the driver's count then, and what this process took and gave back since (lock
    held) */
@@ -103,6 +112,12 @@ int vk_devmem_init(int bda) {
     vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &g_devmem.mp);
     g_devmem.bda = bda;
     g_devmem.apart = g_vk.props.limits.bufferImageGranularity > DM_UNIT;
+    g_devmem.main_heap = -1;
+    for (u32 h = 0; h < g_devmem.mp.memoryHeapCount; h++)
+        if ((g_devmem.mp.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) &&
+            (g_devmem.main_heap < 0 ||
+             g_devmem.mp.memoryHeaps[h].size > g_devmem.mp.memoryHeaps[g_devmem.main_heap].size))
+            g_devmem.main_heap = (int)h;
     g_devmem.coherent = 1;
     for (u32 t = 0; t < g_devmem.mp.memoryTypeCount; t++) {
         VkMemoryPropertyFlags f = g_devmem.mp.memoryTypes[t].propertyFlags;
@@ -137,8 +152,7 @@ void vk_devmem_budgets(DevMemBudget* b) {
 /* The memory type for a request, of the types in bits, or -1. One rule for every caller: the type must have what the
    place needs, and of those that do, the one that lacks the fewest properties the place prefers and has the fewest
    it avoids wins, the first of equals. The GPU's own memory avoids a type the CPU can map: on a discrete GPU with a
-   small window that type is the window, which the whole desktop shares, and what did not fit the GPU's memory then
-   goes to system memory, where the driver expects it */
+   small window that type is the window, which the whole desktop shares */
 static int type_pick(u32 bits, const DevMemWant* w) {
     VkMemoryPropertyFlags need = w->need, like = 0,
                           avoid = VK_MEMORY_PROPERTY_PROTECTED_BIT | VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT |
@@ -147,6 +161,11 @@ static int type_pick(u32 bits, const DevMemWant* w) {
     case DM_DEVICE:
         like = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
         avoid |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+        /* On a GPU with memory of its own, what the GPU reads stays in that memory. A request that does not fit
+           fails, and its owner makes room or does without: the caches trim and ask again (vk_mem_trim), a buffer
+           takes the ring. A library's way is to give it system memory with no word, where every read of it
+           crosses the bus: 612 MB of one game's textures were there */
+        if (g_vk.mem_model != VK_MEM_UMA) need |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
         break;
     case DM_HOST:
         need |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
@@ -202,6 +221,12 @@ static u32 block_slot(void) {
 /* size bytes of the driver's memory of a type, as a block (of that many units) or as the memory of
    one allocation (units 0), for a buffer or an image when the driver wants it alone: its index plus one, 0 with *res */
 static u32 block_new(u32 type, u64 size, int image, u32 units, VkBuffer buf, VkImage img, VkResult* res) {
+    u32 heap_of = g_devmem.mp.memoryTypes[type].heapIndex;
+    /* the capped heap takes no more past its budget: full for this request, as if the driver had said so */
+    if (heap_capped(heap_of) && heap_usage(heap_of) + size > heap_budget(heap_of)) {
+        *res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+        return 0;
+    }
     u32 slot = block_slot();
     *res = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (!slot) return 0;

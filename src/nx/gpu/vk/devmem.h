@@ -12,8 +12,10 @@
    which goes back to the driver when the request does. A block with nothing in it goes back too, but for one of its
    kind, which the next request finds without a call to the driver.
 
-   A heap that the driver has no more of takes no more blocks: the request then goes to the next memory type that
-   suits it, as a driver's own overflow does, and not to a small allocation of its own in the full heap.
+   On a GPU with memory of its own, the GPU's own heap is used up to the driver's budget less a margin, and a request
+   for the GPU's own memory never gets system memory in its place: it fails, and its owner makes room or does
+   without. A heap that has no room takes no more blocks for a while, so a request without room costs no call to
+   the driver.
 
    One lock guards it all: any thread may ask. The driver's allocate and free go through the ledger, which times
    them (ledger.h) */
