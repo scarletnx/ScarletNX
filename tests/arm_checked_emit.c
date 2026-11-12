@@ -28,7 +28,7 @@ int main(int argc, char** argv) {
     for (unsigned i = 0; i < F_count; ++i) {
         const ArmFixture* f = &arm_fixtures[i];
         SnxArmCodegenOptions o = {SNX_ARM_CODEGEN_OPTIONS_ABI, (SnxArmProfile)f->profile,
-                                  f->checked ? SNX_ARM_MEMORY_CHECKED : SNX_ARM_MEMORY_FLAT};
+                                  f->checked ? SNX_ARM_MEMORY_CHECKED : SNX_ARM_MEMORY_FLAT, 0, 0};
         char name[80];
         snprintf(name, sizeof name, "snx_fixture_%s", f->name);
         size_t consumed = 0;
@@ -53,8 +53,14 @@ int main(int argc, char** argv) {
     table = LLVMAddGlobal(mod, LLVMArrayType(LLVMInt32TypeInContext(ctx), F_count), "snx_test_consumed");
     LLVMSetInitializer(table, LLVMConstArray(LLVMInt32TypeInContext(ctx), counts, F_count));
     LLVMSetGlobalConstant(table, 1);
-    /* Rejected options must not leave a partially emitted function behind. */
-    SnxArmCodegenOptions bad[] = {{99, 0, 0}, {1, 99, 0}, {1, 0, 99}};
+    /* Rejected options must not leave a partially emitted function behind: a bad ABI, profile or memory mode, and bus
+       cycles counted by a profile other than the ARM7TDMI, into one place only, or into the table itself */
+    SnxArmCodegenOptions bad[] = {{99, 0, 0, 0, 0},
+                                  {1, 99, 0, 0, 0},
+                                  {1, 0, 99, 0, 0},
+                                  {1, SNX_ARM_PROFILE_A57, SNX_ARM_MEMORY_FLAT, 1024, 1032},
+                                  {1, SNX_ARM_PROFILE_ARM7TDMI, SNX_ARM_MEMORY_FLAT, 1024, 0},
+                                  {1, SNX_ARM_PROFILE_ARM7TDMI, SNX_ARM_MEMORY_FLAT, 1024, 1024}};
     for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i) {
         size_t n = 123;
         uint32_t arm = 0xe1a00000;
@@ -68,8 +74,8 @@ int main(int argc, char** argv) {
     }
     /* A hosted block has a noalias cpu and no entry checks, and SETEND BE stops it. The AGB's ARM7TDMI is not hosted. */
     {
-        SnxArmCodegenOptions hosted = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_HOSTED};
-        SnxArmCodegenOptions agb = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM7TDMI, SNX_ARM_MEMORY_HOSTED};
+        SnxArmCodegenOptions hosted = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_HOSTED, 0, 0};
+        SnxArmCodegenOptions agb = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM7TDMI, SNX_ARM_MEMORY_HOSTED, 0, 0};
         uint32_t arm[2] = {0xe1a00000, 0xf1010200};
         uint16_t thumb[2] = {0x46c0, 0x46c0};
         size_t n = 0;

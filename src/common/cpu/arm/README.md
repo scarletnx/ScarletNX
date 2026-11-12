@@ -61,7 +61,7 @@ changes shared code generation. Other boards opt in through the `_ex` APIs:
 
 ```c
 SnxArmCodegenOptions options = {
-    SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM11, SNX_ARM_MEMORY_CHECKED
+    SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM11, SNX_ARM_MEMORY_CHECKED, 0, 0
 };
 snx_arm_llvm_block_ex(module, name, words, count, pc, &consumed, &options);
 ```

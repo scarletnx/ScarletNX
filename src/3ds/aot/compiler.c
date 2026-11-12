@@ -113,7 +113,7 @@ static bool chunk(SnxIr* ir, const SnxCtrImage* image, const Entry* entries, uns
     bool ok = false;
     unsigned capacity = 0;
     SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM11,
-                                    (SnxArmMemoryMode)snx_ctr_module_memory()};
+                                    (SnxArmMemoryMode)snx_ctr_module_memory(), 0, 0};
     *rest = NULL;
     *rest_count = 0;
     for (unsigned i = 0; i < count; ++i) {

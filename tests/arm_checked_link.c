@@ -19,7 +19,7 @@ static int link_block(char opt) {
         fprintf(stderr, "skipped: %s\n", error);
         return EXIT_SKIPPED;
     }
-    SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM11, SNX_ARM_MEMORY_CHECKED};
+    SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM11, SNX_ARM_MEMORY_CHECKED, 0, 0};
     size_t consumed = 0;
     if (!snx_arm_llvm_block_ex(ir->mod, "block", code, 2, 0x1000, &consumed, &options)) {
         fprintf(stderr, "FAIL: -O%c: the checked block is not emitted\n", opt);
