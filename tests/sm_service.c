@@ -3,6 +3,7 @@
 /* sm: (sm.c): the names it accepts, and RegisterService and UnregisterService answering as an application's sm does,
    with the service registry stubbed */
 #include "nx/hle/services/services_int.h"
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stdio.h>
 
@@ -27,12 +28,17 @@ void logf_(int level, const char* format, ...) {
     (void)level;
     (void)format;
 }
-/* log.c's: the stop of a game that opened a service the runtime answers only natively, which no check here asks */
+/* log.c's: the stop of a program that opened a service the runtime answers only natively; its message is kept */
+static jmp_buf test_stopped;
+static int test_expects_stop;
+static char test_stop_text[640];
 void fatal(const char* format, ...) {
     va_list args;
     va_start(args, format);
-    vfprintf(stderr, format, args);
+    vsnprintf(test_stop_text, sizeof test_stop_text, format, args);
     va_end(args);
+    if (test_expects_stop) longjmp(test_stopped, 1);
+    fprintf(stderr, "%s\n", test_stop_text);
     test_fail("fatal", __LINE__);
     exit(1);
 }
@@ -96,6 +102,32 @@ int main(void) {
     CHECK(nn_sm_detail_IUserInterface_UnregisterService(NULL, &name) == RC(21, 6));
     /* a service the runtime doesn't have still gets a session, to a stand-in under its name */
     name = name_of("abcdefgh", 8);
+    handle = 0;
+    CHECK(nn_sm_detail_IUserInterface_GetServiceHandle(NULL, &name, &handle) == 0 && handle == 0x1234);
+
+    /* a service the runtime answers only in the SDK's functions gets no session and no stand-in: the program stops,
+       told which service and layer, that an SDK function is not native yet, and what a program with no SDK has to
+       do. Its neighbours by name are other services */
+    static const char* const native_only[] = {"fsp-srv", "fsp-pr",  "fsp-ldr", "time:u",  "time:a",  "time:s",
+                                              "time:r",  "time:su", "pl:u",    "pl:s",    "pctl",    "pctl:a",
+                                              "pctl:s",  "pctl:r",  "nsd:u",   "nsd:a",   "ngc:u",   "ngct:u",
+                                              "prepo:u", "prepo:s", "prepo:m", "prepo:a", "prepo:a2"};
+    for (size_t i = 0; i < sizeof native_only / sizeof native_only[0]; i++) {
+        char opened[32], itself[40];
+        snprintf(opened, sizeof opened, "opened %s,", native_only[i]);
+        snprintf(itself, sizeof itself, "opens %s itself", native_only[i]);
+        name = name_of(native_only[i], strlen(native_only[i]));
+        test_expects_stop = 1;
+        if (!setjmp(test_stopped)) {
+            nn_sm_detail_IUserInterface_GetServiceHandle(NULL, &name, &handle);
+            test_fail("the program went on with a session of a native-only service", __LINE__);
+        }
+        test_expects_stop = 0;
+        CHECK(strstr(test_stop_text, opened) && strstr(test_stop_text, itself));
+        CHECK(strstr(test_stop_text, "nn::") && strstr(test_stop_text, "not native yet"));
+        CHECK(strstr(test_stop_text, "libnx") && strstr(test_stop_text, "the word hooks in its mode file"));
+    }
+    name = name_of("time:x", 6);
     handle = 0;
     CHECK(nn_sm_detail_IUserInterface_GetServiceHandle(NULL, &name, &handle) == 0 && handle == 0x1234);
 
