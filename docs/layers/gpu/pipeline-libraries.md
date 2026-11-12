@@ -113,6 +113,7 @@ is the best case for the GPU.
 | `sample_shading` | FS and FO | in both keys |
 | `conservative` | PR | dynamic with `extendedDynamicState3ConservativeRasterizationMode` and `ExtraPrimitiveOverestimationSize`, else in the PR key |
 | `fs` | FS | the module (or `null_fs()`), in the FS key |
+| `fs_spec` | FS | the module's specialization constants (the alpha test's function), in the FS key |
 
 Some state goes into every part and into the link, and it is the same for all pipelines of a run. These are the
 `VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT` flag with `has_descriptor_buffers`
@@ -229,6 +230,7 @@ typedef struct {
     u32 sample_shading;
     u32 samples, sample_off, alpha_to_coverage, alpha_to_one;  /* 0 without sample_shading */
     VkCoverage coverage;
+    u32 spec;                         /* the module's specialization constants */
 } PipeFsKey;
 typedef struct {
     u32 ncolor, color[8], depth, stencil;

@@ -2929,6 +2929,17 @@ static struct {
 } g_draw = {.check = -1};
 u64 g_vk_draw_kept, g_vk_draw_checked;
 
+/* What the draw's pipeline gives fs's specialization constants (PipeKey.fs_spec): the state of those fs declares, so
+   that a program which reads none of it is drawn by one pipeline whatever that state is */
+static u32 draw_fs_spec(const DsState* ds, const VkSh* fs) {
+    u32 spec = 0;
+    if (!fs) return 0;
+    if (fs->si.spec & (1u << SH_SPEC_ALPHA))
+        spec |=
+            SH_SPEC_ALPHA_ALWAYS ^ (ds->dyn.alpha_test ? ds->dyn.alpha_func & PIPE_SPEC_ALPHA : SH_SPEC_ALPHA_ALWAYS);
+    return spec;
+}
+
 static void draw_differs(const char* what) {
     WARN_LIMIT(32,
                "vulkan: draw_state_check=1: a draw that kept the last draw's state has another %s when it is made "
@@ -4209,6 +4220,8 @@ retry:
     if (kept && (memcmp(&sample_locations, &g_draw.k.sample_locations, sizeof sample_locations) ||
                  to_color != g_draw.k.coverage_to_color)) kept = 0;
     if (kept && memcmp(&native_blend, &g_draw.k.advanced, sizeof native_blend)) kept = 0;
+    u32 fs_spec = draw_fs_spec(ds, fs);
+    if (kept && fs_spec != g_draw.k.fs_spec) kept = 0;
     PipeKey made_k;
     VertexPlan made_pl;
     const PipeKey* k = &g_draw.k;
@@ -4223,6 +4236,7 @@ retry:
             return;
         }
         made_k.coverage = coverage;
+        made_k.fs_spec = fs_spec;
         made_k.advanced = native_blend;
         made_k.sample_locations = sample_locations;
         made_k.coverage_to_color = to_color;
@@ -4900,7 +4914,7 @@ retry:
               rec_CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_BACK_BIT, sb[6])));
     }
     /* push constants: the depth mode (snx_vp.y) for the vertex stage, 0 too where the device makes the range of -1 to
-       1 (VK_DYN_PR_DEPTH_RANGE), the alpha test (on, function, reference) and
+       1 (VK_DYN_PR_DEPTH_RANGE), the alpha test's reference (its function is the pipeline's: draw_fs_spec) and
        the point sprite's T flip for the fragment stage. PointCoord's T is 0 at row 0, which is a lower-left window's
        bottom: it flips when the sprite's origin (1 the top) is the other side. Then the fragment stage's scaled
        textures (stage_set), and whether the window is lower left and its surface clip's height, which the fragment's
@@ -4925,9 +4939,7 @@ retry:
        indirect mesh draw's first group, which the task or mesh program takes from SNX_VKB_RS */
     u32 params = mesh && dc->indirect ? SH_PUSH_GPU_MESH_FIRST : dc->indirect ? dc->params : 0;
     memcpy(&pc[2], &params, sizeof(u32));
-    pc[4] = ds->dyn.alpha_test ? 1.0f : 0.0f;
-    pc[5] = (float)ds->dyn.alpha_func;
-    memcpy(&pc[6], &ds->dyn.alpha_ref, 4);
+    memcpy(&pc[6], &ds->dyn.alpha_ref, 4); /* the test's function is the pipeline's (draw_fs_spec) */
     pc[7] = ds->dyn.sprite_origin == ((ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0) ? 1.0f : 0.0f;
     u32 scaled_words[2] = {(u32)scaled[0], (u32)(scaled[0] >> 32)};
     memcpy(&pc[8], scaled_words, sizeof scaled_words);

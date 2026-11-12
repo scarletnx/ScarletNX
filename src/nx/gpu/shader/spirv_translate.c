@@ -2939,6 +2939,9 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                                  frontface, depth_buffer, advanced_blend ? outputs[0] : 0, blend_image, blend_image_type);
     spv_emit_function_end(&c->emit);
     u32* result = spv_emit_finish(&c->emit, word_count);
+    u32 spec = 0;
+    for (u32 id = 0; id < SH_SPEC_COUNT; id++)
+        if (c->spec[id]) spec |= 1u << id;
     spv_emit_destroy(&c->emit);
     free(c->ftz);
     free(c->ftz_of);
@@ -3012,6 +3015,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     next.writes_point_size = point_size_used;
     next.uses_sample_id = needs_sample_id;
     next.has_discard = has_discard;
+    next.spec = spec;
     next.early_fragment_tests = si->early_fragment_tests;
     next.writes_viewport = viewport_used;
     memcpy(next.tex, textures, (size_t)texture_count * sizeof textures[0]);

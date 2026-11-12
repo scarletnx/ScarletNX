@@ -416,6 +416,13 @@ uint32_t spv_emit_constant_bool(SpvEmitter* e, uint32_t type, int value) {
     return id;
 }
 
+uint32_t spv_emit_spec_constant_u32(SpvEmitter* e, uint32_t type, uint32_t spec_id, uint32_t value) {
+    uint32_t id = spv_emit_id(e);
+    EMIT(&e->types, SPV_OP_SPEC_CONSTANT, type, id, value);
+    EMIT(&e->decorations, SPV_OP_DECORATE, id, SPV_DECORATION_SPEC_ID, spec_id);
+    return id;
+}
+
 uint32_t spv_emit_constant_f32(SpvEmitter* e, uint32_t type, float value) {
     uint32_t bits;
     memcpy(&bits, &value, sizeof bits);

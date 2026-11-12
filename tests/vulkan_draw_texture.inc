@@ -26,7 +26,9 @@ static int check_draw_texture(void) {
     CHECK(nvn_tic_encode(&texture, NULL, 0, 0, tic));
     CHECK(!storage_write_words(gpu, tic, 8));
     CHECK(!storage_write_words(gpu + 0x1000, (const u32[8]){2u | 2u << 3 | 2u << 6}, 8)); /* nearest and clamp to edge */
-    for (u32 test = 0; test < 6; test++) {
+    /* tests 3 and 6 draw one fragment program with two alpha functions: the texel's alpha is a half, which is not
+       greater than the reference and is less than it */
+    for (u32 test = 0; test < 7; test++) {
         vk_lock();
         channel->r3d[0x574] = 0;
         rt_clear(channel, target, 4, 4, 0, 0);
@@ -40,8 +42,8 @@ static int check_draw_texture(void) {
         state->blend.mask[0] = test == 2 ? DS_COMPONENT_G : 15;
         state->rkey.alpha_to_coverage = state->rkey.alpha_to_one = 0;
         state->rkey.sample_mask = ~0u;
-        state->dyn.alpha_test = test == 3;
-        state->dyn.alpha_func = DS_CMP_GREATER;
+        state->dyn.alpha_test = test == 3 || test == 6;
+        state->dyn.alpha_func = test == 6 ? DS_CMP_LESS : DS_CMP_GREATER;
         state->dyn.alpha_ref = 0.75f;
         DrawTexture rectangle = {.w = 4, .h = 4, .sx0 = 0.5f, .sy0 = 0.5f};
         rectangle.state.multisample_flags = DS_MS_A2C_DITHER;

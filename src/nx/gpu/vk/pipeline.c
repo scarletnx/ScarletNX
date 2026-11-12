@@ -1239,6 +1239,10 @@ float vk_conservative_extra(u32 conservative) {
 typedef struct {
     VkPipelineShaderStageCreateInfo st[5];
     u32 nst, npr; /* the stages, the first npr of them before rasterization and then the fragment one */
+    /* the fragment module's specialization constants (k->fs_spec), by SpecId */
+    u32 spec_values[SH_SPEC_COUNT];
+    VkSpecializationMapEntry spec_entries[SH_SPEC_COUNT];
+    VkSpecializationInfo spec;
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo warp; /* a mesh pipeline's mesh and task stages' */
     /* with descriptor heaps (k->heaps), each stage's mapping of its set's bindings */
     VkShaderDescriptorSetAndBindingMappingInfoEXT mappings[5];
@@ -1308,6 +1312,14 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
                                                              o->binding_maps[o->nst], SNX_VKB_END),
                 .pMappings = o->binding_maps[o->nst]};
             o->st[o->nst].pNext = &o->mappings[o->nst];
+        }
+        if (s == 4 && k->fs_spec) {
+            /* a constant the module does not declare changes nothing in it, so each is given whatever the module */
+            o->spec_values[SH_SPEC_ALPHA] = SH_SPEC_ALPHA_ALWAYS ^ (k->fs_spec & PIPE_SPEC_ALPHA);
+            for (u32 id = 0; id < SH_SPEC_COUNT; id++)
+                o->spec_entries[id] = (VkSpecializationMapEntry){id, id * (u32)sizeof(u32), sizeof(u32)};
+            o->spec = (VkSpecializationInfo){SH_SPEC_COUNT, o->spec_entries, sizeof o->spec_values, o->spec_values};
+            o->st[o->nst].pSpecializationInfo = &o->spec;
         }
         o->nst++;
         if (s < 4) o->npr = o->nst;

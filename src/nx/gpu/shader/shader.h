@@ -256,7 +256,20 @@ typedef struct {
     u32 nmemh;
     u32 memh_none;     /* texture instructions whose handle from memory is SH_PROBE_NONE, */
     char memh_why[64]; /* and why the first is */
+    u32 spec;          /* the specialization constants the module declares: bit SH_SPEC_ of each */
 } ShaderInfo;
+/* A fragment module's specialization constants, by SpecId: state a draw has before its program runs, which the
+   pipeline gives the module (vk/pipeline.c, PipeKey.fs_spec) so that the driver compiles the program for it. As a
+   push constant the same state is a value the program computes with for every fragment: the alpha test compared the
+   function with each of its eight values. A program is translated once whatever the state; a pipeline is made for
+   each value a program is drawn with, and only a module that declares the constant (ShaderInfo.spec) has one */
+enum {
+    /* the alpha test's function, in the 3D engine's order: 0 never, 1 less, 2 equal, 3 less or equal, 4 greater, 5 not
+       equal, 6 greater or equal, 7 always. With the test off it is 7, the module's default */
+    SH_SPEC_ALPHA = 0,
+    SH_SPEC_COUNT
+};
+#define SH_SPEC_ALPHA_ALWAYS 7u
 /* The graphics cache packs these explicit fragment-only fields above its eight image-format bits. */
 enum { SH_FS_LATE_DEPTH = 1u, SH_FS_CAPTURE_SHIFT = 1, SH_FS_VARYING_SHIFT = 4, SH_FS_CONFIG_MASK = 0xFFFFFFu };
 /* ShaderInfo.varying, a fragment program's key from SH_FS_VARYING_SHIFT up of those fields. A host GPU that clips a

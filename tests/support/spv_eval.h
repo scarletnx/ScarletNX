@@ -31,6 +31,8 @@ typedef struct {
     uint32_t shuffle_id;        /* the invocation the last OpGroupNonUniformShuffle read from (its Id operand) */
     uint32_t steps_max;         /* 0: 1000000 */
     uint32_t push[20];          /* the push constant block's words */
+    /* the specialization constants by SpecId: spec[k] where bit k of spec_given is set, else the module's default */
+    uint32_t spec[8], spec_given;
     /* task and mesh programs, one invocation of a workgroup: the TaskPayloadWorkgroupEXT variable's words (given, and
        kept when the invocation ends), the counts of OpSetMeshOutputsEXT (vertices, primitives) and of
        OpEmitMeshTasksEXT (x, y, z), each with its flag, and where the words of each Output array go: by location,

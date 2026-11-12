@@ -30,24 +30,18 @@ int shader_ipa_position(u32 pos_in, const u32* sph, u32 addr) {
 }
 
 void shader_alpha_test(DirectCtx* c, u32 push, u32 push_pointer, u32 alpha) {
-    u32 index[3];
-    for (u32 i = 0; i < 3; i++) index[i] = shader_u32(c, i);
-    u32 enabled = spv_emit_push_component_f32(&c->emit, push_pointer, push, index[0], index[0], c->f32_type);
-    u32 function = spv_emit_push_component_f32(&c->emit, push_pointer, push, index[0], index[1], c->f32_type);
-    u32 reference = spv_emit_push_component_f32(&c->emit, push_pointer, push, index[0], index[2], c->f32_type);
-    u32 zero = spv_emit_constant_f32(&c->emit, c->f32_type, 0.0f);
-    u32 active = spv_emit_fcompare(&c->emit, c->bool_type, 5, enabled, zero);
-    u32 pass =
-        spv_emit_fcompare(&c->emit, c->bool_type, 2, function, spv_emit_constant_f32(&c->emit, c->f32_type, 7.0f));
+    /* the function is the pipeline's (SH_SPEC_ALPHA: always, with the test off), so the driver keeps the one
+       comparison of the draw, or none; the reference stays a push constant, as any value of a draw's */
+    u32 function = shader_spec(c, SH_SPEC_ALPHA, SH_SPEC_ALPHA_ALWAYS);
+    u32 reference = spv_emit_push_component_f32(&c->emit, push_pointer, push, c->zero, shader_u32(c, 2), c->f32_type);
+    u32 pass = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, function, shader_u32(c, SH_SPEC_ALPHA_ALWAYS));
     for (u32 mode = 1; mode <= 6; mode++) {
-        u32 tag = spv_emit_constant_f32(&c->emit, c->f32_type, (float)mode);
-        u32 selected = spv_emit_fcompare(&c->emit, c->bool_type, 2, function, tag);
+        u32 selected = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, function, shader_u32(c, mode));
         u32 comparison = spv_emit_fcompare(&c->emit, c->bool_type, mode, alpha, reference);
         u32 result = spv_emit_bool_binary(&c->emit, c->bool_type, 0, selected, comparison);
         pass = spv_emit_bool_binary(&c->emit, c->bool_type, 1, pass, result);
     }
     u32 fail = spv_emit_unary(&c->emit, SPV_OP_LOGICAL_NOT, c->bool_type, pass);
-    fail = spv_emit_bool_binary(&c->emit, c->bool_type, 0, active, fail);
     if (c->discarded) { /* in the flow loop: discarded after it */
         spv_emit_store(
             &c->emit, c->discarded,

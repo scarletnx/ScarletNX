@@ -5448,6 +5448,61 @@ static void inputs_loaded_once_a_block(void) {
 #undef INPUT_ALD
 }
 
+/* The alpha test's function is the pipeline's, a specialization constant (shader.h's SH_SPEC_ALPHA): a fragment
+   program that writes a colour declares it and reads the reference alone from the push constants, and with each
+   function keeps or discards the fragment as the 3D engine's test does; with none given the test is off. A program
+   that writes no colour has no test and declares nothing */
+static void alpha_function_specialized(void) {
+    enum { SPEC_CONSTANT = 50, DECORATE = 71, SPEC_ID = 1 };
+    const float alphas[3] = {0.25f, 0.5f, 0.75f}, reference = 0.5f;
+    for (u32 at = 0; at < 3; at++) {
+        u32 alpha_bits, reference_bits;
+        memcpy(&alpha_bits, &alphas[at], 4);
+        memcpy(&reference_bits, &reference, 4);
+        const u64 program[] = {mov32i(3, alpha_bits)}; /* R3, colour 0's alpha */
+        for (int colour = 0; colour < 2; colour++) {
+            ShaderInfo info = {0};
+            size_t words = 0, slots;
+            u64* code = guest_program(program, 1, NULL, &slots);
+            if (!code) return;
+            set_sph(code, 18, colour ? 0xf : 0);
+            u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 0, 1, 1, 1);
+            free(code);
+            check_translated(spv, &info, "a fragment program setting its alpha translates");
+            if (!spv) continue;
+            int constants = count_opcode(spv, words, SPEC_CONSTANT, 0xffffffffu), named = 0;
+            for (size_t i = 5; i < words; i += spv[i] >> 16) /* OpDecorate id SpecId SH_SPEC_ALPHA */
+                if ((spv[i] & 0xffff) == DECORATE && spv[i] >> 16 == 4 && spv[i + 2] == SPEC_ID &&
+                    spv[i + 3] == SH_SPEC_ALPHA)
+                    named++;
+            check(constants == colour && named == colour && info.spec == (colour ? 1u << SH_SPEC_ALPHA : 0u),
+                  "a program that writes a colour declares the alpha function, and one that writes none nothing");
+            for (u32 function = 0; function <= 8 && colour; function++) { /* 8: none given */
+                SpvEvalEnv env = {0};
+                env.push[0] = env.push[1] = 0x7fc00000u; /* what the test's switch and function were: not read */
+                env.push[2] = reference_bits;
+                env.spec[SH_SPEC_ALPHA] = function;
+                env.spec_given = function < 8 ? 1u << SH_SPEC_ALPHA : 0;
+                const char* why = spv_eval(spv, words, &env);
+                float a = alphas[at];
+                int passes = function == 1   ? (a < reference)
+                             : function == 2 ? (a == reference)
+                             : function == 3 ? (a <= reference)
+                             : function == 4 ? (a > reference)
+                             : function == 5 ? (a != reference)
+                             : function == 6 ? (a >= reference)
+                                             : function >= 7;
+                if (why || env.killed != !passes)
+                    fprintf(stderr, "alpha test: function %u of alpha %g against %g: %s, killed %d, not %d\n", function,
+                            (double)a, (double)reference, why ? why : "ran", env.killed, !passes);
+                check(!why && env.killed == !passes,
+                      "each alpha function keeps the fragments the 3D engine's test keeps");
+            }
+            free(spv);
+        }
+    }
+}
+
 /* What the translator knows as it translates is settled there, not left for the driver's compiler: PT, the
    predicate most instructions name, is the constant true; a constant a register holds is a constant of the type it
    is read as; and a float a register holds is read back as that float, not through its bits */
@@ -5824,6 +5879,7 @@ int main(int argc, char** argv) {
     fragment_position_pass();
     per_vertex_pass();
     settled_when_translated();
+    alpha_function_specialized();
     inputs_loaded_once_a_block();
     check(!g_fixtures.failed, "shader fixture paths allocated");
     for (size_t i = 0; i < g_fixtures.count; i++) free(g_fixtures.paths[i]);

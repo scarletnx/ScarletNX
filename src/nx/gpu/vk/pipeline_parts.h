@@ -88,6 +88,7 @@ typedef struct {
     /* with sample shading, the multisample state the fragment output part has too (they must be the same) */
     u32 sample_shading, samples, sample_off, alpha_to_coverage, alpha_to_one;
     VkCoverage coverage;
+    u32 spec; /* PipeKey.fs_spec: the module's specialization constants */
 } PipeFsKey;
 typedef struct {
     u32 ncolor, color[8], depth, stencil;
