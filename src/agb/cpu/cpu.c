@@ -9,7 +9,6 @@
 /* The handler returns to this address: the machine takes the interrupt's epilogue from there. */
 #define AGB_IRQ_RETURN             0x00000004u
 #define AGB_BIOS_FLAGS             0x03007FF8u /* the interrupt flags a game's handler sets for IntrWait */
-/* Recompiled blocks are charged two cycles per instruction, the ARM7TDMI's average. */
 
 typedef struct {
     AgbBoard* board;
@@ -106,6 +105,8 @@ void agb_cpu_init(AgbCpu* cpu, AgbBoard* board, uint8_t* map) {
     cpu->over =
         (uint32_t)((board->ppu.vcount + AGB_FRAME_LINES - AGB_SCREEN_HEIGHT) % AGB_FRAME_LINES) * AGB_SCANLINE_CYCLES +
         board->ppu.dot;
+    cpu->costs_waitcnt = 0x10000;    /* none made yet: the first block's run makes them */
+    cpu->bus_costs = &cpu->costs[0]; /* a block run on its own reads one, all zero */
 }
 
 static void advance(AgbCpu* cpu, AgbSink* sink, uint32_t cycles) {
@@ -619,14 +620,43 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
     return -1;
 }
 
-/* The cycles a block takes: each instruction its fetch (GBATEK's memory timings by region; on the cartridge with
-   WAITCNT's prefetch buffer on, which fetches the next ones while the CPU works, a cycle a halfword), and the branch
-   that ends it a refill of the pipeline, two fetches */
-static uint32_t block_cycles(const AgbBoard* board, const AgbBlock* block) {
-    unsigned width = block->thumb ? 16 : 32, region = block->pc >> 24 & 0xF;
-    uint32_t fetch = agb_access_cycles(board, block->pc, width, 1), refill = 2 * fetch;
-    if (region >= 0x8 && region <= 0xD && (board->io[0x204 >> 1] & 0x4000)) fetch = block->thumb ? 1 : 2;
-    return (uint32_t)block->instructions * fetch + refill;
+/* The bus costs of the loads and stores of code running from each region (arm.h's SnxArmBusCosts), for the WAITCNT
+   the board has, as mGBA counts them (gba/memory.c: GBALoad*, GBAStore*, GBAMemoryStall): a first access 1 + its wait
+   states, each next word of a multiple one 1 + a sequential word's, then the fetch after it a non-sequential one. With
+   the prefetch buffer on, code on the cartridge has its next halfwords fetched while the CPU reaches other memory: the
+   instruction's time there hides up to that many fetches, 8 at most (1 + 8 sequential wait states), and its fetch
+   after it is one of them */
+static void bus_costs(AgbCpu* cpu, const AgbBoard* board) {
+    int prefetch = (board->io[0x204 >> 1] & 0x4000) != 0;
+    for (unsigned code = 0; code < 16; ++code) {
+        SnxArmBusCosts* c = &cpu->costs[code];
+        int n = (int)agb_access_cycles(board, code << 24, 16, 0) - 1,
+            s = (int)agb_access_cycles(board, code << 24, 16, 1) - 1;
+        int cartridge = code >= 0x8 && code <= 0xD;
+        for (unsigned region = 0; region < 16; ++region) {
+            c->nonseq[region][0] = (uint8_t)agb_access_cycles(board, region << 24, 8, 0);
+            c->nonseq[region][1] = (uint8_t)agb_access_cycles(board, region << 24, 16, 0);
+            c->nonseq[region][2] = c->nonseq[region][3] = (uint8_t)agb_access_cycles(board, region << 24, 32, 0);
+            c->seq[region] = (uint8_t)agb_access_cycles(board, region << 24, 32, 1);
+            c->adjust[region] = (int8_t)(cartridge && prefetch && region < 0x8 ? -(1 + 8 * s) : n - s);
+        }
+    }
+    cpu->costs_waitcnt = board->io[0x204 >> 1];
+}
+
+/* The cycles a block took, as mGBA counts an instruction's: each its fetch, 1 + a sequential access's wait states
+   (GBATEK's memory timings by region and WAITCNT), whatever the prefetch buffer; a jump to next (a branch taken, not
+   the instruction after the block) a refill of the pipeline there, a non-sequential and a sequential fetch and two
+   cycles; and what its loads and stores counted (bus_costs) */
+static uint32_t block_cycles(AgbCpu* cpu, const AgbBoard* board, const AgbBlock* block, uint32_t next) {
+    unsigned width = block->thumb ? 16 : 32;
+    uint32_t fallthrough = block->pc + (uint32_t)block->instructions * (width / 8);
+    uint32_t cycles = (uint32_t)block->instructions * agb_access_cycles(board, block->pc, width, 1) + cpu->bus_cycles;
+    unsigned next_width = cpu->arm.cpsr & SNX_ARM_T ? 16 : 32;
+    if (next != fallthrough)
+        cycles += agb_access_cycles(board, next, next_width, 0) + agb_access_cycles(board, next, next_width, 1);
+    cpu->bus_cycles = 0;
+    return cycles;
 }
 
 int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles, int16_t* audio,
@@ -677,9 +707,12 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
         const AgbBlock* block =
             agb_recomp_lookup(recomp, board, cpu->arm.r[15], (cpu->arm.cpsr & SNX_ARM_T) != 0, error, error_size);
         if (!block) return -1;
+        if (cpu->costs_waitcnt != board->io[0x204 >> 1]) bus_costs(cpu, board);
+        cpu->bus_costs = &cpu->costs[block->pc >> 24 & 0xF];
+        cpu->bus_cycles = 0;
         cpu->arm.exit = SNX_ARM_OK;
         block->fn(&cpu->arm);
-        advance(cpu, &sink, block_cycles(board, block));
+        advance(cpu, &sink, block_cycles(cpu, board, block, cpu->arm.r[15]));
         if (cpu->arm.exit == SNX_ARM_SVC)
             handle_swi(cpu, &sink, cpu->arm.syndrome, block->thumb);
         else if (cpu->arm.exit == SNX_ARM_UNDEFINED) {

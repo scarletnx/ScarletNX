@@ -37,8 +37,8 @@ static void put16(uint8_t* p, uint16_t value) {
    0x03007FFC, waits for a vblank through the HLE BIOS and writes two markers on its way. The handler
    acknowledges the interrupt flag and writes a marker of its own. */
 static uint8_t* make_rom(size_t* size) {
-    uint8_t* rom = (uint8_t*)calloc(1, 0x200);
-    *size = 0x200;
+    uint8_t* rom = (uint8_t*)calloc(1, 0x300);
+    *size = 0x300;
     put32(rom + 0x00, 0xEA00002E); /* B 0xC0, the header's entry branch */
     put32(rom + 0xC0, 0xEA00001E); /* b 0x140 */
     rom[0xB2] = 0x96;
@@ -114,6 +114,19 @@ static uint8_t* make_rom(size_t* size) {
     put32(rom + 0x134, 0x04000202);
     put32(rom + 0x138, 0x03007FF8);
     put32(rom + 0x13C, 0x02000004); /* marker 2 */
+    /* Thumb loops on the cartridge, each adding 1 to r0 a turn, which the bus cycle checks run (main) */
+    put16(rom + 0x200, 0x3001); /* adds r0, #1 */
+    put16(rom + 0x202, 0xE7FD); /* b 0x200 */
+    put16(rom + 0x210, 0x6811); /* ldr r1, [r2] */
+    put16(rom + 0x212, 0x3001); /* adds r0, #1 */
+    put16(rom + 0x214, 0xE7FC); /* b 0x210 */
+    put16(rom + 0x220, 0x3001); /* adds r0, #1 */
+    put16(rom + 0x222, 0xD000); /* beq 0x226: never taken */
+    put16(rom + 0x224, 0xE7FC); /* b 0x220 */
+    put16(rom + 0x230, 0xB4F0); /* push {r4-r7} */
+    put16(rom + 0x232, 0xBCF0); /* pop {r4-r7} */
+    put16(rom + 0x234, 0x3001); /* adds r0, #1 */
+    put16(rom + 0x236, 0xE7FB); /* b 0x230 */
     return rom;
 }
 
@@ -336,6 +349,49 @@ int main(void) {
             CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2400, audio, AGB_APU_RATE, NULL, error, sizeof error));
             CHECK(cpu.arm.r[0] == (ram ? 100u : 600u));
         }
+    }
+    {
+        /* the time an instruction takes on the cartridge, as mGBA counts it, with WAITCNT 0x4317 (the first access
+           of a halfword 4 cycles, the next ones 2) or 0x0317, the same without the prefetch buffer: each instruction
+           its fetch, 2, the prefetch buffer or not; a branch taken 6 more, refilling the pipeline (4 + 2), one not taken
+           none; a load or store 1 + its wait states, a load 1 more, and the fetch after it non-sequential, 2 more, or,
+           with the prefetch buffer and the data not on the cartridge, up to 9 cycles hidden while it fetches ahead.
+           Each loop runs 50 turns in 50 times its cycles */
+        static const struct {
+            uint32_t pc, waitcnt, r2, cycles;
+        } loop[] = {
+            {0x08000200, 0x4317, 0, 2 + 2 + 6},              /* adds, b */
+            {0x08000200, 0x0317, 0, 2 + 2 + 6},              /* the same: the buffer saves no fetch of its own */
+            {0x08000210, 0x4317, 0x03000000, 6 + 6 + 0},     /* ldr from IWRAM: 1 + 1 hidden */
+            {0x08000210, 0x0317, 0x03000000, 6 + 6 + 2 + 2}, /* ldr from IWRAM: 1 + 1, then a non-sequential fetch */
+            {0x08000210, 0x4317, 0x02000000, 6 + 6 + 0},     /* ldr from EWRAM: 6 + 1 hidden */
+            {0x08000210, 0x0317, 0x02000000, 6 + 6 + 7 + 2}, /* ldr from EWRAM: 6 + 1 */
+            {0x08000210, 0x4317, 0x08000000, 6 + 6 + 7 + 2}, /* ldr from the cartridge: 6 + 1, nothing hidden */
+            {0x08000220, 0x4317, 0, 2 + 2 + 2 + 6},          /* adds, beq not taken, then b on its own */
+            {0x08000230, 0x4317, 0, 8 + 6 + 0 + 0},          /* push and pop of 4 words on IWRAM, hidden */
+            {0x08000230, 0x0317, 0, 8 + 6 + 6 + 7},          /* push 4 + 2, pop 4 + 1 + 2 */
+        };
+        for (size_t i = 0; i < sizeof loop / sizeof loop[0]; ++i) {
+            agb_write16(&board, 0x04000204, (uint16_t)loop[i].waitcnt);
+            cpu.arm.r[0] = 0;
+            cpu.arm.r[2] = loop[i].r2;
+            cpu.arm.r[13] = 0x03007E00;
+            cpu.arm.r[15] = loop[i].pc;
+            cpu.arm.cpsr = 0x9F | SNX_ARM_T;
+            cpu.over = 0;
+            board.cpu_halted = cpu.wait = 0;
+            board.held_cycles = 0;
+            CHECK(!agb_cpu_run(&board, &cpu, &recomp, 50 * loop[i].cycles, audio, AGB_APU_RATE, NULL, error,
+                               sizeof error));
+            if (cpu.arm.r[0] != 50 || cpu.over)
+                fprintf(stderr,
+                        "agb_cpu: the loop at 0x%08X with WAITCNT 0x%04X, r2 0x%08X: %u turns in %u cycles, "
+                        "%u over, not 50 of %u\n",
+                        loop[i].pc, loop[i].waitcnt, loop[i].r2, cpu.arm.r[0], 50 * loop[i].cycles, cpu.over,
+                        loop[i].cycles);
+            CHECK(cpu.arm.r[0] == 50 && !cpu.over);
+        }
+        agb_write16(&board, 0x04000204, 0);
     }
     /* the instructions after the interpreted ones start blocks the discovery step did not see: they were compiled as
        the run reached them, and saving the run keeps them, in the map as hints (the module as it was, at once) */

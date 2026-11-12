@@ -30,6 +30,7 @@ typedef struct {
     uint32_t offset; /* what a Thumb32 LDREX or STREX adds to its base (TH_A32's .rd); A32's add nothing */
     SnxArmProfile profile;
     SnxArmMemoryMode memory;
+    uint32_t bus_costs, bus_cycles; /* SnxArmCodegenOptions': 0 counts no bus cycles */
     LLVMValueRef transfer_base, transfer_buffer;
     unsigned transfer_bytes, transfer_operation;
 } ArmIR;
@@ -40,7 +41,9 @@ static int options_valid(const SnxArmCodegenOptions* o) {
                    o->profile == SNX_ARM_PROFILE_A9 ||
                    (o->profile == SNX_ARM_PROFILE_ARM7TDMI && o->memory == SNX_ARM_MEMORY_FLAT)) &&
                   (o->memory == SNX_ARM_MEMORY_FLAT || o->memory == SNX_ARM_MEMORY_CHECKED ||
-                   o->memory == SNX_ARM_MEMORY_HOSTED));
+                   o->memory == SNX_ARM_MEMORY_HOSTED) &&
+                  ((!o->bus_costs && !o->bus_cycles) || (o->profile == SNX_ARM_PROFILE_ARM7TDMI && o->bus_costs &&
+                                                         o->bus_cycles && o->bus_costs != o->bus_cycles)));
 }
 /* llvm.h: flat memory in a window of 2^32 guest addresses with a guard after it, the cpu private to the running block,
    and the entry state seen to by the dispatch loop */
@@ -338,9 +341,29 @@ static void instruction_fetch(ArmIR* a, uint32_t encoded, unsigned bytes) {
     value = host_order(a, value, bytes);
     require(a, cmp(a, LLVMIntEQ, value, LLVMConstInt(type, encoded, 0)), SNX_ARM_CODE_CHANGED, c32(a, a->pc));
 }
+/* the bus cycles of a load or store (SnxArmBusCosts), once for the instruction: its first access by addr's region and
+   its width, each next word of a multiple one a sequential word, a load's internal cycle and the region's adjustment,
+   never below none */
+static void bus_charge(ArmIR* a, LLVMValueRef addr, unsigned bytes, int write, int multi) {
+    unsigned words = multi ? (bytes / 4 ? bytes / 4 : 1) : 1, width = multi || bytes == 4 ? 2 : bytes == 2 ? 1 : 0;
+    LLVMValueRef costs = get(a, a->bus_costs, a->ptr), region = band(a, lsr(a, addr, 24), c32(a, 15)), raw, adjusted;
+    LLVMValueRef at[3] = {z64(a, add(a, c32(a, (uint32_t)offsetof(SnxArmBusCosts, nonseq) + width), shl(a, region, 2))),
+                          z64(a, add(a, c32(a, (uint32_t)offsetof(SnxArmBusCosts, seq)), region)),
+                          z64(a, add(a, c32(a, (uint32_t)offsetof(SnxArmBusCosts, adjust)), region))};
+    LLVMValueRef cost[3];
+    for (int i = 0; i < 3; ++i)
+        cost[i] = LLVMBuildLoad2(a->b, a->i8, LLVMBuildGEP2(a->b, a->i8, costs, &at[i], 1, ""), "");
+    raw = add(a, LLVMBuildZExt(a->b, cost[0], a->i32, ""), c32(a, !write));
+    if (words > 1)
+        raw = add(a, raw, LLVMBuildMul(a->b, LLVMBuildZExt(a->b, cost[1], a->i32, ""), c32(a, words - 1), ""));
+    adjusted = add(a, raw, LLVMBuildSExt(a->b, cost[2], a->i32, ""));
+    adjusted = LLVMBuildSelect(a->b, cmp(a, LLVMIntSLT, adjusted, c32(a, 0)), c32(a, 0), adjusted, "");
+    put(a, a->bus_cycles, add(a, get(a, a->bus_cycles, a->i32), adjusted));
+}
 static void transfer_begin(ArmIR* a, LLVMValueRef addr, unsigned bytes, unsigned alignment, int write, int multi) {
     if (a->memory != SNX_ARM_MEMORY_CHECKED) {
         bounds(a, addr, bytes, alignment);
+        if (a->bus_cycles) bus_charge(a, addr, bytes, write, multi);
         return;
     }
     if (alignment > 1)
@@ -1292,6 +1315,8 @@ LLVMValueRef snx_arm_llvm_block_ex(LLVMModuleRef module, const char* name, const
     if (options) {
         a.profile = options->profile;
         a.memory = options->memory;
+        a.bus_costs = options->bus_costs;
+        a.bus_cycles = options->bus_cycles;
     }
     block_begin(&a, module, name, pc);
     if (!hosted(&a)) {

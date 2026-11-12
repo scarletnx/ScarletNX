@@ -475,7 +475,12 @@ LLVMValueRef snx_thumb_llvm_block_ex(LLVMModuleRef module, const char* name, con
     if (!options_valid(options) || !module || !name || !*name || !halfwords || !count || count > 65536 || (pc & 1) ||
         LLVMGetNamedFunction(module, name) || LLVMGetNamedGlobal(module, name))
         return NULL;
-    if (options) { a.profile = options->profile; a.memory = options->memory; }
+    if (options) {
+        a.profile = options->profile;
+        a.memory = options->memory;
+        a.bus_costs = options->bus_costs;
+        a.bus_cycles = options->bus_cycles;
+    }
     a.thumb = 1;
     block_begin(&a, module, name, pc);
     if (!hosted(&a)) {
