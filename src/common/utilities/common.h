@@ -395,6 +395,8 @@ int snx_utf8_valid(const char* text, size_t n, char* hex, size_t hex_size);
    control characters, its titles inflated when the NACP keeps them in deflate (TitleCompression). A name whose bytes
    are not UTF-8 counts as none. 1 when it has one, else 0 and "" */
 int snx_nacp_name(const unsigned char* nacp, size_t size, char* name, size_t name_size);
+/* A Vita game's param.sfo string under key (TITLE_ID, TITLE), UTF-8, owned; NULL without one */
+char* snx_sfo_string(const unsigned char* sfo, size_t size, const char* key);
 /* snx_nacp_name, and when it has no name, why into why (its bytes in hex for a name that is not UTF-8); "" else */
 int snx_nacp_name_why(const unsigned char* nacp, size_t size, char* name, size_t name_size, char* why, size_t why_size);
 /* The title ID of a program without an NPDM (an NRO, an ExeFS without main.npdm): none of its own */

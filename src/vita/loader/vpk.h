@@ -14,8 +14,6 @@ unsigned char* vita_vpk_member(const char* vpk, const char* name, size_t* size, 
 /* Every member into folder (made, with its subfolders): a name leaving the folder (absolute, "..", a drive) is
    refused, as is any member that fails its CRC. False with error filled */
 bool vita_vpk_extract(const char* vpk, const char* folder, char* error, size_t error_size);
-/* param.sfo's string under key (TITLE_ID, TITLE), the caller's to free; NULL without one */
-char* vita_sfo_string(const unsigned char* sfo, size_t size, const char* key);
 /* A Vita title ID as param.sfo's TITLE_ID has them: four capital letters and five digits (PCSE00001) */
 bool vita_title_id(const char* text);
 #endif
