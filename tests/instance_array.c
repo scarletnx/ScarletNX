@@ -216,11 +216,12 @@ int main(void) {
     maxwell3d_method(&ch, 0x378, 0, 1);
     maxwell3d_method(&ch, 0x3DF, 0, 1);
     maxwell3d_method(&ch, 0x3DD, 0, 1);
+    maxwell3d_method(&ch, 0x4A2, 0, 1); /* the same invalidation without the WFI */
     maxwell3d_method(&ch, 0x509, 0, 1);
     maxwell3d_method(&ch, 0x50A, 0, 1);
     maxwell3d_method(&ch, 0x44, 0, 1);
     /* neither the texture cache invalidation nor WAIT_FOR_IDLE lands shader results: the game observes neither */
-    if (ndraws != 1 || nbarriers != 6 || memcmp(barriers, (int[]){0, 1, 2, 3, 3, 4}, sizeof(int) * 6) || signals) {
+    if (ndraws != 1 || nbarriers != 7 || memcmp(barriers, (int[]){0, 1, 2, 2, 3, 3, 4}, sizeof(int) * 7) || signals) {
         fprintf(stderr, "FAIL: Maxwell barriers or idle were not dispatched in stream order\n");
         failures++;
     }
