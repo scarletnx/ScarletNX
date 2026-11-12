@@ -180,8 +180,9 @@ int native_video_open(int encoder, u32* session);                             /*
 int native_video_requirements(const u32 pref[16], u32 count, u64* size, u64* alignment); /* 991 */
 int native_video_pool_create(const u32 pref[16], u32 count, u32 memory, u32* image);    /* 911 */
 int native_video_pool_destroy(u32 image);                                              /* 912 */
-/* the row pitch of the four bytes a pixel images a pool keeps in native memory, 0 for any other memory */
-u32 native_video_memory_pitch(u32 memory);
+/* an image of a pool, as nvnNativeImageInitialize makes an NVN memory pool of it: its bytes in guest memory, and the
+   row pitch it is written with when it is four bytes a pixel (0 for NV12). 1, or 0 when no pool has the image */
+int native_video_image_memory(u32 image, u64* cpu, u64* size, u32* linear_pitch);
 int native_video_query(u32 image, u64 d[16]);                                          /* 961 */
 int native_video_gpu_query(u32 image, u64 d[16]);                                      /* 428 */
 int native_video_gpu_map(u32 image, u32 address_space, u64* first, u64* last, u64 d[16]); /* 426 */
