@@ -541,6 +541,8 @@ void vk_checkpoint_dump(const char* why) {
             u64 idx = (mark & CP_MARK) ? (u64)(mark & ~CP_MARK) : 0; /* 0: checkpoints.c's, which vk_ck_report names */
             if (idx >= 1 && idx <= CP_LOG) {
                 CpDesc d = g_cp_desc[idx - 1];
+                /* the three numbers: a dispatch's grid; a draw's vertices or indices, instances and first vertex or
+                   index; an indirect draw's most draws, stride and kind */
                 LOG("vulkan: %s (%s) checkpoint[%u] stage %#x: %s %016llx code %llx grid %ux%ux%u\n", why, names[qi], i,
                     c[i].stage, d.what, (unsigned long long)d.key, (unsigned long long)d.addr, d.gx, d.gy, d.gz);
             } else {
@@ -553,12 +555,12 @@ void vk_checkpoint_dump(const char* why) {
 }
 static void draw_run(const void* p) {
     const DrawArgs* x = p;
-    vk_checkpoint(x->cb, "draw", x->tag[0], x->tag[1], 0, 0, 0);
+    vk_checkpoint(x->cb, "draw", x->tag[0], x->tag[1], x->a1, x->a2, x->a3);
     if (!rec_drop_draw()) vkCmdDraw(x->cb, x->a1, x->a2, x->a3, x->a4);
 }
 void rec_CmdDraw(VkCommandBuffer cb, u32 vertices, u32 instances, u32 first_vertex, u32 first_instance) {
     if (!rec_on(cb)) {
-        vk_checkpoint(cb, "draw", g_rec_tag[0], g_rec_tag[1], 0, 0, 0);
+        vk_checkpoint(cb, "draw", g_rec_tag[0], g_rec_tag[1], vertices, instances, first_vertex);
         vkCmdDraw(cb, vertices, instances, first_vertex, first_instance);
         return;
     }
@@ -575,13 +577,13 @@ typedef struct {
 } DrawIndexedArgs;
 static void draw_indexed_run(const void* p) {
     const DrawIndexedArgs* x = p;
-    vk_checkpoint(x->cb, "draw_indexed", x->tag[0], x->tag[1], 0, 0, 0);
+    vk_checkpoint(x->cb, "draw_indexed", x->tag[0], x->tag[1], x->a1, x->a2, x->a3);
     if (!rec_drop_draw()) vkCmdDrawIndexed(x->cb, x->a1, x->a2, x->a3, x->a4, x->a5);
 }
 void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 indices, u32 instances, u32 first_index, i32 vertex_offset,
                         u32 first_instance) {
     if (!rec_on(cb)) {
-        vk_checkpoint(cb, "draw_indexed", g_rec_tag[0], g_rec_tag[1], 0, 0, 0);
+        vk_checkpoint(cb, "draw_indexed", g_rec_tag[0], g_rec_tag[1], indices, instances, first_index);
         vkCmdDrawIndexed(cb, indices, instances, first_index, vertex_offset, first_instance);
         return;
     }
@@ -635,7 +637,7 @@ typedef struct {
     u64 tag[2];
 } DrawIndirectArgs;
 static void draw_indirect_now(const DrawIndirectArgs* x) {
-    vk_checkpoint(x->cb, "draw_indirect", x->tag[0], x->tag[1], 0, 0, 0);
+    vk_checkpoint(x->cb, "draw_indirect", x->tag[0], x->tag[1], x->max, x->stride, x->kind);
     switch (x->kind) {
         case 0: vkCmdDrawIndirect(x->cb, x->buf, x->off, x->max, x->stride); break;
         case 1: vkCmdDrawIndexedIndirect(x->cb, x->buf, x->off, x->max, x->stride); break;
