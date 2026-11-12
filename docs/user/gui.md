@@ -459,7 +459,10 @@ files keys nothing reads), the last asks what Settings > App's Clean Old Setting
 [Deprecated] in 2 .ini`): **Clean Now**, in focus, takes them out there, the box then saying each file and what was
 done to it, and OK goes on; **Not Now** goes on, App's row still there. Clean Now comes under Back, Not Now and Skip, a
 row apart: the choices that act on the player's files in a group of their own, as on Old Files' last page, Up/Down
-going round them all past that row. The first page has **Skip** after its choices: it
+going round them all past that row. On the notices' and Old Files' pages each choice has the icon of what it does, as
+F1's box and Settings > App draw it: Back an arrow left, Next and OK a check, Not Now an x, Skip skip-forward, Clean Now
+the eraser, Move All the folder with an arrow in it, Delete All the trash can. The first page has **Skip** after its
+choices: it
 takes every page left as its defaults have it, what Next, OK or Enter on each would take (the notices read, the
 appearance and the install as they are, Keep, Later, the nickname `Player`, and Not Now on both questions: Skip cleans,
 moves and deletes nothing), writes `setup.ini` and opens the menu; a page whose default fails (a `users.ini` that
