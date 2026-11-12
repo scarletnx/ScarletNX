@@ -26,12 +26,13 @@
 #define START (SDK + 0x40)
 #define NAME  "_ZN2nn4init5StartEmmPFvvES2_S2_"
 enum { MOD0 = 0x80, DYNAMIC = 0xc0, SYMTAB = 0x200, STRTAB = 0x248, RELA = 0x400, JMPREL = 0x500, RELR = 0x600 };
-enum { DATA = 0x800, DATA_SIZE = 0x200, SIZE = 0x1000 };
+enum { DATA = 0x800, DATA_SIZE = 0x200, MODULE_BYTES = 0x1000 };
 
 static u8 g_memory[0x30000];
 u8* g_mem = g_memory;
-static SnxModInfo g_mods[2] = {{.name = "rtld", .base = RTLD, .size = SIZE, .data_off = DATA, .data_size = DATA_SIZE},
-                               {.name = "sdk", .base = SDK, .size = SIZE, .data_off = DATA, .data_size = DATA_SIZE}};
+static SnxModInfo g_mods[2] = {
+    {.name = "rtld", .base = RTLD, .size = MODULE_BYTES, .data_off = DATA, .data_size = DATA_SIZE},
+    {.name = "sdk", .base = SDK, .size = MODULE_BYTES, .data_off = DATA, .data_size = DATA_SIZE}};
 static const SnxModule g_module = {.abi = SNX_ABI, .nmods = 2, .mods = g_mods};
 const SnxModule* g_mod = &g_module;
 const SnxArmModule* g_arm_mod;
@@ -70,7 +71,7 @@ static void module(u64 base, u64 value, int plt) {
                             {7, RELA},         {8, plt ? 0 : 48}, {23, JMPREL},
                             {2, plt ? 24 : 0}, {36, RELR},        {35, plt ? 0 : 8}};
     unsigned i;
-    memset(m, 0, SIZE);
+    memset(m, 0, MODULE_BYTES);
     snx_st_le32(m + 4, MOD0);
     memcpy(m + MOD0, "MOD0", 4);
     snx_st_le32(m + MOD0 + 4, DYNAMIC - MOD0);
@@ -110,8 +111,8 @@ static void game(void) {
 
 int main(int argc, char** argv) {
     int differ = argc > 1 && !strcmp(argv[1], "differ");
-    SnxRelocModule place[2] = {{"rtld", GP(RTLD), RTLD, SIZE, GP(RTLD) + DATA, DATA, DATA_SIZE, 0},
-                               {"sdk", GP(SDK), SDK, SIZE, GP(SDK) + DATA, DATA, DATA_SIZE, 0}};
+    SnxRelocModule place[2] = {{"rtld", GP(RTLD), RTLD, MODULE_BYTES, GP(RTLD) + DATA, DATA, DATA_SIZE, 0},
+                               {"sdk", GP(SDK), SDK, MODULE_BYTES, GP(SDK) + DATA, DATA, DATA_SIZE, 0}};
     SnxRelocCounts counts;
     GuestFn* slot = &g_disp[(START - g_code_lo) / 4];
     char error[256];
