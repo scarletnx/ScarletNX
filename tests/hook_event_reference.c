@@ -18,6 +18,10 @@ static unsigned checks;
     } while (0)
 
 u8* g_mem;
+const SnxArmModule* g_arm_mod; /* a 64-bit game: hook_guest_call runs the function itself */
+void hook_guest_call_a32(CPU* c, u32 fn, u32 a0, u32 a1, u32 a2, u32 a3) {
+    (void)c, (void)fn, (void)a0, (void)a1, (void)a2, (void)a3;
+}
 static KEvent event;
 static unsigned made, destroyed, handles;
 static int table_full, no_attach;
