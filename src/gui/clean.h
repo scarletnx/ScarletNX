@@ -61,4 +61,7 @@ GuiKeep gui_old_keep(const char* path, GuiKept* kept);
    laid out beside others with its <name>_data/), else the entry says it would be; what gui_old_keep keeps, and a folder another disk is mounted in, stay, said; one not there
    says nothing. 1 when it is deleted, or would be */
 int gui_delete_old(GuiCleaned* done, const char* old, bool apply);
+/* Delete All, an entry the old files' list says is a save (one the versions before kept, its files in the folder
+   itself, wherever it is): it stays, said as gui_delete_old says a save */
+void gui_delete_keep_save(GuiCleaned* done, const char* old);
 #endif
