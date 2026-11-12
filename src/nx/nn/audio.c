@@ -110,13 +110,11 @@ static AudOut* out_lock(u64 guest, const char* what) {
     return q;
 }
 
-/* a new buffer event attached to the game's SystemEvent: its id, with a reference of the out's beside the handle's,
-   or 0 when the SDK exports no function to attach it with */
+/* a new buffer event attached to the game's SystemEvent: its id, with the reference hook_attach_event gives the out
+   beside the handle's, or 0 when the SDK exports no function to attach it with */
 static u32 attach_event(CPU* c, u64 event) {
     KEvent* e = hook_attach_event(c, event, "audio out buffers");
-    if (!e) return 0;
-    kobj_ref(&e->o);
-    return kobj_id(&e->o);
+    return e ? kobj_id(&e->o) : 0;
 }
 static void drop_event(u32 ev) {
     KObj* o = kobj_at(ev);
@@ -464,7 +462,8 @@ int nnaudio_is_device_auto_tune(CPU* c) {
     return enabled;
 }
 
-/* a new event attached to the game's SystemEvent, which then holds its only reference */
+/* a new event attached to the game's SystemEvent, which then holds its only reference: nothing here keeps the event,
+   so the one hook_attach_event gave is dropped */
 static void device_event(CPU* c, u64 event, const char* name, int signaled) {
     KEvent* e = event ? hook_attach_event(c, event, name) : NULL;
     if (!e) {
@@ -475,6 +474,7 @@ static void device_event(CPU* c, u64 event, const char* name, int signaled) {
         return;
     }
     if (signaled) kevent_signal(e);
+    kobj_unref(&e->o);
 }
 /* AcquireAudioDeviceNotificationForOutput and ForInput, and the older AcquireAudioDeviceSwitchNotification: the
    device's output, input and system events, each signaled when the game gets it */
