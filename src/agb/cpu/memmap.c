@@ -108,10 +108,13 @@ static int mirror(AgbMap* map, AgbBoard* board, size_t rom, size_t rom_backing_s
                    ? -1
                    : 0;
     {
-        /* Each of the three wait state windows holds the image once. Past it the cartridge drives no data
-           and the bus keeps the halfword address it latched, GBATEK's "Address/2 AND FFFFh". */
+        /* Each of the three wait state windows holds the image over its extent (a 1 MiB one four times). Past it the
+           cartridge drives no data and the bus keeps the halfword address it latched, GBATEK's "Address/2 AND
+           FFFFh". */
+        size_t repeats = agb_cartridge_extent(&board->cartridge);
+        uint32_t extent = (uint32_t)(repeats > rom ? repeats : rom_backing_size);
         int backing = map_backing(map, rom_backing_size),
-            bus = rom_backing_size < AGB_ROM_MAX ? map_backing(map, AGB_ROM_BUS_PERIOD) : -2;
+            bus = extent < AGB_ROM_MAX ? map_backing(map, AGB_ROM_BUS_PERIOD) : -2;
         if (backing < 0 || bus == -1) {
             snx_os_error(why, sizeof why);
             snprintf(error, error_size, "cannot make the guest's cartridge memory, %zu bytes: %s",
@@ -127,10 +130,9 @@ static int mirror(AgbMap* map, AgbBoard* board, size_t rom, size_t rom_backing_s
         }
         for (uint32_t window = 0x08000000; window < 0x0E000000; window += AGB_ROM_MAX) {
             for (uint32_t base = 0;; base = 0x80000000u) {
-                if (mirror_region(map, base + window, (uint32_t)rom_backing_size, (uint32_t)rom_backing_size,
-                                  backing) ||
-                    (bus >= 0 && mirror_region(map, base + window + (uint32_t)rom_backing_size,
-                                               AGB_ROM_MAX - (uint32_t)rom_backing_size, AGB_ROM_BUS_PERIOD, bus))) {
+                if (mirror_region(map, base + window, extent, (uint32_t)rom_backing_size, backing) ||
+                    (bus >= 0 &&
+                     mirror_region(map, base + window + extent, AGB_ROM_MAX - extent, AGB_ROM_BUS_PERIOD, bus))) {
                     snx_os_error(why, sizeof why);
                     snprintf(error, error_size, "cannot mirror the guest's cartridge window at 0x%08X: %s",
                              base + window, why);
@@ -169,11 +171,13 @@ int agb_map_init(AgbMap* map, AgbBoard* board, char* error, size_t error_size) {
             agb_map_destroy(map, board);
             return -1;
         }
-        if (board->has_cartridge)
+        if (board->has_cartridge) {
+            size_t extent = agb_cartridge_extent(&board->cartridge);
             for (uint32_t window = 0x08000000; window < 0x0E000000; window += AGB_ROM_MAX) {
-                memcpy(map->base + window, board->cartridge.data, rom);
-                for (uint32_t i = (uint32_t)rom; i < AGB_ROM_MAX; ++i) map->base[window + i] = agb_rom_open_bus8(i);
+                for (size_t at = 0; at < extent; at += rom) memcpy(map->base + window + at, board->cartridge.data, rom);
+                for (uint32_t i = (uint32_t)extent; i < AGB_ROM_MAX; ++i) map->base[window + i] = agb_rom_open_bus8(i);
             }
+        }
     }
     /* the board's devices read and write the regions through these pointers */
     agb_memory_free(&board->memory);
