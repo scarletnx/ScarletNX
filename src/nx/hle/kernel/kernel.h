@@ -199,7 +199,7 @@ void kthread_commit(void);
    end a hold point */
 void kthread_block(KThread* t);
 void kthread_unblock(KThread* t);
-void kernel_run_main(u64 entry, u64 stack_size, int prio, int core);
+void kernel_run_main(u64 entry, const u64* args, u64 stack_size, int prio, int core);
 /* SVC #imm of a 64-bit thread (RtAPI.svc) and of a 32-bit one: g_svc64[imm] and svc.c's g_svc32[imm], each SVC's
    own entry, which takes its registers in that ABI (svcgen, hle/svc/hos.svc). The NX modules call g_svc64 by number
    through RtAPI.svcs */

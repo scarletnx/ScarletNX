@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The native nn::ro (ro.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
+# nn::ro: the modules of the program and the NROs it loads, as the game's linker (its rtld module) keeps them for the
+# SDK. These are the functions of the SDK that read the rtld's lists of modules or call it back, every one of them of
+# nn::ro: with them answered here, nothing of the SDK reaches what an rtld would have left. The family is installed
+# only when the runtime links the game in the rtld's place (runtime/linker.c)
+family nn_ro
+hook _ZN2nn2ro10InitializeEv() = nnro_initialize
+hook _ZN2nn2ro20InitializeForRuntimeEv() = nnro_initialize_for_runtime
+hook _ZN2nn2ro22InitializeWithPortNameEPKc(const char* port) = nnro_initialize_with_port_name
+hook _ZN2nn2ro8FinalizeEv() = nnro_finalize
+hook _ZN2nn2ro13GetBufferSizeEPmPKv(addr size, addr nro) -> u32 = nnro_get_buffer_size
+hook _ZN2nn2ro12LookupSymbolEPmPKc(addr address, const char* name) -> u32 = nnro_lookup_symbol
+hook _ZN2nn2ro29ProtectFullRelroForAllModulesEv() = nnro_protect_full_relro_for_all_modules
+hook _ZN2nn2ro12ProtectRelroEPKvS2_S2_S2_S2_(addr first, addr second, addr third, addr fourth, addr fifth) = nnro_protect_relro
+# not answered yet: each stops the game with its name
+hook _ZN2nn2ro16LookupNextSymbolEPmPKc(addr address, const char* name) -> u32 = nnro_lookup_next_symbol
+hook _ZN2nn2ro18LookupModuleSymbolEPmPKNS0_6ModuleEPKc(addr address, addr module, const char* name) -> u32 = nnro_lookup_module_symbol
+hook _ZN2nn2ro18RegisterModuleInfoEPNS0_16RegistrationInfoEPKv(addr info, addr nrr) -> u32 = nnro_register_module_info
+hook _ZN2nn2ro18RegisterModuleInfoEPNS0_16RegistrationInfoEPKvj(addr info, addr nrr, u32 flag) -> u32 = nnro_register_module_info_flag
+hook _ZN2nn2ro20UnregisterModuleInfoEPNS0_16RegistrationInfoE(addr info) = nnro_unregister_module_info
+hook _ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmi(addr module, addr image, addr buffer, u64 size, i32 flag) -> u32 = nnro_load_module
+hook _ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmib(addr module, addr image, addr buffer, u64 size, i32 flag, bool check) -> u32 = nnro_load_module_check
+hook _ZN2nn2ro12UnloadModuleEPNS0_6ModuleE(addr module) = nnro_unload_module
+hook _ZN2nn2ro18FindDynamicSegmentEm(u64 address) -> addr = nnro_find_dynamic_segment
+hook _ZN2nn2ro20GetModuleNamePointerEPPKcPmm(addr name, addr length, u64 address) -> u32 = nnro_get_module_name_pointer
+hook _ZN2nn2ro13GetModuleNameEPcmm(addr name, u64 size, u64 address) -> u32 = nnro_get_module_name
+hook _ZN2nn2ro11GetModuleIdEPNS0_8ModuleIdEm(addr id, u64 address) -> u32 = nnro_get_module_id
