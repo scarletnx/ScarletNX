@@ -187,7 +187,7 @@ int main(void) {
     }
     /* the anchor is the announcement's pair, and a reconnect measures from it again rather than from the last event */
     {
-        SnxTracyGpuCal cal;
+        SnxTracyGpuCal cal = {0};
         snx_tracy_gpu_cal_announce(&cal, 1, 1000);
         CHECK(cal.calibrated && cal.cpu_anchor == 1000 && cal.cpu_prev == 1000);
         CHECK(snx_tracy_gpu_cal_delta(&cal, 1200) == 200 && cal.cpu_prev == 1200);
