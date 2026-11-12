@@ -3,8 +3,12 @@
 /* The native nn::fs (src/nx/nn/fs.c) on a stand-in CPU, with the file server's core stubbed to two RomFS images of no
    files, the game's and a system archive's: what the SDK's C library asks of a path before it opens it (whether its
    mount is there, and the limits of its file system), answered for a native mount and left to the SDK's own code for
-   any other; and a system archive mounted by its data id, with the cache size its tables need */
+   any other; and a system archive mounted by its data id, with the cache size its tables need. Then a file of that
+   archive opened, read and closed by a 64-bit game and by a 32-bit one through its table's adapters (fs.hook's a32):
+   the handle and the bytes read take 8 bytes of the game's memory in the first and 4 in the second, and a handle
+   the SDK made goes back to the SDK's own code in both */
 #include "nx/nn/fs.c"
+#include "hle/hook/hooks.hook.inc" /* fs.hook's table, and a 32-bit game's */
 #include <stdio.h>
 
 static unsigned checks;
@@ -168,6 +172,48 @@ void hook_run_original(CPU* c, u64 addr) {
     c->x[0] = 0x77;
 }
 static int own(const char* symbol, unsigned runs) { return own_runs == runs && !strcmp(own_symbol, symbol); }
+/* a 32-bit game's: the own code of the function its thread is in, which answers 0x78 */
+static SnxArmModule module32;
+const SnxArmModule* g_arm_mod;
+static SnxArmCPU a;
+static unsigned own_runs32;
+u64 hook_run_original_a32(CPU* c) {
+    (void)c;
+    own_runs32++;
+    a.r[0] = 0x78;
+    return 0x78;
+}
+CPU* hook_a32_cpu(SnxArmCPU* arm) { return (void)arm, &cpu; }
+/* a 32-bit game's adapter for symbol, which its table has */
+static SnxArmBlock a32(const char* symbol) {
+    for (int i = 0; i < HOOK32_COUNT; i++)
+        if (!strcmp(hook32_symbol[i], symbol)) return hook32_fn[i];
+    fprintf(stderr, "%s is not in a 32-bit game's table\n", symbol);
+    exit(1);
+}
+/* a call of a 32-bit game's: r0 to r3, and the words of the stack, at STACK */
+#define STACK 0x1f00u
+static u32 call32(const char* symbol, u32 r0, u32 r1, u32 r2, u32 r3, u32 s0, u32 s1, u32 s2) {
+    a.r[0] = r0, a.r[1] = r1, a.r[2] = r2, a.r[3] = r3, a.r[13] = STACK, a.r[14] = 0x9000;
+    snx_st_le32(mem + STACK, s0), snx_st_le32(mem + STACK + 4, s1), snx_st_le32(mem + STACK + 8, s2);
+    a32(symbol)(&a);
+    CHECK(a.r[15] == 0x9000 && a.r[13] == STACK);
+    return a.r[0];
+}
+
+/* the archive's image with one file, /a, of the five bytes "hello" */
+static void image_with_file(u8* b) {
+    u64 dirs = snx_ld_le64(b + 0x18), files = snx_ld_le64(b + 0x38);
+    u8* f = b + files;
+    snx_st_le32(b + dirs + 12, 0); /* the root's first file */
+    snx_st_le64(b + 0x40, 0x24);   /* the file table: one entry and its name */
+    snx_st_le64(b + 0x48, files + 0x24);
+    snx_st_le32(f, 0), snx_st_le32(f + 4, ROM_NONE);
+    snx_st_le64(f + 8, 0), snx_st_le64(f + 16, 5);
+    snx_st_le32(f + 24, ROM_NONE), snx_st_le32(f + 28, 1);
+    memcpy(f + 32, "a\0\0\0", 4);
+    memcpy(b + files + 0x24, "hello", 5);
+}
 
 #define NAME  0x100u /* a mount name */
 #define PATH  0x140u /* a path */
@@ -252,6 +298,82 @@ int main(void) {
     nnfs_unmount(c, NAME);
     CHECK(storages_open == 0);
     CHECK(nnfs_is_path_mounted(c, PATH) == 1 && own_runs == 9); /* unmounted: the SDK's again */
+
+    /* a file of the archive, in a 64-bit game: the handle is 8 bytes with bit 63, the bytes read a size_t of 8 */
+    image_with_file(data_image_bytes);
+    text(NAME, "ng");
+    text(PATH, "ng:/a");
+    CHECK(nnfs_mount_system_data(c, NAME, SYSTEM_ID, CACHE, 0x100) == 0);
+    outs();
+    CHECK(nnfs_open_file(c, RESULT, PATH, 1) == 0 && snx_ld_le64(mem + RESULT) >> 63 && mem[RESULT + 8] == 0xee);
+    {
+        u64 h = snx_ld_le64(mem + RESULT);
+        outs();
+        CHECK(nnfs_read_file(c, RESULT, h, 1, 0x600, 16) == 0 && snx_ld_le64(mem + RESULT) == 4);
+        CHECK(!memcmp(mem + 0x600, "ello", 4) && mem[RESULT + 8] == 0xee);
+        CHECK(nnfs_read_file(c, RESULT, 0x5000, 0, 0x600, 16) == 0x77 && own(SYM_READ_FILE, 10)); /* the SDK's */
+        nnfs_close_file(c, h);
+    }
+    nnfs_unmount(c, NAME);
+
+    /* the same in a 32-bit game, through its adapters. The cache size is a size_t of 4 bytes, the archive's id two
+       registers, and the mount's cache and its size two words of the stack */
+    module32.nmods = 0;
+    g_arm_mod = &module32;
+    a.mem = mem, a.mem_size = sizeof mem;
+    CHECK(HOOK32_COUNT == 41);
+    outs();
+    CHECK(call32("_ZN2nn2fs29QueryMountSystemDataCacheSizeEPjNS_3ncm12SystemDataIdE", RESULT, 0xdead, (u32)SYSTEM_ID,
+                 (u32)(SYSTEM_ID >> 32), 0, 0, 0) == 0);
+    CHECK(snx_ld_le32(mem + RESULT) == 0x50 && mem[RESULT + 4] == 0xee); /* 12 + 0x18 + 4 + 0x24, rounded up to 8 */
+    CHECK(call32("_ZN2nn2fs15MountSystemDataEPKcNS_3ncm12SystemDataIdEPvj", NAME, 0xdead, (u32)SYSTEM_ID,
+                 (u32)(SYSTEM_ID >> 32), CACHE, 0x50, 0) == 0 &&
+          storages_open == 1);
+    {
+        /* the handle: 4 bytes, bit 0 set and bit 1 clear for a file, the 4 bytes after it left */
+        u32 h, d;
+        outs();
+        CHECK(call32("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", RESULT, PATH, 1, 0, 0, 0, 0) == 0);
+        h = snx_ld_le32(mem + RESULT);
+        CHECK((h & 3) == 1 && mem[RESULT + 4] == 0xee);
+        /* ReadFile: the offset in r2 and r3, the buffer and the size on the stack, the bytes read in 4 bytes */
+        outs();
+        memset(mem + 0x600, 0xee, 16);
+        CHECK(call32("_ZN2nn2fs8ReadFileEPjNS0_10FileHandleExPvj", RESULT, h, 1, 0, 0x600, 16, 0) == 0);
+        CHECK(snx_ld_le32(mem + RESULT) == 4 && mem[RESULT + 4] == 0xee && !memcmp(mem + 0x600, "ello\xee", 5));
+        /* the form with no count: the handle in r0, r1 skipped for the offset's pair; short of the size asked, as
+           the SDK's check has it */
+        CHECK(call32("_ZN2nn2fs8ReadFileENS0_10FileHandleExPvj", h, 0xdead, 0, 0, 0x600, 5, 0) == 0);
+        CHECK(!memcmp(mem + 0x600, "hello", 5));
+        /* the size: an int64_t, 8 bytes in either game */
+        outs();
+        CHECK(call32("_ZN2nn2fs11GetFileSizeEPxNS0_10FileHandleE", RESULT, h, 0, 0, 0, 0, 0) == 0);
+        CHECK(snx_ld_le64(mem + RESULT) == 5 && mem[RESULT + 8] == 0xee);
+        /* a handle the SDK made is a pointer, so even: the function's own code answers it, and its r0 comes back */
+        CHECK(call32("_ZN2nn2fs8ReadFileEPjNS0_10FileHandleExPvj", RESULT, 0x5000, 0, 0, 0x600, 16, 0) == 0x78);
+        CHECK(own_runs32 == 1 && own_runs == 10);
+        CHECK(call32("_ZN2nn2fs15GetFileOpenModeENS0_10FileHandleE", h, 0, 0, 0, 0, 0, 0) == 1 && own_runs32 == 1);
+        /* a directory's handle has bit 1 too, and is no file's */
+        outs();
+        text(PATH, "ng:/");
+        CHECK(call32("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", RESULT, PATH, 3, 0, 0, 0, 0) == 0);
+        d = snx_ld_le32(mem + RESULT);
+        CHECK((d & 3) == 3 && mem[RESULT + 4] == 0xee && file_of(d) < 0 && dir_of(d) >= 0 && dir_of(h) < 0);
+        outs();
+        CHECK(call32("_ZN2nn2fs22GetDirectoryEntryCountEPxNS0_15DirectoryHandleE", RESULT, d, 0, 0, 0, 0, 0) == 0);
+        CHECK(snx_ld_le64(mem + RESULT) == 1);
+        call32("_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE", d, 0, 0, 0, 0, 0, 0);
+        call32("_ZN2nn2fs9CloseFileENS0_10FileHandleE", h, 0, 0, 0, 0, 0, 0);
+        CHECK(file_of(h) < 0 && dir_of(d) < 0); /* closed: the handles name nothing */
+        /* the slot opened again has another generation: the old handle still names nothing */
+        text(PATH, "ng:/a");
+        CHECK(call32("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", RESULT, PATH, 1, 0, 0, 0, 0) == 0);
+        CHECK(snx_ld_le32(mem + RESULT) != h && file_of(h) < 0 && file_of(snx_ld_le32(mem + RESULT)) >= 0);
+        call32("_ZN2nn2fs9CloseFileENS0_10FileHandleE", snx_ld_le32(mem + RESULT), 0, 0, 0, 0, 0, 0);
+    }
+    call32("_ZN2nn2fs7UnmountEPKc", NAME, 0, 0, 0, 0, 0, 0);
+    CHECK(storages_open == 0 && own_runs32 == 1);
+    g_arm_mod = NULL;
     printf("nn_fs: %u checks passed\n", checks);
     return 0;
 }
