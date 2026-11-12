@@ -12,6 +12,11 @@
    that reaches the server stops the game in sm, which names it (hle/services/sm.c). Its handles
    have bit 63 set, which no guest address has, so a handle tells which side made it.
 
+   A 32-bit game (g_arm_mod) calls the same handlers through its own declarations (fs.hook's a32). What differs there
+   is in four places: a size_t the game reads back is 4 bytes (put_size), a handle is 4 bytes with bit 0 set, which
+   no pointer to the SDK's accessor has (handle_make, handle_parts), and the SDK's own code runs from the hooked
+   function the thread is in (sdk_own).
+
    Mount kinds here: the game's RomFS (MountRom) and an add-on content's, read through fs.c's images, and the
    account's save (also read only), cache storage, temporary storage and the SD card, on the host folders fs.c gives
    them. The mounts, files and directories are g_hle.nnfs's and g_hle.fs's slots, which a save state holds.
@@ -24,6 +29,7 @@
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/services/services.h"
+#include "nx/runtime/arm.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/common.h"
@@ -157,8 +163,10 @@ void nnfs_init(void) { pm_init(&g_nnfs.lock); }
 
 /* ---- the SDK's own code, for what is not native */
 
-/* runs the hooked function's own code with the CPU as the call left it, and gives its x0 */
+/* runs the hooked function's own code with the CPU as the call left it, and gives its x0, or a 32-bit game's r0: there
+   the function is the one whose handler the thread is in, under whatever symbol its SDK gives it */
 static u64 sdk_own(CPU* c, const char* symbol) {
+    if (g_arm_mod) return (u32)hook_run_original_a32(c);
     u64 at = hook_site(symbol);
     if (!at) fatal("nn::fs: %s has no code of its own to run", symbol);
     hook_run_original(c, at);
@@ -194,6 +202,13 @@ static int space_result(u32 r) {
 static const char* gstr(const CPU* c, u64 a) { return (const char*)hook_host(c, a); }
 static void put_u64(CPU* c, u64 a, u64 v) { snx_st_le64(hook_host(c, a), v); }
 static void put_u32(CPU* c, u64 a, u32 v) { snx_st_le32(hook_host(c, a), v); }
+/* a size_t of the game's: 8 bytes, or a 32-bit game's 4 */
+static void put_size(CPU* c, u64 a, u64 v) {
+    if (g_arm_mod)
+        put_u32(c, a, (u32)v);
+    else
+        put_u64(c, a, v);
+}
 
 /* ---- mount names and paths */
 
@@ -462,19 +477,52 @@ static u64 rom_cache_size(const NRom* rm) {
 
 /* ---- handles */
 
+/* A native handle as the game holds it, of a file or a directory (dir), slot i at generation gen. A 64-bit game's:
+   bit 63, the kind in bit 62, the generation and the index. A 32-bit game's FileHandle and DirectoryHandle are one
+   pointer of 4 bytes: bit 0 set, which no pointer to the SDK's accessor (a heap object) has, bit 1 for a directory,
+   the index in bits 2 to 11 and the low 20 bits of the generation above them */
+#define H32_NATIVE   1u
+#define H32_DIR      2u
+#define H32_GEN_MASK 0xfffffu
+_Static_assert(NFILES <= 1024 && NDIRS <= 1024, "a slot's index fits the 10 bits of a 32-bit game's handle");
+static u64 handle_make(int dir, u32 gen, u32 i) {
+    if (g_arm_mod) return H32_NATIVE | (dir ? H32_DIR : 0) | i << 2 | (gen & H32_GEN_MASK) << 12;
+    return (dir ? TAG_DIR : TAG_FILE) | (u64)gen << 32 | (u64)i;
+}
+/* h's slot and generation when it is a native handle of the kind, and the bits of a slot's generation it holds: 1 */
+static int handle_parts(u64 h, int dir, u32* i, u32* gen, u32* gen_mask) {
+    if (g_arm_mod) {
+        if ((h & (H32_NATIVE | H32_DIR)) != (H32_NATIVE | (dir ? H32_DIR : 0)) || h >> 32) return 0;
+        *i = (u32)h >> 2 & 0x3ffu;
+        *gen = (u32)h >> 12;
+        *gen_mask = H32_GEN_MASK;
+        return 1;
+    }
+    if ((h & TAG_MASK) != (dir ? TAG_DIR : TAG_FILE)) return 0;
+    *i = (u32)(h & 0xffffffffu);
+    *gen = (u32)(h >> 32) & 0x3fffffffu;
+    *gen_mask = 0x3fffffffu;
+    return 1;
+}
+static void put_handle(CPU* c, u64 a, u64 h) {
+    if (g_arm_mod)
+        put_u32(c, a, (u32)h);
+    else
+        put_u64(c, a, h);
+}
 static int file_of(u64 h) { /* lock held: the native file of h, or -1 */
-    if ((h & TAG_MASK) != TAG_FILE) return -1;
-    u32 i = (u32)(h & 0xffffffffu), gen = (u32)(h >> 32) & 0x3fffffffu;
-    if (i >= NFILES || !g_hle.nnfs.files[i].used || g_hle.nnfs.files[i].gen != gen) return -1;
+    u32 i, gen, mask;
+    if (!handle_parts(h, 0, &i, &gen, &mask)) return -1;
+    if (i >= NFILES || !g_hle.nnfs.files[i].used || (g_hle.nnfs.files[i].gen & mask) != gen) return -1;
     return (int)i;
 }
 static int dir_of(u64 h) {
-    if ((h & TAG_MASK) != TAG_DIR) return -1;
-    u32 i = (u32)(h & 0xffffffffu), gen = (u32)(h >> 32) & 0x3fffffffu;
-    if (i >= NDIRS || !g_hle.nnfs.dirs[i].used || g_hle.nnfs.dirs[i].gen != gen) return -1;
+    u32 i, gen, mask;
+    if (!handle_parts(h, 1, &i, &gen, &mask)) return -1;
+    if (i >= NDIRS || !g_hle.nnfs.dirs[i].used || (g_hle.nnfs.dirs[i].gen & mask) != gen) return -1;
     return (int)i;
 }
-static int is_native(u64 h) { return (h & TAG_FILE) != 0; }
+static int is_native(u64 h) { return g_arm_mod ? (h & H32_NATIVE) != 0 : (h & TAG_FILE) != 0; }
 
 /* a native handle that no live object has: the game passed a closed one, which the SDK's own code would read freed
    memory for */
@@ -586,7 +634,7 @@ u32 nnfs_query_mount_rom_cache_size(CPU* c, u64 size) {
     u64 n = rom_cache_size(rom_at(0));
     pm_unlock(&g_nnfs.lock);
     if (!size) return done("QueryMountRomCacheSize", R_NULL_ARGUMENT);
-    put_u64(c, size, n);
+    put_size(c, size, n);
     return 0;
 }
 
@@ -633,7 +681,7 @@ u32 nnfs_query_mount_add_on_content_cache_size(CPU* c, u64 size, i32 index) {
         }
     }
     pm_unlock(&g_nnfs.lock);
-    if (!r) put_u64(c, size, n);
+    if (!r) put_size(c, size, n);
     return done("QueryMountAddOnContentCacheSize", r);
 }
 
@@ -664,7 +712,7 @@ u32 nnfs_query_mount_system_data_cache_size(CPU* c, u64 size, u64 id) {
         }
     }
     pm_unlock(&g_nnfs.lock);
-    if (!r) put_u64(c, size, n);
+    if (!r) put_size(c, size, n);
     return done("QueryMountSystemDataCacheSize", r);
 }
 
@@ -828,7 +876,7 @@ u32 nnfs_open_file(CPU* c, u64 handle, u64 path, i32 mode) {
         f->mount = (u32)m;
         f->mode = (u32)mode;
         mt->opens++;
-        put_u64(c, handle, TAG_FILE | (u64)gen << 32 | (u64)i);
+        put_handle(c, handle, handle_make(0, gen, (u32)i));
     }
     pm_unlock(&g_nnfs.lock);
     return done("OpenFile", r);
@@ -903,7 +951,7 @@ u32 nnfs_read_file(CPU* c, u64 read, u64 h, i64 offset, u64 buffer, u64 size) {
     if (!is_native(h)) return (u32)sdk_own(c, SYM_READ_FILE);
     u64 n;
     u32 r = file_read("ReadFile", h, read, 1, offset, buffer, size, &n);
-    if (!r) put_u64(c, read, n);
+    if (!r) put_size(c, read, n);
     return done("ReadFile", r);
 }
 u32 nnfs_read_file_option(CPU* c, u64 read, u64 h, i64 offset, u64 buffer, u64 size, u64 option) {
@@ -911,7 +959,7 @@ u32 nnfs_read_file_option(CPU* c, u64 read, u64 h, i64 offset, u64 buffer, u64 s
     if (!is_native(h)) return (u32)sdk_own(c, SYM_READ_FILE_OPT);
     u64 n;
     u32 r = file_read("ReadFile", h, read, 1, offset, buffer, size, &n);
-    if (!r) put_u64(c, read, n);
+    if (!r) put_size(c, read, n);
     return done("ReadFile", r);
 }
 /* the overloads with no count read the whole size, or fail with R_OUT_OF_RANGE */
@@ -1101,7 +1149,7 @@ u32 nnfs_open_directory(CPU* c, u64 handle, u64 path, i32 mode) {
         d->gen = gen;
         d->mount = (u32)m;
         mt->opens++;
-        put_u64(c, handle, TAG_DIR | (u64)gen << 32 | (u64)i);
+        put_handle(c, handle, handle_make(1, gen, (u32)i));
     }
     pm_unlock(&g_nnfs.lock);
     return done("OpenDirectory", r);
@@ -1256,7 +1304,7 @@ static u32 length_max(CPU* c, const char* symbol, u64 has, int utf16, u64 out, u
     if (path_take(c, path, p, &r) < 0) return (u32)sdk_own(c, symbol);
     pm_unlock(&g_nnfs.lock);
     if (utf16 && has) *hook_host(c, has) = 0;
-    if (out) put_u64(c, out, utf16 ? 0 : PATH_LENGTH_MAX);
+    if (out) put_size(c, out, utf16 ? 0 : PATH_LENGTH_MAX);
     return 0;
 }
 u32 nnfs_get_path_length_max(CPU* c, u64 out, u64 path) { return length_max(c, SYM_PATH_MAX, 0, 0, out, path); }

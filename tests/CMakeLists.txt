@@ -1509,7 +1509,7 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-nn-fs nn_fs.c)
     snx_test_target(snx-test-nn-fs 23)
     snx_service_swipc(snx-test-nn-fs)
-    snx_hookgen(snx-test-nn-fs SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/fs.hook")
+    snx_hookgen(snx-test-nn-fs SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/fs.hook" A32_MARKED)
     add_test(NAME nn_fs COMMAND snx-test-nn-fs)
     # the native nn::pctl (nn/pctl.c): the answers of a console with no parental controls set
     add_executable(snx-test-nn-pctl nn_pctl.c)
