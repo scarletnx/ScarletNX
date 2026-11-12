@@ -475,8 +475,9 @@ space their saves take, the data folder's `save/` they go to, Move All's entries
 Delete All never deletes: Move All moves it`, then a line a game, its folder's name and its saves' space, rolling up a
 line every 0.6 s and back when they do not all fit, arrows and a scroll bar beside them and the last row saying how
 many are under them. Next goes on, Back back, PgUp/PgDn a page either way and Home/End to the first or the
-last; the last asks Back, **Not Now**, in focus, and a row under them Move All and Delete All. Move All moves them as
-Move Old Files does; Delete
+last; the last asks Back, **Not Now**, in focus, and a row under them Move All and Delete All. Delete All, and its
+question's Delete, have no way back: framed and written in the theme's `failure` colour, filled with it in focus, on
+every theme. Move All moves them as Move Old Files does; Delete
 All asks first how many go and how many stay, its Delete pressed twice, and deletes each folder but a save, a folder
 holding saves (a game's `<name>_data/` with a `save/` or `sdmc/`, however deep), a folder it cannot read whole (one it
 cannot list, an entry it cannot look at, a link to a folder, which it does not follow), as it cannot tell it holds no
