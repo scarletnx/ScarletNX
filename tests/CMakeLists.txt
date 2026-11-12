@@ -1742,6 +1742,12 @@ if(Python3_Interpreter_FOUND)
     # then the checks on checkouts made to fail them
     add_test(NAME docs_check COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check-docs.py")
     add_test(NAME docs_check_script COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/docs_test.py")
+    # every key settings.txt dropped in main's history named by INI_DEPRECATED and docs/user/deprecations.md, the two
+    # alike (scripts/check-deprecations.py); then the checks on histories made to fail them. Skipped (77) without git
+    # or a checkout; a shallow clone's states are the ones it has
+    add_test(NAME deprecations_check COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check-deprecations.py")
+    add_test(NAME deprecations_check_script COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/deprecations_test.py")
+    set_tests_properties(deprecations_check PROPERTIES SKIP_RETURN_CODE 77)
     # which GitHub Actions caches the cleanup workflow deletes (scripts/trim-caches.py)
     add_test(NAME trim_caches COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/trim_caches_test.py")
     # build.yml's LLVM builds, each saved by the step right after it: a later failure or a cancelled run keeps it;
