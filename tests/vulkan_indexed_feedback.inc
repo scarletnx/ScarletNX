@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Dynamic handles alternate the active target and an ordinary texture. All fragments read column1. That column
-   changes during the first draw, so an exact pre-draw copy and a refreshed copy on the next draw are both required. */
+   changes during the first draw, so an exact pre-draw copy and a refreshed copy on the next draw are both required:
+   each later draw follows a texture barrier, as the console's texture reads see earlier draws' writes only after one */
 #include "nx/gpu/nvn/nvn_blend.h"
 
 static int check_indexed_texture_feedback(void) {
@@ -118,6 +119,7 @@ static int check_indexed_texture_feedback(void) {
         }
         u64 drawn = g_vk_drawn, copies = g_vk_rt_copies;
         u64 uploads = g_vk_itable_uploads, reused = g_vk_itable_reused;
+        if (draw) g_renderer->method_barrier(0); /* NVN's ORDER_FRAGMENTS | INVALIDATE_TEXTURE */
         vk_render_draw(state, &call, &channel->owner);
         CHECK(g_vk_drawn == drawn + 1 && g_vk_rt_copies > copies);
         if (draw == 1 && vk_frame_id() == uniform_frame)
