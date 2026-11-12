@@ -183,8 +183,48 @@ msgstr ""
 msgid "Not moved: it cannot be read: %s"
 msgstr ""
 
-#: src/gui/clean.c
+#: src/gui/clean.c src/gui/main.c
 msgid "Removed: it was empty"
+msgstr ""
+
+#: src/gui/clean.c
+msgid "Stays: a save, which Delete All never deletes: Move All moves it"
+msgstr ""
+
+#: src/gui/clean.c
+msgid "Stays: it holds saves, which Delete All never deletes: Move All moves it"
+msgstr ""
+
+#: src/gui/clean.c
+msgid "Stays: the console's keys, which Delete All never deletes: Move All moves them"
+msgstr ""
+
+#: src/gui/clean.c
+#, c-format
+msgid "Not deleted: %s is mounted inside it, whose files would go with it"
+msgstr ""
+
+#: src/gui/clean.c
+#, c-format
+msgid "Not deleted: %s"
+msgstr ""
+
+#: src/gui/clean.c
+#, c-format
+msgid "Deleted, with %s"
+msgstr ""
+
+#: src/gui/clean.c
+#, c-format
+msgid "Deletes it, with %s"
+msgstr ""
+
+#: src/gui/clean.c
+msgid "Deleted"
+msgstr ""
+
+#: src/gui/clean.c
+msgid "Deletes it"
 msgstr ""
 
 #: src/gui/editor.c
@@ -1524,7 +1564,22 @@ msgid "While the app is in testing, Android's Settings > Apps > ScarletNX > Stor
 msgstr ""
 
 #: src/gui/main.c
-msgid "counting"
+msgid "An older version left these where this one no longer looks: each folder, what moved and where it is now"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "and %d more, which Share Log lists"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "and %d more: Up/Down, PgUp/PgDn and the wheel go over them"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Delete All: %d done, %d not"
 msgstr ""
 
 #: src/gui/main.c
@@ -1540,11 +1595,6 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Clean Old Settings: %d done"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "and %d more, which Share Log lists"
 msgstr ""
 
 #: src/gui/main.c
@@ -2158,6 +2208,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Notice"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Old Files"
 msgstr ""
 
 #: src/gui/main.c
@@ -3677,6 +3731,12 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Left/Right: choose. Enter: OK. PgUp/PgDn: page. ESC: exit."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Up/Down: row. Left/Right: change. Enter: change. ESC: back."
 msgstr ""
 
@@ -3712,6 +3772,20 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "The system's random number generator failed: no uid for a new user"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Delete All deletes none of these: a save and the console's keys are only moved"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Delete All? %d deleted, %d stay: a save and the console's keys are only moved"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Delete All? %d deleted"
 msgstr ""
 
 #: src/gui/main.c
@@ -3811,6 +3885,14 @@ msgid "Not Now"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Move All"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Delete All"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Next"
 msgstr ""
 
@@ -3854,6 +3936,10 @@ msgid "Tip: --no-setup skips the setup"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Tip: Settings > App > Move Old Files moves them later"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Tip: games keep their own language: Settings > Display > Language"
 msgstr ""
 
@@ -3893,6 +3979,24 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Changed %d/%d"
+msgstr ""
+
+#: src/gui/main.c
+msgid "size"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Move All: %d done, %d not"
+msgstr ""
+
+#: src/gui/main.c
+msgid "counting"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Old Files %d/%d"
 msgstr ""
 
 #: src/gui/main.c
@@ -4064,6 +4168,48 @@ msgid "Removed %s"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Nothing in it to move"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d moved to %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "1 entry moves"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d entries move"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Not moved: run it from its dump once, then move its saves (docs/user/deprecations.md)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d moved to %s, %d not: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d entries move, %d stay: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d not moved: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d stay: %s"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Not moved: run it from its dump once, which makes %s, then move its saves (docs/user/deprecations.md)"
 msgstr ""
@@ -4071,6 +4217,20 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Not moved: %s is not in the data folder, which these settings go by"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Not there any more"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d deleted, %d not: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Deletes %d, %d stay: %s"
 msgstr ""
 
 #: src/gui/main.c

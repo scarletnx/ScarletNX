@@ -43,4 +43,14 @@ bool gui_save_old(const char* save);
    from it. One that cannot move puts back the ones that did, the save as it was, and is the only entry. With apply
    false nothing is touched and the entries say what would move. How many move */
 int gui_move_save_committed(GuiCleaned* done, const char* save, bool apply);
+/* What Delete All of the old files leaves where it is, said on the page and in its entry: a save, never deleted, only
+   moved (a game's save folder, <name>_data/save/<kind>, or a game an older version laid out beside others, whose
+   <name>_data/ holds its saves); a folder holding saves (a <name>_data/ with a save/ or sdmc/ in it, four folders
+   down at most); the console's keys (prod.keys or title.keys, or a folder holding them) */
+typedef enum { GUI_KEEP_NONE, GUI_KEEP_SAVE, GUI_KEEP_SAVES, GUI_KEEP_KEYS } GuiKeep;
+GuiKeep gui_old_keep(const char* path);
+/* Delete All, an entry an older version left at old: deleted with apply (a file, or a folder and all in it; a game
+   laid out beside others with its <name>_data/), else the entry says it would be; what gui_old_keep keeps, and a folder another disk is mounted in, stay, said; one not there
+   says nothing. 1 when it is deleted, or would be */
+int gui_delete_old(GuiCleaned* done, const char* old, bool apply);
 #endif

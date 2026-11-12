@@ -727,6 +727,196 @@ static void test_clean_notice(App* app) {
     puts("PASS the last notice's Clean Now, Not Now, and Skip cleaning none");
 }
 
+/* what an older version left: a setup page each folder (a game's save/ for each of its kinds), the last, after the
+   notices and the steps, alone when nothing else is due; its size, where it goes and what Move All and Delete All
+   would do; on the last Move All, Delete All (asked, pressed twice) or Not Now, in focus; a save and keys never
+   deleted; F5 and the 5 s look again; the old files' pages alone write no setup.ini */
+static void test_old_files(App* app) {
+    char *config = config_of(app), *file = join(config, "setup.ini"), *user = snx_user_data_dir();
+    char *gui = join(user, "gui"), *settings = join(gui, "settings.ini"), *work = join(app->data_dir, "work");
+    char *object = join(work, "a.o"), *games = join(app->data_dir, "games"), *old_game = join(games, "x");
+    char *game = join(app->games_dir, "0100000000ABC000"), *saves = join(game, "0100000000ABC000_data/save");
+    char *device = join(saves, "device/d.bin"), *moved = join(app->data_dir, "save/device/0100000000ABC000/d.bin");
+    char head[32], *text;
+    const char* labels[GUI_SETUP_CHOICES];
+    static const char mine[] = "; kept as it is\n[setup]\nversion = 1\nnotices = 99\n";
+    put(file, mine);
+    left_behind(app);
+    assert(!app->lefts);
+    put(settings, "[menu]\n");
+    put(object, "o");
+    put(old_game, "x");
+    put(device, "save");
+    {
+        char* account = join(saves, "user." FIRST "/u.bin");
+        put(account, "save");
+        free(account);
+    }
+    left_behind(app);
+    while (!__atomic_load_n(&app->left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
+    assert(app->lefts == 5 && left_groups(app) == 4);
+    setup_start(app);
+    assert(app->setup_on && app->setup_count == 1 && page(app) == SETUP_LEFT && !setup_steps(app));
+    {
+        char tab[64];
+        tab_label(app, 0, tab, sizeof tab);
+        assert(!strcmp(tab, ICON_FOLDER_INPUT " Old Files"));
+    }
+    /* the first: gui/, Next alone, no Skip */
+    assert(setup_labels(app, labels) == 1 && !strcmp(labels[0], "Next"));
+    render(app);
+    shows(app, "Left by older versions", rgb(app->theme.page));
+    shows(app, "Old Files 1/4", rgb(head_ink(app)));
+    shows(app, "size        1 KB", rgb(app->theme.ink));
+    shows(app, "Move All    1 entry moves", rgb(app->theme.ink));
+    shows(app, "Delete All  Deletes it", rgb(app->theme.ink));
+    /* PgDn a page on, PgUp back; End the last, Home the first */
+    key(app, SDLK_PAGEDOWN);
+    assert(app->setup_top == 1 && setup_labels(app, labels) == 2 && !strcmp(choice_label(app), "Next"));
+    key(app, SDLK_PAGEUP);
+    key(app, SDLK_PAGEUP); /* none before the first */
+    assert(!app->setup_top);
+    key(app, SDLK_RETURN);
+    key(app, SDLK_RETURN);
+    assert(app->setup_top == 2); /* the game's save/, its two kinds one page */
+    render(app);
+    shows(app, "Old Files 3/4", rgb(head_ink(app)));
+    shows(app, "Move All    2 entries move", rgb(app->theme.ink));
+    shows(app, "Delete All  Stays: a save,", rgb(app->theme.ink));
+    {
+        SDL_Event end = {0};
+        end.type = SDL_EVENT_KEY_DOWN;
+        end.key.key = SDLK_END;
+        end.key.down = true;
+        event(app, &end);
+        assert(app->setup_top == 3);
+        end.key.key = SDLK_HOME;
+        event(app, &end);
+        assert(!app->setup_top);
+        end.key.key = SDLK_END;
+        event(app, &end);
+    }
+    /* the last: Back, Move All, Delete All and Not Now, in focus */
+    assert(setup_labels(app, labels) == 4 && !strcmp(labels[0], "Back") && !strcmp(labels[1], "Move All") &&
+           !strcmp(labels[2], "Delete All") && !strcmp(choice_label(app), "Not Now"));
+    snprintf(head, sizeof head, "Old Files %d/%d", 4, 4);
+    render(app);
+    shows(app, head, rgb(head_ink(app)));
+    /* Delete All asks, Delete pressed twice: what it deletes, a save staying */
+    key(app, SDLK_UP);
+    key(app, SDLK_RETURN);
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_DELETE_OLD && app->confirm.twice &&
+           !strcmp(app->ask_line, "Delete All? 3 deleted, 2 stay: a save and the console's keys are only moved"));
+    key(app, SDLK_ESCAPE); /* Cancel: nothing deleted */
+    assert(!app->confirm.shown && snx_is_file(settings) && !app->left_did);
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(app->confirm.shown && app->confirm.armed && snx_is_file(settings)); /* armed, not yet */
+    render(app);
+    shows(app, "Delete: press again", rgb(app->theme.page));
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown && app->left_did == 2 && !snx_path_exists(gui) && !snx_path_exists(work) &&
+           !snx_path_exists(games) && snx_is_file(device));
+    assert(app->moved.count == 4 && app->moved.done == 3 && app->report_delete && !app->cleaned_shown);
+    assert(setup_labels(app, labels) == 1 && !strcmp(labels[0], "OK"));
+    render(app);
+    shows(app, "Delete All: 3 done, 1 not", rgb(head_ink(app)));
+    key(app, SDLK_RETURN);
+    assert(!app->setup_on && app->lefts == 2);
+    text = text_of(config, "setup.ini");
+    assert(text && !strcmp(text, mine)); /* nothing else due: setup.ini as it was */
+    free(text);
+    /* the next start: the save alone; Delete All deletes none, said, nothing asked; Move All moves it */
+    left_behind(app);
+    setup_start(app);
+    assert(app->setup_on && page(app) == SETUP_LEFT && setup_labels(app, labels) == 3 &&
+           !strcmp(choice_label(app), "Not Now"));
+    key(app, SDLK_UP);
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown && app->setup_failed && app->setup_on &&
+           !strcmp(app->message, "Delete All deletes none of these: a save and the console's keys are only moved"));
+    key(app, SDLK_UP);
+    key(app, SDLK_RETURN);
+    assert(app->left_did == 1 && snx_is_file(moved) && !snx_path_exists(device) && app->moved.count == 1);
+    render(app);
+    shows(app, "Move All: 1 done, 0 not", rgb(head_ink(app)));
+    key(app, SDLK_RETURN);
+    /* the save in the data folder's save/ now, its files in the folder itself as the versions before kept one: listed
+       again, on the saves' page, and the next Move All puts them in its 0/ (left_save) */
+    assert(!app->setup_on && app->lefts == 2 && strstr(app->left, "save")); /* the device and the account save */
+    left_behind(app);
+    setup_start(app);
+    assert(app->setup_on && page(app) == SETUP_LEFT);
+    key(app, SDLK_END);
+    for (int n = 0; n < 8 && strcmp(choice_label(app), "Move All"); ++n) key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(app->left_did == 1 && !snx_path_exists(moved));
+    key(app, SDLK_RETURN);
+    assert(!app->setup_on && !app->lefts);
+    left_behind(app);
+    setup_start(app);
+    assert(!app->setup_on); /* nothing left, nothing due */
+    /* Not Now keeps them; F5 and the 5 s look find them gone, and the setup goes on */
+    for (int how = 0; how < 3; ++how) {
+        put(settings, "[menu]\n");
+        left_behind(app);
+        setup_start(app);
+        assert(app->setup_on && page(app) == SETUP_LEFT && !strcmp(choice_label(app), "Not Now"));
+        if (!how) {
+            key(app, SDLK_RETURN);
+            assert(!app->setup_on && snx_is_file(settings) && app->lefts == 1);
+            continue;
+        }
+        assert(!snx_remove_tree(gui));
+        if (how == 1) {
+            SDL_Event f5 = {0};
+            f5.type = SDL_EVENT_KEY_DOWN;
+            f5.key.key = SDLK_F5;
+            f5.key.down = true;
+            event(app, &f5);
+        } else {
+            app->left_at = 0;
+            pump(app);
+        }
+        assert(!app->setup_on && !app->lefts);
+    }
+    /* after the notices: Skip goes through them with Not Now */
+    put(settings, "[menu]\n");
+    {
+        char seen[64];
+        snprintf(seen, sizeof seen, "[setup]\nversion = 1\nnotices = %d\n", SNX_NOTICES - 1);
+        put(file, seen);
+    }
+    left_behind(app);
+    setup_start(app);
+    assert(app->setup_on && app->setup_count == 2 && app->setup_pages[1] == SETUP_LEFT);
+    key(app, SDLK_DOWN); /* from OK to Skip */
+    assert(!strcmp(choice_label(app), "Skip"));
+    key(app, SDLK_RETURN);
+    assert(!app->setup_on && snx_is_file(settings) && !app->left_did);
+    assert(!snx_remove_tree(gui) && !snx_remove_tree(game));
+    text = join(app->data_dir, "save"); /* where Move All put the saves */
+    assert(!snx_remove_tree(text));
+    free(text);
+    left_behind(app);
+    assert(!app->lefts);
+    free(moved);
+    free(device);
+    free(saves);
+    free(game);
+    free(old_game);
+    free(games);
+    free(object);
+    free(work);
+    free(settings);
+    free(gui);
+    free(user);
+    free(file);
+    free(config);
+    puts("PASS the old files a page each, Move All, Delete All asked twice keeping saves, Not Now");
+}
+
 /* in another language: the notices in its words (setup.c marks them), and the rows' labels padded to the columns their
    letters take, not their bytes: xx's "at\303\251" (3 columns in 4 bytes) and "agora" lined up */
 static void test_translated(App* app) {
@@ -1028,6 +1218,7 @@ int main(void) {
     test_users(&app);
     test_notice(&app);
     test_clean_notice(&app);
+    test_old_files(&app);
     test_translated(&app);
     test_places(&app);
     test_skip(&app);

@@ -636,8 +636,10 @@ An older version made its games in the data folder's `games/` (`recompiled/` now
 kept a game's files side by side in `games/` (`games/Game`, `Game_code.so`, `Game_data/`,
 `Game.ini`), the menu's in the data folder's `gui/`, outside Linux the rest in the data folder itself, a portable
 copy's in a `games/` beside the program, and a build tree's `games/`, `work/` and keys in its checkout. This one moves
-none of it by itself: as long as it is there, the menu lists each folder and where it goes now, the driver says so on
-each run, and an older game runs where it is, its run saying where its folder goes. Asked, it moves them:
+none of it by itself: as long as it is there, the launcher's setup shows each folder on a page of its own (Old Files,
+[GUI](gui.md#setup)) with where it goes now and asks on the last whether to move them all, delete them all (never a save
+nor the console's keys) or not now, the driver says so on each run, and an older game runs where it is, its run saying
+where its folder goes. Asked, it moves them:
 
 ```
 ./build/scarletnx --migrate       # each entry a line and where it would go; nothing is touched
@@ -725,8 +727,10 @@ only said, nothing is moved), then asks:
    `0123456789abcdeffedcba9876543210`, the uid user 1 has had, while a game in `recompiled/` has saves of it.
 
 In the launcher the last notice asks to take out the keys a game's `.ini` keeps under `[Deprecated]` (Clean Now, or
-Not Now), and the first page also has Skip, which takes each step as its default, what Enter on each would take (the
-nickname `Player`, Not Now), and writes `setup.ini`.
+Not Now), and after the steps a page for each folder an older version left asks, on the last, Move All, Delete All or
+Not Now ([GUI](gui.md#setup)); those pages come alone, with nothing written to `setup.ini`, at each start while the
+folders are there. The first page also has Skip, which takes each step as its default, what Enter on each would take
+(the nickname `Player`, Not Now on both questions), and writes `setup.ini`.
 
 `setup.ini`, in the config folder, keeps how far it went:
 
