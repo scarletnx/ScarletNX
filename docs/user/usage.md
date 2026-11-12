@@ -724,8 +724,9 @@ only said, nothing is moved), then asks:
    has one user, the nickname given (`Player` by default), its uid random, of a v4 UUID's form as Ryujinx's are; or
    `0123456789abcdeffedcba9876543210`, the uid user 1 has had, while a game in `recompiled/` has saves of it.
 
-In the launcher the first page also has Skip, which takes each step as its default, what Enter on each would take
-(the nickname `Player`), and writes `setup.ini`.
+In the launcher the last notice asks to take out the keys a game's `.ini` keeps under `[Deprecated]` (Clean Now, or
+Not Now), and the first page also has Skip, which takes each step as its default, what Enter on each would take (the
+nickname `Player`, Not Now), and writes `setup.ini`.
 
 `setup.ini`, in the config folder, keeps how far it went:
 

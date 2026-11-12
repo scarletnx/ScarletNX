@@ -662,6 +662,71 @@ static void test_notice(App* app) {
     puts("PASS a notice alone after an update, and --debug");
 }
 
+/* the last notice asks Clean Old Settings while it has something to take: Clean Now in focus cleans there, the box
+   saying what it did and OK going on; Not Now goes on and cleans none, nor does Skip; with nothing to take, OK */
+static void test_clean_notice(App* app) {
+    char *config = config_of(app), *file = join(config, "setup.ini"), *game = join(app->games_dir, "0100000000ABC000");
+    char *ini = join(game, "0100000000ABC000.ini"), before[64], *text;
+    const char* labels[GUI_SETUP_CHOICES];
+    static const char deprecated[] = "[Display]\nfullscreen=1\n\n[Deprecated]\n; renderer: Vulkan is the only "
+                                     "renderer\nrenderer=opengl\n";
+    snprintf(before, sizeof before, "[setup]\nversion = 1\nnotices = %d\n", SNX_NOTICES - 2);
+    put(file, before);
+    put(ini, deprecated);
+    setup_start(app);
+    assert(app->setup_on && page(app) == SETUP_NOTICE && !strcmp(choice_label(app), "Next"));
+    assert(app->clean_inis_found < 0); /* looked for as the last comes, not before */
+    key(app, SDLK_RETURN);
+    assert(app->setup_top == 1 && app->clean_inis_found == 1 && app->setup_choice.count == 3);
+    assert(setup_labels(app, labels) == 4 && !strcmp(labels[0], "Back") && !strcmp(labels[1], "Clean Now") &&
+           !strcmp(labels[2], "Not Now") && !strcmp(labels[3], "Skip"));
+    assert(!strcmp(choice_label(app), "Clean Now"));
+    render(app);
+    shows(app, "Clean Old Settings? [Deprecated] in 1 .ini", rgb(app->theme.ink));
+    key(app, SDLK_RETURN); /* Clean Now: done there, said in the box, OK in focus; nothing over the screen */
+    text = text_of(game, "0100000000ABC000.ini");
+    assert(text && !strcmp(text, "[Display]\nfullscreen=1\n"));
+    free(text);
+    assert(app->setup_on && app->setup_cleaned && !app->cleaned_shown && app->cleaned.count == 1);
+    assert(app->setup_choice.count == 2 && !strcmp(choice_label(app), "OK") && !strcmp(choice_before(app), "Back"));
+    render(app);
+    shows(app, "Cleaned: 1 done, 0 not", rgb(app->theme.ink));
+    shows(app, "[Deprecated] removed", rgb(app->theme.soft));
+    hides(app, "Clean Old Settings?", rgb(app->theme.ink));
+    key(app, SDLK_RETURN);
+    assert(!app->setup_on);
+    gui_cleaned_free(&app->cleaned);
+    /* Not Now: on, the file as it was; and Skip, which cleans none */
+    for (int skip = 0; skip < 2; ++skip) {
+        snprintf(before, sizeof before, "[setup]\nversion = 1\nnotices = %d\n", SNX_NOTICES - 1);
+        put(file, before);
+        put(ini, deprecated);
+        setup_start(app);
+        assert(app->setup_on && !app->setup_top && !strcmp(choice_label(app), "Clean Now") && !choice_before(app));
+        key(app, SDLK_DOWN);
+        if (skip) key(app, SDLK_DOWN);
+        assert(!strcmp(choice_label(app), skip ? "Skip" : "Not Now"));
+        key(app, SDLK_RETURN);
+        assert(!app->setup_on && !app->setup_cleaned && !app->cleaned.count);
+        text = text_of(game, "0100000000ABC000.ini");
+        assert(text && !strcmp(text, deprecated));
+        free(text);
+    }
+    /* nothing to take: OK, as the other notices */
+    put(file, before);
+    put(ini, "[Display]\nfullscreen=1\n");
+    setup_start(app);
+    assert(app->setup_on && !app->clean_inis_found && !strcmp(choice_label(app), "OK"));
+    key(app, SDLK_RETURN);
+    assert(!app->setup_on);
+    assert(!snx_remove_tree(game));
+    free(ini);
+    free(game);
+    free(file);
+    free(config);
+    puts("PASS the last notice's Clean Now, Not Now, and Skip cleaning none");
+}
+
 /* in another language: the notices in its words (setup.c marks them), and the rows' labels padded to the columns their
    letters take, not their bytes: xx's "at\303\251" (3 columns in 4 bytes) and "agora" lined up */
 static void test_translated(App* app) {
@@ -962,6 +1027,7 @@ int main(void) {
     test_first(&app);
     test_users(&app);
     test_notice(&app);
+    test_clean_notice(&app);
     test_translated(&app);
     test_places(&app);
     test_skip(&app);

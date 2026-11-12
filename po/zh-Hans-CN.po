@@ -3806,6 +3806,14 @@ msgid "Overwrite"
 msgstr "覆盖"
 
 #: src/gui/main.c
+msgid "Clean Now"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Not Now"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Next"
 msgstr "下一步"
 
@@ -3879,6 +3887,11 @@ msgstr "现在"
 #: src/gui/main.c
 msgid "Not moved. See docs/user/deprecations.md"
 msgstr "未移动任何文件。参见 docs/user/deprecations.md"
+
+#: src/gui/main.c
+#, c-format
+msgid "Cleaned: %d done, %d not"
+msgstr "已清理：%d 项完成，%d 项未完成"
 
 #: src/gui/main.c
 #, c-format
@@ -4083,10 +4096,6 @@ msgid "Move Old Files? %d move"
 msgstr "移动旧文件？%d 项将移动"
 
 #: src/gui/main.c
-msgid "Nothing to clean: no [Deprecated] in a game's .ini, no old keys"
-msgstr "无需清理：游戏的 .ini 中没有 [Deprecated]，也没有旧键"
-
-#: src/gui/main.c
 #, c-format
 msgid "Clean Old Settings? [Deprecated] in %d .ini, %d old keys"
 msgstr "清理旧设置？%d 个 .ini 中有 [Deprecated]，另有 %d 个旧键"
@@ -4112,6 +4121,10 @@ msgid "Clean Old Settings? %d old key"
 msgstr "清理旧设置？%d 个旧键"
 
 #: src/gui/main.c
+msgid "Nothing to clean: no [Deprecated] in a game's .ini, no old keys"
+msgstr "无需清理：游戏的 .ini 中没有 [Deprecated]，也没有旧键"
+
+#: src/gui/main.c
 msgid "Every setting is at its default"
 msgstr "全部设置已是默认"
 
@@ -4124,11 +4137,6 @@ msgstr "恢复默认？%d 项设置将更改"
 #, c-format
 msgid "Reset to Defaults? %d setting changes"
 msgstr "恢复默认？%d 项设置将更改"
-
-#: src/gui/main.c
-#, c-format
-msgid "Cleaned: %d done, %d not"
-msgstr "已清理：%d 项完成，%d 项未完成"
 
 #: src/gui/main.c
 #, c-format
