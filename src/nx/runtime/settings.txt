@@ -1300,7 +1300,7 @@ setting Sparse texture sharing
 setting Buffer pages
     key vk_buffer_pages
     int 0 2
-    default 0
+    default 1
     startup
     words Off|Read|Read and write
     help 1 = keeps the guest memory that draws read by page, in sparse buffers: ranges that overlap share their bytes,
