@@ -19,18 +19,14 @@ struct nn::prepo::PlayReport @version(>= 16.0.0) { addr buffer @0x28; u64 capaci
 # SDK's own finished one. Read in SDK 16.2, 18.3, 19.3 and 20.5; no older SDK of the dumps here exports it
 struct nn::prepo::AsyncContext @version(>= 16.0.0) { addr object @0x0; u32 result @0x8 } size 0x10
 @version(>= 16.0.0) hook _ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE(addr report, addr uid) = nnprepo_send uses nn::prepo::PlayReport, nn::prepo::AsyncContext
-hook _ZN2nn5prepo28RequestImmediateTransmissionEv() -> u32 = nnprepo_request_immediate_transmission
-hook _ZN2nn5prepo21GetTransmissionStatusEPNS0_18TransmissionStatusE(addr status) -> u32 = nnprepo_get_transmission_status
+hook _ZN2nn5prepo28RequestImmediateTransmissionEv() -> u32 = nnprepo_request_immediate_transmission a32 @version(< 1.0.0)
+hook _ZN2nn5prepo21GetTransmissionStatusEPNS0_18TransmissionStatusE(addr status) -> u32 = nnprepo_get_transmission_status a32 @version(< 1.0.0)
 # what nn::prepo::Initialize and the library's first use end in: the session's start, and its end
-hook _ZN2nn5prepo6detail3ipc10InitializeEv() = nnprepo_ipc_initialize
-hook _ZN2nn5prepo6detail3ipc8FinalizeEv() = nnprepo_ipc_finalize
+hook _ZN2nn5prepo6detail3ipc10InitializeEv() = nnprepo_ipc_initialize a32 @version(< 1.0.0)
+hook _ZN2nn5prepo6detail3ipc8FinalizeEv() = nnprepo_ipc_finalize a32 @version(< 1.0.0)
 # A 32-bit game: its SDK's report has the same fields, 4 bytes each, and Save has no limit there. Read in SDK
 # 0.12.16, the one 32-bit SDK of the dumps here, so every declaration is for that SDK alone: a game of another has
 # no hook, and stops in sm with prepo:u's name
 struct nn::prepo::PlayReport32 @version(< 1.0.0) { u32 buffer @0x20; u32 capacity @0x24; u32 used @0x28 } size 0x2c
 @version(< 1.0.0) a32 hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = nnprepo_save32 uses nn::prepo::PlayReport32
 @version(< 1.0.0) a32 hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user32 uses nn::prepo::PlayReport32
-@version(< 1.0.0) a32 hook _ZN2nn5prepo28RequestImmediateTransmissionEv() -> u32 = nnprepo_request_immediate_transmission
-@version(< 1.0.0) a32 hook _ZN2nn5prepo21GetTransmissionStatusEPNS0_18TransmissionStatusE(addr status) -> u32 = nnprepo_get_transmission_status
-@version(< 1.0.0) a32 hook _ZN2nn5prepo6detail3ipc10InitializeEv() = nnprepo_ipc_initialize
-@version(< 1.0.0) a32 hook _ZN2nn5prepo6detail3ipc8FinalizeEv() = nnprepo_ipc_finalize

@@ -4,9 +4,10 @@
 # The native nn::nsd (nsd.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
 # nn::nsd: the names of the console's servers, with no nsd:u session. Resolve and ResolveEx are what games call,
 # nn::oe::GetServerEnvironmentType calls GetApplicationServerEnvironmentType, and the network libraries ask
-# GetEnvironmentIdentifier for the environment's name
+# GetEnvironmentIdentifier for the environment's name. A 32-bit game has the same four in SDK 0.12.16, the one 32-bit
+# SDK read, so they hold for it alone there (a32 @version): a 32-bit game of another has no hook here
 family nn_nsd
-hook _ZN2nn3nsd7ResolveEPNS0_4FqdnERKS1_(addr out, addr in) -> u32 = nnnsd_resolve a32
-hook _ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_(addr out, addr in) -> u32 = nnnsd_resolve_ex a32
-hook _ZN2nn3nsd35GetApplicationServerEnvironmentTypeEv() -> u32 = nnnsd_server_environment_type a32
-hook _ZN2nn3nsd24GetEnvironmentIdentifierEPNS0_21EnvironmentIdentifierE(addr out) = nnnsd_get_environment_identifier a32
+hook _ZN2nn3nsd7ResolveEPNS0_4FqdnERKS1_(addr out, addr in) -> u32 = nnnsd_resolve a32 @version(< 1.0.0)
+hook _ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_(addr out, addr in) -> u32 = nnnsd_resolve_ex a32 @version(< 1.0.0)
+hook _ZN2nn3nsd35GetApplicationServerEnvironmentTypeEv() -> u32 = nnnsd_server_environment_type a32 @version(< 1.0.0)
+hook _ZN2nn3nsd24GetEnvironmentIdentifierEPNS0_21EnvironmentIdentifierE(addr out) = nnnsd_get_environment_identifier a32 @version(< 1.0.0)

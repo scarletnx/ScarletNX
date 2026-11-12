@@ -44,6 +44,9 @@ int main(void) {
     {
         static SnxArmCPU a;
         CHECK(HOOK32_COUNT == HOOK_COUNT);
+        /* each for the one 32-bit SDK read, 0.12.16, alone: a 32-bit game of another SDK has no hook here */
+        for (int i = 0; i < HOOK32_COUNT; i++)
+            CHECK(hook32_key[i] == HOOK_SDK && hook32_lo[i] == 0 && hook32_hi[i] == 0x10000);
         for (int i = 0; i < HOOK32_COUNT; i++) {
             CHECK(!strcmp(hook32_symbol[i], hook_symbol[i]));
             if (strcmp(hook32_symbol[i], "_ZN2nn3nsd7ResolveEPNS0_4FqdnERKS1_")) continue;
