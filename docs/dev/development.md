@@ -144,7 +144,7 @@ beside it:
   (`log: reached log_max=16 MiB: 7.4 MiB of lines between the run's start and here cut`), and the first time the
   game's picture says so for 3 s. `--log=2` with a long run is what fills it.
 - `--log=2` also logs the process's resources, alike on every system. Each second a `resources:` line: the
-  footprint, what the system still gives the process (`?` where it tells none) and the renderer's VMA blocks; on iOS
+  footprint, what the system still gives the process (`?` where it tells none) and the renderer's blocks of device memory; on iOS
   Metal's memory, the thermal state and low power mode too. Every 5 s a `threads:` line: the three threads with the
   most time on the processors, by the names the runtime gives them (Linux and Android keep 15 bytes of a name,
   FreeBSD 19). A `memory: under N MiB free` line, with each GPU heap, the first time what the system still gives

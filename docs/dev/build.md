@@ -345,10 +345,9 @@ The Switch runtime's shared font stand-ins download only when it is built ([Shar
 Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 uses CPM's system-package discovery with a pinned static
 source fallback. Use `-DCPM_DOWNLOAD_SDL3=ON` to request the bundled source build.
 
-`-DCPM_USE_LOCAL_PACKAGES=ON` (CPM's own option, OFF by default, also read from the environment) takes LZ4, the Vulkan
-headers and VulkanMemoryAllocator from the system when `find_package` finds their CMake package at the pinned version
-or newer (`lz4`, `VulkanHeaders` with its `share/vulkan/registry/vk.xml`, `VulkanMemoryAllocator`), and the pinned
-source otherwise. LZ4 then links as the system's library. The configure says where each came from:
+`-DCPM_USE_LOCAL_PACKAGES=ON` (CPM's own option, OFF by default, also read from the environment) takes LZ4 and the Vulkan
+headers from the system when `find_package` finds their CMake package at the pinned version or newer (`lz4`,
+`VulkanHeaders` with its `share/vulkan/registry/vk.xml`), and the pinned source otherwise. LZ4 then links as the system's library. The configure says where each came from:
 `CPM: Using local package lz4@1.10.0`, or `CPM: Adding package lz4@1.10.0 (...)` for the pinned source. Every other
 package keeps its pinned source with the option on ([cpm_local.cmake](../../cmake/cpm_local.cmake)): the build compiles
 it into a target of its own, with its own flags or a change of ours (FFmpeg, OpenSSL and the libcurl built on it,
@@ -393,7 +392,7 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
   tree's driver uses). `SNX_GAMES_DIR`, its name before, is still taken while it is empty, said as it configures. A
   tree whose value is the checkout's `games/`, the default before, is set back to empty.
 - `-DCPM_SOURCE_CACHE=/path`: override source-download cache.
-- `-DCPM_USE_LOCAL_PACKAGES=ON`: take LZ4, the Vulkan headers and VulkanMemoryAllocator from the system where it has
+- `-DCPM_USE_LOCAL_PACKAGES=ON`: take LZ4 and the Vulkan headers from the system where it has
   them at the pinned version or newer (default OFF: every package from its pinned source). See
   [Rebuild, deploy, cache](#rebuild-deploy-cache).
 - `-DSNX_DEPS_CACHE=/path`: reuse and publish finished FFmpeg, OpenSSL and jemalloc builds there (default: the

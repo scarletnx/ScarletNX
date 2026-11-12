@@ -64,7 +64,7 @@ typedef struct {
        sparseResidencyAliased): key[i] is what page i shows as its binder was told (vk_image_resident), 0 for a page
        like no other, and the pages with one key have one allocation. NULL: each page its own */
     u64* key;
-    VmaAllocation pages[];
+    DevMem pages[];
 } Pieces;
 /* a block or a page and the key of what it shows, to find the ones of a key by */
 typedef struct {
@@ -244,10 +244,11 @@ static void bind_run(const void* arg) {
         fatal("vulkan: sparse bind batch %llu of %u binds failed (%d)", (unsigned long long)h->value, binds, (int)r);
 }
 
-static VmaAllocation* bind_gone(void) { return (VmaAllocation*)(void*)(g_bind.buf + BIND_CAP); }
+static DevMem* bind_gone(void) { return (DevMem*)(void*)(g_bind.buf + BIND_CAP); }
 static void gone_free(void* a) {
-    vk_mem_untrack(a);
-    vmaFreeMemory(g_vk.vma, a);
+    DevMem m = (DevMem)(uintptr_t)a;
+    vk_mem_untrack(m);
+    vk_devmem_free(m);
 }
 
 /* the batch to the graphics queue, after the work submitted before it when it changes blocks of an image in use. The
@@ -262,7 +263,7 @@ static void bind_flush(void) {
         h->value = ++g_bind.issued;
         vk_rec_call(bind_run, g_bind.buf, g_bind.used);
     }
-    for (u32 i = 0; i < g_bind.ngone; i++) vk_defer_call(gone_free, bind_gone()[i]);
+    for (u32 i = 0; i < g_bind.ngone; i++) vk_defer_call(gone_free, (void*)(uintptr_t)bind_gone()[i]);
     vk_defer_bytes(g_bind.gone_bytes);
     g_bind.used = g_bind.last = 0;
     g_bind.ngone = 0;
@@ -283,13 +284,13 @@ int vk_sparse_flush(VkSemaphoreSubmitInfo* wait) {
 
 /* 0 when there is no memory for a batch */
 static int bind_ready(void) {
-    if (!g_bind.buf) g_bind.buf = malloc(BIND_CAP + GONE_CAP * sizeof(VmaAllocation));
+    if (!g_bind.buf) g_bind.buf = malloc(BIND_CAP + GONE_CAP * sizeof(DevMem));
     return g_bind.buf != NULL;
 }
 /* one bind of img into the batch, after the others of img: a VkSparseMemoryBind when opaque, else a
    VkSparseImageMemoryBind, each bytes. gone: the memory it lets go (VK_NULL_HANDLE none), size bytes, freed after
    the batch. readers: the batch waits for the work submitted before it. The batch it went into */
-static u64 bind_put(BindOne key, const void* bind, VmaAllocation gone, u64 size, int readers) {
+static u64 bind_put(BindOne key, const void* bind, DevMem gone, u64 size, int readers) {
     u64 each = bind_each(key.kind);
     if (g_bind.used + sizeof(BindOne) + each > BIND_CAP || g_bind.ngone == GONE_CAP) bind_flush();
     if (key.kind != BIND_BUFFER) unissued_add(key.of.img);
@@ -325,7 +326,7 @@ static u64 bind_put(BindOne key, const void* bind, VmaAllocation gone, u64 size,
     return g_bind.issued + 1;
 }
 
-static u64 bind_add(VkImage img, int opaque, const void* bind, u64 each, VmaAllocation gone, u64 size, int readers) {
+static u64 bind_add(VkImage img, int opaque, const void* bind, u64 each, DevMem gone, u64 size, int readers) {
     BindOne key;
     memset(&key, 0, sizeof key); /* compared by its bytes (bind_put) */
     key.of.img = img;
@@ -333,7 +334,7 @@ static u64 bind_add(VkImage img, int opaque, const void* bind, u64 each, VmaAllo
     (void)each;
     return bind_put(key, bind, gone, size, readers);
 }
-u64 vk_buffer_sparse_bind(VkBuffer buf, const VkSparseMemoryBind* bind, VmaAllocation gone, u64 size, int readers) {
+u64 vk_buffer_sparse_bind(VkBuffer buf, const VkSparseMemoryBind* bind, DevMem gone, u64 size, int readers) {
     if (!bind_ready()) return 0;
     BindOne key;
     memset(&key, 0, sizeof key);
@@ -379,10 +380,9 @@ static int pieces_bind(VkImage img, const VkMemoryRequirements* req, Pieces* p, 
     for (u32 i = 0; i < n && ok; i++) {
         u64 at = (u64)i * chunk, size = req->size - at < chunk ? req->size - at : chunk;
         VkMemoryRequirements piece = {.size = size, .alignment = req->alignment, .memoryTypeBits = req->memoryTypeBits};
-        VmaAllocationCreateInfo aci = {.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
-                                       .preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
-        VmaAllocationInfo info;
-        *res = vmaAllocateMemory(g_vk.vma, &piece, &aci, &p->pages[i], &info);
+        DevMemWant aci = {.at = DM_DEVICE, .own = 1, .image = 1};
+        DevMemInfo info;
+        *res = vk_devmem_alloc(&piece, &aci, &p->pages[i], &info);
         if (!VK_OK(*res)) {
             ok = 0;
             break;
@@ -390,10 +390,10 @@ static int pieces_bind(VkImage img, const VkMemoryRequirements* req, Pieces* p, 
         p->n++;
         vk_mem_track(p->pages[i], owner);
         binds[i] = (VkSparseMemoryBind){
-            .resourceOffset = at, .size = size, .memory = info.deviceMemory, .memoryOffset = info.offset};
+            .resourceOffset = at, .size = size, .memory = info.memory, .memoryOffset = info.offset};
     }
     /* a new image: nothing reads it yet, and its commands are recorded after this, so the batch waits for no work */
-    for (u32 i = 0; i < n && ok; i++) p->batch = bind_add(img, 1, &binds[i], sizeof *binds, VK_NULL_HANDLE, 0, 0);
+    for (u32 i = 0; i < n && ok; i++) p->batch = bind_add(img, 1, &binds[i], sizeof *binds, 0, 0, 0);
     free(binds);
     return ok;
 }
@@ -408,7 +408,7 @@ static void pieces_free(Pieces* p) {
             if (j < i) continue;
         }
         vk_mem_untrack(p->pages[i]);
-        vmaFreeMemory(g_vk.vma, p->pages[i]);
+        vk_devmem_free(p->pages[i]);
     }
     free(p->key);
     free(p);
@@ -458,14 +458,14 @@ static int image_in_pieces(const VkImageCreateInfo* ii, VkImage* img, u32 owner,
     return 1;
 }
 
-int vk_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem) {
+int vk_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem) {
     VkResult res;
     return vk_image_create_r(ii, img, mem, VK_OWN_IMAGE_OTHER, &res);
 }
-static int image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u32 owner, VkResult* res) {
+static int image_create_r(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, VkResult* res) {
     *res = VK_ERROR_UNKNOWN;
     *img = VK_NULL_HANDLE;
-    *mem = VK_NULL_HANDLE;
+    *mem = 0;
     VkDeviceImageMemoryRequirements q = {.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
                                          .pCreateInfo = ii};
     VkMemoryRequirements2 req = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
@@ -478,12 +478,12 @@ static int image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
         LOG_LIMIT(4, "vulkan: a %llu MiB image in one allocation, past the %llu MiB cap\n",
                   (unsigned long long)(req.memoryRequirements.size >> 20), (unsigned long long)(g_vk.alloc_cap >> 20));
     }
-    VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    *res = vmaCreateImage(g_vk.vma, ii, &aci, img, mem, NULL);
+    DevMemWant aci = {.at = DM_DEVICE};
+    *res = vk_devmem_image(ii, &aci, img, mem);
     if (VK_OK(*res)) vk_mem_track(*mem, owner);
     return VK_OK(*res);
 }
-int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u32 owner, VkResult* res) {
+int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, VkResult* res) {
     VkResourceScope scope = vk_resource_begin();
     int result = image_create_r(ii, img, mem, owner, res);
     vk_resource_end(VK_RESOURCE_IMAGE_CREATE, scope);
@@ -498,8 +498,8 @@ int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* 
    zero (residencyNonResidentStrict) or undefined, as the console's unmapped sparse pages read zero, and writes to it
    are discarded.
 
-   Each block's memory is a VMA allocation of its own, which VMA takes from its shared blocks. A bind is waited for on
-   the host, as pieces_bind does: the commands recorded after it are submitted after it is done. A release unbinds at
+   Each block's memory is an allocation of its own, which devmem.c takes from its blocks of device memory. A bind is
+   waited for on the host, as pieces_bind does: the commands recorded after it are submitted after it is done. A release unbinds at
    once, and its memory goes when the frame being recorded is done: the frames in flight can still read through the old
    binding.
 
@@ -524,14 +524,14 @@ typedef struct {
     /* the blocks' allocations: of[b] is block b's, its index in mem and one more, 0 for none. free_mem: the first
        free record and one more (next goes on), 0 for none */
     struct SparseMem {
-        VmaAllocation a;
+        DevMem a;
         u64 key;  /* what its blocks show, 0: one block's own, which no other joins */
         u32 refs; /* the blocks bound to it, 0: free */
         u32 next;
     } * mem;
     u32 nmem, capmem, free_mem;
     u32* of;
-    VmaAllocation slot[]; /* the blocks' memory (VkSparseShape's order), then the tails' */
+    DevMem slot[]; /* the blocks' memory (VkSparseShape's order), then the tails' */
 } Sparse;
 static Sparse** g_sparse;
 static u32 g_nsparse, g_capsparse;
@@ -694,13 +694,13 @@ const VkSparseShape* vk_image_sparse_shape(VkImage img) {
 /* the memory a release unbound, freed once the frames that could read it are done */
 typedef struct {
     u32 n;
-    VmaAllocation a[];
+    DevMem a[];
 } SparseDead;
 static void sparse_dead_free(void* arg) {
     SparseDead* d = arg;
     for (u32 i = 0; i < d->n; i++) {
         vk_mem_untrack(d->a[i]);
-        vmaFreeMemory(g_vk.vma, d->a[i]);
+        vk_devmem_free(d->a[i]);
     }
     free(d);
 }
@@ -849,24 +849,24 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
     u32 nalloc = p.nfresh + p.ntail, nmem0 = s->nmem; /* nmem0: the records the plan is of */
     VkSparseImageMemoryBind* ib = calloc(p.nbind ? p.nbind : 1, sizeof *ib);
     VkSparseMemoryBind* ob = calloc(p.ntail ? p.ntail : 1, sizeof *ob);
-    VmaAllocation* fresh = calloc(nalloc ? nalloc : 1, sizeof *fresh);
-    VmaAllocationInfo* info = calloc(nalloc ? nalloc : 1, sizeof *info);
+    DevMem* fresh = calloc(nalloc ? nalloc : 1, sizeof *fresh);
+    DevMemInfo* info = calloc(nalloc ? nalloc : 1, sizeof *info);
     /* the new records' places in s->mem and their allocations: those of the records emptied first, then fresh ones */
     u32* rec = calloc(p.nnew ? p.nnew : 1, sizeof *rec);
-    VmaAllocation* rec_a = calloc(p.nnew ? p.nnew : 1, sizeof *rec_a);
+    DevMem* rec_a = calloc(p.nnew ? p.nnew : 1, sizeof *rec_a);
     SparseDead* dead = calloc(1, sizeof *dead + (s->nmem + 1) * sizeof dead->a[0]);
     int ok = ib && ob && fresh && info && rec && rec_a && dead;
     /* the fresh blocks, all at once, then the tails */
     VkMemoryRequirements req = {.size = s->block, .alignment = s->block, .memoryTypeBits = s->memtypes};
-    VmaAllocationCreateInfo aci = {.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+    DevMemWant aci = {.at = DM_DEVICE, .image = 1};
     u32 made = 0;
-    if (ok && p.nfresh) {
-        ok = VK_OK(vmaAllocateMemoryPages(g_vk.vma, &req, &aci, p.nfresh, fresh, info));
-        if (ok) made = p.nfresh;
+    for (u32 j = 0; ok && j < p.nfresh; j++) {
+        ok = VK_OK(vk_devmem_alloc(&req, &aci, &fresh[j], &info[j]));
+        if (ok) made++;
     }
     for (u32 t = 0; ok && t < p.ntail; t++) {
         VkMemoryRequirements tr = {.size = s->tail_size, .alignment = s->block, .memoryTypeBits = s->memtypes};
-        ok = VK_OK(vmaAllocateMemory(g_vk.vma, &tr, &aci, &fresh[p.nfresh + t], &info[p.nfresh + t]));
+        ok = VK_OK(vk_devmem_alloc(&tr, &aci, &fresh[p.nfresh + t], &info[p.nfresh + t]));
         if (ok) made++;
     }
     /* room in the table for the new records before anything changes: one emptied gives its place too */
@@ -894,9 +894,9 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
             if (to == TO_STAY) continue;
             sparse_region(s, b, &ib[ni]);
             if (to != TO_DROP) { /* else memory VK_NULL_HANDLE: unbound */
-                VmaAllocationInfo ai;
-                vmaGetAllocationInfo(g_vk.vma, to >= TO_NEW ? rec_a[to - TO_NEW] : s->mem[to].a, &ai);
-                ib[ni].memory = ai.deviceMemory;
+                DevMemInfo ai;
+                vk_devmem_info(to >= TO_NEW ? rec_a[to - TO_NEW] : s->mem[to].a, &ai);
+                ib[ni].memory = ai.memory;
                 ib[ni].memoryOffset = ai.offset;
             }
             ni++;
@@ -905,7 +905,7 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
             if (!s->slot[nb + t]) {
                 ob[no] = (VkSparseMemoryBind){.resourceOffset = s->tail_offset + t * s->tail_stride,
                                               .size = s->tail_size,
-                                              .memory = info[p.nfresh + no].deviceMemory,
+                                              .memory = info[p.nfresh + no].memory,
                                               .memoryOffset = info[p.nfresh + no].offset};
                 no++;
             }
@@ -919,7 +919,7 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
         ok = sparse_submit(&bi);
     }
     if (!ok) { /* nothing changes: the new memory goes, and what was bound stays */
-        for (u32 i = 0; i < made; i++) vmaFreeMemory(g_vk.vma, fresh[i]);
+        for (u32 i = 0; i < made; i++) vk_devmem_free(fresh[i]);
         for (u32 j = p.nrecycled; j < nrec; j++) { /* the places taken for fresh records, free again */
             s->mem[rec[j]].refs = 0;
             s->mem[rec[j]].next = s->free_mem;
@@ -946,7 +946,7 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* byte
             u32 to = p.to[b];
             if (to == TO_DROP) {
                 s->of[b] = 0;
-                s->slot[b] = VK_NULL_HANDLE;
+                s->slot[b] = 0;
             } else if (to != TO_STAY) {
                 u32 at = to >= TO_NEW ? rec[to - TO_NEW] : to;
                 s->of[b] = at + 1;
@@ -990,7 +990,7 @@ int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32
     for (u32 z = bz0; z <= bz1; z++)
         for (u32 y = by0; y <= by1; y++)
             for (u32 x = 0; x < sh->bx[level]; x++) {
-                int have = s->slot[base + ((u64)z * sh->by[level] + y) * sh->bx[level] + x] != VK_NULL_HANDLE;
+                int have = s->slot[base + ((u64)z * sh->by[level] + y) * sh->bx[level] + x] != 0;
                 if (have != all) return have;
             }
     return all;
@@ -1006,9 +1006,9 @@ u32 vk_image_bound_blocks(VkImage img) {
     const Pieces* p = s ? NULL : pieces_of(img);
     u32 n = 0;
     if (s)
-        for (u64 b = 0; b < sparse_nblocks(s) + s->tails; b++) n += s->slot[b] != VK_NULL_HANDLE;
+        for (u64 b = 0; b < sparse_nblocks(s) + s->tails; b++) n += s->slot[b] != 0;
     else if (p && p->per_layer)
-        for (u32 i = 0; i < p->n; i++) n += p->pages[i] != VK_NULL_HANDLE;
+        for (u32 i = 0; i < p->n; i++) n += p->pages[i] != 0;
     return n;
 }
 
@@ -1018,7 +1018,7 @@ u32 vk_image_bound_memory(VkImage img) {
     u32 n = 0;
     if (s) {
         for (u32 i = 0; i < s->nmem; i++) n += s->mem[i].refs != 0;
-        for (u64 b = sparse_nblocks(s); b < sparse_nblocks(s) + s->tails; b++) n += s->slot[b] != VK_NULL_HANDLE;
+        for (u64 b = sparse_nblocks(s); b < sparse_nblocks(s) + s->tails; b++) n += s->slot[b] != 0;
         return n;
     }
     if (!p || !p->per_layer || !p->key) return vk_image_bound_blocks(img);
@@ -1047,12 +1047,12 @@ static int sparse_destroy(VkImage img) {
         for (u32 k = 0; k < s->nmem; k++) /* each allocation once, however many blocks it has */
             if (s->mem[k].refs) {
                 vk_mem_untrack(s->mem[k].a);
-                vmaFreeMemory(g_vk.vma, s->mem[k].a);
+                vk_devmem_free(s->mem[k].a);
             }
         for (u64 k = sparse_nblocks(s); k < sparse_nblocks(s) + s->tails; k++)
             if (s->slot[k]) {
                 vk_mem_untrack(s->slot[k]);
-                vmaFreeMemory(g_vk.vma, s->slot[k]);
+                vk_devmem_free(s->slot[k]);
             }
         free(s->mem);
         free(s->of);
@@ -1063,10 +1063,10 @@ static int sparse_destroy(VkImage img) {
     return 0;
 }
 
-static void image_destroy(VkImage img, VmaAllocation mem) {
+static void image_destroy(VkImage img, DevMem mem) {
     if (mem || !img) {
         vk_mem_untrack(mem);
-        vmaDestroyImage(g_vk.vma, img, mem);
+        vk_devmem_image_destroy(img, mem);
         return;
     }
     unissued_remove(img); /* its binds leave the batch (bind_drop), or went with it already */
@@ -1081,7 +1081,7 @@ static void image_destroy(VkImage img, VmaAllocation mem) {
     if (sparse_destroy(img)) return;
     vkDestroyImage(g_vk.dev, img, NULL); /* made without memory */
 }
-void vk_image_destroy(VkImage img, VmaAllocation mem) {
+void vk_image_destroy(VkImage img, DevMem mem) {
     VkResourceScope scope = vk_resource_begin();
     image_destroy(img, mem);
     vk_resource_end(VK_RESOURCE_IMAGE_DESTROY, scope);
@@ -1213,12 +1213,12 @@ typedef struct {
    one the pages of its key have, whose texels are theirs (want[i] stays 1). *had: the memory it lets go that no page
    has any more, VK_NULL_HANDLE when it had none or other pages of its old key keep it */
 static VkResult page_change(Pieces* p, u32 i, u8* want, u64 key, PageKeys* k, const VkMemoryRequirements* mem,
-                            VkDeviceMemory* memory, VkDeviceSize* offset, VmaAllocation* had) {
-    const VmaAllocationCreateInfo aci = {.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
-    VmaAllocationInfo info;
-    const VmaAllocation old = p->pages[i];
+                            VkDeviceMemory* memory, VkDeviceSize* offset, DevMem* had) {
+    const DevMemWant aci = {.at = DM_DEVICE, .image = 1};
+    DevMemInfo info;
+    const DevMem old = p->pages[i];
     const u64 old_key = p->key ? p->key[i] : 0;
-    VmaAllocation use = VK_NULL_HANDLE;
+    DevMem use = 0;
     if (want[i] && key) { /* the memory of its key: a page that keeps it, or one given it in this bind */
         u32 at = key_find(k->kept, k->nkept, key);
         if (at < k->nkept)
@@ -1228,19 +1228,19 @@ static VkResult page_change(Pieces* p, u32 i, u8* want, u64 key, PageKeys* k, co
                 if (k->made[j].key == key) use = p->pages[k->made[j].block];
     }
     if (want[i] && !use) {
-        VkResult res = vmaAllocateMemory(g_vk.vma, mem, &aci, &use, &info);
+        VkResult res = vk_devmem_alloc(mem, &aci, &use, &info);
         if (!VK_OK(res)) return res;
         vk_mem_track(use, VK_OWN_TEXTURE);
         p->bound += mem->size;
         want[i] = 2;
         if (key) k->made[k->nmade++] = (KeyBlock){key, i};
     } else if (want[i]) {
-        vmaGetAllocationInfo(g_vk.vma, use, &info);
+        vk_devmem_info(use, &info);
         want[i] = 1;
     }
     /* what it had goes when no page has it any more: its own, or its old key's once the last page has left it and
        none keeps it */
-    *had = VK_NULL_HANDLE;
+    *had = 0;
     if (old) {
         int shared = 0;
         if (old_key) {
@@ -1255,7 +1255,7 @@ static VkResult page_change(Pieces* p, u32 i, u8* want, u64 key, PageKeys* k, co
     p->pages[i] = use;
     if (p->key) p->key[i] = use ? key : 0;
     if (use) {
-        *memory = info.deviceMemory;
+        *memory = info.memory;
         *offset = info.offset;
     }
     return VK_SUCCESS;
@@ -1340,7 +1340,7 @@ int vk_image_resident(VkImage img, u8* want, const u64* keys, u32 n, u64* bytes)
     const VkMemoryRequirements one = {p->req.alignment, p->req.alignment, p->req.memoryTypeBits},
                                tail = {p->tail_size, p->req.alignment, p->req.memoryTypeBits};
     VkResult res = VK_SUCCESS;
-    VmaAllocation had;
+    DevMem had;
     u32 nb = 0, i = 0;
     for (u32 layer = 0; layer < p->layers && VK_OK(res); layer++)
         for (u32 l = 0; l < p->tail_first && VK_OK(res); l++) {
@@ -1392,8 +1392,8 @@ static int g_heap = -1;
 static u64 g_budget_cap; /* vk_budget_mb, 0 when unset */
 #if defined(__ANDROID__)
 /* where the GPU shares the system's memory, the budget vk_uma_budget gives, measured once a second and held between
-   measures: an eviction leaves a hole in a VMA block or waits for a frame in flight before the system gets its memory
-   back, and a budget measured again at every trim would take that for room still missing and evict again each
+   measures: an eviction leaves a hole in a block of device memory or waits for a frame in flight before the system
+   gets its memory back, and a budget measured again at every trim would take that for room still missing and evict again each
    present */
 static struct {
     u64 reserve; /* 0: the driver's budget alone */
@@ -1404,7 +1404,7 @@ static struct {
 
 static void heap_find(void) {
     const VkPhysicalDeviceMemoryProperties* mp;
-    vmaGetMemoryProperties(g_vk.vma, &mp);
+    mp = vk_devmem_props();
     g_heap = 0;
     for (u32 h = 0; h < mp->memoryHeapCount; h++)
         if ((mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) &&
@@ -1419,8 +1419,8 @@ static void heap_find(void) {
 #if defined(__ANDROID__)
     if (g_vk.mem_model == VK_MEM_UMA) {
         long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGESIZE);
-        VmaBudget b[VK_MAX_MEMORY_HEAPS];
-        vmaGetHeapBudgets(g_vk.vma, b);
+        DevMemBudget b[VK_MAX_MEMORY_HEAPS];
+        vk_devmem_budgets(b);
         if (pages > 0 && page > 0) {
             u64 system = (u64)pages * (u64)page;
             g_uma_budget.reserve = vk_uma_reserve(system);
@@ -1449,32 +1449,30 @@ u64 vk_mem_budget_cap(u64 bytes) {
 }
 
 /* The driver's use of the device-local heap and its budget for it, through VK_EXT_memory_budget. Without the extension
-   VMA's budget is its guess (80% of the heap), so what is known goes instead, *ours set: the memory this process took
-   from the heap (VMA's blocks) and the heap's size */
+   devmem.c's budget is its guess (80% of the heap), so what is known goes instead, *ours set: the memory this process
+   took from the heap (devmem.c's blocks) and the heap's size */
 void vk_mem_driver_use(u64* usage, u64* budget, int* ours) {
-    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    DevMemBudget b[VK_MAX_MEMORY_HEAPS];
     int heap = vk_mem_heap();
-    vmaGetHeapBudgets(g_vk.vma, b); /* the driver's, asked at frame_recycle's vmaSetCurrentFrameIndex */
+    vk_devmem_budgets(b); /* the driver's, asked at frame_recycle's vk_devmem_frame */
     *ours = !g_vk.has_budget;
     if (g_vk.has_budget) {
         *usage = b[heap].usage;
         *budget = b[heap].budget;
     } else {
-        const VkPhysicalDeviceMemoryProperties* mp;
-        vmaGetMemoryProperties(g_vk.vma, &mp);
-        *usage = b[heap].statistics.blockBytes;
-        *budget = mp->memoryHeaps[heap].size;
+        *usage = b[heap].block_bytes;
+        *budget = vk_devmem_props()->memoryHeaps[heap].size;
     }
 }
 
-/* the heap's use as the caches see it, and its budget. The use leaves out the free space inside VMA's blocks, which
-   the next allocations fill before VMA asks the driver for more, and the memory of evicted entries the frames in
+/* the heap's use as the caches see it, and its budget. The use leaves out the free space inside devmem.c's blocks,
+   which the next allocations fill before it asks the driver for more, and the memory of evicted entries the frames in
    flight still hold (vk_deferred_bytes): it goes once they are done */
 void vk_mem_use(u64* usage, u64* budget) {
-    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    DevMemBudget b[VK_MAX_MEMORY_HEAPS];
     if (g_heap < 0) heap_find();
-    vmaGetHeapBudgets(g_vk.vma, b);
-    u64 u = b[g_heap].usage, holes = b[g_heap].statistics.blockBytes - b[g_heap].statistics.allocationBytes,
+    vk_devmem_budgets(b);
+    u64 u = b[g_heap].usage, holes = b[g_heap].block_bytes - b[g_heap].allocated_bytes,
         gone = vk_deferred_bytes();
     u = u > holes ? u - holes : 0;
     *usage = u > gone ? u - gone : 0;

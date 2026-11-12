@@ -46,34 +46,33 @@ static void add(u64* to, u64 v) { __atomic_fetch_add(to, v, __ATOMIC_RELAXED); }
 static u64 get(const u64* from) { return __atomic_load_n(from, __ATOMIC_RELAXED); }
 
 /* where an allocation's bytes count: the heap the caches budget is the device's */
-static u64* bytes_of(u32 owner, const VmaAllocationInfo* info) {
+static u64* bytes_of(u32 owner, const DevMemInfo* info) {
     const VkPhysicalDeviceMemoryProperties* mp;
-    vmaGetMemoryProperties(g_vk.vma, &mp);
-    return (int)mp->memoryTypes[info->memoryType].heapIndex == vk_mem_heap() ? &g_ledger.device[owner]
+    mp = vk_devmem_props();
+    return (int)mp->memoryTypes[info->type].heapIndex == vk_mem_heap() ? &g_ledger.device[owner]
                                                                              : &g_ledger.host[owner];
 }
 
-void vk_mem_track(VmaAllocation a, u32 owner) {
+void vk_mem_track(DevMem a, u32 owner) {
     if (!a || owner >= VK_OWN_N) return;
-    VmaAllocationInfo info;
-    vmaGetAllocationInfo(g_vk.vma, a, &info);
-    vmaSetAllocationUserData(g_vk.vma, a, (void*)(uintptr_t)(owner + 1));
+    DevMemInfo info;
+    vk_devmem_info(a, &info);
+    vk_devmem_tag(a, owner + 1);
     add(bytes_of(owner, &info), info.size);
     add(&g_ledger.count[owner], 1);
-    SNX_MEM_ALLOC((const void*)a, info.size, k_owner[owner]);
+    SNX_MEM_ALLOC((const void*)(uintptr_t)a, info.size, k_owner[owner]);
 }
 
-void vk_mem_untrack(VmaAllocation a) {
+void vk_mem_untrack(DevMem a) {
     if (!a) return;
-    VmaAllocationInfo info;
-    vmaGetAllocationInfo(g_vk.vma, a, &info);
-    uintptr_t tag = (uintptr_t)info.pUserData;
-    if (!tag || tag > VK_OWN_N) return;
-    u32 owner = (u32)tag - 1;
-    vmaSetAllocationUserData(g_vk.vma, a, NULL);
+    DevMemInfo info;
+    vk_devmem_info(a, &info);
+    if (!info.tag || info.tag > VK_OWN_N) return;
+    u32 owner = info.tag - 1;
+    vk_devmem_tag(a, 0);
     add(bytes_of(owner, &info), 0 - (u64)info.size);
     add(&g_ledger.count[owner], 0 - 1ull);
-    SNX_MEM_FREE((const void*)a, k_owner[owner]);
+    SNX_MEM_FREE((const void*)(uintptr_t)a, k_owner[owner]);
 }
 
 void vk_ledger_heap(u32 owner, i64 delta) {
@@ -152,31 +151,31 @@ void vk_ledger_log(void) {
                          mb(device), mb(host), mb(heap), (unsigned long long)get(&g_ledger.count[o]));
         if (n > 0) at += (size_t)n < sizeof line - at ? (size_t)n : sizeof line - at - 1;
         if (at > 200) { /* a few owners a line */
-            LOG("vulkan: memory by owner (MB of the device, of the host from VMA, of the heap, in allocations):%s\n",
-                line);
+            LOG("vulkan: memory by owner (MB of the device, of the host, of the heap, in allocations):%s\n", line);
             at = 0;
         }
     }
     if (at)
-        LOG("vulkan: memory by owner (MB of the device, of the host from VMA, of the heap, in allocations):%s\n", line);
+        LOG("vulkan: memory by owner (MB of the device, of the host, of the heap, in allocations):%s\n", line);
 
-    /* what VMA holds beside the owners: the free space inside its blocks, which is the device's memory all the same,
-       and what a site allocated and did not enter */
-    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    /* what devmem.c holds beside the owners: the free space inside its blocks, which is the device's memory all the
+       same, and what a site allocated and did not enter */
+    DevMemBudget b[VK_MAX_MEMORY_HEAPS];
     const VkPhysicalDeviceMemoryProperties* mp;
     u64 blocks = 0, allocated = 0;
     int heap = vk_mem_heap();
-    vmaGetHeapBudgets(g_vk.vma, b);
-    vmaGetMemoryProperties(g_vk.vma, &mp);
+    vk_devmem_budgets(b);
+    mp = vk_devmem_props();
     for (u32 h = 0; h < mp->memoryHeapCount; h++) {
-        blocks += b[h].statistics.blockBytes;
-        allocated += b[h].statistics.allocationBytes;
+        blocks += b[h].block_bytes;
+        allocated += b[h].allocated_bytes;
     }
-    LOG("vulkan: VMA holds %.1f MB in %u blocks, %.1f MB of it free inside them (%.1f MB of that in heap %d); %.1f "
-        "MB allocated under no owner; %.1f MB of freed memory waits for its frames\n",
-        mb(blocks), b[heap].statistics.blockCount, mb(blocks - allocated),
-        mb(b[heap].statistics.blockBytes - b[heap].statistics.allocationBytes), heap,
+    LOG("vulkan: device memory: %.1f MB in %u blocks, %.1f MB of it free inside them (%.1f MB of that in heap %d); "
+        "%.1f MB allocated under no owner; %.1f MB of freed memory waits for its frames\n",
+        mb(blocks), b[heap].blocks, mb(blocks - allocated),
+        mb(b[heap].block_bytes - b[heap].allocated_bytes), heap,
         (double)(i64)(allocated - tagged) / 1048576.0, mb(vk_deferred_bytes()));
+    vk_devmem_log();
 
     DriverCalls a, f;
     u64 na = driver_report(&g_ledger.allocate, &g_ledger.reported[0], &a);

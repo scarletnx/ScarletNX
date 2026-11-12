@@ -39,7 +39,7 @@
 
 typedef struct {
     u8* shadow;                /* the guest bytes the mirror was given, as the GPU holds them less its own writes */
-    VmaAllocation mem, mask;   /* bound into the mirror and its mask */
+    DevMem mem, mask;   /* bound into the mirror and its mask */
     u64 valid[MIR_PAGES / 64]; /* the pages given guest memory's bytes: those bindings covered */
     /* each valid page's write tracking clock before it was last brought up to date: only a binding's own pages are,
        as the others may not be mapped any more */
@@ -140,20 +140,20 @@ static Gran* gran_bind(u64 g) {
     vkGetBufferMemoryRequirements(g_vk.dev, g_mir.mask, &req[1]);
     req[0].size = MIR_G;
     req[1].size = MIR_MASK_G;
-    VmaAllocationCreateInfo aci = {.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
-    VmaAllocationInfo info[2];
-    if (!r->shadow || !VK_OK(vmaAllocateMemory(g_vk.vma, &req[0], &aci, &r->mem, &info[0]))) goto fail;
-    if (!VK_OK(vmaAllocateMemory(g_vk.vma, &req[1], &aci, &r->mask, &info[1]))) {
-        vmaFreeMemory(g_vk.vma, r->mem);
+    DevMemWant aci = {.at = DM_DEVICE};
+    DevMemInfo info[2];
+    if (!r->shadow || !VK_OK(vk_devmem_alloc(&req[0], &aci, &r->mem, &info[0]))) goto fail;
+    if (!VK_OK(vk_devmem_alloc(&req[1], &aci, &r->mask, &info[1]))) {
+        vk_devmem_free(r->mem);
         goto fail;
     }
     vk_mem_track(r->mem, VK_OWN_MIRROR);
     vk_mem_track(r->mask, VK_OWN_MIRROR);
     VkSparseMemoryBind b[2] = {
-        {.resourceOffset = g * MIR_G, .size = MIR_G, .memory = info[0].deviceMemory, .memoryOffset = info[0].offset},
+        {.resourceOffset = g * MIR_G, .size = MIR_G, .memory = info[0].memory, .memoryOffset = info[0].offset},
         {.resourceOffset = g * MIR_MASK_G,
          .size = MIR_MASK_G,
-         .memory = info[1].deviceMemory,
+         .memory = info[1].memory,
          .memoryOffset = info[1].offset}};
     VkSparseBufferMemoryBindInfo bb[2] = {{g_mir.buf, 1, &b[0]}, {g_mir.mask, 1, &b[1]}};
     VkBindSparseInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO, .bufferBindCount = 2, .pBufferBinds = bb};
@@ -458,7 +458,7 @@ typedef struct {
     u32 n, room, entry;
     u64 pages;
     u32* out; /* in host memory, MIR_HEAD words then room entries then the pages left */
-    VmaAllocation mem;
+    DevMem mem;
 } MirBatch;
 static MirRange* g_mir_now; /* the ranges written in the submit being recorded */
 static u32 g_mir_nnow, g_mir_capnow;
@@ -660,7 +660,7 @@ static void harvest_batch(VkCommandBuffer cb, u64 submit, const MirRange* r, u32
     u32 room = pages < g_mir_room ? (u32)pages : g_mir_room;
     VkBuffer out;
     u64 at;
-    VmaAllocation mem;
+    DevMem mem;
     u32* p = (u32*)(void*)vk_stage_back(out_bytes(room, pages, entry), &out, &at, &mem);
     if (!p || !harvest_record(cb, kept, n, out, at, out_bytes(room, pages, entry), room, entry, VK_NULL_HANDLE))
         fatal("vulkan: no memory to land the GPU mirror's writes in");
@@ -934,13 +934,11 @@ static void harvest_left(const u32* left, u32 n) {
                               .size = size,
                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo aci = {.flags =
-                                       VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                   .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    DevMemWant aci = {.at = DM_CACHED, .mapped = 1};
     VkBuffer out;
-    VmaAllocation mem;
-    VmaAllocationInfo info;
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &out, &mem, &info)))
+    DevMem mem;
+    DevMemInfo info;
+    if (!VK_OK(vk_buffer_create(&bci, &aci, &out, &mem, &info)))
         fatal("vulkan: no memory to land the GPU mirror's writes in");
     /* its sets from a pool of its own, freed once it is done: it runs inside a landing (vk_mirror_done), where the
        frame's sets would start the frame's command buffer (vk_desc_alloc's vk_cmd). Started there, that command buffer
@@ -969,12 +967,12 @@ static void harvest_left(const u32* left, u32 n) {
         ok = ok && vk_wait_fence(fence);
         vkDestroyFence(g_vk.dev, fence, NULL);
     }
-    if (!ok || !VK_OK(vmaInvalidateAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE)))
+    if (!ok || !VK_OK(vk_devmem_invalidate(mem, 0, VK_WHOLE_SIZE)))
         fatal("vulkan: could not land the GPU mirror's writes");
     vkDestroyDescriptorPool(g_vk.dev, dpool, NULL); /* its work is done */
-    const u32* w = info.pMappedData;
+    const u32* w = info.ptr;
     for (u32 i = 0; i < w[0] && i < n; i++) land_entry(w + MIR_HEAD + i * MIR_ENTRY);
-    vmaDestroyBuffer(g_vk.vma, out, mem);
+    vk_devmem_buffer_destroy(out, mem);
     free(r);
 }
 
@@ -991,7 +989,7 @@ void vk_mirror_done(u64 done) {
         MirBatch batch = g_mir_batch[b], *m = &batch;
         memmove(g_mir_batch + b, g_mir_batch + b + 1, (size_t)(g_mir_nbatch - b - 1) * sizeof *g_mir_batch);
         g_mir_nbatch--;
-        if (!VK_OK(vmaInvalidateAllocation(g_vk.vma, m->mem, 0, VK_WHOLE_SIZE)))
+        if (!VK_OK(vk_devmem_invalidate(m->mem, 0, VK_WHOLE_SIZE)))
             fatal("vulkan: could not read the GPU mirror's writes");
         u32 n = m->out[0], take = n < m->room ? n : m->room;
         vk_result_begin();

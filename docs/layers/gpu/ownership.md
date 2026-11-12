@@ -288,8 +288,8 @@ reads them reads local memory. With a small BAR the ring stays in host memory (t
 desktop, `cmd.c`).
 
 The host memory of a ring that the CPU fills is of one of two kinds (`vk_stage_memory`, `stage_cached` in `cmd.c`).
-Asked for memory that it writes in order, VMA takes a type that is not cached where the device has one, and a driver
-can map that write-combined. Asked for cached memory, it takes a cached type. Cached is the default only on Intel's
+Memory for writes in order (`DM_HOST` in `devmem.h`) is a type that is not cached where the device has one, and a
+driver can map that write-combined. Cached memory (`DM_CACHED`) is a cached type. Cached is the default only on Intel's
 Mesa driver, where both types are the same system memory. `snx-test-vulkan -H --bench-stage-memory` times the CPU's
 copies into each kind on the device it runs on, for block sizes from 64 bytes to 16 MiB. On an RTX 2080 the type that
 is not cached takes them faster, 7,300 to 9,700 MB/s against 5,100 to 8,900, so that device keeps it.

@@ -78,7 +78,7 @@
 enum { PG_CUR, PG_NEW, PG_OLD, PG_MINE, PG_OLD_CPU /* PG_OLD, by a write of the CPU */, PG_CPU = 0x10, PG_GPU = 0x20 };
 
 typedef struct {
-    VmaAllocation mem;
+    DevMem mem;
     /* the owner its pages are published under once a draw wrote them (vk_pages_write), with a reference: NULL until
        then. A landing waits for the submission that last wrote this granule, not the region */
     VkOwnRes* own;
@@ -226,16 +226,16 @@ static PgGran* gran_get(PgRegion* r, u64 g) {
     if (!q) return NULL;
     VkMemoryRequirements req = g_pages.req;
     req.size = PG_SIZE;
-    VmaAllocationCreateInfo aci = {.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
-    VmaAllocationInfo info;
-    if (vmaAllocateMemory(g_vk.vma, &req, &aci, &q->mem, &info) != VK_SUCCESS) {
+    DevMemWant aci = {.at = DM_DEVICE};
+    DevMemInfo info;
+    if (vk_devmem_alloc(&req, &aci, &q->mem, &info) != VK_SUCCESS) {
         free(q);
         return NULL;
     }
     VkSparseMemoryBind b = {
-        .resourceOffset = g << PG_SHIFT, .size = PG_SIZE, .memory = info.deviceMemory, .memoryOffset = info.offset};
-    if (!vk_buffer_sparse_bind(r->buf, &b, VK_NULL_HANDLE, 0, 0)) {
-        vmaFreeMemory(g_vk.vma, q->mem);
+        .resourceOffset = g << PG_SHIFT, .size = PG_SIZE, .memory = info.memory, .memoryOffset = info.offset};
+    if (!vk_buffer_sparse_bind(r->buf, &b, 0, 0, 0)) {
+        vk_devmem_free(q->mem);
         free(q);
         return NULL;
     }

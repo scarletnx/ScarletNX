@@ -380,7 +380,7 @@ static int render_begin_empty(void) {
    captures as many vertices as it has, in whole primitives, while they fit in every buffer */
 static struct {
     VkBuffer buf;
-    VmaAllocation mem;
+    DevMem mem;
     u32 end[GPU_CHANNELS * 2][4];
 } g_xfb;
 static int xfb_counters(void) {
@@ -390,8 +390,8 @@ static int xfb_counters(void) {
                               .usage = VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT |
                                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &g_xfb.buf, &g_xfb.mem, NULL))) return 0;
+    DevMemWant aci = {.at = DM_DEVICE};
+    if (!VK_OK(vk_buffer_create(&bci, &aci, &g_xfb.buf, &g_xfb.mem, NULL))) return 0;
     vk_mem_track(g_xfb.mem, VK_OWN_XFB);
     return 1;
 }
@@ -3642,7 +3642,7 @@ static u64 draw_last_vertex(const u32* inline_indices, const DsIndex* ix, int in
    draw, made once for each size it grows to: 0 1 2 0 2 3, 4 5 6 4 6 7..., drawn from the draw's first vertex */
 static struct {
     VkBuffer buf;
-    VmaAllocation mem;
+    DevMem mem;
     u32 quads; /* how many quads it has the indices of */
 } g_quads;
 /* what the GPU wrote (src: the stage and access) before what reads it next (dst) */
@@ -3684,10 +3684,10 @@ static int quad_indices(u32 nq, VkBuffer* buf, u64* off) {
                                   .size = (u64)cap * 24,
                                   .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                   .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-        VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        DevMemWant aci = {.at = DM_DEVICE};
         VkBuffer b;
-        VmaAllocation m;
-        if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &b, &m, NULL))) return 0;
+        DevMem m;
+        if (!VK_OK(vk_buffer_create(&bci, &aci, &b, &m, NULL))) return 0;
         vk_mem_track(m, VK_OWN_XFB);
         vk_render_end(); /* dispatches happen outside rendering passes */
         VkCommandBuffer cb = vk_cmd();

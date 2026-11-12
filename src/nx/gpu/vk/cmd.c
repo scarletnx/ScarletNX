@@ -26,7 +26,7 @@
 
 typedef struct {
     VkImage img;
-    VmaAllocation mem;
+    DevMem mem;
     VkImageView v1, v2;
     VkBuffer buf;
     VkBufferView view;
@@ -93,7 +93,7 @@ typedef struct {
    ring that doubled up to the allocation limit stayed there for 300 frames */
 typedef struct {
     VkBuffer buf; /* VK_NULL_HANDLE: an entry no buffer holds */
-    VmaAllocation mem;
+    DevMem mem;
     u8* ptr;    /* where the CPU maps it, NULL in device memory */
     u64 size;   /* the chunk size it was made at (chunk_size), or a big buffer's size class (big_size) */
     u64 freed;  /* the frame it went back to the pool at */
@@ -205,7 +205,7 @@ static void dead_free(Frame* f) {
         if (d->img) vk_image_destroy(d->img, d->mem);
         if (d->buf) {
             vk_mem_untrack(d->mem);
-            vmaDestroyBuffer(g_vk.vma, d->buf, d->mem);
+            vk_devmem_buffer_destroy(d->buf, d->mem);
         }
         if (d->fn) d->fn(d->arg);
     }
@@ -238,15 +238,15 @@ u64 vk_stage_chunk(void) { return chunk_size(); }
    10 frames a second for twenty seconds, its GPU thread half in the kernel. Streamed buffer snapshots use host memory
    instead: their large sequential writes must not cross that window. Stable input buffers get device-local copies.
 
-   The room is the driver's budget (VK_EXT_memory_budget through VMA) less the use it counts, except where the driver
+   The room is the driver's budget (VK_EXT_memory_budget, devmem.c) less the use it counts, except where the driver
    counts the whole system's use of the window: NVIDIA's (615.78) does, and budgets what is left of it, so that use and
    budget add up to the heap's size. A process that has allocated nothing there (vulkaninfo) is told 155 of 246 MiB
    used and 91 budgeted, as nvidia-smi's BAR1 count. Read as this process's use, that looked past the budget all the
    time, and each frame's ring was freed at its reuse and made again in the window: a 16 MiB vkAllocateMemory and
-   vkFreeMemory every frame, about a millisecond (a menu at 760 frames a second ran at 3200 without it). VMA
-   (3.4) checks VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT only when it makes a block, and a ring of over half a block (an
-   eighth of a small heap) gets memory of its own, so the rings didn't move out either. A ring's chunk is made there
-   with room for it and a sixteenth of the heap to spare, for the desktop, and stays while the heap is within its
+   vkFreeMemory every frame, about a millisecond (a menu at 760 frames a second ran at 3200 without it). A ring of
+   more than a quarter of a block (a block is an eighth of a small heap, devmem.c) gets memory of its own, which no
+   budget check of the allocator covers, so the rings didn't move out either. A ring's chunk is made there with room
+   for it and a sixteenth of the heap to spare, for the desktop, and stays while the heap is within its
    budget. Where that memory is in the heap the caches use (resizable BAR, a GPU sharing system memory), the caches keep
    the heap within its budget, counting the rings, and a chunk goes there while the heap's use stays within it.
 
@@ -264,7 +264,7 @@ static int bar_heap(void) {
     const VkPhysicalDeviceMemoryProperties* mp;
     const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
     if (g_bar_heap != -2) return g_bar_heap;
-    vmaGetMemoryProperties(g_vk.vma, &mp);
+    mp = vk_devmem_props();
     g_bar_heap = -1;
     for (u32 t = 0; t < mp->memoryTypeCount && g_bar_heap < 0; t++)
         if ((mp->memoryTypes[t].propertyFlags & want) == want) g_bar_heap = (int)mp->memoryTypes[t].heapIndex;
@@ -272,7 +272,7 @@ static int bar_heap(void) {
 }
 /* whether that heap has room for a ring of add more bytes (0: keeping the ones there), back: one coming back from
    host memory, after it went there for want of room */
-static int bar_room(const VmaBudget* b, u64 add, int back) {
+static int bar_room(const DevMemBudget* b, u64 add, int back) {
     const VkPhysicalDeviceMemoryProperties* mp;
     int heap = bar_heap();
     u64 size, use, budget, whole;
@@ -283,9 +283,9 @@ static int bar_room(const VmaBudget* b, u64 add, int back) {
     use = b[heap].usage;
     budget = b[heap].budget;
     if (heap == vk_mem_heap()) return use + add <= (back ? budget / 4 * 3 : budget);
-    vmaGetMemoryProperties(g_vk.vma, &mp);
+    mp = vk_devmem_props();
     size = mp->memoryHeaps[heap].size;
-    if (add && b[heap].statistics.blockBytes + add > size / 4) return 0;
+    if (add && b[heap].block_bytes + add > size / 4) return 0;
     whole = use + budget + (1u << 20) >= size && use + budget <= size + (1u << 20); /* NVIDIA's use */
     if (whole) use = 0;                                                           /* the budget is what is left */
     return budget >= use + (add ? add + size / 16 : 0);
@@ -452,7 +452,7 @@ static void frame_recycle(Frame* f) {
     for (int i = 0; i < f->npool; i++) vkResetDescriptorPool(g_vk.dev, f->pool_d[i], 0);
     f->ipool = 0;
     memset(f->spare, 0, sizeof f->spare);
-    vmaSetCurrentFrameIndex(g_vk.vma, (u32)g_frame_id); /* VMA asks the driver for its budgets again */
+    vk_devmem_frame(); /* the driver's budgets, asked again */
     pool_recycle(f);
     vk_descriptors_reset((u32)(f - g_fr));
     vk_rec_frame_reset((u32)(f - g_fr)); /* the slot's sets made on the recording thread too */
@@ -502,11 +502,11 @@ VkCommandBuffer vk_cmd(void) {
 
 /* What the rings handed out, by ring and by where its memory is (above), for vk_buffer_stats */
 static u64 g_xfer[XRING_N][XFER_N];
-static u32 xfer_where(const VmaAllocationInfo* info) {
+static u32 xfer_where(const DevMemInfo* info) {
     const VkPhysicalDeviceMemoryProperties* mp;
     VkMemoryPropertyFlags f;
-    vmaGetMemoryProperties(g_vk.vma, &mp);
-    f = mp->memoryTypes[info->memoryType].propertyFlags;
+    mp = vk_devmem_props();
+    f = mp->memoryTypes[info->type].propertyFlags;
     return !(f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? XFER_HOST
          : f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT    ? XFER_MAPPED
                                                       : XFER_DEVICE;
@@ -542,11 +542,11 @@ void vk_stage_report(void) {
     }
 }
 
-/* Whether the rings the CPU fills are in cached host memory (vk_stage_memory). Asked for memory it writes in order, VMA
-   takes a type that is not cached where the device has one, and a driver can map that write-combined: each store
-   then goes to the memory through a few line buffers, and a ring's many small copies, each at its own alignment,
-   leave lines half filled that the next copy flushes. Intel's Mesa driver has both types over the same system
-   memory, so there the cached one costs the GPU nothing */
+/* Whether the rings the CPU fills are in cached host memory (vk_stage_memory), not in memory for writes in order
+   (devmem.h's DM_CACHED and DM_HOST). The second is a type that is not cached where the device has one, and a driver
+   can map that write-combined: each store then goes to the memory through a few line buffers, and a ring's many
+   small copies, each at its own alignment, leave lines half filled that the next copy flushes. Intel's Mesa driver
+   has both types over the same system memory, so there the cached one costs the GPU nothing */
 static int stage_cached(void) {
     return g_settings.staging_memory ? g_settings.staging_memory == 2
                                      : g_vk.driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;
@@ -563,20 +563,18 @@ static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
                                        VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                        (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo aci = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                                            VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                   .usage = bar ? VMA_MEMORY_USAGE_AUTO : VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
-    VmaAllocationInfo info;
+    DevMemWant aci = {.at = bar ? DM_WINDOW : DM_HOST, .mapped = 1};
+    DevMemInfo info;
     VkBuffer buf;
-    VmaAllocation mem;
+    DevMem mem;
     u32 i = 0;
     if (ring == XRING_BACK) { /* storage: render targets are swizzled into it (vk/blocklinear.c) */
         bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        aci.at = DM_CACHED;
     } else if (ring == XRING_DEVICE)
-        aci = (VmaAllocationCreateInfo){.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        aci = (DevMemWant){.at = DM_DEVICE};
     else if (stage_cached() && (!bar || g_vk.mem_model == VK_MEM_UMA)) /* a discrete GPU's window has no such type */
-        aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        aci.at = DM_CACHED;
     while (i < g_cmd.nchunk && g_cmd.chunk[i].buf) i++;
     if (i == g_cmd.capchunk) {
         u32 cap = g_cmd.capchunk ? g_cmd.capchunk * 2 : 32;
@@ -587,21 +585,21 @@ static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
         g_cmd.chunk = grown;
         g_cmd.capchunk = cap;
     }
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &buf, &mem, &info))) return 0;
+    if (!VK_OK(vk_buffer_create(&bci, &aci, &buf, &mem, &info))) return 0;
     vk_mem_track(mem, VK_OWN_STAGING);
     if (ring == XRING_STAGE && !g_cmd.stage_told) {
         const VkPhysicalDeviceMemoryProperties* mp;
-        vmaGetMemoryProperties(g_vk.vma, &mp);
+        mp = vk_devmem_props();
         g_cmd.stage_told = 1;
-        LOG("vulkan: the staging ring is in memory type %u, %s (vk_stage_memory=%d)\n", info.memoryType,
-            mp->memoryTypes[info.memoryType].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? "cached"
+        LOG("vulkan: the staging ring is in memory type %u, %s (vk_stage_memory=%d)\n", info.type,
+            mp->memoryTypes[info.type].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? "cached"
                                                                                                : "not cached",
             g_settings.staging_memory);
     }
     if (i == g_cmd.nchunk) g_cmd.nchunk++;
     g_cmd.chunk[i] = (Chunk){.buf = buf,
                              .mem = mem,
-                             .ptr = info.pMappedData,
+                             .ptr = info.ptr,
                              .size = size,
                              .ring = ring,
                              .in = xfer_where(&info),
@@ -613,7 +611,7 @@ static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
 static void chunk_destroy(Chunk* c) {
     if (c->flush) g_cmd.unflushed--;
     vk_mem_untrack(c->mem);
-    vmaDestroyBuffer(g_vk.vma, c->buf, c->mem);
+    vk_devmem_buffer_destroy(c->buf, c->mem);
     *c = (Chunk){0};
 }
 /* host writes to a chunk of the staging or output ring, made visible to the GPU at the next submit */
@@ -664,8 +662,8 @@ static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
         if (!*pick || pool_before(c, &g_cmd.chunk[*pick - 1])) *pick = i + 1;
     }
     if (!here && bar) {
-        VmaBudget budget[VK_MAX_MEMORY_HEAPS];
-        vmaGetHeapBudgets(g_vk.vma, budget);
+        DevMemBudget budget[VK_MAX_MEMORY_HEAPS];
+        vk_devmem_budgets(budget);
         if (!bar_room(budget, size, other != 0)) {
             here = other;
             bar = 0;
@@ -687,8 +685,8 @@ static u32 chunk_take(u32 ring, u64 size, int big, int bar, u32 slot) {
 static void pool_recycle(Frame* f) {
     u32 slot = (u32)(f - g_fr) + 1, keep[FRAME_RINGS][2], pooled[FRAME_RINGS][2] = {{0}}, held[FRAME_RINGS][2] = {{0}};
     u64 size = chunk_size();
-    VmaBudget budget[VK_MAX_MEMORY_HEAPS];
-    vmaGetHeapBudgets(g_vk.vma, budget);
+    DevMemBudget budget[VK_MAX_MEMORY_HEAPS];
+    vk_devmem_budgets(budget);
     for (u32 r = 0; r < FRAME_RINGS; r++)
         for (u32 big = 0; big < 2; big++) {
             keep[r][big] = !big;
@@ -731,7 +729,7 @@ static void pool_recycle(Frame* f) {
 /* size bytes of the frame's ring at *off of *buf, the chunk's memory in *mem: the chunk, NULL when none could be had.
    A request no bigger than a chunk is handed out of the ring's chunk, or of the next one when that is full (a big
    buffer chunk_take lent it, counted as a big one); a bigger one gets a big buffer of its own */
-static const Chunk* ring_take(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem) {
+static const Chunk* ring_take(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem) {
     Ring* r = &f->ring[ring];
     u32 slot = (u32)(f - g_fr) + 1;
     Chunk* c;
@@ -771,12 +769,12 @@ static const Chunk* ring_take(Frame* f, u32 ring, u64 size, u64 align, VkBuffer*
     if (mem) *mem = c->mem;
     return c;
 }
-static u8* ring_alloc(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem) {
+static u8* ring_alloc(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem) {
     const Chunk* c = ring_take(f, ring, size, align, buf, off, mem);
     return c ? c->ptr + *off : NULL;
 }
 
-static u8* stage_alloc(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem, int output)
+static u8* stage_alloc(u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem, int output)
 {
 	Frame* f;
 
@@ -784,7 +782,7 @@ static u8* stage_alloc(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocati
 	f = &g_fr[g_cur];
 	return ring_alloc(f, output ? XRING_OUTPUT : XRING_STAGE, size, align, buf, off, mem);
 }
-u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem)
+u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem)
 {
 	return stage_alloc(size, align, buf, off, mem, 1);
 }
@@ -826,7 +824,7 @@ u8* vk_stage_guest_input(u64 gva, u64 source_size, u64 bytes, VkBuffer* buf, u64
 /* The staging ring can be device-local memory behind the BAR, where every CPU read crosses PCIe uncached: comparing
    a frame's storage results there cost one game most of its GPU thread. The frame's results are copied
    on the GPU into host-cached memory instead, and read from there. */
-u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, VmaAllocation* mem) {
+u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, DevMem* mem) {
     vk_cmd();
     return ring_alloc(&g_fr[g_cur], XRING_BACK, size, g_vk.props.limits.nonCoherentAtomSize, buf, off, mem);
 }
@@ -853,10 +851,10 @@ int vk_stage_device_at(const char* file, int line, u64 size, u64 align, VkBuffer
    big buffers since the last submit, made visible to the GPU */
 static void rings_flush(const Frame* f) {
     for (u32 r = XRING_STAGE; r <= XRING_OUTPUT; r++)
-        if (f->ring[r].cur) vmaFlushAllocation(g_vk.vma, g_cmd.chunk[f->ring[r].cur - 1].mem, 0, VK_WHOLE_SIZE);
+        if (f->ring[r].cur) vk_devmem_flush(g_cmd.chunk[f->ring[r].cur - 1].mem, 0, VK_WHOLE_SIZE);
     for (u32 i = 0; g_cmd.unflushed && i < g_cmd.nchunk; i++)
         if (g_cmd.chunk[i].flush) {
-            vmaFlushAllocation(g_vk.vma, g_cmd.chunk[i].mem, 0, VK_WHOLE_SIZE);
+            vk_devmem_flush(g_cmd.chunk[i].mem, 0, VK_WHOLE_SIZE);
             g_cmd.chunk[i].flush = 0;
             g_cmd.unflushed--;
         }
@@ -1261,10 +1259,10 @@ static Frame* dead_slot(void) {
         if (g_fr[i].last > f->last) f = &g_fr[i];
     return f;
 }
-void vk_defer_image(VkImage img, VmaAllocation a, VkImageView v1, VkImageView v2) {
+void vk_defer_image(VkImage img, DevMem a, VkImageView v1, VkImageView v2) {
     dead_push(dead_slot(), (Dead){.img = img, .mem = a, .v1 = v1, .v2 = v2});
 }
-void vk_defer_buffer(VkBuffer b, VmaAllocation a) { dead_push(dead_slot(), (Dead){.buf = b, .mem = a}); }
+void vk_defer_buffer(VkBuffer b, DevMem a) { dead_push(dead_slot(), (Dead){.buf = b, .mem = a}); }
 /* on the list its release goes on, so they leave the count when the release is performed: counted on a fresh slot
    before the release that started it, they left at that slot's recycling */
 void vk_defer_bytes(u64 bytes) {
@@ -1298,7 +1296,7 @@ void vk_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkPi
 /* one buffer the GPU copies into for the host to read: vk_readback_buffer before recording the copy, vk_finish,
    then vk_readback_ready before reading the pointer */
 static VkBuffer g_rb;
-static VmaAllocation g_rb_mem;
+static DevMem g_rb_mem;
 static u8* g_rb_ptr;
 static u64 g_rb_cap;
 static u32 g_rb_small; /* readbacks in a row of an eighth of it or less */
@@ -1318,17 +1316,15 @@ u8* vk_readback_buffer(u64 size, VkBuffer* buf) {
                                   /* storage: render targets are swizzled into it (vk/blocklinear.c) */
                                   .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                   .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-        VmaAllocationCreateInfo aci = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
-                                                VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                       .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
-        VmaAllocationInfo info;
-        if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &g_rb, &g_rb_mem, &info))) {
+        DevMemWant aci = {.at = DM_CACHED, .mapped = 1};
+        DevMemInfo info;
+        if (!VK_OK(vk_buffer_create(&bci, &aci, &g_rb, &g_rb_mem, &info))) {
             g_rb = VK_NULL_HANDLE;
             g_rb_cap = 0;
             return NULL;
         }
         vk_mem_track(g_rb_mem, VK_OWN_READBACK);
-        g_rb_ptr = info.pMappedData;
+        g_rb_ptr = info.ptr;
         g_rb_cap = cap;
         g_rb_in = xfer_where(&info);
     }
@@ -1336,7 +1332,7 @@ u8* vk_readback_buffer(u64 size, VkBuffer* buf) {
     *buf = g_rb;
     return g_rb_ptr;
 }
-void vk_readback_ready(void) { vmaInvalidateAllocation(g_vk.vma, g_rb_mem, 0, VK_WHOLE_SIZE); }
+void vk_readback_ready(void) { vk_devmem_invalidate(g_rb_mem, 0, VK_WHOLE_SIZE); }
 
 void vk_wait_foreground(void) {
 #ifdef SNX_IOS

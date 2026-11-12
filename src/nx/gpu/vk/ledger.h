@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The byte ledger: what each part of the renderer holds. An owner has three counts of bytes: the device's memory
-   (VMA allocations in the heap the caches budget, vk_mem_heap), the host memory VMA gave it (allocations in the
-   other heaps) and the process's heap (malloc, which the owner reports itself). vk_mem_track enters a VMA allocation
-   under its owner and vk_mem_untrack takes it out again, so the sum over the owners is what VMA has allocated; what
-   differs is an allocation that some site did not enter, which the report names as untagged.
+   (devmem.c's allocations in the heap the caches budget, vk_mem_heap), the host memory it gave the owner (allocations
+   in the other heaps) and the process's heap (malloc, which the owner reports itself). vk_mem_track enters an
+   allocation under its owner and vk_mem_untrack takes it out again, so the sum over the owners is what devmem.c has
+   handed out; what differs is an allocation that some site did not enter, which the report names as untagged.
 
-   The ledger also times the driver's own allocations (vkAllocateMemory, vkFreeMemory), which VMA calls when it needs
-   a new block or lets one go: a block costs milliseconds on some drivers, on whichever thread asked. */
+   The ledger also times the driver's own allocations (vkAllocateMemory, vkFreeMemory), which devmem.c calls when it
+   needs a new block or lets one go: a block costs milliseconds on some drivers, on whichever thread asked. */
 #ifndef SNX_VK_LEDGER_H
 #define SNX_VK_LEDGER_H
 #include "nx/gpu/vk/vk.h"
@@ -35,19 +35,19 @@ enum {
     VK_OWN_N
 };
 
-/* a VMA allocation entered under owner, and taken out again before it is freed (an allocation never entered is left
-   alone). They are also the Tracy memory events of the allocation (SNX_TRACY builds), in a pool named for the owner */
-void vk_mem_track(VmaAllocation a, u32 owner);
-void vk_mem_untrack(VmaAllocation a);
+/* an allocation of devmem.c entered under owner, and taken out again before it is freed (an allocation never entered
+   is left alone). They are also the Tracy memory events of the allocation (SNX_TRACY builds), in a pool named for the owner */
+void vk_mem_track(DevMem a, u32 owner);
+void vk_mem_untrack(DevMem a);
 /* an owner's bytes in the process's heap grew (or, negative, shrank) by delta */
 void vk_ledger_heap(u32 owner, i64 delta);
-/* the driver's allocate and free, timed: device.c gives them to VMA in place of the driver's */
+/* the driver's allocate and free, timed: devmem.c calls them in place of the driver's */
 VkResult VKAPI_CALL vk_ledger_allocate(VkDevice dev, const VkMemoryAllocateInfo* ai, const VkAllocationCallbacks* cb,
                                        VkDeviceMemory* mem);
 void VKAPI_CALL vk_ledger_free(VkDevice dev, VkDeviceMemory mem, const VkAllocationCallbacks* cb);
-/* one owner's bytes now, for a caller that budgets it: device, host (VMA's), heap */
+/* one owner's bytes now, for a caller that budgets it: device, host, heap */
 void vk_ledger_owner(u32 owner, u64* device, u64* host, u64* heap);
-/* the report (renderer.c, every 600 presents): each owner that holds something, what VMA holds beside them, and the
-   driver's allocations since the last report */
+/* the report (renderer.c, every 600 presents): each owner that holds something, what devmem.c holds beside them, and
+   the driver's allocations since the last report */
 void vk_ledger_log(void);
 #endif

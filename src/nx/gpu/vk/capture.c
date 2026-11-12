@@ -51,11 +51,11 @@ static void capture_tiles_drop(VkCapture* capture, int defer) {
             vk_defer_buffer(capture->tile_buffer, capture->tile_memory);
         else {
             vk_mem_untrack(capture->tile_memory);
-            vmaDestroyBuffer(g_vk.vma, capture->tile_buffer, capture->tile_memory);
+            vk_devmem_buffer_destroy(capture->tile_buffer, capture->tile_memory);
         }
     }
     capture->tile_buffer = VK_NULL_HANDLE;
-    capture->tile_memory = VK_NULL_HANDLE;
+    capture->tile_memory = 0;
     capture->tile_bytes = capture->tile_count = 0;
     capture->tile_dirty = 0;
 }
@@ -74,8 +74,8 @@ static int capture_tiles_make(VkCapture* capture, const Surf* target) {
                                 .size = bytes,
                                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                          VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
-    VmaAllocationCreateInfo memory = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &info, &memory, &capture->tile_buffer, &capture->tile_memory, NULL))) return 0;
+    DevMemWant memory = {.at = DM_DEVICE};
+    if (!VK_OK(vk_buffer_create(&info, &memory, &capture->tile_buffer, &capture->tile_memory, NULL))) return 0;
     vk_mem_track(capture->tile_memory, VK_OWN_MISC);
     capture->tile_count = (u32)count;
     capture->tile_bytes = bytes;
@@ -114,7 +114,7 @@ static void capture_tiles_barrier(VkCapture* capture, VkPipelineStageFlags2 sour
 static void capture_image_drop(Surf* image, int defer) {
     for (int i = 0; i < image->nsv; i++) {
         if (defer)
-            vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, image->sv[i].v, VK_NULL_HANDLE);
+            vk_defer_image(VK_NULL_HANDLE, 0, image->sv[i].v, VK_NULL_HANDLE);
         else
             vk_image_view_destroy(g_vk.dev, image->sv[i].v, NULL);
     }

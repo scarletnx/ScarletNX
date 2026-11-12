@@ -247,7 +247,7 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
         get_target_property(snx_vulkan_include_dir Vulkan::Headers INTERFACE_INCLUDE_DIRECTORIES)
         snx_local_vulkan_registry(snx_vulkan_local_registry)
     endif()
-    # volk.c is compiled into the vk components, VMA is a header
+    # volk.c is compiled into the vk components
     CPMAddPackage(NAME volk VERSION 1.4.363
                   URL https://github.com/zeux/volk/archive/refs/tags/vulkan-sdk-1.4.363.0.tar.gz
                   URL_HASH SHA256=1547d8d74395d4048fb3f4a6313da56db626e89b55db238d0d7e8944c8a645f3
@@ -267,7 +267,7 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
                      fe040590fa035e2602c9ce25ba3cf6a208fcb72cb9d53945cbc5747610ad4e15)
         include("${PROJECT_SOURCE_DIR}/cmake/ctr_system_archives.cmake")
     endif()
-    # volk.c and VMA's implementation (src/nx/gpu/vk/vma.cpp) compiled into a target of ours: no warnings, and not
+    # volk.c compiled into a target of ours: no warnings, and not
     # the sanitizers SNX_TEST_SANITIZERS gives our code (tests/CMakeLists.txt)
     set(snx_third_party_flags -w)
     if(SNX_TEST_SANITIZERS)
@@ -353,15 +353,6 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
                  6fbbf5176ff4fd2024f9d150c889477f6b45ece4ac5e45d51286e32f8b13a6f2)
     include("${PROJECT_SOURCE_DIR}/cmake/shared_fonts.cmake")
 
-    snx_cpm_local_package(NAME VulkanMemoryAllocator VERSION 3.5.0
-                          URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.5.0.tar.gz
-                          URL_HASH SHA256=c5f3db848fca9cb9726b41f256cc3007773321fa92a86d1e0902e66474e8a9e3
-                          DOWNLOAD_ONLY YES)
-    if(VulkanMemoryAllocator_ADDED)
-        set(snx_vma_include_dir "${VulkanMemoryAllocator_SOURCE_DIR}/include")
-    else()
-        get_target_property(snx_vma_include_dir GPUOpen::VulkanMemoryAllocator INTERFACE_INCLUDE_DIRECTORIES)
-    endif()
     # RenderDoc's in-application API, one header (renderdoc, gpu/vk/renderdoc.c), from the release tag
     snx_cpm_file(renderdoc_app 1.46
                  https://raw.githubusercontent.com/baldurk/renderdoc/v1.46/renderdoc/api/app/renderdoc_app.h

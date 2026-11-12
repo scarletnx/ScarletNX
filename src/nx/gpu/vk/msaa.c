@@ -214,7 +214,7 @@ int vk_ms_moves(const Surf* s) {
 
 /* the single-sampled image of rows of s's guest rows, at its guest width, in its move format, for usage:
    VK_NULL_HANDLE when it can't be made */
-static VkImage ms_grid(const Surf* s, u32 rows, VkImageUsageFlags usage, VmaAllocation* mem) {
+static VkImage ms_grid(const Surf* s, u32 rows, VkImageUsageFlags usage, DevMem* mem) {
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
                             .format = ms_format(s),
@@ -236,7 +236,7 @@ VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer, u32 y0, u32 rows) {
         return VK_NULL_HANDLE;
     int depth = s->f.depth;
     VkImageAspectFlags aspect = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-    VmaAllocation mem;
+    DevMem mem;
     VkImage grid = ms_grid(s, rows,
                            (depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) |
                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
@@ -268,7 +268,7 @@ VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer, u32 y0, u32 rows) {
 
 int vk_ms_pack(VkCommandBuffer cb, Surf* s, u32 layer, VkBuffer buf, u64 off, u32 pitch) {
     if (!vk_ms_moves(s) || s->f.depth || layer >= s->layers || !g_vk.feat.sampleRateShading) return 0;
-    VmaAllocation mem;
+    DevMem mem;
     u32 gw = s->w << ds_msaa_log2_x(s->msaa), gh = s->h << ds_msaa_log2_y(s->msaa);
     VkImage grid = ms_grid(s, gh, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, &mem);
     if (!grid) return 0;

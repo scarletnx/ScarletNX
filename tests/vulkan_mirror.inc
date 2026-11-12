@@ -7,7 +7,7 @@
 static int buffer_read(VkBuffer src, u64 from, u32 len, u8* out) {
     VkBuffer back;
     u64 at;
-    VmaAllocation mem;
+    DevMem mem;
     u8* p = vk_stage_back(len, &back, &at, &mem);
     CHECK(p);
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -26,7 +26,7 @@ static int buffer_read(VkBuffer src, u64 from, u32 len, u8* out) {
     b.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
     rec_CmdPipelineBarrier2(vk_cmd(), &d);
     vk_finish();
-    CHECK(VK_OK(vmaInvalidateAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE)));
+    CHECK(VK_OK(vk_devmem_invalidate(mem, 0, VK_WHOLE_SIZE)));
     memcpy(out, p, len);
     return 0;
 }

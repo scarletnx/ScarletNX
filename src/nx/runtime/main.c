@@ -743,7 +743,7 @@ void resources_text(char* out, size_t size) {
        (descriptor pools, pipelines, argument buffers), not the game's textures and buffers */
     n = strlen(out);
     if (g_renderer && g_renderer->memory_blocks && n < size)
-        snprintf(out + n, size - n, ", VMA blocks %llu MiB", (unsigned long long)(g_renderer->memory_blocks() >> 20));
+        snprintf(out + n, size - n, ", GPU memory blocks %llu MiB", (unsigned long long)(g_renderer->memory_blocks() >> 20));
 }
 /* log level 2: the three host threads with the most CPU time since the last line, by their names. iOS reported a CPU
    exception (90 s of CPU in 93 s) that named no thread */

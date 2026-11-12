@@ -31,7 +31,7 @@ typedef struct {
     size_t nruns;
     u64 sub, back_off, back_size, wgen;
     u8* back;
-    VmaAllocation back_mem;
+    DevMem back_mem;
     /* id: its own, never 0. after: the entry whose landed bytes are its bytes from before the draw (original is NULL
        until that one lands), 0 for none. gw: guest memory's write generation when its copy was recorded */
     u64 id, after, gw;
@@ -202,7 +202,7 @@ static void image_land(size_t index) {
     GfxImageOut* o = &g_image_out.out[index];
     u64 id = o->id, keep_size = 0;
     u8* keep = NULL;
-    vmaInvalidateAllocation(g_vk.vma, o->back_mem, o->back_off, o->back_size);
+    vk_devmem_invalidate(o->back_mem, o->back_off, o->back_size);
     vk_surf_flush_land(o->surf, o->back, o->original, o->wgen, image_followed(id) ? &keep : NULL, &keep_size);
     image_follow(id, keep, keep_size);
     if ((index = image_find(id)) < g_image_out.count) image_remove(index);
@@ -332,7 +332,7 @@ void vk_gfx_image_put_aside(void) {
         GfxImageOut* o = &g_image_out.out[i];
         u64 size, off;
         VkBuffer buf;
-        VmaAllocation mem;
+        DevMem mem;
         u8* p;
         if (o->sub) {
             i++;

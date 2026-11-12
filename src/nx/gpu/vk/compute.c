@@ -43,7 +43,7 @@ static CsPipe* g_csp[256];
 
 /* the arena: inputs and outputs of the batch's dispatches, and what the outputs held before (org, host only) */
 static VkBuffer g_ar;
-static VmaAllocation g_ar_mem;
+static DevMem g_ar_mem;
 static u8* g_ar_ptr;
 static u8* g_org;
 static u64 g_ar_cap, g_ar_used;
@@ -77,7 +77,7 @@ typedef struct {
     VkCommandBuffer cb;
     VkDescriptorPool dpool;
     VkBuffer ar;
-    VmaAllocation ar_mem;
+    DevMem ar_mem;
     u8* ar_ptr;
     u8* org;
     u64 ar_cap, org_cap, cval;
@@ -221,7 +221,7 @@ static u64 g_ar_want = 8ull << 20; /* doubles when a batch fills the arena, up t
 /* arenas draws read from: reused once the frames that read them are done */
 static struct {
     VkBuffer b;
-    VmaAllocation m;
+    DevMem m;
     u8* p;
     u64 cap, frame;
 } g_retired[8];
@@ -274,15 +274,13 @@ static int arena_fit(u64 need) {
                               .sharingMode = fam[0] != fam[1] ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
                               .queueFamilyIndexCount = fam[0] != fam[1] ? 2 : 0,
                               .pQueueFamilyIndices = fam};
-    VmaAllocationCreateInfo aci = {.flags =
-                                       VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                   .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
-    VmaAllocationInfo info;
+    DevMemWant aci = {.at = DM_CACHED, .mapped = 1};
+    DevMemInfo info;
     g_ar = VK_NULL_HANDLE;
     g_ar_cap = 0;
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &g_ar, &g_ar_mem, &info))) return 0;
+    if (!VK_OK(vk_buffer_create(&bci, &aci, &g_ar, &g_ar_mem, &info))) return 0;
     vk_mem_track(g_ar_mem, VK_OWN_ARENA);
-    g_ar_ptr = info.pMappedData;
+    g_ar_ptr = info.ptr;
     g_ar_cap = cap;
     return org_fit();
 }
@@ -297,7 +295,7 @@ static GpOps g_ops = {.op = g_op, .cap = VK_GP_OPS, .queries = VK_GP_QUERIES};
 /* submits the batch without waiting; it signals g_vk_csem with the next value */
 static void cs_submit(void) {
     if (!g_recording) return;
-    vmaFlushAllocation(g_vk.vma, g_ar_mem, 0, VK_WHOLE_SIZE); /* the arena may not be host coherent */
+    vk_devmem_flush(g_ar_mem, 0, VK_WHOLE_SIZE); /* the arena may not be host coherent */
     vk_gpuprof_compute_submit(&g_ops, g_ccb);
     VK_OK(vkEndCommandBuffer(g_ccb));
     VkCommandBufferSubmitInfo c = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = g_ccb};
@@ -351,8 +349,8 @@ static void run_add(void* user, u32 from, u32 to) {
     }
     g_runs[g_nruns++] = (VkRun){from, to};
 }
-static void cs_write_back(VmaAllocation mem, const u8* ar, const u8* org, const CsOut* out, int nout) {
-    vmaInvalidateAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE);
+static void cs_write_back(DevMem mem, const u8* ar, const u8* org, const CsOut* out, int nout) {
+    vk_devmem_invalidate(mem, 0, VK_WHOLE_SIZE);
     for (int i = 0; i < nout; i++) {
         if (!out[i].log) {
             vk_write_changed(out[i].addr, ar + out[i].off, org + out[i].off, out[i].size);
@@ -366,7 +364,7 @@ static void cs_write_back(VmaAllocation mem, const u8* ar, const u8* org, const 
 }
 /* an arena whose batch has landed: draws that read it may still run (gfx), so it waits for their frame like the
    arenas draws read; one they didn't read is free now */
-static void cs_arena_done(VkBuffer b, VmaAllocation m, u8* p, u64 cap, int gfx) {
+static void cs_arena_done(VkBuffer b, DevMem m, u8* p, u64 cap, int gfx) {
     if (g_nretired == 8) { /* full: the oldest goes for good */
         vk_defer_buffer(g_retired[0].b, g_retired[0].m);
         memmove(g_retired, g_retired + 1, sizeof g_retired[0] * 7);
@@ -2191,9 +2189,9 @@ rebind:
     g_vk_dispatches++;
     if (gfx) {
         /* everything before it on the graphics queue runs first; then its results land at once */
-        vmaFlushAllocation(g_vk.vma, g_ar_mem, 0, VK_WHOLE_SIZE); /* the arena may not be host coherent */
+        vk_devmem_flush(g_ar_mem, 0, VK_WHOLE_SIZE); /* the arena may not be host coherent */
         vk_finish();
-        vmaInvalidateAllocation(g_vk.vma, g_ar_mem, 0, VK_WHOLE_SIZE);
+        vk_devmem_invalidate(g_ar_mem, 0, VK_WHOLE_SIZE);
         g_landing = 1;
         cs_write_back(g_ar_mem, g_ar_ptr, g_org, g_out, g_nout); /* a logged result has no original bytes in g_org */
         logs_unref(g_logs, &g_nlogs);

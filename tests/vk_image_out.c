@@ -65,10 +65,10 @@ int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) {
 void vk_lock(void) {}
 void vk_unlock(void) {}
 VkCommandBuffer vk_cmd(void) { return VK_NULL_HANDLE; }
-u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, VmaAllocation* mem) {
+u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, DevMem* mem) {
     if (g.ring_at + size > sizeof g.ring) return NULL;
     *buf = VK_NULL_HANDLE;
-    *mem = VK_NULL_HANDLE;
+    *mem = 0;
     *off = g.ring_at;
     g.ring_at += size;
     return g.ring + *off;
@@ -91,9 +91,8 @@ void vk_wait_submit(u64 value) {
         g.done = value;
     }
 }
-VkResult vmaInvalidateAllocation(VmaAllocator allocator, VmaAllocation allocation, VkDeviceSize offset,
-                                 VkDeviceSize size) {
-    (void)allocator, (void)allocation, (void)offset, (void)size;
+VkResult vk_devmem_invalidate(DevMem allocation, u64 offset, u64 size) {
+    (void)allocation, (void)offset, (void)size;
     return VK_SUCCESS;
 }
 /* as surface.c's for a linear image of the guest's size: the bytes the image changed land, and keep gets the image */

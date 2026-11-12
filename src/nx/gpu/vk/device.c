@@ -62,65 +62,64 @@ int vk_trylock(void) {
 u32 vk_lock_owner(void) { return __atomic_load_n(&g_vk_owner, __ATOMIC_RELAXED); }
 int vk_lock_held(void) { return t_vkdepth > 0; }
 
-/* What held the memory at an out-of-memory, at the first ones: each heap as VMA counts it, and the descriptor pools,
-   which MoltenVK backs with Metal memory that VMA's blocks do not hold (cmd.c). The heap's use less its blocks is
-   what the driver and the other allocations of the process took. Any thread can fail, and VMA's statistics take its
-   own lock */
-/* set once the allocator exists, which lives to the end of the process: vk_memory_text's threads read g_vk.vma only
-   after they see it, atomic */
-static int g_vma_ready;
+/* What held the memory at an out-of-memory, at the first ones: each heap as devmem.c counts it, and the descriptor
+   pools, which MoltenVK backs with Metal memory that its blocks do not hold (cmd.c). The heap's use less its blocks
+   is what the driver and the other allocations of the process took. Any thread can fail, and the counts take
+   devmem.c's own lock */
+/* set once devmem.c knows the device's memory: vk_memory_text's threads ask it only after they see this, atomic */
+static int g_devmem_ready;
 #define OOM_REPORTS 3
 static void oom_report(VkResult r) {
     static u32 reports;
-    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    DevMemBudget b[VK_MAX_MEMORY_HEAPS];
     const VkPhysicalDeviceMemoryProperties* mp;
     if (r != VK_ERROR_OUT_OF_DEVICE_MEMORY && r != VK_ERROR_OUT_OF_HOST_MEMORY) return;
-    if (!__atomic_load_n(&g_vma_ready, __ATOMIC_ACQUIRE) ||
+    if (!__atomic_load_n(&g_devmem_ready, __ATOMIC_ACQUIRE) ||
         __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) >= OOM_REPORTS)
         return;
-    vmaGetHeapBudgets(g_vk.vma, b);
-    vmaGetMemoryProperties(g_vk.vma, &mp);
+    vk_devmem_budgets(b);
+    mp = vk_devmem_props();
     for (u32 h = 0; h < mp->memoryHeapCount; h++)
-        LOG("vulkan: out of memory, heap %u%s: use %llu MiB, budget %llu MiB, VMA blocks %u (%llu MiB), allocations "
+        LOG("vulkan: out of memory, heap %u%s: use %llu MiB, budget %llu MiB, blocks %u (%llu MiB), allocations "
             "%u (%llu MiB), heap size %llu MiB\n",
             h, mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? " (device local)" : "",
-            (unsigned long long)(b[h].usage >> 20), (unsigned long long)(b[h].budget >> 20), b[h].statistics.blockCount,
-            (unsigned long long)(b[h].statistics.blockBytes >> 20), b[h].statistics.allocationCount,
-            (unsigned long long)(b[h].statistics.allocationBytes >> 20),
+            (unsigned long long)(b[h].usage >> 20), (unsigned long long)(b[h].budget >> 20), b[h].blocks,
+            (unsigned long long)(b[h].block_bytes >> 20), b[h].allocations,
+            (unsigned long long)(b[h].allocated_bytes >> 20),
             (unsigned long long)(mp->memoryHeaps[h].size >> 20));
     LOG("vulkan: out of memory with %u descriptor pools\n", vk_desc_pools());
 }
 
 /* Each heap and the descriptor pools in one part of a line, for a low memory warning from a thread that never calls
-   Vulkan. VMA's functions are safe on any thread (its own locks), and the budget it fetches again now and then comes
-   from vkGetPhysicalDeviceMemoryProperties2, which needs no external synchronization */
+   Vulkan. devmem.c's functions are safe on any thread (its own lock), and the budget it fetches again now and then
+   comes from vkGetPhysicalDeviceMemoryProperties2, which needs no external synchronization */
 u64 vk_memory_blocks(void) {
-    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    DevMemBudget b[VK_MAX_MEMORY_HEAPS];
     const VkPhysicalDeviceMemoryProperties* mp;
     u64 sum = 0;
-    if (!__atomic_load_n(&g_vma_ready, __ATOMIC_ACQUIRE)) return 0;
-    vmaGetHeapBudgets(g_vk.vma, b);
-    vmaGetMemoryProperties(g_vk.vma, &mp);
-    for (u32 h = 0; h < mp->memoryHeapCount; h++) sum += b[h].statistics.blockBytes;
+    if (!__atomic_load_n(&g_devmem_ready, __ATOMIC_ACQUIRE)) return 0;
+    vk_devmem_budgets(b);
+    mp = vk_devmem_props();
+    for (u32 h = 0; h < mp->memoryHeapCount; h++) sum += b[h].block_bytes;
     return sum;
 }
 void vk_memory_text(char* out, size_t size) {
-    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    DevMemBudget b[VK_MAX_MEMORY_HEAPS];
     const VkPhysicalDeviceMemoryProperties* mp;
     size_t n = 0;
     if (!size) return;
     out[0] = 0;
-    if (!__atomic_load_n(&g_vma_ready, __ATOMIC_ACQUIRE)) {
+    if (!__atomic_load_n(&g_devmem_ready, __ATOMIC_ACQUIRE)) {
         snprintf(out, size, "no GPU heaps yet, %u descriptor pools", vk_desc_pools());
         return;
     }
-    vmaGetHeapBudgets(g_vk.vma, b);
-    vmaGetMemoryProperties(g_vk.vma, &mp);
+    vk_devmem_budgets(b);
+    mp = vk_devmem_props();
     for (u32 h = 0; h < mp->memoryHeapCount && n < size; h++) {
-        int w = snprintf(out + n, size - n, "GPU heap %u%s use %llu of %llu MiB (VMA blocks %llu MiB), ", h,
+        int w = snprintf(out + n, size - n, "GPU heap %u%s use %llu of %llu MiB (blocks %llu MiB), ", h,
                          mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? " (device local)" : "",
                          (unsigned long long)(b[h].usage >> 20), (unsigned long long)(b[h].budget >> 20),
-                         (unsigned long long)(b[h].statistics.blockBytes >> 20));
+                         (unsigned long long)(b[h].block_bytes >> 20));
         if (w < 0) return;
         n += (size_t)w;
     }
@@ -834,8 +833,8 @@ static int create_device(void) {
         g_vk.has_depth_range_unrestricted = snx_vk_extensions_has(&e, VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME);
         has_pipeline_robustness = snx_vk_extensions_has(&e, VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
         has_robustness2 = snx_vk_extensions_has(&e, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
-        /* the driver's budget for each heap, the other processes' use taken out, for VMA: without it VMA took
-           80% of a heap's size as its budget, blind to what the desktop and other programs hold */
+        /* the driver's budget for each heap, the other processes' use taken out (devmem.c): without it the budget
+           is 80% of a heap's size, blind to what the desktop and other programs hold */
         g_vk.has_budget = snx_vk_extensions_has(&e, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
         /* the GPU's clock next to the client's, for the profiler's GPU track (gpuprof.c's calibration) */
         has_calibrated = snx_vk_extensions_has(&e, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
@@ -1781,24 +1780,10 @@ static int create_device(void) {
     pm_lock_announce(&g_vklock, "vulkan"); /* the device's calls, every thread's */
     vkGetDeviceQueue(g_vk.dev, g_vk.gfx_family, 0, &g_vk.gfx);
     vkGetDeviceQueue(g_vk.dev, g_vk.compute_family, second ? 1 : 0, &g_vk.compute);
-    /* the driver's allocate and free go through the ledger, which times them */
-    VmaVulkanFunctions vf = {.vkGetInstanceProcAddr = vkGetInstanceProcAddr,
-                             .vkGetDeviceProcAddr = vkGetDeviceProcAddr,
-                             .vkAllocateMemory = vk_ledger_allocate,
-                             .vkFreeMemory = vk_ledger_free};
     vk_mem_init(sparse_queue);
-    /* VMA's blocks are 256 MiB at most already, and kept within a smaller cap */
-    VmaAllocatorCreateInfo vai = {.physicalDevice = g_vk.phys,
-                                  .device = g_vk.dev,
-                                  .instance = g_vk.instance,
-                                  .preferredLargeHeapBlockSize = g_vk.alloc_cap < (256ull << 20) ? g_vk.alloc_cap : 0,
-                                  .vulkanApiVersion = core13 ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2,
-                                  .pVulkanFunctions = &vf,
-                                  .flags = g_vk.has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
-    if (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)
-        vai.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
-    if (!VK_OK(vmaCreateAllocator(&vai, &g_vk.vma))) return 0;
-    __atomic_store_n(&g_vma_ready, 1, __ATOMIC_RELEASE);
+    /* the renderer's own allocator (devmem.c): its blocks are 64 MiB at most, and no more than the cap */
+    if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support)) return 0;
+    __atomic_store_n(&g_devmem_ready, 1, __ATOMIC_RELEASE);
     if (g_vk.has_descriptor_heaps && !vk_descriptor_heaps_init(&g_vk.descriptor_heap_props)) {
         g_vk.has_descriptor_heaps = 0;
         g_vk.has_descriptor_heap_support = 0;
