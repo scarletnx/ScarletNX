@@ -2,13 +2,14 @@
    Copyright 2026 the ScarletNX contributors */
 /* A game module's calls through its PLT (loader.h's SnxBoundBranch): an extracted game of two modules, recompiled by
    the CLI, whose main calls the SDK module's ext_add, its own own_add and two, which both modules define, each
-   through a PLT stub, and ends in a tail call of the SDK's ext_tail through a fourth. A stub whose symbol one module
-   alone defines must call that function directly once its slot holds the function's address, whatever its dispatch
-   slot holds, and go through CPU.disp while the slot holds anything else: the address the game's linker leaves there
-   until the stub's first call, or another function. Two's stub, a stub of a function a hook names and every stub of a
-   recompile with --hook-direct-calls must call through the table. The call is made where the BL or B is (the IR of
-   the calling function calls the three functions itself), and goes to the stub's own function once the guest has
-   changed the stub's code.
+   through a PLT stub, and ends in a tail call of the SDK's ext_tail through a fourth. A call of a stub whose symbol
+   one module alone defines must call that function directly, whatever its dispatch slot holds, and without reading
+   the PLT slot: whatever links the game binds it to that function, so the call is the same while the slot still
+   holds the address a game's own linker leaves there until the stub's first call, or anything else. Such a stub
+   entered as a function, through a pointer, reads its slot and goes where it says. Two's stub, a stub of a function
+   a hook names and every stub of a recompile with --hook-direct-calls must call through the table. The call is made
+   where the BL or B is (the IR of the calling function calls the three functions itself), and goes to the stub's own
+   function once the guest has changed the stub's code.
      plt_calls SCARLETNX DATA */
 #include "common/utilities/common.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -266,26 +267,35 @@ static void module_runs(const char* path, const unsigned char* main_bytes, const
         missed = 0;
         entry(&c, a + CALLER);
         if (!step)
-            want = 4000; /* four calls of an address with no code */
+            /* the slots are not read where the call is direct: ext_add's 5, own_add's 0x20 and ext_tail's 3, and a
+               call of an address with no code for each stub that goes through the table */
+            want = direct == 3 ? 5 + 0x20 + 1000 + 3 : direct == 2 ? 1000 + 0x20 + 1000 + 3 : 4000;
         else if (step == 1)
             /* directly: ext_add's 5 (the handler's 7 when a hook names it), own_add's 0x20 and ext_tail's 3; through
                the table: two, and all four when every call goes through it */
             want = direct == 3 ? 5 + 0x20 + 7 + 3 : direct == 2 ? 7 + 0x20 + 7 + 3 : 28;
-        else
-            want = 3 + 0x20 + 0x200 + 3; /* ext_tail's 3 where ext_add's 5 was bound */
+        else /* ext_add's own 5 where its call is direct, ext_tail's 3 where the slot is read */
+            want = (direct == 3 ? 5 : 3) + 0x20 + 0x200 + 3;
         if (c.x[0] != want)
             fprintf(stderr, "how %d step %d: x0 = %llx, where %llx was wanted\n", how, step, (unsigned long long)c.x[0],
                     (unsigned long long)want);
-        check(c.x[0] == want, !step       ? "a stub whose slot is unbound calls what the slot holds, through the table"
+        check(c.x[0] == want, !step ? "a call of a stub one module defines the symbol of calls that function while "
+                                      "the slot is unbound, the others what the slot holds, through the table"
                               : step == 1 ? "a bound stub calls its function directly, two's through the table"
-                                          : "a slot that holds another function calls that one");
-        check(missed == (step ? 0 : 4), "only a call of an address with no code reaches the miss");
+                                          : "a slot that holds another function is not read where the call is direct");
+        check(missed == (step          ? 0
+                         : direct == 3 ? 1
+                         : direct == 2 ? 2
+                                       : 4),
+              "only a call of an address with no code reaches the miss");
         check(c.pc == 0x1000, "it returns to its caller");
-        /* what the last stub run leaves: its slot's address and what the slot held */
-        check(c.x[16] == a + 0x2018 && c.x[17] == slot[3], "x16 and x17 are as the stub leaves them");
-        if (how == BOUND && step == 1) /* ext_add and own_add ran, each called where its BL is */
+        /* what the last stub run leaves: its slot's address, and its function where the call is direct, else what
+           the slot held */
+        check(c.x[16] == a + 0x2018 && c.x[17] == (how == TABLE ? slot[3] : b + EXT_TAIL),
+              "x16 and x17 are as the stub leaves them once its slot is bound");
+        if (how == BOUND) /* ext_add and own_add ran, each called where its BL is */
             check(c.x[20] == a + 0x2000 && c.x[21] == b + EXT_ADD && c.x[22] == a + 0x2008,
-                  "a function called directly finds x16 and x17 as its stub leaves them");
+                  "a function called directly finds x16 and x17 as its stub leaves them, whatever the slot holds");
         free(c.disp);
     }
     /* a stub entered as a function, as a pointer to it reaches it, with its slot bound: its own branch calls the
@@ -315,6 +325,15 @@ static void module_runs(const char* path, const unsigned char* main_bytes, const
         missed = 0;
         if (stub) stub(&c, a + STUB);
         check(c.x[0] == 5 && c.pc == 0x1000 && !missed, "a stub entered as a function calls its function directly");
+        /* and with its slot not bound yet, it goes where the slot says: the stub's own code reads it */
+        slot = UNBOUND;
+        for (i = 0; i < 8; ++i) memory[a + 0x2000 + i] = (unsigned char)(slot >> (8 * i));
+        c.x[0] = 0;
+        c.x[30] = 0x1000;
+        missed = 0;
+        if (stub) stub(&c, a + STUB);
+        check(c.x[0] == 1000 && c.pc == 0x1000 && missed == 1,
+              "a stub entered as a function with its slot unbound goes where the slot says, through the table");
         free(c.disp);
     }
     /* the guest changed the first stub's code (the runtime marks the function compiled from it stale): the call goes

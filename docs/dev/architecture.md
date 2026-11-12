@@ -141,12 +141,14 @@ the game's image read from that image.
   The recompile binds each stub whose symbol one module alone of the program defines as a function
   (`snx_program_exports` and `snx_module_bound` in `src/nx/loader/loader.c`, from each module's dynamic symbols as the
   game's linker reads them: a symbol with a section, not local; the recompile's `PLT:` line counts them). A `BL` or
-  `B` to a bound stub runs the stub's three instructions where the call is (`ir_codegen.c`'s `call_stub`) and
-  compares the address they loaded with that function's: equal, it calls the function as a `BL` to it would; anything
-  else in the slot (the linker has not bound it yet, a mod wrote another function there) calls the stub's own
-  function, which goes through `CPU.disp` as before. That function, which a pointer to the stub reaches too, compares
-  the same way before its lookup, and a call whose stub's code the guest changed goes to it, stale as any other
-  (`RtAPI.code_changed`).
+  `B` to a bound stub calls the function where the call is, as a `BL` to it would (`ir_codegen.c`'s `call_stub`), and
+  does not read the slot: whatever links the game binds it to that function, the runtime when it loads the modules
+  and a game's own rtld at the stub's first call, since one module alone defines the name. `x16` is left as the
+  stub's `adrp` and `add` leave it and `x17` holds the function's address, as the bound slot gives it. A slot that
+  holds anything else (a game's own rtld has not bound it yet, something wrote another function there) changes
+  nothing for such a call. The stub's own function, which a pointer to the stub reaches, loads the slot, compares
+  the address with that function's and calls it when they are equal, and goes through `CPU.disp` when they are not;
+  a call whose stub's code the guest changed goes to that function, stale as any other (`RtAPI.code_changed`).
   A symbol two modules define is the linker's to pick, and its stub stays as it was; so does every stub with
   `--hook-direct-calls`, and the stub of a function a hook names calls through the function's slot
   ([Hooks](../platforms/nx/hooks.md#how-a-call-reaches-a-hook)). An NRO's module binds its stubs the same way
