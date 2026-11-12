@@ -12,3 +12,5 @@ hook _ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE(i32 type) -> addr = n
 hook _ZN2nn2pl30GetSharedFontInOrderOfPriorityEPiPNS0_14SharedFontTypeEPPKvPmiNS_8settings12LanguageCodeE(addr count, addr types, addr addresses, addr sizes, i32 max, u64 language) -> bool = nnpl_get_shared_font_in_order_of_priority
 hook _ZN2nn2pl39GetSharedFontInOrderOfPriorityForSystemEPiPNS0_23SharedFontTypeForSystemEPPKvPmiNS_8settings12LanguageCodeE(addr count, addr types, addr addresses, addr sizes, i32 max, u64 language) -> bool = nnpl_get_shared_font_in_order_of_priority_for_system
 hook _ZN2nn2pl13GetSharedFontEPiPNS0_14SharedFontDataEiNS_8settings12LanguageCodeE(addr count, addr data, i32 max, u64 language) -> bool = nnpl_get_shared_font
+# the Ounce SDK's built-in fonts, which are the shared fonts: one font's flags, address and size (read in SDK 19.3)
+hook _ZN2nn2pl18GetBuiltInFontDataEPNS0_20BuiltInFontDataOunceENS0_20BuiltInFontTypeOunceEb(addr font, u8 type, bool flag) -> bool = nnpl_get_built_in_font_data

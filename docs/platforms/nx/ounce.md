@@ -74,18 +74,12 @@ stops if 21 fails. With no camera, the event is never signaled.
 ## Built-in fonts
 
 An Ounce game's SDK has `nn::pl::GetBuiltInFontData(BuiltInFontDataOunce*, BuiltInFontTypeOunce, bool)` beside the
-shared fonts' calls. It asks `pl` with two commands (`pl.c`):
+shared fonts' calls. The runtime answers it in the game's own SDK function (`src/nx/nn/pl.c`, `pl.hook`), as it does
+the shared fonts': it fills the caller's `BuiltInFontDataOunce` as the SDK fills it from the service's answer, two
+bytes of flags, the font's address at +8 and its size at +0x10, and answers whether the type has a font.
 
-- **2010**, with the font's type in the request's first byte and a bool in the second. The reply's raw data is a found
-  byte, then at +4 the font's 12 bytes: two bytes that the SDK copies to the caller's `BuiltInFontDataOunce`, the
-  font's offset at +8 of the reply and its size at +0xc. The SDK reads the font's bytes as a u64 at +4 and a u32 at
-  +0xc, and it fills the caller's structure only when the found byte is 1.
-- **2000**, once, at the first font that 2010 finds: a `u32` size and a copy handle of the shared memory that holds
-  the fonts. The SDK maps that memory read-only and stops when the command fails. The pointer it gives the game is
-  the base of that mapping plus the offset of 2010.
-
-The fonts are the shared fonts of commands 0 to 6: each is a plain TrueType font after its header, so the same memory
-answers both. `tests/pl_fonts.c` sends both commands through the dispatcher.
+The fonts are the shared fonts: each is a plain TrueType font after its header, so the same memory, mapped read only
+in the game at the first ask, answers both. `tests/pl_fonts.c` checks the structure for each type.
 
 ## Shaders
 

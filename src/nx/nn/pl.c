@@ -16,9 +16,10 @@
    life of the process. The hooks do the same through the kernel (kshmem_map_free). Every font is loaded from the
    start. The SDK stops the game on any failure of the service, so no function here returns one.
 
-   A later SDK than the three games' asks pl:u for built-in fonts (commands 2000 and 2010, which the service answered
-   with this same memory and each font's offset and size). No function of these SDKs sends them, so no hook stands
-   for them yet: a game that does stops in sm, which names nn::pl */
+   The Ounce's SDK also has built-in fonts (GetBuiltInFontData), which are the shared fonts, each a plain TrueType
+   font past its header: the same memory answers, with the font's address in it and its size. Its other built-in
+   font functions (the sets, and the ones of the first console's types) have no hook: a game that calls one opens
+   pl:u, and sm stops it with the name of this layer */
 #include "nx/nn/pl.h"
 #include "nx/nn/pl_font.h"
 #include "nx/hle/hook/hook.h"
@@ -245,5 +246,19 @@ int nnpl_get_shared_font_in_order_of_priority_for_system(CPU* c, u64 count, u64 
 int nnpl_get_shared_font(CPU* c, u64 count, u64 data, i32 max, u64 language) {
     (void)language;
     in_order(c, count, max, 0, 0, 0, data);
+    return 1;
+}
+
+/* GetBuiltInFontData: the caller's BuiltInFontDataOunce filled as the SDK fills it from the service's answer, two
+   bytes of flags (1 and 0: the first is the value a game ran with, and what they mean is not known), the font's
+   address at 8 and its size at 0x10; a type with no font leaves it and answers false */
+int nnpl_get_built_in_font_data(CPU* c, u64 font, u8 type, int flag) {
+    (void)flag;
+    if (type >= PL_FONTS || !g_hle.pl.font_size[type]) return 0;
+    u8* f = hook_host(c, font);
+    f[0] = 1;
+    f[1] = 0;
+    snx_st_le64(f + 8, fonts_base() + g_hle.pl.font_off[type]);
+    snx_st_le64(f + 0x10, g_hle.pl.font_size[type]);
     return 1;
 }
