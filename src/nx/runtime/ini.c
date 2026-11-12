@@ -328,6 +328,15 @@ static const struct {
                       {"controls_skin", "the on-screen controls are white shapes, with no skin"},
                       {"vk_descriptors", "now vk_descriptors_mode, of the same values: the default a .ini wrote, 0 and "
                                          "later 3, is its Automatic"},
+                      {"nvn_direct", "the runtime always runs the game's NVN calls"},
+                      {"nvn_verify", "went with the game's NVN driver on the emulated Maxwell GPU"},
+                      {"nvn_trace", "went with the game's NVN driver on the emulated Maxwell GPU"},
+                      {"mme_hle", "the GPU macros went with the emulated Maxwell GPU"},
+                      {"mme_jit", "the GPU macros went with the emulated Maxwell GPU"},
+                      {"mme_verify", "the GPU macros went with the emulated Maxwell GPU"},
+                      {"astc_background_threads", "astc_background's CPU threads are gone: the GPU encodes alone"},
+                      {"press", "now script, whose press_at:press is the same press"},
+                      {"press_at", "now script, whose press_at:press is the same press"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;

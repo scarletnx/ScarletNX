@@ -29,6 +29,12 @@ int main(void) {
     /* renamed, of the same values: the launcher carries a pick of it over */
     assert(ini_renamed("vk_descriptors") && !strcmp(ini_renamed("vk_descriptors"), "vk_descriptors_mode") &&
            !ini_renamed("memory_fit") && !ini_renamed("vk_descriptors_mode") && !ini_renamed(""));
+    /* the NVN and Maxwell paths' switches, the ASTC background's CPU threads and the unattended run's one press */
+    assert(!strcmp(ini_deprecated("nvn_direct"), "the runtime always runs the game's NVN calls") &&
+           ini_deprecated("mme_verify") && ini_deprecated("astc_background_threads") &&
+           !ini_deprecated("astc_background"));
+    assert(!strcmp(ini_deprecated("press_at"), "now script, whose press_at:press is the same press") &&
+           !ini_deprecated("press_len") && !ini_deprecated("script"));
     assert(!ini_deprecated("resolution") && !ini_deprecated("controls") && !ini_deprecated(""));
     /* the section, word for word */
     f = tmpfile();
