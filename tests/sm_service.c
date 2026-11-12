@@ -42,6 +42,12 @@ void fatal(const char* format, ...) {
     test_fail("fatal", __LINE__);
     exit(1);
 }
+/* debug.c's: the threads and their calls, which name the SDK function that asked; counted, and before the stop */
+static unsigned test_thread_dumps;
+void kernel_dump_threads(void) {
+    if (!test_expects_stop) test_fail("a thread dump no stop followed", __LINE__);
+    test_thread_dumps++;
+}
 /* the runtime has one service here, "set" */
 int svc_registered(const char* name) { return !strcmp(name, "set"); }
 SvcObj* svc_open(const char* name) { return svc_registered(name) ? &test_service : NULL; }
@@ -123,6 +129,7 @@ int main(void) {
             test_fail("the program went on with a session of a native-only service", __LINE__);
         }
         test_expects_stop = 0;
+        CHECK(test_thread_dumps == i + 1 && strstr(test_stop_text, "the calls of its thread"));
         CHECK(strstr(test_stop_text, opened) && strstr(test_stop_text, itself));
         CHECK(strstr(test_stop_text, "nn::") && strstr(test_stop_text, "not native yet"));
         CHECK(strstr(test_stop_text, "libnx") && strstr(test_stop_text, "the word hooks in its mode file"));
@@ -130,6 +137,7 @@ int main(void) {
     name = name_of("time:x", 6);
     handle = 0;
     CHECK(nn_sm_detail_IUserInterface_GetServiceHandle(NULL, &name, &handle) == 0 && handle == 0x1234);
+    CHECK(test_thread_dumps == sizeof native_only / sizeof native_only[0]);
 
     /* an application may host no service: NotAllowed, whether or not the name is taken */
     name = name_of("mysrv", 5);

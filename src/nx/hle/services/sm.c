@@ -72,12 +72,17 @@ static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_s
     (void)self;
     R_UNLESS(sm_name(name, s), SNX_RC_SM_INVALID_SERVICE_NAME);
     for (size_t i = 0; i < sizeof g_native_only / sizeof g_native_only[0]; i++)
-        if (!strcmp(s, g_native_only[i][0]))
+        if (!strcmp(s, g_native_only[i][0])) {
+            /* the SDK function that asked is in the calls of the thread that sent this request */
+            WARN("\n*** The program opened %s, which the runtime answers only natively ***\n", s);
+            kernel_dump_threads();
             fatal("sm: the program opened %s, which the runtime answers only in the SDK's own functions, %s. A game "
-                  "got here through an SDK function that is not native yet (the log's backtrace and its last lines "
-                  "name it). A homebrew program that opens %s itself, as libnx does, is not supported: it has to "
-                  "call the SDK's functions, as edenprobe does with the word hooks in its mode file",
+                  "got here through an SDK function that is not native yet (the calls of its thread, in the log's "
+                  "thread list before this, name it). A homebrew program that opens %s itself, as libnx does, is "
+                  "not supported: it has to call the SDK's functions, as edenprobe does with the word hooks in its "
+                  "mode file",
                   s, g_native_only[i][1], s);
+        }
     o = svc_open(s);
     if (!o) {
         WARN("sm: %s is not implemented, its commands answer without doing anything\n", s);
