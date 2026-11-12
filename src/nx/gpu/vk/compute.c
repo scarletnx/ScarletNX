@@ -714,6 +714,8 @@ typedef struct {
     u64 tex_int, tex_sint, tex_rect;
     u32 image, image_sint;
     u8 query[SH_MAXTEX]; /* the dimension of each texture only a TXQ names (ShaderInfo.tex_query_hint) */
+    u64 tex_dc; /* color textures sampled with a depth compare, and their functions (ShaderInfo.tex_dc_color_*) */
+    u32 tex_dc_funcs;
 } CsKey;
 static CsPipe g_cs_alloc_failed = {.failed = 1}; /* out of memory: not cached, retried */
 /* the key of a program (code, its window as cs_read_code makes it), its launch parameters and its variant, its BRX
@@ -723,7 +725,8 @@ static u64 cs_key(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm
     u64 key = vk_shader_hash(code, CS_WINDOW, blen, read) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^ ((u64)lz << 56) ^
               ((u64)shm << 20) ^ ((u64)k->image << 32) ^ (u64)k->tex_int * 0x9E3779B97F4A7C15ull ^
               (u64)k->tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k->image_sint * 0xA24BAED4963EE407ull ^
-              (u64)k->tex_rect * 0x165667B19E3779F9ull;
+              (u64)k->tex_rect * 0x165667B19E3779F9ull ^ (u64)k->tex_dc * 0x27D4EB2F165667C5ull ^
+              (u64)k->tex_dc_funcs * 0x94D049BB133111EBull;
     if (shader_absolute_flow(code, CS_WINDOW)) key ^= (u64)flow_base * 0xD6E8FEB86659FD93ull;
     for (u32 q = 0; q < SH_MAXTEX; q++) key ^= (u64)k->query[q] * (0x9E3779B97F4A7C15ull + 2 * q + 1) << (q & 15);
     return key;
@@ -829,6 +832,8 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
     p->si.tex_int_mask = k.tex_int;
     p->si.tex_sint_mask = k.tex_sint;
     p->si.tex_rect_mask = k.tex_rect;
+    p->si.tex_dc_color_mask = k.tex_dc;
+    p->si.tex_dc_color_funcs = k.tex_dc_funcs;
     memcpy(p->si.tex_query_hint, k.query, sizeof p->si.tex_query_hint);
     const char* corpus = vk_corpus_dir();
     if (corpus) shader_corpus_save(corpus, code, blen, CS_WINDOW, ST_CS, &p->si, key);
@@ -1275,6 +1280,7 @@ void vk_dispatch(const DispatchState* d) {
        signed stores, and integer sampled textures select a variant keyed on their numeric types. */
     tcb_key = d->tex_bank;
     tic_key_base = d->tex_pool;
+    u32 dc_slots = 0;
     if (!p->failed)
         for (i = 0; i < p->si.ntex && i < SH_MAXTEX; i++) {
             ShTex* st = &p->si.tex[i];
@@ -1291,7 +1297,23 @@ void vk_dispatch(const DispatchState* d) {
             /* a texture only a TXQ names: translated as a 2D query until the header says what it is (a 3D
                query answers its depth, which a 2D slot can't) */
             if (p->si.tex_query_mask >> i & 1) ck.query[i] = vk_tic_query_hint(tic);
-            if (st->shadow) continue;
+            if (st->shadow) {
+                /* a depth compare of a color texture compares its first component, which Vulkan's compare samplers
+                   can't do on a color image: the program samples it and compares (the TSC's function, LEQUAL when it
+                   has none), as a draw's fragment program does (render.c's fs_key). By the header, as the texture is
+                   resolved only when bound; a depth surface there, sampled plainly, gives its depth to compare. A
+                   header with no format the renderer has binds no texture, which reads as the farthest depth. The
+                   SM86 translator compares only through compare samplers */
+                VkFmt f = vk_tic_format(tic[0], 0);
+                if (g_shader_sm86 || !f.bpp || f.depth || f.is_int || vk_tic_reads_stencil(tic)) continue;
+                u32 tsc0 = 0;
+                vk_gmem_words(d->smp_pool + (u64)texture_handle_tsc_id(h) * TEXTURE_POOL_ENTRY_BYTES, &tsc0, 1);
+                u32 func = (tsc0 >> 9) & 1 ? (tsc0 >> 10) & 7 : 3;
+                ck.tex_dc |= 1ull << i;
+                if (dc_slots < SH_DC_COLOR_MAX) ck.tex_dc_funcs |= func << (3 * dc_slots);
+                dc_slots++;
+                continue;
+            }
             /* by the header alone: textures are resolved only when bound, a color texture's surface has its header's
                number type, and depth isn't sampled here */
             num = vk_tex_num(tic, NULL);
@@ -1311,10 +1333,11 @@ void vk_dispatch(const DispatchState* d) {
         }
     int queried = 0;
     for (i = 0; i < SH_MAXTEX; i++) queried |= ck.query[i] != 0;
-    if (ck.tex_int || ck.image || ck.image_sint || ck.tex_rect || queried) {
+    if (ck.tex_int || ck.image || ck.image_sint || ck.tex_rect || ck.tex_dc || queried) {
         if (!p->keyed || p->keyed->si.img_int_mask != ck.image || p->keyed->si.tex_int_mask != ck.tex_int ||
             p->keyed->si.tex_sint_mask != ck.tex_sint || p->keyed->si.img_sint_mask != ck.image_sint ||
-            p->keyed->si.tex_rect_mask != ck.tex_rect ||
+            p->keyed->si.tex_rect_mask != ck.tex_rect || p->keyed->si.tex_dc_color_mask != ck.tex_dc ||
+            p->keyed->si.tex_dc_color_funcs != ck.tex_dc_funcs ||
             memcmp(p->keyed->si.tex_query_hint, ck.query, sizeof ck.query) != 0) {
             static u8 keyed_code[CS_WINDOW];
             static u32 keyed_used;
@@ -1736,6 +1759,12 @@ rebind:
             }
         for (int i = 0; i < p->si.ntex && i < SH_MAXTEX; i++) {
             ShTex* st = &p->si.tex[i];
+            ShTex plain;
+            if (st->shadow && (p->si.tex_dc_color_mask >> i & 1)) { /* compared in the program: a plain sampler */
+                plain = *st;
+                plain.shadow = 0;
+                st = &plain;
+            }
             u32 h = 0, h2 = 0;
             if (st->flags & SNX_TEX_MEMORY)
                 h = memh[i];
@@ -1769,13 +1798,18 @@ rebind:
                       : ((p->si.tex_sint_mask >> i) & 1) ? 2
                                                          : 1;
             VkImageView v = t ? vk_tex_bind_view(t, want, tic, tsc, num) : VK_NULL_HANDLE;
+            if (v && st->shadow && !t->f.depth)
+                LOG_LIMIT(4,
+                          "vulkan: compute %016llx compares texture %d (header format %02x) through a sampler on a "
+                          "%ux%u surface of VkFormat %d, which has no depth: the compare's result is the driver's\n",
+                          (unsigned long long)p->key, i, tic[0] & 0x7F, t->w, t->h, (int)t->f.vk);
             VkImageLayout sampled_layout =
                 p->si.nimg ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             const Surf* sampled = v ? t : NULL; /* the texture whose own view is bound, for the sampler */
             if (v)
                 vk_surf_use(vk_cmd(), t, sampled_layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
             else {
-                v = vk_null_view(want, num, ms);
+                v = vk_null_view(want, st->shadow ? 3 : num, ms); /* a compare's: the farthest depth, as a draw's */
                 sampled_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
             VkSampler smp = vk_tex_bind_sampler(tsc, tic, st, num, sampled, want);

@@ -6526,6 +6526,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_layered_surface_loads());
     CHECK(!check_rect_textures());
     CHECK(!check_compute_depth_texture());
+    CHECK(!check_compute_compares());
     CHECK(!check_viewport_orientation());
     CHECK(!check_index_draws());
     CHECK(!check_pass_breaks());
