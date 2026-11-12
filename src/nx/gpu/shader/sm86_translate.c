@@ -2623,8 +2623,13 @@ static u32 system_value(Ctx* c, u32 sr);
 /* ---- the warp's matrix instructions (HMMA, LDSM, MOVM), as the lanes of an invocation's own 32 of a subgroup of 32 or
    64 (NVIDIA's warp: lane l of it is the local invocation index's l % 32), each one's registers spread over the lanes
    as PTX's mma.sync, ldmatrix and movmatrix lay them out. A lane reads another's register with a shuffle */
+/* Whether a shuffle's index is the lane id itself: the subgroup holds a warp's 32 lanes (g_shader_lane32, the
+   device's own size, or the 32 the runtime asks for in compute where it can). Outside a warp's own 32 in a subgroup
+   of 64 the index needs the warp's base, which warp_own makes */
+static int lane32(const Ctx* c) { return g_shader_lane32 && c->stage == ST_CS; }
 static u32 warp_lane(Ctx* c) {
-    return spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, 31));
+    u32 lane = system_value(c, 0);
+    return lane32(c) ? lane : spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, lane, cu(c, 31));
 }
 /* the first lane of the invocation's own 32, made once per program: a load of the lane id and a mask, which every
    gather below would otherwise emit again, 24 of them in one HMMA of a game's video upscaler */
@@ -2633,18 +2638,20 @@ static u32 warp_own(Ctx* c) {
         c->warp_own_v = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, ~31u));
     return c->warp_own_v;
 }
+/* a gather's index: the lane itself where the subgroup is a warp, or its base OR'd in */
+static u32 gather_index(Ctx* c, u32 j) {
+    return lane32(c) ? j : spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, warp_own(c), j);
+}
 /* value as lane j (0-31) of the invocation's own 32 holds it */
 static u32 warp_read(Ctx* c, u32 value, u32 j) {
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
-    return SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, c->t_u32, cu(c, 3), value,
-               spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, warp_own(c), j));
+    return SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, c->t_u32, cu(c, 3), value, gather_index(c, j));
 }
 /* and the same for a value of another type: a gathered pair of floats is one shuffle, where the two words it came
    from were two shuffles and two unpacks */
 static u32 warp_read_t(Ctx* c, u32 type, u32 value, u32 j) {
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
-    return SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, type, cu(c, 3), value,
-               spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, warp_own(c), j));
+    return SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, type, cu(c, 3), value, gather_index(c, j));
 }
 /* value as lane 4g + p of the invocation's own 32 holds it, g4 = 4g for the reader's own g: a quad broadcast where the
    stage has quad operations, which AMD makes a DPP move where a shuffle goes through LDS. Vulkan's quad is four
@@ -2656,7 +2663,7 @@ static u32 quad_read_t(Ctx* c, u32 type, u32 value, u32 g4, u32 p) {
         spv_emit_subgroup_quad_capability(&c->e);
         return spv_emit_subgroup_quad(&c->e, type, value, 0, cu(c, p));
     }
-    return warp_read_t(c, type, value, spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, g4, cu(c, p)));
+    return warp_read_t(c, type, value, gather_index(c, spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, g4, cu(c, p))));
 }
 static u32 quad_read(Ctx* c, u32 value, u32 g4, u32 p) { return quad_read_t(c, c->t_u32, value, g4, p); }
 static u32 half_pair(Ctx* c, u32 bits) { return SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, bits); }

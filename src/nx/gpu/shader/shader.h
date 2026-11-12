@@ -432,6 +432,10 @@ extern int g_shader_quad;
 /* quad operations in compute programs (the QUAD bit, compute among the subgroup stages): an SM86 HMMA reads its A
    fragments from the lane's own quad with them, a DPP move on AMD where a shuffle goes through LDS. 1 offline */
 extern int g_shader_quad_compute;
+/* the subgroup is a warp's 32 lanes: the device's subgroupSize is 32, or the program is compute and the runtime asked
+   for 32 (has_cs_warp32). A shuffle's index is then the lane id, and an SM86 warp's gathers leave out the warp's base
+   word. 1 offline */
+extern int g_shader_lane32;
 /* VK_VALVE_shader_mixed_float_dot_product's shaderMixedFloatDotProductFloat16AccFloat32, with shaderFloat16: an SM86
    HMMA sums each pair of f16 products into its f32 accumulator with one OpFDot2MixAcc32VALVE (v_dot2_f32_f16 on AMD)
    instead of unpacking both pairs to f32. 0 offline */
