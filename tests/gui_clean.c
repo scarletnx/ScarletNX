@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Clean Old Settings (src/gui/clean.c): a game's .ini without its [Deprecated] section and nothing else changed, the
-   .ini files of a folder, and an entry for each file, done or not */
+   .ini files of a folder, and an entry for each file, done or not; Move Old Files' moves, and Delete All, which never
+   deletes a save or the console's keys */
 #include "gui/clean.h"
 #include "common/utilities/common.h"
 #include <assert.h>
@@ -377,6 +378,80 @@ int main(void) {
         free(base);
         free(now);
         free(old);
+    }
+    /* Delete All: a save is never deleted, nor a game laid out beside others (its <name>_data/ holds its saves), a
+       folder holding saves four folders down or the console's keys; the rest is, only with apply, said either way */
+    {
+        static const char* const files[] = {"gui/settings.ini",
+                                            "work/tmp/a.o",
+                                            "games/0100000000ABC000/0100000000ABC000_data/save/user.x/s",
+                                            "games/0100000000ABC000/0100000000ABC000_data/exefs/main",
+                                            "code/0100000000ABC000/0100000000ABC000_data/exefs/main",
+                                            "beside/Game",
+                                            "beside/Game_data/sdmc/notes.txt",
+                                            "deep/a/b/c/d/x_data/save/s",
+                                            "checkout/prod.keys",
+                                            "keys/sub/title.keys",
+                                            "laid/Old",
+                                            "laid/Old_data/exefs/main"};
+        static const char* const olds[] = {
+            "gui", "work", "code", "laid/Old", "games", "beside/Game", "checkout/prod.keys", "keys"};
+        char *base = snx_path_join(root, ""), *path, *said;
+        size_t i;
+        GuiKeep keep;
+        for (i = 0; i < sizeof files / sizeof files[0]; ++i) {
+            char* dir;
+            path = snx_path_join(root, files[i]);
+            dir = snx_dirname(path);
+            assert(dir && !snx_mkdirs(dir));
+            write_text(path, "x");
+            free(dir);
+            free(path);
+        }
+#define KEEP(at) (path = snx_path_join(root, at), keep = gui_old_keep(path), free(path), keep)
+        assert(KEEP("gui") == GUI_KEEP_NONE && KEEP("work") == GUI_KEEP_NONE && KEEP("code") == GUI_KEEP_NONE);
+        assert(KEEP("games/0100000000ABC000/0100000000ABC000_data/save/user.x") == GUI_KEEP_SAVE);
+        assert(KEEP("beside/Game") == GUI_KEEP_SAVE && KEEP("games") == GUI_KEEP_SAVES);
+        assert(KEEP("deep") == GUI_KEEP_NONE && KEEP("deep/a") == GUI_KEEP_SAVES); /* x_data five folders down, four */
+        assert(KEEP("checkout/prod.keys") == GUI_KEEP_KEYS && KEEP("checkout") == GUI_KEEP_KEYS);
+        assert(KEEP("keys") == GUI_KEEP_KEYS);
+#undef KEEP
+        for (i = 0; i < sizeof olds / sizeof olds[0]; ++i) {
+            path = snx_path_join(root, olds[i]);
+            gui_delete_old(&done, path, false);
+            free(path);
+        }
+        said = native(
+            snx_format("+gui|Deletes it\n+work|Deletes it\n+code|Deletes it\n"
+                       "+laid/Old|Deletes it, with Old_data\n"
+                       "!games|Stays: it holds saves, which Delete All never deletes: Move All moves it\n"
+                       "!beside/Game|Stays: a save, which Delete All never deletes: Move All moves it\n"
+                       "!checkout/prod.keys|Stays: the console's keys, which Delete All never deletes: Move "
+                       "All moves them\n"
+                       "!keys|Stays: the console's keys, which Delete All never deletes: Move All moves them\n"));
+        assert(!strcmp(entries(&done, base), said) && done.count == 8 && done.done == 4);
+        free(said);
+        path = snx_path_join(root, "gui/settings.ini");
+        assert(snx_is_file(path)); /* nothing deleted without apply */
+        free(path);
+        gui_cleaned_free(&done);
+        for (i = 0; i < sizeof olds / sizeof olds[0]; ++i) {
+            path = snx_path_join(root, olds[i]);
+            assert(gui_delete_old(&done, path, true) == (i < 4));
+            assert(!snx_path_exists(path) == (i < 4));
+            free(path);
+        }
+        path = snx_path_join(root, "laid/Old_data");
+        assert(!snx_path_exists(path)); /* with its game */
+        free(path);
+        said = native(snx_format("+gui|Deleted\n+work|Deleted\n+code|Deleted\n+laid/Old|Deleted, with Old_data\n"));
+        assert(done.count == 8 && done.done == 4 && !strncmp(entries(&done, base), said, strlen(said)));
+        free(said);
+        gui_cleaned_free(&done);
+        path = snx_path_join(root, "gone");
+        assert(!gui_delete_old(&done, path, true) && !done.count); /* not there: nothing said */
+        free(path);
+        free(base);
     }
     assert(!snx_remove_tree(root));
     free(games);

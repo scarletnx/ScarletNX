@@ -370,12 +370,12 @@ typedef struct App {
     uint64_t free_bytes; /* on the data folder's disk, when the count started */
     char* left;          /* what older builds left where this one no longer looks, a line each, lefts of them */
     int lefts;
+    int left_pages;    /* the setup's Old Files pages they take: a folder each (left_folder) */
     int clean_found;   /* what Clean Old Settings would take out, as App last looked (clean_left); -1 before a look */
     /* UI scale's slider, in its dialog: its bar as last drawn, empty when none shows; a drag on it going on */
     GuiRect slider_bar;
     bool slider_drag;
-    bool left_shown;   /* in a box as the menu opens, until a key, a button or a finger closes it */
-    bool left_clear;   /* the menu's own files of menu_old among them: the box says how they go (SAY_LEFT_CLEAR) */
+    bool left_clear;   /* the menu's own files of menu_old among them: their page says how they go (SAY_LEFT_CLEAR) */
     char* menu_old;    /* Android: SDL's folder for the app, its own files, where an older version kept the menu's own
                           files (menu_files); NULL elsewhere */
     Uint64 left_at;    /* when they were looked for */
@@ -704,9 +704,12 @@ typedef struct App {
     char* scale_gone;    /* [app] ui_scale = or text_size = Auto or a part of it, "ui_scale = auto": written again */
     char* background_key; /* [app] recompile_background = as app.ini had it: written again as background_recompile */
     bool scale_new;      /* no UI scale in app.ini as the start read it: the start's, written by setup_start */
-    GuiCleaned cleaned;  /* what it did, in a box over the screen while cleaned_shown, until a key closes it */
+    GuiCleaned cleaned;  /* what it did, a file an entry, in a box over the screen while cleaned_shown, until a key
+                            closes it; Share Log lists them */
+    GuiCleaned moved;    /* what Move Old Files or the old files' page did, a folder an entry: the box's, for them */
     bool cleaned_shown;
-    bool report_move; /* the box shows what Move Old Files did, not Clean Old Settings */
+    bool report_move;   /* the box shows what Move Old Files did, not Clean Old Settings */
+    bool report_delete; /* the old files' Delete All did it: Share Log names it so */
     /* app.ini's animations: a screen comes in from the page's colour and a box's shade comes and goes, GUI_FADE_MS
        each; with it off (0) each shows at once */
     bool animations_off;
@@ -814,13 +817,17 @@ typedef struct App {
        each step setup.ini has left */
     bool setup_on;
     SnxSetup setup; /* setup.ini as it was read, a newer one's numbers kept when it is written */
-    int setup_pages[SNX_SETUP_STEPS + 1], setup_count, setup_page;
+    int setup_pages[SNX_SETUP_STEPS + 2], setup_count, setup_page;
     GuiChoice setup_choice; /* the page's choices, the one in focus */
-    int setup_top;          /* the notice shown, one a page: the last one's OK goes on */
+    int setup_top;          /* the notice shown, one a page: the last one's OK goes on; the old files' folder */
     /* what Clean Old Settings would take, as the last notice found it (-1 before), and its Clean Now done: its box
        says what it did (cleaned) */
     int clean_inis_found, clean_keys_found;
     bool setup_cleaned;
+    /* the old files' last page: 0 asking, 1 after Move All, 2 after Delete All (moved says what); what each page says
+       its folder's Move All and Delete All would do, an entry a page */
+    int left_did;
+    GuiCleaned left_plan, left_drop;
     int setup_language;     /* Settings > App's Language as the setup found it, 0 Auto: kept Auto on the system's */
     int setup_row;          /* the Appearance page's focus, a GUI_APPEARANCE_* row or its Next */
     bool setup_typing;      /* the first user's nickname being typed, setup_name, to go with setup_uid */
@@ -2417,7 +2424,7 @@ static void fades_mark(App* app) {
     unsigned mark = screen_mark(app);
     bool boxed = app->confirm.shown || app->sizes_shown || (app->editing && app->editor.typing) || app->users_shown ||
                  app->addons_shown || app->options_shown || app->states_shown || app->cleaned_shown ||
-                 app->left_shown || app->dests_shown || app->picks_shown || app->help_shown;
+                 app->dests_shown || app->picks_shown || app->help_shown;
     if (mark != app->screen_was && app->screen_was) app->switch_ms = SDL_max(now_ms(app), 1);
     if (boxed != app->boxed_was) app->box_ms = SDL_max(now_ms(app), 1);
     app->screen_was = mark;
@@ -2484,7 +2491,8 @@ static const char* ask_question(App* app) {
         case GUI_ASK_CACHE:
         case GUI_ASK_DRIVER:
         case GUI_ASK_CRASH:
-        case GUI_ASK_ADDONS: return app->ask_line;
+        case GUI_ASK_ADDONS:
+        case GUI_ASK_DELETE_OLD: return app->ask_line;
         case GUI_ASK_ERROR: return app->error_line;
         case GUI_ASK_CLOSE:
             if (!app->menu.running && !app->finished) return job_leaving(app);
@@ -2631,71 +2639,59 @@ static int wrap_rows(const App* app, const char* s, int width, int path) {
         for (s += wrap_at(s, width, path); *s == ' ';) ++s;
     return SDL_max(rows, 1);
 }
-/* a box of files over the screen, two lines each, as many as fit from app->files_top, how many more, then OK,
-   focused: the folders and files an older version left (report 0), each where it is (-) and the space it takes; or
-   what Clean Old Settings did (1), each file and what was done to it or why not. Up/Down go over them, another key
-   closes it */
-/* the space the older version's i-th folder, old, takes, or that it is still counted */
-static void left_size(const App* app, int i, const char* old, char* out, size_t size) {
-    const GuiSpace* space = app->left_space;
-    if (space && i < __atomic_load_n(&space->counted, __ATOMIC_ACQUIRE) && !strcmp(space->dirs[i], old))
-        gui_size_text(out, size, space->bytes[i]);
-    else
-        snprintf(out, size, "%s", snx_tr("counting"));
-}
-/* the i-th file, at: its two lines, their colours, whether the second is a path; the next file, NULL after the last */
-static const char* files_entry(const App* app, int report, int i, const char* at, char* a, char* b, size_t size,
-                               SDL_Color* ca, SDL_Color* cb, int* path) {
-    SDL_Color failure = rgb(app->theme.failure), ink = rgb(app->theme.ink);
-    const char* next;
-    bool ok;
-    if (!report) {
-        left_paths(at, a, b, size);
-        left_size(app, i, a, b, size);
-        *ca = failure;
-        *cb = rgb(app->theme.soft);
-        *path = 0;
-        next = strchr(at, '\n') + 1;
-        return *next ? next : NULL;
-    }
-    next = gui_cleaned_entry(at, &ok, a, b, size);
-    *ca = ok ? ink : failure;
-    *cb = ok ? rgb(app->theme.soft) : failure;
-    *path = 0;
-    return next;
-}
+/* why the box of what Move Old Files did lists what it lists, over them */
+#define SAY_MOVED_WHY                                                                                                  \
+    SNX_TR_NOOP("An older version left these where this one no longer looks: each folder, what moved and where it is " \
+                "now")
+/* the box's entries: Move Old Files' a folder each (app->moved), Clean Old Settings' a file each (app->cleaned) */
+static const GuiCleaned* files_shown_of(const App* app) { return app->report_move ? &app->moved : &app->cleaned; }
+/* the more line under the entries: how many more, and how to get to them */
+#ifdef SNX_TOUCH_UI
+#define SAY_FILES_MORE SNX_TR_NOOP("and %d more, which Share Log lists")
+#else
+#define SAY_FILES_MORE SNX_TR_NOOP("and %d more: Up/Down, PgUp/PgDn and the wheel go over them")
+#endif
 static int rows_h(void (*layout)(GuiRect, int, GuiRect*), GuiRect (*row)(const GuiRect*, int, int, size_t),
                   GuiRect* rects, int item, int scale, int count);
-static void render_files(App* app, int report) {
-    char a[4400], b[4400], label[96];
-    const char *first = report ? app->cleaned.text : app->left, *at = first;
-    int width, height, cols, room, used = 0, shown, i, y, path, s = app->scale, ok_h, hint;
-    int count = report ? app->cleaned.count : app->lefts, done = app->cleaned.done, top;
-    SDL_Color ca, cb;
-    GuiRect r, text;
-    GuiRect ok[UI_FILES_ITEMS];
+static bool bar_place(const App* app, GuiRect area, long long total, long long view, long long at, GuiRect* track,
+                      GuiRect* thumb);
+static void bar_draw(App* app, GuiRect track, GuiRect thumb, bool held);
+/* a box of files over the screen, two lines each, as many as fit from app->files_top, how many more, then OK,
+   focused: what Move Old Files did, a folder an entry, under why they are there; or what Clean Old Settings did, a
+   file an entry. Each where it is (-) and what was done to it or why not. Up/Down go over them, an arrow at the
+   right of the first saying some are above it and one at the last's some are under it, a scroll bar beside them while
+   they do not all show; another key closes it */
+static void render_files(App* app) {
+    char a[4400], b[4400], label[128];
+    const GuiCleaned* list = files_shown_of(app);
+    const char *first, *at = list->text, *why = app->report_move ? snx_tr(SAY_MOVED_WHY) : NULL;
+    int width, height, cols, room, used = 0, shown, i, y, s = app->scale, ok_h, top, head_rows, last_y = 0;
+    int count = list->count, done = list->done;
+    bool ok;
+    GuiRect r, text, entries, track, thumb;
+    GuiRect oks_r[UI_FILES_ITEMS];
     UiList oks[UI_FILES_ITEMS] = {{0}}; /* OK in focus */
     area(app, &width, &height);
     cols = width / cell_w(app) - 6;
-    hint = !report && app->left_clear ? wrap_rows(app, snx_tr(SAY_LEFT_CLEAR), cols, 0) : 0; /* under them, before OK */
+    head_rows = why ? wrap_rows(app, why, cols, 0) + 1 : 0; /* the why, and a row under it */
     /* the first shown, kept among them when there are fewer since */
     top = app->files_top = SDL_clamp(app->files_top, 0, SDL_max(count - 1, 0));
-    for (i = 0; at && i < top; ++i) at = files_entry(app, report, i, at, a, b, sizeof a, &ca, &cb, &path);
+    for (i = 0; at && i < top; ++i) at = gui_cleaned_entry(at, &ok, a, b, sizeof a);
     first = at;
-    /* the files' rows, and one for how many more */
-    ok_h = rows_h(ui_files_layout, ui_files_row, ok, UI_FILES_OK, s, 1); /* ui.txt's scene Files: OK's row */
-    room = (height - head_h(app) - ok_h - 24 * s) / cell_h(app) - 2 - hint;
+    /* the files' rows, a letter's room at their right for the scroll bar, and one for how many more */
+    ok_h = rows_h(ui_files_layout, ui_files_row, oks_r, UI_FILES_OK, s, 1); /* ui.txt's scene Files: OK's row */
+    room = (height - head_h(app) - ok_h - 24 * s) / cell_h(app) - 2 - head_rows;
     for (shown = 0; at && top + shown < count; ++shown) {
         int need;
-        at = files_entry(app, report, top + shown, at, a, b, sizeof a, &ca, &cb, &path);
-        need = wrap_rows(app, a, cols - 2, 1) + wrap_rows(app, b, cols - 2, path);
+        at = gui_cleaned_entry(at, &ok, a, b, sizeof a);
+        need = wrap_rows(app, a, cols - 3, 1) + wrap_rows(app, b, cols - 3, 0);
         if (shown && used + need > room) break;
         used += need;
     }
     app->files_shown = shown;
-    r = over_rect(app, cols, head_h(app) + (used + (top + shown < count) + hint) * cell_h(app) + ok_h + 16 * s);
-    if (!report)
-        snprintf(label, sizeof label, "%s", snx_tr(SAY_LEFT_TITLE));
+    r = over_rect(app, cols, head_h(app) + (head_rows + used + (top + shown < count)) * cell_h(app) + ok_h + 16 * s);
+    if (app->report_delete)
+        snprintf(label, sizeof label, snx_tr("Delete All: %d done, %d not"), done, count - done);
     else if (app->report_move)
         snprintf(label, sizeof label, snx_tr("Move Old Files: %d done, %d not"), done, count - done);
     else if (count > done)
@@ -2704,21 +2700,33 @@ static void render_files(App* app, int report) {
         snprintf(label, sizeof label, snx_tr("Clean Old Settings: %d done"), done);
     y = over_box(app, r, label) + 2 * s;
     text = inner(app, r);
+    if (why) y += (wrap_in(app, text, text.x, y, why, 0, rgb(app->theme.soft)) + 1) * cell_h(app);
+    entries = gui_rect(text.x, y, text.w, used * cell_h(app));
+    text.w -= cell_w(app); /* the scroll bar's */
     for (i = 0, at = first; at && i < shown; ++i) {
-        at = files_entry(app, report, top + i, at, a, b, sizeof a, &ca, &cb, &path);
+        SDL_Color ca = rgb(app->theme.ink), cb = rgb(app->theme.soft);
+        at = gui_cleaned_entry(at, &ok, a, b, sizeof a);
+        if (!ok) ca = cb = rgb(app->theme.failure);
         text_in(app, text, text.x, y, "-", ca);
-        if (top && !i) text_in(app, r, text.x + text.w, y, "\x1e", rgb(app->theme.soft)); /* more above: its margin */
+        last_y = y;
         y += wrap_in(app, text, text.x + 2 * cell_w(app), y, a, 1, ca) * cell_h(app);
-        y += wrap_in(app, text, text.x + 2 * cell_w(app), y, b, path, cb) * cell_h(app);
+        y += wrap_in(app, text, text.x + 2 * cell_w(app), y, b, 0, cb) * cell_h(app);
     }
+    if (top) text_in(app, r, text.x + text.w, entries.y, "\x1e", rgb(app->theme.soft)); /* more above: its margin */
     if (top + shown < count) {
-        snprintf(label, sizeof label, snx_tr("and %d more, which Share Log lists"), count - top - shown);
+        text_in(app, r, text.x + text.w, last_y, "\x1f", rgb(app->theme.soft)); /* more under */
+        snprintf(label, sizeof label, snx_tr(SAY_FILES_MORE), count - top - shown);
         text_in(app, text, text.x, y, label, rgb(app->theme.soft));
-        y += cell_h(app);
     }
-    if (hint) wrap_in(app, text, text.x, y, snx_tr(SAY_LEFT_CLEAR), 0, rgb(app->theme.ink));
-    ui_files_layout(gui_rect(text.x, r.y + r.h - ok_h - 6 * s, SDL_min(text.w, 26 * cell_w(app)), ok_h), s, ok);
-    ui_files_draw(app, ok, s, oks);
+    if (bar_place(app, gui_rect(entries.x, entries.y, entries.w + cell_w(app) / 2, entries.h), count, shown, top,
+                  &track, &thumb)) {
+        track.x += cell_w(app) / 2; /* in the margin past the arrows' column */
+        thumb.x = track.x;
+        track.w = thumb.w = SDL_max(s, cell_w(app) / 4);
+        bar_draw(app, track, thumb, false);
+    }
+    ui_files_layout(gui_rect(text.x, r.y + r.h - ok_h - 6 * s, SDL_min(text.w, 26 * cell_w(app)), ok_h), s, oks_r);
+    ui_files_draw(app, oks_r, s, oks);
 }
 /* ---- a question and its choices, as the theme's options-dialog places them: in a box in the middle of their area, the
    question over the choices; or the question in a box at the area's foot, a tab with its label on the box's top edge,
@@ -2913,6 +2921,7 @@ static const char* const ask_choices[][2] = {{SNX_TR_NOOP("Continue"), SNX_TR_NO
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Remove")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Clear")},
                                              {SNX_TR_NOOP("Yes"), SNX_TR_NOOP("No")},
+                                             {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Delete")},
                                              {SNX_TR_NOOP("OK"), NULL}};
 /* a question added to GuiAsk takes its choices here, in its place */
 typedef char snx_gui_ask_choices[SDL_arraysize(ask_choices) == GUI_ASK_ERROR + 1 ? 1 : -1];
@@ -3088,6 +3097,7 @@ static unsigned key_icon(const char* key, const char* what) {
                  {"user", GUI_ICON_MOVE},
                  {"queue", GUI_ICON_MOVE},
                  {"scroll", GUI_ICON_MOVE},
+                 {"page", GUI_ICON_MOVE},
                  {"move, change", GUI_ICON_MOVE},
                  {"key, change", GUI_ICON_MOVE},
                  {"row, change", GUI_ICON_MOVE},
@@ -6268,22 +6278,23 @@ static int recompile_tab(const App* app, char* out, size_t size) {
     snprintf(out, size, "%s", failed ? snx_tr("Compile FAILED") : ok ? snx_tr("Compile OK") : snx_tr("Compile"));
     return failed ? GUI_TAB_FAILED : ok ? GUI_TAB_OK : GUI_TAB_GOES;
 }
-/* the tabs while the setup shows: its pages, the notices' then each step's, numbered */
-enum { SETUP_NOTICE = SNX_SETUP_STEPS }; /* a page's: a step's, or the notices' */
+/* the tabs while the setup shows: its pages, the notices' then each step's, numbered, then what older versions left */
+enum { SETUP_NOTICE = SNX_SETUP_STEPS, SETUP_LEFT }; /* a page's: a step's, the notices' or the old files' */
 static const char* const setup_step_names[SNX_SETUP_STEPS] = {SNX_TR_NOOP("Appearance"), SNX_TR_NOOP("Install"),
                                                               SNX_TR_NOOP("Folders"), SNX_TR_NOOP("Keys"),
                                                               SNX_TR_NOOP("User")};
 /* each step's icon in its tab, before its name where its number was (the page's head says it, 1/5): the tabs keep
-   the width they had; the notices' after them */
-static const unsigned setup_step_icons[SNX_SETUP_STEPS + 1] = {
-    GUI_ICON_PALETTE, GUI_ICON_HARD_DRIVE_DOWNLOAD, GUI_ICON_FOLDER, GUI_ICON_KEY_ROUND, GUI_ICON_USER, GUI_ICON_INFO};
+   the width they had; the notices' and the old files' after them, the latter Move Old Files' */
+static const unsigned setup_step_icons[SNX_SETUP_STEPS + 2] = {
+    GUI_ICON_PALETTE, GUI_ICON_HARD_DRIVE_DOWNLOAD, GUI_ICON_FOLDER, GUI_ICON_KEY_ROUND, GUI_ICON_USER,
+    GUI_ICON_INFO,    GUI_ICON_FOLDER_INPUT};
 static int tab_count(const App* app) {
     if (app->setup_on && !app->editing) return app->setup_count;
     return app->queue.count ? GUI_TABS : GUI_TAB_RECOMPILE;
 }
-/* page i's number among the steps, from 1; 0 for the notices' */
+/* page i's number among the steps, from 1; 0 for the notices' and the old files' */
 static int setup_number(const App* app, int i) {
-    return app->setup_pages[i] == SETUP_NOTICE ? 0 : i + (app->setup_pages[0] != SETUP_NOTICE);
+    return app->setup_pages[i] >= SETUP_NOTICE ? 0 : i + (app->setup_pages[0] != SETUP_NOTICE);
 }
 static void tab_label(const App* app, int i, char* out, size_t size) {
     if ((!app->setup_on || app->editing) && i == GUI_TAB_RECOMPILE)
@@ -6295,6 +6306,7 @@ static void tab_label(const App* app, int i, char* out, size_t size) {
         gui_icon_utf8(setup_step_icons[app->setup_pages[i]], icon);
         snprintf(out, size, "%s %s", icon,
                  app->setup_pages[i] == SETUP_NOTICE ? snx_tr("Notice")
+                 : app->setup_pages[i] == SETUP_LEFT ? snx_tr("Old Files")
                                                      : snx_tr(setup_step_names[app->setup_pages[i]]));
     }
 }
@@ -7699,7 +7711,6 @@ static void draw_screen(App* app) {
     if (idle && app->addons_shown && !app->confirm.shown) render_addons(app);
     if (idle && app->options_shown && !app->confirm.shown) render_view(app);
     if (idle && app->states_shown && !app->confirm.shown) render_states(app);
-    if (idle && app->left_shown && app->lefts) render_files(app, 0);
     overlay(app);
 }
 int (*snx_menu_has_driver)(const char* name) = NULL;
@@ -8090,6 +8101,7 @@ static void size_shown(const App* app, char* out, size_t n) {
         size_name(app->menu.text_size, out, n);
 }
 static bool on_battery(App* app);
+static int left_groups(const App* app);
 static void app_values(App* app) {
     GuiAppForm* f = &app->app_form;
     char games[4200], work[4200];
@@ -8127,8 +8139,8 @@ static void app_values(App* app) {
         else
             snprintf(f->freedreno, sizeof f->freedreno, "%s", snx_tr("None"));
     }
-    if (app->lefts) /* as the menu last looked: when it opened, or App did */
-        snprintf(f->moves, sizeof f->moves, snx_tr("%d left"), app->lefts);
+    if (app->lefts) /* as the menu last looked: when it opened, or App did; a folder each, as the setup's pages */
+        snprintf(f->moves, sizeof f->moves, snx_tr("%d left"), left_groups(app));
     else
         snprintf(f->moves, sizeof f->moves, "%s", snx_tr("Nothing left"));
     /* the three folders under the rows, as Folders' value has no room for them; one in the data folder from it */
@@ -12630,11 +12642,13 @@ static void form_pointer(App* app, float x, float y) {
 #define SAY_SETUP_TYPING SNX_TR_KEYS("Type the nickname.")
 #endif
 #define SAY_SETUP_NOTICE SAY_SETUP
+#define SAY_SETUP_LEFT   SAY_SETUP
 #else
 #define SAY_SETUP        SNX_TR_KEYS("Up/Down: choose. Enter: next. ESC: back.")
 #define SAY_SETUP_FIRST  SNX_TR_KEYS("Up/Down: choose. Enter: next. ESC: exit.")
 #define SAY_SETUP_TYPING SNX_TR_KEYS("Type the nickname. Enter: done. ESC: back.")
 #define SAY_SETUP_NOTICE SNX_TR_KEYS("Left/Right: choose. Enter: OK. ESC: exit.")
+#define SAY_SETUP_LEFT   SNX_TR_KEYS("Left/Right: choose. Enter: OK. PgUp/PgDn: page. ESC: exit.")
 #endif
 #ifdef SNX_TOUCH_UI
 #define SAY_SETUP_LOOK       SAY_SETUP
@@ -12671,10 +12685,15 @@ static void closing_start(App* app) {
 #endif
 }
 static int setup_page_of(const App* app) { return app->setup_pages[app->setup_page]; }
-static int setup_steps(const App* app) { return app->setup_count - (app->setup_pages[0] == SETUP_NOTICE); }
+static int setup_steps(const App* app) {
+    return app->setup_count - (app->setup_pages[0] == SETUP_NOTICE) -
+           (app->setup_count && app->setup_pages[app->setup_count - 1] == SETUP_LEFT);
+}
 /* the first page shows Skip after its own choices (setup_choice.count of them): every page left taken as its defaults
-   have it (setup_skip) */
-static int setup_skips(const App* app) { return app->setup_page == 0; }
+   have it (setup_skip); the old files' alone have their own Not Now */
+static int setup_skips(const App* app) { return app->setup_page == 0 && setup_page_of(app) != SETUP_LEFT; }
+/* the old files' pages show */
+static bool left_page(const App* app) { return app->setup_on && setup_page_of(app) == SETUP_LEFT; }
 /* a portable copy's folder beside the program (snx_portable_dir), and whether it is there: owned */
 static char* setup_portable(const App* app, bool* there) {
     char* portable = snx_portable_dir(app->drivers);
@@ -12715,6 +12734,15 @@ static void setup_keyboard(App* app) {
 static int setup_notices(const App* app, int* list);
 static int clean_count(App* app, int* inis, int* keys);
 static void clean_old(App* app);
+static int left_groups(const App* app);
+static int left_pages_of(const App* app);
+static int left_group_first(const App* app, int page);
+static const char* left_nth(const App* app, int i);
+static void left_folder(const char* old, char* out, size_t size);
+static void left_plans(App* app);
+static int move_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply);
+static int delete_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply);
+static void refresh(App* app);
 /* the last notice, while Clean Old Settings has something to take and its Clean Now was not taken: it asks */
 static bool notice_cleans(const App* app) {
     int list[SNX_NOTICES];
@@ -12737,6 +12765,81 @@ static void clean_now(App* app) {
     app->cleaned_shown = false;
     app->setup_cleaned = true;
     app->clean_found = -1; /* App looks again */
+}
+/* the old files' choices: Next, Back before it past the first page; on the last Move All, Delete All and Not Now, Not
+   Now in focus; OK alone once one of the first two is done. The focus on Back while back says so */
+static void left_choices(App* app, bool back) {
+    int n = left_groups(app), backs = app->setup_top > 0 && !app->left_did;
+    app->setup_choice.count = app->left_did ? 1 : backs + (app->setup_top >= n - 1 ? 3 : 1);
+    app->setup_choice.focus = back && backs ? 0 : app->setup_choice.count - 1;
+}
+/* the old files' page to: a step on or back, the first or the last; none past them, nor once one was done */
+static void left_turn(App* app, int to) {
+    int n = left_groups(app);
+    to = SDL_clamp(to, 0, SDL_max(n - 1, 0));
+    if (app->left_did || to == app->setup_top) return;
+    app->setup_top = to;
+    left_choices(app, false);
+}
+/* the old files looked for again (the player may have moved some, F5 asked): the pages as they are now, what Move All
+   and Delete All would do looked again when they changed or plans says so, the page shown and the choice in focus
+   kept as far as they can be; none left, the setup goes on */
+static void setup_next(App* app);
+static void left_again(App* app, bool plans) {
+    int focus = app->setup_choice.focus, count = app->setup_choice.count, n;
+    char* was = app->left ? snx_strdup(app->left) : NULL;
+    left_behind(app);
+    n = left_groups(app);
+    if (!n) {
+        free(was);
+        setup_next(app);
+        return;
+    }
+    if (plans || !was || !app->left || strcmp(was, app->left)) left_plans(app);
+    free(was);
+    app->setup_top = SDL_min(app->setup_top, n - 1);
+    left_choices(app, false);
+    if (app->setup_choice.count == count) app->setup_choice.focus = focus;
+}
+/* Move All or Delete All done (did: 1 or 2), app->moved saying what to each folder: the page says it, OK goes on */
+static void left_done(App* app, int did) {
+    app->report_move = true; /* Share Log's name for what app->cleaned lists */
+    app->report_delete = did == 2;
+    app->left_did = did;
+    left_behind(app);     /* App's Move Old Files counts what is left */
+    app->games_stamp = 0; /* Games lists them again where they are */
+    left_choices(app, false);
+}
+/* Move All: each folder's entries where this version keeps them, as Move Old Files moves them */
+static void left_move(App* app) {
+    gui_cleaned_free(&app->cleaned);
+    gui_cleaned_free(&app->moved);
+    move_old(app, &app->cleaned, &app->moved, true);
+    left_done(app, 1);
+}
+/* Delete All asked first, Delete pressed twice (GUI_ASK_DELETE_OLD): how many paths go and how many stay, a save and
+   the console's keys always; with none it can delete, the foot says so and nothing is asked */
+static void setup_fail(App* app, const char* text);
+static void left_delete_ask(App* app) {
+    GuiCleaned files = {0};
+    int deleted = delete_old(app, &files, NULL, false), paths = files.count;
+    gui_cleaned_free(&files);
+    if (!deleted) {
+        setup_fail(app, snx_tr("Delete All deletes none of these: a save and the console's keys are only moved"));
+        return;
+    }
+    snprintf(app->ask_line, sizeof app->ask_line,
+             paths > deleted ? snx_tr("Delete All? %d deleted, %d stay: a save and the console's keys are only moved")
+                             : snx_tr("Delete All? %d deleted"),
+             deleted, paths - deleted);
+    gui_confirm_open(&app->confirm, GUI_ASK_DELETE_OLD, true);
+}
+/* its Delete pressed the second time */
+static void left_delete(App* app) {
+    gui_cleaned_free(&app->cleaned);
+    gui_cleaned_free(&app->moved);
+    delete_old(app, &app->cleaned, &app->moved, true);
+    left_done(app, 2);
 }
 /* the page shown from its start: its choices, the one in focus the one in use */
 static void setup_enter(App* app) {
@@ -12772,6 +12875,16 @@ static void setup_enter(App* app) {
             app->setup_choice.count = 2; /* Keep, Overwrite */
             if (!app->setup_written) setup_type(app);
             break;
+        case SETUP_LEFT: /* what an older version left, a folder a page, looked for now */
+            app->left_did = 0;
+            left_behind(app);
+            if (!left_groups(app)) { /* moved meanwhile */
+                setup_next(app);
+                return;
+            }
+            left_plans(app);
+            left_choices(app, false);
+            break;
         default: notice_choices(app, false); break; /* the notices' Next or OK, Back past the first */
     }
 }
@@ -12792,6 +12905,7 @@ static void setup_start(App* app) {
     app->setup_count = app->setup_page = 0;
     app->clean_inis_found = app->clean_keys_found = -1;
     app->setup_cleaned = false;
+    app->left_did = 0;
     if (snx_setup_skip || !file) {
         free(file);
         scale_keep(app);
@@ -12804,15 +12918,18 @@ static void setup_start(App* app) {
     if (i < SNX_NOTICES) app->setup_pages[app->setup_count++] = SETUP_NOTICE;
     for (i = 0; i < SNX_SETUP_STEPS; ++i)
         if (snx_setup_asks(&app->setup, i) && snx_setup_here(i)) app->setup_pages[app->setup_count++] = i;
+    if (app->lefts > 0) app->setup_pages[app->setup_count++] = SETUP_LEFT; /* what an older version left, last */
     app->setup_on = app->setup_count > 0;
     app->setup_save = app->setup_moved = false;
     app->setup_language = app->language;
     if (app->setup_on) setup_enter(app);
     scale_keep(app);
 }
-/* the last page done: setup.ini says so, the language picked kept in app.ini, the menu with the user its head shows */
+/* the last page done: setup.ini says so (the old files' pages alone write nothing), the language picked kept in
+   app.ini, the menu with the user its head shows */
 static void setup_finish(App* app) {
     char why[512], *file = snx_setup_file(app->home_dir ? app->home_dir : app->data_dir);
+    bool due = snx_setup_due(&app->setup);
     app->setup_on = false;
     app->setup_typing = false;
     SDL_StopTextInput(app->window);
@@ -12820,15 +12937,24 @@ static void setup_finish(App* app) {
     app->message[0] = 0;
     users_read(app);
     if (app->setup_save) app_save(app);
-    if (!file || snx_setup_done(file, &app->setup, why, sizeof why)) {
+    if (due && (!file || snx_setup_done(file, &app->setup, why, sizeof why))) {
         snprintf(app->message, sizeof app->message, snx_tr("The setup was not kept, so it asks again: %s"),
                  file ? why : snx_tr("no folder for setup.ini"));
         say_failure(app, app->message);
+    } else if (due) { /* done, as setup.ini says now */
+        app->setup.version = SDL_max(app->setup.version, SNX_SETUP_VERSION);
+        app->setup.notices = SDL_max(app->setup.notices, SNX_NOTICES);
     }
     app->setup_failed = false;
-    if (app->setup_moved) { /* in the folders it has now */
+    if (app->setup_moved) { /* in the folders it has now: what an older version left there, its pages */
+        app->setup_moved = false;
         left_behind(app);
-        app->left_shown = app->lefts > 0;
+        if (app->lefts > 0) {
+            app->setup_count = app->setup_page = 0;
+            app->setup_pages[app->setup_count++] = SETUP_LEFT;
+            app->setup_on = true;
+            setup_enter(app);
+        }
     }
     free(file);
     layout(app);
@@ -12998,6 +13124,24 @@ static void setup_take(App* app) {
             notice_choices(app, back);
             return;
         }
+        case SETUP_LEFT: { /* a folder a page; on the last Move All, Delete All (asked, pressed twice) or Not Now,
+                              which keeps them for Settings > App > Move Old Files; OK after either */
+            int backs = app->setup_top > 0 && !app->left_did;
+            if (app->left_did)
+                setup_next(app);
+            else if (backs && !choice) {
+                left_turn(app, app->setup_top - 1);
+                left_choices(app, true);
+            } else if (app->setup_top < left_groups(app) - 1)
+                left_turn(app, app->setup_top + 1);
+            else if (choice - backs == 0)
+                left_move(app);
+            else if (choice - backs == 1)
+                left_delete_ask(app);
+            else
+                setup_next(app);
+            return;
+        }
         default: setup_next(app); return;
     }
 }
@@ -13098,6 +13242,10 @@ static void setup_key(App* app, GuiKey key) {
             app->setup_choice.focus = key == GUI_UP ? all.count - 1 : 0;
         return;
     }
+    if (setup_page_of(app) == SETUP_LEFT && (key == GUI_PAGE_UP || key == GUI_PAGE_DOWN)) { /* a page back or on */
+        left_turn(app, app->setup_top + (key == GUI_PAGE_DOWN ? 1 : -1));
+        return;
+    }
     did = gui_choice_key(&all, key);
     app->setup_choice.focus = all.focus;
     switch (did) {
@@ -13142,6 +13290,14 @@ static bool setup_event(App* app, const SDL_Event* e) {
     }
     if (app->setup_typing && (e->key.key == SDLK_SPACE || (e->key.key >= SDLK_A && e->key.key <= SDLK_Z)))
         return true; /* letters come as text */
+    if (left_page(app) && (e->key.key == SDLK_HOME || e->key.key == SDLK_END)) { /* the old files' first or last page */
+        left_turn(app, e->key.key == SDLK_HOME ? 0 : left_groups(app) - 1);
+        return true;
+    }
+    if (left_page(app) && e->key.key == SDLK_F5) { /* looked for again now */
+        if (!e->key.repeat) refresh(app);
+        return true;
+    }
     if (menu_key_of(&e->key, &key)) setup_key(app, key);
     return true;
 }
@@ -13154,16 +13310,22 @@ static int setup_labels(const App* app, const char** labels) {
     static const char* const keys[] = {SNX_TR_NOOP("Use These"), SNX_TR_NOOP("Browse..."), SNX_TR_NOOP("Later")};
     static const char* const user[] = {SNX_TR_NOOP("Keep"), SNX_TR_NOOP("Overwrite")};
     static const char* const clean[] = {SNX_TR_NOOP("Clean Now"), SNX_TR_NOOP("Not Now")};
-    int i, page = setup_page_of(app), count = app->setup_choice.count, list[SNX_NOTICES], backs = app->setup_top > 0;
-    bool last = page == SETUP_NOTICE ? app->setup_top >= setup_notices(app, list) - 1 : true; /* the nickname's OK */
+    static const char* const left[] = {SNX_TR_NOOP("Move All"), SNX_TR_NOOP("Delete All"), SNX_TR_NOOP("Not Now")};
+    int i, page = setup_page_of(app), count = app->setup_choice.count, list[SNX_NOTICES];
+    int backs = app->setup_top > 0 && (page != SETUP_LEFT || !app->left_did);
+    bool last = page == SETUP_LEFT     ? app->setup_top >= left_groups(app) - 1
+                : page == SETUP_NOTICE ? app->setup_top >= setup_notices(app, list) - 1
+                                       : true; /* the nickname's OK */
     for (i = 0; i < count; ++i)
         labels[i] = page == SNX_SETUP_LANGUAGE                     ? snx_tr("Next")
                     : page == SNX_SETUP_INSTALL                    ? snx_tr(install[i])
                     : page == SNX_SETUP_FOLDERS                    ? snx_tr(folders[i])
                     : page == SNX_SETUP_KEYS                       ? snx_tr(keys[i + 3 - count])
                     : page == SNX_SETUP_USER && !app->setup_typing ? snx_tr(user[i])
+                    : page == SETUP_LEFT && app->left_did          ? snx_tr("OK")
                     : i < backs                                    ? snx_tr("Back")
                     : page == SETUP_NOTICE && notice_cleans(app)   ? snx_tr(clean[i - backs])
+                    : page == SETUP_LEFT && last                   ? snx_tr(left[i - backs])
                     : !last                                        ? snx_tr("Next")
                                                                    : snx_tr("OK");
     if (setup_skips(app)) labels[count++] = snx_tr("Skip");
@@ -13173,6 +13335,7 @@ static const char* setup_question(const App* app, char* out, size_t size) {
     switch (setup_page_of(app)) {
         case SETUP_NOTICE:
             return app->setup.version ? snx_tr("Changed since the last version") : snx_tr("Changed in older versions");
+        case SETUP_LEFT: return snx_tr(SAY_LEFT_TITLE);
         case SNX_SETUP_LANGUAGE: return snx_tr("Appearance");
         case SNX_SETUP_INSTALL: return snx_tr("Install Type");
         case SNX_SETUP_FOLDERS: return snx_tr("Folders");
@@ -13192,6 +13355,7 @@ static const char* setup_question(const App* app, char* out, size_t size) {
 static const char* setup_tip(const App* app) {
     switch (setup_page_of(app)) {
         case SETUP_NOTICE: return snx_tr("Tip: --no-setup skips the setup");
+        case SETUP_LEFT: return snx_tr("Tip: Settings > App > Move Old Files moves them later");
         case SNX_SETUP_LANGUAGE: return snx_tr("Tip: games keep their own language: Settings > Display > Language");
         case SNX_SETUP_INSTALL: return snx_tr("Tip: a portable copy is a folder you can copy");
         case SNX_SETUP_FOLDERS: return snx_tr("Tip: Settings > App > Folders changes them");
@@ -13207,6 +13371,7 @@ static const char* setup_keys_said(const App* app) {
     if (setup_page_of(app) == SNX_SETUP_LANGUAGE) return app->setup_page ? SAY_SETUP_LOOK : SAY_SETUP_LOOK_FIRST;
     return app->setup_typing                    ? SAY_SETUP_TYPING
            : setup_page_of(app) == SETUP_NOTICE ? SAY_SETUP_NOTICE
+           : setup_page_of(app) == SETUP_LEFT   ? SAY_SETUP_LEFT
            : app->setup_page                    ? SAY_SETUP
                                                 : SAY_SETUP_FIRST;
 }
@@ -13412,6 +13577,75 @@ static void setup_notices_box(App* app, GuiRect r) {
     else
         setup_box(app, r, head, lines, k);
 }
+/* the old files' page: the folder an older version left (a game's save/ for each of its kinds), the space it takes,
+   where its entries go now, and what Move All and Delete All would do to it, with the menu's own files an older
+   Android version kept out of reach how they go; once one of them was done, what it did to each folder */
+static void setup_left_box(App* app, GuiRect r) {
+    static const char* const said[] = {SNX_TR_NOOP("size"), SNX_TR_NOOP("now"), SNX_TR_NOOP("Move All"),
+                                       SNX_TR_NOOP("Delete All")};
+    enum { LINES = 14 };
+    char text[LINES][1100], head[96], pad[64], old[4400], now[4400], folder[4400], here[4400], last[4400] = "";
+    char shown[1024], file[4400], what[4400];
+    const char* lines[LINES];
+    const char* at;
+    const GuiSpace* space = app->left_space;
+    int n = left_groups(app), page = SDL_min(app->setup_top, n - 1), first, k = 0, i, pass;
+    int cols = setup_cols(said, 4, 2), counted = space ? __atomic_load_n(&space->counted, __ATOMIC_ACQUIRE) : 0;
+    uint64_t bytes = 0;
+    bool ok, counting = false, out_of_reach = false;
+    if (app->left_did) {
+        snprintf(head, sizeof head,
+                 app->left_did == 2 ? snx_tr("Delete All: %d done, %d not") : snx_tr("Move All: %d done, %d not"),
+                 app->moved.done, app->moved.count - app->moved.done);
+        setup_entries_box(app, r, head, NULL, 0, &app->moved);
+        return;
+    }
+    first = left_group_first(app, page);
+    if (first < 0) return; /* none left: the setup goes on at the next look */
+    left_paths(left_nth(app, first), old, now, sizeof old);
+    left_folder(old, folder, sizeof folder);
+#define LEFT_LINE(...) (snprintf(text[k], sizeof text[k], __VA_ARGS__), lines[k] = text[k], ++k)
+    snx_home_short(folder, shown, sizeof shown);
+    LEFT_LINE("%s%s", app->theme.marker, shown);
+    for (pass = 0; pass < 2; ++pass) { /* the space its paths take, each once; then where each goes */
+        last[0] = 0;
+        if (pass) {
+            if (counting)
+                snprintf(what, sizeof what, "%s", snx_tr("counting"));
+            else
+                gui_size_text(what, sizeof what, bytes);
+            LEFT_LINE("    %s%s", setup_pad(pad, sizeof pad, said[0], cols), what);
+        }
+        for (i = first; (at = left_nth(app, i)) != NULL && i < app->lefts; ++i) {
+            left_paths(at, old, now, sizeof old);
+            left_folder(old, here, sizeof here);
+            if (strcmp(here, folder)) break;
+            if (!pass && strcmp(old, last)) {
+                if (space && i < counted && !strcmp(space->dirs[i], old))
+                    bytes += space->bytes[i];
+                else
+                    counting = true;
+                out_of_reach = out_of_reach || (app->menu_old && snx_path_within(old, app->menu_old));
+            }
+            snprintf(last, sizeof last, "%s", old);
+            if (pass && k < LINES - 3) { /* the label on the first, the others under its value */
+                snx_home_short(now, shown, sizeof shown);
+                if (i == first)
+                    LEFT_LINE("    %s%s", setup_pad(pad, sizeof pad, said[1], cols), shown);
+                else
+                    LEFT_LINE("    %*s%s", cols, "", shown);
+            }
+        }
+    }
+    if (entry_nth(&app->left_plan, page, &ok, file, what, sizeof file))
+        LEFT_LINE("    %s%s", setup_pad(pad, sizeof pad, said[2], cols), what);
+    if (entry_nth(&app->left_drop, page, &ok, file, what, sizeof file))
+        LEFT_LINE("    %s%s", setup_pad(pad, sizeof pad, said[3], cols), what);
+    if (out_of_reach) LEFT_LINE("  %s", snx_tr(SAY_LEFT_CLEAR));
+#undef LEFT_LINE
+    snprintf(head, sizeof head, snx_tr("Old Files %d/%d"), page + 1, n);
+    setup_box(app, r, head, lines, k);
+}
 /* users.ini's users, a row each: the picture, the nickname, the uid */
 static void setup_users_box(App* app, GuiRect r) {
     GuiRect text = inner(app, r);
@@ -13501,6 +13735,7 @@ static void setup_panes(App* app, GuiRect r) {
 #define SETUP_LINE(...) (snprintf(text[n], sizeof text[n], __VA_ARGS__), lines[n] = text[n], ++n)
     switch (setup_page_of(app)) {
         case SETUP_NOTICE: setup_notices_box(app, r); break;
+        case SETUP_LEFT: setup_left_box(app, r); break;
         case SNX_SETUP_LANGUAGE: {
             GuiAppearanceBoxes a;
             appearance_boxes(app, r, &a);
@@ -13843,7 +14078,7 @@ static void render(App* app) {
             render_users(app); /* opened from the form's head, as from the menu's */
     } else
         draw_screen(app);
-    if (app->cleaned_shown) render_files(app, 1); /* over the menu, or the App's rows it was started from */
+    if (app->cleaned_shown) render_files(app); /* over the menu, or the App's rows it was started from */
     if (app->help_shown) render_help(app);
     fades_draw(app);
     SDL_RenderPresent(app->renderer);
@@ -14398,6 +14633,7 @@ static void left_behind(App* app) {
         free(now);
     }
     left_count(app);
+    app->left_pages = left_pages_of(app);
     free(kept);
     free(moved);
     free(work);
@@ -14454,7 +14690,7 @@ static void clean_keys(App* app, const char* file, const char* unread, int faile
 static void clean_old(App* app) {
     char unread[1024];
     gui_cleaned_free(&app->cleaned);
-    app->report_move = false;
+    app->report_move = app->report_delete = false;
     clean_inis(app, &app->cleaned);
     if (settings_unread(app, unread, sizeof unread))
         clean_keys(app, app->settings_file, unread, gui_settings_save(&app->settings, app->settings_file));
@@ -14463,23 +14699,118 @@ static void clean_old(App* app) {
     app->cleaned_shown = app->cleaned.count > 0;
     app->files_top = 0;
 }
-/* the moves of Move Old Files, made with apply, else what they would be, an entry each in done: each folder app->left
-   names, entry by entry, into the one this version keeps it in; the menu's gui/ split by its files between the config
-   and state folders; with the data folder's games/, its games' settings and caches in the config, state and cache
-   folders. A game laid out beside others is not moved: its run from its dump makes its folder (docs/user/deprecations.md).
-   How many entries move */
+/* the i-th line of app->left, NULL past its last */
+static const char* left_nth(const App* app, int i) {
+    const char* at = app->left;
+    for (; at && *at && i > 0; --i) at = strchr(at, '\n') ? strchr(at, '\n') + 1 : NULL;
+    return at && *at ? at : NULL;
+}
+/* the folder of the old files' page an old path is on: a game's save/ for each of its kinds (<id>_data/save/<kind>),
+   else the path itself (gui/'s two lines, one for the config folder and one for the state folder, are one page) */
+static void left_folder(const char* old, char* out, size_t size) {
+    const char *name = old + strlen(old), *parent, *grand;
+    while (name > old && name[-1] != '/' && name[-1] != '\\') --name;
+    parent = name > old ? name - 1 : old; /* the separator before it: save/ is what ends there */
+    for (grand = parent; grand > old && grand[-1] != '/' && grand[-1] != '\\';) --grand;
+    if (parent - grand == 4 && !strncmp(grand, "save", 4) && grand - old > 6 && !strncmp(grand - 6, "_data", 5))
+        snprintf(out, size, "%.*s", (int)(parent - old), old);
+    else
+        snprintf(out, size, "%s", old);
+}
+/* the old files' pages: app->left's lines a folder each (left_folder), as left_behind counted them */
+static int left_groups(const App* app) { return app->left_pages; }
+static int left_pages_of(const App* app) {
+    char old[4400], now[4400], folder[4400], last[4400] = "";
+    const char* at;
+    int i, n = 0;
+    for (i = 0; (at = left_nth(app, i)) != NULL && i < app->lefts; ++i) {
+        left_paths(at, old, now, sizeof old);
+        left_folder(old, folder, sizeof folder);
+        if (i && !strcmp(folder, last)) continue;
+        snprintf(last, sizeof last, "%s", folder);
+        ++n;
+    }
+    return n;
+}
+/* the line of app->left where the old files' page-th folder starts, -1 past the last */
+static int left_group_first(const App* app, int page) {
+    char old[4400], now[4400], folder[4400], last[4400] = "";
+    const char* at;
+    int i, n = 0;
+    for (i = 0; (at = left_nth(app, i)) != NULL && i < app->lefts; ++i) {
+        left_paths(at, old, now, sizeof old);
+        left_folder(old, folder, sizeof folder);
+        if (i && !strcmp(folder, last)) continue;
+        snprintf(last, sizeof last, "%s", folder);
+        if (n++ == page) return i;
+    }
+    return -1;
+}
+/* done's entries from its from-th, a folder's, summed up as one entry of folders for it, the folder of an old files'
+   page: how many of its entries moved (or would, without apply) and where, how many did not and the first one's why;
+   the folder itself taken away once empty is no entry of its. A game laid out beside others (beside), which no move
+   takes, says so without its path, which its page shows */
+static void folder_moves(GuiCleaned* folders, const GuiCleaned* done, int from, const char* folder, const char* dests,
+                         bool apply, bool beside) {
+    char shown[4400], file[4400], what[4400], why[4400], said[9000];
+    const char* at = done->text;
+    bool ok;
+    int i, n = 0, moved = 0;
+    why[0] = 0;
+    for (i = 0; at; ++i) {
+        at = gui_cleaned_entry(at, &ok, file, what, sizeof file);
+        if (i < from || (ok && !strcmp(what, snx_tr("Removed: it was empty")))) continue; /* an old folder, gone */
+        ++n;
+        moved += ok;
+        if (!ok && !why[0]) snprintf(why, sizeof why, "%s", what);
+    }
+    if (!n)
+        snprintf(said, sizeof said, "%s", snx_tr("Nothing in it to move"));
+    else if (moved == n && apply)
+        snprintf(said, sizeof said, snx_tr("%d moved to %s"), moved, dests);
+    else if (moved == n) /* its page says where, above */
+        snprintf(said, sizeof said, n == 1 ? snx_tr("1 entry moves") : snx_tr("%d entries move"), n);
+    else if (beside && !moved)
+        snprintf(said, sizeof said, "%s",
+                 snx_tr("Not moved: run it from its dump once, then move its saves (docs/user/deprecations.md)"));
+    else if (moved && apply)
+        snprintf(said, sizeof said, snx_tr("%d moved to %s, %d not: %s"), moved, dests, n - moved, why);
+    else if (moved)
+        snprintf(said, sizeof said, snx_tr("%d entries move, %d stay: %s"), moved, n - moved, why);
+    else if (n == 1)
+        snprintf(said, sizeof said, "%s", why);
+    else
+        snprintf(said, sizeof said, apply ? snx_tr("%d not moved: %s") : snx_tr("%d stay: %s"), n, why);
+    snx_home_short(folder, shown, sizeof shown);
+    gui_cleaned_add(folders, moved == n, shown, said);
+}
+/* whether item is one of list's, a comma and a space between them */
+static bool listed(const char* list, const char* item) {
+    size_t n = strlen(item);
+    for (const char* at = list; (at = strstr(at, item)) != NULL; at += n)
+        if ((at == list || (at - list >= 2 && !strncmp(at - 2, ", ", 2))) && (!at[n] || !strncmp(at + n, ", ", 2)))
+            return true;
+    return false;
+}
+/* the moves of Move Old Files and the old files' Move All, made with apply, else what they would be, a file an entry
+   in done and, with folders, a page's folder an entry there (folder_moves): each folder app->left names, entry by
+   entry, into the one this version keeps it in; the menu's gui/ split by its files between the config and state
+   folders; with the data folder's games/, its games' settings and caches in the config, state and cache folders. A
+   game laid out beside others is not moved: its run from its dump makes its folder (docs/user/deprecations.md). How
+   many entries move */
 static const char* last_part(const char* path) {
     const char* end = path + strlen(path);
     while (end > path && end[-1] != '/' && end[-1] != '\\') --end;
     return end;
 }
-static int move_old(App* app, GuiCleaned* done, bool apply) {
-    char old[4400], now[4400], what[4500];
+static int move_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply) {
+    char old[4400], now[4400], what[4500], folder[4400], group[4400] = "", dests[4400] = "", shown[4400];
     char *config = menu_folder(app, SNX_USER_CONFIG, false), *state = menu_folder(app, SNX_USER_STATE, false);
     char* games = games_old(app);
     const char* only[2][5];
     const char* at = app->left;
-    int i, k, moves = 0;
+    int i, k, moves = 0, from = 0;
+    bool beside = false;
     for (i = 0; i < 2; ++i) { /* menu_files, as gui_move_entries takes them */
         for (k = 0; k < 4 && menu_files[i][k][0]; ++k) only[i][k] = menu_files[i][k];
         only[i][k] = NULL;
@@ -14488,6 +14819,16 @@ static int move_old(App* app, GuiCleaned* done, bool apply) {
         const char* const* files = NULL;
         char* data;
         left_paths(at, old, now, sizeof old);
+        left_folder(old, folder, sizeof folder);
+        snx_home_short(now, shown, sizeof shown);
+        if (folders && strcmp(folder, group)) { /* a page's folder: the one before summed up */
+            if (group[0]) folder_moves(folders, done, from, group, dests, apply, beside);
+            snprintf(group, sizeof group, "%s", folder);
+            snprintf(dests, sizeof dests, "%s", shown);
+            from = done->count;
+            beside = false;
+        } else if (folders && !listed(dests, shown) && strlen(dests) + strlen(shown) + 3 < sizeof dests)
+            snprintf(dests + strlen(dests), sizeof dests - strlen(dests), ", %s", shown);
         data = snx_format("%s_data", old);
         if (!snx_is_dir(old) && data && snx_is_dir(data)) { /* a game laid out beside others */
             snprintf(what, sizeof what,
@@ -14496,6 +14837,7 @@ static int move_old(App* app, GuiCleaned* done, bool apply) {
                      now);
             gui_cleaned_add(done, false, old, what);
             free(data);
+            beside = true;
             continue;
         }
         free(data);
@@ -14508,39 +14850,102 @@ static int move_old(App* app, GuiCleaned* done, bool apply) {
         moves += gui_move_entries(done, old, now, files, apply);
         moves += gui_move_save_note(done, old, now, apply); /* a save's folder (left_saves) brings its note */
         for (k = SNX_USER_CONFIG; games && !strcmp(old, games) && k <= SNX_USER_CACHE; ++k) {
-            char *from = snx_user_path(old, k), *to = snx_user_path(now, k);
-            if (from && to && strcmp(from, old) && strcmp(to, now))
-                moves += gui_move_entries(done, from, to, NULL, apply);
-            else if (from && strcmp(from, old) && snx_path_exists(from)) { /* recompiled/ is not in the data folder */
+            char *from_dir = snx_user_path(old, k), *to = snx_user_path(now, k);
+            if (from_dir && to && strcmp(from_dir, old) && strcmp(to, now))
+                moves += gui_move_entries(done, from_dir, to, NULL, apply);
+            else if (from_dir && strcmp(from_dir, old) && snx_path_exists(from_dir)) { /* recompiled/ is not in the
+                                                                                          data folder */
                 snprintf(what, sizeof what,
                          snx_tr("Not moved: %s is not in the data folder, which these settings go by"), now);
-                gui_cleaned_add(done, false, from, what);
+                gui_cleaned_add(done, false, from_dir, what);
             }
-            free(from);
+            free(from_dir);
             free(to);
         }
     }
+    if (folders && group[0]) folder_moves(folders, done, from, group, dests, apply, beside);
     free(games);
     free(config);
     free(state);
     return moves;
 }
+/* the old files' Delete All, made with apply, else what it would be: each path app->left names once
+   (gui_delete_old), a file or folder an entry in done, and a page's folder an entry in folders: what was done to its
+   paths, the first one's word when it is every one's, else how many were deleted and why the first of the rest was
+   not. How many paths are deleted, or would be */
+static int delete_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply) {
+    char old[4400], now[4400], folder[4400], last[4400] = "", file[4400], what[4400], why[4400], shown[4400];
+    char said[9000];
+    const char* at;
+    int i = 0, deleted = 0;
+    while ((at = left_nth(app, i)) != NULL && i < app->lefts) {
+        GuiCleaned one = {0};
+        int paths = 0, gone = 0, same = 1;
+        bool ok;
+        left_paths(at, old, now, sizeof old);
+        left_folder(old, folder, sizeof folder);
+        what[0] = why[0] = 0;
+        for (; (at = left_nth(app, i)) != NULL && i < app->lefts; ++i) { /* the page's paths, each once */
+            char this_folder[4400];
+            left_paths(at, old, now, sizeof old);
+            left_folder(old, this_folder, sizeof this_folder);
+            if (strcmp(this_folder, folder)) break;
+            if (!strcmp(old, last)) continue;
+            snprintf(last, sizeof last, "%s", old);
+            gui_cleaned_free(&one);
+            gone += gui_delete_old(&one, old, apply);
+            if (!one.text) continue; /* not there now */
+            gui_cleaned_entry(one.text, &ok, file, said, sizeof file);
+            gui_cleaned_add(done, ok, file, said);
+            same = same && (!paths || !strcmp(what, said));
+            if (!paths) snprintf(what, sizeof what, "%s", said);
+            if (!ok && !why[0]) snprintf(why, sizeof why, "%s", said);
+            ++paths;
+        }
+        gui_cleaned_free(&one);
+        deleted += gone;
+        snx_home_short(folder, shown, sizeof shown);
+        if (!paths)
+            snprintf(said, sizeof said, "%s", snx_tr("Not there any more"));
+        else if (same)
+            snprintf(said, sizeof said, "%s", what);
+        else
+            snprintf(said, sizeof said, apply ? snx_tr("%d deleted, %d not: %s") : snx_tr("Deletes %d, %d stay: %s"),
+                     gone, paths - gone, why);
+        if (folders) gui_cleaned_add(folders, paths && gone == paths, shown, said);
+    }
+    return deleted;
+}
+/* what each old files' page says Move All and Delete All would do to its folder, looked for now */
+static void left_plans(App* app) {
+    GuiCleaned files = {0};
+    gui_cleaned_free(&app->left_plan);
+    gui_cleaned_free(&app->left_drop);
+    move_old(app, &files, &app->left_plan, false);
+    gui_cleaned_free(&files);
+    delete_old(app, &files, &app->left_drop, false);
+    gui_cleaned_free(&files);
+}
 /* App's Move Old Files: what it would move, in a box (GUI_ASK_MOVE); nothing left, said; nothing that can move, the
    box of entries saying why */
 static void move_row(App* app) {
-    GuiCleaned plan = {0};
+    GuiCleaned plan = {0}, folders = {0};
     int moves;
     left_behind(app);
     app_values(app);
-    moves = move_old(app, &plan, false);
+    moves = move_old(app, &plan, &folders, false);
     if (!plan.count) {
+        gui_cleaned_free(&folders);
         snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Nothing left by an older version"));
         return;
     }
     if (!moves) {
         gui_cleaned_free(&app->cleaned);
+        gui_cleaned_free(&app->moved);
         app->cleaned = plan;
+        app->moved = folders;
         app->report_move = true;
+        app->report_delete = false;
         app->cleaned_shown = true;
         app->files_top = 0;
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("None of the %d can move: the box says why"),
@@ -14552,6 +14957,7 @@ static void move_row(App* app) {
                                 : snx_tr("Move Old Files? %d move"),
              moves, plan.count - moves);
     gui_cleaned_free(&plan);
+    gui_cleaned_free(&folders);
     gui_confirm_open(&app->confirm, GUI_ASK_MOVE, false);
 }
 /* what Clean Old Settings would take out: the .ini files with a [Deprecated] section in inis, the keys of the menu's
@@ -14618,8 +15024,10 @@ static void change_answer(App* app, GuiAsk ask, bool taken) {
     } else if (ask == GUI_ASK_MOVE) { /* done: what it did over the screen, and the menu as the files are now */
         int moved;
         gui_cleaned_free(&app->cleaned);
-        moved = move_old(app, &app->cleaned, true);
+        gui_cleaned_free(&app->moved);
+        moved = move_old(app, &app->cleaned, &app->moved, true);
         app->report_move = true;
+        app->report_delete = false;
         app->cleaned_shown = app->cleaned.count > 0;
         app->files_top = 0;
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%d moved, %d not"), moved,
@@ -14821,10 +15229,8 @@ static void pump(App* app) {
         app->job_usage = gui_process_usage_of(app->job_process);
         app->sampled = now;
     }
-    if (app->left_shown && (!app->left_at || now - app->left_at >= 5000)) { /* the player may have moved them */
-        left_behind(app);
-        app->left_shown = app->lefts > 0;
-    }
+    if (left_page(app) && !app->left_did && !app->confirm.shown && (!app->left_at || now - app->left_at >= 5000))
+        left_again(app, false); /* the player may have moved them */
     if (app->leaving_ms && now_ms(app) - app->leaving_ms >= app->theme.fade_out_ms) leave_run(app);
     if (app->closing_ms && now_ms(app) - app->closing_ms >= GUI_CLOSING_MS) app->menu.quit = true;
     if (app->dump_icons.lock) { /* a dump's icon the driver answered: its row looks again */
@@ -17356,9 +17762,13 @@ static void share_log(App* app, bool zip) {
         "%s\nMessage: %s\n%s%s%s%s\n%s== the last run: %s ==\n%s\n\n== the last recompile of the queue: %s "
         "==\n%s\n\n== the launcher's log: %s ==\n%s\n\n== fatal errors: %s ==\n%s\n\n== %s ==\n%s\n",
         snx_build_log_line(), app->message, app->left ? app->left : "", app->left_clear ? SAY_LEFT_CLEAR "\n" : "",
-        app->cleaned.count ? "Clean Old Settings:\n" : "", app->cleaned.text ? app->cleaned.text : "", summary,
-        app->run_log ? app->run_log : "", run, app->job_log ? app->job_log : "", recompiled,
-        console[0] ? console : "none", said, errors[0] ? errors : "none", fatal, game ? game : "no game log", played);
+        !app->cleaned.count  ? ""
+        : app->report_delete ? "Delete All of the old files:\n"
+        : app->report_move   ? "Move Old Files:\n"
+                             : "Clean Old Settings:\n",
+        app->cleaned.text ? app->cleaned.text : "", summary, app->run_log ? app->run_log : "", run,
+        app->job_log ? app->job_log : "", recompiled, console[0] ? console : "none", said, errors[0] ? errors : "none",
+        fatal, game ? game : "no game log", played);
     logs = logs_folder(app);
     share = logs ? snx_path_join(logs, "share") : NULL;
     if (!share) snprintf(app->message, sizeof(app->message), snx_tr("The logs could not be saved: %s"), logs_none());
@@ -17929,6 +18339,8 @@ static void ask_key(App* app, GuiKey key) {
         closing_start(app);
     } else if (ask == GUI_ASK_EXIT && second)
         closing_start(app);
+    else if (ask == GUI_ASK_DELETE_OLD && second)
+        left_delete(app);
     else if (ask == GUI_ASK_ABORT && second)
         abort_run(app);
 }
@@ -18605,7 +19017,7 @@ static bool menu_key_of(const SDL_KeyboardEvent* k, GuiKey* key) {
 }
 /* the box of files over the screen step files on (back for a negative one), down only while some are under them */
 static void files_step(App* app, int step) {
-    int count = app->cleaned_shown ? app->cleaned.count : app->lefts;
+    int count = files_shown_of(app)->count;
     if (step > 0 && app->files_top + app->files_shown >= count) return; /* the last one shows already */
     app->files_top = SDL_max(0, app->files_top + step);
 }
@@ -18615,10 +19027,9 @@ static void files_step(App* app, int step) {
 static void refresh(App* app) {
     app->clean_found = -1; /* Clean Old Settings looks again */
     app->loads_at = 0;     /* the loads' drivers looked for again */
-    if (app->left_shown) {
-        left_behind(app);
-        app->left_shown = app->lefts > 0;
-    } else if (app->editing && app->form == GUI_FORM_FOLDERS) {
+    if (left_page(app) && !app->left_did)
+        left_again(app, true);
+    else if (app->editing && app->form == GUI_FORM_FOLDERS) {
         /* the places, a default made when a run needs it and a picked one not; then the libraries' folders */
         char gone[sizeof app->editor.note];
         size_t n = 0;
@@ -18787,25 +19198,16 @@ static void event_take(App* app, const SDL_Event* e) {
     }
     /* the setup, while it shows, takes the keys and the typing; the pointer goes to it through pointer() */
     if (app->setup_on && !app->splash && setup_event(app, e)) return;
-    /* what Clean Old Settings did, and the box of an older version's files: Up/Down and the wheel go over their files,
-       the first other key, button or finger closes it */
-    if (!app->setup_on && (app->cleaned_shown || (app->left_shown && !app->splash)) &&
+    /* what Clean Old Settings or Move Old Files did: Up/Down and the wheel go over their files, the first other key,
+       button or finger closes it */
+    if (!app->setup_on && app->cleaned_shown &&
         ((e->type == SDL_EVENT_KEY_DOWN && files_key(app, e->key.key)) || e->type == SDL_EVENT_MOUSE_WHEEL)) {
         if (e->type == SDL_EVENT_MOUSE_WHEEL) files_step(app, -e->wheel.integer_y); /* a notch a file, as a row */
-        return;
-    }
-    if (app->left_shown && !app->splash && !app->setup_on && e->type == SDL_EVENT_KEY_DOWN && e->key.key == SDLK_F5) {
-        if (!e->key.repeat) refresh(app);
         return;
     }
     if (app->cleaned_shown &&
         (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_FINGER_DOWN)) {
         app->cleaned_shown = false;
-        return;
-    }
-    if (app->left_shown && !app->splash && !app->setup_on &&
-        (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_FINGER_DOWN)) {
-        app->left_shown = false;
         return;
     }
     /* the splash takes the input it gets: a key, a button or a finger ends it, and does nothing else */
@@ -19074,7 +19476,7 @@ static void event_take(App* app, const SDL_Event* e) {
         int rows = e->wheel.integer_y;
         for (; app->setup_on && !app->splash && !app->confirm.shown && rows; rows += rows > 0 ? -1 : 1)
             setup_key(app, rows > 0 ? GUI_UP : GUI_DOWN);
-        if (app->splash || app->menu.running || app->finished || app->confirm.shown || app->left_shown ||
+        if (app->splash || app->menu.running || app->finished || app->confirm.shown ||
             (app->editing && app->editor.picking))
             return;
         if (app->help_shown) { /* F1's box's rows, a notch a row, and nothing under it */
@@ -19352,6 +19754,9 @@ static void forget(App* app) {
     free(app->folders_file);
     free(app->app_file);
     gui_cleaned_free(&app->cleaned);
+    gui_cleaned_free(&app->moved);
+    gui_cleaned_free(&app->left_plan);
+    gui_cleaned_free(&app->left_drop);
     free(app->left);
     if (app->run_locked) snx_unlock_file(app->run_lock);
     app->run_locked = false;
@@ -19498,7 +19903,7 @@ static int migrate(const char* self, bool apply, FILE* out) {
     }
     open_files(&app); /* the folders the menu picked, which tell where things go */
     left_behind(&app);
-    moves = move_old(&app, &app.cleaned, apply);
+    moves = move_old(&app, &app.cleaned, NULL, apply);
     for (at = app.cleaned.text; at;) {
         at = gui_cleaned_entry(at, &ok, file, what, sizeof file);
         fprintf(out, "%s: %s\n", file, what);
@@ -19556,13 +19961,12 @@ int snx_gui_main(const char* self) {
     }
     open_files(&app); /* here, not in initialize(), so the tests keep their own */
     mark_start(&app, false);
+    left_behind(&app); /* what an older version left: the setup's last pages, Old Files */
     setup_start(&app);
     app.games_fresh = true;
     watch_start(&app);
     app.dump_icons.live = true; /* the dumps' icons asked on a thread of their own */
     space_start(&app);          /* the footer's disk */
-    left_behind(&app);
-    app.left_shown = app.lefts > 0;
     splash_start(&app);
     while (!app.menu.quit) {
         SDL_Event e;

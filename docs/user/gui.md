@@ -250,10 +250,13 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   (only while the runtime lists its settings) and those of `app.ini` the menu does not know. A box
   over the screen then lists each file and what was done to it, or why not, Up/Down and the wheel going over those
   that do not fit, until another key closes it;
-  Share Log lists them too. **Move Old Files** (its value how many folders an older version left) asks first, with
-  how many entries would move and how many stay, then moves what *Left by older versions* lists an entry at a time
-  (`scarletnx --migrate=yes` without the menu, [Usage](usage.md#folders)), the same box saying what moved and why the
-  rest did not: one already there, one on another disk, a game laid out beside others, which moves from its dump.
+  Share Log lists them too. **Move Old Files** (its value how many folders an older version left, the setup's Old Files
+  pages) asks first, with how many entries would move and how many stay, then moves them an entry at a time
+  (`scarletnx --migrate=yes` without the menu, [Usage](usage.md#folders)). The box then says, over them, why they are
+  there, and a folder a line what moved and where it is now, or why not: one already there, one on another disk, a game
+  laid out beside others, which moves from its dump; an arrow at the right of the first and of the last while some are
+  above or under them, a scroll bar beside them, and how many more, Up/Down, PgUp/PgDn and the wheel going over them;
+  Share Log lists each entry.
   **Reset to Defaults**, the last row, puts every setting of the groups after App back to its default, asking first with how
   many change. A group of settings shows
   a row each, its help above, Left/Right going round its values, Enter typing one. A value typed (a number, a text, a
@@ -415,19 +418,16 @@ two; left out, none), `probe_mode` (edenprobe Mode's `quick`, the default, or `f
   files it keeps for the next start (Settings, the picks of Settings > App, the libraries' folders, the recent games), a second
   close skipping it. Closing its window during a run asks first: Exit terminates the entire owned process tree (a
   recompile's work lost), so let the game exit normally to preserve its saves.
-- As it opens, the menu shows in a box what an older version left where this one no longer looks, a
-  folder at a time: where it is (`- `, in the failure colour, a path too long for a row going on in the next) and
-  under it the space it takes, counted as the box shows (*counting* until then). They are the menu's `gui/`, `work/`, each game laid out
-  beside the others in `games/` or a library's Extra (`games/<id>/` now), the data folder's `games/` (`recompiled/` now,
-  its games still listed, each row marked `(games/)`, until they are moved), a portable copy's `games/`
-  beside the program, and a build tree's `games/`, `work/` and keys in its checkout
-  ([Usage](usage.md#folders)). Up/Down, PgUp/PgDn and the wheel go over those that do not fit (an arrow at the
-  right of the first says some are above it, *and N more* the ones under), any other key, click or tap closes it;
-  nothing is moved, and it shows again at the next start for as long as they are there.
-  **Share Log** lists them all, each with where it goes now. On Android the menu's own files an older version kept
-  in the app's own files, out of the Files app's reach, are listed a file at a time, and under them the box says how
-  they go while the app is in testing: Android's Settings > Apps > ScarletNX > Storage > Clear storage, which takes
-  every game, save and key in the app with them. The menu never reads them: it starts from its defaults.
+- As it opens, the menu shows what an older version left where this one no longer looks on the setup's **Old Files**
+  pages ([Setup](#setup)), alone when nothing else of the setup is due: the menu's `gui/`, `work/`, each game laid out
+  beside the others in `games/` or a library's Extra (`games/<id>/` now), a game's own saves (`save/` of the data
+  folder now, with `save_layout=global`), the data folder's `games/` (`recompiled/` now, its games still listed, each
+  row marked `(games/)`, until they are moved), a portable copy's `games/` beside the program, and a build tree's
+  `games/`, `work/` and keys in its checkout ([Usage](usage.md#folders)). They show at each start for as long as they
+  are there. **Share Log** lists them all, each with where it goes now. On Android the menu's own files an older
+  version kept in the app's own files, out of the Files app's reach, are a page each, which says how they also go while
+  the app is in testing: Android's Settings > Apps > ScarletNX > Storage > Clear storage, which takes every game, save
+  and key in the app with them. The menu never reads them: it starts from its defaults.
 - **Recent Games**, at the top of Games, lists the last games run, newest first, three and a row that
   shows the rest, by the name their run gave (the runner's `ScarletNX - <name>` line), else their file's. A dump not
   made into a game yet stays in the list but has no row, as opening it would compile it; once made, by any run, its
@@ -465,9 +465,22 @@ files keys nothing reads), the last asks what Settings > App's Clean Old Setting
 [Deprecated] in 2 .ini`): **Clean Now**, in focus, takes them out there, the box then saying each file and what was
 done to it, and OK goes on; **Not Now** goes on, App's row still there. The first page has **Skip** after its choices: it
 takes every page left as its defaults have it, what Next, OK or Enter on each would take (the notices read, the
-appearance and the install as they are, Keep, Later, the nickname `Player`, and Not Now on the last notice: Skip cleans
-nothing), writes `setup.ini` and opens the menu; a page whose default fails (a `users.ini` that cannot be written)
-stays, saying why.
+appearance and the install as they are, Keep, Later, the nickname `Player`, and Not Now on both questions: Skip cleans,
+moves and deletes nothing), writes `setup.ini` and opens the menu; a page whose default fails (a `users.ini` that
+cannot be written) stays, saying why.
+
+**Old Files**, after the steps, is a page for each folder an older version left (Old Files 1/4), a game's `save/` one
+for all its saves: where it is, the space it takes (*counting* until it is counted), where its entries go now, and what
+**Move All** and **Delete All** would do to it (`2 entries move`, `Deletes it`, `Stays: a save, which Delete All never
+deletes: Move All moves it`). Next goes on, Back back, PgUp/PgDn a page either way and Home/End to the first or the
+last; the last asks Move All, Delete All or **Not Now**, in focus. Move All moves them as Move Old Files does; Delete
+All asks first how many go and how many stay, its Delete pressed twice, and deletes each folder but a save, a folder
+holding saves (a game's `<name>_data/` with a `save/` or `sdmc/`, four folders down at most) and the console's keys,
+which only Move All moves; a game laid out beside the others goes with its `<name>_data/`. The page then says a folder
+a line what was done, and OK goes on. Not Now moves and deletes nothing: the pages come again at the next start, and
+Settings > App > Move Old Files moves them meanwhile. F5 looks again at once, and the page looks every 5 s: a folder
+moved away goes, and with none left the setup goes on. With nothing else due they come alone and write nothing to
+`setup.ini`.
 
 - **Appearance**: a box of Settings > App's Language, Theme, UI scale and Side panel, and Games' View and Icon size
   as its View box has them (Icon size greyed in the list), a row each, and Next (with Skip, on the first page) under
@@ -701,7 +714,7 @@ foot's ESC. A failure of the system's (a file not written, a folder not made, a 
 not found, the log not saved) shows whole in a box over the screen until OK, once in a session; the tips or the
 note go on saying it after. F5, or the foot's (Refresh on a phone), looks at the disk again at once rather than at the next look:
 Games lists its folders again, Folders says which of its folders are there, the menu counts the disk
-again, and the box of what an older version left looks again. The theme editor lists its keys, the preview beside them. The list's column is two fifths of
+again, and the Old Files pages look again. The theme editor lists its keys, the preview beside them. The list's column is two fifths of
 every screen, 20 columns at the least, and a window under 45 columns shows the list alone, or with app.ini's
 `side_box = on` (F2) the side box under it; a run's output and the theme editor's keys take three fifths, the side box
 24 columns at the least, under them on a window under 45 columns. The screens are laid out by `src/gui/ui.txt`'s
@@ -727,8 +740,8 @@ its rows, its last sliding what is left, or takes one that slides with `[body] t
 beside it what runs and how it ended over the status, the file in the tips and the ESC line where the keys
 go, which a tap aborts. The button map draws the pad in the box between the head and the foot. A question comes
 over the screen darkened, in a box in its middle, or with `[body] options-dialog = yorha` (YoRHa's) in a box at its
-foot, a tab with its label on the box's edge, the choices at its right above it, as the game's dialogs. The files an
-older version left come in a box over the screen darkened.
+foot, a tab with its label on the box's edge, the choices at its right above it, as the game's dialogs. What Clean Old
+Settings and Move Old Files did comes in a box over the screen darkened.
 
 The built-ins are `default`, the look above, and `yorha`: paper and ink, a title twice the text's size where it fits whole, a faint
 grid on the page, square markers, the focused box inverted, the tips in a box under the head, the keys in one on a
