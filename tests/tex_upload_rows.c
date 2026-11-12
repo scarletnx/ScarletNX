@@ -187,6 +187,7 @@ VkResult vk_sampler_create(VkDevice device, const VkSamplerCreateInfo* info,
     abort();
 }
 _Atomic int g_cs_any;
+u64 g_tex_cache_hits, g_tex_cache_misses, g_tex_upload_bytes, g_tex_frees;
 u32 g_vk_present;
 static char g_log[1024]; /* the last line logged */
 void logf_(int lvl, const char* fmt, ...) {
