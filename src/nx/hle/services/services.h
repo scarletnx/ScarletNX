@@ -64,7 +64,6 @@ int ldr_own_unload(u64 address);
 /* the functions a save state may hold of each file (nx/runtime/state_fns.h) */
 extern const StateFnTable g_acc_state_fns;    /* acc.c */
 extern const StateFnTable g_am_state_fns;     /* am.c */
-extern const StateFnTable g_audio_state_fns;  /* audio.c */
 extern const StateFnTable g_ldr_state_fns;    /* ldr.c */
 extern const StateFnTable g_misc_state_fns;   /* misc.c */
 /* how many nn::settings::Language values set knows, to check the language the settings file names */

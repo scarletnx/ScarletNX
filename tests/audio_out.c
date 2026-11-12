@@ -1,14 +1,18 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* hwopus and aud:u (audio.c) through their IPC commands. The native audio outs and audio device have their own test
-   (nn_audio.c), and the renderer its own (nn_audio_renderer.c, audren_host.c) */
+/* aud:u (audio.c) through its IPC commands, and the hardware Opus decoder: its decoding (audio.c) and the native
+   nn::codec functions over it (nn/codec.c), their handlers called as the hooks call them and codec.hook's table by
+   SDK version. The native audio outs and audio device have their own test (nn_audio.c), and the renderer its own
+   (nn_audio_renderer.c, audren_host.c) */
 #include "nx/hle/services/services_int.h"
 #include <setjmp.h>
 #include <stdarg.h>
 
 #include "nx/hle/services/audio.c"
+#include "nx/nn/codec.c"
 #include "nx/hle/hle.c"
-#include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
+#include "hle/hook/hooks.hook.inc" /* codec.hook's table and adapters */
+#include "kobj_ids.h"              /* the kernel objects the stubs make, as ids */
 
 u8* g_mem;
 u64 g_as_size = AS_MAX; /* the reservation's size, mem.c's, which this test does not link */
@@ -202,24 +206,7 @@ u32 ev_handle(u32 ev) {
 void ffmpeg_log_init(void) {}
 #endif
 
-/* what ipc.c makes of a reply: a failed request returns no data, handles or objects */
-static int ipc_result(IpcCtx* c, int rc) {
-    if (!rc) return 0;
-    for (int i = 0; i < c->nout_objs; i++) svcobj_unref(c->out_objs[i]);
-    c->nout_copy = c->nout_move = c->nout_objs = 0;
-    c->out_size = 0;
-    return rc;
-}
-/* a request's raw data is the message's, little-endian as the guest writes it: these give a command's arguments in
-   that order, from a ring of buffers that outlives the requests a check makes at once */
-static u8 test_raw[8][0x48];
-static unsigned test_raw_next;
-static u8* raw_slot(void) { return test_raw[test_raw_next++ % 8]; }
-static const void* le32s(const u32* v, u32 n) {
-    u8* p = raw_slot();
-    for (u32 i = 0; i < n; i++) snx_st_le32(p + i * 4, v[i]);
-    return p;
-}
+/* a request with no arguments, as aud:u's commands take */
 static IpcCtx request(u32 cmd, const void* raw, u32 size) {
     IpcCtx c;
     memset(&c, 0, sizeof c);
@@ -228,44 +215,19 @@ static IpcCtx request(u32 cmd, const void* raw, u32 size) {
     c.raw_size = size;
     return c;
 }
-static u32 reply32(IpcCtx* c, u32 off) {
-    CHECK(off + 4 <= c->out_size);
-    return snx_ld_le32(c->out + off);
-}
-static IpcBuf buffer(u64 addr, u64 size) {
-    IpcBuf b = {addr, size, 0};
-    return b;
-}
-
-/* hwopus: GetWorkBufferSize (1) and OpenHardwareOpusDecoder (0), the parameters {sample rate, channels} at 0 and the
-   work buffer's size at 8. The SDK's decoder takes one or two channels: more is the multistream commands' */
-static int open_opus(SvcObj* manager, u32 rate, u32 channels, SvcObj** decoder) {
-    u32 raw[3] = {rate, channels, 0x10000};
-    IpcCtx c = request(0, le32s(raw, 3), sizeof raw);
-    c.ncopy = 1;
-    c.copy_h[0] = 0x200;
-    int rc = manager->dispatch(manager, &c);
-    CHECK(c.nout_objs == 1 && (!rc || !c.out_objs[0])); /* a refused open makes no decoder */
-    rc = ipc_result(&c, rc);
-    CHECK(c.out_size == 0);
-    *decoder = rc ? NULL : c.out_objs[0];
-    return rc;
-}
 #ifndef SNX_NO_H264
 /* a 440 Hz tone libopus (1.5, 6 kbit/s) encoded as 20 ms packets: three SILK narrowband, then hybrid fullband and
    CELT. FFmpeg's resampler holds back samples of the first and gives them back with the hybrid one, where its SILK
    rate changes: every reply still has to be the packet's 20 ms, in a buffer sized for that */
 static const u8 opus_tone[] = {
-    0x00, 0x00, 0x00, 0x0B, 0, 0, 0, 0, 0x08, 0x83, 0xF9, 0x5E, 0xDD, 0x07, 0x1D, 0x4F, 0x23, 0x57, 0x20,
-    0x00, 0x00, 0x00, 0x1C, 0, 0, 0, 0, 0x08, 0xAC, 0x3F, 0x74, 0x00, 0xE7, 0x95, 0x5C, 0x81, 0xA4, 0x83, 0xEA, 0x83,
-    0x32, 0x06, 0x21, 0xF8, 0xF5, 0x7E, 0x77, 0xE7, 0x4A, 0x2B, 0x8D, 0x72, 0x2E, 0xCF, 0x60,
-    0x00, 0x00, 0x00, 0x10, 0, 0, 0, 0, 0x08, 0xA8, 0x5F, 0xCD, 0xAD, 0xF0, 0xDB, 0x1D, 0x7C, 0xE3, 0x69, 0xA5, 0x64,
-    0xFD, 0xD7, 0x60,
-    0x00, 0x00, 0x00, 0x22, 0, 0, 0, 0, 0x78, 0x85, 0xE6, 0x29, 0xC2, 0x60, 0x33, 0x08, 0xDA, 0x6D, 0x3C, 0x99, 0xC5,
-    0xF2, 0x66, 0x1A, 0x42, 0x46, 0x50, 0x16, 0x63, 0x03, 0x84, 0x78, 0xCF, 0xFF, 0x16, 0x8D, 0x7C, 0xCF, 0xA8, 0xBD,
-    0xFA, 0x33,
-    0x00, 0x00, 0x00, 0x10, 0, 0, 0, 0, 0xF8, 0x63, 0xAE, 0xAD, 0xD6, 0x7A, 0x46, 0x26, 0x4F, 0x24, 0x1D, 0x9A, 0x2C,
-    0x1F, 0x02, 0xD7,
+    0x00, 0x00, 0x00, 0x0B, 0,    0,    0,    0,    0x08, 0x83, 0xF9, 0x5E, 0xDD, 0x07, 0x1D, 0x4F, 0x23, 0x57, 0x20,
+    0x00, 0x00, 0x00, 0x1C, 0,    0,    0,    0,    0x08, 0xAC, 0x3F, 0x74, 0x00, 0xE7, 0x95, 0x5C, 0x81, 0xA4, 0x83,
+    0xEA, 0x83, 0x32, 0x06, 0x21, 0xF8, 0xF5, 0x7E, 0x77, 0xE7, 0x4A, 0x2B, 0x8D, 0x72, 0x2E, 0xCF, 0x60, 0x00, 0x00,
+    0x00, 0x10, 0,    0,    0,    0,    0x08, 0xA8, 0x5F, 0xCD, 0xAD, 0xF0, 0xDB, 0x1D, 0x7C, 0xE3, 0x69, 0xA5, 0x64,
+    0xFD, 0xD7, 0x60, 0x00, 0x00, 0x00, 0x22, 0,    0,    0,    0,    0x78, 0x85, 0xE6, 0x29, 0xC2, 0x60, 0x33, 0x08,
+    0xDA, 0x6D, 0x3C, 0x99, 0xC5, 0xF2, 0x66, 0x1A, 0x42, 0x46, 0x50, 0x16, 0x63, 0x03, 0x84, 0x78, 0xCF, 0xFF, 0x16,
+    0x8D, 0x7C, 0xCF, 0xA8, 0xBD, 0xFA, 0x33, 0x00, 0x00, 0x00, 0x10, 0,    0,    0,    0,    0xF8, 0x63, 0xAE, 0xAD,
+    0xD6, 0x7A, 0x46, 0x26, 0x4F, 0x24, 0x1D, 0x9A, 0x2C, 0x1F, 0x02, 0xD7,
 };
 static void test_opus_decode(void) {
     static const u8 toc[][2] = {{0x08, 0}, {0x19, 0}, {0x62, 0}, {0xFB, 0x03}, {0x0B, 0x07}, {0x83, 0}};
@@ -297,85 +259,185 @@ static void test_opus_decode(void) {
         CHECK(loud); /* the tone, still there after the switch to CELT */
     }
     CHECK(hwopus_decode(&h, opus_tone, 8, out, sizeof out, 0, &consumed, &samples) == RC(111, 17)); /* no payload */
-    hwopus_free(&h); /* opened by hand, so it holds none of the service's decoder slots */
+    hwopus_free(&h); /* opened by hand, so it holds none of the pool's decoders */
+}
+#endif
+/* the game's decoder objects, 0x40 apart, and what a decode reads and writes */
+#define T_DEC(i)   (0x4000u + 0x40u * (u32)(i))
+#define T_MAP      0x3000u
+#define T_IN       0x5000u
+#define T_OUT      0x5400u
+#define T_CONSUMED 0x5800u
+#define T_SAMPLES  0x5808u
+static CPU cpu;
+static u32 live_decoders(void) {
+    u32 n = 0;
+    for (u32 i = 0; i < HWOPUS_POOL; i++) n += g_hle.audio.opus[i].guest != 0;
+    return n;
+}
+static HwOpus* decoder_at(u64 guest) {
+    for (u32 i = 0; i < HWOPUS_POOL; i++)
+        if (g_hle.audio.opus[i].guest == guest) return &g_hle.audio.opus[i];
+    return NULL;
+}
+#ifndef SNX_NO_H264
+/* the handlers' decode against the decoding itself: the same packets through a decoder opened by hand give the same
+   samples, bit by bit; the results are the SDK's own */
+static void test_hwopus_decode(void) {
+    CPU* c = &cpu;
+    HwOpus ref;
+    i16 want[320];
+    u32 consumed, samples, off = 0, first = 8 + opus_tone[3];
+    memset(&ref, 0, sizeof ref);
+    CHECK(hwopus_open(&ref, 16000, 1, 1, 0, NULL));
+    memset(GP(T_DEC(0)), 0xCC, 0x40);
+    CHECK(nncodec_hwopus_init_timed(c, T_DEC(0), 16000, 1, 0x6000, 0x1000, 0) == 0);
+    while (off < sizeof opus_tone) {
+        u32 len = 8 + opus_tone[off + 3];
+        memcpy(GP(T_IN), opus_tone + off, len);
+        memset(GP(T_OUT), 0xEE, 0x400);
+        memset(GP(T_CONSUMED), 0xEE, 16);
+        test_now += 250000;
+        CHECK(nncodec_hwopus_decode_timed(c, T_DEC(0), T_CONSUMED, T_SAMPLES, T_OUT, 640, T_IN, len) == 0);
+        CHECK(hwopus_decode(&ref, opus_tone + off, len, want, sizeof want, 0, &consumed, &samples) == 0);
+        /* a size_t of the bytes taken, an int of the samples given, and nothing past the packet's samples */
+        CHECK(snx_ld_le64(GP(T_CONSUMED)) == len && snx_ld_le32(GP(T_SAMPLES)) == 320 && GP(T_SAMPLES)[4] == 0xEE);
+        CHECK(!memcmp(GP(T_OUT), want, sizeof want) && GP(T_OUT)[640] == 0xEE);
+        off += len;
+    }
+    /* the SDK's own ResetHardwareOpusDecoder sets the struct's flag: the next decode starts the stream again, as a
+       decoder just opened does, and clears it */
+    hwopus_free(&ref);
+    memset(&ref, 0, sizeof ref);
+    CHECK(hwopus_open(&ref, 16000, 1, 1, 0, NULL));
+    nncodec_hwopus_reset(c, T_DEC(0));
+    CHECK(GP(T_DEC(0))[0x28] == 1);
+    memcpy(GP(T_IN), opus_tone, first);
+    CHECK(nncodec_hwopus_decode_timed(c, T_DEC(0), T_CONSUMED, T_SAMPLES, T_OUT, 640, T_IN, first) == 0);
+    CHECK(hwopus_decode(&ref, opus_tone, first, want, sizeof want, 0, &consumed, &samples) == 0);
+    CHECK(GP(T_DEC(0))[0x28] == 0 && !memcmp(GP(T_OUT), want, sizeof want));
+    hwopus_free(&ref);
+    /* the SDK's results: 6 for an input shorter than a header or than the header says, 7 for an output with no room
+       (4 in SDK 0.12, where the session refuses it), 4 for a packet that isn't one, and nothing written for any */
+    memset(GP(T_CONSUMED), 0xEE, 16);
+    CHECK(nncodec_hwopus_decode_timed(c, T_DEC(0), T_CONSUMED, T_SAMPLES, T_OUT, 640, T_IN, 7) == 6);
+    CHECK(nncodec_hwopus_decode_timed(c, T_DEC(0), T_CONSUMED, T_SAMPLES, T_OUT, 640, T_IN, first - 1) == 6);
+    CHECK(nncodec_hwopus_decode_timed(c, T_DEC(0), T_CONSUMED, T_SAMPLES, T_OUT, 638, T_IN, first) == 7);
+    snx_st_be32(GP(T_IN), 0);
+    CHECK(nncodec_hwopus_decode_timed(c, T_DEC(0), T_CONSUMED, T_SAMPLES, T_OUT, 640, T_IN, first) == 4);
+    CHECK(GP(T_CONSUMED)[0] == 0xEE && GP(T_SAMPLES)[0] == 0xEE);
+    /* the time the last decode took, in microseconds, where the SDK's getter reads it */
+    CHECK(snx_ld_le64(GP(T_DEC(0) + 0x20)) == 0); /* the clock stood still during it */
+    nncodec_hwopus_finalize(c, T_DEC(0));
+    /* the class up to SDK 4: the same decode, no flag and no time in its object; SDK 0.12's leaves the room to the
+       session */
+    memset(GP(T_DEC(0)), 0xCC, 0x40);
+    CHECK(nncodec_hwopus_class_init(c, T_DEC(0), 16000, 1, 0x6000, 0x1000) == 0);
+    memcpy(GP(T_IN), opus_tone, first);
+    CHECK(nncodec_hwopus_class_decode(c, T_DEC(0), T_CONSUMED, T_SAMPLES, T_OUT, 640, T_IN, first) == 0);
+    CHECK(snx_ld_le32(GP(T_SAMPLES)) == 320 && GP(T_DEC(0))[0x20] == 0xCC && GP(T_DEC(0))[0x28] == 0xCC);
+    CHECK(nncodec_hwopus_class_decode(c, T_DEC(0), T_CONSUMED, T_SAMPLES, T_OUT, 638, T_IN, first) == 7);
+    CHECK(nncodec_hwopus_class_decode_first(c, T_DEC(0), T_CONSUMED, T_SAMPLES, T_OUT, 638, T_IN, first) == 4);
+    nncodec_hwopus_class_finalize(c, T_DEC(0));
+    /* an object that was never opened: the log names it */
+    test_last_log[0] = 0;
+    CHECK(nncodec_hwopus_decode_timed(c, T_DEC(0), T_CONSUMED, T_SAMPLES, T_OUT, 640, T_IN, first) == 4);
+    CHECK(strstr(test_last_log, "0x4000") && live_decoders() == 0);
 }
 #endif
 static void test_hwopus(void) {
-    SvcObj* manager = new_hwopus();
-    u32 params[2] = {48000, 2};
-    IpcCtx c = request(1, le32s(params, 2), sizeof params);
-    CHECK(manager->dispatch(manager, &c) == 0 && c.out_size == 4 && reply32(&c, 0) == 0xd474);
-    /* the console's sizes (Ryujinx's): the decoder state, then the stream and frame buffers. Parameters too short to
-       read get the error of the opens */
-    u32 multi[4] = {48000, 6, 4, 2}, size = 0;
-    memset(GP(0x3000), 0, 0x110);
-    memcpy(GP(0x3000), multi, sizeof multi);
-    snx_le32_array(GP(0x3000), 4);
-    CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStream(NULL, buffer(0x3000, 0x110),
-                                                                                     &size) == 0 &&
-          size == 0x25750);
-    /* ExEx (9) decodes on the DSP: no decoder state. One game's sound init takes these two sizes, and fails with the
-       state in them */
-    u32 exex[2][6] = {{48000, 2, 2, 0, 0, 0}, {48000, 2, 1, 1, 0, 0}};
-    for (int i = 0; i < 2; i++) {
-        memset(GP(0x3000), 0, 0x118);
-        memcpy(GP(0x3000), exex[i], sizeof exex[i]);
-        snx_le32_array(GP(0x3000), 6);
-        CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStreamExEx(
-                  NULL, buffer(0x3000, 0x118), &size) == 0 &&
-              size == (i ? 0x1500u : 0x1ac0u));
-    }
-    nn_codec_detail_HardwareOpusDecoderParameterInternalEx large = {48000, 2, 1, 0}; /* frames of 120 ms */
-    CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeExEx(NULL, &large, &size) == 0 &&
-          size == 0x3300);
-    CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStream(NULL, buffer(0x3000, 0x10),
-                                                                                     &size) == RC(111, 385));
-    /* Ex (7) reads the flags at 0x10: frames of 120 ms */
-    u32 ex[6] = {48000, 2, 1, 1, 1, 0};
-    memset(GP(0x3000), 0, 0x118);
-    memcpy(GP(0x3000), ex, sizeof ex);
-    snx_le32_array(GP(0x3000), 6);
-    CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStreamEx(NULL, buffer(0x3000, 0x118),
-                                                                                       &size) == 0 &&
-          size == 0x15394);
-    /* more than the channels in streams: refused */
-    u32 wide[4] = {48000, 2, 2, 1};
-    memcpy(GP(0x3000), wide, sizeof wide);
-    snx_le32_array(GP(0x3000), 4);
-    CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStream(NULL, buffer(0x3000, 0x110),
-                                                                                     &size) != 0);
-    /* 24 kHz: half the frame */
-    nn_codec_detail_HardwareOpusDecoderParameterInternal mono24 = {24000, 1};
-    CHECK(nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSize(NULL, &mono24, &size) == 0 && size == 0x9f24);
-    unsigned objects = test_objects;
-    SvcObj* decoder;
-    CHECK(open_opus(manager, 48000, 3, &decoder) == RC(111, 385));
-    CHECK(test_objects == objects);
+    CPU* c = &cpu;
+    /* the console's work buffer sizes (Ryujinx's): the decoder state, then the stream and frame buffers */
+    CHECK(nncodec_hwopus_work_size(c, 48000, 2) == 0xd474 && nncodec_hwopus_work_size_option(c, 48000, 2, 0) == 0xd474);
+    CHECK(nncodec_hwopus_multi_work_size(c, 48000, 6, 4, 2) == 0x25750);
+    /* from SDK 16 the session decodes on the DSP: no decoder state. One game's sound init takes these two sizes, and
+       fails with the state in them */
+    CHECK(nncodec_hwopus_multi_work_size_dsp(c, 48000, 2, 2, 0) == 0x1ac0);
+    CHECK(nncodec_hwopus_multi_work_size_option_dsp(c, 48000, 2, 1, 1, 0) == 0x1500);
+    CHECK(nncodec_hwopus_work_size_dsp(c, 48000, 2, 1) == 0x3300); /* the option's bit 0: frames of 120 ms */
+    CHECK(nncodec_hwopus_multi_work_size_option(c, 48000, 2, 1, 1, 1) == 0x15394);
+    /* the class's, with the object first; from SDK 12 the multistream class keeps its option at 0x40 */
+    CHECK(nncodec_hwopus_class_work_size(c, T_DEC(0), 24000, 1) == 0x9f24); /* 24 kHz: half the frame */
+    CHECK(nncodec_hwopus_class_multi_work_size(c, T_DEC(0), 48000, 6, 4, 2) == 0x25750);
+    snx_st_le32(GP(T_DEC(0) + 0x40), 1);
+    CHECK(nncodec_hwopus_class_multi_work_size_option(c, T_DEC(0), 48000, 2, 1, 1) == 0x15394);
+    /* what the session refused has no size: more streams than channels, three channels in one stream, a rate Opus
+       has no decoder for; the log names the numbers */
+    test_last_log[0] = 0;
+    CHECK(nncodec_hwopus_multi_work_size(c, 48000, 2, 2, 1) == 0 && strstr(test_last_log, "2 channels in 2 streams"));
+    CHECK(nncodec_hwopus_work_size(c, 48000, 3) == 0 && nncodec_hwopus_work_size(c, 44100, 2) == 0);
+    CHECK(strstr(test_last_log, "44100 Hz"));
 #ifndef SNX_NO_H264
-    CHECK(open_opus(manager, 48000, 2, &decoder) == 0);
-    CHECK(((HwOpus*)decoder->data)->channels == 2 && ((HwOpus*)decoder->data)->rate == 48000);
-    svcobj_unref(decoder);
-    CHECK(open_opus(manager, 24000, 1, &decoder) == 0 && ((HwOpus*)decoder->data)->step == 2);
-    svcobj_unref(decoder);
-    CHECK(open_opus(manager, 44100, 2, &decoder) == RC(111, 385)); /* not a rate Opus decodes at */
-    /* 24 live decoders, from any session; the 25th is refused as out of decoders until one closes */
-    SvcObj* other = new_hwopus();
-    SvcObj* live[24];
-    for (u32 i = 0; i < 24; i++) CHECK(open_opus(i & 1 ? other : manager, 48000, 2, &live[i]) == 0);
-    unsigned held = test_objects;
-    CHECK(open_opus(manager, 48000, 2, &decoder) == RC(111, 385));
-    CHECK(open_opus(other, 48000, 1, &decoder) == RC(111, 385));
-    CHECK(test_objects == held);
-    svcobj_unref(live[5]);
-    CHECK(open_opus(manager, 48000, 2, &live[5]) == 0);
-    CHECK(open_opus(manager, 48000, 2, &decoder) == RC(111, 385));
-    for (u32 i = 0; i < 24; i++) svcobj_unref(live[i]);
-    CHECK(open_opus(other, 48000, 2, &decoder) == 0);
-    svcobj_unref(decoder);
+    /* the struct from SDK 6: the open fills what the SDK's own getters read, the rate and the channels, zeroes the
+       last decode's time and the reset flag, and leaves a word that isn't zero where the session's object goes */
+    memset(GP(T_DEC(0)), 0xCC, 0x40);
+    CHECK(nncodec_hwopus_init_timed(c, T_DEC(0), 48000, 2, 0x6000, 0x1000, 0) == 0 && live_decoders() == 1);
+    CHECK(snx_ld_le64(GP(T_DEC(0))) != 0 && snx_ld_le32(GP(T_DEC(0) + 0x18)) == 48000);
+    CHECK(snx_ld_le32(GP(T_DEC(0) + 0x1c)) == 2 && snx_ld_le64(GP(T_DEC(0) + 0x20)) == 0);
+    CHECK(GP(T_DEC(0))[0x28] == 0 && GP(T_DEC(0))[0x29] == 0xCC && GP(T_DEC(0))[8] == 0xCC);
+    CHECK(decoder_at(T_DEC(0))->channels == 2 && decoder_at(T_DEC(0))->rate == 48000);
+    /* opened again over itself: one decoder still */
+    CHECK(nncodec_hwopus_init_timed(c, T_DEC(0), 24000, 1, 0x6000, 0x1000, 0) == 0 && live_decoders() == 1);
+    CHECK(decoder_at(T_DEC(0))->step == 2 && snx_ld_le32(GP(T_DEC(0) + 0x18)) == 24000);
+    /* the close frees it and clears the struct's first four words, as the SDK does */
+    nncodec_hwopus_finalize(c, T_DEC(0));
+    CHECK(live_decoders() == 0 && snx_ld_le64(GP(T_DEC(0))) == 0 && snx_ld_le64(GP(T_DEC(0) + 0x18)) == 0);
+    CHECK(GP(T_DEC(0))[0x29] == 0xCC);
+    nncodec_hwopus_finalize(c, T_DEC(0)); /* closed twice: nothing to let go */
+    /* SDK 5's struct has no time and no flag: the bytes there stay the game's */
+    memset(GP(T_DEC(0)), 0xCC, 0x40);
+    CHECK(nncodec_hwopus_init(c, T_DEC(0), 48000, 1, 0x6000, 0x1000, 0) == 0);
+    CHECK(snx_ld_le32(GP(T_DEC(0) + 0x1c)) == 1 && GP(T_DEC(0))[0x20] == 0xCC && GP(T_DEC(0))[0x28] == 0xCC);
+    /* the class from SDK 5 is that struct behind its vtable: its Finalize closes the struct's decoder */
+    nncodec_hwopus_type_class_finalize(c, T_DEC(0) - 8);
+    CHECK(live_decoders() == 0 && snx_ld_le64(GP(T_DEC(0))) == 0);
+    /* the class up to SDK 4: the flag that it is initialized, the rate and the channels, and its vtable untouched */
+    memset(GP(T_DEC(0)), 0xCC, 0x40);
+    CHECK(nncodec_hwopus_class_init(c, T_DEC(0), 24000, 1, 0x6000, 0x1000) == 0);
+    CHECK(GP(T_DEC(0))[0] == 0xCC && GP(T_DEC(0))[8] == 1 && GP(T_DEC(0))[9] == 0xCC);
+    CHECK(snx_ld_le32(GP(T_DEC(0) + 0xc)) == 24000 && snx_ld_le32(GP(T_DEC(0) + 0x10)) == 1);
+    CHECK(nncodec_hwopus_class_set_context(c, T_DEC(0), 0x6000, 0x10) == 0);
+    nncodec_hwopus_class_finalize(c, T_DEC(0));
+    CHECK(live_decoders() == 0 && GP(T_DEC(0))[8] == 0 && snx_ld_le32(GP(T_DEC(0) + 0xc)) == 24000);
+    /* multistream: six channels in four streams, two of them stereo, placed by the mapping; the stream counts where
+       each shape keeps them */
+    static const u8 mapping[6] = {0, 4, 1, 2, 3, 5};
+    memcpy(GP(T_MAP), mapping, sizeof mapping);
+    memset(GP(T_DEC(0)), 0xCC, 0x40);
+    CHECK(nncodec_hwopus_multi_init_timed(c, T_DEC(0), 48000, 6, 4, 2, T_MAP, 0x6000, 0x1000) == 0);
+    CHECK(snx_ld_le32(GP(T_DEC(0) + 0x1c)) == 6 && snx_ld_le32(GP(T_DEC(0) + 0x20)) == 4);
+    CHECK(snx_ld_le32(GP(T_DEC(0) + 0x24)) == 2 && snx_ld_le64(GP(T_DEC(0) + 0x28)) == 0 && GP(T_DEC(0))[0x30] == 0);
+    CHECK(decoder_at(T_DEC(0))->streams == 4 && decoder_at(T_DEC(0))->mapped &&
+          !memcmp(decoder_at(T_DEC(0))->mapping, mapping, 6));
+    nncodec_hwopus_multi_finalize(c, T_DEC(0));
+    CHECK(live_decoders() == 0 && snx_ld_le64(GP(T_DEC(0) + 0x20)) == 0 && GP(T_DEC(0))[0x30] == 0);
+    memset(GP(T_DEC(0)), 0xCC, 0x40);
+    CHECK(nncodec_hwopus_class_multi_init(c, T_DEC(0), 48000, 6, 4, 2, T_MAP, 0x6000, 0x1000) == 0);
+    CHECK(GP(T_DEC(0))[8] == 1 && snx_ld_le32(GP(T_DEC(0) + 0x14)) == 4 && snx_ld_le32(GP(T_DEC(0) + 0x18)) == 2);
+    nncodec_hwopus_class_multi_finalize(c, T_DEC(0));
+    CHECK(nncodec_hwopus_multi_init(c, T_DEC(0), 48000, 6, 4, 2, T_MAP, 0x6000, 0x1000) == 0);
+    nncodec_hwopus_type_class_multi_finalize(c, T_DEC(0) - 8);
+    CHECK(live_decoders() == 0);
+    /* no decoder: three channels in one stream, a rate Opus doesn't decode at, a mapping outside the game's memory.
+       The SDK's result for none left, the object as it was, and the log's numbers */
+    memset(GP(T_DEC(0)), 0xCC, 0x40);
+    test_last_log[0] = 0;
+    CHECK(nncodec_hwopus_init_timed(c, T_DEC(0), 48000, 3, 0x6000, 0x1000, 0) == 8);
+    CHECK(strstr(test_last_log, "3 channels at 48000 Hz") && GP(T_DEC(0))[0] == 0xCC && GP(T_DEC(0))[0x18] == 0xCC);
+    CHECK(nncodec_hwopus_init_timed(c, T_DEC(0), 44100, 2, 0x6000, 0x1000, 0) == 8);
+    CHECK(nncodec_hwopus_multi_init_timed(c, T_DEC(0), 48000, 6, 4, 2, 0x20000, 0x6000, 0x1000) == 8);
+    CHECK(strstr(test_last_log, "0x20000") && live_decoders() == 0);
+    /* 24 decoders, as the firmware has; the 25th gets the SDK's result for none left until one closes */
+    for (u32 i = 0; i < 24; i++) CHECK(nncodec_hwopus_init_timed(c, T_DEC(i), 48000, 2, 0x6000, 0x1000, 0) == 0);
+    test_last_log[0] = 0;
+    CHECK(nncodec_hwopus_init_timed(c, T_DEC(24), 48000, 2, 0x6000, 0x1000, 0) == 8 && live_decoders() == 24);
+    CHECK(strstr(test_last_log, "all 24 open"));
+    nncodec_hwopus_finalize(c, T_DEC(5));
+    CHECK(nncodec_hwopus_init_timed(c, T_DEC(24), 48000, 1, 0x6000, 0x1000, 0) == 0);
+    CHECK(nncodec_hwopus_init_timed(c, T_DEC(5), 48000, 2, 0x6000, 0x1000, 0) == 8);
     /* the decoders a save state holds count once it is loaded: 24 saved with their host parts nil, as a save writes
        them, then loaded over the running ones as state.c does (the host's parts let go of, then made again) */
     static HleAudio saved;
-    for (u32 i = 0; i < 24; i++) CHECK(open_opus(i & 1 ? other : manager, 48000, 2, &live[i]) == 0);
     saved = g_hle.audio;
     for (u32 i = 0; i < HWOPUS_POOL; i++) {
         saved.opus[i].dec = NULL;
@@ -387,18 +449,106 @@ static void test_hwopus(void) {
     audio_state_drop();
     g_hle.audio = saved;
     audio_state_rebuild();
-    CHECK(((HwOpus*)live[7]->data)->dec != NULL); /* made again */
-    CHECK(open_opus(manager, 48000, 2, &decoder) == RC(111, 385));
-    for (u32 i = 0; i < 24; i++) svcobj_unref(live[i]);
-    CHECK(open_opus(manager, 48000, 2, &decoder) == 0);
-    svcobj_unref(decoder);
-    svcobj_unref(other);
+    CHECK(decoder_at(T_DEC(7))->dec != NULL && decoder_at(T_DEC(24))->channels == 1); /* made again */
+    CHECK(nncodec_hwopus_init_timed(c, T_DEC(5), 48000, 2, 0x6000, 0x1000, 0) == 8);
+    for (u32 i = 0; i < 25; i++) nncodec_hwopus_finalize(c, T_DEC(i));
+    CHECK(live_decoders() == 0);
     test_opus_decode();
+    test_hwopus_decode();
 #else
-    CHECK(open_opus(manager, 48000, 2, &decoder) == RC(111, 385)); /* this build has no Opus decoder */
+    CHECK(nncodec_hwopus_init_timed(c, T_DEC(0), 48000, 2, 0x6000, 0x1000, 0) ==
+          8); /* this build has no Opus decoder */
+    CHECK(live_decoders() == 0);
 #endif
-    CHECK(test_objects == objects);
-    svcobj_unref(manager);
+}
+
+/* codec.hook: each function by the handler its SDK's version takes, and none for an SDK that was not read */
+static void test_hwopus_table(void) {
+#define N     "_ZN2nn5codec"
+#define K     "_ZNK2nn5codec"
+#define TYPE  "PNS0_23HardwareOpusDecoderTypeE"
+#define MULTI "PNS0_34HardwareOpusMultiStreamDecoderTypeE"
+    static const struct {
+        u32 sdk;
+        const char* symbol;
+        const char* handler; /* NULL: no hook for that version */
+    } hooks[] = {
+        {0x000c0e, N "19HardwareOpusDecoder10InitializeEiiPvm", "nncodec_hwopus_class_init"},
+        {0x000c0e, N "19HardwareOpusDecoder17DecodeInterleavedEPmPiPsmPKvm", "nncodec_hwopus_class_decode_first"},
+        {0x010301, N "19HardwareOpusDecoder17DecodeInterleavedEPmPiPsmPKvm", "nncodec_hwopus_class_decode"},
+        {0x020300, N "19HardwareOpusDecoder10InitializeEiiPvm", NULL},
+        {0x030500, N "19HardwareOpusDecoder10SetContextEPKvm", "nncodec_hwopus_class_set_context"},
+        {0x030500, N "30HardwareOpusMultiStreamDecoder10InitializeEiiiiPKhPvm", "nncodec_hwopus_class_multi_init"},
+        {0x040500, N "30HardwareOpusMultiStreamDecoder17DecodeInterleavedEPmPiPsmPKvm",
+         "nncodec_hwopus_class_multi_decode"},
+        {0x040500, N "19HardwareOpusDecoder8FinalizeEv", "nncodec_hwopus_class_finalize"},
+        {0x040500, K "19HardwareOpusDecoder17GetWorkBufferSizeEii", "nncodec_hwopus_class_work_size"},
+        {0x0504b4, N "19HardwareOpusDecoder8FinalizeEv", "nncodec_hwopus_type_class_finalize"},
+        {0x0504b4, N "19HardwareOpusDecoder10InitializeEiiPvm", NULL}, /* the class calls the struct's from SDK 5 */
+        {0x0504b4, K "19HardwareOpusDecoder17GetWorkBufferSizeEii", "nncodec_hwopus_class_work_size"},
+        {0x060500, K "19HardwareOpusDecoder17GetWorkBufferSizeEii", NULL},
+        {0x0504b4, N "29InitializeHardwareOpusDecoderE" TYPE "iiPvmi", "nncodec_hwopus_init"},
+        {0x0504b4, N "33DecodeOpusInterleavedWithHardwareE" TYPE "PmPiPsmPKvm", "nncodec_hwopus_decode"},
+        {0x060500, N "29InitializeHardwareOpusDecoderE" TYPE "iiPvmi", "nncodec_hwopus_init_timed"},
+        {0x140511, N "33DecodeOpusInterleavedWithHardwareE" TYPE "PmPiPsmPKvm", "nncodec_hwopus_decode_timed"},
+        {0x150000, N "29InitializeHardwareOpusDecoderE" TYPE "iiPvmi", NULL},
+        {0x0504b4, N "40InitializeHardwareOpusMultiStreamDecoderE" MULTI "iiiiPKhPvmi", "nncodec_hwopus_multi_init"},
+        {0x0d0302, N "40InitializeHardwareOpusMultiStreamDecoderE" MULTI "iiiiPKhPvmi",
+         "nncodec_hwopus_multi_init_timed"},
+        {0x0d0302, N "44DecodeOpusMultiStreamInterleavedWithHardwareE" MULTI "PmPiPsmPKvm",
+         "nncodec_hwopus_multi_decode_timed"},
+        {0x0d0302, N "38FinalizeHardwareOpusMultiStreamDecoderE" MULTI, "nncodec_hwopus_multi_finalize"},
+        {0x0e0300, N "30HardwareOpusMultiStreamDecoder8FinalizeEv", "nncodec_hwopus_type_class_multi_finalize"},
+        {0x0f0301, N "30HardwareOpusMultiStreamDecoder8FinalizeEv", NULL},
+        {0x0b0400, N "36GetHardwareOpusDecoderWorkBufferSizeEii", "nncodec_hwopus_work_size"},
+        {0x0c0307, N "36GetHardwareOpusDecoderWorkBufferSizeEii", NULL}, /* the SDK's own, over the one below */
+        {0x0c0307, N "36GetHardwareOpusDecoderWorkBufferSizeEiii", "nncodec_hwopus_work_size_option"},
+        {0x0f0301, N "36GetHardwareOpusDecoderWorkBufferSizeEiii", "nncodec_hwopus_work_size_option"},
+        {0x100200, N "36GetHardwareOpusDecoderWorkBufferSizeEiii", "nncodec_hwopus_work_size_dsp"},
+        {0x0b0400, N "47GetHardwareOpusMultiStreamDecoderWorkBufferSizeEiiii", "nncodec_hwopus_multi_work_size"},
+        {0x0f0301, N "47GetHardwareOpusMultiStreamDecoderWorkBufferSizeEiiii", "nncodec_hwopus_multi_work_size"},
+        {0x100200, N "47GetHardwareOpusMultiStreamDecoderWorkBufferSizeEiiii", "nncodec_hwopus_multi_work_size_dsp"},
+        {0x0f0301, N "47GetHardwareOpusMultiStreamDecoderWorkBufferSizeEiiiii",
+         "nncodec_hwopus_multi_work_size_option"},
+        {0x140511, N "47GetHardwareOpusMultiStreamDecoderWorkBufferSizeEiiiii",
+         "nncodec_hwopus_multi_work_size_option_dsp"},
+        {0x0b0400, K "30HardwareOpusMultiStreamDecoder17GetWorkBufferSizeEiiii",
+         "nncodec_hwopus_class_multi_work_size"},
+        {0x0e0300, K "30HardwareOpusMultiStreamDecoder17GetWorkBufferSizeEiiii",
+         "nncodec_hwopus_class_multi_work_size_option"},
+    };
+    CPU* c = &cpu;
+    int first, k;
+    for (unsigned i = 0; i < sizeof hooks / sizeof hooks[0]; i++) {
+        u32 versions[HOOK_KEYS] = {0};
+        versions[HOOK_SDK] = hooks[i].sdk;
+        k = hook_select(&hook_table, hooks[i].symbol, versions, &first);
+        if (!hooks[i].handler)
+            CHECK(k == -2);
+        else
+            CHECK(k >= 0 && !strcmp(hook_handler[k], hooks[i].handler));
+    }
+    { /* a module whose SDK is unknown takes none: every function here is one SDK's */
+        u32 versions[HOOK_KEYS] = {0};
+        CHECK(hook_select(&hook_table, N "29InitializeHardwareOpusDecoderE" TYPE "iiPvmi", versions, &first) < 0);
+    }
+    { /* through the adapters, as a game's calls: the work buffer's size from two ints, and a refused open's result */
+        u32 versions[HOOK_KEYS] = {0};
+        versions[HOOK_SDK] = 0x140511;
+        k = hook_select(&hook_table, N "36GetHardwareOpusDecoderWorkBufferSizeEiii", versions, &first);
+        c->x[0] = 48000, c->x[1] = 2, c->x[2] = 1, c->x[30] = 0x1234, c->pc = 0;
+        hook_fn[k](c, 0);
+        CHECK(c->x[0] == 0x3300 && c->pc == 0x1234);
+        k = hook_select(&hook_table, N "29InitializeHardwareOpusDecoderE" TYPE "iiPvmi", versions, &first);
+        c->x[0] = T_DEC(0), c->x[1] = 44100, c->x[2] = 2, c->x[3] = 0x6000, c->x[4] = 0x1000, c->x[5] = 0;
+        c->x[30] = 0x1234, c->pc = 0;
+        hook_fn[k](c, 0);
+        CHECK((u32)c->x[0] == 8 && c->pc == 0x1234 && live_decoders() == 0);
+    }
+#undef N
+#undef K
+#undef TYPE
+#undef MULTI
 }
 
 /* aud:u, the Ounce's manager of managers: the audio in manager it hands out, and the audio out and renderer
@@ -433,7 +583,9 @@ int main(void) {
     audio_state_drop();
     audio_state_rebuild();
     CHECK(test_out_drops == 1 && test_out_rebuilds == 1);
+    cpu.mem = g_mem;
     test_hwopus();
+    test_hwopus_table();
     CHECK(test_objects == 0 && test_events == 0);
     free(g_mem);
     printf("audio: %u checks passed\n", test_checks);

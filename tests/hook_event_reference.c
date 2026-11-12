@@ -22,6 +22,10 @@ const SnxArmModule* g_arm_mod; /* a 64-bit game: hook_guest_call runs the functi
 void hook_guest_call_a32(CPU* c, u32 fn, u32 a0, u32 a1, u32 a2, u32 a3) {
     (void)c, (void)fn, (void)a0, (void)a1, (void)a2, (void)a3;
 }
+/* nn/codec.c's: the decoders that are not the Ounce's, which its Finalize and Reset hooks hand over */
+static u64 test_finalized, test_reset;
+void nncodec_hwopus_finalize(CPU* c, u64 decoder) { (void)c, test_finalized = decoder; }
+void nncodec_hwopus_reset(CPU* c, u64 decoder) { (void)c, test_reset = decoder; }
 static KEvent event;
 static unsigned made, destroyed, handles;
 static int table_full, no_attach;
@@ -82,6 +86,11 @@ int main(void) {
     /* an SDK with no AttachReadableHandleToSystemEvent: no event is made */
     no_attach = 1;
     CHECK(hook_attach_event(c, 0, "test") == NULL && made == 3 && destroyed == 3);
+    /* FinalizeHardwareOpusDecoder and ResetHardwareOpusDecoder are an older SDK's symbols too: a decoder that isn't
+       one of the Ounce's is nn/codec.c's to close and to reset */
+    codec_decoder_finalize(c, 0x5000);
+    codec_decoder_reset(c, 0x5040);
+    CHECK(test_finalized == 0x5000 && test_reset == 0x5040);
     printf("hook_event_reference: %u checks passed\n", checks);
     return 0;
 }

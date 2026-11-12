@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# hwopus, audin:u and aud:u (audio.c). The audio outs, the audio device and the audio renderer are native (nn/)
+# audin:u and aud:u (audio.c). The audio outs, the audio device, the audio renderer and the hardware Opus decoders
+# are native (nn/)
 
 type nn::audio::AudioInParameter = struct {
     u32 sample_rate;
@@ -8,33 +9,6 @@ type nn::audio::AudioInParameter = struct {
     u16 reserved;
 };
 type nn::audio::AudioInProtocol = u32[2];
-type nn::codec::detail::HardwareOpusDecoderParameterInternal = struct {
-    u32 sample_rate;
-    u32 channel_count;
-};
-type nn::codec::detail::HardwareOpusDecoderParameterInternalEx = struct {
-    u32 sample_rate;
-    u32 channel_count;
-    u32 flags;
-    u32 reserved;
-};
-type nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternal = struct {
-    u32 sample_rate;
-    u32 channel_count;
-    u32 stream_count;
-    u32 stereo_stream_count;
-    u8[0x100] channel_mappings;
-};
-type nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternalEx = struct {
-    u32 sample_rate;
-    u32 channel_count;
-    u32 stream_count;
-    u32 stereo_stream_count;
-    u32 flags;
-    u32 reserved;
-    u8[0x100] channel_mappings;
-};
-
 # The Ounce native audio service (aud:u): a TIPC session that hands back the managers audren:u/audout:u/audin:u
 # serve, one per command. Native-ABI games reach the renderer manager this way, then its GetWorkBufferSize (cmd 1).
 interface nn::audio::detail::INativeAudioManager is aud:u {
@@ -70,50 +44,4 @@ interface nn::audio::detail::IAudioInManager is audin:u {
         -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
 }
 interface nn::audio::detail::IAudioIn {
-}
-
-@fallback(quiet_ok)
-interface nn::codec::detail::IHardwareOpusDecoderManager is hwopus {
-    [0] OpenHardwareOpusDecoder(nn::codec::detail::HardwareOpusDecoderParameterInternal params, u32 work_buffer_size,
-                                handle<copy, transfer_memory> work_buffer)
-        -> object<nn::codec::detail::IHardwareOpusDecoder> decoder;
-    [1] GetWorkBufferSize(nn::codec::detail::HardwareOpusDecoderParameterInternal params) -> u32 size;
-    [2] OpenHardwareOpusDecoderForMultiStream(
-            buffer<nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternal, 0x19> params,
-            u32 work_buffer_size, handle<copy, transfer_memory> work_buffer)
-        -> object<nn::codec::detail::IHardwareOpusDecoder> decoder;
-    [3] GetWorkBufferSizeForMultiStream(
-            buffer<nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternal, 0x19> params) -> u32 size;
-    [4] OpenHardwareOpusDecoderEx(nn::codec::detail::HardwareOpusDecoderParameterInternalEx params,
-                                  u32 work_buffer_size, handle<copy, transfer_memory> work_buffer)
-        -> object<nn::codec::detail::IHardwareOpusDecoder> decoder;
-    [5] GetWorkBufferSizeEx(nn::codec::detail::HardwareOpusDecoderParameterInternalEx params) -> u32 size;
-    [6] OpenHardwareOpusDecoderForMultiStreamEx(
-            buffer<nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternalEx, 0x19> params,
-            u32 work_buffer_size, handle<copy, transfer_memory> work_buffer)
-        -> object<nn::codec::detail::IHardwareOpusDecoder> decoder;
-    [7] GetWorkBufferSizeForMultiStreamEx(
-            buffer<nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternalEx, 0x19> params) -> u32 size;
-    [8] GetWorkBufferSizeExEx(nn::codec::detail::HardwareOpusDecoderParameterInternalEx params) -> u32 size;
-    [9] GetWorkBufferSizeForMultiStreamExEx(
-            buffer<nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternalEx, 0x19> params) -> u32 size;
-}
-
-interface nn::codec::detail::IHardwareOpusDecoder {
-    [0] DecodeInterleavedOld(buffer<u8, 5> input, buffer<i16, 6> output) -> (u32 consumed, u32 samples);
-    @stub [1] SetContext(buffer<u8, 5> context);
-    [2] DecodeInterleavedForMultiStreamOld(buffer<u8, 5> input, buffer<i16, 6> output) -> (u32 consumed, u32 samples);
-    @stub [3] SetContextForMultiStream(buffer<u8, 5> context);
-    [4] DecodeInterleavedWithPerfOld(buffer<u8, 5> input, buffer<i16, 0x46> output)
-        -> (u32 consumed, u32 samples, u64 perf_us);
-    [5] DecodeInterleavedForMultiStreamWithPerfOld(buffer<u8, 5> input, buffer<i16, 0x46> output)
-        -> (u32 consumed, u32 samples, u64 perf_us);
-    [6] DecodeInterleavedWithPerfAndResetOld(b8 reset, buffer<u8, 5> input, buffer<i16, 0x46> output)
-        -> (u32 consumed, u32 samples, u64 perf_us);
-    [7] DecodeInterleavedForMultiStreamWithPerfAndResetOld(b8 reset, buffer<u8, 5> input, buffer<i16, 0x46> output)
-        -> (u32 consumed, u32 samples, u64 perf_us);
-    [8] DecodeInterleaved(b8 reset, buffer<u8, 0x45> input, buffer<i16, 0x46> output)
-        -> (u32 consumed, u32 samples, u64 perf_us);
-    [9] DecodeInterleavedForMultiStream(b8 reset, buffer<u8, 0x45> input, buffer<i16, 0x46> output)
-        -> (u32 consumed, u32 samples, u64 perf_us);
 }

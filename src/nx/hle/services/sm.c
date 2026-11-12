@@ -71,6 +71,7 @@ static const char* const g_native_only[][2] = {
     {"audren:u", "nn::audio (nn/audio_renderer.c)"},
     {"audren:a", "nn::audio (nn/audio_renderer.c)"},
     {"audren:d", "nn::audio (nn/audio_renderer.c)"},
+    {"hwopus", "nn::codec (nn/codec.c)"},
 };
 static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_sm_ServiceName* name, u32* session) {
     char s[9];

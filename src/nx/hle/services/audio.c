@@ -7,9 +7,9 @@
    SPDX-FileCopyrightText: Copyright 2018-2024 yuzu Emulator Project (GPL-2.0-or-later)
    The hwopus work buffer sizes, from Ryujinx (src/Ryujinx.Horizon/Sdk/Codec/Detail/HardwareOpusDecoderManager.cs):
    SPDX-FileCopyrightText: Ryujinx Team and Contributors (MIT) */
-/* hwopus, audin:u and aud:u, with the audio clock that paces the native audio outs (nn/audio.c) and renderers
-   (nn/audio_renderer.c, audren.c): every 5 ms it renders a frame of each started renderer, signals the renderer event,
-   and plays and releases the audio outs' buffers */
+/* The hardware Opus decoding (the native nn::codec's, nn/codec.c), audin:u and aud:u, with the audio clock that
+   paces the native audio outs (nn/audio.c) and renderers (nn/audio_renderer.c, audren.c): every 5 ms it renders a
+   frame of each started renderer, signals the renderer event, and plays and releases the audio outs' buffers */
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/services/audren_dsp.h"
@@ -188,7 +188,7 @@ static u32 opus_packet_48k(const u8* p, u32 len) {
     return frames > 5760 ? 0 : frames;
 }
 
-static void hwopus_free(HwOpus* h) {
+void hwopus_free(HwOpus* h) {
 #ifndef SNX_NO_H264
     avcodec_free_context(&h->dec);
     av_packet_free(&h->pkt);
@@ -224,23 +224,9 @@ static void hwopus_filter(HwOpus* h) {
 }
 #endif
 
-/* the firmware keeps SNX_HWOPUS_MAX_DECODERS (services_int.h) decoders and refuses the next with OutOfOpusDecoders,
-   which sends the SDK to its software decoder; a game that opens decoders until refused depends on that answer.
-   Those open, across every hwopus session, are the pool's slots taken, counted under ipc.c's lock, which guards the
-   pool */
-static u32 hwopus_count(void) {
-    u32 i, n = 0;
-    pm_lock(&g_host.ipc.lk);
-    for (i = 0; i < HWOPUS_POOL; i++) n += g_hle.audio.opus[i].obj != 0;
-    pm_unlock(&g_host.ipc.lk);
-    return n;
-}
-
-static void hwopus_destroy(SvcObj* o) { hwopus_free(o->data); }
-
 /* opens h for rate and channels: one stream (mapping NULL), or streams of them with stereo_streams coupled and
    mapping placing their channels. 0 when it can't be */
-static int hwopus_open(HwOpus* h, u32 rate, u32 channels, u32 streams, u32 stereo_streams, const u8* mapping) {
+int hwopus_open(HwOpus* h, u32 rate, u32 channels, u32 streams, u32 stereo_streams, const u8* mapping) {
 #ifndef SNX_NO_H264
     const AVCodec* codec;
     u8* extra;
@@ -390,8 +376,13 @@ static int hwopus_decode(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out
     R_SUCCEED();
 }
 
+/* the samples per channel a packet's payload gives at h's rate, 0 for one that isn't an Opus packet */
+u32 hwopus_packet_samples(const HwOpus* h, const u8* payload, u32 size) {
+    return opus_packet_48k(payload, size) / h->step;
+}
+
 /* An Ounce game's hardware Opus decoders (hle/hook/codec.c), which its SDK runs on the audio DSP and the hooks run
-   here: the same decoding, outside the service's objects and their save states */
+   here: the same decoding, outside the pool's decoders and their save states */
 HwOpus* hwopus_new(u32 rate, u32 channels) {
     HwOpus* h = calloc(1, sizeof *h);
     if (h && !hwopus_open(h, rate, channels, 1, channels - 1, NULL)) {
@@ -414,60 +405,6 @@ int hwopus_decode_packet(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out
     return rc;
 }
 
-/* a decode command: the guest's buffers checked, the time it took in microseconds */
-static int decode(SvcObj* self, int reset, IpcBuf input, IpcBuf output, u32* consumed, u32* samples, u64* perf_us) {
-    HwOpus* h = self->data;
-    u64 t = plat_ns();
-    int rc;
-    if (!snx_audio_guest_ok(input.addr, input.size, PERM_R) || !snx_audio_guest_ok(output.addr, output.size, PERM_W))
-        R_THROW(SNX_RC_CODEC_LIB_OPUS_INVALID_PACKET);
-    pm_lock(&h->lk);
-    rc = hwopus_decode(h, GP(input.addr), input.size, (i16*)GP(output.addr), output.size, reset, consumed, samples);
-    pm_unlock(&h->lk);
-    if (perf_us) *perf_us = (plat_ns() - t) / 1000;
-    return rc;
-}
-
-static int nn_codec_detail_IHardwareOpusDecoder_DecodeInterleavedOld(SvcObj* self, IpcBuf input, IpcBuf output,
-                                                                     u32* consumed, u32* samples) {
-    return decode(self, 0, input, output, consumed, samples, NULL);
-}
-static int nn_codec_detail_IHardwareOpusDecoder_DecodeInterleavedForMultiStreamOld(SvcObj* self, IpcBuf input,
-                                                                                   IpcBuf output, u32* consumed,
-                                                                                   u32* samples) {
-    return decode(self, 0, input, output, consumed, samples, NULL);
-}
-static int nn_codec_detail_IHardwareOpusDecoder_DecodeInterleavedWithPerfOld(SvcObj* self, IpcBuf input,
-                                                                             IpcBuf output, u32* consumed,
-                                                                             u32* samples, u64* perf_us) {
-    return decode(self, 0, input, output, consumed, samples, perf_us);
-}
-static int nn_codec_detail_IHardwareOpusDecoder_DecodeInterleavedForMultiStreamWithPerfOld(
-    SvcObj* self, IpcBuf input, IpcBuf output, u32* consumed, u32* samples, u64* perf_us) {
-    return decode(self, 0, input, output, consumed, samples, perf_us);
-}
-static int nn_codec_detail_IHardwareOpusDecoder_DecodeInterleavedWithPerfAndResetOld(SvcObj* self, u8 reset,
-                                                                                     IpcBuf input, IpcBuf output,
-                                                                                     u32* consumed, u32* samples,
-                                                                                     u64* perf_us) {
-    return decode(self, reset, input, output, consumed, samples, perf_us);
-}
-static int nn_codec_detail_IHardwareOpusDecoder_DecodeInterleavedForMultiStreamWithPerfAndResetOld(
-    SvcObj* self, u8 reset, IpcBuf input, IpcBuf output, u32* consumed, u32* samples, u64* perf_us) {
-    return decode(self, reset, input, output, consumed, samples, perf_us);
-}
-static int nn_codec_detail_IHardwareOpusDecoder_DecodeInterleaved(SvcObj* self, u8 reset, IpcBuf input,
-                                                                  IpcBuf output, u32* consumed, u32* samples,
-                                                                  u64* perf_us) {
-    return decode(self, reset, input, output, consumed, samples, perf_us);
-}
-static int nn_codec_detail_IHardwareOpusDecoder_DecodeInterleavedForMultiStream(SvcObj* self, u8 reset,
-                                                                                IpcBuf input, IpcBuf output,
-                                                                                u32* consumed, u32* samples,
-                                                                                u64* perf_us) {
-    return decode(self, reset, input, output, consumed, samples, perf_us);
-}
-
 /* ------------------------------------------------------------ hwopus */
 /* The work buffer sizes of the console's hwopus, from Ryujinx: libopus's decoder state, then the stream and frame
    buffers. Ryujinx gives the ExEx commands (8 and 9) no decoder state, as a placeholder: the console's value is not
@@ -480,132 +417,25 @@ enum {
     OPUS_STREAM_2CH = 0x6774,       /* a stereo stream: the state less its 0x5800 decoder */
     OPUS_MULTISTREAM_BASE = 0xb920, /* the multistream decoder itself */
 };
-/* flags: bit 0 asks for frames of 120 ms, not 40 ms. dsp: an ExEx command */
-static int work_size(u32 rate, u32 channels, u32 streams, u32 stereo_streams, int multi, u32 flags, int dsp,
-                     u32* size) {
-    if (multi ? !channels || channels > 255 : channels != 1 && channels != 2)
-        R_THROW(SNX_RC_CODEC_INVALID_OPUS_CHANNEL_COUNT);
-    R_UNLESS(opus_rate_ok(rate), SNX_RC_CODEC_INVALID_OPUS_SAMPLE_RATE);
-    if (multi && (!streams || stereo_streams > streams || streams + stereo_streams > channels))
-        R_THROW(SNX_RC_CODEC_INVALID_OPUS_SAMPLE_RATE); /* Eden's answer for a bad stream count */
+/* flags: bit 0 asks for frames of 120 ms, not 40 ms. dsp: the size the session's ExEx commands gave. 0 for a rate,
+   a channel count or stream counts the session refused */
+u32 hwopus_work_size(u32 rate, u32 channels, u32 streams, u32 stereo_streams, int multi, u32 flags, int dsp) {
+    if (multi ? !channels || channels > 255 : channels != 1 && channels != 2) return 0;
+    if (!opus_rate_ok(rate)) return 0;
+    if (multi && (!streams || stereo_streams > streams || streams + stereo_streams > channels)) return 0;
     u32 frame = (u32)snx_align_up(channels * (flags & 1 ? 5760u : 1920u) / (48000u / rate), 64);
     u32 state = channels == 2 ? OPUS_STATE_2CH : OPUS_STATE_1CH;
     if (multi)
         state = OPUS_STREAM_1CH * (streams - stereo_streams) + OPUS_STREAM_2CH * stereo_streams + OPUS_MULTISTREAM_BASE;
-    *size = (dsp ? 0 : state) + (multi ? (u32)snx_align_up(1500u * streams, 64) : 0x600u) + frame;
-    R_SUCCEED();
+    return (dsp ? 0 : state) + (multi ? (u32)snx_align_up(1500u * streams, 64) : 0x600u) + frame;
 }
-
-static int open_decoder(u32 rate, u32 channels, u32 streams, u32 stereo_streams, const u8* mapping,
-                        SvcObj** decoder) {
-    SvcObj* o;
-    /* the count and the take under the audio's lock, so two opens can't both take the last decoder */
-    pm_lock(&g_host.audio.lk);
-    if (hwopus_count() >= SNX_HWOPUS_MAX_DECODERS) {
-        pm_unlock(&g_host.audio.lk);
-        R_THROW(SNX_RC_CODEC_OUT_OF_OPUS_DECODERS);
-    }
-    o = nn_codec_detail_IHardwareOpusDecoder_new_data(g_hle.audio.opus, g_hle.audio.opus_next, "hwopus decoders");
-    pm_unlock(&g_host.audio.lk);
-    if (!hwopus_open(o->data, rate, channels, streams, stereo_streams, mapping)) {
-        WARN_LIMIT(4, "hwopus: can't open a decoder of %lu channels at %lu Hz\n", (unsigned long)channels,
-                   (unsigned long)rate);
-        svcobj_unref(o);
-        R_THROW(SNX_RC_CODEC_OUT_OF_OPUS_DECODERS);
-    }
-    o->destroy = hwopus_destroy;
-    *decoder = o;
-    R_SUCCEED();
-}
-
-/* a multistream parameter buffer: rate, channels, streams, coupled streams, then flags and a reserved word in the Ex
-   form, then the channel mapping. v[4] is the flags, 0 without the Ex form */
-static int multi_params(IpcBuf b, int ex, u32 v[5], const u8** mapping) {
-    u64 need = ex ? 0x118 : 0x110;
-    if (!b.addr || b.size < need || !snx_audio_guest_ok(b.addr, need, PERM_R)) return 0;
-    memcpy(v, GP(b.addr), ex ? 20 : 16);
-    snx_le32_array(v, ex ? 5 : 4);
-    if (!ex) v[4] = 0;
-    *mapping = GP(b.addr + (ex ? 0x18 : 0x10));
-    return 1;
-}
-
-static int nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSize(
-    SvcObj* self, const nn_codec_detail_HardwareOpusDecoderParameterInternal* params, u32* size) {
-    (void)self;
-    return work_size(params->sample_rate, params->channel_count, 1, 0, 0, 0, 0, size);
-}
-static int nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeEx(
-    SvcObj* self, const nn_codec_detail_HardwareOpusDecoderParameterInternalEx* params, u32* size) {
-    (void)self;
-    return work_size(params->sample_rate, params->channel_count, 1, 0, 0, params->flags, 0, size);
-}
-static int nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeExEx(
-    SvcObj* self, const nn_codec_detail_HardwareOpusDecoderParameterInternalEx* params, u32* size) {
-    (void)self;
-    return work_size(params->sample_rate, params->channel_count, 1, 0, 0, params->flags, 1, size);
-}
-/* parameters too short to read: the error of the opens */
-static int multi_size(IpcBuf params, int ex, int dsp, u32* size) {
-    u32 v[5];
-    const u8* mapping;
-    R_UNLESS(multi_params(params, ex, v, &mapping), SNX_RC_CODEC_OUT_OF_OPUS_DECODERS);
-    return work_size(v[0], v[1], v[2], v[3], 1, v[4], dsp, size);
-}
-static int nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStream(SvcObj* self, IpcBuf params,
-                                                                                      u32* size) {
-    (void)self;
-    return multi_size(params, 0, 0, size);
-}
-static int nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStreamEx(SvcObj* self,
-                                                                                        IpcBuf params, u32* size) {
-    (void)self;
-    return multi_size(params, 1, 0, size);
-}
-static int nn_codec_detail_IHardwareOpusDecoderManager_GetWorkBufferSizeForMultiStreamExEx(SvcObj* self,
-                                                                                          IpcBuf params,
-                                                                                          u32* size) {
-    (void)self;
-    return multi_size(params, 1, 1, size);
-}
-
-static int nn_codec_detail_IHardwareOpusDecoderManager_OpenHardwareOpusDecoder(
-    SvcObj* self, const nn_codec_detail_HardwareOpusDecoderParameterInternal* params, u32 work_buffer_size_,
-    u32 work_buffer, SvcObj** decoder) {
-    (void)self, (void)work_buffer_size_, (void)work_buffer;
-    return open_decoder(params->sample_rate, params->channel_count, 1, params->channel_count - 1, NULL, decoder);
-}
-static int nn_codec_detail_IHardwareOpusDecoderManager_OpenHardwareOpusDecoderEx(
-    SvcObj* self, const nn_codec_detail_HardwareOpusDecoderParameterInternalEx* params, u32 work_buffer_size_,
-    u32 work_buffer, SvcObj** decoder) {
-    (void)self, (void)work_buffer_size_, (void)work_buffer;
-    return open_decoder(params->sample_rate, params->channel_count, 1, params->channel_count - 1, NULL, decoder);
-}
-static int open_multi(IpcBuf params, int ex, SvcObj** decoder) {
-    u32 v[5];
-    const u8* mapping;
-    R_UNLESS(multi_params(params, ex, v, &mapping), SNX_RC_CODEC_OUT_OF_OPUS_DECODERS);
-    return open_decoder(v[0], v[1], v[2], v[3], mapping, decoder);
-}
-static int nn_codec_detail_IHardwareOpusDecoderManager_OpenHardwareOpusDecoderForMultiStream(
-    SvcObj* self, IpcBuf params, u32 work_buffer_size_, u32 work_buffer, SvcObj** decoder) {
-    (void)self, (void)work_buffer_size_, (void)work_buffer;
-    return open_multi(params, 0, decoder);
-}
-static int nn_codec_detail_IHardwareOpusDecoderManager_OpenHardwareOpusDecoderForMultiStreamEx(
-    SvcObj* self, IpcBuf params, u32 work_buffer_size_, u32 work_buffer, SvcObj** decoder) {
-    (void)self, (void)work_buffer_size_, (void)work_buffer;
-    return open_multi(params, 1, decoder);
-}
-
-SvcObj* new_hwopus(void) { return nn_codec_detail_IHardwareOpusDecoderManager_new(); }
 
 /* ============================================================ save states */
 void audio_state_drop(void) {
     u32 i;
     nnaudio_out_state_drop();
     for (i = 0; i < HWOPUS_POOL; i++)
-        if (g_hle.audio.opus[i].obj) hwopus_free(&g_hle.audio.opus[i]);
+        if (g_hle.audio.opus[i].guest) hwopus_free(&g_hle.audio.opus[i]);
 }
 void audio_state_rebuild(void) {
     u32 i;
@@ -613,7 +443,7 @@ void audio_state_rebuild(void) {
     for (i = 0; i < HWOPUS_POOL; i++) {
         HwOpus* h = &g_hle.audio.opus[i];
         u8 mapping[255];
-        if (!h->obj) continue;
+        if (!h->guest) continue;
         memcpy(mapping, h->mapping, sizeof mapping);
 #ifndef SNX_NO_H264
         h->dec = NULL;
@@ -625,6 +455,3 @@ void audio_state_rebuild(void) {
             WARN("state: an Opus decoder (%u Hz, %u channels) couldn't be made again\n", h->rate, h->channels);
     }
 }
-/* the functions a save state may hold of this file (state_fns.h) */
-STATE_FN_TABLE(g_audio_state_fns,
-               STATE_FN("audio", hwopus_destroy));
