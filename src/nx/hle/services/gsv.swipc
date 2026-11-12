@@ -67,6 +67,13 @@ interface nn::gsv::UserSession {
     [1201] CreateChatContext();
     [1202] InitializeChatContext() -> handle<copy, session> session;
     [1203] DestroyChatContext();
+    # nn::chat::gsv's image pools: GameChat's camera video storage, which one game's SDK makes at boot. Its
+    # CreateImagePool, DestroyImagePool and CalculateRequiredBufferMemory send what the decoder's 911, 912 and 991 send,
+    # and read the same answers, so the pools are the video service's (native_video.c)
+    [1211] CreateChatImagePool(nn::gsv::VideoImagePreference preference, u32 count, u32 memory_handle) -> u32 image;
+    [1212] DestroyChatImagePool(u32 image);
+    [1291] CalculateChatImageRequirements(nn::gsv::VideoImagePreference preference, u32 count)
+        -> (u64 size, u64 alignment);
     [1101] CreateGraphicsFrameContext();
     [1102] InitializeGraphicsFrameContext();
     # how the console's GPU schedules a frame, which the host's doesn't take
@@ -82,8 +89,11 @@ interface nn::gsv::UserSession {
     @stub [1502] InitializeInterModuleImageContext();
 }
 
+# The camera context's session. One game's own camera module asks 21 for an event as it starts, which it attaches as a
+# system event and stops if 21 fails. With no camera, nothing about one changes, so the event is never signaled
 @fallback(gsv_camera_none)
 interface nn::gsv::CameraSession {
+    [21] GetEvent(u32 id) -> handle<copy, event> event;
 }
 
 # The SDK sends the current tick to 0 and aborts unless it comes back. The other names are guesses from the SDK's code
