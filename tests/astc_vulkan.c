@@ -644,7 +644,7 @@ static int upload_wait_case(int retire) {
             vk_finish();
         }
     }
-    if (g_texture_pipelines.count != 1 || !g_texture_pipelines.ns) /* astc_bc7.comp's, made once */
+    if (g_texture_pipelines.count != 2 || !g_texture_pipelines.ns) /* astc_bc7.comp's two passes, each made once */
         fatal("BC7 upload wait: internal pipeline counters missed creation or counted a reused pipeline\n");
     if (!retire && (source.calls < 2 || !source.changes || vk_submit_number() <= source.first_submit))
         fatal("BC7 upload wait: no continuation across a submission (%u calls, %u changes)\n",

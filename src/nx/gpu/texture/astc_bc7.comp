@@ -47,6 +47,18 @@ layout(binding = 1, std430) writeonly restrict buffer OutputBlocks {
     uvec4 bc7_blocks[];
 };
 
+/* the blocks the first pass leaves to the second (astc_bc7.glsl): the second pass's workgroups, as an indirect
+   dispatch reads them (vk/astc.c sets them 0, 1, 1), how many blocks there are, and their numbers */
+#if SNX_BC7_PASS
+layout(binding = 2, std430) restrict buffer Work {
+    uint work_groups;
+    uint work_groups_y;
+    uint work_groups_z;
+    uint work_count;
+    uint work_list[];
+};
+#endif
+
 /* The block being decoded: astc_decode.glsl's 39 words (its F_ fields), which astc.comp keeps for a tile of 64 blocks
    in the workgroup's shared memory. Here they are the invocation's own. Shared memory is what a GPU has least of: 10
    KB a workgroup held a GeForce GT 1030 to a fifth fewer blocks in flight through the encoder, which is nearly all of

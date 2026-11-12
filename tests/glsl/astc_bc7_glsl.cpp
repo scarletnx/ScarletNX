@@ -7,7 +7,10 @@
 // and strips of several slices. Then the multiplication that stands for a coordinate's division by the footprint, for
 // every footprint and coordinate. No GPU is needed: tests/astc_vulkan.c holds the SPIR-V build of the same files to
 // the same blocks on a Vulkan device.
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -63,7 +66,22 @@ static void check(uint32_t build, uint32_t bw, uint32_t bh, int srgb, uint32_t w
             failures++;
             return;
         }
-    std::printf("PASS %ux%u srgb=%d %ux%ux%u build %u\n", bw, bh, srgb, w, h, depth, build);
+    // the two passes of the builds that search past mode 6: the same blocks, some of them the second pass's
+    uint32_t listed = 0;
+    if (build < 2) {
+        std::fill(got.begin(), got.end(), uint8_t(0xA5));
+        astc_bc7_cpu_passes(build, blocks.data(), w, h, depth, bw, bh, srgb, got.data(), &listed);
+        if (std::memcmp(got.data(), want.data(), want.size()) || !listed || listed >= cx * cy * depth) {
+            std::fprintf(stderr,
+                         "FAIL %ux%u srgb=%d %ux%ux%u build %u in two passes: not the encoder's blocks, or %u of "
+                         "the %u left to the second pass\n",
+                         bw, bh, srgb, w, h, depth, build, listed, cx * cy * depth);
+            failures++;
+            return;
+        }
+    }
+    std::printf("PASS %ux%u srgb=%d %ux%ux%u build %u, %u blocks the second pass's\n", bw, bh, srgb, w, h, depth,
+                build, listed);
 }
 
 // a texel's coordinate divided by a footprint's side as (v * ceil(2^18 / side)) >> 18, for every side and every
@@ -81,7 +99,87 @@ static void footprint_division() {
     std::puts("PASS a texel's coordinate divided by the footprint's side, by multiplication");
 }
 
-int main() {
+// --measure file.astc...: what the hints cost and save on a game's own blocks (astc_dump's files). Each file's first
+// slice, transcoded by the full build, the fast one, the fast one with each cut of its search and mode 6 alone, on the CPU: the PSNR of each against
+// the ASTC blocks' own texels (all four channels), the seconds each took here (the CPU's, which count the same
+// operations the GPU runs but none of its divergence), and how many blocks each build wrote in each mode
+extern "C" void bcn_decode_image(const uint8_t* src, uint32_t w, uint32_t h, int kind, uint8_t* dst);
+#define NB 10
+static int measure(int n, char** files) {
+    static const struct {
+        uint32_t build;
+        const char* name;
+    } builds[NB] = {{0, "full"},
+                    {1, "fast"},
+                    {1 | ASTC_BC7_QUICK(16), "fast q16"},
+                    {1 | ASTC_BC7_QUICK(64), "fast q64"},
+                    {1 | ASTC_BC7_QUICK(256), "fast q256"},
+                    {1 | ASTC_BC7_HINTS, "hints"},
+                    {1 | ASTC_BC7_HINTS | ASTC_BC7_QUICK(16), "hints q16"},
+                    {1 | ASTC_BC7_HINTS | ASTC_BC7_QUICK(64), "hints q64"},
+                    {1 | ASTC_BC7_HINTS | ASTC_BC7_QUICK(256), "hints q256"},
+                    {2, "mode 6"}};
+    double sse[NB] = {0}, secs[NB] = {0}, values = 0;
+    for (int f = 0; f < n; f++) {
+        FILE* file = std::fopen(files[f], "rb");
+        uint8_t hdr[16];
+        if (!file || std::fread(hdr, 1, 16, file) != 16) {
+            std::fprintf(stderr, "cannot read %s\n", files[f]);
+            return 1;
+        }
+        const uint32_t bw = hdr[4], bh = hdr[5], w = hdr[7] | hdr[8] << 8 | hdr[9] << 16,
+                       h = hdr[10] | hdr[11] << 8 | hdr[12] << 16;
+        const uint32_t nx = (w + bw - 1) / bw, ny = (h + bh - 1) / bh, cx = (w + 3) / 4, cy = (h + 3) / 4;
+        std::vector<uint8_t> blocks((size_t)nx * ny * 16);
+        if (bw < 4 || bw > 12 || bh < 4 || bh > 12 || !w || !h || w > 16384 || h > 16384 ||
+            std::fread(blocks.data(), 16, (size_t)nx * ny, file) != (size_t)nx * ny) {
+            std::fprintf(stderr, "%s is no .astc file of whole blocks\n", files[f]);
+            return 1;
+        }
+        std::fclose(file);
+        std::vector<uint8_t> texels((size_t)w * h * 4), bc7((size_t)cx * cy * 16), got((size_t)cx * cy * 64);
+        astc_decode_image(blocks.data(), w, h, bw, bh, texels.data(), 0);
+        std::printf("%s: %ux%u of %ux%u", files[f], w, h, bw, bh);
+        for (int b = 0; b < NB; b++) {
+            timespec t0, t1;
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            astc_bc7_cpu(builds[b].build, blocks.data(), w, h, 1, bw, bh, 0, bc7.data());
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            const double s = double(t1.tv_sec - t0.tv_sec) + double(t1.tv_nsec - t0.tv_nsec) / 1e9;
+            bcn_decode_image(bc7.data(), cx * 4, cy * 4, 9 /* BCN_BC7 */, got.data());
+            double e = 0;
+            for (uint32_t y = 0; y < h; y++)
+                for (uint32_t x = 0; x < w * 4; x++) {
+                    const double d = double(got[(size_t)y * cx * 16 + x]) - double(texels[(size_t)y * w * 4 + x]);
+                    e += d * d;
+                }
+            uint32_t modes[8] = {0};
+            for (size_t i = 0; i < bc7.size(); i += 16) {
+                uint32_t m = 0;
+                while (m < 8 && !(bc7[i] >> m & 1)) m++;
+                modes[m & 7]++;
+            }
+            sse[b] += e;
+            secs[b] += s;
+            const double mse = e / (double(w) * h * 4);
+            std::printf("\n  %-10s %6.2f dB %7.3f s  modes 1:%u 2:%u 3:%u 4:%u 5:%u 6:%u 7:%u", builds[b].name,
+                        mse > 0 ? 10 * std::log10(255.0 * 255.0 / mse) : 99.0, s, modes[1], modes[2], modes[3],
+                        modes[4], modes[5], modes[6], modes[7]);
+        }
+        std::printf("\n");
+        std::fflush(stdout);
+        values += double(w) * h * 4;
+    }
+    std::printf("all %d files:", n);
+    for (int b = 0; b < NB; b++)
+        std::printf(" %s %.2f dB %.2f s;", builds[b].name,
+                    sse[b] > 0 ? 10 * std::log10(255.0 * 255.0 * values / sse[b]) : 99.0, secs[b]);
+    std::printf("\n");
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    if (argc > 2 && !std::strcmp(argv[1], "--measure")) return measure(argc - 2, argv + 2);
     footprint_division();
     const uint32_t footprints[][2] = {{4, 4}, {5, 4},  {5, 5},  {6, 5},  {6, 6},   {8, 5},   {8, 6},
                                       {8, 8}, {10, 5}, {10, 6}, {10, 8}, {10, 10}, {12, 10}, {12, 12}};
