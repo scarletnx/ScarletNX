@@ -3,7 +3,7 @@
 /* The native nn::fs (src/nx/nn/fs.c) on a stand-in CPU, with the file server's core stubbed to two RomFS images of no
    files, the game's and a system archive's: what the SDK's C library asks of a path before it opens it (whether its
    mount is there, and the limits of its file system), answered for a native mount and left to the SDK's own code for
-   any other */
+   any other; and a system archive mounted by its data id, with the cache size its tables need */
 #include "nx/nn/fs.c"
 #include <stdio.h>
 
@@ -199,6 +199,23 @@ int main(void) {
     CHECK(nnfs_is_path_mounted(c, PATH) == 1 && own_runs == 7);
     CHECK(nnfs_is_path_mounted(c, 0) == 1 && own_runs == 8);
 
+    /* a system archive by its data id: the cache size is its four tables' (12 + 0x18 + 4 + 0, rounded up to 8), the
+       query leaves no image open, and the mount copies the tables into the game's cache */
+    outs();
+    CHECK(nnfs_query_mount_system_data_cache_size(c, RESULT, SYSTEM_ID) == 0 && snx_ld_le64(mem + RESULT) == 0x28);
+    CHECK(storages_open == 0);
+    outs();
+    CHECK(nnfs_query_mount_rom_cache_size(c, RESULT) == 0 &&
+          snx_ld_le64(mem + RESULT) == 0x20); /* the game's: 4 + 0x18 + 4 */
+    text(NAME, "ng");
+    memset(mem + CACHE, 0xee, 0x40);
+    CHECK(nnfs_mount_system_data(c, NAME, SYSTEM_ID, CACHE, 0x28) == 0 && storages_open == 1);
+    CHECK(!memcmp(mem + CACHE, data_image_bytes + 0x50, 12 + 0x18 + 4) && mem[CACHE + 0x28] == 0xee);
+    text(PATH, "ng:/words");
+    CHECK(nnfs_is_path_mounted(c, PATH) == 1 && own_runs == 8);
+    nnfs_unmount(c, NAME);
+    CHECK(storages_open == 0);
+    CHECK(nnfs_is_path_mounted(c, PATH) == 1 && own_runs == 9); /* unmounted: the SDK's again */
     printf("nn_fs: %u checks passed\n", checks);
     return 0;
 }
