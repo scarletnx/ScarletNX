@@ -16,8 +16,13 @@
    the renderer, and runs the managers on what it answered. Where the config keeps its buffers differs between SDKs:
    audio_renderer.hook has the layout of each SDK read.
 
-   The handle is two words, the SDK's session object and a context of its own: every function that takes one is
-   answered here, so the first is the renderer's name (audren.c's, its slot plus 1) and the second is unused */
+   The handle is two words, the SDK's session object and a context of its own, and the session object alone before
+   SDK 2: every function that takes one is answered here, so the first is the renderer's name (audren.c's, its slot
+   plus 1) and the second is unused.
+
+   Before SDK 2 the game's AudioRendererParameter is the session's own, handed over as it is, and the voices' update
+   is two of the VoiceInfoManager's methods, one a section; before SDK 1 a config has no SplitterInfoManager and an
+   update no splitter section */
 #include "nx/nn/audio.h"
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
@@ -92,20 +97,23 @@ static u64 work_buffer_size(const Params* p) {
 
 /* the game's AudioRendererParameter as the SDK hands it to its session: the first 32 bytes and the splitter counts as
    they are, the voice drop flag, and the rendering device and execution mode as a byte each. The revision is the
-   last word, where audio_renderer.hook's layout has it; an SDK that keeps a word before it there (6.5 to 8.2) hands that one
-   over as the external context's size */
+   last word, where audio_renderer.hook's layout has it; an SDK that keeps a word before it there (6 to 8) hands that
+   one over as the external context's size. Before SDK 2 the game's struct is the session's, its revision at 0x30 */
 static void params_read(const CPU* c, const HookLayout_nn_audio_AudioRendererParameter* L, u64 param, Params* p,
                         u8 raw[PARAMS_SIZE]) {
     const u8* g = hook_host(c, param);
-    u32 context = L->revision.offset > 0x34 ? snx_ld_le32(g + 0x34) : 0;
-    memset(raw, 0, PARAMS_SIZE);
-    memcpy(raw, g, 0x20);
-    raw[0x20] = g[0x20];
-    raw[0x22] = g[0x2c];
-    raw[0x23] = g[0x30];
-    memcpy(raw + 0x24, g + 0x24, 8);
-    snx_st_le32(raw + 0x2c, context);
-    snx_st_le32(raw + 0x30, hook_get_u32(c, L->revision, param));
+    if (L->revision.offset == 0x30)
+        memcpy(raw, g, PARAMS_SIZE);
+    else {
+        memset(raw, 0, PARAMS_SIZE);
+        memcpy(raw, g, 0x20);
+        raw[0x20] = g[0x20];
+        raw[0x22] = g[0x2c];
+        raw[0x23] = g[0x30];
+        memcpy(raw + 0x24, g + 0x24, 8);
+        snx_st_le32(raw + 0x2c, L->revision.offset > 0x34 ? snx_ld_le32(g + 0x34) : 0);
+        snx_st_le32(raw + 0x30, hook_get_u32(c, L->revision, param));
+    }
     p->sample_rate = snx_ld_le32(raw), p->sample_count = snx_ld_le32(raw + 4);
     p->mix_buffer_count = snx_ld_le32(raw + 8), p->sub_mix_count = snx_ld_le32(raw + 12);
     p->voice_count = snx_ld_le32(raw + 16), p->sink_count = snx_ld_le32(raw + 20);
@@ -113,7 +121,7 @@ static void params_read(const CPU* c, const HookLayout_nn_audio_AudioRendererPar
     p->is_voice_drop_enabled = raw[0x20], p->reserved = 0, p->rendering_device = raw[0x22];
     p->execution_mode = raw[0x23];
     p->splitter_count = snx_ld_le32(raw + 0x24), p->splitter_send_channel_count = snx_ld_le32(raw + 0x28);
-    p->external_context_size = context, p->revision = snx_ld_le32(raw + 0x30);
+    p->external_context_size = snx_ld_le32(raw + 0x2c), p->revision = snx_ld_le32(raw + 0x30);
 }
 
 u64 nnaudio_get_renderer_work_buffer_size(CPU* c, const HookLayout_nn_audio_AudioRendererParameter* L, u64 param) {
@@ -134,13 +142,13 @@ static u64 sdk_function(const char* symbol, const char* why) {
     return fn;
 }
 
-u32 nnaudio_open_renderer_event(CPU* c, const HookLayout_nn_audio_AudioRendererParameter* L, u64 handle, u64 event,
-                                u64 param, u64 work, u64 size) {
+/* words: how many the game's AudioRendererHandle holds, 2, or 1 before SDK 2 */
+static u32 open_renderer(CPU* c, const HookLayout_nn_audio_AudioRendererParameter* L, u64 handle, u64 event, u64 param,
+                         int words) {
     Params p;
     u8 raw[PARAMS_SIZE];
     ARRen* r;
     u32 id;
-    (void)work, (void)size; /* the renderer's state is the runtime's: the game's work buffer stays untouched */
     params_read(c, L, param, &p, raw);
     if (revision_number(p.revision) > REN_REVISION) {
         WARN_LIMIT(4,
@@ -156,7 +164,7 @@ u32 nnaudio_open_renderer_event(CPU* c, const HookLayout_nn_audio_AudioRendererP
         return SNX_RC_AUDIO_OPERATION_FAILED;
     }
     snx_st_le64(hook_host(c, handle), id);
-    snx_st_le64(hook_host(c, handle + 8), 0);
+    if (words == 2) snx_st_le64(hook_host(c, handle + 8), 0);
     if (!event) return 0;
     r = audren_at(id);
     if (r->manual && p.rendering_device == 1) {
@@ -173,9 +181,26 @@ u32 nnaudio_open_renderer_event(CPU* c, const HookLayout_nn_audio_AudioRendererP
              "that waits for one waits forever\n");
     return 0;
 }
+/* the renderer's state is the runtime's: the game's work buffer stays untouched */
+u32 nnaudio_open_renderer_event(CPU* c, const HookLayout_nn_audio_AudioRendererParameter* L, u64 handle, u64 event,
+                                u64 param, u64 work, u64 size) {
+    (void)work, (void)size;
+    return open_renderer(c, L, handle, event, param, 2);
+}
 u32 nnaudio_open_renderer(CPU* c, const HookLayout_nn_audio_AudioRendererParameter* L, u64 handle, u64 param, u64 work,
                           u64 size) {
-    return nnaudio_open_renderer_event(c, L, handle, 0, param, work, size);
+    (void)work, (void)size;
+    return open_renderer(c, L, handle, 0, param, 2);
+}
+u32 nnaudio_open_renderer_event_word(CPU* c, const HookLayout_nn_audio_AudioRendererParameter* L, u64 handle, u64 event,
+                                     u64 param, u64 work, u64 size) {
+    (void)work, (void)size;
+    return open_renderer(c, L, handle, event, param, 1);
+}
+u32 nnaudio_open_renderer_word(CPU* c, const HookLayout_nn_audio_AudioRendererParameter* L, u64 handle, u64 param,
+                               u64 work, u64 size) {
+    (void)work, (void)size;
+    return open_renderer(c, L, handle, 0, param, 1);
 }
 
 /* the renderer a handle names, which what names in the log when there is none */
@@ -229,6 +254,10 @@ void nnaudio_set_renderer_time_limit(CPU* c, u64 id, u64 context, i32 percent) {
     (void)c, (void)context;
     if (r) __atomic_store_n(&r->limit, (u32)percent, __ATOMIC_RELAXED);
 }
+/* a one-word handle's: the limit is the second argument */
+void nnaudio_set_renderer_time_limit_word(CPU* c, u64 id, i32 percent) {
+    nnaudio_set_renderer_time_limit(c, id, 0, percent);
+}
 i32 nnaudio_get_renderer_time_limit(CPU* c, u64 id, u64 context) {
     ARRen* r = renderer(id, "GetAudioRendererRenderingTimeLimit");
     (void)c, (void)context;
@@ -281,7 +310,8 @@ u32 nnaudio_execute_renderer(CPU* c, u64 id, u64 context) {
 /* ------------------------------------------------------------ RequestUpdateAudioRenderer */
 /* the SDK's managers RequestUpdateAudioRenderer runs, each a method of the manager the config holds at its offset:
    the eight that write a section of the update, in the order they are written, then the six that read a section of
-   the answer, in theirs, and the three of the BehaviorManager around them */
+   the answer, in theirs, the two of the BehaviorManager around them, and the two that write the voices' sections
+   before SDK 2, where UpdateVoiceRelatedParameters writes both */
 enum {
     M_BEHAVIOR_IN,
     M_POOL_IN,
@@ -299,6 +329,8 @@ enum {
     M_BEHAVIOR_OUT,
     M_REVISION,
     M_CHECK_ERRORS,
+    M_VOICE_RESOURCE_IN,
+    M_VOICE_INFO_IN,
     M_COUNT
 };
 _Static_assert(M_COUNT == SNX_AUDREN_METHODS, "g_hle.audio.ren_fn holds one address a method");
@@ -323,18 +355,32 @@ static const struct {
     [M_BEHAVIOR_OUT] = {"15BehaviorManager15UpdateOutStatusE", 0x30, 0x04},
     [M_REVISION] = {"15BehaviorManager11GetRevisionE", 0x30, 0},
     [M_CHECK_ERRORS] = {"15BehaviorManager11CheckErrorsE", 0x30, 0},
+    [M_VOICE_RESOURCE_IN] = {"16VoiceInfoManager37UpdateVoiceChannelResourceInParameterE", 0x00, 0x10},
+    [M_VOICE_INFO_IN] = {"16VoiceInfoManager22UpdateVoiceInParameterE", 0x00, 0x0c},
 };
 #define HEADER_VOICE_RESOURCE 0x10 /* the second size UpdateVoiceRelatedParameters gives */
 #define HEADER_INFO           0x28 /* the answer's render info's size */
 #define HEADER_TOTAL          0x3c
 
-/* the managers' functions in the game's SDK, found once (g_hle.audio.ren_fn): 1 when it exports every one */
-static int methods_find(void) {
+/* how an SDK's RequestUpdateAudioRenderer differs from the newest's */
+#define UPDATE_VOICE_SPLIT 1u /* the voices' two sections each by its own method (before SDK 2) */
+#define UPDATE_NO_SPLITTER 2u /* no SplitterInfoManager, and no splitter section (before SDK 1) */
+
+/* whether an update of those differences runs method m */
+static int method_used(int m, u32 differences) {
+    if (m == M_VOICE_IN) return !(differences & UPDATE_VOICE_SPLIT);
+    if (m == M_VOICE_RESOURCE_IN || m == M_VOICE_INFO_IN) return (differences & UPDATE_VOICE_SPLIT) != 0;
+    if (m == M_SPLITTER_IN) return !(differences & UPDATE_NO_SPLITTER);
+    return 1;
+}
+/* the managers' functions in the game's SDK, found once (g_hle.audio.ren_fn): 1 when it exports every one an update
+   of those differences runs */
+static int methods_find(u32 differences) {
     static const char* const prefix[2] = {"_ZN2nn5audio", "_ZNK2nn5audio"};
     HleAudio* a = &g_hle.audio;
     const char* name;
     u64 addr;
-    u32 i, k, found = 0;
+    u32 i, k, missing = 0;
     if (a->ren_fn_found) return a->ren_fn_found == 1;
     for (i = 0; kernel_symbol(i, &addr, &name); i++) {
         const char* rest = NULL;
@@ -342,17 +388,16 @@ static int methods_find(void) {
         for (k = 0; k < 2 && !rest; k++)
             if (!strncmp(name, prefix[k], strlen(prefix[k]))) rest = name + strlen(prefix[k]);
         for (k = 0; rest && k < M_COUNT; k++)
-            if (!a->ren_fn[k] && !strncmp(rest, g_methods[k].method, strlen(g_methods[k].method))) {
-                a->ren_fn[k] = addr;
-                found++;
-            }
+            if (!a->ren_fn[k] && !strncmp(rest, g_methods[k].method, strlen(g_methods[k].method))) a->ren_fn[k] = addr;
     }
     for (k = 0; k < M_COUNT; k++)
-        if (!a->ren_fn[k])
+        if (!a->ren_fn[k] && method_used((int)k, differences)) {
             WARN("audren: the SDK exports no nn::audio function named %s..., which RequestUpdateAudioRenderer runs: "
                  "updates fail with OperationFailed (%#x)\n",
                  g_methods[k].method, SNX_RC_AUDIO_OPERATION_FAILED);
-    a->ren_fn_found = found == M_COUNT ? 1 : 2;
+            missing++;
+        }
+    a->ren_fn_found = missing ? 2 : 1;
     return a->ren_fn_found == 1;
 }
 /* method m of its manager in the config, on up to three arguments: what it returns */
@@ -362,8 +407,9 @@ static u64 method(CPU* c, u64 config, int m, u64 a1, u64 a2, u64 a3) {
 }
 
 /* the update: frames is where the config keeps the address the SDK writes the rendered frames' count to, 0 for an
-   SDK that keeps none (before 6.5) */
-static u32 request_update(CPU* c, const HookLayout_nn_audio_AudioRendererConfig* L, u64 id, u64 config, u32 frames) {
+   SDK that keeps none (before 6) */
+static u32 request_update(CPU* c, const HookLayout_nn_audio_AudioRendererConfig* L, u64 id, u64 config, u32 frames,
+                          u32 differences) {
     u64 in = hook_get_addr(c, L->in, config), in_size = hook_get_u64(c, L->in_size, config);
     u64 out = hook_get_addr(c, L->out, config), out_size = hook_get_u64(c, L->out_size, config);
     u64 at, sp = c->x[31], slots;
@@ -371,7 +417,7 @@ static u32 request_update(CPU* c, const HookLayout_nn_audio_AudioRendererConfig*
     u32 total = REN_HEADER, n, rc;
     int m;
     if (!renderer(id, "RequestUpdateAudioRenderer")) return SNX_RC_AUDIO_INVALID_HANDLE;
-    if (!methods_find()) return SNX_RC_AUDIO_OPERATION_FAILED;
+    if (!methods_find(differences)) return SNX_RC_AUDIO_OPERATION_FAILED;
     if (!in || in_size < REN_HEADER || !out || out_size < REN_HEADER) {
         WARN_LIMIT(4,
                    "audren: an AudioRendererConfig with %llu bytes for the update and %llu for its answer, under a "
@@ -388,7 +434,15 @@ static u32 request_update(CPU* c, const HookLayout_nn_audio_AudioRendererConfig*
     snx_st_le32(header, (u32)method(c, config, M_REVISION, 0, 0, 0));
     at = in + REN_HEADER;
     for (m = M_BEHAVIOR_IN; m <= M_PERFORMANCE_IN; m++) {
-        if (m == M_VOICE_IN) {
+        if (!method_used(m, differences)) {
+            if (m != M_VOICE_IN) continue;
+            /* the channel resources, then the voices, each at the other's end */
+            n = (u32)method(c, config, M_VOICE_RESOURCE_IN, at, 0, 0);
+            snx_st_le32(header + HEADER_VOICE_RESOURCE, n);
+            total += n;
+            at += n;
+            n = (u32)method(c, config, M_VOICE_INFO_IN, at, 0, 0);
+        } else if (m == M_VOICE_IN) {
             snx_st_le64(hook_host(c, slots), 0);
             snx_st_le64(hook_host(c, slots + 8), 0);
             method(c, config, m, at, slots, slots + 8);
@@ -436,11 +490,19 @@ static u32 request_update(CPU* c, const HookLayout_nn_audio_AudioRendererConfig*
 }
 u32 nnaudio_request_update(CPU* c, const HookLayout_nn_audio_AudioRendererConfig* L, u64 id, u64 context, u64 config) {
     (void)context;
-    return request_update(c, L, id, config, 0);
+    return request_update(c, L, id, config, 0, 0);
 }
-/* from SDK 6.5 the config holds, at 0x40, where the rendered frames' count goes */
+/* from SDK 6 the config holds, at 0x40, where the rendered frames' count goes */
 u32 nnaudio_request_update_frames(CPU* c, const HookLayout_nn_audio_AudioRendererConfig* L, u64 id, u64 context,
                                   u64 config) {
     (void)context;
-    return request_update(c, L, id, config, 0x40);
+    return request_update(c, L, id, config, 0x40, 0);
+}
+/* SDK 1, with its one-word handle */
+u32 nnaudio_request_update_word(CPU* c, const HookLayout_nn_audio_AudioRendererConfig* L, u64 id, u64 config) {
+    return request_update(c, L, id, config, 0, UPDATE_VOICE_SPLIT);
+}
+/* SDK 0, which has no splitters yet */
+u32 nnaudio_request_update_first(CPU* c, const HookLayout_nn_audio_AudioRendererConfig* L, u64 id, u64 config) {
+    return request_update(c, L, id, config, 0, UPDATE_VOICE_SPLIT | UPDATE_NO_SPLITTER);
 }

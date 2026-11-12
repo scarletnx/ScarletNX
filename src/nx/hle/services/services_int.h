@@ -276,7 +276,7 @@ typedef struct {
 } HostAm;
 
 /* ---- audio.c */
-#define SNX_AUDREN_METHODS 16 /* nn/audio_renderer.c's M_COUNT */
+#define SNX_AUDREN_METHODS 18 /* nn/audio_renderer.c's M_COUNT */
 #define AUDOUT_BUFFERS 64 /* appended and released buffers an audio out holds */
 #define AUDOUT_MAX     32 /* the audio outs open at once: the console's audout:u has a dozen (Eden's 12 sessions) */
 /* the firmware keeps 24 decoders (OutOfOpusDecoders after), as many as the pool holds: audio.c counts the slots
