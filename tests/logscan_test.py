@@ -187,6 +187,17 @@ THREEDS_STOP = THREEDS + (
     '\n[ended, status 3]\n'
 )
 VITA = 'Game: Some Vita Game - ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)\n'
+# the same two as the current runtimes print them: the Switch's header with the console after the title, then the build
+# and, for the 3DS, its title ID
+THREEDS_NEW = (
+    'ScarletNX - Some 3DS Game (3DS)\n'
+    'build: ScarletNX main d22bbab (clang 23.1.4, Linux x86_64)\n'
+    'title ID: 0004000000179400\n'
+)
+VITA_NEW = (
+    'ScarletNX - Some Vita Game (Vita)\n'
+    'build: ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)\n'
+)
 # the GBA's: its title and console on the Switch's header line, its build, and its game code (agb/runtime/main.c)
 GBA = (
     'ScarletNX - SOME GBA GAME (GBA)\n'
@@ -499,6 +510,16 @@ def main():
     check(
         (vi['title'], vi['title_id'], vi['console'], vi['commit']) == ('Some Vita Game', None, 'Vita', '1234abc'),
         f"the Vita's header: {vi['title']} {vi['title_id']} {vi['commit']}",
+    )
+    t3n, vin = scan(THREEDS_NEW), scan(VITA_NEW)
+    check(
+        (t3n['title'], t3n['title_id'], t3n['console'], t3n['commit'])
+        == ('Some 3DS Game', '0004000000179400', '3DS', 'd22bbab'),
+        f"the 3DS's current header: {t3n['title']} {t3n['title_id']} {t3n['console']} {t3n['commit']}",
+    )
+    check(
+        (vin['title'], vin['title_id'], vin['console'], vin['commit']) == ('Some Vita Game', None, 'Vita', '1234abc'),
+        f"the Vita's current header: {vin['title']} {vin['title_id']} {vin['console']} {vin['commit']}",
     )
     go = scan(LAUNCHER_GAME_ONLY)
     check(
