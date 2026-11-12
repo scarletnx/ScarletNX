@@ -40,7 +40,7 @@ void mem_query(u64 addr, MemBlock* out) {
     out->perm = PERM_RX;
 }
 static void note_hint(uint64_t pc) { (void)pc; }
-const RtAPI g_rtapi = {.note_hint = note_hint};
+const RtAPI g_rtapi = {.cas128 = snx_runtime_cas128, .note_hint = note_hint};
 KThread* kthread_cur(void) { return NULL; }
 void core_poll(KThread* t) { (void)t; }
 void svc_exit_thread(KThread* t) {
