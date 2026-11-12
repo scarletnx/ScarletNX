@@ -17,3 +17,6 @@ struct nn::prepo::PlayReport @version(>= 16.0.0) { addr buffer @0x28; u64 capaci
 @version(>= 16.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user uses nn::prepo::PlayReport
 hook _ZN2nn5prepo28RequestImmediateTransmissionEv() -> u32 = nnprepo_request_immediate_transmission
 hook _ZN2nn5prepo21GetTransmissionStatusEPNS0_18TransmissionStatusE(addr status) -> u32 = nnprepo_get_transmission_status
+# what nn::prepo::Initialize and the library's first use end in: the session's start, and its end
+hook _ZN2nn5prepo6detail3ipc10InitializeEv() = nnprepo_ipc_initialize
+hook _ZN2nn5prepo6detail3ipc8FinalizeEv() = nnprepo_ipc_finalize
