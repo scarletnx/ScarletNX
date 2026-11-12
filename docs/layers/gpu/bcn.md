@@ -93,9 +93,15 @@ block's 128 bits buy, which is what the candidates are:
 
 How many values an end's channel takes is not in the block: the decoder works it out from the bits the header and the
 weights leave, as the largest encoding that fits. So each layout has exactly one, and the ends are quantized to it
-while they are fitted. The encodings with a trit or a quint come from tables that `tools/astc_tables.py` makes by
-turning `astc_decode.glsl`'s own rules round (the bits of five trits and of three quints, the nearest value an
-encoding holds and its code, the partition seeds), into `astc_encode_tables.glsl`.
+while they are fitted. The encodings with a trit or a quint are worked out, with no table (`astc_quant.glsl`): an
+encoding's values come in two halves that mirror each other, and in a half the value of rank r is a multiply and a
+shift (the decoder's own rule), while the rank of the value nearest a colour is one more multiply and shift, with
+constants found by search over every colour. The bits five trits or three quints share are the decoder's rule turned
+round, a few selects. A table of 768 words read at a colour is a cache line a read, and an array a shader indexes is
+memory mobile GPUs are slow with; the arithmetic costs the search pass about 6% on a GT 1030 and the pass most blocks
+take nothing. `tests/glsl/astc_encode_glsl.cpp` holds every answer to the decoder's rules. The one table left is the
+partition seeds' (`astc_encode_tables.glsl`, from `tools/astc_tables.py`), 64 words that only blocks of two
+partitions read.
 
 **The source's own lines.** A BCn block is lines already, so the encoder is told them (`as_hint`, set by
 `texconv.glsl` as it decodes the block) and tries them before any search:

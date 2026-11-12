@@ -157,6 +157,95 @@ static void direct_blocks() {
     }
 }
 
+// astc_quant.glsl works the colour encodings out where a table would do, so every answer it has is held here to the
+// decoder's rules (src/nx/gpu/texture/astc_decode.glsl's DecodeSequence, ColorParams and UnquantizeTQ, written out
+// again below) turned round by search: for each encoding and each colour a value it holds, none nearer, under a
+// code that decodes to it, and for every five trits and three quints bits that decode to them,
+// with nothing set in the bits a shorter last group lacks.
+static uint32_t field(uint32_t v, uint32_t off, uint32_t n) {
+    return (v >> off) & ((1u << n) - 1u);
+}
+static void trits_of(uint32_t T, uint32_t t[5]) {
+    const bool c7 = field(T, 2, 3) == 7, h3 = field(T, 5, 2) == 3;
+    const uint32_t C = c7 ? (field(T, 5, 3) << 2) | field(T, 0, 2) : field(T, 0, 5);
+    t[4] = c7 || h3 ? 2 : field(T, 7, 1);
+    t[3] = c7 ? 2 : h3 ? field(T, 7, 1) : field(T, 5, 2);
+    const bool l3 = field(C, 0, 2) == 3, m3 = field(C, 2, 2) == 3;
+    t[2] = l3 || m3 ? 2 : field(C, 4, 1);
+    t[1] = l3 ? field(C, 4, 1) : m3 ? 2 : field(C, 2, 2);
+    t[0] = l3 ? (field(C, 3, 1) << 1) | (field(C, 2, 1) & ~field(C, 3, 1) & 1)
+              : m3 ? field(C, 0, 2) : (field(C, 1, 1) << 1) | (field(C, 0, 1) & ~field(C, 1, 1) & 1);
+}
+static void quints_of(uint32_t Q, uint32_t q[3]) {
+    const bool high = field(Q, 1, 2) == 3, both4 = high && field(Q, 5, 2) == 0;
+    const uint32_t C = high ? (field(Q, 3, 2) << 3) | ((~field(Q, 5, 2) & 3) << 1) | field(Q, 0, 1) : field(Q, 0, 5);
+    const bool five = field(C, 0, 3) == 5;
+    q[0] = both4 ? 4 : five ? field(C, 3, 2) : field(C, 0, 3);
+    q[1] = both4 || five ? 4 : field(C, 3, 2);
+    const uint32_t n0 = ~field(Q, 0, 1) & 1;
+    q[2] = both4 ? (field(Q, 0, 1) << 2) | ((field(Q, 4, 1) & n0) << 1) | (field(Q, 3, 1) & n0)
+                 : high ? 4 : field(Q, 5, 2);
+}
+// a trit or quint d over b bits v, to 8 bits
+static uint32_t unquant(bool trit, uint32_t b, uint32_t v, uint32_t d) {
+    const uint32_t i = b - 1, bmask = ((1u << b) - 1) >> 1;
+    uint32_t c, mb, sb;
+    if (trit) {
+        c = field(b <= 4 ? 0x162C5DCCu : 0x050Bu, (i & 3) * 8, 8);
+        mb = field(b <= 2 ? 0x01160000u : b <= 4 ? 0x00410085u : 0x01010081u, (i & 1) * 16, 16);
+        sb = field(0x420000u, (i & 7) * 4, 4);
+    } else {
+        c = field(b <= 4 ? 0x0D1A3671u : 0x06u, (i & 3) * 8, 8);
+        mb = field(b <= 2 ? 0x010C0000u : b <= 4 ? 0x00810105u : 0x0101u, (i & 1) * 16, 16);
+        sb = field(0x31100u, (i & 7) * 4, 4);
+    }
+    const uint32_t A = v & 1 ? 0x1FFu : 0, B = (((v >> 1) & bmask) * mb) >> sb;
+    return (A & 0x80) | (((d * c + B) ^ A) >> 2);
+}
+static void quant_formulas() {
+    for (uint32_t range = 0; range < 6; range++) {
+        const bool trit = !(range & 1);
+        const uint32_t b = 6 - ((range + 1) >> 1), digits = trit ? 3 : 5;
+        bool held[256] = {};
+        for (uint32_t d = 0; d < digits; d++)
+            for (uint32_t v = 0; v < 1u << b; v++) held[unquant(trit, b, v, d)] = true;
+        for (uint32_t t = 0; t < 256; t++) {
+            int least = 256;
+            for (int u = 0; u < 256; u++)
+                if (held[u] && std::abs(u - (int)t) < least) least = std::abs(u - (int)t);
+            const uint32_t got = astc_quant_cpu(range, t), code = got >> 8, v = got & 255;
+            if (std::abs((int)v - (int)t) != least || code >> b >= digits ||
+                unquant(trit, b, code & ((1u << b) - 1), code >> b) != v) {
+                std::fprintf(stderr, "encoding %u, colour %u: value %u under code 0x%X, the nearest held is %d away\n",
+                             range, t, v, code, least);
+                failures++;
+            }
+        }
+    }
+    for (uint32_t i = 0; i < 243; i++) {
+        const uint32_t t[5] = {i % 3, i / 3 % 3, i / 9 % 3, i / 27 % 3, i / 81};
+        uint32_t back[5], n = 5;
+        const uint32_t T = astc_trit_bits_cpu(t);
+        trits_of(T & 255, back);
+        while (n > 1 && t[n - 1] == 0) n--; // a group of n values keeps ceil(8 n / 5) bits
+        if (T > 255 || std::memcmp(t, back, sizeof back) || T >> ((8 * n + 4) / 5)) {
+            std::fprintf(stderr, "trits %u %u %u %u %u: bits 0x%X\n", t[0], t[1], t[2], t[3], t[4], T);
+            failures++;
+        }
+    }
+    for (uint32_t i = 0; i < 125; i++) {
+        const uint32_t q[3] = {i % 5, i / 5 % 5, i / 25};
+        uint32_t back[3], n = 3;
+        const uint32_t Q = astc_quint_bits_cpu(q);
+        quints_of(Q & 127, back);
+        while (n > 1 && q[n - 1] == 0) n--; // a group of n values keeps ceil(7 n / 3) bits
+        if (Q > 127 || std::memcmp(q, back, sizeof back) || Q >> ((7 * n + 2) / 3)) {
+            std::fprintf(stderr, "quints %u %u %u: bits 0x%X\n", q[0], q[1], q[2], Q);
+            failures++;
+        }
+    }
+}
+
 static double psnr(const uint8_t* a, const uint8_t* b, size_t n) {
     double e = 0;
     for (size_t i = 0; i < n; i++) e += double(int(a[i]) - int(b[i])) * double(int(a[i]) - int(b[i]));
@@ -291,6 +380,7 @@ static int measure(int n, char** files) {
 
 int main(int argc, char** argv) {
     if (argc > 2 && !std::strcmp(argv[1], "--measure")) return measure(argc - 2, argv + 2);
+    quant_formulas();
     blocks();
     direct_blocks();
     picture_psnr();

@@ -381,6 +381,7 @@ uint tx_px[16];
 #define SNX_ASTC_STOP 1
 #endif
 #include "astc_encode_tables.glsl"
+#include "astc_quant.glsl"
 #include "bc7_encode.glsl"
 #include "astc_encode.glsl"
 #include "astc_direct.glsl"

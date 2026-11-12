@@ -91,13 +91,14 @@ uint sh_mask;
 #define SNX_BC7_QUICK 0
 #endif
 /* 1: the fitter serves astc_encode.glsl, which is included after this file: ASTC's partitions, weights and colour
-   encodings in place of BC7's (ASTC_P2 and ASTC_NEAR are astc_encode_tables.glsl's, included before it, and as_range
+   encodings in place of BC7's (AS_P2 is astc_encode_tables.glsl's and AsQuant astc_quant.glsl's, included before it, and as_range
    the colour encoding of the ends being fitted) */
 #ifndef SNX_ASTC_ENC
 #define SNX_ASTC_ENC 0
 #endif
 #if SNX_ASTC_ENC
 uint as_range;
+uvec2 as_key; /* astc_quant.glsl's AsKey of it */
 #endif
 /* 0: a block of one colour is searched for like any other (tests/glsl/bc7_cpu.cpp's build of the search as it was) */
 #ifndef SNX_BC7_SOLID
@@ -192,7 +193,7 @@ void SetShape(uint ns, uint part) {
     } else if (ns == 2u) {
         /* a bit a texel spread to two: bit k to bit 2k */
 #if SNX_ASTC_ENC
-        uint v = ASTC_P2[part]; /* ASTC's partitions, a seed each (astc_encode.glsl) */
+        uint v = AS_P2(part); /* ASTC's partitions, a seed each (astc_encode.glsl) */
 #else
         uint v = P2[part];
 #endif
@@ -272,8 +273,8 @@ uint Decoded(uint stored) {
 uint Quant(int t, uint p) {
 #if SNX_ASTC_ENC
     /* an ASTC end is kept as the 8 bits it decodes to (StoredBits is 8): the value its colour encoding holds nearest
-       t, from the table of an encoding with a trit or a quint, or t itself where the encoding is 8 bits */
-    if (as_range < 6u) return (ASTC_NEAR[as_range * 64u + (uint(t) >> 2u)] >> ((uint(t) & 3u) * 8u)) & 255u;
+       t, worked out for an encoding with a trit or a quint, or t itself where the encoding is 8 bits */
+    if (as_range < 6u) return AsQuantKey(as_key, uint(t)) & 255u;
     if (p == 0u) return uint(t); /* no p-bit: p is always 0 here */
 #endif
     const uint n = StoredBits();

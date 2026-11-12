@@ -14,6 +14,11 @@ void astc_encode_cpu(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth
 /* one block of 16 texels (RGBA8 words, R the low byte): its 16 bytes, and the squared error the encoder worked out
    for it, over its texels and channels */
 uint32_t astc_encode_block_cpu(const uint32_t texels[16], uint8_t out[16]);
+/* astc_quant.glsl's arithmetic: the value colour encoding range (0 to 5) holds nearest t with its code above it, and
+   the bits five trits and three quints share */
+uint32_t astc_quant_cpu(uint32_t range, uint32_t t);
+uint32_t astc_trit_bits_cpu(const uint32_t t[5]);
+uint32_t astc_quint_bits_cpu(const uint32_t q[3]);
 #ifdef __cplusplus
 }
 #endif

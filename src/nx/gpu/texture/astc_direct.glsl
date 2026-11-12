@@ -46,8 +46,8 @@ uvec4 DxOne(uint e0, uint e1, uint cem, uint ib, uint range, uint wlo, uint whi)
         q1 = 0u;
         for (uint c = 0u; c < 4u; c++) {
             const uint a = Ch(e0, c), b = Ch(e1, c);
-            q0 |= AsByte(ASTC_NEAR[range * 64u + (a >> 2u)], a) << (c * 8u);
-            q1 |= AsByte(ASTC_NEAR[range * 64u + (b >> 2u)], b) << (c * 8u);
+            q0 |= (AsQuant(range, a) & 255u) << (c * 8u);
+            q1 |= (AsQuant(range, b) & 255u) << (c * 8u);
         }
     }
     as_cem = cem;
@@ -80,8 +80,8 @@ uvec4 DxDual(uint e0, uint e1, uint plane, uint w0, uint w1) {
     uint q0 = 0u, q1 = 0u;
     for (uint c = 0u; c < 3u; c++) {
         const uint a = Ch(e0, c), b = Ch(e1, c);
-        q0 |= AsByte(ASTC_NEAR[AS_Q5 * 64u + (a >> 2u)], a) << (c * 8u);
-        q1 |= AsByte(ASTC_NEAR[AS_Q5 * 64u + (b >> 2u)], b) << (c * 8u);
+        q0 |= (AsQuant(AS_Q5, a) & 255u) << (c * 8u);
+        q1 |= (AsQuant(AS_Q5, b) & 255u) << (c * 8u);
     }
     as_cem = 8u;
     as_enc = AS_Q5;
