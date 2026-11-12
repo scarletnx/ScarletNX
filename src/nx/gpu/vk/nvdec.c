@@ -23,7 +23,7 @@ static u64 up(u64 v, u64 a) { return (v + a - 1) / a * a; }
 
 /* a surface's current contents into a new buffer of its extent: staged, what the GPU holds copied over */
 static VkOwnRes* surface_load(VkCommandBuffer cb, u64 cpu, u64 ext) {
-    VkOwnRes* r = vk_own_res_new(ext);
+    VkOwnRes* r = vk_own_res_new(ext, VK_OWN_BY_VIDEO);
     VkBuffer staged;
     u64 at;
     u8* p = r ? vk_stage(ext, vk_stage_align(), &staged, &at) : NULL;

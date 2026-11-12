@@ -2520,7 +2520,7 @@ static int keep_new(u64 gva, u32 len, u64 align, VkBuffer* buf, u64* off) {
         vk_own_res_ref(res);
         vk_own_res_wrote(res);
     } else {
-        if (!(res = vk_own_res_new(len))) return 0;
+        if (!(res = vk_own_res_new(len, VK_OWN_BY_DRAW))) return 0;
         if (!vk_guest_read_device(gva, len, res->buf, 0)) { /* the CPU's bytes staged, the GPU's copied there */
             vk_own_res_unref(res);
             return 0;
@@ -2667,7 +2667,7 @@ static int back_record(GfxOut* o) {
     for (i = 0; i < n; i++) {
         if (p[i].kind != BACK_NEW) continue;
         /* the bytes memory has there, the program's merged over them below */
-        if (!(p[i].res = vk_own_res_new(p[i].len)) ||
+        if (!(p[i].res = vk_own_res_new(p[i].len, VK_OWN_BY_DRAW)) ||
             !vk_guest_read_device(o->addr + (p[i].cpu - o->cpu), p[i].len, p[i].res->buf, 0)) {
             back_unref(p, n);
             return 0;

@@ -96,7 +96,7 @@ static int check_mapping_lock(void) {
     if (own_traps()) {
         const u64 cpu = LW_CPU + 2 * LW_SIZE;
         CHECK(mem_map(cpu, LW_SIZE, MS_NORMAL, PERM_RW) == 0);
-        VkOwnRes* owner = vk_own_res_new(256);
+        VkOwnRes* owner = vk_own_res_new(256, VK_OWN_BY_DRAW);
         CHECK(owner);
         vk_lock();
         vk_own_publish_owned(cpu + 0x1000, 256, owner, 0);
@@ -152,7 +152,7 @@ static int check_landing_wait(void) {
     if (!own_traps()) return 0;
     CHECK(mem_map(LW_OWN_CPU, 0x1000, MS_NORMAL, PERM_RW) == 0);
     memset(GP(LW_OWN_CPU), 0x11, 0x1000);
-    VkOwnRes* owner = vk_own_res_new(256);
+    VkOwnRes* owner = vk_own_res_new(256, VK_OWN_BY_DRAW);
     CHECK(owner);
     vk_lock();
     VkBuffer upload;

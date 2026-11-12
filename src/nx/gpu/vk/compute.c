@@ -1103,7 +1103,7 @@ static int res_bind(u64 gva, u64 len, int written, VkBuffer* buf, u64* off, VkOw
        four buffers for every one they write) */
     if (!written) return vk_buf_get_strict(gva, len, buf, off);
     vk_render_end(); /* the copies happen outside rendering passes */
-    VkOwnRes* r = vk_own_res_new(len);
+    VkOwnRes* r = vk_own_res_new(len, VK_OWN_BY_COMPUTE);
     if (!r) return 0;
     if (!vk_guest_read_device(gva, len, r->buf, 0)) { /* straight into it: the GPU's bytes stay on the GPU */
         vk_own_res_unref(r);

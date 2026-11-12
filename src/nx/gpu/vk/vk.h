@@ -1216,8 +1216,13 @@ typedef struct VkOwnRes {
     u64 serial;  /* new with each write: what its bytes hash as (vk_guest_peek), never its address, a freed one's */
     u64 read;    /* buffer.c's count of reads where it is when a draw or dispatch last read it there (buf_get_owned) */
     u32 refs;    /* the creator's, and one an owned range */
+    u32 born;    /* the present it was made at, for the statistics of how long results are kept */
     u8 borrowed; /* buf is another's (the GPU mirror's): letting go of the last reference frees only this record */
+    u8 by;       /* VK_OWN_BY_*: what made it, for the statistics */
 } VkOwnRes;
+/* what makes a kept result: a dispatch, a draw that writes guest memory, a copy engine, the video engines, a render
+   target written back */
+enum { VK_OWN_BY_COMPUTE, VK_OWN_BY_DRAW, VK_OWN_BY_COPY, VK_OWN_BY_VIDEO, VK_OWN_BY_TARGET, VK_OWN_BY_N };
 /* a resource whose bytes are in buf, at the guest address of each range it owns (the GPU mirror's): one reference */
 VkOwnRes* vk_own_res_borrow(VkBuffer buf);
 /* r's bytes over [cpu, cpu + size) from off on, published as vk_own_publish_owned does, written by the submission
@@ -1231,6 +1236,7 @@ int vk_rec_unsafe(void);
 /* mirror.c: guest memory [cpu, cpu + size) landed from an owner: the mirror's shadow of its pages goes */
 void vk_mirror_landed(u64 cpu, u64 size);
 int vk_own_init(void);
+void vk_own_log(void); /* statistics: the kept results in use, and the freed buffers in the pool */
 /* guest memory [cpu, cpu + size) watched for the CPU (own_watch), as vk_own_publish traps an owner's: 0, or -1 where it
    can't be (no traps, memory an import holds, memory not in the pool). vk_lock held */
 int vk_own_watch(u64 cpu, u64 size);
@@ -1238,7 +1244,7 @@ int vk_own_watch(u64 cpu, u64 size);
    touched them under a draw's storage image kept on the GPU (vk_own_cpu_touched) */
 int vk_own_cpu_read(u64 cpu, u64 size, u32 presents);
 void vk_own_cpu_touched(u64 cpu, u64 size);
-VkOwnRes* vk_own_res_new(u64 size); /* with the caller's reference; NULL when out of memory */
+VkOwnRes* vk_own_res_new(u64 size, u32 by); /* with the caller's reference; NULL when out of memory */
 void vk_own_res_ref(VkOwnRes* r);
 void vk_own_res_unref(VkOwnRes* r);
 /* r's bytes are written by work recorded in the submission being recorded: a landing of them waits for that

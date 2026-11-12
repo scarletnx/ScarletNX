@@ -6,6 +6,7 @@
    submission only), and copied into the pool's mirror. On a host without traps a publish lands at once. Landing runs
    on whatever thread faulted or acquired, under vk_lock, which own.c takes before it marks what lands (OwnHooks'
    lock) and own_land again for itself (it is reentrant, and a publish without traps lands with no landing of own.c's) */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
@@ -35,6 +36,11 @@ static struct {
     u8* ptr;
     u64 cap;
     u64 serial; /* the last VkOwnRes.serial given */
+    /* the results with a buffer of their own that are in use, and their buffers' bytes: any thread adds and takes */
+    u64 live[VK_OWN_BY_N], live_bytes[VK_OWN_BY_N];
+    /* those let go since the last statistics, by how many presents they were kept: under 8, under 120, under 1200,
+       longer */
+    u64 let_go[4];
 } g_owned;
 
 /* Landings copy on the compute queue where it is a queue of its own: there the copy waits for the submission that wrote
@@ -96,7 +102,36 @@ static OwnPoolEntry own_pool_take(u64 size) {
     return e;
 }
 
-VkOwnRes* vk_own_res_new(u64 size) {
+/* statistics: what the ledger's kept results are, the ones in use and the freed buffers that wait in the pool */
+void vk_own_log(void) {
+    u64 pooled = 0;
+    pm_lock(&g_pool_lk);
+    u32 n = g_pool_n;
+    for (u32 i = 0; i < n; i++) pooled += g_pool[i].cap;
+    pm_unlock(&g_pool_lk);
+    static const char* const by[VK_OWN_BY_N] = {"dispatches", "draws", "copies", "video", "render targets"};
+    char line[320];
+    size_t at = 0;
+    u64 live = 0;
+    for (u32 k = 0; k < VK_OWN_BY_N; k++) {
+        u64 count = __atomic_load_n(&g_owned.live[k], __ATOMIC_RELAXED),
+            bytes = __atomic_load_n(&g_owned.live_bytes[k], __ATOMIC_RELAXED);
+        live += count;
+        if (!count) continue;
+        int w = snprintf(line + at, sizeof line - at, "%s %llu of %s (%.1f MB)", at ? "," : "",
+                         (unsigned long long)count, by[k], (double)bytes / 1048576.0);
+        if (w > 0) at += (size_t)w < sizeof line - at ? (size_t)w : sizeof line - at - 1;
+    }
+    u64 gone[4];
+    for (u32 k = 0; k < 4; k++) gone[k] = __atomic_exchange_n(&g_owned.let_go[k], 0, __ATOMIC_RELAXED);
+    if (n || live)
+        LOG("vulkan: kept results in use:%s; %u freed buffers in the pool (%.1f MB); let go since the last report "
+            "after under 8 presents %llu, under 120 %llu, under 1200 %llu, longer %llu\n",
+            at ? line : " none", n, (double)pooled / 1048576.0, (unsigned long long)gone[0],
+            (unsigned long long)gone[1], (unsigned long long)gone[2], (unsigned long long)gone[3]);
+}
+
+VkOwnRes* vk_own_res_new(u64 size, u32 by) {
     VkOwnRes* r = (VkOwnRes*)calloc(1, sizeof *r);
     u64 want = size ? size : 16;
     if (!r) return NULL;
@@ -130,6 +165,10 @@ VkOwnRes* vk_own_res_new(u64 size) {
     }
     r->refs = 1;
     r->serial = __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED);
+    r->by = (u8)by;
+    r->born = g_vk_present;
+    __atomic_fetch_add(&g_owned.live[by], 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&g_owned.live_bytes[by], r->size, __ATOMIC_RELAXED);
     return r;
 }
 static void res_retain(void* res) { __atomic_add_fetch(&((VkOwnRes*)res)->refs, 1, __ATOMIC_RELAXED); }
@@ -150,6 +189,10 @@ static void res_release(void* res) {
         free(r);
         return;
     }
+    u32 kept = g_vk_present - r->born;
+    __atomic_fetch_sub(&g_owned.live[r->by], 1, __ATOMIC_RELAXED);
+    __atomic_fetch_sub(&g_owned.live_bytes[r->by], r->size, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&g_owned.let_go[kept < 8 ? 0 : kept < 120 ? 1 : kept < 1200 ? 2 : 3], 1, __ATOMIC_RELAXED);
     vk_lock();
     /* the frame recording may still copy from it: return it to the pool at the frame's recycle, as a destroy was
        deferred there before */

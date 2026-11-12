@@ -487,7 +487,7 @@ static int check_wt_owned(void) {
         return 0;
     }
     CHECK(wt_texel(tic) == wt_fill(0x11) && wt_texel(tic2) == wt_fill(0x11));
-    VkOwnRes* owner = vk_own_res_new(0x2000);
+    VkOwnRes* owner = vk_own_res_new(0x2000, VK_OWN_BY_DRAW);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 0x2000, 0x42));
     vk_own_publish_owned(cpu, 0x2000, owner, 0);
     CHECK(own_lookup(cpu, 0x2000, NULL, 0) == 1);
@@ -545,7 +545,7 @@ static int check_wt_mixed_leaf(void) {
         return 0;
     }
     CHECK(wt_texel(tic) == wt_fill(0x11));
-    VkOwnRes* owner = vk_own_res_new(0x2000);
+    VkOwnRes* owner = vk_own_res_new(0x2000, VK_OWN_BY_DRAW);
     CHECK(owner && !owned_test_fill(owner->buf, 0, 0x2000, 0x42));
     vk_own_publish_owned(cpu, 0x2000, owner, 0);
     CHECK(own_lookup(cpu, 0x2000, NULL, 0) == 1);
