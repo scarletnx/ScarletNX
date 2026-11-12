@@ -2,7 +2,7 @@
 # Copyright 2026 the ScarletNX contributors
 #
 # The native nn::nsd (nsd.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
-# nn::nsd: the names of Nintendo's servers, with no nsd:u session. Resolve and ResolveEx are what games call, and
+# nn::nsd: the names of the console's servers, with no nsd:u session. Resolve and ResolveEx are what games call, and
 # nn::oe::GetServerEnvironmentType calls GetApplicationServerEnvironmentType
 family nn_nsd
 hook _ZN2nn3nsd7ResolveEPNS0_4FqdnERKS1_(addr out, addr in) -> u32 = nnnsd_resolve
