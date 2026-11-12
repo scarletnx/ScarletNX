@@ -186,10 +186,10 @@ static void soft_reset(AgbBoard* board, AgbCpu* cpu) {
     cpu->arm.r[15] = entry;
 }
 
-/* The BIOS's entry to a call that waits, as mGBA's HLE BIOS and the console's have it: the caller's CPSR, r11, r12 and
-   the return address go on the supervisor stack, the call runs in system mode in ARM state with interrupts as the
-   caller had them, and r2 and lr go on the caller's stack. An interrupt handler that runs while the call waits works
-   below them, and what it leaves on the stack sits that much lower */
+/* The BIOS's entry to a call that waits, as the console's has it: the caller's CPSR, r11, r12 and the return address
+   go on the supervisor stack, the call runs in system mode in ARM state with interrupts as the caller had them, and r2
+   and lr go on the caller's stack. An interrupt handler that runs while the call waits works below them, and what it
+   leaves on the stack sits that much lower */
 static void swi_enter(AgbBoard* board, AgbCpu* cpu) {
     uint32_t caller = cpu->arm.cpsr, back = cpu->arm.r[15], sp;
     switch_mode(cpu, 0x13);
@@ -207,6 +207,8 @@ static void swi_enter(AgbBoard* board, AgbCpu* cpu) {
     agb_write32(board, sp, cpu->arm.r[2]);
     agb_write32(board, sp + 4, cpu->arm.r[14]);
     cpu->arm.r[13] = sp;
+    cpu->arm.r[11] = (caller & 0x80) | 0x1F;
+    cpu->arm.r[14] = AGB_BIOS_SWI_RETURN;
 }
 
 /* The other half, at AGB_BIOS_SWI_RETURN: r2 and lr come back, then what the supervisor stack holds, and the caller
@@ -231,21 +233,29 @@ static void swi_return(AgbBoard* board, AgbCpu* cpu) {
     board->bios_prefetch = AGB_BIOS_PREFETCH_SWI;
 }
 
-/* IntrWait's loop, at AGB_BIOS_INTR_WAIT: over once the game's interrupt handler flagged one of the interrupts r1
-   names in the BIOS's flags, which it takes out of them; else it halts for the next interrupt. Interrupts are on
-   either way */
-static void intr_wait(AgbBoard* board, AgbCpu* cpu) {
-    uint16_t flags = agb_read16(board, AGB_BIOS_FLAGS), done = flags & (uint16_t)(cpu->arm.r[1] & 0x3FFF);
+/* IntrWait's look at the BIOS's flags: the interrupts r1 names that the game's handler flagged come out of them and
+   into r0, the rest stay in r2, and IME is on after it */
+static uint32_t intr_check(AgbBoard* board, AgbCpu* cpu) {
+    uint16_t flags = agb_read16(board, AGB_BIOS_FLAGS), done = flags & (uint16_t)cpu->arm.r[1];
+    if (done) agb_write16(board, AGB_BIOS_FLAGS, flags ^ done);
+    cpu->arm.r[0] = done;
+    cpu->arm.r[2] = flags ^ done;
     board->irq_ime = 1;
-    if (!done) {
+    return done;
+}
+
+/* IntrWait's loop, at AGB_BIOS_INTR_WAIT: over once a handler flagged an interrupt it waits for, when r4 and its
+   return come back from the caller's stack; else it halts for the next interrupt */
+static void intr_wait(AgbBoard* board, AgbCpu* cpu) {
+    cpu->arm.r[14] = AGB_BIOS_INTR_WAIT + 4;
+    if (!intr_check(board, cpu)) {
         board->cpu_halted = 1;
         return;
     }
-    agb_write16(board, AGB_BIOS_FLAGS, (uint16_t)(flags & ~done));
-    cpu->arm.r[2] = agb_read32(board, cpu->arm.r[13]);
-    cpu->arm.r[3] = agb_read32(board, cpu->arm.r[13] + 4);
-    cpu->arm.r[13] += 12;
-    cpu->arm.r[15] = AGB_BIOS_SWI_RETURN;
+    cpu->arm.r[4] = agb_read32(board, cpu->arm.r[13]);
+    cpu->arm.r[14] = agb_read32(board, cpu->arm.r[13] + 4);
+    cpu->arm.r[13] += 8;
+    cpu->arm.r[15] = cpu->arm.r[14] & ~(uint32_t)3;
 }
 
 static void handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb) {
@@ -257,34 +267,34 @@ static void handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb)
         return;
     }
     if (number == AGB_SWI_HALT || number == AGB_SWI_STOP) {
-        /* halted inside the BIOS, the I/O base in r12 as its routine has it: the interrupt that wakes the machine is
-           taken there, then the call returns */
+        /* halted inside the BIOS, r2 zero and the I/O base in r12 as its routine has them: the interrupt that wakes
+           the machine is taken there, then the call returns */
         swi_enter(board, cpu);
+        cpu->arm.r[2] = 0;
         cpu->arm.r[12] = 0x04000000;
-        cpu->arm.r[15] = AGB_BIOS_SWI_RETURN;
+        cpu->arm.r[15] = AGB_BIOS_HALT;
         board->cpu_halted = 1;
         return;
     }
     if (number == AGB_SWI_INTR_WAIT || number == AGB_SWI_VBLANK_INTR_WAIT) {
-        /* the BIOS's way: r2, r3 and its return on the caller's stack, the flags asked for (r1) cleared first when r0
-           says so (VBlankIntrWait always), then it halts with IME on until the game's interrupt handler sets one of
-           them in its flags at 0x03007FF8 (intr_wait). The hardware's IF is the handler's to acknowledge. It waits
-           with r0 = 0 and the I/O base in r12, which an interrupt handler that runs meanwhile may use, as mGBA's HLE
-           BIOS keeps them */
-        int discard = number == AGB_SWI_VBLANK_INTR_WAIT || cpu->arm.r[0];
+        /* the BIOS's way: r4 and its return on the caller's stack below the entry's two, the flags asked for (r1)
+           dropped first when r0 says so (VBlankIntrWait always), then it halts with IME on until the game's interrupt
+           handler sets one of them in its flags at 0x03007FF8 (intr_wait). The hardware's IF is the handler's to
+           acknowledge. It waits with r3 = 0, r4 = 1 and the I/O base in r12, which an interrupt handler that runs
+           meanwhile may use */
+        if (number == AGB_SWI_VBLANK_INTR_WAIT) cpu->arm.r[0] = cpu->arm.r[1] = 1;
+        int discard = cpu->arm.r[0] != 0;
         swi_enter(board, cpu);
-        cpu->arm.r[13] -= 12;
-        agb_write32(board, cpu->arm.r[13], cpu->arm.r[2]);
-        agb_write32(board, cpu->arm.r[13] + 4, cpu->arm.r[3]);
-        agb_write32(board, cpu->arm.r[13] + 8, AGB_BIOS_SWI_RETURN);
-        cpu->arm.r[0] = 0;
-        if (number == AGB_SWI_VBLANK_INTR_WAIT) cpu->arm.r[1] = 1;
+        cpu->arm.r[13] -= 8;
+        agb_write32(board, cpu->arm.r[13], cpu->arm.r[4]);
+        agb_write32(board, cpu->arm.r[13] + 4, cpu->arm.r[14]);
+        cpu->arm.r[3] = 0;
+        cpu->arm.r[4] = 1;
         cpu->arm.r[12] = 0x04000000;
         cpu->arm.r[15] = AGB_BIOS_INTR_WAIT;
         if (discard) {
-            uint16_t flags = agb_read16(board, AGB_BIOS_FLAGS);
-            agb_write16(board, AGB_BIOS_FLAGS, flags & (uint16_t)~(cpu->arm.r[1] & 0x3FFF));
-            board->irq_ime = 1;
+            intr_check(board, cpu);
+            cpu->arm.r[14] = AGB_BIOS_INTR_WAIT - 4;
             board->cpu_halted = 1;
         }
         return;
@@ -660,6 +670,7 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
             irq_return(board, cpu);
             continue;
         }
+        if (cpu->arm.r[15] == AGB_BIOS_HALT) cpu->arm.r[15] = AGB_BIOS_SWI_RETURN; /* Halt awake: bx lr */
         if (cpu->arm.r[15] == AGB_BIOS_SWI_RETURN) {
             swi_return(board, cpu);
             continue;
