@@ -21,7 +21,7 @@ static struct {
 
 SnxCtrVk* snx_ctr_vk(void) { return g_device.up ? &g_device.vk : NULL; }
 bool snx_ctr_vk_copies(void) { return g_device.up && g_device.vk.ram_count && g_device.vk.ram[0].copy; }
-bool snx_ctr_vk_shadow(void) { return g_device.up && g_device.vk.host_shadow && g_device.vk.ram_count; }
+bool snx_ctr_vk_shadow(void) { return g_device.up && g_device.vk.ram_count && g_device.vk.ram[0].map; }
 const char* snx_ctr_vk_error(void) { return g_device.error; }
 
 bool snx_ctr_vk_window(uint32_t pa, uint64_t size, SnxCtrVkWindow* w, uint32_t* inside) {
@@ -498,7 +498,7 @@ static void choose_path(SnxCtrVk* v, SnxCtrMemory* memory) {
     char why[256], line[640];
     uint64_t bytes = 0;
     uint32_t type = 0;
-    if (v->host_shadow) {
+    if (v->ram_count && v->ram[0].map) { /* the copy in host-visible memory */
         snprintf(
             line, sizeof line,
             "vk_memory=%d: the device can neither import the board's RAM nor take it as its own memory, so the GPU "
@@ -680,7 +680,6 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
                 snx_ctr_vk_free();
                 return false;
             }
-            v->host_shadow = true;
         }
     }
     choose_path(v, memory);
