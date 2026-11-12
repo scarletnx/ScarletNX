@@ -16,7 +16,7 @@ set(snx_dav1d_ready OFF)
 if(SNX_DAV1D)
     find_program(SNX_MESON meson)
     find_program(SNX_DAV1D_NINJA NAMES ninja ninja-build)
-    if(CMAKE_CROSSCOMPILING OR APPLE OR ANDROID)
+    if(CMAKE_CROSSCOMPILING OR ANDROID)
         message(STATUS "dav1d: not built for this target yet: AV1 movies play black")
     elseif(NOT SNX_MESON OR NOT SNX_DAV1D_NINJA)
         message(STATUS "dav1d: meson or ninja not found: AV1 movies play black. Install them, or configure with "
