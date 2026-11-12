@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/present_quad.h"
 #include "nx/gpu/vk/ui_spv.h"
@@ -288,7 +289,7 @@ static void atlas_upload(VkCommandBuffer cb) {
                               .imageExtent = {(u32)w, (u32)h, 1}};
     if (!px || version == g_atlas_version) return;
     if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &bai, &buf, &mem, &info))) return;
-    vk_mem_track(mem);
+    vk_mem_track(mem, VK_OWN_UI);
     memcpy(info.pMappedData, px, (size_t)w * (size_t)h * 4);
     vmaFlushAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE);
     vk_defer_buffer(buf, mem);
@@ -298,7 +299,7 @@ static void atlas_upload(VkCommandBuffer cb) {
         g_atlas = VK_NULL_HANDLE;
         return;
     }
-    vk_mem_track(g_atlas_mem);
+    vk_mem_track(g_atlas_mem, VK_OWN_UI);
     vci.image = g_atlas;
     if (!VK_OK(vk_image_view_create(g_vk.dev, &vci, NULL, &g_atlas_view))) {
         vk_mem_untrack(g_atlas_mem);
@@ -364,7 +365,9 @@ static void image_upload(VkCommandBuffer cb) {
             return;
         }
         vci.image = g_image;
+        vk_mem_track(g_image_mem, VK_OWN_UI);
         if (!VK_OK(vk_image_view_create(g_vk.dev, &vci, NULL, &g_image_view))) {
+            vk_mem_untrack(g_image_mem);
             vmaDestroyImage(g_vk.vma, g_image, g_image_mem);
             g_image = VK_NULL_HANDLE;
             return;
@@ -461,7 +464,7 @@ static int glyphs_upload(VkCommandBuffer cb) {
         g_glyphs = VK_NULL_HANDLE;
         return 0;
     }
-    vk_mem_track(g_glyphs_mem);
+    vk_mem_track(g_glyphs_mem, VK_OWN_UI);
     memcpy(to, gui_vga_font, 256 * 16); /* bytes: the device's words read them little-endian, as the shader takes */
     memcpy(to + 256 * 16, gui_icon_font, 2 * GUI_ICON_COUNT * 16);
     copy.srcOffset = off;
@@ -504,7 +507,7 @@ static int frames_make(void) {
         g_frames = VK_NULL_HANDLE;
         return 0;
     }
-    vk_mem_track(g_frames_mem);
+    vk_mem_track(g_frames_mem, VK_OWN_UI);
     g_frames_at = (u8*)info.pMappedData;
     {
         VkMemoryPropertyFlags flags = 0;

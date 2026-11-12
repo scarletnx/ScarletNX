@@ -25,9 +25,11 @@
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/hdr_swapchain.h"
 #include "nx/gpu/vk/resource_stats.h"
+#include "nx/gpu/vk/tex_report.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/pending_pages.h"
@@ -400,7 +402,7 @@ static Surf* cpu_frame(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bh
             g_cpu_img = NULL;
             return NULL;
         }
-        vk_mem_track(g_cpu_img->mem);
+        vk_mem_track(g_cpu_img->mem, VK_OWN_UI);
     }
     /* its bytes, staged as they are: a block linear one's whole rows of blocks, a pitch linear one's rows (and
        16 bytes, as a conversion reads whole words and a row of 2 byte pixels may end inside one) */
@@ -865,6 +867,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         (unsigned long long)(b[q].statistics.allocationBytes >> 20));
                 LOG("vulkan: memory used and budgeted:%s\n", line);
             }
+            vk_ledger_log();
             {
                 /* what the caches hold, which vk_mem_trim keeps within the budget */
                 u32 nrt, ntex, nbuf, parked, none;
@@ -880,6 +883,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                     (unsigned long long)(bbuf >> 20), (unsigned long long)(usage >> 20),
                     (unsigned long long)(budget >> 20), (unsigned long long)(trimmed >> 20));
             }
+            vk_tex_report_log();
             LOG("vulkan: %llu draws sampled a target they render to in place (%llu barriers in passes, %llu passes "
                 "begun again), %llu through a copy; %llu copies of targets written\n",
                 (unsigned long long)g_vk_fb_draws, (unsigned long long)g_vk_fb_barriers,
@@ -1055,7 +1059,7 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
     VkImage tmp;
     VmaAllocation tmem;
     if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &tmp, &tmem, NULL))) return NULL;
-    vk_mem_track(tmem);
+    vk_mem_track(tmem, VK_OWN_IMAGE_OTHER);
     VkBuffer buf;
     u8* p = vk_readback_buffer((u64)dw * dh * 4, &buf);
     if (!p) {

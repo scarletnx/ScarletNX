@@ -5,6 +5,7 @@
    heap sizes. No Vulkan loader, device or GPU is used. */
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
+#include "nx/gpu/vk/ledger.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,6 +100,8 @@ VkResult vmaCreateBuffer(VmaAllocator allocator, const VkBufferCreateInfo* info,
     *details = (VmaAllocationInfo){.size = info->size, .pMappedData = g_test.mapped};
     return VK_SUCCESS;
 }
+void vk_mem_track(VmaAllocation a, u32 owner) { (void)a, (void)owner; }
+void vk_mem_untrack(VmaAllocation a) { (void)a; }
 void vmaDestroyBuffer(VmaAllocator allocator, VkBuffer buffer, VmaAllocation memory) {
     (void)allocator, (void)buffer, (void)memory;
 }

@@ -10,6 +10,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/vertex_input.h"
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/descriptors.h"
@@ -1778,8 +1779,11 @@ static int create_device(void) {
     pm_lock_announce(&g_vklock, "vulkan"); /* the device's calls, every thread's */
     vkGetDeviceQueue(g_vk.dev, g_vk.gfx_family, 0, &g_vk.gfx);
     vkGetDeviceQueue(g_vk.dev, g_vk.compute_family, second ? 1 : 0, &g_vk.compute);
+    /* the driver's allocate and free go through the ledger, which times them */
     VmaVulkanFunctions vf = {.vkGetInstanceProcAddr = vkGetInstanceProcAddr,
-                             .vkGetDeviceProcAddr = vkGetDeviceProcAddr};
+                             .vkGetDeviceProcAddr = vkGetDeviceProcAddr,
+                             .vkAllocateMemory = vk_ledger_allocate,
+                             .vkFreeMemory = vk_ledger_free};
     vk_mem_init(sparse_queue);
     /* VMA's blocks are 256 MiB at most already, and kept within a smaller cap */
     VmaAllocatorCreateInfo vai = {.physicalDevice = g_vk.phys,

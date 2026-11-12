@@ -7,6 +7,7 @@
    Sampler bytes are deterministic for identical create infos (VK_EXT_descriptor_heap), so byte interning preserves
    sampler state while it removes duplicate heap copies. All cache comparisons use CPU memory, never mapped GPU memory. */
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
 #include "common/utilities/endian.h"
 #include "nx/runtime/platform/log.h"
@@ -123,7 +124,7 @@ static int heap_create(Heap* heap, const VkDescriptorHeapMemoryPlan* plan, const
     if (!VK_OK(vmaCreateBuffer(g_vk.vma, &create, &allocation, &heap->buffer, &heap->memory, &details)))
         return refused("the %s heap's %llu-byte buffer could not be made", name,
                        (unsigned long long)plan->allocation_size);
-    vk_mem_track(heap->memory);
+    vk_mem_track(heap->memory, VK_OWN_DESCRIPTORS);
     VkDeviceAddress original = buffer_address(heap->buffer);
     VkDeviceSize padding = snx_align_up(original, plan->alignment) - original;
     if (!original || !details.pMappedData || padding > plan->allocation_size - plan->range_size) {

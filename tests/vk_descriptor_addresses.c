@@ -12,6 +12,7 @@
 typedef uint8_t u8;
 typedef uint32_t u32;
 typedef uint64_t u64;
+typedef int64_t i64;
 #define SNX_VK_H
 #define SNX_LOG_H
 #define VK_FRAMES                                              2
@@ -47,7 +48,7 @@ static struct {
 } g_test;
 VkResult vmaCreateBuffer(VmaAllocator, const VkBufferCreateInfo*, const VmaAllocationCreateInfo*, VkBuffer*,
                          VmaAllocation*, VmaAllocationInfo*);
-void vk_mem_track(VmaAllocation);
+void vk_mem_track(VmaAllocation, u32);
 VkCommandBuffer vk_cmd(void);
 u32 vk_frame_slot(void);
 u64 vk_frame_id(void);
@@ -105,8 +106,8 @@ VkResult vmaCreateBuffer(VmaAllocator a, const VkBufferCreateInfo* b, const VmaA
     (void)f;
     abort();
 }
-void vk_mem_track(VmaAllocation a) {
-    (void)a;
+void vk_mem_track(VmaAllocation a, u32 owner) {
+    (void)a, (void)owner;
     abort();
 }
 VkCommandBuffer vk_cmd(void) { return HANDLE(VkCommandBuffer, 1); }

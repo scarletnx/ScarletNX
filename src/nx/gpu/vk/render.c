@@ -22,6 +22,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
@@ -391,7 +392,7 @@ static int xfb_counters(void) {
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &g_xfb.buf, &g_xfb.mem, NULL))) return 0;
-    vk_mem_track(g_xfb.mem);
+    vk_mem_track(g_xfb.mem, VK_OWN_XFB);
     return 1;
 }
 static u64 xfb_counter_offset(u32 owner) { return ((u64)(owner & 0x7fffffff) + (owner >> 31 ? GPU_CHANNELS : 0)) * 16; }
@@ -3684,7 +3685,7 @@ static int quad_indices(u32 nq, VkBuffer* buf, u64* off) {
         VkBuffer b;
         VmaAllocation m;
         if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &b, &m, NULL))) return 0;
-        vk_mem_track(m);
+        vk_mem_track(m, VK_OWN_XFB);
         vk_render_end(); /* dispatches happen outside rendering passes */
         VkCommandBuffer cb = vk_cmd();
         /* the input is bound but not read: vertex numbers are their own indices */

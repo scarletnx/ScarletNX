@@ -10,6 +10,8 @@
    table (its API version is the SDK's, 55.8 in one game) rather than nxnative's 55.15 */
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/guest_pools.h"
+#include "nx/gpu/guest_textures.h"
 #include "nx/gpu/nvn/nvn_replay.h"
 #include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/gpu/nvn/nvn_state.h"
@@ -423,6 +425,7 @@ int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
     if (!va)
         fatal("nvn: no GPU address space left for a memory pool of %llx bytes", (unsigned long long)o.size);
     o.gpu = va + lead;
+    gpu_pool_add(o.gpu, o.size, (o.flags & NVN_POOL_VIRTUAL) != 0);
     memcpy(GP(p), &o, sizeof o);
     LOGV("nvn: memory pool %llx: %llx, %llx bytes at GPU %llx, flags %#x\n", (unsigned long long)p,
          (unsigned long long)o.memory, (unsigned long long)o.size, (unsigned long long)o.gpu, o.flags);
@@ -433,6 +436,7 @@ void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
     u64 lead = o->gpu & 0xfff;
     (void)c;
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->gpu) {
+        gpu_pool_remove(o->gpu);
         nvn_wait_begin(); /* off the core, as nvn_MemoryPoolInitialize's map changes */
         gmmu_space_free(o->gpu - lead, lead + o->size);
         nvn_wait_end();
@@ -1057,11 +1061,17 @@ int nvn_TextureInitialize(CPU* c, u64 t, u64 b) {
        converted, before any submission can read the texture */
     if (s->packaged_data && o.memory && o.size) memmove(GP(o.memory), GP(s->packaged_data), (size_t)o.size);
     memcpy(GP(t), &o, sizeof o);
+    /* a live texture at that address (gpu/guest_textures.c), until nvn_TextureFinalize: the renderer's texture cache
+       measures what it holds for none. A texture with no storage has no address */
+    gpu_texture_add(o.gpu, o.size);
     return 1;
 }
 void nvn_TextureFinalize(CPU* c, u64 t) {
+    NvnTexture* o = NVN_OBJ(NvnTexture, t);
     (void)c;
-    NVN_OBJ(NvnTexture, t)->magic = 0;
+    /* only a texture that nvn_TextureInitialize made, and one time: the count of its address stays whole */
+    if (o->magic == NVN_MAGIC('T', 'E', 'X', 0)) gpu_texture_remove(o->gpu);
+    o->magic = 0;
 }
 #define CT(t) NVN_OBJ(const NvnTexture, t)
 i32 nvn_TextureGetFlags(CPU* c, u64 t) {

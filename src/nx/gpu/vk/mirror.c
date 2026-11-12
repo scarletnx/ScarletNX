@@ -27,6 +27,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "common/utilities/bits.h"
@@ -143,8 +144,8 @@ static Gran* gran_bind(u64 g) {
         vmaFreeMemory(g_vk.vma, r->mem);
         goto fail;
     }
-    vk_mem_track(r->mem);
-    vk_mem_track(r->mask);
+    vk_mem_track(r->mem, VK_OWN_MIRROR);
+    vk_mem_track(r->mask, VK_OWN_MIRROR);
     VkSparseMemoryBind b[2] = {
         {.resourceOffset = g * MIR_G, .size = MIR_G, .memory = info[0].deviceMemory, .memoryOffset = info[0].offset},
         {.resourceOffset = g * MIR_MASK_G,
@@ -168,6 +169,7 @@ static Gran* gran_bind(u64 g) {
     vk_render_end();
     rec_CmdFillBuffer(vk_cmd(), g_mir.mask, g * MIR_MASK_G, MIR_MASK_G, 0);
     g_mir.bound++;
+    vk_ledger_heap(VK_OWN_MIRROR, (i64)MIR_G); /* its shadow */
     return r;
 fail:
     free(r->shadow);

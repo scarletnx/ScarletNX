@@ -6,6 +6,7 @@
 #include "nx/gpu/shader/coverage_spirv.h"
 #include "nx/gpu/shader/capture_tiles_spirv.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/memory/mem.h"
 #include "nx/hle/services/nvdrv.h"
 #include <stdlib.h>
@@ -75,7 +76,7 @@ static int capture_tiles_make(VkCapture* capture, const Surf* target) {
                                          VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
     VmaAllocationCreateInfo memory = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (!VK_OK(vk_buffer_create(g_vk.vma, &info, &memory, &capture->tile_buffer, &capture->tile_memory, NULL))) return 0;
-    vk_mem_track(capture->tile_memory);
+    vk_mem_track(capture->tile_memory, VK_OWN_MISC);
     capture->tile_count = (u32)count;
     capture->tile_bytes = bytes;
     capture->tile_dirty = 1;

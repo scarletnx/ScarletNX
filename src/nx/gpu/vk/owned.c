@@ -10,6 +10,7 @@
 #include <string.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/memory/mem.h"
@@ -124,7 +125,7 @@ VkOwnRes* vk_own_res_new(u64 size) {
             free(r);
             return NULL;
         }
-        vk_mem_track(r->mem);
+        vk_mem_track(r->mem, VK_OWN_OWNED);
         r->size = want;
     }
     r->refs = 1;
@@ -245,7 +246,7 @@ static void land_prepare(u64 size) {
     VmaAllocationInfo info;
     if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_owned.back, &g_owned.mem, &info)))
         fatal("vulkan: no host memory for ownership readback");
-    vk_mem_track(g_owned.mem);
+    vk_mem_track(g_owned.mem, VK_OWN_OWNED);
     g_owned.ptr = info.pMappedData;
     g_owned.cap = cap;
 }

@@ -6,9 +6,11 @@
    change replaces, so nothing waits for the GPU. A big range's own buffer instead takes the pages written since it
    last matched memory, copied on the GPU in order with the draws (patch_own). Big ranges that have been stable for
    long are checked less often. */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/guest_pools.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
@@ -18,6 +20,8 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
+#include "nx/gpu/vk/range_shape.h"
 #include "nx/gpu/vk/resource_stats.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pending_pages.h"
@@ -282,6 +286,7 @@ typedef struct GfxOut {
        give the bytes they wrote (logs) */
     u8* org;
     int org_alloc; /* org allocated on its own: taken when a writer that logs nothing joined a logged result */
+    u32 block;     /* the bytes of its block in the heap, as the byte ledger counts them */
     /* the writer binds a buffer the program writes but never reads: its input was not copied in, so its staging's
        bytes are not guest memory and a reader must compose, not read it in place */
     int no_input;
@@ -500,9 +505,12 @@ static VkAccessFlags2 out_access(void) {
 static GfxOut* gfx_out_new(u32 npages, u32 len) {
     /* not calloc: its caller fills the original bytes and out_map the page lists, and zeroing them first was a tenth
        of one game's GPU thread's copying */
-    GfxOut* o = malloc(sizeof *o + 2 * (size_t)npages * sizeof *o->pages + len);
+    size_t block = sizeof(GfxOut) + 2 * (size_t)npages * sizeof(u64) + len;
+    GfxOut* o = malloc(block);
     if (!o) return NULL;
     *o = (GfxOut){0};
+    o->block = (u32)block;
+    vk_ledger_heap(VK_OWN_RESULT, (i64)block);
     o->pages = (u64*)(o + 1);
     o->vmap = o->pages + npages;
     o->npages = npages;
@@ -826,12 +834,17 @@ static void land_logged(GfxOut* o) {
         for (u32 i = 0; i < g_nchg; i++) g_wb_logged_bytes += g_chg[i].to - g_chg[i].from;
     }
 }
+/* an output's block back to the heap, and out of the ledger with the original bytes it took apart from the block */
+static void out_block_free(GfxOut* o) {
+    vk_ledger_heap(VK_OWN_RESULT, -(i64)(o->block + (o->org_alloc ? o->size : 0)));
+    if (o->org_alloc) free(o->org);
+    free(o);
+}
 static void out_free(GfxOut* o) {
     for (u32 k = 0; k < o->nlogs; k++) vk_wlog_unref(o->logs[k].log);
     free(o->logs);
-    if (o->org_alloc) free(o->org);
     if (o->keep) vk_own_res_unref(o->keep); /* a made owner stays published: it holds memory's bytes */
-    free(o);
+    out_block_free(o);
 }
 /* The frame fence has signaled. Its stage allocations still exist here; cmd.c frees them only after this call. */
 void vk_buf_frame_done(u64 frame) {
@@ -863,7 +876,7 @@ void vk_buf_frame_done(u64 frame) {
             out_pages(o, -1);
             gpu_mem_written_shader(o->addr, o->size);
             vk_own_res_unref(o->keep);
-            free(o);
+            out_block_free(o);
             continue;
         }
         if (o->mem != invalidated) {
@@ -2722,6 +2735,7 @@ static int out_take_org(GfxOut* o) {
     o->org = malloc(o->size ? o->size : 1);
     if (!o->org) return 0;
     o->org_alloc = 1;
+    vk_ledger_heap(VK_OWN_RESULT, (i64)o->size);
     read_untracked(o->addr, o->org, o->size);
     return 1;
 }
@@ -2778,7 +2792,7 @@ static int copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
     } else if (!owned) {
         const u8* src = guest_bytes(gva, len);
         if (!src) {
-            free(o);
+            out_block_free(o);
             return 0;
         }
         memcpy(o->org, src, len);
@@ -2792,12 +2806,12 @@ static int copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
     int zeros = !(owned && !(back && g_bind_no_read)) && pending != 2 && logged && g_bind_no_read;
     o->ptr = vk_stage_output(zeros ? (len + 3) & ~3ull : len, align, buf, off, &o->mem);
     if (!o->ptr) {
-        free(o);
+        out_block_free(o);
         return 0;
     }
     if (owned && !(back && g_bind_no_read)) {
         if (!writable_owned(o, gva, len, *buf, *off)) {
-            free(o);
+            out_block_free(o);
             return 0;
         }
     } else if (pending == 2) {
@@ -2812,7 +2826,7 @@ static int copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
         if (!g_bind_no_read) { /* the program reads the buffer: its bytes are the input */
             const u8* src = guest_bytes(gva, len);
             if (!src) {
-                free(o);
+                out_block_free(o);
                 return 0;
             }
             memcpy(o->ptr, src, len);
@@ -3310,7 +3324,7 @@ static int make_own_(u32 i, VkBuffer sb, u64 so) {
     VkBuffer b;
     VmaAllocation m;
     if (vk_buffer_create(g_vk.vma, &bci, &aci, &b, &m, NULL) != VK_SUCCESS) return 0;
-    vk_mem_track(m);
+    vk_mem_track(m, VK_OWN_BUFFER);
     if (copy_stats_on()) g_copy_owned += len;
     VkBufferCopy r = {so, 0, len};
     rec_CmdCopyBuffer(vk_cmd_upload(0), sb, b, 1, &r);
@@ -3847,6 +3861,132 @@ void vk_buf_writable_stats(u64* copied, u64* read_back, u64* merged) {
     *merged = g_buffer.wstat.merged;
 }
 
+/* The cache's shape (buffer_copy_stats), for a cache keyed by guest page in place of this one keyed by range: what
+   the buffers of their own hold more than once, and what a backing in granules would bind for the ranges draws
+   bound lately. Each entry's range goes by the guest memory it shows, as that cache would key it, so two GPU addresses
+   of the same memory count as the same bytes */
+typedef struct {
+    VkRange* v;
+    u32 n, cap;
+    u64 unmapped; /* bytes of entries that show no guest memory now */
+} ShapeSet;
+static void shape_add(ShapeSet* s, u64 gva, u64 len) {
+    while (len) {
+        u64 cpu = 0, run = gmmu_run(gva, len, &cpu);
+        if (!run) { /* an unmapped page: on to the next */
+            run = 0x1000 - (gva & 0xFFF);
+            if (run > len) run = len;
+            s->unmapped += run;
+        } else if (s->n < s->cap)
+            s->v[s->n++] = (VkRange){cpu, run};
+        gva += run;
+        len -= run;
+    }
+}
+static double shape_mb(u64 bytes) { return (double)bytes / 1048576.0; }
+static void shape_report(void) {
+    static const u64 gran[VK_SHAPE_GRANS] = {64ull << 10, 2ull << 20};
+    /* room for each entry in a few pieces: an entry over more runs of guest memory than that loses its last ones */
+    u32 cap = g_vblive * 4 + 64;
+    ShapeSet own = {.v = malloc((size_t)cap * sizeof(VkRange)), .cap = cap},
+             recent = {.v = malloc((size_t)cap * sizeof(VkRange)), .cap = cap};
+    if (own.v && recent.v) {
+        for (u32 i = 1; i < g_nvb; i++) {
+            const Vb* e = &g_vb[i];
+            if (!e->len) continue;
+            if (e->own) shape_add(&own, e->start, e->len);
+            if ((u32)(g_vk_present - e->used) < 600) shape_add(&recent, e->start, e->len);
+        }
+        VkRangeShape so, sr;
+        vk_range_shape(own.v, own.n, gran, &so);
+        vk_range_shape(recent.v, recent.n, gran, &sr);
+        LOG("vulkan: buffer cache shape: buffers of their own hold %.1f MB in %u runs of guest memory, %.1f MB of it "
+            "bytes another one holds too (%.0f%%); joined they are %u pieces, the longest %.1f MB; %.1f MB show no "
+            "guest memory now\n",
+            shape_mb(so.sum), so.ranges, shape_mb(so.sum - so.covered),
+            so.sum ? 100.0 * (double)(so.sum - so.covered) / (double)so.sum : 0.0, so.runs, shape_mb(so.run_max),
+            shape_mb(own.unmapped));
+        LOG("vulkan: buffer cache shape: the ranges bound in 600 presents are %u runs of %.1f MB that cover %.1f MB "
+            "of guest memory in %u pieces, the longest %.1f MB; granules of 64 KiB over them take %.1f MB (%llu), "
+            "of 2 MiB %.1f MB (%llu)\n",
+            sr.ranges, shape_mb(sr.sum), shape_mb(sr.covered), sr.runs, shape_mb(sr.run_max),
+            shape_mb(sr.granules[0] * gran[0]), (unsigned long long)sr.granules[0], shape_mb(sr.granules[1] * gran[1]),
+            (unsigned long long)sr.granules[1]);
+        for (u32 pass = 0; pass < 2; pass++) {
+            const VkRangeShape* s = pass ? &sr : &so;
+            char line[400];
+            size_t at = 0;
+            for (u32 b = 0; b < VK_SHAPE_SIZES && at < sizeof line; b++) {
+                if (!s->size_count[b]) continue;
+                u64 least = vk_shape_bucket_floor(b);
+                int n = snprintf(line + at, sizeof line - at, "%s %llu %s up: %u (%.1f MB)", at ? "," : "",
+                                 (unsigned long long)(least >> 20   ? least >> 20
+                                                      : least >> 10 ? least >> 10
+                                                                    : least),
+                                 least >> 20   ? "MiB"
+                                 : least >> 10 ? "KiB"
+                                               : "B",
+                                 s->size_count[b], shape_mb(s->size_bytes[b]));
+                if (n > 0) at += (size_t)n;
+            }
+            if (at)
+                LOG("vulkan: buffer cache shape: %s by size:%s\n",
+                    pass ? "the ranges bound in 600 presents" : "buffers of their own", line);
+        }
+    }
+    free(own.v);
+    free(recent.v);
+}
+/* The guest's memory pools against what draws bound of them in 600 presents, by GPU address as a pool has it: a pool
+   bound nearly whole could be one buffer, where one bound in small parts would take memory for what no draw reads.
+   A pool no entry falls in holds textures or commands, and counts apart */
+static void pool_report(void) {
+    u32 npool = gpu_pools(NULL, 0);
+    if (!npool) return;
+    GpuPool* pool = malloc((size_t)npool * sizeof *pool);
+    VkRange* bound = malloc((size_t)(g_vblive + 1) * sizeof *bound);
+    if (pool && bound) {
+        u32 n = gpu_pools(pool, npool), nb = 0;
+        if (n > npool) n = npool; /* some made since the count: left for the next report */
+        for (u32 i = 1; i < g_nvb && nb < g_vblive; i++)
+            if (g_vb[i].len && (u32)(g_vk_present - g_vb[i].used) < 600)
+                bound[nb++] = (VkRange){g_vb[i].start, g_vb[i].len};
+        nb = vk_range_join(bound, nb);
+        u64 all = 0, used_size = 0, used_bound = 0, half_size = 0, tenth_size = 0, top_size[4] = {0},
+            top_bound[4] = {0};
+        u32 used = 0, half = 0, tenth = 0;
+        for (u32 i = 0; i < n; i++) {
+            u64 in = vk_range_inside(bound, nb, pool[i].gva, pool[i].size);
+            all += pool[i].size;
+            if (!in) continue;
+            used++;
+            used_size += pool[i].size;
+            used_bound += in;
+            if (in >= pool[i].size / 2) half++, half_size += pool[i].size;
+            if (in <= pool[i].size / 10) tenth++, tenth_size += pool[i].size;
+            for (u32 k = 0; k < 4; k++) /* the four biggest of them, biggest first */
+                if (pool[i].size > top_size[k]) {
+                    for (u32 m = 3; m > k; m--) top_size[m] = top_size[m - 1], top_bound[m] = top_bound[m - 1];
+                    top_size[k] = pool[i].size;
+                    top_bound[k] = in;
+                    break;
+                }
+        }
+        LOG("vulkan: memory pools: %u of %.1f MB, %u of them (%.1f MB) with ranges bound in 600 presents, %.1f MB "
+            "bound (%.0f%%); %u (%.1f MB) bound by half or more, %u (%.1f MB) by a tenth or less; the biggest bound "
+            "ones: %.1f MB %.0f%%, %.1f MB %.0f%%, %.1f MB %.0f%%, %.1f MB %.0f%%\n",
+            n, shape_mb(all), used, shape_mb(used_size), shape_mb(used_bound),
+            used_size ? 100.0 * (double)used_bound / (double)used_size : 0.0, half, shape_mb(half_size), tenth,
+            shape_mb(tenth_size), shape_mb(top_size[0]),
+            top_size[0] ? 100.0 * (double)top_bound[0] / (double)top_size[0] : 0.0, shape_mb(top_size[1]),
+            top_size[1] ? 100.0 * (double)top_bound[1] / (double)top_size[1] : 0.0, shape_mb(top_size[2]),
+            top_size[2] ? 100.0 * (double)top_bound[2] / (double)top_size[2] : 0.0, shape_mb(top_size[3]),
+            top_size[3] ? 100.0 * (double)top_bound[3] / (double)top_size[3] : 0.0);
+    }
+    free(pool);
+    free(bound);
+}
+
 /* buffers not read for twenty seconds, and in 120 presents, go */
 static void buf_frame(void) {
     vk_uma_frame();
@@ -3926,6 +4066,8 @@ static void buf_frame(void) {
             (unsigned long long)g_alias_draws, (unsigned long long)g_alias_pages, g_vblive,
             (unsigned long long)g_vb_lookups, (unsigned long long)g_vb_probes);
         vk_gfx_image_report();
+        shape_report();
+        pool_report();
         g_vb_lookups = g_vb_probes = 0;
         g_copy_uncached = g_copy_stage = g_copy_owned = g_copy_zero = g_copy_calls = g_copy_peak = g_read_bound =
             g_owned_bound = 0;

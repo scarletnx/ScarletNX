@@ -14,6 +14,7 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/texture_arrays.h"
 #include "nx/gpu/vk/uma_budget.h"
@@ -345,11 +346,19 @@ void vk_wait_semaphore(VkSemaphore sem, u64 value) {
 }
 
 /* a fence's wait, the same way: no fence of the runtime's own (a bind of sparse memory, a landing) takes seconds */
+/* the fence waits since the last statistics and their time, from whichever thread waited (a bind of sparse memory, a
+   granule of the mirror, a landing): each is a round trip to the GPU that vk_finish's sites and the timeline's waits
+   do not count */
+static u64 g_fence_waits, g_fence_wait_ns;
 int vk_wait_fence(VkFence fence) {
     u64 t0 = plat_ns();
     for (;;) {
         VkResult r = vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, 1000000000ull);
-        if (r != VK_TIMEOUT) return VK_OK(r);
+        if (r != VK_TIMEOUT) {
+            __atomic_fetch_add(&g_fence_waits, 1, __ATOMIC_RELAXED);
+            __atomic_fetch_add(&g_fence_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
+            return VK_OK(r);
+        }
         if (plat_ns() - t0 >= VK_GPU_STUCK_NS) {
             vk_checkpoint_dump("GPU stopped");
             fatal("vulkan: the GPU stopped responding: a fence wasn't signaled for %llu s",
@@ -551,7 +560,7 @@ static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
         g_cmd.capchunk = cap;
     }
     if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &buf, &mem, &info))) return 0;
-    vk_mem_track(mem);
+    vk_mem_track(mem, VK_OWN_STAGING);
     if (i == g_cmd.nchunk) g_cmd.nchunk++;
     g_cmd.chunk[i] = (Chunk){.buf = buf,
                              .mem = mem,
@@ -1002,6 +1011,11 @@ void vk_finishes_log(void) {
         g_finish_sites[best].n = 0;
     }
     for (u32 i = 0; i < FINISH_SITES && g_finish_sites[i].file; i++) g_finish_sites[i].n = g_finish_sites[i].ns = 0;
+    u64 fences = __atomic_exchange_n(&g_fence_waits, 0, __ATOMIC_RELAXED),
+        fence_ns = __atomic_exchange_n(&g_fence_wait_ns, 0, __ATOMIC_RELAXED);
+    if (fences)
+        LOG("vulkan:   %llu waits for a fence (%.1f ms): sparse binds, the mirror's granules and landings\n",
+            (unsigned long long)fences, (double)fence_ns / 1e6);
 }
 
 /* A present ends the frame: the next one records in the other slot, once that slot's previous use is done. What the
@@ -1265,7 +1279,7 @@ u8* vk_readback_buffer(u64 size, VkBuffer* buf) {
             g_rb_cap = 0;
             return NULL;
         }
-        vk_mem_track(g_rb_mem);
+        vk_mem_track(g_rb_mem, VK_OWN_READBACK);
         g_rb_ptr = info.pMappedData;
         g_rb_cap = cap;
         g_rb_in = xfer_where(&info);

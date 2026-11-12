@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/gpu/vk/depth_shadow.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/shader/depth_stencil_spirv.h"
 #include "nx/memory/mem.h"
 #include "nx/hle/services/nvdrv.h"
@@ -36,7 +37,7 @@ static int shadow_buffer(u64 bytes) {
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation memory = VK_NULL_HANDLE;
     if (!VK_OK(vk_buffer_create(g_vk.vma, &info, &memory_info, &buffer, &memory, NULL))) return 0;
-    vk_mem_track(memory);
+    vk_mem_track(memory, VK_OWN_MISC);
     if (g_depth_shadow.buffer) vk_defer_buffer(g_depth_shadow.buffer, g_depth_shadow.memory);
     g_depth_shadow.buffer = buffer;
     g_depth_shadow.memory = memory;

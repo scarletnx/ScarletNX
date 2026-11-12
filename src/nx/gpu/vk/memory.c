@@ -41,6 +41,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/resource_stats.h"
 
 #define ALLOC_CAP_DEFAULT (256ull << 20)
@@ -89,19 +90,6 @@ static struct {
     u64 gone_bytes;
     int readers; /* it changes blocks of an image in use: after the work submitted before it */
 } g_bind;
-
-/* VMA allocations as Tracy memory events. */
-#if defined(SNX_TRACY)
-void vk_mem_track(VmaAllocation a) {
-    VmaAllocationInfo info;
-    if (!a) return;
-    vmaGetAllocationInfo(g_vk.vma, a, &info);
-    SNX_MEM_ALLOC((const void*)a, info.size, "gpu");
-}
-void vk_mem_untrack(VmaAllocation a) {
-    if (a) SNX_MEM_FREE((const void*)a, "gpu");
-}
-#endif
 
 void vk_mem_init(int sparse_queue) {
     VkPhysicalDeviceMaintenance3Properties m3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES};
@@ -314,7 +302,7 @@ static void bind_drop(const Pieces* p) {
     g_bind.last = 0; /* the next bind starts an entry of its own */
 }
 
-static int pieces_bind(VkImage img, const VkMemoryRequirements* req, Pieces* p, VkResult* res) {
+static int pieces_bind(VkImage img, const VkMemoryRequirements* req, Pieces* p, u32 owner, VkResult* res) {
     u64 chunk = g_vk.alloc_cap / req->alignment * req->alignment;
     if (!chunk) return 0;
     if (!bind_ready()) {
@@ -337,7 +325,7 @@ static int pieces_bind(VkImage img, const VkMemoryRequirements* req, Pieces* p, 
             break;
         }
         p->n++;
-        vk_mem_track(p->pages[i]);
+        vk_mem_track(p->pages[i], owner);
         binds[i] = (VkSparseMemoryBind){
             .resourceOffset = at, .size = size, .memory = info.deviceMemory, .memoryOffset = info.offset};
     }
@@ -374,7 +362,7 @@ static Pieces* pieces_of(VkImage img) {
 static u32 level_dim(u32 v, u32 level) { return v >> level ? v >> level : 1; }
 
 /* an image whose memory is more than one allocation may be: bound to pieces of at most g_vk.alloc_cap */
-static int image_in_pieces(const VkImageCreateInfo* ii, VkImage* img, VkResult* res) {
+static int image_in_pieces(const VkImageCreateInfo* ii, VkImage* img, u32 owner, VkResult* res) {
     VkImageCreateInfo si = *ii;
     si.flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT;
     *res = vkCreateImage(g_vk.dev, &si, NULL, img);
@@ -384,7 +372,7 @@ static int image_in_pieces(const VkImageCreateInfo* ii, VkImage* img, VkResult* 
     u64 chunk = req.alignment ? g_vk.alloc_cap / req.alignment * req.alignment : 0;
     u32 n = chunk ? (u32)((req.size + chunk - 1) / chunk) : 0;
     Pieces* p = n ? calloc(1, sizeof *p + n * sizeof p->pages[0]) : NULL;
-    if (!p || !pieces_room() || !pieces_bind(*img, &req, p, res)) {
+    if (!p || !pieces_room() || !pieces_bind(*img, &req, p, owner, res)) {
         WARN("vulkan: cannot bind a %llu MiB image in %u pieces of %llu MiB\n", (unsigned long long)(req.size >> 20), n,
              (unsigned long long)(chunk >> 20));
         vkDestroyImage(g_vk.dev, *img, NULL);
@@ -401,9 +389,9 @@ static int image_in_pieces(const VkImageCreateInfo* ii, VkImage* img, VkResult* 
 
 int vk_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem) {
     VkResult res;
-    return vk_image_create_r(ii, img, mem, &res);
+    return vk_image_create_r(ii, img, mem, VK_OWN_IMAGE_OTHER, &res);
 }
-static int image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, VkResult* res) {
+static int image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u32 owner, VkResult* res) {
     *res = VK_ERROR_UNKNOWN;
     *img = VK_NULL_HANDLE;
     *mem = VK_NULL_HANDLE;
@@ -414,19 +402,19 @@ static int image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
     vkGetDeviceImageMemoryRequirements(g_vk.dev, &q, &req);
     vk_resource_end(VK_RESOURCE_IMAGE_QUERY, query);
     if (req.memoryRequirements.size > g_vk.alloc_cap) {
-        if (g_vk.sparse) return image_in_pieces(ii, img, res);
+        if (g_vk.sparse) return image_in_pieces(ii, img, owner, res);
         /* without sparse binding the one allocation is the only way: the driver may still take it */
         LOG_LIMIT(4, "vulkan: a %llu MiB image in one allocation, past the %llu MiB cap\n",
                   (unsigned long long)(req.memoryRequirements.size >> 20), (unsigned long long)(g_vk.alloc_cap >> 20));
     }
     VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     *res = vmaCreateImage(g_vk.vma, ii, &aci, img, mem, NULL);
-    if (VK_OK(*res)) vk_mem_track(*mem);
+    if (VK_OK(*res)) vk_mem_track(*mem, owner);
     return VK_OK(*res);
 }
-int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, VkResult* res) {
+int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u32 owner, VkResult* res) {
     VkResourceScope scope = vk_resource_begin();
-    int result = image_create_r(ii, img, mem, res);
+    int result = image_create_r(ii, img, mem, owner, res);
     vk_resource_end(VK_RESOURCE_IMAGE_CREATE, scope);
     return result;
 }
@@ -706,7 +694,7 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, u64* bytes) {
             int want = (bits[b >> 3] >> (b & 7)) & 1;
             if (want && !s->slot[b]) {
                 s->slot[b] = fresh[k++];
-                vk_mem_track(s->slot[b]);
+                vk_mem_track(s->slot[b], VK_OWN_TEXTURE);
             } else if (!want && s->slot[b]) {
                 dead->a[dead->n++] = s->slot[b];
                 s->slot[b] = VK_NULL_HANDLE;
@@ -715,7 +703,7 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, u64* bytes) {
         for (u32 t = 0; t < s->tails; t++)
             if (!s->slot[nb + t]) {
                 s->slot[nb + t] = fresh[k++];
-                vk_mem_track(s->slot[nb + t]);
+                vk_mem_track(s->slot[nb + t], VK_OWN_TEXTURE);
             }
         s->bytes = s->bytes + (add - ntail) * s->block + (u64)ntail * s->tail_size - drop * s->block;
         *bytes = s->bytes;
@@ -754,6 +742,17 @@ int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32
 void vk_sparse_stats(u64* binds, u64* bind_ns) {
     *binds = g_sparse_binds;
     *bind_ns = g_sparse_bind_ns;
+}
+
+u32 vk_image_bound_blocks(VkImage img) {
+    const Sparse* s = sparse_find(img);
+    const Pieces* p = s ? NULL : pieces_of(img);
+    u32 n = 0;
+    if (s)
+        for (u64 b = 0; b < sparse_nblocks(s) + s->tails; b++) n += s->slot[b] != VK_NULL_HANDLE;
+    else if (p && p->per_layer)
+        for (u32 i = 0; i < p->n; i++) n += p->pages[i] != VK_NULL_HANDLE;
+    return n;
 }
 
 static int sparse_destroy(VkImage img) {
@@ -917,7 +916,7 @@ static VkResult page_change(Pieces* p, u32 i, u8* want, const VkMemoryRequiremen
     *had = VK_NULL_HANDLE;
     VkResult res = vmaAllocateMemory(g_vk.vma, mem, &aci, &p->pages[i], &info);
     if (!VK_OK(res)) return res;
-    vk_mem_track(p->pages[i]);
+    vk_mem_track(p->pages[i], VK_OWN_TEXTURE);
     *memory = info.deviceMemory;
     *offset = info.offset;
     p->bound += mem->size;

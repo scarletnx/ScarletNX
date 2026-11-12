@@ -8,6 +8,7 @@
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/descriptor_encoding.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
+#include "nx/gpu/vk/ledger.h"
 #include "common/utilities/bits.h"
 #include "nx/runtime/platform/log.h"
 #include <stdlib.h>
@@ -119,7 +120,7 @@ static void arena(u32 slot) {
     if (!VK_OK(vmaCreateBuffer(g_vk.vma, &info, &allocation, &g_descriptors.frame[slot].buffer,
                               &g_descriptors.frame[slot].memory, &details)))
         fatal("vulkan: cannot allocate graphics descriptor memory");
-    vk_mem_track(g_descriptors.frame[slot].memory);
+    vk_mem_track(g_descriptors.frame[slot].memory, VK_OWN_DESCRIPTORS);
     g_descriptors.frame[slot].mapped = details.pMappedData;
     g_descriptors.frame[slot].address = address(g_descriptors.frame[slot].buffer);
     g_descriptors.frame[slot].capacity = capacity;

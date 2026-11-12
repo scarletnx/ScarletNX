@@ -15,6 +15,8 @@
 #include "nx/gpu/renderer.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
+#include "nx/gpu/vk/tex_report.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
@@ -956,7 +958,7 @@ static int later_rgba8_again(Surf* t) {
     int storage;
     const VkFormat rgba8 = later_rgba8(t->f.vk);
     tex_info(t, rgba8, &ii, &vf, &storage);
-    if (!vk_cache_image_create(&ii, &img, &mem, &bytes)) {
+    if (!vk_cache_image_create(&ii, &img, &mem, VK_OWN_TEXTURE, &bytes)) {
         LOG_LIMIT(4,
                   "vulkan: no memory for the RGBA8 image (%llu MB) a %ux%ux%u ASTC texture held as BC7 is loaded again "
                   "into: it is left out until a check finds some\n",
@@ -1060,7 +1062,7 @@ void vk_tex_later_frame(void) {
             int storage;
             tex_info(t, later_bc7(t->f.vk), &ii, &vf, &storage);
             vk_surf_touch(t); /* used now: the trim that makes room for the image leaves t, and t first in the queue */
-            if (!vk_cache_image_create(&ii, &t->bc7.img, &t->bc7.mem, &t->bc7.bytes)) {
+            if (!vk_cache_image_create(&ii, &t->bc7.img, &t->bc7.mem, VK_OWN_TEXTURE, &t->bc7.bytes)) {
                 LOG_LIMIT(4,
                           "vulkan: no memory for the BC7 image (%llu MB) of a %ux%ux%u ASTC texture: it stays RGBA8, "
                           "%llu MB, and the encoder tries again in the next frame\n",
@@ -1538,7 +1540,7 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     }
     if (sparse && vk_image_create_sparse(&ii, &t->img))
         t->sparse = 1;
-    else if (!vk_cache_image_create(&ii, &t->img, &t->mem, &t->bytes)) {
+    else if (!vk_cache_image_create(&ii, &t->img, &t->mem, VK_OWN_TEXTURE, &t->bytes)) {
         free(t);
         return NULL;
     }
@@ -1656,7 +1658,7 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
         VkViewFormats vf;
         vk_view_formats(&ii, &vf, VK_FORMAT_UNDEFINED);
-        if (!vk_cache_image_create(&ii, &c->img, &c->mem, &c->bytes)) { /* rt was used now: it stays */
+        if (!vk_cache_image_create(&ii, &c->img, &c->mem, VK_OWN_TEXTURE, &c->bytes)) { /* rt was used now: it stays */
             free(c);
             return guest ? NULL : rt;
         }
@@ -2603,7 +2605,9 @@ texture_from_memory:
     if (!t->piecewise) t->hash = tex_hash(t);
     t->checked = g_vk_present;
     t->next_check = g_vk_present + 4;
-    return (t->piecewise ? tex_load_pieces(t) : tex_upload(t)) ? t : NULL;
+    const int loaded = t->piecewise ? tex_load_pieces(t) : tex_upload(t);
+    vk_tex_made(t); /* statistics: one the cache evicted before is counted, with the memory its load bound */
+    return loaded ? t : NULL;
 }
 
 VkFormat vk_tex_view_format(const Surf* s, int srgb) { return s->f.depth ? s->f.vk : vk_srgb_as(s->f.vk, srgb); }
@@ -2725,7 +2729,7 @@ VkImageView vk_null_view(VkImageViewType type, int num, int ms) {
             free(s);
             return VK_NULL_HANDLE;
         }
-        vk_mem_track(s->mem);
+        vk_mem_track(s->mem, VK_OWN_TEXTURE);
         vk_render_end(); /* clears happen outside rendering passes */
         VkCommandBuffer cb = vk_cmd();
         vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
@@ -2782,7 +2786,7 @@ Surf* vk_null_storage(VkImageViewType type, int kind, VkImageView* view) {
             free(s);
             return NULL;
         }
-        vk_mem_track(s->mem);
+        vk_mem_track(s->mem, VK_OWN_TEXTURE);
         vk_render_end(); /* clears happen outside rendering passes */
         VkCommandBuffer cb = vk_cmd();
         vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,

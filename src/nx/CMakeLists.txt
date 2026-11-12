@@ -77,7 +77,7 @@ target_link_libraries(snx_video PRIVATE FFmpeg::avcodec)
 # hwopus (hle/services/audio.c) decodes Opus with FFmpeg too; acc's user picture is a splash drawing (cmake/splash.cmake)
 include("${PROJECT_SOURCE_DIR}/cmake/splash.cmake")
 target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec OpenSSL::SSL snx_splash)
-snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/write_pages.c gpu/draw_state.c gpu/maxwell/draw_state.c gpu/maxwell/maxwell3d.c gpu/renderer.c
+snx_component(gpu gpu/gpu.c gpu/guest_pools.c gpu/guest_textures.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/write_pages.c gpu/draw_state.c gpu/maxwell/draw_state.c gpu/maxwell/maxwell3d.c gpu/renderer.c
               gpu/nvn/nvn_loader.c gpu/nvn/nvn_object.c gpu/nvn/nvn_cmd.c gpu/nvn/nvn_queue.c gpu/nvn/nvn_dlss.c
               gpu/nvn/nvn_tex.c gpu/nvn/nvn_driver.c gpu/nvn/nvn_tic.c gpu/nvn/nvn_replay.c gpu/nvn/nvn_draw.c gpu/nvn/nvn_copy.c gpu/nvn/nvn_state.c
               gpu/nvn/nvn_save.c
@@ -135,7 +135,7 @@ snx_decodetree(snx_shader OUTPUT decode-sm86.inc DECODE "${CMAKE_CURRENT_SOURCE_
 include("${PROJECT_SOURCE_DIR}/cmake/vk_extension_bans.cmake")
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/writelog.c gpu/vk/mirror.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/xfb.c gpu/vk/display.c gpu/vk/compute.c
-                 gpu/vk/pending_pages.c gpu/vk/checkpoints.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/memory.c gpu/vk/resource_stats.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/bc7_cache.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/vk/hdr_swapchain.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c gpu/vk/uma.c
+                 gpu/vk/pending_pages.c gpu/vk/checkpoints.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/memory.c gpu/vk/ledger.c gpu/vk/range_shape.c gpu/vk/tex_census.c gpu/vk/tex_report.c gpu/vk/resource_stats.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/bc7_cache.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/vk/hdr_swapchain.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c gpu/vk/uma.c
                  gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/pipeline_parts.c gpu/vk/extension_bans.c
                  "${PROJECT_BINARY_DIR}/generated/vk_extension_bans_text.c"
                  gpu/vk/draw_texture.c gpu/vk/draw_texture_shader.c gpu/vk/tess_passthrough.c gpu/vk/varying_geometry.c gpu/vk/present_quad.c gpu/vk/capture.c gpu/vk/depth_shadow.c

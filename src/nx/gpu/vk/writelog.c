@@ -17,6 +17,7 @@
 #include "nx/gpu/shader/shader.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 
 struct VkWriteLog {
@@ -69,7 +70,7 @@ static VkWriteLog* log_get(u32 parts, int gpu) {
             free(l);
             return NULL;
         }
-        vk_mem_track(l->mem);
+        vk_mem_track(l->mem, VK_OWN_WRITELOG);
         l->parts = parts;
         l->gpu = gpu;
         if (gpu) {
@@ -154,6 +155,7 @@ void vk_wlog_trim(void) {
         while (*pp) {
             VkWriteLog* l = *pp;
             *pp = l->next;
+            vk_mem_untrack(l->mem);
             vmaDestroyBuffer(g_vk.vma, l->buf, l->mem); /* free: no work uses it */
             g_wlog.bytes -= log_bytes(l->parts);
             free(l);

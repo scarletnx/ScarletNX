@@ -42,6 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/texture/astc_spv.h" /* compiled from astc.comp by the build (cmake/glsl.cmake) */
 #include "nx/gpu/texture/astc_bc7_spv.h" /* compiled from astc_bc7.comp, in each of the encoder's builds */
@@ -175,7 +176,7 @@ static void astc_init(void) {
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_astc.scratch, &g_astc.mem, NULL)))
         fatal("vulkan: cannot allocate ASTC scratch memory");
-    vk_mem_track(g_astc.mem);
+    vk_mem_track(g_astc.mem, VK_OWN_ENCODER);
 }
 
 /* astc_bc7.comp's push constants: the strip as astc.comp has it, then the footprint, which is no constant of its
@@ -197,14 +198,14 @@ static void bc7_init(void) {
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_astc.bc7_scratch, &g_astc.bc7_mem, NULL)))
         fatal("vulkan: cannot allocate the BC7 encoder's scratch memory");
-    vk_mem_track(g_astc.bc7_mem);
+    vk_mem_track(g_astc.bc7_mem, VK_OWN_ENCODER);
     /* a word a block the scratch holds, were every block of a strip left to the second pass */
     bi.size = BC7_WORK_HEAD + g_astc.cap / 4;
     bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_astc.bc7_work, &g_astc.bc7_work_mem, NULL)))
         fatal("vulkan: cannot allocate the BC7 encoder's work list");
-    vk_mem_track(g_astc.bc7_work_mem);
+    vk_mem_track(g_astc.bc7_work_mem, VK_OWN_ENCODER);
 }
 
 u32 vk_bc7_build(u32 w, u32 h, u32 d) {
@@ -911,7 +912,7 @@ static Bc7Job* bg_job_new(const u64 key[2], u32 w, u32 h, u32 depth, u32 bw, u32
         return NULL;
     }
     if (j->snap) {
-        vk_mem_track(j->snap_mem);
+        vk_mem_track(j->snap_mem, VK_OWN_ENCODER);
         j->snap_bytes = bytes;
         g_bg.snap_bytes += bytes;
     }
@@ -1433,7 +1434,7 @@ int vk_astc_keep(Surf* t) {
         t->bc7.kept_mem = VK_NULL_HANDLE;
         return 0;
     }
-    vk_mem_track(t->bc7.kept_mem);
+    vk_mem_track(t->bc7.kept_mem, VK_OWN_TEXTURE);
     t->bc7.kept_bytes = bytes;
     g_astc.kept_bytes += bytes;
     return 1;
