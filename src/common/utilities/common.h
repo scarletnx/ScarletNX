@@ -297,16 +297,21 @@ typedef struct {
     size_t left;         /* the units no thread has taken yet */
 } SnxAotReading;
 typedef struct {
-    unsigned most;    /* the threads the cores give */
+    unsigned most;    /* the threads the cores give, or aot_threads_most */
     unsigned threads; /* the threads open */
     SnxU64 base;      /* the footprint before the first unit: the recompile's own, with no unit under way */
     SnxU64 unit;      /* the most a unit under way was seen to take: the units' memory over the units under way */
     int said;         /* why the last tick opened none, so each reason is said once: 0 none, 1 no room, 2 pressure */
 } SnxAotGovernor;
 /* Starts the control on 1 thread of most, with the footprint before the first unit and the words of the system's
-   pressure signal (snx_memory_pressure's), and writes its first line into line, without a newline */
-void snx_aot_governor_start(SnxAotGovernor* g, unsigned most, SnxU64 footprint, const char* pressure, char* line,
-                            size_t size);
+   pressure signal (snx_memory_pressure's), and writes its first line into line, without a newline. most_key: most is
+   the setting aot_threads_most's, not the cores' */
+void snx_aot_governor_start(SnxAotGovernor* g, unsigned most, int most_key, SnxU64 footprint, const char* pressure,
+                            char* line, size_t size);
+/* The threads a recompile compiles on, from the settings aot_threads and aot_threads_most: threads when it names a
+   count; for 0 (Auto) the most it opens, most when it names one, else what the cores give (snx_build_threads). A most
+   given beside a count changes nothing, and note says so with both values, without a newline; "" otherwise */
+unsigned snx_aot_threads(int threads, int most, char* note, size_t size);
 /* A tick: 1 when one more thread opens (g->threads counts it already), 0 when none does. line gets what was decided
    and the numbers it came from, without a newline: every thread opened, and a reason not to open the first tick it
    holds; "" when there is nothing new to say. pressure is the words of r->pressure */

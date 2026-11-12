@@ -6,7 +6,8 @@
 typedef struct {
     const char* opt;
     unsigned jobs;
-    int jobs_open; /* jobs is the most the cores give: the threads open as the memory holds them (aot_threads=0) */
+    int jobs_open; /* jobs is the most: the threads open as the memory holds them (aot_threads=0); 2 when that most is
+                      aot_threads_most's, 1 the cores' */
     int target_win, quiet;
 } SnxCompileOptions;
 char* snx_build_runtime(const SnxPaths* paths, int target_win, int quiet);

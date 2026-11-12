@@ -1087,8 +1087,13 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         return snx_error("llvm_batch = ipo takes the place of -O1 to -O3, s and z's passes: opt = 0 runs none");
     compile.opt = g_settings.optimization_level;
     gen.chunk_instrs = (size_t)g_settings.unit_size;
-    compile.jobs = g_settings.aot_threads > 0 ? (unsigned)g_settings.aot_threads : snx_build_threads();
-    compile.jobs_open = g_settings.aot_threads <= 0; /* Auto: up to that many, as the units' memory is measured */
+    {
+        char note[160];
+        compile.jobs = snx_aot_threads(g_settings.aot_threads, g_settings.aot_threads_most, note, sizeof note);
+        if (note[0]) fprintf(stderr, "scarletnx: %s\n", note);
+    }
+    /* Auto: up to that many, as the units' memory is measured; 2 when aot_threads_most set that many */
+    compile.jobs_open = g_settings.aot_threads > 0 ? 0 : g_settings.aot_threads_most > 0 ? 2 : 1;
     if (!strcmp(target, "win64"))
         compile.target_win = 1;
     else if (!strcmp(target, "linux"))

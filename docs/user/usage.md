@@ -35,7 +35,7 @@ works for now, and the run says once what it is called now ([Deprecations](depre
 
 Each driver that recompiles (`scarletnx`, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-agb`) also takes
 `--aot_threads=N`, the setting [`aot_threads`](settings.md): the threads compiling the game's code, 0 (the default)
-up to the computer's cores with a quarter left free (`scarletnx`'s open one at a time, as the memory holds them:
+up to the computer's cores with a quarter left free, or to `--aot_threads_most=N` (`scarletnx`'s open one at a time, as the memory holds them:
 [Extract → AOT → run](#extract--aot--run)). A GBA ROM's code is one module and compiles on one thread whatever N,
 which its recompile says. A value that is not a whole number from 0 to 1024 stops the run.
 

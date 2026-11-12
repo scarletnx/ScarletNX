@@ -429,7 +429,7 @@ typedef struct App {
     bool job_low;      /* its priority lowered: Background recompile Gentle, Auto on battery, or a game playing */
     bool job_kept_low; /* the system refused to raise it again: low until it ends, job_said says why */
     char job_said[160];
-    int job_threads;        /* the threads it was started with: 0 for the driver's own count (the AOT threads') */
+    int job_threads;        /* the most threads it was started with: 0 for the driver's own (the AOT threads') */
     int queue_focus;        /* the Compile tab's row, a job of the queue */
     int background_mode; /* app.ini's background_recompile: GUI_BACKGROUND_AUTO (Gentle on battery), FULL or GENTLE */
     /* the host on its battery, as SDL said it at power_ms (asked again 5 s on, not each frame); power_test, a test's: 1
@@ -7975,7 +7975,8 @@ static const GuiThemeKey app_keys[] = {
     {"", SNX_TR_NOOP("Background recompile"), GUI_KEY_ACTION, offsetof(GuiAppForm, background),
      sizeof(((GuiAppForm*)0)->background), NULL, 0,
      SNX_TR_NOOP("The Compile tab's: R's, B's and a game's first. Auto: Gentle on battery, Full on the charger. Full: "
-                 "every core. Gentle: half of them, at a low priority. Each goes gently while a game plays"),
+                 "its threads as the recompile's settings give them. Gentle: as many as the memory holds, up to half "
+                 "of those, at a low priority. Each goes gently while a game plays"),
      0, 0, 0, 0, NULL},
     {"", SNX_TR_NOOP("Theme Editor"), GUI_KEY_ACTION, 0, 0, NULL, 0,
      SNX_TR_NOOP("This theme's keys with a preview, saved as themes/<name>/theme.ini"), 0, 0, 0, 0, NULL},
@@ -15593,17 +15594,17 @@ static void job_speed(App* app, char* out, size_t size) {
     else
         snprintf(out, size, "%s", snx_tr("Gentle, a game plays"));
     n = strlen(out);
-    if (app->job_threads && n < size) snprintf(out + n, size - n, snx_tr(", %d threads"), app->job_threads);
+    if (app->job_threads && n < size) snprintf(out + n, size - n, snx_tr(", up to %d threads"), app->job_threads);
     n = strlen(out);
     if (app->job_said[0] && !app->job_kept_low && n < size) /* the priority it could not have */
         snprintf(out + n, size - n, " (%s)", app->job_said);
 }
-/* the threads a recompile of the queue takes at full speed: the AOT threads picked, else the runtime's own Auto,
-   so a Gentle recompile (its half) leaves the machine the same room the queue's Full one would */
+/* the threads a recompile of the queue takes at full speed: the AOT threads picked, else the most the runtime's Auto
+   opens, so a Gentle recompile (its half) leaves the machine the same room the queue's Full one would */
 static int job_cores(App* app) {
-    const char* picked = gui_settings_value(settings_of(app), "aot_threads");
-    int n = picked ? SDL_atoi(picked) : 0;
-    return n > 0 ? n : (int)snx_build_threads();
+    const char *picked = gui_settings_value(settings_of(app), "aot_threads"),
+               *most = gui_settings_value(settings_of(app), "aot_threads_most");
+    return (int)snx_aot_threads(picked ? SDL_atoi(picked) : 0, most ? SDL_atoi(most) : 0, NULL, 0);
 }
 /* the Compile tab, its focus on job i */
 static void queue_show(App* app, int i) {
@@ -15625,12 +15626,13 @@ static void job_start(App* app) {
     while ((i = gui_queue_next(&app->queue)) >= 0 && gui_queue_running(&app->queue) < 0) {
         job = &app->queue.job[i];
         free((void*)argv);
-        argv = (const char**)snx_alloc((size_t)(job->argc + 2) * sizeof *argv); /* and --aot_threads= */
+        argv = (const char**)snx_alloc((size_t)(job->argc + 3) * sizeof *argv); /* and Gentle's two */
         n = gui_queue_argv(&app->queue, i, argv);
         gentle = job_gentle(app);
         app->job_threads = gentle ? SDL_max(1, job_cores(app) / 2) : 0;
-        if (gentle) { /* after the settings' --aot_threads=, which the last one given replaces */
-            snprintf(threads, sizeof threads, "--aot_threads=%d", app->job_threads);
+        if (gentle) { /* after the settings', which the last one given replaces: Auto, as the memory holds, up to half */
+            snprintf(threads, sizeof threads, "--aot_threads_most=%d", app->job_threads);
+            argv[n++] = "--aot_threads=0";
             argv[n++] = threads;
             argv[n] = NULL;
         }

@@ -268,9 +268,11 @@ static void worker(void* arg) {
     }
     snx_ir_free(ir);
 }
-/* on the threads the setting aot_threads gives, as the Switch's recompile: N, or for 0 the machine's own count */
+/* on the threads the settings aot_threads and aot_threads_most give, as the Switch's recompile (snx_aot_threads) */
 static bool compile_chunks(Work* w) {
-    unsigned jobs = g_settings.aot_threads > 0 ? (unsigned)g_settings.aot_threads : snx_build_threads();
+    char note[160];
+    unsigned jobs = snx_aot_threads(g_settings.aot_threads, g_settings.aot_threads_most, note, sizeof note);
+    if (note[0]) fprintf(stderr, "scarletnx-3ds: %s\n", note);
     if (jobs > w->chunks) jobs = w->chunks;
     if (jobs < 1) jobs = 1;
     printf("ARM11 AOT: %u chunks of static blocks on %u threads\n", w->chunks, jobs);
