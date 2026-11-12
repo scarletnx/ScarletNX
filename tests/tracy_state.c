@@ -12,6 +12,9 @@ static struct {
     int failures;
     int startups, shutdowns, connected, zones, zone_ends, captures, logs, frames;
     int gpu_begins, gpu_ends, gpu_times, gpu_syncs, gpu_calibrates, configs, srclocs;
+    int msgs;
+    size_t msg_size;
+    char msg[32];
     uint64_t conn;
 } g_test;
 #define CHECK(x)                                                                                                       \
@@ -49,8 +52,11 @@ void ___tracy_end_sampling_profiling(void) {}
 void ___tracy_emit_frame_mark_start(const char* name) { (void)name; }
 void ___tracy_emit_frame_mark_end(const char* name) { (void)name; }
 void ___tracy_emit_logString(int8_t severity, int32_t color, int32_t callstack_depth, size_t size, const char* txt) {
-    (void)severity, (void)color, (void)callstack_depth, (void)size, (void)txt;
-}
+    (void)severity, (void)color, (void)callstack_depth;
+    g_test.msgs++;
+    g_test.msg_size = size;
+    snprintf(g_test.msg, sizeof g_test.msg, "%.*s", (int)(size < sizeof g_test.msg - 1 ? size : sizeof g_test.msg - 1),
+             txt);}
 uint64_t ___tracy_alloc_srcloc_name(uint32_t line, const char* source, size_t source_size, const char* function,
                                     size_t function_size, const char* name, size_t name_size, uint32_t color) {
     (void)line, (void)source, (void)source_size, (void)function, (void)function_size, (void)name, (void)name_size;
@@ -209,6 +215,10 @@ int main(void) {
         CHECK(snx_tracy_gpu_cal_delta(&cal, 900) == 200);
     }
     dropped0 = g_tracy_dropped; /* what the run dropped before the test's own zones: the app's code's */
+    /* a message: one emission, gated as the other short ones are, and nothing after the gate shuts */
+    g_test.msgs = 0;
+    SNX_MSG("a syncpoint wait", 16);
+    CHECK(g_test.msgs == 1 && g_test.msg_size == 16 && !strncmp(g_test.msg, "a syncpoint wait", 16));
     /* a zone deeper than the limit is dropped rather than leaked: its begin sends nothing, and the count says how
        many went that way */
     {
@@ -236,6 +246,8 @@ int main(void) {
     CHECK(g_test.shutdowns == 1 && g_test.zone_ends == 67 && g_tracy_pending == 0); /* the deep test's, and this one's */
     snx_tracy_zone_end(ctx);
     CHECK(g_test.zone_ends == 67);
+    SNX_MSG("after the stop", 14);
+    CHECK(g_test.msgs == 1); /* the gate is shut: the client's data cannot be read */
     CHECK(!snx_tracy_gate_open() && !snx_tracy_enter() && !snx_tracy_zone_begin(&where).active);
     /* stopped for good: a second shutdown and a capture asked for start and stop nothing, and say nothing either
        (a running client's capture would say the GUI is attached) */

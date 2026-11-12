@@ -840,6 +840,20 @@ static void frontend_loop(void) {
             was_frees = frees;
             last_ns = now_ns;
         }
+        {
+            /* the syncpoint plots' bases */
+            static u64 was_waits, was_timeouts, last_ns;
+            u64 waits = 0, timeouts = 0, now_ns = plat_ns();
+            double secs = last_ns ? (double)(now_ns - last_ns) / 1e9 : 0.0;
+            syncpt_wait_stats(&waits, &timeouts);
+            if (secs > 0) {
+                SNX_PLOT("syncpt waits/s", (double)(waits - was_waits) / secs);
+                SNX_PLOT("syncpt timeouts/s", (double)(timeouts - was_timeouts) / secs);
+            }
+            was_waits = waits;
+            was_timeouts = timeouts;
+            last_ns = now_ns;
+        }
 #endif
         pause_unattended();
         state_poll();

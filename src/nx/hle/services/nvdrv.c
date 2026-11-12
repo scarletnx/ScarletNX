@@ -36,6 +36,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/video/host1x.h"
 #include "nx/runtime/clock.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdlib.h>
 #include <string.h>
 static void nv_events_check(void);
@@ -650,12 +651,13 @@ static int syncpt_reached(u32 id, u32 thresh) { return (i32)(syncpt_read(id) - t
 /* 1 once id reaches thresh, 0 when the time runs out first. timeout_ns 0 looks once, negative waits for good. The
    deadline is absolute, so a spurious wakeup doesn't extend it, and in guest time, which a game pause stops */
 int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
-    u64 deadline;
+    u64 deadline, waited_ns;
     int reached;
     if (id >= SYNCPT_IDS) return 0;
     if (syncpt_reached(id, thresh)) return 1;
     if (!timeout_ns) return 0;
     deadline = timeout_ns > 0 ? guest_ns() + (u64)timeout_ns : 0;
+    u64 started = plat_ns();
     /* syncpt_bump broadcasts under it, so no increment slips between the check and the wait */
     pm_lock(&g_host.nvdrv.sync_lk);
     for (;;) {
@@ -670,7 +672,21 @@ int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
         kthread_wait(&g_host.nvdrv.sync_cv, &g_host.nvdrv.sync_lk, left);
     }
     pm_unlock(&g_host.nvdrv.sync_lk);
+    waited_ns = plat_ns() - started;
+    __atomic_add_fetch(&g_hle.nvdrv.syncpt_waits, 1, __ATOMIC_RELAXED);
+    [[maybe_unused]] double ms = (double)waited_ns / 1e6;
+    SNX_PLOT("syncpt wait ms", ms);
+    if (!reached) __atomic_add_fetch(&g_hle.nvdrv.syncpt_timeouts, 1, __ATOMIC_RELAXED);
+    if (ms > 1.0 && snx_tracy_attached()) {
+        char msg[64];
+        int n = snprintf(msg, sizeof msg, "syncpoint %u waited for %u", id, thresh);
+        if (n > 0 && n < (int)sizeof msg) SNX_MSG(msg, (size_t)n);
+    }
     return reached;
+}
+void syncpt_wait_stats(u64* waits, u64* timeouts) {
+    *waits = __atomic_load_n(&g_hle.nvdrv.syncpt_waits, __ATOMIC_RELAXED);
+    *timeouts = __atomic_load_n(&g_hle.nvdrv.syncpt_timeouts, __ATOMIC_RELAXED);
 }
 /* every syncpoint user (GPU channels here, host1x channels in host1x.c) allocates here, lowest free id first, so ids
    stay unique and below SYNCPT_N (nvdrv.h: NVIDIA's stream library sizes its per-syncpoint tables at 128, and an id
@@ -712,12 +728,14 @@ static int fence_on_gpu_thread(u32 id, u32 val) {
     int gpu = id < SYNCPT_N && g_hle.nvdrv.syncpt_gpu[id] && (i32)(val - g_hle.nvdrv.syncpt_max[id]) <= 0;
     pm_unlock(&g_host.nvdrv.sync_lk);
     if (gpu) return 1;
+    [[maybe_unused]] u64 started = plat_ns();
     if (!syncpt_wait(id, val, FENCE_WAIT_NS))
         WARN_LIMIT(
             8,
             "gpu: a present waited %u ms on its own thread for syncpoint %u to reach %u (it is at %u), and goes "
             "on\n",
             (unsigned)(FENCE_WAIT_NS / NS_PER_MS), id, val, syncpt_read(id));
+    SNX_PLOT("present fence wait ms", (double)(plat_ns() - started) / 1e6);
     return 0;
 }
 void nv_gpu_call_after(u32 n, u32* id, const u32* val, void (*fn)(void*), void* arg) {
