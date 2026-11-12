@@ -222,10 +222,6 @@ typedef struct {
     u8 syncpt_used[SYNCPT_N];
     u8 syncpt_gpu[SYNCPT_N]; /* a GPU channel's: submissions promise its increments (syncpt_max), the GPU thread makes
                                 them (sync_lk) */
-    /* the waits that blocked (syncpt_wait), and those whose time ran out first, both atomic */
-    u64 syncpt_waits;
-    char syncpt_pad[64];
-    u64 syncpt_timeouts;
     /* each ctrl fd's event slots, a table of ctrl_evt taken on first use and given back with the fd, under
        nvev_lk: 1 + its index, 0 for none. As on the console, the slots are the fd's (Ryujinx's NvHostCtrlDeviceFile
        keeps them per open). A game's GPU fence waits (one fd) and its movie player (another) both use slot 0,
@@ -258,6 +254,10 @@ typedef struct {
     PMutex nvev_lk;
     /* nv_first_use's (device, ioctl) pairs, under seen_lock */
     PMutex seen_lock;
+    /* the waits that blocked (syncpt_wait), and those whose time ran out first, both atomic: the profiler's rates */
+    u64 syncpt_waits;
+    char syncpt_pad[64];
+    u64 syncpt_timeouts;
 } HostNvdrv;
 /* nvdrv's thread state, t_hle.nvdrv (hle.h's) */
 typedef struct {

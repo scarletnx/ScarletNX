@@ -673,10 +673,10 @@ int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
     }
     pm_unlock(&g_host.nvdrv.sync_lk);
     u64 waited_ns = plat_ns() - started;
-    __atomic_add_fetch(&g_hle.nvdrv.syncpt_waits, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_host.nvdrv.syncpt_waits, 1, __ATOMIC_RELAXED);
     [[maybe_unused]] double ms = (double)waited_ns / 1e6;
     SNX_PLOT("syncpt wait ms", ms);
-    if (!reached) __atomic_add_fetch(&g_hle.nvdrv.syncpt_timeouts, 1, __ATOMIC_RELAXED);
+    if (!reached) __atomic_add_fetch(&g_host.nvdrv.syncpt_timeouts, 1, __ATOMIC_RELAXED);
     if (ms > 1.0 && snx_tracy_attached()) {
         char msg[64];
         int n = snprintf(msg, sizeof msg, "syncpoint %u waited for %u", id, thresh);
@@ -685,8 +685,8 @@ int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
     return reached;
 }
 void syncpt_wait_stats(u64* waits, u64* timeouts) {
-    *waits = __atomic_load_n(&g_hle.nvdrv.syncpt_waits, __ATOMIC_RELAXED);
-    *timeouts = __atomic_load_n(&g_hle.nvdrv.syncpt_timeouts, __ATOMIC_RELAXED);
+    *waits = __atomic_load_n(&g_host.nvdrv.syncpt_waits, __ATOMIC_RELAXED);
+    *timeouts = __atomic_load_n(&g_host.nvdrv.syncpt_timeouts, __ATOMIC_RELAXED);
 }
 /* every syncpoint user (GPU channels here, host1x channels in host1x.c) allocates here, lowest free id first, so ids
    stay unique and below SYNCPT_N (nvdrv.h: NVIDIA's stream library sizes its per-syncpoint tables at 128, and an id

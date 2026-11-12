@@ -734,6 +734,16 @@ static void test_hid(void) {
     set_styles(h, 0x7F);
     test_vibration(h);
     test_npad_players(h);
+    /* the input ticks the profiler counts are the host's (g_host.hid): a state load, which puts a saved g_hle in
+       place, leaves the count where it is */
+    {
+        static Hle saved;
+        u64 ticks = hid_updates();
+        memcpy(&saved, &g_hle, sizeof g_hle);
+        hid_update();
+        memcpy(&g_hle, &saved, sizeof g_hle);
+        CHECK(hid_updates() == ticks + 1);
+    }
     close_handles();
     test_full_handle_table(h);
     svcobj_unref(h);
