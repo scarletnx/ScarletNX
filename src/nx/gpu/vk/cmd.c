@@ -15,6 +15,7 @@
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/texture_arrays.h"
 #include "nx/gpu/vk/uma_budget.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/common.h"
@@ -1107,11 +1108,14 @@ VkDescriptorPool vk_desc_pool_new(u32 array_sets) {
     VkDescriptorPoolSize sz[VK_POOL_TYPES];
     VkDescriptorPoolCreateInfo ci = {0};
     vk_pool_sizes(sz, 1024, array_sets);
-    if (!__atomic_exchange_n(&said[!array_sets ? 0 : array_sets == VK_POOL_ARRAY_SETS ? 1 : 2], 1, __ATOMIC_RELAXED))
-        LOG("vulkan: descriptor pools of 1024 sets, %u of them with texture arrays: %u uniform and %u storage "
-            "buffers, %u combined image samplers, %u storage images, %u texel buffers, %u sampled images\n",
-            array_sets, sz[0].descriptorCount, sz[1].descriptorCount, sz[2].descriptorCount, sz[3].descriptorCount,
+    if (!__atomic_exchange_n(&said[!array_sets ? 0 : array_sets == VK_POOL_ARRAY_SETS ? 1 : 2], 1, __ATOMIC_RELAXED)) {
+        char arrays[96]; /* the arrays the sets hold, which a device without them leaves out (vk_pool_sizes) */
+        snx_vk_pool_arrays_text(arrays, sizeof arrays, array_sets, vk_texture_array_elements());
+        LOG("vulkan: descriptor pools of 1024 sets, %s: %u uniform and %u storage buffers, %u combined image samplers, "
+            "%u storage images, %u texel buffers, %u sampled images\n",
+            arrays, sz[0].descriptorCount, sz[1].descriptorCount, sz[2].descriptorCount, sz[3].descriptorCount,
             sz[4].descriptorCount, sz[5].descriptorCount);
+    }
     ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     ci.maxSets = 1024;
     ci.poolSizeCount = VK_POOL_TYPES;

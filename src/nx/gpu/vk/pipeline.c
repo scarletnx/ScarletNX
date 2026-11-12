@@ -26,6 +26,7 @@
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/gpu/vk/tess_passthrough.h"
+#include "nx/gpu/vk/texture_arrays.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/shader/shipped.h"
 #include "nx/gpu/shipped_pass.h"
@@ -549,6 +550,7 @@ VkShaderStageFlags vk_set_stages(int s) {
     if (s < 0 || s >= 5) return 0;
     return vis[s] | (s == shader_vk_set(ST_MS) || s == shader_vk_set(ST_TS) ? g_vk.mesh_stages : 0);
 }
+u32 vk_texture_array_elements(void) { return g_shader_texture_arrays ? SNX_TEX_ARRAY : 0; }
 int vk_dslayout_arrays(VkDescriptorSetLayout layout) {
     for (u32 s = 0; s < 5; s++)
         if (layout && layout == g_vk_dslayout[1][s]) return g_shader_texture_arrays;
@@ -592,12 +594,17 @@ void vk_pipeline_init(void) {
     pm_lock_announce(&g_pipeline.xlate_lock, "shader translate");
     /* the tessellation and geometry stages' sets come after the first two, where the device binds that many */
     g_vk_stage_sets = g_vk.props.limits.maxBoundDescriptorSets >= 5 ? 5 : 2;
-    /* A compact array holds the unique handles selected by all indexed tables. */
-    if (g_vk.props.limits.maxPerStageDescriptorSamplers < SH_MAXTEX + 2 * SNX_TEX_ARRAY ||
-        g_vk.props.limits.maxPerStageDescriptorSampledImages < SH_MAXTEX + 2 * SNX_TEX_ARRAY ||
-        g_vk.props.limits.maxDescriptorSetSamplers < 5 * (SH_MAXTEX + 2 * SNX_TEX_ARRAY) ||
-        g_vk.props.limits.maxDescriptorSetSampledImages < 5 * (SH_MAXTEX + 2 * SNX_TEX_ARRAY))
-        g_shader_texture_arrays = 0;
+    /* A compact array holds the unique handles selected by all indexed tables, where the device binds it beside a
+       stage's own SH_MAXTEX (texture_arrays.h); the line says why where it does not */
+    {
+        const VkPhysicalDeviceLimits* l = &g_vk.props.limits;
+        SnxVkTextureLimits tl = {l->maxPerStageDescriptorSamplers, l->maxPerStageDescriptorSampledImages,
+                                 l->maxDescriptorSetSamplers, l->maxDescriptorSetSampledImages};
+        char line[640];
+        g_shader_texture_arrays =
+            snx_vk_texture_array_say(line, sizeof line, g_shader_texture_arrays, &tl, SH_MAXTEX, SNX_TEX_ARRAY) != 0;
+        if (line[0]) LOG("%s\n", line);
+    }
     cbufs_fit_limits();
     for (int s = 0; s < 5; s++) {
         VkDescriptorSetLayoutBinding b[SNX_VKB_END];
@@ -619,12 +626,6 @@ void vk_pipeline_init(void) {
         g_vk.image_slots[shader_stage[s]] = image_slots;
         g_vk.buffer_image_slots[shader_stage[s]] = buffer_slots;
         if (!s) g_vk_buffer_image_slots = buffer_slots;
-        /* A compact array holds the unique handles selected by all indexed tables. */
-        if (g_vk.props.limits.maxPerStageDescriptorSamplers < SH_MAXTEX + 2 * SNX_TEX_ARRAY ||
-            g_vk.props.limits.maxPerStageDescriptorSampledImages < SH_MAXTEX + 2 * SNX_TEX_ARRAY ||
-            g_vk.props.limits.maxDescriptorSetSamplers < 5 * (SH_MAXTEX + 2 * SNX_TEX_ARRAY) ||
-            g_vk.props.limits.maxDescriptorSetSampledImages < 5 * (SH_MAXTEX + 2 * SNX_TEX_ARRAY))
-            g_shader_texture_arrays = 0;
         for (i = 0; i < SNX_VKB_END; i++) {
             if (i == SNX_VKB_CAPTURE && (s != 1 || !vk_capture_tiles_supported())) continue;
             /* Each graphics stage has storage bindings within both per-stage and whole-pipeline limits. */

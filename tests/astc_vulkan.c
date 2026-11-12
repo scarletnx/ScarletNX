@@ -173,6 +173,7 @@ int vk_dslayout_arrays(VkDescriptorSetLayout layout) {
     (void)layout;
     return 0;
 }
+u32 vk_texture_array_elements(void) { return 0; }
 void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets) {
     (void)array_sets;
     sz[0] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * 2};
