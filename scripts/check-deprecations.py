@@ -8,6 +8,8 @@ and line:
   working tree's file has not is named by src/nx/runtime/ini.c's INI_DEPRECATED, which keeps it under a game's
   [Deprecated] with what became of it, and by a `.ini` key row of docs/user/deprecations.md's table under ## Now
 - the two name the same keys, and none of them is a key settings.txt has now: the runtime never reads a deprecated one
+- no other document (README.md, CONTRIBUTING.md, ROADMAP.md, docs/) writes a deprecated key as a setting, in code
+  (`nvn_direct=1`, `--user=N`): it would tell the reader to set what nothing reads; naming it is fine
 
 A key is read as settingsgen makes it: <N> of a repeat and <ID> of an each written out, a vulkan table's @NAME as name
 in lowercase. An llvm table's keys are LLVM's passes and options, which LLVM keeps, so they are not read. A state is the
@@ -30,6 +32,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SETTINGS = 'src/nx/runtime/settings.txt'
 INI_C = 'src/nx/runtime/ini.c'
 DOC = 'docs/user/deprecations.md'
+DOCUMENTS = ('README.md', 'CONTRIBUTING.md', 'ROADMAP.md', 'docs')
+SETTING = re.compile(r'`-{0,2}([a-z_][a-z0-9_]*)=')
 SKIP = 77
 
 KEY = re.compile(r'^[a-z_][a-z0-9_]*$')
@@ -146,6 +150,21 @@ def doc_keys(root):
     return keys, now
 
 
+def settings_written(root, keys):
+    """[(path, line, key)] of a deprecated key written as a setting in a document but deprecations.md"""
+    out = []
+    for name in DOCUMENTS:
+        top = root / name
+        paths = sorted(top.rglob('*.md')) if top.is_dir() else [top] if top.is_file() else []
+        for path in paths:
+            relative = path.relative_to(root).as_posix()
+            if relative == DOC:
+                continue
+            for number, line in enumerate(path.read_text(encoding='utf-8', errors='replace').split('\n'), 1):
+                out += [(relative, number, key) for key in SETTING.findall(line) if key in keys]
+    return out
+
+
 def git(root, *args, data=None):
     run = subprocess.run(['git', '-C', str(root), *args], input=data, capture_output=True, check=False)
     if run.returncode:
@@ -212,6 +231,10 @@ def check(root, since=None):
         failures.add(INI_C, table_line, f'{key}: {DOC}:{documented[key]} names it, INI_DEPRECATED does not')
     for key in sorted(set(deprecated) & now):
         failures.add(INI_C, deprecated[key], f'{key}: deprecated, and {SETTINGS} has it: the runtime never reads it')
+    for path, line, key in settings_written(root, deprecated):
+        failures.add(
+            path, line, f'{key}=: a deprecated key written as a setting, which the runtime does not read ({DOC})'
+        )
     first = read[0]
     shallow = git(root, 'rev-parse', '--is-shallow-repository').decode().strip() == 'true'
     said = (
