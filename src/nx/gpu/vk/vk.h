@@ -593,6 +593,7 @@ u32 vk_desc_pools(void);                 /* the pools that exist, made on any th
 void vk_desc_taken(VkDescriptorSetLayout layout, u32 n); /* n sets of layout taken from a frame's pools */
 u64 vk_desc_array_sets(void);                            /* the sets of the arrays layouts taken so far */
 int vk_dslayout_arrays(VkDescriptorSetLayout layout);    /* one of the stage layouts with the texture arrays */
+u32 vk_texture_array_elements(void); /* each texture array's elements, 0 where the device takes none (pipeline.c) */
 /* each heap's use and budget and the descriptor pools, as text for a line: any thread, also one that never calls
    Vulkan */
 void vk_memory_text(char* out, size_t size);
