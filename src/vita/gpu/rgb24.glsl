@@ -23,15 +23,23 @@ void main() {
         dst[w] = (bgr != 0u ? (c2 | (c1 << 8u) | (c0 << 16u)) : (c0 | (c1 << 8u) | (c2 << 16u))) | 0xff000000u;
         return;
     }
-    uint v = dst[w];
-    for (uint b = 0u; b < 4u; b++) {
-        uint at = (w << 2u) + b;
-        if (at < dst_at) continue;
-        uint s = at - dst_at, p = s / 3u, y = p / stride, x = p - y * stride;
+    /* the word's first byte of the surface (b: 4 when it has none) finds its pixel and component by division, the
+       bytes after it by stepping: a component on, then a pixel, then a row */
+    uint v = dst[w], at = w << 2u, b = at < dst_at ? min(dst_at - at, 4u) : 0u;
+    uint s = at + b - dst_at, p = s / 3u, y = p / stride, x = p - y * stride, c = s - p * 3u;
+    for (; b < 4u; b++) {
         if (y >= height) break;
-        if (x >= width) continue;
-        uint c = s - p * 3u, component = bgr != 0u ? 2u - c : c, shift = b << 3u;
-        v = (v & ~(0xffu << shift)) | (((src[y * width + x] >> (component << 3u)) & 0xffu) << shift);
+        if (x < width) {
+            uint component = bgr != 0u ? 2u - c : c, shift = b << 3u;
+            v = (v & ~(0xffu << shift)) | (((src[y * width + x] >> (component << 3u)) & 0xffu) << shift);
+        }
+        if (++c == 3u) {
+            c = 0u;
+            if (++x == stride) {
+                x = 0u;
+                y++;
+            }
+        }
     }
     dst[w] = v;
 }
