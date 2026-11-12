@@ -227,11 +227,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_tests_properties(vulkan_headless PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the recording thread's own vk_rec_sync must return: the fatal path of a lost device calls it from that thread, and
-    # a wait there waits for the thread that runs it (record.c). This one needs no shaders, so it runs on any driver,
-    # and a run that hangs fails at the timeout
+    # a wait there waits for the thread that runs it (record.c); and the window's release for the error's screen must
+    # return while that thread is stopped in a packet. These need no shaders, so they run on any driver, and a run
+    # that hangs fails at the timeout
     add_test(NAME vulkan_recorder COMMAND snx-test-vulkan -H)
-    set_tests_properties(vulkan_recorder PROPERTIES TIMEOUT 20 ENVIRONMENT "SNX_TEST_RECORDER_ONLY=1"
-        PASS_REGULAR_EXPRESSION "The recording thread's own vk_rec_sync returns")
+    set_tests_properties(vulkan_recorder PROPERTIES TIMEOUT 30 ENVIRONMENT "SNX_TEST_RECORDER_ONLY=1"
+        PASS_REGULAR_EXPRESSION "PASS headless Vulkan recorder only")
     # the writable storage buffers' check (tests/vulkan_storage_buffer_keep.inc) with guest buffers copied: the default
     # run takes unified memory on an integrated device and on lavapipe, which writes them in guest memory instead of
     # keeping them on the GPU. A run that hangs fails at the timeout

@@ -263,7 +263,9 @@ int vk_api_setting(const char* text, u32* cap, char* why, size_t n);
 enum { VK_SC_UNORM, VK_SC_SRGB, VK_SC_PQ, VK_SC_SCRGB };
 int vk_swapchain_create(int kind);
 int vk_surface_recreate(void);
-int vk_window_release(void); /* Renderer.release_window */
+/* Renderer.release_window, for a fatal error's screen (sdl3.c): 1 when the swapchain and the surface are gone, 0 when a
+   thread holding the renderer, a queue or the swapchain did not let go in time, and the window stays as it is */
+int vk_window_release(void);
 /* logs a failed call with where it happened; evaluates to 1 on success */
 #define VK_OK(call) vk_ok_((call), #call, __FILE__, __LINE__)
 int vk_ok_(VkResult r, const char* what, const char* file, int line);
@@ -628,6 +630,11 @@ void vk_rec_begin_upload(VkCommandBuffer cb); /* begins cb, the submission's upl
 void vk_rec_submit(VkCommandBuffer up, VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw,
                    const VkSemaphoreSubmitInfo* s, u32 ns);
 void vk_rec_sync(void);       /* until everything queued is recorded and submitted */
+/* vk_rec_sync's wait, given up at until (plat_ns; VK_REC_FOREVER: never): 1 when the ring drained, 0 when it had not by
+   then. The window's release for a fatal error waits this way (vk_window_release): an error or a crash on the
+   recording thread stops it inside a packet for good, and the ring never drains */
+#define VK_REC_FOREVER (~0ull)
+int vk_rec_sync_until(u64 until);
 /* Runs fn(arg) on the recording thread, after what the ring already holds, and returns when it has run. This is how a
    check puts a call where the fatal path calls from (submit_run): vk_rec_sync there must not wait for the thread it
    runs on (tests/vulkan_headless.c's check_recorder_self_sync). A call from the recording thread itself returns at
@@ -642,6 +649,7 @@ void vk_rec_call(void (*fn)(const void* arg), const void* arg, u64 size);
    thread submits and presents the frames and binds sparse memory (record.c, memory.c) without vk_lock, which the GPU
    thread holds while it submits compute. A leaf lock: taken with vk_lock held or not, never the other way */
 void vk_queue_lock(VkQueue q);
+int vk_queue_trylock(VkQueue q); /* vk_queue_lock unless another thread holds it: 1 when taken */
 void vk_queue_unlock(VkQueue q);
 /* presents image idx of sc once wait is signaled, in order after the submissions queued before it (vk_lock). The
    result is this present's without the recording thread, otherwise that of an earlier one which wasn't VK_SUCCESS,

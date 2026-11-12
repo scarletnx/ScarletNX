@@ -98,6 +98,66 @@ static int check_recorder_self_sync(void) {
     return 0;
 }
 
+/* An error or a crash on the recording thread stops it inside a packet for good, with what the packet took: a submit or
+   a present keeps the graphics queue's lock. The window's release for the error's screen, which the main thread makes
+   (sdl3.c's fatal_screen), waited for that ring to drain with no end: the window froze, no error showed and the process
+   stayed. The release has to return in its own while: the window let go when the packet holds nothing, and kept (the
+   system's box shows the error) when it holds the queue's lock */
+static u32 g_rec_stop; /* 0 not reached, 1 the packet stopped there, 2 let go */
+static void recorder_stops(const void* arg) {
+    int hold_queue = *(const int*)arg;
+    if (hold_queue) vk_queue_lock(g_vk.gfx);
+    __atomic_store_n(&g_rec_stop, 1, __ATOMIC_RELEASE);
+    plat_wake_word(&g_rec_stop);
+    while (__atomic_load_n(&g_rec_stop, __ATOMIC_ACQUIRE) != 2) plat_wait_word(&g_rec_stop, 1, -1);
+    if (hold_queue) vk_queue_unlock(g_vk.gfx);
+}
+static u32 g_release_done; /* 0 running, 1 returned */
+static int g_released;
+static void release_on_thread(void* arg) {
+    (void)arg;
+    g_released = vk_window_release();
+    __atomic_store_n(&g_release_done, 1, __ATOMIC_RELEASE);
+    plat_wake_word(&g_release_done);
+}
+static int check_release_stopped_recorder(void) {
+    if (!vk_rec_threaded()) {
+        puts("SKIP the window's release past a stopped recording thread: vk_record=0 has none");
+        return 0;
+    }
+    for (int hold_queue = 0; hold_queue < 2; hold_queue++) {
+        u64 until = plat_ns() + 8000000000ull; /* the release's two waits of 2 s, with room to spare */
+        int returned;
+        u32 stop;
+        __atomic_store_n(&g_rec_stop, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_release_done, 0, __ATOMIC_RELEASE);
+        vk_lock();
+        vk_rec_call(recorder_stops, &hold_queue, sizeof hold_queue); /* the release's own drain publishes it */
+        vk_unlock();
+        CHECK(plat_thread(release_on_thread, NULL, 0) == 0);
+        for (;;) {
+            u64 now = plat_ns();
+            if (__atomic_load_n(&g_release_done, __ATOMIC_ACQUIRE) || now >= until) break;
+            plat_wait_word(&g_release_done, 0, (i64)(until - now));
+        }
+        returned = (int)__atomic_load_n(&g_release_done, __ATOMIC_ACQUIRE);
+        stop = __atomic_load_n(&g_rec_stop, __ATOMIC_ACQUIRE);
+        /* the packet let go: a release still waiting returns, and the ring drains for the checks after this one */
+        __atomic_store_n(&g_rec_stop, 2, __ATOMIC_RELEASE);
+        plat_wake_word(&g_rec_stop);
+        while (!__atomic_load_n(&g_release_done, __ATOMIC_ACQUIRE)) plat_wait_word(&g_release_done, 0, -1);
+        vk_rec_sync();
+        if (!returned)
+            fprintf(stderr, "the window's release waited past 8 s for the recording thread stopped in a packet%s\n",
+                    hold_queue ? " with the graphics queue's lock" : "");
+        CHECK(stop == 1);
+        CHECK(returned);
+        CHECK(g_released == !hold_queue);
+    }
+    printf("The window's release returns while the recording thread is stopped in a packet\n");
+    return 0;
+}
+
 /* A frame's descriptor pool holds VK_POOL_ARRAY_SETS sets of the arrays layouts, not 1024: a driver may make a pool's
    memory for all it can hold as the pool is made (Qualcomm's: 470 MiB for 1024 sets that all could hold the arrays).
    Its 1024 sets are for the layouts without them; a pool made because a set with the arrays didn't fit holds
@@ -6078,12 +6138,14 @@ static int run_headless(int argc, char** argv) {
     }
     if (getenv("SNX_TEST_RECORDER_ONLY")) { /* the recording thread's own sync alone, on the driver the loader picks */
         CHECK(!check_recorder_self_sync());
+        CHECK(!check_release_stopped_recorder());
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan recorder only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
     CHECK(!check_recorder_self_sync());
+    CHECK(!check_release_stopped_recorder());
     viw_install();
     /* every check with each draw binding the pipeline linked from its parts and never the one made whole
        (SNX_TEST_GPL=linked), or with each pipeline made whole, with the dynamic state the libraries gave (whole) */
