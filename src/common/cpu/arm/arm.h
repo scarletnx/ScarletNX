@@ -80,6 +80,16 @@ void snx_arm_coproc_user(SnxArmCPU* cpu, uint32_t word);
 
 typedef void (*SnxArmBlock)(SnxArmCPU* cpu);
 
+/* What an ARM7TDMI block's loads and stores cost on the bus, which the runtime knows (its wait states) and keeps in
+   this table: each load or store, a multiple one too, adds once max(0, nonseq + (words - 1) * seq + load + adjust),
+   by the region of its address (bits 24 to 27), to the runtime's counter (llvm.h's SnxArmCodegenOptions) */
+typedef struct {
+    uint8_t nonseq[16][4]; /* its first access, by region and width ([0] 8, [1] 16, [2] 32 bits) */
+    uint8_t seq[16];       /* each next word of a multiple one */
+    int8_t adjust[16];     /* once for the instruction, by its data's region: what the fetch after it adds, or (below 0)
+                              what the code region's prefetch buffer hides */
+} SnxArmBusCosts;
+
 typedef enum {
     SNX_A32_UNDEFINED,
     SNX_A32_DATA,

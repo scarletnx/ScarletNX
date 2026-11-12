@@ -13,6 +13,13 @@ typedef struct AgbBoard AgbBoard;
 typedef struct {
     SnxArmCPU arm;
     AgbBoard* board; /* the machine the bus hook serves */
+    /* the bus cycles of the recompiled blocks' loads and stores (arm.h's SnxArmBusCosts): the table of the running
+       block's code region, which the block reads, and the cycles it adds up, which the machine loop takes after it */
+    const SnxArmBusCosts* bus_costs;
+    uint32_t bus_cycles;
+    /* each code region's table, made for the WAITCNT costs_waitcnt says (0x10000 before any) */
+    uint32_t costs_waitcnt;
+    SnxArmBusCosts costs[16];
     /* the banked registers of the ARM7TDMI's modes: usr and sys share one bank */
     uint32_t banked_r13[6], banked_r14[6], spsr[6];
     uint32_t fiq_r8[5], usr_r8[5]; /* the ARM7TDMI banks r8 to r12 in FIQ mode */

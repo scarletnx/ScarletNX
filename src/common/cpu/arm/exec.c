@@ -93,7 +93,11 @@ static int reserve(SnxArmExec* e) {
 
 SnxArmBlock snx_arm_exec_compile(SnxArmExec* e, const void* code, size_t count, uint32_t pc, int thumb,
                                  SnxArmProfile profile, int memory, size_t* consumed) {
-    SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, profile, (SnxArmMemoryMode)memory};
+    SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, profile, (SnxArmMemoryMode)memory, 0, 0};
+    return snx_arm_exec_compile_ex(e, code, count, pc, thumb, &options, consumed);
+}
+SnxArmBlock snx_arm_exec_compile_ex(SnxArmExec* e, const void* code, size_t count, uint32_t pc, int thumb,
+                                    const SnxArmCodegenOptions* options, size_t* consumed) {
     size_t size = 0;
     char name[48], error[512];
     *consumed = 0;
@@ -102,8 +106,8 @@ SnxArmBlock snx_arm_exec_compile(SnxArmExec* e, const void* code, size_t count, 
     LLVMModuleRef module = LLVMModuleCreateWithNameInContext(name, e->ir->ctx);
     LLVMSetTarget(module, LLVMGetTarget(e->ir->mod));
     LLVMSetDataLayout(module, LLVMGetDataLayoutStr(e->ir->mod));
-    LLVMValueRef fn = thumb ? snx_thumb_llvm_block_ex(module, name, (const uint16_t*)code, count, pc, consumed, &options)
-                            : snx_arm_llvm_block_ex(module, name, (const uint32_t*)code, count, pc, consumed, &options);
+    LLVMValueRef fn = thumb ? snx_thumb_llvm_block_ex(module, name, (const uint16_t*)code, count, pc, consumed, options)
+                            : snx_arm_llvm_block_ex(module, name, (const uint32_t*)code, count, pc, consumed, options);
     unsigned char* object = NULL;
     int rc = fn ? snx_ir_module_object(e->ir, module, BLOCK_OPT, &object, &size, error, sizeof error) : -1;
     LLVMDisposeModule(module);

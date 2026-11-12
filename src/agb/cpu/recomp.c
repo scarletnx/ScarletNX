@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "agb/cpu/recomp.h"
+#include "agb/cpu/agb_cpu.h"
 #include "agb/board/board.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
@@ -15,12 +16,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define AGB_RECOMP_ABI 6   /* a map's block names its module function, or none ("-") for a hint */
+#define AGB_RECOMP_ABI 7   /* a map's block names its module function, or none ("-") for a hint */
 #define AGB_BLOCK_MAX  256 /* words compiled per block at most */
 
-/* the ARM7TDMI's rules (arm.h) on the flat window: the A57 default would run the ROM as ARMv8-A */
+/* the ARM7TDMI's rules (arm.h) on the flat window: the A57 default would run the ROM as ARMv8-A. Its loads and stores
+   count their bus cycles into the machine's CPU (agb_cpu.h), whose first member is the one the blocks get */
 static const SnxArmCodegenOptions agb_codegen = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM7TDMI,
-                                                 SNX_ARM_MEMORY_FLAT};
+                                                 SNX_ARM_MEMORY_FLAT, offsetof(AgbCpu, bus_costs),
+                                                 offsetof(AgbCpu, bus_cycles)};
+_Static_assert(offsetof(AgbCpu, arm) == 0, "the blocks' CPU is the machine's first member");
 
 void agb_recomp_init(AgbRecomp* recomp, const char* base) {
     *recomp = (AgbRecomp){0};
@@ -373,13 +377,11 @@ static int compile_block(AgbRecomp* recomp, AgbBoard* board, AgbBlock* block, ch
     if (block->thumb) {
         uint16_t words[AGB_BLOCK_MAX];
         for (uint32_t j = 0; j < AGB_BLOCK_MAX; ++j) words[j] = agb_read16(board, block->pc + j * 2);
-        block->fn =
-            snx_arm_exec_compile(recomp->exec, words, AGB_BLOCK_MAX, block->pc, 1, agb_codegen.profile, 0, &consumed);
+        block->fn = snx_arm_exec_compile_ex(recomp->exec, words, AGB_BLOCK_MAX, block->pc, 1, &agb_codegen, &consumed);
     } else {
         uint32_t words[AGB_BLOCK_MAX];
         for (uint32_t j = 0; j < AGB_BLOCK_MAX; ++j) words[j] = agb_read32(board, block->pc + j * 4);
-        block->fn =
-            snx_arm_exec_compile(recomp->exec, words, AGB_BLOCK_MAX, block->pc, 0, agb_codegen.profile, 0, &consumed);
+        block->fn = snx_arm_exec_compile_ex(recomp->exec, words, AGB_BLOCK_MAX, block->pc, 0, &agb_codegen, &consumed);
     }
     if (!block->fn || !consumed) {
         snprintf(error, error_size, "the ARM recompiler rejected the block at 0x%08X", block->pc);

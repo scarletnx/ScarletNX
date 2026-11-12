@@ -43,10 +43,13 @@ LLVMValueRef snx_thumb_llvm_block(LLVMModuleRef module, const char* name, const 
    instead, so no entry has to look at it. */
 typedef enum { SNX_ARM_MEMORY_FLAT, SNX_ARM_MEMORY_CHECKED, SNX_ARM_MEMORY_HOSTED } SnxArmMemoryMode;
 #define SNX_ARM_CODEGEN_OPTIONS_ABI 1u
-typedef struct {
+typedef struct SnxArmCodegenOptions {
     uint32_t abi;
     SnxArmProfile profile;
     SnxArmMemoryMode memory;
+    /* the ARM7TDMI's bus cycles: where, past the pointer its blocks get, the runtime keeps a const SnxArmBusCosts* and
+       the uint32_t its loads and stores add to (arm.h's SnxArmBusCosts). 0 and 0 count none; another profile takes none */
+    uint32_t bus_costs, bus_cycles;
 } SnxArmCodegenOptions;
 LLVMValueRef snx_arm_llvm_block_ex(LLVMModuleRef module, const char* name, const uint32_t* words, size_t count,
                                    uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options);

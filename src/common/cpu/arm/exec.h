@@ -41,6 +41,10 @@ void snx_arm_exec_forget(SnxArmExec* exec, uint64_t lo, uint64_t hi);
    serialize */
 SnxArmBlock snx_arm_exec_compile(SnxArmExec* exec, const void* code, size_t count, uint32_t pc, int thumb,
                                  SnxArmProfile profile, int memory, size_t* consumed);
+/* The same with the code generation's options (llvm.h), an ARM7TDMI's bus cycles among them */
+struct SnxArmCodegenOptions;
+SnxArmBlock snx_arm_exec_compile_ex(SnxArmExec* exec, const void* code, size_t count, uint32_t pc, int thumb,
+                                    const struct SnxArmCodegenOptions* options, size_t* consumed);
 /* Runs from cpu->r[15] until the process exits (cpu->exit set by a trap or the
    syscall handler). code_ranges bound block compilation. Returns cpu->exit. */
 int snx_arm_exec_run(SnxArmExec* exec, SnxArmCPU* cpu, const SnxArmExecRange* ranges, size_t range_count,
