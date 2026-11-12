@@ -120,7 +120,7 @@ static const char* text(int k) {
     int s = stats_scale(g_test.menu);
     float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s;
     stats_box(safe, s, box);
-    return line_at(box[0] + 4 * cw, box[1] + ch / 4 + (float)k * ch, k == 1 ? STATS_GPU_AT - 4 : STATS_COLS - 4);
+    return line_at(box[0] + 5 * cw, box[1] + ch / 4 + (float)k * ch, k == 1 ? STATS_GPU_AT - 5 : STATS_COLS - 5);
 }
 /* the GPU's text, after its icon beside the processor's line */
 static const char* gpu_text(void) {
@@ -145,13 +145,13 @@ static unsigned icon_at(int k, int at) {
     return GUI_ICON_NONE;
 }
 /* the icon before the box's line k */
-static unsigned icon(int k) { return icon_at(k, 1); }
+static unsigned icon(int k) { return icon_at(k, 2); } /* after the blank cell */
 /* the line k under the graph, after its icon */
 static const char* note(int k) {
     int s = stats_scale(g_test.menu);
     float box[4], cw = 8.0f * (float)s, ch = 16.0f * (float)s;
     stats_box(safe, s, box);
-    return line_at(box[0] + 4 * cw, box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch, (int)(box[2] / cw) - 4);
+    return line_at(box[0] + 5 * cw, box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch, (int)(box[2] / cw) - 5);
 }
 /* the icon before the line k under the graph, drawn in rgba: GUI_ICON_NONE for none */
 static unsigned note_icon(int k, u32 rgba) {
@@ -160,7 +160,7 @@ static unsigned note_icon(int k, u32 rgba) {
     stats_box(safe, s, box);
     for (i = 0; i < g_test.l.n; ++i) {
         const SnxUiQuadView q_v = qv(&g_test.quads[i]), *q = &q_v;
-        if (q->uw == 16 && q->vh == 16 && q->v == SNX_UI_PICTURE_Y && q->x == box[0] + cw &&
+        if (q->uw == 16 && q->vh == 16 && q->v == SNX_UI_PICTURE_Y && q->x == box[0] + 2 * cw &&
             q->y == box[1] + 8 * ch + 3 * ch / 4 + (float)k * ch && q->rgba == ui_rgba(rgba))
             return GUI_ICON_FIRST + (unsigned)(q->u - SNX_UI_ICONS_X) / 16;
     }
@@ -476,7 +476,7 @@ int main(void) {
         stats_capture(&c);
         draw(at);
         stats_box(safe, 2, box);
-        assert(box[3] == plain + 32 + 8 && box[2] == (34 + 5) * 16); /* the line's 34 letters past STATS_COLS */
+        assert(box[3] == plain + 32 + 8 && box[2] == (34 + 6) * 16); /* the line's 34 letters past STATS_COLS */
         assert(!strcmp(note(0), "RenderDoc: Ctrl+Shift+F12 captures") && note_icon(0, TEXT_RGBA) == GUI_ICON_IMAGE);
         /* a capture written: how many, and the last one's file by its name */
         c.taken = 2;
@@ -508,12 +508,12 @@ int main(void) {
         assert(!strcmp(note(0), "RenderDoc: Ctrl+Shift+F12 captures") && !strcmp(note(2), "debugger attached: gdb"));
         assert(note_icon(2, TEXT_RGBA) == GUI_ICON_BUG);
         stats_box(safe, 2, box);
-        assert(box[3] == plain + 3 * 32 + 8 && box[2] == (34 + 5) * 16 && past_margin() == 0);
+        assert(box[3] == plain + 3 * 32 + 8 && box[2] == (34 + 6) * 16 && past_margin() == 0);
         /* a name the box's letters don't hold: the box wider, the line whole */
         stats_debugger("lldb-server-123");
         draw(at);
         stats_box(safe, 2, box);
-        assert(!strcmp(note(2), "debugger attached: lldb-server-123") && box[2] == (19 + 15 + 5) * 16);
+        assert(!strcmp(note(2), "debugger attached: lldb-server-123") && box[2] == (19 + 15 + 6) * 16);
         assert(past_margin() == 0);
         /* a file's name past the safe area: the box as wide as the area, the name's start cut, its end shown */
         stats_debugger("");
@@ -525,8 +525,8 @@ int main(void) {
         draw(at);
         stats_box(safe, 2, box);
         assert(box[2] == 78 * 16 && box[0] + box[2] <= (float)(safe[0] + safe[2]) - 16 && past_margin() == 0);
-        assert(!strncmp(note(1), "capture 4: ...", 14) && strlen(note(1)) == 73);
-        assert(!strcmp(note(1) + 73 - 15, "_capture_12.rdc"));
+        assert(!strncmp(note(1), "capture 4: ...", 14) && strlen(note(1)) == 72);
+        assert(!strcmp(note(1) + 72 - 15, "_capture_12.rdc"));
         /* bottom right: the taller box still a gap above the safe area's bottom */
         stats_corner_set(corner, "br");
         stats_box(safe, 2, box);

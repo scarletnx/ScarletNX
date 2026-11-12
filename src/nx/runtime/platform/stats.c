@@ -47,8 +47,8 @@ _Static_assert(STATS_BARS <= SNX_UI_RING_MAX, "the bars fit the ring, a slot eac
 /* the height past which a bar draws in the failure colour: a frame past 30 FPS's, STATS_30_MS of STATS_TOP_MS */
 #define STATS_SLOW_FROM ((int)(255.0f * STATS_30_MS / STATS_TOP_MS + 0.5f))
 #define STATS_QUADS     1536 /* its quads at most: the lines, the graph and three lines under it of 255 letters */
-#define STATS_CELLS     (STATS_COLS - 5) /* a line's cells: after the icon's three, to a letter before the right */
-#define STATS_CPU_CELLS (STATS_GPU_AT - 4)
+#define STATS_CELLS     (STATS_COLS - 6) /* a line's cells: after a blank and the icon's three, to the graph's right */
+#define STATS_CPU_CELLS (STATS_GPU_AT - 5)
 #define STATS_GPU_CELLS (STATS_COLS - 1 - (STATS_GPU_AT + 3))
 /* a window's queue of the frames' times (stats_draw's quickest and slowest): its first the window's greatest */
 typedef struct {
@@ -235,8 +235,8 @@ static void box_notes(const int safe[4], int scale, float box[4], StatsNotes* no
        picture narrower than the box still gets the box's */
     float fit = ((float)safe[2] - 2 * gap) / cw;
     size_t across = fit > 0 ? (size_t)fit : 0;
-    notes_make(notes, (across > STATS_COLS ? across : STATS_COLS) - 5);
-    box[2] = (float)(notes->longest + 5 > STATS_COLS ? notes->longest + 5 : STATS_COLS) * cw;
+    notes_make(notes, (across > STATS_COLS ? across : STATS_COLS) - 6);
+    box[2] = (float)(notes->longest + 6 > STATS_COLS ? notes->longest + 6 : STATS_COLS) * cw;
     /* the lines and the graph, a quarter line around each, and the lines under it with a quarter line after them */
     box[3] = (STATS_LINES + STATS_GRAPH_LINES) * ch + 3 * ch / 4 + (notes->n ? (float)notes->n * ch + ch / 4 : 0);
     if (vpad_showcase_box(safe, showcase) == corner) { /* beside showcase's box, toward the picture's middle */
@@ -317,11 +317,15 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
     g_box.at[1] = box[1];
     g_box.at[2] = box[2] - cw;
     g_box.at[3] = box[3];
-    for (j = 0; j < STATS_LINES; ++j) { /* the icon's two cells and one, then the line, as the menu's items */
+    /* the lines as the Debug settings' box (hud.c): a strip of the ink a quarter line high above them, and a blank
+       cell before each icon; the graph under them keeps its own edges */
+    ui_fill(&l, box[0] + cw, box[1], STATS_GRAPH_W * cw, ch / 4, UI_INK);
+    for (j = 0; j < STATS_LINES; ++j) { /* a blank, the icon's two cells and one, then the line, as the menu's items */
         float y = box[1] + ch / 4 + (float)j * ch;
-        icon_backed(&l, box[0] + cw, y, scale, icons[j], UI_PAGE);
+        ui_text_backed(&l, box[0] + cw, y, scale, " ", UI_PAGE);
+        icon_backed(&l, box[0] + 2 * cw, y, scale, icons[j], UI_PAGE);
         g_box.cells[j] =
-            ui_cells_backed(&l, box[0] + 4 * cw, y, scale, j == 1 ? STATS_CPU_CELLS : STATS_CELLS, UI_PAGE);
+            ui_cells_backed(&l, box[0] + 5 * cw, y, scale, j == 1 ? STATS_CPU_CELLS : STATS_CELLS, UI_PAGE);
     }
     icon_backed(&l, box[0] + STATS_GPU_AT * cw, box[1] + ch / 4 + ch, scale, GUI_ICON_GPU, UI_PAGE);
     g_box.gpu =
@@ -341,11 +345,20 @@ static void box_layout(const int safe[4], int scale, const StatsKey* key) {
     ui_ring_bars(&l, g_box.gx, g_box.gy, g_box.gw, g_box.gh, STATS_BARS, UI_PAGE); /* none yet */
     memset(g_box.height, 0, sizeof g_box.height);
     ++g_box.ring_version;
-    /* the lines under it, half a line down, each after its icon as the lines above */
-    for (j = 0; j < (unsigned)notes.n; ++j) {
-        float y = g_box.gy + g_box.gh + ch / 2 + (float)j * ch;
-        icon_backed(&l, box[0] + cw, y, scale, notes.icon[j], notes.rgba[j]);
-        ui_text_backed(&l, box[0] + 4 * cw, y, scale, notes.text[j], notes.rgba[j]);
+    /* the lines under it, half a line down, each after a blank and its icon as the lines above, its band filled to
+       the box's right; the half line above them and a quarter line under them the ink's */
+    if (notes.n) {
+        float right = box[0] + box[2] - cw;
+        ui_fill(&l, box[0] + cw, g_box.gy + g_box.gh, right - box[0] - cw, ch / 2, UI_INK);
+        ui_fill(&l, box[0] + cw, g_box.gy + g_box.gh + ch / 2 + (float)notes.n * ch, right - box[0] - cw, ch / 4,
+                UI_INK);
+        for (j = 0; j < (unsigned)notes.n; ++j) {
+            float y = g_box.gy + g_box.gh + ch / 2 + (float)j * ch, at;
+            ui_text_backed(&l, box[0] + cw, y, scale, " ", UI_PAGE);
+            icon_backed(&l, box[0] + 2 * cw, y, scale, notes.icon[j], notes.rgba[j]);
+            at = box[0] + 5 * cw + ui_text_backed(&l, box[0] + 5 * cw, y, scale, notes.text[j], notes.rgba[j]);
+            if (at < right) ui_fill(&l, at, y, right - at, ch, UI_INK);
+        }
     }
     g_box.n = l.n;
     g_box.key = *key;
