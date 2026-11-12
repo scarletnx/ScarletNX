@@ -418,8 +418,9 @@ u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si
             free(result);
             return NULL;
         }
-        /* the shared optimizer, after the translator: the registers, predicates and flags that no later block reads,
-           and what was made only for them */
+        /* the shared optimizer, after the translator: what an instruction that dominates already computed, then
+           the registers, predicates and flags that no later block reads, and what was made only for them */
+        *words = spv_opt_values(result, *words);
         *words = spv_opt_dead_code(result, *words);
     }
     return result;

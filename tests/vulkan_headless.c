@@ -1861,6 +1861,41 @@ static int check_translation_dead_code(void) {
     return 0;
 }
 
+/* and through value numbering: a fragment program that writes one sum to two of its color's registers (R0 and R1, by
+   FADDs of R4 with itself) comes out smaller than the translator's module with only its dead code out, with nothing
+   left for either pass, and the device takes the module */
+static int check_translation_values(void) {
+    u64 guest[16] = {0};
+    guest[9] = 0xf;                    /* the header's output map: render target 0's RGBA, from R0-R3 */
+    guest[10] = 0x001f8000fc0007e0ull; /* scheduler */
+    guest[11] = 0x4c98078004470004ull; /* MOV R4, c[0][0x110] */
+    guest[12] = 0x5c58000000470400ull; /* FADD R0, R4, R4 */
+    guest[13] = 0x5c58000000470401ull; /* FADD R1, R4, R4 */
+    guest[14] = 0x001f8000fc0007e0ull; /* scheduler */
+    guest[15] = 0xe30000000007000full; /* EXIT */
+    ShaderInfo info = {0}, direct_info = {0};
+    size_t words = 0, direct_words = 0;
+    u32* spirv = vk_translate_spirv((const u8*)guest, sizeof guest, ST_FS, &info, &words, NULL, NULL);
+    u32* direct = shader_to_spirv((const u8*)guest, sizeof guest, ST_FS, &direct_info, &direct_words, g_vk_ftz,
+                                  g_vk_preserve_infnan, g_vk_preserve_infnan64,
+                                  (g_vk_subgroup_stages & VK_SHADER_STAGE_FRAGMENT_BIT) != 0);
+    if (!spirv || !direct) fprintf(stderr, "values: %s; %s\n", info.first_unsupported, direct_info.first_unsupported);
+    CHECK(spirv && direct);
+    size_t dead = spv_opt_dead_code(direct, direct_words);
+    if (words >= dead)
+        fprintf(stderr, "values: the runtime's module has %zu words, without the pass %zu\n", words, dead);
+    CHECK(words < dead);
+    CHECK(spv_opt_values(spirv, words) == words && spv_opt_dead_code(spirv, words) == words);
+    VkShaderModuleCreateInfo smi = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * sizeof(u32), .pCode = spirv};
+    VkShaderModule module;
+    CHECK(vkCreateShaderModule(g_vk.dev, &smi, NULL, &module) == VK_SUCCESS);
+    vkDestroyShaderModule(g_vk.dev, module, NULL);
+    free(spirv);
+    free(direct);
+    return 0;
+}
+
 /* Execute the direct writer's module, not only spirv-val's structural check. */
 /* code, a compute module of one invocation over set 0 binding 0, run once on count words of data, read back
    into data */
@@ -6754,6 +6789,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_sparse_while_submitting());
     CHECK(!check_multisample_shader_gate());
     CHECK(!check_translation_dead_code());
+    CHECK(!check_translation_values());
     CHECK(!check_msaa());
     CHECK(!check_msaa_nvn());
     CHECK(!check_direct_spirv());
