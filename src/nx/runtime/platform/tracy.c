@@ -128,7 +128,7 @@ static int tracy_capture_start(int seconds, int launch) {
     snprintf(dir, sizeof dir, "%scaptures", g_exedir);
     tool = named[0] ? snx_find_tool(named) : tracy_tool("tracy-capture");
     if (!tool) {
-        WARN("tracy: %s needs tracy-capture 0.14.1 beside the runtime or on PATH%s\n",
+        WARN("tracy: %s needs tracy-capture " SNX_TRACY_VERSION " beside the runtime or on PATH%s\n",
              launch ? "--tracy-capture" : "a capture", suffix);
         return 0;
     }

@@ -15,7 +15,7 @@ set_target_properties(snx_driver PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON
 target_compile_definitions(snx_driver PRIVATE
     SNX_SOURCE_DIR="${PROJECT_SOURCE_DIR}" SNX_BUILD_DIR="${PROJECT_BINARY_DIR}" _CRT_SECURE_NO_WARNINGS
     SNX_NX_ABI_INCLUDE="${PROJECT_SOURCE_DIR}/src/nx/loader"
-    SNX_COMMON_INCLUDE="${PROJECT_SOURCE_DIR}/src/common")
+    SNX_COMMON_INCLUDE="${PROJECT_SOURCE_DIR}/src/common" SNX_TRACY_VERSION="${SNX_TRACY_VERSION}")
 target_compile_options(snx_driver PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
 # snx_build_info (the top CMakeLists, after CTest): the commit the games' stamps carry
 target_link_libraries(snx_driver PUBLIC scarletnx-common snx_setup snx_nx_module snx_lz4 OpenSSL::Crypto

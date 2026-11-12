@@ -10,6 +10,10 @@
 # Patching a package: snx_patched_copy (cmake/patched_copy.cmake) on a copy in the build tree, never CPM's PATCHES, which
 # patches only what CPM itself downloads into the cache.
 
+# Tracy's release: the client an SNX_TRACY build pins below, and the tracy-capture the driver's help and the runtime's
+# warning name, which has to be the same release to capture that client
+set(SNX_TRACY_VERSION 0.15.0)
+
 set(CPM_VERSION 0.43.2)
 set(CPM_HASH 49a3bef91ceb65bb66d57255e12d1ffd22abc2f6408fa9fe4534c544a2f232aa)
 if(NOT DEFINED CPM_SOURCE_CACHE AND NOT DEFINED ENV{CPM_SOURCE_CACHE})
@@ -376,8 +380,8 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         if(NOT ANDROID)
             list(APPEND snx_tracy_options "TRACY_ONLY_LOCALHOST ON" "TRACY_NO_BROADCAST ON")
         endif()
-        CPMAddPackage(NAME tracy VERSION 0.15.0
-                      URL https://github.com/wolfpld/tracy/archive/refs/tags/v0.15.0.tar.gz
+        CPMAddPackage(NAME tracy VERSION ${SNX_TRACY_VERSION}
+                      URL https://github.com/wolfpld/tracy/archive/refs/tags/v${SNX_TRACY_VERSION}.tar.gz
                       URL_HASH SHA256=3d57da54aa67d7875da1e8fecd0bd5957675cef73c27dd52bffb6ab8d290a5e6
                       EXCLUDE_FROM_ALL YES
                       OPTIONS ${snx_tracy_options})

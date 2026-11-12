@@ -1857,7 +1857,7 @@ if(SNX_TRACY)
     target_include_directories(snx-test-tracy-state SYSTEM PRIVATE
         $<TARGET_PROPERTY:Tracy::TracyClient,INTERFACE_INCLUDE_DIRECTORIES>
         $<TARGET_PROPERTY:SDL3::Headers,INTERFACE_INCLUDE_DIRECTORIES>)
-    target_compile_definitions(snx-test-tracy-state PRIVATE SNX_TRACY=1
+    target_compile_definitions(snx-test-tracy-state PRIVATE SNX_TRACY=1 SNX_TRACY_VERSION="${SNX_TRACY_VERSION}"
         $<TARGET_PROPERTY:Tracy::TracyClient,INTERFACE_COMPILE_DEFINITIONS>)
     target_link_libraries(snx-test-tracy-state PRIVATE scarletnx-common scarletnx-filesystem snx_build_info)
     add_test(NAME tracy_state COMMAND snx-test-tracy-state)
@@ -1905,6 +1905,7 @@ add_executable(snx-test-driver driver_workflow.c
     "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/process.c"
     "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
 snx_test_target(snx-test-driver 99)
+target_compile_definitions(snx-test-driver PRIVATE SNX_TRACY_VERSION="${SNX_TRACY_VERSION}")
 target_link_libraries(snx-test-driver PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle snx_nx_module)
 set_target_properties(snx-test-driver PROPERTIES LINKER_LANGUAGE CXX)
 if(APPLE) # driver/setup.c's weak snx_menu_language, as snx_driver has it: ld64 wants it named
@@ -1921,7 +1922,7 @@ if(NOT WIN32)
         "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/process.c"
         "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
     snx_test_target(snx-test-driver-ready 99)
-    target_compile_definitions(snx-test-driver-ready PRIVATE SNX_DRIVER_READY=1)
+    target_compile_definitions(snx-test-driver-ready PRIVATE SNX_DRIVER_READY=1 SNX_TRACY_VERSION="${SNX_TRACY_VERSION}")
     target_link_libraries(snx-test-driver-ready PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle
                                                         snx_nx_module)
     set_target_properties(snx-test-driver-ready PROPERTIES LINKER_LANGUAGE CXX)
