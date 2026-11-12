@@ -60,15 +60,18 @@ static void rela(Build* b, int plt, SnxU64 target, unsigned type, unsigned sym, 
     snx_st_le64(r + 16, addend);
 }
 static void relr(Build* b, SnxU64 entry) { snx_st_le64(b->image + RELR + 8 * b->relr++, entry); }
-/* the dynamic table of what was put: rela_size bytes of RELA when not 0, else its entries' */
-static void end(Build* b, SnxU64 rela_size) {
+/* the dynamic table of what was put: rela_size bytes of RELA when not 0, else its entries'; DT_INIT and DT_FINI
+   when not 0 */
+static void end(Build* b, SnxU64 rela_size, SnxU64 init, SnxU64 fini) {
     unsigned char* d = b->image + DYNAMIC;
-    SnxU64 tags[9][2] = {
-        {6, SYMTAB}, {5, STRTAB},         {10, b->names}, {7, RELA}, {8, 0}, {23, JMPREL}, {2, 24ull * b->jmprel},
-        {36, RELR},  {35, 8ull * b->relr}};
-    unsigned i;
+    SnxU64 tags[11][2] = {
+        {6, SYMTAB}, {5, STRTAB},          {10, b->names}, {7, RELA}, {8, 0}, {23, JMPREL}, {2, 24ull * b->jmprel},
+        {36, RELR},  {35, 8ull * b->relr}, {12, 0},        {13, 0}};
+    unsigned i, n = 9;
     tags[4][1] = rela_size ? rela_size : 24ull * b->rela;
-    for (i = 0; i < 9; ++i) {
+    if (init) tags[n][0] = 12, tags[n++][1] = init;
+    if (fini) tags[n][0] = 13, tags[n++][1] = fini;
+    for (i = 0; i < n; ++i) {
         snx_st_le64(d + 16 * i, tags[i][0]);
         snx_st_le64(d + 16 * i + 8, tags[i][1]);
     }
@@ -87,7 +90,7 @@ static void build(SnxU64 rela_size) {
     ext = symbol(&a, "ext", 0x12, 0, 0, 0);
     rela(&a, 1, DATA, JUMP_SLOT, ext, 0);
     snx_st_le64(g_image[0] + DATA, 0x700);
-    end(&a, 0);
+    end(&a, 0, 0, 0);
     /* b: dup again, prot, loc, and every kind of relocation */
     begin(&b, g_image[1]);
     dup = symbol(&b, "dup", 0x12, 0, 1, 0x30);
@@ -116,7 +119,7 @@ static void build(SnxU64 rela_size) {
     snx_st_le64(g_image[1] + DATA + 0x108, 0x66);
     snx_st_le64(g_image[1] + DATA + 0x110, 0x77);
     snx_st_le64(g_image[1] + DATA + 0x118, 0x88);
-    end(&b, rela_size);
+    end(&b, rela_size, 0x60, 0x64);
     /* c: ext, a protected prot, and a use of each and of loc */
     begin(&c, g_image[2]);
     symbol(&c, "ext", 0x12, 0, 1, 0x50);
@@ -124,7 +127,7 @@ static void build(SnxU64 rela_size) {
     loc = symbol(&c, "loc", 0x12, 0, 0, 0);
     rela(&c, 0, DATA, GLOB_DAT, prot, 0); /* protected: its own, though b defines it before */
     rela(&c, 0, DATA + 8, ABS64, loc, 0); /* b's: a's is local */
-    end(&c, 0);
+    end(&c, 0, 0x60, 0);
 }
 /* the modules, their data linked into the copies, or in place */
 static void modules(SnxRelocModule* m, int in_place) {
@@ -178,6 +181,16 @@ int main(void) {
     check(counts.absent == 1 && counts.unresolved == 2 && counts.outside == 1 && counts.other == 1,
           "and the ones that are not");
     check(counts.first_unresolved && !strcmp(counts.first_unresolved, "gone"), "the first symbol nothing defines");
+    check(!copy[0].init && copy[1].init == BASE_B + 0x60 && copy[1].fini == BASE_B + 0x64 && !copy[2].fini,
+          "a module's DT_INIT and DT_FINI are given as addresses");
+    {
+        SnxU64 at = 0;
+        check(snx_relocate_find(copy, 3, "dup", &at, error, sizeof error) == 1 && at == BASE_A + 0x10,
+              "a name is found at its first definition in load order");
+        check(snx_relocate_find(copy, 3, "loc", &at, error, sizeof error) == 1 && at == BASE_B + 0x40,
+              "a local definition is passed over");
+        check(snx_relocate_find(copy, 3, "gone", &at, error, sizeof error) == 0, "a name nothing defines is not found");
+    }
     /* in place, as the game's own linker leaves the modules: the same words */
     modules(place, 1);
     check(!snx_relocate(place, 3, &counts, error, sizeof error), "the modules link in place");
