@@ -103,7 +103,14 @@ u64 mem_total(void) {
    gets 2 GiB without an alias region and 1 GiB with one, however large the application pool is; a game that asks
    GetInfo for the total and sets its heap to nearly all of it would otherwise ask for more than its heap region */
 static u64 reach(u64 total) { return total < HEAP_SIZE ? total : HEAP_SIZE; }
-static u64 process_memory_total(void) { return reach(mem_total()); }
+/* The most memory a process may have, never below what it already holds: no console reports a process that used more
+   than its total, and a game that subtracts the two (the SDK does, at its start, for the heap's size) would take the
+   difference as an unsigned size. The Auto fit can measure less than the process's own system resource, which made
+   the difference negative and the heap request a wrapped u64 that the console's own limit refused. */
+static u64 process_memory_total(void) {
+    u64 total = reach(mem_total()), used = used_memory();
+    return total > used ? total : used;
+}
 /* what the game may have of what the process can reach: the rest takes the runtime as it is now and the graphics'
    first allocations, never less than a phone's run measured, and the game keeps a GiB however little is left */
 #define FIT_GRAPHICS    (256 * MIB)
