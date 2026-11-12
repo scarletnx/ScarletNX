@@ -4399,7 +4399,8 @@ static void dump_addons(App* app, const char* dir) {
     free(app->folders[--app->folder_count]);
     go_tab(app, GUI_TAB_MENU);
     set_env("XDG_CACHE_HOME", cache_was);
-    assert(!snx_remove_tree(dumps) && !snx_remove_tree(cache));
+    assert(!snx_remove_tree(dumps));
+    assert(!snx_path_exists(cache) || !snx_remove_tree(cache)); /* XDG's alone: elsewhere the menu's own folder */
     for (k = 0; k < 3; ++k) free(dlc[k]);
     free(program);
     free(made);
