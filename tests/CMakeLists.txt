@@ -389,6 +389,14 @@ if(TARGET snx_ctr_board)
     add_test(NAME 3ds_vk_pipeline_cache COMMAND snx-test-3ds-vk-pipeline-cache
                                                 "${CMAKE_CURRENT_BINARY_DIR}/pipeline-cache")
     set_tests_properties(3ds_vk_pipeline_cache PROPERTIES SKIP_RETURN_CODE 77)
+    # the shader objects' binaries kept between runs: a compiled shader's binary written, read back whole and made
+    # again with no compile; another device's file, a cut file, no temporary file left, and the renderer's folder
+    add_executable(snx-test-3ds-vk-shader-object 3ds_vk_shader_object.c)
+    snx_test_target(snx-test-3ds-vk-shader-object 11)
+    target_link_libraries(snx-test-3ds-vk-shader-object PRIVATE snx_ctr_gpu)
+    add_test(NAME 3ds_vk_shader_object COMMAND snx-test-3ds-vk-shader-object
+                                               "${CMAKE_CURRENT_BINARY_DIR}/shader-object")
+    set_tests_properties(3ds_vk_shader_object PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's draws against the software renderer, the CPU reference they replaced, scene by scene
     add_executable(snx-test-3ds-vk-draw 3ds_vk_draw.c)
     snx_test_target(snx-test-3ds-vk-draw 11)
@@ -396,9 +404,14 @@ if(TARGET snx_ctr_board)
     add_test(NAME 3ds_vk_draw COMMAND snx-test-3ds-vk-draw)
     # async_pipelines: the draw skipped while its pipeline is made on a worker, then drawn
     add_test(NAME 3ds_vk_draw_async COMMAND snx-test-3ds-vk-draw --async)
-    # the pipeline cache kept between runs: the file named for the driver, and a failed write made again by the next
-    add_test(NAME 3ds_vk_draw_pipeline_cache COMMAND snx-test-3ds-vk-draw --pipeline-cache)
-    set_tests_properties(3ds_vk_draw 3ds_vk_draw_async 3ds_vk_draw_pipeline_cache PROPERTIES SKIP_RETURN_CODE 77)
+    # the same two through pipelines, where the device would draw with shader objects (VK_EXT_shader_object)
+    add_test(NAME 3ds_vk_draw_pipelines COMMAND snx-test-3ds-vk-draw --vk_ext_shader_object=off)
+    add_test(NAME 3ds_vk_draw_async_pipelines COMMAND snx-test-3ds-vk-draw --async --vk_ext_shader_object=off)
+    # the pipeline cache kept between runs: the file named for the driver, and a failed write made again by the next.
+    # Through pipelines, as a device with shader objects makes none (3ds_vk_shader_object checks their binaries)
+    add_test(NAME 3ds_vk_draw_pipeline_cache COMMAND snx-test-3ds-vk-draw --pipeline-cache --vk_ext_shader_object=off)
+    set_tests_properties(3ds_vk_draw 3ds_vk_draw_async 3ds_vk_draw_pipelines 3ds_vk_draw_async_pipelines
+                         3ds_vk_draw_pipeline_cache PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's copy of the RAM, page by page: what is copied in and back, and when, and every byte where it belongs
     add_executable(snx-test-3ds-vk-copies 3ds_vk_copies.c)
     snx_test_target(snx-test-3ds-vk-copies 11)

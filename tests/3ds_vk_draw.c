@@ -1159,6 +1159,7 @@ static const Mode modes[] = {{"--present", "the presented screens", screens},
 
 int main(int argc, char** argv) {
     int vk_memory = test_ctr_vk_memory(&argc, argv);
+    test_ctr_vk_extensions(&argc, argv);
     const Mode* mode = &scenes;
     if (argc > 1) {
         mode = NULL;
@@ -1182,6 +1183,7 @@ int main(int argc, char** argv) {
         return 77;
     }
     test_ctr_vk_memory_taken(vk_memory);
+    printf("drawn through %s\n", snx_ctr_vk()->shader_object ? "shader objects" : "pipelines");
     mode->run(m);
     snx_ctr_vk_transfer_free();
     snx_ctr_vk_y2r_free();

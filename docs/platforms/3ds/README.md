@@ -169,7 +169,20 @@ runs after 20 s in which no pipeline was made, so a run that stops early keeps w
 file another GPU or another build of the driver wrote, or one cut inside its header, is not given
 to the driver, and the log says why. The
 Switch's `vk_pipeline_cache=0` neither reads nor writes it, and `3ds_vk_pipeline_cache` and
-`3ds_vk_draw_pipeline_cache` check the file. Vertex and
+`3ds_vk_draw_pipeline_cache` check the file. Where the device has `VK_EXT_shader_object` (issue
+#1454), no pipeline is made at all:
+a draw binds its vertex and fragment shaders as shader objects and sets the output merger, the
+vertex layout and the rest as dynamic state, changing only what differs from the draw before it
+in the same recording. A new shader is still compiled as its first draw needs it, or by the
+workers with `async_pipelines=1`, but a scene's few dozen shaders replace its hundreds of
+pipelines. The driver's binary of each shader is kept between runs in
+`shader_cache/vk_shaders.<driver>.bin`, written as the pipeline cache is, so a later run makes
+each shader from its binary with no compile; the file names the device's shader binary UUID and
+version, and one of another device or driver version is not read. The shared parts are in
+`src/common/gpu/vk/shader_object.c`. `vk_ext_shader_object=off` draws through pipelines on such a
+device, and the drivers' bans (`src/common/gpu/vk/extension_bans.txt`) and the other `vk_ext_*`
+settings hold for the 3DS's device as for a Switch game's. `3ds_vk_shader_object` checks the
+binaries' file, and `3ds_vk_draw_pipelines` the draws through pipelines. Vertex and
 index data are read where the GPU works (in place, or its copy), except in a draw with a geometry shader, whose vertex and
 geometry shaders run on the CPU (see below). `tests/3ds_vk_draw.c` holds the draws to the
 software renderer they replaced, which stays as their reference. The shown
