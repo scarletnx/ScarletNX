@@ -103,6 +103,8 @@ static u32 open_decoder(CPU* c, const Shape* s, u64 guest, u32 rate, u32 channel
         *hook_host(c, guest + s->object) = 1;
     else
         snx_st_le64(hook_host(c, guest + s->object), place);
+    LOG("hwopus: decoder %llx: %lu channels in %lu streams at %lu Hz\n", (unsigned long long)guest,
+        (unsigned long)channels, (unsigned long)streams, (unsigned long)rate);
     return 0;
 }
 /* a mapping is a byte a channel; one that can't be read opens no decoder */
@@ -209,6 +211,8 @@ static u32 decode(CPU* c, const Shape* s, u64 guest, u64 consumed, u64 samples, 
     rc = hwopus_decode_packet(h, hook_host(c, in), (u64)size + OPUS_HEADER, (i16*)hook_host(c, out), out_size, reset,
                               &used, &got);
     if (rc) return OPUS_BROKEN_DATA;
+    LOG_LIMIT(1, "hwopus: the first packet decoded, %lu bytes into %lu samples\n", (unsigned long)used,
+              (unsigned long)got);
     snx_st_le64(hook_host(c, consumed), used);
     snx_st_le32(hook_host(c, samples), got);
     if (s->time) snx_st_le64(hook_host(c, guest + s->time), (plat_ns() - t) / 1000);
