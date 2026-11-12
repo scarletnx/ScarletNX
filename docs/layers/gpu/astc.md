@@ -615,6 +615,15 @@ a texture's changed runs are. Other footprints (an 8x8 tile is 2x2 BC7 blocks) a
 128x128 texels) keep the whole image, and the log line saying so names the format and the device's block in the
 layout's terms.
 
+A game maps one tile of its memory at many tiles of a sparse texture, and the blocks of those tiles show the same
+texels. Where the device binds memory to more than one place of an image (`sparseResidencyAliased`), such blocks
+share one allocation. `texture.c` gives each block a key: a hash of which guest memory lies under it and where in the
+block each run of that memory lies, with the block's level. `memory.c` binds the blocks of one key to the same memory
+(`vk_image_resident` for a texture bound a tile at a time, `vk_image_sparse_bind` for the others). A block that joins
+the memory of its key has that memory's texels and is not loaded. A block whose key changed is bound again. What is
+loaded into one block of a key is in all of them, which is right because they show the same bytes. A block at a
+level's edge and a mip tail share nothing. `vk_sparse_share=0` gives each block its own memory.
+
 ## Building the shader
 
 Nothing compiled is checked in. `astc_bc7.comp` is built twelve times: the two passes of the full and of the fast

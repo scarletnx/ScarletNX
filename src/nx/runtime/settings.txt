@@ -1289,6 +1289,14 @@ setting Buffer copy stats
     startup
     words Off|On
     help 1 = logs what the renderer copies between guest memory and its buffers, and why it waits for their results
+setting Sparse texture sharing
+    key vk_sparse_share
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = the blocks of a sparse texture that show the same memory of the game share one piece of GPU memory, where
+    help the GPU can bind memory to more than one place of an image. 0 = each block has its own
 setting Buffer pages
     key vk_buffer_pages
     int 0 2

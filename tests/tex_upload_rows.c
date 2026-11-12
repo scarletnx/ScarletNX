@@ -662,8 +662,12 @@ int vk_image_create_resident(const VkImageCreateInfo* ii, const VkResidentShape*
     *img = (VkImage)(uintptr_t)0x5E5;
     return g_res.shape.block.width != 0;
 }
-int vk_image_resident(VkImage img, u8* want, u32 n, u64* bytes) {
-    (void)img;
+u64 vk_image_resident_need(VkImage img, const u8* want, const u64* keys, u32 n) {
+    (void)img, (void)want, (void)keys, (void)n;
+    return 0;
+}
+int vk_image_resident(VkImage img, u8* want, const u64* keys, u32 n, u64* bytes) {
+    (void)img, (void)keys;
     *bytes = 0;
     if (n > sizeof g_res.bound) return 0;
     g_res.pages = n;
@@ -683,12 +687,12 @@ const VkSparseShape* vk_image_sparse_shape(VkImage img) {
     (void)img;
     return NULL;
 }
-int vk_image_sparse_bind(VkImage img, const u8* bits, u64* bytes) {
-    (void)img, (void)bits, (void)bytes;
+int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* bytes) {
+    (void)img, (void)bits, (void)keys, (void)bytes;
     return -1;
 }
-u64 vk_image_sparse_need(VkImage img, const u8* bits) {
-    (void)img, (void)bits;
+u64 vk_image_sparse_need(VkImage img, const u8* bits, const u64* keys) {
+    (void)img, (void)bits, (void)keys;
     return 0;
 }
 int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32 z0, u32 z1, int all) {
