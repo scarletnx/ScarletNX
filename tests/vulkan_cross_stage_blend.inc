@@ -3,7 +3,8 @@
 #include "nx/gpu/nvn/nvn_blend.h"
 
 /* TES/GS resolve their texture sets after the fragment set. Snapshotting RT0 there must not leave the ordered
-   fragment blend image in TRANSFER_SRC layout, and each draw must get the target's newest contents. */
+   fragment blend image in TRANSFER_SRC layout, and a draw after a texture barrier must get the target's newest
+   contents: the console's texture reads see earlier draws' writes only after one. */
 static int cross_stage_snapshot_program(u64 address, int stage) {
     u64 ops[32];
     u32 count = 0;
@@ -130,6 +131,7 @@ static int check_cross_stage_blend_snapshots(void) {
             NVN_BLEND_ADV_NPM, 1);
         for (u32 draw = 0; draw < 2; draw++) {
             u64 before = g_vk_drawn;
+            if (draw) g_renderer->method_barrier(0); /* NVN's ORDER_FRAGMENTS | INVALIDATE_TEXTURE */
             vk_render_draw(&channel->ds, &call, &channel->owner);
             CHECK(g_vk_drawn == before + 1);
         }

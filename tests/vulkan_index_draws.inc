@@ -1032,7 +1032,9 @@ static int query_target_case(GpuChannel* channel, u64 target, u64 address) {
    from the bottom is in place again under a viewport of negative height. With clip set, the mapping is the fragment
    program's (ShaderInfo.pos_out_mask, screen_ndc): the vertex program writes the generic as its position itself, and
    the sample is at the generic's (x / w / 2 + 1/2, y / w / 2 + 1/2), or -y / w / 2 + 1/2 counted from the bottom. The
-   same rounds, the generic loaded apart from the position in place of the stored w */
+   same rounds, the generic loaded apart from the position in place of the stored w. Each round writes the target's
+   texels anew and puts a texture barrier before its draw, as the console's texture reads see those writes only after
+   one */
 #define OWN_FFMA(d, a, c, scale, negc)                                                                                 \
     (0x32a0000000070000ull | (u64)((scale) >> 12 & 0x7ffff) << 20 | (u64)((scale) >> 31) << 56 | (u64)(c) << 39 |      \
      (u64)(negc) << 49 | (u64)(a) << 8 | (u64)(d))
@@ -1157,6 +1159,7 @@ static int own_target_case(GpuChannel* channel, u64 target, u64 address, int cli
             vk_surf_wrote(surface);
             vk_rt_drawn(surface);
             vk_surf_touch(surface);
+            g_renderer->method_barrier(0); /* NVN's ORDER_FRAGMENTS | INVALIDATE_TEXTURE */
             vk_render_draw(&channel->ds, &call, &channel->owner);
             loops = g_vk_fb_draws - loops, written = g_vk_rt_copy_writes - written, through = g_vk_rt_copies - through;
             ok = g_vk_drawn == drawn + 1;
