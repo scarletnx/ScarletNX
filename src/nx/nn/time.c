@@ -429,6 +429,9 @@ i64 nntime_steady_now(CPU* c) {
     (void)c;
     return initialized() ? steady_point().value : 0;
 }
+/* a 32-bit game's now(): AAPCS32 returns the time point, a class of 8 bytes, through the pointer the caller gives */
+void nntime_system_now_out(CPU* c, u64 out) { snx_st_le64(hook_host(c, out), (u64)nntime_user_now(c)); }
+void nntime_steady_now_out(CPU* c, u64 out) { snx_st_le64(hook_host(c, out), (u64)nntime_steady_now(c)); }
 u32 nntime_steady_get_current_time_point(CPU* c, u64 out) {
     R_UNLESS(initialized(), TIME_NOT_INITIALIZED);
     TimeContext now = steady_point();

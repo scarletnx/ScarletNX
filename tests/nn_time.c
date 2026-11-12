@@ -3,8 +3,10 @@
 /* The native nn::time (src/nx/nn/time.c), its handlers called as the hooks call them, on a stand-in CPU over a guest
    buffer: Initialize's count and mode, the results before Initialize, the clocks against the host's time, calendar
    times in a fixed-offset zone, the snapshots and the spans between them, and the calls the SDK stops the game on.
-   The guest clock, the lock and the log are stand-ins here */
+   Then a 32-bit game's table (time.hook's a32): the functions its SDK has, now() through a pointer and an argument
+   from the stack. The guest clock, the lock and the log are stand-ins here */
 #include "nx/nn/time.c"
+#include "hle/hook/hooks.hook.inc" /* time.hook's table, and a 32-bit game's */
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -59,6 +61,14 @@ void fatal(const char* fmt, ...) {
 static CPU cpu;
 static u8 mem[0x40000];
 static i64 rd64(u64 a) { return (i64)snx_ld_le64(mem + a); }
+CPU* hook_a32_cpu(SnxArmCPU* arm) { return (void)arm, &cpu; }
+/* a 32-bit game's adapter for symbol, which its table has */
+static SnxArmBlock a32(const char* symbol) {
+    for (int i = 0; i < HOOK32_COUNT; i++)
+        if (!strcmp(hook32_symbol[i], symbol)) return hook32_fn[i];
+    fprintf(stderr, "%s is not in a 32-bit game's table\n", symbol);
+    exit(1);
+}
 
 int main(void) {
     cpu.mem = mem;
@@ -190,6 +200,42 @@ int main(void) {
     CHECK_STOPS(nntime_set_device_location_name(c, 0x200));
     CHECK_STOPS(nntime_set_automatic_correction_enabled(c, 0));
     CHECK(nntime_is_automatic_correction_enabled(c) && nntime_is_accuracy_sufficient(c) && nntime_initial_year(c) == 2019);
+
+    /* a 32-bit game: the 28 functions its SDK has, and none of a later SDK's */
+    {
+        static SnxArmCPU a;
+        a.mem = mem, a.mem_size = sizeof mem;
+        CHECK(HOOK32_COUNT == 28);
+        for (int i = 0; i < HOOK32_COUNT; i++)
+            CHECK(!strstr(hook32_symbol[i], "Adjustable") && !strstr(hook32_symbol[i], "Snapshot") &&
+                  !strstr(hook32_symbol[i], "Ephemeral") && !strstr(hook32_symbol[i], "timespec"));
+        /* now(): the time point through the pointer in r0, the same on both clocks, and r1 as it was */
+        CHECK(nntime_user_get_current_time(c, 0x100) == 0);
+        memset(mem + 0xa00, 0xee, 0x30);
+        a.r[0] = 0xa08, a.r[1] = 0x1234, a.r[14] = 0x5000;
+        a32("_ZN2nn4time23StandardUserSystemClock3nowEv")(&a);
+        CHECK(rd64(0xa08) == rd64(0x100) && mem[0xa07] == 0xee && mem[0xa10] == 0xee);
+        CHECK(a.r[1] == 0x1234 && a.r[15] == 0x5000);
+        a.r[0] = 0xa18;
+        a32("_ZN2nn4time26StandardNetworkSystemClock3nowEv")(&a);
+        CHECK(rd64(0xa18) == rd64(0x100));
+        a.r[0] = 0xa20;
+        a32("_ZN2nn4time19StandardSteadyClock3nowEv")(&a);
+        CHECK(rd64(0xa20) == nntime_steady_now(c) && rd64(0xa20) != rd64(0x100));
+        /* GetCurrentTime: the PosixTime's address in r0, the result in r0, back into Thumb code */
+        a.r[0] = 0xa28, a.r[14] = 0x5001;
+        a32("_ZN2nn4time23StandardUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE")(&a);
+        CHECK(a.r[0] == 0 && rd64(0xa28) == rd64(0x100) && a.r[15] == 0x5000 && (a.cpsr & SNX_ARM_T));
+        /* ToPosixTime with a rule: its fifth argument is on the stack. 2024-03-01 00:04:05 in UTC+9 */
+        strcpy((char*)mem + 0x500, "Etc/GMT-9");
+        CHECK(nntime_load_time_zone_rule(c, 0x10000, 0x500) == 0);
+        snx_st_le16(mem + 0x800, 2024);
+        mem[0x802] = 3, mem[0x803] = 1, mem[0x804] = 0, mem[0x805] = 4, mem[0x806] = 5;
+        snx_st_le32(mem + 0xb00, 0x10000);
+        a.r[0] = 0x810, a.r[1] = 0x820, a.r[2] = 2, a.r[3] = 0x800, a.r[13] = 0xb00, a.r[14] = 0x5000;
+        a32("_ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeERKNS0_12TimeZoneRuleE")(&a);
+        CHECK(a.r[0] == 0 && snx_ld_le32(mem + 0x810) == 1 && rd64(0x820) == 1709219045);
+    }
 
     /* after Finalize to zero: the clocks answer 0x74 again, the adjustable ones stop the game */
     CHECK(nntime_finalize(c) == 0 && !nntime_is_initialized(c));

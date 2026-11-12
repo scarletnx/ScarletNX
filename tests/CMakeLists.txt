@@ -1501,7 +1501,7 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-nn-time nn_time.c)
     snx_test_target(snx-test-nn-time 23)
     snx_service_swipc(snx-test-nn-time)
-    snx_hookgen(snx-test-nn-time SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/time.hook")
+    snx_hookgen(snx-test-nn-time SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/time.hook" A32_MARKED)
     target_link_libraries(snx-test-nn-time PRIVATE OpenSSL::Crypto)
     add_test(NAME nn_time COMMAND snx-test-nn-time)
     # the native nn::fs (nn/fs.c): a path's mount and limits as the SDK's C library asks them, and a system archive
