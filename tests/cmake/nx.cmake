@@ -246,6 +246,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_tests_properties(vulkan_owned_page_reads vulkan_owned_page_reads_protection PROPERTIES TIMEOUT 60
         ENVIRONMENT "SNX_TEST_NVN_CASE=owned_page_reads" SKIP_REGULAR_EXPRESSION "SKIP owned page reads"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the targets a release watches and the CPU's first read lands, color and depth (check_rt_watch, check_zt_watch),
+    # with guest memory copied as on a discrete GPU: on unified memory they are skipped, as lavapipe's default run takes it
+    add_test(NAME vulkan_rt_watch COMMAND snx-test-vulkan -H --vk_memory=1)
+    set_tests_properties(vulkan_rt_watch PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_RT_WATCH_ONLY=1"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR;watch: needs traps")
     # the budget's trim alone (tests/vulkan_trim.inc): a trim that wants more than everything held would take what the
     # other checks hold
     add_test(NAME vulkan_trim COMMAND snx-test-vulkan -H)

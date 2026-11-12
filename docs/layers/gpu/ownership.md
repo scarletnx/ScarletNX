@@ -33,8 +33,8 @@ reads the draws' stores and writes after them, and nothing is compared. Any othe
 fence and merged by the byte with what the CPU wrote meanwhile, but with unified memory, where the draws write guest
 memory in place (below).
 
-Render targets stay the renderer's: their pixels reach guest memory only when a consumer asks. Pitch-linear color
-targets are the exception, as a game draws into those to read the result on the CPU: each release publishes the ones
+Render targets stay the renderer's: their pixels reach guest memory only when a consumer asks. Pitch-linear targets
+are the exception, as a game draws into those to read the result on the CPU: each release publishes the ones
 drawn since the last (`vk_rt_publish_drawn` in `vk/surface.c`), and storage images are published the same way
 (`vk_surf_publish`): a dispatch's after it, a draw's at the release (`vk_surf_keep_begin` and `vk_surf_keep_end`), where
 the image's span is whole pages the CPU hasn't touched lately and write tracking answers for it. A publish takes the
@@ -43,8 +43,9 @@ level of a mip chain has the other levels there. A page the CPU writes
 between the draw and the release keeps the CPU's bytes. Any other draw's storage image keeps its write-back, which
 reads its bytes before the draw and merges them by the byte.
 
-A block linear color target the CPU reads is rare, but it occurs: one game draws its save's thumbnail into a 320x180
-target, and its CPU code reads the texels from memory with no call to the GPU. To publish each block linear target at
+A block linear target the CPU reads is rare, but it occurs: one game draws its save's thumbnail into a 320x180
+target, and its CPU code reads the texels from memory with no call to the GPU, and a program may clear a depth target
+with the 3D engine, wait for the GPU and read it from memory. To publish each block linear target at
 each release would copy tens of megabytes a frame. So a release *watches* the ones drawn since the last
 (`own_watch`, through `vk_own_watch`): a watch is an entry with no resource. Its pages are trapped as an owner's, but
 it holds no bytes. `own_lookup` and `own_stage` skip it, and its CPU bytes stay readable through the mirror (in place,

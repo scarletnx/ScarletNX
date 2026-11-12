@@ -894,8 +894,8 @@ typedef struct Surf {
     u64 draw_wseq; /* render targets: wseq at its last draw or clear (vk_rt_drawn), 0 before one */
     int in_drawn;  /* in surface.c's list of drawn targets, entered at drawn_from */
     int take_seen; /* render targets: vk_rt_drawn_in gave it to a texture's search since its last write */
-    int in_linear; /* a pitch-linear color target in surface.c's list of those drawn since the last release */
-    int in_bl;     /* a block linear color target in surface.c's other list of those */
+    int in_linear; /* a pitch-linear target in surface.c's list of those drawn since the last release */
+    int in_bl;     /* a block linear target in surface.c's other list of those */
     u64 drawn_from;
     u64 draw_gw;    /* guest-memory generation at the first draw this present or since a full replacement */
     u64 draw_hash;  /* fallback guest-memory hash at that baseline */
