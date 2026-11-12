@@ -1316,6 +1316,8 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
         if (s == 4 && k->fs_spec) {
             /* a constant the module does not declare changes nothing in it, so each is given whatever the module */
             o->spec_values[SH_SPEC_ALPHA] = SH_SPEC_ALPHA_ALWAYS ^ (k->fs_spec & PIPE_SPEC_ALPHA);
+            o->spec_values[SH_SPEC_LOWER_LEFT] = (k->fs_spec & PIPE_SPEC_LOWER_LEFT) != 0;
+            o->spec_values[SH_SPEC_SPRITE_FLIP] = (k->fs_spec & PIPE_SPEC_SPRITE_FLIP) != 0;
             for (u32 id = 0; id < SH_SPEC_COUNT; id++)
                 o->spec_entries[id] = (VkSpecializationMapEntry){id, id * (u32)sizeof(u32), sizeof(u32)};
             o->spec = (VkSpecializationInfo){SH_SPEC_COUNT, o->spec_entries, sizeof o->spec_values, o->spec_values};

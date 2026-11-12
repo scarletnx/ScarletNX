@@ -267,6 +267,11 @@ enum {
     /* the alpha test's function, in the 3D engine's order: 0 never, 1 less, 2 equal, 3 less or equal, 4 greater, 5 not
        equal, 6 greater or equal, 7 always. With the test off it is 7, the module's default */
     SH_SPEC_ALPHA = 0,
+    /* 1 when the window's origin is the lower left: the fragment's y then counts up from the surface clip's bottom
+       (shader_frag_y_origin, shader_scaled_fetch). 0, the upper left, is the default */
+    SH_SPEC_LOWER_LEFT,
+    /* 1 when a point sprite's T runs against PointCoord's (the sprite's origin and the window's, vk/render.c) */
+    SH_SPEC_SPRITE_FLIP,
     SH_SPEC_COUNT
 };
 #define SH_SPEC_ALPHA_ALWAYS 7u

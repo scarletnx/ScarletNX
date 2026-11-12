@@ -4121,8 +4121,9 @@ static void scaled_texel_fetch(void) {
         }
         env.ubo[SNX_VKB_RS] = scale;
         env.ubo_words[SNX_VKB_RS] = 4;
-        env.push[4] = cases[at].scaled; /* the uvec4 after the fragment stage's vec4: slot 0's bit, then the origin */
-        env.push[6] = cases[at].lower_left;
+        env.push[4] = cases[at].scaled; /* the uvec4 after the fragment stage's vec4: slot 0's bit, the clip's height */
+        env.spec[SH_SPEC_LOWER_LEFT] = cases[at].lower_left;
+        env.spec_given = 1u << SH_SPEC_LOWER_LEFT;
         env.push[7] = 8;
         env.push[12] = cases[at].own; /* the uvec4 at byte 96: slot 0's target has the size drawn to */
         const char* why = spv_eval(code, words, &env);
@@ -5503,6 +5504,72 @@ static void alpha_function_specialized(void) {
     }
 }
 
+/* The window's origin and the point sprite's flip are the pipeline's too (SH_SPEC_LOWER_LEFT, SH_SPEC_SPRITE_FLIP):
+   only a program that reads the fragment's y or the sprite's T declares one, and each reads as the state says. The
+   surface clip's height stays a push constant */
+static void window_origin_specialized(void) {
+    const struct {
+        u64 read;       /* into R1, colour 0's green */
+        u32 spec;       /* the constant it declares beside the alpha function, SH_SPEC_COUNT for none */
+        float given[2]; /* FragCoord's or PointCoord's component, and what R1 holds with the constant 0 */
+        float turned;   /* and with the constant 1 */
+        const char* what;
+    } cases[] = {
+        {0xe003ff874ff7ff01ull,
+         SH_SPEC_LOWER_LEFT,
+         {1.5f, 1.5f},
+         6.5f,
+         "the fragment's y counts up from the clip's 8 rows in a lower-left window"},
+        {0xe003ff870ff7ff01ull, SH_SPEC_COUNT, {1.5f, 1.5f}, 1.5f, "the fragment's x declares no constant"},
+        {0xe003ffae4ff7ff01ull,
+         SH_SPEC_SPRITE_FLIP,
+         {0.25f, 0.25f},
+         0.75f,
+         "the sprite's T runs the other way with the flip"},
+        {0xe003ffae0ff7ff01ull, SH_SPEC_COUNT, {0.25f, 0.25f}, 0.25f, "the sprite's S declares no constant"},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        ShaderInfo info = {0};
+        size_t words = 0, slots;
+        u64* code = guest_program(&cases[i].read, 1, NULL, &slots);
+        if (!code) return;
+        set_sph(code, 18, 0xf);
+        u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 0, 1, 1, 1);
+        free(code);
+        check_translated(spv, &info, "a fragment program reading its place translates");
+        if (!spv) continue;
+        u32 want = 1u << SH_SPEC_ALPHA | (cases[i].spec < SH_SPEC_COUNT ? 1u << cases[i].spec : 0u);
+        if (info.spec != want) fprintf(stderr, "origin case %zu declares constants %x, not %x\n", i, info.spec, want);
+        check(info.spec == want && count_opcode(spv, words, 50, 0xffffffffu) == (cases[i].spec < SH_SPEC_COUNT ? 2 : 1),
+              cases[i].what);
+        for (u32 on = 0; on < 3; on++) { /* 2: none given */
+            SpvEvalEnv env = {0};
+            float one[4] = {1.0f, 1.0f, 1.0f, 0.0f}, got;
+            u32 scale[4];
+            memcpy(scale, one, sizeof one);
+            env.ubo[SNX_VKB_RS] = scale;
+            env.ubo_words[SNX_VKB_RS] = 4;
+            for (u32 k = 0; k < 2; k++) { /* FragCoord (15) and PointCoord (16), x and y alike */
+                memcpy(&env.builtin[15][k], &cases[i].given[0], 4);
+                memcpy(&env.builtin[16][k], &cases[i].given[0], 4);
+            }
+            env.push[7] = 8; /* the surface clip's height */
+            if (cases[i].spec < SH_SPEC_COUNT && on < 2) {
+                env.spec[cases[i].spec] = on;
+                env.spec_given = 1u << cases[i].spec;
+            }
+            const char* why = spv_eval(spv, words, &env);
+            memcpy(&got, &env.out[0][1], 4);
+            float expected = on == 1 ? cases[i].turned : cases[i].given[1];
+            if (why || got != expected)
+                fprintf(stderr, "origin case %zu with the constant %u: %s, read %g, not %g\n", i, on, why ? why : "ran",
+                        (double)got, (double)expected);
+            check(!why && got == expected, cases[i].what);
+        }
+        free(spv);
+    }
+}
+
 /* What the translator knows as it translates is settled there, not left for the driver's compiler: PT, the
    predicate most instructions name, is the constant true; a constant a register holds is a constant of the type it
    is read as; and a float a register holds is read back as that float, not through its bits */
@@ -5880,6 +5947,7 @@ int main(int argc, char** argv) {
     per_vertex_pass();
     settled_when_translated();
     alpha_function_specialized();
+    window_origin_specialized();
     inputs_loaded_once_a_block();
     check(!g_fixtures.failed, "shader fixture paths allocated");
     for (size_t i = 0; i < g_fixtures.count; i++) free(g_fixtures.paths[i]);

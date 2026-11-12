@@ -2007,10 +2007,13 @@ typedef struct {
     u32 conservative;   /* DsRasterKey's (has_conservative): 0 off, else 1 plus the dilation in quarter pixels */
     /* what the pipeline gives the fragment module's specialization constants (shader.h's SH_SPEC_), of those the
        module declares; 0 is every constant at its default, a pipeline with none given. PIPE_SPEC_ALPHA's bits: the
-       alpha test's function, as its difference from always (SH_SPEC_ALPHA_ALWAYS ^ the function) */
+       alpha test's function, as its difference from always (SH_SPEC_ALPHA_ALWAYS ^ the function). Then a bit each for
+       the lower-left window origin and the point sprite's flipped T */
     u32 fs_spec;
 } PipeKey;
-#define PIPE_SPEC_ALPHA 7u
+#define PIPE_SPEC_ALPHA       7u
+#define PIPE_SPEC_LOWER_LEFT  8u
+#define PIPE_SPEC_SPRITE_FLIP 16u
 /* the overestimation of conservative rasterization of a PipeKey.conservative, within the device's most (pipeline.c) */
 float vk_conservative_extra(u32 conservative);
 #define PIPE_MESH_WHOLE(stage) (2u << ((stage) == ST_TS)) /* PipeKey.mesh's bit of a whole stage's workgroup */

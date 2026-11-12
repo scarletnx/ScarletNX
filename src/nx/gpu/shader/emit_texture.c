@@ -110,11 +110,7 @@ void shader_scaled_fetch(DirectCtx* c, u32 push, u32 fragcoord, u32 vec4, int sl
     u32 scaled = scaled_slot(c, push, slot, 0), own = scaled_slot(c, push, slot, 1);
     u32 scale = scale_component(c, 2), over = scale_component(c, 0);
     u32 lower_left =
-        spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type,
-                             spv_emit_push_component_f32(&c->emit, spv_emit_type_pointer(&c->emit, 9, c->u32_type),
-                                                         push, spv_emit_constant_u32(&c->emit, c->u32_type, 1),
-                                                         spv_emit_constant_u32(&c->emit, c->u32_type, 2), c->u32_type),
-                             c->zero);
+        spv_emit_binary(&c->emit, SPV_OP_I_NOT_EQUAL, c->bool_type, shader_spec(c, SH_SPEC_LOWER_LEFT, 0), c->zero);
     u32 half = spv_emit_constant_f32(&c->emit, c->f32_type, 0.5f);
     u32* v[2] = {x, y};
     for (u32 k = 0; k < 2; k++) {
