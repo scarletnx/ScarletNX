@@ -426,7 +426,7 @@ counted, now goes another way:
   cut in pieces of at most 256 KiB of blocks (`Bc7Pieces`): whole layers or slices when one is smaller, else bands of
   block rows, whose height is a multiple of the rows that start on a row of ASTC blocks too. The level's size and
   footprint alone place them, and each is a record of the cache under a key of its own (the level's key, with the
-  fast build's, and where the piece lies), so the cache takes a level of any size. With `astc_background=2`, the
+  fast build's, and where the piece lies), so the cache takes a level of any size. With `astc_background=1`, the
   default, the GPU encodes one piece after each present, in a submission of its own after the frame's
   (`vk_astc_background`), the next once that one is done. Each piece also goes into the texture, while it holds the
   upload the background started from: another upload of that level, a copy of render targets into it or its end
@@ -460,15 +460,13 @@ over the scene's first 40 seconds as the game streams):
 The GPU had room: before, it was busy 27 ms of each 57 ms frame, and a piece of the background made that 36. The frame
 rates' differences are within what runs vary by: runs without any background gave 15.4 to 17.9 in the same windows.
 Copying each piece into the texture as well (the build after these runs) left the background's cost a frame and its
-length (138 s) the same. The game was run capped to four CPUs (a cgroup quota of 400%), as all our test runs are: its
-own threads took 2 to 2.3 of them in that scene, so even two workers at idle priority used up the cap and held the
-game back, and six (a quarter of the 24 threads, `astc_background_threads=0`) brought it down to 3 to 6 frames a
-second. Without such a cap, idle priority leaves the game its CPUs, but the cost stays: on that game's blocks a Zen 5
-core encodes 0.7 megatexels a second, so the two arrays take 10 minutes of CPU time where the GPU spends 13 seconds,
-with the power and fan noise that come with it. `astc_background=1` is for a game that the GPU holds back, on a
-computer with cores to spare. Its blocks are the GPU's byte for byte (integer arithmetic only), so they are stored
-under the same keys: the CPU decoder (`astc_cpu.c`) and the encoder's body run through `glsl.hpp`
-(`gpu/texture/bc7_encode_cpu.cpp`), which the tests hold to the GPU's bytes.
+length (138 s) the same. The CPU column is the worker threads the background once had as well, which ran the CPU
+decoder and the encoder's body at idle priority. The game was run capped to four CPUs (a cgroup quota of 400%), as all
+our test runs are: its own threads took 2 to 2.3 of them in that scene, so even two workers used up the cap and held
+the game back, and six brought it down to 3 to 6 frames a second. Without such a cap the cost stays: on that game's
+blocks a Zen 5 core encodes 0.7 megatexels a second, so the two arrays take 10 minutes of CPU time where the GPU spends
+13 seconds. The background is the GPU's alone now; the CPU decoder and encoder (`astc_cpu.c`,
+`bc7_encode_cpu.cpp`) are only the tests' references.
 
 Why 8 megatexels: at that game's rate (25 ns a texel, most blocks trying every mode), the fast build of a level under
 it costs the frame at most about 200 ms on the 890M, and a tenth of that on blocks mode 6 holds (an albedo map); a game
