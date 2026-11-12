@@ -6,15 +6,17 @@
 // them), blocks of one colour and blocks a layout holds come back exact, and a picture of gradients, edges, noise and
 // alpha comes back no worse than each region is held to. No GPU is needed.
 //
-// snx-test-astc-encode-glsl --measure FILE.astc... gives the PSNR of a game's own textures (astc_dump's files, decoded
-// and encoded again) beside the BC7 encoder's fast build of the same texels.
+// snx-test-astc-encode-glsl --measure FILE.astc... gives the PSNR of a game's own textures (astc_dump's files) made
+// ASTC 4x4 from their texels and, as the runtime does, from BC7 blocks of them, with the BCn block's hints and without.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <vector>
 #include "astc_encode_cpu.h"
 #include "bc7_cpu.h"
+#include "bcn_etc2_cpu.h"
 extern "C" void astc_decode_image(const uint8_t* src, uint32_t w, uint32_t h, uint32_t bw, uint32_t bh, uint8_t* dst,
                                   int srgb);
 extern "C" void bcn_decode_image(const uint8_t* src, uint32_t w, uint32_t h, int kind, uint8_t* dst);
@@ -146,8 +148,12 @@ static void picture_psnr() {
     }
 }
 
+// --measure: each file's first slice decoded, and its texels made ASTC 4x4 three ways: by the encoder alone, and as
+// the runtime makes them, from BC7 blocks (the BC7 encoder's fast build of the texels), the BCn block's hints taken and
+// not. The PSNR of each against the texels, and of the two from BC7 against what the BC7 blocks decode to, which is
+// what the game would have shown; the CPU's seconds for the two from BC7; and how the hinted blocks were written
 static int measure(int n, char** files) {
-    double se[2] = {0, 0}, values = 0;
+    double se[5] = {0, 0, 0, 0, 0}, secs[2] = {0, 0}, values = 0;
     for (int f = 0; f < n; f++) {
         FILE* file = std::fopen(files[f], "rb");
         uint8_t hdr[16];
@@ -165,33 +171,71 @@ static int measure(int n, char** files) {
             return 1;
         }
         std::fclose(file);
-        std::vector<uint8_t> texels((size_t)w * h * 4), blocks((size_t)cx * cy * 16), got((size_t)cx * cy * 64);
+        const size_t padded = (size_t)cx * cy * 64;
+        std::vector<uint8_t> texels((size_t)w * h * 4), bc7((size_t)cx * cy * 16), blocks(bc7.size()), got(padded),
+            shown(padded);
         astc_decode_image(src.data(), w, h, bw, bh, texels.data(), 0);
-        double e[2] = {0, 0};
-        for (int which = 0; which < 2; which++) {
-            if (which == 0) {
+        bc7_encode_cpu_fast(texels.data(), w, h, 1, bc7.data());
+        bcn_decode_image(bc7.data(), cx * 4, cy * 4, 9 /* BCN_BC7 */, shown.data());
+        double e[5] = {0, 0, 0, 0, 0}, s[2] = {0, 0};
+        uint32_t kinds[4] = {0, 0, 0, 0};
+        for (int which = 0; which < 3; which++) {
+            timespec t0, t1;
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            if (which == 0)
                 astc_encode_cpu(texels.data(), w, h, 1, blocks.data());
-                astc_decode_image(blocks.data(), cx * 4, cy * 4, 4, 4, got.data(), 0);
-            } else {
-                bc7_encode_cpu_fast(texels.data(), w, h, 1, blocks.data());
-                bcn_decode_image(blocks.data(), cx * 4, cy * 4, 9 /* BCN_BC7 */, got.data());
-            }
+            else if (which == 1)
+                bcn_astc_plain_cpu(9, bc7.data(), cx, cy, 1, blocks.data());
+            else
+                bcn_astc_cpu(9, bc7.data(), cx, cy, 1, blocks.data());
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            if (which) s[which - 1] = double(t1.tv_sec - t0.tv_sec) + double(t1.tv_nsec - t0.tv_nsec) / 1e9;
+            astc_decode_image(blocks.data(), cx * 4, cy * 4, 4, 4, got.data(), 0);
             for (uint32_t y = 0; y < h; y++)
                 for (uint32_t x = 0; x < w * 4; x++) {
-                    const double d = double(got[(size_t)y * cx * 16 + x]) - double(texels[(size_t)y * w * 4 + x]);
+                    const size_t at = (size_t)y * cx * 16 + x;
+                    const double d = double(got[at]) - double(texels[(size_t)y * w * 4 + x]);
                     e[which] += d * d;
+                    if (which) {
+                        const double d2 = double(got[at]) - double(shown[at]);
+                        e[2 + which] += d2 * d2;
+                    }
                 }
-            se[which] += e[which];
+            if (which == 2)
+                for (size_t i = 0; i < blocks.size(); i += 16) {
+                    const uint32_t m = blocks[i] | blocks[i + 1] << 8;
+                    kinds[(m & 0x1FF) == 0x1FC ? 0 : (m >> 10 & 1) ? 2 : (m >> 11 & 3) ? 3 : 1]++;
+                }
         }
+        uint32_t left[8], had[8] = {0};
+        const uint32_t listed = bcn_astc_left_cpu(bc7.data(), cx * cy, left);
+        for (size_t i = 0; i < bc7.size(); i += 16) {
+            uint32_t m = 0;
+            while (m < 7 && !(bc7[i] >> m & 1)) m++;
+            had[m]++;
+        }
+        std::printf("  the second pass's: %u of %u blocks; of BC7's modes 0 to 7", listed, cx * cy);
+        for (int m = 0; m < 8; m++) std::printf(" %u/%u", left[m], had[m]);
+        std::printf("\n");
         const double count = double(w) * h * 4;
         values += count;
-        std::printf("%s: %ux%u of %ux%u: ASTC 4x4 %.2f dB, BC7 (the fast build) %.2f dB\n", files[f], w, h, bw, bh,
-                    e[0] > 0 ? 10 * std::log10(255.0 * 255.0 * count / e[0]) : 99.0,
-                    e[1] > 0 ? 10 * std::log10(255.0 * 255.0 * count / e[1]) : 99.0);
+        for (int k = 0; k < 5; k++) se[k] += e[k];
+        secs[0] += s[0];
+        secs[1] += s[1];
+#define DB(x) ((x) > 0 ? 10 * std::log10(255.0 * 255.0 * count / (x)) : 99.0)
+        std::printf("%s: %ux%u of %ux%u: from texels %.2f dB; from BC7 %.2f dB (%.2f to BC7's own) in %.3f s, with "
+                    "hints %.2f dB (%.2f) in %.3f s: %u void extents, %u of one partition, %u of two planes, %u of two "
+                    "partitions\n",
+                    files[f], w, h, bw, bh, DB(e[0]), DB(e[1]), DB(e[3]), s[0], DB(e[2]), DB(e[4]), s[1], kinds[0],
+                    kinds[1], kinds[2], kinds[3]);
+#undef DB
         std::fflush(stdout);
     }
-    std::printf("all %d files: ASTC 4x4 %.2f dB, BC7 %.2f dB\n", n, 10 * std::log10(255.0 * 255.0 * values / se[0]),
-                10 * std::log10(255.0 * 255.0 * values / se[1]));
+#define DB(x) (10 * std::log10(255.0 * 255.0 * values / (x)))
+    std::printf("all %d files: from texels %.2f dB; from BC7 %.2f dB (%.2f to BC7's own) in %.2f s, with hints %.2f dB "
+                "(%.2f) in %.2f s\n",
+                n, DB(se[0]), DB(se[1]), DB(se[3]), secs[0], DB(se[2]), DB(se[4]), secs[1]);
+#undef DB
     return 0;
 }
 
