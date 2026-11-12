@@ -75,8 +75,14 @@ int main(int argc, char** argv) {
     CHECK(file_size(path) == (long)saved);
     VkPipelineCache again = snx_vk_pipeline_cache_load(dev, &props, path, &loaded, why, sizeof why);
     CHECK(again != VK_NULL_HANDLE);
-    CHECK(loaded == saved);
-    CHECK(!why[0]);
+    if (saved >= 32) {
+        CHECK(loaded == saved);
+        CHECK(!why[0]);
+    } else { /* lavapipe of Mesa 26.2 gives 20 bytes of its 32-byte header, which no driver may be given back */
+        printf("the driver's own data: %s\n", why);
+        CHECK(loaded == 0);
+        CHECK(strstr(why, "fewer than the 32") != NULL);
+    }
     /* the driver takes what it wrote: the same pipeline from the loaded cache */
     VkPipeline remade = VK_NULL_HANDLE;
     CHECK(snx_vk_compute_pipeline(dev, again, fill.layout, snx_ctr_fill_spv, snx_ctr_fill_spv_size, &remade) ==
@@ -105,16 +111,17 @@ int main(int argc, char** argv) {
     }
     snx_free_strings(names, count);
 
-    /* the same data from another build of the driver (another pipelineCacheUUID): kept from the driver, which Vulkan
-       lets be given only what it gave out, and some drivers take without a check */
-    size_t size = 0;
-    unsigned char* other = snx_read_file(path, &size);
-    CHECK(other && size == saved && size > 32);
-    if (other && size > 32) {
-        other[16] ^= 0xff;
-        CHECK(!snx_write_file(path, other, size));
+    /* this device's header from another build of the driver (another pipelineCacheUUID), as a driver update leaves
+       the file: kept from the driver, which Vulkan lets be given only what it gave out, and some drivers take without
+       a check */
+    unsigned char other[32] = {32, 0, 0, 0, 1};
+    for (unsigned i = 0; i < 4; ++i) {
+        other[8 + i] = (unsigned char)(props.vendorID >> 8 * i);
+        other[12 + i] = (unsigned char)(props.deviceID >> 8 * i);
     }
-    free(other);
+    memcpy(other + 16, props.pipelineCacheUUID, VK_UUID_SIZE);
+    other[16] ^= 0xff;
+    CHECK(!snx_write_file(path, other, sizeof other));
     VkPipelineCache from_other = snx_vk_pipeline_cache_load(dev, &props, path, &loaded, why, sizeof why);
     printf("another driver build: %s\n", why);
     CHECK(from_other != VK_NULL_HANDLE);

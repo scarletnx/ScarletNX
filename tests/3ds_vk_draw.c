@@ -704,7 +704,8 @@ static void pipeline_cache(SnxCtrMemory* m) {
             temporary += n > 4 && !strcmp(names[i] + n - 4, ".tmp");
         }
     snx_free_strings(names, count);
-    bool ok = drawn && blocked && kept_out && data && size > 32 && !temporary;
+    /* lavapipe keeps no pipeline: its file is the header alone, or less (Mesa 26.2 gives 20 bytes) */
+    bool ok = drawn && blocked && kept_out && data && size && !temporary;
     printf("%-24s %s: %zu bytes once the folder in its place went, %zu temporary files: %s\n", s->name, path, size,
            temporary, ok ? "ok" : "FAIL");
     failures += !ok;
