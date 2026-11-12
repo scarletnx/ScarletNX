@@ -408,8 +408,11 @@ if(TARGET snx_ctr_board)
     # the pipeline cache kept between runs: the file named for the driver, and a failed write made again by the next.
     # Through pipelines, as a device with shader objects makes none (3ds_vk_shader_object checks their binaries)
     add_test(NAME 3ds_vk_draw_pipeline_cache COMMAND snx-test-3ds-vk-draw --pipeline-cache --vk_ext_shader_object=off)
+    # the stand-in shaders (shaders/standin.vert and standin.frag) given every draw they draw, against the CPU
+    # reference
+    add_test(NAME 3ds_vk_draw_stand_in COMMAND snx-test-3ds-vk-draw --ctr_stand_in=2)
     set_tests_properties(3ds_vk_draw 3ds_vk_draw_async 3ds_vk_draw_pipelines 3ds_vk_draw_async_pipelines
-                         3ds_vk_draw_pipeline_cache PROPERTIES SKIP_RETURN_CODE 77)
+                         3ds_vk_draw_pipeline_cache 3ds_vk_draw_stand_in PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's copy of the RAM, page by page: what is copied in and back, and when, and every byte where it belongs
     add_executable(snx-test-3ds-vk-copies 3ds_vk_copies.c)
     snx_test_target(snx-test-3ds-vk-copies 11)

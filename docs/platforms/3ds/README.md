@@ -182,7 +182,18 @@ version, and one of another device or driver version is not read. The shared par
 `src/common/gpu/vk/shader_object.c`. `vk_ext_shader_object=off` draws through pipelines on such a
 device, and the drivers' bans (`src/common/gpu/vk/extension_bans.txt`) and the other `vk_ext_*`
 settings hold for the 3DS's device as for a Switch game's. `3ds_vk_shader_object` checks the
-binaries' file, and `3ds_vk_draw_pipelines` the draws through pipelines. Vertex and
+binaries' file, and `3ds_vk_draw_pipelines` the draws through pipelines. With shader objects and
+`async_pipelines=1`, a draw whose shaders are still being made is drawn with stand-ins, two
+shaders made once per run. The vertex one (`gpu/vk/shaders/standin.vert`) runs the vertex
+program from a buffer, with `gpu/shader.c`'s flow control and `vsgen.c`'s arithmetic, registers
+and outputs, its config in push constants and the integer attributes in scaled formats, which
+it reads as floats. The fragment one (`gpu/vk/shaders/standin.frag`) reads the fragment state
+from push constants, and follows `fsgen.c`'s lighting, stages, rounding, sampling, alpha test,
+fog, scissor and depth. It takes every draw but those with gas, a procedural texture, shadow
+rendering, or a shadow or cube texture on unit 0, which are still skipped. Where the device
+keeps infinities and NaNs, both declare it as the generated shaders do. `ctr_stand_in=0` skips
+the draws, and `ctr_stand_in=2` gives the stand-ins every draw they draw, which
+`3ds_vk_draw_stand_in` holds to the CPU reference. Vertex and
 index data are read where the GPU works (in place, or its copy), except in a draw with a geometry shader, whose vertex and
 geometry shaders run on the CPU (see below). `tests/3ds_vk_draw.c` holds the draws to the
 software renderer they replaced, which stays as their reference. The shown

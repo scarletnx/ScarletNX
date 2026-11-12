@@ -65,8 +65,15 @@ int main(int argc, char** argv) {
                                   .pSetLayouts = &fill.set,
                                   .pushConstantRangeCount = 1,
                                   .pPushConstantRanges = &push};
-    uint64_t key = snx_vk_shader_key(VK_SHADER_STAGE_COMPUTE_BIT, snx_ctr_fill_spv, snx_ctr_fill_spv_size / 4);
-    CHECK(key != snx_vk_shader_key(VK_SHADER_STAGE_VERTEX_BIT, snx_ctr_fill_spv, snx_ctr_fill_spv_size / 4));
+    uint64_t key = snx_vk_shader_key(&info);
+    /* another stage, another push constant range: another key */
+    VkShaderCreateInfoEXT changed = info;
+    changed.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    CHECK(key != snx_vk_shader_key(&changed));
+    VkPushConstantRange more = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 32};
+    changed = info;
+    changed.pPushConstantRanges = &more;
+    CHECK(key != snx_vk_shader_key(&changed));
 
     /* no file: no binaries, and the shader compiled, its binary kept */
     SnxVkShaderBinaries b;
