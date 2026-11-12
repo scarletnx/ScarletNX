@@ -667,7 +667,7 @@ static int savable(char* why, size_t whysize) {
             snprintf(why, whysize, "the game has a secure connection open");
             return -1;
         }
-    for (i = 0; i < RO_SESSIONS; i++)
+    for (i = 0; i < RO_STATES; i++)
         for (k = 0; k < RO_LIMIT; k++)
             if (g_hle.ldr.states[i].nro[k].map.base) {
                 snprintf(why, whysize, "the game has loaded code modules (NROs), which states don't hold yet");
@@ -716,7 +716,7 @@ static void nil_host(Hle* c) {
         NIL(c->audren.rens[i].out);
         c->audren.rens[i].out_failed = c->audren.rens[i].out_started = 0;
     }
-    for (i = 0; i < RO_SESSIONS * RO_LIMIT; i++) NIL(c->ldr.states[i / RO_LIMIT].nrr[i % RO_LIMIT].hashes);
+    for (i = 0; i < RO_STATES * RO_LIMIT; i++) NIL(c->ldr.states[i / RO_LIMIT].nrr[i % RO_LIMIT].hashes);
     for (i = 0; i < NV_GMMU_L1; i++) NIL(c->nvdrv.gmmu[i]);
     NIL(c->nvdrv.gmaps);
     NIL(c->nvdrv.gruns);
@@ -802,7 +802,7 @@ static int save_hle(Buf* hle, Buf* heap, Names* names) {
         SWZ(a->o);
     }
     /* ldr: the NRRs' hashes */
-    for (i = 0; i < RO_SESSIONS; i++)
+    for (i = 0; i < RO_STATES; i++)
         for (k = 0; k < RO_LIMIT; k++) {
             RoNrr* n = &c->ldr.states[i].nrr[k];
             if (n->hashes) r |= heap_put(&io, HEAP_NRR, i * RO_LIMIT + k, n->hashes, (u64)n->count * 32);
@@ -854,7 +854,7 @@ static void drop_host(void) {
     for (i = 0; i < AM_STORAGES; i++)
         if (g_hle.am.storages[i].obj) free(g_hle.am.storages[i].d);
     for (i = 0; i < KCODEVIEW_MAX; i++) free(g_hle.svcmem.views[i].snap);
-    for (i = 0; i < RO_SESSIONS; i++)
+    for (i = 0; i < RO_STATES; i++)
         for (k = 0; k < RO_LIMIT; k++) free(g_hle.ldr.states[i].nrr[k].hashes);
     for (i = 0; i < NV_GMMU_L1; i++) free(g_hle.nvdrv.gmmu[i]);
     free(g_hle.nvdrv.gmaps);
@@ -970,7 +970,7 @@ static void staged_free(Hle* ld) {
     u32 i;
     for (i = 0; i < AM_STORAGES; i++) free(ld->am.storages[i].d);
     for (i = 0; i < KCODEVIEW_MAX; i++) free(ld->svcmem.views[i].snap);
-    for (i = 0; i < RO_SESSIONS * RO_LIMIT; i++) free(ld->ldr.states[i / RO_LIMIT].nrr[i % RO_LIMIT].hashes);
+    for (i = 0; i < RO_STATES * RO_LIMIT; i++) free(ld->ldr.states[i / RO_LIMIT].nrr[i % RO_LIMIT].hashes);
     for (i = 0; i < SNX_AUDREN_MAX; i++) free(ld->audren.rens[i].s);
     for (i = 0; i < NV_GMMU_L1; i++) free(ld->nvdrv.gmmu[i]);
     free(ld->nvdrv.gmaps);
@@ -1026,7 +1026,7 @@ static int stage_hle(Hle* ld, Buf* heap, const Names* names, Buf* fs_paths) {
                 break;
             case HEAP_NRR: {
                 RoNrr* nrr;
-                if (slot >= RO_SESSIONS * RO_LIMIT) goto bad;
+                if (slot >= RO_STATES * RO_LIMIT) goto bad;
                 nrr = &ld->ldr.states[slot / RO_LIMIT].nrr[slot % RO_LIMIT];
                 if (nrr->hashes || n != (u64)nrr->count * 32 || !(nrr->hashes = (u8*)malloc((size_t)(n ? n : 1))))
                     goto bad;

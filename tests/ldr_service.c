@@ -356,6 +356,43 @@ static void concurrency(void) {
     }
     svcobj_unref(o);
 }
+/* the runtime's own state (services.h's ldr_own_*), which nn::ro answered by the runtime uses with no session: the
+   commands' checks and mappings, apart from every session's */
+static void own(void) {
+    u64 base = 0, second = 0;
+    u32 process = 0xFFFF8001u, none = 123;
+    fixture();
+    CHECK(ldr_own_load(SRC, 0x3000, BSS, 0x1000, &base) == RO(9)); /* no NRR registered: not authorized */
+    CHECK(ldr_own_register(NRR, 0x1000, &none) == RO(1031));
+    ldr_own_kind(1);
+    CHECK(ldr_own_register(NRR, 0x1000, &process) == RO(10)); /* ro:1's kind asked of an NRR of ldr:ro's kind */
+    CHECK(!ldr_own_register(NRR, 0x1000, NULL));              /* with no handle: ldr:ro's kind, whatever the port */
+    CHECK(!ldr_own_unregister(NRR) && ldr_own_unregister(NRR) == RO(1029));
+    ldr_own_kind(0);
+    CHECK(!ldr_own_register(NRR, 0x1000, &process));
+    CHECK(!ldr_own_load(SRC, 0x3000, BSS, 0x1000, &base) && base);
+    block_is(base, MS_ALIASCODE, PERM_RX, 0);
+    CHECK(GP(base + 0x3000)[0] == 0xa5); /* the game's buffer as it was: the linker zeroes what is BSS */
+    CHECK(ldr_own_load(SRC2, 0x3000, SRC2 + 0x3000, 0x1000, &second) == RO(3)); /* the same module ID, loaded */
+    /* a session neither sees it nor shares its registrations, and every session's state is still free */
+    SvcObj* sessions[RO_SESSIONS];
+    for (int i = 0; i < RO_SESSIONS; i++) {
+        sessions[i] = new_ldr();
+        CHECK(sessions[i]->data != &g_hle.ldr.states[RO_SESSIONS]);
+    }
+    request(4, 0, 0, 0, 0);
+    CHECK(!call(sessions[0]));
+    request(1, base, 0, 0, 0);
+    CHECK(call(sessions[0]) == RO(1028));
+    request(0, SRC2, 0x3000, SRC2 + 0x3000, 0x1000);
+    CHECK(call(sessions[0]) == RO(9));
+    for (int i = 0; i < RO_SESSIONS; i++) svcobj_unref(sessions[i]);
+    block_is(base, MS_ALIASCODE, PERM_RX, 0); /* a session's end leaves the runtime's NRO */
+    CHECK(!ldr_own_unload(base) && ldr_own_unload(base) == RO(1028));
+    block_is(base, MS_FREE, PERM_NONE, 0);
+    block_is(SRC, MS_NORMAL, PERM_RW, 0);
+    CHECK(!ldr_own_unregister(NRR));
+}
 /* a request shorter than its command's arguments (0x28 bytes for MapManualLoadModuleMemory: the pid, then four u64s)
    is refused by sf before ldr sees it: nothing is mapped */
 static void short_request(void) {
@@ -684,6 +721,7 @@ int main(int argc, char** argv) {
     short_request();
     concurrency();
     aot_slots();
+    own();
     limits();
     CHECK(!mem_heap_set(0, 0x10000));
     CHECK(!munmap(g_mem, AS_SIZE));
