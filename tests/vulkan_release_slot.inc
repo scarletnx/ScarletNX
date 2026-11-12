@@ -142,6 +142,38 @@ static int check_release_fresh(void) {
    The present costs what it costs when the owner is still held elsewhere and nothing is released: the same command
    buffers begun, the same submissions made. The release began one in the slot the present was leaving, which stayed
    open when the frames came round to it (commands past the recording thread) until the present submitted it as well */
+/* The bytes a release frees (vk_defer_bytes) are counted until the release is performed, whichever of the two comes
+   first: counted before the release in a fresh slot, they left the count when the release started the slot */
+static int check_release_bytes(void) {
+    RsCall call = {0};
+    vk_lock();
+    vk_finish();
+    for (int i = 0; i < VK_FRAMES; i++) { /* every slot's list performed: what is counted from here is this check's */
+        vk_frame_next();
+        vk_cmd();
+    }
+    vk_finish();
+    vk_frame_next(); /* nothing recording: the next slot, fresh */
+    u64 counted = vk_deferred_bytes();
+    vk_defer_bytes(4096);
+    vk_defer_call(rs_freed, &call);
+    u64 after = vk_deferred_bytes() - counted;
+    if (after != 4096)
+        fprintf(stderr,
+                "release bytes: %llu bytes counted after 4096 were deferred with their release, in a fresh slot\n",
+                (unsigned long long)after);
+    CHECK(after == 4096 && !call.calls);
+    for (int i = 0; i < VK_FRAMES; i++) {
+        vk_frame_next();
+        vk_cmd();
+    }
+    CHECK(call.calls == 1 && vk_deferred_bytes() == counted);
+    vk_finish();
+    vk_unlock();
+    puts("release bytes: a release's bytes are counted until it is performed");
+    return 0;
+}
+
 #define RS_CPU (HEAP_BASE + 0x7f0000)
 #define RS_GVA 0xad00000ull
 /* A storage result over an owner's bytes, its submission done and still to land: owner holds 0x22 and is published

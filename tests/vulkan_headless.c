@@ -6693,6 +6693,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_release_in_use());
     CHECK(!check_release_recording());
     CHECK(!check_release_fresh());
+    CHECK(!check_release_bytes());
     CHECK(!check_release_present_landing());
     CHECK(!check_release_recycle_landing());
     CHECK(!check_release_landing_fresh());
