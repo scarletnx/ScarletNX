@@ -122,6 +122,10 @@ typedef struct {
     VkPhysicalDeviceFeatures feat;
     int has_divisor;    /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
     int astc_bc7_could; /* the GPU samples BCn but not ASTC: astc_mode=2 holds its ASTC textures as BC7 */
+    /* the images ran short of memory (surface.c's trim): with bcn_astc's Auto the BC1 textures made from now on are
+       ETC2 RGB8A1, half ASTC 4x4's bytes (format.c). A texture keeps the format it was made with, so ETC2 takes
+       ASTC's place as textures are evicted and loaded again */
+    int bc1_tight;
     /* shaderIntegerDotProduct is on and the GPU says its packed unsigned one is accelerated: astc_bc7.comp's builds
        that use it (astc.c's bc7_pipe) */
     int bc7_dot;
@@ -830,6 +834,9 @@ void vk_blocks_say(void);
 /* the ASTC textures the GPU decodes are held as BC7: astc_mode's BC7, or its Auto on a device that started with little
    memory (gpu/texture/astc_bc.h) */
 int vk_astc_bc7(void);
+/* the images ran short of memory, why said: g_vk.bc1_tight from now on (format.c). 1 when that changes what BC1
+   textures become, which the log then says */
+int vk_bc1_tight(const char* why);
 /* vk_tic_format for a 3D image: ASTC and ETC2 blocks decoded where the device can't make 3D images of them */
 VkFmt vk_tic_format_3d(u32 w0, int srgb);
 /* The device and optimal-tiling format both support writes without a shader format. */

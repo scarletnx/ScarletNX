@@ -85,14 +85,14 @@ static const uint32_t TC_BCN_ASTC_MODE = 50; // texconv_modes.glsl's TC_BCN_ASTC
 
 template <typename T>
 static void transcode(int kind, const uint8_t* blocks, uint32_t bw, uint32_t bh, uint32_t slices, uint8_t* out) {
-    const uint32_t words = bw * 4;
-    std::vector<glsl::leuint> in((size_t)words * bh * slices), res((size_t)words * bh * slices);
+    const uint32_t words = bw * 4, in_words = bw * (kind == 0 ? 2 : 4); // BC1's blocks are 8 bytes
+    std::vector<glsl::leuint> in((size_t)in_words * bh * slices), res((size_t)words * bh * slices);
     std::memcpy(in.data(), blocks, in.size() * 4);
     glsl::dispatch<T>(glsl::uvec3((bw + 63) / 64, bh, slices), glsl::uvec3(64, 1, 1), [&](T& t) {
         t.mode = TC_BCN_ASTC_MODE + (uint32_t)kind;
         t.units = bw;
         t.rows = bh;
-        t.in_pitch = words;
+        t.in_pitch = in_words;
         t.out_pitch = words;
         t.in_bias = 0;
         t.out_bias = 0;

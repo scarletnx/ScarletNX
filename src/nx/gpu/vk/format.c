@@ -178,15 +178,32 @@ static VkFmt TC(VkFormat f, int bpp) { /* block compressed, 4x4 */
    ASTC_AS_BC7: a decoded ASTC texture encoded again as BC7 (astc_mode's BC7, or its Auto, the default, on a GPU of
    little memory, vk_astc_bc7), where the device samples BCn: vk_blocks_want turns textureCompressionBC on for it, so
    BCn is sampled as it is only when native_bc says so as well */
-enum { NATIVE_ASTC = 1, NATIVE_ETC2 = 2, NATIVE_BC = 4, ASTC_AS_BC7 = 8, BCN_AS_ASTC = 16 };
+enum { NATIVE_ASTC = 1, NATIVE_ETC2 = 2, NATIVE_BC = 4, ASTC_AS_BC7 = 8, BCN_AS_ASTC = 16, BC1_AS_ASTC = 32 };
 int vk_astc_bc7(void) { return snx_astc_bc7(g_settings.astc_mode, g_vk.astc_auto_bc7); }
 static u32 native_blocks(void) {
     return (g_vk.feat.textureCompressionASTC_LDR ? NATIVE_ASTC : 0) |
            (g_vk.feat.textureCompressionETC2 ? NATIVE_ETC2 : 0) |
            (g_vk.feat.textureCompressionBC && g_settings.native_bc ? NATIVE_BC : 0) |
            (g_vk.feat.textureCompressionBC && vk_astc_bc7() ? ASTC_AS_BC7 : 0) |
-           /* BC2, BC3 and BC7 encoded again as ASTC 4x4 where the GPU samples ASTC (bcn_astc) and not BCn (TB) */
-           (g_vk.feat.textureCompressionASTC_LDR && g_settings.bcn_astc ? BCN_AS_ASTC : 0);
+           /* BC2, BC3 and BC7 encoded again as ASTC 4x4 where the GPU samples ASTC (bcn_astc) and not BCn (TB); BC1
+              too, twice its bytes, until the images run short of memory (g_vk.bc1_tight), when ETC2 RGB8A1, half
+              ASTC's, takes its place where the GPU samples that, unless bcn_astc says always */
+           (g_vk.feat.textureCompressionASTC_LDR && g_settings.bcn_astc ? BCN_AS_ASTC : 0) |
+           (g_vk.feat.textureCompressionASTC_LDR && g_settings.bcn_astc &&
+                    (g_settings.bcn_astc == 2 || !g_vk.bc1_tight || !g_vk.feat.textureCompressionETC2)
+                ? BC1_AS_ASTC
+                : 0);
+}
+int vk_bc1_tight(const char* why) {
+    if (g_vk.bc1_tight) return 0;
+    g_vk.bc1_tight = 1;
+    /* said only where it changes what BC1 becomes */
+    if (g_vk.feat.textureCompressionBC && g_settings.native_bc) return 0;
+    if (!g_vk.feat.textureCompressionASTC_LDR || g_settings.bcn_astc != 1 || !g_vk.feat.textureCompressionETC2) return 0;
+    LOG("vulkan: %s: BC1 textures loaded from now on are encoded again as ETC2 RGB8A1, half ASTC 4x4's bytes and "
+        "slower to load (bcn_astc=1, Auto; 2 keeps them ASTC)\n",
+        why);
+    return 1;
 }
 /* textureCompressionBC is turned on wherever the device has it (ASTC's BC7 may want it), ASTC LDR and ETC2 where the
    native_astc and native_etc2 settings ask as well; a setting at 1 the device can't meet is a warning, in the line of
@@ -270,7 +287,7 @@ static VkFmt tic_format(u32 w0, int srgb, u32 native) {
     u32 f = w0 & 0x7F, ct = (w0 >> 7) & 7;
     int flt = ct == 7, sn = ct == 1, ui = ct == 4, si = ct == 3;
     u32 etc2 = native & NATIVE_ETC2, bc = native & NATIVE_BC; /* sampled as blocks (TE) */
-    u32 as_astc = native & BCN_AS_ASTC;
+    u32 as_astc = native & BCN_AS_ASTC, bc1_astc = native & BC1_AS_ASTC;
     const VkFormat astc4 = srgb ? VK_FORMAT_ASTC_4x4_SRGB_BLOCK : VK_FORMAT_ASTC_4x4_UNORM_BLOCK, no = VK_FORMAT_UNDEFINED;
 #define PICK(F_, SN_, UI_, SI_, UN_, bpp_)                                                                             \
     return flt  ? T(F_, bpp_, 0, 0)                                                                                    \
@@ -336,13 +353,14 @@ static VkFmt tic_format(u32 w0, int srgb, u32 native) {
             PICK(VK_FORMAT_R8_UNORM, VK_FORMAT_R8_SNORM, VK_FORMAT_R8_UINT, VK_FORMAT_R8_SINT, VK_FORMAT_R8_UNORM, 1);
         case 0x20: return T(VK_FORMAT_E5B9G9R9_UFLOAT_PACK32, 4, 0, 0);
         case 0x21: return T(VK_FORMAT_B10G11R11_UFLOAT_PACK32, 4, 0, 0);
-        /* BCn as ETC2 and EAC where the GPU samples those (TB): BC1 as RGB8A1, whose punch-through alpha is BC1's
+        /* BCn as ASTC 4x4 where the GPU samples that (TB): BC1 (until memory runs short), BC2, BC3 and BC7. Else as ETC2
+           and EAC where the GPU samples those: BC1 as RGB8A1, whose punch-through alpha is BC1's
            transparent black; BC2, BC3 and BC7 as RGBA8; BC4 and BC5 as R11 and RG11. Else to RGBA8, BC4 and BC5 to 16
            bit channels and BC6H to half floats, so their interpolants keep the precision a GPU decodes them in */
         case 0x24:
-            return TB(srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK, no,
+            return TB(srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK, astc4,
                       srgb ? VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK : VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK,
-                      srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 8, VKC_BC1, bc, etc2, as_astc);
+                      srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 8, VKC_BC1, bc, etc2, bc1_astc);
         case 0x25:
             return TB(srgb ? VK_FORMAT_BC2_SRGB_BLOCK : VK_FORMAT_BC2_UNORM_BLOCK, astc4,
                       srgb ? VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK : VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK,

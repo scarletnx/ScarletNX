@@ -996,13 +996,15 @@ setting Native ETC2
 setting BCN ASTC
     label BCn textures as ASTC
     key bcn_astc
-    int 0 1
+    int 0 2
     default 1
     startup
-    words Off|On
-    help 1 = on a GPU that samples ASTC and not BCn (most phone and tablet ones), BC2, BC3 and BC7 textures are encoded
-    help again as ASTC 4x4, the same bytes a texel, which holds them much closer than ETC2 RGBA8 does. 0 = they are
-    help encoded again as ETC2 RGBA8 (native_etc2), as BC1, BC4 and BC5 are as ETC2 and EAC either way
+    words Off|Auto|Always
+    help On a GPU that samples ASTC and not BCn (most phone and tablet ones). 1 (Auto) = BC1, BC2, BC3 and BC7 textures
+    help are encoded again as ASTC 4x4 as they load, several times faster than as ETC2 and closer to the game's blocks.
+    help ASTC 4x4 is twice BC1's bytes, so once the GPU's memory runs short the BC1 textures loaded from then on are
+    help encoded as ETC2 (native_etc2) again, half the bytes and slower to load. 2 (Always) = BC1 stays ASTC whatever the
+    help memory. 0 = all of them as ETC2. BC4 and BC5 are encoded as EAC either way
 setting CPU extensions
     key cpu_extensions
     int 0 1

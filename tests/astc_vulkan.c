@@ -1796,18 +1796,23 @@ static void convert_case(void) {
     puts("PASS texture conversions (blits between pixel formats, nearest and filtered)");
     fflush(stdout);
 }
-/* texconv.comp's ASTC build on the device against the CPU's run of it (tests/glsl/bcn_astc_cpu.cpp): random BC2, BC3
-   and BC7 blocks in an image whose sides aren't multiples of 4, encoded again as ASTC 4x4, byte for byte; and the
+/* texconv.comp's ASTC build on the device against the CPU's run of it (tests/glsl/bcn_astc_cpu.cpp): random BC1, BC2,
+   BC3 and BC7 blocks in an image whose sides aren't multiples of 4, encoded again as ASTC 4x4, byte for byte; and the
    blocks decode (the CPU's ASTC decoder) near what the BCn blocks do: random blocks are noise, which no block format
    holds, so near is 12 dB here, where a block the decoder refused, magenta, or one laid out wrong would be far under */
 static void astc_encode_case(void) {
     u32 w = 67, h = 37, bw = 17, bh = 10;
-    static const int kinds[3] = {BCN_BC2, BCN_BC3, BCN_BC7};
-    for (int ki = 0; ki < 3; ki++) {
+    static const int kinds[4] = {BCN_BC1, BCN_BC2, BCN_BC3, BCN_BC7};
+    for (int ki = 0; ki < 4; ki++) {
         const int kind = kinds[ki];
         u8* blocks = malloc((size_t)bw * bh * 16);
         bc_blocks(kind, blocks, bw * bh);
-        VkFmt f = {.vk = VK_FORMAT_ASTC_4x4_UNORM_BLOCK, .bpp = 16, .bw = 4, .bh = 4, .conv = (u8)(VKC_BC1 + kind)};
+        /* BC1's blocks are 8 bytes in and 16 out */
+        VkFmt f = {.vk = VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
+                   .bpp = (u8)bcn_block_bytes(kind),
+                   .bw = 4,
+                   .bh = 4,
+                   .conv = (u8)(VKC_BC1 + kind)};
         u64 out_size;
         u8* out = tc_blocks(&f, blocks, w, bw, bh, &out_size);
         u8* want = malloc((size_t)bw * bh * 16);
@@ -1830,7 +1835,7 @@ static void astc_encode_case(void) {
         free(blocks);
         free(want);
     }
-    puts("PASS texture conversions (BC2, BC3 and BC7 encoded again as ASTC 4x4)");
+    puts("PASS texture conversions (BC1, BC2, BC3 and BC7 encoded again as ASTC 4x4)");
     fflush(stdout);
 }
 /* --bench-etc2: a 2048x2048 level of random blocks of each kind decoded (as on a GPU that samples neither BCn nor
@@ -1861,7 +1866,7 @@ static void bench_etc2(int runs, const char* file) {
         else
             bc_blocks(kind, blocks, bw * bh);
         /* decoded, encoded again as ETC2 or EAC, and (BC2, BC3 and BC7) as ASTC 4x4 */
-        for (int etc = 0; etc < (kind == BCN_BC2 || kind == BCN_BC3 || kind == BCN_BC7 ? 3 : 2); etc++) {
+        for (int etc = 0; etc < (kind == BCN_BC1 || kind == BCN_BC2 || kind == BCN_BC3 || kind == BCN_BC7 ? 3 : 2); etc++) {
             VkFmt f = {.vk = etc == 2 ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK : etc ? etc2_of(kind) : decoded_of(kind),
                        .bpp = (u8)bb,
                        .bw = 4,

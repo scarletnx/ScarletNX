@@ -644,8 +644,8 @@ void main() {
     dst[at] = word;
 }
 #elif defined(SNX_TC_ASTC)
-/* The ASTC build: a block an invocation, a BC2, BC3 or BC7 block (the kind mode names, TC_BCN_ASTC on from TC_BC1's
-   place) decoded and encoded again as ASTC 4x4, at column u of blocks of row of blocks gl_GlobalInvocationID.y of
+/* The ASTC build: a block an invocation, a BC1, BC2, BC3 or BC7 block (the kind mode names, TC_BCN_ASTC on from
+   TC_BC1's place; BC1's 8 bytes, the others' 16) decoded and encoded again as ASTC 4x4, at column u of blocks of row of blocks gl_GlobalInvocationID.y of
    slice z. Input as the BCn modes read it; output rows of blocks out_pitch words apart, 16 bytes each. In two passes
    (astc_encode.glsl's SNX_ASTC_PASS): the first as said, writing the blocks a hint settles and listing the others in
    work_list; the second an invocation a listed block, decoded again and searched for */
@@ -660,23 +660,38 @@ void main() {
     uint row = gl_GlobalInvocationID.z * rows + gl_GlobalInvocationID.y;
 #endif
     uint kind = mode - TC_BCN_ASTC + TC_BC1;
-    uint at = in_bias + row * in_pitch + u * 4u, o = out_bias + row * out_pitch + u * 4u;
+    uint words = kind == TC_BC1 ? 2u : 4u;
+    uint at = in_bias + row * in_pitch + u * words, o = out_bias + row * out_pitch + u * 4u;
     uint b[4];
-    for (uint w = 0u; w < 4u; w++) b[w] = src[at + w];
+    for (uint w = 0u; w < 4u; w++) {
+        b[w] = 0u;
+        if (w < words) b[w] = src[at + w];
+    }
     if (kind == TC_BC7) {
         bc7_block(b, 0u, 0u);
     } else {
+        /* BC1's colour block: the block itself, or after BC2's and BC3's alpha */
+        uint ce = kind == TC_BC1 ? b[0] : b[2], ci = kind == TC_BC1 ? b[1] : b[3];
+        bool clear = false;
         for (uint i = 0u; i < 16u; i++) {
-            uint a = kind == TC_BC2 ? (((i < 8u ? b[0] : b[1]) >> (4u * (i & 7u))) & 15u) * 17u : bc3_alpha(b[1], b[0], i);
-            px[i] = (bc1_pixel(b[2], b[3], false, i) & 0xFFFFFFu) | (a << 24);
+            if (kind == TC_BC1) {
+                px[i] = bc1_pixel(ce, ci, true, i);
+                clear = clear || px[i] < 0x80000000u;
+            } else {
+                uint a = kind == TC_BC2 ? (((i < 8u ? b[0] : b[1]) >> (4u * (i & 7u))) & 15u) * 17u
+                                        : bc3_alpha(b[1], b[0], i);
+                px[i] = (bc1_pixel(ce, ci, false, i) & 0xFFFFFFu) | (a << 24);
+            }
         }
-        /* BC2 and BC3 are a colour line of 2 bit weights (BC1's two ends) beside their alpha: two planes, alpha apart */
-        uint e0 = b[2] & 0xFFFFu, e1 = b[2] >> 16;
+        /* a colour line (BC1's two ends) beside the alpha: two planes, alpha apart, which AstcEncode takes as one line
+           of 2 bit weights where every alpha is 255. A BC1 block of three colours has its third halfway, which 3 bit
+           weights come nearest, and with a transparent texel (black, off the line) nothing to say */
+        uint e0 = ce & 0xFFFFu, e1 = ce >> 16;
         as_h0[0] = tc_rgba(bc_expand(e0 >> 11, 5u), bc_expand((e0 >> 5) & 63u, 6u), bc_expand(e0 & 31u, 5u), 255u);
         as_h1[0] = tc_rgba(bc_expand(e1 >> 11, 5u), bc_expand((e1 >> 5) & 63u, 6u), bc_expand(e1 & 31u, 5u), 255u);
-        as_hint = 2u;
+        as_hint = clear ? 0u : 2u;
         as_hplane = 3u;
-        as_hib = 2u;
+        as_hib = kind == TC_BC1 && e0 <= e1 ? 3u : 2u;
     }
     hint_on = false;
     uvec4 block = AstcEncode();
