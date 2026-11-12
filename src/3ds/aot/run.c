@@ -12,6 +12,7 @@
 #include "3ds/runtime/internal.h"
 #include "common/utilities/endian.h"
 #include "3ds/gpu/present.h"
+#include "3ds/gpu/vk/vk_render.h"
 #include "common/utilities/build_info.h"
 #include "3ds/audio/output.h"
 #include "3ds/input/input.h"
@@ -276,6 +277,7 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
     if (!snx_ctr_present_init(process->memory, frames))
         printf("No Vulkan device: no frames will be drawn, shown or saved\n");
     else {
+        snx_ctr_vk_pipeline_cache_open(directory); /* before the first draw */
         snx_ctr_present_title(process->title[0] ? process->title : id, "");
         /* the Switch's fullscreen=1, but for a timed or budgeted test run, as for a Switch game */
         if (g_settings.fullscreen && !(seconds > 0) && !limit) snx_ctr_present_fullscreen();

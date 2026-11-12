@@ -1,8 +1,20 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L /* getpid in strict C99 */
+#endif
 #include "common/gpu/vk/vk_common.h"
+#include "common/platform/file.h"
+#include "common/utilities/common.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h> /* GetCurrentProcessId */
+#else
+#include <unistd.h> /* getpid */
+#endif
 
 const char* snx_vk_result_str(VkResult r) {
     switch (r) {
@@ -287,6 +299,50 @@ int snx_vk_pipeline_workers(int setting, int cpus) {
    in a burst, where the frame waits and the game idles, and what the system gives after the game's threads while it
    plays */
 int snx_vk_pipeline_low_workers(int workers) { return workers > 2 ? workers - 2 : 0; }
+
+VkPipelineCache snx_vk_pipeline_cache_load(VkDevice dev, const char* path, size_t* loaded) {
+    VkPipelineCacheCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    PFileMap data = {0};
+    if (path && !plat_file_map(&data, path) && data.data) {
+        ci.initialDataSize = (size_t)data.size;
+        ci.pInitialData = data.data;
+    }
+    VkPipelineCache cache = VK_NULL_HANDLE;
+    /* data the driver cannot take at all (a cut file): an empty cache instead */
+    if (vkCreatePipelineCache(dev, &ci, NULL, &cache) != VK_SUCCESS && ci.initialDataSize) {
+        ci.initialDataSize = 0;
+        ci.pInitialData = NULL;
+        if (vkCreatePipelineCache(dev, &ci, NULL, &cache) != VK_SUCCESS) cache = VK_NULL_HANDLE;
+    }
+    *loaded = cache ? ci.initialDataSize : 0;
+    plat_file_unmap(&data); /* the cache copied it, and a mapped file can't be replaced on Windows */
+    return cache;
+}
+int snx_vk_pipeline_cache_save(VkDevice dev, VkPipelineCache cache, const char* path, size_t* saved) {
+    *saved = 0;
+    size_t n = 0;
+    if (!cache || vkGetPipelineCacheData(dev, cache, &n, NULL) != VK_SUCCESS || !n) return -1;
+    void* data = malloc(n);
+#if defined(_WIN32)
+    unsigned long pid = (unsigned long)GetCurrentProcessId();
+#else
+    unsigned long pid = (unsigned long)getpid();
+#endif
+    char* tmp = snx_format("%s.%lu.tmp", path, pid);
+    int failed = !data || !tmp || vkGetPipelineCacheData(dev, cache, &n, data) != VK_SUCCESS;
+    if (!failed) {
+        FILE* f = fopen(tmp, "wb");
+        failed = !f || fwrite(data, 1, n, f) != n;
+        if (f && fclose(f)) failed = 1;
+        /* the old file stays whole until this */
+        if (!failed && plat_replace_file(tmp, path)) failed = 1;
+        if (failed && f) remove(tmp);
+    }
+    if (!failed) *saved = n;
+    free(tmp);
+    free(data);
+    return failed ? -1 : 0;
+}
 
 VkResult snx_vk_shader_module(VkDevice dev, const uint32_t* words, size_t size, VkShaderModule* out) {
     VkShaderModuleCreateInfo info = {

@@ -817,26 +817,6 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
     free(owned);
 }
 
-void pf_driver_tag(char* out, size_t n, u32 driver_id, u32 vendor, u32 device, const char* package) {
-    size_t at;
-    int w = snprintf(out, n, "d%u-%04x-%08x", (unsigned)driver_id, (unsigned)vendor, (unsigned)device);
-    if (w < 0 || (size_t)w >= n || !package || !*package) return;
-    at = (size_t)w;
-    out[at++] = '-';
-    /* a package's folder name as a file name keeps it: any other letter is an underscore */
-    for (; *package && at + 1 < n; package++, at++) {
-        char c = *package;
-        out[at] = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
-                          c == '-'
-                      ? c
-                      : '_';
-    }
-    out[at] = 0;
-}
-void pf_driver_path(char* out, size_t n, const char* dir, const char* name, const char* tag, const char* ext) {
-    snprintf(out, n, "%s/%s.%s%s", dir, name, tag, ext);
-}
-
 int pf_adopt(const char* path, const char* legacy, u64* bytes, char* why, size_t n) {
     FILE *in, *out, *there = fopen(path, "rb");
     char* tmp;

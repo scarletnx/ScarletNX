@@ -91,6 +91,22 @@ int snx_vk_pipeline_workers(int setting, int cpus);
    (snx_thread_priority_low) */
 int snx_vk_pipeline_low_workers(int workers);
 
+/* Each driver keeps a cache of its own: <dir>/<name>.<tag><ext>, the tag the driver's, so a game run with another
+   driver and then with this one again finds this one's shaders and pipelines. A driver is its ID (VkDriverId), the
+   GPU's vendor and device, and the gpu_driver package it was loaded from (none or empty for the system's), in the
+   letters a file name keeps: d<ID>-<vendor>-<device>[-<package>] */
+#define SNX_VK_DRIVER_TAG 96
+void snx_vk_driver_tag(char* out, size_t n, uint32_t driver_id, uint32_t vendor, uint32_t device, const char* package);
+void snx_vk_driver_path(char* out, size_t n, const char* dir, const char* name, const char* tag, const char* ext);
+/* A pipeline cache started from the driver's data in the file at path, when there is one: the driver takes data of
+   its own device and version and ignores any other. *loaded gets the bytes it was given, 0 for none. VK_NULL_HANDLE
+   when the device refuses even an empty cache */
+VkPipelineCache snx_vk_pipeline_cache_load(VkDevice dev, const char* path, size_t* loaded);
+/* The cache's data written to path, through a temporary file of this process's: a run that stops while it writes
+   leaves the earlier file whole, and two runs at once do not write one file. The driver holds the cache while it
+   copies its data out, so a pipeline made meanwhile waits for the copy. 0 when written, its bytes in *saved */
+int snx_vk_pipeline_cache_save(VkDevice dev, VkPipelineCache cache, const char* path, size_t* saved);
+
 /* a shader module of size bytes of SPIR-V */
 VkResult snx_vk_shader_module(VkDevice dev, const uint32_t* words, size_t size, VkShaderModule* out);
 /* a compute pipeline of module's "main" in layout, spec (NULL for none) giving its specialization constants */

@@ -377,6 +377,14 @@ if(TARGET snx_ctr_board)
     target_link_libraries(snx-test-3ds-vk-y2r PRIVATE snx_ctr_gpu)
     add_test(NAME 3ds_vk_y2r COMMAND snx-test-3ds-vk-y2r)
     set_tests_properties(3ds_vk_y2r PROPERTIES SKIP_RETURN_CODE 77)
+    # the pipeline cache kept between runs: an empty one without a file, a written one read back whole, a cut file,
+    # no temporary file left, and the renderer's file in the folder's shader_cache
+    add_executable(snx-test-3ds-vk-pipeline-cache 3ds_vk_pipeline_cache.c)
+    snx_test_target(snx-test-3ds-vk-pipeline-cache 11)
+    target_link_libraries(snx-test-3ds-vk-pipeline-cache PRIVATE snx_ctr_gpu)
+    add_test(NAME 3ds_vk_pipeline_cache COMMAND snx-test-3ds-vk-pipeline-cache
+                                                "${CMAKE_CURRENT_BINARY_DIR}/pipeline-cache")
+    set_tests_properties(3ds_vk_pipeline_cache PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's draws against the software renderer, the CPU reference they replaced, scene by scene
     add_executable(snx-test-3ds-vk-draw 3ds_vk_draw.c)
     snx_test_target(snx-test-3ds-vk-draw 11)
@@ -2181,7 +2189,7 @@ if(NOT SNX_TOOLS_ONLY)
     # read through its mapping
     add_executable(snx-test-pipeline-file pipeline_file.c tracy_stubs.c)
     snx_test_target(snx-test-pipeline-file 23)
-    target_link_libraries(snx-test-pipeline-file PRIVATE snx_nx_flags snx_zstd scarletnx-common)
+    target_link_libraries(snx-test-pipeline-file PRIVATE snx_nx_flags snx_zstd scarletnx-common snx_vk_common)
     add_test(NAME pipeline_file COMMAND snx-test-pipeline-file)
     add_executable(snx-test-vk-pipeline-probe-flags vk_pipeline_probe_flags.c)
     snx_test_target(snx-test-vk-pipeline-probe-flags 23)

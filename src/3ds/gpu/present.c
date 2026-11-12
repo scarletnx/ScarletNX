@@ -484,6 +484,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
                            unsigned pitch, uint64_t* hash) {
     if (!g_present.up || screen > 1 || !width || !height || width > MAX_SIDE || height > MAX_SIDE || format > 4)
         return false;
+    if (!screen) snx_ctr_vk_pipeline_cache_save(false); /* once the game made no pipeline for a while */
     uint32_t bytes = snx_ctr_pixel_bytes(format);
     SnxCtrVkWindow w;
     uint32_t inside;

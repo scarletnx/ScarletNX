@@ -50,6 +50,13 @@ void snx_ctr_vk_render_begin(unsigned slot);
 void snx_ctr_vk_render_close(void);
 void snx_ctr_vk_render_retire(unsigned slot, uint64_t serial);
 void snx_ctr_vk_render_free(void);
+/* The driver's pipelines kept between runs, in <directory>/shader_cache/vk_pipelines.<driver>.bin as the Switch's
+   (common/gpu/vk/vk_common.h's driver tag): read here, before the first draw, and every pipeline made after it goes
+   into it. vk_pipeline_cache=0 neither reads nor writes it. Without it the pipelines are made as before */
+void snx_ctr_vk_pipeline_cache_open(const char* directory);
+/* The cache written when a pipeline went into it since: at_exit always, else only after a quiet time with no
+   pipeline made, queued or being made, so the write never holds one up. Asked at each frame shown, and at the end */
+void snx_ctr_vk_pipeline_cache_save(bool at_exit);
 /* async_pipelines: waits until the workers have made every pipeline asked for; the draws skipped meanwhile, since the
    renderer started */
 uint64_t snx_ctr_vk_pipelines_wait(void);
