@@ -1506,7 +1506,7 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-nn-pctl nn_pctl.c)
     snx_test_target(snx-test-nn-pctl 23)
     target_include_directories(snx-test-nn-pctl PRIVATE "${PROJECT_SOURCE_DIR}/src")
-    snx_hookgen(snx-test-nn-pctl SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/pctl.hook")
+    snx_hookgen(snx-test-nn-pctl SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/pctl.hook" A32_MARKED)
     add_test(NAME nn_pctl COMMAND snx-test-nn-pctl)
     # the native nn::nsd (nn/nsd.c): the names of the servers in the retail environment
     add_executable(snx-test-nn-nsd nn_nsd.c)
