@@ -147,6 +147,17 @@ static void resolve(u64 addr, u64 size) {
     __atomic_add_fetch(&g_resolves, 1, __ATOMIC_RELAXED);
     if (g_resolve_res) CHECK(own_begin(g_resolve_lo, g_resolve_size, g_resolve_res, 0) == 0);
 }
+/* the producer's answer before owners land (OwnHooks' refresh): g_refresh_res published over
+   [g_refresh_lo, + g_refresh_size), or nothing when it is NULL */
+static int g_refreshes; /* atomic */
+static void* g_refresh_res;
+static u64 g_refresh_lo, g_refresh_size;
+static void refresh(u64 addr, u64 size) {
+    (void)addr;
+    (void)size;
+    __atomic_add_fetch(&g_refreshes, 1, __ATOMIC_RELAXED);
+    if (g_refresh_res) CHECK(own_begin(g_refresh_lo, g_refresh_size, g_refresh_res, 0) == 0);
+}
 /* the producer's lock: recursive, as the renderer's */
 static pthread_mutex_t g_producer;
 static void producer_lock(void) { pthread_mutex_lock(&g_producer); }
@@ -745,6 +756,41 @@ static void test_let_go_watched(void) {
    mirror, or in place the shadows that own_watch took), own_trapped and own_hash see it. The first access asks the
    producer once (resolve), and lands what it published there. own_drop and own_unwatch open its pages with no resolve,
    and a thread that holds the producer's lock drops it with no resolve and goes on. A watch never cuts an owner */
+/* An owner whose producer holds newer bytes for its span (a render target drawn again since its publish): the CPU's
+   access asks the producer once before the owner lands, the producer publishes over it, and the access lands that.
+   With nothing newer the owner lands as it is. A thread that holds the producer's lock is not asked */
+static void test_refresh(void) {
+    u64 a = region(R0 + 0xF00000, 0x10000);
+    Res *r = res_new(0x2000, 0xB0), *newer = res_new(0x2000, 0xC0), *plain = res_new(0x1000, 0xD0);
+    int asked = __atomic_load_n(&g_refreshes, __ATOMIC_ACQUIRE);
+    CHECK(own_begin(a + 0x1000, 0x2000, r, 0) == 0);
+    g_refresh_res = newer;
+    g_refresh_lo = a + 0x1000;
+    g_refresh_size = 0x2000;
+    CHECK(GP(a)[0x1800] == (u8)(0xC0 + 0x800)); /* the newer bytes, not the owner's */
+    g_refresh_res = NULL;
+    CHECK(GP(a)[0x2FFF] == (u8)(0xC0 + 0x1FFF) && GP(a)[0x0FFF] == (u8)(0x11 + 0x0FFF));
+    CHECK(refs(r) == 0 && refs(newer) == 0 && !own_trapped(a, 0x10000));
+    CHECK(__atomic_load_n(&g_refreshes, __ATOMIC_ACQUIRE) == asked + 1);
+    /* nothing newer: asked once, and the owner's bytes land */
+    CHECK(own_begin(a + 0x5000, 0x1000, plain, 0) == 0);
+    CHECK(GP(a)[0x5010] == (u8)(0xD0 + 0x10) && refs(plain) == 0);
+    CHECK(__atomic_load_n(&g_refreshes, __ATOMIC_ACQUIRE) == asked + 2);
+    /* the producer's lock holder is not asked */
+    res_free(plain);
+    plain = res_new(0x1000, 0xE0);
+    CHECK(own_begin(a + 0x7000, 0x1000, plain, 0) == 0);
+    g_busy_tid = plat_tid();
+    own_acquire(a + 0x7000, 0x1000);
+    g_busy_tid = 0;
+    CHECK(GP(a)[0x7010] == (u8)(0xE0 + 0x10));
+    CHECK(refs(plain) == 0 && __atomic_load_n(&g_refreshes, __ATOMIC_ACQUIRE) == asked + 2);
+    CHECK(mem_unmap(a, 0x10000) == 0);
+    res_free(r);
+    res_free(newer);
+    res_free(plain);
+    puts("memory_own: an owner's landing asks its producer for newer bytes first, once");
+}
 static void test_watch(void) {
     u64 a = region(R0 + 0xC00000, 0x10000), h = 0;
     Res* r = res_new(0x2000, 0xA0);
@@ -967,7 +1013,8 @@ int main(int argc, char** argv) {
                   .busy_tid = busy_tid,
                   .lock = producer_lock,
                   .unlock = producer_unlock,
-                  .resolve = resolve};
+                  .resolve = resolve,
+                  .refresh = refresh};
     pthread_mutexattr_t recursive;
     pthread_mutexattr_init(&recursive);
     pthread_mutexattr_settype(&recursive, PTHREAD_MUTEX_RECURSIVE);
@@ -1039,6 +1086,7 @@ int main(int argc, char** argv) {
     test_busy_unowned();
     test_scan_owned();
     test_let_go_watched();
+    test_refresh();
     test_watch();
     test_watch_many();
     test_rearm();

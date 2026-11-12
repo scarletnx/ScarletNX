@@ -498,7 +498,8 @@ int vk_own_init(void) {
                   .landed = own_landed,
                   .writer = own_writer,
                   .wait = own_wait,
-                  .resolve = vk_rt_watch_hit};
+                  .resolve = vk_rt_watch_hit,
+                  .refresh = vk_rt_watch_hit};
     g_owned.traps = !own_init(&h);
     return g_owned.traps ? 0 : -1;
 }

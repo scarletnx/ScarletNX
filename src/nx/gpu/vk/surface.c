@@ -1902,7 +1902,8 @@ static u64 rt_mem_hash(const Surf* s) {
    one game draws its save's thumbnail into a 320x180 target, and reads its texels from memory with no call to the GPU.
    A release watches their bytes (own_watch): the pages are trapped with no copy of the GPU's, and the CPU's first
    access publishes the targets pending there (vk_rt_watch_hit) and lands them. A target that the CPU read lately
-   (vk_own_cpu_read), or that an owner already covers, is published at the release, as a pitch-linear one.
+   (vk_own_cpu_read) is published at the release, as a pitch-linear one. Where an owner already covers it, the
+   owner's trap is its watch.
 
    Depth targets go in the same lists, in their formats' layouts (flush_bytes): a program that clears one with the 3D
    engine, waits for the GPU and reads it from memory read the bytes from before the clear */
@@ -1949,21 +1950,18 @@ static void rt_watch(Surf* s) {
     u64 size = rt_bytes(s);
     int publish = 0, armed = 0;
     if (!own_traps()) return; /* no traps: left as before, as a publish would land at once, a readback a release */
-    /* read lately, or an owner over it (one this publish made at a release before, or another engine's): the owner's
-       bytes are older than its pixels, and a watch never replaces an owner */
-    for (u64 off = 0; off < size && !publish;) {
-        u64 cpu = 0, n = gmmu_run(s->gva + off, size - off, &cpu);
-        if (!n) {
-            n = 0x1000 - ((s->gva + off) & 0xFFF);
-            if (n > size - off) n = size - off;
-        } else if (vk_own_cpu_read(cpu, n, KEEP_CPU_PRESENTS) || own_lookup(cpu, n, NULL, 0))
-            publish = 1;
-        off += n;
-    }
+    /* Read lately: published now, so that the CPU's next read finds it with no fault. That is a CPU access that had
+       this target published (cpu_asked), not any read near it: by the 64 KiB area (vk_own_cpu_read), a 2560x1440
+       target beside a 64x1 one that a game reads each frame was published at each release with it. Not for an owner
+       over it either (one a publish made before, or another engine's), whose bytes are older than its pixels: the
+       owner's pages are trapped as a watch's are, and the CPU's access to them publishes the targets pending there
+       before the owner lands (OwnHooks' refresh, which is vk_rt_watch_hit too). Published at each release while its
+       owner stayed, one game's targets were copied 24,000 to 43,000 times in 600 presents, its 2560x1440 depth
+       targets among them, and each wait for the GPU took 63 ms where it takes 4 */
+    publish = s->cpu_asked && g_vk_present + 1 - s->cpu_asked <= KEEP_CPU_PRESENTS;
     if (publish) {
         if (g_vk_rt_watch.publishes++ < 4)
-            LOG("vulkan: the %ux%u render target at %llx (%llu bytes) published at a release: the CPU read it lately, or "
-                "an owner is over it\n",
+            LOG("vulkan: the %ux%u render target at %llx (%llu bytes) published at a release: the CPU read it lately\n",
                 s->w, s->h, (unsigned long long)s->gva, (unsigned long long)size);
         rt_publish_now(s);
         return;
@@ -2011,6 +2009,7 @@ void vk_rt_watch_hit(u64 cpu, u64 size) {
             LOG("vulkan: the CPU touched guest memory %llx, a page of the %ux%u render target at %llx (%llu bytes), "
                 "watched: published\n",
                 (unsigned long long)cpu, s->w, s->h, (unsigned long long)s->gva, (unsigned long long)rt_bytes(s));
+        s->cpu_asked = g_vk_present + 1;
         rt_publish_now(s);
     }
     if (pending.surfaces != local) free(pending.surfaces);
