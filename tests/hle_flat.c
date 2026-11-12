@@ -135,7 +135,6 @@ static const char* const KNOWN[] = {
     "HwOpus.queue",
     "HwOpus.taps",
     "HwOpus.hist",
-    "ARRen.o",
     "ARRen.s",
     "ARRen.out",
     "RoNrr.hashes",

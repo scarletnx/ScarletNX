@@ -69,7 +69,6 @@ void svc_core_init(void) {
     /* one interface, two kinds of session (ldr.c) */
     svc_register("ldr:ro", new_ldr);
     svc_register("ro:1", new_ro1);
-    nn_audio_detail_IAudioRendererManager_register(new_audren);
     nn_audio_detail_INativeAudioManager_register(new_aud);
     nn_codec_detail_IHardwareOpusDecoderManager_register(new_hwopus);
 

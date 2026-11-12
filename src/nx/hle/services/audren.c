@@ -4,7 +4,7 @@
    src/core/hle/service/audio/errors.h):
    SPDX-FileCopyrightText: Copyright 2025-2026 Eden Emulator Project
    SPDX-FileCopyrightText: Copyright 2019-2022 yuzu Emulator Project (GPL-2.0-or-later) */
-/* the audio renderers' side that audren_dsp.c doesn't do: each open renderer's state and host output, RequestUpdate
+/* the audio renderers' side that audren_dsp.c doesn't do: each open renderer's state and host output, an update
    handed to the state under its lock, and the clock's frame of every started renderer (audio.c's audio_clock) queued
    to the host. The update's parsing, the output buffer's layout and the frame itself are audren_dsp.c's */
 #include "nx/hle/services/services_int.h"
@@ -13,19 +13,23 @@
 #include "nx/hle/services/services.h"
 #include "nx/hle/hle.h"
 
-/* the open renderers (ARRen, services_int.h), each found from its object's u[1], its slot in g_hle.audren.rens plus
-   1; the object's u[0] is its play state, which audio.c sets. g_host.audren.lk guards the renderers and every
+/* the open renderers (ARRen, services_int.h), each named by its slot in g_hle.audren.rens plus 1, with its play state
+   and the parameters it reads back (nn/audio_renderer.c sets them). g_host.audren.lk guards the renderers and every
    renderer's state (an update and a frame never run at once) */
 
 /* a frame is dropped while the host holds more than this many ms, so the latency stays bounded when the host plays a
    little slower than the clock renders */
 #define AUDREN_MAX_QUEUED_MS 100
 
-static ARRen* audren_of(const SvcObj* o) { return &g_hle.audren.rens[o->u[1] - 1]; }
+ARRen* audren_at(u32 id) {
+    ARRen* r = id && id <= SNX_AUDREN_MAX ? &g_hle.audren.rens[id - 1] : NULL;
+    return r && r->used ? r : NULL;
+}
 
-static void audren_destroy(SvcObj* o) {
-    ARRen* r = audren_of(o);
+void audren_close(u32 id) {
+    ARRen* r = audren_at(id);
     PAudio* out;
+    if (!r) return;
     pm_lock(&g_host.audren.lk);
     out = r->out;
     audren_state_free(r->s); /* under the lock: its compressors go back to their pool */
@@ -34,21 +38,32 @@ static void audren_destroy(SvcObj* o) {
     plat_audio_close(out);
 }
 
-int audren_open(SvcObj* o, const u8* params) {
+u32 audren_open(const u8* params, int manual) {
     static int announced;
     ARState* s = audren_state_new(params);
     ARRen* r;
+    u32 id;
     if (!announced && __atomic_exchange_n(&announced, 1, __ATOMIC_ACQ_REL) == 0)
         pm_lock_announce(&g_host.audren.lk, "audren"); /* the renderers' table, the game's threads and the audio's */
     if (!s) return 0;
     pm_lock(&g_host.audren.lk);
-    r = POOL_TAKE(g_hle.audren.rens, g_hle.audren.ren_next, "audio renderers");
-    r->o = o;
-    r->s = s;
-    o->u[1] = (u64)POOL_INDEX(g_hle.audren.rens, r) + 1;
+    r = POOL_TRY(g_hle.audren.rens, g_hle.audren.ren_next);
+    if (r) {
+        r->used = 1;
+        r->state = SNX_AUDREN_STOPPED;
+        r->sample_rate = snx_ld_le32(params);
+        r->sample_count = snx_ld_le32(params + 4);
+        r->mix_buffer_count = snx_ld_le32(params + 8);
+        r->limit = 100;
+        r->voice_drop = 1.0f;
+        r->manual = (u32)manual;
+        r->rendering_device = params[0x22];
+        r->s = s;
+    } else
+        audren_state_free(s);
+    id = r ? POOL_INDEX(g_hle.audren.rens, r) + 1 : 0;
     pm_unlock(&g_host.audren.lk);
-    o->destroy = audren_destroy;
-    return 1;
+    return id;
 }
 
 void audren_volume(float gain) {
@@ -61,20 +76,20 @@ void audren_volume(float gain) {
 }
 
 /* RequestUpdate: the input read into the state and the output written by audren_state_update, whose failures are
-   the renderer's result descriptions (InvalidUpdateInfo 41, InsufficientBuffer 4) */
-int audren_update(SvcObj* o, IpcBuf in, IpcBuf out) {
-    ARRen* r = audren_of(o);
+   the renderer's results (InvalidUpdateInfo 41, InsufficientBuffer 4) */
+int audren_update(u32 id, u64 in, u64 in_size, u64 out, u64 out_size) {
+    ARRen* r = audren_at(id);
     int rc;
     u32 rev;
-    R_UNLESS(in.addr && out.addr && in.size >= 0x40,
-             SNX_RC_AUDIO_INVALID_UPDATE_INFO); /* not even an update's header */
+    R_UNLESS(r, SNX_RC_AUDIO_INVALID_HANDLE);
+    R_UNLESS(in && out && in_size >= 0x40, SNX_RC_AUDIO_INVALID_UPDATE_INFO); /* not even an update's header */
     pm_lock(&g_host.audren.lk);
-    rc = audren_state_update(r->s, GP(in.addr), in.size, GP(out.addr), out.size);
+    rc = audren_state_update(r->s, GP(in), in_size, GP(out), out_size);
     pm_unlock(&g_host.audren.lk);
     if (rc == -41) R_THROW(SNX_RC_AUDIO_INVALID_UPDATE_INFO);
     if (rc == -4) R_THROW(SNX_RC_AUDIO_INSUFFICIENT_BUFFER);
     R_UNLESS(rc >= 0, SNX_RC_AUDIO_OPERATION_FAILED);
-    rev = snx_ld_le32(GP(in.addr));
+    rev = snx_ld_le32(GP(in));
     LOG_LIMIT(1, "audren: the first update, revision REV%d\n", audren_revision(rev));
     R_SUCCEED();
 }
@@ -86,8 +101,8 @@ void audren_tick(void) {
     for (i = 0; i < SNX_AUDREN_MAX; i++) {
         ARRen* r = &g_hle.audren.rens[i];
         u32 bytes;
-        if (!r->o) continue; /* a free slot */
-        if (__atomic_load_n(&r->o->u[0], __ATOMIC_ACQUIRE) != SNX_AUDREN_STARTED) continue;
+        if (!r->used) continue; /* a free slot */
+        if (__atomic_load_n(&r->state, __ATOMIC_ACQUIRE) != SNX_AUDREN_STARTED) continue;
         if (!audren_frame(r->s, stereo)) continue;
         if (!r->out && !r->out_failed) { /* the device sink's first frame: stereo at the renderer's rate */
             r->out = plat_audio_open(r->s->rate, 2);
@@ -122,7 +137,7 @@ void audren_state_drop(void) {
     pm_lock(&g_host.audren.lk);
     for (i = 0; i < SNX_AUDREN_MAX; i++) {
         ARRen* r = &g_hle.audren.rens[i];
-        if (!r->o) continue;
+        if (!r->used) continue;
         audren_state_free(r->s);
         plat_audio_close(r->out);
         r->s = NULL;
@@ -130,6 +145,3 @@ void audren_state_drop(void) {
     }
     pm_unlock(&g_host.audren.lk);
 }
-/* the functions a save state may hold of this file (state_fns.h) */
-STATE_FN_TABLE(g_audren_state_fns,
-               STATE_FN("audren", audren_destroy));
