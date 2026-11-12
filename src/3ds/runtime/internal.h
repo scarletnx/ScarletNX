@@ -338,6 +338,13 @@ struct SnxCtrProcess {
     uint32_t stub_logged[256], stub_logged_count;
     uint64_t time_update_ns; /* host monotonic deadline of the shared page's next hourly time entry */
     uint64_t sched_seq;      /* the last ready_seq/wait_seq handed out */
+    /* The thread and the timer objects, in index order, for the scheduler's passes (kernel/thread.c): an object is 752
+       bytes, and a pass over all of them for their types touched 192 KiB. Made again after an object was made or freed
+       (objects_changed counts them; sched_listed is the count they were made at). Their types are checked as they are
+       read: one freed since is passed over */
+    uint32_t objects_changed, sched_listed;
+    uint16_t sched_threads[CTR_OBJECTS], sched_timers[CTR_OBJECTS];
+    uint32_t sched_thread_count, sched_timer_count;
     /* the block at pc the static module lacks, compiled while the game runs (aot/jit.c) when the driver sets it: NULL
        when it cannot be. stale drops the one compiled before, whose code changed */
     SnxArmBlock (*compile)(void* compiler, uint32_t pc, bool thumb, bool stale);
@@ -366,6 +373,8 @@ void snx_ctr_thread_ready(SnxCtrProcess* p, uint32_t thread);
 uint32_t snx_ctr_thread_priority(SnxCtrProcess* p, uint32_t thread);
 /* every object's effective priority at once (CTR_OBJECTS entries; 64 for what is not a thread) */
 void snx_ctr_thread_priorities(SnxCtrProcess* p, uint32_t* priority);
+/* the scheduler's lists of threads and timers, made again when objects were made or freed since */
+void snx_ctr_sched_lists(SnxCtrProcess* p);
 /* an object type a thread can wait on */
 bool snx_ctr_waitable(uint32_t type);
 /* host monotonic nanoseconds, the clock every deadline is on */

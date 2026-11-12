@@ -70,6 +70,7 @@ uint32_t snx_ctr_object_create(SnxCtrProcess* p, uint32_t type, uint32_t* out) {
     for (unsigned i = 3; i < CTR_OBJECTS; ++i) {
         if (p->objects[i].type) continue;
         p->objects[i].type = type;
+        ++p->objects_changed;
         uint32_t result = snx_ctr_handle_add(p, i, out);
         if (result) p->objects[i] = (CtrObject){0};
         return result;
