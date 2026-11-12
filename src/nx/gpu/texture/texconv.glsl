@@ -157,15 +157,17 @@ uint bc1_pixel(uint e, uint idx, bool three, uint i) {
     if (k == 0u) return tc_rgba(r0, g0, b0, 255u);
     if (k == 1u) return tc_rgba(r1, g1, b1, 255u);
     int rq0 = int(e0 >> 11), bq0 = int(e0 & 31u), rq1 = int(e1 >> 11), bq1 = int(e1 & 31u), d = g1 - g0;
+    /* d / 4 rounds toward zero, d being of either sign; the sums are never negative (green's is 128 at least),
+       so their divisions by 8 and 256 are shifts */
     if (e0 > e1 || !three) {
         if (k == 2u)
-            return tc_rgba((2 * rq0 + rq1) * 22 / 8, (256 * g0 + d / 4 + 128 + d * 80) / 256, (2 * bq0 + bq1) * 22 / 8,
-                           255u);
-        return tc_rgba((rq0 + 2 * rq1) * 22 / 8, (256 * g1 - d / 4 + 128 - d * 80) / 256, (bq0 + 2 * bq1) * 22 / 8,
+            return tc_rgba((2 * rq0 + rq1) * 22 >> 3, (256 * g0 + d / 4 + 128 + d * 80) >> 8,
+                           (2 * bq0 + bq1) * 22 >> 3, 255u);
+        return tc_rgba((rq0 + 2 * rq1) * 22 >> 3, (256 * g1 - d / 4 + 128 - d * 80) >> 8, (bq0 + 2 * bq1) * 22 >> 3,
                        255u);
     }
     if (k == 3u) return 0u;
-    return tc_rgba((rq0 + rq1) * 33 / 8, (256 * g0 + d / 4 + 128 + d * 128) / 256, (bq0 + bq1) * 33 / 8, 255u);
+    return tc_rgba((rq0 + rq1) * 33 >> 3, (256 * g0 + d / 4 + 128 + d * 128) >> 8, (bq0 + bq1) * 33 >> 3, 255u);
 }
 /* NVIDIA's BC4 weights of the second endpoint for indices 2 to 7 (tests/support/bcn.c): eight values, then six, in
    257ths unsigned and 258ths signed */
@@ -180,18 +182,22 @@ uint bc4_value(uint hi, uint lo, bool sn, uint i) {
         a1 = max(a1 >= 128 ? a1 - 256 : a1, -127);
     }
     uint k = tc_bits(hi, lo, 18u + 3u * i, 16u + 3u * i);
-    int x, d = 1;
+    int x;
+    bool mixed = false; /* x is a sum of the weights, in 257ths (258ths signed), not a value */
     if (k < 2u) {
         x = k == 0u ? a0 : a1;
     } else if (a0 <= a1 && k >= 6u) {
         x = k == 6u ? (sn ? -127 : 0) : (sn ? 127 : 255);
     } else {
         int w = BC4_W[(sn ? 12u : 0u) + (a0 > a1 ? 0u : 6u) + k - 2u];
-        d = sn ? 258 : 257;
-        x = (d - w) * a0 + w * a1;
+        x = ((sn ? 258 : 257) - w) * a0 + w * a1;
+        mixed = true;
     }
-    if (!sn) return uint((x * 257 + d / 2) / d);
-    int m = x < 0 ? -x : x, v = (m * 32767 + 127 * d / 2) / (127 * d);
+    /* (x * 257 + d / 2) / d, and signed (|x| * 32767 + 127 * d / 2) / (127 * d), d being 1 for a value and 257 or
+       258 for a sum: a division by a constant each, of a dividend never negative */
+    if (!sn) return mixed ? (uint(x) * 257u + 128u) / 257u : uint(x) * 257u;
+    uint m = uint(x < 0 ? -x : x);
+    int v = int(mixed ? (m * 32767u + 16383u) / 32766u : (m * 32767u + 63u) / 127u);
     return uint(x < 0 ? -v : v) & 0xFFFFu;
 }
 /* NVIDIA's BC3 alpha weight in 2048ths at steps from the nearer endpoint (1 to 3 of a block of eight values, 1 or 2
@@ -205,9 +211,9 @@ uint bc3_alpha(uint hi, uint lo, uint i) {
     int k = int(tc_bits(hi, lo, 18u + 3u * i, 16u + 3u * i));
     if (k < 2) return uint(k == 0 ? a0 : a1);
     if (n == 5 && k >= 6) return k == 6 ? 0u : 255u;
-    /* the sum is never negative */
-    if (2 * (k - 1) < n) return uint((2048 * a0 + 1024 + bc3_w(n == 7, k - 1) * (a1 - a0)) / 2048);
-    return uint((2048 * a1 + 1024 + bc3_w(n == 7, n + 1 - k) * (a0 - a1)) / 2048);
+    /* the sum is never negative: its division by 2048 is a shift */
+    if (2 * (k - 1) < n) return uint((2048 * a0 + 1024 + bc3_w(n == 7, k - 1) * (a1 - a0)) >> 11);
+    return uint((2048 * a1 + 1024 + bc3_w(n == 7, n + 1 - k) * (a0 - a1)) >> 11);
 }
 
 /* BPTC's tables (tests/support/bcn.c's, packed): the subset bit of each pixel of the two subset partitions, 16 bits each; the
@@ -557,24 +563,25 @@ uint tc_d24_float(uint z) {
 uint tc_expand(uint v, uint bits) {
     return bits == 4u ? v * 17u : bits == 5u ? (v << 3) | (v >> 2) : (v << 2) | (v >> 4);
 }
-uint tc_16to32(uint v) {
+uint tc_16to32(uint v) { /* v is 16 bits: its top field needs no mask */
     if (mode == TC_VI_RGB565)
-        return tc_expand((v >> 11) & 31u, 5u) | (tc_expand((v >> 5) & 63u, 6u) << 8) |
+        return tc_expand(v >> 11, 5u) | (tc_expand((v >> 5) & 63u, 6u) << 8) |
                (tc_expand(v & 31u, 5u) << 16) | 0xFF000000u;
     if (mode == TC_VI_RGBA5551)
-        return tc_expand((v >> 11) & 31u, 5u) | (tc_expand((v >> 6) & 31u, 5u) << 8) |
+        return tc_expand(v >> 11, 5u) | (tc_expand((v >> 6) & 31u, 5u) << 8) |
                (tc_expand((v >> 1) & 31u, 5u) << 16) | ((v & 1u) != 0u ? 0xFF000000u : 0u);
     if (mode == TC_VI_RGBA4444)
-        return tc_expand((v >> 12) & 15u, 4u) | (tc_expand((v >> 8) & 15u, 4u) << 8) |
+        return tc_expand(v >> 12, 4u) | (tc_expand((v >> 8) & 15u, 4u) << 8) |
                (tc_expand((v >> 4) & 15u, 4u) << 16) | (tc_expand(v & 15u, 4u) << 24);
     if (mode == TC_RGBA4)
         return (v & 15u) * 17u | (((v >> 4) & 15u) * 17u << 8) | (((v >> 8) & 15u) * 17u << 16) |
                ((v >> 12) * 17u << 24);
+    /* a 5 bit field f as f * 255 / 31: (f * 1053) >> 7 is the same for f of 0 to 31 */
     if (mode == TC_RGB5A1)
-        return (v & 31u) * 255u / 31u | (((v >> 5) & 31u) * 255u / 31u << 8) |
-               (((v >> 10) & 31u) * 255u / 31u << 16) | ((v >> 15) * 255u << 24);
-    return (v & 1u) * 255u | (((v >> 1) & 31u) * 255u / 31u << 8) | (((v >> 6) & 31u) * 255u / 31u << 16) |
-           (((v >> 11) & 31u) * 255u / 31u << 24);
+        return ((v & 31u) * 1053u >> 7) | ((((v >> 5) & 31u) * 1053u >> 7) << 8) |
+               ((((v >> 10) & 31u) * 1053u >> 7) << 16) | ((v >> 15) * 255u << 24);
+    return (v & 1u) * 255u | ((((v >> 1) & 31u) * 1053u >> 7) << 8) | ((((v >> 6) & 31u) * 1053u >> 7) << 16) |
+           (((v >> 11) * 1053u >> 7) << 24);
 }
 
 /* byte b of the input buffer (byte addressed) */
