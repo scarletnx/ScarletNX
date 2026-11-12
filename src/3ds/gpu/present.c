@@ -633,8 +633,8 @@ void snx_ctr_present_report(void) {
     printf("  gpu: %llu top and %llu bottom screen frames%s; its work read %.1f MiB and wrote %.1f MiB of %s%s; "
            "%llu CPU accesses to its pages trapped\n",
            (unsigned long long)g_present.decoded[0], (unsigned long long)g_present.decoded[1], unshown,
-           (double)t.read / 1048576.0, (double)t.written / 1048576.0,
-           copied ? "its copy of the RAM" : "the RAM", copies, (unsigned long long)t.traps);
+           (double)t.read / 1048576.0, (double)t.written / 1048576.0, copied ? "its copy of the RAM" : "the RAM",
+           copies, (unsigned long long)t.traps);
 }
 void snx_ctr_present_free(void) {
     if (!g_present.up) return;

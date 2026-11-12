@@ -499,11 +499,12 @@ static void choose_path(SnxCtrVk* v, SnxCtrMemory* memory) {
     uint64_t bytes = 0;
     uint32_t type = 0;
     if (v->host_shadow) {
-        snprintf(line, sizeof line,
-                 "vk_memory=%d: the device can neither import the board's RAM nor take it as its own memory, so the GPU "
-                 "works on a copy of it in the device's host-visible memory (0x%llx bytes of memory type %u), copied in "
-                 "and back by page",
-                 asked, (unsigned long long)v->shadow_bytes, v->shadow_type);
+        snprintf(
+            line, sizeof line,
+            "vk_memory=%d: the device can neither import the board's RAM nor take it as its own memory, so the GPU "
+            "works on a copy of it in the device's host-visible memory (0x%llx bytes of memory type %u), copied in "
+            "and back by page",
+            asked, (unsigned long long)v->shadow_bytes, v->shadow_type);
         fprintf(stderr, "3ds gpu: %s\n", line);
         return;
     }
@@ -553,9 +554,8 @@ static bool shadow_ram(SnxCtrVk* v, SnxCtrMemory* memory, char* error, size_t er
         type = snx_ctr_vk_memory_type(req.memoryTypeBits, want | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
         if (type == UINT32_MAX) type = snx_ctr_vk_memory_type(req.memoryTypeBits, want);
         if (type == UINT32_MAX) {
-            snprintf(error, error_size,
-                     "no host-visible, coherent memory type is one of the %s region's copy's (0x%x)", r->name,
-                     req.memoryTypeBits);
+            snprintf(error, error_size, "no host-visible, coherent memory type is one of the %s region's copy's (0x%x)",
+                     r->name, req.memoryTypeBits);
             release_ram(v);
             return false;
         }
@@ -563,14 +563,15 @@ static bool shadow_ram(SnxCtrVk* v, SnxCtrMemory* memory, char* error, size_t er
             .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size, .memoryTypeIndex = type};
         if ((result = vkAllocateMemory(v->device, &ai, NULL, &ram->memory)) != VK_SUCCESS) {
             ram->memory = VK_NULL_HANDLE;
-            snprintf(error, error_size, "vkAllocateMemory gave %s (%d) for the %s region's copy, 0x%llx bytes of memory "
-                     "type %u", snx_vk_result_str(result), (int)result, r->name, (unsigned long long)req.size, type);
+            snprintf(error, error_size,
+                     "vkAllocateMemory gave %s (%d) for the %s region's copy, 0x%llx bytes of memory type %u",
+                     snx_vk_result_str(result), (int)result, r->name, (unsigned long long)req.size, type);
             release_ram(v);
             return false;
         }
         if ((result = vkBindBufferMemory(v->device, ram->buffer, ram->memory, 0)) != VK_SUCCESS) {
-            snprintf(error, error_size, "vkBindBufferMemory gave %s (%d) for the %s region's copy", snx_vk_result_str(result),
-                     (int)result, r->name);
+            snprintf(error, error_size, "vkBindBufferMemory gave %s (%d) for the %s region's copy",
+                     snx_vk_result_str(result), (int)result, r->name);
             release_ram(v);
             return false;
         }
@@ -617,9 +618,7 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
             snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v);
     }
     if (!made) {
-        snprintf(
-            error, error_size,
-            "no Vulkan 1.3 device with 8-bit storage buffers and dynamic rendering");
+        snprintf(error, error_size, "no Vulkan 1.3 device with 8-bit storage buffers and dynamic rendering");
         snx_ctr_vk_free();
         return false;
     }
