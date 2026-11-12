@@ -498,7 +498,9 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
     /* A module from an earlier compile is replaced only once the new one is complete, by a rename over it, so a
        failed publish leaves what was there. On Windows a DLL a running copy of the game has loaded cannot be
        replaced. */
-    if (snx_write_file(staged, linked.data, linked.size) || plat_replace_file(staged, target)) {
+    /* a module Android can map: its text is loaded executable, which its file must allow there */
+    if (snx_write_file(staged, linked.data, linked.size) || snx_make_executable(staged) ||
+        plat_replace_file(staged, target)) {
         char why[256];
         snprintf(error, error_size, "cannot write %s: %s", target, snx_os_error(why, sizeof why));
         (void)remove(staged);
