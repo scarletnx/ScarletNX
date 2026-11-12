@@ -126,6 +126,48 @@ static uint32_t run_block(AgbCpu* cpu, const AgbBlock* block) {
     return cpu->arm.exit == SNX_ARM_OK ? cpu->arm.r[0] : 0xFFFFFFFFu;
 }
 
+/* A 1 MiB image repeats four times in each cartridge window, as mGBA has those cartridges, and the bus pattern follows;
+   an image of another size is there once: in the flat map the recompiled code reads, and on the board */
+static int rom_mirrors(void) {
+    static const size_t sizes[] = {0x100000, 0x200000};
+    for (size_t k = 0; k < sizeof sizes / sizeof sizes[0]; ++k) {
+        AgbBoard board;
+        AgbMap map;
+        char error[512] = {0};
+        size_t header = 0;
+        uint8_t *rom = make_rom(&header), *image = (uint8_t*)calloc(1, sizes[k]);
+        CHECK(rom && image);
+        memcpy(image, rom, header);
+        free(rom);
+        put32(image + sizes[k] - 4, 0x11223344);
+        agb_board_init(&board);
+        CHECK(!agb_board_insert(&board, image, sizes[k], error, sizeof error));
+        free(image);
+        CHECK(!agb_map_init(&map, &board, error, sizeof error));
+        for (uint32_t window = 0x08000000; window < 0x0E000000; window += 0x02000000) {
+            /* the last word of each MiB up to 4: the image's last word where the image (or a repeat of it) ends there */
+            for (uint32_t at = 0x100000; at <= 0x400000; at += 0x100000) {
+                uint32_t pattern = ((at - 4) >> 1 & 0xFFFF) | ((at - 2) >> 1 & 0xFFFF) << 16;
+                uint32_t want = sizes[k] == 0x100000 || at == sizes[k] ? 0x11223344u : at < sizes[k] ? 0 : pattern;
+                uint32_t flat = (uint32_t)map.base[window + at - 4] | (uint32_t)map.base[window + at - 3] << 8 |
+                                (uint32_t)map.base[window + at - 2] << 16 | (uint32_t)map.base[window + at - 1] << 24;
+                if (flat != want || agb_read32(&board, window + at - 4) != want) {
+                    fprintf(stderr,
+                            "agb_cpu: a %zu KiB image at 0x%08X: the map reads 0x%08X, the board 0x%08X, not 0x%08X\n",
+                            sizes[k] >> 10, window + at - 4, flat, agb_read32(&board, window + at - 4), want);
+                    return 1;
+                }
+            }
+            /* past 4 MiB the cartridge drives nothing: the address / 2 pattern */
+            CHECK(map.base[window + 0x400400] == 0x00 && map.base[window + 0x400401] == 0x02);
+            CHECK(agb_read32(&board, window + 0x400400) == 0x02010200);
+        }
+        agb_map_destroy(&map, &board);
+        agb_board_destroy(&board);
+    }
+    return 0;
+}
+
 int main(void) {
     AgbBoard board;
     AgbMap map;
@@ -561,6 +603,7 @@ int main(void) {
         CHECK(result && strstr(error, "agb_cpu_test.code.map is another ROM's ("));
         result = 1;
     }
+    CHECK(!rom_mirrors());
     result = 0;
 done:
     agb_recomp_free(&recomp);

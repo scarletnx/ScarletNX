@@ -54,10 +54,11 @@ static uint8_t* region8(AgbBoard* board, uint32_t address) {
 
 uint8_t agb_rom_open_bus8(uint32_t address) { return (uint8_t)((address >> 1 & 0xFFFF) >> (address & 1) * 8); }
 
-/* A byte of the cartridge windows at 0x08000000, 0x0A000000 and 0x0C000000, each holding the image once. */
+/* A byte of the cartridge windows at 0x08000000, 0x0A000000 and 0x0C000000, each holding the image over its extent. */
 static uint8_t rom8(const AgbBoard* board, uint32_t address) {
     uint32_t offset = address & (AGB_ROM_MAX - 1);
-    if (board->has_cartridge && offset < board->cartridge.size) return board->cartridge.data[offset];
+    if (board->has_cartridge && offset < agb_cartridge_extent(&board->cartridge))
+        return board->cartridge.data[offset % board->cartridge.size];
     return agb_rom_open_bus8(offset);
 }
 

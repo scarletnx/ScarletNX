@@ -25,4 +25,7 @@ typedef struct {
    copied. */
 int agb_cartridge_load(AgbCartridge* cartridge, const void* image, size_t size, char* error, size_t error_size);
 void agb_cartridge_unload(AgbCartridge* cartridge);
+/* The bytes of each cartridge window the image repeats over: a 1 MiB image four times, as mGBA has the 1 MiB
+   cartridges (a game of one checks that its image repeats past 1 MiB); any other its own size once */
+size_t agb_cartridge_extent(const AgbCartridge* cartridge);
 #endif

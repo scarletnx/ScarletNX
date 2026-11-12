@@ -56,6 +56,10 @@ int agb_cartridge_load(AgbCartridge* cartridge, const void* image, size_t size, 
     return 0;
 }
 
+size_t agb_cartridge_extent(const AgbCartridge* cartridge) {
+    return cartridge->size == 0x100000 ? 0x400000 : cartridge->size;
+}
+
 void agb_cartridge_unload(AgbCartridge* cartridge) {
     free(cartridge->data);
     *cartridge = (AgbCartridge){0};
