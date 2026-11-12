@@ -112,9 +112,12 @@ encoding holds and its code, the partition seeds), into `astc_encode_tables.glsl
 A hinted line is taken as it is: its ends quantized to the layout's colour encoding and each texel given the weight
 nearest its place, one pass of the texels where the search fits a box and least squares over several. Its error is
 still measured on the texels, so a hint the layout holds badly (ASTC's partition is not always BC7's, and two
-partitions leave an end 40 values) costs time and no more: past `SNX_ASTC_HINT_ENOUGH` (a squared error of 256 a
-block, the BC7 encoder's fast build's line too) the block is searched for, and the search takes the hint as well, the
-source's partition fitted in place of 64 scored, and no partition at all for a source of one line.
+partitions leave an end 40 values) costs time and little else: past `SNX_ASTC_HINT_ENOUGH` (a squared error of 1024
+a block, 4 a channel as a root mean square) the block is searched for, and the search takes the hint as well, the
+source's partition fitted in place of 64 scored, and no partition at all for a source of one line. The line was 256
+at first, the BC7 encoder's fast build's: the blocks searched for were then 6% of one game's level and nearly all of
+its time, and what the search finds for them is seldom much nearer. At 1024 that level takes 3.5 ms where it took
+6.2, for 0.27 dB.
 
 **No texel decoded.** Some BCn blocks are an ASTC layout already, field for field, and those are moved, not encoded
 (`gpu/texture/astc_direct.glsl`): the ends are read out of the block and written in ASTC's encoding, and the weights
@@ -145,9 +148,10 @@ The second and third are indirect dispatches, as many workgroups as their list h
 buffer). The blocks are the bytes one invocation doing all three would write, which is what the tests run on the CPU.
 
 What it gives, on nine levels of two games' textures as BC7 blocks (the BC7 encoder's fast build of each) made ASTC
-(`snx-test-astc-encode-glsl --measure FILE.astc...`): 50.86 dB against what the BC7 blocks decode to. Every block
-decoded, its lines tried and measured, gave 51.31, and searched for with no hint 50.29: moving the blocks costs
-half a dB of what the hints had gained. Against the textures themselves 47.67 dB, where the BC7 blocks are at 50.55.
+(`snx-test-astc-encode-glsl --measure FILE.astc...`): 50.67 dB against what the BC7 blocks decode to. Every block
+decoded, its lines tried and held to 256, gave 51.31, and searched for with no hint 50.29: moving the blocks and
+the wider line cost two thirds of a dB of what the hints had gained. Against the textures themselves 47.58 dB, where
+the BC7 blocks are at 50.55.
 
 Time, on the GT 1030 (which samples neither ASTC nor ETC2, so only the conversions run): a 2048x2048 level, 262,144
 blocks, its blocks in device memory and its output left there, the dispatches alone
@@ -160,10 +164,10 @@ took another 10 ms and hid all of this):
 | 8x6, mostly one colour | 2.2 ms | 78 ms | 1.2 ms |
 | 6x6 | 2.8 ms | 150 ms | 2.6 ms |
 | 4x4, with alpha | 2.3 ms | 134 ms | 2.7 ms |
-| 8x5 | 2.4 ms | 135 ms | 6.1 ms |
-| 8x8, 18% hard blocks | 4.9 ms | 167 ms | 6.2 ms |
+| 8x5 | 2.4 ms | 135 ms | 3.0 ms |
+| 8x8, 18% hard blocks | 4.9 ms | 167 ms | 3.5 ms |
 
-Random blocks, which nearly all take the search: BC1 28 ms (ETC2 172), BC3 44 ms (186), BC7 90 ms (198).
+Random blocks, which nearly all take the search: BC1 26 ms (ETC2 172), BC3 36 ms (186), BC7 88 ms (198).
 
 What it does not have yet: three and four partitions, two partitions with alpha, and blocks moved for BC7's modes 1
 and 3 (two partitions of 2 bit weights are ASTC's too, where its partition is BC7's, but their ends have 40 values a
