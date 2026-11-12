@@ -20,7 +20,7 @@ uint morton(uint x, uint y, uint bpp) {
 }
 void main() {
     uint x = gl_GlobalInvocationID.x, r = gl_GlobalInvocationID.y;
-    uint s = scale != 0u ? scale : 1u, image_width = width * s, image_height = height * s;
+    uint s = max(scale, 1u), image_width = width * s, image_height = height * s;
     if (store != 0u) {
         if (x >= width || r >= height) return;
         uint y = flip != 0u ? r : height - 1u - r, bpp = format == 0u ? 2u : format == 2u ? 3u : 4u;
