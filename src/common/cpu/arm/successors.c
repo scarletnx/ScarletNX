@@ -55,6 +55,7 @@ static void thumb_next(SnxArmProfile profile, uint32_t pc, const unsigned char* 
                 it_conds[i] = i == 0 ? first : ((first & 0xE) | ((mask >> (4 - i)) & 1));
         }
     }
+    const uint32_t start = pc;
     pc += (uint32_t)used * 2; /* the last instruction */
     uint32_t next = pc + (uint32_t)len * 2, base = pc + 4;
     int always = cond == 14, ends = 0;
@@ -110,7 +111,26 @@ static void thumb_next(SnxArmProfile profile, uint32_t pc, const unsigned char* 
             }
             break;
         }
-        case TH_TABLE: ends = 1; break;
+        case TH_TABLE: {
+            /* TBB and TBH: the table follows the instruction, an entry each case's target, half its distance from the
+               instruction's PC. Its size is not in the code. Targets only go forward and the cases' code comes after the
+               table, so it ends where the lowest target found so far begins. A guest that runs without a run-time
+               compiler has only the blocks found here, and every case is a place nothing else branches to */
+            const uint32_t size = t.op ? 2u : 1u, table = base;
+            const uint32_t limit = t.op ? 4096u : 256u;
+            uint32_t end = UINT32_MAX;
+            for (uint32_t i = 0; i < limit; ++i) {
+                uint32_t at = table + i * size;
+                if (at >= end || (uint64_t)(at - start) + size > (uint64_t)count * 2) break;
+                const unsigned char* entry = code + (at - start);
+                uint32_t target = base + 2u * (t.op ? (uint32_t)(entry[0] | entry[1] << 8) : entry[0]);
+                if (target < at + size) break; /* not a case's target: the table has ended */
+                if (target < end) end = target;
+                found(context, target, 1);
+            }
+            ends = 1;
+            break;
+        }
         case TH_HI: ends = t.rd == 15 && t.op != 1; break; /* MOV or ADD to the PC; not CMP */
         case TH_LOAD: ends = t.rd == 15; break;
         case TH_PUSHPOP: ends = t.op == 1 && t.ra; break; /* POP with the PC */
