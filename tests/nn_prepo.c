@@ -4,9 +4,10 @@
    through prepo.hook's table for every SDK version read: Save
    refuses an event id that is empty, too long or has a character past 0-9, a-z and _, and leaves the report then;
    a save starts the report's buffer again (de 00 00, or nothing in a buffer under 3 bytes); and SDK 20 lets 900 saves
-   through in any 90 minutes, a save past them succeeding with the report left as it is */
+   through in any 90 minutes, a save past them succeeding with the report left as it is. Then a 32-bit game's table:
+   the six hooks for the 32-bit SDK read and none for another, and Save on that SDK's report of 4-byte fields */
 #include "nx/nn/prepo.c"
-#include "hle/hook/hooks.hook.inc" /* prepo.hook's table and adapters */
+#include "hle/hook/hooks.hook.inc" /* prepo.hook's table and adapters, and a 32-bit game's */
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -45,6 +46,7 @@ void pm_unlock(PMutex* m) { (void)m; }
 
 static CPU cpu;
 static u8 mem[0x1000];
+CPU* hook_a32_cpu(SnxArmCPU* arm) { return (void)arm, &cpu; }
 #define REPORT 0x100u
 #define BUFFER 0x400u
 
@@ -147,6 +149,65 @@ int main(void) {
         CHECK(hook_select(&hook_table, "_ZN2nn5prepo28RequestImmediateTransmissionEv", versions, &first) >= 0);
         CHECK(hook_select(&hook_table, "_ZN2nn5prepo21GetTransmissionStatusEPNS0_18TransmissionStatusE", versions,
                           &first) >= 0);
+    }
+
+    /* a 32-bit game: the six hooks hold for the 32-bit SDK read (0.12.16), and none for a module of another SDK or
+       of an unknown one. Save there: the report's fields are 4 bytes each, at 0x20, 0x24 and 0x28 */
+    {
+        static const char* const all[6] = {save[0],
+                                           save[1],
+                                           "_ZN2nn5prepo28RequestImmediateTransmissionEv",
+                                           "_ZN2nn5prepo21GetTransmissionStatusEPNS0_18TransmissionStatusE",
+                                           "_ZN2nn5prepo6detail3ipc10InitializeEv",
+                                           "_ZN2nn5prepo6detail3ipc8FinalizeEv"};
+        static SnxArmCPU a;
+        u32 versions[HOOK_KEYS] = {0};
+        a.mem = mem, a.mem_size = sizeof mem;
+        CHECK(HOOK32_COUNT == 6);
+        for (int i = 0; i < 6; i++) {
+            versions[HOOK_SDK] = 0;
+            CHECK(hook_select(&hook32_table, all[i], versions, &first) == -2);
+            versions[HOOK_SDK] = 0x010000;
+            CHECK(hook_select(&hook32_table, all[i], versions, &first) == -2);
+            versions[HOOK_SDK] = 0x000c10;
+            CHECK(hook_select(&hook32_table, all[i], versions, &first) >= 0);
+        }
+        for (int user = 0; user < 2; user++) {
+            int k = hook_select(&hook32_table, save[user], versions, &first);
+            CHECK(!strcmp(hook32_handler[k], user ? "nnprepo_save_user32" : "nnprepo_save32"));
+            CHECK(strstr(hook32_layouts[k], "nn::prepo::PlayReport32 of line"));
+            memset(mem + REPORT, 0xee, 0x40);
+            strcpy((char*)mem + REPORT, "event_1");
+            snx_st_le32(mem + REPORT + 0x20, BUFFER);
+            snx_st_le32(mem + REPORT + 0x24, 0x100);
+            snx_st_le32(mem + REPORT + 0x28, 10);
+            memset(mem + BUFFER, 0xee, 16);
+            a.r[0] = REPORT, a.r[1] = 0x200, a.r[14] = 0x1234;
+            hook32_fn[k](&a);
+            CHECK(a.r[0] == 0 && a.r[15] == 0x1234 && mem[BUFFER] == 0xde && mem[BUFFER + 1] == 0 &&
+                  mem[BUFFER + 2] == 0);
+            CHECK(snx_ld_le32(mem + REPORT + 0x28) == 3 && mem[REPORT + 0x2c] == 0xee && mem[BUFFER + 3] == 0xee);
+            /* an event id refused: the report left */
+            strcpy((char*)mem + REPORT, "Upper");
+            snx_st_le32(mem + REPORT + 0x28, 10);
+            a.r[0] = REPORT;
+            hook32_fn[k](&a);
+            CHECK(a.r[0] == 0xa81 && snx_ld_le32(mem + REPORT + 0x28) == 10);
+            /* a buffer with no room for the map: nothing written, nothing used */
+            strcpy((char*)mem + REPORT, "event_1");
+            snx_st_le32(mem + REPORT + 0x24, 2);
+            mem[BUFFER] = 0xee;
+            a.r[0] = REPORT;
+            hook32_fn[k](&a);
+            CHECK(a.r[0] == 0 && mem[BUFFER] == 0xee && snx_ld_le32(mem + REPORT + 0x28) == 0);
+        }
+        { /* the status of an empty queue in its 4 bytes */
+            int k = hook_select(&hook32_table, all[3], versions, &first);
+            memset(mem + 0x200, 0xee, 8);
+            a.r[0] = 0x200, a.r[14] = 0x1234;
+            hook32_fn[k](&a);
+            CHECK(a.r[0] == 0 && snx_ld_le32(mem + 0x200) == 0 && mem[0x204] == 0xee);
+        }
     }
 
     /* Send through prepo.hook, for the SDKs that have it (16 on): the context the caller passes in x8 comes back

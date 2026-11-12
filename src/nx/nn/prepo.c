@@ -16,6 +16,8 @@
    context holds the limit's Result and the report is left; an event id Save refuses stops the SDK's Send, so that
    case runs the SDK's own code.
 
+   A 32-bit game's SDK (0.12.16, the one read) has the same Save over a report of 4-byte fields (PlayReport32).
+
    From SDK 10 Save has a limit, 900 calls in any 90 minutes as SDK 20's is: a call past the limit returns success and
    leaves the report as it is. The SDK also signals its own event for that (GetOverSaveFrequencyLimitEvent), which stays with the SDK's
    code and is not signaled here. Any other nn::prepo function that needs the service opens prepo:u, and sm stops the
@@ -52,16 +54,17 @@ static int event_id_ok(const CPU* c, u64 report) {
     return n > 0 && n < PREPO_EVENT_ID;
 }
 
-/* the report's buffer started again: an empty MessagePack map (de 00 00), when it has room for one */
-static void clear(CPU* c, const HookLayout_nn_prepo_PlayReport* L, u64 report) {
-    u64 buffer = hook_get_addr(c, L->buffer, report), capacity = hook_get_u64(c, L->capacity, report);
-    if (!buffer || capacity < 3) {
-        hook_put_u64(c, L->used, report, 0);
-        return;
-    }
+/* a report's buffer started again: an empty MessagePack map (de 00 00), when it has room for one. What the report
+   has used of it then */
+static u32 restart(CPU* c, u64 buffer, u64 capacity) {
+    if (!buffer || capacity < 3) return 0;
     u8* p = hook_host(c, buffer);
     p[0] = 0xde, p[1] = 0, p[2] = 0;
-    hook_put_u64(c, L->used, report, 3);
+    return 3;
+}
+static void clear(CPU* c, const HookLayout_nn_prepo_PlayReport* L, u64 report) {
+    hook_put_u64(c, L->used, report,
+                 restart(c, hook_get_addr(c, L->buffer, report), hook_get_u64(c, L->capacity, report)));
 }
 
 /* a save or a send past the limit: the 900th before this one less than 90 minutes ago, in the ring of its kind */
@@ -98,6 +101,19 @@ u32 nnprepo_save_unlimited(CPU* c, const HookLayout_nn_prepo_PlayReport* L, u64 
 u32 nnprepo_save_user_unlimited(CPU* c, const HookLayout_nn_prepo_PlayReport* L, u64 report, u64 uid) {
     (void)uid;
     return save(c, L, report);
+}
+/* a 32-bit SDK's report: the same fields, 4 bytes each. Its Save has no limit */
+u32 nnprepo_save32(CPU* c, const HookLayout_nn_prepo_PlayReport32* L, u64 report) {
+    if (!event_id_ok(c, report)) return PREPO_EVENT_ID_INVALID;
+    LOGV("prepo: the report %.31s (%u bytes) is kept nowhere\n", (const char*)hook_host(c, report),
+         (unsigned)hook_get_u32(c, L->used, report));
+    hook_put_u32(c, L->used, report,
+                 restart(c, hook_get_u32(c, L->buffer, report), hook_get_u32(c, L->capacity, report)));
+    return 0;
+}
+u32 nnprepo_save_user32(CPU* c, const HookLayout_nn_prepo_PlayReport32* L, u64 report, u64 uid) {
+    (void)uid;
+    return nnprepo_save32(c, L, report);
 }
 u32 nnprepo_request_immediate_transmission(CPU* c) {
     (void)c;
