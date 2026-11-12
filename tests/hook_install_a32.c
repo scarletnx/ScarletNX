@@ -89,6 +89,7 @@ GuestFn* g_disp;
 u64 g_code_lo, g_code_hi;
 u8* g_mem;
 Hle g_hle;
+HleHost g_host;
 Settings g_settings;
 const SnxRoutes* g_routes;
 static CPU cpu32;

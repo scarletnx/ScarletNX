@@ -156,6 +156,11 @@ typedef struct {
        were skipped (atomic) */
     u32 verify_taken;
     u64 agreed[HOOK_SITES], differed[HOOK_SITES], skipped[HOOK_SITES];
+    /* a 32-bit game's hooked functions: each one's address (bit 0 set for Thumb) and the block its slot held, for
+       hook_run_original_a32 */
+    u32 a32_count;
+    u32 a32_addr[HOOK_SITES];
+    SnxArmBlock a32_orig[HOOK_SITES];
 } HostHook;
 
 /* hooks the functions the game exports that hooks.hook names, and those of the game's builds that the address hooks
