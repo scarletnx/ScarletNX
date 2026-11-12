@@ -74,6 +74,37 @@ struct TranscoderFirst : Invocation {
 #include "nx/gpu/texture/texconv.glsl"
 #pragma GCC diagnostic pop
 };
+// the second and the third, each over the list the passes before left it
+#undef SNX_ASTC_PASS
+#define SNX_ASTC_PASS 2
+struct TranscoderSecond : Invocation {
+    uint mode, units, rows, in_pitch, out_pitch, st_pitch, in_bias, out_bias, st_bias, zfloat;
+    uint remap, const_a, const_b, line_out;
+    const leuint* src;
+    leuint* dst;
+    leuint* work;
+#include "nx/gpu/texture/texconv_modes.glsl"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#include "nx/gpu/texture/texconv.glsl"
+#pragma GCC diagnostic pop
+};
+#undef SNX_ASTC_STOP
+#undef SNX_NO_ARRAYS
+#undef SNX_ASTC_PASS
+#define SNX_ASTC_PASS 3
+struct TranscoderThird : Invocation {
+    uint mode, units, rows, in_pitch, out_pitch, st_pitch, in_bias, out_bias, st_bias, zfloat;
+    uint remap, const_a, const_b, line_out;
+    const leuint* src;
+    leuint* dst;
+    leuint* work;
+#include "nx/gpu/texture/texconv_modes.glsl"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#include "nx/gpu/texture/texconv.glsl"
+#pragma GCC diagnostic pop
+};
 #undef SNX_ASTC_PASS
 #undef SNX_ASTC_HINTS
 #undef SNX_TC_ASTC
@@ -137,4 +168,37 @@ extern "C" uint32_t bcn_astc_left_cpu(const uint8_t* blocks, uint32_t n, uint32_
             left[m]++;
         }
     return uint32_t(work[3]) + uint32_t(work[7]);
+}
+
+// the three passes as vk/texconv.c dispatches them, each the shader's own build of it: n blocks in a row. listed,
+// when not NULL: how many blocks the first pass left the second, and how many of those the second left the third
+template <typename T>
+static void pass(int kind, uint32_t n, uint32_t groups, const glsl::leuint* in, glsl::leuint* res, glsl::leuint* work) {
+    glsl::dispatch<T>(glsl::uvec3(groups, 1, 1), glsl::uvec3(64, 1, 1), [&](T& t) {
+        t.mode = TC_BCN_ASTC_MODE + (uint32_t)kind;
+        t.units = n;
+        t.rows = 1;
+        t.in_pitch = n * (kind == 0 ? 2 : 4);
+        t.out_pitch = n * 4;
+        t.in_bias = 0;
+        t.out_bias = 0;
+        t.const_a = n;
+        t.src = in;
+        t.dst = res;
+        t.work = work;
+    });
+}
+extern "C" void bcn_astc_passes_cpu(int kind, const uint8_t* blocks, uint32_t n, uint8_t* out, uint32_t listed[2]) {
+    using namespace astc_transcode_shader;
+    std::vector<glsl::leuint> in((size_t)n * (kind == 0 ? 2 : 4)), res((size_t)n * 4), work(8 + 2 * (size_t)n, 0u);
+    std::memcpy(in.data(), blocks, in.size() * 4);
+    pass<TranscoderFirst>(kind, n, (n + 63) / 64, in.data(), res.data(), work.data());
+    const uint32_t before = uint32_t(work[7]);
+    pass<TranscoderSecond>(kind, n, uint32_t(work[0]), in.data(), res.data(), work.data());
+    if (listed) {
+        listed[0] = uint32_t(work[3]);
+        listed[1] = uint32_t(work[7]) - before;
+    }
+    pass<TranscoderThird>(kind, n, uint32_t(work[4]), in.data(), res.data(), work.data());
+    std::memcpy(out, res.data(), res.size() * 4);
 }

@@ -76,12 +76,24 @@ def main():
     print("   (astc_decode.glsl): do not edit. ASTC's partitions of a 4x4 block in two nearest BC7's 64 (%d of them the" % exact)
     print("   same), a word each: in the low 16 bits a bit a texel, its subset, texel 0 in subset 0 (AS_P2); above them the")
     print("   partition's seed, 10 bits, and in bit 10 of that whether subset 0 is ASTC's partition 1 (AS_SEED2). Only the")
-    print("   passes that fit a block of two partitions read it */")
-    print("#define AS_P2(i) (ASTC_PART[i] & 0xFFFFu)")
-    print("#define AS_SEED2(i) (ASTC_PART[i] >> 16u)")
-    print("const uint ASTC_PART[64] = {")
-    for k in range(0, 64, 8):
-        print("    " + ", ".join("0x%08Xu" % w for w in words[k : k + 8]) + ("," if k + 8 < 64 else "};"))
+    print("   passes that fit a block of two partitions read it: as an array, or in a build that keeps none (SNX_NO_ARRAYS)")
+    print("   with selects (mux.glsl, included before) */")
+    for half, name in ((0, "LO"), (32, "HI")):
+        print("#define ASTC_PART_%s \\" % name)
+        for k in range(half, half + 32, 8):
+            print("    " + ", ".join("0x%08Xu" % w for w in words[k : k + 8]) + (", \\" if k + 8 < half + 32 else ""))
+    print("#undef AS_PART")
+    print("#if defined(SNX_NO_ARRAYS) && SNX_NO_ARRAYS")
+    print("uint AsPart(uint i) {")
+    print("    return (i & 32u) != 0u ? Mux32(i, ASTC_PART_HI) : Mux32(i, ASTC_PART_LO);")
+    print("}")
+    print("#define AS_PART(i) AsPart(i)")
+    print("#else")
+    print("const uint ASTC_PART[64] = {ASTC_PART_LO, ASTC_PART_HI};")
+    print("#define AS_PART(i) ASTC_PART[i]")
+    print("#endif")
+    print("#define AS_P2(i) (AS_PART(i) & 0xFFFFu)")
+    print("#define AS_SEED2(i) (AS_PART(i) >> 16u)")
 
 
 main()

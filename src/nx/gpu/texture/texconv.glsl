@@ -194,28 +194,31 @@ uint bc4_value(uint hi, uint lo, bool sn, uint i) {
     int m = x < 0 ? -x : x, v = (m * 32767 + 127 * d / 2) / (127 * d);
     return uint(x < 0 ? -v : v) & 0xFFFFu;
 }
-/* NVIDIA's BC3 alpha weights in 2048ths by the steps from the nearer endpoint: eight values, then six */
-const int BC3_W[8] = {0, 289, 578, 892, 0, 385, 770, 0};
+/* NVIDIA's BC3 alpha weight in 2048ths at steps from the nearer endpoint (1 to 3 of a block of eight values, 1 or 2
+   of one of six) */
+int bc3_w(bool eight, int steps) {
+    return eight ? (steps == 1 ? 289 : steps == 2 ? 578 : 892) : (steps == 1 ? 385 : 770);
+}
 /* pixel i's 8 bit alpha of a BC3 alpha block hi:lo, as NVIDIA's GPUs decode it */
 uint bc3_alpha(uint hi, uint lo, uint i) {
     int a0 = int(lo & 255u), a1 = int((lo >> 8) & 255u), n = a0 > a1 ? 7 : 5;
     int k = int(tc_bits(hi, lo, 18u + 3u * i, 16u + 3u * i));
     if (k < 2) return uint(k == 0 ? a0 : a1);
     if (n == 5 && k >= 6) return k == 6 ? 0u : 255u;
-    int t = n == 7 ? 0 : 4; /* the sum is never negative */
-    if (2 * (k - 1) < n) return uint((2048 * a0 + 1024 + BC3_W[t + k - 1] * (a1 - a0)) / 2048);
-    return uint((2048 * a1 + 1024 + BC3_W[t + n + 1 - k] * (a0 - a1)) / 2048);
+    /* the sum is never negative */
+    if (2 * (k - 1) < n) return uint((2048 * a0 + 1024 + bc3_w(n == 7, k - 1) * (a1 - a0)) / 2048);
+    return uint((2048 * a1 + 1024 + bc3_w(n == 7, n + 1 - k) * (a0 - a1)) / 2048);
 }
 
 /* BPTC's tables (tests/support/bcn.c's, packed): the subset bit of each pixel of the two subset partitions, 16 bits each; the
    subset of each pixel of the three subset ones, 2 bits each; the anchor pixel of subset 1 of the two subset
    partitions and of subsets 1 (A) and 2 (B) of the three subset ones, a nibble each */
-const uint BC_PART2[32] = {
-    0x8888CCCCu, 0xECC8EEEEu, 0xFEECC880u, 0xEC80FEC8u, 0xFFECC800u, 0xE800FE80u, 0xFF00FFE8u, 0xF000FFF0u,
-    0x008EF710u, 0x08CE7100u, 0x7310008Cu, 0x8CCE3100u, 0x3110088Cu, 0x366C6666u, 0x0FF017E8u, 0x399C718Eu,
-    0xF0F0AAAAu, 0x33CC5A5Au, 0x55AA3C3Cu, 0xA55A9696u, 0x13C873CEu, 0x3BDC324Cu, 0xC33C6996u, 0x06609966u,
+#define BC_PART2_WORDS \
+    0x8888CCCCu, 0xECC8EEEEu, 0xFEECC880u, 0xEC80FEC8u, 0xFFECC800u, 0xE800FE80u, 0xFF00FFE8u, 0xF000FFF0u, \
+    0x008EF710u, 0x08CE7100u, 0x7310008Cu, 0x8CCE3100u, 0x3110088Cu, 0x366C6666u, 0x0FF017E8u, 0x399C718Eu, \
+    0xF0F0AAAAu, 0x33CC5A5Au, 0x55AA3C3Cu, 0xA55A9696u, 0x13C873CEu, 0x3BDC324Cu, 0xC33C6996u, 0x06609966u, \
     0x04E40272u, 0x27204E40u, 0x936CC936u, 0x639C39C6u, 0x9CC69336u, 0xE718817Eu, 0x0FCCCCF0u, 0xEE227744u
-};
+const uint BC_PART2[32] = {BC_PART2_WORDS};
 const uint BC_PART3[64] = {
     0xAA685050u, 0x6A5A5040u, 0x5A5A4200u, 0x5450A0A8u, 0xA5A50000u, 0xA0A05050u, 0x5555A0A0u, 0x5A5A5050u,
     0xAA550000u, 0xAA555500u, 0xAAAA5500u, 0x90909090u, 0x94949494u, 0xA4A4A4A4u, 0xA9A59450u, 0x2A0A4250u,
@@ -226,9 +229,9 @@ const uint BC_PART3[64] = {
     0xAA444444u, 0x54A854A8u, 0x95809580u, 0x96969600u, 0xA85454A8u, 0x80959580u, 0xAA141414u, 0x96960000u,
     0xAAAA1414u, 0xA05050A0u, 0xA0A5A5A0u, 0x96000000u, 0x40804080u, 0xA9A8A9A8u, 0xAAAAAA44u, 0x2A4A5254u
 };
-const uint BC_ANCHOR2[8] = {
+#define BC_ANCHOR2_WORDS \
     0xFFFFFFFFu, 0xFFFFFFFFu, 0xF882282Fu, 0x22882282u, 0xFF8286FFu, 0x6FF22282u, 0x22FF8626u, 0xF22FFFFFu
-};
+const uint BC_ANCHOR2[8] = {BC_ANCHOR2_WORDS};
 const uint BC_ANCHOR3A[8] = {
     0xFF38FF33u, 0x33566688u, 0xA633F833u, 0xFF586885u, 0xF8A653F8u, 0xFFFF5F3Fu, 0xA58555F3u, 0x33CFD8A5u
 };
@@ -378,13 +381,19 @@ uint tx_px[16];
 #define SNX_ASTC_PASS 0
 #endif
 #if SNX_ASTC_PASS == 2
+#undef SNX_ASTC_STOP
 #define SNX_ASTC_STOP 1
+/* the second pass keeps no arrays (bc7_encode.glsl's SNX_NO_ARRAYS, bcn_regs.glsl) */
+#undef SNX_NO_ARRAYS
+#define SNX_NO_ARRAYS 1
 #endif
+#include "mux.glsl"
 #include "astc_encode_tables.glsl"
 #include "astc_quant.glsl"
 #include "bc7_encode.glsl"
 #include "astc_encode.glsl"
 #include "astc_direct.glsl"
+#include "bcn_regs.glsl"
 #endif
 /* texel i (row by row) of the block at column u of blocks whose four rows of RGBA8 pixels start at word o0: into the
    output, or into tx_px in the ETC2 build */
@@ -665,13 +674,27 @@ void main() {
    invocation waits beside one at a hundred times its work (a GPU runs them abreast, at the pace of the slowest):
    1. over the strip's blocks: those that are an ASTC layout as they stand, moved field for field with no texel
       decoded (astc_direct.glsl). The others are listed, by what the block says it is: with lines of its own to try
-      (BC7's modes 1, 3, 4 and 5, BC1's blocks of three colours, BC2 and BC3 with alpha) or without (work_list's first
-      and second half, const_a blocks each);
+      (BC7's modes 1, 3, 4 and 5, BC1's blocks of three colours with no transparent texel, BC2 and BC3 with alpha) or
+      without (work_list's first and second half, const_a blocks each);
    2. over the first list: the block decoded and its own lines tried (AstcEncode's hints, stopped before the search);
-      what they don't settle joins the second list;
+      what they don't settle joins the second list. This pass keeps no arrays, as the first: bcn_regs.glsl decodes
+      its BC7 blocks, and the fitter is built with SNX_NO_ARRAYS;
    3. over the second list: the block decoded and searched for.
    The second and third are indirect dispatches, as many workgroups as their list has blocks for (work_head). 0: all
    in one invocation, which is what the tests run on the CPU: the same blocks */
+/* texel i of the BC1, BC2 or BC3 block (as_bk) being made ASTC: its colour block as_bce and as_bci, under the alpha
+   as_ba0 and as_ba1 hold (BC2's 4 bits a texel, BC3's block) */
+uint as_bk;
+uint as_ba0;
+uint as_ba1;
+uint as_bce;
+uint as_bci;
+uint AsBcTexel(uint i) {
+    if (as_bk == TC_BC1) return bc1_pixel(as_bce, as_bci, true, i);
+    uint a = as_bk == TC_BC2 ? (((i < 8u ? as_ba0 : as_ba1) >> (4u * (i & 7u))) & 15u) * 17u
+                             : bc3_alpha(as_ba1, as_ba0, i);
+    return (bc1_pixel(as_bce, as_bci, false, i) & 0xFFFFFFu) | (a << 24);
+}
 #if SNX_ASTC_PASS == 1 || SNX_ASTC_PASS == 2
 void as_list(uint which, uint e) {
     uint n = atomicAdd(work_head[which * 4u + 3u], 1u);
@@ -716,32 +739,40 @@ void main() {
         /* a BC7 block's mode is its lowest set bit: 1, 3, 4 and 5 have lines AstcEncode takes; 0, 2 and 7 have not,
            nor has a block of no mode */
         uint m = uint(findLSB(b0 & 255u));
-        as_list(kind == TC_BC7 && ((0x3Au >> (m & 7u)) & 1u) == 0u ? 1u : 0u, row * units + u);
+        /* nor has a BC1 block with a transparent texel (index 3 of a block of three colours, which is every BC1
+           block left here) */
+        bool none = kind == TC_BC7 ? ((0x3Au >> (m & 7u)) & 1u) == 0u
+                                   : kind == TC_BC1 && (b1 & (b1 >> 1) & 0x55555555u) != 0u;
+        as_list(none ? 1u : 0u, row * units + u);
         return;
     }
 #else
     if (!done) {
         if (kind == TC_BC7) {
+#if SNX_NO_ARRAYS
+            if (!Rg7(b0, b1, b2, b3)) { /* no block the first pass lists for this one */
+                as_list(1u, e);
+                return;
+            }
+#else
             uint b[4];
             b[0] = b0;
             b[1] = b1;
             b[2] = b2;
             b[3] = b3;
             bc7_block(b, 0u, 0u);
+#endif
         } else {
             /* BC1's colour block: the block itself, or after BC2's and BC3's alpha */
             uint ce = kind == TC_BC1 ? b0 : b2, ci = kind == TC_BC1 ? b1 : b3;
-            bool clear = false;
-            for (uint i = 0u; i < 16u; i++) {
-                if (kind == TC_BC1) {
-                    PX_SET(i, bc1_pixel(ce, ci, true, i));
-                    clear = clear || PX(i) < 0x80000000u;
-                } else {
-                    uint a = kind == TC_BC2 ? (((i < 8u ? b0 : b1) >> (4u * (i & 7u))) & 15u) * 17u
-                                            : bc3_alpha(b1, b0, i);
-                    PX_SET(i, (bc1_pixel(ce, ci, false, i) & 0xFFFFFFu) | (a << 24));
-                }
-            }
+            as_bk = kind;
+            as_ba0 = b0;
+            as_ba1 = b1;
+            as_bce = ce;
+            as_bci = ci;
+            RG_FILL(AsBcTexel);
+            /* a BC1 block of three colours with a texel of index 3, which is transparent black */
+            bool clear = kind == TC_BC1 && (ce & 0xFFFFu) <= (ce >> 16) && (ci & (ci >> 1) & 0x55555555u) != 0u;
             /* a colour line (BC1's two ends) beside the alpha: two planes, alpha apart, which AstcEncode takes as one
                line of 2 bit weights where every alpha is 255. A BC1 block of three colours has its third halfway,
                which 3 bit weights come nearest, and with a transparent texel (black, off the line) nothing to say */

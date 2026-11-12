@@ -152,13 +152,33 @@ block is a dispatch of its own. With hints and the search in one dispatch the hi
 third of the operations though they are.
 
 1. Over the strip's blocks: those above, moved. The others are listed, by what the block says it is: with lines of its
-   own to try (BC7's modes 1, 3, 4 and 5, BC1's blocks of three colours, BC2 and BC3 with alpha), or without.
+   own to try (BC7's modes 1, 3, 4 and 5, BC1's blocks of three colours with no transparent texel, BC2 and BC3 with
+   alpha), or without.
 2. Over the first list: the block decoded and its lines tried (the hints above); what they don't settle joins the
    second list.
 3. Over the second list: the block decoded and searched for.
 
 The second and third are indirect dispatches, as many workgroups as their list has blocks (the work lists, a third
 buffer). The blocks are the bytes one invocation doing all three would write, which is what the tests run on the CPU.
+
+The second pass keeps no arrays either (`SNX_NO_ARRAYS`), for the same GPUs the first is written for:
+
+- its BC7 blocks are of modes 1, 3, 4 and 5 only, so they are decoded by `bcn_regs.glsl` and not by the decoder of
+  every mode: each mode's fields cut at bits that are constants, an end the word of its channels, a stream of indices
+  two words with its anchors' missing bits put in, a texel two multiplications;
+- the 16 texels are 16 words, written by name and read through `PX`, a tree of selects by the texel's number: the
+  loops over the texels are then for the driver's compiler to unroll, which leaves each read the word itself;
+- the three tables a block of two subsets needs (BC7's partition and anchor, ASTC's seed for that partition) are read
+  with selects between constants (`mux.glsl`), once a block;
+- a texel's weight comes from comparisons, with no reciprocal and no floating point: `(q top + 32) >> 6` is how many
+  of a few quotients `q = n / dd` reaches, and `q` reaches `Q` where `n` reaches `Q dd`. The same index, and on a
+  GT 1030 3% slower than the reciprocal where the BC7 encoder was tried with it, so only this build has it.
+
+Its compiled SPIR-V declares no array but the work lists' head, and executes no floating point for the layouts it
+writes. On a GT 1030 it is as fast as with arrays or a little faster for BC7 (a 2048x2048 level of random blocks 3.8
+ms where it took 4.2, a game's 2.4 where it took 2.9) and a tenth slower for BC3 (5.5 where it took 5.0); nothing is
+measured on a phone yet. It is twice the size, each texel's decode being written out 16 times. The third pass, the
+search, keeps its arrays: it is the fitter the BC7 encoder shares.
 
 What it gives, on nine levels of two games' textures as BC7 blocks (the BC7 encoder's fast build of each) made ASTC
 (`snx-test-astc-encode-glsl --measure FILE.astc...`): 50.67 dB against what the BC7 blocks decode to. Every block
@@ -226,8 +246,10 @@ pipeline is compiled the first time a BCn texture loads (1.3 s on llvmpipe), and
 - `astc_encode_glsl` (no GPU) runs the ASTC encoder on the CPU and decodes its blocks with the CPU's ASTC decoder
   (`tests/support/astc.c`): 6000 blocks of noise, edges, gradients, single colours and alpha each decode to the squared
   error the encoder worked out (so each layout's bits, colour encoding and weights are where the decoder reads them),
-  none is a block the decoder refuses, every layout is written, and a picture holds its PSNR. `astc_vulkan` holds the
-  SPIR-V of the ASTC build, its two passes, to the CPU's run of it in one (`tests/glsl/bcn_astc_cpu.cpp`, hints and
+  none is a block the decoder refuses, every layout is written, and a picture holds its PSNR. The transcoder's three passes
+  as the shader builds each (the second with no arrays and no reciprocal) write the blocks one invocation does, on
+  random BC1, BC2, BC3 and BC7 blocks and on a picture's BC7 blocks, most of which the second pass writes.
+  `astc_vulkan` holds the SPIR-V of the ASTC build, its three passes, to the CPU's run of it in one (`tests/glsl/bcn_astc_cpu.cpp`, hints and
   all) on random BC2, BC3 and BC7 blocks, byte for byte.
 - `vk_block_formats` runs `vk_blocks_want`, `vk_tic_format` and `vk_blocks_say` on stand-in devices, the first a
   player's Mali-G52 MC2 from its vkjson (ASTC and ETC2 sampled, BCn not).
