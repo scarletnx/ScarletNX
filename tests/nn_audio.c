@@ -137,8 +137,8 @@ int hook_attach_handle(CPU* c, u64 event, u32 handle) {
 
 static CPU cpu;
 static const HookLayout_nn_audio_AudioOut L = {0x110, {0x0}, {0x4}, {0x8}, {0xc}, {0x10}};
-#define OUT     0x1000u /* the game's AudioOut */
-#define OUT2    0x1200u
+#define T_OUT   0x1000u /* the game's AudioOut */
+#define T_OUT2  0x1200u
 #define PARAMS  0x1400u /* an AudioOutParameter */
 #define EVENT   0x1500u /* the game's SystemEvent */
 #define EVENT2  0x1540u
@@ -197,56 +197,56 @@ static u32 released(u64 out) {
 /* GetAudioOutState, ContainsAudioOutBuffer, GetAudioOutBufferCount and RegisterBufferEvent, which the SDK's
    audio-out loop polls between appends */
 static void test_queries(void) {
-    AudOut* q = open_output(OUT);
+    AudOut* q = open_output(T_OUT);
     unsigned attached = test_attached;
-    CHECK(nnaudio_get_out_state(&cpu, &L, OUT) == 1); /* stopped until Start */
-    CHECK(nnaudio_start_out(&cpu, OUT) == 0);
-    CHECK(nnaudio_get_out_state(&cpu, &L, OUT) == 0);
-    nnaudio_stop_out(&cpu, OUT);
-    CHECK(nnaudio_get_out_state(&cpu, &L, OUT) == 1);
-    CHECK(nnaudio_get_out_buffer_count(&cpu, OUT) == 0);
-    CHECK(append(OUT, 0x11, SAMPLES, 196, 192, 0) == 1); /* 48 frames: 1 ms at 48 kHz */
-    CHECK(append(OUT, 0x22, SAMPLES, 196, 192, 0) == 1);
-    CHECK(nnaudio_get_out_buffer_count(&cpu, OUT) == 2);
-    CHECK(nnaudio_contains_out_buffer(&cpu, OUT, B(0x22)) == 1);
-    CHECK(nnaudio_contains_out_buffer(&cpu, OUT, B(0x33)) == 0);
+    CHECK(nnaudio_get_out_state(&cpu, &L, T_OUT) == 1); /* stopped until Start */
+    CHECK(nnaudio_start_out(&cpu, T_OUT) == 0);
+    CHECK(nnaudio_get_out_state(&cpu, &L, T_OUT) == 0);
+    nnaudio_stop_out(&cpu, T_OUT);
+    CHECK(nnaudio_get_out_state(&cpu, &L, T_OUT) == 1);
+    CHECK(nnaudio_get_out_buffer_count(&cpu, T_OUT) == 0);
+    CHECK(append(T_OUT, 0x11, SAMPLES, 196, 192, 0) == 1); /* 48 frames: 1 ms at 48 kHz */
+    CHECK(append(T_OUT, 0x22, SAMPLES, 196, 192, 0) == 1);
+    CHECK(nnaudio_get_out_buffer_count(&cpu, T_OUT) == 2);
+    CHECK(nnaudio_contains_out_buffer(&cpu, T_OUT, B(0x22)) == 1);
+    CHECK(nnaudio_contains_out_buffer(&cpu, T_OUT, B(0x33)) == 0);
     /* played: not counted any more, still contained until GetReleasedAudioOutBuffer takes it back */
-    CHECK(nnaudio_start_out(&cpu, OUT) == 0);
+    CHECK(nnaudio_start_out(&cpu, T_OUT) == 0);
     test_now += 1500000;
-    CHECK(nnaudio_get_out_buffer_count(&cpu, OUT) == 1);
-    CHECK(nnaudio_contains_out_buffer(&cpu, OUT, B(0x11)) == 1);
-    CHECK(released(OUT) == 1 && taken[0] == B(0x11));
-    CHECK(nnaudio_contains_out_buffer(&cpu, OUT, B(0x11)) == 0);
+    CHECK(nnaudio_get_out_buffer_count(&cpu, T_OUT) == 1);
+    CHECK(nnaudio_contains_out_buffer(&cpu, T_OUT, B(0x11)) == 1);
+    CHECK(released(T_OUT) == 1 && taken[0] == B(0x11));
+    CHECK(nnaudio_contains_out_buffer(&cpu, T_OUT, B(0x11)) == 0);
     /* Stop hands the one still queued back: no longer counted, contained until taken */
-    nnaudio_stop_out(&cpu, OUT);
-    CHECK(nnaudio_get_out_state(&cpu, &L, OUT) == 1 && nnaudio_get_out_buffer_count(&cpu, OUT) == 0);
-    CHECK(nnaudio_contains_out_buffer(&cpu, OUT, B(0x22)) == 1);
+    nnaudio_stop_out(&cpu, T_OUT);
+    CHECK(nnaudio_get_out_state(&cpu, &L, T_OUT) == 1 && nnaudio_get_out_buffer_count(&cpu, T_OUT) == 0);
+    CHECK(nnaudio_contains_out_buffer(&cpu, T_OUT, B(0x22)) == 1);
     /* RegisterBufferEvent: a new event attached to the game's SystemEvent, the out's own reference beside the
        handle's; a second SystemEvent gets a handle to the same event */
     CHECK(q->ev == 0);
-    nnaudio_register_buffer_event(&cpu, OUT, EVENT);
+    nnaudio_register_buffer_event(&cpu, T_OUT, EVENT);
     CHECK(q->ev && test_attached == attached + 1 && test_attached_to[attached % 4] == EVENT);
     CHECK(kev(q->ev)->o.refs == 2);
     u32 ev = q->ev;
     unsigned handles = test_handles;
-    nnaudio_register_buffer_event(&cpu, OUT, EVENT2);
+    nnaudio_register_buffer_event(&cpu, T_OUT, EVENT2);
     CHECK(q->ev == ev && test_handles == handles + 1 && test_attached_to[(attached + 1) % 4] == EVENT2);
     CHECK(kev(ev)->o.refs == 3);
-    CHECK(released(OUT) == 1 && taken[0] == B(0x22));
+    CHECK(released(T_OUT) == 1 && taken[0] == B(0x22));
     /* CloseAudioOut marks the game's struct stopped, frees the out and drops its reference on the event */
-    snx_st_le32(GP(OUT + 12), 0x55);
-    nnaudio_close_out(&cpu, &L, OUT);
-    CHECK(out_at(OUT) == NULL && snx_ld_le32(GP(OUT + 12)) == 1 && kev(ev)->o.refs == 2);
+    snx_st_le32(GP(T_OUT + 12), 0x55);
+    nnaudio_close_out(&cpu, &L, T_OUT);
+    CHECK(out_at(T_OUT) == NULL && snx_ld_le32(GP(T_OUT + 12)) == 1 && kev(ev)->o.refs == 2);
     /* an AudioOut that isn't open: its state is what the struct holds, as the SDK reads it, and the rest answers as
        an empty, stopped out, each call named in the log */
-    snx_st_le32(GP(OUT + 12), 0);
-    CHECK(nnaudio_get_out_state(&cpu, &L, OUT) == 0);
+    snx_st_le32(GP(T_OUT + 12), 0);
+    CHECK(nnaudio_get_out_state(&cpu, &L, T_OUT) == 0);
     test_last_log[0] = 0;
-    CHECK(nnaudio_start_out(&cpu, OUT) == RC(153, 2));
+    CHECK(nnaudio_start_out(&cpu, T_OUT) == RC(153, 2));
     CHECK(strstr(test_last_log, "StartAudioOut") && strstr(test_last_log, "0x1000"));
-    CHECK(append(OUT, 1, SAMPLES, 196, 192, 0) == 0 && nnaudio_get_released_out_buffer(&cpu, OUT) == 0);
-    CHECK(nnaudio_get_out_buffer_count(&cpu, OUT) == 0 && nnaudio_get_out_played_sample_count(&cpu, OUT) == 0);
-    CHECK(nnaudio_flush_out_buffers(&cpu, OUT) == 0 && nnaudio_get_out_volume(&cpu, OUT) == 1.0f);
+    CHECK(append(T_OUT, 1, SAMPLES, 196, 192, 0) == 0 && nnaudio_get_released_out_buffer(&cpu, T_OUT) == 0);
+    CHECK(nnaudio_get_out_buffer_count(&cpu, T_OUT) == 0 && nnaudio_get_out_played_sample_count(&cpu, T_OUT) == 0);
+    CHECK(nnaudio_flush_out_buffers(&cpu, T_OUT) == 0 && nnaudio_get_out_volume(&cpu, T_OUT) == 1.0f);
 }
 
 /* OpenAudioOut: the name asked for, the game's AudioOut filled, the SDK's results for an out opened twice and for
@@ -254,47 +254,47 @@ static void test_queries(void) {
 static void test_open(void) {
     parameter(44100, 6);
     memset(GP(NAME), 0, 0x100);
-    memset(GP(OUT), 0xCC, 0x120);
-    CHECK(nnaudio_open_out(&cpu, &L, OUT, NAME, PARAMS) == 0); /* an empty name: the default device */
+    memset(GP(T_OUT), 0xCC, 0x120);
+    CHECK(nnaudio_open_out(&cpu, &L, T_OUT, NAME, PARAMS) == 0); /* an empty name: the default device */
     /* the game gets what it asked for: here 6 channels, 48 kHz s16, stopped */
-    CHECK(snx_ld_le32(GP(OUT)) == 48000 && snx_ld_le32(GP(OUT + 4)) == 6 && snx_ld_le32(GP(OUT + 8)) == 2);
-    CHECK(snx_ld_le32(GP(OUT + 12)) == 1);
-    CHECK(out_at(OUT)->channels == 6 && out_at(OUT)->output->channels == 6);
-    CHECK(!strcmp((char*)GP(OUT + 0x10), "DeviceOut"));
-    for (u32 i = 9; i < 0x100; i++) CHECK(GP(OUT + 0x10)[i] == 0);
-    for (u32 i = 0x110; i < 0x120; i++) CHECK(GP(OUT)[i] == 0xCC); /* nothing past the name */
+    CHECK(snx_ld_le32(GP(T_OUT)) == 48000 && snx_ld_le32(GP(T_OUT + 4)) == 6 && snx_ld_le32(GP(T_OUT + 8)) == 2);
+    CHECK(snx_ld_le32(GP(T_OUT + 12)) == 1);
+    CHECK(out_at(T_OUT)->channels == 6 && out_at(T_OUT)->output->channels == 6);
+    CHECK(!strcmp((char*)GP(T_OUT + 0x10), "DeviceOut"));
+    for (u32 i = 9; i < 0x100; i++) CHECK(GP(T_OUT + 0x10)[i] == 0);
+    for (u32 i = 0x110; i < 0x120; i++) CHECK(GP(T_OUT)[i] == 0xCC); /* nothing past the name */
     /* the same AudioOut again: the SDK's own result, and the out as it was */
-    CHECK(nnaudio_open_out(&cpu, &L, OUT, NAME, PARAMS) == RC(153, 9) && out_at(OUT)->channels == 6);
-    nnaudio_close_out(&cpu, &L, OUT);
+    CHECK(nnaudio_open_out(&cpu, &L, T_OUT, NAME, PARAMS) == RC(153, 9) && out_at(T_OUT)->channels == 6);
+    nnaudio_close_out(&cpu, &L, T_OUT);
     /* by its name, and a name that is no device's */
     strcpy((char*)GP(NAME), "DeviceOut");
-    CHECK(nnaudio_open_out(&cpu, &L, OUT, NAME, PARAMS) == 0);
-    nnaudio_close_out(&cpu, &L, OUT);
+    CHECK(nnaudio_open_out(&cpu, &L, T_OUT, NAME, PARAMS) == 0);
+    nnaudio_close_out(&cpu, &L, T_OUT);
     strcpy((char*)GP(NAME), "Speaker");
     test_last_log[0] = 0;
-    CHECK(nnaudio_open_out(&cpu, &L, OUT, NAME, PARAMS) == RC(153, 1) && out_at(OUT) == NULL);
+    CHECK(nnaudio_open_out(&cpu, &L, T_OUT, NAME, PARAMS) == RC(153, 1) && out_at(T_OUT) == NULL);
     CHECK(strstr(test_last_log, "Speaker") && strstr(test_last_log, "DeviceOut"));
     /* with the game's SystemEvent: the buffer event attached at once */
     unsigned attached = test_attached;
-    CHECK(nnaudio_open_default_out_event(&cpu, &L, OUT, EVENT, PARAMS) == 0);
-    CHECK(out_at(OUT)->ev && test_attached == attached + 1 && test_attached_to[attached % 4] == EVENT);
-    nnaudio_close_out(&cpu, &L, OUT);
+    CHECK(nnaudio_open_default_out_event(&cpu, &L, T_OUT, EVENT, PARAMS) == 0);
+    CHECK(out_at(T_OUT)->ev && test_attached == attached + 1 && test_attached_to[attached % 4] == EVENT);
+    nnaudio_close_out(&cpu, &L, T_OUT);
     strcpy((char*)GP(NAME), "DeviceOut");
-    CHECK(nnaudio_open_out_event(&cpu, &L, OUT, EVENT2, NAME, PARAMS) == 0);
-    CHECK(out_at(OUT)->ev && test_attached_to[(attached + 1) % 4] == EVENT2);
-    nnaudio_close_out(&cpu, &L, OUT);
+    CHECK(nnaudio_open_out_event(&cpu, &L, T_OUT, EVENT2, NAME, PARAMS) == 0);
+    CHECK(out_at(T_OUT)->ev && test_attached_to[(attached + 1) % 4] == EVENT2);
+    nnaudio_close_out(&cpu, &L, T_OUT);
     /* an SDK with no AttachReadableHandleToSystemEvent: the out opens with no event, and the log says what follows */
     test_no_attach = 1;
     test_last_log[0] = 0;
-    CHECK(nnaudio_open_default_out_event(&cpu, &L, OUT, EVENT, PARAMS) == 0 && out_at(OUT)->ev == 0);
+    CHECK(nnaudio_open_default_out_event(&cpu, &L, T_OUT, EVENT, PARAMS) == 0 && out_at(T_OUT)->ev == 0);
     CHECK(strstr(test_last_log, "AttachReadableHandleToSystemEvent") && strstr(test_last_log, "0x1000"));
     test_no_attach = 0;
-    nnaudio_close_out(&cpu, &L, OUT);
+    nnaudio_close_out(&cpu, &L, T_OUT);
 
     /* every out the runtime holds, then one more: the SDK's result for its own limit, with the limit in the log */
     for (u32 i = 0; i < AUDOUT_MAX; i++) CHECK(nnaudio_open_default_out(&cpu, &L, 0x4000 + 0x10 * i, PARAMS) == 0);
     test_last_log[0] = 0;
-    CHECK(nnaudio_open_default_out(&cpu, &L, OUT, PARAMS) == RC(153, 5) && strstr(test_last_log, "32"));
+    CHECK(nnaudio_open_default_out(&cpu, &L, T_OUT, PARAMS) == RC(153, 5) && strstr(test_last_log, "32"));
     for (u32 i = 0; i < AUDOUT_MAX; i++) nnaudio_close_out(&cpu, &L, 0x4000 + 0x10 * i);
 
     /* ListAudioOuts: the one device, into an array of names; none into an array of none */
@@ -310,88 +310,88 @@ static void test_layouts(void) {
     static const u16 asked[5] = {1, 4, 3, 0, 6}, given[5] = {1, 4, 2, 2, 6};
     for (u32 i = 0; i < 5; i++) {
         parameter(48000, asked[i]);
-        CHECK(nnaudio_open_default_out(&cpu, &L, OUT, PARAMS) == 0);
-        CHECK(snx_ld_le32(GP(OUT + 4)) == given[i] && out_at(OUT)->channels == given[i]);
-        CHECK(out_at(OUT)->output->channels == given[i]);
-        nnaudio_close_out(&cpu, &L, OUT);
+        CHECK(nnaudio_open_default_out(&cpu, &L, T_OUT, PARAMS) == 0);
+        CHECK(snx_ld_le32(GP(T_OUT + 4)) == given[i] && out_at(T_OUT)->channels == given[i]);
+        CHECK(out_at(T_OUT)->output->channels == given[i]);
+        nnaudio_close_out(&cpu, &L, T_OUT);
     }
-    AudOut* q = open_output(OUT);
+    AudOut* q = open_output(T_OUT);
     PAudio* host = q->output;
-    CHECK(append(OUT, 0x31, 0x2000, 96, 96, 0) == 1);
+    CHECK(append(T_OUT, 0x31, 0x2000, 96, 96, 0) == 1);
     CHECK(q->nqueued == 1 && q->frames[(q->first + q->nreleased) % AUDOUT_BUFFERS] == 24 && host->bytes == 96);
-    CHECK(append(OUT, 0x32, 0x2000, 96, 0, 0) == 1); /* holds nothing */
+    CHECK(append(T_OUT, 0x32, 0x2000, 96, 0, 0) == 1); /* holds nothing */
     CHECK(q->nqueued == 2 && host->bytes == 96);
     unsigned before = host->queued;
-    CHECK(append(OUT, 0x33, 0x2000, 64, 96, 0) == 1); /* 96 bytes in a 64 byte buffer: timed, not played */
+    CHECK(append(T_OUT, 0x33, 0x2000, 64, 96, 0) == 1); /* 96 bytes in a 64 byte buffer: timed, not played */
     CHECK(q->nqueued == 3 && host->queued == before);
-    CHECK(append(OUT, 0x34, 0x2000, 96, 64, 64) == 1); /* past the capacity from its offset */
+    CHECK(append(T_OUT, 0x34, 0x2000, 96, 64, 64) == 1); /* past the capacity from its offset */
     CHECK(q->nqueued == 4 && host->queued == before);
     /* an AudioOutBuffer the game can't have: not appended, and the log names its address */
     test_last_log[0] = 0;
-    CHECK(nnaudio_append_out_buffer(&cpu, OUT, 0x7FF0) == 0 && q->nqueued == 4 && strstr(test_last_log, "0x7ff0"));
-    CHECK(nnaudio_append_out_buffer(&cpu, OUT, 0) == 0 && q->nqueued == 4);
-    nnaudio_close_out(&cpu, &L, OUT);
+    CHECK(nnaudio_append_out_buffer(&cpu, T_OUT, 0x7FF0) == 0 && q->nqueued == 4 && strstr(test_last_log, "0x7ff0"));
+    CHECK(nnaudio_append_out_buffer(&cpu, T_OUT, 0) == 0 && q->nqueued == 4);
+    nnaudio_close_out(&cpu, &L, T_OUT);
 }
 
 /* a data offset past the buffer's capacity (a game leaves the field unset, 0xCD in every byte) plays the buffer from
    its start, as Eden and yuzu play every buffer: they never read the field. The message names both offsets */
 static void test_offset_past_capacity(void) {
-    AudOut* q = open_output(OUT);
+    AudOut* q = open_output(T_OUT);
     PAudio* host = q->output;
     u8 expected[192];
     for (u32 i = 0; i < 196; i++) GP(SAMPLES)[i] = (u8)(i * 5 + 1);
     memcpy(expected, GP(SAMPLES), sizeof expected);
     test_last_log[0] = 0;
-    CHECK(append(OUT, 0x51, SAMPLES, 196, 192, 0xCDCDCDCDCDCDCDCDull) == 1);
+    CHECK(append(T_OUT, 0x51, SAMPLES, 196, 192, 0xCDCDCDCDCDCDCDCDull) == 1);
     CHECK(q->nqueued == 1 && host->queued == 1 && host->bytes == 192 && !memcmp(host->pcm, expected, 192));
     CHECK(strstr(test_last_log, "0xcdcdcdcdcdcdcdcd") && strstr(test_last_log, "capacity 196") &&
           strstr(test_last_log, "from offset 0"));
-    CHECK(append(OUT, 0x52, SAMPLES, 196, 192, 197) == 1); /* one past the capacity */
+    CHECK(append(T_OUT, 0x52, SAMPLES, 196, 192, 197) == 1); /* one past the capacity */
     CHECK(host->queued == 2 && host->bytes == 384 && !memcmp(host->pcm + 192, expected, 192));
-    nnaudio_close_out(&cpu, &L, OUT);
+    nnaudio_close_out(&cpu, &L, T_OUT);
 }
 
 /* a buffer ending in part of a frame (a whole .wav file, its header and all): its whole frames played, the rest left
    out, as the DSP counts frames */
 static void test_partial_frame(void) {
-    AudOut* q = open_output(OUT);
-    CHECK(append(OUT, 0x41, 0x2000, 0x1000, 4 * 100 + 2, 0) == 1);
+    AudOut* q = open_output(T_OUT);
+    CHECK(append(T_OUT, 0x41, 0x2000, 0x1000, 4 * 100 + 2, 0) == 1);
     CHECK(q->frames[(q->first + q->nreleased) % AUDOUT_BUFFERS] == 100 && q->output->bytes == 4 * 100);
-    CHECK(append(OUT, 0x42, 0x2000, 0x1000, 3, 0) == 1); /* under a frame: timed as nothing, nothing played */
+    CHECK(append(T_OUT, 0x42, 0x2000, 0x1000, 3, 0) == 1); /* under a frame: timed as nothing, nothing played */
     CHECK(q->nqueued == 2 && q->output->queued == 1);
-    nnaudio_close_out(&cpu, &L, OUT);
+    nnaudio_close_out(&cpu, &L, T_OUT);
     parameter(48000, 6);
-    CHECK(nnaudio_open_default_out(&cpu, &L, OUT, PARAMS) == 0);
-    q = out_at(OUT);
-    CHECK(q->channels == 6 && append(OUT, 0x43, 0x2000, 0x1000, 12 * 10 + 10, 0) == 1);
+    CHECK(nnaudio_open_default_out(&cpu, &L, T_OUT, PARAMS) == 0);
+    q = out_at(T_OUT);
+    CHECK(q->channels == 6 && append(T_OUT, 0x43, 0x2000, 0x1000, 12 * 10 + 10, 0) == 1);
     CHECK(q->frames[(q->first + q->nreleased) % AUDOUT_BUFFERS] == 10 && q->output->bytes == 12 * 10);
-    nnaudio_close_out(&cpu, &L, OUT);
+    nnaudio_close_out(&cpu, &L, T_OUT);
 }
 
 /* two outs at once, each found by its own AudioOut; the output device's volume on both; the clock's turn; and a
    save state's load, which opens the host outputs again */
 static void test_two_outs(void) {
-    AudOut* a = open_output(OUT);
-    AudOut* b = open_output(OUT2);
+    AudOut* a = open_output(T_OUT);
+    AudOut* b = open_output(T_OUT2);
     CHECK(a != b);
-    nnaudio_register_buffer_event(&cpu, OUT, EVENT);
-    nnaudio_register_buffer_event(&cpu, OUT2, EVENT2);
+    nnaudio_register_buffer_event(&cpu, T_OUT, EVENT);
+    nnaudio_register_buffer_event(&cpu, T_OUT2, EVENT2);
     CHECK(a->ev && b->ev && a->ev != b->ev);
-    CHECK(append(OUT, 1, SAMPLES, 196, 192, 0) == 1 && append(OUT2, 2, SAMPLES, 196, 96, 0) == 1);
-    CHECK(nnaudio_start_out(&cpu, OUT) == 0 && nnaudio_start_out(&cpu, OUT2) == 0);
+    CHECK(append(T_OUT, 1, SAMPLES, 196, 192, 0) == 1 && append(T_OUT2, 2, SAMPLES, 196, 96, 0) == 1);
+    CHECK(nnaudio_start_out(&cpu, T_OUT) == 0 && nnaudio_start_out(&cpu, T_OUT2) == 0);
     kev(a->ev)->signaled = kev(b->ev)->signaled = 0;
     test_now += 500000; /* 24 frames: the second out's buffer, half of the first's */
     nnaudio_out_tick(test_now);
     CHECK(!kev(a->ev)->signaled && kev(b->ev)->signaled);
-    CHECK(nnaudio_get_released_out_buffer(&cpu, OUT) == 0 && nnaudio_get_released_out_buffer(&cpu, OUT2) == B(2));
-    nnaudio_set_out_volume(&cpu, OUT, 0.5f);
+    CHECK(nnaudio_get_released_out_buffer(&cpu, T_OUT) == 0 && nnaudio_get_released_out_buffer(&cpu, T_OUT2) == B(2));
+    nnaudio_set_out_volume(&cpu, T_OUT, 0.5f);
     g_hle.audio.device_volume = 0.5f;
     nnaudio_out_device_volume();
     CHECK(a->output->volume == 0.25f && b->output->volume == 0.5f);
     /* the out's own volume, under the device's; and an out opened later starts at the device's */
-    nnaudio_set_out_volume(&cpu, OUT, 1.0f);
+    nnaudio_set_out_volume(&cpu, T_OUT, 1.0f);
     CHECK(a->output->volume == 0.5f);
-    nnaudio_set_out_volume(&cpu, OUT, 0.5f);
+    nnaudio_set_out_volume(&cpu, T_OUT, 0.5f);
     CHECK(a->output->volume == 0.25f);
     AudOut* later = open_output(0x1800);
     CHECK(later->output->volume == 0.5f);
@@ -402,8 +402,8 @@ static void test_two_outs(void) {
     CHECK(a->output && b->output && a->output->started && b->output->started && a->output->bytes == 0);
     CHECK(a->output->volume == 0.25f && b->output->volume == 0.5f);
     g_hle.audio.device_volume = 1.0f;
-    nnaudio_close_out(&cpu, &L, OUT);
-    nnaudio_close_out(&cpu, &L, OUT2);
+    nnaudio_close_out(&cpu, &L, T_OUT);
+    nnaudio_close_out(&cpu, &L, T_OUT2);
 }
 
 /* audio.hook: every function is hooked for any SDK, by the handler that takes its arguments, and the adapters hand
@@ -445,25 +445,25 @@ static void test_table(void) {
     CPU* c = &cpu;
     parameter(48000, 2);
     strcpy((char*)GP(NAME), "DeviceOut");
-    memset(GP(OUT), 0, 0x120);
+    memset(GP(T_OUT), 0, 0x120);
 #define CALL(i, a0, a1, a2, a3)                                                                                        \
     do {                                                                                                               \
         c->x[0] = (a0), c->x[1] = (a1), c->x[2] = (a2), c->x[3] = (a3), c->x[30] = 0x1234, c->pc = 0;                  \
         hook_fn[k[i]](c, 0);                                                                                           \
         CHECK(c->pc == 0x1234);                                                                                        \
     } while (0)
-    CALL(1, OUT, EVENT, NAME, PARAMS);
-    CHECK((u32)c->x[0] == 0 && out_at(OUT) && out_at(OUT)->ev && snx_ld_le32(GP(OUT)) == 48000);
-    CALL(9, OUT, buffer(5, SAMPLES, 196, 192, 0), 0, 0);
+    CALL(1, T_OUT, EVENT, NAME, PARAMS);
+    CHECK((u32)c->x[0] == 0 && out_at(T_OUT) && out_at(T_OUT)->ev && snx_ld_le32(GP(T_OUT)) == 48000);
+    CALL(9, T_OUT, buffer(5, SAMPLES, 196, 192, 0), 0, 0);
     CHECK((c->x[0] & 0xFF) == 1);
-    CALL(7, OUT, 0, 0, 0);
+    CALL(7, T_OUT, 0, 0, 0);
     CHECK((u32)c->x[0] == 0);
-    CALL(6, OUT, 0, 0, 0);
+    CALL(6, T_OUT, 0, 0, 0);
     CHECK((u32)c->x[0] == 0); /* started */
     test_now += 1000000;
-    CALL(13, OUT, 0, 0, 0);
+    CALL(13, T_OUT, 0, 0, 0);
     CHECK(c->x[0] == 48);
-    CALL(10, OUT, 0, 0, 0);
+    CALL(10, T_OUT, 0, 0, 0);
     CHECK(c->x[0] == B(5));
     { /* the volume goes and comes in s0 */
         f32 half = 0.5f;
@@ -471,14 +471,14 @@ static void test_table(void) {
         memcpy(&bits, &half, 4);
         memset(&c->v[0], 0, sizeof c->v[0]);
         SNX_VSET_S(c->v[0], 0, bits);
-        CALL(15, OUT, 0, 0, 0);
-        CHECK(out_at(OUT)->volume == 0.5f);
+        CALL(15, T_OUT, 0, 0, 0);
+        CHECK(out_at(T_OUT)->volume == 0.5f);
         memset(&c->v[0], 0, sizeof c->v[0]);
-        CALL(16, OUT, 0, 0, 0);
+        CALL(16, T_OUT, 0, 0, 0);
         CHECK(hook_f32(c, 0) == 0.5f);
     }
-    CALL(5, OUT, 0, 0, 0);
-    CHECK(out_at(OUT) == NULL);
+    CALL(5, T_OUT, 0, 0, 0);
+    CHECK(out_at(T_OUT) == NULL);
 #undef CALL
 }
 
@@ -488,80 +488,81 @@ int main(void) {
     CHECK(g_mem != NULL);
     cpu.mem = g_mem;
     g_hle.audio.device_volume = 1.0f;
-    AudOut* q = open_output(OUT);
+    AudOut* q = open_output(T_OUT);
     PAudio* host = q->output;
     CHECK(host && !host->started);
     for (u32 i = 0; i < 196; i++) GP(SAMPLES)[i] = (u8)(i * 7);
     u8 expected[192];
     memcpy(expected, GP(SAMPLES + 4), sizeof expected);
-    CHECK(append(OUT, 0, SAMPLES, 196, 192, 4) == 1);
+    CHECK(append(T_OUT, 0, SAMPLES, 196, 192, 4) == 1);
     CHECK(host->queued == 1 && host->bytes == 192 && !memcmp(host->pcm, expected, 192));
     memset(GP(SAMPLES), 0, 196); /* the host owns its copy, even when the guest later reuses the memory */
     CHECK(!memcmp(host->pcm, expected, 192));
 
     test_now = 1000000000;
-    CHECK(released(OUT) == 0);
-    CHECK(nnaudio_start_out(&cpu, OUT) == 0);
+    CHECK(released(T_OUT) == 0);
+    CHECK(nnaudio_start_out(&cpu, T_OUT) == 0);
     CHECK(host->started);
     test_now += 500000;
-    CHECK(nnaudio_get_out_played_sample_count(&cpu, OUT) == 24);
+    CHECK(nnaudio_get_out_played_sample_count(&cpu, T_OUT) == 24);
     /* Stop hands back what wasn't played, as Flush does: the host's queue goes and the buffer event says so. What
        was played stays counted */
-    nnaudio_register_buffer_event(&cpu, OUT, EVENT);
+    nnaudio_register_buffer_event(&cpu, T_OUT, EVENT);
     kev(q->ev)->signaled = 0;
-    nnaudio_stop_out(&cpu, OUT);
+    nnaudio_stop_out(&cpu, T_OUT);
     CHECK(!host->started && host->cleared == 1 && host->bytes == 0 && kev(q->ev)->signaled);
-    i64 played = nnaudio_get_out_played_sample_count(&cpu, OUT);
+    i64 played = nnaudio_get_out_played_sample_count(&cpu, T_OUT);
     CHECK(played == 24); /* what was played stays counted: the count never goes back */
     test_now += 1000000000;
-    CHECK(nnaudio_get_out_played_sample_count(&cpu, OUT) == played && released(OUT) == 1 && taken[0] == B(0));
+    CHECK(nnaudio_get_out_played_sample_count(&cpu, T_OUT) == played && released(T_OUT) == 1 && taken[0] == B(0));
     /* a buffer appended while stopped plays from the next Start */
-    CHECK(append(OUT, 1, SAMPLES, 196, 192, 0) == 1);
-    CHECK(nnaudio_start_out(&cpu, OUT) == 0);
+    CHECK(append(T_OUT, 1, SAMPLES, 196, 192, 0) == 1);
+    CHECK(nnaudio_start_out(&cpu, T_OUT) == 0);
     test_now += 500000;
-    CHECK(released(OUT) == 0 && nnaudio_get_out_played_sample_count(&cpu, OUT) == played + 24);
+    CHECK(released(T_OUT) == 0 && nnaudio_get_out_played_sample_count(&cpu, T_OUT) == played + 24);
     test_now += 500000;
-    CHECK(released(OUT) == 1 && taken[0] == B(1));
-    CHECK(nnaudio_get_out_played_sample_count(&cpu, OUT) == played + 48);
+    CHECK(released(T_OUT) == 1 && taken[0] == B(1));
+    CHECK(nnaudio_get_out_played_sample_count(&cpu, T_OUT) == played + 48);
 
-    nnaudio_set_out_volume(&cpu, OUT, 0.25f);
-    CHECK(host->volume == 0.25f && nnaudio_get_out_volume(&cpu, OUT) == 0.25f);
-    CHECK(append(OUT, 2, SAMPLES, 196, 192, 0) == 1);
-    CHECK(nnaudio_flush_out_buffers(&cpu, OUT) == 1);
+    nnaudio_set_out_volume(&cpu, T_OUT, 0.25f);
+    CHECK(host->volume == 0.25f && nnaudio_get_out_volume(&cpu, T_OUT) == 0.25f);
+    CHECK(append(T_OUT, 2, SAMPLES, 196, 192, 0) == 1);
+    CHECK(nnaudio_flush_out_buffers(&cpu, T_OUT) == 1);
     CHECK(host->cleared == 2 && host->bytes == 0);
-    CHECK(released(OUT) == 1 && taken[0] == B(2));
+    CHECK(released(T_OUT) == 1 && taken[0] == B(2));
     /* flushing does not count the discarded samples as played */
-    CHECK(nnaudio_get_out_played_sample_count(&cpu, OUT) == played + 48);
+    CHECK(nnaudio_get_out_played_sample_count(&cpu, T_OUT) == played + 48);
 
-    nnaudio_stop_out(&cpu, OUT);
+    nnaudio_stop_out(&cpu, T_OUT);
     unsigned before = host->queued;
-    CHECK(append(OUT, 3, 0x7FF0, 192, 192, 0) == 1); /* spans an unreadable allocation */
+    CHECK(append(T_OUT, 3, 0x7FF0, 192, 192, 0) == 1); /* spans an unreadable allocation */
     CHECK(host->queued == before);
     /* a stopped out keeps what was appended: Flush says it flushed nothing, and a Start of a started out is
        refused */
-    CHECK(nnaudio_flush_out_buffers(&cpu, OUT) == 0);
-    CHECK(released(OUT) == 0 && nnaudio_get_out_buffer_count(&cpu, OUT) == 1);
-    CHECK(nnaudio_start_out(&cpu, OUT) == 0);
-    CHECK(nnaudio_start_out(&cpu, OUT) == RC(153, 2));
-    CHECK(nnaudio_flush_out_buffers(&cpu, OUT) == 1);
-    CHECK(released(OUT) == 1);
-    for (u32 i = 0; i < 64; i++) CHECK(append(OUT, 4 + i, SAMPLES, 196, 192, 0) == 1);
-    CHECK(append(OUT, 70, SAMPLES, 196, 192, 0) == 0); /* the ring is full: false, as the SDK answers BufferRingFull */
-    CHECK(host->queued == before + 64);                /* a full ring refuses the host copy too */
-    CHECK(nnaudio_flush_out_buffers(&cpu, OUT) == 1);
-    CHECK(released(OUT) == 64 && taken[0] == B(4) && taken[63] == B(67));
-    nnaudio_stop_out(&cpu, OUT);
-    nnaudio_close_out(&cpu, &L, OUT);
+    CHECK(nnaudio_flush_out_buffers(&cpu, T_OUT) == 0);
+    CHECK(released(T_OUT) == 0 && nnaudio_get_out_buffer_count(&cpu, T_OUT) == 1);
+    CHECK(nnaudio_start_out(&cpu, T_OUT) == 0);
+    CHECK(nnaudio_start_out(&cpu, T_OUT) == RC(153, 2));
+    CHECK(nnaudio_flush_out_buffers(&cpu, T_OUT) == 1);
+    CHECK(released(T_OUT) == 1);
+    for (u32 i = 0; i < 64; i++) CHECK(append(T_OUT, 4 + i, SAMPLES, 196, 192, 0) == 1);
+    CHECK(append(T_OUT, 70, SAMPLES, 196, 192, 0) ==
+          0);                           /* the ring is full: false, as the SDK answers BufferRingFull */
+    CHECK(host->queued == before + 64); /* a full ring refuses the host copy too */
+    CHECK(nnaudio_flush_out_buffers(&cpu, T_OUT) == 1);
+    CHECK(released(T_OUT) == 64 && taken[0] == B(4) && taken[63] == B(67));
+    nnaudio_stop_out(&cpu, T_OUT);
+    nnaudio_close_out(&cpu, &L, T_OUT);
     for (u32 i = 0; i < AUDOUT_MAX; i++) CHECK(g_hle.audio.outs_pool[i].guest == 0);
 
     test_no_device = 1;
-    q = open_output(OUT);
+    q = open_output(T_OUT);
     CHECK(q->output == NULL);
-    CHECK(append(OUT, 0, SAMPLES, 196, 192, 0) == 1);
-    CHECK(nnaudio_start_out(&cpu, OUT) == 0);
+    CHECK(append(T_OUT, 0, SAMPLES, 196, 192, 0) == 1);
+    CHECK(nnaudio_start_out(&cpu, T_OUT) == 0);
     test_now += 1000000;
-    CHECK(released(OUT) == 1 && taken[0] == B(0) && nnaudio_get_out_played_sample_count(&cpu, OUT) == 48);
-    nnaudio_close_out(&cpu, &L, OUT);
+    CHECK(released(T_OUT) == 1 && taken[0] == B(0) && nnaudio_get_out_played_sample_count(&cpu, T_OUT) == 48);
+    nnaudio_close_out(&cpu, &L, T_OUT);
     test_no_device = 0;
     test_queries();
     test_open();
