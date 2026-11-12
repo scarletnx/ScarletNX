@@ -406,7 +406,7 @@ uint Eval(uint s, uint q0, uint q1, bool near) {
         if (dd > 0) {
             /* the texel's place along the line, 0 to 64, then the nearest weight */
             const int t = clamp(int(Dot4(p, b)) - int(Dot4(p, a)) - along, 0, dd);
-            const int n = t * 64 + dd / 2;
+            const int n = t * 64 + (dd >> 1); /* dd / 2, dd being positive here */
 #if SNX_NO_ARRAYS
             /* No division and no floating point in this build, whose lines have weights of 2 or 3 bits (mobile GPUs
                convert between integers and floats slowly; on a GT 1030 the reciprocal below is 3% the faster, which
