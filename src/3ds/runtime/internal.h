@@ -347,6 +347,8 @@ struct SnxCtrProcess {
     void (*flush)(void* compiler);
     /* set by flush, and run by the dispatcher before its next block */
     void (*reclaim)(void* compiler);
+    /* the functions of the static text the runtime runs in C (aot/ctr_hook.h), NULL for none */
+    struct SnxCtrHooks* hooks;
     unsigned char physical_owner[];
 };
 CtrThread* snx_ctr_thread(SnxCtrProcess* p);
