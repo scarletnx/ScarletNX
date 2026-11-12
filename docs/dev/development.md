@@ -342,6 +342,7 @@ second tool. The cost of each is one atomic load per emission, and each goes out
 | Is the host running out of memory? | `host heap` (the allocator's live bytes), `host rss`, `host free` |
 | How much of a frame does the GPU's hold on guest memory cost, and was a stall a landing? | the `own land` zones (the bytes and the ranges each lands), `own bytes`, `own traps/s`, `own land MB/s` |
 | Does the texture cache serve a level, or is the same texture encoded and uploaded again? | the `texture BC7 encode` zones, `texture cache hits/s`, `texture cache misses/s`, `texture upload MB/s`, `texture frees/s` |
+| Which wait held a thread back, a syncpoint, a present's fence or the display's pace? | `syncpt wait ms`, `present fence wait ms`, `present pace ms`, `syncpt waits/s`, `syncpt timeouts/s`, and a message names a syncpoint that waited more than a millisecond |
 | Is the input and output keeping up? | `io read MB/s`, `io write MB/s`, `guest memory` |
 | Is a frame being dropped or a queue growing? | `submits pending`, `compute pending`, `draws`, `dispatches` |
 

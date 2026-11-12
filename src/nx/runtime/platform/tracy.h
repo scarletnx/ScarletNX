@@ -45,6 +45,8 @@ static inline void snx_tracy_zone_end_at_scope(TracyCZoneCtx* ctx) { snx_tracy_z
     } while (0)
 #define SNX_ZONE_TEXT(ctx, ...) SNX_TRACY_EMIT(TracyCZoneTextF(ctx, __VA_ARGS__))
 #define SNX_ZONE_VALUE(ctx, value) SNX_TRACY_EMIT(TracyCZoneValue(ctx, (uint64_t)(value)))
+/* a one-line mark on the timeline, where a plot would say how often and a message says which one */
+#define SNX_MSG(text, size) SNX_TRACY_EMIT(TracyCMessage(text, size))
 /* a zone whose text or value is known as it opens */
 #define SNX_ZONE_T(ctx, name, ...) SNX_ZONE(ctx, name); SNX_ZONE_TEXT(ctx, __VA_ARGS__)
 #define SNX_ZONE_V(ctx, name, value) SNX_ZONE(ctx, name); SNX_ZONE_VALUE(ctx, value)
@@ -115,6 +117,7 @@ void snx_tracy_lock_try(SnxTracyLock* l, int acquired);
 #define SNX_ZONE_C(ctx, name, color)       [[maybe_unused]] int ctx = 0
 #define SNX_ZONE_TEXT(ctx, ...)  ((void)0)
 #define SNX_ZONE_VALUE(ctx, value) ((void)0)
+#define SNX_MSG(text, size)      ((void)0)
 #define SNX_ZONE_T(ctx, name, ...)         [[maybe_unused]] int ctx = 0
 #define SNX_ZONE_V(ctx, name, value)       [[maybe_unused]] int ctx = 0
 #define SNX_ZONE_TV(ctx, name, value, ...) [[maybe_unused]] int ctx = 0
