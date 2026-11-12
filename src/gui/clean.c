@@ -297,59 +297,119 @@ static bool data_holds_saves(const char* data) {
     free(sdmc);
     return holds;
 }
-/* what folder holds, depth folders down at most: saves first, then keys */
-static GuiKeep folder_keeps(const char* folder, int depth) {
+/* how much a reason to keep weighs: a save over what cannot be read whole, over keys */
+static int keep_weight(GuiKeep keep) {
+    return keep == GUI_KEEP_SAVE || keep == GUI_KEEP_SAVES ? 4
+           : keep == GUI_KEEP_UNREAD                       ? 3
+           : keep == GUI_KEEP_LINK                         ? 2
+           : keep == GUI_KEEP_KEYS                         ? 1
+                                                           : 0;
+}
+/* keep, where and why (the system's, taken where it failed, for one not read) when they weigh more than kept's */
+static void keep_note(GuiKept* kept, GuiKeep keep, const char* where, const char* why) {
+    if (keep_weight(keep) <= keep_weight(kept->keep)) return;
+    kept->keep = keep;
+    snprintf(kept->where, sizeof kept->where, "%s", where);
+    snprintf(kept->why, sizeof kept->why, "%s", why ? why : "");
+}
+/* folder and every folder in it, however deep: a <name>_data/ with saves ends the look; else the first folder it
+   cannot list, or entry it cannot look at, or link to a folder, which it does not follow; else keys */
+static void folder_keeps(const char* folder, GuiKept* kept) {
     char** names = NULL;
+    char why[256];
     size_t count = 0, i;
-    GuiKeep keep = GUI_KEEP_NONE, inner;
-    if (snx_is_link(folder) || snx_list_dir(folder, &names, &count)) return GUI_KEEP_NONE;
-    for (i = 0; i < count && keep != GUI_KEEP_SAVES; ++i) {
+    if (snx_list_dir(folder, &names, &count)) {
+        keep_note(kept, GUI_KEEP_UNREAD, folder, snx_os_error(why, sizeof why));
+        return;
+    }
+    for (i = 0; i < count && keep_weight(kept->keep) < 4; ++i) {
         char* path = snx_path_join(folder, names[i]);
-        if (path && is_keys(names[i]) && snx_is_file(path))
-            keep = GUI_KEEP_KEYS;
-        else if (path && snx_is_dir(path) && !snx_is_link(path)) {
+        if (!path)
+            keep_note(kept, GUI_KEEP_UNREAD, folder, "out of memory");
+        else if (!snx_path_exists(path))
+            keep_note(kept, GUI_KEEP_UNREAD, path, snx_os_error(why, sizeof why));
+        else if (snx_is_link(path)) {
+            if (snx_is_dir(path)) keep_note(kept, GUI_KEEP_LINK, path, NULL);
+        } else if (snx_is_dir(path)) {
             if (ends_with(names[i], "_data") && data_holds_saves(path))
-                keep = GUI_KEEP_SAVES;
-            else if (depth > 1 && (inner = folder_keeps(path, depth - 1)) != GUI_KEEP_NONE)
-                keep = inner == GUI_KEEP_KEYS ? GUI_KEEP_KEYS : GUI_KEEP_SAVES;
-        }
+                keep_note(kept, GUI_KEEP_SAVES, path, NULL);
+            else
+                folder_keeps(path, kept);
+        } else if (is_keys(names[i]))
+            keep_note(kept, GUI_KEEP_KEYS, path, NULL);
         free(path);
     }
     snx_free_strings(names, count);
-    return keep;
 }
-GuiKeep gui_old_keep(const char* path) {
+GuiKeep gui_old_keep(const char* path, GuiKept* out) {
     char *parent = snx_dirname(path), *grand = parent ? snx_dirname(parent) : NULL, *data = snx_format("%s_data", path);
     const char *name = path + strlen(path), *up;
-    GuiKeep keep = GUI_KEEP_NONE;
+    GuiKept kept = {GUI_KEEP_NONE, "", ""};
     while (name > path && name[-1] != '/' && name[-1] != '\\') --name;
     up = parent ? parent + strlen(parent) : NULL;
     while (up && up > parent && up[-1] != '/' && up[-1] != '\\') --up;
     if (up && !strcmp(up, "save") && grand && ends_with(grand, "_data"))
-        keep = GUI_KEEP_SAVE; /* <name>_data/save/<kind> */
+        keep_note(&kept, GUI_KEEP_SAVE, path, NULL); /* <name>_data/save/<kind> */
     else if (data && snx_is_dir(data) && data_holds_saves(data))
-        keep = GUI_KEEP_SAVE; /* a game laid out beside others: its <name>_data/ */
-    else if (is_keys(name))
-        keep = GUI_KEEP_KEYS;
-    else if (snx_is_dir(path))
-        keep = folder_keeps(path, 4);
+        keep_note(&kept, GUI_KEEP_SAVE, data, NULL); /* a game laid out beside others: its <name>_data/ */
+    else if (snx_is_link(path) && snx_is_dir(path))
+        keep_note(&kept, GUI_KEEP_LINK, path, NULL);
+    else if (is_keys(name) && !snx_is_dir(path))
+        keep_note(&kept, GUI_KEEP_KEYS, path, NULL);
+    else {
+        if (snx_is_dir(path)) folder_keeps(path, &kept);
+        if (data && snx_is_link(data) && snx_is_dir(data)) /* a game's data, deleted with it */
+            keep_note(&kept, GUI_KEEP_LINK, data, NULL);
+        else if (data && snx_is_dir(data))
+            folder_keeps(data, &kept);
+    }
     free(data);
     free(grand);
     free(parent);
-    return keep;
+    if (out) *out = kept;
+    return kept.keep;
 }
 int gui_delete_old(GuiCleaned* done, const char* old, bool apply) {
-    static const char* const kept[] = {
-        NULL, SNX_TR_NOOP("Stays: a save, which Delete All never deletes: Move All moves it"),
-        SNX_TR_NOOP("Stays: it holds saves, which Delete All never deletes: Move All moves it"),
-        SNX_TR_NOOP("Stays: the console's keys, which Delete All never deletes: Move All moves them")};
-    char what[4400], why[256];
-    GuiKeep keep = gui_old_keep(old); /* a game laid out beside others: its program may be gone, its saves not */
+    char what[4800], why[256];
+    GuiKept kept;
     char *mount, *data;
     bool beside;
-    if (keep) {
-        gui_cleaned_add(done, false, old, snx_tr(kept[keep]));
-        return 0;
+    switch (gui_old_keep(old, &kept)) { /* a game laid out beside others: its program may be gone, its saves not */
+        case GUI_KEEP_NONE: break;
+        case GUI_KEEP_SAVE:
+            gui_cleaned_add(done, false, old,
+                            snx_tr("Stays: a save, which Delete All never deletes: Move All moves it"));
+            return 0;
+        case GUI_KEEP_SAVES:
+            snprintf(what, sizeof what,
+                     snx_tr("Stays: it holds saves (%s), which Delete All never deletes: Move All moves it"),
+                     kept.where);
+            gui_cleaned_add(done, false, old, what);
+            return 0;
+        case GUI_KEEP_UNREAD:
+            snprintf(what, sizeof what,
+                     snx_tr("Stays: %s cannot be read (%s), so Delete All cannot tell it holds no save"), kept.where,
+                     kept.why);
+            gui_cleaned_add(done, false, old, what);
+            return 0;
+        case GUI_KEEP_LINK:
+            snprintf(what, sizeof what,
+                     snx_tr("Stays: %s is a link to a folder, which Delete All does not follow, so it cannot tell it "
+                            "holds no save"),
+                     kept.where);
+            gui_cleaned_add(done, false, old, what);
+            return 0;
+        case GUI_KEEP_KEYS:
+            if (!strcmp(kept.where, old))
+                snprintf(what, sizeof what, "%s",
+                         snx_tr("Stays: the console's keys, which Delete All never deletes: Move All moves them"));
+            else
+                snprintf(what, sizeof what,
+                         snx_tr("Stays: it holds the console's keys (%s), which Delete All never deletes: Move All "
+                                "moves them"),
+                         kept.where);
+            gui_cleaned_add(done, false, old, what);
+            return 0;
     }
     if (!snx_path_exists(old)) return 0;
     mount = snx_is_dir(old) && !snx_is_link(old) ? snx_mount_within(old) : NULL;

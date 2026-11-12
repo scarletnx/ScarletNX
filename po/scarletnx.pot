@@ -192,11 +192,27 @@ msgid "Stays: a save, which Delete All never deletes: Move All moves it"
 msgstr ""
 
 #: src/gui/clean.c
-msgid "Stays: it holds saves, which Delete All never deletes: Move All moves it"
+#, c-format
+msgid "Stays: it holds saves (%s), which Delete All never deletes: Move All moves it"
+msgstr ""
+
+#: src/gui/clean.c
+#, c-format
+msgid "Stays: %s cannot be read (%s), so Delete All cannot tell it holds no save"
+msgstr ""
+
+#: src/gui/clean.c
+#, c-format
+msgid "Stays: %s is a link to a folder, which Delete All does not follow, so it cannot tell it holds no save"
 msgstr ""
 
 #: src/gui/clean.c
 msgid "Stays: the console's keys, which Delete All never deletes: Move All moves them"
+msgstr ""
+
+#: src/gui/clean.c
+#, c-format
+msgid "Stays: it holds the console's keys (%s), which Delete All never deletes: Move All moves them"
 msgstr ""
 
 #: src/gui/clean.c
