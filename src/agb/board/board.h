@@ -21,6 +21,9 @@ enum {
     AGB_BIOS_PREFETCH_IRQ_RETURN = 0xE55EC002u
 };
 
+/* Where the BIOS's boot leaves the display when it starts the cartridge: the line and the cycles into it */
+enum { AGB_BOOT_LINE = 126, AGB_BOOT_DOT = 919 };
+
 /* The interrupt lines devices raise, the bits of the interrupt controller's registers. */
 enum {
     AGB_IRQ_VBLANK = 0x001,

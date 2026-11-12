@@ -16,6 +16,11 @@ void agb_board_init(AgbBoard* board) {
     board->apu.soundbias = 0x200;
     board->ppu.bgpa[2] = board->ppu.bgpd[2] = board->ppu.bgpa[3] = board->ppu.bgpd[3] = 0x100;
     board->io[0x300 >> 1] = 1;
+    /* the BIOS's boot ends on line 126, 919 cycles into it, where mGBA's machine starts the cartridge when it skips the
+       BIOS (line 0x7E, its first horizontal blank at cycle 1008 of the line 120 cycles away, then 31 cycles of its reset
+       code): a game that turns its interrupts on as it boots meets the first vertical blank 34 lines later, not 160 */
+    board->ppu.vcount = AGB_BOOT_LINE;
+    board->ppu.dot = AGB_BOOT_DOT;
 }
 
 int agb_board_insert(AgbBoard* board, const void* image, size_t size, char* error, size_t error_size) {
