@@ -1790,6 +1790,11 @@ static void view_box(App* app, const char* temporary) {
         app->editor.row = row;
         key(app, SDLK_RETURN);
         assert(app->picks_shown && app->picks.count == 3 && !strcmp(pick_label(app, 2), "Remove from Library"));
+        app->choices_of = GUI_CHOICES_PICKS; /* it wants care, in the warning colour; Open Folder none */
+        assert(ui_choices_rows_get_row_info(app, 2, 0, &info) && (info.attr & UI_ATTR_CAUTION));
+        info = (UiRowInfo){0};
+        assert(ui_choices_rows_get_row_info(app, 0, 0, &info) && !(info.attr & (UI_ATTR_CAUTION | UI_ATTR_DANGER)));
+        info = (UiRowInfo){0};
         key(app, SDLK_DOWN);
         key(app, SDLK_DOWN);
         key(app, SDLK_RETURN);
@@ -2913,6 +2918,12 @@ static void gpu_drivers(App* app, const char* temporary) {
     app->editor.row = 1;
     key(app, SDLK_RETURN);
     assert(app->picks_shown && app->picks_of == GUI_PICKS_DRIVER && app->picks.count == 2);
+    { /* Remove has no way back: the failure colour; Use none */
+        UiRowInfo use = {0}, gone = {0};
+        app->choices_of = GUI_CHOICES_PICKS;
+        assert(ui_choices_rows_get_row_info(app, 0, 0, &use) && !(use.attr & (UI_ATTR_CAUTION | UI_ATTR_DANGER)));
+        assert(ui_choices_rows_get_row_info(app, 1, 0, &gone) && (gone.attr & UI_ATTR_DANGER));
+    }
     render(app);
     assert(find_text(app, "Use", yellow, 1, &x, &y));
     key(app, SDLK_RETURN);
@@ -2991,6 +3002,11 @@ static void gpu_drivers(App* app, const char* temporary) {
     assert(app->fd_count == 1 && !strcmp(app->fd_vars[0].name, "TU_DEBUG") &&
            !strcmp(app->fd_vars[0].value, "sysmem") &&
            !strcmp(app->editor.note, "Preset 'Debug - CPU Memory' applied") && app->editor.dirty);
+    { /* Clear All wants care: the warning colour (Save keeps what it did, Back none of it) */
+        UiRowInfo all = {0};
+        assert(form_row_info(app, &app->editor, 9 + 1 + 3, form_labels(&app->editor), 0, &all) &&
+               strstr(all.label, "Clear All") && (all.attr & UI_ATTR_CAUTION));
+    }
     snprintf(app->fd_form.name, sizeof app->fd_form.name, "%s", "LD_PRELOAD");
     snprintf(app->fd_form.value, sizeof app->fd_form.value, "%s", "/x.so");
     freedreno_action(app, 9 + app->fd_count + 2, false); /* Add Variable */
@@ -3497,6 +3513,11 @@ static void run_edenprobe(App* app, const char* temporary) {
         drivers_show(app, 4);
         assert(gui_editor_rows(&app->editor) == 6 && app->drivers_clear == 5 &&
                !strcmp(app->drivers_label[5], "Clear Crash List") && strstr(app->drivers_about[5], ": 2."));
+        {
+            UiRowInfo clear = {0};
+            assert(form_row_info(app, &app->editor, 5, form_labels(&app->editor), 0, &clear) &&
+                   (clear.attr & UI_ATTR_DANGER)); /* the list gone, no way back */
+        }
         app->editor.row = 5;
         key(app, SDLK_RETURN);
         assert(app->confirm.shown && app->confirm.ask == GUI_ASK_CRASH &&
@@ -5988,14 +6009,23 @@ int main(int argc, char** argv) {
         key(&app, SDLK_RETURN);
         app.editor.row = GUI_APP_RESET;
         assert(app.form == GUI_FORM_APP && GUI_APP_RESET == GUI_APP_ROWS - 1);
+        for (int r = 0; r < GUI_APP_ROWS;
+             ++r) { /* Clean Old Settings, Move Old Files and Reset to Defaults want care */
+            UiRowInfo row = {0};
+            bool care = r == GUI_APP_CLEAN || r == GUI_APP_MOVE || r == GUI_APP_RESET;
+            assert(form_row_info(&app, &app.editor, (size_t)r, form_labels(&app.editor), 0, &row));
+            assert(!!(row.attr & UI_ATTR_CAUTION) == (care && !(row.attr & UI_ATTR_OFF)) &&
+                   !(row.attr & UI_ATTR_DANGER));
+        }
         render(&app);
-        shows(&app, "- " ICON_ROTATE_CCW " Reset to Defaults", yellow);
+        shows(&app, "- " ICON_ROTATE_CCW " Reset to Defaults",
+              rgb(app.theme.page)); /* in focus: on the warning colour */
         key(&app, SDLK_RETURN);
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_RESET && !strcmp(app.ask_line, asked));
         render(&app);
         shows(&app, asked, rgb(app.theme.warning));
         shows(&app, "- Cancel", yellow);
-        shows(&app, "- Reset", normal);
+        shows(&app, "- Reset", rgb(app.theme.warning)); /* it wants care */
         key(&app, SDLK_RETURN); /* Back, in focus */
         assert(!app.confirm.shown && setting_is(&app, "gdbstub", "on") && app.form == GUI_FORM_APP);
         key(&app, SDLK_RETURN);
@@ -6078,11 +6108,11 @@ int main(int argc, char** argv) {
             app.lefts = 1;
             old = snx_format("%s[app]\nan_old_key = 1\n", was ? was : "");
             assert(!snx_write_file(app.app_file, old, strlen(old)));
-            app.editor.row = row; /* off them, so they read in ink */
+            app.editor.row = row; /* off them: the warning colour they want, unfocused */
             key(&app, SDLK_F5);
             render(&app);
-            shows(&app, "- " ICON_FOLDER_INPUT " Move Old Files", normal);
-            shows(&app, "- " ICON_ERASER " Clean Old Settings", normal);
+            shows(&app, "- " ICON_FOLDER_INPUT " Move Old Files", rgb(app.theme.warning));
+            shows(&app, "- " ICON_ERASER " Clean Old Settings", rgb(app.theme.warning));
             assert(!snx_write_file(app.app_file, was ? was : "", was ? size : 0));
             app.lefts = 0;
             app.clean_found = -1;
@@ -6774,7 +6804,7 @@ int main(int argc, char** argv) {
         render(&app);
         shows(&app, "Clean Old Settings? [Deprecated] in 1 .ini, 2 old keys", rgb(app.theme.warning));
         shows(&app, "- Cancel", yellow);
-        shows(&app, "- Clean", normal);
+        shows(&app, "- Clean", rgb(app.theme.warning));
         key(&app, SDLK_ESCAPE); /* Back: nothing taken out */
         assert(!app.confirm.shown && !app.cleaned_shown && app.editor.row == GUI_APP_CLEAN);
         kept = (char*)snx_read_file(old_ini, &size);
@@ -6847,7 +6877,7 @@ int main(int argc, char** argv) {
                !strcmp(app.ask_line, "Move Old Files? 1 move, 1 stay where they are"));
         assert(!strcmp(app.app_form.moves, "2 left"));
         render(&app);
-        shows(&app, "- Move", normal);
+        shows(&app, "- Move", rgb(app.theme.warning));
         key(&app, SDLK_ESCAPE); /* Back: nothing moved */
         assert(!app.confirm.shown && snx_is_file(old_game) && !snx_path_exists(moved));
         key(&app, SDLK_RETURN);
@@ -7533,7 +7563,8 @@ int main(int argc, char** argv) {
                 key(&app, SDLK_DELETE);
                 assert(app.confirm.shown && app.confirm.ask == GUI_ASK_PLACE && !strcmp(app.ask_line, asked));
                 render(&app);
-                shows(&app, "- Reset", normal); /* the question names the default: the choice says no word for it */
+                shows(&app, "- Reset",
+                      rgb(app.theme.warning)); /* the question names the default: the choice says no word for it */
                 free(asked);
             }
             key(&app, SDLK_ESCAPE);
@@ -7671,7 +7702,7 @@ int main(int argc, char** argv) {
             folder_pick(&app, 2);
             assert(app.confirm.shown && app.confirm.ask == GUI_ASK_FOLDER && !strcmp(app.ask_line, asked));
             render(&app);
-            shows(&app, "- Remove", normal);
+            shows(&app, "- Remove", rgb(app.theme.warning));
             key(&app, SDLK_ESCAPE);
             assert(!app.confirm.shown && app.folder_count == 1);
             key(&app, SDLK_DELETE);
@@ -8025,6 +8056,12 @@ int main(int argc, char** argv) {
                 assert(strstr(screen_said(&app, true, said, sizeof said), "Del: default."));
                 app.editor.row = folder_rows(&app); /* Reset to Defaults, with a folder picked */
                 assert(strstr(screen_said(&app, true, said, sizeof said), "Enter: reset."));
+                {
+                    UiRowInfo reset = {0};
+                    assert(form_row_info(&app, &app.editor, (size_t)folder_rows(&app), form_labels(&app.editor), 0,
+                                         &reset) &&
+                           (reset.attr & UI_ATTR_CAUTION));
+                }
                 app.editor.row = FOLDER_ROW(GUI_ROW_PLACE, GUI_PLACE_STATE);
             }
             assert(app.place[GUI_PLACE_STATE] && same_path(app.state_dir, logs));
@@ -8222,7 +8259,7 @@ int main(int argc, char** argv) {
             assert(SDL_SetWindowSize(app.window, w, h));
             render(&app);
             shows(&app, "- Cancel", yellow);
-            shows(&app, "- Use Anyway", normal);
+            shows(&app, "- Use Anyway", rgb(app.theme.warning));
             key(&app, SDLK_ESCAPE);
             assert(!app.confirm.shown && !app.place[GUI_PLACE_WORK] && !strcmp(app.editor.note, "Not changed"));
             place_set(&app, GUI_PLACE_WORK, temporary);
@@ -8230,7 +8267,7 @@ int main(int argc, char** argv) {
             key(&app, SDLK_RETURN);
             assert(app.confirm.shown && app.confirm.armed && !app.place[GUI_PLACE_WORK]);
             render(&app);
-            shows(&app, "- Use Anyway: press again", yellow);
+            shows(&app, "- Use Anyway: press again", rgb(app.theme.page));
             key(&app, SDLK_RETURN);
             assert(!app.confirm.shown && app.place[GUI_PLACE_WORK] && same_path(app.work_dir, temporary));
             assert(!strcmp(app.app_form.folder[FOLDER_ROW(GUI_ROW_PLACE, GUI_PLACE_WORK)], "outside the app"));
@@ -8267,7 +8304,7 @@ int main(int argc, char** argv) {
         key(&app, SDLK_RETURN);
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_PLACES && !strcmp(app.ask_line, line));
         render(&app);
-        shows(&app, "- Reset", normal);
+        shows(&app, "- Reset", rgb(app.theme.warning));
         key(&app, SDLK_ESCAPE);
         assert(!app.confirm.shown && app.place[GUI_PLACE_DATA]);
         key(&app, SDLK_RETURN);
@@ -8819,7 +8856,7 @@ int main(int argc, char** argv) {
         render(&app);
         shows(&app, "Needs about 3 MB, 2 MB free.", rgb(app.theme.warning));
         shows(&app, "- Cancel", yellow);
-        shows(&app, "- Run Anyway", normal);
+        shows(&app, "- Run Anyway", rgb(app.theme.warning));
         key(&app, SDLK_RETURN);
         assert(!app.confirm.shown && !launched(&app) && !app.room_file);
         launch(&app, snx_strdup(dump), false);
@@ -8827,7 +8864,7 @@ int main(int argc, char** argv) {
         key(&app, SDLK_RETURN);
         assert(app.confirm.shown && app.confirm.armed && !launched(&app));
         render(&app);
-        shows(&app, "- Run Anyway: press again", yellow);
+        shows(&app, "- Run Anyway: press again", rgb(app.theme.page));
         key(&app, SDLK_RETURN);
         assert(!app.confirm.shown && launched(&app) && !app.room_ok && app.menu.selected == GUI_SWITCH);
         argv_got = ran(&app, 0);
@@ -9797,7 +9834,7 @@ int main(int argc, char** argv) {
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_CLOSE && !app.closing_ms && !app.menu.quit);
         assert(strstr(ask_question(&app), ": exiting ScarletNX "));
         render(&app);
-        shows(&app, "- Exit", normal);
+        shows(&app, "- Exit", rgb(app.theme.warning));
         key(&app, SDLK_ESCAPE);
         assert(!app.confirm.shown && app.menu.running && !app.closing_ms && !app.aborting);
     }
@@ -9919,7 +9956,7 @@ int main(int argc, char** argv) {
             run_place(&app, &p);
             shows(&app, "Abort the compile? Its work is lost.", rgb(app.theme.warning));
             shows(&app, "- Continue", yellow);
-            shows(&app, "- Abort", normal);
+            shows(&app, "- Abort", rgb(app.theme.warning));
             key(&app, SDLK_ESCAPE);
             assert(!app.confirm.shown && app.menu.running && !app.aborting);
             key(&app, SDLK_AC_BACK);
@@ -9927,7 +9964,7 @@ int main(int argc, char** argv) {
             assert(app.confirm.shown && app.confirm.selected == GUI_CONFIRM_ABORT);
             render(&app);
             shows(&app, "- Continue", normal);
-            shows(&app, "- Abort", yellow);
+            shows(&app, "- Abort", rgb(app.theme.page));
             key(&app, SDLK_ESCAPE); /* on Abort too */
             assert(!app.confirm.shown && !app.aborting);
             touch_box(&app, p.keys); /* the ESC line */
@@ -9958,7 +9995,7 @@ int main(int argc, char** argv) {
             render(&app);
             shows(&app, "Abort the compile?", rgb(app.theme.page));
             shows(&app, "\xfe Continue", rgb(app.theme.page));
-            shows(&app, "\xfe Abort", rgb(app.theme.ink));
+            shows(&app, "\xfe Abort", rgb(app.theme.warning)); /* it wants care */
             ask_boxes(&app, &r, &l);
             {
                 int w, h;
@@ -11715,7 +11752,7 @@ int main(int argc, char** argv) {
                 assert(snx_path_within(caches[0], own) && snx_path_within(caches[1], own)); /* the test's own */
                 info = (UiRowInfo){0};
                 assert(ui_addons_rows_get_row_info(&app, 15, 0, &info) && addons_row(&app, 15) == ROW_CLEAN_CACHE &&
-                       (info.attr & UI_ATTR_OFF));
+                       (info.attr & UI_ATTR_OFF) && !(info.attr & UI_ATTR_DANGER)); /* greyed: no colour */
                 app.addons_focus = 15;
                 key(&app, SDLK_RETURN);
                 snprintf(want, sizeof want, "%s has no cache to delete: no %s, no %s", app.addons_title, caches[0],
@@ -11728,7 +11765,8 @@ int main(int argc, char** argv) {
                 keep = snx_path_join(saves, "user.1");
                 assert(!snx_mkdirs(saves) && !snx_write_file(keep, "save", 4));
                 info = (UiRowInfo){0};
-                assert(ui_addons_rows_get_row_info(&app, 15, 0, &info) && !(info.attr & UI_ATTR_OFF));
+                assert(ui_addons_rows_get_row_info(&app, 15, 0, &info) && !(info.attr & UI_ATTR_OFF) &&
+                       (info.attr & UI_ATTR_DANGER)); /* the caches deleted, no way back */
                 key(&app, SDLK_RETURN);
                 gui_size_text(size, sizeof size, sizeof bytes);
                 assert(app.confirm.shown && app.confirm.ask == GUI_ASK_CACHE && strstr(app.ask_line, size) &&
