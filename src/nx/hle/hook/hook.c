@@ -400,6 +400,21 @@ void hook_run_original(CPU* c, u64 addr) {
     while (c->pc != ret || c->x[31] != sp) snx_lookup(c, c->pc)(c, c->pc);
 }
 
+void hook_guest_call_a32(CPU* c, u32 fn, u32 a0, u32 a1, u32 a2, u32 a3) {
+    SnxArmCPU* a = arm_cpu(c);
+    u32 lr = a->r[14], at = a->r[15], state = a->cpsr & SNX_ARM_T;
+    a->r[0] = a0;
+    a->r[1] = a1;
+    a->r[2] = a2;
+    a->r[3] = a3;
+    a->r[15] = fn & ~1u;
+    a->cpsr = (a->cpsr & ~SNX_ARM_T) | (fn & 1 ? SNX_ARM_T : 0);
+    arm_run(a, NULL, lr);
+    a->r[14] = lr;
+    a->r[15] = at;
+    a->cpsr = (a->cpsr & ~SNX_ARM_T) | state;
+}
+
 u64 hook_run_original_a32(CPU* c) {
     SnxArmCPU* a = arm_cpu(c);
     u32 lr = a->r[14], at = a->r[15] | (a->cpsr & SNX_ARM_T ? 1u : 0u), i;

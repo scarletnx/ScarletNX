@@ -8,6 +8,8 @@ hook thumb_answer(addr out) = test_thumb_answer a32
 hook wide(u64 size) -> u64 = test_wide
 # its handler hands the call back to the function's own code
 hook own(u32 a) -> u32 = test_own a32
+# its handler calls another function of the game
+hook caller(u32 fn) -> u32 = test_caller a32
 # one symbol, another declaration for a 32-bit program: its result comes back through a pointer there
 hook now() -> i64 = test_now
 a32 hook now(addr out) = test_now_out

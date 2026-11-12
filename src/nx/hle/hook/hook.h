@@ -51,10 +51,13 @@ void hook_version_text(char* out, size_t n, int key, u32 version);
 /* an entry's versions as @version writes them ("sdk >= 12.0.0, < 16.0.0"), "any version" for HOOK_ANY */
 void hook_range_text(char* out, size_t n, int key, u32 lo, u32 hi);
 
-/* Runs the 64-bit guest function fn(a0, a1, a2, a3) from inside a handler, as nvn_cmd.c's guest_call runs a game's
+/* Runs the guest function fn(a0, a1, a2, a3) from inside a handler, as nvn_cmd.c's guest_call runs a game's
    callback: its return to the handler's own return address ends the run, and the link register is put back
-   (codec.c) */
+   (codec.c). In a 32-bit game it is hook_guest_call_a32 */
 void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3);
+/* the same for a 32-bit game's function (bit 0 of fn set for Thumb), its four words in r0 to r3: the thread is put
+   back at the hooked function its handler is for, where hook_run_original_a32 finds it (hook.c) */
+void hook_guest_call_a32(CPU* c, u32 fn, u32 a0, u32 a1, u32 a2, u32 a3);
 /* a readable handle of a new kernel event attached to the game's SystemEventType at event through its SDK's own
    nn::os::AttachReadableHandleToSystemEvent (auto close, auto clear), as an SDK object attaches its service's: the
    event, with a reference of the caller's beside the handle's, to drop (kobj_unref) when the caller's object goes;
