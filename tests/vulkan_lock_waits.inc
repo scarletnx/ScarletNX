@@ -202,6 +202,9 @@ static int check_mapping_landing(void) {
     gmmu_map(LW_LAND_GVA, LW_LAND_CPU, LW_SIZE);
     vk_lock();
     vk_finish();
+    /* memory the CPU read lately: its result is copied and lands, where the page cache would keep it on the GPU and
+       an unmap would let go of it with no wait (keep_pages) */
+    results_copied(LW_LAND_CPU, 256);
     CHECK(vk_buf_copy_writable(LW_LAND_GVA, 256, &output, &offset, 1));
     u8* data = vk_stage_upload(256, 16, &upload, &at);
     CHECK(data);

@@ -9,6 +9,8 @@
 
 /* the device and the setting allow the cache (decided at the first call, with the device made) */
 int vk_pages_on(void);
+/* and draws write guest memory there (vk_buffer_pages=2) */
+int vk_pages_keep(void);
 /* GPU range [gva, gva + len) from the cache: 1 with the buffer and the offset to bind, its pages brought up to date
    ahead of this submission's draws, or after the draws recorded so far where one of them read a page that changed
    since (a range longer than 1 MiB: the rendering pass ends). 0 or -1 when the cache cannot serve it, and the caller
@@ -19,12 +21,18 @@ int vk_pages_on(void);
    its draws. The caller has found no pending GPU result over the range. vk_lock held */
 int vk_pages_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 /* GPU range [gva, gva + len) for a draw or a dispatch to write in place: 1 with the buffer and the offset to bind.
-   Its whole pages hold guest memory's bytes and are the GPU's from here on (vk_own_publish), so nothing is copied back
-   or compared: the CPU's touch of a page lands it. 0 when the cache cannot take it: as vk_pages_get, and also another
+   The pages it is on hold guest memory's bytes, and the range is the GPU's from here on (vk_own_publish), so nothing
+   is copied back or compared: the CPU's touch of a page of it lands it. 0 when the cache cannot take it: as vk_pages_get, and also another
    owner or a watch anywhere on its pages, or pages that cannot be trapped. ordered: the front end orders its draws
    by their place in the stream (Maxwell), so a write waits for the reads and writes of its bytes before it. The caller
    has found no pending result of another kind on the range's pages. vk_lock held */
 int vk_pages_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off);
+/* how many ranges were bound for writing in place so far: a copy of GPU-owned bytes made before the last of them may
+   lack what it wrote (buffer.c buf_get_owned) */
+u64 vk_pages_written(void);
+/* the submission being recorded goes to the queue: the ranges it wrote in place are stamped as written by the GPU
+   (gpu_mem_written_shader), for what is built from their bytes */
+void vk_pages_submit(void);
 /* a range that vk_pages_get served is bound again where it was (buffer.c's entry): the read takes its place in the
    order of work in place */
 void vk_pages_read(u64 gva, u64 len);

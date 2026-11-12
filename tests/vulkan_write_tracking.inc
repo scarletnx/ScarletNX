@@ -1135,6 +1135,7 @@ static int check_wt_compares(void) {
     g_renderer->mem_may_have_changed();
     vk_lock();
     int tracking = wt_tracking(cpu);
+    results_copied(cpu, size); /* a result that stays pending and is compared */
     CHECK(vk_buf_copy_writable(gva, len, &out, &at, 1));
     vk_buf_writable_commit();
     u32 owners = own_lookup(cpu, size, NULL, 0);

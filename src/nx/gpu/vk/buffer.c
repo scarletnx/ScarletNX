@@ -46,6 +46,7 @@ typedef struct {
        there again in the same submission and epoch without a look at its pages (a window has thousands). 0: buf is
        not the page cache's */
     u64 pg_sub;
+    u64 pg_written; /* vk_pages_written when its copy of GPU-owned bytes was made (buf_get_owned) */
     u32 wseen; /* write-tracking clock when it last matched memory */
     u32 host_gen; /* g_vb_map_gen when host_cpu was found: 0 never */
     u64 host_cpu; /* the guest memory the range shows, ~0 for none (entry_host) */
@@ -179,7 +180,20 @@ static struct {
     } patch;
 } g_buffer;
 /* why keep_new turned a writable binding away (temporary diagnosis of the writeback cost) */
-enum { KF_NONE, KF_TRAPS_OFF, KF_UMA, KF_EMPTY, KF_UNALIGNED, KF_NOT_CONTIG, KF_CPU_READ, KF_N };
+enum {
+    KF_NONE,
+    KF_TRAPS_OFF,
+    KF_UMA,
+    KF_EMPTY,
+    KF_UNALIGNED,
+    KF_NOT_CONTIG,
+    KF_CPU_READ,
+    KF_PAGE_RUN,    /* keep_pages: its whole pages are not one run of guest memory */
+    KF_PAGE_RESULT, /* a result of another kind is pending on its pages */
+    KF_PAGE_OTHER,  /* a compute, image, release or mirror result is */
+    KF_PAGE_CACHE,  /* the page cache refused it (its own counts say why) */
+    KF_N
+};
 static u64 g_keep_fail[KF_N];
 static void own_link(u32 i) {
     Vb* e = &g_vb[i];
@@ -350,6 +364,11 @@ static struct {
 static u32 g_nretire, g_capretire;
 /* gfx_gpu_src's result taken in place for writing, when it answers 1 */
 static GfxOut* g_src_match;
+/* gfx_gpu_src's answer of 2: every result it found over the range holds guest memory's bytes wherever its draw wrote
+   none (it has its original bytes, and its input was copied in), so its bytes can go over a copy of guest memory that
+   is kept (gfx_composed_pages) */
+static int g_src_plain;
+static u64 g_composed_pages, g_composed_pages_bytes; /* since the last statistics */
 /* The results in g_out by the pages they cover, so a binding or a read compares (out_meets) the results over its range
    alone, not each of the hundreds a frame keeps pending until it is done. Each run of a result's guest pages [lo, hi]
    is an entry, in order of lo, as surface.c keeps the live render targets by address (g_rts); a search starts as far
@@ -934,6 +953,7 @@ void vk_buf_frame_done(u64 frame) {
    compares bytes quickly, or takes a logged one's runs. A result whose copy can't be allocated is read where the
    shader wrote it. A kept one stays in its owner */
 void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
+    vk_pages_submit(); /* what its draws wrote in place in the page cache reads as written from here on */
     vk_uma_host_barrier(cb, frame);
     vk_mirror_harvest(cb, frame); /* the pages the submit's programs wrote in the GPU mirror */
     GfxOut* first = g_out;
@@ -1406,7 +1426,8 @@ static void overlay_span(void* user, u64 at, u64 from, u64 n) {
     if (!cover_take(v->cov, at, at + n, overlay_part, v)) overlay_part(v, at, at + n);
 }
 /* copies the pending results' bytes in [gva, gva + len), through any GPU address, into dst at dst_off (after
-   gfx_gpu_src said they can be): each byte from the newest result over it. gap(user, to, a, b) writes the bytes of
+   gfx_gpu_src said they can be): each byte from the newest result over it. gap NULL: dst holds guest memory's bytes
+   already (the page cache's buffer), and only the results' go over them. Else gap(user, to, a, b) writes the bytes of
    each run [a, b) of the destination no result gives at to: into host, the destination's mapping, or (host NULL, dst
    in device memory) into staging, which the GPU copies into dst with the results. A result gives most of a composed
    range in the end, and copying all of it before (a few results over storage ranges of half a megabyte, bound and read
@@ -1425,6 +1446,12 @@ static int gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off, u8* host,
     out_near(&l, gva, len, &q);
     memset(&c, 0, sizeof c);
     c.dst = dst;
+    if (!gap) { /* into a buffer the draws recorded so far read in place: after all of their work, not the writers' alone */
+        vk_render_end();
+        copy_barrier(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, out_access(), VK_PIPELINE_STAGE_2_COPY_BIT,
+                     VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        c.started = 1;
+    }
     cover_init(&cov, len);
     for (u32 i = l.n; i-- && !cover_full(&cov);) { /* newest first */
         Overlay v = {&c, l.v[i], dst_off, 0, 0, &cov};
@@ -1433,7 +1460,7 @@ static int gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off, u8* host,
     out_list_free(&l);
     u64 at = 0;
     int ok = 1;
-    for (u32 i = 0; i <= cov.n && at < len && ok; i++) {
+    for (u32 i = 0; gap && i <= cov.n && at < len && ok; i++) {
         u64 a = i < cov.n ? cov.v[i].a : len, b = a < len ? a : len;
         if (b > at) ok = overlay_gap(&c, dst_off, host, at, b, gap, user);
         if (i < cov.n && cov.v[i].b > at) at = cov.v[i].b;
@@ -1606,6 +1633,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     if (!g_gfx_any || t_buffer.out_landing || !gva || !len) return 0;
     if (g_cs_any) vk_compute_mem_need(gva, len);
     if (!pend_hit(&g_out_pages, gva, len)) return 0;
+    g_src_plain = 1;
     out_list_init(&l);
     /* A range contained in the last result already has the newest writer. Rebinding its suffix is common for NVN
        storage draws: do not translate all its pages and search the older results only to select this same tail.
@@ -1640,6 +1668,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
         match = newest;
         count = 1;
         before = newest->frame_id != vk_frame_id();
+        g_src_plain = newest->org && !newest->no_input && !newest->initial && !newest->keep;
     } else
         for (u32 i = 0; i < l.n; i++) { /* not inside the tail: l holds what the search found */
             GfxOut* o = l.v[i];
@@ -1654,6 +1683,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
             match = o;
             count++;
             before |= o->frame_id != vk_frame_id();
+            if (!o->org || o->no_input || o->initial || o->keep) g_src_plain = 0;
         }
     GfxOut* holder = NULL; /* the newest result of this search that holds the whole range */
     for (u32 i = l.n; count > 1 && i-- && !holder;)
@@ -1744,6 +1774,28 @@ static int gfx_composed(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     if (!vk_stage_device(len, vk_stage_align(), buf, off)) return 0;
     GapRead g = {gva};
     return gfx_overlay(gva, len, *buf, *off, NULL, gap_read, &g);
+}
+/* The same in the page cache (pagespace.c), where the range's guest memory is kept already: the range binds the
+   cache's buffer, and only the pending results' bytes are copied, over the pages they are on. One game binds bare
+   storage buffers in windows of 64 MiB, and a result of some 20 KB that had not landed lay inside one about 400 times
+   in 600 presents: each time the whole window was made again in device memory, the CPU reading the 64 MiB around the
+   result into the ring for it.
+   The pages then hold the results' bytes ahead of guest memory. What the results' draws wrote lands there (a landing
+   that changed a byte stamps its pages, and the cache takes them again), and the rest of a result is its original
+   bytes, which guest memory still holds: gfx_gpu_src found each result copyable, and a write of the CPU since shows
+   in the write tracking. So only results that hold guest memory's bytes where their draws wrote none go there
+   (g_src_plain). While a result is pending every read over it comes here again, so a page the cache took from guest
+   memory again in between has the result's bytes before the read. 0 when the cache does not serve the range */
+static int gfx_composed_pages(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
+    if (!g_src_plain || !vk_pages_on() || vk_uma_pending(gva, len) || vk_release_pending(gva, len) ||
+        vk_pages_get(gva, len, align, buf, off) <= 0)
+        return 0;
+    (void)gfx_overlay(gva, len, *buf, *off, NULL, NULL, NULL);
+    if (copy_stats_on()) {
+        g_composed_pages++;
+        g_composed_pages_bytes += len;
+    }
+    return 1;
 }
 
 /* written-page tracking (plat_ww_scan): a generation per 4K page of guest memory, bumped when a scan finds it
@@ -2500,28 +2552,60 @@ static int writable_owned(GfxOut* o, u64 gva, u32 len, VkBuffer buf, u64 off) {
    itself (vk_uma_write). 1 with the owner's place in *buf, *off and the result in g_prep, 0 when the binding takes
    the copies */
 #define KEEP_CPU_PRESENTS 1200 /* as long as compute.c's storage buffers stay off the GPU once the CPU read them */
-static int keep_new(u64 gva, u32 len, u64 align, VkBuffer* buf, u64* off) {
+/* A writable binding that is not of whole pages, kept on the GPU in the page cache (pagespace.c vk_pages_write): the
+   draw writes the cache's buffer in place, and the range is the GPU's from the bind on. Its pages are trapped, the
+   CPU's bytes beside the range on them too, which the runtime still reads without a landing (gpu.c copy_runs). One
+   game writes ranges of about 20 KB at any address, 1.7 million bindings in 600
+   presents that keep_new turned away, each copied to the ring before its draw, copied back after it and compared.
+   There is no result to keep pending: the ownership table says where the bytes are, to the page cache and to every
+   other reader (buf_get_owned), and the trap lands them. So no result of another kind may be pending on the pages:
+   its landing would write guest memory under the trap, and land the pages for it.
+   [cpu, cpu + len) is the range's run of guest memory */
+static int keep_pages(u64 gva, u32 len, u64 cpu, u64 align, int ordered, VkBuffer* buf, u64* off) {
+    u64 head = cpu & 0xFFF, pgva = gva - head, plen = (head + len + 0xFFF) & ~0xFFFull, pcpu = 0;
+    int why = KF_NONE;
+    if (gmmu_run(pgva, plen, &pcpu) != plen || pcpu != cpu - head)
+        why = KF_PAGE_RUN;
+    else if (pend_hit(&g_out_pages, pgva, plen))
+        why = KF_PAGE_RESULT;
+    else if ((g_cs_any && vk_compute_pending(pgva, plen)) || (g_gfx_img_any && vk_gfx_image_pending(pgva, plen)) ||
+             vk_release_pending(pgva, plen) || vk_mirror_pending(pgva, plen) || vk_mirror_holds(pgva, plen))
+        why = KF_PAGE_OTHER;
+    for (const GfxOut* o = g_prep; o && !why; o = o->next) /* the draw being set up, bound before this binding */
+        for (u32 k = 0; k < o->npages && !why; k++)
+            if (o->pages[k] >= pcpu >> 12 && o->pages[k] < (pcpu + plen) >> 12) why = KF_PAGE_RESULT;
+    if (!why && !vk_pages_write(gva, len, align, ordered, buf, off)) why = KF_PAGE_CACHE;
+    if (why) {
+        g_keep_fail[why]++;
+        return 0;
+    }
+    g_buffer.wstat.kept++;
+    return 1;
+}
+static int keep_new(u64 gva, u32 len, u64 align, int ordered, VkBuffer* buf, u64* off) {
     OwnRange r[2];
     u64 cpu = 0, at = 0;
     VkOwnRes* res;
     GfxOut* o;
     int why = KF_NONE;
+    int paged = ((gva | len) & 0xFFF) != 0; /* not whole pages: the page cache keeps it, where there is one */
     if (!own_traps())
         why = KF_TRAPS_OFF;
     else if (vk_uma())
         why = KF_UMA;
     else if (!len)
         why = KF_EMPTY;
-    else if ((gva | len) & 0xFFF)
+    else if (paged && !vk_pages_keep())
         why = KF_UNALIGNED;
     else if (gmmu_run(gva, len, &cpu) != len)
         why = KF_NOT_CONTIG;
-    else if (vk_own_cpu_read(cpu, len, KEEP_CPU_PRESENTS))
+    else if (vk_own_cpu_read(cpu & ~0xFFFull, ((cpu & 0xFFF) + len + 0xFFF) & ~0xFFFull, KEEP_CPU_PRESENTS))
         why = KF_CPU_READ;
     if (why) {
         g_keep_fail[why]++;
         return 0;
     }
+    if (paged) return keep_pages(gva, len, cpu, align, ordered, buf, off);
     if (own_lookup(cpu, len, r, 2) == 1 && r[0].addr == cpu && r[0].size == len) {
         if (r[0].res_off & (align - 1)) return 0;
         res = (VkOwnRes*)r[0].res;
@@ -2793,7 +2877,7 @@ static int copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
        or read as below */
     int back = !pending && logged && back_can(gva, len);
     if (!pending && !back) gmem_need(gva, len);
-    if (!pending && !back && keep_new(gva, len, bind_align, buf, off)) return 1;
+    if (!pending && !back && keep_new(gva, len, bind_align, ordered, buf, off)) return 1;
     int owned = !pending && range_owned(gva, len);
     if (owned) (void)written_since_gva(gva, len, 0); /* establish the CPU-write baseline before the GPU copy */
     o = gfx_out_new((u32)(((gva & 0xFFF) + len + 0xFFF) >> 12), logged ? 0 : len);
@@ -3470,6 +3554,7 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, 
     if (strict) e->strict_epoch = epoch;
     e->gw = gpu_mem_generation();
     e->wseen = vk_ww_now();
+    e->pg_written = vk_pages_written();
     use(i, buf, off);
     return 1;
 }
@@ -3536,7 +3621,10 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     if (!e || e->cs_adds != vk_compute_adds() || e->gfx_adds != vk_buf_adds()) {
         pending = gfx_gpu_src(gva, len, buf, off, 0, align, 1);
         if (pending == 1) return 1;
-        if (pending == 2) return gfx_composed(gva, len, buf, off); /* newer than any cached copy */
+        if (pending == 2) { /* newer than any cached copy */
+            if (strict != 2 && (!e || e->paged > 0) && gfx_composed_pages(gva, len, align, buf, off)) return 1;
+            return gfx_composed(gva, len, buf, off);
+        }
         if (vk_compute_gpu_src(gva, len, buf, off)) return 1;      /* a compute result that hasn't landed yet */
         /* one that covers the range only in part lands first (its write shows in gpu_mem_dirty_since below): the
            cached copy would otherwise be used without it */
@@ -3551,13 +3639,14 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     if (inplace && vk_uma() && !range_owned(gva, len) && vk_uma_get(gva, len, align, buf, off)) return 1;
     if (inplace == IN_ONLY) return 0;
     /* The page cache (pagespace.c), which holds the bytes by guest page: a range it serves binds its region's buffer
-       with no copy while its pages hold still, and takes no buffer of its own. Not GPU-owned bytes nor bytes written in
-       place by a submission not done (buf_get_owned copies those on the GPU), not a range a queued report still
-       writes counts into (draw_bytes), and not a copy engine's source, which is compared where the tracking does
-       not look (strict 2). The entry stays for what it records of the pending results checked above */
+       with no copy while its pages hold still, and takes no buffer of its own. GPU-owned bytes too where the cache
+       is their owner, which a draw that wrote them in place made it (vk_pages_write): another owner's it refuses, and
+       buf_get_owned copies those on the GPU. Not bytes written in place by a submission not done, not a range a
+       queued report still writes counts into (draw_bytes), and not a copy engine's source, which is compared where
+       the tracking does not look (strict 2). The entry stays for what it records of the pending results checked
+       above */
     int pages_hot = 0;
-    int pages = strict != 2 && vk_pages_on() && !range_owned(gva, len) && !vk_uma_pending(gva, len) &&
-                !vk_release_pending(gva, len);
+    int pages = strict != 2 && vk_pages_on() && !vk_uma_pending(gva, len) && !vk_release_pending(gva, len);
     if (pages && (!e || e->paged >= 0)) {
         u64 sub = vk_submit_number();
         /* served in this submission and this epoch, and no GPU-side write on it since: its pages are as they were
@@ -3600,6 +3689,9 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     /* valid: the data is where draws can read it this frame */
     /* not while an in-place write is pending over it: a copy from before the write would be read */
     int valid = e && e->buf && (e->own || e->frame == vk_submit_number()) && !vk_uma_pending(gva, len);
+    /* a copy of this submission's over bytes the page cache owns: a draw may have written them in place since, which
+       stamps nothing before the submission goes (vk_pages_submit) */
+    if (valid && !e->own && e->pg_written != vk_pages_written() && range_owned(gva, len)) valid = 0;
     int told = 0; /* write tracking answered for the range (it was written): its checks need no samples */
     if (valid && !gpu_mem_dirty_since(e->gw, gva, len)) {
         if (e->epoch == epoch && (!strict || e->strict_epoch == epoch)) {
@@ -3929,8 +4021,10 @@ int vk_buf_order_pending(int writes_only) {
 void vk_buf_order_request(int writes_only) {
     /* One later dependency covers every earlier point. Readbacks and surface consumers retain their own orders. */
     if (vk_buf_order_pending(writes_only)) g_buffer.order.required = 1;
+    vk_pages_order_request();
 }
 void vk_buf_ordered(void) {
+    vk_pages_ordered();
     g_buffer.order.owner_reads_ordered = g_buffer.order.owner_reads; /* the renderer's barrier is from all commands */
     g_buffer.order.submit = vk_submit_number();
     g_buffer.order.work = g_vk_drawn + g_vk_dispatches;
@@ -4132,6 +4226,11 @@ static void buf_frame(void) {
             (unsigned long long)g_wb_draw_miss[1], (unsigned long long)g_wb_draw_miss[3],
             (unsigned long long)g_absorbed, (unsigned long long)g_absorbed_bytes);
         g_absorbed = g_absorbed_bytes = 0;
+        if (g_composed_pages)
+            LOG("vulkan: %llu ranges (%.1f MB) with pending results inside were bound in the page cache, the results' "
+                "bytes copied over its pages\n",
+                (unsigned long long)g_composed_pages, (double)g_composed_pages_bytes / 1048576.0);
+        g_composed_pages = g_composed_pages_bytes = 0;
         LOG("vulkan: writable storage over 600 presents: %llu bytes copied before the draws, %llu read back, %llu "
             "results merged, %llu bindings kept on the GPU\n",
             (unsigned long long)(g_buffer.wstat.copied - g_buffer.wstat_seen.copied),
@@ -4140,10 +4239,13 @@ static void buf_frame(void) {
             (unsigned long long)(g_buffer.wstat.kept - g_buffer.wstat_seen.kept));
         g_buffer.wstat_seen = g_buffer.wstat;
         LOG("vulkan: keep_new rejected (traps_off=%llu uma=%llu empty=%llu unaligned=%llu not_contig=%llu "
-            "cpu_read=%llu)\n",
+            "cpu_read=%llu; in the page cache: pages_not_one_run=%llu other_result_on_pages=%llu "
+            "other_pending_on_pages=%llu cache_refused=%llu)\n",
             (unsigned long long)g_keep_fail[KF_TRAPS_OFF], (unsigned long long)g_keep_fail[KF_UMA],
             (unsigned long long)g_keep_fail[KF_EMPTY], (unsigned long long)g_keep_fail[KF_UNALIGNED],
-            (unsigned long long)g_keep_fail[KF_NOT_CONTIG], (unsigned long long)g_keep_fail[KF_CPU_READ]);
+            (unsigned long long)g_keep_fail[KF_NOT_CONTIG], (unsigned long long)g_keep_fail[KF_CPU_READ],
+            (unsigned long long)g_keep_fail[KF_PAGE_RUN], (unsigned long long)g_keep_fail[KF_PAGE_RESULT],
+            (unsigned long long)g_keep_fail[KF_PAGE_OTHER], (unsigned long long)g_keep_fail[KF_PAGE_CACHE]);
         {
             u64 cmp, chg;
             vk_writeback_diag(&cmp, &chg);

@@ -22,6 +22,8 @@ static int check_pending_index(void) {
     memset(GP(ucpu), 0x11, 0x2000);
     vk_lock();
     vk_finish();
+    results_copied(cpu, RESULTS * 4096ull); /* results that stay pending, which the index is of */
+    results_copied(ucpu, 0x2000);
     u32 validation = g_vk_validation_messages;
     for (u32 i = 0; i < RESULTS; i++) {
         CHECK(vk_buf_copy_writable(gva + i * 4096ull, HALF, &out[i], &out_at[i], 1));

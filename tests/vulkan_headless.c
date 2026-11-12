@@ -5977,6 +5977,9 @@ static int check_video_decode_gate(void) {
     }
     return 0;
 }
+/* For the checks of results that are copied to the ring, read back and landed: guest memory the CPU read lately takes
+   that path, where the page cache would keep a draw's result on the GPU (buffer.c keep_pages). vk_lock held */
+static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_shader_invalidate.inc"
 #include "vulkan_shader_windows.inc"
 #include "vulkan_shared_clamp.inc"
@@ -6907,6 +6910,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_deko_vertex_storage());
     CHECK(!check_storage_image_keep());
     CHECK(!check_storage_buffer_keep());
+    CHECK(!check_storage_pages_keep());
     CHECK(!check_packed_depth());
     CHECK(!check_astc_mode());
     CHECK(!check_depth_array());

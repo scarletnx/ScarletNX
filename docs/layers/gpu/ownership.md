@@ -33,6 +33,24 @@ reads the draws' stores and writes after them, and nothing is compared. Any othe
 fence and merged by the byte with what the CPU wrote meanwhile, but with unified memory, where the draws write guest
 memory in place (below).
 
+With the page cache writing (`vk_buffer_pages=2`, `vk/pagespace.c`), a binding that is not whole pages stays on the GPU too
+(`keep_pages`). The cache keeps guest memory by page in sparse buffers, one for each GiB of the guest's address space.
+It brings the pages the range is on up to date, the draw writes the cache's buffer in place, and the range is
+published GPU-owned, each 64 KiB granule's part under an owner of that granule, so a landing waits only for the
+submission that last wrote that granule. Only the range's own bytes are published. The runtime's reads of guest
+memory land an owner only for bytes it holds, and a game keeps the constant buffers its draws read beside the buffers
+they write. The ownership table is what tells the cache which of its pages have such bytes: such a page is trapped,
+so the region holds the truth of all of it, it takes nothing from guest memory, a later read of it binds the same
+buffer with no copy, and when the table lets go of it the stamp its publish left makes the cache take memory's bytes
+again. A page the game's CPU code touches lands, and its granule takes the copies again for 1200 presents. A range
+on pages the CPU wrote in the last 120 presents is not kept at all: a game that writes such pages every frame would
+land them every frame. No result of another kind may be pending on the pages when they are published, because its landing
+would write guest memory under the trap. A draw's write and another's read now share one buffer, so the cache keeps
+the ranges read and written in place since the last barrier of a submission: a read of bytes written since gets a
+barrier first, and a write gets one when the front end orders its draws by their place in the stream or the game
+asked for a dependency. What a submission wrote in place is stamped as written by the GPU when the submission goes
+to the queue. A granule nothing used for 120 presents lands before its memory goes back.
+
 Render targets stay the renderer's: their pixels reach guest memory only when a consumer asks. Pitch-linear targets
 are the exception, as a game draws into those to read the result on the CPU: each release publishes the ones
 drawn since the last (`vk_rt_publish_drawn` in `vk/surface.c`), and storage images are published the same way
