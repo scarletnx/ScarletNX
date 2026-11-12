@@ -292,26 +292,44 @@ levels with hard blocks no faster.
 
 | Value | Name | Held as |
 | --- | --- | --- |
-| `0` | Auto, the default | Exact where the budget of the heap images go to is 8 GiB or more as the device starts, else BC7 |
+| `0` | Auto, the default | Exact while the heap images go to has room, BC7 from its caches' first trim, Exact again once the room is back (below); an Ounce game's, BC7 at load |
 | `1` | Exact | RGBA8, as the game's blocks decode, four bytes a texel |
 | `2` | BC7 | RGBA8 at once, then BC7 made between frames, a byte a texel |
+| `3` | BC7 at load | BC7 as each texture loads, with no RGBA8 image before it |
 
 Memory is what a desktop GPU runs short of. As RGBA8, one game's textures took 5.7 GB of a 5.7 GB budget and were
 evicted and uploaded again every frame (600 to 1000 ms frames); as BC7 they took 2.5 GB. Another took 3.9 GB of an
 RX 6700 XT's 11.8 GB budget as RGBA8, 0.4 GB more than as BC7, and its frames were smoother so. BC7 is not exact (its
-PSNR is below), mostly seen in UI text. Auto's line (`SNX_ASTC_EXACT_MB` in `gpu/texture/astc_bc.h`) is drawn
-between them: the budget is `VK_EXT_memory_budget`'s (80% of the heap without it), or `vk_budget_mb`
-where that is lower, as `vk_mem_use` gives it, read once after the device is made (`device.c`'s `astc_choose`). The
-log's line says the budget, the line and the choice (an RX 6700 XT's):
+PSNR is below), mostly seen in UI text. So Auto holds them Exact while the memory has room for it, and follows the
+room as the game runs (`gpu/texture/astc_bc.h`'s `SnxAstcAuto`, `device.c`'s `vk_astc_auto_trimmed` and
+`vk_astc_auto_present`). The room is the budget of the heap images go to, `VK_EXT_memory_budget`'s or `vk_budget_mb`
+where that is lower, less the caches' use, both as `vk_mem_use` gives them:
+
+- **BC7** from the caches' first trim (`surface.c`'s `vk_mem_trim`): their use past `vk_mem_trim_start`, the budget less
+  a head (`trim_head`: a 16th of the budget from 128 to 256 MiB, a quarter at most), from where each new RGBA8 level
+  costs an eviction, or an image that found no memory. The textures that load from then on are held as BC7; those loaded
+  before keep their RGBA8 images until they go.
+- **Exact again** at a present (after the frame's trim) whose room under that mark is more than the most room any trim
+  of the run has left under it (the band). A trim takes the caches from past the mark down to two heads under the budget
+  or a little under, and with no band the next present would find room and turn Exact again, and the next trim BC7: two
+  switches a trim. With the band, a trim alone never brings Exact back; memory the game freed (a scene left behind) or a
+  budget that grew does. The band is not a number set here: the run's trims measure it, on this GPU and for this game.
+
+Where the driver has no `VK_EXT_memory_budget`, both numbers are the renderer's own (`devmem.c`: its memory blocks for
+the use, 80% of the heap's size for the budget), blind to what other programs take; Auto follows them, and its first
+line says so. Its lines say the numbers as the device starts and at every switch, and Auto's state with the stats of
+every 600 presents (an RX 6700 XT's, with `vk_budget_mb=1800`):
 
 ```
-vulkan: astc_mode=0 (Auto): heap 1's budget is 11834 MB as the device starts, at least 8192 MB: ASTC textures are decoded to RGBA8, exact, in four times BC7's memory (Exact)
+vulkan: astc_mode=0 (Auto): ASTC textures that load are decoded to RGBA8, exact, in four times BC7's memory while heap 1 has room, and BC7 from the first trim of its caches, past 1620 of the 1800 MB budgeted, until the room under that is more than any trim has left: 0 MB in use as the device starts
+vulkan: astc_mode=0 (Auto): ASTC textures that load from now on are BC7, decoded to RGBA8 at once and encoded again as BC7 between frames, a quarter of RGBA8's memory: heap 1 has 1622 of 1800 MB budgeted in use, 177 MB free, past the 1620 MB where its caches' trim starts
+vulkan: astc_mode=0 (Auto): ASTC textures that load now are BC7, after 1 switches; the trims left at most 0 MB under where they start
 ```
 
-Held as RGBA8 (Exact, or Auto with the budget for it), the log suggests `astc_mode=2` once a run, with the budget, the
-use and the megabytes of ASTC textures decoded to RGBA8, when the images run short (`surface.c`'s `astc_bc_suggest`):
-an image allocation finds no memory, a trim leaves the caches past their budget, or a trim takes what the last eight
-presents used (the working set, which the next frames load again).
+Held as RGBA8 by Exact (`astc_mode=1`), the log suggests `astc_mode=2` once a run, with the budget, the use and the
+megabytes of ASTC textures decoded to RGBA8, when the images run short (`surface.c`'s `astc_bc_suggest`): an image
+allocation finds no memory, a trim leaves the caches past their budget, or a trim takes what the last eight presents
+used (the working set, which the next frames load again). Auto makes them BC7 itself then.
 
 ### Between frames
 
@@ -724,7 +742,11 @@ separate SPIRV-Tools is needed.
   straight to BC7 for a block and whole as RGBA8 for 55296 blocks; a texture written 3 frames after its write before
   queued, 2 after held Exact out of the queue, and queued again once read 30 frames unwritten, not 29; pieces of a BC7
   one, straight to BC7 3 frames after its write before and whole as RGBA8, held Exact, the next frame; and a texture
-  freed while it is made. `astc_bc_suggest` (ctest, no GPU) holds Auto's line and the three modes.
+  freed while it is made. It also follows Auto: a texture loads RGBA8 with room, a trim under a budget lowered to the
+  caches' use turns the next one BC7 and opens the game's BC7 cache, and the budget back turns the third RGBA8 again.
+  `astc_bc_suggest` (ctest, no GPU) holds the modes and Auto with budgets given: BC7 from a trim, Exact again only
+  past the band, a trim never bringing it back by itself over a grid of uses and frees, and one switch over 200 trims
+  of a sawtooth where no band makes 399.
 - `astc_vulkan` and `astc_vulkan_pieces` also upload very large levels (`astc_quick_mtexels=1` there, a megatexel):
   bands of block rows of 4x4 and 6x6 blocks (whose bands step 3 rows) and pieces of several layers, once with the
   background on the CPU and once on the GPU. The first upload's image is the quick build of the CPU decoder's texels,

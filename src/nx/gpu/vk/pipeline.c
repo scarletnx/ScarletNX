@@ -129,6 +129,8 @@ static struct {
     /* The caches live in shader_cache/ of the game's cache folder (g_cachedir), wherever the runtime was started
        from */
     char cache_dir[1100], pcache_path[1200];
+    /* the BC7 cache's file while it is still to open (vk_pipeline_bc7_cache), empty once opened */
+    char bc7_cache[1200];
     char driver_tag[SNX_VK_DRIVER_TAG]; /* the driver's, whose files of the cache these are (snx_vk_driver_tag) */
     int pcache_dirty;        /* pipelines made since the cache was last written (atomic: it is saved outside vk_lock) */
     u64 pcache_used;         /* plat_ns when a pipeline last went into the cache (atomic) */
@@ -267,6 +269,11 @@ static struct {
                 .pj_lock = PMUTEX_INIT,
                 .plib = {.lock = PMUTEX_INIT}};
 static void pcache_note(void);
+void vk_pipeline_bc7_cache(void) {
+    if (!g_pipeline.bc7_cache[0]) return;
+    vk_astc_cache_open(g_pipeline.bc7_cache);
+    g_pipeline.bc7_cache[0] = 0;
+}
 #if defined(SNX_TRACY)
 /* the stages' names, for the shader translate zone's text */
 static const char* const vk_tracy_stage[] = {"vert", "tess ctrl", "tess eval", "geom", "frag", "comp", "task", "mesh"};
@@ -748,13 +755,11 @@ void vk_pipeline_init(void) {
     if (!g_vk_playout) fatal("vulkan: cannot create shader pipeline layout");
     snprintf(g_pipeline.cache_dir, sizeof g_pipeline.cache_dir, "%sshader_cache", g_cachedir);
     plat_mkdir(g_pipeline.cache_dir);
-    /* the BC7 blocks of earlier ASTC encodes, where ASTC textures are held as BC7 (astc.c) */
-    if (vk_astc_bc7()) {
-        char bc7[1200];
-        snprintf(bc7, sizeof bc7, "%s/%s.vkbc7", g_pipeline.cache_dir, g_exename);
-        snx_path_native(bc7);
-        vk_astc_cache_open(bc7);
-    }
+    /* the BC7 blocks of earlier ASTC encodes, where ASTC textures are held as BC7 (astc.c): opened now, or by
+       astc_mode's Auto once it holds them as BC7 (vk_astc_auto_present) */
+    snprintf(g_pipeline.bc7_cache, sizeof g_pipeline.bc7_cache, "%s/%s.vkbc7", g_pipeline.cache_dir, g_exename);
+    snx_path_native(g_pipeline.bc7_cache);
+    if (vk_astc_bc7()) vk_pipeline_bc7_cache();
     /* each driver's files apart: a game run with the system's driver, then a package's (gpu_driver), then the
        system's again keeps the first one's */
     snx_vk_driver_tag(g_pipeline.driver_tag, sizeof g_pipeline.driver_tag, g_vk.driver_id, g_vk.props.vendorID,

@@ -1354,14 +1354,15 @@ static int gpu_unpack(const VkFmt* f, const u32* src, u32 n, u32* depth, u8* ste
 }
 
 /* astc_mode: where the GPU samples BCn but not ASTC, an ASTC texture is held as BC7 by BC7 (2), as RGBA8 by Exact (1),
-   and by Auto (0, the default) as the budget at start said (device.c astc_choose: BC7 under 8 GiB); where the GPU
-   samples ASTC, all three keep the game's blocks */
+   and by Auto (0, the default) as the GPU's memory has room now (gpu/texture/astc_bc.h; RGBA8 as the device starts,
+   with no trim yet: vulkan_astc_later.inc's al_auto follows it); where the GPU samples ASTC, all three keep the game's
+   blocks */
 static int check_astc_mode(void) {
     u64 usage, budget;
     vk_mem_use(&usage, &budget);
     for (int mode = 0; mode < 3; mode++) {
         g_settings.astc_mode = mode;
-        const int bc7 = mode == 2 || (mode == 0 && g_vk.astc_auto_bc7);
+        const int bc7 = mode == 2 || (mode == 0 && g_vk.astc_auto.bc7);
         const VkFormat want = g_vk.feat.textureCompressionASTC_LDR    ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK
                               : g_vk.feat.textureCompressionBC && bc7 ? VK_FORMAT_BC7_UNORM_BLOCK
                                                                       : VK_FORMAT_R8G8B8A8_UNORM;
@@ -1369,7 +1370,7 @@ static int check_astc_mode(void) {
     }
     g_settings.astc_mode = 0;
     printf("astc_mode: Auto holds ASTC textures as %s here (a budget of %llu MB now), Exact as RGBA8, BC7 as BC7\n",
-           g_vk.astc_auto_bc7 ? "BC7" : "RGBA8", (unsigned long long)(budget >> 20));
+           g_vk.astc_auto.bc7 ? "BC7" : "RGBA8", (unsigned long long)(budget >> 20));
     return 0;
 }
 

@@ -668,6 +668,69 @@ static int al_cached(void) {
     return failed;
 }
 
+/* (j) astc_mode's Auto follows the GPU's memory (gpu/texture/astc_bc.h, device.c): Exact while the caches have room,
+   so a texture loads RGBA8 and stays out of the encoder's queue. A trim, with the budget lowered to the caches' use (as
+   vk_budget_mb lowers it), turns it to BC7: the next texture is queued for the encoder, the first stays RGBA8, and the
+   game's BC7 cache opens at the next present, which keeps BC7 with no more room than the trim left. A present with the
+   budget back, its room under the trim's start past what the trim left, turns it to Exact again, and the third texture
+   loads RGBA8 */
+static int al_auto(void) {
+    static const AlCase c = {"ASTC 8x8 256x256, Auto", NVN_FORMAT_RGBA_ASTC_8x8, 256, 256, 1, 0};
+    const SnxAstcAuto had = g_vk.astc_auto;
+    AlTex xa, xb, xc;
+    u64 usage, budget, reads, stored, restarts, file0, file;
+    g_settings.astc_mode = 0;
+    g_vk.astc_auto = (SnxAstcAuto){0, 0, 0};
+    vk_bc7_cache_stats(&reads, &stored, &restarts, &file0);
+    Surf* a = al_make(&xa, &c, 10);
+    CHECK(a && a->f.vk == VK_FORMAT_R8G8B8A8_UNORM && !a->bc7_later && !vk_astc_bc7());
+    g_vk_present++; /* a trim of its own present: none has run dry in it */
+    vk_mem_use(&usage, &budget);
+    const u64 cap = vk_mem_budget_cap(usage);
+    vk_lock();
+    vk_mem_trim(0, 0);
+    vk_unlock();
+    const SnxAstcAuto trimmed = g_vk.astc_auto;
+    Surf* b = al_make(&xb, &c, 11);
+    vk_lock();
+    vk_astc_auto_present();
+    vk_unlock();
+    const int kept = g_vk.astc_auto.bc7;
+    const u64 band = g_vk.astc_auto.band;
+    vk_bc7_cache_stats(&reads, &stored, &restarts, &file);
+    vk_mem_budget_cap(cap);
+    vk_lock();
+    vk_astc_auto_present();
+    vk_unlock();
+    const SnxAstcAuto back = g_vk.astc_auto;
+    Surf* d = al_make(&xc, &c, 12);
+    int failed = !trimmed.bc7 || trimmed.switches != 1 || !b || !b->bc7_later || !b->bc7.queued ||
+                 a->f.vk != VK_FORMAT_R8G8B8A8_UNORM || a->bc7_later || !kept || (!file0 && !file) || back.bc7 ||
+                 back.switches != 2 || back.band != band || !d || d->bc7_later || d->f.vk != VK_FORMAT_R8G8B8A8_UNORM;
+    if (failed)
+        fprintf(stderr,
+                "astc_mode's Auto: Exact first (format %d, held as BC7 later %d); after a trim under a budget of %llu "
+                "MB, BC7 %d after %llu switches (a band of %llu MB), the next texture held as BC7 later %d, queued %d, "
+                "kept at a present %d, the BC7 cache %llu bytes; with the budget back BC7 %d after %llu switches, the "
+                "third texture held as BC7 later %d\n",
+                (int)a->f.vk, a->bc7_later, (unsigned long long)(usage >> 20), trimmed.bc7,
+                (unsigned long long)trimmed.switches, (unsigned long long)(trimmed.band >> 20), b ? b->bc7_later : -1,
+                b ? b->bc7.queued : -1, kept, (unsigned long long)file, back.bc7, (unsigned long long)back.switches,
+                d ? d->bc7_later : -1);
+    else
+        printf("astc_mode's Auto: RGBA8 with room; a trim under a budget of %llu MB made the next texture BC7 (the "
+               "trim left %llu MB under its start), and the budget back made the third RGBA8 again\n",
+               (unsigned long long)(usage >> 20), (unsigned long long)(trimmed.band >> 20));
+    later_drain();
+    if (!file0) vk_bc7_cache_close(); /* the game's, which the present opened: the checks after have none */
+    g_vk.astc_auto = had;
+    g_settings.astc_mode = 2;
+    al_free(&xa);
+    al_free(&xb);
+    al_free(&xc);
+    return failed;
+}
+
 static int check_astc_later(void) {
     const int had = g_settings.astc_mode;
     u32 tic[8];
@@ -701,6 +764,7 @@ static int check_astc_later(void) {
     failed |= al_hot_pieces();
     failed |= al_freed();
     failed |= al_cached();
+    failed |= al_auto();
     g_settings.astc_mode = had;
     return failed;
 }

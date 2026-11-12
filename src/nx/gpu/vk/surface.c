@@ -2437,9 +2437,9 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
 }
 
 /* ------------------------------------------------------------ the budget */
-/* A trim that found the images short of memory, where ASTC textures are held as RGBA8 (astc_mode=1, Exact, or Auto with
-   the budget for it at start) on a GPU that samples BCn but not ASTC: the log suggests astc_mode=2 (BC7) once a run,
-   with the numbers (snx_astc_bc_suggest).
+/* A trim that found the images short of memory, where ASTC textures are held as RGBA8 by astc_mode=1 (Exact; Auto makes
+   them BC7 by itself, vk_astc_auto_trimmed) on a GPU that samples BCn but not ASTC: the log suggests astc_mode=2 (BC7)
+   once a run, with the numbers (snx_astc_bc_suggest).
    Short: an image allocation found no memory (force), the caches left past their budget once all that could go went,
    or the working set evicted (what the last eight presents used, the trim's second step), which the next frames load
    again: a game held slow by eviction */
@@ -2450,7 +2450,7 @@ static void astc_bc_suggest(int force, u64 extra, u64 usage, u64 budget, u64 fre
               : working       ? SNX_ASTC_SHORT_WORKING_SET
                               : SNX_ASTC_SHORT_NONE;
     char said[128];
-    if (!snx_astc_bc_suggest(vk_astc_bc7(), g_vk.astc_bc7_could, 0, astc, why)) return;
+    if (!snx_astc_bc_suggest(vk_astc_bc7() || g_settings.astc_mode == 0, g_vk.astc_bc7_could, 0, astc, why)) return;
     if (why == SNX_ASTC_SHORT_NO_MEMORY)
         snprintf(said, sizeof said, "an image of %llu MB found no memory", (unsigned long long)(extra >> 20));
     else if (why == SNX_ASTC_SHORT_PAST_BUDGET)
@@ -2567,6 +2567,7 @@ static u32 g_forced;    /* the present a failed allocation last forced a trim (+
 static u32 g_oom;       /* the present an image allocation last found no memory (+1) */
 static u64 g_oom_bytes; /* the smallest size that found none in that present */
 u64 vk_mem_trimmed(void) { return g_trimmed; }
+u64 vk_mem_trim_start(u64 budget) { return budget - trim_head(budget); }
 void vk_mem_trim(u64 extra, int force) {
     u64 usage, budget, need = 0;
     if (force) {
@@ -2582,7 +2583,7 @@ void vk_mem_trim(u64 extra, int force) {
     if (force) { /* the allocation's size, less what evictions before it are releasing already */
         u64 gone = vk_deferred_bytes();
         need = extra > gone ? extra - gone : 0;
-    } else if (usage + head <= budget)
+    } else if (usage <= vk_mem_trim_start(budget))
         return;
     SNX_ZONE_V(z, "vk mem trim", force);
     /* What goes first is what can be had again without loss: textures (loaded again from memory), own buffers (copied
@@ -2649,6 +2650,7 @@ void vk_mem_trim(u64 extra, int force) {
         vk_bc1_tight("the caches stay past their budget after a trim");
     else if (working)
         vk_bc1_tight("a trim took textures and targets the last eight presents used");
+    vk_astc_auto_trimmed(usage, snx_astc_trim_left(usage, extra, freed, force), budget, force);
     if (short_of) g_trim_dry = g_vk_present + 1;
     if (freed || short_of)
         LOG_LIMIT(20,
