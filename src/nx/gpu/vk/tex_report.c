@@ -18,7 +18,13 @@ static struct {
     u64 evictions;                            /* the textures the cache evicted */
     u64 reloads, reload_guest, reload_device; /* those made again: their guest bytes, and their images' memory */
     u64 reported;                             /* reloads at the last report */
+    /* How long the evicted went unused before they went, and how long after it those made again came back, in
+       presents, since the last report: under 60, under 300, under 1200, more. when: the present a key was evicted
+       at, by its hash's bits (a key that shares a slot with a later one counts with that one's present) */
+    u64 idle[4], back[4];
+    u32 when[4096];
 } g_tex_report;
+static u32 age_class(u32 presents) { return presents < 60 ? 0 : presents < 300 ? 1 : presents < 1200 ? 2 : 3; }
 
 /* what the cache finds t by (texture.c tex_from_tic's search), as one hash */
 static u64 tex_key(const Surf* t) {
@@ -43,12 +49,17 @@ static u64 tex_key(const Surf* t) {
 }
 
 void vk_tex_evicted(const Surf* t) {
+    u64 key = tex_key(t);
     g_tex_report.evictions++;
-    vk_tex_evicted_add(&g_tex_report.evicted, tex_key(t));
+    g_tex_report.idle[age_class(g_vk_present - (u32)t->last_used)]++;
+    g_tex_report.when[key >> 20 & 4095] = g_vk_present;
+    vk_tex_evicted_add(&g_tex_report.evicted, key);
 }
 
 void vk_tex_made(const Surf* t) {
-    if (!vk_tex_evicted_take(&g_tex_report.evicted, tex_key(t))) return;
+    u64 key = tex_key(t);
+    if (!vk_tex_evicted_take(&g_tex_report.evicted, key)) return;
+    g_tex_report.back[age_class(g_vk_present - g_tex_report.when[key >> 20 & 4095])]++;
     g_tex_report.reloads++;
     g_tex_report.reload_guest += t->size;
     g_tex_report.reload_device += t->bytes;
@@ -281,6 +292,16 @@ void vk_tex_report_log(void) {
             (unsigned long long)(g_tex_report.reloads - g_tex_report.reported),
             (unsigned long long)g_tex_report.evictions);
     g_tex_report.reported = g_tex_report.reloads;
+    const u64 *idle = g_tex_report.idle, *back = g_tex_report.back;
+    if (idle[0] | idle[1] | idle[2] | idle[3] | back[0] | back[1] | back[2] | back[3])
+        LOG("vulkan: since the last report the cache evicted %llu textures unused for under 60 presents, %llu for 60 "
+            "to 299, %llu for 300 to 1199, %llu for longer; of those made again %llu came back under 60 presents "
+            "after they went, %llu after 60 to 299, %llu after 300 to 1199, %llu later\n",
+            (unsigned long long)idle[0], (unsigned long long)idle[1], (unsigned long long)idle[2],
+            (unsigned long long)idle[3], (unsigned long long)back[0], (unsigned long long)back[1],
+            (unsigned long long)back[2], (unsigned long long)back[3]);
+    memset(g_tex_report.idle, 0, sizeof g_tex_report.idle);
+    memset(g_tex_report.back, 0, sizeof g_tex_report.back);
     if (c.detail) {
         if (c.sparse) sparse_log(&c);
         formats_log(&c);
