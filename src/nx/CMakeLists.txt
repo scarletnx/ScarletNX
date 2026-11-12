@@ -184,6 +184,16 @@ snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.frag NAME msaa_unpack_spv HEADER nx/gpu
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.frag NAME msaa_unpack_depth_spv HEADER nx/gpu/vk/msaa_spv.h
                DEFINES MS_UNPACK_DEPTH)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.frag NAME msaa_pack_spv HEADER nx/gpu/vk/msaa_spv.h DEFINES MS_PACK)
+# the built-in modules: depth-only passes' empty fragment shader (gpu/vk/pipeline.c), and the masked clears' triangle
+# and color in each number type (gpu/vk/render.c). Vulkan 1.2's SPIR-V 1.5, for the vertex shader's gl_Layer
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/null.frag NAME snx_null_fs_spv HEADER nx/gpu/vk/internal_spv.h TARGET vulkan1.2)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/clear.vert NAME snx_clear_vs_spv HEADER nx/gpu/vk/internal_spv.h TARGET vulkan1.2)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/clear.frag NAME snx_clear_fs_float_spv HEADER nx/gpu/vk/internal_spv.h
+               TARGET vulkan1.2)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/clear.frag NAME snx_clear_fs_uint_spv HEADER nx/gpu/vk/internal_spv.h
+               TARGET vulkan1.2 DEFINES CLEAR_UINT)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/clear.frag NAME snx_clear_fs_sint_spv HEADER nx/gpu/vk/internal_spv.h
+               TARGET vulkan1.2 DEFINES CLEAR_SINT)
 set(components core kernel hle video gpu platform shader vk)
 # third-party code (vma.cpp is VMA's implementation), cmake/dependencies.cmake
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" gpu/vk/vma.cpp PROPERTIES COMPILE_OPTIONS

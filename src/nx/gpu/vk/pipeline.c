@@ -1209,7 +1209,7 @@ VkShaderModule vk_module_spv_location(const u32* source, size_t nw, u32 location
 /* an empty fragment shader for depth-only passes */
 static VkShaderModule null_fs(void) {
     if (!g_pipeline.null_fs)
-        g_pipeline.null_fs = vk_module_spv(snx_null_fs_spv, sizeof snx_null_fs_spv / sizeof *snx_null_fs_spv);
+        g_pipeline.null_fs = vk_module_spv(snx_null_fs_spv, snx_null_fs_spv_size / sizeof *snx_null_fs_spv);
     return g_pipeline.null_fs;
 }
 

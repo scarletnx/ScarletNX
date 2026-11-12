@@ -636,13 +636,11 @@ static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect, u32 
     rp_record();
     const VkFmt* f = &g_rp.rt[slot]->f;
     int num = f->is_int ? (f->sint ? 2 : 1) : 0;
-    if (!g_clear.vs) g_clear.vs = vk_module_spv(snx_clear_vs_spv, sizeof snx_clear_vs_spv / sizeof *snx_clear_vs_spv);
+    if (!g_clear.vs) g_clear.vs = vk_module_spv(snx_clear_vs_spv, snx_clear_vs_spv_size / sizeof *snx_clear_vs_spv);
     if (!g_clear.fs[slot][num]) {
         static const u32* words[3] = {snx_clear_fs_float_spv, snx_clear_fs_uint_spv, snx_clear_fs_sint_spv};
-        static const size_t count[3] = {sizeof snx_clear_fs_float_spv / sizeof *snx_clear_fs_float_spv,
-                                        sizeof snx_clear_fs_uint_spv / sizeof *snx_clear_fs_uint_spv,
-                                        sizeof snx_clear_fs_sint_spv / sizeof *snx_clear_fs_sint_spv};
-        g_clear.fs[slot][num] = vk_module_spv_location(words[num], count[num], slot);
+        const u64 bytes[3] = {snx_clear_fs_float_spv_size, snx_clear_fs_uint_spv_size, snx_clear_fs_sint_spv_size};
+        g_clear.fs[slot][num] = vk_module_spv_location(words[num], bytes[num] / sizeof(u32), slot);
     }
     if (!g_clear.vs || !g_clear.fs[slot][num]) return 0;
     PipeKey k;
@@ -682,7 +680,7 @@ static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect, u32 
    output, color writes or depth writes. It covers only the requested rectangle and layer, under the GPU predicate. */
 static int clear_stencil_masked(u32 mask, u32 value, VkRect2D rect, u32 layer, u32 pred) {
     rp_record();
-    if (!g_clear.vs) g_clear.vs = vk_module_spv(snx_clear_vs_spv, sizeof snx_clear_vs_spv / sizeof *snx_clear_vs_spv);
+    if (!g_clear.vs) g_clear.vs = vk_module_spv(snx_clear_vs_spv, snx_clear_vs_spv_size / sizeof *snx_clear_vs_spv);
     if (!g_clear.vs) return 0;
     PipeKey k;
     memset(&k, 0, sizeof k); /* pipeline keys compare every byte */

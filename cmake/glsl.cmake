@@ -64,14 +64,17 @@ if(NOT SNX_SPIRV_VAL)
         "spirv-val to validate shaders with (empty: the one beside spirv-opt, or on PATH)" FORCE)
 endif()
 
-# snx_glsl_spirv(target SOURCE file.comp NAME symbol HEADER include/path.h [DEFINES MACRO[=value]...])
-# Compiles SOURCE (its #includes followed through glslang's depfile) for Vulkan 1.1 without debug information,
+# snx_glsl_spirv(target SOURCE file.comp NAME symbol HEADER include/path.h [TARGET vulkan1.x] [DEFINES MACRO[=value]...])
+# Compiles SOURCE (its #includes followed through glslang's depfile) for Vulkan 1.1 (or TARGET) without debug information,
 # optimizes it for speed with spirv-opt -O, validates the result with spirv-val, and puts it into a C file added to
 # target: `const u32 NAME[]` and `const u64 NAME_size` (bytes). HEADER, which the C file includes, declares them: the
 # build writes it too, under generated/include in the build tree (on the include path beside src), one header for every
 # NAME given it. DEFINES are predefined macros, for another build of the same source
 function(snx_glsl_spirv target)
-    cmake_parse_arguments(arg "" "SOURCE;NAME;HEADER" "DEFINES" ${ARGN})
+    cmake_parse_arguments(arg "" "SOURCE;NAME;HEADER;TARGET" "DEFINES" ${ARGN})
+    if(NOT arg_TARGET)
+        set(arg_TARGET vulkan1.1)
+    endif()
     get_property(headers GLOBAL PROPERTY snx_spirv_headers)
     if(NOT arg_HEADER IN_LIST headers)
         set_property(GLOBAL APPEND PROPERTY snx_spirv_headers "${arg_HEADER}")
@@ -92,14 +95,14 @@ function(snx_glsl_spirv target)
     # to (they make it a rule for the file it names). DEPENDS rather than MAIN_DEPENDENCY: a source can be built twice.
     # spirv-opt validates what it is given before it optimizes, and spirv-val what it gave
     add_custom_command(OUTPUT "${spv}"
-        COMMAND "${SNX_GLSLANG}" -V --target-env vulkan1.1 -g0 ${defines} --depfile "${spv}.d" -o "${spv}" "${source}"
+        COMMAND "${SNX_GLSLANG}" -V --target-env ${arg_TARGET} -g0 ${defines} --depfile "${spv}.d" -o "${spv}" "${source}"
         DEPENDS "${source}"
         DEPFILE "${spv}.d"
         COMMENT "Compiling ${shown} to SPIR-V (${arg_NAME})"
         VERBATIM)
     add_custom_command(OUTPUT "${out}"
-        COMMAND "${SNX_SPIRV_OPT}" -O --target-env=vulkan1.1 "${spv}" -o "${opt}"
-        COMMAND "${SNX_SPIRV_VAL}" --target-env vulkan1.1 "${opt}"
+        COMMAND "${SNX_SPIRV_OPT}" -O --target-env=${arg_TARGET} "${spv}" -o "${opt}"
+        COMMAND "${SNX_SPIRV_VAL}" --target-env ${arg_TARGET} "${opt}"
         COMMAND "${CMAKE_COMMAND}" -DWORDS=${opt} -DOUT=${out} -DNAME=${arg_NAME} -DHEADER=${arg_HEADER}
                 -DSOURCE=${shown} -P "${PROJECT_SOURCE_DIR}/cmake/spirv_source.cmake"
         DEPENDS "${spv}" "${PROJECT_SOURCE_DIR}/cmake/spirv_source.cmake"
