@@ -2396,6 +2396,7 @@ snx_test_target(snx-test-runtime-linker 11)
 target_link_libraries(snx-test-runtime-linker PRIVATE scarletnx-common scarletnx-filesystem snx_settings)
 add_test(NAME runtime_linker COMMAND snx-test-runtime-linker)
 add_test(NAME runtime_linker_differ COMMAND snx-test-runtime-linker differ)
+add_test(NAME runtime_linker_switch COMMAND snx-test-runtime-linker switch)
 # an NRO's own AOT module (nro_module_fixture.c, a descriptor and two functions by hand), which guest_jit.c loads for
 # the NRO mapped at the address it was made for: runtime_variants copies it under the names the NROs' hashes give
 add_library(snx-test-nro-module MODULE nro_module_fixture.c)

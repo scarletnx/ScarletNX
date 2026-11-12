@@ -152,15 +152,24 @@ the game's image read from that image.
   ([Hooks](../platforms/nx/hooks.md#how-a-call-reaches-a-hook)). An NRO's module binds its stubs the same way
   ([NRO](../platforms/nx/nro.md)). `ctest -R plt_calls` (`tests/plt_calls.c`) recompiles a game of two modules and
   runs its calls with each slot unbound, bound and holding another function, and with a stub's code changed.
-- A game links itself: the `rtld` module it carries relocates every module and binds their symbols before it enters
-  the SDK. The runtime has a linker of its own, `src/nx/loader/relocate.c`: DT_RELR's and DT_RELA's relative
+- A game links itself: the `rtld` module it carries relocates every module and binds their symbols, then enters the
+  SDK (`nn::init::Start`), which calls the rtld back for the modules' constructors and, through `nn::ro`, for its
+  lists of modules. The runtime has a linker of its own, `src/nx/loader/relocate.c`: DT_RELR's and DT_RELA's relative
   relocations, and `ABS64`, `GLOB_DAT` and `JUMP_SLOT` by the rule a game's rtld follows (the first definition of the
   name that is not local, among the modules in load order; the module's own for a protected or hidden symbol; 0 for
-  a weak symbol nothing defines). For now it only proves itself: `runtime/linker.c` links a copy of the modules' data
-  when they are loaded, and at the game's first call of `nn::init::Start`, the last thing its linker does, compares
-  every relocated word of the game's memory with the copy. The log's `linker:` line gives the count, or how many
-  differ and the first of them. The game's memory is only read. Not under NCE, nor for a 32-bit game. `ctest -R
-  loader_relocate` (`tests/relocate_test.c`) links three modules with every kind of relocation.
+  a weak symbol nothing defines). Where it can, the runtime links the game in the rtld's place (`runtime/linker.c`):
+  it relocates the modules when they are loaded, every PLT slot bound; the main thread enters `nn::init::Start`
+  with three functions of the runtime's (their addresses the rtld's first three instructions, whose dispatch slots
+  hold them: the second runs each module's `DT_INIT`, the last module first, the third each `DT_FINI`); and `nn::ro`
+  is answered by the runtime (`src/nx/nn/ro.hook`, `ro.c`), so nothing of the SDK reads what an rtld would have
+  left. No code of the rtld runs. Where it cannot, the game's rtld links it as before and the log's `linker:` line
+  says why: under NCE, a 32-bit game, no `nn::init::Start` the runtime knows, a module that does not route `nn::ro`
+  (one recompiled before this), the `nn_ro` hooks off (`hooks_off=nn_ro`), or a game that maps NROs, which the
+  runtime's linker does not load yet. The runtime then links a copy of the modules' data and, at the game's first
+  call of `nn::init::Start`, compares every relocated word of the game's memory with the copy; the log gives the
+  count, or how many differ and the first of them. A function of `nn::ro` the runtime does not answer yet (loading,
+  unloading or describing a module) stops the game by its name. `ctest -R 'loader_relocate|runtime_linker'`
+  (`tests/relocate_test.c`, `tests/runtime_linker.c`).
 - The LLVM backend's speed: guest memory and the CPU structure are separate alias scopes (registers stay in host
   registers). Guest accesses are unaligned, and volatile only when `volatile_memory` is enabled (off by default).
   Logical immediates and SIMD

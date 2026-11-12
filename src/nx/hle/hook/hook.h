@@ -155,6 +155,8 @@ void hook_install(void);
    When not, a hook in the slot sees only the calls through function pointers and the PLT stubs the module did not
    bind (loader.h's SnxBoundBranch) */
 int hook_routed(const char* name);
+/* whether the settings turn the hooks of family off: hooks=0, or hooks_off names it */
+int hook_family_off(const char* family);
 /* puts the hooks in [addr, addr + size) back in their slots after the JIT dropped what was compiled there
    (jit_code_invalidate), where the function is still executable code */
 void hook_restore(u64 addr, u64 size);

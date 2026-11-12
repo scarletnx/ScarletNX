@@ -891,8 +891,9 @@ void kernel_release(void) {
 
 /* the main thread, as the console starts an application: its stack mapped in the stack region between two free guard
    pages, x0 0 and x1 its own handle, on the core the npdm names, which becomes the process's default core. The
-   stack is process memory, charged with the images before any heap */
-void kernel_run_main(u64 entry, u64 stack_size, int prio, int core) {
+   stack is process memory, charged with the images before any heap. With args, the thread enters a function of the
+   SDK in the place of the game's linker's entry: x0 its handle, x1 to x4 the four of args */
+void kernel_run_main(u64 entry, const u64* args, u64 stack_size, int prio, int core) {
     u64 stack;
     u32 h;
     KThread* t;
@@ -919,6 +920,10 @@ void kernel_run_main(u64 entry, u64 stack_size, int prio, int core) {
     kthread_set_own_handle(t, h);
     t->cpu.x[1] = h;
     t->arm.r[1] = h;
+    if (args) {
+        t->cpu.x[0] = h;
+        memcpy(&t->cpu.x[1], args, 4 * sizeof(u64));
+    }
     LOG("main thread: entry %llx, stack %llx (%llu KiB), priority %d, core %d\n", (unsigned long long)entry,
         (unsigned long long)stack, (unsigned long long)(stack_size >> 10), prio, core);
     (void)kthread_start(t); /* made above: it has not started */

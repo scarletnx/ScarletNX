@@ -1281,9 +1281,11 @@ int snx_main(int argc, char** argv) {
     if (loader_load()) fatal("Could not load the game executables. See the .log for details.");
     nce_init(); /* the patches of native code, before the hooks take their functions */
     kernel_load_symbols();
-    hook_install(); /* before NVN, which takes what a slot holds, and the JIT, which reads the slots */
+    linker_decide(); /* before the hooks: nn::ro's are installed only when the runtime links the game */
+    hook_install();  /* before NVN, which takes what a slot holds, and the JIT, which reads the slots */
     nvn_loader_init();
     linker_init(); /* after the hooks and NVN, whose slots it leaves alone */
+    entry = linker_entry(entry);
     /* after NVN, which says whether calls must go through the slots it takes. The JIT compiles A64: a 32-bit
        game's blocks are arm.c's, and its hints are A32 block keys the JIT must not warm-compile */
     if (!g_arm_mod && !nce_on()) jit_init();
@@ -1327,7 +1329,11 @@ int snx_main(int argc, char** argv) {
 #endif
     }
     prepare_wait(title);
-    if (!g_quit) kernel_run_main(entry, mod->main_stack, (int)mod->main_prio, (int)mod->main_core);
+    if (!g_quit) {
+        u64 args[4];
+        kernel_run_main(entry, linker_main(args) ? args : NULL, mod->main_stack, (int)mod->main_prio,
+                        (int)mod->main_core);
+    }
     frontend_loop();
     status = 0;
 done:

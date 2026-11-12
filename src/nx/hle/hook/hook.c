@@ -12,6 +12,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/guest_jit.h"
+#include "nx/runtime/linker.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
@@ -146,6 +147,10 @@ int hook_routed(const char* name) {
     return lo < r->count && r->names[lo] == hash;
 }
 
+int hook_family_off(const char* family) {
+    return !g_settings.native_hooks || family_listed(g_settings.hook_families_off, family);
+}
+
 /* which calls the module sends through the dispatch slots, once */
 static void routes_say(void) {
     const SnxRoutes* r = g_routes;
@@ -239,6 +244,8 @@ void hook_install(void) {
     for (i = 0; i < HOOK_FAMILIES; i++)
         if ((off[i] = (unsigned char)family_listed(g_settings.hook_families_off, hook_family_name[i])) != 0)
             LOG("hooks: the %s family is off (hooks_off)\n", hook_family_name[i]);
+        else if (!strcmp(hook_family_name[i], LINKER_FAMILY) && !linker_links())
+            off[i] = 1; /* nn::ro is the SDK's own while the game's linker runs: linker.c said why */
         else if (family_listed(g_settings.hook_families_verified, hook_family_name[i]))
             verify[i] = 1, any_verify = 1;
     if (any_verify) {
