@@ -103,7 +103,7 @@ int32_t ___tracy_before_lock_lockable_ctx(struct __tracy_lockable_context_data* 
     return 0;
 }
 void ___tracy_after_lock_lockable_ctx(struct __tracy_lockable_context_data* l) { (void)l; }
-void ___tracy_after_unlock_lockable_ctx(struct __tracy_lockable_context_data* l) { (void)l; }
+void ___tracy_before_unlock_lockable_ctx(struct __tracy_lockable_context_data* l) { (void)l; }
 void ___tracy_after_try_lock_lockable_ctx(struct __tracy_lockable_context_data* l, int32_t acquired) {
     (void)l, (void)acquired;
 }
