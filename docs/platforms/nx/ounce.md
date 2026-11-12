@@ -4,6 +4,7 @@
 
 * [The GPU path](#the-gpu-path)
 * [The platform](#the-platform)
+  * [GameChat's images and the camera](#gamechats-images-and-the-camera)
 * [Shaders](#shaders)
 * [Surfaces](#surfaces)
 * [Driver offsets](#driver-offsets)
@@ -47,6 +48,27 @@ runtime read the same NPDM, and `g_ounce` is the one flag. It gives the game the
 
 `tools/nvn_missing.py work/Game` lists the NVN functions of a game's driver that `nvn.hook` doesn't implement for its
 API version.
+
+### GameChat's images and the camera
+
+The update of a racing game (a newer SDK than its first version) starts GameChat at boot, and makes its camera video
+storage with `nn::chat::gsv`: three NV12 images of 384x216 (kind 1) in each storage. The SDK sends TIPC types 1307,
+1227 and 1228, which are gsv commands 1291, 1211 and 1212. `CalculateRequiredBufferMemory` (1291), `CreateImagePool`
+(1211) and `DestroyImagePool` (1212) send the request of the decoder's 991, 911 and 912, and read the same answer. The
+chat's pools are thus the video service's pools (`native_video.c`).
+
+NVN makes a memory pool of each image with `nvnNativeImageInitialize`. That function asks `QueryNativeImage` (428)
+for the image's page span, and gives it to `NvRmMemHandleAllocNativeImage`, which makes an NvRm memory handle for the
+image. Then it gives the handle to `nvnMemoryPoolBuilderSetNativeHandleNVX`. The SDK's NvRm numbers its handles from
+1, for each handle it makes, so the handle is not a native memory or an image number. The runtime's
+`nvnMemoryPoolInitialize` asks the SDK's `NvRmMemGetNativeImageHandle` for the image, as the driver does. Before, it
+took the handle for a native memory number, which was right only while the two numbers agreed. Another game, whose
+title movie uses the video pools, makes no such pool.
+
+The camera session (gsv 602) answers each command but 21 with result 0xdc4 (module 452, description 6), as a console
+with no camera. The game's own camera module accepts it from command 3 (the camera "Default") and from command 29,
+which it sends again and again. Command 21 must give an event, which the module attaches as a system event. The module
+stops if 21 fails. With no camera, the event is never signaled.
 
 ## Shaders
 
