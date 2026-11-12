@@ -5,7 +5,8 @@
    each struct an array holds (a pool's slots) is walked by its own type: every field whose type is a pointer or a host
    type is reported, as is an array of a struct no walk covered, unless the list of known exceptions below names it.
    A field a load sets again from the host (state.c's fixups) is one of those exceptions; the others are the work
-   left. --list prints every member's fields, and --report the exceptions that are no longer needed */
+   left. Every member of g_hle must have a walk: one with none would be written unchecked. --list prints every
+   member's fields, and --report the exceptions that are no longer needed */
 #include "nx/hle/hle.h"
 #include "nx/hle/hle_walk.h"
 #include <stdarg.h>
@@ -248,6 +249,39 @@ static const char* problem(const char* path, const char* t) {
     return NULL;
 }
 
+/* The members of g_hle no walk covers: a save state writes such a member as it is with nothing checked in it, and
+   the state's schema (state.c) does not change with its fields */
+static int unwalked(void) {
+    char* line = g_text;
+    int bad = 0;
+    g_len = 0;
+    memset(g_text, 0, sizeof g_text);
+    __builtin_dump_struct(&h, out, NULL);
+    if (g_len >= sizeof g_text) {
+        fprintf(stderr, "hle_flat: g_hle's fields are past the %zu bytes of text kept\n", sizeof g_text);
+        exit(1);
+    }
+    while (line && *line) {
+        char* nl = strchr(line, '\n');
+        char* eq;
+        if (nl) *nl = 0;
+        /* a member's own line: two spaces, as __builtin_dump_struct indents a struct's fields */
+        if (!strncmp(line, "  ", 2) && line[2] != ' ' && (eq = strstr(line, " =")) != NULL) {
+            const char* name;
+            int i;
+            *eq = 0;
+            name = strrchr(line, ' ') + 1;
+            for (i = 0; i < g_nwalked && strcmp(g_walked[i], name); i++) {}
+            if (i == g_nwalked) {
+                printf("g_hle.%s has no walk in hle_walk.h\n", name);
+                bad++;
+            }
+        }
+        line = nl ? nl + 1 : NULL;
+    }
+    return bad;
+}
+
 int main(int argc, char** argv) {
     int list = argc > 1 && !strcmp(argv[1], "--list"), report = argc > 1 && !strcmp(argv[1], "--report");
     int bad = 0, i;
@@ -262,6 +296,7 @@ int main(int argc, char** argv) {
         if (!list) printf("%s (%s) is %s\n", g_fields[i].path, g_fields[i].type, why);
         bad++;
     }
+    bad += unwalked();
     if (report)
         for (i = 0; KNOWN[i]; i++)
             if (!known_used[i]) printf("no longer needed: %s\n", KNOWN[i]);
