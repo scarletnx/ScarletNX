@@ -105,7 +105,6 @@ void svc_core_init(void) {
     nn_mii_detail_IStaticService_register(new_mii);
     nn_ldn_detail_IUserServiceCreator_register(new_ldn);
     nn_btm_IBtmUser_register(new_btmu);
-    nn_audio_detail_IAudioInManager_register(new_audin);
     nn_olsc_srv_IOlscServiceForApplication_register(new_olsc);
 
     /* the audio renderer's 5 ms frames and the audio outs' buffers (audio.c), from the start as on the console */

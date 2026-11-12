@@ -551,18 +551,15 @@ static void test_hwopus_table(void) {
 #undef MULTI
 }
 
-/* aud:u, the Ounce's manager of managers: the audio in manager it hands out, and the audio out and renderer
-   managers, which nothing serves (the outs and the renderer are native): asking for one stops the game after the
-   threads' calls, naming nn::audio */
+/* aud:u, the Ounce's manager of managers: nothing serves the audio in, audio out and renderer managers it would hand
+   out (the ins, the outs and the renderer are native), so asking for one stops the game after the threads' calls,
+   naming nn::audio */
 static void test_native_manager(void) {
-    static const char* const what[3] = {NULL, "the audio out manager", "the audio renderer manager"};
+    static const char* const what[3] = {"the audio in manager", "the audio out manager", "the audio renderer manager"};
     SvcObj* aud = new_aud();
-    IpcCtx c = request(0, NULL, 0);
-    CHECK(aud->dispatch(aud, &c) == 0 && c.nout_objs == 1);
-    svcobj_unref(c.out_objs[0]);
-    for (u32 cmd = 1; cmd <= 2; cmd++) {
+    for (u32 cmd = 0; cmd <= 2; cmd++) {
         unsigned dumps = test_thread_dumps;
-        c = request(cmd, NULL, 0);
+        IpcCtx c = request(cmd, NULL, 0);
         test_expect_stop = 1;
         int stopped = setjmp(test_stopped);
         if (!stopped) aud->dispatch(aud, &c);
