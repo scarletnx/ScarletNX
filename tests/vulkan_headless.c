@@ -5322,8 +5322,9 @@ static int check_rt_watch(void) {
 }
 /* Depth targets the 3D engine clears and the CPU then reads from memory, as edenprobe's zeta and msaa suites do after a
    barrier and a wait for idle: a release watches them as it does color ones, and the CPU's first read publishes them
-   and lands them in their format's layout. Each format a 80x40 block linear target (2 rows of blocks of 4 GOBs),
-   cleared to depth 0.25 and stencil 0x5A, then its scissor's rectangle to 0.75, in memory of its own (one over memory
+   and lands them in their format's layout (S8's a byte a texel, its stencil). Each format a 80x40 block linear target
+   (2 rows of blocks of 4 GOBs), cleared to depth 0.25 and stencil 0x5A, then its scissor's rectangle to depth 0.75 and
+   stencil 0xC3, in memory of its own (one over memory
    the CPU read lately is published at the release instead); its bytes are those of the CPU reference
    (support/dma_ref.c) laying the same picture out over the same memory, padding included. A 4x ZF32 target cleared to
    0.75 holds it at every sample. They stayed on the GPU: the CPU read the bytes from before the clear */
@@ -5332,12 +5333,14 @@ static int check_rt_watch(void) {
 static int check_zt_watch(void) {
     static const struct {
         u32 zeta, bpp, msaa;
-        u32 word[2][2]; /* a texel (or a sample) at 0.25 and at 0.75: its first word, and the one after it (8 bytes) */
+        u32 word[2]
+                [2]; /* a texel (or a sample) out of the rectangle and in it: its first word, and the next (8 bytes) */
     } c[] = {
         {0x13, 2, 0, {{0x4000, 0}, {0xBFFF, 0}}},                     /* Z16 */
         {0x0A, 4, 0, {{0x3E800000u, 0}, {0x3F400000u, 0}}},           /* Z32F */
-        {0x14, 4, 0, {{0x4000005Au, 0}, {0xBFFFFF5Au, 0}}},           /* Z24S8, the stencil low */
-        {0x19, 8, 0, {{0x3E800000u, 0x5A}, {0x3F400000u, 0x5A}}},     /* Z32F_X24S8 */
+        {0x14, 4, 0, {{0x4000005Au, 0}, {0xBFFFFFC3u, 0}}},           /* Z24S8, the stencil low */
+        {0x19, 8, 0, {{0x3E800000u, 0x5A}, {0x3F400000u, 0xC3}}},     /* Z32F_X24S8 */
+        {0x17, 1, 0, {{0x5A, 0}, {0xC3, 0}}},                         /* S8 */
         {0x0A, 4, DS_MSAA_2X2, {{0x3F400000u, 0}, {0x3F400000u, 0}}}, /* Z32F, 4 samples a pixel */
     };
     const u32 w = 80, h = 40, rect[4] = {8, 4, 51, 23}; /* x0, y0, x1, y1 */
@@ -5385,6 +5388,7 @@ static int check_zt_watch(void) {
             r[0x381] = rect[0] | rect[2] << 16;
             r[0x382] = rect[1] | rect[3] << 16;
             memcpy(&r[0x364], &three, 4);
+            r[0x368] = 0xC3;
             engine_clear(ch, 3);
             r[0x43E] &= ~0x100u;
             r[0x380] = 0;
