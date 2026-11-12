@@ -30,6 +30,9 @@ import tempfile
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+# the longest script the runtime takes: one byte less than the size of its setting
+SCRIPT_MAX = 4095
+
 def data_folder():
     """The user's data folder, the driver's when no --data names one (snx_user_data_dir in common.c)"""
     if sys.platform == 'win32':
@@ -119,6 +122,13 @@ def main():
     ap.add_argument('args', nargs='*', help='more runtime options, e.g. --fps_limit=0 (with or without -- before them)')
     a, unknown = ap.parse_known_args()
     a.args += unknown
+    # the runtime keeps an empty script in place of one past the size of its setting (settings.txt, "text 4096"),
+    # with one line in the log: the run then has no input at all
+    if a.script and len(a.script.encode()) > SCRIPT_MAX:
+        ap.error(
+            'the script is %d bytes, and the runtime keeps none past %d: hold each press longer with --press_len=MS '
+            'in place of many short presses' % (len(a.script.encode()), SCRIPT_MAX)
+        )
 
     exe = find_game(a.game)
     folder = os.path.dirname(exe)
