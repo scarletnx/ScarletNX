@@ -3,10 +3,17 @@
    Copyright 2026 the ScarletNX contributors */
 #include "agb/bios/bios.h"
 #include "agb/board/board.h"
+#include "common/utilities/bits.h"
 #include <math.h>
 #include <string.h>
 
 #define AGB_PI 3.14159265358979323846
+
+/* The time the BIOS's own loops take beyond the memory they stream through, as mGBA's HLE BIOS counts it: added to the
+   call's cycles while the CPU counts them (agb_cpu_run's BIOS call) */
+static void spend(AgbBoard* board, uint32_t cycles) {
+    if (board->counting) board->counted_cycles += cycles;
+}
 
 /* Div and DivArm: r0 = numerator over r1 = denominator, giving the quotient in r0, the remainder in r1 and
    the absolute quotient in r3. The real BIOS hangs on a zero denominator; the HLE call returns the values a
@@ -31,18 +38,54 @@ static void bios_div(uint32_t regs[16], int32_t numerator, int32_t denominator) 
     regs[3] = (uint32_t)quotient;
 }
 
-static uint32_t bios_sqrt(uint32_t value) {
-    uint32_t root = 0, bit = 1u << 30;
-    while (bit > value) bit >>= 2;
-    while (bit) {
-        if (value >= root + bit) {
-            value -= root + bit;
-            root = (root >> 1) + bit;
-        } else
-            root >>= 1;
-        bit >>= 2;
+/* Div's loop as mGBA's HLE BIOS times it: 4 cycles in, 13 a step for each bit the numerator is wider than the
+   denominator (one step at least), 7 out */
+static uint32_t div_cycles(int32_t numerator, int32_t denominator) {
+    int steps = (int)snx_clz32((uint32_t)denominator) - (int)snx_clz32((uint32_t)numerator);
+    return 4 + 13 * (uint32_t)(steps < 1 ? 1 : steps) + 7;
+}
+
+/* Sqrt: the BIOS's Newton steps on a bound, from a power of two at least the root, as mGBA's HLE BIOS has them and times
+   them (15 cycles in, 6 a halving of the start, 6 a step, 5 a shift up and 8 a bit of each step's division; 53 for 0) */
+static uint32_t bios_sqrt(uint32_t value, uint32_t* cycles) {
+    if (!value) {
+        *cycles = 53;
+        return 0;
     }
-    return root;
+    uint32_t spent = 15, upper = value, bound = 1;
+    while (bound < upper) {
+        upper >>= 1;
+        bound <<= 1;
+        spent += 6;
+    }
+    for (;;) {
+        uint32_t accum = 0, lower = bound, old_bound = bound;
+        spent += 6;
+        upper = value;
+        for (;;) {
+            uint32_t old_lower = lower;
+            spent += 5;
+            if (lower <= upper >> 1) lower <<= 1;
+            if (old_lower >= upper >> 1) break;
+        }
+        for (;;) {
+            spent += 8;
+            accum <<= 1;
+            if (upper >= lower) {
+                ++accum;
+                upper -= lower;
+            }
+            if (lower == bound) break;
+            lower >>= 1;
+        }
+        bound = (bound + accum) >> 1;
+        if (bound >= old_bound) {
+            bound = old_bound;
+            break;
+        }
+    }
+    *cycles = spent;
+    return bound;
 }
 
 /* the BIOS's arithmetic as the ARM7TDMI does it: a product and a shift left wrap to 32 bits, a quotient of INT32_MIN by
@@ -52,36 +95,52 @@ static int32_t wrap_shl(int32_t a, unsigned bits) { return (int32_t)((uint32_t)a
 static int32_t wrap_neg(int32_t a) { return (int32_t)(0u - (uint32_t)a); }
 static int32_t wrap_div(int32_t n, int32_t d) { return d == -1 ? wrap_neg(n) : n / d; }
 
+/* the ARM7TDMI's multiply ends early: a cycle for each byte of the multiplier above its lowest that is not all zeros
+   or all ones, as mGBA's _mulWait counts it on the product */
+static uint32_t multiply_cycles(int32_t product) {
+    uint32_t r = (uint32_t)product;
+    if ((r & 0xFFFFFF00u) == 0xFFFFFF00u || !(r & 0xFFFFFF00u)) return 1;
+    if ((r & 0xFFFF0000u) == 0xFFFF0000u || !(r & 0xFFFF0000u)) return 2;
+    if ((r & 0xFF000000u) == 0xFF000000u || !(r & 0xFF000000u)) return 3;
+    return 4;
+}
+
 /* Angles are turns in 16 bits: 0x10000 is a full circle, 0x4000 is a right angle. ArcTan takes the tangent t in 1.14
    fixed point and evaluates the BIOS's polynomial in a = -(t * t >> 14), as mGBA's HLE BIOS has it; r1 keeps a and r3
    the polynomial's last term, as the BIOS leaves them */
-static int32_t bios_arctan(int32_t tangent, int32_t* a_out, int32_t* b_out) {
+static int32_t bios_arctan(int32_t tangent, int32_t* a_out, int32_t* b_out, uint32_t* cycles) {
     static const int32_t terms[] = {0x390, 0x91C, 0xFB6, 0x16AA, 0x2081, 0x3651, 0xA2F9};
     int32_t a = wrap_neg(wrap_mul(tangent, tangent) >> 14), b = wrap_mul(0xA9, a) >> 14;
+    /* 37 cycles and each multiply's: as mGBA times the BIOS's */
+    *cycles = 37 + multiply_cycles(wrap_mul(tangent, tangent)) + multiply_cycles(wrap_mul(0xA9, a));
     b += terms[0];
-    for (size_t i = 1; i < sizeof terms / sizeof terms[0]; ++i) b = (wrap_mul(b, a) >> 14) + terms[i];
+    for (size_t i = 1; i < sizeof terms / sizeof terms[0]; ++i) {
+        *cycles += multiply_cycles(wrap_mul(b, a));
+        b = (wrap_mul(b, a) >> 14) + terms[i];
+    }
     if (a_out) *a_out = a;
     if (b_out) *b_out = b;
     return (int16_t)(wrap_mul(tangent, b) >> 16);
 }
 
 /* ArcTan2: the angle of (x, y), ArcTan of the smaller over the larger moved to its octant, as a 16 bit turn */
-static uint16_t bios_arctan2(int32_t x, int32_t y, int32_t* a_out) {
+static uint16_t bios_arctan2(int32_t x, int32_t y, int32_t* a_out, uint32_t* cycles) {
+    *cycles = 11; /* on an axis */
     if (!y) return x >= 0 ? 0 : 0x8000;
     if (!x) return y >= 0 ? 0x4000 : 0xC000;
     int32_t over_x = wrap_div(wrap_shl(y, 14), x), over_y = wrap_div(wrap_shl(x, 14), y);
     if (y >= 0) {
         if (x >= 0) {
-            if (x >= y) return (uint16_t)bios_arctan(over_x, a_out, NULL);
+            if (x >= y) return (uint16_t)bios_arctan(over_x, a_out, NULL, cycles);
         } else if (wrap_neg(x) >= y)
-            return (uint16_t)(bios_arctan(over_x, a_out, NULL) + 0x8000);
-        return (uint16_t)(0x4000 - bios_arctan(over_y, a_out, NULL));
+            return (uint16_t)(bios_arctan(over_x, a_out, NULL, cycles) + 0x8000);
+        return (uint16_t)(0x4000 - bios_arctan(over_y, a_out, NULL, cycles));
     }
     if (x <= 0) {
-        if (wrap_neg(x) > wrap_neg(y)) return (uint16_t)(bios_arctan(over_x, a_out, NULL) + 0x8000);
+        if (wrap_neg(x) > wrap_neg(y)) return (uint16_t)(bios_arctan(over_x, a_out, NULL, cycles) + 0x8000);
     } else if (x >= wrap_neg(y))
-        return (uint16_t)bios_arctan(over_x, a_out, NULL);
-    return (uint16_t)(0xC000 - bios_arctan(over_y, a_out, NULL));
+        return (uint16_t)bios_arctan(over_x, a_out, NULL, cycles);
+    return (uint16_t)(0xC000 - bios_arctan(over_y, a_out, NULL, cycles));
 }
 
 /* CpuSet: r2 carries the unit count, the fill flag (bit 24) and the width (bit 26, 32 bits or 16 bits). */
@@ -217,40 +276,60 @@ static void bios_bit_unpack(AgbBoard* board, uint32_t regs[16]) {
 
 /* The compression streams share a header holding the decompressed size and a signature nibble. Each
    variant writes bytes or halfwords; the VRAM bus only takes halfwords. */
-static void put_byte(AgbBoard* board, uint32_t address, uint8_t value, int halfwords, uint16_t* held, int* count) {
+static int put_byte(AgbBoard* board, uint32_t address, uint8_t value, int halfwords, uint16_t* held, int* count) {
     if (!halfwords) {
         agb_write8(board, address, value);
-        return;
+        return 1;
     }
     *held = (uint16_t)(*held | value << (8 * *count));
     *count ^= 1;
-    if (!*count) {
-        agb_write16(board, address & ~(uint32_t)1, *held);
-        *held = 0;
-    }
+    if (*count) return 0;
+    agb_write16(board, address & ~(uint32_t)1, *held);
+    *held = 0;
+    return 1;
 }
 
+/* an access of a BIOS loop that moves a unit at a time: a first access each (its wait states), and a load's internal
+   cycle, as mGBA counts its decompressors' */
+static uint32_t lone_access(const AgbBoard* board, uint32_t address, unsigned width, int load) {
+    return agb_access_cycles(board, address, width, 0) + (load ? 1u : 0u);
+}
+
+/* LZ77: the BIOS's loop takes 20 cycles to start, 14 a step (a flag byte or a unit), 18 a unit and 10 a byte a back
+   reference copies (4 more through VRAM's halfwords), beside its accesses, as mGBA's HLE BIOS times it: a 30 KiB
+   picture for VRAM holds the CPU for three frames and more */
 static void bios_lz77_uncomp(AgbBoard* board, uint32_t regs[16], int halfwords) {
+    uint8_t counting = board->counting;
+    board->counting = 0; /* each access counted below as a lone one */
     uint32_t source = regs[0], destination = regs[1], size = agb_read32(board, source) >> 8, written = 0;
+    uint32_t cycles = 20 + lone_access(board, source, 32, 1);
+    unsigned width = halfwords ? 16 : 8;
     uint16_t held = 0;
     int count = 0;
     source += 4;
     while (written < size) {
+        cycles += 14 + lone_access(board, source, 8, 1);
         uint32_t flags = agb_read8(board, source++);
         for (uint32_t bit = 8; bit && written < size; --bit) {
             uint8_t value;
+            cycles += 14 + 18;
             if (flags & 0x80) {
+                cycles += 2 * lone_access(board, source, 8, 1);
                 uint32_t first = agb_read8(board, source++), second = agb_read8(board, source++);
                 uint32_t length = (first >> 4) + 3, distance = ((first & 0xF) << 8 | second) + 1;
                 while (length-- && written < size) {
+                    cycles += 10 + (halfwords ? 4 : 0) + lone_access(board, destination - distance, width, 1);
                     value = agb_read8(board, destination - distance);
-                    put_byte(board, destination, value, halfwords, &held, &count);
+                    if (put_byte(board, destination, value, halfwords, &held, &count))
+                        cycles += lone_access(board, destination, width, 0);
                     ++destination;
                     ++written;
                 }
             } else {
+                cycles += lone_access(board, source, 8, 1);
                 value = agb_read8(board, source++);
-                put_byte(board, destination, value, halfwords, &held, &count);
+                if (put_byte(board, destination, value, halfwords, &held, &count))
+                    cycles += lone_access(board, destination, width, 0);
                 ++destination;
                 ++written;
             }
@@ -258,6 +337,8 @@ static void bios_lz77_uncomp(AgbBoard* board, uint32_t regs[16], int halfwords) 
         }
     }
     if (halfwords && count) agb_write16(board, destination & ~(uint32_t)1, held);
+    board->counting = counting;
+    spend(board, cycles);
 }
 
 /* HuffUnComp, as mGBA's _unHuffman reads the BIOS's: a header (the output's size, the symbols' width in bits), the tree's
@@ -504,21 +585,36 @@ int agb_bios_call(AgbBoard* board, uint32_t swi, uint32_t regs[16]) {
     if (source_refused(swi, regs[0])) return 0;
     switch (swi) {
         case AGB_SWI_REGISTER_RAM_RESET: bios_register_ram_reset(board, regs); break;
-        case AGB_SWI_DIV: bios_div(regs, (int32_t)regs[0], (int32_t)regs[1]); break;
-        case AGB_SWI_DIV_ARM: bios_div(regs, (int32_t)regs[1], (int32_t)regs[0]); break;
-        case AGB_SWI_SQRT: regs[0] = bios_sqrt(regs[0]); break;
+        case AGB_SWI_DIV:
+            spend(board, div_cycles((int32_t)regs[0], (int32_t)regs[1]));
+            bios_div(regs, (int32_t)regs[0], (int32_t)regs[1]);
+            break;
+        case AGB_SWI_DIV_ARM:
+            spend(board, div_cycles((int32_t)regs[1], (int32_t)regs[0]));
+            bios_div(regs, (int32_t)regs[1], (int32_t)regs[0]);
+            break;
+        case AGB_SWI_SQRT: {
+            uint32_t cycles;
+            regs[0] = bios_sqrt(regs[0], &cycles);
+            spend(board, cycles);
+            break;
+        }
         case AGB_SWI_ARCTAN: {
             int32_t a, b;
-            regs[0] = (uint32_t)bios_arctan((int32_t)regs[0], &a, &b);
+            uint32_t cycles;
+            regs[0] = (uint32_t)bios_arctan((int32_t)regs[0], &a, &b, &cycles);
             regs[1] = (uint32_t)a;
             regs[3] = (uint32_t)b;
+            spend(board, cycles);
             break;
         }
         case AGB_SWI_ARCTAN2: {
             int32_t a = (int32_t)regs[1];
-            regs[0] = bios_arctan2((int32_t)regs[0], (int32_t)regs[1], &a);
+            uint32_t cycles;
+            regs[0] = bios_arctan2((int32_t)regs[0], (int32_t)regs[1], &a, &cycles);
             regs[1] = (uint32_t)a;
             regs[3] = 0x170;
+            spend(board, cycles);
             break;
         }
         case AGB_SWI_CPU_SET: bios_cpu_set(board, regs); break;
