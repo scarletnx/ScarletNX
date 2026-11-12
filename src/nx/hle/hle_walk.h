@@ -33,7 +33,6 @@
     X(LibApplet, (h).am.applets[0])                                                                                    \
     X(AudOut, (h).audio.outs_pool[0])                                                                                  \
     X(AudRen, (h).audio.rens[0])                                                                                       \
-    X(AudDevice, (h).audio.devices[0])                                                                                 \
     X(HwOpus, (h).audio.opus[0])                                                                                       \
     X(ARRen, (h).audren.rens[0])                                                                                       \
     X(ARCompressor, (h).audren_dsp.compressors[0])                                                                     \
