@@ -27,6 +27,7 @@ void snx_ctr_object_release(SnxCtrProcess* p, uint32_t id) {
     if (o->type == CTR_OBJ_FILE && !o->data.file.closed) snx_ctr_file_release(p, id);
     if (o->type == CTR_OBJ_SESSION && o->data.session.service == SNX_CTR_SERVICE_GSP) snx_ctr_gsp_session_closed(p, id);
     p->objects[id] = (CtrObject){0};
+    ++p->objects_changed;
 }
 void snx_ctr_thread_block(SnxCtrProcess* p, uint32_t id, uint32_t address) {
     CtrThread* t = snx_ctr_thread(p);
@@ -41,12 +42,26 @@ uint64_t snx_ctr_now_ns(void) { return (uint64_t)(snx_ctr_clock_seconds() * 1e9)
 /* Every thread's effective priority: its own, improved to the best effective priority of the threads waiting on a
    mutex it holds, transitively (Azahar Mutex::UpdatePriority and Thread::UpdatePriority). A chain is at most as long
    as the threads, and each round that changes nothing ends it. */
+void snx_ctr_sched_lists(SnxCtrProcess* p) {
+    if (p->sched_listed == p->objects_changed) return;
+    p->sched_thread_count = p->sched_timer_count = 0;
+    for (uint32_t i = 1; i < CTR_OBJECTS; ++i) {
+        if (p->objects[i].type == CTR_OBJ_THREAD) p->sched_threads[p->sched_thread_count++] = (uint16_t)i;
+        if (p->objects[i].type == CTR_OBJ_TIMER) p->sched_timers[p->sched_timer_count++] = (uint16_t)i;
+    }
+    p->sched_listed = p->objects_changed;
+}
 void snx_ctr_thread_priorities(SnxCtrProcess* p, uint32_t* priority) {
-    for (uint32_t i = 1; i < CTR_OBJECTS; ++i)
-        priority[i] = p->objects[i].type == CTR_OBJ_THREAD ? p->objects[i].data.thread.priority : 64;
+    snx_ctr_sched_lists(p);
+    for (uint32_t i = 1; i < CTR_OBJECTS; ++i) priority[i] = 64;
+    for (uint32_t n = 0; n < p->sched_thread_count; ++n) {
+        uint32_t i = p->sched_threads[n];
+        if (p->objects[i].type == CTR_OBJ_THREAD) priority[i] = p->objects[i].data.thread.priority;
+    }
     for (uint32_t round = 0; round < CTR_THREAD_LIMIT; ++round) {
         bool changed = false;
-        for (uint32_t i = 1; i < CTR_OBJECTS; ++i) {
+        for (uint32_t n = 0; n < p->sched_thread_count; ++n) {
+            uint32_t i = p->sched_threads[n];
             const CtrThread* t = &p->objects[i].data.thread;
             if (p->objects[i].type != CTR_OBJ_THREAD || t->dead || !t->waiting_object) continue;
             for (uint32_t j = 0; j <= t->wait_more_count; ++j) {
@@ -381,14 +396,17 @@ SnxCtrSchedule snx_ctr_schedule(SnxCtrProcess* p) {
         if (now >= snx_ctr_cam_deadline(p)) snx_ctr_cam_update(p, now);
         if (now >= snx_ctr_csnd_deadline(p)) snx_ctr_csnd_update(p, now);
         if (now >= p->time_update_ns) snx_ctr_shared_page_time(p);
-        for (uint32_t i = 1; i < CTR_OBJECTS; ++i) {
+        snx_ctr_sched_lists(p);
+        for (uint32_t n = 0; n < p->sched_timer_count; ++n) {
+            uint32_t i = p->sched_timers[n];
             CtrObject* o = &p->objects[i];
             if (o->type != CTR_OBJ_TIMER || !o->data.timer.deadline) continue;
             if (o->data.timer.deadline <= now) snx_ctr_timer_signal(p, i, now);
             if (o->data.timer.deadline && o->data.timer.deadline < earliest) earliest = o->data.timer.deadline;
         }
         /* deadlines first: sleeps end and waits time out, which makes those threads runnable */
-        for (uint32_t i = 1; i < CTR_OBJECTS; ++i) {
+        for (uint32_t n = 0; n < p->sched_thread_count; ++n) {
+            uint32_t i = p->sched_threads[n];
             if (p->objects[i].type != CTR_OBJ_THREAD) continue;
             CtrThread* t = &p->objects[i].data.thread;
             if (t->dead || !t->wake_ns) continue;
@@ -413,7 +431,8 @@ SnxCtrSchedule snx_ctr_schedule(SnxCtrProcess* p) {
         for (uint32_t turn = 0; turn < 4 && !next; ++turn) {
             core = (p->next_core + turn) & 3;
             uint32_t yielded = 0, own = p->core_thread[core];
-            for (uint32_t i = 1; i < CTR_OBJECTS; ++i) {
+            for (uint32_t n = 0; n < p->sched_thread_count; ++n) {
+                uint32_t i = p->sched_threads[n];
                 if (p->objects[i].type != CTR_OBJ_THREAD) continue;
                 CtrThread* t = &p->objects[i].data.thread;
                 if (t->dead || t->wake_ns || t->waiting_object || (t->core & 3) != core) continue;

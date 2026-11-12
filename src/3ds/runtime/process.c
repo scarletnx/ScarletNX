@@ -148,6 +148,7 @@ SnxCtrProcess* snx_ctr_process_new(const SnxCtrImage* image, SnxCtrModel model) 
     p->physical_end = p->physical_next + p->app_limit;
     p->objects[1] = (CtrObject){.type = CTR_OBJ_PROCESS, .refs = 1};
     p->objects[2] = (CtrObject){.type = CTR_OBJ_THREAD, .refs = 1};
+    p->objects_changed = 1; /* the scheduler's lists are made at its first pass */
     p->current_thread = 2;
     /* the ExHeader's ARM11 local capabilities give the main thread's priority (Azahar Process::Run) */
     p->objects[2].data.thread.priority = image->main_priority;
