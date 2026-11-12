@@ -21,6 +21,7 @@
 #include "nx/runtime/platform/tracy.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
+#include "nx/gpu/vk/pagespace.h"
 #include "nx/gpu/vk/range_shape.h"
 #include "nx/gpu/vk/resource_stats.h"
 #include "nx/gpu/vk/descriptors.h"
@@ -34,6 +35,13 @@ typedef struct {
     u64 cs_adds, gfx_adds; /* vk_compute_adds and vk_buf_adds when pending results were last checked for */
     u64 frame; /* the staging frame buf/off point into, when not own */
     int own;   /* buf is this entry's own buffer */
+    /* 1: the page cache serves it (pagespace.c), and it takes no buffer of its own: one made at a lookup the pages
+       refused was dropped at the next lookup they served and made again at the next refusal, 548 MB more of such
+       copies in 600 presents of one game. -1: the page cache found a page of it changed after a draw of the same
+       submission read it, so it lies on pages the game writes between its draws, beside what it streams there. It
+       is not asked of the pages again while the entry lives, and is kept as before them: copied to the ring at every
+       submission instead, 174000 ranges that had not changed were copied in 600 presents, twice as many as before */
+    int paged;
     u32 wseen; /* write-tracking clock when it last matched memory */
     u32 host_gen; /* g_vb_map_gen when host_cpu was found: 0 never */
     u64 host_cpu; /* the guest memory the range shows, ~0 for none (entry_host) */
@@ -3538,6 +3546,30 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
        that shares memory with the CPU. Not GPU-owned bytes, which only the GPU holds */
     if (inplace && vk_uma() && !range_owned(gva, len) && vk_uma_get(gva, len, align, buf, off)) return 1;
     if (inplace == IN_ONLY) return 0;
+    /* The page cache (pagespace.c), which holds the bytes by guest page: a range it serves binds its region's buffer
+       with no copy while its pages hold still, and takes no buffer of its own. Not GPU-owned bytes nor bytes written in
+       place by a submission not done (buf_get_owned copies those on the GPU), not a range a queued report still
+       writes counts into (draw_bytes), and not a copy engine's source, which is compared where the tracking does
+       not look (strict 2). The entry stays for what it records of the pending results checked above */
+    int pages_hot = 0;
+    if (strict != 2 && (!e || e->paged >= 0) && vk_pages_on() && !range_owned(gva, len) && !vk_uma_pending(gva, len) &&
+        !vk_release_pending(gva, len)) {
+        int got = vk_pages_get(gva, len, align, buf, off);
+        if (got > 0) {
+            if (!e && (i = vb_new(gva, (u32)len))) e = &g_vb[i];
+            if (e) {
+                if (!e->paged) drop_own(i); /* the pages have its bytes now */
+                e->paged = 1;
+                e->cs_adds = vk_compute_adds();
+                e->gfx_adds = vk_buf_adds();
+                e->epoch = epoch;
+                e->used = g_vk_present;
+            }
+            return 1;
+        }
+        pages_hot = got < 0;
+        if (pages_hot && e) e->paged = -1;
+    }
     /* valid: the data is where draws can read it this frame */
     /* not while an in-place write is pending over it: a copy from before the write would be read */
     int valid = e && e->buf && (e->own || e->frame == vk_submit_number()) && !vk_uma_pending(gva, len);
@@ -3642,6 +3674,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
         e->hash = h ^ 1;
         e->cs_adds = vk_compute_adds(); /* checked for pending results above */
         e->gfx_adds = vk_buf_adds();
+        if (pages_hot) e->paged = -1;
     }
     int changed = e->hash != h;
     if (e->hash == h && e->stable < 100000)
@@ -3674,7 +3707,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
            and an 8192x8192 RGBA8 texture's levels took 760 MiB of them that nothing read again, where a phone had
            1 GB available. Such a source takes one once it stays the same, as every other range does */
         int at_once = len >= PATCH_MIN && g_ww > 0 && (strict != 2 || len <= copy_src_at_once());
-        if (ncounts || !((e->stable >= 2 || at_once) && make_own(i, sb, so))) {
+        if (ncounts || e->paged > 0 || !((e->stable >= 2 || at_once) && make_own(i, sb, so))) {
             /* changing (or new) data: read from this frame's staging ring */
             e->buf = sb;
             e->off = so;
@@ -4018,6 +4051,7 @@ static void pool_report(void) {
 /* buffers not read for twenty seconds, and in 120 presents, go */
 static void buf_frame(void) {
     vk_uma_frame();
+    vk_pages_frame();
     if (g_vk_present % 4) return;
     vk_wlog_trim();
     if (copy_stats_on() && g_vk_present % 600 == 0) {
@@ -4096,6 +4130,7 @@ static void buf_frame(void) {
         vk_gfx_image_report();
         shape_report();
         pool_report();
+        vk_pages_log();
         LOG("vulkan: windows over 600 presents: %llu made, %llu kept through a change of the mappings, %llu ended by "
             "one\n",
             (unsigned long long)g_win_made, (unsigned long long)g_win_kept, (unsigned long long)g_win_ended);
@@ -4134,6 +4169,7 @@ void vk_buf_frame(void) {
 void vk_buf_forget_all(void) {
     u32 i;
     vk_uma_forget_all();
+    vk_pages_forget_all();
     for (i = 1; i < g_nvb; i++) /* entry 0 is none: vb_new never writes it, and its bytes are what malloc gave */
         if (g_vb[i].len) {
             drop_own(i);

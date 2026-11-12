@@ -40,7 +40,8 @@ static int check_pending_index(void) {
     CHECK(buf == out[K] && at == out_at[K]);
     u64 one = vk_buf_pending_inspected() - seen;
     /* the rest of its page: no byte of a result there, guest memory (two searches, one result each: the source's,
-       then the read of guest memory's own before it reads) */
+       then the read of guest memory's own before it reads; one with the page cache, which takes whole pages of
+       guest memory after the source's search found no result over the range) */
     seen = vk_buf_pending_inspected();
     CHECK(vk_buf_get_input(gva + K * 4096ull + HALF, HALF, 1, &buf, &at));
     CHECK(!(buf == out[K] && at == out_at[K]));
@@ -68,7 +69,8 @@ static int check_pending_index(void) {
            "another address, %llu over %u results' pages, %llu over an unmapped page, of %u pending\n",
            (unsigned long long)one, (unsigned long long)beside, (unsigned long long)page, (unsigned long long)other,
            (unsigned long long)many, MANY, (unsigned long long)unmapped, RESULTS + 1);
-    CHECK(one == 1 && beside == 2 && page == 1 && other == 2 && many == 2 * MANY && unmapped == 1);
+    CHECK(one == 1 && beside == (vk_pages_on() ? 1u : 2u) && page == 1 && other == 2 && many == 2 * MANY &&
+          unmapped == 1);
     vk_finish();
     vk_unlock();
     for (u32 i = 0; i < RESULTS; i++)

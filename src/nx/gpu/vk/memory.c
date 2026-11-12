@@ -71,12 +71,21 @@ typedef struct {
     u64 gfx;   /* the graphics timeline value it waits for, 0 none */
     u64 after; /* the batch before it, 0 none */
     u64 value; /* its own on the bind timeline */
-    u32 nimg, nopaque;
+    u32 nimg, nopaque, nbuf; /* its entries of each kind */
 } BindHead;
+/* kind: BIND_BLOCKS an image's blocks (VkSparseImageMemoryBind each), BIND_OPAQUE an image in pieces and BIND_BUFFER
+   a buffer's ranges (VkSparseMemoryBind each) */
+enum { BIND_BLOCKS, BIND_OPAQUE, BIND_BUFFER };
 typedef struct {
-    VkImage img;
-    u32 n, opaque;
+    union {
+        VkImage img;
+        VkBuffer buf;
+    } of;
+    u32 n, kind;
 } BindOne;
+static u64 bind_each(u32 kind) {
+    return kind == BIND_BLOCKS ? sizeof(VkSparseImageMemoryBind) : sizeof(VkSparseMemoryBind);
+}
 /* a batch's bytes at most, a quarter of the recording thread's ring: the 7644 blocks of a volume in one batch */
 #define BIND_CAP (1u << 20)
 #define GONE_CAP (BIND_CAP / sizeof(VkSparseImageMemoryBind)) /* at most one released block for each bind */
@@ -159,17 +168,21 @@ static void bind_run(const void* arg) {
     const u8* at = (const u8*)(h + 1);
     VkSparseImageMemoryBindInfo* img = calloc(h->nimg + 1, sizeof *img);
     VkSparseImageOpaqueMemoryBindInfo* opaque = calloc(h->nopaque + 1, sizeof *opaque);
-    u32 ni = 0, no = 0, binds = 0;
-    if (!img || !opaque) fatal("vulkan: out of memory for a batch of %u sparse binds", h->nimg + h->nopaque);
-    for (u32 k = 0; k < h->nimg + h->nopaque; k++) {
+    VkSparseBufferMemoryBindInfo* buf = calloc(h->nbuf + 1, sizeof *buf);
+    u32 ni = 0, no = 0, nb = 0, binds = 0;
+    if (!img || !opaque || !buf)
+        fatal("vulkan: out of memory for a batch of %u sparse binds", h->nimg + h->nopaque + h->nbuf);
+    for (u32 k = 0; k < h->nimg + h->nopaque + h->nbuf; k++) {
         BindOne one;
         memcpy(&one, at, sizeof one);
         at += sizeof one;
-        if (one.opaque)
-            opaque[no++] = (VkSparseImageOpaqueMemoryBindInfo){one.img, one.n, (const VkSparseMemoryBind*)at};
+        if (one.kind == BIND_BUFFER)
+            buf[nb++] = (VkSparseBufferMemoryBindInfo){one.of.buf, one.n, (const VkSparseMemoryBind*)at};
+        else if (one.kind == BIND_OPAQUE)
+            opaque[no++] = (VkSparseImageOpaqueMemoryBindInfo){one.of.img, one.n, (const VkSparseMemoryBind*)at};
         else
-            img[ni++] = (VkSparseImageMemoryBindInfo){one.img, one.n, (const VkSparseImageMemoryBind*)at};
-        at += (u64)one.n * (one.opaque ? sizeof(VkSparseMemoryBind) : sizeof(VkSparseImageMemoryBind));
+            img[ni++] = (VkSparseImageMemoryBindInfo){one.of.img, one.n, (const VkSparseImageMemoryBind*)at};
+        at += (u64)one.n * bind_each(one.kind);
         binds += one.n;
     }
     VkSemaphore wait[2];
@@ -186,6 +199,8 @@ static void bind_run(const void* arg) {
                            .pNext = &ts,
                            .waitSemaphoreCount = nw,
                            .pWaitSemaphores = wait,
+                           .bufferBindCount = nb,
+                           .pBufferBinds = buf,
                            .imageOpaqueBindCount = no,
                            .pImageOpaqueBinds = opaque,
                            .imageBindCount = ni,
@@ -199,6 +214,7 @@ static void bind_run(const void* arg) {
     for (u32 k = 0; k < no; k++) unissued_remove(opaque[k].image);
     free(img);
     free(opaque);
+    free(buf);
     if (!VK_OK(r))
         fatal("vulkan: sparse bind batch %llu of %u binds failed (%d)", (unsigned long long)h->value, binds, (int)r);
 }
@@ -248,9 +264,10 @@ static int bind_ready(void) {
 /* one bind of img into the batch, after the others of img: a VkSparseMemoryBind when opaque, else a
    VkSparseImageMemoryBind, each bytes. gone: the memory it lets go (VK_NULL_HANDLE none), size bytes, freed after
    the batch. readers: the batch waits for the work submitted before it. The batch it went into */
-static u64 bind_add(VkImage img, int opaque, const void* bind, u64 each, VmaAllocation gone, u64 size, int readers) {
+static u64 bind_put(BindOne key, const void* bind, VmaAllocation gone, u64 size, int readers) {
+    u64 each = bind_each(key.kind);
     if (g_bind.used + sizeof(BindOne) + each > BIND_CAP || g_bind.ngone == GONE_CAP) bind_flush();
-    unissued_add(img);
+    if (key.kind != BIND_BUFFER) unissued_add(key.of.img);
     if (!g_bind.used) {
         memset(g_bind.buf, 0, sizeof(BindHead));
         g_bind.used = sizeof(BindHead);
@@ -258,11 +275,15 @@ static u64 bind_add(VkImage img, int opaque, const void* bind, u64 each, VmaAllo
     BindHead* h = (BindHead*)(void*)g_bind.buf;
     BindOne one;
     if (g_bind.last) memcpy(&one, g_bind.buf + g_bind.last, sizeof one);
-    if (!g_bind.last || one.img != img || one.opaque != (u32)opaque) {
-        one = (BindOne){img, 0, (u32)opaque};
+    /* the bytes compared: a key is made zeroed, and a buffer's handle is as wide as an image's */
+    if (!g_bind.last || one.kind != key.kind || memcmp(&one.of, &key.of, sizeof one.of)) {
+        one = key;
+        one.n = 0;
         g_bind.last = g_bind.used;
         g_bind.used += sizeof one;
-        if (opaque)
+        if (key.kind == BIND_BUFFER)
+            h->nbuf++;
+        else if (key.kind == BIND_OPAQUE)
             h->nopaque++;
         else
             h->nimg++;
@@ -279,6 +300,23 @@ static u64 bind_add(VkImage img, int opaque, const void* bind, u64 each, VmaAllo
     return g_bind.issued + 1;
 }
 
+static u64 bind_add(VkImage img, int opaque, const void* bind, u64 each, VmaAllocation gone, u64 size, int readers) {
+    BindOne key;
+    memset(&key, 0, sizeof key); /* compared by its bytes (bind_put) */
+    key.of.img = img;
+    key.kind = opaque ? BIND_OPAQUE : BIND_BLOCKS;
+    (void)each;
+    return bind_put(key, bind, gone, size, readers);
+}
+u64 vk_buffer_sparse_bind(VkBuffer buf, const VkSparseMemoryBind* bind, VmaAllocation gone, u64 size, int readers) {
+    if (!bind_ready()) return 0;
+    BindOne key;
+    memset(&key, 0, sizeof key);
+    key.of.buf = buf;
+    key.kind = BIND_BUFFER;
+    return bind_put(key, bind, gone, size, readers);
+}
+
 /* an image going: its binds still in the batch leave it (the memory they let go is still freed after the batch). One
    whose batch went to the queue is destroyed once the frames' work is done (vk_defer_image), the batch with it */
 static void bind_drop(const Pieces* p) {
@@ -288,17 +326,17 @@ static void bind_drop(const Pieces* p) {
     while (at < g_bind.used) {
         BindOne one;
         memcpy(&one, g_bind.buf + at, sizeof one);
-        u64 len = sizeof one + (u64)one.n * (one.opaque ? sizeof(VkSparseMemoryBind) : sizeof(VkSparseImageMemoryBind));
-        if (one.img != p->img) {
+        u64 len = sizeof one + (u64)one.n * bind_each(one.kind);
+        if (one.kind == BIND_BUFFER || one.of.img != p->img) {
             memmove(g_bind.buf + to, g_bind.buf + at, len);
             to += len;
-        } else if (one.opaque)
+        } else if (one.kind == BIND_OPAQUE)
             h->nopaque--;
         else
             h->nimg--;
         at += len;
     }
-    g_bind.used = h->nimg + h->nopaque ? to : 0;
+    g_bind.used = h->nimg + h->nopaque + h->nbuf ? to : 0;
     g_bind.last = 0; /* the next bind starts an entry of its own */
 }
 
