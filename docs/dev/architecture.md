@@ -152,6 +152,15 @@ the game's image read from that image.
   ([Hooks](../platforms/nx/hooks.md#how-a-call-reaches-a-hook)). An NRO's module binds its stubs the same way
   ([NRO](../platforms/nx/nro.md)). `ctest -R plt_calls` (`tests/plt_calls.c`) recompiles a game of two modules and
   runs its calls with each slot unbound, bound and holding another function, and with a stub's code changed.
+- A game links itself: the `rtld` module it carries relocates every module and binds their symbols before it enters
+  the SDK. The runtime has a linker of its own, `src/nx/loader/relocate.c`: DT_RELR's and DT_RELA's relative
+  relocations, and `ABS64`, `GLOB_DAT` and `JUMP_SLOT` by the rule a game's rtld follows (the first definition of the
+  name that is not local, among the modules in load order; the module's own for a protected or hidden symbol; 0 for
+  a weak symbol nothing defines). For now it only proves itself: `runtime/linker.c` links a copy of the modules' data
+  when they are loaded, and at the game's first call of `nn::init::Start`, the last thing its linker does, compares
+  every relocated word of the game's memory with the copy. The log's `linker:` line gives the count, or how many
+  differ and the first of them. The game's memory is only read. Not under NCE, nor for a 32-bit game. `ctest -R
+  loader_relocate` (`tests/relocate_test.c`) links three modules with every kind of relocation.
 - The LLVM backend's speed: guest memory and the CPU structure are separate alias scopes (registers stay in host
   registers). Guest accesses are unaligned, and volatile only when `volatile_memory` is enabled (off by default).
   Logical immediates and SIMD

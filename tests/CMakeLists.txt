@@ -2384,6 +2384,14 @@ endif()
 add_executable(snx-test-runtime-variants runtime_variants.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/guest_jit.c")
 snx_test_target(snx-test-runtime-variants 11)
 target_link_libraries(snx-test-runtime-variants PRIVATE scarletnx-common scarletnx-filesystem snx_settings)
+# the runtime's linker beside the game's own (runtime/linker.c): nn::init::Start's slot taken until its first call,
+# when the game's memory is compared with the copy the runtime linked
+add_executable(snx-test-runtime-linker runtime_linker.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/linker.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/loader/relocate.c")
+snx_test_target(snx-test-runtime-linker 11)
+target_link_libraries(snx-test-runtime-linker PRIVATE scarletnx-common scarletnx-filesystem snx_settings)
+add_test(NAME runtime_linker COMMAND snx-test-runtime-linker)
+add_test(NAME runtime_linker_differ COMMAND snx-test-runtime-linker differ)
 # an NRO's own AOT module (nro_module_fixture.c, a descriptor and two functions by hand), which guest_jit.c loads for
 # the NRO mapped at the address it was made for: runtime_variants copies it under the names the NROs' hashes give
 add_library(snx-test-nro-module MODULE nro_module_fixture.c)

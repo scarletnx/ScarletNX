@@ -31,6 +31,7 @@
 #include "nx/runtime/arm.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/gdbstub.h"
+#include "nx/runtime/linker.h"
 #include "nx/runtime/loader.h"
 #include "nx/loader/ounce.h"
 #include "nx/runtime/options.h"
@@ -1281,6 +1282,7 @@ int snx_main(int argc, char** argv) {
     kernel_load_symbols();
     hook_install(); /* before NVN, which takes what a slot holds, and the JIT, which reads the slots */
     nvn_loader_init();
+    linker_init(); /* after the hooks and NVN, whose slots it leaves alone */
     /* after NVN, which says whether calls must go through the slots it takes. The JIT compiles A64: a 32-bit
        game's blocks are arm.c's, and its hints are A32 block keys the JIT must not warm-compile */
     if (!g_arm_mod && !nce_on()) jit_init();
