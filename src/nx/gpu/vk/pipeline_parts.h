@@ -107,6 +107,13 @@ typedef struct {
 /* k's parts: fs is the fragment program the pipeline gets (k->fs, or the empty one for none) */
 void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d, PipeViKey* vi, PipePrKey* pr,
                    PipeFsKey* f, PipeFoKey* fo);
+/* PipeKey.fs_spec of a draw: its state for the specialization constants the fragment module declares (declared,
+   ShaderInfo.spec), and 0 for the others, so that a program which reads none of this state is drawn by one pipeline
+   whatever the state is. The alpha test off is its function always. PointCoord's T is 0 at row 0, a lower-left
+   window's bottom: the sprite's T flips when its origin (sprite_origin, 1 the top) is the other side */
+u32 vk_pipe_fs_spec(u32 declared, int alpha_test, u32 alpha_func, int lower_left, int sprite_origin);
+/* what a pipeline of fs_spec gives each constant, by SpecId: the defaults for 0 */
+void vk_pipe_fs_spec_values(u32 fs_spec, u32 values[SH_SPEC_COUNT]);
 /* the whole key a part (VK_PART_*) of key is made from: what the part's key holds and nothing else, so that one part
    is made the same whatever pipeline needed it first, and a part made without a draw (the programs a game ships)
    is the one a draw makes. Its split gives key back for that part */

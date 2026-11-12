@@ -4123,7 +4123,7 @@ static void scaled_texel_fetch(void) {
         env.ubo_words[SNX_VKB_RS] = 4;
         env.push[4] = cases[at].scaled; /* the uvec4 after the fragment stage's vec4: slot 0's bit, the clip's height */
         env.spec[SH_SPEC_LOWER_LEFT] = cases[at].lower_left;
-        env.spec_given = 1u << SH_SPEC_LOWER_LEFT;
+        env.spec_given = cases[at].lower_left ? 1u << SH_SPEC_LOWER_LEFT : 0; /* upper left is the default */
         env.push[7] = 8;
         env.push[12] = cases[at].own; /* the uvec4 at byte 96: slot 0's target has the size drawn to */
         const char* why = spv_eval(code, words, &env);

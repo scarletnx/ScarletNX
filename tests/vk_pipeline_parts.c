@@ -339,6 +339,30 @@ static void check_split(void) {
         }
 }
 
+/* ---- the fragment module's specialization constants in the key (vk_pipe_fs_spec): every state of the constants a
+   module declares gives the pipeline those values back, and a constant it does not declare stays out of the key */
+static void check_fs_spec(void) {
+    for (u32 declared = 0; declared < 1u << SH_SPEC_COUNT; declared++)
+        for (u32 state = 0; state < 64; state++) {
+            int alpha_test = state & 1, lower_left = state >> 1 & 1, sprite_origin = state >> 2 & 1;
+            u32 alpha_func = state >> 3, values[SH_SPEC_COUNT];
+            u32 spec = vk_pipe_fs_spec(declared, alpha_test, alpha_func, lower_left, sprite_origin);
+            vk_pipe_fs_spec_values(spec, values);
+            u32 want[SH_SPEC_COUNT] = {SH_SPEC_ALPHA_ALWAYS, 0, 0};
+            if (declared >> SH_SPEC_ALPHA & 1) want[SH_SPEC_ALPHA] = alpha_test ? alpha_func : SH_SPEC_ALPHA_ALWAYS;
+            if (declared >> SH_SPEC_LOWER_LEFT & 1) want[SH_SPEC_LOWER_LEFT] = (u32)lower_left;
+            if (declared >> SH_SPEC_SPRITE_FLIP & 1) want[SH_SPEC_SPRITE_FLIP] = sprite_origin == lower_left;
+            if (memcmp(values, want, sizeof want))
+                fprintf(stderr, "constants %x, state %u: the pipeline gives %u %u %u, not %u %u %u\n", declared, state,
+                        values[0], values[1], values[2], want[0], want[1], want[2]);
+            CHECK(!memcmp(values, want, sizeof want), "a pipeline gives the declared constants the draw's state");
+            CHECK(declared || !spec, "a module with no constant takes no pipeline of its own for the state");
+        }
+    CHECK(!vk_pipe_fs_spec(1u << SH_SPEC_ALPHA, 1, SH_SPEC_ALPHA_ALWAYS, 1, 0) &&
+              !vk_pipe_fs_spec(1u << SH_SPEC_ALPHA, 0, 3, 0, 1),
+          "the test off and the function always are one pipeline, whatever the origin, for a module with no other");
+}
+
 static void say(const char* line, int warn) {
     (void)warn;
     g_test.said++;
@@ -400,6 +424,7 @@ int main(void) {
     check_bans();
     check_states();
     check_split();
+    check_fs_spec();
     printf("%s: %u checks, %u failed\n", g_test.failures ? "FAIL" : "PASS", g_test.checks, g_test.failures);
     return g_test.failures != 0;
 }
