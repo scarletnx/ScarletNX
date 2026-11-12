@@ -2206,10 +2206,15 @@ if(NOT SNX_TOOLS_ONLY)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         # The real cache saver with a fake driver: compilation defers periodic snapshots without losing dirty work.
         # Include only its implementation; sanitizer-retained callback tables make whole-file linker GC unsuitable.
-        add_executable(snx-test-vk-pipeline-save vk_pipeline_save.c)
-        snx_test_target(snx-test-vk-pipeline-save 23)
-        target_link_libraries(snx-test-vk-pipeline-save PRIVATE snx_nx_flags)
-        add_test(NAME vk_pipeline_save COMMAND snx-test-vk-pipeline-save)
+        # It writes through the common writer (common/gpu/vk/vk_common.c), which calls volk's pointers
+        if(TARGET snx_vk_common)
+            add_executable(snx-test-vk-pipeline-save vk_pipeline_save.c "${volk_SOURCE_DIR}/volk.c")
+            set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS
+                                        "${snx_third_party_flags}")
+            snx_test_target(snx-test-vk-pipeline-save 23)
+            target_link_libraries(snx-test-vk-pipeline-save PRIVATE snx_nx_flags snx_vk_common)
+            add_test(NAME vk_pipeline_save COMMAND snx-test-vk-pipeline-save)
+        endif()
     endif()
     # graphics storage images' write-backs (gpu/vk/image_out.c) against a stand-in GPU: a draw over one whose copy is
     # recorded goes on from it with no read or wait, and they land in order, each over the bytes the last one left
