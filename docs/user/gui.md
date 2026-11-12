@@ -455,7 +455,9 @@ Status box. See [GNU ABI](../platforms/gnuabi/README.md) for supported Linux ELF
 The first start opens on the setup, not the menu, a page at a time, each a tab at the top under its number: the
 notices of what older versions did that this one does otherwise (only said, nothing moves:
 [Deprecations](deprecations.md)), then **Appearance**, **Install**, **Folders**, **Keys** and **User**
-([Usage](usage.md#setup) has what each asks, the terminal's setup too). Its boxes say what the page is about; its
+([Usage](usage.md#setup) has what each asks, the terminal's setup too). Its boxes say what the page is about, a box
+with more rows than it holds rolling them up a row every 0.6 s and back, an arrow at its right while some are above or
+under them and a scroll bar between the arrows, so none is cut; its
 question and choices come as the theme's `[body] options-dialog` places a question ([Themes](#themes)), over the boxes
 without darkening them; its tip, and what a choice did or why it did not, are in the foot. Up/Down (or the mouse)
 move between the choices, Enter takes one and ESC goes back a page, on the first page asking whether to exit. The
