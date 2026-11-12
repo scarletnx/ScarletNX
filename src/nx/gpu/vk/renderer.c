@@ -776,6 +776,10 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                     (unsigned long long)(upload_bytes >> 20), (unsigned long long)partial,
                     (unsigned long long)(partial_bytes >> 20), (unsigned long long)slow_frames,
                     (unsigned long long)(slowest_ns / 1000000));
+                if (vk_shader_folds())
+                    LOG("vulkan: %llu of those shaders translated again, to hold more of their draws' constant buffer "
+                        "words as constants\n",
+                        (unsigned long long)vk_shader_folds());
                 slow_frames = slowest_ns = 0;
                 if (g_vk.has_gpl) {
                     u64 made[4], hits[4], make_ms[4], links, link_ms, opts, opt_ms;

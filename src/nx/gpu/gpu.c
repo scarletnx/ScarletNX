@@ -177,6 +177,14 @@ u32 gmem_r32(u64 gva) {
     gmem_read(gva, b, 4);
     return snx_ld_le32(b);
 }
+const u8* gmem_cpu_bytes(u64 gva, u64 size) {
+    u64 cpu = 0, owners = 0;
+    if ((__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) || g_cs_any || g_gfx_any || g_gfx_img_any || g_uma_any) &&
+        mem_pending(gva, size))
+        return NULL;
+    if (!size || gmmu_run(gva, size, &cpu) != size || own_hash(cpu, size, &owners)) return NULL;
+    return GP(cpu);
+}
 void gmem_w32(u64 gva, u32 v) {
     u8 b[4];
     snx_st_le32(b, v);

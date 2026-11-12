@@ -318,6 +318,10 @@ u8* gmem_ptr_untracked(u64 gva, u64 size);
 u8* gmem_host(u64 gva, u64 size);
 /* a word of guest memory as a number (little-endian there) */
 u32 gmem_r32(u64 gva);
+/* the host address of [gva, gva + size) to read, when the CPU alone holds those bytes and they are contiguous. NULL
+   where a queued release, a pending result or an owner on the GPU may hold some of them, which gmem_read lands to
+   read: for a reader that can do without the bytes */
+const u8* gmem_cpu_bytes(u64 gva, u64 size);
 void gmem_w32(u64 gva, u32 v);
 /* the byte offset of (x_bytes, y, z) in a block linear surface width_bytes wide and height rows high, with blocks of
    2^bh_log2 GOBs high and 2^bd_log2 deep (the caller shrinks them for small surfaces, as the hardware does). The

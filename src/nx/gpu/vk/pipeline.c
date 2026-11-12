@@ -25,6 +25,7 @@
 #include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/pipeline_file.h"
 #include "nx/gpu/vk/pipeline_parts.h"
+#include "nx/gpu/vk/cb_fold.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/gpu/vk/tess_passthrough.h"
 #include "nx/gpu/vk/texture_arrays.h"
@@ -59,6 +60,10 @@ typedef struct {
     u32 mask[26], epoch, wseen;
     int stage;
     VkSh* s;
+    /* whether s folds as many constant buffer words as any translation of its program (sh_fold_top), as the tables
+       were at g_pipeline.fold_gen: one that does and holds is the draw's without a look at the others */
+    u32 fold_gen;
+    int fold_top;
 } ShA;
 struct PipeLib;
 typedef struct Pipe {
@@ -137,6 +142,9 @@ static struct {
     VkCbReader rec_read;
     VkCbReads* rec;
     int rec_failed;
+    const VkCbFold* fold; /* how the translation running folds its constant buffer words (fold_read) */
+    int fold_off;         /* vk_cb_fold_switch: no translation folds */
+    u32 fold_gen;         /* counts the shaders put in shh, for ShA.fold_top */
     /* vk_corpus_dir's answer once asked for, and the folder it made for it */
     char corpus_dir[sizeof g_exedir + sizeof "captures/shaders"];
     const char* corpus_at;
@@ -152,6 +160,7 @@ static struct {
     /* for the stats line: pipelines made, the GPU thread's time waiting for new ones, shaders translated and the time
        their translation and modules took (all on the GPU thread) */
     u64 pipes_new, sh_new, sh_ns;
+    u64 sh_folds;           /* of sh_new, the translations made beside one that held, to fold more of a draw's words */
     u64 pipe_wait_ns;       /* the GPU thread's and the recording thread's waits, added atomically */
     u64 pipe_make_ns;       /* the workers' time making pipelines, added atomically */
     u64 pipe_hits;          /* pipelines the pipeline cache had */
@@ -247,6 +256,7 @@ static struct {
        reading thread's alone). A read it didn't make answers that the buffer isn't bound: the shader then keeps that
        read, and a draw whose buffers hold more translates its own (vk_shader_get checks every read) */
     const VkCbReads* replay;
+    u8 replay_word[4]; /* the word of them replay_bytes last gave */
     /* the constants of the program the pass translates now (ship_read), the reading thread's alone */
     const u8* ship_consts;
     size_t ship_nconsts;
@@ -287,6 +297,18 @@ static int sh_cb_read(u32 idx, u32 off, u32* out) {
     *out = in.bytes ? ds_inline_word(in, off) : gmem_r32(a + off);
     return 1;
 }
+/* the bytes sh_cb_read reads, for the words a translation folds or holds folded (VkCbBytes): NULL as well where
+   reading them would land what the GPU holds of them (a result kept there), which a draw that loads the words never
+   does */
+static const u8* sh_cb_bytes(u32 idx, u32 off, u32 size) {
+    if (idx >= 18 || !g_pipeline.sh_ds) return NULL;
+    DsCbBlock in = ds_cb_inline(g_pipeline.sh_ds, g_pipeline.sh_bind, idx);
+    u64 a = g_pipeline.sh_ds->bind.cb_addr[g_pipeline.sh_bind][idx];
+    u32 sz = g_pipeline.sh_ds->bind.cb_size[g_pipeline.sh_bind][idx];
+    u32 limit = in.bytes ? in.size : sz ? sz : 65536;
+    if ((!a && !in.bytes) || limit < size || off > limit - size) return NULL;
+    return in.bytes ? in.bytes + off : gmem_cpu_bytes(a + off, size);
+}
 static int rec_read(u32 idx, u32 off, u32* out) {
     int ok = g_pipeline.rec_read(idx, off, out);
     VkCbReads* reads = g_pipeline.rec;
@@ -300,6 +322,10 @@ static int rec_read(u32 idx, u32 off, u32* out) {
     }
     reads->r[reads->n++] = (VkCbRead){idx, off, (u32)ok, ok ? *out : 0};
     return ok;
+}
+/* the translator's question of a load at a constant place (g_shader_cb_fold), for the translation running */
+static int fold_read(u32 idx, u32 off, u32* out) {
+    return vk_cb_fold_note(g_pipeline.rec, g_pipeline.fold, idx, off, out, &g_pipeline.rec_failed);
 }
 const char* vk_corpus_dir(void) {
     char* dir = g_pipeline.corpus_dir;
@@ -402,12 +428,20 @@ static u32* sm86_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo*
 }
 u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words, VkCbReader read,
                         VkCbReads* reads) {
+    return vk_translate_spirv_fold(code, max_bytes, stage, si, words, read, reads, NULL);
+}
+u32* vk_translate_spirv_fold(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words, VkCbReader read,
+                             VkCbReads* reads, const VkCbFold* fold) {
     pm_lock(&g_pipeline.xlate_lock);
     int (*old)(u32, u32, u32*) = g_shader_cb_read;
     g_pipeline.rec_read = read;
     g_pipeline.rec = reads;
     g_pipeline.rec_failed = 0;
     g_shader_cb_read = rec_read;
+    /* fragment programs, of the translator that asks: a vertex program gains a fifth of it for the same cost */
+    int folds = fold && fold->mode != VK_CB_FOLD_NONE && read && reads && stage == ST_FS && !g_shader_sm86;
+    g_pipeline.fold = fold;
+    g_shader_cb_fold = folds ? fold_read : NULL;
     const VkShaderStageFlagBits stages[] = {VK_SHADER_STAGE_VERTEX_BIT,
                                             VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
                                             VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
@@ -421,7 +455,10 @@ u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si
                                 : shader_to_spirv(code, max_bytes, stage, si, words, g_vk_ftz, g_vk_preserve_infnan,
                                                   g_vk_preserve_infnan64, (g_vk_subgroup_stages & shader_stage) != 0);
     g_shader_cb_read = old;
+    g_shader_cb_fold = NULL;
+    g_pipeline.fold = NULL;
     g_pipeline.rec = NULL;
+    if (folds) vk_cb_reads_sort(reads);
     int failed = g_pipeline.rec_failed;
     pm_unlock(&g_pipeline.xlate_lock);
     if (failed) {
@@ -478,16 +515,6 @@ static int sh_merge_dual(const u8* a, const u8* b, u8* m, VkCbReader read) {
     pm_unlock(&g_pipeline.xlate_lock);
     return merged;
 }
-int vk_cb_reads_hold(const VkCbReads* reads, VkCbReader read) {
-    for (u32 i = 0; i < reads->n; i++) {
-        const VkCbRead* c = &reads->r[i];
-        u32 v = 0;
-        int ok = read(c->idx, c->off, &v);
-        if ((u32)ok != c->ok || (ok && v != c->v)) return 0;
-    }
-    return 1;
-}
-
 u32 g_vk_buffer_image_slots;
 
 VkDescriptorType vk_cbuf_type(u32 slot) {
@@ -925,7 +952,7 @@ static void sh_mesh_sph(ShaderInfo* si, int stage, const u8* code, const u32 mas
    word that its own constants don't hold: a draw's lookup checks the reads against its own buffers, which a read
    that failed never matches */
 static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[26], u32 len, u64 qh, u32 len_a,
-                     u64 qh_a, const ShXfb* xfb, VkCbReader read, int shipped, size_t* nw) {
+                     u64 qh_a, const ShXfb* xfb, VkCbReader read, const VkCbFold* fold, int shipped, size_t* nw) {
     s->shipped = shipped;
     s->hash = h;
     s->stage = stage;
@@ -942,7 +969,9 @@ static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[2
                   stage >= 0 && stage < (int)(sizeof vk_tracy_stage / sizeof *vk_tracy_stage) ? vk_tracy_stage[stage]
                                                                                               : "stage?",
                   (unsigned)h);
-    u32* spv = vk_translate_spirv(code, SH_CODE, stage, &s->si, nw, read, &s->cbr);
+    u32* spv =
+        vk_translate_spirv_fold(code, SH_CODE, stage, &s->si, nw, read, &s->cbr, g_pipeline.fold_off ? NULL : fold);
+    s->nfold = vk_cb_fold_count(&s->cbr);
     SNX_ZONE_VALUE(z_translate, *nw);
     SNX_ZONE_END(z_translate);
     for (int i = 0; i < s->si.ntex; i++) s->indexed |= (s->si.tex[i].flags & SNX_TEX_INDEXED) != 0;
@@ -974,12 +1003,12 @@ static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[2
    made, kept in the shader file with its program. One that couldn't be translated comes back failed; NULL when out
    of memory */
 static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[26], u32 len, u64 qh, u32 len_a,
-                     u64 qh_a, const ShXfb* xfb, VkCbReader read) {
+                     u64 qh_a, const ShXfb* xfb, VkCbReader read, const VkCbFold* fold) {
     size_t nw;
     VkSh* s = calloc(1, sizeof *s);
     if (!s) return NULL;
     SNX_ZONE(z, "shader translate");
-    u32* spv = sh_spirv(s, code, h, stage, mask, len, qh, len_a, qh_a, xfb, read, 0, &nw);
+    u32* spv = sh_spirv(s, code, h, stage, mask, len, qh, len_a, qh_a, xfb, read, fold, 0, &nw);
     SNX_ZONE_END(z);
     if (spv) {
         VkShaderModuleCreateInfo mi = {
@@ -1026,6 +1055,54 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
     }
     return s;
 }
+/* A program's translations (cb_fold.h): the tables hold one for each set of constant buffer words it was made to
+   hold, and a draw takes the one that holds most of those whose words its buffers still have */
+static int sh_same_program(const VkSh* q, u64 h, int stage, const u32 mask[26], u32 len, u64 qh, u32 len_a, u64 qh_a) {
+    return q->hash == h && q->stage == stage && !memcmp(q->mask, mask, sizeof q->mask) && q->clen == len &&
+           q->qh == qh && q->clen_a == len_a && q->qh_a == qh_a;
+}
+static VkSh* sh_holder(u64 h, int stage, const u32 mask[26], u32 len, u64 qh, u32 len_a, u64 qh_a) {
+    VkSh* best = NULL;
+    for (VkSh* q = g_pipeline.shh[h & 1023]; q; q = q->next)
+        if (sh_same_program(q, h, stage, mask, len, qh, len_a, qh_a) && (!best || q->nfold > best->nfold) &&
+            vk_cb_folds_hold(&q->cbr, sh_cb_read, sh_cb_bytes))
+            best = q;
+    return best;
+}
+static int sh_fold_top(const VkSh* s) {
+    for (const VkSh* q = g_pipeline.shh[s->hash & 1023]; q; q = q->next)
+        if (q->nfold > s->nfold && sh_same_program(q, s->hash, s->stage, s->mask, s->clen, s->qh, s->clen_a, s->qh_a))
+            return 0;
+    return 1;
+}
+/* how a translation of the program made now folds: by the count of those a draw's words made (the shipped pass's is
+   not one: it knew the program's own constants alone), whose reads go in others for the one that folds what they
+   agree on */
+static void sh_fold_plan(u64 h, int stage, const u32 mask[26], u32 len, u64 qh, u32 len_a, u64 qh_a, VkCbFold* fold,
+                         const VkCbReads* others[SH_CB_FOLD_VARIANTS]) {
+    u32 made = 0;
+    for (const VkSh* q = g_pipeline.shh[h & 1023]; q; q = q->next)
+        if (sh_same_program(q, h, stage, mask, len, qh, len_a, qh_a) && q->nfold && !q->shipped) {
+            if (made < SH_CB_FOLD_VARIANTS) others[made] = &q->cbr;
+            made++;
+        }
+    *fold = (VkCbFold){.mode = vk_cb_fold_mode(made),
+                       .bytes = sh_cb_bytes,
+                       .others = others,
+                       .nothers = made < SH_CB_FOLD_VARIANTS ? made : SH_CB_FOLD_VARIANTS};
+}
+/* whether a draw takes s, a translation of its program that holds, as it is: 0 when one that folds more of the
+   draw's words is to be made first. Asked once a translation, and once more when another's words stopped holding
+   (again), so that a program whose words change from draw to draw is not asked at each */
+static int sh_fold_settled(VkSh* s, int again) {
+    VkCbFold fold;
+    const VkCbReads* others[SH_CB_FOLD_VARIANTS];
+    if (s->failed || (s->fold_asked && !again)) return 1;
+    s->fold_asked = 1;
+    sh_fold_plan(s->hash, s->stage, s->mask, s->clen, s->qh, s->clen_a, s->qh_a, &fold, others);
+    return fold.mode == VK_CB_FOLD_NONE || !vk_cb_fold_more(&s->cbr, &fold);
+}
+
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                     u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
                     const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint) {
@@ -1104,7 +1181,28 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
             ca->wseen = vk_ww_now();
             ca->gw = gpu_mem_generation();
         }
-        if (same && vk_cb_reads_hold(&s->cbr, sh_cb_read)) return s;
+        if (same) {
+            /* the first time a translation's words stop holding, the program's others are asked again */
+            int again = 0, held = vk_cb_folds_hold(&s->cbr, sh_cb_read, sh_cb_bytes);
+            if (ca->fold_gen != g_pipeline.fold_gen) {
+                ca->fold_top = sh_fold_top(s);
+                ca->fold_gen = g_pipeline.fold_gen;
+            }
+            if (!held) {
+                again = !s->fold_broke;
+                s->fold_broke = 1;
+            }
+            if (!held || !ca->fold_top) {
+                s = sh_holder(s->hash, s->stage, s->mask, s->clen, s->qh, s->clen_a, s->qh_a);
+                if (s) ca->fold_top = sh_fold_top(s);
+            }
+            if (s && sh_fold_settled(s, again)) {
+                ca->s = s;
+                return s;
+            }
+            /* none holds, or one more is to be made: from the program's code, below */
+            if (s) s->fold_asked = 0;
+        }
     } else { /* an empty way, else the one used longest ago */
         ca = &set[0];
         for (int w = 1; w < VK_SHA_WAYS && ca->s; w++)
@@ -1146,39 +1244,50 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
     u32 mlen = len;
     u64 h = g_shader_sm86 && !gva_a ? sm86_hash(code, SH_CODE, len) : vk_shader_hash(code, SH_CODE, &mlen, sh_cb_read);
     mask[20] = shader_absolute_flow(code, mlen) ? (u32)gva : 0;
-    VkSh* s = NULL;
     /* one made for the same program: its whole code hashes the same (the merged program's, and each part's with its
        length, which ShA's checks compare memory with later), with the same key and constant buffer reads. Shaders of
        earlier runs (pf_merge) are found only so */
-    for (VkSh* q = g_pipeline.shh[h & 1023]; q && !s; q = q->next)
-        if (q->hash == h && q->stage == stage && !memcmp(q->mask, mask, sizeof mask) && q->clen == len && q->qh == qh &&
-            q->clen_a == len_a && q->qh_a == qh_a && vk_cb_reads_hold(&q->cbr, sh_cb_read))
-            s = q;
+    VkSh* s = sh_holder(h, stage, mask, len, qh, len_a, qh_a);
     if (s && s->shipped == 1) pf_ship_found(s);
     if (!s && (s = pf_ship_take(h, stage, mask, len, qh, len_a, qh_a)) != NULL) {
         s->next = g_pipeline.shh[h & 1023];
         g_pipeline.shh[h & 1023] = s;
+        g_pipeline.fold_gen++;
     }
-    if (!s) {
-        if (vk_corpus_dir()) { /* the key's words as sh_make takes them into si, which the corpus keeps */
+    if (!s || !sh_fold_settled(s, 0)) {
+        VkCbFold fold;
+        const VkCbReads* others[SH_CB_FOLD_VARIANTS];
+        if (!s && vk_corpus_dir()) { /* the key's words as sh_make takes them into si, which the corpus keeps */
             ShaderInfo si;
             sh_key_info(&si, stage, mask, xfb);
             sh_mesh_sph(&si, stage, code, mask);
             shader_corpus_save(vk_corpus_dir(), code, mlen, SH_CODE, stage, &si, h ^ mix);
         }
         u64 t0 = plat_ns();
-        s = sh_make(code, mlen, h, stage, mask, len, qh, len_a, qh_a, xfb, sh_cb_read);
-        if (!s) {
+        sh_fold_plan(h, stage, mask, len, qh, len_a, qh_a, &fold, others);
+        VkSh* made = sh_make(code, mlen, h, stage, mask, len, qh, len_a, qh_a, xfb, sh_cb_read, &fold);
+        if (!made && !s) {
             free(code);
             return NULL;
         }
-        if (s->failed)
+        if (made && made->failed && !s)
             WARN("vulkan: shader %016llx (stage %d) not translated: %s\n", (unsigned long long)h, stage,
-                 s->si.first_unsupported[0] ? s->si.first_unsupported : "unsupported feature or float controls");
-        g_pipeline.sh_new++;
-        g_pipeline.sh_ns += plat_ns() - t0;
-        s->next = g_pipeline.shh[h & 1023];
-        g_pipeline.shh[h & 1023] = s;
+                 made->si.first_unsupported[0] ? made->si.first_unsupported : "unsupported feature or float controls");
+        if (made && made->failed && s) { /* the one that holds serves, as before the question */
+            free(made->cbr.r);
+            free(made);
+            made = NULL;
+        }
+        if (made) {
+            g_pipeline.sh_new++;
+            g_pipeline.sh_folds += s != NULL;
+            g_pipeline.sh_ns += plat_ns() - t0;
+            made->fold_asked = 1; /* it folded what the draw's words allow */
+            made->next = g_pipeline.shh[h & 1023];
+            g_pipeline.shh[h & 1023] = made;
+            g_pipeline.fold_gen++;
+            if (!s || made->nfold > s->nfold) s = made;
+        }
     }
     free(code);
     ca->gva = gva;
@@ -1190,6 +1299,8 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
     ca->gw = gw;
     ca->shader_generation = g_vk.shader_generation;
     ca->s = s;
+    ca->fold_gen = g_pipeline.fold_gen;
+    ca->fold_top = sh_fold_top(s);
     return s;
 }
 
@@ -1206,7 +1317,7 @@ VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k) 
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s) {
     g_pipeline.sh_ds = ds;
     g_pipeline.sh_bind = sh_bind_stage(s->stage);
-    return vk_cb_reads_hold(&s->cbr, sh_cb_read);
+    return vk_cb_folds_hold(&s->cbr, sh_cb_read, sh_cb_bytes);
 }
 
 VkShaderModule vk_module_spv(const u32* spv, size_t nw) {
@@ -2262,6 +2373,9 @@ void vk_pipeline_stats(u64* pipes, u64* hits, u64* make_ms, u64* wait_ms, u64* s
     *shader_ms = g_pipeline.sh_ns / 1000000;
 }
 
+u64 vk_shader_folds(void) { return g_pipeline.sh_folds; }
+void vk_cb_fold_switch(int on) { g_pipeline.fold_off = !on; }
+
 #include "nx/gpu/vk/pipeline_cache_save.inc"
 
 /* ------------------------------------------------------------ the shaders and pipelines of earlier runs */
@@ -2332,6 +2446,7 @@ void vk_shader_generated_record(VkSh* s, const u32* spv, size_t words, const u8*
     pf_shader_record(s, spv, words, source, bytes, NULL);
     s->next = g_pipeline.shh[s->hash & 1023];
     g_pipeline.shh[s->hash & 1023] = s;
+    g_pipeline.fold_gen++;
 }
 /* a draw's pipeline, made: kept for the next run, its modules by their shaders' records (any thread) */
 static void pf_pipe_record(const PipeKey* k) {
@@ -2373,6 +2488,8 @@ static VkSh* sh_from_record(const PfShader* r, const u32* cbr, const u32* spv) {
         memcpy(s->cbr.r, cbr, r->ncbr * sizeof *s->cbr.r);
         s->cbr.n = r->ncbr;
     }
+    vk_cb_reads_sort(&s->cbr); /* as vk_cb_folds_hold reads them, whatever wrote the record */
+    s->nfold = vk_cb_fold_count(&s->cbr);
     s->hash = r->hash;
     s->shipped = (r->flags & PF_SHIPPED) != 0;
     s->stage = (int)r->stage;
@@ -2401,12 +2518,22 @@ static u64 pf_load_shader(void* ctx, const PfShader* r, const u32* cbr, const u3
     return mod_bits(s->mod);
 }
 static int replay_read(u32 idx, u32 off, u32* out) {
-    for (u32 i = 0; i < g_pipeline.replay->n; i++)
-        if (g_pipeline.replay->r[i].idx == idx && g_pipeline.replay->r[i].off == off) {
-            *out = g_pipeline.replay->r[i].v;
-            return (int)g_pipeline.replay->r[i].ok;
+    for (u32 i = 0; i < g_pipeline.replay->n; i++) {
+        const VkCbRead* c = &g_pipeline.replay->r[i];
+        /* a load that stayed a load read nothing the record kept: the translation again leaves it one */
+        if (c->idx == idx && c->off == off && c->ok != VK_CB_LOAD) {
+            *out = c->v;
+            return c->ok != VK_CB_UNBOUND;
         }
+    }
     return 0;
+}
+/* a word replay_read holds, as bytes (VkCbBytes): the folds of the translation the record was made from */
+static const u8* replay_bytes(u32 idx, u32 off, u32 size) {
+    u32 v = 0;
+    if (size != 4 || !replay_read(idx, off, &v)) return NULL;
+    snx_st_le32(g_pipeline.replay_word, v);
+    return g_pipeline.replay_word;
 }
 /* on the reading thread, in a file of another build or driver being rebuilt: the program a shader was translated
    from, translated again with this build's translator as vk_shader_get would, and recorded in the new file */
@@ -2443,8 +2570,8 @@ static u64 pf_load_source(void* ctx, const PfSource* r, const u32* cbr, const u8
     if (r->ncbr) memcpy(reads, cbr, r->ncbr * sizeof *reads);
     memcpy(window, code, r->ncode);
     g_pipeline.replay = &replay;
-    spv = sh_spirv(s, window, r->hash, (int)r->stage, r->mask, r->clen, r->qh, r->clen_a, r->qh_a, xfb, replay_read, 0,
-                   &nw);
+    spv = sh_spirv(s, window, r->hash, (int)r->stage, r->mask, r->clen, r->qh, r->clen_a, r->qh_a, xfb, replay_read,
+                   &(VkCbFold){.mode = VK_CB_FOLD_VALUES, .bytes = replay_bytes}, 0, &nw);
     g_pipeline.replay = NULL;
     if (!spv || vk_spirv_unavailable(spv, nw) || !(s->mod = vk_module_spv(spv, nw))) goto fail;
     modinfo_put(s->mod, r->hash, (int)r->stage, nw);
@@ -2814,7 +2941,7 @@ static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[26], u32 len, u64 qh,
             : sh_from_record(&r, cbr, spv);
     free(owned); /* sh_from_record copied the reads */
     if (!s) return NULL;
-    if (!vk_cb_reads_hold(&s->cbr, sh_cb_read)) {
+    if (!vk_cb_folds_hold(&s->cbr, sh_cb_read, sh_cb_bytes)) {
         vkDestroyShaderModule(g_vk.dev, s->mod, NULL);
         free(s->cbr.r);
         free(s);
@@ -2833,6 +2960,11 @@ static int ship_read(u32 idx, u32 off, u32* out) {
     if (idx != 1 || g_pipeline.ship_nconsts < 4 || off > g_pipeline.ship_nconsts - 4) return 0;
     *out = snx_ld_le32(g_pipeline.ship_consts + off);
     return 1;
+}
+/* the same constants as bytes (VkCbBytes), for the words the translation folds */
+static const u8* ship_bytes(u32 idx, u32 off, u32 size) {
+    if (idx != 1 || g_pipeline.ship_nconsts < size || off > g_pipeline.ship_nconsts - size) return NULL;
+    return g_pipeline.ship_consts + off;
 }
 /* SH_CODE bytes from p (avail of them), as vk_shader_get reads a program from guest memory: zeros past them */
 static u8* ship_window(const u8* p, size_t avail) {
@@ -2900,7 +3032,9 @@ static int ship_make(const u8* code, u64 h, int stage, u32 len, u64 qh, u32 len_
     mask[6] = ship_clip(stage);
     e = idx_slot(h, stage, mask[6], len, qh, len_a, qh_a);
     if (e && e->at) return SHIP_KNOWN;
-    u32* spv = sh_spirv(&s, code, h, stage, mask, len, qh, len_a, qh_a, NULL, ship_read, 1, &nw);
+    /* of the words a draw will hold, the pass knows the program's own constants */
+    u32* spv = sh_spirv(&s, code, h, stage, mask, len, qh, len_a, qh_a, NULL, ship_read,
+                        &(VkCbFold){.mode = VK_CB_FOLD_VALUES, .bytes = ship_bytes}, 1, &nw);
     int translated = spv != NULL;
     if (spv) at = pf_shader_into(&g_pipeline.pf.ship, &s, 0, spv, nw, NULL, 0, NULL);
     if (translated && nw >= SHIP_WARM_WORDS) ship_warm(stage, s.indexed, spv, nw);
@@ -3184,6 +3318,7 @@ static void pf_merge(void) {
         g_pipeline.pf.sh = s->next;
         s->next = g_pipeline.shh[s->hash & 1023];
         g_pipeline.shh[s->hash & 1023] = s;
+        g_pipeline.fold_gen++;
     }
     g_pipeline.pf.sh_tail = NULL;
     for (u32 b = 0; b < PIPEH; b++)

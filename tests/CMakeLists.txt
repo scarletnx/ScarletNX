@@ -2474,6 +2474,12 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-pipeline-parts 23)
     target_link_libraries(snx-test-vk-pipeline-parts PRIVATE snx_nx_flags)
     add_test(NAME vk_pipeline_parts COMMAND snx-test-vk-pipeline-parts)
+    # constant buffer words folded into a translation (gpu/vk/cb_fold.c): which words fold, what a translation records
+    # of its loads, when it holds for a draw's buffers, and how many of a program's translations fold by value
+    add_executable(snx-test-vk-cb-fold vk_cb_fold.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/cb_fold.c")
+    snx_test_target(snx-test-vk-cb-fold 23)
+    target_link_libraries(snx-test-vk-cb-fold PRIVATE snx_nx_flags)
+    add_test(NAME vk_cb_fold COMMAND snx-test-vk-cb-fold)
     # the drivers known to break an extension or feature (common/gpu/vk/extension_bans.c), with no GPU: the table's errors,
     # each driver's versions at every bound's edge, the filter and the features asked for against stand-in devices,
     # the table the build carries, and vulkan_ban_ignore read from a .ini. With --devices it lists the lines that hold
