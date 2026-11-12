@@ -95,7 +95,8 @@ static void usage(void) {
          "Short options may be combined, for example -rx or -Hs.");
 #endif
     puts("\nOn the Switch, INPUT and --update take dumps (XCI, NSP, DXCI, DNSP), and the game's folder is\n"
-         "<outdir>/<title ID>. --keys takes prod.keys (default: the data folder, then ~/.switch). Without -f or\n"
+         "<outdir>/<title ID>; with --update, INPUT may be a game made already (its program), the updates and DLCs\n"
+         "going into its folder. --keys takes prod.keys (default: the data folder, then ~/.switch). Without -f or\n"
          "--fullscreen=0 the game's .ini decides. --headless runs without a window or swapchain. --seconds,\n"
          "--frames, --shot and --script are settings of the game's run, which reach it as --key=value. The data\n"
          "folder holds recompiled/, work/ and the keys. Its default is a .scarletnx folder beside the AppImage or\n"
@@ -951,15 +952,29 @@ static int play_dump_at(const char* input, const SnxPaths* paths, unsigned flags
         free(root);
     }
     if (nupdates) { /* the game made first, then each update or DLC made and checked, then the game played with them */
-        SnxU64 title, own, of_game;
-        char of[17], *program;
-        if (out || nro || prepared) {
-            snx_error("--update takes a game's dump, and an update or a DLC goes into the game's folder");
+        SnxU64 title = prepared ? game_id(name) : 0, own, of_game;
+        char of[17], *program, *addons_at = NULL;
+        if (out || nro) {
+            snx_error("--update takes a game's dump, or the program of a game made from one in its own folder, and an "
+                      "update or a DLC goes into the game's folder");
             goto done;
         }
-        rc = play_dump(input, paths, flags | PLAY_PREPARE, outdir, NULL, opt, recompiling, recompile, 0, NULL, 0, NULL,
-                       NULL, 0);
-        if (!rc) rc = snx_extract_title(input, paths, &title, &of_game, NULL, NULL);
+        if (prepared && outdir) {
+            snx_error("--outdir cannot go with %s and --update: it is a game made already, whose updates and DLCs go "
+                      "into its own folder",
+                      input);
+            goto done;
+        }
+        if (prepared && !title) {
+            snx_error("%s was made from no dump with a title ID of its own, which an update or a DLC goes with", input);
+            goto done;
+        }
+        /* a game made already, by its program: what it was made from left as it is, its add-ons put in its folder */
+        if (prepared) addons_at = snx_dirname(folder);
+        rc = prepared ? 0
+                      : play_dump(input, paths, flags | PLAY_PREPARE, outdir, NULL, opt, recompiling, recompile, 0,
+                                  NULL, 0, NULL, NULL, 0);
+        if (!rc && !prepared) rc = snx_extract_title(input, paths, &title, &of_game, NULL, NULL);
         for (j = 0; !rc && j < nupdates; ++j) {
             rc = snx_extract_title(updates[j], paths, &own, &of_game, NULL, NULL);
             if (!rc && (snx_addon_kind(title, own) == SNX_ADDON_NONE || of_game != title)) {
@@ -970,12 +985,13 @@ static int play_dump_at(const char* input, const SnxPaths* paths, unsigned flags
                                updates[j], input, given, named);
             }
             if (!rc)
-                rc = play_dump(updates[j], paths, flags | PLAY_PREPARE, outdir, NULL, opt, recompiling, recompile, 0,
-                               NULL, 0, NULL, NULL, 0);
+                rc = play_dump(updates[j], paths, flags | PLAY_PREPARE, prepared ? addons_at : outdir, NULL, opt,
+                               recompiling, recompile, 0, NULL, 0, NULL, NULL, 0);
         }
+        free(addons_at);
         if (rc || (flags & (SNX_RECOMP | PLAY_PREPARE))) goto done;
         snx_title_text(title, of);
-        folder = game_folder(outdir, paths->repo, of);
+        if (!prepared) folder = game_folder(outdir, paths->repo, of);
         program = game_program(folder, of);
         rc = !program || play_dump(program, paths, flags, NULL, NULL, opt, recompiling, recompile, settings, setting,
                                    game_argc, game_argv, NULL, 0);
