@@ -382,6 +382,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/texconv_etc2_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_convert_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_a_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_b_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_fast_a_spv.c"
@@ -395,7 +396,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_mode6_dot_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_quick_dot_spv.c"
         "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/astc_bc7_cpu.cpp"
-        "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_etc2_cpu.cpp"
+        "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_etc2_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_astc_cpu.cpp"
         "${PROJECT_SOURCE_DIR}/tests/glsl/blit_convert_cpu.cpp")
     target_include_directories(snx-test-astc-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests/glsl")
     target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags scarletnx-filesystem snx_xxhash snx_vk_common

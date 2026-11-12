@@ -371,11 +371,20 @@ const uint BC7_MODE[8] = {0x03040043u, 0x03060062u, 0x02050063u, 0x02070062u,
 /* the ETC2 build's decoded block, which etc2_encode.glsl encodes again: RGBA8 texels row by row */
 uint tx_px[16];
 #endif
+#ifdef SNX_TC_ASTC
+/* the ASTC build's decoded block is the encoder's own px (bc7_encode.glsl's fitter, which astc_encode.glsl encodes
+   with): RGBA8 texels row by row */
+#include "astc_encode_tables.glsl"
+#include "bc7_encode.glsl"
+#include "astc_encode.glsl"
+#endif
 /* texel i (row by row) of the block at column u of blocks whose four rows of RGBA8 pixels start at word o0: into the
    output, or into tx_px in the ETC2 build */
 void bc_put(uint o0, uint u, uint i, uint c) {
 #ifdef SNX_TC_ETC2
     tx_px[i] = c;
+#elif defined(SNX_TC_ASTC)
+    px[i] = c;
 #else
     dst[o0 + (i >> 2) * out_pitch + 4u * u + (i & 3u)] = c;
 #endif
@@ -609,6 +618,33 @@ void main() {
         word = (word & ~(255u << shift)) | (value << shift);
     }
     dst[at] = word;
+}
+#elif defined(SNX_TC_ASTC)
+/* The ASTC build: a block an invocation, a BC2, BC3 or BC7 block (the kind mode names, TC_BCN_ASTC on from TC_BC1's
+   place) decoded and encoded again as ASTC 4x4, at column u of blocks of row of blocks gl_GlobalInvocationID.y of
+   slice z. Input as the BCn modes read it; output rows of blocks out_pitch words apart, 16 bytes each */
+void main() {
+    uint u = gl_GlobalInvocationID.x;
+    if (u >= units) return;
+    uint kind = mode - TC_BCN_ASTC + TC_BC1;
+    uint row = gl_GlobalInvocationID.z * rows + gl_GlobalInvocationID.y;
+    uint at = in_bias + row * in_pitch + u * 4u, o = out_bias + row * out_pitch + u * 4u;
+    uint b[4];
+    for (uint w = 0u; w < 4u; w++) b[w] = src[at + w];
+    if (kind == TC_BC7) {
+        bc7_block(b, 0u, 0u);
+    } else {
+        for (uint i = 0u; i < 16u; i++) {
+            uint a = kind == TC_BC2 ? (((i < 8u ? b[0] : b[1]) >> (4u * (i & 7u))) & 15u) * 17u : bc3_alpha(b[1], b[0], i);
+            px[i] = (bc1_pixel(b[2], b[3], false, i) & 0xFFFFFFu) | (a << 24);
+        }
+    }
+    hint_on = false;
+    uvec4 block = AstcEncode();
+    dst[o] = block.x;
+    dst[o + 1u] = block.y;
+    dst[o + 2u] = block.z;
+    dst[o + 3u] = block.w;
 }
 #elif !defined(SNX_TC_ETC2)
 void main() {

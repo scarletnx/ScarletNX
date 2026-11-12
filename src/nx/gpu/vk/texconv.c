@@ -3,9 +3,9 @@
 /* Texture formats the host can't take as they are, converted on the GPU (gpu/texture/texconv.comp) from linear rows
    into rows the copies into the image take. One pipeline for every format, made on first use and kept for the
    device's lifetime, like the other internal pipelines; a second, the shader's ETC2 build, for BCn blocks encoded again
-   as ETC2 and EAC (gpu/texture/etc2_encode.glsl), and a third, its conversion build, for the blits that convert
-   between pixel formats (TC_BLIT_CONVERT), each made the first time it is used. Uses are on g_vk.gfx, under
-   vk_lock() */
+   as ETC2 and EAC (gpu/texture/etc2_encode.glsl), its ASTC build for those encoded again as ASTC 4x4, and its
+   conversion build for the blits that convert between pixel formats (TC_BLIT_CONVERT), each made the first time it
+   is used. Uses are on g_vk.gfx, under vk_lock() */
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/texture/texconv_spv.h" /* compiled from texconv.comp by the build (cmake/glsl.cmake) */
 #include "nx/gpu/texture/texconv_modes.glsl"
@@ -20,15 +20,15 @@ typedef struct {
 
 static VkDescriptorSetLayout g_tc_ds;
 static VkPipelineLayout g_tc_layout;
-static VkPipeline g_tc_pipe[3]; /* texconv.comp's, its ETC2 build's and its conversion build's */
+static VkPipeline g_tc_pipe[4]; /* texconv.comp's, its ETC2 build's, its ASTC build's and its conversion build's */
 
-/* the pipeline of the build that runs mode, made on first use: the ETC2 build for the BCn modes it encodes again, the
-   conversion build for TC_BLIT_CONVERT, the plain one for the rest */
+/* the pipeline of the build that runs mode, made on first use: the ETC2 or the ASTC build for the BCn modes they
+   encode again, the conversion build for TC_BLIT_CONVERT, the plain one for the rest */
 static VkPipeline tc_init(u32 mode) {
-    static const char* const names[3] = {"", " (its ETC2 build)", " (its conversion build)"};
-    const u32* const spv[3] = {texconv_spv, texconv_etc2_spv, texconv_convert_spv};
-    const u64 sizes[3] = {texconv_spv_size, texconv_etc2_spv_size, texconv_convert_spv_size};
-    int build = mode >= TC_BCN_ETC2 ? 1 : mode == TC_BLIT_CONVERT ? 2 : 0;
+    static const char* const names[4] = {"", " (its ETC2 build)", " (its ASTC build)", " (its conversion build)"};
+    const u32* const spv[4] = {texconv_spv, texconv_etc2_spv, texconv_astc_spv, texconv_convert_spv};
+    const u64 sizes[4] = {texconv_spv_size, texconv_etc2_spv_size, texconv_astc_spv_size, texconv_convert_spv_size};
+    int build = mode >= TC_BCN_ASTC ? 2 : mode >= TC_BCN_ETC2 ? 1 : mode == TC_BLIT_CONVERT ? 3 : 0;
     VkPipeline* pipe = &g_tc_pipe[build];
     if (*pipe) return *pipe;
     if (!g_tc_layout && !VK_OK(snx_vk_compute_layouts(g_vk.dev, 2, 0, sizeof(TcParams), &g_tc_ds, &g_tc_layout)))
@@ -63,7 +63,11 @@ static u32 tc_mode(const VkFmt* f) {
         case VKC_NONE: return f->bpp == 8 ? TC_D32S8 : TC_D24S8; /* a depth and stencil format as it is in memory */
     }
     /* the ETC2 and EAC kinds, and the BCn ones, each in the same order; BCn into ETC2 or EAC blocks is the ETC2 build's */
-    if (f->conv >= VKC_BC1) return (is_etc2(f->vk) ? TC_BCN_ETC2 : TC_BC1) + (f->conv - VKC_BC1);
+    if (f->conv >= VKC_BC1)
+        return (f->vk == VK_FORMAT_ASTC_4x4_UNORM_BLOCK || f->vk == VK_FORMAT_ASTC_4x4_SRGB_BLOCK ? TC_BCN_ASTC
+                : is_etc2(f->vk)                                                                     ? TC_BCN_ETC2
+                                                                                                     : TC_BC1) +
+               (f->conv - VKC_BC1);
     return TC_ETC2_RGB + (f->conv - VKC_ETC2);
 }
 
@@ -81,7 +85,7 @@ static VkTcShape tc_shape(u32 mode, u32 w) {
     if (mode >= TC_BCN_ETC2) {
         /* a row of blocks into a row of blocks of the same bytes, as a row of texels four times as wide: a quarter of
            a block's bytes a texel, which the copy's bufferRowLength counts */
-        u32 k = mode - TC_BCN_ETC2 + TC_BC1;
+        u32 k = mode - (mode >= TC_BCN_ASTC ? TC_BCN_ASTC : TC_BCN_ETC2) + TC_BC1;
         s.units = (w + 3) / 4;
         s.out_texels = s.units * 4;
         s.out_bpp = k == TC_BC1 || k == TC_BC4 || k == TC_BC4_SNORM ? 2 : 4;

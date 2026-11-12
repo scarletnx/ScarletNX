@@ -1796,6 +1796,43 @@ static void convert_case(void) {
     puts("PASS texture conversions (blits between pixel formats, nearest and filtered)");
     fflush(stdout);
 }
+/* texconv.comp's ASTC build on the device against the CPU's run of it (tests/glsl/bcn_astc_cpu.cpp): random BC2, BC3
+   and BC7 blocks in an image whose sides aren't multiples of 4, encoded again as ASTC 4x4, byte for byte; and the
+   blocks decode (the CPU's ASTC decoder) near what the BCn blocks do: random blocks are noise, which no block format
+   holds, so near is 12 dB here, where a block the decoder refused, magenta, or one laid out wrong would be far under */
+static void astc_encode_case(void) {
+    u32 w = 67, h = 37, bw = 17, bh = 10;
+    static const int kinds[3] = {BCN_BC2, BCN_BC3, BCN_BC7};
+    for (int ki = 0; ki < 3; ki++) {
+        const int kind = kinds[ki];
+        u8* blocks = malloc((size_t)bw * bh * 16);
+        bc_blocks(kind, blocks, bw * bh);
+        VkFmt f = {.vk = VK_FORMAT_ASTC_4x4_UNORM_BLOCK, .bpp = 16, .bw = 4, .bh = 4, .conv = (u8)(VKC_BC1 + kind)};
+        u64 out_size;
+        u8* out = tc_blocks(&f, blocks, w, bw, bh, &out_size);
+        u8* want = malloc((size_t)bw * bh * 16);
+        bcn_astc_cpu(kind, blocks, bw, bh, 1, want);
+        if (out_size != (u64)bw * bh * 16)
+            fatal("texconv's ASTC build: %llu bytes out, not %u\n", (unsigned long long)out_size, bw * bh * 16);
+        for (u32 i = 0; i < bw * bh; i++)
+            if (memcmp(out + (size_t)i * 16, want + (size_t)i * 16, 16))
+                fatal("texconv's ASTC build: BCn kind %d block %u differs from the CPU's\n", kind, i);
+        u8* was = malloc((size_t)bw * bh * 64);
+        u8* is = malloc((size_t)bw * bh * 64);
+        bcn_decode_image(blocks, bw * 4, bh * 4, kind, was);
+        astc_decode_image(want, bw * 4, bh * 4, 4, 4, is, 0);
+        double e = 0;
+        for (u32 i = 0; i < bw * bh * 64; i++) e += ((double)was[i] - is[i]) * ((double)was[i] - is[i]);
+        const double db = e > 0 ? 10 * log10(255.0 * 255.0 * bw * bh * 64 / e) : 99;
+        if (db < 12) fatal("texconv's ASTC build: BCn kind %d comes back at %.1f dB\n", kind, db);
+        free(was);
+        free(is);
+        free(blocks);
+        free(want);
+    }
+    puts("PASS texture conversions (BC2, BC3 and BC7 encoded again as ASTC 4x4)");
+    fflush(stdout);
+}
 /* --bench-etc2: a 2048x2048 level of random blocks of each kind decoded (as on a GPU that samples neither BCn nor
    ETC2) and encoded again as ETC2 or EAC, the conversion's dispatch alone, runs times each; and the bytes each holds.
    Random blocks take every candidate (no block of one alpha or one colour stops early): a game's take less */
@@ -1823,8 +1860,9 @@ static void bench_etc2(int runs, const char* file) {
             memcpy(blocks, pic, (size_t)bw * bh * bb);
         else
             bc_blocks(kind, blocks, bw * bh);
-        for (int etc = 0; etc < 2; etc++) {
-            VkFmt f = {.vk = etc ? etc2_of(kind) : decoded_of(kind),
+        /* decoded, encoded again as ETC2 or EAC, and (BC2, BC3 and BC7) as ASTC 4x4 */
+        for (int etc = 0; etc < (kind == BCN_BC2 || kind == BCN_BC3 || kind == BCN_BC7 ? 3 : 2); etc++) {
+            VkFmt f = {.vk = etc == 2 ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK : etc ? etc2_of(kind) : decoded_of(kind),
                        .bpp = (u8)bb,
                        .bw = 4,
                        .bh = 4,
@@ -1834,7 +1872,7 @@ static void bench_etc2(int runs, const char* file) {
                 tc_blocks(&f, blocks, w, bw, bh, &out_size);
                 double ms = (plat_ns() - t0) / 1e6;
                 printf("BENCH BCn kind %d %ux%u %s: %.1f ms, %llu bytes held (%.2f bytes a texel)\n", kind, w, h,
-                       etc ? "encoded again as ETC2/EAC" : "decoded", ms, (unsigned long long)out_size,
+                       etc == 2 ? "encoded again as ASTC 4x4" : etc ? "encoded again as ETC2/EAC" : "decoded", ms, (unsigned long long)out_size,
                        (double)out_size / ((double)w * h));
                 fflush(stdout);
             }
@@ -1918,6 +1956,7 @@ int main(int argc, char** argv) {
     bc_native_case();
     etc2_case();
     convert_case();
+    astc_encode_case();
     /* Known solid color, independent of the CPU reference, catches its old
        11-bit header bug. The GPU is compared to this reference below. */
     const u8 solid[16] = {0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0x12, 0, 0x34, 0, 0x56, 0, 0x78};
