@@ -223,6 +223,9 @@ static void hooks(void) {
         static SnxArmCPU a;
         a.mem = mem, a.mem_size = sizeof mem;
         CHECK(HOOK32_COUNT == 5);
+        /* each for the one 32-bit SDK read, 0.12.16, alone: a 32-bit game of another SDK has no hook here */
+        for (int i = 0; i < HOOK32_COUNT; i++)
+            CHECK(hook32_key[i] == HOOK_SDK && hook32_lo[i] == 0 && hook32_hi[i] == 0x10000);
         a.r[0] = 3, a.r[1] = 0x1234, a.r[14] = 0x800;
         a32("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE")(&a);
         CHECK(a.r[0] == g_hle.pl.font_size[3] && a.r[1] == 0x1234 && a.r[15] == 0x800);

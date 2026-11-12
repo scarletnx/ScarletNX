@@ -6,31 +6,32 @@
 # function that reads the state the SDK keeps behind Initialize is here, with Initialize, so that state stays empty.
 # The functions that need no state (the calendar's arithmetic, the snapshot's getters) run their own code.
 # A 32-bit game: the ones marked a32 are the ones a 32-bit SDK (0.12.16) has, read there: the same arguments under
-# AAPCS32 and the same bytes in each struct. Its now() returns the time point, a class of 8 bytes, through a pointer
+# AAPCS32 and the same bytes in each struct. Its now() returns the time point, a class of 8 bytes, through a pointer.
+# Each is for that SDK alone (a32 @version), the one 32-bit SDK read: a 32-bit game of another has no hook here
 family nn_time
-hook _ZN2nn4time10InitializeEv() -> u32 = nntime_initialize a32
-hook _ZN2nn4time17InitializeForMenuEv() -> u32 = nntime_initialize_for_menu a32
-hook _ZN2nn4time19InitializeForSystemEv() -> u32 = nntime_initialize_for_system a32
+hook _ZN2nn4time10InitializeEv() -> u32 = nntime_initialize a32 @version(< 1.0.0)
+hook _ZN2nn4time17InitializeForMenuEv() -> u32 = nntime_initialize_for_menu a32 @version(< 1.0.0)
+hook _ZN2nn4time19InitializeForSystemEv() -> u32 = nntime_initialize_for_system a32 @version(< 1.0.0)
 hook _ZN2nn4time19InitializeForRepairEv() -> u32 = nntime_initialize_for_repair
 hook _ZN2nn4time23InitializeForSystemUserEv() -> u32 = nntime_initialize_for_system_user
-hook _ZN2nn4time8FinalizeEv() -> u32 = nntime_finalize a32
-hook _ZN2nn4time13IsInitializedEv() -> bool = nntime_is_initialized a32
-hook _ZN2nn4time23StandardUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE(addr out) -> u32 = nntime_user_get_current_time a32
+hook _ZN2nn4time8FinalizeEv() -> u32 = nntime_finalize a32 @version(< 1.0.0)
+hook _ZN2nn4time13IsInitializedEv() -> bool = nntime_is_initialized a32 @version(< 1.0.0)
+hook _ZN2nn4time23StandardUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE(addr out) -> u32 = nntime_user_get_current_time a32 @version(< 1.0.0)
 hook _ZN2nn4time23StandardUserSystemClock3nowEv() -> i64 = nntime_user_now
-a32 hook _ZN2nn4time23StandardUserSystemClock3nowEv(addr out) = nntime_system_now_out
-hook _ZN2nn4time23StandardUserSystemClock21GetSystemClockContextEPNS0_18SystemClockContextE(addr out) -> u32 = nntime_user_get_context a32
-hook _ZN2nn4time26StandardNetworkSystemClock14GetCurrentTimeEPNS0_9PosixTimeE(addr out) -> u32 = nntime_network_get_current_time a32
+@version(< 1.0.0) a32 hook _ZN2nn4time23StandardUserSystemClock3nowEv(addr out) = nntime_system_now_out
+hook _ZN2nn4time23StandardUserSystemClock21GetSystemClockContextEPNS0_18SystemClockContextE(addr out) -> u32 = nntime_user_get_context a32 @version(< 1.0.0)
+hook _ZN2nn4time26StandardNetworkSystemClock14GetCurrentTimeEPNS0_9PosixTimeE(addr out) -> u32 = nntime_network_get_current_time a32 @version(< 1.0.0)
 hook _ZN2nn4time26StandardNetworkSystemClock3nowEv() -> i64 = nntime_network_now
-a32 hook _ZN2nn4time26StandardNetworkSystemClock3nowEv(addr out) = nntime_system_now_out
-hook _ZN2nn4time26StandardNetworkSystemClock21GetSystemClockContextEPNS0_18SystemClockContextE(addr out) -> u32 = nntime_network_get_context a32
+@version(< 1.0.0) a32 hook _ZN2nn4time26StandardNetworkSystemClock3nowEv(addr out) = nntime_system_now_out
+hook _ZN2nn4time26StandardNetworkSystemClock21GetSystemClockContextEPNS0_18SystemClockContextE(addr out) -> u32 = nntime_network_get_context a32 @version(< 1.0.0)
 hook _ZN2nn4time19StandardSteadyClock3nowEv() -> i64 = nntime_steady_now
-a32 hook _ZN2nn4time19StandardSteadyClock3nowEv(addr out) = nntime_steady_now_out
-hook _ZN2nn4time19StandardSteadyClock19GetCurrentTimePointEPNS0_20SteadyClockTimePointE(addr out) -> u32 = nntime_steady_get_current_time_point a32
+@version(< 1.0.0) a32 hook _ZN2nn4time19StandardSteadyClock3nowEv(addr out) = nntime_steady_now_out
+hook _ZN2nn4time19StandardSteadyClock19GetCurrentTimePointEPNS0_20SteadyClockTimePointE(addr out) -> u32 = nntime_steady_get_current_time_point a32 @version(< 1.0.0)
 hook _ZN2nn4time38GetStandardSteadyClockCurrentTimePointEPNS0_20SteadyClockTimePointE(addr out) -> u32 = nntime_steady_get_current_time_point
-hook _ZN2nn4time21GetDeviceLocationNameEPNS0_12LocationNameE(addr out) = nntime_get_device_location_name a32
-hook _ZN2nn4time16LoadTimeZoneRuleEPNS0_12TimeZoneRuleERKNS0_12LocationNameE(addr rule, addr name) -> u32 = nntime_load_time_zone_rule a32
-hook _ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeE(addr cal, addr info, addr time) -> u32 = nntime_to_calendar_time a32
-hook _ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeERKNS0_12TimeZoneRuleE(addr cal, addr info, addr time, addr rule) -> u32 = nntime_to_calendar_time_rule a32
+hook _ZN2nn4time21GetDeviceLocationNameEPNS0_12LocationNameE(addr out) = nntime_get_device_location_name a32 @version(< 1.0.0)
+hook _ZN2nn4time16LoadTimeZoneRuleEPNS0_12TimeZoneRuleERKNS0_12LocationNameE(addr rule, addr name) -> u32 = nntime_load_time_zone_rule a32 @version(< 1.0.0)
+hook _ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeE(addr cal, addr info, addr time) -> u32 = nntime_to_calendar_time a32 @version(< 1.0.0)
+hook _ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeERKNS0_12TimeZoneRuleE(addr cal, addr info, addr time, addr rule) -> u32 = nntime_to_calendar_time_rule a32 @version(< 1.0.0)
 hook _ZN2nn4time13ClockSnapshot29CreateWithStandardSystemClockEPS1_(addr snapshot) = nntime_snapshot_create_standard
 hook _ZN2nn4time48CalculateStandardUserSystemClockDifferenceByUserERKNS0_13ClockSnapshotES3_(addr a, addr b) -> i64 = nntime_user_difference
 hook _ZN2nn4time20CalculateSpanBetweenEPNS_8TimeSpanERKNS0_13ClockSnapshotES5_(addr out, addr a, addr b) -> bool = nntime_span_between
@@ -51,19 +52,19 @@ hook _ZN2nn4time27EphemeralNetworkSystemClock3nowEv() -> i64 = nntime_ephemeral_
 hook _ZN2nn4time37GetEphemeralNetworkSystemClockContextEPNS0_18SystemClockContextE(addr out) -> u32 = nntime_ephemeral_get_context
 hook _ZN2nn4time41SetEphemeralNetworkSystemClockCurrentTimeERKNS0_9PosixTimeE(addr time) -> u32 = nntime_set_clock
 hook _ZN2nn4time37SetEphemeralNetworkSystemClockContextERKNS0_18SystemClockContextE(addr context) -> u32 = nntime_set_clock
-hook _ZN2nn4time38SetStandardLocalSystemClockCurrentTimeERKNS0_9PosixTimeE(addr time) -> u32 = nntime_set_clock a32
-hook _ZN2nn4time34SetStandardLocalSystemClockContextERKNS0_18SystemClockContextE(addr context) -> u32 = nntime_set_clock a32
-hook _ZN2nn4time40SetStandardNetworkSystemClockCurrentTimeERKNS0_9PosixTimeE(addr time) -> u32 = nntime_set_clock a32
-hook _ZN2nn4time36SetStandardNetworkSystemClockContextERKNS0_18SystemClockContextE(addr context) -> u32 = nntime_set_clock a32
-hook _ZN2nn4time51IsStandardUserSystemClockAutomaticCorrectionEnabledEv() -> bool = nntime_is_automatic_correction_enabled a32
-hook _ZN2nn4time52SetStandardUserSystemClockAutomaticCorrectionEnabledEb(bool enabled) = nntime_set_automatic_correction_enabled a32
+hook _ZN2nn4time38SetStandardLocalSystemClockCurrentTimeERKNS0_9PosixTimeE(addr time) -> u32 = nntime_set_clock a32 @version(< 1.0.0)
+hook _ZN2nn4time34SetStandardLocalSystemClockContextERKNS0_18SystemClockContextE(addr context) -> u32 = nntime_set_clock a32 @version(< 1.0.0)
+hook _ZN2nn4time40SetStandardNetworkSystemClockCurrentTimeERKNS0_9PosixTimeE(addr time) -> u32 = nntime_set_clock a32 @version(< 1.0.0)
+hook _ZN2nn4time36SetStandardNetworkSystemClockContextERKNS0_18SystemClockContextE(addr context) -> u32 = nntime_set_clock a32 @version(< 1.0.0)
+hook _ZN2nn4time51IsStandardUserSystemClockAutomaticCorrectionEnabledEv() -> bool = nntime_is_automatic_correction_enabled a32 @version(< 1.0.0)
+hook _ZN2nn4time52SetStandardUserSystemClockAutomaticCorrectionEnabledEb(bool enabled) = nntime_set_automatic_correction_enabled a32 @version(< 1.0.0)
 hook _ZN2nn4time6detail56GetStandardUserSystemClockAutomaticCorrectionUpdatedTimeEPNS0_20SteadyClockTimePointE(addr out) = nntime_automatic_correction_updated_time
 hook _ZN2nn4time26StandardNetworkSystemClock20IsAccuracySufficientEv() -> bool = nntime_is_accuracy_sufficient
 hook _ZN2nn4time37GetStandardUserSystemClockInitialYearEv() -> i32 = nntime_initial_year
-hook _ZN2nn4time25GetTotalLocationNameCountEv() -> i32 = nntime_total_location_name_count a32
-hook _ZN2nn4time20LoadLocationNameListEPiPNS0_12LocationNameEii(addr count, addr out, i32 max, i32 index) = nntime_load_location_name_list a32
+hook _ZN2nn4time25GetTotalLocationNameCountEv() -> i32 = nntime_total_location_name_count a32 @version(< 1.0.0)
+hook _ZN2nn4time20LoadLocationNameListEPiPNS0_12LocationNameEii(addr count, addr out, i32 max, i32 index) = nntime_load_location_name_list a32 @version(< 1.0.0)
 hook _ZN2nn4time22GetTimeZoneRuleVersionEPNS0_19TimeZoneRuleVersionE(addr out) = nntime_get_time_zone_rule_version
 hook _ZN2nn4time6detail35GetDeviceLocationNameAndUpdatedTimeEPNS0_12LocationNameEPNS0_20SteadyClockTimePointE(addr name, addr point) = nntime_get_device_location_name_and_updated_time
-hook _ZN2nn4time21SetDeviceLocationNameERKNS0_12LocationNameE(addr name) = nntime_set_device_location_name a32
-hook _ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeE(addr count, addr out, i32 max, addr cal) -> u32 = nntime_to_posix_time a32
-hook _ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeERKNS0_12TimeZoneRuleE(addr count, addr out, i32 max, addr cal, addr rule) -> u32 = nntime_to_posix_time_rule a32
+hook _ZN2nn4time21SetDeviceLocationNameERKNS0_12LocationNameE(addr name) = nntime_set_device_location_name a32 @version(< 1.0.0)
+hook _ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeE(addr count, addr out, i32 max, addr cal) -> u32 = nntime_to_posix_time a32 @version(< 1.0.0)
+hook _ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeERKNS0_12TimeZoneRuleE(addr count, addr out, i32 max, addr cal, addr rule) -> u32 = nntime_to_posix_time_rule a32 @version(< 1.0.0)

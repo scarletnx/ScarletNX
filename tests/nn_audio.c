@@ -638,6 +638,9 @@ static void test_a32(void) {
     AudOut* q;
     arm.mem = g_mem, arm.mem_size = 0x10000;
     CHECK(HOOK32_COUNT == 19);
+    /* each for the one 32-bit SDK read, 0.12.16, alone: a 32-bit game of another SDK has no hook here */
+    for (int i = 0; i < HOOK32_COUNT; i++)
+        CHECK(hook32_key[i] == HOOK_SDK && hook32_lo[i] == 0 && hook32_hi[i] == 0x10000);
     parameter(48000, 2);
     memset(GP(T_OUT), 0xCC, 0x120);
     CHECK(call32("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutERKNS0_17AudioOutParameterE", T_OUT, PARAMS) == 0);

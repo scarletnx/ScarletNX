@@ -5,13 +5,14 @@
 # nn::pl: the shared fonts, with no pl:u session. These are every function that reaches pl:u. IsRunningOnOunce is a
 # constant of the SDK's, and the system functions use other services.
 # A 32-bit game: the five functions a 32-bit SDK (0.12.16) has, read there. Four are the same (a32); the list's
-# pointers and sizes are 4 bytes each, and its language code, 8 characters by value, is two words of the stack
+# pointers and sizes are 4 bytes each, and its language code, 8 characters by value, is two words of the stack.
+# Each is for that SDK alone (a32 @version), the one 32-bit SDK read: a 32-bit game of another has no hook here
 family nn_pl
-hook _ZN2nn2pl21RequestSharedFontLoadENS0_14SharedFontTypeE(i32 type) = nnpl_request_shared_font_load a32
-hook _ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE(i32 type) -> i32 = nnpl_get_shared_font_load_state a32
-hook _ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE(i32 type) -> usize = nnpl_get_shared_font_size a32
-hook _ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE(i32 type) -> addr = nnpl_get_shared_font_address a32
-a32 hook _ZN2nn2pl30GetSharedFontInOrderOfPriorityEPiPNS0_14SharedFontTypeEPPKvPjiNS_8settings12LanguageCodeE(addr count, addr types, addr addresses, addr sizes, i32 max, u32 language, u32 language_end) -> bool = nnpl_get_shared_font_in_order_of_priority_a32
+hook _ZN2nn2pl21RequestSharedFontLoadENS0_14SharedFontTypeE(i32 type) = nnpl_request_shared_font_load a32 @version(< 1.0.0)
+hook _ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE(i32 type) -> i32 = nnpl_get_shared_font_load_state a32 @version(< 1.0.0)
+hook _ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE(i32 type) -> usize = nnpl_get_shared_font_size a32 @version(< 1.0.0)
+hook _ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE(i32 type) -> addr = nnpl_get_shared_font_address a32 @version(< 1.0.0)
+@version(< 1.0.0) a32 hook _ZN2nn2pl30GetSharedFontInOrderOfPriorityEPiPNS0_14SharedFontTypeEPPKvPjiNS_8settings12LanguageCodeE(addr count, addr types, addr addresses, addr sizes, i32 max, u32 language, u32 language_end) -> bool = nnpl_get_shared_font_in_order_of_priority_a32
 hook _ZN2nn2pl30GetSharedFontInOrderOfPriorityEPiPNS0_14SharedFontTypeEPPKvPmiNS_8settings12LanguageCodeE(addr count, addr types, addr addresses, addr sizes, i32 max, u64 language) -> bool = nnpl_get_shared_font_in_order_of_priority
 hook _ZN2nn2pl39GetSharedFontInOrderOfPriorityForSystemEPiPNS0_23SharedFontTypeForSystemEPPKvPmiNS_8settings12LanguageCodeE(addr count, addr types, addr addresses, addr sizes, i32 max, u64 language) -> bool = nnpl_get_shared_font_in_order_of_priority_for_system
 hook _ZN2nn2pl13GetSharedFontEPiPNS0_14SharedFontDataEiNS_8settings12LanguageCodeE(addr count, addr data, i32 max, u64 language) -> bool = nnpl_get_shared_font

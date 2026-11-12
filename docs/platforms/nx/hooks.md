@@ -88,7 +88,9 @@ hook memcpy(void* dst, const void* src, u64 size) -> void* = hook_memmove
   reads nothing whose layout differs in the 32-bit SDK. A hook that `uses` a struct can't be one: a struct's layout
   is one SDK's. A `@version` after that `a32` gives the versions the declaration holds for in a 32-bit game, in place
   of the hook's own: `hook SYMBOL() -> u32 = handler a32 @version(< 1.0.0)`. The 32-bit SDKs a function was read in
-  are not the 64-bit ones.
+  are not the 64-bit ones, and the runtime's own specs name them on every declaration for a 32-bit game
+  (`tests/nn_*.c` check each family's). A 32-bit game of another SDK then has no hook, and stops when its SDK opens
+  a service the runtime answers only natively.
 - A line that begins with `a32` declares a hook for a 32-bit game alone: `a32 hook SYMBOL(...) ...`, with a
   `@version` before it and `uses` after its handler as any hook. It is for a function whose declaration differs
   there. A 32-bit SDK mangles a `size_t` as `j` where the 64-bit one has `m` (and an `int64_t` as `x` for `l`), so a

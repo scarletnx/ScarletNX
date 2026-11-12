@@ -333,6 +333,9 @@ int main(void) {
     g_arm_mod = &module32;
     a.mem = mem, a.mem_size = sizeof mem;
     CHECK(HOOK32_COUNT == 42);
+    /* each for the one 32-bit SDK read, 0.12.16, alone: a 32-bit game of another SDK has no hook here */
+    for (int i = 0; i < HOOK32_COUNT; i++)
+        CHECK(hook32_key[i] == HOOK_SDK && hook32_lo[i] == 0 && hook32_hi[i] == 0x10000);
     outs();
     CHECK(call32("_ZN2nn2fs29QueryMountSystemDataCacheSizeEPjNS_3ncm12SystemDataIdE", RESULT, 0xdead, (u32)SYSTEM_ID,
                  (u32)(SYSTEM_ID >> 32), 0, 0, 0) == 0);
