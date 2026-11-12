@@ -8,10 +8,12 @@
    the result. Each is decoded once, when the hooks are found: an instruction it uses outside a small set of ARM ones
    (data processing with an immediate shift, single, halfword, doubleword and multiple loads and stores, forward
    branches, BX LR) leaves the stub to the game's code, and so does a register that holds a TLS address escaping into
-   anything but the buffer's addressing. Which registers hold TLS addresses, and at which offsets, is the decode's: the
-   hook runs the stub's instructions on the CPU's registers with each access to the buffer going to 64 words of its
-   own, and the SVC sending them to the session's service (snx_ctr_ipc_exchange). The game's TLS is never read or
-   written, and the kernel's SVC and the scheduling after it are skipped.
+   anything but the buffer's addressing, or a path that reaches the SVC without having stored the header at the
+   buffer's start: a function that only makes the SVC (libctru's svcSendSyncRequest, SVC 0x32 and BX LR) sends the
+   words its caller wrote in the TLS, which the hook doesn't hold. Which registers hold TLS addresses, and at which
+   offsets, is the decode's: the hook runs the stub's instructions on the CPU's registers with each access to the
+   buffer going to 64 words of its own, and the SVC sending them to the session's service (snx_ctr_ipc_exchange). The
+   game's TLS is never read or written, and the kernel's SVC and the scheduling after it are skipped.
 
    A stub whose handle reaches srv: or a service the runtime has no model of (where a request can block the thread,
    whose reply the TLS buffer then takes later) declines that call before it changed anything but its stack's free
@@ -113,8 +115,10 @@ void snx_ctr_hooks_free(SnxCtrHooks* h) {
 }
 
 /* ---- decoding a stub ---- */
+/* a path's state. The paths meeting at an instruction must agree on tls; header holds there when it holds on each */
 typedef struct {
     int16_t tls[16]; /* each register's offset from the TLS pointer when it holds one, else NO_TLS */
+    bool header;     /* the path stored a word at the buffer's start: the request the SVC sends is the stub's own */
 } Tags;
 #define NO_TLS INT16_MIN
 static bool tagged(const Tags* t, unsigned r) { return t->tls[r] != NO_TLS; }
@@ -127,7 +131,7 @@ static bool in_static(int32_t offset, uint32_t size) {
     return offset >= TLS_END && offset + (int32_t)size <= TLS_STATIC_END;
 }
 static uint32_t ror32(uint32_t v, unsigned n) { return n ? v >> n | v << (32 - n) : v; }
-static bool same_tags(const Tags* a, const Tags* b) { return !memcmp(a, b, sizeof *a); }
+static bool same_tags(const Tags* a, const Tags* b) { return !memcmp(a->tls, b->tls, sizeof a->tls); }
 typedef enum { FAIL, NEXT, END } Step; /* an instruction the hook can't take, the next one, a path's end */
 typedef struct {
     const unsigned char* text;
@@ -219,6 +223,7 @@ static Step transfer(Decode* d, Op* op, uint32_t w, bool load, uint32_t size, bo
         if (in_buffer(at, size)) {
             op->kind = load ? OP_BUF_LOAD : OP_BUF_STORE;
             op->buf = (uint16_t)(at - TLS_BUFFER);
+            if (!load && at == TLS_BUFFER && size >= 4) d->tags.header = true;
         } else { /* the guest's TLS, where the register points */
             op->kind = load ? OP_LOAD : OP_STORE;
             if (!load && !d->svc_seen) d->hook->static_buffers = true;
@@ -256,6 +261,7 @@ static Step multiple(Decode* d, Op* op, uint32_t w) {
         if (buffer) {
             op->kind = load ? OP_BUF_LDM : OP_BUF_STM;
             op->buf = (uint16_t)(low - TLS_BUFFER);
+            if (!load && low == TLS_BUFFER) d->tags.header = true;
         } else {
             op->kind = load ? OP_LDM : OP_STM;
             if (!load && !d->svc_seen) d->hook->static_buffers = true;
@@ -305,7 +311,7 @@ static Step decode_one(Decode* d, Op* op, uint32_t w) {
         return NEXT;
     }
     if ((w & 0x0f000000) == 0x0f000000) { /* SVC */
-        if ((w & 0xffffff) != 0x32 || d->svc_seen || op->cond != 14 || !plain(d, 0)) return FAIL;
+        if ((w & 0xffffff) != 0x32 || d->svc_seen || op->cond != 14 || !plain(d, 0) || !d->tags.header) return FAIL;
         op->kind = OP_SVC;
         d->svc_seen = true;
         untag(d, 0);
@@ -328,6 +334,7 @@ static Step decode_one(Decode* d, Op* op, uint32_t w) {
             if (!in_buffer(at, op->imm2)) return FAIL;
             op->kind = load ? OP_BUF_LOAD : OP_BUF_STORE;
             op->buf = (uint16_t)(at - TLS_BUFFER);
+            if (!load && at == TLS_BUFFER) d->tags.header = true;
             return NEXT;
         }
         if (!load && !d->svc_seen && rn != 13) return FAIL;
@@ -344,8 +351,10 @@ static Step decode_one(Decode* d, Op* op, uint32_t w) {
         op->kind = OP_B;
         op->target = (uint16_t)at;
         if (d->pending[at] && !same_tags(&d->pending_tags[at], &d->tags)) return FAIL;
+        bool header = d->tags.header && (!d->pending[at] || d->pending_tags[at].header);
         d->pending[at] = true;
         d->pending_tags[at] = d->tags;
+        d->pending_tags[at].header = header;
         return op->cond == 14 ? END : NEXT;
     }
     if ((w & 0x0fc000f0) == 0x00000090) { /* MUL, MLA */
@@ -411,7 +420,9 @@ static bool decode_stub(const unsigned char* text, uint32_t base, uint32_t bytes
     for (unsigned i = 0; i < STUB_OPS; ++i) {
         if (d.pending[i]) {
             if (reachable && !same_tags(&d.pending_tags[i], &d.tags)) return false;
+            bool header = d.pending_tags[i].header && (!reachable || d.tags.header);
             d.tags = d.pending_tags[i];
+            d.tags.header = header;
             reachable = true;
         }
         if (!reachable) {
