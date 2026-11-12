@@ -45,6 +45,10 @@ static FsTreeResult test_tree_rename(FsTree* tree, FsNode* scope, const char* sr
 #define fs_tree_create test_tree_create
 #define fs_tree_remove test_tree_remove
 #define fs_tree_rename test_tree_rename
+/* the time fs.c's storage reads wait, added up instead of slept */
+static int64_t test_slept_ns;
+static void test_sleep_ns(int64_t ns) { test_slept_ns += ns; }
+#define plat_sleep_ns test_sleep_ns
 #include "nx/hle/filesystem/fs.c"
 #include "common/utilities/mii_model.h"
 #include "nx/hle/hle.c"
@@ -721,6 +725,24 @@ static void test_index_and_paths(SvcObj* fs) {
     puts("PASS HLE index-only visibility, confined paths, bounded IPC paths and loader helpers");
 }
 
+/* a thread's storage reads of 64 KiB or less that go on where its last one ended take the console's time, as a
+   read-ahead's pages do; its first read, a bigger one, one elsewhere and one of another storage take none */
+static void test_read_pacing(void) {
+    const u64 page = FS_PACE_MAX_BYTES, page_ns = page * 1000000000ull / FS_PACE_BYTES_PER_S;
+    TlsFs t = {0};
+    const int a = 0, b = 0; /* two storages, by their addresses */
+    CHECK(page == 0x10000 && page_ns > 0);
+    CHECK(fs_pace_ns(&t, &a, 0, page) == 0);
+    for (u64 i = 1; i < 8; i++) CHECK(fs_pace_ns(&t, &a, i * page, page) == page_ns);
+    CHECK(fs_pace_ns(&t, &a, 8 * page, 0x400000) == 0); /* a load */
+    CHECK(fs_pace_ns(&t, &a, 8 * page + 0x400000, 0x800) == 0x800 * 1000000000ull / FS_PACE_BYTES_PER_S);
+    CHECK(fs_pace_ns(&t, &a, 0, page) == 0);
+    CHECK(fs_pace_ns(&t, &b, page, page) == 0);
+    CHECK(fs_pace_ns(&t, &a, 2 * page, page) == 0); /* b's read came between */
+    CHECK(fs_pace_ns(&t, &a, 3 * page, page + 1) == 0);
+    puts("PASS a thread's 64 KiB read-ahead on one storage paced, its loads and other reads not");
+}
+
 static void test_storage_contracts(SvcObj* storage, u64 size) {
     const struct {
         u64 off, size, capacity;
@@ -1321,9 +1343,20 @@ static void test_dump(SvcObj* proxy) {
     name_size = snx_ld_le32(image + file_table + 0x1c);
     CHECK(name_size == 9 && size == sizeof dump_asset - 1 && data_offset + at + size <= total);
     CHECK(!memcmp(image + data_offset + at, dump_asset, size));
+    /* the image's first read waited nothing; two of 0x20 bytes from its start, the second where the first ended,
+       and only that one waits */
+    CHECK(test_slept_ns == 0);
+    for (u64 off = 0; off < 0x40; off += 0x20) {
+        request(&r, 0);
+        argument64(&r, 0, off);
+        argument64(&r, 8, 0x20);
+        output_buffer(&r, 0x20);
+        dispatch(storage, &r, 0);
+    }
+    CHECK(test_slept_ns == (int64_t)(0x20 * 1000000000ull / FS_PACE_BYTES_PER_S));
     svcobj_unref(storage);
     free(meta.data);
-    puts("PASS the dump's ExeFS and RomFS read in place, nothing extracted");
+    puts("PASS the dump's ExeFS and RomFS read in place, nothing extracted, its read-ahead paced");
 }
 
 /* the RomFS image storage gives, a file name and its bytes the first file in its table, as a dump's image of one file
@@ -2901,6 +2934,7 @@ static void test_rhash(void) {
 int main(int argc, char** argv) {
     hle_init();
     test_rhash();
+    test_read_pacing();
     g_hle.kernel.title_id = 0x0100000000010000ull; /* the title the test was written for */
     CHECK((argc == 3 || argc == 4 || argc == 6) && strstr(argv[1], "scarletnx-fs-tree-") != NULL);
     CHECK(!test_chdir(argv[1]));

@@ -1435,6 +1435,23 @@ static int istorage_read(SvcObj* self, u64 off, u64 sz, u64 a) {
     pm_unlock(&g_hle.fs.tree.lock);
     return rc;
 }
+/* A console's storage takes time for each read, and a game's read-ahead is timed against it: a movie library that
+   caches its file a 64 KiB page at a time, as fast as the reads come back, filled a heap the game sized for the
+   console before its decoder freed the buffers of its first configuration, and the game stopped at its own
+   out-of-memory trap. So a stream, a read of FS_PACE_MAX_BYTES or less that starts where the same thread's last read
+   of the same storage ended, takes the time FS_PACE_BYTES_PER_S gives it; a stream's first read, a bigger read (a
+   load) and a read elsewhere take none. That game plays its intro with its pages at 20 MB/s or less and stops in
+   some runs at 25: 15 leaves it room */
+#define FS_PACE_MAX_BYTES   0x10000u
+#define FS_PACE_BYTES_PER_S 15000000u
+/* the ns a read of sz bytes at off of storage waits, for the thread whose last storage read t holds, which it
+   becomes */
+static u64 fs_pace_ns(TlsFs* t, const void* storage, u64 off, u64 sz) {
+    int stream = t->storage == storage && t->next == off;
+    t->storage = storage;
+    t->next = off + sz;
+    return stream && sz <= FS_PACE_MAX_BYTES ? sz * 1000000000ull / FS_PACE_BYTES_PER_S : 0;
+}
 static int nn_fssrv_sf_IStorage_Read(SvcObj* self, i64 offset, IpcBuf buffer, i64 size_in) {
     u64 off = (u64)offset, sz = (u64)size_in, a = buffer.addr;
     int rc = check_transfer(offset, buffer, size_in);
@@ -1447,6 +1464,16 @@ static int nn_fssrv_sf_IStorage_Read(SvcObj* self, i64 offset, IpcBuf buffer, i6
     plat_ww_open(GP(a), sz);
     rc = istorage_read(self, off, sz, a);
     plat_ww_close(GP(a), sz);
+    if (!rc) {
+        u64 ns = fs_pace_ns(&t_hle.fs, self, off, sz);
+        if (ns) {
+            if (!__atomic_exchange_n(&g_host.fs.pace_told, 1, __ATOMIC_RELAXED))
+                LOG("fs: storage reads of up to %u bytes that go on where the thread's last one ended take a "
+                    "console's time from here, %u bytes a second (this one %llu bytes, %llu us)\n",
+                    FS_PACE_MAX_BYTES, FS_PACE_BYTES_PER_S, (unsigned long long)sz, (unsigned long long)(ns / 1000));
+            plat_sleep_ns((i64)ns);
+        }
+    }
     return rc;
 }
 /* the read-only storages: their backend rejects Write and SetSize, after the adapter's argument checks. Flush
