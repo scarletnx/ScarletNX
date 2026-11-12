@@ -20,7 +20,7 @@
 
 ASTC textures are decoded on the GPU by a compute shader, `src/nx/gpu/texture/astc.comp` with its body in
 `astc_decode.glsl`. It is a GLSL port of Eden's `src/video_core/host_shaders/astc_decoder.comp` (GPL-3.0-or-later, with yuzu's GPL-2.0-or-later parts). The
-CPU decoder in `src/nx/gpu/texture/astc_cpu.c` is a C port of Eden's `src/video_core/textures/astc.cpp`, which
+CPU decoder in `tests/support/astc.c` is a C port of Eden's `src/video_core/textures/astc.cpp`, which
 carries the University of North Carolina at Chapel Hill's Apache-2.0 decoder (FasTC). The tests use it as the
 reference the shader must match byte for byte, and the runtime runs it only for the background encodes on the CPU
 ([Very large levels](#very-large-levels)).
@@ -47,8 +47,7 @@ where the loop took about 45.
 `astc.comp` holds only the declarations: the workgroup size, the footprint, the push constants, the two buffers and
 the tile in shared memory (39 words a block, 9984 bytes). The decoder is `astc_decode.glsl`, which it includes, written in the part
 of GLSL that is also C++ so that the tests run the same file on the CPU (see Tests). The rules are at the top of
-`src/nx/gpu/texture/glsl.hpp` (`tests/glsl/glsl.hpp` includes it), which the runtime's BC7 encodes on the CPU run
-the encoder's body through too.
+`tests/glsl/glsl.hpp`.
 
 ### Written for the machine
 
@@ -465,8 +464,8 @@ decoder and the encoder's body at idle priority. The game was run capped to four
 our test runs are: its own threads took 2 to 2.3 of them in that scene, so even two workers used up the cap and held
 the game back, and six brought it down to 3 to 6 frames a second. Without such a cap the cost stays: on that game's
 blocks a Zen 5 core encodes 0.7 megatexels a second, so the two arrays take 10 minutes of CPU time where the GPU spends
-13 seconds. The background is the GPU's alone now; the CPU decoder and encoder (`astc_cpu.c`,
-`bc7_encode_cpu.cpp`) are only the tests' references.
+13 seconds. The background is the GPU's alone now; the CPU decoder and encoder are only the tests' references
+(`tests/support/astc.c`, `tests/glsl/bc7_cpu.cpp`).
 
 Why 8 megatexels: at that game's rate (25 ns a texel, most blocks trying every mode), the fast build of a level under
 it costs the frame at most about 200 ms on the 890M, and a tenth of that on blocks mode 6 holds (an albedo map); a game
