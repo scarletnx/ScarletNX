@@ -107,11 +107,14 @@
 
    A 32-bit program. A hook says a32 after its handler (and its uses and pure) when its declaration holds for a
    32-bit program too: the function has the same symbol there, its arguments are these under AAPCS32 (a usize for a
-   size_t) and its handler reads nothing whose layout differs, so it uses no struct. A function that a 32-bit program
-   has another declaration of is declared for it alone, on a line that begins with a32:
+   size_t) and its handler reads nothing whose layout differs, so it uses no struct. A @version after that a32 gives
+   the versions it holds for there, in place of the hook's own: the 32-bit SDKs the function was read in, which are
+   not the 64-bit ones. A function that a 32-bit program has another declaration of is declared for it alone, on a
+   line that begins with a32:
 
+     hook _ZN2nn4time10InitializeEv() -> u32 = initialize a32 @version(< 1.0.0)
      hook _ZN2nn4time19StandardSteadyClock3nowEv() -> i64 = steady_now
-     a32 hook _ZN2nn4time19StandardSteadyClock3nowEv(addr out) = steady_now_out
+     @version(< 1.0.0) a32 hook _ZN2nn4time19StandardSteadyClock3nowEv(addr out) = steady_now_out
      @version(< 1.0.0) a32 hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = save32 uses PlayReport32
 
    one whose result AAPCS32 returns through a pointer (a class of 8 bytes, which AAPCS64 returns in x0), one whose
@@ -227,6 +230,7 @@ typedef struct {
     Kind ret;
     char ret_cname[MAX_NAME];
     Range range;
+    Range range32; /* its versions in a 32-bit program: those after its a32, else range */
     char use_name[MAX_USES][MAX_NAME];
     int use[MAX_USES]; /* the structs' first variants */
 } Hook;
@@ -784,9 +788,10 @@ static void assign_a32(Hook* h) {
     }
 }
 
-/* hook SYMBOL(TYPE NAME, ...) [-> TYPE] [= HANDLER] [uses STRUCT, ...] [pure] [a32], or for an address hook (at, its
-   key BUILDID:OFFSET) hook HANDLER(TYPE NAME, ...) [-> TYPE] [uses STRUCT, ...] [pure]: a function without a symbol has
-   only the name its handler gives it. alone: the line began with a32, a declaration for a 32-bit program alone */
+/* hook SYMBOL(TYPE NAME, ...) [-> TYPE] [= HANDLER] [uses STRUCT, ...] [pure] [a32 [@version(...)]], or for an address
+   hook (at, its key BUILDID:OFFSET) hook HANDLER(TYPE NAME, ...) [-> TYPE] [uses STRUCT, ...] [pure]: a function
+   without a symbol has only the name its handler gives it. alone: the line began with a32, a declaration for a 32-bit
+   program alone */
 static void parse_hook(const char* p, int line, const Range* range, const char* at, int alone) {
     Hook* h;
     char derived[MAX_NAME];
@@ -797,7 +802,7 @@ static void parse_hook(const char* p, int line, const Range* range, const char* 
     memset(h, 0, sizeof *h);
     h->line = line;
     h->family = nfamilies - 1;
-    h->range = *range;
+    h->range = h->range32 = *range;
     h->at = at != NULL;
     h->a32 = alone ? FOR_A32_ALONE : 0;
     if (at) {
@@ -880,6 +885,7 @@ static void parse_hook(const char* p, int line, const Range* range, const char* 
                        "SDK's: declare the 32-bit program's with a32 before hook");
         h->a32 = FOR_A32_TOO;
         p = skip_space(p + 3);
+        if (!strncmp(p, "@version", 8)) p = skip_space(parse_version(p + 8, &h->range32, line));
     }
     if (*p) fail(line, "unexpected text after the hook's handler");
     resolve_buffers(h, line);
@@ -1179,13 +1185,14 @@ static int by_symbol(const void* a, const void* b) {
     return order ? order : by_range(&x->range, &y->range);
 }
 
-/* hook i's versions split at the bounds of the variants it uses, into the entries of list (*count of them) */
-static void split_hook(int i, Entry* list, int* count) {
+/* hook i's versions (range: its own, or a 32-bit program's) split at the bounds of the variants it uses, into the
+   entries of list (*count of them) */
+static void split_hook(int i, const Range* range, Entry* list, int* count) {
     const Hook* h = &hooks[i];
     int first = *count, end, j, u;
     if (*count == MAX_ENTRIES) fail(h->line, "more than %d hooks once split by version", MAX_ENTRIES);
     list[*count].hook = i;
-    list[*count].range = h->range;
+    list[*count].range = *range;
     ++*count;
     /* each use splits the entries so far at its variants' bounds */
     for (u = 0; u < h->nuses; u++) {
@@ -1229,10 +1236,11 @@ static void check_hooks(void) {
                 const Hook *a = hooks[i].line < hooks[j].line ? &hooks[i] : &hooks[j],
                            *b = a == &hooks[i] ? &hooks[j] : &hooks[i];
                 int both64 = a->a32 != FOR_A32_ALONE && b->a32 != FOR_A32_ALONE, both32 = a->a32 && b->a32;
-                if (!both64 && !both32) continue;
-                if (a->range.key == K_ANY && b->range.key == K_ANY)
+                if ((both64 && a->range.key == K_ANY && b->range.key == K_ANY) ||
+                    (both32 && a->range32.key == K_ANY && b->range32.key == K_ANY))
                     fail(b->line, "%s is hooked on %s too", b->symbol, ref(a->line, b->line));
-                check_ranges(b->symbol, &a->range, a->line, &b->range, b->line);
+                if (both64) check_ranges(b->symbol, &a->range, a->line, &b->range, b->line);
+                if (both32) check_ranges(b->symbol, &a->range32, a->line, &b->range32, b->line);
             }
     for (i = 0; i < nroutes; i++) {
         for (j = 0; j < i; j++)
@@ -1252,8 +1260,8 @@ static void check_hooks(void) {
             if (j == nvariants) fail(h->line, "unknown struct '%s'", h->use_name[u]);
             h->use[u] = j;
         }
-        if (h->a32 != FOR_A32_ALONE) split_hook(i, entries, &nentries);
-        if (h->a32) split_hook(i, entries32, &nentries32);
+        if (h->a32 != FOR_A32_ALONE) split_hook(i, &h->range, entries, &nentries);
+        if (h->a32) split_hook(i, &h->range32, entries32, &nentries32);
     }
 }
 

@@ -86,7 +86,9 @@ hook memcpy(void* dst, const void* src, u64 size) -> void* = hook_memmove
 - The word `a32` after a hook's handler (after `pure`) says the declaration holds for a 32-bit game too: its
   arguments are the function's under AAPCS32 as written (a `usize` for a `size_t`, never a `u64`), and its handler
   reads nothing whose layout differs in the 32-bit SDK. A hook that `uses` a struct can't be one: a struct's layout
-  is one SDK's.
+  is one SDK's. A `@version` after that `a32` gives the versions the declaration holds for in a 32-bit game, in place
+  of the hook's own: `hook SYMBOL() -> u32 = handler a32 @version(< 1.0.0)`. The 32-bit SDKs a function was read in
+  are not the 64-bit ones.
 - A line that begins with `a32` declares a hook for a 32-bit game alone: `a32 hook SYMBOL(...) ...`, with a
   `@version` before it and `uses` after its handler as any hook. It is for a function whose declaration differs
   there. A 32-bit SDK mangles a `size_t` as `j` where the 64-bit one has `m` (and an `int64_t` as `x` for `l`), so a
