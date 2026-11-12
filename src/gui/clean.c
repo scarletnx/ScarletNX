@@ -163,6 +163,91 @@ int gui_move_save_note(GuiCleaned* done, const char* old, const char* now, bool 
     free(to);
     return moves;
 }
+/* the folder a save's files are moved into before it takes the save's place: <save> and GUI_SAVE_MOVING */
+static char* save_staged(const char* save) {
+    size_t n = strlen(save);
+    while (n > 1 && (save[n - 1] == '/' || save[n - 1] == '\\')) --n;
+    return snx_format("%.*s" GUI_SAVE_MOVING, (int)n, save);
+}
+bool gui_save_old(const char* save) {
+    char *mark = snx_path_join(save, SNX_SAVE_JOURNALED), *staged = save_staged(save), **names = NULL;
+    size_t count = 0;
+    bool old = mark && staged && snx_is_dir(save) && !snx_is_link(save) && !snx_path_exists(mark) &&
+               !snx_list_dir(save, &names, &count) && (count || snx_is_dir(staged));
+    snx_free_strings(names, count);
+    free(staged);
+    free(mark);
+    return old;
+}
+int gui_move_save_committed(GuiCleaned* done, const char* save, bool apply) {
+    char *staged = save_staged(save), *into = staged ? snx_path_join(staged, SNX_SAVE_COMMITTED) : NULL;
+    char* mark = staged ? snx_path_join(staged, SNX_SAVE_JOURNALED) : NULL;
+    char *last = snx_path_join(save, SNX_SAVE_COMMITTED), **names = NULL, *from, *to, what[4400], why[256];
+    size_t count = 0, i, moved = 0;
+    int moves = 0;
+    bool ok = staged && into && mark && last && gui_save_old(save) && !snx_list_dir(save, &names, &count);
+    if (!ok) goto out;
+    if (apply && (snx_mkdirs(into) || (!snx_path_exists(mark) && snx_write_file(mark, "", 0)))) {
+        snprintf(what, sizeof what, snx_tr("Not moved: %s could not be made: %s"), staged,
+                 snx_os_error(why, sizeof why));
+        gui_cleaned_add(done, false, save, what);
+        goto out;
+    }
+    for (i = 0; ok && i < count; ++i) {
+        from = snx_path_join(save, names[i]);
+        to = snx_path_join(into, names[i]);
+        if (!from || !to)
+            ok = false;
+        else if (snx_path_exists(to)) {
+            snprintf(what, sizeof what, snx_tr("Stays: %s is there"), to);
+            gui_cleaned_add(done, ok = false, from, what);
+        } else if (apply && plat_replace_file(from, to)) {
+            snprintf(what, sizeof what, snx_tr("Not moved to %s: %s"), to, snx_os_error(why, sizeof why));
+            gui_cleaned_add(done, ok = false, from, what);
+        } else
+            moved = i + 1;
+        free(from);
+        free(to);
+    }
+    if (!ok) { /* the ones that moved go back: a save with part of its files in its folder is no save */
+        for (i = 0; apply && i < moved; ++i) {
+            from = snx_path_join(into, names[i]);
+            to = snx_path_join(save, names[i]);
+            if (from && to) plat_replace_file(from, to);
+            free(from);
+            free(to);
+        }
+        if (apply && !snx_remove_empty_dir(into) && !remove(mark)) snx_remove_empty_dir(staged);
+        goto out;
+    }
+    for (i = 0; i < count; ++i) {
+        from = snx_path_join(save, names[i]);
+        to = snx_path_join(last, names[i]);
+        if (from && to) {
+            snprintf(what, sizeof what, apply ? snx_tr("Moved to %s") : snx_tr("Moves to %s"), to);
+            gui_cleaned_add(done, true, from, what);
+            ++moves;
+        }
+        free(from);
+        free(to);
+    }
+    if (apply && (snx_remove_empty_dir(save) || plat_replace_file(staged, save))) {
+        snprintf(what, sizeof what, snx_tr("Its files are in %s, which could not take its place: %s"), staged,
+                 snx_os_error(why, sizeof why));
+        gui_cleaned_add(done, false, save, what);
+    } else if (!count) { /* a move cut short after its last file: only the folder was left to put in place */
+        snprintf(what, sizeof what, apply ? snx_tr("Moved to %s") : snx_tr("Moves to %s"), save);
+        gui_cleaned_add(done, true, staged, what);
+        ++moves;
+    }
+out:
+    snx_free_strings(names, count);
+    free(last);
+    free(mark);
+    free(into);
+    free(staged);
+    return moves;
+}
 int gui_move_entries(GuiCleaned* done, const char* old, const char* now, const char* const* only, bool apply) {
     char **names = NULL, *from, *to, what[4400], why[256];
     const char* slash;

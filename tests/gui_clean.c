@@ -278,6 +278,80 @@ int main(void) {
             free(saves);
             free(note);
         }
+        /* a save an older version kept, the game's own files in its folder, two of them folders named 0 and 1 (a game's
+           slots): each into the save's 0/, its last commit as this version keeps a save, with the file that says so.
+           Nothing touched without apply; then the save is not one of those any more, and nothing is left beside it */
+        {
+            char *save = snx_path_join(root, "title"), *zero = snx_path_join(save, "0/slot.bin"),
+                 *one = snx_path_join(save, "1/slot.bin"), *top = snx_path_join(save, "system.bin"),
+                 *staged = snx_path_join(root, "title.moving"), *mark = snx_path_join(save, SNX_SAVE_JOURNALED),
+                 *moved = snx_path_join(save, SNX_SAVE_COMMITTED "/1/slot.bin"), *dir, *said;
+            assert(!gui_save_old(save) && !snx_mkdirs(save)); /* not there */
+            assert(!gui_save_old(save));                      /* a folder with nothing in it */
+            dir = snx_dirname(zero);
+            assert(!snx_mkdirs(dir));
+            free(dir);
+            dir = snx_dirname(one);
+            assert(!snx_mkdirs(dir));
+            free(dir);
+            write_text(zero, "zero");
+            write_text(one, "one");
+            write_text(top, "top");
+            assert(gui_save_old(save));
+            assert(gui_move_save_committed(&done, save, false) == 3);
+            said = native(snx_format("+title/0|Moves to %s/title/0/0\n+title/1|Moves to %s/title/0/1\n"
+                                     "+title/system.bin|Moves to %s/title/0/system.bin\n",
+                                     root, root, root));
+            assert(!strcmp(entries(&done, base), said) && snx_is_file(top) && !snx_path_exists(staged));
+            free(said);
+            gui_cleaned_free(&done);
+            assert(gui_move_save_committed(&done, save, true) == 3 && done.count == 3 && done.done == 3);
+            gui_cleaned_free(&done);
+            assert(snx_is_file(mark) && snx_is_file(moved) && !snx_path_exists(top) && !snx_path_exists(staged));
+            {
+                char* text = read_text(moved);
+                assert(text && !strcmp(text, "one"));
+                free(text);
+            }
+            free(moved);
+            moved = snx_path_join(save, SNX_SAVE_COMMITTED "/0/slot.bin");
+            assert(snx_is_file(moved) && !snx_path_exists(one));
+            /* laid out now: not one of those, and a second move does nothing */
+            assert(!gui_save_old(save) && !gui_move_save_committed(&done, save, true) && !done.count);
+            /* a move cut short after its last file: the save's folder empty, its files beside it. The next one puts
+               the folder in place */
+            assert(!rename(save, staged) && !snx_mkdirs(save) && gui_save_old(save));
+            assert(gui_move_save_committed(&done, save, true) == 1 && done.count == 1 && done.done == 1);
+            gui_cleaned_free(&done);
+            assert(snx_is_file(mark) && snx_is_file(moved) && !snx_path_exists(staged) && !gui_save_old(save));
+            /* one of its files cannot move, its name there already from a move cut short: the save is as it was, the
+               ones that moved back in it, and that file is the only entry */
+            assert(!snx_remove_tree(save) && !snx_mkdirs(save));
+            write_text(top, "top");
+            free(moved);
+            moved = snx_path_join(save, "a.bin");
+            write_text(moved, "a");
+            dir = snx_path_join(staged, SNX_SAVE_COMMITTED "/system.bin");
+            free(zero);
+            zero = snx_dirname(dir);
+            assert(!snx_mkdirs(zero));
+            write_text(dir, "an older move's");
+            assert(!gui_move_save_committed(&done, save, true) && done.count == 1 && done.done == 0);
+            said = native(snx_format("!title/system.bin|Stays: %s/title.moving/0/system.bin is there\n", root));
+            assert(!strcmp(entries(&done, base), said));
+            free(said);
+            gui_cleaned_free(&done);
+            assert(snx_is_file(moved) && snx_is_file(top) && snx_is_file(dir) && !snx_path_exists(mark));
+            assert(!snx_remove_tree(save) && !snx_remove_tree(staged));
+            free(dir);
+            free(moved);
+            free(mark);
+            free(staged);
+            free(top);
+            free(one);
+            free(zero);
+            free(save);
+        }
 #ifdef SNX_XDG
         { /* another disk: the entry not moved, the folder on the other named */
             char* shm = snx_is_dir("/dev/shm") ? snx_temp_dir("/dev/shm") : NULL;
