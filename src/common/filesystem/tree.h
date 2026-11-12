@@ -37,10 +37,7 @@ typedef struct FsNode {
     int fd;
     const uint8_t* map;
     unsigned refs; /* open handles; attached nodes are additionally owned by the tree */
-    /* the tree's user's, which the tree only carries, 0 where nothing commits: NX's fs.c marks a save's folder, and
-       a file of one while its bytes wait for the save's commit (its "A save's commit") */
-    int save;
-    char* host; /* a graft's top (fs_tree_graft, a followed link): the host folder its subtree is in, else NULL */
+    char* host;    /* a graft's top (fs_tree_graft, a followed link): the host folder its subtree is in, else NULL */
 } FsNode;
 
 typedef struct {
