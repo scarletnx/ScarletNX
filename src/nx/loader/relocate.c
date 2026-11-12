@@ -26,7 +26,7 @@ typedef struct {
 
 /* a module's dynamic tables, as offsets from its start, and its definitions in the order of their names */
 typedef struct {
-    SnxU64 rela, relasz, jmprel, pltrelsz, relr, relrsz, symtab, strtab, strsz, symbols;
+    SnxU64 rela, relasz, jmprel, pltrelsz, relr, relrsz, symtab, strtab, strsz, symbols, init, fini;
     Def* defs;
     size_t def_count;
 } Tables;
@@ -78,6 +78,8 @@ static int read_tables(const SnxRelocModule* m, Tables* t, char* error, size_t e
         if (tag == DT_STRTAB && !t->strtab) t->strtab = value;
         if (tag == DT_STRSZ && !t->strsz) t->strsz = value;
         if (tag == DT_HASH && !have_hash) hash = value, have_hash = 1;
+        if (tag == DT_INIT && !t->init) t->init = value;
+        if (tag == DT_FINI && !t->fini) t->fini = value;
     }
     /* the number of symbols: DT_HASH's chain count, else the room between the symbols and the strings after them */
     if (have_hash && inside(hash, 8, m->size))
@@ -261,6 +263,8 @@ int snx_relocate(SnxRelocModule* modules, size_t count, SnxRelocCounts* counts, 
             free(tables);
             return -1;
         }
+        modules[i].init = tables[i].init ? modules[i].base + tables[i].init : 0;
+        modules[i].fini = tables[i].fini ? modules[i].base + tables[i].fini : 0;
         symbols += tables[i].symbols;
     }
     defs = (Def*)snx_alloc((size_t)(symbols ? symbols : 1) * sizeof(*defs));
@@ -318,6 +322,29 @@ int snx_relocate_compare(const SnxRelocModule* modules, size_t count, SnxRelocDi
         Tables t;
         if (read_tables(&modules[i], &t, error, error_size)) return -1;
         walk(&modules[i], &t, i, compare_one, &c);
+    }
+    return 0;
+}
+
+int snx_relocate_find(const SnxRelocModule* modules, size_t count, const char* name, SnxU64* address, char* error,
+                      size_t error_size) {
+    size_t i;
+    SnxU64 k;
+    for (i = 0; i < count; ++i) {
+        const SnxRelocModule* m = &modules[i];
+        Tables t;
+        if (read_tables(m, &t, error, error_size)) return -1;
+        for (k = 1; k < t.symbols; ++k) { /* the first of the table by that name, as the sorted definitions give */
+            const unsigned char* s = m->image + t.symtab + k * SYM_SIZE;
+            unsigned section = snx_ld_le16(s + 6);
+            const char* own = symbol_name(m, &t, k);
+            if (!own || strcmp(own, name) || section == SHN_UNDEF || section == SHN_COMMON ||
+                ELF64_ST_TYPE(s[4]) == STT_FILE)
+                continue;
+            if (ELF64_ST_BIND(s[4]) == STB_LOCAL) break; /* a local one is the module's answer: the next module's */
+            *address = m->base + snx_ld_le64(s + 8);
+            return 1;
+        }
     }
     return 0;
 }

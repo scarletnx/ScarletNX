@@ -18,15 +18,16 @@
 
 /* One module to link. image is the module as mapped at base, size bytes of it readable: its tables are read there.
    data is where the words of [data_off, data_off + data_size) are relocated: image + data_off to link the module in
-   place, or a copy of those bytes, which leaves the module as it is. lazy is set by snx_relocate: what a PLT slot of
-   the module holds until it is bound, 0 for a module with none */
+   place, or a copy of those bytes, which leaves the module as it is. snx_relocate sets the rest: lazy, what a PLT
+   slot of the module holds until it is bound, 0 for a module with none; init and fini, the addresses of the functions
+   its DT_INIT and DT_FINI name, which run its constructors and destructors, 0 for none */
 typedef struct {
     const char* name; /* in messages */
     const unsigned char* image;
     SnxU64 base, size;
     unsigned char* data;
     SnxU64 data_off, data_size;
-    SnxU64 lazy;
+    SnxU64 lazy, init, fini;
 } SnxRelocModule;
 
 /* What snx_relocate did: the relocations applied by kind, those of a weak symbol nothing defines (0), those of another
@@ -52,5 +53,11 @@ typedef struct {
 } SnxRelocDiff;
 int snx_relocate_compare(const SnxRelocModule* modules, size_t count, SnxRelocDiff* diff, char* error,
                          size_t error_size);
+
+/* The address a symbol of that name is bound to among the modules, by the rule above for a symbol of default
+   visibility: 1 with it in *address, 0 when nothing defines the name, -1 said in error for a table outside its
+   module */
+int snx_relocate_find(const SnxRelocModule* modules, size_t count, const char* name, SnxU64* address, char* error,
+                      size_t error_size);
 
 #endif
