@@ -108,6 +108,7 @@ void vk_pipe_part_src(u32 part, const void* key, PipeKey* out) {
         const PipeFsKey* f = key;
         out->fs = f->fs;
         out->arrays = f->arrays;
+        out->fs_spec = f->spec;
         out->feedback = f->feedback;
         out->sample_shading = f->sample_shading;
         out->samples = f->samples;
@@ -226,6 +227,7 @@ void vk_pipe_split(const PipeKey* k, VkShaderModule fs, const PipeSplitDevice* d
     *f = (PipeFsKey){0};
     f->fs = fs;
     f->arrays = k->arrays & VK_ARRAYS_FS;
+    f->spec = k->fs_spec;
     if (!d->feedback_dynamic) f->feedback = k->feedback;
     if (k->sample_shading) {
         f->sample_shading = k->sample_shading;

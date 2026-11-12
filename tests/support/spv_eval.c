@@ -23,6 +23,7 @@ typedef struct {
     uint32_t builtin;  /* a variable: its BuiltIn + 1 */
     uint32_t location; /* a variable: its Location + 1 */
     uint32_t binding;  /* a variable: its Binding + 1 */
+    uint32_t spec;     /* a specialization constant: its SpecId + 1 */
     uint32_t sclass;   /* a pointer type or a variable: its storage class */
     Val v;
 } Id;
@@ -790,12 +791,15 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
                 y->a = in[3];
             }
         }
-        if ((op == 41 || op == 42 || op == 43 || op == 44 || op == 46) && in[2] < e->bound) {
+        if ((op == 41 || op == 42 || op == 43 || op == 44 || op == 46 || op == 50) && in[2] < e->bound) {
             Id* c = &e->ids[in[2]];
             c->kind = K_CONST;
             c->type = in[1];
             if (op == 41) c->v.c[0] = 1;
             if (op == 43) c->v.c[0] = len > 4 ? (uint64_t)in[3] | (uint64_t)in[4] << 32 : in[3];
+            if (op == 50) /* OpSpecConstant of 32 bits: the test's value for its SpecId, or its default */
+                c->v.c[0] =
+                    c->spec && c->spec <= 8 && (env->spec_given >> (c->spec - 1) & 1) ? env->spec[c->spec - 1] : in[3];
             if (op == 44)
                 for (uint32_t k = 3; k < len && k < 7; k++) c->v.c[k - 3] = e->ids[in[k]].v.c[0];
         }
@@ -805,6 +809,7 @@ const char* spv_eval(const uint32_t* w, size_t count, SpvEvalEnv* env) {
             if (in[2] == 11) v->builtin = in[3] + 1;
             if (in[2] == 30) v->location = in[3] + 1;
             if (in[2] == 33) v->binding = in[3] + 1;
+            if (in[2] == 1) v->spec = in[3] + 1;
         }
         if (op == 248 && in[1] < e->bound) {
             e->ids[in[1]].kind = K_LABEL;

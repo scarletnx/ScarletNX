@@ -96,6 +96,8 @@ typedef struct {
     u32 branch_target; /* and the word a BRX that ends it goes to */
     /* the u32 constants under SH_SMALL_U32 made so far, 0 for one not made: shader_u32 asks the emitter once each */
     u32 small_u32[64];
+    /* the module's specialization constants by SpecId (shader.h's SH_SPEC_), 0 for one no instruction read yet */
+    u32 spec[SH_SPEC_COUNT];
 } DirectCtx;
 #define SH_SMALL_U32 64u
 
@@ -104,6 +106,13 @@ static inline u32 shader_u32(DirectCtx* c, u32 value) {
     if (value >= SH_SMALL_U32) return spv_emit_constant_u32(&c->emit, c->u32_type, value);
     if (!c->small_u32[value]) c->small_u32[value] = spv_emit_constant_u32(&c->emit, c->u32_type, value);
     return c->small_u32[value];
+}
+
+/* the module's specialization constant id (SH_SPEC_), a u32 whose default is value: declared when first read, so
+   that a module which reads none has none (ShaderInfo.spec) and takes no pipeline of its own for it */
+static inline u32 shader_spec(DirectCtx* c, u32 id, u32 value) {
+    if (!c->spec[id]) c->spec[id] = spv_emit_spec_constant_u32(&c->emit, c->u32_type, id, value);
+    return c->spec[id];
 }
 
 /* Fragment fetches from a scaled render target (resolution=): texel p is from pixel p * scale on (shader_scaled_fetch),

@@ -218,12 +218,12 @@ static void check_states(void) {
    state and no other, so a new state of known shaders reuses the parts that compile shaders */
 enum { F_VS, F_TCS, F_TES, F_GS, F_PATCH, F_POLYGON, F_CLAMP, F_PROVOKING, F_CONSERVATIVE, F_TOPO, F_VI, F_NCOLOR,
        F_COLOR, F_DEPTH, F_STENCIL, F_BLEND, F_MASK, F_LOGIC, F_SAMPLES, F_SAMPLE_OFF, F_A2C, F_A2O, F_COVERAGE,
-       F_ADVANCED, F_SHADING, F_FEEDBACK, F_ARRAYS_VS, F_ARRAYS_FS, F_ARRAYS_GS, F_FS, F_COUNT };
+       F_ADVANCED, F_SHADING, F_FEEDBACK, F_ARRAYS_VS, F_ARRAYS_FS, F_ARRAYS_GS, F_FS_SPEC, F_FS, F_COUNT };
 static const char* const g_fields[F_COUNT] = {
     "vs", "tcs", "tes", "gs", "patch", "polygon", "depth_clamp", "provoking_last", "conservative", "topo_class", "vi",
     "ncolor", "color", "depth", "stencil", "blend", "blend mask", "logic_op", "samples", "sample_off",
     "alpha_to_coverage", "alpha_to_one", "coverage", "advanced blend", "sample_shading", "feedback", "arrays (vertex)",
-    "arrays (fragment)", "arrays (geometry)", "fs"};
+    "arrays (fragment)", "arrays (geometry)", "fs_spec", "fs"};
 static void mutate(PipeKey* k, int f) {
     switch (f) {
     case F_VS: k->vs = (VkShaderModule)(uintptr_t)0x1010; break;
@@ -255,6 +255,7 @@ static void mutate(PipeKey* k, int f) {
     case F_ARRAYS_VS: k->arrays |= 1u; break;
     case F_ARRAYS_FS: k->arrays |= 2u; break;
     case F_ARRAYS_GS: k->arrays |= 16u; break;
+    case F_FS_SPEC: k->fs_spec = 3; break;
     default: k->fs = (VkShaderModule)(uintptr_t)0x2020; break;
     }
 }
@@ -299,7 +300,7 @@ static void check_split(void) {
                     break;
                 case F_SHADING: want = VK_PART_FS | VK_PART_FO; break;
                 case F_FEEDBACK: want = dynamic ? 0 : VK_PART_FS | VK_PART_FO; break;
-                case F_ARRAYS_FS: case F_FS: want = VK_PART_FS; break;
+                case F_ARRAYS_FS: case F_FS_SPEC: case F_FS: want = VK_PART_FS; break;
                 default: want = VK_PART_FO; break;
                 }
                 char what[160];

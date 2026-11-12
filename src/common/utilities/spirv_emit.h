@@ -108,6 +108,7 @@ enum {
     SPV_OP_CONSTANT_TRUE = 41,
     SPV_OP_CONSTANT_FALSE = 42,
     SPV_OP_CONSTANT = 43,
+    SPV_OP_SPEC_CONSTANT = 50,
     SPV_OP_CONSTANT_COMPOSITE = 44,
     SPV_OP_CONSTANT_NULL = 46,
     SPV_OP_FUNCTION = 54,
@@ -255,6 +256,7 @@ enum {
     SPV_STORAGE_STORAGE_BUFFER = 12
 };
 enum {
+    SPV_DECORATION_SPEC_ID = 1,
     SPV_DECORATION_BLOCK = 2,
     SPV_DECORATION_ARRAY_STRIDE = 6,
     SPV_DECORATION_BUILT_IN = 11,
@@ -436,6 +438,10 @@ uint32_t spv_emit_constant_u32(SpvEmitter* e, uint32_t type, uint32_t value);
 /* whether id is a 32-bit OpConstant this emitter made, and its type and bits */
 int spv_emit_constant_bits(const SpvEmitter* e, uint32_t id, uint32_t* type, uint32_t* value);
 uint32_t spv_emit_constant_bool(SpvEmitter* e, uint32_t type, int value);
+/* a 32-bit specialization constant of type, a new one each time: spec_id is the SpecId a pipeline names it by
+   (VkSpecializationMapEntry.constantID), value what it is in a pipeline that names none. No OpConstant: instructions
+   take it as any value, and a driver folds them once the pipeline says what it is */
+uint32_t spv_emit_spec_constant_u32(SpvEmitter* e, uint32_t type, uint32_t spec_id, uint32_t value);
 /* a constant of a 64-bit type (F64, or a 64-bit integer) from its bits */
 uint32_t spv_emit_constant64(SpvEmitter* e, uint32_t type, uint64_t value);
 uint32_t spv_emit_constant_f32(SpvEmitter* e, uint32_t type, float value);
