@@ -151,7 +151,8 @@ snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc.comp NAME astc_spv HEADER nx/gpu/t
 # ASTC blocks straight into BC7 blocks, for a GPU that samples BC7 and not ASTC (gpu/vk/astc.c), in the encoder's
 # builds: the full one; the fast one, every mode only where mode 6 is not close, for large levels; mode 6 alone for the
 # largest; and mode 6 from its first line alone, a very large level's quick encode until the background's fast build is
-# in the cache. The full and the fast one are two passes each (SNX_BC7_PASS 1 and 2, gpu/texture/astc_bc7.glsl). Then
+# in the cache. The full and the fast one are two passes each (SNX_BC7_PASS 1 and 2, gpu/texture/astc_bc7.glsl), and
+# the fast one's second pass, the search, takes what the ASTC blocks say of each block (SNX_BC7_HINTS). Then
 # all of them with SPIR-V's packed dot product (Vulkan 1.3's shaderIntegerDotProduct), for a GPU that says it has an
 # instruction for it: the same blocks
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_a_spv HEADER nx/gpu/texture/astc_bc7_spv.h
@@ -161,7 +162,7 @@ snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_b_spv HEADE
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_fast_a_spv HEADER nx/gpu/texture/astc_bc7_spv.h
                DEFINES SNX_BC7_FAST=1 SNX_BC7_PASS=1)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_fast_b_spv HEADER nx/gpu/texture/astc_bc7_spv.h
-               DEFINES SNX_BC7_FAST=1 SNX_BC7_PASS=2)
+               DEFINES SNX_BC7_FAST=1 SNX_BC7_PASS=2 SNX_BC7_HINTS=1)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_mode6_spv HEADER nx/gpu/texture/astc_bc7_spv.h
                DEFINES SNX_BC7_FAST=2)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_quick_spv HEADER nx/gpu/texture/astc_bc7_spv.h
@@ -173,7 +174,7 @@ snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_b_dot_spv H
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_fast_a_dot_spv HEADER nx/gpu/texture/astc_bc7_spv.h
                TARGET vulkan1.3 DEFINES SNX_BC7_FAST=1 SNX_BC7_PASS=1 SNX_BC7_DOT=1)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_fast_b_dot_spv HEADER nx/gpu/texture/astc_bc7_spv.h
-               TARGET vulkan1.3 DEFINES SNX_BC7_FAST=1 SNX_BC7_PASS=2 SNX_BC7_DOT=1)
+               TARGET vulkan1.3 DEFINES SNX_BC7_FAST=1 SNX_BC7_PASS=2 SNX_BC7_HINTS=1 SNX_BC7_DOT=1)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_mode6_dot_spv HEADER nx/gpu/texture/astc_bc7_spv.h
                TARGET vulkan1.3 DEFINES SNX_BC7_FAST=2 SNX_BC7_DOT=1)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_quick_dot_spv HEADER nx/gpu/texture/astc_bc7_spv.h

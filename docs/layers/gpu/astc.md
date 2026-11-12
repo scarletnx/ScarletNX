@@ -264,19 +264,24 @@ loads (`astc_dump=DIR` keeps them as `.astc` files) repeated over it:
 | Random 4x4 blocks | 164 ms | 30 ms |
 | Random 8x8 blocks | 220 ms | 46 ms |
 
-Two cuts of the search are options of the build that no build takes (`snx-test-astc-bc7-glsl --measure FILE...` gives
-each one's PSNR against the ASTC blocks' own texels, the modes written and the CPU's seconds):
+The fast build's second pass takes what the ASTC blocks say of each block (`SNX_BC7_HINTS`, `astc_bc7.glsl`), in
+place of the search's own choice of partitions and rotations. Texels of one ASTC partition lie on one line, so a block
+of one such set takes mode 6 alone; a block of two sets (two partitions, or two ASTC blocks' texels) takes the
+partition of BC7's 64 with the fewest texels on the wrong side, found by counting bits where the search sums 128
+partitions' spreads; a second plane names the rotation of modes 4 and 5. More than two sets, two planes of different
+channels, or a partition more than two texels from every one of BC7's leave the block to the whole search. It took
+the two levels above with hard blocks from 95 to 67 ms and from 69 to 51. It costs PSNR: over 11 of that game's levels
+51.13 dB against the ASTC blocks' own texels where the search alone gives 51.27 (the full build 51.70, mode 6 alone
+47.52), and one level of text lost 1.8 dB (`snx-test-astc-bc7-glsl --measure FILE...` gives each build's PSNR, the
+modes written and the CPU's seconds). The full build keeps the whole search. With the hints the fast build's blocks
+are no longer the encoder's of the decoded texels alone, so the tests hold the GPU's blocks to the same shader run on
+the CPU over the same ASTC blocks (`tests/glsl/astc_bc7_cpu.cpp`); `vulkan_headless` reads those blocks back from
+what the texture keeps.
 
-- `SNX_BC7_HINTS` (`astc_bc7.glsl`): the search takes what the ASTC blocks say of the block. Texels of one ASTC
-  partition lie on one line, so a block of one such set takes mode 6 alone; a block of two sets (two partitions, or two
-  ASTC blocks' texels) takes the partition of BC7's 64 with the fewest texels on the wrong side, found by counting
-  bits where the search sums 128 partitions' spreads; a second plane names the rotation of modes 4 and 5. In the
-  second pass it took the two levels above with hard blocks from 95 to 67 ms and 69 to 51. Over 11 of that game's
-  levels it gave 51.13 dB where the fast build gives 51.27, and one level of text lost 1.8 dB. The tests' expected
-  blocks come from texels, which have no hints, so turning it on means making them from the blocks.
-- `SNX_BC7_QUICK` (`bc7_encode.glsl`): mode 6 first takes its box's line with one choice of p-bits and each texel at
-  the weight nearest its place, and keeps it under an error. Under 64 it took the first pass of a level mode 6 holds
-  from 18.5 to 12.8 ms for 0.3 to 0.8 dB, and made the levels with hard blocks no faster.
+One more cut is an option of the build that no build takes: `SNX_BC7_QUICK` (`bc7_encode.glsl`), with which mode 6
+first takes its box's line with one choice of p-bits and each texel at the weight nearest its place, and keeps it under
+an error. Under 64 it took the first pass of a level mode 6 holds from 18.5 to 12.8 ms for 0.3 to 0.8 dB, and made the
+levels with hard blocks no faster.
 
 ### Auto, Exact and BC7
 

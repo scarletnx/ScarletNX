@@ -55,8 +55,10 @@ static void check(uint32_t build, uint32_t bw, uint32_t bh, int srgb, uint32_t w
     for (uint32_t z = 0; z < depth; z++)
         astc_decode_image(blocks.data() + (size_t)z * nx * ny * 16, w, h, bw, bh, texels.data() + (size_t)z * w * h * 4,
                           srgb);
+    // the fast build without the hints is the encoder's fast build of the texels; with them (as the shader is built)
+    // it is held to its two passes below
     bc7_encode_cpu_build(build, texels.data(), w, h, depth, want.data());
-    astc_bc7_cpu(build, blocks.data(), w, h, depth, bw, bh, srgb, got.data());
+    astc_bc7_cpu(build == 1 ? 1u | ASTC_BC7_PLAIN : build, blocks.data(), w, h, depth, bw, bh, srgb, got.data());
     for (size_t i = 0; i < want.size(); i += 16)
         if (std::memcmp(&got[i], &want[i], 16)) {
             std::fprintf(stderr,
@@ -69,6 +71,7 @@ static void check(uint32_t build, uint32_t bw, uint32_t bh, int srgb, uint32_t w
     // the two passes of the builds that search past mode 6: the same blocks, some of them the second pass's
     uint32_t listed = 0;
     if (build < 2) {
+        astc_bc7_cpu(build, blocks.data(), w, h, depth, bw, bh, srgb, want.data());
         std::fill(got.begin(), got.end(), uint8_t(0xA5));
         astc_bc7_cpu_passes(build, blocks.data(), w, h, depth, bw, bh, srgb, got.data(), &listed);
         if (std::memcmp(got.data(), want.data(), want.size()) || !listed || listed >= cx * cy * depth) {
@@ -104,20 +107,16 @@ static void footprint_division() {
 // the ASTC blocks' own texels (all four channels), the seconds each took here (the CPU's, which count the same
 // operations the GPU runs but none of its divergence), and how many blocks each build wrote in each mode
 extern "C" void bcn_decode_image(const uint8_t* src, uint32_t w, uint32_t h, int kind, uint8_t* dst);
-#define NB 10
+#define NB 6
 static int measure(int n, char** files) {
     static const struct {
         uint32_t build;
         const char* name;
     } builds[NB] = {{0, "full"},
+                    {1 | ASTC_BC7_PLAIN, "fast, no hints"},
                     {1, "fast"},
-                    {1 | ASTC_BC7_QUICK(16), "fast q16"},
-                    {1 | ASTC_BC7_QUICK(64), "fast q64"},
-                    {1 | ASTC_BC7_QUICK(256), "fast q256"},
-                    {1 | ASTC_BC7_HINTS, "hints"},
-                    {1 | ASTC_BC7_HINTS | ASTC_BC7_QUICK(16), "hints q16"},
-                    {1 | ASTC_BC7_HINTS | ASTC_BC7_QUICK(64), "hints q64"},
-                    {1 | ASTC_BC7_HINTS | ASTC_BC7_QUICK(256), "hints q256"},
+                    {1 | ASTC_BC7_PLAIN | ASTC_BC7_QUICK, "no hints, q64"},
+                    {1 | ASTC_BC7_QUICK, "fast, q64"},
                     {2, "mode 6"}};
     double sse[NB] = {0}, secs[NB] = {0}, values = 0;
     for (int f = 0; f < n; f++) {
@@ -162,7 +161,7 @@ static int measure(int n, char** files) {
             sse[b] += e;
             secs[b] += s;
             const double mse = e / (double(w) * h * 4);
-            std::printf("\n  %-10s %6.2f dB %7.3f s  modes 1:%u 2:%u 3:%u 4:%u 5:%u 6:%u 7:%u", builds[b].name,
+            std::printf("\n  %-14s %6.2f dB %7.3f s  modes 1:%u 2:%u 3:%u 4:%u 5:%u 6:%u 7:%u", builds[b].name,
                         mse > 0 ? 10 * std::log10(255.0 * 255.0 / mse) : 99.0, s, modes[1], modes[2], modes[3],
                         modes[4], modes[5], modes[6], modes[7]);
         }
