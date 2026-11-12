@@ -1203,6 +1203,19 @@ void mem_init(void) {
     LOG("memory: %llu KiB host pages, %s\n", (unsigned long long)(g_host_page >> 10),
         g_pool_on ? "views share their source's pages (alias pool)" : "views are copies (no alias pool)");
 }
+/* the guest's pages in files (plat_vm_files), before the game commits any: not under NCE, whose reservation is the
+   guest's own addresses and not g_mem's */
+int mem_files_on(const char* dir) {
+    int r;
+    if (g_mem_identity || !g_mem) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    mem_lock();
+    r = g_nblk == 1 && g_blk[0].state == MS_FREE ? plat_vm_files(g_mem, g_as_size, dir) : (errno = EBUSY, -1);
+    mem_unlock();
+    return r;
+}
 
 /* ============================================================ mapping */
 int mem_map(u64 addr, u64 size, u32 state, u32 perm) {

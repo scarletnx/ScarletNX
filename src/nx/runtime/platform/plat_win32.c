@@ -334,6 +334,19 @@ int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off, u64 allocation_size) {
     return -1;
 }
 void plat_vm_fd_close(int fd) { (void)fd; }
+int plat_vm_files(u8* base, u64 size, const char* dir) {
+    (void)base;
+    (void)size;
+    (void)dir;
+    errno = ENOSYS;
+    return -1;
+}
+int plat_vm_files_slot(const u8* p, int* fd, u64* off) {
+    (void)p;
+    (void)fd;
+    (void)off;
+    return 0;
+}
 int plat_alias_write(u64 off, const void* src, u64 size) {
     (void)off;
     (void)src;
