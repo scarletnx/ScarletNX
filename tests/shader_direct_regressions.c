@@ -3897,6 +3897,16 @@ static void audit_shader_regressions(void) {
               "instance subtracts BaseInstance less the pushed offset");
     }
     free(code);
+    /* ALD.64 R0, a[0x2f8]: the instance number into R0 and the vertex number into R1 in one read, as uam compiles a
+       vertex program that places its point by gl_VertexID and gl_InstanceID. It wasn't translated, and its draws
+       were skipped */
+    const u64 instance_vertex = 0xefd8ff802f87ff00ull;
+    code = translate(&instance_vertex, 1, ST_VS, &info, &words, 1);
+    check_translated(code, &info, "the instance and vertex numbers read as a pair translate");
+    if (code)
+        check(count_builtin(code, words, 43) == 1 && count_builtin(code, words, 42) == 1,
+              "the pair reads InstanceIndex and VertexIndex");
+    free(code);
     const u64 tlds = 0xD244012030570A02ull;
     for (int sign = 0; sign < 2; sign++) {
         size_t slots;
