@@ -379,7 +379,7 @@ int main(void) {
             cpu.arm.r[15] = loop[i].pc;
             cpu.arm.cpsr = 0x9F | SNX_ARM_T;
             cpu.over = 0;
-            board.cpu_halted = cpu.wait = 0;
+            board.cpu_halted = 0;
             board.held_cycles = 0;
             CHECK(!agb_cpu_run(&board, &cpu, &recomp, 50 * loop[i].cycles, audio, AGB_APU_RATE, NULL, error,
                                sizeof error));
