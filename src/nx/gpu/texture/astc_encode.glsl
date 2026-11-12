@@ -54,13 +54,17 @@
    A hinted line is taken as it is: its ends quantized to the layout's colour encoding and each texel given the
    weight nearest its place, one pass of the texels (bc7_encode.glsl's Try, quick), where the search fits a box and
    least squares over several. Its error is still the texels' own, so a hint that is wrong, or that the layout holds
-   badly (ASTC's partition is not always BC7's, and two partitions leave an end 40 values), costs time and no more:
-   past SNX_ASTC_HINT_ENOUGH the search runs as without one, and keeps the hinted block if it finds no better */
+   badly (ASTC's partition is not always BC7's, and two partitions leave an end 40 values), costs time and little
+   else: past SNX_ASTC_HINT_ENOUGH the search runs as without one, and keeps the hinted block if it finds no better */
 #ifndef SNX_ASTC_HINTS
 #define SNX_ASTC_HINTS 1
 #endif
+/* 1024 is a squared error of 4 a channel as a root mean square. The search is a hundred times a hinted line's cost
+   and what it finds for such a block is seldom much nearer, the layouts being what they are: at 256 the blocks
+   searched for were 6% of one game's level and nearly all of its time, and at 1024 the level takes half the time for
+   a quarter of a dB (docs/layers/gpu/bcn.md) */
 #ifndef SNX_ASTC_HINT_ENOUGH
-#define SNX_ASTC_HINT_ENOUGH 256
+#define SNX_ASTC_HINT_ENOUGH 1024
 #endif
 /* SNX_ASTC_STOP 1: AstcEncode writes the blocks of one colour and those a hint settles, and stops at the others with
    as_more set, where it would search: texconv.glsl's ASTC build runs in passes (its main), as astc_bc7.glsl's do,
