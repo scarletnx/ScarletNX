@@ -10,8 +10,8 @@
 
 /* libretro-database's No-Intro list of the GBA's games, a clrmamepro DAT */
 #define GUI_COVERS_LIST_URL                                                                                            \
-    "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro/"                            \
-    "Nintendo%20-%20Game%20Boy%20Advance.dat"
+    "https://raw.githubusercontent.com/libretro/libretro-database/master/"                                             \
+    "metadat/no-intro/Nintendo%20-%20Game%20Boy%20Advance.dat"
 /* the folder of libretro-thumbnails' boxes of the GBA's games, a PNG each, named by the game's No-Intro name */
 #define GUI_COVERS_BOX_URL                                                                                             \
     "https://raw.githubusercontent.com/libretro-thumbnails/Nintendo_-_Game_Boy_Advance/master/Named_Boxarts/"
