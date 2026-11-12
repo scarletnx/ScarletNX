@@ -181,7 +181,7 @@ static void thumb_ldmstm(ArmIR* a, const SnxThumb* t) {
     unsigned index = 0;
     if (t->op == 1) { /* LDMIA: snapshot before writeback */
         for (unsigned i = 0; i < 8; ++i)
-            if (list & (1u << i)) values[i] = readmem(a, add(a, base, c32(a, index++ * 4)), 4, 0);
+            if (list & (1u << i)) values[i] = readmem_list(a, add(a, base, c32(a, index++ * 4)), 4);
         for (unsigned i = 0; i < 8; ++i)
             if (list & (1u << i)) if (i != t->rn || !(t->flags & TH_WB)) setreg(a, i, values[i]);
     } else { /* STMIA: the ARM7TDMI stores the written back base when the base is not the first in the list */
