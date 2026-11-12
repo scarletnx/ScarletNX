@@ -3040,6 +3040,228 @@ static int check_sparse_view(void) {
     puts("sparse view: a view of a sparse texture's levels smaller than a tile reads rows of their own GOBs");
     return 0;
 }
+/* The sparse blocks that show the same bytes share memory (memory.c): an RGBA8 image of 2048x2048 with sparse
+   residency, blocks 0, 5, 17 and 40 bound with one key, 1 and 18 with another and 2 with none. Where the device binds
+   memory to more than one place of an image, the seven blocks are on three allocations, and what is copied to one
+   block of a key reads back through another. A block that takes another key is bound to that key's memory and leaves
+   the others of its old key theirs; a block let go gives its allocation to a new one; a block whose key goes takes
+   memory of its own; and all let go leaves none */
+static void alias_layout(VkImage img, VkImageLayout from, VkImageLayout to) {
+    VkImageMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                               .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                               .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                               .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                               .oldLayout = from,
+                               .newLayout = to,
+                               .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                               .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                               .image = img,
+                               .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b};
+    rec_CmdPipelineBarrier2(vk_cmd(), &d);
+}
+/* block b's texels all set to value, and block b's first texel read (the image in TRANSFER_DST and back to it) */
+static int alias_fill_at(VkImage img, VkExtent3D g, u32 bx, u32 b, u32 value) {
+    const u32 w = g.width, h = g.height, d = g.depth;
+    VkBuffer src;
+    u64 at;
+    u8* data = vk_stage_upload((u64)w * h * d * 4, 16, &src, &at);
+    CHECK(data);
+    for (u32 i = 0; i < w * h * d; i++) snx_st_le32(data + i * 4, value);
+    VkBufferImageCopy c = {.bufferOffset = at,
+                           .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                           .imageOffset = {(i32)(b % bx * w), (i32)(b / bx * h), 0},
+                           .imageExtent = {w, h, d}};
+    vk_render_end();
+    rec_CmdCopyBufferToImage(vk_cmd(), src, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    return 0;
+}
+static int alias_fill(VkImage img, const VkSparseShape* sh, u32 b, u32 value) {
+    return alias_fill_at(img, sh->gran, sh->bx[0], b, value);
+}
+static int alias_read_at(VkImage img, VkExtent3D g, u32 bx, u32 b, u32* texel) {
+    VkBuffer buffer;
+    u8* result = vk_readback_buffer(4, &buffer);
+    CHECK(result);
+    VkBufferImageCopy c = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                           .imageOffset = {(i32)(b % bx * g.width + 3), (i32)(b / bx * g.height + 5), 0},
+                           .imageExtent = {1, 1, 1}};
+    vk_render_end();
+    alias_layout(img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    rec_CmdCopyImageToBuffer(vk_cmd(), img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &c);
+    alias_layout(img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vk_finish();
+    vk_readback_ready();
+    *texel = snx_ld_le32(result);
+    return 0;
+}
+static int alias_read(VkImage img, const VkSparseShape* sh, u32 b, u32* texel) {
+    return alias_read_at(img, sh->gran, sh->bx[0], b, texel);
+}
+/* The same for an image with memory where it is bound, in pages (vk_image_resident): a 3D RGBA8 image four blocks
+   wide, pages 0 and 1 of one key, page 2 of another, page 3 of none. Pages 0 and 1 share memory, and page 1 has page
+   0's texels without a load; page 1 takes page 2's key and reads page 2's; page 0 let go frees its memory, which no
+   page has any more; page 2 let go leaves its memory to page 1 */
+static int alias_bricks(void) {
+    VkResidentShape rs;
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_3D,
+                            .format = VK_FORMAT_R8G8B8A8_UNORM,
+                            .extent = {1, 1, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VkImage img;
+    if (!vk_resident_shape(&ii, &rs)) return -1;
+    ii.extent = (VkExtent3D){rs.block.width * 4, rs.block.height, rs.block.depth};
+    if (!vk_resident_shape(&ii, &rs) || !vk_image_create_resident(&ii, &rs, &img)) return -1;
+    const VkExtent3D g = rs.block;
+    u8 want[4] = {1, 1, 1, 1};
+    u64 keys[4] = {7, 7, 9, 0}, bytes = 0, need = vk_image_resident_need(img, want, keys, 4), block;
+    u32 texel = 0;
+    CHECK(vk_image_resident(img, want, keys, 4, &bytes) && bytes == need && bytes);
+    const int aliased = want[1] == 1; /* page 1 has page 0's memory */
+    block = bytes / (aliased ? 3 : 4);
+    CHECK(want[0] == 2 && want[2] == 2 && want[3] == 2 && bytes == block * (aliased ? 3 : 4));
+    alias_layout(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    CHECK(!alias_fill_at(img, g, 4, 0, 0x11223344) && !alias_fill_at(img, g, 4, 2, 0x55667788) &&
+          !alias_fill_at(img, g, 4, 3, 0x99aabbcc));
+    if (!aliased) CHECK(!alias_fill_at(img, g, 4, 1, 0x11223344)); /* its own memory: loaded as page 0 */
+    CHECK(!alias_read_at(img, g, 4, 1, &texel) && texel == 0x11223344);
+    /* page 1 takes page 2's key */
+    keys[1] = 9;
+    memset(want, 1, 4);
+    CHECK(vk_image_resident_need(img, want, keys, 4) == 0 || !aliased);
+    CHECK(vk_image_resident(img, want, keys, 4, &bytes) && bytes == block * (aliased ? 3 : 4));
+    if (aliased) {
+        CHECK(want[1] == 1 && !alias_read_at(img, g, 4, 1, &texel) && texel == 0x55667788);
+        CHECK(!alias_read_at(img, g, 4, 0, &texel) && texel == 0x11223344);
+    }
+    /* page 0 goes: its key's memory with it */
+    memset(want, 1, 4);
+    want[0] = 0;
+    CHECK(vk_image_resident(img, want, keys, 4, &bytes) && bytes == block * (aliased ? 2 : 3));
+    if (g_vk.resident) CHECK(!alias_read_at(img, g, 4, 0, &texel) && texel == 0);
+    /* page 2 goes and page 0 comes with a new key: page 1 keeps the memory it shared with page 2 */
+    memset(want, 1, 4);
+    want[2] = 0;
+    keys[0] = 5;
+    CHECK(vk_image_resident(img, want, keys, 4, &bytes) && want[0] == 2 && bytes == block * 3);
+    CHECK(!alias_read_at(img, g, 4, 1, &texel) && texel == (aliased ? 0x55667788u : 0x11223344u));
+    CHECK(!alias_read_at(img, g, 4, 3, &texel) && texel == 0x99aabbcc);
+    memset(want, 0, 4);
+    CHECK(vk_image_resident(img, want, keys, 4, &bytes) && !bytes);
+    vk_finish();
+    vk_defer_image(img, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    return aliased;
+}
+static int check_sparse_alias(void) {
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = VK_FORMAT_R8G8B8A8_UNORM,
+                            .extent = {2048, 2048, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                     VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    VkImage img;
+    vk_lock();
+    vk_finish();
+    u32 validation = g_vk_validation_messages;
+    if (!vk_image_create_sparse(&ii, &img)) {
+        vk_unlock();
+        puts("sparse alias: the device makes no RGBA8 image with sparse residency, skipped");
+        return 0;
+    }
+    const VkSparseShape* sh = vk_image_sparse_shape(img);
+    CHECK(sh && sh->per_layer > 41 && sh->tail_first == 1);
+    const int shares = g_vk.feat.sparseResidencyAliased != 0; /* asked of this format too (memory.c) */
+    u8* bits = calloc(sh->per_layer / 8 + 1, 1);
+    u64* keys = calloc(sh->per_layer, sizeof *keys);
+    CHECK(bits && keys);
+    static const u32 a[4] = {0, 5, 17, 40}, b[2] = {1, 18};
+    for (u32 i = 0; i < 4; i++) bits[a[i] >> 3] |= (u8)(1u << (a[i] & 7)), keys[a[i]] = 11;
+    for (u32 i = 0; i < 2; i++) bits[b[i] >> 3] |= (u8)(1u << (b[i] & 7)), keys[b[i]] = 22;
+    bits[0] |= 1u << 2; /* block 2: like no other */
+    u64 bytes = 0, block;
+    CHECK(vk_image_sparse_need(img, bits, keys) && vk_image_sparse_bind(img, bits, keys, &bytes) == 1);
+    u32 blocks = vk_image_bound_blocks(img), mems = vk_image_bound_memory(img);
+    int aliased = mems < blocks;
+    if (blocks != 7 || (mems != 3 && mems != 7) || (shares && !aliased && mems != 7))
+        fprintf(stderr, "sparse alias: %u blocks have memory, on %u allocations: 7 on 3 (or on 7 where the device "
+                        "shares none) expected\n",
+                blocks, mems);
+    CHECK(blocks == 7 && (mems == 3 || mems == 7) && bytes && !(bytes % mems));
+    block = bytes / mems;
+    CHECK(!vk_image_sparse_need(img, bits, keys) && vk_image_sparse_bind(img, bits, keys, &bytes) == 0);
+    u32 texel = 0;
+    alias_layout(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    for (u32 i = 0; i < 4; i++) CHECK(!alias_fill(img, sh, a[i], 0x11223344)); /* what a load does: each block */
+    for (u32 i = 0; i < 2; i++) CHECK(!alias_fill(img, sh, b[i], 0x55667788));
+    CHECK(!alias_fill(img, sh, 2, 0x99aabbcc));
+    for (u32 i = 0; i < 4; i++) CHECK(!alias_read(img, sh, a[i], &texel) && texel == 0x11223344);
+    CHECK(!alias_read(img, sh, 18, &texel) && texel == 0x55667788);
+    CHECK(!alias_read(img, sh, 2, &texel) && texel == 0x99aabbcc);
+    if (g_vk.resident) CHECK(!alias_read(img, sh, 3, &texel) && texel == 0); /* a hole */
+    if (aliased) { /* one block of a key written: the others of it read it */
+        CHECK(!alias_fill(img, sh, 17, 0x0badf00d));
+        CHECK(!alias_read(img, sh, 0, &texel) && texel == 0x0badf00d);
+        CHECK(!alias_read(img, sh, 40, &texel) && texel == 0x0badf00d);
+        CHECK(!alias_read(img, sh, 1, &texel) && texel == 0x55667788);
+    }
+    /* block 5 takes the second key, block 2 goes and block 9 comes with no key: block 9 has block 2's allocation,
+       and block 5 reads the second key's texels with nothing loaded */
+    keys[5] = 22;
+    bits[0] &= (u8)~(1u << 2);
+    keys[2] = 0;
+    bits[1] |= 1u << 1;
+    u64 bytes2 = 0;
+    CHECK(vk_image_sparse_need(img, bits, keys) == 0 || !aliased);
+    CHECK(vk_image_sparse_bind(img, bits, keys, &bytes2) == 1);
+    CHECK(vk_image_bound_blocks(img) == 7 && vk_image_bound_memory(img) == mems && bytes2 == bytes);
+    if (aliased) {
+        CHECK(!alias_read(img, sh, 5, &texel) && texel == 0x55667788);
+        CHECK(!alias_read(img, sh, 0, &texel) && texel == 0x0badf00d);
+        CHECK(!alias_read(img, sh, 9, &texel) && texel == 0x99aabbcc); /* block 2's memory, as it was left */
+    }
+    if (g_vk.resident) CHECK(!alias_read(img, sh, 2, &texel) && texel == 0);
+    /* block 40's key goes: memory of its own, and the blocks it shared with keep theirs */
+    keys[40] = 0;
+    CHECK(vk_image_sparse_bind(img, bits, keys, &bytes2) == (aliased ? 1 : 0));
+    CHECK(vk_image_bound_memory(img) == mems + (aliased ? 1u : 0u) && bytes2 == bytes + (aliased ? block : 0));
+    CHECK(!alias_fill(img, sh, 40, 0x01020304));
+    CHECK(!alias_read(img, sh, 40, &texel) && texel == 0x01020304);
+    CHECK(!alias_read(img, sh, 17, &texel) && texel == (aliased ? 0x0badf00d : 0x11223344));
+    /* all let go */
+    memset(bits, 0, sh->per_layer / 8 + 1);
+    CHECK(vk_image_sparse_bind(img, bits, keys, &bytes2) == 1 && !bytes2);
+    CHECK(!vk_image_bound_blocks(img) && !vk_image_bound_memory(img));
+    vk_finish();
+    vk_image_destroy(img, VK_NULL_HANDLE);
+    int bricks = alias_bricks();
+    CHECK(bricks != 1 || aliased);
+    vk_finish();
+    CHECK(g_vk_validation_messages == validation);
+    vk_unlock();
+    free(bits);
+    free(keys);
+    printf("sparse alias: seven blocks of three keys on %u allocations (%s); a block written reads through the others "
+           "of its key, and blocks change keys, come and go with the rest left as they were; %s\n",
+           mems, aliased ? "the device binds one memory to several blocks" : "no aliased sparse residency here",
+           bricks < 0   ? "no 3D RGBA8 image with memory where it is bound here"
+           : bricks     ? "the pages of an image bound in pages share memory the same way"
+                        : "the pages of an image bound in pages have memory each");
+    return 0;
+}
 static int check_sparse_tiles(void) {
     const StCase cases[] = {
         {"BC1", NVN_FORMAT_RGBA_DXT1, 8, 4, VK_FORMAT_BC1_RGBA_UNORM_BLOCK, 0x2C0000000ull, HEAP_BASE + 0xD00000, 1, 0,
@@ -3496,7 +3718,7 @@ static int check_sparse_unbind_in_flight(void) {
             "sparse unbind in flight: the device can't keep a 3D RGBA8 image's memory only where it is bound, skipped");
         return 0;
     }
-    CHECK(vk_image_resident(img, both, 2, &whole) && whole);
+    CHECK(vk_image_resident(img, both, NULL, 2, &whole) && whole);
     u8* back = vk_readback_buffer(256, &rb);
     CHECK(back);
     sparse_clear(img, VK_IMAGE_LAYOUT_UNDEFINED, SPARSE_RED);
@@ -3508,7 +3730,7 @@ static int check_sparse_unbind_in_flight(void) {
     /* block 0 released */
     ScCount c0 = sc_now();
     u64 held0 = rv_allocated(), deferred0 = vk_deferred_bytes(), t0 = plat_ns();
-    int ok = vk_image_resident(img, second, 2, &bytes);
+    int ok = vk_image_resident(img, second, NULL, 2, &bytes);
     u64 t1 = plat_ns(), held1 = rv_allocated();
     ScCount c1 = sc_now();
     const u64 reader = vk_last_submit(); /* the copies' */
@@ -3558,7 +3780,7 @@ static int check_sparse_unbind_in_flight(void) {
     const u64 gated = vk_last_submit();
     c0 = sc_now();
     t0 = plat_ns();
-    ok = vk_image_resident(img, both, 2, &bytes);
+    ok = vk_image_resident(img, both, NULL, 2, &bytes);
     t1 = plat_ns();
     c1 = sc_now();
     sparse_clear(img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, SPARSE_GREEN);
@@ -3609,7 +3831,7 @@ static int check_sparse_resident_batched(void) {
     CHECK(back);
     vk_finish();
     ScCount c0 = sc_now();
-    CHECK(vk_image_resident(a, both, 2, &bytes) && vk_image_resident(b, both, 2, &bytes));
+    CHECK(vk_image_resident(a, both, NULL, 2, &bytes) && vk_image_resident(b, both, NULL, 2, &bytes));
     sparse_clear(a, VK_IMAGE_LAYOUT_UNDEFINED, SPARSE_RED);
     sparse_clear(b, VK_IMAGE_LAYOUT_UNDEFINED, SPARSE_GREEN);
     sparse_copy(rb, 0, a, g.width);
@@ -3622,7 +3844,7 @@ static int check_sparse_resident_batched(void) {
     /* a block of one image released and bound again with no submission between: a batch binds a block once, so
        these are two batches, the second after the first, and the read after them sees the second */
     ScCount c3 = sc_now();
-    CHECK(vk_image_resident(a, second, 2, &bytes) && vk_image_resident(a, both, 2, &bytes));
+    CHECK(vk_image_resident(a, second, NULL, 2, &bytes) && vk_image_resident(a, both, NULL, 2, &bytes));
     sparse_clear(a, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, SPARSE_GREEN);
     sparse_copy(rb, 32, a, 0);
     vk_finish();
@@ -6947,6 +7169,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_sparse_volume());
     CHECK(!check_sparse_view());
     CHECK(!check_sparse_tiles());
+    CHECK(!check_sparse_alias());
     CHECK(!check_sparse_copy());
     CHECK(!check_resident_volume());
     CHECK(!check_sparse_unbind_in_flight());

@@ -73,7 +73,7 @@ typedef struct {
     /* the sparse textures: their blocks and mip tails with memory, that memory, and the runs the guest maps under
        them, one block of two arrays of capruns: their GPU addresses, then the guest memory behind each */
     u32 sparse;
-    u64 sparse_blocks, sparse_bytes;
+    u64 sparse_blocks, sparse_mems, sparse_bytes;
     VkRange* runs;
     u32 nruns, capruns;
     int runs_lost; /* no memory for a run: the pages are not counted */
@@ -141,6 +141,7 @@ static void census_texture(void* ctx, const Surf* t) {
     if (!t->sparse && !t->bricks) return;
     c->sparse++;
     c->sparse_blocks += vk_image_bound_blocks(t->img);
+    c->sparse_mems += vk_image_bound_memory(t->img);
     c->sparse_bytes += t->bytes;
     gmmu_pieces(t->gva, t->size, census_run, c);
 }
@@ -246,13 +247,15 @@ static void sparse_log(Census* c) {
         vk_range_shape(c->runs + c->capruns, c->nruns, gran, &cpu);
     }
     if (c->runs_lost)
-        LOG("vulkan: sparse textures: %u hold %llu blocks and mip tails with memory (%llu MB). No memory to count "
-            "the pages the guest maps under them\n",
-            c->sparse, (unsigned long long)c->sparse_blocks, MB(c->sparse_bytes));
+        LOG("vulkan: sparse textures: %u hold %llu blocks and mip tails with memory, on %llu allocations (%llu MB). "
+            "No memory to count the pages the guest maps under them\n",
+            c->sparse, (unsigned long long)c->sparse_blocks, (unsigned long long)c->sparse_mems,
+            MB(c->sparse_bytes));
     else
-        LOG("vulkan: sparse textures: %u hold %llu blocks and mip tails with memory (%llu MB). The guest maps %llu "
-            "pages of their GPU addresses (%llu different pages) to %llu different pages of its memory\n",
-            c->sparse, (unsigned long long)c->sparse_blocks, MB(c->sparse_bytes),
+        LOG("vulkan: sparse textures: %u hold %llu blocks and mip tails with memory, on %llu allocations (%llu MB). "
+            "The guest maps %llu pages of their GPU addresses (%llu different pages) to %llu different pages of its "
+            "memory\n",
+            c->sparse, (unsigned long long)c->sparse_blocks, (unsigned long long)c->sparse_mems, MB(c->sparse_bytes),
             (unsigned long long)(gpu.sum / GMMU_PAGE_SIZE), (unsigned long long)gpu.granules[0],
             (unsigned long long)cpu.granules[0]);
 }

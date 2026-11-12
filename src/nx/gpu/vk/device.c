@@ -728,6 +728,8 @@ static int create_device(void) {
            and other textures in the device's sparse blocks */
         WANT(sparseResidencyImage2D);
         WANT(sparseResidencyImage3D);
+        /* and the blocks of such a texture that show the same guest memory bound to the same memory */
+        WANT(sparseResidencyAliased);
         /* the mirror of guest memory that the programs logging their writes read and write in place (mirror.c) */
         WANT(sparseResidencyBuffer);
     }

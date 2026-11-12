@@ -93,11 +93,18 @@ static u64 bl_layer_size(u32 w, u32 h, u32 d, const VkFmt* f, u32 bh, u32 bd, u3
 }
 
 /* One level of one layer, for mark_pages: which of the image's sparse blocks hold the texels of the block-linear blocks
-   (64 bytes by 2^lbh GOB rows by 2^lbd slices) that the mapped pages touch */
+   (64 bytes by 2^lbh GOB rows by 2^lbd slices) that the mapped pages touch. And what each of those sparse blocks
+   shows, as a key: the sum, over the pieces of block-linear blocks under it, of a hash of where the piece lies in the
+   sparse block and the level, and which guest memory it is. Two blocks with one key show the same bytes of guest
+   memory at the same places, so the same texels, whatever the bytes are and whenever they change: memory.c binds
+   them the same memory. A game maps one tile of its memory at many tiles of a sparse texture. A block at a level's
+   edge, short of whole, is like no other (odd): its key is 0 */
 typedef struct {
     const VkSparseShape* sh;
     const VkFmt* f;
     u8* bits;
+    u64* keys;
+    u8* odd;
     u64 at, end, base;       /* the level's guest addresses, and its first sparse block */
     u32 level, lw, lh, ld;   /* its texels */
     u32 gobs_x, rows_blocks; /* its block-linear blocks across, and down */
@@ -111,8 +118,10 @@ static void mark_pages(void* ctx, u64 gva, u64 cpu, u64 n) {
     if (lo >= hi) return;
     u64 block = 512ull << (m->lbh + m->lbd), first = (lo - m->at) / block, last = (hi - 1 - m->at) / block;
     u32 l = m->level, rows = 8u << m->lbh, slices = 1u << m->lbd;
-    (void)cpu;
     for (u64 b = first; b <= last; b++) {
+        /* the piece of this block that the run maps, and the guest memory it shows */
+        u64 bat = m->at + b * block, plo = lo > bat ? lo : bat, phi = hi < bat + block ? hi : bat + block;
+        u64 piece[7] = {l, 0, 0, 0, plo - bat, phi - plo, cpu + (plo - gva)};
         u32 gx = (u32)(b % m->gobs_x), gy = (u32)(b / m->gobs_x % m->rows_blocks),
             gz = (u32)(b / m->gobs_x / m->rows_blocks);
         /* its texels: the units its 64 bytes of a row touch, its rows of units, its slices */
@@ -127,6 +136,14 @@ static void mark_pages(void* ctx, u64 gva, u64 cpu, u64 n) {
                 for (u32 x = x0 / sh->gran.width; x <= (x1 - 1) / sh->gran.width; x++) {
                     u64 k = m->base + ((u64)z * sh->by[l] + y) * sh->bx[l] + x;
                     m->bits[k >> 3] |= (u8)(1u << (k & 7));
+                    /* where the piece's block starts in this sparse block, in texels (before it too: as a number) */
+                    piece[1] = (u64)x0 - (u64)x * sh->gran.width;
+                    piece[2] = (u64)y0 - (u64)y * sh->gran.height;
+                    piece[3] = (u64)z0 - (u64)z * sh->gran.depth;
+                    m->keys[k] += vk_hash((const u8*)piece, sizeof piece);
+                    if ((x + 1) * sh->gran.width > m->lw || (y + 1) * sh->gran.height > m->lh ||
+                        (z + 1) * sh->gran.depth > m->ld)
+                        m->odd[k >> 3] |= (u8)(1u << (k & 7));
                 }
     }
 }
@@ -137,7 +154,14 @@ static int tex_bind(Surf* t) {
     if (!sh) return -1;
     u64 nbits = (u64)sh->layers * sh->per_layer;
     u8* bits = calloc(nbits / 8 + 1, 1);
-    if (!bits) return -1;
+    u8* odd = calloc(nbits / 8 + 1, 1);
+    u64* keys = calloc(nbits + 1, sizeof *keys);
+    if (!bits || !odd || !keys) {
+        free(bits);
+        free(odd);
+        free(keys);
+        return -1;
+    }
     u32 d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1;
     const VkFmt* f = &t->f;
     for (u32 layer = 0; layer < t->layers; layer++) {
@@ -151,6 +175,8 @@ static int tex_bind(Surf* t) {
                 PageMark m = {sh,
                               f,
                               bits,
+                              keys,
+                              odd,
                               at,
                               at + lsz,
                               (u64)layer * sh->per_layer + sh->first[l],
@@ -167,11 +193,19 @@ static int tex_bind(Surf* t) {
             at += lsz;
         }
     }
-    u64 need = vk_image_sparse_need(t->img, bits), bytes;
+    for (u64 k = 0; k < nbits; k++) { /* 0 is the key of a block like no other */
+        if ((odd[k >> 3] >> (k & 7)) & 1)
+            keys[k] = 0;
+        else if ((bits[k >> 3] >> (k & 7)) & 1 && !keys[k])
+            keys[k] = 1;
+    }
+    u64 need = vk_image_sparse_need(t->img, bits, keys), bytes;
     if (need) vk_mem_trim(need, 0);
-    int r = vk_image_sparse_bind(t->img, bits, &bytes);
+    int r = vk_image_sparse_bind(t->img, bits, keys, &bytes);
     if (r < 0 && need) vk_mem_trim(need, 1); /* room for it by the time the upload is tried again */
     free(bits);
+    free(odd);
+    free(keys);
     if (r > 0) {
         vk_surf_bytes(t, bytes);
         LOG_LIMIT(32, "vulkan: a %ux%ux%u texture of %u levels has sparse residency: %llu KiB bound\n", t->w, t->h,
@@ -667,38 +701,89 @@ static int resident_order(const Surf* t, u8* want, u8* dev, int to_guest) {
     }
     return 1;
 }
-/* the pages of such a texture that memory maps any byte of */
+/* the pages of such a texture that memory maps any byte of. And what each brick shows, as a key (ukey): the sum over
+   the runs of guest memory mapped under it of a hash of where the run lies in the brick and which memory it is. Two
+   bricks of a level with one key show the same bytes at the same places, so the same texels, whatever the bytes are:
+   memory.c binds them the same memory. A game maps one tile of its memory at many tiles of a sparse texture */
 typedef struct {
     const Surf* t;
     u8* want;
+    u64* ukey;
 } Mapped;
 static void page_mapped(void* ctx, u64 gva, u64 cpu, u64 n) {
     Mapped* m = ctx;
     u64 end;
-    (void)cpu;
     for (u64 o = gva - m->t->gva; o < gva + n - m->t->gva; o = end) {
         i64 k = resident_page(m->t, o, &end);
-        if (k >= 0) m->want[k] = 1;
+        if (k < 0) continue;
+        m->want[k] = 1;
+        if (m->ukey && (u64)k < (u64)m->t->layers * m->t->bricks) {
+            u64 to = end < gva + n - m->t->gva ? end : gva + n - m->t->gva;
+            u64 run[3] = {o - (end - m->t->brick_bytes), to - o, cpu + (o - (gva - m->t->gva))};
+            m->ukey[k] += vk_hash(run, sizeof run);
+        }
     }
+}
+/* The keys of such a texture's device blocks (dkey, the order vk_image_resident takes) from its units' (ukey, the
+   guest's order). A block of a level that doesn't stack has its unit's, with its level: the same bytes are other
+   texels in another level. A stack's blocks have the stack's units' together, with the block's place in the stack. A
+   block at a level's edge, short of whole, and a mip tail are like no other: 0 */
+static void resident_keys(const Surf* t, const u64* ukey, u64* dkey) {
+    const VkExtent3D g = t->grain;
+    const u32 d3 = t->type == VK_IMAGE_VIEW_TYPE_3D ? t->depth3d : 1;
+    u32 at = 0;
+    for (u32 layer = 0; layer < t->layers; layer++)
+        for (u32 l = 0; l < t->tail_first; l++) {
+            const u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1, ld = d3 >> l ? d3 >> l : 1;
+            const u32 bx = (lw + g.width - 1) / g.width, by = (lh + g.height - 1) / g.height,
+                      bz = (ld + g.depth - 1) / g.depth, k = resident_stack(t, l);
+            for (u32 z = 0; z < bz; z++, at += bx * by)
+                for (u32 u = 0; u < bx * by / k; u++) {
+                    const u32 x = u % bx, row = u / bx * k;
+                    u64 all = 0;
+                    for (u32 j = 0; j < k; j++) {
+                        u64 unit[2] = {j, ukey[at + u * k + j]};
+                        all += vk_hash(unit, sizeof unit);
+                    }
+                    for (u32 j = 0; j < k; j++) {
+                        const u32 y = row + j;
+                        const int whole = (x + 1) * g.width <= lw && (y + 1) * g.height <= lh && (z + 1) * g.depth <= ld;
+                        u64 block[3] = {all, j, l};
+                        u64 key = vk_hash(block, sizeof block);
+                        dkey[at + y * bx + x] = !whole ? 0 : key ? key : 1;
+                    }
+                }
+        }
+    for (u32 i = t->layers * t->bricks; i < resident_pages(t); i++) dkey[i] = 0;
 }
 /* such a texture's pages bound where memory maps any of their bytes and released where it maps none
    (vk_image_resident: what isn't bound reads as zeros, as the holes do), the ones bound set in want (resident_pages of
    them, zeroed; 2 where the memory is new). 1 when they all are */
 static int resident_bind_mapped(Surf* t, u8* want) {
-    Mapped m = {t, want};
-    u32 n = 0, pages = resident_pages(t);
+    u32 pages = resident_pages(t);
     u64 bytes;
+    /* without memory for the keys each block takes memory of its own, as before them */
+    u64* ukey = calloc(pages + 1, sizeof *ukey);
+    u64* dkey = ukey ? calloc(pages + 1, sizeof *dkey) : NULL;
+    Mapped m = {t, want, dkey ? ukey : NULL};
     gmmu_pieces(t->gva, t->size, page_mapped, &m);
     u8* dev = malloc(pages);
-    if (!dev) return 0;
+    if (!dev) {
+        free(ukey);
+        free(dkey);
+        return 0;
+    }
     const int stacked = resident_order(t, want, dev, 0);
     if (!stacked) memcpy(dev, want, pages);
-    for (u32 i = 0; i < pages; i++) n += dev[i];
-    /* room made under the budget, a mip tail counted as a brick */
-    if ((u64)n * t->brick_bytes > t->bytes) vk_mem_trim((u64)n * t->brick_bytes - t->bytes, 0);
-    int ok = vk_image_resident(t->img, dev, pages, &bytes);
+    if (dkey) resident_keys(t, ukey, dkey);
+    /* room made under the budget for the memory the bind takes: none for a block that joins the memory of its key */
+    u64 need = vk_image_resident_need(t->img, dev, dkey, pages);
+    if (need) vk_mem_trim(need, 0);
+    int ok = vk_image_resident(t->img, dev, dkey, pages, &bytes);
     if (!stacked || !resident_order(t, want, dev, 1)) memcpy(want, dev, pages);
     free(dev);
+    free(ukey);
+    free(dkey);
     vk_surf_bytes(t, bytes);
     return ok;
 }
@@ -1540,9 +1625,17 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     }
     if (sparse && vk_image_create_sparse(&ii, &t->img))
         t->sparse = 1;
-    else if (!vk_cache_image_create(&ii, &t->img, &t->mem, VK_OWN_TEXTURE, &t->bytes)) {
-        free(t);
-        return NULL;
+    else {
+        if (holes)
+            LOG_LIMIT(8, "vulkan: a %ux%ux%u texture of %u levels in format %d with holes in its mapping takes memory "
+                         "for all of it (%s)\n",
+                      w, h, layers * d3, levels, (int)ii.format,
+                      !sparse ? "no sparse residency for it here, or it is not block linear, or it is multisampled"
+                              : "the device makes no such image with sparse residency, or it is under 4 MiB");
+        if (!vk_cache_image_create(&ii, &t->img, &t->mem, VK_OWN_TEXTURE, &t->bytes)) {
+            free(t);
+            return NULL;
+        }
     }
     vk_surf_add(t);
     return t;

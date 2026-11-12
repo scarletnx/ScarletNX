@@ -306,8 +306,11 @@ void vk_image_destroy(VkImage img, VmaAllocation mem);
    vk_image_resident binds memory to its pages whose want[] is set and releases it from the others (n: all of them),
    after the work recorded before, which it submits; the commands recorded after it see the new bindings, and the
    memory released goes once the GPU is done with it. A page that got memory has its want[] made 2: its texels are
-   undefined until they are loaded. *bytes gets the memory bound. 0 when memory ran out: the pages that got memory
-   are bound, the others as they were */
+   undefined until they are loaded. keys (NULL for none): a number for each page that says what its texels show, 0
+   for a page like no other. Where the device binds memory to more than one place of an image, the pages with one key
+   are bound to the same memory: a page that joins one has that memory's texels (its want[] stays 1), what is loaded
+   into one is in all of them, and a page whose key changed is bound again. *bytes gets the memory bound, each
+   allocation once. 0 when memory ran out: the pages that got memory are bound, the others as they were */
 typedef struct {
     VkExtent3D block; /* the texels of a block */
     u32 tail_first;   /* the first level in the mip tail, the image's levels when there is none */
@@ -315,7 +318,9 @@ typedef struct {
 } VkResidentShape;
 int vk_resident_shape(const VkImageCreateInfo* ii, VkResidentShape* s);
 int vk_image_create_resident(const VkImageCreateInfo* ii, const VkResidentShape* s, VkImage* img);
-int vk_image_resident(VkImage img, u8* want, u32 n, u64* bytes);
+int vk_image_resident(VkImage img, u8* want, const u64* keys, u32 n, u64* bytes);
+/* the bytes such a bind allocates: what the budget must have room for before it */
+u64 vk_image_resident_need(VkImage img, const u8* want, const u64* keys, u32 n);
 /* the sparse binds made since the last submission, to the graphics queue in one batch before it (cmd.c's submit). 1
    when the submission has to wait for one, which *wait then holds */
 int vk_sparse_flush(VkSemaphoreSubmitInfo* wait);
@@ -335,7 +340,10 @@ int vk_sparse_unissued(VkImage img);
    in a level slice by slice, row by row, left to right. vk_image_sparse_bind binds memory to the blocks whose bit is
    set in bits (block b: bit b & 7 of bits[b >> 3]) and to the mip tail, which is bound always. It releases the memory
    of the other blocks. It gives -1 when memory ran out (nothing changed), 0 when nothing had to change, 1 when the
-   binds changed, with the bytes bound now in *bytes. vk_image_sparse_need: the bytes that a bind of bits adds.
+   binds changed, with the bytes bound now in *bytes. keys (NULL for none): a number for each block that says what
+   its texels show, 0 for a block like no other. Blocks with one key bind the same memory where the device allows it
+   (sparseResidencyAliased), so what is copied to one is in all of them, and a block whose key changed is bound
+   again. vk_image_sparse_need: the bytes that such a bind adds.
    vk_image_sparse_bound: a block of the level's texel rows y0 to y1 and slices z0 to z1 has memory (all: each block
    has), or the level is in the mip tail */
 #define VK_SPARSE_LEVELS 16
@@ -349,12 +357,14 @@ typedef struct {
 int vk_sparse_supported(const VkImageCreateInfo* ii);
 int vk_image_create_sparse(const VkImageCreateInfo* ii, VkImage* img);
 const VkSparseShape* vk_image_sparse_shape(VkImage img); /* NULL for an image without sparse residency */
-int vk_image_sparse_bind(VkImage img, const u8* bits, u64* bytes);
-u64 vk_image_sparse_need(VkImage img, const u8* bits);
+int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* bytes);
+u64 vk_image_sparse_need(VkImage img, const u8* bits, const u64* keys);
 int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32 z0, u32 z1, int all);
 void vk_sparse_stats(u64* binds, u64* bind_ns); /* statistics: sparse binds, and the host's wait for them */
 /* statistics: the blocks and mip tails with memory now of an image of either kind above, 0 for another image */
 u32 vk_image_bound_blocks(VkImage img);
+/* and the allocations those are bound to: fewer where blocks that show the same bytes share one */
+u32 vk_image_bound_memory(VkImage img);
 /* ledger.h: vk_mem_track and vk_mem_untrack enter each VMA allocation in the byte ledger under its owner */
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
 /* before the device is made: the extension to enable, VK_UMA_WITH_* (VK_EXT_external_memory_host, or Android's
