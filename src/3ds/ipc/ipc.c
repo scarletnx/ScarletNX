@@ -176,6 +176,12 @@ int snx_ctr_ipc_stub_mask(const char* list, uint32_t* mask) {
 bool snx_ctr_ipc_stubbed(const SnxCtrProcess* p, uint32_t service) {
     return g_settings.ctr_answer_unknown_commands || (service < 32 && (p->ipc_stubs >> service & 1));
 }
+uint32_t snx_ctr_ipc_service(const SnxCtrProcess* p, uint32_t handle) {
+    uint32_t id = snx_ctr_handle_object((SnxCtrProcess*)p, handle);
+    if (!id) return SNX_CTR_SERVICE_NONE;
+    if (p->objects[id].type == CTR_OBJ_FILE) return SNX_CTR_SERVICE_FILE;
+    return p->objects[id].type == CTR_OBJ_SESSION ? p->objects[id].data.session.service : SNX_CTR_SERVICE_NONE;
+}
 SnxCtrSvcResult snx_ctr_ipc_send(SnxCtrProcess* p, uint32_t handle, uint32_t* result) {
     *result = 0;
     uint32_t id = snx_ctr_handle_object(p, handle);
@@ -196,8 +202,24 @@ SnxCtrSvcResult snx_ctr_ipc_send(SnxCtrProcess* p, uint32_t handle, uint32_t* re
         *result = 0xe0e01bf5u;
         return SNX_CTR_SVC_RETURN;
     }
+    uint32_t words[SNX_CTR_IPC_WORDS];
+    for (unsigned i = 0; i < SNX_CTR_IPC_WORDS; ++i) words[i] = snx_ld_le32(bytes + i * 4);
+    SnxCtrSvcResult state = snx_ctr_ipc_exchange(p, handle, words, result);
+    if (state != SNX_CTR_SVC_RETURN || *result) return state;
+    for (unsigned i = 0; i < SNX_CTR_IPC_WORDS; ++i) snx_st_le32(bytes + i * 4, words[i]);
+    if (snx_ctr_write_ram(p->space, address, bytes, sizeof bytes) != SNX_CTR_MEM_OK) return SNX_CTR_SVC_UNSUPPORTED;
+    return SNX_CTR_SVC_RETURN;
+}
+SnxCtrSvcResult snx_ctr_ipc_exchange(SnxCtrProcess* p, uint32_t handle, uint32_t words[SNX_CTR_IPC_WORDS],
+                                     uint32_t* result) {
+    *result = 0;
+    uint32_t id = snx_ctr_handle_object(p, handle);
+    if (!id || (p->objects[id].type != CTR_OBJ_SESSION && p->objects[id].type != CTR_OBJ_FILE)) {
+        *result = 0xd8e007f7u;
+        return SNX_CTR_SVC_RETURN;
+    }
     SnxCtrIpc c = {.process = p, .object = id, .caller_pid = CTR_PROCESS_ID};
-    for (unsigned i = 0; i < SNX_CTR_IPC_WORDS; ++i) c.in[i] = snx_ld_le32(bytes + i * 4);
+    memcpy(c.in, words, sizeof c.in);
     p->last_ipc_header = c.in[0];
     p->last_ipc_service =
         p->objects[id].type == CTR_OBJ_FILE ? SNX_CTR_SERVICE_FILE : p->objects[id].data.session.service;
@@ -292,7 +314,6 @@ SnxCtrSvcResult snx_ctr_ipc_send(SnxCtrProcess* p, uint32_t handle, uint32_t* re
                 c.in[0], *result ? 0 : c.out[0], *result ? "transport " : "", *result ? *result : c.out[1]);
     }
     if (*result) return SNX_CTR_SVC_RETURN;
-    for (unsigned i = 0; i < SNX_CTR_IPC_WORDS; ++i) snx_st_le32(bytes + i * 4, c.out[i]);
-    if (snx_ctr_write_ram(p->space, address, bytes, sizeof bytes) != SNX_CTR_MEM_OK) return SNX_CTR_SVC_UNSUPPORTED;
+    memcpy(words, c.out, sizeof c.out);
     return SNX_CTR_SVC_RETURN;
 }
