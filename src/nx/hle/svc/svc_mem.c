@@ -546,46 +546,54 @@ u32 svc_unmap_process_memory(u64 dst, u32 process, u64 src, u64 size) {
     pm_unlock(&g_host.svcmem.views_lk);
     R_SUCCEED();
 }
-/* A line a flush names through a view or in the code it shows changed when its bytes differ from the view's
+/* A line a flush names through a view or in the code it shows changed when its bytes differ from a view's
    snapshot. A mod may flush its whole view after a few writes (exlaunch's RwPages), as a cache line that didn't
-   change costs the console nothing: here such a line keeps its compiled code. Without the pool the view is a copy, so
-   its bytes are what the mod wrote: copy the line into the code before that line is compiled again */
+   change costs the console nothing: here such a line keeps its compiled code.
+
+   Several views can show the same code at once: exlaunch keeps a view of each module's whole code, and maps one more
+   page of it for each hook it writes. On the console they are all the same pages. Without the pool each view is a
+   copy, so a write through one of them is in that copy only: every view of the line is read, a line one of them
+   changed goes into the code, and then every copy and snapshot gets the code as it is now, as one page would show
+   it. Reading only the first view that showed the line missed a hook written through a later one (TotK's UltraCam:
+   its nnMain hook, which mounts the SD card, never ran) */
 int svc_code_line(u64 addr, u64* code) {
-    int i, r = -1, copies = !mem_pool_active();
+    int i, r = 0, found = 0, copies = !mem_pool_active();
+    u64 line;
     addr &= ~(u64)63;
-    *code = addr;
+    line = addr;
     pm_lock(&g_host.svcmem.views_lk);
-    for (i = 0; i < KCODEVIEW_MAX; i++) {
-        KCodeView* v = &g_hle.svcmem.views[i];
-        u64 at;
-        u8 *src, *view;
-        int changed, src_changed;
-        if (!v->size) continue;
-        if (addr - v->dst < v->size)
-            at = addr - v->dst;
-        else if (addr - v->src < v->size)
-            at = addr - v->src;
-        else
-            continue;
-        *code = v->src + at;
-        if (!v->snap || at + 64 > v->size) { /* nothing kept to compare with: it may have changed */
-            if (copies) {
-                u64 n = v->size - at < 64 ? v->size - at : 64;
-                if (n) memcpy(GP(v->src + at), GP(v->dst + at), (size_t)n);
-            }
+    for (i = 0; i < KCODEVIEW_MAX; i++) { /* the line in the code, when the flush names it through a view */
+        const KCodeView* v = &g_hle.svcmem.views[i];
+        if (v->size && addr - v->dst < v->size) {
+            line = v->src + (addr - v->dst);
             break;
         }
-        src = GP(v->src + at);
-        view = copies ? GP(v->dst + at) : src;
-        changed = memcmp(v->snap + at, view, 64) != 0;
-        src_changed = view != src && memcmp(v->snap + at, src, 64) != 0;
-        if (changed && view != src) memcpy(src, view, 64); /* what the view wrote is in the code now */
-        r = changed || src_changed;
-        if (r) memcpy(v->snap + at, src, 64); /* what is there to run */
-        break;
+    }
+    *code = line;
+    /* views are whole pages, so a view that shows any of the line shows all 64 bytes of it */
+    if (copies)
+        for (i = 0; i < KCODEVIEW_MAX; i++) { /* what any copy wrote goes into the code */
+            const KCodeView* v = &g_hle.svcmem.views[i];
+            u64 at = line - v->src;
+            if (!v->size || at >= v->size) continue;
+            if (!v->snap || memcmp(v->snap + at, GP(v->dst + at), 64)) memcpy(GP(v->src + at), GP(v->dst + at), 64);
+        }
+    for (i = 0; i < KCODEVIEW_MAX; i++) { /* the code against what each view kept, and each copy made the code */
+        KCodeView* v = &g_hle.svcmem.views[i];
+        u64 at = line - v->src;
+        const u8* src = GP(line);
+        if (!v->size || at >= v->size) continue;
+        found = 1;
+        if (!v->snap) { /* nothing kept to compare with: it may have changed */
+            r = 1;
+        } else if (memcmp(v->snap + at, src, 64)) {
+            memcpy(v->snap + at, src, 64); /* what is there to run */
+            r = 1;
+        }
+        if (copies) memcpy(GP(v->dst + at), src, 64);
     }
     pm_unlock(&g_host.svcmem.views_lk);
-    return r;
+    return found ? r : -1; /* a line no view knows: it may have changed */
 }
 
 /* ============================================================ QueryMemory */
