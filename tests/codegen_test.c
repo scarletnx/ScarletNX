@@ -146,6 +146,38 @@ static void analysis_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* A hooked function reached by a tail call: with no unwind information the function that ends in a B to it is explored
+   first and would take its instructions as its own, so the B became a jump inside one function and never read the
+   dispatch slot the hook is in. A routed function is a function of its own, whatever reaches it */
+static void routed_tail_call_test(void) {
+    /* 0: mov x0, #1; b 12 | 8: ret | 12: mov x0, #2; ret */
+    static const SnxU32 words[] = {0xD2800020UL, 0x14000002UL, 0xD65F03C0UL, 0xD2800040UL, 0xD65F03C0UL};
+    unsigned char image[sizeof(words)];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxU64 exported = 12;
+    const SnxFunction* caller;
+    size_t i;
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+    setup_program(&program, &module, image, sizeof(image));
+    module.functions = &exported;
+    module.function_count = 1;
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a tail call to an exported function");
+    caller = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    check(caller && snx_function_contains(caller, SNX_CODE_BASE + 12), "a function no hook names joins its caller");
+    snx_codegen_free(&codegen);
+    module.routed = &exported;
+    module.routed_count = 1;
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a tail call to a routed function");
+    caller = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    check(caller && caller->count == 2 && !snx_function_contains(caller, SNX_CODE_BASE + 12),
+          "the caller ends at its B to the routed function");
+    check(snx_codegen_function(&codegen, SNX_CODE_BASE + 12) != NULL, "the routed function is a function of its own");
+    check(snx_codegen_routed(&codegen, SNX_CODE_BASE + 12), "its calls go through its dispatch slot");
+    snx_codegen_free(&codegen);
+}
+
 /* Function pointers built in code must be compiled even without symbols or unwind information. */
 static void address_taken_test(void) {
     unsigned char image[80];
@@ -1369,6 +1401,7 @@ static void zva_test(void) {
 int main(void) {
     decoder_test();
     analysis_test();
+    routed_tail_call_test();
     address_taken_test();
     address_taken_shifted_test();
     jump_table_test();
