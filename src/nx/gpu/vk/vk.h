@@ -511,7 +511,7 @@ enum {
 };
 void vk_ck_init(void);
 void vk_ck_(VkCommandBuffer cb, u32 kind, u32 a, u32 b, u32 c, u32 d);
-void vk_ck_report(void); /* logs them, once: before the fatal error of a lost device */
+void vk_ck_report(void); /* logs them, once: before the fatal error of a lost or stopped device */
 #define vk_ck(cb, kind, a, b, c, d)                                                                                    \
     do {                                                                                                               \
         if (g_vk.has_checkpoints) vk_ck_((cb), (kind), (a), (b), (c), (d));                                            \
@@ -696,7 +696,7 @@ void rec_CmdDrawMeshTasks(VkCommandBuffer cb, u32 groups); /* vkCmdDrawMeshTasks
 void rec_CmdDrawMeshTasksIndirect(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off);
 /* the programs of the draws recorded next (the vertex or mesh program's hash, the fragment program's), which their
    checkpoints name in vk_checkpoint_dump */
-void rec_draw_tag(u64 first, u64 second);
+void rec_draw_tag(u64 first, u64 second, u32 sources);
 /* max draws of the arguments at buf + off, stride bytes apart (vkCmdDraw[Indexed]Indirect), or with count_buf, as
    many as the 32-bit count at count_buf + count_off says (their Count forms) */
 void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDeviceSize off, VkBuffer count_buf,
@@ -1780,6 +1780,8 @@ u64 vk_buf_ahead(void); /* buffers filled ahead of their submission's rendering 
 int vk_buf_pending(u64 gva, u64 len); /* a pending graphics result overlaps the range */
 /* GPU-owned bytes are on the range's pages (memory/own.c): reading them on the CPU lands them, a wait for the GPU */
 int vk_buf_owned(u64 gva, u64 len);
+u32 vk_buf_sources(void);             /* where the ranges bound since the last call came from (buffer.c) */
+u32 vk_tex_tags(void);                /* and what the textures looked up since then were (texture.c) */
 u64 vk_buf_adds(void);                /* graphics results committed so far: as vk_compute_adds */
 int vk_buf_pending_any(void);         /* any graphics result is pending */
 int vk_buf_pending_unsubmitted(void); /* one is in the commands recorded since the last submit */

@@ -3567,7 +3567,24 @@ static u64 copy_src_at_once(void) {
     vk_mem_use(&usage, &budget);
     return budget / 64;
 }
+/* Where buf_get bound the ranges asked of it since the last call, as bits: 1 the mirror in place, 2 a copy of the
+   mirror, 4 a pending result or a composition of them, 8 a compute result, 16 guest memory in place, 32 the page
+   cache, 64 a buffer of the cache's own or the ring. A stopped GPU's report names them for the draw it stopped in
+   (record.c) */
+static u32 g_buf_sources, g_buf_kind; /* g_buf_kind: the bit of the range buf_get is at, 0 for the last one */
+u32 vk_buf_sources(void) {
+    u32 s = g_buf_sources;
+    g_buf_sources = 0;
+    return s;
+}
+static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align, int inplace);
 static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align, int inplace) {
+    g_buf_kind = 0;
+    int got = buf_get_(gva, len, buf, off, strict, align, inplace);
+    if (got) g_buf_sources |= g_buf_kind ? g_buf_kind : 64;
+    return got;
+}
+static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align, int inplace) {
     int pending;
     u32 i = 0, epoch = vk_ww_epoch(); /* before anything is checked or read */
     Vb* e = NULL;
@@ -3597,6 +3614,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
                 }
                 *buf = mb;
                 *off = mo;
+                g_buf_kind = 1;
                 return 1;
             }
             vk_render_end(); /* copies happen outside rendering passes */
@@ -3607,6 +3625,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
                 rec_CmdCopyBuffer(vk_cmd(), mb, *buf, 1, &r);
                 copy_barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                              VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
+                g_buf_kind = 2;
                 return 1;
             }
         }
@@ -3620,12 +3639,16 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
        vk_buf_frame frees entries, and only this function adds them, so e stays good meanwhile) */
     if (!e || e->cs_adds != vk_compute_adds() || e->gfx_adds != vk_buf_adds()) {
         pending = gfx_gpu_src(gva, len, buf, off, 0, align, 1);
+        if (pending) g_buf_kind = 4;
         if (pending == 1) return 1;
         if (pending == 2) { /* newer than any cached copy */
             if (strict != 2 && (!e || e->paged > 0) && gfx_composed_pages(gva, len, align, buf, off)) return 1;
             return gfx_composed(gva, len, buf, off);
         }
-        if (vk_compute_gpu_src(gva, len, buf, off)) return 1;      /* a compute result that hasn't landed yet */
+        if (vk_compute_gpu_src(gva, len, buf, off)) { /* a compute result that hasn't landed yet */
+            g_buf_kind = 8;
+            return 1;
+        }
         /* one that covers the range only in part lands first (its write shows in gpu_mem_dirty_since below): the
            cached copy would otherwise be used without it */
         if (g_cs_any) vk_compute_mem_need(gva, len);
@@ -3636,7 +3659,10 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     }
     /* no GPU result is pending over it: guest memory holds its bytes, which the GPU reads where they are on a device
        that shares memory with the CPU. Not GPU-owned bytes, which only the GPU holds */
-    if (inplace && vk_uma() && !range_owned(gva, len) && vk_uma_get(gva, len, align, buf, off)) return 1;
+    if (inplace && vk_uma() && !range_owned(gva, len) && vk_uma_get(gva, len, align, buf, off)) {
+        g_buf_kind = 16;
+        return 1;
+    }
     if (inplace == IN_ONLY) return 0;
     /* The page cache (pagespace.c), which holds the bytes by guest page: a range it serves binds its region's buffer
        with no copy while its pages hold still, and takes no buffer of its own. GPU-owned bytes too where the cache
@@ -3658,11 +3684,13 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             e->used = g_vk_present;
             *buf = e->buf;
             *off = e->off;
+            g_buf_kind = 32;
             return 1;
         }
         u64 gnow = gpu_mem_generation(); /* before the pages are looked at */
         int got = vk_pages_get(gva, len, align, buf, off);
         if (got > 0) {
+            g_buf_kind = 32;
             if (!e && (i = vb_new(gva, (u32)len))) e = &g_vb[i];
             if (e) {
                 if (!e->paged) drop_own(i); /* the pages have its bytes now */

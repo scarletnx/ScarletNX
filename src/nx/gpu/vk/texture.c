@@ -3289,9 +3289,30 @@ static void tex_take_drawn(Surf* t) {
         t->take_wgen = t->wgen;
     }
 }
+/* What the textures looked up since the last call were, as bits beside vk_buf_sources': 256 one with no memory of its
+   own (sparse, or bound in pieces), 512 one whose memory is not in the GPU's heap, 1024 a 3D one. Kept only with
+   vk_checkpoints, whose report of a stopped GPU names them for the draw it stopped in (record.c) */
+static u32 g_tex_tags;
+u32 vk_tex_tags(void) {
+    u32 s = g_tex_tags;
+    g_tex_tags = 0;
+    return s;
+}
+static void tex_tag(const Surf* t) {
+    if (!t || !g_vk.has_nv_checkpoints) return;
+    if (t->type == VK_IMAGE_VIEW_TYPE_3D) g_tex_tags |= 1024;
+    if (!t->mem) {
+        g_tex_tags |= 256;
+        return;
+    }
+    DevMemInfo info;
+    vk_devmem_info(t->mem, &info);
+    if ((int)vk_devmem_props()->memoryTypes[info.type].heapIndex != vk_mem_heap()) g_tex_tags |= 512;
+}
 Surf* vk_tex_from_tic(const u32* tic) {
     Surf* t = tex_from_tic(tic, 0, TEX_SAMPLED);
     tex_take_drawn(t);
+    tex_tag(t);
     return t;
 }
 Surf* vk_tex_from_tic_storage(const u32* tic) {
