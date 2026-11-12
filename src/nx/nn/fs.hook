@@ -68,6 +68,8 @@ hook _ZN2nn2fs6CommitEPKcRKNS0_12CommitOptionE(const char* name, addr option) ->
 hook _ZN2nn2fs14CommitSaveDataEPKc(const char* name) -> u32 = nnfs_commit_save_data
 hook _ZN2nn2fs17MountAddOnContentEPKciPvm(const char* name, i32 index, addr cache, u64 cache_size) -> u32 = nnfs_mount_add_on_content
 hook _ZN2nn2fs31QueryMountAddOnContentCacheSizeEPmi(u64* size, i32 index) -> u32 = nnfs_query_mount_add_on_content_cache_size
+hook _ZN2nn2fs15MountSystemDataEPKcNS_3ncm12SystemDataIdEPvm(const char* name, u64 id, addr cache, u64 cache_size) -> u32 = nnfs_mount_system_data
+hook _ZN2nn2fs29QueryMountSystemDataCacheSizeEPmNS_3ncm12SystemDataIdE(u64* size, u64 id) -> u32 = nnfs_query_mount_system_data_cache_size
 hook _ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE(addr uid) -> u32 = nnfs_ensure_save_data
 hook _ZN2nn2fs14ExtendSaveDataERKNS_7account3UidEll(addr uid, i64 size, i64 journal_size) -> u32 = nnfs_extend_save_data
 hook _ZN2nn2fs15GetSaveDataSizeEPlS1_RKNS_7account3UidE(i64* size, i64* journal_size, addr uid) -> u32 = nnfs_get_save_data_size

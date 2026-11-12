@@ -637,6 +637,37 @@ u32 nnfs_query_mount_add_on_content_cache_size(CPU* c, u64 size, i32 index) {
     return done("QueryMountAddOnContentCacheSize", r);
 }
 
+/* MountSystemData and its cache size: a system archive's RomFS, mounted as an add-on content's is. A game's SDK
+   through 13 reads its profanity filter's word lists this way */
+u32 nnfs_mount_system_data(CPU* c, u64 name, u64 id, u64 cache, u64 cache_size) {
+    pm_lock(&g_nnfs.lock);
+    u32 r;
+    int rom = data_image(id, &r);
+    if (rom >= 0) {
+        r = mount_image(c, "MountSystemData", name, cache, cache_size, (u32)rom);
+        if (r) rom_release((u32)rom);
+    }
+    pm_unlock(&g_nnfs.lock);
+    return done("MountSystemData", r);
+}
+u32 nnfs_query_mount_system_data_cache_size(CPU* c, u64 size, u64 id) {
+    pm_lock(&g_nnfs.lock);
+    u32 r = 0;
+    u64 n = 0;
+    if (!size)
+        r = R_NULL_ARGUMENT;
+    else {
+        int rom = data_image(id, &r);
+        if (rom >= 0) {
+            n = rom_cache_size(rom_at((u32)rom));
+            rom_release((u32)rom);
+        }
+    }
+    pm_unlock(&g_nnfs.lock);
+    if (!r) put_u64(c, size, n);
+    return done("QueryMountSystemDataCacheSize", r);
+}
+
 /* mount m's root folder (retained), in a slot of g_hle.fs.fss */
 static void mount_root_set(int m, FsNode* root, int noted) {
     fs_lock();
