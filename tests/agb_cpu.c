@@ -196,9 +196,10 @@ int main(void) {
             fprintf(stderr, "agb_cpu: %s\n", error);
             goto done;
         }
-        /* the mixer filled the frame's audio at 32768 Hz; the first frame is the rest of the one the boot ended in, from
-           line 126 cycle 919 to line 0: 124745 cycles */
-        CHECK(frame ? written >= 540 && written <= 560 : written >= 240 && written <= 248);
+        /* the mixer filled the frame's audio at 32768 Hz; the first frame is the one the boot ended in, from line 126
+           cycle 919 to the vertical blank at line 160: 40969 cycles, 80 samples. Each run ends at line 160 */
+        CHECK(frame ? written >= 540 && written <= 560 : written >= 78 && written <= 82);
+        CHECK(board.ppu.vcount == AGB_SCREEN_HEIGHT);
     }
     /* the recompiled code ran: the swap went through the machine, the BIOS call waited for a vblank and the
        markers landed */
@@ -206,8 +207,9 @@ int main(void) {
     CHECK(agb_read32(&board, 0x02000018) == 0x03007F00); /* the IRQ mode's stack stayed in its bank */
     CHECK(agb_read32(&board, 0x02000000) == 42);
     CHECK(agb_read32(&board, 0x02000004) == 7);
-    /* the interrupt handler acknowledged the flag and left the machine running */
-    CHECK(agb_read16(&board, 0x04000202) == 0);
+    /* the interrupt handler acknowledged the flags and left the machine running: the one up is the vertical blank the
+       last frame ended on, which the next run takes */
+    CHECK(agb_read16(&board, 0x04000202) == AGB_IRQ_VBLANK);
     CHECK(agb_read16(&board, 0x04000208) == 1);
     /* the empty list stored the PC + 12 at the base - 0x40 and moved the base there */
     CHECK(agb_read32(&board, 0x02000104) == 0x020000C0);
@@ -228,7 +230,7 @@ int main(void) {
     {
         /* a block that ends past a frame's cycles, at each frame: 200 moves and the branch back in IWRAM, 203 cycles (a
            cycle each and a refill of two), run for frames of 280896, 147 more than 1383 of them. Each run ends where the
-           machine's frame does, before line 0 is drawn, not 56 cycles later at each frame */
+           machine's frame does, as the vertical blank starts at line 160, not 56 cycles later at each frame */
         for (uint32_t i = 0; i < 200; ++i) agb_write32(&board, 0x03001000 + i * 4, 0xE1A00000); /* mov r0, r0 */
         agb_write32(&board, 0x03001320, 0xEAFFFF36);                                            /* b 0x03001000 */
         agb_write16(&board, 0x04000208, 0);                                                     /* IME off */
@@ -241,7 +243,7 @@ int main(void) {
                 fprintf(stderr, "agb_cpu: %s\n", error);
                 goto done;
             }
-            if (board.ppu.vcount || board.ppu.dot >= 203) {
+            if (board.ppu.vcount != AGB_SCREEN_HEIGHT || board.ppu.dot >= 203) {
                 fprintf(stderr, "agb_cpu: frame %d ended at line %u, cycle %u of it\n", frame, board.ppu.vcount,
                         board.ppu.dot);
                 goto done;

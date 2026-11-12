@@ -90,9 +90,11 @@ void agb_cpu_init(AgbCpu* cpu, AgbBoard* board, uint8_t* map) {
     cpu->banked_r13[2] = 0x03007FA0;
     cpu->banked_r13[3] = 0x03007FE0;
     cpu->arm.r[15] = 0x08000000; /* the BIOS jumps to the cartridge's first word, the branch its header starts with */
-    /* the first run takes the rest of the frame the boot ended in: every run then ends where the machine's frame does,
-       at line 0, its picture whole */
-    cpu->over = (uint32_t)board->ppu.vcount * AGB_SCANLINE_CYCLES + board->ppu.dot;
+    /* the first run takes the frame the boot ended in up to its vertical blank, line 160, where mGBA's frame ends: every
+       run then ends there, its picture whole, and the next run's keys come as the blank starts */
+    cpu->over =
+        (uint32_t)((board->ppu.vcount + AGB_FRAME_LINES - AGB_SCREEN_HEIGHT) % AGB_FRAME_LINES) * AGB_SCANLINE_CYCLES +
+        board->ppu.dot;
 }
 
 static void advance(AgbCpu* cpu, AgbSink* sink, uint32_t cycles) {
