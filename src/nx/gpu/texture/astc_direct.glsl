@@ -216,19 +216,27 @@ bool Direct7(uint b0, uint b1, uint b2, uint b3) {
     return true;
 }
 
-/* A BC7 block of mode 4 or 5 whose alpha is one value and which has no rotation into dx_block: its colour is then one
-   line of 2 or 3 bit weights, which ASTC's one partition holds with the same weights (they are BC7's) and, for an
-   opaque block's RGB ends or 2 bit weights, ends of 8 bits: the block as it stands. Every block of one colour a BC7
-   encoder writes this way is among them. And a mode 5 block of two planes that is opaque (below). 0 for any other
-   block: two planes with alpha are RGBA ends of 48 values a channel, too coarse to take unmeasured */
-bool Direct45(uint b0, uint b1, uint b2, uint b3) {
+/* A BC7 block of mode 4 or 5 taken apart (0 for a block of another mode): into f45_.
+   Mode 5: a rotation of 2 bits from bit 6, colour ends of 7 bits from bit 8 (red of both, then green and blue), alpha
+   ends of 8 from bit 50, then two streams of 2 bit indices, 31 bits each, from bits 66 and 97.
+   Mode 4: the rotation from bit 5, an index selection bit, colour ends of 5 bits from bit 8, alpha ends of 6 from bit
+   38, a stream of 2 bit indices (31 bits from bit 50) and one of 3 bit ones (47 from bit 81), which the selection bit
+   gives the colour. The ends are widened to 8 bits by their top bits, and each stream is opened: its first index, the
+   anchor's, is a bit short, and a nought is put above it, so texel k's index lies at k times its bits */
+bool f45_m5;    /* mode 5 */
+uint f45_rot;   /* the rotation */
+bool f45_three; /* mode 4's selection bit: the colour has the 3 bit indices */
+uint f45_e0;    /* the colour's ends, RGB */
+uint f45_e1;
+uint f45_a0; /* alpha's */
+uint f45_a1;
+uint f45_w2;   /* the first stream, 2 bit indices */
+uint f45_x2;   /* mode 5's second, 2 bit indices */
+uint f45_t3lo; /* mode 4's second, 3 bit indices: 48 bits */
+uint f45_t3hi;
+bool Fields45(uint b0, uint b1, uint b2, uint b3) {
     const bool m5 = (b0 & 0x3Fu) == 0x20u;
     if (!m5 && (b0 & 0x1Fu) != 0x10u) return false;
-    /* Mode 5: a rotation of 2 bits from bit 6, colour ends of 7 bits from bit 8 (red of both, then green and blue),
-       alpha ends of 8 from bit 50, then two streams of 2 bit indices, 31 bits each, from bits 66 and 97.
-       Mode 4: the rotation from bit 5, an index selection bit, colour ends of 5 bits from bit 8, alpha ends of 6 from
-       bit 38, a stream of 2 bit indices (31 bits from bit 50) and one of 3 bit ones (47 from bit 81), which the
-       selection bit gives the colour. The ends widened to 8 bits by their top bits */
     uint rot, e0, e1, a0, a1, s2, t2, t3lo, t3hi;
     if (m5) {
         rot = (b0 >> 6u) & 3u;
@@ -259,8 +267,31 @@ bool Direct45(uint b0, uint b1, uint b2, uint b3) {
         t3lo = (p0 & 3u) | ((p0 & ~3u) << 1u) | (p1 << 25u);
         t3hi = p1 >> 7u;
     }
+    f45_m5 = m5;
+    f45_rot = rot;
+    f45_three = !m5 && (b0 & 0x80u) != 0u;
+    f45_e0 = e0;
+    f45_e1 = e1;
+    f45_a0 = a0;
+    f45_a1 = a1;
     /* a stream of 2 bit indices, texel 0's 1 bit: a nought put above it */
-    const uint w2 = (s2 & 1u) | ((s2 & ~1u) << 1u);
+    f45_w2 = (s2 & 1u) | ((s2 & ~1u) << 1u);
+    f45_x2 = (t2 & 1u) | ((t2 & ~1u) << 1u);
+    f45_t3lo = t3lo;
+    f45_t3hi = t3hi;
+    return true;
+}
+
+/* A BC7 block of mode 4 or 5 whose alpha is one value and which has no rotation into dx_block: its colour is then one
+   line of 2 or 3 bit weights, which ASTC's one partition holds with the same weights (they are BC7's) and, for an
+   opaque block's RGB ends or 2 bit weights, ends of 8 bits: the block as it stands. Every block of one colour a BC7
+   encoder writes this way is among them. And a mode 5 block of two planes that is opaque (below). 0 for any other
+   block: two planes with alpha are RGBA ends of 48 values a channel, too coarse to take unmeasured */
+bool Direct45(uint b0, uint b1, uint b2, uint b3) {
+    if (!Fields45(b0, b1, b2, b3)) return false;
+    const bool m5 = f45_m5;
+    const uint rot = f45_rot, a0 = f45_a0, a1 = f45_a1, w2 = f45_w2, t3lo = f45_t3lo, t3hi = f45_t3hi;
+    uint e0 = f45_e0, e1 = f45_e1;
     if (rot != 0u) {
         /* A rotation swaps the fourth channel with red, green or blue as the texels are decoded. Mode 5 with that
            colour channel 255 at both ends is then an opaque block of two planes: the swapped channel takes the fourth
@@ -269,14 +300,14 @@ bool Direct45(uint b0, uint b1, uint b2, uint b3) {
         const uint sh = (rot - 1u) * 8u;
         if (!m5 || (((e0 & e1) >> sh) & 0xFFu) != 255u) return false;
         dx_block = DxDual((e0 & ~(0xFFu << sh)) | (a0 << sh), (e1 & ~(0xFFu << sh)) | (a1 << sh), rot - 1u, w2,
-                          (t2 & 1u) | ((t2 & ~1u) << 1u));
+                          f45_x2);
         return true;
     }
     if (a0 != a1) return false;
     e0 |= a0 << 24u;
     e1 |= a0 << 24u;
     /* the colour's weights: mode 4's 3 bit ones where its selection bit says */
-    const bool three = !m5 && (b0 & 0x80u) != 0u;
+    const bool three = f45_three;
     const uint wlo = three ? t3lo : w2, whi = three ? t3hi : 0u;
     /* every index alike: an index every 3 bits, 16 of them 48 bits, the eleventh's top bit the high word's first */
     const uint i = wlo & (three ? 7u : 3u);

@@ -246,6 +246,41 @@ static void quant_formulas() {
     }
 }
 
+// The transcoder's three passes (the second decodes with no arrays, bcn_regs.glsl) against the one invocation that
+// does it all: the same blocks, for random blocks of each kind (a random BC7 block is of every mode) and for the BC7
+// encoder's blocks of the picture below, many of which their own lines hold, so that the second pass writes them.
+static uint32_t picture(uint32_t x, uint32_t y);
+static void passes_case(const char* what, int kind, const std::vector<uint8_t>& in, uint32_t n, bool settles) {
+    std::vector<uint8_t> one((size_t)n * 16), three((size_t)n * 16);
+    uint32_t listed[2], differ = 0;
+    bcn_astc_cpu(kind, in.data(), n, 1, 1, one.data());
+    bcn_astc_passes_cpu(kind, in.data(), n, three.data(), listed);
+    for (uint32_t k = 0; k < n; k++) differ += std::memcmp(&one[(size_t)k * 16], &three[(size_t)k * 16], 16) != 0;
+    const bool ok = !differ && listed[0] && (!settles || listed[1] < listed[0]);
+    std::printf("%s %s, %u blocks in three passes as in one: %u differ; the second pass took %u and wrote %u\n",
+                ok ? "PASS" : "FAIL", what, n, differ, listed[0], listed[0] - listed[1]);
+    if (!ok) failures++;
+}
+static void passes() {
+    static const char* const names[4] = {"random BC1", "random BC2", "random BC3", "random BC7"};
+    static const int kinds[4] = {0, 1, 2, 9};
+    for (int j = 0; j < 4; j++) {
+        const uint32_t n = 4096;
+        std::vector<uint8_t> in((size_t)n * (kinds[j] == 0 ? 8 : 16));
+        for (auto& b : in) b = (uint8_t)(random_word() >> 24);
+        passes_case(names[j], kinds[j], in, n, false);
+    }
+    const uint32_t w = 128, h = 128;
+    std::vector<uint8_t> texels((size_t)w * h * 4), bc7((size_t)w * h);
+    for (uint32_t y = 0; y < h; y++)
+        for (uint32_t x = 0; x < w; x++) {
+            const uint32_t c = picture(x, y);
+            std::memcpy(&texels[((size_t)y * w + x) * 4], &c, 4);
+        }
+    bc7_encode_cpu(texels.data(), w, h, 1, bc7.data());
+    passes_case("the picture's BC7", 9, bc7, w * h / 16, true);
+}
+
 static double psnr(const uint8_t* a, const uint8_t* b, size_t n) {
     double e = 0;
     for (size_t i = 0; i < n; i++) e += double(int(a[i]) - int(b[i])) * double(int(a[i]) - int(b[i]));
@@ -381,6 +416,7 @@ static int measure(int n, char** files) {
 int main(int argc, char** argv) {
     if (argc > 2 && !std::strcmp(argv[1], "--measure")) return measure(argc - 2, argv + 2);
     quant_formulas();
+    passes();
     blocks();
     direct_blocks();
     picture_psnr();

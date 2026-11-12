@@ -30,6 +30,9 @@ void bcn_astc_plain_cpu(int kind, const uint8_t* blocks, uint32_t bw, uint32_t b
 /* of n BC7 blocks in a row, how many the first of the ASTC build's passes leaves to the later ones (those that are no
    ASTC layout as they stand, which are decoded), and of which BC7 mode each: left[0] to left[7] */
 uint32_t bcn_astc_left_cpu(const uint8_t* blocks, uint32_t n, uint32_t left[8]);
+/* n blocks in a row made ASTC by the three passes vk/texconv.c dispatches, each the shader's own build of it (the
+   second keeps no arrays). listed, when not NULL: the blocks the first pass left the second, and those of them the second left the third */
+void bcn_astc_passes_cpu(int kind, const uint8_t* blocks, uint32_t n, uint8_t* out, uint32_t listed[2]);
 #ifdef __cplusplus
 }
 #endif
