@@ -4,6 +4,7 @@
    order, with their Results, the object as Initialize leaves it, a text that comes back as it was with none counted,
    the encodings refused, and Finalize */
 #include "nx/nn/ngc.c"
+#include "hle/hook/hooks.hook.inc" /* ngc.hook's table and adapters */
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -75,6 +76,35 @@ int main(void) {
     nnngc_finalize(c, SELF);
     CHECK(mem[SELF + OBJ_INITIALIZED] == 0 && nnngc_mask(c, SELF, COUNT, TEXT, 0) == NGC_NOT_INITIALIZED);
     nnngc_finalize(c, SELF);
+    /* ngc.hook's own choice: every hook holds from SDK 16, where the filter first asks ngc:u, and none before it,
+       where the filter works in its own code; Initialize through its adapter on an SDK 17 module */
+    static const u32 with_service[] = {0x100200, 0x110504, 0x120302, 0x130303, 0x140503};
+    static const u32 own_code[] = {0x030500, 0x080201, 0x0d0305};
+    int first;
+    for (u32 k = 0; k < HOOK_COUNT; k++) {
+        u32 versions[HOOK_KEYS] = {0};
+        for (unsigned i = 0; i < sizeof with_service / sizeof with_service[0]; i++) {
+            versions[HOOK_SDK] = with_service[i];
+            CHECK(hook_select(&hook_table, hook_symbol[k], versions, &first) >= 0);
+        }
+        for (unsigned i = 0; i < sizeof own_code / sizeof own_code[0]; i++) {
+            versions[HOOK_SDK] = own_code[i];
+            CHECK(hook_select(&hook_table, hook_symbol[k], versions, &first) == -2);
+        }
+    }
+    {
+        static CPU cpu17;
+        static u8 mem17[0x400];
+        u32 versions[HOOK_KEYS] = {0};
+        versions[HOOK_SDK] = 0x110504;
+        int k = hook_select(&hook_table, "_ZN2nn3ngc15ProfanityFilter10InitializeEPvmb", versions, &first);
+        cpu17.mem = mem17;
+        cpu17.x[0] = 0x100, cpu17.x[1] = 0x200, cpu17.x[2] = 0x20000, cpu17.x[3] = 1, cpu17.x[30] = 0x1234;
+        CHECK(k >= 0);
+        hook_fn[k](&cpu17, 0);
+        CHECK(cpu17.x[0] == 0 && cpu17.pc == 0x1234 && mem17[0x109] == 1 && mem17[0x108] == 1);
+        CHECK(snx_ld_le64(mem17 + 0x118) == 0x200 && snx_ld_le64(mem17 + 0x120) == 0x20000);
+    }
     printf("nn_ngc: %u checks passed\n", checks);
     return 0;
 }
