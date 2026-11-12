@@ -295,7 +295,7 @@ static u32 get_thread_context(KThread* cur, u64 out, u32 h) {
     R_UNLESS(t, SNX_RC_SVC_INVALID_HANDLE);
     if (t == cur)
         r = SNX_RC_SVC_BUSY;
-    else if (!(out < AS_END && sizeof ctx <= AS_END - out))
+    else if (!(out < AS_END && sizeof ctx <= AS_END - out) || !mem_user_mapped(out, sizeof ctx))
         r = SNX_RC_SVC_INVALID_POINTER;
     if (r) {
         thread_put(t);
@@ -436,14 +436,14 @@ static u32 clear_event(u32 h, int reset) {
 }
 
 /* ============================================================ IPC, process, debug */
-/* svcConnectToNamedPort: a name of at most 11 characters (OutOfRange without its NUL in 12 bytes), a service the
-   runtime has (NotFound) */
+/* svcConnectToNamedPort: a name of at most 11 characters (OutOfRange without its NUL in 12 bytes, InvalidPointer when
+   a page before its NUL is not mapped), a service the runtime has (NotFound) */
 static u32 connect_port(u64 name_addr, u32* out) {
     char name[12];
     SvcObj* s;
-    R_UNLESS(name_addr < AS_END && sizeof name <= AS_END - name_addr, SNX_RC_SVC_INVALID_POINTER);
-    memcpy(name, GP(name_addr), sizeof name);
-    R_UNLESS(memchr(name, 0, sizeof name) != NULL, SNX_RC_SVC_OUT_OF_RANGE);
+    int n = mem_user_string(name, name_addr, sizeof name);
+    R_UNLESS(n >= 0, SNX_RC_SVC_INVALID_POINTER);
+    R_UNLESS(n > 0, SNX_RC_SVC_OUT_OF_RANGE);
     s = svc_open(name);
     R_UNLESS(s, SNX_RC_SVC_NOT_FOUND);
     *out = session_new(s);

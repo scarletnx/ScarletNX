@@ -62,6 +62,12 @@ static u32 check_word(u64 addr) {
     R_UNLESS(!(addr & 3), SNX_RC_SVC_INVALID_ADDRESS);
     R_SUCCEED();
 }
+/* the user access's own failure, on a page nothing is mapped at (a futex word on a freed stack): InvalidCurrentMemory,
+   where a host access would end the process */
+static u32 check_mapped(u64 addr, u64 size) {
+    R_UNLESS(mem_user_mapped(addr, size), SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    R_SUCCEED();
+}
 static u32* uword(u64 addr) { return (u32*)(void*)GP(addr); }
 /* The words are little-endian, the guest's order: these take and give host numbers, and convert at the access (nothing
    on a little-endian host). A compare-and-swap's expected value is converted in and out, so a failed one gives the
@@ -177,6 +183,7 @@ u32 svc_arbitrate_lock(KThread* t, u32 owner, u64 addr, u32 tag) {
     KObj* o;
     u32 r;
     R_TRY(check_word(addr));
+    R_TRY(check_mapped(addr, 4));
     pm_lock(&g_host.kernel.klock);
     if (word_load(uword(addr)) != (owner | HANDLE_WAIT)) {
         klock_unlock();
@@ -204,21 +211,29 @@ u32 svc_arbitrate_lock(KThread* t, u32 owner, u64 addr, u32 tag) {
 u32 svc_arbitrate_unlock(u64 addr) {
     KThread* n;
     int more;
+    u32 r;
     R_TRY(check_word(addr));
+    r = check_mapped(addr, 4);
     pm_lock(&g_host.kernel.klock);
     n = mutex_next_nl(addr, &more);
-    word_store(uword(addr), mutex_tag(n, more));
+    /* the next owner has the mutex whether the word can be written or not, as on the console */
+    if (!r) word_store(uword(addr), mutex_tag(n, more));
     if (n) wake(n, 0);
     klock_unlock();
-    R_SUCCEED();
+    return r;
 }
 
 /* ============================================================ condition variables */
 /* Eden's KConditionVariable::SignalImpl: a signaled waiter takes its mutex if it is free, or waits for its owner */
 static void cv_take_mutex_nl(KThread* w) {
-    u32* p = uword(w->wait_addr);
-    u32 old = word_load(p), nv;
+    u32 *p, old, nv;
     KObj* o;
+    if (check_mapped(w->wait_addr, 4)) { /* its mutex's page went while it waited */
+        wake(w, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+        return;
+    }
+    p = uword(w->wait_addr);
+    old = word_load(p);
     do
         nv = old ? old | HANDLE_WAIT : w->wait_tag;
     while (!word_cas(p, &old, nv, 1));
@@ -250,16 +265,24 @@ static u32 cv_finish_nl(KThread* t, int woke) {
    before the mutex changes hands, so the thread that takes the mutex sees it and signals */
 u32 svc_wait_cv(KThread* t, u64 maddr, u64 key, u32 tag, i64 timeout) {
     KThread* n;
-    int more;
+    int more, key_mapped;
     u32 r;
     R_TRY(check_word(maddr));
     key &= ~3ull;
     R_UNLESS(key <= AS_SIZE - 4, SNX_RC_SVC_INVALID_CURRENT_MEMORY);
+    /* the console marks the key without checking that it could, and writes the mutex's word before it sleeps: the
+       mutex is handed on either way, and a word it can't write ends the wait */
+    key_mapped = mem_user_mapped(key, 4);
+    r = check_mapped(maddr, 4);
     pm_lock(&g_host.kernel.klock);
     n = mutex_next_nl(maddr, &more);
-    word_store(uword(key), 1u);
-    word_store(uword(maddr), mutex_tag(n, more));
+    if (key_mapped) word_store(uword(key), 1u);
+    if (!r) word_store(uword(maddr), mutex_tag(n, more));
     if (n) wake(n, 0);
+    if (r) {
+        klock_unlock();
+        return r;
+    }
     if (!timeout) {
         klock_unlock();
         R_THROW(SNX_RC_SVC_TIMED_OUT);
@@ -281,7 +304,9 @@ u32 svc_signal_cv(u64 key, i32 count) {
     KThread* w;
     u32* l;
     i32 n = 0;
+    int key_mapped;
     key &= ~3ull;
+    key_mapped = key <= AS_SIZE - 4 && mem_user_mapped(key, 4); /* the console clears the mark where it can */
     l = wait_list_for(3, key);
     pm_lock(&g_host.kernel.klock);
     while ((count <= 0 || n < count) && (w = list_best(*l, 1, key)) != NULL) {
@@ -290,7 +315,7 @@ u32 svc_signal_cv(u64 key, i32 count) {
         cv_take_mutex_nl(w);
         n++;
     }
-    if (!list_best(*l, 1, key) && key <= AS_SIZE - 4) word_store(uword(key), 0u);
+    if (!list_best(*l, 1, key) && key_mapped) word_store(uword(key), 0u);
     klock_unlock();
     R_SUCCEED();
 }
@@ -320,6 +345,7 @@ u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i64 value, i64 timeout) {
     } else
         R_TRY(check_word(addr));
     R_UNLESS(type <= 3, SNX_RC_SVC_INVALID_ENUM_VALUE);
+    R_TRY(check_mapped(addr, type == 3 ? 8 : 4));
     p = uword(addr);
     pm_lock(&g_host.kernel.klock);
     if (type == 3)
@@ -358,6 +384,7 @@ u32 svc_signal_addr(u64 addr, u32 type, i32 value, i32 count) {
     u32* p;
     R_TRY(check_word(addr));
     R_UNLESS(type <= 2, SNX_RC_SVC_INVALID_ENUM_VALUE);
+    if (type) R_TRY(check_mapped(addr, 4)); /* a plain signal reads nothing */
     p = uword(addr);
     l = wait_list_for(4, addr);
     pm_lock(&g_host.kernel.klock);
@@ -429,7 +456,8 @@ u32 svc_wait_sync(KThread* t, u64 hptr, u32 n, i64 timeout, u32* out_idx) {
     KObj* objs[64];
     u32 i, r = 0;
     R_UNLESS(n <= 64, SNX_RC_SVC_OUT_OF_RANGE);
-    if (n && (hptr > AS_SIZE || AS_SIZE - hptr < 4ull * n)) R_THROW(SNX_RC_SVC_INVALID_POINTER);
+    if (n && (hptr > AS_SIZE || AS_SIZE - hptr < 4ull * n || !mem_user_mapped(hptr, 4ull * n)))
+        R_THROW(SNX_RC_SVC_INVALID_POINTER);
     if (n) memcpy(hs, GP(hptr), 4 * (size_t)n);
     snx_le32_array(hs, n);
     pm_lock(&g_host.kernel.klock);

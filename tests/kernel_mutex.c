@@ -11,6 +11,13 @@
 
 u8* g_mem;
 u64 g_as_size = AS_MAX; /* the reservation's size, mem.c's, which this test does not link */
+/* the test's guest memory, two pages: the second is free while g_hole_free says so, as a freed stack's is */
+enum { SNX_KMT_HOLE = 0x1000, SNX_KMT_MEM = 0x2000 };
+static int g_hole_free;
+int mem_user_mapped(u64 addr, u64 size) {
+    u64 end = g_hole_free ? SNX_KMT_HOLE : SNX_KMT_MEM;
+    return !size || (addr < end && size <= end - addr);
+}
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 void logf_(int lvl, const char* fmt, ...) {
@@ -112,7 +119,7 @@ void pm_init(PMutex* m) { (void)m; }
 
 int main(void) {
     hle_init();
-    g_mem = calloc(1, 0x1000);
+    g_mem = calloc(1, SNX_KMT_MEM); /* the free page too, so a missing check reads it instead of crashing */
     if (!g_mem) return 1;
     enum { SNX_KMT_M = 0x100, SNX_KMT_M2 = 0x200, SNX_KMT_CV = 0x300 };
 
@@ -358,6 +365,63 @@ int main(void) {
                   snx_ld_le64(g_mem + SNX_KMT_ARB64) == 0x100000006ull,
               "SignalAndIncrementIfEqual on its low word wakes the other: %llx",
               (unsigned long long)snx_ld_le64(g_mem + SNX_KMT_ARB64));
+    }
+
+    /* a word on a page nothing is mapped at: the console's user access fails and the SVC answers InvalidCurrentMemory,
+       where a host access would end the process. The alignment is checked first, a plain SignalToAddress reads
+       nothing, a condition variable's key is marked only where it can be, and the mutex is handed on even when its
+       word can't be written */
+    {
+        enum { SNX_KMT_W = SNX_KMT_HOLE + 0x40 };
+        t = reset(start_prio);
+        a = &t[0], b = &t[1];
+        memset(g_hle.sync.arbwait, 0, sizeof g_hle.sync.arbwait);
+        snx_st_le32(g_mem + SNX_KMT_W, 0x55u); /* what the free page held: a missing check reads or writes it */
+        g_hole_free = 1;
+        g_slept = 0;
+        CHECK(svc_arbitrate_lock(b, handle(a), SNX_KMT_W, handle(b)) == SNX_RC_SVC_INVALID_CURRENT_MEMORY && !g_slept,
+              "ArbitrateLock on a free page");
+        CHECK(svc_arbitrate_lock(b, handle(a), SNX_KMT_W + 2, handle(b)) == SNX_RC_SVC_INVALID_ADDRESS,
+              "the alignment before the page");
+        CHECK(svc_arbitrate_unlock(SNX_KMT_W) == SNX_RC_SVC_INVALID_CURRENT_MEMORY && word(SNX_KMT_W) == 0x55u,
+              "ArbitrateUnlock on a free page");
+        CHECK(svc_wait_cv(b, SNX_KMT_W, SNX_KMT_CV, handle(b), -1) == SNX_RC_SVC_INVALID_CURRENT_MEMORY && !g_slept &&
+                  word(SNX_KMT_CV) == 1u,
+              "WaitProcessWideKeyAtomic with its mutex on a free page: the key marked, no wait");
+        snx_st_le32(g_mem + SNX_KMT_M, 0u);
+        CHECK(svc_wait_cv(b, SNX_KMT_M, SNX_KMT_W, handle(b), -1) == 0 && g_slept == 1 && word(SNX_KMT_W) == 0x55u,
+              "a key on a free page: no mark, and the thread waits");
+        CHECK(svc_signal_cv(SNX_KMT_W, 1) == 0 && b->woken && word(SNX_KMT_W) == 0x55u,
+              "SignalProcessWideKey on that key wakes it, and clears no mark");
+        CHECK(svc_wait_addr(&t[2], SNX_KMT_W, 2, 0x55, -1) == SNX_RC_SVC_INVALID_CURRENT_MEMORY,
+              "WaitForAddress on a free page");
+        CHECK(svc_wait_addr(&t[2], SNX_KMT_W, 3, 0x55, -1) == SNX_RC_SVC_INVALID_CURRENT_MEMORY,
+              "WaitIfEqual64 on a free page");
+        CHECK(svc_signal_addr(SNX_KMT_W, 0, 0, 1) == 0, "a plain SignalToAddress reads nothing");
+        CHECK(svc_signal_addr(SNX_KMT_W, 1, 0x55, 1) == SNX_RC_SVC_INVALID_CURRENT_MEMORY && word(SNX_KMT_W) == 0x55u,
+              "SignalAndIncrementIfEqual on a free page");
+
+        /* a condition variable's waiter whose mutex's page went while it waited: the signal ends its wait with
+           InvalidCurrentMemory, and the key's mark is cleared */
+        t = reset(start_prio);
+        g_hole_free = 0;
+        snx_st_le32(g_mem + SNX_KMT_W, 0u);
+        CHECK(svc_wait_cv(&t[2], SNX_KMT_W, SNX_KMT_CV, handle(&t[2]), -1) == 0, "a wait with its mutex mapped");
+        g_hole_free = 1;
+        t[2].woken = 0;
+        CHECK(svc_signal_cv(SNX_KMT_CV, 1) == 0 && t[2].woken &&
+                  t[2].wait_result == (int)SNX_RC_SVC_INVALID_CURRENT_MEMORY && word(SNX_KMT_CV) == 0u,
+              "the signal ends the wait with InvalidCurrentMemory (%x)", (unsigned)t[2].wait_result);
+
+        /* a mutex taken while its page was mapped, unlocked after the page went: the waiter has it all the same */
+        t = reset(start_prio);
+        a = &t[0], b = &t[1];
+        g_hole_free = 0;
+        lock(b, a, SNX_KMT_W);
+        g_hole_free = 1;
+        CHECK(svc_arbitrate_unlock(SNX_KMT_W) == SNX_RC_SVC_INVALID_CURRENT_MEMORY && b->woken,
+              "ArbitrateUnlock on a free page still hands the mutex on");
+        g_hole_free = 0;
     }
 
     printf("%u checks, %u failed\n", checks, failures);

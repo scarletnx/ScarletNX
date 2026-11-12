@@ -22,6 +22,12 @@
 /* ============================================================ the kernel ipc.c calls */
 u8* g_mem;
 u64 g_as_size = AS_MAX; /* the reservation's size, mem.c's, which this test does not link */
+/* the pages a buffer descriptor may name are mapped for the parse, but these 16, inside the address space
+   (mem.c's mem_user_mapped) */
+#define FREE_PAGES 0x1F00000000ull
+int mem_user_mapped(u64 addr, u64 size) {
+    return !size || addr >= FREE_PAGES + 0x10000 || (addr < FREE_PAGES && size <= FREE_PAGES - addr);
+}
 static int test_log; /* SNX_TEST_LOG=1 prints what ipc.c logs */
 /* single-threaded: the locks only have to be balanced, which the count checks at the end */
 static int test_locks;
@@ -569,6 +575,25 @@ static void kernel_refusals(u32 h) {
     clear();
     r = cmif_make_request(msg(), (CmifRequestFormat){.request_id = 1, .num_out_buffers = 1});
     hipc_buffer(r.hipc.recv_buffers, AS_SIZE - 0x1000, 0x2000, 0);
+    CHECK(send(h) == 0xD401 && !got.calls);
+    /* a B buffer, a send static and a receive list entry on pages nothing is mapped at (a freed buffer), or running
+       onto them: InvalidCurrentMemory, the server never called, where its write or read would end the process */
+    clear();
+    r = cmif_make_request(msg(), (CmifRequestFormat){.request_id = 1, .num_out_buffers = 1});
+    hipc_buffer(r.hipc.recv_buffers, FREE_PAGES + 0x100, 0x100, 0);
+    CHECK(send(h) == 0xD401 && !got.calls);
+    clear();
+    r = cmif_make_request(msg(), (CmifRequestFormat){.request_id = 1, .num_out_buffers = 1});
+    hipc_buffer(r.hipc.recv_buffers, FREE_PAGES - 0x80, 0x100, 0);
+    CHECK(send(h) == 0xD401 && !got.calls);
+    clear();
+    r = cmif_make_request(msg(), (CmifRequestFormat){.request_id = 1, .num_in_pointers = 1});
+    hipc_send_static(r.hipc.send_statics, FREE_PAGES, 0x40, 0);
+    CHECK(send(h) == 0xD401 && !got.calls);
+    clear();
+    r = cmif_make_request(msg(), (CmifRequestFormat){.request_id = 1, .num_out_pointers = 1});
+    hipc_recv_static(r.hipc.recv_list, FREE_PAGES, 0x80);
+    r.out_pointer_sizes[0] = 0x80;
     CHECK(send(h) == 0xD401 && !got.calls);
     /* through a user buffer of 0x1000 bytes: a 0x118 byte message fits it but not the server's 0x100 byte buffer,
        MessageTooLarge. In the TLS buffer the same message describes more than the buffer */
