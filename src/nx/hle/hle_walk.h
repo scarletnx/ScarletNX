@@ -65,6 +65,12 @@
     X(FsData, (h).fs.fss[0])                                                                                           \
     X(FileData, (h).fs.files[0])                                                                                       \
     X(DirData, (h).fs.dirs[0])                                                                                         \
+    X(NativeVideoPool, (h).native_video.pools[0])                                                                      \
+    X(NativeVideoMap, (h).native_video.maps[0])                                                                        \
+    X(NativeVideoContext, (h).native_video.contexts[0])                                                                \
+    X(NativeVideoInput, (h).native_video.codecs[0].inputs[0])                                                          \
+    X(NativeVideoImage, (h).native_video.codecs[0].images[0])                                                          \
+    X(NativeVideoCodec, (h).native_video.codecs[0])                                                                    \
     X(kernel, (h).kernel)                                                                                              \
     X(thread, (h).thread)                                                                                              \
     X(sync, (h).sync)                                                                                                  \
@@ -81,6 +87,7 @@
     X(ldr, (h).ldr)                                                                                                    \
     X(misc, (h).misc)                                                                                                  \
     X(nvdrv, (h).nvdrv)                                                                                                \
+    X(native_video, (h).native_video)                                                                                  \
     X(pl, (h).pl)                                                                                                      \
     X(set, (h).set)                                                                                                    \
     X(sm, (h).sm)                                                                                                      \
