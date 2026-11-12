@@ -367,6 +367,7 @@ The unattended runs' settings ([Run / diagnose](../dev/development.md#run--diagn
 | Key | Default | Effect |
 | --- | --- | --- |
 | `ctr_ipc_trace` | `0` | `1` logs each service request the 3DS game sends, its service and header, in the order sent |
+| `ctr_hooks` | `1` | `1` runs the 3DS game's IPC stubs (the SDK's functions that send a service request) in the runtime, which sends their requests to the services without the TLS command buffer and the SVC, and runs a GX command at the SDK's enqueue. `0` leaves every request to the game's code |
 | `ctr_svc_trace` | `0` | `1` logs each SVC the game makes that answers a failure (`r0` with its top bit set), `2` every SVC, with the thread, its pc and `r0` to `r3` before and after |
 | `ctr_gpu_trace` | `0` | `1` logs each GX command the game queues, and each framebuffer swap the display takes or drops, and why |
 | `ctr_uds_trace` | `0` | `1` logs each local wireless packet of the game that goes through an Eden room ([local wireless](../platforms/3ds/README.md#experimental-local-wireless-over-rooms)): its direction (sent, received, delivered), the time, its size and its first 96 bytes in hex |
