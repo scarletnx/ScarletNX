@@ -2100,10 +2100,20 @@ static SnxU64 aot_units(const SnxAotGovernor* g, const SnxAotReading* r) {
     SnxU64 own = g->base + r->held;
     return r->footprint > own ? r->footprint - own : 0;
 }
-void snx_aot_governor_start(SnxAotGovernor* g, unsigned most, SnxU64 footprint, const char* pressure, char* line,
-                            size_t size) {
+unsigned snx_aot_threads(int threads, int most, char* note, size_t size) {
+    if (size) note[0] = 0;
+    if (threads > 0) {
+        if (most > 0)
+            snprintf(note, size, "aot_threads_most=%d bounds Auto only: aot_threads=%d compiles on %d threads", most,
+                     threads, threads);
+        return (unsigned)threads;
+    }
+    return most > 0 ? (unsigned)most : snx_build_threads();
+}
+void snx_aot_governor_start(SnxAotGovernor* g, unsigned most, int most_key, SnxU64 footprint, const char* pressure,
+                            char* line, size_t size) {
     SnxAotGovernor start = {0};
-    char own[96];
+    char own[96], ceiling[64];
     start.most = most ? most : 1u;
     start.threads = 1u;
     start.base = footprint;
@@ -2112,14 +2122,17 @@ void snx_aot_governor_start(SnxAotGovernor* g, unsigned most, SnxU64 footprint, 
         snprintf(own, sizeof own, "%llu MiB in use before the first unit", (unsigned long long)(footprint >> 20));
     else
         snprintf(own, sizeof own, "the system does not say what the process takes");
+    if (most_key)
+        snprintf(ceiling, sizeof ceiling, "aot_threads_most=%u gives", g->most);
+    else
+        snprintf(ceiling, sizeof ceiling, "the cores give with a quarter left free");
     if (g->most == 1u)
-        snprintf(line, size, "aot_threads=0 (Auto): 1 thread, what the cores give with a quarter left free");
+        snprintf(line, size, "aot_threads=0 (Auto): 1 thread, what %s", ceiling);
     else
         snprintf(line, size,
                  "aot_threads=0 (Auto): 1 thread to start, %s; once that unit has ended one more opens each second "
-                 "while the memory holds it, up to the %u the cores give with a quarter left free. The system's "
-                 "memory pressure: %s",
-                 own, g->most, pressure);
+                 "while the memory holds it, up to the %u %s. The system's memory pressure: %s",
+                 own, g->most, ceiling, pressure);
 }
 int snx_aot_governor_tick(SnxAotGovernor* g, const SnxAotReading* r, const char* pressure, char* line, size_t size) {
     SnxU64 units = aot_units(g, r), open_take, more = 0;

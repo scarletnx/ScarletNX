@@ -637,19 +637,20 @@ static bool has_arg(const char* argv, const char* arg, const char* after) {
     return false;
 }
 /* a console's game not made yet, opened: its first compile through driver, its own (no Switch flag), -r before file
-   and its data folder, run to its end with status (driver_will). One the queue started gently has half the threads
-   as --aot_threads=, which every console's driver takes; another has none */
+   and its data folder, run to its end with status (driver_will). One the queue started gently has Auto's threads up
+   to half, --aot_threads=0 and --aot_threads_most=, which every console's driver takes; another has neither */
 static void compiled_by(App* app, const char* driver, const char* file, int status) {
-    char threads[32];
+    char threads[48];
     bool gentle = !app->menu.running && app->job_low;
     char* argv;
-    snprintf(threads, sizeof threads, "--aot_threads=%d", SDL_max(1, job_cores(app) / 2));
+    snprintf(threads, sizeof threads, "--aot_threads_most=%d", SDL_max(1, job_cores(app) / 2));
     assert(!gentle || app->job_threads == SDL_max(1, job_cores(app) / 2));
     argv = ran(app, status);
     assert(strstr(argv, driver) && strstr(argv, driver) < strchr(argv, '\n') && has_arg(argv, "-r", file) &&
            has_arg(argv, "--data", app->data_dir) && !has_arg(argv, "-S", NULL) &&
            !has_arg(argv, "--fullscreen=1", NULL));
-    assert(gentle ? has_arg(argv, threads, NULL) : !strstr(argv, "--aot_threads="));
+    assert(gentle ? has_arg(argv, "--aot_threads=0", NULL) && has_arg(argv, threads, NULL)
+                  : !strstr(argv, "--aot_threads=") && !strstr(argv, "--aot_threads_most="));
     free(argv);
 }
 /* the event e (a game dropped) taken with Background recompile Gentle: its compile starts gently */
@@ -4041,11 +4042,11 @@ static void recompile_queue(App* app) {
             go_tab(app, GUI_TAB_GAMES);
             focus_game(app, names[0]);
         }
-        snprintf(line, sizeof line, "threads 4, priority %d", low);
+        snprintf(line, sizeof line, "threads 0 up to 4, priority %d", low);
         assert(noted(&app->job_steps, line) && app->job_low && app->job_threads == 4 &&
                priority_of(job_pid(app)) == low);
         job_speed(app, said, sizeof said);
-        assert(!strcmp(said, way ? "Gentle, on battery, 4 threads" : "Gentle, 4 threads"));
+        assert(!strcmp(said, way ? "Gentle, on battery, up to 4 threads" : "Gentle, up to 4 threads"));
         job_step(app, 50);
         job_step(app, 75);
         job_step(app, 100);
@@ -4637,10 +4638,13 @@ int main(int argc, char** argv) {
     if (argc > 2 && !strcmp(argv[1], "-r") && strstr(argv[2], "queue game")) {
         /* a recompile of the queue: its blocks one at a time, each once the test makes <input>.step (which it takes),
            then how it ended; the threads and the priority it got on its second line, its pid in <input>.pid */
-        const char *threads = "default", *name = argv[2] + strlen(argv[2]);
+        const char *threads = "default", *most = NULL, *name = argv[2] + strlen(argv[2]);
         char *step = snx_format("%s.step", argv[2]), *pid = snx_format("%s.pid", argv[2]), *at;
         for (int i = 3; i < argc; ++i)
-            if (!strncmp(argv[i], "--aot_threads=", 14)) threads = argv[i] + 14; /* the last one given */
+            if (!strncmp(argv[i], "--aot_threads=", 14))
+                threads = argv[i] + 14; /* the last one given */
+            else if (!strncmp(argv[i], "--aot_threads_most=", 19))
+                most = argv[i] + 19;
         while (name > argv[2] && name[-1] != '/' && name[-1] != '\\') --name;
 #ifdef _WIN32
         at = snx_format("%lu", (unsigned long)GetCurrentProcessId());
@@ -4648,9 +4652,9 @@ int main(int argc, char** argv) {
         at = snx_format("%ld", (long)getpid());
 #endif
         assert(!snx_write_file(pid, at, strlen(at)));
-        printf("Recompiling %.*s (1 modules)\nthreads %s, priority %d\n",
+        printf("Recompiling %.*s (1 modules)\nthreads %s%s%s, priority %d\n",
                (int)(strstr(name, ".exe") ? (size_t)(strstr(name, ".exe") - name) : strlen(name)), name, threads,
-               own_priority());
+               most ? " up to " : "", most ? most : "", own_priority());
         for (int b = 1; b <= 4; ++b) {
             printf("  compiled block %d/4: code_00%d, 10 functions (0.1 s)\n", b, b - 1);
             fflush(stdout);
@@ -4771,9 +4775,9 @@ int main(int argc, char** argv) {
     }
     if (argc > 2 && strstr(argv[argv[1][0] == '-' ? 2 : 1], "0100ABCD12340000")) { /* a game or its update */
         int r = !strcmp(argv[1], "-r"), args = argc;
-        /* a recompile the queue runs gently (on battery) ends with its half of the threads, which the last one given
-           replaces, as the menu's own line says */
-        if (args > 1 && !strncmp(argv[args - 1], "--aot_threads=", 14)) --args;
+        /* a recompile the queue runs gently (on battery) ends with Auto and its ceiling of half the threads, which the last
+           ones given replace, as the menu's own line says */
+        if (args > 2 && !strncmp(argv[args - 1], "--aot_threads_most=", 19)) args -= 2; /* and its --aot_threads=0 */
         assert(strstr(argv[0], "runtime") && snx_is_file(argv[1 + r]));
         assert(!strcmp(argv[args - 2], "--data") && argv[args - 1][0]);
         puts("ScarletNX - an update");
@@ -4788,7 +4792,7 @@ int main(int argc, char** argv) {
     }
     if (argc > 2 && !strcmp(argv[1], "-r") && strstr(argv[2], "folder game")) { /* R on it: recompiled, not played */
         int i = 3, args = argc;
-        if (args > 1 && !strncmp(argv[args - 1], "--aot_threads=", 14)) --args; /* the Gentle recompile's half */
+        if (args > 2 && !strncmp(argv[args - 1], "--aot_threads_most=", 19)) args -= 2; /* the Gentle recompile's */
         assert(strstr(argv[0], "runtime") && snx_is_file(argv[2]));
         assert(i + 2 == args && !strcmp(argv[i], "--data") && argv[i + 1][0]);
         puts("Recompiling folder game (1 modules)\nBuilt folder game");
@@ -5518,18 +5522,18 @@ int main(int argc, char** argv) {
     assert(app.form == GUI_FORM_SETTINGS);
     key(&app, SDLK_RETURN);
     /* a group's settings on the right, a row each with its help in the tips; the group named over them */
-    /* gdbstub, Extract to tmpfs, Extract dump, Java home, Optimization level, LLVM batch, AOT threads, Unit size,
-       Unit cache limit and the LLVM Internals page: the profiler's rows are the game's Debug section's, not the
-       launcher's own */
-    assert(app.form == GUI_FORM_GROUP && app.group == 1 && app.editor.count == 10);
+    /* gdbstub, Extract to tmpfs, Extract dump, Java home, Optimization level, LLVM batch, AOT threads, AOT threads at
+       most, Unit size, Unit cache limit and the LLVM Internals page: the profiler's rows are the game's Debug
+       section's, not the launcher's own */
+    assert(app.form == GUI_FORM_GROUP && app.group == 1 && app.editor.count == 11);
     render(&app);
     shows(&app, "Launch", normal);
     shows_half(&app, "Enables gdbstub", normal); /* in the tips */
-    shows(&app, "-    GDB stub ", yellow); /* its value in the column after the longest name, Optimization level's */
+    shows(&app, "-    GDB stub ", yellow); /* its value in the column after the longest name, AOT threads at most's */
     shows(&app, "-    Extract to tmpfs ", normal);
     {
         char row[64];
-        snprintf(row, sizeof row, "-    %-*s off", (int)strlen("Optimization level"), "Extract dump");
+        snprintf(row, sizeof row, "-    %-*s off", (int)strlen("AOT threads at most"), "Extract dump");
         shows(&app, row, normal);
     }
     { /* Del is said where it does something: on a setting away from its default */
