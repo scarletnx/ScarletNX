@@ -6,7 +6,8 @@
    Off and On never asking the host; the steps round On, Off and Auto of hotkey_tv_mode and the game's menu. And a key the .ini gives twice: the last line's value, and a line that names the
    key and both values; and memory_fit, deprecated, read from an old .ini as memory_fit_mode while the file gives that
    one none, and the file written with memory_fit_mode and memory_fit under [Deprecated]. And controls_opacity and
-   controls_alpha, deprecated, kept under [Deprecated]. And vk_descriptors, deprecated: the
+   controls_alpha, deprecated, kept under [Deprecated], and the other keys settings.txt dropped. And vk_descriptors,
+   deprecated: the
    default an older version wrote in every game's .ini is no pick, so the game runs Automatic and nothing is said over
    its picture; a pick is carried to vk_descriptors_mode, and --vk_descriptors=N is this run's */
 #include "common/utilities/common.h"
@@ -412,6 +413,38 @@ static void test_controls_opacity_old(void) {
     g_test.write = 0;
 }
 
+/* the keys settings.txt dropped that a .ini an older version wrote still holds (scripts/check-deprecations.py finds
+   them): each kept under [Deprecated] after what became of it, none under [Other] with a newer version's keys, and the
+   run's line naming every one */
+static void test_dropped_keys_old(void) {
+    static const char* const old[] = {"nvn_direct=1",
+                                      "nvn_verify=0",
+                                      "nvn_trace=0",
+                                      "mme_hle=1",
+                                      "mme_jit=1",
+                                      "mme_verify=0",
+                                      "astc_background_threads=4",
+                                      "press=10",
+                                      "press_at=2000"};
+    char *text, file[1024] = "[Debug]\n", key[64], line[256];
+    size_t i;
+    for (i = 0; i < sizeof old / sizeof old[0]; ++i)
+        snprintf(file + strlen(file), sizeof file - strlen(file), "%s\n", old[i]);
+    g_test.write = 1;
+    text = open_ini(file);
+    CHECK(text && strstr(text, "\n[Deprecated]\n") && !strstr(text, "\n[Other]\n"));
+    for (i = 0; i < sizeof old / sizeof old[0]; ++i) { /* "; key: what became of it", then the line as it was */
+        snprintf(key, sizeof key, "%.*s", (int)strcspn(old[i], "="), old[i]);
+        CHECK(ini_deprecated(key));
+        snprintf(line, sizeof line, "\n; %s: %s\n%s\n", key, ini_deprecated(key), old[i]);
+        CHECK(strstr(text, line) && strstr(text, "\n[Deprecated]\n") < strstr(text, line));
+    }
+    CHECK(strstr(g_test.said, "keeps 9 keys this version does not use (nvn_direct, nvn_verify, nvn_trace, mme_hle, "
+                              "mme_jit, mme_verify, astc_background_threads, press, press_at), under [Deprecated]"));
+    free(text);
+    g_test.write = 0;
+}
+
 /* the Debug settings over the picture (options_debug) say the descriptors' setting: its key=value, NULL for none */
 static const char* debug_descriptors(void) {
     static char list[1024];
@@ -532,6 +565,7 @@ int main(int argc, char** argv) {
     test_memory_fit_old();
     test_astc_bc_old();
     test_controls_opacity_old();
+    test_dropped_keys_old();
     test_vk_descriptors_old_default();
     test_vk_descriptors_old();
     printf("options_tv_mode: ok\n");
