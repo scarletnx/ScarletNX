@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* extension_bans.txt read, matched against the device and said (extension_bans.h) */
-#include "nx/gpu/vk/extension_bans.h"
+#include "common/gpu/vk/extension_bans.h"
 #include <stdio.h>
 #include <string.h>
 #if defined(__APPLE__)

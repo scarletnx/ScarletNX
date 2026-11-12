@@ -2,7 +2,7 @@
 # Copyright 2026 the ScarletNX contributors
 #
 # The drivers known to break a Vulkan extension or feature: which driver, which versions, on which system, what breaks,
-# and who found it. The renderer reads this before it turns anything on (gpu/vk/extension_bans.c): an "off" line takes
+# and who found it. The renderer reads this before it turns anything on (common/gpu/vk/extension_bans.c): an "off" line takes
 # the extension out of the device's list, or turns the feature off where the renderer can do without it, and the log
 # says which, on which device, driver and version, and why. A "warn" line is only said: a ban another project lifted,
 # one not proven for the way this renderer uses the feature, or a part it has no way around. Compiled in

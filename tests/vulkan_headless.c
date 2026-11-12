@@ -16,7 +16,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/pagespace.h"
 #include "nx/gpu/vk/descriptors.h"
-#include "nx/gpu/vk/extension_bans.h"
+#include "common/gpu/vk/extension_bans.h"
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"

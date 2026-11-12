@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The extension bans (gpu/vk/extension_bans.c), with no GPU: the table's errors, each named with its line and value;
+/* The extension bans (common/gpu/vk/extension_bans.c), with no GPU: the table's errors, each named with its line and value;
    each driver's numbering of versions and every kind of bound at its edges; systems and GPUs; the filter taking a
    banned extension out of a stand-in device's list and leaving one a setting owns; the features asked for, said only
    where the device has them; the "off" lines nothing asked for, said; the log lines naming the key, the device, its
@@ -11,7 +11,7 @@
      --devices [--table FILE]                     this machine's Vulkan devices, and the lines that hold for each
      --match DRIVER VERSION [SYSTEM [DEVICEID]] [--table FILE]   the lines that hold for a driver given by hand
      --check FILE                                 FILE read as the table: its first error, or that it reads */
-#include "nx/gpu/vk/extension_bans.h"
+#include "common/gpu/vk/extension_bans.h"
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
 #include <stdio.h>

@@ -5,7 +5,7 @@
 #include "nx/gpu/vk/vertex_input.h"
 #include <stdio.h>
 #include <string.h>
-#include "nx/gpu/vk/extension_bans.h"
+#include "common/gpu/vk/extension_bans.h"
 
 /* the setting's values, by SNX_VK_VI_* */
 static const char* const vi_words[] = {"auto", "on", "off"};

@@ -413,11 +413,11 @@ again with the layout in the key.
 
 ## Driver bans
 
-`src/nx/gpu/vk/extension_bans.txt` is the table of drivers known to break a Vulkan extension or feature: a line per
+`src/common/gpu/vk/extension_bans.txt` is the table of drivers known to break a Vulkan extension or feature: a line per
 ban, with the extension or feature, `off` or `warn`, the driver (its `VkDriverId` by name), the versions in that
 driver's own numbering, the system, the GPUs, what breaks, where that is known from, the case that tests it again, the
 date it was last tested and the setting that turns it on anyway. Its head explains each field. It is compiled in, and
-the device reads it before it turns anything on (`src/nx/gpu/vk/extension_bans.c`): an `off` line takes the extension
+the device reads it before it turns anything on (`src/common/gpu/vk/extension_bans.c`): an `off` line takes the extension
 out of the device's list, or the feature off where the renderer can do without it, and a `warn` line is only said.
 Each line that holds is said in the log, with the device, its driver and version and the table's line:
 
@@ -436,7 +436,7 @@ for a driver given by hand:
 ```sh
 build/tests/snx-test-vk-bans --devices                              # each Vulkan device and the lines that hold
 build/tests/snx-test-vk-bans --match qualcomm 512.800.48 android    # a phone's driver
-build/tests/snx-test-vk-bans --check src/nx/gpu/vk/extension_bans.txt   # a table being edited: its first error
+build/tests/snx-test-vk-bans --check src/common/gpu/vk/extension_bans.txt   # a table being edited: its first error
 ctest --test-dir build -R 'vk_extension_bans|vk_vertex_input'
 ```
 
