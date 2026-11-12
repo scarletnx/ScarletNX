@@ -164,6 +164,40 @@ int main(void) {
     CHECK(call(regs, AGB_SWI_LZ77_UNCOMP_VRAM) == 0);
     CHECK(!memcmp(&board.memory.vram[0], "ABCBCBCB", 8));
 
+    /* a source in the BIOS's region: the copies and unpacks refuse one below EWRAM, the decompressions one with none of
+       bits 25 to 27 (0x10000000 too), and none of them writes anything */
+    {
+        static const uint32_t calls[] = {AGB_SWI_CPU_SET,
+                                         AGB_SWI_CPU_FAST_SET,
+                                         AGB_SWI_BIT_UNPACK,
+                                         AGB_SWI_LZ77_UNCOMP_WRAM,
+                                         AGB_SWI_LZ77_UNCOMP_VRAM,
+                                         AGB_SWI_HUFF_UNCOMP,
+                                         AGB_SWI_RL_UNCOMP_WRAM,
+                                         AGB_SWI_RL_UNCOMP_VRAM,
+                                         AGB_SWI_DIFF_8BIT_UNFILTER_WRAM,
+                                         AGB_SWI_DIFF_8BIT_UNFILTER_VRAM,
+                                         AGB_SWI_DIFF_16BIT_UNFILTER};
+        static const uint32_t sources[] = {0x00000000, 0x00003F00, 0x01000000, 0x10000000};
+        for (size_t i = 0; i < sizeof calls / sizeof calls[0]; ++i)
+            for (size_t k = 0; k < sizeof sources / sizeof sources[0]; ++k) {
+                int copies =
+                    calls[i] == AGB_SWI_CPU_SET || calls[i] == AGB_SWI_CPU_FAST_SET || calls[i] == AGB_SWI_BIT_UNPACK;
+                if (copies && sources[k] == 0x10000000) continue; /* past EWRAM: a copy reads it */
+                agb_write32(&board, 0x02030000, 0xA5A5A5A5);
+                memset(regs, 0, sizeof(regs));
+                regs[0] = sources[k];
+                regs[1] = 0x02030000;
+                regs[2] = calls[i] == AGB_SWI_BIT_UNPACK ? 0x02000010 : 8;
+                CHECK(call(regs, calls[i]) == 0);
+                if (agb_read32(&board, 0x02030000) != 0xA5A5A5A5) {
+                    fprintf(stderr, "agb_bios: call 0x%02X from 0x%08X wrote 0x%08X at 0x02030000\n", calls[i],
+                            sources[k], agb_read32(&board, 0x02030000));
+                    return 1;
+                }
+            }
+    }
+
     /* RL: a run and a literal block */
     agb_write32(&board, 0x02000100, (6u << 8) | 0x30);
     agb_write8(&board, 0x02000104, 0x81); /* four Z */
