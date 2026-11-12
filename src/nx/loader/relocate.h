@@ -54,10 +54,10 @@ typedef struct {
 int snx_relocate_compare(const SnxRelocModule* modules, size_t count, SnxRelocDiff* diff, char* error,
                          size_t error_size);
 
-/* The address a symbol of that name is bound to among the modules, by the rule above for a symbol of default
-   visibility: 1 with it in *address, 0 when nothing defines the name, -1 said in error for a table outside its
-   module */
-int snx_relocate_find(const SnxRelocModule* modules, size_t count, const char* name, SnxU64* address, char* error,
-                      size_t error_size);
+/* The address a symbol of that name is bound to among the modules from `first` on, by the rule above for a symbol
+   of default visibility (first 0: every module; the index after a module: what the name is bound to past it): 1
+   with it in *address, 0 when none of them defines the name, -1 said in error for a table outside its module */
+int snx_relocate_find(const SnxRelocModule* modules, size_t count, size_t first, const char* name, SnxU64* address,
+                      char* error, size_t error_size);
 
 #endif

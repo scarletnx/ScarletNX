@@ -160,15 +160,17 @@ the game's image read from that image.
   a weak symbol nothing defines). Where it can, the runtime links the game in the rtld's place (`runtime/linker.c`):
   it relocates the modules when they are loaded, every PLT slot bound; the main thread enters `nn::init::Start`
   with three functions of the runtime's (their addresses the rtld's first three instructions, whose dispatch slots
-  hold them: the second runs each module's `DT_INIT`, the last module first, the third each `DT_FINI`); and `nn::ro`
-  is answered by the runtime (`src/nx/nn/ro.hook`, `ro.c`), so nothing of the SDK reads what an rtld would have
-  left. No code of the rtld runs. Where it cannot, the game's rtld links it as before and the log's `linker:` line
+  hold them: the second runs each module's `DT_INIT`, the last module first, the third each `DT_FINI`); and what
+  of `nn::ro` needs an rtld's lists is answered by the runtime (`src/nx/nn/ro.hook`, `ro.c`: a symbol by its name,
+  among every module or the ones after the caller's), so nothing of the SDK reads what an rtld would have left. What
+  describes a module by its address (`FindDynamicSegment`, `GetModuleName`, `GetModuleId`) stays the SDK's code,
+  which reads the module's own header where no list was left. No code of the rtld runs. Where it cannot, the game's rtld links it as before and the log's `linker:` line
   says why: under NCE, a 32-bit game, no `nn::init::Start` the runtime knows, a module that does not route `nn::ro`
   (one recompiled before this), the `nn_ro` hooks off (`hooks_off=nn_ro`), or a game that maps NROs, which the
   runtime's linker does not load yet. The runtime then links a copy of the modules' data and, at the game's first
   call of `nn::init::Start`, compares every relocated word of the game's memory with the copy; the log gives the
-  count, or how many differ and the first of them. A function of `nn::ro` the runtime does not answer yet (loading,
-  unloading or describing a module) stops the game by its name. `ctest -R 'loader_relocate|runtime_linker'`
+  count, or how many differ and the first of them. A function of `nn::ro` the runtime does not answer yet (loading or
+  unloading an NRO, or looking into one) stops the game by its name. `ctest -R 'loader_relocate|runtime_linker'`
   (`tests/relocate_test.c`, `tests/runtime_linker.c`).
 - The LLVM backend's speed: guest memory and the CPU structure are separate alias scopes (registers stay in host
   registers). Guest accesses are unaligned, and volatile only when `volatile_memory` is enabled (off by default).

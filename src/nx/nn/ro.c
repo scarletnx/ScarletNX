@@ -4,8 +4,10 @@
    (runtime/linker.c) in the place of the lists a game's own linker keeps. Installed only when the runtime linked the
    game. Written from what the functions are seen to do with their arguments, never from the SDK's code.
    Answered: the initializers (no ldr:ro session is needed for what follows), an NRO's buffer size, a symbol's address
-   by its name, and the RELRO passes, which the runtime's mapping leaves writable. A function that loads, unloads or
-   describes a module is not answered yet: it stops the game by its name */
+   by its name, among every module or among the ones after the caller's, and the RELRO passes, which the runtime's
+   mapping leaves writable. A function that loads or unloads an NRO, or looks into one, is not answered yet: it
+   stops the game by its name. What describes a module by its address (its dynamic segment, name and id) is the
+   SDK's own code, which reads the module's header where there is no list of an rtld's */
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
 #include "nx/runtime/linker.h"
@@ -39,14 +41,17 @@ u32 nnro_lookup_symbol(CPU* c, u64 address, u64 name) {
     snx_st_le64(hook_host(c, address), found);
     return 0;
 }
+/* the same among the modules loaded after the caller's, which the return address names */
+u32 nnro_lookup_next_symbol(CPU* c, u64 address, u64 name) {
+    u64 found = 0;
+    if (!linker_find_after(c->x[30], (const char*)hook_host(c, name), &found)) return RO_NOT_FOUND;
+    snx_st_le64(hook_host(c, address), found);
+    return 0;
+}
 /* the modules' relocated read-only data stays writable: nothing of the game writes it, and the runtime does not rely
    on the fault */
 void nnro_protect_full_relro_for_all_modules(CPU* c) { (void)c; }
 
-u32 nnro_lookup_next_symbol(CPU* c, u64 address, u64 name) {
-    (void)c, (void)address, (void)name;
-    unanswered("LookupNextSymbol");
-}
 u32 nnro_lookup_module_symbol(CPU* c, u64 address, u64 module, u64 name) {
     (void)c, (void)address, (void)module, (void)name;
     unanswered("LookupModuleSymbol");
@@ -74,22 +79,6 @@ u32 nnro_load_module_check(CPU* c, u64 module, u64 image, u64 buffer, u64 size, 
 void nnro_unload_module(CPU* c, u64 module) {
     (void)c, (void)module;
     unanswered("UnloadModule");
-}
-u64 nnro_find_dynamic_segment(CPU* c, u64 address) {
-    (void)c, (void)address;
-    unanswered("FindDynamicSegment");
-}
-u32 nnro_get_module_name_pointer(CPU* c, u64 name, u64 length, u64 address) {
-    (void)c, (void)name, (void)length, (void)address;
-    unanswered("GetModuleNamePointer");
-}
-u32 nnro_get_module_name(CPU* c, u64 name, u64 size, u64 address) {
-    (void)c, (void)name, (void)size, (void)address;
-    unanswered("GetModuleName");
-}
-u32 nnro_get_module_id(CPU* c, u64 id, u64 address) {
-    (void)c, (void)id, (void)address;
-    unanswered("GetModuleId");
 }
 /* a module's own RELRO pass, which its start-up code asks for with the module's object of its BSS (all zero here: no
    rtld filled it): left writable too */

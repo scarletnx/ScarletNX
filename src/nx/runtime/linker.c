@@ -247,11 +247,21 @@ int linker_main(u64 args[4]) {
     return 1;
 }
 
-int linker_find(const char* name, u64* address) {
+/* the modules' tables were read whole when the runtime linked them, so a lookup has no error left to say */
+static int find(u32 first, const char* name, u64* address) {
     char error[512];
     SnxU64 found = 0;
-    if (!g_linker.links || snx_relocate_find(g_linker.modules, g_linker.count, name, &found, error, sizeof error) != 1)
-        return 0;
+    if (snx_relocate_find(g_linker.modules, g_linker.count, first, name, &found, error, sizeof error) != 1) return 0;
     *address = found;
     return 1;
+}
+
+int linker_find(const char* name, u64* address) { return g_linker.links && find(0, name, address); }
+
+int linker_find_after(u64 caller, const char* name, u64* address) {
+    u32 i;
+    if (!g_linker.links) return 0;
+    for (i = 0; i < g_linker.count; i++)
+        if (caller - g_linker.modules[i].base < g_linker.modules[i].size) return find(i + 1, name, address);
+    return 0;
 }

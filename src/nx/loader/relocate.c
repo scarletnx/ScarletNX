@@ -326,11 +326,11 @@ int snx_relocate_compare(const SnxRelocModule* modules, size_t count, SnxRelocDi
     return 0;
 }
 
-int snx_relocate_find(const SnxRelocModule* modules, size_t count, const char* name, SnxU64* address, char* error,
-                      size_t error_size) {
+int snx_relocate_find(const SnxRelocModule* modules, size_t count, size_t first, const char* name, SnxU64* address,
+                      char* error, size_t error_size) {
     size_t i;
     SnxU64 k;
-    for (i = 0; i < count; ++i) {
+    for (i = first; i < count; ++i) {
         const SnxRelocModule* m = &modules[i];
         Tables t;
         if (read_tables(m, &t, error, error_size)) return -1;

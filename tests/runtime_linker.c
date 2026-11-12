@@ -9,7 +9,9 @@
      runtime_linker differ   a word the game's linker left differs
    And where the runtime can link the game itself (the module routes nn::ro, whose hooks are on, and the game maps no
    NRO), linker_decide must relocate the game's memory, every slot bound, the main thread must enter
-   nn::init::Start with the runtime's three callbacks, and the second must run each module's DT_INIT but the rtld's.
+   nn::init::Start with the runtime's three callbacks, the second must run each module's DT_INIT but the rtld's, the
+   last module first, the third each DT_FINI in load order, and a name must be found among every module or among the
+   ones after a caller's. That game has a third module, which defines nn::init::Start's name too.
      runtime_linker switch */
 #include "nx/hle/hook/hook.h"
 #include "nx/hle/kernel/kernel.h"
@@ -27,25 +29,28 @@
 
 #define RTLD  0x10000ull
 #define SDK   0x20000ull
+#define LAST  0x30000ull
 #define START (SDK + 0x40)
 #define NAME  "_ZN2nn4init5StartEmmPFvvES2_S2_"
 enum { MOD0 = 0x80, DYNAMIC = 0xc0, SYMTAB = 0x200, STRTAB = 0x248, RELA = 0x400, JMPREL = 0x500, RELR = 0x600 };
 enum { DATA = 0x800, DATA_SIZE = 0x200, MODULE_BYTES = 0x1000 };
 
-static u8 g_memory[0x30000];
+static u8 g_memory[0x40000];
 u8* g_mem = g_memory;
 const SnxNros* g_nros;
-static SnxModInfo g_mods[2] = {
+static SnxModInfo g_mods[3] = {
     {.name = "rtld", .text_size = 0x80, .base = RTLD, .size = MODULE_BYTES, .data_off = DATA, .data_size = DATA_SIZE},
-    {.name = "sdk", .base = SDK, .size = MODULE_BYTES, .data_off = DATA, .data_size = DATA_SIZE}};
-static const SnxModule g_module = {.abi = SNX_ABI, .nmods = 2, .mods = g_mods};
+    {.name = "sdk", .base = SDK, .size = MODULE_BYTES, .data_off = DATA, .data_size = DATA_SIZE},
+    {.name = "last", .base = LAST, .size = MODULE_BYTES, .data_off = DATA, .data_size = DATA_SIZE}};
+static SnxModule g_module = {.abi = SNX_ABI, .nmods = 2, .mods = g_mods};
 const SnxModule* g_mod = &g_module;
 const SnxArmModule* g_arm_mod;
-static GuestFn g_dispatch[0x20000 / 4];
+static GuestFn g_dispatch[0x30000 / 4];
 GuestFn* g_disp = g_dispatch;
-u64 g_code_lo = RTLD, g_code_hi = RTLD + 0x20000;
+u64 g_code_lo = RTLD, g_code_hi = RTLD + 0x30000;
 
-static int failures, g_nce, g_routed, g_ro_routed, g_exported, g_started, g_family_off, g_ctors, g_dtors;
+static int failures, g_nce, g_routed, g_ro_routed, g_exported, g_started, g_family_off, g_ran;
+static u64 g_order[8];
 static char g_log[4096];
 static void check(int ok, const char* what) {
     if (!ok) {
@@ -69,13 +74,9 @@ static void original(CPU* c, u64 entry) {
     (void)c;
     g_started += entry == START;
 }
-/* the SDK's DT_INIT and DT_FINI, at 0x48 and 0x4c of it: each returns to its caller */
-static void ctor(CPU* c, u64 entry) {
-    g_ctors += entry == SDK + 0x48 && c->x[30] == 0x5554;
-    c->pc = c->x[30];
-}
-static void dtor(CPU* c, u64 entry) {
-    g_dtors += entry == SDK + 0x4c && c->x[30] == 0x5554;
+/* a module's DT_INIT and DT_FINI, at 0x48 and 0x4c of it: each says it ran and returns to its caller */
+static void ran(CPU* c, u64 entry) {
+    if (c->x[30] == 0x5554 && g_ran < 8) g_order[g_ran++] = entry;
     c->pc = c->x[30];
 }
 
@@ -94,10 +95,9 @@ static void module(u64 base, u64 value, int plt) {
         snx_st_le64(m + DYNAMIC + 16 * i, tags[i][0]);
         snx_st_le64(m + DYNAMIC + 16 * i + 8, tags[i][1]);
     }
-    if (!plt) { /* DT_INIT and DT_FINI */
-        snx_st_le64(m + DYNAMIC + 16 * 9, 12), snx_st_le64(m + DYNAMIC + 16 * 9 + 8, 0x48);
-        snx_st_le64(m + DYNAMIC + 16 * 10, 13), snx_st_le64(m + DYNAMIC + 16 * 10 + 8, 0x4c);
-    }
+    /* DT_INIT and DT_FINI */
+    snx_st_le64(m + DYNAMIC + 16 * 9, 12), snx_st_le64(m + DYNAMIC + 16 * 9 + 8, 0x48);
+    snx_st_le64(m + DYNAMIC + 16 * 10, 13), snx_st_le64(m + DYNAMIC + 16 * 10 + 8, 0x4c);
     snx_st_le32(m + SYMTAB + 24, 1);
     m[SYMTAB + 24 + 4] = 0x12;
     m[SYMTAB + 24 + 6] = value ? 1 : 0;
@@ -124,9 +124,11 @@ static void game(void) {
     memset(g_dispatch, 0, sizeof g_dispatch);
     module(RTLD, 0, 1);
     module(SDK, 0x40, 0);
+    module(LAST, 0x44, 0);
     g_disp[(START - g_code_lo) / 4] = original;
-    g_disp[(SDK + 0x48 - g_code_lo) / 4] = ctor;
-    g_disp[(SDK + 0x4c - g_code_lo) / 4] = dtor;
+    g_disp[(RTLD + 0x48 - g_code_lo) / 4] = g_disp[(RTLD + 0x4c - g_code_lo) / 4] = ran;
+    g_disp[(SDK + 0x48 - g_code_lo) / 4] = g_disp[(SDK + 0x4c - g_code_lo) / 4] = ran;
+    g_disp[(LAST + 0x48 - g_code_lo) / 4] = g_disp[(LAST + 0x4c - g_code_lo) / 4] = ran;
     g_log[0] = 0;
 }
 
@@ -136,16 +138,17 @@ static void switched(void) {
     RtAPI rt = {.cas128 = snx_runtime_cas128};
     CPU c = {0};
     u64 at = 0, args[4] = {0};
+    g_module.nmods = 3;
     game();
     g_exported = g_routed = g_ro_routed = 1;
     linker_decide();
-    check(linker_links() && strstr(g_log, "the runtime linked the game's 2 modules itself") &&
-              strstr(g_log, "1 relative relocations, 1 with a symbol, 1 PLT slots, each bound") &&
-              strstr(g_log, "of 1 words that are weak (0) and of 0 that are not"),
+    check(linker_links() && strstr(g_log, "the runtime linked the game's 3 modules itself") &&
+              strstr(g_log, "2 relative relocations, 2 with a symbol, 1 PLT slots, each bound") &&
+              strstr(g_log, "of 2 words that are weak (0) and of 0 that are not"),
           "the runtime links the game, and says what it linked");
     check(snx_ld_le64(GP(SDK) + DATA) == START && snx_ld_le64(GP(SDK) + DATA + 8) == SDK + 0x123 &&
-              !snx_ld_le64(GP(SDK) + DATA + 0x10),
-          "the game's memory is relocated in place");
+              !snx_ld_le64(GP(SDK) + DATA + 0x10) && snx_ld_le64(GP(LAST) + DATA) == START,
+          "the game's memory is relocated in place, a name two modules define bound to the first's");
     check(snx_ld_le64(GP(RTLD) + DATA) == START, "a PLT slot is bound to its function, not left lazy");
     linker_init();
     check(*slot == original, "nn::init::Start's slot is its own");
@@ -161,16 +164,24 @@ static void switched(void) {
     c.code_hi = g_code_hi;
     c.x[30] = 0x5554;
     g_disp[0](&c, RTLD);
-    check(c.pc == 0x5554 && c.x[30] == 0x5554 && !g_ctors && !g_dtors, "the first callback returns to its caller");
+    check(c.pc == 0x5554 && c.x[30] == 0x5554 && !g_ran, "the first callback returns to its caller");
     c.pc = 0;
     g_disp[1](&c, RTLD + 4);
-    check(g_ctors == 1 && !g_dtors && c.pc == 0x5554 && c.x[30] == 0x5554,
-          "the second runs each module's DT_INIT but the rtld's, and returns");
+    check(g_ran == 2 && g_order[0] == LAST + 0x48 && g_order[1] == SDK + 0x48 && c.pc == 0x5554 && c.x[30] == 0x5554,
+          "the second runs each module's DT_INIT but the rtld's, the last module first, and returns");
     c.pc = 0;
     g_disp[2](&c, RTLD + 8);
-    check(g_ctors == 1 && g_dtors == 1 && c.pc == 0x5554, "the third runs each DT_FINI");
+    check(g_ran == 4 && g_order[2] == SDK + 0x4c && g_order[3] == LAST + 0x4c && c.pc == 0x5554,
+          "the third runs each DT_FINI in load order, but the rtld's");
     check(linker_find(NAME, &at) == 1 && at == START && !linker_find("nothing", &at),
           "a name is found where the modules bind it");
+    check(linker_find_after(RTLD + 8, NAME, &at) == 1 && at == START, "past the rtld, at the SDK's definition");
+    check(linker_find_after(SDK + MODULE_BYTES - 4, NAME, &at) == 1 && at == LAST + 0x44,
+          "past the SDK, at the next module's, for a caller in the SDK's last word");
+    at = 0;
+    check(!linker_find_after(LAST + 4, NAME, &at) && !linker_find_after(SDK + MODULE_BYTES, NAME, &at) &&
+              !linker_find_after(RTLD - 4, NAME, &at) && !at,
+          "nowhere past the last module that defines it, nor for a caller no module holds");
 }
 
 int main(int argc, char** argv) {
