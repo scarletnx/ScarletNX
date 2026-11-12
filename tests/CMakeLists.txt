@@ -585,6 +585,17 @@ add_executable(snx-test-gpu-driver-stage gpu_driver_stage.c)
 snx_test_target(snx-test-gpu-driver-stage 11)
 target_link_libraries(snx-test-gpu-driver-stage PRIVATE scarletnx-common)
 add_test(NAME gpu_driver_stage COMMAND snx-test-gpu-driver-stage)
+# the common utilities alone, for the tests every build runs (gui_probe) and the NX ones
+add_library(snx_test_common STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/common.c"
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/game_ini.c"
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/script.c")
+snx_test_target(snx_test_common 99)
+target_link_libraries(snx_test_common PUBLIC snx_libdeflate) # a control.nacp's titles in deflate
+target_link_libraries(snx_test_common PUBLIC scarletnx-platform) # the clocks (snx_seconds)
+if(WIN32)
+    target_link_libraries(snx_test_common PUBLIC advapi32)
+endif()
+
 # Run edenprobe's card and report (gui/probe.c)
 add_executable(snx-test-gui-probe gui_probe.c "${PROJECT_SOURCE_DIR}/src/gui/probe.c")
 snx_test_target(snx-test-gui-probe 99)
@@ -1823,16 +1834,6 @@ if(SNX_TRACY)
         $<TARGET_PROPERTY:Tracy::TracyClient,INTERFACE_COMPILE_DEFINITIONS>)
     target_link_libraries(snx-test-tracy-state PRIVATE scarletnx-common scarletnx-filesystem snx_build_info)
     add_test(NAME tracy_state COMMAND snx-test-tracy-state)
-endif()
-
-add_library(snx_test_common STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/common.c"
-    "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/game_ini.c"
-    "${PROJECT_SOURCE_DIR}/src/common/utilities/script.c")
-snx_test_target(snx_test_common 99)
-target_link_libraries(snx_test_common PUBLIC snx_libdeflate) # a control.nacp's titles in deflate
-target_link_libraries(snx_test_common PUBLIC scarletnx-platform) # the clocks (snx_seconds)
-if(WIN32)
-    target_link_libraries(snx_test_common PUBLIC advapi32)
 endif()
 
 # a collection's programs (common.h's snx_program_index, game_ini.h's hand-over, mods.h's own mods of a program)

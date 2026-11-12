@@ -365,6 +365,50 @@ class ArchitectureTests(unittest.TestCase):
                 (['no test runs a program of the build: the sanitizers would be checked on nothing'], []),
             )
 
+    def test_a_library_of_ours_this_configuration_skips_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            repo = Path(temporary)
+            (repo / 'tests').mkdir()
+            # snx_common_test is defined after a return() some configurations take, snx_kept before it
+            (repo / 'tests/CMakeLists.txt').write_text(
+                'add_library(snx_kept STATIC kept.c)\nreturn()\nadd_library(snx_common_test STATIC common.c)\n',
+                encoding='ascii',
+            )
+            reply = repo / 'build/.cmake/api/v1/reply'
+            reply.mkdir(parents=True)
+
+            def target(name, *libraries):
+                fragments = [{'fragment': library, 'role': 'libraries'} for library in libraries]
+                return {'id': name, 'name': name, 'type': 'EXECUTABLE', 'link': {'commandFragments': fragments}}
+
+            targets = [
+                target('snx-test-probe', '-lsnx_common_test', 'libsnx_kept.a', '-lm'),
+                target('snx-test-other', 'libsnx_kept.a', '-ldl'),
+                {'id': 'snx_kept', 'name': 'snx_kept', 'type': 'STATIC_LIBRARY'},
+            ]
+            documents = {
+                'index-test.json': {'reply': {'codemodel-v2': {'jsonFile': 'model.json'}}},
+                'model.json': {
+                    'configurations': [
+                        {
+                            'targets': [
+                                {'id': t['id'], 'name': t['name'], 'jsonFile': f'{t["id"]}.json'} for t in targets
+                            ]
+                        }
+                    ]
+                },
+            }
+            documents.update({f'{t["id"]}.json': t for t in targets})
+            for name, content in documents.items():
+                (reply / name).write_text(json.dumps(content), encoding='utf-8')
+            self.assertEqual(
+                architecture.check_link_names(repo, repo / 'build'),
+                [
+                    'snx-test-probe links snx_common_test, a library of the project that this configuration does not '
+                    'define (its add_library is skipped here): the link fails on -lsnx_common_test'
+                ],
+            )
+
     def test_sanitizers_of_a_compile_line(self):
         self.assertEqual(
             architecture.sanitizers_of(['-fsanitize=address,undefined -fno-sanitize=vptr']),
