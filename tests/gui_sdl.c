@@ -4412,6 +4412,152 @@ static void dump_addons(App* app, const char* dir) {
     free(cache);
     free(cache_was);
 }
+/* a folder of dumps whose titles the driver has not said yet, in the Dumps library: a game's 3 DLCs, a0.nsp to a2.nsp,
+   made one item once known; 3 games' dumps after them, g00.xci to g02.xci; then 60 3DS games, which make the list
+   scroll and ask the driver nothing. Its path, which the caller frees */
+static char* relist_dumps(App* app, const char* dir, const char* name) {
+    char* dumps = snx_path_join(dir, name);
+    assert(!snx_mkdirs(dumps));
+    for (int k = 0; k < 66; ++k) {
+        char file[32], *path, *text;
+        if (k < 3) {
+            snprintf(file, sizeof file, "a%d.nsp", k);
+            text = snx_format("title=0100ABCD7000100%d\ngame=0100ABCD70000000\nversion=0\n", k + 1);
+        } else if (k < 6) {
+            snprintf(file, sizeof file, "g%02d.xci", k - 3);
+            text = snx_format("title=0100ABCD6%03d0000\ngame=0100ABCD6%03d0000\nversion=\nname=Game %02d\n", k, k, k);
+        } else {
+            snprintf(file, sizeof file, "z%02d.cia", k - 6);
+            text = snx_strdup("fixture");
+        }
+        path = snx_path_join(dumps, file);
+        assert(!snx_write_file(path, text, strlen(text)));
+        free(path);
+        free(text);
+    }
+    folder_keep(app, dumps, GUI_LIBRARY_DUMPS, false);
+    return dumps;
+}
+/* the mouse's left button pressed at pixel x, y of the render, or let go there */
+static void left_button(App* app, int x, int y, bool down) {
+    SDL_Event e = {0};
+    float wx, wy;
+    assert(SDL_RenderCoordinatesToWindow(app->renderer, (float)x + 0.5f, (float)y + 0.5f, &wx, &wy));
+    e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+    e.button.button = SDL_BUTTON_LEFT;
+    e.button.x = wx;
+    e.button.y = wy;
+    event(app, &e);
+}
+/* Games listed again as the driver says what its dumps are (titles_look) while the player scrolls, the game in focus
+   on another row then (the dumps before it one item at the end, the groups' headings put in): View List's rows stay
+   where the wheel took them, and where the thumb held at the track's foot takes them, through the drag and once let
+   go; View Grid's lines stay where its thumb took them, held and let go. The focus on the same game all along */
+static void relist_keeps_scroll(App* app, const char* dir) {
+    char* cache_was = getenv("XDG_CACHE_HOME") ? snx_strdup(getenv("XDG_CACHE_HOME")) : NULL;
+    char *cache = snx_path_join(dir, "relist cache"), *dumps;
+    int text_size = app->menu.text_size, row_h, total, view, k, focus;
+    GuiGamesBoxes g;
+    GuiRect track, thumb;
+    SDL_Event e = {0};
+    float y, max;
+    set_env("XDG_CACHE_HOME", cache);
+    /* View List: the focus on g01.xci, its row shown, then the wheel a screen down, the focus where it was */
+    dumps = relist_dumps(app, dir, "relist list dumps");
+    go_tab(app, GUI_TAB_GAMES);
+    app->games_y = app->games_to = app->games_v = 0;
+    focus = games_row(app, "g01.xci");
+    assert(focus >= 0 && app->dump_icons.count >= 6 && !app->games.set_count);
+    app->pointed = false;
+    app->browser.selected = app->browser.head + (size_t)focus;
+    render(app);
+    games_boxes(app, &g);
+    games_extent(app, &g, &row_h, &total, &view);
+    y = app->games_y;
+    e.type = SDL_EVENT_MOUSE_WHEEL;
+    e.wheel.integer_y = -(view / row_h / 3 + 1); /* past a screen of rows: the focus's row out of sight */
+    event(app, &e);
+    render(app);
+    games_boxes(app, &g);
+    assert(app->games_y == y - (float)(3 * e.wheel.integer_y * row_h) && app->games_y <= games_max(app, &g));
+    assert((float)(g.lists[UI_GAMES_ROWS].focus * (size_t)row_h) < app->games_y);
+    y = app->games_y;
+    dump_icons_pass(&app->dump_icons);
+    pump(app); /* the answers: listed again */
+    for (k = 0; k < 3; ++k) render(app);
+    assert(app->games.set_count == 1 && games_row(app, "g01.xci") != focus);
+    assert(app->browser.selected == app->browser.head + (size_t)games_row(app, "g01.xci") && app->games_y == y);
+    /* the thumb held at the track's foot, Games listed again meanwhile and once it is let go */
+    games_boxes(app, &g);
+    assert(games_bar(app, &g, &track, &thumb));
+    max = games_max(app, &g);
+    left_button(app, track.x + 1, track.y + track.h - 1, true);
+    assert(app->bar_held && app->games_y == max);
+    games_relist(app);
+    for (k = 0; k < 3; ++k) {
+        pump(app);
+        render(app);
+    }
+    assert(app->bar_held && app->games_y == max);
+    mouse_px(app, track.x + 1, track.y + track.h - 1, false);
+    left_button(app, track.x + 1, track.y + track.h - 1, false);
+    render(app);
+    games_relist(app);
+    for (k = 0; k < 3; ++k) render(app);
+    assert(!app->bar_held && app->games_y == max);
+    free(app->folders[--app->folder_count]);
+    assert(!snx_remove_tree(dumps));
+    free(dumps);
+    /* View Grid, big letters (lines past the area): the focus on g01.xci by the keys, its line in the middle; the
+       grid's thumb held at the track's foot, Games listed again as the answers come, and let go */
+    dumps = relist_dumps(app, dir, "relist grid dumps");
+    app->options[GUI_OPTION_VIEW] = 1;
+    app->menu.text_size = 4;
+    go_tab(app, GUI_TAB_MENU);
+    go_tab(app, GUI_TAB_GAMES);
+    assert(games_grid(app) && !app->games.set_count);
+    focus = games_row(app, "g01.xci");
+    app->pointed = false;
+    app->browser.selected = app->browser.head + (size_t)focus + 1;
+    key(app, SDLK_LEFT);
+    render(app);
+    {
+        const GuiBar* bar = bar_of(app, GUI_LIST_GRID);
+        GuiRect bottom;
+        assert(bar && app->browser.selected == app->browser.head + (size_t)focus);
+        bottom = bar->track;
+        left_button(app, bottom.x + 1, bottom.y + bottom.h - 1, true);
+        assert(app->bar_hold == GUI_LIST_GRID + 1);
+        render(app);
+        assert(app->list_y[GUI_LIST_GRID] == app->list_max[GUI_LIST_GRID] && app->list_max[GUI_LIST_GRID] > 0);
+        y = app->list_y[GUI_LIST_GRID];
+        dump_icons_pass(&app->dump_icons);
+        pump(app); /* the answers, while it is held: listed again */
+        for (k = 0; k < 3; ++k) render(app);
+        assert(app->games.set_count == 1 && games_row(app, "g01.xci") != focus);
+        assert(app->bar_hold == GUI_LIST_GRID + 1 && app->list_y[GUI_LIST_GRID] == y);
+        /* the thumb still at the foot: the lines' foot, which the item's lines moved */
+        mouse_px(app, bottom.x + 1, bottom.y + bottom.h - 1, false);
+        render(app);
+        y = app->list_y[GUI_LIST_GRID];
+        assert(y == app->list_max[GUI_LIST_GRID]);
+        left_button(app, bottom.x + 1, bottom.y + bottom.h - 1, false);
+        games_relist(app);
+        for (k = 0; k < 3; ++k) render(app);
+        assert(!app->bar_hold && app->list_y[GUI_LIST_GRID] == y);
+        assert(app->browser.selected == app->browser.head + (size_t)games_row(app, "g01.xci"));
+    }
+    app->options[GUI_OPTION_VIEW] = 0;
+    app->menu.text_size = text_size;
+    free(app->folders[--app->folder_count]);
+    go_tab(app, GUI_TAB_MENU);
+    set_env("XDG_CACHE_HOME", cache_was);
+    assert(!snx_remove_tree(dumps));
+    assert(!snx_path_exists(cache) || !snx_remove_tree(cache)); /* XDG's alone: elsewhere the menu's own folder */
+    free(dumps);
+    free(cache);
+    free(cache_was);
+}
 static bool wait_taken(const char* path) {
     for (int n = 0; n < 2000; ++n) {
         if (snx_is_file(path) && !remove(path)) return true;
@@ -15085,6 +15231,7 @@ int main(int argc, char** argv) {
     }
     compile_first(&app, temporary);
     dump_addons(&app, temporary);
+    relist_keeps_scroll(&app, temporary);
     recompile_queue(&app);
 #ifdef SNX_XDG /* the last of the test: SDL keeps the picker it found from then on */
     pickers_asked(&app, temporary, self);
