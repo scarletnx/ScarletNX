@@ -1521,6 +1521,42 @@ int shader_direct_track_image_handle_pair(const ShFlow* f, u32 index, u32 reg, u
     return direct_joined_handle(f, index, reg, bank, off, bank2, off2, depth);
 }
 
+/* The handles reg can hold at index when its writes there don't agree: each one-word handle that a MOV or LDC reads
+   from a constant buffer into reg, by a write that control can carry to index. One program picks its texture with a
+   predicate (@P0 MOV R30, c[2][0x88]; @!P0 MOV R30, c[2][0x100]), and a path around both keeps a handle that it loaded
+   from memory. The translation binds each candidate and takes the sample of the one whose word equals the register
+   when the instruction runs, so a handle from elsewhere that equals a candidate's is that texture too. A MOV from
+   another register adds that register's candidates where the MOV reads it. The count, or 0 when there are none or
+   more than max. */
+static int handle_candidates(const ShFlow* f, u32 index, u32 reg, u32* banks, u32* offs, int count, int max,
+                             int depth) {
+    if (reg == 255 || depth > 4) return count;
+    for (u32 k = 11; k < index && count >= 0; k++) {
+        const Op* op = IDX_OK(k) ? f->op[k] : NULL;
+        u32 bank, off, bank2, off2;
+        int seen = 0;
+        if (!op || B(f->insn[k], 0, 8) != reg || !shader_writes_reg(f->insn[k], op->id, reg)) continue;
+        if (op->id == O_MOV_R) {
+            if (direct_can_reach(f, k + 1, index) != 0)
+                count = handle_candidates(f, k, B(f->insn[k], 20, 8), banks, offs, count, max, depth + 1);
+            continue;
+        }
+        if (op->id != O_MOV_C && op->id != O_LDC) continue;
+        if (direct_handle_definition(f, k, &bank, &off, &bank2, &off2, 0) != 1) continue;
+        if (direct_can_reach(f, k + 1, index) == 0) continue;
+        for (int c = 0; c < count; c++) seen |= banks[c] == bank && offs[c] == off;
+        if (seen) continue;
+        if (count == max) return -1;
+        banks[count] = bank;
+        offs[count++] = off;
+    }
+    return count;
+}
+int shader_direct_handle_candidates(const ShFlow* f, u32 index, u32 reg, u32* banks, u32* offs, int max) {
+    int count = handle_candidates(f, index, reg, banks, offs, 0, max, 0);
+    return count > 0 ? count : 0;
+}
+
 /* AL2P's predicate (bits 44-46) is a range check no source describes. The NVN compiler gives every AL2P one, P0 to P6
    in turn, and overwrites or leaves them, so a program is translated without it only when nothing can see it: no
    instruction reads the predicate, or every path from the AL2P meets a comparison or AL2P without a guard that writes
