@@ -6,7 +6,7 @@
    keeping its shape (frame_layout). With separate screens each one has its own window and fills it. Nothing of the
    frame passes through the CPU. The frame dumps (the first eight, then each screen's latest about once a second, in
    frame_dir) and the tests' hashes are the one readback: the shader writes those frames' RGBA pixels to a
-   host-visible buffer as well. The 3DS framebuffer is 240x400/320 portrait, one 240-pixel row per screen column from
+   host-visible buffer as well, and a latest dump is written once the GPU is done, without a wait for it. The 3DS framebuffer is 240x400/320 portrait, one 240-pixel row per screen column from
    the left, each row from the bottom of the screen up (libctru's console draws pixel (x, y) at x * 240 + 239 - y);
    the window and the dumps show it that way round. A 3D render scaled by its screen's resolution setting is drawn
    from its render target while the GPU keeps that newer than memory. */
@@ -52,7 +52,14 @@ static struct {
     VkSemaphore acquire[2][SNX_CTR_VK_SLOTS], presented[2][SNX_CTR_VK_SLOTS];
     const char* frame_dir;
     unsigned dumps;
-    uint64_t presents;     /* past the first dumps, two presents (one a screen) of every 120 are kept as the latest */
+    double latest_at[2];   /* past the first dumps, when each screen's latest was last kept (host seconds) */
+    /* a latest dump the GPU has not finished: its recording's serial and its frame, written at a present once that is
+       done, or when the presenter goes. Nothing else reads the readback back meanwhile, and no other dump is taken */
+    struct {
+        bool active;
+        uint64_t serial;
+        unsigned screen, width, height;
+    } pending;
     unsigned bottom_alone; /* bottom screen frames since the window last showed, the top screen showing none */
     uint64_t decoded[2];   /* each screen's frames decoded */
     uint64_t unshown;      /* the shows that found every image of their window on the display */
@@ -231,12 +238,16 @@ bool snx_ctr_present_separate(void) {
     return g_present.up && g_present.separate && g_present.swap[0].swapchain && g_present.swap[1].swapchain;
 }
 
-/* whether this present is one the dumps keep: the first eight frames, then about one a second as
-   frame-<screen>-latest.ppm */
-static bool dump_due(void) {
+/* whether this present is one the dumps keep: the first eight frames, then each screen's about once a second (of the
+   host's time, however fast the game runs) as frame-<screen>-latest.ppm */
+static bool dump_due(unsigned screen) {
     if (!g_present.frame_dir) return false;
     if (g_present.dumps < 8) return true;
-    return g_present.presents++ % 120 < 2;
+    if (g_present.pending.active) return false;
+    double now = snx_seconds();
+    if (g_present.latest_at[screen] > 0 && now - g_present.latest_at[screen] < 1.0) return false;
+    g_present.latest_at[screen] = now;
+    return true;
 }
 /* the readback's frame (framebuffer order, RGBA) as a landscape PPM, a latest one written beside its file and renamed
    over it so a reader never sees half of one */
@@ -258,6 +269,19 @@ static void write_ppm(unsigned screen, unsigned width, unsigned height, const un
         ++g_present.dumps;
     else if (closed)
         (void)plat_replace_file(staged, path);
+}
+/* The pending latest dump written once the GPU has done it: at once when it has (a present looks, without waiting), or
+   waited for (wait) */
+static void write_pending(bool wait) {
+    if (!g_present.pending.active) return;
+    uint64_t serial = g_present.pending.serial;
+    if (!wait && serial >= snx_ctr_vk_serial()) return; /* its recording is still open */
+    if (!snx_ctr_vk_wait(serial, wait ? UINT64_MAX : 0)) {
+        if (wait) g_present.pending.active = false; /* a lost device: the dump goes */
+        return;
+    }
+    g_present.pending.active = false;
+    write_ppm(g_present.pending.screen, g_present.pending.width, g_present.pending.height, g_present.readback_view);
 }
 /* The blit rectangle of a screen in swapchain pixels: in one window the pair scaled to fit and centred, each screen
    centred across the layout; in its own window the screen scaled to fit and centred. False before a layout and a
@@ -480,10 +504,16 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
         frame_free(f);
         if (!frame_make(f, frame_width, frame_height, scale)) return false;
     }
-    bool dump = dump_due(), readback = dump || hash;
+    /* A frame the host reads: a test's hash and the first dumps are waited for, a latest dump is written once the GPU
+       is done with it, at a later present, so the game's thread does not wait for the GPU's queue to drain for it */
+    write_pending(false);
+    if (hash) write_pending(true); /* the readback is about to be written again */
+    bool dump = dump_due(screen), readback = dump || hash;
+    bool latest = dump && g_present.dumps >= 8 && !hash, waited = readback && !latest;
     if (!from_target) snx_ctr_vk_sync(pa, pitch * (height - 1) + width * bytes, false); /* the draws over it stored */
     VkCommandBuffer cb = snx_ctr_vk_commands();
     unsigned slot = snx_ctr_vk_slot(); /* the open recording's, whose semaphores it takes */
+    uint64_t recording = snx_ctr_vk_serial();
     snx_ctr_vk_compute_barrier(cb);    /* after what the GPU wrote to the framebuffer */
     image_barrier(cb, f->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); /* the shader writes all of it */
     f->layout = VK_IMAGE_LAYOUT_GENERAL;
@@ -558,8 +588,8 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     if (show) {
         uint64_t serial =
             snx_ctr_vk_submit_with(g_present.acquire[window_index][slot], g_present.presented[window_index][slot]);
-        ok = !readback || snx_ctr_vk_wait(serial, UINT64_MAX);
-    } else if (readback)
+        ok = !waited || snx_ctr_vk_wait(serial, UINT64_MAX);
+    } else if (waited)
         ok = snx_ctr_vk_finish();
     if (show && ok) {
         VkPresentInfoKHR present = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -573,7 +603,13 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     }
     pump();
     if (!ok) return false;
-    if (readback) {
+    if (latest) {
+        g_present.pending.active = true;
+        g_present.pending.serial = recording;
+        g_present.pending.screen = screen;
+        g_present.pending.width = width;
+        g_present.pending.height = height;
+    } else if (readback) {
         const unsigned char* rgba = g_present.readback_view;
         if (hash) {
             /* not SNX_FNV_BASIS (a digit short of it), kept so the frame hashes stay what they were */
@@ -601,6 +637,7 @@ void snx_ctr_present_report(void) {
 }
 void snx_ctr_present_free(void) {
     if (!g_present.up) return;
+    write_pending(true);
     const SnxCtrVk* v = snx_ctr_vk();
     vkDeviceWaitIdle(v->device);
     for (unsigned screen = 0; screen < 2; ++screen)
