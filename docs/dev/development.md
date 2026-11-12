@@ -290,11 +290,13 @@ wait
 
 The timeline has the frontend tick,
 presents, GPU jobs and idle waits, Vulkan record/land/release/submit/wait/present work, shader translation and
-pipeline creation, texture uploads, the audio and host1x clocks,
+pipeline creation, texture uploads, the landings of the guest memory the GPU owns, the audio and host1x clocks,
 every returning SVC except the waits above (named
 as in `hos.svc`) and every IPC command (the service and command number in the zone's text). Frames appear with the
 `frame ms`, guest memory, GPU memory and budget, per-frame draws, shader translations, pipelines made, texture
-uploads, and the pipeline cache's hits and the time making and waiting for pipelines. Zones that work on a count
+uploads, and the pipeline cache's hits and the time making and waiting for pipelines. The rates of the memory the GPU
+owns (`own traps/s`, `own land MB/s`) go on the frontend tick, beside `guest memory` and the io rates, so a rate is
+read over the same second of wall time as the others. Zones that work on a count
 carry it as their value, such as the command buffers in a submit, the GPU channel of a job, the words of a
 translated shader, the records in a record pass, the bytes of an uploaded texture (with its dimensions in the
 text), the frames an audio tick runs behind its schedule, and the voices an audio frame plays. A translated
@@ -337,6 +339,7 @@ second tool. The cost of each is one atomic load per emission, and each goes out
 | Is the audio behind or clipping? | `audio queued ms`, `audio underruns`, `audio frame ms`, and the `audio voice` zones |
 | What does host1x's worker do? | the `host1x job` zones, with the engine, the class and the syncpoint value |
 | Is the host running out of memory? | `host heap` (the allocator's live bytes), `host rss`, `host free` |
+| How much of a frame does the GPU's hold on guest memory cost, and was a stall a landing? | the `own land` zones (the bytes and the ranges each lands), `own bytes`, `own traps/s`, `own land MB/s` |
 | Is the input and output keeping up? | `io read MB/s`, `io write MB/s`, `guest memory` |
 | Is a frame being dropped or a queue growing? | `submits pending`, `compute pending`, `draws`, `dispatches` |
 
