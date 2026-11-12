@@ -103,6 +103,8 @@ if(BUILD_TESTING)
              -DAPPLE_HOST=$<BOOL:${APPLE}> -P "${PROJECT_SOURCE_DIR}/tests/settings_list.cmake")
     add_test(NAME runtime_unknown_option COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
              -P "${PROJECT_SOURCE_DIR}/tests/unknown_option.cmake")
+    add_test(NAME runtime_tracy_version COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
+             "-DTRACY_VERSION=${SNX_TRACY_VERSION}" -P "${PROJECT_SOURCE_DIR}/tests/tracy_version.cmake")
     add_test(NAME runtime_recompile_settings COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
              -P "${PROJECT_SOURCE_DIR}/tests/recompile_settings.cmake")
     if(NOT WIN32) # Windows' error box would wait for a click

@@ -113,6 +113,8 @@ if(SNX_TRACY)
     list(APPEND platform runtime/platform/tracy_conn.cpp)
 endif()
 snx_component(platform ${platform})
+# the tracy-capture a capture needs (tracy.c), the client's release (cmake/dependencies.cmake)
+target_compile_definitions(snx_platform PRIVATE SNX_TRACY_VERSION="${SNX_TRACY_VERSION}")
 
 snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c gpu/shader/shipped.c
                      gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/structure.c
