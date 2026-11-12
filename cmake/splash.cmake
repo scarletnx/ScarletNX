@@ -95,22 +95,4 @@ include(GNUInstallDirs) # its folders, before the first install of a fresh confi
 install(FILES "${lunasvg_SOURCE_DIR}/LICENSE" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx/lunasvg)
 install(FILES "${plutovg_SOURCE_DIR}/LICENSE" "${plutovg_SOURCE_DIR}/source/FTL.TXT"
         DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx/plutovg)
-if(BUILD_TESTING)
-    add_executable(snx-test-splash "${PROJECT_SOURCE_DIR}/tests/splash.c")
-    target_link_libraries(snx-test-splash PRIVATE snx_splash SDL3::SDL3)
-    # plutovg, built into snx_splash, makes the JPEGs the pictures are drawn from
-    target_include_directories(snx-test-splash SYSTEM PRIVATE "${plutovg_SOURCE_DIR}/include")
-    target_compile_definitions(snx-test-splash PRIVATE PLUTOVG_BUILD_STATIC)
-    target_compile_definitions(snx-test-splash PRIVATE
-                               SNX_SPLASH_ICON="${PROJECT_SOURCE_DIR}/dist/icons/hicolor/256x256/apps/wimsy.png")
-    target_compile_options(snx-test-splash PRIVATE -Wall -Wextra -Werror -UNDEBUG)
-    add_test(NAME splash COMMAND snx-test-splash)
-    set_tests_properties(splash PROPERTIES ENVIRONMENT "SDL_VIDEO_DRIVER=dummy")
-    # an SVG with two <metadata> blocks is refused, not built with its drawing gone. Written only when it changes:
-    # runtime_architecture reconfigures the tree while this test may be reading it
-    file(CONFIGURE OUTPUT "${PROJECT_BINARY_DIR}/splash-two-metadata.svg" @ONLY CONTENT
-         "<svg viewBox=\"0 0 8 8\"><metadata>a</metadata><rect width=\"8\" height=\"8\"/><metadata>b</metadata></svg>\n")
-    add_test(NAME splash_two_metadata COMMAND "${CMAKE_COMMAND}" "-DSVG=${PROJECT_BINARY_DIR}/splash-two-metadata.svg" -P
-             "${PROJECT_SOURCE_DIR}/cmake/splash.cmake")
-    set_tests_properties(splash_two_metadata PROPERTIES PASS_REGULAR_EXPRESSION "2 <metadata> blocks")
-endif()
+include("${PROJECT_SOURCE_DIR}/tests/cmake/splash.cmake") # its tests
