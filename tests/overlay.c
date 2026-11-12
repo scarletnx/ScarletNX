@@ -1433,11 +1433,16 @@ int main(void) {
         assert(shows("SCARLETNX  /  MENU"));
     }
     /* a notification over the game, closed or open, until its time is up */
-    overlay_toast("Saved to slot 2", 1000);
+    overlay_state_saved("slot 2", 0, 1000);
     assert(overlay_toasting(1000) && !overlay_toasting(1000 + (u64)SNX_OVERLAY_TOAST_MS * 1000000u));
     overlay_toggle();
     draw();
     assert(!overlay_shown() && shows("Saved to slot 2"));
+    overlay_state_saved("slot 2", 1, 1000); /* a slot that held a state: said replaced, F7 asking nothing */
+    draw();
+    assert(shows("Saved over slot 2"));
+    overlay_state_saved("slot 2", 0, 1000);
+    draw();
     /* over the game it is its letters and a blank cell at either end, a row from the corner, each backed by the
        layer's ground, the menu's ink, in its page's colour: a band of cells side by side with no fill under them */
     {

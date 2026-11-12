@@ -616,6 +616,11 @@ void overlay_slots_set(const OverlaySlot* given, int n) {
     keep_in_view();
     changed();
 }
+void overlay_state_saved(const char* slot, int over, u64 now_ns) {
+    char text[OVERLAY_COLS_MAX + 1];
+    snprintf(text, sizeof text, "Saved %s %s", over ? "over" : "to", slot);
+    overlay_toast(text, now_ns);
+}
 void overlay_toast(const char* text, u64 now_ns) {
     snprintf(toast, sizeof toast, "%s", text);
     toast_until = now_ns + (u64)SNX_OVERLAY_TOAST_MS * 1000000u;
