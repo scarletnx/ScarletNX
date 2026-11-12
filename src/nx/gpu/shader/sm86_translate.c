@@ -451,8 +451,9 @@ static u32 float_mul(Ctx* c, u32 mode, u32 scale, u32 x, u32 y) {
         /* 2^(scale - 4) is a power of two, exact in a float, so the scale keeps its exactness without a double */
         u32 v = nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, y));
         if (scale != 4) {
-            float factor = (float)(scale - 4 > 0 ? (1u << (scale - 4)) : 1) /
-                           (float)(scale - 4 < 0 ? (1u << (4 - scale)) : 1); /* 2^(scale - 4), scale 1 to 7 */
+            /* 2^(scale - 4), scale 1 to 7. scale is unsigned: below 4, scale - 4 is a number near 2^32, not a
+               negative one, so a .D scale divides by 2^(4 - scale) */
+            float factor = scale > 4 ? (float)(1u << (scale - 4)) : 1.0f / (float)(1u << (4 - scale));
             v = nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, v,
                                               spv_emit_constant_f32(&c->e, c->t_f32, factor)));
         }

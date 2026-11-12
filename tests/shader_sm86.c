@@ -2399,6 +2399,37 @@ static void test_shading_rate(const char* dir) {
     free(spv);
     (void)dir;
 }
+/* FMUL's scale (bits 84-86, 2^(field - 4): nvdisasm's .D4 at 2, .M4 at 6) is part of the product whatever the device
+   rounds in: 3.0 * 2.0 is 1.5 with .D4 and 24.0 with .M4, with doubles and without them */
+static void test_float64_fallback_scale(const char* dir) {
+    static const struct {
+        u32 field;
+        float product;
+        const char* name;
+    } scales[] = {{2, 1.5f, "D4"}, {6, 24.0f, "M4"}};
+    int had = g_shader_float64;
+    for (int f64 = 1; f64 >= 0; f64--)
+        for (size_t i = 0; i < sizeof scales / sizeof *scales; i++) {
+            u8 code[16 * 8] = {0};
+            u32 n = 0, out[4] = {0};
+            put(code, n++, mov_imm(0, 0x40400000u)); /* 3.0 */
+            Word x = alu(0x020, 4, 0, 0);            /* FMUL.<scale> R0, R0, 2.0 */
+            set(&x, 32, 32, 0x40000000u);
+            set(&x, 84, 3, scales[i].field);
+            put(code, n++, x);
+            put(code, n++, exit_insn());
+            put(code, n, bra(n, n, 7, 0));
+            n++;
+            g_shader_float64 = f64;
+            CHECK(run_fs_at(code, n, 0, NULL, 0, out));
+            if (out[0] != f2u(scales[i].product))
+                fprintf(stderr, "FMUL.%s 3.0, 2.0 with g_shader_float64=%d: %#x, not %g (%#x)\n", scales[i].name, f64,
+                        out[0], (double)scales[i].product, f2u(scales[i].product));
+            CHECK(out[0] == f2u(scales[i].product));
+        }
+    g_shader_float64 = had;
+    (void)dir;
+}
 
 /* LDG.E (no uniform) of type 4 (32 bits) or 5 (64 bits) into dst from [addr + imm], and STG.E of data */
 static Word ldg_nou(u32 dst, u32 addr, u32 imm, u32 type) {
@@ -3986,6 +4017,7 @@ int main(int argc, char** argv) {
     test_tex_f16(dir);
     test_output_defaults(dir);
     test_fragment_depth(dir);
+    test_float64_fallback_scale(dir);
     test_flow_operand(dir);
     test_global_pointer(dir);
     test_global_indirect(dir);
