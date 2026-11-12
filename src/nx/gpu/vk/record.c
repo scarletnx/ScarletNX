@@ -162,19 +162,28 @@ static void rec_commit(void) {
     if (g_pending - g_published >= REC_PUBLISH) publish();
 }
 
-void vk_rec_sync(void) {
-    if (g_rec <= 0) return;
+int vk_rec_sync_until(u64 until) {
+    int drained = 1;
+    if (g_rec <= 0) return 1;
     /* The recording thread moves g_tail itself, after the packet it runs returns. A wait from one of its own packets
        would wait for itself: a submit that found the device lost calls fatal(), which releases the window through
        here, and the process then spins at full speed instead of showing the error (record.c's submit_run). Every
        packet before this one is already recorded, and the packet after it is not part of what the caller asks for */
     u32 self = plat_tid();
-    if (__atomic_load_n(&g_rec_tid, __ATOMIC_ACQUIRE) == self) return;
+    if (__atomic_load_n(&g_rec_tid, __ATOMIC_ACQUIRE) == self) return 1;
     vk_lock(); /* no command is added meanwhile */
     publish();
-    while (__atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) != g_pending) plat_yield();
+    while (__atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) != g_pending) {
+        if (until != VK_REC_FOREVER && plat_ns() >= until) {
+            drained = 0;
+            break;
+        }
+        plat_yield();
+    }
     vk_unlock();
+    return drained;
 }
+void vk_rec_sync(void) { (void)vk_rec_sync_until(VK_REC_FOREVER); }
 
 typedef struct {
     void (*fn)(void*);
@@ -209,6 +218,7 @@ void vk_rec_queue(VkQueue q) {
 static PMutex g_gfx_qlock = PMUTEX_INIT, g_compute_qlock = PMUTEX_INIT;
 static PMutex* queue_mutex(VkQueue q) { return q == g_vk.gfx ? &g_gfx_qlock : &g_compute_qlock; }
 void vk_queue_lock(VkQueue q) { pm_lock(queue_mutex(q)); }
+int vk_queue_trylock(VkQueue q) { return pm_trylock(queue_mutex(q)); }
 void vk_queue_unlock(VkQueue q) { pm_unlock(queue_mutex(q)); }
 
 /* ------------------------------------------------------------ beginning and submitting */
