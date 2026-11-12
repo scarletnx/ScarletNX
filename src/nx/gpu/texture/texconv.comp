@@ -10,7 +10,9 @@
    branches on it never diverge, and one pipeline is compiled instead of fifteen (on lavapipe each is an LLVM
    compile) for code that is mostly the same loads and stores. Built a second time with SNX_TC_ETC2, its BCn decoders
    followed by etc2_encode.glsl: BCn blocks encoded again as ETC2 and EAC for a GPU that samples those and not BCn, a
-   pipeline of its own so the encoder's registers don't weigh on the other conversions. */
+   pipeline of its own so the encoder's registers don't weigh on the other conversions. Built a third time with
+   SNX_TC_CONVERT, TC_BLIT_CONVERT alone: an Adreno 610's stock compiler fails to link the plain build with it inside
+   and links each half. */
 
 #include "texconv_modes.glsl"
 

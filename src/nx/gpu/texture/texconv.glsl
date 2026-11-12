@@ -584,7 +584,33 @@ uint tc_index(uint j) {
     return j;
 }
 
-#ifndef SNX_TC_ETC2
+#if defined(SNX_TC_CONVERT)
+/* The conversion build: TC_BLIT_CONVERT alone, a row of the blit's rectangle a word an invocation. A pipeline of its
+   own, as an Adreno 610's stock compiler refuses the plain build with it ("PSEUDOIMUL32 must not be seen here") and
+   links each half */
+void main() {
+    uint u = gl_GlobalInvocationID.x;
+    if (u >= units) return;
+    uint line = gl_GlobalInvocationID.y, at = out_bias + line * out_pitch + u, word = dst[at];
+    uint source = remap & 0x7FFFu, destination = (remap >> 16) & 0x7FFFu;
+    uint sb = GPU_PIXEL_BYTES(source), db = GPU_PIXEL_BYTES(destination);
+    uint row = in_bias + src[const_b + line] * in_pitch;
+    for (uint byte_index = 0u; byte_index < 4u; byte_index++) {
+        uint ob = 4u * u + byte_index;
+        if (ob >= line_out) continue;
+        uint pixel = ob / db, value;
+        if ((remap & GPU_BLIT_LINEAR_BIT) != 0u)
+            value = tc_pixel_linear_byte(pixel, line, source, destination, ob % db);
+        else {
+            uint source_at = row + src[const_a + pixel] * sb;
+            value = tc_pixel_byte(source_at, source, destination, ob % db);
+        }
+        uint shift = byte_index * 8u;
+        word = (word & ~(255u << shift)) | (value << shift);
+    }
+    dst[at] = word;
+}
+#elif !defined(SNX_TC_ETC2)
 void main() {
     uint u = gl_GlobalInvocationID.x;
     if (u >= units) return;
@@ -642,27 +668,6 @@ void main() {
             r |= v << (8u * b);
         }
         dst[at] = r;
-        return;
-    }
-    if (mode == TC_BLIT_CONVERT) {
-        uint line = gl_GlobalInvocationID.y, at = out_bias + line * out_pitch + u, word = dst[at];
-        uint source = remap & 0x7FFFu, destination = (remap >> 16) & 0x7FFFu;
-        uint sb = GPU_PIXEL_BYTES(source), db = GPU_PIXEL_BYTES(destination);
-        uint row = in_bias + src[const_b + line] * in_pitch;
-        for (uint byte_index = 0u; byte_index < 4u; byte_index++) {
-            uint ob = 4u * u + byte_index;
-            if (ob >= line_out) continue;
-            uint pixel = ob / db, value;
-            if ((remap & GPU_BLIT_LINEAR_BIT) != 0u)
-                value = tc_pixel_linear_byte(pixel, line, source, destination, ob % db);
-            else {
-                uint source_at = row + src[const_a + pixel] * sb;
-                value = tc_pixel_byte(source_at, source, destination, ob % db);
-            }
-            uint shift = byte_index * 8u;
-            word = (word & ~(255u << shift)) | (value << shift);
-        }
-        dst[at] = word;
         return;
     }
     if (mode == TC_BLIT_FLOAT) {

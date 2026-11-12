@@ -61,7 +61,9 @@ not pass through the CPU's `bl_land` padding check. No two invocations own one r
 to BC7 blocks where the device lacks `textureCompressionBC` or the `native_bc` setting is 0 (`tests/support/bcn.c` is the
 reference; RGBA8 out, 16 bit channels for BC4 and BC5, RGBA16F for BC6H), and vi's pixel formats. Its ETC2 build
 (`SNX_TC_ETC2`, a pipeline of its own) encodes BCn blocks again as ETC2 and EAC where the device samples those
-([BCn without BCn](bcn.md)). An invocation owns whole output words (a pair of 2 byte texels, a texel, four depth texels whose
+([BCn without BCn](bcn.md)). Its conversion build (`SNX_TC_CONVERT`, a pipeline of its own too) runs the 2D engine's
+blits between pixel formats (`pixel_convert.glsl`): an Adreno 610's stock compiler fails to link the plain build with
+them inside ("PSEUDOIMUL32 must not be seen here") and links each part. An invocation owns whole output words (a pair of 2 byte texels, a texel, four depth texels whose
 stencil bytes make one word, or a block), and output rows are padded to them, so no two invocations write one word.
 The copies into the image take the padding through `bufferRowLength`.
 
@@ -78,7 +80,7 @@ and the direction selects which side is read. A push constant picks the directio
 is all it costs. A second shader, or a specialization constant, would be a second pipeline to compile at startup (on
 lavapipe each pipeline is an LLVM compile) and to keep in the pipeline cache. The conversions follow the same rule:
 a dispatch converts one level of one format, so their branches on the mode never diverge, and one pipeline replaces
-twenty. Both pipelines are made on first use, from SPIR-V the build compiles (`cmake/glsl.cmake`), and kept for the
+twenty. Each pipeline is made on first use, from SPIR-V the build compiles (`cmake/glsl.cmake`), and kept for the
 device's lifetime like the backend's other internal pipelines.
 
 ## Multisampled surfaces

@@ -77,7 +77,8 @@
    vertex's start on, read past its stride into the next vertex as the guest's attributes do. The stream starts at
    byte in_bias of the bound range, which holds every word its const_a bytes touch; bytes past them are 0 */
 #define TC_RESTRIDE 38u
-/* Nearest gather with normalized, packed or floating-point component conversion (pixel_format.h descriptors). */
+/* Nearest gather with normalized, packed or floating-point component conversion (pixel_format.h descriptors). The
+   conversion build's alone (texconv.comp with SNX_TC_CONVERT, a pipeline of its own: vk/texconv.c) */
 #define TC_BLIT_CONVERT 39u
 /* the ETC2 build (texconv.comp with SNX_TC_ETC2, a pipeline of its own: vk/texconv.c): BC1 to BC7 blocks, in TC_BC1 to
    TC_BC7's order from here, decoded and encoded again a block an invocation (etc2_encode.glsl): BC1 as ETC2 RGB8A1,
