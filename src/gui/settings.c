@@ -485,9 +485,8 @@ size_t gui_settings_recompile(GuiSettings* s, int make, const char** argv) {
     for (i = 0; i < s->own; ++i) {
         const char* value = s->values[i].kind ? NULL : picked(s, i);
         const char* key = s->values[i].key;
-        if (!value || !strcmp(key, "gdbstub") || !strcmp(key, "tmpfs") || !strcmp(key, "extract") ||
-            !strcmp(key, "java_home"))
-            continue;
+        /* the launcher's own tables' rows are its own to act on, no recompile's option */
+        if (!value || ini_find(g_launch_ini, key) || ini_find(g_gba_ini, key)) continue;
         snprintf(s->values[i].option, sizeof s->values[i].option, "--%s=%s", key, value);
         argv[n++] = s->values[i].option;
     }

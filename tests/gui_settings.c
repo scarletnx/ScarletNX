@@ -139,6 +139,20 @@ int main(int argc, char** argv) {
            !strcmp(s.keys[opt + 6].key, "LLVM Internals"));
     assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "aot_threads", "") &&
            !gui_settings_recompile(&s, 0, options));
+    /* Settings > GBA's Covers, the launcher's own after Launch's: None by default, Box art (libretro-thumbnails) when
+       picked, an unknown value refused, and never a recompile's option nor a run's */
+    {
+        int covers = at(&s, "gba_covers");
+        assert(covers > opt + 6 && covers < s.own && !strcmp(s.keys[covers].section, "GBA") &&
+               !strcmp(s.keys[covers].key, "Covers") && words(&s.keys[covers]) == 2 &&
+               strstr(s.keys[covers].about, "libretro-thumbnails") &&
+               !strcmp(on_screen(&s, "gba_covers"), "None [default]") && !gui_settings_value(&s, "gba_covers"));
+        assert(!gui_settings_set(&s, "gba_covers", "screenshot") && gui_settings_set(&s, "gba_covers", "boxart") &&
+               !strcmp(gui_settings_value(&s, "gba_covers"), "boxart") &&
+               !strcmp(on_screen(&s, "gba_covers"), "Box art (libretro-thumbnails)"));
+        assert(!gui_settings_recompile(&s, 1, options) && !gui_settings_one(&s, "gba_covers", options));
+        assert(gui_settings_set(&s, "gba_covers", "none") && !gui_settings_value(&s, "gba_covers"));
+    }
     /* a game's setting alone, as a GBA run takes fullscreen: once picked, and never a launcher's own */
     assert(!gui_settings_one(&s, "slp_vectorizer", options) && gui_settings_set(&s, "slp_vectorizer", "1"));
     assert(gui_settings_one(&s, "slp_vectorizer", options) == 1 && !strcmp(options[0], "--slp_vectorizer=1"));

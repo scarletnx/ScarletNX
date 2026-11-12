@@ -107,7 +107,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   [Vita driver](../platforms/vita/README.md) for limits.
 - **Load GBA/MultiBoot ROM** uses `scarletnx-agb`, the AGB board runtime, with the menu's data folder as its
   `--data`, on a `.gba` or a `.mb` (a program the console receives through the link cable): it makes the game's folder
-  of `recompiled/` (named after the ROM's file), its module and its copy of the runtime, and plays it in a window. See [AGB board](../platforms/agb/README.md).
+  of `recompiled/` (named after the ROM's file), its module and its copy of the runtime, and plays it in a window. With
+  Settings > GBA > **Covers** on *Box art (libretro-thumbnails)* (`gba_covers=boxart`, off by default), each make that
+  ends well downloads the game's box into its folder (`icon.png`), which its rows show; a ROM with no box there keeps
+  Wimsy, and its row says why ([Settings](settings.md#gba)). See [AGB board](../platforms/agb/README.md).
 - **Load Android APK/XAPK** uses `scarletnx-android` on an `.apk`, `.xapk` or `.apks` file, with no other argument.
   The driver installs a bundle of split APKs itself. The app runs as it is, as a Linux program does: nothing is
   compiled first, and its recent row shows at once. An APK in a games or dumps folder shows in Games, and Enter runs

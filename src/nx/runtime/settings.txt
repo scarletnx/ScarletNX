@@ -1885,3 +1885,18 @@ setting @InlinerThreshold
     help (LLVMPassBuilderOptionsSetInlinerThreshold)
 
 section Launch: g_launch_ini, g_recompile_ini, g_llvm_ini/LLVM Internals    launcher
+
+# the launcher's own for a GBA game it makes
+table g_gba_ini launcher
+setting GBA covers
+    label Covers
+    key gba_covers
+    text 8
+    default none
+    words none=None|boxart=Box art (libretro-thumbnails)
+    help The picture a GBA game made from a ROM shows in Games. None = Wimsy, as a game with no icon. Box art = its
+    help box from libretro-thumbnails, downloaded as the game is made: the ROM's CRC-32 names the game in
+    help libretro-database's No-Intro list, and the box under that name goes in the game's folder as icon.png. A ROM the
+    help list does not have, or a game with no box there, keeps Wimsy and its row says which name was looked for
+
+section GBA: g_gba_ini    launcher
