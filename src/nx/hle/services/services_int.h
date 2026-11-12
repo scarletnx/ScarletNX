@@ -406,9 +406,12 @@ typedef struct {
     RoNro nro[RO_LIMIT];
     RoNrr nrr[RO_LIMIT];
 } RoState;
+/* the sessions' states and, the last, the runtime's own: what nn::ro answered by the runtime (nn/ro.c) registers and
+   maps, with no session */
+#define RO_STATES (RO_SESSIONS + 1)
 typedef struct {
     u32 owner;   /* the obj of the session that initialized, 0 for none */
-    RoState states[RO_SESSIONS];
+    RoState states[RO_STATES];
     u32 state_next;
 } HleLdr;
 /* ldr's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */

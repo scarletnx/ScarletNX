@@ -47,6 +47,15 @@ void am_display_mode_changed(void);
    program the system started */
 int am_handover_out(SnxNext* next);
 void am_handover_in(int program, const SnxNext* next);
+/* ldr:ro for the runtime's linker, where it answers nn::ro in the SDK's place (nn/ro.c) and the SDK opens no session:
+   what the session's commands of those names do, on a state of the runtime's own, each the command's result.
+   ldr_own_kind: the port the SDK was told to use, ldr:ro (0) or ro:1 (1), whose kind of NRR a registration with a
+   process handle asks for; process NULL: RegisterModuleInfo, else RegisterProcessModuleInfo with that handle */
+void ldr_own_kind(int kind);
+int ldr_own_register(u64 nrr, u64 size, const u32* process);
+int ldr_own_unregister(u64 nrr);
+int ldr_own_load(u64 nro, u64 size, u64 bss, u64 bss_size, u64* address);
+int ldr_own_unload(u64 address);
 /* the functions a save state may hold of each file (nx/runtime/state_fns.h) */
 extern const StateFnTable g_acc_state_fns;    /* acc.c */
 extern const StateFnTable g_am_state_fns;     /* am.c */

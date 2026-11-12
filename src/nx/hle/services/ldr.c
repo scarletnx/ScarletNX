@@ -263,12 +263,50 @@ static void ro_destroy(SvcObj* o) {
     pm_unlock(&g_host.ldr.lock);
 }
 static SvcObj* ro_new(const char* name, int kind) {
-    SvcObj* o = SVCOBJ_NEW_DATA(name, ro_dispatch, g_hle.ldr.states, g_hle.ldr.state_next, "ldr:ro sessions");
+    SvcObj* o = svcobj_new_data(name, ro_dispatch, g_hle.ldr.states, sizeof *g_hle.ldr.states, RO_SESSIONS,
+                                &g_hle.ldr.state_next, "ldr:ro sessions");
     ((RoState*)o->data)->kind = kind;
     o->destroy = ro_destroy;
     return o;
 }
 SvcObj* new_ldr(void) { return ro_new("ldr:ro", 0); }
 SvcObj* new_ro1(void) { return ro_new("ro:1", 1); }
+
+/* the runtime's own state (services.h): no session, no process to name */
+static RoState* ro_own(void) { return &g_hle.ldr.states[RO_SESSIONS]; }
+void ldr_own_kind(int kind) {
+    pm_lock(&g_host.ldr.lock);
+    ro_own()->kind = kind;
+    pm_unlock(&g_host.ldr.lock);
+}
+int ldr_own_register(u64 nrr, u64 size, const u32* process) {
+    int r = process && !ro_process_handle(*process) ? SNX_RC_RO_INVALID_PROCESS : 0;
+    if (r) return r;
+    pm_lock(&g_host.ldr.lock);
+    r = ro_register_nrr(ro_own(), nrr, size, process ? ro_own()->kind : 0);
+    pm_unlock(&g_host.ldr.lock);
+    return r;
+}
+int ldr_own_unregister(u64 nrr) {
+    int r;
+    pm_lock(&g_host.ldr.lock);
+    r = ro_unregister_nrr(ro_own(), nrr);
+    pm_unlock(&g_host.ldr.lock);
+    return r;
+}
+int ldr_own_load(u64 nro, u64 size, u64 bss, u64 bss_size, u64* address) {
+    int r;
+    pm_lock(&g_host.ldr.lock);
+    r = ro_load_nro(ro_own(), nro, size, bss, bss_size, address);
+    pm_unlock(&g_host.ldr.lock);
+    return r;
+}
+int ldr_own_unload(u64 address) {
+    int r;
+    pm_lock(&g_host.ldr.lock);
+    r = ro_unload_nro(ro_own(), address);
+    pm_unlock(&g_host.ldr.lock);
+    return r;
+}
 /* the functions a save state may hold of this file (state_fns.h) */
 STATE_FN_TABLE(g_ldr_state_fns, STATE_FN("ldr", ro_dispatch), STATE_FN("ldr", ro_destroy));
