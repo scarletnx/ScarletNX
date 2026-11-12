@@ -1440,10 +1440,11 @@ static int istorage_read(SvcObj* self, u64 off, u64 sz, u64 a) {
    console before its decoder freed the buffers of its first configuration, and the game stopped at its own
    out-of-memory trap. So a stream, a read of FS_PACE_MAX_BYTES or less that starts where the same thread's last read
    of the same storage ended, takes the time FS_PACE_BYTES_PER_S gives it; a stream's first read, a bigger read (a
-   load) and a read elsewhere take none. That game plays its intro with its pages at 20 MB/s or less and stops in
-   some runs at 25: 15 leaves it room */
+   load) and a read elsewhere take none. The game's decoder lets go of those buffers once the game takes its first
+   picture, which a long frame there delayed by up to 1.2 s at opt 0: 8 MB/s keeps its cache under what fits
+   for 1.8 s */
 #define FS_PACE_MAX_BYTES   0x10000u
-#define FS_PACE_BYTES_PER_S 15000000u
+#define FS_PACE_BYTES_PER_S 8000000u
 /* the ns a read of sz bytes at off of storage waits, for the thread whose last storage read t holds, which it
    becomes */
 static u64 fs_pace_ns(TlsFs* t, const void* storage, u64 off, u64 sz) {
