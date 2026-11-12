@@ -450,9 +450,29 @@ const char* agb_bios_name(uint32_t swi) {
     return NULL;
 }
 
+/* The BIOS reads nothing of its own: a copy or an unpack from below EWRAM, and a decompression from an address with none
+   of bits 25 to 27, do nothing at all, as mGBA's HLE BIOS refuses them (a game's null pointer decompressed nothing) */
+static int source_refused(uint32_t swi, uint32_t source) {
+    switch (swi) {
+        case AGB_SWI_CPU_SET:
+        case AGB_SWI_CPU_FAST_SET:
+        case AGB_SWI_BIT_UNPACK: return source < 0x02000000u;
+        case AGB_SWI_LZ77_UNCOMP_WRAM:
+        case AGB_SWI_LZ77_UNCOMP_VRAM:
+        case AGB_SWI_HUFF_UNCOMP:
+        case AGB_SWI_RL_UNCOMP_WRAM:
+        case AGB_SWI_RL_UNCOMP_VRAM:
+        case AGB_SWI_DIFF_8BIT_UNFILTER_WRAM:
+        case AGB_SWI_DIFF_8BIT_UNFILTER_VRAM:
+        case AGB_SWI_DIFF_16BIT_UNFILTER: return !(source & 0x0E000000u);
+        default: return 0;
+    }
+}
+
 int agb_bios_call(AgbBoard* board, uint32_t swi, uint32_t regs[16]) {
     const char* name = agb_bios_name(swi);
     if (!name) return -1;
+    if (source_refused(swi, regs[0])) return 0;
     switch (swi) {
         case AGB_SWI_REGISTER_RAM_RESET: bios_register_ram_reset(board, regs); break;
         case AGB_SWI_DIV: bios_div(regs, (int32_t)regs[0], (int32_t)regs[1]); break;
