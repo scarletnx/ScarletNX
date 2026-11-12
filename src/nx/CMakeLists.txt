@@ -148,16 +148,16 @@ include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
 # (gpu/vk/pipeline_file.c)
 target_link_libraries(snx_vk PUBLIC snx_xxhash snx_vk_common PRIVATE snx_zstd)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc.comp NAME astc_spv HEADER nx/gpu/texture/astc_spv.h)
-snx_glsl_spirv(snx_vk SOURCE gpu/texture/bc7.comp NAME bc7_spv HEADER nx/gpu/texture/bc7_spv.h)
-# the fast build, every mode only where mode 6 is not close, for large levels, and mode 6 alone for the largest
-# (gpu/vk/astc.c)
-snx_glsl_spirv(snx_vk SOURCE gpu/texture/bc7.comp NAME bc7_fast_spv HEADER nx/gpu/texture/bc7_spv.h
+# ASTC blocks straight into BC7 blocks, for a GPU that samples BC7 and not ASTC (gpu/vk/astc.c), in the encoder's
+# builds: the full one; the fast one, every mode only where mode 6 is not close, for large levels; mode 6 alone for the
+# largest; and mode 6 from its first line alone, a very large level's quick encode until the background's fast build is
+# in the cache
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_spv HEADER nx/gpu/texture/astc_bc7_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_fast_spv HEADER nx/gpu/texture/astc_bc7_spv.h
                DEFINES SNX_BC7_FAST=1)
-snx_glsl_spirv(snx_vk SOURCE gpu/texture/bc7.comp NAME bc7_mode6_spv HEADER nx/gpu/texture/bc7_spv.h
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_mode6_spv HEADER nx/gpu/texture/astc_bc7_spv.h
                DEFINES SNX_BC7_FAST=2)
-# mode 6 from its first line alone: a very large level's quick encode, until the background's fast build is in the
-# cache (gpu/vk/astc.c)
-snx_glsl_spirv(snx_vk SOURCE gpu/texture/bc7.comp NAME bc7_quick_spv HEADER nx/gpu/texture/bc7_spv.h
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_quick_spv HEADER nx/gpu/texture/astc_bc7_spv.h
                DEFINES SNX_BC7_FAST=3)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/blocklinear.comp NAME blocklinear_spv HEADER nx/gpu/texture/blocklinear_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_spv HEADER nx/gpu/texture/texconv_spv.h)

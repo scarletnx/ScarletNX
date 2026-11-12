@@ -969,14 +969,19 @@ typedef struct Surf {
     u8 bc7_hot;
     u32 bc7_wrote;
     /* that BC7 image while it is made (VK_NULL_HANDLE before the encoder starts on it), its memory, and how far the
-       encoder got: level, then slice (a layer, or a 3D level's depth slice) and row of BC7 blocks, from the RGBA8
-       image's texels of write generation wgen. queued: in the encoder's queue */
+       encoder got: level, then slice (a layer, or a 3D level's depth slice) and row of ASTC blocks, from the blocks
+       kept of write generation wgen. queued: in the encoder's queue */
     struct {
         VkImage img;
         VmaAllocation mem;
         u64 bytes;
         u32 level, slice, row, wgen;
         int queued;
+        /* the ASTC blocks the RGBA8 image was decoded from, kept on the GPU while the texture is RGBA8 (astc.c's
+           vk_astc_keep): what the BC7 image is made from, as an upload straight to BC7 makes it */
+        VkBuffer kept;
+        VmaAllocation kept_mem;
+        u64 kept_bytes;
         /* the BC7 cache's key of each level (keyed: a bit a level), from the guest bytes the RGBA8 image was loaded
            from: the encoder's levels are read back into the cache, and a level the cache has is copied from it */
         u32 keyed;
@@ -1324,7 +1329,7 @@ int vk_tc_convert_vi(VkCommandBuffer cb, u32 fmt, u32 w, u32 rows, VkBuffer in, 
                      u64 out_at);
 
 /* astc.c: decode a level of one layer of t, or a region of it, w x h x depth texels at (x, y) of it, into it: x and y
-   on its blocks, and on 4x4 ones for a BC7 image, whose region ends on them too or at the level's edge (bc7.comp
+   on its blocks, and on 4x4 ones for a BC7 image, whose region ends on them too or at the level's edge (astc_bc7.comp
    encodes a block from its own texels, the last one repeated past a strip's edge). The blocks come from rows(ctx, cb,
    z, nz, y, n, &buf, &off): block rows y to y + n (of the region) of slices z to z + nz, tightly packed, 16 bytes a
    block, a slice's after another's, in buf at off (aligned for a storage buffer) once what rows recorded into cb is
@@ -1345,13 +1350,21 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y, u32 w, u32 h, u32 
    work to fill the GPU and each layer's encoder dispatch waits for the one before (docs/layers/gpu/astc.md) */
 int vk_astc_upload_layers(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 level, u32 layer, u32 layers, VkAstcRows rows,
                           void* ctx, const u64* content);
-/* The BC7 blocks of slices z to z + nz of level `level` of src, an RGBA8 image in TRANSFER_SRC_OPTIMAL (w x h texels a
-   slice: its layers, or a 3D level's depth slices with is3d), rows texel rows of them from y, a multiple of 4, encoded
-   into the same place of dst, a BC7 image of its shape in TRANSFER_DST_OPTIMAL. rows ends on a whole block or at the
-   level's edge; nz x rows x w texels fit vk_bc7_strip_texels. d: a 3D level's depth slices, which with w and h pick the
-   encoder's build (vk_bc7_build). 0 when no descriptor set is left */
-int vk_bc7_encode_image(VkCommandBuffer cb, VkImage src, VkImage dst, u32 level, u32 w, u32 h, u32 d, int is3d, u32 z,
-                        u32 nz, u32 y, u32 rows);
+/* The ASTC blocks a texture held as BC7 keeps while its image is RGBA8, for its BC7 image made between frames
+   (texture.c's vk_tex_later_frame): vk_astc_keep gives t the buffer for them (1 when it has one), and from then on
+   vk_astc_upload and vk_astc_upload_layers copy each strip they decode into its place there, a region's too.
+   vk_astc_unkeep lets it go, once what the GPU still does with it is done. vk_astc_kept_bytes: the bytes kept now.
+   vk_bc7_encode_kept: slices z to z + nz of level `level` of t (its layers, or a 3D level's depth slices), ASTC block
+   rows y to y + n of them, from what t keeps straight into BC7 blocks (astc_bc7.comp), copied into the same place of
+   dst, a BC7 image of t's shape in TRANSFER_DST_OPTIMAL: the blocks an upload straight to BC7 makes. y is a multiple
+   of vk_bc7_kept_unit(t), the block rows after which a 4x4 block starts on a block row again (1, 2 or 4), and n too
+   unless the strip ends the level; more than one slice are whole ones; the strip's BC7 blocks are vk_bc7_strip_blocks
+   at most. 0 when no descriptor set is left */
+int vk_astc_keep(Surf* t);
+void vk_astc_unkeep(Surf* t);
+u64 vk_astc_kept_bytes(void);
+u32 vk_bc7_kept_unit(const Surf* t);
+int vk_bc7_encode_kept(VkCommandBuffer cb, Surf* t, VkImage dst, u32 level, u32 z, u32 nz, u32 y, u32 n);
 /* A level of ASTC encoded again as BC7 with VK_BC7_FAST_TEXELS texels or more takes the encoder's fast build, which
    keeps mode 6 where it is close and tries every mode on the other blocks, and one of VK_BC7_MODE6_TEXELS or more its
    build of mode 6 alone (bc7_encode.glsl's SNX_BC7_FAST). vk_bc7_build: the build for a level of w x h texels and d
@@ -1389,7 +1402,7 @@ int vk_bc7_cache_read(const u64 key[2], u8* dst, u64 size);
 void vk_bc7_cache_put(const u64 key[2], const u8* p, u64 size);
 /* hits, records stored, times it started over at its bound, and the file's bytes */
 void vk_bc7_cache_stats(u64* hits, u64* stored, u64* restarts, u64* bytes);
-u64 vk_bc7_strip_texels(void); /* the texels vk_bc7_encode_image takes at once at most */
+u64 vk_bc7_strip_blocks(void); /* the BC7 blocks vk_bc7_encode_kept makes at once at most */
 /* the image levels (or regions of them) uploaded as BC7 so far, the levels the BC7 cache gave (here or between frames),
    their bytes, and the bytes they would have taken as RGBA8 */
 void vk_astc_stats(u64* levels, u64* hits, u64* bytes, u64* rgba8_bytes);
@@ -2300,7 +2313,7 @@ int vk_gpuprof_profiled(VkCommandBuffer cb); /* cb is one of the command buffers
 enum {
     VK_PROF_NONE,
     VK_PROF_ASTC,            /* the ASTC decode (astc.comp) */
-    VK_PROF_BC7,             /* its BC7 encode (bc7.comp) */
+    VK_PROF_BC7,             /* ASTC blocks made BC7 blocks (astc_bc7.comp) */
     VK_PROF_BC7_BACKGROUND,  /* a very large level's decode and fast build in the background (astc.c) */
     VK_PROF_MIRROR_FOLD,     /* a dispatch's write log into the GPU mirror's mask (mirror_fold.comp) */
     VK_PROF_MIRROR_HARVEST,  /* the mirror's pages written in a submit, out for landing (mirror_harvest.comp) */

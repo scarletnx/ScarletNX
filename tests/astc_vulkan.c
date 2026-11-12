@@ -631,7 +631,7 @@ static int upload_wait_case(int retire) {
             vk_finish();
         }
     }
-    if (g_texture_pipelines.count != 2 || !g_texture_pipelines.ns)
+    if (g_texture_pipelines.count != 1 || !g_texture_pipelines.ns) /* astc_bc7.comp's, made once */
         fatal("BC7 upload wait: internal pipeline counters missed creation or counted a reused pipeline\n");
     if (!retire && (source.calls < 2 || !source.changes || vk_submit_number() <= source.first_submit))
         fatal("BC7 upload wait: no continuation across a submission (%u calls, %u changes)\n",
@@ -733,9 +733,10 @@ static void run_region(u32 bw, u32 bh, int bc7, u32 w, u32 h, u32 rx, u32 ry, u3
     fflush(stdout);
 }
 
-/* --bench [file.astc]: one w x h level of ASTC blocks uploaded into an RGBA8 image and into a BC7 one, as texture.c
+/* --bench [WxH | file.astc]: one w x h level of ASTC blocks uploaded into an RGBA8 image and into a BC7 one, as texture.c
    does for Exact and BC7, each runs times: the time from the upload's start to the GPU's end of it, the texels and the
-   BC7 blocks a second. The blocks are random 8x8 ones, or a file's (astcenc's .astc) repeated over the level: random
+   BC7 blocks a second. The blocks are random ones, 8x8 or of the footprint given, or a file's (astcenc's .astc)
+   repeated over the level: random
    blocks have every block mode, many partitions and HDR errors, where a game's textures are mostly void extents and
    one partition, and the encoder's time depends on what it encodes */
 typedef struct {
@@ -743,7 +744,7 @@ typedef struct {
     u32 bw, bh;       /* the footprint */
 } BenchSource;
 static u8* bench_blocks(BenchSource* src, u32 w, u32 h) {
-    if (!src->name) return blocks_new(w, h, 1, src->bw = 8, src->bh = 8);
+    if (!src->name) return blocks_new(w, h, 1, src->bw, src->bh);
     FILE* f = fopen(src->name, "rb");
     u8 hdr[16];
     if (!f || fread(hdr, 1, 16, f) != 16) fatal("cannot read the header of %s\n", src->name);
@@ -1825,7 +1826,11 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--large")) large = 1;
         else if (!strcmp(argv[i], "--bench")) {
             large = 2;
-            if (i + 1 < argc && argv[i + 1][0] != '-') bench_src.name = argv[++i];
+            /* --bench WxH: random blocks of that footprint */
+            if (i + 1 < argc && sscanf(argv[i + 1], "%ux%u", &bench_src.bw, &bench_src.bh) == 2)
+                i++;
+            else if (i + 1 < argc && argv[i + 1][0] != '-')
+                bench_src.name = argv[++i];
         } else if (!strcmp(argv[i], "--upload-wait"))
             upload_wait = 1;
         else if (!strcmp(argv[i], "--upload-retire"))
