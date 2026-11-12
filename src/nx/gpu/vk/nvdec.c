@@ -182,7 +182,9 @@ static int nvdec_write(const NvdecPic* p, HwPic* hp) {
         /* the picture's rows over the surfaces' (pitch linear: straight into the surfaces) */
         int pl = p->pitch_linear;
         vk_copy_rows(cb, rows, at_rows, w, pl ? ry->buf : scratch, 0, ly, w, h);
-        vk_copy_rows(cb, pl ? rows : scratch, at_crows, crow_pitch, pl ? rc->buf : scratch, pl ? 0 : at_c, lc, cw, ch);
+        /* a media engine picture's chroma is staged as rows (semi), the interleaved one is scratch's */
+        vk_copy_rows(cb, p->semi ? rows : scratch, at_crows, crow_pitch, pl ? rc->buf : scratch, pl ? 0 : at_c, lc, cw,
+                     ch);
         vk_all_barrier(cb);
         if (!pl)
             ok = vk_bl_move(cb, &my, 1, ry->buf, 0, scratch, 0) && vk_bl_move(cb, &mc, 1, rc->buf, 0, scratch, at_c);
