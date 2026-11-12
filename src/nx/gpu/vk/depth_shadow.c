@@ -10,7 +10,7 @@
 
 static struct {
     VkBuffer buffer;
-    VmaAllocation memory;
+    DevMem memory;
     u64 bytes;
     Surf *active, *reserved;
     u64 reserved_bytes;
@@ -33,10 +33,10 @@ static int shadow_buffer(u64 bytes) {
     if (g_depth_shadow.buffer && g_depth_shadow.bytes >= bytes) return 1;
     VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = bytes,
         .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
-    VmaAllocationCreateInfo memory_info = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    DevMemWant memory_info = {.at = DM_DEVICE};
     VkBuffer buffer = VK_NULL_HANDLE;
-    VmaAllocation memory = VK_NULL_HANDLE;
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &info, &memory_info, &buffer, &memory, NULL))) return 0;
+    DevMem memory = 0;
+    if (!VK_OK(vk_buffer_create(&info, &memory_info, &buffer, &memory, NULL))) return 0;
     vk_mem_track(memory, VK_OWN_MISC);
     if (g_depth_shadow.buffer) vk_defer_buffer(g_depth_shadow.buffer, g_depth_shadow.memory);
     g_depth_shadow.buffer = buffer;
@@ -242,10 +242,10 @@ void vk_depth_shadow_cancel(void) {
 void vk_depth_shadow_destroy(void) {
     if (g_depth_shadow.buffer) {
         vk_mem_untrack(g_depth_shadow.memory);
-        vmaDestroyBuffer(g_vk.vma, g_depth_shadow.buffer, g_depth_shadow.memory);
+        vk_devmem_buffer_destroy(g_depth_shadow.buffer, g_depth_shadow.memory);
     }
     g_depth_shadow.buffer = VK_NULL_HANDLE;
-    g_depth_shadow.memory = VK_NULL_HANDLE;
+    g_depth_shadow.memory = 0;
     g_depth_shadow.bytes = 0;
     g_depth_shadow.active = NULL;
     g_depth_shadow.reserved = NULL;

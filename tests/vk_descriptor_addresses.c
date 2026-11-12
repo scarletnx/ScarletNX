@@ -18,25 +18,21 @@ typedef int64_t i64;
 #define VK_FRAMES                                              2
 #define SNX_VKB_END                                            64
 #define VK_OK(result)                                          ((result) == VK_SUCCESS)
-#define VMA_ALLOCATION_CREATE_MAPPED_BIT                       1
-#define VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT 2
-#define VMA_MEMORY_USAGE_AUTO_PREFER_HOST                      0
-typedef void* VmaAllocator;
-typedef void* VmaAllocation;
+#define DM_HOST                                                1
+typedef u32 DevMem;
 typedef struct {
-    u32 flags;
-    int usage;
-    VkMemoryPropertyFlags requiredFlags;
-} VmaAllocationCreateInfo;
+    u32 at;
+    VkMemoryPropertyFlags need;
+    unsigned char mapped;
+} DevMemWant;
 typedef struct {
-    void* pMappedData;
-} VmaAllocationInfo;
+    void* ptr;
+} DevMemInfo;
 static struct {
     int has_descriptor_buffers, has_descriptor_heap_support, has_descriptor_heaps;
     VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_props;
     VkPhysicalDeviceFeatures feat;
     VkDevice dev;
-    VmaAllocator vma;
     u64 alloc_cap;
 } g_vk;
 static struct {
@@ -46,9 +42,8 @@ static struct {
     VkDeviceSize range[128];
     VkFormat format[128];
 } g_test;
-VkResult vmaCreateBuffer(VmaAllocator, const VkBufferCreateInfo*, const VmaAllocationCreateInfo*, VkBuffer*,
-                         VmaAllocation*, VmaAllocationInfo*);
-void vk_mem_track(VmaAllocation, u32);
+VkResult vk_devmem_buffer(const VkBufferCreateInfo*, const DevMemWant*, VkBuffer*, DevMem*, DevMemInfo*);
+void vk_mem_track(DevMem, u32);
 VkCommandBuffer vk_cmd(void);
 u32 vk_frame_slot(void);
 u64 vk_frame_id(void);
@@ -96,9 +91,8 @@ void vk_descriptor_heaps_get_stats(VkDescriptorHeapStats* stats) {
     (void)stats;
     abort();
 }
-VkResult vmaCreateBuffer(VmaAllocator a, const VkBufferCreateInfo* b, const VmaAllocationCreateInfo* c, VkBuffer* d,
-                         VmaAllocation* e, VmaAllocationInfo* f) {
-    (void)a;
+VkResult vk_devmem_buffer(const VkBufferCreateInfo* b, const DevMemWant* c, VkBuffer* d, DevMem* e,
+                          DevMemInfo* f) {
     (void)b;
     (void)c;
     (void)d;
@@ -106,7 +100,7 @@ VkResult vmaCreateBuffer(VmaAllocator a, const VkBufferCreateInfo* b, const VmaA
     (void)f;
     abort();
 }
-void vk_mem_track(VmaAllocation a, u32 owner) {
+void vk_mem_track(DevMem a, u32 owner) {
     (void)a, (void)owner;
     abort();
 }

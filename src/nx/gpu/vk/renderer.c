@@ -396,8 +396,8 @@ static Surf* cpu_frame(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bh
                                 .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                          VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-        VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &g_cpu_img->img, &g_cpu_img->mem, NULL))) {
+        DevMemWant aci = {.at = DM_DEVICE};
+        if (!VK_OK(vk_devmem_image(&ii, &aci, &g_cpu_img->img, &g_cpu_img->mem))) {
             free(g_cpu_img);
             g_cpu_img = NULL;
             return NULL;
@@ -851,21 +851,21 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             }
             {
                 /* each memory heap's use and the driver's budget for it (VK_EXT_memory_budget), and our own memory in
-                   it (VMA's blocks): past the budget the driver moves memory, and the heap the CPU maps (the BAR window)
+                   it (devmem.c's blocks): past the budget the driver moves memory, and the heap the CPU maps (the BAR window)
                    is the one to watch. NVIDIA counts the whole system's use of the window as ours, and budgets what
                    is left of it (cmd.c bar_room) */
-                VmaBudget b[VK_MAX_MEMORY_HEAPS];
+                DevMemBudget b[VK_MAX_MEMORY_HEAPS];
                 const VkPhysicalDeviceMemoryProperties* mp;
                 char line[256];
                 size_t at = 0;
-                vmaGetHeapBudgets(g_vk.vma, b);
-                vmaGetMemoryProperties(g_vk.vma, &mp);
+                vk_devmem_budgets(b);
+                mp = vk_devmem_props();
                 for (u32 q = 0; q < mp->memoryHeapCount && at < sizeof line; q++)
                     at += (size_t)snprintf(
                         line + at, sizeof line - at, "%s heap %u %llu of %llu MB (%llu ours, %llu of it allocated)",
                         q ? "," : "", q, (unsigned long long)(b[q].usage >> 20),
-                        (unsigned long long)(b[q].budget >> 20), (unsigned long long)(b[q].statistics.blockBytes >> 20),
-                        (unsigned long long)(b[q].statistics.allocationBytes >> 20));
+                        (unsigned long long)(b[q].budget >> 20), (unsigned long long)(b[q].block_bytes >> 20),
+                        (unsigned long long)(b[q].allocated_bytes >> 20));
                 LOG("vulkan: memory used and budgeted:%s\n", line);
             }
             vk_ledger_log();
@@ -1062,16 +1062,16 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
                             .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    DevMemWant aci = {.at = DM_DEVICE};
     VkImage tmp;
-    VmaAllocation tmem;
-    if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &tmp, &tmem, NULL))) return NULL;
+    DevMem tmem;
+    if (!VK_OK(vk_devmem_image(&ii, &aci, &tmp, &tmem))) return NULL;
     vk_mem_track(tmem, VK_OWN_IMAGE_OTHER);
     VkBuffer buf;
     u8* p = vk_readback_buffer((u64)dw * dh * 4, &buf);
     if (!p) {
         vk_mem_untrack(tmem);
-        vmaDestroyImage(g_vk.vma, tmp, tmem);
+        vk_devmem_image_destroy(tmp, tmem);
         return NULL;
     }
     vk_render_end(); /* the blit, the copy and their barriers can't be recorded inside a rendering pass */
@@ -1115,7 +1115,7 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
     vk_finish();
     vk_readback_ready();
     vk_mem_untrack(tmem);
-    vmaDestroyImage(g_vk.vma, tmp, tmem);
+    vk_devmem_image_destroy(tmp, tmem);
     return p;
 }
 /* the frame's picture on the trace's timeline (tracy_frame_images' seconds): a readback of what was just

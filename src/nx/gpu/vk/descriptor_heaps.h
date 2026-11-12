@@ -293,7 +293,7 @@ static inline const char* vk_descriptor_heap_missing(int extension, int feature,
                         : NULL;
 }
 
-/* Called after VMA and the extension entry points exist. A failure logs what failed and the backend the device
+/* Called after devmem.c is set up and the extension entry points exist. A failure logs what failed and the backend the device
    keeps (buffers or sets), and leaves those backends available. */
 int vk_descriptor_heaps_init(const VkPhysicalDeviceDescriptorHeapPropertiesEXT* props);
 /* The device is idle before destruction; the dedicated transition set remains immutable until then. */
@@ -322,7 +322,7 @@ typedef struct {
 } VkDescriptorHeapStats;
 /* Counters are monotonic. Requests/payload include every logical element. On successful runs, requests equal
    lookups+replicas; sampler hits may overlap driver calls when byte interning follows native encoding.
-   Memory values describe physical VMA allocations, reserved ranges and CPU cache storage. */
+   Memory values describe physical allocations of device memory, reserved ranges and CPU cache storage. */
 void vk_descriptor_heaps_get_stats(VkDescriptorHeapStats* stats);
 
 /* Any legacy descriptor or push command invalidates heap state across both bind points. */

@@ -488,7 +488,7 @@ Surf* vk_rt_find(u64 gva) {
     return NULL;
 }
 
-VkImage vk_unscaled_image(const Surf* s, u32 layers, VmaAllocation* mem) {
+VkImage vk_unscaled_image(const Surf* s, u32 layers, DevMem* mem) {
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
                             .format = s->f.vk,
@@ -597,7 +597,7 @@ static int rt_load_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 off, u32 
                                .bufferRowLength = pitch / s->f.bpp,
                                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
                                .imageExtent = {s->w, s->h, 1}};
-        VmaAllocation tm;
+        DevMem tm;
         VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : vk_unscaled_image(s, 1, &tm);
         if (!t)
             rec_CmdCopyBufferToImage(cb, buf, s->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
@@ -871,7 +871,7 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
                                .imageSubresource = {flush_aspect(s), 0, layer, 1},
                                .imageOffset = {0, (i32)part->y, 0},
                                .imageExtent = {s->w, part->rows, depth}};
-        VmaAllocation tm;
+        DevMem tm;
         VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : vk_unscaled_image(s, 1, &tm);
         if (!t)
             rec_CmdCopyImageToBuffer(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);
@@ -2134,8 +2134,8 @@ static void surf_free(Surf* s) {
         }
         pend_add_va(&g_drawn_pages, s->drawn_from, 1, -1);
     }
-    for (int i = 0; i < s->nsv; i++) vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, s->sv[i].v, VK_NULL_HANDLE);
-    if (s->present) vk_defer_image(VK_NULL_HANDLE, NULL, s->present, VK_NULL_HANDLE);
+    for (int i = 0; i < s->nsv; i++) vk_defer_image(VK_NULL_HANDLE, 0, s->sv[i].v, VK_NULL_HANDLE);
+    if (s->present) vk_defer_image(VK_NULL_HANDLE, 0, s->present, VK_NULL_HANDLE);
     vk_defer_image(s->img, s->mem, s->att, s->att_linear);
     free(s);
 }
@@ -2361,7 +2361,7 @@ void vk_surf_bytes(Surf* s, u64 bytes) {
     s->bytes = bytes;
 }
 
-int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u32 owner, u64* bytes) {
+int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes) {
     VkDeviceImageMemoryRequirements q = {.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
                                          .pCreateInfo = ii};
     VkMemoryRequirements2 req = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
@@ -2373,10 +2373,10 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
     *bytes = req.memoryRequirements.size;
     SNX_ZONE_VALUE(z, *bytes);
     *img = VK_NULL_HANDLE;
-    *mem = VK_NULL_HANDLE;
+    *mem = 0;
     /* more than the whole heap: never made, and the caches aren't emptied for it (a header's garbage size) */
     const VkPhysicalDeviceMemoryProperties* mp;
-    vmaGetMemoryProperties(g_vk.vma, &mp);
+    mp = vk_devmem_props();
     u64 heap = mp->memoryHeaps[vk_mem_heap()].size;
     if (*bytes > heap) {
         LOG_LIMIT(4, "vulkan: a %ux%ux%u image of %u layers takes %llu MB, more than the GPU's %llu MB (not made)\n",
@@ -2555,7 +2555,7 @@ static int resolve_depth(Surf* st, const Surf2D* d, int dx, int dy, int dw, int 
     vk_rt_note_read(st);
     if (st->layout == VK_IMAGE_LAYOUT_UNDEFINED) return 0;
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_DEPTH_BIT | (st->f.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
-    VmaAllocation tm;
+    DevMem tm;
     VkImage tmp;
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
@@ -2711,7 +2711,7 @@ static int blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int 
     } else {
         VkImage src = st->img;
         if (st->msaa || crop) { /* Resolve samples, or isolate logical texels from render-target row padding. */
-            VmaAllocation tm;
+            DevMem tm;
             VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                                     .imageType = VK_IMAGE_TYPE_2D,
                                     .format = st->f.vk,

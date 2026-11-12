@@ -19,19 +19,17 @@ static int bench_descriptor_pattern(u32 sets, u32 count, u32 images, u32 indexed
     /* A frame-owned staging range would retire while later benchmark operations still reference it. This buffer
        owns its allocation for the complete batch, including all measured frame transitions. */
     VkBuffer buffer;
-    VmaAllocation memory;
+    DevMem memory;
     VkBufferCreateInfo buffer_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = staged_bytes,
         .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo allocation_info = {.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
-            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-        .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
-    VmaAllocationInfo allocation;
-    CHECK(vk_buffer_create(g_vk.vma, &buffer_info, &allocation_info, &buffer, &memory, &allocation) == VK_SUCCESS);
+    DevMemWant allocation_info = {.at = DM_HOST, .mapped = 1,
+        .need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
+    DevMemInfo allocation;
+    CHECK(vk_buffer_create(&buffer_info, &allocation_info, &buffer, &memory, &allocation) == VK_SUCCESS);
     vk_mem_track(memory, VK_OWN_MISC);
-    CHECK(allocation.pMappedData);
-    memset(allocation.pMappedData, 0, (size_t)staged_bytes);
+    CHECK(allocation.ptr);
+    memset(allocation.ptr, 0, (size_t)staged_bytes);
     VkSampler samplers[SNX_TEX_ARRAY] = {0};
     u32 sampler_count = indexed ? indexed : images ? 1 : 0;
     VkDescriptorImageInfo image = {0}, array[SNX_TEX_ARRAY];
@@ -123,7 +121,7 @@ static int bench_descriptor_pattern(u32 sets, u32 count, u32 images, u32 indexed
     u32 median = order[1];
     for (u32 i = 0; i < sampler_count; i++) vk_sampler_destroy(g_vk.dev, samplers[i], NULL);
     vk_mem_untrack(memory);
-    vmaDestroyBuffer(g_vk.vma, buffer, memory);
+    vk_devmem_buffer_destroy(buffer, memory);
     if (!unique && !indexed)
         printf("DESCRIPTOR_BENCH {\"sets\":%u,\"descriptors\":%u,\"images\":%u,\"elapsed_ns\":%llu,\"vk_descriptors\":%u,\"vk_descriptor_heaps\":%u,\"vk_record\":%u}\n",
                sets, count, images, (unsigned long long)elapsed[median], (u32)g_vk.has_descriptor_buffers,

@@ -475,7 +475,7 @@ void vk_uma_gpu_reads(int on) { (void)on; }
 int vk_uma_copy_pending(u64 cpu, u64 len, VkBuffer* buf, u64* off) {
     return (void)cpu, (void)len, (void)buf, (void)off, 0;
 }
-void vk_defer_image(VkImage img, VmaAllocation a, VkImageView v1, VkImageView v2) {
+void vk_defer_image(VkImage img, DevMem a, VkImageView v1, VkImageView v2) {
     (void)img, (void)a, (void)v1, (void)v2;
 }
 static u64 g_hashes;                   /* vk_hash's calls */
@@ -548,7 +548,7 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
     return (VkFmt){0};
 }
 VkFmt vk_tic_format_3d(u32 w0, int srgb) { return vk_tic_format(w0, srgb); }
-VkImage vk_unscaled_image(const Surf* s, u32 layers, VmaAllocation* mem) {
+VkImage vk_unscaled_image(const Surf* s, u32 layers, DevMem* mem) {
     (void)s, (void)layers, (void)mem;
     return VK_NULL_HANDLE;
 }
@@ -635,12 +635,11 @@ void vk_all_barrier(VkCommandBuffer cb) {
     (void)cb;
     all_bars++;
 }
-VkResult vmaCreateImage(VmaAllocator a, const VkImageCreateInfo* ii, const VmaAllocationCreateInfo* ai, VkImage* img,
-                        VmaAllocation* mem, VmaAllocationInfo* info) {
-    (void)a, (void)ii, (void)ai, (void)img, (void)mem, (void)info;
+VkResult vk_devmem_image(const VkImageCreateInfo* ii, const DevMemWant* ai, VkImage* img, DevMem* mem) {
+    (void)ii, (void)ai, (void)img, (void)mem;
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 }
-int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u32 owner, u64* bytes) {
+int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes) {
     (void)ii, (void)img, (void)mem, (void)owner, (void)bytes;
     return 0;
 }

@@ -32,7 +32,7 @@ static struct {
     VkCommandBuffer cb;
     VkFence fence;
     VkBuffer back;
-    VmaAllocation mem;
+    DevMem mem;
     u8* ptr;
     u64 cap;
     u64 serial; /* the last VkOwnRes.serial given */
@@ -70,19 +70,19 @@ static void land_sharing(VkBufferCreateInfo* bi, u32 fam[2]) {
 #define OWN_LAND_MAX 16  /* results landed at one present */
 typedef struct {
     VkBuffer buf;
-    VmaAllocation mem;
+    DevMem mem;
     u64 cap; /* the buffer's bytes, at least the resource's */
     u32 put; /* the present it came back at: one no result took for OWN_IDLE presents goes (vk_own_trim) */
 } OwnPoolEntry;
 static OwnPoolEntry g_pool[OWN_POOL_MAX];
 static u32 g_pool_n;
 static PMutex g_pool_lk = PMUTEX_INIT;
-static void own_pool_put_locked(VkBuffer buf, VmaAllocation mem, u64 cap) {
+static void own_pool_put_locked(VkBuffer buf, DevMem mem, u64 cap) {
     if (g_pool_n < OWN_POOL_MAX)
         g_pool[g_pool_n++] = (OwnPoolEntry){buf, mem, cap, g_vk_present};
     else { /* the pool is full: free it, as it was before the pool */
         vk_mem_untrack(mem);
-        vmaDestroyBuffer(g_vk.vma, buf, mem);
+        vk_devmem_buffer_destroy(buf, mem);
     }
 }
 static void own_pool_return(void* arg) {
@@ -163,7 +163,7 @@ void vk_own_trim(void) {
             continue;
         }
         vk_mem_untrack(g_pool[i].mem);
-        vmaDestroyBuffer(g_vk.vma, g_pool[i].buf, g_pool[i].mem); /* free: nothing uses a pooled buffer */
+        vk_devmem_buffer_destroy(g_pool[i].buf, g_pool[i].mem); /* free: nothing uses a pooled buffer */
         g_pool[i] = g_pool[--g_pool_n];
         g_owned.trim_pooled++;
     }
@@ -228,9 +228,9 @@ VkOwnRes* vk_own_res_new(u64 size, u32 by) {
                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                           (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
                                  .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        DevMemWant ai = {.at = DM_DEVICE};
         land_sharing(&bi, fam);
-        if (size > g_vk.alloc_cap || !VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &r->buf, &r->mem, NULL))) {
+        if (size > g_vk.alloc_cap || !VK_OK(vk_buffer_create(&bi, &ai, &r->buf, &r->mem, NULL))) {
             free(r);
             return NULL;
         }
@@ -350,21 +350,19 @@ static void land_prepare(u64 size) {
     if (size > cap) fatal("vulkan: ownership readback exceeds its allocation limit");
     if (g_owned.back) {
         vk_mem_untrack(g_owned.mem);
-        vmaDestroyBuffer(g_vk.vma, g_owned.back, g_owned.mem);
+        vk_devmem_buffer_destroy(g_owned.back, g_owned.mem);
     }
     u32 fam[2];
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = cap,
                              .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     land_sharing(&bi, fam);
-    VmaAllocationCreateInfo ai = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
-                                           VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                  .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
-    VmaAllocationInfo info;
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_owned.back, &g_owned.mem, &info)))
+    DevMemWant ai = {.at = DM_CACHED, .mapped = 1};
+    DevMemInfo info;
+    if (!VK_OK(vk_buffer_create(&bi, &ai, &g_owned.back, &g_owned.mem, &info)))
         fatal("vulkan: no host memory for ownership readback");
     vk_mem_track(g_owned.mem, VK_OWN_OWNED);
-    g_owned.ptr = info.pMappedData;
+    g_owned.ptr = info.ptr;
     g_owned.cap = cap;
 }
 
@@ -457,7 +455,7 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
         if (!ok) { /* a GPU fault (Xid 109's CTX SWITCH TIMEOUT, say): name the draw that hung, from its checkpoints */
             vk_checkpoint_dump("device lost");
         }
-        if (!ok || !VK_OK(vmaInvalidateAllocation(g_vk.vma, g_owned.mem, 0, total)))
+        if (!ok || !VK_OK(vk_devmem_invalidate(g_owned.mem, 0, total)))
             fatal("vulkan: could not complete ownership readback");
         for (j = 0; j < np; j++) memcpy(pc[j].dst, g_owned.ptr + pc[j].at, pc[j].size);
     }

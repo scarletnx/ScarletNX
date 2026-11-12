@@ -22,7 +22,7 @@
 
 struct VkWriteLog {
     VkBuffer buf;
-    VmaAllocation mem;
+    DevMem mem;
     u32* w;
     u32 parts, refs; /* parts: its global buffers' masks, SH_WLOG_PART words each */
     int gpu;         /* in the GPU's memory, unmapped: only the GPU reads it, and clears it (vk_wlog_clear) */
@@ -70,12 +70,10 @@ static VkWriteLog* log_get(u32 parts, int gpu) {
                                   .pQueueFamilyIndices = fam};
         /* host memory, cached where it can be: the CPU reads the flags of every part and the masks of the windows
            written, and writes zeros over them. Or the GPU's, which only the GPU touches */
-        VmaAllocationCreateInfo aci = {
-            .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-            .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
-        if (gpu) aci = (VmaAllocationCreateInfo){.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        VmaAllocationInfo info;
-        if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &l->buf, &l->mem, &info))) {
+        DevMemWant aci = {.at = DM_CACHED, .mapped = 1};
+        if (gpu) aci = (DevMemWant){.at = DM_DEVICE};
+        DevMemInfo info;
+        if (!VK_OK(vk_buffer_create(&bci, &aci, &l->buf, &l->mem, &info))) {
             free(l);
             return NULL;
         }
@@ -98,9 +96,9 @@ static VkWriteLog* log_get(u32 parts, int gpu) {
                 .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
             rec_CmdPipelineBarrier2(cb, &d);
         } else {
-            l->w = info.pMappedData;
+            l->w = info.ptr;
             memset(l->w, 0, log_bytes(parts)); /* the only time it is cleared whole */
-            if (!VK_OK(vmaFlushAllocation(g_vk.vma, l->mem, 0, VK_WHOLE_SIZE)))
+            if (!VK_OK(vk_devmem_flush(l->mem, 0, VK_WHOLE_SIZE)))
                 fatal("vulkan: a write log stayed unflushed");
         }
         g_wlog.made++;
@@ -161,7 +159,7 @@ void vk_wlog_ref(VkWriteLog* l) { l->refs++; }
 /* the GPU's writes visible to the host, once: every reader runs after the work that wrote it is done */
 static void log_see(VkWriteLog* l) {
     if (l->seen) return;
-    if (!VK_OK(vmaInvalidateAllocation(g_vk.vma, l->mem, 0, VK_WHOLE_SIZE)))
+    if (!VK_OK(vk_devmem_invalidate(l->mem, 0, VK_WHOLE_SIZE)))
         fatal("vulkan: a write log could not be read after its work completed");
     l->seen = 1;
 }
@@ -194,7 +192,7 @@ void vk_wlog_trim(void) {
             VkWriteLog* l = *pp;
             *pp = l->next;
             vk_mem_untrack(l->mem);
-            vmaDestroyBuffer(g_vk.vma, l->buf, l->mem); /* free: no work uses it */
+            vk_devmem_buffer_destroy(l->buf, l->mem); /* free: no work uses it */
             g_wlog.bytes -= log_bytes(l->parts);
             free(l);
         }
@@ -224,7 +222,7 @@ void vk_wlog_unref(VkWriteLog* l) {
                 g_wlog.cleared++;
             }
     }
-    if (cleared && !VK_OK(vmaFlushAllocation(g_vk.vma, l->mem, 0, VK_WHOLE_SIZE)))
+    if (cleared && !VK_OK(vk_devmem_flush(l->mem, 0, VK_WHOLE_SIZE)))
         fatal("vulkan: a write log stayed unflushed");
     log_free(l);
 }

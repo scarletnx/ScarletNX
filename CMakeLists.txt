@@ -114,7 +114,7 @@ if(SNX_RECOMPILED_DIR STREQUAL "${PROJECT_SOURCE_DIR}/games")
 endif()
 
 # RelWithDebInfo builds with -O2 and adds symbols for crash reports. It leaves out -DNDEBUG, which keeps the runtime's
-# few assert()s (hle/kernel/ipc.c's full pools) and VMA's assertions on.
+# few assert()s (hle/kernel/ipc.c's full pools) on.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
@@ -294,9 +294,6 @@ if(Vulkan-Headers_ADDED)
     install(DIRECTORY "${Vulkan-Headers_SOURCE_DIR}/LICENSES" DESTINATION ${licenses}/Vulkan-Headers)
 endif()
 install(FILES "${volk_SOURCE_DIR}/LICENSE.md" DESTINATION ${licenses}/volk)
-if(VulkanMemoryAllocator_ADDED)
-    install(FILES "${VulkanMemoryAllocator_SOURCE_DIR}/LICENSE.txt" DESTINATION ${licenses}/VulkanMemoryAllocator)
-endif()
 # renderdoc_app.h's license is the comment at the top of the header
 file(READ "${renderdoc_app_SOURCE_DIR}/renderdoc_app.h" renderdoc_app)
 string(FIND "${renderdoc_app}" "*/" renderdoc_app_end)

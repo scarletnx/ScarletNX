@@ -41,7 +41,7 @@ static struct {
     VkDeviceSize largest; /* the largest layout's size, aligned: what one stage of a draw takes at most */
     struct {
         VkBuffer buffer;
-        VmaAllocation memory;
+        DevMem memory;
         u8* mapped;
         VkDeviceAddress address;
         VkDeviceSize used, capacity;
@@ -55,15 +55,14 @@ static struct {
     size_t buffer_stride;
 } g_descriptors;
 
-VkResult vk_buffer_create(VmaAllocator allocator, const VkBufferCreateInfo* info,
-                           const VmaAllocationCreateInfo* allocation, VkBuffer* buffer,
-                           VmaAllocation* memory, VmaAllocationInfo* details) {
+VkResult vk_buffer_create(const VkBufferCreateInfo* info, const DevMemWant* allocation, VkBuffer* buffer,
+                          DevMem* memory, DevMemInfo* details) {
     VkBufferCreateInfo create = *info;
     if ((g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support) &&
         (create.usage & (VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT)))
         create.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    return vmaCreateBuffer(allocator, &create, allocation, buffer, memory, details);
+    return vk_devmem_buffer(&create, allocation, buffer, memory, details);
 }
 int vk_descriptors_memory(VkPhysicalDevice phys) {
     VkPhysicalDeviceMemoryProperties mp;
@@ -112,16 +111,13 @@ static void arena(u32 slot) {
     VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = capacity,
         .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo allocation = {.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
-                                                   VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-        .requiredFlags = ARENA_MEMORY};
-    VmaAllocationInfo details;
-    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &info, &allocation, &g_descriptors.frame[slot].buffer,
-                              &g_descriptors.frame[slot].memory, &details)))
+    DevMemWant allocation = {.at = DM_HOST, .mapped = 1, .need = ARENA_MEMORY};
+    DevMemInfo details;
+    if (!VK_OK(vk_devmem_buffer(&info, &allocation, &g_descriptors.frame[slot].buffer,
+                                &g_descriptors.frame[slot].memory, &details)))
         fatal("vulkan: cannot allocate graphics descriptor memory");
     vk_mem_track(g_descriptors.frame[slot].memory, VK_OWN_DESCRIPTORS);
-    g_descriptors.frame[slot].mapped = details.pMappedData;
+    g_descriptors.frame[slot].mapped = details.ptr;
     g_descriptors.frame[slot].address = address(g_descriptors.frame[slot].buffer);
     g_descriptors.frame[slot].capacity = capacity;
 }

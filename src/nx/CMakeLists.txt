@@ -25,8 +25,7 @@ target_compile_options(snx_nx_flags INTERFACE
                        $<$<COMPILE_LANGUAGE:C>:-Werror=missing-prototypes -Werror=missing-variable-declarations>)
 target_compile_definitions(snx_nx_flags INTERFACE VK_NO_PROTOTYPES)
 target_link_libraries(snx_nx_flags INTERFACE Vulkan::Headers)
-target_include_directories(snx_nx_flags BEFORE INTERFACE "${volk_SOURCE_DIR}"
-                                                "${snx_vma_include_dir}" "${renderdoc_app_SOURCE_DIR}")
+target_include_directories(snx_nx_flags BEFORE INTERFACE "${volk_SOURCE_DIR}" "${renderdoc_app_SOURCE_DIR}")
 
 function(snx_component name)
     add_library(snx_${name} OBJECT ${ARGN})
@@ -135,7 +134,7 @@ snx_decodetree(snx_shader OUTPUT decode-sm86.inc DECODE "${CMAKE_CURRENT_SOURCE_
 include("${PROJECT_SOURCE_DIR}/cmake/vk_extension_bans.cmake")
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/descriptor_heaps.c gpu/vk/descriptor_objects.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/writelog.c gpu/vk/mirror.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/xfb.c gpu/vk/display.c gpu/vk/compute.c
-                 gpu/vk/pending_pages.c gpu/vk/checkpoints.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/memory.c gpu/vk/ledger.c gpu/vk/pagespace.c gpu/vk/range_shape.c gpu/vk/tex_census.c gpu/vk/tex_report.c gpu/vk/resource_stats.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/bc7_cache.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/vk/hdr_swapchain.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c gpu/vk/uma.c
+                 gpu/vk/pending_pages.c gpu/vk/checkpoints.c gpu/vk/image_out.c gpu/vk/depth_pack.c gpu/vk/memory.c gpu/vk/ledger.c gpu/vk/pagespace.c gpu/vk/range_shape.c gpu/vk/tex_census.c gpu/vk/tex_report.c gpu/vk/resource_stats.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/bc7_cache.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/vk/hdr_swapchain.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/devmem.c gpu/vk/space.c gpu/vk/gpuprof.c gpu/vk/uma.c
                  gpu/vk/ftz_probe.c gpu/vk/vertex_input.c gpu/vk/pipeline_parts.c gpu/vk/extension_bans.c
                  "${PROJECT_BINARY_DIR}/generated/vk_extension_bans_text.c"
                  gpu/vk/draw_texture.c gpu/vk/draw_texture_shader.c gpu/vk/tess_passthrough.c gpu/vk/varying_geometry.c gpu/vk/present_quad.c gpu/vk/capture.c gpu/vk/depth_shadow.c
@@ -233,8 +232,8 @@ snx_glsl_spirv(snx_vk SOURCE gpu/vk/clear.frag NAME snx_clear_fs_uint_spv HEADER
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/clear.frag NAME snx_clear_fs_sint_spv HEADER nx/gpu/vk/internal_spv.h
                TARGET vulkan1.2 DEFINES CLEAR_SINT)
 set(components core kernel hle video gpu platform shader vk)
-# third-party code (vma.cpp is VMA's implementation), cmake/dependencies.cmake
-set_source_files_properties("${volk_SOURCE_DIR}/volk.c" gpu/vk/vma.cpp PROPERTIES COMPILE_OPTIONS
+# third-party code, cmake/dependencies.cmake
+set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS
                             "${snx_third_party_flags}")
 
 if(ANDROID)

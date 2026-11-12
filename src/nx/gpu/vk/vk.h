@@ -4,7 +4,8 @@
    loader the window backend gives (SDL's), or from libvulkan itself in headless runs (vk_init), so nothing links
    against a Vulkan library.
 
-   device.c    instance, device, queues, swapchain, memory allocator (VMA)
+   device.c    instance, device, queues, swapchain
+   devmem.c    device memory: blocks from the driver, handed out in ranges (space.c)
    memory.c    the cap on one allocation, and images bigger than it bound in pieces (sparse binding); textures
                that guest memory maps in part, with memory only where it maps them (sparse residency); the device
                memory budget the caches keep within (surface.c vk_mem_trim), and the present clock
@@ -25,7 +26,6 @@
    renderer.c  the renderer interface the GPU front end calls (gpu/renderer.h) and presenting
    renderdoc.c RenderDoc captures of chosen frames (renderdoc) and of the capture key's
    ui.c        the on-screen controls and the game's menu, drawn over the swapchain image
-   vma.cpp     VulkanMemoryAllocator's implementation
 
    Everything that records commands runs under vk_lock(), which is reentrant: submits and presents come from the GPU
    thread (gpu/gpu.c, hle/services/vi.c's present_queued), the menu's refresh from the main thread, and compute results
@@ -43,7 +43,7 @@
 #include "nx/runtime/platform/tracy.h"
 #include "volk.h"
 #include "common/gpu/vk/vk_common.h"
-#include "vk_mem_alloc.h"
+#include "nx/gpu/vk/devmem.h"
 #include "nx/gpu/shader/shader.h"
 
 #define VK_FRAMES          2  /* frames in flight */
@@ -75,7 +75,6 @@ typedef struct {
     VkPipelineLayout cs_playout;
     VkDescriptorSetLayout cs_dslayout;
     VkDevice dev;
-    VmaAllocator vma;
     /* compute is a second queue of the graphics family, or of a compute-only family, when the device has one; else
        it is the graphics queue itself */
     u32 gfx_family, compute_family;
@@ -234,7 +233,7 @@ typedef struct {
        vk_swapchain_create found it. Atomic: the display session's thread reads it */
     int hdr_display;
     u32 gfx_timestamp_bits;  /* the graphics queue family's timestampValidBits: 0 where it writes no timestamps */
-    /* VK_EXT_memory_budget: the driver tells each heap's use and budget (VMA reads them, and guesses without it) */
+    /* VK_EXT_memory_budget: the driver tells each heap's use and budget (devmem.c reads them, and guesses without) */
     int has_budget;
     int has_checkpoints; /* vk_checkpoints=1 on a driver that has them (checkpoints.c) */
     /* VK_GOOGLE_display_timing, enabled without present waits (Android): presents carry ids and times to be shown at,
@@ -288,16 +287,16 @@ int vk_trylock(void);    /* vk_lock unless another thread holds it: 1 when taken
 u32 vk_lock_owner(void); /* the thread (plat_tid) holding vk_lock, 0 when none */
 int vk_lock_held(void);  /* this thread holds vk_lock */
 
-/* memory.c. vk_mem_init once the device exists, before the allocator (VMA's blocks are kept within the cap):
+/* memory.c. vk_mem_init once the device exists, before the allocator (devmem.c keeps its blocks within the cap):
    sparse_queue is whether the graphics queue's family can bind sparse memory */
 void vk_mem_init(int sparse_queue);
-/* an image with its memory: one VMA allocation in mem, or, past g_vk.alloc_cap, pieces (mem stays VK_NULL_HANDLE).
-   0 on failure. Destroyed with vk_image_destroy (vk_defer_image does that), never vmaDestroyImage */
-int vk_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem);
+/* an image with its memory: one allocation in mem, or, past g_vk.alloc_cap, pieces (mem stays VK_NULL_HANDLE).
+   0 on failure. Destroyed with vk_image_destroy (vk_defer_image does that), never vk_devmem_image_destroy */
+int vk_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem);
 /* the same, entered in the byte ledger under owner (ledger.h's VK_OWN_*; vk_image_create's are VK_OWN_IMAGE_OTHER),
    with the result of the call that failed in res (VK_ERROR_OUT_OF_DEVICE_MEMORY: no memory for it) */
-int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u32 owner, VkResult* res);
-void vk_image_destroy(VkImage img, VmaAllocation mem);
+int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, VkResult* res);
+void vk_image_destroy(VkImage img, DevMem mem);
 /* An image with memory only where it is bound, what isn't reading as zeros (g_vk.resident). vk_resident_shape: how the
    device would bind an image made as ii that way (the texels of its blocks, its first level in the mip tail, its mip
    tails), 0 when it can't. vk_image_create_resident: such an image, of that shape (which it is refused without), with
@@ -329,7 +328,7 @@ int vk_sparse_flush(VkSemaphoreSubmitInfo* wait);
    fence. gone: the memory the range had (VK_NULL_HANDLE none), size bytes, freed once the batch is done. readers:
    work submitted before may still read the range, and the batch waits for it. The batch's number, 0 when there is no
    memory for a batch */
-u64 vk_buffer_sparse_bind(VkBuffer buf, const VkSparseMemoryBind* bind, VmaAllocation gone, u64 size, int readers);
+u64 vk_buffer_sparse_bind(VkBuffer buf, const VkSparseMemoryBind* bind, DevMem gone, u64 size, int readers);
 /* img has binds in a batch that hasn't gone to the queue yet, which goes ahead of the next submission */
 int vk_sparse_unissued(VkImage img);
 /* Sparse residency (memory.c), for a texture that guest memory maps only in part. vk_sparse_supported: the device
@@ -365,7 +364,7 @@ void vk_sparse_stats(u64* binds, u64* bind_ns); /* statistics: sparse binds, and
 u32 vk_image_bound_blocks(VkImage img);
 /* and the allocations those are bound to: fewer where blocks that show the same bytes share one */
 u32 vk_image_bound_memory(VkImage img);
-/* ledger.h: vk_mem_track and vk_mem_untrack enter each VMA allocation in the byte ledger under its owner */
+/* ledger.h: vk_mem_track and vk_mem_untrack enter each allocation in the byte ledger under its owner */
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
 /* before the device is made: the extension to enable, VK_UMA_WITH_* (VK_EXT_external_memory_host, or Android's
    VK_ANDROID_external_memory_android_hardware_buffer) */
@@ -438,7 +437,7 @@ u64 vk_uma_import_in(u64 cpu, u64 end, u64* hi);
 int vk_uma_migrate(int on);
 
 /* The caches of textures, render targets and buffers are kept within the driver's budget for the heap images go to
-   (VK_EXT_memory_budget through VMA; vk_budget_mb lowers it, for testing): past it the driver pages memory out,
+   (VK_EXT_memory_budget, devmem.c; vk_budget_mb lowers it, for testing): past it the driver pages memory out,
    which took 160 ms frames and then the device in one game. Ages are kept in presents, and measured in time as well
    as presents, the frame rate being anything from 5 to 144 a second.
    vk_mem_use: that heap's use as the caches count it, and its budget. vk_mem_present: at each present, after
@@ -476,9 +475,9 @@ u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off);
 u8* vk_stage_guest_input(u64 gva, u64 source_size, u64 bytes, VkBuffer* buf, u64* off);
 /* GPU-written storage, device-local when host-visible memory and its budget allow;
    includes the allocation for invalidation after its frame fence. */
-u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem);
+u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem);
 /* Host-cached memory for the current frame's GPU -> host copies, read after its fence once invalidated. */
-u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, VmaAllocation* mem);
+u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, DevMem* mem);
 /* Device memory for the current frame's data that the GPU writes and reads itself, with the same lifetime as vk_stage:
    0 when none could be made */
 int vk_stage_device_at(const char* file, int line, u64 size, u64 align, VkBuffer* buf, u64* off);
@@ -545,8 +544,8 @@ u64 vk_ring_made(void);                   /* the rings' chunks and big buffers m
 u8* vk_readback_buffer(u64 size, VkBuffer* buf);
 void vk_readback_ready(void);
 /* destroyed once the frame being recorded now is done (the GPU may still use them until then) */
-void vk_defer_image(VkImage img, VmaAllocation a, VkImageView v1, VkImageView v2);
-void vk_defer_buffer(VkBuffer b, VmaAllocation a);
+void vk_defer_image(VkImage img, DevMem a, VkImageView v1, VkImageView v2);
+void vk_defer_buffer(VkBuffer b, DevMem a);
 void vk_defer_buffer_view(VkBufferView v);
 /* bytes of device memory the resources just deferred release, and all deferred releases still to come: an evicted
    entry's memory counts as gone from when it is deferred (vk_mem_trim) */
@@ -612,7 +611,7 @@ u32 vk_texture_array_elements(void); /* each texture array's elements, 0 where t
 /* each heap's use and budget and the descriptor pools, as text for a line: any thread, also one that never calls
    Vulkan */
 void vk_memory_text(char* out, size_t size);
-u64 vk_memory_blocks(void);              /* the bytes of VMA's blocks in all heaps, any thread */
+u64 vk_memory_blocks(void);              /* the bytes of devmem.c's blocks in all heaps, any thread */
 u32 vk_frame_slot(void);                 /* the frame slot being recorded */
 /* A descriptor pool's sizes (VK_POOL_TYPES entries) for `sets` stage or auxiliary sets, array_sets of them with the
    texture arrays (gpu/vk/pipeline.c). */
@@ -905,7 +904,7 @@ typedef struct Surf {
     u8 ms_raw;            /* multisampled: its samples move to and from guest memory (gpu/vk/msaa.c) */
     VkImageViewType type; /* what it was created as */
     VkImage img;
-    VmaAllocation mem;
+    DevMem mem;
     VkImageView att;        /* level 0: the attachment */
     VkImageView att_linear; /* same storage without sRGB conversion */
     VkImageView present;    /* level 0's layer 0 as its bytes (its sRGB twin's UNORM), sampled: the window's present
@@ -1001,14 +1000,14 @@ typedef struct Surf {
        kept of write generation wgen. queued: in the encoder's queue */
     struct {
         VkImage img;
-        VmaAllocation mem;
+        DevMem mem;
         u64 bytes;
         u32 level, slice, row, wgen;
         int queued;
         /* the ASTC blocks the RGBA8 image was decoded from, kept on the GPU while the texture is RGBA8 (astc.c's
            vk_astc_keep): what the BC7 image is made from, as an upload straight to BC7 makes it */
         VkBuffer kept;
-        VmaAllocation kept_mem;
+        DevMem kept_mem;
         u64 kept_bytes;
         /* the BC7 cache's key of each level (keyed: a bit a level), from the guest bytes the RGBA8 image was loaded
            from: the encoder's levels are read back into the cache, and a level the cache has is copied from it */
@@ -1045,7 +1044,7 @@ void vk_rt_before_write(u64 gva, u64 size);
 void vk_rt_before_write_cpu(u64 cpu, u64 size);
 /* an image of a scaled target's format at the guest's size with that many layers, a transfer's source and
    destination: to move it to and from guest memory, or into a texture a blit can't reach. VK_NULL_HANDLE on failure */
-VkImage vk_unscaled_image(const Surf* s, u32 layers, VmaAllocation* mem);
+VkImage vk_unscaled_image(const Surf* s, u32 layers, DevMem* mem);
 /* moves a surface into a layout for a use, with the barrier that needs (which ends an open rendering pass) */
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage, VkAccessFlags2 access);
 /* the stages a texture moved to SHADER_READ_ONLY_OPTIMAL is made visible to: all that sample, since a later read in
@@ -1183,7 +1182,7 @@ u64 vk_mem_trimmed(void); /* statistics: the bytes vk_mem_trim freed */
 /* vk_image_create for a surface of the caches, with room made for it first (vk_mem_trim). When no memory is found, a
    forced trim makes room for later, and images as big fail at once for the rest of the present. bytes: the device
    memory it takes */
-int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u32 owner, u64* bytes);
+int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes);
 /* the device memory a surface of the caches takes now: an image whose memory follows its mapping grows and shrinks */
 void vk_surf_bytes(Surf* s, u64 bytes);
 int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
@@ -1228,7 +1227,7 @@ u64 vk_bl_scratch_asked(void);
    it then. vk_own_init after the device and the frames exist: 0 when the host traps guest memory */
 typedef struct VkOwnRes {
     VkBuffer buf;
-    VmaAllocation mem;
+    DevMem mem;
     u64 size;
     u64 written; /* the graphics submission its last publish's writes were recorded in: a landing waits for that one */
     u64 serial;  /* new with each write: what its bytes hash as (vk_guest_peek), never its address, a freed one's */

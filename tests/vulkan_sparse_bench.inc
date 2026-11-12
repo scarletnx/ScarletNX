@@ -365,10 +365,10 @@ static int bench_texture_reads(void) {
     }
     VkBufferCreateInfo bi = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 4096, .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
-    VmaAllocationCreateInfo bai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    DevMemWant bai = {.at = DM_DEVICE};
     VkBuffer out;
-    VmaAllocation out_memory;
-    CHECK(vmaCreateBuffer(g_vk.vma, &bi, &bai, &out, &out_memory, NULL) == VK_SUCCESS);
+    DevMem out_memory;
+    CHECK(vk_devmem_buffer(&bi, &bai, &out, &out_memory, NULL) == VK_SUCCESS);
     VkSamplerCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                                .magFilter = VK_FILTER_NEAREST,
                                .minFilter = VK_FILTER_NEAREST,
@@ -455,7 +455,7 @@ static int bench_texture_reads(void) {
     for (u32 k = 0; k < 3; k++) vkDestroyImageView(g_vk.dev, view[k], NULL);
     vkDestroyDescriptorPool(g_vk.dev, pool, NULL);
     vkDestroySampler(g_vk.dev, sampler, NULL);
-    vmaDestroyBuffer(g_vk.vma, out, out_memory);
+    vk_devmem_buffer_destroy(out, out_memory);
     for (u32 v = 0; v < 2; v++) vkDestroyPipeline(g_vk.dev, pipeline[v], NULL);
     vkDestroyPipelineLayout(g_vk.dev, playout, NULL);
     vkDestroyDescriptorSetLayout(g_vk.dev, dlayout, NULL);

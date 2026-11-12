@@ -913,7 +913,7 @@ static void later_drop_image(Surf* t) {
         __atomic_add_fetch(&g_tex_frees, 1, __ATOMIC_RELAXED);
     }
     t->bc7.img = VK_NULL_HANDLE;
-    t->bc7.mem = VK_NULL_HANDLE;
+    t->bc7.mem = 0;
     t->bc7.bytes = 0;
     t->bc7.level = t->bc7.slice = t->bc7.row = 0;
 }
@@ -1012,10 +1012,10 @@ void vk_tex_later_stats(VkLaterStats* s) {
 }
 /* t's image as img (memory mem, bytes bytes) of format fmt, in UNDEFINED or (copied) TRANSFER_DST_OPTIMAL: the old one
    and its views go once the frames that sample them are done */
-static void tex_image_swap(Surf* t, VkImage img, VmaAllocation mem, u64 bytes, VkFormat fmt, int copied) {
-    for (int i = 0; i < t->nsv; i++) vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, t->sv[i].v, VK_NULL_HANDLE);
+static void tex_image_swap(Surf* t, VkImage img, DevMem mem, u64 bytes, VkFormat fmt, int copied) {
+    for (int i = 0; i < t->nsv; i++) vk_defer_image(VK_NULL_HANDLE, 0, t->sv[i].v, VK_NULL_HANDLE);
     t->nsv = 0;
-    if (t->present) vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, t->present, VK_NULL_HANDLE); /* the old image's */
+    if (t->present) vk_defer_image(VK_NULL_HANDLE, 0, t->present, VK_NULL_HANDLE); /* the old image's */
     t->present = VK_NULL_HANDLE;
     vk_defer_image(t->img, t->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
     vk_defer_bytes(t->bytes);
@@ -1038,7 +1038,7 @@ static int later_rgba8_again(Surf* t) {
     VkImageCreateInfo ii;
     VkViewFormats vf;
     VkImage img;
-    VmaAllocation mem;
+    DevMem mem;
     u64 bytes;
     int storage;
     const VkFormat rgba8 = later_rgba8(t->f.vk);
@@ -1154,7 +1154,7 @@ void vk_tex_later_frame(void) {
                           (unsigned long long)(t->bc7.bytes >> 20), t->w, t->h, t->layers * t->depth3d,
                           (unsigned long long)(t->bytes >> 20));
                 t->bc7.img = VK_NULL_HANDLE;
-                t->bc7.mem = VK_NULL_HANDLE;
+                t->bc7.mem = 0;
                 t->bc7.bytes = 0;
                 later_to_back();
                 break;
@@ -1663,7 +1663,7 @@ static int rt_copy_guest(Surf* rt, Surf* c, u32 sw, u32 sh) {
                      .srcOffsets = {{0, 0, 0}, {(i32)sw, (i32)sh, 1}},
                      .dstSubresource = all,
                      .dstOffsets = {{0, 0, 0}, {(i32)c->w, (i32)c->h, 1}}};
-    VmaAllocation mid_memory = VK_NULL_HANDLE;
+    DevMem mid_memory = 0;
     VkImage mid = c->f.vk == rt->f.vk ? VK_NULL_HANDLE : vk_unscaled_image(rt, rt->layers, &mid_memory);
     if (c->f.vk != rt->f.vk && !mid) return 0;
     vk_render_end(); /* blits and the image's barriers happen outside rendering passes */
@@ -1710,7 +1710,7 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
             c = x;
         else if ((i32)(g_vk_present - (u32)x->last_used) > 60) {
             *pp = x->next;
-            for (int i = 0; i < x->nsv; i++) vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, x->sv[i].v, VK_NULL_HANDLE);
+            for (int i = 0; i < x->nsv; i++) vk_defer_image(VK_NULL_HANDLE, 0, x->sv[i].v, VK_NULL_HANDLE);
             vk_defer_image(x->img, x->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
             vk_defer_bytes(x->bytes);
             free(x);
@@ -2760,7 +2760,7 @@ static VkImageView tex_view(Surf* s, VkImageViewType type, int srgb, const VkCom
     VkImageView v;
     if (!VK_OK(vk_image_view_create(g_vk.dev, &vi, NULL, &v))) return VK_NULL_HANDLE;
     if (s->nsv == (int)(sizeof s->sv / sizeof s->sv[0])) { /* full: drop the oldest */
-        vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, s->sv[0].v, VK_NULL_HANDLE);
+        vk_defer_image(VK_NULL_HANDLE, 0, s->sv[0].v, VK_NULL_HANDLE);
         memmove(s->sv, s->sv + 1, sizeof s->sv - sizeof s->sv[0]);
         s->nsv--;
     }
@@ -2817,8 +2817,8 @@ VkImageView vk_null_view(VkImageViewType type, int num, int ms) {
                                 .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-        VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &s->img, &s->mem, NULL))) {
+        DevMemWant aci = {.at = DM_DEVICE};
+        if (!VK_OK(vk_devmem_image(&ii, &aci, &s->img, &s->mem))) {
             free(s);
             return VK_NULL_HANDLE;
         }
@@ -2874,8 +2874,8 @@ Surf* vk_null_storage(VkImageViewType type, int kind, VkImageView* view) {
                                 .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-        VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &s->img, &s->mem, NULL))) {
+        DevMemWant aci = {.at = DM_DEVICE};
+        if (!VK_OK(vk_devmem_image(&ii, &aci, &s->img, &s->mem))) {
             free(s);
             return NULL;
         }
@@ -3186,7 +3186,7 @@ static void tex_take_drawn(Surf* t) {
                 vk_rt_drawn_fresh(s)) {
                 /* a blit can't take array layers into a 3D image's slices, only a copy can: scaled, the layers
                    are blitted down to an array at the guest's size first, and copied into the slices from there */
-                VmaAllocation mm = VK_NULL_HANDLE;
+                DevMem mm = 0;
                 VkImage mid = scaled ? vk_unscaled_image(s, t->depth3d, &mm) : VK_NULL_HANDLE;
                 if (scaled && !mid) {
                     settled = 0;

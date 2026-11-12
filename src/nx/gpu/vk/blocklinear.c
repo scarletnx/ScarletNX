@@ -27,7 +27,7 @@ static struct {
     VkPipelineLayout layout;
     VkPipeline pipe;
     VkBuffer scratch;
-    VmaAllocation mem;
+    DevMem mem;
     u64 cap, asked;
 } g_blocklinear;
 
@@ -68,8 +68,8 @@ VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                       VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_blocklinear.scratch, &g_blocklinear.mem, NULL))) {
+    DevMemWant ai = {.at = DM_DEVICE};
+    if (!VK_OK(vk_buffer_create(&bi, &ai, &g_blocklinear.scratch, &g_blocklinear.mem, NULL))) {
         g_blocklinear.scratch = VK_NULL_HANDLE;
         *cap_out = 0;
         return VK_NULL_HANDLE;

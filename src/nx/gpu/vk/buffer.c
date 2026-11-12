@@ -51,7 +51,7 @@ typedef struct {
     u32 host_gen; /* g_vb_map_gen when host_cpu was found: 0 never */
     u64 host_cpu; /* the guest memory the range shows, ~0 for none (entry_host) */
     VkBuffer buf;
-    VmaAllocation mem;
+    DevMem mem;
     u64 off;
     u32 own_prev, own_next; /* own buffers, from the least recently used to the most (vk_buf_reclaim); a free entry's
                                next free one in own_next */
@@ -306,7 +306,7 @@ typedef struct GfxOut {
     u32 size;
     VkBuffer buf;
     u64 off;
-    VmaAllocation mem;
+    DevMem mem;
     u8* ptr;
     /* the bytes it started from, which landing compares it with; NULL for a logged result, whose writers' write logs
        give the bytes they wrote (logs) */
@@ -318,7 +318,7 @@ typedef struct GfxOut {
     int no_input;
     /* GPU-owned input snapshotted before shader writes, read only at the frame fence. */
     u8* initial;
-    VmaAllocation initial_mem;
+    DevMem initial_mem;
     u64* pages; /* sorted guest CPU pages behind this GPU virtual range */
     u64* vmap;  /* the same pages in the range's order, ~0 for an unmapped one */
     u64 cpu;    /* the guest CPU address of addr when vmap is one run of guest memory, ~0 otherwise */
@@ -898,7 +898,7 @@ void vk_buf_frame_done(u64 frame) {
     g_out_tail = NULL;
     for (GfxOut* o = g_out; o; o = o->next) g_out_tail = o;
     g_gfx_any = g_out != NULL || done != NULL;
-    VmaAllocation invalidated = VK_NULL_HANDLE;
+    DevMem invalidated = 0;
     t_buffer.out_landing++;
     while (done) {
         GfxOut* o = done;
@@ -911,12 +911,12 @@ void vk_buf_frame_done(u64 frame) {
             continue;
         }
         if (o->mem != invalidated) {
-            if (!VK_OK(vmaInvalidateAllocation(g_vk.vma, o->mem, 0, VK_WHOLE_SIZE)))
+            if (!VK_OK(vk_devmem_invalidate(o->mem, 0, VK_WHOLE_SIZE)))
                 fatal("Could not invalidate a graphics storage buffer after its frame completed");
             invalidated = o->mem;
         }
         if (o->initial) {
-            if (!VK_OK(vmaInvalidateAllocation(g_vk.vma, o->initial_mem, 0, VK_WHOLE_SIZE)))
+            if (!VK_OK(vk_devmem_invalidate(o->initial_mem, 0, VK_WHOLE_SIZE)))
                 fatal("Could not invalidate a graphics storage buffer baseline");
             memcpy(o->org, o->initial, o->size);
             o->initial = NULL;
@@ -981,7 +981,7 @@ void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
            program's 16 MiB bindings, which made this one take its runs in place, are in the GPU mirror */
         VkBuffer back;
         u64 at;
-        VmaAllocation mem;
+        DevMem mem;
         u8* p = vk_stage_back(o->size, &back, &at, &mem);
         if (!p) break; /* out of memory: this result and the rest stay where the shader wrote them */
         if (n && (n == sizeof regions / sizeof *regions || o->buf != src || back != dst)) {
@@ -3071,7 +3071,7 @@ static u32 draw_page_index(const DrawPage* p, size_t n, u64 key) {
     }
     return (u32)lo;
 }
-static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, VmaAllocation mem, int composed) {
+static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, DevMem mem, int composed) {
     GfxOut* o;
     const u8* page;
     if (p->key & (1ull << 63)) return 1;
@@ -3198,7 +3198,7 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
             if (active[p[i].bind] && (!unique || p[i].key != p[unique - 1].key)) p[unique++] = p[i];
     VkBuffer atlas = VK_NULL_HANDLE;
     u64 atlas_off = 0, atlas_size = unique * 4096ull;
-    VmaAllocation mem = VK_NULL_HANDLE;
+    DevMem mem = 0;
     u8* ptr = NULL;
     int composed = 0;
     if (alias) {
@@ -3391,7 +3391,7 @@ static int patch_dirty(u32 i, u64 gva, const u8* host, u64 gw, u32 ws) {
 }
 
 /* An own buffer is device memory the GPU reads at full speed, filled by a copy from this frame's staging ring. Mapped
-   memory for it is the BAR's window on most GPUs (256 MB, which VMA prefers for host writes), and thousands of own
+   memory for it is the BAR's window on most GPUs (256 MB), and thousands of own
    buffers there crowded out the staging rings: one game's rings, made again in the window as they grew after loading,
    took writes at a twentieth of their speed for minutes (18 to 25 fps against 43). sb at so is the entry's bytes, in
    the staging ring already. Nothing before the copy reads the new buffer and the CPU wrote its bytes, so it runs ahead
@@ -3419,10 +3419,10 @@ static int make_own_(u32 i, VkBuffer sb, u64 so) {
                                        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT, /* render.c copies indices out of it */
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    DevMemWant aci = {.at = DM_DEVICE};
     VkBuffer b;
-    VmaAllocation m;
-    if (vk_buffer_create(g_vk.vma, &bci, &aci, &b, &m, NULL) != VK_SUCCESS) return 0;
+    DevMem m;
+    if (vk_buffer_create(&bci, &aci, &b, &m, NULL) != VK_SUCCESS) return 0;
     vk_mem_track(m, VK_OWN_BUFFER);
     if (copy_stats_on()) g_copy_owned += len;
     VkBufferCopy r = {so, 0, len};

@@ -412,7 +412,7 @@ static int check_staging_overflow(void) {
     g_vk.alloc_cap = 1u << 20;
     for (u32 frame = 0; frame < VK_FRAMES * 3; frame++) {
         VkBuffer rb, output, next_output;
-        VmaAllocation memory;
+        DevMem memory;
         VkBufferCopy output_copy;
         u64 output_offset, next_offset;
         u8* result = vk_readback_buffer(80, &rb);
@@ -590,14 +590,14 @@ static int check_stats_gpu_time(void) {
                               .size = size,
                               .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    VmaAllocationInfo info;
+    DevMemWant aci = {.at = DM_DEVICE};
+    DevMemInfo info;
     VkBuffer buf[2];
-    VmaAllocation mem[2];
+    DevMem mem[2];
     u64 stamps, busy, copied, t0, wall, vram, budget, empty[5];
     int ours;
     int was = g_settings.stats;
-    for (int i = 0; i < 2; i++) CHECK(vk_buffer_create(g_vk.vma, &bci, &aci, &buf[i], &mem[i], &info) == VK_SUCCESS);
+    for (int i = 0; i < 2; i++) CHECK(vk_buffer_create(&bci, &aci, &buf[i], &mem[i], &info) == VK_SUCCESS);
     g_settings.stats = 0;
     vk_finish();
     vk_frame_next();
@@ -663,25 +663,23 @@ static int check_stats_gpu_time(void) {
            (unsigned long long)(budget >> 20), g_vk.has_budget ? "on" : "off");
     CHECK(vram && budget && ours == !g_vk.has_budget);
     {
-        /* as on a driver without the extension (Qualcomm's): VMA's blocks on the heap and the heap's size, never its
-           80% guess */
+        /* as on a driver without the extension (Qualcomm's): devmem.c's blocks on the heap and the heap's size, never
+           its 80% guess */
         int had = g_vk.has_budget;
-        const VkPhysicalDeviceMemoryProperties* mp;
-        VmaBudget b[VK_MAX_MEMORY_HEAPS];
+        const VkPhysicalDeviceMemoryProperties* mp = vk_devmem_props();
+        DevMemBudget b[VK_MAX_MEMORY_HEAPS];
         g_vk.has_budget = 0;
         vk_mem_driver_use(&vram, &budget, &ours);
         g_vk.has_budget = had;
-        vmaGetMemoryProperties(g_vk.vma, &mp);
-        vmaGetHeapBudgets(g_vk.vma, b);
+        vk_devmem_budgets(b);
         printf("stats without the budget: ours %llu of the heap's %llu MiB\n", (unsigned long long)(vram >> 20),
                (unsigned long long)(budget >> 20));
-        CHECK(ours && vram && vram == b[vk_mem_heap()].statistics.blockBytes &&
-              budget == mp->memoryHeaps[vk_mem_heap()].size);
+        CHECK(ours && vram && vram == b[vk_mem_heap()].block_bytes && budget == mp->memoryHeaps[vk_mem_heap()].size);
     }
 done:
     g_settings.stats = was;
     vk_finish();
-    for (int i = 0; i < 2; i++) vmaDestroyBuffer(g_vk.vma, buf[i], mem[i]);
+    for (int i = 0; i < 2; i++) vk_devmem_buffer_destroy(buf[i], mem[i]);
     return 0;
 }
 
@@ -1586,7 +1584,7 @@ static int check_srgb_blit(void) {
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
     VkImage dst;
-    VmaAllocation mem;
+    DevMem mem;
     vk_lock();
     CHECK(vk_image_create(&ii, &dst, &mem));
     VkCommandBuffer cb = vk_cmd();
@@ -1737,7 +1735,7 @@ static int check_sparse_while_submitting(void) {
                                 .samples = VK_SAMPLE_COUNT_1_BIT,
                                 .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
         VkImage img;
-        VmaAllocation mem;
+        DevMem mem;
         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                                .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
@@ -2015,15 +2013,13 @@ static int run_compute(const u32* code, size_t words, u32* data, u32 count, VkIm
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = (VkDeviceSize)count * sizeof(u32),
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
-    VmaAllocationCreateInfo ai = {.flags =
-                                      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                  .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    DevMemWant ai = {.at = DM_CACHED, .mapped = 1};
     VkBuffer buffer;
-    VmaAllocation memory;
-    VmaAllocationInfo allocation;
-    CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &buffer, &memory, &allocation) == VK_SUCCESS);
-    memcpy(allocation.pMappedData, data, (size_t)count * sizeof(u32));
-    CHECK(vmaFlushAllocation(g_vk.vma, memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
+    DevMem memory;
+    DevMemInfo allocation;
+    CHECK(vk_devmem_buffer(&bi, &ai, &buffer, &memory, &allocation) == VK_SUCCESS);
+    memcpy(allocation.ptr, data, (size_t)count * sizeof(u32));
+    CHECK(vk_devmem_flush(memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
     VkDescriptorPoolSize pool_sizes[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
                                           {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}};
     VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -2089,11 +2085,11 @@ static int run_compute(const u32* code, size_t words, u32* data, u32 count, VkIm
     int done = submitted == VK_SUCCESS && vk_wait_fence(fence);
     vkDestroyFence(g_vk.dev, fence, NULL);
     CHECK(done);
-    CHECK(vmaInvalidateAllocation(g_vk.vma, memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
-    memcpy(data, allocation.pMappedData, (size_t)count * sizeof(u32));
+    CHECK(vk_devmem_invalidate(memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
+    memcpy(data, allocation.ptr, (size_t)count * sizeof(u32));
     vkDestroyCommandPool(g_vk.dev, cpool, NULL);
     vkDestroyDescriptorPool(g_vk.dev, pool, NULL);
-    vmaDestroyBuffer(g_vk.vma, buffer, memory);
+    vk_devmem_buffer_destroy(buffer, memory);
     vkDestroyPipeline(g_vk.dev, pipeline, NULL);
     vkDestroyPipelineLayout(g_vk.dev, playout, NULL);
     vkDestroyDescriptorSetLayout(g_vk.dev, dlayout, NULL);
@@ -2129,22 +2125,20 @@ static int check_sampler_reduction(void) {
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
-    VmaAllocationCreateInfo device = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    DevMemWant device = {.at = DM_DEVICE};
     VkImage image;
-    VmaAllocation image_memory;
-    CHECK(vmaCreateImage(g_vk.vma, &ii, &device, &image, &image_memory, NULL) == VK_SUCCESS);
+    DevMem image_memory;
+    CHECK(vk_devmem_image(&ii, &device, &image, &image_memory) == VK_SUCCESS);
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = sizeof texels,
                              .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
-    VmaAllocationCreateInfo host = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                                             VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                    .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    DevMemWant host = {.at = DM_HOST, .mapped = 1};
     VkBuffer staging;
-    VmaAllocation staging_memory;
-    VmaAllocationInfo allocation;
-    CHECK(vmaCreateBuffer(g_vk.vma, &bi, &host, &staging, &staging_memory, &allocation) == VK_SUCCESS);
-    memcpy(allocation.pMappedData, texels, sizeof texels);
-    CHECK(vmaFlushAllocation(g_vk.vma, staging_memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
+    DevMem staging_memory;
+    DevMemInfo allocation;
+    CHECK(vk_devmem_buffer(&bi, &host, &staging, &staging_memory, &allocation) == VK_SUCCESS);
+    memcpy(allocation.ptr, texels, sizeof texels);
+    CHECK(vk_devmem_flush(staging_memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     VkImageMemoryBarrier2 to_copy = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -2171,7 +2165,7 @@ static int check_sampler_reduction(void) {
     dep.pImageMemoryBarriers = &to_read;
     rec_CmdPipelineBarrier2(cb, &dep);
     vk_finish();
-    vmaDestroyBuffer(g_vk.vma, staging, staging_memory);
+    vk_devmem_buffer_destroy(staging, staging_memory);
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                 .image = image,
                                 .viewType = VK_IMAGE_VIEW_TYPE_2D,
@@ -2243,7 +2237,7 @@ static int check_sampler_reduction(void) {
     CHECK(!minmax || vk_tex_bind_sampler(least, swizzled, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D, 0) != avg);
     g_vk.has_minmax_swizzle = had_swizzle;
     vk_image_view_destroy(g_vk.dev, view, NULL);
-    vmaDestroyImage(g_vk.vma, image, image_memory);
+    vk_devmem_image_destroy(image, image_memory);
     return 0;
 }
 
@@ -3157,7 +3151,7 @@ static int alias_bricks(void) {
     memset(want, 0, 4);
     CHECK(vk_image_resident(img, want, keys, 4, &bytes) && !bytes);
     vk_finish();
-    vk_defer_image(img, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_defer_image(img, 0, VK_NULL_HANDLE, VK_NULL_HANDLE);
     return aliased;
 }
 static int check_sparse_alias(void) {
@@ -3246,7 +3240,7 @@ static int check_sparse_alias(void) {
     CHECK(vk_image_sparse_bind(img, bits, keys, &bytes2) == 1 && !bytes2);
     CHECK(!vk_image_bound_blocks(img) && !vk_image_bound_memory(img));
     vk_finish();
-    vk_image_destroy(img, VK_NULL_HANDLE);
+    vk_image_destroy(img, 0);
     int bricks = alias_bricks();
     CHECK(bricks != 1 || aliased);
     vk_finish();
@@ -3364,11 +3358,11 @@ static int check_sparse_copy(void) {
    and reads as zeros again */
 #define RV_TILE 0x10000u
 enum { RV_X = 13, RV_Y = 7, RV_Z = 84 }; /* tiles across, down and deep */
-/* the bytes VMA has allocated in the heap images go to */
+/* the bytes devmem.c has handed out in the heap images go to */
 static u64 rv_allocated(void) {
-    VmaBudget b[VK_MAX_MEMORY_HEAPS];
-    vmaGetHeapBudgets(g_vk.vma, b);
-    return b[vk_mem_heap()].statistics.allocationBytes;
+    DevMemBudget b[VK_MAX_MEMORY_HEAPS];
+    vk_devmem_budgets(b);
+    return b[vk_mem_heap()].allocated_bytes;
 }
 /* whether the device can keep a 3D BC1 image's memory only where it is bound, in bricks of a tile, the rest reading as
    zeros */
@@ -3795,7 +3789,7 @@ static int check_sparse_unbind_in_flight(void) {
     vk_readback_ready();
     memcpy(got[4], back + 64, 4);
     memcpy(got[5], back + 80, 4);
-    vk_defer_image(img, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_defer_image(img, 0, VK_NULL_HANDLE, VK_NULL_HANDLE);
     vk_unlock();
     vkDestroySemaphore(g_vk.dev, gate.sem, NULL);
     printf(
@@ -3852,8 +3846,8 @@ static int check_sparse_resident_batched(void) {
     const ScBind first = g_sc.prev, then = g_sc.last;
     vk_readback_ready();
     int again = !memcmp(back + 32, SPARSE_GREEN8, 4);
-    vk_defer_image(a, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
-    vk_defer_image(b, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_defer_image(a, 0, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_defer_image(b, 0, VK_NULL_HANDLE, VK_NULL_HANDLE);
     vk_unlock();
     printf("sparse binds batched: 2 images bound one after the other, %llu queue binds, %llu host waits before the "
            "frame's end; a block released and bound again, %llu queue binds, the second after the first: %s\n",
@@ -3866,7 +3860,7 @@ static int check_sparse_resident_batched(void) {
 /* The same for three images in pieces made in one frame, each cleared and read whole */
 static int check_sparse_pieces_batched(void) {
     VkImage pieces[3];
-    VmaAllocation none[3];
+    DevMem none[3];
     VkBuffer rb;
     if (!g_vk.sparse) {
         puts("sparse binds batched: no sparse binding, images in pieces skipped");
@@ -3905,7 +3899,7 @@ static int check_sparse_pieces_batched(void) {
     u32 wrong = 0;
     for (u64 at = 0; at < 3 * size; at += 4)
         wrong += !!memcmp(back + at, at / size == 1 ? SPARSE_GREEN8 : SPARSE_RED8, 4);
-    for (u32 i = 0; i < 3; i++) vk_defer_image(pieces[i], VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    for (u32 i = 0; i < 3; i++) vk_defer_image(pieces[i], 0, VK_NULL_HANDLE, VK_NULL_HANDLE);
     vk_unlock();
     printf("sparse binds batched: 3 images of 4 pieces made in one frame, %llu queue binds, %llu host waits before the "
            "frame's end, %u texels not their color\n",
