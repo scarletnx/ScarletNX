@@ -26,6 +26,11 @@
 # own code on every call (verify.h).
 
 # the C library (libc.c): the guest's own byte loops become the host's
+# What a game's linker calls last (runtime/linker.c wraps it until then, with C of its own): through its dispatch
+# slot. With three callbacks of the linker's, and with two
+route _ZN2nn4init5StartEmmPFvvES2_S2_
+route _ZN2nn4init5StartEmmPFvvES2_
+
 family libc
 hook memcpy(void* dst out[size], const void* src in[size], u64 size) -> void* = hook_memmove pure
 hook memmove(void* dst out[size], const void* src in[size], u64 size) -> void* = hook_memmove pure
