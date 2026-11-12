@@ -20,7 +20,12 @@ enum {
     SPV_OPT_SWEEPS = 16, /* the most dead code elimination walks the functions: what is left then stays */
     /* what a pass knows of an id */
     SPV_OPT_VARIABLE = 1, /* a Function variable */
-    SPV_OPT_GONE = 2      /* its instruction was taken out */
+    SPV_OPT_GONE = 2,     /* its instruction was taken out */
+    /* what dead code elimination may do with an instruction */
+    SPV_OPT_KEEP = 0,       /* it has an effect, or is gone already */
+    SPV_OPT_RESULT = 1,     /* it only makes its result: it goes when nothing uses the result */
+    SPV_OPT_LOCAL = 2,      /* a Function variable: it goes when nothing uses it and no store to it is left */
+    SPV_OPT_LOCAL_STORE = 3 /* a store to one: it goes when nothing uses the variable */
 };
 
 /* The opcodes under 256 whose instructions have a type and a result and no effect but the result, a bit each: OpUndef;
@@ -108,87 +113,95 @@ size_t spv_opt_dead_code(uint32_t* module, size_t words) {
     if (words <= SPV_OPT_HEADER) return words;
     uint32_t bound = module[3], glsl = 0;
     size_t first = 0; /* the first OpFunction: what comes before it is the module's declarations */
-    for (size_t i = SPV_OPT_HEADER; i < words; i += module[i] >> 16) {
+    for (size_t i = SPV_OPT_HEADER; i < words && !first; i += module[i] >> 16) {
         uint32_t width = module[i] >> 16, op = module[i] & 0xffff;
         assert(width && width <= words - i);
         if (op == SPV_OP_EXT_INST_IMPORT && width == 2 + sizeof glsl_name / sizeof *glsl_name &&
             !memcmp(module + i + 2, glsl_name, sizeof glsl_name))
             glsl = module[i + 1];
-        if (op == SPV_OP_FUNCTION && !first) first = i;
+        if (op == SPV_OP_FUNCTION) first = i;
     }
     if (!first) return words;
-    /* one block: each id's uses by the instructions left and, for a Function variable, the stores to it left; where
-       each instruction of the functions starts (as many as their words at most); and what each id is, a byte */
-    size_t body = words - first, ids = bound;
-    assert(body <= SIZE_MAX / 8 && ids <= SIZE_MAX / 32);
-    uint32_t* uses = calloc(1, (2 * ids + body) * sizeof *uses + ids);
-    if (!uses) abort();
-    uint32_t *stores = uses + bound, *at = stores + bound, count = 0;
-    uint8_t* is = (uint8_t*)(at + body);
+    size_t count = 0; /* the functions' instructions */
     for (size_t i = first; i < words; i += module[i] >> 16) {
+        assert(module[i] >> 16 && module[i] >> 16 <= words - i);
+        count++;
+    }
+    /* one block: each id's uses by the instructions left and, for a Function variable, the stores to it left; where
+       each instruction of the functions starts and what the pass may do with it (SPV_OPT_KEEP and the others, with
+       where its ids are: operand_ids' answer, decoded once); and what each id is, a byte */
+    size_t ids = bound;
+    assert(count <= SIZE_MAX / 16 && ids <= SIZE_MAX / 32);
+    uint32_t* uses = calloc(1, (2 * ids + 2 * count) * sizeof *uses + ids);
+    if (!uses) abort();
+    uint32_t *stores = uses + bound, *at = stores + bound, *how = at + count;
+    uint8_t* is = (uint8_t*)(how + count);
+    uint32_t n = 0;
+    for (size_t i = first; i < words; i += module[i] >> 16, n++) {
         const uint32_t* w = module + i;
-        uint32_t width = w[0] >> 16, op = w[0] & 0xffff, from, literal, more;
-        at[count++] = (uint32_t)i;
+        uint32_t width = w[0] >> 16, op = w[0] & 0xffff, kind = SPV_OPT_KEEP, from, literal, more;
         operand_ids(op, &literal, &more);
         if (op == SPV_OP_VARIABLE && width >= 4 && w[3] == SPV_STORAGE_FUNCTION && w[2] < bound) {
             is[w[2]] = SPV_OPT_VARIABLE;
+            kind = SPV_OPT_LOCAL;
             from = 4; /* its initializer */
         } else if (op == SPV_OP_STORE && width >= 3 && w[1] < bound && is[w[1]] == SPV_OPT_VARIABLE) {
             stores[w[1]]++;
+            kind = SPV_OPT_LOCAL_STORE;
             from = 2; /* the value: a store is no use of the variable it writes */
-        } else {
-            /* an instruction with a result does not use it, nor its type; one that stays may count both */
-            from = only_result(w, width, op, glsl) ? 3 : 1;
-        }
+        } else if (only_result(w, width, op, glsl) && w[2] < bound) {
+            kind = SPV_OPT_RESULT;
+            from = 3; /* an instruction with a result does not use it, nor its type */
+        } else
+            from = 1; /* one that stays may count both */
+        at[n] = (uint32_t)i;
+        how[n] = kind | from << 4 | literal << 8 | more << 12;
         if (literal && !more) width = width < literal ? width : literal;
         for (uint32_t k = from; k < width; k++)
             if (k != literal && w[k] < bound) uses[w[k]]++;
     }
     /* Backwards, so that what an instruction used is looked at after the instruction went. A variable's last read
        may go after the stores that follow it in the words were passed: those go in one more sweep */
-    size_t gone = 0;
-    int again = 1;
+    int again = 1, any = 0;
     for (int sweep = 0; again && sweep < SPV_OPT_SWEEPS; sweep++) {
         again = 0;
-        for (uint32_t n = count; n-- > 0;) {
+        for (n = (uint32_t)count; n-- > 0;) {
+            uint32_t kind = how[n] & 15;
+            if (kind == SPV_OPT_KEEP) continue;
             uint32_t* w = module + at[n];
-            uint32_t width = w[0] >> 16, op = w[0] & 0xffff, from, literal, more;
-            if (op == SPV_OP_VARIABLE && width >= 4 && w[3] == SPV_STORAGE_FUNCTION && w[2] < bound) {
-                if (uses[w[2]] || stores[w[2]]) continue;
-                is[w[2]] = SPV_OPT_GONE;
-                from = 4;
-            } else if (op == SPV_OP_STORE && width >= 3 && w[1] < bound && is[w[1]] == SPV_OPT_VARIABLE) {
+            if (kind == SPV_OPT_LOCAL_STORE) {
                 if (uses[w[1]]) continue;
                 stores[w[1]]--;
-                from = 2;
-            } else if (only_result(w, width, op, glsl) && w[2] < bound && !uses[w[2]]) {
+            } else {
+                if (uses[w[2]] || (kind == SPV_OPT_LOCAL && stores[w[2]])) continue;
                 is[w[2]] = SPV_OPT_GONE;
-                from = 3;
-            } else
-                continue;
-            operand_ids(op, &literal, &more);
-            if (literal && !more) width = width < literal ? width : literal;
-            for (uint32_t k = from; k < width; k++) {
+            }
+            uint32_t width = w[0] >> 16, literal = how[n] >> 8 & 15;
+            if (literal && !(how[n] >> 12)) width = width < literal ? width : literal;
+            for (uint32_t k = how[n] >> 4 & 15; k < width; k++) {
                 if (k == literal || w[k] >= bound) continue;
                 uses[w[k]]--;
                 if (!uses[w[k]] && is[w[k]] == SPV_OPT_VARIABLE && stores[w[k]]) again = 1;
             }
-            gone += w[0] >> 16;
+            how[n] = SPV_OPT_KEEP;
             w[0] = (w[0] & 0xffff0000u) | SPV_OPT_OP_NOP;
+            any = 1;
         }
     }
-    if (gone) {
-        size_t to = SPV_OPT_HEADER;
-        for (size_t i = SPV_OPT_HEADER; i < words;) {
-            uint32_t width = module[i] >> 16, op = module[i] & 0xffff;
-            /* a name or a decoration of what went goes too */
+    if (any) {
+        /* the instructions that stay, moved down a run at a time; a name or a decoration of what went goes too */
+        size_t to = SPV_OPT_HEADER, run = SPV_OPT_HEADER;
+        for (size_t i = SPV_OPT_HEADER; i <= words;) {
+            uint32_t width = i < words ? module[i] >> 16 : 0, op = i < words ? module[i] & 0xffff : SPV_OPT_OP_NOP;
             int names = width >= 2 && module[i + 1] < bound && is[module[i + 1]] == SPV_OPT_GONE &&
                         (op == SPV_OP_NAME || op == SPV_OP_DECORATE || op == SPV_OPT_OP_DECORATE_ID ||
                          op == SPV_OPT_OP_DECORATE_STRING);
-            if (op != SPV_OPT_OP_NOP && !names) {
-                memmove(module + to, module + i, width * sizeof *module);
-                to += width;
+            if (op == SPV_OPT_OP_NOP || names) {
+                if (to != run) memmove(module + to, module + run, (i - run) * sizeof *module);
+                to += i - run;
+                run = i + width;
             }
+            if (i == words) break;
             i += width;
         }
         words = to;
