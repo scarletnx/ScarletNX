@@ -56,14 +56,16 @@ typedef struct {
     bool (*made)(const char* path, const void* user); /* a dump made already, or put in its game: NULL for none */
     /* what the dump at path is (gui_dump_title), when it is known: NULL for none */
     bool (*titled)(const char* path, const void* user, GuiDumpTitle* title);
+    /* a game ready to run that the player took off the list (Remove from Games): NULL for none */
+    bool (*removed)(const char* path, const void* user);
     const void* user;
 } GuiGroups;
 /* games in three groups: those ready to run, the dumps and CIAs, each in the order it had, then the Updates and DLCs,
    an item a game (GuiAddonDumps) for the update and DLC dumps of it, as titled says of each, by what it is shown as
    ("<name>: update 1.0.1 + 3 DLCs"); when two have games, each under a heading of its own (an entry whose path is NULL,
    its text shown). One group alone gets none here: Games heads it itself while Recent Games shows rows above it. A dump
-   made already (made says so of its path) is left out, and with dumps NULL every dump and CIA, the ready games alone.
-   False when out of memory, games as they were */
+   made already (made says so of its path) is left out, so is a game removed says so of, and with dumps NULL every dump
+   and CIA, the ready games alone. False when out of memory, games as they were */
 bool gui_games_group(GuiGames* games, const GuiGroups* groups);
 /* the Updates and DLCs item at entry i of games, NULL for any other entry */
 const GuiAddonDumps* gui_games_addon_set(const GuiGames* games, size_t i);
@@ -102,6 +104,13 @@ char* gui_folder_game(const char* directory, const char* name);
 /* whether path is a game's program in the folder named for it, <folder>/<name> (.exe, _code.snxobj or _code.so cut):
    a 3DS game's shape, which has no <name>_data folder for gui_game_folder to find */
 bool gui_game_program(const char* path);
+/* Whether the game whose program is at path, a game of a folder of its own, plays from a file that is not there: a
+   Switch game's dump or extracted folder (source= in its .ini) it reads in place, its ExeFS not extracted into its
+   <name>_data, or a GBA game's ROM, which its driver reads at every run. That file's path into out (size bytes, ""
+   when false; out may be NULL). False for a game that plays without it (made from no dump, as an NRO's; extracted),
+   for a 3DS or Vita game (their drivers keep copies of their own), for one an older version linked to its dump
+   (<name>.source) and for any other file */
+bool gui_game_source_missing(const char* path, char* out, size_t size);
 /* What Games shows the game whose program is at path as, a game of a folder of its own: the name in its
    <name>_data/control.nacp, or a Vita game's TITLE in its sce_sys/param.sfo, else its folder's name. Owned */
 char* gui_game_shown(const char* path);

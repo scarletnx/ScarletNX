@@ -2292,6 +2292,10 @@ msgid "In use: %s"
 msgstr ""
 
 #: src/gui/main.c
+msgid "  (file not found)"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Show More"
 msgstr ""
 
@@ -2432,6 +2436,11 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Made with: O%c, AOT %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not found: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -4342,6 +4351,10 @@ msgid "Library folders"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Removed from Games"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Closing ScarletNX"
 msgstr ""
 
@@ -4613,6 +4626,14 @@ msgid "Use"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Locate..."
+msgstr ""
+
+#: src/gui/main.c
+msgid "Remove from Games"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"
 msgstr ""
@@ -4640,6 +4661,26 @@ msgstr ""
 #: src/gui/main.c
 #, snx-key
 msgid "Mods"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Removed games not kept: %s could not be written (%s)."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Locate...: the folder picker could not open: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Locate...: the file picker could not open: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is off Games: %s is not found. Its folder %s stays, and Games lists it again once that file is back."
 msgstr ""
 
 #: src/gui/main.c
@@ -5299,6 +5340,34 @@ msgstr ""
 #: src/gui/main.c
 #, snx-key
 msgid "Refresh"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Locate...: no folder was picked."
+msgstr ""
+
+#: src/gui/main.c
+msgid "Locate...: no file was picked."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no extracted game (exefs/ with its main): %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no GBA ROM (.gba): %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no NSP or XCI: %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s plays from %s now."
 msgstr ""
 
 #: src/gui/main.c
