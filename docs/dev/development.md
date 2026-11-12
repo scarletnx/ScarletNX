@@ -208,7 +208,7 @@ measurements they made, in [GPU preparation benchmarks](../history/gpu-hotpath-b
 [Graphics descriptor measurements](../history/gpu-descriptor-bench.md).
 
 The profiler is not part of the ordinary runtime: `SNX_TRACY` defaults to OFF, so `scarletnx` carries the pinned
-Tracy 0.14.1 client only in a build that asks for it — `cmake --preset tracy -B build/tracy && cmake --build
+Tracy 0.15.0 client only in a build that asks for it — `cmake --preset tracy -B build/tracy && cmake --build
 build/tracy`, or `-DSNX_TRACY=ON` in a build of your own (Android's app leaves it out, and iOS cannot have it).
 The client starts only when profiling is requested: the Settings' Debug rows (`tracy profiler`, `tracy capture`),
 `--tracy-capture`, `--tracy`, or `F10`.
@@ -244,7 +244,7 @@ which walk the stack at every context switch, are off. Every runtime build keeps
 as the sampler walks them. The sampler needs the kernel's perf events (a normal user has them) while the context
 switches need the tracefs and so root.
 
-- The server (the GUI, or `tracy-capture`) must be the same Tracy version as the client, 0.14.1 here.
+- The server (the GUI, or `tracy-capture`) must be the same Tracy version as the client, 0.15.0 here.
 - The GUI's Statistics window has an *Instrumentation* and a *Sampling* button; the sampling one holds the hot
   symbols and their call stacks.
 - The GPU's and the CPU's clocks drift apart while the machine synchronizes its time; stopping the sync
@@ -259,7 +259,7 @@ and writes `captures/tracy_<game>_<date>.tracy` beside the game when the run end
 Tracy port` (`tracy_port`) on when the setting names one. With the setting off, the runtime does not start the
 client; use `--tracy` for a
 GUI-only run, or the launcher's `Settings > Debug > Tracy profiler`, which starts the run with the client up for
-the GUI to attach to. `--tracy-capture` also needs Tracy 0.14.1's `tracy-capture`; a runtime built with
+the GUI to attach to. `--tracy-capture` also needs Tracy 0.15.0's `tracy-capture`; a runtime built with
 `-DSNX_TRACY=OFF` (Android, iOS) refuses both flags.
 A capture that cannot start, or one whose handshake the loading game missed three times, leaves the run going
 without a capture and says why in the log: a setting does not cost the game its launch. A capture gets a port of its
@@ -271,7 +271,7 @@ a 60-second capture beside the game, and logs its path. Run it again after it fi
 connected GUI and `tracy-capture` are both viewers of the same one-connection client, so disconnect the GUI first
 if it is open.
 
-With `--tracy`, connect the Tracy 0.14.1 GUI to `127.0.0.1:8086`, or to `tracy_port`'s port when the setting names
+With `--tracy`, connect the Tracy 0.15.0 GUI to `127.0.0.1:8086`, or to `tracy_port`'s port when the setting names
 one; broadcast discovery is off. `tracy-capture` records the same stream to a file without the GUI. It can start
 before or after the game, and `-s` bounds the recording; it writes the trace when that ends or the game exits.
 A normal exit (Esc, the game's own exit, or an unattended limit) ends the zones still open on the exiting thread,
@@ -290,7 +290,8 @@ wait
 
 The timeline has the frontend tick,
 presents, GPU jobs and idle waits, Vulkan record/land/release/submit/wait/present work, shader translation and
-pipeline creation, texture uploads, the audio and host1x clocks, every returning SVC except the waits above (named
+pipeline creation, texture uploads, the audio and host1x clocks,
+every returning SVC except the waits above (named
 as in `hos.svc`) and every IPC command (the service and command number in the zone's text). Frames appear with the
 `frame ms`, guest memory, GPU memory and budget, per-frame draws, shader translations, pipelines made, texture
 uploads, and the pipeline cache's hits and the time making and waiting for pipelines. Zones that work on a count
