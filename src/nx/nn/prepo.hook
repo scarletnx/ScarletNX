@@ -3,7 +3,7 @@
 #
 # The native nn::prepo (prepo.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
 # nn::prepo: the play reports, with no prepo:u session. The report is built in the game's buffer by the SDK's own
-# code. Save, RequestImmediateTransmission and GetTransmissionStatus are what reach the service. The report's layout
+# code. Save, Send, RequestImmediateTransmission and GetTransmissionStatus are what reach the service. The report's layout
 # and Save's limit are those of the SDKs read: no limit in 3.5.0 to 8.2.1, the limit from 10.4.0, the buffer at 0x20
 # through 13.3.5 and at 0x28 from 16.2.0. SDK 9, 14 and 15 were not read: they have no hook and keep their own code
 family nn_prepo
@@ -15,6 +15,10 @@ struct nn::prepo::PlayReport @version(>= 16.0.0) { addr buffer @0x28; u64 capaci
 @version(< 9.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user_unlimited uses nn::prepo::PlayReport
 @version(>= 10.0.0, < 14.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user uses nn::prepo::PlayReport
 @version(>= 16.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user uses nn::prepo::PlayReport
+# Send, the report sent at once, which the SDK has from 16: its AsyncContext, which the caller passes in x8, is the
+# SDK's own finished one. Read in SDK 16.2, 18.3, 19.3 and 20.5; no older SDK of the dumps here exports it
+struct nn::prepo::AsyncContext @version(>= 16.0.0) { addr object @0x0; u32 result @0x8 } size 0x10
+@version(>= 16.0.0) hook _ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE(addr report, addr uid) = nnprepo_send uses nn::prepo::PlayReport, nn::prepo::AsyncContext
 hook _ZN2nn5prepo28RequestImmediateTransmissionEv() -> u32 = nnprepo_request_immediate_transmission
 hook _ZN2nn5prepo21GetTransmissionStatusEPNS0_18TransmissionStatusE(addr status) -> u32 = nnprepo_get_transmission_status
 # what nn::prepo::Initialize and the library's first use end in: the session's start, and its end
