@@ -39,7 +39,8 @@ static void extract_help(void) {
          "  --keys FILE         prod.keys (default: the data folder's, then ~/.switch)\n"
          "  --title-keys FILE   title.keys (same discovery order; optional)\n"
          "  --program N         Program N of an application of several (default: 0, the application's own)\n"
-         "  --icon              The game's icon alone, icon.jpg into --out DIR (what Games shows), nothing extracted\n"
+         "  --icon              The dump's icon, icon.jpg, and what it is, title.ini, into --out DIR (what Games\n"
+         "                      shows and groups the dumps by), nothing extracted; a DLC has no icon\n"
          "  --help              Show this help");
     puts("The data folder: --data, else a portable copy's or the user's (scarletnx --help).");
 #ifdef SNX_XDG
@@ -499,6 +500,7 @@ static int copy_extracted(const ExtractOptions* options) {
     if (!rc) progress_say(&state, 1);
     return rc;
 }
+static int dump_icon(const char* dump, const SnxPaths* paths, const char* out, int titled);
 int snx_extract(int argc, char** argv, const SnxPaths* paths) {
     ExtractOptions options;
     ExtractState state;
@@ -516,7 +518,7 @@ int snx_extract(int argc, char** argv, const SnxPaths* paths) {
         effective_paths = *paths;
         effective_paths.keys = options.keys;
         effective_paths.title_keys = options.title_keys;
-        return snx_extract_icon(options.base, &effective_paths, options.out) ? 1 : 0;
+        return dump_icon(options.base, &effective_paths, options.out, 1) ? 1 : 0;
     }
     memset(&state, 0, sizeof state);
     result = prepare_paths(&state, &options, paths);
@@ -544,14 +546,45 @@ static int nro_icon(const char* nro, const char* to) {
     free(jpeg);
     return result;
 }
-int snx_extract_icon(const char* dump, const SnxPaths* paths, const char* out) {
+/* what the dump is, title.ini in out, for the launcher, which lists a game's update and DLC dumps as one item of their
+   own: its title ID, its game's (its own for a game's dump), its content meta's version, and the name and version its
+   control.nacp gives (a DLC has none). 0, else said why */
+static int title_write(SnxDump* dump, SnxU64 title, SnxU64 game, SnxU64 version, const char* out) {
+    char own[17] = {0}, of[17] = {0}, name[0x200] = {0}, display[0x20] = {0}, numbered[24] = {0}, *path, *text;
+    const char* why = NULL;
+    size_t size = 0, i;
+    unsigned char* nacp = dump->control.found ? snx_dump_nacp(dump, &size, &why) : NULL;
+    int failed;
+    if (nacp && !snx_nacp_name(nacp, size, name, sizeof name)) name[0] = 0;
+    if (nacp && !snx_nacp_version(nacp, size, display, sizeof display)) display[0] = 0;
+    free(nacp);
+    for (i = 0; name[i]; ++i) /* one line each */
+        if (name[i] == '\r' || name[i] == '\n') name[i] = ' ';
+    for (i = 0; display[i]; ++i)
+        if (display[i] == '\r' || display[i] == '\n') display[i] = ' ';
+    snx_title_text(title, own);
+    snx_title_text(game, of);
+    if (version != SNX_NO_VERSION) snprintf(numbered, sizeof numbered, "%llu", (unsigned long long)version);
+    path = snx_path_join(out, "title.ini");
+    text = snx_format("; what this dump is, as scarletnx -x --icon read it from its content meta and control.nacp\n"
+                      "title=%s\ngame=%s\nversion=%s\nname=%s\ndisplay_version=%s\n",
+                      own, of, numbered, name, display);
+    failed = !path || !text || snx_write_file(path, text, strlen(text));
+    if (failed) snx_error("%s cannot be written: the launcher lists the dump as a dump", path ? path : out);
+    free(text);
+    free(path);
+    return failed;
+}
+/* dump's icon into out/icon.jpg, and with titled what it is into out/title.ini first (title_write): a DLC's alone has
+   no icon, which is no failure then. 0, else nonzero, said why */
+static int dump_icon(const char* dump, const SnxPaths* paths, const char* out, int titled) {
     ExtractState state;
-    SnxU64 title, game;
+    SnxU64 title, game, version;
     unsigned char* icon = NULL;
     const char* why = NULL;
     char* to = snx_path_join(out, "icon.jpg");
     size_t size = 0;
-    int result;
+    int result, dlc = 0;
     if (snx_ends_with_nocase(dump, ".nro")) { /* no extraction: its assets after its code */
         result = to ? nro_icon(dump, to) : snx_error("cannot resolve %s", dump);
         free(to);
@@ -565,11 +598,18 @@ int snx_extract_icon(const char* dump, const SnxPaths* paths, const char* out) {
         result = snx_error("%s is not a file", state.base);
     else {
         snx_hac_on_exit(hactool_exit, &state);
-        result = snx_dump_title(&state.dump, state.base, paths->keys, paths->title_keys, paths->repo, 0, &title,
-                                &game, NULL);
-        if (!result) icon = snx_dump_icon(&state.dump, &size, &why);
+        result = snx_dump_title(&state.dump, state.base, paths->keys, paths->title_keys, paths->repo, 0, &title, &game,
+                                &version);
+        if (!result && titled) result = title_write(&state.dump, title, game, version, out);
+        dlc = !result && snx_addon_kind(game, title) == SNX_ADDON_DLC;
+        if (!result && !(titled && dlc)) icon = snx_dump_icon(&state.dump, &size, &why);
         snx_hac_on_exit(NULL, NULL);
-        if (!result && !icon)
+        if (!result && titled && dlc) {
+            char own[17], of[17];
+            snx_title_text(title, own);
+            snx_title_text(game, of);
+            printf("%s is the DLC %s of the game %s: it has no icon of its own\n", state.base, own, of);
+        } else if (!result && !icon)
             result = snx_error("Games shows no icon for %s: %s", state.base, why);
         else if (!result && snx_write_file(to, icon, size))
             result = snx_error("Games shows no icon for %s: %s cannot be written", state.base, to);
@@ -577,6 +617,9 @@ int snx_extract_icon(const char* dump, const SnxPaths* paths, const char* out) {
     free(icon);
     free(to);
     return cleanup(&state, result);
+}
+int snx_extract_icon(const char* dump, const SnxPaths* paths, const char* out) {
+    return dump_icon(dump, paths, out, 0);
 }
 int snx_extract_title(const char* dump, const SnxPaths* paths, SnxU64* title, SnxU64* game, SnxU64* version,
                       int* programs) {
