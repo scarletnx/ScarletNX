@@ -525,6 +525,7 @@ static void test_table(void) {
         {"_ZN2nn5audio24GetActiveAudioDeviceNameEPNS0_15AudioDeviceNameE", "nnaudio_get_active_device_name"},
         {"_ZN2nn5audio30GetActiveAudioOutputDeviceNameEPNS0_15AudioDeviceNameE", "nnaudio_get_active_device_name"},
         {"_ZN2nn5audio41GetActiveAudioDeviceChannelCountForOutputEv", "nnaudio_get_active_device_channel_count"},
+        {"_ZN2nn5audio21GetActiveChannelCountEv", "nnaudio_get_active_device_channel_count"},
         {"_ZN2nn5audio26SetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameEf", "nnaudio_set_device_output_volume"},
         {"_ZN2nn5audio26GetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameE", "nnaudio_get_device_output_volume"},
         {"_ZN2nn5audio39AcquireAudioDeviceNotificationForOutputEPNS_2os11SystemEventE",
@@ -598,14 +599,16 @@ static void test_table(void) {
         memcpy(&bits, &half, 4);
         memset(&c->v[0], 0, sizeof c->v[0]);
         SNX_VSET_S(c->v[0], 0, bits);
-        CALL(23, NAME, 0, 0, 0);
+        CALL(24, NAME, 0, 0, 0);
         CHECK(g_hle.audio.device_volume == 0.5f);
         memset(&c->v[0], 0, sizeof c->v[0]);
-        CALL(24, NAME, 0, 0, 0);
+        CALL(25, NAME, 0, 0, 0);
         CHECK(hook_f32(c, 0) == 0.5f);
         g_hle.audio.device_volume = 1.0f;
     }
     CALL(22, 0, 0, 0, 0);
+    CHECK((u32)c->x[0] == 2);
+    CALL(23, 0, 0, 0, 0); /* GetActiveChannelCount, its name up to SDK 10 */
     CHECK((u32)c->x[0] == 2);
     memset(GP(NAME), 0xCC, 0x100);
     CALL(19, NAME, 3, 0, 0);
