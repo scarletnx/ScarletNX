@@ -1879,6 +1879,13 @@ snx_test_target(snx-test-script 99)
 target_link_libraries(snx-test-script PRIVATE snx_test_common)
 add_test(NAME script COMMAND snx-test-script)
 
+# a recompile's threads left open (common.h's SnxAotGovernor, recompiler/auto_workers.h): one more a tick while the
+# memory measured from the units holds it, on readings of the test's own
+add_executable(snx-test-aot-governor aot_governor.c)
+snx_test_target(snx-test-aot-governor 99)
+target_link_libraries(snx-test-aot-governor PRIVATE snx_test_common)
+add_test(NAME aot_governor COMMAND snx-test-aot-governor)
+
 # the summary's build line: its commit's day, and the days from it to the run (common/utilities/logscan.c)
 add_executable(snx-test-logscan-age logscan_age.c "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
 snx_test_target(snx-test-logscan-age 99)

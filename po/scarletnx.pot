@@ -5790,7 +5790,7 @@ msgid "AOT threads"
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "The threads compiling the game's code when it is recompiled: 0 (Auto) = the cores with the last quarter left free, so the machine stays responsive; N = that many"
+msgid "The threads compiling the game's code when it is recompiled: 0 (Auto) = 1 to start, then one more each second while the memory the code units are seen to take leaves room for it and the system reports no memory pressure, up to the cores with the last quarter left free, so the machine stays responsive; N = that many, whatever the memory. The recompile says each thread it opens and why it opens no more"
 msgstr ""
 
 #: src/nx/runtime/settings.txt

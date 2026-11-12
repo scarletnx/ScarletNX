@@ -2095,6 +2095,81 @@ unsigned snx_build_threads(void) {
     if (jobs > logical) jobs = logical;
     return jobs;
 }
+/* what the units under way take: the footprint less the recompile's own and the finished units' code */
+static SnxU64 aot_units(const SnxAotGovernor* g, const SnxAotReading* r) {
+    SnxU64 own = g->base + r->held;
+    return r->footprint > own ? r->footprint - own : 0;
+}
+void snx_aot_governor_start(SnxAotGovernor* g, unsigned most, SnxU64 footprint, const char* pressure, char* line,
+                            size_t size) {
+    SnxAotGovernor start = {0};
+    char own[96];
+    start.most = most ? most : 1u;
+    start.threads = 1u;
+    start.base = footprint;
+    *g = start;
+    if (footprint)
+        snprintf(own, sizeof own, "%llu MiB in use before the first unit", (unsigned long long)(footprint >> 20));
+    else
+        snprintf(own, sizeof own, "the system does not say what the process takes");
+    if (g->most == 1u)
+        snprintf(line, size, "aot_threads=0 (Auto): 1 thread, what the cores give with a quarter left free");
+    else
+        snprintf(line, size,
+                 "aot_threads=0 (Auto): 1 thread to start, %s; once that unit has ended one more opens each second "
+                 "while the memory holds it, up to the %u the cores give with a quarter left free. The system's "
+                 "memory pressure: %s",
+                 own, g->most, pressure);
+}
+int snx_aot_governor_tick(SnxAotGovernor* g, const SnxAotReading* r, const char* pressure, char* line, size_t size) {
+    SnxU64 units = aot_units(g, r), open_take, more = 0;
+    char memory[384];
+    int measured = r->footprint && g->base, room = 1;
+    line[0] = 0;
+    if (measured && r->active && units / r->active > g->unit) g->unit = units / r->active;
+    if (g->threads >= g->most || !r->left || !r->done) return 0;
+    if (r->pressure > 0) {
+        if (g->said != 2)
+            snprintf(line, size,
+                     "aot_threads=0 (Auto): stays on %u thread%s of %u: the system says memory is short (%s)",
+                     g->threads, g->threads == 1u ? "" : "s", g->most, pressure);
+        g->said = 2;
+        return 0;
+    }
+    if (measured && r->available_known) {
+        /* each thread open takes a unit's most sooner or later: what they have not taken yet is still to come */
+        open_take = (SnxU64)g->threads * g->unit;
+        if (open_take > units) more = open_take - units;
+        room = r->available >= more + 2u * g->unit;
+        snprintf(memory, sizeof memory,
+                 "%llu MiB in use, %llu MiB of them before the first unit and %llu MiB finished units' code, so a "
+                 "unit under way took %llu MiB at most; the system can still give %llu MiB, the %u thread%s open may "
+                 "take %llu MiB more, and 2 units more are %llu MiB",
+                 (unsigned long long)(r->footprint >> 20), (unsigned long long)(g->base >> 20),
+                 (unsigned long long)(r->held >> 20), (unsigned long long)(g->unit >> 20),
+                 (unsigned long long)(r->available >> 20), g->threads, g->threads == 1u ? "" : "s",
+                 (unsigned long long)(more >> 20), (unsigned long long)(2u * g->unit >> 20));
+    } else
+        snprintf(memory, sizeof memory, "the system does not say %s: the cores alone decide",
+                 measured ? "what memory it can still give" : "what the process takes");
+    if (!room) {
+        if (g->said != 1)
+            snprintf(line, size, "aot_threads=0 (Auto): stays on %u thread%s of %u: %s", g->threads,
+                     g->threads == 1u ? "" : "s", g->most, memory);
+        g->said = 1;
+        return 0;
+    }
+    g->said = 0;
+    ++g->threads;
+    snprintf(line, size, "aot_threads=0 (Auto): thread %u of %u opens: %s", g->threads, g->most, memory);
+    return 1;
+}
+void snx_aot_read(SnxAotReading* r, char* pressure, size_t size) {
+    r->footprint = snx_footprint();
+    r->available = 0;
+    r->available_known = snx_memory_available(&r->available);
+    r->pressure = snx_memory_pressure(pressure, size);
+}
 /* Code arenas (code_loader.c) reserve their address space once and give each page access only when it is used: the
    loader writes into read-write pages and makes them executable before anything jumps there */
 void snx_abort_request(int on) { g_common.abort_requested = on; }
@@ -2540,6 +2615,79 @@ int snx_memory_available(SnxU64* bytes) {
 #else
     (void)bytes;
     return 0;
+#endif
+}
+int snx_psi_some(const char* text, unsigned* avg10, SnxU64* total) {
+    const char* line = text;
+    unsigned whole = 0, part = 0;
+    unsigned long long us = 0;
+    while (line && strncmp(line, "some ", 5)) {
+        line = strchr(line, '\n');
+        if (line) ++line;
+    }
+    /* the kernel prints each average as %lu.%02lu */
+    if (!line || sscanf(line, "some avg10=%u.%2u avg60=%*u.%*u avg300=%*u.%*u total=%llu", &whole, &part, &us) != 3)
+        return 0;
+    *avg10 = whole * 100u + part;
+    *total = us;
+    return 1;
+}
+int snx_psi_short(const char* text, unsigned* avg10) {
+    SnxU64 total = 0;
+    if (!snx_psi_some(text, avg10, &total)) return -1;
+    return *avg10 >= SNX_PSI_SHORT;
+}
+int snx_memory_pressure(char* words, size_t size) {
+    char why[160];
+#if defined(__linux__)
+    char text[256];
+    unsigned avg10 = 0;
+    size_t n;
+    int is_short;
+    FILE* f = fopen("/proc/pressure/memory", "r");
+    if (!f) {
+        snprintf(words, size, "none this process can read (/proc/pressure/memory: %s)", snx_os_error(why, sizeof why));
+        return -1;
+    }
+    n = fread(text, 1, sizeof text - 1, f);
+    fclose(f);
+    text[n] = 0;
+    is_short = snx_psi_short(text, &avg10);
+    if (is_short < 0) {
+        snprintf(words, size, "none this process can read (/proc/pressure/memory has no \"some\" line)");
+        return -1;
+    }
+    snprintf(words, size, "Linux's pressure stall information, some avg10=%u.%02u", avg10 / 100u, avg10 % 100u);
+    return is_short;
+#elif defined(_WIN32)
+    HANDLE low = CreateMemoryResourceNotification(LowMemoryResourceNotification);
+    BOOL set = FALSE;
+    if (!low || !QueryMemoryResourceNotification(low, &set)) {
+        snprintf(words, size, "none this process can read (Windows' low memory notification: %s)",
+                 snx_os_error(why, sizeof why));
+        if (low) CloseHandle(low);
+        return -1;
+    }
+    CloseHandle(low);
+    snprintf(words, size, "Windows' low memory notification is %s", set ? "set" : "clear");
+    return set != FALSE;
+#elif defined(__APPLE__)
+    int level = 0;
+    size_t length = sizeof level;
+    if (sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &length, NULL, 0) || length != sizeof level) {
+        snprintf(words, size, "none this process can read (kern.memorystatus_vm_pressure_level: %s)",
+                 snx_os_error(why, sizeof why));
+        return -1;
+    }
+    snprintf(words, size, "the kernel's memory pressure level %d (%s)", level,
+             level >= 4   ? "critical"
+             : level >= 2 ? "warning"
+                          : "normal");
+    return level >= 2;
+#else
+    (void)why;
+    snprintf(words, size, "none on this system");
+    return -1;
 #endif
 }
 int snx_memory_total(SnxU64* bytes) {

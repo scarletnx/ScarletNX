@@ -1779,8 +1779,10 @@ setting AOT threads
     int 0 1024
     default 0
     words Auto|#
-    help The threads compiling the game's code when it is recompiled: 0 (Auto) = the cores with the last quarter
-    help left free, so the machine stays responsive; N = that many
+    help The threads compiling the game's code when it is recompiled: 0 (Auto) = 1 to start, then one more each
+    help second while the memory the code units are seen to take leaves room for it and the system reports no memory
+    help pressure, up to the cores with the last quarter left free, so the machine stays responsive; N = that many,
+    help whatever the memory. The recompile says each thread it opens and why it opens no more
 setting Unit size
     key unit_instructions
     int 1 INT_MAX

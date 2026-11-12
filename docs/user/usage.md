@@ -35,7 +35,8 @@ works for now, and the run says once what it is called now ([Deprecations](depre
 
 Each driver that recompiles (`scarletnx`, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-agb`) also takes
 `--aot_threads=N`, the setting [`aot_threads`](settings.md): the threads compiling the game's code, 0 (the default)
-the computer's cores with a quarter left free. A GBA ROM's code is one module and compiles on one thread whatever N,
+up to the computer's cores with a quarter left free (`scarletnx`'s open one at a time, as the memory holds them:
+[Extract → AOT → run](#extract--aot--run)). A GBA ROM's code is one module and compiles on one thread whatever N,
 which its recompile says. A value that is not a whole number from 0 to 1024 stops the run.
 
 | Option | Meaning | Switch | 3DS | Vita | AGB | Android | GNU ABI |
@@ -400,7 +401,18 @@ Remaining examples: POSIX.
   else the logical ones, at most 75%, so a recompile does not make the computer stutter). The quarter is
   deliberate: a large game's recompile runs for minutes, a pass that took every core would keep the machine
   unusable that long and heat a phone, while an LLVM pass gains little from a hyperthread. At most 75%, rounded
-  down, leaves one whole core free on a machine of 4, and a quarter of the largest ones. Every pass of LLVM's
+  down, leaves one whole core free on a machine of 4, and a quarter of the largest ones. Left at 0 (Auto) that count
+  is the most, and the memory decides how many of them compile: every thread compiles a code unit at once, and what
+  a unit takes follows the game, so the recompile starts on 1 thread, measures what its own units take while they
+  compile, and once the first has ended opens one thread more each second while the memory the system can still
+  give holds what the threads already open may still take and two units more (the new thread's, and one to spare:
+  a unit can be larger than any seen yet). No thread opens while the system says memory is short: Linux's pressure
+  stall information (`/proc/pressure/memory`, its `some avg10` at 10.00 or more: tasks waiting for memory a tenth of
+  the time, where the runtime's low memory watch warns), Windows' low memory notification, macOS's
+  memory pressure level; Android lets an app read none, so the measure alone decides there, and where the system
+  says neither what the process takes nor what it can still give, the cores alone do. A unit under way is never
+  ended: the recompile only stops opening. Its log says each thread it opens and each reason it opens none, with
+  the numbers. Threads given (`--jobs N`) are all open from the start, whatever the memory. Every pass of LLVM's
   pipelines can be turned off for the game's code,
   `--llvm_pass_<pass>=0` (`--llvm_pass_instcombine=0`), and each option LLVM's C API sets on the pass builder and the
   target machine set, `--llvm_<option>=N` (`--llvm_inliner_threshold=50`). `scarletnx --settings=recompile` lists
