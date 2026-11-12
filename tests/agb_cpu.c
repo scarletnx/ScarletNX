@@ -154,7 +154,9 @@ int main(void) {
             fprintf(stderr, "agb_cpu: %s\n", error);
             goto done;
         }
-        CHECK(written >= 540 && written <= 560); /* the mixer filled the frame's audio at 32768 Hz */
+        /* the mixer filled the frame's audio at 32768 Hz; the first frame is the rest of the one the boot ended in, from
+           line 126 cycle 919 to line 0: 124745 cycles */
+        CHECK(frame ? written >= 540 && written <= 560 : written >= 240 && written <= 248);
     }
     /* the recompiled code ran: the swap went through the machine, the BIOS call waited for a vblank and the
        markers landed */

@@ -24,6 +24,17 @@ static uint32_t pixel(int x, int y) { return board.ppu.framebuffer[y * AGB_SCREE
 
 int main(void) {
     agb_board_init(&board);
+    /* the display as the BIOS's boot leaves it: line 126, 919 cycles in, outside the vertical blank */
+    CHECK(agb_ppu_read(&board, 0x006) == 126 && board.ppu.dot == 919 && !(agb_ppu_read(&board, 0x004) & 1));
+    agb_ppu_step(&board, (159 - 126) * AGB_SCANLINE_CYCLES + AGB_SCANLINE_CYCLES - 919 - 1);
+    CHECK(agb_ppu_read(&board, 0x006) == 159);
+    agb_ppu_step(&board, 1);
+    CHECK(agb_ppu_read(&board, 0x006) == 160 && (agb_ppu_read(&board, 0x004) & 1));
+    /* the checks below count from line 0 */
+    board.ppu.vcount = 0;
+    board.ppu.dot = 0;
+    board.ppu.dispstat = 0;
+    agb_io_write16(&board, 0x04000202, 0xFFFF, 0xFFFF);
 
     /* timing: VCOUNT walks the visible lines into the blank, and DISPSTAT reports both */
     agb_ppu_write(&board, 0x004, 0x0008 | (160 << 8)); /* vblank interrupt on, match line 160 */
