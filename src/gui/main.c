@@ -15257,13 +15257,15 @@ static void job_console_size(App* app, int* cols, int* rows);
 /* the first recompile waiting, when none runs: its argv, half the threads and a low priority while it goes gently
    (job_gentle); one that cannot start ends there, saying why, and the next is tried */
 static void job_start(App* app) {
-    const char* argv[GUI_QUEUE_ARGS + 1];
+    const char** argv = NULL;
     char threads[32], why[256];
     int i, n, cols, rows;
     GuiJob* job;
     bool gentle;
     while ((i = gui_queue_next(&app->queue)) >= 0 && gui_queue_running(&app->queue) < 0) {
         job = &app->queue.job[i];
+        free((void*)argv);
+        argv = (const char**)snx_alloc((size_t)(job->argc + 2) * sizeof *argv); /* and --aot_threads= */
         n = gui_queue_argv(&app->queue, i, argv);
         gentle = job_gentle(app);
         app->job_threads = gentle ? SDL_max(1, job_cores(app) / 2) : 0;
@@ -15309,6 +15311,7 @@ static void job_start(App* app) {
         tell(app); /* now, while the menu may show: Android 12 starts no notification's service for an app behind */
 #endif
     }
+    free((void*)argv);
 }
 /* the tips for job i, which joined the queue behind the one running: where it waits, and how far that one went */
 static void join_said(App* app, int i, int run, const char* name) {

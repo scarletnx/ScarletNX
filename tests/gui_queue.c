@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The queue of R's and B's recompiles (gui/queue.h): a job's argv kept whole until it starts, one of the same game and
-   kind not added twice, its place in the line, a full queue and an argv too long refused, a line taken out, how far the
-   compiles going on have gone, and the places as the rows say them */
+   kind not added twice, its place in the line, a full queue and an argv too long refused, one with a game's 100 add-ons
+   kept, a line taken out, how far the compiles going on have gone, and the places as the rows say them */
 #include "gui/queue.h"
 #include <assert.h>
 #include <stdio.h>
@@ -84,6 +84,26 @@ int main(void) {
     many[GUI_QUEUE_ARGS - 1] = NULL;
     assert(gui_queue_add(&q, many, "/games/x/x", "/games/x/x", "X", GUI_JOB_RECOMPILE, false, &added) == 0);
     gui_queue_free(&q);
+    { /* a game's recompile with its update and 99 DLCs, --update and a dump each: kept whole, each its own */
+        static char dumps[100][32];
+        const char* hundred[3 + 2 * 100 + 2 + 1];
+        int n = 0;
+        hundred[n++] = "scarletnx";
+        hundred[n++] = "-r";
+        hundred[n++] = "/dumps/game.xci";
+        for (i = 0; i < 100; ++i) {
+            snprintf(dumps[i], sizeof dumps[i], "/dumps/add-on %d.nsp", i);
+            hundred[n++] = "--update";
+            hundred[n++] = dumps[i];
+        }
+        hundred[n++] = "--data";
+        hundred[n++] = "/data";
+        hundred[n] = NULL;
+        assert(gui_queue_add(&q, hundred, "/dumps/game.xci", "/dumps/game.xci", "G", GUI_JOB_COMPILE, false, &added) ==
+               0);
+        argv_is(&q, 0, hundred);
+        gui_queue_free(&q);
+    }
     /* how far the compiles going on have gone: from the one added while none waited or ran, an ended one whole, the
        running one as far as it said, a waiting one at 0; the ended ones of the compiles before count for nothing */
     assert(gui_queue_add(&q, one, "/games/a/a", "/games/a/a", "A", GUI_JOB_RECOMPILE, false, &added) == 0);
