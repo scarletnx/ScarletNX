@@ -317,6 +317,46 @@ static int check_mirror(void) {
     }
     CHECK(!check_mirror_fold(cpu, gva, 0));
     CHECK(!check_mirror_fold(cpu, gva, 1));
+    /* With the device's memory short, the granules no binding took for 600 presents give their memory back
+       (vk_mirror_trim): a program's write there lands first, and the next binding has guest memory's bytes, that
+       write among them. With memory to spare, or bound lately, they stay */
+    {
+        u64 gr0, gr, hv, pages, landed, overflows;
+        u32 room, present = g_vk_present;
+        u8 byte = 0;
+        CHECK(vk_mirror_slice(gva, len, &buf, &off));
+        CHECK(!mirror_write(cpu + 0x310, 1, 0x6d, 1));
+        vk_mirror_wrote(cpu + 0x310, 1);
+        vk_finish();
+        vk_mirror_stats(&gr0, &hv, &pages, &landed, &overflows, &room);
+        CHECK(gr0);
+        g_vk_present += 601;
+        for (u32 i = 0; i < 32; i++) vk_mirror_trim(); /* memory to spare: nothing goes */
+        vk_mirror_stats(&gr, &hv, &pages, &landed, &overflows, &room);
+        CHECK(gr == gr0);
+        u64 cap = vk_mem_budget_cap(1); /* a budget of one byte: short */
+        g_vk_present += 601;
+        CHECK(vk_mirror_slice(gva, len, &buf, &off)); /* this one bound now: it stays */
+        u64 kept = 0;
+        for (u32 i = 0; i < 32; i++) vk_mirror_trim(); /* each call a part of the granules, a landing or a release */
+        vk_mirror_stats(&kept, &hv, &pages, &landed, &overflows, &room);
+        g_vk_present += 601;
+        for (u32 i = 0; i < 32; i++) vk_mirror_trim();
+        vk_mirror_stats(&gr, &hv, &pages, &landed, &overflows, &room);
+        vk_mem_budget_cap(cap);
+        g_vk_present = present;
+        if (!kept || kept >= gr0 || gr)
+            fprintf(stderr, "vulkan_headless: mirror: of %llu granules %llu stayed with one bound lately (some, not "
+                            "all, expected) and %llu once it was idle too (none expected)\n",
+                    (unsigned long long)gr0, (unsigned long long)kept, (unsigned long long)gr);
+        CHECK(kept && kept < gr0 && !gr);
+        vk_finish();
+        CHECK(!gmem_read(gva + 0x310, &byte, 1) && byte == 0x6d); /* landed before its granule went */
+        CHECK(vk_mirror_slice(gva, len, &buf, &off)); /* bound again, from guest memory */
+        static u8 again[0x400], guest[0x400];
+        memcpy(guest, GP(cpu), sizeof guest);
+        CHECK(!buffer_read(buf, off, sizeof again, again) && !memcmp(again, guest, sizeof again) && again[0x310] == 0x6d);
+    }
     CHECK(g_vk_validation_messages == validation);
     vk_unlock();
     puts("The GPU mirror takes the bytes the CPU changed and keeps those the GPU wrote; the bytes its programs logged "
