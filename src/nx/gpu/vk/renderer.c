@@ -255,6 +255,8 @@ static int vkr_samples_report(u32 owner, u64 gva, u32 len, u64 ticks) {
 }
 static void vkr_method_barrier(int kind)
 {
+	/* a fragment barrier makes earlier draws' writes visible to texture reads (vk_rt_snapshot) */
+	if (kind == 0) __atomic_add_fetch(&g_vk_texture_epoch, 1, __ATOMIC_RELAXED);
 	VkMemoryBarrier2 mb = {
 		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
 		.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -708,6 +710,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
         resource_was = resource_is;
         last_present_ns = now_ns;
         g_vk_present++;
+        __atomic_add_fetch(&g_vk_texture_epoch, 1, __ATOMIC_RELAXED); /* a frame's snapshots never outlive it */
         {
             SnxStatsGpu gpu = {0};
             if (__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) { /* read only while the box shows */

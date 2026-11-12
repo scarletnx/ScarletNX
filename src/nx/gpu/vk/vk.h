@@ -945,6 +945,7 @@ typedef struct Surf {
        (gpu/vk/texture.c rt_crop) */
     struct Surf* crop;
     u32 crop_gen;
+    u64 crop_epoch; /* a snapshot's g_vk_texture_epoch when it was last copied (vk_rt_snapshot) */
     struct Surf* next;
     /* the recency list it is in (surface.c): textures, render targets (parked ones too), or none (copies, the CPU
        frame), with the device memory its image takes. A list runs from the least recently used to the most */
@@ -1773,6 +1774,11 @@ void vk_release_incr(u32 id);
 void vk_release_samples(u64 gva, u32 len, u32 counter, u64 first, u64 end, u64 ticks);
 void vk_release_queued(u64* n, u64* gate, u64* cgate); /* the queue's length and its oldest's gates (any thread) */
 void vk_release_submit(void); /* the GPFIFO submission ended or waits: a release gated on the recording submits */
+/* Counts the points after which a draw must see in its textures what earlier draws wrote: the guest's texture barriers
+   (NVN's INVALIDATE_TEXTURE, renderer.c's barrier kind 0), the end or a wait of a GPFIFO submission, and each present.
+   Between two of them the console's texture caches may still hold what was there before, so a snapshot of a target a
+   draw samples while rendering to it (vk_rt_snapshot) is reused. Atomic */
+extern u64 g_vk_texture_epoch;
 void vk_release_need(u64 gva, u64 len);
 int vk_release_read(u64 gva, void* dst, u64 len);
 int vk_release_pending(u64 gva, u64 len); /* a queued release's payload covers GPU range [gva, gva + len) (vk_lock) */
