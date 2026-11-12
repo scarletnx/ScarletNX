@@ -552,6 +552,28 @@ static void check_shipped(void) {
         if (w < 0) show_said();
         CHECK(vk_ban_find("textureCompressionASTC_LDR") == 0, "and turns native ASTC off nowhere");
     }
+    /* native ASTC on PanVK: the same warning, the Mali's decoder making illegal and HDR blocks black */
+    {
+        VkExtensionProperties list[1] = {{"VK_KHR_swapchain", 1}};
+        SnxVkExtensions e = {list, 1};
+        VkBanDevice d = {"Mali-G76 MC4",
+                         "panvk",
+                         "FristOneRR v3.7.0 (Mesa 27.0.0-devel)",
+                         VK_DRIVER_ID_MESA_PANVK,
+                         MESA(26u, 99u, 99u),
+                         0x72120000,
+                         SNX_VK_BAN_ANDROID};
+        vk_bans_device(&d);
+        g_test.nsaid = 0;
+        CHECK(vk_bans_filter(&e, say) == 0 && e.count == 1, "a warn line takes no extension out on PanVK");
+        int w = said_with("vulkan: a known problem the extension bans do not turn off: textureCompressionASTC_LDR on "
+                          "Mali-G76 MC4 (panvk, FristOneRR v3.7.0 (Mesa 27.0.0-devel), driver version 26.99.99): "
+                          "PanVK decodes an illegal or HDR ASTC block as transparent black",
+                          "native_astc=0", "#1898");
+        CHECK(w >= 0 && g_test.warned[w], "native ASTC on PanVK is a warning naming native_astc=0 and the issue");
+        if (w < 0) show_said();
+        CHECK(vk_ban_find("textureCompressionASTC_LDR") == 0, "and turns native ASTC off nowhere on PanVK");
+    }
     /* this machine's drivers, RADV and lavapipe: no "off" line holds; RADV's warnings are the lifted bans */
     static const struct {
         uint32_t id, v;

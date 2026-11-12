@@ -111,6 +111,7 @@ VK_EXT_custom_border_color | warn | turnip | * | any | * | crashed creating samp
 # Block formats (format.c: native_astc=1, the default, samples ASTC as the game's blocks where the device has it, and
 # 0 decodes it on the GPU)
 textureCompressionASTC_LDR | warn | turnip | * | any | * | decodes an illegal or HDR ASTC block as transparent black where the specification says opaque magenta, and sRGB ASTC texels up to 2 steps off (seen on an Adreno 610); native_astc=0 decodes them as the specification says but for a step of sRGB | #1655 | edenprobe:astc: an illegal block is the error colour | 2026-11-11 broken on 26.2.99 (Adreno 610) | -
+textureCompressionASTC_LDR | warn | panvk | * | any | * | decodes an illegal or HDR ASTC block as transparent black where the specification says opaque magenta (seen on a Mali-G76); native_astc=0 decodes them as the specification says | #1898 | edenprobe:astc: an illegal block is the error colour | 2026-11-12 broken on 26.99.99 (Mali-G76 MC4) | -
 
 # Core parts the renderer has no way around: said so a report from such a driver starts from them
 timelineSemaphore | warn | qualcomm | * | any | * | does not run timeline semaphores properly on all of its drivers | yuzu 1462db4694 (2023-07-03) | new:headless:timeline waits and signals across the two queues | never | -
