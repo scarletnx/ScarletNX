@@ -58,11 +58,12 @@ enum {
    mGBA's HLE BIOS answers the sound driver's functions, which the HLE BIOS does not have */
 #define AGB_BIOS_NOP_CALL 0x00003FF0u
 
-/* Where the BIOS's code stands while a call of it waits, the addresses of mGBA's HLE BIOS: IntrWait after its halt,
-   which an interrupt handler that runs meanwhile returns to, and the return every call leaves through, which IntrWait
-   keeps on the caller's stack */
-#define AGB_BIOS_INTR_WAIT  0x000001F0u
-#define AGB_BIOS_SWI_RETURN 0x000000A4u
+/* Where the BIOS's code stands while a call of it waits, the console's addresses: IntrWait's loop and Halt after
+   they halted, which an interrupt handler that runs meanwhile returns to, and the return every call leaves through,
+   which IntrWait keeps on the caller's stack */
+#define AGB_BIOS_INTR_WAIT  0x00000348u
+#define AGB_BIOS_HALT       0x000001B4u
+#define AGB_BIOS_SWI_RETURN 0x00000170u
 
 /* Runs one software interrupt. The register file is the caller's r0 through r15: the call reads its
    arguments there and writes its results there. Returns 0 when the call ran, 1 when it is a known call
