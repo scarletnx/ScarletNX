@@ -2934,9 +2934,15 @@ u64 g_vk_draw_kept, g_vk_draw_checked;
 static u32 draw_fs_spec(const DsState* ds, const VkSh* fs) {
     u32 spec = 0;
     if (!fs) return 0;
+    int lower_left = (ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0;
     if (fs->si.spec & (1u << SH_SPEC_ALPHA))
         spec |=
             SH_SPEC_ALPHA_ALWAYS ^ (ds->dyn.alpha_test ? ds->dyn.alpha_func & PIPE_SPEC_ALPHA : SH_SPEC_ALPHA_ALWAYS);
+    if ((fs->si.spec & (1u << SH_SPEC_LOWER_LEFT)) && lower_left) spec |= PIPE_SPEC_LOWER_LEFT;
+    /* PointCoord's T is 0 at row 0, which is a lower-left window's bottom: it flips when the sprite's origin (1 the
+       top) is the other side */
+    if ((fs->si.spec & (1u << SH_SPEC_SPRITE_FLIP)) && ds->dyn.sprite_origin == lower_left)
+        spec |= PIPE_SPEC_SPRITE_FLIP;
     return spec;
 }
 
@@ -4914,11 +4920,10 @@ retry:
               rec_CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_BACK_BIT, sb[6])));
     }
     /* push constants: the depth mode (snx_vp.y) for the vertex stage, 0 too where the device makes the range of -1 to
-       1 (VK_DYN_PR_DEPTH_RANGE), the alpha test's reference (its function is the pipeline's: draw_fs_spec) and
-       the point sprite's T flip for the fragment stage. PointCoord's T is 0 at row 0, which is a lower-left window's
-       bottom: it flips when the sprite's origin (1 the top) is the other side. Then the fragment stage's scaled
-       textures (stage_set), and whether the window is lower left and its surface clip's height, which the fragment's
-       y counts up from there (shader/emit_io.c's shader_frag_y_origin) */
+       1 (VK_DYN_PR_DEPTH_RANGE), and the alpha test's reference for the fragment stage. Then the fragment stage's
+       scaled textures (stage_set) and the surface clip's height, which the fragment's y counts up from in a lower-left
+       window (shader/emit_io.c's shader_frag_y_origin). The test's function, the window's origin and the point
+       sprite's T flip are the pipeline's (draw_fs_spec) */
     float pc[32] = {0, ds->dyn.depth_mode || (g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) ? 0.0f : 1.0f, 0, 0};
     /* with the viewport transform off, the viewport's width and height (window_size), which the last stage before
        rasterization takes the position's pixels to clip space by (SNX_SH_WINDOW_XY) */
@@ -4940,15 +4945,13 @@ retry:
     u32 params = mesh && dc->indirect ? SH_PUSH_GPU_MESH_FIRST : dc->indirect ? dc->params : 0;
     memcpy(&pc[2], &params, sizeof(u32));
     memcpy(&pc[6], &ds->dyn.alpha_ref, 4); /* the test's function is the pipeline's (draw_fs_spec) */
-    pc[7] = ds->dyn.sprite_origin == ((ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0) ? 1.0f : 0.0f;
     u32 scaled_words[2] = {(u32)scaled[0], (u32)(scaled[0] >> 32)};
     memcpy(&pc[8], scaled_words, sizeof scaled_words);
     /* and of those the ones whose target has the draw's size, in the uvec4 at byte 96: the one at byte 80 holds a
        texture draw's rectangle and a varying pass's viewport */
     u32 own_words[2] = {(u32)scaled[1], (u32)(scaled[1] >> 32)};
     memcpy(&pc[24], own_words, sizeof own_words);
-    u32 origin_words[2] = {(ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0, ds->dyn.clip_height};
-    memcpy(&pc[10], origin_words, sizeof origin_words);
+    memcpy(&pc[11], &ds->dyn.clip_height, sizeof(u32));
     float point_size = (dc->state_flags & DS_DRAW_POINT_SIZE) ? dc->point_size : 1.0f;
     if (!g_vk.feat.largePoints || !(point_size > 0)) point_size = 1.0f;
     if (point_size < g_vk.props.limits.pointSizeRange[0]) point_size = g_vk.props.limits.pointSizeRange[0];
