@@ -19,7 +19,7 @@ static inline bool snx_ctr_shared_setting(const char* key) {
     return !strcmp(key, "vk_memory") || !strcmp(key, "async_pipelines") || !strcmp(key, "pipeline_threads") ||
            !strcmp(key, "gamepad_swap_ab") || !strcmp(key, "gamepad_deadzone") || !strcmp(key, "gamepad_map") ||
            !strcmp(key, "touch") || !strcmp(key, "vsync") || !strcmp(key, "fullscreen") || !strcmp(key, "anisotropy") ||
-           !strcmp(key, "fps_limit") || !strcmp(key, "vk_pipeline_cache");
+           !strcmp(key, "anti_aliasing") || !strcmp(key, "fps_limit") || !strcmp(key, "vk_pipeline_cache");
 }
 
 #endif

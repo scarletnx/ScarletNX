@@ -242,6 +242,14 @@ setting Anisotropic filtering
     startup
     words Game's|#x
     help 0 = textures filtered as the game asks, 2 to 16 = sharper surfaces seen at an angle
+setting Anti-aliasing
+    key anti_aliasing
+    int 0 1
+    default 0
+    words Off|FXAA
+    help 1 = FXAA smooths the jagged edges of the picture the window shows. It is a filter on the finished picture
+    help and costs little. The menus, the on-screen controls and screenshots are not filtered. A higher resolution
+    help scale smooths the edges of the 3D picture itself
 setting Game HDR
     key hdr_game
     label Game HDR output

@@ -735,7 +735,8 @@ void vk_ui_present(VkCommandBuffer cb, VkImage sc, Surf* src, VkRect2D crop, VkR
                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     if (view) {
         ui_pass_begin(cb, view, 1);
-        if (framed) vk_present_quad_draw(cb, &from, g_vk.sc_format, crop, to, transform);
+        /* the frame's edges smoothed before the on-screen layer, which stays sharp */
+        if (framed) vk_present_quad_draw(cb, &from, g_vk.sc_format, crop, to, transform, g_settings.anti_aliasing);
         if (n) ui_record(cb, n);
         rec_CmdEndRendering(cb);
         vk_render_forget_state();

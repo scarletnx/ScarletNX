@@ -745,17 +745,24 @@ const SnxCtrVkRam* snx_ctr_vk_ram(uint32_t pa, uint32_t size, VkDeviceSize* offs
 }
 bool snx_ctr_vk_compute(const uint32_t* words, size_t count, unsigned buffers, unsigned images, uint32_t push,
                         SnxCtrVkCompute* out) {
-    SnxCtrVk* v = &g_device.vk;
-    VkDescriptorSetLayoutBinding bindings[16];
+    VkDescriptorType types[16];
     *out = (SnxCtrVkCompute){0};
     if (buffers + images > 16) return false;
     for (unsigned i = 0; i < buffers + images; ++i)
-        bindings[i] = (VkDescriptorSetLayoutBinding){
-            i, i < buffers ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
-            VK_SHADER_STAGE_COMPUTE_BIT, NULL};
+        types[i] = i < buffers ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    return snx_ctr_vk_compute_types(words, count, types, buffers + images, push, out);
+}
+bool snx_ctr_vk_compute_types(const uint32_t* words, size_t count, const VkDescriptorType* types, unsigned bindings,
+                              uint32_t push, SnxCtrVkCompute* out) {
+    SnxCtrVk* v = &g_device.vk;
+    VkDescriptorSetLayoutBinding layout[16];
+    *out = (SnxCtrVkCompute){0};
+    if (bindings > 16) return false;
+    for (unsigned i = 0; i < bindings; ++i)
+        layout[i] = (VkDescriptorSetLayoutBinding){i, types[i], 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL};
     VkDescriptorSetLayoutCreateInfo si = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                          .bindingCount = buffers + images,
-                                          .pBindings = bindings};
+                                          .bindingCount = bindings,
+                                          .pBindings = layout};
     VkPushConstantRange range = {VK_SHADER_STAGE_COMPUTE_BIT, 0, push};
     VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                      .setLayoutCount = 1,

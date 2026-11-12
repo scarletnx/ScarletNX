@@ -9,11 +9,13 @@
    host-visible buffer as well, and a latest dump is written once the GPU is done, without a wait for it. The 3DS framebuffer is 240x400/320 portrait, one 240-pixel row per screen column from
    the left, each row from the bottom of the screen up (libctru's console draws pixel (x, y) at x * 240 + 239 - y);
    the window and the dumps show it that way round. A 3D render scaled by its screen's resolution setting is drawn
-   from its render target while the GPU keeps that newer than memory. */
+   from its render target while the GPU keeps that newer than memory. With the anti_aliasing setting the window shows
+   each frame through vk/shaders/fxaa.comp, which smooths its edges into a frame of its own as the window shows it. */
 #include "3ds/gpu/present.h"
 #include "3ds/board/clock.h"
 #include "3ds/input/input.h"
 #include "3ds/gpu/vk/vk.h"
+#include "3ds/gpu/vk/shaders/fxaa_spv.h"
 #include "3ds/gpu/vk/shaders/present_spv.h"
 #include "3ds/gpu/vk/vk_transfer.h"
 #include "3ds/gpu/vk/vk_y2r.h"
@@ -43,6 +45,10 @@ typedef struct {
 static struct {
     SnxCtrVkCompute decode;
     Frame frames[2];
+    /* with anti_aliasing: each screen's frame with its edges smoothed, which the window shows in its place */
+    SnxCtrVkCompute smooth;
+    VkSampler linear; /* the frame's, as smooth reads it */
+    Frame smoothed[2];
     Frame source_dummy; /* bound where a frame is decoded from the guest, which the shader does not read */
     VkBuffer readback;
     VkDeviceMemory readback_memory;
@@ -112,7 +118,8 @@ static bool frame_make(Frame* f, unsigned width, unsigned height, unsigned scale
                             .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     if (vkCreateImage(v->device, &ii, NULL, &f->image) != VK_SUCCESS) return false;
@@ -153,6 +160,49 @@ static bool semaphores(const SnxCtrVk* v, const VkSemaphoreCreateInfo* si) {
                 vkCreateSemaphore(v->device, si, NULL, &g_present.presented[screen][i]) != VK_SUCCESS)
                 return false;
     return true;
+}
+/* the FXAA pass: the frame sampled bilinearly, the smoothed frame written */
+static bool smooth_init(const SnxCtrVk* v) {
+    static const VkDescriptorType types[2] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                              VK_DESCRIPTOR_TYPE_STORAGE_IMAGE};
+    VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                              .magFilter = VK_FILTER_LINEAR,
+                              .minFilter = VK_FILTER_LINEAR,
+                              .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                              .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                              .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                              .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+    return vkCreateSampler(v->device, &si, NULL, &g_present.linear) == VK_SUCCESS &&
+           snx_ctr_vk_compute_types(snx_ctr_fxaa_spv, snx_ctr_fxaa_spv_size / 4, types, 2, 0, &g_present.smooth);
+}
+/* The screen's frame f smoothed into g_present.smoothed[screen], which it returns, recorded on cb as the window shows
+   it: a frame no window image shows costs no pass, and the pass is in the submission that shows it */
+static Frame* smooth(VkCommandBuffer cb, unsigned screen, Frame* f) {
+    Frame* to = &g_present.smoothed[screen];
+    image_barrier(cb, f->image, f->layout, VK_IMAGE_LAYOUT_GENERAL); /* after the decode's writes */
+    f->layout = VK_IMAGE_LAYOUT_GENERAL;
+    image_barrier(cb, to->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); /* the pass writes all of it */
+    to->layout = VK_IMAGE_LAYOUT_GENERAL;
+    VkDescriptorSet set = snx_ctr_vk_set(g_present.smooth.set);
+    VkDescriptorImageInfo from = {g_present.linear, f->view, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo out = {VK_NULL_HANDLE, to->view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet writes[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = 0,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                       .pImageInfo = &from},
+                                      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = 1,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                       .pImageInfo = &out}};
+    vkUpdateDescriptorSets(snx_ctr_vk()->device, 2, writes, 0, NULL);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_present.smooth.pipeline);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_present.smooth.layout, 0, 1, &set, 0, NULL);
+    vkCmdDispatch(cb, (to->width + 7) / 8, (to->height + 7) / 8, 1);
+    return to;
 }
 bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
     if (g_present.up) return true;
@@ -196,6 +246,7 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir) {
         !semaphores(v, &si))
         return false;
     g_present.readback_view = mapped;
+    if (g_settings.anti_aliasing && !smooth_init(v)) return false;
     image_barrier(snx_ctr_vk_commands(), g_present.source_dummy.image, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_GENERAL);
     g_present.source_dummy.layout = VK_IMAGE_LAYOUT_GENERAL;
@@ -469,6 +520,7 @@ static void show_screens(VkCommandBuffer cb, VkImage target, unsigned screen) {
         VkOffset2D rect[2];
         /* a screen not drawn yet stays black */
         if (!f->image || f->layout == VK_IMAGE_LAYOUT_UNDEFINED || !screen_rect(i, rect)) continue;
+        if (g_present.smooth.pipeline) f = smooth(cb, i, f);
         image_barrier(cb, f->image, f->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         f->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
@@ -503,7 +555,10 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     if (f->width != frame_width || f->height != frame_height) {
         snx_ctr_vk_finish();
         frame_free(f);
-        if (!frame_make(f, frame_width, frame_height, scale)) return false;
+        frame_free(&g_present.smoothed[screen]);
+        if (!frame_make(f, frame_width, frame_height, scale) ||
+            (g_present.smooth.pipeline && !frame_make(&g_present.smoothed[screen], frame_width, frame_height, scale)))
+            return false;
     }
     /* A frame the host reads: a test's hash and the first dumps are waited for, a latest dump is written once the GPU
        is done with it, at a later present, so the game's thread does not wait for the GPU's queue to drain for it */
@@ -644,7 +699,12 @@ void snx_ctr_present_free(void) {
     vkDeviceWaitIdle(v->device);
     for (unsigned screen = 0; screen < 2; ++screen)
         if (g_present.swap[screen].swapchain) swap_destroy(screen);
-    for (unsigned i = 0; i < 2; ++i) frame_free(&g_present.frames[i]);
+    for (unsigned i = 0; i < 2; ++i) {
+        frame_free(&g_present.frames[i]);
+        frame_free(&g_present.smoothed[i]);
+    }
+    if (g_present.linear) vkDestroySampler(v->device, g_present.linear, NULL);
+    snx_ctr_vk_compute_free(&g_present.smooth);
     frame_free(&g_present.source_dummy);
     for (unsigned screen = 0; screen < 2; ++screen)
         for (unsigned i = 0; i < SNX_CTR_VK_SLOTS; ++i) {

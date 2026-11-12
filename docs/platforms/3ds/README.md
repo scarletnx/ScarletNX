@@ -616,7 +616,9 @@ and F11 or Alt+Enter switches the window it is pressed in, as on the Switch;
 Alt+Enter does not press Start. Esc twice within 3 seconds closes the game, a first
 press warning on the terminal. The Switch's `anisotropy` (2 to 16) filters a
 mipmapped texture the game filters linearly anisotropically, held to the device's most,
-and the run says at start the value in effect. Bounded PPM snapshots land in
+and the run says at start the value in effect. The Switch's `anti_aliasing=1`
+smooths the edges of each screen with FXAA at its render resolution before the
+window scales it. The frame dumps and the tests' hashes stay unfiltered. Bounded PPM snapshots land in
 `<output>/frames` in every mode. Without a display the window path is
 unavailable and frames are only recorded; without a Vulkan device the presenter
 reports unavailability and no frame is fabricated.

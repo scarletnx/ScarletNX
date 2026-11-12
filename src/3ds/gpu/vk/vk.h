@@ -196,6 +196,9 @@ typedef struct {
 } SnxCtrVkCompute;
 bool snx_ctr_vk_compute(const uint32_t* words, size_t count, unsigned buffers, unsigned images, uint32_t push,
                         SnxCtrVkCompute* out);
+/* the same with a binding of each of types, in their order (up to 16): a sampled image's among them */
+bool snx_ctr_vk_compute_types(const uint32_t* words, size_t count, const VkDescriptorType* types, unsigned bindings,
+                              uint32_t push, SnxCtrVkCompute* out);
 void snx_ctr_vk_compute_free(SnxCtrVkCompute* compute);
 /* a buffer write the next commands may read or write, or one the host reads after snx_ctr_vk_finish */
 void snx_ctr_vk_barrier(VkCommandBuffer cb);

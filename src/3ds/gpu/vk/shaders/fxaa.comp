@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright 2026 the ScarletNX contributors
+// A screen's frame as the window shows it with the anti_aliasing setting on: the decoded landscape frame
+// (present.comp's) with its jagged edges smoothed (common/gpu/vk/fxaa.glsl), at the frame's own render scale, before
+// the window's blit scales it. One invocation per pixel. The frame dumps and the tests' hashes are present.comp's,
+// which this leaves as they were.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D frame;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D smoothed;
+#include "common/gpu/vk/fxaa.glsl"
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, imageSize(smoothed)))) return;
+    imageStore(smoothed, p, fxaa(frame, vec2(p) + 0.5, false));
+}

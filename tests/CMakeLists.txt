@@ -387,6 +387,13 @@ if(TARGET snx_ctr_board)
     add_test(NAME 3ds_vk_pipeline_cache COMMAND snx-test-3ds-vk-pipeline-cache
                                                 "${CMAKE_CURRENT_BINARY_DIR}/pipeline-cache")
     set_tests_properties(3ds_vk_pipeline_cache PROPERTIES SKIP_RETURN_CODE 77)
+    # the FXAA of the window's picture (the anti_aliasing setting, the Switch's and the 3DS's) against its CPU
+    # reference
+    add_executable(snx-test-3ds-vk-fxaa 3ds_vk_fxaa.c support/fxaa_ref.c)
+    snx_test_target(snx-test-3ds-vk-fxaa 11)
+    target_link_libraries(snx-test-3ds-vk-fxaa PRIVATE snx_ctr_gpu m)
+    add_test(NAME 3ds_vk_fxaa COMMAND snx-test-3ds-vk-fxaa)
+    set_tests_properties(3ds_vk_fxaa PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's draws against the software renderer, the CPU reference they replaced, scene by scene
     add_executable(snx-test-3ds-vk-draw 3ds_vk_draw.c)
     snx_test_target(snx-test-3ds-vk-draw 11)

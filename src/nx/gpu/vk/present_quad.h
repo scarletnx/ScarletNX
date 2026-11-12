@@ -9,12 +9,14 @@ int vk_present_quad(Surf* source, VkImage destination, VkFormat format, VkExtent
                     VkRect2D source_rect, VkRect2D destination_rect, u32 transform, int linear);
 /* vk_present_quad in two, for a pass that draws more (the window's, with the on-screen layer: gpu/vk/ui.c): source made
    ready to sample, outside a rendering pass (raw: through the view of its bytes, its sRGB twin's UNORM, which
-   converts nothing); then its crop drawn into the pass open on cb, whose attachment has format. 0 when it can't be */
+   converts nothing); then its crop drawn into the pass open on cb, whose attachment has format, its edges smoothed
+   with antialias (FXAA, common/gpu/vk/fxaa.glsl: a source made ready with linear only). 0 when it can't be */
 typedef struct {
     Surf* surf;
     VkDescriptorSet set;
+    int light; /* sampled through an sRGB view: the shader reads linear light */
 } SnxPresentSource;
 int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw, SnxPresentSource* out);
 int vk_present_quad_draw(VkCommandBuffer cb, const SnxPresentSource* s, VkFormat format, VkRect2D source_rect,
-                         VkRect2D destination_rect, u32 transform);
+                         VkRect2D destination_rect, u32 transform, int antialias);
 #endif

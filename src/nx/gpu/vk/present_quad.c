@@ -111,6 +111,7 @@ int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw
     VkImageView from;
     VkDescriptorSet set;
     if (!source || !initialize()) return 0;
+    VkFormat format = raw ? vk_srgb_as(source->f.vk, 0) : source->f.vk;
     if (raw && !g_present_quad.pool) { /* the window's: a set of its own for each frame in flight */
         VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_FRAMES};
         VkDescriptorPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -138,12 +139,12 @@ int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw
     if (!set) return 0;
     if (raw) { /* kept on the surface for the next present of it */
         if (!source->present) {
-            source->present = view(source->img, vk_srgb_as(source->f.vk, 0), VK_IMAGE_USAGE_SAMPLED_BIT);
+            source->present = view(source->img, format, VK_IMAGE_USAGE_SAMPLED_BIT);
             source->present_serial = ++g_present_quad.serials ? g_present_quad.serials : ++g_present_quad.serials;
         }
         from = source->present;
     } else
-        from = view(source->img, source->f.vk, VK_IMAGE_USAGE_SAMPLED_BIT);
+        from = view(source->img, format, VK_IMAGE_USAGE_SAMPLED_BIT);
     if (!from) return 0;
     vk_surf_use(cb, source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
@@ -159,11 +160,12 @@ int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw
         vkUpdateDescriptorSets(g_vk.dev, 1, &write, 0, NULL);
         vk_defer_image(VK_NULL_HANDLE, 0, from, VK_NULL_HANDLE);
     }
-    *out = (SnxPresentSource){.surf = source, .set = set};
+    /* an sRGB format is not its own UNORM twin */
+    *out = (SnxPresentSource){.surf = source, .set = set, .light = vk_srgb_as(format, 0) != format};
     return 1;
 }
 int vk_present_quad_draw(VkCommandBuffer cb, const SnxPresentSource* s, VkFormat format, VkRect2D source_rect,
-                         VkRect2D destination_rect, u32 transform) {
+                         VkRect2D destination_rect, u32 transform, int antialias) {
     VkPipeline p = pipeline(format);
     if (!p || !source_rect.extent.width || !source_rect.extent.height || !destination_rect.extent.width ||
         !destination_rect.extent.height)
@@ -173,7 +175,7 @@ int vk_present_quad_draw(VkCommandBuffer cb, const SnxPresentSource* s, VkFormat
     struct { float crop[4]; u32 flags[4]; } push = {
         {(float)source_rect.offset.x / s->surf->sw, (float)source_rect.offset.y / s->surf->sh,
          (float)source_rect.extent.width / s->surf->sw, (float)source_rect.extent.height / s->surf->sh},
-        {transform & 7, 0, 0, 0}};
+        {transform & 7, antialias ? 1u | (s->light ? 2u : 0u) : 0u, 0, 0}};
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
     rec_CmdSetViewport(cb, 0, 1, &viewport);
     rec_CmdSetScissor(cb, 0, 1, &destination_rect);
@@ -205,7 +207,7 @@ int vk_present_quad(Surf* source, VkImage destination, VkFormat format, VkExtent
     VkRenderingInfo rendering = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, extent},
                                   .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &attachment};
     rec_CmdBeginRendering(cb, &rendering);
-    vk_present_quad_draw(cb, &from, format, source_rect, destination_rect, transform);
+    vk_present_quad_draw(cb, &from, format, source_rect, destination_rect, transform, 0);
     rec_CmdEndRendering(cb);
     vk_render_forget_state();
     vk_barrier(cb, destination, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
