@@ -67,14 +67,16 @@ int native_video_pool_create(const u32 pref[16], u32 count, u32 memory, u32* ima
         (unsigned long long)p.cpu, p.layout.image_bytes);
     R_SUCCEED();
 }
-u32 native_video_memory_pitch(u32 memory) {
-    u32 pitch = 0;
+int native_video_image_memory(u32 image, u64* cpu, u64* size, u32* linear_pitch) {
     pm_lock(&g_host.native_video.lock);
-    for (u32 i = 0; i < NVIDEO_POOLS && !pitch; i++)
-        if (NV->pools[i].first && NV->pools[i].memory == memory && !nvideo_kind_nv12(NV->pools[i].layout.kind))
-            pitch = NV->pools[i].layout.pitch;
+    const NativeVideoPool* p = nvideo_pool_find(NV->pools, NVIDEO_POOLS, image);
+    if (p) {
+        *cpu = p->cpu + (u64)(image - p->first) * p->layout.image_bytes;
+        *size = p->layout.image_bytes;
+        *linear_pitch = nvideo_kind_nv12(p->layout.kind) ? 0 : p->layout.pitch;
+    }
     pm_unlock(&g_host.native_video.lock);
-    return pitch;
+    return p != NULL;
 }
 /* The SDK destroys the native memory right after, with the images maybe still mapped for the GPU: the mappings stay
    until 427, and a codec skips an image whose pool went */

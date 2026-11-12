@@ -28,6 +28,7 @@
 #include "nx/hle/services/native_video.h"
 #include "nx/runtime/clock.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/hle/hook/hook.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
@@ -364,8 +365,10 @@ void nvn_MemoryPoolBuilderSetStorage(CPU* c, u64 b, u64 memory, u64 size) {
     o->size = size;
     o->native = 0;
 }
-/* The SDK's nvnNativeImageInitialize builds a pool over a native image's memory with this: as the driver, it clears the
-   storage, and the other way round in SetStorage */
+/* The SDK's nvnNativeImageInitialize builds a pool over a native image with this. The handle is an NvRm memory handle
+   that the SDK's NvRmMemHandleAllocNativeImage made for the image (its ids count up from 1 for every NvRm handle, so
+   it is not a native memory or image number). As the driver, it clears the storage, and the other way round in
+   SetStorage */
 void nvn_MemoryPoolBuilderSetNativeHandleNVX(CPU* c, u64 b, i32 handle) {
     NvnPoolBuilder* o = NVN_OBJ(NvnPoolBuilder, b);
     (void)c;
@@ -391,17 +394,24 @@ int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
     const NvnPoolBuilder* s = NVN_OBJ(NvnPoolBuilder, b);
     NvnPool o = {0};
     u64 lead, va;
-    (void)c;
     o.magic = NVN_MAGIC('P', 'O', 'O', 'L');
     o.flags = s->flags;
     o.memory = s->memory;
     o.size = s->size;
     if (s->native) {
-        int bound = gsv_native_memory_cpu(s->native, &o.memory, &o.size);
-        LOG_LIMIT(8, "nvn: memory pool %llx over native memory %u: %s %llx, %llx bytes\n", (unsigned long long)p,
-                  s->native, bound ? "bound at" : "NOT bound", (unsigned long long)o.memory,
-                  (unsigned long long)o.size);
-        o.linear_pitch = native_video_memory_pitch(s->native);
+        /* the image the handle was made for, which the driver asks the SDK's NvRm for: the table of handles is the
+           SDK's, in guest memory */
+        u64 get = kernel_find_symbol_exact("NvRmMemGetNativeImageHandle");
+        u32 native = s->native, image = 0;
+        if (get) {
+            hook_guest_call(c, get, native, 0, 0, 0);
+            image = (u32)c->x[0];
+        }
+        if (!image || !native_video_image_memory(image, &o.memory, &o.size, &o.linear_pitch))
+            fatal("nvn: memory pool %llx is made over NvRm handle %u, whose native image (%u) the runtime doesn't have",
+                  (unsigned long long)p, native, image);
+        LOG_LIMIT(8, "nvn: memory pool %llx over native image %u (NvRm handle %u): %llx, %llx bytes\n",
+                  (unsigned long long)p, image, native, (unsigned long long)o.memory, (unsigned long long)o.size);
     }
     if (!o.memory && !(o.flags & NVN_POOL_VIRTUAL))
         LOG_LIMIT(8, "nvn: memory pool %llx has no storage (flags %#x)\n", (unsigned long long)p, o.flags);

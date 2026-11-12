@@ -75,7 +75,7 @@ NVN_FITS(NvnQueue, 0x1748);
 typedef struct {
     u64 device, memory, size;
     u32 flags;
-    u32 native; /* SetNativeHandleNVX's: the pool is that native memory, not memory and size */
+    u32 native; /* SetNativeHandleNVX's NvRm handle: the pool is the native image it names, not memory and size */
 } NvnPoolBuilder;
 NVN_FITS(NvnPoolBuilder, 0x40);
 /* memory: the storage's guest address (0 for a virtual pool, which has none); gpu: its GPU address, the page table
@@ -86,7 +86,7 @@ typedef struct {
     u32 magic, flags;
     u64 memory, size, gpu;
     u32 nvmap;
-    u32 linear_pitch; /* a video image's native memory, written pitch linear: a texture on it reads it so */
+    u32 linear_pitch; /* a video image, written pitch linear: a texture on it reads it so */
 } NvnPool;
 NVN_FITS(NvnPool, 0x100);
 

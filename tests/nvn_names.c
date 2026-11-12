@@ -83,13 +83,16 @@ void arm_run(SnxArmCPU* c, SnxArmBlock first, u32 stop_at) {
 }
 void gpu_kick(void) {}
 void gpu_cpu_signal(void) {}
-/* native memory pools (nvn_object.c's): none here */
-int gsv_native_memory_cpu(u32 memory, u64* cpu, u64* size) {
-    (void)memory, (void)cpu, (void)size;
+/* pools over native images (nvn_object.c's): none here */
+u64 kernel_find_symbol_exact(const char* name) {
+    (void)name;
     return 0;
 }
-u32 native_video_memory_pitch(u32 memory) {
-    (void)memory;
+void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
+    (void)c, (void)fn, (void)a0, (void)a1, (void)a2, (void)a3;
+}
+int native_video_image_memory(u32 image, u64* cpu, u64* size, u32* linear_pitch) {
+    (void)image, (void)cpu, (void)size, (void)linear_pitch;
     return 0;
 }
 void pm_init(PMutex* m) { (void)m; }
