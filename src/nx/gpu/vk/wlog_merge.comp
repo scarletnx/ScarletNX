@@ -45,9 +45,9 @@ void main() {
             dst[dadj + k] = s;
             continue;
         }
-        uint keep = 0u;
-        for (uint q = 0u; q < 4u; q++)
-            if ((bits & (1u << q)) != 0u) keep |= 0xFFu << (q * 8u);
+        /* each of the four bits to its byte: the copies bits * 0x204081 makes, 7 apart, put bit q at 8q without
+           meeting, and * 0xFF fills each byte from its low bit */
+        uint keep = ((bits * 0x204081u) & 0x01010101u) * 0xFFu;
         dst[dadj + k] = (dst[dadj + k] & ~keep) | (s & keep);
     }
 }
