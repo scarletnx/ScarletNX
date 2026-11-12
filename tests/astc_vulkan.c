@@ -233,8 +233,21 @@ static void init(void) {
                                   .queueFamilyIndex = family,
                                   .queueCount = 1,
                                   .pQueuePriorities = &priority};
+    /* the encoder's builds with packed dot products where the device says it has an instruction for them, as
+       device.c picks them (SNX_TEST_BC7_DOT=0 or 1 says otherwise, where the device has the feature) */
+    VkPhysicalDeviceVulkan13Features have13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceFeatures2 have2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &have13};
+    VkPhysicalDeviceVulkan13Properties p13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+    VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p13};
+    vkGetPhysicalDeviceFeatures2(g_vk.phys, &have2);
+    vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
+    const char* dot = getenv("SNX_TEST_BC7_DOT");
+    g_vk.bc7_dot = have13.shaderIntegerDotProduct &&
+                   (dot ? atoi(dot) != 0 : p13.integerDotProduct4x8BitPackedUnsignedAccelerated != 0);
+    printf("BC7 encoder: %s\n", g_vk.bc7_dot ? "packed dot products" : "dot products spelled out");
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-                                            .synchronization2 = VK_TRUE};
+                                            .synchronization2 = VK_TRUE,
+                                            .shaderIntegerDotProduct = g_vk.bc7_dot ? VK_TRUE : VK_FALSE};
     /* cmd.c's frame fences are timeline semaphores */
     VkPhysicalDeviceVulkan12Features f12 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f13, .timelineSemaphore = VK_TRUE};

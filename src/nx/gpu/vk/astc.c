@@ -207,21 +207,29 @@ u32 vk_bc7_build(u32 w, u32 h, u32 d) {
 /* the encoder's pipeline of build `build` (vk_bc7_build), made the first time it is asked for: a run that loads no
    level of a build compiles none of it */
 static VkPipeline bc7_pipe(u32 build) {
+    /* each build spelled out, and with SPIR-V's packed dot product (bc7_encode.glsl's Dot4), for a GPU that has an
+       instruction for it (g_vk.bc7_dot): the same blocks either way */
     static const struct {
         const u32* code;
         const u64* size;
         const char* name;
-    } builds[4] = {{astc_bc7_spv, &astc_bc7_spv_size, "full"},
-                   {astc_bc7_fast_spv, &astc_bc7_fast_spv_size, "fast"},
-                   {astc_bc7_mode6_spv, &astc_bc7_mode6_spv_size, "mode 6"},
-                   {astc_bc7_quick_spv, &astc_bc7_quick_spv_size, "quick"}};
+    } builds[2][4] = {{{astc_bc7_spv, &astc_bc7_spv_size, "full"},
+                       {astc_bc7_fast_spv, &astc_bc7_fast_spv_size, "fast"},
+                       {astc_bc7_mode6_spv, &astc_bc7_mode6_spv_size, "mode 6"},
+                       {astc_bc7_quick_spv, &astc_bc7_quick_spv_size, "quick"}},
+                      {{astc_bc7_dot_spv, &astc_bc7_dot_spv_size, "full, dot products"},
+                       {astc_bc7_fast_dot_spv, &astc_bc7_fast_dot_spv_size, "fast, dot products"},
+                       {astc_bc7_mode6_dot_spv, &astc_bc7_mode6_dot_spv_size, "mode 6, dot products"},
+                       {astc_bc7_quick_dot_spv, &astc_bc7_quick_dot_spv_size, "quick, dot products"}}};
+    const int dot = g_vk.bc7_dot != 0;
     if (g_astc.bc7_pipes[build]) return g_astc.bc7_pipes[build];
-    if (!VK_OK(snx_vk_shader_module(g_vk.dev, builds[build].code, *builds[build].size, &g_astc.bc7_modules[build])))
-        fatal("vulkan: cannot load the BC7 encoder's %s build", builds[build].name);
+    if (!VK_OK(snx_vk_shader_module(g_vk.dev, builds[dot][build].code, *builds[dot][build].size,
+                                    &g_astc.bc7_modules[build])))
+        fatal("vulkan: cannot load the BC7 encoder's %s build", builds[dot][build].name);
     u64 started = plat_ns();
     if (!VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), g_astc.bc7_layout, g_astc.bc7_modules[build], NULL,
                                       &g_astc.bc7_pipes[build])))
-        fatal("vulkan: cannot create the BC7 encoder's %s build", builds[build].name);
+        fatal("vulkan: cannot create the BC7 encoder's %s build", builds[dot][build].name);
     vk_texture_pipeline_made(plat_ns() - started);
     return g_astc.bc7_pipes[build];
 }
@@ -232,9 +240,14 @@ static VkPipeline bc7_pipe(u32 build) {
    GPU and its driver, whose compilers run that SPIR-V */
 void vk_astc_cache_open(const char* path) {
     const VkPhysicalDeviceProperties* d = &g_vk.props;
-    const u64 spirv[4] = {vk_hash(blocklinear_spv, blocklinear_spv_size), vk_hash(astc_bc7_spv, astc_bc7_spv_size),
-                          vk_hash(astc_bc7_fast_spv, astc_bc7_fast_spv_size),
-                          vk_hash(astc_bc7_mode6_spv, astc_bc7_mode6_spv_size)};
+    const int dot = g_vk.bc7_dot != 0; /* the builds this device runs */
+    const u64 spirv[4] = {vk_hash(blocklinear_spv, blocklinear_spv_size),
+                          dot ? vk_hash(astc_bc7_dot_spv, astc_bc7_dot_spv_size)
+                              : vk_hash(astc_bc7_spv, astc_bc7_spv_size),
+                          dot ? vk_hash(astc_bc7_fast_dot_spv, astc_bc7_fast_dot_spv_size)
+                              : vk_hash(astc_bc7_fast_spv, astc_bc7_fast_spv_size),
+                          dot ? vk_hash(astc_bc7_mode6_dot_spv, astc_bc7_mode6_dot_spv_size)
+                              : vk_hash(astc_bc7_mode6_spv, astc_bc7_mode6_spv_size)};
     char uuid[33], key[256];
     for (int i = 0; i < 16; i++) snprintf(uuid + 2 * i, 3, "%02x", d->pipelineCacheUUID[i]);
     int n = snprintf(key, sizeof key, "bc7 encoder=%d spirv=%016llx gpu=%04x:%04x driver=%u uuid=%s",

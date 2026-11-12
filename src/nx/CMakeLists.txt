@@ -159,6 +159,16 @@ snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_mode6_spv H
                DEFINES SNX_BC7_FAST=2)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_quick_spv HEADER nx/gpu/texture/astc_bc7_spv.h
                DEFINES SNX_BC7_FAST=3)
+# the same four with SPIR-V's packed dot product (Vulkan 1.3's shaderIntegerDotProduct), for a GPU that says it has an
+# instruction for it: the same blocks
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_dot_spv HEADER nx/gpu/texture/astc_bc7_spv.h
+               TARGET vulkan1.3 DEFINES SNX_BC7_DOT=1)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_fast_dot_spv HEADER nx/gpu/texture/astc_bc7_spv.h
+               TARGET vulkan1.3 DEFINES SNX_BC7_FAST=1 SNX_BC7_DOT=1)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_mode6_dot_spv HEADER nx/gpu/texture/astc_bc7_spv.h
+               TARGET vulkan1.3 DEFINES SNX_BC7_FAST=2 SNX_BC7_DOT=1)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc_bc7.comp NAME astc_bc7_quick_dot_spv HEADER nx/gpu/texture/astc_bc7_spv.h
+               TARGET vulkan1.3 DEFINES SNX_BC7_FAST=3 SNX_BC7_DOT=1)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/blocklinear.comp NAME blocklinear_spv HEADER nx/gpu/texture/blocklinear_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_spv HEADER nx/gpu/texture/texconv_spv.h)
 # its ETC2 build: BCn encoded again as ETC2 and EAC, for a GPU that samples those and not BCn (gpu/vk/texconv.c)
