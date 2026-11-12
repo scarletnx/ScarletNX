@@ -94,6 +94,7 @@ extern HleHost g_host;
 typedef struct {
     TlsThread thread;
     TlsNvdrv nvdrv;
+    TlsFs fs;
 } HleTls;
 extern _Thread_local HleTls t_hle;
 void hle_init(void);

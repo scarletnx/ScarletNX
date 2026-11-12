@@ -181,7 +181,14 @@ typedef struct {
     unsigned save_flat_told;          /* and those whose save an older version kept, played where it is, was */
     unsigned save_stray_told; /* and those whose folder holds more than the save, which the game does not read */
     char save_newer[FS_TREE_PATH_MAX + 256]; /* the last save opened that a newer version wrote, said (save_note) */
+    int pace_told;                           /* the first paced read was said (fs.c's fs_pace_ns) */
 } HostFs;
+/* fs's thread state (hle.h's t_hle.fs): where this thread's last storage read ended, which the next one continues as
+   a stream when it starts there (fs.c's fs_pace_ns) */
+typedef struct {
+    const void* storage; /* the storage it read, NULL for none yet */
+    u64 next;            /* the offset just past it */
+} TlsFs;
 /* all zero: fs_init sets the tree up */
 extern const StateFnTable g_fs_state_fns; /* the functions a save state may hold of fs.c */
 /* a load's: the state's open file systems, files and folders found by path in this process's tree and opened, files as
