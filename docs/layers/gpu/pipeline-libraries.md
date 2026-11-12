@@ -192,7 +192,8 @@ So the GPL path makes every graphics layout with `INDEPENDENT_SETS`:
 
 All three have the same push constant range, as the push constant VUIDs (06620, 06621) need. The null-set layouts
 come from a second table beside `g_pipeline.playouts`, keyed by the part (PR or FS) and the bits of the part. That is 16 PR
-layouts and 2 FS layouts at most.
+layouts and 2 FS layouts at most. A part is a library, so a device without pipeline libraries makes none, and every
+draw compiles whole there: `ship_warm` returns before it queues one.
 
 Vulkan calls two layouts compatible for set N only when both or neither have `INDEPENDENT_SETS`. Thus the binds of
 graphics descriptor sets must use the same family as the pipeline. They do: `render.c` binds with
@@ -521,10 +522,11 @@ menus of an Ounce game under `--vk_validation=1` against the same run on feat/ou
 6. **`[gpu] Let one worker at most make optimized pipelines`**: the bound `PIPE_OPT_WORKERS`, the stats of the draws'
    waits for a worker, and the setting `vk_pipeline_cache` for cold runs.
 7. `[vk] Warm the large shipped programs' parts into the pipeline cache`: the pass warms the part of each shipped
-   program whose SPIR-V is 256 KiB or larger (step 8, below). One worker warms at a time (`WARM_WORKERS`), as the
-   optimized pipelines, and the parts are made into `g_pipeline.pcache` and dropped, so a draw that meets the program later
-   hits the cache by the SPIR-V. A warm-up of every shipped program is still not done: the 7,403 programs would cost
-   about 18 minutes of worker time in a first run (see [The warm-up of the shipped programs](#the-warm-up-of-the-shipped-programs-measured)).
+   vertex or fragment program whose SPIR-V is 256 KiB or larger (step 8, below). One worker warms at a time
+   (`WARM_WORKERS`), as the optimized pipelines, and the parts are made into `g_pipeline.pcache` and dropped, so a draw
+   that meets the program later hits the cache by the SPIR-V. A warm-up of every shipped program is still not done: the
+   7,403 programs would cost about 18 minutes of worker time in a first run (see
+   [The warm-up of the shipped programs](#the-warm-up-of-the-shipped-programs-measured)).
 
 ## Rejected alternatives
 
