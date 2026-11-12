@@ -540,6 +540,7 @@ u64 vk_submit_number(void);
    everywhere else */
 void vk_wait_foreground(void);
 u32 vk_cb_begun(void); /* command buffers begun so far: changes when a new one starts recording */
+u32 vk_frame_recycles(void); /* frame slots recycled so far: a slot's previous use ended and its new one started */
 u64 vk_frame_id(void);
 /* the submission being recorded reads buffers in frame frame_id's rings: that frame's slot isn't reused until it is
    done. Only the frame before the current one can be held: older slots were reused already */

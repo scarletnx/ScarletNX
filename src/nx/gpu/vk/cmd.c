@@ -112,6 +112,7 @@ static struct {
                                                  the one being recorded */
     u32 itook;
     u64 made; /* chunks and big buffers made since the start (statistics, tests) */
+    u32 recycles; /* frame slots recycled since the start (tests) */
 } g_cmd;
 
 static Frame g_fr[VK_FRAMES];
@@ -385,6 +386,7 @@ int vk_rec_unsafe(void) { return g_rec_unsafe; }
    GPU address space page by page under vk_lock for minutes (the trap thread's landings, and the game's threads
    faulting on results, waited). The landing in progress lands them, in order, or the next one does */
 static int g_landing;
+static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land, int why);
 static void land_through(u64 value) {
     if (g_landing) return;
     g_landing = 1;
@@ -395,6 +397,9 @@ static void land_through(u64 value) {
         vk_astc_frame_done(g_landed); /* BC7 blocks read back for the cache, before the ring they are in is reused */
     }
     g_rec_unsafe--;
+    /* what it recorded in a fresh slot (vk_cmd) and left recording goes now: the slot's recycling waits for it, and
+       a fresh slot handed out recording would never be recycled */
+    if (g_fr[g_cur].fresh && g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_OTHER);
     g_landing = 0;
 }
 
@@ -412,17 +417,20 @@ void vk_frame_ready(void) {
     timeline_wait(at, VK_WAIT_RECYCLE);
 }
 static void pool_recycle(Frame* f);
-/* the frame's previous use is done, its results landed and what it held freed, before it records again */
+/* the frame's previous use is done, its results landed and what it held freed, before it records again. The landing
+   can record and submit in the slot (vk_cmd): that work is part of the previous use, waited for and landed as well */
 static void frame_recycle(Frame* f) {
-    u64 done = f->last > f->hold ? f->last : f->hold;
+    u64 done, landed = 0;
     SNX_ZONE(z, "vk frame recycle");
     __atomic_store_n(&g_recycle_at, 0, __ATOMIC_RELEASE);
-    if (done) {
+    while ((done = f->last > f->hold ? f->last : f->hold) != landed) {
         timeline_wait(done, VK_WAIT_RECYCLE);
         land_through(done);
-        f->last = 0;
-        f->hold = 0;
+        landed = done;
     }
+    f->last = 0;
+    f->hold = 0;
+    g_cmd.recycles++;
     vk_gpuprof_frame_done((u32)(f - g_fr)); /* its timestamps, read before the slot records again */
     dead_free(f);
     g_dead_bytes -= f->dead_bytes;
@@ -450,7 +458,10 @@ int vk_cmd_ready(void) {
 VkCommandBuffer vk_cmd(void) {
     Frame* f = &g_fr[g_cur];
     if (!f->recording) {
-        if (f->fresh) {
+        /* not inside a landing: the slot's results may be the ones landing, out of the rings its recycling hands
+           back, and the recycling's own landing would recycle the slot again under itself. What a landing records in
+           a fresh slot goes after its previous use's command buffers, in that use's rings and pools */
+        if (f->fresh && !g_landing) {
             g_rec_unsafe++;
             frame_recycle(f);
             g_rec_unsafe--;
@@ -1072,6 +1083,7 @@ u64 vk_ring_made(void) { return g_cmd.made; }
 
 u64 vk_submit_number(void) { return g_gval + 1; }
 u32 vk_cb_begun(void) { return g_cb_begun; }
+u32 vk_frame_recycles(void) { return g_cmd.recycles; }
 u64 vk_last_submit(void) { return g_gval; }
 VkSemaphore vk_gfx_timeline(void) { return g_gsem; }
 void vk_submit_progress(u64* submitted, u64* done) {
@@ -1160,16 +1172,25 @@ VkDescriptorSet vk_desc_alloc(VkDescriptorSetLayout layout) {
     return f->spare[i].n ? f->spare[i].set[--f->spare[i].n] : VK_NULL_HANDLE;
 }
 
-/* The slot whose list a release goes on, freed when the slot is recycled. After a frame advance the current slot is
-   fresh, still holding an older frame's work: vk_cmd() first, which waits for that work and frees its list, so what
-   is pushed now waits for the frame recorded from now on, which is submitted after every frame that can still use
-   it. A slot in use takes the release as it is: every command recorded before it is in the command buffer the slot
-   records, or in a submission no newer than the slot's last, which its recycling waits for. Beginning a command
-   buffer for it there gave the landing of a present's submission, whose results' owners are released, one in the slot
-   the present was leaving (vk_frame_next) */
+/* The slot whose list a release goes on, freed when the slot is recycled. A slot in use takes the release as it is:
+   every command recorded before it is in the command buffer the slot records, or in a submission no newer than the
+   slot's last, which its recycling waits for. Beginning a command buffer for it there gave the landing of a present's
+   submission, whose results' owners are released, one in the slot the present was leaving (vk_frame_next). A fresh
+   slot still holds an older frame's work, and the release starts it first (vk_cmd): that waits for the older work
+   and frees its list, so what is pushed now waits for the frame recorded from now on, which is submitted after every
+   frame that can still use it. Inside a landing a fresh slot does not start (vk_cmd), and the release goes on the
+   list of the slot that made the newest submission: nothing is recorded that is not submitted, and that slot's
+   recycling waits for all of it */
 static Frame* dead_slot(void) {
-    if (g_fr[g_cur].fresh) vk_cmd();
-    return &g_fr[g_cur];
+    Frame* f = &g_fr[g_cur];
+    if (!f->fresh || f->recording) return f;
+    if (!g_landing) {
+        vk_cmd();
+        return f;
+    }
+    for (int i = 0; i < VK_FRAMES; i++)
+        if (g_fr[i].last > f->last) f = &g_fr[i];
+    return f;
 }
 void vk_defer_image(VkImage img, VmaAllocation a, VkImageView v1, VkImageView v2) {
     dead_push(dead_slot(), (Dead){.img = img, .mem = a, .v1 = v1, .v2 = v2});
