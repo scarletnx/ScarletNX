@@ -241,6 +241,32 @@ int main(void) {
         CHECK(flat[0x06018004] == 0xA5 && flat[0x06038004] == 0xA5);
     }
     {
+        /* the ARM7TDMI writes a loaded PC with bits 1 and 0 dropped and stays in ARM state: LDR PC from 0x02000501 reads
+           the word at 0x02000500 rotated by 8 (0x03000AC3, so 0x03000AC0), whose code stores 5, then LDM {PC} loads
+           0x03000B01 and runs ARM code at 0x03000B00, which stores 6 */
+        static const uint32_t first[] = {0xE3A00005, 0xE5830000, 0xE8998000};
+        static const uint32_t second[] = {0xE3A01006, 0xE5831004, 0xEAFFFFFE};
+        uint32_t written = 0;
+        agb_write32(&board, 0x03000A80, 0xE598F000); /* ldr pc, [r8] */
+        for (uint32_t i = 0; i < 3; ++i) {
+            agb_write32(&board, 0x03000AC0 + i * 4, first[i]);
+            agb_write32(&board, 0x03000B00 + i * 4, second[i]);
+        }
+        agb_write32(&board, 0x02000500, 0x000AC303);
+        agb_write32(&board, 0x02000510, 0x03000B01);
+        agb_write16(&board, 0x04000208, 0); /* IME off */
+        cpu.arm.r[3] = 0x02000600;
+        cpu.arm.r[8] = 0x02000501;
+        cpu.arm.r[9] = 0x02000510;
+        cpu.arm.r[15] = 0x03000A80;
+        cpu.arm.cpsr = 0x1F;
+        board.cpu_halted = cpu.wait = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, AGB_SCANLINE_CYCLES * AGB_FRAME_LINES, audio, AGB_APU_RATE, &written,
+                           error, sizeof error));
+        CHECK(agb_read32(&board, 0x02000600) == 5 && agb_read32(&board, 0x02000604) == 6);
+        CHECK(!(cpu.arm.cpsr & SNX_ARM_T) && cpu.arm.r[15] == 0x03000B08);
+    }
+    {
         /* a block that ends past a frame's cycles, at each frame: 200 moves and the branch back in IWRAM, 203 cycles (a
            cycle each and a refill of two), run for frames of 280896, 147 more than 1383 of them. Each run ends where the
            machine's frame does, as the vertical blank starts at line 160, not 56 cycles later at each frame */
