@@ -668,11 +668,11 @@ u32 nnfs_query_mount_system_data_cache_size(CPU* c, u64 size, u64 id) {
     return done("QueryMountSystemDataCacheSize", r);
 }
 
-/* mount m's root folder (retained), in a slot of g_hle.fs.fss */
-static void mount_root_set(int m, FsNode* root, int noted) {
+/* mount m's root folder (retained), in a slot of g_hle.fs.fss: noted and journaled as fs_save_root says */
+static void mount_root_set(int m, FsNode* root, int noted, int journaled) {
     fs_lock();
     u32 i = fss_slot();
-    g_hle.fs.fss[i] = (FsData){.obj = 1, .root = root, .noted = (u32)noted};
+    g_hle.fs.fss[i] = (FsData){.obj = 1, .root = root, .noted = (u32)noted, .journaled = (u32)journaled};
     fs_unlock();
     g_hle.nnfs.mounts[m].fss = i;
 }
@@ -684,12 +684,12 @@ static u32 mount_save(CPU* c, const char* function, u64 name, const u8 uid[16], 
     int m = mount_new(s, MOUNT_SAVE, 0, &r);
     if (m >= 0) {
         FsNode* root;
-        int noted;
-        r = fs_save_root(type, uid, index, &root, &noted);
+        int noted, journaled;
+        r = fs_save_root(type, uid, index, &root, &noted, &journaled);
         if (r)
             g_hle.nnfs.mounts[m] = (NMount){0};
         else {
-            mount_root_set(m, root, noted);
+            mount_root_set(m, root, noted, journaled);
             g_hle.nnfs.mounts[m].read_only = (u32)read_only;
             LOG("nn::fs: %s(\"%s\") native\n", function, s);
         }
@@ -1372,27 +1372,33 @@ u32 nnfs_get_total_space_size(CPU* c, u64 size, u64 path) {
 }
 
 /* a commit of a native mount: a save writes its note, and the RomFS has nothing to commit */
-static u32 commit(CPU* c, const char* symbol, u64 name) {
+static u32 commit(CPU* c, const char* symbol, const char* function, u64 name) {
     pm_lock(&g_nnfs.lock);
     int m = mount_named(name ? gstr(c, name) : NULL);
+    u32 r = 0;
     if (m < 0) {
         pm_unlock(&g_nnfs.lock);
         return (u32)sdk_own(c, symbol);
     }
     if (g_hle.nnfs.mounts[m].kind == MOUNT_SAVE) {
+        const FsData* fs = &g_hle.fs.fss[g_hle.nnfs.mounts[m].fss];
         fs_lock();
-        fs_root_commit(mount_root(m), (int)g_hle.fs.fss[g_hle.nnfs.mounts[m].fss].noted);
+        /* a journaled save's last commit is made then, which may be refused; any other root's files are its own */
+        if (fs->journaled)
+            r = fs_save_commit(fs->root, (int)fs->noted);
+        else
+            fs_root_commit(fs->root, (int)fs->noted);
         fs_unlock();
     }
     pm_unlock(&g_nnfs.lock);
-    return 0;
+    return done(function, r);
 }
-u32 nnfs_commit(CPU* c, u64 name) { return commit(c, SYM_COMMIT, name); }
+u32 nnfs_commit(CPU* c, u64 name) { return commit(c, SYM_COMMIT, "Commit", name); }
 u32 nnfs_commit_option(CPU* c, u64 name, u64 option) {
     (void)option;
-    return commit(c, SYM_COMMIT_OPT, name);
+    return commit(c, SYM_COMMIT_OPT, "Commit", name);
 }
-u32 nnfs_commit_save_data(CPU* c, u64 name) { return commit(c, SYM_COMMIT_SAVE, name); }
+u32 nnfs_commit_save_data(CPU* c, u64 name) { return commit(c, SYM_COMMIT_SAVE, "CommitSaveData", name); }
 
 /* ---- save data and cache storage that the console makes through am and the file system service. The host's folders
    take what a game writes, so nothing is ever missing space: a save and a cache storage are made when they are
@@ -1479,7 +1485,7 @@ u32 nnfs_mount_sd_card(CPU* c, u64 name) {
         if (r)
             g_hle.nnfs.mounts[m] = (NMount){0};
         else {
-            mount_root_set(m, root, 0);
+            mount_root_set(m, root, 0, 0);
             LOG("nn::fs: MountSdCard(\"%s\") native\n", s);
         }
     }

@@ -69,8 +69,7 @@ which says the folder is laid out so:
 | --- | --- |
 | The save is opened | `1/` becomes a copy of `0/`: what a run wrote and did not commit is gone. With no `0/`, a commit was cut short: it is finished from `1/`, and the log says so |
 | The game writes | in `1/` alone |
-| `Commit` | refused (WriteModeFileNotClosed, the file named in the log) while a file of the save is open for writing. Else `0/` is renamed `_/`, `_/` becomes a copy of `1/` and is renamed `0/` |
-| `IMultiCommitManager`'s Commit | each save's Commit in turn, every one even after one fails; the first failure is the answer |
+| `Commit`, `CommitSaveData` | refused (WriteModeFileNotClosed, the file named in the log, which the SDK stops the game on) while a file of the save is open for writing. Else `0/` is renamed `_/`, `_/` becomes a copy of `1/` and is renamed `0/` |
 
 The first rename is the commit. A game that dies before it leaves the last commit; one that dies after it leaves `1/`
 whole and no `0/`, which the next open or commit finishes. `0/` is never written in place, so the game's death at any
@@ -80,7 +79,8 @@ Nothing is synced to the disk: a host that loses power during a commit, while th
 working copy (the console refuses the second mount; here `save/system` can be several saves' folder). Temporary
 storage has no commit and is written where it is. What the folder holds beside `0/`, `1/` and `snx-journaled` (a save
 pasted into it by hand) the game does not read: the log names the first such entry once a run for each save type, and
-that a save's files go in `0/`.
+that a save's files go in `0/`. A commit of several saves at once (`nn::fs::Commit` of a list of
+mount names) has no native answer: its SDK code asks fsp-srv, and sm stops the game.
 
 A save's folder with files in it and no `snx-journaled` is one an older version kept, the game's own files in the
 folder itself (a game's own folders may be named `0` and `1`). It is played where it is and written in place, so a
