@@ -995,7 +995,7 @@ static void test_old_files(App* app) {
     assert(!app->setup_on && app->lefts == 2 && strstr(app->left, "save")); /* the device and the account save */
     left_behind(app);
     setup_start(app);
-    assert(app->setup_on && page(app) == SETUP_LEFT);
+    assert(app->setup_on && page(app) == SETUP_LEFT && left_groups(app) == 1); /* the saves' page */
     key(app, SDLK_END);
     for (int n = 0; n < 8 && strcmp(choice_label(app), "Move All"); ++n) key(app, SDLK_DOWN);
     key(app, SDLK_RETURN);
@@ -1130,6 +1130,44 @@ static void test_saves_one_page(App* app) {
     free(file);
     free(config);
     puts("PASS the games' own saves one page, rolling, moved and never deleted");
+}
+
+/* a save as the versions before kept one in the data folder's save/, its files in the folder itself: on the games'
+   saves' page, a line by its path there; Delete All keeps it, said, nothing asked; Move All puts its files in its 0/ */
+static void test_data_saves(App* app) {
+    char *config = config_of(app), *file = join(config, "setup.ini"), path[SNX_PATH_SIZE];
+    const char* labels[GUI_SETUP_CHOICES];
+    put(file, "[setup]\nversion = 1\nnotices = 99\n");
+    assert(!snx_path_format(path, sizeof path, "%s/save/device/0100000000ABC000/d.bin", app->data_dir));
+    put(path, "save");
+    left_behind(app);
+    while (!__atomic_load_n(&app->left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
+    assert(app->lefts == 1 && left_groups(app) == 1);
+    setup_start(app);
+    assert(app->setup_on && page(app) == SETUP_LEFT && setup_labels(app, labels) == 3 &&
+           !strcmp(choice_label(app), "Not Now"));
+    render(app);
+    shows(app, "The games' own saves: 1 game", rgb(app->theme.ink));
+    shows(app, "device/0100000000ABC000  1 KB", rgb(app->theme.ink));
+    shows(app, "Delete All  Stays: a save,", rgb(app->theme.ink));
+    key(app, SDLK_UP); /* round to Delete All: it keeps the save, said, nothing asked */
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown && app->setup_failed &&
+           !strcmp(app->message, "Delete All deletes none of these: a save and the console's keys are only moved"));
+    assert(snx_is_file(path));
+    key(app, SDLK_UP); /* Move All: into its last commit */
+    key(app, SDLK_RETURN);
+    assert(app->left_did == 1 && !snx_path_exists(path));
+    assert(!snx_path_format(path, sizeof path, "%s/save/device/0100000000ABC000/" SNX_SAVE_COMMITTED "/d.bin",
+                            app->data_dir) &&
+           snx_is_file(path));
+    key(app, SDLK_RETURN);
+    assert(!app->setup_on);
+    assert(!snx_path_format(path, sizeof path, "%s/save", app->data_dir) && !snx_remove_tree(path));
+    left_behind(app);
+    free(file);
+    free(config);
+    puts("PASS a save of the data folder's save/ on the saves' page, kept by Delete All, moved into its 0/");
 }
 
 /* in another language: the notices in its words (setup.c marks them), and the rows' labels padded to the columns their
@@ -1435,6 +1473,7 @@ int main(void) {
     test_clean_notice(&app);
     test_old_files(&app);
     test_saves_one_page(&app);
+    test_data_saves(&app);
     test_translated(&app);
     test_places(&app);
     test_skip(&app);
