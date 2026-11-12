@@ -3888,6 +3888,14 @@ msgid "Overwrite"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Clean Now"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Not Now"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Next"
 msgstr ""
 
@@ -3960,6 +3968,11 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Not moved. See docs/user/deprecations.md"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Cleaned: %d done, %d not"
 msgstr ""
 
 #: src/gui/main.c
@@ -4165,10 +4178,6 @@ msgid "Move Old Files? %d move"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Nothing to clean: no [Deprecated] in a game's .ini, no old keys"
-msgstr ""
-
-#: src/gui/main.c
 #, c-format
 msgid "Clean Old Settings? [Deprecated] in %d .ini, %d old keys"
 msgstr ""
@@ -4194,6 +4203,10 @@ msgid "Clean Old Settings? %d old key"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Nothing to clean: no [Deprecated] in a game's .ini, no old keys"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Every setting is at its default"
 msgstr ""
 
@@ -4205,11 +4218,6 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Reset to Defaults? %d setting changes"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Cleaned: %d done, %d not"
 msgstr ""
 
 #: src/gui/main.c
