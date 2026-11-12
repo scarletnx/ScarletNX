@@ -1196,8 +1196,11 @@ void vk_defer_image(VkImage img, VmaAllocation a, VkImageView v1, VkImageView v2
     dead_push(dead_slot(), (Dead){.img = img, .mem = a, .v1 = v1, .v2 = v2});
 }
 void vk_defer_buffer(VkBuffer b, VmaAllocation a) { dead_push(dead_slot(), (Dead){.buf = b, .mem = a}); }
+/* on the list its release goes on, so they leave the count when the release is performed: counted on a fresh slot
+   before the release that started it, they left at that slot's recycling */
 void vk_defer_bytes(u64 bytes) {
-    g_fr[g_cur].dead_bytes += bytes;
+    if (!bytes) return;
+    dead_slot()->dead_bytes += bytes;
     g_dead_bytes += bytes;
 }
 u64 vk_deferred_bytes(void) { return g_dead_bytes; }
