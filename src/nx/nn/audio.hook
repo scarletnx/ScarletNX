@@ -62,3 +62,56 @@ hook _ZN2nn5audio36AcquireAudioOutputDeviceNotificationEPNS_2os11SystemEventE(ad
 hook _ZN2nn5audio35AcquireAudioInputDeviceNotificationEPNS_2os11SystemEventE(addr event) = nnaudio_acquire_device_notification
 hook _ZN2nn5audio36ReleaseAudioOutputDeviceNotificationEPNS_2os11SystemEventE(addr event) = nnaudio_release_device_notification
 hook _ZN2nn5audio35ReleaseAudioInputDeviceNotificationEPNS_2os11SystemEventE(addr event) = nnaudio_release_device_notification
+
+# What the system asks nn::audio of a game's sound, with no session: the applet manager's calls by a process's
+# AppletResourceUserId (audout:a, audin:a, audren:a and aud:a: registering it, suspending and resuming its sound with
+# a fade, its volumes) and the debugger's (audout:d, audin:d, audren:d, aud:d, and the DSP's load from auddev). A game
+# has no access to those services and calls none of them: each answers success with nothing done, a volume reads 1,
+# the DSP's load 0. The names changed at SDK 4 (the suspends lose their SystemEvent), 11 (one call for outs, ins and
+# renderers) and 17 (the DSP's statistics); exported by an SDK of every major version read, 1 to 20
+family nn_audio_applet
+hook _ZN2nn5audio26RequestResumeAudioForDebugENS_6applet20AppletResourceUserIdE(u64 user) -> u32 = nnaudio_applet_user
+hook _ZN2nn5audio27RequestSuspendAudioForDebugENS_6applet20AppletResourceUserIdE(u64 user) -> u32 = nnaudio_applet_user
+hook _ZN2nn5audio28RegisterAppletResourceUserIdENS_6applet20AppletResourceUserIdE(u64 user) -> u32 = nnaudio_applet_user
+hook _ZN2nn5audio29RequestResumeAudioInsForDebugENS_6applet20AppletResourceUserIdE(u64 user) -> u32 = nnaudio_applet_user
+hook _ZN2nn5audio30RequestResumeAudioOutsForDebugENS_6applet20AppletResourceUserIdE(u64 user) -> u32 = nnaudio_applet_user
+hook _ZN2nn5audio30RequestSuspendAudioInsForDebugENS_6applet20AppletResourceUserIdE(u64 user) -> u32 = nnaudio_applet_user
+hook _ZN2nn5audio30UnregisterAppletResourceUserIdENS_6applet20AppletResourceUserIdE(u64 user) -> u32 = nnaudio_applet_user
+hook _ZN2nn5audio31RequestSuspendAudioOutsForDebugENS_6applet20AppletResourceUserIdE(u64 user) -> u32 = nnaudio_applet_user
+hook _ZN2nn5audio35RequestResumeAudioRenderersForDebugENS_6applet20AppletResourceUserIdE(u64 user) -> u32 = nnaudio_applet_user
+hook _ZN2nn5audio36RequestSuspendAudioRenderersForDebugENS_6applet20AppletResourceUserIdE(u64 user) -> u32 = nnaudio_applet_user
+hook _ZN2nn5audio18RequestResumeAudioENS_6applet20AppletResourceUserIdENS_8TimeSpanE(u64 user, i64 fade) -> u32 = nnaudio_applet_fade
+hook _ZN2nn5audio19RequestSuspendAudioENS_6applet20AppletResourceUserIdENS_8TimeSpanE(u64 user, i64 fade) -> u32 = nnaudio_applet_fade
+hook _ZN2nn5audio21RequestResumeAudioInsENS_6applet20AppletResourceUserIdENS_8TimeSpanE(u64 user, i64 fade) -> u32 = nnaudio_applet_fade
+hook _ZN2nn5audio22RequestResumeAudioOutsENS_6applet20AppletResourceUserIdENS_8TimeSpanE(u64 user, i64 fade) -> u32 = nnaudio_applet_fade
+hook _ZN2nn5audio22RequestSuspendAudioInsENS_6applet20AppletResourceUserIdENS_8TimeSpanE(u64 user, i64 fade) -> u32 = nnaudio_applet_fade
+hook _ZN2nn5audio23RequestSuspendAudioOutsENS_6applet20AppletResourceUserIdENS_8TimeSpanE(u64 user, i64 fade) -> u32 = nnaudio_applet_fade
+hook _ZN2nn5audio27RequestResumeAudioRenderersENS_6applet20AppletResourceUserIdENS_8TimeSpanE(u64 user, i64 fade) -> u32 = nnaudio_applet_fade
+hook _ZN2nn5audio28RequestSuspendAudioRenderersENS_6applet20AppletResourceUserIdENS_8TimeSpanE(u64 user, i64 fade) -> u32 = nnaudio_applet_fade
+hook _ZN2nn5audio21RequestResumeAudioInsENS_6applet20AppletResourceUserIdENS_8TimeSpanEPNS_2os15SystemEventTypeE(u64 user, i64 fade, addr event) -> u32 = nnaudio_applet_fade_event
+hook _ZN2nn5audio22RequestResumeAudioOutsENS_6applet20AppletResourceUserIdENS_8TimeSpanEPNS_2os15SystemEventTypeE(u64 user, i64 fade, addr event) -> u32 = nnaudio_applet_fade_event
+hook _ZN2nn5audio22RequestSuspendAudioInsENS_6applet20AppletResourceUserIdENS_8TimeSpanEPNS_2os15SystemEventTypeE(u64 user, i64 fade, addr event) -> u32 = nnaudio_applet_fade_event
+hook _ZN2nn5audio23RequestSuspendAudioOutsENS_6applet20AppletResourceUserIdENS_8TimeSpanEPNS_2os15SystemEventTypeE(u64 user, i64 fade, addr event) -> u32 = nnaudio_applet_fade_event
+hook _ZN2nn5audio27RequestResumeAudioRenderersENS_6applet20AppletResourceUserIdENS_8TimeSpanEPNS_2os15SystemEventTypeE(u64 user, i64 fade, addr event) -> u32 = nnaudio_applet_fade_event
+hook _ZN2nn5audio28RequestSuspendAudioRenderersENS_6applet20AppletResourceUserIdENS_8TimeSpanEPNS_2os15SystemEventTypeE(u64 user, i64 fade, addr event) -> u32 = nnaudio_applet_fade_event
+hook _ZN2nn5audio30GetAudioInsProcessMasterVolumeEPfNS_6applet20AppletResourceUserIdE(addr volume, u64 user) -> u32 = nnaudio_applet_get_volume
+hook _ZN2nn5audio31GetAudioOutsProcessMasterVolumeEPfNS_6applet20AppletResourceUserIdE(addr volume, u64 user) -> u32 = nnaudio_applet_get_volume
+hook _ZN2nn5audio31GetAudioOutsProcessRecordVolumeEPfNS_6applet20AppletResourceUserIdE(addr volume, u64 user) -> u32 = nnaudio_applet_get_volume
+hook _ZN2nn5audio32GetAudioInputProcessMasterVolumeEPfNS_6applet20AppletResourceUserIdE(addr volume, u64 user) -> u32 = nnaudio_applet_get_volume
+hook _ZN2nn5audio33GetAudioOutputProcessMasterVolumeEPfNS_6applet20AppletResourceUserIdE(addr volume, u64 user) -> u32 = nnaudio_applet_get_volume
+hook _ZN2nn5audio33GetAudioOutputProcessRecordVolumeEPfNS_6applet20AppletResourceUserIdE(addr volume, u64 user) -> u32 = nnaudio_applet_get_volume
+hook _ZN2nn5audio36GetAudioRenderersProcessMasterVolumeEPfNS_6applet20AppletResourceUserIdE(addr volume, u64 user) -> u32 = nnaudio_applet_get_volume
+hook _ZN2nn5audio36GetAudioRenderersProcessRecordVolumeEPfNS_6applet20AppletResourceUserIdE(addr volume, u64 user) -> u32 = nnaudio_applet_get_volume
+hook _ZN2nn5audio30SetAudioInsProcessMasterVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE(u64 user, f32 volume, i64 fade) -> u32 = nnaudio_applet_set_volume
+hook _ZN2nn5audio31SetAudioOutsProcessMasterVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE(u64 user, f32 volume, i64 fade) -> u32 = nnaudio_applet_set_volume
+hook _ZN2nn5audio31SetAudioOutsProcessRecordVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE(u64 user, f32 volume, i64 fade) -> u32 = nnaudio_applet_set_volume
+hook _ZN2nn5audio32SetAudioInputProcessMasterVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE(u64 user, f32 volume, i64 fade) -> u32 = nnaudio_applet_set_volume
+hook _ZN2nn5audio33SetAudioOutputProcessMasterVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE(u64 user, f32 volume, i64 fade) -> u32 = nnaudio_applet_set_volume
+hook _ZN2nn5audio33SetAudioOutputProcessRecordVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE(u64 user, f32 volume, i64 fade) -> u32 = nnaudio_applet_set_volume
+hook _ZN2nn5audio36SetAudioRenderersProcessMasterVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE(u64 user, f32 volume, i64 fade) -> u32 = nnaudio_applet_set_volume
+hook _ZN2nn5audio36SetAudioRenderersProcessRecordVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE(u64 user, f32 volume, i64 fade) -> u32 = nnaudio_applet_set_volume
+hook _ZN2nn5audio11GetDspUsageEv() -> u32 = nnaudio_get_dsp_usage
+hook _ZN2nn5audio16GetDspStatisticsEPNS0_13DspStatisticsE(addr statistics) -> u32 = nnaudio_get_dsp_statistics
+hook _ZN2nn5audio23GetAppletStateSummariesEPNS0_18AppletStateSummaryEi(addr summaries, i32 count) -> i32 = nnaudio_get_applet_state_summaries
+hook _ZN2nn5audio25EnableDspUsageMeasurementEv() = nnaudio_set_dsp_usage_measurement
+hook _ZN2nn5audio26DisableDspUsageMeasurementEv() = nnaudio_set_dsp_usage_measurement

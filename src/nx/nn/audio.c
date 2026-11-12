@@ -499,6 +499,53 @@ void nnaudio_release_device_notification(CPU* c, u64 event) {
     hook_guest_call(c, fn, event, 0, 0, 0);
 }
 
+/* ============================================================ the system's calls */
+/* What the applet manager and a debugger ask nn::audio of a game's sound, by the game's AppletResourceUserId: to
+   register it, to suspend and resume its sound with a fade, and its volumes; and the DSP's load. The services behind
+   them (audout:a, audren:a, aud:a, their :d, auddev) take no session from a game, so no game calls these: each
+   answers that it was done, with nothing to do. Nothing here plays a process louder or softer than the device */
+u32 nnaudio_applet_user(CPU* c, u64 user) {
+    (void)c, (void)user;
+    return 0;
+}
+u32 nnaudio_applet_fade(CPU* c, u64 user, i64 fade) {
+    (void)c, (void)user, (void)fade;
+    return 0;
+}
+/* up to SDK 3 a suspend or a resume gives an event for the fade's end, which the SDK attaches to the caller's
+   SystemEvent: here the fade is over at once, so the event is signaled from the start */
+u32 nnaudio_applet_fade_event(CPU* c, u64 user, i64 fade, u64 event) {
+    (void)user, (void)fade;
+    if (event) device_event(c, event, "audio fade", 1);
+    return 0;
+}
+u32 nnaudio_applet_get_volume(CPU* c, u64 volume, u64 user) {
+    f32 one = 1.0f;
+    (void)user;
+    if (volume) memcpy(hook_host(c, volume), &one, sizeof one);
+    return 0;
+}
+u32 nnaudio_applet_set_volume(CPU* c, u64 user, f32 volume, i64 fade) {
+    (void)c, (void)user, (void)volume, (void)fade;
+    return 0;
+}
+/* no applet's state to list */
+i32 nnaudio_get_applet_state_summaries(CPU* c, u64 summaries, i32 count) {
+    (void)c, (void)summaries, (void)count;
+    return 0;
+}
+/* the DSP's load: the runtime has no audio DSP to measure, so the measurement turns on and off with nothing behind
+   it, the usage reads 0 and the statistics stay as the caller left them */
+void nnaudio_set_dsp_usage_measurement(CPU* c) { (void)c; }
+u32 nnaudio_get_dsp_usage(CPU* c) {
+    (void)c;
+    return 0;
+}
+u32 nnaudio_get_dsp_statistics(CPU* c, u64 statistics) {
+    (void)c, (void)statistics;
+    return 0;
+}
+
 /* ============================================================ the device's volume, and save states */
 void nnaudio_out_device_volume(void) {
     u32 i;
