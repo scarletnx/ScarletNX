@@ -111,8 +111,9 @@ u32 ev_handle(u32 ev) {
     test_handles++;
     return 7;
 }
-/* hook/codec.c's: the event the SDK's AttachReadableHandleToSystemEvent would attach, with the handle's reference;
-   the guest address it was attached to is kept */
+/* hook/codec.c's, by its contract (tests/hook_event_reference.c checks the real one): the event the SDK's
+   AttachReadableHandleToSystemEvent would attach, with the handle's reference and one for the caller to drop; the
+   guest address it was attached to is kept */
 static u64 test_attached_to[4];
 static KEvent test_event_pool[16];
 static u32 test_event_next;
@@ -123,7 +124,7 @@ KEvent* hook_attach_event(CPU* c, u64 event, const char* name) {
     CHECK(test_event_next < 16);
     e = &test_event_pool[test_event_next++];
     e->o.type = KO_EVENT;
-    e->o.refs = 1; /* the handle's */
+    e->o.refs = 2; /* the handle's and the caller's */
     test_events++;
     test_attached_to[test_attached++ % 4] = event;
     return e;
@@ -237,8 +238,8 @@ static void test_queries(void) {
     nnaudio_stop_out(&cpu, T_OUT);
     CHECK(nnaudio_get_out_state(&cpu, &L, T_OUT) == 1 && nnaudio_get_out_buffer_count(&cpu, T_OUT) == 0);
     CHECK(nnaudio_contains_out_buffer(&cpu, T_OUT, B(0x22)) == 1);
-    /* RegisterBufferEvent: a new event attached to the game's SystemEvent, the out's own reference beside the
-       handle's; a second SystemEvent gets a handle to the same event */
+    /* RegisterBufferEvent: a new event attached to the game's SystemEvent, held by the out's reference and the
+       handle's, and no third; a second SystemEvent gets a handle to the same event */
     CHECK(q->ev == 0);
     nnaudio_register_buffer_event(&cpu, T_OUT, EVENT);
     CHECK(q->ev && test_attached == attached + 1 && test_attached_to[attached % 4] == EVENT);
@@ -768,9 +769,16 @@ int main(void) {
     test_table();
     test_a32();
     for (u32 i = 0; i < AUDOUT_MAX; i++) CHECK(g_hle.audio.outs_pool[i].guest == 0);
-    /* every out is closed, and no event went with one: each is still the game's, through its SystemEvent's handle */
+    /* every out is closed, and no event went with one: each is still the game's, through its SystemEvent's handle.
+       Nothing else holds one: the references left are the handles', one from each attach and one from each handle
+       a second SystemEvent got */
     CHECK(test_event_next > 0 && test_events == test_event_next);
-    for (u32 i = 0; i < test_event_next; i++) CHECK(test_event_pool[i].o.refs >= 1);
+    unsigned held = 0;
+    for (u32 i = 0; i < test_event_next; i++) {
+        CHECK(test_event_pool[i].o.refs >= 1);
+        held += test_event_pool[i].o.refs;
+    }
+    CHECK(held == test_event_next + test_handles);
     printf("nn_audio: %u checks\n", test_checks);
     free(g_mem);
     return 0;
