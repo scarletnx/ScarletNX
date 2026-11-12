@@ -279,8 +279,93 @@ void vk_bc7_level_key(const u64 content[2], u32 w, u32 h, u32 depth, u32 layers,
     vk_bc7_key(content, &lv, key);
 }
 
+/* astc_dump: each whole level's blocks as the decoder reads them (deswizzled on the GPU, so the CPU never has them in
+   rows), copied strip by strip into the frame's readback ring and written into the level's .astc file once their
+   submission is done. DUMP_MAX bytes a run, a debugging aid */
+#define DUMP_MAX (2ull << 30)
+typedef struct {
+    u8* p;
+    VmaAllocation mem;
+    u64 off, size, sub, at;
+    u32 file;
+} AstcDump;
+static struct {
+    AstcDump* d;
+    u32 n, cap, files;
+    u64 bytes;
+} g_dump;
+static void dump_path(u32 file, char* path, size_t n) {
+    snprintf(path, n, "%s/%06u.astc", g_settings.astc_dump, file);
+}
+/* a new level's file with astcenc's header: the footprint, then width, height and depth in 24 bits each. Its number,
+   or ~0 when the dump is off, full, or the file can't be made */
+static u32 dump_begin(u32 w, u32 h, u32 depth, u32 bw, u32 bh, u64 bytes) {
+    char path[1100];
+    if (!g_settings.astc_dump[0] || g_dump.bytes + bytes > DUMP_MAX) return ~0u;
+    const u8 hdr[16] = {0x13, 0xAB, 0xA1, 0x5C, (u8)bw, (u8)bh, 1, (u8)w, (u8)(w >> 8), (u8)(w >> 16), (u8)h,
+                        (u8)(h >> 8), (u8)(h >> 16), (u8)depth, (u8)(depth >> 8), (u8)(depth >> 16)};
+    dump_path(g_dump.files, path, sizeof path);
+    FILE* f = fopen(path, "wb");
+    if (!f || fwrite(hdr, 1, 16, f) != 16) {
+        LOG_LIMIT(1, "vulkan: astc_dump cannot write %s\n", path);
+        if (f) fclose(f);
+        return ~0u;
+    }
+    fclose(f);
+    g_dump.bytes += bytes;
+    return g_dump.files++;
+}
+/* a strip's blocks, size bytes at off in buf, read back for file `file`, where they go at byte `at` of its blocks */
+static void dump_strip(VkCommandBuffer cb, u32 file, VkBuffer buf, u64 off, u64 size, u64 at) {
+    VkBuffer back;
+    AstcDump d = {.size = size, .at = at, .file = file};
+    if (file == ~0u || !(d.p = vk_stage_back(size, &back, &d.off, &d.mem))) return;
+    if (g_dump.n == g_dump.cap) {
+        u32 cap = g_dump.cap ? g_dump.cap * 2 : 64;
+        AstcDump* grown = realloc(g_dump.d, cap * sizeof *grown);
+        if (!grown) return;
+        g_dump.d = grown;
+        g_dump.cap = cap;
+    }
+    const VkBufferCopy r = {off, d.off, size};
+    rec_CmdCopyBuffer(cb, buf, back, 1, &r);
+    VkBufferMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                                .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .buffer = back,
+                                .offset = d.off,
+                                .size = size};
+    VkDependencyInfo dep = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &b};
+    rec_CmdPipelineBarrier2(cb, &dep);
+    d.sub = vk_submit_number();
+    g_dump.d[g_dump.n++] = d;
+}
+static void dump_landed(u64 sub) {
+    u32 kept = 0;
+    for (u32 i = 0; i < g_dump.n; i++) {
+        AstcDump* d = &g_dump.d[i];
+        if (d->sub > sub) {
+            g_dump.d[kept++] = *d;
+            continue;
+        }
+        char path[1100];
+        dump_path(d->file, path, sizeof path);
+        FILE* f = fopen(path, "r+b");
+        vmaInvalidateAllocation(g_vk.vma, d->mem, d->off, d->size);
+        if (f && !fseek(f, (long)(16 + d->at), SEEK_SET)) fwrite(d->p, 1, d->size, f);
+        if (f) fclose(f);
+    }
+    g_dump.n = kept;
+}
+
 void vk_astc_frame_done(u64 sub) {
     if (sub > g_bg_landed) g_bg_landed = sub;
+    if (g_dump.n) dump_landed(sub);
     for (u32 i = 0; g_astc.captured && i < g_astc.ncaptures; i++) {
         Bc7Capture* c = &g_astc.captures[i];
         if (!c->sub || c->sub > sub) continue;
@@ -1085,6 +1170,11 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
         }
         g_bg.quick += quick && !x && !y0;
     }
+    /* astc_dump: a whole level's blocks, as the decoder reads them */
+    u32 dump = ~0u;
+    if (g_settings.astc_dump[0] && !x && !y0 && !sh && w == (t->w >> level ? t->w >> level : 1) &&
+        h == (t->h >> level ? t->h >> level : 1))
+        dump = dump_begin(w, h, depth, bw, bh, row_in * ny * depth);
     for (u32 z = 0; z < depth; z += slices) {
         u32 nz = depth - z < slices ? depth - z : slices;
         for (u32 y = 0; y < ny; y += nrows) {
@@ -1104,6 +1194,7 @@ static int astc_upload(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h,
                 if (job) bg_job_free(job);
                 return 0;
             }
+            dump_strip(cb, dump, input, offset, size, ((u64)z * ny + y) * row_in);
             /* the strip's blocks into their place in the snapshot: rows of a slice, or slices */
             if (job && job->snap) {
                 const VkBufferCopy snap = {offset, ((u64)z * ny + y) * row_in, size};
