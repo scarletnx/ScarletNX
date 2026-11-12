@@ -205,7 +205,8 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
     char id[17];
     snprintf(id, sizeof id, "%016llX", (unsigned long long)process->title_id);
     char run[SNX_RUN_LOG_LINE];
-    printf("Game: %s (%s) - %s\n", process->title[0] ? process->title : id, id, snx_build_log_line());
+    printf("ScarletNX - %s (3DS)\nbuild: %s\ntitle ID: %s\n", process->title[0] ? process->title : id,
+           snx_build_log_line(), id);
     snx_run_log_line(run, (long long)time(NULL));
     printf("%s\n", run);
     if (!snx_ctr_present_init(process->memory, frames))
