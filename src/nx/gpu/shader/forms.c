@@ -690,16 +690,17 @@ int shader_supported(u64 w, int op) {
         case O_AL2P: return 1;
         /* ALD and AST: a patch's attributes (bit 31) are its tessellation levels and 30 vectors from 0x20. Which stage
            has which is shader_stage_has's. ALD.O (bit 32) reads a control program's per-vertex outputs. With an index
-           register (an AL2P's result), an input vector of the header's map, at the register plus addr */
+           register (an AL2P's result), an input vector of the header's map, at the register plus addr. The instance
+           and vertex numbers (0x2f8, 0x2fc) come one at a time or as a pair, as the tessellation coordinate does */
         case O_ALD: {
             u32 addr = B(w, 20, 10), count = B(w, 47, 2) + 1;
             if (B(w, 0, 8) + count > 255) return 0;
             if (B(w, 8, 8) != 255) return !B(w, 31, 1) && !B(w, 32, 1);
             if (B(w, 31, 1)) return addr + count * 4 <= 0x200;
-            return (addr >= 0x70 && addr + count * 4 <= 0x280) ||
-                   (addr == 0x6c && count == 1) || (addr >= 0x2c0 && addr + count * 4 <= 0x2e0) ||
-                   ((addr == 0x60 || addr == 0x2f4 || addr == 0x2f8 || addr == 0x2fc) && count == 1) ||
-                   (addr == 0x2f0 && count <= 2);
+            return (addr >= 0x70 && addr + count * 4 <= 0x280) || (addr == 0x6c && count == 1) ||
+                   (addr >= 0x2c0 && addr + count * 4 <= 0x2e0) ||
+                   ((addr == 0x60 || addr == 0x2f4 || addr == 0x2fc) && count == 1) ||
+                   ((addr == 0x2f0 || addr == 0x2f8) && count <= 2);
         }
         /* AST also takes the viewport mask (0x3a0): what it holds is checked over the program (to_spirv) */
         case O_AST: {
