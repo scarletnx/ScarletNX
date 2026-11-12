@@ -1565,8 +1565,10 @@ static int etc_kind_of(int kind) {
                               EAC_RG,       EAC_RG_SNORM, 0,         0,     ETC2_RGBA};
     return k[kind];
 }
-/* bw x bh blocks of kind through texconv (vk_tc_convert) as f says, into a readback buffer of out_size bytes */
-static u8* tc_blocks(const VkFmt* f, const u8* blocks, u32 w, u32 bw, u32 bh, u64* out_size) {
+/* bw x bh blocks of kind through texconv (vk_tc_convert) as f says, into a readback buffer of out_size bytes; with
+   piece rows, as texture.c's up_convert cuts an encoder's conversion: pieces of that many rows at their rows' offsets
+   in and out, each in a submission of its own */
+static u8* tc_blocks_in(const VkFmt* f, const u8* blocks, u32 w, u32 bw, u32 bh, u32 piece, u64* out_size) {
     u32 bb = f->bpp, pitch = (bw * bb + 15) / 16 * 16;
     u64 at, cap;
     VkBuffer staged, rb;
@@ -1577,13 +1579,23 @@ static u8* tc_blocks(const VkFmt* f, const u8* blocks, u32 w, u32 bw, u32 bh, u6
     VkBuffer scratch = vk_bl_scratch(*out_size, &cap);
     u8* out = vk_readback_buffer(*out_size, &rb);
     vk_bl_barrier(vk_cmd(), 1);
-    if (!vk_tc_convert(vk_cmd(), f, w, bh, 1, staged, at, pitch, scratch, 0)) fatal("conversion refused\n");
+    if (!piece) piece = bh;
+    for (u32 y = 0; y < bh; y += piece) {
+        if (y) vk_submit_split();
+        u32 n = bh - y < piece ? bh - y : piece;
+        if (!vk_tc_convert(vk_cmd(), f, w, n, 1, staged, at + (u64)y * pitch, pitch, scratch,
+                           y * vk_tc_out_size(&s, 1, 1)))
+            fatal("conversion refused\n");
+    }
     vk_bl_barrier(vk_cmd(), 0);
     VkBufferCopy c = {0, 0, *out_size};
     rec_CmdCopyBuffer(vk_cmd(), scratch, rb, 1, &c);
     vk_finish();
     vk_readback_ready();
     return out;
+}
+static u8* tc_blocks(const VkFmt* f, const u8* blocks, u32 w, u32 bw, u32 bh, u64* out_size) {
+    return tc_blocks_in(f, blocks, w, bw, bh, 0, out_size);
 }
 /* where the device samples ETC2: its own decoding of the blocks the transcoder wrote (w x h, whole blocks), blitted
    into RGBA32F, against tests/support/etc2.c's. ETC2's bytes are exact by the specification, EAC's 11 bits within half
@@ -1664,8 +1676,10 @@ static void etc2_native(int kind, const u8* etc, u32 w, u32 h) {
     vk_image_destroy(dst, dst_mem);
 }
 /* texconv.comp's ETC2 build on the device against the CPU's run of it (tests/glsl/bcn_etc2_cpu.cpp): random blocks of
-   every kind but BC6H, which has no ETC2 counterpart, in an image whose sides aren't multiples of 4, byte for byte;
-   then the device's own decoding of them, where it samples ETC2 */
+   every kind but BC6H, which has no ETC2 counterpart, in an image whose sides aren't multiples of 4, byte for byte,
+   whole and in pieces of 3 rows a submission (rows 17 blocks wide: offsets of no storage alignment), as an encoder's
+   shape bounds a submission (submit_units, which the decoders' don't); then the device's own decoding of them, where
+   it samples ETC2 */
 static void etc2_case(void) {
     u32 w = 67, h = 37, bw = 17, bh = 10;
     for (int kind = BCN_BC1; kind <= BCN_BC7; kind++) {
@@ -1683,6 +1697,20 @@ static void etc2_case(void) {
         for (u32 i = 0; i < bw * bh; i++)
             if (memcmp(out + (size_t)i * bb, want + (size_t)i * bb, bb))
                 fatal("texconv's ETC2 build: BCn kind %d block %u differs from the CPU's\n", kind, i);
+        VkFmt d = f;
+        d.vk = decoded_of(kind);
+        if (!vk_tc_shape(&f, w).submit_units || vk_tc_shape(&d, w).submit_units)
+            fatal("texconv's ETC2 build: BCn kind %d bounds a submission at %u blocks encoded, %u decoded\n", kind,
+                  vk_tc_shape(&f, w).submit_units, vk_tc_shape(&d, w).submit_units);
+        u64 split = vk_submit_number();
+        out = tc_blocks_in(&f, blocks, w, bw, bh, 3, &out_size);
+        if (vk_submit_number() - split < 4)
+            fatal("texconv's ETC2 build: %llu submissions for 4 pieces\n",
+                  (unsigned long long)(vk_submit_number() - split));
+        for (u32 i = 0; i < bw * bh; i++)
+            if (memcmp(out + (size_t)i * bb, want + (size_t)i * bb, bb))
+                fatal("texconv's ETC2 build in pieces of 3 rows: BCn kind %d block %u differs from the CPU's\n", kind,
+                      i);
         etc2_native(kind, want, 64, 40);
         free(blocks);
         free(want);

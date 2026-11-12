@@ -7,7 +7,8 @@
    levels, a level read through gmem_read, a pitch-linear level, a converted format, and a sparse texture's levels
    whose rows are whole tiles. No level takes a buffer of its size on the CPU. Levels past the allocation cap go in
    strips, each region checked where it lands, and an ASTC level's block rows reach vk_astc_upload strip by strip,
-   deswizzled */
+   deswizzled. BCn encoded again (an encoder's conversion) goes to the GPU in pieces, no submission holding more of its
+   blocks than the shape bounds, each piece recorded into the command buffer recording then */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -123,7 +124,8 @@ static u8 copied[16u << 20];
 static u64 copied_used;
 static void VKAPI_CALL copy_to_image(VkCommandBuffer cb, VkBuffer b, VkImage img, VkImageLayout l, uint32_t n,
                                      const VkBufferImageCopy* r) {
-    (void)cb, (void)img, (void)l;
+    (void)img, (void)l;
+    CHECK(cb == vk_cmd());
     for (u32 i = 0; i < n && nregs < 1024; i++) {
         VkBufferImageCopy c = r[i];
         u32 bpp = c.imageSubresource.aspectMask == VK_IMAGE_ASPECT_STENCIL_BIT ? 1 : copy_bpp;
@@ -198,7 +200,11 @@ int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     (void)what, (void)file, (void)line;
     return r == VK_SUCCESS;
 }
-VkCommandBuffer vk_cmd(void) { return (VkCommandBuffer)(uintptr_t)0xCB; }
+/* submissions ended by vk_submit_split; the command buffer recording is another after each */
+static u32 g_splits;
+VkCommandBuffer vk_cmd(void) { return (VkCommandBuffer)(uintptr_t)(0xCB0 + g_splits); }
+u64 vk_submit_number(void) { return g_splits + 1; }
+void vk_submit_split(void) { g_splits++; }
 /* the BC7 encoder between frames (texture.c vk_tex_later_frame), which no case here runs: the textures are RGBA8 or
    held as such. They link at every level, and abort if a case ever reaches them */
 int vk_cmd_ready(void) { abort(); }
@@ -359,11 +365,12 @@ int vk_astc_upload_layers(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 level, 
     return 1;
 }
 /* a CPU model of the GPU's moves (vk/blocklinear.c) and conversions (vk/texconv.c), done as they are recorded: the
-   recorded order is the order the barriers keep. Conversions: RGBA4 only, the format the cases convert */
+   recorded order is the order the barriers keep. Conversions: RGBA4, and BC7 encoded again (as ETC2 RGBA8), which
+   stands for an encoder: each block's bytes XOR 0x5A, the shape's submit_units g_enc_bound */
 /* static u32 moves */
 static u32 convs;
 void vk_bl_barrier(VkCommandBuffer cb, int before) {
-    (void)cb;
+    CHECK(cb == vk_cmd());
     bar_state = before ? 1 : 2;
     if (before) batch_moves = 0;
 }
@@ -384,7 +391,7 @@ void vk_bl_range(const VkBlMove* m, u64* lo, u64* hi) {
     *hi = (u64)(zl >> m->bd) * slab + (u64)(((last >> 3) >> m->bh) + 1) * block_row;
 }
 int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u64 bl_at, VkBuffer lin, u64 lin_at) {
-    (void)cb;
+    CHECK(cb == vk_cmd());
     u64 lo, hi;
     vk_bl_range(m, &lo, &hi);
     CHECK(!to_bl && mem_of(bl) && mem_of(lin) && bar_state == 1 && m->lin_pitch % 16 == 0 &&
@@ -401,16 +408,40 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
     return 1;
 }
 int vk_tc_converts(const VkFmt* f) { return f->conv != VKC_NONE && f->conv != VKC_ASTC; }
+static u32 g_enc_bound;
 VkTcShape vk_tc_shape(const VkFmt* f, u32 w) {
+    if (f->conv == VKC_BC7)
+        return (VkTcShape){.units = (w + 3) / 4,
+                           .out_texels = (w + 3) / 4 * 4,
+                           .out_bpp = 4,
+                           .out_rows = 1,
+                           .in_align = 16,
+                           .submit_units = g_enc_bound};
     CHECK(f->conv == VKC_RGBA4);
     return (VkTcShape){.units = (w + 1) / 2, .out_texels = (w + 1) / 2 * 2, .out_bpp = 4, .out_rows = 1, .in_align = 16};
 }
 u64 vk_tc_out_size(const VkTcShape* s, u32 rows, u32 slices) { return (u64)s->out_texels * 4 * rows * slices; }
+/* the encoder's calls and blocks, the most blocks one submission held, and the blocks of the submission recording now
+   (g_enc_in_sub of it) */
+static u32 g_enc_calls;
+static u64 g_enc_blocks, g_enc_most, g_enc_in_sub, g_enc_sub_blocks;
 int vk_tc_convert(VkCommandBuffer cb, const VkFmt* f, u32 w, u32 rows, u32 slices, VkBuffer in, u64 in_at,
                   u32 in_pitch, VkBuffer out, u64 out_at) {
-    (void)cb, (void)f;
+    CHECK(cb == vk_cmd() && mem_of(in) && mem_of(out) && (bar_state == 2 || (bar_state == 1 && !batch_moves)));
+    if (f->conv == VKC_BC7) {
+        u32 units = (w + 3) / 4;
+        u64 blocks = (u64)units * rows * slices;
+        if (g_enc_in_sub != vk_submit_number()) g_enc_in_sub = vk_submit_number(), g_enc_sub_blocks = 0;
+        g_enc_sub_blocks += blocks;
+        g_enc_blocks += blocks;
+        if (g_enc_sub_blocks > g_enc_most) g_enc_most = g_enc_sub_blocks;
+        for (u32 y = 0; y < rows * slices; y++)
+            for (u32 i = 0; i < units * 16; i++)
+                mem_of(out)[out_at + (u64)y * units * 16 + i] = mem_of(in)[in_at + (u64)y * in_pitch + i] ^ 0x5A;
+        g_enc_calls++;
+        return 1;
+    }
     u32 ow = (w + 1) / 2 * 2;
-    CHECK(mem_of(in) && mem_of(out) && (bar_state == 2 || (bar_state == 1 && !batch_moves)));
     for (u32 y = 0; y < rows * slices; y++)
         for (u32 x = 0; x < w; x++) {
             const u8* t = mem_of(in) + in_at + (u64)y * in_pitch + x * 2;
@@ -820,6 +851,56 @@ static u32 model_wrong(void) {
                 wrong += have != want;
             }
     return wrong;
+}
+
+/* BC7 encoded again, which stands for an encoder's conversion: a w x h texel level of d3 slices, block linear (blocks
+   2^bh GOBs high and 2^bd slices deep) or pitch linear, under a bound of bound blocks a submission. It takes splits
+   more submissions (vk_submit_split) and calls conversions of its blocks once each, no submission holds more of them
+   than bound (or a row's, where a row has more), and every block lands where the image has it, its bytes the guest's
+   encoded */
+static void enc_case(u32 w, u32 h, u32 d3, u32 bh, u32 bd, int bl, u32 bound, u32 splits, u32 calls) {
+    Surf t = tex(w, h, d3, 1, 16, bh, bd, bl);
+    t.f.bw = t.f.bh = 4;
+    t.f.vk = VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+    t.f.conv = VKC_BC7;
+    const u32 bw = (w + 3) / 4, rows = (h + 3) / 4, rowb = bw * 16;
+    if (!bl) t.pitch = (rowb + 31) & ~31u;
+    stage_used = copied_used = nregs = 0;
+    copy_bpp = 16, copy_bw = copy_bh = 4;
+    g_enc_bound = bound;
+    g_enc_most = 0;
+    const u32 splits0 = g_splits, calls0 = g_enc_calls;
+    const u64 blocks0 = g_enc_blocks;
+    CHECK(tex_upload(&t));
+    const u64 most = bound > bw ? bound : bw, blocks = g_enc_blocks - blocks0;
+    if (g_splits - splits0 != splits || g_enc_calls - calls0 != calls || g_enc_most > most ||
+        blocks != (u64)bw * rows * d3)
+        fprintf(
+            stderr,
+            "BC7 encoded again, %ux%ux%u texels under %u blocks a submission: %u more submissions (%u expected), %u "
+            "conversions (%u expected) of %llu blocks (%u), at most %llu blocks in one (%llu allowed)\n",
+            w, h, d3, bound, g_splits - splits0, splits, g_enc_calls - calls0, calls, (unsigned long long)blocks,
+            bw * rows * d3, (unsigned long long)g_enc_most, (unsigned long long)most);
+    CHECK(g_splits - splits0 == splits && g_enc_calls - calls0 == calls && g_enc_most <= most &&
+          blocks == (u64)bw * rows * d3);
+    u32 lbh = 0, lbd = 0, covered = 0;
+    if (bl) bl_level_size(t.w, t.h, d3, &t.f, t.bh, t.bd, t.tile_w, 0, &lbh, &lbd);
+    const u32 gw = level_gobs(&t, rowb, rows, d3);
+    for (u32 i = 0; i < nregs; i++) {
+        const VkBufferImageCopy* r = &regs[i];
+        const u32 y0 = (u32)r->imageOffset.y / 4, z0 = (u32)r->imageOffset.z, n = (r->imageExtent.height + 3) / 4;
+        const u64 pitch = (u64)r->bufferRowLength / 4 * 16, height = r->bufferImageHeight / 4;
+        CHECK(r->imageOffset.x == 0 && r->imageExtent.width == w && y0 + n <= rows && pitch >= rowb && height >= n);
+        for (u32 z = z0; z < z0 + r->imageExtent.depth; z++)
+            for (u32 y = y0; y < y0 + n; y++)
+                for (u32 x = 0; x < rowb; x++) {
+                    u64 o = bl ? bl_offset_g(x, y, z, gw, rows, lbh, lbd) : ((u64)z * rows + y) * t.pitch + x;
+                    CHECK(copied[r->bufferOffset + ((u64)(z - z0) * height + (y - y0)) * pitch + x] ==
+                          (guest[o] ^ 0x5A));
+                }
+        covered += n * r->imageExtent.depth;
+    }
+    CHECK(covered == rows * d3);
 }
 
 static u32 g_image_copies;
@@ -1461,6 +1542,25 @@ int main(void) {
                 CHECK(got == want);
             }
     g_vk.alloc_cap = 256ull << 20;
+    /* BC7 encoded again goes to the GPU in pieces of whole rows of blocks, a submission holding at most the shape's
+       submit_units of them, as a phone's kernel ends a submission that runs past 2 s; a conversion that bounds none
+       (RGBA4, above) took no submission of its own. A 64x64 level block linear (16x16 blocks) under 40 blocks: 8 pieces
+       of 2 rows, 7 more submissions; then a pitch linear one of 16x8 blocks in the same submission, whose first piece
+       already doesn't fit (32 of the 40 are the last one's), 4 more; a volume of 4 slices of 4x4 blocks, in blocks of 2
+       slices, under 12 blocks: its rows and slices as one run of 16 rows, pieces of 3 that cross from one slice into
+       the next, 6 more; rows of 16 blocks under 10, each row alone; 8x8 blocks under 40 where the last row's 16 are,
+       3 rows into the room left and 5 after; once another submission ended (the frame's), 8x5 blocks under 40 in it
+       whole; and in a fresh one, rows of 16 blocks under 10: the first with no submission ended before it */
+    CHECK(g_splits == 0);
+    enc_case(64, 64, 1, 2, 0, 1, 40, 7, 8);
+    enc_case(64, 32, 1, 0, 0, 0, 40, 4, 4);
+    enc_case(16, 16, 4, 0, 1, 1, 12, 6, 6);
+    enc_case(64, 16, 1, 1, 0, 1, 10, 4, 4);
+    enc_case(32, 32, 1, 0, 0, 1, 40, 1, 2);
+    vk_submit_split();
+    enc_case(32, 20, 1, 0, 0, 1, 40, 0, 1);
+    vk_submit_split();
+    enc_case(64, 8, 1, 0, 0, 1, 10, 1, 2);
     /* an ASTC level (4x4 blocks of 16 bytes) of 3 slices: its block rows as vk_astc_upload receives them,
        deswizzled on the GPU */
     Surf k = tex(60, 37, 3, 1, 16, 1, 1, 1);

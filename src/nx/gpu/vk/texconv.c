@@ -64,6 +64,13 @@ static u32 tc_mode(const VkFmt* f) {
 
 int vk_tc_converts(const VkFmt* f) { return f->conv == VKC_NONE ? f->depth && f->stencil : f->conv != VKC_ASTC; }
 
+/* The BCn blocks one submission encodes again at most (VkTcShape's submit_units). A submission is one job of the
+   kernel's GPU scheduler, which ends a job that runs past its timeout, 2 s in kgsl (adreno_drawobj_timeout), and its
+   fence then never signals. An Adreno 610 takes 27 us a block of the ETC2 build: a 2048x2048 level (262144 blocks) is
+   7.1 s of it, which the kernel ended as one dispatch, and as 16 dispatches in one submission. In 16 submissions of
+   these each took 0.44 to 0.48 s, and the level came out whole */
+#define TC_ENCODE_SUBMIT_BLOCKS 16384u
+
 static VkTcShape tc_shape(u32 mode, u32 w) {
     VkTcShape s = {.out_bpp = 4, .out_rows = 1, .in_align = 16};
     if (mode >= TC_BCN_ETC2) {
@@ -73,6 +80,7 @@ static VkTcShape tc_shape(u32 mode, u32 w) {
         s.units = (w + 3) / 4;
         s.out_texels = s.units * 4;
         s.out_bpp = k == TC_BC1 || k == TC_BC4 || k == TC_BC4_SNORM ? 2 : 4;
+        s.submit_units = TC_ENCODE_SUBMIT_BLOCKS;
     } else if (mode <= TC_A5B5G5R1 || (mode >= TC_VI_RGB565 && mode <= TC_VI_RGBA4444)) {
         s.units = (w + 1) / 2;
         s.out_texels = s.units * 2;
