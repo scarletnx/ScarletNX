@@ -280,6 +280,17 @@ setting Vulkan Video decode
     help 1 = H.264 and AV1 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), each where the GPU and
     help its driver have a decode queue for it. Experimental. 0 = FFmpeg decodes them on the CPU. VP9 movies always
     help decode on the CPU
+setting Apple video decode
+    key apple_video
+    only macos
+    label VideoToolbox decode
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = AV1 movies decode on the Apple GPU's media engine with VideoToolbox, and the CPU only copies the picture
+    help into the game's image. 0 = FFmpeg decodes them on the CPU with dav1d. A stream the media engine doesn't take
+    help decodes on the CPU either way, and the log says which one has it
 setting Vulkan driver
     key vulkan_driver
     only macos
