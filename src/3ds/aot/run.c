@@ -122,7 +122,7 @@ static void report_threads(SnxCtrProcess* p) {
     }
     putchar('\n');
     if (p->hooks) {
-        char line[160];
+        char line[256];
         snx_ctr_hooks_report(p->hooks, line, sizeof line);
         printf("  %s\n", line);
     }
@@ -192,7 +192,7 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
     }
     process->ipc_stubs = ipc_stubs;
     if (g_settings.ctr_hooks) {
-        char found[160];
+        char found[256];
         process->hooks = snx_ctr_hooks_find(process, found, sizeof found);
         if (found[0]) printf("%s\n", found);
     }
