@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* audren:u's service side and hwopus (audio.c) through their IPC commands, with a clock the test
-   moves. The native audio outs and audio device have their own test (nn_audio.c) */
+/* hwopus and aud:u (audio.c) through their IPC commands. The native audio outs and audio device have their own test
+   (nn_audio.c), and the renderer its own (nn_audio_renderer.c, audren_host.c) */
 #include "nx/hle/services/services_int.h"
 #include <setjmp.h>
 #include <stdarg.h>
@@ -148,29 +148,6 @@ void svc_register(const char* name, SvcCtor ctor) {
     (void)name;
     (void)ctor;
 }
-/* audren.c's side, recorded: what RequestUpdate handed it and what it answers */
-static struct {
-    SvcObj* renderer;
-    IpcBuf in, out;
-    unsigned updates, opens;
-    int result, refuse;
-    u32 sample_rate;
-} test_audren;
-int audren_update(SvcObj* o, IpcBuf in, IpcBuf out) {
-    CHECK(o == test_audren.renderer);
-    test_audren.in = in;
-    test_audren.out = out;
-    test_audren.updates++;
-    return test_audren.result;
-}
-int audren_open(SvcObj* o, const u8* params) {
-    nn_audio_detail_AudioRendererParameterInternal p;
-    memcpy(&p, params, sizeof p);
-    test_audren.renderer = o;
-    test_audren.sample_rate = p.sample_rate;
-    test_audren.opens++;
-    return !test_audren.refuse;
-}
 void audren_tick(void) {}
 void outstream_tick(u64 now) { (void)now; } /* audio_stream.c's: no output streams here */
 /* fatal: the game stops, which a check expects, with what it said kept */
@@ -243,11 +220,6 @@ static const void* le32s(const u32* v, u32 n) {
     for (u32 i = 0; i < n; i++) snx_st_le32(p + i * 4, v[i]);
     return p;
 }
-static const void* lef(float v) {
-    u32 bits;
-    memcpy(&bits, &v, 4);
-    return le32s(&bits, 1);
-}
 static IpcCtx request(u32 cmd, const void* raw, u32 size) {
     IpcCtx c;
     memset(&c, 0, sizeof c);
@@ -260,134 +232,9 @@ static u32 reply32(IpcCtx* c, u32 off) {
     CHECK(off + 4 <= c->out_size);
     return snx_ld_le32(c->out + off);
 }
-static void command(SvcObj* o, u32 cmd) {
-    IpcCtx c = request(cmd, NULL, 0);
-    CHECK(o->dispatch(o, &c) == 0);
-}
-/* an AutoSelect buffer is sent in both of its lists, the unused one empty: ins in A and X, outs in B and C. This
-   fills the lists up to ins and outs with empty descriptors, for the test to set the ones it uses */
-static void auto_descriptors(IpcCtx* c, int ins, int outs) {
-    c->na = c->nx = ins;
-    c->nb = c->nc = outs;
-}
-static u32 query32(SvcObj* o, u32 cmd) {
-    IpcCtx c = request(cmd, NULL, 0);
-    CHECK(o->dispatch(o, &c) == 0 && c.out_size == 4);
-    return reply32(&c, 0);
-}
 static IpcBuf buffer(u64 addr, u64 size) {
     IpcBuf b = {addr, size, 0};
     return b;
-}
-
-/* IAudioRenderer from OpenAudioRenderer (0): the parameters at 0, the work buffer's size at 0x38, the aruid at 0x40 */
-static void test_renderer(void) {
-    SvcObj* manager = new_audren();
-    u8 raw[0x48] = {0};
-    nn_audio_detail_AudioRendererParameterInternal params;
-    memset(&params, 0, sizeof params);
-    params.sample_rate = 32000;
-    params.sample_count = 160;
-    params.mix_buffer_count = 6;
-    params.voice_count = 24;
-    params.sink_count = 1;
-    params.revision = 0x38564552; /* REV8: "REV8" in memory */
-    memcpy(raw, &params, sizeof params);
-    snx_le32_array(raw, 8);        /* the counts, then the flag bytes at 0x20 */
-    snx_le32_array(raw + 0x24, 4); /* the splitters, the external context and the revision */
-    u64 work = 0x20000;
-    snx_st_le64(raw + 0x38, work);
-    IpcCtx c = request(0, raw, sizeof raw);
-    c.has_pid = 1;
-    c.ncopy = 2;
-    c.copy_h[0] = 0x100;
-    c.copy_h[1] = 0xFFFF8001u;
-    /* parameters audren.c can't make a renderer with fail the open, OperationFailed, with no object */
-    unsigned objects = test_objects;
-    test_audren.refuse = 1;
-    int refused = manager->dispatch(manager, &c);
-    CHECK(c.nout_objs == 1 && !c.out_objs[0]); /* the generated code hands ipc.c the object it didn't get */
-    CHECK(ipc_result(&c, refused) == RC(153, 2) && test_objects == objects);
-    test_audren.refuse = 0;
-    c = request(0, raw, sizeof raw);
-    c.has_pid = 1;
-    c.ncopy = 2;
-    c.copy_h[0] = 0x100;
-    c.copy_h[1] = 0xFFFF8001u;
-    CHECK(manager->dispatch(manager, &c) == 0 && c.nout_objs == 1 && c.out_size == 0);
-    SvcObj* r = c.out_objs[0];
-    CHECK(test_audren.opens == 2 && test_audren.renderer == r && test_audren.sample_rate == 32000);
-    CHECK(query32(r, 0) == 32000 && query32(r, 1) == 160 && query32(r, 2) == 6);
-    CHECK(query32(r, 3) == 1); /* stopped until Start */
-    command(r, 5);
-    CHECK(query32(r, 3) == 0);
-    command(r, 6);
-    CHECK(query32(r, 3) == 1);
-    CHECK(query32(r, 9) == 100); /* the rendering time limit starts at 100% */
-    u32 limit = 75;
-    c = request(8, le32s(&limit, 1), sizeof limit);
-    CHECK(r->dispatch(r, &c) == 0 && query32(r, 9) == 75);
-    /* the voice drop parameter starts at 1 and reads back as set */
-    float drop;
-    u32 bits = query32(r, 13);
-    memcpy(&drop, &bits, sizeof drop);
-    CHECK(drop == 1.0f);
-    drop = 0.5f;
-    c = request(12, lef(drop), sizeof drop);
-    CHECK(r->dispatch(r, &c) == 0);
-    bits = query32(r, 13);
-    memcpy(&drop, &bits, sizeof drop);
-    CHECK(drop == 0.5f);
-    /* RequestUpdate (4): the input in A, the output in B0 and the performance buffer in B1, which audren.c doesn't
-       take. Its result is the command's */
-    c = request(4, NULL, 0);
-    c.na = 1;
-    c.a[0] = buffer(0x3000, 0x400);
-    c.nb = 2;
-    c.b[0] = buffer(0x4000, 0x200);
-    c.b[1] = buffer(0x5000, 0x100);
-    CHECK(r->dispatch(r, &c) == 0 && c.out_size == 0 && test_audren.updates == 1);
-    CHECK(test_audren.in.addr == 0x3000 && test_audren.in.size == 0x400);
-    CHECK(test_audren.out.addr == 0x4000 && test_audren.out.size == 0x200);
-    test_audren.result = RC(153, 41);
-    CHECK(r->dispatch(r, &c) == RC(153, 41) && test_audren.updates == 2);
-    test_audren.result = 0;
-    /* RequestUpdateAuto (10): the same buffers through X0, C0 and C1 */
-    c = request(10, NULL, 0);
-    auto_descriptors(&c, 1, 2);
-    c.x[0] = buffer(0x3100, 0x300);
-    c.c[0] = buffer(0x4100, 0x180);
-    c.c[1] = buffer(0x5100, 0x80);
-    CHECK(r->dispatch(r, &c) == 0 && test_audren.updates == 3);
-    CHECK(test_audren.in.addr == 0x3100 && test_audren.in.size == 0x300);
-    CHECK(test_audren.out.addr == 0x4100 && test_audren.out.size == 0x180);
-    /* QuerySystemEvent (7): the renderer's event, which the audio clock signals every 5 ms */
-    audio_init();
-    c = request(7, NULL, 0);
-    CHECK(r->dispatch(r, &c) == 0 && c.nout_copy == 1 && c.out_copy[0] == 7);
-    kobj_unref(&kev(g_hle.audio.ev)->o);
-    g_hle.audio.ev = 0;
-    svcobj_unref(r);
-    svcobj_unref(manager);
-}
-
-/* GetAudioDeviceService (2) and GetAudioDeviceServiceWithRevisionInfo (4): the device is native (nn/audio.c), with
-   none to hand out, and asking for one stops the game after the threads' calls, naming nn::audio */
-static void test_device(void) {
-    SvcObj* manager = new_audren();
-    u64 raw[2] = {0, 0};
-    for (u32 cmd = 2; cmd <= 4; cmd += 2) {
-        IpcCtx c = request(cmd, raw, cmd == 2 ? 8 : 16);
-        unsigned dumps = test_thread_dumps;
-        test_expect_stop = 1;
-        int stopped = setjmp(test_stopped);
-        if (!stopped) manager->dispatch(manager, &c);
-        test_expect_stop = 0;
-        CHECK(stopped == 1 && test_thread_dumps == dumps + 1);
-        CHECK(strstr(test_stop_text, "audren:u") && strstr(test_stop_text, "the audio device service") &&
-              strstr(test_stop_text, "nn::audio (nn/audio.c)"));
-    }
-    svcobj_unref(manager);
 }
 
 /* hwopus: GetWorkBufferSize (1) and OpenHardwareOpusDecoder (0), the parameters {sample rate, channels} at 0 and the
@@ -554,20 +401,26 @@ static void test_hwopus(void) {
     svcobj_unref(manager);
 }
 
-/* aud:u, the Ounce's manager of managers: the renderer manager it hands out, and the audio out manager, which nothing
-   serves (the outs are native): asking for it stops the game after the threads' calls, naming nn::audio */
+/* aud:u, the Ounce's manager of managers: the audio in manager it hands out, and the audio out and renderer
+   managers, which nothing serves (the outs and the renderer are native): asking for one stops the game after the
+   threads' calls, naming nn::audio */
 static void test_native_manager(void) {
+    static const char* const what[3] = {NULL, "the audio out manager", "the audio renderer manager"};
     SvcObj* aud = new_aud();
-    IpcCtx c = request(2, NULL, 0);
+    IpcCtx c = request(0, NULL, 0);
     CHECK(aud->dispatch(aud, &c) == 0 && c.nout_objs == 1);
     svcobj_unref(c.out_objs[0]);
-    c = request(1, NULL, 0);
-    test_expect_stop = 1;
-    int stopped = setjmp(test_stopped);
-    if (!stopped) aud->dispatch(aud, &c);
-    test_expect_stop = 0;
-    CHECK(stopped == 1 && test_thread_dumps == 1);
-    CHECK(strstr(test_stop_text, "aud:u") && strstr(test_stop_text, "nn::audio (nn/audio.c)"));
+    for (u32 cmd = 1; cmd <= 2; cmd++) {
+        unsigned dumps = test_thread_dumps;
+        c = request(cmd, NULL, 0);
+        test_expect_stop = 1;
+        int stopped = setjmp(test_stopped);
+        if (!stopped) aud->dispatch(aud, &c);
+        test_expect_stop = 0;
+        CHECK(stopped == 1 && test_thread_dumps == dumps + 1);
+        CHECK(strstr(test_stop_text, "aud:u") && strstr(test_stop_text, what[cmd]) &&
+              strstr(test_stop_text, "nn::audio (nn/audio.c)"));
+    }
     svcobj_unref(aud);
 }
 
@@ -580,8 +433,6 @@ int main(void) {
     audio_state_drop();
     audio_state_rebuild();
     CHECK(test_out_drops == 1 && test_out_rebuilds == 1);
-    test_renderer();
-    test_device();
     test_hwopus();
     CHECK(test_objects == 0 && test_events == 0);
     free(g_mem);

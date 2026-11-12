@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# audren:u and hwopus (audio.c, and audren.c for RequestUpdate). The audio outs are native (nn/audio.c)
+# hwopus, audin:u and aud:u (audio.c). The audio outs, the audio device and the audio renderer are native (nn/)
 
-type nn::audio::detail::AudioRendererParameterInternal = struct {
-    u32 sample_rate;
-    u32 sample_count;
-    u32 mix_buffer_count;
-    u32 sub_mix_count;
-    u32 voice_count;
-    u32 sink_count;
-    u32 effect_count;
-    u32 performance_frame_count;
-    b8 is_voice_drop_enabled;
-    u8 reserved;
-    u8 rendering_device;
-    u8 execution_mode;
-    u32 splitter_count;
-    u32 splitter_send_channel_count;
-    u32 external_context_size;
-    u32 revision;
-};
 type nn::audio::AudioInParameter = struct {
     u32 sample_rate;
     u16 channel_count;
@@ -61,41 +43,9 @@ interface nn::audio::detail::INativeAudioManager is aud:u {
     [2] GetAudioRendererManager() -> object<nn::audio::detail::IAudioRendererManager> manager;
 }
 
-interface nn::audio::detail::IAudioRendererManager is audren:u {
-    [0] OpenAudioRenderer(nn::audio::detail::AudioRendererParameterInternal params, u64 work_buffer_size, aruid aruid,
-                          handle<copy, transfer_memory> work_buffer, handle<copy, process> process)
-        -> object<nn::audio::detail::IAudioRenderer> renderer;
-    [1] GetWorkBufferSize(nn::audio::detail::AudioRendererParameterInternal params) -> u64 size;
-    [2] GetAudioDeviceService(nn::applet::AppletResourceUserId aruid) -> object<nn::audio::detail::IAudioDevice> device;
-    # two u64s around the process handle: the SDK's server uses the first whole and the second as 32 bits
-    [3] OpenAudioRendererForManualExecution(nn::audio::detail::AudioRendererParameterInternal params,
-                                            u64 work_buffer_address, handle<copy, process> process,
-                                            u64 work_buffer_size, aruid aruid)
-        -> object<nn::audio::detail::IAudioRenderer> renderer;
-    [4] GetAudioDeviceServiceWithRevisionInfo(nn::applet::AppletResourceUserId aruid, u32 revision)
-        -> object<nn::audio::detail::IAudioDevice> device;
-}
-
-interface nn::audio::detail::IAudioRenderer {
-    [0] GetSampleRate() -> u32 sample_rate;
-    [1] GetSampleCount() -> u32 sample_count;
-    [2] GetMixBufferCount() -> u32 mix_buffer_count;
-    [3] GetState() -> u32 state;
-    [4] RequestUpdate(buffer<u8, 5> input, buffer<u8, 6> output, buffer<u8, 6> performance);
-    [5] Start();
-    [6] Stop();
-    [7] QuerySystemEvent() -> handle<copy, event> event;
-    [8] SetRenderingTimeLimit(u32 percent);
-    [9] GetRenderingTimeLimit() -> u32 percent;
-    [10] RequestUpdateAuto(buffer<u8, 0x21> input, buffer<u8, 0x22> output, buffer<u8, 0x22> performance);
-    @stub [11] ExecuteAudioRendererRendering();
-    [12] SetVoiceDropParameter(f32 parameter);
-    [13] GetVoiceDropParameter() -> f32 parameter;
-}
-
-# the audio device, which nothing here serves: it is native (nn/audio.c), and audren:u's commands 2 and 4 stop the game
-# that asks for it
-interface nn::audio::detail::IAudioDevice {
+# audren:u's manager, which nothing here serves: the audio renderer and the audio device are native
+# (nn/audio_renderer.c, nn/audio.c), and aud:u's command 2 stops the game that asks for it
+interface nn::audio::detail::IAudioRendererManager {
 }
 
 # audout:u's manager, which nothing here serves: the audio outs are native (nn/audio.c), and aud:u's command 1 stops

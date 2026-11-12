@@ -7,9 +7,9 @@
    SPDX-FileCopyrightText: Copyright 2018-2024 yuzu Emulator Project (GPL-2.0-or-later)
    The hwopus work buffer sizes, from Ryujinx (src/Ryujinx.Horizon/Sdk/Codec/Detail/HardwareOpusDecoderManager.cs):
    SPDX-FileCopyrightText: Ryujinx Team and Contributors (MIT) */
-/* audren:u's service side and hwopus, with the audio clock that paces them and the native audio outs
-   (nn/audio.c): every 5 ms it renders a frame of each started renderer (audren.c), signals the renderer event, and
-   plays and releases the audio outs' buffers */
+/* hwopus, audin:u and aud:u, with the audio clock that paces the native audio outs (nn/audio.c) and renderers
+   (nn/audio_renderer.c, audren.c): every 5 ms it renders a frame of each started renderer, signals the renderer event,
+   and plays and releases the audio outs' buffers */
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/services/audren_dsp.h"
@@ -31,10 +31,6 @@
 
 #define AUDIO_RATE      48000u  /* the DSP's */
 #define AUDIO_FRAME_NS  5000000 /* the DSP's frame */
-/* the newest renderer revision understood: Eden's CurrentRevision, 15, and the Ounce's 16 (REV@, and REv@ with its
-   lowercase v), which an SDK 22 game asks for. No feature of 16's is known: Eglantine (Eden's Ounce fork) takes its
-   native 16 as 15, and so does the renderer here (audren_dsp.c's features go by revision 15 and earlier) */
-#define AUDIO_REVISION  16
 
 /* the objects' data (AudRen, HwOpus) and their pools: g_hle.audio (services_int.h) */
 
@@ -52,12 +48,6 @@ int snx_audio_guest_ok(u64 addr, u64 size, u32 perm) {
     return 1;
 }
 
-/* 'REV' and the revision's digit, or a bare number, as Eden's GetRevisionNum reads it */
-static u32 revision_number(u32 rev) {
-    if (rev >= 0x100) rev = (rev - 0x30564552u) >> 24; /* 'R' 'E' 'V' '0' */
-    return rev;
-}
-
 /* A part of nn::audio the runtime answers only natively: a game that asks service for what got here through an SDK
    function that is not native yet, as one that opens a native-only service did (sm.c), and stops the same way */
 static _Noreturn void native_only(const char* service, const char* what) {
@@ -70,9 +60,8 @@ static _Noreturn void native_only(const char* service, const char* what) {
 }
 
 /* ============================================================ the native audio manager (aud:u) */
-/* The Ounce service that hands back the managers the older services serve: a native-ABI game's
-   GetAudioRendererWorkBufferSize reaches GetAudioRendererManager here, then calls GetWorkBufferSize on the returned
-   object. GetWorkBufferSize is stateless, so a fresh manager answers it exactly as audren:u would. */
+/* The Ounce service that hands back the managers the older services serve. The audio in manager is the one still
+   served here */
 static int nn_audio_detail_INativeAudioManager_GetAudioInManager(SvcObj* self, SvcObj** manager) {
     (void)self;
     *manager = new_audin();
@@ -83,11 +72,12 @@ static int nn_audio_detail_INativeAudioManager_GetAudioOutManager(SvcObj* self, 
     (void)self, (void)manager;
     native_only("aud:u", "the audio out manager");
 }
+/* nor a renderer manager: the audio renderer is native too (nn/audio_renderer.c) */
 static int nn_audio_detail_INativeAudioManager_GetAudioRendererManager(SvcObj* self, SvcObj** manager) {
-    (void)self;
-    *manager = new_audren();
-    R_SUCCEED();
+    (void)self, (void)manager;
+    native_only("aud:u", "the audio renderer manager");
 }
+
 SvcObj* new_aud(void) { return nn_audio_detail_INativeAudioManager_new(); }
 
 /* ============================================================ audin: no microphone to open */
@@ -115,166 +105,6 @@ static int nn_audio_detail_IAudioInManager_OpenAudioInProtocolSpecified(
                                                        channel_count, sample_format, state, in);
 }
 SvcObj* new_audin(void) { return nn_audio_detail_IAudioInManager_new(); }
-
-/* ============================================================ the audio renderer */
-static int nn_audio_detail_IAudioRenderer_GetSampleRate(SvcObj* self, u32* sample_rate) {
-    *sample_rate = ((AudRen*)self->data)->sample_rate;
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioRenderer_GetSampleCount(SvcObj* self, u32* sample_count) {
-    *sample_count = ((AudRen*)self->data)->sample_count;
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioRenderer_GetMixBufferCount(SvcObj* self, u32* mix_buffer_count) {
-    *mix_buffer_count = ((AudRen*)self->data)->mix_buffer_count;
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioRenderer_GetState(SvcObj* self, u32* state) {
-    *state = (u32)__atomic_load_n(&self->u[0], __ATOMIC_ACQUIRE);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioRenderer_RequestUpdate(SvcObj* self, IpcBuf input, IpcBuf output,
-                                                        IpcBuf performance) {
-    (void)performance; /* no performance metrics are kept */
-    return audren_update(self, input, output);
-}
-static int nn_audio_detail_IAudioRenderer_RequestUpdateAuto(SvcObj* self, IpcBuf input, IpcBuf output,
-                                                            IpcBuf performance) {
-    return nn_audio_detail_IAudioRenderer_RequestUpdate(self, input, output, performance);
-}
-static int nn_audio_detail_IAudioRenderer_Start(SvcObj* self) {
-    __atomic_store_n(&self->u[0], SNX_AUDREN_STARTED, __ATOMIC_RELEASE);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioRenderer_Stop(SvcObj* self) {
-    __atomic_store_n(&self->u[0], SNX_AUDREN_STOPPED, __ATOMIC_RELEASE);
-    R_SUCCEED();
-}
-/* the event the clock signals after each frame; a renderer the game executes by itself has none */
-static int nn_audio_detail_IAudioRenderer_QuerySystemEvent(SvcObj* self, u32* event) {
-    R_UNLESS(!((AudRen*)self->data)->manual, SNX_RC_AUDIO_NOT_SUPPORTED);
-    *event = ev_handle(g_hle.audio.ev);
-    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioRenderer_SetRenderingTimeLimit(SvcObj* self, u32 percent) {
-    __atomic_store_n(&((AudRen*)self->data)->limit, percent, __ATOMIC_RELAXED);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioRenderer_GetRenderingTimeLimit(SvcObj* self, u32* percent) {
-    *percent = __atomic_load_n(&((AudRen*)self->data)->limit, __ATOMIC_RELAXED);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioRenderer_SetVoiceDropParameter(SvcObj* self, float parameter) {
-    __atomic_store(&((AudRen*)self->data)->voice_drop, &parameter, __ATOMIC_RELAXED);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioRenderer_GetVoiceDropParameter(SvcObj* self, float* parameter) {
-    __atomic_load(&((AudRen*)self->data)->voice_drop, parameter, __ATOMIC_RELAXED);
-    R_SUCCEED();
-}
-
-/* ------------------------------------------------------------ audren:u */
-
-/* the work buffer the game gives OpenAudioRenderer, in the shape of the console's (Eden's System::GetWorkBufferSize).
-   The runtime keeps its state in host memory and never touches it, so the sizes of the console's structures are
-   generous estimates here */
-static u64 work_buffer_size(const nn_audio_detail_AudioRendererParameterInternal* p) {
-    u64 mixes = (u64)p->sub_mix_count + 1, size = 0, voices = p->voice_count, dests, infos;
-    u32 rev = revision_number(p->revision);
-    size += snx_align_up((u64)p->mix_buffer_count * 4, 0x40);
-    size += (u64)p->sub_mix_count * 256 * 4; /* the submixes' effect order */
-    size += mixes * 0x940;                   /* MixInfo */
-    size += voices * (0x220 + 0x70 + 0x100); /* VoiceInfo, VoiceChannelResource, VoiceState */
-    size += snx_align_up(mixes * 8, 0x10) + snx_align_up(voices * 8, 0x10);
-    size += snx_align_up((((u64)p->sink_count + p->sub_mix_count) * 240 * 4 + (u64)p->sample_count * 4) *
-                         ((u64)p->mix_buffer_count + 6),
-                     0x40);
-    if (rev >= 2) { /* splitters: the mix graph's nodes and edges, then the splitters themselves */
-        size += snx_align_up(mixes * 16 + snx_align_up(mixes * mixes / 8 + 1, 0x10), 0x10);
-        dests = p->splitter_send_channel_count;
-        infos = p->splitter_count;
-        size += dests * 0xE0 + infos * 0x20;
-        if (rev >= 5) size += snx_align_up(dests * 4, 0x10);
-    }
-    size += ((u64)p->effect_count + voices * 4) * 0x20; /* MemoryPoolInfo */
-    if (rev >= 9) size += (u64)p->effect_count * 0x80;  /* EffectResultState */
-    size = snx_align_up(size + 0x50, 0x40);
-    size += ((u64)p->sink_count + p->sub_mix_count) * 0x280; /* UpsamplerInfo */
-    size += (u64)p->effect_count * 0x1B0;                   /* EffectInfoBase */
-    size += snx_align_up(voices * 0x100, 0x40);
-    size += (u64)p->sink_count * 0x170;
-    if (rev >= 9) size += (u64)p->effect_count * 0x80;
-    if (p->performance_frame_count)
-        size += snx_align_up((0x18 + (voices + p->effect_count + p->sink_count + mixes + 1) * 0x18 + 100 * 0x18) *
-                             ((u64)p->performance_frame_count + 1) +
-                             0xC0,
-                         0x100);
-    size += 0x18000 + (0x40 - 1) * 2; /* the command buffer */
-    return snx_align_up(size, 0x1000);
-}
-
-static int open_renderer(const nn_audio_detail_AudioRendererParameterInternal* params, u32 process, int manual,
-                         SvcObj** renderer) {
-    SvcObj* o;
-    AudRen* r;
-    R_UNLESS(revision_number(params->revision) <= AUDIO_REVISION, SNX_RC_AUDIO_INVALID_REVISION);
-    R_UNLESS(process, SNX_RC_AUDIO_INVALID_HANDLE);
-    o = nn_audio_detail_IAudioRenderer_new_data(g_hle.audio.rens, g_hle.audio.ren_next, "audio renderers");
-    r = o->data;
-    r->sample_rate = params->sample_rate;
-    r->sample_count = params->sample_count;
-    r->mix_buffer_count = params->mix_buffer_count;
-    r->limit = 100;
-    r->voice_drop = 1.0f;
-    r->manual = (u32)manual;
-    o->u[0] = SNX_AUDREN_STOPPED;
-    if (!audren_open(o, (const u8*)params)) {
-        WARN("audren: can't open a renderer of %lu voices, %lu submixes, %lu effects, %lu sinks at %lu Hz\n",
-             (unsigned long)params->voice_count, (unsigned long)params->sub_mix_count,
-             (unsigned long)params->effect_count, (unsigned long)params->sink_count,
-             (unsigned long)params->sample_rate);
-        svcobj_unref(o);
-        R_THROW(SNX_RC_AUDIO_OPERATION_FAILED);
-    }
-    *renderer = o;
-    R_SUCCEED();
-}
-
-static int nn_audio_detail_IAudioRendererManager_OpenAudioRenderer(
-    SvcObj* self, const nn_audio_detail_AudioRendererParameterInternal* params, u64 work_buffer_size_, u64 aruid,
-    u32 work_buffer, u32 process, SvcObj** renderer) {
-    (void)self, (void)work_buffer_size_, (void)aruid, (void)work_buffer;
-    return open_renderer(params, process, 0, renderer);
-}
-static int nn_audio_detail_IAudioRendererManager_OpenAudioRendererForManualExecution(
-    SvcObj* self, const nn_audio_detail_AudioRendererParameterInternal* params, u64 work_buffer_address, u32 process,
-    u64 work_buffer_size_, u64 aruid, SvcObj** renderer) {
-    (void)self, (void)work_buffer_address, (void)work_buffer_size_, (void)aruid;
-    return open_renderer(params, process, 1, renderer);
-}
-static int nn_audio_detail_IAudioRendererManager_GetWorkBufferSize(
-    SvcObj* self, const nn_audio_detail_AudioRendererParameterInternal* params, u64* size) {
-    (void)self;
-    R_UNLESS(revision_number(params->revision) <= AUDIO_REVISION, SNX_RC_AUDIO_INVALID_REVISION);
-    *size = work_buffer_size(params);
-    R_SUCCEED();
-}
-
-/* ------------------------------------------------------------ IAudioDevice */
-/* the audio device is answered in the SDK's own functions (nn/audio.c), with no device to hand out */
-static int nn_audio_detail_IAudioRendererManager_GetAudioDeviceService(SvcObj* self, nn_applet_AppletResourceUserId aruid,
-                                                                       SvcObj** device) {
-    (void)self, (void)aruid, (void)device;
-    native_only("audren:u", "the audio device service");
-}
-static int nn_audio_detail_IAudioRendererManager_GetAudioDeviceServiceWithRevisionInfo(
-    SvcObj* self, nn_applet_AppletResourceUserId aruid, u32 revision, SvcObj** device) {
-    (void)self, (void)aruid, (void)revision, (void)device;
-    native_only("audren:u", "the audio device service");
-}
-
-SvcObj* new_audren(void) { return nn_audio_detail_IAudioRendererManager_new(); }
 
 /* ============================================================ the clock */
 void audio_init(void) {

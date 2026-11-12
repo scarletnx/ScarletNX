@@ -1544,6 +1544,13 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     snx_service_swipc(snx-test-nn-audio)
     snx_hookgen(snx-test-nn-audio SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/audio.hook" A32_MARKED)
     add_test(NAME nn_audio COMMAND snx-test-nn-audio)
+    # the native audio renderer (nn/audio_renderer.c): the parameters, the handle, RequestUpdateAudioRenderer over a
+    # stand-in SDK's managers, and audio_renderer.hook's table by SDK version
+    add_executable(snx-test-nn-audio-renderer nn_audio_renderer.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+    snx_test_target(snx-test-nn-audio-renderer 23)
+    snx_service_swipc(snx-test-nn-audio-renderer)
+    snx_hookgen(snx-test-nn-audio-renderer SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/audio_renderer.hook")
+    add_test(NAME nn_audio_renderer COMMAND snx-test-nn-audio-renderer)
 endif()
 
 # Inline software keyboard protocol and applet completion events.

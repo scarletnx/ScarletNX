@@ -86,7 +86,6 @@ SvcObj* new_ro1(void);
 int snx_audio_guest_ok(u64 addr, u64 size, u32 perm);
 void audio_init(void); /* the renderer's event, before the audio clock runs */
 void audio_clock(void* arg);
-SvcObj* new_audren(void);
 SvcObj* new_audin(void); /* audin:u: no microphone to open */
 SvcObj* new_aud(void);   /* aud:u, the Ounce native audio manager */
 SvcObj* new_hwopus(void);
@@ -121,8 +120,13 @@ void apm_cpu_boost(u32 boost); /* am's SetCpuBoostMode: Boost mode's configurati
 SvcObj* new_olsc(void);
 
 /* ---- audren.c: the audio renderer */
-int audren_update(SvcObj* o, IpcBuf in, IpcBuf out); /* RequestUpdate, on its input and output buffers */
-int audren_open(SvcObj* o, const u8* params);        /* 0 when the renderer can't be made */
+/* a renderer of the internal parameters at params, stopped: its name, its slot plus 1, or 0 when it can't be made
+   (parameters the DSP refuses, or every slot taken). manual: the game executes it itself */
+u32 audren_open(const u8* params, int manual);
+void audren_close(u32 id);
+struct ARRen* audren_at(u32 id); /* the open renderer id names, NULL for none */
+/* an update of renderer id, from the guest's input buffer into its output buffer: 0 or the renderer's result */
+int audren_update(u32 id, u64 in, u64 in_size, u64 out, u64 out_size);
 void audren_tick(void);                              /* one frame of every started renderer */
 void audren_volume(float gain); /* the output device's volume (audio.c), on every renderer's host output */
 
@@ -272,6 +276,7 @@ typedef struct {
 } HostAm;
 
 /* ---- audio.c */
+#define SNX_AUDREN_METHODS 16 /* nn/audio_renderer.c's M_COUNT */
 #define AUDOUT_BUFFERS 64 /* appended and released buffers an audio out holds */
 #define AUDOUT_MAX     32 /* the audio outs open at once: the console's audout:u has a dozen (Eden's 12 sessions) */
 /* the firmware keeps 24 decoders (OutOfOpusDecoders after), as many as the pool holds: audio.c counts the slots
@@ -297,15 +302,6 @@ typedef struct AudOut {
     u64 t0_frames;   /* frames played since t0 */
     u64 played;      /* GetAudioOutPlayedSampleCount */
 } AudOut;
-/* an IAudioRenderer. Its play state is the object's u[0] (SNX_AUDREN_STARTED or SNX_AUDREN_STOPPED), which the clock
-   reads in audren_tick; audren.c keeps its renderer's slot in u[1] */
-typedef struct {
-    u32 obj;
-    u32 sample_rate, sample_count, mix_buffer_count; /* the parameters it was opened with, read back */
-    u32 limit;
-    float voice_drop; /* as the game set it, read back: no voice is dropped here */
-    u32 manual;       /* OpenAudioRendererForManualExecution: no system event */
-} AudRen;
 /* a hwopus decoder (audio.c) */
 typedef struct {
     u32 obj;
@@ -339,9 +335,12 @@ typedef struct {
     u8 auto_tune;        /* the output volume's auto-tune mode, for its getter: what plays keeps its volume */
     u32 hwopus_live;     /* decoders open, across every hwopus session */
     AudOut outs_pool[AUDOUT_MAX]; /* every open audio out, for the clock */
-    AudRen rens[SNX_AUDREN_MAX];
     HwOpus opus[HWOPUS_POOL];
-    u32 out_next, ren_next, opus_next;
+    u32 out_next, opus_next;
+    /* the SDK's managers RequestUpdateAudioRenderer runs (nn/audio_renderer.c), found once: 0 not looked for, 1 every
+       one found, 2 some missing */
+    u64 ren_fn[SNX_AUDREN_METHODS];
+    u32 ren_fn_found;
     int hold, held;
 } HleAudio;
 /* audio's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
@@ -352,9 +351,16 @@ typedef struct {
 } HostAudio;
 
 /* ---- audren.c */
-/* an open renderer, its object's u[1] its slot plus 1 */
-typedef struct {
-    SvcObj* o; /* set while the slot is taken */
+/* an open renderer, named by its slot plus 1 */
+typedef struct ARRen {
+    u32 used;  /* set while the slot is taken */
+    u32 state; /* atomic: SNX_AUDREN_STARTED or SNX_AUDREN_STOPPED, which the clock reads in audren_tick */
+    u32 sample_rate, sample_count, mix_buffer_count; /* the parameters it was opened with, read back */
+    u32 limit;                                       /* atomic: the rendering time limit, percent, as set */
+    float voice_drop; /* atomic: as the game set it, read back: no voice is dropped here */
+    u32 manual;       /* opened for the game's own execution: no system event */
+    u32 rendering_device; /* as asked for, read back */
+    u64 manual_event; /* the game's SystemEvent the SDK signals after a manual renderer's frame, 0 for none */
     ARState* s;
     PAudio* out;    /* opened on the first frame with a device sink; NULL before, or without a host device */
     int out_failed; /* the host had no output for it: not asked again */
