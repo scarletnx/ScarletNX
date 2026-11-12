@@ -494,6 +494,20 @@ static void test_device(void) {
     test_no_destroy = 0;
 }
 
+/* the audio ins: no microphone, so none listed and none opened, the game's AudioIn and SystemEvent left as they
+   were */
+static void test_ins(void) {
+    CPU* c = &cpu;
+    unsigned attached = test_attached;
+    memset(GP(T_OUT), 0xCC, 0x120);
+    memset(GP(NAME), 0xCC, 0x100);
+    CHECK(nnaudio_list_ins(c, NAME, 4) == 0 && GP(NAME)[0] == 0xCC);
+    CHECK(nnaudio_open_in(c, T_OUT, NAME, PARAMS) == RC(153, 1));
+    CHECK(nnaudio_open_in_event(c, T_OUT, EVENT, NAME, PARAMS) == RC(153, 1));
+    CHECK(nnaudio_open_default_in_event(c, T_OUT, EVENT, PARAMS) == RC(153, 1));
+    CHECK(GP(T_OUT)[0] == 0xCC && GP(T_OUT)[0xc] == 0xCC && test_attached == attached);
+}
+
 /* the system's calls by a game's AppletResourceUserId, and the DSP's load: each done with nothing to do */
 static void test_applet(void) {
     CPU* c = &cpu;
@@ -571,6 +585,12 @@ static void test_table(void) {
          "nnaudio_release_device_notification"},
         {"_ZN2nn5audio35ReleaseAudioInputDeviceNotificationEPNS_2os11SystemEventE",
          "nnaudio_release_device_notification"},
+        {"_ZN2nn5audio12ListAudioInsEPNS0_11AudioInInfoEi", "nnaudio_list_ins"},
+        {"_ZN2nn5audio11OpenAudioInEPNS0_7AudioInEPKcRKNS0_16AudioInParameterE", "nnaudio_open_in"},
+        {"_ZN2nn5audio11OpenAudioInEPNS0_7AudioInEPNS_2os11SystemEventEPKcRKNS0_16AudioInParameterE",
+         "nnaudio_open_in_event"},
+        {"_ZN2nn5audio18OpenDefaultAudioInEPNS0_7AudioInEPNS_2os11SystemEventERKNS0_16AudioInParameterE",
+         "nnaudio_open_default_in_event"},
         {"_ZN2nn5audio26RequestResumeAudioForDebugENS_6applet20AppletResourceUserIdE", "nnaudio_applet_user"},
         {"_ZN2nn5audio27RequestSuspendAudioForDebugENS_6applet20AppletResourceUserIdE", "nnaudio_applet_user"},
         {"_ZN2nn5audio28RegisterAppletResourceUserIdENS_6applet20AppletResourceUserIdE", "nnaudio_applet_user"},
@@ -878,6 +898,7 @@ int main(void) {
     test_partial_frame();
     test_two_outs();
     test_device();
+    test_ins();
     test_applet();
     test_table();
     test_a32();

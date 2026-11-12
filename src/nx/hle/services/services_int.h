@@ -86,7 +86,6 @@ SvcObj* new_ro1(void);
 int snx_audio_guest_ok(u64 addr, u64 size, u32 perm);
 void audio_init(void); /* the renderer's event, before the audio clock runs */
 void audio_clock(void* arg);
-SvcObj* new_audin(void); /* audin:u: no microphone to open */
 SvcObj* new_aud(void);   /* aud:u, the Ounce native audio manager */
 
 /* ---- misc.c: the small services */

@@ -63,6 +63,15 @@ hook _ZN2nn5audio35AcquireAudioInputDeviceNotificationEPNS_2os11SystemEventE(add
 hook _ZN2nn5audio36ReleaseAudioOutputDeviceNotificationEPNS_2os11SystemEventE(addr event) = nnaudio_release_device_notification
 hook _ZN2nn5audio35ReleaseAudioInputDeviceNotificationEPNS_2os11SystemEventE(addr event) = nnaudio_release_device_notification
 
+# The audio ins, with no audin:u session: no microphone to list or to open, as the service answered. The same
+# symbols in every SDK read (0.12.14 to 20.5.17); OpenDefaultAudioIn without an event calls OpenAudioIn, and the
+# functions that take an open AudioIn have none to be called with
+family nn_audio_in
+hook _ZN2nn5audio12ListAudioInsEPNS0_11AudioInInfoEi(addr infos, i32 count) -> i32 = nnaudio_list_ins
+hook _ZN2nn5audio11OpenAudioInEPNS0_7AudioInEPKcRKNS0_16AudioInParameterE(addr in, addr name, addr params) -> u32 = nnaudio_open_in
+hook _ZN2nn5audio11OpenAudioInEPNS0_7AudioInEPNS_2os11SystemEventEPKcRKNS0_16AudioInParameterE(addr in, addr event, addr name, addr params) -> u32 = nnaudio_open_in_event
+hook _ZN2nn5audio18OpenDefaultAudioInEPNS0_7AudioInEPNS_2os11SystemEventERKNS0_16AudioInParameterE(addr in, addr event, addr params) -> u32 = nnaudio_open_default_in_event
+
 # What the system asks nn::audio of a game's sound, with no session: the applet manager's calls by a process's
 # AppletResourceUserId (audout:a, audin:a, audren:a and aud:a: registering it, suspending and resuming its sound with
 # a fade, its volumes) and the debugger's (audout:d, audin:d, audren:d, aud:d, and the DSP's load from auddev). A game

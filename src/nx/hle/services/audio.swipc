@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# audin:u and aud:u (audio.c). The audio outs, the audio device, the audio renderer and the hardware Opus decoders
-# are native (nn/)
+# aud:u (audio.c). The audio outs, the audio ins, the audio device, the audio renderer and the hardware Opus
+# decoders are native (nn/)
 
-type nn::audio::AudioInParameter = struct {
-    u32 sample_rate;
-    u16 channel_count;
-    u16 reserved;
-};
-type nn::audio::AudioInProtocol = u32[2];
 # The Ounce native audio service (aud:u): a TIPC session that hands back the managers audren:u/audout:u/audin:u
 # serve, one per command. Native-ABI games reach the renderer manager this way, then its GetWorkBufferSize (cmd 1).
 interface nn::audio::detail::INativeAudioManager is aud:u {
@@ -27,21 +21,7 @@ interface nn::audio::detail::IAudioRendererManager {
 interface nn::audio::detail::IAudioOutManager {
 }
 
-interface nn::audio::detail::IAudioInManager is audin:u {
-    @stub [0] ListAudioIns(array<nn::audio::AudioDeviceName, 6> names) -> u32 count;
-    [1] OpenAudioIn(nn::audio::AudioInParameter params, aruid aruid, handle<copy, process> process,
-                    buffer<nn::audio::AudioDeviceName, 5> name, buffer<nn::audio::AudioDeviceName, 6> name_out)
-        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
-    @stub [2] ListAudioInsAuto(array<nn::audio::AudioDeviceName, 0x22> names) -> u32 count;
-    [3] OpenAudioInAuto(nn::audio::AudioInParameter params, aruid aruid, handle<copy, process> process,
-                        buffer<nn::audio::AudioDeviceName, 0x21> name, buffer<nn::audio::AudioDeviceName, 0x22> name_out)
-        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
-    @stub [4] ListAudioInsAutoFiltered(array<nn::audio::AudioDeviceName, 0x22> names) -> u32 count;
-    [5] OpenAudioInProtocolSpecified(nn::audio::AudioInProtocol protocol, nn::audio::AudioInParameter params,
-                                     aruid aruid, handle<copy, process> process,
-                                     buffer<nn::audio::AudioDeviceName, 0x21> name,
-                                     buffer<nn::audio::AudioDeviceName, 0x22> name_out)
-        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
-}
-interface nn::audio::detail::IAudioIn {
+# audin:u's manager, which nothing here serves: the audio ins are native (nn/audio.c), and aud:u's command 0 stops
+# the game that asks for it
+interface nn::audio::detail::IAudioInManager {
 }

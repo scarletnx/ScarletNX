@@ -398,6 +398,28 @@ i32 nnaudio_list_outs(CPU* c, u64 infos, i32 count) {
     return 1;
 }
 
+/* ============================================================ the audio ins */
+/* nn::audio's audio ins, with no audin:u session: the runtime has no microphone, so there is none to list and none
+   to open, as the service answered. The SDK gives a game the session's result for an open that fails, and writes
+   nothing into its AudioIn; the functions that take an AudioIn it opened (StartAudioIn, AppendAudioInBuffer and the
+   rest) have none to be called with */
+i32 nnaudio_list_ins(CPU* c, u64 infos, i32 count) {
+    (void)c, (void)infos, (void)count;
+    return 0;
+}
+u32 nnaudio_open_in(CPU* c, u64 in, u64 name, u64 params) {
+    (void)c, (void)in, (void)name, (void)params;
+    return SNX_RC_AUDIO_NOT_FOUND;
+}
+u32 nnaudio_open_in_event(CPU* c, u64 in, u64 event, u64 name, u64 params) {
+    (void)c, (void)in, (void)event, (void)name, (void)params;
+    return SNX_RC_AUDIO_NOT_FOUND;
+}
+u32 nnaudio_open_default_in_event(CPU* c, u64 in, u64 event, u64 params) {
+    (void)c, (void)in, (void)event, (void)params;
+    return SNX_RC_AUDIO_NOT_FOUND;
+}
+
 /* ============================================================ the audio device */
 /* nn::audio's audio device functions, with no IAudioDevice session: one output device, "AudioTvOutput", of two
    channels, whose volume plays on every audio out and renderer. The SDK asks its session for a device event each time

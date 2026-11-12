@@ -7,7 +7,7 @@
    SPDX-FileCopyrightText: Copyright 2018-2024 yuzu Emulator Project (GPL-2.0-or-later)
    The hwopus work buffer sizes, from Ryujinx (src/Ryujinx.Horizon/Sdk/Codec/Detail/HardwareOpusDecoderManager.cs):
    SPDX-FileCopyrightText: Ryujinx Team and Contributors (MIT) */
-/* The hardware Opus decoding (the native nn::codec's, nn/codec.c), audin:u and aud:u, with the audio clock that
+/* The hardware Opus decoding (the native nn::codec's, nn/codec.c) and aud:u, with the audio clock that
    paces the native audio outs (nn/audio.c) and renderers (nn/audio_renderer.c, audren.c): every 5 ms it renders a
    frame of each started renderer, signals the renderer event, and plays and releases the audio outs' buffers */
 #include "nx/hle/services/services_int.h"
@@ -60,14 +60,13 @@ static _Noreturn void native_only(const char* service, const char* what) {
 }
 
 /* ============================================================ the native audio manager (aud:u) */
-/* The Ounce service that hands back the managers the older services serve. The audio in manager is the one still
-   served here */
+/* The Ounce service that hands back the managers the older services serve: none is served here. The audio ins are
+   answered in the SDK's own functions (nn/audio.c), with no manager to hand out */
 static int nn_audio_detail_INativeAudioManager_GetAudioInManager(SvcObj* self, SvcObj** manager) {
-    (void)self;
-    *manager = new_audin();
-    R_SUCCEED();
+    (void)self, (void)manager;
+    native_only("aud:u", "the audio in manager");
 }
-/* the audio outs are answered in the SDK's own functions (nn/audio.c), with no manager to hand out */
+/* nor an audio out manager: the audio outs are native too */
 static int nn_audio_detail_INativeAudioManager_GetAudioOutManager(SvcObj* self, SvcObj** manager) {
     (void)self, (void)manager;
     native_only("aud:u", "the audio out manager");
@@ -79,32 +78,6 @@ static int nn_audio_detail_INativeAudioManager_GetAudioRendererManager(SvcObj* s
 }
 
 SvcObj* new_aud(void) { return nn_audio_detail_INativeAudioManager_new(); }
-
-/* ============================================================ audin: no microphone to open */
-static int nn_audio_detail_IAudioInManager_OpenAudioIn(SvcObj* self, const nn_audio_AudioInParameter* params,
-                                                       u64 aruid, u32 process, IpcBuf name, IpcBuf name_out,
-                                                       u32* sample_rate, u32* channel_count, u32* sample_format,
-                                                       u32* state, SvcObj** in) {
-    (void)self, (void)params, (void)aruid, (void)process, (void)name, (void)name_out;
-    (void)sample_rate, (void)channel_count, (void)sample_format, (void)state, (void)in;
-    R_THROW(SNX_RC_AUDIO_NOT_FOUND);
-}
-static int nn_audio_detail_IAudioInManager_OpenAudioInAuto(SvcObj* self, const nn_audio_AudioInParameter* params,
-                                                           u64 aruid, u32 process, IpcBuf name, IpcBuf name_out,
-                                                           u32* sample_rate, u32* channel_count, u32* sample_format,
-                                                           u32* state, SvcObj** in) {
-    return nn_audio_detail_IAudioInManager_OpenAudioIn(self, params, aruid, process, name, name_out, sample_rate,
-                                                       channel_count, sample_format, state, in);
-}
-static int nn_audio_detail_IAudioInManager_OpenAudioInProtocolSpecified(
-    SvcObj* self, const nn_audio_AudioInProtocol* protocol, const nn_audio_AudioInParameter* params, u64 aruid,
-    u32 process, IpcBuf name, IpcBuf name_out, u32* sample_rate, u32* channel_count, u32* sample_format, u32* state,
-    SvcObj** in) {
-    (void)protocol;
-    return nn_audio_detail_IAudioInManager_OpenAudioIn(self, params, aruid, process, name, name_out, sample_rate,
-                                                       channel_count, sample_format, state, in);
-}
-SvcObj* new_audin(void) { return nn_audio_detail_IAudioInManager_new(); }
 
 /* ============================================================ the clock */
 void audio_init(void) {
