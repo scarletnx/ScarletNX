@@ -26,6 +26,7 @@
 #include "support/bcn.h"
 #include "bc7_cpu.h"
 #include "bcn_etc2_cpu.h"
+#include "blit_convert_cpu.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
@@ -1690,6 +1691,72 @@ static void etc2_case(void) {
     puts("PASS texture conversions (BC1 to BC5 and BC7 encoded again as ETC2 and EAC)");
     fflush(stdout);
 }
+/* texconv.comp's conversion build on the device against the CPU's run of it (tests/glsl/blit_convert_cpu.cpp): the 2D
+   engine's blits between pixel formats, as vk/blit.c hands them to vk_tc_blit, byte for byte with the bytes past each
+   row's end kept. Nearest from random pixels through random tables, rows starting anywhere in a word; filtered from
+   normalized pixels at whole, quarter and half positions, where the interpolation's product is exact, so the device's
+   rounding is the CPU's whether it fuses the multiply and add or not */
+static void convert_case(void) {
+    static const struct {
+        u32 src, dst, linear;
+    } blits[] = {
+        {GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM), GPU_PIXEL_DESC(1, 3, GPU_PIXEL_565), 0},
+        {GPU_PIXEL_DESC(2, 4, GPU_PIXEL_1010102), GPU_PIXEL_DESC(1, 4, GPU_PIXEL_SNORM), 0},
+        {GPU_PIXEL_DESC(2, 3, GPU_PIXEL_111110), GPU_PIXEL_DESC(1, 4, GPU_PIXEL_FLOAT), 0},
+        {GPU_PIXEL_DESC(1, 4, GPU_PIXEL_SNORM), GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM) | GPU_PIXEL_BGR | GPU_PIXEL_X, 0},
+        {GPU_PIXEL_DESC(1, 4, GPU_PIXEL_5551) | GPU_PIXEL_BGR, GPU_PIXEL_DESC(2, 4, GPU_PIXEL_FLOAT), 0},
+        {GPU_PIXEL_DESC(0, 4, GPU_PIXEL_UNORM), GPU_PIXEL_DESC(1, 4, GPU_PIXEL_FLOAT), 1},
+        {GPU_PIXEL_DESC(1, 4, GPU_PIXEL_UNORM), GPU_PIXEL_DESC(1, 3, GPU_PIXEL_565) | GPU_PIXEL_BGR, 1},
+    };
+    static const float steps[3] = {0.0f, 0.25f, 0.5f};
+    const u32 sw = 23, sh = 7, w = 19, rows = 5, src_at = 3, fill = 0xC3A55A3Cu;
+    for (u32 b = 0; b < sizeof blits / sizeof blits[0]; b++) {
+        u32 fmt = GPU_BLIT_CONVERT(blits[b].src, blits[b].dst) | (blits[b].linear ? GPU_BLIT_LINEAR_BIT : 0);
+        u32 sb = GPU_PIXEL_BYTES(blits[b].src), nb = w * GPU_PIXEL_BYTES(blits[b].dst);
+        u32 in_pitch = sw * sb + 6, col_at = (src_at + sh * in_pitch + 3) / 4 * 4, row_at = col_at + 4 * w;
+        u32 in_size = row_at + 4 * rows, out_pitch = (nb + 3) / 4 * 4 + 4;
+        u64 out_size = (u64)out_pitch * rows, at, cap;
+        u8* in = malloc(in_size);
+        for (u32 i = 0; i < in_size; i++) in[i] = (u8)random_word();
+        for (u32 i = 0; i < w + rows; i++) {
+            u32 v;
+            if (blits[b].linear) {
+                /* a column filtered between pixels x0 and x0 + 1, a row between y0 and y0 + 1 */
+                float f = i < w ? (float)(i * 5 % (sw - 1)) + steps[i % 3]
+                                : (float)(i * 3 % (sh - 1)) + (i % 2 ? 0.5f : 0.0f);
+                memcpy(&v, &f, 4);
+            } else
+                v = random_word() % (i < w ? sw : sh);
+            snx_st_le32(in + col_at + 4 * i, v); /* the row table follows the column table */
+        }
+        u8* want = malloc(out_size);
+        for (u64 i = 0; i < out_size; i += 4) snx_st_le32(want + i, fill);
+        blit_convert_cpu(fmt, nb, rows, in, in_size, src_at, in_pitch, col_at, row_at, want, out_pitch);
+        VkBuffer staged, rb;
+        u8* p = vk_stage(in_size, vk_stage_align(), &staged, &at);
+        memcpy(p, in, in_size);
+        VkBuffer scratch = vk_bl_scratch(out_size, &cap);
+        u8* out = vk_readback_buffer(out_size, &rb);
+        rec_CmdFillBuffer(vk_cmd(), scratch, 0, out_size, fill);
+        vk_bl_barrier(vk_cmd(), 1);
+        /* vk_tc_blit binds its input from byte 0 of the buffer, as blit.c's scratch is */
+        if (!vk_tc_blit(vk_cmd(), 0, fmt, nb, rows, staged, at + in_size, at + src_at, in_pitch, at + col_at,
+                        at + row_at, scratch, 0, out_pitch))
+            fatal("blit conversion refused\n");
+        vk_bl_barrier(vk_cmd(), 0);
+        VkBufferCopy c = {0, 0, out_size};
+        rec_CmdCopyBuffer(vk_cmd(), scratch, rb, 1, &c);
+        vk_finish();
+        vk_readback_ready();
+        for (u32 y = 0; y < rows; y++)
+            if (memcmp(out + (u64)y * out_pitch, want + (u64)y * out_pitch, out_pitch))
+                fatal("texconv's conversion build: blit %u (%#x), row %u differs from the CPU's\n", b, fmt, y);
+        free(in);
+        free(want);
+    }
+    puts("PASS texture conversions (blits between pixel formats, nearest and filtered)");
+    fflush(stdout);
+}
 /* --bench-etc2: a 2048x2048 level of random blocks of each kind decoded (as on a GPU that samples neither BCn nor
    ETC2) and encoded again as ETC2 or EAC, the conversion's dispatch alone, runs times each; and the bytes each holds.
    Random blocks take every candidate (no block of one alpha or one colour stops early): a game's take less */
@@ -1789,6 +1856,7 @@ int main(int argc, char** argv) {
     bc_case();
     bc_native_case();
     etc2_case();
+    convert_case();
     /* Known solid color, independent of the CPU reference, catches its old
        11-bit header bug. The GPU is compared to this reference below. */
     const u8 solid[16] = {0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0x12, 0, 0x34, 0, 0x56, 0, 0x78};

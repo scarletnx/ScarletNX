@@ -3,7 +3,9 @@
 /* Texture formats the host can't take as they are, converted on the GPU (gpu/texture/texconv.comp) from linear rows
    into rows the copies into the image take. One pipeline for every format, made on first use and kept for the
    device's lifetime, like the other internal pipelines; a second, the shader's ETC2 build, for BCn blocks encoded again
-   as ETC2 and EAC (gpu/texture/etc2_encode.glsl), made the first time one is. Uses are on g_vk.gfx, under vk_lock() */
+   as ETC2 and EAC (gpu/texture/etc2_encode.glsl), and a third, its conversion build, for the blits that convert
+   between pixel formats (TC_BLIT_CONVERT), each made the first time it is used. Uses are on g_vk.gfx, under
+   vk_lock() */
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/texture/texconv_spv.h" /* compiled from texconv.comp by the build (cmake/glsl.cmake) */
 #include "nx/gpu/texture/texconv_modes.glsl"
@@ -18,22 +20,25 @@ typedef struct {
 
 static VkDescriptorSetLayout g_tc_ds;
 static VkPipelineLayout g_tc_layout;
-static VkPipeline g_tc_pipe[2]; /* texconv.comp's, and its ETC2 build's */
+static VkPipeline g_tc_pipe[3]; /* texconv.comp's, its ETC2 build's and its conversion build's */
 
-/* the pipeline of mode: the ETC2 build's for the BCn modes it encodes again, made on first use as the other */
+/* the pipeline of the build that runs mode, made on first use: the ETC2 build for the BCn modes it encodes again, the
+   conversion build for TC_BLIT_CONVERT, the plain one for the rest */
 static VkPipeline tc_init(u32 mode) {
-    int etc2 = mode >= TC_BCN_ETC2;
-    VkPipeline* pipe = &g_tc_pipe[etc2];
+    static const char* const names[3] = {"", " (its ETC2 build)", " (its conversion build)"};
+    const u32* const spv[3] = {texconv_spv, texconv_etc2_spv, texconv_convert_spv};
+    const u64 sizes[3] = {texconv_spv_size, texconv_etc2_spv_size, texconv_convert_spv_size};
+    int build = mode >= TC_BCN_ETC2 ? 1 : mode == TC_BLIT_CONVERT ? 2 : 0;
+    VkPipeline* pipe = &g_tc_pipe[build];
     if (*pipe) return *pipe;
     if (!g_tc_layout && !VK_OK(snx_vk_compute_layouts(g_vk.dev, 2, 0, sizeof(TcParams), &g_tc_ds, &g_tc_layout)))
         fatal("vulkan: cannot create the texture conversion descriptor and pipeline layouts");
     VkShaderModule module;
-    if (!VK_OK(snx_vk_shader_module(g_vk.dev, etc2 ? texconv_etc2_spv : texconv_spv,
-                                    etc2 ? texconv_etc2_spv_size : texconv_spv_size, &module)))
-        fatal("vulkan: cannot load the texture conversion shader%s", etc2 ? " (its ETC2 build)" : "");
+    if (!VK_OK(snx_vk_shader_module(g_vk.dev, spv[build], sizes[build], &module)))
+        fatal("vulkan: cannot load the texture conversion shader%s", names[build]);
     u64 started = plat_ns();
     if (!VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), g_tc_layout, module, NULL, pipe)))
-        fatal("vulkan: cannot create the texture conversion compute pipeline%s", etc2 ? " (its ETC2 build)" : "");
+        fatal("vulkan: cannot create the texture conversion compute pipeline%s", names[build]);
     vk_texture_pipeline_made(plat_ns() - started);
     vkDestroyShaderModule(g_vk.dev, module, NULL);
     return *pipe;
