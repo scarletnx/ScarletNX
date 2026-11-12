@@ -137,12 +137,12 @@ generically), creates its save data and stops at its first prompt for the A
 button, drawn through the PICA renderer. Input is the next gap.
 
 The GPU's work runs on one Vulkan device (`src/3ds/gpu/vk/`), which needs Vulkan
-1.3, 8-bit storage buffers and `VK_EXT_external_memory_host` or
-`VK_EXT_external_memory_dma_buf`: the board's RAM regions are its buffers, imported
-or, where the driver will not import them, the device's own memory (below), so a GPU
-that shares the system's memory reads and writes the guest's memory in place and nothing
-of it is copied by the CPU; a discrete GPU works on a copy of it in its own memory
-(below). Memory fills, display transfers
+1.3 and 8-bit storage buffers. The board's RAM regions reach it in one of three ways: imported
+where the driver takes host memory (`VK_EXT_external_memory_host`), moved into the device's own
+memory where it will not (below), or a copy in the device's host-visible memory where it takes
+neither (below). A GPU that shares the system's memory reads and writes the guest's memory in
+place on the first two; a discrete GPU works on a copy of it in its own memory; and the third
+keeps a copy the CPU fills and reads back by page. Memory fills, display transfers
 and texture copies are compute shaders (`gpu/vk/shaders/`), held byte for byte to
 the CPU reference `gpu/transfer.c` by `tests/3ds_vk_transfer.c`. The Y2R engine (`y2r:u`, `services/y2r.c`), which
 turns a video's YUV frames to RGB, converts on the GPU too (`gpu/vk/y2r.c`). Its streams
@@ -638,14 +638,23 @@ write tracking protects and opens again stays a mapping of its own: a host with 
 (`vm.max_map_count`, 65530 where systemd 256's 1048576 is not set) can run out, and write
 tracking then says, for each view it cannot protect, its address and the system's errno.
 
-When the device's memory cannot hold the RAM either, the 3DS device does not start, and its
-error gives both reasons (which call refused which region, the `VkResult`), then the device
-and driver. The CPU side, the AOT modules and the settings still run; the game ends at its
-first GX command that needs the GPU (a command list, fill, display transfer or texture copy),
-with that error as the run's last line. `3ds_vk_ram` checks the RAM on whatever device there
-is: what the guest wrote reaches the GPU, a GPU fill shows in every guest view, a store through
-the flat space reaches the GPU, and the RAM outlives the device; `3ds_memory_adopt` checks the
-move with a memfd standing in for the dma-buf, on every host.
+When the device can neither import the RAM nor take it into its own memory, the RAM is a copy
+in the device's host-visible, coherent memory, which the CPU keeps in step with the board's
+own by page: a page the guest wrote is copied in before the GPU first reads it, and a page the
+GPU wrote is copied back before the CPU touches it (render.c's `copy_in` and `copy_out`, the
+page tracking the copies path uses). No `vkCmdCopyBuffer` is possible there, because the
+guest's RAM is not a `VkBuffer`: the copy is a `memcpy`. The device says so on the standard
+error, with the size and the memory type. A Mac's MoltenVK is such a driver.
+
+When none of the three ways is there, the 3DS device does not start, and its error gives all
+three reasons (which call refused which region, the `VkResult`), then the device and driver.
+The CPU side, the AOT modules and the settings still run; the game ends at its first GX
+command that needs the GPU (a command list, fill, display transfer or texture copy), with
+that error as the run's last line. `3ds_vk_ram` checks the RAM on whatever device imports it or
+holds it as its own memory (a device that keeps a copy skips it, its buffer not being the
+guest's): what the guest wrote reaches the GPU, a GPU fill shows in every guest view, a store
+through the flat space reaches the GPU, and the RAM outlives the device; `3ds_memory_adopt`
+checks the move with a memfd standing in for the dma-buf, on every host.
 
 Audio runs on a high-level DSP (`src/3ds/audio/`, ported from Azahar's HLE audio core):
 dsp::DSP (`services/dsp.c`) takes the application's pipe writes, interrupt events, the

@@ -14,12 +14,14 @@
 static struct {
     SnxCtrVk vk;
     int up;
-    char error[768];  /* why the last snx_ctr_vk_init failed (an import refused, then the device's memory's reason) */
+    char error[768];  /* why the last snx_ctr_vk_init failed (an import refused, then the device's memory's and the
+                         copy's reasons) */
     char device[512]; /* the device it chose and its driver, "" before one */
 } g_device;
 
 SnxCtrVk* snx_ctr_vk(void) { return g_device.up ? &g_device.vk : NULL; }
 bool snx_ctr_vk_copies(void) { return g_device.up && g_device.vk.ram_count && g_device.vk.ram[0].copy; }
+bool snx_ctr_vk_shadow(void) { return g_device.up && g_device.vk.host_shadow && g_device.vk.ram_count; }
 const char* snx_ctr_vk_error(void) { return g_device.error; }
 
 bool snx_ctr_vk_window(uint32_t pa, uint64_t size, SnxCtrVkWindow* w, uint32_t* inside) {
@@ -47,11 +49,14 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     if (!snx_vk_device_extensions(phys, &list)) return false;
     const char* extensions[7];
     uint32_t n = 0;
-    /* the RAM imported, or the device's memory that the RAM moves into (snx_ctr_vk_init): one of them */
+    /* the RAM imported, or the device's memory that the RAM moves into (snx_ctr_vk_init), each where it can be; a
+       device with neither takes a copy of the RAM in its host-visible memory instead */
     bool host = snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
     bool dmabuf = snx_vk_extensions_has(&list, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
                   snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
-    bool ok = host || dmabuf;
+    /* neither: the RAM is a copy in the device's host-visible memory, which the CPU keeps in step with the board's
+       (render.c), as a driver that cannot take guest memory leaves no other way to run the GPU */
+    bool ok = true;
     if (host) extensions[n++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
     if (dmabuf) {
         extensions[n++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
@@ -200,6 +205,7 @@ static const VkBufferUsageFlags ram_usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
    RAM's dma-buf keeps, mapped at every view, after the device is gone) */
 static void release_ram(SnxCtrVk* v) {
     for (unsigned i = 0; i < v->ram_count; ++i) {
+        if (v->ram[i].map) vkUnmapMemory(v->device, v->ram[i].memory);
         vkDestroyBuffer(v->device, v->ram[i].buffer, NULL);
         vkFreeMemory(v->device, v->ram[i].memory, NULL);
         vkDestroyBuffer(v->device, v->ram[i].copy, NULL);
@@ -492,10 +498,97 @@ static void choose_path(SnxCtrVk* v, SnxCtrMemory* memory) {
     char why[256], line[640];
     uint64_t bytes = 0;
     uint32_t type = 0;
+    if (v->host_shadow) {
+        snprintf(line, sizeof line,
+                 "vk_memory=%d: the device can neither import the board's RAM nor take it as its own memory, so the GPU "
+                 "works on a copy of it in the device's host-visible memory (0x%llx bytes of memory type %u), copied in "
+                 "and back by page",
+                 asked, (unsigned long long)v->shadow_bytes, v->shadow_type);
+        fprintf(stderr, "3ds gpu: %s\n", line);
+        return;
+    }
     bool copy = asked == 1 || (asked == 0 && model != SNX_VK_UMA);
     bool copied = copy && make_copies(v, snx_ctr_memory_profile(memory), &bytes, &type, why, sizeof why);
     snx_ctr_vk_path_line(asked, model, copied, copy && !copied ? why : NULL, bytes, type, line, sizeof line);
     fprintf(stderr, "3ds gpu: %s\n", line);
+}
+/* Every RAM region a buffer of the device's host-visible memory, coherent and cached where the device has such, mapped
+   for the CPU: the GPU reads and writes it in place, and render.c copies the guest's pages to it and back (copy_in,
+   copy_out), as a driver that can neither import the RAM nor move it into its own memory leaves no other way. False
+   with why in error, and nothing of it left */
+static bool shadow_ram(SnxCtrVk* v, SnxCtrMemory* memory, char* error, size_t error_size) {
+    const SnxCtrProfile* profile = snx_ctr_memory_profile(memory);
+    bool have_type = false;
+    for (size_t i = 0; i < profile->region_count; ++i) {
+        unsigned char* guest = snx_ctr_memory_region(memory, i);
+        const SnxCtrRegion* r = &profile->regions[i];
+        SnxCtrVkRam* ram;
+        VkBufferCreateInfo bi;
+        VkMemoryRequirements req;
+        VkMemoryPropertyFlags want;
+        VkMemoryAllocateInfo ai;
+        uint32_t type;
+        VkResult result;
+        if (!guest) continue;
+        ram = &v->ram[v->ram_count];
+        bi = (VkBufferCreateInfo){.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                  .size = r->size,
+                                  .usage = ram_usage,
+                                  .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        if ((result = vkCreateBuffer(v->device, &bi, NULL, &ram->buffer)) != VK_SUCCESS) {
+            snprintf(error, error_size, "vkCreateBuffer gave %s (%d) for the %s region's copy, 0x%x bytes",
+                     snx_vk_result_str(result), (int)result, r->name, r->size);
+            release_ram(v);
+            return false;
+        }
+        /* in the RAM from here on, so every failure below releases this region's buffer and memory too: not the
+           memory an import that was refused left in this place, freed already */
+        ram->memory = VK_NULL_HANDLE;
+        ram->base = r->base;
+        ram->size = r->size;
+        ++v->ram_count;
+        vkGetBufferMemoryRequirements(v->device, ram->buffer, &req);
+        /* the guest's CPU reads and writes this memory through the CPU's copies: cached where the device has it */
+        want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        type = snx_ctr_vk_memory_type(req.memoryTypeBits, want | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+        if (type == UINT32_MAX) type = snx_ctr_vk_memory_type(req.memoryTypeBits, want);
+        if (type == UINT32_MAX) {
+            snprintf(error, error_size,
+                     "no host-visible, coherent memory type is one of the %s region's copy's (0x%x)", r->name,
+                     req.memoryTypeBits);
+            release_ram(v);
+            return false;
+        }
+        ai = (VkMemoryAllocateInfo){
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size, .memoryTypeIndex = type};
+        if ((result = vkAllocateMemory(v->device, &ai, NULL, &ram->memory)) != VK_SUCCESS) {
+            ram->memory = VK_NULL_HANDLE;
+            snprintf(error, error_size, "vkAllocateMemory gave %s (%d) for the %s region's copy, 0x%llx bytes of memory "
+                     "type %u", snx_vk_result_str(result), (int)result, r->name, (unsigned long long)req.size, type);
+            release_ram(v);
+            return false;
+        }
+        if ((result = vkBindBufferMemory(v->device, ram->buffer, ram->memory, 0)) != VK_SUCCESS) {
+            snprintf(error, error_size, "vkBindBufferMemory gave %s (%d) for the %s region's copy", snx_vk_result_str(result),
+                     (int)result, r->name);
+            release_ram(v);
+            return false;
+        }
+        if ((result = vkMapMemory(v->device, ram->memory, 0, VK_WHOLE_SIZE, 0, (void**)&ram->map)) != VK_SUCCESS) {
+            ram->map = NULL;
+            snprintf(error, error_size, "vkMapMemory gave %s (%d) for the %s region's copy", snx_vk_result_str(result),
+                     (int)result, r->name);
+            release_ram(v);
+            return false;
+        }
+        ram->guest = guest;
+        v->shadow_bytes += req.size;
+        if (!have_type) { /* the regions' buffers are alike: the first one's type says it */
+            v->shadow_type = type;
+            have_type = true;
+        }
+    }
+    return true;
 }
 static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
     SnxCtrVk* v = &g_device.vk;
@@ -526,8 +619,7 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
     if (!made) {
         snprintf(
             error, error_size,
-            "no Vulkan 1.3 device with 8-bit storage buffers, dynamic rendering and VK_EXT_external_memory_host or "
-            "VK_EXT_external_memory_dma_buf");
+            "no Vulkan 1.3 device with 8-bit storage buffers and dynamic rendering");
         snx_ctr_vk_free();
         return false;
     }
@@ -567,22 +659,30 @@ static bool init(SnxCtrMemory* memory, char* error, size_t error_size) {
     v->ring.close = snx_ctr_vk_render_close;
     v->ring.retire = snx_ctr_vk_render_retire;
     g_device.up = 1;
-    /* the RAM imported where it is; where the driver refuses that, the RAM moved into the device's memory, said with
-       the refusal, which stays in the error when the device's memory cannot hold it either */
+    /* The RAM imported where it is; where the driver refuses that, the RAM moved into the device's memory; where it
+       cannot take it either, a copy in the device's host-visible memory, which the CPU keeps in step with the board's.
+       Each refusal stays in the error when the next one fails too */
     char refused[384];
     if (!import_ram(v, memory, refused, sizeof refused)) {
         SnxCtrVkDeviceRam f = {0};
-        if (!device_ram(v, memory, &f)) {
-            char why[256];
+        if (device_ram(v, memory, &f)) {
+            fprintf(stderr,
+                    "3ds gpu: %s; the board's RAM is the device's memory instead: 0x%llx bytes of memory type %u "
+                    "(host-visible, coherent, cached), its dma-buf mapped at every guest view\n",
+                    refused, (unsigned long long)f.allocation, f.type);
+        } else {
+            char why[256], copy_why[256];
             snx_ctr_vk_device_ram_error(&f, snx_ctr_memory_profile(memory)->regions[f.region].name, why, sizeof why);
-            snprintf(error, error_size, "%s; nor can the board's RAM be the device's memory: %s", refused, why);
-            snx_ctr_vk_free();
-            return false;
+            if (!shadow_ram(v, memory, copy_why, sizeof copy_why)) {
+                snprintf(error, error_size,
+                         "%s; nor can the board's RAM be the device's memory: %s; nor a copy in its host-visible "
+                         "memory: %s",
+                         refused, why, copy_why);
+                snx_ctr_vk_free();
+                return false;
+            }
+            v->host_shadow = true;
         }
-        fprintf(stderr,
-                "3ds gpu: %s; the board's RAM is the device's memory instead: 0x%llx bytes of memory type %u "
-                "(host-visible, coherent, cached), its dma-buf mapped at every guest view\n",
-                refused, (unsigned long long)f.allocation, f.type);
     }
     choose_path(v, memory);
     /* the renderer answers for the pages the GPU keeps (memory/ctr_memory.h) */
