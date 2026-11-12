@@ -172,7 +172,7 @@ FS part must have one, and it must also match (06636, 06637). So:
 
 The layouts now are `vk_playout(arrays)`. They are 32 at most, one for each value of the five bits of `arrays`. Set
 N is `g_vk_dslayout[bit N][N]`, by `shader_vk_set`: set 0 vertex (and compute), set 1 fragment, sets 2 to 4
-tessellation control, tessellation evaluation and geometry. There is one push constant range of 80 bytes for
+tessellation control, tessellation evaluation and geometry. There is one push constant range of 128 bytes for
 `VK_PUSH_STAGES`.
 
 A link with a PR part and an FS part must use layouts that agree. Without `VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT`,
