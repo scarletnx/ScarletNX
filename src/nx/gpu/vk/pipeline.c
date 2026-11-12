@@ -1565,6 +1565,16 @@ static void plib_init(void) {
     pc_init(&g_pipeline.pj_done);
 }
 
+/* an empty descriptor set layout, for the set a part's stage does not have: a layout of a part takes only its own
+   stage's sets, and Vulkan wants a valid layout there unless graphics pipeline libraries make the sets independent */
+static VkDescriptorSetLayout empty_layout(void) {
+    static VkDescriptorSetLayout made;
+    if (!made) {
+        VkDescriptorSetLayoutCreateInfo e = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &e, NULL, &made))) made = VK_NULL_HANDLE;
+    }
+    return made;
+}
 /* a part's layout: the sets of its own stages, the others none. A pre-rasterization part and a fragment part then
    link whatever texture arrays the other has (PipeKey.arrays), where one layout for both would put the fragment
    program's bit in the vertex program's key and compile it again for each kind of fragment program it meets */
@@ -1579,9 +1589,14 @@ static VkPipelineLayout part_layout(u32 part, u32 arrays) {
         u32 n = fs ? 2 : g_vk_stage_sets;
         for (u32 s = 0; s < n; s++)
             if ((s == 1) == fs) sets[s] = g_vk_dslayout[(arrays >> s) & 1][s];
+        /* a set its stage does not have is null only with pipeline libraries, which allow it: without them the layout
+           takes an empty one of each */
+        if (!g_vk.has_gpl)
+            for (u32 s = 0; s < n; s++)
+                if (!sets[s]) sets[s] = empty_layout();
         VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 128}; /* vk_playout's: a link's parts take its push constants */
         VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                         .flags = VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT,
+                                         .flags = g_vk.has_gpl ? VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT : 0,
                                          .setLayoutCount = n,
                                          .pSetLayouts = sets,
                                          .pushConstantRangeCount = 1,
@@ -2813,6 +2828,12 @@ static u8* ship_window(const u8* p, size_t avail) {
    (seconds). The program's indexed bit and its clip word are the ship pass's guesses, so a draw whose key differs
    still translates and compiles its own, as now (docs/layers/gpu/pipeline-libraries.md, step 8) */
 static void ship_warm(int stage, int indexed, const u32* spv, u32 nw) {
+    /* a part is a library, which a device without VK_EXT_graphics_pipeline_library never promised: there every draw
+       compiles whole, and a part made for it is a create the driver was not given (MoltenVK reads the null
+       rasterization state of a fragment part and ends its pipeline worker) */
+    if (!g_vk.has_gpl) return;
+    /* a control program shares the pre-rasterization part with the vertex program, so it is warmed with its draw */
+    if (stage != ST_VS && stage != ST_FS) return;
     VkShaderModule mod = vk_module_spv(spv, nw);
     if (!mod) return;
     WarmItem* w = calloc(1, sizeof *w);
