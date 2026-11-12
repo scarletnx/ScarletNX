@@ -594,12 +594,28 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
 
     /* the blocks and their edges; what an instruction of no known layout might name stays */
     uint32_t nblocks = 0, nedges = 0, n = 0;
+    uint8_t by_opcode[256] = {0};
     int entry = 0, phis = 0;
     for (size_t i = first; i < words; i += module[i] >> 16) {
         const uint32_t* w = module + i;
-        uint32_t width = w[0] >> 16, op = w[0] & 0xffff, kind = value_class(w, width, op, glsl);
+        uint32_t width = w[0] >> 16, op = w[0] & 0xffff, kind, literal, more;
+        /* what value_class and value_operands say, in a byte that is never 0 (ids follow, or a literal has a
+           place): the class, the literal's place, whether ids follow it. An opcode's answer is kept for the module's
+           next instruction of it, when it does not hang on the instruction's words (an extended instruction's set,
+           a load's memory operand, a result's missing words) */
+        int fixed = op < 256 && op != SPV_OP_EXT_INST && op != SPV_OP_LOAD &&
+                    (width >= 3 || !(result_only[op / 32] >> (op % 32) & 1));
+        if (fixed && by_opcode[op]) {
+            kind = by_opcode[op] & 7;
+            class_of[n++] = by_opcode[op];
+        } else {
+            kind = value_class(w, width, op, glsl);
+            value_operands(op, &literal, &more);
+            class_of[n] = (uint8_t)(kind | literal << 3 | more << 6);
+            if (fixed) by_opcode[op] = class_of[n];
+            n++;
+        }
         assert(kind < SPV_OPT_PURE || w[2] < bound);
-        class_of[n++] = (uint8_t)kind;
         if (op == SPV_OP_FUNCTION) {
             entry = 1;
         } else if (op == SPV_OP_LABEL) {
@@ -688,16 +704,19 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
     n = 0;
     for (size_t i = first; i < words; i += module[i] >> 16) {
         uint32_t* w = module + i;
-        uint32_t width = w[0] >> 16, op = w[0] & 0xffff, kind = class_of[n++], literal, more;
+        uint32_t width = w[0] >> 16, op = w[0] & 0xffff, kind = class_of[n] & 7;
+        uint32_t literal = class_of[n] >> 3 & 7, more = class_of[n] >> 6 & 1;
+        n++;
         if (kind == SPV_OPT_UNKNOWN) {
             epoch++;
             continue;
         }
-        value_operands(op, &literal, &more);
+        int result = op < 256 && (result_only[op / 32] >> (op % 32) & 1); /* a type, a result, then operands */
         uint32_t last = literal && !more && literal < width ? literal : width;
-        for (uint32_t k = 1; k < last; k++)
+        /* nothing to read before the first instruction went; a type and a result are never replaced */
+        for (uint32_t k = result ? 3 : 1; any && k < last; k++)
             if (k != literal && w[k] < bound && replace[w[k]]) w[k] = replace[w[k]];
-        if (op < 256 && (result_only[op / 32] >> (op % 32) & 1) && w[1] < bound && w[2] < bound) {
+        if (result && w[1] < bound && w[2] < bound) {
             type_of[w[2]] = w[1];
             def[w[2]] = (uint32_t)i;
         }

@@ -540,6 +540,38 @@ int main(void) {
     check(twice(0, ARRAY_LENGTH, 2, (uint32_t)X, 1u) == 0 && twice(0, 123, 2, (uint32_t)X, 1u) == 0,
           "an array's length and a cast with a storage class, whose literals the pass does not list, stay");
 
+    /* an opcode's class is asked once a module, but for the ones that hang on an instruction's words: another
+       set's instruction after GLSL.std.450's, a volatile load after a plain one, a sum cut short after a whole one */
+    begin(&m);
+    function(&m);
+    put(&m, I_ADD, 4, (uint32_t)T, (uint32_t)A, (uint32_t)X, (uint32_t)Y);
+    put(&m, I_ADD, 4, (uint32_t)T, (uint32_t)B, (uint32_t)X, (uint32_t)Y);
+    put(&m, I_ADD, 4, (uint32_t)T, (uint32_t)C, (uint32_t)X, (uint32_t)Y);
+    put(&m, EXT_INST, 5, (uint32_t)T, (uint32_t)D, (uint32_t)GLSL, 31u, (uint32_t)X);
+    put(&m, EXT_INST, 5, (uint32_t)T, (uint32_t)E, (uint32_t)OTHER, 31u, (uint32_t)B);
+    put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)C);
+    end(&m);
+    left = run(&m, &o);
+    check(left == m.count - 5 && count(&o, left, I_ADD, B) == 1 && find(&o, left, STORE, 0)[2] == A,
+          "another set's instruction keeps what it names, after a GLSL.std.450 one in the module too");
+    begin(&m);
+    function(&m);
+    put(&m, LOAD, 3, (uint32_t)T, (uint32_t)A, (uint32_t)IN);
+    put(&m, LOAD, 4, (uint32_t)T, (uint32_t)B, (uint32_t)IN, 1u);
+    put(&m, LOAD, 4, (uint32_t)T, (uint32_t)C, (uint32_t)IN, 1u);
+    end(&m);
+    check(untouched(&m), "two volatile loads stay two, after a plain load in the module too");
+    begin(&m);
+    function(&m);
+    put(&m, I_ADD, 4, (uint32_t)T, (uint32_t)A, (uint32_t)X, (uint32_t)Y);
+    put(&m, I_ADD, 1, (uint32_t)T);
+    put(&m, I_ADD, 4, (uint32_t)T, (uint32_t)B, (uint32_t)X, (uint32_t)Y);
+    put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)B);
+    end(&m);
+    left = run(&m, &o);
+    check(left == m.count - 5 && count(&o, left, I_ADD, A) == 1 && find(&o, left, STORE, 0)[2] == A,
+          "a sum cut short of its result is left where it is, after a whole sum in the module too");
+
     /* what only makes a result but is not a value of its operands alone */
     check(twice(0, UNDEF, 0) == 0, "two undefined values stay two");
     check(twice(0, IMAGE_TEXEL_POINTER, 3, (uint32_t)IMAGE, (uint32_t)X, (uint32_t)X) == 0, "texel pointers stay");
