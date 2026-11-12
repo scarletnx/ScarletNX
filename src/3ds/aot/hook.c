@@ -28,6 +28,7 @@
 #include "3ds/ipc/ctr_ipc.h"
 #include "3ds/services/gsp.h"
 #include "3ds/runtime/internal.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "snx_settings.h"
 #include <inttypes.h>
@@ -245,7 +246,7 @@ static Step multiple(Decode* d, Op* op, uint32_t w) {
     op->up = w >> 23 & 1;
     op->writeback = w >> 21 & 1;
     if ((w >> 22 & 1) || !list || rn == 15 || (op->writeback && (list >> rn & 1))) return FAIL;
-    unsigned count = (unsigned)__builtin_popcount(list);
+    unsigned count = snx_popcount64(list);
     if (tagged(&d->tags, rn)) {
         int32_t offset = d->tags.tls[rn], bytes = (int32_t)count * 4;
         int32_t low = op->up ? offset + (op->pre ? 4 : 0) : offset - bytes + (op->pre ? 0 : 4);
@@ -672,7 +673,7 @@ static SnxCtrHookResult run_stub(SnxCtrProcess* p, SnxArmCPU* cpu, SnxCtrHook* h
             }
             case OP_LDM:
             case OP_STM: {
-                unsigned count = (unsigned)__builtin_popcount(op->imm);
+                unsigned count = snx_popcount64(op->imm);
                 uint32_t base = cpu->r[op->rn];
                 uint32_t low = op->up ? base + (op->pre ? 4 : 0) : base - count * 4 + (op->pre ? 0 : 4);
                 unsigned char b[64];
@@ -698,7 +699,7 @@ static SnxCtrHookResult run_stub(SnxCtrProcess* p, SnxArmCPU* cpu, SnxCtrHook* h
             }
             case OP_BUF_LDM:
             case OP_BUF_STM: {
-                unsigned count = (unsigned)__builtin_popcount(op->imm), n = 0;
+                unsigned count = snx_popcount64(op->imm), n = 0;
                 for (unsigned r = 0; r < 16; ++r) {
                     if (!(op->imm >> r & 1)) continue;
                     unsigned char* b = buffer + op->buf + 4 * n++;
