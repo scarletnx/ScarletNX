@@ -1198,20 +1198,20 @@ static void driver_files(void) {
     const char* key_a = "guest=5 gpu=5143:44050001 features=aaaa caps=11; ScarletNX one driver=100 sizes=1";
     const char* key_b = "guest=5 gpu=5143:44050001 features=bbbb caps=11; ScarletNX one driver=200 sizes=1";
     const char* legacy = "pipeline_file_test.legacy.vkshaders";
-    char tag_a[PF_TAG], tag_b[PF_TAG], small[12], a[256], b[256], c[256];
+    char tag_a[SNX_VK_DRIVER_TAG], tag_b[SNX_VK_DRIVER_TAG], small[12], a[256], b[256], c[256];
     PFile pf;
     u32 loaded[2];
     u64 bytes = 0;
     char why[128];
-    pf_driver_tag(tag_a, sizeof tag_a, 8, 0x5143, 0x44050001, "");                     /* Qualcomm's, the system's */
-    pf_driver_tag(tag_b, sizeof tag_b, 18, 0x5143, 0x44050001, "mainline turnip/V32"); /* Turnip, a package */
+    snx_vk_driver_tag(tag_a, sizeof tag_a, 8, 0x5143, 0x44050001, ""); /* Qualcomm's, the system's */
+    snx_vk_driver_tag(tag_b, sizeof tag_b, 18, 0x5143, 0x44050001, "mainline turnip/V32"); /* Turnip, a package */
     CHECK(!strcmp(tag_a, "d8-5143-44050001"));
     CHECK(!strcmp(tag_b, "d18-5143-44050001-mainline_turnip_V32"));
-    pf_driver_tag(small, sizeof small, 18, 0x5143, 0x44050001, "pkg");
+    snx_vk_driver_tag(small, sizeof small, 18, 0x5143, 0x44050001, "pkg");
     CHECK(strlen(small) == sizeof small - 1);
-    pf_driver_path(a, sizeof a, ".", "pipeline_file_test", tag_a, ".vkshaders");
-    pf_driver_path(b, sizeof b, ".", "pipeline_file_test", tag_b, ".vkshaders");
-    pf_driver_path(c, sizeof c, ".", "pipeline_file_test", "d3-1002-000073df", ".vkshaders");
+    snx_vk_driver_path(a, sizeof a, ".", "pipeline_file_test", tag_a, ".vkshaders");
+    snx_vk_driver_path(b, sizeof b, ".", "pipeline_file_test", tag_b, ".vkshaders");
+    snx_vk_driver_path(c, sizeof c, ".", "pipeline_file_test", "d3-1002-000073df", ".vkshaders");
     CHECK(!strcmp(a, "./pipeline_file_test.d8-5143-44050001.vkshaders"));
     remove(a);
     remove(b);

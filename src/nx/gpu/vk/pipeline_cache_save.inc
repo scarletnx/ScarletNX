@@ -57,19 +57,7 @@ void vk_pipeline_save(int at_exit) {
         pm_unlock(&g_pipeline.psave);
         return;
     }
-    size_t n = 0;
-    void* d = NULL;
-    if (vkGetPipelineCacheData(g_vk.dev, g_pipeline.pcache, &n, NULL) == VK_SUCCESS && n) d = malloc(n);
-    if (d && vkGetPipelineCacheData(g_vk.dev, g_pipeline.pcache, &n, d) == VK_SUCCESS) {
-        FILE* f = fopen(g_pipeline.pcache_tmp, "wb");
-        if (f) {
-            int ok = fwrite(d, 1, n, f) == n;
-            if (fclose(f)) ok = 0;
-            if (!ok || plat_replace_file(g_pipeline.pcache_tmp,
-                                         g_pipeline.pcache_path)) /* the old cache stays whole until this */
-                remove(g_pipeline.pcache_tmp);
-        }
-    }
-    free(d);
+    size_t saved;
+    (void)snx_vk_pipeline_cache_save(g_vk.dev, g_pipeline.pcache, g_pipeline.pcache_path, &saved);
     pm_unlock(&g_pipeline.psave);
 }

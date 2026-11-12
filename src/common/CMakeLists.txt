@@ -121,7 +121,8 @@ endif()
 # the device's choice, the submission ring, the swapchain and the SDL window (gpu/vk/). Each frontend compiles volk.c,
 # whose functions these call
 if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
-    add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/ring.c gpu/vk/swapchain.c gpu/vk/window.c)
+    add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/driver_tag.c gpu/vk/ring.c gpu/vk/swapchain.c
+                                     gpu/vk/window.c)
     set_target_properties(snx_vk_common PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx_vk_common PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                                  -Werror=missing-variable-declarations)

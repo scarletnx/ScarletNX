@@ -157,7 +157,13 @@ shader compiler at run time. The output merger is the pipeline's fixed state. A 
 is made as its first draw needs it, which pauses the game while the driver compiles it; with the
 Switch's `async_pipelines=1` (`--async_pipelines=1`) workers make it instead
 (`pipeline_threads` of them) and the draws that need it are skipped until it is ready, so what
-they draw shows up a few frames late, and the run's end says how many were skipped. Vertex and
+they draw shows up a few frames late, and the run's end says how many were skipped. The driver
+keeps the pipelines it compiled between runs, as for a Switch game, in
+`shader_cache/vk_pipelines.<driver>.bin` of the game's folder, one file for each driver. The
+file is read before the first draw and written at the end of the run, and also while the game
+runs after 20 s in which no pipeline was made, so a run that stops early keeps what it made. The
+Switch's `vk_pipeline_cache=0` neither reads nor writes it, and `3ds_vk_pipeline_cache` checks
+the file. Vertex and
 index data are read where the GPU works (in place, or its copy), except in a draw with a geometry shader, whose vertex and
 geometry shaders run on the CPU (see below). `tests/3ds_vk_draw.c` holds the draws to the
 software renderer they replaced, which stays as their reference. The shown

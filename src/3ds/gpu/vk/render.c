@@ -16,6 +16,8 @@
 #include "3ds/gpu/vk/shaders/texture_spv.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vsgen.h"
+#include "common/gpu/vk/vk_common.h"
+#include "common/platform/file.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
@@ -256,6 +258,13 @@ static struct {
     PipeJob jobs[PIPE_JOBS];
     uint64_t skipped; /* the draws skipped while their pipeline was made */
     int low_refused;  /* a worker's low priority was refused, which the first one refused says (atomic) */
+    /* the driver's pipelines kept between runs (snx_ctr_vk_pipeline_cache_open): the cache every pipeline is made
+       with, its file, whether a pipeline went into it since it was written and when the last one did (atomic: the
+       workers make pipelines too) */
+    VkPipelineCache cache;
+    char cache_path[1200];
+    int cache_dirty;
+    uint64_t cache_used_ms;
 } g;
 
 static VkDevice device(void) { return snx_ctr_vk()->device; }
@@ -1349,8 +1358,11 @@ static VkPipeline make_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderMod
                                        .pDynamicState = &dynamic,
                                        .layout = g.layout};
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(v->device, VK_NULL_HANDLE, 1, &pi, NULL, &pipeline) != VK_SUCCESS)
-        return VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(v->device, g.cache, 1, &pi, NULL, &pipeline) != VK_SUCCESS) return VK_NULL_HANDLE;
+    if (g.cache) {
+        __atomic_store_n(&g.cache_used_ms, (uint64_t)(snx_seconds() * 1000), __ATOMIC_RELAXED);
+        __atomic_store_n(&g.cache_dirty, 1, __ATOMIC_RELAXED);
+    }
     return pipeline;
 }
 /* A worker: makes the queued pipelines one by one, until the renderer stops them. One past the first two runs at the
@@ -2059,6 +2071,58 @@ static void copy_every_page_back(void) {
     }
     if (copied) (void)snx_ctr_vk_finish();
 }
+/* ---- the pipeline cache kept between runs ---- */
+
+void snx_ctr_vk_pipeline_cache_open(const char* directory) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    if (!v || g.cache || !g_settings.vulkan_pipeline_cache) return;
+    char dir[1100], tag[SNX_VK_DRIVER_TAG];
+    snprintf(dir, sizeof dir, "%s/shader_cache", directory);
+    snx_path_native(dir);
+    if (!snx_is_dir(dir) && plat_mkdir(dir)) {
+        char why[256];
+        fprintf(stderr, "3ds gpu: no pipeline cache kept between runs: cannot create %s: %s\n", dir,
+                snx_os_error(why, sizeof why));
+        return;
+    }
+    /* each driver's file apart, as the Switch's: d<driver ID>-<vendor>-<device> */
+    VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
+    vkGetPhysicalDeviceProperties2(v->phys, &props);
+    snx_vk_driver_tag(tag, sizeof tag, (uint32_t)driver.driverID, props.properties.vendorID, props.properties.deviceID,
+                      NULL);
+    snx_vk_driver_path(g.cache_path, sizeof g.cache_path, dir, "vk_pipelines", tag, ".bin");
+    snx_path_native(g.cache_path);
+    size_t loaded = 0;
+    g.cache = snx_vk_pipeline_cache_load(v->device, g.cache_path, &loaded);
+    if (loaded) fprintf(stderr, "3ds gpu: the pipeline cache of earlier runs loaded (%zu KB)\n", loaded >> 10);
+}
+/* No pipeline for this long, and none queued or being made, before a write while the game runs: the driver holds the
+   cache while it copies it out, and a pipeline made meanwhile would wait for the whole copy (the Switch's renderer
+   once waited 3.2 s so) */
+#define CACHE_QUIET_MS 20000u
+void snx_ctr_vk_pipeline_cache_save(bool at_exit) {
+    if (!g.cache || !__atomic_load_n(&g.cache_dirty, __ATOMIC_RELAXED)) return;
+    if (!at_exit) {
+        uint64_t now = (uint64_t)(snx_seconds() * 1000);
+        if (now - __atomic_load_n(&g.cache_used_ms, __ATOMIC_RELAXED) < CACHE_QUIET_MS) return;
+        bool busy = false;
+        if (g.job_lock) {
+            SDL_LockMutex(g.job_lock);
+            for (unsigned i = 0; i < PIPE_JOBS && !busy; ++i)
+                busy = g.jobs[i].state == JOB_QUEUED || g.jobs[i].state == JOB_MAKING;
+            SDL_UnlockMutex(g.job_lock);
+        }
+        if (busy) return;
+    }
+    __atomic_store_n(&g.cache_dirty, 0, __ATOMIC_RELAXED);
+    size_t saved = 0;
+    if (snx_vk_pipeline_cache_save(device(), g.cache, g.cache_path, &saved))
+        fprintf(stderr, "3ds gpu: the pipeline cache could not be written to %s\n", g.cache_path);
+    else if (at_exit)
+        fprintf(stderr, "3ds gpu: the pipeline cache written (%zu KB)\n", saved >> 10);
+}
+
 void snx_ctr_vk_render_free(void) {
     if (!snx_ctr_vk()) {
         memset(&g, 0, sizeof g);
@@ -2076,6 +2140,8 @@ void snx_ctr_vk_render_free(void) {
         for (unsigned i = 0; i < PIPE_JOBS; ++i)
             if (g.jobs[i].state == JOB_DONE) vkDestroyPipeline(d, g.jobs[i].made, NULL);
     }
+    snx_ctr_vk_pipeline_cache_save(true); /* every pipeline made, the workers stopped */
+    if (g.cache) vkDestroyPipelineCache(d, g.cache, NULL);
     if (g.job_done) SDL_DestroyCondition(g.job_done);
     if (g.job_queued) SDL_DestroyCondition(g.job_queued);
     if (g.job_lock) SDL_DestroyMutex(g.job_lock);

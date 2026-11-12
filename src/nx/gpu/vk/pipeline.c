@@ -121,8 +121,8 @@ typedef struct WarmItem {
 static struct {
     /* The caches live in shader_cache/ of the game's cache folder (g_cachedir), wherever the runtime was started
        from */
-    char cache_dir[1100], pcache_path[1200], pcache_tmp[1230];
-    char driver_tag[PF_TAG]; /* the driver's, whose files of the cache these are (pf_driver_tag) */
+    char cache_dir[1100], pcache_path[1200];
+    char driver_tag[SNX_VK_DRIVER_TAG]; /* the driver's, whose files of the cache these are (snx_vk_driver_tag) */
     int pcache_dirty;        /* pipelines made since the cache was last written (atomic: it is saved outside vk_lock) */
     u64 pcache_used;         /* plat_ns when a pipeline last went into the cache (atomic) */
     VkPipelineLayout playouts[1u << 5]; /* by the sets with texture arrays, made when first used */
@@ -711,13 +711,11 @@ void vk_pipeline_init(void) {
     }
     /* each driver's files apart: a game run with the system's driver, then a package's (gpu_driver), then the
        system's again keeps the first one's */
-    pf_driver_tag(g_pipeline.driver_tag, sizeof g_pipeline.driver_tag, g_vk.driver_id, g_vk.props.vendorID,
-                  g_vk.props.deviceID, g_settings.gpu_driver);
-    pf_driver_path(g_pipeline.pcache_path, sizeof g_pipeline.pcache_path, g_pipeline.cache_dir, "vk_pipelines",
-                   g_pipeline.driver_tag, ".bin");
+    snx_vk_driver_tag(g_pipeline.driver_tag, sizeof g_pipeline.driver_tag, g_vk.driver_id, g_vk.props.vendorID,
+                      g_vk.props.deviceID, g_settings.gpu_driver);
+    snx_vk_driver_path(g_pipeline.pcache_path, sizeof g_pipeline.pcache_path, g_pipeline.cache_dir, "vk_pipelines",
+                       g_pipeline.driver_tag, ".bin");
     snx_path_native(g_pipeline.pcache_path);
-    /* the temporary name is the process's own: two games running at once would otherwise write the same file */
-    snprintf(g_pipeline.pcache_tmp, sizeof g_pipeline.pcache_tmp, "%s.%u.tmp", g_pipeline.pcache_path, pf_pid());
     /* the driver's compiled pipelines from earlier runs; it ignores data from another device or driver version.
        Without a file of this driver's, the one every driver wrote before each had its own, left where it is */
     VkPipelineCacheCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
@@ -3096,10 +3094,10 @@ static void pf_start_load(void) {
     }
     g_pipeline.pf.on = 1;
     null_fs(); /* made here, before the reading thread uses it */
-    pf_driver_path(g_pipeline.pf.path, sizeof g_pipeline.pf.path, g_pipeline.cache_dir, g_exename,
-                   g_pipeline.driver_tag, ".vkshaders");
-    pf_driver_path(g_pipeline.pf.ship_path, sizeof g_pipeline.pf.ship_path, g_pipeline.cache_dir, g_exename,
-                   g_pipeline.driver_tag, ".vkshipped");
+    snx_vk_driver_path(g_pipeline.pf.path, sizeof g_pipeline.pf.path, g_pipeline.cache_dir, g_exename,
+                       g_pipeline.driver_tag, ".vkshaders");
+    snx_vk_driver_path(g_pipeline.pf.ship_path, sizeof g_pipeline.pf.ship_path, g_pipeline.cache_dir, g_exename,
+                       g_pipeline.driver_tag, ".vkshipped");
     snprintf(g_pipeline.pf.scan_path, sizeof g_pipeline.pf.scan_path, "%s/%s.vkscan", g_pipeline.cache_dir, g_exename);
     snx_path_native(g_pipeline.pf.path);
     snx_path_native(g_pipeline.pf.ship_path);
