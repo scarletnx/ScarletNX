@@ -5,6 +5,8 @@
    (nvn_draw.c) turns the records into the renderer's draw state, which a renderer of the test's takes; the device,
    textures, samplers, programs, events, syncs and state objects (nvn_object.c); and the queue and window
    (nvn_queue.c) */
+#include "nx/gpu/guest_pools.h"
+#include "nx/gpu/guest_textures.h"
 #include "nx/runtime/arm.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/nvn/nvn_object.h"
@@ -155,6 +157,12 @@ int arm_code_range(u64* lo, u64* hi) {
     return 0;
 }
 /* the GPU's addresses are the guest's: a pool at its storage */
+/* the registry of the pools (gpu/guest_pools.c), which no test here reads */
+void gpu_pool_add(u64 gva, u64 size, int virtual) { (void)gva, (void)size, (void)virtual; }
+void gpu_pool_remove(u64 gva) { (void)gva; }
+/* the registry of the live textures (gpu/guest_textures.c), which no test here reads */
+void gpu_texture_add(u64 gva, u64 size) { (void)gva, (void)size; }
+void gpu_texture_remove(u64 gva) { (void)gva; }
 u64 gmmu_space_alloc(u64 size, u64 align) {
     (void)size;
     (void)align;

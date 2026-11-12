@@ -22,6 +22,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/backing.h"
@@ -239,8 +240,10 @@ static void arena_retire(void) {
 static int org_fit(void) {
     if (g_org_cap >= g_ar_cap) return 1;
     free(g_org);
+    vk_ledger_heap(VK_OWN_ARENA, -(i64)g_org_cap);
     g_org = malloc(g_ar_cap);
     g_org_cap = g_org ? g_ar_cap : 0;
+    vk_ledger_heap(VK_OWN_ARENA, (i64)g_org_cap);
     return g_org != NULL;
 }
 static int arena_fit(u64 need) {
@@ -278,7 +281,7 @@ static int arena_fit(u64 need) {
     g_ar = VK_NULL_HANDLE;
     g_ar_cap = 0;
     if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &g_ar, &g_ar_mem, &info))) return 0;
-    vk_mem_track(g_ar_mem);
+    vk_mem_track(g_ar_mem, VK_OWN_ARENA);
     g_ar_ptr = info.pMappedData;
     g_ar_cap = cap;
     return org_fit();

@@ -7,6 +7,7 @@
    conversion build for the blits that convert between pixel formats (TC_BLIT_CONVERT), each made the first time it
    is used. Uses are on g_vk.gfx, under vk_lock() */
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/texture/texconv_spv.h" /* compiled from texconv.comp by the build (cmake/glsl.cmake) */
 #include "nx/gpu/texture/texconv_modes.glsl"
@@ -75,7 +76,7 @@ static int tc_work(u64 blocks) {
     if (bi.size > g_vk.props.limits.maxStorageBufferRange ||
         !VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &buf, &mem, NULL)))
         return 0;
-    vk_mem_track(mem);
+    vk_mem_track(mem, VK_OWN_CONVERT);
     if (g_tc_work) vk_defer_buffer(g_tc_work, g_tc_work_mem);
     g_tc_work = buf;
     g_tc_work_mem = mem;

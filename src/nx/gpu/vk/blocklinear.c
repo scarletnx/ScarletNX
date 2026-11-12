@@ -6,6 +6,7 @@
    and from images take. One pipeline serves both directions; it is made on first use and kept for the device's
    lifetime, like the other internal pipelines. Uses are on g_vk.gfx, under vk_lock() */
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/gpu/texture/blocklinear_spv.h" /* compiled from blocklinear.comp by the build (cmake/glsl.cmake) */
@@ -73,7 +74,7 @@ VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
         *cap_out = 0;
         return VK_NULL_HANDLE;
     }
-    vk_mem_track(g_blocklinear.mem);
+    vk_mem_track(g_blocklinear.mem, VK_OWN_CONVERT);
     *cap_out = g_blocklinear.cap = cap;
     return g_blocklinear.scratch;
 }

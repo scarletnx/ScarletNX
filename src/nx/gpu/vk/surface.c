@@ -18,7 +18,9 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/resource_stats.h"
+#include "nx/gpu/vk/tex_report.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/texture/astc_bc.h"
 #include "nx/gpu/texture/blocklinear.h"
@@ -110,6 +112,10 @@ void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked) {
     *count = g_held[kind].n;
     *bytes = g_held[kind].bytes;
     *parked = kind == VK_LRU_RT ? g_parked : 0;
+}
+void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx) {
+    for (int list = kind; list <= kind + LRU_AGED; list += LRU_AGED)
+        for (const Surf* s = g_lru[list].head; s; s = s->lru_next) fn(ctx, s);
 }
 static _Thread_local int g_rt_flushing;
 static u32 hkey(u64 a) { return (u32)((a >> 8) ^ (a >> 20)) & (SURFH - 1); }
@@ -306,7 +312,7 @@ static Surf* surf_create_(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 
     vk_view_formats(&ii, &vf, raw);
     /* a scaled target can pass the allocation cap (4x of 4K is 506 MiB in RGBA8). Room is made for it under the
        budget: the caller holds only surfaces it used this present, which stay */
-    if (!vk_cache_image_create(&ii, &s->img, &s->mem, &s->bytes)) {
+    if (!vk_cache_image_create(&ii, &s->img, &s->mem, VK_OWN_TARGET, &s->bytes)) {
         free(s);
         return NULL;
     }
@@ -2152,6 +2158,7 @@ static int lossless(const Surf* s) {
 }
 /* s out of the table and freed, with its copies (gpu/vk/texture.c rt_crop): the device memory that releases */
 static u64 surf_evict(Surf* s) {
+    if (s->lru && lru_kind(s) == VK_LRU_TEX) vk_tex_evicted(s); /* statistics: one made again later is counted */
     if (s->is_rt && !(s->gva >> 63)) rtx_del(s->gva);
     for (Surf** pp = &g_surfh[hkey(s->gva)]; *pp; pp = &(*pp)->next)
         if (*pp == s) {
@@ -2354,7 +2361,7 @@ void vk_surf_bytes(Surf* s, u64 bytes) {
     s->bytes = bytes;
 }
 
-int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u64* bytes) {
+int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u32 owner, u64* bytes) {
     VkDeviceImageMemoryRequirements q = {.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
                                          .pCreateInfo = ii};
     VkMemoryRequirements2 req = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
@@ -2381,7 +2388,7 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
        frame is done). Its draws go without it until the next present */
     if (g_oom == g_vk_present + 1 && *bytes >= g_oom_bytes) return 0;
     vk_mem_trim(*bytes, 0);
-    if (vk_image_create_r(ii, img, mem, &res)) return 1;
+    if (vk_image_create_r(ii, img, mem, owner, &res)) return 1;
     if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
         if (g_oom != g_vk_present + 1 || *bytes < g_oom_bytes) g_oom_bytes = *bytes;
         g_oom = g_vk_present + 1;

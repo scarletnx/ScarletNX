@@ -294,8 +294,9 @@ void vk_mem_init(int sparse_queue);
 /* an image with its memory: one VMA allocation in mem, or, past g_vk.alloc_cap, pieces (mem stays VK_NULL_HANDLE).
    0 on failure. Destroyed with vk_image_destroy (vk_defer_image does that), never vmaDestroyImage */
 int vk_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem);
-/* the same, with the result of the call that failed in res (VK_ERROR_OUT_OF_DEVICE_MEMORY: no memory for it) */
-int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, VkResult* res);
+/* the same, entered in the byte ledger under owner (ledger.h's VK_OWN_*; vk_image_create's are VK_OWN_IMAGE_OTHER),
+   with the result of the call that failed in res (VK_ERROR_OUT_OF_DEVICE_MEMORY: no memory for it) */
+int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u32 owner, VkResult* res);
 void vk_image_destroy(VkImage img, VmaAllocation mem);
 /* An image with memory only where it is bound, what isn't reading as zeros (g_vk.resident). vk_resident_shape: how the
    device would bind an image made as ii that way (the texels of its blocks, its first level in the mip tail, its mip
@@ -346,14 +347,9 @@ int vk_image_sparse_bind(VkImage img, const u8* bits, u64* bytes);
 u64 vk_image_sparse_need(VkImage img, const u8* bits);
 int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32 z0, u32 z1, int all);
 void vk_sparse_stats(u64* binds, u64* bind_ns); /* statistics: sparse binds, and the host's wait for them */
-/* Tracy memory events for VMA allocations. */
-#if defined(SNX_TRACY)
-void vk_mem_track(VmaAllocation a);
-void vk_mem_untrack(VmaAllocation a);
-#else
-static inline void vk_mem_track(VmaAllocation a) { (void)a; }
-static inline void vk_mem_untrack(VmaAllocation a) { (void)a; }
-#endif
+/* statistics: the blocks and mip tails with memory now of an image of either kind above, 0 for another image */
+u32 vk_image_bound_blocks(VkImage img);
+/* ledger.h: vk_mem_track and vk_mem_untrack enter each VMA allocation in the byte ledger under its owner */
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
 /* before the device is made: the extension to enable, VK_UMA_WITH_* (VK_EXT_external_memory_host, or Android's
    VK_ANDROID_external_memory_android_hardware_buffer) */
@@ -1157,6 +1153,8 @@ u64 vk_surf_reclaim(int kind, u32 before, u64 want, int lossy);
 /* the render targets later ones drew all over (no pixels to lose), last used before `before`, up to `want` bytes */
 u64 vk_rt_reclaim_superseded(u32 before, u64 want);
 void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked);
+/* statistics: each texture (VK_LRU_TEX) or render target (VK_LRU_RT) of the caches given to fn, which changes none */
+void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx);
 /* frees cache entries (surfaces and own buffers), the least recently used first, when the heap's use with `extra`
    bytes more would be past 90% of its budget: idle lossless ones down to 80%, the lossless working set down to 95%,
    then lossy ones (vk_surf_reclaim). Only entries unused for the last two presents go, so the caller may hold any
@@ -1167,7 +1165,7 @@ u64 vk_mem_trimmed(void); /* statistics: the bytes vk_mem_trim freed */
 /* vk_image_create for a surface of the caches, with room made for it first (vk_mem_trim). When no memory is found, a
    forced trim makes room for later, and images as big fail at once for the rest of the present. bytes: the device
    memory it takes */
-int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u64* bytes);
+int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u32 owner, u64* bytes);
 /* the device memory a surface of the caches takes now: an image whose memory follows its mapping grows and shrinks */
 void vk_surf_bytes(Surf* s, u64 bytes);
 int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,

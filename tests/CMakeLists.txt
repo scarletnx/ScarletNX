@@ -2226,6 +2226,23 @@ if(NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-vk-resource-stats vk_resource_stats.c)
     snx_test_target(snx-test-vk-resource-stats 11)
     add_test(NAME vk_resource_stats COMMAND snx-test-vk-resource-stats)
+    # the shape of a set of ranges (gpu/vk/range_shape.c), which the buffer cache's measurements report: the bytes
+    # held twice, the joined pieces, the granules they touch and the sizes
+    add_executable(snx-test-vk-range-shape vk_range_shape.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/range_shape.c")
+    snx_test_target(snx-test-vk-range-shape 11)
+    add_test(NAME vk_range_shape COMMAND snx-test-vk-range-shape)
+    # the calculations of the texture cache's measurements (gpu/vk/tex_census.c): a key's hash, the table of evicted
+    # keys, a texture among the guest's live texture objects, the sums by host format and ASTC block size
+    add_executable(snx-test-vk-tex-census vk_tex_census.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/tex_census.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/range_shape.c")
+    snx_test_target(snx-test-vk-tex-census 11)
+    add_test(NAME vk_tex_census COMMAND snx-test-vk-tex-census)
+    # the registry of the guest's live texture objects (gpu/guest_textures.c): counted addresses, each in reach while
+    # the table grows and while others leave it
+    add_executable(snx-test-guest-textures guest_textures.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/guest_textures.c")
+    snx_test_target(snx-test-guest-textures 11)
+    target_link_libraries(snx-test-guest-textures PRIVATE scarletnx-platform) # the registry's PMutex
+    add_test(NAME guest_textures COMMAND snx-test-guest-textures)
     # the BC7 cache of ASTC levels (gpu/vk/bc7_cache.c), without a GPU: every input that changes a level's blocks
     # changes its key, records come back as written and from the file in a later run, another version or a damaged
     # record starts the file over or drops the record, a record cut short is cut off, and the bound starts it over

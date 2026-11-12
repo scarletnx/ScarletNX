@@ -519,6 +519,7 @@ VkFormat vk_srgb_as(VkFormat f, int srgb) {
     return f;
 }
 void vk_surf_add(Surf* s) { (void)s; }
+void vk_tex_made(const Surf* t) { (void)t; } /* gpu/vk/tex_report.c's count, which no test here reads */
 void vk_surf_touch(Surf* s) { (void)s; }
 void vk_surf_relist(Surf* s) { (void)s; }
 u32 vk_surf_gen(void) {
@@ -639,8 +640,8 @@ VkResult vmaCreateImage(VmaAllocator a, const VkImageCreateInfo* ii, const VmaAl
     (void)a, (void)ii, (void)ai, (void)img, (void)mem, (void)info;
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 }
-int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u64* bytes) {
-    (void)ii, (void)img, (void)mem, (void)bytes;
+int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u32 owner, u64* bytes) {
+    (void)ii, (void)img, (void)mem, (void)owner, (void)bytes;
     return 0;
 }
 /* images with memory only where it is bound: of the shape g_res.shape gives (none while its block is 0 texels), their

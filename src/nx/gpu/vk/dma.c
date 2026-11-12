@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
@@ -63,7 +64,7 @@ static int snap_chunk_new(SnapChunk* c) {
         c->buf = VK_NULL_HANDLE;
         return 0;
     }
-    vk_mem_track(c->mem);
+    vk_mem_track(c->mem, VK_OWN_DMA);
     c->ptr = info.pMappedData;
     return 1;
 }

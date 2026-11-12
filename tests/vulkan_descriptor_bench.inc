@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/gpu/vk/descriptor_heaps.h"
+#include "nx/gpu/vk/ledger.h"
 /* CPU submission benchmark. Pixel and buffer correctness is checked by the ordinary fixture first. No game data,
    AI, camera, frame limiter, shader compilation, or GPU shader work participates in these measurements. */
 static int bench_descriptor_pattern(u32 sets, u32 count, u32 images, u32 indexed, int unique) {
@@ -28,7 +29,7 @@ static int bench_descriptor_pattern(u32 sets, u32 count, u32 images, u32 indexed
         .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
     VmaAllocationInfo allocation;
     CHECK(vk_buffer_create(g_vk.vma, &buffer_info, &allocation_info, &buffer, &memory, &allocation) == VK_SUCCESS);
-    vk_mem_track(memory);
+    vk_mem_track(memory, VK_OWN_MISC);
     CHECK(allocation.pMappedData);
     memset(allocation.pMappedData, 0, (size_t)staged_bytes);
     VkSampler samplers[SNX_TEX_ARRAY] = {0};
