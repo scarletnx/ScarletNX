@@ -13,6 +13,7 @@
 #include "common/utilities/spirv_emit.h"
 #include "common/utilities/spirv_opt.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/pagespace.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/extension_bans.h"
 #include "nx/gpu/vk/pipeline_parts.h"

@@ -257,13 +257,18 @@ static int pb_patch_case(GpuChannel* ch, u64 target) {
         u64 begun = vk_submit_number() == submit ? g_vk_passes - passes : 0; /* 0: a submit came between (pb_frame) */
         CHECK(!pb_halves(target, half));
         vk_unlock();
-        if (half[0] != 'r' || half[1] != 'g' || (tracked && begun && begun != 2))
-            fprintf(stderr, "guest write between draws: left %c, right %c (r, g wanted), %llu passes (2 wanted)\n",
-                    half[0], half[1], (unsigned long long)begun);
+        /* with the page cache the second draw's range is on a page the first was given, so it reads a copy in the
+           ring and the pass goes on: one pass, where the pages copied over a buffer between the draws end it */
+        u64 want = vk_pages_on() ? 1 : 2;
+        if (half[0] != 'r' || half[1] != 'g' || (tracked && begun && begun != want))
+            fprintf(stderr, "guest write between draws: left %c, right %c (r, g wanted), %llu passes (%llu wanted)\n",
+                    half[0], half[1], (unsigned long long)begun, (unsigned long long)want);
         CHECK(half[0] == 'r' && half[1] == 'g');
-        if (tracked) CHECK(!begun || begun == 2);
+        if (tracked) CHECK(!begun || begun == want);
         printf("pass breaks: a guest write between two draws is read by the second and not the first (%s%s)\n",
-               tracked ? "its pages copied over the buffer between them" : "no write tracking: hashed again",
+               !tracked        ? "no write tracking: hashed again"
+               : vk_pages_on() ? "the second reads a copy in the ring, in the same pass"
+                               : "its pages copied over the buffer between them",
                begun ? "" : "; a submit between the draws, their passes not counted");
     }
     r[0x701] = (u32)((PB_GVA + 0x12000) >> 32); /* the harness's streams again */
