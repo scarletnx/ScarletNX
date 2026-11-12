@@ -104,11 +104,17 @@ static void addon_items(void) {
     assert(gui_games_add(&g, d, GUI_GAMES_DUMP, error, sizeof error) && gui_games_group(&g, &dumps_only));
     assert(g.count == 8 && !g.set_count && named(&g, "Game [DLC].nsp") < g.count);
     gui_games_free(&g);
-#ifndef _WIN32
     { /* the game recompiled, made from game.xci: the item names its program, by its name the update gives */
-        char *folder = snx_path_join(d, "0100ABCD12340000"), *program = snx_path_join(folder, "0100ABCD12340000"),
-             *data = snx_path_join(folder, "0100ABCD12340000_data");
-        assert(!snx_mkdirs(data) && !snx_write_file(program, "#!/bin/sh\n", 10) && !chmod(program, 0755));
+#ifdef _WIN32
+        char *folder = snx_path_join(d, "0100ABCD12340000"), *program = snx_path_join(folder, "0100ABCD12340000.exe");
+#else
+        char *folder = snx_path_join(d, "0100ABCD12340000"), *program = snx_path_join(folder, "0100ABCD12340000");
+#endif
+        char* data = snx_path_join(folder, "0100ABCD12340000_data");
+        assert(!snx_mkdirs(data) && !snx_write_file(program, "#!/bin/sh\n", 10));
+#ifndef _WIN32
+        assert(!chmod(program, 0755));
+#endif
         assert(gui_games_add(&g, d, GUI_GAMES_RUN | GUI_GAMES_DUMP, error, sizeof error));
         assert(gui_games_group(&g, &titled_made));
         /* Recompiled, the game, Dumps, unread.nsp, Updates and DLCs, the item */
@@ -122,7 +128,6 @@ static void addon_items(void) {
         free(program);
         free(folder);
     }
-#endif
     /* games in no folder: an update named by its control.nacp, DLCs by their game's title ID; each item by what it is
        shown as */
     path = snx_path_join(d, "game.xci");
