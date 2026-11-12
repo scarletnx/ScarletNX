@@ -2,17 +2,18 @@
 # Copyright 2026 the ScarletNX contributors
 #
 # The native nn::ngc (ngc.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
-# nn::ngc::ProfanityFilter with no ngc:u session and no word lists. From SDK 20 these are every function that reads
-# the session or the heap that Initialize makes; the setters and the other constructors run their own code. An
-# older SDK filters in its own code, on the NgWord archive, and has no hook here
+# nn::ngc::ProfanityFilter with no ngc:u session and no word lists. From SDK 16 these are every function that reads
+# the session or the heap that Initialize makes; the setters and the other constructors run their own code. Read in
+# SDK 16.2, 18.3 and 20.5, whose Initialize lays the object out alike. Through SDK 13 the filter works in its own
+# code, on the NgWord archive, and has no hook here; SDK 14 and 15 were not read
 family nn_ngc
-@version(>= 20.0.0) hook _ZN2nn3ngc15ProfanityFilter10InitializeEPvmb(addr self, addr work, u64 size, bool language) -> u32 = nnngc_initialize
-@version(>= 20.0.0) hook _ZN2nn3ngc15ProfanityFilter8FinalizeEv(addr self) = nnngc_finalize
-@version(>= 20.0.0) hook _ZN2nn3ngc15ProfanityFilterD2Ev(addr self) = nnngc_finalize
-@version(>= 20.0.0) hook _ZN2nn3ngc15ProfanityFilter17GetContentVersionEv(addr self) -> u32 = nnngc_get_content_version
-@version(>= 20.0.0) hook _ZN2nn3ngc15ProfanityFilter24MaskProfanityWordsInTextEPiPcj(addr self, addr count, addr text, u32 patterns) -> u32 = nnngc_mask
-@version(>= 20.0.0) hook _ZN2nn3ngc15ProfanityFilter24MaskProfanityWordsInTextEPiPDsj(addr self, addr count, addr text, u32 patterns) -> u32 = nnngc_mask16
-@version(>= 20.0.0) hook _ZN2nn3ngc15ProfanityFilter24MaskProfanityWordsInTextEPiPtj(addr self, addr count, addr text, u32 patterns) -> u32 = nnngc_mask16
-@version(>= 20.0.0) hook _ZN2nn3ngc15ProfanityFilter19CheckProfanityWordsEPjjPPKcm(addr self, addr out, u32 patterns, addr words, u64 n) -> u32 = nnngc_check
-@version(>= 20.0.0) hook _ZN2nn3ngc15ProfanityFilter19CheckProfanityWordsEPjjPPKDsm(addr self, addr out, u32 patterns, addr words, u64 n) -> u32 = nnngc_check16
-@version(>= 20.0.0) hook _ZN2nn3ngc15ProfanityFilter19CheckProfanityWordsEPjjPPKtm(addr self, addr out, u32 patterns, addr words, u64 n) -> u32 = nnngc_check16
+@version(>= 16.0.0) hook _ZN2nn3ngc15ProfanityFilter10InitializeEPvmb(addr self, addr work, u64 size, bool language) -> u32 = nnngc_initialize
+@version(>= 16.0.0) hook _ZN2nn3ngc15ProfanityFilter8FinalizeEv(addr self) = nnngc_finalize
+@version(>= 16.0.0) hook _ZN2nn3ngc15ProfanityFilterD2Ev(addr self) = nnngc_finalize
+@version(>= 16.0.0) hook _ZN2nn3ngc15ProfanityFilter17GetContentVersionEv(addr self) -> u32 = nnngc_get_content_version
+@version(>= 16.0.0) hook _ZN2nn3ngc15ProfanityFilter24MaskProfanityWordsInTextEPiPcj(addr self, addr count, addr text, u32 patterns) -> u32 = nnngc_mask
+@version(>= 16.0.0) hook _ZN2nn3ngc15ProfanityFilter24MaskProfanityWordsInTextEPiPDsj(addr self, addr count, addr text, u32 patterns) -> u32 = nnngc_mask16
+@version(>= 16.0.0) hook _ZN2nn3ngc15ProfanityFilter24MaskProfanityWordsInTextEPiPtj(addr self, addr count, addr text, u32 patterns) -> u32 = nnngc_mask16
+@version(>= 16.0.0) hook _ZN2nn3ngc15ProfanityFilter19CheckProfanityWordsEPjjPPKcm(addr self, addr out, u32 patterns, addr words, u64 n) -> u32 = nnngc_check
+@version(>= 16.0.0) hook _ZN2nn3ngc15ProfanityFilter19CheckProfanityWordsEPjjPPKDsm(addr self, addr out, u32 patterns, addr words, u64 n) -> u32 = nnngc_check16
+@version(>= 16.0.0) hook _ZN2nn3ngc15ProfanityFilter19CheckProfanityWordsEPjjPPKtm(addr self, addr out, u32 patterns, addr words, u64 n) -> u32 = nnngc_check16

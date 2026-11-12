@@ -5,8 +5,8 @@
    never the SDK's code: the checks of the arguments and their Results, which the game sees, are the SDK's, and the
    work that the service did is that of an empty list.
 
-   From SDK 20 the filter asks the ngc:u service, and the hooks hold for those SDKs. An older SDK (7.7.0) filters in
-   its own code, on the NgWord system archive (hle/filesystem/fs.c), and keeps its own code. The China functions
+   From SDK 16 the filter asks the ngc:u service, and the hooks hold for those SDKs. An older SDK (through 13.3)
+   filters in its own code, on the NgWord system archive (hle/filesystem/fs.c), and keeps its own code. The China functions
    (ngct:u) are not here: a game that calls them opens ngct:u, and sm stops it with the name of this layer.
 
    The game owns the ProfanityFilter object: the flag of the desired language at 8, initialized at 9, the skip, mask
