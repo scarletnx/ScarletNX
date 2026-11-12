@@ -2094,7 +2094,9 @@ void snx_ctr_vk_pipeline_cache_open(const char* directory) {
     snx_vk_driver_path(g.cache_path, sizeof g.cache_path, dir, "vk_pipelines", tag, ".bin");
     snx_path_native(g.cache_path);
     size_t loaded = 0;
-    g.cache = snx_vk_pipeline_cache_load(v->device, g.cache_path, &loaded);
+    char why[512];
+    g.cache = snx_vk_pipeline_cache_load(v->device, &props.properties, g.cache_path, &loaded, why, sizeof why);
+    if (why[0]) fprintf(stderr, "3ds gpu: %s: %s\n", g.cache_path, why);
     if (loaded) fprintf(stderr, "3ds gpu: the pipeline cache of earlier runs loaded (%zu KB)\n", loaded >> 10);
 }
 /* No pipeline for this long, and none queued or being made, before a write while the game runs: the driver holds the

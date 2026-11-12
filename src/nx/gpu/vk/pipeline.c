@@ -716,31 +716,29 @@ void vk_pipeline_init(void) {
     snx_vk_driver_path(g_pipeline.pcache_path, sizeof g_pipeline.pcache_path, g_pipeline.cache_dir, "vk_pipelines",
                        g_pipeline.driver_tag, ".bin");
     snx_path_native(g_pipeline.pcache_path);
-    /* the driver's compiled pipelines from earlier runs; it ignores data from another device or driver version.
-       Without a file of this driver's, the one every driver wrote before each had its own, left where it is */
-    VkPipelineCacheCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    /* the driver's compiled pipelines from earlier runs, from a file of this device's and driver build's
+       (snx_vk_pipeline_cache_new). Without a file of this driver's, the one every driver wrote before each had its
+       own, left where it is */
     PFileMap data = {0};
     /* vk_pipeline_cache=0 reads neither file */
     char* legacy = g_settings.vulkan_pipeline_cache ? snx_format("%s/vk_pipelines.bin", g_pipeline.cache_dir) : NULL;
     if (legacy) snx_path_native(legacy);
-    int mapped = g_settings.vulkan_pipeline_cache && !plat_file_map(&data, g_pipeline.pcache_path) && data.data;
-    if (!mapped && legacy && !plat_file_map(&data, legacy) && data.data) {
-        mapped = 1;
+    const char* from = g_settings.vulkan_pipeline_cache && !plat_file_map(&data, g_pipeline.pcache_path) && data.data
+                           ? g_pipeline.pcache_path
+                           : NULL;
+    if (!from && legacy && !plat_file_map(&data, legacy) && data.data) {
+        from = legacy;
         LOG("vulkan: %s, the file every driver shared before each had its own, stays where it is, read as the start "
             "of %s, which is not there yet\n",
             legacy, g_pipeline.pcache_path);
     }
-    if (mapped) {
-        ci.initialDataSize = (size_t)data.size;
-        ci.pInitialData = data.data;
-    }
+    size_t loaded = 0;
+    char why[512];
+    g_pipeline.pcache = snx_vk_pipeline_cache_new(g_vk.dev, &g_vk.props, from ? (const void*)data.data : NULL,
+                                                  (size_t)data.size, &loaded, why, sizeof why);
+    if (why[0]) LOG("vulkan: %s: %s\n", from ? from : g_pipeline.pcache_path, why);
+    if (loaded) LOG("vulkan: pipeline cache loaded (%zu KB)\n", loaded >> 10);
     free(legacy);
-    if (!VK_OK(vkCreatePipelineCache(g_vk.dev, &ci, NULL, &g_pipeline.pcache)) && ci.initialDataSize) {
-        ci.initialDataSize = 0;
-        ci.pInitialData = NULL;
-        VK_OK(vkCreatePipelineCache(g_vk.dev, &ci, NULL, &g_pipeline.pcache));
-    }
-    if (ci.initialDataSize) LOG("vulkan: pipeline cache loaded (%zu KB)\n", ci.initialDataSize >> 10);
     plat_file_unmap(&data); /* the cache copied it, and a mapped file can't be replaced on Windows */
     /* how shaders get the console's FP32 flush to zero, settled before the reading thread translates any */
     if (g_vk_flush_denorm)

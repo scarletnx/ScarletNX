@@ -300,21 +300,47 @@ int snx_vk_pipeline_workers(int setting, int cpus) {
    plays */
 int snx_vk_pipeline_low_workers(int workers) { return workers > 2 ? workers - 2 : 0; }
 
-VkPipelineCache snx_vk_pipeline_cache_load(VkDevice dev, const char* path, size_t* loaded) {
+VkPipelineCache snx_vk_pipeline_cache_new(VkDevice dev, const VkPhysicalDeviceProperties* props, const void* data,
+                                          size_t size, size_t* taken, char* why, size_t n) {
     VkPipelineCacheCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
-    PFileMap data = {0};
-    if (path && !plat_file_map(&data, path) && data.data) {
-        ci.initialDataSize = (size_t)data.size;
-        ci.pInitialData = data.data;
+    char found[256];
+    *taken = 0;
+    if (n) *why = 0;
+    if (data && snx_vk_pipeline_cache_check(data, size, props, found, sizeof found))
+        snprintf(why, n, "it %s, so the pipeline cache starts empty", found);
+    else if (data) {
+        ci.initialDataSize = size;
+        ci.pInitialData = data;
     }
     VkPipelineCache cache = VK_NULL_HANDLE;
-    /* data the driver cannot take at all (a cut file): an empty cache instead */
-    if (vkCreatePipelineCache(dev, &ci, NULL, &cache) != VK_SUCCESS && ci.initialDataSize) {
+    VkResult r = vkCreatePipelineCache(dev, &ci, NULL, &cache);
+    if (r != VK_SUCCESS && ci.initialDataSize) {
+        snprintf(why, n, "the driver refused its %zu bytes (%s), so the pipeline cache starts empty", size,
+                 snx_vk_result_str(r));
         ci.initialDataSize = 0;
         ci.pInitialData = NULL;
-        if (vkCreatePipelineCache(dev, &ci, NULL, &cache) != VK_SUCCESS) cache = VK_NULL_HANDLE;
+        r = vkCreatePipelineCache(dev, &ci, NULL, &cache);
     }
-    *loaded = cache ? ci.initialDataSize : 0;
+    if (r != VK_SUCCESS) {
+        size_t at = n ? strlen(why) : 0;
+        snprintf(why + at, n - at,
+                 "%sthe device refuses even an empty pipeline cache (%s): pipelines are made without one",
+                 at ? "; " : "", snx_vk_result_str(r));
+        return VK_NULL_HANDLE;
+    }
+    *taken = ci.initialDataSize;
+    return cache;
+}
+VkPipelineCache snx_vk_pipeline_cache_load(VkDevice dev, const VkPhysicalDeviceProperties* props, const char* path,
+                                           size_t* loaded, char* why, size_t n) {
+    PFileMap data = {0};
+    char os[256] = "";
+    int there = path && snx_path_exists(path);
+    if (there && plat_file_map(&data, path)) snx_os_error(os, sizeof os);
+    /* an empty file is checked too: what a run cut short leaves on a file system that lost the data */
+    const void* bytes = !there || os[0] ? NULL : data.data ? (const void*)data.data : "";
+    VkPipelineCache cache = snx_vk_pipeline_cache_new(dev, props, bytes, (size_t)data.size, loaded, why, n);
+    if (os[0] && cache) snprintf(why, n, "it cannot be read (%s), so the pipeline cache starts empty", os);
     plat_file_unmap(&data); /* the cache copied it, and a mapped file can't be replaced on Windows */
     return cache;
 }

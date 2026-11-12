@@ -98,10 +98,22 @@ int snx_vk_pipeline_low_workers(int workers);
 #define SNX_VK_DRIVER_TAG 96
 void snx_vk_driver_tag(char* out, size_t n, uint32_t driver_id, uint32_t vendor, uint32_t device, const char* package);
 void snx_vk_driver_path(char* out, size_t n, const char* dir, const char* name, const char* tag, const char* ext);
-/* A pipeline cache started from the driver's data in the file at path, when there is one: the driver takes data of
-   its own device and version and ignores any other. *loaded gets the bytes it was given, 0 for none. VK_NULL_HANDLE
-   when the device refuses even an empty cache */
-VkPipelineCache snx_vk_pipeline_cache_load(VkDevice dev, const char* path, size_t* loaded);
+/* Whether size bytes at data, a pipeline cache's file, may go to the driver: they start with the header Vulkan puts
+   first in a pipeline cache's data (VkPipelineCacheHeaderVersionOne, least significant byte first), and it names
+   props' device: its vendor, device and pipelineCacheUUID, which changes with the driver's build. Vulkan lets a driver
+   be given only data it gave out, whole, and some drivers do not check what they are given. 0, or -1 with what was
+   found, against the device's, in why */
+int snx_vk_pipeline_cache_check(const void* data, size_t size, const VkPhysicalDeviceProperties* props, char* why,
+                                size_t n);
+/* A pipeline cache started from size bytes at data, a file's (NULL for no file), when snx_vk_pipeline_cache_check takes
+   them; else, or when the driver refuses them, an empty one, which why says with the reason. *taken gets the bytes the
+   driver was given, 0 for none. VK_NULL_HANDLE when the device refuses even an empty cache, which why says too; why
+   is empty when there is nothing to say */
+VkPipelineCache snx_vk_pipeline_cache_new(VkDevice dev, const VkPhysicalDeviceProperties* props, const void* data,
+                                          size_t size, size_t* taken, char* why, size_t n);
+/* The same from the file at path, when it is there; why also says a file there that cannot be read */
+VkPipelineCache snx_vk_pipeline_cache_load(VkDevice dev, const VkPhysicalDeviceProperties* props, const char* path,
+                                           size_t* loaded, char* why, size_t n);
 /* The cache's data written to path, through a temporary file of this process's: a run that stops while it writes
    leaves the earlier file whole, and two runs at once do not write one file. The driver holds the cache while it
    copies its data out, so a pipeline made meanwhile waits for the copy. 0 when written, its bytes in *saved */

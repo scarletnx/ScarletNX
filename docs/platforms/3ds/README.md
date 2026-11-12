@@ -161,7 +161,9 @@ they draw shows up a few frames late, and the run's end says how many were skipp
 keeps the pipelines it compiled between runs, as for a Switch game, in
 `shader_cache/vk_pipelines.<driver>.bin` of the game's folder, one file for each driver. The
 file is read before the first draw and written at the end of the run, and also while the game
-runs after 20 s in which no pipeline was made, so a run that stops early keeps what it made. The
+runs after 20 s in which no pipeline was made, so a run that stops early keeps what it made. A
+file another GPU or another build of the driver wrote, or one cut inside its header, is not given
+to the driver, and the log says why. The
 Switch's `vk_pipeline_cache=0` neither reads nor writes it, and `3ds_vk_pipeline_cache` checks
 the file. Vertex and
 index data are read where the GPU works (in place, or its copy), except in a draw with a geometry shader, whose vertex and
