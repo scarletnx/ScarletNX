@@ -165,6 +165,47 @@ static int check_uma_trap_ranges(void) {
     return 0;
 }
 
+/* A lookup in a window that a trap holds a page of imports the range's own pages, not the window: a driver may read
+   an import's pages on the CPU from the thread that holds vk_lock, which a trapped page's landing needs (PanVK on a
+   Mali phone read one up to its trapped page, #1875). The owner stays, nothing lands, and the range reads the CPU's
+   bytes */
+#define UMA_TW  (HEAP_BASE + 0xd800000) /* a window, one page of it trapped */
+#define UMA_GTW 0x4f1000000ull
+static int check_uma_trapped_window(void) {
+    const u64 window = 0x200000, page = 0x1000, held = UMA_TW + 0x10000; /* uma.c's UMA_WINDOW */
+    VkBuffer b, rb;
+    u64 o;
+    if (uma_skip()) return 0;
+    CHECK(mem_map(UMA_TW, window, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GTW, UMA_TW, window);
+    memset(GP(UMA_TW), 0x71, (size_t)window);
+    vk_lock();
+    u8* result = vk_readback_buffer(256, &rb);
+    VkOwnRes* owner = uma_owner(page, 0x72);
+    CHECK(result && owner);
+    vk_own_publish_owned(held, page, owner, 0);
+    CHECK(own_lookup(held, page, NULL, 0) == 1);
+    u64 lands = own_landings();
+    CHECK(vk_buf_get_input(UMA_GTW + 0x100, 256, 4, &b, &o));
+    u32 over = vk_uma_imports(held, page), inplace = vk_uma_imports(UMA_TW, page);
+    uma_read(b, o, rb, 0);
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < 256; i++) CHECK(result[i] == 0x71);
+    int kept = own_lookup(held, page, NULL, 0) == 1, landed = own_landings() != lands;
+    vk_unlock();
+    if (over || !kept || landed)
+        fprintf(stderr, "in place, a window with a trapped page: %u imports over that page, owner %s, %s\n", over,
+                kept ? "kept" : "gone", landed ? "landed" : "nothing landed");
+    CHECK(!over && kept && !landed);
+    CHECK(!uma_landed(held, page, 0x72));
+    vk_own_res_unref(owner);
+    CHECK(mem_unmap(UMA_TW, window) == 0);
+    printf("in place: a lookup in a window with a trapped page imports none a trap holds (%s)\n",
+           inplace ? "its own page imported" : "copied: the driver refused it");
+    return 0;
+}
+
 /* A lookup whose use is recorded after a submission since the lookup (a draw's setup that waits for a landing, as
    buffer.c's wait_finish and surface.c's flush_wait do) is read by that later submission: a trap of its pages waits
    for that one too, and the import goes after it. Also when the next draw has begun by the trap (vk_frame_check) */
