@@ -1965,6 +1965,11 @@ add_executable(snx-test-loader loader_test.c "${PROJECT_SOURCE_DIR}/src/nx/loade
 snx_test_target(snx-test-loader 99)
 target_link_libraries(snx-test-loader PRIVATE snx_test_common snx_lz4 OpenSSL::Crypto snx_nx_module) # the route list
 add_test(NAME loader_native COMMAND snx-test-loader)
+# the linker (src/nx/loader/relocate.c): three modules relocated into copies and in place, and the two compared
+add_executable(snx-test-relocate relocate_test.c "${PROJECT_SOURCE_DIR}/src/nx/loader/relocate.c")
+snx_test_target(snx-test-relocate 99)
+target_link_libraries(snx-test-relocate PRIVATE scarletnx-common)
+add_test(NAME loader_relocate COMMAND snx-test-relocate)
 # the read-only function matcher: names for a stripped module's functions from the sdk module's exports
 add_executable(snx-test-function-match function_match.c "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c")
 snx_test_target(snx-test-function-match 99)
