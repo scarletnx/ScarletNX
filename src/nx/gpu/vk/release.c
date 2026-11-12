@@ -296,8 +296,10 @@ void vk_release_write(u64 gva, const void* data, u32 len) {
 }
 /* the GPFIFO submission ended or waits: the stream's releases go, those no GPU work holds at once, and a release still
    gated on the submit being recorded goes to the GPU, as the guest may look at it now */
+u64 g_vk_texture_epoch; /* vk.h: the points that make draws' writes visible to texture reads */
 void vk_release_submit(void) {
     SNX_ZONE(z, "vk release submit");
+    __atomic_add_fetch(&g_vk_texture_epoch, 1, __ATOMIC_RELAXED); /* the console's GPU idles its caches here */
     vk_lock();
     pm_lock(&g_rlock);
     hold_inplace(g_rheld, g_rhead);

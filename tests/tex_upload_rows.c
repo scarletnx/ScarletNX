@@ -172,6 +172,7 @@ void rec_CmdClearDepthStencilImage(VkCommandBuffer cb, VkImage img, VkImageLayou
 
 /* ------------------------------------------------ what texture.c reaches otherwise, unused here */
 VkState g_vk;
+u64 g_vk_texture_epoch; /* release.c's: render target snapshots, which no upload takes */
 /* Uploading into the fixture's existing image never creates views or samplers. Keep the registry boundary
    explicit, and fail if an upload unexpectedly starts exercising object creation. */
 VkResult vk_image_view_create(VkDevice device, const VkImageViewCreateInfo* info,

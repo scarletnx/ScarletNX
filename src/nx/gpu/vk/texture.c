@@ -1586,8 +1586,9 @@ u64 g_vk_rt_copy_writes;
    size, the target's bytes read as that format (a bit copy, which vkCmdCopyImage makes between such formats). The
    copy has the target's scale, or with guest the guest's size (rt_copy_guest): then NULL when it can't be made.
    Without pixels the copy is returned as it is, the target's pixels not brought into it: for a program that only
-   asks its size */
-static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pixels) {
+   asks its size. With reuse, a copy made since the last point that makes draws' writes visible to texture reads
+   (g_vk_texture_epoch) is returned as it is though the target was drawn to since (vk_rt_snapshot) */
+static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pixels, int reuse) {
     Surf* c = NULL;
     VkFmt f = as ? *as : rt->f;
     /* the same region of the scaled target */
@@ -1658,7 +1659,8 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
         c->crop_gen = rt->wgen;
         g_vk_rt_copy_writes++;
     }
-    if (c->crop_gen != rt->wgen) {
+    u64 epoch = __atomic_load_n(&g_vk_texture_epoch, __ATOMIC_RELAXED);
+    if (c->crop_gen != rt->wgen && !(reuse && c->crop_gen != ~0u && c->crop_epoch == epoch)) {
         VkCommandBuffer cb = vk_cmd();
         VkImageCopy r[2];
         vk_surf_use(cb, rt, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -1681,17 +1683,18 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest, int pix
         rec_CmdCopyImage(cb, rt->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, c->img,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rt->f.stencil ? 2 : 1, r);
         c->crop_gen = rt->wgen;
+        c->crop_epoch = epoch;
         g_vk_rt_copy_writes++;
     }
     return c;
 }
-static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) { return rt_copy(rt, w, h, as, 0, 1); }
+static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) { return rt_copy(rt, w, h, as, 0, 1, 0); }
 /* A scaled color target for a program whose texels are the guest's (a compute program, whose fetches, size queries
    and stored images count them, or a stage before the fragment's): its top-left w x h at the guest's size, in as when
    not NULL. NULL for a multisampled or depth target, a format that can't be blitted or a copy that found no memory,
    said once: the caller takes the scaled image */
 static Surf* rt_guest(Surf* rt, u32 w, u32 h, const VkFmt* as) {
-    Surf* c = rt->msaa || rt->f.depth || !can_blit(rt->f.vk) ? NULL : rt_copy(rt, w, h, as, 1, 1);
+    Surf* c = rt->msaa || rt->f.depth || !can_blit(rt->f.vk) ? NULL : rt_copy(rt, w, h, as, 1, 1, 0);
     if (!c)
         LOG_LIMIT(1,
                   "vulkan: a compute, vertex, tessellation, geometry or mesh program reads the %ux%u render target at "
@@ -1702,9 +1705,15 @@ static Surf* rt_guest(Surf* rt, u32 w, u32 h, const VkFmt* as) {
     return c;
 }
 
+/* A draw that samples a target it renders to, where the feedback loop can't take it (render.c's stage_set_), reads a
+   copy of the target. The console's texture caches hold what they read until a texture barrier, so a draw there may
+   or may not see the draws before it without one, and NVN asks the game for the barrier when it needs them. So the
+   copy is made again only after a texture barrier, a submission's end or wait, or a present (g_vk_texture_epoch),
+   not after each draw to the target: one game's 50 such draws a frame took 5.8 ms of its 9.6 ms on the GPU with a
+   copy before each, 92 % of them with no texture barrier since the copy before */
 Surf* vk_rt_snapshot(Surf* rt, int pixels) {
     if (!rt || rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) return rt;
-    return rt_copy(rt, rt->w, rt->h, NULL, 0, pixels);
+    return rt_copy(rt, rt->w, rt->h, NULL, 0, pixels, 1);
 }
 
 /* texture header type -> what the image is created as */
