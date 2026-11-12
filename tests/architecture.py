@@ -556,6 +556,47 @@ def check_link_needs(repo, build, graph):
     return errors
 
 
+# add_library( NAME in the project's own CMake files: a library a target names that no target of this configuration
+# is goes to the linker as -lNAME, which fails at the link instead of the configure
+ADD_LIBRARY = re.compile(r'^\s*add_library\(\s*([A-Za-z0-9_.+-]+)', re.M)
+
+
+def project_libraries(repo):
+    names = set()
+    for path in [repo / 'CMakeLists.txt', *(repo / folder for folder in ('src', 'tests', 'cmake', 'llvm-backend'))]:
+        files = [path] if path.is_file() else [*path.rglob('CMakeLists.txt'), *path.rglob('*.cmake')]
+        for file in files:
+            names.update(ADD_LIBRARY.findall(file.read_text(encoding='utf-8', errors='replace')))
+    return names
+
+
+def check_link_names(repo, build):
+    """A target that links a library of the project's by a name no target of this configuration has: the library's
+    add_library is skipped here (an if, or a return() before it), and the link fails on -lNAME"""
+    reply = build / '.cmake/api/v1/reply'
+    indexes = sorted(reply.glob('index-*.json'))
+    if not indexes:
+        return ['CMake file API did not produce a target/source snapshot']
+    index = json.loads(indexes[-1].read_text(encoding='utf-8'))
+    model = json.loads((reply / index['reply']['codemodel-v2']['jsonFile']).read_text(encoding='utf-8'))
+    ours = project_libraries(repo)
+    errors = []
+    for configuration in model['configurations']:
+        defined = {entry['name'] for entry in configuration['targets']}
+        for entry in configuration['targets']:
+            target = json.loads((reply / entry['jsonFile']).read_text(encoding='utf-8'))
+            for fragment in target.get('link', {}).get('commandFragments', ()):
+                name = fragment.get('fragment', '').strip()
+                if fragment.get('role') != 'libraries' or not name.startswith('-l'):
+                    continue
+                if name[2:] in ours and name[2:] not in defined:
+                    errors.append(
+                        f'{entry["name"]} links {name[2:]}, a library of the project that this configuration does not '
+                        f'define (its add_library is skipped here): the link fails on {name}'
+                    )
+    return errors
+
+
 SANITIZERS = {'address', 'undefined'}
 LIBRARIES = {'STATIC_LIBRARY', 'SHARED_LIBRARY', 'MODULE_LIBRARY', 'OBJECT_LIBRARY'}
 
@@ -725,6 +766,7 @@ def main():
         errors.extend(check_graph(graph))
         errors.extend(check_target_sources(args.repo.resolve(), args.build.resolve()))
         errors.extend(check_link_needs(args.repo.resolve(), args.build.resolve(), graph))
+        errors.extend(check_link_names(args.repo.resolve(), args.build.resolve()))
         errors.extend(check_include_shadows(args.repo.resolve(), args.build.resolve()))
         errors.extend(check_include_roots(args.repo.resolve(), args.build.resolve()))
         if args.sanitizers:
