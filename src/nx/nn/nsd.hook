@@ -6,7 +6,7 @@
 # nn::oe::GetServerEnvironmentType calls GetApplicationServerEnvironmentType, and the network libraries ask
 # GetEnvironmentIdentifier for the environment's name
 family nn_nsd
-hook _ZN2nn3nsd7ResolveEPNS0_4FqdnERKS1_(addr out, addr in) -> u32 = nnnsd_resolve
-hook _ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_(addr out, addr in) -> u32 = nnnsd_resolve_ex
-hook _ZN2nn3nsd35GetApplicationServerEnvironmentTypeEv() -> u32 = nnnsd_server_environment_type
-hook _ZN2nn3nsd24GetEnvironmentIdentifierEPNS0_21EnvironmentIdentifierE(addr out) = nnnsd_get_environment_identifier
+hook _ZN2nn3nsd7ResolveEPNS0_4FqdnERKS1_(addr out, addr in) -> u32 = nnnsd_resolve a32
+hook _ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_(addr out, addr in) -> u32 = nnnsd_resolve_ex a32
+hook _ZN2nn3nsd35GetApplicationServerEnvironmentTypeEv() -> u32 = nnnsd_server_environment_type a32
+hook _ZN2nn3nsd24GetEnvironmentIdentifierEPNS0_21EnvironmentIdentifierE(addr out) = nnnsd_get_environment_identifier a32
