@@ -1577,6 +1577,10 @@ static u8* keep_original(VkOwnRes* held, u64 off, u64 size) {
     memcpy(original, p, size);
     return original;
 }
+int vk_surf_keep_whole(const Surf* s, const VkImageKeep* k) {
+    u64 size = rt_bytes(s), cpu = 0, off = 0;
+    return gmmu_run(s->gva, size, &cpu) == size && span_owner(cpu, size, &off) == k->held && off == k->off;
+}
 int vk_surf_keep_end(Surf* s, const VkImageKeep* k, u8** original) {
     u64 size = rt_bytes(s), cpu = 0, off = 0;
     int whole = gmmu_run(s->gva, size, &cpu) == size;

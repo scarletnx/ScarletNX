@@ -19,7 +19,12 @@
    A kept entry (vk_surf_keep_begin at the bind) holds its span GPU-owned instead of its bytes from before the draw:
    the release publishes its image over the span, and the bytes land when the CPU touches them. Only where the CPU
    touched the span since the bind does it become a write-back, its bytes from before the draw read back from that
-   owner (vk_surf_keep_end) */
+   owner (vk_surf_keep_end).
+   A release publishes a kept entry only where the CPU touched its span. One it still owns whole stays kept (released),
+   and later draws to its image join it, as they do before a release: what reads its bytes publishes it then. The GPU
+   finds it in g_img_pages (vk_gfx_image_mem_need), and the CPU's touch lands its owner, which publishes it first
+   (vk_gfx_image_cpu_need). One game's draws wrote a 640x360 image between 32 releases a frame: each release made a
+   new owner and copied the image into it, 30 MB and 1.1 to 1.5 ms of GPU time a frame, and nothing read it */
 typedef struct {
     u64 cpu, n;
 } MemRun;
@@ -36,6 +41,7 @@ typedef struct {
        until that one lands), 0 for none. gw: guest memory's write generation when its copy was recorded */
     u64 id, after, gw;
     VkImageKeep keep; /* kept: keep.held, the span's owner from the bind on, whose reference the entry holds */
+    int released;     /* kept past a release, its span untouched: the CPU's touch publishes it (vk_gfx_image_cpu_need) */
 } GfxImageOut;
 static struct {
     GfxImageOut* out;
@@ -305,11 +311,17 @@ int vk_gfx_image_holds(const Surf* s) {
         if (g_image_out.out[i].surf == s) return 1;
     return 0;
 }
-int vk_gfx_image_pending(u64 gva, u64 size) {
+int vk_gfx_image_pending(u64 gva, u64 size) { return vk_gfx_image_pending_besides(gva, size, NULL); }
+u64 vk_gfx_image_adds(void) { return __atomic_load_n(&g_img_pages.adds, __ATOMIC_RELAXED); }
+int vk_gfx_image_pending_besides(u64 gva, u64 size, const Surf* self) {
     int hit = 0;
     if (!g_gfx_img_any || !size) return 0;
     vk_lock();
-    for (size_t i = 0; i < g_image_out.count && !hit; i++) hit = image_overlaps(&g_image_out.out[i], gva, size);
+    /* by the page first: a released entry stays pending across the frame (vk_gfx_image_put_aside), and every texture's
+       memo asks this. Walking each entry's runs through the GMMU for each one cost 0.8 ms a frame in one game */
+    if (pend_hit(&g_img_pages, gva, size))
+        for (size_t i = 0; i < g_image_out.count && !hit; i++)
+            hit = g_image_out.out[i].surf != self && image_overlaps(&g_image_out.out[i], gva, size);
     vk_unlock();
     return hit;
 }
@@ -338,8 +350,13 @@ void vk_gfx_image_put_aside(void) {
             i++;
             continue;
         }
-        if (o->keep.held) { /* published, or a write-back from here on */
+        if (o->keep.held) { /* kept still, or a write-back from here on */
             u64 id = o->id;
+            if (vk_surf_keep_whole(o->surf, &o->keep)) {
+                o->released = 1;
+                i++;
+                continue;
+            }
             if (image_keep_end(id)) continue;
             o = &g_image_out.out[i = image_find(id)];
             if (!o->original) { /* its bytes from before the draw couldn't be read back */
@@ -364,6 +381,20 @@ void vk_gfx_image_put_aside(void) {
         o->gw = gpu_mem_generation();
         i++;
     }
+    g_img_landing = 0;
+    vk_unlock();
+}
+void vk_gfx_image_cpu_need(u64 cpu, u64 size) {
+    if (!g_gfx_img_any || g_img_landing || !size) return;
+    SNX_ZONE(z, "vk image cpu need");
+    vk_lock();
+    g_img_landing = 1;
+    for (size_t i = 0; i < g_image_out.count;)
+        if (g_image_out.out[i].released && image_meets(&g_image_out.out[i], cpu, size)) {
+            image_flush_at(i);
+            i = 0;
+        } else
+            i++;
     g_img_landing = 0;
     vk_unlock();
 }

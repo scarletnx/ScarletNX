@@ -6,8 +6,10 @@
    read of guest memory and no wait: the write-backs land in order, the later one over the bytes the earlier one left.
    A read of the bytes before then lands both in order; another surface's write-back over the same bytes, a GPU-side
    write since the copy or another size reads guest memory instead, as before. A kept image (vk_surf_keep_begin) reads
-   nothing before its draws and copies nothing back: the release publishes it; where the CPU touched its span, it
-   becomes a write-back with the bytes from before its draws its owner kept */
+   nothing before its draws and copies nothing back. The release leaves it kept, and later draws join it: what reads
+   its bytes then publishes it, a read of guest memory or the CPU's touch of its owner (vk_gfx_image_cpu_need). Where
+   the CPU touched its span before the release, it becomes a write-back with the bytes from before its draws its owner
+   kept */
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/vk.h"
@@ -40,6 +42,12 @@ static struct {
 VkState g_vk;
 PendPages g_pend_any; /* the stand-in GPU tracks nothing per page: image_out's pend_add is a no-op here */
 void pend_add(PendPages* t, u64 gva, u64 size, int delta) { (void)t; (void)gva; (void)size; (void)delta; }
+int pend_hit(const PendPages* t, u64 gva, u64 size) { /* any page may be: the entries' bytes decide */
+    (void)t;
+    (void)gva;
+    (void)size;
+    return 1;
+}
 
 static u8* image_of(const Surf* s) { return g.image[s - g.surf]; }
 static void note_landing(const Surf* s, const u8* original) {
@@ -126,6 +134,12 @@ void vk_surf_flush(Surf* s, const u8* original) {
 void vk_own_res_unref(VkOwnRes* r) {
     (void)r;
     g.refs--;
+}
+/* the owner still holds the span whole: the CPU hasn't touched it */
+int vk_surf_keep_whole(const Surf* s, const VkImageKeep* k) {
+    (void)s;
+    (void)k;
+    return !g.touched;
 }
 /* published GPU-owned: the stand-in lands it over memory now, as a CPU read would later. Where the CPU touched the
    span (g.touched), the owner's bytes from before the draws */
@@ -296,7 +310,8 @@ int main(void) {
     frame_done();
     check(!strcmp(g.order, "AA") && g.guest[2] == 0x22 && g.last_original[1] == 0x11, "the second with the next");
 
-    /* kept on the GPU: two draws, nothing read before them, the release publishes them with nothing copied back */
+    /* kept on the GPU: two draws, nothing read before them. The release leaves it kept, with nothing copied back, and
+       a later read publishes it */
     u64 published = stat(2);
     copied = stat(0), back = stat(1);
     start();
@@ -304,11 +319,31 @@ int main(void) {
     keep_draw(a, 2, 0x22);
     check(g.reads == 0 && g_gfx_img_any, "a kept image reads no guest memory before its draws");
     release();
-    check(g.published == 1 && g.ring_at == 0 && g.waits == 0 && g.syncs == 0 && !g_gfx_img_any && !g.refs,
-          "the release publishes a kept image, copying nothing back, waiting for nothing, its owner let go");
-    check(g.guest[1] == 0x11 && g.guest[2] == 0x22, "with both draws' writes");
+    check(g.published == 0 && g.ring_at == 0 && g.waits == 0 && g.syncs == 0 && g_gfx_img_any && g.refs == 1,
+          "the release leaves a kept image kept, copying nothing back, waiting for nothing, its owner held");
+    keep_draw(a, 3, 0x33);
+    check(g.refs == 1 && g.reads == 0, "a draw after the release joins it");
+    {
+        u8 seen[SIZE];
+        gmem_read(BASE, seen, SIZE);
+        check(g.published == 1 && !g_gfx_img_any && !g.refs && g.waits == 0 && g.syncs == 0,
+              "a read after the release publishes it, its owner let go");
+        check(seen[1] == 0x11 && seen[2] == 0x22 && seen[3] == 0x33, "with every draw's writes");
+    }
     check(stat(0) == copied && stat(1) == back && stat(2) - published == 1,
           "counted as published, with no byte copied");
+
+    /* the CPU's touch of its owner after the release: published first, so the landing finds the image */
+    start();
+    keep_draw(a, 1, 0x11);
+    vk_gfx_image_cpu_need(BASE + SIZE, 16);
+    check(g.published == 0 && g_gfx_img_any, "the CPU's touch before the release leaves it, beside its span or not");
+    release();
+    vk_gfx_image_cpu_need(BASE + SIZE, 16);
+    check(g.published == 0 && g_gfx_img_any, "a touch beside its span after the release leaves it");
+    vk_gfx_image_cpu_need(BASE + 8, 4);
+    check(g.published == 1 && g.guest[1] == 0x11 && !g_gfx_img_any && !g.refs,
+          "a touch of its span after the release publishes it");
 
     /* a read before the release: a kept image is published then, the read landing it from its owner */
     start();

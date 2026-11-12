@@ -47,6 +47,11 @@ typedef struct {
        again since its publish is such a holder: it is not published at each release (vk/surface.c's rt_watch).
        Called as resolve, once for a landing of owners, before any of them is marked. Optional */
     void (*refresh)(u64 addr, u64 size);
+    /* a landing of the host pages [lo, hi), once it holds the producer's lock and before it looks for their entries:
+       the producer publishes over them what it held back from them (a storage image the guest released, which nothing
+       read since), so the landing finds those bytes. Called with the producer's lock held and none of own.c's.
+       Optional */
+    void (*claim)(u64 lo, u64 hi);
 } OwnHooks;
 
 /* 0 when the host can trap guest memory (plat_trap_init): own_begin can work from then on. -1: producers land their
