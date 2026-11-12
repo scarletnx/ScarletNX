@@ -2745,6 +2745,7 @@ typedef struct {
 } GuiChoices;
 /* choice i of whose choices (GuiChoicesOf) as its row reads, in out when it is made there; NULL past the last */
 static const char* choice_text(App* app, int of, int i, char* out, size_t size);
+static unsigned setup_icon(const App* app, int row);
 /* the height count rows of a scene's list take, from the first one's top to the last one's foot, as the scene lays
    them out: its layout and its row functions, rects room for its items, item the list's */
 static int rows_h(void (*layout)(GuiRect, int, GuiRect*), GuiRect (*row)(const GuiRect*, int, int, size_t),
@@ -2818,8 +2819,10 @@ static void choices_place(App* app, int of, GuiRect area, const char* question, 
     const char* label;
     memset(c, 0, sizeof *c);
     c->of = of;
-    for (; (label = choice_text(app, of, c->count, app->row_text, sizeof app->row_text)); ++c->count)
-        longest = SDL_max(longest, gui_text_cols(label) + marker + 2);
+    for (; (label = choice_text(app, of, c->count, app->row_text, sizeof app->row_text)); ++c->count) {
+        int icon = of == GUI_CHOICES_SETUP && setup_icon(app, c->count) ? 3 : 0; /* its columns and a space */
+        longest = SDL_max(longest, gui_text_cols(label) + marker + icon + 2);
+    }
     list_h = rows_h(ui_choices_layout, ui_choices_row, c->rects, UI_CHOICES_ROWS, s, c->count);
     if (app->theme.dialog == GUI_DIALOG_YORHA) {
         int margin = app->theme.cursor[0] ? gui_text_cols(app->theme.cursor) * cw : 0;
@@ -12823,6 +12826,18 @@ static int setup_order_row(const App* app, int choice) {
         if (rows[i] == choice) return i;
     return -1;
 }
+/* the icon before a choice by what it does (SetupDoes' order): the verb's in F1's box (key_icon), and that of Settings >
+   App's row that does the same (Clean Old Settings, Move Old Files); none for another page's */
+static const unsigned setup_icons[] = {GUI_ICON_NONE, GUI_ICON_ARROW_LEFT,   GUI_ICON_CHECK,  GUI_ICON_CHECK,
+                                       GUI_ICON_X,    GUI_ICON_SKIP_FORWARD, GUI_ICON_ERASER, GUI_ICON_FOLDER_INPUT,
+                                       GUI_ICON_TRASH};
+/* a SetupDoes added takes its icon here, in its place */
+typedef char snx_setup_icons[SDL_arraysize(setup_icons) == SETUP_DOES_DELETE + 1 ? 1 : -1];
+/* the icon before the choice on row i (setup_order); none between the groups */
+static unsigned setup_icon(const App* app, int row) {
+    int rows[GUI_SETUP_ROWS], n = setup_order(app, rows);
+    return row < n && rows[row] >= 0 ? setup_icons[setup_does(app, rows[row])] : GUI_ICON_NONE;
+}
 /* the old files' page to: a step on or back, the first or the last; none past them, nor once one was done */
 static void left_turn(App* app, int to) {
     int n = left_groups(app);
@@ -18635,13 +18650,16 @@ static const char* choice_text(App* app, int of, int i, char* out, size_t size) 
         }
     }
 }
-/* Choices' row: the choice's text, drawn with the theme's marker; the row between the setup's two groups a label, no
-   box */
+/* Choices' row: the choice's text, drawn with the theme's marker, a setup's notice's or old files' choice with its
+   icon; the row between the setup's two groups a label, no box */
 bool ui_choices_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
     (void)width; /* a choice too long for its row is cut, or slides while focused, as the menu's rows (row_text_in) */
     info->label = row < 64 ? choice_text(app, app->choices_of, (int)row, app->row_text, sizeof app->row_text) : NULL;
     if (app->choices_of == GUI_CHOICES_SIZES && !row && size_why(app, NULL, 0)) info->attr |= UI_ATTR_OFF; /* OK */
-    if (app->choices_of == GUI_CHOICES_SETUP && info->label && !info->label[0]) info->attr |= UI_ATTR_LABEL;
+    if (app->choices_of == GUI_CHOICES_SETUP && info->label) {
+        info->icon = setup_icon(app, (int)row);
+        if (!info->label[0]) info->attr |= UI_ATTR_LABEL;
+    }
     return info->label != NULL;
 }
 /* a choice under the pointer takes the focus, and a click takes it: the question's pressed, UI scale's size or the

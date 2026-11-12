@@ -88,9 +88,10 @@ static const char* choice_before(const App* app) {
     return app->setup_choice.focus ? labels[app->setup_choice.focus - 1] : NULL;
 }
 /* the page's choices drawn as rows top to bottom, want's labels ("" the row between the two groups: a label, no box,
-   its row's room the only one between them), each a row's step under the one before, the one in focus focus's: its
-   label after the marker drawn in its row in the focus's look, the others' in ink */
-static void rows_show(App* app, const char* const* want, int n, const char* focus) {
+   its row's room the only one between them) each with its icon (icons.h's, as gui_screen.h writes it), each a row's step
+   under the one before, the one in focus focus's: the marker, the icon and the label drawn in its row in the focus's
+   look, the others' in ink */
+static void rows_show(App* app, const char* const* want, const char* const* icons, int n, const char* focus) {
     GuiSetupBoxes b;
     int i, x, y;
     char label[64];
@@ -106,8 +107,12 @@ static void rows_show(App* app, const char* const* want, int n, const char* focu
         assert(!want[i][0] == !!(info.attr & UI_ATTR_LABEL));
         assert(focused == (b.choices.lists[UI_CHOICES_ROWS].focus == (size_t)i));
         if (i) assert(box.y - choice_box(app, &b.choices, i - 1).y == item_h(app) + 2 * app->scale);
-        if (!want[i][0]) continue;
-        snprintf(label, sizeof label, "%s%s", app->theme.marker, want[i]);
+        if (!want[i][0]) {
+            assert(!info.icon && !icons[i][0]);
+            continue;
+        }
+        is_icon(icons[i], info.icon);
+        snprintf(label, sizeof label, "%s%s %s", app->theme.marker, icons[i], want[i]);
         assert(find_text(app, label,
                          rgb(!focused               ? app->theme.ink
                              : app->theme.focus_bar ? app->theme.page
@@ -501,6 +506,11 @@ static void test_first(App* app) {
     assert(page(app) == SNX_SETUP_FOLDERS && snx_is_dir(portable) && same_path(app->home_dir, portable));
     key(app, SDLK_ESCAPE); /* back: it is portable now, the focus on Portable */
     assert(page(app) == SNX_SETUP_INSTALL && app->setup_choice.focus == 1);
+    { /* the steps' own choices have no icon: the notices' and the old files' alone do */
+        UiRowInfo info = {0};
+        app->choices_of = GUI_CHOICES_SETUP;
+        assert(ui_choices_rows_get_row_info(app, 0, 0, &info) && !info.icon);
+    }
     {
         char line[1100], expected[1100], shown[1024];
         snx_home_short(portable, shown, sizeof shown);
@@ -720,7 +730,8 @@ static void test_clean_notice(App* app) {
     { /* two groups: Back, Not Now and Skip, which keep the files as they are, a row apart from Clean Now, in focus;
          the keys go round them past that row, which takes no click */
         static const char* const rows[] = {"Back", "Not Now", "Skip", "", "Clean Now"};
-        rows_show(app, rows, 5, "Clean Now");
+        static const char* const icons[] = {ICON_ARROW_LEFT, ICON_X, ICON_SKIP_FORWARD, "", ICON_ERASER};
+        rows_show(app, rows, icons, 5, "Clean Now");
         key(app, SDLK_UP);
         assert(!strcmp(choice_label(app), "Skip"));
         key(app, SDLK_DOWN);
@@ -730,7 +741,7 @@ static void test_clean_notice(App* app) {
         key(app, SDLK_UP);
         click_row(app, 3);
         assert(app->setup_top == 1 && !app->setup_cleaned && !strcmp(choice_label(app), "Clean Now"));
-        rows_show(app, rows, 5, "Clean Now");
+        rows_show(app, rows, icons, 5, "Clean Now");
     }
     render(app);
     shows(app, "Clean Old Settings? [Deprecated] in 1 .ini", rgb(app->theme.ink));
@@ -824,6 +835,11 @@ static void test_old_files(App* app) {
     /* PgDn a page on, PgUp back; End the last, Home the first */
     key(app, SDLK_PAGEDOWN);
     assert(app->setup_top == 1 && setup_labels(app, labels) == 2 && !strcmp(choice_label(app), "Next"));
+    { /* none acts: one group, each with its icon */
+        static const char* const rows[] = {"Back", "Next"};
+        static const char* const icons[] = {ICON_ARROW_LEFT, ICON_CHECK};
+        rows_show(app, rows, icons, 2, "Next");
+    }
     key(app, SDLK_PAGEUP);
     key(app, SDLK_PAGEUP); /* none before the first */
     assert(!app->setup_top);
@@ -856,7 +872,8 @@ static void test_old_files(App* app) {
     { /* two groups: Back and Not Now, in focus, which keep them as they are, a row apart from Move All and Delete All;
          Down from Not Now passes that row, which takes no click */
         static const char* const rows[] = {"Back", "Not Now", "", "Move All", "Delete All"};
-        rows_show(app, rows, 5, "Not Now");
+        static const char* const icons[] = {ICON_ARROW_LEFT, ICON_X, "", ICON_FOLDER_INPUT, ICON_TRASH};
+        rows_show(app, rows, icons, 5, "Not Now");
         key(app, SDLK_DOWN);
         assert(!strcmp(choice_label(app), "Move All"));
         key(app, SDLK_UP);
@@ -882,7 +899,11 @@ static void test_old_files(App* app) {
            !snx_path_exists(games) && snx_is_file(device));
     assert(app->moved.count == 4 && app->moved.done == 3 && app->report_delete && !app->cleaned_shown);
     assert(setup_labels(app, labels) == 1 && !strcmp(labels[0], "OK"));
-    render(app);
+    {
+        static const char* const rows[] = {"OK"};
+        static const char* const icons[] = {ICON_CHECK};
+        rows_show(app, rows, icons, 1, "OK");
+    }
     shows(app, "Delete All: 3 done, 1 not", rgb(head_ink(app)));
     key(app, SDLK_RETURN);
     assert(!app->setup_on && app->lefts == 2);
@@ -896,7 +917,8 @@ static void test_old_files(App* app) {
            !strcmp(choice_label(app), "Not Now"));
     {
         static const char* const rows[] = {"Not Now", "", "Move All", "Delete All"};
-        rows_show(app, rows, 4, "Not Now");
+        static const char* const icons[] = {ICON_X, "", ICON_FOLDER_INPUT, ICON_TRASH};
+        rows_show(app, rows, icons, 4, "Not Now");
     }
     key(app, SDLK_UP); /* round to the last, Delete All */
     key(app, SDLK_RETURN);
@@ -1195,7 +1217,7 @@ static void test_skip(App* app) {
     n = setup_labels(app, labels);
     assert(n == 2 && !strcmp(labels[0], "Next") && !strcmp(labels[1], "Skip"));
     render(app);
-    shows(app, "\xfe Skip", rgb(app->theme.ink));
+    shows(app, "\xfe " ICON_SKIP_FORWARD " Skip", rgb(app->theme.ink)); /* a notice's choice: with its icon */
     /* past the first page: none */
     for (i = setup_notices(app, list); i > 0; --i) key(app, SDLK_RETURN);
     assert(page(app) == SNX_SETUP_LANGUAGE && app->setup_page == 1 && setup_labels(app, labels) == 1);
@@ -1211,7 +1233,7 @@ static void test_skip(App* app) {
     key(app, SDLK_UP); /* round from Next to Skip */
     assert(!strcmp(choice_label(app), "Skip"));
     render(app);
-    shows(app, "\xfe Skip", rgb(app->theme.page)); /* in focus, on YoRHa's band */
+    shows(app, "\xfe " ICON_SKIP_FORWARD " Skip", rgb(app->theme.page)); /* in focus, on YoRHa's band */
     keyboards = 0;
     key(app, SDLK_RETURN);
     pump(app);
