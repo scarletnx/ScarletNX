@@ -4344,7 +4344,11 @@ static void dump_addons(App* app, const char* dir) {
     open_game(app, (size_t)item, false);
     assert(!app->confirm.shown && app->queue.count == 1);
     argv_got = ran(app, 0);
-    assert(has_arg(argv_got, "-r", game) && updates_with(argv_got, dlc[1]) && updates_with(argv_got, dlc[2]));
+    {
+        char* opened = snx_absolute(game); /* as Games opens a row's file */
+        assert(has_arg(argv_got, "-r", opened) && updates_with(argv_got, dlc[1]) && updates_with(argv_got, dlc[2]));
+        free(opened);
+    }
     free(argv_got);
     /* the game made, its first DLC put in it already: the item puts the others in it, the game's program given */
     made = made_game(app, game, "0100ABCD56780000");
