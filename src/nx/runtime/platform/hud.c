@@ -16,7 +16,8 @@ static struct {
     char debug[HUD_DEBUG_MAX];
     u32 gen; /* the lists set */
     struct {
-        int safe[4], scale;
+        int safe[4], scale, boxed;
+        float stats[4];
         u32 gen;
     } laid; /* what the quads are laid out for; gen 0: nothing yet */
     SnxUiQuad q[HUD_QUADS];
@@ -54,24 +55,58 @@ static size_t line_of(const char* s, size_t room, const char** next) {
     return end;
 }
 
-static void hud_layout(SnxUiList* l, const int safe[4], int scale) {
-    float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, x, y;
-    size_t lead = strlen(HUD_DEBUG_LEAD), cols = (size_t)((float)safe[2] / cw), longest = 0, lines = 0, n;
+/* the lines the list takes at cols letters a line, and the longest of them in *longest */
+static size_t lines_at(size_t cols, size_t* longest) {
+    size_t lead = strlen(HUD_DEBUG_LEAD), lines = 0, n;
     const char *s, *next;
-    char line[HUD_DEBUG_MAX];
-    if (!g_hud.debug[0]) return;
-    cols = cols > 2 ? cols - 2 : 0;       /* a letter's gap at either side */
-    if (cols < lead + 8) cols = lead + 8; /* a picture narrower than that still shows it all, past its sides */
+    *longest = 0;
     for (s = g_hud.debug; *s; s = next, ++lines) {
         n = line_of(s, lines ? cols : cols - lead, &next) + (lines ? 0 : lead);
-        if (n > longest) longest = n;
+        if (n > *longest) *longest = n;
     }
+    return lines;
+}
+/* the letters a band of width w holds, a letter's gap at either side, and never under the lead and 8: a place
+   narrower than that still shows it all, past its sides */
+static size_t cols_of(float w, float cw) {
+    size_t cols = w > 2 * cw ? (size_t)(w / cw) - 2 : 0;
+    return cols < strlen(HUD_DEBUG_LEAD) + 8 ? strlen(HUD_DEBUG_LEAD) + 8 : cols;
+}
+static void hud_layout(SnxUiList* l, const int safe[4], int scale, const float* stats) {
+    float cw = 8.0f * (float)scale, ch = 16.0f * (float)scale, x, y;
+    size_t lead = strlen(HUD_DEBUG_LEAD), cols = cols_of((float)safe[2], cw), longest = 0, lines, n;
+    const char *s, *next;
+    char line[HUD_DEBUG_MAX];
+    int beside = 0; /* 1 under the stats' box, 2 to its right */
+    if (!g_hud.debug[0]) return;
+    /* the stats' box shown: the list keeps clear of it, under it in its column, or to its right when the picture has
+       no room under it, each wrapped to the room there */
+    if (stats) {
+        size_t c = cols_of(stats[2], cw);
+        float under = stats[1] + stats[3] + ch / 2, right = (float)(safe[0] + safe[2]) - (stats[0] + stats[2] + cw);
+        if (under + (float)lines_at(c, &longest) * ch + ch / 2 <= (float)(safe[1] + safe[3])) {
+            beside = 1;
+            cols = c;
+        } else if (right >= (float)(lead + 10) * cw) {
+            beside = 2;
+            cols = cols_of(right, cw);
+        }
+    }
+    lines = lines_at(cols, &longest);
     /* The box as it looks, a letter's gap at either side of the longest line and a quarter line above and under the
        lines, with no fill behind the letters: each line is a band of the layer's ground made of a blank cell, its
        letters, backed (ui.h's UI_BACKED), and a fill of the ink from them to the box's right; the margins are a strip
        of the ink each. Nothing is drawn under a letter, and all of it is the plain pipeline's */
-    x = (float)safe[0] + ((float)safe[2] - (float)(longest + 2) * cw) / 2;
-    y = (float)safe[1] + ch / 2;
+    if (beside == 1) {
+        x = stats[0];
+        y = stats[1] + stats[3] + ch / 2;
+    } else if (beside == 2) {
+        x = stats[0] + stats[2] + cw;
+        y = stats[1];
+    } else {
+        x = (float)safe[0] + ((float)safe[2] - (float)(longest + 2) * cw) / 2;
+        y = (float)safe[1] + ch / 2;
+    }
     ui_fill(l, x, y, (float)(longest + 2) * cw, ch / 4, UI_INK);
     ui_fill(l, x, y + ch / 4 + (float)lines * ch, (float)(longest + 2) * cw, ch / 4, UI_INK);
     y += ch / 4;
@@ -85,14 +120,18 @@ static void hud_layout(SnxUiList* l, const int safe[4], int scale) {
         ui_fill(l, at, row, x + (float)(longest + 2) * cw - at, ch, UI_INK);
     }
 }
-void hud_draw(SnxUiList* l, const int safe[4], int scale) {
+void hud_draw(SnxUiList* l, const int safe[4], int scale, const float* stats) {
+    float none[4] = {0};
     if (!g_hud.debug[0]) return;
     if (g_hud.laid.gen != g_hud.gen || g_hud.laid.scale != scale ||
-        memcmp(g_hud.laid.safe, safe, sizeof g_hud.laid.safe)) {
+        memcmp(g_hud.laid.safe, safe, sizeof g_hud.laid.safe) || g_hud.laid.boxed != (stats != NULL) ||
+        memcmp(g_hud.laid.stats, stats ? stats : none, sizeof g_hud.laid.stats)) {
         SnxUiList kept = {g_hud.q, 0, (int)HUD_QUADS};
-        hud_layout(&kept, safe, scale);
+        hud_layout(&kept, safe, scale, stats);
         g_hud.n = kept.n;
         memcpy(g_hud.laid.safe, safe, sizeof g_hud.laid.safe);
+        memcpy(g_hud.laid.stats, stats ? stats : none, sizeof g_hud.laid.stats);
+        g_hud.laid.boxed = stats != NULL;
         g_hud.laid.scale = scale;
         g_hud.laid.gen = g_hud.gen;
         ++g_hud.version;

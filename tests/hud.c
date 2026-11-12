@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The Debug settings' line over the game (runtime/platform/hud.c): nothing for none, bands of the layer's ground at the
-   top's middle of the safe area, every letter of the list drawn and backed by it, cut between its items onto lines that
-   keep inside the area */
+   top's middle of the safe area, or clear of the stats' box when it shows, every letter of the list drawn and backed by
+   it, cut between its items onto lines that keep inside the area */
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/plat.h"
 #include "gui_theme_colors.h"
@@ -30,11 +30,12 @@ static int letters(const char* s) {
     for (; *s; ++s) n += *s != ' ';
     return n;
 }
-static SnxUiList drawn(const int safe[4], int scale) {
+static SnxUiList drawn_by(const int safe[4], int scale, const float* stats) {
     SnxUiList l = {quads, 0, QUADS};
-    hud_draw(&l, safe, scale);
+    hud_draw(&l, safe, scale, stats);
     return l;
 }
+static SnxUiList drawn(const int safe[4], int scale) { return drawn_by(safe, scale, NULL); }
 /* a theme's 0xRRGGBB as a quad holds it */
 #define THEME(rgb) ui_rgba(0xFF000000u | ((rgb) & 0xFFu) << 16 | ((rgb) & 0xFF00u) | ((rgb) >> 16 & 0xFFu))
 /* What is drawn, checked: a box of the layer's ground, the ink, with nothing under a letter. First its two margins,
@@ -156,6 +157,22 @@ int main(void) {
             assert(inked == letters(HUD_DEBUG_LEAD) + letters(most));
             assert(lines <= 2 * (letters_all / (cols - 1)) + 1);
         }
+    }
+    /* with the stats' box shown the list keeps clear of it: under it in its column, half a line apart, wrapped to its
+       width (28 letters: "Debug on: log=2," then "vk_validation=1," then "shader_corpus, gdbstub"); to its right,
+       from its top, when the picture has no room under it */
+    assert(hud_debug_set(list));
+    {
+        static const float stats[4] = {48, 28, 30 * 8, 6 * 16}, tall[4] = {48, 28, 30 * 8, 700};
+        l = drawn_by(wide, 1, stats);
+        assert(rows(&l, 1, band, &inked) == 3 && inked == letters(HUD_DEBUG_LEAD) + letters(list));
+        assert(band[0] == stats[0] && band[1] == stats[1] + stats[3] + 8 && band[2] == (float)(22 + 2) * 8 &&
+               band[0] + band[2] <= stats[0] + stats[2]);
+        l = drawn_by(wide, 1, tall);
+        assert(rows(&l, 1, band, &inked) == 1 && inked == letters(HUD_DEBUG_LEAD) + letters(list));
+        assert(band[0] == tall[0] + tall[2] + 8 && band[1] == tall[1]);
+        l = drawn(wide, 1); /* and back at the top's middle once the box is gone */
+        assert(rows(&l, 1, band, &inked) == 1 && band[0] + band[2] / 2 == (float)wide[0] + (float)wide[2] / 2);
     }
     assert(hud_debug_set("") && (l = drawn(wide, 1), l.n == 0));
     puts("hud passed");
