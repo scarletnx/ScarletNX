@@ -192,6 +192,11 @@ u64 hook_site(const char* symbol);
    return address (x30) with the call's stack, through the dispatch loop when its code leaves for code compiled apart:
    for a handler that does its work around the function's, as the function's own code then sees every call */
 void hook_run_original(CPU* c, u64 addr);
+/* The same for a 32-bit game, from the handler of the hooked function its thread is in: the adapter runs with r15 at
+   the function, so no address is given (a 32-bit SDK's symbol is often not the 64-bit one's). The function's own
+   code runs with the registers and the stack as the call left them until it returns to the call's lr; its result
+   comes back, r0 with r1 above it */
+u64 hook_run_original_a32(CPU* c);
 
 /* the float arguments and results of the generated adapters: lane 0 of a vector register, the guest's bytes */
 static inline f32 hook_f32(const CPU* c, int r) {
