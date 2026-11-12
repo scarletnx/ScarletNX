@@ -214,6 +214,12 @@ static int is_known(const Known* known, SnxU64 address) {
     return set_has(known->set, address) || (known->callback && known->callback(known->user, address));
 }
 
+/* where a function being explored ends: at a function found before it, and at one a module routes, whose dispatch
+   slot a hook may hold: a branch into it is a tail call through that slot, never a jump inside one function */
+static int is_boundary(const SnxCodegen* codegen, const Known* known, SnxU64 address) {
+    return is_known(known, address) || snx_codegen_routed(codegen, address);
+}
+
 /* what word does to the flow, for the guest's features, with insn its decode (a branch's target) */
 static SnxA64Flow decode(const SnxCodegen* codegen, SnxU32 word, SnxA64Insn* insn) {
     snx_a64_decode_word(word, codegen->features, insn);
@@ -563,7 +569,7 @@ static Addresses explore(SnxCodegen* codegen, SnxU64 start, const Known* known, 
         for (;;) {
             SnxU32 word;
             SnxA64Insn insn;
-            if (set_has(&seen, address) || (address != start && is_known(known, address))) break;
+            if (set_has(&seen, address) || (address != start && is_boundary(codegen, known, address))) break;
             if (!snx_codegen_word(codegen, address, &word)) break;
             set_add(&seen, address);
             push(&result, address);
@@ -575,7 +581,8 @@ static Addresses explore(SnxCodegen* codegen, SnxU64 start, const Known* known, 
                     if (snx_codegen_module(codegen, target)) push(&todo, target);
                 } else if (kind == SNX_A64_FLOW_B) {
                     SnxU64 distance = target > start ? target - start : start - target;
-                    if (snx_codegen_module(codegen, target) && !is_known(known, target) && distance < 0x100000UL)
+                    if (snx_codegen_module(codegen, target) && !is_boundary(codegen, known, target) &&
+                        distance < 0x100000UL)
                         push(&todo, target);
                     break;
                 } else if (work && snx_codegen_module(codegen, target))
@@ -584,7 +591,7 @@ static Addresses explore(SnxCodegen* codegen, SnxU64 start, const Known* known, 
                 SnxU64 targets[SNX_JUMP_TABLE_MAX];
                 size_t n = snx_codegen_jump_table(codegen, address, targets, SNX_JUMP_TABLE_MAX);
                 for (size_t k = 0; k < n; ++k)
-                    if (!is_known(known, targets[k])) push(&todo, targets[k]);
+                    if (!is_boundary(codegen, known, targets[k])) push(&todo, targets[k]);
                 break;
             } else if (kind == SNX_A64_FLOW_RET || kind == SNX_A64_FLOW_BRK)
                 break;
