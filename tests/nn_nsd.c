@@ -4,7 +4,7 @@
    every name resolves, the 0x100 bytes of the output are the name and zeros after it, a name with no end in its
    0x100 bytes is cut there, and the environment's own name fills its 8 bytes */
 #include "nx/nn/nsd.c"
-#include "hle/hook/hooks.hook.inc" /* nsd.hook's table, and its adapters for a 32-bit game */
+#include "hle/hook/hooks.hook.inc" /* nsd.hook's table, and a 32-bit game's */
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -40,15 +40,16 @@ int main(void) {
     memset(mem + 0x100, 0xee, 0x10); /* the environment's name in its 8 bytes, nothing past them */
     nnnsd_get_environment_identifier(c, 0x100);
     CHECK(!memcmp(mem + 0x100, "lp1\0\0\0\0\0", 8) && mem[0x108] == 0xee);
-    /* a 32-bit game: each hook has an adapter (nsd.hook's a32), the two names in r0 and r1 */
+    /* a 32-bit game: each hook is in its table (nsd.hook's a32), the two names in r0 and r1 */
     {
         static SnxArmCPU a;
-        for (int i = 0; i < HOOK_COUNT; i++) {
-            CHECK(hook_a32[i] != NULL);
-            if (strcmp(hook_symbol[i], "_ZN2nn3nsd7ResolveEPNS0_4FqdnERKS1_")) continue;
+        CHECK(HOOK32_COUNT == HOOK_COUNT);
+        for (int i = 0; i < HOOK32_COUNT; i++) {
+            CHECK(!strcmp(hook32_symbol[i], hook_symbol[i]));
+            if (strcmp(hook32_symbol[i], "_ZN2nn3nsd7ResolveEPNS0_4FqdnERKS1_")) continue;
             strcpy((char*)mem, "a.%.example");
             a.r[0] = 0x100, a.r[1] = 0, a.r[14] = 0x2000;
-            hook_a32[i](&a);
+            hook32_fn[i](&a);
             CHECK(a.r[0] == 0 && a.r[15] == 0x2000 && !strcmp((char*)mem + 0x100, "a.lp1.example"));
         }
     }

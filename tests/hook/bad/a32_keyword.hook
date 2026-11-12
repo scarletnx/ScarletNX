@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+family a
+a32 struct S { u32 f @0x0 } size 0x4

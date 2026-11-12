@@ -229,9 +229,10 @@ u64 hook_site(const char* symbol) {
     return 0;
 }
 
-/* A 32-bit game: its code is arm.c's blocks, and a hook declared a32 (hookgen: its arguments and what its handler
-   reads are the same under AAPCS32 and in the 32-bit SDK's layouts) takes its function's block in the code table.
-   The module's SDK version isn't read there, so a versioned hook takes none; no hook is verified */
+/* A 32-bit game: its code is arm.c's blocks, and the hooks of its own table (hookgen --a32-marked: those declared
+   a32, whose arguments and what their handlers read are the same under AAPCS32 and in the 32-bit SDK's layouts, and
+   those declared for a 32-bit program alone) take their functions' blocks in the code table. The module's SDK version
+   isn't read there, so a versioned hook takes none; no hook is verified */
 static void install_a32(void) {
     const char* name;
     u64 addr;
@@ -245,13 +246,13 @@ static void install_a32(void) {
         SnxArmBlock* slot;
         int first, k;
         if (!name || addr >> 32) continue;
-        k = hook_select(&hook_table, name, versions, &first);
-        if (k < 0 || !hook_a32[k] || off[hook_family[k]]) continue;
+        k = hook_select(&hook32_table, name, versions, &first);
+        if (k < 0 || off[hook32_family[k]]) continue;
         slot = arm_slot((u32)addr & ~1u, (int)(addr & 1));
-        if (!slot || *slot == hook_a32[k]) continue;
-        __atomic_store_n(slot, hook_a32[k], __ATOMIC_RELEASE);
+        if (!slot || *slot == hook32_fn[k]) continue;
+        __atomic_store_n(slot, hook32_fn[k], __ATOMIC_RELEASE);
         count++;
-        LOG("hook: %s at %llx runs %s (32-bit)\n", name, (unsigned long long)addr, hook_handler[k]);
+        LOG("hook: %s at %llx runs %s (32-bit)\n", name, (unsigned long long)addr, hook32_handler[k]);
     }
     LOG("hooks: %u of the 32-bit game's functions run the runtime's handlers; a function of the SDK that no hook "
         "takes for a 32-bit game yet runs its own code\n",

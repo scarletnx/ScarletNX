@@ -34,27 +34,24 @@ int main(void) {
     CHECK(mem[0x40] == 7);
     for (int i = 1; i < 0x18; i++) CHECK(mem[0x40 + i] == 0);
     CHECK(mem[0x3f] == 0xee && mem[0x58] == 0xee);
-    /* a 32-bit game: every hook but the one that fills a struct has an adapter (pctl.hook's a32), and Initialize's
+    /* a 32-bit game: every hook but the one that fills a struct is in its table (pctl.hook's a32), and Initialize's
        answers success in r0 and goes back to lr; the play timer's 64-bit answer is r0 and r1 */
     {
         static SnxArmCPU a;
-        int with = 0, without = 0;
-        for (int i = 0; i < HOOK_COUNT; i++) {
-            int info = strstr(hook_symbol[i], "DisplayInfo") != NULL;
-            CHECK((hook_a32[i] == NULL) == info);
-            with += hook_a32[i] != NULL, without += !hook_a32[i];
-            if (!strcmp(hook_symbol[i], "_ZN2nn4pctl10InitializeEv")) {
+        CHECK(HOOK_COUNT == 20 && HOOK32_COUNT == 19);
+        for (int i = 0; i < HOOK32_COUNT; i++) {
+            CHECK(!strstr(hook32_symbol[i], "DisplayInfo"));
+            if (!strcmp(hook32_symbol[i], "_ZN2nn4pctl10InitializeEv")) {
                 a.r[0] = 0xdead, a.r[14] = 0x2001;
-                hook_a32[i](&a);
+                hook32_fn[i](&a);
                 CHECK(a.r[0] == 0 && a.r[15] == 0x2000 && (a.cpsr & SNX_ARM_T));
             }
-            if (!strcmp(hook_symbol[i], "_ZN2nn4pctl25GetPlayTimerRemainingTimeEv")) {
+            if (!strcmp(hook32_symbol[i], "_ZN2nn4pctl25GetPlayTimerRemainingTimeEv")) {
                 a.r[0] = a.r[1] = 0xdead, a.r[14] = 0x3000;
-                hook_a32[i](&a);
+                hook32_fn[i](&a);
                 CHECK(a.r[0] == 0 && a.r[1] == 0 && a.r[15] == 0x3000);
             }
         }
-        CHECK(with == 19 && without == 1);
     }
     printf("nn_pctl: %u checks passed\n", checks);
     return 0;
