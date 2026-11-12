@@ -503,11 +503,13 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
         if (op == SPV_OP_FUNCTION) first = i;
     }
     if (!first) return words;
-    size_t blocks = 0, edges = 0, numbered = 0;
+    size_t count = 0, blocks = 0, edges = 0, numbered = 0; /* numbered: at most, the ones that make a result */
     int switches = 0;
     for (size_t i = first; i < words; i += module[i] >> 16) {
         uint32_t width = module[i] >> 16, op = module[i] & 0xffff;
         assert(width && width <= words - i);
+        count++;
+        if (op < 256 && (result_only[op / 32] >> (op % 32) & 1)) numbered++;
         if (op == SPV_OP_LABEL) {
             assert(width == 2 && module[i + 1] < bound);
             blocks++;
@@ -521,9 +523,6 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
             assert(width >= 3);
             edges += 1 + (width - 3) / 2;
             switches = 1;
-        } else if (value_class(module + i, width, op, glsl) >= SPV_OPT_PURE) {
-            assert(module[i + 2] < bound);
-            numbered++;
         }
     }
     /* a switch on a 64-bit selector has two words a case: its targets are not where this reads them */
@@ -532,24 +531,24 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
     while (slots < 2 * numbered) slots *= 2;
     while (known < 2 * (constants + numbered)) known *= 2;
     /* One block. By id: what replaces it, its decorations (a bit each), its block when it is a label (from 1), its
-       type, its bits when it is a constant, where its instruction is, and what it is, a byte. By block: its immediate dominator, its number in the post order (from 1; 0 when nothing
-       reaches it), where its successors and its predecessors start, the post order, and the stack that walks it. By
-       edge: the block it goes to, and the predecessors' lists. By slot of the table: the instruction, its block and
-       its scope. By slot of the constants' table: the id. By numbered instruction: the id of the constant it was
-       made. */
+       type, its bits when it is a constant, where its instruction is, and what it is, a byte. By block: its
+       immediate dominator, its number in the post order (from 1; 0 when nothing reaches it), where its successors
+       and its predecessors start, the post order, and the stack that walks it. By edge: the block it goes to, and
+       the predecessors' lists. By slot of the table, three words side by side: the instruction, its block and its
+       scope. By slot of the constants' table: the id. By numbered instruction: the id of the constant it was made.
+       By instruction: its value_class, a byte. */
     size_t ids = bound;
     assert(ids <= SIZE_MAX / 64 && blocks <= SIZE_MAX / 64 && edges <= SIZE_MAX / 64 && slots <= SIZE_MAX / 64 &&
            known <= SIZE_MAX / 64);
-    uint32_t* replace =
-        calloc(1, (6 * ids + 7 * blocks + 2 + 2 * edges + 3 * slots + known + numbered) * sizeof *replace + ids);
+    uint32_t* replace = calloc(
+        1, (6 * ids + 7 * blocks + 2 + 2 * edges + 3 * slots + known + numbered) * sizeof *replace + ids + count);
     if (!replace) abort();
     uint32_t *sign = replace + ids, *block_of = sign + ids, *type_of = block_of + ids, *value = type_of + ids;
     uint32_t *def = value + ids, *idom = def + ids, *order = idom + blocks;
     uint32_t *succ = order + blocks, *pred = succ + blocks + 1, *sequence = pred + blocks + 1;
     uint32_t *stack = sequence + blocks, *to = stack + 2 * blocks, *from = to + edges;
-    uint32_t *slot_at = from + edges, *slot_block = slot_at + slots, *slot_scope = slot_block + slots;
-    uint32_t *constant = slot_scope + slots, *made = constant + known, nmade = 0;
-    uint8_t* is = (uint8_t*)(made + numbered);
+    uint32_t *slot = from + edges, *constant = slot + 3 * slots, *made = constant + known, nmade = 0;
+    uint8_t *is = (uint8_t*)(made + numbered), *class_of = is + ids;
 
     /* the declarations: which ids are decorated and how, the variables no instruction can write, and the integer
        and boolean types with their constants (a type comes before the constants of it) */
@@ -594,11 +593,13 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
     }
 
     /* the blocks and their edges; what an instruction of no known layout might name stays */
-    uint32_t nblocks = 0, nedges = 0;
+    uint32_t nblocks = 0, nedges = 0, n = 0;
     int entry = 0, phis = 0;
     for (size_t i = first; i < words; i += module[i] >> 16) {
         const uint32_t* w = module + i;
-        uint32_t width = w[0] >> 16, op = w[0] & 0xffff;
+        uint32_t width = w[0] >> 16, op = w[0] & 0xffff, kind = value_class(w, width, op, glsl);
+        assert(kind < SPV_OPT_PURE || w[2] < bound);
+        class_of[n++] = (uint8_t)kind;
         if (op == SPV_OP_FUNCTION) {
             entry = 1;
         } else if (op == SPV_OP_LABEL) {
@@ -616,7 +617,7 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
             for (uint32_t k = 4; k < width; k += 2) to[nedges++] = w[k];
         } else if (op == SPV_OP_PHI) {
             phis = 1;
-        } else if (value_class(w, width, op, glsl) == SPV_OPT_UNKNOWN) {
+        } else if (kind == SPV_OPT_UNKNOWN) {
             for (uint32_t k = 1; k < width; k++)
                 if (w[k] < bound) is[w[k]] |= SPV_OPT_PINNED;
         }
@@ -684,9 +685,10 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
     uint32_t block = 0, epoch = 0;
     uint32_t mask = (uint32_t)slots - 1;
     int any = 0;
+    n = 0;
     for (size_t i = first; i < words; i += module[i] >> 16) {
         uint32_t* w = module + i;
-        uint32_t width = w[0] >> 16, op = w[0] & 0xffff, kind = value_class(w, width, op, glsl), literal, more;
+        uint32_t width = w[0] >> 16, op = w[0] & 0xffff, kind = class_of[n++], literal, more;
         if (kind == SPV_OPT_UNKNOWN) {
             epoch++;
             continue;
@@ -712,7 +714,9 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
             is[w[2]] |= SPV_OPT_READ_ONLY; /* a pointer into what its base points into */
         if (is[w[2]] & SPV_OPT_PINNED) continue;
         uint32_t folded = 0, how = SPV_OPT_FOLD_NONE;
-        if (kind == SPV_OPT_PURE && !sign[w[2]] && w[1] < bound)
+        /* fold looks at a 32-bit integer or a boolean, a select and a bitcast: the rest are not worth its call */
+        if (kind == SPV_OPT_PURE && !sign[w[2]] && w[1] < bound &&
+            (is[w[1]] & (SPV_OPT_INT | SPV_OPT_BOOL) || op == SPV_OP_SELECT || op == SPV_OP_BITCAST))
             how = fold(module, w, width, op, bound, is, type_of, value, def, &folded);
         if (how == SPV_OPT_FOLD_VALUE) {
             uint32_t k = constant_slot(constant, (uint32_t)known - 1, type_of, value, w[1], folded);
@@ -745,18 +749,18 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
             for (uint32_t k = 3; k < width; k++) hash = (hash ^ w[k]) * 0x01000193u;
         uint32_t s = (hash ^ hash >> 15) & mask;
         const uint32_t* same = NULL;
-        for (; slot_at[s]; s = (s + 1) & mask) {
-            const uint32_t* r = module + slot_at[s];
-            if (slot_scope[s] != scope || r[0] != w[0] || r[1] != w[1] || sign[r[2]] != sign[w[2]]) continue;
+        for (; slot[3 * s]; s = (s + 1) & mask) {
+            const uint32_t* r = module + slot[3 * s];
+            if (slot[3 * s + 2] != scope || r[0] != w[0] || r[1] != w[1] || sign[r[2]] != sign[w[2]]) continue;
             if (memcmp(r + 3, w + 3, (width - 3) * sizeof *w) && !(swap && r[3] == w[4] && r[4] == w[3])) continue;
-            if (!dominates(idom, order, slot_block[s], block)) continue;
+            if (!dominates(idom, order, slot[3 * s + 1], block)) continue;
             same = r;
             break;
         }
         if (!same) {
-            slot_at[s] = (uint32_t)i;
-            slot_block[s] = block;
-            slot_scope[s] = scope;
+            slot[3 * s] = (uint32_t)i;
+            slot[3 * s + 1] = block;
+            slot[3 * s + 2] = scope;
         } else {
             replace[w[2]] = same[2];
             is[w[2]] = SPV_OPT_GONE;
