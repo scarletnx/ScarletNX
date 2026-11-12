@@ -114,13 +114,14 @@ IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.
 - Live directory cursor: `strcmp` order, last visited name, latched EOF; counts reflect current children.
 - RomFS: prefer indexed `romfs.bin`; otherwise synthesize from `romfs/`.
 - Storage reads that stream take a console's time: an `IStorage::Read` of 64 KiB or less that starts where the same
-  thread's last read of the same storage ended waits what 15 MB/s takes (`fs.c`'s `fs_pace_ns`, 4.4 ms for 64 KiB). A
+  thread's last read of the same storage ended waits what 8 MB/s takes (`fs.c`'s `fs_pace_ns`, 8.2 ms for 64 KiB). A
   stream's first read, a bigger read (a load) and a read anywhere else wait nothing, so loads stay as fast as the host.
   A game's read-ahead is timed against the console's storage: a movie library that caches its file a 64 KiB page at a
   time, as fast as the reads come back, filled the heap its game sized for the console before the decoder let go of
-  the buffers of its first configuration, and the game stopped at its own out-of-memory trap. With its pages at
-  20 MB/s or less it plays its intro; at 25 it stopped in some runs. The log says it the first time a read waits, with
-  the size and the rate.
+  the buffers of its first configuration, and the game stopped at its own out-of-memory trap. The decoder lets go of
+  them once the game takes its first picture, which a long frame there delayed by up to 1.2 s at opt 0; at 8 MB/s
+  the cache stays under what fits for 1.8 s. The log says it the first time a read waits, with the size and the
+  rate.
 - Readonly RAM copies: missing system archives become valid empty images at `system/archives/<16-hex-id>.romfs`. No
   persistent host copy. One there in the data directory is served instead.
 - `0100000000000802` (MiiModel), the Mii parts' shapes and textures a game that draws Miis builds their heads from, is
