@@ -63,7 +63,7 @@ static void module_versions(u32 sdk[HOOK_MODULES]) {
 
 /* the site of the hooked function at addr; -1 for none */
 static int site_of(u64 addr) {
-    const HleHook* h = &g_hle.hook;
+    const HostHook* h = &g_host.hook;
     u32 i;
     for (i = 0; i < h->count; i++)
         if (h->addr[i] == addr) return (int)i;
@@ -72,7 +72,7 @@ static int site_of(u64 addr) {
 
 /* a scratch slot of verify mode's, -1 when every one is taken */
 static int verify_claim(void) {
-    u32* taken = &g_hle.hook.verify_taken;
+    u32* taken = &g_host.hook.verify_taken;
     u32 seen = __atomic_load_n(taken, __ATOMIC_RELAXED);
     for (;;) {
         int i;
@@ -90,9 +90,9 @@ static int verify_milestone(u64 n) { return n == 1 || (n >= 1024 && !(n & (n - 1
    runs the function's own code on copies of its buffers, then the handler, and the log names the calls whose
    results, registers or bytes differ */
 static void verify_fn(CPU* RESTRICT c, u64 entry) {
-    HleHook* h = &g_hle.hook;
+    HostHook* h = &g_host.hook;
     int i = site_of(entry), slot, what;
-    u64 args[8], lr = c->x[30];
+    u64 args[8], lr = c->x[30], base = g_hle.hook.verify_base;
     HookVerifyResult r;
     u16 k;
     if (i < 0) { /* not a site: cannot happen, as only hook_install puts this in a slot */
@@ -100,17 +100,20 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
     }
     k = h->hook[i];
     memcpy(args, c->x, sizeof args);
-    slot = verify_claim();
+    slot = base ? verify_claim() : -1; /* a save state loaded since holds the scratch slots only if it has their base */
     what = slot < 0 ? HOOK_SKIP_SIZE
                     : hook_verify_call(c, entry, h->orig[i], hook_fn[k], &hook_verify[k],
-                                       h->verify_base + (u64)slot * HOOK_VERIFY_SLOT, HOOK_VERIFY_SLOT, &r);
+                                       base + (u64)slot * HOOK_VERIFY_SLOT, HOOK_VERIFY_SLOT, &r);
     if (slot >= 0) __atomic_and_fetch(&h->verify_taken, ~(1u << slot), __ATOMIC_RELEASE);
     if (what >= HOOK_SKIP_SIZE) { /* nothing ran: the handler does the call */
         u64 n = __atomic_add_fetch(&h->skipped[i], 1, __ATOMIC_RELAXED);
         hook_fn[k](c, entry);
         if (verify_milestone(n))
             LOG("hook verify: %s, %llu calls skipped (%s), the last of %llu bytes\n", hook_symbol[k],
-                (unsigned long long)n, slot < 0 ? "no scratch slot free" : hook_verify_text(what),
+                (unsigned long long)n,
+                slot >= 0 ? hook_verify_text(what)
+                : base ? "no scratch slot free"
+                       : "the save state loaded has no scratch memory: hooks_verify was off in the run that saved it",
                 (unsigned long long)args[2]);
         return;
     }
@@ -171,7 +174,7 @@ static void routes_say(void) {
 
 /* the function at addr given entry k's adapter, or verify mode's check: 0, or -1 when every site is taken */
 static int hook_put(int k, u64 addr, const char* name, const unsigned char verify[]) {
-    HleHook* h = &g_hle.hook;
+    HostHook* h = &g_host.hook;
     GuestFn* slot;
     if (h->count == HOOK_SITES) {
         WARN("hooks: more than %d functions to hook, so %s at %llx and those after it run their own code\n", HOOK_SITES,
@@ -219,7 +222,7 @@ static void hook_put_addresses(const unsigned char off[], const unsigned char ve
 }
 
 u64 hook_site(const char* symbol) {
-    const HleHook* h = &g_hle.hook;
+    const HostHook* h = &g_host.hook;
     u32 i;
     for (i = 0; i < h->count; i++)
         if (!strcmp(hook_symbol[h->hook[i]], symbol)) return h->addr[i];
@@ -227,7 +230,7 @@ u64 hook_site(const char* symbol) {
 }
 
 void hook_install(void) {
-    HleHook* h = &g_hle.hook;
+    const HostHook* h = &g_host.hook;
     const char* name;
     u64 addr;
     u32 i, sdk[HOOK_MODULES] = {0};
@@ -249,9 +252,9 @@ void hook_install(void) {
         else if (family_listed(g_settings.hook_families_verified, hook_family_name[i]))
             verify[i] = 1, any_verify = 1;
     if (any_verify) {
-        h->verify_base = kmem_alloc((u64)HOOK_VERIFY_SLOTS * HOOK_VERIFY_SLOT, MS_KERNEL, PERM_RW);
+        g_hle.hook.verify_base = kmem_alloc((u64)HOOK_VERIFY_SLOTS * HOOK_VERIFY_SLOT, MS_KERNEL, PERM_RW);
         LOG("hooks: verify mode for the pure hooks of the families hooks_verify names, with %u KiB of scratch at %llx\n",
-            (HOOK_VERIFY_SLOTS * HOOK_VERIFY_SLOT) >> 10, (unsigned long long)h->verify_base);
+            (HOOK_VERIFY_SLOTS * HOOK_VERIFY_SLOT) >> 10, (unsigned long long)g_hle.hook.verify_base);
     }
     module_versions(sdk);
     for (i = 0; kernel_symbol(i, &addr, &name); i++) {
@@ -287,7 +290,7 @@ void hook_install(void) {
 }
 
 void hook_restore(u64 addr, u64 size) {
-    const HleHook* h = &g_hle.hook;
+    const HostHook* h = &g_host.hook;
     MemBlock block;
     u32 i;
     for (i = 0; i < h->count; i++) {
@@ -301,19 +304,19 @@ void hook_restore(u64 addr, u64 size) {
 
 GuestFn hook_function(u64 addr) {
     int i = site_of(addr);
-    return i < 0 ? NULL : g_hle.hook.fn[i];
+    return i < 0 ? NULL : g_host.hook.fn[i];
 }
 
 GuestFn hook_original(u64 addr) {
     int i = site_of(addr);
-    return i < 0 ? NULL : g_hle.hook.orig[i];
+    return i < 0 ? NULL : g_host.hook.orig[i];
 }
 
 const char* hook_at(u64 addr, const char** handler) {
     int i = site_of(addr);
     if (i < 0) return NULL;
-    *handler = hook_handler[g_hle.hook.hook[i]];
-    return hook_symbol[g_hle.hook.hook[i]];
+    *handler = hook_handler[g_host.hook.hook[i]];
+    return hook_symbol[g_host.hook.hook[i]];
 }
 
 void hook_run_original(CPU* c, u64 addr) {

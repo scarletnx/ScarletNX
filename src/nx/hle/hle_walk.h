@@ -90,6 +90,7 @@
     X(ldn, (h).ldn)                                                                                                    \
     X(nifm, (h).nifm)                                                                                                  \
     X(ssl, (h).ssl)                                                                                                    \
-    X(fs, (h).fs)
+    X(fs, (h).fs)                                                                                                      \
+    X(hook, (h).hook)
 
 #endif

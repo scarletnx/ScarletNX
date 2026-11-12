@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# hooks for tests/hook_install.c: a pure one, whose family the test verifies, and a plain one
+family pure
+hook copy(u8* dst out[n], const u8* src in[n], u64 n) -> u8* = test_copy pure
+family plain
+hook answer(u32 a) -> u32 = test_answer

@@ -59,7 +59,7 @@ typedef struct {
     HleSsl ssl;
     /* the file system */
     HleFs fs;
-    /* the game's functions the runtime runs natively */
+    /* the hooks' guest memory (hook.h); the functions hooked are the process's, in g_host */
     HleHook hook;
 } Hle;
 
@@ -86,6 +86,7 @@ typedef struct {
     HostLdn ldn;
     HostSsl ssl;
     HostFs fs;
+    HostHook hook;
 } HleHost;
 extern HleHost g_host;
 /* The HLE's thread state: each thread's own, all zero when it starts, one member for each file that keeps any

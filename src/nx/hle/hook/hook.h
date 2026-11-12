@@ -134,18 +134,25 @@ static inline void hook_put_f64(CPU* c, HookField_f64 f, u64 addr, f64 v) {
 #define HOOK_VERIFY_SLOTS 16
 #define HOOK_VERIFY_SLOT  (4u << 20)
 
+/* What a save state holds of the hooks: verify mode's scratch slots (hooks_verify), which are guest memory, so their
+   base is the state's. 0 for none: the state of a run that verified nothing */
+typedef struct {
+    u64 verify_base;
+} HleHook;
+
+/* The host's side, which a save state never holds: the functions this process hooked, by its own code's addresses. A
+   state loaded here was saved by a process with other ones, or with other hooks */
 typedef struct {
     u32 count;
     u16 hook[HOOK_SITES];     /* its hook, in the generated table */
     u64 addr[HOOK_SITES];     /* the function's guest address */
     GuestFn orig[HOOK_SITES]; /* its recompiled code, which its slot held */
     GuestFn fn[HOOK_SITES];   /* what its slot holds now: the hook's adapter, or verify mode's check */
-    /* verify mode (hooks_verify): the scratch slots' base and which are taken (bit i, atomic), and each site's calls
-       that agreed, differed and were skipped (atomic) */
-    u64 verify_base;
+    /* verify mode: which scratch slots are taken (bit i, atomic), and each site's calls that agreed, differed and
+       were skipped (atomic) */
     u32 verify_taken;
     u64 agreed[HOOK_SITES], differed[HOOK_SITES], skipped[HOOK_SITES];
-} HleHook;
+} HostHook;
 
 /* hooks the functions the game exports that hooks.hook names, and those of the game's builds that the address hooks
    of src/nx/patches/ name (unless hooks=0), once the game's executables are loaded and their symbols read
