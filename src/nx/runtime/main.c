@@ -819,6 +819,27 @@ static void frontend_loop(void) {
             was_land_bytes = land_bytes;
             last_ns = now_ns;
         }
+        {
+            /* the texture plots' bases */
+            static u64 was_hits, was_misses, was_upload_bytes, was_frees, last_ns;
+            u64 hits = __atomic_load_n(&g_tex_cache_hits, __ATOMIC_RELAXED);
+            u64 misses = __atomic_load_n(&g_tex_cache_misses, __ATOMIC_RELAXED);
+            u64 upload_bytes = __atomic_load_n(&g_tex_upload_bytes, __ATOMIC_RELAXED);
+            u64 frees = __atomic_load_n(&g_tex_frees, __ATOMIC_RELAXED);
+            u64 now_ns = plat_ns();
+            double secs = last_ns ? (double)(now_ns - last_ns) / 1e9 : 0.0;
+            if (secs > 0) {
+                SNX_PLOT("texture cache hits/s", (double)(hits - was_hits) / secs);
+                SNX_PLOT("texture cache misses/s", (double)(misses - was_misses) / secs);
+                SNX_PLOT("texture upload MB/s", (double)(upload_bytes - was_upload_bytes) / 1048576.0 / secs);
+                SNX_PLOT("texture frees/s", (double)(frees - was_frees) / secs);
+            }
+            was_hits = hits;
+            was_misses = misses;
+            was_upload_bytes = upload_bytes;
+            was_frees = frees;
+            last_ns = now_ns;
+        }
 #endif
         pause_unattended();
         state_poll();
