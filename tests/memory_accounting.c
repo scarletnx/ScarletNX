@@ -379,32 +379,38 @@ static void test_heap32(void) {
     CHECK(svc_set_heap_size(0) == 0);
     g_layout = saved;
 }
-/* memory_fit: the game is told the budget the measure leaves, at most Memory (GB)'s, and the console's amount when
-   the system told nothing */
+/* memory_fit: the game is told the budget the measure leaves, at most Memory (GB)'s and never less than the console's,
+   and the console's amount when the system told nothing */
 static void test_fit(void) {
     base_process();
     CHECK(mem_fit_budget(3000 * MIB, 300 * MIB) == 2600 * MIB);  /* the rest, at least 700 MiB */
     CHECK(mem_fit_budget(8000 * MIB, 1000 * MIB) == 7744 * MIB); /* the runtime's 1000, the graphics' 256 */
     CHECK(mem_fit_budget(100 * MIB, 100 * MIB) == 1024 * MIB);   /* a GiB however little is left */
-    mem_fit(1, 2000 * MIB, 300 * MIB);
-    CHECK(g_hle.svcmem.fit == 1600 * MIB && mem_total() == 1600 * MIB && info(6) == 1600 * MIB);
-    CHECK(svc_set_heap_size(1546 * MIB) == SNX_RC_SVC_LIMIT_REACHED); /* 56 MiB used: 1544 is the most */
-    CHECK(svc_set_heap_size(1544 * MIB) == 0 && svc_set_heap_size(0) == 0);
+    said[0] = 0;
+    mem_fit(1, 2000 * MIB, 300 * MIB); /* the measure leaves 1600: the console's is the least Auto tells */
+    CHECK(g_hle.svcmem.fit == 3285 * MIB && mem_total() == 3285 * MIB && info(6) == 3285 * MIB);
+    CHECK(!strcmp(said, "memory: memory_fit_mode=0 (Auto): the game is told 3285 MiB, as Auto tells no less than the "
+                        "console's 3285, where the measure leaves 1600 (the system can still give 2000 MiB, the "
+                        "process holds 300)\n"));
     mem_fit(1, 8000 * MIB, 1000 * MIB); /* more than the console's: the console's */
     CHECK(mem_total() == 3285 * MIB);
-    g_settings.memory_gb = 8;
+    g_settings.memory_gb = 8; /* what memory_gb adds above the console's is what Auto trims */
     CHECK(mem_total() == 6964 * MIB);
+    mem_fit(1, 5000 * MIB, 300 * MIB);
+    CHECK(g_hle.svcmem.fit == 4600 * MIB && mem_total() == 4600 * MIB && info(6) == 4600 * MIB);
+    CHECK(svc_set_heap_size(4546 * MIB) == SNX_RC_SVC_LIMIT_REACHED); /* 56 MiB used: 4544 is the most */
+    CHECK(svc_set_heap_size(4544 * MIB) == 0 && svc_set_heap_size(0) == 0);
+    mem_fit(1, 2000 * MIB, 300 * MIB);
+    CHECK(mem_total() == 3285 * MIB);
     g_settings.memory_gb = 0;
     mem_fit(0, 0, 0);
     CHECK(!g_hle.svcmem.fit && mem_total() == 3285 * MIB);
-    { /* a 32-bit process is told the smaller of the budget and its heap region */
+    { /* a 32-bit process is told its heap region, less than the console's whatever the measure */
         MemLayout saved = g_layout;
         mem_layout32(2);
         base_process();
-        mem_fit(1, 3000 * MIB, 300 * MIB);
-        CHECK(mem_total() == 2600 * MIB && info(6) == 2ull << 30);
         mem_fit(1, 2000 * MIB, 300 * MIB);
-        CHECK(info(6) == 1600 * MIB && info(21) == 1600 * MIB);
+        CHECK(mem_total() == 3285 * MIB && info(6) == 2ull << 30 && info(21) == 2ull << 30);
         mem_fit(0, 0, 0);
         g_layout = saved;
     }
@@ -427,12 +433,27 @@ static void test_short_hint(void) {
     mem_fit(1, 4400 * MIB, 300 * MIB); /* 4000 MiB for the game: more than it has, less than memory_gb=6's */
     CHECK(hint_is("It was told 3285 MiB (memory_gb=4): memory_gb=6 in its .ini tells it 4000 MiB of its 4916, as "
                   "memory_fit_mode=0 (Auto) measured 4400 MiB the system could still give as the game started"));
-    mem_fit(1, 2000 * MIB, 300 * MIB); /* less than it has: memory_gb=6 would tell it the same 1600 */
-    CHECK(hint_is("It was told 1600 MiB of the console's 3285: memory_fit_mode=0 (Auto) measured 2000 MiB the system "
-                  "could still give as the game started. memory_fit_mode=1 (Off) in its .ini tells it 3285 MiB "
-                  "whatever the system can give, and Auto does once the system can still give 3685 MiB"));
-    mem_fit(1, 3685 * MIB, 300 * MIB); /* which is what that last amount gives */
-    CHECK(mem_total() == 3285 * MIB);
+    mem_fit(1, 2000 * MIB, 300 * MIB); /* less than it has: Auto tells the console's, and memory_gb=6 the same */
+    CHECK(mem_total() == 3285 * MIB && hint_is(""));
+    g_settings.memory_gb = 6; /* what memory_gb adds is what Auto trims, and Off tells */
+    mem_fit(1, 4400 * MIB, 300 * MIB);
+    CHECK(hint_is("It was told 4000 MiB of the console's 4916: memory_fit_mode=0 (Auto) measured 4400 MiB the system "
+                  "could still give as the game started. memory_fit_mode=1 (Off) in its .ini tells it 4916 MiB "
+                  "whatever the system can give, and Auto does once the system can still give 5316 MiB"));
+    mem_fit(1, 5316 * MIB, 300 * MIB); /* which is what that last amount gives */
+    CHECK(mem_total() == 4916 * MIB && hint_is(""));
+    mem_fit(1, 4400 * MIB, 300 * MIB + 1); /* a byte more held is a byte less to give: the whole MiB above it */
+    CHECK(hint_is("It was told 4000 MiB of the console's 4916: memory_fit_mode=0 (Auto) measured 4400 MiB the system "
+                  "could still give as the game started. memory_fit_mode=1 (Off) in its .ini tells it 4916 MiB "
+                  "whatever the system can give, and Auto does once the system can still give 5316 MiB"));
+    mem_fit(1, 5315 * MIB, 300 * MIB + 1);
+    CHECK(mem_total() < 4916 * MIB);
+    mem_fit(1, 5316 * MIB, 300 * MIB + 1);
+    CHECK(mem_total() == 4916 * MIB);
+    mem_fit(1, 4400 * MIB, 1000 * MIB); /* a larger runtime: its own 1000 and the graphics' 256 */
+    CHECK(hint_is("It was told 4144 MiB of the console's 4916: memory_fit_mode=0 (Auto) measured 4400 MiB the system "
+                  "could still give as the game started. memory_fit_mode=1 (Off) in its .ini tells it 4916 MiB "
+                  "whatever the system can give, and Auto does once the system can still give 5172 MiB"));
     mem_fit(0, 0, 0);
     for (int gb = 6; gb <= 12; gb += 2) { /* no key tells it more than these do, 12 being experimental */
         g_settings.memory_gb = gb;
@@ -443,24 +464,8 @@ static void test_short_hint(void) {
     mem_layout_large_heap();
     g_ounce = 1;
     CHECK(hint_is(""));
-    mem_fit(1, 8006 * MIB, 106 * MIB); /* a small runtime: the 700 MiB floor is what the rest takes */
-    CHECK(hint_is("It was told 7412 MiB of the console's 10240: memory_fit_mode=0 (Auto) measured 8006 MiB the system "
-                  "could still give as the game started. memory_fit_mode=1 (Off) in its .ini tells it 10240 MiB "
-                  "whatever the system can give, and Auto does once the system can still give 10834 MiB"));
-    mem_fit(1, 10833 * MIB, 106 * MIB);
-    CHECK(mem_total() == 10239 * MIB);
-    mem_fit(1, 8006 * MIB, 106 * MIB + 1); /* a byte more held is a byte less to give: the whole MiB above it */
-    CHECK(hint_is("It was told 7412 MiB of the console's 10240: memory_fit_mode=0 (Auto) measured 8006 MiB the system "
-                  "could still give as the game started. memory_fit_mode=1 (Off) in its .ini tells it 10240 MiB "
-                  "whatever the system can give, and Auto does once the system can still give 10834 MiB"));
-    mem_fit(1, 10833 * MIB, 106 * MIB + 1);
-    CHECK(mem_total() < 10240 * MIB);
-    mem_fit(1, 10834 * MIB, 106 * MIB);
+    mem_fit(1, 8006 * MIB, 106 * MIB); /* the measure leaves 7412: an Ounce game's 10240 is the least Auto tells */
     CHECK(mem_total() == 10240 * MIB && hint_is(""));
-    mem_fit(1, 8006 * MIB, 1000 * MIB); /* a larger one: its own 1000 and the graphics' 256 */
-    CHECK(hint_is("It was told 7750 MiB of the console's 10240: memory_fit_mode=0 (Auto) measured 8006 MiB the system "
-                  "could still give as the game started. memory_fit_mode=1 (Off) in its .ini tells it 10240 MiB "
-                  "whatever the system can give, and Auto does once the system can still give 10496 MiB"));
     g_settings.memory_gb = 0;
     mem_fit(0, 0, 0);
     CHECK(hint_is(""));
@@ -469,10 +474,8 @@ static void test_short_hint(void) {
     mem_layout32(2); /* a 32-bit process is told its 2 GiB heap region at any memory_gb */
     base_process();
     CHECK(info(6) == 2ull << 30 && hint_is(""));
-    mem_fit(1, 2000 * MIB, 300 * MIB);
-    CHECK(hint_is("It was told 1600 MiB of the console's 2048: memory_fit_mode=0 (Auto) measured 2000 MiB the system "
-                  "could still give as the game started. memory_fit_mode=1 (Off) in its .ini tells it 2048 MiB "
-                  "whatever the system can give, and Auto does once the system can still give 2448 MiB"));
+    mem_fit(1, 2000 * MIB, 300 * MIB); /* Auto tells no less than the console's, which is more than the region */
+    CHECK(info(6) == 2ull << 30 && hint_is(""));
     mem_fit(0, 0, 0);
     g_layout = saved;
 }
@@ -489,11 +492,11 @@ static void test_gb_said(void) {
     g_ounce = 1;
     mem_gb_said();
     CHECK(!strcmp(said, "memory: memory_gb=8 does not change an Ounce game's memory: it is told 10240 MiB\n"));
-    mem_fit(1, 8006 * MIB, 106 * MIB);
+    mem_fit(1, 8006 * MIB, 106 * MIB); /* the measure leaves 7412: Auto tells no less than its own 10240 */
     said[0] = 0;
     g_settings.memory_gb = 6;
     mem_gb_said();
-    CHECK(!strcmp(said, "memory: memory_gb=6 does not change an Ounce game's memory: it is told 7412 MiB\n"));
+    CHECK(!strcmp(said, "memory: memory_gb=6 does not change an Ounce game's memory: it is told 10240 MiB\n"));
     said[0] = 0;
     g_settings.memory_gb = 0; /* the key's default: nothing was asked */
     mem_gb_said();

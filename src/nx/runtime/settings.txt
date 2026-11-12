@@ -383,10 +383,10 @@ setting Memory fit mode
     default 0
     startup
     words Auto|Off
-    help Auto = the game sees no more of Memory (GB) than the device can still give it, measured as it starts, less
-    help what the rest of ScarletNX takes: a device with less than the console's is not run out of memory, and one that
-    help can give it all shows the game all of it. Off = all of it, whatever the device can give. It takes the place of
-    help memory_fit, whose 0 was Off (docs/user/deprecations.md)
+    help Auto = the game sees at least the console's memory, and of what Memory (GB) adds above it no more than the
+    help device can still give, measured as it starts, less what the rest of ScarletNX takes: a device with less than
+    help the console's runs as with Off, and one that can give it all shows the game all of it. Off = all of it,
+    help whatever the device can give. It takes the place of memory_fit, whose 0 was Off (docs/user/deprecations.md)
 setting Heap limit (MB)
     key heap_max_mb
     text 32
