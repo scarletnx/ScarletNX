@@ -34,14 +34,6 @@ static int family_listed(const char* list, const char* family) {
     return 0;
 }
 
-/* A 32-bit game's hooked functions, the host's side, which a save state never holds: each one's address (bit 0 set
-   for Thumb) and the block its slot held, for hook_run_original_a32 */
-static struct {
-    u32 a32_count;
-    u32 a32_addr[HOOK_SITES];
-    SnxArmBlock a32_orig[HOOK_SITES];
-} g_hook;
-
 /* the modules whose versions hook_install reads; a module past them has none, so it gets only unversioned hooks */
 #define HOOK_MODULES 32
 
@@ -272,14 +264,14 @@ static void install_a32(void) {
         if (k < 0 || off[hook32_family[k]]) continue;
         slot = arm_slot((u32)addr & ~1u, (int)(addr & 1));
         if (!slot || *slot == hook32_fn[k]) continue;
-        if (g_hook.a32_count == HOOK_SITES) {
+        if (g_host.hook.a32_count == HOOK_SITES) {
             WARN("hooks: more than %d functions to hook, so %s at %llx and those after it run their own code\n",
                  HOOK_SITES, name, (unsigned long long)addr);
             break;
         }
         /* the function's own block first: once the hook has its slot, the slot is all that names the address */
-        g_hook.a32_orig[g_hook.a32_count] = arm_block((u32)addr & ~1u, (int)(addr & 1));
-        g_hook.a32_addr[g_hook.a32_count++] = (u32)addr;
+        g_host.hook.a32_orig[g_host.hook.a32_count] = arm_block((u32)addr & ~1u, (int)(addr & 1));
+        g_host.hook.a32_addr[g_host.hook.a32_count++] = (u32)addr;
         __atomic_store_n(slot, hook32_fn[k], __ATOMIC_RELEASE);
         count++;
         if (hook32_key[k] == HOOK_ANY || said[k]) {
@@ -411,10 +403,10 @@ void hook_run_original(CPU* c, u64 addr) {
 u64 hook_run_original_a32(CPU* c) {
     SnxArmCPU* a = arm_cpu(c);
     u32 lr = a->r[14], at = a->r[15] | (a->cpsr & SNX_ARM_T ? 1u : 0u), i;
-    for (i = 0; i < g_hook.a32_count && g_hook.a32_addr[i] != at; i++) {}
-    if (i == g_hook.a32_count || !g_hook.a32_orig[i])
+    for (i = 0; i < g_host.hook.a32_count && g_host.hook.a32_addr[i] != at; i++) {}
+    if (i == g_host.hook.a32_count || !g_host.hook.a32_orig[i])
         fatal("hook: the function at %x has no code of its own to run", (unsigned)at);
-    arm_run(a, g_hook.a32_orig[i], lr);
+    arm_run(a, g_host.hook.a32_orig[i], lr);
     a->r[14] = lr; /* the adapter returns through it, and the function's own code may leave anything there */
     return (u64)a->r[0] | (u64)a->r[1] << 32;
 }
