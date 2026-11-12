@@ -4,7 +4,7 @@
    lizzie/refactor-networking-12), through the runtime's nsd:u service that this file replaces:
      SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project, GPL-3.0-or-later
      SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project, GPL-2.0-or-later */
-/* nn::nsd, native (nsd.hook): the names of Nintendo's servers in the console's network environment, with no nsd:u
+/* nn::nsd, native (nsd.hook): the names of the console's servers in its network environment, with no nsd:u
    session. The behavior is that of a clean-room spec of the SDK's functions, never the SDK's code. The environment
    is the retail one, lp1. Any other nn::nsd function opens nsd:u itself, and sm stops the game with the name of
    this layer */
