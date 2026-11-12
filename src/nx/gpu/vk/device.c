@@ -631,6 +631,9 @@ static int create_device(void) {
        quadOperationsInAllStages, is about the other stages) */
     g_shader_quad_compute = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) &&
                             (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
+    /* a subgroup of 32 lanes is a warp's, and a shuffle's index is then the lane id: the device's own size, or the 32
+       the runtime asks for in compute where it can (pipeline.c's subgroups) */
+    g_shader_lane32 = subgroup.subgroupSize == 32;
     log_subgroups(subgroup.subgroupSize, subgroup.supportedOperations, subgroup.supportedStages);
     g_vk_preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32 != 0;
     /* a binding's stride as dynamic state, core in Vulkan 1.3, unless a driver is banned from it (MoltenVK's fails every

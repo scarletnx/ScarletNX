@@ -144,6 +144,10 @@ int g_shader_i2f_nearest;
 int g_shader_draw_parameters = 1;
 int g_shader_quad = 1;
 int g_shader_quad_compute = 1;
+/* the subgroup holds a warp's 32 lanes, so a shuffle's index is the lane id itself: 1 when the device's subgroups are
+   32 lanes, or in compute where the runtime asks for that. It saves the warp's base and the OR that every gather of a
+   matrix instruction otherwise adds to its index. 1 offline */
+int g_shader_lane32 = 1;
 int g_shader_mixed_dot;
 int g_shader_hmma_coop;
 u32 g_shader_mesh_tasks_max;
