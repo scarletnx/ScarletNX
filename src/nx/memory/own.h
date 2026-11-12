@@ -121,8 +121,10 @@ typedef struct {
     int traps;  /* own_init found traps */
     u64 page;   /* the host's page, which traps are armed in */
     u8* mirror; /* the pool's mirror, which landings write through; NULL where they land in place */
-    u64 lands;  /* atomic: landings so far, for the statistics */
+    u64 lands; /* atomic: landings so far, for the statistics */
+    char own_pad_lands[64];
     u64 faults; /* atomic: the faults that landed */
+    char own_pad_faults[64];
     u64 land_bytes; /* atomic: the bytes landed */
     PMutex lk;  /* the entries' lock */
     /* arming pages and the check that lets them go, one at a time: a page let go just as an entry lands on it stays

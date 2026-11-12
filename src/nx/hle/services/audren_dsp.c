@@ -2071,9 +2071,10 @@ int audren_frame(ARState* s, i16* stereo) {
         ARVoice* v = &s->voice[i];
         if (!v->in_use || !v->wave_count) continue;
         if (voice_prepare(s, v)) {
-            /* the DSP frame's own work, split by voice, with the samples each wrote */
-            SNX_ZONE_TV(z_voice, "audio voice", n, "voice %u mix %u", i, v->mix_id);
+            [[maybe_unused]] u64 t0 = plat_ns();
+            SNX_ZONE_T(z_voice, "audio voice", "voice %u mix %u", i, v->mix_id);
             play_voice(s, v);
+            SNX_ZONE_VALUE(z_voice, (u64)(plat_ns() - t0) / 1000); /* its microseconds: the zones rank the voices */
             played++;
             SNX_ZONE_END(z_voice);
         }
@@ -2088,6 +2089,7 @@ int audren_frame(ARState* s, i16* stereo) {
         if (d->in_use && d->need_update) memcpy(d->prev, d->vol, sizeof d->prev);
         d->need_update = 0;
     }
+    [[maybe_unused]] u64 mix0 = plat_ns();
     for (u32 k = 0; k < nsorted; k++) { /* the submixes, then the final mix */
         u32 id = (u32)s->order[k];
         ARMix* m = &s->mix[id];
@@ -2115,6 +2117,7 @@ int audren_frame(ARState* s, i16* stereo) {
                 for (u32 i = 0; i < n; i++) dst[i] += src[i] * g;
             }
     }
+    SNX_PLOT("audio mix ms", (double)(plat_ns() - mix0) / 1e6);
     int device = 0;
     if (s->mix[SNX_AUDREN_FINAL_MIX].distance >= 0) {
         for (u32 i = 0; i < s->nsinks; i++)
