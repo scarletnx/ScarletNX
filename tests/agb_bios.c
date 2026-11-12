@@ -190,6 +190,41 @@ int main(void) {
     CHECK(call(regs, AGB_SWI_LZ77_UNCOMP_VRAM) == 0);
     CHECK(!memcmp(&board.memory.vram[0], "ABCBCBCB", 8));
 
+    {
+        /* the BIOS's own time beside the memory it moves, the cycles mGBA's HLE BIOS counts for its loops: Div 4 in, 13 a
+           step for each bit the numerator is wider, 7 out; Sqrt and ArcTan their steps and multiplies; ArcTan2 11 on an
+           axis; the LZ77 above 20 to start, 14 a step, 18 a unit, 10 a byte copied (4 more for VRAM), each access a
+           lone one and a load's internal cycle: 287 cycles to EWRAM, 277 to VRAM */
+        static const struct {
+            uint32_t swi, r0, r1, cycles;
+        } cases[] = {{AGB_SWI_DIV, 100, 7, 63},
+                     {AGB_SWI_DIV, (uint32_t)-100, 0, 427},
+                     {AGB_SWI_DIV_ARM, 5, 30, 37},
+                     {AGB_SWI_SQRT, 1000, 0, 200},
+                     {AGB_SWI_SQRT, 0xFFFFFFFF, 0, 552},
+                     {AGB_SWI_SQRT, 0, 0, 53},
+                     {AGB_SWI_ARCTAN, 1000, 0, 59},
+                     {AGB_SWI_ARCTAN2, 300, 100, 63},
+                     {AGB_SWI_ARCTAN2, 0, 5, 11},
+                     {AGB_SWI_LZ77_UNCOMP_WRAM, 0x02000000, 0x02010000, 287},
+                     {AGB_SWI_LZ77_UNCOMP_VRAM, 0x02000000, 0x06000000, 277}};
+        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+            memset(regs, 0, sizeof(regs));
+            regs[0] = cases[i].r0;
+            regs[1] = cases[i].r1;
+            board.counting = 1;
+            board.counted_cycles = 0;
+            CHECK(call(regs, cases[i].swi) == 0);
+            board.counting = 0;
+            if (board.counted_cycles != cases[i].cycles) {
+                fprintf(stderr, "agb_bios: call 0x%02X (0x%X, 0x%X) took %u cycles, mGBA's HLE BIOS %u\n", cases[i].swi,
+                        cases[i].r0, cases[i].r1, board.counted_cycles, cases[i].cycles);
+                return 1;
+            }
+        }
+        CHECK(!memcmp(&board.memory.vram[0], "ABCBCBCB", 8));
+    }
+
     /* a source in the BIOS's region: the copies and unpacks refuse one below EWRAM, the decompressions one with none of
        bits 25 to 27 (0x10000000 too), and none of them writes anything */
     {
