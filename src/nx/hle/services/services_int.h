@@ -88,7 +88,6 @@ void audio_init(void); /* the renderer's event, before the audio clock runs */
 void audio_clock(void* arg);
 SvcObj* new_audin(void); /* audin:u: no microphone to open */
 SvcObj* new_aud(void);   /* aud:u, the Ounce native audio manager */
-SvcObj* new_hwopus(void);
 
 /* ---- misc.c: the small services */
 SvcObj* new_apm(void);
@@ -302,9 +301,9 @@ typedef struct AudOut {
     u64 t0_frames;   /* frames played since t0 */
     u64 played;      /* GetAudioOutPlayedSampleCount */
 } AudOut;
-/* a hwopus decoder (audio.c) */
+/* a hardware Opus decoder (audio.c): one of the pool is a game's (nn/codec.c), named by its decoder object */
 typedef struct {
-    u32 obj;
+    u64 guest; /* the game's decoder object, which names the decoder: 0 for a free slot */
     u32 rate, channels, step;
     /* how it was opened, for a save state's load to open it again: the streams and their channels' places, mapped
        set for a multistream decoder */
@@ -324,6 +323,12 @@ typedef struct {
 /* a decoder of one stream outside the service (audio.c), for hle/hook/codec.c: NULL when it can't be opened. A packet
    is the service's, behind its 8 byte header; out takes its samples, interleaved, little-endian */
 HwOpus* hwopus_new(u32 rate, u32 channels);
+/* the pool's decoders (nn/codec.c): h opened for rate and channels, one stream (mapping NULL) or streams of them with
+   stereo_streams coupled and mapping placing their channels, 0 when it can't be; and closed */
+int hwopus_open(HwOpus* h, u32 rate, u32 channels, u32 streams, u32 stereo_streams, const u8* mapping);
+void hwopus_free(HwOpus* h);
+u32 hwopus_packet_samples(const HwOpus* h, const u8* payload, u32 size);
+u32 hwopus_work_size(u32 rate, u32 channels, u32 streams, u32 stereo_streams, int multi, u32 flags, int dsp);
 void hwopus_delete(HwOpus* h);
 int hwopus_decode_packet(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out_size, int reset, u32* consumed,
                          u32* samples);

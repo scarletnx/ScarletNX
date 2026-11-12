@@ -14,6 +14,7 @@
 #include "hle/hook/hooks.hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/services_int.h"
+#include "nx/nn/codec.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/platform/log.h"
 #include <stdlib.h>
@@ -232,7 +233,6 @@ u32 codec_decoder_init(CPU* c, u64 decoder, i32 rate, i32 channels, i64 frame, u
 }
 void codec_decoder_finalize(CPU* c, u64 decoder) {
     CodecDecoder** slot;
-    (void)c;
     lock();
     slot = decoder_slot(decoder);
     if (slot) {
@@ -242,11 +242,12 @@ void codec_decoder_finalize(CPU* c, u64 decoder) {
         *slot = NULL;
     }
     unlock();
+    /* the function's symbol is an older SDK's too, whose decoder is nn/codec.c's */
+    if (!slot) nncodec_hwopus_finalize(c, decoder);
 }
 /* its requests dropped, and the next packet starts the stream again */
 void codec_decoder_reset(CPU* c, u64 decoder) {
     CodecDecoder** slot;
-    (void)c;
     lock();
     slot = decoder_slot(decoder);
     if (slot) {
@@ -254,6 +255,7 @@ void codec_decoder_reset(CPU* c, u64 decoder) {
         (*slot)->reset = 1;
     }
     unlock();
+    if (!slot) nncodec_hwopus_reset(c, decoder); /* an older SDK's, as its finalize */
 }
 
 /* a packet decoded now into a waiting request: all of the data is consumed */

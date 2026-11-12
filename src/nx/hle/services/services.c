@@ -70,7 +70,6 @@ void svc_core_init(void) {
     svc_register("ldr:ro", new_ldr);
     svc_register("ro:1", new_ro1);
     nn_audio_detail_INativeAudioManager_register(new_aud);
-    nn_codec_detail_IHardwareOpusDecoderManager_register(new_hwopus);
 
     /* bsd:u and bsd:a are the application's and the applets' sessions, bsd:s the system's (bsd.c) */
     svc_register("bsd:u", new_bsd_u);
