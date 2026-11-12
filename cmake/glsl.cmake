@@ -65,11 +65,12 @@ if(NOT SNX_SPIRV_VAL)
 endif()
 
 # snx_glsl_spirv(target SOURCE file.comp NAME symbol HEADER include/path.h [TARGET vulkan1.x] [DEFINES MACRO[=value]...])
-# Compiles SOURCE (its #includes followed through glslang's depfile) for Vulkan 1.1 (or TARGET) without debug information,
-# optimizes it for speed with spirv-opt -O, validates the result with spirv-val, and puts it into a C file added to
-# target: `const u32 NAME[]` and `const u64 NAME_size` (bytes). HEADER, which the C file includes, declares them: the
-# build writes it too, under generated/include in the build tree (on the include path beside src), one header for every
-# NAME given it. DEFINES are predefined macros, for another build of the same source
+# Compiles SOURCE (its #includes, beside it or from src as a C file's, followed through glslang's depfile) for Vulkan
+# 1.1 (or TARGET) without debug information, optimizes it for speed with spirv-opt -O, validates the result with
+# spirv-val, and puts it into a C file added to target: `const u32 NAME[]` and `const u64 NAME_size` (bytes). HEADER,
+# which the C file includes, declares them: the build writes it too, under generated/include in the build tree (on the
+# include path beside src), one header for every NAME given it. DEFINES are predefined macros, for another build of the
+# same source
 function(snx_glsl_spirv target)
     cmake_parse_arguments(arg "" "SOURCE;NAME;HEADER;TARGET" "DEFINES" ${ARGN})
     if(NOT arg_TARGET)
@@ -95,7 +96,8 @@ function(snx_glsl_spirv target)
     # to (they make it a rule for the file it names). DEPENDS rather than MAIN_DEPENDENCY: a source can be built twice.
     # spirv-opt validates what it is given before it optimizes, and spirv-val what it gave
     add_custom_command(OUTPUT "${spv}"
-        COMMAND "${SNX_GLSLANG}" -V --target-env ${arg_TARGET} -g0 ${defines} --depfile "${spv}.d" -o "${spv}" "${source}"
+        COMMAND "${SNX_GLSLANG}" -V --target-env ${arg_TARGET} -g0 ${defines} "-I${PROJECT_SOURCE_DIR}/src"
+                --depfile "${spv}.d" -o "${spv}" "${source}"
         DEPENDS "${source}"
         DEPFILE "${spv}.d"
         COMMENT "Compiling ${shown} to SPIR-V (${arg_NAME})"
