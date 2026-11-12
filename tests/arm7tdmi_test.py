@@ -31,11 +31,13 @@ ARM = {
     'ldm': (0xE8940005,),  # LDMIA r4, {r0, r2}
     'io_load': (0xE5940000,),  # LDR r0, [r4]
     'io_store': (0xE1C410B0,),  # STRH r1, [r4]
+    'io_store_more': (0xE4841004, 0xE3A02001),  # STR r1, [r4], #4; MOV r2, #1
 }
 THUMB = {
     'pop_pc': (0xBD01,),  # POP {r0, pc}
     # BL's second half alone (a GBA game's call through LR); with the halfword after it A57's STRB.W r0, [r0, r0]
     'bl_suffix': (0xF810, 0x0000),
+    'io_store_more': (0x8021, 0x2201),  # STRH r1, [r4]; MOVS r2, #1
 }
 
 
@@ -65,7 +67,7 @@ def put(memory, address, data):
 class Run:
     """one block on a fresh CPU and zeroed memory; the hook records what reaches it"""
 
-    def __init__(self, block, thumb=False, **registers):
+    def __init__(self, block, thumb=False, written=0, **registers):
         self.backing = mmap.mmap(-1, SIZE)
         self.memory = (C.c_uint8 * SIZE).from_buffer(self.backing)
         self.calls = []
@@ -79,10 +81,11 @@ class Run:
         self.cpu.mem_size = SIZE
         self.cpu.io = C.cast(self.hook, C.c_void_p)
         self.block = block
+        self.written = written
 
     def access(self, address, size_write, value):
         self.calls.append((address, size_write, value))
-        return 0xCAFE
+        return self.written if size_write & 0x100 else 0xCAFE
 
     def __call__(self):
         self.block(C.byref(self.cpu))
@@ -120,6 +123,17 @@ def check(arm, thumb, profile):
     run = Run(arm['io_store'], r1=0x12345678, r4=0x04000006)
     assert run().exit == 0 and run.calls == ([(0x04000006, 0x102, 0x12345678)] if seven else [])
     assert word(run.memory, 0x04000004) == (0 if seven else 0x56780000)
+    # a write the hook answers nonzero ends the block once its instruction is done (the base written back), at the
+    # next one; zero goes on
+    for written in (0, 1):
+        run = Run(arm['io_store_more'], written=written, r1=7, r4=0x04000008)
+        cpu = run()
+        stopped = seven and written
+        assert (cpu.exit, cpu.r[2], cpu.r[4]) == (0, 0 if stopped else 1, 0x0400000C), (written, cpu.r[2], cpu.r[4])
+        assert cpu.r[15] == (PC + 4 if stopped else PC + 8), (written, hex(cpu.r[15]))
+        run = Run(thumb['io_store_more'], thumb=True, written=written, r1=7, r4=0x04000008)
+        cpu = run()
+        assert (cpu.exit, cpu.r[2], cpu.r[15]) == (0, 0 if stopped else 1, PC + 2 if stopped else PC + 4), written
     run = Run(arm['io_load'], r4=0x02000000)
     put(run.memory, 0x02000000, b'\x01\x02\x03\x04')
     assert run().r[0] == 0x04030201 and not run.calls

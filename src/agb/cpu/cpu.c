@@ -74,13 +74,16 @@ static uint32_t bus(SnxArmCPU* arm, uint32_t address, uint32_t size_write, uint3
         return (uint32_t)(int32_t)(int16_t)agb_read16(board, address);
     }
     if (size_write & 0x100) {
+        uint32_t held = board->held_cycles;
         if (bytes == 1)
             agb_write8(board, address, (uint8_t)value);
         else if (bytes == 2)
             agb_write16(board, address, (uint16_t)value);
         else
             agb_write32(board, address, value);
-        return 0;
+        /* a DMA the write started holds the bus: the block ends after this instruction, and the next one runs once
+           the CPU waited it out (agb_cpu_run), as the console's does */
+        return board->held_cycles != held;
     }
     return bytes == 1 ? agb_read8(board, address) : bytes == 2 ? agb_read16(board, address)
                                                              : agb_read32(board, address);

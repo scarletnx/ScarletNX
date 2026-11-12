@@ -44,7 +44,8 @@ typedef struct SnxArmCPU {
     uint64_t mem_size; /* flat mapping, at most 2^32 bytes; no MMIO */
     /* An optional bus hook for the regions whose bus rules a plain access cannot follow: mirrors
        finer than a page, byte write widths. Reads return the value with size_write = the width;
-       writes pass size_write = 0x100 | width and value. Like the fetch callback, none is needed by
+       writes pass size_write = 0x100 | width and value, and return nonzero to end the block once the
+       instruction that wrote is done, R15 at the next one. Like the fetch callback, none is needed by
        default: without one every access goes straight to mem. */
     uint32_t (*io)(struct SnxArmCPU* cpu, uint32_t address, uint32_t size_write, uint32_t value);
     uint64_t exclusive_value;
