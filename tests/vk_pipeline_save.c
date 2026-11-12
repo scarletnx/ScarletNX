@@ -19,7 +19,7 @@ VkState g_vk;
 /* Only the owner state read by the production cache saver: no shader loader, pipeline worker or callback table. */
 static struct {
     VkPipelineCache pcache;
-    char pcache_path[1200], pcache_tmp[1230];
+    char pcache_path[1200];
     int pcache_dirty;
     u64 pcache_used;
     PMutex psave;
@@ -59,7 +59,6 @@ static VKAPI_ATTR VkResult VKAPI_CALL snapshot(VkDevice device, VkPipelineCache 
     *size = 4;
     return VK_SUCCESS;
 }
-PFN_vkGetPipelineCacheData vkGetPipelineCacheData = snapshot;
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "pipeline_save:%d: %s\n", __LINE__, #x); return 1; } } while (0)
 static void reset(void) {
@@ -72,9 +71,9 @@ static void reset(void) {
 }
 int main(void) {
     g_settings.vulkan_pipeline_cache = 1; /* its default: the cache is written */
+    vkGetPipelineCacheData = snapshot;    /* volk's, which the common writer (common/gpu/vk/vk_common.c) calls */
     g_pipeline.pcache = (VkPipelineCache)(uintptr_t)1;
     snprintf(g_pipeline.pcache_path, sizeof g_pipeline.pcache_path, "pipeline_save_test.bin");
-    snprintf(g_pipeline.pcache_tmp, sizeof g_pipeline.pcache_tmp, "pipeline_save_test.tmp");
     reset();
     pcache_note();
     vk_pipeline_save(0);
