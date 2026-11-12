@@ -1624,6 +1624,53 @@ int main(int argc, char** argv) {
         free(image);
         free(own);
     }
+    { /* a game made already, given by its program with its update's and DLC's dumps: each made or recorded beside
+         it and checked, the game not made again; with -r nothing played, without it the game with them, the update
+         made already left as it is. Its program with --outdir is refused: its add-ons go into its own folder */
+        char *game_dump = snx_path_join(repo, "Game.nsp"), *update = snx_path_join(repo, "Game Update.nsp");
+        char *dlc = snx_path_join(repo, "Game Dlc.nsp"), *folder = snx_path_join(repo, "recompiled/0100ABCD12340000");
+        char *program = snx_path_join(folder, "0100ABCD12340000"), *both = snx_format("%s|%s", update, dlc);
+        char *own = snx_path_join(folder, "0100ABCD12340000_0100ABCD12340800v65536"), *ini, *checked;
+        set_env("SNX_WORKFLOW_ADDON", "1");
+        set_env("SNX_WORKFLOW_GAMES", folder);
+        set_env("SNX_WORKFLOW_EXTRACT", "");
+        reset(repo, dump);
+        CHECK(!snx_write_file(game_dump, "game", 4) && !snx_write_file(update, "update", 6) &&
+              !snx_write_file(dlc, "dlc", 3));
+        run(exe, repo, game_dump, log, 0, "RG", NULL);
+        set_env("SNX_WORKFLOW_UPDATE", both);
+        set_env("SNX_WORKFLOW_FLAGS", "-r");
+        run(exe, repo, program, log, 0, "R", NULL); /* the update's program alone made */
+        set_env("SNX_WORKFLOW_FLAGS", "");
+        CHECK(snx_is_file(own) && records_dump(folder, "0100ABCD12340000_0100ABCD12340800v65536", update));
+        CHECK(records_dump(folder, "0100ABCD12340000_0100ABCD5555A001", dlc));
+        CHECK(records_dump(folder, "0100ABCD12340000", game_dump)); /* what it was made from, as it was */
+        ini = snx_game_ini(folder, "0100ABCD12340000");
+        checked = snx_ini_value(ini, "addons");
+        CHECK(checked && !strcmp(checked, "0100ABCD12340800v65536,0100ABCD5555A001"));
+        free(checked);
+        CHECK(!snx_ini_record(ini, "addons", ""));
+        run(exe, repo, program, log, 0, "A", NULL); /* checked again, and played from the update's program */
+        checked = snx_ini_value(ini, "addons");
+        CHECK(checked && !strcmp(checked, "0100ABCD12340800v65536,0100ABCD5555A001"));
+        free(checked);
+        set_env("SNX_WORKFLOW_OUTDIR", repo);
+        run(exe, repo, program, log, 1, "", "and --update: it is a game made already, whose updates and DLCs go");
+        set_env("SNX_WORKFLOW_OUTDIR", "");
+        set_env("SNX_WORKFLOW_UPDATE", "");
+        set_env("SNX_WORKFLOW_ADDON", "");
+        cwd = snx_path_join(repo, "recompiled/Test game");
+        set_env("SNX_WORKFLOW_GAMES", cwd);
+        free(cwd);
+        free(ini);
+        free(own);
+        free(both);
+        free(program);
+        free(game_dump);
+        free(update);
+        free(dlc);
+        free(folder);
+    }
     { /* A collection of 3 programs: each made beside the game, its code alone; ExecuteProgram's hand-over followed
          to program 2 and back; --program picks one, one not made plays program 0, said; a hand-over left before a run
          taken away; a program named that is not made recompiled from the game's dump; one that never takes its

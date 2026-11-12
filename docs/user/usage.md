@@ -187,6 +187,7 @@ checks: any number of DLCs and one update at most. Give their dumps with the gam
 ```sh
 ./build/scarletnx Game.xci --update Update.nsp --update Dlc.nsp   # the game made first if it isn't yet
 ./build/scarletnx Dlc.nsp                                          # a game made already: its DLC checked too
+./build/scarletnx -r recompiled/<id>/<id> --update Dlc.nsp         # a game made already, its dump not needed
 ```
 
 Each dump given is checked along with what the list checks already: a DLC is added, and an update, older or newer,
