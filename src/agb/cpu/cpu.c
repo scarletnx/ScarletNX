@@ -137,7 +137,6 @@ static int irq_enter(AgbBoard* board, AgbCpu* cpu) {
     cpu->arm.cpsr = (cpu->arm.cpsr & ~(uint32_t)SNX_ARM_T) | (handler & 1 ? SNX_ARM_T : 0);
     cpu->arm.r[15] = handler & ~(uint32_t)1;
     board->bios_prefetch = AGB_BIOS_PREFETCH_IRQ;
-    ++cpu->irq_depth;
     return 1;
 }
 
@@ -155,7 +154,6 @@ static void irq_return(AgbBoard* board, AgbCpu* cpu) {
     cpu->arm.cpsr = saved_cpsr;
     cpu->arm.r[15] = back - 4;
     board->bios_prefetch = AGB_BIOS_PREFETCH_IRQ_RETURN;
-    if (cpu->irq_depth) --cpu->irq_depth;
 }
 
 /* ---- software interrupts and the privileged residue ---- */
@@ -175,7 +173,68 @@ static void soft_reset(AgbBoard* board, AgbCpu* cpu) {
     cpu->banked_r14[2] = cpu->banked_r14[3] = cpu->spsr[2] = cpu->spsr[3] = 0;
     cpu->arm.cpsr = 0x1F;
     cpu->arm.r[15] = entry;
-    cpu->wait = cpu->irq_depth = 0;
+}
+
+/* The BIOS's entry to a call that waits, as mGBA's HLE BIOS and the console's have it: the caller's CPSR, r11, r12 and
+   the return address go on the supervisor stack, the call runs in system mode in ARM state with interrupts as the
+   caller had them, and r2 and lr go on the caller's stack. An interrupt handler that runs while the call waits works
+   below them, and what it leaves on the stack sits that much lower */
+static void swi_enter(AgbBoard* board, AgbCpu* cpu) {
+    uint32_t caller = cpu->arm.cpsr, back = cpu->arm.r[15], sp;
+    switch_mode(cpu, 0x13);
+    cpu->spsr[3] = caller;
+    cpu->arm.r[14] = back;
+    sp = cpu->arm.r[13] - 16;
+    agb_write32(board, sp, caller);
+    agb_write32(board, sp + 4, cpu->arm.r[11]);
+    agb_write32(board, sp + 8, cpu->arm.r[12]);
+    agb_write32(board, sp + 12, back);
+    cpu->arm.r[13] = sp;
+    switch_mode(cpu, 0x1F);
+    cpu->arm.cpsr &= ~(uint32_t)SNX_ARM_T;
+    sp = cpu->arm.r[13] - 8;
+    agb_write32(board, sp, cpu->arm.r[2]);
+    agb_write32(board, sp + 4, cpu->arm.r[14]);
+    cpu->arm.r[13] = sp;
+}
+
+/* The other half, at AGB_BIOS_SWI_RETURN: r2 and lr come back, then what the supervisor stack holds, and the caller
+   resumes */
+static void swi_return(AgbBoard* board, AgbCpu* cpu) {
+    uint32_t sp = cpu->arm.r[13], caller, back;
+    cpu->arm.r[2] = agb_read32(board, sp);
+    cpu->arm.r[14] = agb_read32(board, sp + 4);
+    cpu->arm.r[13] = sp + 8;
+    switch_mode(cpu, 0x13);
+    sp = cpu->arm.r[13];
+    caller = agb_read32(board, sp);
+    cpu->arm.r[11] = agb_read32(board, sp + 4);
+    cpu->arm.r[12] = agb_read32(board, sp + 8);
+    back = agb_read32(board, sp + 12);
+    cpu->arm.r[13] = sp + 16;
+    cpu->spsr[3] = caller;
+    cpu->arm.r[14] = back;
+    switch_mode(cpu, caller & 0x1F);
+    cpu->arm.cpsr = caller;
+    cpu->arm.r[15] = back;
+    board->bios_prefetch = AGB_BIOS_PREFETCH_SWI;
+}
+
+/* IntrWait's loop, at AGB_BIOS_INTR_WAIT: over once the game's interrupt handler flagged one of the interrupts r1
+   names in the BIOS's flags, which it takes out of them; else it halts for the next interrupt. Interrupts are on
+   either way */
+static void intr_wait(AgbBoard* board, AgbCpu* cpu) {
+    uint16_t flags = agb_read16(board, AGB_BIOS_FLAGS), done = flags & (uint16_t)(cpu->arm.r[1] & 0x3FFF);
+    board->irq_ime = 1;
+    if (!done) {
+        board->cpu_halted = 1;
+        return;
+    }
+    agb_write16(board, AGB_BIOS_FLAGS, (uint16_t)(flags & ~done));
+    cpu->arm.r[2] = agb_read32(board, cpu->arm.r[13]);
+    cpu->arm.r[3] = agb_read32(board, cpu->arm.r[13] + 4);
+    cpu->arm.r[13] += 12;
+    cpu->arm.r[15] = AGB_BIOS_SWI_RETURN;
 }
 
 static void handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb) {
@@ -187,24 +246,36 @@ static void handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb)
         return;
     }
     if (number == AGB_SWI_HALT || number == AGB_SWI_STOP) {
+        /* halted inside the BIOS, the I/O base in r12 as its routine has it: the interrupt that wakes the machine is
+           taken there, then the call returns */
+        swi_enter(board, cpu);
+        cpu->arm.r[12] = 0x04000000;
+        cpu->arm.r[15] = AGB_BIOS_SWI_RETURN;
         board->cpu_halted = 1;
         return;
     }
     if (number == AGB_SWI_INTR_WAIT || number == AGB_SWI_VBLANK_INTR_WAIT) {
-        /* the BIOS's way: the flags asked for, cleared first when r0 says so (VBlankIntrWait always), then halts with
-           IME on until the game's interrupt handler sets one of them in its flags at 0x03007FF8 (agb_cpu_run). The
-           hardware's IF is the handler's to acknowledge */
+        /* the BIOS's way: r2, r3 and its return on the caller's stack, the flags asked for (r1) cleared first when r0
+           says so (VBlankIntrWait always), then it halts with IME on until the game's interrupt handler sets one of
+           them in its flags at 0x03007FF8 (intr_wait). The hardware's IF is the handler's to acknowledge. It waits
+           with r0 = 0 and the I/O base in r12, which an interrupt handler that runs meanwhile may use, as mGBA's HLE
+           BIOS keeps them */
         int discard = number == AGB_SWI_VBLANK_INTR_WAIT || cpu->arm.r[0];
-        cpu->wait = number == AGB_SWI_VBLANK_INTR_WAIT ? AGB_IRQ_VBLANK : (uint16_t)(cpu->arm.r[1] & 0x3FFF);
-        /* the BIOS's routine waits, and returns, with r0 = 0 and the I/O base in r12 (VBlankIntrWait with r1 = 1), which
-           an interrupt handler that runs meanwhile may use, as mGBA's HLE BIOS keeps them */
+        swi_enter(board, cpu);
+        cpu->arm.r[13] -= 12;
+        agb_write32(board, cpu->arm.r[13], cpu->arm.r[2]);
+        agb_write32(board, cpu->arm.r[13] + 4, cpu->arm.r[3]);
+        agb_write32(board, cpu->arm.r[13] + 8, AGB_BIOS_SWI_RETURN);
         cpu->arm.r[0] = 0;
         if (number == AGB_SWI_VBLANK_INTR_WAIT) cpu->arm.r[1] = 1;
         cpu->arm.r[12] = 0x04000000;
-        cpu->wait_depth = cpu->irq_depth;
-        if (discard) agb_write16(board, AGB_BIOS_FLAGS, agb_read16(board, AGB_BIOS_FLAGS) & (uint16_t)~cpu->wait);
-        board->irq_ime = 1;
-        if (discard) board->cpu_halted = 1;
+        cpu->arm.r[15] = AGB_BIOS_INTR_WAIT;
+        if (discard) {
+            uint16_t flags = agb_read16(board, AGB_BIOS_FLAGS);
+            agb_write16(board, AGB_BIOS_FLAGS, flags & (uint16_t)~(cpu->arm.r[1] & 0x3FFF));
+            board->irq_ime = 1;
+            board->cpu_halted = 1;
+        }
         return;
     }
     /* the BIOS's routine takes its time: its entry and return (45 cycles, as mGBA's HLE BIOS counts them) and the
@@ -576,16 +647,7 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
             advance(cpu, &sink, held);
             continue;
         }
-        /* IntrWait, back where it was called once the handlers it ran returned: over once a handler flagged what it
-           waits for, which it takes out of the flags; else it halts for the next interrupt */
-        if (cpu->wait && !board->cpu_halted && cpu->irq_depth == cpu->wait_depth) {
-            uint16_t flags = agb_read16(board, AGB_BIOS_FLAGS), done = flags & cpu->wait;
-            if (done) {
-                agb_write16(board, AGB_BIOS_FLAGS, (uint16_t)(flags & ~done));
-                cpu->wait = 0;
-            } else
-                board->cpu_halted = 1;
-        }
+        if (cpu->arm.r[15] == AGB_BIOS_INTR_WAIT && !board->cpu_halted) intr_wait(board, cpu);
         if (board->cpu_halted && (board->irq_if & board->irq_ie)) board->cpu_halted = 0;
         if (board->cpu_halted) {
             advance(cpu, &sink, 64);
@@ -597,6 +659,15 @@ int agb_cpu_run(AgbBoard* board, AgbCpu* cpu, AgbRecomp* recomp, uint32_t cycles
         }
         if (cpu->arm.r[15] == AGB_IRQ_RETURN) {
             irq_return(board, cpu);
+            continue;
+        }
+        if (cpu->arm.r[15] == AGB_BIOS_SWI_RETURN) {
+            swi_return(board, cpu);
+            continue;
+        }
+        /* IntrWait awake with no interrupt it may take: the BIOS's loop goes round */
+        if (cpu->arm.r[15] == AGB_BIOS_INTR_WAIT) {
+            advance(cpu, &sink, 64);
             continue;
         }
         if (cpu->arm.r[15] == AGB_BIOS_NOP_CALL) { /* a sound driver function SoundDriverGetJumpList named: bx lr */

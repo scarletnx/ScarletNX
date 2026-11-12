@@ -258,7 +258,7 @@ int main(void) {
         cpu.arm.r[15] = 0x03000800;
         cpu.arm.cpsr = 0x9F;
         cpu.over = 0;
-        board.cpu_halted = cpu.wait = 0;
+        board.cpu_halted = 0;
         board.held_cycles = 1000;
         CHECK(!agb_cpu_run(&board, &cpu, &recomp, 1000, audio, AGB_APU_RATE, NULL, error, sizeof error));
         CHECK(cpu.arm.r[0] == 0 && board.held_cycles == 0);
@@ -290,7 +290,7 @@ int main(void) {
         cpu.arm.r[15] = 0x03000900;
         cpu.arm.cpsr = 0x9F;
         cpu.over = 0;
-        board.cpu_halted = cpu.wait = 0;
+        board.cpu_halted = 0;
         board.held_cycles = 0;
         CHECK(!agb_cpu_run(&board, &cpu, &recomp, 800, audio, AGB_APU_RATE, NULL, error, sizeof error));
         CHECK(cpu.arm.r[5] == 0);
@@ -309,7 +309,7 @@ int main(void) {
             cpu.arm.r[15] = base;
             cpu.arm.cpsr = 0x9F;
             cpu.over = 0;
-            board.cpu_halted = cpu.wait = 0;
+            board.cpu_halted = 0;
             board.held_cycles = 0;
             CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2400, audio, AGB_APU_RATE, NULL, error, sizeof error));
             CHECK(cpu.arm.r[0] == (ram ? 100u : 600u));
@@ -415,7 +415,7 @@ int main(void) {
         cpu.arm.r[14] = 0x03000201;
         cpu.arm.r[15] = AGB_BIOS_NOP_CALL;
         cpu.arm.cpsr = 0x9F;
-        board.cpu_halted = cpu.wait = 0;
+        board.cpu_halted = 0;
         CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2000, audio, AGB_APU_RATE, &written, error, sizeof error));
         CHECK(cpu.arm.r[0] == 7 && cpu.arm.r[15] == 0x03000202 && (cpu.arm.cpsr & SNX_ARM_T));
     }
@@ -433,7 +433,7 @@ int main(void) {
         agb_write32(&board, 0x03000518, 0x02000300);
         cpu.arm.r[15] = 0x03000502;
         cpu.arm.cpsr = 0x9F | SNX_ARM_T;
-        board.cpu_halted = cpu.wait = 0;
+        board.cpu_halted = 0;
         CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2000, audio, AGB_APU_RATE, &written, error, sizeof error));
         CHECK(agb_read32(&board, 0x02000300) == 42 && agb_read32(&board, 0x02000304) == 0x0300050C);
         CHECK(cpu.arm.r[15] == 0x03000514 && !(cpu.arm.cpsr & SNX_ARM_T));
@@ -450,7 +450,7 @@ int main(void) {
         agb_write32(&board, 0x03000614, 0x02000310);
         cpu.arm.r[15] = 0x03000600;
         cpu.arm.cpsr = 0x9F;
-        board.cpu_halted = cpu.wait = 0;
+        board.cpu_halted = 0;
         CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2000, audio, AGB_APU_RATE, &written, error, sizeof error));
         CHECK(agb_read32(&board, 0x02000310) == 7);
         CHECK(cpu.unknown_swi == 0xFF && cpu.unknown_swi_at == 0x03000600 && cpu.unknown_swi_count == 1);
@@ -574,7 +574,7 @@ int main(void) {
         agb_write16(&board, 0x04000200, 0x0800); /* IE: DMA 3 */
         agb_write16(&board, 0x04000208, 0x0001);
         board.irq_if = 0;
-        board.cpu_halted = cpu.wait = 0;
+        board.cpu_halted = 0;
         agb_irq_request(&board, AGB_IRQ_DMA(3));
         cpu.arm.r[15] = 0x03000840;
         cpu.arm.cpsr = 0x1F;
@@ -584,35 +584,64 @@ int main(void) {
         agb_write16(&board, 0x04000208, 0);
     }
     {
-        /* the BIOS's IntrWait waits with the I/O base in r12 and returns with it there, and its interrupt stub calls the
-           game's handler with that base in r0: a handler that flags the vblank through r12 (0x03FFFFF8, the flags'
-           mirror) ends the wait. Here ARM code with r12 = 0 calls VBlankIntrWait, then stores 42 and its r12 at
-           0x02000320; the handler stores its r0 at 0x02000328 */
+        /* the BIOS runs IntrWait in system mode on the caller's stack, where its entry keeps r2 and lr and the call
+           r2, r3 and its return, 20 bytes; it waits with the I/O base in r12, and its interrupt stub calls the game's
+           handler with that base in r0. Here ARM code with r12 = 0 calls VBlankIntrWait, then turns IME off and stores
+           42 and its r12 at 0x02000320; the handler stores its r0 at 0x02000328 and system mode's stack pointer at
+           0x0200032C, and flags the vblank through r12 (0x03FFFFF8, the flags' mirror), which ends the wait. Halt
+           keeps the entry's 8 bytes while the machine sleeps: its caller stores 43 and its r12 at 0x02000330 */
         static const uint32_t code[] = {
-            0xE3A0C000, 0xEF050000, 0xE3A0502A, 0xE59F1008, 0xE5815000, 0xE581C004, 0xEAFFFFFE, 0x02000320,
+            0xE3A0C000, 0xEF050000, 0xE3A00301, 0xE3A06000, 0xE5806208, 0xE3A0502A,
+            0xE59F1008, 0xE5815000, 0xE581C004, 0xEAFFFFFE, 0x02000320,
         };
         static const uint32_t handler[] = {
-            0xE59F2014, 0xE5820000, 0xE3A01001, 0xE14C10B8, 0xE2802C02, 0xE1C210B2, 0xE12FFF1E, 0x02000328,
+            0xE59F2028, 0xE5820000, 0xE10F3000, 0xE383101F, 0xE121F001, 0xE582D004, 0xE121F003,
+            0xE3A01001, 0xE14C10B8, 0xE2802C02, 0xE1C210B2, 0xE12FFF1E, 0x02000328,
+        };
+        static const uint32_t halts[] = {
+            0xEF020000, 0xE3A00301, 0xE3A06000, 0xE5806208, 0xE3A0502B,
+            0xE59F1008, 0xE5815000, 0xE581C004, 0xEAFFFFFE, 0x02000330,
         };
         uint32_t written = 0;
-        for (uint32_t i = 0; i < 8; ++i) {
-            agb_write32(&board, 0x03000700 + i * 4, code[i]);
-            agb_write32(&board, 0x03000740 + i * 4, handler[i]);
-        }
+        for (uint32_t i = 0; i < 11; ++i) agb_write32(&board, 0x03000700 + i * 4, code[i]);
+        for (uint32_t i = 0; i < 13; ++i) agb_write32(&board, 0x03000740 + i * 4, handler[i]);
+        for (uint32_t i = 0; i < 10; ++i) agb_write32(&board, 0x03000780 + i * 4, halts[i]);
         agb_write32(&board, 0x03007FFC, 0x03000740);
         agb_write16(&board, 0x03007FF8, 0);
         agb_write16(&board, 0x04000004, 0x0008); /* the vblank interrupt on */
         agb_write16(&board, 0x04000200, 0x0001);
         agb_write16(&board, 0x04000208, 0x0001);
         board.irq_if = 0;
-        board.cpu_halted = cpu.wait = 0;
+        board.cpu_halted = 0;
+        cpu.arm.r[2] = 0x22;
+        cpu.arm.r[3] = 0x33;
+        cpu.arm.r[11] = 0x0B;
+        cpu.arm.r[13] = 0x03007E00;
+        cpu.arm.r[14] = 0x08001234;
         cpu.arm.r[15] = 0x03000700;
         cpu.arm.cpsr = 0x1F;
         for (int frame = 0; frame < 2; ++frame)
             CHECK(!agb_cpu_run(&board, &cpu, &recomp, AGB_SCANLINE_CYCLES * AGB_FRAME_LINES, audio, AGB_APU_RATE,
                                &written, error, sizeof error));
-        CHECK(agb_read32(&board, 0x02000328) == 0x04000000);
-        CHECK(agb_read32(&board, 0x02000320) == 42 && agb_read32(&board, 0x02000324) == 0x04000000);
+        CHECK(agb_read32(&board, 0x02000328) == 0x04000000 && agb_read32(&board, 0x0200032C) == 0x03007E00 - 20);
+        CHECK(agb_read32(&board, 0x02000320) == 42 && agb_read32(&board, 0x02000324) == 0);
+        CHECK(agb_read32(&board, 0x03007E00 - 4) == 0x08001234 && agb_read32(&board, 0x03007E00 - 8) == 0x22);
+        CHECK(agb_read32(&board, 0x03007E00 - 12) == AGB_BIOS_SWI_RETURN &&
+              agb_read32(&board, 0x03007E00 - 16) == 0x33);
+        CHECK(agb_read32(&board, 0x03007E00 - 20) == 0x22);
+        CHECK(cpu.arm.r[2] == 0x22 && cpu.arm.r[3] == 0x33 && cpu.arm.r[11] == 0x0B && cpu.arm.r[13] == 0x03007E00);
+        CHECK(cpu.arm.r[14] == 0x08001234 && cpu.arm.r[15] == 0x03000724 && cpu.arm.cpsr == 0x1F);
+        agb_write16(&board, 0x03007FF8, 0);
+        agb_write16(&board, 0x04000208, 0x0001);
+        cpu.arm.r[12] = 0x0C0C;
+        cpu.arm.r[15] = 0x03000780;
+        for (int frame = 0; frame < 2; ++frame)
+            CHECK(!agb_cpu_run(&board, &cpu, &recomp, AGB_SCANLINE_CYCLES * AGB_FRAME_LINES, audio, AGB_APU_RATE,
+                               &written, error, sizeof error));
+        CHECK(agb_read32(&board, 0x02000328) == 0x04000000 && agb_read32(&board, 0x0200032C) == 0x03007E00 - 8);
+        CHECK(agb_read32(&board, 0x02000330) == 43 && agb_read32(&board, 0x02000334) == 0x0C0C);
+        CHECK(cpu.arm.r[2] == 0x22 && cpu.arm.r[13] == 0x03007E00 && cpu.arm.r[14] == 0x08001234);
+        CHECK(cpu.arm.r[15] == 0x030007A0 && cpu.arm.cpsr == 0x1F);
         agb_write16(&board, 0x04000208, 0);
     }
     {
@@ -627,7 +656,7 @@ int main(void) {
         cpu.arm.r[3] = 0x02000400;
         cpu.arm.r[15] = 0x03000900;
         cpu.arm.cpsr = 0x1F;
-        board.cpu_halted = cpu.wait = 0;
+        board.cpu_halted = 0;
         CHECK(!agb_cpu_run(&board, &cpu, &recomp, AGB_SCANLINE_CYCLES * AGB_FRAME_LINES, audio, AGB_APU_RATE, &written,
                            error, sizeof error));
         CHECK(agb_read32(&board, 0x02000400) == 7 && cpu.arm.r[0] == 0);
