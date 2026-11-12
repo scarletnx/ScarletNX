@@ -937,7 +937,9 @@ static int shadow_map_cases(GpuChannel* channel, u64 target, u64 address) {
    TXQ of the 4x4 target is the quad's red, less 4: the quad is green when the query answers 4, and no copy is
    written, before a copy of the target exists and with one left by an earlier draw. Between the two a fragment
    program fetches the target's texel (0, 0) for every pixel: that draw has the pixels it found copied, the clear's
-   blue */
+   blue. It fetches it again after the 3D engine's texture data cache invalidation, then after a fragment barrier:
+   each of those makes the earlier draws' writes visible to texture reads, so each draw has the target copied again
+   (g_vk_texture_epoch) */
 static int query_target_case(GpuChannel* channel, u64 target, u64 address) {
     const u64 query = address + 0x5000, fetch = address + 0x5400, pool = address + 0x1F000, samplers = pool + 0x100,
               cbuf = pool + 0x200;
@@ -984,8 +986,15 @@ static int query_target_case(GpuChannel* channel, u64 target, u64 address) {
     r[0x982] = 2;
     DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
     int ok = 1;
-    for (u32 round = 0; ok && round < 3; round++) {
-        int fetches = round == 1, stage = fetches ? 4 : 0;
+    static const char* const what[5] = {"a vertex program asks its width",
+                                        "a fragment program fetches the target's texel",
+                                        "a vertex program asks its width",
+                                        "a fragment program fetches the target's texel after a texture data cache "
+                                        "invalidation",
+                                        "a fragment program fetches the target's texel after a fragment barrier"};
+    for (u32 round = 0; ok && round < 5; round++) {
+        int fetches = round == 1 || round >= 3, stage = fetches ? 4 : 0;
+        if (round >= 3) g_renderer->method_barrier(round == 3 ? 2 : 0);
         u64 written = g_vk_rt_copy_writes, through = g_vk_rt_copies;
         r[0x811] = fetches ? 0 : (u32)(query - address);
         r[0x851] = fetches ? (u32)(fetch - address) : 0x10000;
@@ -1002,9 +1011,8 @@ static int query_target_case(GpuChannel* channel, u64 target, u64 address) {
             fprintf(stderr,
                     "target query: draw %u (%s): %u green, %u blue, %u red, %llu copies of the target written, %llu "
                     "draws through a copy\n",
-                    round,
-                    fetches ? "a fragment program fetches the target's texel" : "a vertex program asks its width",
-                    px.green, px.blue, px.red, (unsigned long long)written, (unsigned long long)through);
+                    round, what[round], px.green, px.blue, px.red, (unsigned long long)written,
+                    (unsigned long long)through);
     }
     r[0x811] = 0;
     r[0x851] = 0x10000; /* the harness's programs again */
