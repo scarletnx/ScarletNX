@@ -130,6 +130,13 @@ its time, and what the search finds for them is seldom much nearer. At 1024 that
 are moved as the 32 or 64 bits they are, with the bit BC7 leaves out of its anchor index put back and BC1's indices
 put in ASTC's order by two masks. Nothing is fitted and nothing measured.
 
+This pass has no arrays and reads no table. GPU drivers each have a kind of memory they are slow with: an array of
+the invocation's own indexed by a value (scratch memory on Adreno and Mali), or the workgroup's shared memory (fewer
+workgroups in flight on NVIDIA). So the block is its four words in registers, a field is cut out of them at a bit
+that is a constant of its mode, an end is the word of its four channels, the ends' codes are two words of a byte
+each, and the ASTC block is four words put together with shifts. The compiled pass declares no array but the work
+list's head.
+
 | Source | Moved as | Off by, a channel |
 | --- | --- | --- |
 | BC7 mode 6, opaque | RGB ends of 192 values, the same 16 indices of 4 bits | 1.0 on average on random blocks, 7 at most: ASTC's 4 bit weights are BC7's within 1 of 64 |
