@@ -518,7 +518,8 @@ layout's terms.
 
 Nothing compiled is checked in. `cmake/glsl.cmake` compiles `astc.comp` at build time with
 `glslangValidator -V --target-env vulkan1.1 -O -g0 --spirv-val`, into `build/generated/spirv/astc_spv.c`, which
-holds the words. `src/nx/gpu/texture/astc_spv.h` declares them (`astc_spv` and `astc_spv_size`, in bytes). glslang's
+holds the words. `nx/gpu/texture/astc_spv.h`, which the build writes beside it (`build/generated/include`), declares
+them (`astc_spv` and `astc_spv_size`, in bytes). glslang's
 depfile makes an edit to `astc_decode.glsl` rebuild it too.
 
 glslangValidator is KhronosGroup's glslang 16.6.0 release for the host, a CPM package pinned by its SHA-256, on Linux

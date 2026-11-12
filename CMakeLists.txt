@@ -175,8 +175,8 @@ include(CTest)
 # Before the sources: the C99 driver of a tools-only build links LZ4 too
 include(cmake/dependencies.cmake)
 # every local include is a path from src/ ("nx/hle/kernel/ipc.h"); generated and third-party headers come with their
-# targets
-include_directories("${PROJECT_SOURCE_DIR}/src")
+# targets, but for the SPIR-V headers (cmake/glsl.cmake), which are paths from src/ in the build tree
+include_directories("${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/generated/include")
 # every setting, generated from src/nx/runtime/settings.txt (struct Settings, g_settings, their tables)
 include(cmake/settings.cmake)
 add_subdirectory(src/common)
