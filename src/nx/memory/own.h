@@ -89,6 +89,8 @@ void own_drop(u64 addr, u64 size);
 /* landings so far (each a wait for the GPU: the statistics count them), and whether own_init found traps */
 u64 own_landings(void);
 int own_traps(void);
+u64 own_faults(void);
+u64 own_land_bytes(void);
 /* own.c's state. Other files read only nown (own_any) */
 typedef struct {
     u64 lo, hi;  /* guest bytes */
@@ -120,6 +122,8 @@ typedef struct {
     u64 page;   /* the host's page, which traps are armed in */
     u8* mirror; /* the pool's mirror, which landings write through; NULL where they land in place */
     u64 lands;  /* atomic: landings so far, for the statistics */
+    u64 faults; /* atomic: the faults that landed */
+    u64 land_bytes; /* atomic: the bytes landed */
     PMutex lk;  /* the entries' lock */
     /* arming pages and the check that lets them go, one at a time: a page let go just as an entry lands on it stays
        trapped (taken before lk) */

@@ -417,7 +417,10 @@ static void tracy_plots_send(void) {
     } cfg[] = {
         {"gpu memory", 1, 0, 1},
         {"gpu memory budget", 1, 0, 1},
+        {"own bytes", 1, 0, 1},
         {"texture uploads", 0, 0, 1},
+        {"own traps/s", 0, 0, 1},
+        {"own land MB/s", 0, 0, 1},
         {"guest memory", 1, 0, 1},
         {"compute cpu reads", 0, 0, 1},
         {"gpu thread idle", 0, 1, 0},
