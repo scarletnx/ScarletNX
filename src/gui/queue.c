@@ -17,19 +17,21 @@ static size_t put(GuiJob* job, size_t at, const char* text) {
 int gui_queue_add(GuiQueue* queue, const char* const* argv, const char* file, const char* listed, const char* name,
                   GuiJobKind kind, bool native, bool* added) {
     GuiJob* job;
-    size_t size = strlen(file) + strlen(listed) + strlen(name) + 3, at = 0;
+    size_t size = strlen(file) + strlen(listed) + strlen(name) + 3, at;
     int argc = 0, i;
     if (added) *added = false;
     for (i = 0; i < queue->count; ++i)
         if (live(&queue->job[i]) && same_kind(queue->job[i].kind, kind) && !strcmp(gui_queue_file(queue, i), file))
             return i;
-    while (argv[argc]) size += strlen(argv[argc++]) + 1;
+    while (argv[argc] && argc < GUI_QUEUE_ARGS) size += strlen(argv[argc++]) + 1 + sizeof(uint32_t);
     if (queue->count == GUI_QUEUE_MAX || argc >= GUI_QUEUE_ARGS || size > UINT32_MAX) return -1;
     job = &queue->job[queue->count];
     memset(job, 0, sizeof *job);
     if (!(job->text = (char*)malloc(size))) return -1;
+    at = (size_t)argc * sizeof(uint32_t); /* the strings past their offsets */
     for (i = 0; i < argc; ++i) {
-        job->args[i] = (uint32_t)at;
+        uint32_t offset = (uint32_t)at;
+        memcpy(job->text + (size_t)i * sizeof offset, &offset, sizeof offset);
         at = put(job, at, argv[i]);
     }
     job->argc = argc;
@@ -98,7 +100,11 @@ int gui_queue_place(const GuiQueue* queue, int i) {
 }
 int gui_queue_argv(const GuiQueue* queue, int i, const char** out) {
     const GuiJob* job = &queue->job[i];
-    for (int k = 0; k < job->argc; ++k) out[k] = job->text + job->args[k];
+    for (int k = 0; k < job->argc; ++k) {
+        uint32_t offset;
+        memcpy(&offset, job->text + (size_t)k * sizeof offset, sizeof offset);
+        out[k] = job->text + offset;
+    }
     out[job->argc] = NULL;
     return job->argc;
 }

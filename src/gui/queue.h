@@ -11,12 +11,15 @@
 #include <stdint.h>
 
 #define GUI_QUEUE_MAX  16 /* the jobs a queue holds: waiting, running and ended */
-#define GUI_QUEUE_ARGS 64 /* a job's argv, its NULL included */
+/* a job's argv at most, its NULL included: a run's options, and --update and a dump for each update and DLC a game's
+   addons= can check (SNX_ADDONS_MAX), which a game's recompile with them gives the driver */
+#define GUI_QUEUE_ARGS (64 + 2 * 2048)
 typedef enum { GUI_JOB_WAITING, GUI_JOB_RUNNING, GUI_JOB_OK, GUI_JOB_FAILED } GuiJobState;
 typedef enum { GUI_JOB_RECOMPILE, GUI_JOB_AOT, GUI_JOB_COMPILE } GuiJobKind;
 typedef struct {
-    char* text;                    /* the block: argv's strings, the file, its path listed and the name, a NUL each */
-    uint32_t args[GUI_QUEUE_ARGS]; /* argv[i] at text + args[i], argc of them */
+    /* the block: where each of argv's strings is in it, argc 32-bit offsets, then the strings, the file, its path
+       listed and the name, a NUL each */
+    char* text;
     int argc;
     /* the game's file as it runs (absolute), the path Games or the recent games list it by, and what Games shows it
        as, at text + */
@@ -56,7 +59,7 @@ int gui_queue_waiting(const GuiQueue* queue);
 int gui_queue_percent(const GuiQueue* queue);
 /* job i's place in the line, 1 the running one's (or the first waiting's while none runs); 0 for one that ended */
 int gui_queue_place(const GuiQueue* queue, int i);
-/* job i's argv into out (GUI_QUEUE_ARGS of them, a NULL after the last): its count */
+/* job i's argv into out (room for its argc and a NULL after the last): its count */
 int gui_queue_argv(const GuiQueue* queue, int i, const char** out);
 const char* gui_queue_file(const GuiQueue* queue, int i);
 const char* gui_queue_listed(const GuiQueue* queue, int i);
