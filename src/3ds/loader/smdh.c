@@ -30,7 +30,7 @@ static size_t title_of(const unsigned char* entry, char* out, size_t out_size) {
                 ++i;
             }
         }
-        if (cp == '\n' || cp == '\r') cp = ' '; /* a title broken over two lines is one in a window's */
+        if (cp == '\n' || cp == '\r') cp = ' ';       /* a title broken over two lines is one in a window's */
         if (cp >= 0xd800 && cp < 0xe000) cp = 0xfffd; /* a surrogate with no pair is not UTF-8 */
         len = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
         if (n + len >= out_size) break;

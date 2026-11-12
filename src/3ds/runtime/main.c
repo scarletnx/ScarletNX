@@ -727,7 +727,7 @@ static int play_folder(char* folder, SnxCtrModel model, bool model_set, const ch
 }
 int snx_ctr_main(int argc, char** argv) {
     SnxCtrModel model = SNX_CTR_OLD;
-    const char* input = NULL, *icon_out = NULL;
+    const char *input = NULL, *icon_out = NULL;
     bool info = false, positional = false, budget_set = false, model_set = false, icon = false;
     uint64_t max_blocks = 0; /* no budget */
     uint32_t ipc_stubs = 0;  /* with ctr_auto_stub_ipc off, every unknown service command stops the run */
@@ -773,8 +773,7 @@ int snx_ctr_main(int argc, char** argv) {
                 snx_cli_free(&cli);
                 return 2;
             }
-        }
-        else if (!positional && (!strcmp(arg, "--max-blocks") || !strncmp(arg, "--max-blocks=", 13))) {
+        } else if (!positional && (!strcmp(arg, "--max-blocks") || !strncmp(arg, "--max-blocks=", 13))) {
             if (!parse_blocks(arg[12] ? arg + 13 : ++i < argc ? argv[i] : NULL, &max_blocks)) {
                 fputs("scarletnx-3ds: --max-blocks requires a positive number\n", stderr);
                 snx_cli_free(&cli);
@@ -871,9 +870,9 @@ int snx_ctr_main(int argc, char** argv) {
             if (!visible_path(input) || !visible_path(icon_out))
                 fputs("scarletnx-3ds: input/output paths may not contain control characters\n", stderr);
             else if ((refused = !game_path(input)         ? "is not a game of this system"
-                               : !snx_path_exists(input) ? "does not exist"
-                               : !snx_is_file(input)     ? "is not a file"
-                                                         : NULL))
+                                : !snx_path_exists(input) ? "does not exist"
+                                : !snx_is_file(input)     ? "is not a file"
+                                                          : NULL))
                 fprintf(stderr, "scarletnx-3ds: %s %s\n", input, refused);
             else
                 status = write_icon(input, icon_out, keys, repo, argv[0]);
