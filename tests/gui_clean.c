@@ -353,6 +353,74 @@ int main(void) {
             free(zero);
             free(save);
         }
+        /* a game's own save as an older version kept it, its files in its folder, to the data folder's save/ at once:
+           each into the new folder's 0/ with the file that says so, the old folder gone; nothing touched without
+           apply. One that cannot move, its name there already from a move cut short, puts back those that did */
+        {
+            char *old = snx_path_join(root, "game/save/device"), *now = snx_path_join(root, "data/save/device/title"),
+                 *a = snx_path_join(old, "a.bin"), *slot = snx_path_join(old, "1/slot.bin"),
+                 *staged = snx_path_join(root, "data/save/device/title.moving"),
+                 *mark = snx_path_join(now, SNX_SAVE_JOURNALED),
+                 *moved = snx_path_join(now, SNX_SAVE_COMMITTED "/1/slot.bin"), *dir = snx_dirname(slot), *said, *b,
+                 *left;
+            assert(dir && !snx_mkdirs(dir));
+            write_text(a, "a");
+            write_text(slot, "slot");
+            assert(gui_move_save_into(&done, old, now, false) == 2);
+            said = native(snx_format("+game/save/device/1|Moves to %s/data/save/device/title/0/1\n"
+                                     "+game/save/device/a.bin|Moves to %s/data/save/device/title/0/a.bin\n",
+                                     root, root));
+            assert(!strcmp(entries(&done, base), said) && snx_is_file(a) && !snx_path_exists(now) &&
+                   !snx_path_exists(staged));
+            free(said);
+            gui_cleaned_free(&done);
+            assert(gui_move_save_into(&done, old, now, true) == 2 && done.count == 3 && done.done == 3);
+            said = native(snx_format("+game/save/device/1|Moved to %s/data/save/device/title/0/1\n"
+                                     "+game/save/device/a.bin|Moved to %s/data/save/device/title/0/a.bin\n"
+                                     "+game/save/device|Removed: it was empty\n",
+                                     root, root));
+            assert(!strcmp(entries(&done, base), said));
+            free(said);
+            gui_cleaned_free(&done);
+            assert(snx_is_file(mark) && snx_is_file(moved) && !snx_path_exists(old) && !snx_path_exists(staged) &&
+                   !gui_save_old(now));
+            /* b.bin's name in the folder an earlier move left: a.bin goes back, b.bin stays, the only entry */
+            assert(!snx_remove_tree(now) && !snx_mkdirs(old));
+            write_text(a, "a");
+            b = snx_path_join(old, "b.bin");
+            write_text(b, "b");
+            left = snx_path_join(staged, SNX_SAVE_COMMITTED "/b.bin");
+            free(dir);
+            dir = snx_dirname(left);
+            assert(dir && !snx_mkdirs(dir));
+            write_text(left, "an older move's");
+            assert(!gui_move_save_into(&done, old, now, true) && done.count == 1 && done.done == 0);
+            said = native(
+                snx_format("!game/save/device/b.bin|Stays: %s/data/save/device/title.moving/0/b.bin is there\n", root));
+            assert(!strcmp(entries(&done, base), said));
+            free(said);
+            gui_cleaned_free(&done);
+            assert(snx_is_file(a) && snx_is_file(b) && snx_is_file(left) && !snx_path_exists(now));
+            said = snx_path_join(staged, SNX_SAVE_COMMITTED "/a.bin");
+            assert(!snx_path_exists(said));
+            free(said);
+            said = snx_path_join(root, "game");
+            assert(!snx_remove_tree(said));
+            free(said);
+            said = snx_path_join(root, "data");
+            assert(!snx_remove_tree(said));
+            free(said);
+            free(left);
+            free(b);
+            free(dir);
+            free(moved);
+            free(mark);
+            free(staged);
+            free(slot);
+            free(a);
+            free(now);
+            free(old);
+        }
 #ifdef SNX_XDG
         { /* another disk: the entry not moved, the folder on the other named */
             char* shm = snx_is_dir("/dev/shm") ? snx_temp_dir("/dev/shm") : NULL;

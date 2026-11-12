@@ -283,6 +283,81 @@ int gui_move_entries(GuiCleaned* done, const char* old, const char* now, const c
     if (apply && !snx_remove_empty_dir(old)) gui_cleaned_add(done, true, old, snx_tr("Removed: it was empty"));
     return moves;
 }
+int gui_move_save_into(GuiCleaned* done, const char* old, const char* now, bool apply) {
+    char *staged = save_staged(now), *into = staged ? snx_path_join(staged, SNX_SAVE_COMMITTED) : NULL;
+    char *mark = staged ? snx_path_join(staged, SNX_SAVE_JOURNALED) : NULL,
+         *last = snx_path_join(now, SNX_SAVE_COMMITTED);
+    char **names = NULL, *from, *to, what[4400], why[256];
+    size_t count = 0, i, moved = 0;
+    int moves = 0;
+    bool made = staged && !snx_path_exists(staged), ok = true;
+    if (!staged || !into || !mark || !last || snx_path_exists(now) || !snx_is_dir(old) || snx_is_link(old) ||
+        snx_list_dir(old, &names, &count) || !count) { /* a save there already, or no folder of files to move */
+        moves = gui_move_entries(done, old, now, NULL, apply);
+        if (apply && gui_save_old(now)) moves += gui_move_save_committed(done, now, true);
+        goto out;
+    }
+    if (apply && (snx_mkdirs(into) || (!snx_path_exists(mark) && snx_write_file(mark, "", 0)))) {
+        snprintf(what, sizeof what, snx_tr("Not moved: %s could not be made: %s"), staged,
+                 snx_os_error(why, sizeof why));
+        gui_cleaned_add(done, false, old, what);
+        goto out;
+    }
+    for (i = 0; ok && i < count; ++i) {
+        from = snx_path_join(old, names[i]);
+        to = snx_path_join(into, names[i]);
+        if (!from || !to)
+            ok = false;
+        else if (snx_path_exists(to)) {
+            snprintf(what, sizeof what, snx_tr("Stays: %s is there"), to);
+            gui_cleaned_add(done, ok = false, from, what);
+        } else if (!snx_same_disk(from, now)) {
+            snprintf(what, sizeof what, snx_tr("Not moved: %s is on another disk"), now);
+            gui_cleaned_add(done, ok = false, from, what);
+        } else if (apply && plat_replace_file(from, to)) {
+            snprintf(what, sizeof what, snx_tr("Not moved to %s: %s"), to, snx_os_error(why, sizeof why));
+            gui_cleaned_add(done, ok = false, from, what);
+        } else
+            moved = i + 1;
+        free(from);
+        free(to);
+    }
+    if (!ok) { /* the ones that moved go back: a save with part of its files in either place is no save */
+        for (i = 0; apply && i < moved; ++i) {
+            from = snx_path_join(into, names[i]);
+            to = snx_path_join(old, names[i]);
+            if (from && to) plat_replace_file(from, to);
+            free(from);
+            free(to);
+        }
+        if (apply && made && !snx_remove_empty_dir(into) && !remove(mark)) snx_remove_empty_dir(staged);
+        goto out;
+    }
+    for (i = 0; i < count; ++i) {
+        from = snx_path_join(old, names[i]);
+        to = snx_path_join(last, names[i]);
+        if (from && to) {
+            snprintf(what, sizeof what, apply ? snx_tr("Moved to %s") : snx_tr("Moves to %s"), to);
+            gui_cleaned_add(done, true, from, what);
+            ++moves;
+        }
+        free(from);
+        free(to);
+    }
+    if (apply && plat_replace_file(staged, now)) {
+        snprintf(what, sizeof what, snx_tr("Its files are in %s, which could not take its place: %s"), staged,
+                 snx_os_error(why, sizeof why));
+        gui_cleaned_add(done, false, now, what);
+    }
+    if (apply && !snx_remove_empty_dir(old)) gui_cleaned_add(done, true, old, snx_tr("Removed: it was empty"));
+out:
+    snx_free_strings(names, count);
+    free(last);
+    free(mark);
+    free(into);
+    free(staged);
+    return moves;
+}
 
 static bool ends_with(const char* name, const char* end) {
     size_t n = strlen(name), e = strlen(end);
