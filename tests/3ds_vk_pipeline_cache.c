@@ -3,8 +3,9 @@
    The pipeline cache kept between runs (common/gpu/vk/vk_common.c, used by the 3DS renderer and the Switch's), on the
    3DS's device: no file gives an empty cache, a pipeline made with it is written and read back whole, a cut file and
    one of another driver build are kept from the driver, which the reason says, and still give a cache, a write that
-   fails says why, no write leaves a temporary file, and the 3DS renderer's file is in the folder's shader_cache with
-   the driver's tag in its name. argv[1] is a folder the test may fill */
+   fails says why, no write leaves a temporary file, and the 3DS renderer makes the folder's shader_cache for its file
+   (named for the driver: 3ds_vk_draw --pipeline-cache), and nothing with vk_pipeline_cache=0. argv[1] is a folder the
+   test may fill */
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
 #include "3ds/gpu/vk/shaders/fill_spv.h"
@@ -130,10 +131,14 @@ int main(int argc, char** argv) {
     CHECK(strstr(why, "holds 16 bytes") && strstr(why, "starts empty"));
 
     /* the renderer's own: <folder>/shader_cache/vk_pipelines.d<driver>-<vendor>-<device>.bin, made at the end of a
-       run in which pipelines went into it */
+       run in which pipelines went into it; with vk_pipeline_cache=0 neither the folder nor the file */
+    char* cache_dir = snx_path_join(dir, "shader_cache");
+    (void)snx_remove_tree(cache_dir);
+    g_settings.vulkan_pipeline_cache = 0;
+    snx_ctr_vk_pipeline_cache_open(dir);
+    CHECK(!snx_path_exists(cache_dir));
     g_settings.vulkan_pipeline_cache = 1;
     snx_ctr_vk_pipeline_cache_open(dir);
-    char* cache_dir = snx_path_join(dir, "shader_cache");
     CHECK(snx_is_dir(cache_dir));
 
     vkDestroyPipeline(dev, made, NULL);

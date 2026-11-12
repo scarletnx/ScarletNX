@@ -164,8 +164,8 @@ file is read before the first draw and written at the end of the run, and also w
 runs after 20 s in which no pipeline was made, so a run that stops early keeps what it made. A
 file another GPU or another build of the driver wrote, or one cut inside its header, is not given
 to the driver, and the log says why. The
-Switch's `vk_pipeline_cache=0` neither reads nor writes it, and `3ds_vk_pipeline_cache` checks
-the file. Vertex and
+Switch's `vk_pipeline_cache=0` neither reads nor writes it, and `3ds_vk_pipeline_cache` and
+`3ds_vk_draw_pipeline_cache` check the file. Vertex and
 index data are read where the GPU works (in place, or its copy), except in a draw with a geometry shader, whose vertex and
 geometry shaders run on the CPU (see below). `tests/3ds_vk_draw.c` holds the draws to the
 software renderer they replaced, which stays as their reference. The shown
