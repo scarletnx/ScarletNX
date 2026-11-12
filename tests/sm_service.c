@@ -31,7 +31,7 @@ void logf_(int level, const char* format, ...) {
 /* log.c's: the stop of a program that opened a service the runtime answers only natively; its message is kept */
 static jmp_buf test_stopped;
 static int test_expects_stop;
-static char test_stop_text[640];
+static char test_stop_text[1400];
 void fatal(const char* format, ...) {
     va_list args;
     va_start(args, format);
@@ -42,6 +42,9 @@ void fatal(const char* format, ...) {
     test_fail("fatal", __LINE__);
     exit(1);
 }
+/* hook.c's: what the hooks left to the game's own code for its SDK version; nothing, until the test gives a text */
+static const char* test_missed = "";
+void hook_missed_text(char* out, size_t n) { snprintf(out, n, "%s", test_missed); }
 /* debug.c's: the threads and their calls, which name the SDK function that asked; counted, and before the stop */
 static unsigned test_thread_dumps;
 void kernel_dump_threads(void) {
@@ -133,11 +136,27 @@ int main(void) {
         CHECK(strstr(test_stop_text, opened) && strstr(test_stop_text, itself));
         CHECK(strstr(test_stop_text, "nn::") && strstr(test_stop_text, "not native yet"));
         CHECK(strstr(test_stop_text, "libnx") && strstr(test_stop_text, "the word hooks in its mode file"));
+        CHECK(!strcmp(strstr(test_stop_text, "its mode file"), "its mode file")); /* nothing was left for a version */
     }
+    /* a game whose SDK has functions the hooks are declared for in other versions: the stop ends with which, so
+       the SDK's version is in what the player reports */
+    test_missed = "41 of the SDK functions run their own code: the first is f in sdk, of version 3.0.1, declared for "
+                  "sdk < 1.0.0";
+    name = name_of("fsp-srv", 7);
+    test_expects_stop = 1;
+    if (!setjmp(test_stopped)) {
+        nn_sm_detail_IUserInterface_GetServiceHandle(NULL, &name, &handle);
+        test_fail("the program went on with a session of a native-only service", __LINE__);
+    }
+    test_expects_stop = 0;
+    CHECK(strstr(test_stop_text, "opened fsp-srv,"));
+    CHECK(strstr(test_stop_text, "its mode file. 41 of the SDK functions run their own code: the first is f in sdk, "
+                                 "of version 3.0.1, declared for sdk < 1.0.0"));
+    test_missed = "";
     name = name_of("time:x", 6);
     handle = 0;
     CHECK(nn_sm_detail_IUserInterface_GetServiceHandle(NULL, &name, &handle) == 0 && handle == 0x1234);
-    CHECK(test_thread_dumps == sizeof native_only / sizeof native_only[0]);
+    CHECK(test_thread_dumps == sizeof native_only / sizeof native_only[0] + 1);
 
     /* an application may host no service: NotAllowed, whether or not the name is taken */
     name = name_of("mysrv", 5);

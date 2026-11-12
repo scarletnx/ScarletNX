@@ -50,6 +50,11 @@ int hook_select(const HookTable* t, const char* symbol, const u32 versions[HOOK_
 void hook_version_text(char* out, size_t n, int key, u32 version);
 /* an entry's versions as @version writes them ("sdk >= 12.0.0, < 16.0.0"), "any version" for HOOK_ANY */
 void hook_range_text(char* out, size_t n, int key, u32 lo, u32 hi);
+/* What hook_install left to the game's own code for its version, for the stop of a game that then reached a service
+   the runtime answers only natively (sm.c): "" when every symbol with a hook got one, else a sentence with how
+   many symbols have declarations that all are for other versions than their module's, and the first one's name,
+   module, version and the versions it is declared for */
+void hook_missed_text(char* out, size_t n);
 
 /* Runs the guest function fn(a0, a1, a2, a3) from inside a handler, as nvn_cmd.c's guest_call runs a game's
    callback: its return to the handler's own return address ends the run, and the link register is put back
@@ -160,10 +165,13 @@ typedef struct {
     u32 verify_taken;
     u64 agreed[HOOK_SITES], differed[HOOK_SITES], skipped[HOOK_SITES];
     /* a 32-bit game's hooked functions: each one's address (bit 0 set for Thumb) and the block its slot held, for
-       hook_run_original_a32 */
+       hook_run_original_a32; and the symbols hook_install found declared only for other versions than their
+       module's, for hook_missed_text: how many, and the first one's first entry in its table, its module and that
+       module's version of the entry's key */
     u32 a32_count;
     u32 a32_addr[HOOK_SITES];
     SnxArmBlock a32_orig[HOOK_SITES];
+    u32 missed, missed_entry, missed_module, missed_version;
 } HostHook;
 
 /* hooks the functions the game exports that hooks.hook names, and those of the game's builds that the address hooks
