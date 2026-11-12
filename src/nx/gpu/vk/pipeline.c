@@ -2813,6 +2813,8 @@ static u8* ship_window(const u8* p, size_t avail) {
    (seconds). The program's indexed bit and its clip word are the ship pass's guesses, so a draw whose key differs
    still translates and compiles its own, as now (docs/layers/gpu/pipeline-libraries.md, step 8) */
 static void ship_warm(int stage, int indexed, const u32* spv, u32 nw) {
+    /* a control program shares the pre-rasterization part with the vertex program, so it is warmed with its draw */
+    if (stage != ST_VS && stage != ST_FS) return;
     VkShaderModule mod = vk_module_spv(spv, nw);
     if (!mod) return;
     WarmItem* w = calloc(1, sizeof *w);
