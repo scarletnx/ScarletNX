@@ -39,6 +39,13 @@ invocation: `texconv.glsl`'s BCn decoders, then `gpu/texture/etc2_encode.glsl`. 
 `texture.c`'s uploads as the decoded ones did: the dispatch writes rows of blocks, and the copy into the image counts
 them as rows of texels four times as wide.
 
+A submission holds 16384 blocks of it at most (`TC_ENCODE_SUBMIT_BLOCKS` in `vk/texconv.c`): a level's conversion
+goes in pieces of whole rows of blocks, and a piece that would take the submission past that goes in the next one
+(`encode_rows` in `vk/texture.c`, `vk_submit_split`). A phone's kernel driver ends a submission that runs past its
+timeout, 2 s in kgsl, and its fence then never signals. An Adreno 610 (stock driver 512.502.0) takes 27 us a block: a
+2048x2048 level is 7.1 s of it, which the kernel ended as one dispatch and as 16 dispatches in one submission, and
+which came out whole in 16 submissions of 0.44 to 0.48 s each.
+
 ETC2 RGB tries the modes that suit the block and keeps the one nearest it (squared error, as the decoder decodes,
 clamping and all):
 
@@ -85,7 +92,11 @@ pipeline is compiled the first time a BCn texture loads (1.3 s on llvmpipe), and
   the decoder clamps (241 with one walk of the planar levels around the fit); BC1's transparent texels
   stay transparent; images whose sides aren't multiples of 4, of several slices, transcode block for block as one
   block alone; and each kind holds the PSNR it reached on a picture of gradients, edges, noise and alpha.
-- `astc_vulkan` runs the SPIR-V: random blocks of every kind against the CPU's run, byte for byte, and, where the
+- `tex_upload_rows`: an encoder's level in pieces under a small bound, block linear, pitch linear and a volume, no
+  submission holding more, each piece recorded into the command buffer recording then, every block where the image
+  has it.
+- `astc_vulkan` runs the SPIR-V: random blocks of every kind against the CPU's run, byte for byte, whole and in pieces
+  of 3 rows a submission, and, where the
   device samples ETC2, the device's own decoding of them against `etc2.c`. llvmpipe samples no ETC2, so on the CI the
   second is skipped; a phone runs it.
 - `vk_block_formats` runs `vk_blocks_want`, `vk_tic_format` and `vk_blocks_say` on stand-in devices, the first a
