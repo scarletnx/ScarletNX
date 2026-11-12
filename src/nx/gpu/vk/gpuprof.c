@@ -23,6 +23,7 @@
    or read. */
 #include <stdlib.h>
 #include <string.h>
+#include "common/gpu/vk/vk_common.h"
 #include "nx/gpu/vk/gpuprof_setting.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/runtime/options.h"
@@ -178,13 +179,14 @@ static GpSlot* gp_slot(void) {
            nothing. 16384 was that, so a portability driver gets a size that fits */
         u32 count = g_vk.has_portability ? 4096 : GP_QUERIES;
         GpSlot* g = calloc(1, sizeof *g);
-        VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY;
+        VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY, refused = VK_SUCCESS;
         for (; g && count >= 256; count /= 2) {
             VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
                                         .queryType = VK_QUERY_TYPE_TIMESTAMP,
                                         .queryCount = count};
             r = vkCreateQueryPool(g_vk.dev, &qi, NULL, &g->ops.pool);
-            if (VK_OK(r)) break;
+            if (r == VK_SUCCESS) break;
+            refused = r; /* said once, with the size taken; with none, VK_OK below says the last */
         }
         if (!g || !VK_OK(r)) {
             free(g);
@@ -194,9 +196,14 @@ static GpSlot* gp_slot(void) {
         g->ops.op = g->op;
         g->ops.cap = GP_DISP;
         g->ops.queries = count;
-        if (count != GP_QUERIES)
-            LOG("vulkan: vk_gpu_profile's pool takes %u timestamps where %u were asked for (the driver's limit)\n",
-                count, (u32)GP_QUERIES);
+        if (refused != VK_SUCCESS)
+            LOG("vulkan: vk_gpu_profile's pool takes %u timestamps where %u were asked for: the driver refused %u "
+                "(%s)\n",
+                count, (u32)GP_QUERIES, count * 2, snx_vk_result_str(refused));
+        else if (count != GP_QUERIES)
+            LOG("vulkan: vk_gpu_profile's pool takes %u timestamps where %u were asked for: a portability driver's "
+                "Metal counter buffer holds %u\n",
+                count, (u32)GP_QUERIES, count);
         g_slot[s] = g;
     }
     return g_slot[s];
