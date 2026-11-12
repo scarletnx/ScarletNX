@@ -89,7 +89,9 @@ jobs:
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
     timeout-minutes: 60
     # Arch's image is x86-64 only; pkgforge's (the AppImage's) is Arch Linux ARM on AArch64, with the same LLVM
-    container: ${{ matrix.arch == 'aarch64' && 'ghcr.io/pkgforge-dev/archlinux:latest' || 'archlinux:latest' }}
+    # pkgforge's image is pinned by digest: its build of 2026-11-12 ~14:00 UTC carries openssl 4 while Arch Linux ARM's
+    # repo has 3.6.5, so Python has no ssl module and pacman refuses openssl; move the pin once the two agree again
+    container: ${{ matrix.arch == 'aarch64' && 'ghcr.io/pkgforge-dev/archlinux@sha256:0187eff73b5a04bfaea16caef5124aed10976dd5ced9a0429caab124ba1393e5' || 'archlinux:latest' }}
     strategy:
       fail-fast: false
       # A pull request builds AArch64's alone: x86-64's tests run in the appimage job, on the build its AppImage is
@@ -514,7 +516,7 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
     # pkgforge's Arch image and tools (https://github.com/pkgforge-dev/Anylinux-AppImages), see scripts/make-appimage.sh
-    container: ghcr.io/pkgforge-dev/archlinux:latest
+    container: ghcr.io/pkgforge-dev/archlinux@sha256:0187eff73b5a04bfaea16caef5124aed10976dd5ced9a0429caab124ba1393e5
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
       - name: Name the commit
@@ -857,14 +859,14 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/pacman"
           docker run --detach --name build --volume "$PWD:/src" --volume "$RUNNER_TEMP/pacman:/var/cache/pacman/pkg" \
-            --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
+            --workdir /src ghcr.io/pkgforge-dev/archlinux@sha256:0187eff73b5a04bfaea16caef5124aed10976dd5ced9a0429caab124ba1393e5 sleep infinity
           docker run --detach --name target --platform linux/${{ matrix.platform }} \
-            --volume "$PWD:/src" --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
+            --volume "$PWD:/src" --workdir /src ghcr.io/pkgforge-dev/archlinux@sha256:0187eff73b5a04bfaea16caef5124aed10976dd5ced9a0429caab124ba1393e5 sleep infinity
       - name: Unpack the ${{ matrix.arch }} system root
         if: steps.sysroot.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          image=ghcr.io/pkgforge-dev/archlinux:latest
+          image=ghcr.io/pkgforge-dev/archlinux@sha256:0187eff73b5a04bfaea16caef5124aed10976dd5ced9a0429caab124ba1393e5
           docker pull --platform linux/${{ matrix.platform }} "$image"
           docker exec build mkdir -p /src/sysroot
           docker export "$(docker create --platform linux/${{ matrix.platform }} "$image")" | docker exec -i build tar -x -C /src/sysroot
