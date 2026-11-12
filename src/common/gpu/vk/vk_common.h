@@ -116,8 +116,10 @@ VkPipelineCache snx_vk_pipeline_cache_load(VkDevice dev, const VkPhysicalDeviceP
                                            size_t* loaded, char* why, size_t n);
 /* The cache's data written to path, through a temporary file of this process's: a run that stops while it writes
    leaves the earlier file whole, and two runs at once do not write one file. The driver holds the cache while it
-   copies its data out, so a pipeline made meanwhile waits for the copy. 0 when written, its bytes in *saved */
-int snx_vk_pipeline_cache_save(VkDevice dev, VkPipelineCache cache, const char* path, size_t* saved);
+   copies its data out, so a pipeline made meanwhile waits for the copy. 0 when written, its bytes in *saved; -1 with
+   the reason in why */
+int snx_vk_pipeline_cache_save(VkDevice dev, VkPipelineCache cache, const char* path, size_t* saved, char* why,
+                               size_t n);
 
 /* a shader module of size bytes of SPIR-V */
 VkResult snx_vk_shader_module(VkDevice dev, const uint32_t* words, size_t size, VkShaderModule* out);

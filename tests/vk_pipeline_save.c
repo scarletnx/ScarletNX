@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The actual periodic cache saver with a stand-in driver and deterministic interleavings. No GPU is used. A busy
    or queued graphics compile must retain dirty state and never ask the driver to snapshot its cache. Activity that
-   starts while a saver takes its mutex must be checked again; a later quiet save and the exit save must persist it. */
+   starts while a saver takes its mutex must be checked again; a later quiet save and the exit save must persist it.
+   A write that fails keeps the work dirty, for the next quiet save. */
 /* Include only the cache saver. ASan can retain callback tables and their callees in the full pipeline translation
    unit, so this fixture must not rely on linker garbage collection to discard unrelated shader/driver code.
    Keep the deterministic lock hooks apart from host.c's locks, which the linked common libraries also provide. */
@@ -36,7 +37,7 @@ static struct {
 #undef pm_unlock
 
 static u64 now;
-static int snapshots, save_lock_event;
+static int snapshots, save_lock_event, replace_fails;
 static int queued;
 
 u64 plat_ns(void) { return now; }
@@ -51,7 +52,7 @@ void pipeline_test_lock(PMutex* m) {
 }
 void pipeline_test_unlock(PMutex* m) { (void)m; }
 void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
-int plat_replace_file(const char* from, const char* to) { return rename(from, to); }
+int plat_replace_file(const char* from, const char* to) { return replace_fails ? -1 : rename(from, to); }
 static VKAPI_ATTR VkResult VKAPI_CALL snapshot(VkDevice device, VkPipelineCache cache, size_t* size, void* data) {
     (void)device, (void)cache;
     snapshots++;
@@ -114,6 +115,21 @@ int main(void) {
     pcache_note();
     vk_pipeline_save(1);
     CHECK(snapshots == 2 && !g_pipeline.pcache_dirty);
+    CHECK(!remove(g_pipeline.pcache_path));
+    /* A write that fails (its file not moved into place) leaves the work dirty and quiet from now, and the next quiet
+       save writes it */
+    reset();
+    replace_fails = 1;
+    vk_pipeline_save(1);
+    CHECK(snapshots == 2 && g_pipeline.pcache_dirty && g_pipeline.pcache_used == now);
+    f = fopen(g_pipeline.pcache_path, "rb");
+    CHECK(!f);
+    replace_fails = 0;
+    vk_pipeline_save(0);
+    CHECK(snapshots == 2 && g_pipeline.pcache_dirty);
+    now += PCACHE_QUIET_NS;
+    vk_pipeline_save(0);
+    CHECK(snapshots == 4 && !g_pipeline.pcache_dirty);
     CHECK(!remove(g_pipeline.pcache_path));
     puts("pipeline cache saves defer active work and retain warm-cache persistence");
     return 0;

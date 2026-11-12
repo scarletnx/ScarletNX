@@ -392,7 +392,9 @@ if(TARGET snx_ctr_board)
     add_test(NAME 3ds_vk_draw COMMAND snx-test-3ds-vk-draw)
     # async_pipelines: the draw skipped while its pipeline is made on a worker, then drawn
     add_test(NAME 3ds_vk_draw_async COMMAND snx-test-3ds-vk-draw --async)
-    set_tests_properties(3ds_vk_draw 3ds_vk_draw_async PROPERTIES SKIP_RETURN_CODE 77)
+    # the pipeline cache kept between runs: the file named for the driver, and a failed write made again by the next
+    add_test(NAME 3ds_vk_draw_pipeline_cache COMMAND snx-test-3ds-vk-draw --pipeline-cache)
+    set_tests_properties(3ds_vk_draw 3ds_vk_draw_async 3ds_vk_draw_pipeline_cache PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's copy of the RAM, page by page: what is copied in and back, and when, and every byte where it belongs
     add_executable(snx-test-3ds-vk-copies 3ds_vk_copies.c)
     snx_test_target(snx-test-3ds-vk-copies 11)

@@ -344,27 +344,49 @@ VkPipelineCache snx_vk_pipeline_cache_load(VkDevice dev, const VkPhysicalDeviceP
     plat_file_unmap(&data); /* the cache copied it, and a mapped file can't be replaced on Windows */
     return cache;
 }
-int snx_vk_pipeline_cache_save(VkDevice dev, VkPipelineCache cache, const char* path, size_t* saved) {
+int snx_vk_pipeline_cache_save(VkDevice dev, VkPipelineCache cache, const char* path, size_t* saved, char* why,
+                               size_t n) {
     *saved = 0;
-    size_t n = 0;
-    if (!cache || vkGetPipelineCacheData(dev, cache, &n, NULL) != VK_SUCCESS || !n) return -1;
-    void* data = malloc(n);
+    if (n) *why = 0;
+    size_t size = 0;
+    if (!cache) {
+        snprintf(why, n, "there is no pipeline cache to write");
+        return -1;
+    }
+    VkResult r = vkGetPipelineCacheData(dev, cache, &size, NULL);
+    if (r != VK_SUCCESS || !size) {
+        snprintf(why, n, "the driver gave %zu bytes for the cache's data (%s)", size, snx_vk_result_str(r));
+        return -1;
+    }
+    void* data = malloc(size);
+    if (!data) {
+        snprintf(why, n, "%zu bytes for the cache's data cannot be allocated", size);
+        return -1;
+    }
+    /* VK_INCOMPLETE when a pipeline made since the size was asked grew the cache: what fits is no whole cache */
+    if ((r = vkGetPipelineCacheData(dev, cache, &size, data)) != VK_SUCCESS) {
+        snprintf(why, n, "the driver did not give the cache's data (%s)", snx_vk_result_str(r));
+        free(data);
+        return -1;
+    }
 #if defined(_WIN32)
     unsigned long pid = (unsigned long)GetCurrentProcessId();
 #else
     unsigned long pid = (unsigned long)getpid();
 #endif
     char* tmp = snx_format("%s.%lu.tmp", path, pid);
-    int failed = !data || !tmp || vkGetPipelineCacheData(dev, cache, &n, data) != VK_SUCCESS;
-    if (!failed) {
-        FILE* f = fopen(tmp, "wb");
-        failed = !f || fwrite(data, 1, n, f) != n;
-        if (f && fclose(f)) failed = 1;
-        /* the old file stays whole until this */
-        if (!failed && plat_replace_file(tmp, path)) failed = 1;
-        if (failed && f) remove(tmp);
+    char os[256];
+    FILE* f = fopen(tmp, "wb");
+    int failed = !f || fwrite(data, 1, size, f) != size;
+    if (f && fclose(f)) failed = 1;
+    if (failed)
+        snprintf(why, n, "%s cannot be written (%s)", tmp, snx_os_error(os, sizeof os));
+    else if (plat_replace_file(tmp, path)) { /* the old file stays whole until this */
+        failed = 1;
+        snprintf(why, n, "%s cannot be moved over it (%s)", tmp, snx_os_error(os, sizeof os));
     }
-    if (!failed) *saved = n;
+    if (failed && f) remove(tmp);
+    if (!failed) *saved = size;
     free(tmp);
     free(data);
     return failed ? -1 : 0;
