@@ -1315,6 +1315,18 @@ size_t fs_dlcs(const u64** ids) {
     return g_hle.fs.ndlcs;
 }
 
+/* the first address of [addr, end), inside the address space, whose block can't take a command's bytes, with that
+   block in *b; end when every one can */
+static u64 buffer_stop(u64 addr, u64 end, MemBlock* b) {
+    while (addr < end) {
+        mem_query(addr, b);
+        if (b->state == MS_FREE || b->state == MS_INACCESSIBLE || !(b->perm & PERM_W) || b->addr > addr ||
+            b->size > AS_SIZE - b->addr || b->addr + b->size <= addr)
+            return addr;
+        addr = b->addr + b->size;
+    }
+    return end;
+}
 /* Whether [addr, addr + size) is a span the guest can hand a file system command: the range has to sit inside the
    address space, and every block of it has to be mapped and writable. A command that names a buffer the guest never
    reserved would otherwise let the runtime write past its reservation: one such buffer, in
@@ -1325,15 +1337,32 @@ static int buffer_valid(u64 addr, u64 size) {
     MemBlock b;
     /* a span of no bytes needs no buffer: a read that runs past the end of a file has its length clamped to what is
        there, and one that starts at it is clamped to none, which the console answers with success and no bytes */
-    if (end < addr || end > AS_SIZE) return 0;
-    while (addr < end) {
-        mem_query(addr, &b);
-        if (b.state == MS_FREE || b.state == MS_INACCESSIBLE || !(b.perm & PERM_W) || b.addr > addr ||
-            b.size > AS_SIZE - b.addr || b.addr + b.size <= addr)
-            return 0;
-        addr = b.addr + b.size;
+    return end >= addr && end <= AS_SIZE && buffer_stop(addr, end, &b) == end;
+}
+/* IStorage::Read's checks of [off, off + sz) of a storage of total bytes into guest memory at a: 0, or 2002-3005
+   said with what refused it, as the result alone names nothing and a game may abort on it */
+static int storage_span(u64 off, u64 sz, u64 total, u64 a) {
+    u64 end = a + sz, at;
+    MemBlock b;
+    if (sz > (u64)INT64_MAX - off || off > total || sz > total - off) {
+        WARN("fs: a storage read of %llx bytes at %llx passes the storage's end, %llx: it answers 2002-3005\n",
+             (unsigned long long)sz, (unsigned long long)off, (unsigned long long)total);
+        return SNX_RC_FS_OUT_OF_RANGE;
     }
-    return 1;
+    if (end < a || end > AS_SIZE) {
+        WARN("fs: a storage read of %llx bytes at %llx goes into guest memory at %llx, past the address space's end, "
+             "%llx: it answers 2002-3005\n",
+             (unsigned long long)sz, (unsigned long long)off, (unsigned long long)a, (unsigned long long)AS_SIZE);
+        return SNX_RC_FS_OUT_OF_RANGE;
+    }
+    if ((at = buffer_stop(a, end, &b)) < end) {
+        WARN("fs: a storage read of %llx bytes at %llx goes into guest memory at %llx, whose address %llx can't take "
+             "it (state %x, permission %x): it answers 2002-3005\n",
+             (unsigned long long)sz, (unsigned long long)off, (unsigned long long)a, (unsigned long long)at, b.state,
+             b.perm);
+        return SNX_RC_FS_OUT_OF_RANGE;
+    }
+    return 0;
 }
 /* The same for a span the runtime only reads, as a path or a file's contents: the permission needed is a read one.
    A guest maps its paths and its read buffers in whatever mode its own code asked for, and demanding a write
@@ -1376,8 +1405,8 @@ static int istorage_read(SvcObj* self, u64 off, u64 sz, u64 a) {
     if (!data && self->u[0] == STORAGE_AOC) { /* a DLC's image, read in place */
         SnxHacFs* fs = g_hle.fs.aocs[self->u[1]].fs;
         u64 total = snx_hac_fs_romfs_size(fs);
-        R_UNLESS(sz <= (u64)INT64_MAX - off && off <= total && sz <= total - off, SNX_RC_FS_OUT_OF_RANGE);
-        R_UNLESS(buffer_valid(a, sz) && sz <= SIZE_MAX, SNX_RC_FS_OUT_OF_RANGE);
+        R_TRY(storage_span(off, sz, total, a));
+        R_UNLESS(sz <= SIZE_MAX, SNX_RC_FS_OUT_OF_RANGE);
         char why[256] = {0};
         pm_lock(&g_host.fs.dlock);
         rc = snx_hac_fs_read_romfs(fs, off, GP(a), (size_t)sz);
@@ -1391,8 +1420,7 @@ static int istorage_read(SvcObj* self, u64 off, u64 sz, u64 a) {
         return rc ? SNX_RC_FS_OUT_OF_RANGE : 0;
     }
     if (!data) { /* the RomFS */
-        R_UNLESS(sz <= (u64)INT64_MAX - off && romfs_in(off, sz), SNX_RC_FS_OUT_OF_RANGE);
-        R_UNLESS(buffer_valid(a, sz), SNX_RC_FS_OUT_OF_RANGE);
+        R_TRY(storage_span(off, sz, g_hle.fs.rtotal, a));
         return romfs_read(off, GP(a), sz, 0) ? SNX_RC_FS_OUT_OF_RANGE : 0;
     }
     R_UNLESS(sz <= (u64)INT64_MAX - off && buffer_valid(a, sz), SNX_RC_FS_OUT_OF_RANGE);

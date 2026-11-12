@@ -1022,6 +1022,36 @@ static void test_romfs_listing(const u8* image, const u64* header) {
     listed.stop_at = 2;
     CHECK(romfs_files(list_file, NULL) == 1 && listed.n == 2); /* stopped by the second */
 }
+/* a RomFS read the storage refuses says why, with the values: one past the image's end, one into guest memory that
+   ends in free pages, one into memory past the address space (the result, 2002-3005, names none of them) */
+static void test_storage_refusals(SvcObj* storage, u64 size) {
+    const struct {
+        u64 off, size, buffer;
+    } cases[] = {{size - 2, 3, 0x5000}, {0, 0x10, TEST_GUEST_SIZE - 8}, {0x10, 0x10, AS_SIZE - 8}};
+    char want[3][256];
+    snprintf(want[0], sizeof want[0],
+             "fs: a storage read of 3 bytes at %llx passes the storage's end, %llx: it answers 2002-3005\n",
+             (unsigned long long)(size - 2), (unsigned long long)size);
+    snprintf(want[1], sizeof want[1],
+             "fs: a storage read of 10 bytes at 0 goes into guest memory at fff8, whose address 10000 can't take it "
+             "(state 0, permission 0): it answers 2002-3005\n");
+    snprintf(want[2], sizeof want[2],
+             "fs: a storage read of 10 bytes at 10 goes into guest memory at %llx, past the address space's end, %llx: "
+             "it answers 2002-3005\n",
+             (unsigned long long)(AS_SIZE - 8), (unsigned long long)AS_SIZE);
+    for (int i = 0; i < 3; i++) {
+        Request r;
+        request(&r, 0);
+        argument64(&r, 0, cases[i].off);
+        argument64(&r, 8, cases[i].size);
+        output_buffer(&r, cases[i].size);
+        r.c.b[0].addr = cases[i].buffer;
+        test_fs_text[0] = 0;
+        dispatch(storage, &r, RC(2, 3005));
+        if (strcmp(test_fs_text, want[i])) fprintf(stderr, "said:     %sexpected: %s", test_fs_text, want[i]);
+        CHECK(!strcmp(test_fs_text, want[i]));
+    }
+}
 static void test_extracted_romfs(SvcObj* proxy) {
     Request r;
     request(&r, 200);
@@ -1031,6 +1061,7 @@ static void test_extracted_romfs(SvcObj* proxy) {
     u64 image_size = get_size(storage);
     CHECK(image_size < 0x8000 && image_size > 0x200);
     test_storage_contracts(storage, image_size);
+    test_storage_refusals(storage, image_size);
     request(&r, 0);
     argument64(&r, 8, image_size);
     output_buffer(&r, image_size);
