@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Whether a device takes the texture arrays (SNX_VKB_TEXARRAY and SNX_VKB_TEXDEPTH), and the lines that say it. A
-   pipeline layout has five stage sets, each with `slots` combined image samplers of its own and the two arrays of
-   `most` elements each */
+/* How many elements each texture array (SNX_VKB_TEXARRAY and SNX_VKB_TEXDEPTH) takes on a device, and the lines that
+   say it. A pipeline layout has five stage sets, each with `slots` combined image samplers of its own and the two
+   arrays; each array takes `most` elements (SNX_TEX_ARRAY) where the device's limits bind them, else as many as the
+   least of those limits leaves after the slots, so a device that binds fewer samplers a stage (PanVK on Bifrost: 128)
+   still picks textures from a table at run time, as long as a draw's tables name no more than that */
 #ifndef SNX_VK_TEXTURE_ARRAYS_H
 #define SNX_VK_TEXTURE_ARRAYS_H
 #include <stddef.h>
@@ -25,13 +27,16 @@ static inline uint32_t snx_vk_texture_stage_room(const SnxVkTextureLimits* l) {
     return least;
 }
 
-/* the elements each array takes: most where the stage's room holds its slots and both arrays, else 0 */
+/* the elements each array takes: most, or what the stage's room leaves after its slots, split between the two
+   arrays; 0 when not one fits */
 static inline uint32_t snx_vk_texture_array_fit(const SnxVkTextureLimits* l, uint32_t slots, uint32_t most) {
-    return snx_vk_texture_stage_room(l) >= slots + 2 * most ? most : 0;
+    uint32_t room = snx_vk_texture_stage_room(l);
+    if (room <= slots) return 0;
+    return (room - slots) / 2 < most ? (room - slots) / 2 : most;
 }
 
-/* The elements each array takes, and in out the line that says why where that is none: the device's values and what
-   the arrays of most need. out is empty where each array takes most (the descriptor pools' line says
+/* The elements each array takes, and in out the line that says why where that is fewer than most: the device's values
+   and what the arrays of most would need. out is empty where each array takes most (the descriptor pools' line says
    the arrays then). nonuniform: the device has shaderSampledImageArrayNonUniformIndexing, without which an element
    can't be picked per invocation */
 static inline uint32_t snx_vk_texture_array_say(char* out, size_t n, int nonuniform, const SnxVkTextureLimits* l,
@@ -47,10 +52,18 @@ static inline uint32_t snx_vk_texture_array_say(char* out, size_t n, int nonunif
     else if (!fit)
         snprintf(out, n,
                  "vulkan: texture arrays off: the GPU binds %u samplers and %u sampled images a stage, and %u and %u "
-                 "in the five stage sets, where the two arrays of %u beside the %u textures of a stage need %u: a "
-                 "texture a program picks from a table of handles at run time can't be bound",
+                 "in the five stage sets, where one element of each of the two arrays beside the %u textures of a "
+                 "stage needs %u: a texture a program picks from a table of handles at run time can't be bound",
                  (unsigned)l->stage_samplers, (unsigned)l->stage_images, (unsigned)l->set_samplers,
-                 (unsigned)l->set_images, (unsigned)most, (unsigned)slots, (unsigned)(slots + 2 * most));
+                 (unsigned)l->set_images, (unsigned)slots, (unsigned)(slots + 2));
+    else if (fit < most)
+        snprintf(out, n,
+                 "vulkan: texture arrays of %u elements, not %u: the GPU binds %u samplers and %u sampled images a "
+                 "stage, and %u and %u in the five stage sets, where arrays of %u need %u a stage (%u textures and two "
+                 "arrays): a draw whose tables of handles name more than %u textures is not drawn",
+                 (unsigned)fit, (unsigned)most, (unsigned)l->stage_samplers, (unsigned)l->stage_images,
+                 (unsigned)l->set_samplers, (unsigned)l->set_images, (unsigned)most, (unsigned)(slots + 2 * most),
+                 (unsigned)slots, (unsigned)fit);
     return fit;
 }
 

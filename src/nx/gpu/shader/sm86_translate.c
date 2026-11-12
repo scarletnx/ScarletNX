@@ -2048,11 +2048,11 @@ static int tex_slot_indexed(Ctx* c, u32 bank, u32 off, u32 type, u32 array, u32 
         c->tex_depth_type[i] = c->tex_depth_type[same];
     } else {
         c->tex_array[i] = spv_emit_sampler_image_array(&c->e, c->t_f32, c->t_u32, set, SNX_VKB_TEXARRAY, dim,
-                                                       (int)array, 0, SNX_TEX_ARRAY, &c->tex_sampled[i]);
+                                                       (int)array, 0, g_shader_tex_array, &c->tex_sampled[i]);
         add_interface(c, c->tex_array[i]);
         if (shadow) {
             c->tex_depth[i] = spv_emit_sampler_image_array(&c->e, c->t_f32, c->t_u32, set, SNX_VKB_TEXDEPTH, dim,
-                                                           (int)array, 1, SNX_TEX_ARRAY, &c->tex_depth_type[i]);
+                                                           (int)array, 1, g_shader_tex_array, &c->tex_depth_type[i]);
             add_interface(c, c->tex_depth[i]);
         }
     }

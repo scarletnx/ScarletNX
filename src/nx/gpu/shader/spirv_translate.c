@@ -129,6 +129,7 @@ static void advanced_blend_epilogue(DirectCtx* c, const ShaderInfo* si, u32 vec4
 }
 
 int g_shader_texture_arrays;
+u32 g_shader_tex_array = SNX_TEX_ARRAY;
 u32 g_shader_uniform_cbufs = 18;
 int g_shader_stage_point_size;
 int g_shader_output_layer = 1;
@@ -2315,16 +2316,16 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                                  shader_same_indexed_kind(textures, si->tex_int_mask, si->tex_sint_mask, same, i)))
                 same++;
             if (same == i) { /* the first slot of its kind declares the kind's arrays */
-                c->tex_array[i] =
-                    spv_emit_sampler_image_array_ex(&c->emit, scalar, c->u32_type, shader_vk_set(stage), SNX_VKB_TEXARRAY,
-                                                 textures[i].type == 0 ? 1 : textures[i].type, textures[i].array, 0,
-                                                 !!(textures[i].flags & 2), SNX_TEX_ARRAY, &c->sampled_type[i]);
+                c->tex_array[i] = spv_emit_sampler_image_array_ex(
+                    &c->emit, scalar, c->u32_type, shader_vk_set(stage), SNX_VKB_TEXARRAY,
+                    textures[i].type == 0 ? 1 : textures[i].type, textures[i].array, 0, !!(textures[i].flags & 2),
+                    g_shader_tex_array, &c->sampled_type[i]);
                 interfaces[count++] = c->tex_array[i];
                 if (textures[i].shadow) {
                     c->tex_depth[i] =
                         spv_emit_sampler_image_array(&c->emit, c->f32_type, c->u32_type, shader_vk_set(stage),
                                                      SNX_VKB_TEXDEPTH, textures[i].type == 0 ? 1 : textures[i].type,
-                                                     textures[i].array, 1, SNX_TEX_ARRAY, &c->tex_depth_type[i]);
+                                                     textures[i].array, 1, g_shader_tex_array, &c->tex_depth_type[i]);
                     interfaces[count++] = c->tex_depth[i];
                 }
             } else {

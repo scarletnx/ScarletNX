@@ -401,6 +401,9 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 /* Device capabilities the renderer sets before translating: */
 /* sampled image arrays indexed per invocation (non-uniform indexing) */
 extern int g_shader_texture_arrays;
+/* the elements of each of those arrays: SNX_TEX_ARRAY, or fewer where the device binds fewer combined image samplers
+   (vk_pipeline_init, vk/texture_arrays.h); a test may set fewer before the renderer starts */
+extern u32 g_shader_tex_array;
 /* constant buffers from this slot up are read-only storage buffers, on a device with fewer uniform buffers a stage
    than the 18 slots and the renderer's own need (18: none) */
 extern u32 g_shader_uniform_cbufs;
