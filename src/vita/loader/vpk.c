@@ -49,26 +49,6 @@ bool vita_vpk_extract(const char* vpk, const char* folder, char* error, size_t e
     snx_zip_close(zip);
     return ok;
 }
-char* vita_sfo_string(const unsigned char* sfo, size_t size, const char* key) {
-    /* "\0PSF", version, the key table's offset, the data table's, the entries (16 bytes each from 20) */
-    if (size < 20 || snx_ld_le32(sfo) != 0x46535000u) return NULL;
-    uint32_t keys = snx_ld_le32(sfo + 8), data = snx_ld_le32(sfo + 12), count = snx_ld_le32(sfo + 16);
-    if (keys > size || data > size || count > (size - 20) / 16) return NULL;
-    for (uint32_t i = 0; i < count; ++i) {
-        const unsigned char* e = sfo + 20 + i * 16;
-        uint32_t name = keys + snx_ld_le16(e), format = snx_ld_le16(e + 2), length = snx_ld_le32(e + 4),
-                 at = data + snx_ld_le32(e + 12);
-        if (name >= size || memchr(sfo + name, 0, size - name) == NULL || strcmp((const char*)sfo + name, key))
-            continue;
-        if (format != 0x0204 || at > size || length > size - at || !length) return NULL;
-        char* value = malloc(length + 1);
-        if (!value) return NULL;
-        memcpy(value, sfo + at, length);
-        value[length] = 0;
-        return value;
-    }
-    return NULL;
-}
 bool vita_title_id(const char* text) {
     if (!text || strlen(text) != 9) return false;
     for (unsigned i = 0; i < 9; ++i)
