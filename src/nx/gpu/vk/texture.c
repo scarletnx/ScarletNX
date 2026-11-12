@@ -2438,9 +2438,63 @@ static void tex_settle(Surf* t, u64 gva, int changed, int count) {
         t->tfull = g_vk_present;
     }
 }
+/* ------------------------------------------------------------ Auto's turn to BC7: the Exact ones read again */
+/* t's memory still holds what it was loaded from: unwritten since, where write tracking watches it, else the hash it
+   was loaded with (tex_hash) */
+static int later_same(const Surf* t) {
+    const int w = tex_written_since(t, t->gva, NULL);
+    return w >= 0 ? !w : t->hash && tex_hash(t) == t->hash;
+}
+typedef struct {
+    u32 textures;
+    u64 bytes;
+} LaterExact;
+/* an ASTC texture held Exact, as RGBA8, whose header takes BC7 now (a 3D one only where the device makes 3D BC7
+   images, vk_tic_format_3d) and whose memory is unchanged: marked to be read again (later_reread) */
+static void later_exact(Surf* t, void* ctx) {
+    LaterExact* took = ctx;
+    if (t->f.conv != VKC_ASTC || t->bc7_later || t->bc7_reread || t->sparse || t->bricks || t->msaa || t->piecewise ||
+        !t->upload_valid || (t->f.vk != VK_FORMAT_R8G8B8A8_UNORM && t->f.vk != VK_FORMAT_R8G8B8A8_SRGB))
+        return;
+    const u32 w0 = t->fkey & 0x7FFFF;
+    const int srgb = (int)(t->fkey >> 31);
+    if (!is_bc7((t->type == VK_IMAGE_VIEW_TYPE_3D ? vk_tic_format_3d(w0, srgb) : vk_tic_format(w0, srgb)).vk)) return;
+    if (!later_same(t)) return;
+    t->bc7_reread = 1;
+    t->bc7_reread_wgen = t->wgen;
+    took->textures++;
+    took->bytes += t->bytes;
+}
+void vk_tex_later_exact(u32* textures, u64* bytes) {
+    LaterExact took = {0, 0};
+    vk_surf_textures(later_exact, &took);
+    *textures = took.textures;
+    *bytes = took.bytes;
+}
+/* t marked to be read again (vk_tex_later_exact), once its check found it as memory has it: loaded again from memory
+   now as one held as BC7 between frames is, its RGBA8 image the same and its blocks kept, then queued for the encoder
+   (tex_upload), while this present's reads again are under LATER_REREAD_BYTES of RGBA8 (one at least): the frame after
+   the switch would otherwise decode at once every texture it draws. One loaded again since it was marked (its memory
+   changed, which the check found), or met after Auto turned Exact again, stays Exact. NULL where the load failed, which
+   the next present's check tries again */
+#define LATER_REREAD_BYTES (16ull << 20)
+static struct {
+    u32 present; /* the present the bytes are of, plus one */
+    u64 bytes;
+} g_reread;
+static Surf* later_reread(Surf* t) {
+    if (!t->bc7_reread) return t;
+    if (g_reread.present != g_vk_present + 1) g_reread.present = g_vk_present + 1, g_reread.bytes = 0;
+    if (g_reread.bytes && g_reread.bytes + t->bytes > LATER_REREAD_BYTES) return t;
+    t->bc7_reread = 0;
+    if (t->wgen != t->bc7_reread_wgen || !vk_astc_bc7()) return t;
+    g_reread.bytes += t->bytes;
+    t->bc7_later = 1;
+    return tex_upload(t) ? t : NULL;
+}
 /* t, a texture found for a header: still as guest memory has it (re-uploaded where it changed), or NULL when its
    upload failed. gva is its address */
-static Surf* tex_check(Surf* t, u64 gva) {
+static Surf* tex_check_memory(Surf* t, u64 gva) {
     vk_surf_touch(t);
     later_cool(t);
     /* an upload that ran out of memory or staging (here, or a re-upload below) is tried again once a frame. A
@@ -2527,6 +2581,11 @@ static Surf* tex_check(Surf* t, u64 gva) {
         }
     }
     return t->upload_valid ? t : NULL;
+}
+/* tex_check_memory, then the read again that Auto's turn to BC7 asked for (later_reread) */
+static Surf* tex_check(Surf* t, u64 gva) {
+    Surf* r = tex_check_memory(t, gva);
+    return r ? later_reread(r) : NULL;
 }
 /* the dimension of the texture a header describes, as ShaderInfo.tex_query_hint keys a TXQ's texture on it: 1 + its
    ShTex type (0 1D, 1 2D, 2 3D, 3 cube), + 4 for an array (a 2D header of several slices is one, as tic_view_type

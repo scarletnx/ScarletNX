@@ -307,8 +307,14 @@ where that is lower, less the caches' use, both as `vk_mem_use` gives them:
 
 - **BC7** from the caches' first trim (`surface.c`'s `vk_mem_trim`): their use past `vk_mem_trim_start`, the budget less
   a head (`trim_head`: a 16th of the budget from 128 to 256 MiB, a quarter at most), from where each new RGBA8 level
-  costs an eviction, or an image that found no memory. The textures that load from then on are held as BC7; those loaded
-  before keep their RGBA8 images until they go.
+  costs an eviction, or an image that found no memory. The textures that load from then on are held as BC7. Those loaded
+  before as RGBA8 whose memory is unchanged (unwritten where write tracking watches it, else the hash they loaded with)
+  go too (`texture.c`'s `vk_tex_later_exact`): each is read again from memory at its next use, its RGBA8 image the same
+  and its blocks kept, and queued for the encoder, 16 MB of RGBA8 a present at most and one at least (`later_reread`),
+  so the frame after the switch does not decode at once every texture it draws. Keeping the blocks of every texture held
+  Exact would cost memory for a switch that may never come, and leaving them RGBA8 left one state load's 1091 MB of them
+  past a 1800 MB budget. One whose memory changed stays Exact. The room their encode frees joins the band
+  (`snx_astc_auto_converted`).
 - **Exact again** at a present (after the frame's trim) whose room under that mark is more than the most room any trim
   of the run has left under it (the band). A trim takes the caches from past the mark down to two heads under the budget
   or a little under, and with no band the next present would find room and turn Exact again, and the next trim BC7: two

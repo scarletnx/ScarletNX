@@ -717,20 +717,32 @@ static int al_cached(void) {
 
 /* (j) astc_mode's Auto follows the GPU's memory (gpu/texture/astc_bc.h, device.c): Exact while the caches have room,
    so a texture loads RGBA8 and stays out of the encoder's queue. A trim, with the budget lowered to the caches' use (as
-   vk_budget_mb lowers it), turns it to BC7: the next texture is queued for the encoder, the first stays RGBA8, and the
-   game's BC7 cache opens at the next present, which keeps BC7 with no more room than the trim left. A present with the
-   budget back, its room under the trim's start past what the trim left, turns it to Exact again, and the third texture
-   loads RGBA8 */
+   vk_budget_mb lowers it), turns it to BC7: the next texture is queued for the encoder as it loads, and the game's BC7
+   cache opens at the next present, which keeps BC7 with no more room than the trim left. The first, loaded Exact with
+   its memory unchanged since, is marked at the switch and read again from memory at its first use of a later present
+   (vk_tex_later_exact): queued then, its blocks kept, and made BC7 by the encoder's frames, the RGBA8 texels it showed
+   before; the switch's band takes at least the three quarters of its RGBA8 bytes that encode frees. A fourth, loaded
+   Exact too but whose memory changed before the switch, stays Exact: its check loads it again first, whether the
+   switch marked it or not (write tracking may not have taken that write in yet). A present with the budget back, its room under the
+   trim's start past what the trim left, turns it to Exact again, and the third texture loads RGBA8 */
 static int al_auto(void) {
     static const AlCase c = {"ASTC 8x8 256x256, Auto", NVN_FORMAT_RGBA_ASTC_8x8, 256, 256, 1, 0};
     const SnxAstcAuto had = g_vk.astc_auto;
-    AlTex xa, xb, xc;
-    u64 usage, budget, reads, stored, restarts, file0, file;
+    AlTex xa, xb, xc, xe;
+    u64 usage, budget, reads, stored, restarts, file0, file, size = 0;
     g_settings.astc_mode = 0;
     g_vk.astc_auto = (SnxAstcAuto){0, 0, 0};
     vk_bc7_cache_stats(&reads, &stored, &restarts, &file0);
     Surf* a = al_make(&xa, &c, 10);
     CHECK(a && a->f.vk == VK_FORMAT_R8G8B8A8_UNORM && !a->bc7_later && !vk_astc_bc7());
+    u64 shown_size = 0;
+    u8* shown = al_image(&xa, a, &shown_size); /* its RGBA8 texels, no blocks kept */
+    const u64 a_bytes = a->bytes;
+    CHECK(shown);
+    Surf* e = al_make(&xe, &c, 13);
+    CHECK(e && e->f.vk == VK_FORMAT_R8G8B8A8_UNORM && !e->bc7_later);
+    al_fill(&xe); /* its memory written since it loaded, as the game writes it, and nothing loaded it again yet */
+    g_renderer->mem_may_have_changed();
     g_vk_present++; /* a trim of its own present: none has run dry in it */
     vk_mem_use(&usage, &budget);
     const u64 cap = vk_mem_budget_cap(usage);
@@ -738,6 +750,8 @@ static int al_auto(void) {
     vk_mem_trim(0, 0);
     vk_unlock();
     const SnxAstcAuto trimmed = g_vk.astc_auto;
+    const int a_marked = a->bc7_reread && !a->bc7_later && !a->bc7.queued && trimmed.band >= a_bytes - a_bytes / 4,
+              e_marked = e->bc7_reread;
     Surf* b = al_make(&xb, &c, 11);
     vk_lock();
     vk_astc_auto_present();
@@ -745,36 +759,59 @@ static int al_auto(void) {
     const int kept = g_vk.astc_auto.bc7;
     const u64 band = g_vk.astc_auto.band;
     vk_bc7_cache_stats(&reads, &stored, &restarts, &file);
+    g_renderer->mem_may_have_changed();
+    g_vk_present++; /* the first use of the two since the switch */
+    vk_lock();
+    const int a_again = vk_tex_from_tic(xa.tic) == a && a->bc7_later && a->bc7.queued && a->bc7.kept &&
+                        !a->bc7_reread && a->f.vk == VK_FORMAT_R8G8B8A8_UNORM,
+              e_exact = vk_tex_from_tic(xe.tic) == e && !e->bc7_later && !e->bc7.queued && !e->bc7.kept &&
+                        e->f.vk == VK_FORMAT_R8G8B8A8_UNORM;
+    vk_unlock();
+    /* read again: the same RGBA8 texels, and now the blocks it keeps after them, which the encoder makes BC7 */
+    u8* rgba = a_again ? al_image(&xa, a, &size) : NULL;
+    const int same = rgba && size == shown_size && a->bc7.kept_bytes && !memcmp(rgba, shown, shown_size);
     vk_mem_budget_cap(cap);
     vk_lock();
     vk_astc_auto_present();
     vk_unlock();
     const SnxAstcAuto back = g_vk.astc_auto;
     Surf* d = al_make(&xc, &c, 12);
-    int failed = !trimmed.bc7 || trimmed.switches != 1 || !b || !b->bc7_later || !b->bc7.queued ||
-                 a->f.vk != VK_FORMAT_R8G8B8A8_UNORM || a->bc7_later || !kept || (!file0 && !file) || back.bc7 ||
-                 back.switches != 2 || back.band != band || !d || d->bc7_later || d->f.vk != VK_FORMAT_R8G8B8A8_UNORM;
+    int failed = !trimmed.bc7 || trimmed.switches != 1 || !b || !b->bc7_later || !b->bc7.queued || !a_marked ||
+                 !a_again || !same || !e_exact || !kept || (!file0 && !file) || back.bc7 || back.switches != 2 ||
+                 back.band != band || !d || d->bc7_later || d->f.vk != VK_FORMAT_R8G8B8A8_UNORM;
     if (failed)
-        fprintf(stderr,
-                "astc_mode's Auto: Exact first (format %d, held as BC7 later %d); after a trim under a budget of %llu "
-                "MB, BC7 %d after %llu switches (a band of %llu MB), the next texture held as BC7 later %d, queued %d, "
-                "kept at a present %d, the BC7 cache %llu bytes; with the budget back BC7 %d after %llu switches, the "
-                "third texture held as BC7 later %d\n",
-                (int)a->f.vk, a->bc7_later, (unsigned long long)(usage >> 20), trimmed.bc7,
-                (unsigned long long)trimmed.switches, (unsigned long long)(trimmed.band >> 20), b ? b->bc7_later : -1,
-                b ? b->bc7.queued : -1, kept, (unsigned long long)file, back.bc7, (unsigned long long)back.switches,
-                d ? d->bc7_later : -1);
-    else
-        printf("astc_mode's Auto: RGBA8 with room; a trim under a budget of %llu MB made the next texture BC7 (the "
-               "trim left %llu MB under its start), and the budget back made the third RGBA8 again\n",
-               (unsigned long long)(usage >> 20), (unsigned long long)(trimmed.band >> 20));
+        fprintf(
+            stderr,
+            "astc_mode's Auto: after a trim under a budget of %llu MB, BC7 %d after %llu switches (a band of %llu "
+            "MB), the first texture marked %d and read again at its next use %d (its texels the same %d), the one whose memory changed "
+            "marked %d and Exact at its next use %d, the next held as BC7 later %d, queued %d, kept at a present "
+            "%d, the BC7 cache %llu bytes; with the budget back BC7 %d after %llu switches, the third texture held "
+            "as BC7 later %d\n",
+            (unsigned long long)(usage >> 20), trimmed.bc7, (unsigned long long)trimmed.switches,
+            (unsigned long long)(trimmed.band >> 20), a_marked, a_again, same, e_marked, e_exact, b ? b->bc7_later : -1,
+            b ? b->bc7.queued : -1, kept, (unsigned long long)file, back.bc7, (unsigned long long)back.switches,
+            d ? d->bc7_later : -1);
     later_drain();
+    if (!failed && a->f.vk != VK_FORMAT_BC7_UNORM_BLOCK) {
+        fprintf(stderr, "astc_mode's Auto: the texture loaded RGBA8 before the trim is format %d after the encoder\n",
+                (int)a->f.vk);
+        failed = 1;
+    }
+    if (!failed) failed = al_differ(&xa, "loaded Exact, read again and made BC7 once Auto turned", a, rgba);
+    if (!failed)
+        printf("astc_mode's Auto: RGBA8 with room; a trim under a budget of %llu MB made the next texture BC7, and the "
+               "one loaded before it too once read again, between frames, while one whose memory changed stayed RGBA8 "
+               "(the trim left %llu MB under its start); the budget back made the third RGBA8 again\n",
+               (unsigned long long)(usage >> 20), (unsigned long long)(trimmed.band >> 20));
+    free(rgba);
+    free(shown);
     if (!file0) vk_bc7_cache_close(); /* the game's, which the present opened: the checks after have none */
     g_vk.astc_auto = had;
     g_settings.astc_mode = 2;
     al_free(&xa);
     al_free(&xb);
     al_free(&xc);
+    al_free(&xe);
     return failed;
 }
 

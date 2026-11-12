@@ -1012,6 +1012,11 @@ typedef struct Surf {
        in, plus one (0: never) */
     u8 bc7_hot;
     u32 bc7_wrote;
+    /* an ASTC texture held Exact when astc_mode's Auto turned to BC7 (vk_tex_later_exact), its memory unchanged since
+       it loaded: its next use reads its blocks again from memory, as a load held as BC7 does, unless it was loaded
+       again since (its wgen then, texture.c later_reread) */
+    u8 bc7_reread;
+    u32 bc7_reread_wgen;
     /* that BC7 image while it is made (VK_NULL_HANDLE before the encoder starts on it), its memory, and how far the
        encoder got: level, then slice (a layer, or a 3D level's depth slice) and row of ASTC blocks, from the blocks
        kept of write generation wgen. queued: in the encoder's queue */
@@ -1213,6 +1218,8 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want);
 void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked);
 /* statistics: each texture (VK_LRU_TEX) or render target (VK_LRU_RT) of the caches given to fn, which changes none */
 void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx);
+/* fn on each texture of the caches with ctx, the least recently used first: it may change one, not free or add one */
+void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx);
 /* each present, while memory is short: the textures whose texture object the game ended go, once memory can give
    them again and a grace period passed with no object made at their address (a game that ends a texture and makes
    it again there with the same bytes still finds it) */
@@ -1694,6 +1701,11 @@ void vk_tex_later_frame(void);
 #define VK_BC7_LATER_BLOCKS (1u << 15)
 /* s goes: its place in the queue and the BC7 image being made for it with it (surface.c surf_free) */
 void vk_tex_later_forget(Surf* s);
+/* astc_mode's Auto turned to BC7 (device.c vk_astc_auto_trimmed): the ASTC textures it held Exact, as RGBA8, whose
+   memory still holds what they loaded from, are read again from it at their next use, their blocks kept, and go to the
+   encoder as ones held as BC7 do (Liz's choice, of keeping every Exact texture's blocks or of leaving them RGBA8); the
+   others stay Exact. How many go, and the bytes of their RGBA8 images */
+void vk_tex_later_exact(u32* textures, u64* bytes);
 /* statistics since the start: textures made BC7, the RGBA8 bytes that freed, encodes started over for a write or
    given up, blocks encoded, textures held Exact for their writes and made BC7 again after; and now: textures waiting,
    the bytes their RGBA8 images take, textures held Exact for their writes */

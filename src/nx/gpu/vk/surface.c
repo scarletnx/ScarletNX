@@ -238,6 +238,10 @@ void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx) {
     for (int list = kind; list <= kind + LRU_AGED; list += LRU_AGED)
         for (u32 r = g_rows.lists[list].head; r; r = g_rows.lru[r].next) fn(ctx, g_rows.surf[r]);
 }
+void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx) {
+    for (int list = VK_LRU_TEX; list <= VK_LRU_TEX + LRU_AGED; list += LRU_AGED)
+        for (Surf* s = g_lru[list].head; s; s = s->lru_next) fn(s, ctx);
+}
 static _Thread_local int g_rt_flushing;
 u32 g_vk_surf_epoch;
 static u32 g_surf_bucket_epoch[SURFH];

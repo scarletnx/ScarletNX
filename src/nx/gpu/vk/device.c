@@ -526,11 +526,16 @@ void vk_astc_auto_trimmed(u64 usage, u64 left, u64 budget, int force) {
     char room[160];
     const u64 mark = vk_mem_trim_start(budget);
     if (!astc_auto_follows() || !snx_astc_auto_trimmed(&g_vk.astc_auto, left, mark)) return;
+    u32 held = 0;
+    u64 held_bytes = 0;
+    vk_tex_later_exact(&held, &held_bytes);
+    snx_astc_auto_converted(&g_vk.astc_auto, held_bytes);
     astc_room(room, sizeof room, usage, budget);
-    LOG("vulkan: astc_mode=0 (Auto): ASTC textures that load from now on are BC7, %s: heap %d has %s, %s the %llu MB "
-        "where its caches' trim starts%s\n",
-        g_astc_bc7, vk_mem_heap(), room, usage > mark ? "past" : "under", (unsigned long long)(mark >> 20),
-        force ? ", and an image found no memory" : "");
+    LOG("vulkan: astc_mode=0 (Auto): ASTC textures are BC7 from now on, %s, and the %u held as RGBA8 (%llu MB) whose "
+        "memory is unchanged too, read again at their next use: heap %d has %s, %s the %llu MB where its caches' trim "
+        "starts%s\n",
+        g_astc_bc7, held, (unsigned long long)(held_bytes >> 20), vk_mem_heap(), room, usage > mark ? "past" : "under",
+        (unsigned long long)(mark >> 20), force ? ", and an image found no memory" : "");
 }
 void vk_astc_auto_present(void) {
     char room[160];

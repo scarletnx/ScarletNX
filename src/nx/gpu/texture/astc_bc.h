@@ -16,8 +16,10 @@
    has left under it. A trim frees the caches from past mark toward two heads under the budget, so a return with less
    room than a trim leaves would follow every trim, BC7 at the trim and Exact at the next present; with more, a trim
    alone never brings it, only memory the game freed or a budget that grew. band is the run's own measure of the caches'
-   swing on this GPU and this game, not a number set here. The textures already loaded keep what they are held as.
-   device.c applies these at each trim and each present, under vk_lock */
+   swing on this GPU and this game, not a number set here. Turning BC7, the textures held as RGBA8 whose memory is
+   unchanged go to the encoder too, read again from it at their next use, and the room that makes joins band
+   (snx_astc_auto_converted); turning Exact, those held as BC7 stay so. device.c applies these at each trim and each
+   present, under vk_lock */
 typedef struct {
     int bc7;                     /* the ASTC levels that load now are held as BC7 */
     unsigned long long band;     /* the most room under mark a trim has left, in bytes */
@@ -39,6 +41,14 @@ static inline int snx_astc_auto_trimmed(SnxAstcAuto* a, unsigned long long left,
     a->bc7 = 1;
     a->switches++;
     return 1;
+}
+/* the ASTC textures Auto held as RGBA8 when it turned to BC7, bytes of them, to be encoded again as BC7, a quarter of
+   those bytes (vk_tex_later_exact): the room their encode makes is Auto's own, not the game's, so band takes it as it
+   takes a trim's, else that room alone turns it Exact again and the next loads to BC7 again. One run's switch took 893
+   MB of them before any trim had left room: 239 MB of room 23 s later, Exact with a band of 0, and four switches in
+   180 s */
+static inline void snx_astc_auto_converted(SnxAstcAuto* a, unsigned long long bytes) {
+    if (bytes - bytes / 4 > a->band) a->band = bytes - bytes / 4;
 }
 /* the caches' use at a present, against mark: 1 when Auto turns to Exact again, with more room under mark than band */
 static inline int snx_astc_auto_room(SnxAstcAuto* a, unsigned long long usage, unsigned long long mark) {
