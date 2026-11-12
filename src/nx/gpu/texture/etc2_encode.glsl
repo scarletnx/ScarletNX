@@ -60,7 +60,7 @@ uint et_dist(uint i, int r, int g, int b) {
 /* texel i's place in the index bits: ETC2 numbers its texels down the columns */
 uint et_pos(uint i) { return (i & 3u) * 4u + (i >> 2); }
 /* the subblock of texel i: side by side (flip 0), or one above the other */
-uint et_sub(uint flip, uint i) { return flip != 0u ? uint(i >= 8u) : uint((i & 3u) >= 2u); }
+uint et_sub(uint flip, uint i) { return (i >> (flip != 0u ? 3u : 1u)) & 1u; } /* i is below 16 */
 /* index k (0 to 3) of texel i in the index bits */
 uint et_index_bits(uint i, uint k) {
     uint p = et_pos(i);
