@@ -15900,11 +15900,28 @@ static void games_back(App* app, const char* path) {
     }
     free(game);
 }
-/* Games listed again where it is, its focus kept on the game it was on (games_back) */
+/* the row of Games' Rows (and the grid's tile) the focus is on, as games_boxes counts them: past the lead's */
+static size_t games_focus_row(const App* app) {
+    size_t selected = app->browser.selected, head = app->browser.head;
+    return selected < head ? selected + 1 : (size_t)games_lead(app) + selected - head;
+}
+/* Games listed again where it is, its focus kept on the game it was on (games_back), on whatever row that game is
+   now: the list and the grid stay where the player scrolled them (the wheel, a thumb, a finger), as a focus that did
+   not move leaves them, a thumb held through it. The listing lays the grid out before its focus is back, so the
+   grid's place is put back after */
 static void games_relist(App* app) {
     bool recent;
     const char* was = games_focused_path(app, &recent);
+    bool seen = app->games_seen == app->browser.selected,
+         held = app->bar_focus[GUI_LIST_GRID] == SIZE_MAX || app->bar_focus[GUI_LIST_GRID] == games_focus_row(app) + 1;
+    float grid_y = app->list_y[GUI_LIST_GRID], grid_v = app->list_v[GUI_LIST_GRID];
     games_back(app, recent ? NULL : was);
+    if (seen) app->games_seen = app->browser.selected;
+    if (held) {
+        app->bar_focus[GUI_LIST_GRID] = games_focus_row(app) + 1;
+        app->list_y[GUI_LIST_GRID] = grid_y;
+        app->list_v[GUI_LIST_GRID] = grid_v;
+    }
 }
 /* the game of the Compile tab's focus, as Games lists it: what Tab and ESC there go back to; NULL with none */
 static const char* queue_game(const App* app) {
