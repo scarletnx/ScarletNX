@@ -171,11 +171,13 @@ module's; each mapping starts from the module as it was made.
 An NRO calls the game's functions, and many of its own, through its PLT: a stub loads the function's address from a
 slot the game's linker (`nn::ro`) fills while the game runs, and branches to it. The recompile reads the NRO's PLT
 slots (`snx_module_plt` in `src/nx/loader/loader.c`) and binds each stub whose symbol names a function of the NRO
-itself, or one that a single module of the game exports. Such a stub, and each `BL` or `B` to it, which runs the
-stub's instructions where the call is, compares the address it
-loaded with the one function it is bound to: equal, it calls that function, the NRO's own as any call inside the
-module, the game's through the module's import of it; anything else in the slot (the linker has not bound it yet,
-another module defines the symbol first) goes through `CPU.disp` as before. A module's imports are its
+itself, or one that a single module of the game exports. A `BL` or `B` to a stub of the game's function calls it
+through the module's import of it and does not read the slot: the game's modules come first for a name, in the
+SDK's `nn::ro` and in the runtime's linker, so the slot is bound to that function. A stub of the NRO's own function,
+and each `BL` or `B` to it, which runs the stub's instructions where the call is, compares the address it loaded with
+that function's: equal, it calls it as any call inside the module; anything else in the slot (another module loaded
+before the NRO defines the symbol too) goes through `CPU.disp` as before. So does the stub of the game's function
+when it is entered as a function, through a pointer. A module's imports are its
 `snx_imports()` table (`nro_slots.h`): each pointer starts as the module's own lookup in `CPU.disp`, and the runtime
 puts there the function that answers the address (`nro_imports_bind` in `guest_jit.c`): what its dispatch slot
 holds, when that is the game module's function, or the function the runtime gave the slot in its place, a hook's

@@ -176,8 +176,10 @@ static void svc(CPU* c, u32 imm) {
 /* The module at path is the NRO's of module ID id at base, size bytes with its BSS, and its code entered at the NRO's
    first instruction leaves base + 0x84 + add in x0. image, for an NRO with calls: the NRO, mapped at base for the run,
    whose two PLT slots are filled as the game's linker fills them. The module must import game_add alone, call it
-   through CPU.disp until the import is bound and directly after, call its own nro_own directly, and take either call
-   through CPU.disp when the slot holds another address than the one its symbol names */
+   through CPU.disp until the import is bound and directly after, whatever its slot holds (the game's modules come
+   first for a name one of them alone defines, so the slot is not read), call its own nro_own directly, and take
+   that call through CPU.disp when its slot holds another address than the one its symbol names (a module loaded
+   before the NRO may define the name too) */
 static void module_runs(const char* path, u64 base, u64 size, unsigned char id, unsigned add,
                         const unsigned char* image) {
     typedef const SnxModule* (*ModuleFn)(void);
@@ -229,7 +231,7 @@ static void module_runs(const char* path, u64 base, u64 size, unsigned char id, 
             memcpy(memory + base, image, 0x3000);
             for (i = 0; i < 16; ++i) memory[base + 0x2000 + i] = (unsigned char)(slot[i / 8] >> (8 * (i % 8)));
             if (step) memcpy(&imports->function[0], step == 4 ? &override : &bound, sizeof bound);
-            want += (step == 4 ? 7 : step == 1 || step == 3 ? 5 : 1000) + (step == 3 ? 1000 : 0x20);
+            want += (step == 4 ? 7 : step ? 5 : 1000) + (step == 3 ? 1000 : 0x20);
         }
         rt.svc = svc;
         rt.undef = undefined;
@@ -250,12 +252,13 @@ static void module_runs(const char* path, u64 base, u64 size, unsigned char id, 
         check(c.x[0] == want, !image      ? "the NRO's code runs as code at its place"
                               : !step     ? "an unbound import calls through the table"
                               : step == 1 ? "a bound import and the NRO's own function are called directly"
+                              : step == 2 ? "a bound import is called directly whatever its slot holds"
                               : step == 4 ? "an import bound to the runtime's function in the game's place calls it"
-                                          : "a slot that holds another address goes through the table");
-        /* through the table: the game's function unbound or replaced (steps 0, 2), the NRO's own replaced (3) */
-        check(c.pc == RETURN && missed <= (image && step != 1 && step != 4 ? 2 : 1),
+                                          : "the NRO's own slot that holds another address goes through the table");
+        /* through the table: the game's function while its import is unbound (step 0), the NRO's own replaced (3) */
+        check(c.pc == RETURN && missed <= (image && (!step || step == 3) ? 1 : 0) + (image ? 0 : 1),
               "it returns to its caller, outside the NRO");
-        if (image) check(missed >= (step == 1 || step == 4 ? 0 : 1), "a call through the table reaches the miss");
+        if (image) check(missed == (!step || step == 3), "only a call through the table reaches the miss");
         free(c.disp);
     }
     free(memory);

@@ -1196,17 +1196,17 @@ static void test_exports(void) {
     CHECK(!snx_module_bound(&modules[0], exports, count, 0, &bound, &bound_count, &own, &sites, error, sizeof error));
     CHECK(bound_count == 2 && own == 1 && sites == 2);
     if (bound_count == 2) {
-        CHECK(bound[0].at == a + 0xac && bound[0].target == b + 0xe8 && !bound[0].game);
-        CHECK(bound[1].at == a + 0xcc && bound[1].target == a + 0xe0 && !bound[1].game);
+        CHECK(bound[0].at == a + 0xac && bound[0].target == b + 0xe8 && !bound[0].game && !bound[0].guard);
+        CHECK(bound[1].at == a + 0xcc && bound[1].target == a + 0xe0 && !bound[1].game && !bound[1].guard);
     }
     free(bound);
     /* as an NRO the program maps: its own functions whatever the program defines, and the program's as the game's */
     CHECK(!snx_module_bound(&modules[0], exports, count, 1, &bound, &bound_count, &own, &sites, error, sizeof error));
     CHECK(bound_count == 3 && own == 2 && sites == 2);
     if (bound_count == 3) {
-        CHECK(bound[0].at == a + 0xac && bound[0].target == b + 0xe8 && bound[0].game == 1);
-        CHECK(bound[1].at == a + 0xbc && bound[1].target == a + 0xe4 && !bound[1].game);
-        CHECK(bound[2].at == a + 0xcc && bound[2].target == a + 0xe0 && !bound[2].game);
+        CHECK(bound[0].at == a + 0xac && bound[0].target == b + 0xe8 && bound[0].game == 1 && !bound[0].guard);
+        CHECK(bound[1].at == a + 0xbc && bound[1].target == a + 0xe4 && !bound[1].game && bound[1].guard == 1);
+        CHECK(bound[2].at == a + 0xcc && bound[2].target == a + 0xe0 && !bound[2].game && bound[2].guard == 1);
     }
     free(bound);
     /* nothing to bind to, and a module without a PLT: none */

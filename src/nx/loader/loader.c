@@ -1123,7 +1123,7 @@ int snx_module_bound(const SnxModuleImage* module, const SnxExport* exports, siz
         SnxU32 adrp = snx_ld_le32(module->image + pc), ldr = snx_ld_le32(module->image + pc + 4);
         SnxU64 page, slot, target = 0;
         size_t lo = 0, hi = slot_count;
-        int game = 0;
+        int game = 0, guard = 0;
         if (snx_ld_le32(module->image + pc + 12) != 0xD61F0220UL || (adrp & 0x9F00001FUL) != 0x90000010UL ||
             (ldr & 0xFFC003FFUL) != 0xF9400211UL ||
             (snx_ld_le32(module->image + pc + 8) & 0xFFC003FFUL) != 0x91000210UL)
@@ -1141,7 +1141,7 @@ int snx_module_bound(const SnxModuleImage* module, const SnxExport* exports, siz
         if (lo == slot_count || slots[lo].slot != slot) continue;
         if (nro && slots[lo].value) { /* the NRO's own function */
             if (!(slots[lo].value & 3) && slots[lo].value >= module->text_off && slots[lo].value < end)
-                target = module->base + slots[lo].value;
+                target = module->base + slots[lo].value, guard = 1;
         } else {
             SnxExport key;
             const SnxExport* found;
@@ -1156,6 +1156,7 @@ int snx_module_bound(const SnxModuleImage* module, const SnxExport* exports, siz
         out[n].at = module->base + pc + 12;
         out[n].target = target;
         out[n].game = game;
+        out[n].guard = guard;
         *own += target >= module->base + module->text_off && target < module->base + end;
         ++n;
     }
