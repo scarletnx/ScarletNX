@@ -1309,23 +1309,35 @@ static void button_map(App* app) {
         free(folder);
     }
 }
-/* every section of settings.txt has its group's icon (group_icon, by group_title's name) and every page its row's
-   (page_icon), but Controllers' Player, a row that steps the player and opens none: one without is named */
+/* every section of settings.txt has its group's icon (group_icon, by group_title's name), none another group's (App's
+   among them), and every page its row's (page_icon), but Controllers' Player, a row that steps the player and opens
+   none: one without, or two groups with one, are named */
 static void icons_named(void) {
     size_t size;
     char* text = (char*)snx_read_file(SNX_GUI_SETTINGS_TXT, &size);
     const char* line;
-    int sections = 0, pages = 0;
+    char group[32][64] = {"App"}; /* the groups so far, the launcher's own first: group_title's names */
+    int sections = 0, pages = 0, groups = 1;
     assert(text && group_icon("App") != GUI_ICON_NONE);
     icons_are();
     for (line = text; line; line = strchr(line, '\n') ? strchr(line, '\n') + 1 : NULL) {
         char name[64], rest[256];
         const char* page;
+        unsigned icon;
         if (sscanf(line, "section %63[^:]: %255[^\n]", name, rest) != 2) continue;
-        if (group_icon(group_title(name)) == GUI_ICON_NONE) {
+        icon = group_icon(group_title(name));
+        if (icon == GUI_ICON_NONE) {
             fprintf(stderr, "settings.txt's section %s has no icon in main.c's group_icon\n", name);
             assert(!"a group's icon");
         }
+        for (int g = 0; g < groups; ++g)
+            if (group_icon(group[g]) == icon) {
+                fprintf(stderr, "the Settings' groups %s and %s have the same icon, U+%04X, in main.c's group_icon\n",
+                        group[g], group_title(name), icon);
+                assert(!"a group's own icon");
+            }
+        assert(groups < (int)SDL_arraysize(group));
+        snprintf(group[groups++], sizeof group[0], "%s", group_title(name));
         ++sections;
         for (page = strchr(rest, '/'); page; page = strchr(page + 1, '/')) {
             char p[64];
