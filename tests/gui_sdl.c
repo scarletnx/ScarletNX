@@ -14484,6 +14484,14 @@ int main(int argc, char** argv) {
         app.theme = *gui_theme_builtin("default");
         render(&app);
     }
+    /* the menu's Exit asks first, nothing running: Cancel, in focus, stays */
+    app.menu.selected = GUI_EXIT;
+    key(&app, SDLK_RETURN);
+    assert(app.confirm.shown && app.confirm.ask == GUI_ASK_EXIT && app.confirm.selected == GUI_CONFIRM_KEEP &&
+           !app.menu.quit && !app.closing_ms && !strcmp(ask_question(&app), "Exit ScarletNX?"));
+    key(&app, SDLK_ESCAPE);
+    assert(!app.confirm.shown && !app.menu.quit && !app.closing_ms);
+    app.menu.selected = 0;
     /* ESC on the menu's first screen asks before the app closes: ESC again stays, Exit closes */
     assert(app.menu.view == GUI_LOAD_NONE && !app.menu.running && !app.finished && !app.confirm.shown);
     key(&app, SDLK_ESCAPE);
