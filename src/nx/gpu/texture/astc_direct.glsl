@@ -19,9 +19,17 @@
      they decode and its indices in ASTC's order (BC1 counts its ends 0 and 1 and the colours between 2 and 3).
    - A block whose ends are one colour, or whose texels all take one index, is one colour: a void extent, exact.
 
-   BC7's anchor index, texel 0's, is stored a bit short; the indices are moved whole and that one bit put back
-   (Direct7). The decoder swaps a block's ends when the first sums higher than the second (astc_encode.glsl's
-   AsEnds): the weights are then every bit turned, which is each index counted from the other end.
+   BC7's anchor index, texel 0's, is stored a bit short; the indices are moved whole and that one bit put back. The
+   decoder swaps a block's ends when the first sums higher than the second: the ends are then written the other way
+   round and the weights with every bit turned, which is each index counted from the other end.
+
+   No arrays. This is the pass nearly every block of a game's texture takes, on GPUs whose drivers each have a kind
+   of memory they are slow with: an array of the invocation's own indexed by a value (scratch memory on Adreno and
+   Mali), or the workgroup's shared memory (fewer workgroups in flight on NVIDIA). So everything here is a word in a
+   register: the block is its four words and a field is cut out of them at a bit that is a constant of its mode, an
+   end is the word of its four channels, the ends' codes are two words of a byte each, and the ASTC block is four
+   words put together with shifts. And no table: an encoding with a trit or a quint is worked out (astc_quant.glsl),
+   with the encoding a constant of the block's kind, so a few multiplies a channel.
 
    What these blocks decode to is not measured here, since no texel is at hand: tests/glsl/astc_encode_glsl.cpp holds
    them to the BCn blocks' own texels, a few steps at most a channel. Every other block is left to the passes that
@@ -33,38 +41,101 @@
 #define SNX_ASTC_DIRECT_NEAR 40u
 #endif
 
-/* the block Direct7 or DirectBc1 made */
+/* the block a Direct function made */
 uvec4 dx_block;
 
-/* one partition of ends e0 and e1 (RGBA8 words), endpoint mode cem (8 RGB, 12 RGBA), colour encoding range, weights
-   of ib bits: the 16 indices in wlo and whi from bit 0 up, texel after texel */
-uvec4 DxOne(uint e0, uint e1, uint cem, uint ib, uint range, uint wlo, uint whi) {
-    uint q0 = e0, q1 = e1;
+/* n < 32 bits from bit at < 32 of the 64 that lo and hi are */
+uint DxCut(uint lo, uint hi, uint at, uint n) {
+    return ((lo >> at) | ((hi << 1u) << (31u - at))) & ((1u << n) - 1u);
+}
+
+/* byte k of the eight that lo and hi are */
+uint DxByte(uint lo, uint hi, uint k) {
+    return ((k < 4u ? lo : hi) >> ((k & 3u) * 8u)) & 255u;
+}
+
+/* a sequence being written, 64 bits from bit 0 up: v, of bits that end under bit 64, at bit pos */
+uint dx_lo;
+uint dx_hi;
+void DxPut(uint pos, uint v) {
+    const bool low = pos < 32u;
+    const uint s = pos & 31u;
+    dx_lo |= low ? v << s : 0u;
+    dx_hi |= low ? (v >> 1u) >> (31u - s) : v << s;
+}
+
+/* The ends e0 and e1 (RGBA8 words) as the block's colour values, n of them (6 for RGB ends, 8 for RGBA), in the colour
+   encoding range, into dx_lo and dx_hi as the integer sequence the block holds from its bit 17 on. 1 when the ends
+   went in the other way round, as the decoder wants the second to sum the higher (red, green and blue as they
+   decode): the weights are then turned */
+bool DxEnds(uint e0, uint e1, uint n, uint range) {
+    /* each channel as the encoding holds it nearest (q) and that value's code (k): the byte itself for 8 bits */
+    uint q0 = e0, q1 = e1, k0 = e0, k1 = e1;
     if (range != AS_B8) {
-        /* each end's channel as the encoding holds it nearest */
         q0 = 0u;
         q1 = 0u;
+        k0 = 0u;
+        k1 = 0u;
         for (uint c = 0u; c < 4u; c++) {
-            const uint a = Ch(e0, c), b = Ch(e1, c);
-            q0 |= (AsQuant(range, a) & 255u) << (c * 8u);
-            q1 |= (AsQuant(range, b) & 255u) << (c * 8u);
+            const uint ta = AsQuant(range, Ch(e0, c)), tb = AsQuant(range, Ch(e1, c));
+            q0 |= (ta & 255u) << (c * 8u);
+            q1 |= (tb & 255u) << (c * 8u);
+            k0 |= ((ta >> 8u) & 255u) << (c * 8u);
+            k1 |= ((tb >> 8u) & 255u) << (c * 8u);
         }
     }
-    as_cem = cem;
-    as_enc = range;
-    as_nv = 0u;
-    as_s0[0] = q0;
-    as_s1[0] = q1;
-    enc = uvec4(0u);
-    Put(0u, ib == 2u ? 0x042u : ib == 3u ? 0x053u : 0x242u, 11u);
-    Put(13u, cem, 4u);
-    const bool turn = AsEnds(0u);
-    AsColours(17u);
-    /* the weights from the block's top bit down; turned with the ends, each index counted from the other end */
+    const bool turn = Dot4(q1 & 0xFFFFFFu, 0x010101u) < Dot4(q0 & 0xFFFFFFu, 0x010101u);
+    const uint f = turn ? k1 : k0, s = turn ? k0 : k1;
+    /* red of both ends, then green, blue and alpha */
+    const uint lo = (f & 255u) | ((s & 255u) << 8u) | ((f & 0xFF00u) << 8u) | ((s & 0xFF00u) << 16u);
+    const uint hi = ((f >> 16u) & 255u) | ((s >> 8u) & 0xFF00u) | ((f >> 8u) & 0xFF0000u) | (s & 0xFF000000u);
+    dx_lo = lo;
+    dx_hi = n == 8u ? hi : hi & 0xFFFFu;
+    if (range == AS_B8) return turn;
+    /* a value is a trit or a quint above b bits; five trits share 8 bits and three quints 7, laid between their
+       values' bits as the decoder reads them (astc_encode.glsl's AsColours has the same layout) */
+    const bool trits = (range & 1u) == 0u;
+    const uint b = 6u - ((range + 1u) >> 1u), group = trits ? 5u : 3u, low = (1u << b) - 1u;
+    dx_lo = 0u;
+    dx_hi = 0u;
+    for (uint g = 0u; g * group < n; g++) {
+        uint m0 = 0u, m1 = 0u, m2 = 0u, m3 = 0u, m4 = 0u, d0 = 0u, d1 = 0u, d2 = 0u, d3 = 0u, d4 = 0u;
+        for (uint k = 0u; k < group; k++) {
+            const uint at = g * group + k, code = at < n ? DxByte(lo, hi, at) : 0u;
+            m0 = k == 0u ? code & low : m0;
+            m1 = k == 1u ? code & low : m1;
+            m2 = k == 2u ? code & low : m2;
+            m3 = k == 3u ? code & low : m3;
+            m4 = k == 4u ? code & low : m4;
+            d0 = k == 0u ? code >> b : d0;
+            d1 = k == 1u ? code >> b : d1;
+            d2 = k == 2u ? code >> b : d2;
+            d3 = k == 3u ? code >> b : d3;
+            d4 = k == 4u ? code >> b : d4;
+        }
+        if (trits) {
+            const uint at = g * (5u * b + 8u), T = AsTritBits(d0, d1, d2, d3, d4);
+            DxPut(at, m0 | ((T & 3u) << b) | (m1 << (b + 2u)));
+            DxPut(at + 2u * b + 2u, ((T >> 2u) & 3u) | (m2 << 2u) | (((T >> 4u) & 1u) << (b + 2u)));
+            DxPut(at + 3u * b + 5u, m3 | (((T >> 5u) & 3u) << b) | (m4 << (b + 2u)) | ((T >> 7u) << (2u * b + 2u)));
+        } else {
+            const uint at = g * (3u * b + 7u), Q = AsQuintBits(d0, d1, d2);
+            DxPut(at, m0 | ((Q & 7u) << b) | (m1 << (b + 3u)));
+            DxPut(at + 2u * b + 3u, ((Q >> 3u) & 3u) | (m2 << 2u) | ((Q >> 5u) << (b + 2u)));
+        }
+    }
+    return turn;
+}
+
+/* one partition of ends e0 and e1 (RGBA8 words), endpoint mode cem (8 RGB, 12 RGBA), colour encoding range, weights
+   of ib bits: the 16 indices in wlo and whi from bit 0 up, texel after texel. The block mode (a 4x4 grid of weights
+   of ib bits) and the endpoint mode from bit 13, the colours from bit 17, and the weights from the top bit down */
+uvec4 DxOne(uint e0, uint e1, uint cem, uint ib, uint range, uint wlo, uint whi) {
+    const bool turn = DxEnds(e0, e1, cem == 12u ? 8u : 6u, range);
     const uint high = ib == 2u ? 0u : ib == 3u ? 0xFFFFu : 0xFFFFFFFFu;
-    enc.w |= bitfieldReverse(turn ? ~wlo : wlo);
-    enc.z |= bitfieldReverse((turn ? ~whi : whi) & high);
-    return enc;
+    return uvec4((ib == 2u ? 0x042u : ib == 3u ? 0x053u : 0x242u) | (cem << 13u) | (dx_lo << 17u),
+                 (dx_lo >> 15u) | (dx_hi << 17u), (dx_hi >> 15u) | bitfieldReverse((turn ? ~whi : whi) & high),
+                 bitfieldReverse(turn ? ~wlo : wlo));
 }
 
 /* 16 indices of 2 bits, a nibble each: the 8 of v's low half, every pair of bits two bits apart */
@@ -75,31 +146,14 @@ uint DxSpread(uint v) {
 }
 
 /* two planes of an opaque block: RGB ends e0 and e1 (160 values a channel), channel plane with the 2 bit weights
-   w1, the other two with w0, each 16 indices from bit 0 up */
+   w1, the other two with w0, each 16 indices from bit 0 up. The plane's channel in the two bits under the weights
+   (bits 62 and 63); a texel's two weights side by side, the first plane's the lower */
 uvec4 DxDual(uint e0, uint e1, uint plane, uint w0, uint w1) {
-    uint q0 = 0u, q1 = 0u;
-    for (uint c = 0u; c < 3u; c++) {
-        const uint a = Ch(e0, c), b = Ch(e1, c);
-        q0 |= (AsQuant(AS_Q5, a) & 255u) << (c * 8u);
-        q1 |= (AsQuant(AS_Q5, b) & 255u) << (c * 8u);
-    }
-    as_cem = 8u;
-    as_enc = AS_Q5;
-    as_nv = 0u;
-    as_s0[0] = q0;
-    as_s1[0] = q1;
-    enc = uvec4(0u);
-    Put(0u, 0x442u, 11u);
-    Put(13u, 8u, 4u);
-    const bool turn = AsEnds(0u);
-    AsColours(17u);
-    Put(62u, plane, 2u);
-    /* a texel's two weights side by side, the first plane's the lower */
+    const bool turn = DxEnds(e0, e1, 6u, AS_Q5);
     const uint wlo = DxSpread(w0 & 0xFFFFu) | (DxSpread(w1 & 0xFFFFu) << 2u);
     const uint whi = DxSpread(w0 >> 16u) | (DxSpread(w1 >> 16u) << 2u);
-    enc.w |= bitfieldReverse(turn ? ~wlo : wlo);
-    enc.z |= bitfieldReverse(turn ? ~whi : whi);
-    return enc;
+    return uvec4(0x442u | (8u << 13u) | (dx_lo << 17u), (dx_lo >> 15u) | (dx_hi << 17u) | (plane << 30u),
+                 bitfieldReverse(turn ? ~whi : whi), bitfieldReverse(turn ? ~wlo : wlo));
 }
 
 /* a void extent of colour c */
@@ -117,23 +171,26 @@ uint DxLerp(uint e0, uint e1, uint w) {
     return ((xe >> 6u) & 0x00FF00FFu) | ((xo << 2u) & 0xFF00FF00u);
 }
 
-/* a BC7 block of mode 6 into dx_block: 0 for a block of another mode */
-bool Direct7(uint b[4]) {
-    if ((b[0] & 0x7Fu) != 0x40u) return false;
-    /* red of both ends, then green, blue and alpha, 7 bits each from bit 7; each end's p-bit under its channels */
-    const uint p0 = b[1] >> 31u, p1 = b[2] & 1u;
-    uint e0 = 0u, e1 = 0u;
-    for (uint c = 0u; c < 4u; c++) {
-        e0 |= ((bc_bits(b, 7u + 14u * c, 7u) << 1u) | p0) << (c * 8u);
-        e1 |= ((bc_bits(b, 14u + 14u * c, 7u) << 1u) | p1) << (c * 8u);
-    }
+/* a BC7 block of mode 6 (its four words) into dx_block: 0 for a block of another mode */
+bool Direct7(uint b0, uint b1, uint b2, uint b3) {
+    if ((b0 & 0x7Fu) != 0x40u) return false;
+    /* red of both ends, then green, blue and alpha, 7 bits each from bit 7; each end's p-bit (bits 63 and 64) under
+       its channels */
+    const uint p0 = (b1 >> 31u) * 0x01010101u, p1 = (b2 & 1u) * 0x01010101u;
+    const uint e0 = ((((b0 >> 7u) & 127u) | (((b0 >> 21u) & 127u) << 8u) | (((b1 >> 3u) & 127u) << 16u) |
+                      (((b1 >> 17u) & 127u) << 24u))
+                     << 1u) |
+                    p0;
+    const uint e1 = ((((b0 >> 14u) & 127u) | (DxCut(b0, b1, 28u, 7u) << 8u) | (((b1 >> 10u) & 127u) << 16u) |
+                      (((b1 >> 24u) & 127u) << 24u))
+                     << 1u) |
+                    p1;
     /* the indices, a nibble a texel from bit 65: texel 0's is 3 bits, its top one nought, so texel k's lies at bit
        64 + 4 k but for that one, a bit up */
-    const uint lo = (b[2] & ~0xFu) | ((b[2] >> 1u) & 7u), hi = b[3];
+    const uint lo = (b2 & ~0xFu) | ((b2 >> 1u) & 7u), hi = b3;
     const uint first = lo & 15u;
     if (e0 == e1 || (lo == first * 0x11111111u && hi == first * 0x11111111u)) {
-        /* one colour: the ends', or the one every texel's index gives, as BC7 interpolates it (two channels a word,
-           as bc7_encode.glsl's LineError) */
+        /* one colour: the ends', or the one every texel's index gives */
         dx_block = DxVoid(DxLerp(e0, e1, (first * 273u + 32u) >> 6u));
         return true;
     }
@@ -164,51 +221,67 @@ bool Direct7(uint b[4]) {
    opaque block's RGB ends or 2 bit weights, ends of 8 bits: the block as it stands. Every block of one colour a BC7
    encoder writes this way is among them. And a mode 5 block of two planes that is opaque (below). 0 for any other
    block: two planes with alpha are RGBA ends of 48 values a channel, too coarse to take unmeasured */
-bool Direct45(uint b[4]) {
-    const bool m5 = (b[0] & 0x3Fu) == 0x20u;
-    if (!m5 && (b[0] & 0x1Fu) != 0x10u) return false;
-    /* mode 5: a rotation of 2 bits from bit 6, colour ends of 7 bits from bit 8, alpha ends of 8, then two streams
-       of 2 bit indices. Mode 4: the rotation from bit 5, an index selection bit, colour ends of 5 bits and alpha ends
-       of 6, a stream of 2 bit indices and one of 3 bit ones, which the selection bit gives the colour */
-    const uint rot = bc_bits(b, m5 ? 6u : 5u, 2u);
-    const uint cb = m5 ? 7u : 5u, ab = m5 ? 8u : 6u, at = 8u + 6u * cb;
-    const uint a0 = uint(bc_expand(bc_bits(b, at, ab), ab)), a1 = uint(bc_expand(bc_bits(b, at + ab, ab), ab));
-    uint e0 = a0 << 24u, e1 = a1 << 24u;
-    for (uint c = 0u; c < 3u; c++) {
-        e0 |= uint(bc_expand(bc_bits(b, 8u + 2u * cb * c, cb), cb)) << (c * 8u);
-        e1 |= uint(bc_expand(bc_bits(b, 8u + cb + 2u * cb * c, cb), cb)) << (c * 8u);
+bool Direct45(uint b0, uint b1, uint b2, uint b3) {
+    const bool m5 = (b0 & 0x3Fu) == 0x20u;
+    if (!m5 && (b0 & 0x1Fu) != 0x10u) return false;
+    /* Mode 5: a rotation of 2 bits from bit 6, colour ends of 7 bits from bit 8 (red of both, then green and blue),
+       alpha ends of 8 from bit 50, then two streams of 2 bit indices, 31 bits each, from bits 66 and 97.
+       Mode 4: the rotation from bit 5, an index selection bit, colour ends of 5 bits from bit 8, alpha ends of 6 from
+       bit 38, a stream of 2 bit indices (31 bits from bit 50) and one of 3 bit ones (47 from bit 81), which the
+       selection bit gives the colour. The ends widened to 8 bits by their top bits */
+    uint rot, e0, e1, a0, a1, s2, t2, t3lo, t3hi;
+    if (m5) {
+        rot = (b0 >> 6u) & 3u;
+        e0 = ((b0 >> 8u) & 127u) | (((b0 >> 22u) & 127u) << 8u) | (((b1 >> 4u) & 127u) << 16u);
+        e1 = ((b0 >> 15u) & 127u) | (DxCut(b0, b1, 29u, 7u) << 8u) | (((b1 >> 11u) & 127u) << 16u);
+        e0 = (e0 << 1u) | ((e0 >> 6u) & 0x010101u);
+        e1 = (e1 << 1u) | ((e1 >> 6u) & 0x010101u);
+        a0 = (b1 >> 18u) & 255u;
+        a1 = DxCut(b1, b2, 26u, 8u);
+        s2 = DxCut(b2, b3, 2u, 31u);
+        t2 = b3 >> 1u;
+        t3lo = 0u;
+        t3hi = 0u;
+    } else {
+        rot = (b0 >> 5u) & 3u;
+        e0 = ((b0 >> 8u) & 31u) | (((b0 >> 18u) & 31u) << 8u) | (DxCut(b0, b1, 28u, 5u) << 16u);
+        e1 = ((b0 >> 13u) & 31u) | (((b0 >> 23u) & 31u) << 8u) | (((b1 >> 1u) & 31u) << 16u);
+        e0 = (e0 << 3u) | ((e0 >> 2u) & 0x070707u);
+        e1 = (e1 << 3u) | ((e1 >> 2u) & 0x070707u);
+        a0 = (b1 >> 6u) & 63u;
+        a1 = (b1 >> 12u) & 63u;
+        a0 = (a0 << 2u) | (a0 >> 4u);
+        a1 = (a1 << 2u) | (a1 >> 4u);
+        s2 = DxCut(b1, b2, 18u, 31u);
+        t2 = 0u;
+        /* the 3 bit stream's 24 bits from bit 81 and 23 from bit 105, texel 0's index 2 bits: a nought put above it */
+        const uint p0 = DxCut(b2, b3, 17u, 24u), p1 = b3 >> 9u;
+        t3lo = (p0 & 3u) | ((p0 & ~3u) << 1u) | (p1 << 25u);
+        t3hi = p1 >> 7u;
     }
-    const uint first = at + 2u * ab; /* the 2 bit stream, 31 bits; the other follows it */
+    /* a stream of 2 bit indices, texel 0's 1 bit: a nought put above it */
+    const uint w2 = (s2 & 1u) | ((s2 & ~1u) << 1u);
     if (rot != 0u) {
         /* A rotation swaps the fourth channel with red, green or blue as the texels are decoded. Mode 5 with that
            colour channel 255 at both ends is then an opaque block of two planes: the swapped channel takes the fourth
            one's ends and weights, and the other two keep the colour's. Both streams are 2 bit indices, ASTC's own
            weights, and RGB ends of two planes have 160 values a channel, within 1 of any byte */
         const uint sh = (rot - 1u) * 8u;
-        if (!m5 || ((e0 & e1) >> sh & 0xFFu) != 255u) return false;
-        const uint p0 = bc_bits(b, first, 31u), p1 = bc_bits(b, first + 31u, 31u);
-        dx_block = DxDual((e0 & ~(0xFFu << sh)) | (a0 << sh), (e1 & ~(0xFFu << sh)) | (a1 << sh), rot - 1u,
-                          (p0 & 1u) | ((p0 & ~1u) << 1u), (p1 & 1u) | ((p1 & ~1u) << 1u));
+        if (!m5 || (((e0 & e1) >> sh) & 0xFFu) != 255u) return false;
+        dx_block = DxDual((e0 & ~(0xFFu << sh)) | (a0 << sh), (e1 & ~(0xFFu << sh)) | (a1 << sh), rot - 1u, w2,
+                          (t2 & 1u) | ((t2 & ~1u) << 1u));
         return true;
     }
     if (a0 != a1) return false;
-    /* the colour's indices, texel 0's a bit short: the bit put back as a nought above it */
-    const bool three = !m5 && (b[0] & 0x80u) != 0u;
-    uint wlo, whi = 0u, same;
-    if (three) {
-        const uint p0 = bc_bits(b, first + 31u, 24u), p1 = bc_bits(b, first + 55u, 23u);
-        wlo = (p0 & 3u) | ((p0 & ~3u) << 1u) | (p1 << 25u);
-        whi = p1 >> 7u;
-        /* an index every 3 bits, 16 of them 48 bits: the eleventh's top bit is the high word's first */
-        const uint i = wlo & 7u;
-        same = wlo == i * 0x49249249u && whi == ((i >> 2u) | (i * 0x2492u)) ? 1u : 0u;
-    } else {
-        const uint p = bc_bits(b, first, 31u);
-        wlo = (p & 1u) | ((p & ~1u) << 1u);
-        same = wlo == (wlo & 3u) * 0x55555555u ? 1u : 0u;
-    }
-    if ((e0 & 0xFFFFFFu) == (e1 & 0xFFFFFFu) || same != 0u) {
-        const uint i = wlo & (three ? 7u : 3u);
+    e0 |= a0 << 24u;
+    e1 |= a0 << 24u;
+    /* the colour's weights: mode 4's 3 bit ones where its selection bit says */
+    const bool three = !m5 && (b0 & 0x80u) != 0u;
+    const uint wlo = three ? t3lo : w2, whi = three ? t3hi : 0u;
+    /* every index alike: an index every 3 bits, 16 of them 48 bits, the eleventh's top bit the high word's first */
+    const uint i = wlo & (three ? 7u : 3u);
+    const bool same = three ? wlo == i * 0x49249249u && whi == ((i >> 2u) | (i * 0x2492u)) : wlo == i * 0x55555555u;
+    if ((e0 & 0xFFFFFFu) == (e1 & 0xFFFFFFu) || same) {
         dx_block = DxVoid(DxLerp(e0, e1, (i * (three ? 585u : 1365u) + 32u) >> 6u));
         return true;
     }

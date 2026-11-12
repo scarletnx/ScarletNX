@@ -688,46 +688,52 @@ void main() {
     uint kind = mode - TC_BCN_ASTC + TC_BC1;
     uint words = kind == TC_BC1 ? 2u : 4u;
     uint at = in_bias + row * in_pitch + u * words, o = out_bias + row * out_pitch + u * 4u;
-    uint b[4];
-    for (uint w = 0u; w < 4u; w++) {
-        b[w] = 0u;
-        if (w < words) b[w] = src[at + w];
+    /* the block's words, each in a register (astc_direct.glsl has no arrays) */
+    uint b0 = src[at], b1 = src[at + 1u], b2 = 0u, b3 = 0u;
+    if (words == 4u) {
+        b2 = src[at + 2u];
+        b3 = src[at + 3u];
     }
     uvec4 block = uvec4(0u);
     bool done = false;
 #if SNX_ASTC_PASS <= 1
     /* the blocks that are an ASTC layout already. BC2's alpha is 4 bits a texel, 255 where they are all ones */
     if (kind == TC_BC7)
-        done = Direct7(b) || Direct45(b);
+        done = Direct7(b0, b1, b2, b3) || Direct45(b0, b1, b2, b3);
     else if (kind == TC_BC1)
-        done = DirectBc1(b[0], b[1], false);
-    else if (kind == TC_BC2 ? (b[0] & b[1]) == 0xFFFFFFFFu : Bc3Opaque(b[0], b[1]))
-        done = DirectBc1(b[2], b[3], true);
+        done = DirectBc1(b0, b1, false);
+    else if (kind == TC_BC2 ? (b0 & b1) == 0xFFFFFFFFu : Bc3Opaque(b0, b1))
+        done = DirectBc1(b2, b3, true);
     if (done) block = dx_block;
 #endif
 #if SNX_ASTC_PASS == 1
     if (!done) {
         /* a BC7 block's mode is its lowest set bit: 1, 3, 4 and 5 have lines AstcEncode takes; 0, 2 and 7 have not,
            nor has a block of no mode */
-        uint m = uint(findLSB(b[0] & 255u));
+        uint m = uint(findLSB(b0 & 255u));
         as_list(kind == TC_BC7 && ((0x3Au >> (m & 7u)) & 1u) == 0u ? 1u : 0u, row * units + u);
         return;
     }
 #else
     if (!done) {
         if (kind == TC_BC7) {
+            uint b[4];
+            b[0] = b0;
+            b[1] = b1;
+            b[2] = b2;
+            b[3] = b3;
             bc7_block(b, 0u, 0u);
         } else {
             /* BC1's colour block: the block itself, or after BC2's and BC3's alpha */
-            uint ce = kind == TC_BC1 ? b[0] : b[2], ci = kind == TC_BC1 ? b[1] : b[3];
+            uint ce = kind == TC_BC1 ? b0 : b2, ci = kind == TC_BC1 ? b1 : b3;
             bool clear = false;
             for (uint i = 0u; i < 16u; i++) {
                 if (kind == TC_BC1) {
                     px[i] = bc1_pixel(ce, ci, true, i);
                     clear = clear || px[i] < 0x80000000u;
                 } else {
-                    uint a = kind == TC_BC2 ? (((i < 8u ? b[0] : b[1]) >> (4u * (i & 7u))) & 15u) * 17u
-                                            : bc3_alpha(b[1], b[0], i);
+                    uint a = kind == TC_BC2 ? (((i < 8u ? b0 : b1) >> (4u * (i & 7u))) & 15u) * 17u
+                                            : bc3_alpha(b1, b0, i);
                     px[i] = (bc1_pixel(ce, ci, false, i) & 0xFFFFFFu) | (a << 24);
                 }
             }
