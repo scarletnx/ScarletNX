@@ -18652,7 +18652,7 @@ static void menu_key(App* app, GuiKey key) {
         case GUI_MENU_SETTINGS: open_settings(app); break;
         case GUI_MENU_LOG: picks_open(app, GUI_PICKS_SHARE); break;
         case GUI_MENU_STAY:
-            if (app->menu.quit && jobs_live(app)) { /* Exit: the queue's recompiles go with the menu, asked first */
+            if (app->menu.quit) { /* Exit, asked first; the queue's recompiles would go with the menu */
                 app->menu.quit = false;
                 gui_confirm_open(&app->confirm, GUI_ASK_EXIT, false);
             }
