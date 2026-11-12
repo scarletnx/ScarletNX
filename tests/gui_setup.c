@@ -170,6 +170,22 @@ static void move_all_asked(App* app, const char* line) {
     key(app, SDLK_RIGHT);
     key(app, SDLK_RETURN);
 }
+/* Overwrite, in focus on the user's page, asked first: users.ini kept as users.ini.old, Overwrite in the warning
+   colour; Cancel keeps the page as it was, not typing; then Overwrite taken */
+static void overwrite_asked(App* app) {
+    UiRowInfo over = {0};
+    key(app, SDLK_RETURN);
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_OVERWRITE && !app->setup_typing &&
+           !strcmp(ask_question(app), "Overwrite users.ini? It is kept as users.ini.old"));
+    app->choices_of = GUI_CHOICES_ASK;
+    assert(ui_choices_rows_get_row_info(app, 1, 0, &over) && !strcmp(over.label, "Overwrite") &&
+           (over.attr & UI_ATTR_CAUTION));
+    key(app, SDLK_ESCAPE);
+    assert(!app->confirm.shown && !app->setup_typing && app->setup_on && page(app) == SNX_SETUP_USER);
+    key(app, SDLK_RETURN);
+    key(app, SDLK_RIGHT);
+    key(app, SDLK_RETURN);
+}
 /* a click on the setup page's row i (setup_order's order) */
 static void click_row(App* app, int i) {
     GuiSetupBoxes b;
@@ -699,7 +715,7 @@ static void test_users(App* app) {
     shows(app, "users.ini has 1 user", rgb(app->theme.page));
     shows(app, "Adam", rgb(app->theme.ink));
     key(app, SDLK_DOWN);
-    key(app, SDLK_RETURN);
+    overwrite_asked(app);
     assert(app->setup_typing);
     key(app, SDLK_ESCAPE);
     assert(!app->setup_typing && app->setup_on && app->setup_choice.count == 2 && app->setup_choice.focus == 1);
@@ -722,7 +738,7 @@ static void test_users(App* app) {
     setup_enter(app);
     assert(app->setup_saves == 1);
     key(app, SDLK_DOWN);
-    key(app, SDLK_RETURN);
+    overwrite_asked(app);
     assert(app->setup_typing && app->setup_saves == 1);
     render(app);
     shows(app, "of the saves of 1 game", rgb(app->theme.ink));
@@ -1219,6 +1235,7 @@ static void test_ask_tones(App* app) {
                 {GUI_ASK_CRASH, UI_ATTR_DANGER},
                 {GUI_ASK_ADDONS, 0},
                 {GUI_ASK_DELETE_OLD, UI_ATTR_DANGER},
+                {GUI_ASK_OVERWRITE, UI_ATTR_CAUTION},
                 {GUI_ASK_ERROR, 0}};
     GuiConfirm was = app->confirm;
     assert(SDL_arraysize(asks) == GUI_ASK_ERROR + 1);
