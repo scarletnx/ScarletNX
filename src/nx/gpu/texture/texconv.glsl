@@ -31,6 +31,8 @@ int tc_byte(uint w0, uint w1, uint i) { return int(((i < 4u ? w0 : w1) >> ((i & 
 uint tc_rgba(int r, int g, int b, uint a) {
     return uint(clamp(r, 0, 255)) | (uint(clamp(g, 0, 255)) << 8) | (uint(clamp(b, 0, 255)) << 16) | (a << 24);
 }
+/* the same of components that are bytes already */
+uint tc_bytes(int r, int g, int b, uint a) { return uint(r) | (uint(g) << 8) | (uint(b) << 16) | (a << 24); }
 
 /* the ETC1 modifiers a and b of each table codeword (indices 0 to 3 are a, b, -a, -b), and the T and H modes'
    distances, a byte each */
@@ -66,7 +68,7 @@ uint etc2_rgb_pixel(uint hi, uint lo, bool punch, uint x, uint y) {
             if (clear) return 0u;
             int d = tc_byte(ETC2_D0, ETC2_D1, (tc_bits(hi, lo, 35u, 34u) << 1) | (hi & 1u));
             if (k == 0u)
-                return tc_rgba(tc_ext4((tc_bits(hi, lo, 60u, 59u) << 2) | tc_bits(hi, lo, 57u, 56u)),
+                return tc_bytes(tc_ext4((tc_bits(hi, lo, 60u, 59u) << 2) | tc_bits(hi, lo, 57u, 56u)),
                                tc_ext4(tc_bits(hi, lo, 55u, 52u)), tc_ext4(tc_bits(hi, lo, 51u, 48u)), 255u);
             int m = k == 1u ? d : k == 3u ? -d : 0;
             return tc_rgba(tc_ext4(tc_bits(hi, lo, 47u, 44u)) + m, tc_ext4(tc_bits(hi, lo, 43u, 40u)) + m,
@@ -154,20 +156,21 @@ uint bc1_pixel(uint e, uint idx, bool three, uint i) {
     uint e0 = e & 0xFFFFu, e1 = e >> 16, k = (idx >> (2u * i)) & 3u;
     int r0 = bc_expand(e0 >> 11, 5u), g0 = bc_expand((e0 >> 5) & 63u, 6u), b0 = bc_expand(e0 & 31u, 5u);
     int r1 = bc_expand(e1 >> 11, 5u), g1 = bc_expand((e1 >> 5) & 63u, 6u), b1 = bc_expand(e1 & 31u, 5u);
-    if (k == 0u) return tc_rgba(r0, g0, b0, 255u);
-    if (k == 1u) return tc_rgba(r1, g1, b1, 255u);
+    if (k == 0u) return tc_bytes(r0, g0, b0, 255u);
+    if (k == 1u) return tc_bytes(r1, g1, b1, 255u);
     int rq0 = int(e0 >> 11), bq0 = int(e0 & 31u), rq1 = int(e1 >> 11), bq1 = int(e1 & 31u), d = g1 - g0;
     /* d / 4 rounds toward zero, d being of either sign; the sums are never negative (green's is 128 at least),
-       so their divisions by 8 and 256 are shifts */
+       so their divisions by 8 and 256 are shifts, and no quotient is above 255 (93 * 22 / 8, 62 * 33 / 8 and
+       65408 / 256 are): nothing here needs tc_rgba's clamp */
     if (e0 > e1 || !three) {
         if (k == 2u)
-            return tc_rgba((2 * rq0 + rq1) * 22 >> 3, (256 * g0 + d / 4 + 128 + d * 80) >> 8,
+            return tc_bytes((2 * rq0 + rq1) * 22 >> 3, (256 * g0 + d / 4 + 128 + d * 80) >> 8,
                            (2 * bq0 + bq1) * 22 >> 3, 255u);
-        return tc_rgba((rq0 + 2 * rq1) * 22 >> 3, (256 * g1 - d / 4 + 128 - d * 80) >> 8, (bq0 + 2 * bq1) * 22 >> 3,
+        return tc_bytes((rq0 + 2 * rq1) * 22 >> 3, (256 * g1 - d / 4 + 128 - d * 80) >> 8, (bq0 + 2 * bq1) * 22 >> 3,
                        255u);
     }
     if (k == 3u) return 0u;
-    return tc_rgba((rq0 + rq1) * 33 >> 3, (256 * g0 + d / 4 + 128 + d * 128) >> 8, (bq0 + bq1) * 33 >> 3, 255u);
+    return tc_bytes((rq0 + rq1) * 33 >> 3, (256 * g0 + d / 4 + 128 + d * 128) >> 8, (bq0 + bq1) * 33 >> 3, 255u);
 }
 /* NVIDIA's BC4 weights of the second endpoint for indices 2 to 7 (tests/support/bcn.c): eight values, then six, in
    257ths unsigned and 258ths signed */
