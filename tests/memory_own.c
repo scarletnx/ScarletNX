@@ -814,6 +814,36 @@ static void test_watch(void) {
     res_free(r);
 }
 
+/* watches past the end of a lookup, and one across its end, with an owner after them: the walk over watches stops at
+   the end of the range (next_real_nl), and the results are those of a walk over every entry. A lookup or a stage that
+   ends before the owner finds no owner; one that reaches it finds it, after the watches before it */
+static void test_watch_bound(void) {
+    u64 a = region(R0 + 0xF00000, 0x40000);
+    Res* r = res_new(0x1000, 0x50);
+    OwnRange o[4];
+    u8 buf[0x8000];
+    CHECK(own_watch(a + 0x7C00, 0x800) == 0); /* across the end of [a, a + 0x8000) */
+    for (u64 k = 0; k < 32; k++) CHECK(own_watch(a + 0x10000 + k * 0x1000, 0x800) == 0);
+    CHECK(own_begin(a + 0x38000, 0x1000, r, 0) == 0);
+    CHECK(own_lookup(a, 0x8000, o, 4) == 0);
+    CHECK(own_lookup(a + 0x10000, 0x20000, o, 4) == 0);
+    CHECK(own_lookup(a, 0x40000, o, 4) == 1 && o[0].addr == a + 0x38000 && o[0].size == 0x1000 && o[0].res == r &&
+          o[0].res_off == 0);
+    CHECK(own_lookup(a + 0x2F000, 0xA000, o, 4) == 1 && o[0].addr == a + 0x38000);
+    CHECK(own_lookup(a + 0x38800, 0x10, o, 4) == 1 && o[0].addr == a + 0x38800 && o[0].res_off == 0x800);
+    /* a stage of watched pages reads the CPU's bytes; a stage over the owner leaves the owner's part to the caller */
+    CHECK(own_stage(a, 0x8000, buf, o, 4) == 0);
+    for (u32 i = 0; i < 0x8000; i++) CHECK(buf[i] == (u8)(0x11 + i));
+    CHECK(own_stage(a + 0x2F000, 0x8000, buf, o, 4) == 0);
+    for (u32 i = 0; i < 0x8000; i++) CHECK(buf[i] == (u8)(0x11 + 0x2F000 + i));
+    CHECK(own_stage(a + 0x37000, 0x3000, buf, o, 4) == 1 && o[0].addr == a + 0x38000 && o[0].size == 0x1000);
+    for (u32 i = 0; i < 0x1000; i++)
+        CHECK(buf[i] == (u8)(0x11 + 0x37000 + i) && buf[0x2000 + i] == (u8)(0x11 + 0x39000 + i));
+    CHECK(mem_unmap(a, 0x40000) == 0);
+    CHECK(refs(r) == 0);
+    res_free(r);
+}
+
 /* a watch of many pages (more than the first slab of shadows holds, in place), with an owner's page inside it: the
    watch goes around the owner, each of its pages is staged with the CPU's bytes, and the owner's with its own. Let go
    and watched again after the CPU wrote, the pages are staged with the new bytes (a slot let go and taken again) */
@@ -1040,6 +1070,7 @@ int main(int argc, char** argv) {
     test_scan_owned();
     test_let_go_watched();
     test_watch();
+    test_watch_bound();
     test_watch_many();
     test_rearm();
     test_stress();

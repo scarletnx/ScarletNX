@@ -384,9 +384,12 @@ static void producer_unlock(void) {
 }
 
 /* ---------------------------------------------------------------- watches (res NULL) */
-/* the first entry at or after i that is a real owner */
-static u32 next_real_nl(u32 i) {
-    while (i < g_own.nown && !g_own.ent[i].res) i++;
+/* the first entry at or after i that is a real owner, or the first that starts at or after end: the caller asks only
+   for an owner before end. Without the bound, a lookup with no owner in its range walked over every watch after it to
+   the next owner: with about 1,000 render targets watched, that walk took half of the GPU thread's time while one game
+   loaded an area */
+static u32 next_real_nl(u32 i, u64 end) {
+    while (i < g_own.nown && !g_own.ent[i].res && g_own.ent[i].lo < end) i++;
     return i;
 }
 /* whether a watch is on [lo, hi) */
@@ -660,7 +663,7 @@ static void own_fault(u8* p, int write, u32 tid) {
         if (fault_state != 0) {
             /* only watches there: they go, and the thread reads the CPU's bytes, as with no watch (own_watch) */
             pm_lock(&g_own.lk);
-            u32 i = next_real_nl(first_after_nl(page));
+            u32 i = next_real_nl(first_after_nl(page), page + g_own.page);
             int real = i < g_own.nown && g_own.ent[i].lo < page + g_own.page;
             pm_unlock(&g_own.lk);
             if (!real) {
@@ -802,7 +805,8 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
     u32 i, n = 0;
     if (!own_any() || !region_owned(addr, end)) return 0;
     pm_lock(&g_own.lk);
-    for (i = next_real_nl(first_after_nl(addr)); i < g_own.nown && g_own.ent[i].lo < end; i = next_real_nl(i + 1), n++)
+    for (i = next_real_nl(first_after_nl(addr), end); i < g_own.nown && g_own.ent[i].lo < end;
+         i = next_real_nl(i + 1, end), n++)
         if (n < max) {
             const Own* o = &g_own.ent[i];
             u64 lo = o->lo > addr ? o->lo : addr, hi = o->hi < end ? o->hi : end;
@@ -858,7 +862,7 @@ static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
    on its first and last pages: an entry on a page within it would be in it. Under g_own.trap_lk and g_own.lk */
 static int unshadowed_nl(u64 addr, u64 end, u64* at) {
     u64 c = addr;
-    u32 i = next_real_nl(first_after_nl(addr)); /* a watch's bytes are the CPU's: a gap's */
+    u32 i = next_real_nl(first_after_nl(addr), end); /* a watch's bytes are the CPU's: a gap's */
     for (;;) {
         u64 next = i < g_own.nown && g_own.ent[i].lo < end ? (g_own.ent[i].lo > addr ? g_own.ent[i].lo : addr) : end;
         if (next > c) {
@@ -874,7 +878,7 @@ static int unshadowed_nl(u64 addr, u64 end, u64* at) {
         }
         if (next >= end || g_own.ent[i].hi >= end) return 0;
         c = g_own.ent[i].hi;
-        i = next_real_nl(i + 1);
+        i = next_real_nl(i + 1, end);
     }
 }
 
@@ -970,7 +974,7 @@ int own_watch(u64 addr, u64 size) {
         u64 rlo = runs[i].addr > addr ? runs[i].addr : addr;
         u64 rhi = runs[i].addr + runs[i].size < end ? runs[i].addr + runs[i].size : end;
         for (u64 c = rlo; c < rhi;) {
-            u32 j = next_real_nl(first_after_nl(c));
+            u32 j = next_real_nl(first_after_nl(c), rhi);
             u64 gap = j < g_own.nown && g_own.ent[j].lo < rhi ? g_own.ent[j].lo : rhi;
             u64 next = gap < rhi ? g_own.ent[j].hi : rhi; /* before the replace moves the entries */
             if (gap > c) {
