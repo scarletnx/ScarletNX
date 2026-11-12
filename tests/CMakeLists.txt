@@ -1506,7 +1506,7 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     snx_hookgen(snx-test-nn-nsd SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/nsd.hook")
     add_test(NAME nn_nsd COMMAND snx-test-nn-nsd)
     # the native nn::ngc (nn/ngc.c): the profanity filter's checks, with no word lists
-    add_executable(snx-test-nn-ngc nn_ngc.c)
+    add_executable(snx-test-nn-ngc nn_ngc.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
     snx_test_target(snx-test-nn-ngc 23)
     target_include_directories(snx-test-nn-ngc PRIVATE "${PROJECT_SOURCE_DIR}/src")
     snx_hookgen(snx-test-nn-ngc SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/ngc.hook")
