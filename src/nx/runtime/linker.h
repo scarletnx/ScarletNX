@@ -35,5 +35,8 @@ int linker_main(u64 args[4]);
 /* the address the game's modules bind name to: 1 with it in *address, 0 for a name nothing defines or when the
    game's linker runs */
 int linker_find(const char* name, u64* address);
+/* the same among the modules loaded after the one that holds caller, an address of the game's code: 0 too when no
+   module holds it */
+int linker_find_after(u64 caller, const char* name, u64* address);
 
 #endif

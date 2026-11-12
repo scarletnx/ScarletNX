@@ -185,11 +185,17 @@ int main(void) {
           "a module's DT_INIT and DT_FINI are given as addresses");
     {
         SnxU64 at = 0;
-        check(snx_relocate_find(copy, 3, "dup", &at, error, sizeof error) == 1 && at == BASE_A + 0x10,
+        check(snx_relocate_find(copy, 3, 0, "dup", &at, error, sizeof error) == 1 && at == BASE_A + 0x10,
               "a name is found at its first definition in load order");
-        check(snx_relocate_find(copy, 3, "loc", &at, error, sizeof error) == 1 && at == BASE_B + 0x40,
+        check(snx_relocate_find(copy, 3, 0, "loc", &at, error, sizeof error) == 1 && at == BASE_B + 0x40,
               "a local definition is passed over");
-        check(snx_relocate_find(copy, 3, "gone", &at, error, sizeof error) == 0, "a name nothing defines is not found");
+        check(snx_relocate_find(copy, 3, 0, "gone", &at, error, sizeof error) == 0,
+              "a name nothing defines is not found");
+        check(snx_relocate_find(copy, 3, 1, "dup", &at, error, sizeof error) == 1 && at == BASE_B + 0x30,
+              "from the second module on, a name is found at that module's definition");
+        check(snx_relocate_find(copy, 3, 2, "dup", &at, error, sizeof error) == 0 &&
+                  snx_relocate_find(copy, 3, 3, "dup", &at, error, sizeof error) == 0,
+              "and not past the last module that defines it");
     }
     /* in place, as the game's own linker leaves the modules: the same words */
     modules(place, 1);
