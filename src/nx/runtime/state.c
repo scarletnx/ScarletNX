@@ -1595,11 +1595,15 @@ static void ask_do(int op, int slot) {
     slot_label(start, sizeof start, slot, 1);
     state_path(path, sizeof path, name);
     if (op == STATE_SAVE) {
-        if (!slot) return; /* only a load saves there */
+        int over = snx_is_file(path); /* a state there, replaced: said so, F7 asking nothing */
+        if (!slot) return;            /* only a load saves there */
         if (state_save(path, why, sizeof why))
             toast("Not saved: %s", why);
-        else
-            toast("Saved to %s", label);
+        else {
+            ui_lock();
+            overlay_state_saved(label, over, plat_ns());
+            ui_unlock();
+        }
         return;
     }
     if (snx_state_peek(path, &h, NULL, why, sizeof why)) {
