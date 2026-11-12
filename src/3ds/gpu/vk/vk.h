@@ -14,7 +14,7 @@
    not import it (RADV takes no shared memory), the device's own memory, host-visible and cached, whose dma-buf the RAM
    moves into (VK_EXT_external_memory_dma_buf, snx_ctr_memory_adopt), every guest view of a page a map of it. A device
    that takes neither keeps a copy of the RAM in its host-visible memory, which the CPU fills and reads back by page
-   (SnxCtrVk.host_shadow). On a GPU
+   (SnxCtrVkRam.map). On a GPU
    that shares the system's memory, vertex and index data, textures, render targets' load and store, transfers and the
    shown framebuffers are read and written there in place, and nothing of them is copied by the CPU. A discrete GPU
    would read and write each of those bytes across the bus, every time: it works on a copy of the RAM in its own
@@ -34,7 +34,8 @@ typedef struct {
     VkDeviceMemory copy_memory;
     /* the RAM as a copy in the device's host-visible memory, when the driver can neither import it nor move it there
        (a Mac's MoltenVK): buffer is it, map is where the CPU copies the guest's pages to and from, and guest is the
-       board's own memory of the region. NULL when the RAM is imported or the device's */
+       board's own memory of the region. NULL when the RAM is imported or the device's, so the first region's map says
+       which (snx_ctr_vk_shadow) */
     unsigned char* map;
     unsigned char* guest;
     uint32_t base, size; /* the physical range it holds */
@@ -57,10 +58,7 @@ typedef struct {
     bool preserve_infnan;  /* shaderSignedZeroInfNanPreserveFloat32: the generated shaders keep infinities and NaNs */
     bool import_host;      /* VK_EXT_external_memory_host */
     bool export_dmabuf;    /* VK_KHR_external_memory_fd and VK_EXT_external_memory_dma_buf */
-    /* neither: the RAM is a copy in the device's host-visible memory, which the CPU keeps in step with the board's
-       (render.c's copy_in and copy_out) */
-    bool host_shadow;
-    uint64_t shadow_bytes; /* the RAM's copies, and their memory type */
+    uint64_t shadow_bytes; /* the RAM's copies in its host-visible memory (SnxCtrVkRam.map), and their memory type */
     uint32_t shadow_type;
     SnxCtrVkRam ram[8];
     unsigned ram_count;
