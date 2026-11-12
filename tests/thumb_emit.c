@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
     char *triple, *error = NULL, line[2048];
     unsigned index = 0;
     FILE* input;
-    SnxArmCodegenOptions codegen = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A57, SNX_ARM_MEMORY_FLAT};
+    SnxArmCodegenOptions codegen = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A57, SNX_ARM_MEMORY_FLAT, 0, 0};
     if (argc < 3 || argc > 5) return 2;
     if (argc == 5) {
         if (!strcmp(argv[4], "arm7tdmi"))

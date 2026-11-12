@@ -138,7 +138,7 @@ static LLVMValueRef emit(LLVMModuleRef module, const VitaImage* image, uint32_t 
     if (!input) return NULL;
     /* hosted (llvm.h): the run loop is the only caller, and the guest's 4 GiB window is followed by pages that fault
        (VITA_SPACE) */
-    const SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_HOSTED};
+    const SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_HOSTED, 0, 0};
     LLVMValueRef fn = thumb ? snx_thumb_llvm_block_ex(module, name, input, count, key & ~1u, consumed, &options)
                             : snx_arm_llvm_block_ex(module, name, input, count, key & ~1u, consumed, &options);
     free(input);
