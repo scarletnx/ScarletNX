@@ -221,3 +221,211 @@ static int check_release_present_landing(void) {
     puts("release in a present's landing: an owner released there begins no command buffer and adds no submission");
     return 0;
 }
+
+/* When an owner's release is performed, told by its buffer: performed, the buffer is back in the owners' pool, which
+   hands a new owner the smallest buffer of at least its size. The owner here has a size no other check uses, in a
+   buffer made for it, and what the pool held of that size or more is kept out of it until the check ends */
+typedef struct {
+    VkOwnRes* held[640];
+    u32 n;
+} RsHeld;
+static VkOwnRes* rs_owner(RsHeld* h, u64 size) {
+    for (;;) {
+        VkOwnRes* r = vk_own_res_new(size);
+        if (!r || r->size == size) return r;
+        if (h->n == sizeof h->held / sizeof h->held[0]) return NULL;
+        h->held[h->n++] = r;
+    }
+}
+static int rs_pooled(RsHeld* h, VkBuffer buf, u64 size) {
+    VkOwnRes* r = vk_own_res_new(size);
+    int pooled = r && r->buf == buf;
+    if (r && h->n < sizeof h->held / sizeof h->held[0]) h->held[h->n++] = r;
+    return pooled;
+}
+static void rs_done(RsHeld* h) {
+    for (u32 i = 0; i < h->n; i++) vk_own_res_unref(h->held[i]);
+    h->n = 0;
+}
+/* an owner lands through a queue of its own, so its landing runs with a submission of the graphics queue held back:
+   on one queue its copy waits behind that submission */
+static int rs_owner_lands_apart(void) { return g_vk.compute && g_vk.compute != g_vk.gfx; }
+
+/* A slot's recycling lands its previous use's results itself, and that landing releases an owner with the slot still
+   fresh. The slot is not recycled a second time inside its own recycling, and the release goes on the list of the
+   slot that made the newest submission: the other one's, held back here where the owner's landing does not wait
+   behind it (rs_owner_lands_apart). It went on the list being freed, and was performed at once, with that submission
+   still to run */
+static int check_release_recycle_landing(void) {
+    RsHeld held = {0};
+    const u64 size = 0x3250;
+    VkSemaphore gate = VK_NULL_HANDLE, result;
+    int apart = rs_owner_lands_apart();
+    u64 first, newest;
+    if (!own_traps()) return 0;
+    gmmu_map(RS_GVA, RS_CPU, 0x2000);
+    vk_lock();
+    vk_finish();
+    VkOwnRes* owner = rs_owner(&held, size);
+    CHECK(owner);
+    VkBuffer buf = owner->buf;
+    CHECK(!rs_result(owner, 1, &result, &first)); /* held back past the other slot's present, which would land it */
+    vk_frame_next();                              /* nothing recording: the other slot */
+    CHECK(!rs_record());
+    if (apart) CHECK(!lw_gate(&gate));
+    vk_frame_next(); /* its submission, the newest, held back; the first slot again, fresh, its result still to land */
+    newest = vk_last_submit();
+    CHECK(!rs_result_go(result, first));
+    u32 recycles = vk_frame_recycles();
+    vk_cmd(); /* recycles the slot: its landing releases the owner */
+    recycles = vk_frame_recycles() - recycles;
+    int early = rs_pooled(&held, buf, size);
+    if (apart) CHECK(!lw_open(gate));
+    if (recycles != 1 || early)
+        fprintf(stderr,
+                "release in a recycling's landing: %u recyclings where one slot is recycled once, the release %s "
+                "before submission %llu was done\n",
+                recycles, early ? "performed" : "not performed", (unsigned long long)newest);
+    CHECK(recycles == 1);
+    CHECK(!early);
+    CHECK(!rs_landed());
+    vk_frame_next();
+    vk_cmd(); /* the other slot recycled, and this one's list freed before it: every slot's releases are performed */
+    vk_frame_next();
+    vk_cmd();
+    CHECK(rs_pooled(&held, buf, size));
+    vk_finish();
+    rs_done(&held);
+    vk_unlock();
+    if (apart) vkDestroySemaphore(g_vk.dev, gate, NULL);
+    puts("release in a recycling's landing: the slot is recycled once and the release waits for the newest submission");
+    return 0;
+}
+
+/* A landing asked for with the current slot fresh (a release's gate, a read of guest memory under results) releases an
+   owner: the slot is not recycled inside the landing, whose results may be in the rings a recycling hands back, and
+   the release is performed once the slots are recycled */
+static int check_release_landing_fresh(void) {
+    RsHeld held = {0};
+    const u64 size = 0x3350;
+    if (!own_traps()) return 0;
+    gmmu_map(RS_GVA, RS_CPU, 0x2000);
+    vk_lock();
+    vk_finish();
+    VkOwnRes* owner = rs_owner(&held, size);
+    CHECK(owner);
+    VkBuffer buf = owner->buf;
+    u64 result;
+    CHECK(!rs_result(owner, 1, NULL, &result));
+    vk_frame_next(); /* nothing recording: the other slot, fresh */
+    u32 recycles = vk_frame_recycles(), slot = vk_frame_slot();
+    vk_land_through(result);
+    recycles = vk_frame_recycles() - recycles;
+    int early = rs_pooled(&held, buf, size);
+    if (recycles || early)
+        fprintf(stderr,
+                "release in a landing with the slot fresh: %u slots recycled inside the landing, where none is, the "
+                "release %s inside it\n",
+                recycles, early ? "performed" : "not performed");
+    CHECK(!recycles && vk_frame_slot() == slot);
+    CHECK(!early);
+    CHECK(!rs_landed());
+    for (int i = 0; i < VK_FRAMES; i++) {
+        vk_cmd();
+        vk_frame_next();
+    }
+    vk_cmd();
+    CHECK(rs_pooled(&held, buf, size));
+    vk_finish();
+    rs_done(&held);
+    vk_unlock();
+    puts("release in a landing with the slot fresh: the landing recycles no slot");
+    return 0;
+}
+
+/* A landing that records: a storage result lands over the bytes of a render target whose pixels memory has not got,
+   and they are written back first (commands recorded, submitted and waited for inside the landing). With the slot
+   fresh, inside its own recycling or in a landing asked for before the frame began, they go after the slot's previous
+   use, and the slot is recycled once, when its frame begins */
+static int check_landing_records_fresh(void) {
+    const u64 cpu = RS_CPU + 0x1000, gva = RS_GVA + 0x1000;
+    static const float color[2][4] = {{1, 0, 0, 1}, {0, 1, 0, 1}};
+    if (vk_uma()) { /* the release checks above record in their landings there: an owner lands on the one queue */
+        puts("landing that records: not run on unified memory, where a storage result is written in place");
+        return 0;
+    }
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    u32* r = ch->r3d;
+    gmmu_map(RS_GVA, RS_CPU, 0x2000);
+    r[0x487] = 1;
+    r[0x201] = (u32)gva;
+    r[0x202] = 64; /* 16 RGBA pixels, pitch linear */
+    r[0x203] = 16;
+    r[0x204] = 0xD5; /* A8B8G8R8 */
+    r[0x205] = 0x1000;
+    r[0x206] = 1;
+    for (int asked = 0; asked < 2; asked++) { /* 0: in the slot's recycling; 1: in a landing asked for */
+        const char* where = asked ? "with the slot fresh" : "in a slot's recycling";
+        VkSemaphore gate;
+        VkBuffer output;
+        u64 at;
+        vk_lock();
+        vk_finish();
+        memset(GP(cpu), 0, 0x1000);
+        memcpy(&r[0x360], color[asked], sizeof color[asked]);
+        engine_clear(ch, 15 << 2);
+        vk_render_end();
+        Surf* target = vk_rt_find(gva);
+        u64 pixels = vk_surf_flush_size(target);
+        CHECK(target && pixels && pixels < 0x800);
+        /* the target's bytes and more, not whole pages: the binding takes the pixels on the GPU, the target keeps
+           them, and the result lands at its submission's end */
+        CHECK(vk_buf_copy_writable(gva, 0x800, &output, &at, 1));
+        vk_buf_writable_commit();
+        CHECK(vk_surf_flush_size(target) == pixels);
+        CHECK(!owned_test_fill(output, at, 0x800, 0x44));
+        CHECK(!lw_gate(&gate));
+        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE); /* held back until its own landing has found it not done */
+        u64 result = vk_last_submit();
+        CHECK(!lw_open(gate));
+        vk_wait_submit(result);
+        vkDestroySemaphore(g_vk.dev, gate, NULL);
+        vk_frame_next();             /* nothing recording: the other slot */
+        if (!asked) vk_frame_next(); /* and the result's slot again, fresh */
+        CHECK(vk_surf_flush_size(target) == pixels && vk_last_submit() == result);
+        u32 recycles = vk_frame_recycles(), expected = asked ? 0 : 1;
+        if (asked)
+            vk_land_through(result);
+        else
+            vk_cmd();
+        recycles = vk_frame_recycles() - recycles;
+        u64 submits = vk_last_submit() - result, left = vk_surf_flush_size(target);
+        if (recycles != expected || !submits || left)
+            fprintf(stderr,
+                    "a landing that records %s: %u slots recycled where %u are, %llu submissions made inside it and "
+                    "%llu bytes of the target left to write back\n",
+                    where, recycles, expected, (unsigned long long)submits, (unsigned long long)left);
+        CHECK(submits && !left); /* the write-back ran inside the landing */
+        CHECK(recycles == expected);
+        if (asked) {
+            recycles = vk_frame_recycles();
+            vk_cmd(); /* the frame begins: the slot's one recycling */
+            CHECK(vk_frame_recycles() == recycles + 1);
+        }
+        vk_finish();
+        vk_unlock();
+        /* the pixels written back first: the result's bytes go over the bytes they left as the result found them */
+        for (u32 i = 0; i < 0x1000; i++) {
+            u8 want = i >= 0x800 ? 0 : i < pixels && (i % 4 == 3 || i % 4 == (u32)asked) ? 255 : 0x44;
+            if (GP(cpu)[i] != want) {
+                fprintf(stderr, "a landing that records %s: byte %#x of the page is %02x, expected %02x\n", where, i,
+                        GP(cpu)[i], want);
+                return 1;
+            }
+        }
+    }
+    free(ch);
+    puts("landing that records: with the slot fresh, its commands go after the slot's previous use");
+    return 0;
+}
