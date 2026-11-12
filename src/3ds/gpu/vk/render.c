@@ -2119,9 +2119,13 @@ void snx_ctr_vk_pipeline_cache_save(bool at_exit) {
     }
     __atomic_store_n(&g.cache_dirty, 0, __ATOMIC_RELAXED);
     size_t saved = 0;
-    if (snx_vk_pipeline_cache_save(device(), g.cache, g.cache_path, &saved))
-        fprintf(stderr, "3ds gpu: the pipeline cache could not be written to %s\n", g.cache_path);
-    else if (at_exit)
+    char why[512];
+    if (snx_vk_pipeline_cache_save(device(), g.cache, g.cache_path, &saved, why, sizeof why)) {
+        fprintf(stderr, "3ds gpu: the pipeline cache could not be written to %s: %s\n", g.cache_path, why);
+        /* written again after another quiet time, or at the end */
+        __atomic_store_n(&g.cache_used_ms, (uint64_t)(snx_seconds() * 1000), __ATOMIC_RELAXED);
+        __atomic_store_n(&g.cache_dirty, 1, __ATOMIC_RELAXED);
+    } else if (at_exit)
         fprintf(stderr, "3ds gpu: the pipeline cache written (%zu KB)\n", saved >> 10);
 }
 

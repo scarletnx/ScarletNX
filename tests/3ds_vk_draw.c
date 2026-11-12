@@ -14,7 +14,10 @@
 #include "3ds/gpu/vk/vk_render.h"
 #include "3ds/gpu/vk/vk_transfer.h"
 #include "3ds/gpu/vk/vk_y2r.h"
+#include "common/gpu/vk/vk_common.h"
+#include "common/platform/file.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "support/3ds_vk_path.h"
 #include "support/thread_nice.h"
@@ -666,6 +669,49 @@ static void async_pipelines(SnxCtrMemory* m) {
     }
     free(s);
 }
+/* the pipeline cache kept between runs: a draw's pipeline goes into the file named for the driver, in the folder's
+   shader_cache, and a write that fails, onto a folder in the file's place, is made again by the next one */
+static void pipeline_cache(SnxCtrMemory* m) {
+    static unsigned char start[W * H * 4], none[W * H * 4], gpu[W * H * 4], gpu_depth[W * H * 4];
+    const char* folder = "3ds_vk_draw_pipeline_cache";
+    (void)snx_remove_tree(folder);
+    (void)plat_mkdir(folder); /* the game's folder, where the renderer makes shader_cache */
+    g_settings.vulkan_pipeline_cache = 1;
+    snx_ctr_vk_pipeline_cache_open(folder);
+    VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
+    vkGetPhysicalDeviceProperties2(snx_ctr_vk()->phys, &props);
+    char tag[SNX_VK_DRIVER_TAG], dir[256], path[512];
+    snx_vk_driver_tag(tag, sizeof tag, (uint32_t)driver.driverID, props.properties.vendorID, props.properties.deviceID,
+                      NULL);
+    snprintf(dir, sizeof dir, "%s/shader_cache", folder);
+    snx_vk_driver_path(path, sizeof path, dir, "vk_pipelines", tag, ".bin");
+    Scene* s = triangle_scene("pipeline cache", 3);
+    random_fill(start, sizeof start);
+    setup(m, s, start, none);
+    bool drawn = draw(m, s, &vulkan, gpu, gpu_depth);
+    bool blocked = !plat_mkdir(path);
+    snx_ctr_vk_pipeline_cache_save(true); /* fails, and says so */
+    bool kept_out = snx_is_dir(path) && !snx_remove_empty_dir(path);
+    snx_ctr_vk_pipeline_cache_save(true);
+    size_t size = 0;
+    unsigned char* data = snx_read_file(path, &size);
+    char** names = NULL;
+    size_t count = 0, temporary = 0;
+    if (!snx_list_dir(dir, &names, &count))
+        for (size_t i = 0; i < count; ++i) {
+            size_t n = strlen(names[i]);
+            temporary += n > 4 && !strcmp(names[i] + n - 4, ".tmp");
+        }
+    snx_free_strings(names, count);
+    bool ok = drawn && blocked && kept_out && data && size > 32 && !temporary;
+    printf("%-24s %s: %zu bytes once the folder in its place went, %zu temporary files: %s\n", s->name, path, size,
+           temporary, ok ? "ok" : "FAIL");
+    failures += !ok;
+    free(data);
+    free(s);
+    (void)snx_remove_tree(folder);
+}
 static void presented_after_draw(SnxCtrMemory* m) {
     present_screens(m, true);
     commands_after_draw(m);
@@ -1107,6 +1153,7 @@ static const Mode modes[] = {{"--present", "the presented screens", screens},
                              {"--texture-after-draw", "the textures after a draw", texture_after_draw},
                              {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy},
                              {"--async", "the draws with async_pipelines", async_pipelines},
+                             {"--pipeline-cache", "the pipeline cache kept between runs", pipeline_cache},
                              {"--shadow", "the shadow maps", shadows}};
 
 int main(int argc, char** argv) {

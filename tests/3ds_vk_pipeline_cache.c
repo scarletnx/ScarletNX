@@ -2,9 +2,9 @@
    Copyright 2026 the ScarletNX contributors
    The pipeline cache kept between runs (common/gpu/vk/vk_common.c, used by the 3DS renderer and the Switch's), on the
    3DS's device: no file gives an empty cache, a pipeline made with it is written and read back whole, a cut file and
-   one of another driver build are kept from the driver, which the reason says, and still give a cache, a write leaves
-   no temporary file, and the 3DS renderer's file is in the folder's shader_cache with the driver's tag in its name.
-   argv[1] is a folder the test may fill */
+   one of another driver build are kept from the driver, which the reason says, and still give a cache, a write that
+   fails says why, no write leaves a temporary file, and the 3DS renderer's file is in the folder's shader_cache with
+   the driver's tag in its name. argv[1] is a folder the test may fill */
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
 #include "3ds/gpu/vk/shaders/fill_spv.h"
@@ -68,8 +68,9 @@ int main(int argc, char** argv) {
     CHECK(snx_vk_compute_pipeline(dev, cache, fill.layout, snx_ctr_fill_spv, snx_ctr_fill_spv_size, &made) ==
           VK_SUCCESS);
     size_t saved = 0;
-    CHECK(snx_vk_pipeline_cache_save(dev, cache, path, &saved) == 0);
+    CHECK(snx_vk_pipeline_cache_save(dev, cache, path, &saved, why, sizeof why) == 0);
     CHECK(saved > 0);
+    CHECK(!why[0]);
     CHECK(file_size(path) == (long)saved);
     VkPipelineCache again = snx_vk_pipeline_cache_load(dev, &props, path, &loaded, why, sizeof why);
     CHECK(again != VK_NULL_HANDLE);
@@ -79,6 +80,19 @@ int main(int argc, char** argv) {
     VkPipeline remade = VK_NULL_HANDLE;
     CHECK(snx_vk_compute_pipeline(dev, again, fill.layout, snx_ctr_fill_spv, snx_ctr_fill_spv_size, &remade) ==
           VK_SUCCESS);
+
+    /* a write that fails says why: a folder where the file goes, a folder that is not there */
+    char *blocked = snx_path_join(dir, "blocked.bin"), *missing = snx_path_join(dir, "missing/cache.bin");
+    size_t none = 1;
+    (void)snx_remove_empty_dir(blocked);
+    CHECK(!plat_mkdir(blocked));
+    CHECK(snx_vk_pipeline_cache_save(dev, cache, blocked, &none, why, sizeof why) == -1);
+    printf("onto a folder: %s\n", why);
+    CHECK(none == 0);
+    CHECK(strstr(why, ".tmp cannot be moved over it (") != NULL);
+    CHECK(snx_vk_pipeline_cache_save(dev, cache, missing, &none, why, sizeof why) == -1);
+    printf("into a folder that is not there: %s\n", why);
+    CHECK(strstr(why, ".tmp cannot be written (") != NULL);
 
     /* no temporary file of this process's left beside it: its name ends in .<pid>.tmp, so look for any */
     char** names = NULL;
@@ -132,6 +146,9 @@ int main(int argc, char** argv) {
     snx_ctr_vk_free();
     snx_ctr_memory_free(m);
     remove(path);
+    (void)snx_remove_empty_dir(blocked);
+    free(blocked);
+    free(missing);
     free(cache_dir);
     free(path);
     if (g_failed) return 1;

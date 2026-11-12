@@ -58,6 +58,10 @@ void vk_pipeline_save(int at_exit) {
         return;
     }
     size_t saved;
-    (void)snx_vk_pipeline_cache_save(g_vk.dev, g_pipeline.pcache, g_pipeline.pcache_path, &saved);
+    char why[512];
+    if (snx_vk_pipeline_cache_save(g_vk.dev, g_pipeline.pcache, g_pipeline.pcache_path, &saved, why, sizeof why)) {
+        WARN("vulkan: the pipeline cache could not be written to %s: %s\n", g_pipeline.pcache_path, why);
+        pcache_note(); /* written again after another quiet time, or at exit */
+    }
     pm_unlock(&g_pipeline.psave);
 }
