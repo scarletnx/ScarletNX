@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
 // The ASTC compute shader's body (src/nx/gpu/texture/astc_decode.glsl) run on the CPU through tests/glsl/glsl.hpp,
-// compared byte for byte with the CPU reference decoder (src/nx/gpu/texture/astc_cpu.c): every footprint in both decode
+// compared byte for byte with the CPU reference decoder (tests/support/astc.c): every footprint in both decode
 // modes, random blocks through all 2048 block modes, sizes that are not a multiple of the footprint, and strips of
 // several slices in one dispatch, as vk/astc.c batches a 3D texture's. No GPU is needed: tests/astc_vulkan.c compares
 // the SPIR-V build of the same file with the same reference on a Vulkan device.

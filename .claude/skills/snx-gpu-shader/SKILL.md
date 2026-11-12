@@ -20,7 +20,7 @@ on lavapipe. Write the source as the machine code that you want.
 
 ## Before you change anything
 
-1. Read the CPU reference (`src/nx/gpu/texture/astc_cpu.c`, `compose_cpu` in `vic.c`). Read also the invariants that its
+1. Read the CPU reference (`tests/support/astc.c`, `compose_cpu` in `vic.c`). Read also the invariants that its
    callers guarantee. For example, `slot_resolve` clips slots to the target, and NV12 starts are even.
 
    Invariants are free optimizations. Write each one down where the code uses it. Make the host refuse jobs that
