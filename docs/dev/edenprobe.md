@@ -22,7 +22,7 @@ fails.
 
 ```sh
 python3 scripts/edenprobe.py run --runtime build/scarletnx --nro edenprobe.nro --out /tmp/edenprobe \
-    --mode "quick notime cpu fs video display kernel audio" \
+    --mode "quick notime cpu fs video display kernel audio hooks" \
     [--baseline tests/edenprobe/linux-x86_64.txt]
 ```
 
@@ -73,6 +73,7 @@ Those of the example, which CI runs; edenprobe's
 | `display` | a layer's buffer history |
 | `kernel` | the scheduler: priority inheritance, preemption, migration |
 | `audio` | the audio renderer: resampler, circular buffer, limiter; headless, nothing is played |
+| `hooks` | nn::fs, time, pl, ngc and nsd asked through the SDK's functions the probe exports, not by IPC: the runtime serves none of their services |
 
 Left out: `graphics` (the drawing suites: clears, blending, depth, textures and their formats, queries, blits),
 which write their own GPU command buffers. They were left out while the runtime had no Maxwell front end, when
