@@ -764,6 +764,33 @@ static void test_storage_contracts(TStorage* storage, u64 size) {
     tstorage_read(storage, size - 1, 1);
     CHECK(GP(0x5000)[1] == 0xcc);
 }
+/* a read the storage refuses says why, with the values: one past its end, one into guest memory that ends in free
+   pages, one into memory past the address space (the result, 2002-3005, names none of them) */
+static void test_storage_refusals(TStorage* storage, u64 size) {
+    const struct {
+        u64 off, size, buffer;
+    } cases[] = {{size - 2, 3, 0x5000}, {0, 0x10, TEST_GUEST_SIZE - 8}, {0x10, 0x10, AS_SIZE - 8}};
+    char want[3][256];
+    CHECK(size >= 0x20);
+    snprintf(want[0], sizeof want[0],
+             "fs: a storage read of 3 bytes at %llx passes the storage's end, %llx: it answers 2002-3005\n",
+             (unsigned long long)(size - 2), (unsigned long long)size);
+    snprintf(want[1], sizeof want[1],
+             "fs: a storage read of 10 bytes at 0 goes into guest memory at fff8, whose address 10000 can't take it "
+             "(state 0, permission 0): it answers 2002-3005\n");
+    snprintf(want[2], sizeof want[2],
+             "fs: a storage read of 10 bytes at 10 goes into guest memory at %llx, past the address space's end, %llx: "
+             "it answers 2002-3005\n",
+             (unsigned long long)(AS_SIZE - 8), (unsigned long long)AS_SIZE);
+    for (int i = 0; i < 3; i++) {
+        test_fs_text[0] = 0;
+        CHECK(tstorage_read_at(storage, cases[i].off, cases[i].buffer, cases[i].size) == -1);
+        if (strcmp(test_fs_text, want[i])) fprintf(stderr, "said:     %sexpected: %s", test_fs_text, want[i]);
+        CHECK(!strcmp(test_fs_text, want[i]));
+    }
+    test_fs_text[0] = 0; /* a read of no bytes is refused nowhere, and says nothing */
+    CHECK(tstorage_read_at(storage, size, AS_SIZE - 8, 0) == 0 && !test_fs_text[0]);
+}
 
 /* finds a RomFS entry the way the SDK does: hash its parent's table offset and its name (bytes unsigned), then walk
    that bucket's chain */
@@ -814,6 +841,7 @@ static void test_virtual_services(TFs fs) {
     TStorage archive = open_data(0x0100000000000819ull);
     CHECK(tstorage_size(&archive) == 0x200);
     test_storage_contracts(&archive, 0x200);
+    test_storage_refusals(&archive, 0x200);
     tstorage_read(&archive, 0, 0x200);
     u64 header_size = snx_ld_le64(GP(0x5000));
     CHECK(header_size == 0x50);
@@ -1017,6 +1045,7 @@ static void test_extracted_romfs(void) {
     u64 image_size = tstorage_size(&storage);
     CHECK(image_size < 0x8000 && image_size > 0x200);
     test_storage_contracts(&storage, image_size);
+    test_storage_refusals(&storage, image_size);
     tstorage_read(&storage, 0, image_size);
     u8* image = GP(0x5000);
     u64 header[10];
@@ -1205,6 +1234,7 @@ static void image_holds(TStorage* storage, const char* name, const char* content
     const u8* image = GP(0x5000);
     CHECK(total >= 0x50 && total <= 0x8000);
     test_storage_contracts(storage, total);
+    test_storage_refusals(storage, total);
     tstorage_read(storage, 0, total);
     file_table = snx_ld_le64(image + 0x38);
     data_offset = snx_ld_le64(image + 0x48);
