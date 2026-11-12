@@ -183,16 +183,20 @@ static unsigned char* word_at(const SnxRelocModule* m, SnxU64 target) {
     return m->data + (target - m->data_off);
 }
 
+/* refused: the name of the first symbol that a closed module's definition would take, of module refused_in, the
+   closed one refused_by */
 typedef struct {
     SnxRelocModule* modules;
     const Tables* tables;
     size_t count;
     SnxRelocCounts* counts;
+    const char* refused;
+    size_t refused_in, refused_by;
 } Linker;
 
 /* The address of the module's symbol: 1 with it in *address, or 0 when nothing defines it, *weak saying whether it
    is weak and *name its name (NULL for a symbol outside the table) */
-static int resolve(const Linker* l, size_t module, SnxU64 symbol, SnxU64* address, int* weak, const char** name) {
+static int resolve(Linker* l, size_t module, SnxU64 symbol, SnxU64* address, int* weak, const char** name) {
     const SnxRelocModule* m = &l->modules[module];
     const Tables* t = &l->tables[module];
     const unsigned char* s;
@@ -211,6 +215,10 @@ static int resolve(const Linker* l, size_t module, SnxU64 symbol, SnxU64* addres
     for (i = 0; i < l->count; ++i) {
         def = find(&l->tables[i], *name);
         if (!def || ELF64_ST_BIND(def->info) == STB_LOCAL) continue;
+        if (l->modules[i].closed && i != module) {
+            if (!l->refused) l->refused = *name, l->refused_in = module, l->refused_by = i;
+            return 0;
+        }
         *address = l->modules[i].base + def->value;
         return 1;
     }
@@ -250,36 +258,112 @@ static void link_one(void* user, size_t module, int kind, SnxU64 target, SnxU64 
     }
 }
 
-int snx_relocate(SnxRelocModule* modules, size_t count, SnxRelocCounts* counts, char* error, size_t error_size) {
-    Tables* tables = (Tables*)snx_alloc((count ? count : 1) * sizeof(*tables));
+/* a module of an earlier load, once another was added: a symbol of it that binds to the added module's definition */
+static void later_one(void* user, size_t module, int kind, SnxU64 target, SnxU64 symbol, SnxU64 addend) {
+    Linker* l = (Linker*)user;
+    SnxRelocModule* m = &l->modules[module];
+    const SnxRelocModule* added = &l->modules[l->count - 1];
+    const char* name = symbol_name(m, &l->tables[module], symbol);
+    const Def* def;
+    unsigned char* p;
+    SnxU64 address = 0;
+    int weak;
+    if ((kind != SYMBOLIC && kind != SLOT) || !name) return;
+    def = find(&l->tables[l->count - 1], name);
+    p = word_at(m, target);
+    if (!def || !p || !resolve(l, module, symbol, &address, &weak, &name) || address != added->base + def->value)
+        return;
+    snx_st_le64(p, address + addend);
+    ++l->counts->earlier;
+}
+
+/* every module's tables with their definitions, in one block to free: NULL said in error */
+static Tables* read_all(const SnxRelocModule* modules, size_t count, char* error, size_t error_size) {
+    Tables* tables;
+    Tables one;
     Def* defs;
-    Linker l;
     SnxU64 symbols = 0;
     size_t i, used = 0;
-    memset(counts, 0, sizeof(*counts));
     for (i = 0; i < count; ++i) {
-        modules[i].lazy = 0;
-        if (read_tables(&modules[i], &tables[i], error, error_size)) {
-            free(tables);
-            return -1;
-        }
-        modules[i].init = tables[i].init ? modules[i].base + tables[i].init : 0;
-        modules[i].fini = tables[i].fini ? modules[i].base + tables[i].fini : 0;
-        symbols += tables[i].symbols;
+        if (read_tables(&modules[i], &one, error, error_size)) return NULL;
+        symbols += one.symbols;
     }
-    defs = (Def*)snx_alloc((size_t)(symbols ? symbols : 1) * sizeof(*defs));
+    tables = (Tables*)snx_alloc((count ? count : 1) * sizeof(*tables) + (size_t)symbols * sizeof(*defs));
+    defs = (Def*)(tables + (count ? count : 1));
     for (i = 0; i < count; ++i) {
+        read_tables(&modules[i], &tables[i], error, error_size); /* read once already */
         tables[i].defs = defs + used;
         tables[i].def_count = read_defs(&modules[i], &tables[i], tables[i].defs);
         used += tables[i].def_count;
     }
+    return tables;
+}
+/* links the modules from `first` on, then gives the ones before it what the last defines when `first` is not 0 */
+static int link_from(SnxRelocModule* modules, size_t count, size_t first, SnxRelocCounts* counts, char* error,
+                     size_t error_size) {
+    Tables* tables;
+    Linker l = {0};
+    size_t i;
+    int rc = 0;
+    memset(counts, 0, sizeof(*counts));
+    tables = read_all(modules, count, error, error_size);
+    if (!tables) return -1;
     l.modules = modules;
     l.tables = tables;
     l.count = count;
     l.counts = counts;
-    for (i = 0; i < count; ++i) walk(&modules[i], &tables[i], i, link_one, &l);
-    free(defs);
+    for (i = first; i < count; ++i) {
+        modules[i].lazy = 0;
+        modules[i].init = tables[i].init ? modules[i].base + tables[i].init : 0;
+        modules[i].fini = tables[i].fini ? modules[i].base + tables[i].fini : 0;
+    }
+    for (i = first; i < count; ++i) walk(&modules[i], &tables[i], i, link_one, &l);
+    for (i = 0; i < first; ++i) walk(&modules[i], &tables[i], i, later_one, &l);
+    if (l.refused)
+        rc = fail(error, error_size, "%s binds %s to %s's definition, a module loaded for no other to bind to",
+                  modules[l.refused_in].name, l.refused, modules[l.refused_by].name);
     free(tables);
+    return rc;
+}
+
+int snx_relocate(SnxRelocModule* modules, size_t count, SnxRelocCounts* counts, char* error, size_t error_size) {
+    return link_from(modules, count, 0, counts, error, error_size);
+}
+
+int snx_relocate_added(SnxRelocModule* modules, size_t count, SnxRelocCounts* counts, char* error, size_t error_size) {
+    return link_from(modules, count, count ? count - 1 : 0, counts, error, error_size);
+}
+
+typedef struct {
+    const SnxRelocModule* modules;
+    size_t gone;
+    SnxU64* words;
+} Reverter;
+
+static void revert_one(void* user, size_t module, int kind, SnxU64 target, SnxU64 symbol, SnxU64 addend) {
+    Reverter* r = (Reverter*)user;
+    const SnxRelocModule *m = &r->modules[module], *gone = &r->modules[r->gone];
+    unsigned char* p = word_at(m, target);
+    (void)symbol, (void)addend;
+    if ((kind != SYMBOLIC && kind != SLOT) || !p || snx_ld_le64(p) - gone->base >= gone->size) return;
+    snx_st_le64(p, kind == SLOT ? m->lazy : 0);
+    ++*r->words;
+}
+
+int snx_relocate_removed(const SnxRelocModule* modules, size_t count, size_t gone, SnxU64* words, char* error,
+                         size_t error_size) {
+    Reverter r;
+    size_t i;
+    *words = 0;
+    r.modules = modules;
+    r.gone = gone;
+    r.words = words;
+    for (i = 0; i < count; ++i) {
+        Tables t;
+        if (i == gone) continue;
+        if (read_tables(&modules[i], &t, error, error_size)) return -1;
+        walk(&modules[i], &t, i, revert_one, &r);
+    }
     return 0;
 }
 
@@ -326,25 +410,41 @@ int snx_relocate_compare(const SnxRelocModule* modules, size_t count, SnxRelocDi
     return 0;
 }
 
+/* the module's first symbol that defines name, as the sorted definitions give it, or NULL */
+static const unsigned char* defined(const SnxRelocModule* m, const Tables* t, const char* name) {
+    SnxU64 k;
+    for (k = 1; k < t->symbols; ++k) {
+        const unsigned char* s = m->image + t->symtab + k * SYM_SIZE;
+        unsigned section = snx_ld_le16(s + 6);
+        const char* own = symbol_name(m, t, k);
+        if (own && !strcmp(own, name) && section != SHN_UNDEF && section != SHN_COMMON &&
+            ELF64_ST_TYPE(s[4]) != STT_FILE)
+            return s;
+    }
+    return NULL;
+}
+
 int snx_relocate_find(const SnxRelocModule* modules, size_t count, size_t first, const char* name, SnxU64* address,
                       char* error, size_t error_size) {
     size_t i;
-    SnxU64 k;
     for (i = first; i < count; ++i) {
         const SnxRelocModule* m = &modules[i];
+        const unsigned char* s;
         Tables t;
         if (read_tables(m, &t, error, error_size)) return -1;
-        for (k = 1; k < t.symbols; ++k) { /* the first of the table by that name, as the sorted definitions give */
-            const unsigned char* s = m->image + t.symtab + k * SYM_SIZE;
-            unsigned section = snx_ld_le16(s + 6);
-            const char* own = symbol_name(m, &t, k);
-            if (!own || strcmp(own, name) || section == SHN_UNDEF || section == SHN_COMMON ||
-                ELF64_ST_TYPE(s[4]) == STT_FILE)
-                continue;
-            if (ELF64_ST_BIND(s[4]) == STB_LOCAL) break; /* a local one is the module's answer: the next module's */
-            *address = m->base + snx_ld_le64(s + 8);
-            return 1;
-        }
+        s = defined(m, &t, name);
+        if (!s || ELF64_ST_BIND(s[4]) == STB_LOCAL) continue; /* a local one is the module's answer: the next's */
+        *address = m->base + snx_ld_le64(s + 8);
+        return 1;
     }
     return 0;
+}
+
+int snx_relocate_own(const SnxRelocModule* module, const char* name, SnxU64* address, char* error, size_t error_size) {
+    const unsigned char* s;
+    Tables t;
+    if (read_tables(module, &t, error, error_size)) return -1;
+    s = defined(module, &t, name);
+    if (s) *address = module->base + snx_ld_le64(s + 8);
+    return s != NULL;
 }

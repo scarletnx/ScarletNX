@@ -2,7 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* The linker (nx/loader/relocate.h): three modules in load order, a, b and c, each a page of tables and a quarter page
    of data, with every kind of relocation and every case of the rule a symbol is bound by. They are linked into copies
-   of their data, then in place, as a game's own linker relocates them, and the two are compared */
+   of their data, then in place, as a game's own linker relocates them, and the two are compared. A fourth, d, is
+   loaded after them as the program loads an NRO: it is linked alone, the words of the others that nothing defined
+   take its definitions, and they lose them when it is unloaded */
 #include "nx/loader/relocate.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
@@ -23,6 +25,7 @@ enum { ABS64 = 257, ABS32 = 258, GLOB_DAT = 1025, JUMP_SLOT = 1026, RELATIVE = 1
 #define BASE_A 0x100000ull
 #define BASE_B 0x200000ull
 #define BASE_C 0x300000ull
+#define BASE_D 0x400000ull
 
 typedef struct {
     unsigned char* image;
@@ -77,7 +80,7 @@ static void end(Build* b, SnxU64 rela_size, SnxU64 init, SnxU64 fini) {
     }
 }
 
-static unsigned char g_image[3][MODULE_BYTES], g_copy[3][DATA_SIZE];
+static unsigned char g_image[4][MODULE_BYTES], g_copy[3][DATA_SIZE];
 
 /* the three modules as loaded. rela_size: module b's DT_RELASZ, 0 for what its table holds */
 static void build(SnxU64 rela_size) {
@@ -135,6 +138,7 @@ static void modules(SnxRelocModule* m, int in_place) {
     static const SnxU64 bases[3] = {BASE_A, BASE_B, BASE_C};
     int i;
     for (i = 0; i < 3; ++i) {
+        memset(&m[i], 0, sizeof(m[i]));
         m[i].name = names[i];
         m[i].image = g_image[i];
         m[i].base = bases[i];
@@ -151,6 +155,106 @@ static void modules(SnxRelocModule* m, int in_place) {
     }
 }
 static SnxU64 word(int module, unsigned offset) { return snx_ld_le64(g_copy[module] + offset); }
+
+/* d, loaded after the others. shared: it defines what b lacks (gone, gone_weak) and dup once more; else only its
+   own solo */
+static void build_added(int shared) {
+    Build d;
+    unsigned ext, dup, solo;
+    begin(&d, g_image[3]);
+    if (shared) {
+        symbol(&d, "gone", 0x12, 0, 1, 0x70);
+        symbol(&d, "gone_weak", 0x12, 0, 1, 0x78);
+        symbol(&d, "dup", 0x12, 0, 1, 0x7c);
+    }
+    solo = symbol(&d, "solo", 0x12, 0, 1, 0x84);
+    symbol(&d, "mine", 0x02, 0, 1, 0x88); /* local */
+    ext = symbol(&d, "ext", 0x12, 0, 0, 0);
+    dup = symbol(&d, "dup2", 0x12, 0, 0, 0); /* nothing defines it */
+    rela(&d, 0, DATA, ABS64, ext, 2);        /* c's */
+    rela(&d, 0, DATA + 8, ABS64, solo, 0);   /* its own */
+    rela(&d, 1, DATA + 0x10, JUMP_SLOT, ext, 0);
+    rela(&d, 1, DATA + 0x18, JUMP_SLOT, dup, 0);
+    relr(&d, DATA + 0x20);
+    snx_st_le64(g_image[3] + DATA + 0x10, 0x900);
+    snx_st_le64(g_image[3] + DATA + 0x18, 0x900);
+    snx_st_le64(g_image[3] + DATA + 0x20, 0x44);
+    end(&d, 0, 0x90, 0x94);
+}
+static void added(SnxRelocModule* m, int closed) {
+    memset(m, 0, sizeof(*m));
+    m->name = "d";
+    m->image = g_image[3];
+    m->base = BASE_D;
+    m->size = MODULE_BYTES;
+    m->data = g_image[3] + DATA;
+    m->data_off = DATA;
+    m->data_size = DATA_SIZE;
+    m->closed = closed;
+}
+static SnxU64 placed(int module, unsigned offset) { return snx_ld_le64(g_image[module] + DATA + offset); }
+
+/* a module loaded after the others, and unloaded */
+static void later(void) {
+    SnxRelocModule m[4];
+    SnxRelocCounts counts;
+    SnxU64 at = 0, words = 99;
+    char error[512] = "";
+    build(0);
+    build_added(1);
+    modules(m, 1);
+    added(&m[3], 0);
+    check(!snx_relocate(m, 3, &counts, error, sizeof error) && placed(1, 0x18) == 0x1111 &&
+              placed(1, 0x88) == BASE_B + 0x700 && placed(1, 0x10) == 4,
+          "before the fourth module, what nothing defines is as the linker leaves it");
+    check(!snx_relocate_added(m, 4, &counts, error, sizeof error), "a module loaded later links");
+    check(placed(3, 0) == BASE_C + 0x52 && placed(3, 8) == BASE_D + 0x84 && placed(3, 0x10) == BASE_C + 0x50 &&
+              placed(3, 0x20) == BASE_D + 0x44,
+          "its words are bound among every module in their order, and relocated");
+    check(placed(3, 0x18) == BASE_D + 0x900 && m[3].lazy == BASE_D + 0x900 && m[3].init == BASE_D + 0x90 &&
+              m[3].fini == BASE_D + 0x94,
+          "its slot nothing defines is lazy, and its DT_INIT and DT_FINI are given");
+    check(counts.relative == 1 && counts.symbolic == 2 && counts.slots == 1 && counts.unresolved == 1,
+          "its relocations are counted");
+    check(placed(1, 0x18) == BASE_D + 0x70 && placed(1, 0x88) == BASE_D + 0x70 && placed(1, 0x10) == BASE_D + 0x7c &&
+              counts.earlier == 3,
+          "a word and a slot of an earlier module that nothing defined, and a weak one, take its definitions");
+    check(placed(1, 0) == BASE_A + 0x11 && placed(1, 0x100) == BASE_B + 0x55 && placed(1, 0x40) == BASE_B + 0x123 &&
+              placed(0, 0) == BASE_C + 0x50 && m[1].lazy == BASE_B + 0x700,
+          "what an earlier module had bound or relocated stays, a name the new module defines too");
+    check(snx_relocate_find(m, 4, 0, "gone", &at, error, sizeof error) == 1 && at == BASE_D + 0x70 &&
+              snx_relocate_find(m, 4, 0, "mine", &at, error, sizeof error) == 0,
+          "a name is found in the module loaded later, a local one of it is not");
+    check(snx_relocate_own(&m[3], "mine", &at, error, sizeof error) == 1 && at == BASE_D + 0x88 &&
+              snx_relocate_own(&m[3], "dup", &at, error, sizeof error) == 1 && at == BASE_D + 0x7c &&
+              snx_relocate_own(&m[3], "ext", &at, error, sizeof error) == 0,
+          "a module's own definition is found, a local one too, and not what it only uses");
+    /* unloaded: the others give up what pointed into it */
+    snx_st_le64(g_image[2] + DATA + 8, BASE_D + MODULE_BYTES); /* the first address past it */
+    check(!snx_relocate_removed(m, 4, 3, &words, error, sizeof error) && words == 3, "the module is unloaded");
+    check(!placed(1, 0x18) && !placed(1, 0x10) && placed(1, 0x88) == BASE_B + 0x700,
+          "a word that pointed into it is 0, a slot its module's lazy value");
+    check(placed(1, 0) == BASE_A + 0x11 && placed(0, 0) == BASE_C + 0x50 && placed(2, 8) == BASE_D + MODULE_BYTES &&
+              placed(3, 8) == BASE_D + 0x84,
+          "words that point elsewhere stay, and the module's own");
+    /* loaded for no other module to bind to */
+    build(0);
+    build_added(1);
+    modules(m, 1);
+    added(&m[3], 1);
+    check(!snx_relocate(m, 3, &counts, error, sizeof error) &&
+              snx_relocate_added(m, 4, &counts, error, sizeof error) == -1 && strstr(error, "b binds gone") &&
+              strstr(error, "to d's definition"),
+          "a closed module whose definition another would take is refused, both and the name said");
+    build(0);
+    build_added(0);
+    modules(m, 1);
+    added(&m[3], 1);
+    check(!snx_relocate(m, 3, &counts, error, sizeof error) &&
+              !snx_relocate_added(m, 4, &counts, error, sizeof error) && placed(3, 8) == BASE_D + 0x84 &&
+              !counts.earlier && placed(1, 0x18) == 0x1111,
+          "a closed module binds its own definitions, and gives the others nothing");
+}
 
 int main(void) {
     SnxRelocModule copy[3], place[3];
@@ -230,6 +334,7 @@ int main(void) {
     check(snx_relocate(copy, 3, &counts, error, sizeof error) == -1 && strstr(error, "c: ") &&
               strstr(error, "0x2000") && strstr(error, "4096 bytes"),
           "symbols outside the module are refused, with where they lie");
+    later();
     printf("linker: %s\n", failures ? "FAILED" : "passed");
     return failures != 0;
 }

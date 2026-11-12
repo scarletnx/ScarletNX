@@ -186,8 +186,8 @@ static void switched(void) {
 
 int main(int argc, char** argv) {
     int differ = argc > 1 && !strcmp(argv[1], "differ");
-    SnxRelocModule place[2] = {{"rtld", GP(RTLD), RTLD, MODULE_BYTES, GP(RTLD) + DATA, DATA, DATA_SIZE, 0, 0, 0},
-                               {"sdk", GP(SDK), SDK, MODULE_BYTES, GP(SDK) + DATA, DATA, DATA_SIZE, 0, 0, 0}};
+    SnxRelocModule place[2] = {{"rtld", GP(RTLD), RTLD, MODULE_BYTES, GP(RTLD) + DATA, DATA, DATA_SIZE, 0, 0, 0, 0},
+                               {"sdk", GP(SDK), SDK, MODULE_BYTES, GP(SDK) + DATA, DATA, DATA_SIZE, 0, 0, 0, 0}};
     SnxRelocCounts counts;
     GuestFn* slot = &g_disp[(START - g_code_lo) / 4];
     char error[256];
