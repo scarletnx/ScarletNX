@@ -196,8 +196,26 @@ static char* extracted_shown(const char* path, const char* name) {
     if (*text) text[strlen(text) - 1] = 0; /* its / */
     return snx_strdup(text);
 }
+/* a Vita game's name, the TITLE in the sce_sys/param.sfo of its folder (the update's before the game's); owned, NULL
+   for a folder that has none */
+static char* vita_name(const char* folder) {
+    static const char* const parts[] = {"patch", "app"};
+    for (size_t i = 0; i < sizeof parts / sizeof *parts; ++i) {
+        char file[SNX_PATH_SIZE], *title;
+        size_t size = 0;
+        unsigned char* sfo = !snx_path_format(file, sizeof file, "%s/%s/sce_sys/param.sfo", folder, parts[i]) &&
+                                     snx_is_file(file)
+                                 ? (unsigned char*)snx_read_file(file, &size)
+                                 : NULL;
+        title = sfo ? snx_sfo_string(sfo, size, "TITLE") : NULL;
+        free(sfo);
+        if (title && *title) return title;
+        free(title);
+    }
+    return NULL;
+}
 /* what the game at path, named name, is shown as: the name in its <name>_data/control.nacp, which the recompile
-   copies there, else name */
+   copies there, or a Vita game's in its param.sfo, else name */
 static char* shown_name(const char* path, const char* name) {
     if (suffix(name, "/")) return extracted_shown(path, name);
     char *folder = snx_dirname(path), *stem = snx_strdup(name), *shown = NULL, nacp[SNX_PATH_SIZE], text[0x200];
@@ -210,6 +228,7 @@ static char* shown_name(const char* path, const char* name) {
                 : NULL;
     if (bytes && snx_nacp_name(bytes, size, text, sizeof text)) shown = snx_strdup(text);
     free(bytes);
+    if (!shown && folder) shown = vita_name(folder);
     free(stem);
     free(folder);
     return shown ? shown : snx_strdup(name);
@@ -224,16 +243,22 @@ char* gui_game_shown(const char* path) {
     return shown;
 }
 char* gui_game_icon(const char* path) {
-    char *folder, icon[SNX_PATH_SIZE];
+    char *folder, icon[SNX_PATH_SIZE], *found = NULL;
     const char* leaf;
-    int cut;
-    if (!path || !gui_game_folder(path)) return NULL;
-    folder = snx_dirname(path);
+    static const char* const vita[] = {"patch", "app"}; /* the folders the Vita driver reads a game's files from */
+    size_t i;
+    if (!path || !(folder = snx_dirname(path))) return NULL;
     leaf = folder + strlen(folder);
     while (leaf > folder && leaf[-1] != '/' && leaf[-1] != '\\') --leaf;
-    cut = snx_path_format(icon, sizeof icon, "%s/%s_data/icon.jpg", folder, leaf);
+    if (gui_game_folder(path) && !snx_path_format(icon, sizeof icon, "%s/%s_data/icon.jpg", folder, leaf) &&
+        snx_is_file(icon))
+        found = snx_strdup(icon);
+    /* a Vita game keeps its dump beside its program: its own icon0.png, the update's before the game's */
+    for (i = 0; !found && i < sizeof vita / sizeof *vita; ++i)
+        if (!snx_path_format(icon, sizeof icon, "%s/%s/sce_sys/icon0.png", folder, vita[i]) && snx_is_file(icon))
+            found = snx_strdup(icon);
     free(folder);
-    return !cut && snx_is_file(icon) ? snx_strdup(icon) : NULL;
+    return found;
 }
 /* whether the add-on named a (<game>_<entry>) is listed before b: updates first, the newest version first (one
    without a version last), then the DLCs by title ID */

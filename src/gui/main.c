@@ -4224,6 +4224,28 @@ static SDL_Texture* icon_none(App* app) {
     free(pixels);
     return app->icon_none;
 }
+/* a PNG icon as its rows show it: GUI_ICON_SIDE pixels square, the alpha premultiplied; NULL when it does not read */
+static SDL_Texture* png_icon(App* app, const char* file) {
+    SDL_Surface* png = SDL_LoadPNG(file);
+    SDL_Surface* argb = png ? SDL_ConvertSurface(png, SDL_PIXELFORMAT_ARGB8888) : NULL;
+    SDL_Surface* scaled = NULL;
+    SDL_Texture* texture = NULL;
+    SDL_DestroySurface(png);
+    if (argb && (argb->w != GUI_ICON_SIDE || argb->h != GUI_ICON_SIDE)) {
+        scaled = SDL_ScaleSurface(argb, GUI_ICON_SIDE, GUI_ICON_SIDE, SDL_SCALEMODE_LINEAR);
+        SDL_DestroySurface(argb);
+        argb = scaled;
+    }
+    if (argb && SDL_PremultiplySurfaceAlpha(argb, false)) {
+        texture = SDL_CreateTextureFromSurface(app->renderer, argb);
+        if (texture && !SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND_PREMULTIPLIED)) {
+            SDL_DestroyTexture(texture);
+            texture = NULL;
+        }
+    }
+    SDL_DestroySurface(argb);
+    return texture;
+}
 static SDL_Texture* game_icon(App* app, const char* path) {
     GuiIcon* icon;
     char* file;
@@ -4243,6 +4265,14 @@ static SDL_Texture* game_icon(App* app, const char* path) {
     if (loading) {
         icon->loading = true;
         return icon_loading(app);
+    }
+    if (file && strlen(file) > 4 && !SDL_strcasecmp(file + strlen(file) - 4, ".png")) { /* a Vita game's icon0.png */
+        icon->texture = png_icon(app, file);
+        if (!icon->texture)
+            snprintf(app->message, sizeof app->message, snx_tr("%s could not be drawn: the game shows Wimsy in grey"),
+                     file);
+        free(file);
+        return icon->texture;
     }
     jpeg = file ? snx_read_file(file, &size) : NULL;
     pixels = jpeg ? malloc((size_t)GUI_ICON_SIDE * GUI_ICON_SIDE * 4) : NULL;
@@ -6871,7 +6901,7 @@ bool ui_games_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info
                                                                                              : "",
                  queued);
         info->label = label;
-        if (r) info->image = r->driver == GUI_SWITCH ? game_icon(app, r->path) : NULL;
+        if (r) info->image = r->driver == GUI_SWITCH || r->driver == GUI_VITA ? game_icon(app, r->path) : NULL;
         if (!r) info->image = icon_more(app);                /* Show More's cover */
         if (r && !info->image) info->image = icon_none(app); /* a game with none of its own */
         return true;
