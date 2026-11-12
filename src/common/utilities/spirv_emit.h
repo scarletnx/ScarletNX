@@ -567,6 +567,9 @@ uint32_t spv_emit_subgroup_shuffle_u32(SpvEmitter* e, uint32_t u32_type, uint32_
 /* value from a lane of the invocation's quad: the lane (0-3) when swap is 0, else the neighbour across direction (0
    horizontal, 1 vertical, 2 diagonal); lane and direction are constants. Helper invocations take part */
 uint32_t spv_emit_subgroup_quad_u32(SpvEmitter* e, uint32_t u32_type, uint32_t value, int swap, uint32_t operand);
+/* the same for a value of any type: a pair of floats gathered from a quad lane is one instruction, where the two
+   words it came from were two */
+uint32_t spv_emit_subgroup_quad(SpvEmitter* e, uint32_t type, uint32_t value, int swap, uint32_t operand);
 uint32_t spv_emit_vec4_insert(SpvEmitter* e, uint32_t vec4_type, uint32_t vector, uint32_t component_value,
                               uint32_t component);
 uint32_t spv_emit_vec4_construct(SpvEmitter* e, uint32_t vec4_type, const uint32_t components[4]);

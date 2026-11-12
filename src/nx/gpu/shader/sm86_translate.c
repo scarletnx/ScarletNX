@@ -50,6 +50,7 @@ typedef struct {
     u32 in_attr[32], out_attr[32], position, point_size, fragcoord, color[8], depth;
     u32 vertex_index, instance_index, local_id, group_id, lane_id;
     u32 num_groups, hmma_count;  /* NumWorkgroups and the HMMAs so far, for hmma_zero */
+    u32 warp_own_v;              /* the first lane of the invocation's own 32, made once (warp_own) */
     int coop;                    /* HMMA takes hmma_coop (coop_wanted), and the module the Vulkan memory model */
     u32 coop_slots, subgroup_id; /* hmma_coop's slots (Workgroup) and SubgroupId */
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
@@ -2612,26 +2613,46 @@ static u32 system_value(Ctx* c, u32 sr);
 static u32 warp_lane(Ctx* c) {
     return spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, 31));
 }
+/* the first lane of the invocation's own 32, made once per program: a load of the lane id and a mask, which every
+   gather below would otherwise emit again, 24 of them in one HMMA of a game's video upscaler */
+static u32 warp_own(Ctx* c) {
+    if (!c->warp_own_v)
+        c->warp_own_v = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, ~31u));
+    return c->warp_own_v;
+}
 /* value as lane j (0-31) of the invocation's own 32 holds it */
 static u32 warp_read(Ctx* c, u32 value, u32 j) {
-    u32 own = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, system_value(c, 0), cu(c, ~31u));
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
     return SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, c->t_u32, cu(c, 3), value,
-               spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, own, j));
+               spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, warp_own(c), j));
+}
+/* and the same for a value of another type: a gathered pair of floats is one shuffle, where the two words it came
+   from were two shuffles and two unpacks */
+static u32 warp_read_t(Ctx* c, u32 type, u32 value, u32 j) {
+    spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
+    return SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, type, cu(c, 3), value,
+               spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, warp_own(c), j));
 }
 /* value as lane 4g + p of the invocation's own 32 holds it, g4 = 4g for the reader's own g: a quad broadcast where the
    stage has quad operations, which AMD makes a DPP move where a shuffle goes through LDS. Vulkan's quad is four
    invocations of adjacent subgroup ids, the first a multiple of 4, in every stage that has them; so in a subgroup of
    64 too the reader's quad is lanes 4g to 4g + 3 of its own 32, and quad lane p is lane 4g + p */
-static u32 quad_read(Ctx* c, u32 value, u32 g4, u32 p) {
+static u32 quad_read_t(Ctx* c, u32 type, u32 value, u32 g4, u32 p) {
     if (c->stage == ST_CS ? g_shader_quad_compute : c->stage == ST_FS && g_shader_quad) {
         spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
         spv_emit_subgroup_quad_capability(&c->e);
-        return spv_emit_subgroup_quad_u32(&c->e, c->t_u32, value, 0, cu(c, p));
+        return spv_emit_subgroup_quad(&c->e, type, value, 0, cu(c, p));
     }
-    return warp_read(c, value, spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, g4, cu(c, p)));
+    return warp_read_t(c, type, value, spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, g4, cu(c, p)));
 }
+static u32 quad_read(Ctx* c, u32 value, u32 g4, u32 p) { return quad_read_t(c, c->t_u32, value, g4, p); }
 static u32 half_pair(Ctx* c, u32 bits) { return SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_UNPACK_HALF2X16, bits); }
+/* two words' four halves as four floats: the pair of words as the four 16-bit floats they are, widened (exact) */
+static u32 half4(Ctx* c, u32 lo, u32 hi, u32 t_v4h) {
+    u32 u2 = spv_emit_vec2_construct(&c->e, c->t_v2u, lo, hi);
+    return spv_emit_unary(&c->e, SPV_OP_F_CONVERT, c->t_v4f,
+                          spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v4h, u2));
+}
 /* A zero for an HMMA to OR its B registers with before it gathers them, a new one every 8 HMMAs, so that a driver
    doesn't keep a B fragment's 16 gathered words live from its first HMMA to its last. Mesa merges identical subgroup
    operations within a block, and one game's video upscaler multiplies one B fragment by many A ones, far apart: with
@@ -2824,10 +2845,39 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
             acc[i][1] = spv_emit_vec4_extract(&c->e, c->t_f32, pair, 1);
         }
     }
+    /* The k16 form's two halves of k in one four-element dot: A's registers 2h (row g) and 2h + 1 (row g + 8) hold
+       columns 2t, 2t + 1 and 2t + 8, 2t + 9 of a row, so a row's four halves are two registers, and B's are its two.
+       Each pair is unpacked once and gathered as the two floats it is: one shuffle of a vec2, where each gathered
+       word was a shuffle and an unpack, and 16 dots of four where there were 32 of two. The products are the same
+       and their sum is in f32 either way, so the bound hmma's is unchanged. The f16 accumulator form (mixed) keeps
+       the two-element dot, which is the instruction it exists for */
+    u32 t_v4h = 0;
+    int k16dot = !mixed && nb == 2;
+    if (k16dot) {
+        spv_emit_capability(&c->e, SPV_CAPABILITY_FLOAT16);
+        t_v4h = spv_emit_type_vector(&c->e, spv_emit_type_float(&c->e, 16), 4);
+    }
+    u32 a4[2] = {0, 0}, b4 = 0;
+    if (k16dot) { /* rows g and g + 8, and the columns' pair, as four floats each */
+        a4[0] = half4(c, a[0], a[2], t_v4h);
+        a4[1] = half4(c, a[1], a[3], t_v4h);
+        b4 = half4(c, b[0], b[1], t_v4h);
+    }
     for (u32 p = 0; p < 4; p++) {
         u32 lb[2] = {spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8, cu(c, p)),
                      spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32, t8, cu(c, 4 + p))};
         u32 av[4], bv[2][2];
+        if (k16dot) {
+            u32 bv4[2];
+            for (u32 j = 0; j < 2; j++) bv4[j] = warp_read_t(c, c->t_v4f, b4, lb[j]);
+            for (u32 i = 0; i < 2; i++) {
+                u32 av4 = quad_read_t(c, c->t_v4f, a4[i], g4, p);
+                for (u32 j = 0; j < 2; j++)
+                    acc[i][j] = op2(c, SPV_OP_F_ADD, c->t_f32, acc[i][j],
+                                    op2(c, 148 /* OpDot */, c->t_f32, av4, bv4[j]));
+            }
+            continue;
+        }
         for (k = 0; k < na; k++) {
             u32 bits = quad_read(c, a[k], g4, p);
             av[k] = mixed ? spv_emit_unary(&c->e, SPV_OP_BITCAST, t_v2h, bits) : half_pair(c, bits);

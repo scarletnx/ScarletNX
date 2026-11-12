@@ -3729,9 +3729,10 @@ static int spv_has_builtin(const u32* words, size_t count, u32 builtin) {
     return 0;
 }
 /* HMMA (16816 and 1688, F16 and F32), LDSM and MOVM with and without the device's quads in compute and its mixed dot
-   product: A's 48 reads are quad broadcasts or shuffles, B's 48, LDSM's 4 and MOVM's 2 stay shuffles, and each pair
-   of products is an OpFDot2MixAcc32VALVE (96) or an OpDot. B's registers are OR'd with hmma_zero's zero, which
-   compares NumWorkgroups.x with 0 */
+   product: A's reads are quad broadcasts or shuffles, and B's, LDSM's 4 and MOVM's 2 stay shuffles. The k16 form's
+   four halves of a row and of a column are one OpDot of four (16 per HMMA), where the k8 form's are two of two (8);
+   the mixed dot product keeps the two-element form, one OpFDot2MixAcc32VALVE per pair (96). B's registers are OR'd
+   with hmma_zero's zero, which compares NumWorkgroups.x with 0 */
 static void test_warp_matrix(const char* dir) {
     u8 code[16 * 8] = {0};
     static const u32 hmma[4][4] = {{16, 14, 0x08}, {20, 24, 0x18}, {28, 255, 0x00}, {32, 36, 0x10}};
@@ -3771,8 +3772,11 @@ static void test_warp_matrix(const char* dir) {
             if (!spv) continue;
             u32 quads = spv_count(spv, count, 365), shuffles = spv_count(spv, count, 345);
             u32 mixes = spv_count(spv, count, 6916), dots = spv_count(spv, count, 148);
-            CHECK(quads == (quad ? 48u : 0u) && shuffles == (quad ? 54u : 102u));
-            CHECK(mixes == (mixed ? 96u : 0u) && dots == (mixed ? 0u : 96u));
+            /* two k16 HMMAs and two k8: the k16 form gathers A's two rows and B's two columns per quad lane, the k8
+               form A's two registers and B's one, and the mixed form keeps the k16 form's two-element dots */
+            CHECK(quads == (quad ? (mixed ? 48u : 32u) : 0u));
+            CHECK(shuffles == (quad ? (mixed ? 54u : 38u) : (mixed ? 102u : 70u)));
+            CHECK(mixes == (mixed ? 96u : 0u) && dots == (mixed ? 0u : 64u));
             CHECK(spv_has_builtin(spv, count, 24) && spv_count(spv, count, 170 /* OpIEqual */) >= 1);
             if (quads != (quad ? 48u : 0u) || mixes != (mixed ? 96u : 0u))
                 fprintf(stderr,
@@ -3909,7 +3913,9 @@ static void test_warp_matrix_coop(const char* dir) {
                     CHECK(spv_has_capability(spv, count, 6022) && spv_has_capability(spv, count, 5345) &&
                           spv_has_capability(spv, count, 5346));
                 } else {
-                    CHECK(products == 0 && loads == 0 && dots == 96 && model == 1 && coherent == 1 && atomic_rw == 0);
+                    /* hmma's dots: the k16 form's four-element ones, or the mixed form's two-element ones */
+                    CHECK(products == 0 && loads == 0 && dots == (mixed ? 96u : 64u) && model == 1 && coherent == 1 &&
+                          atomic_rw == 0);
                 }
                 if (coop ? products != 4 || model != 3 || coherent || atomic_rw != 2 : products || model != 1)
                     fprintf(stderr,
