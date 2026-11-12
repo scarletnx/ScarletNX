@@ -5742,7 +5742,7 @@ msgstr "Nenhum themes/%s/theme.ini pôde ser lido: mostra %s"
 
 #: src/gui/ui.txt
 msgid "Load Switch NSP/XCI/NRO"
-msgstr "Abrir Switch NSP/XCI/NRO"
+msgstr "Abrir jogo de Switch"
 
 #: src/gui/ui.txt
 msgid "Load Linux ARM ELF"
