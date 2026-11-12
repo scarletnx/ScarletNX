@@ -767,8 +767,9 @@ static int resident_upload(Surf* t) {
     return ok;
 }
 /* ------------------------------------------------------------ ASTC held as BC7, made between frames */
-/* An ASTC texture held as BC7 (vk_astc_bc7) goes up decoded to RGBA8, which the game samples at once, and the BC7
-   encoder makes its BC7 image from those texels after the frames' presents, VK_BC7_LATER_BLOCKS blocks a frame at most:
+/* An ASTC texture held as BC7 (vk_astc_bc7) goes up decoded to RGBA8, which the game samples at once, and its BC7
+   image is made after the frames' presents, straight from its ASTC blocks, which it keeps on the GPU beside the RGBA8
+   image until then (vk_astc_keep, astc.c), VK_BC7_LATER_BLOCKS blocks a frame at most:
    uploading straight to BC7 held the game for the encoder, 50 to 90 ms when two arrays came in one frame, a second and
    more before the arrays went up a level at a time. Once whole, the BC7 image takes the RGBA8 one's place, which goes
    with its views when the frames that sample them are done. A write of the texture before then (a whole upload or
@@ -831,8 +832,8 @@ static void later_drop_image(Surf* t) {
 }
 /* t's RGBA8 image holds what its BC7 one has to, as of its wgen: queued, the encoder starting from its first block */
 static void later_queue(Surf* t) {
-    /* a queued one starts over on its new wgen */
-    if (!t->bc7_later || t->bc7_hot || is_bc7(t->f.vk) || t->bc7.queued) return;
+    /* a queued one starts over on its new wgen; one that found no memory to keep its blocks stays RGBA8 */
+    if (!t->bc7_later || t->bc7_hot || is_bc7(t->f.vk) || t->bc7.queued || !t->bc7.kept) return;
     if (g_later.n == g_later.cap) {
         u32 cap = g_later.cap ? g_later.cap * 2 : 256;
         Surf** q = realloc(g_later.q, (size_t)cap * sizeof *q);
@@ -872,6 +873,7 @@ static void later_unqueue(Surf* s) {
 }
 void vk_tex_later_forget(Surf* s) {
     later_unqueue(s);
+    vk_astc_unkeep(s);
     if (s->bc7_hot) g_later.hot--;
     s->bc7_hot = 0;
 }
@@ -964,18 +966,16 @@ static int later_rgba8_again(Surf* t) {
     tex_image_swap(t, img, mem, bytes, rgba8, 0);
     return 1;
 }
-/* encodes t's BC7 image on from where the encoder got, up to left blocks, its first strip whatever its size: the RGBA8
-   image a copy's source and back in the layout it was sampled in. The blocks it took */
-static u32 later_encode(VkCommandBuffer cb, Surf* t, u32 left) {
+/* makes t's BC7 image on from where the encoder got, up to left BC7 blocks, from the ASTC blocks t keeps
+   (vk_bc7_encode_kept): the RGBA8 image is not read. A strip is whole rows of ASTC blocks, so the frame's first one
+   (begun 0: nothing was made in this frame yet) goes whatever its size, and one that the blocks left don't hold waits
+   for the next frame. The blocks it took */
+static u32 later_encode(VkCommandBuffer cb, Surf* t, u32 left, int begun) {
     const int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
-    const u64 cap = vk_bc7_strip_texels();
-    const VkImageLayout was = t->layout;
-    const VkPipelineStageFlags2 stage = t->stage;
-    const VkAccessFlags2 access = t->access;
+    const u64 cap = vk_bc7_strip_blocks();
+    const u32 bh = t->f.bh, unit = vk_bc7_kept_unit(t);
     const int first = !t->bc7.level && !t->bc7.slice && !t->bc7.row;
     u32 used = 0;
-    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-                VK_ACCESS_2_TRANSFER_READ_BIT);
     /* the BC7 image's copies after the last frame's into it (from nothing when the encoder starts on it) */
     vk_barrier(cb, t->bc7.img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
                first ? 0 : VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -984,8 +984,8 @@ static u32 later_encode(VkCommandBuffer cb, Surf* t, u32 left) {
     while (t->bc7.level < t->levels && (!used || used < left)) {
         const u32 l = t->bc7.level, lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
         const u32 slices = is3d ? (t->depth3d >> l ? t->depth3d >> l : 1) : t->layers;
-        const u32 cx = (lw + 3) / 4, cy = (lh + 3) / 4;
-        const u64 room = left > used ? left - used : 1, slice_blocks = (u64)cx * cy, row_texels = (u64)lw * 4;
+        const u32 cx = (lw + 3) / 4, cy = (lh + 3) / 4, ny = (lh + bh - 1) / bh;
+        const u64 room = left > used ? left - used : 1, slice_blocks = (u64)cx * cy;
         const int keyed = l < VK_TEX_MAX_LEVELS && (t->bc7.keyed >> l & 1);
         /* a level the BC7 cache has: copied from it, a sixteenth of the encoder's cost a block counted */
         if (keyed && !t->bc7.slice && !t->bc7.row &&
@@ -996,27 +996,30 @@ static u32 later_encode(VkCommandBuffer cb, Surf* t, u32 left) {
             continue;
         }
         u32 nz = 1, n;
-        if (!t->bc7.row && slice_blocks <= room && row_texels * cy <= cap) {
+        if (!t->bc7.row && slice_blocks <= room && slice_blocks <= cap) {
             /* whole slices, as many as the blocks left and the scratch take */
-            u64 k = room / slice_blocks, by_cap = cap / (row_texels * cy);
+            u64 k = room / slice_blocks, by_cap = cap / slice_blocks;
             if (k > by_cap) k = by_cap;
             nz = slices - t->bc7.slice < k ? slices - t->bc7.slice : (u32)k;
-            n = cy;
+            n = ny;
         } else {
-            /* rows of blocks of one slice: one at least */
-            u64 k = room / cx, by_cap = cap / row_texels;
+            /* rows of ASTC blocks of one slice, as many as hold the BC7 block rows the blocks left and the scratch
+               take, whole 4x4 blocks: a multiple of unit, and one such strip at least a frame */
+            u64 k = room / cx, by_cap = cap / cx;
             if (k > by_cap) k = by_cap;
-            if (!k) k = 1;
-            n = cy - t->bc7.row < k ? cy - t->bc7.row : (u32)k;
+            k = k * 4 / bh / unit * unit;
+            if (!k && (used || begun)) break; /* less than a strip is left of the frame's blocks */
+            if (!k) k = unit;
+            n = ny - t->bc7.row < k ? ny - t->bc7.row : (u32)k;
         }
-        const u32 y = t->bc7.row * 4, rows = lh - y < n * 4 ? lh - y : n * 4;
-        u64 blocks = (u64)cx * n * nz;
+        const u32 y = t->bc7.row * bh, rows = lh - y < n * bh ? lh - y : n * bh;
+        u64 blocks = (u64)cx * ((rows + 3) / 4) * nz;
         SNX_ZONE_TV(z_enc, "texture BC7 encode", blocks * 16, "%ux%u level %u", lw, lh, l);
-        if (!vk_bc7_encode_image(cb, t->img, t->bc7.img, l, lw, lh, slices, is3d, t->bc7.slice, nz, y, rows)) break;
+        if (!vk_bc7_encode_kept(cb, t, t->bc7.img, l, t->bc7.slice, nz, t->bc7.row, n)) break;
         used += (u32)blocks;
-        if (n == cy)
+        if (n == ny)
             t->bc7.slice += nz;
-        else if ((t->bc7.row += n) == cy) {
+        else if ((t->bc7.row += n) == ny) {
             t->bc7.row = 0;
             t->bc7.slice++;
         }
@@ -1028,8 +1031,6 @@ static u32 later_encode(VkCommandBuffer cb, Surf* t, u32 left) {
             __atomic_add_fetch(&g_tex_cache_misses, 1, __ATOMIC_RELAXED);
         }
     }
-    if (was == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || was == VK_IMAGE_LAYOUT_GENERAL)
-        vk_surf_use(cb, t, was, stage, access);
     return used;
 }
 void vk_tex_later_frame(void) {
@@ -1076,7 +1077,7 @@ void vk_tex_later_frame(void) {
             vk_render_end(); /* copies and dispatches happen outside rendering passes */
             cb = vk_cmd();
         }
-        u32 used = later_encode(cb, t, left);
+        u32 used = later_encode(cb, t, left, left < VK_BC7_LATER_BLOCKS);
         g_later.stats.blocks += used;
         left = used < left ? left - used : 0;
         if (t->bc7.level < t->levels) {
@@ -1092,6 +1093,7 @@ void vk_tex_later_frame(void) {
         tex_image_swap(t, t->bc7.img, t->bc7.mem, t->bc7.bytes, later_bc7(t->f.vk), 1);
         if (was == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || was == VK_IMAGE_LAYOUT_GENERAL)
             vk_surf_use(cb, t, was, stage, access);
+        vk_astc_unkeep(t); /* the blocks it was made from */
         memset(&t->bc7, 0, sizeof t->bc7);
         memmove(g_later.q, g_later.q + 1, (size_t)(g_later.n - 1) * sizeof *g_later.q);
         g_later.n--;
@@ -1126,6 +1128,12 @@ static int tex_upload_(Surf* t) {
     if (t->bricks) return t->upload_valid = resident_upload(t);
     /* held as BC7 and whole: RGBA8 again, made BC7 again between frames */
     if (t->bc7_later && is_bc7(f->vk) && !later_rgba8_again(t)) return t->upload_valid = 0;
+    /* its blocks kept beside the RGBA8 image as they are decoded, for the BC7 image made from them between frames */
+    if (t->bc7_later && !is_bc7(f->vk) && !vk_astc_keep(t))
+        LOG_LIMIT(4,
+                  "vulkan: no memory to keep the blocks of a %ux%ux%u ASTC texture for its BC7 image: it stays RGBA8, "
+                  "%llu MB, until it is loaded again\n",
+                  t->w, t->h, t->layers * t->depth3d, (unsigned long long)(t->bytes >> 20));
     t->bc7.keyed = 0; /* the BC7 cache's keys of the bytes loaded now, below */
     /* a sparse texture: the levels guest memory maps get memory first, and only they are copied */
     int bound = !t->sparse || tex_bind(t) >= 0;

@@ -1,0 +1,59 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors
+   The ASTC decoding is ported from Eden (src/video_core/host_shaders/astc_decoder.comp):
+   SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+   SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project */
+/* ASTC blocks straight into BC7 blocks, one dispatch, for a GPU that samples BC7 but not ASTC: an invocation makes one
+   4x4 block. It decodes the ASTC blocks its 16 texels lie in, one to four of them (astc_decode.glsl's DecodeBlock and
+   SlotTexel), and encodes the texels (bc7_encode.glsl). No texel leaves the invocation: the RGBA8 strip that a decode
+   wrote and an encode read back, four bytes a texel each way, is gone, and so is the second dispatch and the barrier
+   between the two.
+
+   A dispatch transcodes a strip: height rows of texels of one slice, or (z > 1) whole slices one after another, in
+   the input and the output. The strip starts on a row of 4x4 blocks. The body is astc_bc7.glsl, which the tests also
+   run on the CPU (tests/glsl/glsl.hpp); this file only declares what it reads and writes. */
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+/* The footprint is pushed, where astc.comp has it as a specialization constant: the encoder is most of this shader's
+   code, and a pipeline of it for each footprint a game uses, in each of the encoder's builds, would be compiled where
+   the game waits for its first texture of each. What the decoder divides by the footprint comes worked out */
+layout(push_constant) uniform PushConstants {
+    uint width;     /* texels in a row of the strip */
+    uint height;    /* rows of texels in each slice of this strip */
+    uint blocks_x;  /* ASTC blocks in a row */
+    uint blocks_y;  /* ASTC block rows in each slice of this strip */
+    uint srgb;      /* nonzero: the specification's sRGB decode mode for void extents' R, G and B */
+    uint block_w;   /* the footprint */
+    uint block_h;
+    uint recip_w;   /* ceil(2^18 / block_w) and of block_h: v / block_w is (v * recip_w) >> 18 for v < 16384 */
+    uint recip_h;
+    uint infill_ds; /* the weight grid infill's steps: (1024 + block_w / 2) / (block_w - 1), and of block_h */
+    uint infill_dt;
+    uint in_base;   /* the strip's first ASTC block in the input */
+};
+#define block_dims uvec2(block_w, block_h)
+
+layout(binding = 0, std430) readonly restrict buffer InputBlocks {
+    uvec4 astc_data[];
+};
+
+layout(binding = 1, std430) writeonly restrict buffer OutputBlocks {
+    uvec4 bc7_blocks[];
+};
+
+/* The block being decoded: astc_decode.glsl's 39 words (its F_ fields), which astc.comp keeps for a tile of 64 blocks
+   in the workgroup's shared memory. Here they are the invocation's own. Shared memory is what a GPU has least of: 10
+   KB a workgroup held a GeForce GT 1030 to a fifth fewer blocks in flight through the encoder, which is nearly all of
+   this shader's time (the encoder alone, with that much shared memory declared and not used, took 285 ms where it
+   had taken 230) */
+uint astc_block[39];
+#define TILE(field, slot) astc_block[(field) + (slot)]
+#define ASTC_SLOT 0u
+
+#define SNX_ASTC_NO_MAIN
+#include "astc_decode.glsl"
+#include "bc7_encode.glsl"
+#include "astc_bc7.glsl"

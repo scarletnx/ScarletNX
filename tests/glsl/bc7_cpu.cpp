@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
-// The BC7 encoder's body (src/nx/gpu/texture/bc7_encode.glsl) run on the CPU through tests/glsl/glsl.hpp, dispatched
-// as vk/astc.c dispatches bc7.comp: the expected blocks of tests/glsl/bc7_glsl.cpp and tests/astc_vulkan.c.
+// The BC7 encoder's body (src/nx/gpu/texture/bc7_encode.glsl) run on the CPU through tests/glsl/glsl.hpp over RGBA8
+// texels (bc7_main.inc): the expected blocks of tests/glsl/bc7_glsl.cpp, and with the CPU's ASTC decoder what
+// astc_bc7.comp's blocks are held to (tests/glsl/astc_bc7_glsl.cpp, tests/astc_vulkan.c).
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -10,12 +11,13 @@
 
 namespace bc7_shader {
 using namespace glsl;
-// what bc7.comp declares, under its names
+// what bc7_main.inc reads and writes
 struct Encoder : Invocation {
     uint width, height, blocks_x, blocks_y;
     const leuint* rgba;
     leuvec4* bc7_blocks;
 #include "nx/gpu/texture/bc7_encode.glsl"
+#include "bc7_main.inc"
 };
 // The pre-optimization search: neither the bounded block stop nor heuristic refinement pruning. The exact Eval
 // and unchanged-weight exits keep the same candidates and bytes as that search.
@@ -26,6 +28,7 @@ struct EncoderWhole : Invocation {
     const leuint* rgba;
     leuvec4* bc7_blocks;
 #include "nx/gpu/texture/bc7_encode.glsl"
+#include "bc7_main.inc"
 };
 // The same without modes4/5 completes the historical digest's four independent workloads.
 #undef SNX_BC7_MODES_4_5
@@ -35,6 +38,7 @@ struct EncoderWithout45 : Invocation {
     const leuint* rgba;
     leuvec4* bc7_blocks;
 #include "nx/gpu/texture/bc7_encode.glsl"
+#include "bc7_main.inc"
 };
 // the fast build vk/astc.c uses for large levels: mode 6 where it is close, every mode elsewhere, with the stop of
 // the full build
@@ -49,6 +53,7 @@ struct EncoderFast : Invocation {
     const leuint* rgba;
     leuvec4* bc7_blocks;
 #include "nx/gpu/texture/bc7_encode.glsl"
+#include "bc7_main.inc"
 };
 // mode 6 alone, which vk/astc.c uses for the largest levels
 #undef SNX_BC7_FAST
@@ -58,6 +63,7 @@ struct EncoderMode6 : Invocation {
     const leuint* rgba;
     leuvec4* bc7_blocks;
 #include "nx/gpu/texture/bc7_encode.glsl"
+#include "bc7_main.inc"
 };
 // mode 6 from one line, vk/astc.c's quick encode of a very large level
 #undef SNX_BC7_FAST
@@ -68,6 +74,7 @@ struct EncoderQuick : Invocation {
     const leuint* rgba;
     leuvec4* bc7_blocks;
 #include "nx/gpu/texture/bc7_encode.glsl"
+#include "bc7_main.inc"
 };
 } // namespace bc7_shader
 

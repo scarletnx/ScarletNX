@@ -63,7 +63,11 @@ uint q_jm, q_js, q_c, q_mb, q_sb, q_bmask, q_amask, q_ahi, q_adj;
 #define F_STEP_CD 36u  /* and c and d, 0 in the lanes of partitions the block doesn't have */
 #define F_RSTEP_CD 37u
 #define F_ROW_CD 38u
-#define VALUE_WORD(i) TILE(i, gl_LocalInvocationIndex)
+/* the slot this invocation decodes into: its own of the tile (astc.comp), or the one astc_bc7.comp has */
+#ifndef ASTC_SLOT
+#define ASTC_SLOT gl_LocalInvocationIndex
+#endif
+#define VALUE_WORD(i) TILE(i, ASTC_SLOT)
 
 uint Bits(uint v, uint off, uint n) {
     return bitfieldExtract(v, int(off), int(n));
@@ -262,7 +266,7 @@ uvec2 ComputeEndpoints(uint cem, uint off) {
     if (((0xC88Cu >> cem) & 1u) != 0u) {
         return uvec2(ERROR_COLOR, ERROR_COLOR);
     }
-    const uint qa = Read32At(gl_LocalInvocationIndex, off), qb = Read32At(gl_LocalInvocationIndex, off + 4u);
+    const uint qa = Read32At(ASTC_SLOT, off), qb = Read32At(ASTC_SLOT, off + 4u);
     const uint v0 = Bits(qa, 0u, 8u), v1 = Bits(qa, 8u, 8u), v2 = Bits(qa, 16u, 8u), v3 = qa >> 24u;
     const uint v4 = Bits(qb, 0u, 8u), v5 = Bits(qb, 8u, 8u), v6 = Bits(qb, 16u, 8u), v7 = qb >> 24u;
     /* the signed modes' bit transfer: the second value's low 6 bits above its first, signed, and the first value's
@@ -323,7 +327,7 @@ uint Unorm16To8(uint c) {
 /* a block of one color (a void extent, or the error color): one partition whose endpoints are both the color, which
    interpolates to itself whatever the weights read */
 void SetSolid(uint rgba) {
-    const uint slot = gl_LocalInvocationIndex;
+    const uint slot = ASTC_SLOT;
     TILE(F_INFO, slot) = 2u | (2u << 4u);
     TILE(F_E0, slot) = rgba;
     TILE(F_E1, slot) = rgba;
@@ -439,7 +443,7 @@ void DecodeBlock() {
     {
         const uint c0 = Bits(cems, 0u, 4u), c1 = Bits(cems, 4u, 4u), c2 = Bits(cems, 8u, 4u), c3 = Bits(cems, 12u, 4u);
         const uint o1 = ((c0 >> 2u) + 1u) * 2u, o2 = o1 + ((c1 >> 2u) + 1u) * 2u, o3 = o2 + ((c2 >> 2u) + 1u) * 2u;
-        const uint slot = gl_LocalInvocationIndex;
+        const uint slot = ASTC_SLOT;
         uvec2 E = ComputeEndpoints(c0, 0u);
         TILE(F_E0, slot) = E.x;
         TILE(F_E1, slot) = E.y;
@@ -471,7 +475,7 @@ void DecodeBlock() {
        word and c and d in another, so a texel takes two multiply-adds per pair, x and y doubled in small blocks.
        The lanes of partitions the block doesn't have stay 0, which never wins: a single partition is partition 0
        with no test for it */
-    const uint slot = gl_LocalInvocationIndex;
+    const uint slot = ASTC_SLOT;
     uint step_ab = 0u, step_cd = 0u, rowstep_ab = 0u, rowstep_cd = 0u, row_ab = 0u, row_cd = 0u;
     if (np > 1u) {
         const uint seed = Bits(blk.x, 13u, 10u) + (np - 1u) * 1024u;
@@ -499,6 +503,50 @@ void DecodeBlock() {
     TILE(F_ROW_CD, slot) = row_cd;
 }
 
+/* The texel at (i, j) of the block in slot, as a packed RGBA8 word, with the weight grid infill's steps from texel to
+   grid coordinates, Ds and Dt, constants of the footprint. It has no branch: one partition and solid blocks need no
+   test (see F_STEP_CD and SetSolid), and a weight grid the block's size infills to its own weights exactly (checked
+   for every footprint), so it needs no path of its own */
+uint SlotTexel(uint slot, uint i, uint j, uint Ds, uint Dt) {
+    const uint info = TILE(F_INFO, slot);
+    const uint N = info & 0xFu, M = Bits(info, 4u, 4u), dual = Bits(info, 8u, 1u), pc = Bits(info, 9u, 2u);
+
+    /* the partition: the highest score, the first of equal ones */
+    const uint pab = TILE(F_ROW_AB, slot) + TILE(F_RSTEP_AB, slot) * j + TILE(F_STEP_AB, slot) * i;
+    const uint pcd = TILE(F_ROW_CD, slot) + TILE(F_RSTEP_CD, slot) * j + TILE(F_STEP_CD, slot) * i;
+    const uint a = pab & 0x3Fu, b = (pab >> 16u) & 0x3Fu, c = pcd & 0x3Fu, d = (pcd >> 16u) & 0x3Fu;
+    const uint p = a >= b && a >= c && a >= d ? 0u : b >= c && b >= d ? 1u : c >= d ? 2u : 3u;
+    const uint E0 = TILE(F_E0 + p, slot), E1 = TILE(F_E1 + p, slot);
+
+    /* the weight grid infilled bilinearly; neighbors past the grid always weigh 0, so they are read without a
+       check (the slot has room for them) */
+    const uint stride = 1u + dual, row_bytes = N * stride, next = 8u * stride;
+    const uint gs = (Ds * (N - 1u) * i + 32u) >> 6u, gt = (Dt * (M - 1u) * j + 32u) >> 6u;
+    const uint fs = gs & 0xFu, ft = gt & 0xFu;
+    const uint w11 = (fs * ft + 8u) >> 4u;
+    const uint w01 = fs - w11, w10 = ft - w11, w00 = 16u - fs - ft + w11;
+    const uint at = (gt >> 4u) * row_bytes + (gs >> 4u) * stride;
+    const uint qa = Read32At(slot, at), qb = Read32At(slot, at + row_bytes);
+    const uint w = (Bits(qa, 0u, 8u) * w00 + Bits(qa, next, 8u) * w01 + Bits(qb, 0u, 8u) * w10 +
+                    Bits(qb, next, 8u) * w11 + 8u) >> 4u;
+    /* the second plane's weight: the odd bytes, garbage with one plane, where it is multiplied by 0 */
+    const uint ws = (Bits(qa, 8u, 8u) * w00 + (qa >> 24u) * w01 + Bits(qb, 8u, 8u) * w10 + (qb >> 24u) * w11 + 8u) >>
+                    4u;
+
+    /* Interpolation, two channels a word: R and B (even) and G and A (odd) in 16 bit lanes, each lane
+       e0 * 64 + 32 + (e1 - e0) * w = e0 * (64 - w) + e1 * w + 32 in [32, 16352], so the lanes never carry into
+       each other and the negative differences are exact modulo 2^32. The second plane's channel adds its own
+       difference times the difference of the weights */
+    const uint e0e = E0 & 0x00FF00FFu, e1e = E1 & 0x00FF00FFu;
+    const uint e0o = (E0 >> 8u) & 0x00FF00FFu, e1o = (E1 >> 8u) & 0x00FF00FFu;
+    const uint sdw = ((Bits(E1, pc * 8u, 8u) - Bits(E0, pc * 8u, 8u)) << ((pc >> 1u) * 16u)) * (ws - w) * dual;
+    const uint xe = (e0e << 6u) + 0x00200020u + (e1e - e0e) * w + ((pc & 1u) == 0u ? sdw : 0u);
+    const uint xo = (e0o << 6u) + 0x00200020u + (e1o - e0o) * w + ((pc & 1u) != 0u ? sdw : 0u);
+    return ((xe >> 6u) & 0x00FF00FFu) | ((xo << 2u) & 0xFF00FF00u);
+}
+
+/* astc.comp's two phases and main; astc_bc7.comp (SNX_ASTC_NO_MAIN) has its own, in astc_bc7.glsl */
+#ifndef SNX_ASTC_NO_MAIN
 /* v / block_dims.x and v / block_dims.y for v < 9216 (the texels of a tile of 64 of the largest blocks) as a
    multiplication: exact for every footprint (checked), and no division even where the driver wouldn't fold one */
 uint DivW(uint v) {
@@ -510,8 +558,7 @@ uint DivH(uint v) {
 
 /* The second phase: the tile's texels, invocation i taking texels i, i + 64, ... in rows of the tile, so the
    workgroup's stores are 64 neighbors each. A texel reads its block's slot and has no branch beyond the image's
-   edge: one partition and solid blocks need no test (see F_STEP_CD and SetSolid), and a weight grid the block's
-   size infills to its own weights exactly (checked for every footprint), so it needs no path of its own */
+   edge (SlotTexel) */
 void WriteTexels() {
     const uint tile_texels_w = block_dims.x << tile_shift;
     const uint base_x = gl_WorkGroupID.x * tile_texels_w;
@@ -529,43 +576,8 @@ void WriteTexels() {
             continue;
         }
         const uint bxs = DivW(tx), bys = DivH(ty);
-        const uint i = tx - bxs * block_dims.x, j = ty - bys * block_dims.y;
-        const uint slot = (bys << tile_shift) + bxs;
-        const uint info = TILE(F_INFO, slot);
-        const uint N = info & 0xFu, M = Bits(info, 4u, 4u), dual = Bits(info, 8u, 1u), pc = Bits(info, 9u, 2u);
-
-        /* the partition: the highest score, the first of equal ones */
-        const uint pab = TILE(F_ROW_AB, slot) + TILE(F_RSTEP_AB, slot) * j + TILE(F_STEP_AB, slot) * i;
-        const uint pcd = TILE(F_ROW_CD, slot) + TILE(F_RSTEP_CD, slot) * j + TILE(F_STEP_CD, slot) * i;
-        const uint a = pab & 0x3Fu, b = (pab >> 16u) & 0x3Fu, c = pcd & 0x3Fu, d = (pcd >> 16u) & 0x3Fu;
-        const uint p = a >= b && a >= c && a >= d ? 0u : b >= c && b >= d ? 1u : c >= d ? 2u : 3u;
-        const uint E0 = TILE(F_E0 + p, slot), E1 = TILE(F_E1 + p, slot);
-
-        /* the weight grid infilled bilinearly; neighbors past the grid always weigh 0, so they are read without a
-           check (the slot has room for them) */
-        const uint stride = 1u + dual, row_bytes = N * stride, next = 8u * stride;
-        const uint gs = (Ds * (N - 1u) * i + 32u) >> 6u, gt = (Dt * (M - 1u) * j + 32u) >> 6u;
-        const uint fs = gs & 0xFu, ft = gt & 0xFu;
-        const uint w11 = (fs * ft + 8u) >> 4u;
-        const uint w01 = fs - w11, w10 = ft - w11, w00 = 16u - fs - ft + w11;
-        const uint at = (gt >> 4u) * row_bytes + (gs >> 4u) * stride;
-        const uint qa = Read32At(slot, at), qb = Read32At(slot, at + row_bytes);
-        const uint w = (Bits(qa, 0u, 8u) * w00 + Bits(qa, next, 8u) * w01 + Bits(qb, 0u, 8u) * w10 +
-                        Bits(qb, next, 8u) * w11 + 8u) >> 4u;
-        /* the second plane's weight: the odd bytes, garbage with one plane, where it is multiplied by 0 */
-        const uint ws = (Bits(qa, 8u, 8u) * w00 + (qa >> 24u) * w01 + Bits(qb, 8u, 8u) * w10 + (qb >> 24u) * w11 + 8u) >>
-                        4u;
-
-        /* Interpolation, two channels a word: R and B (even) and G and A (odd) in 16 bit lanes, each lane
-           e0 * 64 + 32 + (e1 - e0) * w = e0 * (64 - w) + e1 * w + 32 in [32, 16352], so the lanes never carry into
-           each other and the negative differences are exact modulo 2^32. The second plane's channel adds its own
-           difference times the difference of the weights */
-        const uint e0e = E0 & 0x00FF00FFu, e1e = E1 & 0x00FF00FFu;
-        const uint e0o = (E0 >> 8u) & 0x00FF00FFu, e1o = (E1 >> 8u) & 0x00FF00FFu;
-        const uint sdw = ((Bits(E1, pc * 8u, 8u) - Bits(E0, pc * 8u, 8u)) << ((pc >> 1u) * 16u)) * (ws - w) * dual;
-        const uint xe = (e0e << 6u) + 0x00200020u + (e1e - e0e) * w + ((pc & 1u) == 0u ? sdw : 0u);
-        const uint xo = (e0o << 6u) + 0x00200020u + (e1o - e0o) * w + ((pc & 1u) != 0u ? sdw : 0u);
-        texels[out_base + Y * width + X] = ((xe >> 6u) & 0x00FF00FFu) | ((xo << 2u) & 0xFF00FF00u);
+        texels[out_base + Y * width + X] =
+            SlotTexel((bys << tile_shift) + bxs, tx - bxs * block_dims.x, ty - bys * block_dims.y, Ds, Dt);
     }
 }
 
@@ -583,3 +595,4 @@ void main() {
     barrier();
     WriteTexels();
 }
+#endif

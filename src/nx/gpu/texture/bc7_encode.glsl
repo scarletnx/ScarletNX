@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* BC7 encoding: the body of bc7.comp, which declares the push constants (width, height, blocks_x, blocks_y), the
-   buffers (rgba, bc7_blocks) and the workgroup. One invocation encodes one 4x4 block of the RGBA8 texels the ASTC
-   decoder wrote, for a GPU that samples BC7 but not ASTC: a quarter of RGBA8's memory.
+/* BC7 encoding: Encode makes a block of the 16 RGBA8 texels in px. astc_bc7.comp includes it after astc_decode.glsl,
+   and astc_bc7.glsl fills px for each 4x4 block from the ASTC blocks its workgroup decoded, for a GPU that samples BC7
+   but not ASTC: a quarter of RGBA8's memory. The tests give it pictures (tests/glsl/bc7_main.inc).
 
    A block is tried in the modes that suit it and the one with the least squared error is written. Every block:
    mode 6, one line through RGBA, 4-bit weights, what a block of one gradient holds closely. An opaque block (every
@@ -636,12 +636,12 @@ uint Spread(uint ns, uint part, uint alpha) {
 /* the block's error with every alpha 255 by construction, for the modes that store none */
 bool opaque;
 
-/* writes count bits of value at bit pos of the block */
-uvec4 blk;
+/* writes count bits of value at bit pos of the block being packed */
+uvec4 enc;
 void Put(uint pos, uint value, uint count) {
     const uint w = pos >> 5u, b = pos & 31u;
-    blk[w] |= value << b;
-    if (b + count > 32u) blk[w + 1u] |= value >> (32u - b);
+    enc[w] |= value << b;
+    if (b + count > 32u) enc[w + 1u] |= value >> (32u - b);
 }
 
 uvec4 Pack() {
@@ -664,7 +664,7 @@ uvec4 Pack() {
                 hi = (hi & ~(15u << ((k - 8u) * 4u))) | (turned << ((k - 8u) * 4u));
         }
     }
-    blk = uvec4(0u);
+    enc = uvec4(0u);
     const uint mode = best_mode;
     /* the mode: as many noughts as its number, then a one */
     Put(mode, 1u, 1u);
@@ -699,7 +699,7 @@ uvec4 Pack() {
         Put(pos, Index(lo, hi, k), bits);
         pos += bits;
     }
-    return blk;
+    return enc;
 }
 
 /* the block of mode 4 or 5 that best_ holds. Texel 0's weight has its top bit nought in each of its two sets: where it
@@ -723,7 +723,7 @@ uvec4 PackDual() {
         alo = atop * 0x11111111u - alo;
         ahi = atop * 0x11111111u - ahi;
     }
-    blk = uvec4(0u);
+    enc = uvec4(0u);
     Put(mode, 1u, 1u);
     uint pos = mode + 1u;
     Put(pos, best_rot, 2u);
@@ -751,7 +751,7 @@ uvec4 PackDual() {
             pos += bits;
         }
     }
-    return blk;
+    return enc;
 }
 
 uvec4 Encode() {
@@ -885,15 +885,4 @@ uvec4 Encode() {
     sh_pk = best_mode == 2u ? 0u : best_mode == 1u ? 1u : 2u;
     sh_ib = best_mode == 6u ? 4u : best_mode == 1u ? 3u : 2u;
     return Pack();
-}
-
-void main() {
-    const uint bx = gl_GlobalInvocationID.x, by = gl_GlobalInvocationID.y, z = gl_WorkGroupID.z;
-    if (bx >= blocks_x || by >= blocks_y) return;
-    /* a block past the image's edge repeats its last texels, which adds no colour to the line */
-    for (uint k = 0u; k < 16u; k++) {
-        const uint x = min(bx * 4u + (k & 3u), width - 1u), y = min(by * 4u + (k >> 2u), height - 1u);
-        px[k] = rgba[(z * height + y) * width + x];
-    }
-    bc7_blocks[(z * blocks_y + by) * blocks_x + bx] = Encode();
 }
