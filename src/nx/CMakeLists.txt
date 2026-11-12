@@ -186,12 +186,14 @@ snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_etc2_spv HEAD
                DEFINES SNX_TC_ETC2)
 # its ASTC build: BC2, BC3 and BC7 encoded again as ASTC 4x4, for a GPU that samples ASTC and not BCn
 # (gpu/texture/astc_encode.glsl over bc7_encode.glsl's fitter)
-# in two passes (gpu/texture/astc_encode.glsl's SNX_ASTC_PASS): the blocks the BCn block's own lines settle, then
-# the search for the ones those leave
+# in three passes (gpu/texture/texconv.glsl's SNX_ASTC_PASS): the blocks that are an ASTC layout as they stand, moved
+# with no texel decoded; then those the BCn block's own lines settle; then the search for the rest
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_astc_spv HEADER nx/gpu/texture/texconv_spv.h
                DEFINES SNX_TC_ASTC SNX_ASTC_ENC=1 SNX_ASTC_PASS=1)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_astc_b_spv HEADER nx/gpu/texture/texconv_spv.h
                DEFINES SNX_TC_ASTC SNX_ASTC_ENC=1 SNX_ASTC_PASS=2)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_astc_c_spv HEADER nx/gpu/texture/texconv_spv.h
+               DEFINES SNX_TC_ASTC SNX_ASTC_ENC=1 SNX_ASTC_PASS=3)
 # and its conversion build: the blits that convert between pixel formats, which a driver's compiler refused inside the
 # plain build (gpu/vk/texconv.c)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_convert_spv HEADER nx/gpu/texture/texconv_spv.h

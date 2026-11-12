@@ -62,13 +62,12 @@
 #ifndef SNX_ASTC_HINT_ENOUGH
 #define SNX_ASTC_HINT_ENOUGH 256
 #endif
-/* Two passes (SNX_ASTC_PASS, texconv.glsl's main in its ASTC build), as astc_bc7.glsl's: a GPU runs invocations
-   abreast, each group at the pace of its slowest, and a block its hint settles is done in a tenth of the time of one
-   that is searched for, so with the two in one dispatch the hints made it slower. The first pass (1) writes the blocks
-   of one colour and those a hint settles, and leaves the others (as_more) to the second (2), which is the whole of
-   AstcEncode over the blocks listed, every group of it at the same work. 0: all here. The blocks are the same */
-#ifndef SNX_ASTC_PASS
-#define SNX_ASTC_PASS 0
+/* SNX_ASTC_STOP 1: AstcEncode writes the blocks of one colour and those a hint settles, and stops at the others with
+   as_more set, where it would search: texconv.glsl's ASTC build runs in passes (its main), as astc_bc7.glsl's do,
+   since a GPU runs invocations abreast at the pace of the slowest and a block a hint settles is done in a tenth of
+   the time of one that is searched for. AstcEncode clears as_more otherwise */
+#ifndef SNX_ASTC_STOP
+#define SNX_ASTC_STOP 0
 #endif
 bool as_more;
 uint as_hint;
@@ -383,7 +382,7 @@ uvec4 AstcEncode() {
         }
         if (as_err <= uint(SNX_ASTC_HINT_ENOUGH)) return AsPack();
     }
-#if SNX_ASTC_PASS == 1
+#if SNX_ASTC_STOP
     as_more = true;
     return uvec4(0u);
 #else

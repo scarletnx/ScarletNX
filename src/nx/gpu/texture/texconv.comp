@@ -43,14 +43,12 @@ layout(std430, binding = 1) restrict buffer Dst {
     uint dst[];
 };
 
-/* the ASTC build's two passes: the blocks the first leaves to the second, the second's workgroups as an indirect
-   dispatch reads them (vk/texconv.c sets them 0, 1, 1), how many blocks there are, and each one's number */
+/* the ASTC build's passes: the blocks each leaves to a later one. Two lists, each with a head of four words: the
+   workgroups of the pass that takes it, as an indirect dispatch reads them (vk/texconv.c sets them 0, 1, 1), and how
+   many blocks it has; then the blocks' numbers, const_a words a list */
 #if SNX_ASTC_PASS
 layout(std430, binding = 2) restrict buffer Work {
-    uint work_groups;
-    uint work_groups_y;
-    uint work_groups_z;
-    uint work_count;
+    uint work_head[8];
     uint work_list[];
 };
 #endif

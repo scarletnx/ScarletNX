@@ -374,9 +374,16 @@ uint tx_px[16];
 #ifdef SNX_TC_ASTC
 /* the ASTC build's decoded block is the encoder's own px (bc7_encode.glsl's fitter, which astc_encode.glsl encodes
    with): RGBA8 texels row by row */
+#ifndef SNX_ASTC_PASS
+#define SNX_ASTC_PASS 0
+#endif
+#if SNX_ASTC_PASS == 2
+#define SNX_ASTC_STOP 1
+#endif
 #include "astc_encode_tables.glsl"
 #include "bc7_encode.glsl"
 #include "astc_encode.glsl"
+#include "astc_direct.glsl"
 #endif
 /* texel i (row by row) of the block at column u of blocks whose four rows of RGBA8 pixels start at word o0: into the
    output, or into tx_px in the ETC2 build */
@@ -644,16 +651,34 @@ void main() {
     dst[at] = word;
 }
 #elif defined(SNX_TC_ASTC)
-/* The ASTC build: a block an invocation, a BC1, BC2, BC3 or BC7 block (the kind mode names, TC_BCN_ASTC on from
-   TC_BC1's place; BC1's 8 bytes, the others' 16) decoded and encoded again as ASTC 4x4, at column u of blocks of row of blocks gl_GlobalInvocationID.y of
-   slice z. Input as the BCn modes read it; output rows of blocks out_pitch words apart, 16 bytes each. In two passes
-   (astc_encode.glsl's SNX_ASTC_PASS): the first as said, writing the blocks a hint settles and listing the others in
-   work_list; the second an invocation a listed block, decoded again and searched for */
+/* The ASTC build: a BC1, BC2, BC3 or BC7 block (the kind mode names, TC_BCN_ASTC on from TC_BC1's place; BC1's 8
+   bytes, the others' 16) made an ASTC 4x4 block, at column u of blocks of row of blocks gl_GlobalInvocationID.y of
+   slice z. Input as the BCn modes read it; output rows of blocks out_pitch words apart, 16 bytes each.
+
+   A block is made the cheapest way that holds it, and each way is a pass of its own (SNX_ASTC_PASS), so that no
+   invocation waits beside one at a hundred times its work (a GPU runs them abreast, at the pace of the slowest):
+   1. over the strip's blocks: those that are an ASTC layout as they stand, moved field for field with no texel
+      decoded (astc_direct.glsl). The others are listed, by what the block says it is: with lines of its own to try
+      (BC7's modes 1, 3, 4 and 5, BC1's blocks of three colours, BC2 and BC3 with alpha) or without (work_list's first
+      and second half, const_a blocks each);
+   2. over the first list: the block decoded and its own lines tried (AstcEncode's hints, stopped before the search);
+      what they don't settle joins the second list;
+   3. over the second list: the block decoded and searched for.
+   The second and third are indirect dispatches, as many workgroups as their list has blocks for (work_head). 0: all
+   in one invocation, which is what the tests run on the CPU: the same blocks */
+#if SNX_ASTC_PASS == 1 || SNX_ASTC_PASS == 2
+void as_list(uint which, uint e) {
+    uint n = atomicAdd(work_head[which * 4u + 3u], 1u);
+    work_list[which * const_a + n] = e;
+    atomicMax(work_head[which * 4u], (n >> 6) + 1u);
+}
+#endif
 void main() {
-#if SNX_ASTC_PASS == 2
-    /* a block the first pass listed: its number is row * units + u */
-    if (gl_GlobalInvocationID.x >= work_count) return;
-    uint e = work_list[gl_GlobalInvocationID.x], row = e / units, u = e - row * units;
+#if SNX_ASTC_PASS >= 2
+    /* a listed block: its number is row * units + u */
+    uint mine = SNX_ASTC_PASS == 2 ? 0u : 1u;
+    if (gl_GlobalInvocationID.x >= work_head[mine * 4u + 3u]) return;
+    uint e = work_list[mine * const_a + gl_GlobalInvocationID.x], row = e / units, u = e - row * units;
 #else
     uint u = gl_GlobalInvocationID.x;
     if (u >= units) return;
@@ -667,40 +692,62 @@ void main() {
         b[w] = 0u;
         if (w < words) b[w] = src[at + w];
     }
-    if (kind == TC_BC7) {
-        bc7_block(b, 0u, 0u);
-    } else {
-        /* BC1's colour block: the block itself, or after BC2's and BC3's alpha */
-        uint ce = kind == TC_BC1 ? b[0] : b[2], ci = kind == TC_BC1 ? b[1] : b[3];
-        bool clear = false;
-        for (uint i = 0u; i < 16u; i++) {
-            if (kind == TC_BC1) {
-                px[i] = bc1_pixel(ce, ci, true, i);
-                clear = clear || px[i] < 0x80000000u;
-            } else {
-                uint a = kind == TC_BC2 ? (((i < 8u ? b[0] : b[1]) >> (4u * (i & 7u))) & 15u) * 17u
-                                        : bc3_alpha(b[1], b[0], i);
-                px[i] = (bc1_pixel(ce, ci, false, i) & 0xFFFFFFu) | (a << 24);
-            }
-        }
-        /* a colour line (BC1's two ends) beside the alpha: two planes, alpha apart, which AstcEncode takes as one line
-           of 2 bit weights where every alpha is 255. A BC1 block of three colours has its third halfway, which 3 bit
-           weights come nearest, and with a transparent texel (black, off the line) nothing to say */
-        uint e0 = ce & 0xFFFFu, e1 = ce >> 16;
-        as_h0[0] = tc_rgba(bc_expand(e0 >> 11, 5u), bc_expand((e0 >> 5) & 63u, 6u), bc_expand(e0 & 31u, 5u), 255u);
-        as_h1[0] = tc_rgba(bc_expand(e1 >> 11, 5u), bc_expand((e1 >> 5) & 63u, 6u), bc_expand(e1 & 31u, 5u), 255u);
-        as_hint = clear ? 0u : 2u;
-        as_hplane = 3u;
-        as_hib = kind == TC_BC1 && e0 <= e1 ? 3u : 2u;
-    }
-    hint_on = false;
-    uvec4 block = AstcEncode();
+    uvec4 block = uvec4(0u);
+    bool done = false;
+#if SNX_ASTC_PASS <= 1
+    /* the blocks that are an ASTC layout already. BC2's alpha is 4 bits a texel, 255 where they are all ones */
+    if (kind == TC_BC7)
+        done = Direct7(b) || Direct45(b);
+    else if (kind == TC_BC1)
+        done = DirectBc1(b[0], b[1], false);
+    else if (kind == TC_BC2 ? (b[0] & b[1]) == 0xFFFFFFFFu : Bc3Opaque(b[0], b[1]))
+        done = DirectBc1(b[2], b[3], true);
+    if (done) block = dx_block;
+#endif
 #if SNX_ASTC_PASS == 1
-    if (as_more) { /* left to the second pass, which the indirect dispatch sizes by the count */
-        uint n = atomicAdd(work_count, 1u);
-        work_list[n] = row * units + u;
-        atomicMax(work_groups, (n >> 6) + 1u);
+    if (!done) {
+        /* a BC7 block's mode is its lowest set bit: 1, 3, 4 and 5 have lines AstcEncode takes; 0, 2 and 7 have not,
+           nor has a block of no mode */
+        uint m = uint(findLSB(b[0] & 255u));
+        as_list(kind == TC_BC7 && ((0x3Au >> (m & 7u)) & 1u) == 0u ? 1u : 0u, row * units + u);
         return;
+    }
+#else
+    if (!done) {
+        if (kind == TC_BC7) {
+            bc7_block(b, 0u, 0u);
+        } else {
+            /* BC1's colour block: the block itself, or after BC2's and BC3's alpha */
+            uint ce = kind == TC_BC1 ? b[0] : b[2], ci = kind == TC_BC1 ? b[1] : b[3];
+            bool clear = false;
+            for (uint i = 0u; i < 16u; i++) {
+                if (kind == TC_BC1) {
+                    px[i] = bc1_pixel(ce, ci, true, i);
+                    clear = clear || px[i] < 0x80000000u;
+                } else {
+                    uint a = kind == TC_BC2 ? (((i < 8u ? b[0] : b[1]) >> (4u * (i & 7u))) & 15u) * 17u
+                                            : bc3_alpha(b[1], b[0], i);
+                    px[i] = (bc1_pixel(ce, ci, false, i) & 0xFFFFFFu) | (a << 24);
+                }
+            }
+            /* a colour line (BC1's two ends) beside the alpha: two planes, alpha apart, which AstcEncode takes as one
+               line of 2 bit weights where every alpha is 255. A BC1 block of three colours has its third halfway,
+               which 3 bit weights come nearest, and with a transparent texel (black, off the line) nothing to say */
+            uint e0 = ce & 0xFFFFu, e1 = ce >> 16;
+            as_h0[0] = tc_rgba(bc_expand(e0 >> 11, 5u), bc_expand((e0 >> 5) & 63u, 6u), bc_expand(e0 & 31u, 5u), 255u);
+            as_h1[0] = tc_rgba(bc_expand(e1 >> 11, 5u), bc_expand((e1 >> 5) & 63u, 6u), bc_expand(e1 & 31u, 5u), 255u);
+            as_hint = clear ? 0u : 2u;
+            as_hplane = 3u;
+            as_hib = kind == TC_BC1 && e0 <= e1 ? 3u : 2u;
+        }
+        hint_on = false;
+        block = AstcEncode();
+#if SNX_ASTC_PASS == 2
+        if (as_more) { /* its lines don't hold it: searched for, in the third pass */
+            as_list(1u, e);
+            return;
+        }
+#endif
     }
 #endif
     dst[o] = block.x;

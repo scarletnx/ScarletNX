@@ -107,6 +107,56 @@ static void blocks() {
     }
 }
 
+// The blocks made with no texel decoded (astc_direct.glsl) are not measured as they are made, so they are held here
+// to what the BCn blocks themselves decode to: random BC7 blocks of mode 6, of mode 5 with one alpha and no rotation,
+// and BC1 blocks of four colours, every one of which is such a block. A channel may differ by what the layout costs:
+// nothing where the ends and weights are the block's own (mode 5); for BC1 its thirds, which the reference decodes as
+// the Switch's GPU rounds them, up to 4 from the 21 and 43 of 64 that ASTC has; and for mode 6 an end's step (192 values, or 48 with alpha) and a 64th of the line (ASTC's 4 bit weights are
+// BC7's within 1, and 3 bit ones their top bits)
+static void direct_blocks() {
+    static const struct {
+        const char* name;
+        int kind; // bcn.h's: 0 BC1, 9 BC7
+        uint32_t most;
+    } cases[3] = {{"BC7 mode 6", 9, 8}, {"BC7 mode 5, one alpha, no rotation", 9, 0}, {"BC1, four colours", 0, 4}};
+    for (int c = 0; c < 3; c++) {
+        const uint32_t n = 4096, bb = cases[c].kind == 0 ? 8 : 16;
+        std::vector<uint8_t> src((size_t)n * bb), astc((size_t)n * 16), was((size_t)n * 64), is((size_t)n * 64);
+        for (uint32_t i = 0; i < n; i++) {
+            uint32_t w[4] = {random_word(), random_word(), random_word(), random_word()};
+            if (c == 0) {
+                w[0] = (w[0] & ~0x7Fu) | 0x40u;
+                if (i & 1) w[1] |= 0xFFFE0000u, w[2] |= 1u; // opaque: both alpha ends and their p-bits all ones
+            } else if (c == 1) {
+                w[0] = (w[0] & ~0xFFu) | 0x20u; // mode 5, rotation 0
+                // alpha's ends, 8 bits each from bits 50 and 58, the same: 255 for every other block
+                const uint32_t a = i & 1 ? 255u : w[3] & 255u;
+                w[1] = (w[1] & ~0xFFFC0000u) | (a << 18) | ((a & 0x3Fu) << 26);
+                w[2] = (w[2] & ~3u) | (a >> 6);
+            } else if ((w[0] & 0xFFFFu) <= (w[0] >> 16)) {
+                w[0] = (w[0] >> 16) | (w[0] << 16);
+                if ((w[0] & 0xFFFFu) == (w[0] >> 16)) w[0] ^= 1u;
+            }
+            for (uint32_t k = 0; k < bb; k++) src[(size_t)i * bb + k] = uint8_t(w[k / 4] >> (k % 4 * 8));
+        }
+        bcn_astc_cpu(cases[c].kind, src.data(), n, 1, 1, astc.data());
+        bcn_decode_image(src.data(), n * 4, 4, cases[c].kind, was.data());
+        astc_decode_image(astc.data(), n * 4, 4, 4, 4, is.data(), 0);
+        uint32_t most = 0;
+        double sum = 0;
+        for (size_t k = 0; k < was.size(); k++) {
+            const uint32_t d = uint32_t(std::abs(int(was[k]) - int(is[k])));
+            most = d > most ? d : most;
+            sum += d;
+        }
+        const bool ok = most <= cases[c].most;
+        std::printf("%s %s, 4096 blocks made ASTC with no texel decoded: a channel %u off at most (%u allowed), %.3f "
+                    "on average\n",
+                    ok ? "PASS" : "FAIL", cases[c].name, most, cases[c].most, sum / double(was.size()));
+        if (!ok) failures++;
+    }
+}
+
 static double psnr(const uint8_t* a, const uint8_t* b, size_t n) {
     double e = 0;
     for (size_t i = 0; i < n; i++) e += double(int(a[i]) - int(b[i])) * double(int(a[i]) - int(b[i]));
@@ -214,7 +264,7 @@ static int measure(int n, char** files) {
             while (m < 7 && !(bc7[i] >> m & 1)) m++;
             had[m]++;
         }
-        std::printf("  the second pass's: %u of %u blocks; of BC7's modes 0 to 7", listed, cx * cy);
+        std::printf("  decoded (no ASTC layout as they stand): %u of %u blocks; of BC7's modes 0 to 7", listed, cx * cy);
         for (int m = 0; m < 8; m++) std::printf(" %u/%u", left[m], had[m]);
         std::printf("\n");
         const double count = double(w) * h * 4;
@@ -242,6 +292,7 @@ static int measure(int n, char** files) {
 int main(int argc, char** argv) {
     if (argc > 2 && !std::strcmp(argv[1], "--measure")) return measure(argc - 2, argv + 2);
     blocks();
+    direct_blocks();
     picture_psnr();
     if (failures) {
         std::fprintf(stderr, "%d failures\n", failures);

@@ -384,6 +384,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_convert_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_b_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_c_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_a_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_b_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_fast_a_spv.c"
