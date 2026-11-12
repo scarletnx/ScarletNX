@@ -305,6 +305,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the on-screen layer's pass (gpu/vk/ui.c, tests/vulkan_ui.inc) under the validation layer when it is installed:
     # quads as instances, sampled in texels, and the device's buffer given only the quads that changed
+    # a vk_gpu_profile pool smaller than asked for, which a driver gave (check_gpuprof_small_pool)
+    add_test(NAME vulkan_gpuprof_pool COMMAND snx-test-vulkan -H --vk_gpu_profile=1 --vk_validation=1)
+    set_tests_properties(vulkan_gpuprof_pool PROPERTIES TIMEOUT 60
+        ENVIRONMENT "SNX_TEST_GPUPROF_POOL_ONLY=1;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:")
     add_test(NAME vulkan_ui COMMAND snx-test-vulkan -H --vk_validation=1)
     set_tests_properties(vulkan_ui PROPERTIES TIMEOUT 60
         ENVIRONMENT "SNX_TEST_UI_ONLY=1;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"

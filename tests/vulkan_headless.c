@@ -656,6 +656,43 @@ done:
     return 0;
 }
 
+/* A driver that refuses vk_gpu_profile's pool at its size gets a smaller one (gpuprof.c's gp_slot halves the size until
+   one is taken), and a frame's passes past it go untimed: no timestamp is written past the pool. Here the driver takes
+   no timestamp pool over 1024 queries, made for the frame slot that comes next, and that frame begins 1000 passes, which
+   would take 2000. In a process of its own (SNX_TEST_GPUPROF_POOL_ONLY, --vk_gpu_profile=1): a slot's pool is made once,
+   at its first use */
+static PFN_vkCreateQueryPool g_pool_create;
+static VkResult VKAPI_CALL small_pools(VkDevice dev, const VkQueryPoolCreateInfo* info,
+                                       const VkAllocationCallbacks* alloc, VkQueryPool* pool) {
+    if (info->queryType == VK_QUERY_TYPE_TIMESTAMP && info->queryCount > 1024) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    return g_pool_create(dev, info, alloc, pool);
+}
+static int check_gpuprof_small_pool(void) {
+    u64 stamps;
+    if (!vk_gpuprof_timed()) {
+        printf("SKIP gpu profile pool: the graphics queue writes no timestamps (timestampValidBits %u)\n",
+               g_vk.gfx_timestamp_bits);
+        return 0;
+    }
+    g_pool_create = vkCreateQueryPool;
+    vkCreateQueryPool = small_pools;
+    vk_frame_next();
+    stamps = g_vk_timestamps;
+    VkCommandBuffer cb = vk_cmd();
+    for (u32 i = 0; i < 1000; i++) {
+        vk_gpuprof_pass_begin(cb, NULL, NULL);
+        vk_gpuprof_pass_end(cb);
+    }
+    vk_frame_next();
+    stamps = g_vk_timestamps - stamps;
+    vkCreateQueryPool = g_pool_create;
+    vk_finish();
+    printf("gpu profile pool of 1024 queries: a frame of 1000 passes wrote %llu timestamps\n",
+           (unsigned long long)stamps);
+    CHECK(stamps > 0 && stamps <= 1024);
+    return 0;
+}
+
 /* a frame that uploads little: 64 bytes through vk_stage and 64 through vk_stage_upload, 16 of each copied into rb */
 static int staging_light_frame(VkBuffer rb) {
     for (int upload = 0; upload < 2; upload++) {
@@ -6533,6 +6570,11 @@ static int run_headless(int argc, char** argv) {
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan resolution scale only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    if (getenv("SNX_TEST_GPUPROF_POOL_ONLY")) { /* a smaller pool than the profile asks for, alone */
+        CHECK(!check_gpuprof_small_pool());
+        printf("PASS headless Vulkan profile pool only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
     if (getenv("SNX_TEST_UI_ONLY")) { /* vulkan_ui.inc's check alone: the on-screen layer's pass */

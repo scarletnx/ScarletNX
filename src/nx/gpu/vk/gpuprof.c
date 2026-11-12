@@ -403,7 +403,7 @@ void vk_gpuprof_waited(u64 value, int kind) {
 void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt) {
     GpSlot* g = gp_slot_reset(cb, gp_on());
     if (!g) return;
-    if (g->ops.used + 2 > GP_QUERIES || g->npass >= GP_QUERIES / 2) {
+    if (g->ops.used + 2 > g->ops.queries || g->npass >= GP_QUERIES / 2) {
         g_lost++;
         return;
     }
