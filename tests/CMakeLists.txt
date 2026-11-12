@@ -1130,6 +1130,14 @@ target_include_directories(snx-test-hook-address PRIVATE "${PROJECT_SOURCE_DIR}/
 snx_hookgen(snx-test-hook-address SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/address_first.hook"
             "${CMAKE_CURRENT_SOURCE_DIR}/hook/address.hook")
 add_test(NAME hook_address COMMAND snx-test-hook-address)
+# hook_install on a 64-bit game (src/nx/hle/hook/hook.c) over tests/hook/install.hook, with the runtime stubbed: the
+# hooks' slots, and what is left of them once a save state's g_hle took the running one's place
+add_executable(snx-test-hook-install hook_install.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+snx_test_target(snx-test-hook-install 23)
+target_include_directories(snx-test-hook-install PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_service_swipc(snx-test-hook-install)
+snx_hookgen(snx-test-hook-install SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/install.hook")
+add_test(NAME hook_install COMMAND snx-test-hook-install)
 # the route list (src/nx/loader/hook_routes.c): hookgen --routes over three specs (tests/hook/routes.hook,
 # versions.hook and address.hook), the runtime's own list, its lookup and the hashes a module carries, and the build
 # IDs an address hook's key names

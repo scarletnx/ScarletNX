@@ -278,6 +278,11 @@ slot (4 MiB, 16 slots taken without waiting, since a guest thread can lose its c
 the handler alone and is counted as skipped. The cumulative FP exception flags (FPSR) aren't compared: no handler
 sets them. Verify mode is slow (each call runs twice and copies its buffers), for checking a hook, never for playing.
 
+The functions hooked are the running process's (`g_host.hook`): their own code and the adapters are addresses of this
+run, so a save state holds none of them, and a state loaded from another run finds this run's hooks in place. The
+scratch slots are guest memory, so a state holds them, with their base (`g_hle.hook`), only when the run that saved
+it verified: after the load of one that has none, each call is skipped and the log says why (`tests/hook_install.c`).
+
 A function with other side effects (it waits, takes a lock, does I/O or reads the clock) can't run twice, so its hook
 isn't `pure` and verify mode skips it: such a hook is verified in tests, on inputs recorded from the game.
 `tests/hook_verify.c` checks verify mode itself with stand-ins for the function's own code.
