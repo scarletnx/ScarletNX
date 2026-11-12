@@ -12939,6 +12939,7 @@ static void left_move(App* app) {
     move_old(app, &app->cleaned, &app->moved, true, false); /* what it did, a folder a line: a game's saves each */
     left_done(app, 1);
 }
+static void left_move_ask(App* app);
 /* Delete All asked first, Delete pressed twice (GUI_ASK_DELETE_OLD): how many paths go and how many stay, a save and
    the console's keys always; with none it can delete, the foot says so and nothing is asked */
 static void setup_fail(App* app, const char* text);
@@ -13246,7 +13247,7 @@ static void setup_take(App* app) {
             notice_choices(app, back);
             return;
         }
-        case SETUP_LEFT: { /* a folder a page; on the last Move All, Delete All (asked, pressed twice) or Not Now,
+        case SETUP_LEFT: { /* a folder a page; on the last Move All (asked), Delete All (asked, pressed twice) or Not Now,
                               which keeps them for Settings > App > Move Old Files; OK after either */
             int backs = app->setup_top > 0 && !app->left_did;
             if (app->left_did)
@@ -13257,7 +13258,7 @@ static void setup_take(App* app) {
             } else if (app->setup_top < left_groups(app) - 1)
                 left_turn(app, app->setup_top + 1);
             else if (choice - backs == 0)
-                left_move(app);
+                left_move_ask(app);
             else if (choice - backs == 1)
                 left_delete_ask(app);
             else
@@ -15311,6 +15312,23 @@ static void move_row(App* app) {
     gui_cleaned_free(&folders);
     gui_confirm_open(&app->confirm, GUI_ASK_MOVE, false);
 }
+/* Move All asked first, as Settings > App's Move Old Files asks (GUI_ASK_MOVE): how many entries move and how many
+   stay; with none that can move it goes on, the page saying why of each */
+static void left_move_ask(App* app) {
+    GuiCleaned plan = {0};
+    int moves = move_old(app, &plan, NULL, false, false);
+    if (!moves) {
+        gui_cleaned_free(&plan);
+        left_move(app);
+        return;
+    }
+    snprintf(app->ask_line, sizeof app->ask_line,
+             plan.count > moves ? snx_tr("Move Old Files? %d move, %d stay where they are")
+                                : snx_tr("Move Old Files? %d move"),
+             moves, plan.count - moves);
+    gui_cleaned_free(&plan);
+    gui_confirm_open(&app->confirm, GUI_ASK_MOVE, false);
+}
 /* what Clean Old Settings would take out: the .ini files with a [Deprecated] section in inis, the keys of the menu's
    own files nothing reads in keys; both */
 static int clean_count(App* app, int* inis, int* keys) {
@@ -15372,7 +15390,9 @@ static void change_answer(App* app, GuiAsk ask, bool taken) {
                  changed > 1 ? snx_tr("%d settings back to their defaults") : snx_tr("%d setting back to its default"),
                  changed);
         write_settings(app);          /* a save that fails says so over the count */
-    } else if (ask == GUI_ASK_MOVE) { /* done: what it did over the screen, and the menu as the files are now */
+    } else if (ask == GUI_ASK_MOVE && left_page(app)) /* the setup's Move All: its page says what it did */
+        left_move(app);
+    else if (ask == GUI_ASK_MOVE) { /* done: what it did over the screen, and the menu as the files are now */
         int moved;
         gui_cleaned_free(&app->cleaned);
         gui_cleaned_free(&app->moved);

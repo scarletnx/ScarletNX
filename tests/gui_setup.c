@@ -156,6 +156,20 @@ static void rows_show(App* app, const char* const* want, const char* const* icon
                    px_is(app, box.x + s, box.y + s, focused ? tone : t->page));
     }
 }
+/* Move All, in focus, asked first as Settings > App's Move Old Files asks: line the question; Cancel moves nothing and
+   keeps the page; then Move taken */
+static void move_all_asked(App* app, const char* line) {
+    key(app, SDLK_RETURN);
+    if (!app->confirm.shown || app->confirm.ask != GUI_ASK_MOVE || strcmp(app->ask_line, line))
+        fprintf(stderr, "gui_setup.c: Move All asked \"%s\", not \"%s\"\n", app->confirm.shown ? app->ask_line : "",
+                line);
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_MOVE && !strcmp(app->ask_line, line) && !app->left_did);
+    key(app, SDLK_ESCAPE);
+    assert(!app->confirm.shown && !app->left_did && app->setup_on);
+    key(app, SDLK_RETURN);
+    key(app, SDLK_RIGHT);
+    key(app, SDLK_RETURN);
+}
 /* a click on the setup page's row i (setup_order's order) */
 static void click_row(App* app, int i) {
     GuiSetupBoxes b;
@@ -834,7 +848,7 @@ static void test_clean_notice(App* app) {
 
 /* what an older version left: a setup page each folder (a game's save/ for each of its kinds), the last, after the
    notices and the steps, alone when nothing else is due; its size, where it goes and what Move All and Delete All
-   would do; on the last Move All, Delete All (asked, pressed twice) or Not Now, in focus; a save and keys never
+   would do; on the last Move All (asked), Delete All (asked, pressed twice) or Not Now, in focus; a save and keys never
    deleted; F5 and the 5 s look again; the old files' pages alone write no setup.ini */
 static void test_old_files(App* app) {
     char *config = config_of(app), *file = join(config, "setup.ini"), *user = snx_user_data_dir();
@@ -999,7 +1013,7 @@ static void test_old_files(App* app) {
     assert(!app->confirm.shown && app->setup_failed && app->setup_on &&
            !strcmp(app->message, "Delete All deletes none of these: a save and the console's keys are only moved"));
     key(app, SDLK_UP);
-    key(app, SDLK_RETURN);
+    move_all_asked(app, "Move Old Files? 2 move");
     assert(app->left_did == 1 && snx_is_file(moved) && !snx_path_exists(device) && app->moved.count == 1);
     render(app);
     shows(app, "Move All: 1 done, 0 not", rgb(head_ink(app)));
@@ -1110,7 +1124,7 @@ static void test_saves_one_page(App* app) {
     assert(!app->confirm.shown && app->setup_failed &&
            !strcmp(app->message, "Delete All deletes none of these: a save and the console's keys are only moved"));
     key(app, SDLK_UP); /* Move All */
-    key(app, SDLK_RETURN);
+    move_all_asked(app, "Move Old Files? 14 move");
     assert(app->left_did == 1 && app->moved.count == 14 && app->moved.done == 14);
     render(app); /* a line a game, rolling: none cut */
     shows(app, "Move All: 14 done, 0 not", rgb(head_ink(app)));
@@ -1166,7 +1180,7 @@ static void test_data_saves(App* app) {
            !strcmp(app->message, "Delete All deletes none of these: a save and the console's keys are only moved"));
     assert(snx_is_file(path));
     key(app, SDLK_UP); /* Move All: into its last commit */
-    key(app, SDLK_RETURN);
+    move_all_asked(app, "Move Old Files? 1 move");
     assert(app->left_did == 1 && !snx_path_exists(path));
     assert(!snx_path_format(path, sizeof path, "%s/save/device/0100000000ABC000/" SNX_SAVE_COMMITTED "/d.bin",
                             app->data_dir) &&
