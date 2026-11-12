@@ -828,7 +828,7 @@ A save state is the whole game at one moment, kept in `states/` in the game's fo
 the selected slot and F8 loads it, and F9 selects the next slot and says what it holds. The menu's **Save states**
 page lists the slots with the date, the play time and a picture of each, and saves, loads and deletes them. A load,
 a delete and a save over a state ask first (F7 does not: it saves at once); Delete and that Save are in the failure
-colour, Load in the warning colour. The game waits while the page is open. Before a load the game is saved to the auto slot,
+colour, Load in the warning colour, and the menu's Exit, which ends the game, in the failure colour and asked first. The game waits while the page is open. Before a load the game is saved to the auto slot,
 listed first, so a load can be undone (`state_auto_backup`). The game's own save files are never part of a state,
 and loading one leaves them as they are. A state loads only into the game, update and mods it was saved with. A newer
 ScarletNX loads it too, unless it changed the recompiled code (`SNX_ABI`) or the layout of what a state holds, and
@@ -870,7 +870,7 @@ touch screen. By default (`controls=2`, Auto) they show on a touch screen while 
 The game's menu (Back on Android, Home on a gamepad, F2) has their page: show them, *Edit layout* (drag a control;
 tap one and size it with the bar on top; *Done* or Back ends it), snap to a grid, scale, the buttons
 shown, a stick's middle where the finger lands, a D-pad a finger slides on, a buzz on each press (Android), the touch
-screen, and *Reset layout*. Each control is a white shape drawn hard over the game, its edge and its label; a pressed
+screen, and *Reset layout*, in the warning colour and asked first. Each control is a white shape drawn hard over the game, its edge and its label; a pressed
 one is filled, its label cut out. The
 game's `.ini` keeps them: `controls`, `controls_scale`,
 `controls_snap`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics`, a control's place once it
