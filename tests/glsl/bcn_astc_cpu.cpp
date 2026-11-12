@@ -60,9 +60,8 @@ struct TranscoderPlain : Invocation {
 #define SNX_ASTC_HINTS 1
 #undef SNX_ASTC_PASS
 #define SNX_ASTC_PASS 1
-#define work_groups work[0]
-#define work_count work[3]
-#define work_list (work + 4)
+#define work_head work
+#define work_list (work + 8)
 struct TranscoderFirst : Invocation {
     uint mode, units, rows, in_pitch, out_pitch, st_pitch, in_bias, out_bias, st_bias, zfloat;
     uint remap, const_a, const_b, line_out;
@@ -110,11 +109,11 @@ extern "C" void bcn_astc_plain_cpu(int kind, const uint8_t* blocks, uint32_t bw,
     transcode<astc_transcode_shader::TranscoderPlain>(kind, blocks, bw, bh, slices, out);
 }
 
-// the blocks the first pass leaves to the second, of n BC7 blocks in a row: how many, and of which BC7 mode each
-// (left[mode], 8 of them)
+// of n BC7 blocks in a row, those the first pass leaves to the later ones (the blocks that are no ASTC layout as they
+// stand): how many, and of which BC7 mode each (left[mode], 8 of them)
 extern "C" uint32_t bcn_astc_left_cpu(const uint8_t* blocks, uint32_t n, uint32_t left[8]) {
     using astc_transcode_shader::TranscoderFirst;
-    std::vector<glsl::leuint> in((size_t)n * 4), res((size_t)n * 4), work(4 + (size_t)n, 0u);
+    std::vector<glsl::leuint> in((size_t)n * 4), res((size_t)n * 4), work(8 + 2 * (size_t)n, 0u);
     std::memcpy(in.data(), blocks, in.size() * 4);
     glsl::dispatch<TranscoderFirst>(glsl::uvec3((n + 63) / 64, 1, 1), glsl::uvec3(64, 1, 1), [&](TranscoderFirst& t) {
         t.mode = TC_BCN_ASTC_MODE + 9u;
@@ -124,16 +123,18 @@ extern "C" uint32_t bcn_astc_left_cpu(const uint8_t* blocks, uint32_t n, uint32_
         t.out_pitch = n * 4;
         t.in_bias = 0;
         t.out_bias = 0;
+        t.const_a = n;
         t.src = in.data();
         t.dst = res.data();
         t.work = work.data();
     });
     for (int m = 0; m < 8; m++) left[m] = 0;
-    for (uint32_t k = 0; k < uint32_t(work[3]); k++) {
-        const uint32_t b = blocks[(size_t)uint32_t(work[4 + k]) * 16];
-        uint32_t m = 0;
-        while (m < 7 && !(b >> m & 1)) m++;
-        left[m]++;
-    }
-    return uint32_t(work[3]);
+    for (uint32_t list = 0; list < 2; list++)
+        for (uint32_t k = 0; k < uint32_t(work[list * 4 + 3]); k++) {
+            const uint32_t b = blocks[(size_t)uint32_t(work[8 + list * n + k]) * 16];
+            uint32_t m = 0;
+            while (m < 7 && !(b >> m & 1)) m++;
+            left[m]++;
+        }
+    return uint32_t(work[3]) + uint32_t(work[7]);
 }

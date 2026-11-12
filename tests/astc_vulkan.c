@@ -1687,6 +1687,36 @@ static void etc2_native(int kind, const u8* etc, u32 w, u32 h) {
     vk_image_destroy(src, src_mem);
     vk_image_destroy(dst, dst_mem);
 }
+/* the GPU's time for a conversion of bw x bh blocks alone, in ms: the blocks copied into device memory first, the
+   conversion's dispatches recorded and waited for, its output left in device memory. tc_blocks reads the output back,
+   which on a GPU behind a bus is most of its time (16 MB a 4096x4096 level, 10 ms of a GeForce GT 1030) and nothing an
+   upload does */
+static double tc_time(const VkFmt* f, const u8* blocks, u32 w, u32 bw, u32 bh) {
+    u32 bb = f->bpp, pitch = (bw * bb + 15) / 16 * 16;
+    u64 at, dev_at, cap;
+    VkBuffer staged, dev;
+    u8* p = vk_stage((u64)pitch * bh, vk_stage_align(), &staged, &at);
+    for (u32 y = 0; y < bh; y++) memcpy(p + (u64)y * pitch, blocks + (size_t)y * bw * bb, (size_t)bw * bb);
+    if (!vk_stage_device((u64)pitch * bh, vk_stage_align(), &dev, &dev_at)) fatal("no device memory to time in\n");
+    VkTcShape s = vk_tc_shape(f, w);
+    VkBuffer scratch = vk_bl_scratch(vk_tc_out_size(&s, bh, 1), &cap);
+    const VkBufferCopy c = {at, dev_at, (u64)pitch * bh};
+    rec_CmdCopyBuffer(vk_cmd(), staged, dev, 1, &c);
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                           .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT};
+    VkDependencyInfo md = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    rec_CmdPipelineBarrier2(vk_cmd(), &md);
+    vk_finish();
+    const u64 t0 = plat_ns();
+    vk_bl_barrier(vk_cmd(), 1);
+    if (!vk_tc_convert(vk_cmd(), f, w, bh, 1, dev, dev_at, pitch, scratch, 0)) fatal("conversion refused\n");
+    vk_bl_barrier(vk_cmd(), 0);
+    vk_finish();
+    return (double)(plat_ns() - t0) / 1e6;
+}
 /* texconv.comp's ETC2 build on the device against the CPU's run of it (tests/glsl/bcn_etc2_cpu.cpp): random blocks of
    every kind but BC6H, which has no ETC2 counterpart, in an image whose sides aren't multiples of 4, byte for byte,
    whole and in pieces of 3 rows a submission (rows 17 blocks wide: offsets of no storage alignment), as an encoder's
@@ -1839,10 +1869,13 @@ static void astc_encode_case(void) {
     fflush(stdout);
 }
 /* --bench-etc2: a 2048x2048 level of random blocks of each kind decoded (as on a GPU that samples neither BCn nor
-   ETC2) and encoded again as ETC2 or EAC, the conversion's dispatch alone, runs times each; and the bytes each holds.
+   ETC2) and encoded again as ETC2 or EAC, the conversion's dispatches alone on the GPU (tc_time), runs times each; and
+   the bytes each holds.
    Random blocks take every candidate (no block of one alpha or one colour stops early): a game's take less */
 static void bench_etc2(int runs, const char* file) {
-    const u32 w = 2048, h = 2048, bw = w / 4, bh = h / 4;
+    /* SNX_BENCH_SIZE: the level's side, 2048 unless said: what a time owes the level and what the submission */
+    const char* side = getenv("SNX_BENCH_SIZE");
+    const u32 w = side && atoi(side) >= 4 ? (u32)atoi(side) & ~3u : 2048, h = w, bw = w / 4, bh = h / 4;
     static const int kinds[5] = {BCN_BC1, BCN_BC3, BCN_BC4, BCN_BC5, BCN_BC7};
     /* --bench-etc2 FILE.astc: a picture's blocks, not random ones, whose every candidate is tried: the file's first
        slice decoded, repeated over the level and made BC7 by the CPU's encoder (its fast build) */
@@ -1873,9 +1906,9 @@ static void bench_etc2(int runs, const char* file) {
                        .bh = 4,
                        .conv = (u8)(VKC_BC1 + kind)};
             for (int r = 0; r < runs; r++) {
-                u64 out_size, t0 = plat_ns();
-                tc_blocks(&f, blocks, w, bw, bh, &out_size);
-                double ms = (plat_ns() - t0) / 1e6;
+                VkTcShape shape = vk_tc_shape(&f, w);
+                u64 out_size = vk_tc_out_size(&shape, bh, 1);
+                double ms = tc_time(&f, blocks, w, bw, bh);
                 printf("BENCH BCn kind %d %ux%u %s: %.1f ms, %llu bytes held (%.2f bytes a texel)\n", kind, w, h,
                        etc == 2 ? "encoded again as ASTC 4x4" : etc ? "encoded again as ETC2/EAC" : "decoded", ms, (unsigned long long)out_size,
                        (double)out_size / ((double)w * h));

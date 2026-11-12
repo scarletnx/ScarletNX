@@ -116,34 +116,58 @@ partitions leave an end 40 values) costs time and no more: past `SNX_ASTC_HINT_E
 block, the BC7 encoder's fast build's line too) the block is searched for, and the search takes the hint as well, the
 source's partition fitted in place of 64 scored, and no partition at all for a source of one line.
 
-**Two passes** (`SNX_ASTC_PASS`), as BC7's are made ([ASTC compute uploads](astc.md#two-passes)): a GPU runs
-invocations abreast at the pace of the slowest, so with the hinted blocks and the searched ones in one dispatch the
-hints made it slower on a GeForce GT 1030 (116 ms for a level that took 92 without them), a third of the operations
-though they are. The first pass writes the blocks of one colour and those a hint settles and lists the others; the
-second is an indirect dispatch over the list, each block decoded again and searched for. On nine levels of two
-games' textures 0 to 6.5% of the blocks are the second's. The blocks are the bytes one pass writes.
+**No texel decoded.** Some BCn blocks are an ASTC layout already, field for field, and those are moved, not encoded
+(`gpu/texture/astc_direct.glsl`): the ends are read out of the block and written in ASTC's encoding, and the weights
+are moved as the 32 or 64 bits they are, with the bit BC7 leaves out of its anchor index put back and BC1's indices
+put in ASTC's order by two masks. Nothing is fitted and nothing measured.
 
-What it gives, on those nine levels as BC7 blocks (the BC7 encoder's fast build of each) made ASTC
-(`snx-test-astc-encode-glsl --measure FILE.astc...`): 51.31 dB against what the BC7 blocks decode to, where the
-search alone gives 50.29, in 0.24 s of the CPU's run where the search takes 0.81; against the textures themselves
-47.83 dB, where the BC7 blocks are at 50.55 and the encoder from the texels at 48.99. On the GT 1030 (which samples
-neither, so only the encoders are timed: `snx-test-astc-vulkan --bench-etc2 FILE.astc`), a 2048x2048 level of five of
-them:
+| Source | Moved as | Off by, a channel |
+| --- | --- | --- |
+| BC7 mode 6, opaque | RGB ends of 192 values, the same 16 indices of 4 bits | 1.0 on average on random blocks, 7 at most: ASTC's 4 bit weights are BC7's within 1 of 64 |
+| BC7 mode 6 with alpha | RGBA ends: of 48 values with the 4 bit indices where the ends lie more than 40 apart, else of 192 with 3 bit weights, an index's top three bits (the nearest 3 bit weight for all 16) | within the same 7 |
+| BC7 modes 4 and 5, one alpha, no rotation | the colour's line with its own 2 or 3 bit weights, 8 bit ends | 0: the weights are BC7's and the ends fit |
+| BC7 mode 5, a rotation onto a channel 255 at both ends | two planes of an opaque block, RGB ends of 160 values, both streams of 2 bit indices | an end's step |
+| BC1 of four colours, alone or under BC2's or BC3's alpha where it is 255 throughout | RGB ends of 8 bits, BC1's own, 2 bit weights | 0.28 on average, 4 at most: BC1's thirds as the Switch's GPU rounds them against ASTC's 21 and 43 of 64 |
+| any of them with one colour (ends alike, or every index alike) | a void extent | 0 |
 
-| Level | ETC2 RGBA8 | ASTC 4x4, searched in one pass | ASTC 4x4, hints and two passes |
+**Three passes** (`SNX_ASTC_PASS`, `texconv.glsl`'s ASTC main), as BC7's are made in two ([ASTC compute
+uploads](astc.md#two-passes)): a GPU runs invocations abreast at the pace of the slowest, so each way of making a
+block is a dispatch of its own. With hints and the search in one dispatch the hints made a GeForce GT 1030 slower, a
+third of the operations though they are.
+
+1. Over the strip's blocks: those above, moved. The others are listed, by what the block says it is: with lines of its
+   own to try (BC7's modes 1, 3, 4 and 5, BC1's blocks of three colours, BC2 and BC3 with alpha), or without.
+2. Over the first list: the block decoded and its lines tried (the hints above); what they don't settle joins the
+   second list.
+3. Over the second list: the block decoded and searched for.
+
+The second and third are indirect dispatches, as many workgroups as their list has blocks (the work lists, a third
+buffer). The blocks are the bytes one invocation doing all three would write, which is what the tests run on the CPU.
+
+What it gives, on nine levels of two games' textures as BC7 blocks (the BC7 encoder's fast build of each) made ASTC
+(`snx-test-astc-encode-glsl --measure FILE.astc...`): 50.86 dB against what the BC7 blocks decode to. Every block
+decoded, its lines tried and measured, gave 51.31, and searched for with no hint 50.29: moving the blocks costs
+half a dB of what the hints had gained. Against the textures themselves 47.67 dB, where the BC7 blocks are at 50.55.
+
+Time, on the GT 1030 (which samples neither ASTC nor ETC2, so only the conversions run): a 2048x2048 level, 262,144
+blocks, its blocks in device memory and its output left there, the dispatches alone
+(`snx-test-astc-vulkan --bench-etc2 FILE.astc`; read back over the bus, as that bench did at first, the output's 4 MB
+took another 10 ms and hid all of this):
+
+| Level, as BC7 blocks | Decoded to RGBA8 | As ETC2 RGBA8 | As ASTC 4x4 |
 | --- | --- | --- | --- |
-| 8x8, 18% hard blocks | 174 ms | 92 ms | 33 ms |
-| 6x6 | 156 ms | 63 ms | 23 ms |
-| 8x5 | 141 ms | 88 ms | 33 ms |
-| 8x6, mostly one colour | 85 ms | 35 ms | 21 ms |
-| 8x8, smooth | 125 ms | | 22 ms |
+| 8x8, smooth: every block mode 6 | 1.9 ms | 96 ms | 0.6 ms |
+| 8x6, mostly one colour | 2.2 ms | 78 ms | 1.2 ms |
+| 6x6 | 2.8 ms | 150 ms | 2.6 ms |
+| 4x4, with alpha | 2.3 ms | 134 ms | 2.7 ms |
+| 8x5 | 2.4 ms | 135 ms | 6.1 ms |
+| 8x8, 18% hard blocks | 4.9 ms | 167 ms | 6.2 ms |
 
-Decoding the BC7 blocks alone is 11 ms of each. Random BC1 blocks take 32 ms where ETC2 takes 171, and random BC3
-ones 54 ms where ETC2 takes 204; random BC7 ones,
-most of which no hint settles, 138.
+Random blocks, which nearly all take the search: BC1 28 ms (ETC2 172), BC3 44 ms (186), BC7 90 ms (198).
 
-What it does not have yet: three and four partitions, two partitions with alpha, and a first pass that makes a
-block from the BCn block's fields without decoding its texels, which is where the rest of the time is.
+What it does not have yet: three and four partitions, two partitions with alpha, and blocks moved for BC7's modes 1
+and 3 (two partitions of 2 bit weights are ASTC's too, where its partition is BC7's, but their ends have 40 values a
+channel), for mode 4 with a rotation and for BC1 with a transparent texel.
 
 ## What it costs
 
