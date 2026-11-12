@@ -2,6 +2,14 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # The shared SPIR-V optimizer
 
+## Index
+
+* [How a pass is written](#how-a-pass-is-written)
+* [Value numbering](#value-numbering)
+* [Integer folds and identities](#integer-folds-and-identities)
+* [Dead code](#dead-code)
+* [Tests](#tests)
+
 `src/common/utilities/spirv_opt.c` holds the passes every layer's SPIR-V shares: spirv-opt's algorithms, each written
 again over a finished module's words. spirv-opt itself stays out of the runtime's path: it builds the whole module's
 representation for each run, and a shader is translated while a draw waits for it.
