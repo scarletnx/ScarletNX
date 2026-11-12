@@ -80,11 +80,27 @@ void fs_lock(void) {}
 void fs_unlock(void) {}
 u32 fs_host_root_result(void) { return FSR(1); }
 u32 fs_sd_root(FsNode** root) { return (void)root, FSR(1); }
-u32 fs_save_root(u8 type, const u8 uid[16], u16 index, FsNode** root, int* noted) {
-    return (void)type, (void)uid, (void)index, (void)root, (void)noted, FSR(1);
+/* no save (FSR(1)) until save_given is 0 or 1: then the root save_root, an Account save's noted, and save_given as
+   its journaled */
+static FsNode* const save_root = (FsNode*)(uintptr_t)0x5a;
+static int save_given = -1;
+u32 fs_save_root(u8 type, const u8 uid[16], u16 index, FsNode** root, int* noted, int* journaled) {
+    (void)uid, (void)index;
+    if (save_given < 0) return FSR(1);
+    *root = save_root, *noted = type == 1, *journaled = save_given;
+    return 0;
 }
 void fs_root_release(FsNode* root) { (void)root; }
-void fs_root_commit(FsNode* root, int noted) { (void)root, (void)noted; }
+/* the last commit of a save: its root, whether it was a journaled save's (fs_save_commit) and its noted; the Result a
+   journaled one answers */
+static FsNode* committed;
+static int committed_noted, committed_journaled;
+static u32 commit_result;
+u32 fs_save_commit(FsNode* work, int noted) {
+    committed = work, committed_noted = noted, committed_journaled = 1;
+    return commit_result;
+}
+void fs_root_commit(FsNode* root, int noted) { committed = root, committed_noted = noted, committed_journaled = 0; }
 u32 fs_root_create(FsNode* root, const char* path, i64 size, int dir) {
     return (void)root, (void)path, (void)size, (void)dir, FSR(1);
 }
@@ -167,6 +183,26 @@ int main(void) {
     nnfs_init();
     image(game_image, 4);
     image(data_image_bytes, 12);
+
+    /* a commit of a native mount goes to the core as fs_save_root opened the save: a journaled save's to fs_save_commit,
+       whose Result is the function's (WriteModeFileNotClosed, desc 6457, one the SDK stops on), and one whose files
+       are its own to fs_root_commit */
+    text(NAME, "save");
+    save_given = 1;
+    CHECK(nnfs_mount_save_data(c, NAME, CACHE) == 0);
+    CHECK(nnfs_commit(c, NAME) == 0 && committed == save_root && committed_noted && committed_journaled);
+    committed = NULL;
+    CHECK(nnfs_commit_save_data(c, NAME) == 0 && committed == save_root && committed_journaled);
+    commit_result = FSR(1);
+    CHECK(nnfs_commit(c, NAME) == FSR(1) && abort_needed(FSR(6457)) && !abort_needed(FSR(1)));
+    commit_result = 0;
+    nnfs_unmount(c, NAME);
+    save_given = 0;
+    CHECK(nnfs_mount_cache_storage(c, NAME) == 0);
+    CHECK(nnfs_commit(c, NAME) == 0 && committed == save_root && !committed_noted && !committed_journaled);
+    nnfs_unmount(c, NAME);
+    save_given = -1;
+    committed = NULL;
 
     /* no native mount yet: every question about a path is the SDK's own */
     text(PATH, "rom:/icu/data.dat");

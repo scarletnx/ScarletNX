@@ -128,8 +128,13 @@ typedef struct {
 void fs_lock(void);
 void fs_unlock(void);
 /* the root of the save of type (1 an account's, 4 temporary, 5 cache) for uid and index, made when it is not there,
-   retained: 0, or the Result. noted: an Account, Device or BCAT save, whose commits write its note. Takes the lock */
-u32 fs_save_root(u8 type, const u8 uid[16], u16 index, FsNode** root, int* noted);
+   retained: 0, or the Result. noted: an Account, Device or BCAT save, whose commits write its note. journaled: a save
+   kept as the console keeps one in a folder, whose root is the copy the game works in, committed by fs_save_commit;
+   any other root's commit is fs_root_commit's. Takes the lock */
+u32 fs_save_root(u8 type, const u8 uid[16], u16 index, FsNode** root, int* noted, int* journaled);
+/* a journaled save's commit: its working folder work made its last commit, refused while a file of it is open for
+   writing (WriteModeFileNotClosed), then its note when noted. 0, or the Result */
+u32 fs_save_commit(FsNode* work, int noted);
 /* the SD card's root (the data folder's sdmc/), made when it is not there, retained. The card is always there.
    Takes the lock */
 u32 fs_sd_root(FsNode** root);
