@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* hook_install on a 32-bit game (src/nx/hle/hook/hook.c), over tests/hook/a32_marked.hook, with the runtime stubbed to
-   a symbol list and a code table of slots: a hook declared a32 takes its function's slot, an A32 function's and a
-   Thumb one's alike, and its adapter runs the handler with the arguments AAPCS32 gives it; one not declared a32, a
-   symbol no hook names and a family that hooks_off names keep their slots */
+   a symbol list and a code table of slots: a hook of the 32-bit program's table (one declared a32, or for a 32-bit
+   program alone) takes its function's slot, an A32 function's and a Thumb one's alike, and its adapter runs the
+   handler with the arguments AAPCS32 gives it; one not declared a32, a symbol no hook names, a versioned hook and a
+   family that hooks_off names keep their slots. The two tables: a symbol declared again for a 32-bit program alone
+   has each program's handler in its table, and one only a 32-bit program has is in no other */
 #include "nx/hle/hook/hook.c"
 #include <assert.h>
 #include <stdio.h>
@@ -18,6 +20,12 @@ u32 test_answer(CPU* c, u32 a, int b) {
 void test_thumb_answer(CPU* c, u64 out) { c->mem[out] = 0x5a; }
 u64 test_wide(CPU* c, u64 size) { return (void)c, size; }
 u32 test_off(CPU* c) { return (void)c, 1; }
+i64 test_now(CPU* c) { return (void)c, 0x1122334455667788ll; }
+void test_now_out(CPU* c, u64 out) { memcpy(c->mem + out, "\x88\x77\x66\x55\x44\x33\x22\x11", 8); }
+u32 test_save(CPU* c, const HookLayout_Report32* l, u64 report, u64 size) {
+    seen[0] = l->size, seen[1] = size;
+    return hook_get_u32(c, l->used, report);
+}
 
 /* ---- the runtime, as far as hook_install reaches it */
 static const struct {
@@ -25,7 +33,8 @@ static const struct {
     u64 addr; /* bit 0 set for a Thumb function */
 } symbols[] = {{"answer", 0x1000},     {"wide", 0x1010},
                {"unhooked", 0x1020},   {"thumb_answer", 0x2001},
-               {"off_answer", 0x1030}, {"answer", 0x100001000ull /* outside a 32-bit game's addresses */}};
+               {"off_answer", 0x1030}, {"now", 0x1040},
+               {"save_j", 0x1050},     {"answer", 0x100001000ull /* outside a 32-bit game's addresses */}};
 int kernel_symbol(u32 i, u64* addr, const char** name) {
     if (i >= sizeof symbols / sizeof symbols[0]) return 0;
     *addr = symbols[i].addr, *name = symbols[i].name;
@@ -55,6 +64,14 @@ void fatal(const char* fmt, ...) {
     fprintf(stderr, "fatal: %s\n", fmt);
     exit(1);
 }
+/* the entry of table t for symbol at a version: hook_select's */
+static int entry(const HookTable* t, const char* symbol, u32 sdk) {
+    u32 versions[HOOK_KEYS] = {0};
+    int first;
+    versions[HOOK_SDK] = sdk;
+    return hook_select(t, symbol, versions, &first);
+}
+
 /* the 64-bit side, which a 32-bit game never reaches */
 static void not_reached(void) { assert(!"the 64-bit install ran for a 32-bit game"); }
 u64 kmem_alloc(u64 size, u32 state, u32 perm) { return (void)size, (void)state, (void)perm, not_reached(), 0; }
@@ -79,26 +96,33 @@ int snx_hook_key_at(const char* name, const unsigned char build_id[32], SnxU64* 
 
 int main(void) {
     static SnxArmCPU a;
-    int answer = -1, thumb = -1, wide = -1, off = -1;
-    for (int i = 0; i < HOOK_COUNT; i++) {
-        if (!strcmp(hook_symbol[i], "answer")) answer = i;
-        if (!strcmp(hook_symbol[i], "thumb_answer")) thumb = i;
-        if (!strcmp(hook_symbol[i], "wide")) wide = i;
-        if (!strcmp(hook_symbol[i], "off_answer")) off = i;
-    }
-    /* hookgen --a32-marked: an adapter for each hook declared a32, none for the other */
-    assert(answer >= 0 && thumb >= 0 && wide >= 0 && off >= 0);
-    assert(hook_a32[answer] && hook_a32[thumb] && hook_a32[off] && !hook_a32[wide]);
+    /* hookgen --a32-marked: the hooks declared a32 are in both tables, one that isn't in the table alone, and one for
+       a 32-bit program alone in that program's */
+    int answer = entry(&hook32_table, "answer", 0), thumb = entry(&hook32_table, "thumb_answer", 0);
+    int now = entry(&hook32_table, "now", 0), off = entry(&hook32_table, "off_answer", 0);
+    assert(HOOK_COUNT == 5 && HOOK32_COUNT == 6);
+    assert(answer >= 0 && thumb >= 0 && now >= 0 && off >= 0);
+    assert(entry(&hook_table, "answer", 0) >= 0 && entry(&hook_table, "wide", 0) >= 0);
+    assert(entry(&hook32_table, "wide", 0) == -1 && entry(&hook_table, "save_j", 0) == -1);
+    /* one symbol, each program's own declaration */
+    assert(!strcmp(hook_handler[entry(&hook_table, "now", 0)], "test_now"));
+    assert(!strcmp(hook32_handler[now], "test_now_out"));
+    /* a 32-bit program's versioned hook: none for an unknown version, and the layout of each version */
+    assert(entry(&hook32_table, "save_j", 0) == -2);
+    assert(!strcmp(hook32_layouts[entry(&hook32_table, "save_j", 0x10000)], "Report32 of line 13"));
+    assert(!strcmp(hook32_layouts[entry(&hook32_table, "save_j", 0x20000)], "Report32 of line 14"));
 
     for (unsigned i = 0; i < 0x40; i++) a32_slots[i] = thumb_slots[i] = own_block;
     g_settings.native_hooks = 1;
     snprintf(g_settings.hook_families_off, sizeof g_settings.hook_families_off, "switched_off");
     hook_install();
-    assert(a32_slots[0] == hook_a32[answer]);  /* an A32 function */
-    assert(thumb_slots[0] == hook_a32[thumb]); /* a Thumb one, by its address without bit 0 */
-    assert(a32_slots[4] == own_block);         /* not declared a32: its own code */
-    assert(a32_slots[8] == own_block);         /* no hook names it */
-    assert(a32_slots[12] == own_block);        /* its family is off */
+    assert(a32_slots[0] == hook32_fn[answer]);  /* an A32 function */
+    assert(thumb_slots[0] == hook32_fn[thumb]); /* a Thumb one, by its address without bit 0 */
+    assert(a32_slots[4] == own_block);          /* not declared a32: its own code */
+    assert(a32_slots[8] == own_block);          /* no hook names it */
+    assert(a32_slots[12] == own_block);         /* its family is off */
+    assert(a32_slots[16] == hook32_fn[now]);    /* the 32-bit program's declaration of a symbol with two */
+    assert(a32_slots[20] == own_block);         /* versioned: the module's version isn't read */
     for (unsigned i = 1; i < 0x40; i++) assert(thumb_slots[i] == own_block);
 
     /* the adapter: r0 and r1 to the handler, its answer in r0, back to lr */
@@ -111,6 +135,19 @@ int main(void) {
     a.r[0] = 0x40, a.r[14] = 0x3001; /* back into Thumb code */
     thumb_slots[0](&a);
     assert(mem32[0x40] == 0x5a && a.r[15] == 0x3000 && (a.cpsr & SNX_ARM_T));
+    /* the 32-bit program's own declaration: the result through the pointer in r0, r1 untouched */
+    a.cpsr = 0;
+    a.r[0] = 0x80, a.r[1] = 0xdead, a.r[14] = 0x3000;
+    a32_slots[16](&a);
+    assert(!memcmp(mem32 + 0x80, "\x88\x77\x66\x55\x44\x33\x22\x11", 8) && a.r[1] == 0xdead && a.r[15] == 0x3000);
+    /* its versioned hook's adapters: each passes its version's layout, the size_t from r1 */
+    mem32[0x28] = 0x11, mem32[0x30] = 0x22;
+    a.r[0] = 0x20, a.r[1] = 0xfffffff0u, a.r[14] = 0x3000;
+    hook32_fn[entry(&hook32_table, "save_j", 0x10000)](&a);
+    assert(a.r[0] == 0x11 && seen[0] == 0xc && seen[1] == 0xfffffff0u);
+    a.r[0] = 0x20, a.r[1] = 4;
+    hook32_fn[entry(&hook32_table, "save_j", 0x20000)](&a);
+    assert(a.r[0] == 0x22 && seen[0] == 0x14 && seen[1] == 4);
 
     /* hooks=0 takes nothing */
     for (unsigned i = 0; i < 0x40; i++) a32_slots[i] = thumb_slots[i] = own_block;

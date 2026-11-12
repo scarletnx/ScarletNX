@@ -57,7 +57,8 @@ endfunction()
 # gives <target> their include root. SPEC is src/nx/hle/hook/hooks.hook, the native SDK's (src/nx/nn/*.hook,
 # snx_hook_sdk) and the game patches' address hooks (src/nx/patches/*.hook, snx_hook_patches) unless a test names its own, NAME is hle/hook/hooks.hook, and PREFIX (hook)
 # names the tables: gpu/nvn/nvn.hook, the NVN functions the runtime implements, is a second spec with its own. A32 adds
-# the adapters for a 32-bit program (hookgen --a32), A32_MARKED those of the hooks declared a32 alone
+# an adapter for a 32-bit program to every hook (hookgen --a32), A32_MARKED a 32-bit program's own table, of the hooks
+# declared a32 and of those declared for it alone (hookgen --a32-marked)
 function(snx_hookgen target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "A32;A32_MARKED" "PREFIX;NAME" "SPEC")
     set(a32)

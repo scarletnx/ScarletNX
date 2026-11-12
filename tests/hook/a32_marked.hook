@@ -1,10 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# hooks for tests/hook_install_a32.c, generated with --a32-marked: the ones declared a32 have an adapter for a 32-bit
-# program, the others none
+# hooks for tests/hook_install_a32.c, generated with --a32-marked: a 32-bit program's table has the ones declared a32
+# and the ones declared for it alone (a32 before hook), the table the others and the ones declared a32
 family marked
 hook answer(u32 a, bool b) -> u32 = test_answer a32
 hook thumb_answer(addr out) = test_thumb_answer a32
 hook wide(u64 size) -> u64 = test_wide
+# one symbol, another declaration for a 32-bit program: its result comes back through a pointer there
+hook now() -> i64 = test_now
+a32 hook now(addr out) = test_now_out
+# a symbol only a 32-bit program has, with a layout of its own by version
+struct Report32 @version(< 2.0.0) { u32 used @0x8 } size 0xc
+struct Report32 @version(>= 2.0.0) { u32 used @0x10 } size 0x14
+a32 hook save_j(addr report, usize size) -> u32 = test_save uses Report32
 family switched_off
 hook off_answer() -> u32 = test_off a32

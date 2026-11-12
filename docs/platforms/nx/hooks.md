@@ -85,12 +85,22 @@ hook memcpy(void* dst, const void* src, u64 size) -> void* = hook_memmove
   `tests/hook_adapters.c` checks the mapping.
 - The word `a32` after a hook's handler (after `pure`) says the declaration holds for a 32-bit game too: its
   arguments are the function's under AAPCS32 as written (a `usize` for a `size_t`, never a `u64`), and its handler
-  reads nothing whose layout differs in the 32-bit SDK. A hook that `uses` a struct can't be one: the layouts are the
-  64-bit SDK's. `hookgen --a32-marked` (`snx_hookgen(... A32_MARKED)`) generates the adapters of those hooks alone,
-  and the others' entries of `<prefix>_a32` are 0. The runtime's own spec is generated this way, and for a 32-bit
-  game `hook_install` puts each such adapter in its function's slot of the code table (`arm_slot`); every other
-  SDK function runs its own code there. A 32-bit SDK mangles a `size_t` as `j` where the 64-bit one has `m`, so a
-  function with one in its signature has another symbol, and needs a declaration of its own.
+  reads nothing whose layout differs in the 32-bit SDK. A hook that `uses` a struct can't be one: a struct's layout
+  is one SDK's.
+- A line that begins with `a32` declares a hook for a 32-bit game alone: `a32 hook SYMBOL(...) ...`, with a
+  `@version` before it and `uses` after its handler as any hook. It is for a function whose declaration differs
+  there. A 32-bit SDK mangles a `size_t` as `j` where the 64-bit one has `m` (and an `int64_t` as `x` for `l`), so a
+  function with one in its signature has another symbol. AAPCS32 returns a class of more than 4 bytes through a
+  pointer the caller passes in r0, where AAPCS64 returns one of 8 bytes in x0, so `nn::time`'s `now()` is
+  `() -> i64` for a 64-bit game and `a32 hook ...(addr out)` for a 32-bit one, under one symbol. And a struct there
+  has its own layout, declared as a struct of another name. A symbol's declarations for a 32-bit game (those marked
+  `a32` and those for it alone) are checked against each other, never against the ones that don't hold for it.
+- `hookgen --a32-marked` (`snx_hookgen(... A32_MARKED)`) writes a 32-bit game's table after the other,
+  `<prefix>32_table` with `<prefix>32_symbol`, `_fn` (the adapters, `SnxArmBlock`s), `_handler`, `_family`, `_key`,
+  `_lo`, `_hi` and `_layouts`: the hooks marked `a32` and the ones for a 32-bit game alone, which are in no other
+  table and name no route (a 32-bit game's every call goes through its code table). The runtime's own spec is
+  generated this way, and for a 32-bit game `hook_install` puts each adapter of that table in its function's slot
+  of the code table (`arm_slot`); every other SDK function runs its own code there.
 - A pointer is a type followed by `*`, each `*` optionally followed by `const`, after an optional `const`:
   `const NVNtexture* const* textures`. It points to `void`, `char`, one of the types above, or a type of the C header
   that the spec's `include` line names (`include "nx/gpu/nvn/nvn.h"`, found in the folders that `-I` gives hookgen).

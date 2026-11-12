@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+family a
+hook f(addr s) -> u32 = h a32
+a32 hook f(addr s, addr t) -> u32 = h32

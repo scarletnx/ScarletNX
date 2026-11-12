@@ -1132,8 +1132,8 @@ snx_test_target(snx-test-hook-adapters 99)
 target_include_directories(snx-test-hook-adapters PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-hook-adapters SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/test.hook" A32)
 add_test(NAME hook_adapters COMMAND snx-test-hook-adapters)
-# hook_install on a 32-bit game (src/nx/hle/hook/hook.c) over tests/hook/a32_marked.hook: the hooks declared a32 take
-# their functions' slots of the code table, with the runtime stubbed
+# hook_install on a 32-bit game (src/nx/hle/hook/hook.c) over tests/hook/a32_marked.hook: the hooks of the 32-bit
+# program's table take their functions' slots of the code table, with the runtime stubbed
 add_executable(snx-test-hook-install-a32 hook_install_a32.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
 snx_test_target(snx-test-hook-install-a32 23)
 target_include_directories(snx-test-hook-install-a32 PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -1160,7 +1160,7 @@ add_executable(snx-test-hook-install hook_install.c "${PROJECT_SOURCE_DIR}/src/n
 snx_test_target(snx-test-hook-install 23)
 target_include_directories(snx-test-hook-install PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_service_swipc(snx-test-hook-install)
-snx_hookgen(snx-test-hook-install SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/install.hook")
+snx_hookgen(snx-test-hook-install SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/install.hook" A32_MARKED)
 add_test(NAME hook_install COMMAND snx-test-hook-install)
 # the route list (src/nx/loader/hook_routes.c): hookgen --routes over three specs (tests/hook/routes.hook,
 # versions.hook and address.hook), the runtime's own list, its lookup and the hashes a module carries, and the build
@@ -1317,7 +1317,11 @@ foreach(bad IN ITEMS
         address_zero 2 "a build ID of zeros names no build"
         address_twice 4 "0123456789abcdef:40 is hooked on line 2 too"
         address_keyword 2 "expected 'hook' after the address"
-        a32_uses 4 "an a32 hook uses no struct")
+        a32_uses 4 "a hook that holds for a 32-bit program too uses no struct"
+        a32_twice 4 "f is hooked on line 3 too"
+        a32_word_twice 3 "the a32 before hook says it already"
+        a32_keyword 3 "expected 'hook' after a32"
+        a32_pure 3 "verify mode checks no hook of a 32-bit program")
     if(NOT DEFINED bad_name)
         set(bad_name "${bad}")
     elseif(NOT DEFINED bad_line)
@@ -1332,6 +1336,11 @@ foreach(bad IN ITEMS
         unset(bad_line)
     endif()
 endforeach()
+# a declaration for a 32-bit program alone, with --a32, which gives that program every hook's declaration
+add_test(NAME hookgen_refuses_a32_all COMMAND snx-hookgen --a32 --out "${CMAKE_CURRENT_BINARY_DIR}/refused.inc"
+         "${CMAKE_CURRENT_SOURCE_DIR}/hook/bad/a32_all.hook")
+set_tests_properties(hookgen_refuses_a32_all PROPERTIES
+                     PASS_REGULAR_EXPRESSION "a32_all.hook:4: .*one for it alone needs --a32-marked")
 add_executable(snx-test-swipc-dispatch swipc_dispatch.c)
 snx_test_target(snx-test-swipc-dispatch 23)
 snx_swipc(snx-test-swipc-dispatch ROOT "${PROJECT_SOURCE_DIR}" FILES tests/swipc/test.swipc tests/swipc/other.swipc)
