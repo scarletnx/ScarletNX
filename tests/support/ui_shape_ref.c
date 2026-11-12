@@ -24,7 +24,7 @@ static float shape_distance(unsigned kind, float px, float py, float w, float h)
 static int label_bit(unsigned label, float px, float py, float w, float h) {
     unsigned c0 = label & 0xFF, c1 = label >> 8, n = c1 ? 2 : c0 ? 1 : 0, x;
     float s, ax, ay, qx, qy, fx, fy;
-    if (!n || 16.0f > h * 0.8f || 8.0f * (float)n > w * 0.8f) return 0;
+    if (!n || 16.0f > h - 2.0f || 8.0f * (float)n > w * 0.8f) return 0;
     s = floorf(fminf(h * 0.5f / 16.0f, w * 0.6f / (8.0f * (float)n)));
     s = s < 1 ? 1 : s;
     ax = floorf((w - 8.0f * (float)n * s) * 0.5f);
