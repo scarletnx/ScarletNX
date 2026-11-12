@@ -6,7 +6,8 @@
    any other; and a system archive mounted by its data id, with the cache size its tables need. Then a file of that
    archive opened, read and closed by a 64-bit game and by a 32-bit one through its table's adapters (fs.hook's a32):
    the handle and the bytes read take 8 bytes of the game's memory in the first and 4 in the second, and a handle
-   the SDK made goes back to the SDK's own code in both */
+   the SDK made goes back to the SDK's own code in both. And MountHost's refusal in both
+   games */
 #include "nx/nn/fs.c"
 #include "hle/hook/hooks.hook.inc" /* fs.hook's table, and a 32-bit game's */
 #include <stdio.h>
@@ -162,9 +163,9 @@ void fatal(const char* fmt, ...) {
 /* ---- hook.c's: each function is hooked somewhere, and the SDK's own code answers 0x77, counted by its symbol */
 static unsigned own_runs;
 static char own_symbol[96];
-static const char* site_symbol[8];
+static const char* site_symbol[12];
 u64 hook_site(const char* symbol) {
-    for (u64 i = 0; i < 8; i++) {
+    for (u64 i = 0; i < 12; i++) {
         if (!site_symbol[i]) site_symbol[i] = symbol;
         if (site_symbol[i] == symbol || !strcmp(site_symbol[i], symbol)) return 0x1000 + 4 * i;
     }
@@ -327,12 +328,33 @@ int main(void) {
     }
     nnfs_unmount(c, NAME);
 
+    /* a folder of the host PC: what the file server answers for the host's root, under either form's symbol */
+    {
+        static const char* const host[3] = {"_ZN2nn2fs9MountHostEPKcS2_",
+                                            "_ZN2nn2fs9MountHostEPKcS2_RKNS0_15MountHostOptionE",
+                                            "_ZN2nn2fs18MountHostForSystemEPKcS2_"};
+        text(NAME, "host");
+        text(PATH, "C:/data");
+        for (int i = 0; i < 3; i++) {
+            int k;
+            for (k = 0; k < HOOK_COUNT && strcmp(hook_symbol[k], host[i]); k++) {}
+            CHECK(k < HOOK_COUNT);
+            c->x[0] = NAME, c->x[1] = PATH, c->x[2] = 0, c->x[30] = 0x9000;
+            hook_fn[k](c, 0);
+            CHECK((u32)c->x[0] == FSR(1) && c->pc == 0x9000 && own_runs == 10);
+        }
+        text(PATH, "host:/x"); /* nothing was mounted: the path is still the SDK's */
+        CHECK(nnfs_is_path_mounted(c, PATH) == 1 && own_runs == 11);
+    }
+    text(NAME, "ng");
+    text(PATH, "ng:/a");
+
     /* the same in a 32-bit game, through its adapters. The cache size is a size_t of 4 bytes, the archive's id two
        registers, and the mount's cache and its size two words of the stack */
     module32.nmods = 0;
     g_arm_mod = &module32;
     a.mem = mem, a.mem_size = sizeof mem;
-    CHECK(HOOK32_COUNT == 42);
+    CHECK(HOOK32_COUNT == 43);
     /* each for the one 32-bit SDK read, 0.12.16, alone: a 32-bit game of another SDK has no hook here */
     for (int i = 0; i < HOOK32_COUNT; i++)
         CHECK(hook32_key[i] == HOOK_SDK && hook32_lo[i] == 0 && hook32_hi[i] == 0x10000);
@@ -365,7 +387,7 @@ int main(void) {
         CHECK(snx_ld_le64(mem + RESULT) == 5 && mem[RESULT + 8] == 0xee);
         /* a handle the SDK made is a pointer, so even: the function's own code answers it, and its r0 comes back */
         CHECK(call32("_ZN2nn2fs8ReadFileEPjNS0_10FileHandleExPvj", RESULT, 0x5000, 0, 0, 0x600, 16, 0) == 0x78);
-        CHECK(own_runs32 == 1 && own_runs == 10);
+        CHECK(own_runs32 == 1 && own_runs == 11);
         CHECK(call32("_ZN2nn2fs15GetFileOpenModeENS0_10FileHandleE", h, 0, 0, 0, 0, 0, 0) == 1 && own_runs32 == 1);
         /* a directory's handle has bit 1 too, and is no file's */
         outs();
@@ -387,6 +409,8 @@ int main(void) {
     }
     call32("_ZN2nn2fs7UnmountEPKc", NAME, 0, 0, 0, 0, 0, 0);
     CHECK(storages_open == 0 && own_runs32 == 1);
+    /* MountHost there: the name and the folder in r0 and r1, the same refusal, nothing of the SDK's run */
+    CHECK(call32("_ZN2nn2fs9MountHostEPKcS2_", NAME, PATH, 0, 0, 0, 0, 0) == FSR(1) && own_runs32 == 1);
     g_arm_mod = NULL;
     printf("nn_fs: %u checks passed\n", checks);
     return 0;
