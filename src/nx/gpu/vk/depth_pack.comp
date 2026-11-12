@@ -39,6 +39,7 @@ void main() {
         words[i * 2u + 1u] = s;
         return;
     }
-    uint z = depth_float != 0u ? uint(clamp(uintBitsToFloat(d), 0.0, 1.0) * 16777215.0 + 0.5) : d & 0xFFFFFFu;
+    /* roundEven, not + 0.5: from 2^23 on the product is already whole, and a half added rounds 0.75 up to 0xC00000 */
+    uint z = depth_float != 0u ? uint(roundEven(clamp(uintBitsToFloat(d), 0.0, 1.0) * 16777215.0)) : d & 0xFFFFFFu;
     words[i] = mode == DP_S8_Z24 ? (z << 8) | s : mode == DP_Z24_S8 ? z | (s << 24) : z;
 }
