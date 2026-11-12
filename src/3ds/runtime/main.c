@@ -73,8 +73,11 @@ static void usage(FILE* out) {
         "                         it shares the system's, 1 on the copy, 2 on the RAM in place. --async_pipelines=1\n"
         "                         skips what a new pipeline draws while it is made, on --pipeline_threads=N threads\n"
         "                         (0: all the computer's but two, two to twelve). --vk_pipeline_cache=0 neither\n"
-        "                         reads nor writes the pipelines kept between runs (shader_cache of the game's\n"
-        "                         folder). --gamepad_swap_ab=1 swaps a\n"
+        "                         reads nor writes the pipelines or shaders kept between runs (shader_cache of the\n"
+        "                         game's folder). --vk_ext_shader_object=off draws through pipelines where the\n"
+        "                         device has shader objects, as each --vk_ext_*=off takes an extension away; a\n"
+        "                         driver known to break one has it taken away too, unless --vulkan_ban_ignore=KEY\n"
+        "                         names it. --gamepad_swap_ab=1 swaps a\n"
         "                         gamepad's A and B, --gamepad_deadzone=N is its sticks' dead zone in percent of\n"
         "                         their travel (default 20), --gamepad_map=MAP the buttons its controls send\n"
         "                         (south:B east:A ..., the Switch's names: Plus is Start, Minus Select). --touch=N\n"
@@ -814,8 +817,8 @@ int snx_ctr_main(int argc, char** argv) {
             model_set = true;
         } else if (!positional && !strncmp(arg, "--", 2) && strchr(arg, '=')) {
             /* a setting of the 3DS display or debug table (g_ctr_display_ini, g_ctr_debug_ini, in
-               src/nx/runtime/settings.txt), or one of the Switch's the 3DS takes too (snx_ctr_shared_setting),
-               --key=value. gamepad_map is the input's to read: its row's setter keeps the map for a Switch game's
+               src/nx/runtime/settings.txt), one of the Switch's the 3DS takes too (snx_ctr_shared_setting), or a
+               Vulkan extension's (vk_ext_*, g_vk_extensions_ini), --key=value. gamepad_map is the input's to read: its row's setter keeps the map for a Switch game's
                pads */
             char key[64];
             const char* value = ini_arg(arg, key, sizeof key);
@@ -838,6 +841,7 @@ int snx_ctr_main(int argc, char** argv) {
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_backend_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_graphics_ini, key);
                 if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_display_ini, key);
+                if (!o) o = ini_find(g_vk_extensions_ini, key);
                 map = !strcmp(key, "gamepad_map");
             }
             if (map)

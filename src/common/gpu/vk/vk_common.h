@@ -120,6 +120,9 @@ VkPipelineCache snx_vk_pipeline_cache_load(VkDevice dev, const VkPhysicalDeviceP
    the reason in why */
 int snx_vk_pipeline_cache_save(VkDevice dev, VkPipelineCache cache, const char* path, size_t* saved, char* why,
                                size_t n);
+/* size bytes of data written to path that way, through a temporary file of this process's. 0 when written; -1 with
+   the reason in why */
+int snx_vk_write_replace(const char* path, const void* data, size_t size, char* why, size_t n);
 
 /* a shader module of size bytes of SPIR-V */
 VkResult snx_vk_shader_module(VkDevice dev, const uint32_t* words, size_t size, VkShaderModule* out);
