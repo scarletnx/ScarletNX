@@ -1226,6 +1226,8 @@ typedef struct {
     Surf* t;
     int rt;   /* t is the render target itself, read whole */
     u32 used; /* g_tex_memo.use when last found or kept: the way used longest ago makes room */
+    /* vk_gfx_image_adds() + 1 when no storage image but its texture's own was pending over its texture: 0 unknown */
+    u64 img_adds;
 } TexMemo;
 /* by the handle, in sets of TEX_MEMO_WAYS ways. With one way in 4096 slots, a handle that shared its slot with another
    one the draws used too put it out each time: 9% of an Ounce game's lookups in a race and 22% of a Switch game's in
@@ -1261,6 +1263,16 @@ static int tex_memo_unpended(TexMemo* m, u64 tic_at, u64 tsc_at, u64 adds) {
         return 0;
     m->adds = adds;
     return 1;
+}
+/* a storage image other than m's texture itself pending over its memory. Asked of each texture of each draw while one
+   is pending anywhere: a released one is pending across the frame (vk_gfx_image_put_aside), and the lookups of every
+   way cost one game 0.45 ms a frame. Unchanged entries keep the answer, as the pending results do (tex_memo_unpended) */
+static int tex_memo_image_pending(TexMemo* m) {
+    u64 adds = vk_gfx_image_adds() + 1;
+    if (m->img_adds == adds) return 0;
+    if (vk_gfx_image_pending_besides(m->t->gva, vk_surf_guest_size(m->t), m->t)) return 1;
+    m->img_adds = adds;
+    return 0;
 }
 static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     const DsBindings* b = &ds->bind;
@@ -1303,9 +1315,11 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     }
     /* a pending storage image over this texture's own memory invalidates it; one elsewhere does not. The global flag
        alone dropped every memo once any fragment program's storage image was pending, so a race that draws its
-       targets and writes storage images in the same frame re-resolved every texture of every draw */
+       targets and writes storage images in the same frame re-resolved every texture of every draw. Nor does the
+       texture's own surface written as a storage image: it samples those writes where they are. A released one stays
+       pending across the frame (vk_gfx_image_put_aside), and one game's draws resolved it again 57 times a frame */
     if (m && m->surf_epoch == vk_surf_epoch_at(m->t_gva) && tex_memo_unwritten(m, tic_at, tsc_at, epoch, now) &&
-        !(g_gfx_img_any && vk_gfx_image_pending(m->t->gva, vk_surf_guest_size(m->t))) &&
+        !(g_gfx_img_any && tex_memo_image_pending(m)) &&
         tex_memo_unpended(m, tic_at, tsc_at, adds) &&
         (m->gw == gw || (!gpu_mem_dirty_since(m->gw, tic_at, 32) && !gpu_mem_dirty_since(m->gw, tsc_at, 32)))) {
         m->gw = gw;
@@ -1351,6 +1365,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
         memcpy(m->tic, x->tic, sizeof m->tic);
         memcpy(m->tsc, x->tsc, sizeof m->tsc);
         m->t = x->t;
+        m->img_adds = 0;
     }
 }
 
