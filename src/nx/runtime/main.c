@@ -28,6 +28,7 @@
 #include "nx/hle/services/services.h"
 #include "nx/hle/services/vi.h"
 #include "nx/memory/mem.h"
+#include "nx/memory/own.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/gdbstub.h"
@@ -803,6 +804,19 @@ static void frontend_loop(void) {
             }
             was_read = read;
             was_written = written;
+            last_ns = now_ns;
+        }
+        {
+            /* the ownership plots' bases */
+            static u64 was_faults, was_land_bytes, last_ns;
+            u64 faults = own_faults(), land_bytes = own_land_bytes(), now_ns = plat_ns();
+            double secs = last_ns ? (double)(now_ns - last_ns) / 1e9 : 0.0;
+            if (secs > 0) {
+                SNX_PLOT("own traps/s", (double)(faults - was_faults) / secs);
+                SNX_PLOT("own land MB/s", (double)(land_bytes - was_land_bytes) / 1048576.0 / secs);
+            }
+            was_faults = faults;
+            was_land_bytes = land_bytes;
             last_ns = now_ns;
         }
 #endif
