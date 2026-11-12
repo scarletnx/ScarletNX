@@ -89,6 +89,14 @@ KEvent* hook_attach_event(CPU* c, u64 event, const char* name) {
     if (event) hook_guest_call(c, fn, event, h, 1, 1);
     return e;
 }
+int hook_attach_handle(CPU* c, u64 event, u32 handle) {
+    static const char attach[] =
+        "_ZN2nn2os33AttachReadableHandleToSystemEventEPNS0_15SystemEventTypeEjbNS0_14EventClearModeE";
+    u64 fn = kernel_find_symbol_exact(attach);
+    if (!fn || !handle) return 0;
+    hook_guest_call(c, fn, event, handle, 1, 1);
+    return 1;
+}
 
 static CodecManager* manager_of(u64 guest) {
     for (u32 i = 0; i < CODEC_MANAGERS; i++)

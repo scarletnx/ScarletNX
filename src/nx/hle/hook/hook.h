@@ -60,6 +60,9 @@ void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3);
    event, with a reference of the caller's beside the handle's, to drop (kobj_unref) when the caller's object goes;
    NULL when the SDK exports no such function or the handle table is full (codec.c) */
 struct KEvent* hook_attach_event(CPU* c, u64 event, const char* name);
+/* attaches handle, a readable handle the caller made, to the game's SystemEventType at event the same way (auto
+   close, auto clear): 0 when the SDK exports no such function or handle is 0, and the handle is then the caller's */
+int hook_attach_handle(CPU* c, u64 event, u32 handle);
 /* the host address of guest address a, in integers as GP (memory/mem.h) makes it: under NCE c->mem is 0 */
 static inline u8* hook_host(const CPU* c, u64 a) { return (u8*)(uintptr_t)((uintptr_t)c->mem + a); }
 /* A field of a guest struct, as a layout hookgen generated from a struct declaration gives it for the module a hook

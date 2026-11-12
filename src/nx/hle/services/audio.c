@@ -1,21 +1,20 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
-   Ported from Eden (src/core/hle/service/audio/audio_out.cpp, audio_renderer_manager.cpp, audio_renderer.cpp,
-   audio_device.cpp, hardware_opus_decoder.cpp, hardware_opus_decoder_manager.cpp, errors.h;
-   src/audio_core/out/audio_out_system.cpp, device/audio_buffers.h, opus/decoder_manager.cpp, opus/decoder.cpp,
-   renderer/system.cpp, common/feature_support.h):
+   Ported from Eden (src/core/hle/service/audio/audio_renderer_manager.cpp, audio_renderer.cpp, audio_device.cpp,
+   hardware_opus_decoder.cpp, hardware_opus_decoder_manager.cpp, errors.h; src/audio_core/opus/decoder_manager.cpp,
+   opus/decoder.cpp, renderer/system.cpp, common/feature_support.h):
    SPDX-FileCopyrightText: Copyright 2025-2026 Eden Emulator Project
    SPDX-FileCopyrightText: Copyright 2018-2024 yuzu Emulator Project (GPL-2.0-or-later)
    The hwopus work buffer sizes, from Ryujinx (src/Ryujinx.Horizon/Sdk/Codec/Detail/HardwareOpusDecoderManager.cs):
    SPDX-FileCopyrightText: Ryujinx Team and Contributors (MIT) */
-/* audout:u, audren:u's service side, IAudioDevice and hwopus, with the audio clock that paces them: every 5 ms it
-   renders a frame of each started renderer (audren.c), signals the renderer event, and plays and releases the
-   audio outs' buffers at 48 kHz as the console's DSP does. Games sync against that release (CRI's movie player
-   waits for its buffers back), so it follows the clock whether or not the host has an audio device */
+/* audren:u's service side, IAudioDevice and hwopus, with the audio clock that paces them and the native audio outs
+   (nn/audio.c): every 5 ms it renders a frame of each started renderer (audren.c), signals the renderer event, and
+   plays and releases the audio outs' buffers */
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/services/audren_dsp.h"
 #include "nx/hle/services/services.h"
+#include "nx/nn/audio.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/tracy.h"
 #include <math.h>
@@ -30,7 +29,7 @@
 #include "hle/services/audio.swipc.inc"
 #include "common/utilities/bits.h"
 
-#define AUDIO_RATE      48000u /* the DSP's, the only rate an audio out plays at */
+#define AUDIO_RATE      48000u  /* the DSP's */
 #define AUDIO_FRAME_NS  5000000 /* the DSP's frame */
 /* the newest renderer revision understood: Eden's CurrentRevision, 15, and the Ounce's 16 (REV@, and REv@ with its
    lowercase v), which an SDK 22 game asks for. No feature of 16's is known: Eglantine (Eden's Ounce fork) takes its
@@ -38,15 +37,13 @@
 #define AUDIO_REVISION  16
 #define AUDIO_NAME_SIZE 0x100   /* an AudioDeviceName */
 
-static const char audout_name[] = "DeviceOut";
 static const char device_name[] = "AudioTvOutput";
 
-/* the objects' data (AudOut, AudRen, AudDevice, HwOpus), their pools, and the outs the clock plays: g_hle.audio
-   (services_int.h) */
+/* the objects' data (AudRen, AudDevice, HwOpus) and their pools: g_hle.audio (services_int.h) */
 
 /* ============================================================ helpers */
 /* whether [addr, addr + size) is guest memory with perm, block by block */
-static int guest_ok(u64 addr, u64 size, u32 perm) {
+int snx_audio_guest_ok(u64 addr, u64 size, u32 perm) {
     u64 end = addr + size;
     MemBlock b;
     if (end < addr || end > AS_SIZE) return 0;
@@ -62,7 +59,7 @@ static int guest_ok(u64 addr, u64 size, u32 perm) {
 static void write_name(IpcBuf b, const char* name) {
     u64 n = b.size < AUDIO_NAME_SIZE ? b.size : AUDIO_NAME_SIZE;
     size_t len = strlen(name);
-    if (!b.addr || !n || !guest_ok(b.addr, n, PERM_W)) return;
+    if (!b.addr || !n || !snx_audio_guest_ok(b.addr, n, PERM_W)) return;
     memset(GP(b.addr), 0, (size_t)n);
     memcpy(GP(b.addr), name, len < n ? len : (size_t)(n - 1));
 }
@@ -80,321 +77,6 @@ static u32 revision_number(u32 rev) {
     return rev;
 }
 
-/* ============================================================ audio outs */
-/* frames of 48 kHz in ns, without overflowing for days of uptime */
-static u64 frames_in(u64 ns) { return ns / 1000000000u * AUDIO_RATE + ns % 1000000000u * AUDIO_RATE / 1000000000u; }
-
-/* plays the queued buffers up to now, releasing the ones finished. Returns how many were. A started out with nothing
-   queued is idle: the clock starts over from the next append */
-static u32 audout_advance(AudOut* q, u64 now) {
-    u32 released = 0;
-    u64 avail;
-    if (!q->started || !q->nqueued) return 0;
-    avail = frames_in(now - q->t0) - q->t0_frames;
-    while (q->nqueued) {
-        u32 i = (q->first + q->nreleased) % AUDOUT_BUFFERS;
-        u32 left = q->frames[i] - q->head_played;
-        u32 n = avail < left ? (u32)avail : left;
-        q->head_played += n;
-        q->t0_frames += n;
-        q->played += n;
-        avail -= n;
-        if (q->head_played < q->frames[i]) break;
-        q->head_played = 0;
-        q->nreleased++;
-        q->nqueued--;
-        released++;
-    }
-    if (!q->nqueued) {
-        q->t0 = now;
-        q->t0_frames = 0;
-    }
-    return released;
-}
-
-/* hands every queued buffer back, unplayed: Stop and Flush */
-static u32 audout_release_all(AudOut* q) {
-    u32 n = q->nqueued;
-    q->nreleased += n;
-    q->nqueued = 0;
-    q->head_played = 0;
-    plat_audio_clear(q->output);
-    return n;
-}
-
-static void audout_destroy(SvcObj* o) {
-    AudOut* q = o->data;
-    AudOut** p;
-    pm_lock(&g_host.audio.lk);
-    for (p = &g_hle.audio.outs; *p; p = &(*p)->next)
-        if (*p == q) {
-            *p = q->next;
-            break;
-        }
-    pm_unlock(&g_host.audio.lk);
-    plat_audio_close(q->output);
-    kobj_unref(kobj_at(q->ev));
-}
-
-/* the clock's turn: every started out played up to now */
-static void audout_tick(u64 now) {
-    AudOut* q;
-    pm_lock(&g_host.audio.lk);
-    for (q = g_hle.audio.outs; q; q = q->next)
-        if (audout_advance(q, now)) ev_signal(q->ev);
-    pm_unlock(&g_host.audio.lk);
-}
-
-/* the out's state brought up to now under the lock, which the caller then holds */
-static AudOut* audout_lock(SvcObj* self) {
-    AudOut* q = self->data;
-    pm_lock(&g_host.audio.lk);
-    if (audout_advance(q, guest_ns())) ev_signal(q->ev);
-    return q;
-}
-
-static int nn_audio_detail_IAudioOut_GetAudioOutState(SvcObj* self, u32* state) {
-    AudOut* q = audout_lock(self);
-    *state = q->started ? 0 : 1;
-    pm_unlock(&g_host.audio.lk);
-    R_SUCCEED();
-}
-
-/* an out already started is refused, as Eden's and Ryujinx's are */
-static int nn_audio_detail_IAudioOut_Start(SvcObj* self) {
-    AudOut* q = audout_lock(self);
-    if (q->started) {
-        pm_unlock(&g_host.audio.lk);
-        R_THROW(SNX_RC_AUDIO_OPERATION_FAILED);
-    }
-    q->started = 1;
-    q->t0 = guest_ns();
-    q->t0_frames = 0;
-    plat_audio_start(q->output, 1);
-    pm_unlock(&g_host.audio.lk);
-    R_SUCCEED();
-}
-
-/* what wasn't played comes back released, the host's copy dropped (Eden's System::Stop) */
-static int nn_audio_detail_IAudioOut_Stop(SvcObj* self) {
-    AudOut* q = audout_lock(self);
-    if (q->started) {
-        q->started = 0;
-        plat_audio_start(q->output, 0);
-        audout_release_all(q);
-        ev_signal(q->ev);
-    }
-    pm_unlock(&g_host.audio.lk);
-    R_SUCCEED();
-}
-
-/* the AudioOutBuffer's samples copied to the host now, so the guest owns its memory again once the buffer is
-   released; its length in frames sets when that is */
-static int audout_append(SvcObj* self, u64 tag, IpcBuf b) {
-    nn_audio_AudioOutBuffer d;
-    AudOut* q;
-    u64 n = b.size < sizeof d ? b.size : sizeof d;
-    u32 i;
-    /* the SDK's first AudioOutBuffer had no data_offset (0x20 bytes): it is 0. Shorter than that, it holds nothing */
-    memset(&d, 0, sizeof d);
-    R_UNLESS(b.addr && (!n || guest_ok(b.addr, n, PERM_R)), SNX_RC_AUDIO_OPERATION_FAILED);
-    if (n >= 0x20) memcpy(&d, GP(b.addr), (size_t)n);
-    snx_le64_array(&d, sizeof d / 8); /* a buffer's contents: the guest's words */
-    q = audout_lock(self);
-    if (q->nreleased + q->nqueued >= AUDOUT_BUFFERS) {
-        pm_unlock(&g_host.audio.lk);
-        R_THROW(SNX_RC_AUDIO_BUFFER_RING_FULL);
-    }
-    if (q->started && !q->nqueued) { /* idle until now */
-        q->t0 = guest_ns();
-        q->t0_frames = 0;
-    }
-    i = (q->first + q->nreleased + q->nqueued) % AUDOUT_BUFFERS;
-    q->tag[i] = tag;
-    q->frames[i] = (u32)((d.data_size < 0xFFFFFFFFu ? d.data_size : 0xFFFFFFFFu) / (q->channels * 2u));
-    q->nqueued++;
-    if (q->output && q->frames[i]) { /* without a host device it is played on the clock alone */
-        u64 offset = d.data_offset;
-        /* an offset past the capacity is no place in the buffer (a game leaves the field unset): the buffer plays
-           from its start, as Eden and yuzu play every buffer, which never read the field */
-        if (offset > d.buffer_capacity) {
-            WARN_LIMIT(4, "audout: buffer %#llx's data offset %#llx is past its capacity %llu: played from offset 0\n",
-                       (unsigned long long)d.buffer, (unsigned long long)offset, (unsigned long long)d.buffer_capacity);
-            offset = 0;
-        }
-        if (d.data_size <= 0xFFFFFFFFu && d.data_size <= d.buffer_capacity - offset && d.buffer + offset >= d.buffer &&
-            guest_ok(d.buffer + offset, d.data_size, PERM_R))
-            /* the frames the clock plays, a part of one at the end left out: SDL refuses it, and the buffer with it */
-            plat_audio_queue(q->output, GP(d.buffer + offset), q->frames[i] * q->channels * 2u);
-        else
-            WARN_LIMIT(4, "audout: buffer %#llx (%llu bytes at offset %llu) isn't readable, played as silence\n",
-                       (unsigned long long)d.buffer, (unsigned long long)d.data_size, (unsigned long long)offset);
-    }
-    pm_unlock(&g_host.audio.lk);
-    R_SUCCEED();
-}
-
-static int nn_audio_detail_IAudioOut_AppendAudioOutBuffer(SvcObj* self, u64 tag, IpcBuf buffer) {
-    return audout_append(self, tag, buffer);
-}
-static int nn_audio_detail_IAudioOut_AppendAudioOutBufferAuto(SvcObj* self, u64 tag, IpcBuf buffer) {
-    return audout_append(self, tag, buffer);
-}
-
-static int nn_audio_detail_IAudioOut_RegisterBufferEvent(SvcObj* self, u32* event) {
-    *event = ev_handle(((AudOut*)self->data)->ev);
-    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
-    R_SUCCEED();
-}
-
-/* the released tags, oldest first. The SDK reads every slot of its array, so the rest is zeroed */
-static int audout_released(SvcObj* self, IpcBuf b, u32* count) {
-    AudOut* q;
-    u32 n = 0, max;
-    if (!b.addr || !guest_ok(b.addr, b.size, PERM_W)) R_SUCCEED();
-    max = (u32)(b.size / 8 < AUDOUT_BUFFERS ? b.size / 8 : AUDOUT_BUFFERS);
-    memset(GP(b.addr), 0, (size_t)(b.size / 8 * 8));
-    q = audout_lock(self);
-    while (q->nreleased && n < max) {
-        gw64(b.addr + 8 * n++, q->tag[q->first]);
-        q->first = (q->first + 1) % AUDOUT_BUFFERS;
-        q->nreleased--;
-    }
-    pm_unlock(&g_host.audio.lk);
-    *count = n;
-    R_SUCCEED();
-}
-
-static int nn_audio_detail_IAudioOut_GetReleasedAudioOutBuffers(SvcObj* self, IpcBuf tags, u32* count) {
-    return audout_released(self, tags, count);
-}
-static int nn_audio_detail_IAudioOut_GetReleasedAudioOutBuffersAuto(SvcObj* self, IpcBuf tags, u32* count) {
-    return audout_released(self, tags, count);
-}
-
-/* appended and not yet taken back, played or not */
-static int nn_audio_detail_IAudioOut_ContainsAudioOutBuffer(SvcObj* self, u64 tag, u8* contains) {
-    AudOut* q = audout_lock(self);
-    u32 i;
-    for (i = 0; i < q->nreleased + q->nqueued; i++)
-        if (q->tag[(q->first + i) % AUDOUT_BUFFERS] == tag) *contains = 1;
-    pm_unlock(&g_host.audio.lk);
-    R_SUCCEED();
-}
-
-static int nn_audio_detail_IAudioOut_GetAudioOutBufferCount(SvcObj* self, u32* count) {
-    AudOut* q = audout_lock(self);
-    *count = q->nqueued;
-    pm_unlock(&g_host.audio.lk);
-    R_SUCCEED();
-}
-
-static int nn_audio_detail_IAudioOut_GetAudioOutPlayedSampleCount(SvcObj* self, u64* count) {
-    AudOut* q = audout_lock(self);
-    *count = q->played;
-    pm_unlock(&g_host.audio.lk);
-    R_SUCCEED();
-}
-
-/* a stopped out keeps what was appended until it starts: only a started one is flushed, and says so */
-static int nn_audio_detail_IAudioOut_FlushAudioOutBuffers(SvcObj* self, u8* flushed) {
-    AudOut* q = audout_lock(self);
-    *flushed = (u8)q->started;
-    if (q->started) {
-        if (audout_release_all(q)) ev_signal(q->ev);
-        q->t0 = guest_ns();
-        q->t0_frames = 0;
-    }
-    pm_unlock(&g_host.audio.lk);
-    R_SUCCEED();
-}
-
-static int nn_audio_detail_IAudioOut_SetAudioOutVolume(SvcObj* self, float volume) {
-    AudOut* q = self->data;
-    pm_lock(&g_host.audio.lk);
-    q->volume = volume;
-    plat_audio_volume(q->output, volume * g_hle.audio.device_volume);
-    pm_unlock(&g_host.audio.lk);
-    R_SUCCEED();
-}
-
-static int nn_audio_detail_IAudioOut_GetAudioOutVolume(SvcObj* self, float* volume) {
-    AudOut* q = self->data;
-    pm_lock(&g_host.audio.lk);
-    *volume = q->volume;
-    pm_unlock(&g_host.audio.lk);
-    R_SUCCEED();
-}
-
-/* ------------------------------------------------------------ audout:u */
-static int nn_audio_detail_IAudioOutManager_ListAudioOuts(SvcObj* self, IpcBuf names, u32* count) {
-    (void)self;
-    *count = list_names(names, audout_name);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioOutManager_ListAudioOutsAuto(SvcObj* self, IpcBuf names, u32* count) {
-    return nn_audio_detail_IAudioOutManager_ListAudioOuts(self, names, count);
-}
-
-/* the default device or "DeviceOut", with the channels asked for when they are 1, 2, 4 or 6 and two otherwise, on the
-   host too (a mono out's buffers are half a stereo one's: frames counted for two channels played them twice as fast);
-   the out plays at 48 kHz, 16-bit, whatever rate was asked for */
-static int open_out(const nn_audio_AudioOutParameter* params, IpcBuf name, IpcBuf name_out, u32* sample_rate,
-                    u32* channel_count, u32* sample_format, u32* state, SvcObj** out) {
-    char want[AUDIO_NAME_SIZE];
-    u32 n = 0;
-    SvcObj* o;
-    AudOut* q;
-    memset(want, 0, sizeof want);
-    if (name.addr && name.size) {
-        n = (u32)(name.size < sizeof want - 1 ? name.size : sizeof want - 1);
-        if (guest_ok(name.addr, n, PERM_R)) memcpy(want, GP(name.addr), n);
-    }
-    if (want[0] && strcmp(want, audout_name)) R_THROW(SNX_RC_AUDIO_NOT_FOUND);
-    o = nn_audio_detail_IAudioOut_new_data(g_hle.audio.outs_pool, g_hle.audio.out_next, "audio outs");
-    q = o->data;
-    switch (params->channel_count) {
-        case 1:
-        case 2:
-        case 4:
-        case 6: q->channels = params->channel_count; break;
-        default: q->channels = 2; break;
-    }
-    q->volume = 1.0f;
-    q->ev = owned_event("IAudioOut");
-    q->output = plat_audio_open(AUDIO_RATE, q->channels);
-    o->destroy = audout_destroy;
-    pm_lock(&g_host.audio.lk);
-    q->next = g_hle.audio.outs;
-    g_hle.audio.outs = q;
-    plat_audio_volume(q->output, q->volume * g_hle.audio.device_volume);
-    pm_unlock(&g_host.audio.lk);
-    write_name(name_out, audout_name);
-    *sample_rate = AUDIO_RATE;
-    *channel_count = q->channels;
-    *sample_format = 2; /* PcmInt16 */
-    *state = 1;         /* stopped */
-    *out = o;
-    R_SUCCEED();
-}
-
-static int nn_audio_detail_IAudioOutManager_OpenAudioOut(SvcObj* self, const nn_audio_AudioOutParameter* params,
-                                                         u64 aruid, u32 process, IpcBuf name, IpcBuf name_out,
-                                                         u32* sample_rate, u32* channel_count, u32* sample_format,
-                                                         u32* state, SvcObj** out) {
-    (void)self, (void)aruid, (void)process;
-    return open_out(params, name, name_out, sample_rate, channel_count, sample_format, state, out);
-}
-static int nn_audio_detail_IAudioOutManager_OpenAudioOutAuto(SvcObj* self, const nn_audio_AudioOutParameter* params,
-                                                             u64 aruid, u32 process, IpcBuf name, IpcBuf name_out,
-                                                             u32* sample_rate, u32* channel_count,
-                                                             u32* sample_format, u32* state, SvcObj** out) {
-    (void)self, (void)aruid, (void)process;
-    return open_out(params, name, name_out, sample_rate, channel_count, sample_format, state, out);
-}
-
-SvcObj* new_audout(void) { return nn_audio_detail_IAudioOutManager_new(); }
-
 /* ============================================================ the native audio manager (aud:u) */
 /* The Ounce service that hands back the managers the older services serve: a native-ABI game's
    GetAudioRendererWorkBufferSize reaches GetAudioRendererManager here, then calls GetWorkBufferSize on the returned
@@ -404,10 +86,15 @@ static int nn_audio_detail_INativeAudioManager_GetAudioInManager(SvcObj* self, S
     *manager = new_audin();
     R_SUCCEED();
 }
+/* the audio outs are answered in the SDK's own functions (nn/audio.c), with no manager to hand out: a game that
+   asks for it called a function there that is not native yet, as one that opens audout:u did (sm.c) */
 static int nn_audio_detail_INativeAudioManager_GetAudioOutManager(SvcObj* self, SvcObj** manager) {
-    (void)self;
-    *manager = new_audout();
-    R_SUCCEED();
+    (void)self, (void)manager;
+    WARN("\n*** The program asked aud:u for the audio out manager, which the runtime answers only natively ***\n");
+    kernel_dump_threads();
+    fatal("aud:u: the program asked for the audio out manager, which the runtime answers only in the SDK's own "
+          "functions, nn::audio (nn/audio.c). A game got here through an SDK function that is not native yet (the "
+          "calls of its thread, in the log's thread list before this, name it)");
 }
 static int nn_audio_detail_INativeAudioManager_GetAudioRendererManager(SvcObj* self, SvcObj** manager) {
     (void)self;
@@ -633,18 +320,17 @@ static int nn_audio_detail_IAudioDevice_ListAudioDeviceNameAuto(SvcObj* self, Ip
 /* whether a device name a game sends is the output device's */
 static int is_device(IpcBuf name) {
     u64 n = name.size < AUDIO_NAME_SIZE ? name.size : AUDIO_NAME_SIZE;
-    if (!name.addr || n < sizeof device_name || !guest_ok(name.addr, n, PERM_R)) return 0;
+    if (!name.addr || n < sizeof device_name || !snx_audio_guest_ok(name.addr, n, PERM_R)) return 0;
     return !memcmp(GP(name.addr), device_name, sizeof device_name);
 }
 /* the output device keeps the volume a game sets, and plays every audio out and renderer that much louder or softer;
    any other name has 1 */
 static int nn_audio_detail_IAudioDevice_SetAudioDeviceOutputVolume(SvcObj* self, IpcBuf name, float volume) {
-    AudOut* q;
     (void)self;
     if (!is_device(name)) R_SUCCEED();
     pm_lock(&g_host.audio.lk);
     g_hle.audio.device_volume = volume;
-    for (q = g_hle.audio.outs; q; q = q->next) plat_audio_volume(q->output, q->volume * volume);
+    nnaudio_out_device_volume();
     audren_volume(volume);
     pm_unlock(&g_host.audio.lk);
     R_SUCCEED();
@@ -761,7 +447,7 @@ void audio_clock(void* arg) {
         ev_signal(g_hle.audio.ev);
         now = plat_ns();
         SNX_ZONE_VALUE(z_audio, now > next ? (u64)(now - next) / AUDIO_FRAME_NS : 0);
-        audout_tick(guest_ns());
+        nnaudio_out_tick(guest_ns());
         outstream_tick(guest_ns());
         SNX_ZONE_END(z_audio);
         next += AUDIO_FRAME_NS;
@@ -1046,7 +732,7 @@ static int decode(SvcObj* self, int reset, IpcBuf input, IpcBuf output, u32* con
     HwOpus* h = self->data;
     u64 t = plat_ns();
     int rc;
-    if (!guest_ok(input.addr, input.size, PERM_R) || !guest_ok(output.addr, output.size, PERM_W))
+    if (!snx_audio_guest_ok(input.addr, input.size, PERM_R) || !snx_audio_guest_ok(output.addr, output.size, PERM_W))
         R_THROW(SNX_RC_CODEC_LIB_OPUS_INVALID_PACKET);
     pm_lock(&h->lk);
     rc = hwopus_decode(h, GP(input.addr), input.size, (i16*)GP(output.addr), output.size, reset, consumed, samples);
@@ -1149,7 +835,7 @@ static int open_decoder(u32 rate, u32 channels, u32 streams, u32 stereo_streams,
    form, then the channel mapping. v[4] is the flags, 0 without the Ex form */
 static int multi_params(IpcBuf b, int ex, u32 v[5], const u8** mapping) {
     u64 need = ex ? 0x118 : 0x110;
-    if (!b.addr || b.size < need || !guest_ok(b.addr, need, PERM_R)) return 0;
+    if (!b.addr || b.size < need || !snx_audio_guest_ok(b.addr, need, PERM_R)) return 0;
     memcpy(v, GP(b.addr), ex ? 20 : 16);
     snx_le32_array(v, ex ? 5 : 4);
     if (!ex) v[4] = 0;
@@ -1230,24 +916,13 @@ SvcObj* new_hwopus(void) { return nn_codec_detail_IHardwareOpusDecoderManager_ne
 /* ============================================================ save states */
 void audio_state_drop(void) {
     u32 i;
-    for (i = 0; i < AUDOUT_MAX; i++) {
-        AudOut* q = &g_hle.audio.outs_pool[i];
-        if (q->obj && q->output) plat_audio_close(q->output);
-        q->output = NULL;
-    }
+    nnaudio_out_state_drop();
     for (i = 0; i < HWOPUS_POOL; i++)
         if (g_hle.audio.opus[i].obj) hwopus_free(&g_hle.audio.opus[i]);
 }
-/* the outs play from the loaded state's clock, their host streams empty: what was queued there is the old game's */
 void audio_state_rebuild(void) {
     u32 i;
-    for (i = 0; i < AUDOUT_MAX; i++) {
-        AudOut* q = &g_hle.audio.outs_pool[i];
-        if (!q->obj) continue;
-        q->output = plat_audio_open(AUDIO_RATE, q->channels);
-        plat_audio_volume(q->output, q->volume * g_hle.audio.device_volume);
-        if (q->started) plat_audio_start(q->output, 1);
-    }
+    nnaudio_out_state_rebuild();
     for (i = 0; i < HWOPUS_POOL; i++) {
         HwOpus* h = &g_hle.audio.opus[i];
         u8 mapping[255];
@@ -1265,6 +940,5 @@ void audio_state_rebuild(void) {
 }
 /* the functions a save state may hold of this file (state_fns.h) */
 STATE_FN_TABLE(g_audio_state_fns,
-               STATE_FN("audio", audout_destroy),
                STATE_FN("audio", device_destroy),
                STATE_FN("audio", hwopus_destroy));

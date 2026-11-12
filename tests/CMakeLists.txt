@@ -1517,6 +1517,13 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     snx_service_swipc(snx-test-nn-prepo)
     snx_hookgen(snx-test-nn-prepo SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/prepo.hook")
     add_test(NAME nn_prepo COMMAND snx-test-nn-prepo)
+    # the native audio outs (nn/audio.c): what OpenAudioOut writes into the game's AudioOut, the buffers' play and
+    # release on the clock, the buffer event, and audio.hook's table
+    add_executable(snx-test-nn-audio nn_audio.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+    snx_test_target(snx-test-nn-audio 23)
+    snx_service_swipc(snx-test-nn-audio)
+    snx_hookgen(snx-test-nn-audio SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/audio.hook")
+    add_test(NAME nn_audio COMMAND snx-test-nn-audio)
 endif()
 
 # Inline software keyboard protocol and applet completion events.
@@ -3060,7 +3067,7 @@ if(NOT SNX_TOOLS_ONLY)
     add_test(NAME pl_fonts COMMAND snx-test-pl-fonts)
 endif()
 
-# audout and hwopus in a fixture, with FFmpeg's Opus decoder for the hwopus decoders that open. FFmpeg::avcodec comes
+# the audio services and hwopus in a fixture, with FFmpeg's Opus decoder for the hwopus decoders that open. FFmpeg::avcodec comes
 # from cmake/dependencies.cmake, before this folder, in every build but a tools-only one, which checks the fixture
 # without it (SNX_NO_H264, which no runtime build defines)
 if(SNX_TOOLS_ONLY)

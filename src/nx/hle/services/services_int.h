@@ -82,10 +82,11 @@ SvcObj* new_ldr(void);
 SvcObj* new_ro1(void);
 
 /* ---- audio.c */
+/* whether [addr, addr + size) is guest memory with perm, block by block */
+int snx_audio_guest_ok(u64 addr, u64 size, u32 perm);
 void audio_init(void); /* the renderer's event, before the audio clock runs */
 void audio_clock(void* arg);
 SvcObj* new_audren(void);
-SvcObj* new_audout(void);
 SvcObj* new_audin(void); /* audin:u: no microphone to open */
 SvcObj* new_aud(void);   /* aud:u, the Ounce native audio manager */
 SvcObj* new_hwopus(void);
@@ -281,15 +282,15 @@ typedef struct {
 struct AVCodecContext;
 struct AVPacket;
 struct AVFrame;
-/* an IAudioOut: its buffers in one ring, the released ones first, oldest to newest, then the ones still queued */
+/* an audio out (nn/audio.c): its buffers in one ring, the released ones first, oldest to newest, then the ones still
+   queued */
 typedef struct AudOut {
-    u32 obj;
+    u64 guest; /* the game's nn::audio::AudioOut, which names the out: 0 for a free slot */
     u32 channels, started;
     float volume;
-    struct AudOut* next; /* in g_hle.audio.outs */
-    PAudio* output;      /* NULL without a host device: the buffers are still played on the clock */
-    u32 ev;              /* the buffer event: a buffer released */
-    u64 tag[AUDOUT_BUFFERS];
+    PAudio* output;          /* NULL without a host device: the buffers are still played on the clock */
+    u32 ev;                  /* the buffer event (a buffer released), 0 until the game registers one */
+    u64 tag[AUDOUT_BUFFERS]; /* each buffer's nn::audio::AudioOutBuffer */
     u32 frames[AUDOUT_BUFFERS];
     u32 first, nreleased, nqueued;
     u32 head_played; /* frames of the first queued buffer already played */
@@ -340,11 +341,10 @@ int hwopus_decode_packet(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out
 void outstream_tick(u64 now);
 typedef struct {
     u32 ev;              /* the renderers' system event, every frame */
-    AudOut* outs;        /* every open audio out, for the clock */
     float device_volume; /* the output device's, as SetAudioDeviceOutputVolume set it */
     u8 auto_tune;        /* the output volume's auto-tune mode, for its getter: what plays keeps its volume */
     u32 hwopus_live;     /* decoders open, across every hwopus session */
-    AudOut outs_pool[AUDOUT_MAX];
+    AudOut outs_pool[AUDOUT_MAX]; /* every open audio out, for the clock */
     AudRen rens[SNX_AUDREN_MAX];
     AudDevice devices[AUDDEV_MAX];
     HwOpus opus[HWOPUS_POOL];
