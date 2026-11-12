@@ -2331,6 +2331,13 @@ void vk_mem_trim(u64 extra, int force) {
     }
     g_trimmed += freed;
     astc_bc_suggest(force, extra, usage, budget, freed, working);
+    /* short of memory, as astc_bc_suggest counts it: BC1 held as ASTC 4x4 goes back to ETC2, half the bytes */
+    if (force)
+        vk_bc1_tight("an image found no memory");
+    else if ((usage > freed ? usage - freed : 0) > budget)
+        vk_bc1_tight("the caches stay past their budget after a trim");
+    else if (working)
+        vk_bc1_tight("a trim took textures and targets the last eight presents used");
     if (short_of) g_trim_dry = g_vk_present + 1;
     if (freed || short_of)
         LOG_LIMIT(20,

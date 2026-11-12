@@ -103,6 +103,8 @@ if(BUILD_TESTING)
              -DAPPLE_HOST=$<BOOL:${APPLE}> -P "${PROJECT_SOURCE_DIR}/tests/settings_list.cmake")
     add_test(NAME runtime_unknown_option COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
              -P "${PROJECT_SOURCE_DIR}/tests/unknown_option.cmake")
+    add_test(NAME runtime_tracy_version COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
+             "-DTRACY_VERSION=${SNX_TRACY_VERSION}" -P "${PROJECT_SOURCE_DIR}/tests/tracy_version.cmake")
     add_test(NAME runtime_recompile_settings COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
              -P "${PROJECT_SOURCE_DIR}/tests/recompile_settings.cmake")
     if(NOT WIN32) # Windows' error box would wait for a click
@@ -148,6 +150,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/support/vic_ref.c" "${PROJECT_SOURCE_DIR}/tests/support/dma_ref.c"
         "${PROJECT_SOURCE_DIR}/tests/support/fermi2d_ref.c" "${PROJECT_SOURCE_DIR}/tests/support/half.c"
         "${PROJECT_SOURCE_DIR}/tests/support/sm86_ref.c" "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp"
+        "${PROJECT_SOURCE_DIR}/tests/glsl/astc_bc7_cpu.cpp"
         "${PROJECT_SOURCE_DIR}/tests/support/ui_shape_ref.c")
     target_include_directories(snx-test-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests")
     target_link_libraries(snx-test-vulkan PRIVATE snx_nx_flags ${components} snx_driver FFmpeg::avutil Threads::Threads
@@ -378,10 +381,24 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         gpu/vk/memory.c gpu/vk/resource_stats.c gpu/vk/record.c gpu/vk/checkpoints.c gpu/vk/vma.cpp ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/texconv_etc2_spv.c"
-        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_convert_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_spv.c"
-        "${PROJECT_BINARY_DIR}/generated/spirv/bc7_fast_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_mode6_spv.c"
-        "${PROJECT_BINARY_DIR}/generated/spirv/bc7_quick_spv.c"
-        "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_etc2_cpu.cpp"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_convert_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_b_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_astc_c_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_a_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_b_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_fast_a_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_fast_b_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_mode6_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_quick_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_a_dot_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_b_dot_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_fast_a_dot_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_fast_b_dot_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_mode6_dot_spv.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/astc_bc7_quick_dot_spv.c"
+        "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/astc_bc7_cpu.cpp"
+        "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_etc2_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/bcn_astc_cpu.cpp"
         "${PROJECT_SOURCE_DIR}/tests/glsl/blit_convert_cpu.cpp")
     target_include_directories(snx-test-astc-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests/glsl")
     target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags scarletnx-filesystem snx_xxhash snx_vk_common

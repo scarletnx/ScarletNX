@@ -52,9 +52,17 @@ void pm_unlock(PMutex* m) {
 }
 void pc_init(PCond* c) { (void)c; }
 void pc_broadcast(PCond* c) { (void)c; }
+/* a syncpoint another thread moves while this one waits on it (test_state_load_wait_counts), 0 for none: nothing
+   else here waits for a syncpoint */
+static u32 test_wake;
 int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     (void)c, (void)m, (void)timeout_ns;
-    test_fail("nothing here waits for a syncpoint", __LINE__);
+    if (!test_wake) {
+        test_fail("nothing here waits for a syncpoint", __LINE__);
+        return 1;
+    }
+    __atomic_add_fetch(&g_hle.nvdrv.syncpt[test_wake], 1, __ATOMIC_SEQ_CST);
+    test_wake = 0;
     return 1;
 }
 int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) { return pc_wait(c, m, timeout_ns); }
@@ -513,6 +521,20 @@ static void test_state_load_armed(u32 ctrl) {
     CHECK(!slot_armed(ctrl, 13) && kev(e->ev)->signaled);
     put(0, 13);
     CHECK(nv_ioctl1(ctrl, EVENT_UNREG, 4) == 0);
+}
+
+/* the syncpoint waits the profiler counts are the host's (g_host.nvdrv): a state load, which puts a saved g_hle in
+   place, leaves the counts where they are. The wait blocks once, and the increment it waits for comes as it does
+   (test_wake, pc_wait's) */
+static void test_state_load_wait_counts(void) {
+    u64 waits, timeouts, now_waits, now_timeouts;
+    syncpt_wait_stats(&waits, &timeouts);
+    memcpy(&test_saved, &g_hle, sizeof g_hle);
+    test_wake = 45;
+    CHECK(syncpt_wait(45, syncpt_read(45) + 1, -1) && !test_wake);
+    memcpy(&g_hle, &test_saved, sizeof g_hle);
+    syncpt_wait_stats(&now_waits, &now_timeouts);
+    CHECK(now_waits == waits + 1 && now_timeouts == timeouts);
 }
 
 /* Ioctl3 (12): ctrl-gpu's GET_CHARACTERISTICS writes the characteristics to the inline output, B1 or C1 */
@@ -1104,6 +1126,7 @@ int main(void) {
     test_ctrl_event_fds(ctrl);
     test_quiet_increments(ctrl);
     test_state_load_armed(ctrl);
+    test_state_load_wait_counts();
 
     /* a channel's own events (1 to 3), made on first query and kept by the fd; the ctrl fd's ids name event slots */
     KEvent* sm = query_event(gpu, 1);

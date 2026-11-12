@@ -128,7 +128,7 @@ static int tracy_capture_start(int seconds, int launch) {
     snprintf(dir, sizeof dir, "%scaptures", g_exedir);
     tool = named[0] ? snx_find_tool(named) : tracy_tool("tracy-capture");
     if (!tool) {
-        WARN("tracy: %s needs tracy-capture 0.14.1 beside the runtime or on PATH%s\n",
+        WARN("tracy: %s needs tracy-capture " SNX_TRACY_VERSION " beside the runtime or on PATH%s\n",
              launch ? "--tracy-capture" : "a capture", suffix);
         return 0;
     }
@@ -417,7 +417,21 @@ static void tracy_plots_send(void) {
     } cfg[] = {
         {"gpu memory", 1, 0, 1},
         {"gpu memory budget", 1, 0, 1},
+        {"own bytes", 1, 0, 1},
         {"texture uploads", 0, 0, 1},
+        {"texture cache hits/s", 0, 0, 1},
+        {"texture cache misses/s", 0, 0, 1},
+        {"texture upload MB/s", 0, 0, 1},
+        {"texture frees/s", 0, 0, 1},
+        {"own traps/s", 0, 0, 1},
+        {"own land MB/s", 0, 0, 1},
+        {"syncpt wait ms", 0, 0, 1},
+        {"present fence wait ms", 0, 0, 1},
+        {"present pace ms", 0, 0, 1},
+        {"syncpt waits/s", 0, 0, 1},
+        {"syncpt timeouts/s", 0, 0, 1},
+        {"hid updates/s", 0, 0, 1},
+        {"audio mix ms", 0, 0, 1},
         {"guest memory", 1, 0, 1},
         {"compute cpu reads", 0, 0, 1},
         {"gpu thread idle", 0, 1, 0},
@@ -663,7 +677,7 @@ void snx_tracy_lock_lock(SnxTracyLock* l) {
 
 void snx_tracy_lock_unlock(SnxTracyLock* l) {
     if (!l || !snx_tracy_enter()) return;
-    ___tracy_after_unlock_lockable_ctx(l);
+    ___tracy_before_unlock_lockable_ctx(l);
     snx_tracy_leave();
 }
 

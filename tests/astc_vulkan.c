@@ -25,6 +25,7 @@
 #include "support/etc2.h"
 #include "support/bcn.h"
 #include "bc7_cpu.h"
+#include "astc_bc7_cpu.h"
 #include "bcn_etc2_cpu.h"
 #include "blit_convert_cpu.h"
 #include "nx/runtime/platform/log.h"
@@ -233,8 +234,21 @@ static void init(void) {
                                   .queueFamilyIndex = family,
                                   .queueCount = 1,
                                   .pQueuePriorities = &priority};
+    /* the encoder's builds with packed dot products where the device says it has an instruction for them, as
+       device.c picks them (SNX_TEST_BC7_DOT=0 or 1 says otherwise, where the device has the feature) */
+    VkPhysicalDeviceVulkan13Features have13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceFeatures2 have2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &have13};
+    VkPhysicalDeviceVulkan13Properties p13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+    VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p13};
+    vkGetPhysicalDeviceFeatures2(g_vk.phys, &have2);
+    vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
+    const char* dot = getenv("SNX_TEST_BC7_DOT");
+    g_vk.bc7_dot = have13.shaderIntegerDotProduct &&
+                   (dot ? atoi(dot) != 0 : p13.integerDotProduct4x8BitPackedUnsignedAccelerated != 0);
+    printf("BC7 encoder: %s\n", g_vk.bc7_dot ? "packed dot products" : "dot products spelled out");
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-                                            .synchronization2 = VK_TRUE};
+                                            .synchronization2 = VK_TRUE,
+                                            .shaderIntegerDotProduct = g_vk.bc7_dot ? VK_TRUE : VK_FALSE};
     /* cmd.c's frame fences are timeline semaphores */
     VkPhysicalDeviceVulkan12Features f12 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f13, .timelineSemaphore = VK_TRUE};
@@ -534,12 +548,11 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
             rec_CmdCopyImageToBuffer(vk_cmd(), t.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
             vk_finish();
             vk_readback_ready();
-            u8* texels = malloc((size_t)lw * lh * ld * 4);
+            u8* texels = NULL;
             u8* expected = malloc(size);
-            for (u32 z = 0; z < ld; z++)
-                astc_decode_image(blocks[layer * levels + l] + (size_t)z * nx * ny * 16, lw, lh, bw, bh,
-                                  texels + (size_t)z * lw * lh * 4, srgb);
-            bc7_encode_cpu_build(vk_bc7_build(lw, lh, ld), texels, lw, lh, ld, expected); /* the level's build */
+            (void)nx, (void)ny;
+            /* the level's build of the shader, run on the CPU over the same blocks */
+            astc_bc7_cpu(vk_bc7_build(lw, lh, ld), blocks[layer * levels + l], lw, lh, ld, bw, bh, srgb, expected);
             for (u64 i = 0; i < size; i++)
                 if (actual[i] != expected[i])
                     fatal("ASTC as BC7 %ux%u srgb=%d %ux%ux%u level %u layer %u: byte %llu (block %llu) expected %u "
@@ -609,7 +622,8 @@ static int upload_wait_case(int retire) {
     for (u32 color = 0; color < 2; color++) {
         u8 texels[64], decoded[64];
         memset(texels, color ? 255 : 0, sizeof texels);
-        bc7_encode_cpu_build(vk_bc7_build(4, 4, 1), texels, 4, 4, 1, expected[color]);
+        astc_bc7_cpu(vk_bc7_build(4, 4, 1), blocks + (color ? (size_t)(ny - 1) * nx * 16 : 0), 4, 4, 1, 4, 4, 0,
+                     expected[color]);
         bcn_decode_image(expected[color], 4, 4, BCN_BC7, decoded);
         if (memcmp(texels, decoded, sizeof texels)) fatal("BC7 upload wait: constant-color reference is not exact\n");
     }
@@ -631,7 +645,7 @@ static int upload_wait_case(int retire) {
             vk_finish();
         }
     }
-    if (g_texture_pipelines.count != 2 || !g_texture_pipelines.ns)
+    if (g_texture_pipelines.count != 2 || !g_texture_pipelines.ns) /* astc_bc7.comp's two passes, each made once */
         fatal("BC7 upload wait: internal pipeline counters missed creation or counted a reused pipeline\n");
     if (!retire && (source.calls < 2 || !source.changes || vk_submit_number() <= source.first_submit))
         fatal("BC7 upload wait: no continuation across a submission (%u calls, %u changes)\n",
@@ -718,7 +732,7 @@ static void run_region(u32 bw, u32 bh, int bc7, u32 w, u32 h, u32 rx, u32 ry, u3
     u8* texels = malloc((size_t)w * h * 4);
     u8* expected = bc7 ? malloc(size) : texels;
     astc_decode_image(b, w, h, bw, bh, texels, 0);
-    if (bc7) bc7_encode_cpu_build(vk_bc7_build(w, h, 1), texels, w, h, 1, expected);
+    if (bc7) astc_bc7_cpu(vk_bc7_build(w, h, 1), b, w, h, 1, bw, bh, 0, expected);
     for (u64 i = 0; i < size; i++)
         if (actual[i] != expected[i])
             fatal("ASTC region %ux%u%s of %ux%u at block (%u, %u), %ux%u blocks: byte %llu expected %u got %u\n", bw,
@@ -733,9 +747,10 @@ static void run_region(u32 bw, u32 bh, int bc7, u32 w, u32 h, u32 rx, u32 ry, u3
     fflush(stdout);
 }
 
-/* --bench [file.astc]: one w x h level of ASTC blocks uploaded into an RGBA8 image and into a BC7 one, as texture.c
+/* --bench [WxH | file.astc]: one w x h level of ASTC blocks uploaded into an RGBA8 image and into a BC7 one, as texture.c
    does for Exact and BC7, each runs times: the time from the upload's start to the GPU's end of it, the texels and the
-   BC7 blocks a second. The blocks are random 8x8 ones, or a file's (astcenc's .astc) repeated over the level: random
+   BC7 blocks a second. The blocks are random ones, 8x8 or of the footprint given, or a file's (astcenc's .astc)
+   repeated over the level: random
    blocks have every block mode, many partitions and HDR errors, where a game's textures are mostly void extents and
    one partition, and the encoder's time depends on what it encodes */
 typedef struct {
@@ -743,7 +758,7 @@ typedef struct {
     u32 bw, bh;       /* the footprint */
 } BenchSource;
 static u8* bench_blocks(BenchSource* src, u32 w, u32 h) {
-    if (!src->name) return blocks_new(w, h, 1, src->bw = 8, src->bh = 8);
+    if (!src->name) return blocks_new(w, h, 1, src->bw, src->bh);
     FILE* f = fopen(src->name, "rb");
     u8 hdr[16];
     if (!f || fread(hdr, 1, 16, f) != 16) fatal("cannot read the header of %s\n", src->name);
@@ -1047,13 +1062,9 @@ static void cache_cases(void) {
    pieces of several layers */
 static void bg_expect(const CacheCase* c, const u8* blocks, u8* quick, u8* fast) {
     const u32 slices = c->depth * c->layers, nx = (c->w + c->bw - 1) / c->bw, ny = (c->h + c->bh - 1) / c->bh;
-    u8* texels = malloc((size_t)c->w * c->h * slices * 4);
-    for (u32 z = 0; z < slices; z++)
-        astc_decode_image(blocks + (size_t)z * nx * ny * 16, c->w, c->h, c->bw, c->bh,
-                          texels + (size_t)z * c->w * c->h * 4, (int)c->srgb);
-    bc7_encode_cpu_quick(texels, c->w, c->h, slices, quick);
-    bc7_encode_cpu_fast(texels, c->w, c->h, slices, fast);
-    free(texels);
+    (void)nx, (void)ny;
+    astc_bc7_cpu(3, blocks, c->w, c->h, slices, c->bw, c->bh, (int)c->srgb, quick);
+    astc_bc7_cpu(1, blocks, c->w, c->h, slices, c->bw, c->bh, (int)c->srgb, fast);
 }
 static void bg_same(const CacheCase* c, const char* what, const u8* got, const u8* want, u64 size) {
     for (u64 i = 0; i < size; i++)
@@ -1676,6 +1687,36 @@ static void etc2_native(int kind, const u8* etc, u32 w, u32 h) {
     vk_image_destroy(src, src_mem);
     vk_image_destroy(dst, dst_mem);
 }
+/* the GPU's time for a conversion of bw x bh blocks alone, in ms: the blocks copied into device memory first, the
+   conversion's dispatches recorded and waited for, its output left in device memory. tc_blocks reads the output back,
+   which on a GPU behind a bus is most of its time (16 MB a 4096x4096 level, 10 ms of a GeForce GT 1030) and nothing an
+   upload does */
+static double tc_time(const VkFmt* f, const u8* blocks, u32 w, u32 bw, u32 bh) {
+    u32 bb = f->bpp, pitch = (bw * bb + 15) / 16 * 16;
+    u64 at, dev_at, cap;
+    VkBuffer staged, dev;
+    u8* p = vk_stage((u64)pitch * bh, vk_stage_align(), &staged, &at);
+    for (u32 y = 0; y < bh; y++) memcpy(p + (u64)y * pitch, blocks + (size_t)y * bw * bb, (size_t)bw * bb);
+    if (!vk_stage_device((u64)pitch * bh, vk_stage_align(), &dev, &dev_at)) fatal("no device memory to time in\n");
+    VkTcShape s = vk_tc_shape(f, w);
+    VkBuffer scratch = vk_bl_scratch(vk_tc_out_size(&s, bh, 1), &cap);
+    const VkBufferCopy c = {at, dev_at, (u64)pitch * bh};
+    rec_CmdCopyBuffer(vk_cmd(), staged, dev, 1, &c);
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                           .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT};
+    VkDependencyInfo md = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    rec_CmdPipelineBarrier2(vk_cmd(), &md);
+    vk_finish();
+    const u64 t0 = plat_ns();
+    vk_bl_barrier(vk_cmd(), 1);
+    if (!vk_tc_convert(vk_cmd(), f, w, bh, 1, dev, dev_at, pitch, scratch, 0)) fatal("conversion refused\n");
+    vk_bl_barrier(vk_cmd(), 0);
+    vk_finish();
+    return (double)(plat_ns() - t0) / 1e6;
+}
 /* texconv.comp's ETC2 build on the device against the CPU's run of it (tests/glsl/bcn_etc2_cpu.cpp): random blocks of
    every kind but BC6H, which has no ETC2 counterpart, in an image whose sides aren't multiples of 4, byte for byte,
    whole and in pieces of 3 rows a submission (rows 17 blocks wide: offsets of no storage alignment), as an encoder's
@@ -1785,29 +1826,91 @@ static void convert_case(void) {
     puts("PASS texture conversions (blits between pixel formats, nearest and filtered)");
     fflush(stdout);
 }
+/* texconv.comp's ASTC build on the device against the CPU's run of it (tests/glsl/bcn_astc_cpu.cpp): random BC1, BC2,
+   BC3 and BC7 blocks in an image whose sides aren't multiples of 4, encoded again as ASTC 4x4, byte for byte; and the
+   blocks decode (the CPU's ASTC decoder) near what the BCn blocks do: random blocks are noise, which no block format
+   holds, so near is 12 dB here, where a block the decoder refused, magenta, or one laid out wrong would be far under */
+static void astc_encode_case(void) {
+    u32 w = 67, h = 37, bw = 17, bh = 10;
+    static const int kinds[4] = {BCN_BC1, BCN_BC2, BCN_BC3, BCN_BC7};
+    for (int ki = 0; ki < 4; ki++) {
+        const int kind = kinds[ki];
+        u8* blocks = malloc((size_t)bw * bh * 16);
+        bc_blocks(kind, blocks, bw * bh);
+        /* BC1's blocks are 8 bytes in and 16 out */
+        VkFmt f = {.vk = VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
+                   .bpp = (u8)bcn_block_bytes(kind),
+                   .bw = 4,
+                   .bh = 4,
+                   .conv = (u8)(VKC_BC1 + kind)};
+        u64 out_size;
+        u8* out = tc_blocks(&f, blocks, w, bw, bh, &out_size);
+        u8* want = malloc((size_t)bw * bh * 16);
+        bcn_astc_cpu(kind, blocks, bw, bh, 1, want);
+        if (out_size != (u64)bw * bh * 16)
+            fatal("texconv's ASTC build: %llu bytes out, not %u\n", (unsigned long long)out_size, bw * bh * 16);
+        for (u32 i = 0; i < bw * bh; i++)
+            if (memcmp(out + (size_t)i * 16, want + (size_t)i * 16, 16))
+                fatal("texconv's ASTC build: BCn kind %d block %u differs from the CPU's\n", kind, i);
+        u8* was = malloc((size_t)bw * bh * 64);
+        u8* is = malloc((size_t)bw * bh * 64);
+        bcn_decode_image(blocks, bw * 4, bh * 4, kind, was);
+        astc_decode_image(want, bw * 4, bh * 4, 4, 4, is, 0);
+        double e = 0;
+        for (u32 i = 0; i < bw * bh * 64; i++) e += ((double)was[i] - is[i]) * ((double)was[i] - is[i]);
+        const double db = e > 0 ? 10 * log10(255.0 * 255.0 * bw * bh * 64 / e) : 99;
+        if (db < 12) fatal("texconv's ASTC build: BCn kind %d comes back at %.1f dB\n", kind, db);
+        free(was);
+        free(is);
+        free(blocks);
+        free(want);
+    }
+    puts("PASS texture conversions (BC1, BC2, BC3 and BC7 encoded again as ASTC 4x4)");
+    fflush(stdout);
+}
 /* --bench-etc2: a 2048x2048 level of random blocks of each kind decoded (as on a GPU that samples neither BCn nor
-   ETC2) and encoded again as ETC2 or EAC, the conversion's dispatch alone, runs times each; and the bytes each holds.
+   ETC2) and encoded again as ETC2 or EAC, the conversion's dispatches alone on the GPU (tc_time), runs times each; and
+   the bytes each holds.
    Random blocks take every candidate (no block of one alpha or one colour stops early): a game's take less */
-static void bench_etc2(int runs) {
-    const u32 w = 2048, h = 2048, bw = w / 4, bh = h / 4;
+static void bench_etc2(int runs, const char* file) {
+    /* SNX_BENCH_SIZE: the level's side, 2048 unless said: what a time owes the level and what the submission */
+    const char* side = getenv("SNX_BENCH_SIZE");
+    const u32 w = side && atoi(side) >= 4 ? (u32)atoi(side) & ~3u : 2048, h = w, bw = w / 4, bh = h / 4;
     static const int kinds[5] = {BCN_BC1, BCN_BC3, BCN_BC4, BCN_BC5, BCN_BC7};
-    for (int ki = 0; ki < 5; ki++) {
+    /* --bench-etc2 FILE.astc: a picture's blocks, not random ones, whose every candidate is tried: the file's first
+       slice decoded, repeated over the level and made BC7 by the CPU's encoder (its fast build) */
+    u8* pic = NULL;
+    if (file) {
+        BenchSource src = {file, 0, 0};
+        u8* astc = bench_blocks(&src, w, h);
+        u8* texels = malloc((size_t)w * h * 4);
+        pic = malloc((size_t)bw * bh * 16);
+        astc_decode_image(astc, w, h, src.bw, src.bh, texels, 0);
+        bc7_encode_cpu_fast(texels, w, h, 1, pic);
+        free(texels);
+        free(astc);
+    }
+    for (int ki = file ? 4 : 0; ki < 5; ki++) {
         int kind = kinds[ki];
         u32 bb = bcn_block_bytes(kind);
         u8* blocks = malloc((size_t)bw * bh * bb);
-        bc_blocks(kind, blocks, bw * bh);
-        for (int etc = 0; etc < 2; etc++) {
-            VkFmt f = {.vk = etc ? etc2_of(kind) : decoded_of(kind),
+        if (pic)
+            memcpy(blocks, pic, (size_t)bw * bh * bb);
+        else
+            bc_blocks(kind, blocks, bw * bh);
+        /* decoded, encoded again as ETC2 or EAC, and (BC2, BC3 and BC7) as ASTC 4x4 */
+        for (int etc = 0; etc < (kind == BCN_BC1 || kind == BCN_BC2 || kind == BCN_BC3 || kind == BCN_BC7 ? 3 : 2); etc++) {
+            VkFmt f = {.vk = etc == 2 ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK : etc ? etc2_of(kind) : decoded_of(kind),
                        .bpp = (u8)bb,
                        .bw = 4,
                        .bh = 4,
                        .conv = (u8)(VKC_BC1 + kind)};
             for (int r = 0; r < runs; r++) {
-                u64 out_size, t0 = plat_ns();
-                tc_blocks(&f, blocks, w, bw, bh, &out_size);
-                double ms = (plat_ns() - t0) / 1e6;
+                VkTcShape shape = vk_tc_shape(&f, w);
+                u64 out_size = vk_tc_out_size(&shape, bh, 1);
+                double ms = tc_time(&f, blocks, w, bw, bh);
                 printf("BENCH BCn kind %d %ux%u %s: %.1f ms, %llu bytes held (%.2f bytes a texel)\n", kind, w, h,
-                       etc ? "encoded again as ETC2/EAC" : "decoded", ms, (unsigned long long)out_size,
+                       etc == 2 ? "encoded again as ASTC 4x4" : etc ? "encoded again as ETC2/EAC" : "decoded", ms, (unsigned long long)out_size,
                        (double)out_size / ((double)w * h));
                 fflush(stdout);
             }
@@ -1825,20 +1928,26 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--large")) large = 1;
         else if (!strcmp(argv[i], "--bench")) {
             large = 2;
-            if (i + 1 < argc && argv[i + 1][0] != '-') bench_src.name = argv[++i];
+            /* --bench WxH: random blocks of that footprint */
+            if (i + 1 < argc && sscanf(argv[i + 1], "%ux%u", &bench_src.bw, &bench_src.bh) == 2)
+                i++;
+            else if (i + 1 < argc && argv[i + 1][0] != '-')
+                bench_src.name = argv[++i];
         } else if (!strcmp(argv[i], "--upload-wait"))
             upload_wait = 1;
         else if (!strcmp(argv[i], "--upload-retire"))
             upload_wait = 2;
-        else if (!strcmp(argv[i], "--bench-etc2"))
+        else if (!strcmp(argv[i], "--bench-etc2")) {
             large = 3;
+            if (i + 1 < argc && argv[i + 1][0] != '-') bench_src.name = argv[++i];
+        }
     init();
     /* every level as before (the fast build, the cache's whole levels): background_cases turns the quick encode on */
     g_settings.astc_quick_mtexels = 0;
     g_settings.astc_background = 0;
     if (upload_wait) return upload_wait_case(upload_wait == 2);
     if (large == 3) {
-        bench_etc2(3);
+        bench_etc2(3, bench_src.name);
         return 0;
     }
     if (large == 2) {
@@ -1885,6 +1994,7 @@ int main(int argc, char** argv) {
     bc_native_case();
     etc2_case();
     convert_case();
+    astc_encode_case();
     /* Known solid color, independent of the CPU reference, catches its old
        11-bit header bug. The GPU is compared to this reference below. */
     const u8 solid[16] = {0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0x12, 0, 0x34, 0, 0x56, 0, 0x78};

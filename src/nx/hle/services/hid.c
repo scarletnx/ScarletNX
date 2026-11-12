@@ -249,6 +249,7 @@ static void hid_lifo_push(u8* lifo, u32 n, const void* state, u32 state_size) {
     if (count < HID_LIFO_N - 1) count++;
     snx_st_le64(lifo + HO_HidCommonLifoHeader_count, count);
     __atomic_store_n((u64*)(lifo + HO_HidCommonLifoHeader_tail), snx_le64(tail), __ATOMIC_RELEASE);
+    __atomic_add_fetch(&g_host.hid.states, 1, __ATOMIC_RELAXED);
 }
 
 /* a sideways single Joy-Con's stick (as the host reports it) held upright, and back */
@@ -392,7 +393,7 @@ static void hid_take_input(TouchState* touch) {
 }
 
 static void hid_mouse_update(u64 now);
-void hid_update(void) {
+u64 hid_update(void) {
     static const u32 lifos[5] = {HO_HidNpadInternalState_full_key_lifo, HO_HidNpadInternalState_handheld_lifo,
                                  HO_HidNpadInternalState_joy_dual_lifo, HO_HidNpadInternalState_joy_left_lifo,
                                  HO_HidNpadInternalState_joy_right_lifo};
@@ -403,6 +404,7 @@ void hid_update(void) {
     u64 now = guest_ns(), dt; /* the motion sensors integrate guest time: none passes while paused */
     int e, i;
     pm_lock(&g_host.hid.lock);
+    u64 states = __atomic_load_n(&g_host.hid.states, __ATOMIC_RELAXED);
     hid_take_input(&touch);
     hid_layout();
     hid_sources(src);
@@ -457,8 +459,12 @@ void hid_update(void) {
     hid_lifo_push(shm + HO_HidSharedMemory_keyboard + HO_HidKeyboardSharedMemoryFormat_lifo, 8 + HS_HidKeyboardState,
                   other, HS_HidKeyboardState);
     hid_mouse_update(now);
+    u64 written = __atomic_load_n(&g_host.hid.states, __ATOMIC_RELAXED) - states;
+    __atomic_add_fetch(&g_host.hid.updates, 1, __ATOMIC_RELAXED);
     pm_unlock(&g_host.hid.lock);
+    return written;
 }
+u64 hid_updates(void) { return __atomic_load_n(&g_host.hid.updates, __ATOMIC_RELAXED); }
 
 /* ---- an Ounce's mouse mode. The SDK reads both memories itself (nn::hid::detail::GetJcmsStates,
    NmouseTransferMemoryAccessor), so their layouts are its reads. A Jcms is a Joy-Con's sensor: the memory holds a LIFO of

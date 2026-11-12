@@ -2503,7 +2503,7 @@ msgid "Background recompile"
 msgstr "后台重新编译"
 
 #: src/gui/main.c
-msgid "The Compile tab's: R's, B's and a game's first. Auto: Gentle on battery, Full on the charger. Full: every core. Gentle: half of them, at a low priority. Each goes gently while a game plays"
+msgid "The Compile tab's: R's, B's and a game's first. Auto: Gentle on battery, Full on the charger. Full: its threads as the recompile's settings give them. Gentle: as many as the memory holds, up to half of those, at a low priority. Each goes gently while a game plays"
 msgstr ""
 
 #: src/gui/main.c
@@ -4355,8 +4355,8 @@ msgstr "轻柔，游戏正在运行"
 
 #: src/gui/main.c
 #, c-format
-msgid ", %d threads"
-msgstr "，%d 个线程"
+msgid ", up to %d threads"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -5793,8 +5793,20 @@ msgid "AOT threads"
 msgstr "AOT 线程数"
 
 #: src/nx/runtime/settings.txt
-msgid "The threads compiling the game's code when it is recompiled: 0 (Auto) = 1 to start, then one more each second while the memory the code units are seen to take leaves room for it and the system reports no memory pressure, up to the cores with the last quarter left free, so the machine stays responsive; N = that many, whatever the memory. The recompile says each thread it opens and why it opens no more"
-msgstr "重新编译时编译游戏代码的线程数：0（自动）= 先用 1 个，之后只要代码单元实际占用的内存还留有余地、且系统未报告内存压力，就每秒再开 1 个，最多为留出四分之一后的核心数，使电脑保持响应；N = 该数量，不论内存多少。重新编译会说明每次开启的线程以及不再开启的原因"
+msgid "The threads compiling the game's code when it is recompiled: 0 (Auto) = 1 to start, then one more each second while the memory the code units are seen to take leaves room for it and the system reports no memory pressure, up to the cores with the last quarter left free (aot_threads_most), so the machine stays responsive; N = that many, whatever the memory. The recompile says each thread it opens and why it opens no more"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "AOT threads most"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "AOT threads at most"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "The most threads aot_threads' Auto opens: 0 (Auto) = the cores with the last quarter left free; N = N at most, whatever the cores. Only Auto takes it: with aot_threads at N, the recompile runs on N"
+msgstr ""
 
 #: src/nx/runtime/settings.txt
 msgid "Unit size"
@@ -5939,6 +5951,12 @@ msgstr "启动"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "LLVM 内部选项"
+
+#~ msgid ", %d threads"
+#~ msgstr "，%d 个线程"
+
+#~ msgid "The threads compiling the game's code when it is recompiled: 0 (Auto) = 1 to start, then one more each second while the memory the code units are seen to take leaves room for it and the system reports no memory pressure, up to the cores with the last quarter left free, so the machine stays responsive; N = that many, whatever the memory. The recompile says each thread it opens and why it opens no more"
+#~ msgstr "重新编译时编译游戏代码的线程数：0（自动）= 先用 1 个，之后只要代码单元实际占用的内存还留有余地、且系统未报告内存压力，就每秒再开 1 个，最多为留出四分之一后的核心数，使电脑保持响应；N = 该数量，不论内存多少。重新编译会说明每次开启的线程以及不再开启的原因"
 
 #~ msgid "The threads compiling the game's code when it is recompiled: 0 (Auto) = the cores with the last quarter left free, so the machine stays responsive; N = that many"
 #~ msgstr "重新编译时编译游戏代码的线程数：0（自动）= 留出四分之一的核心空闲，使电脑保持响应；N = 该数量"

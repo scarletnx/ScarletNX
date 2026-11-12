@@ -606,8 +606,9 @@ static int ui_list(const int safe[4]) {
     }
     {
         int px, py, scale;
-        overlay_place(sw, sh, &px, &py, &scale); /* the menu's letters */
-        hud_draw(&list, safe, scale);
+        float stats[4];
+        overlay_place(sw, sh, &px, &py, &scale); /* the stats panel's letters, and its box kept clear of */
+        hud_draw(&list, safe, stats_scale(scale), stats_box_drawn(stats) ? stats : NULL, now / 1000000u);
     }
     overlay_draw(&list, sw, sh, now);
     ui_dirty_end(&first, &end);

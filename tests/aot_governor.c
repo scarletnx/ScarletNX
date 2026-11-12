@@ -43,7 +43,7 @@ static void tick(SnxAotGovernor* g, const char* what, unsigned footprint, unsign
 static void rule(void) {
     SnxAotGovernor g;
     char line[768];
-    snx_aot_governor_start(&g, 4, MIB(200), "the test's signal", line, sizeof line);
+    snx_aot_governor_start(&g, 4, 0, MIB(200), "the test's signal", line, sizeof line);
     check(!strcmp(line,
                   "aot_threads=0 (Auto): 1 thread to start, 200 MiB in use before the first unit; once that unit has "
                   "ended one more opens each second while the memory holds it, up to the 4 the cores give with a "
@@ -90,7 +90,7 @@ static void rule(void) {
     check(g.threads == 4, "never more threads than the cores give");
 
     /* no unit left to take: a thread more would find none */
-    snx_aot_governor_start(&g, 4, MIB(200), "s", line, sizeof line);
+    snx_aot_governor_start(&g, 4, 0, MIB(200), "s", line, sizeof line);
     tick(&g, "no unit left", 500, 0, 50000, 1, 0, 1, 1, 0, 0, "");
     /* a footprint under the one before the first unit is no unit's memory, and wraps nothing */
     tick(
@@ -104,7 +104,7 @@ static void unknown(void) {
     SnxAotGovernor g;
     char line[768];
     /* a system that says no footprint: nothing is measured, the cores alone decide, and the lines say so */
-    snx_aot_governor_start(&g, 3, 0, "none on this system", line, sizeof line);
+    snx_aot_governor_start(&g, 3, 0, 0, "none on this system", line, sizeof line);
     check(!strcmp(line,
                   "aot_threads=0 (Auto): 1 thread to start, the system does not say what the process takes; once that "
                   "unit has ended one more opens each second while the memory holds it, up to the 3 the cores give "
@@ -115,7 +115,7 @@ static void unknown(void) {
          "aot_threads=0 (Auto): thread 2 of 3 opens: the system does not say what the process takes: the cores alone "
          "decide");
     /* a footprint, and no word of what the system can still give */
-    snx_aot_governor_start(&g, 3, MIB(200), "none on this system", line, sizeof line);
+    snx_aot_governor_start(&g, 3, 0, MIB(200), "none on this system", line, sizeof line);
     tick(&g, "no available memory", 500, 0, 123, 0, -1, 1, 1, 9, 1,
          "aot_threads=0 (Auto): thread 2 of 3 opens: the system does not say what memory it can still give: the cores "
          "alone decide");
@@ -125,12 +125,33 @@ static void unknown(void) {
          "finished units' code, so a unit under way took 300 MiB at most; the system can still give 900 MiB, the 2 "
          "threads open may take 300 MiB more, and 2 units more are 600 MiB");
     /* one core: nothing to open, and the line says the one thread */
-    snx_aot_governor_start(&g, 1, MIB(200), "s", line, sizeof line);
+    snx_aot_governor_start(&g, 1, 0, MIB(200), "s", line, sizeof line);
     check(!strcmp(line, "aot_threads=0 (Auto): 1 thread, what the cores give with a quarter left free"),
           "the line of a machine whose cores give 1 thread");
     tick(&g, "one core", 500, 0, 50000, 1, 0, 1, 1, 9, 0, "");
-    snx_aot_governor_start(&g, 0, MIB(200), "s", line, sizeof line);
+    snx_aot_governor_start(&g, 0, 0, MIB(200), "s", line, sizeof line);
     check(g.most == 1 && g.threads == 1, "no cores said is 1 thread");
+    /* a ceiling the setting aot_threads_most gives is said as its, not the cores' */
+    snx_aot_governor_start(&g, 3, 1, MIB(200), "s", line, sizeof line);
+    check(!strcmp(line,
+                  "aot_threads=0 (Auto): 1 thread to start, 200 MiB in use before the first unit; once that unit "
+                  "has ended one more opens each second while the memory holds it, up to the 3 aot_threads_most=3 "
+                  "gives. The system's memory pressure: s"),
+          "the first line names aot_threads_most's ceiling");
+    snx_aot_governor_start(&g, 1, 1, MIB(200), "s", line, sizeof line);
+    check(!strcmp(line, "aot_threads=0 (Auto): 1 thread, what aot_threads_most=1 gives"), "aot_threads_most=1's line");
+}
+/* the threads from the two settings: a count as given, Auto's ceiling aot_threads_most's or the cores', and a most
+   given beside a count said with both values */
+static void threads_of_settings(void) {
+    char note[160] = "unset";
+    check(snx_aot_threads(6, 0, note, sizeof note) == 6 && !note[0], "aot_threads=6 is 6, nothing said");
+    check(snx_aot_threads(0, 3, note, sizeof note) == 3 && !note[0], "Auto with aot_threads_most=3 opens 3 at most");
+    check(snx_aot_threads(0, 0, note, sizeof note) == snx_build_threads() && !note[0], "Auto alone: the cores'");
+    check(snx_aot_threads(6, 2, note, sizeof note) == 6 &&
+              !strcmp(note, "aot_threads_most=2 bounds Auto only: aot_threads=6 compiles on 6 threads"),
+          "a most beside a count changes nothing, said with both values");
+    check(snx_aot_threads(0, 5, NULL, 0) == 5, "no note asked");
 }
 
 static void psi(void) {
@@ -264,6 +285,7 @@ static void workers(void) {
 
 int main(void) {
     rule();
+    threads_of_settings();
     unknown();
     psi();
     workers();

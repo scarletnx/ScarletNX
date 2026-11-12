@@ -529,9 +529,12 @@ static void* worker_main(void* w) {
     return NULL;
 }
 #endif
-/* on the threads the setting aot_threads gives, as the Switch's recompile: N, or for 0 the machine's own count */
+/* on the threads the settings aot_threads and aot_threads_most give, as the Switch's recompile (snx_aot_threads) */
 static bool compile_chunks(Work* w) {
-    unsigned jobs = g_settings.aot_threads > 0 ? (unsigned)g_settings.aot_threads : snx_build_threads(), created = 0;
+    char note[160];
+    unsigned jobs = snx_aot_threads(g_settings.aot_threads, g_settings.aot_threads_most, note, sizeof note),
+             created = 0;
+    if (note[0]) fprintf(stderr, "scarletnx-vita: %s\n", note);
     if (jobs > w->chunks) jobs = w->chunks;
     if (jobs < 1) jobs = 1;
     printf("Compiling %u chunks of blocks on %u threads\n", w->chunks, jobs);

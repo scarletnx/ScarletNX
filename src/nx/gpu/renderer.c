@@ -5,6 +5,7 @@
 
 int g_renderer_up;
 u64 g_draws;
+u64 g_tex_cache_hits, g_tex_cache_misses, g_tex_upload_bytes, g_tex_frees;
 /* set by the renderer while it holds results not yet in guest memory, read by every reader of guest memory: a reader
    that sees 0 has nothing to land. The compute and graphics sides set theirs from different threads: a cache line
    each */

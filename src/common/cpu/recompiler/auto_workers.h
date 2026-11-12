@@ -17,7 +17,8 @@ typedef struct {
     /* the queue's part of a reading, read under its lock: active, done, left (0 once it has failed too) and held */
     void (*state)(void* arg, SnxAotReading* r);
     void* arg;
-    unsigned most; /* the threads the cores give */
+    unsigned most; /* the threads the cores give, or aot_threads_most */
+    int most_key;  /* most is aot_threads_most's */
     /* the system's part of a reading and the words of its pressure signal: NULL for snx_aot_read, a test's own */
     void (*read)(void* arg, SnxAotReading* r, char* pressure, size_t size);
     void (*say)(void* arg, const char* line); /* a line of the control: NULL for stdout */
@@ -67,7 +68,7 @@ static inline unsigned snx_run_workers_auto(const SnxAutoWorkers* w) {
         w->read(w->arg, &r, pressure, sizeof pressure);
     else
         snx_aot_read(&r, pressure, sizeof pressure);
-    snx_aot_governor_start(&g, most, r.footprint, pressure, line, sizeof line);
+    snx_aot_governor_start(&g, most, w->most_key, r.footprint, pressure, line, sizeof line);
     snx_auto_workers_say(w, line);
     for (;;) {
         int opens = !created; /* the first thread; then the ones a tick opens */

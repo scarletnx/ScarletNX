@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* BC7 encoding: the body of bc7.comp, which declares the push constants (width, height, blocks_x, blocks_y), the
-   buffers (rgba, bc7_blocks) and the workgroup. One invocation encodes one 4x4 block of the RGBA8 texels the ASTC
-   decoder wrote, for a GPU that samples BC7 but not ASTC: a quarter of RGBA8's memory.
+/* BC7 encoding: Encode makes a block of the 16 RGBA8 texels in px. astc_bc7.comp includes it after astc_decode.glsl,
+   and astc_bc7.glsl fills px for each 4x4 block from the ASTC blocks its workgroup decoded, for a GPU that samples BC7
+   but not ASTC: a quarter of RGBA8's memory. The tests give it pictures (tests/glsl/bc7_main.inc).
 
    A block is tried in the modes that suit it and the one with the least squared error is written. Every block:
    mode 6, one line through RGBA, 4-bit weights, what a block of one gradient holds closely. An opaque block (every
@@ -57,8 +57,50 @@ const uint ANCHORS[64] = {
     0x6F2u, 0xF38u, 0x8F2u, 0xF52u, 0x3F2u, 0x6FFu, 0x6FFu, 0x8F6u,
     0xF36u, 0x3F2u, 0xF56u, 0xF58u, 0xF5Fu, 0xF8Fu, 0xF52u, 0xFA2u,
     0xF5Fu, 0xFAFu, 0xF8Fu, 0xFDFu, 0x3FFu, 0xFC2u, 0xF32u, 0x83Fu};
+/* SNX_NO_ARRAYS 1: a build that keeps no array, for the passes most blocks of a texture take on GPUs that are slow
+   with an array a shader indexes by a value (texconv.glsl's ASTC build's second pass). The texels are 16 words,
+   read through PX and written by name or through PX_SET; a loop over them is then for the compiler to unroll, which
+   leaves each read the word itself */
+#ifndef SNX_NO_ARRAYS
+#define SNX_NO_ARRAYS 0
+#endif
 /* the block's texels, RGBA8 words (R in the low byte), row by row */
+#undef PX
+#undef PX_SET
+#if SNX_NO_ARRAYS
+uint px_0, px_1, px_2, px_3, px_4, px_5, px_6, px_7, px_8, px_9, px_10, px_11, px_12, px_13, px_14, px_15;
+uint Px(uint k) {
+    const bool b0 = (k & 1u) != 0u, b1 = (k & 2u) != 0u, b2 = (k & 4u) != 0u;
+    const uint q0 = b1 ? (b0 ? px_3 : px_2) : (b0 ? px_1 : px_0), q1 = b1 ? (b0 ? px_7 : px_6) : (b0 ? px_5 : px_4);
+    const uint q2 = b1 ? (b0 ? px_11 : px_10) : (b0 ? px_9 : px_8);
+    const uint q3 = b1 ? (b0 ? px_15 : px_14) : (b0 ? px_13 : px_12);
+    return (k & 8u) != 0u ? (b2 ? q3 : q2) : (b2 ? q1 : q0);
+}
+void PxSet(uint k, uint v) {
+    px_0 = k == 0u ? v : px_0;
+    px_1 = k == 1u ? v : px_1;
+    px_2 = k == 2u ? v : px_2;
+    px_3 = k == 3u ? v : px_3;
+    px_4 = k == 4u ? v : px_4;
+    px_5 = k == 5u ? v : px_5;
+    px_6 = k == 6u ? v : px_6;
+    px_7 = k == 7u ? v : px_7;
+    px_8 = k == 8u ? v : px_8;
+    px_9 = k == 9u ? v : px_9;
+    px_10 = k == 10u ? v : px_10;
+    px_11 = k == 11u ? v : px_11;
+    px_12 = k == 12u ? v : px_12;
+    px_13 = k == 13u ? v : px_13;
+    px_14 = k == 14u ? v : px_14;
+    px_15 = k == 15u ? v : px_15;
+}
+#define PX(k) Px(k)
+#define PX_SET(k, v) PxSet(k, v)
+#else
 uint px[16];
+#define PX(k) px[k]
+#define PX_SET(k, v) px[k] = (v)
+#endif
 
 /* the shape being tried: its subsets, partition, bits an end's colour channel, whether alpha is stored (else 255),
    p-bits (0 none, 1 one shared by a subset's two ends, 2 one an end), index bits */
@@ -81,6 +123,46 @@ uint sh_mask;
    takes its place (vk/astc.c) */
 #ifndef SNX_BC7_FAST
 #define SNX_BC7_FAST 0
+#endif
+/* Above 0: a shape of one subset over all four channels (mode 6) first takes its box's line quickly (Try's quick: one
+   choice of p-bits, each texel at the weight nearest its place), and keeps it with no other line tried when its error
+   is this or less. The texels of one partition of an ASTC block lie on a line, which the box of them is, so on a
+   game's textures most blocks stop here, at a tenth of the fit's cost. The error is the squared one over the block's
+   16 texels and 4 channels, as SNX_BC7_ENOUGH's */
+#ifndef SNX_BC7_QUICK
+#define SNX_BC7_QUICK 0
+#endif
+/* 1: the fitter serves astc_encode.glsl, which is included after this file: ASTC's partitions, weights and colour
+   encodings in place of BC7's (AS_P2 is astc_encode_tables.glsl's and AsQuant astc_quant.glsl's, included before it, and as_range
+   the colour encoding of the ends being fitted) */
+#ifndef SNX_ASTC_ENC
+#define SNX_ASTC_ENC 0
+#endif
+#if SNX_ASTC_ENC
+uint as_range;
+uvec2 as_key; /* astc_quant.glsl's AsKey of it */
+#endif
+/* 0: a block of one colour is searched for like any other (tests/glsl/bc7_cpu.cpp's build of the search as it was) */
+#ifndef SNX_BC7_SOLID
+#define SNX_BC7_SOLID 1
+#endif
+/* SNX_BC7_PASS 1: Encode tries mode 6 alone, and where the search would go on past it gives no block and sets
+   enc_more: the block is left to another pass of the whole search (astc_bc7.glsl). Encode clears it otherwise */
+#ifndef SNX_BC7_PASS
+#define SNX_BC7_PASS 0
+#endif
+bool enc_more;
+/* What the texels' source says of the block, where there is one (astc_bc7.glsl: the ASTC blocks they were decoded
+   from), which Encode takes in place of its own search when hint_on: the block's texels are of one line each in at
+   most two sets. hint_part is the partition of two subsets nearest those sets (64: there is one set, so no shape with
+   subsets is tried), and hint_rot the rotation whose channel has weights of its own (5: none has, so modes 4 and 5 are
+   not tried). Mode 6 is always tried. Whoever calls Encode sets hint_on */
+bool hint_on;
+uint hint_part;
+uint hint_rot;
+/* 1: the packed dot product instruction (Dot4) */
+#ifndef SNX_BC7_DOT
+#define SNX_BC7_DOT 0
 #endif
 #if SNX_BC7_FAST == 3
 #define SNX_BC7_LINES 1u
@@ -152,13 +234,19 @@ void SetShape(uint ns, uint part) {
         sh_pbits = 0u;
     } else if (ns == 2u) {
         /* a bit a texel spread to two: bit k to bit 2k */
+#if SNX_ASTC_ENC
+        uint v = AS_P2(part); /* ASTC's partitions, a seed each (astc_encode.glsl) */
+#else
         uint v = P2[part];
+#endif
         v = (v | (v << 8u)) & 0x00FF00FFu;
         v = (v | (v << 4u)) & 0x0F0F0F0Fu;
         v = (v | (v << 2u)) & 0x33333333u;
         v = (v | (v << 1u)) & 0x55555555u;
         sh_pbits = v;
+#if !SNX_ASTC_ENC /* an ASTC block has no anchors */
         sh_anchor1 = ANCHORS[part] & 15u;
+#endif
     } else {
         sh_pbits = P3[part];
         const uint an = ANCHORS[part];
@@ -187,6 +275,14 @@ bool IsAnchor(uint k) {
    against the tables, every i < 2^bits of bits 2, 3 and 4). It relies on i <= top: Eval's weights are in 0 to top,
    and fit_lo and fit_hi hold only the weights of an Eval that ran to its end */
 uint Weight(uint i) {
+#if SNX_ASTC_ENC
+    /* ASTC's weights of 2 and 3 bits are BC7's. Its 16 are the 4 bits repeated to 6, one more above 32 (0 4 8 12 17
+       21 25 29 35 39 43 47 52 56 60 64) */
+    if (sh_ib == 4u) {
+        const uint r = (i << 2u) | (i >> 2u);
+        return r + ((r + 31u) >> 6u);
+    }
+#endif
     const uint k = sh_ib == 4u ? 273u : sh_ib == 3u ? 585u : 1365u;
     return (i * k + 32u) >> 6u;
 }
@@ -219,6 +315,12 @@ uint Decoded(uint stored) {
    two candidates, compared once (ucas: exhaustive equiv with the search of guess - 2 to guess + 2, over t 0 to 255, n 5
    to 8, both p and with and without p-bits) */
 uint Quant(int t, uint p) {
+#if SNX_ASTC_ENC
+    /* an ASTC end is kept as the 8 bits it decodes to (StoredBits is 8): the value its colour encoding holds nearest
+       t, worked out for an encoding with a trit or a quint, or t itself where the encoding is 8 bits */
+    if (as_range < 6u) return AsQuantKey(as_key, uint(t)) & 255u;
+    if (p == 0u) return uint(t); /* no p-bit: p is always 0 here */
+#endif
     const uint n = StoredBits();
     const int top = int((1u << n) - 1u);
     const int guess = (t * top + 127) / 255;
@@ -236,58 +338,108 @@ uint QuantWord(int r, int g, int b, int a, uint p) {
     return Quant(r, p) | (Quant(g, p) << 8u) | (Quant(b, p) << 16u) | (sh_alpha != 0u ? Quant(a, p) << 24u : 0u);
 }
 
-uint TexelError(uint p, uint q0, uint q1, uint w) {
-    uint e = 0u;
-    for (uint c = 0u; c < 4u; c++) {
-        if (((sh_mask >> c) & 1u) == 0u) continue;
-        /* ((64 - w) a + w b + 32) >> 6 = a + ((w (b - a) + 32) >> 6), the shift arithmetic: one multiply (ucas:
-           exhaustive equiv over a, b 0 to 255 and w 0 to 64) */
-        const int a0 = int(Ch(q0, c));
-        const int v = a0 + ((int(w) * (int(Ch(q1, c)) - a0) + 32) >> 6) - int(Ch(p, c));
-        e += uint(v * v);
-    }
-    return e;
+/* The dot product of two words' four bytes, each 0 to 255. SNX_BC7_DOT builds take SPIR-V's packed one (Vulkan 1.3's
+   shaderIntegerDotProduct), an instruction of its own on the GPUs that say it is accelerated
+   (integerDotProduct4x8BitPackedUnsignedAccelerated: vk/astc.c picks the build by it); the others spell it out */
+uint Dot4(uint a, uint b) {
+#if SNX_BC7_DOT
+    return dotPacked4x8EXT(a, b);
+#else
+    return (a & 0xFFu) * (b & 0xFFu) + ((a >> 8u) & 0xFFu) * ((b >> 8u) & 0xFFu) +
+           ((a >> 16u) & 0xFFu) * ((b >> 16u) & 0xFFu) + (a >> 24u) * (b >> 24u);
+#endif
 }
 
-/* channel c of q1 less q0's, nought for a channel the shape does not weigh */
-int Step(uint q0, uint q1, uint c) { return ((sh_mask >> c) & 1u) != 0u ? int(Ch(q1, c)) - int(Ch(q0, c)) : 0; }
+/* the channels the shape's lines weigh as a word's bytes, 0xFF each: sh_mask's bit c to bit 8c (the multiplier puts
+   bit c at c, c + 7, c + 14 and c + 21, no two of the sixteen alike, so nothing carries), then spread over the byte */
+uint MaskBytes() {
+    return ((sh_mask * 0x00204081u) & 0x01010101u) * 0xFFu;
+}
+
+/* the squared distance of two words' bytes */
+uint ByteError(uint x, uint y) {
+    return Dot4(x, x) + Dot4(y, y) - 2u * Dot4(x, y);
+}
+
+/* The squared error of texel p (the channels the shape weighs, the others nought; pp its dot product with itself)
+   against the line's point of weight w, 0 to 64. The line is its first end's even bytes (red and blue, in 16 bit
+   lanes) and odd bytes (green and alpha), ae and ao, and the second end's less those, de and dx: each lane
+   a 64 + 32 + (b - a) w = a (64 - w) + b w + 32 is in 32 to 16352, so no lane carries into the next and a negative
+   difference is exact modulo 2^32 (as astc_decode.glsl's SlotTexel interpolates). It is ((64 - w) a + w b + 32) >> 6,
+   the format's interpolation, all four channels in two multiplications. The error is then |I - p|^2 = I.I - 2 I.p +
+   p.p, exact in 32 bits (each dot product is 260100 at most) */
+uint LineError(uint p, uint pp, uint ae, uint ao, uint de, uint dx, uint w) {
+    const uint xe = (ae << 6u) + 0x00200020u + de * w, xo = (ao << 6u) + 0x00200020u + dx * w;
+    const uint v = ((xe >> 6u) & 0x00FF00FFu) | ((xo << 2u) & 0xFF00FF00u);
+    return Dot4(v, v) + pp - 2u * Dot4(v, p);
+}
 
 /* subset s's squared error with decoded ends q0 and q1, each of its texels at its best weight, which go to cur_lo
-   and cur_hi */
-uint Eval(uint s, uint q0, uint q1) {
-    const int dr = Step(q0, q1, 0u);
-    const int dg = Step(q0, q1, 1u);
-    const int db = Step(q0, q1, 2u);
-    const int da = Step(q0, q1, 3u);
-    const int dd = dr * dr + dg * dg + db * db + da * da;
+   and cur_hi: the best of the three weights around its place along the line, or with near false the one nearest
+   that place alone (the quick line of FitSubset).
+
+   Written for the GPU's time, which is nearly all spent here (every line of every subset of every shape calls it,
+   16 texels each): a texel's place along the line is (p - q0).(q1 - q0) = p.q1 - p.q0 - q0.(q1 - q0), two dot products
+   of packed bytes and a constant of the line, and its error at a weight two more (LineError). The place's division
+   by the line's squared length dd is a multiplication by a reciprocal in floating point, made whole again in
+   integers: n = 64 t + dd / 2 is under 2^24, so float(n) is exact, the product is within a thousandth of n / dd
+   (65 at most, with a few units in the last place of rounding in 1 / dd and the product), so its integer part is the
+   quotient or one beside it, and the remainder n - q dd says which. The bytes are those of the division (the tests'
+   digest of the encoder's blocks, tests/glsl/bc7_glsl.cpp, is from before this), whatever the driver's rounding */
+uint Eval(uint s, uint q0, uint q1, bool near) {
+    const uint m = MaskBytes(), a = q0 & m, b = q1 & m;
+    const int aa = int(Dot4(a, a)), ab = int(Dot4(a, b));
+    const int dd = int(Dot4(b, b)) - 2 * ab + aa;
+    const int along = ab - aa; /* q0.(q1 - q0) */
+    const float rd = 1.0 / float(max(dd, 1));
+    const uint ae = a & 0x00FF00FFu, ao = (a >> 8u) & 0x00FF00FFu;
+    const uint de = (b & 0x00FF00FFu) - ae, dx = ((b >> 8u) & 0x00FF00FFu) - ao;
     const uint top = (1u << sh_ib) - 1u;
     uint err = 0u;
     cur_lo = 0u;
     cur_hi = 0u;
     for (uint k = 0u; k < 16u; k++) {
         if (SubsetOf(k) != s) continue;
-        const uint p = px[k];
+        const uint p = PX(k) & m, pp = Dot4(p, p);
         uint i = 0u;
         if (dd > 0) {
             /* the texel's place along the line, 0 to 64, then the nearest weight */
-            const int t = clamp((int(Ch(p, 0u)) - int(Ch(q0, 0u))) * dr + (int(Ch(p, 1u)) - int(Ch(q0, 1u))) * dg +
-                                    (int(Ch(p, 2u)) - int(Ch(q0, 2u))) * db + (int(Ch(p, 3u)) - int(Ch(q0, 3u))) * da,
-                                0, dd);
-            /* t <= dd keeps t64 <= 64 ((64 dd + dd / 2) / dd = 64), so (t64 top + 32) / 64 <= top: no min */
-            const uint t64 = uint((t * 64 + dd / 2) / dd);
-            i = (t64 * top + 32u) / 64u;
+            const int t = clamp(int(Dot4(p, b)) - int(Dot4(p, a)) - along, 0, dd);
+            const int n = t * 64 + dd / 2;
+#if SNX_NO_ARRAYS
+            /* No division and no floating point in this build, whose lines have weights of 2 or 3 bits (mobile GPUs
+               convert between integers and floats slowly; on a GT 1030 the reciprocal below is 3% the faster, which
+               is why the other builds keep it). (q top + 32) >> 6 is how many of a few quotients q = n / dd reaches
+               (11, 32 and 54 for 2 bits), and q reaches Q where n reaches Q dd: comparisons. For 3 bits they are 5,
+               14, 23, 32, 42, 51 and 60, halved three times: the index's top bit, then the next, then the last,
+               whose quotient is a byte of the word by the two above it. The same index as the division's */
+            if (sh_ib == 2u) {
+                i = (n >= 11 * dd ? 1u : 0u) + (n >= 32 * dd ? 1u : 0u) + (n >= 54 * dd ? 1u : 0u);
+            } else if (sh_ib == 3u) {
+                i = n >= 32 * dd ? 4u : 0u;
+                i |= n >= (i != 0u ? 51 : 14) * dd ? 2u : 0u;
+                i |= n >= int((0x3C2A1705u >> (i * 4u)) & 255u) * dd ? 1u : 0u;
+            } else
+#endif
+            {
+                int q = int(float(n) * rd);
+                const int r = n - q * dd;
+                q += r >= dd ? 1 : r < 0 ? -1 : 0;
+                /* t <= dd keeps q <= 64 ((64 dd + dd / 2) / dd = 64), so (q top + 32) / 64 <= top: no min */
+                i = (uint(q) * top + 32u) >> 6u;
+            }
         }
         uint bi = i;
-        uint be = TexelError(p, q0, q1, Weight(i));
-        if (i > 0u) {
-            const uint e = TexelError(p, q0, q1, Weight(i - 1u));
+        uint be = LineError(p, pp, ae, ao, de, dx, Weight(i));
+        if (near && i > 0u) {
+            const uint e = LineError(p, pp, ae, ao, de, dx, Weight(i - 1u));
             if (e < be) {
                 be = e;
                 bi = i - 1u;
             }
         }
-        if (i < top) {
-            const uint e = TexelError(p, q0, q1, Weight(i + 1u));
+        if (near && i < top) {
+            const uint e = LineError(p, pp, ae, ao, de, dx, Weight(i + 1u));
             if (e < be) {
                 be = e;
                 bi = i + 1u;
@@ -312,8 +464,8 @@ uint PAllowed(uint s) {
     uint lo = 255u, hi = 0u;
     for (uint k = 0u; k < 16u; k++) {
         if (SubsetOf(k) != s) continue;
-        lo = min(lo, Ch(px[k], 3u));
-        hi = max(hi, Ch(px[k], 3u));
+        lo = min(lo, Ch(PX(k), 3u));
+        hi = max(hi, Ch(PX(k), 3u));
     }
     return lo == 255u ? 2u : hi == 0u ? 1u : 3u;
 }
@@ -321,14 +473,30 @@ uint PAllowed(uint s) {
 /* a candidate line for subset s, a0 to a3 one end and b0 to b3 the other (RGBA, 0 to 255): each p-bit choice the
    shape and the subset allow (allowed, PAllowed(s): FitSubset reads it once, as nothing it depends on changes between
    its lines), the best kept in fit_ */
-void Try(uint s, uint allowed, int a0, int a1, int a2, int a3, int b0, int b1, int b2, int b3) {
+void Try(uint s, uint allowed, bool quick, int a0, int a1, int a2, int a3, int b0, int b1, int b2, int b3) {
+    /* quick: the one choice whose ends, as the decoder widens them, lie nearest the line's own (each end's p-bit by
+       its own squared distance, or the shared one by both ends'), and each texel at the weight nearest its place, so
+       the line costs one pass of the texels with one error each, where it otherwise costs a pass a choice with three */
+    uint only = 4u;
+    if (quick && sh_pk != 0u) {
+        const uint m = MaskBytes() & (sh_alpha != 0u ? 0xFFFFFFFFu : 0x00FFFFFFu);
+        const uint ta = (uint(a0) | (uint(a1) << 8u) | (uint(a2) << 16u) | (uint(a3) << 24u)) & m;
+        const uint tb = (uint(b0) | (uint(b1) << 8u) | (uint(b2) << 16u) | (uint(b3) << 24u)) & m;
+        const uint no0 = (allowed & 1u) == 0u ? 0x40000000u : 0u, no1 = (allowed & 2u) == 0u ? 0x40000000u : 0u;
+        const uint a_0 = ByteError(Decoded(QuantWord(a0, a1, a2, a3, 0u)) & m, ta) + no0;
+        const uint a_1 = ByteError(Decoded(QuantWord(a0, a1, a2, a3, 1u)) & m, ta) + no1;
+        const uint b_0 = ByteError(Decoded(QuantWord(b0, b1, b2, b3, 0u)) & m, tb) + no0;
+        const uint b_1 = ByteError(Decoded(QuantWord(b0, b1, b2, b3, 1u)) & m, tb) + no1;
+        only = sh_pk == 2u ? (a_1 < a_0 ? 1u : 0u) | (b_1 < b_0 ? 2u : 0u) : a_1 + b_1 < a_0 + b_0 ? 1u : 0u;
+    }
     for (uint pp = 0u; pp < 4u; pp++) {
+        if (only != 4u && pp != only) continue;
         const uint p0 = pp & 1u, p1 = sh_pk == 2u ? pp >> 1u : p0;
         if (sh_pk != 2u && (pp >> 1u) != 0u) continue;
         if (sh_pk == 0u && pp != 0u) continue;
         if ((allowed & (1u << p0)) == 0u || (allowed & (1u << p1)) == 0u) continue;
         const uint s0 = QuantWord(a0, a1, a2, a3, p0), s1 = QuantWord(b0, b1, b2, b3, p1);
-        const uint err = Eval(s, Decoded(s0), Decoded(s1));
+        const uint err = Eval(s, Decoded(s0), Decoded(s1), !quick);
         if (err < fit_err) {
             fit_err = err;
             fit_s0 = s0;
@@ -374,7 +542,7 @@ int Solve(uint s, uint c, uint side, int det) {
     for (uint k = 0u; k < 16u; k++) {
         if (SubsetOf(k) != s) continue;
         const int w = int(Weight(Index(fit_lo, fit_hi, k)));
-        const int x = int(Ch(px[k], c));
+        const int x = int(Ch(PX(k), c));
         v += x;
         wv += w * x;
     }
@@ -389,7 +557,7 @@ void FitSubset(uint s) {
     int s0 = 0, s1 = 0, s2 = 0, s3 = 0, n = 0;
     for (uint k = 0u; k < 16u; k++) {
         if (SubsetOf(k) != s) continue;
-        const uint p = px[k];
+        const uint p = PX(k);
         lo0 = min(lo0, int(Ch(p, 0u)));
         lo1 = min(lo1, int(Ch(p, 1u)));
         lo2 = min(lo2, int(Ch(p, 2u)));
@@ -420,7 +588,7 @@ void FitSubset(uint s) {
     int c0 = 0, c1 = 0, c2 = 0, c3 = 0;
     for (uint k = 0u; k < 16u; k++) {
         if (SubsetOf(k) != s) continue;
-        const uint p = px[k];
+        const uint p = PX(k);
         const int vw = n * int(Ch(p, wide)) - sw;
         c0 += (n * int(Ch(p, 0u)) - s0) * vw;
         c1 += (n * int(Ch(p, 1u)) - s1) * vw;
@@ -436,6 +604,10 @@ void FitSubset(uint s) {
     fit_err = 0xFFFFFFFFu;
     const uint allowed = PAllowed(s);
     uint seen_lo = 0u, seen_hi = 0u;
+    if (SNX_BC7_QUICK > 0 && sh_ns == 1u && sh_mask == 15u) {
+        Try(s, allowed, true, a0, a1, a2, a3, b0, b1, b2, b3);
+        if (fit_err <= uint(SNX_BC7_QUICK)) return;
+    }
     /* the lines tried, in turn: the box pulled in, the box, then a least squares fit to the weights chosen, twice.
        One call of Try in a loop, not one a line: the compiler inlines each call, and the copies' registers (the
        whole encoder's, as each shape inlines this too) made the GPU spill and run fewer blocks at once */
@@ -459,7 +631,7 @@ void FitSubset(uint s) {
             for (uint k = 0u; k < 16u; k++) {
                 if (SubsetOf(k) != s) continue;
                 const int w = int(Weight(Index(fit_lo, fit_hi, k)));
-                const uint p = px[k];
+                const uint p = PX(k);
                 fit_n++;
                 fit_w += w;
                 fit_w2 += w * w;
@@ -483,7 +655,7 @@ void FitSubset(uint s) {
             f2 = SolveEnd(2u, 1u, det, v2, w2);
             f3 = SolveEnd(3u, 1u, det, v3, w3);
         }
-        Try(s, allowed, e0, e1, e2, e3, f0, f1, f2, f3);
+        Try(s, allowed, false, e0, e1, e2, e3, f0, f1, f2, f3);
     }
 }
 
@@ -523,8 +695,8 @@ void Rotate(uint rot) {
     if (rot == 0u) return;
     const uint sh = (rot - 1u) * 8u;
     for (uint k = 0u; k < 16u; k++) {
-        const uint p = px[k];
-        px[k] = (p & ~(0xFF000000u | (0xFFu << sh))) | ((p >> 24u) << sh) | (((p >> sh) & 0xFFu) << 24u);
+        const uint p = PX(k);
+        PX_SET(k, (p & ~(0xFF000000u | (0xFFu << sh))) | ((p >> 24u) << sh) | (((p >> sh) & 0xFFu) << 24u));
     }
 }
 
@@ -584,7 +756,7 @@ void BlockSums() {
     blk_b = 0;
     blk_a = 0;
     for (uint k = 0u; k < 16u; k++) {
-        const uint p = px[k];
+        const uint p = PX(k);
         const int vr = int(Ch(p, 0u)), vg = int(Ch(p, 1u)), vb = int(Ch(p, 2u)), va = int(Ch(p, 3u));
         blk_q += vr * vr + vg * vg + vb * vb;
         blk_qa += va * va;
@@ -608,7 +780,7 @@ uint Spread(uint ns, uint part, uint alpha) {
     for (uint k = 0u; k < 16u; k++) {
         const uint sub = SubsetOf(k);
         if (sub == 0u) continue;
-        const uint p = px[k];
+        const uint p = PX(k);
         const int vr = int(Ch(p, 0u)), vg = int(Ch(p, 1u)), vb = int(Ch(p, 2u));
         const int va = alpha != 0u ? int(Ch(p, 3u)) : 0;
         const int q = vr * vr + vg * vg + vb * vb + va * va;
@@ -636,12 +808,20 @@ uint Spread(uint ns, uint part, uint alpha) {
 /* the block's error with every alpha 255 by construction, for the modes that store none */
 bool opaque;
 
-/* writes count bits of value at bit pos of the block */
-uvec4 blk;
+/* writes count bits of value at bit pos of the block being packed */
+uvec4 enc;
 void Put(uint pos, uint value, uint count) {
     const uint w = pos >> 5u, b = pos & 31u;
-    blk[w] |= value << b;
-    if (b + count > 32u) blk[w + 1u] |= value >> (32u - b);
+#if SNX_NO_ARRAYS
+    const uint lo = value << b, hi = b + count > 32u ? value >> (32u - b) : 0u;
+    enc.x |= w == 0u ? lo : 0u;
+    enc.y |= w == 1u ? lo : w == 0u ? hi : 0u;
+    enc.z |= w == 2u ? lo : w == 1u ? hi : 0u;
+    enc.w |= w == 3u ? lo : w == 2u ? hi : 0u;
+#else
+    enc[w] |= value << b;
+    if (b + count > 32u) enc[w + 1u] |= value >> (32u - b);
+#endif
 }
 
 uvec4 Pack() {
@@ -664,7 +844,7 @@ uvec4 Pack() {
                 hi = (hi & ~(15u << ((k - 8u) * 4u))) | (turned << ((k - 8u) * 4u));
         }
     }
-    blk = uvec4(0u);
+    enc = uvec4(0u);
     const uint mode = best_mode;
     /* the mode: as many noughts as its number, then a one */
     Put(mode, 1u, 1u);
@@ -699,7 +879,7 @@ uvec4 Pack() {
         Put(pos, Index(lo, hi, k), bits);
         pos += bits;
     }
-    return blk;
+    return enc;
 }
 
 /* the block of mode 4 or 5 that best_ holds. Texel 0's weight has its top bit nought in each of its two sets: where it
@@ -723,7 +903,7 @@ uvec4 PackDual() {
         alo = atop * 0x11111111u - alo;
         ahi = atop * 0x11111111u - ahi;
     }
-    blk = uvec4(0u);
+    enc = uvec4(0u);
     Put(mode, 1u, 1u);
     uint pos = mode + 1u;
     Put(pos, best_rot, 2u);
@@ -751,12 +931,37 @@ uvec4 PackDual() {
             pos += bits;
         }
     }
-    return blk;
+    return enc;
+}
+
+/* A block of one colour, exactly, with no search: mode 5, whose colour is 7 bits a channel (widened by its top bit)
+   and alpha 8, every texel at weight 21 of 64. For a channel c the ends c >> 1 and (c >> 1) + (c & 1) - (c >> 7), the
+   second one more for an odd c under 128 and one less for an even c from 128 on, interpolate to c (every c checked,
+   tests/glsl/bc7_glsl.cpp). Mode 6 cannot: its two p-bits are each shared by an end's four channels, and no weight
+   brings one channel to 0 and another to 255 */
+uvec4 Solid(uint c) {
+    const uint lo = (c >> 1u) & 0x007F7F7Fu;
+    best_mode = 5u;
+    best_rot = 0u;
+    best_isb = 0u;
+    best_s0[0] = lo | (c & 0xFF000000u);
+    best_s1[0] = (lo + (c & 0x00010101u) - ((c >> 7u) & 0x00010101u)) | (c & 0xFF000000u);
+    best_lo = 0x11111111u;
+    best_hi = 0x11111111u;
+    best_lo2 = 0u;
+    best_hi2 = 0u;
+    return PackDual();
 }
 
 uvec4 Encode() {
     opaque = true;
-    for (uint k = 0u; k < 16u; k++) opaque = opaque && Ch(px[k], 3u) == 255u;
+    bool solid = true;
+    for (uint k = 0u; k < 16u; k++) {
+        opaque = opaque && Ch(PX(k), 3u) == 255u;
+        solid = solid && PX(k) == PX(0);
+    }
+    enc_more = false;
+    if (SNX_BC7_SOLID != 0 && solid) return Solid(PX(0));
     best_err = 0xFFFFFFFFu;
     /* The shapes tried, in turn, one call of TryShape and one of TryDual for all of them (see FitSubset):
        job 0, mode 6: one subset, RGBA, 7 bits and a p-bit an end, 4-bit weights. Unless it is exact, then the two
@@ -772,6 +977,17 @@ uvec4 Encode() {
         if (best_err <= uint(SNX_BC7_GOOD_ENOUGH)) break;
         if (j == 1u) {
             if (SNX_BC7_FAST == 2 || SNX_BC7_FAST == 3 || best_err <= SNX_BC7_ENOUGH) break;
+            if (SNX_BC7_PASS == 1) {
+                enc_more = true;
+                return uvec4(0u);
+            }
+            if (hint_on) first = hint_part;
+        }
+        /* with a hint: the partition it names alone, in each mode with two subsets, and the rotation it names */
+        if (hint_on && j > 0u &&
+            (j < shapes ? hint_part >= 64u || ((j - 1u) & 1u) != 0u || j == 5u : (j - shapes) / 3u != hint_rot))
+            continue;
+        if (j == 1u && !hint_on) {
             BlockSums();
             const uint alpha = opaque ? 0u : 1u;
             uint f_cost = 0xFFFFFFFFu, s_cost = 0xFFFFFFFFu;
@@ -885,15 +1101,4 @@ uvec4 Encode() {
     sh_pk = best_mode == 2u ? 0u : best_mode == 1u ? 1u : 2u;
     sh_ib = best_mode == 6u ? 4u : best_mode == 1u ? 3u : 2u;
     return Pack();
-}
-
-void main() {
-    const uint bx = gl_GlobalInvocationID.x, by = gl_GlobalInvocationID.y, z = gl_WorkGroupID.z;
-    if (bx >= blocks_x || by >= blocks_y) return;
-    /* a block past the image's edge repeats its last texels, which adds no colour to the line */
-    for (uint k = 0u; k < 16u; k++) {
-        const uint x = min(bx * 4u + (k & 3u), width - 1u), y = min(by * 4u + (k >> 2u), height - 1u);
-        px[k] = rgba[(z * height + y) * width + x];
-    }
-    bc7_blocks[(z * blocks_y + by) * blocks_x + bx] = Encode();
 }

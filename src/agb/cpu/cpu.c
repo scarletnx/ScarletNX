@@ -105,7 +105,8 @@ static void advance(AgbCpu* cpu, AgbSink* sink, uint32_t cycles) {
 
 /* ---- interrupts ---- */
 
-static int irq_pending(AgbBoard* board) { return (board->irq_ime & 1) && (board->irq_ie & board->irq_if & 0x3FF); }
+/* the 14 interrupt lines, IE's and IF's bits 0 to 13: the DMAs' (8 to 11), the keypad's and the cartridge's too */
+static int irq_pending(AgbBoard* board) { return (board->irq_ime & 1) && (board->irq_ie & board->irq_if & 0x3FFF); }
 
 /* The interrupt entry the BIOS stub performs: the live registers land on the IRQ stack, the handler at
    0x03007FFC runs, and its return reaches the epilogue the machine services. Returns 0 while no handler

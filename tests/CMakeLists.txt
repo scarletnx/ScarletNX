@@ -1865,7 +1865,7 @@ if(SNX_TRACY)
     target_include_directories(snx-test-tracy-state SYSTEM PRIVATE
         $<TARGET_PROPERTY:Tracy::TracyClient,INTERFACE_INCLUDE_DIRECTORIES>
         $<TARGET_PROPERTY:SDL3::Headers,INTERFACE_INCLUDE_DIRECTORIES>)
-    target_compile_definitions(snx-test-tracy-state PRIVATE SNX_TRACY=1
+    target_compile_definitions(snx-test-tracy-state PRIVATE SNX_TRACY=1 SNX_TRACY_VERSION="${SNX_TRACY_VERSION}"
         $<TARGET_PROPERTY:Tracy::TracyClient,INTERFACE_COMPILE_DEFINITIONS>)
     target_link_libraries(snx-test-tracy-state PRIVATE scarletnx-common scarletnx-filesystem snx_build_info)
     add_test(NAME tracy_state COMMAND snx-test-tracy-state)
@@ -1913,6 +1913,7 @@ add_executable(snx-test-driver driver_workflow.c
     "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/process.c"
     "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
 snx_test_target(snx-test-driver 99)
+target_compile_definitions(snx-test-driver PRIVATE SNX_TRACY_VERSION="${SNX_TRACY_VERSION}")
 target_link_libraries(snx-test-driver PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle snx_nx_module)
 set_target_properties(snx-test-driver PROPERTIES LINKER_LANGUAGE CXX)
 if(APPLE) # driver/setup.c's weak snx_menu_language, as snx_driver has it: ld64 wants it named
@@ -1929,7 +1930,7 @@ if(NOT WIN32)
         "${PROJECT_SOURCE_DIR}/src/nx/loader/match.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/process.c"
         "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
     snx_test_target(snx-test-driver-ready 99)
-    target_compile_definitions(snx-test-driver-ready PRIVATE SNX_DRIVER_READY=1)
+    target_compile_definitions(snx-test-driver-ready PRIVATE SNX_DRIVER_READY=1 SNX_TRACY_VERSION="${SNX_TRACY_VERSION}")
     target_link_libraries(snx-test-driver-ready PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle
                                                         snx_nx_module)
     set_target_properties(snx-test-driver-ready PROPERTIES LINKER_LANGUAGE CXX)
@@ -2850,6 +2851,20 @@ add_executable(snx-test-bc7-glsl glsl/bc7_glsl.cpp glsl/bc7_cpu.cpp support/bcn.
 snx_test_target(snx-test-bc7-glsl 23)
 target_include_directories(snx-test-bc7-glsl PRIVATE glsl)
 add_test(NAME bc7_glsl COMMAND snx-test-bc7-glsl)
+# astc_bc7.comp's GLSL, ASTC blocks straight into BC7 ones, run on the CPU (tests/glsl/glsl.hpp): its blocks are the
+# encoder's of the texels the CPU's ASTC decoder makes: no GPU needed
+add_executable(snx-test-astc-bc7-glsl glsl/astc_bc7_glsl.cpp glsl/astc_bc7_cpu.cpp glsl/bc7_cpu.cpp support/astc.c
+               support/bcn.c)
+snx_test_target(snx-test-astc-bc7-glsl 23)
+target_include_directories(snx-test-astc-bc7-glsl PRIVATE glsl)
+add_test(NAME astc_bc7_glsl COMMAND snx-test-astc-bc7-glsl)
+# the ASTC 4x4 encoder's GLSL (BCn encoded again as ASTC) run on the CPU (tests/glsl/glsl.hpp), its blocks decoded by
+# the CPU's ASTC decoder: no GPU needed
+add_executable(snx-test-astc-encode-glsl glsl/astc_encode_glsl.cpp glsl/astc_encode_cpu.cpp glsl/bcn_astc_cpu.cpp
+               glsl/bc7_cpu.cpp support/astc.c support/bcn.c)
+snx_test_target(snx-test-astc-encode-glsl 23)
+target_include_directories(snx-test-astc-encode-glsl PRIVATE glsl)
+add_test(NAME astc_encode_glsl COMMAND snx-test-astc-encode-glsl)
 # the BCn to ETC2 and EAC transcoder's GLSL (texconv.glsl's ETC2 build) run on the CPU (tests/glsl/glsl.hpp), its blocks
 # decoded by the CPU references, the BCn pictures it is held to made by its own encoders and the BC7 one: no GPU needed
 add_executable(snx-test-bcn-etc2-glsl glsl/bcn_etc2_glsl.cpp glsl/bcn_etc2_cpu.cpp glsl/bc7_cpu.cpp support/etc2.c
@@ -3114,6 +3129,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(snx-test-plat-cpus PRIVATE scarletnx-platform) # plat_thread, plat_cpus, the waits
     add_test(NAME plat_cpus COMMAND snx-test-plat-cpus)
 endif()
+
+# the profiler's view of a named lock (common/platform/thread.c): its release is reported while it is held
+add_executable(snx-test-pm-tracy pm_tracy.c)
+snx_test_target(snx-test-pm-tracy 11)
+target_link_libraries(snx-test-pm-tracy PRIVATE scarletnx-platform)
+add_test(NAME pm_tracy COMMAND snx-test-pm-tracy)
 
 # the process's memory as common.c reads it, which memory_fit takes (process_memory.c)
 add_executable(snx-test-process-memory process_memory.c)

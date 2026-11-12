@@ -383,10 +383,10 @@ setting Memory fit mode
     default 0
     startup
     words Auto|Off
-    help Auto = the game sees no more of Memory (GB) than the device can still give it, measured as it starts, less
-    help what the rest of ScarletNX takes: a device with less than the console's is not run out of memory, and one that
-    help can give it all shows the game all of it. Off = all of it, whatever the device can give. It takes the place of
-    help memory_fit, whose 0 was Off (docs/user/deprecations.md)
+    help Auto = the game sees at least the console's memory, and of what Memory (GB) adds above it no more than the
+    help device can still give, measured as it starts, less what the rest of ScarletNX takes: a device with less than
+    help the console's runs as with Off, and one that can give it all shows the game all of it. Off = all of it,
+    help whatever the device can give. It takes the place of memory_fit, whose 0 was Off (docs/user/deprecations.md)
 setting Heap limit (MB)
     key heap_max_mb
     text 32
@@ -993,6 +993,18 @@ setting Native ETC2
     help GPUs), in a quarter to an eighth of the memory, and so are the BCn textures a GPU without BCn gets encoded
     help again as ETC2 (native_bc). 0 = they are decoded on the GPU, as they are on GPUs without ETC2 (most desktop
     help ones), and BCn too there, to compare the two. On such a GPU 1 is a warning at start
+setting BCN ASTC
+    label BCn textures as ASTC
+    key bcn_astc
+    int 0 2
+    default 1
+    startup
+    words Off|Auto|Always
+    help On a GPU that samples ASTC and not BCn (most phone and tablet ones). 1 (Auto) = BC1, BC2, BC3 and BC7 textures
+    help are encoded again as ASTC 4x4 as they load, several times faster than as ETC2 and closer to the game's blocks.
+    help ASTC 4x4 is twice BC1's bytes, so once the GPU's memory runs short the BC1 textures loaded from then on are
+    help encoded as ETC2 (native_etc2) again, half the bytes and slower to load. 2 (Always) = BC1 stays ASTC whatever the
+    help memory. 0 = all of them as ETC2. BC4 and BC5 are encoded as EAC either way
 setting CPU extensions
     key cpu_extensions
     int 0 1
@@ -1205,6 +1217,14 @@ setting Shader corpus
     startup
     help A folder that keeps each translated shader for snx-shaderc (gpu/shader/corpus.c). With it every shader is
     help translated, and none is kept for the next run. Empty: none, or captures/shaders with Shader captures
+setting ASTC dump
+    key astc_dump
+    text 1024
+    default ""
+    startup
+    help A folder that keeps each whole ASTC texture level the game loads, as an .astc file (astcenc's format, the
+    help layers or slices as its depth), for snx-test-astc-vulkan --bench and the BC7 encoder's measurements (the
+    help game's own textures: keep them local). At most 2 GiB a run. Empty: none
 setting SM86 dump
     key sm86_dump
     text 1024
@@ -1781,8 +1801,16 @@ setting AOT threads
     words Auto|#
     help The threads compiling the game's code when it is recompiled: 0 (Auto) = 1 to start, then one more each
     help second while the memory the code units are seen to take leaves room for it and the system reports no memory
-    help pressure, up to the cores with the last quarter left free, so the machine stays responsive; N = that many,
-    help whatever the memory. The recompile says each thread it opens and why it opens no more
+    help pressure, up to the cores with the last quarter left free (aot_threads_most), so the machine stays responsive;
+    help N = that many, whatever the memory. The recompile says each thread it opens and why it opens no more
+setting AOT threads most
+    label AOT threads at most
+    key aot_threads_most
+    int 0 1024
+    default 0
+    words Auto|#
+    help The most threads aot_threads' Auto opens: 0 (Auto) = the cores with the last quarter left free; N = N at most,
+    help whatever the cores. Only Auto takes it: with aot_threads at N, the recompile runs on N
 setting Unit size
     key unit_instructions
     int 1 INT_MAX

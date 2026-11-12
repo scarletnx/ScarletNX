@@ -121,6 +121,7 @@ static void device(int astc, int etc2, int bc, int native_astc, int native_etc2,
     g_settings.native_etc2 = native_etc2;
     g_settings.native_bc = native_bc;
     g_settings.astc_mode = 1; /* Exact: ASTC decoded stays RGBA8, which needs no memory budget here */
+    g_settings.bcn_astc = 0;  /* BCn as ETC2: at its default of 1 the BCn checks below would take ASTC 4x4 */
     g_vk.astc_auto_bc7 = 0;
     vk_blocks_want(&have, &g_vk.feat);
     g_test.n = 0;
@@ -218,6 +219,34 @@ int main(void) {
     line(2, "vulkan: BCn textures (native_bc=0, the GPU samples BCn, ETC2 sampled): encoded again on the GPU: BC1 as "
             "ETC2 RGB8A1, BC2 as ETC2 RGBA8, BC3 as ETC2 RGBA8, BC4 as EAC R11, BC5 as EAC RG11, BC7 as ETC2 RGBA8; "
             "decoded on the GPU: BC6H to RGBA16F");
+
+    /* bcn_astc=1 on a phone's GPU (ASTC and ETC2 sampled, BCn not): BC2, BC3 and BC7 encoded again as ASTC 4x4, which
+       holds them closer than ETC2 RGBA8, and BC1, BC4 and BC5 as ETC2 and EAC as before */
+    device(1, 1, 0, 1, 1, 1);
+    g_settings.bcn_astc = 1;
+    takes(0x17, 0, 0, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, VKC_BC7, "bcn_astc=1 BC7");
+    takes(0x17, 0, 1, VK_FORMAT_ASTC_4x4_SRGB_BLOCK, VKC_BC7, "bcn_astc=1 BC7 sRGB");
+    takes(0x26, 0, 0, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, VKC_BC3, "bcn_astc=1 BC3");
+    takes(0x24, 0, 0, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, VKC_BC1, "bcn_astc=1 BC1, memory to spare");
+    takes(0x27, 0, 0, VK_FORMAT_EAC_R11_UNORM_BLOCK, VKC_BC4, "bcn_astc=1 BC4");
+    takes(0x40, 0, 0, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, VKC_NONE, "bcn_astc=1 ASTC 4x4, the game's own blocks");
+    g_test.n = 0;
+    vk_blocks_say();
+    line(2, "W vulkan: BCn textures (native_bc=1, the GPU samples no BCn, ETC2 sampled): encoded again on the GPU: BC1 "
+            "as ASTC 4x4, BC2 as ASTC 4x4, BC3 as ASTC 4x4, BC4 as EAC R11, BC5 as EAC RG11, BC7 as ASTC 4x4; "
+            "decoded on the GPU: BC6H to RGBA16F");
+    /* the images run short of memory: BC1, which ASTC 4x4 holds in twice its bytes, is ETC2 RGB8A1 from then on, said
+       once; the others, the same bytes either way, stay ASTC. bcn_astc=2 keeps BC1 ASTC */
+    g_test.n = 0;
+    CHECK(vk_bc1_tight("an image found no memory") == 1 && vk_bc1_tight("again") == 0, "memory short: not said once");
+    line(0, "vulkan: an image found no memory: BC1 textures loaded from now on are encoded again as ETC2 RGB8A1, half "
+            "ASTC 4x4's bytes and slower to load (bcn_astc=1, Auto; 2 keeps them ASTC)");
+    takes(0x24, 0, 0, VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK, VKC_BC1, "bcn_astc=1 BC1, memory short");
+    takes(0x17, 0, 0, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, VKC_BC7, "bcn_astc=1 BC7, memory short");
+    g_settings.bcn_astc = 2;
+    takes(0x24, 0, 0, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, VKC_BC1, "bcn_astc=2 BC1, memory short");
+    g_settings.bcn_astc = 0;
+    g_vk.bc1_tight = 0;
 
     /* a GPU of none of them (a software rasterizer without them): everything decoded */
     device(0, 0, 0, 1, 1, 1);

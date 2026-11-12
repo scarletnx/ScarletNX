@@ -611,6 +611,7 @@ static void run(Queue* q, unsigned jobs, int open) {
         w.state = queue_state;
         w.arg = q;
         w.most = jobs;
+        w.most_key = open == 2;
         w.quiet = q->build->quiet;
         snx_run_workers_auto(&w);
 #ifdef _WIN32

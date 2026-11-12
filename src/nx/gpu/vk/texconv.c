@@ -3,10 +3,11 @@
 /* Texture formats the host can't take as they are, converted on the GPU (gpu/texture/texconv.comp) from linear rows
    into rows the copies into the image take. One pipeline for every format, made on first use and kept for the
    device's lifetime, like the other internal pipelines; a second, the shader's ETC2 build, for BCn blocks encoded again
-   as ETC2 and EAC (gpu/texture/etc2_encode.glsl), and a third, its conversion build, for the blits that convert
-   between pixel formats (TC_BLIT_CONVERT), each made the first time it is used. Uses are on g_vk.gfx, under
-   vk_lock() */
+   as ETC2 and EAC (gpu/texture/etc2_encode.glsl), its ASTC build for those encoded again as ASTC 4x4, and its
+   conversion build for the blits that convert between pixel formats (TC_BLIT_CONVERT), each made the first time it
+   is used. Uses are on g_vk.gfx, under vk_lock() */
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/texture/texconv_spv.h" /* compiled from texconv.comp by the build (cmake/glsl.cmake) */
 #include "nx/gpu/texture/texconv_modes.glsl"
 #include "nx/runtime/platform/log.h"
@@ -20,28 +21,66 @@ typedef struct {
 
 static VkDescriptorSetLayout g_tc_ds;
 static VkPipelineLayout g_tc_layout;
-static VkPipeline g_tc_pipe[3]; /* texconv.comp's, its ETC2 build's and its conversion build's */
+static VkPipeline g_tc_pipe[6]; /* texconv.comp's, its ETC2 build's, its ASTC build's three passes and its
+                                   conversion build's */
+/* the ASTC build's work lists (texconv.comp's Work): the blocks each pass leaves to a later one, two lists of a word a
+   block after a head of four words each, as large as the largest dispatch yet */
+static VkBuffer g_tc_work;
+static VmaAllocation g_tc_work_mem;
+static u64 g_tc_work_size;
+#define TC_WORK_HEAD 32u
 
-/* the pipeline of the build that runs mode, made on first use: the ETC2 build for the BCn modes it encodes again, the
-   conversion build for TC_BLIT_CONVERT, the plain one for the rest */
-static VkPipeline tc_init(u32 mode) {
-    static const char* const names[3] = {"", " (its ETC2 build)", " (its conversion build)"};
-    const u32* const spv[3] = {texconv_spv, texconv_etc2_spv, texconv_convert_spv};
-    const u64 sizes[3] = {texconv_spv_size, texconv_etc2_spv_size, texconv_convert_spv_size};
-    int build = mode >= TC_BCN_ETC2 ? 1 : mode == TC_BLIT_CONVERT ? 2 : 0;
+/* the pipeline of mode: the ETC2 or the ASTC build's for the BCn modes they encode again (the ASTC build's pass
+   `pass`, 0 to 2), the conversion build's for TC_BLIT_CONVERT, made on first use as the other */
+static VkPipeline tc_init(u32 mode, int pass) {
+    int build = mode >= TC_BCN_ASTC ? 2 + pass : mode >= TC_BCN_ETC2 ? 1 : mode == TC_BLIT_CONVERT ? 5 : 0;
     VkPipeline* pipe = &g_tc_pipe[build];
     if (*pipe) return *pipe;
-    if (!g_tc_layout && !VK_OK(snx_vk_compute_layouts(g_vk.dev, 2, 0, sizeof(TcParams), &g_tc_ds, &g_tc_layout)))
+    /* the third buffer is the ASTC build's work list; the other conversions name two */
+    if (!g_tc_layout && !VK_OK(snx_vk_compute_layouts(g_vk.dev, 3, 0, sizeof(TcParams), &g_tc_ds, &g_tc_layout)))
         fatal("vulkan: cannot create the texture conversion descriptor and pipeline layouts");
+    static const char* const what[6] = {"", " (its ETC2 build)", " (its ASTC build)", " (its ASTC build's second pass)",
+                                        " (its ASTC build's third pass)", " (its conversion build)"};
+    static const struct {
+        const u32* code;
+        const u64* size;
+    } spv[6] = {{texconv_spv, &texconv_spv_size},
+                {texconv_etc2_spv, &texconv_etc2_spv_size},
+                {texconv_astc_spv, &texconv_astc_spv_size},
+                {texconv_astc_b_spv, &texconv_astc_b_spv_size},
+                {texconv_astc_c_spv, &texconv_astc_c_spv_size},
+                {texconv_convert_spv, &texconv_convert_spv_size}};
     VkShaderModule module;
-    if (!VK_OK(snx_vk_shader_module(g_vk.dev, spv[build], sizes[build], &module)))
-        fatal("vulkan: cannot load the texture conversion shader%s", names[build]);
+    if (!VK_OK(snx_vk_shader_module(g_vk.dev, spv[build].code, *spv[build].size, &module)))
+        fatal("vulkan: cannot load the texture conversion shader%s", what[build]);
     u64 started = plat_ns();
     if (!VK_OK(snx_vk_module_pipeline(g_vk.dev, vk_pipeline_cache(), g_tc_layout, module, NULL, pipe)))
-        fatal("vulkan: cannot create the texture conversion compute pipeline%s", names[build]);
+        fatal("vulkan: cannot create the texture conversion compute pipeline%s", what[build]);
     vk_texture_pipeline_made(plat_ns() - started);
     vkDestroyShaderModule(g_vk.dev, module, NULL);
     return *pipe;
+}
+/* the work list with room for blocks blocks: 0 when no memory was found for a larger one */
+static int tc_work(u64 blocks) {
+    const u64 size = TC_WORK_HEAD + blocks * 8;
+    if (size <= g_tc_work_size) return 1;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                             .size = size < (1u << 20) ? 1u << 20 : size,
+                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    VkBuffer buf;
+    VmaAllocation mem;
+    if (bi.size > g_vk.props.limits.maxStorageBufferRange ||
+        !VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &buf, &mem, NULL)))
+        return 0;
+    vk_mem_track(mem);
+    if (g_tc_work) vk_defer_buffer(g_tc_work, g_tc_work_mem);
+    g_tc_work = buf;
+    g_tc_work_mem = mem;
+    g_tc_work_size = bi.size;
+    return 1;
 }
 
 /* the block formats BCn is encoded again into where the GPU samples ETC2 and not BCn (format.c) */
@@ -63,7 +102,11 @@ static u32 tc_mode(const VkFmt* f) {
         case VKC_NONE: return f->bpp == 8 ? TC_D32S8 : TC_D24S8; /* a depth and stencil format as it is in memory */
     }
     /* the ETC2 and EAC kinds, and the BCn ones, each in the same order; BCn into ETC2 or EAC blocks is the ETC2 build's */
-    if (f->conv >= VKC_BC1) return (is_etc2(f->vk) ? TC_BCN_ETC2 : TC_BC1) + (f->conv - VKC_BC1);
+    if (f->conv >= VKC_BC1)
+        return (f->vk == VK_FORMAT_ASTC_4x4_UNORM_BLOCK || f->vk == VK_FORMAT_ASTC_4x4_SRGB_BLOCK ? TC_BCN_ASTC
+                : is_etc2(f->vk)                                                                     ? TC_BCN_ETC2
+                                                                                                     : TC_BC1) +
+               (f->conv - VKC_BC1);
     return TC_ETC2_RGB + (f->conv - VKC_ETC2);
 }
 
@@ -81,10 +124,11 @@ static VkTcShape tc_shape(u32 mode, u32 w) {
     if (mode >= TC_BCN_ETC2) {
         /* a row of blocks into a row of blocks of the same bytes, as a row of texels four times as wide: a quarter of
            a block's bytes a texel, which the copy's bufferRowLength counts */
-        u32 k = mode - TC_BCN_ETC2 + TC_BC1;
+        u32 k = mode - (mode >= TC_BCN_ASTC ? TC_BCN_ASTC : TC_BCN_ETC2) + TC_BC1;
         s.units = (w + 3) / 4;
         s.out_texels = s.units * 4;
         s.out_bpp = k == TC_BC1 || k == TC_BC4 || k == TC_BC4_SNORM ? 2 : 4;
+        if (mode >= TC_BCN_ASTC) s.out_bpp = 4; /* an ASTC block is 16 bytes whatever it was made of */
         s.submit_units = TC_ENCODE_SUBMIT_BLOCKS;
     } else if (mode <= TC_A5B5G5R1 || (mode >= TC_VI_RGB565 && mode <= TC_VI_RGBA4444)) {
         s.units = (w + 1) / 2;
@@ -146,17 +190,60 @@ static int tc_dispatch(VkCommandBuffer cb, const TcParams* p, u32 gx, u32 rows, 
         LOG_LIMIT(1, "vulkan: a %ux%u conversion exceeds the device's limits (left out)\n", p->units, rows);
         return 0;
     }
-    VkPipeline pipe = tc_init(p->mode);
+    /* BCn into ASTC: three passes (texconv.glsl's ASTC main). The first over the blocks, which moves those that are an
+       ASTC layout already and lists the others; the second and third indirect dispatches over the two lists: the
+       blocks with lines of their own decoded and those tried, then the rest decoded and searched for */
+    const int astc = p->mode >= TC_BCN_ASTC;
+    const u64 blocks = (u64)p->units * rows * slices;
+    if (astc && (blocks > 0xFFFFFFFFu || !tc_work(blocks))) {
+        LOG_LIMIT(1, "vulkan: no memory for the work lists of a %ux%u conversion (left out)\n", p->units, rows);
+        return 0;
+    }
+    TcParams q = *p;
+    if (astc) q.const_a = (u32)blocks; /* a list's words */
+    VkPipeline pipe = tc_init(p->mode, 0);
     VkDescriptorSet set = vk_desc_alloc(g_tc_ds);
     if (!set) return 0;
-    VkDescriptorBufferInfo sides[2] = {{in, in_off, in_size}, {out, out_off, out_size}};
-    snx_vk_storage_buffers(g_vk.dev, set, sides, 2);
+    VkDescriptorBufferInfo sides[3] = {
+        {in, in_off, in_size}, {out, out_off, out_size}, {g_tc_work, 0, TC_WORK_HEAD + blocks * 8}};
+    snx_vk_storage_buffers(g_vk.dev, set, sides, astc ? 3 : 2);
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    VkDependencyInfo md = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    if (astc) { /* no block listed, and 0 x 1 x 1 workgroups for each later pass, which the passes before raise */
+        mb.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+        mb.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                           VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        mb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        mb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        rec_CmdPipelineBarrier2(cb, &md);
+        rec_CmdFillBuffer(cb, g_tc_work, 0, TC_WORK_HEAD, 0);
+        rec_CmdFillBuffer(cb, g_tc_work, 4, 8, 1);
+        rec_CmdFillBuffer(cb, g_tc_work, 20, 8, 1);
+        mb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        mb.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        rec_CmdPipelineBarrier2(cb, &md);
+    }
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_tc_layout, 0, 1, &set, 0, NULL);
-    rec_CmdPushConstants(cb, g_tc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof *p, p);
+    rec_CmdPushConstants(cb, g_tc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof q, &q);
     vk_ck(cb, VK_CK_CONVERT, gx, rows, slices, 0);
     vk_gpuprof_tag(VK_PROF_TEXCONV);
     rec_CmdDispatch(cb, gx, rows, slices);
+    for (int pass = 1; astc && pass < 3; pass++) {
+        /* each later pass after the writes of the ones before: of its list and the list's head, which the indirect
+           dispatch reads, and of the blocks beside the ones it writes */
+        mb.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        mb.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        mb.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+        mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                           VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+        rec_CmdPipelineBarrier2(cb, &md);
+        rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, tc_init(p->mode, pass));
+        vk_gpuprof_tag(VK_PROF_TEXCONV);
+        rec_CmdDispatchIndirect(cb, g_tc_work, (VkDeviceSize)(pass - 1) * 16);
+    }
     return 1;
 }
 static u64 storage_align(void) {

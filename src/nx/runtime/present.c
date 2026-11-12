@@ -78,6 +78,7 @@ void present_pace(u32 interval, int slot) {
     }
     refresh = 1000000000u / (fps == SNX_FPS_GAME ? (u64)VI_REFRESH_HZ : (u64)fps);
     period = fps == SNX_FPS_GAME ? refresh * interval : refresh;
+    [[maybe_unused]] u64 started = plat_ns();
     if (fps == SNX_FPS_GAME && g_renderer->display_wait) {
         int stuck = __atomic_load_n(&g_pace.display_stuck, __ATOMIC_RELAXED);
         u64 shown = 0, start = plat_ns();
@@ -102,5 +103,6 @@ void present_pace(u32 interval, int slot) {
     g_pace.last = next;
     pm_unlock(&g_pace.lock);
     if (next > now) plat_sleep_ns((i64)(next - now));
+    SNX_PLOT("present pace ms", (double)(plat_ns() - started) / 1e6);
     released(slot, fps == SNX_FPS_GAME ? period : 0);
 }

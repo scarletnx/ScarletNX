@@ -30,7 +30,9 @@ typedef struct {
     u32 rumble[2];
 } PadState;
 
-void hid_update(void); /* the next samples in shared memory, touch screen included */
+u64 hid_update(void); /* the LIFO states it wrote */
+/* the input ticks hid_update has done, for the profiler's rate */
+u64 hid_updates(void);
 /* the TV mode changed while the game runs: the handheld Npad's style set is written now */
 void hid_mode_changed(void);
 /* the number of connected players, and the Npad id of the first in *first_id */
@@ -68,8 +70,8 @@ typedef struct {
     TouchState touch;
     u32 shm, xpad_shm, six_shm, joysix_shm; /* kernel object ids */
     u32 style_ev[HID_ENTRIES];
-    u64 samp;    /* the sampling number of the latest states */
-    u64 last_ns; /* when they were taken */
+    u64 samp;            /* the sampling number of the latest states */
+    u64 last_ns;         /* when they were taken */
     u32 supported_styles, supported_ids; /* the game's: styles, and Npads by entry index */
     i64 hold, handheld_mode, comm_mode;
     i64 header_hold; /* the hold type the single Joy-Cons' headers were written for */
@@ -88,5 +90,7 @@ typedef struct {
     PMutex input_lock;
     /* hid's own, under lock */
     PMutex lock;
+    /* atomic: the input ticks done, and the LIFO states they wrote, which the profiler's rates read */
+    u64 updates, states;
 } HostHid;
 #endif

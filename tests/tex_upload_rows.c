@@ -187,6 +187,7 @@ VkResult vk_sampler_create(VkDevice device, const VkSamplerCreateInfo* info,
     abort();
 }
 _Atomic int g_cs_any;
+u64 g_tex_cache_hits, g_tex_cache_misses, g_tex_upload_bytes, g_tex_frees;
 u32 g_vk_present;
 static char g_log[1024]; /* the last line logged */
 void logf_(int lvl, const char* fmt, ...) {
@@ -215,7 +216,17 @@ static struct {
     int keyed, takes, owner_over;
     u64 content[2];
 } g_astc_key;
-u64 vk_bc7_strip_texels(void) { abort(); }
+u64 vk_bc7_strip_blocks(void) { abort(); }
+/* the blocks a texture held as BC7 keeps for its BC7 image (astc.c): a buffer in name only, which no case here reads */
+int vk_astc_keep(Surf* t) {
+    t->bc7.kept = (VkBuffer)(uintptr_t)0xB7;
+    return 1;
+}
+void vk_astc_unkeep(Surf* t) { t->bc7.kept = VK_NULL_HANDLE; }
+u32 vk_bc7_kept_unit(const Surf* t) {
+    (void)t;
+    abort();
+}
 /* the BC7 cache (astc.c, bc7_cache.c): it takes a level while g_astc_key.takes says so. The content is the bytes and
    layout words mixed in by FNV-1a, and the key that with the level's shape, which is all texture.c needs of them */
 int vk_astc_cached(u32 w, u32 h, u32 depth) {
@@ -267,10 +278,8 @@ int own_trapped(u64 addr, u64 size) {
     (void)addr, (void)size;
     return g_astc_key.owner_over != 0;
 }
-int vk_bc7_encode_image(VkCommandBuffer cb, VkImage src, VkImage dst, u32 level, u32 w, u32 h, u32 d, int is3d, u32 z,
-                        u32 nz, u32 y, u32 rows) {
-    (void)cb, (void)src, (void)dst, (void)level, (void)w, (void)h, (void)d, (void)is3d, (void)z, (void)nz, (void)y,
-        (void)rows;
+int vk_bc7_encode_kept(VkCommandBuffer cb, Surf* t, VkImage dst, u32 level, u32 z, u32 nz, u32 y, u32 n) {
+    (void)cb, (void)t, (void)dst, (void)level, (void)z, (void)nz, (void)y, (void)n;
     abort();
 }
 /* surface.c's, for a storage image over a target, which no case here samples: an unoptimized build keeps the call, and

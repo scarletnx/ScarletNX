@@ -42,7 +42,10 @@ static int ui_quads(UiCheck* c, const int safe[4]) {
     vpad_draw(&l, safe, scale);
     vpad_showcase_draw(&l, safe, vpad_showcase_fps(g_vk_present, plat_ns()), scale);
     stats_draw(&l, safe, scale, plat_ns());
-    hud_draw(&l, safe, scale);
+    {
+        float stats[4];
+        hud_draw(&l, safe, stats_scale(scale), stats_box_drawn(stats) ? stats : NULL, plat_ns() / 1000000u);
+    }
     overlay_draw(&l, UI_W, UI_H, plat_ns());
     ui_unlock();
     return l.n;
@@ -293,6 +296,16 @@ static int check_ui(void) {
         static const i32 none[4], right[4] = {32767, 0, 0, 0};
         g_settings.show_controls = 1;
         CHECK(!ui_frame(c, safe, "the on-screen controls", &changed));
+        /* at their smallest the shoulder buttons are 19 pixels high: room for the font's 16 rows and a pixel above
+           and under them, so their letters show */
+        {
+            int scale = g_settings.controls_scale;
+            g_settings.controls_scale = 0;
+            vpad_changed(); /* as the menu's Scale row says it */
+            CHECK(!ui_frame(c, safe, "the on-screen controls at their smallest", &changed));
+            g_settings.controls_scale = scale;
+            vpad_changed();
+        }
         g_settings.show_controls = 0;
         g_settings.showcase = 1;
         vpad_showcase_input(1u << 0 | 1u << 13 | 1u << 4, right);

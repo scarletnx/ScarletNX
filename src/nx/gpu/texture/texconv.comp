@@ -10,7 +10,7 @@
    branches on it never diverge, and one pipeline is compiled instead of fifteen (on lavapipe each is an LLVM
    compile) for code that is mostly the same loads and stores. Built a second time with SNX_TC_ETC2, its BCn decoders
    followed by etc2_encode.glsl: BCn blocks encoded again as ETC2 and EAC for a GPU that samples those and not BCn, a
-   pipeline of its own so the encoder's registers don't weigh on the other conversions. Built a third time with
+   pipeline of its own so the encoder's registers don't weigh on the other conversions. Built again with
    SNX_TC_CONVERT, TC_BLIT_CONVERT alone: an Adreno 610's stock compiler fails to link the plain build with it inside
    and links each half. */
 
@@ -42,5 +42,15 @@ layout(std430, binding = 0) readonly restrict buffer Src {
 layout(std430, binding = 1) restrict buffer Dst {
     uint dst[];
 };
+
+/* the ASTC build's passes: the blocks each leaves to a later one. Two lists, each with a head of four words: the
+   workgroups of the pass that takes it, as an indirect dispatch reads them (vk/texconv.c sets them 0, 1, 1), and how
+   many blocks it has; then the blocks' numbers, const_a words a list */
+#if SNX_ASTC_PASS
+layout(std430, binding = 2) restrict buffer Work {
+    uint work_head[8];
+    uint work_list[];
+};
+#endif
 
 #include "texconv.glsl"

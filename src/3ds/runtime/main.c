@@ -87,7 +87,8 @@ static void usage(FILE* out) {
         "                         N/60 of the console's pace (the 3DS shows 60 frames a second), 0 as fast as it\n"
         "                         goes, game the console's (the default), and F4 turns it off and on.\n"
         "                         --aot_threads=N compiles the game's code on N threads (1 to 1024; the default 0:\n"
-        "                         the computer's cores with a quarter left free), as the Switch's\n"
+        "                         the computer's cores with a quarter left free, or --aot_threads_most=N), as the\n"
+        "                         Switch's\n"
         "\n"
         "On the 3DS, --update takes an update's or a DLC's CIA (a bare NCCH for an update), given again for each.\n"
         "It is recorded beside the game in its folder and checked in its .ini's addons=, as a Switch game's are,\n"
@@ -808,7 +809,7 @@ int snx_ctr_main(int argc, char** argv) {
             const IniOpt* o = NULL;
             bool map = false;
             /* the recompile's threads, the Switch's setting: a value it does not take stops here, as there */
-            if (value && !strcmp(key, "aot_threads")) {
+            if (value && (!strcmp(key, "aot_threads") || !strcmp(key, "aot_threads_most"))) {
                 o = ini_find(g_recompile_ini, key);
                 if (ini_check(o, value, error, sizeof error)) {
                     fprintf(stderr, "scarletnx-3ds: %s\n", error);

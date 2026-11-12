@@ -41,6 +41,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 #include "snx_settings.h"
 
 OwnState g_own = {.lk = PMUTEX_INIT, .trap_lk = PMUTEX_INIT};
@@ -218,6 +219,13 @@ static void res_release(ResList* l) {
     free(l->res);
 }
 
+static void own_bytes_plot_nl(void) { /* under g_own.lk */
+    [[maybe_unused]] double bytes = 0;
+    if (!snx_tracy_attached()) return;
+    for (u32 i = 0; i < g_own.nown; i++) bytes += (double)(g_own.ent[i].hi - g_own.ent[i].lo);
+    SNX_PLOT("own bytes", bytes);
+}
+
 /* the bytes [lo, hi) owned by nobody any more: entries cut back or split, their resources to release in rel */
 static void cut_nl(u64 lo, u64 hi, ResList* rel) {
     u32 i = first_after_nl(lo);
@@ -233,7 +241,7 @@ static void cut_nl(u64 lo, u64 hi, ResList* rel) {
             cover_nl(o, 1);
             if (right.res) g_own.hooks.retain(right.res);
             insert_nl(i + 1, &right);
-            return;
+            break; /* the range is cut whole: the loop would find the left part again */
         }
         if (o->lo < lo) { /* its end goes */
             cover_nl(o, (u32)-1);
@@ -246,7 +254,7 @@ static void cut_nl(u64 lo, u64 hi, ResList* rel) {
             cover_nl(o, (u32)-1);
             o->lo = hi;
             cover_nl(o, 1);
-            return;
+            break; /* the entry starts at hi now, so the range is cut whole */
         } else { /* all of it */
             /* Entries are sorted and apart, so all fully covered entries form one run. Move the suffix only once:
                dropping or replacing a range over many owners must not shift that suffix once for every owner. */
@@ -260,6 +268,7 @@ static void cut_nl(u64 lo, u64 hi, ResList* rel) {
             __atomic_store_n(&g_own.nown, g_own.nown - (past - i), __ATOMIC_RELEASE);
         }
     }
+    own_bytes_plot_nl();
 }
 
 /* own_begin's taking of [lo, hi) in one move: the entries over it go (their resources to release in rel), and the n
@@ -329,6 +338,7 @@ static void own_replace(u64 lo, u64 hi, const Own* nw, u32 n, ResList* rel) {
         g_own.ent[from + n] = up;
         cover_nl(&up, 1);
     }
+    own_bytes_plot_nl();
 }
 
 /* the host pages [lo, hi) (page aligned): those no entry is on any more let go, and trapped no more */
@@ -559,6 +569,8 @@ static void land_pages(u64 lo, u64 hi) {
         if (o->hi > ehi) ehi = o->hi;
     }
     pm_unlock(&g_own.lk);
+    __atomic_add_fetch(&g_own.land_bytes, total, __ATOMIC_RELAXED);
+    SNX_ZONE_TV(z_land, "own land", total, "%u ranges", n);
     g_own.hooks.land(r, dst, n);
     __atomic_add_fetch(&g_own.lands, 1, __ATOMIC_RELAXED);
     if (!mirror)
@@ -566,6 +578,7 @@ static void land_pages(u64 lo, u64 hi) {
             if (plat_trap_fill(GP(r[i].addr), dst[i], r[i].size))
                 fatal("Could not land GPU-owned memory at %llx (%llu bytes)", (unsigned long long)r[i].addr,
                       (unsigned long long)r[i].size);
+    SNX_ZONE_END(z_land);
     /* the landed pages through the mirror, still trapped: no thread can write them before let_go below. An entry is
        a run of pool pages, so its pages lie in the mirror as they do in guest memory, the edges' CPU bytes too.
        Without a mirror, the pages that plat_trap_fill filled */
@@ -596,6 +609,7 @@ static void report_owned_fault(u64 a, int write, u32 tid, int fault_state) {
     Own owners[16];
     u64 page = a & ~(g_own.page - 1);
     u32 i, n = 0, total = 0;
+    __atomic_add_fetch(&g_own.faults, 1, __ATOMIC_RELAXED);
     /* Snapshot metadata only: no guest reads, renderer lock, or logging under the map lock. */
     pm_lock(&g_own.lk);
     for (i = first_after_nl(page); i < g_own.nown && g_own.ent[i].lo < page + g_own.page; i++) {
@@ -662,6 +676,7 @@ static void own_fault(u8* p, int write, u32 tid) {
     /* never under g_own.trap_lk: the landing takes the producer's lock. Its let_go wakes the faulting thread, which may
        publish over the page again before this returns: that owner lands when an access faults on it, not here (a VIC
        job's picture, written over the one just read, stays on the GPU for the display) */
+    __atomic_add_fetch(&g_own.faults, 1, __ATOMIC_RELAXED);
     land_pages(page, page + g_own.page);
 }
 
@@ -1034,4 +1049,6 @@ void own_drop(u64 addr, u64 size) {
     res_release(&rel);
 }
 u64 own_landings(void) { return __atomic_load_n(&g_own.lands, __ATOMIC_RELAXED); }
+u64 own_faults(void) { return __atomic_load_n(&g_own.faults, __ATOMIC_RELAXED); }
+u64 own_land_bytes(void) { return __atomic_load_n(&g_own.land_bytes, __ATOMIC_RELAXED); }
 int own_traps(void) { return g_own.traps; }

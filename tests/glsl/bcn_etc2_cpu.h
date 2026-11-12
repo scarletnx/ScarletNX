@@ -22,6 +22,17 @@ int etc2_tries_cpu(const uint32_t texels[16], int punch, uint32_t c);
 /* sixteen values (row by row) as an EAC block of kind 0 (8 bit alpha), 1 (11 bit unsigned) or 2 (signed), as
    stored */
 void eac_cpu(int kind, const int32_t values[16], uint8_t out[8]);
+/* the same blocks of kind BC1, BC2, BC3 or BC7 (0, 1, 2 and 9) encoded again as ASTC 4x4 (texconv.comp's ASTC build, run by
+   bcn_astc_cpu.cpp), 16 bytes each */
+void bcn_astc_cpu(int kind, const uint8_t* blocks, uint32_t bw, uint32_t bh, uint32_t slices, uint8_t* out);
+/* the same without the BCn block's hints (astc_encode.glsl's SNX_ASTC_HINTS 0): every block searched for */
+void bcn_astc_plain_cpu(int kind, const uint8_t* blocks, uint32_t bw, uint32_t bh, uint32_t slices, uint8_t* out);
+/* of n BC7 blocks in a row, how many the first of the ASTC build's passes leaves to the later ones (those that are no
+   ASTC layout as they stand, which are decoded), and of which BC7 mode each: left[0] to left[7] */
+uint32_t bcn_astc_left_cpu(const uint8_t* blocks, uint32_t n, uint32_t left[8]);
+/* n blocks in a row made ASTC by the three passes vk/texconv.c dispatches, each the shader's own build of it (the
+   second keeps no arrays). listed, when not NULL: the blocks the first pass left the second, and those of them the second left the third */
+void bcn_astc_passes_cpu(int kind, const uint8_t* blocks, uint32_t n, uint8_t* out, uint32_t listed[2]);
 #ifdef __cplusplus
 }
 #endif

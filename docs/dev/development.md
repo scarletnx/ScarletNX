@@ -208,7 +208,7 @@ measurements they made, in [GPU preparation benchmarks](../history/gpu-hotpath-b
 [Graphics descriptor measurements](../history/gpu-descriptor-bench.md).
 
 The profiler is not part of the ordinary runtime: `SNX_TRACY` defaults to OFF, so `scarletnx` carries the pinned
-Tracy 0.14.1 client only in a build that asks for it — `cmake --preset tracy -B build/tracy && cmake --build
+Tracy 0.15.0 client only in a build that asks for it — `cmake --preset tracy -B build/tracy && cmake --build
 build/tracy`, or `-DSNX_TRACY=ON` in a build of your own (Android's app leaves it out, and iOS cannot have it).
 The client starts only when profiling is requested: the Settings' Debug rows (`tracy profiler`, `tracy capture`),
 `--tracy-capture`, `--tracy`, or `F10`.
@@ -244,7 +244,7 @@ which walk the stack at every context switch, are off. Every runtime build keeps
 as the sampler walks them. The sampler needs the kernel's perf events (a normal user has them) while the context
 switches need the tracefs and so root.
 
-- The server (the GUI, or `tracy-capture`) must be the same Tracy version as the client, 0.14.1 here.
+- The server (the GUI, or `tracy-capture`) must be the same Tracy version as the client, 0.15.0 here.
 - The GUI's Statistics window has an *Instrumentation* and a *Sampling* button; the sampling one holds the hot
   symbols and their call stacks.
 - The GPU's and the CPU's clocks drift apart while the machine synchronizes its time; stopping the sync
@@ -259,7 +259,7 @@ and writes `captures/tracy_<game>_<date>.tracy` beside the game when the run end
 Tracy port` (`tracy_port`) on when the setting names one. With the setting off, the runtime does not start the
 client; use `--tracy` for a
 GUI-only run, or the launcher's `Settings > Debug > Tracy profiler`, which starts the run with the client up for
-the GUI to attach to. `--tracy-capture` also needs Tracy 0.14.1's `tracy-capture`; a runtime built with
+the GUI to attach to. `--tracy-capture` also needs Tracy 0.15.0's `tracy-capture`; a runtime built with
 `-DSNX_TRACY=OFF` (Android, iOS) refuses both flags.
 A capture that cannot start, or one whose handshake the loading game missed three times, leaves the run going
 without a capture and says why in the log: a setting does not cost the game its launch. A capture gets a port of its
@@ -271,7 +271,7 @@ a 60-second capture beside the game, and logs its path. Run it again after it fi
 connected GUI and `tracy-capture` are both viewers of the same one-connection client, so disconnect the GUI first
 if it is open.
 
-With `--tracy`, connect the Tracy 0.14.1 GUI to `127.0.0.1:8086`, or to `tracy_port`'s port when the setting names
+With `--tracy`, connect the Tracy 0.15.0 GUI to `127.0.0.1:8086`, or to `tracy_port`'s port when the setting names
 one; broadcast discovery is off. `tracy-capture` records the same stream to a file without the GUI. It can start
 before or after the game, and `-s` bounds the recording; it writes the trace when that ends or the game exits.
 A normal exit (Esc, the game's own exit, or an unattended limit) ends the zones still open on the exiting thread,
@@ -290,10 +290,14 @@ wait
 
 The timeline has the frontend tick,
 presents, GPU jobs and idle waits, Vulkan record/land/release/submit/wait/present work, shader translation and
-pipeline creation, texture uploads, the audio and host1x clocks, every returning SVC except the waits above (named
+pipeline creation, texture uploads, the BC7 encodes between frames, the landings of the guest memory the GPU owns,
+the input tick, the audio and host1x clocks, every returning SVC except the waits above (named
 as in `hos.svc`) and every IPC command (the service and command number in the zone's text). Frames appear with the
 `frame ms`, guest memory, GPU memory and budget, per-frame draws, shader translations, pipelines made, texture
-uploads, and the pipeline cache's hits and the time making and waiting for pipelines. Zones that work on a count
+uploads, and the pipeline cache's hits and the time making and waiting for pipelines. The texture cache's rates
+(`texture cache hits/s`, `texture cache misses/s`, `texture upload MB/s`, `texture frees/s`) and the memory the GPU
+owns (`own traps/s`, `own land MB/s`) go on the frontend tick, beside `guest memory` and the io rates, so a rate is
+read over the same second of wall time as the others. Zones that work on a count
 carry it as their value, such as the command buffers in a submit, the GPU channel of a job, the words of a
 translated shader, the records in a record pass, the bytes of an uploaded texture (with its dimensions in the
 text), the frames an audio tick runs behind its schedule, and the voices an audio frame plays. A translated
@@ -336,6 +340,10 @@ second tool. The cost of each is one atomic load per emission, and each goes out
 | Is the audio behind or clipping? | `audio queued ms`, `audio underruns`, `audio frame ms`, and the `audio voice` zones |
 | What does host1x's worker do? | the `host1x job` zones, with the engine, the class and the syncpoint value |
 | Is the host running out of memory? | `host heap` (the allocator's live bytes), `host rss`, `host free` |
+| How much of a frame does the GPU's hold on guest memory cost, and was a stall a landing? | the `own land` zones (the bytes and the ranges each lands), `own bytes`, `own traps/s`, `own land MB/s` |
+| Does the texture cache serve a level, or is the same texture encoded and uploaded again? | the `texture BC7 encode` zones, `texture cache hits/s`, `texture cache misses/s`, `texture upload MB/s`, `texture frees/s` |
+| Which wait held a thread back, a syncpoint, a present's fence or the display's pace? | `syncpt wait ms`, `present fence wait ms`, `present pace ms`, `syncpt waits/s`, `syncpt timeouts/s`, and a message names a syncpoint that waited more than a millisecond |
+| Does the input tick cost anything, and which voice or part of the audio frame is its cost? | the `hid update` zone with the states it wrote, `hid updates/s`, the `audio voice` zones with their microseconds, `audio mix ms` beside `audio frame ms` |
 | Is the input and output keeping up? | `io read MB/s`, `io write MB/s`, `guest memory` |
 | Is a frame being dropped or a queue growing? | `submits pending`, `compute pending`, `draws`, `dispatches` |
 

@@ -82,6 +82,8 @@ void syncpt_events(void);
 u32 syncpt_promise(u32 id, u32 n);
 /* 1 once id reaches thresh (across the 32-bit wrap), 0 when the time runs out. 0 looks once, negative waits for good */
 int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns);
+/* the syncpoint waits that blocked, and those whose time ran out first (syncpt_wait), both since the start */
+void syncpt_wait_stats(u64* waits, u64* timeouts);
 /* gsv.c: the syncpoint supervisor's armed waits, signaled when a syncpoint moves (called from syncpt_add) */
 void gsv_syncpt_changed(void);
 /* the game signaled event: whether it was the syncpoint cache's request event, answered by now */
@@ -252,6 +254,10 @@ typedef struct {
     PMutex nvev_lk;
     /* nv_first_use's (device, ioctl) pairs, under seen_lock */
     PMutex seen_lock;
+    /* the waits that blocked (syncpt_wait), and those whose time ran out first, both atomic: the profiler's rates */
+    u64 syncpt_waits;
+    char syncpt_pad[64];
+    u64 syncpt_timeouts;
 } HostNvdrv;
 /* nvdrv's thread state, t_hle.nvdrv (hle.h's) */
 typedef struct {

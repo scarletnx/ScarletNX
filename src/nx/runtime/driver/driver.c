@@ -65,7 +65,8 @@ static void usage(void) {
     snx_cli_help(stdout, nx_cli);
     puts("Switch options:\n"
          "  --tracy                Start the Tracy client for a GUI connection (SNX_TRACY builds)\n"
-         "  --tracy-capture        Record the run with tracy-capture, from Tracy 0.14.1 on PATH (SNX_TRACY builds)");
+         "  --tracy-capture        Record the run with tracy-capture, from Tracy " SNX_TRACY_VERSION
+         " on PATH (SNX_TRACY builds)");
     puts("  --touch=0|1|2          The game's touch screen: off, fingers, or fingers and the mouse\n"
          "  --controls=0|1|2       The on-screen controls: hidden, shown, or Auto, shown on a touch screen while no\n"
          "                         gamepad is connected\n"
