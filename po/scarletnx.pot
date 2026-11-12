@@ -2280,6 +2280,11 @@ msgid "A dump, prepared when it runs"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid ". No box art: %s"
+msgstr ""
+
+#: src/gui/main.c
 msgid ", in the games/ an older version made: new games go to recompiled/"
 msgstr ""
 
@@ -3331,6 +3336,82 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Not downloaded: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "cannot write %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "cannot read %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, CRC-32 %08X, is no game of libretro-database's No-Intro list"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "the name %s makes a link past %zu bytes"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "libretro-thumbnails has no box of %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "GET %s: %zu bytes that are no PNG"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "no room for the path of %s's icon.png"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: no box art: no thread: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: no box art: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: box art of %s, from libretro-thumbnails"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "; the No-Intro list is not kept: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: no box art: no game of %s names it as its source"
+msgstr ""
+
+#: src/gui/main.c
+msgid "this build of the launcher has no HTTPS client"
+msgstr ""
+
+#: src/gui/main.c
+msgid "no cache folder to keep the No-Intro list in"
+msgstr ""
+
+#: src/gui/main.c
+msgid "too many games wait for theirs: make it again once they are done"
+msgstr ""
+
+#: src/gui/main.c
+msgid "no memory to ask for it"
 msgstr ""
 
 #: src/gui/main.c
@@ -5968,4 +6049,20 @@ msgstr ""
 
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "GBA covers"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "Covers"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "The picture a GBA game made from a ROM shows in Games. None = Wimsy, as a game with no icon. Box art = its box from libretro-thumbnails, downloaded as the game is made: the ROM's CRC-32 names the game in libretro-database's No-Intro list, and the box under that name goes in the game's folder as icon.png. A ROM the list does not have, or a game with no box there, keeps Wimsy and its row says which name was looked for"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "GBA"
 msgstr ""

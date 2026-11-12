@@ -23,6 +23,7 @@
 #include "common/utilities/run_mark.h"
 #include "gui/aot.h"
 #include "gui/browser.h"
+#include "gui/covers.h"
 #include "gui/editor.h"
 #include "common/utilities/font.h"
 #include "common/network/https.h"
@@ -278,6 +279,25 @@ typedef struct {
 } GuiFetchForm;
 /* the launcher's HTTPS GET (common/network/https.h), a test's own in its place */
 typedef int (*GuiHttpsGet)(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size);
+/* Settings > GBA > Covers' box art for a GBA game made from a ROM (cover_run): what the thread is given, and what it
+   found, which it hands back as its answer */
+typedef struct {
+    GuiHttpsGet get;
+    Uint32 event;
+    bool list_fetched; /* given: the list was fetched in this session already; back: this one fetched it */
+    bool failed;
+    char rom[SNX_PATH_SIZE], folder[SNX_PATH_SIZE]; /* the ROM, and its game's folder, where icon.png goes */
+    char list[SNX_PATH_SIZE];                       /* the list's copy in the cache */
+    char name[400];                                 /* the game's name in the list, "" while none */
+    char why[1000];                                 /* why no box came */
+    char kept[400];                                 /* why the list fetched could not be kept, "" when it was */
+} GuiCoverJob;
+/* a game whose box did not come, kept with why for the session, in memory alone: its row says why */
+typedef struct {
+    char* folder;
+    char why[1000];
+} GuiCoverFailure;
+#define GUI_COVERS_WAIT GUI_QUEUE_MAX /* the games waiting for theirs: each of the queue's at most */
 /* the head's measures: the row of tabs (its height and the tabs' width), the title's height and width (0: none), the
    user's box (0: none), a cell of the text */
 typedef struct {
@@ -665,6 +685,14 @@ typedef struct App {
     char asset_labels[GUI_FETCH_ASSETS][240];
     const char* asset_picks[GUI_FETCH_ASSETS + 1];
     char download_name[160], download_said[400];
+    /* Settings > GBA > Covers: the box being fetched (covering), the games waiting for theirs, those whose box did not
+       come, and whether the No-Intro list was fetched in this session */
+    Uint32 cover_event;
+    bool covering, cover_list_fetched;
+    GuiCoverJob* cover_wait[GUI_COVERS_WAIT];
+    int cover_waiting;
+    GuiCoverFailure* cover_failed;
+    int cover_failed_count;
     char vk_gpu[256]; /* the system's GPU, as Vulkan names it (vk_system_ask): Download Driver's recommendation */
     char* run_driver; /* the run's --gpu_driver= and --freedreno_env= (gui_run_option), until the next run */
     char* run_freedreno;
@@ -4322,18 +4350,35 @@ static SDL_Texture* icon_none(App* app) {
     free(pixels);
     return app->icon_none;
 }
-/* a PNG icon as its rows show it: GUI_ICON_SIDE pixels square, the alpha premultiplied; NULL when it does not read */
+/* argb, an ARGB8888 surface, as an icon's rows show it, GUI_ICON_SIDE pixels square: scaled, and one that is not square
+   (a GBA game's box) keeping its shape, centred, the rest clear. Takes argb; NULL when SDL could not */
+static SDL_Surface* icon_square(SDL_Surface* argb) {
+    SDL_Surface *scaled, *square;
+    int w, h;
+    if (!argb || (argb->w == GUI_ICON_SIDE && argb->h == GUI_ICON_SIDE)) return argb;
+    w = argb->w >= argb->h ? GUI_ICON_SIDE : SDL_max(1, argb->w * GUI_ICON_SIDE / argb->h);
+    h = argb->h >= argb->w ? GUI_ICON_SIDE : SDL_max(1, argb->h * GUI_ICON_SIDE / argb->w);
+    scaled = SDL_ScaleSurface(argb, w, h, SDL_SCALEMODE_LINEAR);
+    SDL_DestroySurface(argb);
+    if (!scaled || (w == GUI_ICON_SIDE && h == GUI_ICON_SIDE)) return scaled;
+    square = SDL_CreateSurface(GUI_ICON_SIDE, GUI_ICON_SIDE, SDL_PIXELFORMAT_ARGB8888);
+    { /* its pixels copied as they are onto clear ones */
+        SDL_Rect at = {(GUI_ICON_SIDE - w) / 2, (GUI_ICON_SIDE - h) / 2, w, h};
+        if (square && (!SDL_FillSurfaceRect(square, NULL, 0) || !SDL_SetSurfaceBlendMode(scaled, SDL_BLENDMODE_NONE) ||
+                       !SDL_BlitSurface(scaled, NULL, square, &at))) {
+            SDL_DestroySurface(square);
+            square = NULL;
+        }
+    }
+    SDL_DestroySurface(scaled);
+    return square;
+}
+/* a PNG icon as its rows show it (icon_square), the alpha premultiplied; NULL when it does not read */
 static SDL_Texture* png_icon(App* app, const char* file) {
     SDL_Surface* png = SDL_LoadPNG(file);
-    SDL_Surface* argb = png ? SDL_ConvertSurface(png, SDL_PIXELFORMAT_ARGB8888) : NULL;
-    SDL_Surface* scaled = NULL;
+    SDL_Surface* argb = icon_square(png ? SDL_ConvertSurface(png, SDL_PIXELFORMAT_ARGB8888) : NULL);
     SDL_Texture* texture = NULL;
     SDL_DestroySurface(png);
-    if (argb && (argb->w != GUI_ICON_SIDE || argb->h != GUI_ICON_SIDE)) {
-        scaled = SDL_ScaleSurface(argb, GUI_ICON_SIDE, GUI_ICON_SIDE, SDL_SCALEMODE_LINEAR);
-        SDL_DestroySurface(argb);
-        argb = scaled;
-    }
     if (argb && SDL_PremultiplySurfaceAlpha(argb, false)) {
         texture = SDL_CreateTextureFromSurface(app->renderer, argb);
         if (texture && !SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND_PREMULTIPLIED)) {
@@ -7038,6 +7083,7 @@ void ui_games_grid_tiles_row_action_cb(App* app, size_t row, uint32_t hit) {
 /* the focused row of Games: what it is, about it, and a line more for a recent game's or a game's kind */
 static bool game_was_old(const App* app, const char* path);
 static int row_driver(const GuiGames* games, size_t i);
+static const char* cover_why(const App* app, const char* path);
 /* a 3DS game, a Vita VPK, a GBA ROM or an Android app: a package its driver makes a game of, or runs as it is */
 static bool package(const char* name) {
     return gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name) || gui_is_apk(name);
@@ -7113,6 +7159,10 @@ static void game_kind(const App* app, const GuiGames* games, size_t i, char* kin
     n = strlen(kind);
     if (!games->addons[i] && (gui_is_dump(name) || gui_is_cia(name)) && games->paths[i])
         n += icon_why_said(app, games->paths[i], kind + n, size - n);
+    else if (games->paths[i] && cover_why(app, games->paths[i]) && n < size) { /* Covers' box, not come */
+        snprintf(kind + n, size - n, snx_tr(". No box art: %s"), cover_why(app, games->paths[i]));
+        n += strlen(kind + n);
+    }
     if (game_was_old(app, games->paths[i]))
         snprintf(kind + n, size - n, "%s",
                  snx_tr(", in the games/ an older version made: new games go to recompiled/"));
@@ -8389,7 +8439,7 @@ static unsigned group_icon(const char* name) {
                  {"Display", GUI_ICON_MONITOR},    {"Graphics", GUI_ICON_IMAGE},  {"3DS", GUI_ICON_MONITOR},
                  {"Performance", GUI_ICON_GAUGE},  {"Overlay", GUI_ICON_POINTER}, {"Controllers", GUI_ICON_GAMEPAD_2},
                  {"Shortcuts", GUI_ICON_KEYBOARD}, {"Network", GUI_ICON_WIFI},    {"User", GUI_ICON_USER},
-                 {"Debug", GUI_ICON_BUG}};
+                 {"Debug", GUI_ICON_BUG},          {"GBA", GUI_ICON_GAMEPAD}}; /* the menu's Load GBA ROM's */
     for (size_t i = 0; i < SDL_arraysize(icons); ++i)
         if (!strcmp(icons[i].name, name)) return icons[i].icon;
     return GUI_ICON_NONE;
@@ -10305,6 +10355,236 @@ static void fetch_answer(App* app, int code, void* data) {
         free(a->r.body);
     }
     free(data);
+}
+
+/* ---- Settings > GBA > Covers: a GBA game made from a ROM, with Box art picked, gets its box from libretro-thumbnails
+   (gui/covers.h) as it is made: the ROM's CRC-32 names it in libretro-database's No-Intro list, whose copy the cache
+   keeps, and the box under that name goes in its folder as icon.png, which its rows show (gui_game_icon). One game at
+   a time on a thread, the others waiting; a game whose box did not come is kept with why for the session ---- */
+#define GUI_COVERS_LIST_MAX (16ull << 20) /* the list's most bytes: about 1 MB now */
+#define GUI_COVERS_BOX_MAX  (16ull << 20) /* a box's */
+/* body (n bytes) put at path, through a copy beside it: 0, else -1 with why */
+static int cover_keep(const char* path, const char* body, size_t n, char* why, size_t size) {
+    char *folder = snx_dirname(path), *staged = snx_format("%s.new", path), os[256];
+    int failed =
+        !folder || !staged || snx_mkdirs(folder) || snx_write_file(staged, body, n) || plat_replace_file(staged, path);
+    if (failed) {
+        snprintf(why, size, snx_tr("cannot write %s: %s"), path, snx_os_error(os, sizeof os));
+        if (staged) remove(staged);
+    }
+    free(staged);
+    free(folder);
+    return failed ? -1 : 0;
+}
+/* the game's name in the list, by crc, into job->name: the cache's copy, fetched first when there is none or when it
+   lacks crc and this session fetched none yet. 0 with the name, 1 when the list has none, -1 when it could not be had,
+   job->why saying why */
+static int cover_name(GuiCoverJob* job, uint32_t crc) {
+    size_t n = 0;
+    char* text = (char*)snx_read_file(job->list, &n);
+    SnxHttpsOptions o = {NULL, 60, GUI_COVERS_LIST_MAX, 0, NULL, NULL};
+    SnxHttpsResponse r;
+    int found = text && gui_cover_name(text, n, crc, job->name, sizeof job->name);
+    if (!found && !job->list_fetched) {
+        if (job->get(GUI_COVERS_LIST_URL, &o, &r, job->why, sizeof job->why)) {
+            free(text);
+            return -1;
+        }
+        if (r.status != 200) {
+            snprintf(job->why, sizeof job->why, snx_tr("GET %s: HTTP %d"), GUI_COVERS_LIST_URL, r.status);
+            free(r.body);
+            free(text);
+            return -1;
+        }
+        job->list_fetched = true;
+        cover_keep(job->list, r.body, r.size, job->kept, sizeof job->kept);
+        free(text);
+        text = r.body;
+        n = r.size;
+        found = gui_cover_name(text, n, crc, job->name, sizeof job->name);
+    }
+    free(text);
+    return found ? 0 : 1;
+}
+static int SDLCALL cover_run(void* data) {
+    GuiCoverJob* job = (GuiCoverJob*)data;
+    SnxHttpsOptions o = {"image/png", 60, GUI_COVERS_BOX_MAX, 0, NULL, NULL};
+    SnxHttpsResponse r = {0};
+    size_t size = 0;
+    unsigned char* rom = (unsigned char*)snx_read_file(job->rom, &size);
+    char url[1600], os[256], *icon = snx_path_join(job->folder, "icon.png");
+    uint32_t crc;
+    int named;
+    job->failed = true;
+    if (!rom) {
+        snprintf(job->why, sizeof job->why, snx_tr("cannot read %s: %s"), job->rom, snx_os_error(os, sizeof os));
+        goto said;
+    }
+    crc = gui_cover_crc(rom, size);
+    free(rom);
+    named = cover_name(job, crc);
+    if (named > 0)
+        snprintf(job->why, sizeof job->why, snx_tr("%s, CRC-32 %08X, is no game of libretro-database's No-Intro list"),
+                 snx_path_leaf(job->rom), (unsigned)crc);
+    if (named) goto said;
+    if (!gui_cover_url(job->name, url, sizeof url)) {
+        snprintf(job->why, sizeof job->why, snx_tr("the name %s makes a link past %zu bytes"), job->name, sizeof url);
+        goto said;
+    }
+    if (job->get(url, &o, &r, job->why, sizeof job->why)) goto said;
+    if (r.status == 404)
+        snprintf(job->why, sizeof job->why, snx_tr("libretro-thumbnails has no box of %s"), job->name);
+    else if (r.status != 200)
+        snprintf(job->why, sizeof job->why, snx_tr("GET %s: HTTP %d"), url, r.status);
+    else if (!gui_cover_png(r.body, r.size))
+        snprintf(job->why, sizeof job->why, snx_tr("GET %s: %zu bytes that are no PNG"), url, r.size);
+    else if (!icon)
+        snprintf(job->why, sizeof job->why, snx_tr("no room for the path of %s's icon.png"), job->folder);
+    else
+        job->failed = cover_keep(icon, r.body, r.size, job->why, sizeof job->why) != 0;
+said:
+    free(r.body);
+    free(icon);
+    fetch_push(job->event, 0, job);
+    return 0;
+}
+/* the next game waiting for its box, on a thread, while none is being fetched */
+static void cover_next(App* app) {
+    GuiCoverJob* job;
+    SDL_Thread* t;
+    if (app->covering || !app->cover_waiting) return;
+    job = app->cover_wait[0];
+    memmove(app->cover_wait, app->cover_wait + 1, (size_t)--app->cover_waiting * sizeof *app->cover_wait);
+    if (!app->cover_event) app->cover_event = SDL_RegisterEvents(1);
+    job->event = app->cover_event;
+    job->list_fetched = app->cover_list_fetched;
+    t = app->cover_event ? SDL_CreateThread(cover_run, "box art", job) : NULL;
+    if (!t) {
+        snprintf(app->message, sizeof app->message, snx_tr("%s: no box art: no thread: %s"), snx_path_leaf(job->folder),
+                 SDL_GetError());
+        free(job);
+        cover_next(app);
+        return;
+    }
+    SDL_DetachThread(t);
+    app->covering = true;
+}
+/* the failure kept for the game in folder: its index, cover_failed_count for none */
+static int cover_failure(const App* app, const char* folder) {
+    int i;
+    for (i = 0; i < app->cover_failed_count && !snx_same_file(app->cover_failed[i].folder, folder); ++i) {}
+    return i;
+}
+/* folder's game's box not come, for why: kept for its row, said and logged; why NULL: come, what was kept forgotten */
+static void cover_said(App* app, const char* folder, const char* why) {
+    int i = cover_failure(app, folder);
+    if (i < app->cover_failed_count && !why) {
+        free(app->cover_failed[i].folder);
+        app->cover_failed[i] = app->cover_failed[--app->cover_failed_count];
+    } else if (why) {
+        if (i == app->cover_failed_count) {
+            app->cover_failed =
+                (GuiCoverFailure*)snx_realloc(app->cover_failed, (size_t)(i + 1) * sizeof *app->cover_failed);
+            app->cover_failed[app->cover_failed_count++].folder = snx_strdup(folder);
+        }
+        snprintf(app->cover_failed[i].why, sizeof app->cover_failed[i].why, "%s", why);
+        snprintf(app->message, sizeof app->message, snx_tr("%s: no box art: %s"), snx_path_leaf(folder), why);
+        gui_log("Covers: %s: %s", folder, why);
+    }
+}
+/* why the game whose program is at path shows no box, as its row says it; NULL when none was asked or it came */
+static const char* cover_why(const App* app, const char* path) {
+    char* folder = path && app->cover_failed_count ? snx_dirname(path) : NULL;
+    int i = folder ? cover_failure(app, folder) : app->cover_failed_count;
+    free(folder);
+    return i < app->cover_failed_count ? app->cover_failed[i].why : NULL;
+}
+/* the thread's answer: its game's icon drawn again from its new file, or why none came kept; then the next */
+static void cover_answer(App* app, GuiCoverJob* job) {
+    app->covering = false;
+    app->cover_list_fetched = app->cover_list_fetched || job->list_fetched;
+    if (job->failed)
+        cover_said(app, job->folder, job->why);
+    else {
+        cover_said(app, job->folder, NULL);
+        icons_free(app);
+        snprintf(app->message, sizeof app->message, snx_tr("%s: box art of %s, from libretro-thumbnails"),
+                 snx_path_leaf(job->folder), job->name);
+    }
+    if (job->kept[0]) { /* the next start fetches it again */
+        size_t n = strlen(app->message);
+        snprintf(app->message + n, sizeof app->message - n, snx_tr("; the No-Intro list is not kept: %s"), job->kept);
+        gui_log("Covers: the No-Intro list is not kept: %s", job->kept);
+    }
+    free(job);
+    cover_next(app);
+}
+/* job i, a GBA game's make that ended well (of a ROM, or of a game made already): with Covers on Box art, the box of
+   the game, from the ROM its folder's .ini names, unless its folder has an icon.png already */
+static void cover_made(App* app, int i) {
+    const char* value = gui_settings_value(&app->settings, "gba_covers");
+    const char* file = gui_queue_file(&app->queue, i);
+    char *folder = NULL, *rom = NULL, *icon = NULL, *list, *cache;
+    GuiCoverJob* job;
+    if (!value || strcmp(value, "boxart")) return;
+    if (gui_game_program(file)) { /* a made game's own make (R on its row): its program, in its folder */
+        char* name = snx_strdup(snx_path_leaf(file));
+        int recorded = 0;
+#ifdef _WIN32
+        if (name && strlen(name) > 4 && !SDL_strcasecmp(name + strlen(name) - 4, ".exe")) name[strlen(name) - 4] = 0;
+#endif
+        folder = snx_dirname(file);
+        rom = folder && name ? snx_game_source(folder, name, &recorded) : NULL;
+        if (!recorded) { /* its .ini names no ROM */
+            free(rom);
+            rom = NULL;
+        }
+        free(name);
+    } else { /* a ROM: the game made of it */
+        MadeGames made;
+        const char* program;
+        made_read(app, &made);
+        program = made_program(&made, file);
+        folder = program ? snx_dirname(program) : NULL;
+        rom = snx_strdup(file);
+        made_free(&made);
+    }
+    cache = folder && rom ? menu_folder(app, SNX_USER_CACHE, false) : NULL;
+    list = cache ? snx_path_join(cache, "covers/gba-no-intro.dat") : NULL;
+    if (!folder || !rom) {
+        snprintf(app->message, sizeof app->message, snx_tr("%s: no box art: no game of %s names it as its source"),
+                 gui_queue_name(&app->queue, i), app->games_dir ? app->games_dir : "recompiled/");
+        gui_log("Covers: %s: no game names it as its source", file);
+    } else if ((icon = snx_path_join(folder, "icon.png")) != NULL && snx_is_file(icon))
+        cover_said(app, folder, NULL); /* its box came already */
+    else if (!app->https_get)
+        cover_said(app, folder, snx_tr("this build of the launcher has no HTTPS client"));
+    else if (!list)
+        cover_said(app, folder, snx_tr("no cache folder to keep the No-Intro list in"));
+    else if (app->cover_waiting == GUI_COVERS_WAIT)
+        cover_said(app, folder, snx_tr("too many games wait for theirs: make it again once they are done"));
+    else if ((job = (GuiCoverJob*)calloc(1, sizeof *job)) != NULL) {
+        job->get = app->https_get;
+        snprintf(job->rom, sizeof job->rom, "%s", rom);
+        snprintf(job->folder, sizeof job->folder, "%s", folder);
+        snprintf(job->list, sizeof job->list, "%s", list);
+        app->cover_wait[app->cover_waiting++] = job;
+        cover_next(app);
+    } else
+        cover_said(app, folder, snx_tr("no memory to ask for it"));
+    free(cache);
+    free(list);
+    free(icon);
+    free(rom);
+    free(folder);
+}
+/* what was kept for Covers, freed as the launcher ends */
+static void covers_free(App* app) {
+    for (int i = 0; i < app->cover_waiting; ++i) free(app->cover_wait[i]);
+    for (int i = 0; i < app->cover_failed_count; ++i) free(app->cover_failed[i].folder);
+    free(app->cover_failed);
+    app->cover_failed = NULL;
+    app->cover_waiting = app->cover_failed_count = 0;
 }
 
 /* Freedreno Settings' rows: Eden's presets, a row a variable set (a press removes it, as Eden's delete does),
@@ -15902,6 +16182,7 @@ static void job_ended(App* app, int i, int status) {
     app->ended_serial = job->serial;
     if (failed) app->log_due = true; /* Share Log blinks, its log holding this one's output */
     snprintf(app->message, sizeof app->message, "%s: %s", name, job->said);
+    if (!failed && job->console == GUI_GBA && job->kind != GUI_JOB_AOT) cover_made(app, i);
 #ifdef SDL_PLATFORM_ANDROID
     app->told_result = failed                         ? SNX_TR_NOOP("Failed")
                        : job->kind == GUI_JOB_AOT     ? SNX_TR_NOOP("AOT pack built")
@@ -18546,6 +18827,11 @@ static void event_take(App* app, const SDL_Event* e) {
         SDL_free(e->user.data2);
         return;
     }
+    /* Covers' thread: a GBA game's box come, or why not */
+    if (app->cover_event && e->type == app->cover_event) {
+        cover_answer(app, (GuiCoverJob*)e->user.data1);
+        return;
+    }
     /* Download Driver's threads: a repository's releases, a download's progress and its end */
     if (app->fetch_event && e->type == app->fetch_event) {
         fetch_answer(app, e->user.code, e->user.data1);
@@ -19017,6 +19303,7 @@ static void forget(App* app) {
     snx_splash_close(app->splash_drawing);
     SDL_DestroyTexture(app->user_picture);
     icons_free(app);
+    covers_free(app);
     users_close(app);
     free(app->user_jpeg);
     free(app->users_dir);

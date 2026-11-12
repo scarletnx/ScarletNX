@@ -776,7 +776,8 @@ static void players_view(App* app) {
     gui_settings_mark(&app->settings);
     app->player = 0;
     open_settings(app);
-    key(app, SDLK_DOWN); /* past Launch, the launcher's own */
+    key(app, SDLK_DOWN); /* past Launch and GBA, the launcher's own */
+    key(app, SDLK_DOWN);
     key(app, SDLK_DOWN);
     key(app, SDLK_RETURN);
     /* All: the Player row, then every player's */
@@ -1083,7 +1084,8 @@ static void button_map(App* app) {
     for (int i = 0; i < app->settings.count; ++i)
         if (app->settings.values[i].kind == GUI_SETTING_PAGE) page = i;
     open_settings(app);
-    key(app, SDLK_DOWN); /* past Launch, the launcher's own */
+    key(app, SDLK_DOWN); /* past Launch and GBA, the launcher's own */
+    key(app, SDLK_DOWN);
     key(app, SDLK_DOWN);
     key(app, SDLK_RETURN);
     assert(app->form == GUI_FORM_GROUP && !strcmp(app->group_keys[app->group].key, "Controllers"));
@@ -3049,6 +3051,197 @@ static void pump_until(App* app, const bool* busy) {
         SDL_Delay(1);
     }
     assert(!*busy);
+}
+/* the test's network for Settings > GBA > Covers: libretro-database's No-Intro list (lists counts its fetches) and
+   libretro-thumbnails' boxes, the one of a game named "Test Cartridge: Covers (World)" alone there */
+static struct {
+    char list[600];
+    char* png;
+    size_t png_size;
+    int lists;
+} g_covers_net;
+static int covers_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size) {
+    const char* body = "404: Not Found";
+    (void)o;
+    memset(out, 0, sizeof *out);
+    snprintf(out->url, sizeof out->url, "%s", url);
+    out->status = 404;
+    if (!strcmp(url, GUI_COVERS_LIST_URL)) {
+        ++g_covers_net.lists;
+        out->status = 200;
+        body = g_covers_net.list;
+    } else if (!strcmp(url, GUI_COVERS_BOX_URL "Test%20Cartridge_%20Covers%20%28World%29.png")) {
+        out->status = 200;
+        out->body = (char*)malloc(g_covers_net.png_size + 1);
+        memcpy(out->body, g_covers_net.png, g_covers_net.png_size);
+        out->size = g_covers_net.png_size;
+        return 0;
+    } else if (strstr(url, "Offline")) {
+        snprintf(why, size, "GET %s: could not resolve the host, 0 bytes in", url);
+        return -1;
+    }
+    out->body = snx_strdup(body);
+    out->size = strlen(body);
+    return 0;
+}
+/* R on the game made of the ROM ("made", whose .ini names it), its make through scarletnx-agb run to its end with
+   status 0, and the box asked of the network, if any, answered */
+static void gba_remake(App* app, const char* got) {
+    char* argv;
+    go_tab(app, GUI_TAB_GAMES);
+    focus_game(app, "made");
+    driver_will(got, 0, "Built 1 blocks");
+    key(app, SDLK_R);
+    assert(gui_queue_running(&app->queue) >= 0 && app->menu.selected == GUI_GBA);
+    argv = ran(app, 0);
+    assert(strstr(argv, "scarletnx-agb") && strstr(argv, "scarletnx-agb") < strchr(argv, '\n'));
+    free(argv);
+    pump_until(app, &app->covering);
+}
+/* the row of the made game named "made", as Games says it */
+static void made_kind(App* app, char* kind, size_t size) {
+    size_t i;
+    app->games_stamp = stamp_now(app);
+    go_tab(app, GUI_TAB_GAMES);
+    for (i = 0; i < app->games.count && (!app->games.names[i] || strcmp(app->games.names[i], "made")); ++i) {}
+    assert(i < app->games.count);
+    game_kind(app, &app->games, i, kind, size);
+}
+/* Settings > GBA > Covers on Box art: a GBA make that ends well fetches libretro-database's No-Intro list into the
+   cache and the box of the name it gives the ROM's CRC-32 into the game's folder, icon.png, which its row shows; a make
+   of a game that has its box fetches nothing. A box libretro-thumbnails lacks is said on the row with the name looked
+   for; a ROM the list lacks, with its CRC-32, the list fetched again once in a session; a network failure as it came,
+   and a build with no HTTPS client so. None, the default, fetches nothing */
+static void gba_covers(App* app, const char* rom, const char* folder, const char* program, const char* got) {
+    char *ini = snx_path_join(folder, "made.ini"), *icon = snx_path_join(folder, "icon.png"), *cache, *list_copy;
+    char *png_file = snx_path_join(folder, "box test.png"), *bytes, kind[600], crc_said[160];
+    char *cache_place = snx_format("%s-cache", app->games_dir), *place_was = app->place[GUI_PLACE_CACHE];
+    SDL_Surface* box = SDL_CreateSurface(4, 7, SDL_PIXELFORMAT_ARGB8888); /* taller than wide, as a few boxes are */
+    bool loading;
+    size_t size;
+    assert(box && SDL_FillSurfaceRect(box, NULL, 0xff336699u) && SDL_SavePNG(box, png_file));
+    SDL_DestroySurface(box);
+    g_covers_net.png = (char*)snx_read_file(png_file, &g_covers_net.png_size);
+    assert(g_covers_net.png && !remove(png_file));
+    snprintf(
+        g_covers_net.list, sizeof g_covers_net.list,
+        "clrmamepro (\n\tname \"Test console - Test list\"\n)\n\ngame (\n\tname \"Test Cartridge: Covers (World)\"\n"
+        "\trom ( name \"agb input.gba\" size 7 crc %08X )\n)\ngame (\n\tname \"No Box Here (World)\"\n"
+        "\trom ( name \"other.gba\" size 9 crc %08X )\n)\ngame (\n\tname \"Offline Test (World)\"\n"
+        "\trom ( name \"offline.gba\" size 7 crc %08X )\n)\n",
+        (unsigned)gui_cover_crc("fixture", 7), (unsigned)gui_cover_crc("fixture 2", 9),
+        (unsigned)gui_cover_crc("offline", 7));
+    g_covers_net.lists = 0;
+    app->place[GUI_PLACE_CACHE] = cache_place; /* a cache folder it can make: the one before is under a file */
+    assert(!snx_ini_record(ini, "source", rom)); /* the game made of the ROM, as the driver records it */
+    app->https_get = covers_get;
+    app->cover_list_fetched = false;
+    /* None, the default: nothing fetched, the game shows Wimsy */
+    assert(!gui_settings_value(&app->settings, "gba_covers"));
+    gba_remake(app, got);
+    assert(!g_covers_net.lists && !snx_is_file(icon) && !cover_why(app, program));
+    /* Box art: the list into the cache, the box into the game's folder, its row drawing it */
+    assert(gui_settings_set(&app->settings, "gba_covers", "boxart"));
+    gba_remake(app, got);
+    bytes = (char*)snx_read_file(icon, &size);
+    assert(bytes && size == g_covers_net.png_size && !memcmp(bytes, g_covers_net.png, size));
+    free(bytes);
+    assert(g_covers_net.lists == 1 && app->cover_list_fetched && !cover_why(app, program));
+    cache = menu_folder(app, SNX_USER_CACHE, false);
+    list_copy = snx_path_join(cache, "covers/gba-no-intro.dat");
+    bytes = (char*)snx_read_file(list_copy, &size);
+    assert(bytes && size == strlen(g_covers_net.list) && !memcmp(bytes, g_covers_net.list, size));
+    free(bytes);
+    {
+        char* file = icon_file(app, program, &loading);
+        assert(file && !strcmp(file, icon) && !loading);
+        free(file);
+        icons_free(app);
+        assert(game_icon(app, program));
+    }
+    { /* a box taller than wide keeps its shape in its square: clear at both sides, its colour in the middle */
+        SDL_Surface* tall = SDL_CreateSurface(4, 7, SDL_PIXELFORMAT_ARGB8888);
+        SDL_Surface* square;
+        Uint8 r, g, b, alpha;
+        assert(tall && SDL_FillSurfaceRect(tall, NULL, 0xff336699u));
+        square = icon_square(tall);
+        assert(square && square->w == GUI_ICON_SIDE && square->h == GUI_ICON_SIDE);
+        assert(SDL_ReadSurfacePixel(square, 2, GUI_ICON_SIDE / 2, &r, &g, &b, &alpha) && !alpha);
+        assert(SDL_ReadSurfacePixel(square, GUI_ICON_SIDE - 3, GUI_ICON_SIDE / 2, &r, &g, &b, &alpha) && !alpha);
+        assert(SDL_ReadSurfacePixel(square, GUI_ICON_SIDE / 2, GUI_ICON_SIDE / 2, &r, &g, &b, &alpha) &&
+               alpha == 255 && r == 0x33 && g == 0x66 && b == 0x99);
+        assert(SDL_ReadSurfacePixel(square, GUI_ICON_SIDE / 2, 0, &r, &g, &b, &alpha) && alpha == 255);
+        SDL_DestroySurface(square);
+    }
+    made_kind(app, kind, sizeof kind);
+    assert(!strcmp(kind, "GBA game, ready to run"));
+    /* a make of a game whose box came: nothing fetched again */
+    gba_remake(app, got);
+    assert(g_covers_net.lists == 1 && snx_is_file(icon));
+    /* a name libretro-thumbnails has no box of: said on its row, with the name; the list's copy read, not fetched */
+    assert(!remove(icon) && !snx_write_file(rom, "fixture 2", 9));
+    gba_remake(app, got);
+    made_kind(app, kind, sizeof kind);
+    assert(!strcmp(kind, "GBA game, ready to run. No box art: libretro-thumbnails has no box of No Box Here (World)"));
+    assert(g_covers_net.lists == 1 && !snx_is_file(icon));
+    /* a ROM the list lacks: its CRC-32 said; the list fetched again only while this session has not fetched it */
+    assert(!snx_write_file(rom, "fixture 3", 9));
+    snprintf(crc_said, sizeof crc_said,
+             "GBA game, ready to run. No box art: agb input.gba, CRC-32 %08X, is no game of libretro-database's "
+             "No-Intro list",
+             (unsigned)gui_cover_crc("fixture 3", 9));
+    gba_remake(app, got);
+    made_kind(app, kind, sizeof kind);
+    assert(!strcmp(kind, crc_said) && g_covers_net.lists == 1);
+    app->cover_list_fetched = false; /* a new session's */
+    gba_remake(app, got);
+    made_kind(app, kind, sizeof kind);
+    assert(!strcmp(kind, crc_said) && g_covers_net.lists == 2);
+    /* the network failing: as it came */
+    assert(!snx_write_file(rom, "offline", 7));
+    gba_remake(app, got);
+    made_kind(app, kind, sizeof kind);
+    assert(strstr(kind, ". No box art: GET " GUI_COVERS_BOX_URL "Offline%20Test%20%28World%29.png: could not resolve "
+                        "the host, 0 bytes in"));
+    /* a build with no HTTPS client */
+    app->https_get = NULL;
+    gba_remake(app, got);
+    made_kind(app, kind, sizeof kind);
+    assert(!strcmp(kind, "GBA game, ready to run. No box art: this build of the launcher has no HTTPS client"));
+    /* a ROM's own make (its first compile, or R on it): the game whose .ini names the ROM gets the box, its row's
+       failure forgotten */
+    {
+        const char* argv[] = {"scarletnx-agb", "-r", rom, NULL};
+        bool added = false;
+        int i;
+        app->https_get = covers_get;
+        assert(!snx_write_file(rom, "fixture", 7));
+        i = gui_queue_add(&app->queue, argv, rom, rom, "agb input", GUI_JOB_RECOMPILE, false, &added);
+        assert(i >= 0 && added);
+        app->queue.job[i].console = GUI_GBA;
+        cover_made(app, i);
+        pump_until(app, &app->covering);
+        queue_drop(app, i);
+        bytes = (char*)snx_read_file(icon, &size);
+        assert(bytes && size == g_covers_net.png_size && !memcmp(bytes, g_covers_net.png, size));
+        free(bytes);
+        made_kind(app, kind, sizeof kind);
+        assert(!strcmp(kind, "GBA game, ready to run") && g_covers_net.lists == 2);
+        assert(!remove(icon));
+    }
+    assert(gui_settings_set(&app->settings, "gba_covers", "none"));
+    assert(!remove(list_copy));
+    app->place[GUI_PLACE_CACHE] = place_was;
+    covers_free(app);
+    go_tab(app, GUI_TAB_MENU); /* as the GBA checks around it go on */
+    free(list_copy);
+    free(cache);
+    free(g_covers_net.png);
+    g_covers_net.png = NULL;
+    free(png_file);
+    free(cache_place);
+    free(icon);
+    free(ini);
 }
 /* GPU Drivers > Download Driver on a phone with an Adreno GPU, against the test's network: the lists fetched as the
    page opens, one repository's failure said, a GPU maker's own marked in its release's box, a download failing said,
@@ -5449,7 +5642,7 @@ int main(int argc, char** argv) {
     /* Settings: the launcher's own, then each setting the runtime lists, a row each with its help above; what the
        menu's items used to set is in them */
     key(&app, SDLK_SPACE);
-    assert(app.editing && app.editor.object && app.editor.count == 6); /* User the last */
+    assert(app.editing && app.editor.object && app.editor.count == 7); /* User the last */
     /* and the disk: what ScarletNX's folders take, counted on a thread, and what is left */
     {
         char line[256], used[32], left[32];
@@ -5491,11 +5684,12 @@ int main(int argc, char** argv) {
     /* the groups first: App, then a group per section the runtime lists (their reset is App's); beside them the
        focused group's rows, in the tips what it holds */
     render(&app);
-    assert(app.form == GUI_FORM_SETTINGS && app.groups == 6 && gui_editor_rows(&app.editor) == 6);
+    assert(app.form == GUI_FORM_SETTINGS && app.groups == 7 && gui_editor_rows(&app.editor) == 7);
     shows(&app, "SETTINGS", normal);
     shows_half(&app, "The theme, the menu's", normal); /* in the tips, a half step under the text's */
     shows(&app, "- " ICON_APP_WINDOW " App", yellow);
     shows(&app, "- " ICON_ROCKET " Launch", normal);
+    shows(&app, "- " ICON_GAMEPAD " GBA", normal); /* the launcher's own too, under the menu's Load GBA ROM's icon */
     shows(&app, "- " ICON_MONITOR " Display", normal);
     shows(&app, "- " ICON_IMAGE " Graphics", normal);
     shows(&app, "- " ICON_POINTER " Overlay", normal); /* the runtime's On-screen controls */
@@ -5559,9 +5753,33 @@ int main(int argc, char** argv) {
     /* ESC goes back to the groups, on the one it came from */
     key(&app, SDLK_ESCAPE);
     assert(app.editing && app.form == GUI_FORM_SETTINGS && app.editor.row == 1);
+    /* GBA's, after Launch: Covers, None by default, then Box art (libretro-thumbnails), Del back to None */
+    {
+        char line[64];
+        key(&app, SDLK_DOWN);
+        render(&app);
+        shows(&app, "- " ICON_GAMEPAD " GBA", yellow);
+        shows_half(&app, "Covers", normal); /* the group's help names its setting */
+        key(&app, SDLK_RETURN);
+        assert(app.form == GUI_FORM_GROUP && app.group == 2 && app.editor.count == 1);
+        render(&app);
+        shows(&app, "GBA", normal);
+        snprintf(line, sizeof line, "- %-8s %s", "Covers", "None [default]"); /* no row of it opens a page: no gutter */
+        shows(&app, line, yellow);
+        shows_half(&app, "The picture a GBA game made from a ROM shows in Games", normal);
+        key(&app, SDLK_RIGHT);
+        assert(setting_is(&app, "gba_covers", "boxart"));
+        render(&app);
+        snprintf(line, sizeof line, "- %-8s %s", "Covers", "Box art (libretro-thumbnails) *");
+        shows(&app, line, yellow);
+        key(&app, SDLK_DELETE);
+        assert(setting_is(&app, "gba_covers", NULL));
+        key(&app, SDLK_ESCAPE);
+        assert(app.form == GUI_FORM_SETTINGS && app.editor.row == 2);
+    }
     key(&app, SDLK_DOWN);
     key(&app, SDLK_RETURN);
-    assert(app.form == GUI_FORM_GROUP && app.group == 2);
+    assert(app.form == GUI_FORM_GROUP && app.group == 3);
     key(&app, SDLK_RIGHT);
     assert(setting_is(&app, "fullscreen", "1"));
     render(&app);
@@ -5728,7 +5946,7 @@ int main(int argc, char** argv) {
                !gui_settings_value(&app.settings, "controls_b_shown"));
         assert(!row_marked(&app, 1));
         key(&app, SDLK_ESCAPE);
-        assert(app.form == GUI_FORM_SETTINGS && app.editor.row == 4);
+        assert(app.form == GUI_FORM_SETTINGS && app.editor.row == 5);
     }
     /* App's Reset to Defaults, its last row, asks first, with how many settings change; Back changes none, Reset puts every one
        back as it started, written to settings.ini, and says how many; none left to change, no box */
@@ -5769,7 +5987,7 @@ int main(int argc, char** argv) {
         free(asked);
         free(done);
     }
-    app.editor.row = 2; /* fullscreen 1 again, for the runs below */
+    app.editor.row = 3; /* Display: fullscreen 1 again, for the runs below */
     key(&app, SDLK_RETURN);
     key(&app, SDLK_RIGHT);
     assert(setting_is(&app, "fullscreen", "1"));
@@ -9405,6 +9623,7 @@ int main(int argc, char** argv) {
         key(&app, SDLK_RETURN);
         assert(launched(&app) && !app.native && app.menu.selected == GUI_GBA);
         compiled_by(&app, "scarletnx-agb", rom, 4);
+        gba_covers(&app, rom, folder, program, got);
         driver_will(NULL, 0, NULL);
         free(game_arg);
         free(got);
@@ -9894,7 +10113,7 @@ int main(int argc, char** argv) {
                !form_first(&f, false) && !form_shown(&app, &f, true));
         render(&app);
         hides(&app, "\x1f", rgb(app.theme.soft)); /* the rows' list, gone with the side box, marks nothing */
-        open_group(&app, 2);
+        open_group(&app, 3); /* Display, after App, Launch and GBA */
         form_boxes(&app, &f);
         assert(app.form == GUI_FORM_GROUP && !form_shown(&app, &f, false) && f.place.side.w == f.place.head.w &&
                form_shown(&app, &f, true));
@@ -15245,6 +15464,7 @@ int main(int argc, char** argv) {
         for (int i = 0; i < app.settings.count; ++i)
             if (app.settings.values[i].kind == GUI_SETTING_PAGE) page = i;
         open_settings(&app);
+        key(&app, SDLK_DOWN); /* past Launch and GBA, to Controllers */
         key(&app, SDLK_DOWN);
         key(&app, SDLK_DOWN);
         key(&app, SDLK_RETURN);

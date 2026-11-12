@@ -309,8 +309,12 @@ char* gui_game_icon(const char* path) {
     for (i = 0; !found && i < sizeof vita / sizeof *vita; ++i)
         if (!snx_path_format(icon, sizeof icon, "%s/%s/sce_sys/icon0.png", folder, vita[i]) && snx_is_file(icon))
             found = snx_strdup(icon);
-    /* a 3DS game has no data folder: its driver writes the SMDH's icon beside the game (icon.rgba) */
+    /* a 3DS game has no data folder: its driver writes the SMDH's icon beside the game (icon.rgba); a GBA game's box
+       goes there too, as the launcher downloads it (Settings > GBA > Covers) */
     if (!found && gui_game_program(path) && !snx_path_format(icon, sizeof icon, "%s/icon.rgba", folder) &&
+        snx_is_file(icon))
+        found = snx_strdup(icon);
+    if (!found && gui_game_program(path) && !snx_path_format(icon, sizeof icon, "%s/icon.png", folder) &&
         snx_is_file(icon))
         found = snx_strdup(icon);
     free(folder);

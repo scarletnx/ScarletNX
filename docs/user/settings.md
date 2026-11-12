@@ -20,6 +20,7 @@
 * [Vita driver](#vita-driver)
 * [Launch](#launch)
   * [LLVM Internals](#llvm-internals)
+* [GBA](#gba)
 
 A game keeps its settings in its `.ini` (`recompiled/<id>/<id>.ini`), a section each as below, and the launcher's
 Settings show a group for each section ([GUI launcher](gui.md)).
@@ -438,3 +439,11 @@ level. These have names of their own in the launcher:
 | `llvm_fast_isel` | LLVM's own | Whether code generation selects instructions with FastISel, quicker and worse (`LLVMSetTargetMachineFastISel`) |
 | `llvm_global_isel` | LLVM's own | Whether code generation selects instructions with GlobalISel (`LLVMSetTargetMachineGlobalISel`) |
 | `llvm_inliner_threshold` | LLVM's own | How large a function the inliner inlines; LLVM picks one for the level until it is set (`LLVMPassBuilderOptionsSetInlinerThreshold`) |
+
+## GBA
+
+The launcher's own settings for a GBA game it makes: the launcher's Settings > GBA.
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `gba_covers` | `none` | The picture a GBA game made from a ROM shows in Games. `none` is Wimsy, as a game with no icon; `boxart` is its box from [libretro-thumbnails](https://github.com/libretro-thumbnails/Nintendo_-_Game_Boy_Advance), downloaded as the game is made: the ROM's CRC-32 names the game in [libretro-database](https://github.com/libretro/libretro-database)'s No-Intro list, which the cache keeps (`covers/gba-no-intro.dat`, fetched again once a session when it lacks a ROM), and the box under that name goes in the game's folder as `icon.png`. A ROM the list does not have (a hack, a translation, a bad dump), or a game with no box there, keeps Wimsy, and its row says which ROM, CRC-32 or name was looked for |
