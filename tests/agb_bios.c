@@ -91,6 +91,32 @@ int main(void) {
     regs[1] = (uint32_t)-5;
     CHECK(call(regs, AGB_SWI_ARCTAN2) == 0);
     CHECK(regs[0] == 0xE000);
+    /* the BIOS's polynomial, as mGBA evaluates it, not the closest angle: tan 1000 / 16384 gives 635 where the angle
+       rounds to 636, and r1 and r3 keep the polynomial's variable and last term */
+    regs[0] = 1000;
+    CHECK(call(regs, AGB_SWI_ARCTAN) == 0);
+    CHECK(regs[0] == 635 && regs[1] == 0xFFFFFFC3 && regs[3] == 0xA2C5);
+    regs[0] = 0x3FFF;
+    CHECK(call(regs, AGB_SWI_ARCTAN) == 0);
+    CHECK(regs[0] == 8191);
+    regs[0] = (uint32_t)-0x3FFF;
+    CHECK(call(regs, AGB_SWI_ARCTAN) == 0);
+    CHECK(regs[0] == (uint32_t)-8192);
+    {
+        /* ArcTan2 in each octant, r3 = 0x170 as the BIOS leaves it */
+        static const int32_t in[][2] = {{300, 100}, {-300, 100}, {-100, -300}, {100, -300}, {7, 3}};
+        static const uint32_t out[] = {0x0D1B, 0x72E4, 0xB2E5, 0xCD1C, 0x107E};
+        for (size_t i = 0; i < sizeof out / sizeof out[0]; ++i) {
+            regs[0] = (uint32_t)in[i][0];
+            regs[1] = (uint32_t)in[i][1];
+            CHECK(call(regs, AGB_SWI_ARCTAN2) == 0);
+            if (regs[0] != out[i] || regs[3] != 0x170) {
+                fprintf(stderr, "agb_bios: ArcTan2(%d, %d) = 0x%04X r3 0x%X, mGBA's BIOS gives 0x%04X r3 0x170\n",
+                        in[i][0], in[i][1], regs[0], regs[3], out[i]);
+                return 1;
+            }
+        }
+    }
 
     /* GetBiosChecksum names the BIOS revision the console reports */
     CHECK(call(regs, AGB_SWI_GET_BIOS_CHECKSUM) == 0);

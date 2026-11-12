@@ -45,14 +45,43 @@ static uint32_t bios_sqrt(uint32_t value) {
     return root;
 }
 
-/* Angles are turns in 16 bits: 0x10000 is a full circle, 0x4000 is a right angle. ArcTan takes the tangent
-   in 1.14 fixed point and returns half a turn at most. */
-static int32_t bios_arctan(int32_t tangent) {
-    return (int32_t)llround(atan((double)tangent / 16384.0) * 65536.0 / (2.0 * AGB_PI));
+/* the BIOS's arithmetic as the ARM7TDMI does it: a product and a shift left wrap to 32 bits, a quotient of INT32_MIN by
+   -1 too */
+static int32_t wrap_mul(int32_t a, int32_t b) { return (int32_t)((uint32_t)a * (uint32_t)b); }
+static int32_t wrap_shl(int32_t a, unsigned bits) { return (int32_t)((uint32_t)a << bits); }
+static int32_t wrap_neg(int32_t a) { return (int32_t)(0u - (uint32_t)a); }
+static int32_t wrap_div(int32_t n, int32_t d) { return d == -1 ? wrap_neg(n) : n / d; }
+
+/* Angles are turns in 16 bits: 0x10000 is a full circle, 0x4000 is a right angle. ArcTan takes the tangent t in 1.14
+   fixed point and evaluates the BIOS's polynomial in a = -(t * t >> 14), as mGBA's HLE BIOS has it; r1 keeps a and r3
+   the polynomial's last term, as the BIOS leaves them */
+static int32_t bios_arctan(int32_t tangent, int32_t* a_out, int32_t* b_out) {
+    static const int32_t terms[] = {0x390, 0x91C, 0xFB6, 0x16AA, 0x2081, 0x3651, 0xA2F9};
+    int32_t a = wrap_neg(wrap_mul(tangent, tangent) >> 14), b = wrap_mul(0xA9, a) >> 14;
+    b += terms[0];
+    for (size_t i = 1; i < sizeof terms / sizeof terms[0]; ++i) b = (wrap_mul(b, a) >> 14) + terms[i];
+    if (a_out) *a_out = a;
+    if (b_out) *b_out = b;
+    return (int16_t)(wrap_mul(tangent, b) >> 16);
 }
 
-static int32_t bios_arctan2(int32_t x, int32_t y) {
-    return (int32_t)((uint32_t)llround(atan2((double)y, (double)x) * 65536.0 / (2.0 * AGB_PI)) & 0xFFFF);
+/* ArcTan2: the angle of (x, y), ArcTan of the smaller over the larger moved to its octant, as a 16 bit turn */
+static uint16_t bios_arctan2(int32_t x, int32_t y, int32_t* a_out) {
+    if (!y) return x >= 0 ? 0 : 0x8000;
+    if (!x) return y >= 0 ? 0x4000 : 0xC000;
+    int32_t over_x = wrap_div(wrap_shl(y, 14), x), over_y = wrap_div(wrap_shl(x, 14), y);
+    if (y >= 0) {
+        if (x >= 0) {
+            if (x >= y) return (uint16_t)bios_arctan(over_x, a_out, NULL);
+        } else if (wrap_neg(x) >= y)
+            return (uint16_t)(bios_arctan(over_x, a_out, NULL) + 0x8000);
+        return (uint16_t)(0x4000 - bios_arctan(over_y, a_out, NULL));
+    }
+    if (x <= 0) {
+        if (wrap_neg(x) > wrap_neg(y)) return (uint16_t)(bios_arctan(over_x, a_out, NULL) + 0x8000);
+    } else if (x >= wrap_neg(y))
+        return (uint16_t)bios_arctan(over_x, a_out, NULL);
+    return (uint16_t)(0xC000 - bios_arctan(over_y, a_out, NULL));
 }
 
 /* CpuSet: r2 carries the unit count, the fill flag (bit 24) and the width (bit 26, 32 bits or 16 bits). */
@@ -478,8 +507,20 @@ int agb_bios_call(AgbBoard* board, uint32_t swi, uint32_t regs[16]) {
         case AGB_SWI_DIV: bios_div(regs, (int32_t)regs[0], (int32_t)regs[1]); break;
         case AGB_SWI_DIV_ARM: bios_div(regs, (int32_t)regs[1], (int32_t)regs[0]); break;
         case AGB_SWI_SQRT: regs[0] = bios_sqrt(regs[0]); break;
-        case AGB_SWI_ARCTAN: regs[0] = (uint32_t)bios_arctan((int32_t)regs[0]); break;
-        case AGB_SWI_ARCTAN2: regs[0] = (uint32_t)bios_arctan2((int32_t)regs[0], (int32_t)regs[1]); break;
+        case AGB_SWI_ARCTAN: {
+            int32_t a, b;
+            regs[0] = (uint32_t)bios_arctan((int32_t)regs[0], &a, &b);
+            regs[1] = (uint32_t)a;
+            regs[3] = (uint32_t)b;
+            break;
+        }
+        case AGB_SWI_ARCTAN2: {
+            int32_t a = (int32_t)regs[1];
+            regs[0] = bios_arctan2((int32_t)regs[0], (int32_t)regs[1], &a);
+            regs[1] = (uint32_t)a;
+            regs[3] = 0x170;
+            break;
+        }
         case AGB_SWI_CPU_SET: bios_cpu_set(board, regs); break;
         case AGB_SWI_CPU_FAST_SET: bios_cpu_fast_set(board, regs); break;
         case AGB_SWI_GET_BIOS_CHECKSUM: regs[0] = 0xBAAE187F; break;
