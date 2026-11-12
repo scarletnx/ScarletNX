@@ -67,8 +67,8 @@ enum {
 };
 /* where a crash report put the host pc */
 enum { SNX_PLACE_NONE, SNX_PLACE_GAME, SNX_PLACE_BLOCK, SNX_PLACE_RUNTIME, SNX_PLACE_LIBRARY };
-/* the console the game is of, by its runtime's header: the Switch's, the 3DS's and the Vita's ("Game: ..."), the
-   GBA's ("ScarletNX - <title> (GBA)") */
+/* the console the game is of, by its runtime's header: the Switch's ("ScarletNX - <title>"), the others' with
+   " (3DS)", " (Vita)" or " (GBA)" after the title (an older 3DS or Vita build's was "Game: ...") */
 enum { SNX_CONSOLE_NONE, SNX_CONSOLE_SWITCH, SNX_CONSOLE_3DS, SNX_CONSOLE_VITA, SNX_CONSOLE_GBA };
 
 /* Every text is an offset into the scan's pool, 0 for none (the pool's first byte is an empty string) */

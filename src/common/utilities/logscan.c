@@ -493,12 +493,17 @@ static int marker(Span line, Marker* m) {
    output is kept while it is read, and stands for itself when its title ID is not the game log's */
 enum { PHASE_START, PHASE_LOG, PHASE_HEAD, PHASE_RUN, PHASE_GAME, PHASE_DONE };
 
-/* "ScarletNX - <title>", what an older build followed with " (<folder>)", which is cut, and the GBA's runtime with
-   " (GBA)" (agb/runtime/main.c), which is cut too: the console says it */
+/* "ScarletNX - <title>", what an older build followed with " (<folder>)", which is cut, and the other runtimes with
+   " (GBA)", " (3DS)" or " (Vita)" (agb/runtime/main.c, 3ds/aot/run.c, vita/runtime/main.c), which is cut too: the
+   console says it */
 static void header(SnxLogScan* s, Span title) {
     size_t i;
-    s->console = ends(title, " (GBA)") ? SNX_CONSOLE_GBA : SNX_CONSOLE_SWITCH;
-    if (s->console == SNX_CONSOLE_GBA) title.n -= 6;
+    s->console = ends(title, " (GBA)")    ? SNX_CONSOLE_GBA
+                 : ends(title, " (3DS)")  ? SNX_CONSOLE_3DS
+                 : ends(title, " (Vita)") ? SNX_CONSOLE_VITA
+                                          : SNX_CONSOLE_SWITCH;
+    if (s->console == SNX_CONSOLE_GBA || s->console == SNX_CONSOLE_3DS) title.n -= 6;
+    if (s->console == SNX_CONSOLE_VITA) title.n -= 7;
     for (i = title.n; i > 2; i--)
         if (title.p[i - 1] == '(' && title.p[i - 2] == ' ') {
             Span path = skip(title, i);
@@ -566,8 +571,8 @@ static int build_line(SnxLogScan* s, Span line) {
     return 1;
 }
 
-/* the other frontends' header, the title, its ID when there is one, and the build on one line (3ds/aot/run.c,
-   vita/runtime/main.c): "Game: <title> (<title ID>) - ScarletNX ...", "Game: <title> - ScarletNX ..." */
+/* the 3DS and Vita runtimes' header of an older build, the title, its ID when there is one, and the build on one line:
+   "Game: <title> (<title ID>) - ScarletNX ...", "Game: <title> - ScarletNX ..." */
 static int frontend_header(SnxLogScan* s, Span rest) {
     long at = find(rest, " - ScarletNX ");
     if (at <= 0) return 0;
@@ -1229,6 +1234,18 @@ void snx_logscan_line(SnxLogScan* s, const char* p, size_t n) {
                                 (char)snx_to_upper(rest.p[2]), (char)snx_to_upper(rest.p[3]), 0};
                 s->title_id = add_c(s, code);
                 return;
+            }
+            break;
+        case 't': /* the 3DS's title ID (3ds/aot/run.c): "title ID: <16 hex digits>" */
+            if (s->console == SNX_CONSOLE_3DS && !s->title_id && take_lit(&rest, "title ID: ") && rest.n == 16) {
+                char id[17];
+                size_t k;
+                for (k = 0; k < 16 && snx_is_hex(rest.p[k]); k++) id[k] = (char)snx_to_upper(rest.p[k]);
+                if (k == 16) {
+                    id[16] = 0;
+                    s->title_id = add_c(s, id);
+                    return;
+                }
             }
             break;
         case 's': /* "system: <OS and version>, <CPU>, <n> threads, <n> GB RAM" (plat_system_info) */
