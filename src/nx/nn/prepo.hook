@@ -3,13 +3,17 @@
 #
 # The native nn::prepo (prepo.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
 # nn::prepo: the play reports, with no prepo:u session. The report is built in the game's buffer by the SDK's own
-# code. Save and RequestImmediateTransmission are what reach the service. The report's layout is that of the two
-# SDKs read (7.7.0 and 20.5): a version between them has no hook and keeps its own code
+# code. Save, RequestImmediateTransmission and GetTransmissionStatus are what reach the service. The report's layout
+# and Save's limit are those of the SDKs read: no limit in 3.5.0 to 8.2.1, the limit from 10.4.0, the buffer at 0x20
+# through 13.3.5 and at 0x28 from 16.2.0. SDK 9, 14 and 15 were not read: they have no hook and keep their own code
 family nn_prepo
-struct nn::prepo::PlayReport @version(< 8.0.0) { addr buffer @0x20; u64 capacity @0x28; u64 used @0x30 } size 0x38
-struct nn::prepo::PlayReport @version(>= 20.0.0) { addr buffer @0x28; u64 capacity @0x30; u64 used @0x38 } size 0x40
-@version(< 8.0.0) hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = nnprepo_save_unlimited uses nn::prepo::PlayReport
-@version(>= 20.0.0) hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = nnprepo_save uses nn::prepo::PlayReport
-@version(< 8.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user_unlimited uses nn::prepo::PlayReport
-@version(>= 20.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user uses nn::prepo::PlayReport
+struct nn::prepo::PlayReport @version(< 14.0.0) { addr buffer @0x20; u64 capacity @0x28; u64 used @0x30 } size 0x38
+struct nn::prepo::PlayReport @version(>= 16.0.0) { addr buffer @0x28; u64 capacity @0x30; u64 used @0x38 } size 0x40
+@version(< 9.0.0) hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = nnprepo_save_unlimited uses nn::prepo::PlayReport
+@version(>= 10.0.0, < 14.0.0) hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = nnprepo_save uses nn::prepo::PlayReport
+@version(>= 16.0.0) hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = nnprepo_save uses nn::prepo::PlayReport
+@version(< 9.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user_unlimited uses nn::prepo::PlayReport
+@version(>= 10.0.0, < 14.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user uses nn::prepo::PlayReport
+@version(>= 16.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user uses nn::prepo::PlayReport
 hook _ZN2nn5prepo28RequestImmediateTransmissionEv() -> u32 = nnprepo_request_immediate_transmission
+hook _ZN2nn5prepo21GetTransmissionStatusEPNS0_18TransmissionStatusE(addr status) -> u32 = nnprepo_get_transmission_status

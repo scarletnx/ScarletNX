@@ -1,10 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The native nn::prepo (src/nx/nn/prepo.c) on a stand-in CPU, in the report layouts of SDK 7.7.0 and SDK 20: Save
+/* The native nn::prepo (src/nx/nn/prepo.c) on a stand-in CPU, in the report layouts of SDK 7.7.0 and SDK 20, and
+   through prepo.hook's table for every SDK version read: Save
    refuses an event id that is empty, too long or has a character past 0-9, a-z and _, and leaves the report then;
    a save starts the report's buffer again (de 00 00, or nothing in a buffer under 3 bytes); and SDK 20 lets 900 saves
    through in any 90 minutes, a save past them succeeding with the report left as it is */
 #include "nx/nn/prepo.c"
+#include "hle/hook/hooks.hook.inc" /* prepo.hook's table and adapters */
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -74,6 +76,53 @@ int main(void) {
         CHECK(save(c, L, REPORT) == 0 && mem[BUFFER] == 0xee && hook_get_u64(c, L->used, REPORT) == 0);
     }
     CHECK(nnprepo_request_immediate_transmission(c) == 0);
+    memset(mem + 0x200, 0xee, 8); /* the status of an empty queue, in its 4 bytes */
+    CHECK(nnprepo_get_transmission_status(c, 0x200) == 0 && snx_ld_le32(mem + 0x200) == 0 && mem[0x204] == 0xee);
+
+    /* prepo.hook's own choice for each SDK version read in a game: Save with or without the limit, on the report as
+       that SDK's SetBuffer lays it out; and no hook for the versions between them that were not read */
+    static const struct {
+        u32 sdk, buffer;
+        int limit;
+    } read[] = {{0x030500, 0x20, 0}, {0x040400, 0x20, 0}, {0x060500, 0x20, 0}, {0x070700, 0x20, 0},
+                {0x080201, 0x20, 0}, {0x0a0400, 0x20, 1}, {0x0d0300, 0x20, 1}, {0x0d0305, 0x20, 1},
+                {0x100200, 0x28, 1}, {0x120302, 0x28, 1}, {0x130303, 0x28, 1}, {0x14050f, 0x28, 1}};
+    static const char* const save[2] = {"_ZN2nn5prepo10PlayReport4SaveEv",
+                                        "_ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE"};
+    static const char* const handler[2][2] = {{"nnprepo_save_unlimited", "nnprepo_save"},
+                                              {"nnprepo_save_user_unlimited", "nnprepo_save_user"}};
+    static const u32 unread[] = {0x090100, 0x0e0100, 0x0f0300};
+    int first;
+    for (unsigned i = 0; i < sizeof read / sizeof read[0]; i++)
+        for (int user = 0; user < 2; user++) {
+            u32 versions[HOOK_KEYS] = {0};
+            versions[HOOK_SDK] = read[i].sdk;
+            int k = hook_select(&hook_table, save[user], versions, &first);
+            CHECK(k >= 0 && !strcmp(hook_handler[k], handler[user][read[i].limit]));
+            memset(mem + REPORT, 0, 0x40);
+            strcpy((char*)mem + REPORT, "event_1");
+            snx_st_le64(mem + REPORT + read[i].buffer, BUFFER);
+            snx_st_le64(mem + REPORT + read[i].buffer + 8, 0x100);
+            snx_st_le64(mem + REPORT + read[i].buffer + 16, 10);
+            memset(mem + BUFFER, 0xee, 16);
+            g_hle.prepo = (HlePrepo){0};
+            c->x[0] = REPORT, c->x[1] = 0x200, c->x[30] = 0x1234, c->pc = 0;
+            hook_fn[k](c, 0);
+            CHECK(c->x[0] == 0 && c->pc == 0x1234 && mem[BUFFER] == 0xde);
+            CHECK(snx_ld_le64(mem + REPORT + read[i].buffer + 16) == 3);
+        }
+    for (unsigned i = 0; i < sizeof unread / sizeof unread[0]; i++) {
+        u32 versions[HOOK_KEYS] = {0};
+        versions[HOOK_SDK] = unread[i];
+        CHECK(hook_select(&hook_table, save[0], versions, &first) == -2);
+        CHECK(hook_select(&hook_table, save[1], versions, &first) == -2);
+    }
+    { /* the two that read no report hold for a module of any SDK, one whose version is unknown too */
+        u32 versions[HOOK_KEYS] = {0};
+        CHECK(hook_select(&hook_table, "_ZN2nn5prepo28RequestImmediateTransmissionEv", versions, &first) >= 0);
+        CHECK(hook_select(&hook_table, "_ZN2nn5prepo21GetTransmissionStatusEPNS0_18TransmissionStatusE", versions,
+                          &first) >= 0);
+    }
 
     /* SDK 20's limit: the saves so far, then up to 900 in the 90 minutes; the 901st succeeds and leaves the report */
     g_hle.prepo = (HlePrepo){0};

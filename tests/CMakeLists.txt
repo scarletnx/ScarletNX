@@ -1512,7 +1512,7 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     snx_hookgen(snx-test-nn-ngc SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/ngc.hook")
     add_test(NAME nn_ngc COMMAND snx-test-nn-ngc)
     # the native nn::prepo (nn/prepo.c): Save in the two report layouts, and SDK 20's limit
-    add_executable(snx-test-nn-prepo nn_prepo.c)
+    add_executable(snx-test-nn-prepo nn_prepo.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
     snx_test_target(snx-test-nn-prepo 23)
     snx_service_swipc(snx-test-nn-prepo)
     snx_hookgen(snx-test-nn-prepo SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/prepo.hook")
