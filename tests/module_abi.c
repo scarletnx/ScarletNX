@@ -172,6 +172,17 @@ int main(int argc, char** argv) {
     check(rc == SNX_EXIT_REMAKE && strstr(output, "is not the NSO that was recompiled") &&
               strstr(output, "The game's recompiled code was made from another copy of the game"),
           "a module of another build of the dump ends with SNX_EXIT_REMAKE", output);
+    /* and says so as any fatal error does, in the error log beside the game's log that Share Log sends, and in a box
+       where one shows: a game an app or a shortcut started has no driver to recompile it */
+    {
+        char* path = snx_format("%s/remake/state/%s", root, SNX_ERROR_LOG);
+        size_t size = 0;
+        char* text = (char*)snx_read_file(path, &size);
+        check(text && strstr(text, "The game's recompiled code was made from another copy of the game"),
+              "a module of another build of the dump is in the error log", text ? text : path);
+        free(text);
+        free(path);
+    }
     free(output);
 
     /* the ABI before it and the one after: refused, saying the module's ABI and the one this runtime runs */
