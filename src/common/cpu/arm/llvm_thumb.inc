@@ -544,6 +544,8 @@ LLVMValueRef snx_thumb_llvm_block_ex(LLVMModuleRef module, const char* name, con
             if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(a.b))) stop = 1; /* trapped */
             if (!stop) setreg(&a, 15, c32(&a, next_pc));
         }
+        if (!stop) yield_check(&a);
+        a.yields = 0;
         used += len;
         if (t.shape == TH_IT) itstate = t.imm & 0xFF;
         if (stop) break;

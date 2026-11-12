@@ -333,6 +333,40 @@ int main(void) {
         }
     }
     {
+        /* a DMA started by a store holds the bus before the next instruction runs, inside a block too: the block ends
+           after the store, so the VCOUNT read after it sees the line the copy ended on, 0x2000 words from EWRAM to
+           EWRAM, 12 cycles each and 2: 98306 cycles, 79 or 80 lines past the one read before it */
+        static const uint32_t code[] = {
+            0xE59F0020, /* ldr r0, [pc, #32]: DMA3SAD */
+            0xE59F1020, /* ldr r1, [pc, #32]: the source */
+            0xE5801000, /* str r1, [r0] */
+            0xE59F101C, /* ldr r1, [pc, #28]: the destination */
+            0xE5801004, /* str r1, [r0, #4] */
+            0xE1504CBE, /* ldrh r4, [r0, #-0xCE]: VCOUNT */
+            0xE59F1014, /* ldr r1, [pc, #20]: on, now, words, 0x2000 of them */
+            0xE5801008, /* str r1, [r0, #8] */
+            0xE1505CBE, /* ldrh r5, [r0, #-0xCE]: VCOUNT */
+            0xEAFFFFFE, /* b . */
+            0x040000D4, 0x02010000, 0x02020000, 0x84002000,
+        };
+        for (uint32_t i = 0; i < sizeof code / sizeof code[0]; ++i) agb_write32(&board, 0x03000D00 + i * 4, code[i]);
+        agb_write32(&board, 0x02017FFC, 0x5A5AA5A5); /* the last word copied */
+        cpu.arm.r[4] = cpu.arm.r[5] = 0xFFFF;
+        cpu.arm.r[15] = 0x03000D00;
+        cpu.arm.cpsr = 0x9F;
+        cpu.over = 0;
+        board.cpu_halted = 0;
+        board.held_cycles = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 120000, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        CHECK(agb_read32(&board, 0x02027FFC) == 0x5A5AA5A5);
+        if ((cpu.arm.r[5] + AGB_FRAME_LINES - cpu.arm.r[4]) % AGB_FRAME_LINES < 79 ||
+            (cpu.arm.r[5] + AGB_FRAME_LINES - cpu.arm.r[4]) % AGB_FRAME_LINES > 80) {
+            fprintf(stderr, "agb_cpu: VCOUNT %u before a DMA of 98306 cycles and %u after it, not 79 or 80 lines on\n",
+                    cpu.arm.r[4], cpu.arm.r[5]);
+            goto done;
+        }
+    }
+    {
         /* an instruction costs its fetch, by region: an add and the branch back are 2 + 2 cycles from IWRAM (32 bits,
            no wait state) and 12 + 12 from EWRAM (16 bits, 2 wait states, a word two halfwords), so 2400 cycles run the
            loop 600 times from IWRAM and 100 from EWRAM */
