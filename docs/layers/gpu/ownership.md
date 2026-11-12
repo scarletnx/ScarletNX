@@ -68,8 +68,11 @@ each release would copy tens of megabytes a frame. So a release *watches* the on
 (`own_watch`, through `vk_own_watch`): a watch is an entry with no resource. Its pages are trapped as an owner's, but
 it holds no bytes. `own_lookup` and `own_stage` skip it, and its CPU bytes stay readable through the mirror (in place,
 `own_watch` copies each page it arms into a shadow). `own_hash` and `own_trapped` see it. A watch goes only into the
-gaps between real owners, and an owner that comes later (`own_begin`) replaces it. A target that the CPU read lately
-(`vk_own_cpu_read`), or that an owner already covers, is published at the release instead, as a pitch-linear one.
+gaps between real owners, and an owner that comes later (`own_begin`) replaces it. A target that a CPU access had published
+in the last 1200 presents (`cpu_asked`) is published at the release instead, as a pitch-linear one. A target that an
+owner already covers is left as it is: the owner's pages are trapped, and the CPU's access to them asks the renderer
+for the targets pending there before the owner lands (`OwnHooks.refresh`). Publishing such a target at every release
+copied one game's targets 24,000 to 43,000 times in 600 presents.
 
 The CPU's first access to a watched page lands it as any other. Before the landing marks an entry, with `vk_lock`
 held, it calls the renderer's `resolve` hook (`vk_rt_watch_hit`). That publishes the targets that are pending over the

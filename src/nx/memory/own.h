@@ -42,6 +42,11 @@ typedef struct {
        or mark of own.c's, on a thread that did not hold the producer's lock before. The watches left over the bytes
        after it go. Optional: without it, a watch only goes */
     void (*resolve)(u64 addr, u64 size);
+    /* a CPU access of pages [addr, addr + size) that owners are on: the producer publishes what it holds of those
+       bytes that is newer than their owners (own_begin), and the access then lands that. A render target drawn
+       again since its publish is such a holder: it is not published at each release (vk/surface.c's rt_watch).
+       Called as resolve, once for a landing of owners, before any of them is marked. Optional */
+    void (*refresh)(u64 addr, u64 size);
 } OwnHooks;
 
 /* 0 when the host can trap guest memory (plat_trap_init): own_begin can work from then on. -1: producers land their

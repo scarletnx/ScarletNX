@@ -509,6 +509,10 @@ static void land_pages(u64 lo, u64 hi, int by) {
         if (!any) return;
     }
     producer_lock();
+    /* An owner's bytes can be older than what the producer holds for them (OwnHooks' refresh): the producer brings
+       the owners here up to date first, once, before any mark, as it answers a watch. Not when this thread held
+       its lock before: its own reads take what is pending from the producer */
+    if (real && !busy && g_own.hooks.refresh) g_own.hooks.refresh(lo, hi - lo);
     pm_lock(&g_own.lk);
     for (;;) {
         while (landing_nl(lo, hi)) pc_wait(&g_own.cv, &g_own.lk, -1);
