@@ -298,6 +298,28 @@ int main(void) {
         CHECK(cpu.arm.r[5] > 0);
     }
     {
+        /* an S-bit write to the PC in system mode, which has no SPSR, sets the flags and keeps the mode, as mGBA does: a
+           game's code ran on with the CPSR's mode 0 after one. orrs pc, pc, #0 jumps two words on with N and Z clear */
+        agb_write32(&board, 0x03000C00, 0xE39FF000); /* orrs pc, pc, #0 */
+        agb_write32(&board, 0x03000C04, 0xE3A05001); /* mov r5, #1, skipped */
+        agb_write32(&board, 0x03000C08, 0xE3A0502A); /* mov r5, #42 */
+        agb_write32(&board, 0x03000C0C, 0xEAFFFFFE); /* b . */
+        cpu.arm.r[5] = 0;
+        cpu.arm.r[15] = 0x03000C00;
+        cpu.arm.cpsr = 0xC000009F; /* system mode, N and Z set, interrupts off */
+        cpu.over = 0;
+        board.cpu_halted = cpu.wait = 0;
+        board.held_cycles = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 200, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        if (cpu.arm.r[5] != 42 || (cpu.arm.cpsr & 0xC000001F) != 0x1F) {
+            fprintf(
+                stderr,
+                "agb_cpu: after orrs pc in system mode r5 is %u and the CPSR 0x%08X, not 42 and mode 0x1F with N, Z clear\n",
+                cpu.arm.r[5], cpu.arm.cpsr);
+            goto done;
+        }
+    }
+    {
         /* an instruction costs its fetch, by region: an add and the branch back are 2 + 2 cycles from IWRAM (32 bits,
            no wait state) and 12 + 12 from EWRAM (16 bits, 2 wait states, a word two halfwords), so 2400 cycles run the
            loop 600 times from IWRAM and 100 from EWRAM */
