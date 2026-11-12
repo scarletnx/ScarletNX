@@ -297,6 +297,32 @@ static void test_process_memory_copies(void) {
     test_handle = NULL;
 }
 
+/* Two views of the same code at once, as exlaunch keeps them: a view of the module's whole code, mapped first, and
+   one page of it for each hook it writes. A hook written through the page and flushed at the code address changes
+   the code, and the whole view shows it after the flush. Its write back at the unmap then keeps the hook */
+static void test_process_memory_two_views(void) {
+    KObj process = {0};
+    u64 src = HEAP_BASE + 0x1000, whole = STACK_BASE + 0x20000, page = STACK_BASE + 0x40000, code;
+    process.type = KO_PROCESS;
+    process.refs = 1;
+    test_handle = &process;
+    CHECK(mem_map(src, 0x2000, MS_CODE, PERM_RX) == 0);
+    memset(GP(src), 0, 0x2000);
+    gw32(src + 0x11E0, 0x14000004); /* a function of one branch, as TotK's nnMain is */
+    CHECK(svc_map_process_memory(whole, 0x1234, src, 0x2000) == 0);
+    CHECK(svc_map_process_memory(page, 0x1234, src + 0x1000, 0x1000) == 0);
+    gw32(page + 0x1E0, 0x17FFFFF0); /* the hook's branch, through the page */
+    CHECK(gr32(src + 0x11E0) == 0x14000004 && gr32(whole + 0x11E0) == 0x14000004);
+    CHECK(svc_code_line(src + 0x11E0, &code) == 1 && code == src + 0x11C0);
+    CHECK(gr32(src + 0x11E0) == 0x17FFFFF0 && gr32(whole + 0x11E0) == 0x17FFFFF0);
+    CHECK(svc_code_line(src + 0x11E0, &code) == 0); /* every snapshot has it now */
+    CHECK(svc_unmap_process_memory(page, 0x1234, src + 0x1000, 0x1000) == 0);
+    CHECK(svc_unmap_process_memory(whole, 0x1234, src, 0x2000) == 0);
+    CHECK(gr32(src + 0x11E0) == 0x17FFFFF0);
+    CHECK(mem_unmap(src, 0x2000) == 0);
+    test_handle = NULL;
+}
+
 /* shared memory: the service's pointer and every guest mapping are the same pages */
 static void test_shared_memory(void) {
     KShmem* s = kshmem_new(0x2000, "test");
@@ -567,6 +593,7 @@ int main(int argc, char** argv) {
     mem_init();
     if (copies) {
         test_process_memory_copies();
+        test_process_memory_two_views();
         CHECK(mapping_depth == 0);
         printf("memory alias copies: %u checks passed\n", checks);
         return 0;
