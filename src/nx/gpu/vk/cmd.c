@@ -302,6 +302,19 @@ static int bar_room(const DevMemBudget* b, u64 add, int back) {
    with the GPU idle at the last value submitted and 2 MB of commands not recorded. The run ended there as "GPU
    stopped", where the GPU had nothing to do */
 #define VK_GPU_STUCK_NS 15000000000ull
+/* The driver gives the GPU's own report of a fault (VK_EXT_device_fault, record.c's fault_dump) only once it has
+   declared the device lost, and a GPU that stopped is not lost yet: the driver's own timeout comes later than
+   VK_GPU_STUCK_NS. A stopped GPU gets 20 s more to become a lost one, so that the report has the fault */
+static void stopped_wait_lost(VkSemaphore sem, u64 value, VkFence fence) {
+    VkSemaphoreWaitInfo wi = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &sem, .pValues = &value};
+    for (u32 i = 0; i < 20; i++) {
+        VkResult r = sem ? vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull)
+                         : vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, 1000000000ull);
+        if (r == VK_ERROR_DEVICE_LOST) LOG("vulkan: the driver declared the stopped GPU's device lost\n");
+        if (r != VK_TIMEOUT) return;
+    }
+}
 void vk_wait_semaphore(VkSemaphore sem, u64 value) {
     VkSemaphoreWaitInfo wi = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &sem, .pValues = &value};
@@ -338,7 +351,9 @@ void vk_wait_semaphore(VkSemaphore sem, u64 value) {
             idle = 0;
             moved = plat_ns();
         } else if (plat_ns() - moved >= VK_GPU_STUCK_NS) {
+            stopped_wait_lost(sem, value, VK_NULL_HANDLE);
             vk_checkpoint_dump("GPU stopped");
+            vk_ck_report(); /* what the submissions it has not finished hold */
             fatal("vulkan: the GPU stopped responding: no work finished for %llu s (at submission %llu, waiting for "
                   "%llu)",
                   VK_GPU_STUCK_NS / 1000000000ull, (unsigned long long)now, (unsigned long long)value);
@@ -361,7 +376,9 @@ int vk_wait_fence(VkFence fence) {
             return VK_OK(r);
         }
         if (plat_ns() - t0 >= VK_GPU_STUCK_NS) {
+            stopped_wait_lost(VK_NULL_HANDLE, 0, fence);
             vk_checkpoint_dump("GPU stopped");
+            vk_ck_report();
             fatal("vulkan: the GPU stopped responding: a fence wasn't signaled for %llu s",
                   VK_GPU_STUCK_NS / 1000000000ull);
         }

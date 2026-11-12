@@ -118,7 +118,8 @@ static void report_unfinished(const VkCkView* view, u64 done, u64 submitted) {
         for (u32 i = back; i > 0 && shown < 40; i--) {
             const VkCk* e = ck_find(view, view->newest - i + 1);
             if (!e || e->submit != sub || e->kind >= VK_CK_KINDS || e->kind == VK_CK_STRIP_DONE) continue;
-            WARN("vulkan:   %s: %u, %u, %u, %u\n", g_ck_names[e->kind], e->a, e->b, e->c, e->d);
+            WARN("vulkan:   marker %llu, %s: %u, %u, %u, %u\n", (unsigned long long)(view->newest - i + 1),
+                 g_ck_names[e->kind], e->a, e->b, e->c, e->d);
             shown++;
         }
     }
@@ -135,8 +136,8 @@ void vk_ck_report(void) {
     pm_unlock(&g_ck.lock);
     u64 submitted = 0, done = 0;
     vk_submit_progress(&submitted, &done);
-    WARN("vulkan: the device was lost with graphics submissions done %llu of %llu\n", (unsigned long long)done,
-         (unsigned long long)submitted);
+    WARN("vulkan: the device was lost or stopped with graphics submissions done %llu of %llu\n",
+         (unsigned long long)done, (unsigned long long)submitted);
     report_unfinished(&view, done, submitted);
     report_queue(&view, "graphics", g_vk.gfx);
     if (g_vk.compute != g_vk.gfx) report_queue(&view, "compute", g_vk.compute);

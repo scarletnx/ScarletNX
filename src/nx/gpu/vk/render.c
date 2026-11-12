@@ -5248,7 +5248,8 @@ retry:
         rec_CmdBindTransformFeedbackBuffersEXT(cb, 0, xcount, xbuf, xoff, xsize);
         rec_CmdBeginTransformFeedbackEXT(cb, 0, xcount, from, counter_offs);
     }
-    rec_draw_tag(vs ? vs->hash : 0, fs ? fs->hash : 0); /* the vertex or mesh program, the fragment program */
+    /* the vertex or mesh program, the fragment program, and where the draw's ranges of guest memory were bound */
+    rec_draw_tag(vs ? vs->hash : 0, fs ? fs->hash : 0, vk_buf_sources() | vk_tex_tags());
     /* outside the predication: a predicated region writes no timestamp. Only a Tracy client times a draw
        (gpuprof.c), so a build without Tracy makes no call per draw */
 #if defined(SNX_TRACY)
@@ -5271,7 +5272,7 @@ retry:
         rec_CmdDraw(cb, count, instances, first, base_instance);
     pred_end(cb, o->pred);
     if (zoned) vk_gpuprof_op_end(cb);
-    rec_draw_tag(0, 0); /* the runtime's own draws after it (clears, blits) name no program */
+    rec_draw_tag(0, 0, 0); /* the runtime's own draws after it (clears, blits) name no program */
     if (xcount) {
         rec_CmdEndTransformFeedbackEXT(cb, 0, xcount, counters, counter_offs);
         o->xfb_started = (u8)((o->xfb_started | xbound) & 15);
