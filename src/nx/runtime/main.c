@@ -803,8 +803,8 @@ static void frontend_loop(void) {
         /* the game's input and its display's vsync are guest work, which a pause holds back with the rest */
         paused = game_paused();
         if (!paused) {
-            [[maybe_unused]] u64 states = hid_update();
             SNX_ZONE(z_hid, "hid update");
+            [[maybe_unused]] u64 states = hid_update();
             SNX_ZONE_VALUE(z_hid, states);
             SNX_ZONE_END(z_hid);
             vi_vsync_tick();
