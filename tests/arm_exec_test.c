@@ -33,11 +33,19 @@ static void block_code(unsigned char* mem, uint32_t pc, unsigned value) {
     const uint32_t words[2] = {0xE3A00000u | (value & 0xFFu), 0xEF000000u}; /* mov r0, #value; svc #0 */
     for (unsigned k = 0; k < 8; k++) mem[pc + k] = (unsigned char)(words[k / 4] >> (k % 4 * 8));
 }
+/* the forget check's memory, out of the stack: the blocks' code, which places are taken, each block's address and the
+   block first compiled there */
+static struct {
+    unsigned char mem[0x1000 + FORGET_SPAN * 8];
+    unsigned char taken[FORGET_SPAN];
+    uint32_t at[FORGET_BLOCKS];
+    SnxArmBlock first[FORGET_BLOCKS];
+} g_forget;
 static int forget_test(void) {
-    static unsigned char mem[0x1000 + FORGET_SPAN * 8];
-    static unsigned char taken[FORGET_SPAN];
-    static uint32_t at[FORGET_BLOCKS];
-    static SnxArmBlock first[FORGET_BLOCKS];
+    unsigned char* mem = g_forget.mem;
+    unsigned char* taken = g_forget.taken;
+    uint32_t* at = g_forget.at;
+    SnxArmBlock* first = g_forget.first;
     SnxArmExecRange range = {0x1000, mem + 0x1000, FORGET_SPAN * 8};
     SnxArmExec* exec = snx_arm_exec_new(NULL, 0);
     uint32_t x = 12345;
@@ -80,11 +88,10 @@ static int forget_test(void) {
             fprintf(stderr, "FAIL: block %d, in the range forgotten, is still the one compiled before\n", i);
             failures++;
         }
-        SnxArmCPU cpu;
+        SnxArmCPU cpu = {0};
         Svc svc = {0};
-        memset(&cpu, 0, sizeof cpu);
         cpu.mem = mem;
-        cpu.mem_size = sizeof mem;
+        cpu.mem_size = sizeof g_forget.mem;
         cpu.cpsr = 0x10;
         cpu.r[15] = pc;
         (void)snx_arm_exec_run(exec, &cpu, &range, 1, syscall, &svc);

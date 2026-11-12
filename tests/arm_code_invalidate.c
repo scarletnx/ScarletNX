@@ -75,8 +75,7 @@ static void code(u32 addr, u32 value) {
 }
 /* r0 after the block at addr returns, entered there as arm.c's loop enters it */
 static u32 run(u32 addr, SnxArmBlock b) {
-    SnxArmCPU c;
-    memset(&c, 0, sizeof c);
+    SnxArmCPU c = {0};
     c.mem = g_memory;
     c.mem_size = sizeof g_memory;
     c.cpsr = 0x10; /* user mode, A32 */
