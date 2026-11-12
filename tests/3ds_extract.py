@@ -65,6 +65,12 @@ def main():
         # A finished extraction is used again, untouched, as the Switch driver does
         assert p.returncode == 0 and 'Using the extraction' in p.stdout and 'Extracting' not in p.stdout
         assert before == {p.relative_to(output): p.read_bytes() for p in output.rglob('*') if p.is_file()}
+        # an SMDH that names the game, with a red first pixel of its large icon
+        smdh = bytearray(0x36c0)
+        smdh[0:4] = b'SMDH'
+        for i, ch in enumerate('A Tested Title'):
+            put(smdh, 0x8 + 0x200 + i * 2, '<H', ord(ch))
+        put(smdh, 0x24C0, '<H', 0xF800)
         # Signature-dependent body positions, absent content and optional metadata.
         for sig in [0x10000, 0x10001, 0x10002, 0x10003, 0x10004, 0x10005]:
             run(cia(signature=sig, with_meta=False))
@@ -132,6 +138,12 @@ def main():
         ini = dict(line.split('=', 1) for line in (expected / f'{name}.ini').read_text().splitlines())
         assert ini.get('ctr_top_resolution') == '2' and ini.get('custom') == '1', ini
         assert not (data / 'work/3ds/input with spacesliteral').exists()
+        # a game with an SMDH, played: the launcher's .ini gets its name, and the icon is written beside it
+        run(cia(application=ncch(icon=bytes(smdh))), 0, 'Guest ExitProcess', extra=('--repo', str(data)),
+            explicit=False)
+        named = expected / f'{name}.ini'  # a --repo outside the user's data folder is its own launcher .ini
+        assert named.is_file() and 'name=A Tested Title' in named.read_text(), named
+        assert (data / 'recompiled' / name / 'icon.rgba').stat().st_size == 48 * 48 * 4
         # the copy plays its game alone, from the CIA its .ini names, with what --script= and --seconds= set
         env = {**os.environ, 'HOME': str(root), 'USERPROFILE': str(root)}
         p = subprocess.run([str(expected / name), '--script=100:1', '--seconds=20'], capture_output=True, text=True,
