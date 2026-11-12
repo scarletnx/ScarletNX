@@ -1114,7 +1114,8 @@ static int tex_upload_(Surf* t) {
     SNX_ZONE_T(z_up, "texture upload", "%ux%u", t->w, t->h);
     SNX_ZONE_VALUE(z_up, t->size);
     g_tex_loads.uploads++;
-    if (!t->bricks) __atomic_add_fetch(&g_tex_upload_bytes, t->size, __ATOMIC_RELAXED); /* a brick at a time for the others */
+    if (!t->bricks) /* a brick at a time for the others */
+        __atomic_add_fetch(&g_tex_upload_bytes, t->size, __ATOMIC_RELAXED);
     if (t->upload_valid || !t->bc7_wrote) later_wrote(t); /* the first load, or a write: not a failed one tried again */
     t->upload_valid = 0;
     t->wgen = vk_surf_gen(); /* even a new texture at a reused address invalidates an old target's copy */

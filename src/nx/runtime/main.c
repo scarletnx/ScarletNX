@@ -771,6 +771,26 @@ static void memory_floors(void) {
     LOG("memory: under %u MiB free: %s, %s\n", under, stats, gpu);
     log_sync();
 }
+#if defined(SNX_TRACY)
+/* The plots whose value is a counter's rate: each counter's total now, the unit its rate takes and its name. One base
+   per counter and one clock for them all, so a rate reads over the same second of wall time as the others */
+typedef struct {
+    const char* name;
+    u64 now;
+    u64 per;
+} RatePlot;
+#define RATE_PLOTS 16
+static void rate_plots(const RatePlot* p, unsigned n, u64 now_ns) {
+    static u64 was[RATE_PLOTS];
+    static u64 last_ns;
+    double secs = last_ns ? (double)(now_ns - last_ns) / 1e9 : 0.0;
+    for (unsigned i = 0; i < n; i++) {
+        if (secs > 0) SNX_PLOT(p[i].name, (double)(p[i].now - was[i]) / p[i].per / secs);
+        was[i] = p[i].now;
+    }
+    last_ns = now_ns;
+}
+#endif
 static void frontend_loop(void) {
     const u64 period = 1000000000u / VI_REFRESH_HZ;
     u64 tick = 0, next = plat_ns(), now, changed = next, rate_at = next, resources_at = next;
@@ -783,7 +803,10 @@ static void frontend_loop(void) {
         /* the game's input and its display's vsync are guest work, which a pause holds back with the rest */
         paused = game_paused();
         if (!paused) {
-            hid_update();
+            [[maybe_unused]] u64 states = hid_update();
+            SNX_ZONE(z_hid, "hid update");
+            SNX_ZONE_VALUE(z_hid, states);
+            SNX_ZONE_END(z_hid);
             vi_vsync_tick();
         }
         if (++tick % 60 == 0) ini_poll(0);
@@ -792,67 +815,24 @@ static void frontend_loop(void) {
 #if defined(SNX_TRACY)
         SNX_PLOT("guest memory", used_memory());
         {
-            /* the io plots' bases */
-            static u64 was_read, was_written, last_ns;
-            u64 read = __atomic_load_n(&g_fs_bytes_read, __ATOMIC_RELAXED);
-            u64 written = __atomic_load_n(&g_fs_bytes_written, __ATOMIC_RELAXED);
-            u64 now_ns = plat_ns();
-            double secs = last_ns ? (double)(now_ns - last_ns) / 1e9 : 0.0;
-            if (secs > 0) {
-                SNX_PLOT("io read MB/s", (double)(read - was_read) / 1048576.0 / secs);
-                SNX_PLOT("io write MB/s", (double)(written - was_written) / 1048576.0 / secs);
-            }
-            was_read = read;
-            was_written = written;
-            last_ns = now_ns;
-        }
-        {
-            /* the ownership plots' bases */
-            static u64 was_faults, was_land_bytes, last_ns;
-            u64 faults = own_faults(), land_bytes = own_land_bytes(), now_ns = plat_ns();
-            double secs = last_ns ? (double)(now_ns - last_ns) / 1e9 : 0.0;
-            if (secs > 0) {
-                SNX_PLOT("own traps/s", (double)(faults - was_faults) / secs);
-                SNX_PLOT("own land MB/s", (double)(land_bytes - was_land_bytes) / 1048576.0 / secs);
-            }
-            was_faults = faults;
-            was_land_bytes = land_bytes;
-            last_ns = now_ns;
-        }
-        {
-            /* the texture plots' bases */
-            static u64 was_hits, was_misses, was_upload_bytes, was_frees, last_ns;
-            u64 hits = __atomic_load_n(&g_tex_cache_hits, __ATOMIC_RELAXED);
-            u64 misses = __atomic_load_n(&g_tex_cache_misses, __ATOMIC_RELAXED);
-            u64 upload_bytes = __atomic_load_n(&g_tex_upload_bytes, __ATOMIC_RELAXED);
-            u64 frees = __atomic_load_n(&g_tex_frees, __ATOMIC_RELAXED);
-            u64 now_ns = plat_ns();
-            double secs = last_ns ? (double)(now_ns - last_ns) / 1e9 : 0.0;
-            if (secs > 0) {
-                SNX_PLOT("texture cache hits/s", (double)(hits - was_hits) / secs);
-                SNX_PLOT("texture cache misses/s", (double)(misses - was_misses) / secs);
-                SNX_PLOT("texture upload MB/s", (double)(upload_bytes - was_upload_bytes) / 1048576.0 / secs);
-                SNX_PLOT("texture frees/s", (double)(frees - was_frees) / secs);
-            }
-            was_hits = hits;
-            was_misses = misses;
-            was_upload_bytes = upload_bytes;
-            was_frees = frees;
-            last_ns = now_ns;
-        }
-        {
-            /* the syncpoint plots' bases */
-            static u64 was_waits, was_timeouts, last_ns;
-            u64 waits = 0, timeouts = 0, now_ns = plat_ns();
-            double secs = last_ns ? (double)(now_ns - last_ns) / 1e9 : 0.0;
+            /* the rates: one base per counter and one clock for them all */
+            u64 waits = 0, timeouts = 0;
             syncpt_wait_stats(&waits, &timeouts);
-            if (secs > 0) {
-                SNX_PLOT("syncpt waits/s", (double)(waits - was_waits) / secs);
-                SNX_PLOT("syncpt timeouts/s", (double)(timeouts - was_timeouts) / secs);
-            }
-            was_waits = waits;
-            was_timeouts = timeouts;
-            last_ns = now_ns;
+            RatePlot rates[] = {
+                {"io read MB/s", __atomic_load_n(&g_fs_bytes_read, __ATOMIC_RELAXED), 1u << 20},
+                {"io write MB/s", __atomic_load_n(&g_fs_bytes_written, __ATOMIC_RELAXED), 1u << 20},
+                {"own traps/s", own_faults(), 1},
+                {"own land MB/s", own_land_bytes(), 1u << 20},
+                {"texture cache hits/s", __atomic_load_n(&g_tex_cache_hits, __ATOMIC_RELAXED), 1},
+                {"texture cache misses/s", __atomic_load_n(&g_tex_cache_misses, __ATOMIC_RELAXED), 1},
+                {"texture upload MB/s", __atomic_load_n(&g_tex_upload_bytes, __ATOMIC_RELAXED), 1u << 20},
+                {"texture frees/s", __atomic_load_n(&g_tex_frees, __ATOMIC_RELAXED), 1},
+                {"syncpt waits/s", waits, 1},
+                {"syncpt timeouts/s", timeouts, 1},
+                {"hid updates/s", hid_updates(), 1},
+            };
+            typedef char snx_check_rates[sizeof rates / sizeof *rates <= RATE_PLOTS ? 1 : -1];
+            rate_plots(rates, sizeof rates / sizeof *rates, plat_ns());
         }
 #endif
         pause_unattended();

@@ -56,7 +56,8 @@ void ___tracy_emit_logString(int8_t severity, int32_t color, int32_t callstack_d
     g_test.msgs++;
     g_test.msg_size = size;
     snprintf(g_test.msg, sizeof g_test.msg, "%.*s", (int)(size < sizeof g_test.msg - 1 ? size : sizeof g_test.msg - 1),
-             txt);}
+             txt);
+}
 uint64_t ___tracy_alloc_srcloc_name(uint32_t line, const char* source, size_t source_size, const char* function,
                                     size_t function_size, const char* name, size_t name_size, uint32_t color) {
     (void)line, (void)source, (void)source_size, (void)function, (void)function_size, (void)name, (void)name_size;

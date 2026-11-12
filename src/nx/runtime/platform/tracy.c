@@ -430,6 +430,8 @@ static void tracy_plots_send(void) {
         {"present pace ms", 0, 0, 1},
         {"syncpt waits/s", 0, 0, 1},
         {"syncpt timeouts/s", 0, 0, 1},
+        {"hid updates/s", 0, 0, 1},
+        {"audio mix ms", 0, 0, 1},
         {"guest memory", 1, 0, 1},
         {"compute cpu reads", 0, 0, 1},
         {"gpu thread idle", 0, 1, 0},

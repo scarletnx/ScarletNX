@@ -290,8 +290,8 @@ wait
 
 The timeline has the frontend tick,
 presents, GPU jobs and idle waits, Vulkan record/land/release/submit/wait/present work, shader translation and
-pipeline creation, texture uploads, the BC7 encodes between frames, the landings of the guest memory the GPU owns, the audio and host1x clocks,
-every returning SVC except the waits above (named
+pipeline creation, texture uploads, the BC7 encodes between frames, the landings of the guest memory the GPU owns,
+the input tick, the audio and host1x clocks, every returning SVC except the waits above (named
 as in `hos.svc`) and every IPC command (the service and command number in the zone's text). Frames appear with the
 `frame ms`, guest memory, GPU memory and budget, per-frame draws, shader translations, pipelines made, texture
 uploads, and the pipeline cache's hits and the time making and waiting for pipelines. The texture cache's rates
@@ -343,6 +343,7 @@ second tool. The cost of each is one atomic load per emission, and each goes out
 | How much of a frame does the GPU's hold on guest memory cost, and was a stall a landing? | the `own land` zones (the bytes and the ranges each lands), `own bytes`, `own traps/s`, `own land MB/s` |
 | Does the texture cache serve a level, or is the same texture encoded and uploaded again? | the `texture BC7 encode` zones, `texture cache hits/s`, `texture cache misses/s`, `texture upload MB/s`, `texture frees/s` |
 | Which wait held a thread back, a syncpoint, a present's fence or the display's pace? | `syncpt wait ms`, `present fence wait ms`, `present pace ms`, `syncpt waits/s`, `syncpt timeouts/s`, and a message names a syncpoint that waited more than a millisecond |
+| Does the input tick cost anything, and which voice or part of the audio frame is its cost? | the `hid update` zone with the states it wrote, `hid updates/s`, the `audio voice` zones with their microseconds, `audio mix ms` beside `audio frame ms` |
 | Is the input and output keeping up? | `io read MB/s`, `io write MB/s`, `guest memory` |
 | Is a frame being dropped or a queue growing? | `submits pending`, `compute pending`, `draws`, `dispatches` |
 
