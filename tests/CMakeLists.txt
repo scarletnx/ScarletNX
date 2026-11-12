@@ -1486,6 +1486,13 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     snx_hookgen(snx-test-nn-time SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/time.hook")
     target_link_libraries(snx-test-nn-time PRIVATE OpenSSL::Crypto)
     add_test(NAME nn_time COMMAND snx-test-nn-time)
+    # the native nn::fs (nn/fs.c): a path's mount and limits as the SDK's C library asks them, and a system archive
+    # mounted by its data id, with the file server's core stubbed
+    add_executable(snx-test-nn-fs nn_fs.c)
+    snx_test_target(snx-test-nn-fs 23)
+    snx_service_swipc(snx-test-nn-fs)
+    snx_hookgen(snx-test-nn-fs SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/fs.hook")
+    add_test(NAME nn_fs COMMAND snx-test-nn-fs)
     # the native nn::pctl (nn/pctl.c): the answers of a console with no parental controls set
     add_executable(snx-test-nn-pctl nn_pctl.c)
     snx_test_target(snx-test-nn-pctl 23)

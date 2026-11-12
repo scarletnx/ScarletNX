@@ -71,6 +71,11 @@
 #define SYM_FREE_SPACE         "_ZN2nn2fs16GetFreeSpaceSizeEPlPKc"
 #define SYM_TOTAL_SPACE        "_ZN2nn2fs17GetTotalSpaceSizeEPlPKc"
 #define SYM_COMMIT             "_ZN2nn2fs6CommitEPKc"
+#define SYM_IS_PATH_MOUNTED    "_ZN2nn2fs13IsPathMountedEPKc"
+#define SYM_PATH_MAX           "_ZN2nn2fs16GetPathLengthMaxEPmPKc"
+#define SYM_ENTRY_NAME_MAX     "_ZN2nn2fs21GetEntryNameLengthMaxEPmPKc"
+#define SYM_UTF16_PATH_MAX     "_ZN2nn2fs21GetUtf16PathLengthMaxEPbPmPKc"
+#define SYM_UTF16_NAME_MAX     "_ZN2nn2fs26GetUtf16EntryNameLengthMaxEPbPmPKc"
 #define SYM_COMMIT_OPT         "_ZN2nn2fs6CommitEPKcRKNS0_12CommitOptionE"
 #define SYM_COMMIT_SAVE        "_ZN2nn2fs14CommitSaveDataEPKc"
 #define SYM_READ_CACHE_LIST    "_ZN2nn2fs20ReadCacheStorageListEPiPNS0_16CacheStorageInfoENS0_22CacheStorageListHandleEi"
@@ -103,6 +108,7 @@ enum {
 #define MOUNT_NAME_MAX NNFS_NAME
 #define ENTRY_SIZE     0x310 /* nn::fs::DirectoryEntry: name[0x301], type (s8) at 0x304, size (s64) at 0x308 */
 #define ROM_NONE       0xFFFFFFFFu
+#define PATH_LENGTH_MAX 0x300 /* what the SDK takes as a path's and a name's limit when the attribute names none */
 #define ROM_DIR_FIXED  24 /* parent, sibling, first child directory, first file, hash, name length */
 #define ROM_FILE_FIXED 32 /* parent, sibling, data offset (u64), size (u64), hash, name length */
 #define DIR_NO_SIZE    0x40000000u /* OpenDirectory's flag: the entries need no file size */
@@ -335,7 +341,7 @@ static u32 rom_load(NRom* rm, int game, u64 data_id) {
     if (game)
         snprintf(what, sizeof what, "the game's RomFS");
     else {
-        snprintf(what, sizeof what, "the add-on content %016llx", (unsigned long long)data_id);
+        snprintf(what, sizeof what, "the data %016llx", (unsigned long long)data_id);
         u32 r = fs_storage_open(data_id, &rm->st);
         if (r) {
             *rm = (NRom){0};
@@ -584,21 +590,22 @@ u32 nnfs_query_mount_rom_cache_size(CPU* c, u64 size) {
     return 0;
 }
 
-/* The add-on content of index: its data storage (data id = the game's base id + index), as aoc's PrepareAddOnContent,
-   which always finds it in place here, and OpenDataStorageByDataId give it, its tables read into a free image (lock
-   held): the image, or -1 with *r the Result */
-static int aoc_image(i32 index, u32* r) {
+/* The data storage of id (an add-on content's, or a system archive's, as OpenDataStorageByDataId gives it), its tables
+   read into a free image (lock held): the image, or -1 with *r the Result */
+static int data_image(u64 id, u32* r) {
     int rom = -1;
     for (int i = 1; i < NMOUNTS && rom < 0; i++)
         if (!g_hle.nnfs.roms[i].used) rom = i;
     if (rom < 0) fatal("nn::fs: more than %d RomFS images mounted natively", NMOUNTS - 1);
-    u64 id = aoc_base_id(g_hle.kernel.title_id) + (u64)(u32)index;
     rom_drop(&g_nnfs.roms[rom]); /* an image of a state from before a load */
     *r = rom_load(&g_nnfs.roms[rom], 0, id);
     if (*r) return -1;
     g_hle.nnfs.roms[rom] = (NnfsRom){.used = 1, .data_id = id};
     return rom;
 }
+/* The add-on content of index: its data id is the game's base id + index, as aoc's PrepareAddOnContent, which
+   always finds it in place here, gives it */
+static int aoc_image(i32 index, u32* r) { return data_image(aoc_base_id(g_hle.kernel.title_id) + (u64)(u32)index, r); }
 
 u32 nnfs_mount_add_on_content(CPU* c, u64 name, i32 index, u64 cache, u64 cache_size) {
     pm_lock(&g_nnfs.lock);
@@ -1200,6 +1207,36 @@ u32 nnfs_get_entry_type(CPU* c, u64 type, u64 path) {
     }
     pm_unlock(&g_nnfs.lock);
     return done("GetEntryType", r);
+}
+
+/* What the SDK's C library asks of a path before it opens it (open, opendir, stat; SDK 16 on). The SDK answers the
+   limits from its file system's attribute, which the service gave all zero: 0x300 for the path and for an entry's
+   name, and no UTF-16 limit (false, 0). A path on no native mount is the SDK's own to answer */
+int nnfs_is_path_mounted(CPU* c, u64 path) {
+    char p[PATH_MAX_LEN + 1];
+    u32 r;
+    if (path_take(c, path, p, &r) < 0) return (int)(sdk_own(c, SYM_IS_PATH_MOUNTED) & 1);
+    pm_unlock(&g_nnfs.lock);
+    return 1;
+}
+static u32 length_max(CPU* c, const char* symbol, u64 has, int utf16, u64 out, u64 path) {
+    char p[PATH_MAX_LEN + 1];
+    u32 r;
+    if (path_take(c, path, p, &r) < 0) return (u32)sdk_own(c, symbol);
+    pm_unlock(&g_nnfs.lock);
+    if (utf16 && has) *hook_host(c, has) = 0;
+    if (out) put_u64(c, out, utf16 ? 0 : PATH_LENGTH_MAX);
+    return 0;
+}
+u32 nnfs_get_path_length_max(CPU* c, u64 out, u64 path) { return length_max(c, SYM_PATH_MAX, 0, 0, out, path); }
+u32 nnfs_get_entry_name_length_max(CPU* c, u64 out, u64 path) {
+    return length_max(c, SYM_ENTRY_NAME_MAX, 0, 0, out, path);
+}
+u32 nnfs_get_utf16_path_length_max(CPU* c, u64 has, u64 out, u64 path) {
+    return length_max(c, SYM_UTF16_PATH_MAX, has, 1, out, path);
+}
+u32 nnfs_get_utf16_entry_name_length_max(CPU* c, u64 has, u64 out, u64 path) {
+    return length_max(c, SYM_UTF16_NAME_MAX, has, 1, out, path);
 }
 
 /* the changes of a mount's tree */
