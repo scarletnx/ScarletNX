@@ -32,8 +32,9 @@ static int gsv_kuser_unknown(SvcObj* self, IpcCtx* c) {
     }
     return ipc_unknown(self, c);
 }
-/* The camera context's session, with no camera behind it: every command answers the camera service's result of module
-   452 and description 6, whose name nobody documents. One game's main lets it pass when it opens the camera "Default" */
+/* The camera context's session, with no camera behind it: every command but 21 (gsv.swipc) answers the camera
+   service's result of module 452 and description 6, whose name nobody documents. One game's main lets it pass when it
+   opens the camera "Default" */
 static int gsv_camera_none(SvcObj* self, IpcCtx* c) {
     u32 i;
     (void)self;
@@ -91,6 +92,10 @@ static int nn_gsv_UserSession_InitializeCameraContext(SvcObj* self, u64 version,
 static int nn_gsv_UserSession_DestroyCameraContext(SvcObj* self) {
     (void)self;
     R_SUCCEED();
+}
+static int nn_gsv_CameraSession_GetEvent(SvcObj* self, u32 id, u32* event) {
+    (void)self, (void)id;
+    return new_event(event, "gsv camera", 0);
 }
 static int nn_gsv_UserSession_OpenGraphicsFrameSession(SvcObj* self, u32* session) {
     (void)self;
@@ -372,6 +377,18 @@ static int nn_gsv_UserSession_CalculateVideoImageRequirements(SvcObj* self,
     (void)self;
     memcpy(words, preference, sizeof words);
     return native_video_requirements(words, count, size, alignment);
+}
+static int nn_gsv_UserSession_CreateChatImagePool(SvcObj* self, const nn_gsv_VideoImagePreference* preference,
+                                                  u32 count, u32 memory_handle, u32* image) {
+    return nn_gsv_UserSession_CreateVideoImagePool(self, preference, count, memory_handle, image);
+}
+static int nn_gsv_UserSession_DestroyChatImagePool(SvcObj* self, u32 image) {
+    return nn_gsv_UserSession_DestroyVideoImagePool(self, image);
+}
+static int nn_gsv_UserSession_CalculateChatImageRequirements(SvcObj* self,
+                                                             const nn_gsv_VideoImagePreference* preference, u32 count,
+                                                             u64* size, u64* alignment) {
+    return nn_gsv_UserSession_CalculateVideoImageRequirements(self, preference, count, size, alignment);
 }
 static int nn_gsv_UserSession_CreateNativeImage(SvcObj* self, const u8* request, u32* image_handle) {
     u32 memory_handle;
