@@ -117,7 +117,11 @@ u64 mem_fit_budget(u64 available, u64 footprint) {
     u64 limit = available + footprint, other = fit_other(footprint);
     return limit > other + FIT_LEAST ? limit - other : FIT_LEAST;
 }
+/* Auto tells no less than the console's own pool (an Ounce game's included): a device with less meets the system's
+   kill, as with Off, rather than a game that stops once the smaller amount it was told runs out. Only what memory_gb
+   adds above the console's is trimmed to the measure */
 void mem_fit(int measured, u64 available, u64 footprint) {
+    u64 budget, console = pool_of(4);
     g_hle.svcmem.fit = g_hle.svcmem.fit_available = g_hle.svcmem.fit_footprint = 0;
     if (!measured) {
         LOG("memory: memory_fit_mode=0 (Auto), but this system tells neither what it can still give nor what the process holds: "
@@ -125,9 +129,18 @@ void mem_fit(int measured, u64 available, u64 footprint) {
             (unsigned long long)(process_memory_total() >> 20));
         return;
     }
-    g_hle.svcmem.fit = mem_fit_budget(available, footprint);
+    budget = mem_fit_budget(available, footprint);
+    g_hle.svcmem.fit = budget > console ? budget : console;
     g_hle.svcmem.fit_available = available;
     g_hle.svcmem.fit_footprint = footprint;
+    if (budget < console) {
+        LOG("memory: memory_fit_mode=0 (Auto): the game is told %llu MiB, as Auto tells no less than the console's %llu, "
+            "where the measure leaves %llu (the system can still give %llu MiB, the process holds %llu)\n",
+            (unsigned long long)(process_memory_total() >> 20), (unsigned long long)(console >> 20),
+            (unsigned long long)(budget >> 20), (unsigned long long)(available >> 20),
+            (unsigned long long)(footprint >> 20));
+        return;
+    }
     LOG("memory: memory_fit_mode=0 (Auto): the game is told %llu MiB, the console's being %llu (the system can still give %llu MiB, "
         "the process holds %llu)\n",
         (unsigned long long)(process_memory_total() >> 20), (unsigned long long)(reach(pool()) >> 20),

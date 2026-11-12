@@ -44,8 +44,9 @@ implementation in ScarletNX, not a port of Atmosphere's GPL-2.0-only code.
 - With `memory_fit_mode=0` (Auto, the default), the pool the game is told is at most what
   the host can still give the process as the game starts, plus what the process
   holds, less what the rest takes (the runtime then and 256 MiB for the graphics,
-  700 MiB at least), never under 1 GiB (`mem_fit_budget`). Every GetInfo above and
-  the heap's limit follow it.
+  700 MiB at least), never under 1 GiB (`mem_fit_budget`), and never under the
+  console's own pool, an Ounce game's included (`mem_fit`): a host with less than
+  the console's runs as with Off. Every GetInfo above and the heap's limit follow it.
 - Validate heap requests in 2 MiB steps and reject sizes at or above 8 GiB with
   InvalidSize. Keep the heap-region/process maximum and optional `heap_max_mb`
   checks separate from resource-limit failures.
