@@ -6540,6 +6540,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_vertex_input_layouts());
     CHECK(!check_vertex_input_file_key());
     CHECK(!check_targetless_stores());
+    CHECK(!check_deko_vertex_storage());
     CHECK(!check_storage_image_keep());
     CHECK(!check_storage_buffer_keep());
     CHECK(!check_packed_depth());

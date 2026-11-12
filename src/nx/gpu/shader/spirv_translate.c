@@ -1570,7 +1570,6 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             if (!tag) tag = shader_gbuf_tag_any(stage, B(w, 34, 5), B(w, 20, 14) * 4);
         } else if (op == O_LEA_LR && !B(w, 45, 2) && b < 255)
             tag = gtags[b];
-        if (tag == 0xb1 && op != O_MOV_C && op != O_LDC && op != O_MOV_R) tag = 0;
         if (op == O_LDG || op == O_STG || op == O_RED || op == O_ATOM || op == O_ATOM_CAS) {
             int current = a < 255 ? gtags[a] : 0, slot = 0;
             if (!current && (op == O_LDG || op == O_STG) && B(w, 48, 3) >= 4) {
@@ -1595,15 +1594,6 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                 }
                 gb_at[i] = 255; /* disabled direct CBE export */
             } else {
-                if (current == 0xb1) {
-                    i32 byte_offset = (i32)(B(w, 20, 24) << 8) >> 8;
-                    u32 words = B(w, 48, 3) == 5 ? 2 : B(w, 48, 3) >= 6 ? 4 : 1;
-                    if ((op != O_LDG && op != O_STG) || byte_offset < 0 || (u32)byte_offset + words * 4 > 16) {
-                        free(gb_at);
-                        free(pop_targets);
-                        return direct_reject(si, "vertex pointer access exceeds known range");
-                    }
-                }
                 u32 descriptor = (u32)(current - 1);
                 for (; slot < ngbuf && gbuf_off[slot] != descriptor; slot++) {}
                 if (slot == ngbuf) {
@@ -1633,12 +1623,11 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         if (shader_writes_reg(w, op, d)) gtags[d] = tag;
     }
     /* an untracked access needs a tracked buffer to be in; one that stores may write any of them */
-    for (int slot = 0; untracked_at && slot < ngbuf; slot++)
-        if (gbuf_off[slot] != 0xb0) {
-            untracked_at = 0;
-            if (untracked_store) gbuf_wmask |= (1u << ngbuf) - 1;
-            if (untracked_load) gbuf_rmask |= (1u << ngbuf) - 1;
-        }
+    if (untracked_at && ngbuf) {
+        untracked_at = 0;
+        if (untracked_store) gbuf_wmask |= (1u << ngbuf) - 1;
+        if (untracked_load) gbuf_rmask |= (1u << ngbuf) - 1;
+    }
     if (untracked_at) return shader_untracked_reject(si, insn, untracked_at, untracked_reg, gb_at, pop_targets);
     /* a compute program's stores and atomics record the bytes they write in its write log (write_log.c), a part for
        each buffer it writes, in slot order. Every store to such a buffer must log, or the renderer, which lands only

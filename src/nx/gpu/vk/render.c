@@ -1411,14 +1411,14 @@ static u64 gbuf_pointer(u32 off, const u32* v) {
     return pointer && gmmu_run(pointer, 4, &cpu) ? pointer : 0;
 }
 u32 vk_gbuf_desc(int stage, u32 off, const u32* v, u64* addr) {
-    u32 size = stage == ST_VS && off == 0xb0 ? 16 : v[2];
+    u32 size = v[2];
     u64 cpu = 0;
     /* An address with nothing mapped there is no buffer, as address 0 is: it reads zeros and its writes land nowhere,
        as the copies of guest memory gave it before. The program cannot access it, or it would fault on the console.
        An Ounce game's dispatches leave such an address in a slot, and the GPU mirror took no dispatch with one: each
        copied its written buffers on the CPU instead, about 230 MB a second of one race */
     *addr = SH_GBUF_INDIRECT(off) ? gbuf_pointer(off, v) : ((u64)v[1] << 32) | v[0];
-    if (!shader_gbuf_sized(stage, off) && off != 0xb0) {
+    if (!shader_gbuf_sized(stage, off)) {
         /* a bare address in the program's own constant buffer has no size beside it: the memory mapped from it on,
            whole words, to the cap below (Eden binds such a buffer to the end of its mapping, at most 8 MiB) */
         u64 run = *addr ? gmmu_run(*addr, 16u << 20, &cpu) : 0;

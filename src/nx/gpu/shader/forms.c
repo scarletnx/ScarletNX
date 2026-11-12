@@ -264,8 +264,6 @@ int shader_helper_side_effect(int op) {
            op == O_SUATOM_CAS;
 }
 int shader_gbuf_tag(int stage, u32 index, u32 offset) {
-    /* The vertex system buffer also supplies a bare 64-bit output pointer at 0xb0. */
-    if (stage == ST_VS && index == 0 && offset == 0xb0) return 0xb1;
     return index == 0 && shader_gbuf_sized(stage, offset) && !(offset & 15) ? (int)offset + 1 : 0;
 }
 /* A bare 64-bit address in a constant buffer of the program's own (1 to 17: cbuf 0 is NVN's, its descriptors and
