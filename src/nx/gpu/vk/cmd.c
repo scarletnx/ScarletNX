@@ -990,9 +990,16 @@ void vk_finishes_log(void) {
     for (u32 i = 0; i < FINISH_SITES && g_finish_sites[i].file; i++) g_finish_sites[i].n = g_finish_sites[i].ns = 0;
 }
 
-/* A present ends the frame: the next one records in the other slot, once that slot's previous use is done */
+/* A present ends the frame: the next one records in the other slot, once that slot's previous use is done. The
+   submission's landing can begin a command buffer in this slot again (vk_defer_call's vk_cmd), which then goes too,
+   without a landing of its own. Left open, the frames coming round to the slot found it recording: vk_cmd handed it
+   out without beginning it on the recording thread, so its commands went to the driver from the GPU thread,
+   descriptor set stand-ins too (record.c). The landing stays before the switch: after it, a vk_cmd in the landing
+   would recycle the next slot, whose own results its land_through can't land inside this landing (g_landing), and
+   whose rings they are in would be reused */
 void vk_frame_next(void) {
     if (g_fr[g_cur].recording) submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_FRAME);
+    if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_FRAME);
     g_cur = (g_cur + 1) % VK_FRAMES;
     g_fr[g_cur].fresh = 1;
     g_frame_id++;
