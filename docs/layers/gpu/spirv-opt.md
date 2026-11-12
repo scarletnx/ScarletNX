@@ -63,6 +63,29 @@ three words each.
 On the Maxwell translator's modules it removes the access chains, bitcasts, negations and field extracts a block
 repeats, and the second load of a constant buffer word or an input.
 
+## Integer folds and identities
+
+The same walk folds an instruction before it looks it up, so what it folds to is what the next ones are numbered
+with (spirv-opt's constant folding and instruction simplification, for what the translators write). Only 32-bit
+integers of either sign and booleans, on constants that are no specialization constants:
+
+- on constants alone: `OpIAdd`, `OpISub`, `OpIMul`, the bitwise ones, `OpNot`, `OpSNegate`, the three shifts (by less
+  than 32), `OpBitFieldUExtract` and `OpBitFieldSExtract` (a field that ends by bit 32), the integer comparisons, the
+  logical instructions, and an `OpBitcast` between the two signs;
+- one operand that decides: `x & 0`, `x * 0`, `x | ~0`, `x - x`, `x ^ x`, `false && x`, `true || x`;
+- one operand that leaves the other: `x + 0`, `x - 0`, `x | 0`, `x ^ 0`, a shift by 0, `x * 1`, `x & ~0`, `x & x`,
+  `x | x`, `true && x`, `false || x`, `x && x`, `x || x`, with the constant on either side of what commutes;
+- of any type: an `OpSelect` whose condition is a constant or whose two values are one id, and an `OpBitcast` to
+  the type its operand has, or of a bitcast from that type.
+
+An instruction becomes one of its operands only when that operand has the instruction's type: a signed sum of an
+unsigned value and zero stays. A constant result reads the module's constant of that type and value; when there is
+none, the instruction's own id becomes that constant, declared before the first function in the room the
+instruction left, so a module never grows. Float arithmetic, divisions and a decorated instruction are not folded.
+
+On the Maxwell translator's modules: `x + 0` for a register's offset, masks and shifts of immediates, selects on a
+constant condition, and bitcasts there and back.
+
 ## Dead code
 
 `spv_opt_dead_code` takes out of a module's functions:
@@ -85,7 +108,7 @@ that never read them.
 
 ## Tests
 
-- `spirv_opt` (`tests/spirv_opt.c`) and `spirv_opt_values` (`tests/spirv_opt_values.c`): each rule above on a module
-  written word by word.
+- `spirv_opt` (`tests/spirv_opt.c`), `spirv_opt_values` (`tests/spirv_opt_values.c`) and `spirv_opt_fold`
+  (`tests/spirv_opt_fold.c`): each rule above on a module written word by word.
 - `vulkan_headless`, `check_translation_dead_code` and `check_translation_values`: the runtime's module is the
   translator's with the passes run, and the device takes it.
