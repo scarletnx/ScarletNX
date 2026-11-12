@@ -271,12 +271,12 @@ static int play(const char* folder, bool recompile, double seconds, const char* 
                                          snx_is_dir(process->patch) ? "patch" : "app")
                              ? NULL
                              : snx_read_file(sfo_path, &sfo_size);
-    title = sfo ? vita_sfo_string(sfo, sfo_size, "TITLE") : NULL;
+    title = sfo ? snx_sfo_string(sfo, sfo_size, "TITLE") : NULL;
     /* the window's title as the 3DS driver's and a Switch game's: the game's name, then the build; the log's line with
        the day its commit was made */
     char* header = snx_format("%s - %s", title ? title : image.name, snx_build_info());
     char run[SNX_RUN_LOG_LINE];
-    printf("Game: %s - %s\n", title ? title : image.name, snx_build_log_line());
+    printf("ScarletNX - %s (Vita)\nbuild: %s\n", title ? title : image.name, snx_build_log_line());
     snx_run_log_line(run, (long long)time(NULL));
     printf("%s\n", run);
     vita_present_init(header ? header : image.name, shot);
@@ -416,7 +416,7 @@ int snx_vita_main(int argc, char** argv) {
                                          ? NULL
                                          : snx_read_file(sfo_path, &size))
                                   : vita_vpk_member(input, "sce_sys/param.sfo", &size, error, sizeof error);
-        char* title = sfo ? vita_sfo_string(sfo, size, "TITLE_ID") : NULL;
+        char* title = sfo ? snx_sfo_string(sfo, size, "TITLE_ID") : NULL;
         free(sfo);
         if (!vita_title_id(title)) {
             fprintf(stderr, "scarletnx-vita: %s has no title ID in its param.sfo%s%s\n", input, sfo ? "" : ": ",

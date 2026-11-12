@@ -219,7 +219,7 @@ static void title_id(VitaProcess* p) {
         char* path = snx_path_join(i ? p->app : p->patch, "sce_sys/param.sfo");
         size_t size = 0;
         unsigned char* sfo = path ? snx_read_file(path, &size) : NULL;
-        title = sfo ? vita_sfo_string(sfo, size, "TITLE_ID") : NULL;
+        title = sfo ? snx_sfo_string(sfo, size, "TITLE_ID") : NULL;
         if (title && !vita_title_id(title)) free(title), title = NULL;
         free(sfo);
         free(path);
