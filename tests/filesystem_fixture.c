@@ -16,8 +16,6 @@ typedef struct {
     size_t size;
 } Fixture;
 
-/* a save as a run that ended with no commit left it: a file committed, and writes beside the save that never were */
-#define CRASHED_SAVE "service-data/save/user.07070707070707070707070707070707"
 static const Fixture files[] = {{"data/drive/seed.bin", "initial", 7},
                                 {"data/drive/folder/nested.bin", "nested", 6},
                                 {"data/drive/folder/sub/deep.bin", "deep", 4},
@@ -37,9 +35,6 @@ static const Fixture files[] = {{"data/drive/seed.bin", "initial", 7},
 #endif
                                 {"service-data/root/root.txt", "root", 4},
                                 {"service-data/save/temp/last-launch.bin", "left", 4},
-                                {CRASHED_SAVE "/kept.bin", "kept", 4},
-                                {CRASHED_SAVE ".pending/kept.bin", "torn", 4},
-                                {CRASHED_SAVE ".pending/dir/deep.bin", "torn", 4},
                                 {"raw-data/romfs.bin", "RAW\0ROMFS\xff bytes", 16}};
 
 static int fixtures(const char* scratch) {

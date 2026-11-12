@@ -669,10 +669,7 @@ there until Settings > App > Move Old Files moves it. Those an older version lef
 `0123456789abcdeffedcba9876543210`, are played there until you move them ([Deprecations](deprecations.md)). Beside
 an Account, Device or BCAT save's folder, `<its folder>.version` names the program and version that last committed it:
 when an older version of the game opens a save a newer one wrote, which a game may not read, the log says both, and so
-does the report if the game crashes or stops. While a game runs, `<its folder>.pending` beside a save's folder holds
-what the game wrote and has not committed yet: the save's own files change only when the game commits, so a game
-killed while it saves leaves the last complete save, and a folder a crash left is removed the next time the game opens
-the save. The game's
+does the report if the game crashes or stops. The game's
 menu (Home, F2) shows the user playing in a box at its head's right, their nickname and picture, and the launcher the
 one its Settings' `user_uid` names, where a click picks another ([GUI](gui.md)); a users.ini that lists no users is said
 in the launcher's foot.

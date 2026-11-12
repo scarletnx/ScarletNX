@@ -1823,12 +1823,6 @@ static void test_notifiers_and_program_index(SvcObj* proxy) {
     puts("PASS event notifiers, the save data transfer prohibiter and the data filesystem by program index");
 }
 
-/* IFileSystem's Commit */
-static void commit(SvcObj* fs) {
-    Request r;
-    request(&r, 10);
-    dispatch(fs, &r, 0);
-}
 static void test_save_data(SvcObj* proxy) {
     /* each SaveDataType has its folder: System (0), Account (1), Bcat (2), Device (3) */
     SvcObj* system = open_save_data(proxy, 51, 0);
@@ -1848,7 +1842,6 @@ static void test_save_data(SvcObj* proxy) {
     SvcObj* user = open_user_save(proxy, test_other_user);
     CHECK(tree_has(OTHER_SAVE) && !tree_has(FIRST_SAVE) && !tree_has("save/user") && tree_has("save/system"));
     fs_command(user, 0, "/other-user.bin", 4, 0);
-    commit(user);
     svcobj_unref(user);
     /* the first user's, with no save/user and save/system empty, is its folder, made then */
     user = open_user_save(proxy, g_user_id);
@@ -1863,7 +1856,6 @@ static void test_save_data(SvcObj* proxy) {
     pm_unlock(&g_hle.fs.tree.lock);
     CHECK(old && !rc);
     fs_command(old, 0, "/progress.bin", 4, 0);
-    commit(old);
     svcobj_unref(old);
     /* save/user, the one Account save of the versions before there were other users, is the first user's while it
        has no folder: played where it is, nothing moved, and said once a run with where it goes. Another user's save
@@ -1874,7 +1866,6 @@ static void test_save_data(SvcObj* proxy) {
     user = open_user_save(proxy, g_user_id);
     fs_command(user, 7, "/progress.bin", 0, 0);
     fs_command(user, 0, "/played.bin", 4, 0);
-    commit(user);
     svcobj_unref(user);
     CHECK(tree_has("save/user/progress.bin") && tree_has("save/user/played.bin") && !tree_has(FIRST_SAVE));
     CHECK(test_left_said == 1 && strstr(test_left_text, "save/user, the first user's saves") &&
@@ -1911,7 +1902,6 @@ static void test_save_data(SvcObj* proxy) {
     user = open_user_save(proxy, g_user_id);
     fs_command(user, 7, "/other.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
     fs_command(user, 0, "/progress.bin", 4, 0);
-    commit(user);
     svcobj_unref(user);
     CHECK(tree_has("save/system/other.bin") && tree_has(FIRST_SAVE "/progress.bin"));
     /* a save/user beside the first user's folder (an older version run again) is two saves of one user: the game
@@ -1921,7 +1911,6 @@ static void test_save_data(SvcObj* proxy) {
     pm_unlock(&g_hle.fs.tree.lock);
     CHECK(old && !rc);
     fs_command(old, 0, "/newer.bin", 4, 0);
-    commit(old);
     svcobj_unref(old);
     {
         jmp_buf jump;
@@ -2010,7 +1999,6 @@ static void test_save_layout(SvcObj* proxy) {
     host_put(path);
     save = open_save_data(proxy, 51, 2); /* the game's own BCAT save, which has a file now: two of it */
     fs_command(save, 0, "/p.bin", 4, 0);
-    commit(save);
     svcobj_unref(save);
     pm_lock(&g_hle.fs.tree.lock);
     CHECK(!fs_tree_remove(&g_hle.fs.tree, NULL, "save/user", 1, 1, 0)); /* test_save_data's two first-user saves */
@@ -2044,7 +2032,6 @@ static void test_save_layout(SvcObj* proxy) {
     save = open_user_save(proxy, g_user_id);
     fs_command(save, 7, "/kept.bin", 0, 0);
     fs_command(save, 0, "/new.bin", 4, 0);
-    commit(save);
     svcobj_unref(save);
     snprintf(path, sizeof path, "%s/user.0123456789abcdeffedcba9876543210/" TITLE "/new.bin", root);
     CHECK(host_file(path) && !tree_has(FIRST_SAVE));
@@ -2064,7 +2051,6 @@ static void test_save_layout(SvcObj* proxy) {
     /* the Device save, in neither (the game's own empty): made in the global folder, nothing enumerated */
     save = open_save_data(proxy, 51, 3);
     fs_command(save, 0, "/d.bin", 4, 0);
-    commit(save);
     svcobj_unref(save);
     snprintf(path, sizeof path, "%s/device/" TITLE "/d.bin", root);
     CHECK(host_file(path) && !tree_has("save/device/d.bin"));
@@ -2074,7 +2060,6 @@ static void test_save_layout(SvcObj* proxy) {
     dispatch(proxy, &r, 0);
     CHECK(r.c.nout_objs == 1);
     fs_command(r.c.out_objs[0], 0, "/c.bin", 4, 0);
-    commit(r.c.out_objs[0]);
     svcobj_unref(r.c.out_objs[0]);
     snprintf(path, sizeof path, "%s/cache/" TITLE "/3/c.bin", root);
     CHECK(host_file(path));
@@ -2106,7 +2091,6 @@ static void test_save_layout(SvcObj* proxy) {
     g_hle.kernel.title_id = SNX_NPDM_DEFAULT_TITLE;
     save = open_save_data(proxy, 51, 5);
     fs_command(save, 0, "/homebrew.bin", 4, 0);
-    commit(save);
     svcobj_unref(save);
     CHECK(tree_has("save/cache/homebrew.bin"));
     g_hle.kernel.title_id = 0x0100000000010000ull;
@@ -2132,7 +2116,6 @@ static void test_save_layout(SvcObj* proxy) {
         CHECK(tree_has("global-user.0123456789abcdeffedcba9876543210/kept.bin"));
         save = open_user_save(proxy, g_user_id);
         fs_command(save, 0, "/program2.bin", 4, 0);
-        commit(save);
         svcobj_unref(save);
         snprintf(path, sizeof path, "%s/user.0123456789abcdeffedcba9876543210/" TITLE "/program2.bin", root);
         CHECK(host_file(path));
@@ -2187,6 +2170,12 @@ static void test_program(u64 update, unsigned long version, const char* display)
     snprintf(g_addonrec, sizeof g_addonrec, "%s", update ? g_exename : "");
     snprintf(test_display, sizeof test_display, "%s", display);
 }
+/* IFileSystem's Commit */
+static void commit(SvcObj* fs) {
+    Request r;
+    request(&r, 10);
+    dispatch(fs, &r, 0);
+}
 /* the host folder of a save's file system */
 static void save_host_folder(SvcObj* save, char* out, size_t size) {
     pm_lock(&g_hle.fs.tree.lock);
@@ -2225,7 +2214,6 @@ static void test_save_note(SvcObj* proxy) {
     n = strlen(folder);
     CHECK(n > 0 && strstr(folder, FIRST_SAVE) && folder[n - 1] != '/');
     snprintf(note, sizeof note, "%s.version", folder);
-    remove(note); /* the one the commits of the tests before this one wrote */
     fs_command(save, 0, "/progress.bin", 4, 0);
     CHECK(!host_file(note));
     commit(save);
@@ -2398,167 +2386,6 @@ static void test_multi_commit(SvcObj* proxy) {
     g_settings.save_layout[0] = 0;
     g_gamename[0] = g_exename[0] = 0;
     puts("PASS the commit of several file systems: ten, each once, their notes written, none when one is closed");
-}
-/* A save's commit (fs.c's save_pend, save_land, save_discard). What the game writes to a save since its last commit is
-   in <the save's folder>.pending beside it, so the save's own files are the last commit's until the next: the game
-   reads what it wrote through every handle, a kill leaves the save as committed, and so does closing it with no commit,
-   said with the files. Commit puts each file in its place whole; one made since the last commit is in the save only
-   then. What a crash left in the pending folder goes when the save is opened, said with its files. Deleting or renaming
-   in the save puts what was written in place first; temporary storage has no commit, and is written at once */
-#define COMMIT_SAVE "save/user.07070707070707070707070707070707"
-static void test_save_commit(SvcObj* proxy) {
-    static const u64 uid[2] = {0x0707070707070707ull, 0x0707070707070707ull};
-    char folder[FS_TREE_PATH_MAX], pending[FS_TREE_PATH_MAX + 16], slot[FS_TREE_PATH_MAX + 16],
-        fresh[FS_TREE_PATH_MAX + 16], kept[FS_TREE_PATH_MAX + 16], left[FS_TREE_PATH_MAX + 32],
-        other[FS_TREE_PATH_MAX + 16];
-    SvcObj *save, *file, *reader, *device, *manager, *temp;
-    Request r;
-    strcpy(g_settings.save_layout, "game");
-    test_program(0, 0, "1.0.0");
-    /* the fixture's save, as a crash left it: kept.bin committed, and a write to it that never was */
-    CHECK(tree_has(COMMIT_SAVE ".pending/kept.bin"));
-    test_fs_text[0] = 0;
-    save = open_user_save(proxy, uid);
-    save_host_folder(save, folder, sizeof folder);
-    snprintf(pending, sizeof pending, "%s.pending", folder);
-    snprintf(slot, sizeof slot, "%s/slot.bin", folder);
-    snprintf(fresh, sizeof fresh, "%s/fresh.bin", folder);
-    snprintf(kept, sizeof kept, "%s/kept.bin", folder);
-    CHECK(host_text(kept, "kept") && !snx_path_exists(pending) && !tree_has(COMMIT_SAVE ".pending"));
-    CHECK(strstr(test_fs_text, folder) && strstr(test_fs_text, "kept.bin") && strstr(test_fs_text, "dir/deep.bin"));
-    file = open_object(save, 8, "/kept.bin", 1);
-    CHECK(get_size(file) == 4 && read_data(file, 0, 16, 0) == 4 && !memcmp(GP(0x5000), "kept", 4));
-    svcobj_unref(file);
-    /* a file made and written is in the save once committed, and not before */
-    fs_command(save, 0, "/slot.bin", 0, 0);
-    file = open_object(save, 8, "/slot.bin", 7);
-    write_data(file, 0, "old1", 4, 0);
-    CHECK(!host_file(slot));
-    commit(save);
-    CHECK(host_text(slot, "old1") && !snx_path_exists(pending));
-    /* written again and not committed: the game reads the new bytes through every handle, one opened before the
-       write and one after it, and the save's file holds the old ones, which is what a kill here leaves */
-    reader = open_object(save, 8, "/slot.bin", 1);
-    write_data(file, 0, "NEWDATA", 7, 0);
-    CHECK(get_size(reader) == 7 && read_data(reader, 0, 16, 0) == 7 && !memcmp(GP(0x5000), "NEWDATA", 7));
-    svcobj_unref(reader);
-    reader = open_object(save, 8, "/slot.bin", 1);
-    CHECK(get_size(reader) == 7 && read_data(reader, 0, 16, 0) == 7 && !memcmp(GP(0x5000), "NEWDATA", 7));
-    CHECK(host_text(slot, "old1"));
-    /* closed with no commit: the old bytes, to the game too when it opens the save again */
-    svcobj_unref(reader);
-    svcobj_unref(file);
-    test_fs_text[0] = 0;
-    svcobj_unref(save);
-    CHECK(host_text(slot, "old1") && !snx_path_exists(pending));
-    CHECK(strstr(test_fs_text, folder) && strstr(test_fs_text, "slot.bin") && strstr(test_fs_text, "1 file"));
-    test_fs_text[0] = 0;
-    save = open_user_save(proxy, uid);
-    CHECK(!test_fs_text[0]);
-    file = open_object(save, 8, "/slot.bin", 7);
-    CHECK(get_size(file) == 4 && read_data(file, 0, 16, 0) == 4 && !memcmp(GP(0x5000), "old1", 4));
-    /* committed: the new bytes, and the handle goes on, its next write pending again */
-    write_data(file, 0, "NEWDATA", 7, 0);
-    commit(save);
-    CHECK(host_text(slot, "NEWDATA") && !snx_path_exists(pending));
-    CHECK(get_size(file) == 7 && read_data(file, 0, 16, 0) == 7 && !memcmp(GP(0x5000), "NEWDATA", 7));
-    write_data(file, 7, "+", 1, 0);
-    CHECK(host_text(slot, "NEWDATA"));
-    commit(save);
-    CHECK(host_text(slot, "NEWDATA+"));
-    /* a size set is a write: the save's file keeps its bytes until the commit */
-    set_size(file, 2, 0);
-    CHECK(get_size(file) == 2 && read_data(file, 0, 16, 0) == 2 && host_text(slot, "NEWDATA+"));
-    /* a file made and not committed: the game's, with its time, and not the save's; gone with the save closed */
-    fs_command(save, 0, "/fresh.bin", 3, 0);
-    fs_command(save, 7, "/fresh.bin", 0, 0);
-    fs_command(save, 14, "/fresh.bin", 0, 0);
-    reader = open_object(save, 8, "/fresh.bin", 1);
-    CHECK(get_size(reader) == 3 && read_data(reader, 0, 16, 0) == 3 && !host_file(fresh));
-    svcobj_unref(reader);
-    svcobj_unref(file);
-    test_fs_text[0] = 0;
-    svcobj_unref(save);
-    CHECK(!host_file(fresh) && host_text(slot, "NEWDATA+") && !snx_path_exists(pending));
-    CHECK(strstr(test_fs_text, "fresh.bin") && strstr(test_fs_text, "slot.bin") && strstr(test_fs_text, "2 files"));
-    CHECK(!tree_has(COMMIT_SAVE "/fresh.bin"));
-    /* what a crash left in the pending folder while the game ran goes when the save is opened, and is said */
-    snprintf(left, sizeof left, "%s/slot.bin", pending);
-    host_put(left);
-    test_fs_text[0] = 0;
-    save = open_user_save(proxy, uid);
-    CHECK(!snx_path_exists(pending) && host_text(slot, "NEWDATA+"));
-    CHECK(strstr(test_fs_text, folder) && strstr(test_fs_text, "slot.bin") && strstr(test_fs_text, "1 file"));
-    fs_command(save, 7, "/fresh.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
-    /* a second file system of the save, closed: the first one's writes stay pending */
-    file = open_object(save, 8, "/slot.bin", 7);
-    write_data(file, 0, "SECOND!!", 8, 0);
-    device = open_user_save(proxy, uid);
-    svcobj_unref(device);
-    CHECK(read_data(file, 0, 16, 0) == 8 && !memcmp(GP(0x5000), "SECOND!!", 8) && host_text(slot, "NEWDATA+"));
-    /* a file deleted, or renamed: what was written is put in place first, the deletion and the new name at once */
-    fs_command(save, 0, "/gone.bin", 0, 0);
-    fs_command(save, 1, "/gone.bin", 0, 0);
-    CHECK(host_text(slot, "SECOND!!") && !snx_path_exists(pending));
-    CHECK(read_data(file, 0, 16, 0) == 8 && !memcmp(GP(0x5000), "SECOND!!", 8));
-    write_data(file, 0, "RENAMED!", 8, 0);
-    CHECK(host_text(slot, "SECOND!!"));
-    svcobj_unref(file); /* Windows renames no file that is open */
-    rename_object(save, 5, "/slot.bin", "/moved.bin", 0);
-    snprintf(other, sizeof other, "%s/moved.bin", folder);
-    CHECK(host_text(other, "RENAMED!") && !host_file(slot) && !snx_path_exists(pending));
-    rename_object(save, 5, "/moved.bin", "/slot.bin", 0);
-    file = open_object(save, 8, "/slot.bin", 7);
-    CHECK(read_data(file, 0, 16, 0) == 8 && !memcmp(GP(0x5000), "RENAMED!", 8));
-    /* a file in a folder: its pending bytes in that folder of the pending one */
-    fs_command(save, 2, "/dir", 0, 0);
-    fs_command(save, 0, "/dir/deep.bin", 0, 0);
-    reader = open_object(save, 8, "/dir/deep.bin", 7);
-    write_data(reader, 0, "deep", 4, 0);
-    snprintf(left, sizeof left, "%s/dir/deep.bin", pending);
-    snprintf(other, sizeof other, "%s/dir/deep.bin", folder);
-    CHECK(host_text(left, "deep") && !host_file(other));
-    commit(save);
-    CHECK(host_text(other, "deep") && !snx_path_exists(pending));
-    svcobj_unref(reader);
-    /* several saves committed together: each one's writes in place */
-    device = open_save_data(proxy, 51, 3);
-    save_host_folder(device, other, sizeof other);
-    strcat(other, "/multi.bin");
-    fs_command(device, 0, "/multi.bin", 0, 0);
-    reader = open_object(device, 8, "/multi.bin", 7);
-    write_data(reader, 0, "device", 6, 0);
-    write_data(file, 0, "TOGETHER", 8, 0);
-    CHECK(!host_file(other) && host_text(slot, "RENAMED!"));
-    request(&r, 1200);
-    dispatch(proxy, &r, 0);
-    CHECK(r.c.nout_objs == 1);
-    manager = r.c.out_objs[0];
-    CHECK(multi_add(manager, save) == 0 && multi_add(manager, device) == 0);
-    request(&r, 2);
-    dispatch(manager, &r, 0);
-    CHECK(host_text(other, "device") && host_text(slot, "TOGETHER"));
-    svcobj_unref(manager);
-    svcobj_unref(reader);
-    fs_command(device, 1, "/multi.bin", 0, 0);
-    svcobj_unref(device);
-    svcobj_unref(file);
-    svcobj_unref(save);
-    /* temporary storage has no commit: written at once */
-    temp = open_save_data(proxy, 51, 4);
-    save_host_folder(temp, other, sizeof other);
-    strcat(other, "/now.bin");
-    fs_command(temp, 0, "/now.bin", 0, 0);
-    file = open_object(temp, 8, "/now.bin", 7);
-    write_data(file, 0, "now", 3, 0);
-    CHECK(host_text(other, "now"));
-    svcobj_unref(file);
-    fs_command(temp, 1, "/now.bin", 0, 0);
-    svcobj_unref(temp);
-    g_settings.save_layout[0] = 0;
-    g_gamename[0] = g_exename[0] = 0;
-    puts("PASS a save's commit: writes pending beside the save until it, read back by the game meanwhile, gone when "
-         "the save is closed without one or a crash left them, in place whole when committed, alone or with others");
 }
 /* ReadSaveDataFileSystemExtraDataWithMaskBySaveDataAttribute (71) {u8 space id, attribute at 8}, the extra data out
    in B 0 and the mask in A 0, 0x200 bytes each: the attribute with the game's program when it named none (0x0), the
@@ -3010,7 +2837,6 @@ int main(int argc, char** argv) {
     test_save_layout(proxy);
     test_save_note(proxy);
     test_multi_commit(proxy);
-    test_save_commit(proxy);
     test_extra_data(proxy);
     test_sd_write(proxy);
     test_state_temp(proxy);
