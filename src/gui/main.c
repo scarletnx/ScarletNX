@@ -3325,7 +3325,8 @@ static GuiRect ui_row_box(const App* app, GuiRect r) {
    other blink_ms with UI_ATTR_BLINK, steady with 0), the active colour writes the one activated last, and an open one
    (UI_ATTR_OPEN) has the focus's look without the cursor; a title (UI_ATTR_TITLE) is on a band of ink in a theme of
    filled boxes, else over a rule. One with nothing to do now (UI_ATTR_OFF) is greyed, still there: written in the soft
-   colour, or inverted on it where the focus inverts */
+   colour, or inverted on it where the focus inverts. An action with no way back (UI_ATTR_DANGER) is on the page framed
+   and written in the failure colour, and filled with it, written in the page's, in focus, whatever the theme's focus */
 /* a row's text's top: as item_text_y has it in a row a cell and a pixel high, in the middle of a taller one */
 static int ui_text_y(const App* app, GuiRect b) { return b.y + (b.h - cell_h(app) + app->scale) / 2; }
 static int user_side(const App* app, int h);
@@ -3405,7 +3406,8 @@ void ui_draw_row(App* app, GuiRect r, const char* text, unsigned icon, const voi
     int look = focused || (attr & UI_ATTR_OPEN), filled = t->panels == GUI_PANELS_FILL, inverted = look && t->focus_bar;
     int failing =
         (attr & UI_ATTR_FAILURE) && !((attr & UI_ATTR_BLINK) && t->blink_ms && (now_ms(app) / t->blink_ms) % 2);
-    int off = (attr & UI_ATTR_OFF) != 0;
+    int off = (attr & UI_ATTR_OFF) != 0, danger = (attr & UI_ATTR_DANGER) && !failing && !off;
+    int solid = failing || inverted || (danger && look); /* filled, written in the page colour */
     GuiRect b = ui_row_box(app, r);
     char label[400];
     if (attr & UI_ATTR_LABEL) { /* between rows, as "Recent Games": no box, no marker */
@@ -3422,13 +3424,14 @@ void ui_draw_row(App* app, GuiRect r, const char* text, unsigned icon, const voi
         return;
     }
     snprintf(label, sizeof label, "%s%s%s%s", t->marker, gui_icon_utf8(icon, glyph), icon ? " " : "", text);
-    if (failing || inverted)
-        fill_rect(app, b, failing ? t->failure : off ? t->soft : t->focus);
-    else if (filled)
-        fill_rect(app, b, t->dim);
-    if (!failing && !inverted && (!filled || look)) outline(app, b, look ? t->focus : t->dim);
+    if (solid)
+        fill_rect(app, b, failing || danger ? t->failure : off ? t->soft : t->focus);
+    else if (danger || filled)
+        fill_rect(app, b, danger ? t->page : t->dim);
+    if (!solid && (!filled || look || danger)) outline(app, b, danger ? t->failure : look ? t->focus : t->dim);
     {
-        SDL_Color ink = rgb(failing || inverted      ? t->page
+        SDL_Color ink = rgb(solid                    ? t->page
+                            : danger                 ? t->failure
                             : off                    ? t->soft
                             : attr & UI_ATTR_WARNING ? t->warning
                             : attr & UI_ATTR_ACTIVE  ? t->active
@@ -3446,7 +3449,7 @@ void ui_draw_row(App* app, GuiRect r, const char* text, unsigned icon, const voi
             row_text_in(app, inner(app, b), x, ui_text_y(app, b), label, focused, ink);
     }
     if (focused && t->cursor[0]) text_in(app, r, r.x, ui_text_y(app, b), t->cursor, rgb(t->focus));
-    row_arrows(app, b, ui_text_y(app, b), attr, rgb(failing || inverted ? t->page : t->soft));
+    row_arrows(app, b, ui_text_y(app, b), attr, rgb(solid ? t->page : t->soft));
 }
 /* a label of a scene of ui.txt, in the soft colour unless it names one */
 void ui_draw_label(App* app, GuiRect r, const char* text, unsigned color) {
@@ -12833,11 +12836,13 @@ static const unsigned setup_icons[] = {GUI_ICON_NONE, GUI_ICON_ARROW_LEFT,   GUI
                                        GUI_ICON_TRASH};
 /* a SetupDoes added takes its icon here, in its place */
 typedef char snx_setup_icons[SDL_arraysize(setup_icons) == SETUP_DOES_DELETE + 1 ? 1 : -1];
-/* the icon before the choice on row i (setup_order); none between the groups */
-static unsigned setup_icon(const App* app, int row) {
+/* what the choice on row i (setup_order) does; SETUP_DOES_OTHER between the groups */
+static SetupDoes setup_row_does(const App* app, int row) {
     int rows[GUI_SETUP_ROWS], n = setup_order(app, rows);
-    return row < n && rows[row] >= 0 ? setup_icons[setup_does(app, rows[row])] : GUI_ICON_NONE;
+    return row >= 0 && row < n && rows[row] >= 0 ? setup_does(app, rows[row]) : SETUP_DOES_OTHER;
 }
+/* the icon before the choice on row i; none between the groups */
+static unsigned setup_icon(const App* app, int row) { return setup_icons[setup_row_does(app, row)]; }
 /* the old files' page to: a step on or back, the first or the last; none past them, nor once one was done */
 static void left_turn(App* app, int to) {
     int n = left_groups(app);
@@ -18651,7 +18656,8 @@ static const char* choice_text(App* app, int of, int i, char* out, size_t size) 
     }
 }
 /* Choices' row: the choice's text, drawn with the theme's marker, a setup's notice's or old files' choice with its
-   icon; the row between the setup's two groups a label, no box */
+   icon; the row between the setup's two groups a label, no box. Delete All and its question's Delete, which have no
+   way back, in the failure colour */
 bool ui_choices_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
     (void)width; /* a choice too long for its row is cut, or slides while focused, as the menu's rows (row_text_in) */
     info->label = row < 64 ? choice_text(app, app->choices_of, (int)row, app->row_text, sizeof app->row_text) : NULL;
@@ -18659,7 +18665,11 @@ bool ui_choices_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* in
     if (app->choices_of == GUI_CHOICES_SETUP && info->label) {
         info->icon = setup_icon(app, (int)row);
         if (!info->label[0]) info->attr |= UI_ATTR_LABEL;
+        if (setup_row_does(app, (int)row) == SETUP_DOES_DELETE) info->attr |= UI_ATTR_DANGER;
     }
+    if (app->choices_of == GUI_CHOICES_ASK && app->confirm.ask == GUI_ASK_DELETE_OLD &&
+        row == (size_t)GUI_CONFIRM_ABORT)
+        info->attr |= UI_ATTR_DANGER;
     return info->label != NULL;
 }
 /* a choice under the pointer takes the focus, and a click takes it: the question's pressed, UI scale's size or the

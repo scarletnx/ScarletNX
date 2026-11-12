@@ -140,6 +140,7 @@ if(BUILD_TESTING)
     endif()
     # the setup's pages (gui_setup.c), as gui_sdl's: the real renderer, a language of the tests' own, no picker
     add_executable(snx-test-gui-setup "${PROJECT_SOURCE_DIR}/tests/gui_setup.c")
+    target_compile_definitions(snx-test-gui-setup PRIVATE SNX_GUI_THEMES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/themes")
     target_link_libraries(snx-test-gui-setup PRIVATE snx_gui_support snx_gui_ui scarletnx-common SDL3::SDL3
                           snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages_test snx_demangle)
     if(APPLE)
