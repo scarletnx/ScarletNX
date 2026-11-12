@@ -115,9 +115,10 @@ static double contrast(GuiRgb a, GuiRgb b) {
    its row's room the only one between them) each with its icon (icons.h's, as gui_screen.h writes it), each a row's step
    under the one before, the one in focus focus's: the marker, the icon and the label drawn in its row in the focus's
    look, the others' in ink; but red's (NULL: none), which has no way back, framed on the page and written in the failure
-   colour, and in focus filled with it and written in the page's */
+   colour, and in focus filled with it and written in the page's; and yellow's, which wants care, so in the warning
+   colour */
 static void rows_show(App* app, const char* const* want, const char* const* icons, int n, const char* focus,
-                      const char* red) {
+                      const char* red, const char* yellow) {
     const GuiTheme* t = &app->theme;
     GuiSetupBoxes b;
     int i, x, y, s = app->scale;
@@ -130,9 +131,11 @@ static void rows_show(App* app, const char* const* want, const char* const* icon
         UiRowInfo info = {0};
         GuiRect box = choice_box(app, &b.choices, i);
         bool focused = !strcmp(want[i], focus), danger = red && !strcmp(want[i], red);
+        bool care = yellow && !strcmp(want[i], yellow);
+        GuiRgb tone = danger ? t->failure : t->warning;
         assert(ui_choices_rows_get_row_info(app, (size_t)i, box.w, &info) && !strcmp(info.label, want[i]));
         assert(!want[i][0] == !!(info.attr & UI_ATTR_LABEL));
-        assert(danger == !!(info.attr & UI_ATTR_DANGER));
+        assert(danger == !!(info.attr & UI_ATTR_DANGER) && care == !!(info.attr & UI_ATTR_CAUTION));
         assert(focused == (b.choices.lists[UI_CHOICES_ROWS].focus == (size_t)i));
         if (i) assert(box.y - choice_box(app, &b.choices, i - 1).y == item_h(app) + 2 * s);
         if (!want[i][0]) {
@@ -142,15 +145,15 @@ static void rows_show(App* app, const char* const* want, const char* const* icon
         is_icon(icons[i], info.icon);
         snprintf(label, sizeof label, "%s%s %s", t->marker, icons[i], want[i]);
         assert(find_text(app, label,
-                         rgb(danger         ? focused ? t->page : t->failure
+                         rgb(danger || care ? focused ? t->page : tone
                              : !focused     ? t->ink
                              : t->focus_bar ? t->page
                                             : t->focus),
                          1, &x, &y));
         assert(y >= box.y && y < box.y + box.h);
-        if (danger) /* its frame, or its fill; and inside the frame, before the marker, the page or the fill */
-            assert(px_is(app, box.x, box.y + box.h / 2, t->failure) &&
-                   px_is(app, box.x + s, box.y + s, focused ? t->failure : t->page));
+        if (danger || care) /* its frame, or its fill; and inside the frame, before the marker, the page or the fill */
+            assert(px_is(app, box.x, box.y + box.h / 2, tone) &&
+                   px_is(app, box.x + s, box.y + s, focused ? tone : t->page));
     }
 }
 /* a click on the setup page's row i (setup_order's order) */
@@ -670,6 +673,14 @@ static void test_users(App* app) {
     app->setup_page = app->setup_count - 1;
     setup_enter(app);
     assert(page(app) == SNX_SETUP_USER && !app->setup_typing && app->setup_users == 1 && !app->setup_choice.focus);
+    { /* Overwrite wants care, users.ini kept as users.ini.old: the warning colour; Keep none */
+        UiRowInfo keep = {0}, over = {0};
+        app->choices_of = GUI_CHOICES_SETUP;
+        assert(ui_choices_rows_get_row_info(app, 0, 0, &keep) && !strcmp(keep.label, "Keep") &&
+               !(keep.attr & (UI_ATTR_CAUTION | UI_ATTR_DANGER)));
+        assert(ui_choices_rows_get_row_info(app, 1, 0, &over) && !strcmp(over.label, "Overwrite") &&
+               (over.attr & UI_ATTR_CAUTION));
+    }
     render(app);
     shows(app, "users.ini has 1 user", rgb(app->theme.page));
     shows(app, "Adam", rgb(app->theme.ink));
@@ -763,7 +774,7 @@ static void test_clean_notice(App* app) {
          the keys go round them past that row, which takes no click */
         static const char* const rows[] = {"Back", "Not Now", "Skip", "", "Clean Now"};
         static const char* const icons[] = {ICON_ARROW_LEFT, ICON_X, ICON_SKIP_FORWARD, "", ICON_ERASER};
-        rows_show(app, rows, icons, 5, "Clean Now", NULL);
+        rows_show(app, rows, icons, 5, "Clean Now", NULL, "Clean Now");
         key(app, SDLK_UP);
         assert(!strcmp(choice_label(app), "Skip"));
         key(app, SDLK_DOWN);
@@ -773,7 +784,7 @@ static void test_clean_notice(App* app) {
         key(app, SDLK_UP);
         click_row(app, 3);
         assert(app->setup_top == 1 && !app->setup_cleaned && !strcmp(choice_label(app), "Clean Now"));
-        rows_show(app, rows, icons, 5, "Clean Now", NULL);
+        rows_show(app, rows, icons, 5, "Clean Now", NULL, "Clean Now");
     }
     render(app);
     shows(app, "Clean Old Settings? [Deprecated] in 1 .ini", rgb(app->theme.ink));
@@ -871,7 +882,7 @@ static void test_old_files(App* app) {
     { /* none acts: one group, each with its icon */
         static const char* const rows[] = {"Back", "Next"};
         static const char* const icons[] = {ICON_ARROW_LEFT, ICON_CHECK};
-        rows_show(app, rows, icons, 2, "Next", NULL);
+        rows_show(app, rows, icons, 2, "Next", NULL, NULL);
     }
     key(app, SDLK_PAGEUP);
     key(app, SDLK_PAGEUP); /* none before the first */
@@ -906,14 +917,15 @@ static void test_old_files(App* app) {
          Down from Not Now passes that row, which takes no click */
         static const char* const rows[] = {"Back", "Not Now", "", "Move All", "Delete All"};
         static const char* const icons[] = {ICON_ARROW_LEFT, ICON_X, "", ICON_FOLDER_INPUT, ICON_TRASH};
-        rows_show(app, rows, icons, 5, "Not Now", "Delete All");
+        rows_show(app, rows, icons, 5, "Not Now", "Delete All", "Move All");
         key(app, SDLK_DOWN);
         assert(!strcmp(choice_label(app), "Move All"));
         key(app, SDLK_UP);
         click_row(app, 2);
         assert(app->setup_top == 3 && !app->confirm.shown && !app->left_did && !strcmp(choice_label(app), "Not Now"));
-        { /* Delete All in the failure colour on every theme shipped, with and without the focus: its words on it at
-             WCAG's 3:1 for large text at least (the menu's letters have two-pixel stems) */
+        { /* Delete All in the failure colour and Move All in the warning colour on every theme shipped, with and
+             without the focus: their words on them at WCAG's 3:1 for large text at least (the menu's letters have
+             two-pixel stems) */
             const char* shipped[] = {SNX_GUI_THEMES_DIR};
             GuiThemes themes = {0};
             GuiTheme was = app->theme;
@@ -921,11 +933,12 @@ static void test_old_files(App* app) {
             assert(themes.count >= 7); /* default, yorha and the folders beside them */
             for (size_t k = 0; k < themes.count; ++k) {
                 gui_theme_load(&app->theme, shipped, 1, themes.ids[k], NULL, 0);
-                assert(!strcmp(app->theme.id, themes.ids[k]) && contrast(app->theme.failure, app->theme.page) >= 3);
-                rows_show(app, rows, icons, 5, "Not Now", "Delete All");
+                assert(!strcmp(app->theme.id, themes.ids[k]) && contrast(app->theme.failure, app->theme.page) >= 3 &&
+                       contrast(app->theme.warning, app->theme.page) >= 3);
+                rows_show(app, rows, icons, 5, "Not Now", "Delete All", "Move All");
                 key(app, SDLK_DOWN);
                 key(app, SDLK_DOWN);
-                rows_show(app, rows, icons, 5, "Delete All", "Delete All");
+                rows_show(app, rows, icons, 5, "Delete All", "Delete All", "Move All");
                 key(app, SDLK_UP);
                 key(app, SDLK_UP);
             }
@@ -963,7 +976,7 @@ static void test_old_files(App* app) {
     {
         static const char* const rows[] = {"OK"};
         static const char* const icons[] = {ICON_CHECK};
-        rows_show(app, rows, icons, 1, "OK", NULL);
+        rows_show(app, rows, icons, 1, "OK", NULL, NULL);
     }
     shows(app, "Delete All: 3 done, 1 not", rgb(head_ink(app)));
     key(app, SDLK_RETURN);
@@ -979,7 +992,7 @@ static void test_old_files(App* app) {
     {
         static const char* const rows[] = {"Not Now", "", "Move All", "Delete All"};
         static const char* const icons[] = {ICON_X, "", ICON_FOLDER_INPUT, ICON_TRASH};
-        rows_show(app, rows, icons, 4, "Not Now", "Delete All");
+        rows_show(app, rows, icons, 4, "Not Now", "Delete All", "Move All");
     }
     key(app, SDLK_UP); /* round to the last, Delete All */
     key(app, SDLK_RETURN);
@@ -1165,6 +1178,50 @@ static void test_data_saves(App* app) {
     free(file);
     free(config);
     puts("PASS a save of the data folder's save/ on the saves' page, kept by Delete All, moved into its 0/");
+}
+
+/* each question's second choice in the colour of what it does: the failure colour for what has no way back, the
+   warning colour for what wants care, none for one that changes nothing kept; the first, which keeps things, none */
+static void test_ask_tones(App* app) {
+    static const struct {
+        GuiAsk ask;
+        unsigned tone;
+    } asks[] = {{GUI_ASK_ABORT, UI_ATTR_CAUTION},
+                {GUI_ASK_EXIT, 0},
+                {GUI_ASK_DEEP, 0},
+                {GUI_ASK_OUTSIDE, UI_ATTR_CAUTION},
+                {GUI_ASK_ROOM, UI_ATTR_CAUTION},
+                {GUI_ASK_CLEAN, UI_ATTR_CAUTION},
+                {GUI_ASK_RESET, UI_ATTR_CAUTION},
+                {GUI_ASK_PLACES, UI_ATTR_CAUTION},
+                {GUI_ASK_PLACE, UI_ATTR_CAUTION},
+                {GUI_ASK_FOLDER, UI_ATTR_CAUTION},
+                {GUI_ASK_MOVE, UI_ATTR_CAUTION},
+                {GUI_ASK_STATE, UI_ATTR_DANGER},
+                {GUI_ASK_CACHE, UI_ATTR_DANGER},
+                {GUI_ASK_CLOSE, UI_ATTR_CAUTION},
+                {GUI_ASK_MADE, 0},
+                {GUI_ASK_DRIVER, UI_ATTR_DANGER},
+                {GUI_ASK_CRASH, UI_ATTR_DANGER},
+                {GUI_ASK_ADDONS, 0},
+                {GUI_ASK_DELETE_OLD, UI_ATTR_DANGER},
+                {GUI_ASK_ERROR, 0}};
+    GuiConfirm was = app->confirm;
+    assert(SDL_arraysize(asks) == GUI_ASK_ERROR + 1);
+    app->choices_of = GUI_CHOICES_ASK;
+    for (size_t i = 0; i < SDL_arraysize(asks); ++i) {
+        UiRowInfo keep = {0}, act = {0};
+        app->confirm.ask = asks[i].ask;
+        assert(ui_choices_rows_get_row_info(app, 0, 0, &keep) && !(keep.attr & (UI_ATTR_DANGER | UI_ATTR_CAUTION)));
+        if (asks[i].ask == GUI_ASK_ERROR) {
+            assert(!ui_choices_rows_get_row_info(app, 1, 0, &act)); /* its OK alone */
+            continue;
+        }
+        assert(ui_choices_rows_get_row_info(app, 1, 0, &act) &&
+               (act.attr & (UI_ATTR_DANGER | UI_ATTR_CAUTION)) == asks[i].tone);
+    }
+    app->confirm = was;
+    puts("PASS each question's second choice in the colour of what it does");
 }
 
 /* in another language: the notices in its words (setup.c marks them), and the rows' labels padded to the columns their
@@ -1471,6 +1528,7 @@ int main(void) {
     test_old_files(&app);
     test_saves_one_page(&app);
     test_data_saves(&app);
+    test_ask_tones(&app);
     test_translated(&app);
     test_places(&app);
     test_skip(&app);

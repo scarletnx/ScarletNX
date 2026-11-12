@@ -22,7 +22,13 @@ and the wide letters a language shows, and nearest-neighbor
 integer scaling; its words are English or a language compiled into it ([Languages](#languages)). An item of a menu
 has an icon beside its name, 16x16 in the font's stroke (`src/gui/icons.hex`): the menu's, the groups of the Settings
 (each its own) and their rows that open a screen or do something (the others keep its columns), a game's box's actions,
-the setup's pages, the game's menu's and the keys of F1's box. No font files or localization packages are needed.
+the setup's pages, the game's menu's and the keys of F1's box. A choice with no way back is framed and written in the
+theme's `failure` colour, and filled with it in focus: Delete All, a game's Clean Cache, a GPU driver's Remove, Clear
+Crash List, and the Delete, Remove or Clear of the question each asks first. One that wants care is so in its `warning`
+colour: Settings > App's Clean Old Settings, Move Old Files and Reset to Defaults, Folders' Reset to Defaults and a
+row's Reset to Default and Remove from Library, Freedreno Settings' Clear All, the setup's Move All, Clean Now and
+Overwrite (users.ini kept as `users.ini.old`), and the questions' Abort, Exit with a run going, Use Anyway, Run Anyway,
+Reset, Clean and Move. No font files or localization packages are needed.
 
 ```sh
 ./build/scarletnx

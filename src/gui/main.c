@@ -2931,6 +2931,30 @@ static const char* const ask_choices[][2] = {{SNX_TR_NOOP("Continue"), SNX_TR_NO
                                              {SNX_TR_NOOP("OK"), NULL}};
 /* a question added to GuiAsk takes its choices here, in its place */
 typedef char snx_gui_ask_choices[SDL_arraysize(ask_choices) == GUI_ASK_ERROR + 1 ? 1 : -1];
+/* the look of each question's second choice, GuiAsk's order: the failure colour for what has no way back (a file
+   deleted, a list cleared), the warning colour for what wants care (a run ended, a warning answered Anyway, settings or
+   folders put back, files moved or cleaned, a folder off the Library); none for a choice that changes nothing kept */
+static const unsigned ask_tones[] = {UI_ATTR_CAUTION, /* Abort: the run ends */
+                                     0,               /* Exit */
+                                     0,               /* With Subfolders */
+                                     UI_ATTR_CAUTION, /* Use Anyway: a folder Android slows */
+                                     UI_ATTR_CAUTION, /* Run Anyway: an extraction that may not fit */
+                                     UI_ATTR_CAUTION, /* Clean: the old keys taken out */
+                                     UI_ATTR_CAUTION, /* Reset: every setting */
+                                     UI_ATTR_CAUTION, /* Reset: every folder picked */
+                                     UI_ATTR_CAUTION, /* Reset: a folder picked */
+                                     UI_ATTR_CAUTION, /* Remove: a folder off the Library, its games kept */
+                                     UI_ATTR_CAUTION, /* Move: what an older version left */
+                                     UI_ATTR_DANGER,  /* Delete: a save state */
+                                     UI_ATTR_DANGER,  /* Delete: a game's caches */
+                                     UI_ATTR_CAUTION, /* Exit: the run ends with the menu */
+                                     0,               /* Recompile */
+                                     UI_ATTR_DANGER,  /* Remove: a GPU driver package */
+                                     UI_ATTR_DANGER,  /* Clear: the crash list */
+                                     0,               /* No */
+                                     UI_ATTR_DANGER,  /* Delete: what an older version left */
+                                     0};
+typedef char snx_gui_ask_tones[SDL_arraysize(ask_tones) == GUI_ASK_ERROR + 1 ? 1 : -1];
 /* the question shown, over the whole screen in the middle or at its foot, a choice asked twice saying so once pressed:
    how many choices it has, one for a failure's OK */
 static int ask_place(App* app, GuiChoices* c) {
@@ -3326,7 +3350,8 @@ static GuiRect ui_row_box(const App* app, GuiRect r) {
    (UI_ATTR_OPEN) has the focus's look without the cursor; a title (UI_ATTR_TITLE) is on a band of ink in a theme of
    filled boxes, else over a rule. One with nothing to do now (UI_ATTR_OFF) is greyed, still there: written in the soft
    colour, or inverted on it where the focus inverts. An action with no way back (UI_ATTR_DANGER) is on the page framed
-   and written in the failure colour, and filled with it, written in the page's, in focus, whatever the theme's focus */
+   and written in the failure colour, and filled with it, written in the page's, in focus, whatever the theme's focus;
+   one to take with care (UI_ATTR_CAUTION) so in the warning colour */
 /* a row's text's top: as item_text_y has it in a row a cell and a pixel high, in the middle of a taller one */
 static int ui_text_y(const App* app, GuiRect b) { return b.y + (b.h - cell_h(app) + app->scale) / 2; }
 static int user_side(const App* app, int h);
@@ -3406,8 +3431,9 @@ void ui_draw_row(App* app, GuiRect r, const char* text, unsigned icon, const voi
     int look = focused || (attr & UI_ATTR_OPEN), filled = t->panels == GUI_PANELS_FILL, inverted = look && t->focus_bar;
     int failing =
         (attr & UI_ATTR_FAILURE) && !((attr & UI_ATTR_BLINK) && t->blink_ms && (now_ms(app) / t->blink_ms) % 2);
-    int off = (attr & UI_ATTR_OFF) != 0, danger = (attr & UI_ATTR_DANGER) && !failing && !off;
-    int solid = failing || inverted || (danger && look); /* filled, written in the page colour */
+    int off = (attr & UI_ATTR_OFF) != 0, toned = (attr & (UI_ATTR_DANGER | UI_ATTR_CAUTION)) && !failing && !off;
+    int solid = failing || inverted || (toned && look); /* filled, written in the page colour */
+    GuiRgb tone = attr & UI_ATTR_DANGER ? t->failure : t->warning;
     GuiRect b = ui_row_box(app, r);
     char label[400];
     if (attr & UI_ATTR_LABEL) { /* between rows, as "Recent Games": no box, no marker */
@@ -3425,13 +3451,13 @@ void ui_draw_row(App* app, GuiRect r, const char* text, unsigned icon, const voi
     }
     snprintf(label, sizeof label, "%s%s%s%s", t->marker, gui_icon_utf8(icon, glyph), icon ? " " : "", text);
     if (solid)
-        fill_rect(app, b, failing || danger ? t->failure : off ? t->soft : t->focus);
-    else if (danger || filled)
-        fill_rect(app, b, danger ? t->page : t->dim);
-    if (!solid && (!filled || look || danger)) outline(app, b, danger ? t->failure : look ? t->focus : t->dim);
+        fill_rect(app, b, failing ? t->failure : toned ? tone : off ? t->soft : t->focus);
+    else if (toned || filled)
+        fill_rect(app, b, toned ? t->page : t->dim);
+    if (!solid && (!filled || look || toned)) outline(app, b, toned ? tone : look ? t->focus : t->dim);
     {
         SDL_Color ink = rgb(solid                    ? t->page
-                            : danger                 ? t->failure
+                            : toned                  ? tone
                             : off                    ? t->soft
                             : attr & UI_ATTR_WARNING ? t->warning
                             : attr & UI_ATTR_ACTIVE  ? t->active
@@ -5235,7 +5261,10 @@ bool ui_addons_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* inf
         why[0] = (addons_row(app, (int)row) == ROW_CLEAN_CACHE && !caches_there(app)) ||
                  (addons_row(app, (int)row) == ROW_STATES && !states_kept(app->addons_game)) ||
                  (addons_row(app, (int)row) == ROW_GPU_DRIVER && app->addons_driver_off);
-    if (why[0]) info->attr |= UI_ATTR_OFF;
+    if (why[0])
+        info->attr |= UI_ATTR_OFF;
+    else if (!app->addons_folders_shown && addons_row(app, (int)row) == ROW_CLEAN_CACHE)
+        info->attr |= UI_ATTR_DANGER; /* the caches deleted */
     return true;
 }
 static void render_addons(App* app) {
@@ -12171,6 +12200,16 @@ static unsigned form_icon(const App* app, const GuiEditor* e, int r) {
         return page_icon(k->key);
     return GUI_ICON_NONE;
 }
+/* the look of row r of e: Settings > App's Clean Old Settings, Move Old Files and Reset to Defaults, Folders' Reset to
+   Defaults and Freedreno Settings' Clear All want care; GPU Drivers' Clear Crash List has no way back */
+static unsigned form_tone(const App* app, const GuiEditor* e, int r) {
+    const GuiThemeKey* k = gui_editor_key_of(e, r);
+    if (e->keys == app_keys) return r == GUI_APP_CLEAN || r == GUI_APP_MOVE || r == GUI_APP_RESET ? UI_ATTR_CAUTION : 0;
+    if (e->keys == app->drivers_keys) return r == app->drivers_clear ? UI_ATTR_DANGER : 0;
+    if (e->keys == app->folder_keys) return !k ? UI_ATTR_CAUTION : 0; /* Reset to Defaults */
+    if (e->keys == app->fd_keys) return k && !strcmp(k->key, "Clear All") ? UI_ATTR_CAUTION : 0;
+    return 0;
+}
 /* row r of e as a list of ui.txt asks for it, in a row width pixels wide: false past its last. In a form with icons a
    row without one starts where their text does, its values in their column; but for Folders', whose rows hold paths
    that need the room (a long one would lose what it is, default, beside it) */
@@ -12189,7 +12228,10 @@ static bool form_row_info(App* app, const GuiEditor* e, size_t r, int labels, in
         memset(line + n, ' ', 3);
     }
     info->label = line + strlen(app->theme.marker); /* ui_draw_row puts the marker */
-    if (form_row_off(app, e, (int)r)) info->attr |= UI_ATTR_OFF;
+    if (form_row_off(app, e, (int)r))
+        info->attr |= UI_ATTR_OFF;
+    else
+        info->attr |= form_tone(app, e, (int)r);
     if (app->warn_until && now_ms(app) < app->warn_until && app->warn_key[0] &&
         e->object == (char*)app->settings.values) {
         int row = setting_of(app, (int)r);
@@ -12845,6 +12887,14 @@ static SetupDoes setup_row_does(const App* app, int row) {
 }
 /* the icon before the choice on row i; none between the groups */
 static unsigned setup_icon(const App* app, int row) { return setup_icons[setup_row_does(app, row)]; }
+/* the look of the choice on row i: Delete All has no way back; Move All, Clean Now and the user's page's Overwrite
+   (users.ini kept as users.ini.old) want care */
+static unsigned setup_tone(const App* app, int row) {
+    SetupDoes does = setup_row_does(app, row);
+    if (does == SETUP_DOES_DELETE) return UI_ATTR_DANGER;
+    if (does == SETUP_DOES_MOVE || does == SETUP_DOES_CLEAN) return UI_ATTR_CAUTION;
+    return setup_page_of(app) == SNX_SETUP_USER && !app->setup_typing && row == 1 ? UI_ATTR_CAUTION : 0;
+}
 /* the old files' page to: a step on or back, the first or the last; none past them, nor once one was done */
 static void left_turn(App* app, int to) {
     int n = left_groups(app);
@@ -15715,6 +15765,18 @@ static const char* pick_label(App* app, int i) {
             : "( )",
         snx_tr(SAY_SUBFOLDERS));
     return app->pick_text;
+}
+/* the look of the picks box's choice i: a GPU driver's Remove has no way back; a Folders row's Reset to Default and
+   Remove from Library want care */
+static unsigned pick_tone(const App* app, int i) {
+    const char* const* picks = picks_list(app);
+    int n = 0;
+    while (picks[n]) ++n;
+    if (i < 0 || i >= n || app->picks_of == GUI_PICKS_ASSET || app->picks_of == GUI_PICKS_THEME ||
+        app->picks_of == GUI_PICKS_GAME)
+        return 0;
+    if (app->picks_of == GUI_PICKS_DRIVER) return !strcmp(picks[i], "Remove") ? UI_ATTR_DANGER : 0;
+    return !strcmp(picks[i], "Reset to Default") || !strcmp(picks[i], "Remove from Library") ? UI_ATTR_CAUTION : 0;
 }
 static void picks_open(App* app, GuiPicksOf of) {
     app->picks_of = of;
@@ -18685,11 +18747,11 @@ bool ui_choices_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* in
     if (app->choices_of == GUI_CHOICES_SETUP && info->label) {
         info->icon = setup_icon(app, (int)row);
         if (!info->label[0]) info->attr |= UI_ATTR_LABEL;
-        if (setup_row_does(app, (int)row) == SETUP_DOES_DELETE) info->attr |= UI_ATTR_DANGER;
+        info->attr |= setup_tone(app, (int)row);
     }
-    if (app->choices_of == GUI_CHOICES_ASK && app->confirm.ask == GUI_ASK_DELETE_OLD &&
-        row == (size_t)GUI_CONFIRM_ABORT)
-        info->attr |= UI_ATTR_DANGER;
+    if (app->choices_of == GUI_CHOICES_ASK && row == (size_t)GUI_CONFIRM_ABORT)
+        info->attr |= ask_tones[app->confirm.ask];
+    if (app->choices_of == GUI_CHOICES_PICKS && info->label) info->attr |= pick_tone(app, (int)row);
     return info->label != NULL;
 }
 /* a choice under the pointer takes the focus, and a click takes it: the question's pressed, UI scale's size or the
