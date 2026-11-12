@@ -117,6 +117,19 @@ int main(void) {
         CHECK(hook_select(&hook_table, save[0], versions, &first) == -2);
         CHECK(hook_select(&hook_table, save[1], versions, &first) == -2);
     }
+    { /* the library's start and end open and close no session: they return with nothing touched, for any SDK */
+        static const char* const session[2] = {"_ZN2nn5prepo6detail3ipc10InitializeEv",
+                                               "_ZN2nn5prepo6detail3ipc8FinalizeEv"};
+        u32 versions[HOOK_KEYS] = {0};
+        for (int i = 0; i < 2; i++) {
+            int k = hook_select(&hook_table, session[i], versions, &first);
+            CHECK(k >= 0);
+            memset(mem + REPORT, 0xee, 0x40);
+            c->x[0] = REPORT, c->x[30] = 0x4321, c->pc = 0;
+            hook_fn[k](c, 0);
+            CHECK(c->pc == 0x4321 && c->x[0] == REPORT && mem[REPORT] == 0xee && mem[REPORT + 0x3f] == 0xee);
+        }
+    }
     { /* the two that read no report hold for a module of any SDK, one whose version is unknown too */
         u32 versions[HOOK_KEYS] = {0};
         CHECK(hook_select(&hook_table, "_ZN2nn5prepo28RequestImmediateTransmissionEv", versions, &first) >= 0);

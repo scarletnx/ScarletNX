@@ -99,3 +99,7 @@ u32 nnprepo_get_transmission_status(CPU* c, u64 status) {
     snx_st_le32(hook_host(c, status), 0);
     return 0;
 }
+/* nn::prepo::detail::ipc's Initialize and Finalize, where nn::prepo::Initialize and the library's first use open
+   prepo:u and its end closes it: there is no session to open, and every function that would use it is answered here */
+void nnprepo_ipc_initialize(CPU* c) { (void)c; }
+void nnprepo_ipc_finalize(CPU* c) { (void)c; }
