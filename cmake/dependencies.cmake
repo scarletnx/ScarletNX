@@ -376,9 +376,9 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         if(NOT ANDROID)
             list(APPEND snx_tracy_options "TRACY_ONLY_LOCALHOST ON" "TRACY_NO_BROADCAST ON")
         endif()
-        CPMAddPackage(NAME tracy VERSION 0.14.1
-                      URL https://github.com/wolfpld/tracy/archive/refs/tags/v0.14.1.tar.gz
-                      URL_HASH SHA256=bf4af567e9c7524d07f3caa745fad02fb33bd5694f11910750382d1efbb251c1
+        CPMAddPackage(NAME tracy VERSION 0.15.0
+                      URL https://github.com/wolfpld/tracy/archive/refs/tags/v0.15.0.tar.gz
+                      URL_HASH SHA256=3d57da54aa67d7875da1e8fecd0bd5957675cef73c27dd52bffb6ab8d290a5e6
                       EXCLUDE_FROM_ALL YES
                       OPTIONS ${snx_tracy_options})
         # The sampler waits for the runtime to ask for it, and samples at 1 kHz unless TRACY_SAMPLING_HZ says

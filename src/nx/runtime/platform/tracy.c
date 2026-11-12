@@ -663,7 +663,7 @@ void snx_tracy_lock_lock(SnxTracyLock* l) {
 
 void snx_tracy_lock_unlock(SnxTracyLock* l) {
     if (!l || !snx_tracy_enter()) return;
-    ___tracy_after_unlock_lockable_ctx(l);
+    ___tracy_before_unlock_lockable_ctx(l);
     snx_tracy_leave();
 }
 
