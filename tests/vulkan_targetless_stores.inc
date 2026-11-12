@@ -154,3 +154,87 @@ static int check_targetless_stores(void) {
     free(channel);
     return 0;
 }
+
+/* deko3d's vertex stage keeps its storage buffers' descriptors {address, size} in c[0] from 0xb0 (driver_constbuf.h:
+   the draw's 16 bytes, then the stage's 32 texture and 8 image handles), below NVN's 0x110. A vertex program that reads
+   word 32 of the first and stores it into the second, as uam compiles them: its draw has no target, so the store is
+   all it leaves. The vertex program wasn't translated and the draw was skipped */
+static int check_deko_vertex_storage(void) {
+    const u64 address = 0x491000000ull, cpu = HEAP_BASE + 0x5480000;
+    const u64 positions = address + 0x2000, cbuf = address + 0x3000, source = address + 0x4000;
+    const u64 stored = address + 0x4800;
+    const u64 vertex[] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
+                          0xef9500000b07ff08ull, /* LDC.64 R8, c[0][0xb0]: the first storage buffer */
+                          0xeed420000807080cull, /* LDG.E R12, [R8+0x80]: its word 32 */
+                          0xef9500000c07ff0aull, /* LDC.64 R10, c[0][0xc0]: the second */
+                          0xeedc200000070a0cull, /* STG.E [R10], R12 */
+                          0xeff1ff800707ff00ull, /* position */
+                          0xe30000000007000full};
+    const u64 nothing[] = {0xe30000000007000full};
+    const float position[12] = {-1, -1, 0, 1, 3, -1, 0, 1, -1, 3, 0, 1};
+    const float transform[6] = {2, 2, 0.5f, 2, 2, 0.5f};
+    const u32 descriptors[8] = {(u32)source, (u32)(source >> 32), 0x100, 0, (u32)stored, (u32)(stored >> 32), 16, 0};
+    u32 words[64];
+    u8 bytes[48];
+    int drawn, skipped;
+    GpuChannel* channel = calloc(1, sizeof *channel);
+    CHECK(channel);
+    channel->id = 126;
+    CHECK(mem_map(cpu, 0x8000, MS_NORMAL, PERM_RW) == 0); /* past the heap */
+    gmmu_map(address, cpu, 0x8000);
+    for (u32 i = 0; i < 12; i++) {
+        u32 word;
+        memcpy(&word, position + i, 4);
+        snx_st_le32(bytes + 4 * i, word);
+    }
+    for (u32 i = 0; i < 64; i++) words[i] = 0xdead0000u | i;
+    words[32] = 0x5eedb0b0;
+    CHECK(!gmem_write(positions, bytes, sizeof bytes));
+    CHECK(!storage_write_words(cbuf + 0xb0, descriptors, 8));
+    CHECK(!storage_write_words(source, words, 64));
+    CHECK(!storage_write_words(stored, (const u32[1]){0xdeadbeef}, 1));
+    CHECK(mesh_program(address, vertex, 7, 0));
+    CHECK(mesh_program(address + 0x1000, nothing, 1, 0));
+    u32* r = channel->r3d;
+    r[0x582] = (u32)(address >> 32);
+    r[0x583] = (u32)address;
+    r[0x850] = 1;
+    r[0x851] = 0x1000;
+    r[0x64b] = 1;
+    r[0x286] = 0x6420;
+    r[0x3fd] = r[0x3fe] = 4u << 16;
+    r[0x680] = 0x1111;
+    r[MAXWELL3D_RASTERIZE_ENABLE] = 1;
+    memcpy(r + 0x280, transform, sizeof transform);
+    r[0x458] = 1u << 21 | 7u << 27; /* RGBA32F */
+    r[0x700] = 0x1000 | 16;
+    r[0x701] = (u32)(positions >> 32);
+    r[0x702] = (u32)positions;
+    r[0x7c0] = (u32)((positions + 47) >> 32);
+    r[0x7c1] = (u32)(positions + 47);
+    r[0x487] = 0x0fac6884;
+    for (u32 i = 0; i < 4; i++) {
+        u64 a = address + 0x5000 + i * 0x400;
+        r[0x200 + i * 0x10] = (u32)(a >> 32);
+        r[0x201 + i * 0x10] = (u32)a;
+        r[0x202 + i * 0x10] = 4;
+        r[0x203 + i * 0x10] = 4;
+        r[0x204 + i * 0x10] = 0; /* no format: nothing is written there */
+    }
+    r[0x54e] = 0; /* depth off */
+    channel->ds.bind.cb_addr[0][0] = cbuf;
+    channel->ds.bind.cb_size[0][0] = 0x1000;
+    channel->r3d_dirty = ~0u;
+    targetless_draw(channel, &drawn, &skipped);
+    u8 word[4];
+    CHECK(!gmem_read(stored, word, sizeof word));
+    if (!drawn || skipped || snx_ld_le32(word) != 0x5eedb0b0)
+        fprintf(stderr,
+                "deko3d vertex storage: drawn %d, skipped %d, the second buffer holds %08x, expected 5eedb0b0\n", drawn,
+                skipped, snx_ld_le32(word));
+    CHECK(drawn && !skipped && snx_ld_le32(word) == 0x5eedb0b0);
+    puts("deko3d vertex storage: a vertex program reads word 32 of its buffer at c[0][0xb0] and stores it through the "
+         "one at c[0][0xc0]");
+    free(channel);
+    return 0;
+}

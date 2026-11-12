@@ -66,11 +66,13 @@ static inline int shader_same_indexed_kind(const ShTex* tex, u64 int_mask, u64 s
 }
 /* A global buffer (ShaderInfo.gbuf_cbuf_off) is named by where its 64-bit address is: the constant buffer in bits 16-20,
    the byte offset in it in bits 0-15. NVN's storage buffer descriptors, in cbuf 0 from 0x110 to 0x410 (compute) or
-   0x830, follow the address with the buffer's size (shader_gbuf_sized). A graphics program may also keep a bare
+   0x830, follow the address with the buffer's size (shader_gbuf_sized). deko3d puts the vertex stage's 16 at 0xb0,
+   after the draw's 16 bytes and that stage's 32 texture and 8 image handles (its driver_constbuf.h), so the vertex
+   stage's start there; its other stages' lie within NVN's range. A graphics program may also keep a bare
    address in a constant buffer of its own, with nothing after it: one game's terrain vertex programs read their patch
    data through such an address in cbuf 6, as Eden tracks them when no NVN descriptor holds the base
    (global_memory_to_storage_buffer_pass.cpp's Track without the NVN bias). The renderer sizes those by the memory
-   mapped from the address on. The vertex stage's cbuf 0 at 0xb0 is a bare pointer of 16 bytes.
+   mapped from the address on.
    An Ounce program may also reach a buffer through a pointer in memory (SH_GBUF_INDIRECT, bit 31): the 64-bit address
    stored at byte SH_GBUF_CELL (bits 21-30, in 8-byte units) of the buffer whose address the constant buffer word of
    bits 0-20 holds (SH_GBUF_PARENT, itself one of the program's buffers). One game's material programs load pointers
@@ -95,7 +97,9 @@ static inline int shader_same_indexed_kind(const ShTex* tex, u64 int_mask, u64 s
 #define SH_GBUF_CELL(d)     (((d) >> 21 & 1023u) * 8u)
 #define SH_GBUF_PARENT(d)   ((d) & 0x1FFFFFu)
 #define SH_GBUF_CELL_MAX    8184u
-static inline int shader_gbuf_sized(int stage, u32 d) { return d >= 0x110 && d < (stage == ST_CS ? 0x410u : 0x830u); }
+static inline int shader_gbuf_sized(int stage, u32 d) {
+    return d >= (stage == ST_VS ? 0xb0u : 0x110u) && d < (stage == ST_CS ? 0x410u : 0x830u);
+}
 /* Transform feedback (key of the last program before rasterization): for each of the 4 buffers, the attribute word
    each 4-byte word of a vertex there holds (its ISA attribute address / 4: the position's x is 28, generic i's
    component k 32 + 4 * i + k), of count words, the vertices stride bytes apart. All counts 0: nothing is captured */

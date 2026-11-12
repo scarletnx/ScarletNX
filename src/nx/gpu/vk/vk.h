@@ -2185,9 +2185,8 @@ VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, i
    A draw also refuses its own attachments, which a dispatch, outside any rendering pass, can write.
    vk_gbuf_desc: a storage buffer's address (*addr) and size from its descriptor's words {address low, address high,
    size} at off (SH_GBUF_*), where shader_gbuf_tag (shader/forms.c) found it for stage (ST_VS, ST_FS or ST_CS).
-   No size takes 16 bytes, and sizes are capped at 16 MiB and rounded up to words. The vertex stage's 0xb0 holds a
-   bare 64-bit pointer with no size after it, 16 bytes (shader_gbuf_tag tags it for the vertex stage alone). A bare address
-   in a program's own constant buffer (shader_gbuf_tag_any, v[2] unread) takes what is mapped from it on, to the cap. */
+   No size takes 16 bytes, and sizes are capped at 16 MiB and rounded up to words. A bare address in a program's own
+   constant buffer (shader_gbuf_tag_any, v[2] unread) takes what is mapped from it on, to the cap. */
 int vk_tex_num(const u32* tic, const Surf* t);
 /* the header's dimension as ShaderInfo.tex_query_hint takes it (1 + ShTex type, + 4 for an array) */
 u8 vk_tic_query_hint(const u32* tic);

@@ -202,7 +202,6 @@ void shader_global_dynamic(DirectCtx* c, int stage, u64 w, int op, const u32* gb
     for (int slot = 0; slot < ngbuf; slot++) {
         u32 then_label, merge_label, base_lo, base_hi, size, relative, borrow, inside;
         u32 bank = SH_GBUF_BANK(gbuf_off[slot]), at = SH_GBUF_OFFSET(gbuf_off[slot]);
-        if (gbuf_off[slot] == 0xb0) continue; /* the vertex stage's bare pointer, a buffer of its own */
         base_lo = shader_cbuf_read_dynamic(c, bank, shader_u32(c, at));
         base_hi = shader_cbuf_read_dynamic(c, bank, shader_u32(c, at + 4));
         /* a bare address has no size beside it: the cap below, of which the renderer binds what is mapped */

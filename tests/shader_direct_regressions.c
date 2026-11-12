@@ -941,6 +941,19 @@ static void global_buffers(void) {
     u32* code = translate(unused, 1, ST_FS, &info, &words, 1);
     check(code && !info.unsupported && info.ngbuf == 0, "unused constant is not a global buffer");
     free(code);
+    /* deko3d's vertex stage keeps its storage buffers' descriptors from c[0][0xb0], each address followed by its size,
+       below NVN's 0x110: a vertex program uam compiles to read word 32 of the first one. It wasn't translated */
+    const u64 deko_vertex[] = {
+        0xEF9500000B07FF00ull, /* LDC.64 R0, c[0x0][0xb0] */
+        0xEED4200008070000ull, /* LDG.E R0, [R0+0x80] */
+    };
+    code = translate(deko_vertex, 2, ST_VS, &info, &words, 1);
+    if (!code || info.unsupported) fprintf(stderr, "deko3d vertex storage read: %s\n", info.first_unsupported);
+    check(code && !info.unsupported && info.ngbuf == 1 && info.gbuf_cbuf_off[0] == 0xb0 && (info.gbuf_rmask & 1) &&
+              shader_gbuf_sized(ST_VS, 0xb0) && shader_gbuf_sized(ST_VS, 0x100) && !shader_gbuf_sized(ST_FS, 0xb0) &&
+              !shader_gbuf_sized(ST_VS, 0xa0),
+          "a deko3d vertex program reads its storage buffer past 16 bytes, its size beside the address");
+    free(code);
     /* an LDG whose base comes from arithmetic the tracking doesn't follow names that instruction (issue #440) */
     const u64 untracked[] = {FMUL_KEEP | 2, 0xEED4200000070200ull};
     code = translate(untracked, 2, ST_FS, &info, &words, 1);
