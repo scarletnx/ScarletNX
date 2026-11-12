@@ -8,7 +8,8 @@
    its version, and none in a module with no label. The two tables: a symbol declared again for a 32-bit program
    alone has each program's handler in its table, and one only a 32-bit program has is in no other. And a handler
    that hands its call back: the function's own block, the one its slot held, runs until the call's return address,
-   and the adapter still returns there */
+   and the adapter still returns there; and one that calls another function of the game, with its four words in r0
+   to r3, and is back at its own function after it */
 #include "nx/hle/hook/hook.c"
 #include <assert.h>
 #include <stdio.h>
@@ -24,6 +25,10 @@ void test_thumb_answer(CPU* c, u64 out) { c->mem[out] = 0x5a; }
 u64 test_wide(CPU* c, u64 size) { return (void)c, size; }
 u32 test_off(CPU* c) { return (void)c, 1; }
 u32 test_own(CPU* c, u32 a) { return a == 5 ? (u32)hook_run_original_a32(c) + 1 : 0; }
+u32 test_caller(CPU* c, u32 fn) {
+    hook_guest_call_a32(c, fn, 11, 12, 13, 14);
+    return (u32)hook_run_original_a32(c); /* the thread is at the hooked function again: its own code is found */
+}
 i64 test_now(CPU* c) { return (void)c, 0x1122334455667788ll; }
 void test_now_out(CPU* c, u64 out) { memcpy(c->mem + out, "\x88\x77\x66\x55\x44\x33\x22\x11", 8); }
 u32 test_save(CPU* c, const HookLayout_Report32* l, u64 report, u64 size) {
@@ -35,7 +40,8 @@ u32 test_save(CPU* c, const HookLayout_Report32* l, u64 report, u64 size) {
 static const struct {
     const char* name;
     u64 addr; /* bit 0 set for a Thumb function */
-} symbols[] = {{"own", 0x1060},
+} symbols[] = {{"caller", 0x1070},
+               {"own", 0x1060},
                {"own", 0x2021},
                {"answer", 0x1000},
                {"wide", 0x1010},
@@ -56,6 +62,7 @@ static void own_block(SnxArmCPU* a) { (void)a; }
 /* the own code of the two functions named own: each returns a value of its own, and leaves lr changed */
 static void own_a32(SnxArmCPU* a) { a->r[0] = 0x40 + a->r[0], a->r[14] = 0xdead; }
 static void own_thumb(SnxArmCPU* a) { a->r[0] = 0x80 + a->r[0], a->r[14] = 0xdead; }
+static void own_caller(SnxArmCPU* a) { a->r[0] = 0xc0, a->r[14] = 0xdead; }
 static SnxArmBlock a32_slots[0x40], thumb_slots[0x40];
 SnxArmBlock* arm_slot(u32 addr, int thumb) {
     assert(!(addr & 1));
@@ -69,10 +76,17 @@ SnxArmBlock arm_block(u32 addr, int thumb) {
 }
 static SnxArmCPU a;
 static unsigned runs;
+static u32 called[6]; /* a guest call's r0 to r3, its function and its state */
 SnxArmCPU* arm_cpu(CPU* c) { return (void)c, &a; }
 void arm_run(SnxArmCPU* c, SnxArmBlock first, u32 stop_at) {
     runs++;
-    first(c);
+    if (first) {
+        first(c);
+    } else { /* from r15: the function a guest call names, which changes r0 to r3 and lr as a function may */
+        memcpy(called, c->r, 4 * sizeof(u32));
+        called[4] = c->r[15], called[5] = c->cpsr & SNX_ARM_T;
+        c->r[0] = c->r[1] = c->r[2] = c->r[3] = 0x99, c->r[14] = 0xdead;
+    }
     c->r[15] = stop_at & ~1u;
     c->cpsr = (c->cpsr & ~SNX_ARM_T) | (stop_at & 1 ? SNX_ARM_T : 0);
 }
@@ -135,7 +149,7 @@ int main(void) {
        a 32-bit program alone in that program's */
     int answer = entry(&hook32_table, "answer", 0), thumb = entry(&hook32_table, "thumb_answer", 0);
     int now = entry(&hook32_table, "now", 0), off = entry(&hook32_table, "off_answer", 0);
-    assert(HOOK_COUNT == 6 && HOOK32_COUNT == 7);
+    assert(HOOK_COUNT == 7 && HOOK32_COUNT == 8);
     assert(answer >= 0 && thumb >= 0 && now >= 0 && off >= 0);
     assert(entry(&hook_table, "answer", 0) >= 0 && entry(&hook_table, "wide", 0) >= 0);
     assert(entry(&hook32_table, "wide", 0) == -1 && entry(&hook_table, "save_j", 0) == -1);
@@ -149,7 +163,7 @@ int main(void) {
     assert(entry(&hook32_table, "save_j", 0x10000) != entry(&hook32_table, "save_j", 0x20000));
 
     for (unsigned i = 0; i < 0x40; i++) a32_slots[i] = thumb_slots[i] = own_block;
-    a32_slots[24] = own_a32, thumb_slots[16] = own_thumb;
+    a32_slots[24] = own_a32, thumb_slots[16] = own_thumb, a32_slots[28] = own_caller;
     g_mem = guest;
     strcpy((char*)guest + 0x1810, "SDK MW+Vendor+VendorSdk_nnSdk-1_2_3-Release");
     g_settings.native_hooks = 1;
@@ -205,6 +219,16 @@ int main(void) {
     a.r[0] = 4, a.r[14] = 0x3001; /* a call the handler answers itself: the function's code doesn't run */
     thumb_slots[16](&a);
     assert(runs == 2 && a.r[0] == 0);
+
+    /* a handler that calls a Thumb function of the game from an A32 one's hook: the words in r0 to r3, the function
+       in r15 in its state, run until the handler's lr; then the thread is at the hooked function again, in its
+       state, with that lr */
+    a.cpsr = 0;
+    a.r[0] = 0x2041, a.r[14] = 0x3000, a.r[15] = 0x1070;
+    a32_slots[28](&a);
+    assert(runs == 4 && called[0] == 11 && called[1] == 12 && called[2] == 13 && called[3] == 14);
+    assert(called[4] == 0x2040 && called[5] == SNX_ARM_T);
+    assert(a.r[0] == 0xc0 && a.r[15] == 0x3000 && !(a.cpsr & SNX_ARM_T));
 
     /* hooks=0 takes nothing */
     for (unsigned i = 0; i < 0x40; i++) a32_slots[i] = thumb_slots[i] = own_block;

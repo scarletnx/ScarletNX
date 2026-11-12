@@ -14,6 +14,7 @@
 #include "hle/hook/hooks.hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/services_int.h"
+#include "nx/runtime/arm.h"
 #include "nx/runtime/platform/log.h"
 #include <stdlib.h>
 #include <string.h>
@@ -64,6 +65,10 @@ static void unlock(void) { pm_unlock(&g_lk); }
 
 void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
     u64 lr = c->x[30], pc = fn;
+    if (g_arm_mod) {
+        hook_guest_call_a32(c, (u32)fn, (u32)a0, (u32)a1, (u32)a2, (u32)a3);
+        return;
+    }
     c->x[0] = a0;
     c->x[1] = a1;
     c->x[2] = a2;
