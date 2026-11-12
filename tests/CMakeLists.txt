@@ -3481,6 +3481,11 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         snx_test_target(snx-test-vk-pipeline-workers 11)
         target_link_libraries(snx-test-vk-pipeline-workers PRIVATE snx_vk_common)
         add_test(NAME vk_pipeline_workers COMMAND snx-test-vk-pipeline-workers)
+        # which pipeline cache files go to the driver: its own data, whole, of this device and driver build
+        add_executable(snx-test-vk-pipeline-cache-check vk_pipeline_cache_check.c)
+        snx_test_target(snx-test-vk-pipeline-cache-check 11)
+        target_link_libraries(snx-test-vk-pipeline-cache-check PRIVATE snx_vk_common)
+        add_test(NAME vk_pipeline_cache_check COMMAND snx-test-vk-pipeline-cache-check)
         # the subgroups a compute pipeline asks for: their size, and whole ones
         add_executable(snx-test-vk-compute-subgroups vk_compute_subgroups.c "${volk_SOURCE_DIR}/volk.c")
         snx_test_target(snx-test-vk-compute-subgroups 11)

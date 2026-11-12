@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
    The pipeline cache kept between runs (common/gpu/vk/vk_common.c, used by the 3DS renderer and the Switch's), on the
-   3DS's device: no file gives an empty cache, a pipeline made with it is written and read back whole, a cut file still
-   gives a cache, a write leaves no temporary file, and the 3DS renderer's file is in the folder's shader_cache with
-   the driver's tag in its name. argv[1] is a folder the test may fill */
+   3DS's device: no file gives an empty cache, a pipeline made with it is written and read back whole, a cut file and
+   one of another driver build are kept from the driver, which the reason says, and still give a cache, a write leaves
+   no temporary file, and the 3DS renderer's file is in the folder's shader_cache with the driver's tag in its name.
+   argv[1] is a folder the test may fill */
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
 #include "3ds/gpu/vk/shaders/fill_spv.h"
@@ -40,7 +41,7 @@ int main(int argc, char** argv) {
     const char* dir = argv[1];
     if (!snx_is_dir(dir)) (void)plat_mkdir(dir);
     SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
-    char why[256];
+    char why[512];
     if (!m) return 1;
     if (!snx_ctr_vk_init(m, why, sizeof why)) {
         printf("no Vulkan device (%s): pipeline cache checks skipped\n", why);
@@ -48,14 +49,17 @@ int main(int argc, char** argv) {
         return 77;
     }
     VkDevice dev = snx_ctr_vk()->device;
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(snx_ctr_vk()->phys, &props);
     char* path = snx_path_join(dir, "cache.bin");
     remove(path);
 
-    /* no file: an empty cache */
+    /* no file: an empty cache, and nothing to say */
     size_t loaded = 1;
-    VkPipelineCache cache = snx_vk_pipeline_cache_load(dev, path, &loaded);
+    VkPipelineCache cache = snx_vk_pipeline_cache_load(dev, &props, path, &loaded, why, sizeof why);
     CHECK(cache != VK_NULL_HANDLE);
     CHECK(loaded == 0);
+    CHECK(!why[0]);
 
     /* a pipeline made with it, written, and read back whole */
     SnxCtrVkCompute fill = {0};
@@ -67,9 +71,10 @@ int main(int argc, char** argv) {
     CHECK(snx_vk_pipeline_cache_save(dev, cache, path, &saved) == 0);
     CHECK(saved > 0);
     CHECK(file_size(path) == (long)saved);
-    VkPipelineCache again = snx_vk_pipeline_cache_load(dev, path, &loaded);
+    VkPipelineCache again = snx_vk_pipeline_cache_load(dev, &props, path, &loaded, why, sizeof why);
     CHECK(again != VK_NULL_HANDLE);
     CHECK(loaded == saved);
+    CHECK(!why[0]);
     /* the driver takes what it wrote: the same pipeline from the loaded cache */
     VkPipeline remade = VK_NULL_HANDLE;
     CHECK(snx_vk_compute_pipeline(dev, again, fill.layout, snx_ctr_fill_spv, snx_ctr_fill_spv_size, &remade) ==
@@ -85,11 +90,30 @@ int main(int argc, char** argv) {
     }
     snx_free_strings(names, count);
 
+    /* the same data from another build of the driver (another pipelineCacheUUID): kept from the driver, which Vulkan
+       lets be given only what it gave out, and some drivers take without a check */
+    size_t size = 0;
+    unsigned char* other = snx_read_file(path, &size);
+    CHECK(other && size == saved && size > 32);
+    if (other && size > 32) {
+        other[16] ^= 0xff;
+        CHECK(!snx_write_file(path, other, size));
+    }
+    free(other);
+    VkPipelineCache from_other = snx_vk_pipeline_cache_load(dev, &props, path, &loaded, why, sizeof why);
+    printf("another driver build: %s\n", why);
+    CHECK(from_other != VK_NULL_HANDLE);
+    CHECK(loaded == 0);
+    CHECK(strstr(why, "another build of the driver") && strstr(why, "starts empty"));
+
     /* a cut file (a run stopped by the system as it wrote, on a file system without the replace): still a cache */
     static const unsigned char cut[16] = {0x20, 0, 0, 0, 1, 0, 0, 0, 0xde, 0xad};
     CHECK(!snx_write_file(path, cut, sizeof cut));
-    VkPipelineCache from_cut = snx_vk_pipeline_cache_load(dev, path, &loaded);
+    VkPipelineCache from_cut = snx_vk_pipeline_cache_load(dev, &props, path, &loaded, why, sizeof why);
+    printf("a cut file: %s\n", why);
     CHECK(from_cut != VK_NULL_HANDLE);
+    CHECK(loaded == 0);
+    CHECK(strstr(why, "holds 16 bytes") && strstr(why, "starts empty"));
 
     /* the renderer's own: <folder>/shader_cache/vk_pipelines.d<driver>-<vendor>-<device>.bin, made at the end of a
        run in which pipelines went into it */
@@ -102,6 +126,7 @@ int main(int argc, char** argv) {
     vkDestroyPipeline(dev, remade, NULL);
     vkDestroyPipelineCache(dev, cache, NULL);
     vkDestroyPipelineCache(dev, again, NULL);
+    vkDestroyPipelineCache(dev, from_other, NULL);
     vkDestroyPipelineCache(dev, from_cut, NULL);
     snx_ctr_vk_compute_free(&fill);
     snx_ctr_vk_free();
