@@ -2929,23 +2929,6 @@ static struct {
 } g_draw = {.check = -1};
 u64 g_vk_draw_kept, g_vk_draw_checked;
 
-/* What the draw's pipeline gives fs's specialization constants (PipeKey.fs_spec): the state of those fs declares, so
-   that a program which reads none of it is drawn by one pipeline whatever that state is */
-static u32 draw_fs_spec(const DsState* ds, const VkSh* fs) {
-    u32 spec = 0;
-    if (!fs) return 0;
-    int lower_left = (ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0;
-    if (fs->si.spec & (1u << SH_SPEC_ALPHA))
-        spec |=
-            SH_SPEC_ALPHA_ALWAYS ^ (ds->dyn.alpha_test ? ds->dyn.alpha_func & PIPE_SPEC_ALPHA : SH_SPEC_ALPHA_ALWAYS);
-    if ((fs->si.spec & (1u << SH_SPEC_LOWER_LEFT)) && lower_left) spec |= PIPE_SPEC_LOWER_LEFT;
-    /* PointCoord's T is 0 at row 0, which is a lower-left window's bottom: it flips when the sprite's origin (1 the
-       top) is the other side */
-    if ((fs->si.spec & (1u << SH_SPEC_SPRITE_FLIP)) && ds->dyn.sprite_origin == lower_left)
-        spec |= PIPE_SPEC_SPRITE_FLIP;
-    return spec;
-}
-
 static void draw_differs(const char* what) {
     WARN_LIMIT(32,
                "vulkan: draw_state_check=1: a draw that kept the last draw's state has another %s when it is made "
@@ -4226,7 +4209,9 @@ retry:
     if (kept && (memcmp(&sample_locations, &g_draw.k.sample_locations, sizeof sample_locations) ||
                  to_color != g_draw.k.coverage_to_color)) kept = 0;
     if (kept && memcmp(&native_blend, &g_draw.k.advanced, sizeof native_blend)) kept = 0;
-    u32 fs_spec = draw_fs_spec(ds, fs);
+    u32 fs_spec = fs ? vk_pipe_fs_spec(fs->si.spec, ds->dyn.alpha_test, ds->dyn.alpha_func,
+                                       (ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0, ds->dyn.sprite_origin)
+                     : 0;
     if (kept && fs_spec != g_draw.k.fs_spec) kept = 0;
     PipeKey made_k;
     VertexPlan made_pl;
@@ -4923,7 +4908,7 @@ retry:
        1 (VK_DYN_PR_DEPTH_RANGE), and the alpha test's reference for the fragment stage. Then the fragment stage's
        scaled textures (stage_set) and the surface clip's height, which the fragment's y counts up from in a lower-left
        window (shader/emit_io.c's shader_frag_y_origin). The test's function, the window's origin and the point
-       sprite's T flip are the pipeline's (draw_fs_spec) */
+       sprite's T flip are the pipeline's (vk_pipe_fs_spec) */
     float pc[32] = {0, ds->dyn.depth_mode || (g_vk.dyn_pr & VK_DYN_PR_DEPTH_RANGE) ? 0.0f : 1.0f, 0, 0};
     /* with the viewport transform off, the viewport's width and height (window_size), which the last stage before
        rasterization takes the position's pixels to clip space by (SNX_SH_WINDOW_XY) */
@@ -4944,7 +4929,7 @@ retry:
        indirect mesh draw's first group, which the task or mesh program takes from SNX_VKB_RS */
     u32 params = mesh && dc->indirect ? SH_PUSH_GPU_MESH_FIRST : dc->indirect ? dc->params : 0;
     memcpy(&pc[2], &params, sizeof(u32));
-    memcpy(&pc[6], &ds->dyn.alpha_ref, 4); /* the test's function is the pipeline's (draw_fs_spec) */
+    memcpy(&pc[6], &ds->dyn.alpha_ref, 4); /* the test's function is the pipeline's (vk_pipe_fs_spec) */
     u32 scaled_words[2] = {(u32)scaled[0], (u32)(scaled[0] >> 32)};
     memcpy(&pc[8], scaled_words, sizeof scaled_words);
     /* and of those the ones whose target has the draw's size, in the uvec4 at byte 96: the one at byte 80 holds a
