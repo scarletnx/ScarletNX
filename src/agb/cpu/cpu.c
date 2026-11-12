@@ -51,6 +51,16 @@ static void switch_mode(AgbCpu* cpu, uint32_t mode) {
     for (int i = 0; i < 5; ++i) cpu->arm.r[8 + i] = new_mode == 1 ? cpu->fiq_r8[i] : cpu->usr_r8[i];
 }
 
+/* An exception return, an S-bit write to the PC, copies the SPSR into the CPSR. User and system mode have no SPSR:
+   there the write sets the flags as any other and the mode stays, as mGBA's _ARMModeHasSPSR has it */
+static void exception_return(AgbCpu* cpu) {
+    int bank = bank_index(cpu->arm.cpsr);
+    if (!bank) return;
+    uint32_t saved = cpu->spsr[bank];
+    switch_mode(cpu, saved & 0x1F);
+    cpu->arm.cpsr = saved;
+}
+
 /* The bus hook the recompiled blocks call for the regions with bus rules a plain access cannot follow:
    the I/O window, the palette, OAM and the save memory. This keeps the 1 KiB mirrors, the byte write
    widths and the register side effects correct while generated code runs at memory speed elsewhere.
@@ -332,20 +342,12 @@ static int data_quirk(AgbCpu* cpu, uint32_t word) {
     if (opcode >= 8 && opcode <= 11) {
         /* The test operations write no result and the ARM7TDMI ignores their Rd field, but with the S
            bit and Rd=15 they still restore the SPSR, changing the mode without touching the PC. */
-        if (rd == 15 && set) {
-            uint32_t saved = cpu->spsr[bank_index(cpu->arm.cpsr)];
-            switch_mode(cpu, saved & 0x1F);
-            cpu->arm.cpsr = saved;
-        }
+        if (rd == 15 && set) exception_return(cpu);
         cpu->arm.r[15] += 4;
         return 0;
     }
     if (rd == 15) {
-        if (set) { /* an exception return restores the SPSR */
-            uint32_t saved = cpu->spsr[bank_index(cpu->arm.cpsr)];
-            switch_mode(cpu, saved & 0x1F);
-            cpu->arm.cpsr = saved;
-        }
+        if (set) exception_return(cpu);
         cpu->arm.r[15] = result & ~(uint32_t)1;
     } else {
         cpu->arm.r[rd] = result;
@@ -508,11 +510,7 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
                     else
                         cpu->arm.r[i] = value;
                 } else if (i == 15) {
-                    if (sbit) { /* an exception return restores the SPSR */
-                        uint32_t saved = cpu->spsr[bank_index(cpu->arm.cpsr)];
-                        switch_mode(cpu, saved & 0x1F);
-                        cpu->arm.cpsr = saved;
-                    }
+                    if (sbit) exception_return(cpu);
                     cpu->arm.r[15] = value & ~(uint32_t)1;
                 } else
                     cpu->arm.r[i] = value;
