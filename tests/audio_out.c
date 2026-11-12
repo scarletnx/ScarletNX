@@ -191,11 +191,8 @@ void fatal(const char* fmt, ...) {
 static unsigned test_thread_dumps;
 void kernel_dump_threads(void) { test_thread_dumps++; }
 /* nn/audio.c's, the native audio outs, which have their own test (nn_audio.c): what audio.c asks of them, counted */
-static unsigned test_out_ticks, test_out_volumes, test_out_drops, test_out_rebuilds;
-void nnaudio_out_tick(u64 now) {
-    (void)now;
-    test_out_ticks++;
-}
+static unsigned test_out_volumes, test_out_drops, test_out_rebuilds;
+void nnaudio_out_tick(u64 now) { (void)now; } /* the clock's thread never runs here */
 void nnaudio_out_device_volume(void) { test_out_volumes++; }
 void nnaudio_out_state_drop(void) { test_out_drops++; }
 void nnaudio_out_state_rebuild(void) { test_out_rebuilds++; }
@@ -713,6 +710,10 @@ int main(void) {
     g_mem = calloc(1, 0x10000);
     CHECK(g_mem != NULL);
     test_native_manager();
+    /* a save state's load closes and reopens the outs' host outputs through nn/audio.c, once each */
+    audio_state_drop();
+    audio_state_rebuild();
+    CHECK(test_out_drops == 1 && test_out_rebuilds == 1);
     test_renderer();
     test_device();
     test_device_gain();

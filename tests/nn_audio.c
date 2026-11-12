@@ -25,7 +25,6 @@ struct PAudio {
     float volume;
     u32 channels;
 };
-static PAudio* test_host; /* the last host output opened */
 
 static void test_fail(const char* expression, int line) {
     fprintf(stderr, "nn_audio.c:%d: check failed: %s\n", line, expression);
@@ -44,12 +43,12 @@ void pm_unlock(PMutex* m) { (void)m; }
 u64 guest_ns(void) { return test_now; } /* the outs play in guest time: no pause here */
 PAudio* plat_audio_open(u32 rate, u32 channels) {
     CHECK(rate == 48000 && (channels == 1 || channels == 2 || channels == 4 || channels == 6));
-    if (test_no_device) return test_host = NULL;
+    if (test_no_device) return NULL;
     PAudio* a = calloc(1, sizeof *a);
     CHECK(a != NULL);
     a->volume = 1.0f;
     a->channels = channels;
-    return test_host = a;
+    return a;
 }
 void plat_audio_close(PAudio* a) { free(a); }
 int plat_audio_queue(PAudio* a, const void* samples, u32 bytes) {
@@ -572,6 +571,9 @@ int main(void) {
     test_two_outs();
     test_table();
     for (u32 i = 0; i < AUDOUT_MAX; i++) CHECK(g_hle.audio.outs_pool[i].guest == 0);
+    /* every out is closed, and no event went with one: each is still the game's, through its SystemEvent's handle */
+    CHECK(test_event_next > 0 && test_events == test_event_next);
+    for (u32 i = 0; i < test_event_next; i++) CHECK(test_event_pool[i].o.refs >= 1);
     printf("nn_audio: %u checks\n", test_checks);
     free(g_mem);
     return 0;
