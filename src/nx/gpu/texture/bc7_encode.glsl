@@ -82,6 +82,10 @@ uint sh_mask;
 #ifndef SNX_BC7_FAST
 #define SNX_BC7_FAST 0
 #endif
+/* 0: a block of one colour is searched for like any other (tests/glsl/bc7_cpu.cpp's build of the search as it was) */
+#ifndef SNX_BC7_SOLID
+#define SNX_BC7_SOLID 1
+#endif
 /* 1: the packed dot product instruction (Dot4) */
 #ifndef SNX_BC7_DOT
 #define SNX_BC7_DOT 0
@@ -785,9 +789,33 @@ uvec4 PackDual() {
     return enc;
 }
 
+/* A block of one colour, exactly, with no search: mode 5, whose colour is 7 bits a channel (widened by its top bit)
+   and alpha 8, every texel at weight 21 of 64. For a channel c the ends c >> 1 and (c >> 1) + (c & 1) - (c >> 7), the
+   second one more for an odd c under 128 and one less for an even c from 128 on, interpolate to c (every c checked,
+   tests/glsl/bc7_glsl.cpp). Mode 6 cannot: its two p-bits are each shared by an end's four channels, and no weight
+   brings one channel to 0 and another to 255 */
+uvec4 Solid(uint c) {
+    const uint lo = (c >> 1u) & 0x007F7F7Fu;
+    best_mode = 5u;
+    best_rot = 0u;
+    best_isb = 0u;
+    best_s0[0] = lo | (c & 0xFF000000u);
+    best_s1[0] = (lo + (c & 0x00010101u) - ((c >> 7u) & 0x00010101u)) | (c & 0xFF000000u);
+    best_lo = 0x11111111u;
+    best_hi = 0x11111111u;
+    best_lo2 = 0u;
+    best_hi2 = 0u;
+    return PackDual();
+}
+
 uvec4 Encode() {
     opaque = true;
-    for (uint k = 0u; k < 16u; k++) opaque = opaque && Ch(px[k], 3u) == 255u;
+    bool solid = true;
+    for (uint k = 0u; k < 16u; k++) {
+        opaque = opaque && Ch(px[k], 3u) == 255u;
+        solid = solid && px[k] == px[0];
+    }
+    if (SNX_BC7_SOLID != 0 && solid) return Solid(px[0]);
     best_err = 0xFFFFFFFFu;
     /* The shapes tried, in turn, one call of TryShape and one of TryDual for all of them (see FitSubset):
        job 0, mode 6: one subset, RGBA, 7 bits and a p-bit an end, 4-bit weights. Unless it is exact, then the two
