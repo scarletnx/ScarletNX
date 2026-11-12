@@ -64,7 +64,7 @@ enum {
 };
 
 typedef struct {
-    uint32_t words[256];
+    uint32_t words[512];
     size_t count;
 } Module;
 static int g_failures;
@@ -190,6 +190,39 @@ int main(void) {
     check(!count(&o, left, VARIABLE, V0) && !count(&o, left, LOAD, 0) && !count(&o, left, I_ADD, 0) &&
               count(&o, left, STORE, 0) == 1,
           "a variable whose only read went goes, with the store that follows the read");
+
+    /* Each walk of the functions frees one more level of variables that only feed each other's stores, 16 walks at
+       most. With more levels than that, what is left is still whole: every store left has its variable, and a value
+       the dead chain and an Output's store share stays */
+    for (uint32_t levels = 4; levels <= 24; levels += 20) {
+        const uint32_t v = 99, a = 11; /* variable k is v - k (99 down to 75), its load a + k (12 to 35) */
+        begin(&m);
+        function(&m);
+        for (uint32_t k = 0; k <= levels; k++) put(&m, VARIABLE, 3, (uint32_t)T, v - k, (uint32_t)FUNCTION_STORAGE);
+        put(&m, I_ADD, 4, (uint32_t)T, (uint32_t)D, (uint32_t)X, (uint32_t)X);
+        put(&m, STORE, 2, v, (uint32_t)D); /* variable 0 is never read */
+        for (uint32_t k = 1; k <= levels; k++) {
+            put(&m, LOAD, 3, (uint32_t)T, a + k, v - k);
+            put(&m, STORE, 2, v - (k - 1), a + k);
+        }
+        put(&m, STORE, 2, v - levels, (uint32_t)X);
+        put(&m, STORE, 2, (uint32_t)OUT, (uint32_t)D);
+        end(&m);
+        left = run(&m, &o);
+        int whole = count(&o, left, I_ADD, D) == 1, locals = 0;
+        for (size_t i = 5; i < left; i += o.words[i] >> 16) {
+            uint32_t op = o.words[i] & 0xffff;
+            if (op == VARIABLE && o.words[i + 3] == FUNCTION_STORAGE) locals++;
+            /* a store's variable, when it is one of these, is there */
+            if (op == STORE && o.words[i + 1] != OUT && !count(&o, left, VARIABLE, o.words[i + 1])) whole = 0;
+        }
+        if (levels < 16)
+            check(whole && !locals && !count(&o, left, LOAD, 0) && count(&o, left, STORE, 0) == 1,
+                  "variables that only feed each other's stores all go, a level a walk");
+        else
+            check(whole && locals == (int)levels - 15 && locals + 1 == count(&o, left, STORE, 0),
+                  "past 16 walks the levels left keep their variables and stores, and the module is whole");
+    }
 
     /* a variable with an initializer and no store or load goes, and what the initializer was does not matter */
     begin(&m);
