@@ -308,7 +308,7 @@ int main(void) {
         cpu.arm.r[15] = 0x03000C00;
         cpu.arm.cpsr = 0xC000009F; /* system mode, N and Z set, interrupts off */
         cpu.over = 0;
-        board.cpu_halted = cpu.wait = 0;
+        board.cpu_halted = 0;
         board.held_cycles = 0;
         CHECK(!agb_cpu_run(&board, &cpu, &recomp, 200, audio, AGB_APU_RATE, NULL, error, sizeof error));
         if (cpu.arm.r[5] != 42 || (cpu.arm.cpsr & 0xC000001F) != 0x1F) {
