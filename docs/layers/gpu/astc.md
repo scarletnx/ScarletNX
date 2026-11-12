@@ -19,6 +19,9 @@
 * [Sparse textures](#sparse-textures)
 * [Building the shader](#building-the-shader)
 * [Tests](#tests)
+* [Findings and what is left](#findings-and-what-is-left)
+  * [What was found](#what-was-found)
+  * [What is left](#what-is-left)
 
 ASTC textures are decoded on the GPU by a compute shader, `src/nx/gpu/texture/astc.comp` with its body in
 `astc_decode.glsl`. It is a GLSL port of Eden's `src/video_core/host_shaders/astc_decoder.comp` (GPL-3.0-or-later, with yuzu's GPL-2.0-or-later parts). The
@@ -732,3 +735,155 @@ error color, the CPU decoder was compared with edenprobe's LDR profile reference
 to astcenc by edenprobe's reference suite) on 20,000 random blocks for each of the 14 footprints: every texel was
 one of the two bytes the reference allows, error blocks included. The sRGB decode mode was checked
 the same way against `astcenc -cs` and `-ds` on five footprints: every byte agreed, alpha included.
+
+## Findings and what is left
+
+Both transcoders are meant: ASTC made BC7 (this page) and BCn made ASTC ([BCn without BCn](bcn.md#as-astc)), which
+share the fitter (`bc7_encode.glsl`). Every time is a GeForce GT 1030's, the one GPU any of this was measured on, on
+levels two games load (`astc_dump=DIR`) and on random blocks.
+
+### What was found
+
+Each is a measurement that decided how the shaders are written. Most have their numbers where the thing is
+described; they are together here so that a change that goes against one is made knowing it.
+
+**Where the time is.**
+
+- *The texels' traffic was never the cost.* The transcoders were first two dispatches with RGBA8 between them, and
+  the stall was taken for bandwidth. Decoding a 2040x2040 level to RGBA8 is 4 ms and encoding it 230 to 390: the
+  round trip was 1% ([Straight from the blocks](#straight-from-the-blocks)). Going straight from the blocks is kept
+  for what it frees, a level of RGBA8 that a phone has no room for, and not for speed.
+- *Invocations run abreast at the pace of the slowest.* This is the finding everything else follows from. One hard
+  block in a group of 32 holds the other 31, so a level with 18% hard blocks took 21 times one with none, for 5
+  times the operations. Hence a pass for each way of making a block, with work lists and indirect dispatches
+  between: two for BC7 (392 to 94 ms, [Two passes](#two-passes)), three for ASTC ([three passes](bcn.md#as-astc)).
+  A cheaper path put *inside* a pass does not help and can hurt: the BCn block's hints in one dispatch with the
+  search made the ASTC build slower, a third of the operations though they were, and a quick first line for mode 6
+  (`SNX_BC7_QUICK`) made levels with hard blocks no faster. A new shortcut wants a pass of its own, or the blocks it
+  takes listed apart.
+- *The workgroup's shared memory costs workgroups in flight.* 10 KB of it declared and not even used took the encoder
+  from 230 to 285 ms on NVIDIA. So an ASTC block is decoded again by each BC7 block over it, up to nine times,
+  into the invocation's own storage, and that is still faster than decoding it once into shared memory. Decoding each
+  ASTC block once ("cells") was tried again after the two passes and was not worth it either.
+- *An array a shader indexes by a value is the phone's shared memory.* It is scratch memory on Adreno and Mali, and
+  glslang compiles a constant array read at a value into one, the table copied in at every place it is read (ten
+  copies of a 768 word table in one pass, before the tables went). The two opposite constraints leave one form that
+  suits both: words in registers, fields cut at constant bits, tables as arithmetic or as selects. The first two
+  passes of the ASTC build are written so ([No texel decoded](bcn.md#as-astc)).
+- *Tables in a buffer were tried and dropped.* The colour encodings' tables as a storage buffer gave the same bytes
+  and needed a fourth binding and an upload; arithmetic (`astc_quant.glsl`) left the pass that moves blocks as fast
+  or faster (0.7 to 0.45 ms with the arrays gone) and costs only the search, 9%.
+- *Reading the result back is not the transcoder.* `--bench-etc2` once read each output over the bus, 10 ms for 4 MB,
+  which hid everything under it: ASTC looked twice as fast as ETC2 and is 20 to 190 times. The benches time the
+  dispatches alone now (`tc_time`). Time passes apart, too: the search is 88 of a hard level's 90 ms, and a change to
+  the other two cannot be seen in the total.
+
+**The fitter.**
+
+- *Its inner loop is written for the operations a GPU has* (`Eval`): two dot products of packed bytes for a texel's
+  place along the line, both channels' pairs interpolated in one multiplication each, and the division a
+  multiplication by a reciprocal with the remainder setting it right, so the bytes are the division's. 26% faster
+  for the same blocks; SPIR-V's packed dot product, where the GPU says it is accelerated, 5% more (`g_vk.bc7_dot`).
+- *A block of one colour needs no fit*, and has a closed form in mode 5 (the ends `c >> 1` and that plus one where
+  the low bit wants it, at the weight 21 of 64). Mode 6 has none in general: its p-bit is shared by colour and alpha,
+  and it cannot hold 0 beside 255.
+- *The source says what the search looks for.* An ASTC block's partitions, planes and block boundaries name BC7's
+  partition and rotation (67 ms where the search took 94, for 0.14 dB); a BCn block is lines already, which the ASTC
+  encoder tries as they are. A hint is still measured on the texels, so a wrong one costs time and not the picture.
+- *Where to stop is worth more than how to search.* Keeping a hinted line up to a squared error of 1024 a block and
+  not 256 halved a level's time for a quarter of a dB: the blocks past the line are few, and nearly all of the time.
+- *A block that is the target's layout already is moved, not encoded.* BC7 mode 6 is ASTC's one partition with 4 bit
+  weights, modes 4 and 5 its 2 and 3 bit ones, BC1 its 8 bit ends with 2 bit weights. No texel is decoded and nothing
+  is measured, so each kind is bounded by a test and not at run time. This is the cheapest block there is, and most
+  of a game's are of these kinds: a level of them takes 0.5 ms where the decode alone to RGBA8 takes 2 to 5.
+- *ASTC's 2 and 3 bit weights are BC7's*, and its 16 are BC7's within 1 of 64, which is why the ASTC encoder is the
+  BC7 fitter with another quantizer and another packer, and why the weights move as the bits they are.
+
+**What was tried and left out.**
+
+- A two pass ETC2 encoder: the same bytes and no gain, since every block there tries all eight candidates and none
+  is a hundred times another. ETC2 stays one dispatch, and stays only for BC1, BC4 and BC5 under memory pressure.
+- Integer comparisons for a texel's weight in the BC7 encoder: the same index, 3% slower than the reciprocal on
+  NVIDIA. They are in the array-free pass alone, for GPUs that convert between integers and floats slowly.
+- A build for the GT 1030 beside a generic one: nothing found was particular to it but the packed dot product, which
+  is a feature bit. One shader, two builds by that bit.
+- `ucas` over the shaders found the peepholes noted where they are (`Weight`, `Widen`, `Quant`). It fails on whole
+  modules and wants a function at a time, and a prelude of plain globals makes it report values as constant that
+  are not.
+
+**How it is held.** The shaders are written in what GLSL and C++ share, so each runs on the CPU
+(`tests/glsl/glsl.hpp`) and the GPU's bytes are held to that run, block for block. Every rewrite above was made
+against it: the same bytes, or a bound stated in a test. The arithmetic that stands in for a table is checked against
+the decoder's own rules over every input. Keep that: it is what let the fitter's inner loop, the quantizer and two
+passes be rewritten in a day each.
+
+### What is left
+
+What the transcoders do not do yet, for whoever takes them further.
+
+**Measure on a phone.** The BCn to ASTC build's first two passes keep no arrays, read no table and, for the layouts
+they write, run no floating point, because Adreno and Mali are said to be slow with each. None of it has been timed
+on either. Before anything below: the three passes' times on an Adreno 6xx and a Mali, with arrays and without
+(`SNX_NO_ARRAYS`), and with the colour encodings worked out and read from a table (the commit that removed the tables
+has them).
+
+- The array-free second pass reads its 16 texels through a tree of selects (`PX`) inside loops of 16. That is free
+  only where the driver's compiler unrolls the loops; where it does not, every read is 15 selects. If a phone shows
+  that, unroll at build (`[[unroll]]` and `spirv-opt --loop-unroll`, or the loops' bodies written out as the decode
+  is by `RG_FILL`).
+- That pass's SPIR-V is twice what it was (327 KB), a texel's decode being written out 16 times. Its pipeline's
+  creation time on a phone is not known. A loop with `PX_SET` is the small form, at 16 selects a texel written.
+
+**The third pass, the search, still has arrays.** It is the fitter the BC7 encoder shares, and nearly all of the
+time of a level that is not mostly moved (88 of 90 ms).
+
+- The texels are behind `PX` already. Left: `cand_s0`, `cand_s1`, `best_s0` and `best_s1` (three subsets' ends),
+  the partition tables `P2`, `P3` and `ANCHORS`, `ASTC_PART`, read 64 times a block where the partitions are scored
+  (`Spread`: a tree of selects is too dear there, so the score wants each partition's mask some other way, or the
+  hash that makes ASTC's partitions worked out), and `texconv.glsl`'s decoder of every BC7 mode (`bc7_block`: `e[24]`,
+  the block's four words, the modes' tables), since modes 0, 2 and 7 arrive here. `bcn_regs.glsl` has the pattern.
+- The same for the ASTC to BC7 build: `astc_bc7.comp` keeps the decoded ASTC block in `astc_block[39]`, of the
+  invocation's own, and `astc_decode.glsl` reads it at fields worked out per texel.
+- The fitter's quantizer is arithmetic since the tables went (`astc_quant.glsl`), which costs the search 9% (80 to
+  87 ms). It needs the value alone, not the code: a formula for the value in one multiplication, or thresholds, would
+  take that back. A table in the desktop builds would too, at the price of two quantizers to keep alike.
+- A texel's weight of 4 bits is still a reciprocal in floating point with a remainder to set it right. The
+  comparisons the second pass has for 2 and 3 bits would be 15 thresholds, four halvings; in the BC7 encoder the 2 and
+  3 bit ones were 3% slower than the reciprocal, so this is for a phone to decide. Half floats were not tried: `n`
+  and `dd` pass a half's range and would be shifted down first, the remainder then setting right an error of one as
+  it does now, and the CPU run of the shader (`tests/glsl/glsl.hpp`) has no half float to hold the bytes to.
+
+**Blocks that could be moved and are decoded.** Every block the first pass moves costs a hundredth of one searched
+for, so each kind below is worth more than any tuning of the fitter.
+
+- BC7 modes 1 and 3 whose partition ASTC has exactly: 30 of the 64 (`tools/astc_tables.py` counts them). Two
+  partitions of RGB ends leave an end 40 values where BC7 has 128 or 256, so the move wants a bound first, as
+  `tests/glsl/astc_encode_glsl.cpp`'s `direct_blocks` gives the others.
+- BC7 mode 4 with a rotation, and mode 5's rotated blocks that are not opaque: two planes of RGBA ends, 48 values a
+  channel. Too coarse unmeasured; fine where the ends lie near.
+- BC7 modes 4 and 5 with two alphas and no rotation: the same two planes, alpha apart.
+- BC1 with a transparent texel: ASTC has no punch-through, so it is two planes of RGBA or a void extent where the
+  block is all transparent, which is not caught today. These go straight to the search now.
+- BC2 and BC3 with alpha: the colour line is BC1's and could be moved as it is, and only alpha's plane fitted. BC3's
+  alpha is a line already (its two ends, 8 values): two planes with the weights requantized, no texel decoded.
+- BC3's second pass is a tenth slower without arrays (5.5 against 5.0 ms). Its alpha is three integer divisions a
+  texel as NVIDIA rounds them (`bc3_alpha`, `bc1_pixel`), which the above would remove.
+
+**Layouts the ASTC encoder does not write.** Three and four partitions (BC7 modes 0 and 2 have three subsets and
+are searched for as one or two); two partitions with alpha (mode 7); two partitions with two planes; weight grids
+smaller than 4x4, which buy the ends more values; the blue contraction and the base and offset endpoint modes, which
+give ends near each other a bit more each. Each is a layout in `AstcEncode`'s list and a row in `AsPack`.
+
+**Smaller things.**
+
+- A block of two partitions reads `ASTC_PART` three times (`SetShape` twice, the seed once): in the array-free pass
+  that is three trees of 63 selects. Keep the word.
+- `SNX_ASTC_HINT_ENOUGH` (1024) and `SNX_ASTC_DIRECT_NEAR` (40) were set on nine levels of two games. More games,
+  and the share of blocks each pass takes for each, would say whether they hold.
+- The colour encoding of trits over 5 bits has no rank in one multiplication and tries two (`AsQuantKey`). No layout
+  comes to it; one that does should look for a better form first.
+- The BCn to ASTC build's passes were not given to `ucas` since they were rewritten; the BC7 fitter and the ETC2
+  encoder were.
+- BC1, BC4 and BC5 still go to ETC2 and EAC once memory is short, an encoder 20 to 190 times the ASTC one's time.
+  BC4 and BC5 as ASTC (one and two channels, a line each, which is the block as it stands) would end that.
+- BC6H has no path to ASTC's HDR modes and is decoded to RGBA16F.
