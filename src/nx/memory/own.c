@@ -509,6 +509,7 @@ static void land_pages(u64 lo, u64 hi) {
         if (!any) return;
     }
     producer_lock();
+    if (g_own.hooks.claim) g_own.hooks.claim(lo, hi);
     pm_lock(&g_own.lk);
     for (;;) {
         while (landing_nl(lo, hi)) pc_wait(&g_own.cv, &g_own.lk, -1);
