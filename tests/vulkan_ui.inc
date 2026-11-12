@@ -42,7 +42,10 @@ static int ui_quads(UiCheck* c, const int safe[4]) {
     vpad_draw(&l, safe, scale);
     vpad_showcase_draw(&l, safe, vpad_showcase_fps(g_vk_present, plat_ns()), scale);
     stats_draw(&l, safe, scale, plat_ns());
-    hud_draw(&l, safe, scale);
+    {
+        float stats[4];
+        hud_draw(&l, safe, stats_scale(scale), stats_box_drawn(stats) ? stats : NULL);
+    }
     overlay_draw(&l, UI_W, UI_H, plat_ns());
     ui_unlock();
     return l.n;
