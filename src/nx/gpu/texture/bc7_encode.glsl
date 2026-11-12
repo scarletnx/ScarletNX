@@ -90,6 +90,15 @@ uint sh_mask;
 #ifndef SNX_BC7_QUICK
 #define SNX_BC7_QUICK 0
 #endif
+/* 1: the fitter serves astc_encode.glsl, which is included after this file: ASTC's partitions, weights and colour
+   encodings in place of BC7's (ASTC_P2 and ASTC_NEAR are astc_encode_tables.glsl's, included before it, and as_range
+   the colour encoding of the ends being fitted) */
+#ifndef SNX_ASTC_ENC
+#define SNX_ASTC_ENC 0
+#endif
+#if SNX_ASTC_ENC
+uint as_range;
+#endif
 /* 0: a block of one colour is searched for like any other (tests/glsl/bc7_cpu.cpp's build of the search as it was) */
 #ifndef SNX_BC7_SOLID
 #define SNX_BC7_SOLID 1
@@ -182,7 +191,11 @@ void SetShape(uint ns, uint part) {
         sh_pbits = 0u;
     } else if (ns == 2u) {
         /* a bit a texel spread to two: bit k to bit 2k */
+#if SNX_ASTC_ENC
+        uint v = ASTC_P2[part]; /* ASTC's partitions, a seed each (astc_encode.glsl) */
+#else
         uint v = P2[part];
+#endif
         v = (v | (v << 8u)) & 0x00FF00FFu;
         v = (v | (v << 4u)) & 0x0F0F0F0Fu;
         v = (v | (v << 2u)) & 0x33333333u;
@@ -217,6 +230,14 @@ bool IsAnchor(uint k) {
    against the tables, every i < 2^bits of bits 2, 3 and 4). It relies on i <= top: Eval's weights are in 0 to top,
    and fit_lo and fit_hi hold only the weights of an Eval that ran to its end */
 uint Weight(uint i) {
+#if SNX_ASTC_ENC
+    /* ASTC's weights of 2 and 3 bits are BC7's. Its 16 are the 4 bits repeated to 6, one more above 32 (0 4 8 12 17
+       21 25 29 35 39 43 47 52 56 60 64) */
+    if (sh_ib == 4u) {
+        const uint r = (i << 2u) | (i >> 2u);
+        return r + ((r + 31u) >> 6u);
+    }
+#endif
     const uint k = sh_ib == 4u ? 273u : sh_ib == 3u ? 585u : 1365u;
     return (i * k + 32u) >> 6u;
 }
@@ -249,6 +270,12 @@ uint Decoded(uint stored) {
    two candidates, compared once (ucas: exhaustive equiv with the search of guess - 2 to guess + 2, over t 0 to 255, n 5
    to 8, both p and with and without p-bits) */
 uint Quant(int t, uint p) {
+#if SNX_ASTC_ENC
+    /* an ASTC end is kept as the 8 bits it decodes to (StoredBits is 8): the value its colour encoding holds nearest
+       t, from the table of an encoding with a trit or a quint, or t itself where the encoding is 8 bits */
+    if (as_range < 6u) return (ASTC_NEAR[as_range * 64u + (uint(t) >> 2u)] >> ((uint(t) & 3u) * 8u)) & 255u;
+    if (p == 0u) return uint(t); /* no p-bit: p is always 0 here */
+#endif
     const uint n = StoredBits();
     const int top = int((1u << n) - 1u);
     const int guess = (t * top + 127) / 255;
