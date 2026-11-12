@@ -364,9 +364,10 @@ void fatal_code(int status, const char* fmt, ...) {
     /* from the crash handler: a box or a flush could wait on a lock the crashed code holds */
     if (__atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST)) _exit(status);
 #endif
-    /* everywhere, since a player started from a desktop entry sees no console and no log. A remake is the driver's
-       to answer, and a box would hold it */
-    if (status != SNX_EXIT_REMAKE) win_fatal_box(msg);
+    /* everywhere, since a player started from a desktop entry sees no console and no log. A remake's too: a game
+       an app or a shortcut started has no driver to recompile it, and one the driver started recompiles once
+       the box is closed */
+    win_fatal_box(msg);
     plat_exit_now(status);
 }
 
