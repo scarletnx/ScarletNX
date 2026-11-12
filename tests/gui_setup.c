@@ -87,6 +87,42 @@ static const char* choice_before(const App* app) {
     assert(setup_labels(app, labels) > app->setup_choice.focus);
     return app->setup_choice.focus ? labels[app->setup_choice.focus - 1] : NULL;
 }
+/* the page's choices drawn as rows top to bottom, want's labels ("" the row between the two groups: a label, no box,
+   its row's room the only one between them), each a row's step under the one before, the one in focus focus's: its
+   label after the marker drawn in its row in the focus's look, the others' in ink */
+static void rows_show(App* app, const char* const* want, int n, const char* focus) {
+    GuiSetupBoxes b;
+    int i, x, y;
+    char label[64];
+    render(app);
+    setup_boxes(app, &b);
+    app->choices_of = GUI_CHOICES_SETUP;
+    assert(b.choices.count == n);
+    for (i = 0; i < n; ++i) {
+        UiRowInfo info = {0};
+        GuiRect box = choice_box(app, &b.choices, i);
+        bool focused = !strcmp(want[i], focus);
+        assert(ui_choices_rows_get_row_info(app, (size_t)i, box.w, &info) && !strcmp(info.label, want[i]));
+        assert(!want[i][0] == !!(info.attr & UI_ATTR_LABEL));
+        assert(focused == (b.choices.lists[UI_CHOICES_ROWS].focus == (size_t)i));
+        if (i) assert(box.y - choice_box(app, &b.choices, i - 1).y == item_h(app) + 2 * app->scale);
+        if (!want[i][0]) continue;
+        snprintf(label, sizeof label, "%s%s", app->theme.marker, want[i]);
+        assert(find_text(app, label,
+                         rgb(!focused               ? app->theme.ink
+                             : app->theme.focus_bar ? app->theme.page
+                                                    : app->theme.focus),
+                         1, &x, &y));
+        assert(y >= box.y && y < box.y + box.h);
+    }
+}
+/* a click on the setup page's row i (setup_order's order) */
+static void click_row(App* app, int i) {
+    GuiSetupBoxes b;
+    render(app);
+    setup_boxes(app, &b);
+    point(app, choice_box(app, &b.choices, i), true);
+}
 /* the Appearance's row i as drawn (ui.txt's scene Appearance): its box, past the cursor's margin, and its whole row */
 static GuiRect appearance_row_box(const App* app, const GuiAppearanceBoxes* a, int i) {
     size_t first = a->lists[UI_APPEARANCE_ROWS].first;
@@ -681,6 +717,21 @@ static void test_clean_notice(App* app) {
     assert(setup_labels(app, labels) == 4 && !strcmp(labels[0], "Back") && !strcmp(labels[1], "Clean Now") &&
            !strcmp(labels[2], "Not Now") && !strcmp(labels[3], "Skip"));
     assert(!strcmp(choice_label(app), "Clean Now"));
+    { /* two groups: Back, Not Now and Skip, which keep the files as they are, a row apart from Clean Now, in focus;
+         the keys go round them past that row, which takes no click */
+        static const char* const rows[] = {"Back", "Not Now", "Skip", "", "Clean Now"};
+        rows_show(app, rows, 5, "Clean Now");
+        key(app, SDLK_UP);
+        assert(!strcmp(choice_label(app), "Skip"));
+        key(app, SDLK_DOWN);
+        assert(!strcmp(choice_label(app), "Clean Now"));
+        key(app, SDLK_DOWN);
+        assert(!strcmp(choice_label(app), "Back"));
+        key(app, SDLK_UP);
+        click_row(app, 3);
+        assert(app->setup_top == 1 && !app->setup_cleaned && !strcmp(choice_label(app), "Clean Now"));
+        rows_show(app, rows, 5, "Clean Now");
+    }
     render(app);
     shows(app, "Clean Old Settings? [Deprecated] in 1 .ini", rgb(app->theme.ink));
     key(app, SDLK_RETURN); /* Clean Now: done there, said in the box, OK in focus; nothing over the screen */
@@ -802,8 +853,19 @@ static void test_old_files(App* app) {
     snprintf(head, sizeof head, "Old Files %d/%d", 4, 4);
     render(app);
     shows(app, head, rgb(head_ink(app)));
+    { /* two groups: Back and Not Now, in focus, which keep them as they are, a row apart from Move All and Delete All;
+         Down from Not Now passes that row, which takes no click */
+        static const char* const rows[] = {"Back", "Not Now", "", "Move All", "Delete All"};
+        rows_show(app, rows, 5, "Not Now");
+        key(app, SDLK_DOWN);
+        assert(!strcmp(choice_label(app), "Move All"));
+        key(app, SDLK_UP);
+        click_row(app, 2);
+        assert(app->setup_top == 3 && !app->confirm.shown && !app->left_did && !strcmp(choice_label(app), "Not Now"));
+    }
     /* Delete All asks, Delete pressed twice: what it deletes, a save staying */
-    key(app, SDLK_UP);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_DOWN);
     key(app, SDLK_RETURN);
     assert(app->confirm.shown && app->confirm.ask == GUI_ASK_DELETE_OLD && app->confirm.twice &&
            !strcmp(app->ask_line, "Delete All? 3 deleted, 2 stay: a save and the console's keys are only moved"));
@@ -832,7 +894,11 @@ static void test_old_files(App* app) {
     setup_start(app);
     assert(app->setup_on && page(app) == SETUP_LEFT && setup_labels(app, labels) == 3 &&
            !strcmp(choice_label(app), "Not Now"));
-    key(app, SDLK_UP);
+    {
+        static const char* const rows[] = {"Not Now", "", "Move All", "Delete All"};
+        rows_show(app, rows, 4, "Not Now");
+    }
+    key(app, SDLK_UP); /* round to the last, Delete All */
     key(app, SDLK_RETURN);
     assert(!app->confirm.shown && app->setup_failed && app->setup_on &&
            !strcmp(app->message, "Delete All deletes none of these: a save and the console's keys are only moved"));
