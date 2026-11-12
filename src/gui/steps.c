@@ -69,8 +69,16 @@ static void line(GuiSteps* steps, const char* s, uint64_t now) {
     } else if (prefix(s, "Built ")) {
         begin(steps, SNX_TR_NOOP("BUILD"), s + 6, strlen(s + 6), now);
         current(steps)->state = GUI_STEP_DONE;
-    } else if (prefix(s, "ScarletNX - "))
-        begin(steps, SNX_TR_NOOP("LAUNCH"), s + 12, strlen(s + 12), now);
+    } else if (prefix(s, "ScarletNX - ")) {
+        /* the other runners' banner says its console after the title: " (GBA)", " (3DS)", " (Vita)" */
+        size_t n = strlen(s + 12);
+        static const char* const consoles[] = {" (GBA)", " (3DS)", " (Vita)"};
+        for (size_t i = 0; i < sizeof consoles / sizeof *consoles; ++i) {
+            size_t k = strlen(consoles[i]);
+            if (n > k && !strcmp(s + 12 + n - k, consoles[i])) n -= k;
+        }
+        begin(steps, SNX_TR_NOOP("LAUNCH"), s + 12, n, now);
+    }
     else if (prefix(s, "Ready "))
         begin(steps, SNX_TR_NOOP("READY"), s + 6, strlen(s + 6), now);
     else if (prefix(s, "vulkan: ") && !steps->gpu && strstr(s, ", Vulkan ")) {
