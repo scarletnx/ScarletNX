@@ -9,6 +9,7 @@
 * [The upload path](#the-upload-path)
 * [Encoded again as BC7](#encoded-again-as-bc7)
   * [Straight from the blocks](#straight-from-the-blocks)
+  * [Two passes](#two-passes)
   * [Auto, Exact and BC7](#auto-exact-and-bc7)
   * [Between frames](#between-frames)
   * [The fast build](#the-fast-build)
@@ -235,6 +236,47 @@ blocks are the same bytes the two dispatches made (`astc_bc7_glsl`, below).
 
 A texture made BC7 between frames has no texels to hand the shader, and no longer needs any: it keeps its ASTC blocks
 (below).
+
+### Two passes
+
+A GPU runs a shader's invocations 32 or 64 abreast, each group at the pace of its slowest. A block mode 6 holds is
+done in a hundredth of the time of one that takes the whole search, and with one such block in six nearly every group
+has one and waits for it: one game's 8x8 level with 18% of its blocks past mode 6 took a GeForce GT 1030 392 ms, and
+a level of the same game that mode 6 holds throughout 18 ms, 21 times, where the operations counted are 5 times.
+
+So the full and the fast build are two dispatches (`SNX_BC7_PASS`, `astc_bc7.glsl`). The first runs over the strip's
+blocks, gives each mode 6 alone, and writes those the search would have stopped at there (`Encode`'s `enc_more`). It
+lists the others in a work list, a third buffer: their numbers, counted by an atomic add, with the second pass's
+workgroups kept beside the count as an indirect dispatch reads them. The second is that indirect dispatch: each
+invocation takes a listed block, decodes its ASTC blocks again and gives it the whole search, so every group is at the
+same work. The blocks are the bytes one pass writes. Mode 6 alone and the quick build have no search past mode 6, and
+stay one dispatch.
+
+On the GT 1030, a 2040x2040 level as BC7 (`snx-test-astc-vulkan --bench FILE`, the fast build), on levels one game
+loads (`astc_dump=DIR` keeps them as `.astc` files) repeated over it:
+
+| Level | One pass | Two passes |
+| --- | --- | --- |
+| 8x8, mode 6 holds every block | 18.5 ms | 20.3 ms |
+| 8x8, 18% of the blocks past mode 6 | 392 ms | 94 ms |
+| 4x4, 512x512 | 205 ms | 46 ms |
+| 8x6, 1000x800, mostly one colour | 89 ms | 13.5 ms |
+| Random 4x4 blocks | 164 ms | 30 ms |
+| Random 8x8 blocks | 220 ms | 46 ms |
+
+Two cuts of the search are options of the build that no build takes (`snx-test-astc-bc7-glsl --measure FILE...` gives
+each one's PSNR against the ASTC blocks' own texels, the modes written and the CPU's seconds):
+
+- `SNX_BC7_HINTS` (`astc_bc7.glsl`): the search takes what the ASTC blocks say of the block. Texels of one ASTC
+  partition lie on one line, so a block of one such set takes mode 6 alone; a block of two sets (two partitions, or two
+  ASTC blocks' texels) takes the partition of BC7's 64 with the fewest texels on the wrong side, found by counting
+  bits where the search sums 128 partitions' spreads; a second plane names the rotation of modes 4 and 5. In the
+  second pass it took the two levels above with hard blocks from 95 to 67 ms and 69 to 51. Over 11 of that game's
+  levels it gave 51.13 dB where the fast build gives 51.27, and one level of text lost 1.8 dB. The tests' expected
+  blocks come from texels, which have no hints, so turning it on means making them from the blocks.
+- `SNX_BC7_QUICK` (`bc7_encode.glsl`): mode 6 first takes its box's line with one choice of p-bits and each texel at
+  the weight nearest its place, and keeps it under an error. Under 64 it took the first pass of a level mode 6 holds
+  from 18.5 to 12.8 ms for 0.3 to 0.8 dB, and made the levels with hard blocks no faster.
 
 ### Auto, Exact and BC7
 
@@ -567,8 +609,9 @@ layout's terms.
 
 ## Building the shader
 
-Nothing compiled is checked in. `astc_bc7.comp` is built eight times: the encoder's four builds (full, fast, mode 6
-alone, quick), each with its dot products spelled out (Vulkan 1.1) and as SPIR-V's packed one (Vulkan 1.3).
+Nothing compiled is checked in. `astc_bc7.comp` is built twelve times: the two passes of the full and of the fast
+build, mode 6 alone and the quick build, each with its dot products spelled out (Vulkan 1.1) and as SPIR-V's packed
+one (Vulkan 1.3).
 `cmake/glsl.cmake` compiles `astc.comp` at build time with
 `glslangValidator -V --target-env vulkan1.1 -O -g0 --spirv-val`, into `build/generated/spirv/astc_spv.c`, which
 holds the words. `nx/gpu/texture/astc_spv.h`, which the build writes beside it (`build/generated/include`), declares
@@ -623,8 +666,9 @@ separate SPIRV-Tools is needed.
 - `astc_bc7_glsl` (ctest, no GPU) runs `astc_bc7.comp`'s body on the CPU and holds its blocks, byte for byte, to
   the encoder's (`bc7_cpu.cpp`) over the texels the CPU's ASTC decoder makes of the same blocks, which is what the two
   dispatches wrote: all 14 footprints in both decode modes, each of the encoder's builds, random blocks through all
-  2048 block modes, sizes on no block of either kind, strips of several slices, and the division by the footprint for
-  every footprint and coordinate. `snx-test-astc-bc7-glsl --measure file.astc...` gives the PSNR and the modes of
+  2048 block modes, sizes on no block of either kind, strips of several slices, the two passes of the full and the
+  fast build (the same blocks, some of them the second pass's), and the division by the footprint for every footprint
+  and coordinate. `snx-test-astc-bc7-glsl --measure file.astc...` gives the PSNR and the modes of
   each build on a game's own blocks (`astc_dump=DIR` keeps the levels a game loads as such files).
 - `bc7_glsl` (ctest, no GPU) runs `bc7_encode.glsl` on the CPU (`tests/glsl/bc7_cpu.cpp`, which gives it pictures
   through `tests/glsl/bc7_main.inc`, as no shader encodes texels any more) and decodes its blocks
