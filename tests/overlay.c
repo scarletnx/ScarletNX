@@ -33,6 +33,10 @@
 #define FAILURE                                                                                                        \
     (0xFFu << 24 | (SNX_GUI_THEME_YORHA_FAILURE & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_FAILURE & 0xFF00u) |             \
      (SNX_GUI_THEME_YORHA_FAILURE >> 16 & 0xFFu))
+/* the colour of a choice to take with care, as R G B A bytes */
+#define WARNING_RGBA                                                                                                   \
+    (0xFFu << 24 | (SNX_GUI_THEME_YORHA_WARNING & 0xFFu) << 16 | (SNX_GUI_THEME_YORHA_WARNING & 0xFF00u) |             \
+     (SNX_GUI_THEME_YORHA_WARNING >> 16 & 0xFFu))
 #include <SDL3/SDL_keycode.h>
 #include <assert.h>
 #include <stdarg.h>
@@ -1324,8 +1328,8 @@ int main(void) {
     assert(text_at(1, 0, "SCARLETNX  /  CONTROLLERS") && overlay_back() == OVERLAY_NONE);
     draw();
     assert(text_at(1, 0, "SCARLETNX  /  MENU"));
-    /* the save states' pages: a row per slot, the auto one first, then a slot's Save, Load and Delete, Load and
-       Delete asked first. The list is read again each time the page opens */
+    /* the save states' pages: a row per slot, the auto one first, then a slot's Save, Load and Delete, Load, Delete
+       and Save over a state asked first. The list is read again each time the page opens */
     {
         OverlaySlot sl[3];
         u8* thumb = (u8*)calloc((size_t)SNX_UI_IMAGE_W * SNX_UI_IMAGE_H, 4);
@@ -1350,6 +1354,18 @@ int main(void) {
         assert(overlay_select() == OVERLAY_NONE);
         draw();
         assert(shows("SCARLETNX  /  SLOT 2") && shows("\xFE Save"));
+        /* its state replaced by Save or gone with Delete, no way back: the failure colour, Save in focus written on it;
+           Load, which keeps what was played since in the auto slot at most, the warning colour */
+        assert(shows_as("\xFE Save", 0, LIGHT_RGBA) && shows_as("\xFE Load", 0, WARNING_RGBA) &&
+               shows_as("\xFE Delete", 0, FAILURE));
+        assert(overlay_select() == OVERLAY_NONE); /* Save over its state: asked, Cancel in focus */
+        draw();
+        assert(shows("SCARLETNX  /  SAVE OVER SLOT 2?") && shows("is replaced.") && shows_as("\xFE Save", 0, FAILURE));
+        assert(overlay_select() == OVERLAY_NONE); /* Cancel: back to the slot, Save in focus */
+        draw();
+        assert(shows("SCARLETNX  /  SLOT 2"));
+        assert(overlay_select() == OVERLAY_NONE);
+        overlay_move(-1);
         assert(overlay_select() == OVERLAY_SAVE && overlay_slot() == 2);
         overlay_move(1); /* Load: asked, Cancel in focus */
         assert(overlay_select() == OVERLAY_NONE);
@@ -1368,7 +1384,9 @@ int main(void) {
         overlay_move(1);
         assert(overlay_select() == OVERLAY_NONE);
         draw();
-        assert(shows("SCARLETNX  /  SLOT 1"));
+        assert(shows("SCARLETNX  /  SLOT 1") && !shows_as("\xFE Delete", 0, FAILURE)); /* nothing there: no colour */
+        overlay_move(-1); /* Save: nothing replaced, nothing asked */
+        assert(overlay_select() == OVERLAY_SAVE && overlay_slot() == 1);
         /* the auto slot has no Save */
         assert(overlay_back() == OVERLAY_NONE);
         overlay_move(-1);

@@ -172,6 +172,14 @@ static char refused[2 * OVERLAY_COLS_MAX];
 
 /* a slot's page's items: the auto slot has no Save */
 static int slot_item(int i) { return slot_at ? i : i + 1; }
+/* the colour of item i of the page shown: a slot's Delete, and its Save over a state, have no way back, its Load
+   wants care (what was played since goes, unless the auto slot keeps it), and so the question's choice; 0 for none */
+static u32 item_tone(int i) {
+    int what = slot_item(i);
+    if (page == PAGE_ASK) return i ? 0 : ask == OVERLAY_LOAD ? UI_WARNING : UI_FAILURE;
+    if (page != PAGE_SLOT || !slots[slot_at].when[0]) return 0;
+    return what == S_DELETE || what == S_SAVE ? UI_FAILURE : what == S_LOAD ? UI_WARNING : 0;
+}
 /* the first page's item shown at i: past Stats, Exit where RenderDoc can't capture */
 static int main_item(int i) { return i >= M_CAPTURE && !g_renderer->capture(0) ? i + 1 : i; }
 /* the Shortcuts page's rows: the runtime's keys this build has (hotkeys.h), then Back. The action at row i, -1 for
@@ -311,7 +319,11 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
         return;
     }
     if (page == PAGE_ASK) {
-        snprintf(text, size, "%s", i ? "Cancel" : ask == OVERLAY_LOAD ? "Load" : "Delete");
+        snprintf(text, size, "%s",
+                 i                     ? "Cancel"
+                 : ask == OVERLAY_LOAD ? "Load"
+                 : ask == OVERLAY_SAVE ? "Save"
+                                       : "Delete");
         return;
     }
     if (page == PAGE_SHORTCUTS) { /* the key, or the wait for one */
@@ -518,9 +530,9 @@ static int act(int i, int step) {
     }
     if (page == PAGE_SLOT && slot_item(i) != S_BACK) {
         int what = slot_item(i);
-        if (what == S_SAVE) return OVERLAY_SAVE;
+        if (what == S_SAVE && !slots[slot_at].when[0]) return OVERLAY_SAVE; /* an empty slot: nothing is replaced */
         if (!slots[slot_at].when[0] || (what == S_LOAD && slots[slot_at].why[0])) return OVERLAY_NONE;
-        ask = what == S_LOAD ? OVERLAY_LOAD : OVERLAY_DELETE;
+        ask = what == S_LOAD ? OVERLAY_LOAD : what == S_SAVE ? OVERLAY_SAVE : OVERLAY_DELETE;
         page = PAGE_ASK;
         focus = 1; /* Cancel: a stray press does nothing */
         top = 0;
@@ -630,6 +642,7 @@ typedef struct {
     DialogPara para[DIALOG_PARAS];
     int paras;
     const char* label[VISIBLE];   /* the items showing, from top on */
+    u32 tone[VISIBLE]; /* 0, or the colour of one with no way back (UI_FAILURE) or to take with care (UI_WARNING) */
     unsigned icon[VISIBLE];       /* beside them, gui/icons.h's; GUI_ICON_NONE for none */
     const char* value[VISIBLE];   /* at their right; NULL for none */
     const char* key[VISIBLE];     /* the keys F1's page names before the label, on a band; NULL for none */
@@ -772,6 +785,7 @@ static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRow
     for (i = 0; i < d->shown; ++i) {
         SnxOverlayRect* at = &out->item[i];
         int on = d->top + i == d->focus;
+        u32 fg;
         float ty; /* its letters' row, in the middle of its own */
         at->x = x;
         at->y = y + ch * (float)(total - 1 - d->shown) + rh * (float)i;
@@ -779,7 +793,15 @@ static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRow
         at->h = rh;
         ty = at->y + into;
         if (!l) continue;
-        if (on) ui_fill(l, x, at->y, w, rh, UI_INK);
+        fg = on ? UI_PAGE : d->tone[i] ? d->tone[i] : UI_INK;
+        if (on)
+            ui_fill(l, x, at->y, w, rh, d->tone[i] ? d->tone[i] : UI_INK);
+        else if (d->tone[i]) { /* framed in its colour, as the launcher's rows */
+            ui_fill(l, x, at->y, w, (float)s, d->tone[i]);
+            ui_fill(l, x, at->y + rh - (float)s, w, (float)s, d->tone[i]);
+            ui_fill(l, x, at->y, (float)s, rh, d->tone[i]);
+            ui_fill(l, x + w - (float)s, at->y, (float)s, rh, d->tone[i]);
+        }
         if (d->key[i]) { /* the marker, the icon, the keys on a band as the launcher's F1 box draws them, the label */
             ui_text(l, x + cw, ty, s, "\xFE", on ? UI_PAGE : UI_INK);
             ui_icon(l, x + 3 * cw, ty, s, d->icon[i], on ? UI_PAGE : UI_INK);
@@ -788,16 +810,14 @@ static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRow
             ui_text(l, x + 6 * cw, ty, s, d->key[i], on ? UI_INK : UI_PAGE);
             ui_text(l, x + cw * (float)(6 + d->keys + 2), ty, s, d->label[i], on ? UI_PAGE : UI_INK);
         } else if (d->icon[i]) { /* the marker, the icon's two cells and one, then the label */
-            ui_text(l, x + cw, ty, s, "\xFE", on ? UI_PAGE : UI_INK);
-            ui_icon(l, x + 3 * cw, ty, s, d->icon[i], on ? UI_PAGE : UI_INK);
-            ui_text(l, x + 6 * cw, ty, s, d->label[i], on ? UI_PAGE : UI_INK);
+            ui_text(l, x + cw, ty, s, "\xFE", fg);
+            ui_icon(l, x + 3 * cw, ty, s, d->icon[i], fg);
+            ui_text(l, x + 6 * cw, ty, s, d->label[i], fg);
         } else {
             snprintf(line, sizeof line, "\xFE %s", d->label[i]);
-            ui_text(l, x + cw, ty, s, line, on ? UI_PAGE : UI_INK);
+            ui_text(l, x + cw, ty, s, line, fg);
         }
-        if (d->value[i])
-            ui_text(l, x + cw * (float)(cols - 1 - (int)strlen(d->value[i])), ty, s, d->value[i],
-                    on ? UI_PAGE : UI_INK);
+        if (d->value[i]) ui_text(l, x + cw * (float)(cols - 1 - (int)strlen(d->value[i])), ty, s, d->value[i], fg);
     }
     /* more above or under: the font's arrows at the edge */
     if (l && d->shown && d->top) ui_text(l, x + cw * (float)(cols - 1), out->item[0].y + into, s, "\x18", UI_SOFT);
@@ -1077,7 +1097,11 @@ int overlay_back(void) {
         focus = C_BUTTONS;
     } else if (page == PAGE_ASK) {
         page = PAGE_SLOT;
-        focus = slot_at ? ask == OVERLAY_LOAD ? S_LOAD : S_DELETE : ask == OVERLAY_LOAD ? 0 : 1;
+        focus = slot_at               ? ask == OVERLAY_LOAD   ? S_LOAD
+                                        : ask == OVERLAY_SAVE ? S_SAVE
+                                                              : S_DELETE
+                : ask == OVERLAY_LOAD ? 0
+                                      : 1;
     } else if (page == PAGE_SLOT) {
         page = PAGE_STATES;
         focus = slot_at;
@@ -1166,12 +1190,18 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
         if (page == PAGE_SLOT)
             snprintf(title, size / 2, "SCARLETNX  /  %s", name);
         else
-            snprintf(title, size / 2, "SCARLETNX  /  %s %s?", ask == OVERLAY_LOAD ? "LOAD" : "DELETE", name);
+            snprintf(title, size / 2, "SCARLETNX  /  %s %s?",
+                     ask == OVERLAY_LOAD   ? "LOAD"
+                     : ask == OVERLAY_SAVE ? "SAVE OVER"
+                                           : "DELETE",
+                     name);
         if (page == PAGE_ASK && ask == OVERLAY_LOAD)
             snprintf(pads, size / 2, "The game goes back to %s.%s", sl->when,
                      g_settings.save_state_backup ? " What was played since is kept in the auto slot." : "");
         else if (page == PAGE_ASK)
-            snprintf(pads, size / 2, "The state saved %s is deleted.", sl->when);
+            snprintf(pads, size / 2,
+                     ask == OVERLAY_SAVE ? "The state saved %s is replaced." : "The state saved %s is deleted.",
+                     sl->when);
         else
             snprintf(pads, size / 2, "%s", sl->when[0] ? sl->when : "Empty.");
         if (page == PAGE_SLOT && sl->why[0]) { /* why it can't load, under its date */
@@ -1193,6 +1223,7 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
         label(top + r, text[r], sizeof *text, value[r], sizeof *value);
         d->label[r] = text[r];
         d->icon[r] = page == PAGE_MAIN ? main_icons[main_item(top + r)] : GUI_ICON_NONE;
+        d->tone[r] = item_tone(top + r);
         d->value[r] = value[r];
     }
 }
