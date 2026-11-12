@@ -36,12 +36,17 @@ void main() {
     if (w >= words) return;
     uint d = w << 2u;
     if (es == 5u) {
-        uint v = 0u;
+        /* the word's bytes are of two elements, or three: each one's place is found once, as its first byte comes */
+        uint v = 0u, e = d / 3u, c = d - e * 3u, from = 0u;
+        if (e < elements) from = src_at + source_element(e) * 3u;
         for (uint b = 0u; b < 4u; b++) {
-            uint at = d + b, e = at / 3u;
             if (e >= elements) break;
-            uint s = src_at + source_element(e) * 3u + at - e * 3u;
+            uint s = from + c;
             v |= ((src[src_base + (s >> 2u)] >> ((s & 3u) << 3u)) & 0xffu) << (b << 3u);
+            if (++c == 3u) {
+                c = 0u;
+                if (++e < elements) from = src_at + source_element(e) * 3u;
+            }
         }
         dst[w] = v;
         return;
