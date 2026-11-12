@@ -116,6 +116,7 @@ static struct {
     u64 made; /* chunks and big buffers made since the start (statistics, tests) */
     u32 recycles; /* frame slots recycled since the start (tests) */
     u64 submits[VK_SUB_N]; /* submissions since the start, by why (statistics, tests) */
+    u32 stage_told; /* the staging ring's memory type is in the log */
 } g_cmd;
 
 static Frame g_fr[VK_FRAMES];
@@ -541,6 +542,15 @@ void vk_stage_report(void) {
     }
 }
 
+/* Whether the rings the CPU fills are in cached host memory (vk_stage_memory). Asked for memory it writes in order, VMA
+   takes a type that is not cached where the device has one, and a driver can map that write-combined: each store
+   then goes to the memory through a few line buffers, and a ring's many small copies, each at its own alignment,
+   leave lines half filled that the next copy flushes. Intel's Mesa driver has both types over the same system
+   memory, so there the cached one costs the GPU nothing */
+static int stage_cached(void) {
+    return g_settings.staging_memory ? g_settings.staging_memory == 2
+                                     : g_vk.driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;
+}
 /* a new buffer of size bytes for ring, handed out to slot (a frame slot plus one): in device memory the CPU maps when
    bar, else in host memory (the device ring's in device memory). Its entry's index plus one, 0 when none was made */
 static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
@@ -565,6 +575,8 @@ static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
         aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     } else if (ring == XRING_DEVICE)
         aci = (VmaAllocationCreateInfo){.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    else if (stage_cached() && (!bar || g_vk.mem_model == VK_MEM_UMA)) /* a discrete GPU's window has no such type */
+        aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     while (i < g_cmd.nchunk && g_cmd.chunk[i].buf) i++;
     if (i == g_cmd.capchunk) {
         u32 cap = g_cmd.capchunk ? g_cmd.capchunk * 2 : 32;
@@ -577,6 +589,15 @@ static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
     }
     if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &buf, &mem, &info))) return 0;
     vk_mem_track(mem, VK_OWN_STAGING);
+    if (ring == XRING_STAGE && !g_cmd.stage_told) {
+        const VkPhysicalDeviceMemoryProperties* mp;
+        vmaGetMemoryProperties(g_vk.vma, &mp);
+        g_cmd.stage_told = 1;
+        LOG("vulkan: the staging ring is in memory type %u, %s (vk_stage_memory=%d)\n", info.memoryType,
+            mp->memoryTypes[info.memoryType].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? "cached"
+                                                                                               : "not cached",
+            g_settings.staging_memory);
+    }
     if (i == g_cmd.nchunk) g_cmd.nchunk++;
     g_cmd.chunk[i] = (Chunk){.buf = buf,
                              .mem = mem,

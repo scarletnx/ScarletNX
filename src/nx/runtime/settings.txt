@@ -1307,6 +1307,15 @@ setting Sparse texture sharing
     words Off|On
     help 1 = the blocks of a sparse texture that show the same memory of the game share one piece of GPU memory, where
     help the GPU can bind memory to more than one place of an image. 0 = each block has its own
+setting Staging memory
+    key vk_stage_memory
+    int 0 2
+    default 0
+    startup
+    words Auto|Sequential|Cached
+    help Which host memory holds the buffers that the CPU fills each frame for the GPU to read (uploads, uniforms,
+    help vertices that change). 1 = memory for writes in order, which a driver can map write-combined: small copies
+    help into it are slow there. 2 = cached memory, where the GPU has such a type. 0 = 2 on Intel's Mesa driver, else 1
 setting Buffer pages
     key vk_buffer_pages
     int 0 2
