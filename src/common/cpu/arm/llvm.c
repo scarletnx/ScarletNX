@@ -226,6 +226,15 @@ static void branch_exchange(ArmIR* a, LLVMValueRef target) {
     PUT(a, cpsr, bor(a, band(a, GET(a, cpsr), c32(a, ~SNX_ARM_T)), shl(a, thumb, 5)));
     setreg(a, 15, band(a, target, c32(a, ~1u)));
 }
+/* A load or an ALU result written to the PC in ARM state. The ARM7TDMI (ARMv4T) does not interwork there: bits 1 and 0
+   are dropped and the state stays ARM, as mGBA's ARMWritePC has it; only BX changes the state. Later cores branch with
+   the state from bit 0 */
+static void arm_write_pc(ArmIR* a, LLVMValueRef value) {
+    if (arm7tdmi(a))
+        setreg(a, 15, band(a, value, c32(a, ~3u)));
+    else
+        branch_exchange(a, value);
+}
 static LLVMValueRef arithmetic(ArmIR* a, LLVMValueRef x, LLVMValueRef y, LLVMValueRef cin, int flags) {
     LLVMValueRef wide = add(a, add(a, z64(a, x), z64(a, y)), z64(a, cin));
     LLVMValueRef result = LLVMBuildTrunc(a->b, wide, a->i32, "");
@@ -284,7 +293,7 @@ static void data(ArmIR* a) {
         if (a->profile == SNX_ARM_PROFILE_ARM11)
             setreg(a, 15, band(a, r, c32(a, ~3u)));
         else
-            branch_exchange(a, r);
+            arm_write_pc(a, r);
     } else
         setreg(a, d, r);
 }
@@ -586,14 +595,14 @@ static void memory(ArmIR* a, SnxA32Kind kind) {
     /* With unaligned support on (ARMv6 SCTLR.U, the model ordinary transfers follow), LDRD and STRD need word
        alignment only. Doubleword alignment is the legacy U=0 rule, and libctru's file code loads 64-bit offsets
        from word-aligned structures */
-    unsigned alignment = pair || (load && d == 15) ? 4 : 1;
+    unsigned alignment = pair || (load && d == 15 && !arm7tdmi(a)) ? 4 : 1; /* the ARM7TDMI rotates a misaligned PC */
     transfer_begin(a, addr, pair ? 8 : bytes, alignment, !load, pair);
     if (load) {
         value = readmem(a, addr, bytes, sign);
         if (pair) second = readmem(a, add(a, addr, c32(a, 4)), 4, 0);
         /* Check a loaded PC before committing writeback. */
         if (d == 15)
-            branch_exchange(a, value);
+            arm_write_pc(a, value);
         else
             setreg(a, d, value);
         if (pair) setreg(a, d + 1, second);
@@ -630,7 +639,7 @@ static void multiple(ArmIR* a) {
                                               : reg(a, i));
             ++index;
         }
-    if (load && values[15]) branch_exchange(a, values[15]);
+    if (load && values[15]) arm_write_pc(a, values[15]);
     index = 0;
     for (unsigned i = 0; i < 16; ++i)
         if (values[i]) {
