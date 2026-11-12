@@ -30,13 +30,13 @@
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
 
-#define OUT_NAME_SIZE    0x100 /* an AudioOutInfo, and the name in an AudioOut */
+#define OUT_NAME_SIZE   0x100 /* an AudioOutInfo, and the name in an AudioOut */
 /* an AudioOutBuffer, which the SDK hands its session whole: the next buffer, the samples' address, their capacity
    and size, and the offset into them, 8 bytes each in a 64-bit and a 32-bit game alike */
-#define OUT_BUFFER_SIZE  0x28
-#define OUT_STARTED      0 /* nn::audio::AudioOutState */
-#define OUT_STOPPED      1
-#define OUT_PCM_INT16    2 /* nn::audio::SampleFormat */
+#define OUT_BUFFER_SIZE 0x28
+#define OUT_STARTED     0 /* nn::audio::AudioOutState */
+#define OUT_STOPPED     1
+#define OUT_PCM_INT16   2 /* nn::audio::SampleFormat */
 
 static const char out_name[] = "DeviceOut";
 
@@ -398,6 +398,105 @@ i32 nnaudio_list_outs(CPU* c, u64 infos, i32 count) {
     memset(hook_host(c, infos), 0, OUT_NAME_SIZE);
     memcpy(hook_host(c, infos), out_name, sizeof out_name);
     return 1;
+}
+
+/* ============================================================ the audio device */
+/* nn::audio's audio device functions, with no IAudioDevice session: one output device, "AudioTvOutput", of two
+   channels, whose volume plays on every audio out and renderer. The SDK asks its session for a device event each time
+   a game acquires a notification, and attaches the handle to the game's SystemEvent: here each acquire attaches a new
+   event, signaled from the start where the session's is (the game reads the device then). Nothing signals it again:
+   the host's device never changes */
+static const char device_name[] = "AudioTvOutput";
+
+static int is_device(const CPU* c, u64 name) {
+    return name && snx_audio_guest_ok(name, sizeof device_name, PERM_R) &&
+           !memcmp(hook_host(c, name), device_name, sizeof device_name);
+}
+/* the device's name into an AudioDeviceName, zero padded */
+static void put_device_name(CPU* c, u64 name) {
+    memset(hook_host(c, name), 0, OUT_NAME_SIZE);
+    memcpy(hook_host(c, name), device_name, sizeof device_name);
+}
+/* the one device, into an array of AudioDeviceName when it has room for one: the count. ListAudioOutputDeviceName
+   lists the same */
+i32 nnaudio_list_device_names(CPU* c, u64 names, i32 count) {
+    if (!names || count < 1) return 0;
+    put_device_name(c, names);
+    return 1;
+}
+void nnaudio_get_active_device_name(CPU* c, u64 name) {
+    if (name) put_device_name(c, name);
+}
+i32 nnaudio_get_active_device_channel_count(CPU* c) {
+    (void)c;
+    return 2;
+}
+/* the output device keeps the volume a game sets, and plays every audio out and renderer that much louder or softer;
+   any other name has 1 and keeps nothing */
+void nnaudio_set_device_output_volume(CPU* c, u64 name, f32 volume) {
+    if (!is_device(c, name)) return;
+    pm_lock(&g_host.audio.lk);
+    g_hle.audio.device_volume = volume;
+    nnaudio_out_device_volume();
+    audren_volume(volume);
+    pm_unlock(&g_host.audio.lk);
+}
+f32 nnaudio_get_device_output_volume(CPU* c, u64 name) {
+    f32 volume;
+    pm_lock(&g_host.audio.lk);
+    volume = is_device(c, name) ? g_hle.audio.device_volume : 1.0f;
+    pm_unlock(&g_host.audio.lk);
+    return volume;
+}
+/* the auto-tune mode only changes what the getter answers: the runtime plays at the volume the game sets */
+void nnaudio_set_device_auto_tune(CPU* c, int enabled) {
+    (void)c;
+    pm_lock(&g_host.audio.lk);
+    g_hle.audio.auto_tune = enabled != 0;
+    pm_unlock(&g_host.audio.lk);
+}
+int nnaudio_is_device_auto_tune(CPU* c) {
+    int enabled;
+    (void)c;
+    pm_lock(&g_host.audio.lk);
+    enabled = g_hle.audio.auto_tune;
+    pm_unlock(&g_host.audio.lk);
+    return enabled;
+}
+
+/* a new event attached to the game's SystemEvent, which then holds its only reference */
+static void device_event(CPU* c, u64 event, const char* name, int signaled) {
+    KEvent* e = event ? hook_attach_event(c, event, name) : NULL;
+    if (!e) {
+        WARN_LIMIT(4,
+                   "audio: the SDK exports no AttachReadableHandleToSystemEvent: the SystemEvent at %#llx has no "
+                   "%s event\n",
+                   (unsigned long long)event, name);
+        return;
+    }
+    if (signaled) kevent_signal(e);
+}
+/* AcquireAudioDeviceNotificationForOutput and ForInput, and the older AcquireAudioDeviceSwitchNotification: the
+   device's output, input and system events, each signaled when the game gets it */
+void nnaudio_acquire_device_output_event(CPU* c, u64 event) { device_event(c, event, "audio device output", 1); }
+void nnaudio_acquire_device_input_event(CPU* c, u64 event) { device_event(c, event, "audio device input", 1); }
+void nnaudio_acquire_device_switch_event(CPU* c, u64 event) { device_event(c, event, "audio device system", 1); }
+/* the Ounce SDK's device notifications, which only a change of the device signals */
+void nnaudio_acquire_device_notification(CPU* c, u64 event) { device_event(c, event, "audio device notification", 0); }
+/* the SDK tells the session, then destroys the game's SystemEvent with its own DestroySystemEvent, which closes the
+   handle and the event with it */
+void nnaudio_release_device_notification(CPU* c, u64 event) {
+    static const char destroy[] = "_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE";
+    u64 fn = kernel_find_symbol_exact(destroy);
+    if (!event) return;
+    if (!fn) {
+        WARN_LIMIT(4,
+                   "audio: the SDK exports no DestroySystemEvent: the device notification's SystemEvent at %#llx "
+                   "stays attached\n",
+                   (unsigned long long)event);
+        return;
+    }
+    hook_guest_call(c, fn, event, 0, 0, 0);
 }
 
 /* ============================================================ the device's volume, and save states */

@@ -93,33 +93,9 @@ interface nn::audio::detail::IAudioRenderer {
     [13] GetVoiceDropParameter() -> f32 parameter;
 }
 
+# the audio device, which nothing here serves: it is native (nn/audio.c), and audren:u's commands 2 and 4 stop the game
+# that asks for it
 interface nn::audio::detail::IAudioDevice {
-    [0] ListAudioDeviceName(array<nn::audio::AudioDeviceName, 6> names) -> i32 count;
-    [1] SetAudioDeviceOutputVolume(buffer<nn::audio::AudioDeviceName, 5> name, f32 volume);
-    [2] GetAudioDeviceOutputVolume(buffer<nn::audio::AudioDeviceName, 5> name) -> f32 volume;
-    [3] GetActiveAudioDeviceName(buffer<nn::audio::AudioDeviceName, 6> name);
-    [4] QueryAudioDeviceSystemEvent() -> handle<copy, event> event;
-    [5] GetActiveChannelCount() -> u32 count;
-    [6] ListAudioDeviceNameAuto(array<nn::audio::AudioDeviceName, 0x22> names) -> i32 count;
-    [7] SetAudioDeviceOutputVolumeAuto(buffer<nn::audio::AudioDeviceName, 0x21> name, f32 volume);
-    [8] GetAudioDeviceOutputVolumeAuto(buffer<nn::audio::AudioDeviceName, 0x21> name) -> f32 volume;
-    [10] GetActiveAudioDeviceNameAuto(buffer<nn::audio::AudioDeviceName, 0x22> name);
-    [11] QueryAudioDeviceInputEvent() -> handle<copy, event> event;
-    [12] QueryAudioDeviceOutputEvent() -> handle<copy, event> event;
-    # SDK 13 and later: before, 13 was another command (an A buffer in, a u32 out), which this declaration refuses
-    [13] GetActiveAudioOutputDeviceName(buffer<nn::audio::AudioDeviceName, 6> name);
-    # SDK 13 and later (nn::audio::ListAudioOutputDeviceName): a game may compare each name with the outputs it knows
-    [14] ListAudioOutputDeviceName(array<nn::audio::AudioDeviceName, 6> names) -> i32 count;
-    # 17.0.0 and later: the server's own symbols give (Out<NativeHandle>, u64) and (u64). The SDK's client reads a copy
-    # handle, and its wrapper aborts on a failed result. A release changes nothing: the device keeps its event to its end
-    [15] AcquireAudioInputDeviceNotification(u64 id) -> handle<copy, event> event;
-    @stub [16] ReleaseAudioInputDeviceNotification(u64 id);
-    [17] AcquireAudioOutputDeviceNotification(u64 id) -> handle<copy, event> event;
-    @stub [18] ReleaseAudioOutputDeviceNotification(u64 id);
-    # 18.0.0 and later: a mode in which the console tunes the output volume. A failed result stops the SDK's wrapper
-    # (an abort)
-    [19] SetAudioDeviceOutputVolumeAutoTuneEnabled(b8 enabled);
-    [20] IsAudioDeviceOutputVolumeAutoTuneEnabled() -> b8 enabled;
 }
 
 # audout:u's manager, which nothing here serves: the audio outs are native (nn/audio.c), and aud:u's command 1 stops

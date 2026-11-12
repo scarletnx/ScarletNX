@@ -7,7 +7,7 @@
    SPDX-FileCopyrightText: Copyright 2018-2024 yuzu Emulator Project (GPL-2.0-or-later)
    The hwopus work buffer sizes, from Ryujinx (src/Ryujinx.Horizon/Sdk/Codec/Detail/HardwareOpusDecoderManager.cs):
    SPDX-FileCopyrightText: Ryujinx Team and Contributors (MIT) */
-/* audren:u's service side, IAudioDevice and hwopus, with the audio clock that paces them and the native audio outs
+/* audren:u's service side and hwopus, with the audio clock that paces them and the native audio outs
    (nn/audio.c): every 5 ms it renders a frame of each started renderer (audren.c), signals the renderer event, and
    plays and releases the audio outs' buffers */
 #include "nx/hle/services/services_int.h"
@@ -35,11 +35,8 @@
    lowercase v), which an SDK 22 game asks for. No feature of 16's is known: Eglantine (Eden's Ounce fork) takes its
    native 16 as 15, and so does the renderer here (audren_dsp.c's features go by revision 15 and earlier) */
 #define AUDIO_REVISION  16
-#define AUDIO_NAME_SIZE 0x100   /* an AudioDeviceName */
 
-static const char device_name[] = "AudioTvOutput";
-
-/* the objects' data (AudRen, AudDevice, HwOpus) and their pools: g_hle.audio (services_int.h) */
+/* the objects' data (AudRen, HwOpus) and their pools: g_hle.audio (services_int.h) */
 
 /* ============================================================ helpers */
 /* whether [addr, addr + size) is guest memory with perm, block by block */
@@ -55,26 +52,21 @@ int snx_audio_guest_ok(u64 addr, u64 size, u32 perm) {
     return 1;
 }
 
-/* a name into an output buffer, cut to fit and zero padded up to an AudioDeviceName */
-static void write_name(IpcBuf b, const char* name) {
-    u64 n = b.size < AUDIO_NAME_SIZE ? b.size : AUDIO_NAME_SIZE;
-    size_t len = strlen(name);
-    if (!b.addr || !n || !snx_audio_guest_ok(b.addr, n, PERM_W)) return;
-    memset(GP(b.addr), 0, (size_t)n);
-    memcpy(GP(b.addr), name, len < n ? len : (size_t)(n - 1));
-}
-
-/* names into an array of AudioDeviceName: as many as fit, up to the one there is */
-static u32 list_names(IpcBuf b, const char* name) {
-    if (!b.addr || b.size < AUDIO_NAME_SIZE) return 0;
-    write_name(b, name);
-    return 1;
-}
-
 /* 'REV' and the revision's digit, or a bare number, as Eden's GetRevisionNum reads it */
 static u32 revision_number(u32 rev) {
     if (rev >= 0x100) rev = (rev - 0x30564552u) >> 24; /* 'R' 'E' 'V' '0' */
     return rev;
+}
+
+/* A part of nn::audio the runtime answers only natively: a game that asks service for what got here through an SDK
+   function that is not native yet, as one that opens a native-only service did (sm.c), and stops the same way */
+static _Noreturn void native_only(const char* service, const char* what) {
+    WARN("\n*** The program asked %s for %s, which the runtime answers only natively ***\n", service, what);
+    kernel_dump_threads();
+    fatal("%s: the program asked for %s, which the runtime answers only in the SDK's own functions, nn::audio "
+          "(nn/audio.c). A game got here through an SDK function that is not native yet (the calls of its thread, "
+          "in the log's thread list before this, name it)",
+          service, what);
 }
 
 /* ============================================================ the native audio manager (aud:u) */
@@ -86,15 +78,10 @@ static int nn_audio_detail_INativeAudioManager_GetAudioInManager(SvcObj* self, S
     *manager = new_audin();
     R_SUCCEED();
 }
-/* the audio outs are answered in the SDK's own functions (nn/audio.c), with no manager to hand out: a game that
-   asks for it called a function there that is not native yet, as one that opens audout:u did (sm.c) */
+/* the audio outs are answered in the SDK's own functions (nn/audio.c), with no manager to hand out */
 static int nn_audio_detail_INativeAudioManager_GetAudioOutManager(SvcObj* self, SvcObj** manager) {
     (void)self, (void)manager;
-    WARN("\n*** The program asked aud:u for the audio out manager, which the runtime answers only natively ***\n");
-    kernel_dump_threads();
-    fatal("aud:u: the program asked for the audio out manager, which the runtime answers only in the SDK's own "
-          "functions, nn::audio (nn/audio.c). A game got here through an SDK function that is not native yet (the "
-          "calls of its thread, in the log's thread list before this, name it)");
+    native_only("aud:u", "the audio out manager");
 }
 static int nn_audio_detail_INativeAudioManager_GetAudioRendererManager(SvcObj* self, SvcObj** manager) {
     (void)self;
@@ -274,147 +261,17 @@ static int nn_audio_detail_IAudioRendererManager_GetWorkBufferSize(
     R_SUCCEED();
 }
 
-/* ------------------------------------------------------------ IAudioDevice: the TV output, two channels */
-/* its system, input and output events, signaled when the device is made (the game reads the device then), and its
-   input and output device notifications, which a change of the device would signal and the host's never makes: an
-   AudDevice (services_int.h) */
-static void device_destroy(SvcObj* o) {
-    int i;
-    for (i = 0; i < 5; i++) kobj_unref(kobj_at(((AudDevice*)o->data)->ev[i]));
-}
-
-static SvcObj* new_device(void) {
-    static const char* const names[5] = {"IAudioDevice system", "IAudioDevice input", "IAudioDevice output",
-                                         "IAudioDevice input notification", "IAudioDevice output notification"};
-    SvcObj* o = nn_audio_detail_IAudioDevice_new_data(g_hle.audio.devices, g_hle.audio.device_next, "audio devices");
-    int i;
-    for (i = 0; i < 5; i++) {
-        ((AudDevice*)o->data)->ev[i] = owned_event(names[i]);
-        if (i < 3) ev_signal(((AudDevice*)o->data)->ev[i]);
-    }
-    o->destroy = device_destroy;
-    return o;
-}
-
+/* ------------------------------------------------------------ IAudioDevice */
+/* the audio device is answered in the SDK's own functions (nn/audio.c), with no device to hand out */
 static int nn_audio_detail_IAudioRendererManager_GetAudioDeviceService(SvcObj* self, nn_applet_AppletResourceUserId aruid,
                                                                        SvcObj** device) {
-    (void)self, (void)aruid;
-    *device = new_device();
-    R_SUCCEED();
+    (void)self, (void)aruid, (void)device;
+    native_only("audren:u", "the audio device service");
 }
 static int nn_audio_detail_IAudioRendererManager_GetAudioDeviceServiceWithRevisionInfo(
     SvcObj* self, nn_applet_AppletResourceUserId aruid, u32 revision, SvcObj** device) {
-    (void)self, (void)aruid, (void)revision;
-    *device = new_device();
-    R_SUCCEED();
-}
-
-static int nn_audio_detail_IAudioDevice_ListAudioDeviceName(SvcObj* self, IpcBuf names, i32* count) {
-    (void)self;
-    *count = (i32)list_names(names, device_name);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioDevice_ListAudioDeviceNameAuto(SvcObj* self, IpcBuf names, i32* count) {
-    return nn_audio_detail_IAudioDevice_ListAudioDeviceName(self, names, count);
-}
-/* whether a device name a game sends is the output device's */
-static int is_device(IpcBuf name) {
-    u64 n = name.size < AUDIO_NAME_SIZE ? name.size : AUDIO_NAME_SIZE;
-    if (!name.addr || n < sizeof device_name || !snx_audio_guest_ok(name.addr, n, PERM_R)) return 0;
-    return !memcmp(GP(name.addr), device_name, sizeof device_name);
-}
-/* the output device keeps the volume a game sets, and plays every audio out and renderer that much louder or softer;
-   any other name has 1 */
-static int nn_audio_detail_IAudioDevice_SetAudioDeviceOutputVolume(SvcObj* self, IpcBuf name, float volume) {
-    (void)self;
-    if (!is_device(name)) R_SUCCEED();
-    pm_lock(&g_host.audio.lk);
-    g_hle.audio.device_volume = volume;
-    nnaudio_out_device_volume();
-    audren_volume(volume);
-    pm_unlock(&g_host.audio.lk);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioDevice_SetAudioDeviceOutputVolumeAuto(SvcObj* self, IpcBuf name, float volume) {
-    return nn_audio_detail_IAudioDevice_SetAudioDeviceOutputVolume(self, name, volume);
-}
-static int nn_audio_detail_IAudioDevice_GetAudioDeviceOutputVolume(SvcObj* self, IpcBuf name, float* volume) {
-    (void)self;
-    pm_lock(&g_host.audio.lk);
-    *volume = is_device(name) ? g_hle.audio.device_volume : 1.0f;
-    pm_unlock(&g_host.audio.lk);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioDevice_GetAudioDeviceOutputVolumeAuto(SvcObj* self, IpcBuf name, float* volume) {
-    return nn_audio_detail_IAudioDevice_GetAudioDeviceOutputVolume(self, name, volume);
-}
-static int nn_audio_detail_IAudioDevice_GetActiveAudioDeviceName(SvcObj* self, IpcBuf name) {
-    (void)self;
-    write_name(name, device_name);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioDevice_GetActiveAudioDeviceNameAuto(SvcObj* self, IpcBuf name) {
-    return nn_audio_detail_IAudioDevice_GetActiveAudioDeviceName(self, name);
-}
-/* the auto-tune mode only changes what the getter answers: the runtime plays at the volume the game sets */
-static int nn_audio_detail_IAudioDevice_SetAudioDeviceOutputVolumeAutoTuneEnabled(SvcObj* self, u8 enabled) {
-    (void)self;
-    pm_lock(&g_host.audio.lk);
-    g_hle.audio.auto_tune = enabled != 0;
-    pm_unlock(&g_host.audio.lk);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioDevice_IsAudioDeviceOutputVolumeAutoTuneEnabled(SvcObj* self, u8* enabled) {
-    (void)self;
-    pm_lock(&g_host.audio.lk);
-    *enabled = g_hle.audio.auto_tune;
-    pm_unlock(&g_host.audio.lk);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioDevice_GetActiveAudioOutputDeviceName(SvcObj* self, IpcBuf name) {
-    return nn_audio_detail_IAudioDevice_GetActiveAudioDeviceName(self, name);
-}
-/* the outputs there are: the one device, as GetActiveAudioOutputDeviceName names it */
-static int nn_audio_detail_IAudioDevice_ListAudioOutputDeviceName(SvcObj* self, IpcBuf names, i32* count) {
-    return nn_audio_detail_IAudioDevice_ListAudioDeviceName(self, names, count);
-}
-static int nn_audio_detail_IAudioDevice_GetActiveChannelCount(SvcObj* self, u32* count) {
-    (void)self;
-    *count = 2;
-    R_SUCCEED();
-}
-/* the system event is signaled again when it is asked for, as Eden does */
-static int nn_audio_detail_IAudioDevice_QueryAudioDeviceSystemEvent(SvcObj* self, u32* event) {
-    u32 e = ((AudDevice*)self->data)->ev[0];
-    ev_signal(e);
-    *event = ev_handle(e);
-    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioDevice_QueryAudioDeviceInputEvent(SvcObj* self, u32* event) {
-    *event = ev_handle(((AudDevice*)self->data)->ev[1]);
-    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioDevice_QueryAudioDeviceOutputEvent(SvcObj* self, u32* event) {
-    *event = ev_handle(((AudDevice*)self->data)->ev[2]);
-    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
-    R_SUCCEED();
-}
-/* 17.0.0 and later. The SDK's wrapper attaches the copy handle to a SystemEvent that owns it, and acquires one a run:
-   each acquire gives the device's one event. The u64 is the SDK's own, which the server doesn't need here */
-static int device_notification(SvcObj* self, int which, u32* event) {
-    *event = ev_handle(((AudDevice*)self->data)->ev[which]);
-    R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
-    R_SUCCEED();
-}
-static int nn_audio_detail_IAudioDevice_AcquireAudioInputDeviceNotification(SvcObj* self, u64 id, u32* event) {
-    (void)id;
-    return device_notification(self, 3, event);
-}
-static int nn_audio_detail_IAudioDevice_AcquireAudioOutputDeviceNotification(SvcObj* self, u64 id, u32* event) {
-    (void)id;
-    return device_notification(self, 4, event);
+    (void)self, (void)aruid, (void)revision, (void)device;
+    native_only("audren:u", "the audio device service");
 }
 
 SvcObj* new_audren(void) { return nn_audio_detail_IAudioRendererManager_new(); }
@@ -940,5 +797,4 @@ void audio_state_rebuild(void) {
 }
 /* the functions a save state may hold of this file (state_fns.h) */
 STATE_FN_TABLE(g_audio_state_fns,
-               STATE_FN("audio", device_destroy),
                STATE_FN("audio", hwopus_destroy));

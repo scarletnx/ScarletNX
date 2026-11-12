@@ -27,3 +27,26 @@ hook _ZN2nn5audio20FlushAudioOutBuffersEPNS0_8AudioOutE(addr out) -> bool = nnau
 hook _ZN2nn5audio17SetAudioOutVolumeEPNS0_8AudioOutEf(addr out, f32 volume) = nnaudio_set_out_volume
 hook _ZN2nn5audio17GetAudioOutVolumeEPKNS0_8AudioOutE(addr out) -> f32 = nnaudio_get_out_volume
 hook _ZN2nn5audio13ListAudioOutsEPNS0_12AudioOutInfoEi(addr infos, i32 count) -> i32 = nnaudio_list_outs
+
+# The audio device, with no IAudioDevice session (audren:u's GetAudioDeviceService): one output device, its volume
+# and the events a game acquires for a change of device. Every function is the same call in every SDK read; which
+# session command it sends differs (AcquireAudioDeviceNotificationForOutput asks for the system event in SDK 3.5 and
+# for the output event from 6.5), and each is an event signaled when the game gets it. The last four are the Ounce
+# SDK's
+family nn_audio_device
+hook _ZN2nn5audio19ListAudioDeviceNameEPNS0_15AudioDeviceNameEi(addr names, i32 count) -> i32 = nnaudio_list_device_names
+hook _ZN2nn5audio25ListAudioOutputDeviceNameEPNS0_15AudioDeviceNameEi(addr names, i32 count) -> i32 = nnaudio_list_device_names
+hook _ZN2nn5audio24GetActiveAudioDeviceNameEPNS0_15AudioDeviceNameE(addr name) = nnaudio_get_active_device_name
+hook _ZN2nn5audio30GetActiveAudioOutputDeviceNameEPNS0_15AudioDeviceNameE(addr name) = nnaudio_get_active_device_name
+hook _ZN2nn5audio41GetActiveAudioDeviceChannelCountForOutputEv() -> i32 = nnaudio_get_active_device_channel_count
+hook _ZN2nn5audio26SetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameEf(addr name, f32 volume) = nnaudio_set_device_output_volume
+hook _ZN2nn5audio26GetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameE(addr name) -> f32 = nnaudio_get_device_output_volume
+hook _ZN2nn5audio39AcquireAudioDeviceNotificationForOutputEPNS_2os11SystemEventE(addr event) = nnaudio_acquire_device_output_event
+hook _ZN2nn5audio38AcquireAudioDeviceNotificationForInputEPNS_2os11SystemEventE(addr event) = nnaudio_acquire_device_input_event
+hook _ZN2nn5audio36AcquireAudioDeviceSwitchNotificationEPNS_2os11SystemEventE(addr event) = nnaudio_acquire_device_switch_event
+hook _ZN2nn5audio40SetDeviceOutputVolumeAutoTuneModeEnabledEb(bool enabled) = nnaudio_set_device_auto_tune
+hook _ZN2nn5audio39IsDeviceOutputVolumeAutoTuneModeEnabledEv() -> bool = nnaudio_is_device_auto_tune
+hook _ZN2nn5audio36AcquireAudioOutputDeviceNotificationEPNS_2os11SystemEventE(addr event) = nnaudio_acquire_device_notification
+hook _ZN2nn5audio35AcquireAudioInputDeviceNotificationEPNS_2os11SystemEventE(addr event) = nnaudio_acquire_device_notification
+hook _ZN2nn5audio36ReleaseAudioOutputDeviceNotificationEPNS_2os11SystemEventE(addr event) = nnaudio_release_device_notification
+hook _ZN2nn5audio35ReleaseAudioInputDeviceNotificationEPNS_2os11SystemEventE(addr event) = nnaudio_release_device_notification

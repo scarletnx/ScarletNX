@@ -135,6 +135,22 @@ int hook_attach_handle(CPU* c, u64 event, u32 handle) {
     return 1;
 }
 
+/* audren.c's: the device's volume on the renderers */
+static float test_renderer_gain = 1.0f;
+void audren_volume(float gain) { test_renderer_gain = gain; }
+/* the SDK's DestroySystemEvent, which the device's release runs in the game: here the call is kept */
+#define DESTROY 0x9000u
+static int test_no_destroy;
+static u64 test_destroyed;
+u64 kernel_find_symbol_exact(const char* name) {
+    return !test_no_destroy && !strcmp(name, "_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE") ? DESTROY : 0;
+}
+void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
+    (void)c, (void)a1, (void)a2, (void)a3;
+    CHECK(fn == DESTROY);
+    test_destroyed = a0;
+}
+
 static CPU cpu;
 static const HookLayout_nn_audio_AudioOut L = {0x110, {0x0}, {0x4}, {0x8}, {0xc}, {0x10}};
 #define T_OUT   0x1000u /* the game's AudioOut */
@@ -406,6 +422,77 @@ static void test_two_outs(void) {
     nnaudio_close_out(&cpu, &L, T_OUT2);
 }
 
+/* the audio device: the one output's name and channels, its volume on the outs and the renderers, the auto-tune
+   flag, and the events a game acquires */
+static void test_device(void) {
+    CPU* c = &cpu;
+    /* ListAudioDeviceName and ListAudioOutputDeviceName: one AudioDeviceName of 0x100 bytes; none into no room */
+    memset(GP(NAME), 0xCC, 0x220);
+    CHECK(nnaudio_list_device_names(c, NAME, 2) == 1);
+    CHECK(!strcmp((char*)GP(NAME), "AudioTvOutput") && GP(NAME)[0xFF] == 0 && GP(NAME + 0x100)[0] == 0xCC);
+    memset(GP(NAME), 0xCC, 0x100);
+    CHECK(nnaudio_list_device_names(c, NAME, 0) == 0 && GP(NAME)[0] == 0xCC);
+    CHECK(nnaudio_list_device_names(c, 0, 2) == 0);
+    /* GetActiveAudioDeviceName: the name, zero padded to the AudioDeviceName, nothing past it */
+    memset(GP(NAME), 0xCC, 0x110);
+    nnaudio_get_active_device_name(c, NAME);
+    CHECK(!strcmp((char*)GP(NAME), "AudioTvOutput"));
+    for (u32 i = 13; i < 0x100; i++) CHECK(GP(NAME)[i] == 0);
+    CHECK(GP(NAME)[0x100] == 0xCC);
+    CHECK(nnaudio_get_active_device_channel_count(c) == 2);
+    /* the device keeps the volume set on it and plays the outs and the renderers at it; another name has 1 and keeps
+       nothing */
+    AudOut* q = open_output(T_OUT);
+    memset(GP(NAME), 0, 0x200);
+    strcpy((char*)GP(NAME), "AudioTvOutput");
+    strcpy((char*)GP(NAME + 0x100), "AudioBuiltInSpeakerOutput");
+    nnaudio_set_out_volume(c, T_OUT, 0.5f);
+    nnaudio_set_device_output_volume(c, NAME, 0.5f);
+    CHECK(g_hle.audio.device_volume == 0.5f && q->output->volume == 0.25f && test_renderer_gain == 0.5f);
+    nnaudio_set_device_output_volume(c, NAME + 0x100, 0.25f);
+    CHECK(g_hle.audio.device_volume == 0.5f && q->output->volume == 0.25f && test_renderer_gain == 0.5f);
+    CHECK(nnaudio_get_device_output_volume(c, NAME) == 0.5f &&
+          nnaudio_get_device_output_volume(c, NAME + 0x100) == 1.0f);
+    CHECK(nnaudio_get_device_output_volume(c, 0) == 1.0f);
+    nnaudio_set_device_output_volume(c, NAME, 1.0f);
+    CHECK(g_hle.audio.device_volume == 1.0f && q->output->volume == 0.5f && test_renderer_gain == 1.0f);
+    nnaudio_close_out(c, &L, T_OUT);
+    /* the auto-tune mode reads back as set */
+    CHECK(nnaudio_is_device_auto_tune(c) == 0);
+    nnaudio_set_device_auto_tune(c, 1);
+    CHECK(nnaudio_is_device_auto_tune(c) == 1);
+    nnaudio_set_device_auto_tune(c, 0);
+    CHECK(nnaudio_is_device_auto_tune(c) == 0);
+    /* the output, input and switch events: a new event each, attached to the game's SystemEvent, which holds its only
+       reference, signaled from the start. The Ounce's notifications are not signaled */
+    void (*const acquire[4])(CPU*, u64) = {nnaudio_acquire_device_output_event, nnaudio_acquire_device_input_event,
+                                           nnaudio_acquire_device_switch_event, nnaudio_acquire_device_notification};
+    for (u32 i = 0; i < 4; i++) {
+        unsigned attached = test_attached;
+        u32 next = test_event_next;
+        acquire[i](c, EVENT + 0x40 * i);
+        CHECK(test_attached == attached + 1 && test_attached_to[attached % 4] == EVENT + 0x40 * i);
+        CHECK(test_event_next == next + 1 && test_event_pool[next].o.refs == 1);
+        CHECK(test_event_pool[next].signaled == (i < 3));
+    }
+    /* an SDK with no AttachReadableHandleToSystemEvent: the log names the SystemEvent */
+    test_no_attach = 1;
+    test_last_log[0] = 0;
+    nnaudio_acquire_device_output_event(c, EVENT);
+    CHECK(strstr(test_last_log, "AttachReadableHandleToSystemEvent") && strstr(test_last_log, "0x1500"));
+    test_no_attach = 0;
+    /* the release destroys the game's SystemEvent with the SDK's own function; without one, the log says so */
+    test_destroyed = 0;
+    nnaudio_release_device_notification(c, EVENT2);
+    CHECK(test_destroyed == EVENT2);
+    test_no_destroy = 1;
+    test_destroyed = 0;
+    test_last_log[0] = 0;
+    nnaudio_release_device_notification(c, EVENT2);
+    CHECK(test_destroyed == 0 && strstr(test_last_log, "DestroySystemEvent") && strstr(test_last_log, "0x1540"));
+    test_no_destroy = 0;
+}
+
 /* audio.hook: every function is hooked for any SDK, by the handler that takes its arguments, and the adapters hand
    them over as the game's call left them */
 static void test_table(void) {
@@ -433,6 +520,29 @@ static void test_table(void) {
         {"_ZN2nn5audio17SetAudioOutVolumeEPNS0_8AudioOutEf", "nnaudio_set_out_volume"},
         {"_ZN2nn5audio17GetAudioOutVolumeEPKNS0_8AudioOutE", "nnaudio_get_out_volume"},
         {"_ZN2nn5audio13ListAudioOutsEPNS0_12AudioOutInfoEi", "nnaudio_list_outs"},
+        {"_ZN2nn5audio19ListAudioDeviceNameEPNS0_15AudioDeviceNameEi", "nnaudio_list_device_names"},
+        {"_ZN2nn5audio25ListAudioOutputDeviceNameEPNS0_15AudioDeviceNameEi", "nnaudio_list_device_names"},
+        {"_ZN2nn5audio24GetActiveAudioDeviceNameEPNS0_15AudioDeviceNameE", "nnaudio_get_active_device_name"},
+        {"_ZN2nn5audio30GetActiveAudioOutputDeviceNameEPNS0_15AudioDeviceNameE", "nnaudio_get_active_device_name"},
+        {"_ZN2nn5audio41GetActiveAudioDeviceChannelCountForOutputEv", "nnaudio_get_active_device_channel_count"},
+        {"_ZN2nn5audio26SetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameEf", "nnaudio_set_device_output_volume"},
+        {"_ZN2nn5audio26GetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameE", "nnaudio_get_device_output_volume"},
+        {"_ZN2nn5audio39AcquireAudioDeviceNotificationForOutputEPNS_2os11SystemEventE",
+         "nnaudio_acquire_device_output_event"},
+        {"_ZN2nn5audio38AcquireAudioDeviceNotificationForInputEPNS_2os11SystemEventE",
+         "nnaudio_acquire_device_input_event"},
+        {"_ZN2nn5audio36AcquireAudioDeviceSwitchNotificationEPNS_2os11SystemEventE",
+         "nnaudio_acquire_device_switch_event"},
+        {"_ZN2nn5audio40SetDeviceOutputVolumeAutoTuneModeEnabledEb", "nnaudio_set_device_auto_tune"},
+        {"_ZN2nn5audio39IsDeviceOutputVolumeAutoTuneModeEnabledEv", "nnaudio_is_device_auto_tune"},
+        {"_ZN2nn5audio36AcquireAudioOutputDeviceNotificationEPNS_2os11SystemEventE",
+         "nnaudio_acquire_device_notification"},
+        {"_ZN2nn5audio35AcquireAudioInputDeviceNotificationEPNS_2os11SystemEventE",
+         "nnaudio_acquire_device_notification"},
+        {"_ZN2nn5audio36ReleaseAudioOutputDeviceNotificationEPNS_2os11SystemEventE",
+         "nnaudio_release_device_notification"},
+        {"_ZN2nn5audio35ReleaseAudioInputDeviceNotificationEPNS_2os11SystemEventE",
+         "nnaudio_release_device_notification"},
     };
     int k[sizeof hooks / sizeof hooks[0]], first;
     CHECK(hook_table.count == sizeof hooks / sizeof hooks[0]);
@@ -479,6 +589,27 @@ static void test_table(void) {
     }
     CALL(5, T_OUT, 0, 0, 0);
     CHECK(out_at(T_OUT) == NULL);
+    /* the device's, a name and a volume in s0, and a count back */
+    memset(GP(NAME), 0, 0x100);
+    strcpy((char*)GP(NAME), "AudioTvOutput");
+    {
+        f32 half = 0.5f;
+        u32 bits;
+        memcpy(&bits, &half, 4);
+        memset(&c->v[0], 0, sizeof c->v[0]);
+        SNX_VSET_S(c->v[0], 0, bits);
+        CALL(23, NAME, 0, 0, 0);
+        CHECK(g_hle.audio.device_volume == 0.5f);
+        memset(&c->v[0], 0, sizeof c->v[0]);
+        CALL(24, NAME, 0, 0, 0);
+        CHECK(hook_f32(c, 0) == 0.5f);
+        g_hle.audio.device_volume = 1.0f;
+    }
+    CALL(22, 0, 0, 0, 0);
+    CHECK((u32)c->x[0] == 2);
+    memset(GP(NAME), 0xCC, 0x100);
+    CALL(19, NAME, 3, 0, 0);
+    CHECK((u32)c->x[0] == 1 && !strcmp((char*)GP(NAME), "AudioTvOutput"));
 #undef CALL
 }
 
@@ -570,6 +701,7 @@ int main(void) {
     test_offset_past_capacity();
     test_partial_frame();
     test_two_outs();
+    test_device();
     test_table();
     for (u32 i = 0; i < AUDOUT_MAX; i++) CHECK(g_hle.audio.outs_pool[i].guest == 0);
     /* every out is closed, and no event went with one: each is still the game's, through its SystemEvent's handle */

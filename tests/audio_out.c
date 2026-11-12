@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* audren:u's service side, IAudioDevice and hwopus (audio.c) through their IPC commands, with a clock the test
-   moves. The native audio outs have their own test (nn_audio.c) */
+/* audren:u's service side and hwopus (audio.c) through their IPC commands, with a clock the test
+   moves. The native audio outs and audio device have their own test (nn_audio.c) */
 #include "nx/hle/services/services_int.h"
 #include <setjmp.h>
 #include <stdarg.h>
@@ -191,13 +191,11 @@ void fatal(const char* fmt, ...) {
 static unsigned test_thread_dumps;
 void kernel_dump_threads(void) { test_thread_dumps++; }
 /* nn/audio.c's, the native audio outs, which have their own test (nn_audio.c): what audio.c asks of them, counted */
-static unsigned test_out_volumes, test_out_drops, test_out_rebuilds;
+static unsigned test_out_drops, test_out_rebuilds;
 void nnaudio_out_tick(u64 now) { (void)now; } /* the clock's thread never runs here */
-void nnaudio_out_device_volume(void) { test_out_volumes++; }
 void nnaudio_out_state_drop(void) { test_out_drops++; }
 void nnaudio_out_state_rebuild(void) { test_out_rebuilds++; }
-static float test_renderer_gain = 1.0f;
-void audren_volume(float gain) { test_renderer_gain = gain; }
+void audren_volume(float gain) { (void)gain; } /* the device's volume, which nn/audio.c sets */
 KEvent* kevent_new(const char* name) {
     KEvent* e = calloc(1, sizeof *e);
     CHECK(e != NULL);
@@ -245,11 +243,6 @@ static const void* le32s(const u32* v, u32 n) {
     for (u32 i = 0; i < n; i++) snx_st_le32(p + i * 4, v[i]);
     return p;
 }
-static const void* le64(u64 v) {
-    u8* p = raw_slot();
-    snx_st_le64(p, v);
-    return p;
-}
 static const void* lef(float v) {
     u32 bits;
     memcpy(&bits, &v, 4);
@@ -266,12 +259,6 @@ static IpcCtx request(u32 cmd, const void* raw, u32 size) {
 static u32 reply32(IpcCtx* c, u32 off) {
     CHECK(off + 4 <= c->out_size);
     return snx_ld_le32(c->out + off);
-}
-static float reply_f(IpcCtx* c, u32 off) {
-    u32 bits = reply32(c, off);
-    float v;
-    memcpy(&v, &bits, 4);
-    return v;
 }
 static void command(SvcObj* o, u32 cmd) {
     IpcCtx c = request(cmd, NULL, 0);
@@ -292,8 +279,6 @@ static IpcBuf buffer(u64 addr, u64 size) {
     IpcBuf b = {addr, size, 0};
     return b;
 }
-/* the guest bytes at addr, then a fill byte that must still be there afterwards */
-static void sentinel(u64 addr, u64 size) { memset(GP(addr), 0xCC, size); }
 
 /* IAudioRenderer from OpenAudioRenderer (0): the parameters at 0, the work buffer's size at 0x38, the aruid at 0x40 */
 static void test_renderer(void) {
@@ -386,142 +371,23 @@ static void test_renderer(void) {
     svcobj_unref(manager);
 }
 
-/* IAudioDevice from GetAudioDeviceService (2): the one output device's name */
+/* GetAudioDeviceService (2) and GetAudioDeviceServiceWithRevisionInfo (4): the device is native (nn/audio.c), with
+   none to hand out, and asking for one stops the game after the threads' calls, naming nn::audio */
 static void test_device(void) {
     SvcObj* manager = new_audren();
-    u64 aruid = 0;
-    IpcCtx c = request(2, le64(aruid), sizeof aruid);
-    CHECK(manager->dispatch(manager, &c) == 0 && c.nout_objs == 1);
-    SvcObj* d = c.out_objs[0];
-    /* its system, input and output events: three, each signaled from the start */
-    AudDevice* dev = d->data;
-    CHECK(dev->ev[0] != dev->ev[1] && dev->ev[1] != dev->ev[2] && dev->ev[0] != dev->ev[2]);
-    CHECK(kev(dev->ev[0])->signaled && kev(dev->ev[1])->signaled && kev(dev->ev[2])->signaled);
-    /* ListAudioDeviceName (0): AudioDeviceName entries of 0x100 bytes in B */
-    sentinel(0x1000, 0x220);
-    c = request(0, NULL, 0);
-    c.nb = 1;
-    c.b[0] = buffer(0x1000, 0x200);
-    CHECK(d->dispatch(d, &c) == 0 && c.out_size == 4 && reply32(&c, 0) == 1);
-    CHECK(!strcmp((char*)GP(0x1000), "AudioTvOutput") && GP(0x1000)[0xFF] == 0 && GP(0x1100)[0] == 0xCC);
-    /* an array too small for one entry lists none and is left alone */
-    sentinel(0x1000, 0x100);
-    c.b[0] = buffer(0x1000, 0x80);
-    CHECK(d->dispatch(d, &c) == 0 && reply32(&c, 0) == 0 && GP(0x1000)[0] == 0xCC);
-    /* ListAudioDeviceNameAuto (6) through C */
-    sentinel(0x1000, 0x110);
-    c = request(6, NULL, 0);
-    auto_descriptors(&c, 0, 1);
-    c.c[0] = buffer(0x1000, 0x100);
-    CHECK(d->dispatch(d, &c) == 0 && reply32(&c, 0) == 1 && !strcmp((char*)GP(0x1000), "AudioTvOutput"));
-    CHECK(GP(0x1000)[0x100] == 0xCC);
-    /* GetActiveAudioDeviceName (3): the name, zero padded to the buffer */
-    sentinel(0x1000, 0x110);
-    c = request(3, NULL, 0);
-    c.nb = 1;
-    c.b[0] = buffer(0x1000, 0x100);
-    CHECK(d->dispatch(d, &c) == 0 && c.out_size == 0 && !strcmp((char*)GP(0x1000), "AudioTvOutput"));
-    for (u32 i = 13; i < 0x100; i++) CHECK(GP(0x1000)[i] == 0);
-    CHECK(GP(0x1000)[0x100] == 0xCC);
-    /* a buffer shorter than the name: cut to fit, still zero-terminated, nothing written past it */
-    sentinel(0x1000, 0x20);
-    c.b[0] = buffer(0x1000, 5);
-    CHECK(d->dispatch(d, &c) == 0 && !memcmp(GP(0x1000), "Audi", 5));
-    for (u32 i = 5; i < 0x20; i++) CHECK(GP(0x1000)[i] == 0xCC);
-    sentinel(0x1000, 0x20);
-    c.b[0] = buffer(0x1000, 1);
-    CHECK(d->dispatch(d, &c) == 0 && GP(0x1000)[0] == 0 && GP(0x1001)[0] == 0xCC);
-    /* GetActiveAudioDeviceNameAuto (10) through C, as short */
-    sentinel(0x1000, 0x20);
-    c = request(10, NULL, 0);
-    auto_descriptors(&c, 0, 1);
-    c.c[0] = buffer(0x1000, 8);
-    CHECK(d->dispatch(d, &c) == 0 && !memcmp(GP(0x1000), "AudioTv", 8) && GP(0x1008)[0] == 0xCC);
-    CHECK(query32(d, 5) == 2); /* GetActiveChannelCount */
-    c = request(4, NULL, 0);   /* QueryAudioDeviceSystemEvent */
-    CHECK(d->dispatch(d, &c) == 0 && c.nout_copy == 1 && c.out_copy[0] == 7);
-    /* AcquireAudioInputDeviceNotification (15) and AcquireAudioOutputDeviceNotification (17), a u64 in: a copy handle
-       to the device's own notification event, which nothing signals, as the host's device never changes. Their releases
-       (16, 18) take the u64 and answer nothing */
-    CHECK(dev->ev[3] != dev->ev[4] && !kev(dev->ev[3])->signaled && !kev(dev->ev[4])->signaled);
-    u64 notification_id = 0;
-    for (u32 cmd = 15; cmd <= 18; cmd++) {
-        c = request(cmd, le64(notification_id), sizeof notification_id);
-        CHECK(d->dispatch(d, &c) == 0 && c.out_size == 0 && c.nout_copy == (cmd & 1) && !c.nout_move);
+    u64 raw[2] = {0, 0};
+    for (u32 cmd = 2; cmd <= 4; cmd += 2) {
+        IpcCtx c = request(cmd, raw, cmd == 2 ? 8 : 16);
+        unsigned dumps = test_thread_dumps;
+        test_expect_stop = 1;
+        int stopped = setjmp(test_stopped);
+        if (!stopped) manager->dispatch(manager, &c);
+        test_expect_stop = 0;
+        CHECK(stopped == 1 && test_thread_dumps == dumps + 1);
+        CHECK(strstr(test_stop_text, "audren:u") && strstr(test_stop_text, "the audio device service") &&
+              strstr(test_stop_text, "nn::audio (nn/audio.c)"));
     }
-    /* SetAudioDeviceOutputVolume (1) and GetAudioDeviceOutputVolume (2), the name in A: the device keeps the volume set
-       on it, and another name has 1 and keeps nothing; the Auto ones (7, 8) through X */
-    float half = 0.5f, quarter = 0.25f, got = 0.0f;
-    memset(GP(0x1000), 0, 0x200);
-    strcpy((char*)GP(0x1000), "AudioTvOutput");
-    strcpy((char*)GP(0x1100), "AudioBuiltInSpeakerOutput");
-    c = request(1, lef(half), sizeof half);
-    c.na = 1;
-    c.a[0] = buffer(0x1000, 0x100);
-    CHECK(d->dispatch(d, &c) == 0 && c.out_size == 0);
-    c = request(1, lef(quarter), sizeof quarter);
-    c.na = 1;
-    c.a[0] = buffer(0x1100, 0x100);
-    CHECK(d->dispatch(d, &c) == 0);
-    c = request(2, NULL, 0);
-    c.na = 1;
-    c.a[0] = buffer(0x1000, 0x100);
-    CHECK(d->dispatch(d, &c) == 0 && c.out_size == 4 && (got = reply_f(&c, 0)) == 0.5f);
-    c.a[0] = buffer(0x1100, 0x100);
-    CHECK(d->dispatch(d, &c) == 0 && (got = reply_f(&c, 0)) == 1.0f);
-    c = request(7, lef(quarter), sizeof quarter);
-    auto_descriptors(&c, 1, 0);
-    c.x[0] = buffer(0x1000, 0x100);
-    CHECK(d->dispatch(d, &c) == 0);
-    c = request(8, NULL, 0);
-    auto_descriptors(&c, 1, 0);
-    c.x[0] = buffer(0x1000, 0x100);
-    CHECK(d->dispatch(d, &c) == 0 && (got = reply_f(&c, 0)) == 0.25f);
-    /* SetAudioDeviceOutputVolumeAutoTuneEnabled (19) and IsAudioDeviceOutputVolumeAutoTuneEnabled (20), of 18.0.0 and
-       later: the getter answers what was set, and neither fails, which would stop the game's SDK */
-    const u8 on = 1, off = 0;
-    c = request(19, &on, 1);
-    CHECK(d->dispatch(d, &c) == 0 && c.out_size == 0);
-    c = request(20, NULL, 0);
-    CHECK(d->dispatch(d, &c) == 0 && c.out_size >= 1 && c.out[0] == 1);
-    c = request(19, &off, 1);
-    CHECK(d->dispatch(d, &c) == 0);
-    c = request(20, NULL, 0);
-    CHECK(d->dispatch(d, &c) == 0 && c.out_size >= 1 && c.out[0] == 0);
-    svcobj_unref(d);
     svcobj_unref(manager);
-}
-
-/* the output device's volume on what plays: kept for the audio outs, which are told (nn/audio.c plays each at its
-   own volume times the device's, nn_audio.c), and the renderers' (audren.c) at the device's */
-static void set_device_volume(SvcObj* d, float volume) {
-    IpcCtx c = request(1, lef(volume), sizeof volume);
-    c.na = 1;
-    c.a[0] = buffer(0x1000, 0x100);
-    CHECK(d->dispatch(d, &c) == 0);
-}
-static void test_device_gain(void) {
-    SvcObj* renderers = new_audren();
-    u64 aruid = 0;
-    IpcCtx c = request(2, le64(aruid), sizeof aruid);
-    CHECK(renderers->dispatch(renderers, &c) == 0 && c.nout_objs == 1);
-    SvcObj* d = c.out_objs[0];
-    memset(GP(0x1000), 0, 0x100);
-    strcpy((char*)GP(0x1000), "AudioTvOutput");
-    unsigned told = test_out_volumes;
-    set_device_volume(d, 1.0f);
-    CHECK(g_hle.audio.device_volume == 1.0f && test_out_volumes == told + 1);
-    set_device_volume(d, 0.5f);
-    CHECK(g_hle.audio.device_volume == 0.5f && test_out_volumes == told + 2 && test_renderer_gain == 0.5f);
-    /* another device's name changes nothing */
-    strcpy((char*)GP(0x1000), "AudioStereoJackOutput");
-    set_device_volume(d, 0.75f);
-    CHECK(g_hle.audio.device_volume == 0.5f && test_out_volumes == told + 2 && test_renderer_gain == 0.5f);
-    strcpy((char*)GP(0x1000), "AudioTvOutput");
-    set_device_volume(d, 1.0f);
-    CHECK(g_hle.audio.device_volume == 1.0f && test_out_volumes == told + 3 && test_renderer_gain == 1.0f);
-    svcobj_unref(d);
-    svcobj_unref(renderers);
 }
 
 /* hwopus: GetWorkBufferSize (1) and OpenHardwareOpusDecoder (0), the parameters {sample rate, channels} at 0 and the
@@ -716,7 +582,6 @@ int main(void) {
     CHECK(test_out_drops == 1 && test_out_rebuilds == 1);
     test_renderer();
     test_device();
-    test_device_gain();
     test_hwopus();
     CHECK(test_objects == 0 && test_events == 0);
     free(g_mem);
