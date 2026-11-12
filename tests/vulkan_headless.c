@@ -5320,6 +5320,129 @@ static int check_rt_watch(void) {
     free(ch);
     return 0;
 }
+/* Depth targets the 3D engine clears and the CPU then reads from memory, as edenprobe's zeta and msaa suites do after a
+   barrier and a wait for idle: a release watches them as it does color ones, and the CPU's first read publishes them
+   and lands them in their format's layout. Each format a 80x40 block linear target (2 rows of blocks of 4 GOBs),
+   cleared to depth 0.25 and stencil 0x5A, then its scissor's rectangle to 0.75, in memory of its own (one over memory
+   the CPU read lately is published at the release instead); its bytes are those of the CPU reference
+   (support/dma_ref.c) laying the same picture out over the same memory, padding included. A 4x ZF32 target cleared to
+   0.75 holds it at every sample. They stayed on the GPU: the CPU read the bytes from before the clear */
+#define ZWATCH_A  (HEAP_BASE + 0xC400000)
+#define ZWATCH_GA 0x3B0000000ull
+static int check_zt_watch(void) {
+    static const struct {
+        u32 zeta, bpp, msaa;
+        u32 word[2][2]; /* a texel (or a sample) at 0.25 and at 0.75: its first word, and the one after it (8 bytes) */
+    } c[] = {
+        {0x13, 2, 0, {{0x4000, 0}, {0xBFFF, 0}}},                     /* Z16 */
+        {0x0A, 4, 0, {{0x3E800000u, 0}, {0x3F400000u, 0}}},           /* Z32F */
+        {0x14, 4, 0, {{0x4000005Au, 0}, {0xBFFFFF5Au, 0}}},           /* Z24S8, the stencil low */
+        {0x19, 8, 0, {{0x3E800000u, 0x5A}, {0x3F400000u, 0x5A}}},     /* Z32F_X24S8 */
+        {0x0A, 4, DS_MSAA_2X2, {{0x3F400000u, 0}, {0x3F400000u, 0}}}, /* Z32F, 4 samples a pixel */
+    };
+    const u32 w = 80, h = 40, rect[4] = {8, 4, 51, 23}; /* x0, y0, x1, y1 */
+    const float quarter = 0.25f, three = 0.75f;
+    if (!own_traps() || vk_uma()) {
+        puts("depth target watch: needs traps and no unified memory, skipped");
+        return 0;
+    }
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    u32* r = ch->r3d;
+    CHECK(mem_map(ZWATCH_A, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(ZWATCH_GA, ZWATCH_A, 0x200000);
+    memset(GP(ZWATCH_A), 0x11, 0x200000);
+    for (u32 k = 0; k < sizeof c / sizeof *c; k++) {
+        const u64 t = (u64)k * 0x20000, ref = 0x100000, src = 0x180000;
+        const u32 sw = w, row = sw * c[k].bpp, gobs = (row + 63) / 64; /* a 4x one's registers count samples */
+        const u64 span = (u64)gobs * 2 * 4 * 512;                      /* 2 rows of blocks 4 GOBs high */
+        memset(GP(ZWATCH_A + ref), 0x11, 0x100000);
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        vk_rt_publish_drawn(); /* the targets the checks before drew */
+        vk_unlock();
+        VkRtWatchStats w0 = g_vk_rt_watch;
+        u64 lands = own_landings();
+        r[0x487] = 0; /* no color target */
+        r[0x54E] = 1;
+        r[0x3F8] = (u32)((ZWATCH_GA + t) >> 32);
+        r[0x3F9] = (u32)(ZWATCH_GA + t);
+        r[0x3FA] = c[k].zeta;
+        r[0x3FB] = 2u << 4; /* block linear, blocks 4 GOBs high */
+        r[0x3FC] = 0;
+        r[0x48A] = sw;
+        r[0x48B] = h;
+        r[0x48C] = 1;
+        r[0x574] = c[k].msaa;
+        r[0x368] = 0x5A;
+        r[0x43E] &= ~0x100u;
+        r[0x380] = 0;
+        memcpy(&r[0x364], c[k].msaa ? &three : &quarter, 4);
+        engine_clear(ch, 3);
+        if (!c[k].msaa) { /* the scissor's rectangle to 0.75 */
+            r[0x43E] |= 0x100;
+            r[0x380] = 1;
+            r[0x381] = rect[0] | rect[2] << 16;
+            r[0x382] = rect[1] | rect[3] << 16;
+            memcpy(&r[0x364], &three, 4);
+            engine_clear(ch, 3);
+            r[0x43E] &= ~0x100u;
+            r[0x380] = 0;
+        }
+        vk_lock();
+        vk_render_end();
+        vk_rt_publish_drawn();
+        vk_unlock();
+        r[0x574] = 0;
+        r[0x54E] = 0;
+        if (g_vk_rt_watch.arms != w0.arms + 1 || !own_watched(ZWATCH_A + t, span)) {
+            fprintf(stderr, "depth target watch, zeta %#x%s: %llu arms at the release, not 1, and %s\n", c[k].zeta,
+                    c[k].msaa ? " 4x" : "", (unsigned long long)(g_vk_rt_watch.arms - w0.arms),
+                    own_watched(ZWATCH_A + t, span) ? "watched" : "not watched");
+            return 1;
+        }
+        /* the reference: the picture in pitch rows, laid out block linear over a copy of the same memory */
+        for (u32 y = 0; y < h; y++)
+            for (u32 x = 0; x < sw; x++) {
+                const int in = !c[k].msaa && x >= rect[0] && x < rect[2] && y >= rect[1] && y < rect[3];
+                u8* p = GP(ZWATCH_A + src) + (u64)y * row + (u64)x * c[k].bpp;
+                memcpy(p, &c[k].word[in][0], c[k].bpp < 4 ? c[k].bpp : 4);
+                if (c[k].bpp == 8) memcpy(p + 4, &c[k].word[in][1], 4);
+            }
+        GpuDmaOp o;
+        memset(&o, 0, sizeof o);
+        o.multi = 1;
+        o.width = o.line_in = o.line_out = row;
+        o.lines = h;
+        o.src = pitch_side(ZWATCH_GA + src, row);
+        o.dst = bl_side(ZWATCH_GA + ref, row, h, 2, 0, 0);
+        dma_copy_ref(&o);
+        u8* got = malloc(span);
+        CHECK(got);
+        memcpy(got, GP(ZWATCH_A + t), span); /* faults: published and landed */
+        u64 bad = span;
+        for (u64 i = 0; i < span && bad == span; i++)
+            if (got[i] != GP(ZWATCH_A + ref)[i]) bad = i;
+        if (bad < span || g_vk_rt_watch.hits < w0.hits + 1 || own_landings() == lands) {
+            fprintf(stderr,
+                    "depth target watch, zeta %#x%s: %llu hits, %llu landings; byte %llu of %llu is %02x, the "
+                    "reference's %02x\n",
+                    c[k].zeta, c[k].msaa ? " 4x" : "", (unsigned long long)(g_vk_rt_watch.hits - w0.hits),
+                    (unsigned long long)(own_landings() - lands), (unsigned long long)(bad < span ? bad : 0),
+                    (unsigned long long)span, got[bad < span ? bad : 0], GP(ZWATCH_A + ref)[bad < span ? bad : 0]);
+            free(got);
+            return 1;
+        }
+        free(got);
+    }
+    vk_lock();
+    vk_rt_before_write(ZWATCH_GA, 0x200000); /* the targets go back to memory before it does */
+    vk_unlock();
+    CHECK(mem_unmap(ZWATCH_A, 0x200000) == 0);
+    free(ch);
+    puts("Depth targets the CPU reads after a clear land in their formats' layouts");
+    return 0;
+}
 static int check_rt_overlap(void) {
     GpuChannel* ch = calloc(1, sizeof *ch);
     GpuDmaOp o;
@@ -6297,6 +6420,14 @@ static int run_headless(int argc, char** argv) {
                g_vk_validation_messages);
         return 0;
     }
+    if (getenv("SNX_TEST_RT_WATCH_ONLY")) { /* the watched targets' checks alone, for their mutants */
+        CHECK(!check_rt_watch());
+        CHECK(!check_zt_watch());
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan watched targets only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_MSAA_ONLY")) { /* the multisample checks alone */
         CHECK(!check_multisample_shader_gate());
         CHECK(!check_msaa());
@@ -6614,6 +6745,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_page_changes());
     CHECK(!check_rt_overlap());
     CHECK(!check_rt_watch());
+    CHECK(!check_zt_watch());
     CHECK(!check_uma());
     CHECK(!check_uma_way());
     CHECK(!check_uma_migrate());

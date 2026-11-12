@@ -1889,7 +1889,10 @@ static u64 rt_mem_hash(const Surf* s) {
    one game draws its save's thumbnail into a 320x180 target, and reads its texels from memory with no call to the GPU.
    A release watches their bytes (own_watch): the pages are trapped with no copy of the GPU's, and the CPU's first
    access publishes the targets pending there (vk_rt_watch_hit) and lands them. A target that the CPU read lately
-   (vk_own_cpu_read), or that an owner already covers, is published at the release, as a pitch-linear one */
+   (vk_own_cpu_read), or that an owner already covers, is published at the release, as a pitch-linear one.
+
+   Depth targets go in the same lists, in their formats' layouts (flush_bytes): a program that clears one with the 3D
+   engine, waits for the GPU and reads it from memory read the bytes from before the clear */
 typedef struct {
     Surf** s;
     u32 n, cap;
@@ -1916,7 +1919,6 @@ static void drawn_pull(DrawnList* l, const Surf* s, int* in) {
     *in = 0;
 }
 static void linear_note(Surf* s) {
-    if (s->f.depth) return;
     if (s->bl)
         drawn_push(&g_bl, s, &s->in_bl);
     else
