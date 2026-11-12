@@ -12749,7 +12749,7 @@ static int left_pages_of(const App* app);
 static int left_group_first(const App* app, int page);
 static const char* left_nth(const App* app, int i);
 static void left_folder(const char* old, char* out, size_t size);
-static void left_page_key(const char* old, char* out, size_t size);
+static void left_page_key(const char* old, const char* now, char* out, size_t size);
 static void left_plans(App* app);
 static int move_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply, bool pages);
 static int delete_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply, bool pages);
@@ -13765,7 +13765,7 @@ static void setup_saves_box(App* app, GuiRect r, int page, int first) {
         at = i < app->lefts ? left_nth(app, i) : NULL;
         if (at) {
             left_paths(at, old, now, sizeof old);
-            left_page_key(old, key, sizeof key);
+            left_page_key(old, now, key, sizeof key);
             left_folder(old, folder, sizeof folder);
         }
         if (last[0] && (!at || strcmp(key, LEFT_SAVES) || strcmp(folder, last))) { /* the game before, whole */
@@ -13775,10 +13775,18 @@ static void setup_saves_box(App* app, GuiRect r, int page, int first) {
             ++games;
         }
         if (!at || strcmp(key, LEFT_SAVES)) break;
-        if (strcmp(folder, last)) { /* a game: <games>/<id>/<id>_data/save */
+        if (strcmp(folder, last)) { /* a game: <games>/<id>/<id>_data/save; or a save of the data folder's save/, by
+                                       its path there (device/<id>) */
             char *data = snx_dirname(folder), *dir = data ? snx_dirname(data) : NULL;
             const char* name = dir ? dir + strlen(dir) : NULL;
             while (name && name > dir && name[-1] != '/' && name[-1] != '\\') --name;
+            if (!strcmp(folder, old)) { /* left_is_save's, not in a game's <id>_data/save: what follows its save/ */
+                const char* in = old + strlen(old);
+                while (in - old >= 6 && !((in[-6] == '/' || in[-6] == '\\') && !strncmp(in - 5, "save", 4) &&
+                                          (in[-1] == '/' || in[-1] == '\\')))
+                    --in;
+                name = in - old >= 6 ? in : old;
+            }
             snprintf(game, sizeof game, "%s", name ? name : folder);
             snprintf(last, sizeof last, "%s", folder);
             free(dir);
@@ -13853,7 +13861,7 @@ static void setup_left_box(App* app, GuiRect r) {
     first = left_group_first(app, page);
     if (first < 0) return; /* none left: the setup goes on at the next look */
     left_paths(left_nth(app, first), old, now, sizeof old);
-    left_page_key(old, folder, sizeof folder);
+    left_page_key(old, now, folder, sizeof folder);
     if (!strcmp(folder, LEFT_SAVES)) {
         setup_saves_box(app, r, page, first);
         return;
@@ -13872,7 +13880,7 @@ static void setup_left_box(App* app, GuiRect r) {
         }
         for (i = first; (at = left_nth(app, i)) != NULL && i < app->lefts; ++i) {
             left_paths(at, old, now, sizeof old);
-            left_page_key(old, here, sizeof here);
+            left_page_key(old, now, here, sizeof here);
             if (strcmp(here, folder)) break;
             if (!pass && strcmp(old, last)) {
                 if (space && i < counted && !strcmp(space->dirs[i], old))
@@ -14977,10 +14985,11 @@ static void left_folder(const char* old, char* out, size_t size) {
     else
         snprintf(out, size, "%s", old);
 }
-/* the page an old path is on: one for every game's own saves (LEFT_SAVES), else its folder's (left_folder) */
-static void left_page_key(const char* old, char* out, size_t size) {
+/* the page an old path going to now is on: one for every game's own saves and every save the versions before kept
+   (left_is_save), LEFT_SAVES, else its folder's (left_folder) */
+static void left_page_key(const char* old, const char* now, char* out, size_t size) {
     left_folder(old, out, size);
-    if (strcmp(out, old)) snprintf(out, size, "%s", LEFT_SAVES);
+    if (strcmp(out, old) || left_is_save(old, now)) snprintf(out, size, "%s", LEFT_SAVES);
 }
 /* the old files' pages: app->left's lines a folder each, the games' saves one (left_page_key), as left_behind
    counted them */
@@ -14991,7 +15000,7 @@ static int left_pages_of(const App* app) {
     int i, n = 0;
     for (i = 0; (at = left_nth(app, i)) != NULL && i < app->lefts; ++i) {
         left_paths(at, old, now, sizeof old);
-        left_page_key(old, folder, sizeof folder);
+        left_page_key(old, now, folder, sizeof folder);
         if (i && !strcmp(folder, last)) continue;
         snprintf(last, sizeof last, "%s", folder);
         ++n;
@@ -15005,7 +15014,7 @@ static int left_group_first(const App* app, int page) {
     int i, n = 0;
     for (i = 0; (at = left_nth(app, i)) != NULL && i < app->lefts; ++i) {
         left_paths(at, old, now, sizeof old);
-        left_page_key(old, folder, sizeof folder);
+        left_page_key(old, now, folder, sizeof folder);
         if (i && !strcmp(folder, last)) continue;
         snprintf(last, sizeof last, "%s", folder);
         if (n++ == page) return i;
@@ -15089,7 +15098,7 @@ static int move_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply,
         char* data;
         left_paths(at, old, now, sizeof old);
         if (pages)
-            left_page_key(old, folder, sizeof folder);
+            left_page_key(old, now, folder, sizeof folder);
         else
             left_folder(old, folder, sizeof folder);
         snx_home_short(now, shown, sizeof shown);
@@ -15156,7 +15165,7 @@ static int delete_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool appl
         bool ok;
         left_paths(at, old, now, sizeof old);
         if (pages)
-            left_page_key(old, folder, sizeof folder);
+            left_page_key(old, now, folder, sizeof folder);
         else
             left_folder(old, folder, sizeof folder);
         what[0] = why[0] = 0;
@@ -15164,14 +15173,17 @@ static int delete_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool appl
             char this_folder[4400];
             left_paths(at, old, now, sizeof old);
             if (pages)
-                left_page_key(old, this_folder, sizeof this_folder);
+                left_page_key(old, now, this_folder, sizeof this_folder);
             else
                 left_folder(old, this_folder, sizeof this_folder);
             if (strcmp(this_folder, folder)) break;
             if (!strcmp(old, last)) continue;
             snprintf(last, sizeof last, "%s", old);
             gui_cleaned_free(&one);
-            gone += gui_delete_old(&one, old, apply);
+            if (left_is_save(old, now)) /* a save the versions before kept, wherever it is */
+                gui_delete_keep_save(&one, old);
+            else
+                gone += gui_delete_old(&one, old, apply);
             if (!one.text) continue; /* not there now */
             gui_cleaned_entry(one.text, &ok, file, said, sizeof file);
             gui_cleaned_add(done, ok, file, said);

@@ -369,6 +369,9 @@ GuiKeep gui_old_keep(const char* path, GuiKept* out) {
     if (out) *out = kept;
     return kept.keep;
 }
+void gui_delete_keep_save(GuiCleaned* done, const char* old) {
+    gui_cleaned_add(done, false, old, snx_tr("Stays: a save, which Delete All never deletes: Move All moves it"));
+}
 int gui_delete_old(GuiCleaned* done, const char* old, bool apply) {
     char what[4800], why[256];
     GuiKept kept;
@@ -376,10 +379,7 @@ int gui_delete_old(GuiCleaned* done, const char* old, bool apply) {
     bool beside;
     switch (gui_old_keep(old, &kept)) { /* a game laid out beside others: its program may be gone, its saves not */
         case GUI_KEEP_NONE: break;
-        case GUI_KEEP_SAVE:
-            gui_cleaned_add(done, false, old,
-                            snx_tr("Stays: a save, which Delete All never deletes: Move All moves it"));
-            return 0;
+        case GUI_KEEP_SAVE: gui_delete_keep_save(done, old); return 0;
         case GUI_KEEP_SAVES:
             snprintf(what, sizeof what,
                      snx_tr("Stays: it holds saves (%s), which Delete All never deletes: Move All moves it"),
