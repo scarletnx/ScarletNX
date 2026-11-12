@@ -1708,7 +1708,10 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
         *off = match->off + (gva - match->addr);
         /* read (or written) where its owner is, maybe in a later submission than its own, still running when the
            result is done: the owner's next draw in place orders itself after it (keep_new) */
-        if (match->keep) match->keep->read = ++g_buffer.order.owner_reads;
+        if (match->keep) {
+            match->keep->read = ++g_buffer.order.owner_reads;
+            match->keep->used = g_vk_present;
+        }
         if (copy_stats_on()) g_wb_reuses++;
         return 1;
     }
@@ -3434,6 +3437,7 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, 
         sb = ((const VkOwnRes*)o[0].res)->buf;
         so = o[0].res_off;
         ((VkOwnRes*)o[0].res)->read = ++g_buffer.order.owner_reads;
+        ((VkOwnRes*)o[0].res)->used = g_vk_present;
         if (copy_stats_on()) g_owned_bound += len;
     } else {
         /* in device memory, where the GPU's bytes stay on the GPU and the draws read all of it: in staging, the GPU

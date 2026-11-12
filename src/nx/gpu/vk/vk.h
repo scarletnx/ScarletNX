@@ -1217,6 +1217,8 @@ typedef struct VkOwnRes {
     u64 read;    /* buffer.c's count of reads where it is when a draw or dispatch last read it there (buf_get_owned) */
     u32 refs;    /* the creator's, and one an owned range */
     u32 born;    /* the present it was made at, for the statistics of how long results are kept */
+    u32 used;    /* the present it was last written or read at: one left alone for long lands when memory is short
+                    (vk_own_trim) */
     u8 borrowed; /* buf is another's (the GPU mirror's): letting go of the last reference frees only this record */
     u8 by;       /* VK_OWN_BY_*: what made it, for the statistics */
 } VkOwnRes;
@@ -1237,6 +1239,9 @@ int vk_rec_unsafe(void);
 void vk_mirror_landed(u64 cpu, u64 size);
 int vk_own_init(void);
 void vk_own_log(void); /* statistics: the kept results in use, and the freed buffers in the pool */
+/* once a present, with nothing of a draw being set up: the freed buffers no result took for a while go, and when
+   device memory is short the results left alone longest land in guest memory, a few a present (owned.c) */
+void vk_own_trim(void);
 /* guest memory [cpu, cpu + size) watched for the CPU (own_watch), as vk_own_publish traps an owner's: 0, or -1 where it
    can't be (no traps, memory an import holds, memory not in the pool). vk_lock held */
 int vk_own_watch(u64 cpu, u64 size);
