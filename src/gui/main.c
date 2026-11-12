@@ -12389,6 +12389,7 @@ static void form_pointer(App* app, float x, float y) {
 #define SAY_SETUP_ON_FIRST   SNX_TR_KEYS("Up/Down: row. Enter: next. ESC: exit.")
 #endif
 #define GUI_SETUP_CHOICES 4 /* a page's, at most: Folders' and Keys' three, and Skip on the first page */
+#define GUI_SETUP_ROWS         (GUI_SETUP_CHOICES + 1) /* and the row between its two groups (setup_order) */
 /* a page's boxes above YoRHa's choices at least, else beside them: a notice's, its head and four lines, and a row */
 #define GUI_SETUP_CONTENT_ROWS 6
 #define GUI_SETUP_CONTENT_COLS 24 /* and the columns beside them it takes */
@@ -12495,6 +12496,51 @@ static void left_choices(App* app, bool back) {
     int n = left_groups(app), backs = app->setup_top > 0 && !app->left_did;
     app->setup_choice.count = app->left_did ? 1 : backs + (app->setup_top >= n - 1 ? 3 : 1);
     app->setup_choice.focus = back && backs ? 0 : app->setup_choice.count - 1;
+}
+/* what choice i of the notices' and the old files' pages does (Skip's place is setup_choice.count), as setup_take reads
+   its place; another page's choices are SETUP_DOES_OTHER. Those from SETUP_DOES_CLEAN on act on the player's files */
+typedef enum {
+    SETUP_DOES_OTHER,
+    SETUP_DOES_BACK,
+    SETUP_DOES_NEXT,
+    SETUP_DOES_OK,
+    SETUP_DOES_NOT_NOW,
+    SETUP_DOES_SKIP,
+    SETUP_DOES_CLEAN,
+    SETUP_DOES_MOVE,
+    SETUP_DOES_DELETE
+} SetupDoes;
+static SetupDoes setup_does(const App* app, int i) {
+    int page = setup_page_of(app), list[SNX_NOTICES], backs = app->setup_top > 0;
+    if (page != SETUP_NOTICE && page != SETUP_LEFT) return SETUP_DOES_OTHER;
+    if (setup_skips(app) && i == app->setup_choice.count) return SETUP_DOES_SKIP;
+    if (page == SETUP_LEFT && app->left_did) return SETUP_DOES_OK;
+    if (i < backs) return SETUP_DOES_BACK;
+    if (notice_cleans(app)) return i == backs ? SETUP_DOES_CLEAN : SETUP_DOES_NOT_NOW;
+    if (page == SETUP_LEFT && app->setup_top >= left_groups(app) - 1)
+        return i == backs ? SETUP_DOES_MOVE : i == backs + 1 ? SETUP_DOES_DELETE : SETUP_DOES_NOT_NOW;
+    return app->setup_top < (page == SETUP_LEFT ? left_groups(app) : setup_notices(app, list)) - 1 ? SETUP_DOES_NEXT
+                                                                                                   : SETUP_DOES_OK;
+}
+/* the page's choices top to bottom, each its place among them (Skip's setup_choice.count): those that keep the files as
+   they are, then those that act on them (setup_does), the empty row -1 between the two groups; a page whose choices
+   all keep them, or all act, in their order. How many rows */
+static int setup_order(const App* app, int* rows) {
+    int i, n = 0, all = app->setup_choice.count + setup_skips(app), acts = 0;
+    for (i = 0; i < all; ++i)
+        if (setup_does(app, i) < SETUP_DOES_CLEAN) rows[n++] = i;
+    for (i = 0; i < all; ++i) acts += setup_does(app, i) >= SETUP_DOES_CLEAN;
+    if (acts && n) rows[n++] = -1;
+    for (i = 0; i < all; ++i)
+        if (setup_does(app, i) >= SETUP_DOES_CLEAN) rows[n++] = i;
+    return n;
+}
+/* the row choice shows on (setup_order), -1 for none */
+static int setup_order_row(const App* app, int choice) {
+    int rows[GUI_SETUP_ROWS], i, n = setup_order(app, rows);
+    for (i = 0; i < n; ++i)
+        if (rows[i] == choice) return i;
+    return -1;
 }
 /* the old files' page to: a step on or back, the first or the last; none past them, nor once one was done */
 static void left_turn(App* app, int to) {
@@ -12969,8 +13015,17 @@ static void setup_key(App* app, GuiKey key) {
         left_turn(app, app->setup_top + (key == GUI_PAGE_DOWN ? 1 : -1));
         return;
     }
-    did = gui_choice_key(&all, key);
-    app->setup_choice.focus = all.focus;
+    { /* round the choices in the order their rows show them, the row between the groups passed */
+        int rows[GUI_SETUP_ROWS], shown[GUI_SETUP_ROWS], i, n = setup_order(app, rows);
+        all.count = 0;
+        for (i = 0; i < n; ++i)
+            if (rows[i] >= 0) {
+                if (rows[i] == app->setup_choice.focus) all.focus = all.count;
+                shown[all.count++] = rows[i];
+            }
+        did = gui_choice_key(&all, key);
+        app->setup_choice.focus = shown[all.focus];
+    }
     switch (did) {
         case GUI_CHOICE_TAKE: setup_take(app); break;
         case GUI_CHOICE_BACK: setup_back(app); break;
@@ -13033,24 +13088,25 @@ static int setup_labels(const App* app, const char** labels) {
     static const char* const keys[] = {SNX_TR_NOOP("Use These"), SNX_TR_NOOP("Browse..."), SNX_TR_NOOP("Later")};
     static const char* const user[] = {SNX_TR_NOOP("Keep"), SNX_TR_NOOP("Overwrite")};
     static const char* const clean[] = {SNX_TR_NOOP("Clean Now"), SNX_TR_NOOP("Not Now")};
-    static const char* const left[] = {SNX_TR_NOOP("Move All"), SNX_TR_NOOP("Delete All"), SNX_TR_NOOP("Not Now")};
-    int i, page = setup_page_of(app), count = app->setup_choice.count, list[SNX_NOTICES];
-    int backs = app->setup_top > 0 && (page != SETUP_LEFT || !app->left_did);
-    bool last = page == SETUP_LEFT     ? app->setup_top >= left_groups(app) - 1
-                : page == SETUP_NOTICE ? app->setup_top >= setup_notices(app, list) - 1
-                                       : true; /* the nickname's OK */
+    static const char* const left[] = {SNX_TR_NOOP("Move All"), SNX_TR_NOOP("Delete All")};
+    /* the notices' and the old files' by what each does (setup_does), from SETUP_DOES_BACK on */
+    const char* const does[] = {SNX_TR_NOOP("Back"),
+                                SNX_TR_NOOP("Next"),
+                                SNX_TR_NOOP("OK"),
+                                clean[1],
+                                SNX_TR_NOOP("Skip"),
+                                clean[0],
+                                left[0],
+                                left[1]};
+    int i, page = setup_page_of(app), count = app->setup_choice.count;
     for (i = 0; i < count; ++i)
-        labels[i] = page == SNX_SETUP_LANGUAGE                     ? snx_tr("Next")
+        labels[i] = setup_does(app, i)                             ? snx_tr(does[setup_does(app, i) - SETUP_DOES_BACK])
+                    : page == SNX_SETUP_LANGUAGE                   ? snx_tr("Next")
                     : page == SNX_SETUP_INSTALL                    ? snx_tr(install[i])
                     : page == SNX_SETUP_FOLDERS                    ? snx_tr(folders[i])
                     : page == SNX_SETUP_KEYS                       ? snx_tr(keys[i + 3 - count])
                     : page == SNX_SETUP_USER && !app->setup_typing ? snx_tr(user[i])
-                    : page == SETUP_LEFT && app->left_did          ? snx_tr("OK")
-                    : i < backs                                    ? snx_tr("Back")
-                    : page == SETUP_NOTICE && notice_cleans(app)   ? snx_tr(clean[i - backs])
-                    : page == SETUP_LEFT && last                   ? snx_tr(left[i - backs])
-                    : !last                                        ? snx_tr("Next")
-                                                                   : snx_tr("OK");
+                                                                   : snx_tr("OK"); /* the nickname's */
     if (setup_skips(app)) labels[count++] = snx_tr("Skip");
     return count;
 }
@@ -13098,12 +13154,11 @@ static const char* setup_keys_said(const App* app) {
            : app->setup_page                    ? SAY_SETUP
                                                 : SAY_SETUP_FIRST;
 }
-/* the page's choice drawn in focus: the Appearance's choices only while the focus is on them, not on a row; -1 for
-   none */
+/* the row of the page's choice drawn in focus (setup_order): the Appearance's choices only while the focus is on them,
+   not on a row; -1 for none */
 static int setup_focus(const App* app) {
-    if (setup_page_of(app) == SNX_SETUP_LANGUAGE)
-        return app->setup_row == GUI_APPEARANCE_NEXT ? app->setup_choice.focus : -1;
-    return app->setup_choice.focus;
+    if (setup_page_of(app) == SNX_SETUP_LANGUAGE && app->setup_row != GUI_APPEARANCE_NEXT) return -1;
+    return setup_order_row(app, app->setup_choice.focus);
 }
 /* ---- the Appearance page's box: at the top of r, as high as its rows; under its head the rows, ui.txt's scene
    Appearance ---- */
@@ -18290,14 +18345,20 @@ static const char* choice_text(App* app, int of, int i, char* out, size_t size) 
         case GUI_CHOICES_DESTS: return dest_label(app, i, out, size);
         case GUI_CHOICES_PICKS: return pick_label(app, i);
         case GUI_CHOICES_TYPED: return i < 2 ? snx_tr(typed_choices[i]) : NULL;
-        default: return i < setup_labels(app, labels) ? labels[i] : NULL;
+        default: { /* the setup's in its rows' order (setup_order), the row between its two groups "" */
+            int rows[GUI_SETUP_ROWS], n = setup_order(app, rows);
+            setup_labels(app, labels);
+            return i >= n ? NULL : rows[i] < 0 ? "" : labels[rows[i]];
+        }
     }
 }
-/* Choices' row: the choice's text, drawn with the theme's marker */
+/* Choices' row: the choice's text, drawn with the theme's marker; the row between the setup's two groups a label, no
+   box */
 bool ui_choices_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
     (void)width; /* a choice too long for its row is cut, or slides while focused, as the menu's rows (row_text_in) */
     info->label = row < 64 ? choice_text(app, app->choices_of, (int)row, app->row_text, sizeof app->row_text) : NULL;
     if (app->choices_of == GUI_CHOICES_SIZES && !row && size_why(app, NULL, 0)) info->attr |= UI_ATTR_OFF; /* OK */
+    if (app->choices_of == GUI_CHOICES_SETUP && info->label && !info->label[0]) info->attr |= UI_ATTR_LABEL;
     return info->label != NULL;
 }
 /* a choice under the pointer takes the focus, and a click takes it: the question's pressed, UI scale's size or the
@@ -18324,11 +18385,14 @@ void ui_choices_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
         case GUI_CHOICES_TYPED:
             if (hit & UI_HIT_CLICK) typed_choice(app, i);
             break;
-        default:
-            app->setup_choice.focus = i;
+        default: { /* the setup's choice on row i (setup_order); none on the row between its groups */
+            int rows[GUI_SETUP_ROWS];
+            if (i >= setup_order(app, rows) || rows[i] < 0) break;
+            app->setup_choice.focus = rows[i];
             app->setup_row = GUI_APPEARANCE_NEXT;
             if (hit & UI_HIT_CLICK) setup_take(app);
             break;
+        }
     }
 }
 /* whether pixel x, y is on the head's user */
