@@ -82,6 +82,8 @@ void syncpt_events(void);
 u32 syncpt_promise(u32 id, u32 n);
 /* 1 once id reaches thresh (across the 32-bit wrap), 0 when the time runs out. 0 looks once, negative waits for good */
 int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns);
+/* the syncpoint waits that blocked, and those whose time ran out first (syncpt_wait), both since the start */
+void syncpt_wait_stats(u64* waits, u64* timeouts);
 /* gsv.c: the syncpoint supervisor's armed waits, signaled when a syncpoint moves (called from syncpt_add) */
 void gsv_syncpt_changed(void);
 /* the game signaled event: whether it was the syncpoint cache's request event, answered by now */
@@ -220,6 +222,8 @@ typedef struct {
     u8 syncpt_used[SYNCPT_N];
     u8 syncpt_gpu[SYNCPT_N]; /* a GPU channel's: submissions promise its increments (syncpt_max), the GPU thread makes
                                 them (sync_lk) */
+    /* the waits that blocked (syncpt_wait), and those whose time ran out first, both atomic */
+    u64 syncpt_waits, syncpt_timeouts;
     /* each ctrl fd's event slots, a table of ctrl_evt taken on first use and given back with the fd, under
        nvev_lk: 1 + its index, 0 for none. As on the console, the slots are the fd's (Ryujinx's NvHostCtrlDeviceFile
        keeps them per open). A game's GPU fence waits (one fd) and its movie player (another) both use slot 0,
