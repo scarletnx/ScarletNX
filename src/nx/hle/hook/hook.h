@@ -57,7 +57,8 @@ void hook_range_text(char* out, size_t n, int key, u32 lo, u32 hi);
 void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3);
 /* a readable handle of a new kernel event attached to the game's SystemEventType at event through its SDK's own
    nn::os::AttachReadableHandleToSystemEvent (auto close, auto clear), as an SDK object attaches its service's: the
-   event, NULL when the SDK exports no such function or the handle table is full (codec.c) */
+   event, with a reference of the caller's beside the handle's, to drop (kobj_unref) when the caller's object goes;
+   NULL when the SDK exports no such function or the handle table is full (codec.c) */
 struct KEvent* hook_attach_event(CPU* c, u64 event, const char* name);
 /* the host address of guest address a, in integers as GP (memory/mem.h) makes it: under NCE c->mem is 0 */
 static inline u8* hook_host(const CPU* c, u64 a) { return (u8*)(uintptr_t)((uintptr_t)c->mem + a); }

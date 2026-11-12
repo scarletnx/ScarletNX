@@ -1144,6 +1144,14 @@ snx_test_target(snx-test-diag-abort 11) # log.h has _Thread_local
 target_include_directories(snx-test-diag-abort PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-diag-abort SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
 add_test(NAME diag_abort COMMAND snx-test-diag-abort)
+# the event a hooked SDK object attaches to the game's SystemEvent (src/nx/hle/hook/codec.c's hook_attach_event): its
+# references, with the kernel's objects stubbed to their counts
+add_executable(snx-test-hook-event-reference hook_event_reference.c)
+snx_test_target(snx-test-hook-event-reference 11)
+target_include_directories(snx-test-hook-event-reference PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_service_swipc(snx-test-hook-event-reference)
+snx_hookgen(snx-test-hook-event-reference SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+add_test(NAME hook_event_reference COMMAND snx-test-hook-event-reference)
 # the hooks' NVN key (tests/hook/nvn_versions.hook): the API version read from a driver's nvnDeviceGetInteger
 # (src/nx/gpu/nvn/nvn_driver.c), the entry hook_select picks for it, and the versions the log calls described
 add_executable(snx-test-nvn-versions nvn_versions.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
