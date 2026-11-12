@@ -13,9 +13,10 @@
    or the heavy variants; no times, which differ from one machine to the next. Never edenprobe's quick either, a
    script's run, which opens no screen: the window stays black to the end. Without it the player sees edenprobe's own
    screens, its start screen (these families chosen, begun after ten seconds), the running screen, then the results,
-   left by themselves after ten seconds with nothing pressed */
-#define GUI_PROBE_QUICK      "notime cpu graphics"
-#define GUI_PROBE_FULL       "notime cpu graphics fs video audio kernel display"
+   left by themselves after ten seconds with nothing pressed. hooks: the runtime serves none of the services of nn::fs,
+   time, pl, ngc and nsd, which the probe then asks through the SDK's functions (from 0.13.0) */
+#define GUI_PROBE_QUICK      "notime cpu graphics hooks"
+#define GUI_PROBE_FULL       "notime cpu graphics fs video audio kernel display hooks"
 /* launches after the first one when one ends before the summary, as edenprobe's own runner relaunches */
 #define GUI_PROBE_RELAUNCHES 16
 #define GUI_PROBE_SUITES     128 /* edenprobe 0.9.0 has 90 */

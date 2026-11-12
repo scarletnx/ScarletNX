@@ -209,7 +209,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   from its zip. A
   game whose package does not load stops, saying why, and so does one whose package lists no Vulkan device, a driver
   for another GPU. Under them, **edenprobe Mode** (Quick, the default:
-  `notime cpu graphics`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays
+  `notime cpu graphics hooks`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays
   [edenprobe](../dev/edenprobe.md)'s probes as a game with the GPU driver picked here, from `probe/edenprobe.nro` of the
   Logs folder, in a data folder of its own there (`probe/.scarletnx`: none of your settings, saves or users) with the
   default settings, and the build as edenprobe's machine (`machine=scarletnx@<commit>`), whose ban list then skips the

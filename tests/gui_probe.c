@@ -68,6 +68,9 @@ int main(void) {
            has_word("x noprogress", "noprogress") && !has_word("progress", "noprogress"));
     assert(!has_word(GUI_PROBE_QUICK, "quick") && !has_word(GUI_PROBE_FULL, "quick"));
     assert(!has_word(GUI_PROBE_QUICK, "noprogress") && !has_word(GUI_PROBE_FULL, "noprogress"));
+    /* both modes ask through the SDK's functions: the runtime serves neither fsp-srv nor time:u, and a probe that asks
+       by IPC stops in sm at its start */
+    assert(has_word(GUI_PROBE_QUICK, "hooks") && has_word(GUI_PROBE_FULL, "hooks"));
 
     /* the words: none without the NRO, said with its path; quick's or full's alone for a probe from before machine=;
        with machine=scarletnx@<the build's commit> for one that knows it, the commit left out when it is unknown or no
