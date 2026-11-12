@@ -8,9 +8,11 @@
    A block is a power of two of bytes, 64 MiB at most, and its free space is kept in 1 KiB units as runs that join
    when they touch (space.h): a request costs its own size in units, and takes the shortest run that holds it.
    Buffers and images share the blocks where the device's granularity between the two is a unit or less. A request
-   of more than a quarter of a block, and one whose resource the driver wants alone, gets device memory of its own,
-   which goes back to the driver when the request does. A block with nothing in it goes back too, but for one of its
-   kind, which the next request finds without a call to the driver.
+   of more than a quarter of a block takes a free run of a block that has one, and else device memory of its own, as
+   does one whose resource the driver wants alone: that memory goes back to the driver when the request does. A block
+   with nothing in it goes back too, but for one of its kind, which the next request finds without a call to the
+   driver. A thread of the allocator's makes that block before the kind's last empty one is taken, and makes the
+   calls that give memory back: the thread that asks does not wait for the driver.
 
    On a GPU with memory of its own, the GPU's own heap is used up to the driver's budget less a margin, and a request
    for the GPU's own memory never gets system memory in its place: it fails, and its owner makes room or does
