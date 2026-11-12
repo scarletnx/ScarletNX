@@ -22,6 +22,9 @@ int etc2_tries_cpu(const uint32_t texels[16], int punch, uint32_t c);
 /* sixteen values (row by row) as an EAC block of kind 0 (8 bit alpha), 1 (11 bit unsigned) or 2 (signed), as
    stored */
 void eac_cpu(int kind, const int32_t values[16], uint8_t out[8]);
+/* the same blocks of kind BC2, BC3 or BC7 (2, 3 and 9) encoded again as ASTC 4x4 (texconv.comp's ASTC build, run by
+   bcn_astc_cpu.cpp), 16 bytes each */
+void bcn_astc_cpu(int kind, const uint8_t* blocks, uint32_t bw, uint32_t bh, uint32_t slices, uint8_t* out);
 #ifdef __cplusplus
 }
 #endif

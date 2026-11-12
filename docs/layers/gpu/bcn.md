@@ -3,6 +3,7 @@
 ## Index
 
 * [The encoder](#the-encoder)
+* [As ASTC](#as-astc)
 * [What it costs](#what-it-costs)
 * [Tests](#tests)
 
@@ -14,7 +15,7 @@ to eight times the memory.
 | BCn | where the GPU samples ETC2 | bytes a texel | decoded (no ETC2 either) | bytes a texel |
 | --- | --- | --- | --- | --- |
 | BC1 | ETC2 RGB8A1 (punch-through alpha: BC1's transparent black) | 0.5 | RGBA8 | 4 |
-| BC2, BC3, BC7 | ETC2 RGBA8 (an EAC alpha block, then an ETC2 RGB one) | 1 | RGBA8 | 4 |
+| BC2, BC3, BC7 | ASTC 4x4 where the GPU samples ASTC (`bcn_astc`, [below](#as-astc)), else ETC2 RGBA8 (an EAC alpha block, then an ETC2 RGB one) | 1 | RGBA8 | 4 |
 | BC4 | EAC R11, unsigned or signed | 0.5 | R16 | 2 |
 | BC5 | EAC RG11, unsigned or signed | 1 | RG16 | 4 |
 | BC6H | none (ETC2 has no HDR): decoded | 8 | RGBA16F | 8 |
@@ -62,6 +63,42 @@ multipliers around the one that spans the block's values, the base that centres 
 way; an alpha the same throughout is written at once. Integer arithmetic only, so the tests run the same file on the
 CPU (`tests/glsl/glsl.hpp`) and get the GPU's bytes.
 
+## As ASTC
+
+ETC2 RGBA8 holds less than BC7 does (below: 5.5 to 11 dB lost against the picture), and the GPUs that sample ETC2 and
+not BCn sample ASTC too, whose 4x4 blocks are the same bytes a texel. With `bcn_astc=1`, the default, BC2, BC3 and BC7
+are encoded again as ASTC 4x4 there: `texconv.comp` built a third time with `SNX_TC_ASTC`, the BCn decoders followed
+by `gpu/texture/astc_encode.glsl`, a pipeline of its own (`vk/texconv.c`). BC1 keeps ETC2 RGB8A1, half ASTC 4x4's
+bytes, and BC4 and BC5 keep EAC. No texel is written out between the decoder and the encoder: an invocation decodes a
+block and encodes it.
+
+The fitting is the BC7 encoder's (`bc7_encode.glsl` built with `SNX_ASTC_ENC`, [ASTC compute
+uploads](astc.md#encoded-again-as-bc7)): ASTC interpolates as BC7 does, `((64 - w) a + w b + 32) >> 6`, with the same
+weights of 2 and 3 bits, so a subset's line is fitted by the same code, packed bytes and all. What differs is what a
+block's 128 bits buy, which is what the candidates are:
+
+- a block of one colour is a void extent, the colour in 16 bits a channel: exact;
+- one partition with a 4x4 grid of weights: an opaque block as RGB ends with 4 bit weights (ends of 192 values) or 3
+  bit ones (8 bit ends); any other as RGBA ends with 3 bit weights (192 values), 4 bit (48) or 2 bit (8 bit ends);
+- two planes, alpha with weights of its own (2 bit weights each, ends of 48 values), what BC7's modes 4 and 5 hold;
+- two partitions of an opaque block (2 bit weights, ends of 40 values): of 64 of ASTC's partition seeds, those
+  nearest BC7's 64 shapes (30 are the same), the one whose subsets spread least.
+
+How many values an end's channel takes is not in the block: the decoder works it out from the bits the header and the
+weights leave, as the largest encoding that fits. So each layout has exactly one, and the ends are quantized to it
+while they are fitted. The encodings with a trit or a quint come from tables that `tools/astc_tables.py` makes by
+turning `astc_decode.glsl`'s own rules round (the bits of five trits and of three quints, the nearest value an
+encoding holds and its code, the partition seeds), into `astc_encode_tables.glsl`.
+
+On 12 levels of two games' textures, each encoded from its texels (`snx-test-astc-encode-glsl --measure FILE.astc...`),
+it gives 48.91 dB where the BC7 encoder's fast build gives 50.58 (a level from 3.4 dB better to 3.3 worse). On a GeForce GT
+1030 (which samples neither, so only the encoders are timed: `snx-test-astc-vulkan --bench-etc2 FILE.astc`), a
+2048x2048 level of four of those textures as BC7 blocks encoded again took 35, 63, 88 and 92 ms as ASTC 4x4 and 85,
+156, 141 and 174 ms as ETC2 RGBA8.
+
+What it does not have yet: three and four partitions, two partitions with alpha, a plane of its own for a colour
+channel, and the hints a BC7 block's own mode and partition would give it.
+
 ## What it costs
 
 Measured against the BCn blocks decoded, which is what a GPU without BCn showed before, on three 512x512 photographs
@@ -75,8 +112,8 @@ and two 256x256 icons with alpha, made BCn by the test's own encoders and the BC
 | BC4, BC5 | 46.5 to 63.6 | | |
 | BC7 | 35.8 to 48.4 | 50.2 to 53.5 | 5.5 to 11 dB |
 
-BC7 loses most: ETC2 RGBA8 holds less than BC7's partitions and 4 bit weights do. ASTC 4x4, the same bytes a texel
-and sampled by the same GPUs, would hold more with an encoder of its own, which isn't written yet.
+BC7 loses most: ETC2 RGBA8 holds less than BC7's partitions and 4 bit weights do, which is why BC2, BC3 and BC7 go to
+ASTC 4x4 where the GPU samples it ([As ASTC](#as-astc)).
 
 Time, `snx-test-astc-vulkan --bench-etc2` on llvmpipe (a 12-core x86 CPU, other work running), a 2048x2048 level of
 random blocks, the dispatch alone: BC1 7 ms decoded, 105 ms encoded again; BC3 9 and 95; BC4 5 and 35; BC5 10 and 65;
@@ -99,5 +136,10 @@ pipeline is compiled the first time a BCn texture loads (1.3 s on llvmpipe), and
   of 3 rows a submission, and, where the
   device samples ETC2, the device's own decoding of them against `etc2.c`. llvmpipe samples no ETC2, so on the CI the
   second is skipped; a phone runs it.
+- `astc_encode_glsl` (no GPU) runs the ASTC encoder on the CPU and decodes its blocks with the CPU's ASTC decoder
+  (`tests/support/astc.c`): 6000 blocks of noise, edges, gradients, single colours and alpha each decode to the squared
+  error the encoder worked out (so each layout's bits, colour encoding and weights are where the decoder reads them),
+  none is a block the decoder refuses, every layout is written, and a picture holds its PSNR. `astc_vulkan` holds the
+  SPIR-V of the ASTC build to the CPU's run of it on random BC2, BC3 and BC7 blocks, byte for byte.
 - `vk_block_formats` runs `vk_blocks_want`, `vk_tic_format` and `vk_blocks_say` on stand-in devices, the first a
   player's Mali-G52 MC2 from its vkjson (ASTC and ETC2 sampled, BCn not).

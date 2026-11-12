@@ -219,6 +219,22 @@ int main(void) {
             "ETC2 RGB8A1, BC2 as ETC2 RGBA8, BC3 as ETC2 RGBA8, BC4 as EAC R11, BC5 as EAC RG11, BC7 as ETC2 RGBA8; "
             "decoded on the GPU: BC6H to RGBA16F");
 
+    /* bcn_astc=1 on a phone's GPU (ASTC and ETC2 sampled, BCn not): BC2, BC3 and BC7 encoded again as ASTC 4x4, which
+       holds them closer than ETC2 RGBA8, and BC1, BC4 and BC5 as ETC2 and EAC as before */
+    device(1, 1, 0, 1, 1, 1);
+    g_settings.bcn_astc = 1;
+    takes(0x17, 0, 0, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, VKC_BC7, "bcn_astc=1 BC7");
+    takes(0x17, 0, 1, VK_FORMAT_ASTC_4x4_SRGB_BLOCK, VKC_BC7, "bcn_astc=1 BC7 sRGB");
+    takes(0x26, 0, 0, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, VKC_BC3, "bcn_astc=1 BC3");
+    takes(0x24, 0, 0, VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK, VKC_BC1, "bcn_astc=1 BC1");
+    takes(0x40, 0, 0, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, VKC_NONE, "bcn_astc=1 ASTC 4x4, the game's own blocks");
+    g_test.n = 0;
+    vk_blocks_say();
+    line(2, "W vulkan: BCn textures (native_bc=1, the GPU samples no BCn, ETC2 sampled): encoded again on the GPU: BC1 "
+            "as ETC2 RGB8A1, BC2 as ASTC 4x4, BC3 as ASTC 4x4, BC4 as EAC R11, BC5 as EAC RG11, BC7 as ASTC 4x4; "
+            "decoded on the GPU: BC6H to RGBA16F");
+    g_settings.bcn_astc = 0;
+
     /* a GPU of none of them (a software rasterizer without them): everything decoded */
     device(0, 0, 0, 1, 1, 1);
     takes(0x17, 0, 0, VK_FORMAT_R8G8B8A8_UNORM, VKC_BC7, "none BC7");
