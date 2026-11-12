@@ -774,6 +774,10 @@ add_executable(snx-test-spirv-opt spirv_opt.c "${PROJECT_SOURCE_DIR}/src/common/
 snx_test_target(snx-test-spirv-opt 99)
 target_include_directories(snx-test-spirv-opt PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME spirv_opt COMMAND snx-test-spirv-opt)
+add_executable(snx-test-spirv-opt-values spirv_opt_values.c "${PROJECT_SOURCE_DIR}/src/common/utilities/spirv_opt.c")
+snx_test_target(snx-test-spirv-opt-values 99)
+target_include_directories(snx-test-spirv-opt-values PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME spirv_opt_values COMMAND snx-test-spirv-opt-values)
 
 # Validate the direct writer against SPIRV-Tools when the system tools are installed.
 if(SNX_BUILD_NX)
