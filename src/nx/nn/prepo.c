@@ -4,12 +4,13 @@
    spec of the SDK's functions, never the SDK's code.
 
    The game builds a report in its own buffer through the SDK's own code (the event id, then a MessagePack map of its
-   values), which needs no service and runs as it is. Only Save and RequestImmediateTransmission reach the service.
-   Nothing here sends a report anywhere: Save checks the event id, logs it, and starts the buffer again as the SDK does
-   after a send, and RequestImmediateTransmission has nothing to send.
+   values), which needs no service and runs as it is. Save, RequestImmediateTransmission and GetTransmissionStatus
+   reach the service. Nothing here sends a report anywhere: Save checks the event id, logs it, and starts the buffer
+   again as the SDK does after a send, RequestImmediateTransmission has nothing to send, and the status is that of an
+   empty queue.
 
-   SDK 20 limits Save to 900 calls in any 90 minutes: a call past the limit returns success and leaves the report as
-   it is. The SDK also signals its own event for that (GetOverSaveFrequencyLimitEvent), which stays with the SDK's
+   From SDK 10 Save has a limit, 900 calls in any 90 minutes as SDK 20's is: a call past the limit returns success and
+   leaves the report as it is. The SDK also signals its own event for that (GetOverSaveFrequencyLimitEvent), which stays with the SDK's
    code and is not signaled here. Any other nn::prepo function that needs the service opens prepo:u, and sm stops the
    game with the name of this layer */
 #include "nx/nn/prepo.h"
@@ -83,7 +84,7 @@ u32 nnprepo_save_user(CPU* c, const HookLayout_nn_prepo_PlayReport* L, u64 repor
     (void)uid;
     return nnprepo_save(c, L, report);
 }
-/* SDK 7.7.0: no limit */
+/* an SDK before the limit */
 u32 nnprepo_save_unlimited(CPU* c, const HookLayout_nn_prepo_PlayReport* L, u64 report) { return save(c, L, report); }
 u32 nnprepo_save_user_unlimited(CPU* c, const HookLayout_nn_prepo_PlayReport* L, u64 report, u64 uid) {
     (void)uid;
@@ -91,5 +92,10 @@ u32 nnprepo_save_user_unlimited(CPU* c, const HookLayout_nn_prepo_PlayReport* L,
 }
 u32 nnprepo_request_immediate_transmission(CPU* c) {
     (void)c;
+    return 0;
+}
+/* nothing is queued: the console's status with an empty queue, 0, as Eden answers the service's command */
+u32 nnprepo_get_transmission_status(CPU* c, u64 status) {
+    snx_st_le32(hook_host(c, status), 0);
     return 0;
 }
