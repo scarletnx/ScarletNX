@@ -24,10 +24,79 @@ int plat_power_on_charger(void) {
 /* ================================================================ libraries */
 #if defined(__ANDROID__)
 #include <dlfcn.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include "nx/runtime/main.h" /* g_datadir, the folder snx_user_path's cache below comes from */
 /* Shared storage (/sdcard) is mounted noexec: a module there loads from a copy in the app's cache folder, which
    plat_dl_open tries when the system refuses the module's own path */
+/* The cache folder a module is loaded from. Android runs no module of the app's files folder: a module is loaded
+   from the app's own cache folder, and only an activity's process can ask SDL for it (SDL_GetAndroidCachePath reads
+   the activity, which a driver the menu runs as its child has none of, and faults there). HOME is the app's files
+   folder (GameActivity sets it), and the cache is beside it, as getCacheDir gives it */
+static const char* android_cache(char* out, size_t size) {
+    const char* home = getenv("HOME");
+    char* own = NULL;
+    /* HOME is the app's own folder (getCacheDir is its cache/), or the files folder a game activity sets, whose
+       cache is beside it */
+    static const char* const beside[] = {"%s/cache", "%s/../cache"};
+    for (size_t i = 0; home && *home && i < sizeof beside / sizeof *beside; ++i)
+        if ((size_t)snprintf(out, size, beside[i], home) < size && snx_is_dir(out) && !access(out, W_OK)) return out;
+    /* a data folder the app owns: its cache/ is the cache of a run that has no activity */
+    if (g_datadir[0]) own = snx_user_path(g_datadir, SNX_USER_CACHE);
+    if (own) {
+        if (snx_mkdirs(own) || access(own, W_OK) || (size_t)snprintf(out, size, "%s", own) >= size) out[0] = 0;
+        free(own);
+    } else
+        out[0] = 0;
+    return *out ? out : NULL;
+}
+/* A module of the app's own storage, in an anonymous file: an app that maps a module's text segment out of its own
+   storage fails there with EACCES (GrapheneOS's exploit protection, in the app's processes only), and a memfd is no
+   such file. The fd needs no name: /proc/self/fd/<fd> is the module's path. NULL where the kernel keeps no memfd */
+static void* dl_open_from_memory(const char* path) {
+#ifndef __NR_memfd_create
+    (void)path;
+    return NULL;
+#else
+    size_t size = 0;
+    unsigned char* bytes = snx_read_file(path, &size);
+    if (!bytes) {
+        fprintf(stderr, "scarletnx: cannot read %s into memory: %s\n", path, strerror(errno));
+        return NULL;
+    }
+    int fd = (int)syscall(__NR_memfd_create, "scarletnx-module", 1 /* MFD_CLOEXEC */);
+    if (fd < 0) {
+        fprintf(stderr, "scarletnx: no memfd: %s\n", strerror(errno));
+        free(bytes);
+        return NULL;
+    }
+    for (size_t at = 0; at < size;) {
+        ssize_t written = write(fd, bytes + at, size - at);
+        if (written <= 0) {
+            fprintf(stderr, "scarletnx: cannot write the module into memory: %s\n", strerror(errno));
+            close(fd);
+            free(bytes);
+            return NULL;
+        }
+        at += (size_t)written;
+    }
+    free(bytes);
+    char name[64];
+    snprintf(name, sizeof name, "/proc/self/fd/%d", fd);
+    void* library = dlopen(name, RTLD_NOW | RTLD_LOCAL);
+    if (!library) fprintf(stderr, "scarletnx: the module in memory does not load either: %s\n", dlerror());
+    close(fd); /* the mapping keeps the file */
+    return library;
+#endif
+}
 static void* dl_open_from_cache(const char* path) {
-    const char* cache = SDL_GetAndroidCachePath();
+    /* a copy of the module in the cache folder, which is where Android loads one from */
+    char cache_buf[1024];
+    void* in_memory = dl_open_from_memory(path); /* the RAM, before 60 MB of copy on the storage */
+    if (in_memory) return in_memory;
+    const char* cache = android_cache(cache_buf, sizeof cache_buf);
     const char* base = strrchr(path, '/');
     char copy[1400], buf[65536];
     FILE *in, *out;
@@ -47,7 +116,12 @@ static void* dl_open_from_cache(const char* path) {
     ok = ok && !ferror(in);
     fclose(in);
     if (fclose(out) || !ok) return NULL;
-    return dlopen(copy, RTLD_NOW | RTLD_LOCAL);
+    /* Android maps a module only where its file is executable */
+    if (snx_make_executable(copy)) return NULL;
+    void* library = dlopen(copy, RTLD_NOW | RTLD_LOCAL);
+    /* the module's own path's error is the one the caller reports: this one is the copy's, said here */
+    if (!library) fprintf(stderr, "scarletnx: the cache's copy at %s does not load either: %s\n", copy, dlerror());
+    return library;
 }
 __attribute__((constructor)) static void dl_cache_register(void) { plat_dl_fallback(dl_open_from_cache); }
 #endif
