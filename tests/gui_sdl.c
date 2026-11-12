@@ -4531,7 +4531,7 @@ int main(int argc, char** argv) {
         IconJpeg jpeg = {{0}, 0};
         /* the 3DS driver's SMDH icon is RGBA; its name is argv[1] when the menu is the multicall program */
         bool ctr = strstr(argv[0], "scarletnx-3ds") != NULL || (argc == 10 && strstr(argv[1], "scarletnx-3ds"));
-        const char* out = argv[argc == 10 ? 7 : 6], *dump = argv[argc == 10 ? 9 : 8];
+        const char *out = argv[argc == 10 ? 7 : 6], *dump = argv[argc == 10 ? 9 : 8];
         char* to = snx_path_join(out, ctr ? "icon.rgba" : "icon.jpg");
         int rc = 1;
 #ifndef _WIN32
@@ -8549,8 +8549,8 @@ int main(int argc, char** argv) {
                 icons_free(&app);
                 list_games(&app);
                 lead = (size_t)games_lead(&app);
-                for (k = 0; k < app.games.count && !(app.games.paths[k] && snx_same_file(app.games.paths[k], ctr)); ++k)
-                    {}
+                for (k = 0; k < app.games.count && !(app.games.paths[k] && snx_same_file(app.games.paths[k], ctr));
+                     ++k) {}
                 assert(k < app.games.count && k < app.browser.page_size);
                 assert(ui_games_rows_get_row_info(&app, lead + k, 300, &info) && info.label &&
                        strstr(info.label, "CTR"));

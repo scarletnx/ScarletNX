@@ -186,7 +186,7 @@ static void game_metadata(const char* directory, const SnxCtrSource* game, char*
        model= and system= alone */
     ini = snx_game_ini(directory, snx_path_leaf(directory));
     if (!title[0] && ini) { /* no SMDH: the dump's own name says more than the title ID the folder is named by */
-        char* source = snx_ini_value(ini, "source"), *leaf = source ? snx_dump_name(source) : NULL;
+        char *source = snx_ini_value(ini, "source"), *leaf = source ? snx_dump_name(source) : NULL;
         if (leaf) snprintf(title, title_size, "%s", leaf);
         free(leaf);
         free(source);

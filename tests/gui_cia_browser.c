@@ -705,8 +705,8 @@ int main(void) {
        ID the folder is named by */
     {
         char *d = snx_temp_dir(NULL), *folder = d ? snx_path_join(d, "delta") : NULL;
-        char *program = folder ? snx_path_join(folder, "delta") : NULL;
-        char *ini = folder ? snx_path_join(folder, "delta.ini") : NULL;
+        char* program = folder ? snx_path_join(folder, "delta") : NULL;
+        char* ini = folder ? snx_path_join(folder, "delta.ini") : NULL;
         char* shown;
         assert(d && folder && program && ini && !snx_mkdirs(folder));
         assert(!snx_write_file(program, "#!/bin/sh\n", 10));
