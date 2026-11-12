@@ -2480,6 +2480,9 @@ static const char* ask_question(App* app) {
 /* app->left's lines, Share Log's: English whatever the menu shows */
 #define SAY_LEFT_BY    " was left by an older version: this one keeps it in "
 #define SAY_LEFT_TITLE SNX_TR_NOOP("Left by older versions")
+/* the old files' page of every game's own saves: its key among the folders' (no path is it), and its name */
+#define LEFT_SAVES     "\x01saves"
+#define SAY_LEFT_SAVES SNX_TR_NOOP("The games' own saves")
 /* how the menu's own files an older Android version left go (left_clear): out of the player's reach, and the app in
    testing, its whole storage is cleared */
 #define SAY_LEFT_CLEAR                                                                                                 \
@@ -12458,9 +12461,10 @@ static int left_pages_of(const App* app);
 static int left_group_first(const App* app, int page);
 static const char* left_nth(const App* app, int i);
 static void left_folder(const char* old, char* out, size_t size);
+static void left_page_key(const char* old, char* out, size_t size);
 static void left_plans(App* app);
-static int move_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply);
-static int delete_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply);
+static int move_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply, bool pages);
+static int delete_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply, bool pages);
 static void refresh(App* app);
 /* the last notice, while Clean Old Settings has something to take and its Clean Now was not taken: it asks */
 static bool notice_cleans(const App* app) {
@@ -12533,7 +12537,7 @@ static void left_done(App* app, int did) {
 static void left_move(App* app) {
     gui_cleaned_free(&app->cleaned);
     gui_cleaned_free(&app->moved);
-    move_old(app, &app->cleaned, &app->moved, true);
+    move_old(app, &app->cleaned, &app->moved, true, false); /* what it did, a folder a line: a game's saves each */
     left_done(app, 1);
 }
 /* Delete All asked first, Delete pressed twice (GUI_ASK_DELETE_OLD): how many paths go and how many stay, a save and
@@ -12541,7 +12545,7 @@ static void left_move(App* app) {
 static void setup_fail(App* app, const char* text);
 static void left_delete_ask(App* app) {
     GuiCleaned files = {0};
-    int deleted = delete_old(app, &files, NULL, false), paths = files.count;
+    int deleted = delete_old(app, &files, NULL, false, false), paths = files.count;
     gui_cleaned_free(&files);
     if (!deleted) {
         setup_fail(app, snx_tr("Delete All deletes none of these: a save and the console's keys are only moved"));
@@ -12557,7 +12561,7 @@ static void left_delete_ask(App* app) {
 static void left_delete(App* app) {
     gui_cleaned_free(&app->cleaned);
     gui_cleaned_free(&app->moved);
-    delete_old(app, &app->cleaned, &app->moved, true);
+    delete_old(app, &app->cleaned, &app->moved, true, false);
     left_done(app, 2);
 }
 /* the page shown from its start: its choices, the one in focus the one in use */
@@ -13197,8 +13201,10 @@ static void setup_boxes(App* app, GuiSetupBoxes* b) {
 #define GUI_SETUP_ROWS_MS 600 /* a box's rows too many for it roll a row this often, resting at each end */
 /* lines in text from its top, each wrapped from a row of its own (at its slashes, as paths), all when they fit; else
    they roll up a row every GUI_SETUP_ROWS_MS to the last and back, an arrow at text's right while some are above or
-   under them and a scroll bar between the arrows, so none is cut. The rows they take */
-static int setup_rows(App* app, GuiRect text, const char* const* lines, int n, SDL_Color color) {
+   under them and a scroll bar between the arrows, so none is cut; each in its colour of colors (NULL: color). The rows
+   they take */
+static int setup_rows(App* app, GuiRect text, const char* const* lines, int n, SDL_Color color,
+                      const SDL_Color* colors) {
     int cw = cell_w(app), ch = cell_h(app), room = text.h / ch, total = 0, top = 0, rows = 0, i, s = app->scale;
     GuiRect area = text, all, track, thumb;
     for (i = 0; i < n; ++i) total += wrap_rows(app, lines[i], area.w / cw, 1);
@@ -13209,7 +13215,8 @@ static int setup_rows(App* app, GuiRect text, const char* const* lines, int n, S
         ui_clip(app, &text);
     }
     all = gui_rect(area.x, area.y - top * ch, area.w, (total + 1) * ch); /* every row, so wrap_in cuts none */
-    for (i = 0; i < n; ++i) rows += wrap_in(app, all, area.x, all.y + rows * ch, lines[i], 1, color);
+    for (i = 0; i < n; ++i)
+        rows += wrap_in(app, all, area.x, all.y + rows * ch, lines[i], 1, colors ? colors[i] : color);
     if (total <= room || room <= 0) return rows;
     ui_clip(app, NULL);
     if (top) text_in(app, text, area.x + area.w, text.y, "\x1e", rgb(app->theme.soft));
@@ -13226,7 +13233,7 @@ static int setup_rows(App* app, GuiRect text, const char* const* lines, int n, S
 static int setup_box(App* app, GuiRect r, const char* label, const char* const* lines, int n) {
     GuiRect text = inner(app, r);
     int y = pane(app, r, label);
-    return setup_rows(app, gui_rect(text.x, y, text.w, r.y + r.h - y), lines, n, rgb(app->theme.ink));
+    return setup_rows(app, gui_rect(text.x, y, text.w, r.y + r.h - y), lines, n, rgb(app->theme.ink), NULL);
 }
 /* two boxes side by side, the first of fifths of r: their rectangles */
 static void setup_split(const App* app, GuiRect r, int fifths, GuiRect* a, GuiRect* b) {
@@ -13257,31 +13264,44 @@ static bool entry_nth(const GuiCleaned* c, int k, bool* ok, char* file, char* wh
 }
 static void clean_said(char* line, size_t size, int inis, int keys);
 /* a box of entries (GuiCleaned's) under its label, after lines: each where it is (-, its path short) and under it what
-   was done to it or why not, the failure colour on one not done; as many as fit, then how many more Share Log lists */
+   was done to it or why not, the failure colour on one not done; rolling as setup_rows' rows when they do not fit */
 static void setup_entries_box(App* app, GuiRect r, const char* label, const char* const* lines, int n,
                               const GuiCleaned* entries) {
-    char file[4400], what[4400], shown[1024], more[96];
+    char file[4400], what[4400], shown[1024];
     GuiRect text = inner(app, r);
-    int y = pane(app, r, label), i, rows = 0, bottom = r.y + r.h, cw = cell_w(app), ch = cell_h(app);
+    int y = pane(app, r, label), i, count = n + 2 * entries->count, k = 0;
+    char* said = (char*)malloc((size_t)(2 * entries->count + 1) * 4400); /* each entry's two lines */
+    const char** all = (const char**)malloc((size_t)(count + 1) * sizeof *all);
+    SDL_Color* colors = (SDL_Color*)malloc((size_t)(count + 1) * sizeof *colors);
     bool ok;
-    text = gui_rect(text.x, y, text.w, bottom - y);
-    for (i = 0; i < n; ++i) rows += wrap_in(app, text, text.x, y + rows * ch, lines[i], 1, rgb(app->theme.ink));
-    y += rows * ch;
+    if (!said || !all || !colors) { /* no memory for their lines: the lines, then how many Share Log lists */
+        char more[96];
+        int rows = setup_rows(app, gui_rect(text.x, y, text.w, r.y + r.h - y), lines, n, rgb(app->theme.ink), NULL);
+        snprintf(more, sizeof more, snx_tr("and %d more, which Share Log lists"), entries->count);
+        text_in(app, text, text.x, y + rows * cell_h(app), more, rgb(app->theme.failure));
+        free(colors);
+        free(all);
+        free(said);
+        return;
+    }
+    for (i = 0; i < n; ++i, ++k) {
+        all[k] = lines[i];
+        colors[k] = rgb(app->theme.ink);
+    }
     for (i = 0; entry_nth(entries, i, &ok, file, what, sizeof file); ++i) {
-        SDL_Color ca = rgb(ok ? app->theme.ink : app->theme.failure),
-                  cb = rgb(ok ? app->theme.soft : app->theme.failure);
-        int need;
+        char *a = said + (size_t)(2 * i) * 4400, *b = a + 4400;
         snx_home_short(file, shown, sizeof shown);
-        need = wrap_rows(app, shown, text.w / cw - 2, 1) + wrap_rows(app, what, text.w / cw - 2, 0);
-        if (y + (need + (i + 1 < entries->count)) * ch > bottom) break; /* a row kept for the more line */
-        text_in(app, text, text.x, y, "-", ca);
-        y += wrap_in(app, text, text.x + 2 * cw, y, shown, 1, ca) * ch;
-        y += wrap_in(app, text, text.x + 2 * cw, y, what, 0, cb) * ch;
+        snprintf(a, 4400, "- %s", shown);
+        snprintf(b, 4400, "  %s", what);
+        all[k] = a;
+        colors[k++] = rgb(ok ? app->theme.ink : app->theme.failure);
+        all[k] = b;
+        colors[k++] = rgb(ok ? app->theme.soft : app->theme.failure);
     }
-    if (i < entries->count) {
-        snprintf(more, sizeof more, snx_tr("and %d more, which Share Log lists"), entries->count - i);
-        text_in(app, text, text.x, y, more, rgb(app->theme.soft));
-    }
+    setup_rows(app, gui_rect(text.x, y, text.w, r.y + r.h - y), all, k, rgb(app->theme.ink), colors);
+    free(colors);
+    free(all);
+    free(said);
 }
 static void setup_notices_box(App* app, GuiRect r) {
     static const char* const said[] = {SNX_TR_NOOP("before"), SNX_TR_NOOP("now")};
@@ -13321,6 +13341,136 @@ static void setup_notices_box(App* app, GuiRect r) {
     else
         setup_box(app, r, head, lines, k);
 }
+/* lines a row each in text from its top, all when they fit; else as many as fit but one roll a line every
+   GUI_SETUP_ROWS_MS to the last and back, an arrow at text's right while some are above or under them and a scroll bar
+   between the arrows, and the last row says how many are under them */
+static void setup_list(App* app, GuiRect text, const char* const* lines, int n) {
+    int cw = cell_w(app), ch = cell_h(app), room = text.h / ch, shown, top, more, i, s = app->scale;
+    SDL_Color ink = rgb(app->theme.ink), soft = rgb(app->theme.soft);
+    GuiRect area = text, track, thumb;
+    char said[96];
+    if (n <= room) {
+        for (i = 0; i < n; ++i) text_in(app, text, text.x, text.y + i * ch, lines[i], ink);
+        return;
+    }
+    if (room < 2) return; /* no row for one and the more line: the box is a row high */
+    shown = room - 1;
+    area.w -= cw; /* a column for the arrows and the bar */
+    top = gui_slide(n - shown, now_ms(app), GUI_SETUP_ROWS_MS);
+    more = n - top - shown;
+    for (i = 0; i < shown; ++i) text_in(app, area, area.x, area.y + i * ch, lines[top + i], ink);
+    if (top) text_in(app, text, area.x + area.w, text.y, "\x1e", soft);
+    if (more) text_in(app, text, area.x + area.w, text.y + (shown - 1) * ch, "\x1f", soft);
+    if (shown > 2 &&
+        bar_place(app, gui_rect(area.x + area.w, text.y + ch, cw, (shown - 2) * ch), n, shown, top, &track, &thumb)) {
+        track.x = thumb.x = area.x + area.w + cw / 2 - SDL_max(s, cw / 4) / 2;
+        track.w = thumb.w = SDL_max(s, cw / 4);
+        bar_draw(app, track, thumb, false);
+    }
+    if (more) {
+        snprintf(said, sizeof said, snx_tr("and %d more, which Share Log lists"), more);
+        text_in(app, text, text.x, text.y + shown * ch, said, soft);
+    }
+}
+/* row appended to rows, used bytes of room, ended by a 0; false when memory runs out */
+static bool rows_add(char** rows, size_t* used, size_t* room, const char* row) {
+    size_t n = strlen(row) + 1;
+    if (*used + n > *room) {
+        size_t want = (*used + n) * 2;
+        char* grown = (char*)realloc(*rows, want);
+        if (!grown) return false;
+        *rows = grown;
+        *room = want;
+    }
+    memcpy(*rows + *used, row, n);
+    *used += n;
+    return true;
+}
+/* the old files' page of the games' own saves, every game's on it: how many games, the space they take, where they
+   go now, what Move All does and that Delete All never deletes a save; then a line a game, its folder's name and the
+   space its saves take, rolling as setup_list's when they do not fit */
+static void setup_saves_box(App* app, GuiRect r, int page, int first) {
+    static const char* const said[] = {SNX_TR_NOOP("size"), SNX_TR_NOOP("now"), SNX_TR_NOOP("Move All"),
+                                       SNX_TR_NOOP("Delete All")};
+    char head[96], pad[64], old[4400], now[4400], key[4400], folder[4400], last[4400] = "", game[4400] = "";
+    char said_lines[5][1100], size[64], file[4400], what[4400], *rows = NULL, *save;
+    const char* lines[5];
+    const char** list = NULL;
+    const GuiSpace* space = app->left_space;
+    const char* at;
+    int cols = setup_cols(said, 4, 2), counted = space ? __atomic_load_n(&space->counted, __ATOMIC_ACQUIRE) : 0;
+    int games = 0, i, k = 0, head_rows = 0, ch = cell_h(app);
+    uint64_t all = 0, one = 0;
+    bool ok, counting = false, game_counting = false;
+    size_t used = 0, room = 0;
+    GuiRect text = inner(app, r);
+    /* each game a row: its folder's name (the one over its <id>_data/) and its saves' space */
+    for (i = first;; ++i) {
+        at = i < app->lefts ? left_nth(app, i) : NULL;
+        if (at) {
+            left_paths(at, old, now, sizeof old);
+            left_page_key(old, key, sizeof key);
+            left_folder(old, folder, sizeof folder);
+        }
+        if (last[0] && (!at || strcmp(key, LEFT_SAVES) || strcmp(folder, last))) { /* the game before, whole */
+            gui_size_text(size, sizeof size, one);
+            snprintf(file, sizeof file, "%s  %s", game, game_counting ? snx_tr("counting") : size);
+            if (!rows_add(&rows, &used, &room, file)) break;
+            ++games;
+        }
+        if (!at || strcmp(key, LEFT_SAVES)) break;
+        if (strcmp(folder, last)) { /* a game: <games>/<id>/<id>_data/save */
+            char *data = snx_dirname(folder), *dir = data ? snx_dirname(data) : NULL;
+            const char* name = dir ? dir + strlen(dir) : NULL;
+            while (name && name > dir && name[-1] != '/' && name[-1] != '\\') --name;
+            snprintf(game, sizeof game, "%s", name ? name : folder);
+            snprintf(last, sizeof last, "%s", folder);
+            free(dir);
+            free(data);
+            one = 0;
+            game_counting = false;
+        }
+        if (space && i < counted && !strcmp(space->dirs[i], old)) {
+            one += space->bytes[i];
+            all += space->bytes[i];
+        } else
+            counting = game_counting = true;
+    }
+    list = games ? (const char**)malloc((size_t)games * sizeof *list) : NULL;
+    for (i = 0, save = rows; list && i < games; ++i, save += strlen(save) + 1) list[i] = save;
+#define SAVES_LINE(...) (snprintf(said_lines[k], sizeof said_lines[k], __VA_ARGS__), lines[k] = said_lines[k], ++k)
+    snprintf(what, sizeof what, games == 1 ? snx_tr("%d game") : snx_tr("%d games"), games);
+    SAVES_LINE("%s%s: %s", app->theme.marker, snx_tr(SAY_LEFT_SAVES), what);
+    if (counting)
+        snprintf(size, sizeof size, "%s", snx_tr("counting"));
+    else
+        gui_size_text(size, sizeof size, all);
+    SAVES_LINE("    %s%s", setup_pad(pad, sizeof pad, said[0], cols), size);
+    save = app->data_dir ? snx_path_join(app->data_dir, "save") : NULL;
+    snx_home_short(save ? save : "save/", what, sizeof what);
+    free(save);
+    SAVES_LINE("    %s%s", setup_pad(pad, sizeof pad, said[1], cols), what);
+    if (entry_nth(&app->left_plan, page, &ok, file, what, sizeof file))
+        SAVES_LINE("    %s%s", setup_pad(pad, sizeof pad, said[2], cols), what);
+    if (entry_nth(&app->left_drop, page, &ok, file, what, sizeof file))
+        SAVES_LINE("    %s%s", setup_pad(pad, sizeof pad, said[3], cols), what);
+#undef SAVES_LINE
+    snprintf(head, sizeof head, snx_tr("Old Files %d/%d"), page + 1, left_groups(app));
+    text = gui_rect(text.x, pane(app, r, head), text.w, 0);
+    text.h = r.y + r.h - text.y;
+    for (i = 0; i < k; ++i) head_rows += wrap_rows(app, lines[i], text.w / cell_w(app), 1);
+    if (text.h / ch >= head_rows + 3) { /* the lines, then the games, rolling under them */
+        setup_rows(app, gui_rect(text.x, text.y, text.w, head_rows * ch), lines, k, rgb(app->theme.ink), NULL);
+        if (list)
+            setup_list(app,
+                       gui_rect(text.x + 2 * cell_w(app), text.y + (head_rows + 1) * ch, text.w - 2 * cell_w(app),
+                                text.h - (head_rows + 1) * ch),
+                       list, games);
+    } else /* a box too short for both: the lines alone, rolling */
+        setup_rows(app, text, lines, k, rgb(app->theme.ink), NULL);
+    free(list);
+    free(rows);
+}
 /* the old files' page: the folder an older version left (a game's save/ for each of its kinds), the space it takes,
    where its entries go now, and what Move All and Delete All would do to it, with the menu's own files an older
    Android version kept out of reach how they go; once one of them was done, what it did to each folder */
@@ -13347,7 +13497,11 @@ static void setup_left_box(App* app, GuiRect r) {
     first = left_group_first(app, page);
     if (first < 0) return; /* none left: the setup goes on at the next look */
     left_paths(left_nth(app, first), old, now, sizeof old);
-    left_folder(old, folder, sizeof folder);
+    left_page_key(old, folder, sizeof folder);
+    if (!strcmp(folder, LEFT_SAVES)) {
+        setup_saves_box(app, r, page, first);
+        return;
+    }
 #define LEFT_LINE(...) (snprintf(text[k], sizeof text[k], __VA_ARGS__), lines[k] = text[k], ++k)
     snx_home_short(folder, shown, sizeof shown);
     LEFT_LINE("%s%s", app->theme.marker, shown);
@@ -13362,7 +13516,7 @@ static void setup_left_box(App* app, GuiRect r) {
         }
         for (i = first; (at = left_nth(app, i)) != NULL && i < app->lefts; ++i) {
             left_paths(at, old, now, sizeof old);
-            left_folder(old, here, sizeof here);
+            left_page_key(old, here, sizeof here);
             if (strcmp(here, folder)) break;
             if (!pass && strcmp(old, last)) {
                 if (space && i < counted && !strcmp(space->dirs[i], old))
@@ -14467,7 +14621,13 @@ static void left_folder(const char* old, char* out, size_t size) {
     else
         snprintf(out, size, "%s", old);
 }
-/* the old files' pages: app->left's lines a folder each (left_folder), as left_behind counted them */
+/* the page an old path is on: one for every game's own saves (LEFT_SAVES), else its folder's (left_folder) */
+static void left_page_key(const char* old, char* out, size_t size) {
+    left_folder(old, out, size);
+    if (strcmp(out, old)) snprintf(out, size, "%s", LEFT_SAVES);
+}
+/* the old files' pages: app->left's lines a folder each, the games' saves one (left_page_key), as left_behind
+   counted them */
 static int left_groups(const App* app) { return app->left_pages; }
 static int left_pages_of(const App* app) {
     char old[4400], now[4400], folder[4400], last[4400] = "";
@@ -14475,7 +14635,7 @@ static int left_pages_of(const App* app) {
     int i, n = 0;
     for (i = 0; (at = left_nth(app, i)) != NULL && i < app->lefts; ++i) {
         left_paths(at, old, now, sizeof old);
-        left_folder(old, folder, sizeof folder);
+        left_page_key(old, folder, sizeof folder);
         if (i && !strcmp(folder, last)) continue;
         snprintf(last, sizeof last, "%s", folder);
         ++n;
@@ -14489,7 +14649,7 @@ static int left_group_first(const App* app, int page) {
     int i, n = 0;
     for (i = 0; (at = left_nth(app, i)) != NULL && i < app->lefts; ++i) {
         left_paths(at, old, now, sizeof old);
-        left_folder(old, folder, sizeof folder);
+        left_page_key(old, folder, sizeof folder);
         if (i && !strcmp(folder, last)) continue;
         snprintf(last, sizeof last, "%s", folder);
         if (n++ == page) return i;
@@ -14531,7 +14691,10 @@ static void folder_moves(GuiCleaned* folders, const GuiCleaned* done, int from, 
         snprintf(said, sizeof said, "%s", why);
     else
         snprintf(said, sizeof said, apply ? snx_tr("%d not moved: %s") : snx_tr("%d stay: %s"), n, why);
-    snx_home_short(folder, shown, sizeof shown);
+    if (!strcmp(folder, LEFT_SAVES))
+        snprintf(shown, sizeof shown, "%s", snx_tr(SAY_LEFT_SAVES));
+    else
+        snx_home_short(folder, shown, sizeof shown);
     gui_cleaned_add(folders, moved == n, shown, said);
 }
 /* whether item is one of list's, a comma and a space between them */
@@ -14553,7 +14716,7 @@ static const char* last_part(const char* path) {
     while (end > path && end[-1] != '/' && end[-1] != '\\') --end;
     return end;
 }
-static int move_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply) {
+static int move_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply, bool pages) {
     char old[4400], now[4400], what[4500], folder[4400], group[4400] = "", dests[4400] = "", shown[4400];
     char *config = menu_folder(app, SNX_USER_CONFIG, false), *state = menu_folder(app, SNX_USER_STATE, false);
     char* games = games_old(app);
@@ -14569,7 +14732,10 @@ static int move_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply)
         const char* const* files = NULL;
         char* data;
         left_paths(at, old, now, sizeof old);
-        left_folder(old, folder, sizeof folder);
+        if (pages)
+            left_page_key(old, folder, sizeof folder);
+        else
+            left_folder(old, folder, sizeof folder);
         snx_home_short(now, shown, sizeof shown);
         if (folders && strcmp(folder, group)) { /* a page's folder: the one before summed up */
             if (group[0]) folder_moves(folders, done, from, group, dests, apply, beside);
@@ -14623,7 +14789,7 @@ static int move_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply)
    (gui_delete_old), a file or folder an entry in done, and a page's folder an entry in folders: what was done to its
    paths, the first one's word when it is every one's, else how many were deleted and why the first of the rest was
    not. How many paths are deleted, or would be */
-static int delete_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply) {
+static int delete_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply, bool pages) {
     char old[4400], now[4400], folder[4400], last[4400] = "", file[4400], what[4400], why[4400], shown[4400];
     char said[9000];
     const char* at;
@@ -14633,12 +14799,18 @@ static int delete_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool appl
         int paths = 0, gone = 0, same = 1;
         bool ok;
         left_paths(at, old, now, sizeof old);
-        left_folder(old, folder, sizeof folder);
+        if (pages)
+            left_page_key(old, folder, sizeof folder);
+        else
+            left_folder(old, folder, sizeof folder);
         what[0] = why[0] = 0;
         for (; (at = left_nth(app, i)) != NULL && i < app->lefts; ++i) { /* the page's paths, each once */
             char this_folder[4400];
             left_paths(at, old, now, sizeof old);
-            left_folder(old, this_folder, sizeof this_folder);
+            if (pages)
+                left_page_key(old, this_folder, sizeof this_folder);
+            else
+                left_folder(old, this_folder, sizeof this_folder);
             if (strcmp(this_folder, folder)) break;
             if (!strcmp(old, last)) continue;
             snprintf(last, sizeof last, "%s", old);
@@ -14654,7 +14826,10 @@ static int delete_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool appl
         }
         gui_cleaned_free(&one);
         deleted += gone;
-        snx_home_short(folder, shown, sizeof shown);
+        if (!strcmp(folder, LEFT_SAVES))
+            snprintf(shown, sizeof shown, "%s", snx_tr(SAY_LEFT_SAVES));
+        else
+            snx_home_short(folder, shown, sizeof shown);
         if (!paths)
             snprintf(said, sizeof said, "%s", snx_tr("Not there any more"));
         else if (same)
@@ -14671,9 +14846,9 @@ static void left_plans(App* app) {
     GuiCleaned files = {0};
     gui_cleaned_free(&app->left_plan);
     gui_cleaned_free(&app->left_drop);
-    move_old(app, &files, &app->left_plan, false);
+    move_old(app, &files, &app->left_plan, false, true); /* a page an entry */
     gui_cleaned_free(&files);
-    delete_old(app, &files, &app->left_drop, false);
+    delete_old(app, &files, &app->left_drop, false, true);
     gui_cleaned_free(&files);
 }
 /* App's Move Old Files: what it would move, in a box (GUI_ASK_MOVE); nothing left, said; nothing that can move, the
@@ -14683,7 +14858,7 @@ static void move_row(App* app) {
     int moves;
     left_behind(app);
     app_values(app);
-    moves = move_old(app, &plan, &folders, false);
+    moves = move_old(app, &plan, &folders, false, false);
     if (!plan.count) {
         gui_cleaned_free(&folders);
         snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Nothing left by an older version"));
@@ -14775,7 +14950,7 @@ static void change_answer(App* app, GuiAsk ask, bool taken) {
         int moved;
         gui_cleaned_free(&app->cleaned);
         gui_cleaned_free(&app->moved);
-        moved = move_old(app, &app->cleaned, &app->moved, true);
+        moved = move_old(app, &app->cleaned, &app->moved, true, false);
         app->report_move = true;
         app->report_delete = false;
         app->cleaned_shown = app->cleaned.count > 0;
@@ -19645,7 +19820,7 @@ static int migrate(const char* self, bool apply, FILE* out) {
     }
     open_files(&app); /* the folders the menu picked, which tell where things go */
     left_behind(&app);
-    moves = move_old(&app, &app.cleaned, NULL, apply);
+    moves = move_old(&app, &app.cleaned, NULL, apply, false);
     for (at = app.cleaned.text; at;) {
         at = gui_cleaned_entry(at, &ok, file, what, sizeof file);
         fprintf(out, "%s: %s\n", file, what);

@@ -1579,6 +1579,10 @@ msgid "Left by older versions"
 msgstr "Deixados por versões antigas"
 
 #: src/gui/main.c
+msgid "The games' own saves"
+msgstr ""
+
+#: src/gui/main.c
 msgid "While the app is in testing, Android's Settings > Apps > ScarletNX > Storage > Clear storage takes the menu's files above, with every game, save and key in the app"
 msgstr "Enquanto o app está em testes, Configurações > Apps > ScarletNX > Armazenamento > Limpar armazenamento do Android apaga os arquivos do menu acima, com todos os jogos, saves e chaves do app"
 
@@ -4005,17 +4009,27 @@ msgid "size"
 msgstr ""
 
 #: src/gui/main.c
-#, c-format
-msgid "Move All: %d done, %d not"
-msgstr ""
-
-#: src/gui/main.c
 msgid "counting"
 msgstr "contando"
 
 #: src/gui/main.c
 #, c-format
+msgid "%d game"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d games"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Old Files %d/%d"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Move All: %d done, %d not"
 msgstr ""
 
 #: src/gui/main.c
