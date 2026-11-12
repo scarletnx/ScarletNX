@@ -115,13 +115,13 @@ u32 ev_handle(u32 ev) {
    AttachReadableHandleToSystemEvent would attach, with the handle's reference and one for the caller to drop; the
    guest address it was attached to is kept */
 static u64 test_attached_to[4];
-static KEvent test_event_pool[16];
+static KEvent test_event_pool[32];
 static u32 test_event_next;
 KEvent* hook_attach_event(CPU* c, u64 event, const char* name) {
     KEvent* e;
     (void)c, (void)name;
     if (test_no_attach) return NULL;
-    CHECK(test_event_next < 16);
+    CHECK(test_event_next < 32);
     e = &test_event_pool[test_event_next++];
     e->o.type = KO_EVENT;
     e->o.refs = 2; /* the handle's and the caller's */
@@ -494,6 +494,32 @@ static void test_device(void) {
     test_no_destroy = 0;
 }
 
+/* the system's calls by a game's AppletResourceUserId, and the DSP's load: each done with nothing to do */
+static void test_applet(void) {
+    CPU* c = &cpu;
+    f32 volume = 0.25f;
+    unsigned attached = test_attached;
+    u32 next = test_event_next;
+    CHECK(nnaudio_applet_user(c, 0x51) == 0 && nnaudio_applet_fade(c, 0x51, 10000000) == 0);
+    /* a volume reads 1 whatever was set, and a getter given no room writes nothing */
+    CHECK(nnaudio_applet_set_volume(c, 0x51, 0.5f, 0) == 0);
+    memcpy(GP(NAME), &volume, 4);
+    CHECK(nnaudio_applet_get_volume(c, NAME, 0x51) == 0);
+    memcpy(&volume, GP(NAME), 4);
+    CHECK(volume == 1.0f && nnaudio_applet_get_volume(c, 0, 0x51) == 0);
+    /* a suspend with a SystemEvent, up to SDK 3: a new event attached to it, signaled, with no reference kept; with
+       none, nothing is attached */
+    CHECK(nnaudio_applet_fade_event(c, 0x51, 10000000, EVENT) == 0);
+    CHECK(test_attached == attached + 1 && test_attached_to[attached % 4] == EVENT);
+    CHECK(test_event_next == next + 1 && test_event_pool[next].o.refs == 1 && test_event_pool[next].signaled == 1);
+    CHECK(nnaudio_applet_fade_event(c, 0x51, 0, 0) == 0 && test_attached == attached + 1);
+    /* no applet's state, no DSP's load, and the statistics untouched */
+    memset(GP(NAME), 0x5A, 0x40);
+    nnaudio_set_dsp_usage_measurement(c);
+    CHECK(nnaudio_get_applet_state_summaries(c, NAME, 4) == 0 && nnaudio_get_dsp_usage(c) == 0);
+    CHECK(nnaudio_get_dsp_statistics(c, NAME) == 0 && GP(NAME)[0] == 0x5A && GP(NAME)[0x3f] == 0x5A);
+}
+
 /* audio.hook: every function is hooked for any SDK, by the handler that takes its arguments, and the adapters hand
    them over as the game's call left them */
 static void test_table(void) {
@@ -545,6 +571,75 @@ static void test_table(void) {
          "nnaudio_release_device_notification"},
         {"_ZN2nn5audio35ReleaseAudioInputDeviceNotificationEPNS_2os11SystemEventE",
          "nnaudio_release_device_notification"},
+        {"_ZN2nn5audio26RequestResumeAudioForDebugENS_6applet20AppletResourceUserIdE", "nnaudio_applet_user"},
+        {"_ZN2nn5audio27RequestSuspendAudioForDebugENS_6applet20AppletResourceUserIdE", "nnaudio_applet_user"},
+        {"_ZN2nn5audio28RegisterAppletResourceUserIdENS_6applet20AppletResourceUserIdE", "nnaudio_applet_user"},
+        {"_ZN2nn5audio29RequestResumeAudioInsForDebugENS_6applet20AppletResourceUserIdE", "nnaudio_applet_user"},
+        {"_ZN2nn5audio30RequestResumeAudioOutsForDebugENS_6applet20AppletResourceUserIdE", "nnaudio_applet_user"},
+        {"_ZN2nn5audio30RequestSuspendAudioInsForDebugENS_6applet20AppletResourceUserIdE", "nnaudio_applet_user"},
+        {"_ZN2nn5audio30UnregisterAppletResourceUserIdENS_6applet20AppletResourceUserIdE", "nnaudio_applet_user"},
+        {"_ZN2nn5audio31RequestSuspendAudioOutsForDebugENS_6applet20AppletResourceUserIdE", "nnaudio_applet_user"},
+        {"_ZN2nn5audio35RequestResumeAudioRenderersForDebugENS_6applet20AppletResourceUserIdE", "nnaudio_applet_user"},
+        {"_ZN2nn5audio36RequestSuspendAudioRenderersForDebugENS_6applet20AppletResourceUserIdE", "nnaudio_applet_user"},
+        {"_ZN2nn5audio18RequestResumeAudioENS_6applet20AppletResourceUserIdENS_8TimeSpanE", "nnaudio_applet_fade"},
+        {"_ZN2nn5audio19RequestSuspendAudioENS_6applet20AppletResourceUserIdENS_8TimeSpanE", "nnaudio_applet_fade"},
+        {"_ZN2nn5audio21RequestResumeAudioInsENS_6applet20AppletResourceUserIdENS_8TimeSpanE", "nnaudio_applet_fade"},
+        {"_ZN2nn5audio22RequestResumeAudioOutsENS_6applet20AppletResourceUserIdENS_8TimeSpanE", "nnaudio_applet_fade"},
+        {"_ZN2nn5audio22RequestSuspendAudioInsENS_6applet20AppletResourceUserIdENS_8TimeSpanE", "nnaudio_applet_fade"},
+        {"_ZN2nn5audio23RequestSuspendAudioOutsENS_6applet20AppletResourceUserIdENS_8TimeSpanE", "nnaudio_applet_fade"},
+        {"_ZN2nn5audio27RequestResumeAudioRenderersENS_6applet20AppletResourceUserIdENS_8TimeSpanE",
+         "nnaudio_applet_fade"},
+        {"_ZN2nn5audio28RequestSuspendAudioRenderersENS_6applet20AppletResourceUserIdENS_8TimeSpanE",
+         "nnaudio_applet_fade"},
+        {"_ZN2nn5audio21RequestResumeAudioInsENS_6applet20AppletResourceUserIdENS_8TimeSpanEPNS_2os15SystemEventTypeE",
+         "nnaudio_applet_fade_event"},
+        {"_ZN2nn5audio22RequestResumeAudioOutsENS_6applet20AppletResourceUserIdENS_8TimeSpanEPNS_2os15SystemEventTypeE",
+         "nnaudio_applet_fade_event"},
+        {"_ZN2nn5audio22RequestSuspendAudioInsENS_6applet20AppletResourceUserIdENS_8TimeSpanEPNS_2os15SystemEventTypeE",
+         "nnaudio_applet_fade_event"},
+        {"_ZN2nn5audio23RequestSuspendAudioOutsENS_6applet20AppletResourceUserIdENS_8TimeSpanEPNS_2os15SystemEventTypeE",
+         "nnaudio_applet_fade_event"},
+        {"_ZN2nn5audio27RequestResumeAudioRenderersENS_6applet20AppletResourceUserIdENS_8TimeSpanEPNS_2os15SystemEventTypeE",
+         "nnaudio_applet_fade_event"},
+        {"_ZN2nn5audio28RequestSuspendAudioRenderersENS_6applet20AppletResourceUserIdENS_8TimeSpanEPNS_2os15SystemEventTypeE",
+         "nnaudio_applet_fade_event"},
+        {"_ZN2nn5audio30GetAudioInsProcessMasterVolumeEPfNS_6applet20AppletResourceUserIdE",
+         "nnaudio_applet_get_volume"},
+        {"_ZN2nn5audio31GetAudioOutsProcessMasterVolumeEPfNS_6applet20AppletResourceUserIdE",
+         "nnaudio_applet_get_volume"},
+        {"_ZN2nn5audio31GetAudioOutsProcessRecordVolumeEPfNS_6applet20AppletResourceUserIdE",
+         "nnaudio_applet_get_volume"},
+        {"_ZN2nn5audio32GetAudioInputProcessMasterVolumeEPfNS_6applet20AppletResourceUserIdE",
+         "nnaudio_applet_get_volume"},
+        {"_ZN2nn5audio33GetAudioOutputProcessMasterVolumeEPfNS_6applet20AppletResourceUserIdE",
+         "nnaudio_applet_get_volume"},
+        {"_ZN2nn5audio33GetAudioOutputProcessRecordVolumeEPfNS_6applet20AppletResourceUserIdE",
+         "nnaudio_applet_get_volume"},
+        {"_ZN2nn5audio36GetAudioRenderersProcessMasterVolumeEPfNS_6applet20AppletResourceUserIdE",
+         "nnaudio_applet_get_volume"},
+        {"_ZN2nn5audio36GetAudioRenderersProcessRecordVolumeEPfNS_6applet20AppletResourceUserIdE",
+         "nnaudio_applet_get_volume"},
+        {"_ZN2nn5audio30SetAudioInsProcessMasterVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE",
+         "nnaudio_applet_set_volume"},
+        {"_ZN2nn5audio31SetAudioOutsProcessMasterVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE",
+         "nnaudio_applet_set_volume"},
+        {"_ZN2nn5audio31SetAudioOutsProcessRecordVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE",
+         "nnaudio_applet_set_volume"},
+        {"_ZN2nn5audio32SetAudioInputProcessMasterVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE",
+         "nnaudio_applet_set_volume"},
+        {"_ZN2nn5audio33SetAudioOutputProcessMasterVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE",
+         "nnaudio_applet_set_volume"},
+        {"_ZN2nn5audio33SetAudioOutputProcessRecordVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE",
+         "nnaudio_applet_set_volume"},
+        {"_ZN2nn5audio36SetAudioRenderersProcessMasterVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE",
+         "nnaudio_applet_set_volume"},
+        {"_ZN2nn5audio36SetAudioRenderersProcessRecordVolumeENS_6applet20AppletResourceUserIdEfNS_8TimeSpanE",
+         "nnaudio_applet_set_volume"},
+        {"_ZN2nn5audio11GetDspUsageEv", "nnaudio_get_dsp_usage"},
+        {"_ZN2nn5audio16GetDspStatisticsEPNS0_13DspStatisticsE", "nnaudio_get_dsp_statistics"},
+        {"_ZN2nn5audio23GetAppletStateSummariesEPNS0_18AppletStateSummaryEi", "nnaudio_get_applet_state_summaries"},
+        {"_ZN2nn5audio25EnableDspUsageMeasurementEv", "nnaudio_set_dsp_usage_measurement"},
+        {"_ZN2nn5audio26DisableDspUsageMeasurementEv", "nnaudio_set_dsp_usage_measurement"},
     };
     int k[sizeof hooks / sizeof hooks[0]], first;
     CHECK(hook_table.count == sizeof hooks / sizeof hooks[0]);
@@ -614,6 +709,23 @@ static void test_table(void) {
     memset(GP(NAME), 0xCC, 0x100);
     CALL(19, NAME, 3, 0, 0);
     CHECK((u32)c->x[0] == 1 && !strcmp((char*)GP(NAME), "AudioTvOutput"));
+    /* the system's: a volume's address before the user, and a suspend's SystemEvent after the user and the fade */
+    for (unsigned i = 0; i < sizeof hooks / sizeof hooks[0]; i++) {
+        unsigned attached = test_attached;
+        if (!strcmp(hooks[i].handler, "nnaudio_applet_get_volume")) {
+            memset(GP(NAME), 0, 4);
+            CALL(i, NAME, 0x51, 0xdead, 0xdead);
+            CHECK((u32)c->x[0] == 0 && snx_ld_le32(GP(NAME)) == 0x3f800000);
+        } else if (!strcmp(hooks[i].handler, "nnaudio_applet_fade_event")) {
+            CALL(i, 0x51, 10000000, EVENT2, 0xdead);
+            CHECK((u32)c->x[0] == 0 && test_attached == attached + 1 && test_attached_to[attached % 4] == EVENT2);
+        } else if (!strncmp(hooks[i].handler, "nnaudio_applet_", 15) || strstr(hooks[i].handler, "_dsp_")) {
+            c->x[0] = 0xdead;
+            CALL(i, 0x51, 10000000, 0, 0);
+            CHECK((u32)c->x[0] == 0 || !strcmp(hooks[i].handler, "nnaudio_set_dsp_usage_measurement"));
+            CHECK(test_attached == attached);
+        }
+    }
 #undef CALL
 }
 
@@ -766,6 +878,7 @@ int main(void) {
     test_partial_frame();
     test_two_outs();
     test_device();
+    test_applet();
     test_table();
     test_a32();
     for (u32 i = 0; i < AUDOUT_MAX; i++) CHECK(g_hle.audio.outs_pool[i].guest == 0);
