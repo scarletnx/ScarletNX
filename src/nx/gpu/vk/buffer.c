@@ -3710,25 +3710,48 @@ int vk_buf_get_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
    up to sixteen of them copy again. A range in no window gets one of WIN_SIZE from the MiB it starts in, as far as
    guest memory runs on and short of a window above, which the ranges after it fall in until the next window. Sized up
    front rather than grown into the union of the ranges that meet it: those come one draw after another, often within a
-   frame, and each growth would copy the whole window again. Windows go when the GPU mappings change (their run of guest
-   memory may have) and when unused for a while, before the cache's entries for them age out */
+   frame, and each growth would copy the whole window again. A window goes when its own run of guest memory changed,
+   and when unused for a while, before the cache's entries for them age out.
+
+   A change of the GPU mappings anywhere used to end every window, as each one's run may have changed. One game makes
+   and frees memory pools all the time it streams its city in, so its windows ended many times a second; the next
+   range bound made a new one from the MiB that range started in, with another start and so another key than the one
+   before, and the cache copied 64 MiB into a new buffer for it while the old one aged out. Its buffers of their own
+   held 971 MB standing still and 2 GB with the camera turning, 91 to 95% of it bytes that another one held too, over
+   ranges that covered under 100 MB of guest memory, and every 600 presents the driver allocated and freed some 100
+   blocks for them, 0.6 to 1.0 s and 0.3 to 0.5 s of the GPU thread. So a window made under an earlier state of the
+   mappings is looked at again when it is next asked for: it stays when its range is still one run of the same
+   guest memory (win_live) */
 #define WIN_N    32
 #define WIN_SIZE (64ull << 20)
 #define WIN_IDLE 1200 /* presents */
 typedef struct {
     u64 start, end; /* end 0: none */
-    u32 used, gen;  /* the present it was last bound at, g_vb_map_gen when made */
+    u64 cpu;        /* the guest memory at start, which its run goes on from */
+    u32 used, gen;  /* the present it was last bound at, g_vb_map_gen when its run was last found whole */
 } Win;
 static Win g_win[WIN_N];
-static int win_live(const Win* w) {
-    return w->end && w->gen == g_vb_map_gen && (u32)(g_vk_present - w->used) < WIN_IDLE;
+static u64 g_win_made, g_win_kept, g_win_ended; /* since the last statistics (buffer_copy_stats) */
+static int win_live(Win* w) {
+    if (!w->end || (u32)(g_vk_present - w->used) >= WIN_IDLE) return 0;
+    if (w->gen != g_vb_map_gen) { /* the mappings changed since: its own run may not have */
+        u64 cpu = 0, len = w->end - w->start;
+        if (gmmu_run(w->start, len, &cpu) < len || cpu != w->cpu) {
+            if (copy_stats_on()) g_win_ended++;
+            w->end = 0;
+            return 0;
+        }
+        w->gen = g_vb_map_gen;
+        if (copy_stats_on()) g_win_kept++;
+    }
+    return 1;
 }
 static int win_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     u64 at, cpu = 0;
     int slot = -1;
     if (!len || gva + len < gva) return 0;
-    for (int i = 0; i < WIN_N && slot < 0; i++)
-        if (win_live(&g_win[i]) && g_win[i].start <= gva && gva + len <= g_win[i].end) slot = i;
+    for (int i = 0; i < WIN_N && slot < 0; i++) /* the range first: only a window that holds it is looked at again */
+        if (g_win[i].start <= gva && gva + len <= g_win[i].end && win_live(&g_win[i])) slot = i;
     if (slot < 0) {
         u64 start = gva & ~((1ull << 20) - 1), run;
         /* the MiB's start may lie before the run of guest memory the range is in: the range's own start then */
@@ -3748,7 +3771,8 @@ static int win_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
         if (slot < 0) /* all live: the one bound longest ago */
             for (int i = slot = 0; i < WIN_N; i++)
                 if ((i32)(g_win[i].used - g_win[slot].used) < 0) slot = i;
-        g_win[slot] = (Win){start, start + run, 0, g_vb_map_gen};
+        g_win[slot] = (Win){start, start + run, cpu, 0, g_vb_map_gen};
+        if (copy_stats_on()) g_win_made++;
     }
     g_win[slot].used = g_vk_present;
     if (!buf_get(g_win[slot].start, g_win[slot].end - g_win[slot].start, buf, &at, 0, vk_stage_align(), IN_NO))
@@ -4068,6 +4092,10 @@ static void buf_frame(void) {
         vk_gfx_image_report();
         shape_report();
         pool_report();
+        LOG("vulkan: windows over 600 presents: %llu made, %llu kept through a change of the mappings, %llu ended by "
+            "one\n",
+            (unsigned long long)g_win_made, (unsigned long long)g_win_kept, (unsigned long long)g_win_ended);
+        g_win_made = g_win_kept = g_win_ended = 0;
         g_vb_lookups = g_vb_probes = 0;
         g_copy_uncached = g_copy_stage = g_copy_owned = g_copy_zero = g_copy_calls = g_copy_peak = g_read_bound =
             g_owned_bound = 0;
