@@ -60,6 +60,7 @@
 #include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/wait_screen.h"
 #include "nx/runtime/platform/unattended.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -846,6 +847,33 @@ void resources_text(char* out, size_t size) {
     n = strlen(out);
     if (g_renderer && g_renderer->memory_blocks && n < size)
         snprintf(out + n, size - n, ", GPU memory blocks %llu MiB", (unsigned long long)(g_renderer->memory_blocks() >> 20));
+    n = strlen(out);
+    if (n < size) snprintf(out + n, size - n, ", guest %llu MiB", (unsigned long long)(used_memory() >> 20));
+}
+/* the guest's pages in files (guest_files), before the game allocates: the disk must hold the game's memory and 2 GiB
+   more, as the system writes the changed pages out */
+static void guest_files(void) {
+    char* dir;
+    SnxU64 free_bytes, need = mem_total() + (2ull << 30);
+    if (!g_settings.guest_files) {
+        LOG("memory: guest pages are anonymous (guest_files=0)\n");
+        return;
+    }
+    dir = snx_temp_root();
+    if (!dir) {
+        LOG("memory: guest pages are anonymous: no temporary folder\n");
+        return;
+    }
+    free_bytes = snx_free_space(dir);
+    if (free_bytes < need)
+        LOG("memory: guest pages are anonymous: %llu MiB free on the disk of %s, %llu needed\n",
+            (unsigned long long)(free_bytes >> 20), dir, (unsigned long long)(need >> 20));
+    else if (mem_files_on(dir))
+        LOG("memory: guest pages are anonymous: their files in %s failed: %s\n", dir, strerror(errno));
+    else
+        LOG("memory: guest pages in unlinked files in %s (%llu MiB of disk free)\n", dir,
+            (unsigned long long)(free_bytes >> 20));
+    free(dir);
 }
 /* log level 2: the three host threads with the most CPU time since the last line, by their names. iOS reported a CPU
    exception (90 s of CPU in 93 s) that named no thread */
@@ -1602,6 +1630,7 @@ int snx_main(int argc, char** argv) {
         mem_fit(snx_memory_available(&available) && footprint, available, footprint);
     }
     mem_gb_said();
+    guest_files();
     kernel_init();
     plat_trap_waiting(kthread_fault_lend);
     dispatch_init();

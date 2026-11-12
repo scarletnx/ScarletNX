@@ -139,6 +139,9 @@ void mem_layout_move(u64 by);
 /* how far mem_layout_move moved the layout, 0 when it stays at the console's addresses */
 u64 mem_moved(void);
 void mem_init(void);
+/* the guest's pages in unlinked files of 1 GiB in dir (plat_vm_files), before the game commits any: 0, or -1 with
+   errno (EBUSY once the game has memory, ENOTSUP under NCE) */
+int mem_files_on(const char* dir);
 int mem_map(u64 addr, u64 size, u32 state, u32 perm); /* 0, MEM_BADSTATE when it isn't free, MEM_NOMEM */
 int mem_unmap(u64 addr, u64 size);
 /* Physical memory in the alias region, and the heap, under the memory lock against one combined budget in bytes.
