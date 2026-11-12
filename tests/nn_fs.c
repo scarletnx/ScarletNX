@@ -84,12 +84,16 @@ void fs_lock(void) {}
 void fs_unlock(void) {}
 u32 fs_host_root_result(void) { return FSR(1); }
 u32 fs_sd_root(FsNode** root) { return (void)root, FSR(1); }
+/* the save asked for last: its type, and whether a user owns it */
+static int save_type = -1, save_owned;
 /* no save (FSR(1)) until save_given is 0 or 1: then the root save_root, an Account save's noted, and save_given as
    its journaled */
 static FsNode* const save_root = (FsNode*)(uintptr_t)0x5a;
 static int save_given = -1;
 u32 fs_save_root(u8 type, const u8 uid[16], u16 index, FsNode** root, int* noted, int* journaled) {
-    (void)uid, (void)index;
+    static const u8 nobody[16];
+    save_type = type, save_owned = memcmp(uid, nobody, 16) != 0;
+    (void)index;
     if (save_given < 0) return FSR(1);
     *root = save_root, *noted = type == 1, *journaled = save_given;
     return 0;
@@ -299,6 +303,13 @@ int main(void) {
     CHECK(storages_open == 0);
     CHECK(nnfs_is_path_mounted(c, PATH) == 1 && own_runs == 9); /* unmounted: the SDK's again */
 
+    /* the device's save is asked of the file server as the save of type 3 that no user owns, an account's as type 1
+       of its user; the server's answer (here: not there) is the function's */
+    text(NAME, "dev");
+    CHECK(nnfs_mount_device_save_data(c, NAME) == FSR(1) && save_type == 3 && !save_owned);
+    memset(mem + 0x300, 0x11, 16);
+    CHECK(nnfs_mount_save_data(c, NAME, 0x300) == FSR(1) && save_type == 1 && save_owned);
+
     /* a file of the archive, in a 64-bit game: the handle is 8 bytes with bit 63, the bytes read a size_t of 8 */
     image_with_file(data_image_bytes);
     text(NAME, "ng");
@@ -321,7 +332,7 @@ int main(void) {
     module32.nmods = 0;
     g_arm_mod = &module32;
     a.mem = mem, a.mem_size = sizeof mem;
-    CHECK(HOOK32_COUNT == 41);
+    CHECK(HOOK32_COUNT == 42);
     outs();
     CHECK(call32("_ZN2nn2fs29QueryMountSystemDataCacheSizeEPjNS_3ncm12SystemDataIdE", RESULT, 0xdead, (u32)SYSTEM_ID,
                  (u32)(SYSTEM_ID >> 32), 0, 0, 0) == 0);
