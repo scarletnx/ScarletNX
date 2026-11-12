@@ -1,6 +1,6 @@
 # edenprobe cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/dev/edenprobe.md)
 # build: v0.13.0
-# mode: audio cpu display fs kernel notime quick video
+# mode: audio cpu display fs hooks kernel notime quick video
 audio: a 10 kHz voice at half the output rate keeps the level default quality's table gives
 audio: a 10 kHz voice at half the output rate keeps the level high quality's table gives
 audio: a 15 kHz voice at 1.25 times the output rate keeps the level default quality's table gives
