@@ -817,6 +817,10 @@ typedef struct App {
     int setup_pages[SNX_SETUP_STEPS + 1], setup_count, setup_page;
     GuiChoice setup_choice; /* the page's choices, the one in focus */
     int setup_top;          /* the notice shown, one a page: the last one's OK goes on */
+    /* what Clean Old Settings would take, as the last notice found it (-1 before), and its Clean Now done: its box
+       says what it did (cleaned) */
+    int clean_inis_found, clean_keys_found;
+    bool setup_cleaned;
     int setup_language;     /* Settings > App's Language as the setup found it, 0 Auto: kept Auto on the system's */
     int setup_row;          /* the Appearance page's focus, a GUI_APPEARANCE_* row or its Next */
     bool setup_typing;      /* the first user's nickname being typed, setup_name, to go with setup_uid */
@@ -12708,11 +12712,31 @@ static void setup_type(App* app) {
 static void setup_keyboard(App* app) {
     if (app->setup_on && app->setup_typing && !SDL_TextInputActive(app->window)) SDL_StartTextInput(app->window);
 }
-/* the notices' choices: Next (OK on the last), Back before it past the first; the focus on Back while back says so and
-   there is one, else on Next */
+static int setup_notices(const App* app, int* list);
+static int clean_count(App* app, int* inis, int* keys);
+static void clean_old(App* app);
+/* the last notice, while Clean Old Settings has something to take and its Clean Now was not taken: it asks */
+static bool notice_cleans(const App* app) {
+    int list[SNX_NOTICES];
+    return setup_page_of(app) == SETUP_NOTICE && app->setup_top == setup_notices(app, list) - 1 &&
+           !app->setup_cleaned && app->clean_inis_found + app->clean_keys_found > 0;
+}
+/* the notices' choices: Next (OK on the last), Back before it past the first; on the last, while it asks
+   (notice_cleans, looked for once as it comes), Clean Now and Not Now in its place, Clean Now in focus. The focus on
+   Back while back says so and there is one, else on Next, OK or Clean Now */
 static void notice_choices(App* app, bool back) {
-    app->setup_choice.count = app->setup_top > 0 ? 2 : 1;
-    app->setup_choice.focus = back && app->setup_top > 0 ? 0 : app->setup_choice.count - 1;
+    int list[SNX_NOTICES], backs = app->setup_top > 0;
+    if (app->setup_top == setup_notices(app, list) - 1 && app->clean_inis_found < 0)
+        clean_count(app, &app->clean_inis_found, &app->clean_keys_found);
+    app->setup_choice.count = backs + (notice_cleans(app) ? 2 : 1);
+    app->setup_choice.focus = back && backs ? 0 : backs;
+}
+/* the last notice's Clean Now: Clean Old Settings, as App's, said in the notice's box rather than over the screen */
+static void clean_now(App* app) {
+    clean_old(app);
+    app->cleaned_shown = false;
+    app->setup_cleaned = true;
+    app->clean_found = -1; /* App looks again */
 }
 /* the page shown from its start: its choices, the one in focus the one in use */
 static void setup_enter(App* app) {
@@ -12766,6 +12790,8 @@ static void setup_start(App* app) {
     int i;
     app->setup_on = false;
     app->setup_count = app->setup_page = 0;
+    app->clean_inis_found = app->clean_keys_found = -1;
+    app->setup_cleaned = false;
     if (snx_setup_skip || !file) {
         free(file);
         scale_keep(app);
@@ -12955,13 +12981,16 @@ static void setup_take(App* app) {
             else
                 setup_next(app);
             return;
-        case SETUP_NOTICE: { /* each notice read before the setup goes on, as terms are; Back the one before */
-            int list[SNX_NOTICES];
-            bool back = app->setup_choice.count == 2 && !app->setup_choice.focus;
+        case SETUP_NOTICE: { /* each notice read before the setup goes on, as terms are; Back the one before; the
+                                last one's Clean Now cleans, its box saying what it did, and Not Now goes on */
+            int list[SNX_NOTICES], backs = app->setup_top > 0;
+            bool back = backs && !choice;
             if (back)
                 --app->setup_top;
             else if (app->setup_top < setup_notices(app, list) - 1)
                 ++app->setup_top;
+            else if (notice_cleans(app) && choice == backs)
+                clean_now(app);
             else {
                 setup_next(app);
                 return;
@@ -12980,6 +13009,7 @@ static void setup_skip(App* app) {
     for (;;) {
         int page = app->setup_page, top = app->setup_top;
         bool typing = app->setup_typing;
+        if (notice_cleans(app)) app->setup_choice.focus = app->setup_choice.count - 1; /* Not Now: Skip cleans none */
         setup_take(app);
         if (!app->setup_on || app->setup_failed || app->confirm.shown) return; /* done, or its failure said */
         if (page == app->setup_page && top == app->setup_top && typing == app->setup_typing) {
@@ -13123,16 +13153,19 @@ static int setup_labels(const App* app, const char** labels) {
                                           SNX_TR_NOOP("Add a folder")};
     static const char* const keys[] = {SNX_TR_NOOP("Use These"), SNX_TR_NOOP("Browse..."), SNX_TR_NOOP("Later")};
     static const char* const user[] = {SNX_TR_NOOP("Keep"), SNX_TR_NOOP("Overwrite")};
-    int i, page = setup_page_of(app), count = app->setup_choice.count, list[SNX_NOTICES];
+    static const char* const clean[] = {SNX_TR_NOOP("Clean Now"), SNX_TR_NOOP("Not Now")};
+    int i, page = setup_page_of(app), count = app->setup_choice.count, list[SNX_NOTICES], backs = app->setup_top > 0;
+    bool last = page == SETUP_NOTICE ? app->setup_top >= setup_notices(app, list) - 1 : true; /* the nickname's OK */
     for (i = 0; i < count; ++i)
         labels[i] = page == SNX_SETUP_LANGUAGE                     ? snx_tr("Next")
                     : page == SNX_SETUP_INSTALL                    ? snx_tr(install[i])
                     : page == SNX_SETUP_FOLDERS                    ? snx_tr(folders[i])
                     : page == SNX_SETUP_KEYS                       ? snx_tr(keys[i + 3 - count])
                     : page == SNX_SETUP_USER && !app->setup_typing ? snx_tr(user[i])
-                    : page == SETUP_NOTICE && i < count - 1        ? snx_tr("Back")
-                    : page == SETUP_NOTICE && app->setup_top < setup_notices(app, list) - 1 ? snx_tr("Next")
-                                                                                            : snx_tr("OK");
+                    : i < backs                                    ? snx_tr("Back")
+                    : page == SETUP_NOTICE && notice_cleans(app)   ? snx_tr(clean[i - backs])
+                    : !last                                        ? snx_tr("Next")
+                                                                   : snx_tr("OK");
     if (setup_skips(app)) labels[count++] = snx_tr("Skip");
     return count;
 }
@@ -13303,11 +13336,50 @@ static const char* setup_pad(char* out, size_t size, const char* label, int cols
     snprintf(out, size, "%s%*s", snx_tr(label), SDL_max(0, cols - gui_text_cols(snx_tr(label))), "");
     return out;
 }
+/* entry k of c: its fields, false past its last */
+static bool entry_nth(const GuiCleaned* c, int k, bool* ok, char* file, char* what, size_t size) {
+    const char* at = c->text && *c->text ? c->text : NULL;
+    for (int i = 0; at; ++i) {
+        const char* next = gui_cleaned_entry(at, ok, file, what, size);
+        if (i == k) return true;
+        at = next;
+    }
+    return false;
+}
+static void clean_said(char* line, size_t size, int inis, int keys);
+/* a box of entries (GuiCleaned's) under its label, after lines: each where it is (-, its path short) and under it what
+   was done to it or why not, the failure colour on one not done; as many as fit, then how many more Share Log lists */
+static void setup_entries_box(App* app, GuiRect r, const char* label, const char* const* lines, int n,
+                              const GuiCleaned* entries) {
+    char file[4400], what[4400], shown[1024], more[96];
+    GuiRect text = inner(app, r);
+    int y = pane(app, r, label), i, rows = 0, bottom = r.y + r.h, cw = cell_w(app), ch = cell_h(app);
+    bool ok;
+    text = gui_rect(text.x, y, text.w, bottom - y);
+    for (i = 0; i < n; ++i) rows += wrap_in(app, text, text.x, y + rows * ch, lines[i], 1, rgb(app->theme.ink));
+    y += rows * ch;
+    for (i = 0; entry_nth(entries, i, &ok, file, what, sizeof file); ++i) {
+        SDL_Color ca = rgb(ok ? app->theme.ink : app->theme.failure),
+                  cb = rgb(ok ? app->theme.soft : app->theme.failure);
+        int need;
+        snx_home_short(file, shown, sizeof shown);
+        need = wrap_rows(app, shown, text.w / cw - 2, 1) + wrap_rows(app, what, text.w / cw - 2, 0);
+        if (y + (need + (i + 1 < entries->count)) * ch > bottom) break; /* a row kept for the more line */
+        text_in(app, text, text.x, y, "-", ca);
+        y += wrap_in(app, text, text.x + 2 * cw, y, shown, 1, ca) * ch;
+        y += wrap_in(app, text, text.x + 2 * cw, y, what, 0, cb) * ch;
+    }
+    if (i < entries->count) {
+        snprintf(more, sizeof more, snx_tr("and %d more, which Share Log lists"), entries->count - i);
+        text_in(app, text, text.x, y, more, rgb(app->theme.soft));
+    }
+}
 static void setup_notices_box(App* app, GuiRect r) {
     static const char* const said[] = {SNX_TR_NOOP("before"), SNX_TR_NOOP("now")};
-    char text[4][320], head[64], pad[64];
-    const char* lines[4];
+    char text[6][1100], head[64], pad[64];
+    const char* lines[6];
     int list[SNX_NOTICES], n = setup_notices(app, list), k = 0, cols = setup_cols(said, 2, 2);
+    bool cleaned = app->setup_cleaned && app->setup_top == n - 1;
     if (n) { /* in the launcher's language: setup.c marks them for scripts/build-languages.py */
         const SnxNotice* notice = &snx_notices[list[SDL_min(app->setup_top, n - 1)]];
         snprintf(text[k], sizeof text[k], "%s%s", app->theme.marker, snx_tr(notice->what));
@@ -13324,8 +13396,21 @@ static void setup_notices_box(App* app, GuiRect r) {
     snprintf(text[k], sizeof text[k], "  %s", snx_tr("Not moved. See docs/user/deprecations.md"));
     lines[k] = text[k];
     ++k;
+    if (notice_cleans(app) || cleaned) { /* the last one: what Clean Now takes, or took, a row under it */
+        lines[k++] = " ";
+        if (cleaned)
+            snprintf(text[k], sizeof text[k], snx_tr("Cleaned: %d done, %d not"), app->cleaned.done,
+                     app->cleaned.count - app->cleaned.done);
+        else
+            clean_said(text[k], sizeof text[k], app->clean_inis_found, app->clean_keys_found);
+        lines[k] = text[k];
+        ++k;
+    }
     snprintf(head, sizeof head, snx_tr("Changed %d/%d"), SDL_min(app->setup_top, n - 1) + 1, n);
-    setup_box(app, r, head, lines, k);
+    if (cleaned)
+        setup_entries_box(app, r, head, lines, k, &app->cleaned);
+    else
+        setup_box(app, r, head, lines, k);
 }
 /* users.ini's users, a row each: the picture, the nickname, the uid */
 static void setup_users_box(App* app, GuiRect r) {
@@ -14469,17 +14554,16 @@ static void move_row(App* app) {
     gui_cleaned_free(&plan);
     gui_confirm_open(&app->confirm, GUI_ASK_MOVE, false);
 }
-/* App's row: what it would take out, in a box (GUI_ASK_CLEAN), else that there is nothing */
-static void clean_row(App* app) {
-    char unread[16], *line = app->ask_line;
-    size_t size = sizeof app->ask_line;
-    int inis = clean_inis(app, NULL);
-    int keys = settings_unread(app, unread, sizeof unread) + app_read(app, false, unread, sizeof unread, NULL, 0);
-    if (!inis && !keys) {
-        snprintf(app->editor.note, sizeof app->editor.note, "%s",
-                 snx_tr("Nothing to clean: no [Deprecated] in a game's .ini, no old keys"));
-        return;
-    }
+/* what Clean Old Settings would take out: the .ini files with a [Deprecated] section in inis, the keys of the menu's
+   own files nothing reads in keys; both */
+static int clean_count(App* app, int* inis, int* keys) {
+    char unread[16];
+    *inis = clean_inis(app, NULL);
+    *keys = settings_unread(app, unread, sizeof unread) + app_read(app, false, unread, sizeof unread, NULL, 0);
+    return *inis + *keys;
+}
+/* the question of Clean Old Settings that takes them, into line */
+static void clean_said(char* line, size_t size, int inis, int keys) {
     if (inis && keys)
         snprintf(line, size,
                  keys > 1 ? snx_tr("Clean Old Settings? [Deprecated] in %d .ini, %d old keys")
@@ -14490,6 +14574,16 @@ static void clean_row(App* app) {
     else
         snprintf(line, size,
                  keys > 1 ? snx_tr("Clean Old Settings? %d old keys") : snx_tr("Clean Old Settings? %d old key"), keys);
+}
+/* App's row: what it would take out, in a box (GUI_ASK_CLEAN), else that there is nothing */
+static void clean_row(App* app) {
+    int inis, keys;
+    if (!clean_count(app, &inis, &keys)) {
+        snprintf(app->editor.note, sizeof app->editor.note, "%s",
+                 snx_tr("Nothing to clean: no [Deprecated] in a game's .ini, no old keys"));
+        return;
+    }
+    clean_said(app->ask_line, sizeof app->ask_line, inis, keys);
     gui_confirm_open(&app->confirm, GUI_ASK_CLEAN, false);
 }
 /* Settings > App's Reset to Defaults: how many settings it changes, in a box (GUI_ASK_RESET), else that none */

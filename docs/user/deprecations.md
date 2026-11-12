@@ -12,9 +12,10 @@ What an older version used that this one replaced, how a run tells you, and how 
   never dropped in silence; a deprecated option still works.
 - **Each run says so** where you read it: stderr for the drivers, the game's `.log` and stderr for the runtime, the
   launcher's box for files an older version left. The line names what replaced it.
-- **You remove it**: a setting by hand or with the launcher's **Settings > App > Clean Old Settings**, which takes
-  the `[Deprecated]` section out of every game's `.ini` the launcher reaches (the games' config folder, `games/` and
-  the libraries of Settings > App > Folders); a file an older version left, by moving it where the line says.
+- **You remove it**: a setting by hand or with the launcher's **Settings > App > Clean Old Settings** (or Clean Now
+  on the setup's last notice), which takes the `[Deprecated]` section out of every game's `.ini` the launcher reaches
+  (the games' config folder, `games/` and the libraries of Settings > App > Folders); a file an older version left, by
+  moving it where the line says.
 - **It is listed below** until the code that reads it goes, which is a change of its own named in the table.
 
 A game's `.ini` keeps its deprecated keys last, under what became of each:
