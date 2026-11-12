@@ -423,7 +423,13 @@ static int interpret(AgbBoard* board, AgbCpu* cpu, uint32_t word, int thumb) {
         } else {
             uint32_t updated = (cpu->arm.cpsr & ~bits) | (value & bits);
             if ((updated & 0x1F) != (cpu->arm.cpsr & 0x1F)) switch_mode(cpu, updated & 0x1F);
-            cpu->arm.cpsr = (updated & ~(uint32_t)SNX_ARM_T) | (cpu->arm.cpsr & SNX_ARM_T);
+            cpu->arm.cpsr = updated;
+            if (updated & SNX_ARM_T) {
+                /* the T bit set this way switches to Thumb with the next word already fetched as ARM, which runs as a
+                   no-op: Thumb starts two words on, as mGBA's MSR has it (a packer's check of the machine) */
+                cpu->arm.r[15] += 8;
+                return 0;
+            }
         }
         cpu->arm.r[15] += 4;
         return 0;

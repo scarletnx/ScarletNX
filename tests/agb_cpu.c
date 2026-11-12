@@ -590,6 +590,24 @@ int main(void) {
         agb_write16(&board, 0x04000208, 0);
     }
     {
+        /* an MSR that sets the T bit switches to Thumb: the word after it, fetched as ARM already, runs as a no-op and
+           Thumb starts two words on, as mGBA has it. Here the ARM word would set r0, the Thumb code stores 7 at r3 */
+        static const uint32_t code[] = {0xE129F002, 0xE3A00001, 0x60192107, 0xE7FE};
+        uint32_t written = 0;
+        for (uint32_t i = 0; i < 4; ++i) agb_write32(&board, 0x03000900 + i * 4, code[i]);
+        agb_write16(&board, 0x04000208, 0); /* IME off */
+        cpu.arm.r[0] = 0;
+        cpu.arm.r[2] = 0x3F;
+        cpu.arm.r[3] = 0x02000400;
+        cpu.arm.r[15] = 0x03000900;
+        cpu.arm.cpsr = 0x1F;
+        board.cpu_halted = cpu.wait = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, AGB_SCANLINE_CYCLES * AGB_FRAME_LINES, audio, AGB_APU_RATE, &written,
+                           error, sizeof error));
+        CHECK(agb_read32(&board, 0x02000400) == 7 && cpu.arm.r[0] == 0);
+        CHECK((cpu.arm.cpsr & 0x3F) == 0x3F && cpu.arm.r[15] == 0x0300090C);
+    }
+    {
         /* the cache is the ROM's it was built from: another one's, named the same, recompiles and says why */
         AgbRecomp other;
         uint8_t* changed = make_rom(&size);
