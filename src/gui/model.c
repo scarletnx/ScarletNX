@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "gui/model.h"
+#include "common/utilities/slide.h"
 #include "common/utilities/common.h"
 #include "common/utilities/font.h"
 #include "common/utilities/setup.h"
@@ -205,16 +206,7 @@ const char* gui_setting_description(const GuiMenu* menu) {
         default: return "";
     }
 }
-#define GUI_SLIDE_WAIT 8 /* steps a sliding line rests at each end */
-int gui_slide(int over, uint64_t ms, uint32_t step_ms) {
-    uint64_t t;
-    if (over <= 0 || !step_ms) return 0;
-    t = ms / step_ms % (uint64_t)(2 * (over + GUI_SLIDE_WAIT));
-    if (t < GUI_SLIDE_WAIT) return 0;
-    if (t < (uint64_t)(GUI_SLIDE_WAIT + over)) return (int)(t - GUI_SLIDE_WAIT);
-    if (t < (uint64_t)(2 * GUI_SLIDE_WAIT + over)) return over;
-    return over - (int)(t - 2 * GUI_SLIDE_WAIT - over);
-}
+int gui_slide(int over, uint64_t ms, uint32_t step_ms) { return snx_slide(over, ms, step_ms); }
 size_t gui_wrap(const char* s, int width) {
     const char* p = s;
     size_t slash = 0, space = 0;
