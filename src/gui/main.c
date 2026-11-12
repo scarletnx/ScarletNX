@@ -14701,9 +14701,10 @@ static bool left_is_save(const char* old, const char* now) {
 /* The saves the games of folder keep in their own folders, <id>/<id>_data/save/<kind>. With global (save_layout=global)
    each is now in the data folder's save/ as fs.c's save_global has them: an Account save in user.<uid>/<id>, Device's
    and BCAT's in device/<id> and bcat/<id>, cache storage in cache/<id>/0 (a game's own folder held its indices as
-   one). A System save stays, its folder there named by a save ID the game's own did not keep, which the game's run
-   says. A game with no title ID of its own keeps its saves, and so does every game with save_layout=game: those are
-   listed while they are as the versions before kept a save (left_save) */
+   one), its files in that folder's 0/ at once (gui_move_save_into). A System save stays, its folder there named by a
+   save ID the game's own did not keep, which the game's run says. A game with no title ID of its own keeps its saves,
+   and so does every game with save_layout=game: those are listed while they are as the versions before kept a save
+   (left_save) */
 static void left_saves(App* app, const char* folder, bool global) {
     char **names = NULL, **kinds = NULL;
     size_t count = 0, kinds_count = 0, i, k;
@@ -15083,6 +15084,7 @@ static const char* last_part(const char* path) {
 }
 static int move_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply, bool pages) {
     char old[4400], now[4400], what[4500], folder[4400], group[4400] = "", dests[4400] = "", shown[4400];
+    char save_of[4400];
     char *config = menu_folder(app, SNX_USER_CONFIG, false), *state = menu_folder(app, SNX_USER_STATE, false);
     char* games = games_old(app);
     const char* only[2][5];
@@ -15128,7 +15130,11 @@ static int move_old(App* app, GuiCleaned* done, GuiCleaned* folders, bool apply,
         }
         if (!strcmp(last_part(old), "gui") && snx_is_dir(old))
             files = config && !strcmp(now, config) ? only[0] : state && !strcmp(now, state) ? only[1] : NULL;
-        moves += gui_move_entries(done, old, now, files, apply);
+        left_folder(old, save_of, sizeof save_of);
+        if (strcmp(save_of, old)) /* a game's own save (left_saves): its files in its last commit at once */
+            moves += gui_move_save_into(done, old, now, apply);
+        else
+            moves += gui_move_entries(done, old, now, files, apply);
         moves += gui_move_save_note(done, old, now, apply); /* a save's folder (left_saves) brings its note */
         for (k = SNX_USER_CONFIG; games && !strcmp(old, games) && k <= SNX_USER_CACHE; ++k) {
             char *from_dir = snx_user_path(old, k), *to = snx_user_path(now, k);

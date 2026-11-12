@@ -830,7 +830,8 @@ static void test_old_files(App* app) {
     char *gui = join(user, "gui"), *settings = join(gui, "settings.ini"), *work = join(app->data_dir, "work");
     char *object = join(work, "a.o"), *games = join(app->data_dir, "games"), *old_game = join(games, "x");
     char *game = join(app->games_dir, "0100000000ABC000"), *saves = join(game, "0100000000ABC000_data/save");
-    char *device = join(saves, "device/d.bin"), *moved = join(app->data_dir, "save/device/0100000000ABC000/d.bin");
+    char *device = join(saves, "device/d.bin"),
+         *moved = join(app->data_dir, "save/device/0100000000ABC000/" SNX_SAVE_COMMITTED "/d.bin");
     char head[32], *text;
     const char* labels[GUI_SETUP_CHOICES];
     static const char mine[] = "; kept as it is\n[setup]\nversion = 1\nnotices = 99\n";
@@ -990,18 +991,7 @@ static void test_old_files(App* app) {
     render(app);
     shows(app, "Move All: 1 done, 0 not", rgb(head_ink(app)));
     key(app, SDLK_RETURN);
-    /* the save in the data folder's save/ now, its files in the folder itself as the versions before kept one: listed
-       again, on the saves' page, and the next Move All puts them in its 0/ (left_save) */
-    assert(!app->setup_on && app->lefts == 2 && strstr(app->left, "save")); /* the device and the account save */
-    left_behind(app);
-    setup_start(app);
-    assert(app->setup_on && page(app) == SETUP_LEFT && left_groups(app) == 1); /* the saves' page */
-    key(app, SDLK_END);
-    for (int n = 0; n < 8 && strcmp(choice_label(app), "Move All"); ++n) key(app, SDLK_DOWN);
-    key(app, SDLK_RETURN);
-    assert(app->left_did == 1 && !snx_path_exists(moved));
-    key(app, SDLK_RETURN);
-    assert(!app->setup_on && !app->lefts);
+    assert(!app->setup_on && !app->lefts); /* each save in its 0/ in the data folder's save/: none listed again */
     left_behind(app);
     setup_start(app);
     assert(!app->setup_on); /* nothing left, nothing due */
@@ -1113,11 +1103,12 @@ static void test_saves_one_page(App* app) {
     shows(app, "Move All: 14 done, 0 not", rgb(head_ink(app)));
     shows(app, "\x1f", rgb(app->theme.soft));
     for (i = 0; i < 14; ++i) {
-        assert(!snx_path_format(path, sizeof path, "%s/save/device/0100000000AB%X000/d.bin", app->data_dir, i));
+        assert(!snx_path_format(path, sizeof path, "%s/save/device/0100000000AB%X000/" SNX_SAVE_COMMITTED "/d.bin",
+                                app->data_dir, i));
         assert(snx_is_file(path));
     }
     key(app, SDLK_RETURN);
-    assert(!app->setup_on && app->lefts == 14); /* in the data folder's save/ now, for the next Move All (left_save) */
+    assert(!app->setup_on && !app->lefts);
     for (i = 0; i < 14; ++i) {
         assert(!snx_path_format(path, sizeof path, "%s/0100000000AB%X000", app->games_dir, i));
         assert(!snx_remove_tree(path));

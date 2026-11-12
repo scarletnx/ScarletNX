@@ -43,6 +43,14 @@ bool gui_save_old(const char* save);
    from it. One that cannot move puts back the ones that did, the save as it was, and is the only entry. With apply
    false nothing is touched and the entries say what would move. How many move */
 int gui_move_save_committed(GuiCleaned* done, const char* save, bool apply);
+/* Move Old Files for a game's own save old, its files in the folder itself as the versions before kept one, to the save
+   folder now as this version keeps one, at once: its files in now's 0/ (SNX_SAVE_COMMITTED), with the file that says
+   so. They go into <now>.moving/0 first, which then takes now's place, as gui_move_save_committed's do: one that
+   cannot move puts back the ones that did, old as it was, and is the only entry. A now already there takes them as
+   gui_move_entries moves entries, and is then put in its 0/ as gui_move_save_committed does when it is a save as the
+   versions before kept one. With apply false nothing is touched and the entries say where each would go. How many
+   move */
+int gui_move_save_into(GuiCleaned* done, const char* old, const char* now, bool apply);
 /* What Delete All of the old files leaves where it is, said on the page and in its entry: a save, never deleted, only
    moved (a game's save folder, <name>_data/save/<kind>, or a game an older version laid out beside others, whose
    <name>_data/ holds its saves); a folder holding saves (a <name>_data/ with a save/ or sdmc/ in it, however deep);

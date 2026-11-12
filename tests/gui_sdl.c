@@ -6896,8 +6896,8 @@ int main(int argc, char** argv) {
         {
             static const char* const kept[] = {"user.0123456789abcdeffedcba9876543210/u.bin", "device/d.bin",
                                                "cache/c.bin", "system/s.bin", "temp/t.bin"};
-            static const char* const now[] = {"user.0123456789abcdeffedcba9876543210/0100000000ABC000/u.bin",
-                                              "device/0100000000ABC000/d.bin", "cache/0100000000ABC000/0/c.bin"};
+            static const char* const now[] = {"user.0123456789abcdeffedcba9876543210/0100000000ABC000/0/u.bin",
+                                              "device/0100000000ABC000/0/d.bin", "cache/0100000000ABC000/0/0/c.bin"};
             /* each one's folder there, and its file */
             static const char* const laid[][2] = {{"user.0123456789abcdeffedcba9876543210/0100000000ABC000", "u.bin"},
                                                   {"device/0100000000ABC000", "d.bin"},
@@ -6974,17 +6974,10 @@ int main(int argc, char** argv) {
             assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/system/s.bin", game) &&
                    snx_is_file(path));
             gui_cleaned_free(&done);
-            /* each is in the data folder's save/ now as an older version kept a save, its files in the folder itself:
-               listed again there, with its 0/, where the second move puts them with the file that says so */
+            /* each in the data folder's save/ at once as this version keeps a save: its files in its 0/, with the file
+               that says so; nothing listed again */
             left_behind(&app);
-            for (i = 0; i < sizeof laid / sizeof *laid; ++i) {
-                assert(!snx_path_format(path, sizeof path, "%s/save/%s", data_saves, laid[i][0]));
-                assert(strstr(app.left, path));
-            }
-            assert(app.lefts == 3);
-            assert(move_old(&app, &done, NULL, false, false) == 3 && done.count == 3 && done.done == 3);
-            gui_cleaned_free(&done);
-            assert(move_old(&app, &done, NULL, true, false) == 3);
+            assert(app.lefts == 0);
             for (i = 0; i < sizeof laid / sizeof *laid; ++i) {
                 assert(!snx_path_format(path, sizeof path, "%s/save/%s/" SNX_SAVE_COMMITTED "/%s", data_saves,
                                         laid[i][0], laid[i][1]));
