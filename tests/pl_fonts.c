@@ -147,6 +147,17 @@ static void hooks(void) {
     }
     CHECK(g_maps == 1 && g_hle.pl.base == FONTS_BASE);
     CHECK(nnpl_get_shared_font_size(c, 6) == 0 && nnpl_get_shared_font_size(c, -1) == 0);
+    /* a built-in font is the shared font of its type: the flags, its address in the mapped memory and its size, the
+       bytes between left; a type with no font answers false and leaves the caller's structure */
+    for (u8 t = 0; t < 6; t++) {
+        memset(mem, 0xee, 0x40);
+        CHECK(nnpl_get_built_in_font_data(c, 0x10, t, 1) == 1 && mem[0x10] == 1 && mem[0x11] == 0 && mem[0x12] == 0xee);
+        CHECK(snx_ld_le64(mem + 0x18) == FONTS_BASE + g_hle.pl.font_off[t]);
+        CHECK(snx_ld_le64(mem + 0x20) == g_hle.pl.font_size[t] && mem[0x28] == 0xee);
+    }
+    memset(mem, 0xee, 0x40);
+    CHECK(nnpl_get_built_in_font_data(c, 0x10, 6, 0) == 0 && nnpl_get_built_in_font_data(c, 0x10, 0xff, 0) == 0);
+    CHECK(mem[0x10] == 0xee && mem[0x18] == 0xee && g_maps == 1);
     /* the three arrays, as many entries as max allows, and the count of all six */
     memset(mem, 0xee, sizeof mem);
     CHECK(nnpl_get_shared_font_in_order_of_priority(c, 0x10, 0x20, 0x100, 0x200, 4, 0x53552d6e65ull));
