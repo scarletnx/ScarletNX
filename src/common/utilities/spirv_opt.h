@@ -20,7 +20,7 @@
    its number: a literal there can only keep what it happens to number. */
 size_t spv_opt_dead_code(uint32_t* module, size_t words);
 
-/* Value numbering, as spirv-opt's redundancy elimination does it: an instruction of a function that only makes its
+/* Value numbering with integer folds, as spirv-opt's redundancy elimination and constant folding do them: an instruction of a function that only makes its
    result from its operands (arithmetic, a conversion, a composite, an access chain, an image sample or query, a
    GLSL.std.450 instruction) goes when an equal one dominates it, and what read its result reads the other's. Equal
    is the same opcode, type, operands and decorations; the two operands of an integer or logical instruction that
@@ -28,6 +28,14 @@ size_t spv_opt_dead_code(uint32_t* module, size_t words);
    only pair inside one block. A load pairs with an equal load: wherever that one dominates it when the pointer is
    into an Input, UniformConstant, PushConstant or Uniform variable (but a module that declares a BufferBlock), and
    otherwise only in the same block with no store, call, atomic, image write or unknown instruction between them.
+
+   Before an instruction is looked up it is folded, when it makes a 32-bit integer or a boolean: on constants (no
+   specialization constant) to their result, and to an operand or a constant when one operand decides (x + 0, x * 1,
+   x & 0, x - x, true && x); of any type, a select on a constant or of one value twice, and a bitcast to its
+   operand's type or back from a bitcast, are that operand. An operand stands for the instruction only with the
+   instruction's type. A constant the module does not declare is declared before the first function under the
+   instruction's own id, in the room the instruction left: the module never grows. Float arithmetic, divisions,
+   shifts by 32 or more and decorated instructions are not folded.
 
    A result an instruction of unknown layout may name (any of its words) neither goes nor stands for another, nor
    does one with a decoration that has operands. A module with a 64-bit integer type and an OpSwitch is left as it is. Run

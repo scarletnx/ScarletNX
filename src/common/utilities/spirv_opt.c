@@ -17,6 +17,7 @@ enum {
     SPV_OPT_OP_GROUP_DECORATE = 74,
     SPV_OPT_OP_GROUP_MEMBER_DECORATE = 75,
     SPV_OPT_OP_COPY_OBJECT = 83,
+    SPV_OPT_OP_CONSTANT_NULL = 46,
     SPV_OPT_OP_IMAGE_SAMPLE_PROJ_EXPLICIT_LOD = 92,
     SPV_OPT_OP_IMAGE_SAMPLE_PROJ_DREF_IMPLICIT_LOD = 93,
     SPV_OPT_OP_IMAGE_SAMPLE_PROJ_DREF_EXPLICIT_LOD = 94,
@@ -40,6 +41,9 @@ enum {
     SPV_OPT_PINNED = 4,    /* an instruction of no known layout may name it, or a decoration with operands does:
                               its instruction is not numbered */
     SPV_OPT_READ_ONLY = 8, /* a pointer into memory no instruction of the module writes */
+    SPV_OPT_INT = 16,      /* a type: a 32-bit integer of either sign */
+    SPV_OPT_BOOL = 32,     /* a type: the boolean */
+    SPV_OPT_CONSTANT = 64, /* a constant of one word, true, false or null, and no specialization constant */
     /* what dead code elimination may do with an instruction */
     SPV_OPT_KEEP = 0,        /* it has an effect, or is gone already */
     SPV_OPT_RESULT = 1,      /* it only makes its result: it goes when nothing uses the result */
@@ -50,7 +54,11 @@ enum {
     SPV_OPT_PLAIN = 1,
     SPV_OPT_PURE = 2,
     SPV_OPT_IN_BLOCK = 3,
-    SPV_OPT_LOADS = 4
+    SPV_OPT_LOADS = 4,
+    /* what an instruction folds to: fold */
+    SPV_OPT_FOLD_NONE = 0,
+    SPV_OPT_FOLD_ID = 1,   /* an id it always equals */
+    SPV_OPT_FOLD_VALUE = 2 /* a constant of its type */
 };
 
 /* "GLSL.std.450" as a module's words hold it, four characters a word from the low byte, on any host */
@@ -330,10 +338,157 @@ static int commutes(uint32_t op, uint32_t width) {
            (op >= SPV_OP_LOGICAL_EQUAL && op <= SPV_OP_LOGICAL_AND);
 }
 
+/* What the instruction at w always equals, when its type is a 32-bit integer or the boolean and its operands say so
+   (they were replaced already): SPV_OPT_FOLD_VALUE with the constant's bits in *out when they are all constants, or
+   when one of them decides (x & 0, x * 0, x - x, x ^ x, false && x, true || x); SPV_OPT_FOLD_ID with an operand in
+   *out when the others leave it as it is (x + 0, x - 0, x | 0, x ^ 0, x << 0, x * 1, x & ~0, x & x, x | x,
+   true && x, false || x, x && x), only when that operand has the instruction's type. Of any type: a select whose
+   condition is a constant or whose two values are one id, and a bitcast to the type its operand has, or of a
+   bitcast from that type. A shift by 32 or more and a field past bit 32 are left: the module gives them no value.
+   module is for the instruction that makes a bitcast's operand, def[] says where; is, type_of and value are by id. */
+static uint32_t fold(const uint32_t* module, const uint32_t* w, uint32_t width, uint32_t op, uint32_t bound,
+                     const uint8_t* is, const uint32_t* type_of, const uint32_t* value, const uint32_t* def,
+                     uint32_t* out) {
+    uint32_t t = w[1], a = width > 3 && w[3] < bound ? w[3] : 0, b = width > 4 && w[4] < bound ? w[4] : 0;
+    uint32_t c = width > 5 && w[5] < bound ? w[5] : 0;
+    /* a, b, c: the operands that are ids the pass has tables for (0 is none: no id is 0) */
+    int ka = is[a] & SPV_OPT_CONSTANT, kb = is[b] & SPV_OPT_CONSTANT, kc = is[c] & SPV_OPT_CONSTANT;
+    int ia = ka && is[type_of[a]] & SPV_OPT_INT, ib = kb && is[type_of[b]] & SPV_OPT_INT;
+    int ba = ka && is[type_of[a]] & SPV_OPT_BOOL, bb = kb && is[type_of[b]] & SPV_OPT_BOOL;
+    uint32_t va = value[a], vb = value[b], vc = value[c], v;
+    if (op == SPV_OP_SELECT && width == 6) {
+        uint32_t pick = ba ? va ? b : c : b == c ? b : 0;
+        if (!pick || type_of[pick] != t) return SPV_OPT_FOLD_NONE;
+        *out = pick;
+        return SPV_OPT_FOLD_ID;
+    }
+    if (op == SPV_OP_BITCAST && width == 4 && a) {
+        const uint32_t* from = module + def[a]; /* the header's first word, an opcode of none, when def[a] is 0 */
+        if (type_of[a] == t) {
+            *out = a;
+            return SPV_OPT_FOLD_ID;
+        }
+        if (ia && is[t] & SPV_OPT_INT) {
+            *out = va;
+            return SPV_OPT_FOLD_VALUE;
+        }
+        if (from[0] == (4u << 16 | SPV_OP_BITCAST) && from[3] < bound && type_of[from[3]] == t) {
+            *out = from[3];
+            return SPV_OPT_FOLD_ID;
+        }
+        return SPV_OPT_FOLD_NONE;
+    }
+    if (is[t] & SPV_OPT_INT && width == 5) {
+        int sum = op == SPV_OP_I_ADD || op == SPV_OP_BITWISE_OR || op == SPV_OP_BITWISE_XOR;
+        int product = op == SPV_OP_I_MUL || op == SPV_OP_BITWISE_AND;
+        int shift =
+            op == SPV_OP_SHIFT_LEFT_LOGICAL || op == SPV_OP_SHIFT_RIGHT_LOGICAL || op == SPV_OP_SHIFT_RIGHT_ARITHMETIC;
+        if (!sum && !product && !shift && op != SPV_OP_I_SUB) return SPV_OPT_FOLD_NONE;
+        if (ia && ib) {
+            if (shift && vb >= 32) return SPV_OPT_FOLD_NONE;
+            switch (op) {
+                case SPV_OP_I_ADD: v = va + vb; break;
+                case SPV_OP_I_SUB: v = va - vb; break;
+                case SPV_OP_I_MUL: v = va * vb; break;
+                case SPV_OP_BITWISE_AND: v = va & vb; break;
+                case SPV_OP_BITWISE_OR: v = va | vb; break;
+                case SPV_OP_BITWISE_XOR: v = va ^ vb; break;
+                case SPV_OP_SHIFT_LEFT_LOGICAL: v = va << vb; break;
+                case SPV_OP_SHIFT_RIGHT_LOGICAL: v = va >> vb; break;
+                default: v = va >> vb | (va >> 31 && vb ? 0xffffffffu << (32 - vb) : 0); break; /* arithmetic */
+            }
+            *out = v;
+            return SPV_OPT_FOLD_VALUE;
+        }
+        /* one constant, k, and the other operand, x: k on the right, or on the left of what commutes */
+        uint32_t x = ib ? a : ia && (sum || product) ? b : 0, k = ib ? vb : va;
+        if (x) {
+            if ((k == 0 && product) || (k == 0xffffffffu && op == SPV_OP_BITWISE_OR)) {
+                *out = k;
+                return SPV_OPT_FOLD_VALUE;
+            }
+            if ((k == 0 && !product) || (k == 1 && op == SPV_OP_I_MUL) ||
+                (k == 0xffffffffu && op == SPV_OP_BITWISE_AND)) {
+                if (type_of[x] != t) return SPV_OPT_FOLD_NONE;
+                *out = x;
+                return SPV_OPT_FOLD_ID;
+            }
+        }
+        if (a && a == b && (op == SPV_OP_I_SUB || op == SPV_OP_BITWISE_XOR)) {
+            *out = 0;
+            return SPV_OPT_FOLD_VALUE;
+        }
+        if (a && a == b && (op == SPV_OP_BITWISE_AND || op == SPV_OP_BITWISE_OR) && type_of[a] == t) {
+            *out = a;
+            return SPV_OPT_FOLD_ID;
+        }
+        return SPV_OPT_FOLD_NONE;
+    }
+    if (is[t] & SPV_OPT_INT && width == 4 && ia && (op == SPV_OP_NOT || op == SPV_OP_S_NEGATE)) {
+        *out = op == SPV_OP_NOT ? ~va : 0u - va;
+        return SPV_OPT_FOLD_VALUE;
+    }
+    if (is[t] & SPV_OPT_INT && width == 6 && ia && ib && kc && is[type_of[c]] & SPV_OPT_INT &&
+        (op == SPV_OP_BIT_FIELD_U_EXTRACT || op == SPV_OP_BIT_FIELD_S_EXTRACT)) {
+        if (vb > 32 || vc > 32 - vb) return SPV_OPT_FOLD_NONE;
+        v = vc ? va >> vb & 0xffffffffu >> (32 - vc) : 0;
+        if (op == SPV_OP_BIT_FIELD_S_EXTRACT && vc && vc < 32 && v >> (vc - 1)) v |= 0xffffffffu << vc;
+        *out = v;
+        return SPV_OPT_FOLD_VALUE;
+    }
+    if (is[t] & SPV_OPT_BOOL && width == 5 && ia && ib && op >= SPV_OP_I_EQUAL && op <= SPV_OP_S_LESS_THAN_EQUAL) {
+        uint32_t sa = va ^ 0x80000000u, sb = vb ^ 0x80000000u; /* in the signed order */
+        switch (op) {
+            case SPV_OP_I_EQUAL: v = va == vb; break;
+            case SPV_OP_I_NOT_EQUAL: v = va != vb; break;
+            case SPV_OP_U_GREATER_THAN: v = va > vb; break;
+            case SPV_OP_S_GREATER_THAN: v = sa > sb; break;
+            case SPV_OP_U_GREATER_THAN_EQUAL: v = va >= vb; break;
+            case SPV_OP_S_GREATER_THAN_EQUAL: v = sa >= sb; break;
+            case SPV_OP_U_LESS_THAN: v = va < vb; break;
+            case SPV_OP_S_LESS_THAN: v = sa < sb; break;
+            case SPV_OP_U_LESS_THAN_EQUAL: v = va <= vb; break;
+            default: v = sa <= sb; break;
+        }
+        *out = v;
+        return SPV_OPT_FOLD_VALUE;
+    }
+    if (is[t] & SPV_OPT_BOOL && width == 4 && ba && op == SPV_OP_LOGICAL_NOT) {
+        *out = !va;
+        return SPV_OPT_FOLD_VALUE;
+    }
+    if (is[t] & SPV_OPT_BOOL && width == 5 && op >= SPV_OP_LOGICAL_EQUAL && op <= SPV_OP_LOGICAL_AND) {
+        int both = op == SPV_OP_LOGICAL_AND, either = op == SPV_OP_LOGICAL_OR;
+        if (ba && bb) {
+            *out = both ? va & vb : either ? va | vb : (va == vb) == (op == SPV_OP_LOGICAL_EQUAL);
+            return SPV_OPT_FOLD_VALUE;
+        }
+        if (!both && !either) return SPV_OPT_FOLD_NONE;
+        uint32_t x = bb ? a : ba ? b : 0, k = bb ? vb : va;
+        if (x && k == (uint32_t)either) { /* false && x, true || x */
+            *out = k;
+            return SPV_OPT_FOLD_VALUE;
+        }
+        if (!x && a == b) x = a;
+        if (!x || type_of[x] != t) return SPV_OPT_FOLD_NONE;
+        *out = x;
+        return SPV_OPT_FOLD_ID;
+    }
+    return SPV_OPT_FOLD_NONE;
+}
+
+/* where the constant of type and value is in table (ids; 0 an empty slot), or the empty slot where it would go */
+static uint32_t constant_slot(const uint32_t* table, uint32_t mask, const uint32_t* type_of, const uint32_t* value,
+                              uint32_t type, uint32_t v) {
+    uint32_t s = (type * 0x9e3779b1u ^ v * 0x85ebca6bu) >> 7 & mask;
+    while (table[s] && (type_of[table[s]] != type || value[table[s]] != v)) s = (s + 1) & mask;
+    return s;
+}
+
 size_t spv_opt_values(uint32_t* module, size_t words) {
     if (words <= SPV_OPT_HEADER) return words;
     uint32_t bound = module[3], glsl = 0;
-    size_t first = 0;
+    size_t first = 0, constants = 0;
     int wide = 0, buffer_block = 0; /* a 64-bit integer type; a block the module may write under Uniform */
     for (size_t i = SPV_OPT_HEADER; i < words && !first; i += module[i] >> 16) {
         const uint32_t* w = module + i;
@@ -344,6 +499,7 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
             glsl = w[1];
         if (op == SPV_OP_TYPE_INT && width >= 3 && w[2] > 32) wide = 1;
         if (op == SPV_OP_DECORATE && width >= 3 && w[2] == SPV_OPT_DECORATION_BUFFER_BLOCK) buffer_block = 1;
+        if (op >= SPV_OP_CONSTANT_TRUE && op <= SPV_OPT_OP_CONSTANT_NULL) constants++;
         if (op == SPV_OP_FUNCTION) first = i;
     }
     if (!first) return words;
@@ -372,24 +528,31 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
     }
     /* a switch on a 64-bit selector has two words a case: its targets are not where this reads them */
     if (!blocks || !numbered || (switches && wide)) return words;
-    size_t slots = 16;
+    size_t slots = 16, known = 16; /* the two tables: the instructions kept, and the constants */
     while (slots < 2 * numbered) slots *= 2;
-    /* One block. By id: what replaces it, its decorations (a bit each), its block when it is a label (from 1), and
-       what it is, a byte. By block: its immediate dominator, its number in the post order (from 1; 0 when nothing
+    while (known < 2 * (constants + numbered)) known *= 2;
+    /* One block. By id: what replaces it, its decorations (a bit each), its block when it is a label (from 1), its
+       type, its bits when it is a constant, where its instruction is, and what it is, a byte. By block: its immediate dominator, its number in the post order (from 1; 0 when nothing
        reaches it), where its successors and its predecessors start, the post order, and the stack that walks it. By
        edge: the block it goes to, and the predecessors' lists. By slot of the table: the instruction, its block and
-       its scope. */
+       its scope. By slot of the constants' table: the id. By numbered instruction: the id of the constant it was
+       made. */
     size_t ids = bound;
-    assert(ids <= SIZE_MAX / 64 && blocks <= SIZE_MAX / 64 && edges <= SIZE_MAX / 64 && slots <= SIZE_MAX / 64);
-    uint32_t* replace = calloc(1, (3 * ids + 7 * blocks + 2 + 2 * edges + 3 * slots) * sizeof *replace + ids);
+    assert(ids <= SIZE_MAX / 64 && blocks <= SIZE_MAX / 64 && edges <= SIZE_MAX / 64 && slots <= SIZE_MAX / 64 &&
+           known <= SIZE_MAX / 64);
+    uint32_t* replace =
+        calloc(1, (6 * ids + 7 * blocks + 2 + 2 * edges + 3 * slots + known + numbered) * sizeof *replace + ids);
     if (!replace) abort();
-    uint32_t *sign = replace + ids, *block_of = sign + ids, *idom = block_of + ids, *order = idom + blocks;
+    uint32_t *sign = replace + ids, *block_of = sign + ids, *type_of = block_of + ids, *value = type_of + ids;
+    uint32_t *def = value + ids, *idom = def + ids, *order = idom + blocks;
     uint32_t *succ = order + blocks, *pred = succ + blocks + 1, *sequence = pred + blocks + 1;
     uint32_t *stack = sequence + blocks, *to = stack + 2 * blocks, *from = to + edges;
     uint32_t *slot_at = from + edges, *slot_block = slot_at + slots, *slot_scope = slot_block + slots;
-    uint8_t* is = (uint8_t*)(slot_scope + slots);
+    uint32_t *constant = slot_scope + slots, *made = constant + known, nmade = 0;
+    uint8_t* is = (uint8_t*)(made + numbered);
 
-    /* the declarations: which ids are decorated and how, and the variables no instruction can write */
+    /* the declarations: which ids are decorated and how, the variables no instruction can write, and the integer
+       and boolean types with their constants (a type comes before the constants of it) */
     uint32_t kinds[32], nkinds = 0;
     for (size_t i = SPV_OPT_HEADER; i < first; i += module[i] >> 16) {
         const uint32_t* w = module + i;
@@ -412,6 +575,21 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
                    (w[3] == SPV_STORAGE_UNIFORM_CONSTANT || w[3] == SPV_STORAGE_INPUT ||
                     w[3] == SPV_STORAGE_PUSH_CONSTANT || (w[3] == SPV_STORAGE_UNIFORM && !buffer_block))) {
             is[w[2]] |= SPV_OPT_READ_ONLY;
+        } else if (op == SPV_OP_TYPE_INT && width >= 3 && w[1] < bound && w[2] == 32) {
+            is[w[1]] |= SPV_OPT_INT;
+        } else if (op == SPV_OP_TYPE_BOOL && width >= 2 && w[1] < bound) {
+            is[w[1]] |= SPV_OPT_BOOL;
+        } else if (op >= SPV_OP_CONSTANT_TRUE && op <= SPV_OPT_OP_CONSTANT_NULL && width >= 3 && w[1] < bound &&
+                   w[2] < bound) {
+            type_of[w[2]] = w[1];
+            /* a constant of one word, true, false or null: fold asks its type before it reads the value */
+            int number = op == SPV_OP_CONSTANT && width == 4;
+            if (!number && op != SPV_OP_CONSTANT_TRUE && op != SPV_OP_CONSTANT_FALSE && op != SPV_OPT_OP_CONSTANT_NULL)
+                continue;
+            is[w[2]] |= SPV_OPT_CONSTANT;
+            value[w[2]] = number ? w[3] : op == SPV_OP_CONSTANT_TRUE;
+            uint32_t s = constant_slot(constant, (uint32_t)known - 1, type_of, value, w[1], value[w[2]]);
+            if (!constant[s]) constant[s] = w[2];
         }
     }
 
@@ -517,6 +695,10 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
         uint32_t last = literal && !more && literal < width ? literal : width;
         for (uint32_t k = 1; k < last; k++)
             if (k != literal && w[k] < bound && replace[w[k]]) w[k] = replace[w[k]];
+        if (op < 256 && (result_only[op / 32] >> (op % 32) & 1) && w[1] < bound && w[2] < bound) {
+            type_of[w[2]] = w[1];
+            def[w[2]] = (uint32_t)i;
+        }
         if (kind == SPV_OPT_PLAIN) {
             if (op == SPV_OP_LABEL) block = block_of[w[1]] - 1;
             if (!only_result(w, width, op, glsl)) epoch++; /* a block's last instruction is one of these */
@@ -529,6 +711,31 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
             width >= 4 && w[3] < bound && is[w[3]] & SPV_OPT_READ_ONLY)
             is[w[2]] |= SPV_OPT_READ_ONLY; /* a pointer into what its base points into */
         if (is[w[2]] & SPV_OPT_PINNED) continue;
+        uint32_t folded = 0, how = SPV_OPT_FOLD_NONE;
+        if (kind == SPV_OPT_PURE && !sign[w[2]] && w[1] < bound)
+            how = fold(module, w, width, op, bound, is, type_of, value, def, &folded);
+        if (how == SPV_OPT_FOLD_VALUE) {
+            uint32_t k = constant_slot(constant, (uint32_t)known - 1, type_of, value, w[1], folded);
+            if (constant[k]) {
+                folded = constant[k];
+                how = SPV_OPT_FOLD_ID;
+            } else { /* no constant of the module has the value: the instruction's id becomes one, declared at the end */
+                constant[k] = w[2];
+                value[w[2]] = folded;
+                is[w[2]] |= SPV_OPT_CONSTANT;
+                made[nmade++] = w[2];
+                w[0] = (w[0] & 0xffff0000u) | SPV_OPT_OP_NOP;
+                any = 1;
+                continue;
+            }
+        }
+        if (how == SPV_OPT_FOLD_ID) {
+            replace[w[2]] = folded;
+            is[w[2]] = SPV_OPT_GONE;
+            w[0] = (w[0] & 0xffff0000u) | SPV_OPT_OP_NOP;
+            any = 1;
+            continue;
+        }
         int swap = commutes(op, width);
         uint32_t lo = swap && w[4] < w[3] ? w[4] : w[3], hash = (w[0] ^ scope * 0x9e3779b1u) * 0x85ebca6bu ^ w[1];
         if (swap) {
@@ -566,6 +773,28 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
                 if (w[k] < bound && replace[w[k]]) w[k] = replace[w[k]];
         }
         words = compact(module, words, bound, is);
+        if (nmade) {
+            /* the constants made go before the first function, into room their instructions left: one is never
+               wider than the instruction it was */
+            size_t at = SPV_OPT_HEADER, room = 0;
+            while ((module[at] & 0xffff) != SPV_OP_FUNCTION) at += module[at] >> 16;
+            for (uint32_t k = 0; k < nmade; k++) room += is[type_of[made[k]]] & SPV_OPT_BOOL ? 3 : 4;
+            memmove(module + at + room, module + at, (words - at) * sizeof *module);
+            for (uint32_t k = 0; k < nmade; k++) {
+                uint32_t id = made[k], type = type_of[id];
+                if (is[type] & SPV_OPT_BOOL) {
+                    module[at++] = 3u << 16 | (value[id] ? SPV_OP_CONSTANT_TRUE : SPV_OP_CONSTANT_FALSE);
+                    module[at++] = type;
+                    module[at++] = id;
+                } else {
+                    module[at++] = 4u << 16 | SPV_OP_CONSTANT;
+                    module[at++] = type;
+                    module[at++] = id;
+                    module[at++] = value[id];
+                }
+            }
+            words += room;
+        }
     }
     free(replace);
     return words;
