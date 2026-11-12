@@ -5145,7 +5145,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_RIGHT);
     assert(app.menu.selected == GUI_GBA);
     render(&app);
-    shows(&app, "- " ICON_GAMEPAD " Load GBA ROM", yellow);
+    shows(&app, "- " ICON_GAMEPAD " Load GBA/MultiBoot ROM", yellow);
     key(&app, SDLK_RIGHT);
     assert(app.menu.selected == GUI_ANDROID);
     render(&app);
@@ -8653,7 +8653,8 @@ int main(int argc, char** argv) {
                                 {"homebrew.cia", GUI_3DS, "3DS game, opened with scarletnx-3ds"},
                                 {"card.3ds", GUI_3DS, "3DS game, opened with scarletnx-3ds"},
                                 {"homebrew.vpk", GUI_VITA, "Vita VPK, opened with scarletnx-vita"},
-                                {"homebrew.gba", GUI_GBA, "GBA ROM, played with scarletnx-agb"}};
+                                {"homebrew.gba", GUI_GBA, "GBA ROM, played with scarletnx-agb"},
+                                {"homebrew.mb", GUI_GBA, "GBA MultiBoot ROM, played with scarletnx-agb"}};
                 GuiRecent was = app.recent;
                 GuiGamesBoxes none = {0};
                 char kind[192], listed[192];

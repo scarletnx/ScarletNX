@@ -2184,7 +2184,7 @@ msgid "Recompiles a PS Vita homebrew .vpk, then runs it"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Runs a GBA ROM on the emulated AGB board"
+msgid "Runs a GBA ROM or MultiBoot ROM on the emulated AGB board"
 msgstr ""
 
 #: src/gui/main.c
@@ -2264,6 +2264,10 @@ msgstr "Jogo de 3DS, aberto com o scarletnx-3ds"
 
 #: src/gui/main.c
 msgid "Vita VPK, opened with scarletnx-vita"
+msgstr ""
+
+#: src/gui/main.c
+msgid "GBA MultiBoot ROM, played with scarletnx-agb"
 msgstr ""
 
 #: src/gui/main.c
@@ -5474,7 +5478,7 @@ msgid "Load Vita VPK"
 msgstr ""
 
 #: src/gui/ui.txt
-msgid "Load GBA ROM"
+msgid "Load GBA/MultiBoot ROM"
 msgstr ""
 
 #: src/gui/ui.txt

@@ -21,7 +21,7 @@
 		[button]"Load Vita VPK" {
 			icon = package
 		}
-		[button]"Load GBA ROM" {
+		[button]"Load GBA/MultiBoot ROM" {
 			icon = gamepad
 		}
 		[button]"Load Android APK/XAPK" {

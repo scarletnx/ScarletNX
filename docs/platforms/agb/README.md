@@ -27,7 +27,7 @@ cmake --build build/agb
 build/agb/scarletnx-agb Game.gba
 ```
 
-`scarletnx-agb` is also a menu entry of `scarletnx-gui` ("Load GBA ROM"), next
+`scarletnx-agb` is also a menu entry of `scarletnx-gui` ("Load GBA/MultiBoot ROM"), next
 to the Switch, Linux and 3DS loaders.
 
 ## Layers
@@ -47,6 +47,11 @@ to the Switch, Linux and 3DS loaders.
 `scarletnx-agb` takes the [common options](../../user/usage.md#common-options) that fit it: `-r`, `--game`, `--data`,
 `--outdir`, `--output`, `--frames`, `--shot`, `--script`, `-f` and `-h`, each
 value as `--option VALUE` or `--option=VALUE`.
+
+A MultiBoot ROM (`.mb`) is a program the console receives through the link cable, as a GameCube game or another
+console sends one: `scarletnx-agb Program.mb` plays it with no cartridge, from EWRAM, where the BIOS puts it (256 KiB
+at most), starting at 0x020000C0 when that word is not zero, else at EWRAM's start, as mGBA does. It has no save
+memory.
 
 `scarletnx-agb Game.gba` plays the ROM in a window four times the console's
 screen, scaled by whole steps when it is resized, with the console's sound and

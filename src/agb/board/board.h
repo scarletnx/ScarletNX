@@ -67,12 +67,20 @@ typedef struct AgbBoard {
     uint32_t open_bus;         /* the opcode the CPU fetched last, as its last read through the bus hook gave it */
     uint16_t io[AGB_IO_COUNT]; /* the I/O register file; devices claim registers here */
     int has_cartridge;
+    uint32_t multiboot_size; /* a multiboot program's bytes at EWRAM's start; 0 with a cartridge */
+    uint64_t multiboot_hash; /* the program's FNV-1a, which names its recompiled code as a ROM's hash does */
 } AgbBoard;
 
 void agb_board_init(AgbBoard* board);
 /* Takes a copy of the image: returns 0, or -1 with a message when the image is not a GBA ROM. */
 int agb_board_insert(AgbBoard* board, const void* image, size_t size, char* error, size_t error_size);
 void agb_board_destroy(AgbBoard* board);
+/* Takes a multiboot program, as the BIOS leaves one it received through the cable: no cartridge, the image at EWRAM's
+   start, so once EWRAM is the map's (agb_map_init). Returns 0, or -1 with a message naming the image's size when it
+   is empty or EWRAM cannot hold it */
+int agb_board_multiboot(AgbBoard* board, const void* image, size_t size, char* error, size_t error_size);
+/* Where the machine starts: the cartridge's first word, or a multiboot program's entry */
+uint32_t agb_board_entry(const AgbBoard* board);
 
 /* The I/O window at 0x04000000: the devices own their registers here. Recompiled code reaches them
    through the bus hook of AgbCpu, which routes every access to these. A store's mask is the lanes it writes,

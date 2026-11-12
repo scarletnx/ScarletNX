@@ -46,6 +46,11 @@ word at 0x080000C0 (mov r5, #0xFF) to code at 0x080000C8 that puts 0x5A in r5 an
 
 A software interrupt whose number the BIOS does not have returns at once, as mGBA's HLE BIOS answers it, and the
 runner says which and where: a third ROM calls swi 0xFF0099 at 0x080000C0, then puts 42 in r5 and spins.
+
+A MultiBoot ROM (.mb) plays with no cartridge from EWRAM, where the BIOS receives one through the link cable: from
+0x020000C0 when that word is not zero (a program that puts 42 in r5 there and spins), else from EWRAM's start (one
+that puts 0x5A in r5 at 0x02000000 and spins), as mGBA's machine starts one. An image past EWRAM's 256 KiB is
+refused, the message naming its size and what EWRAM holds.
 """
 
 import argparse
@@ -130,6 +135,41 @@ def main():
             sys.exit(
                 'agb_reset: after swi 0xFF0099 r5 is %s, not 0000002A, or the runner did not name the call 0xFF at '
                 '0x080000C0\n%s%s' % (found.group(1) if found else 'missing', run.stdout, run.stderr)
+            )
+        # MultiBoot ROMs: the header's branch to 0xC0, mov r5, #42 and a spin there; mov r5, #0x5A and a spin at the
+        # start with a zero word at 0xC0; and an image a word past EWRAM
+        programs = {
+            'entry.mb': (0xEA00002E).to_bytes(4, 'little')
+            + bytes(0xBC)
+            + b''.join(w.to_bytes(4, 'little') for w in (0xE3A0502A, 0xEAFFFFFE)),
+            'start.mb': b''.join(w.to_bytes(4, 'little') for w in (0xE3A0505A, 0xEAFFFFFE)) + bytes(0xC0),
+        }
+        for name, (r5, pc) in {'entry.mb': (42, 0x020000C4), 'start.mb': (0x5A, 0x02000004)}.items():
+            (work / name).write_bytes(programs[name])
+            run = subprocess.run(
+                [args.runner, '--frames=2', '--registers', '--outdir', str(work), str(work / name)],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            found = dict(re.findall(r'\b(r\d+)=([0-9A-F]{8})', run.stdout))
+            if run.returncode or int(found.get('r5', '0'), 16) != r5 or int(found.get('r15', '0'), 16) != pc:
+                sys.exit(
+                    'agb_reset: the MultiBoot ROM %s ended with r5 %s and r15 %s, not %08X and %08X\n%s%s'
+                    % (name, found.get('r5', 'missing'), found.get('r15', 'missing'), r5, pc, run.stdout, run.stderr)
+                )
+        (work / 'big.mb').write_bytes(programs['entry.mb'] + bytes(0x40000 + 4 - len(programs['entry.mb'])))
+        run = subprocess.run(
+            [args.runner, '--frames=2', '--outdir', str(work), str(work / 'big.mb')],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        said = 'the multiboot program is 262148 bytes: EWRAM, where the BIOS receives one, holds 1 to 262144'
+        if run.returncode != 1 or said not in run.stderr:
+            sys.exit(
+                'agb_reset: a MultiBoot ROM of 262148 bytes ended with %d, not 1 with "%s"\n%s%s'
+                % (run.returncode, said, run.stdout, run.stderr)
             )
     print('agb_reset: passed')
 

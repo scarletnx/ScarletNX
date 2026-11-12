@@ -141,5 +141,6 @@ bool gui_copy_mod(const char* from, const char* to, char* why, size_t size);
 bool gui_is_cia(const char* name);
 bool gui_is_vpk(const char* name);
 bool gui_is_gba(const char* name);
+bool gui_is_multiboot(const char* name);
 bool gui_is_apk(const char* name);
 #endif
