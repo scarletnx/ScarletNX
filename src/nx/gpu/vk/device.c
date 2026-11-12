@@ -469,36 +469,90 @@ static void mesh_choose(int has_ext, const VkPhysicalDeviceMeshShaderFeaturesEXT
         LOG("vulkan: mesh draws use VK_EXT_mesh_shader%s\n",
             g_vk.has_task ? " with task shaders" : ", without task shaders");
 }
-/* How the ASTC textures the GPU decodes are held, where it samples BCn but not ASTC (astc_mode, gpu/texture/astc_bc.h):
-   Auto takes BC7 or Exact by the budget of the heap images go to as the device starts, which the line says with its
-   numbers. vk_mem_use's budget is the one the caches keep within: the driver's, or vk_budget_mb where that is lower */
+/* How the ASTC textures the GPU decodes are held, where it samples BCn but not ASTC (astc_mode, gpu/texture/astc_bc.h).
+   Auto, for a program that is not an Ounce one, follows the room of the heap images go to as the game runs
+   (vk_astc_auto_trimmed, vk_astc_auto_present); its line says the budget and the use it starts from. vk_mem_use's
+   budget is the one the caches keep within: the driver's, or vk_budget_mb where that is lower. Without
+   VK_EXT_memory_budget both numbers are devmem.c's own, the blocks it took for the use and 80% of the heap's size for
+   the budget, which see nothing other programs take: Auto follows those, and its line says so */
+static const char g_astc_exact[] = "decoded to RGBA8, exact, in four times BC7's memory",
+                  g_astc_bc7[] = "decoded to RGBA8 at once and encoded again as BC7 between frames, a quarter of "
+                                 "RGBA8's memory";
 static void astc_choose(void) {
-    static const char exact[] = "decoded to RGBA8, exact, in four times BC7's memory",
-                      bc7[] = "decoded to RGBA8 at once and encoded again as BC7 between frames, a quarter of RGBA8's "
-                              "memory";
     u64 usage = 0, budget = 0;
     if (g_vk.feat.textureCompressionASTC_LDR) return; /* sampled as the game's blocks */
     if (g_settings.astc_mode == 1) {
-        LOG("vulkan: astc_mode=1 (Exact): ASTC textures are %s\n", exact);
+        LOG("vulkan: astc_mode=1 (Exact): ASTC textures are %s\n", g_astc_exact);
         return;
     }
     if (!g_vk.feat.textureCompressionBC) return; /* RGBA8, which vk_blocks_say's line says */
-    vk_mem_use(&usage, &budget);
-    g_vk.astc_auto_bc7 = g_shader_sm86 || snx_astc_auto_bc7(budget);
+    g_vk.astc_auto = (SnxAstcAuto){g_shader_sm86, 0, 0};
     g_vk.astc_at_load = g_settings.astc_mode == 3 || (g_settings.astc_mode == 0 && g_shader_sm86);
     if (g_settings.astc_mode == 0 && g_shader_sm86)
         LOG("vulkan: astc_mode=0 (Auto): an Ounce program: ASTC textures are encoded as BC7 as they load, a quarter of "
             "RGBA8's memory (BC7 at load)\n");
-    else if (g_settings.astc_mode == 0)
-        LOG("vulkan: astc_mode=0 (Auto): heap %d's budget is %llu MB as the device starts, %s %llu MB: ASTC textures "
-            "are %s (%s)\n",
-            vk_mem_heap(), (unsigned long long)(budget >> 20), g_vk.astc_auto_bc7 ? "under" : "at least",
-            SNX_ASTC_EXACT_MB, g_vk.astc_auto_bc7 ? bc7 : exact, g_vk.astc_auto_bc7 ? "BC7" : "Exact");
-    else if (g_settings.astc_mode == 3)
+    else if (g_settings.astc_mode == 0) {
+        vk_mem_use(&usage, &budget);
+        LOG("vulkan: astc_mode=0 (Auto): ASTC textures that load are %s while heap %d has room, and BC7 from the first "
+            "trim of its caches, past %llu of the %llu MB budgeted, until the room under that is more than any "
+            "trim has left: %llu MB in use as the device starts%s\n",
+            g_astc_exact, vk_mem_heap(), (unsigned long long)(vk_mem_trim_start(budget) >> 20),
+            (unsigned long long)(budget >> 20), (unsigned long long)(usage >> 20),
+            g_vk.has_budget ? ""
+                            : "; the driver has no VK_EXT_memory_budget, so these are the renderer's own numbers, "
+                              "its memory blocks for the use and 80% of the heap's size for the budget, blind to what "
+                              "other programs take");
+    } else if (g_settings.astc_mode == 3)
         LOG("vulkan: astc_mode=3 (BC7 at load): ASTC textures are encoded as BC7 as they load, a quarter of RGBA8's "
             "memory\n");
     else
-        LOG("vulkan: astc_mode=2 (BC7): ASTC textures are %s\n", bc7);
+        LOG("vulkan: astc_mode=2 (BC7): ASTC textures are %s\n", g_astc_bc7);
+}
+/* Auto follows the memory here: astc_mode 0, a program that is not an Ounce one, ASTC decoded where BC7 is sampled */
+static int astc_auto_follows(void) {
+    return g_settings.astc_mode == 0 && !g_shader_sm86 && !g_vk.feat.textureCompressionASTC_LDR &&
+           g_vk.feat.textureCompressionBC;
+}
+/* the use and the budget of a switch's line: "U of B MB budgeted in use, R MB free", or past it */
+static void astc_room(char* out, size_t size, u64 usage, u64 budget) {
+    if (usage <= budget)
+        snprintf(out, size, "%llu of %llu MB budgeted in use, %llu MB free", (unsigned long long)(usage >> 20),
+                 (unsigned long long)(budget >> 20), (unsigned long long)((budget - usage) >> 20));
+    else
+        snprintf(out, size, "%llu MB in use, %llu MB past the %llu budgeted", (unsigned long long)(usage >> 20),
+                 (unsigned long long)((usage - budget) >> 20), (unsigned long long)(budget >> 20));
+}
+void vk_astc_auto_trimmed(u64 usage, u64 left, u64 budget, int force) {
+    char room[160];
+    const u64 mark = vk_mem_trim_start(budget);
+    if (!astc_auto_follows() || !snx_astc_auto_trimmed(&g_vk.astc_auto, left, mark)) return;
+    astc_room(room, sizeof room, usage, budget);
+    LOG("vulkan: astc_mode=0 (Auto): ASTC textures that load from now on are BC7, %s: heap %d has %s, %s the %llu MB "
+        "where its caches' trim starts%s\n",
+        g_astc_bc7, vk_mem_heap(), room, usage > mark ? "past" : "under", (unsigned long long)(mark >> 20),
+        force ? ", and an image found no memory" : "");
+}
+void vk_astc_auto_present(void) {
+    char room[160];
+    u64 usage, budget;
+    if (!astc_auto_follows() || !g_vk.astc_auto.bc7) return;
+    vk_pipeline_bc7_cache();
+    vk_mem_use(&usage, &budget);
+    const u64 mark = vk_mem_trim_start(budget);
+    if (!snx_astc_auto_room(&g_vk.astc_auto, usage, mark)) return;
+    astc_room(room, sizeof room, usage, budget);
+    LOG("vulkan: astc_mode=0 (Auto): ASTC textures that load from now on are Exact again: heap %d has %s, %llu MB "
+        "under the %llu MB where its caches' trim starts, more than the %llu MB the trims of this run left under it "
+        "at most\n",
+        vk_mem_heap(), room, (unsigned long long)((mark - usage) >> 20), (unsigned long long)(mark >> 20),
+        (unsigned long long)(g_vk.astc_auto.band >> 20));
+}
+void vk_astc_auto_say(void) {
+    if (!astc_auto_follows()) return;
+    LOG("vulkan: astc_mode=0 (Auto): ASTC textures that load now are %s, after %llu switches; the trims left at most "
+        "%llu MB under where they start\n",
+        g_vk.astc_auto.bc7 ? "BC7" : "Exact", (unsigned long long)g_vk.astc_auto.switches,
+        (unsigned long long)(g_vk.astc_auto.band >> 20));
 }
 
 /* a line of the extension bans (extension_bans.h) for the log */

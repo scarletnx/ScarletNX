@@ -36,6 +36,7 @@
 #include "common/utilities/endian.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/draw_state.h"
+#include "nx/gpu/texture/astc_bc.h"
 #include "nx/gpu/vk/coverage.h"
 #include "nx/gpu/vk/sample_locations.h"
 #include "nx/gpu/vk/advanced_blend.h"
@@ -130,9 +131,10 @@ typedef struct {
     int bc7_dot;
     /* the block formats the device samples, whether turned on or not (vk_blocks_want): VK_BLOCKS_* bits */
     u32 blocks_have;
-    /* astc_mode's Auto holds the ASTC textures it decodes as BC7: the device started with a budget under
-       SNX_ASTC_EXACT_MB (gpu/texture/astc_bc.h). vk_astc_bc7 says what the mode in effect holds them as */
-    int astc_auto_bc7;
+    /* astc_mode's Auto: whether the ASTC textures that load now are held as BC7, which follows the GPU's memory as the
+       game runs (gpu/texture/astc_bc.h; device.c vk_astc_auto_trimmed, vk_astc_auto_present), and always is for an
+       Ounce program. vk_astc_bc7 says what the mode in effect holds them as */
+    SnxAstcAuto astc_auto;
     /* ASTC held as BC7 is encoded as each texture loads, with no RGBA8 image before it: astc_mode=3, or its Auto for an
        Ounce program, as feat/ounce holds them (texture.c's tex_create) */
     int astc_at_load;
@@ -1220,12 +1222,24 @@ u64 vk_surf_ended_freed(void); /* statistics: their bytes freed so far */
    whose memory it unmapped is one it ended (the renderer's bracket of a GMMU change, at its end) */
 void vk_surf_mapping_changed(u64 gva, u64 size);
 /* frees cache entries (surfaces and own buffers), the least recently used first, when the heap's use with `extra`
-   bytes more would be past 90% of its budget: idle lossless ones down to 80%, the lossless working set down to 95%,
-   then lossy ones (vk_surf_reclaim). Only entries unused for the last two presents go, so the caller may hold any
-   surface it used in them. With force (an allocation found no memory), `extra` bytes go even under the marks, less
-   what is being released already, once a present */
+   bytes more would be past vk_mem_trim_start: idle lossless ones down to two heads under the budget, the lossless
+   working set to half a head under it, then lossy ones (vk_surf_reclaim). Only entries unused for the last two presents
+   go, so the caller may hold any surface it used in them. With force (an allocation found no memory), `extra` bytes go
+   even under the marks, less what is being released already, once a present */
 void vk_mem_trim(u64 extra, int force);
+/* the use past which vk_mem_trim frees, for a budget: the budget less a head (surface.c's trim_head, a 16th of the
+   budget from 128 to 256 MiB, a quarter of it at most) */
+u64 vk_mem_trim_start(u64 budget);
 u64 vk_mem_trimmed(void); /* statistics: the bytes vk_mem_trim freed */
+/* astc_mode's Auto follows the memory (gpu/texture/astc_bc.h): vk_astc_auto_trimmed, at the end of each trim that ran,
+   with the use it counted (an allocation's extra bytes in it), what it left (the use less what it freed, an
+   allocation that found no memory left out) and the budget, turns it to BC7; vk_astc_auto_present, at each present
+   after the trim, turns it to Exact again where the room is back, and opens the BC7 cache once it holds them as BC7.
+   Each switch is said in the log with the use, the budget and the room. vk_astc_auto_say: Auto's state for the stats
+   of the last 600 presents (renderer.c) */
+void vk_astc_auto_trimmed(u64 usage, u64 left, u64 budget, int force);
+void vk_astc_auto_present(void);
+void vk_astc_auto_say(void);
 /* vk_image_create for a surface of the caches, with room made for it first (vk_mem_trim). When no memory is found, a
    forced trim makes room for later, and images as big fail at once for the rest of the present. bytes: the device
    memory it takes */
@@ -1510,6 +1524,8 @@ void vk_astc_stats(u64* levels, u64* hits, u64* bytes, u64* rgba8_bytes);
    bounds the readback ring's growth and is the most a level's blocks are to be cached */
 #define VK_BC7_CAPTURE_BYTES (32ull << 20)
 void vk_astc_cache_open(const char* path);
+/* the game's BC7 cache opened, where pipeline.c put it off (Auto holding them as RGBA8 as the device started): once */
+void vk_pipeline_bc7_cache(void);
 int vk_astc_cached(u32 w, u32 h, u32 depth);
 void vk_bc7_level_key(const u64 content[2], u32 w, u32 h, u32 depth, u32 layers, u32 bw, u32 bh, int srgb, u32 build,
                       u64 key[2]);

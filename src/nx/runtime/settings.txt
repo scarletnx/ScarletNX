@@ -365,11 +365,14 @@ setting ASTC mode
     startup
     words Auto|Exact|BC7|BC7 at load
     help How a GPU that samples BCn but not ASTC (most desktop ones) holds ASTC textures. Auto = BC7 at load for an Ounce
-    help game, as feat/ounce holds them; for any other, Exact where the GPU's memory budget is 8 GB or more as the game
-    help starts, else BC7. Exact = decoded to RGBA8, exactly as the game's
-    help blocks decode, in four times the memory. BC7 = shown at once decoded to RGBA8, then encoded again as BC7 between
-    help frames, a few at a time, into a quarter of RGBA8's memory, close to what the blocks decode to but not always the
-    help same. A later run loads them from the BC7 cache. BC7 at load = encoded as BC7 as each texture loads, with no
+    help game, as feat/ounce holds them; for any other, it follows the GPU's memory as the game runs: the textures that
+    help load are Exact while there is room, BC7 from the moment the caches fill to where they start freeing memory
+    help (a little under the budget), and Exact again once more room comes back than the caches' own trims leave;
+    help those loaded keep what they are. The log says each change with the memory in use, the budget and the room.
+    help Exact = decoded to RGBA8, exactly as the game's blocks decode, in four times the memory.
+    help BC7 = shown at once decoded to RGBA8, then encoded again as BC7 between frames, a few at a time, into a
+    help quarter of RGBA8's memory, close to what the blocks decode to but not always the same. A later run loads them
+    help from the BC7 cache. BC7 at load = encoded as BC7 as each texture loads, with no
     help RGBA8 image before it, as feat/ounce does (temporary, to compare). Where the GPU samples ASTC it does
     help nothing. It takes the place of astc_bc, whose 1 is Auto
 setting BC7 queue
