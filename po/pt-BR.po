@@ -153,6 +153,11 @@ msgstr "Não movido: não foi possível criar %s: %s"
 
 #: src/gui/clean.c
 #, c-format
+msgid "Its files are in %s, which could not take its place: %s"
+msgstr "Os arquivos dele estão em %s, que não pôde tomar o lugar dele: %s"
+
+#: src/gui/clean.c
+#, c-format
 msgid "Not moved: it cannot be read: %s"
 msgstr "Não movido: não dá para ler: %s"
 

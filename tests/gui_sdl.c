@@ -6312,6 +6312,10 @@ int main(int argc, char** argv) {
                                                "cache/c.bin", "system/s.bin", "temp/t.bin"};
             static const char* const now[] = {"user.0123456789abcdeffedcba9876543210/0100000000ABC000/u.bin",
                                               "device/0100000000ABC000/d.bin", "cache/0100000000ABC000/0/c.bin"};
+            /* each one's folder there, and its file */
+            static const char* const laid[][2] = {{"user.0123456789abcdeffedcba9876543210/0100000000ABC000", "u.bin"},
+                                                  {"device/0100000000ABC000", "d.bin"},
+                                                  {"cache/0100000000ABC000/0", "c.bin"}};
             /* the three listed, then three not; app.left says them in the system's separators */
             static const char* const said[] = {"0100000000ABC000_data/save/user.0123456789abcdeffedcba9876543210",
                                                "saves data/save/user.0123456789abcdeffedcba9876543210/0100000000ABC000",
@@ -6368,8 +6372,68 @@ int main(int argc, char** argv) {
             assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/system/s.bin", game) &&
                    snx_is_file(path));
             gui_cleaned_free(&done);
+            /* each is in the data folder's save/ now as an older version kept a save, its files in the folder itself:
+               listed again there, with its 0/, where the second move puts them with the file that says so */
+            left_behind(&app);
+            for (i = 0; i < sizeof laid / sizeof *laid; ++i) {
+                assert(!snx_path_format(path, sizeof path, "%s/save/%s", data_saves, laid[i][0]));
+                assert(strstr(app.left, path));
+            }
+            assert(app.lefts == 3);
+            assert(move_old(&app, &done, false) == 3 && done.count == 3 && done.done == 3);
+            gui_cleaned_free(&done);
+            assert(move_old(&app, &done, true) == 3);
+            for (i = 0; i < sizeof laid / sizeof *laid; ++i) {
+                assert(!snx_path_format(path, sizeof path, "%s/save/%s/" SNX_SAVE_COMMITTED "/%s", data_saves,
+                                        laid[i][0], laid[i][1]));
+                assert(snx_is_file(path));
+                assert(!snx_path_format(path, sizeof path, "%s/save/%s/" SNX_SAVE_JOURNALED, data_saves, laid[i][0]));
+                assert(snx_is_file(path));
+                assert(!snx_path_format(path, sizeof path, "%s/save/%s/%s", data_saves, laid[i][0], laid[i][1]));
+                assert(!snx_path_exists(path));
+            }
+            assert(!snx_path_format(path, sizeof path,
+                                    "%s/save/user.0123456789abcdeffedcba9876543210/0100000000ABC000.version",
+                                    data_saves) &&
+                   snx_is_file(path)); /* the note stays beside the save's folder */
+            gui_cleaned_free(&done);
             left_behind(&app);
             assert(app.lefts == 0);
+            /* a move cut short before it wrote the file: the folder beside the save is no save of its own */
+            assert(!snx_path_format(path, sizeof path, "%s/save/device/0100000000ABC000" GUI_SAVE_MOVING "/0",
+                                    data_saves) &&
+                   !snx_mkdirs(path));
+            left_behind(&app);
+            assert(app.lefts == 0);
+            assert(!snx_path_format(path, sizeof path, "%s/save/device/0100000000ABC000" GUI_SAVE_MOVING, data_saves) &&
+                   !snx_remove_tree(path));
+            /* save_layout=game (read from settings.ini, as this driver lists no save_layout): a game's own save as an
+               older version kept it is listed where it is, with its 0/ */
+            {
+                GuiSettings listed = app.settings;
+                char *file = app.settings_file, *ini = snx_path_join(temporary, "old saves settings.ini");
+                assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/device", game) &&
+                       !snx_mkdirs(path));
+                assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/device/d.bin", game));
+                assert(!snx_write_file(path, "save", 4));
+                app.settings = (GuiSettings){0};
+                app.settings_file = ini;
+                assert(!snx_write_file(ini, "save_layout = game\n", 19));
+                left_behind(&app);
+                assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/device", game));
+                assert(app.lefts == 1 && strstr(app.left, path));
+                assert(move_old(&app, &done, true) == 1);
+                assert(!snx_path_format(path, sizeof path,
+                                        "%s/0100000000ABC000_data/save/device/" SNX_SAVE_COMMITTED "/d.bin", game) &&
+                       snx_is_file(path));
+                gui_cleaned_free(&done);
+                left_behind(&app);
+                assert(app.lefts == 0);
+                app.settings = listed;
+                app.settings_file = file;
+                assert(!snx_remove_tree(ini));
+                free(ini);
+            }
             assert(!snx_remove_tree(game) && !snx_remove_tree(data_saves));
             if (!had_games) assert(!snx_remove_tree(app.games_dir));
             app.data_dir = was_data;

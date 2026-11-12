@@ -153,6 +153,11 @@ msgstr "未移动：无法创建 %s：%s"
 
 #: src/gui/clean.c
 #, c-format
+msgid "Its files are in %s, which could not take its place: %s"
+msgstr ""
+
+#: src/gui/clean.c
+#, c-format
 msgid "Not moved: it cannot be read: %s"
 msgstr "未移动：无法读取：%s"
 

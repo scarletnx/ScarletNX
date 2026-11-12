@@ -13639,28 +13639,46 @@ static bool saves_global(const App* app) {
     free(text);
     return global;
 }
-/* save_layout=global: the saves the games of folder keep in their own folders, <id>/<id>_data/save/<kind>, each now in
-   the data folder's save/ as fs.c's save_global has them: an Account save in user.<uid>/<id>, Device's and BCAT's in
-   device/<id> and bcat/<id>, cache storage in cache/<id>/0 (a game's own folder held its indices as one). A System
-   save stays, its folder there named by a save ID the game's own did not keep, which the game's run says; a game with
-   no title ID of its own keeps its saves */
-static void left_saves(App* app, const char* folder) {
+/* a save as the versions before kept one, the game's own files in the folder save itself: this one keeps a save's last
+   commit in its 0/ (fs.c's "A save's commit"), where Move Old Files puts them */
+static void left_save(App* app, const char* save) {
+    char now[SNX_PATH_SIZE];
+    if (gui_save_old(save) && !snx_path_format(now, sizeof now, "%s/" SNX_SAVE_COMMITTED, save))
+        left_line(app, save, now, true);
+}
+/* whether old and now are such a save's line: the folder, and its 0/ */
+static bool left_is_save(const char* old, const char* now) {
+    size_t n = strlen(old);
+    return strlen(now) == n + 1 + strlen(SNX_SAVE_COMMITTED) && !strncmp(now, old, n) &&
+           (now[n] == '/' || now[n] == '\\') && !strcmp(now + n + 1, SNX_SAVE_COMMITTED);
+}
+/* The saves the games of folder keep in their own folders, <id>/<id>_data/save/<kind>. With global (save_layout=global)
+   each is now in the data folder's save/ as fs.c's save_global has them: an Account save in user.<uid>/<id>, Device's
+   and BCAT's in device/<id> and bcat/<id>, cache storage in cache/<id>/0 (a game's own folder held its indices as
+   one). A System save stays, its folder there named by a save ID the game's own did not keep, which the game's run
+   says. A game with no title ID of its own keeps its saves, and so does every game with save_layout=game: those are
+   listed while they are as the versions before kept a save (left_save) */
+static void left_saves(App* app, const char* folder, bool global) {
     char **names = NULL, **kinds = NULL;
     size_t count = 0, kinds_count = 0, i, k;
     if (!folder || !app->data_dir || snx_list_dir(folder, &names, &count)) return;
     for (i = 0; i < count; ++i) {
         char save[SNX_PATH_SIZE], old[SNX_PATH_SIZE], now[SNX_PATH_SIZE];
         SnxU64 id;
-        if (!snx_title_parse(names[i], &id) ||
-            snx_path_format(save, sizeof save, "%s/%s/%s_data/save", folder, names[i], names[i]) ||
+        bool moves = global && snx_title_parse(names[i], &id);
+        if (snx_path_format(save, sizeof save, "%s/%s/%s_data/save", folder, names[i], names[i]) ||
             snx_list_dir(save, &kinds, &kinds_count))
             continue;
         for (k = 0; k < kinds_count; ++k) {
             const char* kind = kinds[k];
             bool user = !strncmp(kind, "user.", 5) && strlen(kind) == 37, cache = !strcmp(kind, "cache");
-            if ((user || cache || !strcmp(kind, "device") || !strcmp(kind, "bcat")) &&
-                !snx_path_format(old, sizeof old, "%s/%s", save, kind) &&
-                !snx_path_format(now, sizeof now, "%s/save/%s/%s%s", app->data_dir, kind, names[i], cache ? "/0" : ""))
+            if ((!user && !cache && strcmp(kind, "device") && strcmp(kind, "bcat")) ||
+                snx_path_format(old, sizeof old, "%s/%s", save, kind))
+                continue;
+            if (!moves)
+                left_save(app, old);
+            else if (!snx_path_format(now, sizeof now, "%s/save/%s/%s%s", app->data_dir, kind, names[i],
+                                      cache ? "/0" : ""))
                 left_line(app, old, now, has_files(old));
         }
         snx_free_strings(kinds, kinds_count);
@@ -13668,6 +13686,42 @@ static void left_saves(App* app, const char* folder) {
         kinds_count = 0;
     }
     snx_free_strings(names, count);
+}
+/* the saves in folder, a folder each, deep folders down: save/device/<title ID> is 1 down from save/device, cache
+   storage's save/cache/<title ID>/<index> 2 */
+static void left_saves_in(App* app, const char* folder, int deep) {
+    char **names = NULL, path[SNX_PATH_SIZE];
+    size_t count = 0, i;
+    if (snx_list_dir(folder, &names, &count)) return;
+    for (i = 0; i < count; ++i) {
+        size_t n = strlen(names[i]), tail = sizeof GUI_SAVE_MOVING - 1;
+        /* a move of the save beside it that was cut short, which that save's line goes on from */
+        if ((n > tail && !strcmp(names[i] + n - tail, GUI_SAVE_MOVING)) ||
+            snx_path_format(path, sizeof path, "%s/%s", folder, names[i]) || !snx_is_dir(path))
+            continue;
+        if (deep > 1)
+            left_saves_in(app, path, deep - 1);
+        else
+            left_save(app, path);
+    }
+    snx_free_strings(names, count);
+}
+/* the data folder's save/ (save_layout=global's): each save there that is as the versions before kept one */
+static void left_saves_global(App* app) {
+    char **kinds = NULL, path[SNX_PATH_SIZE];
+    size_t count = 0, i;
+    if (!app->data_dir || snx_path_format(path, sizeof path, "%s/save", app->data_dir) ||
+        snx_list_dir(path, &kinds, &count))
+        return;
+    for (i = 0; i < count; ++i) {
+        const char* kind = kinds[i];
+        bool user = !strncmp(kind, "user.", 5) && strlen(kind) == 37, cache = !strcmp(kind, "cache");
+        if ((user || cache || !strcmp(kind, "device") || !strcmp(kind, "bcat") || !strcmp(kind, "system") ||
+             !strcmp(kind, "sysbcat")) &&
+            !snx_path_format(path, sizeof path, "%s/save/%s", app->data_dir, kind))
+            left_saves_in(app, path, cache ? 2 : 1);
+    }
+    snx_free_strings(kinds, count);
 }
 /* the data folder's games/, where an older version made its games, while it is not the folder games go to: its games
    are still listed until the player moves them to recompiled/. NULL when there is none */
@@ -13775,10 +13829,9 @@ static void left_behind(App* app) {
 #endif
     left_games(app, app->games_dir);
     for (i = 0; i < app->folder_count; ++i) left_games(app, app->folders[i]);
-    if (saves_global(app)) {
-        left_saves(app, app->games_dir);
-        for (i = 0; i < app->folder_count; ++i) left_saves(app, app->folders[i]);
-    }
+    left_saves(app, app->games_dir, saves_global(app));
+    for (i = 0; i < app->folder_count; ++i) left_saves(app, app->folders[i], saves_global(app));
+    left_saves_global(app);
     /* the data folder's games/, recompiled/ now */
     old = games_old(app);
     if (old && app->games_dir) left_line(app, old, app->games_dir, has_files(old));
@@ -13903,6 +13956,10 @@ static int move_old(App* app, GuiCleaned* done, bool apply) {
             continue;
         }
         free(data);
+        if (left_is_save(old, now)) { /* a save's own files into its last commit (left_save) */
+            moves += gui_move_save_committed(done, old, apply);
+            continue;
+        }
         if (!strcmp(last_part(old), "gui") && snx_is_dir(old))
             files = config && !strcmp(now, config) ? only[0] : state && !strcmp(now, state) ? only[1] : NULL;
         moves += gui_move_entries(done, old, now, files, apply);

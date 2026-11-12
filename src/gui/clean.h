@@ -32,4 +32,15 @@ int gui_move_entries(GuiCleaned* done, const char* old, const char* now, const c
    folder the save moves to, as gui_move_entries moves an entry and says it: one at the new place stays, and the
    old one with it. 1 when it moves (or would, without apply) */
 int gui_move_save_note(GuiCleaned* done, const char* old, const char* now, bool apply);
+/* the folder save is a save as the versions before kept one, the game's own files in it and so without the file
+   that says it holds a last commit and a working copy (SNX_SAVE_JOURNALED, fs.c's "A save's commit"); or one whose
+   move below was cut short after its last file, the folder empty and its files in <save>.moving beside it */
+bool gui_save_old(const char* save);
+#define GUI_SAVE_MOVING ".moving" /* that folder's name: the save's and this */
+/* Move Old Files for such a save: its files into <save>/0, its last commit as this version keeps a save
+   (SNX_SAVE_COMMITTED), with the file that says so. They are moved, a file or folder at a time, into <save>.moving/0
+   beside the save, which then takes the save's place: a move cut short leaves that folder, and the next one goes on
+   from it. One that cannot move puts back the ones that did, the save as it was, and is the only entry. With apply
+   false nothing is touched and the entries say what would move. How many move */
+int gui_move_save_committed(GuiCleaned* done, const char* save, bool apply);
 #endif
