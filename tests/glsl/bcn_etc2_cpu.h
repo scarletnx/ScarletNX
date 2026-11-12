@@ -25,6 +25,11 @@ void eac_cpu(int kind, const int32_t values[16], uint8_t out[8]);
 /* the same blocks of kind BC2, BC3 or BC7 (2, 3 and 9) encoded again as ASTC 4x4 (texconv.comp's ASTC build, run by
    bcn_astc_cpu.cpp), 16 bytes each */
 void bcn_astc_cpu(int kind, const uint8_t* blocks, uint32_t bw, uint32_t bh, uint32_t slices, uint8_t* out);
+/* the same without the BCn block's hints (astc_encode.glsl's SNX_ASTC_HINTS 0): every block searched for */
+void bcn_astc_plain_cpu(int kind, const uint8_t* blocks, uint32_t bw, uint32_t bh, uint32_t slices, uint8_t* out);
+/* of n BC7 blocks in a row, how many the first of the ASTC build's two passes leaves to the second (those no hint
+   settles), and of which BC7 mode each: left[0] to left[7] */
+uint32_t bcn_astc_left_cpu(const uint8_t* blocks, uint32_t n, uint32_t left[8]);
 #ifdef __cplusplus
 }
 #endif

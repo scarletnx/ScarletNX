@@ -90,14 +90,52 @@ while they are fitted. The encodings with a trit or a quint come from tables tha
 turning `astc_decode.glsl`'s own rules round (the bits of five trits and of three quints, the nearest value an
 encoding holds and its code, the partition seeds), into `astc_encode_tables.glsl`.
 
-On 12 levels of two games' textures, each encoded from its texels (`snx-test-astc-encode-glsl --measure FILE.astc...`),
-it gives 48.91 dB where the BC7 encoder's fast build gives 50.58 (a level from 3.4 dB better to 3.3 worse). On a GeForce GT
-1030 (which samples neither, so only the encoders are timed: `snx-test-astc-vulkan --bench-etc2 FILE.astc`), a
-2048x2048 level of four of those textures as BC7 blocks encoded again took 35, 63, 88 and 92 ms as ASTC 4x4 and 85,
-156, 141 and 174 ms as ETC2 RGBA8.
+**The source's own lines.** A BCn block is lines already, so the encoder is told them (`as_hint`, set by
+`texconv.glsl` as it decodes the block) and tries them before any search:
 
-What it does not have yet: three and four partitions, two partitions with alpha, a plane of its own for a colour
-channel, and the hints a BC7 block's own mode and partition would give it.
+| Source | Taken as |
+| --- | --- |
+| BC7 mode 6 | one line: an opaque block's as RGB ends with 4 bit weights, any other's as RGBA ends with 3 bit weights and with 4, the better kept |
+| BC7 modes 4 and 5 | two planes, the rotated channel apart; an opaque block's with RGB ends (160 values an end, where RGBA ends have 48); with alpha apart and every alpha 255, one line as RGB ends with the source's 2 or 3 bit weights and 8 bit ends |
+| BC7 modes 1 and 3 | two partitions, BC7's own partition number (`ASTC_P2` is in BC7's order), each subset's line the source's |
+| BC2, BC3 | two planes, alpha apart, the colour's line BC1's two ends; opaque, one line as RGB ends with 2 bit weights and 8 bit ends, which hold BC1's ends and weights as they are |
+| BC7 modes 0, 2 and 7 | nothing: three subsets, and two with alpha, have no layout here |
+
+A hinted line is taken as it is: its ends quantized to the layout's colour encoding and each texel given the weight
+nearest its place, one pass of the texels where the search fits a box and least squares over several. Its error is
+still measured on the texels, so a hint the layout holds badly (ASTC's partition is not always BC7's, and two
+partitions leave an end 40 values) costs time and no more: past `SNX_ASTC_HINT_ENOUGH` (a squared error of 256 a
+block, the BC7 encoder's fast build's line too) the block is searched for, and the search takes the hint as well, the
+source's partition fitted in place of 64 scored, and no partition at all for a source of one line.
+
+**Two passes** (`SNX_ASTC_PASS`), as BC7's are made ([ASTC compute uploads](astc.md#two-passes)): a GPU runs
+invocations abreast at the pace of the slowest, so with the hinted blocks and the searched ones in one dispatch the
+hints made it slower on a GeForce GT 1030 (116 ms for a level that took 92 without them), a third of the operations
+though they are. The first pass writes the blocks of one colour and those a hint settles and lists the others; the
+second is an indirect dispatch over the list, each block decoded again and searched for. On nine levels of two
+games' textures 0 to 6.5% of the blocks are the second's. The blocks are the bytes one pass writes.
+
+What it gives, on those nine levels as BC7 blocks (the BC7 encoder's fast build of each) made ASTC
+(`snx-test-astc-encode-glsl --measure FILE.astc...`): 51.31 dB against what the BC7 blocks decode to, where the
+search alone gives 50.29, in 0.24 s of the CPU's run where the search takes 0.81; against the textures themselves
+47.83 dB, where the BC7 blocks are at 50.55 and the encoder from the texels at 48.99. On the GT 1030 (which samples
+neither, so only the encoders are timed: `snx-test-astc-vulkan --bench-etc2 FILE.astc`), a 2048x2048 level of five of
+them:
+
+| Level | ETC2 RGBA8 | ASTC 4x4, searched in one pass | ASTC 4x4, hints and two passes |
+| --- | --- | --- | --- |
+| 8x8, 18% hard blocks | 174 ms | 92 ms | 33 ms |
+| 6x6 | 156 ms | 63 ms | 23 ms |
+| 8x5 | 141 ms | 88 ms | 33 ms |
+| 8x6, mostly one colour | 85 ms | 35 ms | 21 ms |
+| 8x8, smooth | 125 ms | | 22 ms |
+
+Decoding the BC7 blocks alone is 11 ms of each. Random BC3 blocks take 54 ms where ETC2 takes 204; random BC7 ones,
+most of which no hint settles, 138.
+
+What it does not have yet: three and four partitions, two partitions with alpha, and a first pass that makes a
+block from the BCn block's fields without decoding its texels, which is where the rest of the time is. BC1 still
+goes to ETC2 RGB8A1, half ASTC 4x4's bytes, through the slower encoder.
 
 ## What it costs
 
@@ -140,6 +178,7 @@ pipeline is compiled the first time a BCn texture loads (1.3 s on llvmpipe), and
   (`tests/support/astc.c`): 6000 blocks of noise, edges, gradients, single colours and alpha each decode to the squared
   error the encoder worked out (so each layout's bits, colour encoding and weights are where the decoder reads them),
   none is a block the decoder refuses, every layout is written, and a picture holds its PSNR. `astc_vulkan` holds the
-  SPIR-V of the ASTC build to the CPU's run of it on random BC2, BC3 and BC7 blocks, byte for byte.
+  SPIR-V of the ASTC build, its two passes, to the CPU's run of it in one (`tests/glsl/bcn_astc_cpu.cpp`, hints and
+  all) on random BC2, BC3 and BC7 blocks, byte for byte.
 - `vk_block_formats` runs `vk_blocks_want`, `vk_tic_format` and `vk_blocks_say` on stand-in devices, the first a
   player's Mali-G52 MC2 from its vkjson (ASTC and ETC2 sampled, BCn not).

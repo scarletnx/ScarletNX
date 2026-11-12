@@ -427,6 +427,30 @@ void bc7_block(uint b[4], uint o0, uint u) {
     for (uint k = 0u; k < nend; k++)
         for (uint c = 0u; c < 4u; c++)
             if (c < 3u || ab != 0u) e[4u * k + c] = bc_expand(uint(e[4u * k + c]), c < 3u ? cprec : aprec);
+#ifdef SNX_TC_ASTC
+    /* what the block says of itself for astc_encode.glsl (as_hint): each subset's ends as they decode, the fourth
+       channel's swapped with the rotation's as the texels' are; mode 6 one line, modes 4 and 5 two planes (the rotated
+       channel apart), modes 1 and 3 two partitions of its own number. Three subsets, and mode 7's two with alpha,
+       have no layout there */
+    as_hint = 0u;
+    if (ns <= 2u && mode != 7u) {
+        for (uint s = 0u; s < ns; s++) {
+            uint h0 = tc_rgba(e[8u * s], e[8u * s + 1u], e[8u * s + 2u], uint(e[8u * s + 3u]));
+            uint h1 = tc_rgba(e[8u * s + 4u], e[8u * s + 5u], e[8u * s + 6u], uint(e[8u * s + 7u]));
+            if (rot != 0u) {
+                uint sh = (rot - 1u) * 8u, keep = ~(0xFF000000u | (0xFFu << sh));
+                h0 = (h0 & keep) | ((h0 >> 24) << sh) | (((h0 >> sh) & 0xFFu) << 24);
+                h1 = (h1 & keep) | ((h1 >> 24) << sh) | (((h1 >> sh) & 0xFFu) << 24);
+            }
+            as_h0[s] = h0;
+            as_h1[s] = h1;
+        }
+        as_hint = ns == 2u ? 3u : mode == 6u ? 1u : 2u;
+        as_hpart = p;
+        as_hplane = rot == 0u ? 3u : rot - 1u;
+        as_hib = mode == 6u ? 4u : isb != 0u ? ib2 : ib;
+    }
+#endif
     /* the second indices follow the first, whose anchors (one a subset) have a bit less */
     uint at2 = at + 16u * ib - ns;
     for (uint i = 0u; i < 16u; i++) {
@@ -622,12 +646,20 @@ void main() {
 #elif defined(SNX_TC_ASTC)
 /* The ASTC build: a block an invocation, a BC2, BC3 or BC7 block (the kind mode names, TC_BCN_ASTC on from TC_BC1's
    place) decoded and encoded again as ASTC 4x4, at column u of blocks of row of blocks gl_GlobalInvocationID.y of
-   slice z. Input as the BCn modes read it; output rows of blocks out_pitch words apart, 16 bytes each */
+   slice z. Input as the BCn modes read it; output rows of blocks out_pitch words apart, 16 bytes each. In two passes
+   (astc_encode.glsl's SNX_ASTC_PASS): the first as said, writing the blocks a hint settles and listing the others in
+   work_list; the second an invocation a listed block, decoded again and searched for */
 void main() {
+#if SNX_ASTC_PASS == 2
+    /* a block the first pass listed: its number is row * units + u */
+    if (gl_GlobalInvocationID.x >= work_count) return;
+    uint e = work_list[gl_GlobalInvocationID.x], row = e / units, u = e - row * units;
+#else
     uint u = gl_GlobalInvocationID.x;
     if (u >= units) return;
-    uint kind = mode - TC_BCN_ASTC + TC_BC1;
     uint row = gl_GlobalInvocationID.z * rows + gl_GlobalInvocationID.y;
+#endif
+    uint kind = mode - TC_BCN_ASTC + TC_BC1;
     uint at = in_bias + row * in_pitch + u * 4u, o = out_bias + row * out_pitch + u * 4u;
     uint b[4];
     for (uint w = 0u; w < 4u; w++) b[w] = src[at + w];
@@ -638,9 +670,24 @@ void main() {
             uint a = kind == TC_BC2 ? (((i < 8u ? b[0] : b[1]) >> (4u * (i & 7u))) & 15u) * 17u : bc3_alpha(b[1], b[0], i);
             px[i] = (bc1_pixel(b[2], b[3], false, i) & 0xFFFFFFu) | (a << 24);
         }
+        /* BC2 and BC3 are a colour line of 2 bit weights (BC1's two ends) beside their alpha: two planes, alpha apart */
+        uint e0 = b[2] & 0xFFFFu, e1 = b[2] >> 16;
+        as_h0[0] = tc_rgba(bc_expand(e0 >> 11, 5u), bc_expand((e0 >> 5) & 63u, 6u), bc_expand(e0 & 31u, 5u), 255u);
+        as_h1[0] = tc_rgba(bc_expand(e1 >> 11, 5u), bc_expand((e1 >> 5) & 63u, 6u), bc_expand(e1 & 31u, 5u), 255u);
+        as_hint = 2u;
+        as_hplane = 3u;
+        as_hib = 2u;
     }
     hint_on = false;
     uvec4 block = AstcEncode();
+#if SNX_ASTC_PASS == 1
+    if (as_more) { /* left to the second pass, which the indirect dispatch sizes by the count */
+        uint n = atomicAdd(work_count, 1u);
+        work_list[n] = row * units + u;
+        atomicMax(work_groups, (n >> 6) + 1u);
+        return;
+    }
+#endif
     dst[o] = block.x;
     dst[o + 1u] = block.y;
     dst[o + 2u] = block.z;
