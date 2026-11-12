@@ -127,7 +127,7 @@ int main(void) {
 
     for (unsigned i = 0; i < 0x40; i++) a32_slots[i] = thumb_slots[i] = own_block;
     g_mem = guest;
-    strcpy((char*)guest + 0x1810, "SDK MW+Nintendo+NintendoSdk_nnSdk-1_2_3-Release");
+    strcpy((char*)guest + 0x1810, "SDK MW+Vendor+VendorSdk_nnSdk-1_2_3-Release");
     g_settings.native_hooks = 1;
     snprintf(g_settings.hook_families_off, sizeof g_settings.hook_families_off, "switched_off");
     hook_install();
