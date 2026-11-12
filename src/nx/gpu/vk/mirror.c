@@ -47,6 +47,7 @@ typedef struct {
     /* the pages [ck_lo, ck_hi) all valid and brought up to date in the stream's epoch ck_epoch (vk_ww_epoch): a binding
        inside them needs nothing more in that epoch (vk_mirror_slice). Emptied when a page loses its shadow */
     u32 ck_epoch, ck_lo, ck_hi;
+    u32 used; /* the present a binding last took it at (vk_mirror_idle) */
 } Gran;
 
 /* the guest pages programs wrote in the mirror that haven't landed (vk_mirror_wrote to vk_mirror_done) */
@@ -57,6 +58,8 @@ static struct {
     u64 granules;
     Gran** gran; /* by granule, NULL where none is bound */
     u64 bound;   /* granules bound */
+    u64 trim_at; /* where vk_mirror_trim looks next */
+    u64 released; /* statistics: granules it let go */
 } g_mir = {.on = -1};
 
 int vk_mirror_on(void) {
@@ -348,6 +351,7 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
             }
             fresh = 1; /* its mask cleared */
         }
+        r->used = g_vk_present;
         u64 base = g * MIR_G;
         u64 lo = cpu > base ? (cpu - base) >> 12 : 0, hi = (cpu + len - base + 4095) >> 12;
         if (hi > MIR_PAGES) hi = MIR_PAGES;
@@ -1028,6 +1032,68 @@ void vk_mirror_mem_need(u64 gva, u64 len) {
     vk_unlock();
 }
 
+/* Granule g's memory given back, in the batch of sparse binds ahead of the next submission, which waits for the
+   work submitted before it (memory.c): no binding took the granule for MIR_IDLE presents, so no command being
+   recorded reads it. 0 when it stays: a program's writes in it have not landed, or pages of it are published as the
+   mirror's own, whose only bytes are here. Those land now, as the CPU's touch would land them, and the granule goes
+   at a later call */
+static int gran_release(u64 g) {
+    Gran* r = g_mir.gran[g];
+    const u64 base = g * MIR_G;
+    if (pend_hit_pages(&g_mir_pend, base >> 12, (base + MIR_G - 1) >> 12)) return 0;
+    if (own_any()) {
+        OwnRange o[16];
+        u32 k = own_lookup(base, MIR_G, o, 16);
+        int own = k > 16; /* more owners than looked at: one of them may be the mirror */
+        for (u32 i = 0; i < k && i < 16; i++) own |= ((const VkOwnRes*)o[i].res)->buf == g_mir.buf;
+        if (own) {
+            own_acquire(base, MIR_G);
+            return 0;
+        }
+    }
+    VkSparseMemoryBind b[2] = {{.resourceOffset = g * MIR_G, .size = MIR_G},
+                               {.resourceOffset = g * MIR_MASK_G, .size = MIR_MASK_G}};
+    if (!vk_buffer_sparse_bind(g_mir.buf, &b[0], r->mem, MIR_G, 1)) return 0; /* no batch to put it in: it stays */
+    if (!vk_buffer_sparse_bind(g_mir.mask, &b[1], r->mask, MIR_MASK_G, 1))
+        fatal("vulkan: could not unbind a granule of the GPU mirror's mask");
+    free(r->shadow);
+    free(r);
+    g_mir.gran[g] = NULL;
+    g_mir.bound--;
+    g_mir.released++;
+    vk_ledger_heap(VK_OWN_MIRROR, -(i64)MIR_G); /* its shadow */
+    return 1;
+}
+/* The mirror's granules that no binding took for MIR_IDLE presents give their memory back when the device's memory
+   is short (four fifths of the budget in use, where owned.c starts to land kept results). A granule is 2 MiB of the
+   device's memory, its mask, and 2 MiB of host memory for its shadow, and the mirror never let one go: in one game
+   100 of its 117 granules, bound by the programs of its menus, took no binding through most of a race, 225 MB of the
+   device's memory, while its textures were evicted for room. One bound again later takes guest memory's bytes
+   whole, as a new one does. A few a call, each a part of the granules: a landing is a round trip to the GPU */
+#define MIR_IDLE    600
+#define MIR_RELEASE 8
+void vk_mirror_trim(void) {
+    if (g_mir.on <= 0 || !g_mir.bound || vk_rec_unsafe()) return;
+    u64 usage, budget;
+    vk_mem_use(&usage, &budget);
+    if (usage < budget / 5 * 4) return;
+    u32 done = 0;
+    for (u64 n = 0; n < g_mir.granules / 8 && done < MIR_RELEASE; n++) {
+        u64 g = g_mir.trim_at++ % g_mir.granules;
+        const Gran* r = g_mir.gran[g];
+        if (r && (u32)(g_vk_present - r->used) >= MIR_IDLE) {
+            gran_release(g);
+            done++;
+        }
+    }
+}
+u64 vk_mirror_released(void) { return g_mir.released; }
+u64 vk_mirror_idle(u32 presents) {
+    u64 n = 0;
+    for (u64 g = 0; g_mir.on > 0 && g < g_mir.granules; g++)
+        n += g_mir.gran[g] && (u32)(g_vk_present - g_mir.gran[g]->used) >= presents;
+    return n;
+}
 void vk_mirror_stats(u64* granules, u64* harvests, u64* pages, u64* landed, u64* overflows, u32* room) {
     *granules = g_mir.bound;
     *harvests = g_mir_stats.harvests;

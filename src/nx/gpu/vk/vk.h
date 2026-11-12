@@ -1713,6 +1713,12 @@ void vk_mirror_mem_need(u64 gva, u64 len);
 void vk_mirror_harvest(VkCommandBuffer cb, u64 submit);
 void vk_mirror_done(u64 done);
 void vk_mirror_stats(u64* granules, u64* harvests, u64* pages, u64* landed, u64* overflows, u32* room);
+/* statistics: the granules with memory that no binding took in the last presents presents */
+u64 vk_mirror_idle(u32 presents);
+/* once every few presents: the granules no binding took for long give their memory back when the device's memory is
+   short. And how many did so far */
+void vk_mirror_trim(void);
+u64 vk_mirror_released(void);
 /* the bytes of a result at res a writer logged (n sorted runs that don't meet, from addr), into guest memory: as
    vk_write_changed lands what it finds changed. The runs whose guest pages the CPU wrote since the write tracking
    clock since, which the GPU's bytes then win over: their count */

@@ -4175,6 +4175,7 @@ static void buf_frame(void) {
     vk_pages_frame();
     if (g_vk_present % 4) return;
     vk_wlog_trim();
+    vk_mirror_trim();
     if (copy_stats_on() && g_vk_present % 600 == 0) {
         LOG("vulkan: buffer bytes over 600 presents: uncached=%llu zero=%llu calls=%llu peak=%llu staged=%llu owned=%llu bound=%llu owner_bound=%llu writeback=%llu/%llu waits=%llu/%llums reused=%llu\n",
             (unsigned long long)g_copy_uncached, (unsigned long long)g_copy_zero, (unsigned long long)g_copy_calls,
@@ -4208,6 +4209,11 @@ static void buf_frame(void) {
                     "harvests past their room (now %u pages)\n",
                     (unsigned long long)(gr * 2), (unsigned long long)hv, (unsigned long long)pg,
                     (unsigned long long)ld, (unsigned long long)ov, room);
+            if (gr)
+                LOG("vulkan: GPU mirror: of its %llu granules, %llu took no binding in the last 120 presents and "
+                    "%llu in the last 600; %llu let go so far\n",
+                    (unsigned long long)gr, (unsigned long long)vk_mirror_idle(120),
+                    (unsigned long long)vk_mirror_idle(600), (unsigned long long)vk_mirror_released());
         }
         LOG("vulkan: buffer dependencies: %llu barriers, %llu consumer barriers avoided, %llu parallel writes, %llu explicit barriers\n",
             (unsigned long long)g_buffer.order.barriers, (unsigned long long)g_buffer.order.read_reuses,
