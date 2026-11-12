@@ -906,10 +906,15 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             vk_ww_stats(600);
             vk_descriptors_stats();
             /* what the GPU engines keep on the GPU (docs/layers/gpu/ownership.md), and what the CPU had to wait for */
-            LOG("vulkan: GPU-owned guest memory landed for the CPU %llu times, render targets written back for an "
+            u64 by[OWN_BY_N];
+            own_landings_by(by);
+            LOG("vulkan: GPU-owned guest memory landed for the CPU %llu times (%llu for the runtime's own access, "
+                "%llu for a read of the game's code, %llu for a write of it), render targets written back for an "
                 "engine %llu times; block linear targets watched %llu times, published for a CPU access %llu times "
                 "and at a release %llu times\n",
-                (unsigned long long)own_landings(), (unsigned long long)g_vk_rt_readbacks,
+                (unsigned long long)own_landings(), (unsigned long long)by[OWN_BY_RUNTIME],
+                (unsigned long long)by[OWN_BY_READ], (unsigned long long)by[OWN_BY_WRITE],
+                (unsigned long long)g_vk_rt_readbacks,
                 (unsigned long long)g_vk_rt_watch.arms, (unsigned long long)g_vk_rt_watch.hits,
                 (unsigned long long)g_vk_rt_watch.publishes);
         }

@@ -323,9 +323,10 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_uma COMMAND snx-test-vulkan -H --vk_memory=2)
     set_tests_properties(vulkan_headless_uma PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
-    # every check again with the guest memory that draws read kept by page in sparse buffers (gpu/vk/pagespace.c). A
-    # device without sparse buffers or write tracking runs the checks as before
-    add_test(NAME vulkan_headless_pages COMMAND snx-test-vulkan -H --vk_buffer_pages=1 --vk_memory=1)
+    # every check again with the guest memory that draws read kept by page in sparse buffers, and what draws write to
+    # guest memory kept there too (gpu/vk/pagespace.c). A device without sparse buffers or write tracking runs the
+    # checks as before
+    add_test(NAME vulkan_headless_pages COMMAND snx-test-vulkan -H --vk_buffer_pages=2 --vk_memory=1)
     set_tests_properties(vulkan_headless_pages PROPERTIES TIMEOUT 180
         FAIL_REGULAR_EXPRESSION "failed: VK_ERROR")
     # every check again with the write tracking by page protection and its hot pages (write_tracking_hot): each render

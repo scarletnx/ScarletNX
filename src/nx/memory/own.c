@@ -473,7 +473,7 @@ static int close_pages_nl(u32* first, u32* n) {
    the entries are looked for again: they may have landed or changed while it waited. No owner can come while it is
    held (own_begin's callers hold it), so every page lands and is let go; an owner that publishes over them after the
    lock is let go stays until something touches its bytes, as any other */
-static void land_pages(u64 lo, u64 hi) {
+static void land_pages(u64 lo, u64 hi, int by) {
     OwnRange* r;
     u8** dst;
     u8* mirror = g_own.mirror;
@@ -573,6 +573,7 @@ static void land_pages(u64 lo, u64 hi) {
     SNX_ZONE_TV(z_land, "own land", total, "%u ranges", n);
     g_own.hooks.land(r, dst, n);
     __atomic_add_fetch(&g_own.lands, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_own.lands_by[by], 1, __ATOMIC_RELAXED);
     if (!mirror)
         for (i = 0; i < n; i++)
             if (plat_trap_fill(GP(r[i].addr), dst[i], r[i].size))
@@ -677,7 +678,7 @@ static void own_fault(u8* p, int write, u32 tid) {
        publish over the page again before this returns: that owner lands when an access faults on it, not here (a VIC
        job's picture, written over the one just read, stays on the GPU for the display) */
     __atomic_add_fetch(&g_own.faults, 1, __ATOMIC_RELAXED);
-    land_pages(page, page + g_own.page);
+    land_pages(page, page + g_own.page, write ? OWN_BY_WRITE : OWN_BY_READ);
 }
 
 int own_init(const OwnHooks* h) {
@@ -895,7 +896,7 @@ u32 own_stage(u64 addr, u64 size, u8* dst, OwnRange* out, u32 max) {
             pm_unlock(&g_own.lk);
             pm_unlock(&g_own.trap_lk);
             if (!need) break;
-            land_pages(page, page + g_own.page);
+            land_pages(page, page + g_own.page, OWN_BY_RUNTIME);
         }
     }
     n = own_lookup(addr, size, out, max);
@@ -1023,7 +1024,7 @@ int own_trapped(u64 addr, u64 size) {
 
 void own_acquire(u64 addr, u64 size) {
     if (!size || !own_any()) return;
-    land_pages(addr & ~(g_own.page - 1), (addr + size + g_own.page - 1) & ~(g_own.page - 1));
+    land_pages(addr & ~(g_own.page - 1), (addr + size + g_own.page - 1) & ~(g_own.page - 1), OWN_BY_RUNTIME);
 }
 
 void own_drop(u64 addr, u64 size) {
@@ -1051,4 +1052,7 @@ void own_drop(u64 addr, u64 size) {
 u64 own_landings(void) { return __atomic_load_n(&g_own.lands, __ATOMIC_RELAXED); }
 u64 own_faults(void) { return __atomic_load_n(&g_own.faults, __ATOMIC_RELAXED); }
 u64 own_land_bytes(void) { return __atomic_load_n(&g_own.land_bytes, __ATOMIC_RELAXED); }
+void own_landings_by(u64 by[OWN_BY_N]) {
+    for (int i = 0; i < OWN_BY_N; i++) by[i] = __atomic_load_n(&g_own.lands_by[i], __ATOMIC_RELAXED);
+}
 int own_traps(void) { return g_own.traps; }

@@ -88,6 +88,10 @@ void own_acquire(u64 addr, u64 size);
 void own_drop(u64 addr, u64 size);
 /* landings so far (each a wait for the GPU: the statistics count them), and whether own_init found traps */
 u64 own_landings(void);
+/* the same by what asked for them: the runtime's own access (own_acquire, own_stage), a read of the game's CPU code
+   that faulted on an owned page, or a write of it */
+enum { OWN_BY_RUNTIME, OWN_BY_READ, OWN_BY_WRITE, OWN_BY_N };
+void own_landings_by(u64 by[OWN_BY_N]);
 int own_traps(void);
 u64 own_faults(void);
 u64 own_land_bytes(void);
@@ -123,6 +127,8 @@ typedef struct {
     u8* mirror; /* the pool's mirror, which landings write through; NULL where they land in place */
     u64 lands; /* atomic: landings so far, for the statistics */
     char own_pad_lands[64];
+    u64 lands_by[3]; /* atomic: the same by what asked for them (OWN_BY_*) */
+    char own_pad_lands_by[64];
     u64 faults; /* atomic: the faults that landed */
     char own_pad_faults[64];
     u64 land_bytes; /* atomic: the bytes landed */

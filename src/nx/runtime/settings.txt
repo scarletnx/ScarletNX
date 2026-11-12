@@ -1291,13 +1291,14 @@ setting Buffer copy stats
     help 1 = logs what the renderer copies between guest memory and its buffers, and why it waits for their results
 setting Buffer pages
     key vk_buffer_pages
-    int 0 1
+    int 0 2
     default 0
     startup
-    words Off|On
+    words Off|Read|Read and write
     help 1 = keeps the guest memory that draws read by page, in sparse buffers: ranges that overlap share their bytes,
-    help and a range that did not change is not copied again. 0 = by the range each draw asks for. It needs a GPU
-    help with sparse buffers and working write tracking, and stays off without them
+    help and a range that did not change is not copied again. 2 = also keeps what a draw writes to guest memory there,
+    help on the GPU, until the game's CPU code touches it. 0 = by the range each draw asks for. It needs a GPU with
+    help sparse buffers and working write tracking, and stays off without them
 setting NVN storage ordering
     key nvn_storage_order
     int 0 2

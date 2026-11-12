@@ -28,12 +28,15 @@
    the submission's own commands, after that draw, as a buffer of the cache's own takes its written pages
    (patch_own): the upload commands would give the draw the new bytes.
 
-   A draw that writes guest memory writes it here too (vk_pages_write, step 6): its whole pages are brought up to
-   date, the draw writes the region's buffer in place, and the pages are published as the GPU's (owned.c), each
-   granule under an owner of its own, so the CPU's first touch of one lands it and nothing is copied, read back or
-   compared before. The ownership table says which pages those are (own_lookup): such a page holds the truth and
-   takes nothing from guest memory, and it goes back to being a copy when the table lets go of it, with the stamp
-   its publish left on it (gpu_mem_written_cpu) telling it to take memory's bytes again.
+   A draw that writes guest memory writes it here too (vk_pages_write, step 6): the pages its range is on are brought
+   up to date, the draw writes the region's buffer in place, and the range is published as the GPU's (owned.c), each
+   granule's part under an owner of that granule, so the CPU's first touch of a page of it lands it and nothing is
+   copied, read back or compared before. Only the range's own bytes are published, as every other producer's are: the
+   runtime's reads of guest memory land an owner only for bytes it holds (gpu.c copy_runs), and a game keeps the
+   constant buffers its draws read beside the buffers they write, on the same pages. The ownership table says which
+   pages have such bytes on them (own_lookup). Such a page is trapped, so the CPU cannot change it: the region holds
+   the truth of all of it and it takes nothing from guest memory. It goes back to being a copy when the table lets
+   go of it, with the stamp its publish left on it (gpu_mem_written_cpu) telling it to take memory's bytes again.
 
    A granule's memory is bound in the batch of sparse binds that goes to the queue ahead of the next submission
    (memory.c), so nothing waits for a fence. */
@@ -65,10 +68,14 @@
 #define PG_WRITE_MAX    (1ull << 20) /* the longest range a draw writes here */
 #define PG_ORDER        256          /* the ranges read and written whose order a submission keeps */
 #define PG_LAND         4            /* the idle granules landed at one sweep */
+#define PG_STAMPS       256          /* the ranges written in place that a submission stamps at its end */
+/* the presents a granule's pages must go without a write of the CPU before a draw's result is kept on them: a page
+   the game writes every frame would trap and land every frame, a wait for the GPU each time */
+#define PG_QUIET        120
 /* what a page of a range asked for does: it holds memory's bytes, takes them (it had none, or older ones), or is the
    cache's own. PG_CPU and PG_GPU mark one that holds bytes for a look of its own: something on the range was written
    since the oldest of its pages was taken */
-enum { PG_CUR, PG_NEW, PG_OLD, PG_MINE, PG_CPU = 0x10, PG_GPU = 0x20 };
+enum { PG_CUR, PG_NEW, PG_OLD, PG_MINE, PG_OLD_CPU /* PG_OLD, by a write of the CPU */, PG_CPU = 0x10, PG_GPU = 0x20 };
 
 typedef struct {
     VmaAllocation mem;
@@ -81,6 +88,7 @@ typedef struct {
     u32 seen_min;
     u32 seen[PG_PAGES]; /* the write tracking's clock when a page's bytes were taken, 0: it has none */
     u32 used;           /* the present a range in it was last given out at */
+    u32 cpu_wrote;      /* the present a page of it last took bytes the CPU had written since (0: never) */
     u32 ck_epoch;       /* the stream's epoch ck_mask is of */
     u16 ck_mask;        /* the pages the tracking found unwritten in ck_epoch: not asked again in it */
     u16 full;           /* the pages with bytes */
@@ -91,6 +99,8 @@ typedef struct {
 } PgRegion;
 
 enum { PG_NO_LONG, PG_NO_RUN, PG_NO_REGION, PG_NO_ALIGN, PG_NO_TRACK, PG_NO_OWNED, PG_NO_HOT, PG_NO_MEMORY, PG_NO_N };
+/* why a range to be written in place was refused, beside those */
+enum { PG_WNO_ASK, PG_WNO_CPU, PG_WNO_OWNER, PG_WNO_N };
 /* a range of a region's bytes a draw or a dispatch read or wrote in place, by guest address, and which one (the count
    of work recorded when it was bound) */
 typedef struct {
@@ -103,6 +113,15 @@ static struct {
     u32 regions, nregion, region_max;
     u32 bound;  /* granules with memory */
     u32 owners; /* granules with an owner: 0 until a draw first writes here, and nothing is ordered until then */
+    u64 writes; /* ranges bound for writing in place so far (vk_pages_written) */
+    /* The ranges written in place in the submission being recorded, by GPU address. They are stamped as written by
+       the GPU when it goes to the queue (vk_pages_submit), which is when a result copied to the ring was stamped at
+       the earliest: stamped at each bind, a window over them was looked at again page by page at its next draw */
+    struct {
+        u64 gva;
+        u32 len;
+    } stamp[PG_STAMPS];
+    u32 nstamp;
     u32 sweep;
     /* The order of this submission's work on the regions' bytes. A draw that writes them in place and another that
        reads them share one buffer, where the copies of buffer.c gave each its own: a read of bytes written since the
@@ -117,11 +136,12 @@ static struct {
     } order;
     struct {
         u64 served, served_bytes, uploads, upload_bytes, refused[PG_NO_N], let_go;
-        u64 patched, written, written_bytes, published, write_refused, not_trapped, barriers, landed;
+        u64 patched, written, written_bytes, published, write_refused[PG_WNO_N], not_trapped, barriers, landed;
         u64 again, longs, long_ns; /* bound where they were; ranges past PG_PATCH_MIN looked at, and the time that took */
     } stats;
 } g_pages = {.on = -1};
 
+int vk_pages_keep(void) { return vk_pages_on() && g_settings.buffer_pages >= 2; }
 int vk_pages_on(void) {
     if (g_pages.on >= 0) return g_pages.on;
     g_pages.on = 0;
@@ -144,8 +164,9 @@ int vk_pages_on(void) {
     g_pages.region = calloc(g_pages.regions, sizeof *g_pages.region);
     if (!g_pages.region) return 0;
     LOG("vulkan: the buffer cache keeps guest memory by page: sparse buffers of %llu GiB, %u at most, with memory in "
-        "granules of %llu KiB (vk_buffer_pages=1)\n",
-        (unsigned long long)(PG_REGION >> 30), g_pages.region_max, (unsigned long long)(PG_SIZE >> 10));
+        "granules of %llu KiB%s (vk_buffer_pages=%d)\n",
+        (unsigned long long)(PG_REGION >> 30), g_pages.region_max, (unsigned long long)(PG_SIZE >> 10),
+        g_settings.buffer_pages >= 2 ? ", and draws write guest memory there" : "", g_settings.buffer_pages);
     return g_pages.on = 1;
 }
 
@@ -314,6 +335,11 @@ static void order_use(u64 lo, u64 hi, int write, int ordered) {
     else
         order_note(g_pages.order.rd, &g_pages.order.nrd, &g_pages.order.rd_all, lo, hi, work);
 }
+void vk_pages_submit(void) {
+    for (u32 i = 0; i < g_pages.nstamp; i++) gpu_mem_written_shader(g_pages.stamp[i].gva, g_pages.stamp[i].len);
+    g_pages.nstamp = 0;
+}
+u64 vk_pages_written(void) { return g_pages.writes; }
 void vk_pages_ordered(void) {
     if (g_pages.on > 0) order_reset();
 }
@@ -331,7 +357,8 @@ typedef struct {
     u64 base, bgva; /* the guest address of its first page, and that page's GPU address */
     u64 sub, gnow;  /* the submission, and the clocks read before any byte: a write after them shows at the next ask */
     u32 now, epoch;
-    u64 stale; /* the pages that take bytes */
+    u64 stale;   /* the pages that take bytes */
+    u64 covered; /* the range's bytes that the cache owns already */
     int hot;   /* one of them was given out in this submission: they are copied after its draws */
     u8 take[PG_LEN_MAX / 4096 + 1]; /* PG_*, a page each */
 } PgAsk;
@@ -347,8 +374,8 @@ static void gpu_note(void* user, u64 at, u64 n) { /* at: a GPU address (gpu_mem_
 }
 /* What [gva, gva + len) needs before it is bound, with nothing changed: a range that is refused leaves its pages as
    they were. 1, with a filled in; 0, or -1 when a page changed after a draw of this submission read it and patch is 0.
-   whole: the range is to be written in place, so its whole pages become the cache's own, and no other owner or watch
-   may be on them */
+   whole: the range is to be written in place and published, so the region must hold the truth of every page it is
+   on: no other owner or watch may be on them */
 static int ask(u64 gva, u64 len, u64 align, int patch, int whole, PgAsk* a) {
     u64 cpu = 0;
     if (g_pages.on <= 0 || !len) return 0;
@@ -368,9 +395,10 @@ static int ask(u64 gva, u64 len, u64 align, int patch, int whole, PgAsk* a) {
     u64 base = a->base = (rg << PG_REGION_SHIFT) + (p0 << 12);
     u64 bgva = a->bgva = gva - (cpu - base); /* the pages of a run go on alike */
     memset(a->take, PG_CUR, n);
-    a->stale = 0;
+    a->stale = a->covered = 0;
     a->hot = 0;
-    /* the pages the cache owns, which hold the truth; another owner's bytes in the range are not here at all */
+    /* the pages with bytes the cache owns, which hold the truth; another owner's bytes in the range are not here at
+       all */
     for (u64 from = base, end = base + (n << 12); own_any() && from < end;) {
         OwnRange o[64];
         u32 k = own_lookup(from, end - from, o, 64), m = k < 64 ? k : 64;
@@ -379,6 +407,9 @@ static int ask(u64 gva, u64 len, u64 align, int patch, int whole, PgAsk* a) {
             const PgGran* q = r->gran[at >> PG_SHIFT];
             if (q && q->own && o[i].res == q->own) {
                 for (u64 p = at >> 12, e = (at + o[i].size - 1) >> 12; p <= e; p++) a->take[p - p0] = PG_MINE;
+                u64 lo = o[i].addr > cpu ? o[i].addr : cpu;
+                u64 hi = o[i].addr + o[i].size < cpu + len ? o[i].addr + o[i].size : cpu + len;
+                if (hi > lo) a->covered += hi - lo;
             } else if (whole || (o[i].addr < cpu + len && cpu < o[i].addr + o[i].size))
                 return refuse(PG_NO_OWNED);
         }
@@ -439,13 +470,13 @@ static int ask(u64 gva, u64 len, u64 align, int patch, int whole, PgAsk* a) {
         if (t & (PG_CPU | PG_GPU)) { /* written since the oldest page was taken: since this one was? */
             const PgGran* q = r->gran[p >> (PG_SHIFT - 12)];
             u32 k = (u32)(p & (PG_PAGES - 1));
-            int old = (t & PG_GPU) && gpu_mem_dirty_since(q->gw[k], bgva + ((p - p0) << 12), 4096);
+            int old = (t & PG_GPU) && gpu_mem_dirty_since(q->gw[k], bgva + ((p - p0) << 12), 4096), by_cpu = 0;
             if (!old && (t & PG_CPU) && (q->ck_epoch != epoch || !(q->ck_mask >> k & 1))) {
                 int w = vk_written_since(GP(pcpu), 4096, q->seen[k]);
                 if (w < 0) return refuse(PG_NO_TRACK);
-                old = w;
+                old = by_cpu = w;
             }
-            t = a->take[p - p0] = old ? PG_OLD : PG_CUR;
+            t = a->take[p - p0] = by_cpu ? PG_OLD_CPU : old ? PG_OLD : PG_CUR;
             if (old) a->stale++;
             /* a page a draw of this submission was given: the upload commands run before that draw */
             if (old && q->given == a->sub) {
@@ -504,7 +535,8 @@ static int bring(PgAsk* a) {
             q->ck_mask &= (u16)~(1u << k);
         else
             q->ck_mask |= (u16)(1u << k); /* taken now, or found unwritten: not asked again in this epoch */
-        if (t == PG_NEW || t == PG_OLD) {
+        if (t == PG_OLD_CPU) q->cpu_wrote = g_vk_present ? g_vk_present : 1;
+        if (t == PG_NEW || t == PG_OLD || t == PG_OLD_CPU) {
             if (!piece) { /* the ring a piece at a time: a window's first use is tens of megabytes */
                 runs_flush(r, sb, run, &nrun, a->hot);
                 piece = left < PG_STAGE ? left : PG_STAGE;
@@ -565,47 +597,55 @@ void vk_pages_read(u64 gva, u64 len) {
 
 int vk_pages_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off) {
     PgAsk a;
-    if (g_pages.on <= 0) return 0;
+    if (!vk_pages_keep()) return 0;
     if (len > PG_WRITE_MAX) return refuse(PG_NO_LONG);
-    if (ask(gva, len, align, 0, 1, &a) <= 0 || !bring(&a)) {
-        g_pages.stats.write_refused++;
+    if (ask(gva, len, align, 0, 1, &a) <= 0) {
+        g_pages.stats.write_refused[PG_WNO_ASK]++;
         return 0;
     }
     PgRegion* r = a.r;
     u64 p0 = a.p0, p1 = a.p1;
+    /* pages the CPU writes now, or wrote in the last PG_QUIET presents: the game writes them as it runs, each write
+       of a page with a result on it would land the page, and the copies of buffer.c wait for nothing */
+    for (u64 p = p0; p <= p1; p++) {
+        const PgGran* q = r->gran[p >> (PG_SHIFT - 12)];
+        if (a.take[p - p0] == PG_OLD_CPU || (q && q->cpu_wrote && g_vk_present - q->cpu_wrote < PG_QUIET)) {
+            g_pages.stats.write_refused[PG_WNO_CPU]++;
+            return 0;
+        }
+    }
+    if (!bring(&a)) {
+        g_pages.stats.write_refused[PG_WNO_ASK]++;
+        return 0;
+    }
     for (u64 g = p0 >> (PG_SHIFT - 12); g <= p1 >> (PG_SHIFT - 12); g++) {
         PgGran* q = r->gran[g];
         if (q->own) continue;
-        if (!(q->own = vk_own_res_borrow(r->buf))) return 0;
+        if (!(q->own = vk_own_res_borrow(r->buf))) {
+            g_pages.stats.write_refused[PG_WNO_OWNER]++;
+            return 0;
+        }
         /* the first of all: the reads recorded so far in this submission were not kept */
         if (!g_pages.owners++) {
             order_begin();
             g_pages.order.rd_all = 1;
         }
     }
-    /* the pages that were copies become the cache's own, a run of them in one granule at a time: from here on the
-       region's buffer holds their bytes, and guest memory is trapped under them */
-    u64 made = 0;
-    for (u64 p = p0; p <= p1;) {
-        if (a.take[p - p0] == PG_MINE) {
-            p++;
-            continue;
+    u64 cpu = (a.rg << PG_REGION_SHIFT) + a.at;
+    for (u64 p = p0; p <= p1; p++) /* the tracking is asked again once a page is a copy */
+        r->gran[p >> (PG_SHIFT - 12)]->ck_mask &= (u16)~(1u << (p & (PG_PAGES - 1)));
+    /* the range becomes the cache's own where it is not yet, a granule's part at a time: from here on the region's
+       buffer holds its bytes, and guest memory is trapped under them */
+    if (a.covered != len) {
+        for (u64 lo = cpu, end = cpu + len; lo < end;) {
+            u64 hi = (lo | (PG_SIZE - 1)) + 1 < end ? (lo | (PG_SIZE - 1)) + 1 : end;
+            vk_own_publish(lo, hi - lo, r->gran[(lo & (PG_REGION - 1)) >> PG_SHIFT]->own, lo & (PG_REGION - 1));
+            lo = hi;
         }
-        u64 e = p, g = p >> (PG_SHIFT - 12);
-        while (e <= p1 && e >> (PG_SHIFT - 12) == g && a.take[e - p0] != PG_MINE) e++;
-        PgGran* q = r->gran[g];
-        vk_own_publish(a.base + ((p - p0) << 12), (e - p) << 12, q->own, p << 12);
-        for (u64 x = p; x < e; x++) q->ck_mask &= (u16)~(1u << (x & (PG_PAGES - 1)));
-        made += e - p;
-        p = e;
-    }
-    for (u64 g = p0 >> (PG_SHIFT - 12); g <= p1 >> (PG_SHIFT - 12); g++)
-        vk_own_res_wrote(r->gran[g]->own); /* a landing of the granule waits for this submission */
-    if (made) {
-        /* a page that cannot be trapped (one mapped in two places) landed at once instead: memory has its bytes,
+        /* a range that cannot be trapped (memory mapped in two places) landed at once instead: memory has its bytes,
            and the draw's would reach nothing */
         u64 owned = 0;
-        for (u64 from = a.base, end = a.base + ((p1 - p0 + 1) << 12); from < end;) {
+        for (u64 from = cpu, end = cpu + len; from < end;) {
             OwnRange o[64];
             u32 k = own_lookup(from, end - from, o, 64), m = k < 64 ? k : 64;
             for (u32 i = 0; i < m; i++) {
@@ -615,14 +655,23 @@ int vk_pages_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64*
             if (k <= 64) break;
             from = o[63].addr + o[63].size;
         }
-        if (owned != (p1 - p0 + 1) << 12) {
+        if (owned != len) {
             g_pages.stats.not_trapped++;
             return 0;
         }
-        g_pages.stats.published += made;
+        g_pages.stats.published += len - a.covered;
     }
-    u64 lo = (a.rg << PG_REGION_SHIFT) + a.at;
-    order_use(lo, lo + len, 1, ordered);
+    for (u64 g = p0 >> (PG_SHIFT - 12); g <= p1 >> (PG_SHIFT - 12); g++)
+        vk_own_res_wrote(r->gran[g]->own); /* a landing of the granule waits for this submission */
+    order_use(cpu, cpu + len, 1, ordered);
+    u32 st = 0;
+    while (st < g_pages.nstamp && (g_pages.stamp[st].gva != gva || g_pages.stamp[st].len != len)) st++;
+    if (st == g_pages.nstamp) {
+        if (st == PG_STAMPS) vk_pages_submit(); /* no room: those now, which is early and never wrong */
+        g_pages.stamp[g_pages.nstamp].gva = gva;
+        g_pages.stamp[g_pages.nstamp++].len = (u32)len;
+    }
+    g_pages.writes++;
     g_pages.stats.written++;
     g_pages.stats.written_bytes += len;
     *buf = r->buf;
@@ -647,7 +696,7 @@ void vk_pages_frame(void) {
             if (!q || (i32)(q->used - before) >= 0) continue;
             u64 cpu = ((u64)rg << PG_REGION_SHIFT) + (g << PG_SHIFT);
             OwnRange o[PG_PAGES];
-            u32 k = q->own && own_any() ? own_lookup(cpu, PG_SIZE, o, PG_PAGES) : 0, own = 0;
+            u32 k = q->own && own_any() ? own_lookup(cpu, PG_SIZE, o, PG_PAGES) : 0, own = k > PG_PAGES;
             for (u32 i = 0; i < k && i < PG_PAGES; i++) own += o[i].res == q->own;
             if (!own)
                 gran_drop(r, g);
@@ -691,12 +740,15 @@ void vk_pages_log(void) {
         (unsigned long long)no[PG_NO_RUN], (unsigned long long)no[PG_NO_REGION], (unsigned long long)no[PG_NO_ALIGN],
         (unsigned long long)no[PG_NO_TRACK], (unsigned long long)no[PG_NO_OWNED], (unsigned long long)no[PG_NO_HOT],
         (unsigned long long)no[PG_NO_MEMORY]);
-    if (g_pages.owners || g_pages.stats.write_refused)
-        LOG("vulkan: page cache, draws' results: %llu ranges written in place (%.1f MB), %llu refused, %llu pages "
-            "made the GPU's, %llu ranges that could not be trapped; %u granules have an owner, %llu idle ones "
-            "landed; %llu barriers for the order of work in place\n",
+    const u64* wno = g_pages.stats.write_refused;
+    if (g_pages.owners || wno[PG_WNO_ASK] || wno[PG_WNO_CPU])
+        LOG("vulkan: page cache, draws' results: %llu ranges written in place (%.1f MB), %llu refused as a read is "
+            "or for another owner on their pages, %llu on pages the CPU wrote lately, %llu bytes made the GPU's, "
+            "%llu ranges that could not be trapped; %u granules have an owner, %llu idle ones landed; %llu barriers "
+            "for the order of work in place\n",
             (unsigned long long)g_pages.stats.written, (double)g_pages.stats.written_bytes / 1048576.0,
-            (unsigned long long)g_pages.stats.write_refused, (unsigned long long)g_pages.stats.published,
+            (unsigned long long)(wno[PG_WNO_ASK] + wno[PG_WNO_OWNER]), (unsigned long long)wno[PG_WNO_CPU],
+            (unsigned long long)g_pages.stats.published,
             (unsigned long long)g_pages.stats.not_trapped, g_pages.owners, (unsigned long long)g_pages.stats.landed,
             (unsigned long long)g_pages.stats.barriers);
     memset(&g_pages.stats, 0, sizeof g_pages.stats);
