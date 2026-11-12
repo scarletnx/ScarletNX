@@ -82,6 +82,10 @@ uint sh_mask;
 #ifndef SNX_BC7_FAST
 #define SNX_BC7_FAST 0
 #endif
+/* 1: the packed dot product instruction (Dot4) */
+#ifndef SNX_BC7_DOT
+#define SNX_BC7_DOT 0
+#endif
 #if SNX_BC7_FAST == 3
 #define SNX_BC7_LINES 1u
 #else
@@ -236,58 +240,85 @@ uint QuantWord(int r, int g, int b, int a, uint p) {
     return Quant(r, p) | (Quant(g, p) << 8u) | (Quant(b, p) << 16u) | (sh_alpha != 0u ? Quant(a, p) << 24u : 0u);
 }
 
-uint TexelError(uint p, uint q0, uint q1, uint w) {
-    uint e = 0u;
-    for (uint c = 0u; c < 4u; c++) {
-        if (((sh_mask >> c) & 1u) == 0u) continue;
-        /* ((64 - w) a + w b + 32) >> 6 = a + ((w (b - a) + 32) >> 6), the shift arithmetic: one multiply (ucas:
-           exhaustive equiv over a, b 0 to 255 and w 0 to 64) */
-        const int a0 = int(Ch(q0, c));
-        const int v = a0 + ((int(w) * (int(Ch(q1, c)) - a0) + 32) >> 6) - int(Ch(p, c));
-        e += uint(v * v);
-    }
-    return e;
+/* The dot product of two words' four bytes, each 0 to 255. SNX_BC7_DOT builds take SPIR-V's packed one (Vulkan 1.3's
+   shaderIntegerDotProduct), an instruction of its own on the GPUs that say it is accelerated
+   (integerDotProduct4x8BitPackedUnsignedAccelerated: vk/astc.c picks the build by it); the others spell it out */
+uint Dot4(uint a, uint b) {
+#if SNX_BC7_DOT
+    return dotPacked4x8EXT(a, b);
+#else
+    return (a & 0xFFu) * (b & 0xFFu) + ((a >> 8u) & 0xFFu) * ((b >> 8u) & 0xFFu) +
+           ((a >> 16u) & 0xFFu) * ((b >> 16u) & 0xFFu) + (a >> 24u) * (b >> 24u);
+#endif
 }
 
-/* channel c of q1 less q0's, nought for a channel the shape does not weigh */
-int Step(uint q0, uint q1, uint c) { return ((sh_mask >> c) & 1u) != 0u ? int(Ch(q1, c)) - int(Ch(q0, c)) : 0; }
+/* the channels the shape's lines weigh as a word's bytes, 0xFF each: sh_mask's bit c to bit 8c (the multiplier puts
+   bit c at c, c + 7, c + 14 and c + 21, no two of the sixteen alike, so nothing carries), then spread over the byte */
+uint MaskBytes() {
+    return ((sh_mask * 0x00204081u) & 0x01010101u) * 0xFFu;
+}
+
+/* The squared error of texel p (the channels the shape weighs, the others nought; pp its dot product with itself)
+   against the line's point of weight w, 0 to 64. The line is its first end's even bytes (red and blue, in 16 bit
+   lanes) and odd bytes (green and alpha), ae and ao, and the second end's less those, de and dx: each lane
+   a 64 + 32 + (b - a) w = a (64 - w) + b w + 32 is in 32 to 16352, so no lane carries into the next and a negative
+   difference is exact modulo 2^32 (as astc_decode.glsl's SlotTexel interpolates). It is ((64 - w) a + w b + 32) >> 6,
+   the format's interpolation, all four channels in two multiplications. The error is then |I - p|^2 = I.I - 2 I.p +
+   p.p, exact in 32 bits (each dot product is 260100 at most) */
+uint LineError(uint p, uint pp, uint ae, uint ao, uint de, uint dx, uint w) {
+    const uint xe = (ae << 6u) + 0x00200020u + de * w, xo = (ao << 6u) + 0x00200020u + dx * w;
+    const uint v = ((xe >> 6u) & 0x00FF00FFu) | ((xo << 2u) & 0xFF00FF00u);
+    return Dot4(v, v) + pp - 2u * Dot4(v, p);
+}
 
 /* subset s's squared error with decoded ends q0 and q1, each of its texels at its best weight, which go to cur_lo
-   and cur_hi */
+   and cur_hi.
+
+   Written for the GPU's time, which is nearly all spent here (every line of every subset of every shape calls it,
+   16 texels each): a texel's place along the line is (p - q0).(q1 - q0) = p.q1 - p.q0 - q0.(q1 - q0), two dot products
+   of packed bytes and a constant of the line, and its error at a weight two more (LineError). The place's division
+   by the line's squared length dd is a multiplication by a reciprocal in floating point, made whole again in
+   integers: n = 64 t + dd / 2 is under 2^24, so float(n) is exact, the product is within a thousandth of n / dd
+   (65 at most, with a few units in the last place of rounding in 1 / dd and the product), so its integer part is the
+   quotient or one beside it, and the remainder n - q dd says which. The bytes are those of the division (the tests'
+   digest of the encoder's blocks, tests/glsl/bc7_glsl.cpp, is from before this), whatever the driver's rounding */
 uint Eval(uint s, uint q0, uint q1) {
-    const int dr = Step(q0, q1, 0u);
-    const int dg = Step(q0, q1, 1u);
-    const int db = Step(q0, q1, 2u);
-    const int da = Step(q0, q1, 3u);
-    const int dd = dr * dr + dg * dg + db * db + da * da;
+    const uint m = MaskBytes(), a = q0 & m, b = q1 & m;
+    const int aa = int(Dot4(a, a)), ab = int(Dot4(a, b));
+    const int dd = int(Dot4(b, b)) - 2 * ab + aa;
+    const int along = ab - aa; /* q0.(q1 - q0) */
+    const float rd = 1.0 / float(max(dd, 1));
+    const uint ae = a & 0x00FF00FFu, ao = (a >> 8u) & 0x00FF00FFu;
+    const uint de = (b & 0x00FF00FFu) - ae, dx = ((b >> 8u) & 0x00FF00FFu) - ao;
     const uint top = (1u << sh_ib) - 1u;
     uint err = 0u;
     cur_lo = 0u;
     cur_hi = 0u;
     for (uint k = 0u; k < 16u; k++) {
         if (SubsetOf(k) != s) continue;
-        const uint p = px[k];
+        const uint p = px[k] & m, pp = Dot4(p, p);
         uint i = 0u;
         if (dd > 0) {
             /* the texel's place along the line, 0 to 64, then the nearest weight */
-            const int t = clamp((int(Ch(p, 0u)) - int(Ch(q0, 0u))) * dr + (int(Ch(p, 1u)) - int(Ch(q0, 1u))) * dg +
-                                    (int(Ch(p, 2u)) - int(Ch(q0, 2u))) * db + (int(Ch(p, 3u)) - int(Ch(q0, 3u))) * da,
-                                0, dd);
-            /* t <= dd keeps t64 <= 64 ((64 dd + dd / 2) / dd = 64), so (t64 top + 32) / 64 <= top: no min */
-            const uint t64 = uint((t * 64 + dd / 2) / dd);
-            i = (t64 * top + 32u) / 64u;
+            const int t = clamp(int(Dot4(p, b)) - int(Dot4(p, a)) - along, 0, dd);
+            const int n = t * 64 + dd / 2;
+            int q = int(float(n) * rd);
+            const int r = n - q * dd;
+            q += r >= dd ? 1 : r < 0 ? -1 : 0;
+            /* t <= dd keeps q <= 64 ((64 dd + dd / 2) / dd = 64), so (q top + 32) / 64 <= top: no min */
+            i = (uint(q) * top + 32u) >> 6u;
         }
         uint bi = i;
-        uint be = TexelError(p, q0, q1, Weight(i));
+        uint be = LineError(p, pp, ae, ao, de, dx, Weight(i));
         if (i > 0u) {
-            const uint e = TexelError(p, q0, q1, Weight(i - 1u));
+            const uint e = LineError(p, pp, ae, ao, de, dx, Weight(i - 1u));
             if (e < be) {
                 be = e;
                 bi = i - 1u;
             }
         }
         if (i < top) {
-            const uint e = TexelError(p, q0, q1, Weight(i + 1u));
+            const uint e = LineError(p, pp, ae, ao, de, dx, Weight(i + 1u));
             if (e < be) {
                 be = e;
                 bi = i + 1u;
