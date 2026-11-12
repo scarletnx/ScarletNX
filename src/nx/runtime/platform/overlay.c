@@ -159,6 +159,8 @@ static int shown, page, focus, top; /* top: the first item showing */
    or OVERLAY_DELETE), and whether the list is to be read again */
 static OverlaySlot slots[OVERLAY_SLOTS_MAX];
 static int nslots = 1, slot_at, ask, slots_stale;
+/* what the question asks besides the OVERLAY_ codes it gives back: the on-screen controls put back */
+enum { ASK_RESET = -1 };
 static u32 slots_gen; /* counts the lists given: the picture is set again */
 static char toast[OVERLAY_COLS_MAX + 1];
 static u64 toast_until;
@@ -172,16 +174,25 @@ static char refused[2 * OVERLAY_COLS_MAX];
 
 /* a slot's page's items: the auto slot has no Save */
 static int slot_item(int i) { return slot_at ? i : i + 1; }
-/* the colour of item i of the page shown: a slot's Delete, and its Save over a state, have no way back, its Load
-   wants care (what was played since goes, unless the auto slot keeps it), and so the question's choice; 0 for none */
+/* the first page's item shown at i: past Stats, Exit where RenderDoc can't capture */
+static int main_item(int i) { return i >= M_CAPTURE && !g_renderer->capture(0) ? i + 1 : i; }
+/* the colour of item i of the page shown: Exit, which ends the game, a slot's Delete and its Save over a state have no
+   way back; a slot's Load (what was played since goes, unless the auto slot keeps it) and the controls' Reset want
+   care; and so the question's choice; 0 for none */
 static u32 item_tone(int i) {
     int what = slot_item(i);
-    if (page == PAGE_ASK) return i ? 0 : ask == OVERLAY_LOAD ? UI_WARNING : UI_FAILURE;
+    if (page == PAGE_ASK) return i ? 0 : ask == OVERLAY_LOAD || ask == ASK_RESET ? UI_WARNING : UI_FAILURE;
+    if (page == PAGE_MAIN) return main_item(i) == M_EXIT ? UI_FAILURE : 0;
+    if (page == PAGE_CONTROLS) return i == C_RESET ? UI_WARNING : 0;
     if (page != PAGE_SLOT || !slots[slot_at].when[0]) return 0;
     return what == S_DELETE || what == S_SAVE ? UI_FAILURE : what == S_LOAD ? UI_WARNING : 0;
 }
-/* the first page's item shown at i: past Stats, Exit where RenderDoc can't capture */
-static int main_item(int i) { return i >= M_CAPTURE && !g_renderer->capture(0) ? i + 1 : i; }
+/* the first page's row Exit is on */
+static int exit_row(void) {
+    int i = 0;
+    while (main_item(i) != M_EXIT) ++i;
+    return i;
+}
 /* the Shortcuts page's rows: the runtime's keys this build has (hotkeys.h), then Back. The action at row i, -1 for
    Back */
 static int shortcut(int i) {
@@ -323,6 +334,8 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
                  i                     ? "Cancel"
                  : ask == OVERLAY_LOAD ? "Load"
                  : ask == OVERLAY_SAVE ? "Save"
+                 : ask == OVERLAY_EXIT ? "Exit"
+                 : ask == ASK_RESET    ? "Reset"
                                        : "Delete");
         return;
     }
@@ -508,7 +521,13 @@ static int act(int i, int step) {
     }
     if (page == PAGE_MAIN) {
         if (step) return OVERLAY_NONE;
-        if (main_item(i) == M_EXIT) return OVERLAY_EXIT;
+        if (main_item(i) == M_EXIT) { /* asked first: the game ends */
+            ask = OVERLAY_EXIT;
+            page = PAGE_ASK;
+            focus = 1; /* Cancel */
+            top = 0;
+            return OVERLAY_NONE;
+        }
         if (main_item(i) == M_CAPTURE) return OVERLAY_CAPTURE;
         page_open(i == M_PADS        ? PAGE_PADS
                   : i == M_STATES    ? PAGE_STATES
@@ -538,6 +557,16 @@ static int act(int i, int step) {
         top = 0;
         return OVERLAY_NONE;
     }
+    if (page == PAGE_ASK && i == 0 && ask == OVERLAY_EXIT) {
+        page_open(PAGE_MAIN);
+        return OVERLAY_EXIT;
+    }
+    if (page == PAGE_ASK && i == 0 && ask == ASK_RESET) {
+        vpad_reset_layout();
+        page_open(PAGE_CONTROLS);
+        focus = C_RESET;
+        return OVERLAY_NONE;
+    }
     if (page == PAGE_ASK && i == 0) {
         int did = ask;
         page = PAGE_SLOT;
@@ -555,9 +584,12 @@ static int act(int i, int step) {
         if (!prepare_screen_shown()) return OVERLAY_EDIT;
     } else if (page == PAGE_CONTROLS && i == C_BUTTONS)
         page_open(PAGE_BUTTONS);
-    else if (page == PAGE_CONTROLS && i == C_RESET)
-        vpad_reset_layout();
-    else if (page == PAGE_PADS && i == P_MAP)
+    else if (page == PAGE_CONTROLS && i == C_RESET) { /* asked first: the controls' places go */
+        ask = ASK_RESET;
+        page = PAGE_ASK;
+        focus = 1; /* Cancel */
+        top = 0;
+    } else if (page == PAGE_PADS && i == P_MAP)
         map_open();
     else /* Back */
         overlay_back();
@@ -1095,6 +1127,12 @@ int overlay_back(void) {
     if (page == PAGE_BUTTONS) {
         page_open(PAGE_CONTROLS);
         focus = C_BUTTONS;
+    } else if (page == PAGE_ASK && ask == OVERLAY_EXIT) {
+        page_open(PAGE_MAIN);
+        focus = exit_row();
+    } else if (page == PAGE_ASK && ask == ASK_RESET) {
+        page_open(PAGE_CONTROLS);
+        focus = C_RESET;
     } else if (page == PAGE_ASK) {
         page = PAGE_SLOT;
         focus = slot_at               ? ask == OVERLAY_LOAD   ? S_LOAD
@@ -1181,7 +1219,12 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
         d->para[1].on = 1;
         d->paras = 2;
     }
-    if (page >= PAGE_SLOT) {
+    if (page == PAGE_ASK && (ask == OVERLAY_EXIT || ask == ASK_RESET)) {
+        snprintf(title, size / 2, "SCARLETNX  /  %s", ask == OVERLAY_EXIT ? "EXIT THE GAME?" : "RESET THE CONTROLS?");
+        snprintf(pads, size / 2, "%s",
+                 ask == OVERLAY_EXIT ? "The game ends: what was played since it last saved is lost."
+                                     : "The on-screen controls go back where they start.");
+    } else if (page >= PAGE_SLOT) {
         char name[16];
         if (slot_at)
             snprintf(name, sizeof name, "SLOT %d", slot_at);

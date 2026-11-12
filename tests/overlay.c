@@ -919,12 +919,25 @@ int main(void) {
     can_capture = 0;
     draw();
     assert(text_at(6, 9, "Exit"));
-    /* a tap on Exit exits; on the title, nothing; outside the panel, it closes */
-    assert(tap(6, 3) == OVERLAY_EXIT && tap(-3, 3) == OVERLAY_NONE);
+    /* Exit ends the game, no way back: the failure colour, asked first with Cancel in focus; Back to the menu on Exit,
+       then its Exit exits. On the title, nothing; outside the panel, it closes */
+    assert(shows_as("Exit", 0, FAILURE));
+    assert(tap(6, 3) == OVERLAY_NONE);
+    draw();
+    assert(shows("SCARLETNX  /  EXIT THE GAME?") && shows("what was played since it last saved is lost.") &&
+           shows_as("\xFE Exit", 0, FAILURE));
+    assert(overlay_back() == OVERLAY_NONE);
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  MENU") && overlay_select() == OVERLAY_NONE);
+    overlay_move(-1);
+    assert(overlay_select() == OVERLAY_EXIT && tap(-3, 3) == OVERLAY_NONE);
     assert(overlay_tap(5.0f, 5.0f, SW, SH) == OVERLAY_CLOSE);
     /* the focus goes round, from Exit to the first item and back over the top; Back from here closes */
+    overlay_move(-1);
     overlay_move(1);
     overlay_move(-8);
+    assert(overlay_select() == OVERLAY_NONE); /* asked */
+    overlay_move(-1);
     assert(overlay_select() == OVERLAY_EXIT && overlay_back() == OVERLAY_CLOSE);
     /* RenderDoc in the game: Capture frame between Stats and Exit, with the stats box's RenderDoc icon and no page
        under it, the panel a row taller; a tap is the caller's capture, Exit a row down */
@@ -932,14 +945,19 @@ int main(void) {
     draw();
     assert(qv(&list.q[0]).h == 12 * 32 && icon_at(3, 9, GUI_ICON_IMAGE) && text_at(6, 9, "Capture frame") &&
            !text_at(C - 2, 9, ">") && text_at(6, 10, "Exit") && icon_at(3, 10, GUI_ICON_LOG_OUT));
-    assert(tap(7, 3) == OVERLAY_EXIT && tap(6, 3) == OVERLAY_CAPTURE && overlay_select() == OVERLAY_CAPTURE);
+    assert(tap(7, 3) == OVERLAY_NONE && overlay_back() == OVERLAY_NONE); /* Exit asked; Back to it */
+    assert(tap(6, 3) == OVERLAY_CAPTURE && overlay_select() == OVERLAY_CAPTURE);
     overlay_move(1);
-    assert(overlay_select() == OVERLAY_EXIT);
+    assert(overlay_select() == OVERLAY_NONE);
     overlay_move(-1);
+    assert(overlay_select() == OVERLAY_EXIT);
+    overlay_move(-2); /* round to Capture frame */
     /* without it, none: Exit where it was */
     can_capture = 0;
     draw();
     assert(qv(&list.q[0]).h == 11 * 32 && text_at(6, 9, "Exit") && !shows("Capture frame"));
+    assert(overlay_select() == OVERLAY_NONE);
+    overlay_move(-1);
     assert(overlay_select() == OVERLAY_EXIT);
 
     /* the Shortcuts page: a row a runtime key, its key at the right. Enter (a select) waits for a key, which with its
@@ -1033,6 +1051,22 @@ int main(void) {
            text_at(1, 7, "\xFE Relative stick center"));
     assert(text_at(1, 10, "\xFE Touch screen") && text_at(1, 11, "\xFE Buttons") &&
            text_at(1, 12, "\xFE Reset layout"));
+    { /* Reset layout wants care, asked first with Cancel in focus: Cancel keeps the controls as they are, Reset puts
+         them back, each shown again */
+        g_settings.control_shown[0] = 0;
+        assert(shows_as("\xFE Reset layout", 0, WARNING_RGBA) && tap(9, 3) == OVERLAY_NONE);
+        draw();
+        assert(shows("SCARLETNX  /  RESET THE CONTROLS?") &&
+               shows("The on-screen controls go back where they start.") && shows_as("\xFE Reset", 0, WARNING_RGBA));
+        assert(overlay_select() == OVERLAY_NONE); /* Cancel */
+        draw();
+        assert(text_at(1, 0, "SCARLETNX  /  CONTROLS") && !g_settings.control_shown[0]);
+        assert(overlay_select() == OVERLAY_NONE); /* Reset layout, in focus again, then Reset */
+        overlay_move(-1);
+        assert(overlay_select() == OVERLAY_NONE);
+        draw();
+        assert(text_at(1, 0, "SCARLETNX  /  CONTROLS") && g_settings.control_shown[0]);
+    }
     g_settings.show_controls = 0;
     draw();
     assert(text_at(C - 4, 3, "Off"));
@@ -1123,7 +1157,8 @@ int main(void) {
         assert(overlay_controls(0, still, 1000) == OVERLAY_NONE); /* let go */
         assert(overlay_controls(0, down, 1000) == OVERLAY_NONE);  /* to Exit */
         assert(overlay_controls(0, down, 1000 + SNX_OVERLAY_REPEAT_DELAY - 1) == OVERLAY_NONE);
-        assert(overlay_controls(1ull << 0, down, 1000 + SNX_OVERLAY_REPEAT_DELAY - 1) == OVERLAY_EXIT); /* not yet */
+        assert(overlay_controls(1ull << 0, down, 1000 + SNX_OVERLAY_REPEAT_DELAY - 1) == OVERLAY_NONE); /* not yet */
+        assert(overlay_back() == OVERLAY_NONE); /* A on Exit asked first; Back to it */
         assert(overlay_controls(0, down, 1000 + SNX_OVERLAY_REPEAT_DELAY) == OVERLAY_NONE); /* round to the top */
         assert(overlay_controls(1ull << 0, down, 1001 + SNX_OVERLAY_REPEAT_DELAY) == OVERLAY_NONE); /* a page */
         draw();
