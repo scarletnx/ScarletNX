@@ -14,14 +14,4 @@ add_dependencies(snx_build_info snx_commit)
 target_include_directories(snx_build_info PRIVATE "${PROJECT_BINARY_DIR}/generated")
 set_target_properties(snx_build_info PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_build_info PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
-if(BUILD_TESTING)
-    add_executable(snx-test-build-info "${PROJECT_SOURCE_DIR}/tests/build_info.c")
-    target_link_libraries(snx-test-build-info PRIVATE snx_build_info)
-    target_include_directories(snx-test-build-info PRIVATE "${PROJECT_BINARY_DIR}/generated")
-    target_compile_options(snx-test-build-info PRIVATE -Wall -Wextra -Werror -UNDEBUG)
-    add_test(NAME build_info COMMAND snx-test-build-info)
-    add_test(NAME build_info_commit COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
-             "-DOUT=${snx_commit_header}" -DCHECK=1 -P "${PROJECT_SOURCE_DIR}/cmake/commit.cmake")
-    add_test(NAME build_info_no_git COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
-             "-DOUT=${PROJECT_BINARY_DIR}/build_info_no_git.h" -P "${PROJECT_SOURCE_DIR}/tests/build_info_no_git.cmake")
-endif()
+include("${PROJECT_SOURCE_DIR}/tests/cmake/build_info.cmake") # its tests

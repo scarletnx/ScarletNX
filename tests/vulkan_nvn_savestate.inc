@@ -224,7 +224,7 @@ static int check_nvn_savestate(const char* shot) {
     CHECK(!check_nvn_state_damage());
 
     /* a range the game's draws read, in the buffer cache at the load: the load lets go of the cache's entries, and
-       entry 0 is none, memory that nothing ever wrote (the test runs with new memory filled, src/nx/CMakeLists.txt) */
+       entry 0 is none, memory that nothing ever wrote (the test runs with new memory filled, tests/cmake/nx.cmake) */
     VkBuffer kept;
     u64 kept_at;
     vk_lock();

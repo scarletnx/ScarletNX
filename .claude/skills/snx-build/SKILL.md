@@ -48,7 +48,7 @@ description: "Build the ScarletNX runtime and recompile games correctly. Avoid t
 
 ## The screen tests
 
-A build makes `snx-test-gui-sdl` and `snx-test-gui-setup` on the Mac too. But `src/gui/CMakeLists.txt` registers
+A build makes `snx-test-gui-sdl` and `snx-test-gui-setup` on the Mac too. But `tests/cmake/gui.cmake` registers
 `gui_sdl_events` and `gui_setup` in its `NOT APPLE` branch only. Thus `ctest` on the Mac runs neither. Run one by
 hand to see what a Linux or Windows check does. Give it the drivers and the language that CI gives it:
 

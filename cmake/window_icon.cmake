@@ -25,11 +25,4 @@ add_library(snx_window_icon STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/w
     "${PROJECT_BINARY_DIR}/generated/window_icon_png.c")
 target_link_libraries(snx_window_icon PUBLIC SDL3::SDL3)
 target_compile_options(snx_window_icon PRIVATE -Wall -Wextra -Werror=missing-prototypes)
-if(BUILD_TESTING)
-    add_executable(snx-test-window-icon "${PROJECT_SOURCE_DIR}/tests/window_icon.c")
-    target_link_libraries(snx-test-window-icon PRIVATE snx_window_icon)
-    target_compile_definitions(snx-test-window-icon PRIVATE SNX_WINDOW_ICON_FILE="${snx_window_icon_png}")
-    target_compile_options(snx-test-window-icon PRIVATE -Wall -Wextra -Werror -UNDEBUG)
-    add_test(NAME window_icon COMMAND snx-test-window-icon)
-    set_tests_properties(window_icon PROPERTIES ENVIRONMENT "SDL_VIDEO_DRIVER=dummy")
-endif()
+include("${PROJECT_SOURCE_DIR}/tests/cmake/window_icon.cmake") # its tests
