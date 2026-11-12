@@ -133,6 +133,10 @@ int main(void) {
     c.x[30] = 0x9000;
     slots[(COPY - CODE) >> 2](&c, COPY);
     assert(checks == 1 && check_scratch == SCRATCH && copies == 1);
+    /* the plain hook's slot runs its handler alone */
+    c.x[0] = 7, c.x[30] = 0x9000;
+    slots[(ANSWER - CODE) >> 2](&c, ANSWER);
+    assert(answers == 1 && own_answers == 0 && c.x[0] == 8 && c.pc == 0x9000 && checks == 1);
 
     /* a save state loaded: g_hle is the state's whole, here one of a run that hooked and verified nothing */
     memset(&g_hle, 0, sizeof g_hle);
