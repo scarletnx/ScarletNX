@@ -155,7 +155,7 @@ static uint64_t source_reach(const Display* d) {
     return (uint64_t)d->in_bpp * (d->scaling == 2 ? 4 : d->scaling ? 2 : 1);
 }
 
-bool snx_ctr_display_spans(const SnxCtrDisplayTransfer* t, size_t* input_bytes, size_t* output_bytes) {
+static bool display_spans(const SnxCtrDisplayTransfer* t, size_t* input_bytes, size_t* output_bytes) {
     Display d;
     uint64_t in_end = 0, out_end = 0, src, dst;
     if (display_setup(t, &d) != SNX_CTR_XFER_OK) return false;
@@ -169,6 +169,38 @@ bool snx_ctr_display_spans(const SnxCtrDisplayTransfer* t, size_t* input_bytes, 
     *input_bytes = (size_t)in_end;
     *output_bytes = (size_t)out_end;
     return true;
+}
+/* The spans walk every output pixel (a frame's 96000 for a 400x240 screen), and depend on the transfer's sizes and
+   flags alone: a game's few transfers, made each frame, are remembered */
+#define SPANS_KEPT 8
+bool snx_ctr_display_spans(const SnxCtrDisplayTransfer* t, size_t* input_bytes, size_t* output_bytes) {
+    static _Thread_local struct {
+        SnxCtrDisplayTransfer key;
+        size_t input, output;
+        bool ok, used;
+    } kept[SPANS_KEPT];
+    static _Thread_local unsigned next;
+    for (unsigned i = 0; i < SPANS_KEPT; ++i)
+        if (kept[i].used && kept[i].key.input_size == t->input_size && kept[i].key.output_size == t->output_size &&
+            kept[i].key.flags == t->flags) {
+            if (!kept[i].ok) return false;
+            *input_bytes = kept[i].input;
+            *output_bytes = kept[i].output;
+            return true;
+        }
+    size_t input = 0, output = 0;
+    bool ok = display_spans(t, &input, &output);
+    unsigned i = next++ % SPANS_KEPT;
+    kept[i].key = *t;
+    kept[i].input = input;
+    kept[i].output = output;
+    kept[i].ok = ok;
+    kept[i].used = true;
+    if (ok) {
+        *input_bytes = input;
+        *output_bytes = output;
+    }
+    return ok;
 }
 
 SnxCtrXferResult snx_ctr_display_transfer(const SnxCtrDisplayTransfer* t, const unsigned char* in, size_t in_size,

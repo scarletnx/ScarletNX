@@ -109,6 +109,31 @@ static void display(void) {
     check(snx_ctr_display_transfer(&t, in, sizeof in, out, sizeof out) == SNX_CTR_XFER_OK, "ScaleXY runs");
     /* output (1,1) averages input (2,2),(3,2),(2,3),(3,3): R = (2+3+2+3)/4 = 2, G = (2+2+3+3)/4 = 2 */
     check(out[(1 * 4 + 1) * 4 + 3] == 2 && out[(1 * 4 + 1) * 4 + 2] == 2, "ScaleXY averages a 2x2 block");
+    /* the spans are remembered by the transfer's sizes and flags (eight of them): more transfers than that, asked
+       again in another order, get the same spans, an unsupported one (scaling mode 3) refused each time */
+    {
+        size_t first[10][2], again[2];
+        for (unsigned i = 0; i < 10; ++i) {
+            SnxCtrDisplayTransfer u = {(8 + 8 * i) | (16u << 16), (8 + 8 * i) | (8u << 16),
+                                       (SNX_CTR_PIX_RGBA8 << SNX_CTR_XFER_IN_FORMAT) |
+                                           ((i & 1 ? SNX_CTR_PIX_RGB565 : SNX_CTR_PIX_RGB8) << SNX_CTR_XFER_OUT_FORMAT) |
+                                           (i & 2 ? SNX_CTR_XFER_FLIP : 0u)};
+            check(snx_ctr_display_spans(&u, &first[i][0], &first[i][1]), "spans of a transfer to remember");
+        }
+        ok = 1;
+        for (unsigned i = 10; i-- > 0;) {
+            SnxCtrDisplayTransfer u = {(8 + 8 * i) | (16u << 16), (8 + 8 * i) | (8u << 16),
+                                       (SNX_CTR_PIX_RGBA8 << SNX_CTR_XFER_IN_FORMAT) |
+                                           ((i & 1 ? SNX_CTR_PIX_RGB565 : SNX_CTR_PIX_RGB8) << SNX_CTR_XFER_OUT_FORMAT) |
+                                           (i & 2 ? SNX_CTR_XFER_FLIP : 0u)};
+            ok &= snx_ctr_display_spans(&u, &again[0], &again[1]) && again[0] == first[i][0] &&
+                  again[1] == first[i][1];
+        }
+        check(ok, "remembered spans are the ones walked");
+        SnxCtrDisplayTransfer bad = {8 | (8u << 16), 8 | (8u << 16), 3u << SNX_CTR_XFER_SCALE_SHIFT};
+        check(!snx_ctr_display_spans(&bad, &again[0], &again[1]) && !snx_ctr_display_spans(&bad, &again[0], &again[1]),
+              "an unsupported transfer has no spans, remembered or not");
+    }
     /* linear in, tiled out reverses the first transfer */
     {
         unsigned char lin[8 * 8 * 4], back[8 * 8 * 4];
