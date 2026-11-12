@@ -1039,8 +1039,8 @@ static void cache_cases(void) {
 
 /* Very large levels (astc_quick_mtexels, 1 megatexel here): the first upload encodes the quick build (mode 6 from one
    line) and gives the level to the background, which stores its fast build in pieces; the next upload, and one after
-   the cache's file is opened again, copy the pieces, which are the fast build of the whole level byte for byte. The
-   workers on the CPU (astc_background=1) and the GPU (2) store the same bytes. An image kept while the background
+   the cache's file is opened again, copy the pieces, which are the fast build of the whole level byte for byte, as the
+   CPU runs it (tests/glsl/bc7_cpu.cpp). An image kept while the background
    runs gets its pieces too, and so does one whose hit ran out of time (g_vk_astc_hit_ns 0), loading them. A background stopped after one piece (the GPU's, which makes one at a time) leaves that
    piece, and the next one makes only the others. Bands of block rows (one of them stepping 3 rows, for 6x6 blocks) and
    pieces of several layers */
@@ -1054,13 +1054,13 @@ static void bg_expect(const CacheCase* c, const u8* blocks, u8* quick, u8* fast)
     bc7_encode_cpu_fast(texels, c->w, c->h, slices, fast);
     free(texels);
 }
-static void bg_same(const CacheCase* c, int mode, const char* what, const u8* got, const u8* want, u64 size) {
+static void bg_same(const CacheCase* c, const char* what, const u8* got, const u8* want, u64 size) {
     for (u64 i = 0; i < size; i++)
         if (got[i] != want[i])
-            fatal("background %d %ux%u %ux%ux%u: %s's byte %llu (block %llu) is %u, not %u\n", mode, c->bw, c->bh, c->w,
+            fatal("background %ux%u %ux%ux%u: %s's byte %llu (block %llu) is %u, not %u\n", c->bw, c->bh, c->w,
                   c->h, c->layers, what, (unsigned long long)i, (unsigned long long)(i / 16), got[i], want[i]);
 }
-static void background_case(const CacheCase* c, int mode) {
+static void background_case(const CacheCase* c) {
     const u32 slices = c->depth * c->layers;
     const u64 size = (u64)((c->w + 3) / 4) * ((c->h + 3) / 4) * 16 * slices;
     u8 *blocks = blocks_new(c->w, c->h, slices, c->bw, c->bh), *quick = malloc(size), *fast = malloc(size);
@@ -1069,27 +1069,27 @@ static void background_case(const CacheCase* c, int mode) {
     remove(CACHE_PATH);
     vk_astc_cache_open(CACHE_PATH);
     g_settings.astc_quick_mtexels = 1;
-    g_settings.astc_background = mode;
+    g_settings.astc_background = 1;
     bg_expect(c, blocks, quick, fast);
     vk_astc_background_stats(&b0);
     u8* got = cache_upload(c, blocks, &took, 0);
     if (!got) {
-        printf("SKIP the background %d %ux%u image=%ux%ux%u: the device has no such BC7 image\n", mode, c->bw, c->bh,
+        printf("SKIP the background %ux%u image=%ux%ux%u: the device has no such BC7 image\n", c->bw, c->bh,
                c->w, c->h, slices);
         goto out;
     }
-    bg_same(c, mode, "the quick encode", got, quick, size);
+    bg_same(c, "the quick encode", got, quick, size);
     free(got);
     vk_astc_background_stats(&b);
     if (b.quick != b0.quick + 1 || b.made != b0.made + 1 || b.hits != b0.hits)
-        fatal("background %d: the first upload was %llu quick, %llu to the background, %llu hits\n", mode,
+        fatal("background: the first upload was %llu quick, %llu to the background, %llu hits\n",
               (unsigned long long)(b.quick - b0.quick), (unsigned long long)(b.made - b0.made),
               (unsigned long long)(b.hits - b0.hits));
     vk_astc_background_drain();
     vk_astc_background_stats(&b);
     const u64 pieces = b.stored - b0.stored;
-    if (b.finished != b0.finished + 1 || b.pending || !pieces || (mode == 2) != (b.gpu_pieces > b0.gpu_pieces))
-        fatal("background %d: %llu finished, %llu pending, %llu pieces stored, %llu by the GPU\n", mode,
+    if (b.finished != b0.finished + 1 || b.pending || !pieces || b.gpu_pieces - b0.gpu_pieces != pieces)
+        fatal("background: %llu finished, %llu pending, %llu pieces stored, %llu by the GPU\n",
               (unsigned long long)(b.finished - b0.finished), (unsigned long long)b.pending, (unsigned long long)pieces,
               (unsigned long long)(b.gpu_pieces - b0.gpu_pieces));
     for (int run = 0; run < 2; run++) {
@@ -1098,8 +1098,8 @@ static void background_case(const CacheCase* c, int mode) {
         got = cache_upload(c, blocks, &took, 0);
         vk_astc_background_stats(&b);
         if (b.hits != b0.hits + 1 || b.quick != b0.quick || b.made != b0.made)
-            fatal("background %d: upload %d of the stored level encoded\n", mode, run + 2);
-        bg_same(c, mode, run ? "the hit after reopening" : "the hit", got, fast, size);
+            fatal("background: upload %d of the stored level encoded\n", run + 2);
+        bg_same(c, run ? "the hit after reopening" : "the hit", got, fast, size);
         free(got);
     }
     /* a hit out of time (a slow disk): encoded quickly, and the pieces load into the image after it */
@@ -1109,18 +1109,18 @@ static void background_case(const CacheCase* c, int mode) {
     vk_astc_background_stats(&b);
     g_vk_astc_hit_ns = ~0ull;
     if (b.quick != b0.quick + 1 || b.hits != b0.hits || b.stored != b0.stored || b.loaded != b0.loaded + pieces)
-        fatal("background %d: a hit out of time was %llu quick, %llu hits, %llu pieces stored, %llu loaded\n", mode,
+        fatal("background: a hit out of time was %llu quick, %llu hits, %llu pieces stored, %llu loaded\n",
               (unsigned long long)(b.quick - b0.quick), (unsigned long long)(b.hits - b0.hits),
               (unsigned long long)(b.stored - b0.stored), (unsigned long long)(b.loaded - b0.loaded));
-    bg_same(c, mode, "the image the pieces loaded into", got, fast, size);
+    bg_same(c, "the image the pieces loaded into", got, fast, size);
     free(got);
     /* another level, its image alive until the background is done: the pieces go into it as they come */
     blocks[9] ^= 0x20;
     bg_expect(c, blocks, quick, fast);
     got = cache_upload(c, blocks, &took, 1);
-    bg_same(c, mode, "the image the background wrote into", got, fast, size);
+    bg_same(c, "the image the background wrote into", got, fast, size);
     free(got);
-    if (mode == 2) {
+    {
         blocks[5] ^= 0x40; /* another level */
         bg_expect(c, blocks, quick, fast);
         vk_astc_background_stats(&b0);
@@ -1134,7 +1134,7 @@ static void background_case(const CacheCase* c, int mode) {
         if (b.stored != b0.stored + 1 || b.pending || b.finished != b0.finished)
             fatal("background stopped after a piece: %llu stored, %llu pending\n",
                   (unsigned long long)(b.stored - b0.stored), (unsigned long long)b.pending);
-        g_settings.astc_background = 2;
+        g_settings.astc_background = 1;
         free(cache_upload(c, blocks, &took, 0));
         vk_astc_background_drain();
         vk_astc_background_stats(&b);
@@ -1142,12 +1142,12 @@ static void background_case(const CacheCase* c, int mode) {
             fatal("background after a stop: %llu pieces stored of %llu\n", (unsigned long long)(b.stored - b0.stored),
                   (unsigned long long)pieces);
         got = cache_upload(c, blocks, &took, 0);
-        bg_same(c, mode, "the hit after a stop", got, fast, size);
+        bg_same(c, "the hit after a stop", got, fast, size);
         free(got);
     }
-    printf("PASS the background %s %ux%u srgb=%u image=%ux%u layers=%u: the quick build first, then the fast build "
+    printf("PASS the background %ux%u srgb=%u image=%ux%u layers=%u: the quick build first, then the fast build "
            "from the cache in %llu pieces\n",
-           mode == 1 ? "CPU" : "GPU", c->bw, c->bh, c->srgb, c->w, c->h, c->layers, (unsigned long long)pieces);
+           c->bw, c->bh, c->srgb, c->w, c->h, c->layers, (unsigned long long)pieces);
     fflush(stdout);
 out:
     g_settings.astc_quick_mtexels = 0;
@@ -1163,7 +1163,7 @@ static void background_cases(void) {
     static const CacheCase cases[] = {
         {4, 4, 0, 1030, 1030, 1, 1}, {6, 6, 1, 1540, 700, 1, 1}, {4, 4, 1, 260, 260, 1, 16}};
     for (u32 i = 0; i < sizeof cases / sizeof cases[0]; i++)
-        for (int mode = 1; mode <= 2; mode++) background_case(&cases[i], mode);
+        background_case(&cases[i]);
 }
 
 /* --bench: the BC7 cache's costs for one w x h level of random 8x8 blocks: an encode with its blocks read back and

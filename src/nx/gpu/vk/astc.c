@@ -37,7 +37,6 @@
    A very large level held as BC7 at load (astc_quick_mtexels, every layer counted) takes the quick build, mode 6 from
    one line, where the frame needs it, and its fast build is made in the background, on the GPU or the CPU, into the
    cache in pieces and into the texture (below bc7_queued_limit). */
-#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
@@ -46,8 +45,6 @@
 #include "nx/gpu/texture/bc7_spv.h"  /* compiled from bc7.comp, and its fast build */
 #include "nx/gpu/texture/blocklinear_spv.h"
 #include "nx/gpu/texture/astc_bc.h"
-#include "nx/gpu/texture/astc_cpu.h"       /* the background's decoder on the CPU */
-#include "nx/gpu/texture/bc7_encode_cpu.h" /* and its encoder */
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -509,21 +506,13 @@ static int split_before(u64 texels) {
    copies them; with any piece missing, or the reads too slow, it encodes the level quickly again, and the pieces
    there load into it after the presents.
 
-   astc_background picks who encodes. 2 (the default): the GPU, a piece after each present in a submission of its own
-   (vk_astc_background), the next one once it is done: on the 890M the two arrays took 13 seconds of its time over 133
-   seconds of play, 2 to 10 ms a frame where the GPU idled 30, and the frame rate stayed within the runs' own spread
-   (docs/layers/gpu/astc.md). 1: worker threads at the system's idle priority (plat_thread_idle), which run the CPU decoder and
-   the encoder's fast build (astc_cpu.c, bc7_encode_cpu.cpp). Their blocks are the GPU's byte for byte (integer
-   arithmetic only, held to it by tests/astc_vulkan.c), so they go under the same keys. On that game's blocks a Zen 5
-   core encodes 0.7 megatexels a second (most blocks try every mode), 10 minutes of CPU time for the arrays: for a
-   game the GPU holds back, on a machine with cores to spare. The GPU thread stores what either made: bc7_cache.c is
-   its alone */
+   The GPU encodes it (astc_background 1, the default; 0 leaves the quick build), a piece after each present in a
+   submission of its own (vk_astc_background), the next one once it is done: on the 890M the two arrays took 13 seconds
+   of its time over 133 seconds of play, 2 to 10 ms a frame where the GPU idled 30, and the frame rate stayed within
+   the runs' own spread (docs/layers/gpu/astc.md). All of it is the GPU thread's, as bc7_cache.c is */
 #define BC7_PIECE_BYTES  (256u << 10)
 /* the snapshots of the levels in the background at once */
 #define BG_SNAPSHOTS_MAX (1ull << 30)
-/* the pieces the workers encoded and the GPU thread has not stored yet: they wait while it presents nothing (a
-   loading screen), which holds their blocks in memory */
-#define BG_DONE_MAX      64
 /* A hit reads the level's pieces on the GPU thread, which the frame waits for: 21 ms for a 168 MB level in the page
    cache, 4.2 s from a disk that gave 40 MB/s (an NVMe drive in a USB enclosure at USB 2 speed). Past this, for all the
    frame's hits, a level is encoded quickly instead, and its pieces load into the texture after the presents that follow, BG_LOAD_NS of reads
@@ -588,18 +577,16 @@ typedef struct {
     u64 key[2]; /* the level's, its fast build's */
     u32 w, h, depth, bw, bh, srgb, nx, ny;
     Bc7Pieces p;
-    u8* state; /* each piece's BG_* (g_bg.lock) */
+    u8* state; /* each piece's BG_* */
     u32 next;  /* no piece before it is BG_TODO */
     u32 left;  /* pieces not BG_DONE */
-    u32 busy;  /* pieces taken by workers and not stored yet: the snapshot is read, a Bc7Done names it (g_bg.lock) */
     u64 ready_sub;
     int ready;
     VkBuffer snap;
     VmaAllocation snap_mem;
-    const u8* snap_ptr;
     u64 snap_bytes;
-    u64 t0, cpu_ns;          /* when it was made; the workers' CPU time on it */
-    u32 by_cpu, by_gpu, had; /* pieces the workers and the GPU encoded, and those the cache held already */
+    u64 t0;          /* when it was made */
+    u32 by_gpu, had; /* pieces the GPU encoded, and those the cache held already */
     /* the texture whose upload made it, while its image holds what that upload wrote there (vk_astc_forget): each
        piece goes into it too, at level, from layer (as_layers: the slices are its layers), so this run shows the
        better blocks as they come */
@@ -607,36 +594,20 @@ typedef struct {
     u32 level, layer;
     int as_layers;
 } Bc7Job;
-/* a piece a worker encoded, for the GPU thread to store */
-typedef struct Bc7Done {
-    struct Bc7Done* next;
-    Bc7Job* job;
-    u32 piece;
-    u8* blocks;
-} Bc7Done;
 static struct {
-    PMutex lock; /* the jobs' list and piece states, their busy counts and the done list: the GPU thread's and the
-                    workers' */
-    PCond work;
-    int cond_made;
     Bc7Job** jobs;
     u32 njobs, cap;
-    Bc7Done* done;
-    u32 ndone; /* in done */
-    u32 threads;
     u64 snap_bytes;
     u64 slice_sub; /* the GPU's piece in flight: its submission (0: none), its job and piece */
     Bc7Job* slice_job;
     u32 slice_piece;
-    u64 quick, made, finished, hits, stored, cpu_ns, gpu_pieces, loaded;
+    u64 quick, made, finished, hits, stored, gpu_pieces, loaded;
     u32 loaded_now; /* pieces bg_load read after this present */
-} g_bg = {.lock = PMUTEX_INIT};
+} g_bg;
 u64 g_vk_astc_hit_ns = BG_HIT_NS;
 
-/* a ready job's piece that nobody encodes yet, taken (g_bg.lock): 0 when there is none, or BG_DONE_MAX wait to be
-   stored */
+/* a ready job's piece that nobody encodes yet, taken: 0 when there is none */
 static int bg_take(Bc7Job** job, u32* piece) {
-    if (g_bg.ndone >= BG_DONE_MAX) return 0;
     for (u32 k = 0; k < g_bg.njobs; k++) {
         Bc7Job* j = g_bg.jobs[k];
         if (!j->ready) continue;
@@ -650,78 +621,6 @@ static int bg_take(Bc7Job** job, u32* piece) {
             }
     }
     return 0;
-}
-
-/* piece i of j on the CPU: its rows decoded from the snapshot and encoded, its blocks (malloc'd), NULL when memory ran
-   out. A strip as the GPU's: the level's own height at its last band, whose blocks repeat their last row */
-static u8* bg_encode_cpu(const Bc7Job* j, u32 i) {
-    Bc7Piece q;
-    piece_at(&j->p, j->key, i, &q);
-    const u32 y = q.r * 4 / j->bh, height = j->h - q.r * 4 < q.nr * 4 ? j->h - q.r * 4 : q.nr * 4;
-    u8 *rgba = malloc((size_t)j->w * height * q.nz * 4), *out = malloc((size_t)q.bytes);
-    if (!rgba || !out) {
-        free(rgba);
-        free(out);
-        return NULL;
-    }
-    for (u32 k = 0; k < q.nz; k++)
-        astc_decode_image(j->snap_ptr + ((u64)(q.z + k) * j->ny + y) * j->nx * 16, j->w, height, j->bw, j->bh,
-                          rgba + (size_t)k * j->w * height * 4, (int)j->srgb);
-    bc7_encode_cpu_strip(rgba, j->w, height, q.nz, out);
-    free(rgba);
-    return out;
-}
-
-/* A worker: pieces of ready jobs while astc_background is 1, else asleep. Below every thread of the game: a CPU the
-   game wants is never the encoder's, and the GPU thread never waits for a worker */
-static void bg_worker(void* arg) {
-    (void)arg;
-    SNX_THREAD_NAME("BC7 background");
-    if (plat_thread_idle())
-        WARN_LIMIT(1, "vulkan: could not lower a BC7 background thread below the game's: %s\n", strerror(errno));
-    const SnxU64 clock = snx_thread_clock(); /* its CPU time, for the log (0: the system has none) */
-    pm_lock(&g_bg.lock);
-    for (;;) {
-        Bc7Job* j;
-        u32 i;
-        if (g_settings.astc_background != 1 || !bg_take(&j, &i)) {
-            pc_wait(&g_bg.work, &g_bg.lock, -1);
-            continue;
-        }
-        j->busy++;
-        pm_unlock(&g_bg.lock);
-        SnxU64 c0 = 0, c1 = 0;
-        if (clock) snx_thread_cpu_ns(clock, &c0);
-        u8* blocks = bg_encode_cpu(j, i);
-        if (clock) snx_thread_cpu_ns(clock, &c1);
-        const u64 spent = c1 > c0 ? c1 - c0 : 0;
-        Bc7Done* d = blocks ? malloc(sizeof *d) : NULL;
-        pm_lock(&g_bg.lock);
-        j->cpu_ns += spent;
-        g_bg.cpu_ns += spent;
-        if (!d) { /* out of memory: the piece is left to a later run */
-            free(blocks);
-            j->state[i] = BG_DONE;
-            j->left--;
-            j->busy--;
-            continue;
-        }
-        *d = (Bc7Done){g_bg.done, j, i, blocks};
-        g_bg.done = d;
-        g_bg.ndone++;
-        j->by_cpu++;
-    }
-}
-/* astc_background_threads, or a quarter of the CPUs the game may use, from 1 to 8: the workers only take CPUs the
-   game leaves idle, but more of them take more of a laptop's power, which its game threads' clocks pay for */
-static u32 bg_workers(void) {
-    static int cpus = -1;
-    if (g_settings.astc_background_threads > 0) return (u32)g_settings.astc_background_threads;
-    if (cpus < 0) {
-        int ids[256];
-        cpus = plat_cpus(ids, 256);
-    }
-    return cpus <= 0 ? 2 : cpus / 4 < 1 ? 1 : cpus / 4 > 8 ? 8 : (u32)(cpus / 4);
 }
 
 /* the copy of piece q of a level (cx blocks across, h texels high) from off in a buffer into the image, at level, from
@@ -751,41 +650,8 @@ void vk_astc_forget(const Surf* t, u32 level) {
         if (g_bg.jobs[k]->surf == t && (level == ~0u || g_bg.jobs[k]->level == level)) g_bg.jobs[k]->surf = NULL;
 }
 
-/* the pieces the workers encoded, into the cache and into their texture (after a present: vk_lock, outside any
-   rendering pass) */
-static void bg_store_done(void) {
-    if (!__atomic_load_n(&g_bg.done, __ATOMIC_RELAXED)) return;
-    pm_lock(&g_bg.lock);
-    Bc7Done* d = g_bg.done;
-    g_bg.done = NULL;
-    g_bg.ndone = 0;
-    pm_unlock(&g_bg.lock);
-    while (d) {
-        Bc7Done* next = d->next;
-        Bc7Piece q;
-        piece_at(&d->job->p, d->job->key, d->piece, &q);
-        vk_bc7_cache_put(q.key, d->blocks, q.bytes);
-        g_bg.stored += vk_bc7_cache_find(q.key) == q.bytes;
-        VkBuffer buf;
-        u64 off;
-        u8* to = d->job->surf ? vk_stage(q.bytes, 16, &buf, &off) : NULL;
-        if (to) {
-            memcpy(to, d->blocks, (size_t)q.bytes);
-            bg_to_image(vk_cmd(), d->job, &q, buf, off);
-        }
-        pm_lock(&g_bg.lock);
-        d->job->state[d->piece] = BG_DONE;
-        d->job->left--;
-        d->job->busy--;
-        pm_unlock(&g_bg.lock);
-        free(d->blocks);
-        free(d);
-        d = next;
-    }
-}
-
 /* j's snapshot freed once the GPU's copies into it are done (it is in host memory, but GPU memory on some devices),
-   and j with it (g_bg.lock not held; no worker reads it) */
+   and j with it */
 static void bg_job_free(Bc7Job* j) {
     if (j->snap) {
         vk_defer_buffer(j->snap, j->snap_mem);
@@ -841,9 +707,7 @@ static Bc7Job* bg_job_new(const u64 key[2], u32 w, u32 h, u32 depth, u32 bw, u32
                              .size = bytes,
                              .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VmaAllocationCreateInfo ai = {.flags =
-                                      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                                  .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST}; /* only the GPU reads it */
     VmaAllocationInfo info;
     if (!j->state || (have < p.n && !VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &j->snap, &j->snap_mem, &info)))) {
         LOG_LIMIT(4, "vulkan: no memory to keep a %ux%ux%u ASTC level's blocks for the background encode\n", w, h,
@@ -854,7 +718,6 @@ static Bc7Job* bg_job_new(const u64 key[2], u32 w, u32 h, u32 depth, u32 bw, u32
     }
     if (j->snap) {
         vk_mem_track(j->snap_mem);
-        j->snap_ptr = info.pMappedData;
         j->snap_bytes = bytes;
         g_bg.snap_bytes += bytes;
     }
@@ -876,8 +739,8 @@ static void bg_job_add(Bc7Job* j, VkCommandBuffer cb) {
         VkBufferMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                                     .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                                     .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                                    .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
-                                    .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT,
+                                    .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                    .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
                                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                     .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                     .buffer = j->snap,
@@ -894,20 +757,16 @@ static void bg_job_add(Bc7Job* j, VkCommandBuffer cb) {
             bg_job_free(j);
             return;
         }
-        pm_lock(&g_bg.lock);
         g_bg.jobs = grown;
         g_bg.cap = cap;
-        pm_unlock(&g_bg.lock);
     }
-    pm_lock(&g_bg.lock);
     g_bg.jobs[g_bg.njobs++] = j;
-    pm_unlock(&g_bg.lock);
     g_bg.made++;
     LOG_LIMIT(16,
               "vulkan: a %ux%ux%u ASTC level of %llu megatexels is in the quick BC7 build for now; its fast build "
-              "comes in the background (%s): %u pieces of %u to make, %u to load from the BC7 cache\n",
-              j->w, j->h, j->depth, (unsigned long long)(((u64)j->w * j->h * j->depth) >> 20),
-              g_settings.astc_background == 2 ? "on the GPU" : "on the CPU", j->left - j->had, j->p.n, j->had);
+              "comes in the background on the GPU: %u pieces of %u to make, %u to load from the BC7 cache\n",
+              j->w, j->h, j->depth, (unsigned long long)(((u64)j->w * j->h * j->depth) >> 20), j->left - j->had,
+              j->p.n, j->had);
 }
 
 /* The GPU's piece: the snapshot's rows of it copied into the frame's device memory, decoded, encoded with the fast
@@ -916,10 +775,7 @@ static void bg_job_add(Bc7Job* j, VkCommandBuffer cb) {
 static void bg_gpu_piece(void) {
     Bc7Job* j;
     u32 i;
-    pm_lock(&g_bg.lock);
-    int took = bg_take(&j, &i);
-    pm_unlock(&g_bg.lock);
-    if (!took) return;
+    if (!bg_take(&j, &i)) return;
     Bc7Piece q;
     piece_at(&j->p, j->key, i, &q);
     const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
@@ -936,9 +792,7 @@ static void bg_gpu_piece(void) {
         set7 = set ? two_buffers(g_astc.scratch, 0, texels, g_astc.bc7_scratch, q.bytes) : VK_NULL_HANDLE;
     }
     if (!set7) { /* the ring or the descriptors ran out this frame: again after the next present */
-        pm_lock(&g_bg.lock);
         j->state[i] = BG_TODO;
-        pm_unlock(&g_bg.lock);
         return;
     }
     VkCommandBuffer cb = vk_cmd();
@@ -1003,10 +857,8 @@ static void bg_load(void) {
             if (ok) bg_to_image(vk_cmd(), j, &q, buf, off);
             g_bg.loaded += ok;
             g_bg.loaded_now++;
-            pm_lock(&g_bg.lock);
             j->state[i] = ok || !j->snap ? BG_DONE : BG_TODO;
             j->left -= ok || !j->snap;
-            pm_unlock(&g_bg.lock);
         }
     }
 }
@@ -1014,35 +866,23 @@ static void bg_load(void) {
 void vk_astc_background(void) {
     if (!g_bg.njobs) return;
     g_bg.loaded_now = 0;
-    const int mode = g_settings.astc_background;
-    bg_store_done();
+    const int on = g_settings.astc_background;
     if (g_bg.slice_sub && g_bg_landed >= g_bg.slice_sub) { /* the GPU's piece, which its landing stored */
         Bc7Job* j = g_bg.slice_job;
         Bc7Piece q;
         piece_at(&j->p, j->key, g_bg.slice_piece, &q);
         const int stored = vk_bc7_cache_find(q.key) == q.bytes;
         g_bg.stored += stored;
-        pm_lock(&g_bg.lock);
         j->state[g_bg.slice_piece] = stored ? BG_DONE : BG_TODO;
         j->left -= stored;
-        pm_unlock(&g_bg.lock);
         g_bg.slice_sub = 0;
         g_bg.slice_job = NULL;
     }
-    int wake = 0;
     for (u32 k = 0; k < g_bg.njobs;) {
         Bc7Job* j = g_bg.jobs[k];
-        if (!j->ready && g_bg_landed >= j->ready_sub) {
-            if (j->snap) vmaInvalidateAllocation(g_vk.vma, j->snap_mem, 0, VK_WHOLE_SIZE);
-            pm_lock(&g_bg.lock);
-            j->ready = 1;
-            pm_unlock(&g_bg.lock);
-            wake = 1;
-        }
-        pm_lock(&g_bg.lock);
-        const int end = (!j->left || !mode) && !j->busy && g_bg.slice_job != j;
+        if (!j->ready && g_bg_landed >= j->ready_sub) j->ready = 1;
+        const int end = (!j->left || !on) && g_bg.slice_job != j;
         if (end) g_bg.jobs[k] = g_bg.jobs[--g_bg.njobs];
-        pm_unlock(&g_bg.lock);
         if (!end) {
             k++;
             continue;
@@ -1050,23 +890,14 @@ void vk_astc_background(void) {
         if (!j->left) {
             g_bg.finished++;
             LOG("vulkan: the fast build of a %ux%ux%u ASTC level is in the BC7 cache: %u pieces (%llu MB) in %.1f s, "
-                "%u on the CPU (%.1f s of its time), %u on the GPU, %u there already\n",
+                "%u on the GPU, %u there already\n",
                 j->w, j->h, j->depth, j->p.n, (unsigned long long)(((u64)j->p.cx * j->p.cy * j->depth * 16) >> 20),
-                (double)(plat_ns() - j->t0) / 1e9, j->by_cpu, (double)j->cpu_ns / 1e9, j->by_gpu, j->had);
+                (double)(plat_ns() - j->t0) / 1e9, j->by_gpu, j->had);
         }
         bg_job_free(j);
     }
-    if (mode == 1 && g_bg.njobs) {
-        if (!g_bg.cond_made) {
-            pc_init(&g_bg.work);
-            g_bg.cond_made = 1;
-        }
-        for (u32 n = bg_workers(); g_bg.threads < n; g_bg.threads++)
-            if (plat_thread(bg_worker, NULL, (size_t)1 << 20)) break;
-        if (wake || g_bg.njobs) pc_broadcast(&g_bg.work);
-    }
     bg_load();
-    if (mode == 2 && !g_bg.slice_sub) bg_gpu_piece();
+    if (on && !g_bg.slice_sub) bg_gpu_piece();
 }
 
 void vk_astc_background_drain(void) {
@@ -1075,13 +906,12 @@ void vk_astc_background_drain(void) {
         for (u32 k = 0; k < g_bg.njobs; k++) copying |= !g_bg.jobs[k]->ready;
         if (copying || g_bg.slice_sub) vk_finish(); /* lands the snapshots' copies, or the GPU's piece */
         vk_astc_background();
-        if (g_bg.njobs && !g_bg.slice_sub) plat_sleep_ns(1000000); /* the workers' */
     }
 }
 
 void vk_astc_background_stats(VkAstcBackground* s) {
-    *s = (VkAstcBackground){g_bg.quick,  g_bg.made,   g_bg.finished,   g_bg.njobs,  g_bg.hits,
-                            g_bg.stored, g_bg.cpu_ns, g_bg.gpu_pieces, g_bg.loaded, g_bg.threads};
+    *s = (VkAstcBackground){g_bg.quick, g_bg.made,  g_bg.finished,   g_bg.njobs,
+                            g_bg.hits,  g_bg.stored, g_bg.gpu_pieces, g_bg.loaded};
 }
 
 /* a very large level's pieces from the cache, staged and copied into the image: 0 when one is missing or doesn't check

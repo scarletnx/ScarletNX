@@ -1410,9 +1410,9 @@ u64 vk_astc_dispatches(void); /* the BC7 encoder's dispatches so far */
    counted) held as BC7 at load takes the encoder's quick build in the frame that uploads it, and its fast build is made
    in the background (astc.c). vk_astc_quick: whether a level of w x h texels and depth slices or layers is one, with
    the BC7 cache open, whose fast build goes into the cache in pieces whatever its size (texture.c keys it as it keys a
-   level vk_astc_cached takes). vk_astc_background: after a present's submission (vk_lock), the pieces the workers
-   encoded stored, the levels whose pieces are all stored ended (their snapshots freed), and with astc_background=2 a
-   piece encoded on the GPU in a submission of its own once the last one is done. vk_astc_background_drain: until every
+   level vk_astc_cached takes). vk_astc_background: after a present's submission (vk_lock), the levels whose pieces are
+   all stored ended (their snapshots freed), and with astc_background on a piece encoded on the GPU in a submission of
+   its own once the last one is done. vk_astc_background_drain: until every
    background encode is done (tests: there are no presents). vk_astc_forget: t's image no longer holds what the upload
    of a level wrote there (another upload of it), or of any (~0u: t is freed), so the background encodes of those
    levels go on into the cache alone. g_vk_astc_hit_ns: the time a very large level's hit may take reading its pieces,
@@ -1422,10 +1422,10 @@ void vk_astc_background(void);
 void vk_astc_background_drain(void);
 void vk_astc_forget(const Surf* t, u32 level);
 /* very large levels encoded quickly, those given to the background and those it finished, those still in it, and
-   those whose fast build came from the cache; the pieces stored, the workers' CPU time, the pieces the GPU encoded,
-   those loaded from the cache after a hit ran out of time, and the workers started */
+   those whose fast build came from the cache; the pieces stored, the pieces the GPU encoded, and those loaded from the
+   cache after a hit ran out of time */
 typedef struct {
-    u64 quick, made, finished, pending, hits, stored, cpu_ns, gpu_pieces, loaded, threads;
+    u64 quick, made, finished, pending, hits, stored, gpu_pieces, loaded;
 } VkAstcBackground;
 void vk_astc_background_stats(VkAstcBackground* s);
 extern u64 g_vk_astc_hit_ns;

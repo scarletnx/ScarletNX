@@ -824,12 +824,10 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 vk_astc_background_stats(&bg);
                 if (bg.quick || bg.hits)
                     LOG("vulkan: %llu very large ASTC levels encoded quickly, %llu given their fast build in the "
-                        "background (%llu done, %llu going: %llu pieces stored, %llu ms of the CPU on %llu threads, "
-                        "%llu pieces on the GPU, %llu loaded from the cache), %llu whose fast build came from the "
-                        "cache\n",
+                        "background (%llu done, %llu going: %llu pieces stored, %llu pieces on the GPU, %llu loaded "
+                        "from the cache), %llu whose fast build came from the cache\n",
                         (unsigned long long)bg.quick, (unsigned long long)bg.made, (unsigned long long)bg.finished,
                         (unsigned long long)bg.pending, (unsigned long long)bg.stored,
-                        (unsigned long long)(bg.cpu_ns / 1000000), (unsigned long long)bg.threads,
                         (unsigned long long)bg.gpu_pieces, (unsigned long long)bg.loaded, (unsigned long long)bg.hits);
                 u64 sparse_binds, sparse_ns;
                 vk_sparse_stats(&sparse_binds, &sparse_ns);
