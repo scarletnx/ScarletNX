@@ -14,7 +14,7 @@ msgstr ""
 
 #: src/gui/android.c
 msgid "an exception that says nothing"
-msgstr ""
+msgstr "一个没有说明的异常"
 
 #: src/gui/android.c
 msgid "No Android activity to ask."
@@ -23,7 +23,7 @@ msgstr "没有可调用的 Android 活动。"
 #: src/gui/android.c
 #, c-format
 msgid "MainActivity.%s did not run: %s"
-msgstr ""
+msgstr "MainActivity.%s 未运行：%s"
 
 #: src/gui/android.c
 #, c-format
@@ -188,12 +188,12 @@ msgstr "已移除：它原本是空的"
 #: src/gui/editor.c
 #, c-format
 msgid "Select to type it: a whole number from %.0f to %.0f"
-msgstr ""
+msgstr "选中以输入：%.0f 到 %.0f 的整数"
 
 #: src/gui/editor.c
 #, c-format
 msgid "Select to type it: a number from %g to %g, three digits and two decimals at most"
-msgstr ""
+msgstr "选中以输入：%g 到 %g 的数，最多三位整数和两位小数"
 
 #: src/gui/editor.c
 msgid "Select to pick it, or type it as #RRGGBB"
@@ -210,32 +210,32 @@ msgstr "选中以输入：#RRGGBB"
 #: src/gui/editor.c
 #, c-format
 msgid "%s is not a folder name: letters, digits, spaces, - _ and ., not starting with ."
-msgstr ""
+msgstr "%s 不是有效的文件夹名：字母、数字、空格、- _ 和 .，不以 . 开头"
 
 #: src/gui/editor.c
 #, c-format
 msgid "%s is not a color #RRGGBB, as #1A2B3C"
-msgstr ""
+msgstr "%s 不是 #RRGGBB 颜色，例如 #1A2B3C"
 
 #: src/gui/editor.c
 #, c-format
 msgid "%s is not a whole number from 0 to %lu"
-msgstr ""
+msgstr "%s 不是 0 到 %lu 的整数"
 
 #: src/gui/editor.c
 #, c-format
 msgid "%s is not a whole number from %.0f to %.0f"
-msgstr ""
+msgstr "%s 不是 %.0f 到 %.0f 的整数"
 
 #: src/gui/editor.c
 #, c-format
 msgid "%s is not a number from %g to %g, two decimals at most"
-msgstr ""
+msgstr "%s 不是 %g 到 %g 的数，最多两位小数"
 
 #: src/gui/editor.c
 #, c-format
 msgid "%s is more than %u bytes"
-msgstr ""
+msgstr "%s 超过 %u 字节"
 
 #: src/gui/editor.c
 msgid "Not saved: ESC again leaves without it, Save keeps it"
@@ -244,12 +244,12 @@ msgstr "未保存：再按 ESC 不保存离开，「保存」则保留"
 #: src/gui/editor.c
 #, c-format
 msgid "Only the digits of a whole number from %.0f to %.0f"
-msgstr ""
+msgstr "只能输入数字：%.0f 到 %.0f 的整数"
 
 #: src/gui/editor.c
 #, c-format
 msgid "Only the digits of a number from %g to %g, three digits and two decimals at most"
-msgstr ""
+msgstr "只能输入数字：%g 到 %g 的数，最多三位整数和两位小数"
 
 #: src/gui/editor.c
 msgid "A folder name: letters, digits, spaces, - _ and ., not starting with ."
@@ -262,32 +262,32 @@ msgstr "颜色：#RRGGBB，例如 #1A2B3C"
 #: src/gui/editor.c
 #, c-format
 msgid "A whole number from 0 to %lu"
-msgstr ""
+msgstr "0 到 %lu 的整数"
 
 #: src/gui/editor.c
 #, c-format
 msgid "A whole number from %.0f to %.0f; empty, the default %s"
-msgstr ""
+msgstr "%.0f 到 %.0f 的整数；留空则为默认值 %s"
 
 #: src/gui/editor.c
 #, c-format
 msgid "A whole number from %.0f to %.0f"
-msgstr ""
+msgstr "%.0f 到 %.0f 的整数"
 
 #: src/gui/editor.c
 #, c-format
 msgid "A number from %g to %g, two decimals at most; empty, the default %s"
-msgstr ""
+msgstr "%g 到 %g 的数，最多两位小数；留空则为默认值 %s"
 
 #: src/gui/editor.c
 #, c-format
 msgid "A number from %g to %g, two decimals at most"
-msgstr ""
+msgstr "%g 到 %g 的数，最多两位小数"
 
 #: src/gui/editor.c
 #, c-format
 msgid "Text, up to %u bytes"
-msgstr ""
+msgstr "文字，最多 %u 字节"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/editor.c src/gui/main.c
@@ -315,133 +315,133 @@ msgstr "已保存到 %s"
 
 #: src/gui/gpu_driver.c
 msgid "Debug - CPU Memory"
-msgstr ""
+msgstr "调试 - CPU 内存"
 
 #: src/gui/gpu_driver.c
 msgid "Use CPU memory (slower but more stable)"
-msgstr ""
+msgstr "使用 CPU 内存（较慢但更稳定）"
 
 #: src/gui/gpu_driver.c
 msgid "Debug - No UBWC"
-msgstr ""
+msgstr "调试 - 禁用 UBWC"
 
 #: src/gui/gpu_driver.c
 msgid "Disable UBWC compression for debugging"
-msgstr ""
+msgstr "禁用 UBWC 压缩以便调试"
 
 #: src/gui/gpu_driver.c
 msgid "Debug - No Binning"
-msgstr ""
+msgstr "调试 - 禁用 Binning"
 
 #: src/gui/gpu_driver.c
 msgid "Disable binning optimization"
-msgstr ""
+msgstr "禁用 binning 优化"
 
 #: src/gui/gpu_driver.c
 msgid "Capture - Renderpass"
-msgstr ""
+msgstr "捕获 - Renderpass"
 
 #: src/gui/gpu_driver.c
 msgid "Capture command stream data for debugging"
-msgstr ""
+msgstr "捕获命令流数据以便调试"
 
 #: src/gui/gpu_driver.c
 msgid "Capture - First 100 Frames"
-msgstr ""
+msgstr "捕获 - 前 100 帧"
 
 #: src/gui/gpu_driver.c
 msgid "Capture command stream for first 100 frames only"
-msgstr ""
+msgstr "仅捕获前 100 帧的命令流"
 
 #: src/gui/gpu_driver.c
 msgid "Shader Debug"
-msgstr ""
+msgstr "着色器调试"
 
 #: src/gui/gpu_driver.c
 msgid "Enable IR3 shader compiler debugging"
-msgstr ""
+msgstr "启用 IR3 着色器编译器调试"
 
 #: src/gui/gpu_driver.c
 msgid "GPU Hang Trace"
-msgstr ""
+msgstr "GPU 挂起追踪"
 
 #: src/gui/gpu_driver.c
 msgid "Trace GPU progress for debugging hangs"
-msgstr ""
+msgstr "追踪 GPU 进度以调试挂起"
 
 #: src/gui/gpu_driver.c
 msgid "Dev - UBWC Flag Hint"
-msgstr ""
+msgstr "开发 - UBWC 标志提示"
 
 #: src/gui/gpu_driver.c
 msgid "Enable TP UBWC flag hint for development"
-msgstr ""
+msgstr "启用 TP UBWC 标志提示，供开发使用"
 
 #: src/gui/gpu_driver.c
 msgid "Performance - Default"
-msgstr ""
+msgstr "性能 - 默认"
 
 #: src/gui/gpu_driver.c
 msgid "Clear all debug options for performance"
-msgstr ""
+msgstr "清除所有调试选项以提升性能"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s is not a zip (%s)"
-msgstr ""
+msgstr "未添加：%s 不是 zip（%s）"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s's entry %u does not read (%s)"
-msgstr ""
+msgstr "未添加：无法读取 %s 的第 %u 项（%s）"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s's %s is %s; a driver's files are at the zip's top"
-msgstr ""
+msgstr "未添加：%s 的 %s 是%s；驱动的文件须位于 zip 顶层"
 
 #: src/gui/gpu_driver.c
 msgid "a folder"
-msgstr ""
+msgstr "文件夹"
 
 #: src/gui/gpu_driver.c
 msgid "not a file at the zip's top"
-msgstr ""
+msgstr "不在 zip 顶层的文件"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s unpacks to %llu bytes, over the %llu a driver takes"
-msgstr ""
+msgstr "未添加：%s 解压后为 %llu 字节，超过驱动上限 %llu"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s has no meta.json at its top"
-msgstr ""
+msgstr "未添加：%s 顶层没有 meta.json"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s's meta.json is %llu bytes, over the %d a driver's takes"
-msgstr ""
+msgstr "未添加：%s 的 meta.json 有 %llu 字节，超过驱动上限 %d"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s's meta.json does not unpack (%s)"
-msgstr ""
+msgstr "未添加：%s 的 meta.json 无法解压（%s）"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s: %s"
-msgstr ""
+msgstr "未添加：%s：%s"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s has no %s, the library its meta.json names"
-msgstr ""
+msgstr "未添加：%s 中没有 %s，即其 meta.json 指定的库"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s needs Android API %d; this device has API %d"
-msgstr ""
+msgstr "未添加：%s 需要 Android API %d；此设备为 API %d"
 
 #: src/gui/gpu_driver.c src/gui/main.c
 #, c-format
@@ -451,94 +451,94 @@ msgstr "未添加：%s"
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Already added: %s (%s/%s)"
-msgstr ""
+msgstr "已添加过：%s（%s/%s）"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s/%s holds %s %s already; remove it first"
-msgstr ""
+msgstr "未添加：%s/%s 中已有 %s %s；请先移除它"
 
 #: src/gui/gpu_driver.c
 msgid "a package whose meta.json does not read,"
-msgstr ""
+msgstr "一个 meta.json 无法读取的包"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: no memory for %s's paths"
-msgstr ""
+msgstr "未添加：内存不足，无法处理 %s 的路径"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s could not be made (%s)"
-msgstr ""
+msgstr "未添加：无法创建 %s（%s）"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s's %s does not unpack (%s)"
-msgstr ""
+msgstr "未添加：%s 的 %s 无法解压（%s）"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s's %s %s"
-msgstr ""
+msgstr "未添加：%s 的 %s %s"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s could not be written (%s)"
-msgstr ""
+msgstr "未添加：无法写入 %s（%s）"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s could not become %s (%s)"
-msgstr ""
+msgstr "未添加：无法将 %s 重命名为 %s（%s）"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Added %s (%s), in %s/%s"
-msgstr ""
+msgstr "已添加 %s（%s），位于 %s/%s"
 
 #: src/gui/gpu_driver.c src/gui/main.c
 msgid "no driverVersion"
-msgstr ""
+msgstr "无 driverVersion"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Removed %s/%s"
-msgstr ""
+msgstr "已移除 %s/%s"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not removed: %s is no driver's folder name"
-msgstr ""
+msgstr "未移除：%s 不是驱动的文件夹名"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not removed: %s is not there"
-msgstr ""
+msgstr "未移除：%s 不存在"
 
 #: src/gui/gpu_driver.c
 #, c-format
 msgid "Not removed: %s could not be deleted (%s)"
-msgstr ""
+msgstr "未移除：无法删除 %s（%s）"
 
 #: src/gui/gpu_driver_fetch.c
 #, c-format
 msgid "GitHub says of %s: %s"
-msgstr ""
+msgstr "GitHub 对 %s 的回复：%s"
 
 #: src/gui/gpu_driver_fetch.c
 #, c-format
 msgid "%s's releases are not GitHub's list of them (%zu bytes)"
-msgstr ""
+msgstr "%s 的发布列表不是 GitHub 的格式（%zu 字节）"
 
 #: src/gui/gpu_driver_fetch.c
 #, c-format
 msgid "no memory for %s's %zu releases and %zu assets"
-msgstr ""
+msgstr "内存不足，无法容纳 %s 的 %zu 个发布版本和 %zu 个资源"
 
 #: src/gui/gpu_driver_fetch.c
 msgid "Unsupported"
-msgstr ""
+msgstr "不支持"
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -556,19 +556,19 @@ msgstr "轻触: 选择. 更新."
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: open. Drag: scroll. Refresh. Back."
-msgstr ""
+msgstr "轻触: 打开. 拖动: 滚动. 更新. 返回."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: open. Drag: scroll. Refresh."
-msgstr ""
+msgstr "轻触: 打开. 拖动: 滚动. 更新."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Play."
-msgstr ""
+msgstr "运行."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -592,7 +592,7 @@ msgstr "AOT 包."
 #: src/gui/main.c
 #, snx-keys
 msgid "Save states."
-msgstr ""
+msgstr "即时存档."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -682,13 +682,13 @@ msgstr "更新."
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: open or change."
-msgstr ""
+msgstr "轻触: 打开或更改."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: open or remove."
-msgstr ""
+msgstr "轻触: 打开或移除."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -730,37 +730,37 @@ msgstr "轻触: 重命名."
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: use, add or remove. Back."
-msgstr ""
+msgstr "轻触: 使用、添加或移除. 返回."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: downloads, or fetch again. Back."
-msgstr ""
+msgstr "轻触: 下载或重新获取. 返回."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: apply, type, remove or save. Back."
-msgstr ""
+msgstr "轻触: 应用、输入、移除或保存. 返回."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: use, add or remove."
-msgstr ""
+msgstr "轻触: 使用、添加或移除."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: downloads, or fetch again."
-msgstr ""
+msgstr "轻触: 下载或重新获取."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: apply, type, remove or save."
-msgstr ""
+msgstr "轻触: 应用、输入、移除或保存."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -810,19 +810,19 @@ msgstr "方向键/鼠标: 移动. 空格/Enter/点击: 选择."
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: move. Enter/Space: open. Left/Right/PgUp/PgDn: scroll. F5: refresh."
-msgstr ""
+msgstr "上/下: 移动. Enter/空格: 打开. 左/右/PgUp/PgDn: 滚动. F5: 更新."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Arrows: move. Enter/Space: open. PgUp/PgDn: scroll. F5: refresh."
-msgstr ""
+msgstr "方向键: 移动. Enter/空格: 打开. PgUp/PgDn: 滚动. F5: 更新."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "L: play."
-msgstr ""
+msgstr "L: 运行."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -846,7 +846,7 @@ msgstr "B: AOT 包."
 #: src/gui/main.c
 #, snx-keys
 msgid "S: save states."
-msgstr ""
+msgstr "S: 即时存档."
 
 #: src/gui/main.c
 msgid "click the box (or Enter) to open the file picker"
@@ -924,7 +924,7 @@ msgstr "上/下: 文件夹. F5: 更新. ESC: 返回."
 #: src/gui/main.c
 #, snx-keys
 msgid "Enter: open or change."
-msgstr ""
+msgstr "Enter: 打开或更改."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -936,13 +936,13 @@ msgstr "Del: 删除."
 #: src/gui/main.c
 #, snx-keys
 msgid "Enter: open or remove."
-msgstr ""
+msgstr "Enter: 打开或移除."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Enter: open."
-msgstr ""
+msgstr "Enter: 打开."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -972,19 +972,19 @@ msgstr "上/下: 用户. 左/右: 当前用户. Enter: 重命名. ESC: 返回."
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: row. Enter: use, add or remove. Del: remove. ESC: back."
-msgstr ""
+msgstr "上/下: 行. Enter: 使用、添加或移除. Del: 移除. ESC: 返回."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: row. Enter: downloads, or fetch again. ESC: back."
-msgstr ""
+msgstr "上/下: 行. Enter: 下载或重新获取. ESC: 返回."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: row. Enter: apply, type, remove or save. Del: remove. ESC: back."
-msgstr ""
+msgstr "上/下: 行. Enter: 应用、输入、移除或保存. Del: 移除. ESC: 返回."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -1040,13 +1040,13 @@ msgstr "十字键: 移动. A: 选择. Start: 更新. B: 退出."
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: move. A: open. LT/RT: scroll. Start: refresh. B: back."
-msgstr ""
+msgstr "十字键: 移动. A: 打开. LT/RT: 滚动. Start: 更新. B: 返回."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Right stick: play."
-msgstr ""
+msgstr "右摇杆: 运行."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -1070,7 +1070,7 @@ msgstr "R3: AOT 包."
 #: src/gui/main.c
 #, snx-keys
 msgid "X: save states."
-msgstr ""
+msgstr "X: 即时存档."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -1124,19 +1124,19 @@ msgstr "十字键: 文件夹. Start: 更新. B: 返回."
 #: src/gui/main.c
 #, snx-keys
 msgid "A: open or change."
-msgstr ""
+msgstr "A: 打开或更改."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "A: open or remove."
-msgstr ""
+msgstr "A: 打开或移除."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "A: open."
-msgstr ""
+msgstr "A: 打开."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -1166,19 +1166,19 @@ msgstr "十字键: 用户、当前用户. A: 重命名. B: 返回."
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: row. A: use, add or remove. X: remove. B: back."
-msgstr ""
+msgstr "十字键: 行. A: 使用、添加或移除. X: 移除. B: 返回."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: row. A: downloads, or fetch again. B: back."
-msgstr ""
+msgstr "十字键: 行. A: 下载或重新获取. B: 返回."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: row. A: apply, type, remove or save. X: remove. B: back."
-msgstr ""
+msgstr "十字键: 行. A: 应用、输入、移除或保存. X: 移除. B: 返回."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -1368,12 +1368,12 @@ msgstr "%s：text_size = %s 现在是 ui_scale = %s"
 #: src/gui/main.c
 #, c-format
 msgid "%s: %s is no longer a UI scale: ui_scale = %d now"
-msgstr ""
+msgstr "%s：%s 已不再是有效的显示大小：现在是 ui_scale = %d"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s: recompile_background = %s is now background_recompile = %s"
-msgstr ""
+msgstr "%s：recompile_background = %s 现在是 background_recompile = %s"
 
 #: src/gui/main.c
 #, c-format
@@ -1603,7 +1603,7 @@ msgstr "移动"
 
 #: src/gui/main.c
 msgid "Delete"
-msgstr ""
+msgstr "删除"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
@@ -1619,7 +1619,7 @@ msgstr "重新编译"
 
 #: src/gui/main.c
 msgid "Clear"
-msgstr ""
+msgstr "清除"
 
 #: src/gui/main.c
 msgid "Yes"
@@ -1663,21 +1663,21 @@ msgstr "无法开始运行：内存不足"
 #: src/gui/main.c
 #, c-format
 msgid "%s cannot be made: %s"
-msgstr ""
+msgstr "无法创建 %s：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "the driver gave no answer in %d s"
-msgstr ""
+msgstr "驱动程序 %d 秒内没有回应"
 
 #: src/gui/main.c
 #, c-format
 msgid "the driver ended with status %d"
-msgstr ""
+msgstr "驱动程序结束，状态 %d"
 
 #: src/gui/main.c
 msgid "the driver ended without one"
-msgstr ""
+msgstr "驱动程序结束时没有生成图标"
 
 #: src/gui/main.c
 #, c-format
@@ -1687,7 +1687,7 @@ msgstr "未能读取转储的图标（%s）"
 #: src/gui/main.c
 #, c-format
 msgid "%s could not be drawn: the game shows Wimsy in grey"
-msgstr ""
+msgstr "无法绘制 %s：游戏改为显示灰色的 Wimsy"
 
 #: src/gui/main.c
 #, c-format
@@ -1723,11 +1723,11 @@ msgstr "内存不足"
 
 #: src/gui/main.c
 msgid "Dump"
-msgstr ""
+msgstr "转储"
 
 #: src/gui/main.c
 msgid "Game"
-msgstr ""
+msgstr "游戏"
 
 #: src/gui/main.c src/common/utilities/setup.c
 msgid "Saves"
@@ -1739,31 +1739,31 @@ msgstr "设置"
 
 #: src/gui/main.c
 msgid "its dump is not known: the game was made before the recompile named it"
-msgstr ""
+msgstr "其转储未知：游戏生成于重新编译开始记录转储之前"
 
 #: src/gui/main.c
 msgid "not known"
-msgstr ""
+msgstr "未知"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s is not there yet"
-msgstr ""
+msgstr "%s 尚不存在"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s is out of the Files app's reach, which shows the app's Documents alone"
-msgstr ""
+msgstr "%s 不在「文件」App 的范围内，它只显示本应用的 Documents"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s has no cache to delete: no %s, no %s"
-msgstr ""
+msgstr "%s 没有可删除的缓存：没有 %s，也没有 %s"
 
 #: src/gui/main.c
 #, c-format
 msgid "Delete the caches of %s? The shader cache, %s (%s), and the code cache, %s (%s). The game makes them again as it runs; its saves, settings and dump stay."
-msgstr ""
+msgstr "删除 %s 的缓存？着色器缓存 %s（%s）和代码缓存 %s（%s）。游戏运行时会重新生成它们；其存档、设置和转储保留。"
 
 #: src/gui/main.c
 msgid "none"
@@ -1772,22 +1772,22 @@ msgstr "无"
 #: src/gui/main.c
 #, c-format
 msgid "Could not delete %s: %s"
-msgstr ""
+msgstr "无法删除 %s：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "Deleted the caches of %s: %s"
-msgstr ""
+msgstr "已删除 %s 的缓存：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "GPU Driver: %s"
-msgstr ""
+msgstr "GPU 驱动：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "Global (%s)"
-msgstr ""
+msgstr "全局（%s）"
 
 #: src/gui/main.c
 #, c-format
@@ -1802,7 +1802,7 @@ msgstr "金手指 %s"
 #: src/gui/main.c
 #, c-format
 msgid "Play Program %d"
-msgstr ""
+msgstr "运行程序 %d"
 
 #: src/gui/main.c
 msgid "No update"
@@ -1826,19 +1826,19 @@ msgstr "打开金手指文件夹"
 
 #: src/gui/main.c
 msgid "Open Folder"
-msgstr ""
+msgstr "打开文件夹"
 
 #: src/gui/main.c
 msgid "Clean Cache"
-msgstr ""
+msgstr "清理缓存"
 
 #: src/gui/main.c
 msgid "Save States"
-msgstr ""
+msgstr "即时存档"
 
 #: src/gui/main.c
 msgid "Freedreno Settings"
-msgstr ""
+msgstr "Freedreno 设置"
 
 #: src/gui/main.c
 msgid "  (Debug on)"
@@ -1988,12 +1988,12 @@ msgstr "未添加：%s 在为其打开的对话框关闭后才返回"
 #: src/gui/main.c
 #, c-format
 msgid "%s is a dump: its recompiled game keeps its own GPU driver and Freedreno variables"
-msgstr ""
+msgstr "%s 是转储：其重编译后的游戏保存自己的 GPU 驱动和 Freedreno 变量"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s is a dump: its recompiled game keeps the save states"
-msgstr ""
+msgstr "%s 是转储：即时存档保存在其重编译后的游戏中"
 
 #: src/gui/main.c
 #, c-format
@@ -2007,7 +2007,7 @@ msgstr "%s：保留其更新、DLC、模组和金手指"
 
 #: src/gui/main.c
 msgid "Icon size is the grid's: View is List"
-msgstr ""
+msgstr "图标大小仅用于网格：视图为列表"
 
 #: src/gui/main.c
 msgid "Side panel"
@@ -2016,41 +2016,41 @@ msgstr "侧栏"
 #: src/gui/main.c
 #, c-format
 msgid "%s: save states"
-msgstr ""
+msgstr "%s：即时存档"
 
 #: src/gui/main.c
 #, c-format
 msgid "Slot %s  %s  %u:%02u:%02u"
-msgstr ""
+msgstr "槽位 %s  %s  %u:%02u:%02u"
 
 #: src/gui/main.c
 #, c-format
 msgid "Auto  %s  %u:%02u:%02u"
-msgstr ""
+msgstr "自动  %s  %u:%02u:%02u"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s has no save states: F7 saves one while it plays, the menu's Save states page too."
-msgstr ""
+msgstr "%s 没有即时存档：游戏运行时按 F7 可保存一个，菜单的「即时存档」页也可以。"
 
 #: src/gui/main.c
 msgid "S lists the save states of a recompiled Switch game in focus."
-msgstr ""
+msgstr "S 列出选中的已重编译 Switch 游戏的即时存档。"
 
 #: src/gui/main.c
 #, c-format
 msgid "It can't be played from that state: %s."
-msgstr ""
+msgstr "无法从该即时存档运行：%s。"
 
 #: src/gui/main.c
 #, c-format
 msgid "Delete the save state %s?"
-msgstr ""
+msgstr "删除即时存档 %s？"
 
 #: src/gui/main.c
 #, c-format
 msgid "Not deleted: %s could not be removed"
-msgstr ""
+msgstr "未删除：无法移除 %s"
 
 #: src/gui/main.c
 msgid "SCARLETNX  /  SETTINGS"
@@ -2085,15 +2085,15 @@ msgstr "SCARLETNX  /  设置  /  文件夹"
 
 #: src/gui/main.c
 msgid "SCARLETNX  /  SETTINGS  /  GPU DRIVERS"
-msgstr ""
+msgstr "SCARLETNX  /  设置  /  GPU 驱动"
 
 #: src/gui/main.c
 msgid "SCARLETNX  /  SETTINGS  /  GPU DRIVERS  /  DOWNLOAD"
-msgstr ""
+msgstr "SCARLETNX  /  设置  /  GPU 驱动  /  下载"
 
 #: src/gui/main.c
 msgid "SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS"
-msgstr ""
+msgstr "SCARLETNX  /  设置  /  FREEDRENO 设置"
 
 #: src/gui/main.c
 #, c-format
@@ -2172,7 +2172,7 @@ msgstr "运行 Linux ARM 程序，64 位或 32 位"
 
 #: src/gui/main.c
 msgid "Recompiles a 3DS game, then runs it"
-msgstr ""
+msgstr "重新编译 3DS 游戏，然后运行它"
 
 #: src/gui/main.c
 msgid "Recompiles a PS Vita homebrew .vpk, then runs it"
@@ -2184,7 +2184,7 @@ msgstr "在模拟的 AGB 主板上运行 GBA ROM"
 
 #: src/gui/main.c
 msgid "Runs an Android app's .apk, .xapk or .apks"
-msgstr ""
+msgstr "运行 Android 应用的 .apk、.xapk 或 .apks"
 
 #: src/gui/main.c
 msgid "Installs prod.keys, which games are extracted with"
@@ -2226,7 +2226,7 @@ msgstr "可以运行"
 #: src/gui/main.c
 #, c-format
 msgid ". No icon: %s"
-msgstr ""
+msgstr "。没有图标：%s"
 
 #: src/gui/main.c
 #, c-format
@@ -2267,7 +2267,7 @@ msgstr "GBA ROM，用 scarletnx-agb 运行"
 
 #: src/gui/main.c
 msgid "Android app, run with scarletnx-android"
-msgstr ""
+msgstr "Android 应用，用 scarletnx-android 运行"
 
 #: src/gui/main.c
 msgid "A dump, prepared when it runs"
@@ -2325,17 +2325,17 @@ msgstr "在另一个游戏上按 R：它会加入队列"
 
 #: src/gui/main.c
 msgid "Made with: ?"
-msgstr ""
+msgstr "生成方式：?"
 
 #: src/gui/main.c
 #, c-format
 msgid "Made with: O%c, JIT only"
-msgstr ""
+msgstr "生成方式：O%c，仅 JIT"
 
 #: src/gui/main.c
 #, c-format
 msgid "Made with: O%c, AOT %s"
-msgstr ""
+msgstr "生成方式：O%c，AOT %s"
 
 #: src/gui/main.c
 #, c-format
@@ -2344,7 +2344,7 @@ msgstr "调试已开：%s"
 
 #: src/gui/main.c
 msgid "Needs Recompile"
-msgstr ""
+msgstr "需要重新编译"
 
 #: src/gui/main.c
 #, c-format
@@ -2386,7 +2386,7 @@ msgstr "没有主文件夹"
 #: src/gui/main.c
 #, c-format
 msgid "3DS keys to: %s"
-msgstr ""
+msgstr "3DS 密钥安装到：%s"
 
 #: src/gui/main.c
 msgid "Installed"
@@ -2476,7 +2476,7 @@ msgstr "显示大小"
 
 #: src/gui/main.c
 msgid "1x to 4x. A new one asks to be kept"
-msgstr ""
+msgstr "1x 到 4x。更改后会询问是否保留"
 
 #: src/gui/main.c
 msgid "Language"
@@ -2504,7 +2504,7 @@ msgstr "后台重新编译"
 
 #: src/gui/main.c
 msgid "The Compile tab's: R's, B's and a game's first. Auto: Gentle on battery, Full on the charger. Full: its threads as the recompile's settings give them. Gentle: as many as the memory holds, up to half of those, at a low priority. Each goes gently while a game plays"
-msgstr ""
+msgstr "「编译」标签页的任务：R 的、B 的和游戏首次运行的编译。自动：用电池时轻柔，接通电源时全速。全速：线程数按重新编译的设置。轻柔：内存容得下的线程数，最多为其一半，低优先级。游戏运行时都会轻柔进行"
 
 #: src/gui/main.c
 msgid "Theme Editor"
@@ -2520,15 +2520,15 @@ msgstr "数据和提取，以及游戏列出的游戏库：已重编译的游戏
 
 #: src/gui/main.c
 msgid "GPU Drivers"
-msgstr ""
+msgstr "GPU 驱动"
 
 #: src/gui/main.c
 msgid "Vulkan drivers for Adreno and Xclipse GPUs on Android (Turnip, RADV): add, remove, and the one games use"
-msgstr ""
+msgstr "Android 上 Adreno 和 Xclipse GPU 的 Vulkan 驱动（Turnip、RADV）：添加、移除，以及游戏使用哪一个"
 
 #: src/gui/main.c
 msgid "Mesa's Freedreno and Turnip variables every game starts with (TU_DEBUG...), and their presets"
-msgstr ""
+msgstr "每个游戏启动时带上的 Mesa Freedreno 和 Turnip 变量（TU_DEBUG...）及其预设"
 
 #: src/gui/main.c
 msgid "Clean Old Settings"
@@ -2557,7 +2557,7 @@ msgstr "将 App 之后各组的所有设置恢复默认。会先询问"
 #: src/gui/main.c
 #, c-format
 msgid "%dx (%dx in this window)"
-msgstr ""
+msgstr "%dx（此窗口中为 %dx）"
 
 #: src/gui/main.c
 #, c-format
@@ -2566,7 +2566,7 @@ msgstr "自动：%s"
 
 #: src/gui/main.c
 msgid "Gentle, on battery"
-msgstr ""
+msgstr "轻柔，正在使用电池"
 
 #: src/gui/main.c
 #, c-format
@@ -2590,11 +2590,11 @@ msgstr "默认"
 #: src/gui/main.c
 #, c-format
 msgid "%d set"
-msgstr ""
+msgstr "已设 %d 个"
 
 #: src/gui/main.c
 msgid "None"
-msgstr ""
+msgstr "无"
 
 #: src/gui/main.c
 #, c-format
@@ -2629,7 +2629,7 @@ msgstr "%s：旧版本各行的文件夹现已放入游戏库：%s"
 
 #: src/gui/main.c
 msgid "Dumps put here are listed (.nsp, .xci and .nro), its subfolders' too with + subfolders. Remove from Library takes it off, its files kept"
-msgstr ""
+msgstr "放在这里的转储（.nsp、.xci 和 .nro）会被列出，加上「+ 子文件夹」时其子文件夹中的也会列出。「从游戏库移除」会移除它，保留其文件"
 
 #: src/gui/main.c
 #, c-format
@@ -2643,7 +2643,7 @@ msgstr "（无）"
 #: src/gui/main.c
 #, c-format
 msgid "%s is the dumps library's Main row, taken off it: its Add to Library puts it back"
-msgstr ""
+msgstr "%s 是转储游戏库的主文件夹，已被移除：用其「添加到游戏库」可放回"
 
 #: src/gui/main.c
 #, c-format
@@ -2689,37 +2689,37 @@ msgstr "已从游戏库中移除 %s。其游戏仍留在文件夹中"
 #: src/gui/main.c
 #, c-format
 msgid "%s removed from the library. Its games stay in the folder; new games go to an Extra"
-msgstr ""
+msgstr "已从游戏库中移除 %s。其游戏仍留在文件夹中；新游戏放入另外的文件夹"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s is in the Dumps Library again, but could not be made"
-msgstr ""
+msgstr "%s 已重新加入转储游戏库，但无法创建"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s is in the Recompiled Library again, but could not be made"
-msgstr ""
+msgstr "%s 已重新加入已重编译游戏库，但无法创建"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s is in the Dumps Library again: Games lists its games"
-msgstr ""
+msgstr "%s 已重新加入转储游戏库：「游戏」会列出其游戏"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s is in the Recompiled Library again: Games lists its games"
-msgstr ""
+msgstr "%s 已重新加入已重编译游戏库：「游戏」会列出其游戏"
 
 #: src/gui/main.c
 #, c-format
 msgid "Remove %s from the Dumps Library? Its games stay in the folder, which ScarletNX no longer makes as it starts."
-msgstr ""
+msgstr "从转储游戏库中移除 %s？其游戏仍留在文件夹中，ScarletNX 启动时不再创建该文件夹。"
 
 #: src/gui/main.c
 #, c-format
 msgid "Remove %s from the Recompiled Library? Its games stay in the folder, and new games go to an Extra of it."
-msgstr ""
+msgstr "从已重编译游戏库中移除 %s？其游戏仍留在文件夹中，新游戏放入该库另外的文件夹。"
 
 #: src/gui/main.c
 #, c-format
@@ -2826,7 +2826,7 @@ msgstr "主文件夹"
 
 #: src/gui/main.c
 msgid "not listed"
-msgstr ""
+msgstr "未列出"
 
 #: src/gui/main.c
 msgid "outside the app"
@@ -2878,7 +2878,7 @@ msgstr "已使用，但下次启动不保留：无法写入 %s"
 #: src/gui/main.c
 #, c-format
 msgid "%d launchers hold the run logs of %s: this one's runs keep none"
-msgstr ""
+msgstr "已有 %d 个启动器在使用 %s 的运行日志：此启动器的运行不保留日志"
 
 #: src/gui/main.c
 #, c-format
@@ -2991,194 +2991,194 @@ msgstr "它的 Mii：游戏把它当作该用户的 Mii，没有头像文件时�
 
 #: src/gui/main.c
 msgid "System driver"
-msgstr ""
+msgstr "系统驱动"
 
 #: src/gui/main.c src/nx/runtime/ini.c
 msgid "Android only"
-msgstr ""
+msgstr "仅 Android"
 
 #: src/gui/main.c
 msgid "arm64 only"
-msgstr ""
+msgstr "仅 arm64"
 
 #: src/gui/main.c
 msgid "Unsupported GPU"
-msgstr ""
+msgstr "不支持的 GPU"
 
 #: src/gui/main.c
 msgid "Needs Android 9"
-msgstr ""
+msgstr "需要 Android 9"
 
 #: src/gui/main.c
 msgid "Not in this build"
-msgstr ""
+msgstr "此构建中没有"
 
 #: src/gui/main.c
 msgid "Adreno only"
-msgstr ""
+msgstr "仅 Adreno"
 
 #: src/gui/main.c
 #, c-format
 msgid "No Vulkan loader: %s"
-msgstr ""
+msgstr "没有 Vulkan 加载器：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "Vulkan did not start: VkResult %d"
-msgstr ""
+msgstr "Vulkan 未能启动：VkResult %d"
 
 #: src/gui/main.c
 msgid "Vulkan lists no GPU"
-msgstr ""
+msgstr "Vulkan 未列出任何 GPU"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s, Vulkan %u.%u.%u, driver %08x"
-msgstr ""
+msgstr "%s，Vulkan %u.%u.%u，驱动 %08x"
 
 #: src/gui/main.c
 msgid "This build of the launcher reads no Vulkan driver"
-msgstr ""
+msgstr "此版本的启动器不读取 Vulkan 驱动"
 
 #: src/gui/main.c
 #, c-format
 msgid "Goes on with the run of edenprobe %s that ended before its summary, from its journal: cases so far %d, on its crash list %d"
-msgstr ""
+msgstr "按其记录继续在汇总前中断的 edenprobe %s 运行：目前用例 %d 个，崩溃列表中 %d 个"
 
 #: src/gui/main.c
 msgid "The GPU driver Settings > App > GPU Drivers picks for every game"
-msgstr ""
+msgstr "「设置 > 应用 > GPU 驱动」为所有游戏选择的 GPU 驱动"
 
 #: src/gui/main.c
 #, c-format
 msgid "The system's own: %s"
-msgstr ""
+msgstr "系统自带：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s/%s does not read: %s"
-msgstr ""
+msgstr "无法读取 %s/%s：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s, %s, by %s, package %s, Android API %d or newer, in %s/%s. %s"
-msgstr ""
+msgstr "%s，%s，作者 %s，包版本 %s，需要 Android API %d 或更高，位于 %s/%s。%s"
 
 #: src/gui/main.c
 msgid "no vendor"
-msgstr ""
+msgstr "无厂商"
 
 #: src/gui/main.c
 msgid "no author"
-msgstr ""
+msgstr "无作者"
 
 #: src/gui/main.c
 msgid "Download Driver"
-msgstr ""
+msgstr "下载驱动"
 
 #: src/gui/main.c
 msgid "The driver repositories Eden lists hold drivers for Adreno GPUs. An Xclipse GPU's driver, RADV, is added from its zip with Add Driver"
-msgstr ""
+msgstr "Eden 列出的驱动仓库提供 Adreno GPU 的驱动。Xclipse GPU 的驱动 RADV 需用「添加驱动」从其 zip 添加"
 
 #: src/gui/main.c
 msgid "The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded and added as Add Driver adds a zip. A GPU maker's own drivers are marked proprietary, no license"
-msgstr ""
+msgstr "来自 GitHub 的 Eden 所列驱动仓库的发布版本：选中的版本会被下载，并像「添加驱动」添加 zip 一样添加。GPU 厂商自己的驱动标为专有、无许可证"
 
 #: src/gui/main.c
 msgid "Add Driver"
-msgstr ""
+msgstr "添加驱动"
 
 #: src/gui/main.c
 msgid "A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's releases are: unpacked into gpu_drivers/ of the user's data folder"
-msgstr ""
+msgstr "驱动包的 zip，顶层是 meta.json 和驱动的库，如 Turnip 的发布版本：解压到用户数据文件夹的 gpu_drivers/ 中"
 
 #: src/gui/main.c
 msgid "edenprobe Mode"
-msgstr ""
+msgstr "edenprobe 模式"
 
 #: src/gui/main.c
 msgid "What Run edenprobe runs. Quick: processor and graphics. Full: also fs (64 MiB written once), video, audio, kernel and display"
-msgstr ""
+msgstr "「运行 edenprobe」运行的内容。快速：处理器和图形。全速：另加 fs（写入一次 64 MiB）、视频、音频、内核和显示"
 
 #: src/gui/main.c
 msgid "Quick"
-msgstr ""
+msgstr "快速"
 
 #: src/gui/main.c
 msgid "Run edenprobe"
-msgstr ""
+msgstr "运行 edenprobe"
 
 #: src/gui/main.c
 #, c-format
 msgid "edenprobe's hardware probes played as a game with this GPU driver, in a data folder of their own with the default settings, %s; then their counts"
-msgstr ""
+msgstr "把 edenprobe 的硬件探测当作游戏，用此 GPU 驱动运行，使用独立的数据文件夹和默认设置（%s）；然后显示其统计"
 
 #: src/gui/main.c
 msgid "Clear Crash List"
-msgstr ""
+msgstr "清除崩溃列表"
 
 #: src/gui/main.c
 #, c-format
 msgid "Cases on the crash list, which a run skips as crashed: %d. Cleared, the next run asks them again"
-msgstr ""
+msgstr "崩溃列表中的用例（运行时作为已崩溃跳过）：%d 个。清除后，下次运行会重新测试它们"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s: its own GPU driver. %s"
-msgstr ""
+msgstr "%s：其自己的 GPU 驱动。%s"
 
 #: src/gui/main.c
 #, c-format
 msgid " %zu more packages are not listed."
-msgstr ""
+msgstr " 另有 %zu 个包未列出。"
 
 #: src/gui/main.c
 #, c-format
 msgid "Not picked: %s/%s does not read: %s"
-msgstr ""
+msgstr "未选择：无法读取 %s/%s：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "Not picked: %s"
-msgstr ""
+msgstr "未选择：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "GPU driver for every game: %s"
-msgstr ""
+msgstr "所有游戏的 GPU 驱动：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "Not kept: %s could not be written"
-msgstr ""
+msgstr "未保存：无法写入 %s"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s: the GPU driver for every game (%s)"
-msgstr ""
+msgstr "%s：所有游戏的 GPU 驱动（%s）"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s: GPU driver %s"
-msgstr ""
+msgstr "%s：GPU 驱动 %s"
 
 #: src/gui/main.c
 #, c-format
 msgid "Remove the driver %s? Games set to it will not start until another is picked."
-msgstr ""
+msgstr "移除驱动 %s？设为使用它的游戏在选择其他驱动之前将无法启动。"
 
 #: src/gui/main.c
 msgid "; the GPU driver for every game is the System driver now"
-msgstr ""
+msgstr "；所有游戏的 GPU 驱动现在是系统驱动"
 
 #: src/gui/main.c
 msgid "Driver package"
-msgstr ""
+msgstr "驱动包"
 
 #: src/gui/main.c
 #, c-format
 msgid "Add Driver: the file picker could not open: %s"
-msgstr ""
+msgstr "添加驱动：文件选择器无法打开：%s"
 
 #: src/gui/main.c
 msgid "No file was picked."
@@ -3187,84 +3187,84 @@ msgstr "未选取文件。"
 #: src/gui/main.c
 #, c-format
 msgid "Not added: %s is %lld bytes, over the %llu a driver takes"
-msgstr ""
+msgstr "未添加：%s 有 %lld 字节，超过驱动上限 %llu"
 
 #: src/gui/main.c
 #, c-format
 msgid "Not added: %s does not read: %s"
-msgstr ""
+msgstr "未添加：无法读取 %s：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "edenprobe Mode: %s"
-msgstr ""
+msgstr "edenprobe 模式：%s"
 
 #: src/gui/main.c
 msgid "Clear Crash List? Its case runs again in the next run."
-msgstr ""
+msgstr "清除崩溃列表？其中的用例会在下次运行时再次测试。"
 
 #: src/gui/main.c
 #, c-format
 msgid "Clear Crash List? Its %d cases run again in the next run."
-msgstr ""
+msgstr "清除崩溃列表？其中的 %d 个用例会在下次运行时再次测试。"
 
 #: src/gui/main.c
 #, c-format
 msgid "GET %s: HTTP %d, %.200s"
-msgstr ""
+msgstr "GET %s：HTTP %d，%.200s"
 
 #: src/gui/main.c
 #, c-format
 msgid "GET %s: HTTP %d"
-msgstr ""
+msgstr "GET %s：HTTP %d"
 
 #: src/gui/main.c
 #, c-format
 msgid "Download Driver: no thread: %s"
-msgstr ""
+msgstr "下载驱动：无法创建线程：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s, %zu downloads. %s"
-msgstr ""
+msgstr "%s，%zu 次下载。%s"
 
 #: src/gui/main.c
 msgid "Latest, Recommended"
-msgstr ""
+msgstr "最新，推荐"
 
 #: src/gui/main.c
 msgid "Recommended"
-msgstr ""
+msgstr "推荐"
 
 #: src/gui/main.c
 msgid "Latest"
-msgstr ""
+msgstr "最新"
 
 #: src/gui/main.c
 msgid "Prerelease"
-msgstr ""
+msgstr "预发布"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s: %zu release"
-msgstr ""
+msgstr "%s：%zu 个发布版本"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s: %zu releases"
-msgstr ""
+msgstr "%s：%zu 个发布版本"
 
 #: src/gui/main.c
 msgid "No releases"
-msgstr ""
+msgstr "没有发布版本"
 
 #: src/gui/main.c
 msgid "Fetch Again"
-msgstr ""
+msgstr "重新获取"
 
 #: src/gui/main.c
 msgid "Loading..."
-msgstr ""
+msgstr "正在加载..."
 
 #: src/gui/main.c
 msgid "Failed"
@@ -3272,167 +3272,167 @@ msgstr "失败"
 
 #: src/gui/main.c
 msgid "Less"
-msgstr ""
+msgstr "收起"
 
 #: src/gui/main.c
 msgid "Only its latest and the recommended release"
-msgstr ""
+msgstr "仅显示最新和推荐的发布版本"
 
 #: src/gui/main.c
 #, c-format
 msgid "More (%zu)"
-msgstr ""
+msgstr "更多（%zu）"
 
 #: src/gui/main.c
 #, c-format
 msgid "GPU: %s. Recommended: %s."
-msgstr ""
+msgstr "GPU：%s。推荐：%s。"
 
 #: src/gui/main.c
 msgid "This build of the launcher has no HTTPS client: Add Driver takes a zip downloaded by hand"
-msgstr ""
+msgstr "此版本的启动器没有 HTTPS 客户端：「添加驱动」可添加手动下载的 zip"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s has no download"
-msgstr ""
+msgstr "%s 没有可下载的文件"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s, %s (proprietary, no license)"
-msgstr ""
+msgstr "%s，%s（专有，无许可证）"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s downloads already: one at a time"
-msgstr ""
+msgstr "%s 正在下载：一次只能下载一个"
 
 #: src/gui/main.c
 #, c-format
 msgid "Downloading %s..."
-msgstr ""
+msgstr "正在下载 %s..."
 
 #: src/gui/main.c
 #, c-format
 msgid "Downloading %s: %s of %s (%d%%)"
-msgstr ""
+msgstr "正在下载 %s：%s / %s（%d%%）"
 
 #: src/gui/main.c
 #, c-format
 msgid "Downloading %s: %s"
-msgstr ""
+msgstr "正在下载 %s：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "Not downloaded: %s"
-msgstr ""
+msgstr "未下载：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s: %s"
-msgstr ""
+msgstr "%s：%s"
 
 #: src/gui/main.c
 msgid "every variable cleared"
-msgstr ""
+msgstr "已清除所有变量"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s=%s. A press removes it"
-msgstr ""
+msgstr "%s=%s。按下即可移除"
 
 #: src/gui/main.c
 msgid "Variable Name (e.g., TU_DEBUG)"
-msgstr ""
+msgstr "变量名（例如 TU_DEBUG）"
 
 #: src/gui/main.c
 msgid "Capitals, digits and _, starting TU_, FD_ or IR3_"
-msgstr ""
+msgstr "大写字母、数字和 _，以 TU_、FD_ 或 IR3_ 开头"
 
 #: src/gui/main.c
 msgid "Variable Value"
-msgstr ""
+msgstr "变量值"
 
 #: src/gui/main.c
 msgid "Its value, without ;"
-msgstr ""
+msgstr "其值，不含 ;"
 
 #: src/gui/main.c
 msgid "Add Variable"
-msgstr ""
+msgstr "添加变量"
 
 #: src/gui/main.c
 msgid "The name and value typed above, set"
-msgstr ""
+msgstr "设置上面输入的名称和值"
 
 #: src/gui/main.c
 msgid "Clear All"
-msgstr ""
+msgstr "全部清除"
 
 #: src/gui/main.c
 msgid "Every variable taken out"
-msgstr ""
+msgstr "移除所有变量"
 
 #: src/gui/main.c
 #, c-format
 msgid "freedreno_env does not read: %s"
-msgstr ""
+msgstr "无法读取 freedreno_env：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s: its own Freedreno variables"
-msgstr ""
+msgstr "%s：其自己的 Freedreno 变量"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s: none of its own, the launcher's go"
-msgstr ""
+msgstr "%s：没有自己的变量，使用启动器的"
 
 #: src/gui/main.c
 msgid "Mesa's Freedreno and Turnip read these as a game starts (docs.mesa3d.org/drivers/freedreno.html). Save keeps them"
-msgstr ""
+msgstr "Mesa 的 Freedreno 和 Turnip 会在游戏启动时读取这些变量（docs.mesa3d.org/drivers/freedreno.html）。「保存」会保留它们"
 
 #: src/gui/main.c
 #, c-format
 msgid "Not saved: the variables take over %d bytes"
-msgstr ""
+msgstr "未保存：变量超过 %d 字节"
 
 #: src/gui/main.c
 msgid "Freedreno configuration saved"
-msgstr ""
+msgstr "Freedreno 配置已保存"
 
 #: src/gui/main.c
 #, c-format
 msgid "Preset '%s' applied"
-msgstr ""
+msgstr "已应用预设「%s」"
 
 #: src/gui/main.c
 #, c-format
 msgid "Variable %s removed"
-msgstr ""
+msgstr "已移除变量 %s"
 
 #: src/gui/main.c
 msgid "Variable name cannot be empty"
-msgstr ""
+msgstr "变量名不能为空"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s's value \"%s\" has a ;, which ends it"
-msgstr ""
+msgstr "%s 的值 \"%s\" 含有 ;，它会截断该值"
 
 #: src/gui/main.c
 #, c-format
 msgid "Not added: the variables take %d bytes at most"
-msgstr ""
+msgstr "未添加：变量最多 %d 字节"
 
 #: src/gui/main.c
 #, c-format
 msgid "Variable %s added"
-msgstr ""
+msgstr "已添加变量 %s"
 
 #: src/gui/main.c
 msgid "All Freedreno variables cleared"
-msgstr ""
+msgstr "已清除所有 Freedreno 变量"
 
 #: src/gui/main.c
 #, c-format
@@ -3471,7 +3471,7 @@ msgstr "返回"
 #: src/gui/main.c
 #, c-format
 msgid "%dx needs a window %d pixels high: this one is %d"
-msgstr ""
+msgstr "%dx 需要 %d 像素高的窗口：此窗口为 %d"
 
 #: src/gui/main.c
 #, c-format
@@ -3527,15 +3527,15 @@ msgstr "正在查找手柄..."
 
 #: src/gui/main.c
 msgid "Over 4x: this takes a lot of GPU memory, and a game may slow down or crash. Beyond this, severe graphical issues may occur"
-msgstr ""
+msgstr "超过 4x：这会占用大量 GPU 内存，游戏可能变慢或崩溃。超出此值可能出现严重的图形问题"
 
 #: src/gui/main.c
 msgid "Under 0.5x: the picture may look very low quality. Beyond this, severe graphical issues may occur"
-msgstr ""
+msgstr "低于 0.5x：画面质量可能很低。低于此值可能出现严重的图形问题"
 
 #: src/gui/main.c
 msgid "Non-standard resolution, experimental."
-msgstr ""
+msgstr "非标准分辨率，实验性。"
 
 #: src/gui/main.c
 #, c-format
@@ -3545,7 +3545,7 @@ msgstr "%s 不是有效的昵称：%s"
 #: src/gui/main.c
 #, c-format
 msgid "%s: %s. A game on this system runs the same whatever it says, and it stays %s"
-msgstr ""
+msgstr "%s：%s。在此系统上，无论它设为什么，游戏运行都一样，它保持为 %s"
 
 #: src/gui/main.c
 msgid "Paste one local folder's path"
@@ -3688,13 +3688,13 @@ msgstr "上/下: 行. 左/右: 更改. Enter: 更改. ESC: 退出."
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: row. Left/Right: change. Enter: open. ESC: back."
-msgstr ""
+msgstr "上/下: 行. 左/右: 更改. Enter: 打开. ESC: 返回."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Up/Down: row. Left/Right: change. Enter: open. ESC: exit."
-msgstr ""
+msgstr "上/下: 行. 左/右: 更改. Enter: 打开. ESC: 退出."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -3761,7 +3761,7 @@ msgstr "已将 prod.keys 安装到 %s"
 #: src/gui/main.c
 #, c-format
 msgid "; aes_keys.txt to %s"
-msgstr ""
+msgstr "；aes_keys.txt 安装到 %s"
 
 #: src/gui/main.c
 #, c-format
@@ -3961,7 +3961,7 @@ msgstr "在程序旁边，届时创建"
 
 #: src/gui/main.c
 msgid " (not listed)"
-msgstr ""
+msgstr " （未列出）"
 
 #: src/gui/main.c
 msgid " + subfolders"
@@ -3977,7 +3977,7 @@ msgstr "仅部分 .nsp 需要"
 
 #: src/gui/main.c
 msgid "only encrypted 3DS games need it"
-msgstr ""
+msgstr "仅加密的 3DS 游戏需要"
 
 #: src/gui/main.c
 msgid "nickname"
@@ -4022,21 +4022,21 @@ msgstr "快捷键"
 #: src/gui/main.c
 #, c-format
 msgid "The game starts its program %d, %s, which is not made: Recompile the game to make its programs"
-msgstr ""
+msgstr "游戏要启动其程序 %d（%s），但它尚未生成：重新编译游戏以生成其程序"
 
 #: src/gui/main.c
 msgid "the game wrote no log"
-msgstr ""
+msgstr "游戏没有写入日志"
 
 #: src/gui/main.c
 #, c-format
 msgid "the game wrote no log since it started; the newest is %s"
-msgstr ""
+msgstr "游戏启动后没有写入日志；最新的是 %s"
 
 #: src/gui/main.c
 #, c-format
 msgid "The game stopped: %s"
-msgstr ""
+msgstr "游戏已停止：%s"
 
 #: src/gui/main.c
 #, c-format
@@ -4180,7 +4180,7 @@ msgstr "  默认，%s 可用"
 
 #: src/gui/main.c
 msgid "Share Zip"
-msgstr ""
+msgstr "分享 Zip"
 
 #: src/gui/main.c src/gui/ui.txt
 msgid "Share Log"
@@ -4188,31 +4188,31 @@ msgstr "分享日志"
 
 #: src/gui/main.c
 msgid "Open Logs Folder"
-msgstr ""
+msgstr "打开日志文件夹"
 
 #: src/gui/main.c
 msgid "Change Folder"
-msgstr ""
+msgstr "更改文件夹"
 
 #: src/gui/main.c
 msgid "Reset to Default"
-msgstr ""
+msgstr "恢复默认"
 
 #: src/gui/main.c
 msgid "Remove from Library"
-msgstr ""
+msgstr "从游戏库移除"
 
 #: src/gui/main.c
 msgid "Subfolders"
-msgstr ""
+msgstr "子文件夹"
 
 #: src/gui/main.c
 msgid "Add to Library"
-msgstr ""
+msgstr "添加到游戏库"
 
 #: src/gui/main.c
 msgid "Use"
-msgstr ""
+msgstr "使用"
 
 #: src/gui/main.c
 #, c-format
@@ -4222,21 +4222,21 @@ msgstr "焦点到哪个主题就显示哪个：Enter 保留，ESC 回到 %s"
 #: src/gui/main.c
 #, c-format
 msgid "Share Zip: the launcher's logs and every game's of the last %d days. Share Log: the last run's log and the end of the launcher's, in one file."
-msgstr ""
+msgstr "「分享 Zip」：启动器的日志和每个游戏最近 %d 天的日志。「分享日志」：上次运行的日志和启动器日志的末尾，合在一个文件中。"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s: its subfolders' games are listed too"
-msgstr ""
+msgstr "%s：也列出其子文件夹中的游戏"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s: its own games alone are listed, not its subfolders'"
-msgstr ""
+msgstr "%s：只列出其自身的游戏，不包括子文件夹中的"
 
 #: src/gui/main.c
 msgid "View Progress"
-msgstr ""
+msgstr "查看进度"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
@@ -4247,7 +4247,7 @@ msgstr "模组"
 #: src/gui/main.c
 #, c-format
 msgid "%s has no folder to open"
-msgstr ""
+msgstr "%s 没有可打开的文件夹"
 
 #: src/gui/main.c
 #, c-format
@@ -4294,55 +4294,55 @@ msgstr "%s 正在编译（%d%%）：队列结束后游戏即可运行"
 
 #: src/gui/main.c
 msgid "The Recompiled Library's Main is off and no Extra of it can take a game: Add to Library on its Main, or add a folder to it, in Settings > App > Folders"
-msgstr ""
+msgstr "已重编译游戏库的主文件夹已关闭，且没有可放入游戏的另外的文件夹：请在「设置 > 应用 > 文件夹」中对其主文件夹使用「添加到游戏库」，或为其添加文件夹"
 
 #: src/gui/main.c
 msgid "Run edenprobe: no state folder to run in"
-msgstr ""
+msgstr "运行 edenprobe：没有可用的状态文件夹"
 
 #: src/gui/main.c
 msgid "Run edenprobe: a compile goes; the probes run once the queue ends"
-msgstr ""
+msgstr "运行 edenprobe：编译正在进行；队列结束后再运行探测"
 
 #: src/gui/main.c
 #, c-format
 msgid "Run edenprobe needs %s: edenprobe.nro from github.com/scarletnx/edenprobe/releases"
-msgstr ""
+msgstr "运行 edenprobe 需要 %s：来自 github.com/scarletnx/edenprobe/releases 的 edenprobe.nro"
 
 #: src/gui/main.c
 #, c-format
 msgid "Run edenprobe: %s"
-msgstr ""
+msgstr "运行 edenprobe：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "Clear Crash List: %s"
-msgstr ""
+msgstr "清除崩溃列表：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "Crash list cleared, cases: %d"
-msgstr ""
+msgstr "已清除崩溃列表，用例：%d 个"
 
 #: src/gui/main.c
 #, c-format
 msgid "edenprobe left no report in %s"
-msgstr ""
+msgstr "edenprobe 未在 %s 中留下报告"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s. The report: %s"
-msgstr ""
+msgstr "%s。报告：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s after %d launches, the most it takes. The report: %s"
-msgstr ""
+msgstr "%s，已启动 %d 次，达到上限。报告：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s after %d launches, the last adding no case. The report: %s"
-msgstr ""
+msgstr "%s，已启动 %d 次，最后一次没有新增用例。报告：%s"
 
 #: src/gui/main.c
 #, c-format
@@ -4356,7 +4356,7 @@ msgstr "轻柔，游戏正在运行"
 #: src/gui/main.c
 #, c-format
 msgid ", up to %d threads"
-msgstr ""
+msgstr "，最多 %d 个线程"
 
 #: src/gui/main.c
 #, c-format
@@ -4478,11 +4478,11 @@ msgstr "R 重新编译游戏：Linux 程序直接运行。"
 
 #: src/gui/main.c
 msgid "R recompiles games: an Android app runs as it is."
-msgstr ""
+msgstr "R 重新编译游戏：Android 应用直接运行。"
 
 #: src/gui/main.c
 msgid "No game in focus to play."
-msgstr ""
+msgstr "没有选中要运行的游戏。"
 
 #: src/gui/main.c
 msgid "B builds an AOT pack for a prepared Switch game in focus."
@@ -4507,15 +4507,15 @@ msgstr "M 打开选中的已重编译 Switch 游戏的模组和金手指。"
 
 #: src/gui/main.c
 msgid "Cannot install aes_keys.txt: neither USERPROFILE nor HOME is set"
-msgstr ""
+msgstr "无法安装 aes_keys.txt：USERPROFILE 和 HOME 都未设置"
 
 #: src/gui/main.c
 msgid "Cannot install aes_keys.txt: HOME is not set"
-msgstr ""
+msgstr "无法安装 aes_keys.txt：HOME 未设置"
 
 #: src/gui/main.c
 msgid "aes_keys.txt installed: encrypted 3DS games can be decrypted now."
-msgstr ""
+msgstr "aes_keys.txt 已安装：现在可以解密加密的 3DS 游戏了。"
 
 #: src/gui/main.c
 msgid "prod.keys installed: games can be extracted now."
@@ -4528,7 +4528,7 @@ msgstr "无法安装 %s：%s"
 
 #: src/gui/main.c
 msgid "Please drop a readable file named prod.keys or aes_keys.txt."
-msgstr ""
+msgstr "请拖入名为 prod.keys 或 aes_keys.txt 的可读文件。"
 
 #: src/gui/main.c
 #, c-format
@@ -4563,12 +4563,12 @@ msgstr "请从这台电脑的存储中选取文件（%s）。"
 #: src/gui/main.c
 #, c-format
 msgid "%s opens with %s, not %s."
-msgstr ""
+msgstr "%s 用 %s 打开，而不是 %s。"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s opens with %s: cannot find %s beside ScarletNX or on PATH."
-msgstr ""
+msgstr "%s 用 %s 打开：在 ScarletNX 旁边或 PATH 中找不到 %s。"
 
 #: src/gui/main.c
 msgid "Drop one local file path, not a list or remote URL."
@@ -4576,26 +4576,26 @@ msgstr "请拖入一个本地文件的路径，不要拖入列表或远程 URL�
 
 #: src/gui/main.c
 msgid "the launcher's log has no folder in Documents"
-msgstr ""
+msgstr "启动器的日志在 Documents 中没有文件夹"
 
 #: src/gui/main.c
 msgid "Settings > App > Folders' Logs names no folder"
-msgstr ""
+msgstr "「设置 > 应用 > 文件夹」的「日志」未指定文件夹"
 
 #: src/gui/main.c
 #, c-format
 msgid "The logs could not be saved: cannot make %s: %s"
-msgstr ""
+msgstr "无法保存日志：无法创建 %s：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "The logs could not be saved: %s, of what was shared before, could not be deleted: %s"
-msgstr ""
+msgstr "无法保存日志：无法删除之前分享留下的 %s：%s"
 
 #: src/gui/main.c
 #, c-format
 msgid "The logs could not be saved: %s"
-msgstr ""
+msgstr "无法保存日志：%s"
 
 #: src/gui/main.c
 #, c-format
@@ -4604,17 +4604,17 @@ msgstr "无法将日志保存到 %s：%s"
 
 #: src/gui/main.c
 msgid "the share sheet did not open"
-msgstr ""
+msgstr "分享面板未能打开"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s is in %s, opened"
-msgstr ""
+msgstr "%s 位于 %s，已打开"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s is in %s; %s"
-msgstr ""
+msgstr "%s 位于 %s；%s"
 
 #: src/gui/main.c
 #, c-format
@@ -4732,7 +4732,7 @@ msgstr "R3"
 #: src/gui/main.c
 #, snx-key
 msgid "Right stick"
-msgstr ""
+msgstr "右摇杆"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
@@ -4822,7 +4822,7 @@ msgstr "移出"
 #: src/gui/main.c
 #, snx-key
 msgid "L"
-msgstr ""
+msgstr "L"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
@@ -4858,13 +4858,13 @@ msgstr "V"
 #: src/gui/main.c
 #, snx-key
 msgid "S"
-msgstr ""
+msgstr "S"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Save states"
-msgstr ""
+msgstr "即时存档"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
@@ -4966,12 +4966,12 @@ msgstr "将移动 %d 项，%d 项保留：--migrate=yes 会移动它们"
 #: src/gui/model.c
 #, c-format
 msgid "%s opens with %s, whose driver %s this app does not include."
-msgstr ""
+msgstr "%s 用 %s 打开，但此应用不包含其驱动程序 %s。"
 
 #: src/gui/model.c
 #, c-format
 msgid "%s needs the driver %s, which this app does not include."
-msgstr ""
+msgstr "%s 需要驱动程序 %s，但此应用不包含它。"
 
 #: src/gui/model.c
 msgid "RAM and CPU: unavailable"
@@ -4988,11 +4988,11 @@ msgstr "游戏 .ini 中的设置、启动器用于之后运行的设置，以及
 
 #: src/gui/model.c
 msgid "Saves the logs as one zip or as scarletnx.log in a folder it opens to share from, or opens their folder"
-msgstr ""
+msgstr "把日志保存为一个 zip 或 scarletnx.log，放在打开的文件夹中以便分享，或打开日志文件夹"
 
 #: src/gui/model.c
 msgid "Where the app keeps each kind of its files, and the libraries: each folder opened or changed"
-msgstr ""
+msgstr "应用存放各类文件的位置，以及游戏库：每个文件夹都可打开或更改"
 
 #: src/gui/process_posix.c
 #, c-format
@@ -5071,12 +5071,12 @@ msgstr "%s=%s 是 %s 的默认值：运行时不再以它覆盖游戏的 .ini"
 #: src/gui/settings.c
 #, c-format
 msgid "%s=%s is deprecated: %s is %s=%s now"
-msgstr ""
+msgstr "%s=%s 是旧的设置：%s 现在为 %s=%s"
 
 #: src/gui/settings.c
 #, c-format
 msgid "%s=%s is deprecated and no value of %s: %s=%s now"
-msgstr ""
+msgstr "%s=%s 是旧的设置，且不是 %s 的有效值：现在为 %s=%s"
 
 #: src/gui/settings.c
 msgid "Mixed"
@@ -5474,7 +5474,7 @@ msgstr "载入 GBA ROM"
 
 #: src/gui/ui.txt
 msgid "Load Android APK/XAPK"
-msgstr ""
+msgstr "载入 Android APK/XAPK"
 
 #: src/gui/ui.txt
 msgid "Install Keys"
@@ -5638,15 +5638,15 @@ msgstr "关闭，因为 LLVM 23 可能因此破坏模块：「设置 > Debug」�
 
 #: src/common/utilities/setup.c
 msgid "The launcher's UI scale"
-msgstr ""
+msgstr "启动器的显示大小"
 
 #: src/common/utilities/setup.c
 msgid "Auto, and 0.25, 0.5 and 0.75 of it"
-msgstr ""
+msgstr "自动，以及它的 0.25、0.5 和 0.75 倍"
 
 #: src/common/utilities/setup.c
 msgid "1x to 4x: the number Auto gave that screen"
-msgstr ""
+msgstr "1x 到 4x：自动为该屏幕给出的倍数"
 
 #: src/common/utilities/setup.c
 msgid "each game's own, in its <id>_data/save/"
@@ -5718,19 +5718,19 @@ msgstr "background_recompile =，默认为自动：用电池时轻柔，接充�
 
 #: src/nx/runtime/ini.c
 msgid "macOS only"
-msgstr ""
+msgstr "仅 macOS"
 
 #: src/nx/runtime/ini.c
 msgid "Windows only"
-msgstr ""
+msgstr "仅 Windows"
 
 #: src/nx/runtime/ini.c
 msgid "Linux and Android only"
-msgstr ""
+msgstr "仅 Linux 和 Android"
 
 #: src/nx/runtime/ini.c
 msgid "arm64 Linux and Android only"
-msgstr ""
+msgstr "仅 arm64 Linux 和 Android"
 
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
@@ -5766,11 +5766,11 @@ msgstr "把转储的 ExeFS 和 RomFS 提取到游戏文件夹中。关闭时游�
 
 #: src/nx/runtime/settings.txt
 msgid "Java home"
-msgstr ""
+msgstr "Java 主目录"
 
 #: src/nx/runtime/settings.txt
 msgid "The JDK, 21 or later, that Android apps run on: the folder that holds its lib/server (bin/server on Windows). Empty = the one the build found. Set, the launcher gives it to scarletnx-android as --java-home"
-msgstr ""
+msgstr "Android 应用运行所用的 JDK（21 或更高）：包含其 lib/server（Windows 上为 bin/server）的文件夹。留空 = 构建时找到的那个。设置后，启动器会以 --java-home 传给 scarletnx-android"
 
 #: src/nx/runtime/settings.txt
 msgid "Optimization level"
@@ -5794,19 +5794,19 @@ msgstr "AOT 线程数"
 
 #: src/nx/runtime/settings.txt
 msgid "The threads compiling the game's code when it is recompiled: 0 (Auto) = 1 to start, then one more each second while the memory the code units are seen to take leaves room for it and the system reports no memory pressure, up to the cores with the last quarter left free (aot_threads_most), so the machine stays responsive; N = that many, whatever the memory. The recompile says each thread it opens and why it opens no more"
-msgstr ""
+msgstr "重新编译时编译游戏代码的线程数：0（自动）= 先用 1 个，之后只要代码单元占用的内存留有余地且系统未报告内存压力，每秒增加一个，最多到保留四分之一空闲后的核心数（aot_threads_most），使机器保持响应；N = 固定 N 个，不论内存。重新编译会说明它打开的每个线程，以及为何不再打开更多"
 
 #: src/nx/runtime/settings.txt
 msgid "AOT threads most"
-msgstr ""
+msgstr "AOT 线程上限"
 
 #: src/nx/runtime/settings.txt
 msgid "AOT threads at most"
-msgstr ""
+msgstr "AOT 线程数上限"
 
 #: src/nx/runtime/settings.txt
 msgid "The most threads aot_threads' Auto opens: 0 (Auto) = the cores with the last quarter left free; N = N at most, whatever the cores. Only Auto takes it: with aot_threads at N, the recompile runs on N"
-msgstr ""
+msgstr "aot_threads 的「自动」最多打开的线程数：0（自动）= 保留四分之一空闲后的核心数；N = 最多 N 个，不论核心数。仅「自动」使用它：aot_threads 为 N 时，重新编译用 N 个线程"
 
 #: src/nx/runtime/settings.txt
 msgid "Unit size"
