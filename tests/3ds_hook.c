@@ -13,16 +13,16 @@
 #include <stdio.h>
 #include <string.h>
 
-#define TEXT    0x100000u
-#define DATA    0x300000u /* the data page: the handles' globals and the out parameters */
-#define RETURN  0x100f00u /* where the stubs return to */
-#define HANDLE  (DATA + 0x00)
-#define OUT     (DATA + 0x10)
-#define DPS     0x41660000u /* hid:USER's GetGyroscopeLowRawToDpsCoefficient answer (services/hid.c) */
+#define CODE          0x100000u
+#define DATA          0x300000u /* the data page: the handles' globals and the out parameters */
+#define RETURN        0x100f00u /* where the stubs return to */
+#define HANDLE_GLOBAL (DATA + 0x00)
+#define OUT_PARAM     (DATA + 0x10)
+#define DPS           0x41660000u /* hid:USER's GetGyroscopeLowRawToDpsCoefficient answer (services/hid.c) */
 
 static unsigned char code[0x3000];
 static void put(uint32_t address, const uint32_t* words, unsigned count) {
-    for (unsigned i = 0; i < count; ++i) snx_st_le32(code + (address - TEXT) + 4 * i, words[i]);
+    for (unsigned i = 0; i < count; ++i) snx_st_le32(code + (address - CODE) + 4 * i, words[i]);
 }
 /* A stub of the SDK's shape for a command of only its header with one word out (header in r0's MOV, as imm8 rotated):
    push {r4, r5, lr}; r5 = the out parameter; r4 = TLS; the header at TLS + 0x80, r4 moved there; the handle from the
@@ -44,7 +44,7 @@ static void stub(uint32_t at, uint32_t mov_header) {
         0xe5850000u, /* str r0, [r5] */
         0xe5940004u, /* ldr r0, [r4, #4] */
         0xe8bd8030u, /* pop {r4, r5, pc} */
-        HANDLE,      /* the handle's global */
+        HANDLE_GLOBAL,      /* the handle's global */
     };
     put(at, words, sizeof words / sizeof *words);
 }
@@ -84,12 +84,12 @@ int main(void) {
     /* the stubs: GetGyroscopeLowRawToDpsCoefficient (0x00150000), the same command with a normal word it doesn't
        take (0x00150040: the kernel's bad descriptor), a stub that sets the static buffer descriptors at TLS + 0x180
        before its SVC, one that passes its TLS pointer to another function, and one that calls out */
-    stub(TEXT + 0x000, 0xe3a00815u);  /* mov r0, #0x150000 */
-    stub(TEXT + 0x100, 0xe3a00815u);
+    stub(CODE + 0x000, 0xe3a00815u);  /* mov r0, #0x150000 */
+    stub(CODE + 0x100, 0xe3a00815u);
     const uint32_t bad[] = {0xe59f0028u}; /* ldr r0, [pc, #0x28]: the header from a literal after the handle's */
-    stub(TEXT + 0x200, 0);
-    put(TEXT + 0x200 + 3 * 4, bad, 1);
-    put(TEXT + 0x200 + 15 * 4, (const uint32_t[]){0x00150040u}, 1);
+    stub(CODE + 0x200, 0);
+    put(CODE + 0x200 + 3 * 4, bad, 1);
+    put(CODE + 0x200 + 15 * 4, (const uint32_t[]){0x00150040u}, 1);
     const uint32_t statics[] = {
         0xe92d4030u, /* push {r4, r5, lr} */
         0xee1d4f70u, /* mrc p15, 0, r4, c13, c0, 3 */
@@ -102,9 +102,9 @@ int main(void) {
         0xe5900000u, /* ldr r0, [r0] */
         0xef000032u, /* svc 0x32 */
         0xe8bd8030u, /* pop {r4, r5, pc} */
-        HANDLE,
+        HANDLE_GLOBAL,
     };
-    put(TEXT + 0x300, statics, sizeof statics / sizeof *statics);
+    put(CODE + 0x300, statics, sizeof statics / sizeof *statics);
     const uint32_t escapes[] = {
         0xe92d4010u, /* push {r4, lr} */
         0xee1d4f70u, /* mrc p15, 0, r4, c13, c0, 3 */
@@ -114,7 +114,7 @@ int main(void) {
         0xef000032u, /* svc 0x32 */
         0xe8bd8010u, /* pop {r4, pc} */
     };
-    put(TEXT + 0x400, escapes, sizeof escapes / sizeof *escapes);
+    put(CODE + 0x400, escapes, sizeof escapes / sizeof *escapes);
     const uint32_t calls[] = {
         0xe92d4010u, /* push {r4, lr} */
         0xee1d4f70u, /* mrc p15, 0, r4, c13, c0, 3 */
@@ -123,13 +123,13 @@ int main(void) {
         0xebfffffeu, /* bl: a call out */
         0xe8bd8010u, /* pop {r4, pc} */
     };
-    put(TEXT + 0x500, calls, sizeof calls / sizeof *calls);
+    put(CODE + 0x500, calls, sizeof calls / sizeof *calls);
     /* the GSP handle's getter, a TriggerCmdReqQueue stub, the enqueue calling them, and an enqueue whose trigger is
        another command's stub, which is not the SDK's */
-    put(TEXT + 0x600, (const uint32_t[]){0xe59f0000u, 0xe12fff1eu, HANDLE}, 3);
-    stub(TEXT + 0x700, 0xe3a00703u); /* mov r0, #0xc0000 */
-    put_enqueue(TEXT + 0x800, TEXT + 0x600, TEXT + 0x700);
-    put_enqueue(TEXT + 0x900, TEXT + 0x600, TEXT);
+    put(CODE + 0x600, (const uint32_t[]){0xe59f0000u, 0xe12fff1eu, HANDLE_GLOBAL}, 3);
+    stub(CODE + 0x700, 0xe3a00703u); /* mov r0, #0xc0000 */
+    put_enqueue(CODE + 0x800, CODE + 0x600, CODE + 0x700);
+    put_enqueue(CODE + 0x900, CODE + 0x600, CODE);
     SnxCtrImage image = ctr_image(code, sizeof code, 0x1000);
     image.segment[0].bytes = 0x1000;
     SnxCtrProcess* p = snx_ctr_process_new(&image, SNX_CTR_OLD);
@@ -140,11 +140,11 @@ int main(void) {
     printf("%s\n", summary);
     assert(!strcmp(summary, "5 of the 7 IPC stubs in the code run without the SVC, and the GX command queue's "
                             "enqueue runs each command at once"));
-    assert(snx_ctr_hook_at(hooks, TEXT + 0x800) && !snx_ctr_hook_at(hooks, TEXT + 0x900));
-    assert(snx_ctr_hook_at(hooks, TEXT) && snx_ctr_hook_at(hooks, TEXT + 0x100) && snx_ctr_hook_at(hooks, TEXT + 0x200) &&
-           snx_ctr_hook_at(hooks, TEXT + 0x300));
-    assert(!snx_ctr_hook_at(hooks, TEXT + 0x400) && !snx_ctr_hook_at(hooks, TEXT + 0x500));
-    assert(!snx_ctr_hook_at(hooks, TEXT + 4) && !snx_ctr_hook_at(hooks, TEXT + 0x2000));
+    assert(snx_ctr_hook_at(hooks, CODE + 0x800) && !snx_ctr_hook_at(hooks, CODE + 0x900));
+    assert(snx_ctr_hook_at(hooks, CODE) && snx_ctr_hook_at(hooks, CODE + 0x100) && snx_ctr_hook_at(hooks, CODE + 0x200) &&
+           snx_ctr_hook_at(hooks, CODE + 0x300));
+    assert(!snx_ctr_hook_at(hooks, CODE + 0x400) && !snx_ctr_hook_at(hooks, CODE + 0x500));
+    assert(!snx_ctr_hook_at(hooks, CODE + 4) && !snx_ctr_hook_at(hooks, CODE + 0x2000));
 
     /* the reply the SVC gets, for the hook's to match */
     uint32_t hid = 0;
@@ -155,62 +155,62 @@ int main(void) {
     assert(tls_buffer_clear(p));
 
     /* the hooked stub: its result in r0, the reply's word out, r4 and r5 and the stack as they were, the return taken */
-    ctr_put(p, HANDLE, hid);
-    SnxArmCPU* cpu = call(p, TEXT, OUT, RETURN);
+    ctr_put(p, HANDLE_GLOBAL, hid);
+    SnxArmCPU* cpu = call(p, CODE, OUT_PARAM, RETURN);
     uint32_t sp = cpu->r[13], r4 = cpu->r[4], r5 = cpu->r[5];
-    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, TEXT)) == SNX_CTR_HOOK_DONE);
+    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, CODE)) == SNX_CTR_HOOK_DONE);
     assert(cpu->r[15] == RETURN && !(cpu->cpsr & SNX_ARM_T) && cpu->r[0] == 0 && cpu->r[1] == 0);
     assert(cpu->r[13] == sp && cpu->r[4] == r4 && cpu->r[5] == r5);
-    assert(ctr_word(p, OUT) == DPS && tls_buffer_clear(p));
+    assert(ctr_word(p, OUT_PARAM) == DPS && tls_buffer_clear(p));
     /* a return to Thumb code */
-    ctr_put(p, OUT, 0);
-    cpu = call(p, TEXT + 0x100, OUT, RETURN | 1);
-    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, TEXT + 0x100)) == SNX_CTR_HOOK_DONE);
-    assert(cpu->r[15] == RETURN && (cpu->cpsr & SNX_ARM_T) && ctr_word(p, OUT) == DPS);
+    ctr_put(p, OUT_PARAM, 0);
+    cpu = call(p, CODE + 0x100, OUT_PARAM, RETURN | 1);
+    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, CODE + 0x100)) == SNX_CTR_HOOK_DONE);
+    assert(cpu->r[15] == RETURN && (cpu->cpsr & SNX_ARM_T) && ctr_word(p, OUT_PARAM) == DPS);
 
     /* the kernel's refusal: the transport's result, the stub's error path (nothing out, its flags from the ANDS) */
-    ctr_put(p, OUT, 0x5a5a5a5a);
-    cpu = call(p, TEXT + 0x200, OUT, RETURN);
-    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, TEXT + 0x200)) == SNX_CTR_HOOK_DONE);
+    ctr_put(p, OUT_PARAM, 0x5a5a5a5a);
+    cpu = call(p, CODE + 0x200, OUT_PARAM, RETURN);
+    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, CODE + 0x200)) == SNX_CTR_HOOK_DONE);
     assert(cpu->r[15] == RETURN && cpu->r[0] == SNX_CTR_IPC_BAD_DESCRIPTOR && cpu->r[1] == 0x80000000u);
-    assert((cpu->cpsr >> 31) && ctr_word(p, OUT) == 0x5a5a5a5a && tls_buffer_clear(p));
+    assert((cpu->cpsr >> 31) && ctr_word(p, OUT_PARAM) == 0x5a5a5a5a && tls_buffer_clear(p));
 
     /* srv: is the game's code's: the call declines with its registers, flags and the TLS as they were */
     uint32_t srv = ctr_srv(p);
     assert(srv);
     ctr_request(p, NULL, 0);
-    ctr_put(p, HANDLE, srv);
+    ctr_put(p, HANDLE_GLOBAL, srv);
     ctr_put(p, SNX_CTR_INITIAL_TLS + 0x180, 0x11111111);
     ctr_put(p, SNX_CTR_INITIAL_TLS + 0x184, 0x22222222);
-    cpu = call(p, TEXT + 0x300, 0x00345678, RETURN);
+    cpu = call(p, CODE + 0x300, 0x00345678, RETURN);
     cpu->cpsr = 0x60000010;
     SnxArmCPU before = *cpu;
-    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, TEXT + 0x300)) == SNX_CTR_HOOK_DECLINE);
+    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, CODE + 0x300)) == SNX_CTR_HOOK_DECLINE);
     assert(!memcmp(cpu->r, before.r, sizeof cpu->r) && cpu->cpsr == before.cpsr);
     assert(ctr_word(p, SNX_CTR_INITIAL_TLS + 0x180) == 0x11111111 && ctr_word(p, SNX_CTR_INITIAL_TLS + 0x184) == 0x22222222);
     assert(tls_buffer_clear(p));
     /* the same stub on hid:USER sends its request, the descriptors it set staying in the TLS as the game's code
        leaves them */
-    ctr_put(p, HANDLE, hid);
-    cpu = call(p, TEXT + 0x300, 0x00345678, RETURN);
-    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, TEXT + 0x300)) == SNX_CTR_HOOK_DONE);
+    ctr_put(p, HANDLE_GLOBAL, hid);
+    cpu = call(p, CODE + 0x300, 0x00345678, RETURN);
+    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, CODE + 0x300)) == SNX_CTR_HOOK_DONE);
     assert(cpu->r[15] == RETURN && cpu->r[0] == 0);
     assert(ctr_word(p, SNX_CTR_INITIAL_TLS + 0x180) == 0x00345678 && ctr_word(p, SNX_CTR_INITIAL_TLS + 0x184) == 2);
 
     /* a handle to nothing: declined, for the SVC to answer */
-    ctr_put(p, HANDLE, 0x12345);
-    cpu = call(p, TEXT, OUT, RETURN);
-    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, TEXT)) == SNX_CTR_HOOK_DECLINE && cpu->r[15] == TEXT);
+    ctr_put(p, HANDLE_GLOBAL, 0x12345);
+    cpu = call(p, CODE, OUT_PARAM, RETURN);
+    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, CODE)) == SNX_CTR_HOOK_DECLINE && cpu->r[15] == CODE);
 
     /* the enqueue: no queue (its object's first word 0), and a queue with no GPU right held: the game's code */
     ctr_put(p, DATA + 0x20, 0);
-    cpu = call(p, TEXT + 0x800, DATA + 0x20, RETURN);
+    cpu = call(p, CODE + 0x800, DATA + 0x20, RETURN);
     cpu->r[1] = DATA + 0x40;
-    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, TEXT + 0x800)) == SNX_CTR_HOOK_DECLINE);
-    assert(cpu->r[15] == TEXT + 0x800 && cpu->r[0] == DATA + 0x20);
+    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, CODE + 0x800)) == SNX_CTR_HOOK_DECLINE);
+    assert(cpu->r[15] == CODE + 0x800 && cpu->r[0] == DATA + 0x20);
     ctr_put(p, DATA + 0x20, DATA + 0x100);
-    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, TEXT + 0x800)) == SNX_CTR_HOOK_DECLINE);
-    assert(cpu->r[15] == TEXT + 0x800 && cpu->r[0] == DATA + 0x20);
+    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, CODE + 0x800)) == SNX_CTR_HOOK_DECLINE);
+    assert(cpu->r[15] == CODE + 0x800 && cpu->r[0] == DATA + 0x20);
 
     char report[200];
     snx_ctr_hooks_report(hooks, report, sizeof report);
