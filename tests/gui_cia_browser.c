@@ -31,11 +31,13 @@ static bool made_game(const char* path, const void* user) {
     (void)user;
     return n >= 8 && !strcmp(path + n - 8, "game.xci");
 }
-static const GuiGroups dumps_only = {"Recompiled", "Dumps", "Updates and DLCs", NULL, NULL, NULL};
-static const GuiGroups b_made = {"Recompiled", "Dumps", "Updates and DLCs", made_b, NULL, NULL};
-static const GuiGroups no_dumps = {"Recompiled", NULL, "Updates and DLCs", made_b, NULL, NULL};
-static const GuiGroups titled = {"Recompiled", "Dumps", "Updates and DLCs", NULL, titled_by_content, NULL};
-static const GuiGroups titled_made = {"Recompiled", "Dumps", "Updates and DLCs", made_game, titled_by_content, NULL};
+/* the headings of the groupings below, which each names what it asks of the dumps */
+#define GROUPS .ready = "Recompiled", .addons = "Updates and DLCs"
+static const GuiGroups dumps_only = {GROUPS, .dumps = "Dumps"};
+static const GuiGroups b_made = {GROUPS, .dumps = "Dumps", .made = made_b};
+static const GuiGroups no_dumps = {GROUPS, .made = made_b};
+static const GuiGroups titled = {GROUPS, .dumps = "Dumps", .titled = titled_by_content};
+static const GuiGroups titled_made = {GROUPS, .dumps = "Dumps", .made = made_game, .titled = titled_by_content};
 /* dir/name holding text */
 static void put(const char* dir, const char* name, const char* text) {
     char* path = snx_path_join(dir, name);
@@ -160,6 +162,125 @@ static void addon_items(void) {
     snx_remove_tree(d);
     free(d);
     puts("PASS a game's update and DLC dumps grouped as one item, by what each dump is");
+}
+/* a made game named name in dir, as a driver leaves one: its program <name>/<name> (.exe on Windows), which Games
+   lists as ready to run, and its .ini holding ini; its folder, owned */
+static char* game_made(const char* dir, const char* name, const char* ini) {
+    char *folder = snx_path_join(dir, name), *ini_name = snx_format("%s.ini", name);
+#ifdef _WIN32
+    char* leaf = snx_format("%s.exe", name);
+#else
+    char* leaf = snx_strdup(name);
+#endif
+    char* program = snx_path_join(folder, leaf);
+    assert(!snx_mkdirs(folder) && !snx_write_file(program, "x", 1) && !snx_make_executable(program));
+    if (ini) put(folder, ini_name, ini);
+    free(program);
+    free(leaf);
+    free(ini_name);
+    return folder;
+}
+static char* program_of(const char* folder, const char* name) {
+#ifdef _WIN32
+    char* leaf = snx_format("%s.exe", name);
+#else
+    char* leaf = snx_strdup(name);
+#endif
+    char* program = snx_path_join(folder, leaf);
+    free(leaf);
+    return program;
+}
+/* gui_games_group's removed: the game named 0100ABCD12340000 taken off the list */
+static bool removed_one(const char* path, const void* user) {
+    (void)user;
+    return strstr(path, "0100ABCD12340000") != NULL;
+}
+/* A made game plays from a file that is not there (gui_game_source_missing): a Switch game read in place, its source=
+   naming a dump that is gone, said with that dump's path; not once the dump is back, nor once the game's ExeFS is
+   extracted into its _data; an extracted game's folder as its source alike; a GBA game's ROM, which no extraction
+   stands for. Never a 3DS game's (its driver keeps copies of its own), a game made from no dump, one an older version
+   linked to its dump, nor a file that is no made game's program. A game taken off the list is left out of the ready
+   ones (gui_games_group's removed), the others kept */
+static void source_missing(void) {
+    char *dir = snx_temp_dir(NULL), *dump = snx_path_join(dir, "game.nsp"), *rom = snx_path_join(dir, "game.gba");
+    char *extracted = snx_path_join(dir, "extracted"), *exefs = snx_path_join(extracted, "exefs");
+    char *text = snx_format("[Game]\nsource=%s\n", dump), out[4096];
+    char *nx = game_made(dir, "0100ABCD12340000", text), *program = program_of(nx, "0100ABCD12340000");
+    GuiGames g = {0};
+    GuiGroups removed = {GROUPS, .removed = removed_one};
+    char error[256];
+    assert(gui_game_source_missing(program, out, sizeof out) && !strcmp(out, dump));
+    assert(gui_game_source_missing(program, NULL, 0)); /* the answer alone */
+    put(dir, "game.nsp", "dump");
+    assert(!gui_game_source_missing(program, out, sizeof out) && !out[0]);
+    assert(!remove(dump));
+    {
+        char* data = snx_path_join(nx, "0100ABCD12340000_data/exefs");
+        assert(!snx_mkdirs(data) && !gui_game_source_missing(program, NULL, 0)); /* plays from its extraction */
+        assert(!snx_remove_tree(data));
+        free(data);
+    }
+    assert(!gui_game_source_missing(dump, NULL, 0) && !gui_game_source_missing(nx, NULL, 0)); /* no program */
+    { /* its source an extracted game's folder: gone, then there */
+        char* folder_ini = snx_format("[Game]\nsource=%s\n", extracted);
+        char *made = game_made(dir, "0100ABCD22220000", folder_ini), *own = program_of(made, "0100ABCD22220000");
+        assert(gui_game_source_missing(own, out, sizeof out) && !strcmp(out, extracted));
+        assert(!snx_mkdirs(exefs));
+        put(exefs, "main", "main");
+        assert(!gui_game_source_missing(own, NULL, 0));
+        free(own);
+        free(made);
+        free(folder_ini);
+    }
+    { /* a GBA game reads its ROM at every run */
+        char* gba_ini = snx_format("[Game]\nsource=%s\nsystem=gba\n", rom);
+        char *made = game_made(dir, "agb game", gba_ini), *own = program_of(made, "agb game");
+        assert(gui_game_source_missing(own, out, sizeof out) && !strcmp(out, rom));
+        put(dir, "game.gba", "rom");
+        assert(!gui_game_source_missing(own, NULL, 0));
+        free(own);
+        free(made);
+        free(gba_ini);
+    }
+    { /* a 3DS game's, one made from no dump, one an older version linked: none */
+        char* ctr_ini = snx_format("[Game]\nsource=%s\nsystem=3ds\n", dump);
+        char *ctr = game_made(dir, "0004000000030000", ctr_ini), *ctr_own = program_of(ctr, "0004000000030000");
+        char *nro = game_made(dir, "homebrew", "[Game]\nname=A homebrew\n"), *nro_own = program_of(nro, "homebrew");
+        char *old = game_made(dir, "0100ABCD33330000", NULL), *old_own = program_of(old, "0100ABCD33330000");
+        assert(!gui_game_source_missing(ctr_own, NULL, 0) && !gui_game_source_missing(nro_own, NULL, 0));
+#ifndef _WIN32
+        {
+            char* link = snx_path_join(old, "0100ABCD33330000.source");
+            assert(!symlink(dump, link) && !gui_game_source_missing(old_own, out, sizeof out) && !out[0]);
+            free(link);
+        }
+#endif
+        free(old_own);
+        free(old);
+        free(nro_own);
+        free(nro);
+        free(ctr_own);
+        free(ctr);
+        free(ctr_ini);
+    }
+    /* taken off the list: the ready games without it */
+    assert(gui_games_add(&g, dir, GUI_GAMES_RUN, error, sizeof error) && gui_games_group(&g, &removed));
+    assert(named(&g, "0100ABCD12340000") == g.count && named(&g, "0100ABCD22220000") < g.count &&
+           named(&g, "agb game") < g.count);
+    gui_games_free(&g);
+    assert(gui_games_add(&g, dir, GUI_GAMES_RUN, error, sizeof error) && gui_games_group(&g, &dumps_only));
+    assert(named(&g, "0100ABCD12340000") < g.count); /* no removed: listed */
+    gui_games_free(&g);
+    assert(!snx_remove_tree(dir));
+    free(program);
+    free(nx);
+    free(text);
+    free(exefs);
+    free(extracted);
+    free(rom);
+    free(dump);
+    free(dir);
+    puts("PASS a made game whose file to play from is not there, and one taken off the list");
 }
 int main(void) {
     GuiGames games = {0};
@@ -701,6 +822,7 @@ int main(void) {
         free(d);
     }
     addon_items();
+    source_missing();
     /* a game whose dump carries no control.nacp: the launcher shows the name the driver recorded for it, not the title
        ID the folder is named by */
     {

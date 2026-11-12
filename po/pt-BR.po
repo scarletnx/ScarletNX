@@ -2291,6 +2291,10 @@ msgid "In use: %s"
 msgstr "Em uso: %s"
 
 #: src/gui/main.c
+msgid "  (file not found)"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Show More"
 msgstr "Mostrar mais"
 
@@ -2432,6 +2436,11 @@ msgstr "Feito com: O%c, só JIT"
 #, c-format
 msgid "Made with: O%c, AOT %s"
 msgstr "Feito com: O%c, AOT %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Not found: %s"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -4241,6 +4250,10 @@ msgid "Library folders"
 msgstr "Pastas das bibliotecas"
 
 #: src/gui/main.c
+msgid "Removed from Games"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Closing ScarletNX"
 msgstr "Fechando o ScarletNX"
 
@@ -4507,6 +4520,14 @@ msgid "Use"
 msgstr "Usar"
 
 #: src/gui/main.c
+msgid "Locate..."
+msgstr ""
+
+#: src/gui/main.c
+msgid "Remove from Games"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Each theme shows as the focus reaches it: Enter keeps it, ESC goes back to %s"
 msgstr "Cada tema aparece quando o foco chega nele: Enter fica com ele, ESC volta para %s"
@@ -4535,6 +4556,26 @@ msgstr "Ver progresso"
 #, snx-key
 msgid "Mods"
 msgstr "Mods"
+
+#: src/gui/main.c
+#, c-format
+msgid "Removed games not kept: %s could not be written (%s)."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Locate...: the folder picker could not open: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Locate...: the file picker could not open: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is off Games: %s is not found. Its folder %s stays, and Games lists it again once that file is back."
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -5199,6 +5240,34 @@ msgstr "Select"
 #, snx-key
 msgid "Refresh"
 msgstr "Atualizar"
+
+#: src/gui/main.c
+msgid "Locate...: no folder was picked."
+msgstr ""
+
+#: src/gui/main.c
+msgid "Locate...: no file was picked."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no extracted game (exefs/ with its main): %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no GBA ROM (.gba): %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no NSP or XCI: %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s plays from %s now."
+msgstr ""
 
 #: src/gui/main.c
 #, c-format

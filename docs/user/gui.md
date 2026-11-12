@@ -22,13 +22,14 @@ and the wide letters a language shows, and nearest-neighbor
 integer scaling; its words are English or a language compiled into it ([Languages](#languages)). An item of a menu
 has an icon beside its name, 16x16 in the font's stroke (`src/gui/icons.hex`): the menu's, the groups of the Settings
 (each its own) and their rows that open a screen or do something (the others keep its columns), a game's box's actions,
-the setup's pages, the game's menu's and the keys of F1's box. A choice with no way back is framed and written in the
-theme's `failure` colour, and filled with it in focus: Delete All, a game's Clean Cache, a GPU driver's Remove, Clear
-Crash List, and the Delete, Remove or Clear of the question each asks first. One that wants care is so in its `warning`
-colour: Settings > App's Clean Old Settings, Move Old Files and Reset to Defaults, Folders' Reset to Defaults and a
-row's Reset to Default and Remove from Library, Freedreno Settings' Clear All, the setup's Move All, Clean Now and
-Overwrite (users.ini kept as `users.ini.old`), and the questions' Abort, Exit with a run going, Use Anyway, Run Anyway,
-Reset, Clean and Move. No font files or localization packages are needed.
+the setup's pages, the choices of a game whose file is not found, the game's menu's and the keys of F1's box. A choice
+with no way back is framed and written in the theme's `failure` colour, and filled with it in focus: Delete All, a
+game's Clean Cache, a GPU driver's Remove, Clear Crash List, and the Delete, Remove or Clear of the question each asks
+first. One that wants care is so in its `warning` colour: Settings > App's Clean Old Settings, Move Old Files and Reset
+to Defaults, Folders' Reset to Defaults and a row's Reset to Default and Remove from Library, a game's Remove from
+Games, Freedreno Settings' Clear All, the setup's Move All, Clean Now and Overwrite (users.ini kept as
+`users.ini.old`), and the questions' Abort, Exit with a run going, Use Anyway, Run Anyway, Reset, Clean and Move. No
+font files or localization packages are needed.
 
 ```sh
 ./build/scarletnx
@@ -171,9 +172,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   back to App, and **Folders**, every folder on one screen, the whole of it, a box a group:
   - **App Folders**: **Data** (`recompiled/`, `dumps/`, `themes/` and `prod.keys`), **Settings**, shown only
     (`app.ini`, which names the others, and each game's `.ini`: `XDG_CONFIG_HOME` moves it, a portable copy keeps its
-    own), **Logs** (the games' logs and `threads.txt`, `recent.txt`, `last-run.log`, `last-recompile.log` and the
-    launcher's `scarletnx-console-<date>.log` and `scarletnx-error.log`), **Caches** (the recompile's
-    `units/`, the shader caches, the dumps' icons, and Extractions by default) and **Extractions**;
+    own), **Logs** (the games' logs and `threads.txt`, `recent.txt`, `removed.txt`, `last-run.log`,
+    `last-recompile.log` and the launcher's `scarletnx-console-<date>.log` and `scarletnx-error.log`), **Caches** (the
+    recompile's `units/`, the shader caches, the dumps' icons, and Extractions by default) and **Extractions**;
   - **Dumps Library**: its **Main**, the data folder's `dumps/` (with its subfolders, going with the data folder), then its
     **Extra** folders, whose dumps Games lists, and **Add a folder**. Main's box, or Del on it, has **Remove from
     Library**, which asks first: Games no longer lists it and ScarletNX no longer makes it as it starts, its files kept;
@@ -450,7 +451,7 @@ two; left out, none), `probe_mode` (edenprobe Mode's `quick`, the default, or `f
   The focus moves between them and the games in one ring, and the tips show the focused
   game's path. Choosing one runs it again with the driver it was
   loaded with and the options the menu has now; a game whose file is gone leaves the
-  list instead. The list is kept in `recent.txt`, beside `last-run.log`, at the root of the menu's state
+  list instead, and a made game whose file to play from is not found asks first, as in the list (below). The list is kept in `recent.txt`, beside `last-run.log`, at the root of the menu's state
   folder ([Usage](usage.md#folders)): `$XDG_STATE_HOME/scarletnx/` on Linux, by default
   `~/.local/state/scarletnx/`, `%APPDATA%\scarletnx\state\` on Windows, or the data folder's `state/` on Android. An
   older version's, in a `gui/` folder, stay where they are. A line per
@@ -603,6 +604,17 @@ cannot be read is named and the others still listed.
   first (Tab), the tips say it is ready, and Enter then plays it. One a game was made from already, in `recompiled/` or
   a recompiled folder of the Library, asks first, naming the game and its folder: **Play**, in focus, plays it,
   **Recompile** recompiles it where it is, as R does, and Back does neither.
+- A made game whose file to play from is not there is greyed and says `(file not found)` after its name, in the list
+  and in Recent Games, and the side box names the file (*Not found:* and its path): a Switch game read from its dump in
+  place (its ExeFS not extracted into its `<name>_data`), or a GBA game, whose ROM its driver reads at every run, the
+  file its `.ini`'s `source=` names. Opening it, as Enter, L and R do, asks first in a box of its own that names the
+  file whole: **Keep**, in focus, and Back leave it as it is; **Locate...** opens the system's file picker (its folder
+  picker for an extracted game's folder), and the file picked, a dump (`.nsp`, `.xci`) for a Switch game or a ROM
+  (`.gba`) for a GBA game, is what the game plays from from then on, in its `.ini`, another kind refused, the message
+  naming it and the file the game keeps; **Remove from Games**, in the warning colour, takes the game off Games and
+  Recent Games, its folder, settings and saves kept, until the file is back where its `.ini` says or a run of the dump
+  records it anew. The games taken off are kept in `removed.txt`, beside `recent.txt`, a program a line. A 3DS or Vita
+  game, whose drivers keep copies of their own, and a game that plays from its extraction say nothing.
 - **L** (on Android a tap on *Play* at the foot, on a pad the right stick) plays the game in focus, recent or on the
   page, as Enter does, but a game with updates, DLCs, mods or cheats beside it plays as its box's **Play** does, with
   the ones the box keeps for it (its `.ini`'s `addons=`, `mods_off=` and `cheats_off=`), without showing the box or

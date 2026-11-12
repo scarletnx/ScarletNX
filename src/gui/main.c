@@ -140,7 +140,8 @@ typedef enum {
     GUI_PICKS_DRIVER,
     GUI_PICKS_ASSET,
     GUI_PICKS_THEME,
-    GUI_PICKS_GAME
+    GUI_PICKS_GAME,
+    GUI_PICKS_MISSING
 } GuiPicksOf;
 /* a finger held this long on a game of Games without moving opens its box (game_box_open), as a right click does */
 #define GUI_HOLD_MS     500
@@ -365,6 +366,9 @@ typedef struct App {
     /* each of games' rows and of the recent ones: its .ini has a Debug setting off its default, read as list_games
        lists them; and the picks or the GDB stub put one on every game, as Games is drawn (game_debug) */
     bool *games_debug, recent_debug[GUI_RECENT_MAX], debug_picks;
+    /* each of games' rows and of the recent ones: a made game whose file to play from is not there
+       (gui_game_source_missing), read as list_games lists them */
+    bool *games_missing, recent_missing[GUI_RECENT_MAX];
     GuiConsole console;
     GuiUsage usage;
     GuiTheme theme;
@@ -391,6 +395,11 @@ typedef struct App {
                           files (menu_files); NULL elsewhere */
     Uint64 left_at;    /* when they were looked for */
     char* recent_file; /* where the recent games are kept; NULL keeps none */
+    /* the made games the player took off Games (Remove from Games), each its program, removed_count of them, kept in
+       removed_file beside recent.txt (NULL keeps none) */
+    char** removed;
+    size_t removed_count;
+    char* removed_file;
     char* run_log;     /* where a run's output goes as it comes, the last run's; NULL keeps none */
     intptr_t run_lock; /* run_log held (snx_lock_file) while run_locked, so another launcher takes a pair of its own */
     bool run_locked;
@@ -437,9 +446,9 @@ typedef struct App {
     Uint64 aot_checked;    /* when aot_focus was looked at */
     SnxGameMade made;      /* how the focused game's code was made, its stamp's made line (unknown: opt 0) */
     bool made_here;        /* this build made it with the mods it plays: false, Play compiles it first */
-    /* the Debug settings a run of the focused row takes off their default (game_debug), for its path, owned, as it
-       was looked at */
-    char debug_focus[1024], *debug_path;
+    /* the Debug settings a run of the focused row takes off their default (game_debug), and the file it plays from
+       when that is not there (gui_game_source_missing, "" else), for its path, owned, as it was looked at */
+    char debug_focus[1024], missing_focus[SNX_PATH_SIZE], *debug_path;
     Uint64 debug_checked;
     bool aot_pack;   /* the run builds a pack from the cache */
     char* aot_cache; /* its .jitcache, owned */
@@ -787,6 +796,11 @@ typedef struct App {
     char* made_file; /* a dump whose game is made, asked about (GUI_ASK_MADE): played or recompiled, by made_item */
     int made_item;
     bool made_ok;    /* asked and answered Play: the dump runs, its driver playing the game made */
+    /* a made game whose file to play from is not there, asked about (GUI_PICKS_MISSING): its program and that file,
+       owned until answered; and the program of the game Locate... was pressed for, until its picker answers with an
+       event of missing_picked */
+    char *missing_game, *missing_file, *missing_picking;
+    Uint32 missing_picked;
     bool compiled;   /* the game a compile just made plays (job_play): its stamp is not looked at again */
     char* room_file; /* a run asked about (GUI_ASK_ROOM): its file, its load and whether it was prepared */
     int room_item;
@@ -1936,9 +1950,9 @@ static int recent_more(const App* app) { return recent_on(app) && recent_shown(a
 static size_t games_head(const App* app) { return (size_t)(recent_shown(app) + recent_more(app)); }
 /* the list as the menu and the file have it */
 static int game_debug(App* app, const char* path, int picks, char* out, size_t size);
-static void recent_debug_read(App* app);
+static void recent_rows_read(App* app);
 static void recent_changed(App* app) {
-    recent_debug_read(app); /* its rows moved */
+    recent_rows_read(app); /* its rows moved */
     app->browser.head = games_head(app);
     gui_browser_resize(&app->browser, app->browser.page_size);
     if (app->recent_file) app->recent_unsaved = gui_recent_save(&app->recent, app->recent_file) != 0;
@@ -1984,7 +1998,7 @@ enum { GUI_SHOWS_STATUS = 1, GUI_SHOWS_TABS = 2, GUI_SHOWS_WIDE = 4, GUI_SHOWS_S
 static void place_screen(App* app, GuiPlace* p, const char* keys, int shows);
 static const char* shown_keys(const App* app, char* out, size_t size);
 static void aot_status_update(App* app);
-static void debug_focus_update(App* app);
+static void side_focus_update(App* app);
 /* a screen's keys, Tab's after them; the key back of a screen whose own keys do not say it; F1's, last in a foot */
 #define SAY_TAB SNX_TR_KEYS("Tab: screen. F2: side box.")
 #ifdef SNX_TOUCH_UI
@@ -2771,6 +2785,7 @@ typedef struct {
 /* choice i of whose choices (GuiChoicesOf) as its row reads, in out when it is made there; NULL past the last */
 static const char* choice_text(App* app, int of, int i, char* out, size_t size);
 static unsigned setup_icon(const App* app, int row);
+static unsigned pick_icon(const App* app, int i);
 /* the height count rows of a scene's list take, from the first one's top to the last one's foot, as the scene lays
    them out: its layout and its row functions, rects room for its items, item the list's */
 static int rows_h(void (*layout)(GuiRect, int, GuiRect*), GuiRect (*row)(const GuiRect*, int, int, size_t),
@@ -2845,8 +2860,9 @@ static void choices_place(App* app, int of, GuiRect area, const char* question, 
     memset(c, 0, sizeof *c);
     c->of = of;
     for (; (label = choice_text(app, of, c->count, app->row_text, sizeof app->row_text)); ++c->count) {
-        int icon = of == GUI_CHOICES_SETUP && setup_icon(app, c->count) ? 3 : 0; /* its columns and a space */
-        longest = SDL_max(longest, gui_text_cols(label) + marker + icon + 2);
+        bool icon = (of == GUI_CHOICES_SETUP && setup_icon(app, c->count)) ||
+                    (of == GUI_CHOICES_PICKS && pick_icon(app, c->count));
+        longest = SDL_max(longest, gui_text_cols(label) + marker + (icon ? 3 : 0) + 2); /* an icon's columns, a space */
     }
     list_h = rows_h(ui_choices_layout, ui_choices_row, c->rects, UI_CHOICES_ROWS, s, c->count);
     if (app->theme.dialog == GUI_DIALOG_YORHA) {
@@ -7099,6 +7115,8 @@ static void games_finger(App* app, float x, float y, int phase) {
 static bool box_shown(App* app);
 static void game_label(const App* app, const GuiGames* games, size_t i, char* out, size_t size);
 static void menu_key(App* app, GuiKey key);
+/* a made game's row whose file to play from is not there (gui_game_source_missing), after its name */
+#define SAY_NOT_FOUND SNX_TR_NOOP("  (file not found)")
 /* Rows' row i as the browser counts it (0 is "Recent Games" over the recent rows, and a lone heading follows them): a
    recent row, else a game of the page */
 static size_t games_selected(const App* app, size_t row) {
@@ -7106,7 +7124,8 @@ static size_t games_selected(const App* app, size_t row) {
     return row < lead ? row - 1 : app->browser.head + row - lead;
 }
 /* Rows' row: "Recent Games", the recent rows and their show more, a page's headings and games; a game in the active
-   colour once activated, the pages before and after marked on the first game and the last */
+   colour once activated, one whose file to play from is not there greyed, the pages before and after marked on the
+   first game and the last */
 bool ui_games_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
     char* label = app->row_text;
     size_t lead = (size_t)games_lead(app), items = gui_browser_items(&app->browser), i, start;
@@ -7127,11 +7146,13 @@ bool ui_games_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info
         char queued[64];
         const GuiRecentGame* r = index < recent_shown(app) ? &app->recent.game[recent_index(app, index)] : NULL;
         job_suffix(app, r ? r->path : NULL, queued, sizeof queued);
-        snprintf(label, sizeof app->row_text, "%s%s%s", r ? r->name : snx_tr("Show More"),
+        snprintf(label, sizeof app->row_text, "%s%s%s%s", r ? r->name : snx_tr("Show More"),
+                 r && app->recent_missing[index] ? snx_tr(SAY_NOT_FOUND) : "",
                  index < recent_shown(app) && (app->debug_picks || app->recent_debug[index]) ? snx_tr("  (Debug on)")
                                                                                              : "",
                  queued);
         info->label = label;
+        if (r && app->recent_missing[index]) info->attr |= UI_ATTR_OFF; /* greyed, as a folder not listed is */
         if (r) info->image = game_icon(app, r->path);
         if (!r) info->image = icon_more(app);                /* Show More's cover */
         if (r && !info->image) info->image = icon_none(app); /* a game with none of its own */
@@ -7148,6 +7169,7 @@ bool ui_games_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info
     info->label = label + strlen(app->theme.marker); /* ui_draw_row puts the marker */
     info->image = game_icon(app, app->games.paths[start + i]);
     if (!info->image) info->image = icon_none(app);
+    if (app->games_missing[start + i]) info->attr |= UI_ATTR_OFF; /* greyed, as a folder not listed is */
     if (app->browser.activated && app->browser.active == start + i) info->attr |= UI_ATTR_ACTIVE;
     if (i == 0 && app->browser.page > 0) info->attr |= UI_ATTR_MORE_UP;
     if (i + 1 == items && app->browser.page + 1 < gui_browser_pages(&app->browser)) info->attr |= UI_ATTR_MORE_DOWN;
@@ -7293,18 +7315,20 @@ static const char* games_focus(App* app, const GuiGamesBoxes* g, const char** ab
     return app->games.shown[g->start + selected - head];
 }
 /* a game's row in Games: its name, how many updates, DLCs and mods it has, (games/) when an older version's games/
-   holds it, and where it is in the queue of recompiles while it waits or runs there */
+   holds it, that its file to play from is not found, and where it is in the queue of recompiles while it waits or
+   runs there */
 static void game_label(const App* app, const GuiGames* games, size_t i, char* out, size_t size) {
     const char* was = game_was_old(app, games->paths[i]) ? snx_tr("  (games/)") : "";
     /* Games' own rows, by what list_games read: another list's are add-ons, which run with their game's */
     const char* debug = games == &app->games && (app->debug_picks || app->games_debug[i]) ? snx_tr("  (Debug on)") : "";
+    const char* gone = games == &app->games && app->games_missing[i] ? snx_tr(SAY_NOT_FOUND) : "";
     char queued[64];
     job_suffix(app, games->paths[i], queued, sizeof queued);
     if (games->addons[i]) /* its updates, DLCs and mods, which opening it offers */
-        snprintf(out, size, "%s%s  +%zu%s%s%s", app->theme.marker, games->shown[i], games->addons[i], was, debug,
-                 queued);
+        snprintf(out, size, "%s%s  +%zu%s%s%s%s", app->theme.marker, games->shown[i], games->addons[i], was, gone,
+                 debug, queued);
     else
-        snprintf(out, size, "%s%s%s%s%s", app->theme.marker, games->shown[i], was, debug, queued);
+        snprintf(out, size, "%s%s%s%s%s%s", app->theme.marker, games->shown[i], was, gone, debug, queued);
 }
 /* the path of the game Games' focus is on, recent (*recent says so) or of the page; NULL on a heading, Show More or
    no game */
@@ -7374,14 +7398,14 @@ static void made_text(const SnxGameMade* m, char* out, size_t size) {
 static void draw_games(App* app) {
     GuiGamesBoxes g;
     GuiRect r;
-    char line[1100], keys[256], kind[192];
+    char line[SNX_PATH_SIZE + 160], keys[256], kind[192]; /* line: room for a whole path, as Not found: says it */
     const char *about, *name;
     size_t i;
     SDL_Color soft = rgb(app->theme.soft), ink = rgb(app->theme.ink), failure = rgb(app->theme.failure);
     int y;
     aot_status_update(app);
     app->debug_picks = gui_settings_debug(settings_of(app), NULL, 1, NULL, 0) > 0;
-    debug_focus_update(app);
+    side_focus_update(app);
     games_scroll_step(app);
     games_boxes(app, &g);
     chrome(app, &g.place);
@@ -7413,6 +7437,10 @@ static void draw_games(App* app) {
         r = gui_rect(r.x, y, r.w, g.place.side.y + g.place.side.h - y);
         y += wrap_in(app, r, r.x, y, about, app->browser.selected != 0, ink) * cell_h(app);
         if (kind[0]) y += wrap_in(app, r, r.x, y, kind, 0, soft) * cell_h(app);
+        if (app->missing_focus[0]) { /* the file it plays from, which opening it asks about */
+            snprintf(line, sizeof line, snx_tr("Not found: %s"), app->missing_focus);
+            y += wrap_in(app, r, r.x, y, line, 0, failure) * cell_h(app);
+        }
         if (app->debug_focus[0]) { /* what the game will say over its picture */
             snprintf(line, sizeof line, snx_tr("Debug on: %s"), app->debug_focus);
             y += wrap_in(app, r, r.x, y, line, 0, failure) * cell_h(app);
@@ -14589,9 +14617,10 @@ void ui_appearance_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
 }
 /* what the menu keeps for the next start, as it closes: each of its files there and its folder, in a box */
 static void draw_closing(App* app) {
-    const char* files[4] = {app->settings_file, app->app_file, app->folders_file, app->recent_file};
-    static const char* const what[4] = {SNX_TR_NOOP("Settings"), SNX_TR_NOOP("Settings > App"),
-                                        SNX_TR_NOOP("Library folders"), SNX_TR_NOOP("Recent Games")};
+    const char* files[5] = {app->settings_file, app->app_file, app->folders_file, app->recent_file, app->removed_file};
+    static const char* const what[5] = {SNX_TR_NOOP("Settings"), SNX_TR_NOOP("Settings > App"),
+                                        SNX_TR_NOOP("Library folders"), SNX_TR_NOOP("Recent Games"),
+                                        SNX_TR_NOOP("Removed from Games")};
     char line[4400];
     int cols, rows = 1, i, y;
     GuiRect r, text;
@@ -14599,7 +14628,7 @@ static void draw_closing(App* app) {
     SDL_RenderClear(app->renderer);
     backdrop(app);
     cols = app->cols - 6;
-    for (i = 0; i < 4; ++i)
+    for (i = 0; i < (int)SDL_arraysize(files); ++i)
         if (files[i] && snx_is_file(files[i])) {
             snprintf(line, sizeof line, "%s: %s", snx_tr(what[i]), files[i]);
             rows += wrap_rows(app, line, cols - 2, 1);
@@ -14611,7 +14640,7 @@ static void draw_closing(App* app) {
                  rows > 1 ? snx_tr("Kept for the next start:") : snx_tr("Nothing to keep: no file of the menu's"), 0,
                  rgb(app->theme.soft)) *
          cell_h(app);
-    for (i = 0; i < 4; ++i)
+    for (i = 0; i < (int)SDL_arraysize(files); ++i)
         if (files[i] && snx_is_file(files[i])) {
             snprintf(line, sizeof line, "%s: %s", snx_tr(what[i]), files[i]);
             y += wrap_in(app, text, text.x, y, line, 1, rgb(app->theme.ink)) * cell_h(app);
@@ -16165,9 +16194,20 @@ static const char* const dumps_extra_picks[] = {SNX_TR_NOOP("Open Folder"), SAY_
                                                 SNX_TR_NOOP("Remove from Library"), NULL};
 /* a GPU Drivers package's */
 static const char* const driver_picks[] = {SNX_TR_NOOP("Use"), SNX_TR_NOOP("Remove"), NULL};
+/* the box of a made game whose file to play from is not there (missing_ask): Keep first, as it changes nothing */
+#define SAY_MISSING_KEEP   SNX_TR_NOOP("Keep")
+#define SAY_MISSING_LOCATE SNX_TR_NOOP("Locate...")
+#define SAY_MISSING_REMOVE SNX_TR_NOOP("Remove from Games")
+/* the room of the picks box's question: a missing game's names a whole path */
+#define GUI_PICKS_QUESTION (SNX_PATH_SIZE + 160)
+static const char* const missing_picks[] = {SAY_MISSING_KEEP, SAY_MISSING_LOCATE, SAY_MISSING_REMOVE, NULL};
+/* their icons, as the setup's choices have theirs: Keep a check, Locate... a picker's open folder, Remove a cross */
+static const unsigned missing_icons[] = {GUI_ICON_CHECK, GUI_ICON_FOLDER_OPEN, GUI_ICON_X};
+typedef char snx_missing_icons[SDL_arraysize(missing_icons) + 1 == SDL_arraysize(missing_picks) ? 1 : -1];
 static const char* const* picks_list(const App* app) {
     int at, group, kind;
     if (app->picks_of == GUI_PICKS_SHARE) return share_picks;
+    if (app->picks_of == GUI_PICKS_MISSING) return missing_picks;
     if (app->picks_of == GUI_PICKS_DRIVER) return driver_picks;
     if (app->picks_of == GUI_PICKS_ASSET) return app->asset_picks;
     if (app->picks_of == GUI_PICKS_THEME) return app->theme_picks;
@@ -16194,7 +16234,7 @@ static const char* pick_label(App* app, int i) {
     return app->pick_text;
 }
 /* the look of the picks box's choice i: a GPU driver's Remove has no way back; a Folders row's Reset to Default and
-   Remove from Library want care */
+   Remove from Library, and a game's Remove from Games, want care */
 static unsigned pick_tone(const App* app, int i) {
     const char* const* picks = picks_list(app);
     int n = 0;
@@ -16203,7 +16243,13 @@ static unsigned pick_tone(const App* app, int i) {
         app->picks_of == GUI_PICKS_GAME)
         return 0;
     if (app->picks_of == GUI_PICKS_DRIVER) return !strcmp(picks[i], "Remove") ? UI_ATTR_DANGER : 0;
+    if (app->picks_of == GUI_PICKS_MISSING) return !strcmp(picks[i], SAY_MISSING_REMOVE) ? UI_ATTR_CAUTION : 0;
     return !strcmp(picks[i], "Reset to Default") || !strcmp(picks[i], "Remove from Library") ? UI_ATTR_CAUTION : 0;
+}
+/* the icon before the picks box's choice i: a missing game's box's (missing_icons); none in the other boxes */
+static unsigned pick_icon(const App* app, int i) {
+    return app->picks_of == GUI_PICKS_MISSING && i >= 0 && i < (int)SDL_arraysize(missing_icons) ? missing_icons[i]
+                                                                                                 : GUI_ICON_NONE;
 }
 static void picks_open(App* app, GuiPicksOf of) {
     app->picks_of = of;
@@ -16252,10 +16298,14 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
            : app->picks_of == GUI_PICKS_DRIVER ? snx_tr("GPU Drivers")
            : app->picks_of == GUI_PICKS_ASSET  ? snx_tr("Download Driver")
            : app->picks_of == GUI_PICKS_THEME  ? (app->theme.dialog == GUI_DIALOG_YORHA ? snx_tr("Theme") : "")
-           : app->picks_of == GUI_PICKS_GAME   ? snx_tr("Game")
-                                               : snx_tr("Folders");
+           : app->picks_of == GUI_PICKS_GAME || app->picks_of == GUI_PICKS_MISSING ? snx_tr("Game")
+                                                                                   : snx_tr("Folders");
     if (app->picks_of == GUI_PICKS_GAME) { /* the game's name, as its row shows it */
         snprintf(out, size, "%s", app->pick_text);
+        return;
+    }
+    if (app->picks_of == GUI_PICKS_MISSING) { /* the file, whole */
+        snprintf(out, size, snx_tr("Not found: %s"), app->missing_file ? app->missing_file : "?");
         return;
     }
     if (app->picks_of == GUI_PICKS_THEME) { /* the line says what the box is: YoRHa's tab names it, the default's
@@ -16326,7 +16376,7 @@ static void picks_place(App* app, GuiChoices* c, char* question, size_t size, co
 }
 static void render_picks(App* app) {
     GuiChoices c;
-    char question[640];
+    char question[GUI_PICKS_QUESTION];
     const char* tab;
     picks_place(app, &c, question, sizeof question, &tab);
     box_shade(app);
@@ -16423,6 +16473,188 @@ static void game_box_take(App* app, const char* pick) {
     else if (!strcmp(pick, SAY_GAME_STATES))
         states_focus(app);
 }
+/* ---- a made game whose file to play from is not there (gui_game_source_missing): its row says so, and opening it, to
+   play or to recompile, asks first in a box of its own (GUI_PICKS_MISSING). Keep, in focus, leaves it as it is;
+   Locate... picks that file where it is now, which the game plays from from then on; Remove from Games takes the game
+   off Games, its folder, settings and saves kept, until that file is back. The games taken off are kept in removed.txt
+   beside recent.txt, a program a line ---- */
+static void games_relist(App* app);
+/* whether the game whose program is at path is one the player took off Games: by its line's spelling, or the same
+   file under another (/var and /private/var) */
+static bool removed_has(const App* app, const char* path) {
+    for (size_t i = 0; path && i < app->removed_count; ++i)
+        if (!strcmp(app->removed[i], path) ||
+            (!strcmp(snx_path_leaf(app->removed[i]), snx_path_leaf(path)) && snx_same_file(app->removed[i], path)))
+            return true;
+    return false;
+}
+static void removed_add(App* app, const char* path) {
+    app->removed = (char**)snx_realloc(app->removed, (app->removed_count + 1) * sizeof *app->removed);
+    app->removed[app->removed_count++] = snx_strdup(path);
+}
+/* removed.txt written again through a file beside it, or taken away once no game is off Games. 0; else said, with
+   the system's reason */
+static int removed_save(App* app) {
+    char *dir, *staged, *text, why[160], note[sizeof app->message];
+    size_t size = 1, n = 0, i;
+    int failed;
+    if (!app->removed_file) return 0;
+    for (i = 0; i < app->removed_count; ++i) size += strlen(app->removed[i]) + 1;
+    text = (char*)snx_alloc(size);
+    for (i = 0; i < app->removed_count; ++i) n += (size_t)snprintf(text + n, size - n, "%s\n", app->removed[i]);
+    dir = snx_dirname(app->removed_file);
+    staged = snx_format("%s.new", app->removed_file);
+    if (!app->removed_count)
+        failed = snx_path_exists(app->removed_file) && remove(app->removed_file) != 0;
+    else
+        failed = !dir || !staged || snx_mkdirs(dir) || snx_write_file(staged, text, n) ||
+                 plat_replace_file(staged, app->removed_file);
+    if (failed) {
+        snx_os_error(why, sizeof why);
+        if (staged && snx_path_exists(staged)) remove(staged);
+        snprintf(note, sizeof note, snx_tr("Removed games not kept: %s could not be written (%s)."), app->removed_file,
+                 why);
+        say_failure(app, note);
+    }
+    free(staged);
+    free(dir);
+    free(text);
+    return failed;
+}
+/* removed.txt, file (owned; NULL keeps none), read: a program a line, each once */
+static void removed_open(App* app, char* file) {
+    size_t size = 0;
+    char *text, *line, *next;
+    free(app->removed_file);
+    app->removed_file = file;
+    snx_free_strings(app->removed, app->removed_count);
+    app->removed = NULL;
+    app->removed_count = 0;
+    text = file ? (char*)snx_read_file(file, &size) : NULL;
+    for (line = text; line && *line; line = next) {
+        char* end = line + strcspn(line, "\r\n");
+        next = end + strspn(end, "\r\n");
+        *end = 0;
+        if (*line && !removed_has(app, line)) removed_add(app, line);
+    }
+    free(text);
+}
+/* the games taken off Games whose file to play from is back, put back where it was or recorded anew by a run of its
+   dump: listed again, their lines gone. One whose program is not there keeps its line (a folder on a disk not
+   mounted) */
+static void removed_prune(App* app) {
+    size_t i, kept = 0;
+    for (i = 0; i < app->removed_count; ++i)
+        if (snx_is_file(app->removed[i]) && !gui_game_source_missing(app->removed[i], NULL, 0))
+            free(app->removed[i]);
+        else
+            app->removed[kept++] = app->removed[i];
+    if (kept == app->removed_count) return;
+    app->removed_count = kept;
+    removed_save(app);
+}
+static void missing_forget(App* app) {
+    free(app->missing_game);
+    free(app->missing_file);
+    app->missing_game = app->missing_file = NULL;
+}
+/* the made game whose program is at program opened, to play or to recompile: when its file to play from is not
+   there, its box asks what becomes of it, and true; false for a game that plays */
+static bool missing_ask(App* app, const char* program) {
+    char file[SNX_PATH_SIZE];
+    if (!program || !gui_game_source_missing(program, file, sizeof file)) return false;
+    missing_forget(app);
+    app->missing_game = snx_strdup(program);
+    app->missing_file = snx_strdup(file);
+    picks_open(app, GUI_PICKS_MISSING);
+    return true;
+}
+/* how the file a game plays from is picked again, by what it was: a GBA game's ROM, a Switch game's dump by its name
+   (one the driver reads in place), else an extracted game's folder */
+typedef enum { MISSING_DUMP, MISSING_FOLDER, MISSING_ROM } MissingKind;
+static MissingKind missing_kind(const char* program, const char* file) {
+    static const char* const dumps[] = {".nsp", ".xci", ".dnsp", ".dxci"};
+    char *folder, *name;
+    SnxSystem system;
+    game_where(program, &folder, &name);
+    system = snx_game_system(folder, name);
+    free(name);
+    free(folder);
+    if (system == SNX_SYSTEM_GBA) return MISSING_ROM;
+    for (size_t i = 0; file && i < SDL_arraysize(dumps); ++i)
+        if (snx_ends_with_nocase(file, dumps[i])) return MISSING_DUMP;
+    return MISSING_FOLDER;
+}
+static void SDLCALL folder_picked(void* userdata, const char* const* files, int filter);
+/* Locate...: the system's picker, for a file or, for an extracted game, a folder, at the game the box was of; its
+   answer an event of missing_picked (missing_located). Why it could not open, said */
+static void missing_locate(App* app) {
+    char why[sizeof app->message - 64] = "";
+    bool folder = missing_kind(app->missing_game, app->missing_file) == MISSING_FOLDER, opened = true;
+    const char* cannot = folder ? snx_tr("Locate...: the folder picker could not open: %s")
+                                : snx_tr("Locate...: the file picker could not open: %s");
+    free(app->missing_picking);
+    app->missing_picking = app->missing_game;
+    app->missing_game = NULL;
+    missing_forget(app);
+    if (!app->missing_picked) app->missing_picked = SDL_RegisterEvents(1);
+    if (!app->missing_picked) {
+        snprintf(app->message, sizeof app->message, cannot, SDL_GetError());
+        say_failure(app, app->message);
+        return;
+    }
+#ifdef SDL_PLATFORM_ANDROID /* SDL has no folder picker there: the system's own, through the app */
+    if (folder)
+        opened = gui_android_pick_folder(folder_picked, &app->missing_picked, why, sizeof why) != 0;
+    else
+        SDL_ShowOpenFileDialog(folder_picked, &app->missing_picked, app->window, NULL, 0, NULL, false);
+#elif defined(SDL_PLATFORM_IOS) /* nor any picker there: the document picker (dist/apple) */
+    opened =
+        gui_apple_pick(app->window, folder, folder_picked, &app->missing_picked, debug_log(app), why, sizeof why) != 0;
+#else
+    /* its answer comes as an event even when it cannot open, which says why */
+    if (folder)
+        SDL_ShowOpenFolderDialog(folder_picked, &app->missing_picked, app->window, NULL, false);
+    else
+        SDL_ShowOpenFileDialog(folder_picked, &app->missing_picked, app->window, NULL, 0, NULL, false);
+#endif
+    if (opened) return;
+    snprintf(app->message, sizeof app->message, cannot, why);
+    say_failure(app, app->message);
+}
+/* Remove from Games: the game the box was of taken off Games and its recent rows, its folder, settings and saves kept,
+   until the file it plays from is back (removed_prune). removed.txt not written is said (removed_save) */
+static void missing_remove(App* app) {
+    char *program = app->missing_game, *file = app->missing_file, *shown, *folder;
+    bool recent = false;
+    app->missing_game = app->missing_file = NULL;
+    if (!program) {
+        free(file);
+        return;
+    }
+    if (!removed_has(app, program)) {
+        removed_add(app, program);
+        removed_save(app);
+    }
+    for (int i = app->recent.count - 1; i >= 0; --i)
+        if (!strcmp(app->recent.game[i].path, program) || snx_same_file(app->recent.game[i].path, program)) {
+            gui_recent_remove(&app->recent, i);
+            recent = true;
+        }
+    if (recent) recent_changed(app);
+    if (app->menu.view == GUI_LOAD_GAMES) games_relist(app);
+    shown = gui_game_shown(program);
+    folder = snx_dirname(program);
+    snprintf(app->message, sizeof app->message,
+             snx_tr("%s is off Games: %s is not found. Its folder %s stays, and Games lists it again once that file is "
+                    "back."),
+             shown ? shown : program, file ? file : "?", folder ? folder : "?");
+    recent_note(app);
+    free(folder);
+    free(shown);
+    free(file);
+    free(program);
+}
 /* choice i taken, or none (-1: Back): the logs as one zip, as the one log of before, or their folder opened; a Folders
    row's folder opened, another picked, its default asked for or its Extra taken off */
 static void pick_take(App* app, int i) {
@@ -16437,6 +16669,15 @@ static void pick_take(App* app, int i) {
             app_save(app);
             app_values(app);
         }
+        return;
+    }
+    if (app->picks_of == GUI_PICKS_MISSING) { /* Keep and Back leave the game as it is */
+        if (i == 1)
+            missing_locate(app);
+        else if (i == 2)
+            missing_remove(app);
+        else
+            missing_forget(app);
         return;
     }
     if (i < 0) return;
@@ -16502,7 +16743,7 @@ static void picks_key(App* app, GuiKey key) {
    Back */
 static void picks_pointer(App* app, float x, float y, bool click) {
     GuiChoices c;
-    char question[640];
+    char question[GUI_PICKS_QUESTION];
     const char* tab;
     bool on;
     int was = app->picks.focus;
@@ -17670,7 +17911,7 @@ static void queue_key(App* app, GuiKey key) {
 /* the recent game shown at row shown, run as the menu would: its driver, the options the menu has now. With play (Games'
    Play key), a Switch game with updates, DLCs, mods or cheats beside it plays as its box's Play row plays it
    (addons_play), the box not shown and its picks not written; one the queue compiles shows its compile, as launch
-   shows it for its path */
+   shows it for its path. A made game whose file to play from is not there asks first (missing_ask) */
 static void open_recent(App* app, int shown, bool play) {
     int index = recent_index(app, shown);
     GuiRecentGame game = app->recent.game[index];
@@ -17681,6 +17922,7 @@ static void open_recent(App* app, int shown, bool play) {
         recent_changed(app);
         return;
     }
+    if (game.prepared && gui_queue_find(&app->queue, game.path) < 0 && missing_ask(app, game.path)) return;
     if (play && game.driver == GUI_SWITCH && gui_queue_find(&app->queue, game.path) < 0) {
         addons_open(app, game.path, game.name, false);
         if (app->addons_shown) {
@@ -17725,7 +17967,7 @@ static int row_driver(const GuiGames* games, size_t i) {
 }
 /* a game of Games' page, at index of the list, played by its row's driver (row_driver). With play (Games' Play key),
    one with updates, DLCs, mods or cheats beside it plays as its box's Play row plays it (addons_play), the box not
-   shown and its picks not written */
+   shown and its picks not written. A made game whose file to play from is not there asks first (missing_ask) */
 static void open_game(App* app, size_t index, bool play) {
     int item = app->menu.selected;
     if (gui_games_heading(&app->games, index)) return;               /* a group's heading runs nothing */
@@ -17741,6 +17983,7 @@ static void open_game(App* app, size_t index, bool play) {
         addons_open_set(app, gui_games_addon_set(&app->games, index));
         return;
     }
+    if (missing_ask(app, app->games.paths[index])) return; /* a made game whose file to play from is not there */
     if (app->games.addons[index]) { /* its updates and DLCs: which one runs is asked first */
         addons_open(app, app->games.paths[index], app->games.shown[index], false);
         if (app->addons_shown && play) {
@@ -17814,13 +18057,18 @@ static int game_debug(App* app, const char* path, int picks, char* out, size_t s
     free(folder);
     return n;
 }
-/* the recent rows' .ini's part, as list_games reads the others' */
-static void recent_debug_read(App* app) {
-    for (int i = 0; i < recent_shown(app); ++i)
-        app->recent_debug[i] = game_debug(app, app->recent.game[recent_index(app, i)].path, 0, NULL, 0) > 0;
+/* the recent rows' .ini's part and whether a made game's file to play from is not there, as list_games reads the
+   others' */
+static void recent_rows_read(App* app) {
+    for (int i = 0; i < recent_shown(app); ++i) {
+        const GuiRecentGame* r = &app->recent.game[recent_index(app, i)];
+        app->recent_debug[i] = game_debug(app, r->path, 0, NULL, 0) > 0;
+        app->recent_missing[i] = r->prepared && gui_game_source_missing(r->path, NULL, 0);
+    }
 }
-/* the focused row's Debug settings, for the side panel: looked at again when the focus moves or a second passes */
-static void debug_focus_update(App* app) {
+/* the focused row's Debug settings and the file it plays from when that is not there, for the side panel: looked at
+   again when the focus moves or a second passes */
+static void side_focus_update(App* app) {
     bool recent;
     const char* path = games_focused_path(app, &recent);
     if (path && app->debug_path && !strcmp(path, app->debug_path) && now_ms(app) - app->debug_checked < 1000) return;
@@ -17828,6 +18076,7 @@ static void debug_focus_update(App* app) {
     app->debug_path = path ? snx_strdup(path) : NULL;
     app->debug_checked = now_ms(app);
     game_debug(app, path, 1, app->debug_focus, sizeof app->debug_focus);
+    gui_game_source_missing(path, app->missing_focus, sizeof app->missing_focus);
 }
 static int aot_focus_game(App* app, AotFocus* f) {
     size_t row = app->browser.selected, head = app->browser.head;
@@ -18701,10 +18950,14 @@ static size_t titles_unknown(const App* app) {
     }
     return unknown;
 }
+/* gui_games_group's removed: a game the player took off Games (Remove from Games) */
+static bool removed_listed(const char* path, const void* user) {
+    return removed_has(((const GamesMade*)user)->app, path);
+}
 /* the Games list: recompiled/, dumps/ (with its subfolders) and the Library's folders, every kind, in two groups: the
    games ready to run, then the dumps not made already, which Dumps off leaves out; each by what it is shown as in each
-   folder, or with Sort's Last opened the game that last ran first. The first folder that cannot be read is named, the
-   others still listed */
+   folder, or with Sort's Last opened the game that last ran first; a game taken off Games (removed.txt) left out. The
+   first folder that cannot be read is named, the others still listed */
 static void games_scan(App* app, GuiGames* games, char* message, size_t size) {
     int kinds = GUI_GAMES_RUN | GUI_GAMES_CIA | GUI_GAMES_DUMP, i; /* the old games/'s: it held both */
     char error[sizeof app->message];
@@ -18745,6 +18998,7 @@ static void games_scan(App* app, GuiGames* games, char* message, size_t size) {
     groups.addons = snx_tr("Updates and DLCs");
     groups.made = made_dump;
     groups.titled = dump_titled;
+    groups.removed = removed_listed;
     groups.user = &made;
     if (!gui_games_group(games, &groups) && !message[0])
         snprintf(message, size, "%s", snx_tr("Not enough memory to list the games in their groups."));
@@ -18887,7 +19141,8 @@ static void watch_stop(App* app) {
     *w = (GuiWatch){0};
 }
 static void list_games(App* app) {
-    icons_free(app); /* a game made since has one now */
+    icons_free(app);    /* a game made since has one now */
+    removed_prune(app); /* a game taken off whose file is back is listed again */
     games_scan(app, &app->games, app->message, sizeof app->message);
     /* each row's driver, read from its folder once here rather than at each frame that shows its kind */
     free(app->games_drivers);
@@ -18897,8 +19152,12 @@ static void list_games(App* app) {
     app->games_debug = (bool*)snx_alloc((app->games.count + 1) * sizeof *app->games_debug);
     for (size_t i = 0; i < app->games.count; ++i)
         app->games_debug[i] = app->games.paths[i] && game_debug(app, app->games.paths[i], 0, NULL, 0) > 0;
+    free(app->games_missing);
+    app->games_missing = (bool*)snx_alloc((app->games.count + 1) * sizeof *app->games_missing);
+    for (size_t i = 0; i < app->games.count; ++i)
+        app->games_missing[i] = app->games.paths[i] && gui_game_source_missing(app->games.paths[i], NULL, 0);
     recent_as_games(app); /* a recent dump made since, by any run, shows as its game */
-    recent_debug_read(app);
+    recent_rows_read(app);
     app->debug_checked = 0; /* and the focused row's, at the next draw */
     app->games_fresh = true;
     watch_set(app);
@@ -19176,9 +19435,9 @@ static const char* choice_text(App* app, int of, int i, char* out, size_t size) 
         }
     }
 }
-/* Choices' row: the choice's text, drawn with the theme's marker, a setup's notice's or old files' choice with its
-   icon; the row between the setup's two groups a label, no box. Delete All and its question's Delete, which have no
-   way back, in the failure colour */
+/* Choices' row: the choice's text, drawn with the theme's marker, a setup's notice's or old files' choice and a missing
+   game's box's with its icon; the row between the setup's two groups a label, no box. Each in the look its tone gives
+   (ask_tones, setup_tone, pick_tone) */
 bool ui_choices_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
     (void)width; /* a choice too long for its row is cut, or slides while focused, as the menu's rows (row_text_in) */
     info->label = row < 64 ? choice_text(app, app->choices_of, (int)row, app->row_text, sizeof app->row_text) : NULL;
@@ -19190,7 +19449,10 @@ bool ui_choices_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* in
     }
     if (app->choices_of == GUI_CHOICES_ASK && row == (size_t)GUI_CONFIRM_ABORT)
         info->attr |= ask_tones[app->confirm.ask];
-    if (app->choices_of == GUI_CHOICES_PICKS && info->label) info->attr |= pick_tone(app, (int)row);
+    if (app->choices_of == GUI_CHOICES_PICKS && info->label) {
+        info->attr |= pick_tone(app, (int)row);
+        info->icon = pick_icon(app, (int)row);
+    }
     return info->label != NULL;
 }
 /* a choice under the pointer takes the focus, and a click takes it: the question's pressed, UI scale's size or the
@@ -19684,6 +19946,72 @@ static void pointer(App* app, float window_x, float window_y, bool click, bool t
         screen_pointer(app, x, y, click, touch);
 }
 /* the file the system's picker chose, as a dropped one; none (cancelled) stays on the screen and says so */
+/* Locate...'s answer: uri picked (NULL for none), or error when the picker could not open. A file of the kind the
+   game played from (missing_kind) is what it plays from from then on, source= in its .ini: Games lists it again
+   where it was, its row no longer saying the file is not found. Anything else is refused, said with the file it
+   keeps */
+static void missing_located(App* app, const char* uri, const char* error, bool failed) {
+    char *program = app->missing_picking, *path = NULL, *folder = NULL, *name = NULL, *shown, *ini = NULL, *was;
+    int recorded = 0;
+    MissingKind kind;
+    bool fits;
+    app->missing_picking = NULL;
+    if (!program) return;
+    game_where(program, &folder, &name);
+    was = snx_game_source(folder, name, &recorded);
+    kind = missing_kind(program, was);
+    shown = gui_game_shown(program);
+    if (failed) {
+        snprintf(app->message, sizeof app->message,
+                 kind == MISSING_FOLDER ? snx_tr("Locate...: the folder picker could not open: %s")
+                                        : snx_tr("Locate...: the file picker could not open: %s"),
+                 error ? error : snx_tr("no reason given"));
+        say_failure(app, app->message);
+        goto done;
+    }
+    if (!uri) {
+        snprintf(app->message, sizeof app->message, "%s",
+                 kind == MISSING_FOLDER ? snx_tr("Locate...: no folder was picked.")
+                                        : snx_tr("Locate...: no file was picked."));
+        goto done;
+    }
+    path = gui_document_path(uri);
+#ifdef SDL_PLATFORM_ANDROID
+    if (!path && kind != MISSING_FOLDER) path = gui_android_document_file(uri); /* a download, by its number */
+#endif
+    if (!path) {
+        snprintf(app->message, sizeof app->message, snx_tr(SAY_PICK_UNREAD), uri);
+        goto done;
+    }
+    fits = kind == MISSING_FOLDER ? snx_extracted_game(path) != 0
+           : kind == MISSING_ROM  ? snx_is_file(path) && gui_is_gba(path)
+                                  : snx_is_file(path) && missing_kind(program, path) == MISSING_DUMP;
+    if (!fits) {
+        snprintf(app->message, sizeof app->message,
+                 kind == MISSING_FOLDER ? snx_tr("%s is no extracted game (exefs/ with its main): %s keeps %s")
+                 : kind == MISSING_ROM  ? snx_tr("%s is no GBA ROM (.gba): %s keeps %s")
+                                        : snx_tr("%s is no NSP or XCI: %s keeps %s"),
+                 path, shown ? shown : name, was ? was : "?");
+        goto done;
+    }
+    /* where each driver reads it: the Switch's from the game's .ini, the GBA's from the one in its folder */
+    ini = kind == MISSING_ROM ? snx_format("%s/%s.ini", folder, name) : snx_game_ini(folder, name);
+    if (!ini || snx_ini_record(ini, "source", path)) {
+        snprintf(app->message, sizeof app->message, snx_tr("Not kept: %s could not be written"), ini ? ini : folder);
+        say_failure(app, app->message);
+        goto done;
+    }
+    if (app->menu.view == GUI_LOAD_GAMES) games_relist(app);
+    snprintf(app->message, sizeof app->message, snx_tr("%s plays from %s now."), shown ? shown : name, path);
+done:
+    free(ini);
+    free(shown);
+    free(was);
+    free(path);
+    free(name);
+    free(folder);
+    free(program);
+}
 static void picked(App* app, const char* uri) {
     char* path;
     if (uri && app->menu.view == GUI_LOAD_KEYS && strstr(uri, "://") && strncmp(uri, "file://", 7)) {
@@ -20125,10 +20453,11 @@ static void event_take(App* app, const SDL_Event* e) {
         return; /* SDL3 owns the event's data, unlike SDL2. */
     }
 #ifdef SDL_PLATFORM_APPLE
-    /* a picker's answer, any of the four, in the launcher log (debug_log): what came back, or SDL's error */
+    /* a picker's answer, any of the five, in the launcher log (debug_log): what came back, or SDL's error */
     if (e->type >= SDL_EVENT_USER &&
         ((app->addon_picked && e->type == app->addon_picked) || (app->driver_picked && e->type == app->driver_picked) ||
-         (app->picked_folder && e->type == app->picked_folder) || (app->picked && e->type == app->picked)) &&
+         (app->picked_folder && e->type == app->picked_folder) || (app->picked && e->type == app->picked) ||
+         (app->missing_picked && e->type == app->missing_picked)) &&
         debug_log(app)) {
         char shown[SNX_PATH_SIZE];
         snx_home_short(e->user.data1 ? (const char*)e->user.data1 : "none", shown, sizeof shown);
@@ -20151,6 +20480,13 @@ static void event_take(App* app, const SDL_Event* e) {
     /* Download Driver's threads: a repository's releases, a download's progress and its end */
     if (app->fetch_event && e->type == app->fetch_event) {
         fetch_answer(app, e->user.code, e->user.data1);
+        return;
+    }
+    /* Locate...'s picker's answer: the file a game plays from, none, or why it could not open */
+    if (app->missing_picked && e->type == app->missing_picked) {
+        missing_located(app, (const char*)e->user.data1, (const char*)e->user.data2, e->user.code != 0);
+        SDL_free(e->user.data1);
+        SDL_free(e->user.data2);
         return;
     }
     /* Add Driver's picker's answer: a zip, none, or why it could not open */
@@ -20609,6 +20945,11 @@ static void forget(App* app) {
     free(app->keys_path);
     free(app->keys3_path);
     free(app->recent_file);
+    snx_free_strings(app->removed, app->removed_count);
+    free(app->removed_file);
+    free(app->missing_game);
+    free(app->missing_file);
+    free(app->missing_picking);
     if (app->run_out) fclose(app->run_out);
     free(app->run_log);
     gui_process_destroy(app->job_process); /* the queue's recompile ends with the menu */
@@ -20618,6 +20959,7 @@ static void forget(App* app) {
     gui_games_free(&app->games);
     free(app->games_drivers);
     free(app->games_debug);
+    free(app->games_missing);
     free(app->debug_path);
     addons_close(app);
     states_close(app);
@@ -20657,6 +20999,7 @@ static void open_files(App* app) {
     if (prefs && !app->look_only) gui_log_folder(prefs);
 #endif
     if (prefs) recent_open(app, snx_path_join(prefs, "recent.txt"));
+    if (prefs) removed_open(app, snx_path_join(prefs, "removed.txt"));
     app->settings_file = settings_path(config);
     free(app->config_dir);
     app->config_dir = config ? snx_strdup(config) : NULL;

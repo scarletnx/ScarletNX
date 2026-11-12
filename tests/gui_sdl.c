@@ -4932,6 +4932,231 @@ static void fake_probe(int argc, char** argv) {
     free(runs);
     free(card);
 }
+/* Locate...'s picker as the test's display has it (none): the box that says it could not open, which Back closes, or
+   none where it answered no file; then the answer the test gives for the game whose program is program, path, as a
+   picker would give it */
+static void locate_answer(App* app, const char* program, const char* path) {
+    SDL_Event e;
+    if (app->confirm.shown) {
+        assert(app->confirm.ask == GUI_ASK_ERROR &&
+               strstr(app->error_line, "Locate...: the file picker could not open: "));
+        key(app, SDLK_ESCAPE);
+    }
+    assert(app->missing_picked && !app->confirm.shown);
+    free(app->missing_picking);
+    app->missing_picking = snx_strdup(program);
+    SDL_zero(e);
+    e.type = app->missing_picked;
+    e.user.data1 = SDL_strdup(path);
+    event(app, &e);
+    assert(!app->missing_picking);
+}
+/* Games' row of the game named name, the list's count when it lists none */
+static size_t listed_at(const App* app, const char* name) {
+    size_t i = 0;
+    while (i < app->games.count && !(app->games.names[i] && !strcmp(app->games.names[i], name))) ++i;
+    return i;
+}
+/* the box a game whose file to play from is not there opens, over Games: the file whole in its question, Keep in
+   focus, then Locate... and Remove from Games, which wants care, each after its icon; nothing runs or compiles */
+static void missing_box(App* app, const char* file) {
+    char question[GUI_PICKS_QUESTION], *want = snx_format("Not found: %s", file);
+    const char* tab;
+    static const unsigned icons[] = {GUI_ICON_CHECK, GUI_ICON_FOLDER_OPEN, GUI_ICON_X};
+    assert(app->picks_shown && app->picks_of == GUI_PICKS_MISSING && app->picks.count == 3 && !app->picks.focus);
+    assert(!app->menu.running && gui_queue_running(&app->queue) < 0 && !app->confirm.shown);
+    picks_question(app, question, sizeof question, &tab);
+    assert(!strcmp(question, want) && !strcmp(tab, "Game"));
+    assert(!strcmp(pick_label(app, 0), "Keep") && !strcmp(pick_label(app, 1), "Locate...") &&
+           !strcmp(pick_label(app, 2), "Remove from Games") && !pick_label(app, 3));
+    render(app);
+    shows(app, "Keep", yellow);
+    shows(app, "Locate...", normal);
+    for (size_t row = 0; row < 3; ++row) {
+        UiRowInfo info = {0};
+        assert(app->choices_of == GUI_CHOICES_PICKS && ui_choices_rows_get_row_info(app, row, 0, &info));
+        assert(info.icon == icons[row] && !(info.attr & UI_ATTR_DANGER));
+        assert(!!(info.attr & UI_ATTR_CAUTION) == (row == 2));
+    }
+    free(want);
+}
+/* A made game whose file to play from is not there (a Switch game read in place from its dump, the dump moved): its
+   row and its recent row say "file not found", the side box names the file, and opening it, played or recompiled, asks
+   first in a box of its own (missing_box). Keep and Back leave it as it is; Locate... refuses a file of another kind,
+   said with the file the game keeps, and takes a dump, which its .ini names from then on: its row says nothing more and
+   Enter plays it. Remove from Games takes it off Games and its recent rows, its folder kept, removed.txt naming it for
+   the next start, until its dump is back; a removed.txt that cannot be written is said. A made game that plays from
+   its extraction asks nothing */
+static void missing_file(App* app, const char* dir) {
+    char *dump = snx_path_join(dir, "lost game.nsp"), *moved_dir = snx_path_join(dir, "moved");
+    char *moved = snx_path_join(moved_dir, "lost game.nsp"), *notes = snx_path_join(dir, "notes.txt");
+    char *got = snx_path_join(dir, "missing argv"), *kept = snx_path_join(dir, "removed.txt");
+    char *unwritable = snx_path_join(notes, "removed.txt"), *folder = made_game(app, dump, "lost game");
+    char *extracted = made_game(app, dump, "extracted game"), *source, *argv_got, *text, *want;
+    size_t size = 0;
+    int recorded = 0;
+#ifdef _WIN32
+    char* program = snx_path_join(folder, "lost game.exe");
+#else
+    char* program = snx_path_join(folder, "lost game");
+#endif
+    {
+        char* exefs = snx_path_join(extracted, "extracted game_data/exefs");
+        assert(!snx_mkdirs(exefs)); /* its ExeFS extracted: it plays without its dump */
+        free(exefs);
+    }
+    assert(!snx_write_file(notes, "notes", 5) && !snx_mkdirs(moved_dir));
+    assert(gui_settings_set(&app->settings, "fullscreen", "1")); /* as finish() reads a run's */
+    recent_open(app, snx_format("%s-missing-recent.txt", app->games_dir));
+    removed_open(app, snx_strdup(kept));
+    assert(!gui_recent_add(&app->recent, program, GUI_SWITCH, 1));
+    recent_changed(app);
+    app->theme = *gui_theme_builtin("default");
+    app->side_box = GUI_SIDE_AUTO;
+    go_tab(app, GUI_TAB_GAMES);
+    focus_game(app, "lost game");
+    assert(app->games_missing[listed_at(app, "lost game")] && !app->games_missing[listed_at(app, "extracted game")]);
+    assert(recent_shown(app) == 1 && app->recent_missing[0]);
+    render(app);
+    assert(!strcmp(app->missing_focus, dump));
+    { /* its row and its recent row (the first under Recent Games) say so, greyed */
+        UiRowInfo info = {0};
+        assert(ui_games_rows_get_row_info(app, games_focus_row(app), 0, &info) && (info.attr & UI_ATTR_OFF) &&
+               !strcmp(info.label, "lost game  (file not found)"));
+        info = (UiRowInfo){0};
+        assert(ui_games_rows_get_row_info(app, 1, 0, &info) && (info.attr & UI_ATTR_OFF) &&
+               !strcmp(info.label, "lost game  (file not found)"));
+        info = (UiRowInfo){0};
+        focus_game(app, "extracted game");
+        assert(ui_games_rows_get_row_info(app, games_focus_row(app), 0, &info) && !(info.attr & UI_ATTR_OFF) &&
+               !strcmp(info.label, "extracted game"));
+        focus_game(app, "lost game");
+        render(app);
+    }
+    shows(app, "lost game  (file", rgb(app->theme.soft)); /* in focus, its frame round it, cut as a long name is */
+    shows(app, "Not found: ", red);                       /* the side box, the file after it */
+    /* Enter: the box; Keep and Back leave it as it is */
+    key(app, SDLK_RETURN);
+    missing_box(app, dump);
+    key(app, SDLK_RETURN);
+    assert(!app->picks_shown && !app->menu.running && !app->missing_game && !app->removed_count);
+    key(app, SDLK_RETURN);
+    missing_box(app, dump);
+    key(app, SDLK_ESCAPE);
+    assert(!app->picks_shown && !app->menu.running && !app->missing_game && app->menu.view == GUI_LOAD_GAMES);
+    /* R and the recent row ask too */
+    key(app, SDLK_R);
+    missing_box(app, dump);
+    key(app, SDLK_ESCAPE);
+    assert(!app->queue.count);
+    app->browser.selected = 0;
+    key(app, SDLK_RETURN);
+    missing_box(app, dump);
+    key(app, SDLK_ESCAPE);
+    /* the game whose ExeFS is extracted plays */
+    driver_will(got, 0, "ScarletNX - extracted game");
+    focus_game(app, "extracted game");
+    key(app, SDLK_RETURN);
+    assert(!app->picks_shown && app->menu.running);
+    argv_got = ran(app, 0); /* back on the menu */
+    free(argv_got);
+    /* Locate...: a file of another kind refused, the dump it keeps said; a dump taken, its row saying nothing more */
+    go_tab(app, GUI_TAB_GAMES);
+    focus_game(app, "lost game");
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(!app->picks_shown && !app->missing_game && !app->menu.running);
+    locate_answer(app, program, notes);
+    want = snx_format("%s is no NSP or XCI: lost game keeps %s", notes, dump);
+    assert(!strcmp(app->message, want));
+    free(want);
+    source = snx_game_source(folder, "lost game", &recorded);
+    assert(recorded && !strcmp(source, dump));
+    free(source);
+    assert(!snx_write_file(moved, "dump", 4));
+    focus_game(app, "lost game");
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    locate_answer(app, program, moved);
+    want = snx_format("lost game plays from %s now.", moved);
+    assert(!strcmp(app->message, want));
+    free(want);
+    source = snx_game_source(folder, "lost game", &recorded);
+    assert(recorded && !strcmp(source, moved));
+    free(source);
+    assert(!app->games_missing[listed_at(app, "lost game")]);
+    for (int i = 0; i < recent_shown(app); ++i) assert(!app->recent_missing[i]);
+    focus_game(app, "lost game");
+    render(app);
+    shows(app, "lost game", yellow);
+    hides(app, "(file not", rgb(app->theme.soft));
+    hides(app, "Not found: ", red);
+    key(app, SDLK_RETURN);
+    assert(!app->picks_shown && app->menu.running);
+    argv_got = ran(app, 0);
+    assert(strstr(argv_got, folder));
+    free(argv_got);
+    driver_will(NULL, 0, NULL);
+    /* the dump gone again: Remove from Games, with removed.txt where it cannot be written, said whole; the game off
+       Games and its recent rows all the same */
+    assert(!remove(moved));
+    go_tab(app, GUI_TAB_GAMES);
+    focus_game(app, "lost game");
+    assert(app->games_missing[listed_at(app, "lost game")] && !app->removed_count);
+    free(app->removed_file);
+    app->removed_file = snx_strdup(unwritable);
+    key(app, SDLK_RETURN);
+    missing_box(app, moved);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR);
+    want = snx_format("Removed games not kept: %s could not be written (", unwritable);
+    assert(!strncmp(app->error_line, want, strlen(want)));
+    free(want);
+    key(app, SDLK_ESCAPE);
+    assert(app->removed_count == 1 && removed_has(app, program) && listed_at(app, "lost game") == app->games.count);
+    for (int i = 0; i < app->recent.count; ++i) assert(strcmp(app->recent.game[i].path, program));
+    want =
+        snx_format("lost game is off Games: %s is not found. Its folder %s stays, and Games lists it again once that "
+                   "file is back.",
+                   moved, folder);
+    assert(!strcmp(app->message, want));
+    free(want);
+    assert(snx_is_file(program)); /* the game, kept */
+    /* kept for the next start: removed.txt names it, and Games still leaves it out */
+    free(app->removed_file);
+    app->removed_file = snx_strdup(kept);
+    assert(!removed_save(app));
+    text = (char*)snx_read_file(kept, &size);
+    want = snx_format("%s\n", program);
+    assert(text && !strcmp(text, want));
+    free(want);
+    free(text);
+    removed_open(app, snx_strdup(kept));
+    assert(app->removed_count == 1);
+    list_games(app);
+    assert(listed_at(app, "lost game") == app->games.count);
+    /* its dump back: listed again, its line gone */
+    assert(!snx_write_file(moved, "dump", 4));
+    list_games(app);
+    assert(listed_at(app, "lost game") < app->games.count && !app->removed_count && !snx_path_exists(kept));
+    assert(!app->games_missing[listed_at(app, "lost game")]);
+    removed_open(app, NULL);
+    made_gone(app, extracted);
+    made_gone(app, folder);
+    assert(!snx_remove_tree(moved_dir) && !remove(notes));
+    free(program);
+    free(unwritable);
+    free(kept);
+    free(got);
+    free(notes);
+    free(moved);
+    free(moved_dir);
+    free(dump);
+}
 int main(int argc, char** argv) {
 #ifdef _WIN32
     snx_test_crash_said();
@@ -15878,6 +16103,7 @@ int main(int argc, char** argv) {
     compile_first(&app, temporary);
     dump_addons(&app, temporary);
     relist_keeps_scroll(&app, temporary);
+    missing_file(&app, temporary);
     recompile_queue(&app);
 #ifdef SNX_XDG /* the last of the test: SDL keeps the picker it found from then on */
     pickers_asked(&app, temporary, self);

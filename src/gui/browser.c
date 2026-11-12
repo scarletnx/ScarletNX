@@ -294,6 +294,27 @@ char* gui_game_shown(const char* path) {
     free(folder);
     return shown;
 }
+bool gui_game_source_missing(const char* path, char* out, size_t size) {
+    char *folder, *name, *source = NULL, exefs[SNX_PATH_SIZE], link[SNX_PATH_SIZE];
+    int recorded = 0;
+    bool missing = false;
+    SnxSystem system;
+    if (out && size) out[0] = 0;
+    if (!gui_game_program(path) || !(folder = snx_dirname(path))) return false;
+    name = snx_strdup(snx_path_leaf(folder));
+    system = snx_game_system(folder, name);
+    if (system == SNX_SYSTEM_SWITCH || system == SNX_SYSTEM_GBA) source = snx_game_source(folder, name, &recorded);
+    /* an older version's <name>.source link names its dump only by where it points, which the launcher cannot read */
+    if (source && recorded && !snx_path_format(link, sizeof link, "%s/%s.source", folder, name) &&
+        strcmp(source, link) && !snx_is_file(source) && !snx_extracted_game(source))
+        missing = system == SNX_SYSTEM_GBA ||
+                  (!snx_path_format(exefs, sizeof exefs, "%s/%s_data/exefs", folder, name) && !snx_is_dir(exefs));
+    if (missing && out && size) snprintf(out, size, "%s", source);
+    free(source);
+    free(name);
+    free(folder);
+    return missing;
+}
 char* gui_game_icon(const char* path) {
     char *folder, icon[SNX_PATH_SIZE], *found = NULL;
     const char* leaf;
@@ -837,7 +858,10 @@ bool gui_games_group(GuiGames* games, const GuiGroups* groups) {
             e->group = -1;
             continue;
         }
-        if (e->file == SIZE_MAX && !gui_games_dumps_group(games, e->row)) continue; /* ready: 0 */
+        if (e->file == SIZE_MAX && !gui_games_dumps_group(games, e->row)) { /* ready: 0 */
+            if (groups->removed && groups->removed(path, groups->user)) e->group = -1;
+            continue;
+        }
         e->group = !groups->dumps || (groups->made && groups->made(path, groups->user)) ? -1 : 1;
         if (e->group < 0 || !gui_is_dump(snx_path_leaf(path)) || !groups->titled ||
             !groups->titled(path, groups->user, &e->title)) {
