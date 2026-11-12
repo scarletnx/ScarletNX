@@ -7,6 +7,7 @@
 #include "gui/aot.h"
 #include "common/utilities/mods.h"
 #include "common/utilities/game_ini.h"
+#include "common/utilities/ini_lines.h"
 #include "gui/i18n.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -57,14 +58,25 @@ bool gui_game_folder(const char* path) {
     free(folder);
     return found;
 }
+static void sets_free(GuiAddonDumps* sets, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        free(sets[i].name);
+        free(sets[i].program);
+        free(sets[i].dump);
+        snx_free_strings(sets[i].files, sets[i].count + sets[i].left);
+    }
+    free(sets);
+}
 void gui_games_free(GuiGames* games) {
     snx_free_strings(games->names, games->count);
     snx_free_strings(games->shown, games->count);
     snx_free_strings(games->paths, games->count);
     free(games->addons);
+    sets_free(games->sets, games->set_count);
     games->names = games->shown = games->paths = NULL;
     games->addons = NULL;
-    games->count = games->room = 0;
+    games->sets = NULL;
+    games->count = games->room = games->set_count = 0;
 }
 uint64_t gui_tree_size(const char* path, const int* stop) {
     char** names = NULL;
@@ -620,57 +632,236 @@ bool gui_games_dumps_group(const GuiGames* games, size_t i) {
     return gui_is_dump(games->names[i]) || gui_is_cia(games->names[i]) || gui_is_vpk(games->names[i]) ||
            gui_is_gba(games->names[i]) || gui_is_apk(games->names[i]);
 }
-bool gui_games_group(GuiGames* games, const char* ready, const char* dumps,
-                     bool (*made)(const char* path, const void* user), const void* user) {
-    size_t room = games->count + 2, n = 0, i, in[2] = {0, 0};
-    char* heading[2][2] = {{NULL, NULL}, {NULL, NULL}}; /* each group's name and text */
-    GuiGames out;
+bool gui_dump_title(const char* path, GuiDumpTitle* title) {
+    size_t size = 0;
+    char *text = path ? (char*)snx_read_file(path, &size) : NULL, *key, *value, *end;
+    SnxIni ini;
+    bool own = false, of = false;
+    memset(title, 0, sizeof *title);
+    title->version = SNX_NO_VERSION;
+    if (!text) return false;
+    snx_ini_start(&ini, text);
+    while (snx_ini_next(&ini, &key, &value))
+        if (!strcmp(key, "title"))
+            own = snx_title_parse(value, &title->title) != 0;
+        else if (!strcmp(key, "game"))
+            of = snx_title_parse(value, &title->game) != 0;
+        else if (!strcmp(key, "version") && *value >= '0' && *value <= '9') {
+            unsigned long long version = strtoull(value, &end, 10);
+            title->version = *end ? SNX_NO_VERSION : (uint64_t)version;
+        } else if (!strcmp(key, "name"))
+            snprintf(title->name, sizeof title->name, "%s", value);
+        else if (!strcmp(key, "display_version"))
+            snprintf(title->display, sizeof title->display, "%s", value);
+    free(text);
+    return own && of;
+}
+const GuiAddonDumps* gui_games_addon_set(const GuiGames* games, size_t i) {
+    if (i >= games->count || !games->paths[i]) return NULL;
+    for (size_t k = 0; k < games->set_count; ++k)
+        if (!strcmp(games->sets[k].files[0], games->paths[i])) return &games->sets[k];
+    return NULL;
+}
+/* an update's version a is newer than b's: one without any is older than every other */
+static bool newer(uint64_t a, uint64_t b) { return a != SNX_NO_VERSION && (b == SNX_NO_VERSION || a > b); }
+/* what an Updates and DLCs item is shown as: its game's name, its update's version and how many DLCs. Owned */
+static char* set_text(const GuiAddonDumps* set) {
+    size_t dlcs = set->count - set->update;
+    if (set->update && dlcs == 1) return snx_format(snx_tr("%s: update %s + 1 DLC"), set->name, set->version);
+    if (set->update && dlcs) return snx_format(snx_tr("%s: update %s + %zu DLCs"), set->name, set->version, dlcs);
+    if (set->update) return snx_format(snx_tr("%s: update %s"), set->name, set->version);
+    return dlcs == 1 ? snx_format(snx_tr("%s: 1 DLC"), set->name) : snx_format(snx_tr("%s: %zu DLCs"), set->name, dlcs);
+}
+/* whether the program at path is the game id's own, <id>/<id> as Games lists it */
+static bool program_of(const char* path, const char* id) {
+    char* folder = gui_game_folder(path) ? snx_dirname(path) : NULL;
+    bool own = folder && !strcmp(snx_path_leaf(folder), id);
+    free(folder);
+    return own;
+}
+/* An entry gui_games_group groups: a row of the list, or a dump of an item the list holds already (an earlier
+   grouping's), file its index in the item's files */
+typedef struct {
+    size_t row, file;   /* file: SIZE_MAX for the row itself */
+    int group;          /* 0 ready, 1 a dump, 2 an update's or a DLC's, -1 left out */
+    size_t set;         /* an update's or a DLC's item, in sets */
+    GuiDumpTitle title; /* a dump's, when titled knows it: title 0 else */
+} GroupEntry;
+static const char* entry_path(const GuiGames* games, const GroupEntry* e) {
+    const GuiAddonDumps* set = gui_games_addon_set(games, e->row);
+    return e->file == SIZE_MAX ? games->paths[e->row] : set->files[e->file];
+}
+/* the items' dumps, each set's: the newest update's first, then each DLC's by its title ID, a second dump of one left
+   out; the game they go in (its program among the ready games) or with (its dump among the dumps); its name and its
+   update's version */
+static void sets_fill(const GuiGames* games, GroupEntry* entries, size_t count, GuiAddonDumps* sets, size_t set_count) {
+    for (size_t k = 0; k < set_count; ++k) {
+        GuiAddonDumps* set = &sets[k];
+        size_t i, members = 0, update = count;
+        char id[17];
+        const char* named = NULL;
+        uint64_t last = 0;
+        snx_title_text(set->game, id);
+        for (i = 0; i < count; ++i)
+            if (entries[i].group == 2 && entries[i].set == k) {
+                members++;
+                if (snx_addon_kind(set->game, entries[i].title.title) == SNX_ADDON_UPDATE &&
+                    (update == count || newer(entries[i].title.version, entries[update].title.version)))
+                    update = i;
+            }
+        set->files = (char**)snx_alloc(members * sizeof *set->files);
+        if (update < count) {
+            const GuiDumpTitle* t = &entries[update].title;
+            set->files[set->count++] = snx_strdup(entry_path(games, &entries[update]));
+            set->update = true;
+            if (t->display[0])
+                snprintf(set->version, sizeof set->version, "%s", t->display);
+            else if (t->version != SNX_NO_VERSION)
+                snprintf(set->version, sizeof set->version, "v%llu", (unsigned long long)t->version);
+            else
+                snprintf(set->version, sizeof set->version, "?");
+            if (t->name[0]) named = t->name;
+        }
+        for (;;) {
+            size_t take = count;
+            for (i = 0; i < count; ++i)
+                if (entries[i].group == 2 && entries[i].set == k &&
+                    snx_addon_kind(set->game, entries[i].title.title) == SNX_ADDON_DLC &&
+                    entries[i].title.title > last &&
+                    (take == count || entries[i].title.title < entries[take].title.title))
+                    take = i;
+            if (take == count) break;
+            set->files[set->count++] = snx_strdup(entry_path(games, &entries[take]));
+            last = entries[take].title.title;
+        }
+        for (i = 0; i < count; ++i) { /* the others, kept to be grouped again */
+            const char* path = entry_path(games, &entries[i]);
+            bool in = false;
+            if (entries[i].group != 2 || entries[i].set != k) continue;
+            for (size_t f = 0; f < set->count && !in; ++f) in = !strcmp(set->files[f], path);
+            if (!in) set->files[set->count + set->left++] = snx_strdup(path);
+        }
+        for (i = 0; i < count && !set->program; ++i)
+            if (entries[i].group == 0 && entries[i].file == SIZE_MAX && program_of(games->paths[entries[i].row], id))
+                set->program = snx_strdup(games->paths[entries[i].row]);
+        for (i = 0; i < count && !set->program && !set->dump; ++i)
+            if (entries[i].group == 1 && entries[i].title.title == set->game && entries[i].title.game == set->game) {
+                set->dump = snx_strdup(entry_path(games, &entries[i]));
+                if (!named && entries[i].title.name[0]) named = entries[i].title.name;
+            }
+        set->name = named ? snx_strdup(named) : set->program ? gui_game_shown(set->program) : snx_strdup(id);
+    }
+}
+bool gui_games_group(GuiGames* games, const GuiGroups* groups) {
+    const char* texts[3] = {groups->ready, groups->dumps, groups->addons};
+    size_t count = 0, room, n = 0, i, k, set_count = 0, in[3] = {0, 0, 0}, filled = 0;
+    GroupEntry* entries;
+    GuiAddonDumps* sets;
+    char** shown;
+    GuiGames out = {0};
     int group;
-    bool ok;
-    for (i = 0; i < games->count; ++i) /* no dumps' heading: none of the second group counted, so none moved */
-        if (games->paths[i] && !(gui_games_dumps_group(games, i) && (!dumps || (made && made(games->paths[i], user)))))
-            in[gui_games_dumps_group(games, i)]++;
-    memset(&out, 0, sizeof out);
+    /* an item's dumps are entries of their own again, and its row the first's */
+    for (i = 0; i < games->count; ++i) {
+        const GuiAddonDumps* set = gui_games_addon_set(games, i);
+        count += set ? set->count + set->left : 1;
+    }
+    entries = (GroupEntry*)calloc(count + 1, sizeof *entries);
+    sets = (GuiAddonDumps*)calloc(count + 1, sizeof *sets);
+    shown = (char**)calloc(count + 1, sizeof *shown);
+    if (!entries || !sets || !shown) {
+        free(entries);
+        free(sets);
+        free(shown);
+        return false;
+    }
+    for (i = 0; i < games->count; ++i) {
+        const GuiAddonDumps* set = gui_games_addon_set(games, i);
+        for (k = 0; k < (set ? set->count + set->left : 1); ++k) {
+            entries[filled].row = i;
+            entries[filled++].file = set ? k : SIZE_MAX;
+        }
+    }
+    for (i = 0; i < count; ++i) {
+        GroupEntry* e = &entries[i];
+        const char* path = entry_path(games, e);
+        int kind;
+        if (!path) { /* an earlier heading goes */
+            e->group = -1;
+            continue;
+        }
+        if (e->file == SIZE_MAX && !gui_games_dumps_group(games, e->row)) continue; /* ready: 0 */
+        e->group = !groups->dumps || (groups->made && groups->made(path, groups->user)) ? -1 : 1;
+        if (e->group < 0 || !gui_is_dump(snx_path_leaf(path)) || !groups->titled ||
+            !groups->titled(path, groups->user, &e->title)) {
+            memset(&e->title, 0, sizeof e->title);
+            continue;
+        }
+        kind = snx_addon_kind(e->title.game, e->title.title);
+        if (kind != SNX_ADDON_UPDATE && kind != SNX_ADDON_DLC) continue;
+        e->group = 2;
+        for (k = 0; k < set_count && sets[k].game != e->title.game; ++k) {}
+        if (k == set_count) sets[set_count++].game = e->title.game;
+        e->set = k;
+    }
+    sets_fill(games, entries, count, sets, set_count);
+    for (k = 0; k < set_count; ++k) { /* by what each is shown as */
+        GuiAddonDumps item = sets[k];
+        char* text = set_text(&item);
+        for (i = k; i > 0 && before(text, shown[i - 1]); --i) {
+            sets[i] = sets[i - 1];
+            shown[i] = shown[i - 1];
+        }
+        sets[i] = item;
+        shown[i] = text;
+    }
+    for (i = 0; i < count; ++i)
+        if (entries[i].group == 0 || entries[i].group == 1) in[entries[i].group]++;
+    in[2] = set_count;
+    room = count + 4; /* and the headings */
     out.names = (char**)calloc(room, sizeof *out.names);
     out.shown = (char**)calloc(room, sizeof *out.shown);
     out.paths = (char**)calloc(room, sizeof *out.paths);
     out.addons = (size_t*)calloc(room, sizeof *out.addons);
     out.room = room;
-    ok = out.names && out.shown && out.paths && out.addons;
-    for (group = 0; group < 2 && ok; ++group)
-        if (in[0] && in[1]) { /* one group alone has nothing here to be told apart from (Games' lone heading) */
-            heading[group][0] = snx_strdup("");
-            heading[group][1] = snx_strdup(group ? dumps : ready);
-            ok = heading[group][0] && heading[group][1];
-        }
-    if (!ok) { /* nothing moved yet: games stays as it was */
-        for (group = 0; group < 2; ++group) {
-            free(heading[group][0]);
-            free(heading[group][1]);
-        }
+    if (!out.names || !out.shown || !out.paths || !out.addons) { /* games as it was */
         gui_games_free(&out);
+        snx_free_strings(shown, set_count);
+        sets_free(sets, set_count);
+        free(entries);
         return false;
     }
-    for (group = 0; group < 2; ++group) {
+    for (group = 0; group < 3; ++group) {
         if (!in[group]) continue;
-        if (heading[group][1]) {
-            out.names[n] = heading[group][0];
-            out.shown[n++] = heading[group][1];
+        if ((in[0] > 0) + (in[1] > 0) + (in[2] > 0) > 1) { /* one group alone has nothing to be told apart from */
+            out.names[n] = snx_strdup("");
+            out.shown[n] = snx_strdup(texts[group] ? texts[group] : "");
+            out.paths[n] = NULL;
+            out.addons[n++] = 0;
         }
-        for (i = 0; i < games->count; ++i) {
-            if (!games->paths[i] || (int)gui_games_dumps_group(games, i) != group)
-                continue; /* an earlier heading goes */
-            if (group && made && made(games->paths[i], user)) continue;
-            out.names[n] = games->names[i];
-            out.shown[n] = games->shown[i];
-            out.paths[n] = games->paths[i];
-            out.addons[n++] = games->addons[i];
-            games->names[i] = games->shown[i] = games->paths[i] = NULL; /* moved to out */
+        for (i = 0; group < 2 && i < count; ++i) {
+            const GroupEntry* e = &entries[i];
+            const char* path = entry_path(games, e);
+            if (e->group != group) continue;
+            out.names[n] = snx_strdup(e->file == SIZE_MAX ? games->names[e->row] : snx_path_leaf(path));
+            out.shown[n] = snx_strdup(e->file == SIZE_MAX ? games->shown[e->row] : snx_path_leaf(path));
+            out.paths[n] = snx_strdup(path);
+            out.addons[n++] = e->file == SIZE_MAX ? games->addons[e->row] : 0;
+        }
+        for (k = 0; group == 2 && k < set_count; ++k) {
+            out.names[n] = snx_strdup(snx_path_leaf(sets[k].files[0]));
+            out.shown[n] = shown[k];
+            shown[k] = NULL;
+            out.paths[n] = snx_strdup(sets[k].files[0]);
+            out.addons[n++] = 0;
         }
     }
     out.count = n;
+    out.sets = sets;
+    out.set_count = set_count;
     gui_games_free(games); /* what was left out: dumps made already, earlier headings */
     *games = out;
+    free(shown);
+    free(entries);
     return true;
 }
 char* gui_game_log(const char* path) {

@@ -107,6 +107,31 @@ msgstr "无法打开 %s：%s"
 msgid "Not enough memory to list %s."
 msgstr "内存不足，无法列出 %s。"
 
+#: src/gui/browser.c
+#, c-format
+msgid "%s: update %s + 1 DLC"
+msgstr "%s：更新 %s + 1 个 DLC"
+
+#: src/gui/browser.c
+#, c-format
+msgid "%s: update %s + %zu DLCs"
+msgstr "%s：更新 %s + %zu 个 DLC"
+
+#: src/gui/browser.c
+#, c-format
+msgid "%s: update %s"
+msgstr "%s：更新 %s"
+
+#: src/gui/browser.c
+#, c-format
+msgid "%s: 1 DLC"
+msgstr "%s：1 个 DLC"
+
+#: src/gui/browser.c
+#, c-format
+msgid "%s: %zu DLCs"
+msgstr "%s：%zu 个 DLC"
+
 #: src/gui/clean.c
 #, c-format
 msgid "Not read: %s"
@@ -1422,6 +1447,10 @@ msgid "Select: help."
 msgstr "Select: 帮助."
 
 #: src/gui/main.c
+msgid "Updates and DLCs"
+msgstr "更新和 DLC"
+
+#: src/gui/main.c
 #, c-format
 msgid "%s in queue"
 msgstr "%s 在队列中"
@@ -1591,6 +1620,14 @@ msgstr "重新编译"
 #: src/gui/main.c
 msgid "Clear"
 msgstr ""
+
+#: src/gui/main.c
+msgid "Yes"
+msgstr "是"
+
+#: src/gui/main.c
+msgid "No"
+msgstr "否"
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -2190,6 +2227,26 @@ msgstr "可以运行"
 #, c-format
 msgid ". No icon: %s"
 msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Updates and DLCs of %s, recompiled already: opening this puts them in it"
+msgstr "%s 的更新和 DLC，游戏已重编译：打开此项会将它们装入游戏"
+
+#: src/gui/main.c
+#, c-format
+msgid "Updates and DLCs of %s: opening this recompiles it with them, from its dump %s"
+msgstr "%s 的更新和 DLC：打开此项会用转储 %s 将游戏连同它们一起重编译"
+
+#: src/gui/main.c
+#, c-format
+msgid "Updates and DLCs of %s, which is not recompiled and whose dump is in no dumps folder: they go in with it"
+msgstr "%s 的更新和 DLC，该游戏未重编译，其转储也不在任何转储文件夹中：它们需与游戏一起装入"
+
+#: src/gui/main.c
+#, c-format
+msgid "; %zu other dump(s) of them left out: an older update's, a DLC's second"
+msgstr "；另有 %zu 个转储未采用：较旧的更新，或 DLC 的第二份副本"
 
 #: src/gui/main.c
 #, c-format
@@ -4196,6 +4253,35 @@ msgstr ""
 #, c-format
 msgid "%s is compiled already, in %s"
 msgstr "%s 已编译，位于 %s"
+
+#: src/gui/main.c
+msgid "1 DLC"
+msgstr "1 个 DLC"
+
+#: src/gui/main.c
+#, c-format
+msgid "%zu DLCs"
+msgstr "%zu 个 DLC"
+
+#: src/gui/main.c
+#, c-format
+msgid "Found the update %s and %s of this game. Recompile together?"
+msgstr "找到此游戏的更新 %s 和 %s。一起重编译？"
+
+#: src/gui/main.c
+#, c-format
+msgid "Found the update %s of this game. Recompile together?"
+msgstr "找到此游戏的更新 %s。一起重编译？"
+
+#: src/gui/main.c
+#, c-format
+msgid "Found %s of this game. Recompile together?"
+msgstr "找到此游戏的 %s。一起重编译？"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not recompiled, and its dump is in no dumps folder: put it in one (Settings > App > Folders), then its updates and DLCs go in with it"
+msgstr "%s 未重编译，其转储也不在任何转储文件夹中：请将转储放入其中一个（「设置 > 应用 > 文件夹」），之后其更新和 DLC 会一起装入"
 
 #: src/gui/main.c
 msgid "That path is not a readable file. Try again or press ESC."

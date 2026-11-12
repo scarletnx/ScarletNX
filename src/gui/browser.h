@@ -5,6 +5,30 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+/* What a Switch dump is, as the driver read it from its content meta and control.nacp: title.ini, which its -x --icon
+   job for the launcher writes beside the dump's icon */
+typedef struct {
+    uint64_t title;     /* its own title ID */
+    uint64_t game;      /* the game's it belongs to, its own for a game's dump */
+    uint64_t version;   /* its content meta's version, SNX_NO_VERSION for none */
+    char name[0x200];   /* its control.nacp's name, "" for none (a DLC has none) */
+    char display[0x20]; /* its control.nacp's version ("1.0.1"), "" for none */
+} GuiDumpTitle;
+/* the title.ini at path read into title: true; false for none, or one that names no title and game */
+bool gui_dump_title(const char* path, GuiDumpTitle* title);
+/* The updates and DLCs of one game among the dumps, the item gui_games_group lists for them all */
+typedef struct {
+    uint64_t game; /* its title ID */
+    char* name;    /* what it is called: its update's control.nacp's name, its dump's, its program's, else its ID */
+    char* program; /* the game made already, which they go in: its program as Games lists it; NULL for none */
+    char* dump;    /* else the game's dump among the dumps listed, which they are recompiled with; NULL for none */
+    /* their dumps: count to put in, the newest update's first when update, then each DLC's by its title ID; then the
+       left others, left out (an older update's, a DLC's second copy) */
+    char** files;
+    size_t count, left;
+    bool update;        /* files[0] is an update's */
+    char version[0x20]; /* the update's version as the player reads it: its control.nacp's, else v and its number */
+} GuiAddonDumps;
 typedef struct {
     char** names; /* basenames: a game's folder, or an older version's file */
     char** shown; /* what each is shown as, sorted in each folder: the name in its control.nacp, else names' */
@@ -12,6 +36,9 @@ typedef struct {
     size_t* addons; /* how many updates and DLCs each has beside it (gui_game_addons), and mods (gui_game_mods) */
     size_t count;
     size_t room; /* the entries the lists have room for, one past the last included */
+    /* the Updates and DLCs group's items (gui_games_group), set_count of them: an item's path is its files[0] */
+    GuiAddonDumps* sets;
+    size_t set_count;
 } GuiGames;
 /* what a folder's games are: ready to run (executables; on Android a game's code or a dump), the other consoles'
    packages (3DS CIA and Vita VPK files, GBA ROMs, each opened with its driver), and dumps (NSP, XCI and NRO files),
@@ -23,12 +50,23 @@ bool gui_games_add(GuiGames* games, const char* directory, int kinds, char* erro
 /* and with depth, the games of its other folders too, down that many levels; a hidden folder left alone. The folder's
    own error alone is said */
 bool gui_games_add_deep(GuiGames* games, const char* directory, int kinds, int depth, char* error, size_t size);
-/* games in two groups: those ready to run, then the dumps and CIAs, each in the order it had; when both have games,
-   each under a heading of its own (an entry whose path is NULL, its text shown). One group alone gets none here: Games
-   heads it itself while Recent Games shows rows above it. A dump made already (made says so of its path) is left out,
-   and with dumps NULL every dump and CIA, the ready games alone. False when out of memory, games as they were */
-bool gui_games_group(GuiGames* games, const char* ready, const char* dumps,
-                     bool (*made)(const char* path, const void* user), const void* user);
+/* how gui_games_group groups: each group's heading, and what it asks of the dumps */
+typedef struct {
+    const char *ready, *dumps, *addons;               /* the headings; dumps NULL leaves out every dump and CIA */
+    bool (*made)(const char* path, const void* user); /* a dump made already, or put in its game: NULL for none */
+    /* what the dump at path is (gui_dump_title), when it is known: NULL for none */
+    bool (*titled)(const char* path, const void* user, GuiDumpTitle* title);
+    const void* user;
+} GuiGroups;
+/* games in three groups: those ready to run, the dumps and CIAs, each in the order it had, then the Updates and DLCs,
+   an item a game (GuiAddonDumps) for the update and DLC dumps of it, as titled says of each, by what it is shown as
+   ("<name>: update 1.0.1 + 3 DLCs"); when two have games, each under a heading of its own (an entry whose path is NULL,
+   its text shown). One group alone gets none here: Games heads it itself while Recent Games shows rows above it. A dump
+   made already (made says so of its path) is left out, and with dumps NULL every dump and CIA, the ready games alone.
+   False when out of memory, games as they were */
+bool gui_games_group(GuiGames* games, const GuiGroups* groups);
+/* the Updates and DLCs item at entry i of games, NULL for any other entry */
+const GuiAddonDumps* gui_games_addon_set(const GuiGames* games, size_t i);
 /* whether entry i of games is a group's heading, which nothing runs */
 bool gui_games_heading(const GuiGames* games, size_t i);
 /* whether entry i of games goes in gui_games_group's second group, the dumps': a dump, a CIA, a VPK or a GBA ROM */

@@ -86,6 +86,7 @@ typedef enum {
     GUI_ASK_MADE,   /* a dump, package or ROM a game was made from already: play the game, or recompile it */
     GUI_ASK_DRIVER, /* a GPU driver package removed (Settings > App > GPU Drivers) */
     GUI_ASK_CRASH,  /* edenprobe's crash list cleared (GPU Drivers' Clear Crash List) */
+    GUI_ASK_ADDONS, /* a game's dump made with its updates' and DLCs' among the dumps, Yes first, or alone */
     GUI_ASK_ERROR   /* a failure of the system's, or Run edenprobe's counts, said whole: OK alone, which closes it */
 } GuiAsk;
 typedef struct {

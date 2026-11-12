@@ -20,6 +20,142 @@ static bool made_b(const char* path, const void* user) {
     return n >= 5 && !strcmp(path + n - 5, "b.nsp");
 }
 
+/* gui_games_group's titled: what a test's dump is, its own text a title.ini as the driver writes it, whatever its name */
+static bool titled_by_content(const char* path, const void* user, GuiDumpTitle* title) {
+    (void)user;
+    return gui_dump_title(path, title);
+}
+/* gui_games_group's made: game.xci is the dump of the game recompiled already */
+static bool made_game(const char* path, const void* user) {
+    size_t n = strlen(path);
+    (void)user;
+    return n >= 8 && !strcmp(path + n - 8, "game.xci");
+}
+static const GuiGroups dumps_only = {"Recompiled", "Dumps", "Updates and DLCs", NULL, NULL, NULL};
+static const GuiGroups b_made = {"Recompiled", "Dumps", "Updates and DLCs", made_b, NULL, NULL};
+static const GuiGroups no_dumps = {"Recompiled", NULL, "Updates and DLCs", made_b, NULL, NULL};
+static const GuiGroups titled = {"Recompiled", "Dumps", "Updates and DLCs", NULL, titled_by_content, NULL};
+static const GuiGroups titled_made = {"Recompiled", "Dumps", "Updates and DLCs", made_game, titled_by_content, NULL};
+/* dir/name holding text */
+static void put(const char* dir, const char* name, const char* text) {
+    char* path = snx_path_join(dir, name);
+    assert(path && !snx_write_file(path, text, strlen(text)));
+    free(path);
+}
+/* the entry of games named name, count when none */
+static size_t named(const GuiGames* games, const char* name) {
+    size_t i;
+    for (i = 0; i < games->count && !(games->names[i] && !strcmp(games->names[i], name)); ++i) {}
+    return i;
+}
+/* A game's dumps by what each is (titled_by_content), not by its name: its update's and DLCs' grouped as one item of
+   their own under Updates and DLCs, the newest update first and the DLCs by title ID, an older update and a DLC's
+   second copy counted as left out, the Dumps keeping the game's dump, which the item names, and one the driver did not
+   read; the same with the game recompiled, its dump made, which the item then names by its program; an update and DLCs
+   of games in no folder, named by the update's control.nacp, else their game's title ID. Grouped again, the same */
+static void addon_items(void) {
+    static const char game[] = "; a game\ntitle=0100ABCD12340000\ngame=0100ABCD12340000\nversion=\nname=A game\n";
+    static const char update[] = "title=0100ABCD12340800\ngame=0100ABCD12340000\nversion=65536\nname=A game\n"
+                                 "display_version=1.0.1\n";
+    static const char older[] = "title=0100ABCD12340800\ngame=0100ABCD12340000\nversion=0\nname=A game\n"
+                                "display_version=1.0.0\n";
+    static const char lone[] = "title=0100ABCD77770800\ngame=0100ABCD77770000\nversion=131072\nname=Another game\n"
+                               "display_version=2.0\n";
+    char error[256], *d = snx_temp_dir(NULL), *path;
+    GuiGames g = {0};
+    const GuiAddonDumps* set;
+    size_t i, k;
+    assert(d);
+    put(d, "game.xci", game);
+    /* named otherwise than what they are: the update's dump as a DLC's, a DLC's as an update's */
+    put(d, "Game [DLC].nsp", update);
+    put(d, "Game v1.0.0 [UPD].nsp", older);
+    put(d, "Game [UPD].nsp", "title=0100ABCD12341003\ngame=0100ABCD12340000\nversion=0\n");
+    put(d, "dlc one.nsp", "title=0100ABCD12341001\ngame=0100ABCD12340000\nversion=0\n");
+    put(d, "dlc one_copy.nsp", "title=0100ABCD12341001\ngame=0100ABCD12340000\nversion=0\n");
+    put(d, "dlc two.nsp", "title=0100ABCD12341002\ngame=0100ABCD12340000\nversion=0\n");
+    put(d, "unread.nsp", "not a title.ini: the driver could not read the dump");
+    assert(gui_games_add(&g, d, GUI_GAMES_DUMP, error, sizeof error) && g.count == 8);
+    assert(gui_games_group(&g, &titled));
+    for (int again = 0; again < 2; ++again) {
+        /* Dumps, game.xci, unread.nsp, Updates and DLCs, the item */
+        assert(g.count == 5 && g.set_count == 1);
+        assert(gui_games_heading(&g, 0) && !strcmp(g.shown[0], "Dumps") && !strcmp(g.names[1], "game.xci") &&
+               !strcmp(g.names[2], "unread.nsp") && gui_games_heading(&g, 3) &&
+               !strcmp(g.shown[3], "Updates and DLCs"));
+        for (i = 0; i < 4; ++i) assert(!gui_games_addon_set(&g, i));
+        set = gui_games_addon_set(&g, 4);
+        assert(set && !strcmp(g.shown[4], "A game: update 1.0.1 + 3 DLCs") && set->game == 0x0100ABCD12340000ull);
+        assert(set->update && set->count == 4 && set->left == 2 && !strcmp(set->version, "1.0.1"));
+        assert(!strcmp(snx_path_leaf(set->files[4]), "dlc one_copy.nsp") &&
+               !strcmp(snx_path_leaf(set->files[5]), "Game v1.0.0 [UPD].nsp")); /* left out, kept by the item */
+        assert(!strcmp(set->name, "A game") && !set->program && set->dump &&
+               !strcmp(snx_path_leaf(set->dump), "game.xci"));
+        assert(!strcmp(snx_path_leaf(set->files[0]), "Game [DLC].nsp") && !strcmp(g.paths[4], set->files[0]));
+        assert(!strcmp(snx_path_leaf(set->files[1]), "dlc one.nsp") &&
+               !strcmp(snx_path_leaf(set->files[2]), "dlc two.nsp") &&
+               !strcmp(snx_path_leaf(set->files[3]), "Game [UPD].nsp"));
+        assert(gui_games_dumps_group(&g, 4)); /* a dump's entry: nothing plays it as a game */
+        assert(gui_games_group(&g, &titled)); /* again: the same */
+    }
+    gui_games_free(&g);
+    assert(!g.sets && !g.set_count);
+    /* the dumps alone, as before titled knew them: every one a dump of its own */
+    assert(gui_games_add(&g, d, GUI_GAMES_DUMP, error, sizeof error) && gui_games_group(&g, &dumps_only));
+    assert(g.count == 8 && !g.set_count && named(&g, "Game [DLC].nsp") < g.count);
+    gui_games_free(&g);
+#ifndef _WIN32
+    { /* the game recompiled, made from game.xci: the item names its program, by its name the update gives */
+        char *folder = snx_path_join(d, "0100ABCD12340000"), *program = snx_path_join(folder, "0100ABCD12340000"),
+             *data = snx_path_join(folder, "0100ABCD12340000_data");
+        assert(!snx_mkdirs(data) && !snx_write_file(program, "#!/bin/sh\n", 10) && !chmod(program, 0755));
+        assert(gui_games_add(&g, d, GUI_GAMES_RUN | GUI_GAMES_DUMP, error, sizeof error));
+        assert(gui_games_group(&g, &titled_made));
+        /* Recompiled, the game, Dumps, unread.nsp, Updates and DLCs, the item */
+        assert(g.count == 6 && g.set_count == 1 && named(&g, "game.xci") == g.count);
+        set = gui_games_addon_set(&g, 5);
+        assert(set && set->program && !strcmp(set->program, program) && !set->dump && set->count == 4);
+        assert(!strcmp(g.names[1], "0100ABCD12340000") && !strcmp(g.names[3], "unread.nsp"));
+        gui_games_free(&g);
+        assert(!snx_remove_tree(folder));
+        free(data);
+        free(program);
+        free(folder);
+    }
+#endif
+    /* games in no folder: an update named by its control.nacp, DLCs by their game's title ID; each item by what it is
+       shown as */
+    path = snx_path_join(d, "game.xci");
+    assert(!remove(path));
+    free(path);
+    put(d, "lone.nsp", lone);
+    put(d, "z1.nsp", "title=0100ABCD55551001\ngame=0100ABCD55550000\nversion=0\n");
+    put(d, "z2.nsp", "title=0100ABCD55551002\ngame=0100ABCD55550000\nversion=0\n");
+    put(d, "z3.nsp", "title=0100ABCD66661001\ngame=0100ABCD66660000\nversion=0\n");
+    assert(gui_games_add(&g, d, GUI_GAMES_DUMP, error, sizeof error) && gui_games_group(&g, &titled));
+    assert(g.set_count == 4 && g.count == 2 + 1 + 4); /* the headings, unread.nsp, the items */
+    k = named(&g, "lone.nsp");
+    set = gui_games_addon_set(&g, k);
+    assert(set && !strcmp(g.shown[k], "Another game: update 2.0") && !set->program && !set->dump);
+    k = named(&g, "z1.nsp");
+    set = gui_games_addon_set(&g, k);
+    assert(set && !strcmp(g.shown[k], "0100ABCD55550000: 2 DLCs") && !strcmp(set->name, "0100ABCD55550000"));
+    k = named(&g, "z3.nsp");
+    assert(gui_games_addon_set(&g, k) && !strcmp(g.shown[k], "0100ABCD66660000: 1 DLC"));
+    assert(!strcmp(g.shown[3], "0100ABCD55550000: 2 DLCs") && !strcmp(g.shown[6], "Another game: update 2.0"));
+    gui_games_free(&g);
+    /* Dumps off (no dumps' heading): neither the dumps nor their items */
+    assert(gui_games_add(&g, d, GUI_GAMES_DUMP, error, sizeof error));
+    {
+        GuiGroups off = titled;
+        off.dumps = NULL;
+        assert(gui_games_group(&g, &off) && !g.count && !g.set_count);
+    }
+    gui_games_free(&g);
+    snx_remove_tree(d);
+    free(d);
+    puts("PASS a game's update and DLC dumps grouped as one item, by what each dump is");
+}
 int main(void) {
     GuiGames games = {0};
     char error[256];
@@ -304,7 +440,7 @@ int main(void) {
         assert(gui_games_add(&g, d, GUI_GAMES_RUN, error, sizeof error) && g.count == 0); /* no dump unasked */
         gui_games_free(&g);
         assert(gui_games_add(&g, d, GUI_GAMES_DUMP | GUI_GAMES_CIA, error, sizeof error) && g.count == 4);
-        assert(gui_games_group(&g, "Recompiled", "Dumps", NULL, NULL) && g.count == 4); /* dumps alone: no heading */
+        assert(gui_games_group(&g, &dumps_only) && g.count == 4); /* dumps alone: no heading */
         for (k = 0; k < g.count; ++k) assert(!gui_games_heading(&g, k));
         gui_games_free(&g);
 #ifndef _WIN32
@@ -320,7 +456,7 @@ int main(void) {
 #endif
         assert(gui_games_add(&g, d, GUI_GAMES_RUN | GUI_GAMES_CIA | GUI_GAMES_DUMP, error, sizeof error));
         assert(g.count == 4 + ready);
-        assert(gui_games_group(&g, "Recompiled", "Dumps", made_b, NULL));
+        assert(gui_games_group(&g, &b_made));
         for (int again = 0; again < 2; ++again) {
             /* [Recompiled, Ready, Dumps,] then a.xci, c.nro and z.cia in their order; b.nsp made already. The headings
                only with both groups: without Ready (Windows here) the dumps alone */
@@ -334,12 +470,12 @@ int main(void) {
             }
             for (k = at; k < g.count; ++k) assert(!gui_games_heading(&g, k) && strcmp(g.names[k], "b.nsp"));
             assert(!gui_games_heading(&g, g.count));                          /* past the end: no heading */
-            assert(gui_games_group(&g, "Recompiled", "Dumps", made_b, NULL)); /* again: the same */
+            assert(gui_games_group(&g, &b_made));                             /* again: the same */
         }
         gui_games_free(&g);
         /* no dumps' heading (Games' Dumps off): the ready games alone, no heading over them */
         assert(gui_games_add(&g, d, GUI_GAMES_RUN | GUI_GAMES_CIA | GUI_GAMES_DUMP, error, sizeof error));
-        assert(g.count == 4 + ready && gui_games_group(&g, "Recompiled", NULL, made_b, NULL) && g.count == ready);
+        assert(g.count == 4 + ready && gui_games_group(&g, &no_dumps) && g.count == ready);
         for (k = 0; k < g.count; ++k) assert(!gui_games_heading(&g, k) && !strcmp(g.names[k], "Ready"));
         gui_games_free(&g);
         snx_remove_tree(d);
@@ -546,7 +682,7 @@ int main(void) {
             free(folder);
         }
         assert(gui_games_add(&g, d, GUI_GAMES_RUN | GUI_GAMES_DUMP, error, sizeof error));
-        assert(gui_games_group(&g, "Recompiled", "Dumps", NULL, NULL) && g.count == 9);
+        assert(gui_games_group(&g, &dumps_only) && g.count == 9);
         assert(!strcmp(g.names[1], "alpha") && !strcmp(g.names[5], "gamma")); /* by name first */
         assert(gui_games_by_last_opened(&g) && g.count == 9);
         assert(gui_games_heading(&g, 0) && !strcmp(g.shown[0], "Recompiled") && gui_games_heading(&g, 6) &&
@@ -559,5 +695,6 @@ int main(void) {
         snx_remove_tree(d);
         free(d);
     }
+    addon_items();
     return 0;
 }

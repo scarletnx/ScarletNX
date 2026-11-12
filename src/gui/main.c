@@ -496,6 +496,11 @@ typedef struct App {
     SDL_Texture* icon_more;    /* Show More's, as a game's cover: a grey + on white */
     GuiDumpIcons dump_icons;   /* the dumps' icons asked of the driver */
     unsigned dump_icons_seen;  /* the answers the rows were drawn after */
+    /* the dumps of Games' list the driver has not said what they are of yet (title.ini), as listed; an answer since
+       has Games listed again, a second after the last at most while more are asked (titles_look) */
+    size_t titles_unknown;
+    bool titles_due;
+    Uint64 titles_ms;
     size_t icons_next;
     int user_side, user_shape;
     /* the box a click on the user opens (users_open): each user of users.ini, the focused one picked as Settings' user */
@@ -726,6 +731,15 @@ typedef struct App {
     char* own_dir;      /* Android: the app's own storage; a folder outside it is asked about (GUI_ASK_OUTSIDE) */
     char* outside_path; /* the folder asked about, for the row outside_place */
     int outside_place;
+    /* a game's dump made with the updates' and DLCs' dumps of it Games lists (GUI_ASK_ADDONS): addons_for the dump
+       the player said Yes or No about, addons_with what launch gives the driver with it then (--update each), none
+       for No; addons_file the dump asked about, launched again by addons_item with addons_recompile once answered */
+    char* addons_for;
+    char** addons_with;
+    size_t addons_with_count;
+    char* addons_file;
+    int addons_item;
+    bool addons_redo;
     char* made_file; /* a dump whose game is made, asked about (GUI_ASK_MADE): played or recompiled, by made_item */
     int made_item;
     bool made_ok;    /* asked and answered Play: the dump runs, its driver playing the game made */
@@ -1937,11 +1951,14 @@ static void games_place(App* app, GuiPlace* p) {
                  GUI_SHOWS_STATUS | GUI_SHOWS_TABS | GUI_SHOWS_SIDE | (games_grid(app) ? GUI_SHOWS_WIDE : 0));
 }
 /* the heading over the page's games while Recent Games shows rows above them and the games are one group alone, which
-   gui_games_group heads only beside the other: that group's own, Recompiled or Dumps, so that its rows read apart
-   from the recent ones. NULL when there is none to put there (the list is one page: its first entry is the page's) */
+   gui_games_group heads only beside another: that group's own, Recompiled, Dumps or Updates and DLCs, so that its rows
+   read apart from the recent ones. NULL when there is none to put there (the list is one page: its first entry is the
+   page's) */
 static const char* games_lone_heading(const App* app) {
     if (!app->browser.head || !app->games.count || gui_games_heading(&app->games, 0)) return NULL;
-    return gui_games_dumps_group(&app->games, 0) ? snx_tr("Dumps") : snx_tr("Recompiled");
+    return gui_games_addon_set(&app->games, 0)     ? snx_tr("Updates and DLCs")
+           : gui_games_dumps_group(&app->games, 0) ? snx_tr("Dumps")
+                                                   : snx_tr("Recompiled");
 }
 /* the list's entries before the page's games: "Recent Games", the recent rows and the page's lone heading
    (games_lone_heading), none without recent games */
@@ -2432,7 +2449,8 @@ static const char* ask_question(App* app) {
         case GUI_ASK_STATE:
         case GUI_ASK_CACHE:
         case GUI_ASK_DRIVER:
-        case GUI_ASK_CRASH: return app->ask_line;
+        case GUI_ASK_CRASH:
+        case GUI_ASK_ADDONS: return app->ask_line;
         case GUI_ASK_ERROR: return app->error_line;
         case GUI_ASK_CLOSE:
             if (!app->menu.running && !app->finished) return job_leaving(app);
@@ -2841,7 +2859,8 @@ static GuiRect choices_over(const App* app) {
 #else
 #define SAY_AGAIN SNX_TR_NOOP("press again")
 #endif
-/* the questions over a run, the menu or a form (GuiAsk's order): the first choice keeps things as they are */
+/* the questions over a run, the menu or a form (GuiAsk's order): the first choice keeps things as they are, but
+   GUI_ASK_ADDONS's Yes, the answer it is asked for, which neither choice keeps */
 static const char* const ask_choices[][2] = {{SNX_TR_NOOP("Continue"), SNX_TR_NOOP("Abort")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Exit")},
                                              {SNX_TR_NOOP("Only This Folder"), SNX_TR_NOOP("With Subfolders")},
@@ -2859,6 +2878,7 @@ static const char* const ask_choices[][2] = {{SNX_TR_NOOP("Continue"), SNX_TR_NO
                                              {SNX_TR_NOOP("Play"), SNX_TR_NOOP("Recompile")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Remove")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Clear")},
+                                             {SNX_TR_NOOP("Yes"), SNX_TR_NOOP("No")},
                                              {SNX_TR_NOOP("OK"), NULL}};
 /* a question added to GuiAsk takes its choices here, in its place */
 typedef char snx_gui_ask_choices[SDL_arraysize(ask_choices) == GUI_ASK_ERROR + 1 ? 1 : -1];
@@ -3927,8 +3947,16 @@ static bool icon_ask_start(GuiDumpIcons* d, GuiIconAsk* a, char* dump, char* dir
     a->process = NULL;
     return false;
 }
+/* whether the dump whose folder in the cache is dir is a DLC's, as the driver said (title.ini): it has no icon */
+static bool dlc_dir(const char* dir) {
+    char* ini = snx_path_join(dir, "title.ini");
+    GuiDumpTitle title;
+    bool dlc = ini && gui_dump_title(ini, &title) && snx_addon_kind(title.game, title.title) == SNX_ADDON_DLC;
+    free(ini);
+    return dlc;
+}
 /* the ask looked at: what the driver printed since, and once it ended (or was stopped past wait_ms) its answer, the
-   icon in its folder or why not kept. True once it ended, its process gone */
+   icon in its folder or why not kept, a DLC's having none. True once it ended, its process gone */
 static bool icon_ask_poll(GuiDumpIcons* d, GuiIconAsk* a) {
     char buffer[4096], why[256], line[200];
     int n, status = 1;
@@ -3942,7 +3970,7 @@ static bool icon_ask_poll(GuiDumpIcons* d, GuiIconAsk* a) {
     if (!gui_process_finished(a->process, &status)) return false;
     {
         char* icon = snx_path_join(a->dir, "icon.jpg");
-        if (late || status || !snx_is_file(icon)) {
+        if (late || status || (!snx_is_file(icon) && !dlc_dir(a->dir))) {
             last_line(a->said, line, sizeof line);
             if (late)
                 snprintf(why, sizeof why, snx_tr("the driver gave no answer in %d s"), (d->wait_ms + 999) / 1000);
@@ -4131,19 +4159,27 @@ static void dump_icons_stop(App* app) {
     *d = (GuiDumpIcons){0};
 }
 /* the icon file of the game or dump at path, owned: a game's own icon.jpg (gui_game_icon); a dump's in its folder of
-   the cache, asked of the driver when it has none and the driver gave none in this session, *loading then saying so.
-   NULL while there is none */
+   the cache, asked of the driver when it has none and the driver gave none in this session, *loading then saying so;
+   a DLC's dump has none. An Updates and DLCs item's is its game's: its program's, its dump's, else its update's. NULL
+   while there is none */
 static char* icon_file(App* app, const char* path, bool* loading) {
     char *dir, *file, why[8];
-    const char* leaf = path + strlen(path);
+    const char* leaf;
     *loading = false;
-    while (leaf > path && leaf[-1] != '/' && leaf[-1] != '\\') --leaf;
+    for (size_t k = 0; k < app->games.set_count; ++k)
+        if (!strcmp(app->games.sets[k].files[0], path)) {
+            const GuiAddonDumps* set = &app->games.sets[k];
+            if (set->program) return gui_game_icon(set->program);
+            if (set->dump) path = set->dump;
+            break;
+        }
+    for (leaf = path + strlen(path); leaf > path && leaf[-1] != '/' && leaf[-1] != '\\'; --leaf) continue;
     if (!gui_is_dump(leaf)) return gui_game_icon(path);
     if (!(dir = dump_icon_dir(app, path))) return NULL;
     file = snx_path_join(dir, "icon.jpg");
     if (!snx_is_file(file)) {
-        if (!icon_failed(&app->dump_icons, dir, why, sizeof why) && (*loading = dump_icon_ask(app, path, dir)) &&
-            app->dump_icons.live)
+        if (!icon_failed(&app->dump_icons, dir, why, sizeof why) && !dlc_dir(dir) &&
+            (*loading = dump_icon_ask(app, path, dir)) && app->dump_icons.live)
             dump_icons_start(app);
         free(file);
         file = NULL;
@@ -6955,11 +6991,48 @@ static size_t icon_why_said(const App* app, const char* path, char* out, size_t 
     int n = dump_icon_why(app, path, why, sizeof why) ? snprintf(out, size, snx_tr(". No icon: %s"), why) : 0;
     return n > 0 ? SDL_min((size_t)n, size ? size - 1 : 0) : 0;
 }
+/* the game an Updates and DLCs item is of, as its texts name it: its name and its title ID, its ID alone when it has
+   no other name */
+static void set_game(const GuiAddonDumps* set, char* out, size_t size) {
+    char id[17];
+    snx_title_text(set->game, id);
+    if (strcmp(set->name, id))
+        snprintf(out, size, "%s (%s)", set->name, id);
+    else
+        snprintf(out, size, "%s", id);
+}
+/* an Updates and DLCs item's kind: whether its game is recompiled, has its dump among the dumps, or neither, which
+   one that is; the other dumps of them left out */
+static void set_kind(const GuiAddonDumps* set, char* kind, size_t size) {
+    char game[0x240];
+    size_t n;
+    set_game(set, game, sizeof game);
+    if (set->program)
+        snprintf(kind, size, snx_tr("Updates and DLCs of %s, recompiled already: opening this puts them in it"), game);
+    else if (set->dump)
+        snprintf(kind, size, snx_tr("Updates and DLCs of %s: opening this recompiles it with them, from its dump %s"),
+                 game, snx_path_leaf(set->dump));
+    else
+        snprintf(kind, size,
+                 snx_tr("Updates and DLCs of %s, which is not recompiled and whose dump is in no dumps folder: they "
+                        "go in with it"),
+                 game);
+    n = strlen(kind);
+    if (set->left && n < size)
+        snprintf(kind + n, size - n, snx_tr("; %zu other dump(s) of them left out: an older update's, a DLC's second"),
+                 set->left);
+}
 /* game i's kind, by its file's name: ready (whose console its folder says), a dump or a package; why a dump shows no
-   icon; its updates, DLCs and mods; the games/ of an older version that holds it, as its row's (games/) says */
+   icon; its updates, DLCs and mods; the games/ of an older version that holds it, as its row's (games/) says. An
+   Updates and DLCs item's, set_kind's */
 static void game_kind(const App* app, const GuiGames* games, size_t i, char* kind, size_t size) {
     const char* name = games->names[i];
+    const GuiAddonDumps* set = gui_games_addon_set(games, i);
     size_t n;
+    if (set) {
+        set_kind(set, kind, size);
+        return;
+    }
     if (games->addons[i])
         snprintf(kind, size, snx_tr("Ready to run, with %zu update(s), DLC(s), mod(s) or cheat(s) to pick from"),
                  games->addons[i]);
@@ -14095,6 +14168,23 @@ static void hold_tick(App* app) {
     game_box_open(app);
     app->hold_fired = app->picks_shown; /* a row that is no game opened none: the lift taps it */
 }
+static size_t titles_unknown(const App* app);
+static void games_relist(App* app);
+/* the driver's answers about the dumps: Games listed again once one says what a dump of it is (titles_unknown), its
+   updates and DLCs then grouped; a second after the last time at most while more are asked, at once when none is */
+static void titles_look(App* app, Uint64 now) {
+    int waiting = 1;
+    if (!app->titles_due || app->menu.view != GUI_LOAD_GAMES || app->menu.running || app->finished) return;
+    if (app->dump_icons.lock) {
+        SDL_LockMutex(app->dump_icons.lock);
+        waiting = app->dump_icons.count;
+        SDL_UnlockMutex(app->dump_icons.lock);
+    }
+    if (waiting && now - app->titles_ms < 1000) return;
+    app->titles_due = false;
+    app->titles_ms = now;
+    if (titles_unknown(app) < app->titles_unknown) games_relist(app);
+}
 static void pump(App* app) {
     hold_tick(app);
     keys_left(app);
@@ -14239,8 +14329,10 @@ static void pump(App* app) {
         if (answered != app->dump_icons_seen) {
             app->dump_icons_seen = answered;
             icons_forget_none(app);
+            app->titles_due = true;
         }
     }
+    titles_look(app, now);
     /* games put in or taken out of the folders while the menu is open, as the watcher's hash of them says: Games and
        its list follow, the list on the file it had. The first hash after a listing is what the list holds, the same
        as the one before it or not */
@@ -14324,6 +14416,7 @@ static void render_dests(App* app) {
     choices_draw(app, &c, question, snx_tr("Recompile"));
 }
 static void launch(App* app, char* absolute, bool prepared);
+static void addons_forget(App* app);
 /* choice i taken (the run goes, its game in that folder), or none (-1: Back, nothing runs) */
 static void dest_take(App* app, int i) {
     const char* dirs[GUI_FOLDERS_MAX + 1];
@@ -14333,6 +14426,7 @@ static void dest_take(App* app, int i) {
     app->dest_file = NULL;
     if (i < 0 || i >= n) {
         free(file);
+        addons_forget(app); /* not made: a next one asks again */
         return;
     }
     free(app->dest_out);
@@ -14752,6 +14846,152 @@ static void made_answer(App* app, bool taken, bool second) {
     app->recompile = app->made_ok = false;
     app->menu.selected = item;
 }
+/* ---- a game's dump made with the updates and DLCs of it among the dumps (an Updates and DLCs item, gui/browser.h's
+   GuiAddonDumps): asked about when the dump is made (GUI_ASK_ADDONS), Yes the usual answer; the item opened puts them
+   in the game made already, or makes the game's dump with them ---- */
+static char* title_ini(const App* app, const char* path);
+static void games_scan(App* app, GuiGames* games, char* message, size_t size);
+/* what was said about a dump's updates and DLCs, and the dump asked about, gone */
+static void addons_forget(App* app) {
+    free(app->addons_for);
+    free(app->addons_file);
+    snx_free_strings(app->addons_with, app->addons_with_count);
+    app->addons_for = app->addons_file = NULL;
+    app->addons_with = NULL;
+    app->addons_with_count = 0;
+}
+/* how many DLCs, as the texts about an item say it, into out */
+static void dlcs_text(size_t dlcs, char* out, size_t size) {
+    if (dlcs == 1)
+        snprintf(out, size, "%s", snx_tr("1 DLC"));
+    else
+        snprintf(out, size, snx_tr("%zu DLCs"), dlcs);
+}
+/* file, a game's dump being made: when Games' dumps hold updates or DLCs of its game (its item), the question whether
+   they go in with it, file kept for the answer, and true; false when there are none, or the driver has not said yet
+   what file is */
+static bool addons_ask(App* app, char* file) {
+    char *ini = title_ini(app, file), message[sizeof app->message], dlcs[48];
+    GuiDumpTitle title;
+    GuiGames games = {0};
+    const GuiAddonDumps* set = NULL;
+    size_t k;
+    if (!ini || !gui_dump_title(ini, &title) || title.title != title.game) {
+        free(ini);
+        return false;
+    }
+    free(ini);
+    games_scan(app, &games, message, sizeof message);
+    for (k = 0; k < games.set_count && !set; ++k)
+        if (games.sets[k].game == title.game) set = &games.sets[k];
+    if (set) {
+        addons_forget(app);
+        app->addons_with = (char**)snx_alloc(set->count * sizeof *app->addons_with);
+        for (k = 0; k < set->count; ++k) app->addons_with[app->addons_with_count++] = snx_strdup(set->files[k]);
+        dlcs_text(set->count - set->update, dlcs, sizeof dlcs);
+        if (set->update && set->count > 1)
+            snprintf(app->ask_line, sizeof app->ask_line,
+                     snx_tr("Found the update %s and %s of this game. Recompile together?"), set->version, dlcs);
+        else if (set->update)
+            snprintf(app->ask_line, sizeof app->ask_line,
+                     snx_tr("Found the update %s of this game. Recompile together?"), set->version);
+        else
+            snprintf(app->ask_line, sizeof app->ask_line, snx_tr("Found %s of this game. Recompile together?"), dlcs);
+        app->addons_file = file;
+        app->addons_item = app->menu.selected;
+        app->addons_redo = app->recompile;
+        gui_confirm_open(&app->confirm, GUI_ASK_ADDONS, false);
+    }
+    gui_games_free(&games);
+    return set != NULL;
+}
+/* the answer about a dump's updates and DLCs: Yes makes it with them, No alone, Back neither */
+static void addons_answer(App* app, bool taken, bool second) {
+    char* file = app->addons_file;
+    int item = app->menu.selected;
+    app->addons_file = NULL;
+    if (!taken || !file) {
+        free(file);
+        addons_forget(app);
+        return;
+    }
+    app->addons_for = snx_strdup(file);
+    if (second) { /* the game alone */
+        snx_free_strings(app->addons_with, app->addons_with_count);
+        app->addons_with = NULL;
+        app->addons_with_count = 0;
+    }
+    app->menu.selected = app->addons_item;
+    app->recompile = app->addons_redo;
+    launch(app, file, false);
+    app->recompile = false;
+    app->menu.selected = item;
+}
+/* an Updates and DLCs item's dumps put in its game made already: the driver's -r on the game's program, --update and a
+   dump each, in the queue, the update's program made and each DLC recorded beside the game, which is not made again */
+static void addons_put(App* app, const GuiAddonDumps* set) {
+    GuiSettings* s;
+    GuiDriverRun how;
+    const char** argv;
+    char* driver;
+    size_t n = 0, k;
+    int item = app->menu.selected;
+    app->menu.selected = GUI_SWITCH;
+    driver = find_driver(app, GUI_SWITCH);
+#ifdef SDL_PLATFORM_IOS /* the app's own driver, which gui_process_start runs on a thread */
+    if (!driver) driver = snx_strdup("scarletnx");
+#endif
+    if (!driver) {
+        driver_missing(app, GUI_SWITCH, app->message, sizeof app->message);
+        say_failure(app, app->message);
+        app->menu.selected = item;
+        return;
+    }
+    s = settings_of(app);
+    argv = (const char**)snx_alloc((s->count + 8 + 2 * set->count) * sizeof *argv);
+    argv[n++] = driver;
+    if (driver_run(app, GUI_SWITCH, &how) && how.first) argv[n++] = how.first;
+    argv[n++] = "-r";
+    argv[n++] = set->program;
+    n += gui_settings_recompile(s, 1, argv + n);
+    argv[n++] = "--data";
+    argv[n++] = app->data_dir;
+    for (k = 0; k < set->count; ++k) {
+        argv[n++] = "--update";
+        argv[n++] = set->files[k];
+    }
+    argv[n] = NULL;
+    job_add(app, argv, set->program, true, true, GUI_JOB_RECOMPILE);
+    free((void*)argv);
+    free(driver);
+    app->menu.selected = item;
+}
+/* an Updates and DLCs item opened: put in its game made already (addons_put), else its game's dump made with them, no
+   question asked; else why not, naming the game */
+static void addons_open_set(App* app, const GuiAddonDumps* set) {
+    char game[0x240];
+    if (set->program) {
+        addons_put(app, set);
+        return;
+    }
+    if (set->dump) {
+        size_t k;
+        int item = app->menu.selected;
+        addons_forget(app);
+        app->addons_for = snx_absolute(set->dump);
+        app->addons_with = (char**)snx_alloc(set->count * sizeof *app->addons_with);
+        for (k = 0; k < set->count; ++k) app->addons_with[app->addons_with_count++] = snx_strdup(set->files[k]);
+        app->menu.selected = GUI_SWITCH;
+        launch(app, snx_absolute(set->dump), false);
+        if (!app->menu.running) app->menu.selected = item;
+        return;
+    }
+    set_game(set, game, sizeof game);
+    snprintf(app->message, sizeof app->message,
+             snx_tr("%s is not recompiled, and its dump is in no dumps folder: put it in one (Settings > App > "
+                    "Folders), then its updates and DLCs go in with it"),
+             game);
+}
 static void queue_show(App* app, int i);
 /* argv started on the run's screen, the menu fading out, file (owned) the run's, which Recent lists when recent says
    so; whether it started, the message saying why not */
@@ -14851,6 +15091,11 @@ static void launch(App* app, char* absolute, bool prepared) {
         made_ask(app, absolute);
         return;
     }
+    /* a game's dump made, with updates or DLCs of it among the dumps: whether they go in with it, asked once (DraVee,
+       2026-11-11), Yes first */
+    if (app->menu.selected == GUI_SWITCH && !prepared && (app->recompile || !made_from(app, absolute)) &&
+        !(app->addons_for && snx_same_file(app->addons_for, absolute)) && addons_ask(app, absolute))
+        return;
     /* a game opened that no game of the library was made from yet compiles first through the queue, as R's recompile
        does: the Compile tab shows it, and it plays once it ended if the tab still shows it (job_play). So does a Switch
        game another build made, which its driver would recompile on the run's screen: its program opened (the one it
@@ -14957,9 +15202,14 @@ static void launch(App* app, char* absolute, bool prepared) {
         free(game_option);
         return;
     }
+    /* the updates' and DLCs' dumps made with a game's dump, as asked (addons_ask), --update each */
+    size_t with = make && !prepared && app->menu.selected == GUI_SWITCH && app->addons_for &&
+                          snx_same_file(app->addons_for, absolute)
+                      ? app->addons_with_count
+                      : 0;
     /* the driver, the file, the settings, --repo and its folder, the picked games and extraction folders, NULL */
     GuiSettings* s = settings_of(app);
-    const char** argv = (const char**)snx_alloc((size_t)(s->count + 21) * sizeof(*argv));
+    const char** argv = (const char**)snx_alloc((size_t)(s->count + 21 + 2 * with) * sizeof(*argv));
     char* out = NULL; /* a dump's extraction in the picked extractions folder */
     char program[16]; /* --program's, a collection's Play Program N */
     /* what runs, and what R makes: the program Play runs; the queue and Recent go by the file opened */
@@ -15030,6 +15280,10 @@ static void launch(App* app, char* absolute, bool prepared) {
         argv[n++] = "--out";
         argv[n++] = out;
     }
+    for (size_t k = 0; k < with; ++k) {
+        argv[n++] = "--update";
+        argv[n++] = app->addons_with[k];
+    }
     argv[n] = NULL;
     /* R's, B's and a first compile, whichever console's: the queue runs them behind the screens, one at a time */
     if (make) {
@@ -15037,6 +15291,7 @@ static void launch(App* app, char* absolute, bool prepared) {
                 compile         ? GUI_JOB_COMPILE
                 : app->aot_pack ? GUI_JOB_AOT
                                 : GUI_JOB_RECOMPILE);
+        addons_forget(app); /* the queue keeps what argv held */
         free(argv);
         free(run);
         free(out);
@@ -15047,6 +15302,7 @@ static void launch(App* app, char* absolute, bool prepared) {
         return;
     }
     run_start(app, argv, absolute, native, prepared, true);
+    addons_forget(app);
     free(argv);
     free(game_option); /* argv held it until the process started */
     free(run);
@@ -15214,6 +15470,7 @@ static void room_answer(App* app, bool taken) {
         free(file);
         free(app->dest_out); /* not run: a next one asks where again */
         app->dest_out = NULL;
+        addons_forget(app);
         return;
     }
     app->room_ok = true;
@@ -15644,6 +15901,12 @@ static void games_back(App* app, const char* path) {
     }
     free(game);
 }
+/* Games listed again where it is, its focus kept on the game it was on (games_back) */
+static void games_relist(App* app) {
+    bool recent;
+    const char* was = games_focused_path(app, &recent);
+    games_back(app, recent ? NULL : was);
+}
 /* the game of the Compile tab's focus, as Games lists it: what Tab and ESC there go back to; NULL with none */
 static const char* queue_game(const App* app) {
     int i = app->queue_focus;
@@ -15740,6 +16003,10 @@ static void open_game(App* app, size_t index, bool play) {
         if (app->recompile) /* R again */
             snprintf(app->message, sizeof app->message, snx_tr("%s is in the queue already"),
                      gui_queue_name(&app->queue, queued));
+        return;
+    }
+    if (gui_games_addon_set(&app->games, index)) { /* updates' and DLCs' dumps, of a game made or among the dumps */
+        addons_open_set(app, gui_games_addon_set(&app->games, index));
         return;
     }
     if (app->games.addons[index]) { /* its updates and DLCs: which one runs is asked first */
@@ -16640,8 +16907,64 @@ static void share_log(App* app, bool zip) {
     free(run);
     free(game);
 }
-/* gui_games_group's made: a dump a game of recompiled/ was made from already, of made_read's */
-static bool made_dump(const char* path, const void* made) { return made_program((const MadeGames*)made, path) != NULL; }
+/* what games_scan groups by: the games made, and the updates and DLCs put in them, each with the dump it names */
+typedef struct {
+    const App* app;
+    MadeGames made, addons;
+} GamesMade;
+/* gui_games_group's made: a dump a game of recompiled/ was made from already, or an update's or a DLC's put in one */
+static bool made_dump(const char* path, const void* user) {
+    const GamesMade* m = (const GamesMade*)user;
+    return made_program(&m->made, path) || made_program(&m->addons, path);
+}
+/* where the driver says what the Switch dump at path is (-x --icon's title.ini, in its folder of the cache), owned:
+   an NSP's or an XCI's, decrypted or not; NULL for any other file (an NRO has no title ID), and for one not there */
+static char* title_ini(const App* app, const char* path) {
+    const char* name = snx_path_leaf(path);
+    char *dir, *ini;
+    if (!gui_is_dump(name) || snx_ends_with_nocase(name, ".nro") || !(dir = dump_icon_dir(app, path))) return NULL;
+    ini = snx_path_join(dir, "title.ini");
+    free(dir);
+    return ini;
+}
+/* gui_games_group's titled: what the dump at path is, as the driver said (title_ini) */
+static bool dump_titled(const char* path, const void* user, GuiDumpTitle* title) {
+    char* ini = title_ini(((const GamesMade*)user)->app, path);
+    bool known = ini && gui_dump_title(ini, title);
+    free(ini);
+    return known;
+}
+/* each Switch dump of games the driver has not said what it is of yet (title_ini), one made or put in a game left out:
+   asked for once, with its icon, one it gave none for in this session left as it is. How many are not known */
+static size_t titles_ask(App* app, const GuiGames* games, const GamesMade* made) {
+    size_t i, unknown = 0;
+    for (i = 0; i < games->count; ++i) {
+        char *ini = games->paths[i] && !made_dump(games->paths[i], made) ? title_ini(app, games->paths[i]) : NULL,
+             *dir = ini ? snx_dirname(ini) : NULL, why[8];
+        GuiDumpTitle title;
+        if (ini && !gui_dump_title(ini, &title)) {
+            unknown++;
+            if (!icon_failed(&app->dump_icons, dir, why, sizeof why) && dump_icon_ask(app, games->paths[i], dir) &&
+                app->dump_icons.live)
+                dump_icons_start(app);
+        }
+        free(dir);
+        free(ini);
+    }
+    return unknown;
+}
+/* the dumps Games lists whose title.ini is not there yet, an Updates and DLCs item's known */
+static size_t titles_unknown(const App* app) {
+    size_t i, unknown = 0;
+    for (i = 0; i < app->games.count; ++i) {
+        char* ini =
+            app->games.paths[i] && !gui_games_addon_set(&app->games, i) ? title_ini(app, app->games.paths[i]) : NULL;
+        GuiDumpTitle title;
+        unknown += ini && !gui_dump_title(ini, &title);
+        free(ini);
+    }
+    return unknown;
+}
 /* the Games list: recompiled/, dumps/ (with its subfolders) and the Library's folders, every kind, in two groups: the
    games ready to run, then the dumps not made already, which Dumps off leaves out; each by what it is shown as in each
    folder, or with Sort's Last opened the game that last ran first. The first folder that cannot be read is named, the
@@ -16649,7 +16972,8 @@ static bool made_dump(const char* path, const void* made) { return made_program(
 static void games_scan(App* app, GuiGames* games, char* message, size_t size) {
     int kinds = GUI_GAMES_RUN | GUI_GAMES_CIA | GUI_GAMES_DUMP, i; /* the old games/'s: it held both */
     char error[sizeof app->message];
-    MadeGames made;
+    GamesMade made = {app, {0}, {0}};
+    GuiGroups groups = {0};
     char *dumps = app->data_dir ? snx_path_join(app->data_dir, "dumps") : NULL, *old;
     gui_games_free(games);
     message[0] = 0;
@@ -16674,13 +16998,24 @@ static void games_scan(App* app, GuiGames* games, char* message, size_t size) {
                                 app->folders_deep[i] ? GUI_FOLDER_DEPTH : 0, error, sizeof error) &&
             !message[0])
             snprintf(message, size, snx_tr("%s It is in Settings > App > Folders."), error);
-    made_read(app, &made);
-    if (!gui_games_group(games, snx_tr("Recompiled"), dumps_on(app) ? snx_tr("Dumps") : NULL, made_dump, &made) &&
-        !message[0])
+    made_read(app, &made.made);
+    made_list(app, &made.addons, true);
+    if (dumps_on(app)) {
+        size_t unknown = titles_ask(app, games, &made);
+        if (games == &app->games) app->titles_unknown = unknown;
+    }
+    groups.ready = snx_tr("Recompiled");
+    groups.dumps = dumps_on(app) ? snx_tr("Dumps") : NULL;
+    groups.addons = snx_tr("Updates and DLCs");
+    groups.made = made_dump;
+    groups.titled = dump_titled;
+    groups.user = &made;
+    if (!gui_games_group(games, &groups) && !message[0])
         snprintf(message, size, "%s", snx_tr("Not enough memory to list the games in their groups."));
     if (by_last_opened(app) && !gui_games_by_last_opened(games) && !message[0])
         snprintf(message, size, "%s", snx_tr("Not enough memory to sort the games by the last opened: by title."));
-    made_free(&made);
+    made_free(&made.made);
+    made_free(&made.addons);
     free(dumps);
 }
 /* gui_browser_key_skip's skip on Games: a group's heading */
@@ -17056,6 +17391,8 @@ static void ask_key(App* app, GuiKey key) {
         room_answer(app, second);
     else if (ask == GUI_ASK_MADE)
         made_answer(app, key == GUI_SELECT, second);
+    else if (ask == GUI_ASK_ADDONS)
+        addons_answer(app, key == GUI_SELECT, second);
     else if (ask == GUI_ASK_CLEAN || ask == GUI_ASK_RESET || ask == GUI_ASK_PLACES || ask == GUI_ASK_PLACE ||
              ask == GUI_ASK_FOLDER || ask == GUI_ASK_MOVE || ask == GUI_ASK_STATE || ask == GUI_ASK_CACHE ||
              ask == GUI_ASK_DRIVER || ask == GUI_ASK_CRASH)
@@ -18480,6 +18817,7 @@ static void forget(App* app) {
     free(app->room_file);
     free(app->dest_file);
     free(app->dest_out);
+    addons_forget(app);
     free(app->folders_file);
     free(app->app_file);
     gui_cleaned_free(&app->cleaned);

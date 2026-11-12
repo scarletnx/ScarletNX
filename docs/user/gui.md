@@ -501,7 +501,8 @@ executables (execute permission on UNIX, `.exe` on Windows), `.cia`, `.cci`, `.3
 directories are excluded.
 A library with Dumps on also lists each extracted game's folder in it (`exefs/` with its `main`), among the dumps and
 named by its folder with a `/` after it: shown by its `control.nacp`'s name, else by the title ID of its
-`exefs/main.npdm`. The folders are looked at once a second while the menu is open (their
+`exefs/main.npdm`. A game's update and DLC dumps go under **Updates and DLCs**, an item a game, by what the driver
+reads each is ([Usage](usage.md#updates-and-dlc)). The folders are looked at once a second while the menu is open (their
 names only), so a game put in or taken out shows in the open list; a folder that
 cannot be read is named and the others still listed.
 
