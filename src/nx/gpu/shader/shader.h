@@ -574,6 +574,9 @@ extern int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);
    compiles (docs/layers/gpu/constant-buffer-folds.md) */
 extern int (*g_shader_cb_fold)(u32 idx, u32 off, u32* out);
 static inline int shader_cb_fold_value(u32 word) { return word < 256 || word == 0x3F800000u; }
+/* the translations of a program that fold by value (vk/cb_fold.h, vk_cb_fold_mode): the count past which one more
+   costs more translations than it folds words in the draws (the same doc's table) */
+#define SH_CB_FOLD_VARIANTS 2u
 /* The programs are SM86 (sm86.h), not Maxwell: an Ounce game's. nvn_direct sets it once, from the game's NVN API
    version, before the game's first draw */
 extern int g_shader_sm86;

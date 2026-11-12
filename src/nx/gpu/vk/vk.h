@@ -2012,6 +2012,10 @@ typedef struct VkSh {
     int shipped; /* a program the game ships, translated before a draw asked for it: 2 once one found it */
     u32 clen, clen_a;
     u64 qh, qh_a;
+    /* cb_fold.h: the constant buffer words the translation holds as constants; whether a draw asked for one that
+       folds more; whether those words stopped holding once */
+    u32 nfold;
+    u8 fold_asked, fold_broke;
     struct VkSh* next;
 } VkSh;
 /* Generated graphics modules share the persistent shader/pipeline ownership and cache. Caller holds vk_lock. */
@@ -2029,6 +2033,9 @@ extern int g_vk_preserve_infnan64;
 extern int g_vk_flush_denorm;
 /* SH_FTZ_*: how translations get the console's FP32 flush to zero, from g_vk_flush_denorm and vk_ftz_native */
 extern int g_vk_ftz;
+/* whether the translations made from now on fold constant buffer words (cb_fold.h): they do, but in a test of the
+   difference */
+void vk_cb_fold_switch(int on);
 /* ftz_probe.c: 1 when the device flushes FP32 subnormals in FADD, FMUL and FFMA as the console's FTZ does, in a module
    that declares no denormal mode (it runs a compute shader and waits for it: at the renderer's start only) */
 int vk_ftz_native(void);
@@ -2151,6 +2158,9 @@ VkPipeline vk_pipeline_now(VkPipeline h, int* pending);
 /* so far: pipelines made, how many of them the pipeline cache had, ms the workers took making them, ms the GPU thread
    waited for new ones, shaders translated, ms translating them */
 void vk_pipeline_stats(u64* pipes, u64* hits, u64* make_ms, u64* wait_ms, u64* shaders, u64* shader_ms);
+/* of those shaders, the ones translated beside a translation of their program that held, to hold more of a draw's
+   constant buffer words as constants (cb_fold.h) */
+u64 vk_shader_folds(void);
 /* with pipeline libraries, so far: the parts made by part (vertex input, pre-rasterization, fragment shader,
    fragment output), how many of them the pipeline cache had and ms making them; the fast links and their ms; the
    optimized pipelines made in the background and their ms */
