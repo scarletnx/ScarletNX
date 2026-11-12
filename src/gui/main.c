@@ -15705,6 +15705,7 @@ static void launch(App* app, char* absolute, bool prepared) {
                                 : GUI_JOB_RECOMPILE);
         addons_forget(app); /* the queue keeps what argv held */
         free(argv);
+        free(game_option);
         free(run);
         free(out);
         free(app->dest_out); /* the run's, which argv held until here: a next one asks again */
