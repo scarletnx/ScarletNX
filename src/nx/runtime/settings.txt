@@ -1205,6 +1205,14 @@ setting Shader corpus
     startup
     help A folder that keeps each translated shader for snx-shaderc (gpu/shader/corpus.c). With it every shader is
     help translated, and none is kept for the next run. Empty: none, or captures/shaders with Shader captures
+setting ASTC dump
+    key astc_dump
+    text 1024
+    default ""
+    startup
+    help A folder that keeps each whole ASTC texture level the game loads, as an .astc file (astcenc's format, the
+    help layers or slices as its depth), for snx-test-astc-vulkan --bench and the BC7 encoder's measurements (the
+    help game's own textures: keep them local). At most 2 GiB a run. Empty: none
 setting SM86 dump
     key sm86_dump
     text 1024
