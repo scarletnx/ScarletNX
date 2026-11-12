@@ -1521,6 +1521,14 @@ setting CTR IPC trace
     default 0
     words Off|On
     help 1 = logs each service request the 3DS game sends, its service and header, in the order sent
+setting CTR hooks
+    key ctr_hooks
+    int 0 1
+    default 1
+    words Off|On
+    help 1 = the 3DS game's IPC stubs (the SDK's functions that send a service request) run in the runtime, which
+    help sends their requests to the services without the TLS command buffer and the SVC (aot/ctr_hook.h); 0 = the
+    help game's code makes every request
 setting CTR SVC trace
     key ctr_svc_trace
     int 0 2

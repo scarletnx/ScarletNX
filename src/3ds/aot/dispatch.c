@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/aot/ctr_discover.h"
+#include "3ds/aot/ctr_hook.h"
 #include "3ds/aot/ctr_module.h"
 #include "3ds/kernel/ctr_kernel.h"
 #include "3ds/runtime/internal.h"
@@ -83,6 +84,20 @@ SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, 
             cpu->exit = SNX_ARM_ALIGNMENT;
             cpu->syndrome = pc;
             return SNX_CTR_RUN_FAULT;
+        }
+        /* a function the runtime runs itself (aot/ctr_hook.h), unless a CRO's relocation rewrote its text. It
+           reschedules as an SVC does when it woke a thread, which can be one that takes the core now */
+        const struct SnxCtrHook* hook = process->hooks && !thumb ? snx_ctr_hook_at(process->hooks, pc) : NULL;
+        if (hook && !window_marked(process, pc - m->text_address)) {
+            uint64_t sequence = process->sched_seq;
+            SnxCtrHookResult ran = snx_ctr_hook_run(process, cpu, hook);
+            if (ran == SNX_CTR_HOOK_DONE) {
+                ++*executed;
+                if (process->sched_seq != sequence && !scheduled(process, &stop)) return stop;
+                continue;
+            }
+            if (ran == SNX_CTR_HOOK_STOP)
+                return cpu->exit == SNX_ARM_BACKEND_UNSUPPORTED ? SNX_CTR_RUN_UNSUPPORTED : SNX_CTR_RUN_FAULT;
         }
         unsigned char instruction[4];
         if (snx_ctr_fetch(snx_ctr_process_space(process), pc, instruction, width) != SNX_CTR_MEM_OK) {
