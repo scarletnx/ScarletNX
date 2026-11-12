@@ -15,6 +15,7 @@
 #define UI_PAGE     UI_RGB(SNX_GUI_THEME_YORHA_PAGE)
 #define UI_SOFT     UI_RGB(SNX_GUI_THEME_YORHA_SOFT)    /* what matters less: a hint, a guide, a part at rest */
 #define UI_FAILURE  UI_RGB(SNX_GUI_THEME_YORHA_FAILURE) /* what went wrong or is too slow, and a part held */
+#define UI_WARNING  UI_RGB(SNX_GUI_THEME_YORHA_WARNING) /* a choice to take with care */
 /* a panel on the page, a little darker: the soft colour at 0x40 over it */
 #define UI_PANEL    UI_RGB(ui_over(SNX_GUI_THEME_YORHA_SOFT, SNX_GUI_THEME_YORHA_PAGE, 0x40u))
 #define UI_WHITE    0xFFFFFFFFu /* the on-screen controls, whatever the theme */
