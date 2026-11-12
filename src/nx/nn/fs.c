@@ -485,7 +485,7 @@ static u64 rom_cache_size(const NRom* rm) {
 #define H32_NATIVE   1u
 #define H32_DIR      2u
 #define H32_GEN_MASK 0xfffffu
-_Static_assert(NFILES <= 1024 && NDIRS <= 1024, "a slot's index fits the 10 bits of a 32-bit game's handle");
+typedef char nnfs_index_fits_a_handle32[NFILES <= 1024 && NDIRS <= 1024 ? 1 : -1]; /* the index's 10 bits */
 static u64 handle_make(int dir, u32 gen, u32 i) {
     if (g_arm_mod) return H32_NATIVE | (dir ? H32_DIR : 0) | i << 2 | (gen & H32_GEN_MASK) << 12;
     return (dir ? TAG_DIR : TAG_FILE) | (u64)gen << 32 | (u64)i;
