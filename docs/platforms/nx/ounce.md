@@ -28,11 +28,11 @@ on channel 21), and it uploads Turing macros (methods 0x45 to 0x48). The Maxwell
 
 The game draws through NVN2, API version 231.16 (GPU code 201.5 to 201.11). The `sdk` module exports
 `nvnBootstrapLoader`, the Switch functions and about 170 new ones: mesh draws, ray tracing, DLSS, device command
-buffers, device messages, variable rate shading and HDR window metadata. ScarletNX takes these calls with
-`nvn_direct=1`.
+buffers, device messages, variable rate shading and HDR window metadata. ScarletNX always takes these calls; the
+`nvn_direct` setting older versions read for that is deprecated ([Deprecations](../../user/deprecations.md)).
 
 The game must be compiled ahead of time (`build/scarletnx -r ...`). With the JIT alone, the dispatch slot of
-`nvnBootstrapLoader` is still empty when `nvn_direct_init` runs, because that runs before `jit_init`.
+`nvnBootstrapLoader` is still empty when `nvn_loader_init` runs, because that runs before `jit_init`.
 
 ## The platform
 
@@ -426,8 +426,8 @@ The driver writes Turing macro calls (method 0xe00 + 2 n is `CALL_MME_MACRO(n)`)
 On the hardware the macros end in NVK's sequence (`nvk_mme_build_draw_mesh`): `SET_DRAW_CONTROL_A` with points,
 then `DRAW_VERTEX_ARRAY_BEGIN_END_A` (0x9c) with 0 and the task count x * y * z. Mesh state is `SET_MESH_CONTROL`
 (0x453), `SET_MESH_SHADER_A` (0x454: topology, most vertices, most primitives), `SET_MESH_SHADER_B` (0x455: shared
-lines, invocations) and `SET_MESH_INIT_SHADER` (0x456: invocations, local lines, payload lines) (`clc597.h`). With
-`nvn_direct` the runtime takes the API calls and needs none of the macros.
+lines, invocations) and `SET_MESH_INIT_SHADER` (0x456: invocations, local lines, payload lines) (`clc597.h`). The
+runtime takes the API calls and needs none of the macros.
 
 ### Design
 

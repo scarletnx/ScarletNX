@@ -150,6 +150,19 @@ class Dropped(unittest.TestCase):
             failures, _ = cd.check(h.root)
             self.assertEqual(failures, [f'{INI_C}:5: a: deprecated, and {SETTINGS} has it: the runtime never reads it'])
 
+    def test_a_deprecated_key_a_document_sets(self):
+        with History() as h:
+            h.commit('Add a', {SETTINGS: settings('a'), INI_C: ini_c('b'), DOC: doc('`.ini` key `b` (`b=1` was on)')})
+            h.write(
+                {
+                    'docs/guide.md': '# G\n\nSet `b=1` to trace.\n\nThe `b` setting is gone; `a=1` is fine.\n',
+                    'README.md': 'Run with `--b=2`.\n',
+                }
+            )
+            failures, _ = cd.check(h.root)
+            said = 'a deprecated key written as a setting, which the runtime does not read (docs/user/deprecations.md)'
+            self.assertEqual(failures, [f'README.md:1: b=: {said}', f'docs/guide.md:3: b=: {said}'])
+
     def test_a_key_back_again_is_not_dropped(self):
         with History() as h:
             h.commit('Add a and b', {SETTINGS: settings('a', 'b'), INI_C: ini_c(), DOC: doc()})
