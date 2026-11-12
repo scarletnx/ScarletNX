@@ -2,6 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/stats.h"
+#include "gui/icons.h"
 #include "nx/runtime/platform/ui_colors.h"
 #include "common/utilities/bits.h"
 #include <math.h>
@@ -653,6 +655,7 @@ int vpad_showcase_box(const int safe[4], float box[4]) {
 void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale) {
     float box[4];
     if (vpad_showcase_box(safe, box) < 0) return;
+    if (__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED)) fps = -1; /* the stats panel says it already */
     if (!g_shown.laid || g_shown.drawn != g_show_version || g_shown.fps != fps || g_shown.scale != scale ||
         memcmp(g_shown.safe, safe, sizeof g_shown.safe)) {
         SnxUiList kept = {g_shown.q, 0, (int)(sizeof g_shown.q / sizeof g_shown.q[0])};
@@ -694,19 +697,23 @@ static void showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale) {
             button_draw(l, c, r, (int)(g_show_buttons >> INFO[c].bit & 1));
     }
     if (fps < 0) return;
-    /* in the menu's letters, as the other lines over the game; a step smaller while they would not keep above the row
-       under them (a quarter of the box's height), which keeps the seven cells between the shoulder buttons too: the
-       box is 5 by 3 */
-    if (scale < 1) scale = 1;
+    /* as the stats panel's first line (stats.c), in its letters and colour: a blank cell, the gauge's icon and the
+       frames a second; a step smaller while they would not keep above the row under them (a quarter of the box's
+       height), which keeps the eleven cells between the shoulder buttons too: the box is 5 by 3 */
+    scale = stats_scale(scale);
     while (scale > 1 && (float)(16 * scale) + h / 25 > h * 0.24f) --scale;
-    /* "999 FPS" at most, the number to the right of its three cells: a field whose place and quads stay, whatever it
+    /* "999 fps" at most, the number to the right of its three cells: a field whose place and quads stay, whatever it
        says (ui_cells), each cell backed by the ground the box is filled with: no pixel of a letter left out */
     {
         char* at = text;
         int digits = fps > 99 ? 3 : fps > 9 ? 2 : 1, first;
+        float x = x0 + (w - (float)(11 * 8 * scale)) / 2, y = y0 + h / 25;
         while (digits++ < 3) *at++ = ' ';
-        *ui_put(ui_put_u(at, (u64)(fps < 999 ? fps : 999)), " FPS") = 0;
-        first = ui_cells_backed(l, x0 + (w - (float)(7 * 8 * scale)) / 2, y0 + h / 25, scale, 7, UI_WHITE);
+        *ui_put(ui_put_u(at, (u64)(fps < 999 ? fps : 999)), " fps") = 0;
+        x += ui_text_backed(l, x, y, scale, " ", UI_PAGE);
+        x += ui_icon_backed(l, x, y, scale, GUI_ICON_GAUGE, UI_PAGE);
+        x += ui_text_backed(l, x, y, scale, " ", UI_PAGE);
+        first = ui_cells_backed(l, x, y, scale, 7, UI_PAGE);
         if (first >= 0) ui_cells_set(&l->q[first], 7, text);
     }
 }
