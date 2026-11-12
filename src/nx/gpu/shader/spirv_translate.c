@@ -1239,18 +1239,34 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             handle_count =
                 bindless ? shader_direct_track_image_handle_pair(flow, i, b, &bank, &off, &bank2, &off2, 0) : 0;
             if (handle_count == 1) indexed = shader_direct_indexed_handle(flow, i, b, stage, &ldc);
-            if (bindless && !handle_count) return shader_untracked_handle(si, "texture", insn, i, b);
+            /* a handle the writes don't agree on: each constant buffer handle that can reach it, chosen when it runs */
+            u32 cand_bank[SH_HANDLE_CANDIDATES], cand_off[SH_HANDLE_CANDIDATES];
+            int candidates = bindless && !handle_count ? shader_direct_handle_candidates(flow, i, b, cand_bank,
+                                                                                         cand_off, SH_HANDLE_CANDIDATES)
+                                                       : 1;
+            if (!candidates) return shader_untracked_handle(si, "texture", insn, i, b);
             int type = B(insn[i], 28, 3) >> 1;
             int array = B(insn[i], 28, 1), shadow = B(insn[i], 50, 1);
-            int read_slot = shader_direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0,
-                                                         bindless, bank, handle_count, bank2, off2, indexed, ldc);
-            if (read_slot < 0) return direct_reject(si, "texture descriptor count");
-            tex_read |= 1ull << read_slot;
+            int read_slot = -1;
+            for (int cand = 0; cand < candidates; cand++) {
+                if (bindless && !handle_count) {
+                    bank = cand_bank[cand];
+                    off = cand_off[cand];
+                }
+                read_slot =
+                    shader_direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0, bindless, bank,
+                                                 handle_count ? handle_count : 1, bank2, off2, indexed, ldc);
+                if (read_slot < 0) return direct_reject(si, "texture descriptor count");
+                tex_read |= 1ull << read_slot;
+                if (!handle_count && bindless) tex_elsewhere |= 1ull << read_slot;
+            }
             u32 coordinate = a + (array || clamp), dimensions = type == 0 ? 1 : type >= 2 ? 3 : 2;
             int plain = type == 1 && !array && !shadow && !offset_enabled && !clamp && mode <= 1;
-            if (stage == ST_FS && screen_sample(flow, i, sph, plain, a, a < 254 ? a + 1 : 255, &screen_in, &screen_ndc))
+            if ((handle_count || !bindless) && stage == ST_FS &&
+                screen_sample(flow, i, sph, plain, a, a < 254 ? a + 1 : 255, &screen_in, &screen_ndc))
                 tex_screen |= 1ull << read_slot;
-            else if (stage == ST_FS && uv_sample(flow, i, sph, plain, a, a < 254 ? a + 1 : 255, &uv_in))
+            else if ((handle_count || !bindless) && stage == ST_FS &&
+                     uv_sample(flow, i, sph, plain, a, a < 254 ? a + 1 : 255, &uv_in))
                 tex_uv |= 1ull << read_slot;
             else
                 tex_elsewhere |= 1ull << read_slot;

@@ -229,6 +229,9 @@ int shader_direct_track_cbuf_word(const ShFlow* f, u32 index, u32 reg, u32* bank
 int shader_direct_track_image_handle(const ShFlow* f, u32 index, u32 reg, u32* bank, u32* off, int depth);
 int shader_direct_track_image_handle_pair(const ShFlow* f, u32 index, u32 reg, u32* bank, u32* off, u32* bank2,
                                           u32* off2, int depth);
+/* the most constant buffer handles one TEX.B chooses among (shader_direct_handle_candidates) */
+#define SH_HANDLE_CANDIDATES 4
+int shader_direct_handle_candidates(const ShFlow* f, u32 index, u32 reg, u32* banks, u32* offs, int max);
 int shader_al2p_predicate_unseen(const ShFlow* f, u32 at);
 u32 shader_direct_indexed_handle(const ShFlow* f, u32 index, u32 reg, int stage, u32* ldc);
 int shader_direct_bindless_matches(const ShTex* t, u32 bank, int handle_count, u32 bank2, u32 off2, u32 indexed,
