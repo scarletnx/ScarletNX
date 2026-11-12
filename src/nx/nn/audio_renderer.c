@@ -22,7 +22,11 @@
 
    Before SDK 2 the game's AudioRendererParameter is the session's own, handed over as it is, and the voices' update
    is two of the VoiceInfoManager's methods, one a section; before SDK 1 a config has no SplitterInfoManager and an
-   update no splitter section */
+   update no splitter section.
+
+   A 32-bit game (g_arm_mod; SDK 0.12.16 is the one read) calls the same handlers through audio_renderer.hook's a32
+   declarations. Its handle is a word of 4 bytes, its config holds its managers and buffers in 4-byte fields
+   (AudioRendererConfig32), and a manager's method leaves its result in r0 */
 #include "nx/nn/audio.h"
 #include "nx/hle/hook/hook.h"
 #include "hle/hook/hooks.hook.h"
@@ -30,6 +34,7 @@
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/services/audren_dsp.h"
+#include "nx/runtime/arm.h"
 #include "nx/runtime/platform/log.h"
 #include "common/utilities/bits.h"
 
@@ -41,6 +46,18 @@
 #define REN_STOPPED  1
 #define REN_HEADER   0x40 /* an update's header, and its answer's */
 #define REN_INFO     0x10 /* the render info after the answer's sections: the frames rendered so far */
+
+/* a pointer in the game's memory: 8 bytes, 4 in a 32-bit game */
+static u32 word_size(void) { return g_arm_mod ? 4 : 8; }
+static u64 word_at(const CPU* c, u64 addr) {
+    return g_arm_mod ? snx_ld_le32(hook_host(c, addr)) : snx_ld_le64(hook_host(c, addr));
+}
+static void word_put(const CPU* c, u64 addr, u64 value) {
+    if (g_arm_mod)
+        snx_st_le32(hook_host(c, addr), (u32)value);
+    else
+        snx_st_le64(hook_host(c, addr), value);
+}
 
 /* the parameters as the session takes them (AudioRendererParameterInternal), which audren_state_new reads as bytes */
 typedef struct {
@@ -163,8 +180,8 @@ static u32 open_renderer(CPU* c, const HookLayout_nn_audio_AudioRendererParamete
              (unsigned long)p.sink_count, (unsigned long)p.sample_rate);
         return SNX_RC_AUDIO_OPERATION_FAILED;
     }
-    snx_st_le64(hook_host(c, handle), id);
-    if (words == 2) snx_st_le64(hook_host(c, handle + 8), 0);
+    word_put(c, handle, id);
+    if (words == 2) word_put(c, handle + word_size(), 0);
     if (!event) return 0;
     r = audren_at(id);
     if (r->manual && p.rendering_device == 1) {
@@ -289,7 +306,7 @@ i32 nnaudio_get_renderer_rendering_device(CPU* c, u64 id, u64 context) {
 /* the event the clock signals after each frame, attached to the game's SystemEvent; a renderer the game executes by
    itself has none */
 u32 nnaudio_query_renderer_event(CPU* c, u64 handle, u64 event) {
-    ARRen* r = renderer(handle ? snx_ld_le64(hook_host(c, handle)) : 0, "QueryAudioRendererSystemEvent");
+    ARRen* r = renderer(handle ? word_at(c, handle) : 0, "QueryAudioRendererSystemEvent");
     if (!r) return SNX_RC_AUDIO_INVALID_HANDLE;
     if (r->manual) return SNX_RC_AUDIO_NOT_SUPPORTED;
     return hook_attach_handle(c, event, ev_handle(g_hle.audio.ev)) ? 0 : SNX_RC_AUDIO_OPERATION_FAILED;
@@ -400,19 +417,20 @@ static int methods_find(u32 differences) {
     a->ren_fn_found = missing ? 2 : 1;
     return a->ren_fn_found == 1;
 }
-/* method m of its manager in the config, on up to three arguments: what it returns */
+/* method m of its manager in the config, on up to three arguments: what it returns. A 32-bit game's config holds
+   the same managers in the same order, a 4-byte pointer each */
 static u64 method(CPU* c, u64 config, int m, u64 a1, u64 a2, u64 a3) {
-    hook_guest_call(c, g_hle.audio.ren_fn[m], snx_ld_le64(hook_host(c, config + g_methods[m].manager)), a1, a2, a3);
-    return c->x[0];
+    u64 manager = word_at(c, config + g_methods[m].manager / (8 / word_size()));
+    hook_guest_call(c, g_hle.audio.ren_fn[m], manager, a1, a2, a3);
+    return g_arm_mod ? arm_cpu(c)->r[0] : c->x[0];
 }
 
-/* the update: frames is where the config keeps the address the SDK writes the rendered frames' count to, 0 for an
-   SDK that keeps none (before 6) */
-static u32 request_update(CPU* c, const HookLayout_nn_audio_AudioRendererConfig* L, u64 id, u64 config, u32 frames,
+/* the update, into and out of the config's two buffers: frames is where the config keeps the address the SDK writes
+   the rendered frames' count to, 0 for an SDK that keeps none (before 6) */
+static u32 request_update(CPU* c, u64 id, u64 config, u64 in, u64 in_size, u64 out, u64 out_size, u32 frames,
                           u32 differences) {
-    u64 in = hook_get_addr(c, L->in, config), in_size = hook_get_u64(c, L->in_size, config);
-    u64 out = hook_get_addr(c, L->out, config), out_size = hook_get_u64(c, L->out_size, config);
-    u64 at, sp = c->x[31], slots;
+    int one = !(differences & UPDATE_VOICE_SPLIT); /* the voices' sizes come back through two words of the stack */
+    u64 at, sp = c->x[31], slots = 0;
     u8* header;
     u32 total = REN_HEADER, n, rc;
     int m;
@@ -427,8 +445,10 @@ static u32 request_update(CPU* c, const HookLayout_nn_audio_AudioRendererConfig*
     }
     /* two words of the game's stack for UpdateVoiceRelatedParameters' sizes, below the handler's caller's frame and
        above the frames of the functions run from here */
-    c->x[31] = sp - 0x20;
-    slots = c->x[31];
+    if (one) {
+        c->x[31] = sp - 0x20;
+        slots = c->x[31];
+    }
     header = hook_host(c, in);
     memset(header, 0, REN_HEADER);
     snx_st_le32(header, (u32)method(c, config, M_REVISION, 0, 0, 0));
@@ -458,7 +478,7 @@ static u32 request_update(CPU* c, const HookLayout_nn_audio_AudioRendererConfig*
     }
     snx_st_le32(header + HEADER_TOTAL, total);
     if (total > in_size) {
-        c->x[31] = sp;
+        if (one) c->x[31] = sp;
         WARN_LIMIT(4, "audren: an update of %u bytes in a buffer of %llu: InvalidUpdateInfo\n", total,
                    (unsigned long long)in_size);
         return SNX_RC_AUDIO_INVALID_UPDATE_INFO;
@@ -485,24 +505,34 @@ static u32 request_update(CPU* c, const HookLayout_nn_audio_AudioRendererConfig*
             rc = (u32)method(c, config, M_CHECK_ERRORS, 0, 0, 0);
     } else if (rc == SNX_RC_AUDIO_INVALID_UPDATE_INFO)
         method(c, config, M_CHECK_ERRORS, 0, 0, 0); /* the SDK reads the renderer's errors, then gives the result */
-    c->x[31] = sp;
+    if (one) c->x[31] = sp;
     return rc;
 }
+/* the config's buffers, where an SDK's layout has them */
+#define BUFFERS(c, L, config)                                                                                          \
+    hook_get_addr(c, (L)->in, config), hook_get_u64(c, (L)->in_size, config), hook_get_addr(c, (L)->out, config),      \
+        hook_get_u64(c, (L)->out_size, config)
 u32 nnaudio_request_update(CPU* c, const HookLayout_nn_audio_AudioRendererConfig* L, u64 id, u64 context, u64 config) {
     (void)context;
-    return request_update(c, L, id, config, 0, 0);
+    return request_update(c, id, config, BUFFERS(c, L, config), 0, 0);
 }
 /* from SDK 6 the config holds, at 0x40, where the rendered frames' count goes */
 u32 nnaudio_request_update_frames(CPU* c, const HookLayout_nn_audio_AudioRendererConfig* L, u64 id, u64 context,
                                   u64 config) {
     (void)context;
-    return request_update(c, L, id, config, 0x40, 0);
+    return request_update(c, id, config, BUFFERS(c, L, config), 0x40, 0);
 }
 /* SDK 1, with its one-word handle */
 u32 nnaudio_request_update_word(CPU* c, const HookLayout_nn_audio_AudioRendererConfig* L, u64 id, u64 config) {
-    return request_update(c, L, id, config, 0, UPDATE_VOICE_SPLIT);
+    return request_update(c, id, config, BUFFERS(c, L, config), 0, UPDATE_VOICE_SPLIT);
 }
 /* SDK 0, which has no splitters yet */
 u32 nnaudio_request_update_first(CPU* c, const HookLayout_nn_audio_AudioRendererConfig* L, u64 id, u64 config) {
-    return request_update(c, L, id, config, 0, UPDATE_VOICE_SPLIT | UPDATE_NO_SPLITTER);
+    return request_update(c, id, config, BUFFERS(c, L, config), 0, UPDATE_VOICE_SPLIT | UPDATE_NO_SPLITTER);
+}
+/* a 32-bit game's, SDK 0 */
+u32 nnaudio_request_update_first32(CPU* c, const HookLayout_nn_audio_AudioRendererConfig32* L, u64 id, u64 config) {
+    return request_update(c, id, config, hook_get_u32(c, L->in, config), hook_get_u32(c, L->in_size, config),
+                          hook_get_u32(c, L->out, config), hook_get_u32(c, L->out_size, config), 0,
+                          UPDATE_VOICE_SPLIT | UPDATE_NO_SPLITTER);
 }

@@ -10,7 +10,11 @@
 # rendered frames' count goes. The revision is the AudioRendererParameter's last word, after one more word in SDK 6
 # to 8. Before SDK 2 the parameter is the session's own struct, the handle is one word (so an argument after it comes
 # one register earlier) and the voices' two sections each have a method; SDK 0 has no splitters. SDK 2 was not read:
-# it has no hook, and keeps its own code
+# it has no hook, and keeps its own code.
+# A 32-bit game: the 13 of these functions a 32-bit SDK (0.12.16, the one read) has. The parameter is the 64-bit SDK
+# 0's, the handle one word of 4 bytes, and the config's buffers are 4-byte fields (AudioRendererConfig32); the ones
+# that take a size_t have another symbol there. A function that takes only the handle is marked a32: the handler
+# reads no second word. Each is for that SDK alone (a32 @version): a 32-bit game of another SDK has no hook here
 family nn_audio_renderer
 struct nn::audio::AudioRendererParameter @version(< 2.0.0) { u32 revision @0x30 } size 0x34
 struct nn::audio::AudioRendererParameter @version(>= 3.0.0, < 6.0.0) { u32 revision @0x34 } size 0x38
@@ -22,37 +26,42 @@ struct nn::audio::AudioRendererConfig @version(>= 3.0.0, < 4.0.0) { addr in @0x5
 struct nn::audio::AudioRendererConfig @version(>= 4.0.0, < 6.0.0) { addr in @0x40; u64 in_size @0x48; addr out @0x50; u64 out_size @0x58 } size 0x60
 struct nn::audio::AudioRendererConfig @version(>= 6.0.0, < 9.0.0) { addr in @0x50; u64 in_size @0x58; addr out @0x60; u64 out_size @0x68 } size 0x70
 struct nn::audio::AudioRendererConfig @version(>= 9.0.0) { addr in @0x48; u64 in_size @0x50; addr out @0x58; u64 out_size @0x60 } size 0x68
-@version(< 2.0.0) hook _ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE(addr param) -> u64 = nnaudio_get_renderer_work_buffer_size uses nn::audio::AudioRendererParameter
-@version(< 2.0.0) hook _ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleERKNS0_22AudioRendererParameterEPvm(addr handle, addr param, addr work, u64 size) -> u32 = nnaudio_open_renderer_word uses nn::audio::AudioRendererParameter
-@version(< 2.0.0) hook _ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleEPNS_2os11SystemEventERKNS0_22AudioRendererParameterEPvm(addr handle, addr event, addr param, addr work, u64 size) -> u32 = nnaudio_open_renderer_event_word uses nn::audio::AudioRendererParameter
-@version(>= 3.0.0, < 6.0.0) hook _ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE(addr param) -> u64 = nnaudio_get_renderer_work_buffer_size uses nn::audio::AudioRendererParameter
+struct nn::audio::AudioRendererConfig32 @version(< 1.0.0) { u32 in @0x2c; u32 in_size @0x30; u32 out @0x34; u32 out_size @0x38 } size 0x3c
+@version(< 2.0.0) hook _ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE(addr param) -> usize = nnaudio_get_renderer_work_buffer_size uses nn::audio::AudioRendererParameter
+@version(< 2.0.0) hook _ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleERKNS0_22AudioRendererParameterEPvm(addr handle, addr param, addr work, usize size) -> u32 = nnaudio_open_renderer_word uses nn::audio::AudioRendererParameter
+@version(< 2.0.0) hook _ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleEPNS_2os11SystemEventERKNS0_22AudioRendererParameterEPvm(addr handle, addr event, addr param, addr work, usize size) -> u32 = nnaudio_open_renderer_event_word uses nn::audio::AudioRendererParameter
+@version(>= 3.0.0, < 6.0.0) hook _ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE(addr param) -> usize = nnaudio_get_renderer_work_buffer_size uses nn::audio::AudioRendererParameter
 @version(>= 3.0.0, < 6.0.0) hook _ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleERKNS0_22AudioRendererParameterEPvm(addr handle, addr param, addr work, u64 size) -> u32 = nnaudio_open_renderer uses nn::audio::AudioRendererParameter
 @version(>= 3.0.0, < 6.0.0) hook _ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleEPNS_2os11SystemEventERKNS0_22AudioRendererParameterEPvm(addr handle, addr event, addr param, addr work, u64 size) -> u32 = nnaudio_open_renderer_event uses nn::audio::AudioRendererParameter
-@version(>= 6.0.0, < 9.0.0) hook _ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE(addr param) -> u64 = nnaudio_get_renderer_work_buffer_size uses nn::audio::AudioRendererParameter
+@version(>= 6.0.0, < 9.0.0) hook _ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE(addr param) -> usize = nnaudio_get_renderer_work_buffer_size uses nn::audio::AudioRendererParameter
 @version(>= 6.0.0, < 9.0.0) hook _ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleERKNS0_22AudioRendererParameterEPvm(addr handle, addr param, addr work, u64 size) -> u32 = nnaudio_open_renderer uses nn::audio::AudioRendererParameter
 @version(>= 6.0.0, < 9.0.0) hook _ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleEPNS_2os11SystemEventERKNS0_22AudioRendererParameterEPvm(addr handle, addr event, addr param, addr work, u64 size) -> u32 = nnaudio_open_renderer_event uses nn::audio::AudioRendererParameter
-@version(>= 9.0.0) hook _ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE(addr param) -> u64 = nnaudio_get_renderer_work_buffer_size uses nn::audio::AudioRendererParameter
+@version(>= 9.0.0) hook _ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE(addr param) -> usize = nnaudio_get_renderer_work_buffer_size uses nn::audio::AudioRendererParameter
 @version(>= 9.0.0) hook _ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleERKNS0_22AudioRendererParameterEPvm(addr handle, addr param, addr work, u64 size) -> u32 = nnaudio_open_renderer uses nn::audio::AudioRendererParameter
 @version(>= 9.0.0) hook _ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleEPNS_2os11SystemEventERKNS0_22AudioRendererParameterEPvm(addr handle, addr event, addr param, addr work, u64 size) -> u32 = nnaudio_open_renderer_event uses nn::audio::AudioRendererParameter
+@version(< 1.0.0) a32 hook _ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE(addr param) -> usize = nnaudio_get_renderer_work_buffer_size uses nn::audio::AudioRendererParameter
+@version(< 1.0.0) a32 hook _ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleERKNS0_22AudioRendererParameterEPvj(addr handle, addr param, addr work, usize size) -> u32 = nnaudio_open_renderer_word uses nn::audio::AudioRendererParameter
+@version(< 1.0.0) a32 hook _ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleEPNS_2os11SystemEventERKNS0_22AudioRendererParameterEPvj(addr handle, addr event, addr param, addr work, usize size) -> u32 = nnaudio_open_renderer_event_word uses nn::audio::AudioRendererParameter
+@version(< 1.0.0) a32 hook _ZN2nn5audio26RequestUpdateAudioRendererENS0_19AudioRendererHandleEPKNS0_19AudioRendererConfigE(addr renderer, addr config) -> u32 = nnaudio_request_update_first32 uses nn::audio::AudioRendererConfig32
 @version(< 1.0.0) hook _ZN2nn5audio26RequestUpdateAudioRendererENS0_19AudioRendererHandleEPKNS0_19AudioRendererConfigE(addr renderer, addr config) -> u32 = nnaudio_request_update_first uses nn::audio::AudioRendererConfig
 @version(>= 1.0.0, < 2.0.0) hook _ZN2nn5audio26RequestUpdateAudioRendererENS0_19AudioRendererHandleEPKNS0_19AudioRendererConfigE(addr renderer, addr config) -> u32 = nnaudio_request_update_word uses nn::audio::AudioRendererConfig
 @version(>= 3.0.0, < 4.0.0) hook _ZN2nn5audio26RequestUpdateAudioRendererENS0_19AudioRendererHandleEPKNS0_19AudioRendererConfigE(addr renderer, addr context, addr config) -> u32 = nnaudio_request_update uses nn::audio::AudioRendererConfig
 @version(>= 4.0.0, < 6.0.0) hook _ZN2nn5audio26RequestUpdateAudioRendererENS0_19AudioRendererHandleEPKNS0_19AudioRendererConfigE(addr renderer, addr context, addr config) -> u32 = nnaudio_request_update uses nn::audio::AudioRendererConfig
 @version(>= 6.0.0, < 9.0.0) hook _ZN2nn5audio26RequestUpdateAudioRendererENS0_19AudioRendererHandleEPKNS0_19AudioRendererConfigE(addr renderer, addr context, addr config) -> u32 = nnaudio_request_update_frames uses nn::audio::AudioRendererConfig
 @version(>= 9.0.0) hook _ZN2nn5audio26RequestUpdateAudioRendererENS0_19AudioRendererHandleEPKNS0_19AudioRendererConfigE(addr renderer, addr context, addr config) -> u32 = nnaudio_request_update_frames uses nn::audio::AudioRendererConfig
-@version(< 2.0.0) hook _ZN2nn5audio34SetAudioRendererRenderingTimeLimitENS0_19AudioRendererHandleEi(addr renderer, i32 percent) = nnaudio_set_renderer_time_limit_word
+@version(< 2.0.0) hook _ZN2nn5audio34SetAudioRendererRenderingTimeLimitENS0_19AudioRendererHandleEi(addr renderer, i32 percent) = nnaudio_set_renderer_time_limit_word a32 @version(< 1.0.0)
 @version(>= 3.0.0) hook _ZN2nn5audio34SetAudioRendererRenderingTimeLimitENS0_19AudioRendererHandleEi(addr renderer, addr context, i32 percent) = nnaudio_set_renderer_time_limit
-hook _ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE(addr renderer, addr context) = nnaudio_close_renderer
-hook _ZN2nn5audio18StartAudioRendererENS0_19AudioRendererHandleE(addr renderer, addr context) -> u32 = nnaudio_start_renderer
-hook _ZN2nn5audio17StopAudioRendererENS0_19AudioRendererHandleE(addr renderer, addr context) = nnaudio_stop_renderer
-hook _ZN2nn5audio21GetAudioRendererStateENS0_19AudioRendererHandleE(addr renderer, addr context) -> u32 = nnaudio_get_renderer_state
-hook _ZN2nn5audio26GetAudioRendererSampleRateENS0_19AudioRendererHandleE(addr renderer, addr context) -> i32 = nnaudio_get_renderer_sample_rate
-hook _ZN2nn5audio27GetAudioRendererSampleCountENS0_19AudioRendererHandleE(addr renderer, addr context) -> i32 = nnaudio_get_renderer_sample_count
-hook _ZN2nn5audio30GetAudioRendererMixBufferCountENS0_19AudioRendererHandleE(addr renderer, addr context) -> i32 = nnaudio_get_renderer_mix_buffer_count
-hook _ZN2nn5audio34GetAudioRendererRenderingTimeLimitENS0_19AudioRendererHandleE(addr renderer, addr context) -> i32 = nnaudio_get_renderer_time_limit
+hook _ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE(addr renderer, addr context) = nnaudio_close_renderer a32 @version(< 1.0.0)
+hook _ZN2nn5audio18StartAudioRendererENS0_19AudioRendererHandleE(addr renderer, addr context) -> u32 = nnaudio_start_renderer a32 @version(< 1.0.0)
+hook _ZN2nn5audio17StopAudioRendererENS0_19AudioRendererHandleE(addr renderer, addr context) = nnaudio_stop_renderer a32 @version(< 1.0.0)
+hook _ZN2nn5audio21GetAudioRendererStateENS0_19AudioRendererHandleE(addr renderer, addr context) -> u32 = nnaudio_get_renderer_state a32 @version(< 1.0.0)
+hook _ZN2nn5audio26GetAudioRendererSampleRateENS0_19AudioRendererHandleE(addr renderer, addr context) -> i32 = nnaudio_get_renderer_sample_rate a32 @version(< 1.0.0)
+hook _ZN2nn5audio27GetAudioRendererSampleCountENS0_19AudioRendererHandleE(addr renderer, addr context) -> i32 = nnaudio_get_renderer_sample_count a32 @version(< 1.0.0)
+hook _ZN2nn5audio30GetAudioRendererMixBufferCountENS0_19AudioRendererHandleE(addr renderer, addr context) -> i32 = nnaudio_get_renderer_mix_buffer_count a32 @version(< 1.0.0)
+hook _ZN2nn5audio34GetAudioRendererRenderingTimeLimitENS0_19AudioRendererHandleE(addr renderer, addr context) -> i32 = nnaudio_get_renderer_time_limit a32 @version(< 1.0.0)
 hook _ZN2nn5audio34SetAudioRendererVoiceDropParameterENS0_19AudioRendererHandleEf(addr renderer, addr context, f32 parameter) = nnaudio_set_renderer_voice_drop
 hook _ZN2nn5audio34GetAudioRendererVoiceDropParameterENS0_19AudioRendererHandleE(addr renderer, addr context) -> f32 = nnaudio_get_renderer_voice_drop
 hook _ZN2nn5audio29GetAudioRendererExecutionModeENS0_19AudioRendererHandleE(addr renderer, addr context) -> i32 = nnaudio_get_renderer_execution_mode
 hook _ZN2nn5audio31GetAudioRendererRenderingDeviceENS0_19AudioRendererHandleE(addr renderer, addr context) -> i32 = nnaudio_get_renderer_rendering_device
-hook _ZN2nn5audio29QueryAudioRendererSystemEventEPNS0_19AudioRendererHandleEPNS_2os11SystemEventE(addr handle, addr event) -> u32 = nnaudio_query_renderer_event
+hook _ZN2nn5audio29QueryAudioRendererSystemEventEPNS0_19AudioRendererHandleEPNS_2os11SystemEventE(addr handle, addr event) -> u32 = nnaudio_query_renderer_event a32 @version(< 1.0.0)
 hook _ZN2nn5audio29ExecuteAudioRendererRenderingENS0_19AudioRendererHandleE(addr renderer, addr context) -> u32 = nnaudio_execute_renderer
