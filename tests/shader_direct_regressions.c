@@ -6089,6 +6089,52 @@ static void window_origin_specialized(void) {
     }
 }
 
+/* Constant buffer words that whoever translates gives as constants (g_shader_cb_fold): a load at a constant place is
+   then that constant, whatever the buffer holds when the module runs; a word it leaves, and every word where nobody
+   is asked, is loaded. The word is asked for by its bank and its byte offset */
+static int fold_second_word(u32 idx, u32 off, u32* out) {
+    if (idx != 2 || off != 4) return 0;
+    *out = 0x3F800000u;
+    return 1;
+}
+static void constant_buffer_words_folded(void) {
+    const u64 reads[] = {0x4c98078800070001ull, 0x4c98078800170002ull}; /* MOV R1, c[2][0]; MOV R2, c[2][4] */
+    for (int folded = 0; folded < 2; folded++) {
+        ShaderInfo info = {0};
+        size_t words = 0, slots;
+        u64* code = guest_program(reads, 2, NULL, &slots);
+        if (!code) return;
+        set_sph(code, 18, 0xf); /* R1 is colour 0's green and R2 its blue */
+        g_shader_cb_fold = folded ? fold_second_word : NULL;
+        u32* spv = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 0, 1, 1, 1);
+        g_shader_cb_fold = NULL;
+        free(code);
+        check_translated(spv, &info, "a fragment program loading two constant buffer words translates");
+        if (!spv) continue;
+        /* the buffer holds 0.25 where the constant is 1.0 */
+        const float held[4] = {5.0f, 0.25f, 0.0f, 0.0f}, one[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+        u32 buffer[4], scale[4];
+        float green, blue;
+        SpvEvalEnv env = {0};
+        memcpy(buffer, held, sizeof held);
+        memcpy(scale, one, sizeof one);
+        env.ubo[2] = buffer;
+        env.ubo_words[2] = 4;
+        env.ubo[SNX_VKB_RS] = scale;
+        env.ubo_words[SNX_VKB_RS] = 4;
+        const char* why = spv_eval(spv, words, &env);
+        memcpy(&green, &env.out[0][1], 4);
+        memcpy(&blue, &env.out[0][2], 4);
+        if (why || green != 5.0f || blue != (folded ? 1.0f : 0.25f))
+            fprintf(stderr, "folded %d: %s, green %g and blue %g\n", folded, why ? why : "ran", (double)green,
+                    (double)blue);
+        check(!why && green == 5.0f && blue == (folded ? 1.0f : 0.25f),
+              folded ? "the word given is the module's constant, and the word left is loaded"
+                     : "where nobody is asked both words are loaded");
+        free(spv);
+    }
+}
+
 /* What the translator knows as it translates is settled there, not left for the driver's compiler: PT, the
    predicate most instructions name, is the constant true; a constant a register holds is a constant of the type it
    is read as; and a float a register holds is read back as that float, not through its bits */
@@ -6482,6 +6528,7 @@ int main(int argc, char** argv) {
     alpha_function_specialized();
     window_origin_specialized();
     inputs_loaded_once_a_block();
+    constant_buffer_words_folded();
     check(!g_fixtures.failed, "shader fixture paths allocated");
     for (size_t i = 0; i < g_fixtures.count; i++) free(g_fixtures.paths[i]);
     free(g_fixtures.paths);
