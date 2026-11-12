@@ -20,6 +20,84 @@ static int syscall(void* context, uint32_t imm, uint64_t number, const uint64_t 
     return 1; /* stop */
 }
 
+/* Blocks forgotten in a range compile again from what memory holds there now, as when ldr:ro maps an NRO where it
+   unmapped another, and every other block stays cached. 500 blocks at scattered addresses fill 1024 slots to just
+   under the half the table grows at, so some share a home slot and sit further on, and every other block from
+   FORGET_LO to FORGET_HI goes, one range each, from among them (blocks in a row would each have a home of their own:
+   the hash spreads a run of addresses evenly) */
+#define FORGET_BLOCKS 500
+#define FORGET_SPAN   8192 /* 8-byte places for a block */
+#define FORGET_LO     100
+#define FORGET_HI     350
+static void block_code(unsigned char* mem, uint32_t pc, unsigned value) {
+    const uint32_t words[2] = {0xE3A00000u | (value & 0xFFu), 0xEF000000u}; /* mov r0, #value; svc #0 */
+    for (unsigned k = 0; k < 8; k++) mem[pc + k] = (unsigned char)(words[k / 4] >> (k % 4 * 8));
+}
+static int forget_test(void) {
+    static unsigned char mem[0x1000 + FORGET_SPAN * 8];
+    static unsigned char taken[FORGET_SPAN];
+    static uint32_t at[FORGET_BLOCKS];
+    static SnxArmBlock first[FORGET_BLOCKS];
+    SnxArmExecRange range = {0x1000, mem + 0x1000, FORGET_SPAN * 8};
+    SnxArmExec* exec = snx_arm_exec_new(NULL, 0);
+    uint32_t x = 12345;
+    int failures = 0;
+    if (!exec) return 1;
+    for (int i = 0; i < FORGET_BLOCKS;) { /* the places, from a fixed sequence (an LCG) */
+        x = x * 1103515245u + 12345u;
+        uint32_t place = ((x & 0x7FFFFFFFu) >> 8) % FORGET_SPAN;
+        if (taken[place]) continue;
+        taken[place] = 1;
+        at[i] = 0x1000u + place * 8;
+        block_code(mem, at[i], (unsigned)i);
+        i++;
+    }
+    for (int i = 0; i < FORGET_BLOCKS; i++) {
+        first[i] = snx_arm_exec_block(exec, &range, 1, at[i], 0, mem);
+        if (!first[i]) {
+            fprintf(stderr, "FAIL: block %d does not compile\n", i);
+            snx_arm_exec_free(exec);
+            return 1;
+        }
+    }
+    /* the odd blocks from FORGET_LO to FORGET_HI are another program's now */
+    for (int i = FORGET_LO | 1; i < FORGET_HI; i += 2) {
+        block_code(mem, at[i], (unsigned)i + 7);
+        snx_arm_exec_forget(exec, at[i], at[i] + 8);
+    }
+    /* the blocks kept first, as nothing is compiled for them: a new block takes the first free slot of its probe, which
+       would fill a hole that hid a kept block from its lookup */
+    for (int k = 0; k < 2 * FORGET_BLOCKS; k++) {
+        int i = k % FORGET_BLOCKS, moved = i >= FORGET_LO && i < FORGET_HI && (i & 1);
+        uint32_t pc = at[i];
+        if (moved != (k >= FORGET_BLOCKS)) continue;
+        SnxArmBlock now = snx_arm_exec_block(exec, &range, 1, pc, 0, mem);
+        if (!moved && now != first[i]) {
+            fprintf(stderr, "FAIL: block %d, outside the range forgotten, was compiled again\n", i);
+            failures++;
+        }
+        if (moved && now == first[i]) {
+            fprintf(stderr, "FAIL: block %d, in the range forgotten, is still the one compiled before\n", i);
+            failures++;
+        }
+        SnxArmCPU cpu;
+        Svc svc = {0};
+        memset(&cpu, 0, sizeof cpu);
+        cpu.mem = mem;
+        cpu.mem_size = sizeof mem;
+        cpu.cpsr = 0x10;
+        cpu.r[15] = pc;
+        (void)snx_arm_exec_run(exec, &cpu, &range, 1, syscall, &svc);
+        unsigned want = (unsigned)(moved ? i + 7 : i) & 0xFFu;
+        if (!svc.seen || cpu.r[0] != want) {
+            fprintf(stderr, "FAIL: block %d ran r0 = %u, %u wanted\n", i, (unsigned)cpu.r[0], want);
+            failures++;
+        }
+    }
+    snx_arm_exec_free(exec);
+    return failures;
+}
+
 int main(void) {
     /* mov r0,#0x80000000; mov r1,#0xFFFFFFFF; mov r7,#7; svc #0 */
     static const uint32_t code[] = {0xE3A00102, 0xE3E01000, 0xE3A07007, 0xEF000000};
@@ -100,6 +178,7 @@ int main(void) {
             failures++;
         }
     }
+    failures += forget_test();
     if (!failures) puts("A32 executor and DRY zero-extending SVC passed");
     return failures ? 1 : 0;
 }

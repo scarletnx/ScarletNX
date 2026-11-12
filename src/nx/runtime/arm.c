@@ -52,6 +52,26 @@ const SnxModule* arm_module(const SnxArmModule* m) {
     return &g_view;
 }
 
+/* a mapping or permission change under guest memory [addr, addr + size) (mem.c, no memory lock held): the blocks
+   compiled from there outside the modules' code are stale. ldr:ro maps one NRO where it unmapped another, and the
+   first one's blocks ran the second one's data as its code. The modules' own blocks stay: their code never moves.
+   Every block compiled outside the modules is in g_extra, so the compiler's cache is gone through only when one of
+   them was in the range: a game's allocator maps and unmaps memory far more often than ldr:ro */
+static void code_invalidate(u64 addr, u64 size) {
+    u64 end = size > ~0ull - addr ? ~0ull : addr + size;
+    int kept = 0, stale;
+    pm_lock(&g_jit_lock);
+    for (int i = 0; i < g_nextra; i++) {
+        u64 a = g_extra[i].key & ~1u;
+        if (a < addr || a >= end) g_extra[kept++] = g_extra[i];
+    }
+    stale = kept < g_nextra;
+    g_nextra = kept;
+    if (stale && addr < g_lo) snx_arm_exec_forget(g_jit, addr, end < g_lo ? end : g_lo);
+    if (stale && end > g_hi) snx_arm_exec_forget(g_jit, addr > g_hi ? addr : g_hi, end);
+    pm_unlock(&g_jit_lock);
+}
+
 void arm_dispatch_init(void) {
     const SnxArmModule* m = g_arm_mod;
     u64 lo = ~0ull, hi = 0;
@@ -76,6 +96,7 @@ void arm_dispatch_init(void) {
             g_a32[(a - g_lo) / 4] = m->entry_fn[i];
     }
     LOG("AArch32: %u recompiled blocks in %x-%x\n", m->nentries, g_lo, g_hi);
+    mem_set_code_invalidate(code_invalidate);
 }
 
 static SnxArmBlock* slot(u32 pc, int thumb) {
