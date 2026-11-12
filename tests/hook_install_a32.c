@@ -5,7 +5,8 @@
    program alone) takes its function's slot, an A32 function's and a Thumb one's alike, and its adapter runs the
    handler with the arguments AAPCS32 gives it; one not declared a32, a symbol no hook names and a family that
    hooks_off names keep their slots. A versioned hook takes the slot of a function whose module's SDK label holds
-   its version, and none in a module with no label. The two tables: a symbol declared again for a 32-bit program
+   its version, and none in a module with no label; one declared a32 for some versions is in the table for any and
+   in a 32-bit program's for those, and in a game of another SDK its function keeps its own code. The two tables: a symbol declared again for a 32-bit program
    alone has each program's handler in its table, and one only a 32-bit program has is in no other. And a handler
    that hands its call back: the function's own block, the one its slot held, runs until the call's return address,
    and the adapter still returns there; and one that calls another function of the game, with its four words in r0
@@ -24,6 +25,7 @@ u32 test_answer(CPU* c, u32 a, int b) {
 void test_thumb_answer(CPU* c, u64 out) { c->mem[out] = 0x5a; }
 u64 test_wide(CPU* c, u64 size) { return (void)c, size; }
 u32 test_off(CPU* c) { return (void)c, 1; }
+u32 test_ranged(CPU* c, u32 a) { return (void)c, a + 1; }
 u32 test_own(CPU* c, u32 a) { return a == 5 ? (u32)hook_run_original_a32(c) + 1 : 0; }
 u32 test_caller(CPU* c, u32 fn) {
     hook_guest_call_a32(c, fn, 11, 12, 13, 14);
@@ -50,6 +52,7 @@ static const struct {
                {"off_answer", 0x1030},
                {"now", 0x1040},
                {"save_j", 0x1050},
+               {"ranged", 0x1080},
                {"save_j", 0x2011 /* in the module with no SDK label */},
                {"answer", 0x3000 /* in no module */},
                {"answer", 0x100001000ull /* outside a 32-bit game's addresses */}};
@@ -149,7 +152,7 @@ int main(void) {
        a 32-bit program alone in that program's */
     int answer = entry(&hook32_table, "answer", 0), thumb = entry(&hook32_table, "thumb_answer", 0);
     int now = entry(&hook32_table, "now", 0), off = entry(&hook32_table, "off_answer", 0);
-    assert(HOOK_COUNT == 7 && HOOK32_COUNT == 8);
+    assert(HOOK_COUNT == 8 && HOOK32_COUNT == 9);
     assert(answer >= 0 && thumb >= 0 && now >= 0 && off >= 0);
     assert(entry(&hook_table, "answer", 0) >= 0 && entry(&hook_table, "wide", 0) >= 0);
     assert(entry(&hook32_table, "wide", 0) == -1 && entry(&hook_table, "save_j", 0) == -1);
@@ -161,6 +164,12 @@ int main(void) {
     assert(!strncmp(hook32_layouts[entry(&hook32_table, "save_j", 0x10000)], "Report32 of line ", 17));
     assert(!strncmp(hook32_layouts[entry(&hook32_table, "save_j", 0x20000)], "Report32 of line ", 17));
     assert(entry(&hook32_table, "save_j", 0x10000) != entry(&hook32_table, "save_j", 0x20000));
+    /* a32 with versions: the table's entry is for any version, a 32-bit program's for the ones after its a32 */
+    assert(hook_key[entry(&hook_table, "ranged", 0)] == HOOK_ANY);
+    assert(entry(&hook32_table, "ranged", 0) == -2 && entry(&hook32_table, "ranged", 0x20000) == -2);
+    assert(hook32_key[entry(&hook32_table, "ranged", 0x10203)] == HOOK_SDK);
+    assert(hook32_lo[entry(&hook32_table, "ranged", 0x10203)] == 0);
+    assert(hook32_hi[entry(&hook32_table, "ranged", 0x10203)] == 0x20000);
 
     for (unsigned i = 0; i < 0x40; i++) a32_slots[i] = thumb_slots[i] = own_block;
     a32_slots[24] = own_a32, thumb_slots[16] = own_thumb, a32_slots[28] = own_caller;
@@ -178,6 +187,7 @@ int main(void) {
     /* versioned: the hook for the SDK its module's label names, and none where the module has no label */
     assert(a32_slots[20] == hook32_fn[entry(&hook32_table, "save_j", 0x10203)]);
     assert(a32_slots[20] != hook32_fn[entry(&hook32_table, "save_j", 0x20000)]);
+    assert(a32_slots[32] == hook32_fn[entry(&hook32_table, "ranged", 0x10203)]);
     for (unsigned i = 1; i < 0x40; i++) assert(i == 16 || thumb_slots[i] == own_block);
 
     /* the adapter: r0 and r1 to the handler, its answer in r0, back to lr */
@@ -229,6 +239,15 @@ int main(void) {
     assert(runs == 4 && called[0] == 11 && called[1] == 12 && called[2] == 13 && called[3] == 14);
     assert(called[4] == 0x2040 && called[5] == SNX_ARM_T);
     assert(a.r[0] == 0xc0 && a.r[15] == 0x3000 && !(a.cpsr & SNX_ARM_T));
+
+    /* a game of another SDK, 3.0.1: the function declared a32 for versions under 2.0.0 keeps its own code there,
+       the versioned one takes its later layout and the unversioned ones their hooks */
+    for (unsigned i = 0; i < 0x40; i++) a32_slots[i] = thumb_slots[i] = own_block;
+    memset(&g_host.hook, 0, sizeof g_host.hook);
+    strcpy((char*)guest + 0x1810, "SDK MW+Vendor+VendorSdk_nnSdk-3_0_1-Release");
+    hook_install();
+    assert(a32_slots[32] == own_block && a32_slots[0] == hook32_fn[answer]);
+    assert(a32_slots[20] == hook32_fn[entry(&hook32_table, "save_j", 0x20000)]);
 
     /* hooks=0 takes nothing */
     for (unsigned i = 0; i < 0x40; i++) a32_slots[i] = thumb_slots[i] = own_block;

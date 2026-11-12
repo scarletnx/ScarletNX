@@ -1321,7 +1321,9 @@ foreach(bad IN ITEMS
         a32_twice 4 "f is hooked on line 3 too"
         a32_word_twice 3 "the a32 before hook says it already"
         a32_keyword 3 "expected 'hook' after a32"
-        a32_pure 3 "verify mode checks no hook of a 32-bit program")
+        a32_pure 3 "verify mode checks no hook of a 32-bit program"
+        a32_versions_overlap 4 "f's versions overlap line 3's"
+        a32_versions_malformed 3 "malformed version '2.x'")
     if(NOT DEFINED bad_name)
         set(bad_name "${bad}")
     elseif(NOT DEFINED bad_line)
