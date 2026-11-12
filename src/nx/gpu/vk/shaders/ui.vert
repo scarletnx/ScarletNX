@@ -116,7 +116,8 @@ void main() {
         v_flags = 2u;
     else if (ink == 5u) { // UI_SHAPE: kind, label, flags and edge in its texels (ui.h's ui_shape)
         uint kind = texels.x, label = texels.y, n = (label >> 8) != 0u ? 2u : (label & 0xFFu) != 0u ? 1u : 0u;
-        if (n == 0u || 16.0 > r.w * 0.8 || 8.0 * float(n) > r.z * 0.8) // no room for it at 1
+        // no room for it at 1: the font's 16 rows and a pixel above and under them, its columns in four fifths
+        if (n == 0u || 16.0 > r.w - 2.0 || 8.0 * float(n) > r.z * 0.8)
             n = 0u;
         float s = max(1.0, floor(min(r.w * 0.5 / 16.0, r.z * 0.6 / (8.0 * float(max(n, 1u))))));
         v_label = vec4(floor((r.zw - vec2(8.0 * float(n), 16.0) * s) * 0.5), s, float(n));
