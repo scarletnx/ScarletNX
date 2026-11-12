@@ -505,10 +505,15 @@ static void writemem(ArmIR* a, LLVMValueRef addr, unsigned bytes, LLVMValueRef v
     LLVMBuildBr(a->b, done);
     LLVMPositionBuilderAtEnd(a->b, done);
 }
-/* LDM and STM move raw words at the exact addresses: the GBA's single transfer rotation and
-   alignment do not apply to the list transfers. The bus hook still sees them. */
+/* LDM and STM move whole words: the ARM7TDMI drives a word's address with bits 1 and 0 clear, below the save memory,
+   whose 8 bit bus takes the address as it is (mGBA's GBALoadMultiple), and a single transfer's rotation does not
+   apply. The bus hook still sees them */
+static LLVMValueRef list_address(ArmIR* a, LLVMValueRef addr) {
+    return LLVMBuildSelect(a->b, cmp(a, LLVMIntULT, addr, c32(a, 0x0E000000)), band(a, addr, c32(a, ~3u)), addr, "");
+}
 static LLVMValueRef readmem_list(ArmIR* a, LLVMValueRef addr, unsigned bytes) {
     if (!arm7tdmi(a)) return readmem(a, addr, bytes, 0);
+    addr = list_address(a, addr);
     LLVMTypeRef type = LLVMIntTypeInContext(a->ctx, bytes * 8);
     LLVMValueRef fn = get(a, offsetof(SnxArmCPU, io), a->ptr);
     LLVMBasicBlockRef io = block(a, "io"), mem = block(a, "mem"), done = block(a, "read");
@@ -540,6 +545,7 @@ static void writemem_list(ArmIR* a, LLVMValueRef addr, unsigned bytes, LLVMValue
         writemem(a, addr, bytes, value);
         return;
     }
+    addr = list_address(a, addr);
     LLVMTypeRef type = LLVMIntTypeInContext(a->ctx, bytes * 8);
     LLVMValueRef fn = get(a, offsetof(SnxArmCPU, io), a->ptr);
     LLVMBasicBlockRef io = block(a, "io"), mem = block(a, "mem"), done = block(a, "written");

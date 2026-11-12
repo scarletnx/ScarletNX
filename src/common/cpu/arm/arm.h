@@ -136,8 +136,8 @@ SnxA32Kind snx_a32_decode(uint32_t word);
    A9 executes them (profile.c).
    ARM7TDMI is the AGB board's CPU on flat memory: misaligned loads rotate and stores align, stores of the PC write
    PC + 12, STM writes the written back base unless it comes first, Thumb's POP {pc} keeps the state, LDM and STM
-   take an unaligned base, and SnxArmCPU.io sees the board's I/O regions. It decodes as A57, but for an MSR that
-   writes the mode, which is UNDEFINED for the board's runtime to run */
+   take an unaligned base and move the aligned words below the save memory, and SnxArmCPU.io sees the board's I/O
+   regions. It decodes as A57, but for an MSR that writes the mode, which is UNDEFINED for the board's runtime to run */
 typedef enum { SNX_ARM_PROFILE_A57, SNX_ARM_PROFILE_ARM11, SNX_ARM_PROFILE_A9, SNX_ARM_PROFILE_ARM7TDMI } SnxArmProfile;
 SnxA32Kind snx_a32_decode_profile(SnxArmProfile profile, uint32_t word);
 

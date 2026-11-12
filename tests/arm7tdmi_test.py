@@ -29,11 +29,13 @@ ARM = {
     'stm_pc': (0xE8848000,),  # STMIA r4, {pc}
     'stm_base': (0xE8A40012,),  # STMIA r4!, {r1, r4}
     'ldm': (0xE8940005,),  # LDMIA r4, {r0, r2}
+    'stm_unaligned': (0xE8A40006,),  # STMIA r4!, {r1, r2}
     'io_load': (0xE5940000,),  # LDR r0, [r4]
     'io_store': (0xE1C410B0,),  # STRH r1, [r4]
 }
 THUMB = {
     'pop_pc': (0xBD01,),  # POP {r0, pc}
+    'ldmia': (0xCC05,),  # LDMIA r4!, {r0, r2}
     # BL's second half alone (a GBA game's call through LR); with the halfword after it A57's STRB.W r0, [r0, r0]
     'bl_suffix': (0xF810, 0x0000),
 }
@@ -112,7 +114,24 @@ def check(arm, thumb, profile):
     assert cpu.exit == 0 and cpu.r[4] == 0x02008008 and word(run.memory, 0x02008000) == 7
     assert word(run.memory, 0x02008004) == (0x02008008 if seven else 0x02008000)  # the base after the first: written back
     run = Run(arm['ldm'], r4=0x02008002)
-    assert run().exit == (0 if seven else 7)  # A57: SNX_ARM_ALIGNMENT
+    put(run.memory, 0x02008000, bytes(range(0x11, 0xDD, 0x11)))
+    cpu = run()
+    assert cpu.exit == (0 if seven else 7)  # A57: SNX_ARM_ALIGNMENT
+    # the ARM7TDMI's list moves the words at the base with bits 1 and 0 clear, and writes the base back as it was plus
+    # the list; the save memory's 8 bit bus takes the address as it is
+    if seven:
+        assert (cpu.r[0], cpu.r[2]) == (0x44332211, 0x88776655), (hex(cpu.r[0]), hex(cpu.r[2]))
+        run = Run(thumb['ldmia'], thumb=True, r4=0x02008002)
+        put(run.memory, 0x02008000, bytes(range(0x11, 0xDD, 0x11)))
+        cpu = run()
+        assert (cpu.exit, cpu.r[0], cpu.r[2], cpu.r[4]) == (0, 0x44332211, 0x88776655, 0x0200800A), hex(cpu.r[0])
+        run = Run(arm['stm_unaligned'], r1=7, r2=9, r4=0x02008002)
+        cpu = run()
+        assert (cpu.exit, cpu.r[4]) == (0, 0x0200800A), hex(cpu.r[4])
+        assert (word(run.memory, 0x02008000), word(run.memory, 0x02008004)) == (7, 9), hex(word(run.memory, 0x02008000))
+        run = Run(arm['ldm'], r4=0x0E000001)
+        run.cpu.mem_size = 0x10000000  # the bounds the board's window has: the hook takes the save memory, past SIZE
+        assert run().exit == 0 and run.calls == [(0x0E000001, 4, 0), (0x0E000005, 4, 0)], run.calls
     # the I/O window goes through the hook, with the documented size_write; elsewhere memory is plain
     run = Run(arm['io_load'], r4=0x04000004)
     assert run().exit == 0 and run.cpu.r[0] == (0xCAFE if seven else 0)
