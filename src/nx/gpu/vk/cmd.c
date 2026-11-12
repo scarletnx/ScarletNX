@@ -990,13 +990,13 @@ void vk_finishes_log(void) {
     for (u32 i = 0; i < FINISH_SITES && g_finish_sites[i].file; i++) g_finish_sites[i].n = g_finish_sites[i].ns = 0;
 }
 
-/* A present ends the frame: the next one records in the other slot, once that slot's previous use is done. The
-   submission's landing can begin a command buffer in this slot again (vk_defer_call's vk_cmd), which then goes too,
-   without a landing of its own. Left open, the frames coming round to the slot found it recording: vk_cmd handed it
-   out without beginning it on the recording thread, so its commands went to the driver from the GPU thread,
-   descriptor set stand-ins too (record.c). The landing stays before the switch: after it, a vk_cmd in the landing
-   would recycle the next slot, whose own results its land_through can't land inside this landing (g_landing), and
-   whose rings they are in would be reused */
+/* A present ends the frame: the next one records in the other slot, once that slot's previous use is done. What the
+   submission's landing recorded in this slot and left recording goes too, without a landing of its own (a write-back
+   that gives up after its first commands; every release, when a release began the slot's command buffer). Left open,
+   the frames coming round to the slot found it recording: vk_cmd handed it out without beginning it on the recording
+   thread, so its commands went to the driver from the GPU thread, descriptor set stand-ins too (record.c). The
+   landing stays before the switch: after it, a vk_cmd in the landing would recycle the next slot, whose own results
+   its land_through can't land inside this landing (g_landing), and whose rings they are in would be reused */
 void vk_frame_next(void) {
     if (g_fr[g_cur].recording) submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_FRAME);
     if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_FRAME);
@@ -1160,30 +1160,28 @@ VkDescriptorSet vk_desc_alloc(VkDescriptorSetLayout layout) {
     return f->spare[i].n ? f->spare[i].set[--f->spare[i].n] : VK_NULL_HANDLE;
 }
 
-/* vk_cmd() first: after a frame advance g_cur is the next slot, still holding an older frame's work. Starting it waits for
-   that work and frees its list, so what is pushed now waits for the frame recorded from now on, which is submitted
-   after every frame that can still use it */
+/* The slot whose list a release goes on, freed when the slot is recycled. After a frame advance the current slot is
+   fresh, still holding an older frame's work: vk_cmd() first, which waits for that work and frees its list, so what
+   is pushed now waits for the frame recorded from now on, which is submitted after every frame that can still use
+   it. A slot in use takes the release as it is: every command recorded before it is in the command buffer the slot
+   records, or in a submission no newer than the slot's last, which its recycling waits for. Beginning a command
+   buffer for it there gave the landing of a present's submission, whose results' owners are released, one in the slot
+   the present was leaving (vk_frame_next) */
+static Frame* dead_slot(void) {
+    if (g_fr[g_cur].fresh) vk_cmd();
+    return &g_fr[g_cur];
+}
 void vk_defer_image(VkImage img, VmaAllocation a, VkImageView v1, VkImageView v2) {
-    vk_cmd();
-    dead_push(&g_fr[g_cur], (Dead){.img = img, .mem = a, .v1 = v1, .v2 = v2});
+    dead_push(dead_slot(), (Dead){.img = img, .mem = a, .v1 = v1, .v2 = v2});
 }
-void vk_defer_buffer(VkBuffer b, VmaAllocation a) {
-    vk_cmd();
-    dead_push(&g_fr[g_cur], (Dead){.buf = b, .mem = a});
-}
+void vk_defer_buffer(VkBuffer b, VmaAllocation a) { dead_push(dead_slot(), (Dead){.buf = b, .mem = a}); }
 void vk_defer_bytes(u64 bytes) {
     g_fr[g_cur].dead_bytes += bytes;
     g_dead_bytes += bytes;
 }
 u64 vk_deferred_bytes(void) { return g_dead_bytes; }
-void vk_defer_buffer_view(VkBufferView v) {
-    vk_cmd();
-    dead_push(&g_fr[g_cur], (Dead){.view = v});
-}
-void vk_defer_call(void (*fn)(void*), void* arg) {
-    vk_cmd();
-    dead_push(&g_fr[g_cur], (Dead){.fn = fn, .arg = arg});
-}
+void vk_defer_buffer_view(VkBufferView v) { dead_push(dead_slot(), (Dead){.view = v}); }
+void vk_defer_call(void (*fn)(void*), void* arg) { dead_push(dead_slot(), (Dead){.fn = fn, .arg = arg}); }
 
 void vk_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkPipelineStageFlags2 src_stage,
                 VkAccessFlags2 src_access, VkImageLayout from, VkPipelineStageFlags2 dst_stage,

@@ -5901,6 +5901,7 @@ static int check_video_decode_gate(void) {
 #include "vulkan_compute_depth.inc"
 #include "vulkan_owned_readback.inc"
 #include "vulkan_lock_waits.inc"
+#include "vulkan_release_slot.inc"
 #include "vulkan_guest_staging.inc"
 #include "vulkan_storage_suffix.inc"
 #include "vulkan_storage_logged.inc"
@@ -6689,6 +6690,10 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_mapping_lock());
     CHECK(!check_landing_wait());
     CHECK(!check_frame_ready());
+    CHECK(!check_release_in_use());
+    CHECK(!check_release_recording());
+    CHECK(!check_release_fresh());
+    CHECK(!check_release_present_landing());
     CHECK(!check_mapping_landing());
     CHECK(!check_guest_staging());
     CHECK(!check_owned_writable());
