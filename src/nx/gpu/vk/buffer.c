@@ -4194,8 +4194,9 @@ static void buf_frame(void) {
         {
             u64 logs, bytes, in_use, windows;
             vk_wlog_stats(&logs, &bytes, &in_use, &windows);
-            LOG("vulkan: write logs: %llu made, %llu MB kept, %llu in use\n", (unsigned long long)logs,
-                (unsigned long long)(bytes >> 20), (unsigned long long)in_use);
+            LOG("vulkan: write logs: %llu made, %llu MB kept, %llu in use, %llu given out again clear so far\n",
+                (unsigned long long)logs, (unsigned long long)(bytes >> 20), (unsigned long long)in_use,
+                (unsigned long long)vk_wlog_again());
         }
         g_wb_logged = g_wb_logged_windows = g_wb_logged_bytes = g_wb_logged_conflicts = 0;
         {
