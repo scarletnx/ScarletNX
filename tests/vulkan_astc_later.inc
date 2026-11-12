@@ -594,6 +594,53 @@ static int al_freed(void) {
     return 0;
 }
 
+/* (i) The encoder's fast build is timed on the GPU for astc_quick_mtexels (astc.c bc7_time_begin), its transcodes of a
+   megatexel or more alone. A 1024x1024 ASTC 8x8 texture held as BC7 at load (g_vk.astc_at_load, astc_mode=3's) adds,
+   once its submission is done, its first level's texels, one dispatch of a megatexel, and some time within the wall
+   time, where the graphics queue writes timestamps (nothing where it writes none); its smaller levels add nothing. The
+   size of a very large level follows the sums, and is the setting's own with vk_astc_quick_measure(0) */
+static int al_timed(void) {
+    static const AlCase c = {"ASTC 8x8 1024x1024 at load, timed", NVN_FORMAT_RGBA_ASTC_8x8, 1024, 1024, 1, 0};
+    const int at_load = g_vk.astc_at_load;
+    AlTex x;
+    u64 ns0, t0, ns1, t1;
+    later_drain(); /* nothing of the checks before encodes beside it */
+    vk_lock();
+    vk_finish();
+    vk_unlock();
+    vk_astc_quick_texels(&ns0, &t0);
+    const u64 wall0 = plat_ns();
+    g_vk.astc_at_load = 1;
+    Surf* t = al_make(&x, &c, 9);
+    g_vk.astc_at_load = at_load;
+    CHECK(t && t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK && !t->bc7_later);
+    vk_lock();
+    vk_finish(); /* its submission done: its timestamps read */
+    vk_unlock();
+    const u64 wall = plat_ns() - wall0; /* the GPU's time of the dispatch fits in it */
+    const u64 size = vk_astc_quick_texels(&ns1, &t1), want = g_vk.gfx_timestamp_bits ? 1ull << 20 : 0;
+    if (t1 - t0 != want || (want && (ns1 <= ns0 || ns1 - ns0 > wall)) ||
+        size != snx_astc_quick_texels(g_settings.astc_quick_mtexels, ns1, t1)) {
+        fprintf(stderr,
+                "ASTC as BC7 at load, %s: %llu texels timed in %llu ns, not %llu%s; very large from %llu texels where "
+                "the sums give %llu\n",
+                c.name, (unsigned long long)(t1 - t0), (unsigned long long)(ns1 - ns0), (unsigned long long)want,
+                want ? " in some time within the wall time" : " (no timestamps)", (unsigned long long)size,
+                (unsigned long long)snx_astc_quick_texels(g_settings.astc_quick_mtexels, ns1, t1));
+        return 1;
+    }
+    const int had = vk_astc_quick_measure(0);
+    const u64 as_set = vk_astc_quick_texels(&ns1, &t1);
+    CHECK(had && !vk_astc_quick_measure(had));
+    CHECK(as_set == snx_astc_quick_texels(g_settings.astc_quick_mtexels, 0, 0));
+    printf("ASTC as BC7 at load, %s: a level of a megatexel timed in %.2f ms of the GPU, %.2f ns a texel, its smaller "
+           "levels not; very large levels from %.1f megatexels (astc_quick_mtexels=%d)\n",
+           c.name, (double)(ns1 - ns0) / 1e6, want ? (double)(ns1 - ns0) / (double)want : 0.0, (double)size / (1 << 20),
+           g_settings.astc_quick_mtexels);
+    al_free(&x);
+    return 0;
+}
+
 /* (h) The BC7 cache (astc.c over bc7_cache.c): the levels the encoder makes go into it once their frames are done, and
    a second texture of the same bytes, the header's twin at another address, takes them from it in its first frame
    with no encode: whole at once, its blocks the CPU encoder's of its RGBA8 texels */
@@ -763,6 +810,7 @@ static int check_astc_later(void) {
     failed |= al_hot();
     failed |= al_hot_pieces();
     failed |= al_freed();
+    failed |= al_timed();
     failed |= al_cached();
     failed |= al_auto();
     g_settings.astc_mode = had;
