@@ -7,6 +7,7 @@
 #include "gui/probe.h"
 #include "common/utilities/common.h"
 #include <assert.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -35,6 +36,17 @@ static char* text_of(const char* folder, const char* path) {
     free(full);
     return text;
 }
+/* 1 when text holds word as edenprobe's mode file reads one: any case, anything not a letter between words */
+static int has_word(const char* text, const char* word) {
+    size_t n = strlen(word), i, at = 0;
+    for (;;) {
+        while (text[at] && !isalpha((unsigned char)text[at])) at++;
+        if (!text[at]) return 0;
+        for (i = 0; i < n && tolower((unsigned char)text[at + i]) == word[i]; i++) {}
+        if (i == n && !isalpha((unsigned char)text[at + n])) return 1;
+        while (isalpha((unsigned char)text[at])) at++;
+    }
+}
 #define START   "{\"type\":\"note\",\"text\":\"edenprobe 0.9.0 (v0.9.0) starting\"}\n"
 #define CASE(s) "{\"type\":\"case\",\"suite\":\"" s "\",\"name\":\"a case\",\"tier\":\"exact\",\"result\":\"pass\"}\n"
 #define FAIL(s) "{\"type\":\"case\",\"suite\":\"" s "\",\"name\":\"a case\",\"tier\":\"exact\",\"result\":\"fail\"}\n"
@@ -49,6 +61,13 @@ int main(void) {
     assert(root);
     folder = snx_path_join(root, "probe");
     nro = gui_probe_nro(folder);
+
+    /* a player watches the run: quick, a script's run, would keep edenprobe's window black to its end, and noprogress
+       its running screen off; has_word finds them where edenprobe would */
+    assert(has_word("Quick notime", "quick") && has_word("cpu,quick", "quick") && !has_word("quicker", "quick") &&
+           has_word("x noprogress", "noprogress") && !has_word("progress", "noprogress"));
+    assert(!has_word(GUI_PROBE_QUICK, "quick") && !has_word(GUI_PROBE_FULL, "quick"));
+    assert(!has_word(GUI_PROBE_QUICK, "noprogress") && !has_word(GUI_PROBE_FULL, "noprogress"));
 
     /* the words: none without the NRO, said with its path; quick's or full's alone for a probe from before machine=;
        with machine=scarletnx@<the build's commit> for one that knows it, the commit left out when it is unknown or no

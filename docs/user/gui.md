@@ -197,12 +197,15 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Download Driver alone is greyed, as those repositories hold Adreno's drivers: its package is added from its zip. A
   game whose package does not load stops, saying why, and so does one whose package lists no Vulkan device, a driver
   for another GPU. Under them, **edenprobe Mode** (Quick, the default:
-  `quick notime cpu graphics`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays
+  `notime cpu graphics`; Full adds `fs video audio kernel display`) and **Run edenprobe**, which plays
   [edenprobe](../dev/edenprobe.md)'s probes as a game with the GPU driver picked here, from `probe/edenprobe.nro` of the
   Logs folder, in a data folder of its own there (`probe/.scarletnx`: none of your settings, saves or users) with the
   default settings, and the build as edenprobe's machine (`machine=scarletnx@<commit>`), whose ban list then skips the
-  cases that end ScarletNX every time. A launch that ends before the report's summary is followed by another, up to
-  16, which goes on after the case it ended inside, while each adds cases; ESC ends it. At the end a box says the
+  cases that end ScarletNX every time. Its window shows edenprobe's own screens: the start screen with those families
+  chosen, which begins by itself after ten seconds, the running screen, then the results, which leave by themselves
+  after ten seconds with nothing pressed (+ or - leaves them). A launch that ends before the report's summary is
+  followed by another, up to 16, which goes on after the case it ended inside (edenprobe's screen that asks first goes
+  on by itself after ten seconds), while each adds cases; ESC ends it. At the end a box says the
   counts and the suites that failed or crashed, and where the report is. A next press after a whole run starts it
   over; after one that stopped inside a case (an iOS app ends with its game), it goes on. **Freedreno Settings** sets
   Mesa's Freedreno and Turnip
