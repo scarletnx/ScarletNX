@@ -2493,6 +2493,7 @@ static const char* ask_question(App* app) {
         case GUI_ASK_CRASH:
         case GUI_ASK_ADDONS:
         case GUI_ASK_DELETE_OLD: return app->ask_line;
+        case GUI_ASK_OVERWRITE: return snx_tr("Overwrite users.ini? It is kept as users.ini.old");
         case GUI_ASK_ERROR: return app->error_line;
         case GUI_ASK_CLOSE:
             if (!app->menu.running && !app->finished) return job_leaving(app);
@@ -2928,6 +2929,7 @@ static const char* const ask_choices[][2] = {{SNX_TR_NOOP("Continue"), SNX_TR_NO
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Clear")},
                                              {SNX_TR_NOOP("Yes"), SNX_TR_NOOP("No")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Delete")},
+                                             {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Overwrite")},
                                              {SNX_TR_NOOP("OK"), NULL}};
 /* a question added to GuiAsk takes its choices here, in its place */
 typedef char snx_gui_ask_choices[SDL_arraysize(ask_choices) == GUI_ASK_ERROR + 1 ? 1 : -1];
@@ -2953,6 +2955,7 @@ static const unsigned ask_tones[] = {UI_ATTR_CAUTION, /* Abort: the run ends */
                                      UI_ATTR_DANGER,  /* Clear: the crash list */
                                      0,               /* No */
                                      UI_ATTR_DANGER,  /* Delete: what an older version left */
+                                     UI_ATTR_CAUTION, /* Overwrite: users.ini, kept as users.ini.old */
                                      0};
 typedef char snx_gui_ask_tones[SDL_arraysize(ask_tones) == GUI_ASK_ERROR + 1 ? 1 : -1];
 /* the question shown, over the whole screen in the middle or at its foot, a choice asked twice saying so once pressed:
@@ -13225,8 +13228,8 @@ static void setup_take(App* app) {
         case SNX_SETUP_USER:
             if (app->setup_typing)
                 setup_user_done(app);
-            else if (choice)
-                setup_type(app);
+            else if (choice) /* Overwrite, asked first */
+                gui_confirm_open(&app->confirm, GUI_ASK_OVERWRITE, false);
             else
                 setup_next(app);
             return;
@@ -18724,6 +18727,8 @@ static void ask_key(App* app, GuiKey key) {
         closing_start(app);
     else if (ask == GUI_ASK_DELETE_OLD && second)
         left_delete(app);
+    else if (ask == GUI_ASK_OVERWRITE && second)
+        setup_type(app);
     else if (ask == GUI_ASK_ABORT && second)
         abort_run(app);
 }

@@ -1559,6 +1559,10 @@ msgid "Outside the app, Android checks every file access: games may run slower."
 msgstr "Fora do app, o Android confere cada acesso a arquivo: os jogos podem rodar mais devagar."
 
 #: src/gui/main.c
+msgid "Overwrite users.ini? It is kept as users.ini.old"
+msgstr ""
+
+#: src/gui/main.c
 msgid "A compile goes: exiting ScarletNX stops it, its work lost."
 msgstr "Uma compilação está rodando: sair do ScarletNX a interrompe, e o trabalho dela se perde."
 
@@ -1703,6 +1707,10 @@ msgstr "Sim"
 #: src/gui/main.c
 msgid "No"
 msgstr "Não"
+
+#: src/gui/main.c
+msgid "Overwrite"
+msgstr "Sobrescrever"
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -3979,10 +3987,6 @@ msgstr "Procurar..."
 #: src/gui/main.c
 msgid "Later"
 msgstr "Depois"
-
-#: src/gui/main.c
-msgid "Overwrite"
-msgstr "Sobrescrever"
 
 #: src/gui/main.c
 msgid "Clean Now"

@@ -89,7 +89,8 @@ typedef enum {
     GUI_ASK_ADDONS, /* a game's dump made with its updates' and DLCs' among the dumps, Yes first, or alone */
     /* the setup's Old Files: Delete All, how many go and how many stay, pressed twice */
     GUI_ASK_DELETE_OLD,
-    GUI_ASK_ERROR   /* a failure of the system's, or Run edenprobe's counts, said whole: OK alone, which closes it */
+    GUI_ASK_OVERWRITE, /* the setup's user page: Overwrite users.ini, which is kept as users.ini.old */
+    GUI_ASK_ERROR      /* a failure of the system's, or Run edenprobe's counts, said whole: OK alone, which closes it */
 } GuiAsk;
 typedef struct {
     bool shown;

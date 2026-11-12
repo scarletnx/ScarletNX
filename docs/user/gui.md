@@ -521,8 +521,8 @@ moved away goes, and with none left the setup goes on. With nothing else due the
 - **Keys**: `prod.keys` and `title.keys` where the Switch driver reads them, and `aes_keys.txt` in `~/.3ds`, for the
   encrypted 3DS games; Use these, Choose folder (a folder with `prod.keys`, `title.keys` if it has one, and
   `aes_keys.txt` if it has one, installed where Install Keys installs them) or Later.
-- **User**: with `users/users.ini` there, its users with their pictures and uids, then Keep or Overwrite; without one,
-  or to overwrite it, the nickname typed (`Player` to start with; Backspace takes a letter out) and Enter. A nickname
+- **User**: with `users/users.ini` there, its users with their pictures and uids, then Keep or Overwrite, which asks
+  first (the file is kept as `users.ini.old`); without one, or to overwrite it, the nickname typed (`Player` to start with; Backspace takes a letter out) and Enter. A nickname
   the rooms' rule refuses is said, and the page stays.
 
 Once the last page is done the menu opens, `setup.ini` written. After an update that brings a notice, the setup
