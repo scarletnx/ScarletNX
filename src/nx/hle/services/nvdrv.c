@@ -651,7 +651,7 @@ static int syncpt_reached(u32 id, u32 thresh) { return (i32)(syncpt_read(id) - t
 /* 1 once id reaches thresh, 0 when the time runs out first. timeout_ns 0 looks once, negative waits for good. The
    deadline is absolute, so a spurious wakeup doesn't extend it, and in guest time, which a game pause stops */
 int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
-    u64 deadline, waited_ns;
+    u64 deadline;
     int reached;
     if (id >= SYNCPT_IDS) return 0;
     if (syncpt_reached(id, thresh)) return 1;
@@ -672,7 +672,7 @@ int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
         kthread_wait(&g_host.nvdrv.sync_cv, &g_host.nvdrv.sync_lk, left);
     }
     pm_unlock(&g_host.nvdrv.sync_lk);
-    waited_ns = plat_ns() - started;
+    u64 waited_ns = plat_ns() - started;
     __atomic_add_fetch(&g_hle.nvdrv.syncpt_waits, 1, __ATOMIC_RELAXED);
     [[maybe_unused]] double ms = (double)waited_ns / 1e6;
     SNX_PLOT("syncpt wait ms", ms);
