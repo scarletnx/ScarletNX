@@ -12,6 +12,7 @@
 #include "common/platform/file.h"
 #include "common/platform/thread.h"
 #include "common/utilities/common.h"
+#include "common/utilities/endian.h"
 #include "support/3ds_guest.h"
 #include "support/3ds_vk_path.h"
 #include <assert.h>
@@ -311,6 +312,32 @@ int main(int argc, char** argv) {
         ctr_put(p, QUEUE + 0x85c, 0x0200);
         ctr_call(p, gsp, trigger, 1, SNX_CTR_SVC_RETURN, 0);
         assert(ctr_word(p, target) == 0x11223344 && (ctr_word(p, QUEUE) & 0xff00) == 0);
+        /* A command an application's enqueue runs at once (the GX enqueue's hook, aot/hook.c): a fill at the queue's
+           index 2, left in its slot, the index past it, nothing pending, its PSC0 raised. A queue with a command
+           pending, or another queue, is declined with nothing changed */
+        {
+            unsigned char fill[0x20] = {2};
+            snx_st_le32(fill + 4, target);
+            snx_st_le32(fill + 8, 0x66778899);
+            snx_st_le32(fill + 12, target + 0x100);
+            snx_st_le32(fill + 28, 0x0201);
+            assert((ctr_word(p, QUEUE + 0x800) & 0xffff) == 2);
+            ctr_put(p, QUEUE + 0x800, 0x100 | 2);
+            assert(snx_ctr_gsp_run_queued(p, QUEUE + 0x800, fill) == SNX_CTR_GX_DECLINED);
+            assert(ctr_word(p, QUEUE + 0x800) == (0x100 | 2) && ctr_word(p, target) == 0x11223344);
+            ctr_put(p, QUEUE + 0x800, 2);
+            assert(snx_ctr_gsp_run_queued(p, QUEUE + 0xa00, fill) == SNX_CTR_GX_DECLINED);
+            assert(ctr_word(p, target) == 0x11223344 && !ctr_word(p, QUEUE + 0x860));
+            ctr_put(p, QUEUE, 0);
+            assert(snx_ctr_gsp_run_queued(p, QUEUE + 0x800, fill) == SNX_CTR_GX_DONE);
+            assert(ctr_word(p, target) == 0x66778899 && ctr_word(p, target + 0xfc) == 0x66778899 &&
+                   ctr_word(p, target + 0x100) == 0x11223344);
+            assert((ctr_word(p, QUEUE + 0x800) & 0xffff) == 3 && ctr_word(p, QUEUE + 0x860) == 2 &&
+                   ctr_word(p, QUEUE + 0x864) == target && ctr_word(p, QUEUE + 0x87c) == 0x0201);
+            assert((ctr_word(p, QUEUE) & 0xffff) == 0x0100 && (ctr_word(p, QUEUE + 12) & 0xff) == 0);
+            ctr_put(p, QUEUE, 0);
+            ctr_put(p, QUEUE + 0x800, 2); /* the index the checks below start from */
+        }
         /* DisplayTransfer of an 8x8 tiled RGBA8 image from the linear heap into VRAM (0x1f000000, physical
            0x18000000) as linear RGB8. The GPU writes physical memory, the process need not map VRAM */
         {

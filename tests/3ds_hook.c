@@ -48,6 +48,23 @@ static void stub(uint32_t at, uint32_t mov_header) {
     };
     put(at, words, sizeof words / sizeof *words);
 }
+/* the SDK's GX command enqueue (aot/hook.c's), its calls to getter and trigger */
+static const uint32_t enqueue[] = {
+    0xe92d47f0u, 0xe5902000u, 0xe3520000u, 0x059f00dcu, 0x0a000035u, 0xe5d23001u, 0xe353000fu, 0x259f00d0u,
+    0x2a000031u, 0xe1923f9fu, 0xe1a02803u, 0xe59fe0c4u, 0xe203c0ffu, 0xe1a02c22u, 0xe08cc002u, 0xe3a08020u,
+    0xe08e4c9eu, 0xe5919018u, 0xe1a0e1aeu, 0xe04ee20eu, 0xe08cc00eu, 0xe590e000u, 0xe088c28cu, 0xe08cc00eu,
+    0xe89141f0u, 0xe591101cu, 0xe58c101cu, 0xe58c9018u, 0xe88c41f0u, 0xe3a01000u, 0xee071f9au, 0xe2821001u,
+    0xe3c32cffu, 0xe1a01401u, 0xe2011cffu, 0xe1811002u, 0xe5903000u, 0xe1832f91u, 0xe3520000u, 0x0a000009u,
+    0xe5901000u, 0xe1911f9fu, 0xe1a03801u, 0xe3c12cffu, 0xe1a01c23u, 0xe2811001u, 0xe1a01401u, 0xe2011cffu,
+    0xe1811002u, 0xeafffff1u, 0xe1a00801u, 0xe1a00c20u, 0xe3500001u, 0x1a000003u, 0xeb000000u, 0xe320f000u,
+    0xe320f000u, 0xeb000000u, 0xe3a00000u, 0xe8bd87f0u, 0xd8a02bf8u, 0xd8a02a02u, 0x88888889u};
+static void put_enqueue(uint32_t at, uint32_t getter, uint32_t trigger) {
+    put(at, enqueue, sizeof enqueue / sizeof *enqueue);
+    uint32_t calls[2] = {0xeb000000u | (((getter - (at + 54 * 4 + 8)) >> 2) & 0xffffffu),
+                         0xeb000000u | (((trigger - (at + 57 * 4 + 8)) >> 2) & 0xffffffu)};
+    put(at + 54 * 4, &calls[0], 1);
+    put(at + 57 * 4, &calls[1], 1);
+}
 static SnxArmCPU* call(SnxCtrProcess* p, uint32_t entry, uint32_t r0, uint32_t lr) {
     SnxArmCPU* cpu = snx_ctr_process_cpu(p);
     for (unsigned i = 0; i < 13; ++i) cpu->r[i] = 0x1110 * i;
@@ -107,6 +124,12 @@ int main(void) {
         0xe8bd8010u, /* pop {r4, pc} */
     };
     put(TEXT + 0x500, calls, sizeof calls / sizeof *calls);
+    /* the GSP handle's getter, a TriggerCmdReqQueue stub, the enqueue calling them, and an enqueue whose trigger is
+       another command's stub, which is not the SDK's */
+    put(TEXT + 0x600, (const uint32_t[]){0xe59f0000u, 0xe12fff1eu, HANDLE}, 3);
+    stub(TEXT + 0x700, 0xe3a00703u); /* mov r0, #0xc0000 */
+    put_enqueue(TEXT + 0x800, TEXT + 0x600, TEXT + 0x700);
+    put_enqueue(TEXT + 0x900, TEXT + 0x600, TEXT);
     SnxCtrImage image = ctr_image(code, sizeof code, 0x1000);
     image.segment[0].bytes = 0x1000;
     SnxCtrProcess* p = snx_ctr_process_new(&image, SNX_CTR_OLD);
@@ -115,7 +138,9 @@ int main(void) {
     SnxCtrHooks* hooks = snx_ctr_hooks_find(p, summary, sizeof summary);
     assert(hooks);
     printf("%s\n", summary);
-    assert(!strcmp(summary, "4 of the 6 IPC stubs in the code run without the SVC"));
+    assert(!strcmp(summary, "5 of the 7 IPC stubs in the code run without the SVC, and the GX command queue's "
+                            "enqueue runs each command at once"));
+    assert(snx_ctr_hook_at(hooks, TEXT + 0x800) && !snx_ctr_hook_at(hooks, TEXT + 0x900));
     assert(snx_ctr_hook_at(hooks, TEXT) && snx_ctr_hook_at(hooks, TEXT + 0x100) && snx_ctr_hook_at(hooks, TEXT + 0x200) &&
            snx_ctr_hook_at(hooks, TEXT + 0x300));
     assert(!snx_ctr_hook_at(hooks, TEXT + 0x400) && !snx_ctr_hook_at(hooks, TEXT + 0x500));
@@ -177,10 +202,21 @@ int main(void) {
     cpu = call(p, TEXT, OUT, RETURN);
     assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, TEXT)) == SNX_CTR_HOOK_DECLINE && cpu->r[15] == TEXT);
 
-    char report[160];
+    /* the enqueue: no queue (its object's first word 0), and a queue with no GPU right held: the game's code */
+    ctr_put(p, DATA + 0x20, 0);
+    cpu = call(p, TEXT + 0x800, DATA + 0x20, RETURN);
+    cpu->r[1] = DATA + 0x40;
+    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, TEXT + 0x800)) == SNX_CTR_HOOK_DECLINE);
+    assert(cpu->r[15] == TEXT + 0x800 && cpu->r[0] == DATA + 0x20);
+    ctr_put(p, DATA + 0x20, DATA + 0x100);
+    assert(snx_ctr_hook_run(p, cpu, snx_ctr_hook_at(hooks, TEXT + 0x800)) == SNX_CTR_HOOK_DECLINE);
+    assert(cpu->r[15] == TEXT + 0x800 && cpu->r[0] == DATA + 0x20);
+
+    char report[200];
     snx_ctr_hooks_report(hooks, report, sizeof report);
     printf("%s\n", report);
-    assert(!strcmp(report, "hooks: 4 requests sent by 4 IPC stubs without the SVC, 2 left to it"));
+    assert(!strcmp(report, "hooks: 4 requests sent by 4 IPC stubs without the SVC, 2 left to it; 0 GX commands run "
+                           "at their enqueue, 2 queued"));
     snx_ctr_hooks_free(hooks);
     snx_ctr_process_free(p);
     puts("3ds hook: ok");

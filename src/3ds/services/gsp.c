@@ -581,21 +581,82 @@ static GxStep gx_submit(SnxCtrIpc* c, const uint32_t* a, GxInterrupts* irq) {
    failing one leaves its error and the FAILED status and the queue goes on; its stop flag stops the queue after it.
    Interrupts go to the right holder's relay queue as the commands raise them. A command the runtime cannot finish
    (a PICA draw) stops the run */
+/* One GX command of a queue's (its 0x20 bytes at cmd: the id, its stop flag in byte 2, seven argument words), run:
+   GX_STOP when the run stops here (c->state says why); *error is GSP's for the command, 0 when it succeeded */
+static GxStep gx_command(SnxCtrIpc* c, const unsigned char* cmd, uint32_t* error, GxInterrupts* irq) {
+    SnxCtrProcess* p = c->process;
+    SnxCtrGsp* g = &p->gsp;
+    uint32_t id = cmd[0], args[7];
+    for (unsigned i = 0; i < 7; ++i) args[i] = snx_ld_le32(cmd + 4 + 4 * i);
+    *error = 0;
+    GxStep step = GX_DONE;
+    if (g_settings.ctr_gpu_trace) fprintf(stderr, "3ds gpu trace: GX command 0x%02x\n", (unsigned)id);
+    switch (id) {
+        case 0: step = gx_dma(c, args, irq); break;
+        case 1: step = gx_submit(c, args, irq); break;
+        case 2: step = gx_fill(c, args, error, irq); break;
+        case 3: /* DisplayTransfer: the addresses must be GPU visible at their first byte */
+            g->transfer.input = gx_physical(args[0], 1) & ~7u;
+            g->transfer.output = gx_physical(args[1], 1) & ~7u;
+            g->transfer.input_size = args[2];
+            g->transfer.output_size = args[3];
+            g->transfer.flags = args[4];
+            step = gx_transfer(c, irq);
+            break;
+        case 4: /* TextureCopy: the addresses must hold the whole size */
+            g->transfer.input = gx_physical(args[0], args[2]) & ~7u;
+            g->transfer.output = gx_physical(args[1], args[2]) & ~7u;
+            g->transfer.copy_size = args[2];
+            g->transfer.copy_input = args[3];
+            g->transfer.copy_output = args[4];
+            g->transfer.flags = args[5];
+            step = gx_transfer(c, irq);
+            break;
+        case 5: break; /* CacheFlush: host memory is coherent with the guest's view */
+        default: *error = GX_ERR_UNKNOWN_COMMAND; break;
+    }
+    if (step == GX_STOP && id >= 1 && id <= 4 && !snx_ctr_vk()) {
+        /* a command list, fill, display transfer or texture copy runs on the device: the run ends here, with why
+           the device did not start as its last line, not with the request's form */
+        const char* why = snx_ctr_vk_error();
+        snprintf(p->stopped, sizeof p->stopped, "GX command 0x%02x needs the 3DS GPU, which did not start%s%s",
+                 (unsigned)id, why[0] ? ": " : "", why);
+        c->state = SNX_CTR_IPC_FAULT;
+    }
+    return step;
+}
+/* The GPU's work submitted, not waited for, and the interrupts raised now: the GPU runs beside the guest, which
+   write tracking keeps from seeing it unfinished (what it writes traps until it is done, what it reads traps
+   writes until then). Not at the work's end, as the hardware raises them: the DSP and the vblanks keep the host's
+   time, so a GPU slower than the console's would starve the guest's frame of its audio */
+static void gx_finish(SnxCtrProcess* p, uint32_t thread, const GxInterrupts* irq) {
+    snx_ctr_vk_submit();
+    for (unsigned i = 0; i < irq->count; ++i) queue_interrupt(p, thread, irq->ids[i]);
+    if (irq->count) signal_registered(p, thread);
+}
+/* the command queue of the thread holding the GPU right: its address and its relay thread, false without one */
+static bool gx_queue(SnxCtrProcess* p, uint32_t* at, uint32_t* thread) {
+    CtrSharedMap* map = p->gsp.shared_object ? shared_map(p, p->gsp.shared_object) : NULL;
+    if (p->gsp.rights_thread == UINT32_MAX) return false;
+    *thread = p->objects[p->gsp.rights_thread].data.session.gsp_thread;
+    if (!map || *thread == UINT32_MAX || *thread >= CTR_GSP_THREADS) return false;
+    *at = map->va + 0x800 + *thread * 0x200;
+    return true;
+}
 static void trigger_queue(SnxCtrIpc* c) {
     if (!snx_ctr_ipc_expect(c, 0, 0)) return;
     SnxCtrProcess* p = c->process;
-    CtrSharedMap* map = p->gsp.shared_object ? shared_map(p, p->gsp.shared_object) : NULL;
     if (p->gsp.rights_thread == UINT32_MAX) {
         c->out[0] = (c->in[0] & 0xffff0000u) | 0x40; /* succeeds with no active queue */
         return;
     }
-    uint32_t thread = p->objects[p->gsp.rights_thread].data.session.gsp_thread;
-    if (!map || thread == UINT32_MAX || thread >= CTR_GSP_THREADS) {
+    uint32_t at, thread;
+    if (!gx_queue(p, &at, &thread)) {
         c->state = SNX_CTR_IPC_UNSUPPORTED;
         return;
     }
     unsigned char queue[0x200];
-    uint32_t at = map->va + 0x800 + thread * 0x200, last_error = 0;
+    uint32_t last_error = 0;
     if (snx_ctr_read_ram(p->space, at, queue, sizeof queue) != SNX_CTR_MEM_OK) {
         c->transport_result = 0xe0e01bf5u;
         return;
@@ -611,46 +672,10 @@ static void trigger_queue(SnxCtrIpc* c) {
         }
         if (queue[2] == GX_STATUS_STOPPED) break;
         const unsigned char* cmd = queue + 0x20 + (index % 15) * 0x20;
-        uint32_t id = cmd[0], args[7], error = 0;
-        memcpy(args, cmd + 4, sizeof args);
+        uint32_t error = 0;
         index = (index + 1) % 15;
         --pending;
-        GxStep step = GX_DONE;
-        SnxCtrGsp* g = &p->gsp;
-        if (g_settings.ctr_gpu_trace) fprintf(stderr, "3ds gpu trace: GX command 0x%02x\n", (unsigned)id);
-        switch (id) {
-            case 0: step = gx_dma(c, args, &irq); break;
-            case 1: step = gx_submit(c, args, &irq); break;
-            case 2: step = gx_fill(c, args, &error, &irq); break;
-            case 3: /* DisplayTransfer: the addresses must be GPU visible at their first byte */
-                g->transfer.input = gx_physical(args[0], 1) & ~7u;
-                g->transfer.output = gx_physical(args[1], 1) & ~7u;
-                g->transfer.input_size = args[2];
-                g->transfer.output_size = args[3];
-                g->transfer.flags = args[4];
-                step = gx_transfer(c, &irq);
-                break;
-            case 4: /* TextureCopy: the addresses must hold the whole size */
-                g->transfer.input = gx_physical(args[0], args[2]) & ~7u;
-                g->transfer.output = gx_physical(args[1], args[2]) & ~7u;
-                g->transfer.copy_size = args[2];
-                g->transfer.copy_input = args[3];
-                g->transfer.copy_output = args[4];
-                g->transfer.flags = args[5];
-                step = gx_transfer(c, &irq);
-                break;
-            case 5: break; /* CacheFlush: host memory is coherent with the guest's view */
-            default: error = GX_ERR_UNKNOWN_COMMAND; break;
-        }
-        if (step == GX_STOP) {
-            if (id >= 1 && id <= 4 && !snx_ctr_vk()) {
-                /* a command list, fill, display transfer or texture copy runs on the device: the run ends here, with
-                   why the device did not start as its last line, not with the request's form */
-                const char* why = snx_ctr_vk_error();
-                snprintf(p->stopped, sizeof p->stopped, "GX command 0x%02x needs the 3DS GPU, which did not start%s%s",
-                         (unsigned)id, why[0] ? ": " : "", why);
-                c->state = SNX_CTR_IPC_FAULT;
-            }
+        if (gx_command(c, cmd, &error, &irq) == GX_STOP) {
             stopped = true;
             break;
         }
@@ -660,14 +685,10 @@ static void trigger_queue(SnxCtrIpc* c) {
         }
         if (cmd[2]) queue[2] = GX_STATUS_STOPPED; /* the command's stop flag */
     }
-    /* The GPU's work submitted, not waited for, and the interrupts raised now: the GPU runs beside the guest, which
-       write tracking keeps from seeing it unfinished (what it writes traps until it is done, what it reads traps
-       writes until then). Not at the work's end, as the hardware raises them: the DSP and the vblanks keep the host's
-       time, so a GPU slower than the console's would starve the guest's frame of its audio */
-    snx_ctr_vk_submit();
     queue[0] = (unsigned char)index;
     queue[1] = (unsigned char)pending;
     memcpy(queue + 4, &last_error, 4);
+    snx_ctr_vk_submit();
     if (snx_ctr_write_ram(p->space, at, queue, 8) != SNX_CTR_MEM_OK) {
         c->state = SNX_CTR_IPC_FAULT;
         return;
@@ -675,6 +696,37 @@ static void trigger_queue(SnxCtrIpc* c) {
     for (unsigned i = 0; i < irq.count; ++i) queue_interrupt(p, thread, irq.ids[i]);
     if (irq.count) signal_registered(p, thread);
     if (!stopped) c->out[0] = (c->in[0] & 0xffff0000u) | 0x40;
+}
+SnxCtrGxQueued snx_ctr_gsp_run_queued(SnxCtrProcess* p, uint32_t queue_va, const unsigned char command[0x20]) {
+    uint32_t at, thread;
+    unsigned char header[8];
+    if (!gx_queue(p, &at, &thread) || at != queue_va ||
+        snx_ctr_read_ram(p->space, at, header, sizeof header) != SNX_CTR_MEM_OK)
+        return SNX_CTR_GX_DECLINED;
+    /* only a queue the trigger empties now: nothing pending, not stopped, not asked to stop */
+    if (header[1] || header[2] == GX_STATUS_STOPPED || header[3]) return SNX_CTR_GX_DECLINED;
+    /* the command where the application's enqueue puts it, as the queue is left */
+    unsigned index = header[0];
+    if (snx_ctr_write_ram(p->space, at + 0x20 + (index % 15) * 0x20, command, 0x20) != SNX_CTR_MEM_OK)
+        return SNX_CTR_GX_DECLINED;
+    SnxCtrIpc c = {.process = p, .object = p->gsp.rights_thread, .caller_pid = CTR_PROCESS_ID};
+    GxInterrupts irq = {{0}, 0};
+    uint32_t error = 0;
+    if (gx_command(&c, command, &error, &irq) == GX_STOP) {
+        if (c.state == SNX_CTR_IPC_UNSUPPORTED)
+            snprintf(p->stopped, sizeof p->stopped, "GX command 0x%02x has a form the runtime does not take",
+                     (unsigned)command[0]);
+        return SNX_CTR_GX_STOPPED;
+    }
+    header[0] = (unsigned char)((index + 1) % 15);
+    if (error) {
+        snx_st_le32(header + 4, error);
+        header[2] = GX_STATUS_FAILED;
+    }
+    if (command[2]) header[2] = GX_STATUS_STOPPED;
+    if (snx_ctr_write_ram(p->space, at, header, sizeof header) != SNX_CTR_MEM_OK) return SNX_CTR_GX_STOPPED;
+    gx_finish(p, thread, &irq);
+    return SNX_CTR_GX_DONE;
 }
 void snx_ctr_gsp_dispatch(SnxCtrIpc* c) {
     switch (c->in[0] >> 16) {

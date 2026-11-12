@@ -16,9 +16,17 @@
    A stub whose handle reaches srv: or a service the runtime has no model of (where a request can block the thread,
    whose reply the TLS buffer then takes later) declines that call before it changed anything but its stack's free
    space and registers it restores, and the game's code makes the request; so does one whose window of text a CRO's
-   relocation rewrote (the dispatcher checks). */
+   relocation rewrote (the dispatcher checks).
+
+   The SDK's GX command enqueue (gxlow's: it copies a 0x20-byte command into the GPU right holder's queue in GSP's
+   shared memory, counts it in with LDREX/STREX, and makes TriggerCmdReqQueue when the queue was empty) is found by
+   its code, its two calls checked to be the GSP handle's getter and a TriggerCmdReqQueue stub. Its hook runs the
+   command there and then (services/gsp.c snx_ctr_gsp_run_queued), leaving the queue as the trigger would: the copy,
+   the count's atomics and the request are skipped. A queue with commands pending, or one that isn't the right
+   holder's, is the game's code's. */
 #include "3ds/aot/ctr_hook.h"
 #include "3ds/ipc/ctr_ipc.h"
+#include "3ds/services/gsp.h"
 #include "3ds/runtime/internal.h"
 #include "common/utilities/endian.h"
 #include "snx_settings.h"
@@ -65,8 +73,10 @@ typedef struct {
     uint32_t address; /* the instruction's, for a read of PC (its address + 8) */
     uint16_t target;  /* OP_B's */
 } Op;
+enum { HOOK_STUB, HOOK_GX_ENQUEUE };
 typedef struct SnxCtrHook {
     uint32_t entry;
+    uint8_t kind;
     bool static_buffers; /* it writes the TLS's static buffer descriptors before the SVC: a decline puts them back */
     uint32_t header; /* the stub's command header, the first constant stored at the buffer's start, 0 unknown */
     uint64_t calls, declined;
@@ -740,7 +750,30 @@ static SnxCtrHookResult run_stub(SnxCtrProcess* p, SnxArmCPU* cpu, SnxCtrHook* h
     cpu->syndrome = h->entry;
     return SNX_CTR_HOOK_STOP;
 }
+/* the enqueue (r0: the queue's object, whose first word is the queue; r1: the command) */
+static SnxCtrHookResult run_gx_enqueue(SnxCtrProcess* p, SnxArmCPU* cpu, SnxCtrHook* h) {
+    unsigned char word[4], command[0x20];
+    SnxCtrAddressSpace* space = snx_ctr_process_space(p);
+    if (snx_ctr_read(space, cpu->r[0], word, 4) != SNX_CTR_MEM_OK || !snx_ld_le32(word) ||
+        snx_ctr_read(space, cpu->r[1], command, sizeof command) != SNX_CTR_MEM_OK) {
+        ++h->declined; /* the game's code answers a missing queue, or faults */
+        return SNX_CTR_HOOK_DECLINE;
+    }
+    switch (snx_ctr_gsp_run_queued(p, snx_ld_le32(word), command)) {
+        case SNX_CTR_GX_DONE: break;
+        case SNX_CTR_GX_DECLINED: ++h->declined; return SNX_CTR_HOOK_DECLINE;
+        default:
+            cpu->exit = SNX_ARM_BACKEND_UNSUPPORTED;
+            cpu->syndrome = h->entry;
+            return SNX_CTR_HOOK_STOP;
+    }
+    ++h->calls;
+    cpu->r[0] = 0;
+    return_to(cpu, cpu->r[14]);
+    return SNX_CTR_HOOK_DONE;
+}
 SnxCtrHookResult snx_ctr_hook_run(SnxCtrProcess* p, SnxArmCPU* cpu, const SnxCtrHook* hook) {
+    if (hook->kind == HOOK_GX_ENQUEUE) return run_gx_enqueue(p, cpu, (SnxCtrHook*)hook);
     return run_stub(p, cpu, (SnxCtrHook*)hook);
 }
 
@@ -758,6 +791,41 @@ static uint32_t function_start(const unsigned char* text, uint32_t base, uint32_
 static int by_entry(const void* a, const void* b) {
     uint32_t x = ((const SnxCtrHook*)a)->entry, y = ((const SnxCtrHook*)b)->entry;
     return x < y ? -1 : x > y;
+}
+/* The SDK's GX command enqueue, as the 3DS SDK of Mario Kart 7 builds it: its words, with the two BLs' offsets
+   (GX_ENQUEUE_GETTER, GX_ENQUEUE_TRIGGER) the only ones that differ from game to game. The function ends at the POP
+   before its three literals */
+static const uint32_t gx_enqueue[] = {
+    0xe92d47f0u, 0xe5902000u, 0xe3520000u, 0x059f00dcu, 0x0a000035u, 0xe5d23001u, 0xe353000fu, 0x259f00d0u,
+    0x2a000031u, 0xe1923f9fu, 0xe1a02803u, 0xe59fe0c4u, 0xe203c0ffu, 0xe1a02c22u, 0xe08cc002u, 0xe3a08020u,
+    0xe08e4c9eu, 0xe5919018u, 0xe1a0e1aeu, 0xe04ee20eu, 0xe08cc00eu, 0xe590e000u, 0xe088c28cu, 0xe08cc00eu,
+    0xe89141f0u, 0xe591101cu, 0xe58c101cu, 0xe58c9018u, 0xe88c41f0u, 0xe3a01000u, 0xee071f9au, 0xe2821001u,
+    0xe3c32cffu, 0xe1a01401u, 0xe2011cffu, 0xe1811002u, 0xe5903000u, 0xe1832f91u, 0xe3520000u, 0x0a000009u,
+    0xe5901000u, 0xe1911f9fu, 0xe1a03801u, 0xe3c12cffu, 0xe1a01c23u, 0xe2811001u, 0xe1a01401u, 0xe2011cffu,
+    0xe1811002u, 0xeafffff1u, 0xe1a00801u, 0xe1a00c20u, 0xe3500001u, 0x1a000003u, 0xeb000000u, 0xe320f000u,
+    0xe320f000u, 0xeb000000u, 0xe3a00000u, 0xe8bd87f0u, 0xd8a02bf8u, 0xd8a02a02u, 0x88888889u};
+#define GX_ENQUEUE_GETTER  54
+#define GX_ENQUEUE_TRIGGER 57
+static uint32_t bl_target(uint32_t address, uint32_t w) { return address + 8 + (uint32_t)((int32_t)(w << 8) >> 6); }
+/* whether the enqueue's words are at offset, its getter returns a literal (LDR R0, [PC]; BX LR), and its trigger is a
+   hooked stub of TriggerCmdReqQueue's header */
+static bool is_gx_enqueue(const SnxCtrHooks* h, const unsigned char* text, uint32_t base, uint32_t bytes,
+                          uint32_t offset) {
+    const unsigned count = sizeof gx_enqueue / sizeof *gx_enqueue;
+    if (offset + count * 4 > bytes) return false;
+    for (unsigned i = 0; i < count; ++i) {
+        uint32_t w = snx_ld_le32(text + offset + 4 * i);
+        uint32_t mask = i == GX_ENQUEUE_GETTER || i == GX_ENQUEUE_TRIGGER ? 0xff000000u : 0xffffffffu;
+        if ((w & mask) != gx_enqueue[i]) return false;
+    }
+    uint32_t at = base + offset;
+    uint32_t getter = bl_target(at + GX_ENQUEUE_GETTER * 4, snx_ld_le32(text + offset + GX_ENQUEUE_GETTER * 4));
+    uint32_t trigger = bl_target(at + GX_ENQUEUE_TRIGGER * 4, snx_ld_le32(text + offset + GX_ENQUEUE_TRIGGER * 4));
+    if (getter < base || getter + 8 > base + bytes || snx_ld_le32(text + (getter - base)) != 0xe59f0000u ||
+        snx_ld_le32(text + (getter - base) + 4) != 0xe12fff1eu)
+        return false;
+    const SnxCtrHook* stub = snx_ctr_hook_at(h, trigger);
+    return stub && stub->kind == HOOK_STUB && stub->header == 0x000c0000u;
 }
 SnxCtrHooks* snx_ctr_hooks_find(SnxCtrProcess* p, char* summary, size_t summary_size) {
     if (summary_size) summary[0] = 0;
@@ -794,8 +862,29 @@ SnxCtrHooks* snx_ctr_hooks_find(SnxCtrProcess* p, char* summary, size_t summary_
         ++h->count;
     }
     qsort(h->hooks, h->count, sizeof *h->hooks, by_entry);
+    /* the enqueues, found while the stubs alone are in the table, then added */
+    size_t stubs_hooked = h->count, enqueues = 0;
+    uint32_t found[8];
+    for (uint32_t at = 0; at + 4 <= bytes && enqueues < sizeof found / sizeof *found; at += 4)
+        if (snx_ld_le32(text + at) == gx_enqueue[0] && is_gx_enqueue(h, text, base, bytes, at)) found[enqueues++] = at;
+    for (size_t k = 0; k < enqueues; ++k) {
+        uint32_t at = found[k];
+        if (h->count == capacity) {
+            capacity = capacity ? capacity * 2 : 16;
+            SnxCtrHook* grown = realloc(h->hooks, capacity * sizeof *grown);
+            if (!grown) goto none;
+            h->hooks = grown;
+        }
+        SnxCtrHook* hook = &h->hooks[h->count++];
+        memset(hook, 0, sizeof *hook);
+        hook->entry = base + at;
+        hook->kind = HOOK_GX_ENQUEUE;
+        h->bits[at / 4 >> 5] |= 1u << (at / 4 & 31);
+    }
+    if (enqueues) qsort(h->hooks, h->count, sizeof *h->hooks, by_entry);
     if (summary_size)
-        snprintf(summary, summary_size, "%zu of the %zu IPC stubs in the code run without the SVC", h->count, stubs);
+        snprintf(summary, summary_size, "%zu of the %zu IPC stubs in the code run without the SVC%s", stubs_hooked,
+                 stubs, enqueues ? ", and the GX command queue's enqueue runs each command at once" : "");
     free(text);
     if (!h->count) {
         snx_ctr_hooks_free(h);
@@ -808,13 +897,21 @@ none:
     return NULL;
 }
 void snx_ctr_hooks_report(const SnxCtrHooks* h, char* line, size_t size) {
-    uint64_t calls = 0, declined = 0;
+    uint64_t calls = 0, declined = 0, commands = 0, queued = 0;
     size_t used = 0;
     for (size_t i = 0; h && i < h->count; ++i) {
+        if (h->hooks[i].kind == HOOK_GX_ENQUEUE) {
+            commands += h->hooks[i].calls;
+            queued += h->hooks[i].declined;
+            continue;
+        }
         calls += h->hooks[i].calls;
         declined += h->hooks[i].declined;
         used += h->hooks[i].calls != 0;
     }
-    snprintf(line, size, "hooks: %" PRIu64 " requests sent by %zu IPC stubs without the SVC, %" PRIu64 " left to it",
-             calls, used, declined);
+    int n = snprintf(line, size, "hooks: %" PRIu64 " requests sent by %zu IPC stubs without the SVC, %" PRIu64
+                     " left to it", calls, used, declined);
+    if (commands + queued && n > 0 && (size_t)n < size)
+        snprintf(line + n, size - (size_t)n, "; %" PRIu64 " GX commands run at their enqueue, %" PRIu64 " queued",
+                 commands, queued);
 }
