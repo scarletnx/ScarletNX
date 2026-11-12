@@ -1642,12 +1642,15 @@ int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off);
    drops a reference, and the last, once the work that wrote it is done, clears what was written and gives it back.
    get_gpu gives one in the GPU's memory, for work whose log only the GPU reads (the mirror's folds): its readers are
    recorded, then vk_wlog_clear clears it on the GPU, in the same command buffer; the CPU never reads it
-   (vk_wlog_runs refuses it), and unref only gives it back */
+   (vk_wlog_runs refuses it), and unref only gives it back. vk_wlog_ready says that clear is recorded: get_gpu then
+   gives the same log, with a reference more, to the next work, which must be recorded after it on the same queue */
 typedef struct VkWriteLog VkWriteLog;
 VkWriteLog* vk_wlog_get(u32 parts);
 VkWriteLog* vk_wlog_get_gpu(u32 parts);
 int vk_wlog_on_gpu(const VkWriteLog* l);
 void vk_wlog_clear(VkCommandBuffer cb, VkWriteLog* l);
+void vk_wlog_ready(VkWriteLog* l);
+u64 vk_wlog_again(void); /* the logs get_gpu gave out again clear, so far */
 VkBuffer vk_wlog_buffer(const VkWriteLog* l);
 u64 vk_wlog_size(const VkWriteLog* l);
 void vk_wlog_ref(VkWriteLog* l);

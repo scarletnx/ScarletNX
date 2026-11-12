@@ -2109,6 +2109,7 @@ rebind:
             if (p->si.gbuf_mark[i] && sa[i]) f[nf++] = (VkMirFold){mcpu[i], ss[i], p->si.gbuf_mark[i] - 1u};
         vk_mirror_fold(cb, vk_wlog_buffer(log), vk_wlog_size(log), f, nf);
         vk_wlog_clear(cb, log); /* in the GPU's memory (cs_log): the folds were its only readers */
+        vk_wlog_ready(log);     /* clear again from here on in this queue's commands: the next dispatch's too */
     }
     if (log) { /* recorded: the dispatch's reference goes with the work that writes the log */
         g_cs_spare = NULL;
