@@ -18,10 +18,10 @@ hook _ZN2nn2ro12LookupSymbolEPmPKc(addr address, const char* name) -> u32 = nnro
 hook _ZN2nn2ro16LookupNextSymbolEPmPKc(addr address, const char* name) -> u32 = nnro_lookup_next_symbol
 hook _ZN2nn2ro29ProtectFullRelroForAllModulesEv() = nnro_protect_full_relro_for_all_modules
 hook _ZN2nn2ro12ProtectRelroEPKvS2_S2_S2_S2_(addr first, addr second, addr third, addr fourth, addr fifth) = nnro_protect_relro
-# not answered yet, each the loading of an NRO or what follows it: each stops the game with its name
+# the NROs the game loads: linked by the runtime's linker, mapped by ldr:ro's code with no session
 hook _ZN2nn2ro18LookupModuleSymbolEPmPKNS0_6ModuleEPKc(addr address, addr module, const char* name) -> u32 = nnro_lookup_module_symbol
 hook _ZN2nn2ro18RegisterModuleInfoEPNS0_16RegistrationInfoEPKv(addr info, addr nrr) -> u32 = nnro_register_module_info
-hook _ZN2nn2ro18RegisterModuleInfoEPNS0_16RegistrationInfoEPKvj(addr info, addr nrr, u32 flag) -> u32 = nnro_register_module_info_flag
+hook _ZN2nn2ro18RegisterModuleInfoEPNS0_16RegistrationInfoEPKvj(addr info, addr nrr, u32 process) -> u32 = nnro_register_module_info_process
 hook _ZN2nn2ro20UnregisterModuleInfoEPNS0_16RegistrationInfoE(addr info) = nnro_unregister_module_info
 hook _ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmi(addr module, addr image, addr buffer, u64 size, i32 flag) -> u32 = nnro_load_module
 hook _ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmib(addr module, addr image, addr buffer, u64 size, i32 flag, bool check) -> u32 = nnro_load_module_check

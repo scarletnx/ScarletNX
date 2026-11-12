@@ -4,12 +4,15 @@
 #include "common/utilities/common.h"
 #include "nx/hle/hook/hook.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/hle/services/services.h"
 #include "nx/loader/relocate.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/runtime/platform/log.h"
+#include "common/utilities/endian.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -18,10 +21,20 @@
 static const char* const linker_start[] = {"_ZN2nn4init5StartEmmPFvvES2_S2_", "_ZN2nn4init5StartEmmPFvvES2_"};
 /* a function of nn::ro the module must route for the runtime to answer the library (nn/ro.hook) */
 #define LINKER_RO_ROUTED "_ZN2nn2ro12LookupSymbolEPmPKc"
+/* the NROs a game has loaded at once at most: as many as an ldr:ro state maps (services_int.h's RO_LIMIT) */
+#define LINKER_NROS      64
+/* the SDK's count of a module's thread-local destructors no thread has run yet, by the address of its DSO handle,
+   which an NRO's header names at 0x60: it does not unload a module that has any */
+#define LINKER_TLS_LEFT  "__nnmusl_get_number_uncalled_tls_dtors"
 
 typedef struct {
-    SnxRelocModule* modules; /* one block: the modules, then, while the game's linker is watched, each one's copy */
+    /* one block: the game's modules, then while the game's linker is watched each one's copy, else room for the NROs
+       the game loads, in the order of their loads */
+    SnxRelocModule* modules;
     u32 count;
+    u32 loaded;                  /* the NROs behind the game's modules */
+    char names[LINKER_NROS][24]; /* theirs, for messages */
+    PMutex lock;                 /* the modules past count and loaded, once the runtime linked the game */
     SnxRelocCounts counts;
     u32 named;        /* which of linker_start names it */
     u64 start;        /* nn::init::Start, 0 when the game has none the runtime knows */
@@ -39,7 +52,7 @@ static void modules_make(int copy) {
     u32 i;
     for (i = 0; copy && i < g_mod->nmods; i++) bytes += g_mod->mods[i].data_size;
     l->count = g_mod->nmods;
-    l->modules = (SnxRelocModule*)snx_alloc(l->count * sizeof(*l->modules) + bytes);
+    l->modules = (SnxRelocModule*)snx_alloc((l->count + (copy ? 0 : LINKER_NROS)) * sizeof(*l->modules) + bytes);
     at = (unsigned char*)(l->modules + l->count);
     for (i = 0; i < l->count; i++) {
         const SnxModInfo* mi = &g_mod->mods[i];
@@ -90,7 +103,6 @@ static const char* own_linker(void) {
         return "the game's first module is no rtld";
     if (hook_family_off(LINKER_FAMILY)) return "the " LINKER_FAMILY " hooks are off (hooks, hooks_off)";
     if (!hook_routed(LINKER_RO_ROUTED)) return "the module does not route nn::ro (recompile the game for it)";
-    if (g_nros) return "the game maps NROs through nn::ro, which the runtime's linker does not load yet";
     for (i = 0; i < g_mod->nmods; i++)
         if ((u64)g_mod->mods[i].data_off + g_mod->mods[i].data_size > g_mod->mods[i].size)
             return "a module's data lies outside it";
@@ -110,6 +122,7 @@ void linker_decide(void) {
             LOG("linker: the game's own linker (rtld) links it: %s\n", error);
             return;
         }
+        pm_init(&l->lock);
         l->links = 1;
         LOG("linker: the runtime linked the game's %u modules itself, and its rtld does not run: %llu relative "
             "relocations, %llu with a symbol, %llu PLT slots, each bound\n",
@@ -249,19 +262,153 @@ int linker_main(u64 args[4]) {
 
 /* the modules' tables were read whole when the runtime linked them, so a lookup has no error left to say */
 static int find(u32 first, const char* name, u64* address) {
+    Linker* l = &g_linker;
     char error[512];
     SnxU64 found = 0;
-    if (snx_relocate_find(g_linker.modules, g_linker.count, first, name, &found, error, sizeof error) != 1) return 0;
-    *address = found;
-    return 1;
+    int is;
+    pm_lock(&l->lock);
+    is = snx_relocate_find(l->modules, l->count + l->loaded, first, name, &found, error, sizeof error) == 1;
+    pm_unlock(&l->lock);
+    if (is) *address = found;
+    return is;
 }
 
 int linker_find(const char* name, u64* address) { return g_linker.links && find(0, name, address); }
 
 int linker_find_after(u64 caller, const char* name, u64* address) {
+    Linker* l = &g_linker;
+    u32 i, after = 0;
+    if (!l->links) return 0;
+    pm_lock(&l->lock);
+    for (i = 0; i < l->count + l->loaded && !after; i++)
+        if (caller - l->modules[i].base < l->modules[i].size) after = i + 1;
+    pm_unlock(&l->lock);
+    return after && find(after, name, address);
+}
+
+/* ---- the NROs the game loads through nn::ro ---- */
+
+/* which of the modules is the loaded NRO that holds the address, or 0 for none: under the lock */
+static u32 nro_holding(u64 address) {
+    const Linker* l = &g_linker;
     u32 i;
-    if (!g_linker.links) return 0;
-    for (i = 0; i < g_linker.count; i++)
-        if (caller - g_linker.modules[i].base < g_linker.modules[i].size) return find(i + 1, name, address);
+    for (i = l->count; i < l->count + l->loaded; i++)
+        if (address - l->modules[i].base < l->modules[i].size) return i;
     return 0;
+}
+
+u32 linker_nro_load(CPU* c, u64 image, u64 size, u64 buffer, u64 buffer_size, int closed, u64* base) {
+    Linker* l = &g_linker;
+    SnxRelocModule* m;
+    SnxRelocCounts counts;
+    char error[512];
+    u64 lr = c->x[30], total = size + buffer_size, mod0, zero, zero_end, init;
+    int r = ldr_own_load(image, size, buffer, buffer_size, base);
+    if (r) return (u32)r;
+    /* the module's header names its BSS, which the game's buffer is mapped as with whatever it held */
+    mod0 = snx_ld_le32(GP(*base + 4));
+    if (total < 0x1c || mod0 > total - 0x1c || memcmp(GP(*base + mod0), "MOD0", 4))
+        fatal("linker: the NRO the game loaded at %llx (%llu bytes) has no module header (MOD0) at %llx of it, which "
+              "the SDK stops the game on",
+              (unsigned long long)*base, (unsigned long long)total, (unsigned long long)mod0);
+    zero = mod0 + snx_ld_le32(GP(*base + mod0 + 8));
+    zero_end = mod0 + snx_ld_le32(GP(*base + mod0 + 12));
+    if (zero > zero_end || zero_end > total)
+        fatal("linker: the NRO the game loaded at %llx names its BSS at %llx to %llx, outside its %llu bytes",
+              (unsigned long long)*base, (unsigned long long)zero, (unsigned long long)zero_end,
+              (unsigned long long)total);
+    memset(GP(*base + zero), 0, (size_t)(zero_end - zero));
+    pm_lock(&l->lock);
+    if (l->loaded == LINKER_NROS)
+        fatal("linker: the game loaded more than %d NROs at once, all the runtime's linker has room for", LINKER_NROS);
+    m = &l->modules[l->count + l->loaded];
+    memset(m, 0, sizeof(*m));
+    snprintf(l->names[l->loaded], sizeof l->names[l->loaded], "NRO %llx", (unsigned long long)*base);
+    m->name = l->names[l->loaded];
+    m->image = GP(*base);
+    m->base = *base;
+    m->size = total;
+    m->data_off = snx_ld_le32(GP(*base + 0x30)); /* its data segment, which the BSS follows */
+    if (m->data_off > total) m->data_off = total;
+    m->data_size = total - m->data_off;
+    m->data = GP(*base + m->data_off);
+    m->closed = closed;
+    if (snx_relocate_added(l->modules, l->count + l->loaded + 1, &counts, error, sizeof error))
+        fatal("linker: the NRO the game loaded at %llx does not link: %s", (unsigned long long)*base, error);
+    l->loaded++;
+    init = m->init;
+    pm_unlock(&l->lock);
+    LOG("linker: linked the NRO at %llx: %llu relative relocations, %llu with a symbol, %llu PLT slots, each bound; "
+        "%llu words of the modules before it took its definitions; nothing defines the symbol of %llu words that "
+        "are weak (0) and of %llu that are not (as loaded)%s%s\n",
+        (unsigned long long)*base, (unsigned long long)counts.relative, (unsigned long long)counts.symbolic,
+        (unsigned long long)counts.slots, (unsigned long long)counts.earlier, (unsigned long long)counts.absent,
+        (unsigned long long)counts.unresolved, counts.first_unresolved ? ", the first " : "",
+        counts.first_unresolved ? counts.first_unresolved : "");
+    if (counts.outside || counts.other)
+        LOG("linker: %llu relocations of the NRO at %llx of a type the runtime's linker has no case for and %llu "
+            "outside its data were left alone\n",
+            (unsigned long long)counts.other, (unsigned long long)*base, (unsigned long long)counts.outside);
+    run(c, init, lr); /* its constructors, on the thread that loads it */
+    c->x[30] = lr;
+    return 0;
+}
+
+int linker_nro_unload(CPU* c, u64 inside) {
+    Linker* l = &g_linker;
+    char error[512];
+    u64 lr = c->x[30], base, fini, left = 0, words = 0;
+    u32 which, k;
+    int closed;
+    pm_lock(&l->lock);
+    which = nro_holding(inside);
+    base = which ? l->modules[which].base : 0;
+    fini = which ? l->modules[which].fini : 0;
+    pm_unlock(&l->lock);
+    if (!which) return 0;
+    if (find(0, LINKER_TLS_LEFT, &left)) {
+        c->x[0] = base + snx_ld_le32(GP(base + 0x60));
+        run(c, left, lr);
+        if (c->x[0])
+            fatal("linker: the game unloads the NRO at %llx while %llu of its thread-local destructors have not run, "
+                  "which the SDK stops the game on",
+                  (unsigned long long)base, (unsigned long long)c->x[0]);
+    }
+    run(c, fini, lr); /* its destructors, while the others still hold its addresses */
+    c->x[30] = lr;
+    pm_lock(&l->lock);
+    which = nro_holding(base);
+    if (!which) fatal("linker: the NRO at %llx was unloaded twice at once", (unsigned long long)base);
+    closed = l->modules[which].closed;
+    if (!closed && snx_relocate_removed(l->modules, l->count + l->loaded, which, &words, error, sizeof error))
+        fatal("linker: the NRO at %llx does not unlink: %s", (unsigned long long)base, error);
+    for (k = which - l->count; k + 1 < l->loaded; k++) {
+        l->modules[l->count + k] = l->modules[l->count + k + 1];
+        memcpy(l->names[k], l->names[k + 1], sizeof l->names[k]);
+        l->modules[l->count + k].name = l->names[k];
+    }
+    l->loaded--;
+    pm_unlock(&l->lock);
+    if (ldr_own_unload(base))
+        fatal("linker: the NRO at %llx that the game unloads is not mapped as it was loaded, which the SDK stops "
+              "the game on",
+              (unsigned long long)base);
+    LOG("linker: unlinked the NRO at %llx: %llu words of the other modules that pointed into it are 0, or their "
+        "slot's lazy value, again\n",
+        (unsigned long long)base, (unsigned long long)words);
+    return 1;
+}
+
+int linker_nro_find(u64 inside, const char* name, u64* address) {
+    Linker* l = &g_linker;
+    char error[512];
+    SnxU64 found = 0;
+    u32 which;
+    int is = 0;
+    pm_lock(&l->lock);
+    which = nro_holding(inside);
+    if (which) is = snx_relocate_own(&l->modules[which], name, &found, error, sizeof error) == 1;
+    pm_unlock(&l->lock);
+    if (is) *address = found;
+    return is;
 }

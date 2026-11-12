@@ -103,6 +103,12 @@ The service does **not** relocate the NRO or resolve its ELF symbols. The guest 
 LoadNro returns. It also manages constructors/destructors. Pre-relocating in the service would change bytes the
 client expects to receive untouched. The caller's BSS backing is preserved, not silently zeroed.
 
+Where the runtime links the game in its rtld's place ([architecture](../../dev/architecture.md)), `nn::ro` is the
+runtime's (`src/nx/nn/ro.c`), not the SDK's: `RegisterModuleInfo`, `LoadModule` and `UnloadModule` reach the same
+registration, mapping and unmapping without a session (`ldr_own_*`, a state of the runtime's own beside the
+sessions'), and the runtime's linker (`src/nx/runtime/linker.c`) does what the guest linker would: it zeroes the
+BSS, relocates the NRO, binds its symbols and runs its constructors and destructors.
+
 An NRO the recompiler found in the game's RomFS has its code made ahead of time
 ([below](#nros-made-ahead-of-time)). The code of any other NRO is compiled by the runtime JIT. When LoadNro maps
 such an NRO, its text joins

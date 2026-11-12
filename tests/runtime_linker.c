@@ -7,11 +7,14 @@
    relocates as the game's linker would, give the slot back, say what it found and run the function.
      runtime_linker          the two agree, one slot not bound yet
      runtime_linker differ   a word the game's linker left differs
-   And where the runtime can link the game itself (the module routes nn::ro, whose hooks are on, and the game maps no
-   NRO), linker_decide must relocate the game's memory, every slot bound, the main thread must enter
+   And where the runtime can link the game itself (the module routes nn::ro, whose hooks are on), linker_decide must
+   relocate the game's memory, every slot bound, the main thread must enter
    nn::init::Start with the runtime's three callbacks, the second must run each module's DT_INIT but the rtld's, the
    last module first, the third each DT_FINI in load order, and a name must be found among every module or among the
-   ones after a caller's. That game has a third module, which defines nn::init::Start's name too.
+   ones after a caller's. That game has a third module, which defines nn::init::Start's name too. It then loads an
+   NRO: mapped by ldr:ro's code (here, where the test put it), its BSS zeroed, linked behind the game's modules, with
+   the weak word they lacked bound to it and its DT_INIT run on the calling thread; found by name; and unloaded, once
+   the SDK counts no thread-local destructor left, its DT_FINI run and the word 0 again.
      runtime_linker switch */
 #include "nx/hle/hook/hook.h"
 #include "nx/hle/kernel/kernel.h"
@@ -23,6 +26,7 @@
 #include "nx/runtime/loader.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/runtime/platform/log.h"
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -30,12 +34,16 @@
 #define RTLD  0x10000ull
 #define SDK   0x20000ull
 #define LAST  0x30000ull
+#define NRO   0x40000ull
 #define START (SDK + 0x40)
 #define NAME  "_ZN2nn4init5StartEmmPFvvES2_S2_"
 enum { MOD0 = 0x80, DYNAMIC = 0xc0, SYMTAB = 0x200, STRTAB = 0x248, RELA = 0x400, JMPREL = 0x500, RELR = 0x600 };
 enum { DATA = 0x800, DATA_SIZE = 0x200, MODULE_BYTES = 0x1000 };
 
-static u8 g_memory[0x40000];
+enum { NRO_SYMTAB = 0x200, NRO_STRTAB = 0x280, NRO_BSS = DATA + 0x100, NRO_IMAGE = 0xc00 };
+#define TLS_LEFT "__nnmusl_get_number_uncalled_tls_dtors"
+
+static u8 g_memory[0x50000];
 u8* g_mem = g_memory;
 const SnxNros* g_nros;
 static SnxModInfo g_mods[3] = {
@@ -45,11 +53,13 @@ static SnxModInfo g_mods[3] = {
 static SnxModule g_module = {.abi = SNX_ABI, .nmods = 2, .mods = g_mods};
 const SnxModule* g_mod = &g_module;
 const SnxArmModule* g_arm_mod;
-static GuestFn g_dispatch[0x30000 / 4];
+static GuestFn g_dispatch[0x40000 / 4];
 GuestFn* g_disp = g_dispatch;
-u64 g_code_lo = RTLD, g_code_hi = RTLD + 0x30000;
+u64 g_code_lo = RTLD, g_code_hi = RTLD + 0x40000;
 
 static int failures, g_nce, g_routed, g_ro_routed, g_exported, g_started, g_family_off, g_ran;
+static int g_ldr_result, g_mapped, g_unmapped;
+static u64 g_tls_asked, g_tls_left;
 static u64 g_order[8];
 static char g_log[4096];
 static void check(int ok, const char* what) {
@@ -66,6 +76,16 @@ void logf_(int lvl, const char* fmt, ...) {
     vsnprintf(g_log + n, sizeof g_log - n, fmt, args);
     va_end(args);
 }
+/* a fatal error: its text, back where the test expects it */
+static jmp_buf g_stopped;
+static char g_fatal[512];
+void fatal(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(g_fatal, sizeof g_fatal, fmt, args);
+    va_end(args);
+    longjmp(g_stopped, 1);
+}
 int nce_on(void) { return g_nce; }
 int hook_routed(const char* name) { return !strcmp(name, NAME) ? g_routed : g_ro_routed; }
 int hook_family_off(const char* family) { return g_family_off && !strcmp(family, LINKER_FAMILY); }
@@ -73,6 +93,24 @@ u64 kernel_find_symbol_exact(const char* name) { return g_exported && !strcmp(na
 static void original(CPU* c, u64 entry) {
     (void)c;
     g_started += entry == START;
+}
+/* ldr:ro's code for the runtime's linker: the NRO is where the test built it */
+int ldr_own_load(u64 nro, u64 size, u64 bss, u64 bss_size, u64* address) {
+    if (g_ldr_result) return g_ldr_result;
+    g_mapped += nro == 0x5000 && size == NRO_IMAGE && bss == 0x6000 && bss_size == MODULE_BYTES - NRO_IMAGE;
+    *address = NRO;
+    return 0;
+}
+int ldr_own_unload(u64 address) {
+    g_unmapped += address == NRO;
+    return 0;
+}
+/* the SDK's count of a module's thread-local destructors left, at 0x50 of the NRO */
+static void tls_left(CPU* c, u64 entry) {
+    (void)entry;
+    g_tls_asked = c->x[0];
+    c->x[0] = g_tls_left;
+    c->pc = c->x[30];
 }
 /* a module's DT_INIT and DT_FINI, at 0x48 and 0x4c of it: each says it ran and returns to its caller */
 static void ran(CPU* c, u64 entry) {
@@ -120,6 +158,101 @@ static void module(u64 base, u64 value, int plt) {
         snx_st_le64(m + DATA + 8, 0x123);
     }
 }
+/* an NRO as ldr:ro maps it: it defines "w", which the game's modules use and nothing of theirs defines, and the
+   SDK's count of destructors; it uses nn::init::Start's name; its BSS holds what the game's buffer held */
+static void nro(void) {
+    u8* m = GP(NRO);
+    const u64 tags[7][2] = {{6, NRO_SYMTAB}, {5, NRO_STRTAB}, {10, 3 + sizeof NAME + sizeof TLS_LEFT},
+                            {7, RELA},       {8, 24},         {12, 0x48},
+                            {13, 0x4c}};
+    unsigned i;
+    memset(m, 0, MODULE_BYTES);
+    snx_st_le32(m + 4, MOD0);
+    snx_st_le32(m + 0x30, DATA);
+    snx_st_le32(m + 0x60, 0x70);
+    memcpy(m + MOD0, "MOD0", 4);
+    snx_st_le32(m + MOD0 + 4, DYNAMIC - MOD0);
+    snx_st_le32(m + MOD0 + 8, NRO_BSS - MOD0);
+    snx_st_le32(m + MOD0 + 12, NRO_BSS + 0x80 - MOD0);
+    for (i = 0; i < 7; i++) {
+        snx_st_le64(m + DYNAMIC + 16 * i, tags[i][0]);
+        snx_st_le64(m + DYNAMIC + 16 * i + 8, tags[i][1]);
+    }
+    memcpy(m + NRO_STRTAB + 1, "w", 2);
+    memcpy(m + NRO_STRTAB + 3, NAME, sizeof NAME);
+    memcpy(m + NRO_STRTAB + 3 + sizeof NAME, TLS_LEFT, sizeof TLS_LEFT);
+    snx_st_le32(m + NRO_SYMTAB + 24, 1); /* w, at 0x60 */
+    m[NRO_SYMTAB + 24 + 4] = 0x12, m[NRO_SYMTAB + 24 + 6] = 1;
+    snx_st_le64(m + NRO_SYMTAB + 24 + 8, 0x60);
+    snx_st_le32(m + NRO_SYMTAB + 48, 3); /* nn::init::Start, used */
+    m[NRO_SYMTAB + 48 + 4] = 0x12;
+    snx_st_le32(m + NRO_SYMTAB + 72, 3 + sizeof NAME); /* the count, at 0x50 */
+    m[NRO_SYMTAB + 72 + 4] = 0x12, m[NRO_SYMTAB + 72 + 6] = 1;
+    snx_st_le64(m + NRO_SYMTAB + 72 + 8, 0x50);
+    snx_st_le64(m + RELA, DATA);
+    snx_st_le64(m + RELA + 8, (2ull << 32) | 257);
+    memset(m + NRO_BSS - 8, 0xee, 0x90); /* the word before its BSS, the BSS and the word after */
+    g_disp[(NRO + 0x48 - g_code_lo) / 4] = g_disp[(NRO + 0x4c - g_code_lo) / 4] = ran;
+    g_disp[(NRO + 0x50 - g_code_lo) / 4] = tls_left;
+}
+/* the game loads the NRO and unloads it */
+static void loads(CPU* c) {
+    u64 base = 0, at = 0;
+    g_ran = 0;
+    g_log[0] = 0;
+    g_ldr_result = 0x416;
+    c->x[30] = 0x5554;
+    check(linker_nro_load(c, 0x5000, NRO_IMAGE, 0x6000, MODULE_BYTES - NRO_IMAGE, 0, &base) == 0x416 && !g_ran &&
+              !linker_find("w", &at) && !g_log[0],
+          "a mapping ldr:ro's code refuses is its result, and nothing is linked or run");
+    g_ldr_result = 0;
+    nro();
+    check(!linker_nro_load(c, 0x5000, NRO_IMAGE, 0x6000, MODULE_BYTES - NRO_IMAGE, 0, &base) && base == NRO &&
+              g_mapped == 1,
+          "the NRO is mapped by ldr:ro's code, with the game's buffer as its BSS");
+    check(snx_ld_le64(GP(NRO) + NRO_BSS - 8) == 0xeeeeeeeeeeeeeeeeull && !snx_ld_le64(GP(NRO) + NRO_BSS) &&
+              !snx_ld_le64(GP(NRO) + NRO_BSS + 0x78) && snx_ld_le64(GP(NRO) + NRO_BSS + 0x80) == 0xeeeeeeeeeeeeeeeeull,
+          "its BSS is zeroed, and nothing around it");
+    check(snx_ld_le64(GP(NRO) + DATA) == START, "its word of a game module's symbol is bound");
+    check(snx_ld_le64(GP(SDK) + DATA + 0x10) == NRO + 0x60 && snx_ld_le64(GP(LAST) + DATA + 0x10) == NRO + 0x60,
+          "the weak word the game's modules lacked takes its definition");
+    check(g_ran == 1 && g_order[0] == NRO + 0x48 && c->x[30] == 0x5554,
+          "its DT_INIT runs on the calling thread, whose link register is put back");
+    check(strstr(g_log, "linked the NRO at 40000: 0 relative relocations, 1 with a symbol, 0 PLT slots") &&
+              strstr(g_log, "2 words of the modules before it took its definitions"),
+          "what was linked is said, with the words of the other modules");
+    check(linker_find("w", &at) == 1 && at == NRO + 0x60 && linker_find_after(LAST + 4, "w", &at) == 1,
+          "its name is found among the modules, and past the game's last");
+    at = 0;
+    check(linker_nro_find(NRO + MODULE_BYTES - 1, "w", &at) == 1 && at == NRO + 0x60 &&
+              !linker_nro_find(NRO + 8, NAME, &at) && !linker_nro_find(NRO + MODULE_BYTES, "w", &at) &&
+              !linker_nro_find(LAST + 8, NAME, &at),
+          "and in the NRO alone by an address inside it, not a name it only uses, nor in a game module");
+    g_log[0] = 0;
+    check(!linker_nro_unload(c, LAST + 8) && !g_unmapped && !g_log[0], "an address no loaded NRO holds unloads none");
+    check(linker_nro_unload(c, NRO + 0x900) == 1 && g_tls_asked == NRO + 0x70 && g_ran == 2 &&
+              g_order[1] == NRO + 0x4c && c->x[30] == 0x5554 && g_unmapped == 1,
+          "unloaded: the SDK counts its destructors left by its DSO handle, its DT_FINI runs, its mapping goes");
+    check(!snx_ld_le64(GP(SDK) + DATA + 0x10) && !snx_ld_le64(GP(LAST) + DATA + 0x10) &&
+              snx_ld_le64(GP(SDK) + DATA) == START && strstr(g_log, "unlinked the NRO at 40000: 2 words"),
+          "the words that pointed into it are 0 again, the others stay, and it is said");
+    check(!linker_find("w", &at) && !linker_nro_find(NRO + 8, "w", &at) && !linker_nro_unload(c, NRO + 8),
+          "its names are gone, and it unloads once");
+    /* loaded again, as the second NRO after another would be */
+    nro();
+    check(!linker_nro_load(c, 0x5000, NRO_IMAGE, 0x6000, MODULE_BYTES - NRO_IMAGE, 0, &base) &&
+              snx_ld_le64(GP(SDK) + DATA + 0x10) == NRO + 0x60 && g_ran == 3,
+          "loaded again, it is linked again");
+    /* what the SDK stops the game on stops it, said: destructors of the module's that no thread has run */
+    g_tls_left = 2;
+    if (!setjmp(g_stopped)) {
+        linker_nro_unload(c, NRO + 8);
+        check(0, "an NRO with thread-local destructors left is not unloaded");
+    }
+    check(strstr(g_fatal, "the NRO at 40000 while 2 of its thread-local destructors have not run") && g_ran == 3 &&
+              g_unmapped == 1 && snx_ld_le64(GP(SDK) + DATA + 0x10) == NRO + 0x60,
+          "the game stops with the NRO's address and the count, before anything of it is undone");
+}
 static void game(void) {
     memset(g_dispatch, 0, sizeof g_dispatch);
     module(RTLD, 0, 1);
@@ -141,6 +274,7 @@ static void switched(void) {
     g_module.nmods = 3;
     game();
     g_exported = g_routed = g_ro_routed = 1;
+    g_nros = (const SnxNros*)g_log; /* a game whose NROs have AOT modules links the same */
     linker_decide();
     check(linker_links() && strstr(g_log, "the runtime linked the game's 3 modules itself") &&
               strstr(g_log, "2 relative relocations, 2 with a symbol, 1 PLT slots, each bound") &&
@@ -182,6 +316,7 @@ static void switched(void) {
     check(!linker_find_after(LAST + 4, NAME, &at) && !linker_find_after(SDK + MODULE_BYTES, NAME, &at) &&
               !linker_find_after(RTLD - 4, NAME, &at) && !at,
           "nowhere past the last module that defines it, nor for a caller no module holds");
+    loads(&c);
 }
 
 int main(int argc, char** argv) {
@@ -223,14 +358,9 @@ int main(int argc, char** argv) {
     g_routed = g_ro_routed = 1, g_family_off = 1;
     linker_decide();
     check(!linker_links() && strstr(g_log, "the nn_ro hooks are off"), "with nn::ro's hooks off the game links itself");
-    game();
-    g_family_off = 0, g_nros = (const SnxNros*)g_log;
-    linker_decide();
-    check(!linker_links() && strstr(g_log, "maps NROs through nn::ro"), "a game that maps NROs links itself");
-    g_nros = NULL;
     /* watched: the slot is taken until its first call */
     game();
-    g_ro_routed = 0;
+    g_family_off = 0, g_ro_routed = 0;
     linker_decide();
     linker_init();
     check(*slot != original && strstr(g_log, "links it: the module does not route nn::ro") &&
