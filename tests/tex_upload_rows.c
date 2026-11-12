@@ -522,6 +522,8 @@ void vk_surf_add(Surf* s) { (void)s; }
 void vk_tex_made(const Surf* t) { (void)t; } /* gpu/vk/tex_report.c's count, which no test here reads */
 void vk_surf_touch(Surf* s) { (void)s; }
 void vk_surf_relist(Surf* s) { (void)s; }
+void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx) { (void)fn, (void)ctx; }
+int vk_astc_bc7(void) { return 0; } /* no texture here is marked to be read again (vk_tex_later_exact) */
 u32 vk_surf_gen(void) {
     static u32 gen;
     return ++gen;
