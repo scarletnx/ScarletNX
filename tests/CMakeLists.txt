@@ -3107,6 +3107,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME plat_cpus COMMAND snx-test-plat-cpus)
 endif()
 
+# the profiler's view of a named lock (common/platform/thread.c): its release is reported while it is held
+add_executable(snx-test-pm-tracy pm_tracy.c)
+snx_test_target(snx-test-pm-tracy 11)
+target_link_libraries(snx-test-pm-tracy PRIVATE scarletnx-platform)
+add_test(NAME pm_tracy COMMAND snx-test-pm-tracy)
+
 # the process's memory as common.c reads it, which memory_fit takes (process_memory.c)
 add_executable(snx-test-process-memory process_memory.c)
 snx_test_target(snx-test-process-memory 11)

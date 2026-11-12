@@ -192,8 +192,10 @@ void pm_lock(PMutex* m) {
 }
 void pm_unlock(PMutex* m) {
     PmNamed* c = __atomic_load_n(&g_pm_tracy_on, __ATOMIC_RELAXED) ? pm_named(m) : NULL;
-    ReleaseSRWLockExclusive(&m->l); /* the release first, as the profiler's own Lockable does */
+    /* reported while it is held, as Tracy's own Lockable does (BeforeUnlock): another thread's lock of it,
+       once it is let go, reaches the profiler after this release */
     if (c && pm_named_admit(c)) g_pm_tracy->unlock(c->l);
+    ReleaseSRWLockExclusive(&m->l);
 }
 int pm_trylock(PMutex* m) {
     int got = TryAcquireSRWLockExclusive(&m->l) != 0;
@@ -295,8 +297,10 @@ void pm_lock(PMutex* m) {
 }
 void pm_unlock(PMutex* m) {
     PmNamed* c = __atomic_load_n(&g_pm_tracy_on, __ATOMIC_RELAXED) ? pm_named(m) : NULL;
-    pthread_mutex_unlock(&m->l); /* the release first, as the profiler's own Lockable does */
+    /* reported while it is held, as Tracy's own Lockable does (BeforeUnlock): another thread's lock of it,
+       once it is let go, reaches the profiler after this release */
     if (c && pm_named_admit(c)) g_pm_tracy->unlock(c->l);
+    pthread_mutex_unlock(&m->l);
 }
 int pm_trylock(PMutex* m) {
     int got = pthread_mutex_trylock(&m->l) == 0;
