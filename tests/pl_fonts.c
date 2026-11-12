@@ -8,6 +8,8 @@
 #include "nx/nn/pl.c"
 #include "nx/hle/hle.c"
 #include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
+#include <setjmp.h>
+#include <stdarg.h>
 
 static unsigned checks;
 #define CHECK(x)                                                                                                       \
@@ -126,11 +128,29 @@ static void covered(u32 off, u32 size, int own_glyphs) {
 /* the kernel's mapping of the fonts' memory: once, at one address */
 #define FONTS_BASE 0x6000000ull
 static unsigned g_maps;
+static int g_no_pages; /* the game's address space has no room for the fonts */
 u64 kshmem_map_free(KShmem* s, u32 perm) {
     (void)s;
     CHECK(perm == PERM_R);
+    if (g_no_pages) return 0;
     g_maps++;
     return FONTS_BASE;
+}
+
+/* fatal: the game stops, which one check expects; its message is kept for it */
+static jmp_buf g_stopped;
+static int g_expect_stop;
+static char g_stop_text[160];
+void fatal(const char* fmt, ...) {
+    va_list a;
+    va_start(a, fmt);
+    vsnprintf(g_stop_text, sizeof g_stop_text, fmt, a);
+    va_end(a);
+    if (!g_expect_stop) {
+        fprintf(stderr, "%s\n", g_stop_text);
+        exit(1);
+    }
+    longjmp(g_stopped, 1);
 }
 
 /* the hooks: every font loaded, its size and its address in the mapped memory, and the lists of all six */
@@ -139,6 +159,14 @@ static void hooks(void) {
     static u8 mem[0x1000];
     CPU* c = &cpu;
     cpu.mem = mem;
+    /* no room to map the fonts: the game stops, and the message gives the size asked for */
+    g_no_pages = g_expect_stop = 1;
+    if (!setjmp(g_stopped)) {
+        nnpl_get_shared_font_address(c, 0);
+        CHECK(!"the game went on with no fonts mapped");
+    }
+    g_no_pages = g_expect_stop = 0;
+    CHECK(strstr(g_stop_text, "0x1100000") && !g_maps && !g_hle.pl.base);
     for (i32 t = 0; t < 6; t++) {
         nnpl_request_shared_font_load(c, t);
         CHECK(nnpl_get_shared_font_load_state(c, t) == 1);
