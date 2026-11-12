@@ -8,10 +8,12 @@
    PLT slot bound, the main thread enters nn::init::Start with three functions of the runtime's (the SDK's exception
    handler is ready; each module's DT_INIT, the last module first; each DT_FINI), and nn::ro is answered by the
    runtime (nn/ro.hook), so that nothing of the SDK reads what an rtld would have left. No code of the rtld runs.
+   An NRO the game loads through nn::ro is mapped by ldr:ro's code and linked here too: behind the game's modules
+   and the NROs loaded before it, in that order, with what the modules before it lacked bound to it, and unbound
+   when it is unloaded.
 
    Where it cannot (NCE, a 32-bit game, a game with no nn::init::Start it knows or whose module does not route
-   nn::ro, the nn_ro hooks off, a game that maps NROs), the game's rtld links it as before, which the log says with
-   the reason. The runtime then links a copy of the modules' data and, at the game's first call of nn::init::Start,
+   nn::ro, the nn_ro hooks off), the game's rtld links it as before, which the log says with the reason. The runtime then links a copy of the modules' data and, at the game's first call of nn::init::Start,
    compares every relocated word of the game's memory with the copy: the log says how many, or the first that
    differs */
 #ifndef SNX_RUNTIME_LINKER_H
@@ -38,5 +40,17 @@ int linker_find(const char* name, u64* address);
 /* the same among the modules loaded after the one that holds caller, an address of the game's code: 0 too when no
    module holds it */
 int linker_find_after(u64 caller, const char* name, u64* address);
+
+/* nn::ro::LoadModule, where the runtime linked the game: the NRO image of size bytes at image is mapped with the
+   game's buffer as its BSS (ldr:ro's own mapping, at the address its AOT module is made for when it has one), its BSS
+   zeroed, linked, and its DT_INIT run on the calling thread c. closed: the game loads it for no other module to bind
+   to. 0 with its address in *base, or ldr:ro's result, nothing loaded. What the SDK stops the game on stops it */
+u32 linker_nro_load(CPU* c, u64 image, u64 size, u64 buffer, u64 buffer_size, int closed, u64* base);
+/* nn::ro::UnloadModule of the loaded NRO that holds the address inside: its DT_FINI run on c, the other modules'
+   words that point into it unbound, and its mapping gone. 1, or 0 when no loaded NRO holds the address */
+int linker_nro_unload(CPU* c, u64 inside);
+/* the address of name as that NRO itself defines it: 1 with it in *address, 0 when it does not or no loaded NRO
+   holds the address */
+int linker_nro_find(u64 inside, const char* name, u64* address);
 
 #endif
