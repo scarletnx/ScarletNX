@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# hooks for tests/hook_install_a32.c, generated with --a32-marked: the ones declared a32 have an adapter for a 32-bit
+# program, the others none
+family marked
+hook answer(u32 a, bool b) -> u32 = test_answer a32
+hook thumb_answer(addr out) = test_thumb_answer a32
+hook wide(u64 size) -> u64 = test_wide
+family switched_off
+hook off_answer() -> u32 = test_off a32

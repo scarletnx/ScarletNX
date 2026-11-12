@@ -83,6 +83,14 @@ hook memcpy(void* dst, const void* src, u64 size) -> void* = hook_memmove
   d7, and the rest on the stack. It calls the same handler with the thread's `CPU`, and returns to lr in the state lr's
   bit 0 gives. A pointer and a `usize` reach the handler zero-extended, an `isize` sign-extended. The NVN spec uses it:
   `tests/hook_adapters.c` checks the mapping.
+- The word `a32` after a hook's handler (after `pure`) says the declaration holds for a 32-bit game too: its
+  arguments are the function's under AAPCS32 as written (a `usize` for a `size_t`, never a `u64`), and its handler
+  reads nothing whose layout differs in the 32-bit SDK. A hook that `uses` a struct can't be one: the layouts are the
+  64-bit SDK's. `hookgen --a32-marked` (`snx_hookgen(... A32_MARKED)`) generates the adapters of those hooks alone,
+  and the others' entries of `<prefix>_a32` are 0. The runtime's own spec is generated this way, and for a 32-bit
+  game `hook_install` puts each such adapter in its function's slot of the code table (`arm_slot`); every other
+  SDK function runs its own code there. A 32-bit SDK mangles a `size_t` as `j` where the 64-bit one has `m`, so a
+  function with one in its signature has another symbol, and needs a declaration of its own.
 - A pointer is a type followed by `*`, each `*` optionally followed by `const`, after an optional `const`:
   `const NVNtexture* const* textures`. It points to `void`, `char`, one of the types above, or a type of the C header
   that the spec's `include` line names (`include "nx/gpu/nvn/nvn.h"`, found in the folders that `-I` gives hookgen).

@@ -80,6 +80,8 @@ GuestFn nce_slot(GuestFn f) { return f; }
 void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
 GuestFn jit_code_now(u64 pc) { return (void)pc, NULL; }
+/* arm.c's: a 64-bit game has no 32-bit code */
+SnxArmBlock* arm_slot(u32 addr, int thumb) { return (void)addr, (void)thumb, NULL; }
 int linker_links(void) { return 0; }
 /* verify.c's: counted, with the scratch slot it was given; the handler answers, as an agreeing check leaves it */
 static unsigned checks;

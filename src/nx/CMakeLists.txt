@@ -58,7 +58,7 @@ target_sources(snx_hle PRIVATE "${PROJECT_BINARY_DIR}/generated/shared_fonts.c")
 # the hooks' adapters and table, generated from hle/hook/hooks.hook and the game patches' address hooks
 # (patches/*.hook), whose handlers are the .c files beside them
 include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
-snx_hookgen(snx_hle)
+snx_hookgen(snx_hle A32_MARKED)
 file(GLOB snx_patch_handlers CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.c")
 target_sources(snx_hle PRIVATE ${snx_patch_handlers})
 # the IPC interfaces of the services (docs/platforms/nx/ipc.md): their dispatchers are generated, the handlers are in the services'

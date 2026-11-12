@@ -105,8 +105,9 @@
    the table and the route list, so that the recompiler routes the direct calls to it. It holds for the one build, so
    it has no @version.
 
-   Usage: hookgen [--prefix NAME] [--a32] [-I DIR]... --header OUT.h --out OUT.inc SPEC... (NAME, hook by default,
-          names the tables; --a32 adds the adapters for a 32-bit program, <prefix>_a32; each -I DIR a folder to find
+   Usage: hookgen [--prefix NAME] [--a32 | --a32-marked] [-I DIR]... --header OUT.h --out OUT.inc SPEC... (NAME,
+          hook by default, names the tables; --a32 adds the adapters for a 32-bit program, <prefix>_a32, and
+          --a32-marked those of the hooks declared a32 alone, the others' entries 0; each -I DIR a folder to find
           the include line's header in; the specs are read one after another into one table, each with its own
           family lines, as hooks.hook and the game patches of src/nx/patches/ are)
           hookgen [-I DIR]... --routes OUT.inc SPEC... (the symbols that the hooks and route lines of every SPEC
@@ -204,6 +205,7 @@ typedef struct {
     char symbol[MAX_NAME], handler[MAX_NAME]; /* an address hook's symbol is its key, BUILDID:OFFSET */
     Arg args[MAX_ARGS];
     int nargs, line, family, nuses, pure, nbufs, at;
+    int a32; /* the declaration holds for a 32-bit program too (the word a32 after it) */
     Kind ret;
     char ret_cname[MAX_NAME];
     Range range;
@@ -848,6 +850,11 @@ static void parse_hook(const char* p, int line, const Range* range, const char* 
         h->pure = 1;
         p = skip_space(p + 4);
     }
+    if (keyword(p, "a32")) {
+        if (h->nuses) fail(line, "an a32 hook uses no struct: a struct's layout here is the 64-bit SDK's");
+        h->a32 = 1;
+        p = skip_space(p + 3);
+    }
     if (*p) fail(line, "unexpected text after the hook's handler");
     resolve_buffers(h, line);
 }
@@ -1487,9 +1494,16 @@ static void write_table(const char* path) {
     for (i = 0; i < nentries; i++) adapter(&entries[i], i);
     if (a32) {
         out("\n/* the adapters for a 32-bit program */\n");
-        for (i = 0; i < nentries; i++) adapter_a32(&entries[i], i);
+        /* --a32-marked: only the hooks declared a32 have one, and the others' entries are 0 */
+        for (i = 0; i < nentries; i++)
+            if (a32 == 1 || hooks[entries[i].hook].a32) adapter_a32(&entries[i], i);
         out("static const SnxArmBlock %s_a32[%s_COUNT + 1] = {\n", prefix, upper);
-        for (i = 0; i < nentries; i++) out("    %s_a32_%d,\n", prefix, i);
+        for (i = 0; i < nentries; i++) {
+            if (a32 == 1 || hooks[entries[i].hook].a32)
+                out("    %s_a32_%d,\n", prefix, i);
+            else
+                out("    0,\n");
+        }
         out("    0};\n");
     }
     out("\nstatic const char* const %s_symbol[%s_COUNT + 1] = {\n", prefix, upper);
@@ -1600,6 +1614,8 @@ int main(int argc, char** argv) {
             prefix = argv[++i];
         else if (!strcmp(argv[i], "--a32"))
             a32 = 1;
+        else if (!strcmp(argv[i], "--a32-marked"))
+            a32 = 2;
         else if (!strcmp(argv[i], "-I") && i + 1 < argc && ninclude_dirs < MAX_DIRS)
             include_dirs[ninclude_dirs++] = argv[++i];
         else if (argv[i][0] != '-' && nspecs < MAX_SPECS)
@@ -1613,8 +1629,10 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (!nspecs || (!header && !table)) {
-        fprintf(stderr, "usage: hookgen [--prefix NAME] [--a32] [-I DIR]... --header OUT.h --out OUT.inc SPEC...\n"
-                        "       hookgen [-I DIR]... --routes OUT.inc SPEC...\n");
+        fprintf(
+            stderr,
+            "usage: hookgen [--prefix NAME] [--a32 | --a32-marked] [-I DIR]... --header OUT.h --out OUT.inc SPEC...\n"
+            "       hookgen [-I DIR]... --routes OUT.inc SPEC...\n");
         return 2;
     }
     for (i = 0; prefix[i]; i++) { /* an identifier, its macros' prefix the same in capitals */
