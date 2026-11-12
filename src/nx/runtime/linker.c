@@ -23,7 +23,7 @@ typedef struct {
     SnxRelocModule* modules; /* one block: the modules, then, while the game's linker is watched, each one's copy */
     u32 count;
     SnxRelocCounts counts;
-    const char* start_name;
+    u32 named;        /* which of linker_start names it */
     u64 start;        /* nn::init::Start, 0 when the game has none the runtime knows */
     int links;        /* the runtime linked the modules: the game's linker does not run */
     GuestFn original; /* what nn::init::Start's dispatch slot held, while the game's linker is watched */
@@ -78,7 +78,7 @@ static const char* own_linker(void) {
     u32 i;
     if (nce_on()) return "the game runs its own code (NCE)";
     for (i = 0; i < sizeof linker_start / sizeof linker_start[0] && !g_linker.start; i++) {
-        g_linker.start_name = linker_start[i];
+        g_linker.named = i;
         g_linker.start = kernel_find_symbol_exact(linker_start[i]);
     }
     if (!g_linker.start || g_linker.start < g_code_lo || g_linker.start >= g_code_hi || (g_linker.start & 3) ||
@@ -111,8 +111,8 @@ void linker_decide(void) {
             return;
         }
         l->links = 1;
-        LOG("linker: the runtime linked the game's %u modules itself, and the game's own linker (rtld) does not run: "
-            "%llu relative relocations, %llu with a symbol, %llu PLT slots, each bound\n",
+        LOG("linker: the runtime linked the game's %u modules itself, and its rtld does not run: %llu relative "
+            "relocations, %llu with a symbol, %llu PLT slots, each bound\n",
             (unsigned)l->count, (unsigned long long)l->counts.relative, (unsigned long long)l->counts.symbolic,
             (unsigned long long)l->counts.slots);
         undefined_say();
@@ -216,10 +216,10 @@ void linker_init(void) {
             linker_start[0], linker_start[1]);
         return;
     }
-    if (!hook_routed(l->start_name)) {
+    if (!hook_routed(linker_start[l->named])) {
         LOG("linker: not compared with the game's own linker: the module does not route %s. Recompile the game for "
             "it\n",
-            l->start_name);
+            linker_start[l->named]);
         return;
     }
     for (i = 0; i < g_mod->nmods; i++)
