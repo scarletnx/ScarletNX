@@ -64,6 +64,10 @@
     X(FsData, (h).fs.fss[0])                                                                                           \
     X(FileData, (h).fs.files[0])                                                                                       \
     X(DirData, (h).fs.dirs[0])                                                                                         \
+    X(NnfsRom, (h).nnfs.roms[0])                                                                                       \
+    X(NnfsMount, (h).nnfs.mounts[0])                                                                                   \
+    X(NnfsFile, (h).nnfs.files[0])                                                                                     \
+    X(NnfsDir, (h).nnfs.dirs[0])                                                                                       \
     X(NativeVideoPool, (h).native_video.pools[0])                                                                      \
     X(NativeVideoMap, (h).native_video.maps[0])                                                                        \
     X(NativeVideoContext, (h).native_video.contexts[0])                                                                \
@@ -88,6 +92,7 @@
     X(nvdrv, (h).nvdrv)                                                                                                \
     X(native_video, (h).native_video)                                                                                  \
     X(pl, (h).pl)                                                                                                      \
+    X(prepo, (h).prepo)                                                                                                \
     X(set, (h).set)                                                                                                    \
     X(sm, (h).sm)                                                                                                      \
     X(time, (h).time)                                                                                                  \
@@ -97,6 +102,7 @@
     X(nifm, (h).nifm)                                                                                                  \
     X(ssl, (h).ssl)                                                                                                    \
     X(fs, (h).fs)                                                                                                      \
+    X(nnfs, (h).nnfs)                                                                                                  \
     X(hook, (h).hook)
 
 #endif
