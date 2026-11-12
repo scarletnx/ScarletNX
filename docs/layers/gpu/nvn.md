@@ -225,8 +225,8 @@ size alone is not a safe bound for a shadow driver's writes. The command buffer'
 report the last ranges the game supplied. Runtime lending does not enlarge the advertised guest capacity, and the
 control range stays free because direct recording needs no driver control bookkeeping.
 
-The SDK exports `nvnBootstrapLoader`, which returns a guest function pointer for an NVN function name. An earlier
-tree had a trace (`nvn_trace=1`) that wrapped the resolvers and counted the calls to each function they resolved.
+The SDK exports `nvnBootstrapLoader`, which returns a guest function pointer for an NVN function name. A trace that
+wrapped the resolvers (the `nvn_trace` setting, deprecated now) counted the calls to each function they resolved.
 Its boot samples resolved about 470 (game A) and 530 (game B) names and called about a third of them. The frequently
 called shared functions are buffer-address and texture-handle lookups, texture binds, blend and vertex state, and
 command-buffer operations. Counts vary between runs with the same frame limit.
