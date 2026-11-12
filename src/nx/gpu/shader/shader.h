@@ -563,6 +563,17 @@ int shader_shared_fit(const u8* code, u32 max_bytes, const u32 local[3], u32 shm
 /* reads word off (bytes) of constant buffer idx for jump tables, into *out as a host number: 1 when it could. Set by
    whoever translates, NULL offline */
 extern int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);
+/* Constant buffer words folded into a translation. A program loads most of its constant buffer words at constant
+   places (the bank and the offset in the instruction), and its draws mostly find the same words there. Where
+   whoever translates sets g_shader_cb_fold, each such load asks it for the word (bank idx, byte off): 1 with the
+   word in *out when the translation is to hold it as a constant, which then serves only the draws whose buffers
+   hold that word (vk/cb_fold.h); 0 for a load. NULL offline.
+   shader_cb_fold_value is which words are worth it, whatever their bank: zero, 1.0f and a whole number up to 255,
+   the words a driver drops a multiply, an add or a branch for. Of the loads one game's scene never changed in its
+   fragment programs they are a third, and they bring 85% of what all of them would in the instructions RADV
+   compiles (docs/layers/gpu/constant-buffer-folds.md) */
+extern int (*g_shader_cb_fold)(u32 idx, u32 off, u32* out);
+static inline int shader_cb_fold_value(u32 word) { return word < 256 || word == 0x3F800000u; }
 /* The programs are SM86 (sm86.h), not Maxwell: an Ounce game's. nvn_direct sets it once, from the game's NVN API
    version, before the game's first draw */
 extern int g_shader_sm86;

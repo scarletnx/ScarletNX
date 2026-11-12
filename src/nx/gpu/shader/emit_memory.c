@@ -55,11 +55,17 @@ static u32 cbuf_entry(DirectCtx* c, u64 w) {
     u32 idx = B(w, 34, 5), off = B(w, 20, 14) * 4, key = (idx << 16 | off >> 2) + 1;
     u32 at = (key * 2654435761u) >> 23; /* 9 bits */
     if (c->cbuf_seen[at].key == key && c->cbuf_seen[at].block == c->emit.block) return at;
+    u32 folded = 0;
+    c->cbuf_seen[at].key = key;
+    c->cbuf_seen[at].block = c->emit.block;
+    if (g_shader_cb_fold && g_shader_cb_fold(idx, off, &folded)) {
+        c->cbuf_seen[at].word = shader_u32(c, folded);
+        c->cbuf_seen[at].as_float = 0;
+        return at;
+    }
     u32 member = shader_u32(c, 0);
     u32 element = shader_u32(c, off >> 4);
     u32 component = shader_u32(c, (off >> 2) & 3);
-    c->cbuf_seen[at].key = key;
-    c->cbuf_seen[at].block = c->emit.block;
     u32 word = spv_emit_uniform_component(&c->emit, c->cbuf_pointer[idx], c->cbuf[idx], member, element, component,
                                           c->u32_type);
     if (c->dp_push && idx == 0 && (off == SH_CB0_BASE_VERTEX || off == SH_CB0_BASE_INSTANCE)) {
