@@ -3081,7 +3081,7 @@ if(NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-pl-fonts pl_fonts.c "${PROJECT_SOURCE_DIR}/src/nx/nn/pl_font.c" "${PROJECT_BINARY_DIR}/generated/shared_fonts.c")
     snx_test_target(snx-test-pl-fonts 23)
     snx_service_swipc(snx-test-pl-fonts)
-    snx_hookgen(snx-test-pl-fonts SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/pl.hook")
+    snx_hookgen(snx-test-pl-fonts SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/pl.hook" A32_MARKED)
     add_test(NAME pl_fonts COMMAND snx-test-pl-fonts)
 endif()
 

@@ -212,9 +212,10 @@ u64 nnpl_get_shared_font_address(CPU* c, i32 type) {
 }
 
 /* every font, in the order of their types whatever the language, as Eden does. The count is all of them, the
-   entries as many as max allows. Each entry: its type, its address and its size, by the SDK's three arrays or its
-   SharedFontData (0x18 bytes: the type at 0, the address at 8, the size at 0x10, the padding left) */
-static void in_order(CPU* c, u64 count, i32 max, u64 types, u64 addresses, u64 sizes, u64 data) {
+   entries as many as max allows. Each entry: its type, its address and its size, by the SDK's three arrays (an
+   address and a size of word bytes each: 8, or a 32-bit game's 4) or its SharedFontData (0x18 bytes: the type at 0,
+   the address at 8, the size at 0x10, the padding left) */
+static void in_order(CPU* c, u64 count, i32 max, u64 types, u64 addresses, u64 sizes, u64 data, u32 word) {
     snx_st_le32(hook_host(c, count), PL_FONTS);
     u64 base = fonts_base();
     for (i32 i = 0; i < max && i < PL_FONTS; i++) {
@@ -227,6 +228,11 @@ static void in_order(CPU* c, u64 count, i32 max, u64 types, u64 addresses, u64 s
             continue;
         }
         snx_st_le32(hook_host(c, types + (u64)i * 4), (u32)i);
+        if (word == 4) {
+            snx_st_le32(hook_host(c, addresses + (u64)i * 4), (u32)address);
+            snx_st_le32(hook_host(c, sizes + (u64)i * 4), (u32)size);
+            continue;
+        }
         snx_st_le64(hook_host(c, addresses + (u64)i * 8), address);
         snx_st_le64(hook_host(c, sizes + (u64)i * 8), size);
     }
@@ -234,18 +240,25 @@ static void in_order(CPU* c, u64 count, i32 max, u64 types, u64 addresses, u64 s
 int nnpl_get_shared_font_in_order_of_priority(CPU* c, u64 count, u64 types, u64 addresses, u64 sizes, i32 max,
                                               u64 language) {
     (void)language;
-    in_order(c, count, max, types, addresses, sizes, 0);
+    in_order(c, count, max, types, addresses, sizes, 0, 8);
+    return 1;
+}
+/* a 32-bit game's: its arrays hold 4-byte addresses and sizes */
+int nnpl_get_shared_font_in_order_of_priority_a32(CPU* c, u64 count, u64 types, u64 addresses, u64 sizes, i32 max,
+                                                  u32 language, u32 language_end) {
+    (void)language, (void)language_end;
+    in_order(c, count, max, types, addresses, sizes, 0, 4);
     return 1;
 }
 int nnpl_get_shared_font_in_order_of_priority_for_system(CPU* c, u64 count, u64 types, u64 addresses, u64 sizes,
                                                          i32 max, u64 language) {
     (void)language;
-    in_order(c, count, max, types, addresses, sizes, 0);
+    in_order(c, count, max, types, addresses, sizes, 0, 8);
     return 1;
 }
 int nnpl_get_shared_font(CPU* c, u64 count, u64 data, i32 max, u64 language) {
     (void)language;
-    in_order(c, count, max, 0, 0, 0, data);
+    in_order(c, count, max, 0, 0, 0, data, 8);
     return 1;
 }
 
