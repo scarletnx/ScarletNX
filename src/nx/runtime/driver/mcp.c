@@ -801,8 +801,9 @@ static yyjson_mut_val* tools(yyjson_mut_doc* d) {
         "with the host's compiler, no Switch toolchain): its lines about suite, its failures and its end.";
     static const char run_says[] =
         "Recompiles an edenprobe NRO (built from the checkout with devkitPro's image, or a pull request's CI "
-        "artifact) with this program, runs it headless in the mode's words (\"quick notime service\", plus \"fatal\" "
-        "for a case that may crash) until its summary, "
+        "artifact) with this program, runs it headless in the mode's words (\"quick notime service hooks\", plus "
+        "\"fatal\" for a case that may crash; without hooks the probe opens fsp-srv and time:u, which this program "
+        "refuses) until its summary, "
         "relaunching after a crash, and answers the report's build, the cases filter names (\"suite\" or \"suite: "
         "name\") and its summary. The recompile is kept while the NRO is unchanged; nothing of the person's "
         "ScarletNX folders is touched. The report stays in the cache for edenprobe_finding.";
