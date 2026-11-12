@@ -30,6 +30,10 @@ void snx_arm_exec_free(SnxArmExec* exec);
    callers serialize */
 SnxArmBlock snx_arm_exec_block(SnxArmExec* exec, const SnxArmExecRange* ranges, size_t range_count, uint32_t pc,
                                int thumb, const unsigned char* base);
+/* Forgets the blocks snx_arm_exec_block compiled for a pc in [lo, hi), whose code there changed (an NRO unmapped and
+   another mapped in its place): the next call for one compiles it again. Their code stays loaded, as a thread may still
+   be in one. Not thread-safe: callers serialize */
+void snx_arm_exec_forget(SnxArmExec* exec, uint64_t lo, uint64_t hi);
 /* A block compiled now from the code given (count A32 words, or Thumb halfwords when thumb is set, as host integers)
    for the profile and memory mode (a SnxArmMemoryMode of llvm.h: 0 flat, 1 checked (checked.h), 2 hosted): the
    caller's to look up and keep, never cached here, each compile a new copy. A hosted block leaves the checks of its

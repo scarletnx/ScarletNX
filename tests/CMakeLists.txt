@@ -794,6 +794,12 @@ add_executable(snx-test-arm-exec arm_exec_test.c)
 snx_test_target(snx-test-arm-exec 11)
 target_link_libraries(snx-test-arm-exec PRIVATE snx_llvm)
 add_test(NAME arm_exec_dry_svc COMMAND snx-test-arm-exec)
+# a 32-bit game's blocks compiled from an NRO go when its memory is unmapped, so another NRO mapped there runs its own
+# code (runtime/arm.c, with the block compiler and the rest of the runtime stubbed)
+add_executable(snx-test-arm-code-invalidate arm_code_invalidate.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/arm.c")
+snx_test_target(snx-test-arm-code-invalidate 11)
+target_link_libraries(snx-test-arm-code-invalidate PRIVATE snx_llvm scarletnx-common)
+add_test(NAME arm_code_invalidate COMMAND snx-test-arm-code-invalidate)
 # a checked block links into the AOT module for Windows x86-64, which has no compiler runtime
 add_executable(snx-test-arm-checked-link arm_checked_link.c)
 snx_test_target(snx-test-arm-checked-link 11)

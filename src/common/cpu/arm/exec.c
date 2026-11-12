@@ -38,10 +38,39 @@ static size_t code_span(const SnxArmExecRange* ranges, size_t n, uint32_t pc, un
     return 0;
 }
 
+static size_t home_of(const SnxArmExec* e, uint64_t key) {
+    return (size_t)((key * 0x9E3779B97F4A7C15ULL) >> 20) & (e->capacity - 1);
+}
 static size_t slot_of(const SnxArmExec* e, uint64_t key) {
-    size_t i = (size_t)((key * 0x9E3779B97F4A7C15ULL) >> 20) & (e->capacity - 1);
+    size_t i = home_of(e, key);
     while (e->blocks[i].key && e->blocks[i].key != key) i = (i + 1) & (e->capacity - 1);
     return i;
+}
+/* empties slot i. A lookup stops at the first empty slot, so each later entry of its run whose probe passed i moves
+   back into the hole, which moves on to where it was */
+static void drop_at(SnxArmExec* e, size_t i) {
+    size_t mask = e->capacity - 1, j = i;
+    for (;;) {
+        j = (j + 1) & mask;
+        if (!e->blocks[j].key) break;
+        size_t home = home_of(e, e->blocks[j].key);
+        if (i <= j ? i < home && home <= j : i < home || home <= j) continue; /* its probe starts after the hole */
+        e->blocks[i] = e->blocks[j];
+        i = j;
+    }
+    e->blocks[i].key = 0;
+    e->blocks[i].fn = NULL;
+    e->count--;
+}
+void snx_arm_exec_forget(SnxArmExec* e, uint64_t lo, uint64_t hi) {
+    size_t i = 0;
+    while (i < e->capacity) {
+        uint64_t key = e->blocks[i].key, pc = (key - 1) >> 1;
+        if (key && pc >= lo && pc < hi)
+            drop_at(e, i); /* an entry from further on may have moved to i: it is looked at next */
+        else
+            i++;
+    }
 }
 
 /* room for one more block: 0, or -1 out of memory */
