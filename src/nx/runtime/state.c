@@ -782,9 +782,6 @@ static int save_hle(Buf* hle, Buf* heap, Names* names) {
         for (k = 0; k < AM_OUT_DATA; k++) SWZ(c->am.applets[i].out[k]);
     }
     for (i = 0; i < AM_USER_CHANNEL; i++) SWZ(c->am.user_channel[i]);
-    /* audio: the outs' list; their host streams and the decoders are made again */
-    SWZ(c->audio.outs);
-    for (i = 0; i < AUDOUT_MAX; i++) SWZ(c->audio.outs_pool[i].next);
     /* audren: each renderer's state as its bytes */
     for (i = 0; i < SNX_AUDREN_MAX; i++) {
         ARRen* a = &c->audren.rens[i];
@@ -958,9 +955,7 @@ static int hle_check(const Hle* h) {
     }
     for (i = 0; i < AM_USER_CHANNEL; i++)
         if (!ELEM_OK(h->am.user_channel[i], g_hle.ipc.svcobjs)) return -1;
-    if (!ELEM_OK(h->audio.outs, g_hle.audio.outs_pool) || !ELEM_OK(h->bsd.client, g_hle.ipc.svcobjs)) return -1;
-    for (i = 0; i < AUDOUT_MAX; i++)
-        if (!ELEM_OK(h->audio.outs_pool[i].next, g_hle.audio.outs_pool)) return -1;
+    if (!ELEM_OK(h->bsd.client, g_hle.ipc.svcobjs)) return -1;
     for (i = 0; i < SNX_AUDREN_MAX; i++)
         if (!ELEM_OK(h->audren.rens[i].o, g_hle.ipc.svcobjs)) return -1;
     return 0;
@@ -1004,8 +999,6 @@ static int stage_hle(Hle* ld, Buf* heap, const Names* names, Buf* fs_paths) {
         for (k = 0; k < AM_OUT_DATA; k++) UNSWZ(ld->am.applets[i].out[k]);
     }
     for (i = 0; i < AM_USER_CHANNEL; i++) UNSWZ(ld->am.user_channel[i]);
-    UNSWZ(ld->audio.outs);
-    for (i = 0; i < AUDOUT_MAX; i++) UNSWZ(ld->audio.outs_pool[i].next);
     for (i = 0; i < SNX_AUDREN_MAX; i++) UNSWZ(ld->audren.rens[i].o);
     UNSWZ(ld->bsd.client);
     if (hle_check(ld)) goto bad;

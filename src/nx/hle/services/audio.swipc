@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# audren:u, audout:u and hwopus (audio.c, and audren.c for RequestUpdate)
+# audren:u and hwopus (audio.c, and audren.c for RequestUpdate). The audio outs are native (nn/audio.c)
 
 type nn::audio::detail::AudioRendererParameterInternal = struct {
     u32 sample_rate;
@@ -20,26 +20,12 @@ type nn::audio::detail::AudioRendererParameterInternal = struct {
     u32 external_context_size;
     u32 revision;
 };
-type nn::audio::AudioOutName = nn::audio::AudioDeviceName;
-type nn::audio::AudioOutParameter = struct {
-    u32 sample_rate;
-    u16 channel_count;
-    u16 reserved;
-};
 type nn::audio::AudioInParameter = struct {
     u32 sample_rate;
     u16 channel_count;
     u16 reserved;
 };
 type nn::audio::AudioInProtocol = u32[2];
-# libnx's AudioOutBuffer: the next buffer, the samples' address, their capacity and size, and the offset into them
-type nn::audio::AudioOutBuffer = struct {
-    u64 next;
-    u64 buffer;
-    u64 buffer_capacity;
-    u64 data_size;
-    u64 data_offset;
-};
 type nn::codec::detail::HardwareOpusDecoderParameterInternal = struct {
     u32 sample_rate;
     u32 channel_count;
@@ -136,32 +122,9 @@ interface nn::audio::detail::IAudioDevice {
     [20] IsAudioDeviceOutputVolumeAutoTuneEnabled() -> b8 enabled;
 }
 
-interface nn::audio::detail::IAudioOutManager is audout:u {
-    [0] ListAudioOuts(array<nn::audio::AudioOutName, 6> names) -> u32 count;
-    [1] OpenAudioOut(nn::audio::AudioOutParameter params, aruid aruid, handle<copy, process> process,
-                     buffer<nn::audio::AudioOutName, 5> name, buffer<nn::audio::AudioOutName, 6> name_out)
-        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioOut> out);
-    [2] ListAudioOutsAuto(array<nn::audio::AudioOutName, 0x22> names) -> u32 count;
-    [3] OpenAudioOutAuto(nn::audio::AudioOutParameter params, aruid aruid, handle<copy, process> process,
-                         buffer<nn::audio::AudioOutName, 0x21> name, buffer<nn::audio::AudioOutName, 0x22> name_out)
-        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioOut> out);
-}
-
-interface nn::audio::detail::IAudioOut {
-    [0] GetAudioOutState() -> u32 state;
-    [1] Start();
-    [2] Stop();
-    [3] AppendAudioOutBuffer(u64 tag, buffer<nn::audio::AudioOutBuffer, 5> buffer);
-    [4] RegisterBufferEvent() -> handle<copy, event> event;
-    [5] GetReleasedAudioOutBuffers(array<u64, 6> tags) -> u32 count;
-    [6] ContainsAudioOutBuffer(u64 tag) -> b8 contains;
-    [7] AppendAudioOutBufferAuto(u64 tag, buffer<nn::audio::AudioOutBuffer, 0x21> buffer);
-    [8] GetReleasedAudioOutBuffersAuto(array<u64, 0x22> tags) -> u32 count;
-    [9] GetAudioOutBufferCount() -> u32 count;
-    [10] GetAudioOutPlayedSampleCount() -> u64 count;
-    [11] FlushAudioOutBuffers() -> b8 released;
-    [12] SetAudioOutVolume(f32 volume);
-    [13] GetAudioOutVolume() -> f32 volume;
+# audout:u's manager, which nothing here serves: the audio outs are native (nn/audio.c), and aud:u's command 1 stops
+# the game that asks for it
+interface nn::audio::detail::IAudioOutManager {
 }
 
 interface nn::audio::detail::IAudioInManager is audin:u {

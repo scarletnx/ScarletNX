@@ -65,6 +65,9 @@ static const char* const g_native_only[][2] = {
     {"prepo:m", "nn::prepo (nn/prepo.c)"},
     {"prepo:a", "nn::prepo (nn/prepo.c)"},
     {"prepo:a2", "nn::prepo (nn/prepo.c)"},
+    {"audout:u", "nn::audio (nn/audio.c)"},
+    {"audout:a", "nn::audio (nn/audio.c)"},
+    {"audout:d", "nn::audio (nn/audio.c)"},
 };
 static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_sm_ServiceName* name, u32* session) {
     char s[9];

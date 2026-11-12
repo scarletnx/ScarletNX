@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The native nn::audio (audio.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
+# The audio outs, with no audout:u session: OpenAudioOut and every function that asks the session of the AudioOut it
+# opened. The SDK reads an out's rate, channels, sample format and name from the game's AudioOut itself
+# (GetAudioOutSampleRate and the like, which stay its own code), so OpenAudioOut fills them: the same layout in every
+# SDK read (0.12.16, 3.5.0, 4.4, 6.5.0, 8.2.1, 10.4.0, 13.3, 16.2, 18.3.2, 19.3.3, 20.5), by those accessors' code.
+# The AudioOutBuffer's own functions (SetAudioOutBufferInfo, GetAudioOutBufferDataPointer...) need no session either
+family nn_audio_out
+struct nn::audio::AudioOut { u32 sample_rate @0x0; u32 channel_count @0x4; u32 sample_format @0x8; u32 state @0xc; u8 name @0x10 } size 0x110
+hook _ZN2nn5audio12OpenAudioOutEPNS0_8AudioOutEPKcRKNS0_17AudioOutParameterE(addr out, addr name, addr params) -> u32 = nnaudio_open_out uses nn::audio::AudioOut
+hook _ZN2nn5audio12OpenAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventEPKcRKNS0_17AudioOutParameterE(addr out, addr event, addr name, addr params) -> u32 = nnaudio_open_out_event uses nn::audio::AudioOut
+hook _ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutERKNS0_17AudioOutParameterE(addr out, addr params) -> u32 = nnaudio_open_default_out uses nn::audio::AudioOut
+hook _ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventERKNS0_17AudioOutParameterE(addr out, addr event, addr params) -> u32 = nnaudio_open_default_out_event uses nn::audio::AudioOut
+hook _ZN2nn5audio19RegisterBufferEventEPNS0_8AudioOutEPNS_2os11SystemEventE(addr out, addr event) = nnaudio_register_buffer_event
+hook _ZN2nn5audio13CloseAudioOutEPNS0_8AudioOutE(addr out) = nnaudio_close_out uses nn::audio::AudioOut
+hook _ZN2nn5audio16GetAudioOutStateEPKNS0_8AudioOutE(addr out) -> u32 = nnaudio_get_out_state uses nn::audio::AudioOut
+hook _ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE(addr out) -> u32 = nnaudio_start_out
+hook _ZN2nn5audio12StopAudioOutEPNS0_8AudioOutE(addr out) = nnaudio_stop_out
+hook _ZN2nn5audio20AppendAudioOutBufferEPNS0_8AudioOutEPNS0_14AudioOutBufferE(addr out, addr buffer) -> bool = nnaudio_append_out_buffer
+hook _ZN2nn5audio25GetReleasedAudioOutBufferEPNS0_8AudioOutE(addr out) -> addr = nnaudio_get_released_out_buffer
+hook _ZN2nn5audio22ContainsAudioOutBufferEPKNS0_8AudioOutEPKNS0_14AudioOutBufferE(addr out, addr buffer) -> bool = nnaudio_contains_out_buffer
+hook _ZN2nn5audio22GetAudioOutBufferCountEPKNS0_8AudioOutE(addr out) -> i32 = nnaudio_get_out_buffer_count
+hook _ZN2nn5audio28GetAudioOutPlayedSampleCountEPKNS0_8AudioOutE(addr out) -> i64 = nnaudio_get_out_played_sample_count
+hook _ZN2nn5audio20FlushAudioOutBuffersEPNS0_8AudioOutE(addr out) -> bool = nnaudio_flush_out_buffers
+hook _ZN2nn5audio17SetAudioOutVolumeEPNS0_8AudioOutEf(addr out, f32 volume) = nnaudio_set_out_volume
+hook _ZN2nn5audio17GetAudioOutVolumeEPKNS0_8AudioOutE(addr out) -> f32 = nnaudio_get_out_volume
+hook _ZN2nn5audio13ListAudioOutsEPNS0_12AudioOutInfoEi(addr infos, i32 count) -> i32 = nnaudio_list_outs
