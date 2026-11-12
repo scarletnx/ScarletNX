@@ -616,6 +616,63 @@ static void test_table(void) {
 #undef CALL
 }
 
+/* A 32-bit game, through its table's adapters (audio.hook's a32): the 19 functions its SDK has. The AudioOut and the
+   AudioOutBuffer are laid out as a 64-bit game's; a buffer comes back as its address in r0, and a volume is a float
+   in s0 */
+CPU* hook_a32_cpu(SnxArmCPU* arm) { return (void)arm, &cpu; }
+static SnxArmCPU arm;
+static u32 call32(const char* symbol, u32 r0, u32 r1) {
+    for (int i = 0; i < HOOK32_COUNT; i++)
+        if (!strcmp(hook32_symbol[i], symbol)) {
+            arm.r[0] = r0, arm.r[1] = r1, arm.r[14] = 0x8000;
+            hook32_fn[i](&arm);
+            CHECK(arm.r[15] == 0x8000);
+            return arm.r[0];
+        }
+    fprintf(stderr, "%s is not in a 32-bit game's table\n", symbol);
+    exit(1);
+}
+static void test_a32(void) {
+    f32 half = 0.5f, got;
+    u32 bits;
+    AudOut* q;
+    arm.mem = g_mem, arm.mem_size = 0x10000;
+    CHECK(HOOK32_COUNT == 19);
+    parameter(48000, 2);
+    memset(GP(T_OUT), 0xCC, 0x120);
+    CHECK(call32("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutERKNS0_17AudioOutParameterE", T_OUT, PARAMS) == 0);
+    CHECK(snx_ld_le32(GP(T_OUT)) == 48000 && snx_ld_le32(GP(T_OUT + 4)) == 2 && snx_ld_le32(GP(T_OUT + 8)) == 2);
+    CHECK(snx_ld_le32(GP(T_OUT + 12)) == 1 && !strcmp((char*)GP(T_OUT + 16), "DeviceOut"));
+    q = out_at(T_OUT);
+    CHECK(q != NULL);
+    CHECK(call32("_ZN2nn5audio20AppendAudioOutBufferEPNS0_8AudioOutEPNS0_14AudioOutBufferE", T_OUT,
+                 (u32)buffer(0, SAMPLES, 196, 192, 0)) == 1);
+    CHECK(call32("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", T_OUT, 0) == 0);
+    CHECK(call32("_ZN2nn5audio16GetAudioOutStateEPKNS0_8AudioOutE", T_OUT, 0) == 0); /* started */
+    CHECK(call32("_ZN2nn5audio22ContainsAudioOutBufferEPKNS0_8AudioOutEPKNS0_14AudioOutBufferE", T_OUT, (u32)B(0)) ==
+          1);
+    test_now += 1000000; /* the buffer's 48 frames played */
+    CHECK(call32("_ZN2nn5audio25GetReleasedAudioOutBufferEPNS0_8AudioOutE", T_OUT, 0) == B(0));
+    CHECK(call32("_ZN2nn5audio25GetReleasedAudioOutBufferEPNS0_8AudioOutE", T_OUT, 0) == 0);
+    /* the device: its name in the game's array, and its volume from and to s0, the other half of d0 as it was */
+    memset(GP(NAME), 0xCC, 0x110);
+    CHECK(call32("_ZN2nn5audio19ListAudioDeviceNameEPNS0_15AudioDeviceNameEi", NAME, 1) == 1);
+    CHECK(!strcmp((char*)GP(NAME), "AudioTvOutput") && GP(NAME)[0x100] == 0xCC);
+    memcpy(&bits, &half, sizeof bits);
+    arm.d[0] = 0x1234567800000000ull | bits;
+    call32("_ZN2nn5audio26SetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameEf", NAME, 0);
+    CHECK(g_hle.audio.device_volume == 0.5f && q->output->volume == 0.5f);
+    arm.d[0] = 0x12345678deadbeefull;
+    call32("_ZN2nn5audio26GetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameE", NAME, 0);
+    bits = (u32)arm.d[0];
+    memcpy(&got, &bits, sizeof got);
+    CHECK(got == 0.5f && arm.d[0] >> 32 == 0x12345678u);
+    nnaudio_set_device_output_volume(&cpu, NAME, 1.0f);
+    call32("_ZN2nn5audio12StopAudioOutEPNS0_8AudioOutE", T_OUT, 0);
+    call32("_ZN2nn5audio13CloseAudioOutEPNS0_8AudioOutE", T_OUT, 0);
+    CHECK(out_at(T_OUT) == NULL && snx_ld_le32(GP(T_OUT + 12)) == 1);
+}
+
 int main(void) {
     hle_init();
     g_mem = calloc(1, 0x10000);
@@ -706,6 +763,7 @@ int main(void) {
     test_two_outs();
     test_device();
     test_table();
+    test_a32();
     for (u32 i = 0; i < AUDOUT_MAX; i++) CHECK(g_hle.audio.outs_pool[i].guest == 0);
     /* every out is closed, and no event went with one: each is still the game's, through its SystemEvent's handle */
     CHECK(test_event_next > 0 && test_events == test_event_next);
