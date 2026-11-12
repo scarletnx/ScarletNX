@@ -127,6 +127,7 @@ static VkTcShape tc_shape(u32 mode, u32 w) {
         s.units = (w + 3) / 4;
         s.out_texels = s.units * 4;
         s.out_bpp = k == TC_BC1 || k == TC_BC4 || k == TC_BC4_SNORM ? 2 : 4;
+        if (mode >= TC_BCN_ASTC) s.out_bpp = 4; /* an ASTC block is 16 bytes whatever it was made of */
         s.submit_units = TC_ENCODE_SUBMIT_BLOCKS;
     } else if (mode <= TC_A5B5G5R1 || (mode >= TC_VI_RGB565 && mode <= TC_VI_RGBA4444)) {
         s.units = (w + 1) / 2;

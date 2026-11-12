@@ -14,7 +14,7 @@ to eight times the memory.
 
 | BCn | where the GPU samples ETC2 | bytes a texel | decoded (no ETC2 either) | bytes a texel |
 | --- | --- | --- | --- | --- |
-| BC1 | ETC2 RGB8A1 (punch-through alpha: BC1's transparent black) | 0.5 | RGBA8 | 4 |
+| BC1 | ASTC 4x4 (1 byte a texel) while memory lasts, then ETC2 RGB8A1 (punch-through alpha: BC1's transparent black; `bcn_astc`, [below](#as-astc)) | 0.5 | RGBA8 | 4 |
 | BC2, BC3, BC7 | ASTC 4x4 where the GPU samples ASTC (`bcn_astc`, [below](#as-astc)), else ETC2 RGBA8 (an EAC alpha block, then an ETC2 RGB one) | 1 | RGBA8 | 4 |
 | BC4 | EAC R11, unsigned or signed | 0.5 | R16 | 2 |
 | BC5 | EAC RG11, unsigned or signed | 1 | RG16 | 4 |
@@ -68,8 +68,15 @@ CPU (`tests/glsl/glsl.hpp`) and get the GPU's bytes.
 ETC2 RGBA8 holds less than BC7 does (below: 5.5 to 11 dB lost against the picture), and the GPUs that sample ETC2 and
 not BCn sample ASTC too, whose 4x4 blocks are the same bytes a texel. With `bcn_astc=1`, the default, BC2, BC3 and BC7
 are encoded again as ASTC 4x4 there: `texconv.comp` built a third time with `SNX_TC_ASTC`, the BCn decoders followed
-by `gpu/texture/astc_encode.glsl`, a pipeline of its own (`vk/texconv.c`). BC1 keeps ETC2 RGB8A1, half ASTC 4x4's
-bytes, and BC4 and BC5 keep EAC. No texel is written out between the decoder and the encoder: an invocation decodes a
+by `gpu/texture/astc_encode.glsl`, a pipeline of its own (`vk/texconv.c`). BC4 and BC5 keep EAC.
+
+BC1 is half ASTC 4x4's bytes, and the ASTC encoder is several times the ETC2 one's speed, so BC1 is tiered: ASTC 4x4
+while memory lasts, for the loads' sake, and ETC2 RGB8A1 once it runs short. Short is what the trim finds
+(`surface.c`: an image that found no memory, the caches past their budget after a trim, or a trim that took what the
+last eight presents used); `vk_bc1_tight` then sets `g_vk.bc1_tight` for the rest of the run and the log says so once.
+A texture keeps the format it was made with, so nothing is encoded twice: the BC1 textures made from then on are ETC2,
+and ETC2 takes ASTC's place as the trim evicts textures and the game loads them again. `bcn_astc=2` keeps BC1 as ASTC
+whatever the memory, and `0` sends all four to ETC2. No texel is written out between the decoder and the encoder: an invocation decodes a
 block and encodes it.
 
 The fitting is the BC7 encoder's (`bc7_encode.glsl` built with `SNX_ASTC_ENC`, [ASTC compute
@@ -99,6 +106,7 @@ encoding holds and its code, the partition seeds), into `astc_encode_tables.glsl
 | BC7 modes 4 and 5 | two planes, the rotated channel apart; an opaque block's with RGB ends (160 values an end, where RGBA ends have 48); with alpha apart and every alpha 255, one line as RGB ends with the source's 2 or 3 bit weights and 8 bit ends |
 | BC7 modes 1 and 3 | two partitions, BC7's own partition number (`ASTC_P2` is in BC7's order), each subset's line the source's |
 | BC2, BC3 | two planes, alpha apart, the colour's line BC1's two ends; opaque, one line as RGB ends with 2 bit weights and 8 bit ends, which hold BC1's ends and weights as they are |
+| BC1 | that one line; a block of three colours, whose third is halfway, with 3 bit weights; one with a transparent texel (black, off the line) nothing |
 | BC7 modes 0, 2 and 7 | nothing: three subsets, and two with alpha, have no layout here |
 
 A hinted line is taken as it is: its ends quantized to the layout's colour encoding and each texel given the weight
@@ -130,12 +138,12 @@ them:
 | 8x6, mostly one colour | 85 ms | 35 ms | 21 ms |
 | 8x8, smooth | 125 ms | | 22 ms |
 
-Decoding the BC7 blocks alone is 11 ms of each. Random BC3 blocks take 54 ms where ETC2 takes 204; random BC7 ones,
+Decoding the BC7 blocks alone is 11 ms of each. Random BC1 blocks take 32 ms where ETC2 takes 171, and random BC3
+ones 54 ms where ETC2 takes 204; random BC7 ones,
 most of which no hint settles, 138.
 
 What it does not have yet: three and four partitions, two partitions with alpha, and a first pass that makes a
-block from the BCn block's fields without decoding its texels, which is where the rest of the time is. BC1 still
-goes to ETC2 RGB8A1, half ASTC 4x4's bytes, through the slower encoder.
+block from the BCn block's fields without decoding its texels, which is where the rest of the time is.
 
 ## What it costs
 
