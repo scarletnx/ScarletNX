@@ -84,6 +84,7 @@
 #include "common/gpu/vk/vk_common.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
+#include "nx/memory/own.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/log.h"
@@ -910,8 +911,11 @@ static void fail(u64 lo, u64 hi, const char* why) {
     pm_unlock(&g_uma.lk);
 }
 /* whether guest memory [lo, hi) can be imported: mapped, and in the migrate way the guest's data on the reservation's
-   own pages, which can move */
+   own pages, which can move. No page a trap holds (memory/own.c): a driver may read an import's pages on the CPU from
+   this thread, which holds vk_lock and so can't have them landed (PanVK on a Mali phone read one up to its trapped
+   page, #1875), and amdgpu fails a submission over one */
 static int imp_can(u64 lo, u64 hi) {
+    if (own_trapped(lo, hi - lo)) return 0;
     return g_uma.migrate ? mem_movable(lo, hi - lo) : mem_mapped_run(lo, hi - lo) == hi - lo;
 }
 /* the import that holds guest memory [cpu, cpu + len), made if there is none: its index, or ~0 for none (the range is
@@ -929,8 +933,8 @@ static u32 imp_get(u64 cpu, u64 len) {
         if (g_uma.imp[last].cpu + g_uma.imp[last].size > hi) hi = g_uma.imp[last].cpu + g_uma.imp[last].size;
         last++;
     }
-    /* only mapped guest memory (the migrate way: the guest's data on the reservation's own pages, which can move): the
-       range's own pages where the windows are not all of it */
+    /* only mapped guest memory (the migrate way: the guest's data on the reservation's own pages, which can move) with
+       no page trapped: the range's own pages where the windows are not all of it */
     if (!imp_can(lo, hi)) {
         if (last > first) return ~0u;
         lo = cpu & ~(g_uma.align - 1);
