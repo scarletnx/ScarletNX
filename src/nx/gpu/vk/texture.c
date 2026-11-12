@@ -323,16 +323,53 @@ static void up_open(Upload* u) {
     if (!u->open) vk_bl_barrier(u->cb, 1);
     u->open = 1;
 }
+/* The units of encoders' conversions (VkTcShape's submit_units) in the submission recording now, g_enc_sub: of
+   n rows of units each, the rows that go in it, at least one. It is ended first (vk_submit_split) when it holds some
+   and one more row would take it past bound. The pieces after it need no barrier of their own: the batch's, recorded
+   before them, order the later submissions' commands too */
+static u64 g_enc_sub, g_enc_units;
+static u32 encode_rows(u32 units, u32 bound, u32 n) {
+    if (g_enc_sub != vk_submit_number()) { /* submitted since: those units are the GPU's */
+        g_enc_sub = vk_submit_number();
+        g_enc_units = 0;
+    }
+    if (g_enc_units && g_enc_units + units > bound) {
+        LOG_LIMIT(1, "vulkan: textures encoded again on the GPU go to it in submissions of %u blocks at most\n", bound);
+        vk_submit_split();
+        g_enc_sub = vk_submit_number();
+        g_enc_units = 0;
+    }
+    u64 rows = (bound - g_enc_units) / units;
+    if (!rows) rows = 1; /* a row of more units than bound: alone */
+    if (rows > n) rows = n;
+    g_enc_units += rows * units;
+    return (u32)rows;
+}
+/* the batch's conversion c of format f; an encoder's (submit_units) in pieces of rows, as encode_rows hands them
+   out. Its rows and slices are one run of rows, slices after another, in and out (out_rows 1, no stencil) */
+static int up_convert(Upload* u, const VkFmt* f, const UpConv* c) {
+    VkTcShape s = vk_tc_shape(f, c->w);
+    if (!s.submit_units)
+        return vk_tc_convert(up_cb(u), f, c->w, c->rows, c->slices, c->in, c->in_at, c->in_pitch, u->scratch,
+                             c->out_at);
+    u64 out_row = vk_tc_out_size(&s, 1, 1);
+    for (u32 y = 0, all = c->rows * c->slices; y < all;) {
+        u32 n = encode_rows(s.units, s.submit_units, all - y);
+        if (!vk_tc_convert(up_cb(u), f, c->w, n, 1, c->in, c->in_at + (u64)y * c->in_pitch, c->in_pitch, u->scratch,
+                           c->out_at + y * out_row))
+            return 0;
+        y += n;
+    }
+    return 1;
+}
 static int up_flush(Upload* u) {
     int ok = 1;
     up_cb(u);
     if (u->moves) vk_bl_barrier(u->cb, 0);
     if (u->nconv) {
         up_open(u);
-        for (u32 i = 0; i < u->nconv && ok; i++)
-            ok = vk_tc_convert(u->cb, &u->t->f, u->conv[i].w, u->conv[i].rows, u->conv[i].slices, u->conv[i].in,
-                               u->conv[i].in_at, u->conv[i].in_pitch, u->scratch, u->conv[i].out_at);
-        vk_bl_barrier(u->cb, 0);
+        for (u32 i = 0; i < u->nconv && ok; i++) ok = up_convert(u, &u->t->f, &u->conv[i]);
+        vk_bl_barrier(up_cb(u), 0);
     }
     for (u32 i = 0, j; i < u->nreg; i = j) {
         for (j = i + 1; j < u->nreg && u->src[j] == u->src[i];) j++;

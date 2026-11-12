@@ -1267,10 +1267,11 @@ void vk_copy_rows(VkCommandBuffer cb, VkBuffer src, u64 src_at, u32 src_pitch, V
 int vk_tc_converts(const VkFmt* f);
 /* the conversion's shape for a row w texels wide: units (invocations) a row, the output's row in texels (padded to
    whole units: a copy's bufferRowLength) and its bytes a texel (a depth aspect's for depth), output rows a row of
-   units (4 for a row of blocks), whether a stencil aspect follows the depth one, and what the input's pitch must be
-   a multiple of (the input rows are read in whole units) */
+   units (4 for a row of blocks), whether a stencil aspect follows the depth one, what the input's pitch must be
+   a multiple of (the input rows are read in whole units), and the units of it one submission may hold (0: any; an
+   encoder's, whose rows go in pieces then, vk_submit_split between them) */
 typedef struct {
-    u32 units, out_texels, out_bpp, out_rows, stencil, in_align;
+    u32 units, out_texels, out_bpp, out_rows, stencil, in_align, submit_units;
 } VkTcShape;
 VkTcShape vk_tc_shape(const VkFmt* f, u32 w);
 /* the output's bytes for rows rows of units of slices slices: depth rows, then as many of stencil bytes */
