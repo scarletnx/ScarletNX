@@ -38,7 +38,10 @@ def main():
             text = p.stdout + p.stderr
             assert p.returncode == status, (cases, args, p.returncode, text)
             assert message in text, (cases, message, text)
-            assert 'ScarletNX - ' not in text and 'AddressSanitizer' not in text and 'runtime error:' not in text, text
+            # explicit=False launches the game, whose own banner now starts the same way: only an extraction's run
+            # (explicit, -x alone) must print no banner at all
+            assert (not explicit or 'ScarletNX - ' not in text) and 'AddressSanitizer' not in text and \
+                'runtime error:' not in text, text
             assert not list(root.rglob('.snx-*')), 'staging directory leaked'
             if status and explicit:
                 assert not output.exists(), (cases, output)
