@@ -1,5 +1,5 @@
 # edenprobe cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/dev/edenprobe.md)
-# build: v0.12.0
+# build: v0.13.0
 # mode: audio cpu display fs kernel notime quick video
 audio: a 10 kHz voice at half the output rate keeps the level default quality's table gives
 audio: a 10 kHz voice at half the output rate keeps the level high quality's table gives
@@ -317,6 +317,7 @@ reference: service: ldn passes the address in host order and the network's confi
 reference: service: ldn passes the network asked, with this console as node 0
 reference: service: mii passes the six default Miis
 reference: service: nfp passes 25 answering what 3 answers
+reference: service: ngc in hooks mode passes a clean name found clean and left as it was
 reference: service: ngc passes a clean name found clean and given back
 reference: service: pl passes six loaded fonts behind the decrypted magic
 reference: service: pl passes the six in order of priority, each as told
@@ -325,6 +326,7 @@ reference: service: profile passes one base twice, of the user, by a name
 reference: service: profile passes the user found and nobody made up
 reference: service: renderer passes a renderer stopped, started and stopped
 reference: service: renderer passes its parameters and two settings kept
+reference: service: sdk passes a tail call that reaches what a call reaches
 reference: service: set passes reden's language codes and fails what strays from them
 reference: service: set-sys passes settings read back as set and flags put back
 reference: service: sm's refusal of a bad name passes 0xc15 alone
@@ -333,6 +335,7 @@ reference: service: time passes a steady clock one or two seconds on
 reference: service: time passes a user clock its context's offset past steady
 reference: service: time passes the device's rule dating as the service's own
 reference: service: time passes the epoch and the known time dated under UTC
+reference: service: time-perm in hooks mode passes the SDK's clock setters refused
 reference: service: time-perm passes every write time:u asks refused
 reference: service: time-snap passes a snapshot of the user clock and its span
 reference: service: time-zone passes names listed, the location and a date back
@@ -713,6 +716,7 @@ support: the runner names its files under a frontend's root, and refuses one too
 support: the running screen draws twice a second and counts a step's cases by pass
 support: the running screen shows the step, the case and the steps done in proportion
 support: the screens gather the cases into their suites, families in the order the run met them
+support: the services a machine may answer in a game's code are asked the way the mode file says
 support: the start screen asks only with something to choose, X for the crash list
 support: the start screen draws the cursor's row, each box and icon, and no warning for an empty crash list
 support: the start screen keeps the video, kernel, display and service families the file names, which have no row
@@ -731,6 +735,7 @@ support: the walk from the overview to a case and back lands where it should
 support: the widest mode goes into the journal whole and a launch goes on in it
 support: the word fatal changes nothing, and the mode line says so once
 support: the word hang asks for the cases that hang, and only beside retry for both
+support: the word hooks asks the services through the SDK's functions, a word of the key
 support: the word listen asks for the listening sequence and the audio family
 support: the word noprogress turns the running screen off and nothing else
 support: the word notime turns the timing passes off and says so

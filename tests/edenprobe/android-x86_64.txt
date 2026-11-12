@@ -1,5 +1,5 @@
 # edenprobe cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/dev/edenprobe.md)
-# build: v0.12.0
+# build: v0.13.0
 # mode: quick
 bionic: /proc/self shows the package, the library and app_process64
 bionic: a SIGUSR1 handler runs on raise, and a blocked signal waits as pending
