@@ -1,5 +1,8 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#if SNX_BC7_DOT
+#extension GL_EXT_integer_dot_product : require
+#endif
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
    The ASTC decoding is ported from Eden (src/video_core/host_shaders/astc_decoder.comp):
