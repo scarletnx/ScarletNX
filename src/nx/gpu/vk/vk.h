@@ -122,6 +122,9 @@ typedef struct {
     VkPhysicalDeviceFeatures feat;
     int has_divisor;    /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
     int astc_bc7_could; /* the GPU samples BCn but not ASTC: astc_mode=2 holds its ASTC textures as BC7 */
+    /* shaderIntegerDotProduct is on and the GPU says its packed unsigned one is accelerated: astc_bc7.comp's builds
+       that use it (astc.c's bc7_pipe) */
+    int bc7_dot;
     /* the block formats the device samples, whether turned on or not (vk_blocks_want): VK_BLOCKS_* bits */
     u32 blocks_have;
     /* astc_mode's Auto holds the ASTC textures it decodes as BC7: the device started with a budget under

@@ -1374,6 +1374,16 @@ static int create_device(void) {
                                                those of the compute programs that use other lanes' values */
                                             .subgroupSizeControl = g_vk.has_mesh || g_vk.has_cs_warp32,
                                             .computeFullSubgroups = g_vk.has_mesh || g_vk.has_cs_warp32};
+    /* the BC7 encoder's build with packed dot products (astc.c's bc7_pipe), where the GPU has an instruction for
+       them: a GeForce GT 1030 encodes 5% faster with it. Spelled out, they are the same numbers */
+    g_vk.bc7_dot = 0;
+    if (core13 && q13.shaderIntegerDotProduct) {
+        VkPhysicalDeviceVulkan13Properties dp13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+        VkPhysicalDeviceProperties2 dpp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dp13};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &dpp2);
+        g_vk.bc7_dot = dp13.integerDotProduct4x8BitPackedUnsignedAccelerated != 0;
+    }
+    f13.shaderIntegerDotProduct = g_vk.bc7_dot ? VK_TRUE : VK_FALSE;
     void* chain = &f13;
     /* a 1.2 device: those features as its extensions' (vk12_extensions), the 1.3 struct left out */
     VkPhysicalDeviceSynchronization2Features fsync2 = {.sType =
