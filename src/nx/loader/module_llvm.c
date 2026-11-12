@@ -1017,7 +1017,9 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
             snx_error("linking failed: %s", error);
             goto done;
         }
-        if (snx_write_file(tmp, linked.data, linked.size) || plat_replace_file(tmp, build->output)) {
+        /* a module Android can map: its text is loaded executable, which its file must allow there */
+        if (snx_write_file(tmp, linked.data, linked.size) || snx_make_executable(tmp) ||
+            plat_replace_file(tmp, build->output)) {
             snx_error("linking failed: cannot write %s", build->output);
             if (snx_is_file(tmp)) snx_remove_tree(tmp);
             goto done;
