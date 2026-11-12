@@ -666,6 +666,14 @@ static u32 g_trap_gen;    /* atomic, a futex word: moves when a trap lets pages 
 #define TRAP_WAITERS 256
 static u32 g_trap_waiting[TRAP_WAITERS]; /* atomic: the threads waiting in a trap, for plat_thread_in_fault */
 static u32 g_trap_unlisted;              /* atomic: threads waiting with no room in that table, which makes it unsure */
+/* What each listed waiter faulted at, for plat_dump_fault_thread: its handler waits on a futex, so /proc shows that
+   wait's registers, not the access's. Written before the waiter posts its page, which the trap thread reads before it
+   reports */
+typedef struct {
+    uintptr_t at, pc, sp, lr; /* lr: the return address a register holds (aarch64's x30), 0 where there is none */
+} TrapWaitCtx;
+static TrapWaitCtx g_trap_wait_ctx[TRAP_WAITERS];
+static void context_frame(void* ctx, TrapWaitCtx* w);
 
 static void trap_futex_wait(u32* w, u32 v) {
 #if defined(__linux__)
@@ -682,15 +690,21 @@ static void trap_futex_wake(u32* w) {
     (void)w;
 #endif
 }
-/* in the handler: page i is held by a trap. Posts it and waits for a trap to let pages go */
-static void trap_wait(u64 i, int write) {
+/* in the handler: page i is held by a trap, faulted at a with the context ctx. Posts it and waits for a trap to let
+   pages go */
+static void trap_wait(u64 i, int write, void* a, void* ctx) {
     u32 gen = __atomic_load_n(&g_trap_gen, __ATOMIC_SEQ_CST), tid = plat_tid(), pos, k, none = 0;
     int slot = -1;
     TrapMsg* m;
     for (k = 0; k < TRAP_WAITERS && slot < 0; k++, none = 0)
         if (__atomic_compare_exchange_n(&g_trap_waiting[k], &none, tid, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
             slot = (int)k;
-    if (slot < 0) __atomic_fetch_add(&g_trap_unlisted, 1, __ATOMIC_ACQ_REL);
+    if (slot < 0)
+        __atomic_fetch_add(&g_trap_unlisted, 1, __ATOMIC_ACQ_REL);
+    else {
+        g_trap_wait_ctx[slot].at = (uintptr_t)a;
+        context_frame(ctx, &g_trap_wait_ctx[slot]);
+    }
     for (;;) { /* a slot whose turn it is: a full ring waits for the trap thread */
         pos = __atomic_load_n(&g_trap_head, __ATOMIC_RELAXED);
         m = &g_trap_ring[pos % TRAP_RING];
@@ -740,7 +754,7 @@ static void* trap_signal_thread(void* arg) {
    goes again too. Only when it faults again at the same address with no page opened since is it not the
    tracking's (a page whose state is wrong, which must end the process rather than spin). A page that isn't mapped
    is never the tracking's */
-static int wp_fault(void* a, int write) {
+static int wp_fault(void* a, int write, void* ctx) {
     u8* w = __atomic_load_n(&g_wp, __ATOMIC_ACQUIRE);
     u64 i, page = (u64)1 << g_wp_shift;
     u8 s;
@@ -753,7 +767,7 @@ static int wp_fault(void* a, int write) {
     }
     if (s & WP_TRAP) { /* a trap's: lands on the trap thread, then the access goes again */
         wp_unlock(i, s);
-        trap_wait(i, write);
+        trap_wait(i, write, a, ctx);
         return 1;
     }
     if (!(s & WP_PROT)) {
@@ -1660,9 +1674,11 @@ static void fault_stack_candidates(uintptr_t sp) {
         int name = 0;
         if (sscanf(line, "%llx-%llx %4s %*s %*s %*s %n", &lo, &hi, perms, &name) != 3 || !name || sp < lo || sp >= hi)
             continue;
-        /* Native stacks only: anonymous private RW or [stack]. Owned guest pool pages are shared mappings.
-           Excluding them prevents the diagnostic itself blocking on a userfaultfd page. */
-        if (!strcmp(perms, "rw-p") && (!line[name] || !strncmp(line + name, "[stack]", 7)))
+        /* Native stacks only: anonymous private RW, [stack], or a thread's stack as bionic names it. Owned guest
+           pool pages are shared mappings. Excluding them prevents the diagnostic itself blocking on a userfaultfd
+           page. */
+        if (!strcmp(perms, "rw-p") &&
+            (!line[name] || !strncmp(line + name, "[stack]", 7) || !strncmp(line + name, "[anon:stack_and_tls:", 20)))
             bytes = hi - sp < sizeof words ? (size_t)(hi - sp) : sizeof words;
         break;
     }
@@ -1696,6 +1712,27 @@ void plat_dump_fault_thread(u32 tid) {
     long call;
     unsigned n = 0, expected;
     if (fault_proc_line(tid, "comm", buf, sizeof buf)) WARN("ownership-fault: thread-name=%s\n", buf);
+    /* a protection trap's waiter sits in its handler's futex, which is all /proc shows: the access's own context,
+       as the handler found it */
+    if (__atomic_load_n(&g_trap_signal, __ATOMIC_ACQUIRE)) {
+        u32 k;
+        for (k = 0; k < TRAP_WAITERS && __atomic_load_n(&g_trap_waiting[k], __ATOMIC_ACQUIRE) != tid; k++) {}
+        if (k < TRAP_WAITERS) {
+            const TrapWaitCtx* w = &g_trap_wait_ctx[k];
+            WARN("ownership-fault: thread %u faulted at host-pc=%llx host-sp=%llx access-address=%llx (the handler's "
+                 "context)\n",
+                 tid, (unsigned long long)w->pc, (unsigned long long)w->sp, (unsigned long long)w->at);
+            fault_code_mapping(w->pc, "pc", 0);
+            if (w->lr) fault_code_mapping(w->lr, "lr", 0);
+            if (w->sp)
+                fault_stack_candidates(w->sp);
+            else
+                WARN("ownership-fault: stack candidates unavailable (this host's context gives no stack pointer)\n");
+            return;
+        }
+        WARN("ownership-fault: thread %u is not among the %d trap waiters listed: /proc's view of its wait follows\n",
+             tid, TRAP_WAITERS);
+    }
     if (fault_proc_line(tid, "wchan", buf, sizeof buf)) WARN("ownership-fault: wait-channel=%s\n", buf);
     if (!fault_proc_line(tid, "syscall", buf, sizeof buf)) return;
     call = strtol(buf, &p, 10);
@@ -2096,7 +2133,7 @@ static void fault_signal(int sig, siginfo_t* si, void* ctx) {
         errno = saved;
         return;
     }
-    if (wp_fault(si->si_addr, context_write(ctx)) || frozen_wait(si->si_addr, access_fault(sig, si))) {
+    if (wp_fault(si->si_addr, context_write(ctx), ctx) || frozen_wait(si->si_addr, access_fault(sig, si))) {
         errno = saved;
         return;
     }
@@ -2198,6 +2235,18 @@ static void* context_pc(void* ctx) {
     return NULL;
 #endif
 }
+/* the code, stack and return addresses of the access the context holds, for a trap's report: 0 for one this host's
+   context doesn't give here (the report says so) */
+static void context_frame(void* ctx, TrapWaitCtx* w) {
+    w->pc = (uintptr_t)context_pc(ctx);
+    w->sp = w->lr = 0;
+#if defined(__linux__) && defined(__x86_64__)
+    w->sp = (uintptr_t)((ucontext_t*)ctx)->uc_mcontext.gregs[REG_RSP];
+#elif defined(__linux__) && defined(__aarch64__)
+    w->sp = (uintptr_t)((ucontext_t*)ctx)->uc_mcontext.sp;
+    w->lr = (uintptr_t)((ucontext_t*)ctx)->uc_mcontext.regs[30]; /* a leaf (memcpy) leaves its caller only here */
+#endif
+}
 
 static void crash_signal(int sig, siginfo_t* si, void* ctx) {
     int idle = 0, saved = errno; /* the interrupted code's, which frozen_wait's futex changes */
@@ -2212,7 +2261,7 @@ static void crash_signal(int sig, siginfo_t* si, void* ctx) {
     /* a write the tracking protected the page against (wp_fault), or a write to memory frozen while it moves
        (plat_freeze), which goes on once the move is done */
     if ((sig == SIGSEGV || sig == SIGBUS) &&
-        (wp_fault(si->si_addr, context_write(ctx)) || frozen_wait(si->si_addr, access_fault(sig, si)))) {
+        (wp_fault(si->si_addr, context_write(ctx), ctx) || frozen_wait(si->si_addr, access_fault(sig, si)))) {
         errno = saved;
         return;
     }
