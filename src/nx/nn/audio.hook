@@ -39,6 +39,8 @@ hook _ZN2nn5audio25ListAudioOutputDeviceNameEPNS0_15AudioDeviceNameEi(addr names
 hook _ZN2nn5audio24GetActiveAudioDeviceNameEPNS0_15AudioDeviceNameE(addr name) = nnaudio_get_active_device_name
 hook _ZN2nn5audio30GetActiveAudioOutputDeviceNameEPNS0_15AudioDeviceNameE(addr name) = nnaudio_get_active_device_name
 hook _ZN2nn5audio41GetActiveAudioDeviceChannelCountForOutputEv() -> i32 = nnaudio_get_active_device_channel_count
+# its name up to SDK 10
+hook _ZN2nn5audio21GetActiveChannelCountEv() -> i32 = nnaudio_get_active_device_channel_count
 hook _ZN2nn5audio26SetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameEf(addr name, f32 volume) = nnaudio_set_device_output_volume
 hook _ZN2nn5audio26GetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameE(addr name) -> f32 = nnaudio_get_device_output_volume
 hook _ZN2nn5audio39AcquireAudioDeviceNotificationForOutputEPNS_2os11SystemEventE(addr event) = nnaudio_acquire_device_output_event
