@@ -319,6 +319,12 @@ int vk_image_resident(VkImage img, u8* want, u32 n, u64* bytes);
 /* the sparse binds made since the last submission, to the graphics queue in one batch before it (cmd.c's submit). 1
    when the submission has to wait for one, which *wait then holds */
 int vk_sparse_flush(VkSemaphoreSubmitInfo* wait);
+/* one range of a sparse buffer bound to memory (or, bind's memory VK_NULL_HANDLE, let go of) in the same batch as
+   the images' binds: it goes to the queue ahead of the next submission, which waits for it, so nothing waits for a
+   fence. gone: the memory the range had (VK_NULL_HANDLE none), size bytes, freed once the batch is done. readers:
+   work submitted before may still read the range, and the batch waits for it. The batch's number, 0 when there is no
+   memory for a batch */
+u64 vk_buffer_sparse_bind(VkBuffer buf, const VkSparseMemoryBind* bind, VmaAllocation gone, u64 size, int readers);
 /* img has binds in a batch that hasn't gone to the queue yet, which goes ahead of the next submission */
 int vk_sparse_unissued(VkImage img);
 /* Sparse residency (memory.c), for a texture that guest memory maps only in part. vk_sparse_supported: the device
@@ -465,7 +471,9 @@ u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation*
 u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, VmaAllocation* mem);
 /* Device memory for the current frame's data that the GPU writes and reads itself, with the same lifetime as vk_stage:
    0 when none could be made */
-int vk_stage_device(u64 size, u64 align, VkBuffer* buf, u64* off);
+int vk_stage_device_at(const char* file, int line, u64 size, u64 align, VkBuffer* buf, u64* off);
+/* each call's bytes are counted for its call site, which the ring statistics list (vk_buffer_stats) */
+#define vk_stage_device(size, align, buf, off) vk_stage_device_at(__FILE__, __LINE__, (size), (align), (buf), (off))
 /* logs what each ring handed out since the last report, by where its memory is (vk_buffer_stats) */
 void vk_stage_report(void);
 /* ends and submits the commands recorded since the last submit, waiting for wait (at wait_stage) and signaling signal.
