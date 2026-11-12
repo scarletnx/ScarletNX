@@ -475,8 +475,10 @@ for all its saves: where it is, the space it takes (*counting* until it is count
 deletes: Move All moves it`). Next goes on, Back back, PgUp/PgDn a page either way and Home/End to the first or the
 last; the last asks Move All, Delete All or **Not Now**, in focus. Move All moves them as Move Old Files does; Delete
 All asks first how many go and how many stay, its Delete pressed twice, and deletes each folder but a save, a folder
-holding saves (a game's `<name>_data/` with a `save/` or `sdmc/`, four folders down at most) and the console's keys,
-which only Move All moves; a game laid out beside the others goes with its `<name>_data/`. The page then says a folder
+holding saves (a game's `<name>_data/` with a `save/` or `sdmc/`, however deep), a folder it cannot read whole (one it
+cannot list, an entry it cannot look at, a link to a folder, which it does not follow), as it cannot tell it holds no
+save, and the console's keys, the page naming the path that keeps each; only Move All moves those. A game laid out
+beside the others goes with its `<name>_data/`. The page then says a folder
 a line what was done, and OK goes on. Not Now moves and deletes nothing: the pages come again at the next start, and
 Settings > App > Move Old Files moves them meanwhile. F5 looks again at once, and the page looks every 5 s: a folder
 moved away goes, and with none left the setup goes on. With nothing else due they come alone and write nothing to

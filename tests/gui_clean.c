@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef SNX_XDG
+#ifndef _WIN32 /* chmod and symlink */
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -379,8 +379,9 @@ int main(void) {
         free(now);
         free(old);
     }
-    /* Delete All: a save is never deleted, nor a game laid out beside others (its <name>_data/ holds its saves), a
-       folder holding saves four folders down or the console's keys; the rest is, only with apply, said either way */
+    /* Delete All: a save is never deleted, nor a game laid out beside others whose <name>_data/ holds its saves, a
+       folder holding saves however deep, one it cannot read whole or the console's keys, each said with its path; the
+       rest is, only with apply, said either way */
     {
         static const char* const files[] = {"gui/settings.ini",
                                             "work/tmp/a.o",
@@ -389,16 +390,16 @@ int main(void) {
                                             "code/0100000000ABC000/0100000000ABC000_data/exefs/main",
                                             "beside/Game",
                                             "beside/Game_data/sdmc/notes.txt",
-                                            "deep/a/b/c/d/x_data/save/s",
+                                            "deep/a/b/c/d/e/x_data/save/s",
                                             "checkout/prod.keys",
                                             "keys/sub/title.keys",
                                             "laid/Old",
                                             "laid/Old_data/exefs/main"};
         static const char* const olds[] = {
-            "gui", "work", "code", "laid/Old", "games", "beside/Game", "checkout/prod.keys", "keys"};
+            "gui", "work", "code", "laid/Old", "games", "beside/Game", "deep", "checkout/prod.keys", "keys"};
         char *base = snx_path_join(root, ""), *path, *said;
         size_t i;
-        GuiKeep keep;
+        GuiKept kept;
         for (i = 0; i < sizeof files / sizeof files[0]; ++i) {
             char* dir;
             path = snx_path_join(root, files[i]);
@@ -408,28 +409,33 @@ int main(void) {
             free(dir);
             free(path);
         }
-#define KEEP(at) (path = snx_path_join(root, at), keep = gui_old_keep(path), free(path), keep)
+#define KEEP(at) (path = snx_path_join(root, at), gui_old_keep(path, &kept), free(path), kept.keep)
+#define WHERE(at)                                                                                                      \
+    (path = native(snx_format("%s/%s", root, at)), strcmp(kept.where, path) ? (free(path), 0) : (free(path), 1))
         assert(KEEP("gui") == GUI_KEEP_NONE && KEEP("work") == GUI_KEEP_NONE && KEEP("code") == GUI_KEEP_NONE);
         assert(KEEP("games/0100000000ABC000/0100000000ABC000_data/save/user.x") == GUI_KEEP_SAVE);
-        assert(KEEP("beside/Game") == GUI_KEEP_SAVE && KEEP("games") == GUI_KEEP_SAVES);
-        assert(KEEP("deep") == GUI_KEEP_NONE && KEEP("deep/a") == GUI_KEEP_SAVES); /* x_data five folders down, four */
+        assert(KEEP("beside/Game") == GUI_KEEP_SAVE && WHERE("beside/Game_data"));
+        assert(KEEP("games") == GUI_KEEP_SAVES && WHERE("games/0100000000ABC000/0100000000ABC000_data"));
+        assert(KEEP("deep") == GUI_KEEP_SAVES && WHERE("deep/a/b/c/d/e/x_data")); /* six folders down */
         assert(KEEP("checkout/prod.keys") == GUI_KEEP_KEYS && KEEP("checkout") == GUI_KEEP_KEYS);
-        assert(KEEP("keys") == GUI_KEEP_KEYS);
-#undef KEEP
+        assert(KEEP("keys") == GUI_KEEP_KEYS && WHERE("keys/sub/title.keys"));
+        assert(gui_old_keep(base, NULL) == GUI_KEEP_SAVES); /* all of it: a save first */
         for (i = 0; i < sizeof olds / sizeof olds[0]; ++i) {
             path = snx_path_join(root, olds[i]);
             gui_delete_old(&done, path, false);
             free(path);
         }
-        said = native(
-            snx_format("+gui|Deletes it\n+work|Deletes it\n+code|Deletes it\n"
-                       "+laid/Old|Deletes it, with Old_data\n"
-                       "!games|Stays: it holds saves, which Delete All never deletes: Move All moves it\n"
-                       "!beside/Game|Stays: a save, which Delete All never deletes: Move All moves it\n"
-                       "!checkout/prod.keys|Stays: the console's keys, which Delete All never deletes: Move "
-                       "All moves them\n"
-                       "!keys|Stays: the console's keys, which Delete All never deletes: Move All moves them\n"));
-        assert(!strcmp(entries(&done, base), said) && done.count == 8 && done.done == 4);
+        said = native(snx_format(
+            "+gui|Deletes it\n+work|Deletes it\n+code|Deletes it\n+laid/Old|Deletes it, with Old_data\n"
+            "!games|Stays: it holds saves (%s/games/0100000000ABC000/0100000000ABC000_data), which Delete All never "
+            "deletes: Move All moves it\n"
+            "!beside/Game|Stays: a save, which Delete All never deletes: Move All moves it\n"
+            "!deep|Stays: it holds saves (%s/deep/a/b/c/d/e/x_data), which Delete All never deletes: Move All moves it\n"
+            "!checkout/prod.keys|Stays: the console's keys, which Delete All never deletes: Move All moves them\n"
+            "!keys|Stays: it holds the console's keys (%s/keys/sub/title.keys), which Delete All never deletes: Move "
+            "All moves them\n",
+            root, root, root));
+        assert(!strcmp(entries(&done, base), said) && done.count == 9 && done.done == 4);
         free(said);
         path = snx_path_join(root, "gui/settings.ini");
         assert(snx_is_file(path)); /* nothing deleted without apply */
@@ -444,13 +450,56 @@ int main(void) {
         path = snx_path_join(root, "laid/Old_data");
         assert(!snx_path_exists(path)); /* with its game */
         free(path);
+        path = snx_path_join(root, "deep/a/b/c/d/e/x_data/save/s");
+        assert(snx_is_file(path)); /* the deep save, there */
+        free(path);
         said = native(snx_format("+gui|Deleted\n+work|Deleted\n+code|Deleted\n+laid/Old|Deleted, with Old_data\n"));
-        assert(done.count == 8 && done.done == 4 && !strncmp(entries(&done, base), said, strlen(said)));
+        assert(done.count == 9 && done.done == 4 && !strncmp(entries(&done, base), said, strlen(said)));
         free(said);
         gui_cleaned_free(&done);
         path = snx_path_join(root, "gone");
         assert(!gui_delete_old(&done, path, true) && !done.count); /* not there: nothing said */
         free(path);
+#ifndef _WIN32
+        /* a folder it cannot list and a link to a folder, which it does not follow: it cannot tell they hold no save,
+           so they stay, the page naming them; root reads what its mode forbids, so that one is not tried as root */
+        {
+            char *locked = snx_path_join(root, "locked"), *sub = snx_path_join(root, "locked/sub"),
+                 *linked = snx_path_join(root, "linked"), *out = snx_path_join(root, "linked/out"),
+                 *target = snx_path_join(root, "target"), **names = NULL;
+            size_t count = 0;
+            assert(!snx_mkdirs(sub) && !snx_mkdirs(linked) && !snx_mkdirs(target) && !symlink(target, out));
+            assert(KEEP("linked") == GUI_KEEP_LINK && !strcmp(kept.where, out));
+            assert(!gui_delete_old(&done, linked, true) && snx_is_dir(linked) && snx_is_dir(target));
+            said =
+                snx_format("!%s|Stays: %s is a link to a folder, which Delete All does not follow, so it cannot tell "
+                           "it holds no save\n",
+                           linked, out);
+            assert(!strcmp(entries(&done, ""), said));
+            free(said);
+            gui_cleaned_free(&done);
+            assert(!chmod(sub, 0));
+            if (snx_list_dir(sub, &names, &count)) {
+                assert(KEEP("locked") == GUI_KEEP_UNREAD && !strcmp(kept.where, sub) && kept.why[0]);
+                assert(!gui_delete_old(&done, locked, true) && snx_is_dir(sub));
+                said = snx_format("!%s|Stays: %s cannot be read (%s), so Delete All cannot tell it holds no save\n",
+                                  locked, sub, kept.why);
+                assert(!strcmp(entries(&done, ""), said));
+                free(said);
+                gui_cleaned_free(&done);
+            } else
+                puts("gui_clean: the mode does not keep this user out (root): a folder not read is not tried");
+            snx_free_strings(names, count);
+            assert(!chmod(sub, 0755));
+            free(target);
+            free(out);
+            free(linked);
+            free(sub);
+            free(locked);
+        }
+#endif
+#undef WHERE
+#undef KEEP
         free(base);
     }
     assert(!snx_remove_tree(root));
