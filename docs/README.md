@@ -81,6 +81,8 @@ keeps audits and measurements as they were taken.
   - [NVN](layers/gpu/nvn.md): how games draw through NVN, and how the runtime replays it
   - [GPU-owned guest memory](layers/gpu/ownership.md): the design of memory the GPU keeps, guest buffers on
     unified memory, and its phases
+  - [Regression inventory for the buffer cache rewrite](layers/gpu/buffer-rewrite-inventory.md): the behaviors
+    that the rewrite of the buffer cache, the rings and the texture trim must keep, from the comments of the code
   - [Graphics pipeline libraries](layers/gpu/pipeline-libraries.md): the design of pipelines linked from shader parts,
     and the optimized pipeline made after them
   - [ASTC compute uploads](layers/gpu/astc.md)
