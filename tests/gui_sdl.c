@@ -6814,7 +6814,8 @@ int main(int argc, char** argv) {
         app.editor.note[0] = 0;
     }
     /* Move Old Files: what an older version left, moved where this one keeps it once asked, entry by entry; a game laid
-       out beside others is not, the report says how it goes; then nothing that can move, said; nothing left, said */
+       out beside others is not, the report says how it goes, a folder a line under why they are there; then nothing
+       that can move, said; nothing left, said */
     {
         char *data_was = app.data_dir, *older = snx_path_join(temporary, "move data"), *old_games, *old_game;
         char *laid = snx_path_join(app.games_dir, "Laid"), *laid_data = snx_path_join(app.games_dir, "Laid_data");
@@ -6844,12 +6845,29 @@ int main(int argc, char** argv) {
         assert(!snx_path_exists(old_games) && snx_is_file(laid)); /* games/ went once empty; Laid stays */
         assert(!strcmp(app.editor.note, "1 moved, 1 not") && app.cleaned.count == 3 && app.cleaned.done == 2);
         assert(strstr(app.cleaned.text, "Not moved: run it from its dump once, which makes "));
+        { /* the box: a folder an entry, the folder emptied no entry of its own */
+            char shown[1024], file[4400], what[4400], *said;
+            bool ok;
+            assert(app.moved.count == 2 && app.moved.done == 1);
+            assert(entry_nth(&app.moved, 0, &ok, file, what, sizeof file) && !ok);
+            snx_home_short(laid, shown, sizeof shown);
+            assert(!strcmp(file, shown) && strstr(what, "Not moved: run it from its dump once"));
+            assert(entry_nth(&app.moved, 1, &ok, file, what, sizeof file) && ok);
+            snx_home_short(old_games, shown, sizeof shown);
+            assert(!strcmp(file, shown));
+            snx_home_short(app.games_dir, shown, sizeof shown);
+            said = snx_format("1 moved to %s", shown);
+            assert(!strcmp(what, said));
+            free(said);
+        }
         render(&app);
-        shows(&app, "Move Old Files: 2 done, 1 not", title);
+        shows(&app, "Move Old Files: 1 done, 1 not", title);
+        shows(&app, "An older version left these where this one no longer", rgb(app.theme.soft));
         key(&app, SDLK_LEFT); /* the report closes */
         assert(!app.cleaned_shown && app.lefts == 1 && !strcmp(app.app_form.moves, "1 left"));
         key(&app, SDLK_RETURN); /* only Laid: none can move, the report says why at once */
         assert(!app.confirm.shown && app.cleaned_shown && app.cleaned.count == 1 && !app.cleaned.done &&
+               app.moved.count == 1 && !app.moved.done &&
                !strcmp(app.editor.note, "None of the 1 can move: the box says why"));
         key(&app, SDLK_LEFT);
         assert(!snx_remove_tree(laid_data) && !remove(laid));
@@ -6866,6 +6884,7 @@ int main(int argc, char** argv) {
         app.data_dir = data_was;
         left_behind(&app);
         gui_cleaned_free(&app.cleaned);
+        gui_cleaned_free(&app.moved);
         app.report_move = false;
         app.editor.row = row;
         app.editor.note[0] = 0;
@@ -6919,7 +6938,23 @@ int main(int argc, char** argv) {
             assert(app.lefts == 3 && strstr(app.left, want[0]) && strstr(app.left, want[1]) &&
                    strstr(app.left, want[2]) && !strstr(app.left, want[3]) && !strstr(app.left, want[4]) &&
                    !strstr(app.left, want[5]));
-            assert(move_old(&app, &done, true) == 5);
+            {
+                GuiCleaned folders = {0};
+                char file[4400], what[4400];
+                bool ok;
+                assert(move_old(&app, &done, &folders, true) == 5);
+                /* the three one folder, the game's save/: its five entries (two of them notes) moved */
+                assert(folders.count == 1 && folders.done == 1 &&
+                       entry_nth(&folders, 0, &ok, file, what, sizeof file) && !strncmp(what, "5 moved to ", 11));
+                { /* to the three folders of the kinds, each once, a comma between */
+                    int commas = 0;
+                    for (const char* c = what; (c = strstr(c, ", ")) != NULL; c += 2) ++commas;
+                    assert(commas == 2);
+                    assert(listed("a, b, c", "b") && listed("a, b", "a") && !listed("ab, c", "b") &&
+                           !listed("a, bc", "b") && !listed("", "b"));
+                }
+                gui_cleaned_free(&folders);
+            }
             for (i = 0; i < sizeof now / sizeof *now; ++i) {
                 assert(!snx_path_format(path, sizeof path, "%s/save/%s", data_saves, now[i]));
                 assert(snx_is_file(path));
@@ -6947,9 +6982,9 @@ int main(int argc, char** argv) {
                 assert(strstr(app.left, path));
             }
             assert(app.lefts == 3);
-            assert(move_old(&app, &done, false) == 3 && done.count == 3 && done.done == 3);
+            assert(move_old(&app, &done, NULL, false) == 3 && done.count == 3 && done.done == 3);
             gui_cleaned_free(&done);
-            assert(move_old(&app, &done, true) == 3);
+            assert(move_old(&app, &done, NULL, true) == 3);
             for (i = 0; i < sizeof laid / sizeof *laid; ++i) {
                 assert(!snx_path_format(path, sizeof path, "%s/save/%s/" SNX_SAVE_COMMITTED "/%s", data_saves,
                                         laid[i][0], laid[i][1]));
@@ -6989,7 +7024,7 @@ int main(int argc, char** argv) {
                 left_behind(&app);
                 assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/device", game));
                 assert(app.lefts == 1 && strstr(app.left, path));
-                assert(move_old(&app, &done, true) == 1);
+                assert(move_old(&app, &done, NULL, true) == 1);
                 assert(!snx_path_format(path, sizeof path,
                                         "%s/0100000000ABC000_data/save/device/" SNX_SAVE_COMMITTED "/d.bin", game) &&
                        snx_is_file(path));
@@ -13460,35 +13495,32 @@ int main(int argc, char** argv) {
             mouse_px(&app, choice_box(&app, &choices, 1).x + 4, choice_box(&app, &choices, 1).y + 4, true);
             assert(!app.confirm.shown && app.closing_ms && !app.menu.quit); /* the screen of what is kept, first */
             app.closing_ms = 0;
-            {
-                char* elsewhere[] = {"/elsewhere"}; /* a count for another list is not this one's */
-                space_count(&app.left_space, &app.left_counter, elsewhere, 1, true);
-                while (!__atomic_load_n(&app.left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
-            }
-            app.left = snx_format("/old/recent.txt" SAY_LEFT_BY "/new/recent.txt\n");
-            app.lefts = 1;
-            app.left_shown = true;
-            app.left_at = SDL_GetTicks(); /* not looked for again, as there is no such file */
+            /* what Move Old Files did, in a box over the screen: its head, why they are there, each folder where it
+               is (-) and under it what was done, the failure colour on one not moved; OK at its foot */
+            gui_cleaned_add(&app.moved, false, "/old/recent.txt", "Stays: /new/recent.txt is there");
+            app.report_move = app.cleaned_shown = true;
             render(&app);
             {
-                int width, height;
+                int width, height, why;
                 area(&app, &width, &height);
-                r = over_rect(&app, width / cw - 6, head_h(&app) + 2 * 16 * s + item_h(&app) + 16 * s);
-                text_px_is(&app, r.x + cw, r.y + 2 * s, "Left by older versions", normal, black);
-                text_px_is(&app, r.x + cw, r.y + head_h(&app) + 4 * s, "- /old/recent.txt", red, black);
-                /* its space, not counted: the menu counts what it looked for itself */
-                text_px_is(&app, r.x + cw + 2 * cw, r.y + head_h(&app) + 4 * s + 16 * s, "counting",
-                           rgb(app.theme.soft), black);
+                why = wrap_rows(&app, SAY_MOVED_WHY, width / cw - 6, 0) + 1;
+                r = over_rect(&app, width / cw - 6, head_h(&app) + (why + 2) * 16 * s + item_h(&app) + 16 * s);
+                text_px_is(&app, r.x + cw, r.y + 2 * s, "Move Old Files: 0 done, 1 not", normal, black);
+                text_px_is(&app, r.x + cw, r.y + head_h(&app) + 4 * s, "An older version left", rgb(app.theme.soft),
+                           black);
+                text_px_is(&app, r.x + cw, r.y + head_h(&app) + 4 * s + why * 16 * s, "- /old/recent.txt", red, black);
+                text_px_is(&app, r.x + cw + 2 * cw, r.y + head_h(&app) + 4 * s + (why + 1) * 16 * s, "Stays:", red,
+                           black);
                 /* OK, ui.txt's scene Files: a row as the menu's at the box's foot, in focus */
                 text_px_is(&app, r.x + cw + cw / 2, r.y + r.h - item_h(&app) - 6 * s + s, "- OK", yellow, black);
             }
-            key(&app, SDLK_DOWN); /* one file: nothing to go to */
-            assert(app.left_shown && app.menu.selected == GUI_EXIT);
+            key(&app, SDLK_DOWN); /* one folder: nothing to go to */
+            assert(app.cleaned_shown && app.menu.selected == GUI_EXIT);
             key(&app, SDLK_RETURN);
-            assert(!app.left_shown && app.menu.selected == GUI_EXIT && !app.confirm.shown); /* closed, nothing else */
-            free(app.left);
-            app.left = NULL;
-            app.lefts = 0;
+            assert(!app.cleaned_shown && app.menu.selected == GUI_EXIT &&
+                   !app.confirm.shown); /* closed, nothing else */
+            gui_cleaned_free(&app.moved);
+            app.report_move = false;
             app.menu.selected = GUI_KEYS;
         }
         /* a run of the console layout: the driver's output in its box, sized to it, beside it what runs and how it
@@ -15085,11 +15117,28 @@ int main(int argc, char** argv) {
             assert(j < app.left_space->count && app.left_space->bytes[j] == snx_file_size(path));
             free(path);
         }
-        app.left_shown = true;
-        render(&app);
-        shows(&app, SAY_LEFT_TITLE, rgb(app.theme.ink));
-        shows(&app, "While the app is in testing,", rgb(app.theme.ink));
-        app.left_shown = false;
+        { /* the page of one of them, Old Files', says how they go */
+            SnxSetup setup_was = app.setup;
+            char old_file[4400], now_file[4400];
+            int page;
+            app.setup.version = SNX_SETUP_VERSION;
+            app.setup.notices = SNX_NOTICES;
+            app.setup_count = 1;
+            app.setup_page = 0;
+            app.setup_pages[0] = SETUP_LEFT;
+            app.setup_on = true;
+            setup_enter(&app);
+            for (page = 0; page < left_groups(&app); ++page) {
+                left_paths(left_nth(&app, left_group_first(&app, page)), old_file, now_file, sizeof old_file);
+                if (snx_path_within(old_file, old)) break;
+            }
+            assert(page < left_groups(&app));
+            app.setup_top = page;
+            render(&app);
+            shows(&app, "While the app is in testing,", rgb(app.theme.ink));
+            app.setup_on = false;
+            app.setup = setup_was;
+        }
         app.log_due = true; /* a crash's log: Share Log blinks in the failure colour until it is saved */
         assert((ui_menu_entries_attr_cb(&app, GUI_LOG) & (UI_ATTR_FAILURE | UI_ATTR_BLINK)) ==
                (UI_ATTR_FAILURE | UI_ATTR_BLINK));
@@ -15263,124 +15312,92 @@ int main(int argc, char** argv) {
                 free(old_games);
                 free(checkout);
             }
-            /* in a box over the menu as it opens: each where it is (-), a path too long for a row going on in the next,
-               and under it the space it takes, counted on a thread (a game laid out beside the others with its files
-               beside it), as many as fit */
+            /* the setup's last pages as the menu opens (Old Files), a folder each: where it is, the space it takes,
+               counted on a thread, where it goes and what Move All and Delete All would do to it; Next, PgUp/PgDn and
+               Home/End go over them; Not Now on the last moves nothing */
             {
-                int width, wraps = 0, selected = app.menu.selected, more, n;
-                SDL_Color ink = rgb(app.theme.ink), added = rgb(app.theme.added), failure = rgb(app.theme.failure);
-                SDL_Color soft = rgb(app.theme.soft);
-                static char paths[2][4200]; /* where each file is, and where it goes */
+                int selected = app.menu.selected, window_w, window_h, text_size = app.menu.text_size, n;
+                SDL_Color ink = rgb(app.theme.ink),
+                          head = rgb(app.theme.panels == GUI_PANELS_FILL ? app.theme.page : app.theme.ink);
+                static const char* const sizes[] = {"1 KB", "3 MB", "0 MB", "1 KB"};
+                char line[1200], file[4400], what[4400];
+                const char* labels[GUI_SETUP_CHOICES];
+                SnxSetup setup_was = app.setup;
+                bool ok;
                 while (!__atomic_load_n(&app.left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
                 assert(app.left_space->count == 5 && app.left_space->bytes[0] == 9 &&
                        app.left_space->bytes[1] == 3u << 20 && app.left_space->bytes[2] == 0 &&
                        app.left_space->bytes[3] == sizeof meta);
-                int window_w, window_h, text_size = app.menu.text_size;
-                app.left_shown = true;
-                app.clock = 1;
-                /* tall enough for all five, whatever the temporary folder's path, at the letters' size of now */
+                app.setup.version = SNX_SETUP_VERSION; /* nothing else due: no setup.ini written as they end */
+                app.setup.notices = SNX_NOTICES;
+                app.setup_count = 1;
+                app.setup_page = 0;
+                app.setup_pages[0] = SETUP_LEFT;
+                app.setup_on = true;
+                setup_enter(&app);
+                assert(app.setup_on && left_groups(&app) == 5 && !app.setup_top && !app.left_did);
                 assert(SDL_GetWindowSize(app.window, &window_w, &window_h));
                 app.menu.text_size = app.scale;
                 assert(SDL_SetWindowSize(app.window, window_w, 30 * 16 * app.scale));
                 SDL_SyncWindow(app.window);
-                render(&app);
-                width = app.cols - 6; /* the box's columns, as render_left takes them */
-                assert(app.rows >= 28 && width >= 57 && !same_colour(added, ink));
-                shows(&app, SAY_LEFT_TITLE, ink);
-                for (at = app.left; *at; at = strchr(at, '\n') + 1) {
-                    left_paths(at, paths[0], paths[1], sizeof paths[0]);
-                    for (const char* rest = paths[0]; *rest;) { /* the whole path, a piece a row */
-                        size_t cut = gui_wrap(rest, width - 2);
-                        line = snx_format("%.*s", (int)cut, rest);
-                        shows(&app, line, failure);
-                        wraps += rest != paths[0];
-                        free(line);
-                        rest += cut;
-                    }
-                    hides(&app, paths[1], ink); /* where it goes is Share Log's */
-                }
-                assert(wraps >= 1); /* the long game's path wraps */
-                shows(&app, "1 KB", soft);
-                shows(&app, "3 MB", soft);
-                shows(&app, "0 MB", soft);
-                shows(&app, "- OK", yellow);
-                hides(&app, "which Share Log lists", rgb(app.theme.soft));
-                /* a window too short for them all: as many as fit, then how many more */
-                assert(SDL_SetWindowSize(app.window, window_w, 14 * 16 * app.scale));
-                SDL_SyncWindow(app.window);
-                render(&app);
-                for (more = 0, n = 1; n < 5; ++n) {
-                    char said[64];
-                    int x, y;
-                    snprintf(said, sizeof said, "and %d more, which Share Log lists", n);
-                    if (find_text(&app, said, rgb(app.theme.soft), 1, &x, &y)) more = n;
-                }
-                assert(more > 0);
-                shows(&app, "- OK", yellow);
-                hides(&app, "\x1e", rgb(app.theme.soft));
-                /* Up/Down go over them, a file at a time, an arrow beside the first saying some are above it; down
-                   only while some are under; PgUp/PgDn as many as show, the wheel a file a notch */
+                app.clock = 1;
                 {
-                    int top;
-                    const char* last = strrchr(app.left, '\n');
-                    while (last > app.left && last[-1] != '\n') --last; /* the last file's line */
-                    left_paths(last, paths[0], paths[1], sizeof paths[0]);
-                    line = snx_format("%.*s", (int)gui_wrap(paths[0], width - 2), paths[0]);
-                    assert(app.files_top == 0 && app.files_shown == app.lefts - more);
-                    key(&app, SDLK_UP);
-                    assert(app.left_shown && app.files_top == 0);
-                    key(&app, SDLK_DOWN);
-                    assert(app.left_shown && app.files_top == 1 && app.menu.selected == selected);
+                    char* elsewhere[] = {"/elsewhere"}; /* a count for another list is not this one's */
+                    space_count(&app.left_space, &app.left_counter, elsewhere, 1, true);
+                    while (!__atomic_load_n(&app.left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
                     render(&app);
-                    shows(&app, "\x1e", rgb(app.theme.soft));
-                    for (n = 0; n < 10 && app.files_top + app.files_shown < app.lefts; ++n) {
-                        key(&app, SDLK_DOWN);
-                        render(&app);
+                    shows(&app, "size        counting", ink);
+                    left_behind(&app); /* this list counted again */
+                    while (!__atomic_load_n(&app.left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
+                    assert(app.left_space->count == 5);
+                }
+                for (n = 0; n < 5; ++n) { /* each page: its head, its size, and Move All's and Delete All's words */
+                    snprintf(line, sizeof line, "Old Files %d/5", n + 1);
+                    render(&app);
+                    shows(&app, line, head);
+                    if (n < 4) {
+                        snprintf(line, sizeof line, "size        %s", sizes[n]);
+                        shows(&app, line, ink);
                     }
-                    assert(app.files_top + app.files_shown == app.lefts && app.files_top > 0);
-                    hides(&app, "which Share Log lists", rgb(app.theme.soft));
-                    shows(&app, line, failure);
-                    free(line);
-                    top = app.files_top;
-                    key(&app, SDLK_DOWN);
-                    render(&app);
-                    assert(app.files_top == top);
-                    key(&app, SDLK_PAGEUP);
-                    assert(app.files_top == SDL_max(0, top - app.files_shown));
-                    key(&app, SDLK_PAGEDOWN);
-                    assert(app.files_top == SDL_max(0, top - app.files_shown) + app.files_shown);
-                    key(&app, SDLK_HOME); /* another key closes it, and does nothing else */
-                    assert(!app.left_shown && app.menu.selected == selected);
-                    app.left_shown = true;
-                    app.files_top = 0;
-                    render(&app);
-                    {
-                        SDL_Event wheel = {0};
-                        wheel.type = SDL_EVENT_MOUSE_WHEEL;
-                        wheel.wheel.integer_y = -1;
-                        event(&app, &wheel);
-                        assert(app.left_shown && app.files_top == 1 && app.menu.selected == selected);
-                        wheel.wheel.integer_y = 3;
-                        event(&app, &wheel);
-                        assert(app.files_top == 0);
+                    assert(entry_nth(&app.left_plan, n, &ok, file, what, sizeof file));
+                    snprintf(line, sizeof line, "Move All    %.12s", what);
+                    shows(&app, line, ink);
+                    assert(n == 0   ? !strcmp(what, "2 entries move") /* recent.txt and last-run.log */
+                           : n == 1 ? !strcmp(what, "1 entry moves")
+                           : n < 4  ? !strcmp(what, "Not moved: run it from its dump once, then move its saves "
+                                                    "(docs/user/deprecations.md)")
+                                    : 1);
+                    assert(entry_nth(&app.left_drop, n, &ok, file, what, sizeof file));
+                    snprintf(line, sizeof line, "Delete All  %.12s", what);
+                    shows(&app, line, ink);
+                    assert(n < 2   ? !strcmp(what, "Deletes it")
+                           : n < 4 ? !strcmp(what,
+                                             n == 2 ? "Deletes it, with " LONG "_data" : "Deletes it, with MyGame_data")
+                                   : 1);
+                    if (n < 4) {
+                        assert(setup_labels(&app, labels) == (n ? 2 : 1) && !strcmp(labels[n ? 1 : 0], "Next"));
+                        key(&app, SDLK_RETURN);
                     }
                 }
-                app.menu.text_size = text_size;
-                assert(SDL_SetWindowSize(app.window, window_w, window_h));
-                SDL_SyncWindow(app.window);
-                layout(&app);
-                app.clock = 0;
-                /* the wheel moves nothing under it, and leaves it open */
+                assert(setup_labels(&app, labels) == 4 && !strcmp(labels[3], "Not Now") && app.setup_choice.focus == 3);
+                key(&app, SDLK_PAGEDOWN); /* none past the last */
+                assert(app.setup_top == 4);
+                key(&app, SDLK_PAGEUP);
+                assert(app.setup_top == 3 && setup_labels(&app, labels) == 2);
                 {
-                    SDL_Event wheel = {0};
-                    wheel.type = SDL_EVENT_MOUSE_WHEEL;
-                    wheel.wheel.integer_y = -2;
-                    event(&app, &wheel);
-                    assert(app.left_shown && app.menu.selected == selected);
+                    SDL_Event jump = {0};
+                    jump.type = SDL_EVENT_KEY_DOWN;
+                    jump.key.down = true;
+                    jump.key.key = SDLK_HOME;
+                    event(&app, &jump);
+                    assert(!app.setup_top);
+                    jump.key.key = SDLK_END;
+                    event(&app, &jump);
+                    assert(app.setup_top == 4 && app.setup_choice.focus == 3);
                 }
-                /* another key closes it and does nothing else; nothing was moved */
-                key(&app, SDLK_RIGHT);
-                assert(!app.left_shown && app.menu.selected == selected && snx_is_file(loose));
+                key(&app, SDLK_RETURN); /* Not Now: nothing moved, the menu as it was */
+                assert(!app.setup_on && app.menu.selected == selected && snx_is_file(loose) && snx_is_dir(work));
+                app.setup = setup_was;
                 /* Clean Old Settings cleans settings only: what an older version left stays where it is */
                 clean_old(&app);
                 assert(snx_is_file(loose) && snx_is_dir(loose_data) && snx_is_file(npdm) && snx_is_dir(work));
@@ -15388,22 +15405,93 @@ int main(int argc, char** argv) {
                 assert(app.lefts == 5);
                 gui_cleaned_free(&app.cleaned);
                 app.cleaned_shown = false;
-                /* gone while it shows, it closes: the data folder's, and the program in a folder with no games/ */
+                /* gone while they show, the setup goes on: F5 looks now, the data folder's and the program in a folder
+                   with no games/ */
                 {
                     char* drivers = app.drivers;
+                    app.setup.version = SNX_SETUP_VERSION;
+                    app.setup.notices = SNX_NOTICES;
+                    app.setup_on = true;
+                    app.setup_page = 0; /* Not Now went past it */
+                    setup_enter(&app);
+                    assert(app.setup_on && left_page(&app));
                     app.drivers = snx_path_join(temporary, "program alone");
-                    app.left_shown = true;
                     assert(!snx_remove_tree(app.data_dir)); /* its gui/ too */
                     app.left_at = SDL_GetTicks();           /* pump looks again in 5 s; F5 now */
                     key(&app, SDLK_F5);
-                    assert(!app.left_shown && !app.lefts && !app.left);
-                    app.left_shown = true;
-                    app.left_at = 0;
-                    pump(&app);
-                    assert(!app.left_shown && !app.lefts && !app.left);
+                    assert(!app.setup_on && !app.lefts && !app.left);
                     free(app.drivers);
                     app.drivers = drivers;
+                    app.setup = setup_was;
                 }
+                /* the box of what Move Old Files did, a folder an entry: as many as fit, an arrow at the right of the
+                   first while some are above it and of the last while some are under, a scroll bar beside them, and
+                   how many more; Up/Down, PgUp/PgDn and the wheel go over them, another key closes it */
+                {
+                    int more = 0, top, i;
+                    gui_cleaned_free(&app.moved);
+                    for (i = 0; i < 24; ++i) {
+                        snprintf(file, sizeof file, "/old/folder %02d", i);
+                        gui_cleaned_add(&app.moved, true, file, "1 moved to /new");
+                    }
+                    app.report_move = app.cleaned_shown = true;
+                    app.files_top = 0;
+                    assert(SDL_SetWindowSize(app.window, window_w, 20 * 16 * app.scale));
+                    SDL_SyncWindow(app.window);
+                    render(&app);
+                    assert(app.files_shown > 1 && app.files_shown < 24);
+                    snprintf(line, sizeof line, "and %d more: Up/Down, PgUp/PgDn and the wheel go over them",
+                             24 - app.files_shown);
+                    shows(&app, line, rgb(app.theme.soft));
+                    shows(&app, "\x1f", rgb(app.theme.soft));
+                    hides(&app, "\x1e", rgb(app.theme.soft));
+                    key(&app, SDLK_UP);
+                    assert(app.cleaned_shown && app.files_top == 0);
+                    key(&app, SDLK_DOWN);
+                    assert(app.cleaned_shown && app.files_top == 1 && app.menu.selected == selected);
+                    render(&app);
+                    shows(&app, "\x1e", rgb(app.theme.soft));
+                    for (i = 0; i < 30 && app.files_top + app.files_shown < 24; ++i) {
+                        key(&app, SDLK_DOWN);
+                        render(&app);
+                    }
+                    assert(app.files_top + app.files_shown == 24 && app.files_top > 0);
+                    hides(&app, "\x1f", rgb(app.theme.soft));
+                    for (i = 1; i < 24; ++i) {
+                        int x, y;
+                        snprintf(line, sizeof line, "and %d more:", i);
+                        if (find_text(&app, line, rgb(app.theme.soft), 1, &x, &y)) more = i;
+                    }
+                    assert(!more);
+                    shows(&app, "- /old/folder 23", ink);
+                    top = app.files_top;
+                    key(&app, SDLK_DOWN);
+                    assert(app.files_top == top);
+                    key(&app, SDLK_PAGEUP);
+                    assert(app.files_top == SDL_max(0, top - app.files_shown));
+                    key(&app, SDLK_PAGEDOWN);
+                    assert(app.files_top == SDL_max(0, top - app.files_shown) + app.files_shown);
+                    {
+                        SDL_Event wheel = {0};
+                        app.files_top = 0;
+                        wheel.type = SDL_EVENT_MOUSE_WHEEL;
+                        wheel.wheel.integer_y = -1;
+                        event(&app, &wheel);
+                        assert(app.cleaned_shown && app.files_top == 1 && app.menu.selected == selected);
+                        wheel.wheel.integer_y = 3;
+                        event(&app, &wheel);
+                        assert(app.files_top == 0);
+                    }
+                    key(&app, SDLK_HOME); /* another key closes it, and does nothing else */
+                    assert(!app.cleaned_shown && app.menu.selected == selected);
+                    gui_cleaned_free(&app.moved);
+                    app.report_move = false;
+                }
+                app.menu.text_size = text_size;
+                assert(SDL_SetWindowSize(app.window, window_w, window_h));
+                SDL_SyncWindow(app.window);
+                layout(&app);
+                app.clock = 0;
             }
             set_env_path("XDG_CONFIG_HOME", xdg_root, "config");
             set_env_path("XDG_CACHE_HOME", xdg_root, "cache");

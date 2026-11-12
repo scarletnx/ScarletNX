@@ -87,6 +87,8 @@ typedef enum {
     GUI_ASK_DRIVER, /* a GPU driver package removed (Settings > App > GPU Drivers) */
     GUI_ASK_CRASH,  /* edenprobe's crash list cleared (GPU Drivers' Clear Crash List) */
     GUI_ASK_ADDONS, /* a game's dump made with its updates' and DLCs' among the dumps, Yes first, or alone */
+    /* the setup's Old Files: Delete All, how many go and how many stay, pressed twice */
+    GUI_ASK_DELETE_OLD,
     GUI_ASK_ERROR   /* a failure of the system's, or Run edenprobe's counts, said whole: OK alone, which closes it */
 } GuiAsk;
 typedef struct {
