@@ -18,7 +18,7 @@ static void check(int ok, const char* what) {
 
 /* where a module's parts lie */
 enum { MOD0 = 0x40, DYNAMIC = 0x80, SYMTAB = 0x200, STRTAB = 0x2c0, RELA = 0x400, JMPREL = 0x500, RELR = 0x600 };
-enum { DATA = 0x800, DATA_SIZE = 0x400, SIZE = 0x1000 };
+enum { DATA = 0x800, DATA_SIZE = 0x400, MODULE_BYTES = 0x1000 };
 enum { ABS64 = 257, ABS32 = 258, GLOB_DAT = 1025, JUMP_SLOT = 1026, RELATIVE = 1027, TLS = 1028 };
 #define BASE_A 0x100000ull
 #define BASE_B 0x200000ull
@@ -31,7 +31,7 @@ typedef struct {
 
 /* an empty module: MOD0 and room for seven symbols (the strings follow them, which tells how many they are) */
 static void begin(Build* b, unsigned char* image) {
-    memset(image, 0, SIZE);
+    memset(image, 0, MODULE_BYTES);
     memset(b, 0, sizeof(*b));
     b->image = image;
     b->names = 1;
@@ -74,7 +74,7 @@ static void end(Build* b, SnxU64 rela_size) {
     }
 }
 
-static unsigned char g_image[3][SIZE], g_copy[3][DATA_SIZE];
+static unsigned char g_image[3][MODULE_BYTES], g_copy[3][DATA_SIZE];
 
 /* the three modules as loaded. rela_size: module b's DT_RELASZ, 0 for what its table holds */
 static void build(SnxU64 rela_size) {
@@ -135,7 +135,7 @@ static void modules(SnxRelocModule* m, int in_place) {
         m[i].name = names[i];
         m[i].image = g_image[i];
         m[i].base = bases[i];
-        m[i].size = SIZE;
+        m[i].size = MODULE_BYTES;
         m[i].data_off = DATA;
         m[i].data_size = DATA_SIZE;
         m[i].lazy = 0;
