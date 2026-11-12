@@ -15145,6 +15145,30 @@ int main(int argc, char** argv) {
                     }
                 }
                 assert(setup_labels(&app, labels) == 4 && !strcmp(labels[3], "Not Now") && app.setup_choice.focus == 3);
+                { /* a page with more rows than its box (the long game's, in a short window): they roll, an arrow
+                     saying some are under them, then above; its last row, under the box at first, shows in time */
+                    bool seen = false;
+                    Uint64 at;
+                    left_turn(&app, 2);
+                    assert(SDL_SetWindowSize(app.window, 800, 16 * 16 * app.scale)); /* the least a window takes */
+                    SDL_SyncWindow(app.window);
+                    app.clock = 1;
+                    render(&app);
+                    shows(&app, "\x1f", rgb(app.theme.soft));
+                    hides(&app, "Delete All  Deletes it, with", ink);
+                    for (at = GUI_SETUP_ROWS_MS; !seen && at < 200 * GUI_SETUP_ROWS_MS; at += GUI_SETUP_ROWS_MS) {
+                        int x, y;
+                        app.clock = at;
+                        render(&app);
+                        seen = find_text(&app, "Delete All  Deletes it, with", ink, 1, &x, &y);
+                    }
+                    assert(seen);
+                    shows(&app, "\x1e", rgb(app.theme.soft));
+                    app.clock = 1;
+                    left_turn(&app, 4);
+                    assert(SDL_SetWindowSize(app.window, window_w, 30 * 16 * app.scale));
+                    SDL_SyncWindow(app.window);
+                }
                 key(&app, SDLK_PAGEDOWN); /* none past the last */
                 assert(app.setup_top == 4);
                 key(&app, SDLK_PAGEUP);

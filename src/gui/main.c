@@ -13194,14 +13194,39 @@ static void setup_boxes(App* app, GuiSetupBoxes* b) {
             b->content = gui_rect(b->content.x, b->content.y, beside, SDL_max(0, foot - b->content.y));
     }
 }
-/* a box of lines under its label, each wrapped from a row of its own (at its slashes, as paths); the rows they took */
+#define GUI_SETUP_ROWS_MS 600 /* a box's rows too many for it roll a row this often, resting at each end */
+/* lines in text from its top, each wrapped from a row of its own (at its slashes, as paths), all when they fit; else
+   they roll up a row every GUI_SETUP_ROWS_MS to the last and back, an arrow at text's right while some are above or
+   under them and a scroll bar between the arrows, so none is cut. The rows they take */
+static int setup_rows(App* app, GuiRect text, const char* const* lines, int n, SDL_Color color) {
+    int cw = cell_w(app), ch = cell_h(app), room = text.h / ch, total = 0, top = 0, rows = 0, i, s = app->scale;
+    GuiRect area = text, all, track, thumb;
+    for (i = 0; i < n; ++i) total += wrap_rows(app, lines[i], area.w / cw, 1);
+    if (total > room && room > 0) { /* a column for the arrows and the bar, the rows wrapped again without it */
+        area.w -= cw;
+        for (total = 0, i = 0; i < n; ++i) total += wrap_rows(app, lines[i], area.w / cw, 1);
+        top = gui_slide(total - room, now_ms(app), GUI_SETUP_ROWS_MS);
+        ui_clip(app, &text);
+    }
+    all = gui_rect(area.x, area.y - top * ch, area.w, (total + 1) * ch); /* every row, so wrap_in cuts none */
+    for (i = 0; i < n; ++i) rows += wrap_in(app, all, area.x, all.y + rows * ch, lines[i], 1, color);
+    if (total <= room || room <= 0) return rows;
+    ui_clip(app, NULL);
+    if (top) text_in(app, text, area.x + area.w, text.y, "\x1e", rgb(app->theme.soft));
+    if (top < total - room) text_in(app, text, area.x + area.w, text.y + (room - 1) * ch, "\x1f", rgb(app->theme.soft));
+    if (room > 2 &&
+        bar_place(app, gui_rect(area.x + area.w, text.y + ch, cw, (room - 2) * ch), total, room, top, &track, &thumb)) {
+        track.x = thumb.x = area.x + area.w + cw / 2 - SDL_max(s, cw / 4) / 2;
+        track.w = thumb.w = SDL_max(s, cw / 4);
+        bar_draw(app, track, thumb, false);
+    }
+    return room;
+}
+/* a box of lines under its label (setup_rows: none cut); the rows they take */
 static int setup_box(App* app, GuiRect r, const char* label, const char* const* lines, int n) {
     GuiRect text = inner(app, r);
-    int y = pane(app, r, label), i, rows = 0;
-    text = gui_rect(text.x, y, text.w, r.y + r.h - y);
-    for (i = 0; i < n; ++i)
-        rows += wrap_in(app, text, text.x, y + rows * cell_h(app), lines[i], 1, rgb(app->theme.ink));
-    return rows;
+    int y = pane(app, r, label);
+    return setup_rows(app, gui_rect(text.x, y, text.w, r.y + r.h - y), lines, n, rgb(app->theme.ink));
 }
 /* two boxes side by side, the first of fifths of r: their rectangles */
 static void setup_split(const App* app, GuiRect r, int fifths, GuiRect* a, GuiRect* b) {
@@ -13302,13 +13327,13 @@ static void setup_notices_box(App* app, GuiRect r) {
 static void setup_left_box(App* app, GuiRect r) {
     static const char* const said[] = {SNX_TR_NOOP("size"), SNX_TR_NOOP("now"), SNX_TR_NOOP("Move All"),
                                        SNX_TR_NOOP("Delete All")};
-    enum { LINES = 14 };
+    enum { LINES = 40 }; /* setup_rows rolls them when the box is short */
     char text[LINES][1100], head[96], pad[64], old[4400], now[4400], folder[4400], here[4400], last[4400] = "";
     char shown[1024], file[4400], what[4400];
     const char* lines[LINES];
     const char* at;
     const GuiSpace* space = app->left_space;
-    int n = left_groups(app), page = SDL_min(app->setup_top, n - 1), first, k = 0, i, pass;
+    int n = left_groups(app), page = SDL_min(app->setup_top, n - 1), first, k = 0, i, pass, unlisted = 0;
     int cols = setup_cols(said, 4, 2), counted = space ? __atomic_load_n(&space->counted, __ATOMIC_ACQUIRE) : 0;
     uint64_t bytes = 0;
     bool ok, counting = false, out_of_reach = false;
@@ -13347,7 +13372,9 @@ static void setup_left_box(App* app, GuiRect r) {
                 out_of_reach = out_of_reach || (app->menu_old && snx_path_within(old, app->menu_old));
             }
             snprintf(last, sizeof last, "%s", old);
-            if (pass && k < LINES - 3) { /* the label on the first, the others under its value */
+            if (pass && k >= LINES - 5) /* the lines after them kept: how many more, said */
+                ++unlisted;
+            else if (pass) { /* the label on the first, the others under its value */
                 snx_home_short(now, shown, sizeof shown);
                 if (i == first)
                     LEFT_LINE("    %s%s", setup_pad(pad, sizeof pad, said[1], cols), shown);
@@ -13355,6 +13382,10 @@ static void setup_left_box(App* app, GuiRect r) {
                     LEFT_LINE("    %*s%s", cols, "", shown);
             }
         }
+    }
+    if (unlisted) {
+        snprintf(what, sizeof what, snx_tr("and %d more, which Share Log lists"), unlisted);
+        LEFT_LINE("    %*s%s", cols, "", what);
     }
     if (entry_nth(&app->left_plan, page, &ok, file, what, sizeof file))
         LEFT_LINE("    %s%s", setup_pad(pad, sizeof pad, said[2], cols), what);
