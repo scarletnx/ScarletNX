@@ -273,6 +273,102 @@ static void programs(const char* scratch) {
     printf("PASS a collection's programs read in place by their index, each its own Control\n");
 }
 
+/* an update's content meta (0x81) of version for title, of the application, listing its Program NCA (ID program)
+   and its Control NCA (ID control) */
+static blob_t patch_meta_nca(uint64_t title, uint64_t application, uint32_t version, const unsigned char program[16],
+                             const unsigned char control[16]) {
+    blob_t cnmt = {zalloc(0x20 + 0x10 + 0x38 * 2), 0x20 + 0x10 + 0x38 * 2};
+    romfs_file_t files[1] = {{"Patch_x.cnmt", cnmt}};
+    blob_t nca;
+    put64(cnmt.data, title);
+    put32(cnmt.data + 8, version);
+    cnmt.data[0xC] = 0x81;
+    cnmt.data[0xE] = 0x10;
+    cnmt.data[0x10] = 2;
+    put64(cnmt.data + 0x20, application);
+    memcpy(cnmt.data + 0x30 + 0x20, program, 16);
+    cnmt.data[0x30 + 0x36] = 1;
+    memcpy(cnmt.data + 0x30 + 0x38 + 0x20, control, 16);
+    cnmt.data[0x30 + 0x38 + 0x36] = 3;
+    nca = dnca_build(NCACONTENTTYPE_META, title, files, 1, NULL, 0);
+    free(cnmt.data);
+    return nca;
+}
+/* -x --icon on a dump, the launcher's ask: 0 when it answered, and its title.ini then, else NULL (owned) */
+static int icon_job(const char* dump, const char* out, const SnxPaths* paths, char** title) {
+    char *args[5] = {"--icon", "--out", NULL, "--", NULL}, *ini = snx_path_join(out, "title.ini");
+    size_t size = 0;
+    int rc;
+    args[2] = (char*)out;
+    args[4] = (char*)dump;
+    rc = snx_extract(5, args, paths);
+    *title = ini ? (char*)snx_read_file(ini, &size) : NULL;
+    free(ini);
+    return rc;
+}
+/* -x --icon says what each dump is in title.ini beside its icon, as the launcher groups dumps by it: a game's own
+   title ID and name; an update's ID, its game's, its content meta's version and its control.nacp's name and version;
+   a DLC's ID and its game's, with no name or icon, which is no failure. A file that is no dump writes none */
+static void titles(const char* scratch) {
+    static const unsigned char patch_id[16] = {0xb0}, control_id[16] = {0xb1};
+    static const unsigned char aoc_id[16] = {0xab, 0xcd, 0xef, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+    char *repo = snx_path_join(scratch, "titles repo"), *game_dump = snx_path_join(scratch, "titles game.nsp");
+    char *update = snx_path_join(scratch, "titles a game.nsp"), *aoc = snx_path_join(scratch, "titles another.nsp");
+    char *junk = snx_path_join(scratch, "titles junk.nsp"), *out = snx_path_join(scratch, "titles out"), *ini, *jpeg;
+    Game game = {{{0}}, 0};
+    SnxPaths paths = {0};
+    blob_t picture = icon();
+    paths.repo = repo;
+    CHECK(!snx_mkdirs(repo));
+    game_add(&game, "program.nca", program(TITLE, 1));
+    game_add(&game, "control.nca", control(TITLE));
+    write_container(game_dump, &game, "nsp");
+    { /* the update's control.nacp: the game's name, and its own version; its icon */
+        blob_t file = nacp(), its = icon(), nca;
+        romfs_file_t romfs[2] = {{"control.nacp", file}, {"icon_AmericanEnglish.dat", its}};
+        memcpy(file.data + 0x3060, "1.0.1", 5);
+        nca = dnca_build(NCACONTENTTYPE_CONTROL, TITLE | 0x800, NULL, 0, romfs, 2);
+        free(file.data);
+        free(its.data);
+        game_add(&game, "b0000000000000000000000000000000.nca", program(TITLE | 0x800, 1));
+        game_add(&game, "b1000000000000000000000000000000.nca", nca);
+        game_add(&game, "f00d.cnmt.nca", patch_meta_nca(TITLE | 0x800, TITLE, 65536, patch_id, control_id));
+        write_container(update, &game, "nsp");
+    }
+    game_add(&game, "abcdef0102030405060708090a0b0c0d.nca", dlc(TITLE + 0x1001));
+    game_add(&game, "f00d.cnmt.nca", meta_nca(0x82, TITLE + 0x1001, TITLE, aoc_id, 2));
+    write_container(aoc, &game, "nsp");
+    CHECK(!snx_write_file(junk, "not a container at all", 22));
+    jpeg = snx_path_join(out, "icon.jpg");
+    CHECK(!icon_job(game_dump, out, &paths, &ini) && file_is(out, "icon.jpg", picture.data, picture.size));
+    CHECK(ini && !strcmp(ini, "; what this dump is, as scarletnx -x --icon read it from its content meta and "
+                              "control.nacp\ntitle=0100000000AB0000\ngame=0100000000AB0000\nversion=\n"
+                              "name=Synthetic Game\ndisplay_version=\n"));
+    free(ini);
+    CHECK(!snx_remove_tree(out));
+    CHECK(!icon_job(update, out, &paths, &ini) && file_is(out, "icon.jpg", picture.data, picture.size));
+    CHECK(ini && strstr(ini, "\ntitle=0100000000AB0800\ngame=0100000000AB0000\nversion=65536\n"
+                             "name=Synthetic Game\ndisplay_version=1.0.1\n"));
+    free(ini);
+    CHECK(!snx_remove_tree(out));
+    CHECK(!icon_job(aoc, out, &paths, &ini) && !snx_path_exists(jpeg)); /* answered, with no icon */
+    CHECK(ini && strstr(ini, "\ntitle=0100000000AB1001\ngame=0100000000AB0000\nversion=0\nname=\n"
+                             "display_version=\n"));
+    free(ini);
+    CHECK(!snx_remove_tree(out));
+    CHECK(icon_job(junk, out, &paths, &ini) != 0 && !ini && !snx_path_exists(jpeg));
+    CHECK(!snx_remove_tree(out));
+    free(picture.data);
+    free(jpeg);
+    free(out);
+    free(junk);
+    free(aoc);
+    free(update);
+    free(game_dump);
+    free(repo);
+    printf("PASS -x --icon says what a game's, an update's and a DLC's dump is in title.ini\n");
+}
+
 /* snx_romfs_each's files as in_place takes them: each name, and its bytes read from where it says they lie */
 typedef struct {
     SnxHacFs* fs;
@@ -612,6 +708,7 @@ int main(int argc, char** argv) {
     scratch = snx_temp_dir(NULL);
     CHECK(scratch != NULL);
     programs(scratch);
+    titles(scratch);
     { /* -x of an extracted game's folder: its exefs/, romfs/ and control.nacp copied into --out as they are, with no
          data folder or keys; --update takes a dump, and an --out inside the folder is refused, each said */
         char *game = snx_path_join(scratch, "extracted game"), *out = snx_path_join(scratch, "copied game");
