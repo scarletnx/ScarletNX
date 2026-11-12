@@ -1799,14 +1799,30 @@ static void convert_case(void) {
 /* --bench-etc2: a 2048x2048 level of random blocks of each kind decoded (as on a GPU that samples neither BCn nor
    ETC2) and encoded again as ETC2 or EAC, the conversion's dispatch alone, runs times each; and the bytes each holds.
    Random blocks take every candidate (no block of one alpha or one colour stops early): a game's take less */
-static void bench_etc2(int runs) {
+static void bench_etc2(int runs, const char* file) {
     const u32 w = 2048, h = 2048, bw = w / 4, bh = h / 4;
     static const int kinds[5] = {BCN_BC1, BCN_BC3, BCN_BC4, BCN_BC5, BCN_BC7};
-    for (int ki = 0; ki < 5; ki++) {
+    /* --bench-etc2 FILE.astc: a picture's blocks, not random ones, whose every candidate is tried: the file's first
+       slice decoded, repeated over the level and made BC7 by the CPU's encoder (its fast build) */
+    u8* pic = NULL;
+    if (file) {
+        BenchSource src = {file, 0, 0};
+        u8* astc = bench_blocks(&src, w, h);
+        u8* texels = malloc((size_t)w * h * 4);
+        pic = malloc((size_t)bw * bh * 16);
+        astc_decode_image(astc, w, h, src.bw, src.bh, texels, 0);
+        bc7_encode_cpu_fast(texels, w, h, 1, pic);
+        free(texels);
+        free(astc);
+    }
+    for (int ki = file ? 4 : 0; ki < 5; ki++) {
         int kind = kinds[ki];
         u32 bb = bcn_block_bytes(kind);
         u8* blocks = malloc((size_t)bw * bh * bb);
-        bc_blocks(kind, blocks, bw * bh);
+        if (pic)
+            memcpy(blocks, pic, (size_t)bw * bh * bb);
+        else
+            bc_blocks(kind, blocks, bw * bh);
         for (int etc = 0; etc < 2; etc++) {
             VkFmt f = {.vk = etc ? etc2_of(kind) : decoded_of(kind),
                        .bpp = (u8)bb,
@@ -1845,15 +1861,17 @@ int main(int argc, char** argv) {
             upload_wait = 1;
         else if (!strcmp(argv[i], "--upload-retire"))
             upload_wait = 2;
-        else if (!strcmp(argv[i], "--bench-etc2"))
+        else if (!strcmp(argv[i], "--bench-etc2")) {
             large = 3;
+            if (i + 1 < argc && argv[i + 1][0] != '-') bench_src.name = argv[++i];
+        }
     init();
     /* every level as before (the fast build, the cache's whole levels): background_cases turns the quick encode on */
     g_settings.astc_quick_mtexels = 0;
     g_settings.astc_background = 0;
     if (upload_wait) return upload_wait_case(upload_wait == 2);
     if (large == 3) {
-        bench_etc2(3);
+        bench_etc2(3, bench_src.name);
         return 0;
     }
     if (large == 2) {
