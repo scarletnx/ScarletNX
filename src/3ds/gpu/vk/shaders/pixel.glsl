@@ -17,14 +17,13 @@ uint c6to8(uint v) { return (v << 2) | (v >> 4); }
 uint c4to8(uint v) { return (v << 4) | v; }
 uvec4 decode(uint format, uint at) {
     uint b0 = uint(SRC[at]), b1 = uint(SRC[at + 1u]);
-    uint v = b0 | (b1 << 8);
+    uint v = b0 | (b1 << 8); // 16 bits: its top field needs no mask
     switch (format) {
     case PIX_RGBA8: return uvec4(uint(SRC[at + 3u]), uint(SRC[at + 2u]), b1, b0);
     case PIX_RGB8: return uvec4(uint(SRC[at + 2u]), b1, b0, 255u);
-    case PIX_RGB565: return uvec4(c5to8((v >> 11) & 31u), c6to8((v >> 5) & 63u), c5to8(v & 31u), 255u);
-    case PIX_RGB5A1:
-        return uvec4(c5to8((v >> 11) & 31u), c5to8((v >> 6) & 31u), c5to8((v >> 1) & 31u), (v & 1u) * 255u);
-    default: return uvec4(c4to8((v >> 12) & 15u), c4to8((v >> 8) & 15u), c4to8((v >> 4) & 15u), c4to8(v & 15u));
+    case PIX_RGB565: return uvec4(c5to8(v >> 11), c6to8((v >> 5) & 63u), c5to8(v & 31u), 255u);
+    case PIX_RGB5A1: return uvec4(c5to8(v >> 11), c5to8((v >> 6) & 31u), c5to8((v >> 1) & 31u), (v & 1u) * 255u);
+    default: return uvec4(c4to8(v >> 12), c4to8((v >> 8) & 15u), c4to8((v >> 4) & 15u), c4to8(v & 15u));
     }
 }
 #ifndef NO_ENCODE
@@ -42,8 +41,9 @@ void encode(uint format, uvec4 c, uint at) {
     DST[at] = uint8_t(v), DST[at + 1u] = uint8_t(v >> 8);
 }
 #endif
-// the byte offset of pixel (x, y) in its 8-pixel-high tile row, as VideoCore::GetMortonOffset
-uint morton(uint x, uint y, uint bpp) {
-    uint i = (x & 1u) | ((y & 1u) << 1) | ((x & 2u) << 1) | ((y & 2u) << 2) | ((x & 4u) << 2) | ((y & 4u) << 3);
-    return (i + (x & ~7u) * 8u) * bpp;
+// the place of pixel (x, y) in its 8x8 tile: the low three bits of each, interleaved
+uint tile_index(uint x, uint y) {
+    return (x & 1u) | ((y & 1u) << 1) | ((x & 2u) << 1) | ((y & 2u) << 2) | ((x & 4u) << 2) | ((y & 4u) << 3);
 }
+// the byte offset of pixel (x, y) in its 8-pixel-high tile row, as VideoCore::GetMortonOffset
+uint morton(uint x, uint y, uint bpp) { return (tile_index(x, y) + (x & ~7u) * 8u) * bpp; }
