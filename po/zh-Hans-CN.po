@@ -5716,6 +5716,18 @@ msgstr "app.ini 中的 recompile_background =，full 或 gentle"
 msgid "background_recompile =, Auto by default: Gentle on battery, Full on the charger"
 msgstr "background_recompile =，默认为自动：用电池时轻柔，接充电器时全速"
 
+#: src/common/utilities/setup.c
+msgid "A save's files"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "in the save's folder itself"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "the save's last commit in its 0/, the copy the game works in in its 1/: Move Old Files moves them"
+msgstr ""
+
 #: src/nx/runtime/ini.c
 msgid "macOS only"
 msgstr ""

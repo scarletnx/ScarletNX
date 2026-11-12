@@ -61,6 +61,33 @@ Opening a save whose note names a newer version of the same game, by the content
 else by the numbers of the display versions, warns once with both, and the crash, svcBreak and BRK reports repeat the
 line (`fs_save_report`).
 
+A save is kept as the console keeps one in a folder of the host (its `DirectorySaveDataFileSystem`). Its folder holds
+`0/`, the save's last commit, `1/`, the copy the game works in and the only one it sees, and the file `snx-journaled`,
+which says the folder is laid out so:
+
+| When | What happens |
+| --- | --- |
+| The save is opened | `1/` becomes a copy of `0/`: what a run wrote and did not commit is gone. With no `0/`, a commit was cut short: it is finished from `1/`, and the log says so |
+| The game writes | in `1/` alone |
+| `Commit` | refused (WriteModeFileNotClosed, the file named in the log) while a file of the save is open for writing. Else `0/` is renamed `_/`, `_/` becomes a copy of `1/` and is renamed `0/` |
+| `IMultiCommitManager`'s Commit | each save's Commit in turn, every one even after one fails; the first failure is the answer |
+
+The first rename is the commit. A game that dies before it leaves the last commit; one that dies after it leaves `1/`
+whole and no `0/`, which the next open or commit finishes. `0/` is never written in place, so the game's death at any
+moment leaves the last commit or the new one, never part of a save (`filesystem_save_kill` kills it at each step).
+Nothing is synced to the disk: a host that loses power during a commit, while the system still holds the bytes of
+`1/`, can lose both. Each open and each commit copies the save whole. A save opened while it is open shares the one
+working copy (the console refuses the second mount; here `save/system` can be several saves' folder). Temporary
+storage has no commit and is written where it is. What the folder holds beside `0/`, `1/` and `snx-journaled` (a save
+pasted into it by hand) the game does not read: the log names the first such entry once a run for each save type, and
+that a save's files go in `0/`.
+
+A save's folder with files in it and no `snx-journaled` is one an older version kept, the game's own files in the
+folder itself (a game's own folders may be named `0` and `1`). It is played where it is and written in place, so a
+game killed while it saves there leaves part of a save; the log names the folder once a run for each save type, the
+launcher lists it, and Settings > App > Move Old Files moves its files into `0/` and writes `snx-journaled`
+([Deprecations](../../user/deprecations.md)).
+
 Init rejects scan/stat errors, symlinks/junctions, regular-file hardlinks, special files and invalid names, and the
 game stops with the path it stopped at and why in the line before (`fs: could not index the game's files in ...:
 .../sdmc/shared is a symbolic link, which the index follows only as a folder at the top of the game's data folder`).

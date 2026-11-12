@@ -5713,6 +5713,18 @@ msgstr ""
 msgid "background_recompile =, Auto by default: Gentle on battery, Full on the charger"
 msgstr ""
 
+#: src/common/utilities/setup.c
+msgid "A save's files"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "in the save's folder itself"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "the save's last commit in its 0/, the copy the game works in in its 1/: Move Old Files moves them"
+msgstr ""
+
 #: src/nx/runtime/ini.c
 msgid "macOS only"
 msgstr ""

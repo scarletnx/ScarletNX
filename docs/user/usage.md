@@ -689,7 +689,11 @@ there until Settings > App > Move Old Files moves it. Those an older version lef
 `0123456789abcdeffedcba9876543210`, are played there until you move them ([Deprecations](deprecations.md)). Beside
 an Account, Device or BCAT save's folder, `<its folder>.version` names the program and version that last committed it:
 when an older version of the game opens a save a newer one wrote, which a game may not read, the log says both, and so
-does the report if the game crashes or stops. The game's
+does the report if the game crashes or stops. In a save's folder, `0/` holds the save's last commit and `1/` the copy
+the running game works in, which becomes the save when the game commits: a game killed while it saves leaves the last
+commit whole. To copy a save, take its folder whole with the game closed; a save's files from elsewhere go in `0/`. A save an older version kept has the game's
+files in the folder itself, and is played so until Move Old Files moves them into `0/` ([Deprecations](deprecations.md)).
+The game's
 menu (Home, F2) shows the user playing in a box at its head's right, their nickname and picture, and the launcher the
 one its Settings' `user_uid` names, where a click picks another ([GUI](gui.md)); a users.ini that lists no users is said
 in the launcher's foot.

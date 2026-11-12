@@ -491,6 +491,13 @@ SnxU64 snx_addon_version(const char* entry);
 /* a save's note, <its folder> and this beside the folder: which program and version committed the save last (fs.c's
    save_note). What moves a save's folder moves its note with it */
 #define SNX_SAVE_NOTE ".version"
+/* A save kept as the console keeps one in a folder: in its folder, SNX_SAVE_COMMITTED holds its last commit,
+   SNX_SAVE_WORKING the copy the game works in, and the file SNX_SAVE_JOURNALED says the folder is laid out so (fs.c's
+   "A save's commit"). A folder without the file holds the game's own files, as the versions before kept a save: one of
+   those may have folders named 0 and 1 itself. What lays a save's folder out so writes the file first */
+#define SNX_SAVE_JOURNALED "snx-journaled"
+#define SNX_SAVE_COMMITTED "0"
+#define SNX_SAVE_WORKING   "1"
 enum { SNX_ADDON_NONE, SNX_ADDON_UPDATE, SNX_ADDON_DLC, SNX_ADDON_PROGRAM };
 /* what the title id is to the game: SNX_ADDON_UPDATE for its patch (its ID with 0x800, as the console makes every
    patch's), SNX_ADDON_PROGRAM for another program of its application or that program's patch (snx_program_index),
