@@ -516,6 +516,28 @@ int main(void) {
         }
     }
     {
+        /* a DMA's interrupt is taken like any other: DMA 3's, with nothing else pending, enters the handler, which stores
+           the IF it saw at 0x02000330 and acknowledges it */
+        static const uint32_t handler[] = {0xE2802C02, 0xE1D210B2, 0xE1C210B2, 0xE59F3004,
+                                           0xE5831000, 0xE12FFF1E, 0x02000330};
+        uint32_t written = 0;
+        for (uint32_t i = 0; i < 7; ++i) agb_write32(&board, 0x03000800 + i * 4, handler[i]);
+        agb_write32(&board, 0x03000840, 0xEAFFFFFE); /* b . */
+        agb_write32(&board, 0x03007FFC, 0x03000800);
+        agb_write16(&board, 0x04000004, 0);      /* no vblank interrupt */
+        agb_write16(&board, 0x04000200, 0x0800); /* IE: DMA 3 */
+        agb_write16(&board, 0x04000208, 0x0001);
+        board.irq_if = 0;
+        board.cpu_halted = cpu.wait = 0;
+        agb_irq_request(&board, AGB_IRQ_DMA(3));
+        cpu.arm.r[15] = 0x03000840;
+        cpu.arm.cpsr = 0x1F;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, AGB_SCANLINE_CYCLES * AGB_FRAME_LINES, audio, AGB_APU_RATE, &written,
+                           error, sizeof error));
+        CHECK(agb_read32(&board, 0x02000330) == 0x0800 && board.irq_if == 0);
+        agb_write16(&board, 0x04000208, 0);
+    }
+    {
         /* the BIOS's IntrWait waits with the I/O base in r12 and returns with it there, and its interrupt stub calls the
            game's handler with that base in r0: a handler that flags the vblank through r12 (0x03FFFFF8, the flags'
            mirror) ends the wait. Here ARM code with r12 = 0 calls VBlankIntrWait, then stores 42 and its r12 at
