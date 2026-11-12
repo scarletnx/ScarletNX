@@ -471,10 +471,13 @@ appearance and the install as they are, Keep, Later, the nickname `Player`, and 
 moves and deletes nothing), writes `setup.ini` and opens the menu; a page whose default fails (a `users.ini` that
 cannot be written) stays, saying why.
 
-**Old Files**, after the steps, is a page for each folder an older version left (Old Files 1/4), a game's `save/` one
-for all its saves: where it is, the space it takes (*counting* until it is counted), where its entries go now, and what
-**Move All** and **Delete All** would do to it (`2 entries move`, `Deletes it`, `Stays: a save, which Delete All never
-deletes: Move All moves it`). Next goes on, Back back, PgUp/PgDn a page either way and Home/End to the first or the
+**Old Files**, after the steps, is a page for each folder an older version left (Old Files 1/4): where it is, the space
+it takes (*counting* until it is counted), where its entries go now, and what **Move All** and **Delete All** would do
+to it (`2 entries move`, `Deletes it`). The games' own saves are one page, whatever the games: how many games, the
+space their saves take, the data folder's `save/` they go to, Move All's entries and Delete All's `Stays: a save, which
+Delete All never deletes: Move All moves it`, then a line a game, its folder's name and its saves' space, rolling up a
+line every 0.6 s and back when they do not all fit, arrows and a scroll bar beside them and the last row saying how
+many are under them. Next goes on, Back back, PgUp/PgDn a page either way and Home/End to the first or the
 last; the last asks Move All, Delete All or **Not Now**, in focus. Move All moves them as Move Old Files does; Delete
 All asks first how many go and how many stay, its Delete pressed twice, and deletes each folder but a save, a folder
 holding saves (a game's `<name>_data/` with a `save/` or `sdmc/`, however deep), a folder it cannot read whole (one it

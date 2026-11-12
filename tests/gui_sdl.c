@@ -6942,7 +6942,7 @@ int main(int argc, char** argv) {
                 GuiCleaned folders = {0};
                 char file[4400], what[4400];
                 bool ok;
-                assert(move_old(&app, &done, &folders, true) == 5);
+                assert(move_old(&app, &done, &folders, true, false) == 5);
                 /* the three one folder, the game's save/: its five entries (two of them notes) moved */
                 assert(folders.count == 1 && folders.done == 1 &&
                        entry_nth(&folders, 0, &ok, file, what, sizeof file) && !strncmp(what, "5 moved to ", 11));
@@ -6982,9 +6982,9 @@ int main(int argc, char** argv) {
                 assert(strstr(app.left, path));
             }
             assert(app.lefts == 3);
-            assert(move_old(&app, &done, NULL, false) == 3 && done.count == 3 && done.done == 3);
+            assert(move_old(&app, &done, NULL, false, false) == 3 && done.count == 3 && done.done == 3);
             gui_cleaned_free(&done);
-            assert(move_old(&app, &done, NULL, true) == 3);
+            assert(move_old(&app, &done, NULL, true, false) == 3);
             for (i = 0; i < sizeof laid / sizeof *laid; ++i) {
                 assert(!snx_path_format(path, sizeof path, "%s/save/%s/" SNX_SAVE_COMMITTED "/%s", data_saves,
                                         laid[i][0], laid[i][1]));
@@ -7024,7 +7024,7 @@ int main(int argc, char** argv) {
                 left_behind(&app);
                 assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/device", game));
                 assert(app.lefts == 1 && strstr(app.left, path));
-                assert(move_old(&app, &done, NULL, true) == 1);
+                assert(move_old(&app, &done, NULL, true, false) == 1);
                 assert(!snx_path_format(path, sizeof path,
                                         "%s/0100000000ABC000_data/save/device/" SNX_SAVE_COMMITTED "/d.bin", game) &&
                        snx_is_file(path));
