@@ -1540,7 +1540,7 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-nn-audio nn_audio.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
     snx_test_target(snx-test-nn-audio 23)
     snx_service_swipc(snx-test-nn-audio)
-    snx_hookgen(snx-test-nn-audio SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/audio.hook")
+    snx_hookgen(snx-test-nn-audio SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/audio.hook" A32_MARKED)
     add_test(NAME nn_audio COMMAND snx-test-nn-audio)
 endif()
 
