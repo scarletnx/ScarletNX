@@ -8,7 +8,7 @@
 #include <stddef.h>
 #include "common/cpu/aarch64/cpu.h"
 #include "volk.h"
-#include "nx/gpu/vk/extension_bans.h"
+#include "common/gpu/vk/extension_bans.h"
 #include "nx/gpu/vk/vk.h"
 
 /* the pre-rasterization state a pipeline made of libraries takes as dynamic state (g_vk.dyn_pr), so that one

@@ -2410,7 +2410,7 @@ if(NOT SNX_TOOLS_ONLY)
     # vertex_input_dynamic_state (gpu/vk/vertex_input.c): its values, read from a .ini without it and with it, the
     # ban the table holds for stand-in devices and the log line of each case
     include("${PROJECT_SOURCE_DIR}/cmake/vk_extension_bans.cmake")
-    set(snx_vk_extension_bans_sources "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/extension_bans.c"
+    set(snx_vk_extension_bans_sources "${PROJECT_SOURCE_DIR}/src/common/gpu/vk/extension_bans.c"
                                       "${PROJECT_BINARY_DIR}/generated/vk_extension_bans_text.c")
     add_executable(snx-test-vk-vertex-input vk_vertex_input.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/vertex_input.c"
                    "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c" ${snx_vk_extension_bans_sources})
@@ -2439,7 +2439,7 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-pipeline-parts 23)
     target_link_libraries(snx-test-vk-pipeline-parts PRIVATE snx_nx_flags)
     add_test(NAME vk_pipeline_parts COMMAND snx-test-vk-pipeline-parts)
-    # the drivers known to break an extension or feature (gpu/vk/extension_bans.c), with no GPU: the table's errors,
+    # the drivers known to break an extension or feature (common/gpu/vk/extension_bans.c), with no GPU: the table's errors,
     # each driver's versions at every bound's edge, the filter and the features asked for against stand-in devices,
     # the table the build carries, and vulkan_ban_ignore read from a .ini. With --devices it lists the lines that hold
     # for this machine's drivers, the workspace's retest reads that

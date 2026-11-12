@@ -6,7 +6,7 @@
    it), and the log line of every case naming the device, the driver, its version, the value given, the path in effect
    and the ban where one decides */
 #include "nx/gpu/vk/vertex_input.h"
-#include "nx/gpu/vk/extension_bans.h"
+#include "common/gpu/vk/extension_bans.h"
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
 #include <stdio.h>

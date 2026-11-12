@@ -1707,7 +1707,7 @@ setting Vita lockstep steps
 # ---- the Vulkan extensions ----
 
 # One setting per Vulkan extension the Switch's renderer can use (gpu/vk/device.c), auto by default: ScarletNX decides
-# whether to use it (gpu/vk/extension_bans.c, by the extension bans), and the driver says whether it is there.
+# whether to use it (common/gpu/vk/extension_bans.c, by the extension bans), and the driver says whether it is there.
 # settingsgen checks each against the Khronos registry and makes its key, the name in lowercase, and help
 table g_vk_extensions_ini vulkan
 setting @VK_ANDROID_external_memory_android_hardware_buffer
