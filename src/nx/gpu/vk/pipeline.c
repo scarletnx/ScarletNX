@@ -529,7 +529,7 @@ void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets, u32 array_sets) {
             if (i < SNX_VKB_TEXARRAY)
                 n++;
             else if (g_shader_texture_arrays)
-                arrays += (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? SNX_TEX_ARRAY : 1;
+                arrays += (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? g_shader_tex_array : 1;
         }
         sz[k] = (VkDescriptorPoolSize){ty[k], n * sets + arrays * array_sets};
     }
@@ -550,7 +550,7 @@ VkShaderStageFlags vk_set_stages(int s) {
     if (s < 0 || s >= 5) return 0;
     return vis[s] | (s == shader_vk_set(ST_MS) || s == shader_vk_set(ST_TS) ? g_vk.mesh_stages : 0);
 }
-u32 vk_texture_array_elements(void) { return g_shader_texture_arrays ? SNX_TEX_ARRAY : 0; }
+u32 vk_texture_array_elements(void) { return g_shader_texture_arrays ? g_shader_tex_array : 0; }
 int vk_dslayout_arrays(VkDescriptorSetLayout layout) {
     for (u32 s = 0; s < 5; s++)
         if (layout && layout == g_vk_dslayout[1][s]) return g_shader_texture_arrays;
@@ -594,15 +594,16 @@ void vk_pipeline_init(void) {
     pm_lock_announce(&g_pipeline.xlate_lock, "shader translate");
     /* the tessellation and geometry stages' sets come after the first two, where the device binds that many */
     g_vk_stage_sets = g_vk.props.limits.maxBoundDescriptorSets >= 5 ? 5 : 2;
-    /* A compact array holds the unique handles selected by all indexed tables, where the device binds it beside a
-       stage's own SH_MAXTEX (texture_arrays.h); the line says why where it does not */
+    /* A compact array holds the unique handles selected by all indexed tables: SNX_TEX_ARRAY of them, or as many as
+       the device binds beside a stage's own SH_MAXTEX (texture_arrays.h), the line saying why where fewer */
     {
         const VkPhysicalDeviceLimits* l = &g_vk.props.limits;
         SnxVkTextureLimits tl = {l->maxPerStageDescriptorSamplers, l->maxPerStageDescriptorSampledImages,
                                  l->maxDescriptorSetSamplers, l->maxDescriptorSetSampledImages};
         char line[640];
-        g_shader_texture_arrays =
-            snx_vk_texture_array_say(line, sizeof line, g_shader_texture_arrays, &tl, SH_MAXTEX, SNX_TEX_ARRAY) != 0;
+        g_shader_tex_array =
+            snx_vk_texture_array_say(line, sizeof line, g_shader_texture_arrays, &tl, SH_MAXTEX, g_shader_tex_array);
+        g_shader_texture_arrays = g_shader_tex_array != 0;
         if (line[0]) LOG("%s\n", line);
     }
     cbufs_fit_limits();
@@ -635,7 +636,7 @@ void vk_pipeline_init(void) {
             b[count++] = (VkDescriptorSetLayoutBinding){
                 .binding = i,
                 .descriptorType = binding_type(i),
-                .descriptorCount = (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? SNX_TEX_ARRAY : 1,
+                .descriptorCount = (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? g_shader_tex_array : 1,
                 .stageFlags = vk_set_stages(s)};
         }
         for (int arrays = 0; arrays < 2; arrays++) {
@@ -2532,6 +2533,9 @@ static void pf_key(char* out, size_t n, size_t* guest) {
     const char* commit = snx_build_commit();
     size_t len = strlen(commit);
     char exe[64] = "", uuid[33];
+    /* 0 no texture arrays, 1 arrays of SNX_TEX_ARRAY (every file's word before arrays came smaller), else 1 and the
+       elements */
+    u32 arrays = !g_shader_texture_arrays ? 0u : g_shader_tex_array == SNX_TEX_ARRAY ? 1u : 1u + g_shader_tex_array;
     u32 caps[] = {(u32)g_vk.has_divisor,
                   (u32)g_vk.has_dynamic_stride,
                   (u32)g_vk.has_shader_draw_parameters,
@@ -2544,7 +2548,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   g_vk.advanced_blend_caps.correlated_overlap,
                   g_vk.advanced_blend_caps.all_operations,
                   (u32)g_vk.has_fragment_interlock,
-                  (u32)g_shader_texture_arrays,
+                  arrays,
                   (u32)g_shader_stage_point_size,
                   (u32)g_shader_output_layer,
                   (u32)g_shader_geometry,

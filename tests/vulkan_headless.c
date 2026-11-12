@@ -177,7 +177,7 @@ static int check_desc_pool_arrays(void) {
         puts("descriptor pools: no texture arrays here, or descriptor buffers: the pools' sets only");
         return 0;
     }
-    CHECK(arrayed[2].descriptorCount == one[2].descriptorCount + 2 * SNX_TEX_ARRAY);
+    CHECK(arrayed[2].descriptorCount == one[2].descriptorCount + 2 * g_shader_tex_array);
     CHECK(VK_POOL_ARRAY_SETS_FOR(g_vk_dslayout[1][1]) == VK_POOL_ARRAY_SETS_MORE &&
           VK_POOL_ARRAY_SETS_FOR(g_vk_dslayout[0][1]) == VK_POOL_ARRAY_SETS);
     /* each kind of frame pool as vk_desc_pool_new makes it, and how many sets of each fragment layout it holds */
@@ -6352,6 +6352,18 @@ static int run_headless(int argc, char** argv) {
     CHECK(mem_map(HEAP_BASE, 0x800000, MS_NORMAL, PERM_RW) == 0);
     nv_init();                          /* color targets may import guest memory through the GPU page table */
     g_settings.vulkan_video_decode = 1; /* a Vulkan Video decode queue where the device has one (lavapipe has none) */
+    /* texture arrays of fewer elements, as a device that binds fewer samplers a stage than SNX_TEX_ARRAY's take gets
+       them (vk/texture_arrays.h): their checks alone, below */
+    const char* tex_array = getenv("SNX_TEST_TEX_ARRAY");
+    if (tex_array) {
+        char* end;
+        unsigned long n = strtoul(tex_array, &end, 10);
+        if (*end || !n || n > SNX_TEX_ARRAY) {
+            fprintf(stderr, "SNX_TEST_TEX_ARRAY=%s is not a whole number from 1 to %u\n", tex_array, SNX_TEX_ARRAY);
+            return 2;
+        }
+        g_shader_tex_array = (u32)n;
+    }
     video_init("Headless Vulkan fixture", "");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
     CHECK(!check_vk12_way());
@@ -6591,6 +6603,19 @@ static int run_headless(int argc, char** argv) {
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan watched targets only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    if (tex_array) { /* the texture arrays at the size asked: their layouts, pools and indexed draws */
+        printf("Texture arrays of %u elements, %u asked\n", g_shader_tex_array, (unsigned)strtoul(tex_array, NULL, 10));
+        CHECK(g_shader_texture_arrays && g_shader_tex_array == strtoul(tex_array, NULL, 10));
+        CHECK(!check_desc_pool_arrays());
+        CHECK(!check_indexed_texture_feedback());
+        CHECK(!check_multisample_shader_gate());
+        CHECK(!check_msaa()); /* its indexed multisample fetch (vulkan_indexed_ms.inc) */
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan texture arrays of %u: %u validation messages\n", g_shader_tex_array,
+               g_vk_validation_messages);
         return 0;
     }
     if (getenv("SNX_TEST_MSAA_ONLY")) { /* the multisample checks alone */
