@@ -971,6 +971,33 @@ uvec4 Encode() {
        end, 2-bit weights) in each of the two, then mode 2 (three subsets, RGB, 5 bits an end, 2-bit weights); any
        other block mode 7 (two subsets, RGBA, 5 bits and a p-bit an end, 2-bit weights) in each. Last modes 5, 4 and 4
        with the other index selection, in each rotation */
+#if SNX_BC7_PASS == 1 || SNX_BC7_FAST == 2 || SNX_BC7_FAST == 3
+    /* These builds try mode 6 alone, so its job is written out here without the loop of jobs: the shape is then the
+       same constants wherever the fit reads it, and the compiler folds every test of the mode out of FitSubset and
+       Pack. In the loop below it cannot: the shape is whatever the job before left */
+    SetShape(1u, 0u);
+    sh_cb = 7u;
+    sh_alpha = 1u;
+    sh_pk = 2u;
+    sh_ib = 4u;
+    sh_mask = 15u;
+    FitSubset(0u);
+    if (fit_err < best_err) {
+        best_err = fit_err;
+        best_mode = 6u;
+        best_part = 0u;
+        best_lo = fit_lo;
+        best_hi = fit_hi;
+        best_s0[0] = fit_s0;
+        best_s1[0] = fit_s1;
+    }
+    if (SNX_BC7_PASS == 1 && SNX_BC7_FAST != 2 && SNX_BC7_FAST != 3 && best_err > uint(SNX_BC7_GOOD_ENOUGH) &&
+        best_err > SNX_BC7_ENOUGH) {
+        enc_more = true;
+        return uvec4(0u);
+    }
+    return Pack();
+#else
     const uint shapes = 1u + (opaque ? 5u : 2u);
     const uint jobs = shapes + (SNX_BC7_MODES_4_5 != 0 ? 12u : 0u);
     uint first = 0u, second = 1u, third = 0u;
@@ -1102,4 +1129,5 @@ uvec4 Encode() {
     sh_pk = best_mode == 2u ? 0u : best_mode == 1u ? 1u : 2u;
     sh_ib = best_mode == 6u ? 4u : best_mode == 1u ? 3u : 2u;
     return Pack();
+#endif
 }
