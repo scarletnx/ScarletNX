@@ -4,8 +4,9 @@
    (cmake/shared_fonts.cmake), the Noto Sans JP, SC, TC and KR subsets for slots 0 to 4 and the button glyphs in slot 5,
    each a TrueType font behind the obfuscated header the SDK decodes its size from, its private-use block blanked; a
    game folder's .ttf taken over the stand-in for its slot; and the hooks' answers on a stand-in CPU, the fonts at the
-   address their memory was mapped at */
+   address their memory was mapped at, and a 32-bit game's through its table's adapters (pl.hook's a32) */
 #include "nx/nn/pl.c"
+#include "hle/hook/hooks.hook.inc" /* pl.hook's table, and a 32-bit game's */
 #include "nx/hle/hle.c"
 #include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 #include <setjmp.h>
@@ -153,10 +154,19 @@ void fatal(const char* fmt, ...) {
     longjmp(g_stopped, 1);
 }
 
+static CPU cpu;
+static u8 mem[0x1000];
+CPU* hook_a32_cpu(SnxArmCPU* arm) { return (void)arm, &cpu; }
+/* a 32-bit game's adapter for symbol, which its table has */
+static SnxArmBlock a32(const char* symbol) {
+    for (int i = 0; i < HOOK32_COUNT; i++)
+        if (!strcmp(hook32_symbol[i], symbol)) return hook32_fn[i];
+    fprintf(stderr, "%s is not in a 32-bit game's table\n", symbol);
+    exit(1);
+}
+
 /* the hooks: every font loaded, its size and its address in the mapped memory, and the lists of all six */
 static void hooks(void) {
-    static CPU cpu;
-    static u8 mem[0x1000];
     CPU* c = &cpu;
     cpu.mem = mem;
     /* no room to map the fonts: the game stops, and the message gives the size asked for */
@@ -208,6 +218,31 @@ static void hooks(void) {
     }
     CHECK(nnpl_get_shared_font(c, 0x10, 0x400, 0, 0) && snx_ld_le32(mem + 0x10) == 6); /* no entry, the count */
     CHECK(g_maps == 1);
+    /* a 32-bit game: the five functions its SDK has. A font's size and address in r0 alone, r1 as it was */
+    {
+        static SnxArmCPU a;
+        a.mem = mem, a.mem_size = sizeof mem;
+        CHECK(HOOK32_COUNT == 5);
+        a.r[0] = 3, a.r[1] = 0x1234, a.r[14] = 0x800;
+        a32("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE")(&a);
+        CHECK(a.r[0] == g_hle.pl.font_size[3] && a.r[1] == 0x1234 && a.r[15] == 0x800);
+        a.r[0] = 3;
+        a32("_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE")(&a);
+        CHECK(a.r[0] == FONTS_BASE + g_hle.pl.font_off[3] && a.r[1] == 0x1234);
+        /* the list: max is the first word of the stack, and each address and size takes 4 bytes of its array */
+        memset(mem, 0xee, sizeof mem);
+        snx_st_le32(mem + 0xf00, 3);
+        a.r[0] = 0x10, a.r[1] = 0x20, a.r[2] = 0x100, a.r[3] = 0x200, a.r[13] = 0xf00;
+        a32("_ZN2nn2pl30GetSharedFontInOrderOfPriorityEPiPNS0_14SharedFontTypeEPPKvPjiNS_8settings12LanguageCodeE")(&a);
+        CHECK(a.r[0] == 1 && snx_ld_le32(mem + 0x10) == 6);
+        for (u32 i = 0; i < 3; i++) {
+            CHECK(snx_ld_le32(mem + 0x20 + 4 * i) == i);
+            CHECK(snx_ld_le32(mem + 0x100 + 4 * i) == FONTS_BASE + g_hle.pl.font_off[i]);
+            CHECK(snx_ld_le32(mem + 0x200 + 4 * i) == g_hle.pl.font_size[i]);
+        }
+        CHECK(mem[0x20 + 12] == 0xee && mem[0x100 + 12] == 0xee &&
+              mem[0x200 + 12] == 0xee); /* the fourth is past max */
+    }
 }
 
 int main(void) {
