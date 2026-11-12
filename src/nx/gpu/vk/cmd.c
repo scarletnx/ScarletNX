@@ -510,6 +510,14 @@ static u32 xfer_where(const VmaAllocationInfo* info) {
          : f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT    ? XFER_MAPPED
                                                       : XFER_DEVICE;
 }
+/* the device ring's bytes since the last statistics by the call site that asked for them (a file's literal and a
+   line), as vk_finish's are counted: which reader of guest memory fills the ring is not told by its total */
+#define DEVICE_SITES 16
+static struct {
+    const char* file;
+    int line;
+    u64 n, bytes;
+} g_device_sites[DEVICE_SITES];
 void vk_stage_report(void) {
     static const char* const ring[XRING_N] = {"staging", "output", "back", "device", "readback"};
     char line[512];
@@ -523,6 +531,14 @@ void vk_stage_report(void) {
         "buffers made for them in all\n",
         line, (unsigned long long)(vk_ring_bytes() >> 20), (unsigned long long)g_cmd.made);
     memset(g_xfer, 0, sizeof g_xfer);
+    for (u32 i = 0; i < DEVICE_SITES && g_device_sites[i].file; i++) {
+        const char* f = strrchr(g_device_sites[i].file, '/');
+        if (g_device_sites[i].n)
+            LOG("vulkan:   device ring: %llu requests, %llu MB at %s:%d\n", (unsigned long long)g_device_sites[i].n,
+                (unsigned long long)(g_device_sites[i].bytes >> 20), f ? f + 1 : g_device_sites[i].file,
+                g_device_sites[i].line);
+        g_device_sites[i].n = g_device_sites[i].bytes = 0;
+    }
 }
 
 /* a new buffer of size bytes for ring, handed out to slot (a frame slot plus one): in device memory the CPU maps when
@@ -796,8 +812,19 @@ u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, VmaAllocation* mem) {
 
 /* What the GPU makes for itself to read, in the frame's device memory. In host memory, where staging is, each byte
    crossed PCIe twice or more: written there by the GPU and read back by every draw that bound it */
-int vk_stage_device(u64 size, u64 align, VkBuffer* buf, u64* off) {
+int vk_stage_device_at(const char* file, int line, u64 size, u64 align, VkBuffer* buf, u64* off) {
     vk_cmd();
+    for (u32 i = 0; i < DEVICE_SITES; i++) {
+        if (!g_device_sites[i].file) {
+            g_device_sites[i].file = file;
+            g_device_sites[i].line = line;
+        }
+        if (g_device_sites[i].file == file && g_device_sites[i].line == line) {
+            g_device_sites[i].n++;
+            g_device_sites[i].bytes += size;
+            break;
+        }
+    }
     return ring_take(&g_fr[g_cur], XRING_DEVICE, size, align, buf, off, NULL) != NULL;
 }
 
