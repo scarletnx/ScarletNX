@@ -14,6 +14,7 @@
 
 #define NSD_ENVIRONMENT "lp1"   /* the retail network environment */
 #define NSD_FQDN        0x100   /* nn::nsd::Fqdn: a string in 0x100 bytes */
+#define NSD_IDENTIFIER  8       /* nn::nsd::EnvironmentIdentifier: a string in 8 bytes */
 #define NSD_LP          1       /* nn::oe::ServerEnvironmentType of the retail servers (Dd is 0) */
 
 /* in's name with each '%', the console's placeholder (accounts.%.ndas.srv.nintendo.net), replaced by the
@@ -41,4 +42,9 @@ u32 nnnsd_resolve_ex(CPU* c, u64 out, u64 in) { return resolve(c, out, in); }
 u32 nnnsd_server_environment_type(CPU* c) {
     (void)c;
     return NSD_LP;
+}
+/* the environment's name and zeros after it, as Eden answers the service's command */
+void nnnsd_get_environment_identifier(CPU* c, u64 out) {
+    char name[NSD_IDENTIFIER] = NSD_ENVIRONMENT;
+    memcpy(hook_host(c, out), name, sizeof name);
 }

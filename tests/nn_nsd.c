@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The native nn::nsd (src/nx/nn/nsd.c) on a stand-in CPU: each '%' of a name becomes the retail environment, lp1,
-   every name resolves, the 0x100 bytes of the output are the name and zeros after it, and a name with no end in its
-   0x100 bytes is cut there */
+   every name resolves, the 0x100 bytes of the output are the name and zeros after it, a name with no end in its
+   0x100 bytes is cut there, and the environment's own name fills its 8 bytes */
 #include "nx/nn/nsd.c"
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +34,9 @@ int main(void) {
     memset(mem, '%', 0x100); /* longer than 0x100 once replaced */
     CHECK(nnnsd_resolve(c, 0x100, 0) == 0 && strlen((char*)mem + 0x100) == 0xff && mem[0x1ff] == 0);
     CHECK(nnnsd_server_environment_type(c) == 1);
+    memset(mem + 0x100, 0xee, 0x10); /* the environment's name in its 8 bytes, nothing past them */
+    nnnsd_get_environment_identifier(c, 0x100);
+    CHECK(!memcmp(mem + 0x100, "lp1\0\0\0\0\0", 8) && mem[0x108] == 0xee);
     printf("nn_nsd: %u checks passed\n", checks);
     return 0;
 }
