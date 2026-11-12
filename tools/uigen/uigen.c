@@ -1302,10 +1302,11 @@ static void write_h(const char* path) {
         "   hidden) or down (rows below) at its right, in the active colour (the one activated last), a label between\n"
         "   rows (no box), in the focus's look without its cursor (open: the row whose own rows show beside its list), a\n"
         "   title over the rows after it (on the theme's band), greyed (off: nothing it can do now, its text in the soft\n"
-        "   colour), in the warning colour (a resolution past 4x or under 0.25x) */\n"
+        "   colour), in the warning colour (a resolution past 4x or under 0.25x), an action with no way back (danger:\n"
+        "   framed and written in the failure colour, filled with it in focus) */\n"
         "enum { UI_ATTR_FAILURE = 1, UI_ATTR_BLINK = 2, UI_ATTR_MORE_UP = 4, UI_ATTR_MORE_DOWN = 8, "
         "UI_ATTR_ACTIVE = 16, UI_ATTR_LABEL = 32, UI_ATTR_OPEN = 64, UI_ATTR_TITLE = 128, UI_ATTR_OFF = 256, "
-        "UI_ATTR_WARNING = 512 };\n");
+        "UI_ATTR_WARNING = 512, UI_ATTR_DANGER = 1024 };\n");
     outs("enum { UI_MOD_CTRL = 1, UI_MOD_ALT = 2 };\n");
     outs("/* what the hit test says of a point, a bit each: on an item, pressed on it, released on it */\nenum { "
          "UI_HIT_HOVER = 1, UI_HIT_CLICK = 2, UI_HIT_RELEASE = 4 };\n");

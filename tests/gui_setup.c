@@ -87,13 +87,40 @@ static const char* choice_before(const App* app) {
     assert(setup_labels(app, labels) > app->setup_choice.focus);
     return app->setup_choice.focus ? labels[app->setup_choice.focus - 1] : NULL;
 }
+/* the render's pixel x, y in c */
+static bool px_is(App* app, int x, int y, GuiRgb c) {
+    SDL_Surface* image = read_px(app, x, y, 1, 1);
+    Uint8 r = 0, g = 0, b = 0; /* read on: Windows' assert can return */
+    bool is;
+    assert(image && SDL_ReadSurfacePixel(image, 0, 0, &r, &g, &b, NULL));
+    is = r == c.r && g == c.g && b == c.b;
+    SDL_DestroySurface(image);
+    return is;
+}
+/* WCAG 2's contrast ratio of two colours, 1 to 21 */
+static double luminance(GuiRgb c) {
+    const Uint8 v[3] = {c.r, c.g, c.b};
+    double l[3];
+    for (int i = 0; i < 3; ++i) {
+        double s = v[i] / 255.0;
+        l[i] = s <= 0.04045 ? s / 12.92 : SDL_pow((s + 0.055) / 1.055, 2.4);
+    }
+    return 0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2];
+}
+static double contrast(GuiRgb a, GuiRgb b) {
+    double x = luminance(a) + 0.05, y = luminance(b) + 0.05;
+    return x > y ? x / y : y / x;
+}
 /* the page's choices drawn as rows top to bottom, want's labels ("" the row between the two groups: a label, no box,
    its row's room the only one between them) each with its icon (icons.h's, as gui_screen.h writes it), each a row's step
    under the one before, the one in focus focus's: the marker, the icon and the label drawn in its row in the focus's
-   look, the others' in ink */
-static void rows_show(App* app, const char* const* want, const char* const* icons, int n, const char* focus) {
+   look, the others' in ink; but red's (NULL: none), which has no way back, framed on the page and written in the failure
+   colour, and in focus filled with it and written in the page's */
+static void rows_show(App* app, const char* const* want, const char* const* icons, int n, const char* focus,
+                      const char* red) {
+    const GuiTheme* t = &app->theme;
     GuiSetupBoxes b;
-    int i, x, y;
+    int i, x, y, s = app->scale;
     char label[64];
     render(app);
     setup_boxes(app, &b);
@@ -102,23 +129,28 @@ static void rows_show(App* app, const char* const* want, const char* const* icon
     for (i = 0; i < n; ++i) {
         UiRowInfo info = {0};
         GuiRect box = choice_box(app, &b.choices, i);
-        bool focused = !strcmp(want[i], focus);
+        bool focused = !strcmp(want[i], focus), danger = red && !strcmp(want[i], red);
         assert(ui_choices_rows_get_row_info(app, (size_t)i, box.w, &info) && !strcmp(info.label, want[i]));
         assert(!want[i][0] == !!(info.attr & UI_ATTR_LABEL));
+        assert(danger == !!(info.attr & UI_ATTR_DANGER));
         assert(focused == (b.choices.lists[UI_CHOICES_ROWS].focus == (size_t)i));
-        if (i) assert(box.y - choice_box(app, &b.choices, i - 1).y == item_h(app) + 2 * app->scale);
+        if (i) assert(box.y - choice_box(app, &b.choices, i - 1).y == item_h(app) + 2 * s);
         if (!want[i][0]) {
             assert(!info.icon && !icons[i][0]);
             continue;
         }
         is_icon(icons[i], info.icon);
-        snprintf(label, sizeof label, "%s%s %s", app->theme.marker, icons[i], want[i]);
+        snprintf(label, sizeof label, "%s%s %s", t->marker, icons[i], want[i]);
         assert(find_text(app, label,
-                         rgb(!focused               ? app->theme.ink
-                             : app->theme.focus_bar ? app->theme.page
-                                                    : app->theme.focus),
+                         rgb(danger         ? focused ? t->page : t->failure
+                             : !focused     ? t->ink
+                             : t->focus_bar ? t->page
+                                            : t->focus),
                          1, &x, &y));
         assert(y >= box.y && y < box.y + box.h);
+        if (danger) /* its frame, or its fill; and inside the frame, before the marker, the page or the fill */
+            assert(px_is(app, box.x, box.y + box.h / 2, t->failure) &&
+                   px_is(app, box.x + s, box.y + s, focused ? t->failure : t->page));
     }
 }
 /* a click on the setup page's row i (setup_order's order) */
@@ -731,7 +763,7 @@ static void test_clean_notice(App* app) {
          the keys go round them past that row, which takes no click */
         static const char* const rows[] = {"Back", "Not Now", "Skip", "", "Clean Now"};
         static const char* const icons[] = {ICON_ARROW_LEFT, ICON_X, ICON_SKIP_FORWARD, "", ICON_ERASER};
-        rows_show(app, rows, icons, 5, "Clean Now");
+        rows_show(app, rows, icons, 5, "Clean Now", NULL);
         key(app, SDLK_UP);
         assert(!strcmp(choice_label(app), "Skip"));
         key(app, SDLK_DOWN);
@@ -741,7 +773,7 @@ static void test_clean_notice(App* app) {
         key(app, SDLK_UP);
         click_row(app, 3);
         assert(app->setup_top == 1 && !app->setup_cleaned && !strcmp(choice_label(app), "Clean Now"));
-        rows_show(app, rows, icons, 5, "Clean Now");
+        rows_show(app, rows, icons, 5, "Clean Now", NULL);
     }
     render(app);
     shows(app, "Clean Old Settings? [Deprecated] in 1 .ini", rgb(app->theme.ink));
@@ -838,7 +870,7 @@ static void test_old_files(App* app) {
     { /* none acts: one group, each with its icon */
         static const char* const rows[] = {"Back", "Next"};
         static const char* const icons[] = {ICON_ARROW_LEFT, ICON_CHECK};
-        rows_show(app, rows, icons, 2, "Next");
+        rows_show(app, rows, icons, 2, "Next", NULL);
     }
     key(app, SDLK_PAGEUP);
     key(app, SDLK_PAGEUP); /* none before the first */
@@ -873,19 +905,47 @@ static void test_old_files(App* app) {
          Down from Not Now passes that row, which takes no click */
         static const char* const rows[] = {"Back", "Not Now", "", "Move All", "Delete All"};
         static const char* const icons[] = {ICON_ARROW_LEFT, ICON_X, "", ICON_FOLDER_INPUT, ICON_TRASH};
-        rows_show(app, rows, icons, 5, "Not Now");
+        rows_show(app, rows, icons, 5, "Not Now", "Delete All");
         key(app, SDLK_DOWN);
         assert(!strcmp(choice_label(app), "Move All"));
         key(app, SDLK_UP);
         click_row(app, 2);
         assert(app->setup_top == 3 && !app->confirm.shown && !app->left_did && !strcmp(choice_label(app), "Not Now"));
+        { /* Delete All in the failure colour on every theme shipped, with and without the focus: its words on it at
+             WCAG's 3:1 for large text at least (the menu's letters have two-pixel stems) */
+            const char* shipped[] = {SNX_GUI_THEMES_DIR};
+            GuiThemes themes = {0};
+            GuiTheme was = app->theme;
+            gui_themes_scan(&themes, shipped, 1);
+            assert(themes.count >= 7); /* default, yorha and the folders beside them */
+            for (size_t k = 0; k < themes.count; ++k) {
+                gui_theme_load(&app->theme, shipped, 1, themes.ids[k], NULL, 0);
+                assert(!strcmp(app->theme.id, themes.ids[k]) && contrast(app->theme.failure, app->theme.page) >= 3);
+                rows_show(app, rows, icons, 5, "Not Now", "Delete All");
+                key(app, SDLK_DOWN);
+                key(app, SDLK_DOWN);
+                rows_show(app, rows, icons, 5, "Delete All", "Delete All");
+                key(app, SDLK_UP);
+                key(app, SDLK_UP);
+            }
+            gui_themes_free(&themes);
+            app->theme = was;
+        }
     }
-    /* Delete All asks, Delete pressed twice: what it deletes, a save staying */
+    /* Delete All asks, Delete pressed twice: what it deletes, a save staying; its Delete in the failure colour too */
     key(app, SDLK_DOWN);
     key(app, SDLK_DOWN);
     key(app, SDLK_RETURN);
     assert(app->confirm.shown && app->confirm.ask == GUI_ASK_DELETE_OLD && app->confirm.twice &&
            !strcmp(app->ask_line, "Delete All? 3 deleted, 2 stay: a save and the console's keys are only moved"));
+    {
+        UiRowInfo keep = {0}, go = {0};
+        app->choices_of = GUI_CHOICES_ASK;
+        assert(ui_choices_rows_get_row_info(app, 0, 0, &keep) && !strcmp(keep.label, "Cancel") &&
+               !(keep.attr & UI_ATTR_DANGER));
+        assert(ui_choices_rows_get_row_info(app, 1, 0, &go) && !strcmp(go.label, "Delete") &&
+               (go.attr & UI_ATTR_DANGER));
+    }
     key(app, SDLK_ESCAPE); /* Cancel: nothing deleted */
     assert(!app->confirm.shown && snx_is_file(settings) && !app->left_did);
     key(app, SDLK_RETURN);
@@ -902,7 +962,7 @@ static void test_old_files(App* app) {
     {
         static const char* const rows[] = {"OK"};
         static const char* const icons[] = {ICON_CHECK};
-        rows_show(app, rows, icons, 1, "OK");
+        rows_show(app, rows, icons, 1, "OK", NULL);
     }
     shows(app, "Delete All: 3 done, 1 not", rgb(head_ink(app)));
     key(app, SDLK_RETURN);
@@ -918,7 +978,7 @@ static void test_old_files(App* app) {
     {
         static const char* const rows[] = {"Not Now", "", "Move All", "Delete All"};
         static const char* const icons[] = {ICON_X, "", ICON_FOLDER_INPUT, ICON_TRASH};
-        rows_show(app, rows, icons, 4, "Not Now");
+        rows_show(app, rows, icons, 4, "Not Now", "Delete All");
     }
     key(app, SDLK_UP); /* round to the last, Delete All */
     key(app, SDLK_RETURN);
