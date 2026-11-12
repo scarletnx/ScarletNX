@@ -90,7 +90,7 @@ hook memcpy(void* dst, const void* src, u64 size) -> void* = hook_memmove
   of the hook's own: `hook SYMBOL() -> u32 = handler a32 @version(< 1.0.0)`. The 32-bit SDKs a function was read in
   are not the 64-bit ones, and the runtime's own specs name them on every declaration for a 32-bit game
   (`tests/nn_*.c` check each family's). A 32-bit game of another SDK then has no hook, and stops when its SDK opens
-  a service the runtime answers only natively.
+  a service the runtime answers only natively ("Versions", below).
 - A line that begins with `a32` declares a hook for a 32-bit game alone: `a32 hook SYMBOL(...) ...`, with a
   `@version` before it and `uses` after its handler as any hook. It is for a function whose declaration differs
   there. A 32-bit SDK mangles a `size_t` as `j` where the 64-bit one has `m` (and an `int64_t` as `x` for `l`), so a
@@ -191,6 +191,12 @@ hook lock(addr m) -> u32 = os_lock_old uses nn::os::MutexType
   range holds the module's version. When a symbol has entries but none holds, the hook isn't installed and the log
   names the symbol and the version once. A versioned hook says the range it was installed for, once
   (`hook: lock at ... runs os_lock, the hook for sdk >= 12.0.0, with the layouts nn::os::MutexType of line 12`).
+- A function left to its own code this way works on the SDK's own state, and reaches the service behind it. Where
+  the runtime answers that service only natively, `sm` stops the game when it opens it, and the stop ends with what
+  was left: how many symbols have declarations of which none holds for their module's version, and the first one's
+  name, module, version and declared versions (`hook_missed_text`: `41 of the SDK functions the runtime has a hook
+  for run their own code in this 32-bit game, ...: the first is ... in sdk, of version 3.0.1, declared for sdk <
+  1.0.0`).
 
 ## Struct layouts
 

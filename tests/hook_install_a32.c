@@ -6,7 +6,8 @@
    handler with the arguments AAPCS32 gives it; one not declared a32, a symbol no hook names and a family that
    hooks_off names keep their slots. A versioned hook takes the slot of a function whose module's SDK label holds
    its version, and none in a module with no label; one declared a32 for some versions is in the table for any and
-   in a 32-bit program's for those, and in a game of another SDK its function keeps its own code. The two tables: a symbol declared again for a 32-bit program
+   in a 32-bit program's for those, and in a game of another SDK its function keeps its own code, which
+   hook_missed_text says with the SDK. The two tables: a symbol declared again for a 32-bit program
    alone has each program's handler in its table, and one only a 32-bit program has is in no other. And a handler
    that hands its call back: the function's own block, the one its slot held, runs until the call's return address,
    and the adapter still returns there; and one that calls another function of the game, with its four words in r0
@@ -152,6 +153,7 @@ int main(void) {
        a 32-bit program alone in that program's */
     int answer = entry(&hook32_table, "answer", 0), thumb = entry(&hook32_table, "thumb_answer", 0);
     int now = entry(&hook32_table, "now", 0), off = entry(&hook32_table, "off_answer", 0);
+    char text[400];
     assert(HOOK_COUNT == 8 && HOOK32_COUNT == 9);
     assert(answer >= 0 && thumb >= 0 && now >= 0 && off >= 0);
     assert(entry(&hook_table, "answer", 0) >= 0 && entry(&hook_table, "wide", 0) >= 0);
@@ -189,6 +191,10 @@ int main(void) {
     assert(a32_slots[20] != hook32_fn[entry(&hook32_table, "save_j", 0x20000)]);
     assert(a32_slots[32] == hook32_fn[entry(&hook32_table, "ranged", 0x10203)]);
     for (unsigned i = 1; i < 0x40; i++) assert(i == 16 || thumb_slots[i] == own_block);
+    /* what was left for a version: the one symbol in the module with no label, by its name, module and versions */
+    hook_missed_text(text, sizeof text);
+    assert(!strncmp(text, "1 of the SDK functions", 22) && strstr(text, "in this 32-bit game"));
+    assert(strstr(text, "the first is save_j in main, of version unknown, declared for sdk < 2.0.0; sdk >= 2.0.0"));
 
     /* the adapter: r0 and r1 to the handler, its answer in r0, back to lr */
     cpu32.mem = mem32;
@@ -241,19 +247,27 @@ int main(void) {
     assert(a.r[0] == 0xc0 && a.r[15] == 0x3000 && !(a.cpsr & SNX_ARM_T));
 
     /* a game of another SDK, 3.0.1: the function declared a32 for versions under 2.0.0 keeps its own code there,
-       the versioned one takes its later layout and the unversioned ones their hooks */
+       the versioned one takes its later layout and the unversioned ones their hooks, and the text names the
+       function, its module, that SDK and the versions it is declared for, with the one of the module with no label */
     for (unsigned i = 0; i < 0x40; i++) a32_slots[i] = thumb_slots[i] = own_block;
     memset(&g_host.hook, 0, sizeof g_host.hook);
     strcpy((char*)guest + 0x1810, "SDK MW+Vendor+VendorSdk_nnSdk-3_0_1-Release");
     hook_install();
     assert(a32_slots[32] == own_block && a32_slots[0] == hook32_fn[answer]);
     assert(a32_slots[20] == hook32_fn[entry(&hook32_table, "save_j", 0x20000)]);
+    hook_missed_text(text, sizeof text);
+    assert(!strncmp(text, "2 of the SDK functions", 22));
+    assert(strstr(text, "the first is ranged in sdk, of version 3.0.1, declared for sdk < 2.0.0"));
+    hook_missed_text(text, 30); /* cut to the buffer */
+    assert(strlen(text) == 29 && !strncmp(text, "2 of the SDK functions", 22));
 
-    /* hooks=0 takes nothing */
+    /* hooks=0 takes nothing, and leaves nothing to say */
     for (unsigned i = 0; i < 0x40; i++) a32_slots[i] = thumb_slots[i] = own_block;
     g_settings.native_hooks = 0;
     hook_install();
     assert(a32_slots[0] == own_block && thumb_slots[0] == own_block);
+    hook_missed_text(text, sizeof text);
+    assert(!*text);
     puts("hook_install_a32: passed");
     return 0;
 }

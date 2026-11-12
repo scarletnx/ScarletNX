@@ -62,6 +62,42 @@ static void module_versions(const SnxModInfo* mods, u32 nmods, u32 sdk[HOOK_MODU
         WARN("hooks: %u modules, so the SDK versions of those past %d are unknown\n", nmods, HOOK_MODULES);
 }
 
+/* a symbol with declarations, of which none holds for the version its module (the game's module'th) has of their key:
+   counted, and the first kept, for hook_missed_text. first is the symbol's first entry in the game's table */
+static void missed_note(int first, int module, u32 version) {
+    HostHook* h = &g_host.hook;
+    if (h->missed++) return;
+    h->missed_entry = (u32)first;
+    h->missed_module = (u32)module;
+    h->missed_version = version;
+}
+
+void hook_missed_text(char* out, size_t n) {
+    const HostHook* h = &g_host.hook;
+    const HookTable* t = g_arm_mod ? &hook32_table : &hook_table;
+    char version[32], ranges[192];
+    size_t used = 0;
+    u32 i;
+    if (n) out[0] = 0;
+    if (!h->missed) return;
+    ranges[0] = 0;
+    for (i = h->missed_entry; i < t->count && !strcmp(t->symbol[i], t->symbol[h->missed_entry]); i++) {
+        char range[96];
+        int wrote;
+        hook_range_text(range, sizeof range, t->key[i], t->lo[i], t->hi[i]);
+        wrote = snprintf(ranges + used, sizeof ranges - used, "%s%s", used ? "; " : "", range);
+        if (wrote < 0 || (size_t)wrote >= sizeof ranges - used) break; /* cut: the log has every one */
+        used += (size_t)wrote;
+    }
+    hook_version_text(version, sizeof version, t->key[h->missed_entry], h->missed_version);
+    snprintf(out, n,
+             "%u of the SDK functions the runtime has a hook for run their own code in this %s game, as none of "
+             "their declarations holds for the version of the module they are in: the first is %s in %s, of "
+             "version %s, declared for %s",
+             (unsigned)h->missed, g_arm_mod ? "32-bit" : "64-bit", t->symbol[h->missed_entry],
+             (g_arm_mod ? g_arm_mod->mods : g_mod->mods)[h->missed_module].name, version, ranges);
+}
+
 /* the site of the hooked function at addr; -1 for none */
 static int site_of(u64 addr) {
     const HostHook* h = &g_host.hook;
@@ -257,6 +293,7 @@ static void install_a32(void) {
         if (k == -2 && !missed[first]) {
             char text[32];
             missed[first] = 1;
+            missed_note(first, m, versions[hook32_key[first]]);
             hook_version_text(text, sizeof text, hook32_key[first], versions[hook32_key[first]]);
             LOG("hooks: %s in %s isn't hooked: no declaration for a 32-bit game holds for its version (%s)\n", name,
                 mods[m].name, text);
@@ -284,7 +321,7 @@ static void install_a32(void) {
             hook32_handler[k], range, *hook32_layouts[k] ? ", with the layouts " : "", hook32_layouts[k]);
     }
     LOG("hooks: %u of the 32-bit game's functions run the runtime's handlers; a function of the SDK that no hook "
-        "takes for a 32-bit game yet runs its own code\n",
+        "takes for a 32-bit game of its SDK yet runs its own code\n",
         (unsigned)count);
 }
 
@@ -297,6 +334,7 @@ void hook_install(void) {
     int any_verify = 0;
     unsigned char said[HOOK_COUNT + 1] = {0};   /* the entries whose versions the log gave */
     unsigned char missed[HOOK_COUNT + 1] = {0}; /* the symbols (by their first entry) the log said had none */
+    g_host.hook.missed = 0;
     if (!g_settings.native_hooks) {
         LOG("hooks: off (hooks=0), every exported function runs its own code\n");
         return;
@@ -334,6 +372,7 @@ void hook_install(void) {
         if (k == -2 && !missed[first]) {
             char text[32];
             missed[first] = 1;
+            missed_note(first, m, versions[hook_key[first]]);
             hook_version_text(text, sizeof text, hook_key[first], versions[hook_key[first]]);
             LOG("hooks: %s in %s isn't hooked: no declaration holds for its version (%s)\n", name, g_mod->mods[m].name,
                 text);
