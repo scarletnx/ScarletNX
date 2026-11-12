@@ -1253,6 +1253,13 @@ u64 mem_mapped_run(u64 addr, u64 size) {
     if (mine) mem_unlock();
     return run;
 }
+int mem_user_mapped(u64 addr, u64 size) { return !size || mem_mapped_run(addr, size) == size; }
+int mem_user_string(char* dst, u64 addr, u64 cap) {
+    u64 i, n = mem_mapped_run(addr, cap);
+    for (i = 0; i < n; i++)
+        if (!(dst[i] = (char)*GP(addr + i))) return (int)(i + 1);
+    return n < cap ? -1 : 0;
+}
 /* the state and permission of mapped memory (the loader's sections, ldr's code views, the memory SVCs) */
 int mem_set_state(u64 addr, u64 size, u32 state, u32 perm) {
     int r = 0;

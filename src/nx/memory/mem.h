@@ -157,6 +157,14 @@ void mem_query(u64 addr, MemBlock* out);
 /* the bytes of [addr, addr + size) still mapped, up to the first free or inaccessible page: what a GPU mapping older
    than the guest's frees may read (gpu.c's copy_runs). All of them before mem_init, with no block list */
 u64 mem_mapped_run(u64 addr, u64 size);
+/* [addr, addr + size) mapped through (size 0: nothing to check), as the console's kernel finds when it reads or writes
+   at a game's pointer: its user access fails on a free page, and the SVC answers InvalidCurrentMemory or InvalidPointer
+   where a host access would end the process. The permission isn't checked: mem_mapped_run's runs are cached per thread,
+   which keeps it cheap for the synchronization SVCs */
+int mem_user_mapped(u64 addr, u64 size);
+/* the console's copy of a string at a game's pointer into dst, cap bytes at most, up to its NUL: its length with the
+   NUL, 0 when cap bytes hold none, -1 when a page before its NUL is not mapped (InvalidPointer) */
+int mem_user_string(char* dst, u64 addr, u64 cap);
 /* fn(a, size) when the host pages under guest memory [a, a + size) are replaced or go, under mem.c's lock */
 void mem_set_pages_replaced(void (*fn)(u64 a, u64 size));
 /* Guest memory a GPU reads in place from a buffer of its own (gpu/vk/uma.c, where the driver can't import host memory,

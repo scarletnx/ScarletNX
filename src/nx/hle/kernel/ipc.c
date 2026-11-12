@@ -266,13 +266,16 @@ typedef struct {
     u32 raw_end; /* their end */
     u32 ndata;   /* how many */
 } Hipc;
-static int out_of_space(u64 addr, u64 size) { return size && (addr >= AS_SIZE || size > AS_SIZE - addr); }
+/* a buffer the kernel can't map or copy for the server: outside the address space, or on a page nothing is mapped at */
+static int out_of_space(u64 addr, u64 size) {
+    return size && (addr >= AS_SIZE || size > AS_SIZE - addr || !mem_user_mapped(addr, size));
+}
 /* Reads the HIPC headers and descriptors into c, checking what the kernel checks before the server gets the request
    (Mesosphere's order): the message with its receive list in the client's buffer (InvalidCombination; with a
    receive-list offset the raw data isn't counted here), raw data within the server's buffer (MessageTooLarge), no
-   move handles (InvalidCombination), every buffer inside the address space (InvalidCurrentMemory), and a receive
-   list after the raw data (InvalidCombination, which the console finds at the reply). A header may announce up to 15
-   descriptors of a kind: all are read and checked, the first MAX_BUFS kept. 0, or the result in kernel_rc */
+   move handles (InvalidCombination), every buffer inside the address space and mapped (InvalidCurrentMemory), and a
+   receive list after the raw data (InvalidCombination, which the console finds at the reply). A header may announce
+   up to 15 descriptors of a kind: all are read and checked, the first MAX_BUFS kept. 0, or the result in kernel_rc */
 static u32 parse_hipc(IpcCtx* c, Hipc* h) {
     const u8* m = c->msg;
     u32 w0 = snx_ld_le32(m), w1 = snx_ld_le32(m + 4), off = 8, ncopy = 0, nmove = 0, cmode, rloff, rl, i, nx, na, nb,
@@ -344,7 +347,7 @@ static const char* kernel_refusal(u32 rc) {
         case SNX_RC_SVC_INVALID_COMBINATION:
             return "a header describing more than the message buffer, a move handle or a misplaced receive list";
         case SNX_RC_SVC_MESSAGE_TOO_LARGE: return "raw data past the server's 0x100 bytes";
-        case SNX_RC_SVC_INVALID_CURRENT_MEMORY: return "a buffer outside the address space";
+        case SNX_RC_SVC_INVALID_CURRENT_MEMORY: return "a buffer outside the address space or not mapped";
         default: return "?";
     }
 }

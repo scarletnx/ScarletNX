@@ -13,6 +13,9 @@
 
 u8* g_mem;
 u64 g_as_size = AS_MAX; /* the reservation's size, mem.c's, which this test does not link */
+/* the test's guest memory, two pages, the second one free (FREE_PAGE) */
+#define FREE_PAGE 0x1000ull
+int mem_user_mapped(u64 addr, u64 size) { return !size || (addr < FREE_PAGE && size <= FREE_PAGE - addr); }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 void logf_(int lvl, const char* fmt, ...) {
@@ -111,7 +114,7 @@ int main(void) {
     hle_init();
     u32 idx, h[3], hw, ht;
     int refs;
-    g_mem = calloc(1, 0x1000);
+    g_mem = calloc(1, 2 * FREE_PAGE); /* the free page too, so a missing check reads it instead of crashing */
     if (!g_mem) return 1;
     g_self.o.type = KO_THREAD;
     g_self.id = 0x60;
@@ -128,6 +131,12 @@ int main(void) {
     CHECK(!strcmp(g_seen_name, "no handles") && g_self.wait_kind == 0);
     g_during = cancel_it;
     CHECK(svc_wait_sync(&g_self, 0, 0, -1, &idx) == SNX_RC_SVC_CANCELLED && !g_self.cancel);
+
+    /* the handles on a page nothing is mapped at, wholly or from one of them on: InvalidPointer, as the console's copy
+       of them fails, and no wait */
+    g_waits = 0;
+    CHECK(svc_wait_sync(&g_self, FREE_PAGE, 1, 1000, &idx) == SNX_RC_SVC_INVALID_POINTER && !g_waits);
+    CHECK(svc_wait_sync(&g_self, FREE_PAGE - 4, 2, 1000, &idx) == SNX_RC_SVC_INVALID_POINTER && !g_waits);
 
     /* more than 64 handles, and handles that name nothing to wait on: the whole wait fails, no reference kept */
     CHECK(kernel_timeouted_wait(65, 0, &idx) == SNX_RC_SVC_OUT_OF_RANGE);

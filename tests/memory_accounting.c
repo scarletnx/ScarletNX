@@ -732,6 +732,28 @@ static void test_mapped_runs(void) {
     CHECK(mem_unmap(a, 0x1000) == 0 && mem_unmap(a + 0x2000, 0x1000) == 0);
     CHECK(mem_mapped_run(a, 0x3000) == 0);
 }
+/* a game's pointer as the kernel reads or writes at it (mem_user_mapped, mem_user_string): mapped through, or the SVC
+   answers InvalidCurrentMemory or InvalidPointer; a string is copied up to its NUL, which may sit before a free page */
+static void test_user_access(void) {
+    u64 a = ALIAS_BASE + 0x400000;
+    char s[12];
+    base_process();
+    CHECK(mem_map(a, 0x1000, MS_STACK, PERM_RW) == 0 && mem_map(a + 0x2000, 0x1000, MS_SHARED, PERM_RW) == 0);
+    CHECK(mem_user_mapped(a, 0x1000) && mem_user_mapped(a + 0xFFC, 4) && mem_user_mapped(a + 0x1000, 0));
+    CHECK(!mem_user_mapped(a + 0xFFC, 8) && !mem_user_mapped(a + 0x1000, 4) && !mem_user_mapped(a, 0x3000));
+    CHECK(mem_user_mapped(a + 0x2000, 0x1000) && !mem_user_mapped(AS_END, 4) && !mem_user_mapped(AS_END - 4, 8));
+    memcpy(GP(a + 0xFF8), "fsp-srv", 8);
+    memset(s, 'x', sizeof s);
+    CHECK(mem_user_string(s, a + 0xFF8, sizeof s) == 8 && !strcmp(s, "fsp-srv")); /* its NUL before the free page */
+    memcpy(GP(a + 0xFF8), "abcdefgh", 8);
+    CHECK(mem_user_string(s, a + 0xFF8, sizeof s) == -1); /* no NUL before the free page */
+    memcpy(GP(a + 0x10), "abcdefghijkl", 12);
+    CHECK(mem_user_string(s, a + 0x10, sizeof s) == 0); /* twelve bytes and no NUL */
+    CHECK(mem_user_string(s, a + 0x1000, sizeof s) == -1 && mem_user_string(s, AS_END, sizeof s) == -1);
+    CHECK(mem_unmap(a, 0x1000) == 0);
+    CHECK(!mem_user_mapped(a, 4)); /* a run this thread kept goes with the page */
+    CHECK(mem_unmap(a + 0x2000, 0x1000) == 0);
+}
 /* rtld's walk of the modules (the game's own rtld: from address 0, QueryMemory on each region; a region of code that
    is readable and executable is a module, the word at +4 the offset of its MOD0 header) over NCE's layout: rtld and a
    pool of stubs after it, a pool before main and main, each module's header where its +4 says. The walk finds the two
@@ -1126,6 +1148,7 @@ int main(void) {
         test_shared_memory();
         test_host_pages();
         test_mapped_runs();
+        test_user_access();
         test_pool_walk();
         test_mapping_boundary(); /* last: every commit after it must be inside a mapping */
         CHECK(munmap(reservation, reservation_size) == 0);
