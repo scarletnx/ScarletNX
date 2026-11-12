@@ -862,7 +862,7 @@ SnxCtrHooks* snx_ctr_hooks_find(SnxCtrProcess* p, char* summary, size_t summary_
         h->bits[word >> 5] |= 1u << (word & 31);
         ++h->count;
     }
-    qsort(h->hooks, h->count, sizeof *h->hooks, by_entry);
+    if (h->count) qsort(h->hooks, h->count, sizeof *h->hooks, by_entry); /* none: hooks is NULL */
     /* the enqueues, found while the stubs alone are in the table, then added */
     size_t stubs_hooked = h->count, enqueues = 0;
     uint32_t found[8];
