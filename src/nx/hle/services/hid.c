@@ -660,6 +660,13 @@ static int nn_hid_IHidServer_EnableShowingCursor(SvcObj* self, u8 enable, u64 ar
     pm_unlock(&g_host.hid.lock);
     R_SUCCEED();
 }
+static int nn_hid_IHidServer_SetMouseLibraryVersion(SvcObj* self, u64 version, u64 aruid) {
+    (void)self, (void)aruid;
+    /* hid keeps it for the mouse library's calls that depend on it; nothing the runtime answers does */
+    LOG("hid: the mouse library at version %llu (aruid %llu)\n", (unsigned long long)version,
+        (unsigned long long)aruid);
+    R_SUCCEED();
+}
 static int nn_hid_IHidServer_SetNmousePointerPosition(SvcObj* self, i32 x, i32 y, u64 aruid, u64 handle) {
     (void)self, (void)aruid, (void)handle;
     pm_lock(&g_host.hid.lock);
