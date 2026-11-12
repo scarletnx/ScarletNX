@@ -1,5 +1,5 @@
 # edenprobe cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/dev/edenprobe.md)
-# build: v0.11.0
+# build: v0.12.0
 # mode: quick
 bionic: /proc/self shows the package, the library and app_process64
 bionic: a SIGUSR1 handler runs on raise, and a blocked signal waits as pending
@@ -152,6 +152,7 @@ reference: clip space plus y is the top of the target
 reference: clz of each 16-bit lane the cpu suite uses
 reference: clz of each 32-bit lane the cpu suite uses
 reference: clz of each 8-bit lane the cpu suite uses
+reference: crc32 and crc32c give the standard check values
 reference: depth bounds keep a stored 0.5 at either end and reject it outside
 reference: each astc block and astcimage picture says its texels are astcenc's where a hash pins them, the specification's otherwise
 reference: each blend case's sentence is the arithmetic the reference does
@@ -175,6 +176,7 @@ reference: fcvtzs and fcvtzu's lanes the cpu suite uses
 reference: fmax, fmin, fmaxnm and fminnm order hand-worked NaNs and noughts
 reference: four quadrants take their own green, and each lag the green that far back
 reference: frecpe, frsqrte and frecpx give hand-worked singles and flags
+reference: frint's roundings of a single worked out by hand
 reference: frintx and frinta's roundings the cpu suite uses
 reference: game: a frame's image has the texture, the fill and the cells where they belong
 reference: game: a quarter's hash is FNV-1a over its pixels, row by row
@@ -296,6 +298,7 @@ reference: service: renderer passes a renderer stopped, started and stopped
 reference: service: renderer passes its parameters and two settings kept
 reference: service: set passes reden's language codes and fails what strays from them
 reference: service: set-sys passes settings read back as set and flags put back
+reference: service: sm's refusal of a bad name passes 0xc15 alone
 reference: service: time passes ToPosixTime giving the known time back
 reference: service: time passes a steady clock one or two seconds on
 reference: service: time passes a user clock its context's offset past steady
@@ -312,6 +315,7 @@ reference: sqdmlal, sqdmlsl and sqdmull lanes worked out by hand
 reference: sqrshl and uqrshl lanes worked out by hand
 reference: sqrshrn, uqrshrn and sqrshrun scalars worked out by hand
 reference: sqshlu's lanes and saturation the cpu suite uses
+reference: sshl to uqshl lanes worked out by hand
 reference: tex8k's ASTC texels are the picture's, from the block their tile shifts in
 reference: tex8k's ASTC tiles and frames take other blocks of the picture
 reference: tex8k's BC1 blocks are one colour, the bytes and texels Pillow decodes

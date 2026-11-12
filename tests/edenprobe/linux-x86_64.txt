@@ -1,5 +1,5 @@
 # edenprobe cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/dev/edenprobe.md)
-# build: v0.10.0
+# build: v0.12.0
 # mode: audio cpu display fs kernel notime quick video
 audio: a 10 kHz voice at half the output rate keeps the level default quality's table gives
 audio: a 10 kHz voice at half the output rate keeps the level high quality's table gives
@@ -18,12 +18,30 @@ binder: a request for nought, before any frame
 binder: the history after ten frames comes newest first, eight at most
 binder: the history after three frames, eight asked for
 cpu: 48 new straight-line blocks with 33 live registers leave the state worked out apart
+cpu: a NaN stored from a b, h, s, d or q register keeps its bits and touches no other byte
 cpu: clz counts each of eight 16-bit lanes
 cpu: clz counts each of four 32-bit lanes
 cpu: clz counts each of sixteen 8-bit lanes
+cpu: cntfrq_el0 says 19.2 MHz and 100 ms asleep counts at that rate
+cpu: crc32b, h, w and x update four accumulators bit for bit
+cpu: crc32cb, h, w and x update four accumulators with the Castagnoli polynomial
+cpu: fadd, fsub, fmul and fdiv keep NaN payloads and nought's sign lane by lane and raise their flags
+cpu: fcmeq, fcmge and fcmgt mask NaN lanes false and raise invalid as each compare must
+cpu: fcvtn and fcvtl with AHP take exponent 31 as a number and saturate past 131008
+cpu: fcvtn keeps a NaN's payload's top bits, and gives the default NaN with DN set
 cpu: fcvtzs and fcvtzu with 64 fraction bits scale by 2^64
+cpu: fmadd and fmsub round once, keep exact results exact and do not overflow midway
+cpu: fmadd gives the default NaN for nought times infinity plus a quiet NaN
+cpu: fmax, fmin, fmaxnm and fminnm order NaNs, noughts and denormals as the Arm ARM does
+cpu: frecpe gives the Arm ARM's reciprocal estimate of singles of every class, flags too
+cpu: frecpx gives the reciprocal exponent, the largest for noughts and denormals
 cpu: frinta rounds halfway cases away from zero
+cpu: frinti rounds by each of FPCR's four modes and raises nothing
+cpu: frintn, frintp, frintm, frintz and frinta round sixteen singles each their own way
+cpu: frintx rounds by each of FPCR's four modes and raises inexact where it rounds
 cpu: frintx rounds to nearest even and raises inexact
+cpu: frsqrte gives the reciprocal square root estimate of singles of every class, flags too
+cpu: ldxp and stxp swap a 128-bit pair
 cpu: mrs cntvct_el0 reads a virtual count that moves with the physical one
 [skip (banned)] cpu: mrs daif reads nothing outside the four interrupt mask bits
 cpu: sdiv and udiv by zero give zero, 32 and 64 bits
@@ -31,7 +49,12 @@ cpu: sdiv and udiv by zero give zero, 32 and 64 bits
 cpu: sqdmlal, sqdmlsl and sqdmull double, accumulate and saturate
 cpu: sqrshl and uqrshl round, shift and saturate lanes of every width
 cpu: sqrshrn, uqrshrn and sqrshrun round and narrow scalars
+cpu: sqshl and uqshl by a register saturate every width and set QC
 cpu: sqshlu saturates 8, 16 and 64-bit lanes and sets QC
+cpu: srshl and urshl round lanes of every width shifted right
+cpu: sshl and ushl shift lanes of every width by a signed byte
+cpu: stxp after clrex fails and leaves the pair
+cpu: urecpe and ursqrte give the unsigned estimates, and all ones below their range
 fs: 256 small files are opened, read and closed
 fs: 4096 random 4 KiB reads at aligned offsets
 fs: 4096 random 4 KiB reads at odd offsets
@@ -54,6 +77,8 @@ nvdec: vp9_hidden_altref: a hidden frame, contexts that adapt, 66 by 66
 nvdec: vp9_hidden_lf_deltas: two hidden frames, loop filter deltas
 nvdec: vp9_show_existing: frames shown again, LastShowFrame both ways
 nvdec: vp9_two_frames: two frames, none hidden
+reference: 0x3a equals 0x5a under the compare mask 0x1f and not without it
+reference: 13/32 lands at least 3/16 of a texel from a boundary on every level
 reference: 4-bit weights 7, 8 and 13 unquantize to 29, 35 and 56
 reference: 5-bit weights 3 and 21 unquantize to 6 and 44
 reference: EAC indices run down each column
@@ -68,19 +93,28 @@ reference: a blend case catches the alpha equation taken from the colour one
 reference: a blend case catches the alpha source factor taken from the colour one
 reference: a centre exactly a margin away is still judged
 reference: a counter clockwise triangle's face under each viewport of the fixed suite
+reference: a draw texture from texel -2 carries 0xffffe000 as its source x
 reference: a draw texture of 16 by 16 at (40, 24) is twelve words from 0x420
+reference: a flipped, layered, scaled or padded copy puts each texel where worked out by hand
 reference: a friend profile is read at the offsets the guest reads it at
+reference: a line loop's closing side is judged drawn, a line strip's clear, and a quad's diagonal clear when drawn as lines
 reference: a margin holds back the pixels an edge runs through
+reference: a missed restart in the topology suite's strips and fans draws pixels the cases judge clear
 reference: a moved rectangle lands at its offset and nothing else changes
 reference: a pixel well outside is called outside
 reference: a point on an edge that is neither top nor left is not covered
 reference: a point on the left edge is covered
 reference: a point on the top edge is covered
 reference: a profile slot is judged by its id as well as its fields
+reference: a quarter, a half, three quarters and all read table entries 3, 7, 11, 15
 reference: a rectangle lands where each viewport of the fixed suite puts it
 reference: a rectangle moved down or up over itself keeps every source row
 reference: a rectangle moved over itself reads each source texel before it goes
 reference: a rectangle not wholly inside is refused and changes nothing
+reference: a rectangle past a pixel covers every one of eight
+reference: a rectangle to a pixel's centre covers 0x2 of the standard two
+reference: a rectangle to a pixel's centre covers 0x3a of the standard eight
+reference: a rectangle to a pixel's centre covers 0x5 of the standard four
 reference: a region's pixels sample the texel whose centre they sit on
 reference: a render enable is 0x20030554, the address high word first, the mode
 reference: a result code reads as the platform prints it
@@ -92,8 +126,10 @@ reference: a shared edge is drawn exactly once
 reference: a solid BC4 block is its value twice and sixteen nought indices
 reference: a status document says nothing is wrong only with both lists empty
 reference: a triangle with no area covers nothing
+reference: a wrong nsd expansion says whether the name came back as asked, with another environment, or with the placeholder left in
 reference: account ids and dotted addresses are read whole or refused
 reference: adding the source at full weight to nothing gives the source back
+reference: alpha to coverage with alpha to one is the inline word 0x8011054f
 reference: an EAC multiplier of nought adds the bare modifier
 reference: an EAC texel is base * 8 + 4 plus modifier * multiplier * 8, clamped
 reference: an ETC2 H mode distance index takes its last bit from the base order
@@ -107,10 +143,13 @@ reference: an aliased move writes what the alias shader writes
 reference: an alpha of 0.5 at three references tells the eight alpha tests apart
 reference: an exterior point is not covered
 reference: an index limit goes high word first
+reference: an index list splits at its restart index, and indexed triangles add the vertex offset
 reference: an inline wait for idle is 0x80000044
 reference: an interior point is covered
+reference: an offset in a level's own texels reads another texel than one in level nought's on levels 1 to 3
 reference: an offset viewport moves the rectangle
 reference: an snorm round trip returns every half but 0x8000, which becomes 0x8001
+reference: an svc case's line names a kernel result and gives a code it does not know
 reference: audio: a sine is read back at its amplitude
 reference: audio: a tone keeps the level the conversion's table gives it
 reference: audio: a tone reads as nothing at another tone's frequency
@@ -142,10 +181,14 @@ reference: clip space plus y is the top of the target
 reference: clz of each 16-bit lane the cpu suite uses
 reference: clz of each 32-bit lane the cpu suite uses
 reference: clz of each 8-bit lane the cpu suite uses
+reference: crc32 and crc32c give the standard check values
 reference: depth bounds keep a stored 0.5 at either end and reject it outside
+reference: each astc block and astcimage picture says its texels are astcenc's where a hash pins them, the specification's otherwise
 reference: each blend case's sentence is the arithmetic the reference does
+reference: each stencil op leaves its own byte at 0xa5 and at 0x5a
 reference: edge distance is the perpendicular one in pixels
 reference: every byte survives the trip through a normalised float
+reference: every edge where the topology suite's colour changes keeps a twentieth of a pixel from every pixel centre
 reference: every float budget is the one the tables give
 reference: every float budget's reason begins with the number it is
 reference: every float budget's reason fits the note that carries it
@@ -153,11 +196,16 @@ reference: every float mode has its budget written down here
 reference: every float operand and argument is exactly representable
 reference: every format packs the pixels worked out from its name
 reference: every format's fields fit its pixel and the mask is exactly them
+reference: every modulated channel is a whole byte with room under an eight bit factor
 reference: every normalised value times its largest code is a code in single precision
 reference: every packed component is at least a 256th of a code from a half
+reference: every sample at the centre leaves a pixel cut a quarter in uncovered
 reference: every {size} in a picture url becomes the size asked for
 reference: fcvtzs and fcvtzu's lanes the cpu suite uses
+reference: fmax, fmin, fmaxnm and fminnm order hand-worked NaNs and noughts
 reference: four quadrants take their own green, and each lag the green that far back
+reference: frecpe, frsqrte and frecpx give hand-worked singles and flags
+reference: frint's roundings of a single worked out by hand
 reference: frintx and frinta's roundings the cpu suite uses
 reference: game: a frame's image has the texture, the fill and the cells where they belong
 reference: game: a quarter's hash is FNV-1a over its pixels, row by row
@@ -168,6 +216,14 @@ reference: game: the file thread reads the whole file in 1024 frames, each chunk
 reference: game: the timed cases carry each measure past the warm-up, in order
 reference: game: the timing notes say the warm-up, each measure and the hitches by number
 reference: game: the world steps and bounces as worked out by hand
+reference: gradients of one, two, four and eight texels give lambdas 0 to 3 exactly
+reference: half of 0xa0 is 0x50 and half of 0x81 is refused
+reference: half precision under AHP and DN gives hand-worked values and flags
+reference: incr stops at 0xff and incr_wrap goes to nought; decr stops at nought and decr_wrap goes to 0xff
+reference: inverting 0x0f through the write mask 0xf0 gives 0xff
+reference: lambda 1.25 blends level 1's 1019 and level 2's 2001 to 1264.5, a float exactly
+reference: line loops close, line strips do not, and quads and polygons drawn as lines show their outlines alone
+reference: lists, strips, fans, quads, quad strips and polygons make the triangles and provoking vertices OpenGL's table gives
 reference: md5: RFC 1321's "" whole and in pieces
 reference: md5: RFC 1321's "123456789012345678901234..." whole and in pieces
 reference: md5: RFC 1321's "ABCDEFGHIJKLMNOPQRSTUVWX..." whole and in pieces
@@ -177,6 +233,7 @@ reference: md5: RFC 1321's "abcdefghijklmnopqrstuvwx..." whole and in pieces
 reference: md5: RFC 1321's "message digest" whole and in pieces
 reference: md5: a million a's
 reference: mirroring folds every index onto a texel
+reference: nearest mip filtering keeps level 0 up to lambda one half and stops at the last level
 reference: no ETC2 block's decoded colours read as an upload of its bytes
 reference: no blend case asks for an alpha destination factor of its own
 reference: no blend case lands near the halfway point between two bytes
@@ -185,6 +242,7 @@ reference: no ordinary float case produces an infinity or a nan
 reference: no two coherence patterns agree at any texel
 reference: no two texels of one coherence pattern are the same
 reference: nsd is expected to answer a rewrite, then the placeholder, else the name
+reference: one texel along x and four along y give lambda 2
 reference: one texture across the target puts sixteen pixels on each texel
 reference: pad: a button pressed again counts, and the window closes on time
 reference: pad: a press is what goes down in its first tenth of a second
@@ -269,6 +327,7 @@ reference: service: renderer passes a renderer stopped, started and stopped
 reference: service: renderer passes its parameters and two settings kept
 reference: service: set passes reden's language codes and fails what strays from them
 reference: service: set-sys passes settings read back as set and flags put back
+reference: service: sm's refusal of a bad name passes 0xc15 alone
 reference: service: time passes ToPosixTime giving the known time back
 reference: service: time passes a steady clock one or two seconds on
 reference: service: time passes a user clock its context's offset past steady
@@ -285,6 +344,7 @@ reference: sqdmlal, sqdmlsl and sqdmull lanes worked out by hand
 reference: sqrshl and uqrshl lanes worked out by hand
 reference: sqrshrn, uqrshrn and sqrshrun scalars worked out by hand
 reference: sqshlu's lanes and saturation the cpu suite uses
+reference: sshl to uqshl lanes worked out by hand
 reference: tex8k's ASTC texels are the picture's, from the block their tile shifts in
 reference: tex8k's ASTC tiles and frames take other blocks of the picture
 reference: tex8k's BC1 blocks are one colour, the bytes and texels Pillow decodes
@@ -295,6 +355,7 @@ reference: tex8k's RGBA8 texels are their place and salt, filled a word at a tim
 reference: tex8k's percentile is numpy's and its distance the worst channel's
 reference: tex8k's raw copies into the BC7 texture cover the blocks its judge expects
 reference: tex8k's regions, levels, samples and copy-out sit where its judge says
+reference: tex8k's textures are tried with no vram word or 4096 MiB, and with less say what the machine has
 reference: the 11-bit value 2047 is 255 either way
 reference: the 16-bit texel 0x7f80 is 127 either way to eight bits
 reference: the 16-bit texel 0x8000 is 128 either way to eight bits
@@ -312,8 +373,13 @@ reference: the block linear rule puts hand worked bytes where a gob keeps them
 reference: the certificate a handshake hands back is found in either form
 reference: the clear and the drawn value differ in every stored channel
 reference: the coherence pattern is the four sums, modulo 256
+reference: the copy suite's channels of nought and full become the bytes each format holds them in
+reference: the copy suite's pictures give every texel a value of its own, and the full texels every combination of nought and full
+reference: the coverage suite's own four split a pixel at its centre as 0x3
 reference: the division agrees with a long division done a bit at a time
 reference: the edge operands are where their budgets say
+reference: the eight stencil compares pass the three bands in eight different ways
+reference: the estimate tables and the unsigned estimates give hand-worked values
 reference: the fill rule triangles are the two halves of a whole pixel square
 reference: the fixed suite's points put no pixel centre on an edge
 reference: the float edge reference matches the values worked out by hand
@@ -322,6 +388,7 @@ reference: the format conversions invert over every code and round at the ends
 reference: the format quad covers exactly its rectangle, no centre near its edges
 reference: the format table has the sixty renderable colour formats
 reference: the fragment coordinate reference carries the half pixel
+reference: the grid pattern splits even columns as 0x3 and odd ones as 0xc in both rows
 reference: the grown integer reference matches the values worked out by hand
 reference: the half patterns raise exponent nought and quiet nothing else
 reference: the half precision patterns agree with the format reference both ways
@@ -384,10 +451,16 @@ reference: the sign-in wait ends only on the answer a signed in session gives
 reference: the signed division's operands keep a float reciprocal exact
 reference: the sine and cosine angles stay inside minus pi to pi
 reference: the slanted triangle lands on whole pixel boundaries
+reference: the standard four put sample 2 inside a pixel cut a quarter in
+reference: the standard four samples sit at (6,2) (14,6) (2,10) (10,14) sixteenths
 reference: the status request is one GET that asks the server to close
+reference: the stream cases skip only when the machine refuses a stream socket and says its network is off
+reference: the svc suite's kernel results are the codes the console returns
 reference: the tight limit of six 16-bit indices at 0x1000 is 0x100b
+reference: the topology suite's quads, quad strip, polygon and fan cover exactly their rectangles
 reference: the triangle whose left edge it is takes the shared centres
 reference: the two right shifts differ exactly on the values with the top bit set
+reference: the vertex suite's layouts give hand-worked floats and its vertices read where worked out by hand
 reference: three copies across the target still miss every texel boundary
 reference: touch: a lifted finger is followed by states with no touch for half a second
 reference: touch: a prompt waits out a finger already down, then takes the next tap
@@ -468,6 +541,7 @@ selfcheck: ulp zero tolerance rejects a neighbour
 support: Y and X in one edge change nothing, and A in that edge still begins
 support: a ban comes after a crash in this run and before the crash list
 support: a ban's versions are every one, a list, or bounds on dotted numbers
+support: a case a runner stopped the program inside is skipped as timeout, with the limit and how long it ran
 support: a case banned on this machine is skipped as banned, its line said, until unban
 support: a case inherits neither another case's samples nor a pass's leftovers
 support: a case known to hang is skipped until hang asks, and retry does not run it
@@ -479,6 +553,7 @@ support: a case that ended this run is skipped even under retry
 support: a case that ended without starting, or started over another, is counted
 support: a case that ends the program runs with no word, and only a crash skips it
 support: a case that put nothing on the graphics unit reports no time
+support: a case that says where its expected value comes from says it after its tier
 support: a case the program ended inside is counted apart and in a colour of its own
 support: a case with no detail is only said to have passed when it did
 support: a case with no picture reports the line it always did
@@ -502,6 +577,7 @@ support: a journal's last line with no newline is left unread
 support: a kept case holds what a reader of its line gets back, and no more
 support: a label in the mode file names the run's folder, and a bad one is refused
 support: a late copy is counted, with the longest wait rounded up
+support: a launch a runner stopped at its limit leaves a timeout, not a crash
 support: a launch goes on with a run only for the same build, the same words and its report
 support: a line that is not a whole journal record is not read as one
 support: a line too big for its buffer comes back whole or not at all
@@ -533,12 +609,14 @@ support: a skip says why in one word of a few, beside the sentence
 support: a slot has arrived once any of its bytes is not the preset
 support: a slot of no bytes has nothing to wait for
 support: a start whose newline an abort took is the case the program ended inside
+support: a suite skip= names is skipped as asked, after a crash in this run and before hang, unban and the crash list
 support: a suite that timed nothing sums up to nothing
 support: a suite's summary counts, adds and orders its cases' times
 support: a tap is one finger down after the screen settled, counted when lifted
 support: a time with no room on its line is left off, never cut
 support: a timed line is the untimed line with its time last
 support: all four colours of a verdict are named under the pictures
+support: all runs every family but pad and nvn, which named beside it add theirs
 support: and not the other way round either
 support: baseline: a case line reads back as written, quotes and all
 support: baseline: a case reported twice in a run is held by its last time
@@ -594,6 +672,7 @@ support: only the verdict pass hands a time to a line
 support: punctuation and case leave the file name alone
 support: quit leaves from every level, and a run that kept nothing can leave
 support: several lines written forward are the file, with nothing missing between
+support: skip= names the suites a run leaves out, and a bad one says the suites in effect
 support: source/bans.txt's lines are whole, and the two runs' lines are there
 support: stepping through a group's cases comes round to where it started
 support: the checks that record a crash for this run take it back
@@ -638,6 +717,7 @@ support: the start screen asks only with something to choose, X for the crash li
 support: the start screen draws the cursor's row, each box and icon, and no warning for an empty crash list
 support: the start screen keeps the video, kernel, display and service families the file names, which have no row
 support: the start screen opens on begin the run, every row as the mode file says
+support: the start screen says nvn's window case is skipped in a run begun there, when the mode file names nvn
 support: the start screen waits ten seconds for a person, and a press keeps it
 support: the start screen warns exactly while the crash list's choice is on
 support: the start screen's menu turns the row under the cursor, listen with audio
@@ -655,6 +735,7 @@ support: the word listen asks for the listening sequence and the audio family
 support: the word noprogress turns the running screen off and nothing else
 support: the word notime turns the timing passes off and says so
 support: the word stress, and nothing else, asks for the stress cases
+support: the word vram=<MiB> says the machine's graphics memory, and a bad number says the one it keeps
 support: the words game and frames=<n> run the scene and set its frames, and a bad number says the one it keeps
 support: the words retry and nojournal ask for what they say and nothing else
 support: the words the start screen saves and the journal keeps read back the same
@@ -666,6 +747,28 @@ support: two names that agree for longer than a stem still get one each
 support: untimed suites report no time
 support: what repeats is the direction pressed, whatever else is held
 support: what the start screen chooses is the run's mode, the label the file's
+svc: a closed handle among two fails svcWaitSynchronization with InvalidHandle
+svc: a handle closed once answers InvalidHandle when closed again
+svc: a pending cancel meets a timeout of 0 with TimedOut and stays pending
+svc: of two signaled events, svcWaitSynchronization names the first
+svc: svcClearEvent of the writable end clears the event
+svc: svcMapMemory locks its source with no permission and maps a stack view to read and write
+svc: svcQueryMemory says the heap is heap memory to read and write
+svc: svcQueryMemory says the program's code is to read and execute
+svc: svcQueryMemory says the program's read-only data is to read only
+svc: svcResetSignal clears a signaled event and is InvalidState on a clear one
+svc: svcSetHeapSize of a size off the 2 MiB step answers InvalidSize
+svc: svcSignalEvent of the readable end answers InvalidHandle
+svc: svcWaitSynchronization of 65 handles answers OutOfRange
+svc: svcWaitSynchronization with no handles and a timeout of 0 answers TimedOut
+svc: svcWaitSynchronization with no handles sleeps out its timeout and answers TimedOut
+svc: the current thread's pseudo-handle is no handle to wait on: InvalidHandle
+svc: the pending cancel ends the next wait at once with Cancelled and is used up
+svc: the process's pseudo-handle cannot be closed: InvalidHandle
+svc: the writable end of an event is no handle to wait on: InvalidHandle
+svc: two events open and a handle is closed
+svc: what is written through svcMapMemory's view is in its source once unmapped
+svc: with only the second of two events signaled, svcWaitSynchronization names it
 vic: the video compositor opens and maps its buffers
 vic: vic_alpha_opaque: the opaque alpha fill over a planar alpha below the top
 vic: vic_background: with no slot the target rect takes the background colour
