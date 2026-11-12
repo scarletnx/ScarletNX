@@ -72,7 +72,6 @@ typedef struct {
     u32 style_ev[HID_ENTRIES];
     u64 samp;            /* the sampling number of the latest states */
     u64 last_ns;         /* when they were taken */
-    u64 updates, states; /* atomic: the input ticks done, and the LIFO states they wrote, for the rate */
     u32 supported_styles, supported_ids; /* the game's: styles, and Npads by entry index */
     i64 hold, handheld_mode, comm_mode;
     i64 header_hold; /* the hold type the single Joy-Cons' headers were written for */
@@ -91,5 +90,7 @@ typedef struct {
     PMutex input_lock;
     /* hid's own, under lock */
     PMutex lock;
+    /* atomic: the input ticks done, and the LIFO states they wrote, which the profiler's rates read */
+    u64 updates, states;
 } HostHid;
 #endif
