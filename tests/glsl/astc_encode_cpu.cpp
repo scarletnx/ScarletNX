@@ -16,6 +16,7 @@ struct Encoder : Invocation {
     const leuint* rgba;
     leuvec4* astc_blocks;
 #include "nx/gpu/texture/astc_encode_tables.glsl"
+#include "nx/gpu/texture/astc_quant.glsl"
 #include "nx/gpu/texture/bc7_encode.glsl"
 #include "nx/gpu/texture/astc_encode.glsl"
     void main() {
@@ -58,4 +59,19 @@ extern "C" uint32_t astc_encode_block_cpu(const uint32_t texels[16], uint8_t out
     const glsl::leuvec4 block = e.AstcEncode();
     std::memcpy(out, &block, 16);
     return e.as_err;
+}
+
+extern "C" uint32_t astc_quant_cpu(uint32_t range, uint32_t t) {
+    astc_encode_shader::Encoder e;
+    return e.AsQuant(range, t);
+}
+
+extern "C" uint32_t astc_trit_bits_cpu(const uint32_t t[5]) {
+    astc_encode_shader::Encoder e;
+    return e.AsTritBits(t[0], t[1], t[2], t[3], t[4]);
+}
+
+extern "C" uint32_t astc_quint_bits_cpu(const uint32_t q[3]) {
+    astc_encode_shader::Encoder e;
+    return e.AsQuintBits(q[0], q[1], q[2]);
 }

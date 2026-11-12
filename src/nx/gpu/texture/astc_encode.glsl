@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* ASTC 4x4 encoding: AstcEncode makes an LDR block of the 16 RGBA8 texels in px, for a GPU that samples ASTC and not
    BCn (texconv.comp's ASTC build decodes a BCn block and encodes it again, as its ETC2 build does). Included after
-   astc_encode_tables.glsl and bc7_encode.glsl built with SNX_ASTC_ENC 1.
+   astc_encode_tables.glsl, astc_quant.glsl and bc7_encode.glsl built with SNX_ASTC_ENC 1.
 
    The fitting is bc7_encode.glsl's: a subset's texels are fitted a line (FitSubset: the box, then least squares, each
    texel at the best of the three weights around its place), and ASTC interpolates as BC7 does, ((64 - w) a + w b +
@@ -21,21 +21,11 @@
    How many values an end's channel takes is not written in the block: the decoder works it out from the bits the
    weights and the header leave, as the largest encoding that fits, so each layout above has exactly one, and the ends
    are quantized to it while they are fitted (bc7_encode.glsl's Quant under SNX_ASTC_ENC), not after. The ones with a
-   trit or a quint come from tables made by turning the decoder round (tools/astc_tables.py).
+   trit or a quint are worked out (astc_quant.glsl), with no table.
 
    The candidate whose squared error is least is written; a block stops trying once one is SNX_ASTC_GOOD or under.
    Integer arithmetic but for the fitter's reciprocal, so tests/glsl/astc_encode_glsl.cpp runs this file on the CPU and
    gets the GPU's bytes, and holds each block's error to the reference decoder's (tests/support/astc.c). */
-
-/* the colour encodings with a trit or a quint, ASTC_NEAR's and ASTC_CODE's order: trits over 6, 5 and 4 bits are the
-   even ones, quints over 5, 4 and 3 the odd ones; then 8 bits as they are */
-#define AS_T6 0u
-#define AS_Q5 1u
-#define AS_T5 2u
-#define AS_Q4 3u
-#define AS_T4 4u
-#define AS_Q3 5u
-#define AS_B8 6u
 
 /* A block stops trying candidates once its squared error over its texels and channels is this or less (bc7_encode.
    glsl's SNX_BC7_GOOD_ENOUGH: a mean squared error of a quarter, 54 dB) */
@@ -109,6 +99,7 @@ void AsShape(uint ns, uint part, uint ib, uint range, uint alpha, uint mask) {
     sh_alpha = alpha;
     sh_mask = mask;
     as_range = range;
+    as_key = AsKey(range);
 }
 
 /* one end of a line as Try takes it, a channel at a time */
@@ -227,11 +218,6 @@ void PutW(uint pos, uint value, uint count) {
     if (b + count > 32u) as_w[w + 1u] |= value >> (32u - b);
 }
 
-/* a table's byte */
-uint AsByte(uint word, uint i) {
-    return (word >> ((i & 3u) * 8u)) & 255u;
-}
-
 /* the colour values of the block, in the order the endpoint modes read them, and how many */
 uint as_v[12];
 uint as_nv;
@@ -251,9 +237,9 @@ bool AsEnds(uint s) {
 }
 
 /* as_v's values as an integer sequence of the block's colour encoding, from bit pos. With a trit or a quint a value
-   is that and some bits (ASTC_CODE); five trits share 8 bits and three quints 7, laid between their values' bits as
-   the decoder reads them (astc_decode.glsl's DecodeSequence). A last group of fewer values is cut short: its missing
-   digits are 0, which leaves the cut bits 0 (the tables keep each group's smallest code) */
+   is that and some bits (AsQuant's code of a value the encoding holds); five trits share 8 bits and three quints 7,
+   laid between their values' bits as the decoder reads them (astc_decode.glsl's DecodeSequence). A last group of fewer
+   values is cut short: its missing digits are 0, which leaves the cut bits 0 */
 void AsColours(uint pos) {
     if (as_enc == AS_B8) {
         for (uint k = 0u; k < as_nv; k++) Put(pos + 8u * k, as_v[k], 8u);
@@ -262,24 +248,18 @@ void AsColours(uint pos) {
     const bool trits = (as_enc & 1u) == 0u;
     const uint b = 6u - ((as_enc + 1u) >> 1u), group = trits ? 5u : 3u;
     for (uint g = 0u; g * group < as_nv; g++) {
-        uint m0 = 0u, m1 = 0u, m2 = 0u, m3 = 0u, m4 = 0u, digits = 0u, scale = 1u;
+        uint m0 = 0u, m1 = 0u, m2 = 0u, m3 = 0u, m4 = 0u, d0 = 0u, d1 = 0u, d2 = 0u, d3 = 0u, d4 = 0u;
         for (uint k = 0u; k < group; k++) {
-            uint code = 0u;
-            if (g * group + k < as_nv) {
-                const uint v = as_v[g * group + k];
-                code = AsByte(ASTC_CODE[as_enc * 64u + (v >> 2u)], v);
-            }
-            const uint m = code & ((1u << b) - 1u);
-            digits += (code >> b) * scale;
-            scale *= trits ? 3u : 5u;
-            if (k == 0u) m0 = m;
-            if (k == 1u) m1 = m;
-            if (k == 2u) m2 = m;
-            if (k == 3u) m3 = m;
-            if (k == 4u) m4 = m;
+            const uint code = g * group + k < as_nv ? AsQuant(as_enc, as_v[g * group + k]) >> 8u : 0u;
+            const uint m = code & ((1u << b) - 1u), digit = code >> b;
+            if (k == 0u) m0 = m, d0 = digit;
+            if (k == 1u) m1 = m, d1 = digit;
+            if (k == 2u) m2 = m, d2 = digit;
+            if (k == 3u) m3 = m, d3 = digit;
+            if (k == 4u) m4 = m, d4 = digit;
         }
         if (trits) {
-            const uint at = pos + g * (5u * b + 8u), T = AsByte(ASTC_TRITS[digits >> 2u], digits);
+            const uint at = pos + g * (5u * b + 8u), T = AsTritBits(d0, d1, d2, d3, d4);
             Put(at, m0, b);
             Put(at + b, T & 3u, 2u);
             Put(at + b + 2u, m1, b);
@@ -291,7 +271,7 @@ void AsColours(uint pos) {
             Put(at + 4u * b + 7u, m4, b);
             Put(at + 5u * b + 7u, T >> 7u, 1u);
         } else {
-            const uint at = pos + g * (3u * b + 7u), Q = AsByte(ASTC_QUINTS[digits >> 2u], digits);
+            const uint at = pos + g * (3u * b + 7u), Q = AsQuintBits(d0, d1, d2);
             Put(at, m0, b);
             Put(at + b, Q & 7u, 3u);
             Put(at + b + 3u, m1, b);
@@ -319,7 +299,7 @@ uvec4 AsPack() {
     } else {
         /* the partition's seed, then the endpoint mode of both; ASTC's partition 0 first, which is subset 1 where the
            table says so */
-        const uint seed = ASTC_SEED2[as_part];
+        const uint seed = AS_SEED2(as_part);
         flip = seed >> 10u;
         Put(13u, seed & 1023u, 10u);
         Put(23u, as_cem << 2u, 6u);
