@@ -430,6 +430,40 @@ int main(void) {
         snx_remove_tree(d);
         free(d);
     }
+    /* a deep library of dumps that holds recompiled games, as the folder the driver recompiles into: a game's folder
+       is no folder of dumps. The scan went down into <name>_data/ and listed its exefs/main.nro and its romfs's NROs */
+    {
+        GuiGames g = {0};
+        char* d = snx_temp_dir(NULL);
+        const char* files[] = {"probe/probe_data/exefs/main.nro", "probe/probe_data/romfs/nro/sdk.nro",
+                               "ab/probe-o2/probe-o2_data/exefs/main.nro", "dumps/game.nsp"};
+        const char* programs[] = {"probe/probe", "ab/probe-o2/probe-o2"};
+        size_t k;
+        assert(d);
+        for (k = 0; k < sizeof files / sizeof *files; ++k) {
+            char *path = snx_format("%s/%s", d, files[k]), *folder = path ? snx_dirname(path) : NULL;
+            assert(folder && !snx_mkdirs(folder) && !snx_write_file(path, "fixture", 7));
+            free(folder);
+            free(path);
+        }
+        for (k = 0; k < sizeof programs / sizeof *programs; ++k) {
+#ifdef _WIN32
+            char* path = snx_format("%s/%s.exe", d, programs[k]);
+#else
+            char* path = snx_format("%s/%s", d, programs[k]);
+#endif
+            assert(path && !snx_write_file(path, "game", 4) && !snx_make_executable(path));
+            free(path);
+        }
+        assert(gui_games_add_deep(&g, d, GUI_GAMES_DUMP, 4, error, sizeof error) && !error[0]);
+        assert(g.count == 1 && !strcmp(g.names[0], "game.nsp"));
+        gui_games_free(&g);
+        assert(gui_games_add_deep(&g, d, GUI_GAMES_RUN | GUI_GAMES_DUMP, 4, error, sizeof error) && !error[0]);
+        assert(g.count == 3); /* the two games, each once, and the dump */
+        gui_games_free(&g);
+        snx_remove_tree(d);
+        free(d);
+    }
     /* the log a run writes for a game (gui_game_log), beside it in a folder no data folder holds; and the games by when
        each last ran: the newest log first, two of a time in the order they had, one never run after them, each group
        apart under its heading, a dump not ordered by a log of its name */

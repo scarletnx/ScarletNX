@@ -540,8 +540,11 @@ static bool add_games(GuiGames* games, const char* directory, int kinds, size_t 
                 free(sub);
         }
         if (!path && depth > 0 && names[i][0] != '.') { /* a folder of games, not one */
-            char* sub = snx_path_join(directory, names[i]);
-            if (sub && snx_is_dir(sub)) add_games(games, sub, kinds, first, depth - 1, error, 0);
+            /* a recompiled game's folder holds its program's NRO and its romfs's, which are no dumps of the player's,
+               when this library lists only dumps */
+            char *sub = snx_path_join(directory, names[i]), *game = folder_game(directory, names[i], GUI_GAMES_RUN);
+            if (sub && !game && snx_is_dir(sub)) add_games(games, sub, kinds, first, depth - 1, error, 0);
+            free(game);
             free(sub);
             continue;
         }
