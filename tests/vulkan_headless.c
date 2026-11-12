@@ -6285,6 +6285,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_capture_bench.inc"
 #include "vulkan_sparse_bench.inc"
 #include "vulkan_storage_lookup_bench.inc"
+#include "vulkan_stage_memory_bench.inc"
 #include "vulkan_storage_buffer_keep.inc"
 #include "vulkan_fragment_barrier.inc"
 #include "vulkan_capture_cap.inc"
@@ -6493,7 +6494,7 @@ static int run_headless(int argc, char** argv) {
     int nvn_benchmark = -1, indexed_map_benchmark = -1;
     u32 benchmark_sets = 0, benchmark_count = 16, benchmark_images = 0, benchmark_indexed = 0;
     u32 benchmark_sparse = 0, benchmark_storage = 0, benchmark_image = 0;
-    u32 benchmark_buffer = 0;
+    u32 benchmark_buffer = 0, benchmark_stage = 0;
     u32 benchmark_passes = 0;
     const char* pipeline_probe = NULL;
     int pipeline_probe_disable = 0;
@@ -6575,6 +6576,10 @@ static int run_headless(int argc, char** argv) {
             benchmark_buffer = 1;
             continue;
         }
+        if (!strcmp(argv[i], "--bench-stage-memory")) {
+            benchmark_stage = 1;
+            continue;
+        }
         if (!strncmp(argv[i], "--bench-pass-breaks=", 20)) {
             benchmark_passes = (u32)strtoul(argv[i] + 20, NULL, 10);
             continue;
@@ -6588,8 +6593,9 @@ static int run_headless(int argc, char** argv) {
                     "snx-test-vulkan: %s is not an option it takes: -H, --KEY=VALUE of the runtime's settings, "
                     "--bench-descriptors=N, --descriptor-images=N, --descriptor-indexed=N, --descriptor-count=N, "
                     "--bench-sparse-volume, --bench-sparse-texture, --bench-storage-lookup, --bench-storage-image, "
-                    "--bench-storage-buffer, --bench-pass-breaks=N, --nvn-draw-bench=N, --bench-indexed-map=N, "
-                    "--pipeline-probe=FILE, --pipeline-probe-disable-opt=0|1, --settings-ini=FILE\n",
+                    "--bench-storage-buffer, --bench-stage-memory, --bench-pass-breaks=N, --nvn-draw-bench=N, "
+                    "--bench-indexed-map=N, --pipeline-probe=FILE, --pipeline-probe-disable-opt=0|1, "
+                    "--settings-ini=FILE\n",
                     argv[i]);
             return 2;
         }
@@ -6702,6 +6708,15 @@ static int run_headless(int argc, char** argv) {
     }
     if (benchmark_storage) {
         int result = bench_storage_lookup();
+        vk_pipeline_quiesce();
+        CHECK(!snx_remove_tree(root));
+        free(root);
+        free(shot);
+        free(ppm);
+        return result;
+    }
+    if (benchmark_stage) {
+        int result = bench_stage_memory();
         vk_pipeline_quiesce();
         CHECK(!snx_remove_tree(root));
         free(root);
