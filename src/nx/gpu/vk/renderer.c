@@ -868,6 +868,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 LOG("vulkan: memory used and budgeted:%s\n", line);
             }
             vk_ledger_log();
+            vk_own_log();
             {
                 /* what the caches hold, which vk_mem_trim keeps within the budget */
                 u32 nrt, ntex, nbuf, parked, none;

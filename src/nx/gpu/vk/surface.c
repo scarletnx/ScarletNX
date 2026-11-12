@@ -1431,7 +1431,7 @@ int vk_surf_publish(Surf* s) {
     u32 kept = cpu_newer(s, size, &newer);
     u64 gw0 = gpu_mem_generation(), kat = 0, kbytes = 0;
     VkBuffer kbuf = VK_NULL_HANDLE;
-    r = vk_own_res_new(size);
+    r = vk_own_res_new(size, VK_OWN_BY_TARGET);
     if (!r) return 0;
     /* straight into the buffer that becomes the span's owner, as the copy engine's destinations go (dma.c): the bytes
        the GPU owns there are copied on the GPU, and only the CPU's cross the bus, once. Staged in host memory, the span
@@ -1517,7 +1517,7 @@ int vk_surf_keep_begin(Surf* s, VkImageKeep* k) {
         vk_own_res_ref(r);
     else { /* memory's bytes, with the targets pending over them, as a release's publish stages them */
         u32 mem_wgen = s->mem_wgen;
-        if (!(r = vk_own_res_new(size))) return 0;
+        if (!(r = vk_own_res_new(size, VK_OWN_BY_TARGET))) return 0;
         if (!vk_guest_read_device(s->gva, size, r->buf, 0)) {
             vk_own_res_unref(r);
             return 0;

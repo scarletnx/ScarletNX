@@ -22,7 +22,7 @@ static int uma_skip(void) {
 }
 /* a GPU result of size bytes of value, its writes recorded */
 static VkOwnRes* uma_owner(u64 size, u8 value) {
-    VkOwnRes* r = vk_own_res_new(size);
+    VkOwnRes* r = vk_own_res_new(size, VK_OWN_BY_DRAW);
     if (r && owned_test_fill(r->buf, 0, (u32)size, value)) {
         vk_own_res_unref(r);
         r = NULL;

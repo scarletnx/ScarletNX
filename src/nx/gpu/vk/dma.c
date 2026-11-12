@@ -241,7 +241,7 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
         if (!got) return dma_fail(o, "could not stage its source's", sspan);
     }
     /* those bytes as they are, read straight into the buffer that becomes their owner, run by run */
-    d = vk_own_res_new(dlen);
+    d = vk_own_res_new(dlen, VK_OWN_BY_COPY);
     for (u32 r = 0; d && r < need->druns; r++)
         if (!vk_guest_read_seen(o->dst.addr + need->dlo + r * need->dstride, need->drun, d->buf, r * need->drun)) {
             vk_own_res_unref(d);
