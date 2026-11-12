@@ -35,30 +35,29 @@ static const unsigned agb_cli =
     SNX_CLI_BIT(SNX_CLI_SHOT) | SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_FULLSCREEN) |
     SNX_CLI_BIT(SNX_CLI_HELP);
 static void usage(FILE* out) {
-    fputs(
-        "Usage: scarletnx-agb [OPTIONS] ROM.gba\n"
-        "       scarletnx-agb [OPTIONS] --game=recompiled/<name>\n"
-        "       <name> [OPTIONS]   (the game's copy of the runtime, in its folder)\n"
-        "Recompiles a Game Boy Advance ROM and plays it on the AGB board, in a window.\n"
-        "\n",
-        out);
+    fputs("Usage: scarletnx-agb [OPTIONS] ROM.gba|ROM.mb\n"
+          "       scarletnx-agb [OPTIONS] --game=recompiled/<name>\n"
+          "       <name> [OPTIONS]   (the game's copy of the runtime, in its folder)\n"
+          "Recompiles a Game Boy Advance ROM and plays it on the AGB board, in a window. A .mb is a MultiBoot ROM, a\n"
+          "program the console receives through the link cable: it plays with no cartridge, from EWRAM.\n"
+          "\n",
+          out);
     snx_cli_help(out, agb_cli);
-    fputs(
-        "AGB options:\n"
-        "  --press_len=MS         How long each scripted press is held (default 300)\n"
-        "  --registers            Print the CPU's registers when the run ends\n"
-        "  --aot_threads=N        The threads a recompile may take (0 to 1024), as the other drivers': a ROM's code\n"
-        "                         is one module, which compiles on 1 thread whatever N, and the recompile says so\n"
-        "\n"
-        "On the AGB, --frames runs with no window, sound or pacing, for tests. --shot writes the final frame as a\n"
-        "PPM image. --script=MS:KEYS,... presses keys MS after the run's start, KEYS in hex as KEYINPUT has them (1\n"
-        "A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down, 100 R, 200 L).\n"
-        "\n"
-        "The game's folder, named after the ROM's file, holds its save (<name>.sav), the recompiled module\n"
-        "(<name>_code.so), the copy of the runtime that plays it from then on (<name>) and <name>.ini, which names\n"
-        "the ROM and the console (source=, system=). A <ROM>.sav beside the ROM is read once when the folder has\n"
-        "none.\n",
-        out);
+    fputs("AGB options:\n"
+          "  --press_len=MS         How long each scripted press is held (default 300)\n"
+          "  --registers            Print the CPU's registers when the run ends\n"
+          "  --aot_threads=N        The threads a recompile may take (0 to 1024), as the other drivers': a ROM's code\n"
+          "                         is one module, which compiles on 1 thread whatever N, and the recompile says so\n"
+          "\n"
+          "On the AGB, --frames runs with no window, sound or pacing, for tests. --shot writes the final frame as a\n"
+          "PPM image. --script=MS:KEYS,... presses keys MS after the run's start, KEYS in hex as KEYINPUT has them (1\n"
+          "A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down, 100 R, 200 L).\n"
+          "\n"
+          "The game's folder, named after the ROM's file, holds its save (<name>.sav), the recompiled module\n"
+          "(<name>_code.so), the copy of the runtime that plays it from then on (<name>) and <name>.ini, which names\n"
+          "the ROM and the console (source=, system=). A <ROM>.sav beside the ROM is read once when the folder has\n"
+          "none; a MultiBoot ROM has no save memory.\n",
+          out);
 }
 
 /* The frame the host presents: 240x160 RGB, straight out of the display device. */
@@ -70,6 +69,9 @@ static int write_shot(const char* path, const uint32_t* framebuffer) {
     fclose(file);
     return 0;
 }
+
+/* a MultiBoot ROM, by its extension: the image the console receives through the link cable, which plays from EWRAM */
+static int multiboot_rom(const char* path) { return snx_ends_with_nocase(path, ".mb"); }
 
 /* the ROM's file name without its folder and its last extension: the game's folder's name */
 static char* game_name(const char* rom) {
@@ -258,7 +260,7 @@ int snx_agb_main(int argc, char** argv) {
         }
         path = rom;
         agb_board_init(&board);
-        if (agb_board_insert(&board, image, length, error, sizeof error)) {
+        if (!multiboot_rom(path) && agb_board_insert(&board, image, length, error, sizeof error)) {
             fprintf(stderr, "scarletnx-agb: %s: %s\n", path, error);
             free(image);
             agb_board_destroy(&board);
@@ -268,13 +270,20 @@ int snx_agb_main(int argc, char** argv) {
             free(name);
             return 1;
         }
-        free(image);
         base = snx_format("%s/%s_code", folder, name);
         save = snx_format("%s/%s.sav", folder, name);
         if (agb_map_init(&map, &board, error, sizeof error)) {
             fprintf(stderr, "scarletnx-agb: %s\n", error);
+            free(image);
             goto board;
         }
+        /* a MultiBoot ROM goes where the BIOS receives one, in EWRAM, which is the map's now */
+        if (multiboot_rom(path) && agb_board_multiboot(&board, image, length, error, sizeof error)) {
+            fprintf(stderr, "scarletnx-agb: %s: %s\n", path, error);
+            free(image);
+            goto map;
+        }
+        free(image);
         if (!map.mirrored)
             fprintf(stderr,
                     "scarletnx-agb: the host's pages are %zu bytes, past the %u a memory mirror can be a view at: each "

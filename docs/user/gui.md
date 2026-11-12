@@ -79,7 +79,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   focus again. A tap on a finished run returns to the menu, and one on a
   running run's ESC line aborts it. Android's back button is ESC. On a screen packed with
   pixels (a phone) the text takes the display's own scale, as far as the menu still fits.
-- **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK**, **Load GBA ROM** and
+- **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK**, **Load GBA/MultiBoot ROM** and
   **Load Android APK/XAPK** open a screen as the keys': a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
   picker (on Linux the desktop's, else zenity's). Dropping a file on the window and Ctrl+V with
   a path work too. On the Switch's, **P** (on a phone a tap on *Folder* at the foot, on a pad Y) opens the system's
@@ -105,9 +105,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   into its game's folder of `recompiled/` (named after its title ID), compiles its code ahead of time and plays it,
   compiling at run time what it missed. A VPK extracted and compiled before plays at once. See
   [Vita driver](../platforms/vita/README.md) for limits.
-- **Load GBA ROM** uses `scarletnx-agb`, the AGB board runtime, with the menu's data folder as its `--data`: it makes
-  the game's folder of `recompiled/` (named after the ROM's file), its module and its copy of the runtime, and plays
-  it in a window. See [AGB board](../platforms/agb/README.md).
+- **Load GBA/MultiBoot ROM** uses `scarletnx-agb`, the AGB board runtime, with the menu's data folder as its
+  `--data`, on a `.gba` or a `.mb` (a program the console receives through the link cable): it makes the game's folder
+  of `recompiled/` (named after the ROM's file), its module and its copy of the runtime, and plays it in a window. See [AGB board](../platforms/agb/README.md).
 - **Load Android APK/XAPK** uses `scarletnx-android` on an `.apk`, `.xapk` or `.apks` file, with no other argument.
   The driver installs a bundle of split APKs itself. The app runs as it is, as a Linux program does: nothing is
   compiled first, and its recent row shows at once. An APK in a games or dumps folder shows in Games, and Enter runs

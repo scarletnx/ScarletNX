@@ -40,8 +40,9 @@ static char* block_name(size_t index) { return snx_format("snx_agb_%zu", index);
 
 /* FNV-1a (snx_fnv1a) tells one ROM, or one block's code, from another */
 static uint64_t rom_hash(const AgbBoard* board) {
-    return board->has_cartridge ? snx_fnv1a(SNX_FNV_BASIS, board->cartridge.data, board->cartridge.size)
-                                : SNX_FNV_BASIS;
+    return board->has_cartridge    ? snx_fnv1a(SNX_FNV_BASIS, board->cartridge.data, board->cartridge.size)
+           : board->multiboot_size ? board->multiboot_hash
+                                   : SNX_FNV_BASIS;
 }
 
 /* The BIOS and the cartridge windows hold the same code for the whole run; the game writes over the rest */
@@ -477,9 +478,9 @@ int agb_recomp_load_cache(AgbRecomp* recomp, AgbBoard* board, char* error, size_
 }
 
 int agb_recomp_build(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size) {
-    if (!recomp->base || !recomp->count) discover(recomp, board, 0x08000000, 0);
+    if (!recomp->base || !recomp->count) discover(recomp, board, agb_board_entry(board), 0);
     if (!recomp->count) {
-        snprintf(error, error_size, "no code found at the ROM entry");
+        snprintf(error, error_size, "no code found at the entry 0x%08X", agb_board_entry(board));
         return -1;
     }
     if (recomp->dirty || !recomp->handle)

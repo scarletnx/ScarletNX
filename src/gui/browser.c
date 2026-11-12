@@ -32,7 +32,9 @@ bool gui_is_cia(const char* name) {
            suffix(name, ".bcia") || suffix(name, ".zcci") || suffix(name, ".zcxi") || suffix(name, ".zcia");
 }
 bool gui_is_vpk(const char* name) { return suffix(name, ".vpk"); }
-bool gui_is_gba(const char* name) { return suffix(name, ".gba"); }
+/* a GBA ROM: a cartridge's image, or a MultiBoot ROM (.mb), the program the console receives through the link cable */
+bool gui_is_gba(const char* name) { return suffix(name, ".gba") || gui_is_multiboot(name); }
+bool gui_is_multiboot(const char* name) { return suffix(name, ".mb"); }
 /* an Android app, one APK or a bundle of split APKs (an XAPK, an APKS) that scarletnx-android installs */
 bool gui_is_apk(const char* name) { return suffix(name, ".apk") || suffix(name, ".xapk") || suffix(name, ".apks"); }
 bool gui_is_dump(const char* name) {

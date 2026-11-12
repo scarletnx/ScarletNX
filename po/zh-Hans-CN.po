@@ -2184,8 +2184,8 @@ msgid "Recompiles a PS Vita homebrew .vpk, then runs it"
 msgstr "重新编译 PS Vita 自制程序 .vpk，然后运行"
 
 #: src/gui/main.c
-msgid "Runs a GBA ROM on the emulated AGB board"
-msgstr "在模拟的 AGB 主板上运行 GBA ROM"
+msgid "Runs a GBA ROM or MultiBoot ROM on the emulated AGB board"
+msgstr "在模拟的 AGB 主板上运行 GBA ROM 或 MultiBoot ROM"
 
 #: src/gui/main.c
 msgid "Runs an Android app's .apk, .xapk or .apks"
@@ -2265,6 +2265,10 @@ msgstr "3DS 游戏，用 scarletnx-3ds 打开"
 #: src/gui/main.c
 msgid "Vita VPK, opened with scarletnx-vita"
 msgstr "Vita VPK，用 scarletnx-vita 打开"
+
+#: src/gui/main.c
+msgid "GBA MultiBoot ROM, played with scarletnx-agb"
+msgstr "GBA MultiBoot ROM，用 scarletnx-agb 运行"
 
 #: src/gui/main.c
 msgid "GBA ROM, played with scarletnx-agb"
@@ -5474,8 +5478,8 @@ msgid "Load Vita VPK"
 msgstr "载入 Vita VPK"
 
 #: src/gui/ui.txt
-msgid "Load GBA ROM"
-msgstr "载入 GBA ROM"
+msgid "Load GBA/MultiBoot ROM"
+msgstr "载入 GBA/MultiBoot ROM"
 
 #: src/gui/ui.txt
 msgid "Load Android APK/XAPK"
@@ -5968,6 +5972,12 @@ msgstr "启动"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "LLVM 内部选项"
+
+#~ msgid "Runs a GBA ROM on the emulated AGB board"
+#~ msgstr "在模拟的 AGB 主板上运行 GBA ROM"
+
+#~ msgid "Load GBA ROM"
+#~ msgstr "载入 GBA ROM"
 
 #~ msgid ", %d threads"
 #~ msgstr "，%d 个线程"
