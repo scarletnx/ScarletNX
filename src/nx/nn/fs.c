@@ -18,8 +18,9 @@
    function the thread is in (sdk_own).
 
    Mount kinds here: the game's RomFS (MountRom) and an add-on content's, read through fs.c's images, and the
-   account's save (also read only), cache storage, temporary storage and the SD card, on the host folders fs.c gives
-   them. The mounts, files and directories are g_hle.nnfs's and g_hle.fs's slots, which a save state holds.
+   account's save (also read only), the device's save, cache storage, temporary storage and the SD card, on the host
+   folders fs.c gives them. The mounts, files and directories are g_hle.nnfs's and g_hle.fs's slots, which a save
+   state holds.
 
    Locks: g_nnfs.lock guards the tables, and is taken before fs_lock (the tree's) when both are held. */
 #include "nx/nn/fs.h"
@@ -127,7 +128,7 @@ enum {
 #define TAG_MASK ((u64)3 << 62)
 
 /* the save types of a SaveDataAttribute */
-enum { SAVE_ACCOUNT = 1, SAVE_TEMPORARY = 4, SAVE_CACHE = 5 };
+enum { SAVE_ACCOUNT = 1, SAVE_DEVICE = 3, SAVE_TEMPORARY = 4, SAVE_CACHE = 5 };
 /* the write state of an open file, as the SDK's file accessor keeps it */
 enum { WRITE_CLEAN, WRITE_NEEDS_FLUSH, WRITE_FAILED };
 
@@ -750,6 +751,11 @@ u32 nnfs_mount_save_data(CPU* c, u64 name, u64 uid) {
     u8 id[16];
     memcpy(id, hook_host(c, uid), sizeof id); /* nn::account::Uid, two u64: the fs UserId is the same bytes */
     return mount_save(c, "MountSaveData", name, id, SAVE_ACCOUNT, 0, 0);
+}
+/* MountDeviceSaveData: the application's save that the device keeps, for every user. The SDK opens it as it does the
+   account's, in the user's space, with a SaveDataAttribute of type Device and no user (read in SDK 0.12.16) */
+u32 nnfs_mount_device_save_data(CPU* c, u64 name) {
+    return mount_save(c, "MountDeviceSaveData", name, g_nobody, SAVE_DEVICE, 0, 0);
 }
 /* The saves of an application: the game's own are here, and no other game's are. Its own id's save of a user is made
    when it is opened (fs_save_root), as the console makes it at the game's start, so it is there */
