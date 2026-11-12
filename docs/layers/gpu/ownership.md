@@ -221,6 +221,11 @@ macOS have no alias pool yet, so no mirror and no traps.
   Use the build revision printed at startup and that build's unstripped binary/debug symbols to resolve addresses;
   a file offset must be translated through the ELF load segments before using it as an addr2line address.
   See https://man7.org/linux/man-pages/man5/proc_pid_syscall.5.html for the blocked-thread register format.
+  With traps by protection (no userfaultfd minor faults, as on the Android phones reported so far, or
+  `memory_traps=1`) the thread waits in its handler's futex, so `/proc` shows only that wait. There the handler keeps
+  the access's context instead: the report gives its PC, SP and exact address (`access-address=`), on aarch64 the link
+  register too (`lr[0]`, the caller of a leaf such as memcpy), and scans the stack from that SP, bionic's named thread
+  stacks included.
 - Landing is a memcpy into the mirror (on Windows into the trapped pages in place, opened as it goes). A producer's
   GPU copy keeps the range's layout (block linear surfaces are swizzled on the GPU), and covers the range's padding:
   it is filled from guest memory when the producer takes the range.

@@ -562,10 +562,20 @@ static int busy_child(int write, int restricted) {
     diagnostic_log = 1;
     if (own_begin(a, 0x1000, r, 0)) return 2;
     g_busy_tid = plat_tid();
-    fprintf(stderr, "(an abort with the thread and address is expected next)\n");
+    fprintf(stderr, "(an abort with the thread and address is expected next) busy access=%llx\n",
+            (unsigned long long)(uintptr_t)(write ? GP(a) : GP(a) + 3));
     if (write) *(volatile u8*)GP(a) = 0x42;
     if (GP(a)[3] == 0x13) return 3; /* the fault must not be answered */
     return 4;
+}
+/* the report's line that starts with what, up to its end, in line (empty when there is none) */
+static void report_line(const char* report, const char* what, char* line, size_t cap) {
+    const char* at = strstr(report, what);
+    size_t n = 0;
+    if (at)
+        while (at[n] && at[n] != '\n' && n + 1 < cap) n++;
+    if (at) memcpy(line, at, n);
+    line[n] = 0;
 }
 static void test_busy(const char* self, int write, int restricted) {
     FILE* output = tmpfile();
@@ -596,6 +606,22 @@ static void test_busy(const char* self, int write, int restricted) {
     /* Restricted procfs must explain missing context rather than silently printing the handler's PC. */
     CHECK(strstr(report, "host-pc=") || strstr(report, "unavailable"));
     if (strstr(report, "host-pc=")) CHECK(strstr(report, "ownership-fault: pc[0] host="));
+    /* the code it names is the access's, busy_child's in this program, and the address the access's own: under
+       protection traps the thread waits in its handler's futex, whose code is libc's */
+    char pc[1024], given[256], told[256];
+    const char* name = strrchr(self, '/') ? strrchr(self, '/') + 1 : self;
+    report_line(report, "ownership-fault: pc[0] host=", pc, sizeof pc);
+    if (pc[0] && !strstr(pc, name)) fprintf(stderr, "busy child: the faulting code named is not %s's: %s\n", name, pc);
+    CHECK(!pc[0] || strstr(pc, name));
+    report_line(report, "busy access=", given, sizeof given);
+    report_line(report, "access-address=", told, sizeof told);
+    CHECK(given[0]);
+    if (told[0]) {
+        unsigned long long a = 0, b = 0;
+        CHECK(sscanf(given, "busy access=%llx", &a) == 1 && sscanf(told, "access-address=%llx", &b) == 1);
+        if (a != b) fprintf(stderr, "busy child: access-address=%llx, the access was at %llx\n", b, a);
+        CHECK(a == b);
+    }
 }
 #endif
 
