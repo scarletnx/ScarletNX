@@ -9,6 +9,13 @@
    again as the SDK does after a send, RequestImmediateTransmission has nothing to send, and the status is that of an
    empty queue.
 
+   From SDK 16 a game also sends a report at once (PlayReport::Send), which hands the report's buffer to the service and gives
+   the game an AsyncContext to wait on. With no service the context is the SDK's own finished one, no object and a
+   Result, as its AsyncContext(Result) makes: the SDK's GetCompletionEvent gives such a context a signaled event,
+   GetResult its Result and Cancel nothing. Send has the limit of its own, 900 in any 90 minutes, past which the
+   context holds the limit's Result and the report is left; an event id Save refuses stops the SDK's Send, so that
+   case runs the SDK's own code.
+
    From SDK 10 Save has a limit, 900 calls in any 90 minutes as SDK 20's is: a call past the limit returns success and
    leaves the report as it is. The SDK also signals its own event for that (GetOverSaveFrequencyLimitEvent), which stays with the SDK's
    code and is not signaled here. Any other nn::prepo function that needs the service opens prepo:u, and sm stops the
@@ -21,6 +28,8 @@
 #include "nx/runtime/platform/log.h"
 #include "common/platform/thread.h"
 
+#define PREPO_SEND_LIMIT       0xc81u /* the play report module (129), description 6 */
+#define PREPO_SYM_SEND         "_ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE"
 #define PREPO_EVENT_ID_INVALID 0xa81u                      /* the play report module (129), description 5 */
 #define PREPO_LIMIT_NS         (5400ull * 1000000000ull)    /* 90 minutes */
 #define PREPO_EVENT_ID         0x20                         /* the event id at the report's start: 31 characters at most */
@@ -55,20 +64,20 @@ static void clear(CPU* c, const HookLayout_nn_prepo_PlayReport* L, u64 report) {
     hook_put_u64(c, L->used, report, 3);
 }
 
-/* a save past SDK 20's limit: the 900th save before this one less than 90 minutes ago */
-static int over_limit(void) {
+/* a save or a send past the limit: the 900th before this one less than 90 minutes ago, in the ring of its kind */
+static int over_ring(u64* count, u64* at) {
     u64 now = guest_ns();
     pm_lock(&g_nnprepo.lock);
-    HlePrepo* s = &g_hle.prepo;
-    u64 slot = s->saved % PREPO_SAVES;
-    int over = s->saved >= PREPO_SAVES && now - s->at[slot] < PREPO_LIMIT_NS;
+    u64 slot = *count % PREPO_SAVES;
+    int over = *count >= PREPO_SAVES && now - at[slot] < PREPO_LIMIT_NS;
     if (!over) {
-        s->at[slot] = now;
-        s->saved++;
+        at[slot] = now;
+        ++*count;
     }
     pm_unlock(&g_nnprepo.lock);
     return over;
 }
+static int over_limit(void) { return over_ring(&g_hle.prepo.saved, g_hle.prepo.at); }
 
 static u32 save(CPU* c, const HookLayout_nn_prepo_PlayReport* L, u64 report) {
     if (!event_id_ok(c, report)) return PREPO_EVENT_ID_INVALID;
@@ -103,3 +112,30 @@ u32 nnprepo_get_transmission_status(CPU* c, u64 status) {
    prepo:u and its end closes it: there is no session to open, and every function that would use it is answered here */
 void nnprepo_ipc_initialize(CPU* c) { (void)c; }
 void nnprepo_ipc_finalize(CPU* c) { (void)c; }
+
+/* a finished context at out: no service object, and r */
+static void context(CPU* c, const HookLayout_nn_prepo_AsyncContext* A, u64 out, u32 r) {
+    hook_put_addr(c, A->object, out, 0);
+    hook_put_u32(c, A->result, out, r);
+}
+/* PlayReport::Send, whose AsyncContext the caller passes in x8: the limit first, as the SDK orders them. A report
+   sent leaves the object with no buffer, as the SDK's does once the service has taken it */
+void nnprepo_send(CPU* c, const HookLayout_nn_prepo_PlayReport* L, const HookLayout_nn_prepo_AsyncContext* A,
+                  u64 report, u64 uid) {
+    u64 out = c->x[8];
+    (void)uid;
+    if (over_ring(&g_hle.prepo.sent, g_hle.prepo.sent_at)) {
+        context(c, A, out, PREPO_SEND_LIMIT);
+        return;
+    }
+    if (!event_id_ok(c, report)) {
+        u64 at = hook_site(PREPO_SYM_SEND);
+        if (!at) fatal("nn::prepo: %s has no code of its own to run", PREPO_SYM_SEND);
+        hook_run_original(c, at);
+        return;
+    }
+    LOGV("prepo: the report %.31s (%llu bytes), sent at once, is kept nowhere\n", (const char*)hook_host(c, report),
+         (unsigned long long)hook_get_u64(c, L->used, report));
+    hook_put_addr(c, L->buffer, report, 0);
+    context(c, A, out, 0);
+}

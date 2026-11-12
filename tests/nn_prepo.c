@@ -27,6 +27,18 @@ void logf_(int lvl, const char* fmt, ...) {
     (void)lvl;
     (void)fmt;
 }
+/* hook.c's: where Send is hooked, and the SDK's own code run in a handler's place, counted */
+#define SEND_AT 0x7000u
+static unsigned own_runs;
+u64 hook_site(const char* symbol) { return !strcmp(symbol, PREPO_SYM_SEND) ? SEND_AT : 0; }
+void hook_run_original(CPU* c, u64 addr) {
+    (void)c;
+    if (addr == SEND_AT) own_runs++;
+}
+void fatal(const char* fmt, ...) {
+    fprintf(stderr, "fatal: %s\n", fmt);
+    exit(1);
+}
 void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
@@ -137,7 +149,45 @@ int main(void) {
                           &first) >= 0);
     }
 
-    /* SDK 20's limit: the saves so far, then up to 900 in the 90 minutes; the 901st succeeds and leaves the report */
+    /* Send through prepo.hook, for the SDKs that have it (16 on): the context the caller passes in x8 comes back
+       finished, with no object and success, its padding left; the report has no buffer after it; an older SDK's
+       module gets no hook */
+    {
+        static const char send[] = PREPO_SYM_SEND;
+        static const u32 with_send[] = {0x100200, 0x120302, 0x130303, 0x140503};
+        u32 versions[HOOK_KEYS] = {0};
+        int k = -1;
+        versions[HOOK_SDK] = 0x0d0305;
+        CHECK(hook_select(&hook_table, send, versions, &first) == -2);
+        for (unsigned i = 0; i < sizeof with_send / sizeof with_send[0]; i++) {
+            versions[HOOK_SDK] = with_send[i];
+            k = hook_select(&hook_table, send, versions, &first);
+            CHECK(k >= 0 && !strcmp(hook_handler[k], "nnprepo_send"));
+        }
+        g_hle.prepo = (HlePrepo){0};
+        for (int i = 0; i <= 901; i++) {
+            const char* id = i == 901 ? "Bad id" : "event_1";
+            report(&v20, id, 0x100);
+            memset(mem + 0x300, 0xee, 0x10);
+            c->x[0] = REPORT, c->x[1] = 0x200, c->x[8] = 0x300, c->x[30] = 0x1234, c->pc = 0;
+            if (i == 901) test_ns += 5400ull * 1000000000ull; /* 90 minutes on: under the limit again */
+            hook_fn[k](c, 0);
+            if (i < 900) { /* sent: no object, success, no buffer left in the report */
+                CHECK(c->pc == 0x1234 && snx_ld_le64(mem + 0x300) == 0 && snx_ld_le32(mem + 0x308) == 0);
+                CHECK(snx_ld_le32(mem + 0x30c) == 0xeeeeeeeeu && hook_get_addr(c, v20.buffer, REPORT) == 0);
+                CHECK(hook_get_u64(c, v20.capacity, REPORT) == 0x100 && !own_runs);
+            } else if (i == 900) { /* past the limit: its Result in the context, the report as it was */
+                CHECK(snx_ld_le64(mem + 0x300) == 0 && snx_ld_le32(mem + 0x308) == 0xc81);
+                CHECK(hook_get_addr(c, v20.buffer, REPORT) == BUFFER && !own_runs);
+            } else { /* an event id the SDK refuses: its own code, the context and the report untouched here */
+                CHECK(own_runs == 1 && mem[0x300] == 0xee && hook_get_addr(c, v20.buffer, REPORT) == BUFFER);
+            }
+            test_ns += 1000000000ull;
+        }
+        CHECK(g_hle.prepo.saved == 0); /* Send's limit is its own, not Save's */
+    }
+
+    /* the limit of SDK 10 on: the saves so far, then up to 900 in the 90 minutes; the 901st succeeds and leaves the report */
     g_hle.prepo = (HlePrepo){0};
     for (int i = 0; i < 900; i++) {
         report(&v20, "event_1", 0x100);
