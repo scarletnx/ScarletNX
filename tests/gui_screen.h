@@ -66,6 +66,7 @@ static inline const uint8_t* font_rows(int c) { return gui_glyph_rows(c); }
 #define ICON_PANEL_RIGHT         "\uE032"
 #define ICON_EYE                 "\uE033"
 #define ICON_KEYBOARD            "\uE034"
+#define ICON_SKIP_FORWARD        "\uE035"
 static inline void is_icon(const char* text, unsigned icon) {
     const char* at = text;
     assert(gui_utf8_step(&at) == icon && !*at);
@@ -124,7 +125,8 @@ static inline void icons_are(void) {
     is_icon(ICON_PANEL_RIGHT, GUI_ICON_PANEL_RIGHT);
     is_icon(ICON_EYE, GUI_ICON_EYE);
     is_icon(ICON_KEYBOARD, GUI_ICON_KEYBOARD);
-    assert(GUI_ICON_KEYBOARD + 1 == GUI_ICON_END); /* every icon named here */
+    is_icon(ICON_SKIP_FORWARD, GUI_ICON_SKIP_FORWARD);
+    assert(GUI_ICON_SKIP_FORWARD + 1 == GUI_ICON_END); /* every icon named here */
 }
 /* where a font's pixel k (from a glyph's corner) is read with letters half halves of a cell big: a whole scale s (2 * s
    of them) its block's corner, k * s, so a glyph is found at its corner alone; a half step's pixels, a pixel and two by
