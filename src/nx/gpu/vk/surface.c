@@ -797,12 +797,20 @@ void vk_rt_reload(u64 gva) {
     vk_resource_end(VK_RESOURCE_RT_RELOAD, scope);
 }
 
-/* a depth target whose Vulkan format holds the guest's bytes (Z32F as D32_SFLOAT, Z16 as D16_UNORM): its depth
-   aspect copies out in the guest's own layout. The packed ones (the Z24S8 kinds, Z32F_X24S8) are packed on the GPU
-   (vk_depth_pack); a scaled or multisampled packed one would need a depth blit first and stays on the GPU */
+/* S8's target, the one depth format of a byte a texel: its stencil aspect is the guest's bytes */
+static int stencil_alone(const Surf* s) { return s->f.depth && s->f.bpp == 1; }
+/* a depth target whose Vulkan format holds the guest's bytes (Z32F as D32_SFLOAT, Z16 as D16_UNORM, S8's stencil): its
+   depth (or stencil) aspect copies out in the guest's own layout. The packed ones (the Z24S8 kinds, Z32F_X24S8) are
+   packed on the GPU (vk_depth_pack); a scaled or multisampled packed one would need a depth blit first and stays on
+   the GPU, as a multisampled S8 one, whose samples vk_ms_unpack reads from the depth */
 static int depth_copies_raw(const Surf* s) {
-    return (s->f.vk == VK_FORMAT_D32_SFLOAT || s->f.vk == VK_FORMAT_D16_UNORM) && s->sw == s->w && s->sh == s->h &&
-           (!s->msaa || vk_ms_moves(s));
+    return (s->f.vk == VK_FORMAT_D32_SFLOAT || s->f.vk == VK_FORMAT_D16_UNORM || stencil_alone(s)) && s->sw == s->w &&
+           s->sh == s->h && (!s->msaa || (vk_ms_moves(s) && !stencil_alone(s)));
+}
+static VkImageAspectFlags flush_aspect(const Surf* s) {
+    return !s->f.depth        ? VK_IMAGE_ASPECT_COLOR_BIT
+           : stencil_alone(s) ? VK_IMAGE_ASPECT_STENCIL_BIT
+                              : VK_IMAGE_ASPECT_DEPTH_BIT;
 }
 static int depth_packs(const Surf* s) {
     return !depth_copies_raw(s) && vk_depth_pack_mode(s->fkey & 0xFFFF) >= 0 && s->sw == s->w && s->sh == s->h &&
@@ -852,12 +860,11 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
             vk_depth_pack(cb, s, layer, buf, at + (u64)(layer - part->layer) * slice, pitch);
             continue;
         }
-        VkBufferImageCopy c = {
-            .bufferOffset = at + (u64)(layer - part->layer) * slice,
-            .bufferRowLength = pitch / s->f.bpp,
-            .imageSubresource = {s->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
-            .imageOffset = {0, (i32)part->y, 0},
-            .imageExtent = {s->w, part->rows, depth}};
+        VkBufferImageCopy c = {.bufferOffset = at + (u64)(layer - part->layer) * slice,
+                               .bufferRowLength = pitch / s->f.bpp,
+                               .imageSubresource = {flush_aspect(s), 0, layer, 1},
+                               .imageOffset = {0, (i32)part->y, 0},
+                               .imageExtent = {s->w, part->rows, depth}};
         VmaAllocation tm;
         VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : vk_unscaled_image(s, 1, &tm);
         if (!t)

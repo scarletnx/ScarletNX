@@ -147,14 +147,14 @@ VkFmt vk_zt_format(u32 f) {
         case 0x14:
         case 0x15:
         case 0x16:
-        case 0x17: /* S8: only the stencil is used */
+        case 0x17: /* S8: only the stencil is used, a byte a texel in guest memory */
         case 0x18:
-            /* D24S8 isn't supported everywhere (AMD), D32F S8 holds the same values. Its texels are still 4 bytes
-               in guest memory, which is what bpp counts */
+            /* D24S8 isn't supported everywhere (AMD), D32F S8 holds the same values. Their texels keep their size in
+               guest memory, which is what bpp counts: 4 bytes, S8's 1 */
             return D(has_features(VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
                          ? VK_FORMAT_D24_UNORM_S8_UINT
                          : VK_FORMAT_D32_SFLOAT_S8_UINT,
-                     4, 1);
+                     f == 0x17 ? 1 : 4, 1);
         case 0x19: return D(VK_FORMAT_D32_SFLOAT_S8_UINT, 8, 1);
     }
     static u32 said[8];
