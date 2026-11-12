@@ -917,6 +917,73 @@ static void test_old_files(App* app) {
     puts("PASS the old files a page each, Move All, Delete All asked twice keeping saves, Not Now");
 }
 
+/* the games' own saves, however many games, one Old Files page: how many games and a line each, rolling under the
+   page's lines when they do not fit, how many more said; Delete All deletes none of them, Move All moves them all, its
+   page then a line a game */
+static void test_saves_one_page(App* app) {
+    char *config = config_of(app), *file = join(config, "setup.ini"), path[SNX_PATH_SIZE];
+    const char* labels[GUI_SETUP_CHOICES];
+    bool more = false;
+    int i, window_w, window_h;
+    put(file, "[setup]\nversion = 1\nnotices = 99\n");
+    assert(SDL_GetWindowSize(app->window, &window_w, &window_h));
+    assert(SDL_SetWindowSize(app->window, 800, 1)); /* the least a window takes: its rows too few for 14 */
+    SDL_SyncWindow(app->window);
+    for (i = 0; i < 14; ++i) {
+        assert(!snx_path_format(path, sizeof path, "%s/0100000000AB%X000/0100000000AB%X000_data/save/device/d.bin",
+                                app->games_dir, i, i));
+        put(path, "save");
+    }
+    left_behind(app);
+    while (!__atomic_load_n(&app->left_space->done, __ATOMIC_ACQUIRE)) SDL_Delay(1);
+    assert(app->lefts == 14 && left_groups(app) == 1);
+    setup_start(app);
+    assert(app->setup_on && page(app) == SETUP_LEFT && setup_labels(app, labels) == 3 &&
+           !strcmp(choice_label(app), "Not Now"));
+    render(app);
+    shows(app, "Old Files 1/1", rgb(head_ink(app)));
+    shows(app, "The games' own saves: 14 games", rgb(app->theme.ink));
+    shows(app, "Move All    14 entries move", rgb(app->theme.ink));
+    shows(app, "Delete All  Stays: a save,", rgb(app->theme.ink));
+    shows(app, "0100000000AB0000  1 KB", rgb(app->theme.ink)); /* the first game, a line */
+    for (i = 1; i < 14; ++i) {                                 /* the rest under it, said; they roll into view */
+        char said[64];
+        int x, y;
+        snprintf(said, sizeof said, "and %d more, which Share Log lists", i);
+        more = more || find_text(app, said, rgb(app->theme.soft), 1, &x, &y);
+    }
+    assert(more);
+    shows(app, "\x1f", rgb(app->theme.soft));
+    key(app, SDLK_UP); /* Delete All: none of them, said, nothing asked */
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown && app->setup_failed &&
+           !strcmp(app->message, "Delete All deletes none of these: a save and the console's keys are only moved"));
+    key(app, SDLK_UP); /* Move All */
+    key(app, SDLK_RETURN);
+    assert(app->left_did == 1 && app->moved.count == 14 && app->moved.done == 14);
+    render(app); /* a line a game, rolling: none cut */
+    shows(app, "Move All: 14 done, 0 not", rgb(head_ink(app)));
+    shows(app, "\x1f", rgb(app->theme.soft));
+    for (i = 0; i < 14; ++i) {
+        assert(!snx_path_format(path, sizeof path, "%s/save/device/0100000000AB%X000/d.bin", app->data_dir, i));
+        assert(snx_is_file(path));
+    }
+    key(app, SDLK_RETURN);
+    assert(!app->setup_on && app->lefts == 14); /* in the data folder's save/ now, for the next Move All (left_save) */
+    for (i = 0; i < 14; ++i) {
+        assert(!snx_path_format(path, sizeof path, "%s/0100000000AB%X000", app->games_dir, i));
+        assert(!snx_remove_tree(path));
+    }
+    assert(!snx_path_format(path, sizeof path, "%s/save", app->data_dir) && !snx_remove_tree(path));
+    left_behind(app);
+    assert(SDL_SetWindowSize(app->window, window_w, window_h));
+    SDL_SyncWindow(app->window);
+    layout(app);
+    free(file);
+    free(config);
+    puts("PASS the games' own saves one page, rolling, moved and never deleted");
+}
+
 /* in another language: the notices in its words (setup.c marks them), and the rows' labels padded to the columns their
    letters take, not their bytes: xx's "at\303\251" (3 columns in 4 bytes) and "agora" lined up */
 static void test_translated(App* app) {
@@ -1219,6 +1286,7 @@ int main(void) {
     test_notice(&app);
     test_clean_notice(&app);
     test_old_files(&app);
+    test_saves_one_page(&app);
     test_translated(&app);
     test_places(&app);
     test_skip(&app);
