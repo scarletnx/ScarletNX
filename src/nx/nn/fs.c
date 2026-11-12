@@ -77,6 +77,8 @@
 #define SYM_RENAME_DIR         "_ZN2nn2fs15RenameDirectoryEPKcS2_"
 #define SYM_FREE_SPACE         "_ZN2nn2fs16GetFreeSpaceSizeEPlPKc"
 #define SYM_TOTAL_SPACE        "_ZN2nn2fs17GetTotalSpaceSizeEPlPKc"
+#define SYM_TIME_STAMP         "_ZN2nn2fs24GetFileTimeStampForDebugEPNS0_13FileTimeStampEPKc"
+#define SYM_TIME_STAMP_RAW     "_ZN2nn2fs27GetFileTimeStampRawForDebugEPNS0_16FileTimeStampRawEPKc"
 #define SYM_COMMIT             "_ZN2nn2fs6CommitEPKc"
 #define SYM_IS_PATH_MOUNTED    "_ZN2nn2fs13IsPathMountedEPKc"
 #define SYM_PATH_MAX           "_ZN2nn2fs16GetPathLengthMaxEPmPKc"
@@ -94,6 +96,7 @@ enum {
     R_PATH_NOT_FOUND = FSR(1),
     R_MOUNT_EXISTS = FSR(60),
     R_TARGET_NOT_FOUND = FSR(1002), /* a save that is not there: another application's */
+    R_NOT_IMPLEMENTED = FSR(3001),  /* what the SDK's file system answers a request it has no code for */
     R_OUT_OF_RANGE = FSR(3005),
     R_CACHE_TOO_SMALL = FSR(6000), /* MountRom's cache buffer is smaller than QueryMountRomCacheSize's */
     R_NEGATIVE_COUNT = FSR(6001),
@@ -1423,6 +1426,42 @@ u32 nnfs_get_free_space_size(CPU* c, u64 size, u64 path) {
 }
 u32 nnfs_get_total_space_size(CPU* c, u64 size, u64 path) {
     return space(c, SYM_TOTAL_SPACE, "GetTotalSpaceSize", size, path, 1);
+}
+
+/* A file's time stamps, which the SDK asks its file system for: the times it was created, modified and accessed in
+   seconds since 1970, and whether they are set. A save's files have the one time the host's tree keeps, for all
+   three. A RomFS keeps none: the SDK's file system answers the request as not implemented, which stops the game.
+   The raw form is the service's 0x20 bytes; the other is filled from it, the three times and the flag's byte (read
+   in SDK 3.5, 10.4 and 20.5), so the 7 bytes after the flag are the game's */
+static u32 time_stamp(CPU* c, const char* symbol, const char* function, u64 out, u64 path, int raw) {
+    char p[PATH_MAX_LEN + 1];
+    u32 r;
+    u64 seconds = 0;
+    int m = path_take(c, path, p, &r);
+    if (m < 0) return (u32)sdk_own(c, symbol);
+    if (!r && !out) r = R_NULL_ARGUMENT;
+    if (!r && g_hle.nnfs.mounts[m].kind == MOUNT_ROM) {
+        r = R_NOT_IMPLEMENTED;
+    } else if (!r) {
+        fs_lock();
+        r = fs_root_time_stamp(mount_root(m), p, &seconds);
+        fs_unlock();
+    }
+    pm_unlock(&g_nnfs.lock);
+    if (!r) {
+        put_u64(c, out, seconds);
+        put_u64(c, out + 8, seconds);
+        put_u64(c, out + 16, seconds);
+        *hook_host(c, out + 24) = 1;
+        if (raw) memset(hook_host(c, out + 25), 0, 7);
+    }
+    return done(function, r);
+}
+u32 nnfs_get_file_time_stamp(CPU* c, u64 stamp, u64 path) {
+    return time_stamp(c, SYM_TIME_STAMP, "GetFileTimeStampForDebug", stamp, path, 0);
+}
+u32 nnfs_get_file_time_stamp_raw(CPU* c, u64 stamp, u64 path) {
+    return time_stamp(c, SYM_TIME_STAMP_RAW, "GetFileTimeStampRawForDebug", stamp, path, 1);
 }
 
 /* a commit of a native mount: a save writes its note, and the RomFS has nothing to commit */

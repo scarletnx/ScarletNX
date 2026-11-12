@@ -6,8 +6,8 @@
    any other; and a system archive mounted by its data id, with the cache size its tables need. Then a file of that
    archive opened, read and closed by a 64-bit game and by a 32-bit one through its table's adapters (fs.hook's a32):
    the handle and the bytes read take 8 bytes of the game's memory in the first and 4 in the second, and a handle
-   the SDK made goes back to the SDK's own code in both. And MountHost's refusal in both
-   games */
+   the SDK made goes back to the SDK's own code in both. A file's time stamps on a save's mount, and MountHost's
+   refusal in both games */
 #include "nx/nn/fs.c"
 #include "hle/hook/hooks.hook.inc" /* fs.hook's table, and a 32-bit game's */
 #include <stdio.h>
@@ -84,7 +84,14 @@ int fs_storage_read_guest(FsStorage* st, u64 off, u64 addr, u64 size) {
 void fs_lock(void) {}
 void fs_unlock(void) {}
 u32 fs_host_root_result(void) { return FSR(1); }
-u32 fs_sd_root(FsNode** root) { return (void)root, FSR(1); }
+/* the SD card: not there, until sd_there gives it a root */
+static int sd_there;
+static FsNode* const sd_root = (FsNode*)(uintptr_t)0x5d;
+u32 fs_sd_root(FsNode** root) {
+    if (!sd_there) return FSR(1);
+    *root = sd_root;
+    return 0;
+}
 /* the save asked for last: its type, and whether a user owns it */
 static int save_type = -1, save_owned;
 /* no save (FSR(1)) until save_given is 0 or 1: then the root save_root, an Account save's noted, and save_given as
@@ -120,6 +127,13 @@ u32 fs_root_rename(FsNode* root, const char* from, const char* to, int dir) {
     return (void)root, (void)from, (void)to, (void)dir, FSR(1);
 }
 u32 fs_root_entry_type(FsNode* root, const char* path, u32* type) { return (void)root, (void)path, (void)type, FSR(1); }
+/* the card's /file was modified at STAMP, and it has no other entry */
+#define STAMP 0x123456789ull
+u32 fs_root_time_stamp(FsNode* root, const char* path, u64* seconds) {
+    if (root != sd_root || strcmp(path, "/file")) return FSR(1);
+    *seconds = STAMP;
+    return 0;
+}
 i64 fs_root_space(int total) { return (void)total, 0; }
 u32 fs_file_open(FsNode* root, const char* path, u32 mode, FileData* out) {
     return (void)root, (void)path, (void)mode, (void)out, FSR(1);
@@ -328,6 +342,28 @@ int main(void) {
     }
     nnfs_unmount(c, NAME);
 
+    /* a file's time stamps. On no native mount they are the SDK's own. On a save's mount (here the SD card's) the
+       three times are the file's one time and the flag says they are set: 25 bytes of the game's FileTimeStamp, and
+       all 0x20 of the raw form, zeros after the flag. A missing file's result is the function's, nothing written */
+    text(PATH, "sd:/file");
+    outs();
+    CHECK(nnfs_get_file_time_stamp(c, RESULT, PATH) == 0x77 && own(SYM_TIME_STAMP, 11) && mem[RESULT] == 0xee);
+    CHECK(nnfs_get_file_time_stamp_raw(c, RESULT, PATH) == 0x77 && own(SYM_TIME_STAMP_RAW, 12));
+    sd_there = 1;
+    text(NAME, "sd");
+    CHECK(nnfs_mount_sd_card(c, NAME) == 0);
+    outs();
+    CHECK(nnfs_get_file_time_stamp(c, RESULT, PATH) == 0 && own_runs == 12);
+    CHECK(snx_ld_le64(mem + RESULT) == STAMP && snx_ld_le64(mem + RESULT + 8) == STAMP);
+    CHECK(snx_ld_le64(mem + RESULT + 16) == STAMP && mem[RESULT + 24] == 1 && mem[RESULT + 25] == 0xee);
+    outs();
+    CHECK(nnfs_get_file_time_stamp_raw(c, RESULT, PATH) == 0 && snx_ld_le64(mem + RESULT + 16) == STAMP);
+    CHECK(mem[RESULT + 24] == 1 && mem[RESULT + 25] == 0 && mem[RESULT + 31] == 0 && mem[RESULT + 32] == 0xee);
+    text(PATH, "sd:/none");
+    outs();
+    CHECK(nnfs_get_file_time_stamp(c, RESULT, PATH) == FSR(1) && mem[RESULT] == 0xee && own_runs == 12);
+    nnfs_unmount(c, NAME);
+    sd_there = 0;
     /* a folder of the host PC: what the file server answers for the host's root, under either form's symbol */
     {
         static const char* const host[3] = {"_ZN2nn2fs9MountHostEPKcS2_",
@@ -341,10 +377,10 @@ int main(void) {
             CHECK(k < HOOK_COUNT);
             c->x[0] = NAME, c->x[1] = PATH, c->x[2] = 0, c->x[30] = 0x9000;
             hook_fn[k](c, 0);
-            CHECK((u32)c->x[0] == FSR(1) && c->pc == 0x9000 && own_runs == 10);
+            CHECK((u32)c->x[0] == FSR(1) && c->pc == 0x9000 && own_runs == 12);
         }
         text(PATH, "host:/x"); /* nothing was mounted: the path is still the SDK's */
-        CHECK(nnfs_is_path_mounted(c, PATH) == 1 && own_runs == 11);
+        CHECK(nnfs_is_path_mounted(c, PATH) == 1 && own_runs == 13);
     }
     text(NAME, "ng");
     text(PATH, "ng:/a");
@@ -387,7 +423,7 @@ int main(void) {
         CHECK(snx_ld_le64(mem + RESULT) == 5 && mem[RESULT + 8] == 0xee);
         /* a handle the SDK made is a pointer, so even: the function's own code answers it, and its r0 comes back */
         CHECK(call32("_ZN2nn2fs8ReadFileEPjNS0_10FileHandleExPvj", RESULT, 0x5000, 0, 0, 0x600, 16, 0) == 0x78);
-        CHECK(own_runs32 == 1 && own_runs == 11);
+        CHECK(own_runs32 == 1 && own_runs == 13);
         CHECK(call32("_ZN2nn2fs15GetFileOpenModeENS0_10FileHandleE", h, 0, 0, 0, 0, 0, 0) == 1 && own_runs32 == 1);
         /* a directory's handle has bit 1 too, and is no file's */
         outs();

@@ -145,6 +145,8 @@ u32 fs_root_create(FsNode* root, const char* path, i64 size, int dir);
 u32 fs_root_remove(FsNode* root, const char* path, int dir, int recursive, int clean);
 u32 fs_root_rename(FsNode* root, const char* from, const char* to, int dir);
 u32 fs_root_entry_type(FsNode* root, const char* path, u32* type); /* 0 a directory, 1 a file */
+/* when the entry at path was last modified, in seconds since 1970: the one time the host's tree keeps */
+u32 fs_root_time_stamp(FsNode* root, const char* path, u64* seconds);
 void fs_root_commit(FsNode* root, int noted);
 /* the free (total 0) or total (1) space that a save reports, the same for every save */
 i64 fs_root_space(int total);

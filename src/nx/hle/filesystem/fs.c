@@ -1585,6 +1585,14 @@ u32 fs_root_entry_type(FsNode* root, const char* path, u32* type) {
     *type = node->is_dir ? 0 : 1;
     R_SUCCEED();
 }
+u32 fs_root_time_stamp(FsNode* root, const char* path, u64* seconds) {
+    FsNode* node;
+    u64 ms;
+    R_TRY(tree_result(fs_tree_lookup(&g_hle.fs.tree, root, path, &node)));
+    R_TRY(tree_result(fs_tree_mtime(&g_hle.fs.tree, node, &ms)));
+    *seconds = ms / 1000;
+    R_SUCCEED();
+}
 /* the file at path under root: its node, after the mode check that the console's file system makes before its back end reports a
    missing file. Lookup also normalizes the path, and its errors precede the mode check */
 static u32 file_lookup(FsNode* root, const char* path, u32 mode, FsNode** node) {
