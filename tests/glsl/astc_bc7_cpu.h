@@ -10,8 +10,16 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+/* or'd into the fast build (1), for --measure: it takes the ASTC blocks' hints (astc_bc7.glsl's SNX_BC7_HINTS), and
+   keeps mode 6's quick line under an error of q (bc7_encode.glsl's SNX_BC7_QUICK: 16, 64 or 256) */
+#define ASTC_BC7_HINTS 8u
+#define ASTC_BC7_QUICK(q) ((uint32_t)(q) << 8)
 void astc_bc7_cpu(uint32_t build, const uint8_t* blocks, uint32_t w, uint32_t h, uint32_t depth, uint32_t bw,
                   uint32_t bh, int srgb, uint8_t* out);
+/* the full (0) or the fast (1) build in the two passes vk/astc.c runs it in (astc_bc7.glsl's SNX_BC7_PASS): the same
+   blocks. listed, when not NULL: the blocks the first pass left to the second */
+void astc_bc7_cpu_passes(uint32_t build, const uint8_t* blocks, uint32_t w, uint32_t h, uint32_t depth, uint32_t bw,
+                         uint32_t bh, int srgb, uint8_t* out, uint32_t* listed);
 #ifdef __cplusplus
 }
 #endif

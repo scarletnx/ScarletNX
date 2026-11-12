@@ -2845,7 +2845,8 @@ target_include_directories(snx-test-bc7-glsl PRIVATE glsl)
 add_test(NAME bc7_glsl COMMAND snx-test-bc7-glsl)
 # astc_bc7.comp's GLSL, ASTC blocks straight into BC7 ones, run on the CPU (tests/glsl/glsl.hpp): its blocks are the
 # encoder's of the texels the CPU's ASTC decoder makes: no GPU needed
-add_executable(snx-test-astc-bc7-glsl glsl/astc_bc7_glsl.cpp glsl/astc_bc7_cpu.cpp glsl/bc7_cpu.cpp support/astc.c)
+add_executable(snx-test-astc-bc7-glsl glsl/astc_bc7_glsl.cpp glsl/astc_bc7_cpu.cpp glsl/bc7_cpu.cpp support/astc.c
+               support/bcn.c)
 snx_test_target(snx-test-astc-bc7-glsl 23)
 target_include_directories(snx-test-astc-bc7-glsl PRIVATE glsl)
 add_test(NAME astc_bc7_glsl COMMAND snx-test-astc-bc7-glsl)

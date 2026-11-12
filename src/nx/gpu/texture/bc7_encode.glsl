@@ -82,10 +82,32 @@ uint sh_mask;
 #ifndef SNX_BC7_FAST
 #define SNX_BC7_FAST 0
 #endif
+/* Above 0: a shape of one subset over all four channels (mode 6) first takes its box's line quickly (Try's quick: one
+   choice of p-bits, each texel at the weight nearest its place), and keeps it with no other line tried when its error
+   is this or less. The texels of one partition of an ASTC block lie on a line, which the box of them is, so on a
+   game's textures most blocks stop here, at a tenth of the fit's cost. The error is the squared one over the block's
+   16 texels and 4 channels, as SNX_BC7_ENOUGH's */
+#ifndef SNX_BC7_QUICK
+#define SNX_BC7_QUICK 0
+#endif
 /* 0: a block of one colour is searched for like any other (tests/glsl/bc7_cpu.cpp's build of the search as it was) */
 #ifndef SNX_BC7_SOLID
 #define SNX_BC7_SOLID 1
 #endif
+/* SNX_BC7_PASS 1: Encode tries mode 6 alone, and where the search would go on past it gives no block and sets
+   enc_more: the block is left to another pass of the whole search (astc_bc7.glsl). Encode clears it otherwise */
+#ifndef SNX_BC7_PASS
+#define SNX_BC7_PASS 0
+#endif
+bool enc_more;
+/* What the texels' source says of the block, where there is one (astc_bc7.glsl: the ASTC blocks they were decoded
+   from), which Encode takes in place of its own search when hint_on: the block's texels are of one line each in at
+   most two sets. hint_part is the partition of two subsets nearest those sets (64: there is one set, so no shape with
+   subsets is tried), and hint_rot the rotation whose channel has weights of its own (5: none has, so modes 4 and 5 are
+   not tried). Mode 6 is always tried. Whoever calls Encode sets hint_on */
+bool hint_on;
+uint hint_part;
+uint hint_rot;
 /* 1: the packed dot product instruction (Dot4) */
 #ifndef SNX_BC7_DOT
 #define SNX_BC7_DOT 0
@@ -262,6 +284,11 @@ uint MaskBytes() {
     return ((sh_mask * 0x00204081u) & 0x01010101u) * 0xFFu;
 }
 
+/* the squared distance of two words' bytes */
+uint ByteError(uint x, uint y) {
+    return Dot4(x, x) + Dot4(y, y) - 2u * Dot4(x, y);
+}
+
 /* The squared error of texel p (the channels the shape weighs, the others nought; pp its dot product with itself)
    against the line's point of weight w, 0 to 64. The line is its first end's even bytes (red and blue, in 16 bit
    lanes) and odd bytes (green and alpha), ae and ao, and the second end's less those, de and dx: each lane
@@ -276,7 +303,8 @@ uint LineError(uint p, uint pp, uint ae, uint ao, uint de, uint dx, uint w) {
 }
 
 /* subset s's squared error with decoded ends q0 and q1, each of its texels at its best weight, which go to cur_lo
-   and cur_hi.
+   and cur_hi: the best of the three weights around its place along the line, or with near false the one nearest
+   that place alone (the quick line of FitSubset).
 
    Written for the GPU's time, which is nearly all spent here (every line of every subset of every shape calls it,
    16 texels each): a texel's place along the line is (p - q0).(q1 - q0) = p.q1 - p.q0 - q0.(q1 - q0), two dot products
@@ -286,7 +314,7 @@ uint LineError(uint p, uint pp, uint ae, uint ao, uint de, uint dx, uint w) {
    (65 at most, with a few units in the last place of rounding in 1 / dd and the product), so its integer part is the
    quotient or one beside it, and the remainder n - q dd says which. The bytes are those of the division (the tests'
    digest of the encoder's blocks, tests/glsl/bc7_glsl.cpp, is from before this), whatever the driver's rounding */
-uint Eval(uint s, uint q0, uint q1) {
+uint Eval(uint s, uint q0, uint q1, bool near) {
     const uint m = MaskBytes(), a = q0 & m, b = q1 & m;
     const int aa = int(Dot4(a, a)), ab = int(Dot4(a, b));
     const int dd = int(Dot4(b, b)) - 2 * ab + aa;
@@ -314,14 +342,14 @@ uint Eval(uint s, uint q0, uint q1) {
         }
         uint bi = i;
         uint be = LineError(p, pp, ae, ao, de, dx, Weight(i));
-        if (i > 0u) {
+        if (near && i > 0u) {
             const uint e = LineError(p, pp, ae, ao, de, dx, Weight(i - 1u));
             if (e < be) {
                 be = e;
                 bi = i - 1u;
             }
         }
-        if (i < top) {
+        if (near && i < top) {
             const uint e = LineError(p, pp, ae, ao, de, dx, Weight(i + 1u));
             if (e < be) {
                 be = e;
@@ -356,14 +384,30 @@ uint PAllowed(uint s) {
 /* a candidate line for subset s, a0 to a3 one end and b0 to b3 the other (RGBA, 0 to 255): each p-bit choice the
    shape and the subset allow (allowed, PAllowed(s): FitSubset reads it once, as nothing it depends on changes between
    its lines), the best kept in fit_ */
-void Try(uint s, uint allowed, int a0, int a1, int a2, int a3, int b0, int b1, int b2, int b3) {
+void Try(uint s, uint allowed, bool quick, int a0, int a1, int a2, int a3, int b0, int b1, int b2, int b3) {
+    /* quick: the one choice whose ends, as the decoder widens them, lie nearest the line's own (each end's p-bit by
+       its own squared distance, or the shared one by both ends'), and each texel at the weight nearest its place, so
+       the line costs one pass of the texels with one error each, where it otherwise costs a pass a choice with three */
+    uint only = 4u;
+    if (quick && sh_pk != 0u) {
+        const uint m = MaskBytes() & (sh_alpha != 0u ? 0xFFFFFFFFu : 0x00FFFFFFu);
+        const uint ta = (uint(a0) | (uint(a1) << 8u) | (uint(a2) << 16u) | (uint(a3) << 24u)) & m;
+        const uint tb = (uint(b0) | (uint(b1) << 8u) | (uint(b2) << 16u) | (uint(b3) << 24u)) & m;
+        const uint no0 = (allowed & 1u) == 0u ? 0x40000000u : 0u, no1 = (allowed & 2u) == 0u ? 0x40000000u : 0u;
+        const uint a_0 = ByteError(Decoded(QuantWord(a0, a1, a2, a3, 0u)) & m, ta) + no0;
+        const uint a_1 = ByteError(Decoded(QuantWord(a0, a1, a2, a3, 1u)) & m, ta) + no1;
+        const uint b_0 = ByteError(Decoded(QuantWord(b0, b1, b2, b3, 0u)) & m, tb) + no0;
+        const uint b_1 = ByteError(Decoded(QuantWord(b0, b1, b2, b3, 1u)) & m, tb) + no1;
+        only = sh_pk == 2u ? (a_1 < a_0 ? 1u : 0u) | (b_1 < b_0 ? 2u : 0u) : a_1 + b_1 < a_0 + b_0 ? 1u : 0u;
+    }
     for (uint pp = 0u; pp < 4u; pp++) {
+        if (only != 4u && pp != only) continue;
         const uint p0 = pp & 1u, p1 = sh_pk == 2u ? pp >> 1u : p0;
         if (sh_pk != 2u && (pp >> 1u) != 0u) continue;
         if (sh_pk == 0u && pp != 0u) continue;
         if ((allowed & (1u << p0)) == 0u || (allowed & (1u << p1)) == 0u) continue;
         const uint s0 = QuantWord(a0, a1, a2, a3, p0), s1 = QuantWord(b0, b1, b2, b3, p1);
-        const uint err = Eval(s, Decoded(s0), Decoded(s1));
+        const uint err = Eval(s, Decoded(s0), Decoded(s1), !quick);
         if (err < fit_err) {
             fit_err = err;
             fit_s0 = s0;
@@ -471,6 +515,10 @@ void FitSubset(uint s) {
     fit_err = 0xFFFFFFFFu;
     const uint allowed = PAllowed(s);
     uint seen_lo = 0u, seen_hi = 0u;
+    if (SNX_BC7_QUICK > 0 && sh_ns == 1u && sh_mask == 15u) {
+        Try(s, allowed, true, a0, a1, a2, a3, b0, b1, b2, b3);
+        if (fit_err <= uint(SNX_BC7_QUICK)) return;
+    }
     /* the lines tried, in turn: the box pulled in, the box, then a least squares fit to the weights chosen, twice.
        One call of Try in a loop, not one a line: the compiler inlines each call, and the copies' registers (the
        whole encoder's, as each shape inlines this too) made the GPU spill and run fewer blocks at once */
@@ -518,7 +566,7 @@ void FitSubset(uint s) {
             f2 = SolveEnd(2u, 1u, det, v2, w2);
             f3 = SolveEnd(3u, 1u, det, v3, w3);
         }
-        Try(s, allowed, e0, e1, e2, e3, f0, f1, f2, f3);
+        Try(s, allowed, false, e0, e1, e2, e3, f0, f1, f2, f3);
     }
 }
 
@@ -815,6 +863,7 @@ uvec4 Encode() {
         opaque = opaque && Ch(px[k], 3u) == 255u;
         solid = solid && px[k] == px[0];
     }
+    enc_more = false;
     if (SNX_BC7_SOLID != 0 && solid) return Solid(px[0]);
     best_err = 0xFFFFFFFFu;
     /* The shapes tried, in turn, one call of TryShape and one of TryDual for all of them (see FitSubset):
@@ -831,6 +880,17 @@ uvec4 Encode() {
         if (best_err <= uint(SNX_BC7_GOOD_ENOUGH)) break;
         if (j == 1u) {
             if (SNX_BC7_FAST == 2 || SNX_BC7_FAST == 3 || best_err <= SNX_BC7_ENOUGH) break;
+            if (SNX_BC7_PASS == 1) {
+                enc_more = true;
+                return uvec4(0u);
+            }
+            if (hint_on) first = hint_part;
+        }
+        /* with a hint: the partition it names alone, in each mode with two subsets, and the rotation it names */
+        if (hint_on && j > 0u &&
+            (j < shapes ? hint_part >= 64u || ((j - 1u) & 1u) != 0u || j == 5u : (j - shapes) / 3u != hint_rot))
+            continue;
+        if (j == 1u && !hint_on) {
             BlockSums();
             const uint alpha = opaque ? 0u : 1u;
             uint f_cost = 0xFFFFFFFFu, s_cost = 0xFFFFFFFFu;

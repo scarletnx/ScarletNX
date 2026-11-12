@@ -503,6 +503,14 @@ void DecodeBlock() {
     TILE(F_ROW_CD, slot) = row_cd;
 }
 
+/* the partition the texel at (i, j) of the block in slot is in: the highest score, the first of equal ones */
+uint SlotPartition(uint slot, uint i, uint j) {
+    const uint pab = TILE(F_ROW_AB, slot) + TILE(F_RSTEP_AB, slot) * j + TILE(F_STEP_AB, slot) * i;
+    const uint pcd = TILE(F_ROW_CD, slot) + TILE(F_RSTEP_CD, slot) * j + TILE(F_STEP_CD, slot) * i;
+    const uint a = pab & 0x3Fu, b = (pab >> 16u) & 0x3Fu, c = pcd & 0x3Fu, d = (pcd >> 16u) & 0x3Fu;
+    return a >= b && a >= c && a >= d ? 0u : b >= c && b >= d ? 1u : c >= d ? 2u : 3u;
+}
+
 /* The texel at (i, j) of the block in slot, as a packed RGBA8 word, with the weight grid infill's steps from texel to
    grid coordinates, Ds and Dt, constants of the footprint. It has no branch: one partition and solid blocks need no
    test (see F_STEP_CD and SetSolid), and a weight grid the block's size infills to its own weights exactly (checked
@@ -511,11 +519,7 @@ uint SlotTexel(uint slot, uint i, uint j, uint Ds, uint Dt) {
     const uint info = TILE(F_INFO, slot);
     const uint N = info & 0xFu, M = Bits(info, 4u, 4u), dual = Bits(info, 8u, 1u), pc = Bits(info, 9u, 2u);
 
-    /* the partition: the highest score, the first of equal ones */
-    const uint pab = TILE(F_ROW_AB, slot) + TILE(F_RSTEP_AB, slot) * j + TILE(F_STEP_AB, slot) * i;
-    const uint pcd = TILE(F_ROW_CD, slot) + TILE(F_RSTEP_CD, slot) * j + TILE(F_STEP_CD, slot) * i;
-    const uint a = pab & 0x3Fu, b = (pab >> 16u) & 0x3Fu, c = pcd & 0x3Fu, d = (pcd >> 16u) & 0x3Fu;
-    const uint p = a >= b && a >= c && a >= d ? 0u : b >= c && b >= d ? 1u : c >= d ? 2u : 3u;
+    const uint p = SlotPartition(slot, i, j);
     const uint E0 = TILE(F_E0 + p, slot), E1 = TILE(F_E1 + p, slot);
 
     /* the weight grid infilled bilinearly; neighbors past the grid always weigh 0, so they are read without a

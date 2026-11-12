@@ -291,6 +291,18 @@ inline uint atomicOr(uint& mem, uint data) { return __atomic_fetch_or(&mem, data
 inline uint atomicAnd(leuint& mem, uint data) { return le_order(atomicAnd(mem.raw, le_order(data))); }
 inline uint atomicOr(leuint& mem, uint data) { return le_order(atomicOr(mem.raw, le_order(data))); }
 
+// an add and a maximum on a buffer word in the device's order, as dispatch runs them: one invocation after another
+inline uint atomicAdd(leuint& mem, uint data) {
+    const uint old = uint(mem);
+    mem = old + data;
+    return old;
+}
+inline uint atomicMax(leuint& mem, uint data) {
+    const uint old = uint(mem);
+    mem = old > data ? old : data;
+    return old;
+}
+
 // runs main() of every invocation of groups workgroups of local_size each, in order. setup(shader) fills in each
 // invocation's push constants and buffers before it runs
 template <class Shader, class Setup> void dispatch(uvec3 groups, uvec3 local_size, Setup&& setup) {
