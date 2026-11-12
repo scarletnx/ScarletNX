@@ -323,7 +323,8 @@ uint Quant(int t, uint p) {
 #endif
     const uint n = StoredBits();
     const int top = int((1u << n) - 1u);
-    const int guess = (t * top + 127) / 255;
+    /* (t * top + 127) / 255: the dividend is below 65536, where x * 32897 >> 23 is x / 255 */
+    const int guess = int(uint(t * top + 127) * 32897u >> 23u);
     const bool other = sh_pk != 0u && (uint(guess) & 1u) != p;
     int lo = sh_pk == 0u || other ? guess - 1 : guess;
     const int hi = other ? guess + 1 : guess;
