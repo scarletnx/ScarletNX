@@ -5327,7 +5327,8 @@ static int check_rt_watch(void) {
    stencil 0xC3, in memory of its own (one over memory
    the CPU read lately is published at the release instead); its bytes are those of the CPU reference
    (support/dma_ref.c) laying the same picture out over the same memory, padding included. A 4x ZF32 target cleared to
-   0.75 holds it at every sample. They stayed on the GPU: the CPU read the bytes from before the clear */
+   0.75 holds it at every sample. They stayed on the GPU: the CPU read the bytes from before the clear. Where the device
+   has no D24S8 (AMD) the Z24S8 one is a float packed into 24 bits (vk_depth_pack), and 0.75 is 0xBFFFFF there too */
 #define ZWATCH_A  (HEAP_BASE + 0xC400000)
 #define ZWATCH_GA 0x3B0000000ull
 static int check_zt_watch(void) {
