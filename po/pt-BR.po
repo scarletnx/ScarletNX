@@ -107,6 +107,31 @@ msgstr "Não foi possível abrir %s: %s"
 msgid "Not enough memory to list %s."
 msgstr "Sem memória para listar %s."
 
+#: src/gui/browser.c
+#, c-format
+msgid "%s: update %s + 1 DLC"
+msgstr "%s: update %s + 1 DLC"
+
+#: src/gui/browser.c
+#, c-format
+msgid "%s: update %s + %zu DLCs"
+msgstr "%s: update %s + %zu DLCs"
+
+#: src/gui/browser.c
+#, c-format
+msgid "%s: update %s"
+msgstr "%s: update %s"
+
+#: src/gui/browser.c
+#, c-format
+msgid "%s: 1 DLC"
+msgstr "%s: 1 DLC"
+
+#: src/gui/browser.c
+#, c-format
+msgid "%s: %zu DLCs"
+msgstr "%s: %zu DLCs"
+
 #: src/gui/clean.c
 #, c-format
 msgid "Not read: %s"
@@ -1422,6 +1447,10 @@ msgid "Select: help."
 msgstr "Select: ajuda."
 
 #: src/gui/main.c
+msgid "Updates and DLCs"
+msgstr "Updates e DLCs"
+
+#: src/gui/main.c
 #, c-format
 msgid "%s in queue"
 msgstr ""
@@ -1591,6 +1620,14 @@ msgstr "Recompilar"
 #: src/gui/main.c
 msgid "Clear"
 msgstr ""
+
+#: src/gui/main.c
+msgid "Yes"
+msgstr "Sim"
+
+#: src/gui/main.c
+msgid "No"
+msgstr "Não"
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -2190,6 +2227,26 @@ msgstr "Pronto para rodar"
 #, c-format
 msgid ". No icon: %s"
 msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Updates and DLCs of %s, recompiled already: opening this puts them in it"
+msgstr "Updates e DLCs de %s, já recompilado: abrir isto os instala nele"
+
+#: src/gui/main.c
+#, c-format
+msgid "Updates and DLCs of %s: opening this recompiles it with them, from its dump %s"
+msgstr "Updates e DLCs de %s: abrir isto o recompila com eles, a partir do dump %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Updates and DLCs of %s, which is not recompiled and whose dump is in no dumps folder: they go in with it"
+msgstr "Updates e DLCs de %s, que não está recompilado e cujo dump não está em nenhuma pasta de dumps: eles entram junto com ele"
+
+#: src/gui/main.c
+#, c-format
+msgid "; %zu other dump(s) of them left out: an older update's, a DLC's second"
+msgstr "; %zu outro(s) dump(s) deles fora: o de um update mais antigo, a segunda cópia de uma DLC"
 
 #: src/gui/main.c
 #, c-format
@@ -4196,6 +4253,35 @@ msgstr ""
 #, c-format
 msgid "%s is compiled already, in %s"
 msgstr ""
+
+#: src/gui/main.c
+msgid "1 DLC"
+msgstr "1 DLC"
+
+#: src/gui/main.c
+#, c-format
+msgid "%zu DLCs"
+msgstr "%zu DLCs"
+
+#: src/gui/main.c
+#, c-format
+msgid "Found the update %s and %s of this game. Recompile together?"
+msgstr "Achei o update %s e %s deste jogo. Recompilar junto?"
+
+#: src/gui/main.c
+#, c-format
+msgid "Found the update %s of this game. Recompile together?"
+msgstr "Achei o update %s deste jogo. Recompilar junto?"
+
+#: src/gui/main.c
+#, c-format
+msgid "Found %s of this game. Recompile together?"
+msgstr "Achei %s deste jogo. Recompilar junto?"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not recompiled, and its dump is in no dumps folder: put it in one (Settings > App > Folders), then its updates and DLCs go in with it"
+msgstr "%s não está recompilado, e o dump dele não está em nenhuma pasta de dumps: coloque-o em uma (Configurações > App > Pastas), e os updates e DLCs entram junto com ele"
 
 #: src/gui/main.c
 msgid "That path is not a readable file. Try again or press ESC."

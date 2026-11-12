@@ -4253,6 +4253,160 @@ static void compile_first(App* app, const char* dir) {
 /* the fake driver's wait for the test: until path is there and taken away, ten seconds at most; whether it was.
    Windows refuses the removal while the test still has the file open, and a file left there would be the next wait's
    step too */
+/* whether argv (a string a line, as ran gives it) gives the driver --update and dump */
+static bool updates_with(const char* argv, const char* dump) {
+    char* pair = snx_format("--update\n%s\n", dump);
+    bool found = strstr(argv, pair) != NULL;
+    free(pair);
+    return found;
+}
+/* the entry of Games' list whose name or text is what, -1 for none */
+static int games_row(const App* app, const char* what) {
+    for (size_t i = 0; i < app->games.count; ++i)
+        if (app->games.paths[i] && (!strcmp(app->games.names[i], what) || !strcmp(app->games.shown[i], what)))
+            return (int)i;
+    return -1;
+}
+/* a game's update and DLC dumps in a dumps folder, among them its own dump and one the driver does not read: each
+   asked of the driver once (-x --icon) as Games lists them, which then lists them again by what each is (title.ini),
+   not by its name: the update's and the DLCs' as one item, Updates and DLCs, the dump not read in Dumps as before,
+   a DLC's with no icon and no failure. The game's dump made asks whether they go with it, Yes in focus: Yes gives the
+   driver --update and each dump, No none, Back nothing. The item opened makes the game's dump with them, asking
+   nothing; with the game made, puts them in it (-r on its program), the ones it has already left out; with neither,
+   names the game */
+static void dump_addons(App* app, const char* dir) {
+    static const char game_text[] = "title=0100ABCD56780000\ngame=0100ABCD56780000\nversion=\nname=A game\n";
+    static const char update_text[] = "title=0100ABCD56780800\ngame=0100ABCD56780000\nversion=65536\nname=A game\n"
+                                      "display_version=1.0.1\n";
+    char* cache_was = getenv("XDG_CACHE_HOME") ? snx_strdup(getenv("XDG_CACHE_HOME")) : NULL;
+    char *cache = snx_path_join(dir, "addons cache"), *dumps = snx_path_join(dir, "addons dumps");
+    char *game = snx_path_join(dumps, "game.xci"), *update = snx_path_join(dumps, "Game [DLC].nsp");
+    char *unread = snx_path_join(dumps, "no icon dump.nsp"), *got = snx_path_join(dir, "addons argv"), *dlc[3];
+    char kind[512], *argv_got, *made, *program;
+    const GuiAddonDumps* set;
+    int item, k;
+    set_env("XDG_CACHE_HOME", cache);
+    assert(!snx_mkdirs(dumps) && !snx_write_file(game, game_text, strlen(game_text)) &&
+           !snx_write_file(update, update_text, strlen(update_text)) && !snx_write_file(unread, "x", 1));
+    for (k = 0; k < 3; ++k) {
+        char name[32], *text = snx_format("title=0100ABCD5678100%d\ngame=0100ABCD56780000\nversion=0\n", k + 1);
+        snprintf(name, sizeof name, "Game [UPD] %d.nsp", k + 1);
+        dlc[k] = snx_path_join(dumps, name);
+        assert(!snx_write_file(dlc[k], text, strlen(text)));
+        free(text);
+    }
+    folder_keep(app, dumps, GUI_LIBRARY_DUMPS, false);
+    go_tab(app, GUI_TAB_GAMES);
+    /* not known yet: each a dump of its own, each asked once */
+    assert(games_row(app, "Game [DLC].nsp") >= 0 && games_row(app, "game.xci") >= 0 && !app->games.set_count);
+    assert(app->titles_unknown >= 6 && app->dump_icons.count >= 6);
+    dump_icons_pass(&app->dump_icons);
+    pump(app); /* answered: listed again */
+    item = games_row(app, "A game: update 1.0.1 + 3 DLCs");
+    assert(item >= 0 && (set = gui_games_addon_set(&app->games, item)) && set->count == 4 && set->dump &&
+           !set->program && !strcmp(set->files[0], update) && !strcmp(set->files[1], dlc[0]));
+    assert(games_row(app, "game.xci") >= 0 && games_row(app, "no icon dump.nsp") >= 0 &&
+           games_row(app, "Game [DLC].nsp") == item && games_row(app, "Game [UPD] 1.nsp") < 0);
+    game_kind(app, &app->games, (size_t)item, kind, sizeof kind);
+    assert(!strcmp(kind, "Updates and DLCs of A game (0100ABCD56780000): opening this recompiles it with them, from "
+                         "its dump game.xci"));
+    { /* a DLC's dump: answered with no icon, no failure kept; the dump not read: its failure, as before */
+        char why[160];
+        assert(!dump_icon_why(app, dlc[0], why, sizeof why) && dump_icon_why(app, unread, why, sizeof why));
+        assert(!app->dump_icons.count);
+    }
+    /* the game's dump made: asked, Yes in focus; Back does nothing */
+    go_tab(app, GUI_TAB_MENU);
+    app->menu.selected = GUI_SWITCH;
+    driver_will(got, 0, "Recompiling a game");
+    launch(app, snx_strdup(game), false);
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ADDONS && !app->confirm.selected && !launched(app));
+    assert(!strcmp(app->ask_line, "Found the update 1.0.1 and 3 DLCs of this game. Recompile together?"));
+    key(app, SDLK_ESCAPE);
+    assert(!app->confirm.shown && !launched(app) && !app->addons_file && !app->addons_with && !app->addons_for);
+    launch(app, snx_strdup(game), false);
+    key(app, SDLK_RETURN); /* Yes */
+    assert(!app->confirm.shown && app->queue.count == 1 && app->queue.job[0].kind == GUI_JOB_COMPILE);
+    argv_got = ran(app, 0);
+    assert(has_arg(argv_got, "-r", game) && has_arg(argv_got, "--update", update) && updates_with(argv_got, dlc[2]) &&
+           strstr(argv_got, update) < strstr(argv_got, dlc[0]) && strstr(argv_got, dlc[0]) < strstr(argv_got, dlc[1]));
+    free(argv_got);
+    assert(!app->addons_for && !app->addons_with);
+    launch(app, snx_strdup(game), false);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN); /* No: the game alone */
+    argv_got = ran(app, 0);
+    assert(has_arg(argv_got, "-r", game) && !strstr(argv_got, "--update"));
+    free(argv_got);
+    /* the item opened: the game's dump made with them, nothing asked */
+    go_tab(app, GUI_TAB_GAMES);
+    item = games_row(app, "A game: update 1.0.1 + 3 DLCs");
+    open_game(app, (size_t)item, false);
+    assert(!app->confirm.shown && app->queue.count == 1);
+    argv_got = ran(app, 0);
+    assert(has_arg(argv_got, "-r", game) && updates_with(argv_got, dlc[1]) && updates_with(argv_got, dlc[2]));
+    free(argv_got);
+    /* the game made, its first DLC put in it already: the item puts the others in it, the game's program given */
+    made = made_game(app, game, "0100ABCD56780000");
+#ifdef _WIN32
+    program = snx_path_join(made, "0100ABCD56780000.exe");
+#else
+    program = snx_path_join(made, "0100ABCD56780000");
+#endif
+    {
+        char *data = snx_path_join(made, "0100ABCD56780000_0100ABCD56781001_data"),
+             *ini = snx_path_join(made, "0100ABCD56780000_0100ABCD56781001.ini"),
+             *text = snx_format("[Game]\nsource=%s\n", dlc[0]);
+        assert(!snx_mkdirs(data) && !snx_write_file(ini, text, strlen(text)));
+        free(text);
+        free(ini);
+        free(data);
+    }
+    go_tab(app, GUI_TAB_GAMES);
+    item = games_row(app, "A game: update 1.0.1 + 2 DLCs");
+    assert(item >= 0 && games_row(app, "game.xci") < 0);
+    set = gui_games_addon_set(&app->games, (size_t)item);
+    assert(set && set->program && !set->dump && set->count == 3 && !strcmp(set->program, program));
+    game_kind(app, &app->games, (size_t)item, kind, sizeof kind);
+    assert(!strcmp(kind, "Updates and DLCs of A game (0100ABCD56780000), recompiled already: opening this puts them "
+                         "in it"));
+    open_game(app, (size_t)item, false);
+    assert(!app->confirm.shown && app->queue.count == 1 && app->queue.job[0].kind == GUI_JOB_RECOMPILE);
+    argv_got = ran(app, 0);
+    assert(has_arg(argv_got, "-r", program) && has_arg(argv_got, "--update", update) &&
+           updates_with(argv_got, dlc[1]) && updates_with(argv_got, dlc[2]) && !strstr(argv_got, dlc[0]) &&
+           !strstr(argv_got, game));
+    free(argv_got);
+    /* neither made nor among the dumps: opening it names the game, nothing made */
+    made_gone(app, made);
+    made = NULL;
+    assert(!remove(game));
+    go_tab(app, GUI_TAB_GAMES);
+    item = games_row(app, "A game: update 1.0.1 + 3 DLCs");
+    assert(item >= 0 && (set = gui_games_addon_set(&app->games, (size_t)item)) && !set->program && !set->dump);
+    game_kind(app, &app->games, (size_t)item, kind, sizeof kind);
+    assert(!strcmp(kind, "Updates and DLCs of A game (0100ABCD56780000), which is not recompiled and whose dump is in "
+                         "no dumps folder: they go in with it"));
+    open_game(app, (size_t)item, false);
+    assert(!launched(app) && !app->queue.count &&
+           !strcmp(app->message, "A game (0100ABCD56780000) is not recompiled, and its dump is in no dumps folder: put "
+                                 "it in one (Settings > App > Folders), then its updates and DLCs go in with it"));
+    driver_will(NULL, 0, NULL);
+    free(app->folders[--app->folder_count]);
+    go_tab(app, GUI_TAB_MENU);
+    set_env("XDG_CACHE_HOME", cache_was);
+    assert(!snx_remove_tree(dumps) && !snx_remove_tree(cache));
+    for (k = 0; k < 3; ++k) free(dlc[k]);
+    free(program);
+    free(made);
+    free(got);
+    free(unread);
+    free(update);
+    free(game);
+    free(dumps);
+    free(cache);
+    free(cache_was);
+}
 static bool wait_taken(const char* path) {
     for (int n = 0; n < 2000; ++n) {
         if (snx_is_file(path) && !remove(path)) return true;
@@ -4380,6 +4534,17 @@ int main(int argc, char** argv) {
             return 9;
         }
 #endif
+        /* what the dump is: a test's dump whose text is a title.ini, as the driver writes it from its content meta */
+        size_t size = 0;
+        char *text = (char*)snx_read_file(argv[8], &size), *ini = snx_path_join(argv[6], "title.ini");
+        GuiDumpTitle title;
+        bool dlc = false;
+        if (text && strstr(text, "title=")) {
+            assert(!snx_write_file(ini, text, size));
+            dlc = gui_dump_title(ini, &title) && snx_addon_kind(title.game, title.title) == SNX_ADDON_DLC;
+        }
+        free(ini);
+        free(text);
         if (strstr(argv[8], "hung icon")) /* never answers: the menu stops it */
             SDL_Delay(60000);
         if (strstr(argv[8], "no icon")) {
@@ -4387,6 +4552,9 @@ int main(int argc, char** argv) {
             fflush(stdout);
             fprintf(stderr, "scarletnx: Games shows no icon for %s: it has no Control NCA\n",
                     argv[8]); /* as snx_error */
+        } else if (dlc) {
+            printf("%s is a DLC: it has no icon of its own\n", argv[8]);
+            rc = 0;
         } else
             rc = snx_splash_jpeg("wimsy-fuddles", 32, 90, icon_jpeg_write, &jpeg) ||
                  snx_write_file(to, jpeg.data, (size_t)jpeg.size);
@@ -14911,6 +15079,7 @@ int main(int argc, char** argv) {
         app.theme = *gui_theme_builtin("default");
     }
     compile_first(&app, temporary);
+    dump_addons(&app, temporary);
     recompile_queue(&app);
 #ifdef SNX_XDG /* the last of the test: SDL keeps the picker it found from then on */
     pickers_asked(&app, temporary, self);

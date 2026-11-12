@@ -200,6 +200,13 @@ kept the same way by `scarletnx-3ds` (`scarletnx-3ds DLC.cia`, or `--update` wit
 program of its own, as the game's reads its code, and is listed by its TMD's version (`Update v1040`): see
 [3DS](../platforms/3ds/README.md).
 
+Games groups a game's update and DLC dumps found in the dumps folders as one item, under **Updates and DLCs**
+(`A game: update 1.0.1 + 99 DLCs`), by what each dump is (its content meta, which `-x --icon` reads into the icons'
+cache as `title.ini`), whatever its file is called: the newest update and each DLC once. Opening the item puts them in
+the game made already (`-r` on its program, `--update` each), else recompiles the game's dump with them, else says
+which game is missing. Making a game's dump with such dumps of it around asks *Found the update 1.0.1 and 99 DLCs of
+this game. Recompile together?*, **Yes** in focus; **No** makes the game alone.
+
 - **Programs:** an update is recompiled from its own ExeFS into a program beside the game,
   `recompiled/<id>/<id>_<its title ID>v<its version>`, which runs whenever it is checked. Every version of a game's update
   has the same title ID, so each version installed keeps a program of its own, its version its content meta's. A DLC runs its game's code and has no program,

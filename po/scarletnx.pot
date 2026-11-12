@@ -104,6 +104,31 @@ msgstr ""
 msgid "Not enough memory to list %s."
 msgstr ""
 
+#: src/gui/browser.c
+#, c-format
+msgid "%s: update %s + 1 DLC"
+msgstr ""
+
+#: src/gui/browser.c
+#, c-format
+msgid "%s: update %s + %zu DLCs"
+msgstr ""
+
+#: src/gui/browser.c
+#, c-format
+msgid "%s: update %s"
+msgstr ""
+
+#: src/gui/browser.c
+#, c-format
+msgid "%s: 1 DLC"
+msgstr ""
+
+#: src/gui/browser.c
+#, c-format
+msgid "%s: %zu DLCs"
+msgstr ""
+
 #: src/gui/clean.c
 #, c-format
 msgid "Not read: %s"
@@ -1419,6 +1444,10 @@ msgid "Select: help."
 msgstr ""
 
 #: src/gui/main.c
+msgid "Updates and DLCs"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "%s in queue"
 msgstr ""
@@ -1587,6 +1616,14 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Clear"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Yes"
+msgstr ""
+
+#: src/gui/main.c
+msgid "No"
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -2186,6 +2223,26 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid ". No icon: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Updates and DLCs of %s, recompiled already: opening this puts them in it"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Updates and DLCs of %s: opening this recompiles it with them, from its dump %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Updates and DLCs of %s, which is not recompiled and whose dump is in no dumps folder: they go in with it"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "; %zu other dump(s) of them left out: an older update's, a DLC's second"
 msgstr ""
 
 #: src/gui/main.c
@@ -4192,6 +4249,35 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s is compiled already, in %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "1 DLC"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%zu DLCs"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Found the update %s and %s of this game. Recompile together?"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Found the update %s of this game. Recompile together?"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Found %s of this game. Recompile together?"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is not recompiled, and its dump is in no dumps folder: put it in one (Settings > App > Folders), then its updates and DLCs go in with it"
 msgstr ""
 
 #: src/gui/main.c
