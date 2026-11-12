@@ -1555,3 +1555,12 @@ u32 nnfs_mount_host_root_option(CPU* c, u64 option) {
     (void)c, (void)option;
     return done("MountHostRoot", fs_host_root_result());
 }
+/* a folder of the host PC under a mount name: the same service, and the same refusal */
+u32 nnfs_mount_host(CPU* c, u64 name, u64 path) {
+    (void)c, (void)name, (void)path;
+    return done("MountHost", fs_host_root_result());
+}
+u32 nnfs_mount_host_option(CPU* c, u64 name, u64 path, u64 option) {
+    (void)c, (void)name, (void)path, (void)option;
+    return done("MountHost", fs_host_root_result());
+}
