@@ -75,7 +75,10 @@ const SnxNotice snx_notices[SNX_NOTICES] = {
     {SNX_TR_NOOP("The launcher's Background recompile"),
      SNX_TR_NOOP("recompile_background = in app.ini, full or gentle"),
      SNX_TR_NOOP("background_recompile =, Auto by default: Gentle on battery, Full on the charger"),
-     "`recompile_background =` in `app.ini`", SNX_NOTICE_ALL}};
+     "`recompile_background =` in `app.ini`", SNX_NOTICE_ALL},
+    {SNX_TR_NOOP("A save's files"), SNX_TR_NOOP("in the save's folder itself"),
+     SNX_TR_NOOP("the save's last commit in its 0/, the copy the game works in in its 1/: Move Old Files moves them"),
+     "A save's files in its folder itself", SNX_NOTICE_ALL}};
 int snx_notice_here(int notice) {
     int systems = snx_notices[notice].systems;
 #if defined(__ANDROID__)

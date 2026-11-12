@@ -630,6 +630,8 @@ if(TARGET hactool_internals)
     add_test(NAME filesystem_raw COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> raw)
     add_test(NAME filesystem_addon_overlay COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> addon-overlay)
     add_test(NAME filesystem_mods COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods)
+    # a game killed while it saves, at each step of a save's commit and open: its last commit or the new one, whole
+    add_test(NAME filesystem_save_kill COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> save-kill)
     add_test(NAME filesystem_mods_stale COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods-stale)
     add_test(NAME filesystem_folder_source
              COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> folder-source)

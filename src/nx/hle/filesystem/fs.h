@@ -94,6 +94,9 @@ typedef struct {
     u32 obj;
     FsNode* root;
     u32 noted; /* 1 for an Account, Device or BCAT save, whose commits write its note (save_note) */
+    /* 1 for a save kept as the console keeps one in a folder: root is the copy the game works in, 1 in the save's own
+       folder, beside its last commit, 0 (fs.c's "A save's commit") */
+    u32 journaled;
 } FsData;
 /* an IFile, or a system archive's IStorage (the RomFS's has no data). f is NULL for a node held in memory */
 typedef struct {
@@ -175,6 +178,8 @@ typedef struct {
        application's */
     u64 save_title;
     unsigned save_told;               /* the save types whose folder of the other layout was said, a bit each */
+    unsigned save_flat_told;          /* and those whose save an older version kept, played where it is, was */
+    unsigned save_stray_told; /* and those whose folder holds more than the save, which the game does not read */
     char save_newer[FS_TREE_PATH_MAX + 256]; /* the last save opened that a newer version wrote, said (save_note) */
 } HostFs;
 /* all zero: fs_init sets the tree up */

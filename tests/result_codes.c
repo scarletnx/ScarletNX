@@ -115,6 +115,7 @@ static void test_codes(void) {
     CHECK(SNX_RC_ACCOUNT_MEMBERSHIP_REQUIRED == 0x27F27C);       /* Switchbrew's value */
     CHECK(SNX_RC_FS_MULTI_COMMIT_FILE_SYSTEM_LIMIT == 0x346C02); /* ResultNames.cs's key */
     CHECK(SNX_RC_FS_MULTI_COMMIT_HAS_OVERLAPPING_TARGETS == 0x327E02);
+    CHECK(SNX_RC_FS_WRITE_MODE_FILE_NOT_CLOSED == 0x327202);
     CHECK(SNX_RC_SSL_SSL_ALERT_CLOSE_NOTIFY == 0xBBA7B && SNX_RC_SSL_SSL_ALERT_BAD_CERTIFICATE == 0xBCA7B);
     r = snx_result_info(SNX_RC_ACCOUNT_MEMBERSHIP_REQUIRED);
     CHECK(r && !strcmp(r->name, "MembershipRequired") && !strcmp(r->source, "Switchbrew"));

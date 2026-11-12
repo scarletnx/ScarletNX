@@ -1571,6 +1571,7 @@ static void file_destroy(SvcObj* o) {
     pm_lock(&g_hle.fs.tree.lock);
     if (data->f != NULL) fclose(data->f);
     fs_tree_release(data->node);
+    data->node = NULL; /* the slot is in the pool until ipc.c takes it out: a save's commit looks at every one */
     pm_unlock(&g_hle.fs.tree.lock);
 }
 /* an IFile on the node, or an IStorage for a system archive */
@@ -1754,14 +1755,9 @@ static int nn_fssrv_sf_IFileSystem_OpenDirectory(SvcObj* self, IpcBuf path, u32 
     *directory = dir;
     R_SUCCEED();
 }
-static void save_note_write(FsNode* root);
-/* Commit: what the game writes lands on the host as it writes it, so a save's note is all there is to do (save_note).
-   tree.lock held, as fs_disp holds it around every command */
-static int nn_fssrv_sf_IFileSystem_Commit(SvcObj* self) {
-    FsData* data = self->data;
-    if (data->noted) save_note_write(data->root);
-    R_SUCCEED();
-}
+static u32 fs_commit(FsData* data);
+/* tree.lock held, as fs_disp holds it around every command */
+static int nn_fssrv_sf_IFileSystem_Commit(SvcObj* self) { return (int)fs_commit(self->data); }
 static int nn_fssrv_sf_IFileSystem_GetFreeSpaceSize(SvcObj* self, IpcBuf path, i64* size) {
     *size = 4ll << 30;
     R_SUCCEED();
@@ -1781,18 +1777,22 @@ static void fs_destroy(SvcObj* o) {
     FsData* data = o->data;
     pm_lock(&g_hle.fs.tree.lock);
     fs_tree_release(data->root);
+    data->root = NULL; /* as an IFile's node: a save's open looks at every slot for one that has it open */
     pm_unlock(&g_hle.fs.tree.lock);
+}
+/* an IFileSystem of the folder root */
+static SvcObj* fs_new(FsNode* root) { /* tree.lock held */
+    SvcObj* o =
+        SVCOBJ_NEW_DATA("nn::fssrv::sf::IFileSystem", fs_disp, g_hle.fs.fss, g_hle.fs.fs_next, "file systems");
+    ((FsData*)o->data)->root = root;
+    fs_tree_retain(root);
+    o->destroy = fs_destroy;
+    return o;
 }
 static SvcObj* hostfs_new(const char* root, u32* rc) { /* tree.lock held */
     FsNode* node;
     *rc = tree_result(fs_tree_mkdirs(&g_hle.fs.tree, root, &node));
-    if (*rc) return NULL;
-    SvcObj* o =
-        SVCOBJ_NEW_DATA("nn::fssrv::sf::IFileSystem", fs_disp, g_hle.fs.fss, g_hle.fs.fs_next, "file systems");
-    ((FsData*)o->data)->root = node;
-    fs_tree_retain(node);
-    o->destroy = fs_destroy;
-    return o;
+    return *rc ? NULL : fs_new(node);
 }
 
 /* the system archives' stand-in: a RomFS with an empty root folder and nothing else, 0x200 bytes */
@@ -1950,6 +1950,18 @@ static int save_layout_global(void) {
     char title[17];
     return g_host.fs.save_root[0] && strcmp(g_settings.save_layout, "game") && snx_title_text(save_title(), title);
 }
+/* the folder name of a save's folder base, NULL when it has none of that name */
+static FsNode* save_part(FsNode* base, const char* name) { /* tree.lock held */
+    FsNode* node;
+    return !fs_tree_lookup(&g_hle.fs.tree, base, name, &node) && node->is_dir ? node : NULL;
+}
+/* path in the tree is a save as the versions before kept one: a folder with the game's own files in it, and so
+   without the file that says it is laid out as the console's (SNX_SAVE_JOURNALED) */
+static int save_flat(const char* path) { /* tree.lock held */
+    FsNode *node, *mark;
+    return !fs_tree_lookup(&g_hle.fs.tree, NULL, path, &node) && node->is_dir && node->children &&
+           fs_tree_lookup(&g_hle.fs.tree, node, SNX_SAVE_JOURNALED, &mark);
+}
 /* An Account save is save/user.<uid>, the folder of its user (users.c). The fixed uid's (am.c's g_user_id, user 1's
    when users.ini gives it none), while it has none, is the one an older version left, played where it is and said once
    a run (docs/user/deprecations.md): save/user, from before there were other users, else a nonempty save/system (earlier
@@ -1971,7 +1983,7 @@ static u32 save_user(const nn_fs_SaveDataAttribute* attribute, char* p, size_t n
     mine = !fs_tree_lookup(&g_hle.fs.tree, NULL, p, &node);
     if (!fs_tree_lookup(&g_hle.fs.tree, NULL, "save/user", &node))
         old = "save/user";
-    else if (!mine && !fs_tree_lookup(&g_hle.fs.tree, NULL, "save/system", &node) && node->is_dir && node->children)
+    else if (!mine && save_flat("save/system")) /* a System save of this version's is not one of those */
         old = "save/system";
     if (!old) R_SUCCEED();
     if (mine) {
@@ -2106,10 +2118,16 @@ static int save_global(const nn_fs_SaveDataAttribute* attribute, char* name, siz
     }
     return 1;
 }
-/* path in the tree is a folder with something in it: a save, not one a mount made and nothing wrote */
+/* path in the tree is a folder that holds a save, not one a mount made and nothing was committed to: the game's own
+   files, as the versions before kept one, or a last commit with something in it; with no last commit, one cut short,
+   a working copy with something in it */
 static int save_there(const char* path) { /* tree.lock held */
-    FsNode* node;
-    return !fs_tree_lookup(&g_hle.fs.tree, NULL, path, &node) && node->is_dir && node->children;
+    FsNode *node, *committed;
+    if (save_flat(path)) return 1;
+    if (fs_tree_lookup(&g_hle.fs.tree, NULL, path, &node) || !node->is_dir) return 0;
+    committed = save_part(node, SNX_SAVE_COMMITTED);
+    if (!committed) committed = save_part(node, SNX_SAVE_WORKING);
+    return committed && committed->children;
 }
 /* save_layout=global's folders of this title there now, grafted: a save is found then without enumerating anything
    later. Called at startup, after the users are known */
@@ -2395,18 +2413,268 @@ static void save_note_write(FsNode* root) { /* tree.lock held */
 void fs_save_report(void) {
     if (g_host.fs.save_newer[0]) WARN("  %s\n", g_host.fs.save_newer);
 }
-/* the attribute's save, where save_folder says; an Account, BCAT or Device save noted (save_note) */
+/* ============================================================ a save's commit
+   A save is kept as the console keeps one in a folder of the host (its DirectorySaveDataFileSystem, as LibHac has
+   it): in the save's folder, 0 holds its last commit and 1 is the copy the game works in, the only one it sees.
+   Opening the save makes 1 a copy of 0, so what a run wrote and did not commit is gone; with no 0, a commit was cut
+   short (the game killed in it) and the open finishes it from 1. Commit renames 0 to _, makes _ a copy of 1 and
+   renames it 0. The first rename is the commit and 0 is never written in place, so a game that dies at any moment
+   leaves its last commit whole or the new one, as long as the host's rename of a folder is whole. Nothing is synced:
+   a host that loses power in a commit is the host's file system's to answer for, as it is the console's.
+   Temporary storage has no commit, on the console either, and is written where it is. A save the versions before
+   kept, the game's files in its folder itself, has no SNX_SAVE_JOURNALED and is played where it is, as it was. */
+#define SAVE_SYNCING "_"
+#define SAVE_CHUNK   0x100000 /* the console's work buffer for the copy */
+/* why a save's folder could not be changed, for a message: the system's reason when the host refused, else the
+   index's */
+static const char* save_why(FsTreeResult r, char* why, size_t size) {
+    switch (r) {
+        case FS_TREE_IO: return snx_os_error(why, size);
+        case FS_TREE_EXISTS: return "something of that name is there";
+        case FS_TREE_NOTFOUND: return "it is not there";
+        case FS_TREE_TOOLONG: return "its path is too long";
+        case FS_TREE_NOMEM: return "out of memory";
+        case FS_TREE_READONLY: return "it is read-only";
+        default: return "the index of the game's files refused it";
+    }
+}
+/* the host path of node for a message, "a save's folder" when it has none */
+static const char* save_host(const FsNode* node, char* path, size_t size) {
+    return fs_tree_path(&g_hle.fs.tree, node, path, size) ? "a save's folder" : path;
+}
+/* the file from's bytes into the file to, made with its size */
+static FsTreeResult save_copy_file(FsNode* to, FsNode* from, u8* chunk) {
+    FILE *in = node_open(from, "rb"), *out = node_open(to, "rb+");
+    u64 left = from->size;
+    FsTreeResult rc = in && out ? FS_TREE_OK : FS_TREE_IO;
+    while (!rc && left) {
+        size_t n = left < SAVE_CHUNK ? (size_t)left : SAVE_CHUNK;
+        if (fread(chunk, 1, n, in) != n || fwrite(chunk, 1, n, out) != n) rc = FS_TREE_IO;
+        left -= n;
+    }
+    if (rc) { /* said here, where the system's reason is the copy's own */
+        char a[FS_TREE_PATH_MAX], b[FS_TREE_PATH_MAX], why[256];
+        snx_os_error(why, sizeof why);
+        WARN("fs: could not copy %s to %s: %s\n", save_host(from, a, sizeof a), save_host(to, b, sizeof b),
+             in && feof(in) ? "the file is shorter than the index of the game's files has it" : why);
+    }
+    if (in) fclose(in);
+    if (out && fclose(out) && !rc) rc = FS_TREE_IO;
+    return rc;
+}
+/* the folder from's folders and files into the folder into, which has none of them; bytes counts the files' */
+static FsTreeResult save_copy(FsNode* into, FsNode* from, u8* chunk, u64* bytes) {
+    FsNode *c, *made;
+    FsTreeResult rc = FS_TREE_OK;
+    for (c = from->children; c && !rc; c = c->next) {
+        rc = fs_tree_create(&g_hle.fs.tree, into, c->name, c->is_dir, c->is_dir ? 0 : c->size, &made);
+        if (rc) {
+            char a[FS_TREE_PATH_MAX], why[256];
+            WARN("fs: could not make %s in %s: %s\n", c->name, save_host(into, a, sizeof a),
+                 save_why(rc, why, sizeof why));
+        } else if (c->is_dir)
+            rc = save_copy(made, c, chunk, bytes);
+        else {
+            if (c->size) rc = save_copy_file(made, c, chunk);
+            *bytes += c->size;
+        }
+    }
+    return rc;
+}
+/* The save's folder dst made a copy of its folder src, the console's SynchronizeDirectory. That one deletes dst and
+   makes it again; dst is emptied here, so it is there throughout and what has it open keeps it */
+static FsTreeResult save_sync(FsNode* base, const char* dst, const char* src, u64* bytes) {
+    FsTree* tree = &g_hle.fs.tree;
+    FsNode *from = save_part(base, src), *to;
+    FsTreeResult rc;
+    u8* chunk;
+    if (!from) return FS_TREE_NOTFOUND;
+    rc = fs_tree_remove(tree, base, dst, 1, 1, 1);
+    if (rc == FS_TREE_NOTFOUND) rc = fs_tree_create(tree, base, dst, 1, 0, NULL);
+    if (rc) return rc;
+    to = save_part(base, dst);
+    chunk = (u8*)malloc(SAVE_CHUNK);
+    if (!to || !chunk) {
+        free(chunk);
+        return to ? FS_TREE_NOMEM : FS_TREE_NOTFOUND;
+    }
+    rc = save_copy(to, from, chunk, bytes);
+    free(chunk);
+    return rc;
+}
+/* the save whose working folder is work is open: an IFileSystem has it as its root */
+static int save_is_open(const FsNode* work) {
+    u32 i;
+    for (i = 0; i < FS_FS_MAX; i++)
+        if (g_hle.fs.fss[i].obj && g_hle.fs.fss[i].journaled && g_hle.fs.fss[i].root == work) return 1;
+    return 0;
+}
+/* a file of the save whose working folder is work that is open for writing, NULL for none */
+static const FsNode* save_written(const FsNode* work) {
+    const FsNode* n;
+    u32 i;
+    for (i = 0; i < FS_FILE_MAX; i++) {
+        const FileData* f = &g_hle.fs.files[i];
+        if (!f->obj || !f->node || !(f->mode & 2)) continue;
+        for (n = f->node; n && n != work; n = n->parent) {}
+        if (n) return f->node;
+    }
+    return NULL;
+}
+/* The save's folder base opened, the console's Initialize: laid out when it is new, then its working folder made a
+   copy of its last commit, or a commit that was cut short finished. A save that is open already (the console refuses
+   a second mount; here two saves the console keeps apart can share a folder, save/system's) is left as it is, both
+   file systems working in the one copy. The working folder into *work. tree.lock held */
+static u32 save_open(FsNode* base, FsNode** work) {
+    FsTree* tree = &g_hle.fs.tree;
+    FsTreeResult rc = FS_TREE_OK;
+    FsNode* node;
+    char host[FS_TREE_PATH_MAX], why[256];
+    u64 bytes = 0;
+    SNX_ZONE(z, "fs save open");
+    *work = NULL;
+    if (fs_tree_lookup(tree, base, SNX_SAVE_JOURNALED, &node))
+        rc = fs_tree_create(tree, base, SNX_SAVE_JOURNALED, 0, 0, NULL); /* first: the folders alone say nothing */
+    if (!rc && !save_part(base, SNX_SAVE_WORKING)) {
+        rc = fs_tree_create(tree, base, SNX_SAVE_WORKING, 1, 0, NULL);
+        if (!rc) rc = fs_tree_create(tree, base, SNX_SAVE_COMMITTED, 1, 0, NULL);
+        if (rc == FS_TREE_EXISTS) rc = FS_TREE_OK; /* a last commit with no working copy: copied below */
+    }
+    if (!rc && !save_is_open(save_part(base, SNX_SAVE_WORKING))) {
+        if (save_part(base, SNX_SAVE_COMMITTED)) {
+            /* a _ beside a last commit is no commit's: only a save put together by hand has both */
+            rc = fs_tree_remove(tree, base, SAVE_SYNCING, 1, 1, 0);
+            if (rc == FS_TREE_NOTFOUND) rc = FS_TREE_OK;
+            if (!rc) rc = save_sync(base, SNX_SAVE_WORKING, SNX_SAVE_COMMITTED, &bytes);
+        } else {
+            LOG("fs: %s has no last commit (its %s): a commit of this save was cut short, and is finished now from "
+                "its working copy (its %s)\n",
+                save_host(base, host, sizeof host), SNX_SAVE_COMMITTED, SNX_SAVE_WORKING);
+            rc = save_sync(base, SAVE_SYNCING, SNX_SAVE_WORKING, &bytes);
+            if (!rc) rc = fs_tree_rename(tree, base, SAVE_SYNCING, SNX_SAVE_COMMITTED, 1);
+        }
+    }
+    SNX_ZONE_VALUE(z, bytes);
+    if (rc) {
+        WARN("fs: could not open the save in %s: %s\n", save_host(base, host, sizeof host),
+             save_why(rc, why, sizeof why));
+        return tree_result(rc);
+    }
+    *work = save_part(base, SNX_SAVE_WORKING);
+    R_SUCCEED();
+}
+/* The save whose working folder is work committed, the console's DoCommit: refused while a file of it is open for
+   writing; then its last commit renamed away, made a copy of the working folder and renamed back. A commit that
+   finds no last commit goes on from there: one before it stopped past the first rename. tree.lock held */
+static u32 save_commit(FsNode* work) {
+    FsTree* tree = &g_hle.fs.tree;
+    FsNode* base = work->parent;
+    const FsNode* held = save_written(work);
+    FsTreeResult rc = FS_TREE_OK;
+    char host[FS_TREE_PATH_MAX], why[256];
+    u64 bytes = 0;
+    int cut = 0;
+    SNX_ZONE(z, "fs save commit");
+    if (held) {
+        WARN_LIMIT(8,
+                   "fs: the game commits the save in %s with its %s open for writing: nothing is committed, and it "
+                   "is answered WriteModeFileNotClosed, as the console answers\n",
+                   save_host(base, host, sizeof host), held->name);
+        R_THROW(SNX_RC_FS_WRITE_MODE_FILE_NOT_CLOSED);
+    }
+    if (save_part(base, SNX_SAVE_COMMITTED)) {
+        rc = fs_tree_remove(tree, base, SAVE_SYNCING, 1, 1, 0);
+        if (rc == FS_TREE_NOTFOUND) rc = FS_TREE_OK;
+        if (!rc) rc = fs_tree_rename(tree, base, SNX_SAVE_COMMITTED, SAVE_SYNCING, 1);
+    }
+    if (!rc) {
+        cut = 1; /* past the commit: the working folder is the save until the last rename */
+        rc = save_sync(base, SAVE_SYNCING, SNX_SAVE_WORKING, &bytes);
+    }
+    if (!rc) rc = fs_tree_rename(tree, base, SAVE_SYNCING, SNX_SAVE_COMMITTED, 1);
+    SNX_ZONE_VALUE(z, bytes);
+    if (rc) {
+        WARN("fs: the commit of the save in %s stopped: %s. %s\n", save_host(base, host, sizeof host),
+             save_why(rc, why, sizeof why),
+             cut ? "Its working copy (1) holds what the game wrote, and the next commit or open of the save finishes "
+                   "this one"
+                 : "Its last commit (0) is as it was");
+        return tree_result(rc);
+    }
+    R_SUCCEED();
+}
+/* Commit, an IFileSystem's or one of a commit of several: a save's (save_commit), then its note (save_note). Any
+   other file system has nothing to commit: what the game writes there is on the host as it writes it. tree.lock held */
+static u32 fs_commit(FsData* data) {
+    if (data->journaled) R_TRY(save_commit(data->root));
+    if (data->noted) save_note_write(data->journaled ? data->root->parent : data->root);
+    R_SUCCEED();
+}
+/* a save the versions before kept, opened: played where it is, said once a run for each save type with where its
+   files go */
+static void save_flat_said(FsNode* base, u8 type, const char* kind) { /* tree.lock held */
+    unsigned bit = type < 8 ? type : 0;
+    char host[FS_TREE_PATH_MAX];
+    if (g_host.fs.save_flat_told >> bit & 1) return;
+    g_host.fs.save_flat_told |= 1u << bit;
+    WARN("fs: %s holds this game's %s save as an older version kept it, the game's files in the folder itself, where "
+         "a game killed while it saves leaves part of a save. The game plays it where it is until you move its files "
+         "into its %s/ (Settings > App > Move Old Files, docs/user/deprecations.md)\n",
+         save_host(base, host, sizeof host), kind, SNX_SAVE_COMMITTED);
+}
+/* What a save's folder holds beside its last commit, its working copy and the file that says so: files put there by
+   hand, a save from elsewhere pasted where the versions before kept one. The game reads none of it: said once a run
+   for each save type, with the first of them and where a save's files go */
+static void save_stray_said(FsNode* base, u8 type, const char* kind) { /* tree.lock held */
+    unsigned bit = type < 8 ? type : 0, more = 0;
+    const FsNode *c, *first = NULL;
+    char host[FS_TREE_PATH_MAX];
+    for (c = base->children; c; c = c->next) {
+        if (!strcmp(c->name, SNX_SAVE_JOURNALED) || !strcmp(c->name, SNX_SAVE_COMMITTED) ||
+            !strcmp(c->name, SNX_SAVE_WORKING) || !strcmp(c->name, SAVE_SYNCING))
+            continue;
+        if (first) more++;
+        if (!first) first = c;
+    }
+    if (!first || (g_host.fs.save_stray_told >> bit & 1)) return;
+    g_host.fs.save_stray_told |= 1u << bit;
+    WARN("fs: %s, this game's %s save, holds %s and %u more beside its %s/ and %s/, which the game does not read: a "
+         "save's files go in its %s/, the last commit (docs/platforms/nx/filesystem.md)\n",
+         save_host(base, host, sizeof host), kind, first->name, more, SNX_SAVE_COMMITTED, SNX_SAVE_WORKING,
+         SNX_SAVE_COMMITTED);
+}
+/* the attribute's save, where save_folder says: its working folder (save_open), or the folder itself for temporary
+   storage and for a save the versions before kept; an Account, BCAT or Device save noted (save_note) */
 static int open_save(const nn_fs_SaveDataAttribute* attribute, SvcObj** filesystem) {
     char p[96], stop[FS_TREE_PATH_MAX * 2 + 512];
     u32 rc;
     u8 type = attribute->type;
+    const char* kind = type < sizeof g_save_kinds / sizeof g_save_kinds[0] ? g_save_kinds[type] : "system";
+    FsNode *base = NULL, *root = NULL;
+    int journaled = 0;
+    *filesystem = NULL;
     pm_lock(&g_hle.fs.tree.lock);
     rc = save_folder(attribute, p, sizeof p, stop, sizeof stop);
-    *filesystem = R_FAILED(rc) || stop[0] ? NULL : hostfs_new(p, &rc);
-    if (*filesystem && type >= 1 && type <= 3) {
-        FsData* data = (*filesystem)->data;
-        data->noted = 1;
-        save_note_check(data->root, g_save_kinds[type]);
+    if (!R_FAILED(rc) && !stop[0]) rc = tree_result(fs_tree_mkdirs(&g_hle.fs.tree, p, &base));
+    if (!R_FAILED(rc) && base) {
+        FsNode* mark;
+        root = base;
+        journaled = type != 4 && (!base->children || !fs_tree_lookup(&g_hle.fs.tree, base, SNX_SAVE_JOURNALED, &mark));
+        if (journaled) {
+            rc = save_open(base, &root);
+            if (!rc) save_stray_said(base, type, kind);
+        } else if (type != 4)
+            save_flat_said(base, type, kind);
+    }
+    if (!R_FAILED(rc) && root) {
+        FsData* data;
+        *filesystem = fs_new(root);
+        data = (*filesystem)->data;
+        data->journaled = (u32)journaled;
+        if (type >= 1 && type <= 3) {
+            data->noted = 1;
+            save_note_check(base, kind);
+        }
     }
     pm_unlock(&g_hle.fs.tree.lock);
     if (stop[0]) fatal("%s", stop);
@@ -2568,10 +2836,12 @@ static int nn_fssrv_sf_IMultiCommitManager_Add(SvcObj* self, SvcObj* filesystem)
     R_UNLESS(n < FS_MULTI_COMMIT_MAX, SNX_RC_FS_MULTI_COMMIT_FILE_SYSTEM_LIMIT);
     R_SUCCEED();
 }
-/* each added file system committed as its Commit does it (its save's note), or none when one of them is gone: closed,
-   or its save deleted (NotFound, as its own Commit answers then) */
+/* each added file system committed as its Commit does it, in turn and every one even after one fails, the first
+   failure answered, as the console commits them; or none when one of them is gone: closed, or its save deleted
+   (NotFound, as its own Commit answers then) */
 static int nn_fssrv_sf_IMultiCommitManager_Commit(SvcObj* self) {
     u64 added = self->u[0];
+    u32 first = 0, rc;
     int i;
     pm_lock(&g_hle.fs.tree.lock);
     for (i = 0; i < FS_FS_MAX; i++)
@@ -2580,9 +2850,9 @@ static int nn_fssrv_sf_IMultiCommitManager_Commit(SvcObj* self) {
             R_THROW(SNX_RC_FS_PATH_NOT_FOUND);
         }
     for (i = 0; i < FS_FS_MAX; i++)
-        if ((added >> i & 1) && g_hle.fs.fss[i].noted) save_note_write(g_hle.fs.fss[i].root);
+        if ((added >> i & 1) && (rc = fs_commit(&g_hle.fs.fss[i])) && !first) first = rc;
     pm_unlock(&g_hle.fs.tree.lock);
-    R_SUCCEED();
+    return (int)first;
 }
 /* nn::fs::SaveDataExtraData's fields past the attribute (Switchbrew) */
 #define FS_EXTRA_DATA_SIZE 0x200

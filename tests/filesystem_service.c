@@ -21,6 +21,30 @@
 #endif
 
 /* Including the production file exposes its service constructors without test hooks in the runtime. */
+/* A launch that ends as a kill ends a game (save-launch, below): at the test_die_in-th change a save's open or commit
+   makes to its folders, before it is made, with nothing closed; 0 for never. fs.c's own calls go through these */
+#define TEST_KILLED 42
+static int test_die_in;
+static void test_change(void) {
+    if (test_die_in && !--test_die_in) _Exit(TEST_KILLED);
+}
+static FsTreeResult test_tree_create(FsTree* tree, FsNode* scope, const char* path, int is_dir, uint64_t size,
+                                     FsNode** out) {
+    test_change();
+    return fs_tree_create(tree, scope, path, is_dir, size, out);
+}
+static FsTreeResult test_tree_remove(FsTree* tree, FsNode* scope, const char* path, int is_dir, int recursive,
+                                     int keep) {
+    test_change();
+    return fs_tree_remove(tree, scope, path, is_dir, recursive, keep);
+}
+static FsTreeResult test_tree_rename(FsTree* tree, FsNode* scope, const char* src, const char* dst, int is_dir) {
+    test_change();
+    return fs_tree_rename(tree, scope, src, dst, is_dir);
+}
+#define fs_tree_create test_tree_create
+#define fs_tree_remove test_tree_remove
+#define fs_tree_rename test_tree_rename
 #include "nx/hle/filesystem/fs.c"
 #include "common/utilities/mii_model.h"
 #include "nx/hle/hle.c"
@@ -163,6 +187,12 @@ void plat_file_unshare(int fd, const u8* data, u64 size) {
 }
 static int test_left_said; /* the warnings that a folder was left by an older version, the last in test_left_text */
 static char test_left_text[1024];
+static int test_flat_said; /* the warnings that a save is as an older version kept it, the last in test_flat_text */
+static char test_flat_text[1024];
+static char test_cut_text[1024]; /* the last line that a save's commit was cut short */
+static int
+    test_stray_said; /* the warnings that a save's folder holds more than the save, the last in test_stray_text */
+static char test_stray_text[1024];
 /* memory/own.c: nothing is GPU-owned here */
 void own_acquire(u64 addr, u64 size) { (void)addr, (void)size; }
 /* platform/plat_posix.c: no page here is protected for the write tracking */
@@ -184,6 +214,15 @@ void logf_(int level, const char* format, ...) {
     if (!level && strstr(text, "was left by an older version")) {
         test_left_said++;
         snprintf(test_left_text, sizeof test_left_text, "%s", text);
+    }
+    if (!level && strstr(text, "as an older version kept it")) {
+        test_flat_said++;
+        snprintf(test_flat_text, sizeof test_flat_text, "%s", text);
+    }
+    if (strstr(text, "was cut short")) snprintf(test_cut_text, sizeof test_cut_text, "%s", text);
+    if (!level && strstr(text, "which the game does not read")) {
+        test_stray_said++;
+        snprintf(test_stray_text, sizeof test_stray_text, "%s", text);
     }
     if (!level && strstr(text, "which mods aren't read through")) { /* kept apart from the last warning */
         size_t said = strlen(test_mod_link_text);
@@ -1663,6 +1702,12 @@ static SvcObj* open_user_save(SvcObj* proxy, const u64* uid) {
     CHECK(r.c.nout_objs == 1 && r.c.out_size == 0);
     return r.c.out_objs[0];
 }
+/* IFileSystem's Commit */
+static void commit(SvcObj* fs) {
+    Request r;
+    request(&r, 10);
+    dispatch(fs, &r, 0);
+}
 #define FIRST_SAVE "save/user.0123456789abcdeffedcba9876543210"
 #define OTHER_SAVE "save/user.04040404040404040404040404040404"
 static const u64 test_other_user[2] = {0x0404040404040404ull, 0x0404040404040404ull};
@@ -1833,8 +1878,9 @@ static void test_save_data(SvcObj* proxy) {
     fs_command(system, 0, "/system.bin", 4, 0);
     fs_command(bcat, 7, "/system.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
     fs_command(device, 7, "/system.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
-    CHECK(tree_has("save/system/system.bin"));
+    CHECK(tree_has("save/system/" SNX_SAVE_WORKING "/system.bin")); /* a new save: in its working folder */
     fs_command(system, 1, "/system.bin", 0, 0);
+    svcobj_unref(system);
     svcobj_unref(bcat);
     svcobj_unref(device);
 
@@ -1842,6 +1888,7 @@ static void test_save_data(SvcObj* proxy) {
     SvcObj* user = open_user_save(proxy, test_other_user);
     CHECK(tree_has(OTHER_SAVE) && !tree_has(FIRST_SAVE) && !tree_has("save/user") && tree_has("save/system"));
     fs_command(user, 0, "/other-user.bin", 4, 0);
+    commit(user);
     svcobj_unref(user);
     /* the first user's, with no save/user and save/system empty, is its folder, made then */
     user = open_user_save(proxy, g_user_id);
@@ -1881,12 +1928,29 @@ static void test_save_data(SvcObj* proxy) {
     fs_command(user, 7, "/played.bin", 0, 0);
     svcobj_unref(user);
     CHECK(!tree_has("save/user"));
-    /* saves an earlier version put in save/system (it read the type from a byte that is always 0) are the first
-       user's while it has no folder and no save/user, played where they are */
+    /* a System save of this version's, save/system with its last commit and working copy, is no save of the first
+       user's: its folder is made */
     pm_lock(&g_hle.fs.tree.lock);
     CHECK(!fs_tree_remove(&g_hle.fs.tree, NULL, FIRST_SAVE, 1, 1, 0));
     pm_unlock(&g_hle.fs.tree.lock);
-    fs_command(system, 0, "/slot.bin", 4, 0);
+    system = open_save_data(proxy, 51, 0);
+    fs_command(system, 0, "/system.bin", 4, 0);
+    commit(system);
+    svcobj_unref(system);
+    user = open_user_save(proxy, g_user_id);
+    fs_command(user, 7, "/system.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
+    svcobj_unref(user);
+    CHECK(tree_has(FIRST_SAVE) && tree_has("save/system/" SNX_SAVE_COMMITTED "/system.bin") && test_left_said == 1);
+    /* saves an earlier version put in save/system (it read the type from a byte that is always 0), its files in
+       the folder itself, are the first user's while it has no folder and no save/user, played where they are */
+    pm_lock(&g_hle.fs.tree.lock);
+    CHECK(!fs_tree_remove(&g_hle.fs.tree, NULL, FIRST_SAVE, 1, 1, 0));
+    CHECK(!fs_tree_remove(&g_hle.fs.tree, NULL, "save/system", 1, 1, 0));
+    old = hostfs_new("save/system", &rc);
+    pm_unlock(&g_hle.fs.tree.lock);
+    CHECK(old && !rc);
+    fs_command(old, 0, "/slot.bin", 4, 0);
+    svcobj_unref(old);
     user = open_user_save(proxy, g_user_id);
     fs_command(user, 7, "/slot.bin", 0, 0);
     svcobj_unref(user);
@@ -1897,13 +1961,15 @@ static void test_save_data(SvcObj* proxy) {
     pm_unlock(&g_hle.fs.tree.lock);
     CHECK(old && !rc);
     svcobj_unref(old);
+    system = open_save_data(proxy, 51, 0);
     fs_command(system, 1, "/slot.bin", 0, 0);
     fs_command(system, 0, "/other.bin", 4, 0);
     user = open_user_save(proxy, g_user_id);
     fs_command(user, 7, "/other.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
     fs_command(user, 0, "/progress.bin", 4, 0);
+    commit(user);
     svcobj_unref(user);
-    CHECK(tree_has("save/system/other.bin") && tree_has(FIRST_SAVE "/progress.bin"));
+    CHECK(tree_has("save/system/other.bin") && tree_has(FIRST_SAVE "/" SNX_SAVE_COMMITTED "/progress.bin"));
     /* a save/user beside the first user's folder (an older version run again) is two saves of one user: the game
        stops, and both stay as they were, for the player to choose */
     pm_lock(&g_hle.fs.tree.lock);
@@ -1926,8 +1992,8 @@ static void test_save_data(SvcObj* proxy) {
         CHECK(strstr(test_fatal_text, "Two saves of the first user") && strstr(test_fatal_text, FIRST_SAVE));
     }
     /* tree_has takes the tree's lock: fatal() came after open_save let it go, or this would wait forever */
-    CHECK(tree_has("save/user/newer.bin") && tree_has(FIRST_SAVE "/progress.bin") &&
-          !tree_has(FIRST_SAVE "/newer.bin"));
+    CHECK(tree_has("save/user/newer.bin") && tree_has(FIRST_SAVE "/" SNX_SAVE_COMMITTED "/progress.bin") &&
+          !tree_has(FIRST_SAVE "/" SNX_SAVE_WORKING "/newer.bin"));
     /* a type past the known ones is a System save, and so is one opened by its system save data id (52) */
     SvcObj* unknown = open_save_data(proxy, 51, 0x7F);
     fs_command(unknown, 7, "/other.bin", 0, 0);
@@ -1999,6 +2065,7 @@ static void test_save_layout(SvcObj* proxy) {
     host_put(path);
     save = open_save_data(proxy, 51, 2); /* the game's own BCAT save, which has a file now: two of it */
     fs_command(save, 0, "/p.bin", 4, 0);
+    commit(save);
     svcobj_unref(save);
     pm_lock(&g_hle.fs.tree.lock);
     CHECK(!fs_tree_remove(&g_hle.fs.tree, NULL, "save/user", 1, 1, 0)); /* test_save_data's two first-user saves */
@@ -2051,17 +2118,21 @@ static void test_save_layout(SvcObj* proxy) {
     /* the Device save, in neither (the game's own empty): made in the global folder, nothing enumerated */
     save = open_save_data(proxy, 51, 3);
     fs_command(save, 0, "/d.bin", 4, 0);
+    commit(save);
     svcobj_unref(save);
-    snprintf(path, sizeof path, "%s/device/" TITLE "/d.bin", root);
-    CHECK(host_file(path) && !tree_has("save/device/d.bin"));
+    snprintf(path, sizeof path, "%s/device/" TITLE "/" SNX_SAVE_COMMITTED "/d.bin", root);
+    CHECK(host_file(path) && !tree_has("save/device/" SNX_SAVE_WORKING "/d.bin"));
+    snprintf(path, sizeof path, "%s/device/" TITLE "/" SNX_SAVE_JOURNALED, root);
+    CHECK(host_file(path));
     /* cache storage, by its index */
     save_request(&r, 51, 5, NULL);
     snx_st_le16(r.raw + 0x2a, 3); /* the attribute's index, at 0x22 in it */
     dispatch(proxy, &r, 0);
     CHECK(r.c.nout_objs == 1);
     fs_command(r.c.out_objs[0], 0, "/c.bin", 4, 0);
+    commit(r.c.out_objs[0]);
     svcobj_unref(r.c.out_objs[0]);
-    snprintf(path, sizeof path, "%s/cache/" TITLE "/3/c.bin", root);
+    snprintf(path, sizeof path, "%s/cache/" TITLE "/3/" SNX_SAVE_COMMITTED "/c.bin", root);
     CHECK(host_file(path));
     /* BCAT in both: the game stops, and keeps both */
     save_request(&r, 51, 2, NULL);
@@ -2072,7 +2143,8 @@ static void test_save_layout(SvcObj* proxy) {
         CHECK(!"two BCAT saves did not stop the game");
     }
     test_fatal_jump = NULL;
-    CHECK(strstr(test_fatal_text, "Two saves of this game's bcat save") && tree_has("save/bcat/p.bin"));
+    CHECK(strstr(test_fatal_text, "Two saves of this game's bcat save") &&
+          tree_has("save/bcat/" SNX_SAVE_COMMITTED "/p.bin"));
     snprintf(path, sizeof path, "%s/bcat/" TITLE "/b.bin", root);
     CHECK(host_file(path));
     /* temporary storage is the game's */
@@ -2092,7 +2164,7 @@ static void test_save_layout(SvcObj* proxy) {
     save = open_save_data(proxy, 51, 5);
     fs_command(save, 0, "/homebrew.bin", 4, 0);
     svcobj_unref(save);
-    CHECK(tree_has("save/cache/homebrew.bin"));
+    CHECK(tree_has("save/cache/" SNX_SAVE_WORKING "/homebrew.bin"));
     g_hle.kernel.title_id = 0x0100000000010000ull;
     /* a collection's program 2: its saves are its application's, the owner its control.nacp names (SaveDataOwnerId),
        the folder program 0 plays, not one of its own ID */
@@ -2170,16 +2242,11 @@ static void test_program(u64 update, unsigned long version, const char* display)
     snprintf(g_addonrec, sizeof g_addonrec, "%s", update ? g_exename : "");
     snprintf(test_display, sizeof test_display, "%s", display);
 }
-/* IFileSystem's Commit */
-static void commit(SvcObj* fs) {
-    Request r;
-    request(&r, 10);
-    dispatch(fs, &r, 0);
-}
-/* the host folder of a save's file system */
+/* the host folder of a save's file system: the save's own, which holds its last commit and its working copy */
 static void save_host_folder(SvcObj* save, char* out, size_t size) {
+    const FsData* data = save->data;
     pm_lock(&g_hle.fs.tree.lock);
-    CHECK(!fs_tree_path(&g_hle.fs.tree, ((FsData*)save->data)->root, out, size));
+    CHECK(!fs_tree_path(&g_hle.fs.tree, data->journaled ? data->root->parent : data->root, out, size));
     pm_unlock(&g_hle.fs.tree.lock);
 }
 /* the file at path is text */
@@ -2214,6 +2281,7 @@ static void test_save_note(SvcObj* proxy) {
     n = strlen(folder);
     CHECK(n > 0 && strstr(folder, FIRST_SAVE) && folder[n - 1] != '/');
     snprintf(note, sizeof note, "%s.version", folder);
+    remove(note); /* test_save_data's commit of this save */
     fs_command(save, 0, "/progress.bin", 4, 0);
     CHECK(!host_file(note));
     commit(save);
@@ -2326,8 +2394,9 @@ static void test_save_note(SvcObj* proxy) {
 }
 
 /* IMultiCommitManager (fsp-srv's 1200): Add (1) {an IFileSystem, in the domain message} takes 10 file systems, each
-   once; Commit (2) commits each as its own Commit does, an Account and a Device save's notes written, or none when
-   one of them was closed since */
+   once; Commit (2) commits each as its own Commit does, an Account and a Device save's files in their last commits
+   and their notes written, each even when another's is refused, the first refusal answered; or none when one of
+   them was closed since */
 static u32 multi_add(SvcObj* manager, SvcObj* filesystem) {
     Request r;
     u32 rc;
@@ -2346,7 +2415,7 @@ static void save_note_of(SvcObj* save, char* note, size_t size) {
 }
 static void test_multi_commit(SvcObj* proxy) {
     char user_note[FS_TREE_PATH_MAX + 16], device_note[FS_TREE_PATH_MAX + 16];
-    SvcObj *manager, *user, *device, *more[9];
+    SvcObj *manager, *user, *device, *held, *more[9];
     Request r;
     strcpy(g_settings.save_layout, "game");
     test_program(0, 0, "1.0.0");
@@ -2364,10 +2433,23 @@ static void test_multi_commit(SvcObj* proxy) {
     CHECK(multi_add(manager, user) == RC(2, 6463));    /* MultiCommitHasOverlappingTargets */
     CHECK(multi_add(manager, manager) == RC(2, 6001)); /* not a file system: InvalidArgument */
     CHECK(!host_file(user_note) && !host_file(device_note));
+    fs_command(user, 0, "/multi.bin", 4, 0);
+    fs_command(device, 0, "/multi.bin", 4, 0);
     request(&r, 2);
     dispatch(manager, &r, 0);
     CHECK(host_text(user_note, "program=0100000000010000\ndisplay=1.0.0\n"));
     CHECK(host_text(device_note, "program=0100000000010000\ndisplay=1.0.0\n"));
+    CHECK(tree_has(FIRST_SAVE "/" SNX_SAVE_COMMITTED "/multi.bin") &&
+          tree_has("save/device/" SNX_SAVE_COMMITTED "/multi.bin"));
+    /* the user's with a file open for writing: refused, said, and the device's committed all the same */
+    fs_command(user, 0, "/held.bin", 4, 0);
+    fs_command(device, 0, "/second.bin", 4, 0);
+    held = open_object(user, 8, "/held.bin", 3);
+    request(&r, 2);
+    dispatch(manager, &r, RC(2, 6457)); /* WriteModeFileNotClosed */
+    svcobj_unref(held);
+    CHECK(!tree_has(FIRST_SAVE "/" SNX_SAVE_COMMITTED "/held.bin") &&
+          tree_has("save/device/" SNX_SAVE_COMMITTED "/second.bin"));
     /* ten at most: MultiCommitFileSystemLimit past them */
     for (int i = 0; i < 9; i++) more[i] = open_user_save(proxy, g_user_id);
     for (int i = 0; i < 8; i++) CHECK(multi_add(manager, more[i]) == 0);
@@ -2385,7 +2467,317 @@ static void test_multi_commit(SvcObj* proxy) {
     svcobj_unref(manager);
     g_settings.save_layout[0] = 0;
     g_gamename[0] = g_exename[0] = 0;
-    puts("PASS the commit of several file systems: ten, each once, their notes written, none when one is closed");
+    puts("PASS the commit of several file systems: ten, each once, their files committed and their notes written, "
+         "each even when another is refused, none when one is closed");
+}
+
+/* A save's commit (fs.c's "A save's commit"), as the console keeps a save in a folder: the save's folder holds its last
+   commit in 0 and the copy the game works in in 1, with the file that says so. The game reads what it wrote before
+   the commit; the last commit changes at Commit alone, whole (files, folders, deletions, renames), and is what a
+   save closed with no commit is when it is opened again. Commit is refused while a file of the save is open for
+   writing. A commit cut short after its first rename is finished by the next open, or the next commit. A save an
+   older version kept, the game's files in the folder itself, is played where it is and said once, also when the
+   game's own folders are named 0 and 1 */
+#define COMMIT_SAVE "save/user.07070707070707070707070707070707"
+static void test_save_commit(SvcObj* proxy) {
+    static const u64 fifth[2] = {0x0707070707070707ull, 0x0707070707070707ull};
+    char folder[FS_TREE_PATH_MAX], last[FS_TREE_PATH_MAX + 64], working[FS_TREE_PATH_MAX + 64];
+    SvcObj *save, *again, *file, *old;
+    Request r;
+    u32 rc;
+    strcpy(g_settings.save_layout, "game");
+    /* a new save: laid out as it is opened; what the game writes is in the working folder alone */
+    save = open_user_save(proxy, fifth);
+    save_host_folder(save, folder, sizeof folder);
+    CHECK(strstr(folder, COMMIT_SAVE) && folder[strlen(folder) - 1] != '/');
+    snprintf(last, sizeof last, "%s/" SNX_SAVE_COMMITTED "/slot.bin", folder);
+    snprintf(working, sizeof working, "%s/" SNX_SAVE_WORKING "/slot.bin", folder);
+    CHECK(tree_has(COMMIT_SAVE "/" SNX_SAVE_JOURNALED) && tree_has(COMMIT_SAVE "/" SNX_SAVE_COMMITTED) &&
+          tree_has(COMMIT_SAVE "/" SNX_SAVE_WORKING));
+    fs_command(save, 0, "/slot.bin", 0, 0);
+    file = open_object(save, 8, "/slot.bin", 7);
+    write_data(file, 0, "first", 5, 0);
+    CHECK(host_text(working, "first") && !host_file(last));
+    /* a file open for writing: the commit is refused, the file named, and nothing is committed */
+    test_fs_text[0] = 0;
+    request(&r, 10);
+    dispatch(save, &r, RC(2, 6457)); /* WriteModeFileNotClosed */
+    CHECK(!host_file(last) && strstr(test_fs_text, folder) && strstr(test_fs_text, "its slot.bin open for writing") &&
+          strstr(test_fs_text, "WriteModeFileNotClosed"));
+    svcobj_unref(file);
+    /* one open for reading does not hold it */
+    file = open_object(save, 8, "/slot.bin", 1);
+    commit(save);
+    CHECK(read_data(file, 0, 16, 0) == 5 && !memcmp(GP(0x5000), "first", 5));
+    svcobj_unref(file);
+    CHECK(host_text(last, "first") && !tree_has(COMMIT_SAVE "/_"));
+    /* written again, and more made, with no commit: the game reads what it wrote, the last commit is as it was */
+    file = open_object(save, 8, "/slot.bin", 7);
+    write_data(file, 0, "SECOND, part of it", 18, 0);
+    CHECK(read_data(file, 0, 32, 0) == 18 && !memcmp(GP(0x5000), "SECOND, part of it", 18));
+    svcobj_unref(file);
+    fs_command(save, 0, "/new.bin", 4, 0);
+    fs_command(save, 2, "/dir", 0, 0);
+    CHECK(host_text(last, "first") && host_text(working, "SECOND, part of it") &&
+          !tree_has(COMMIT_SAVE "/" SNX_SAVE_COMMITTED "/new.bin"));
+    svcobj_unref(save);
+    /* closed with no commit and opened again, as the next launch opens it after the game was killed: its last commit */
+    save = open_user_save(proxy, fifth);
+    file = open_object(save, 8, "/slot.bin", 1);
+    CHECK(get_size(file) == 5 && read_data(file, 0, 16, 0) == 5 && !memcmp(GP(0x5000), "first", 5));
+    svcobj_unref(file);
+    fs_command(save, 7, "/new.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
+    fs_command(save, 7, "/dir", 0, SNX_RC_FS_PATH_NOT_FOUND);
+    CHECK(host_text(last, "first") && host_text(working, "first"));
+    /* a commit takes the folders, the deletions and the renames with the files */
+    fs_command(save, 2, "/dir", 0, 0);
+    fs_command(save, 0, "/dir/deep.bin", 3, 0);
+    fs_command(save, 0, "/gone.bin", 4, 0);
+    commit(save);
+    CHECK(tree_has(COMMIT_SAVE "/" SNX_SAVE_COMMITTED "/gone.bin"));
+    rename_object(save, 5, "/slot.bin", "/moved.bin", 0);
+    fs_command(save, 1, "/gone.bin", 0, 0);
+    commit(save);
+    CHECK(tree_has(COMMIT_SAVE "/" SNX_SAVE_COMMITTED "/dir/deep.bin") &&
+          tree_has(COMMIT_SAVE "/" SNX_SAVE_COMMITTED "/moved.bin") &&
+          !tree_has(COMMIT_SAVE "/" SNX_SAVE_COMMITTED "/slot.bin") &&
+          !tree_has(COMMIT_SAVE "/" SNX_SAVE_COMMITTED "/gone.bin") && !tree_has(COMMIT_SAVE "/_"));
+    snprintf(last, sizeof last, "%s/" SNX_SAVE_COMMITTED "/moved.bin", folder);
+    CHECK(host_text(last, "first"));
+    snprintf(last, sizeof last, "%s/" SNX_SAVE_COMMITTED "/slot.bin", folder);
+    CHECK(!host_file(last));
+    /* opened while it is open: both file systems in the one working copy, which the second open leaves as it is */
+    fs_command(save, 0, "/pending.bin", 4, 0);
+    again = open_user_save(proxy, fifth);
+    fs_command(again, 7, "/pending.bin", 0, 0);
+    svcobj_unref(again);
+    fs_command(save, 7, "/pending.bin", 0, 0);
+    /* a commit cut short after its first rename, the game killed in it: no last commit and the working folder whole,
+       which the next commit goes on from */
+    pm_lock(&g_hle.fs.tree.lock);
+    CHECK(!fs_tree_rename(&g_hle.fs.tree, NULL, COMMIT_SAVE "/" SNX_SAVE_COMMITTED, COMMIT_SAVE "/_", 1));
+    pm_unlock(&g_hle.fs.tree.lock);
+    commit(save);
+    CHECK(tree_has(COMMIT_SAVE "/" SNX_SAVE_COMMITTED "/pending.bin") && !tree_has(COMMIT_SAVE "/_"));
+    /* and which the next open finishes, saying so: the save is the one the game committed */
+    fs_command(save, 0, "/last.bin", 4, 0);
+    svcobj_unref(save);
+    pm_lock(&g_hle.fs.tree.lock);
+    CHECK(!fs_tree_rename(&g_hle.fs.tree, NULL, COMMIT_SAVE "/" SNX_SAVE_COMMITTED, COMMIT_SAVE "/_", 1));
+    pm_unlock(&g_hle.fs.tree.lock);
+    test_cut_text[0] = 0;
+    save = open_user_save(proxy, fifth);
+    fs_command(save, 7, "/last.bin", 0, 0);
+    fs_command(save, 7, "/moved.bin", 0, 0);
+    CHECK(tree_has(COMMIT_SAVE "/" SNX_SAVE_COMMITTED "/last.bin") &&
+          tree_has(COMMIT_SAVE "/" SNX_SAVE_COMMITTED "/dir/deep.bin") && !tree_has(COMMIT_SAVE "/_"));
+    CHECK(strstr(test_cut_text, folder) && strstr(test_cut_text, "has no last commit (its 0)") &&
+          strstr(test_cut_text, "is finished now from its working copy (its 1)"));
+    svcobj_unref(save);
+    /* files put in the save's folder by hand, beside its last commit and its working copy (a save from elsewhere
+       pasted there): the game reads none of them, said once a run with the first and where a save's files go */
+    CHECK(test_stray_said == 0);
+    pm_lock(&g_hle.fs.tree.lock);
+    CHECK(!fs_tree_create(&g_hle.fs.tree, NULL, COMMIT_SAVE "/pasted.bin", 0, 4, NULL));
+    CHECK(!fs_tree_create(&g_hle.fs.tree, NULL, COMMIT_SAVE "/pasted too", 1, 0, NULL));
+    pm_unlock(&g_hle.fs.tree.lock);
+    save = open_user_save(proxy, fifth);
+    fs_command(save, 7, "/pasted.bin", 0, SNX_RC_FS_PATH_NOT_FOUND);
+    fs_command(save, 7, "/last.bin", 0, 0);
+    svcobj_unref(save);
+    CHECK(test_stray_said == 1 && strstr(test_stray_text, folder) &&
+          strstr(test_stray_text, ", this game's user save, holds pasted too and 1 more beside its 0/ and 1/, which "
+                                  "the game does not read: a save's files go in its 0/"));
+    save = open_user_save(proxy, fifth);
+    svcobj_unref(save);
+    CHECK(test_stray_said == 1 && tree_has(COMMIT_SAVE "/pasted.bin"));
+    /* a save an older version kept, a game's slots in folders named 0 and 1: its files are not taken for a last commit
+       and a working copy (the open would write the one over the other). Played where it is, said once a run */
+    pm_lock(&g_hle.fs.tree.lock);
+    old = hostfs_new("save/sysbcat", &rc);
+    pm_unlock(&g_hle.fs.tree.lock);
+    CHECK(old && !rc);
+    fs_command(old, 2, "/0", 0, 0);
+    fs_command(old, 0, "/0/slot.bin", 4, 0);
+    fs_command(old, 2, "/1", 0, 0);
+    fs_command(old, 0, "/1/slot.bin", 6, 0);
+    svcobj_unref(old);
+    test_flat_said = 0;
+    save = open_save_data(proxy, 51, 6);
+    CHECK(test_flat_said == 1 &&
+          strstr(test_flat_text, "save/sysbcat holds this game's sysbcat save as an older "
+                                 "version kept it") &&
+          strstr(test_flat_text, "until you move its files into its 0/ (Settings > App > Move Old Files, "
+                                 "docs/user/deprecations.md)"));
+    file = open_object(save, 8, "/1/slot.bin", 1);
+    CHECK(get_size(file) == 6);
+    svcobj_unref(file);
+    fs_command(save, 7, "/0/slot.bin", 0, 0);
+    fs_command(save, 0, "/written.bin", 4, 0);
+    commit(save); /* nothing to commit: its files are written where they are */
+    svcobj_unref(save);
+    CHECK(tree_has("save/sysbcat/written.bin") && tree_has("save/sysbcat/1/slot.bin") &&
+          !tree_has("save/sysbcat/" SNX_SAVE_JOURNALED));
+    save = open_save_data(proxy, 51, 6);
+    svcobj_unref(save);
+    CHECK(test_flat_said == 1);
+    g_settings.save_layout[0] = 0;
+    puts("PASS a save's commit: the last commit and the working copy, an open after no commit, a commit refused with "
+         "a file open for writing, a commit cut short finished, an older version's save played where it is");
+}
+
+/* A game killed while it saves (#1147). Each launch is a process of this harness on the same data folder, which
+   indexes it anew as a game's start does, opens the first user's save and ends as a kill ends a game: _Exit, nothing
+   closed, where the step says. The save has two versions, apart in every file: the old one (slot.bin of 3000 'A',
+   dir/deep.bin) and the new (slot.bin of 3500 'B', new.bin, no dir). Whatever the moment of the kill, the next
+   launch finds one of them whole */
+enum { LAUNCH_OLD = 10, LAUNCH_NEW = 11, LAUNCH_LIVED = 12 };
+static void launch_fill(SvcObj* file, char byte, size_t size) {
+    char chunk[0x800];
+    size_t at, n;
+    memset(chunk, byte, sizeof chunk);
+    for (at = 0; at < size; at += n) {
+        n = size - at < sizeof chunk ? size - at : sizeof chunk;
+        write_data(file, at, chunk, n, 0);
+    }
+}
+/* the save written whole as one of its versions, every file closed */
+static void launch_write(SvcObj* save, int new_version) {
+    SvcObj* file;
+    fs_command(save, 13, "/", 0, 0); /* CleanDirectoryRecursively */
+    fs_command(save, 0, "/slot.bin", 0, 0);
+    file = open_object(save, 8, "/slot.bin", 7);
+    launch_fill(file, new_version ? 'B' : 'A', new_version ? 3500 : 3000);
+    svcobj_unref(file);
+    if (!new_version) fs_command(save, 2, "/dir", 0, 0);
+    fs_command(save, 0, new_version ? "/new.bin" : "/dir/deep.bin", 0, 0);
+    file = open_object(save, 8, new_version ? "/new.bin" : "/dir/deep.bin", 7);
+    write_data(file, 0, new_version ? "new" : "old-deep", new_version ? 3 : 8, 0);
+    svcobj_unref(file);
+}
+/* which version the save is, every byte of it checked: LAUNCH_OLD or LAUNCH_NEW; anything else fails */
+static int launch_version(SvcObj* save) {
+    SvcObj* file = open_object(save, 8, "/slot.bin", 1);
+    u64 size = get_size(file), at, n;
+    int new_version = size == 3500;
+    CHECK(size == (new_version ? 3500u : 3000u));
+    for (at = 0; at < size; at += n) {
+        n = read_data(file, at, 0x800, 0);
+        CHECK(n == (size - at < 0x800 ? size - at : 0x800));
+        for (u64 i = 0; i < n; i++) CHECK(GP(0x5000)[i] == (new_version ? 'B' : 'A'));
+    }
+    svcobj_unref(file);
+    fs_command(save, 7, "/new.bin", 0, new_version ? 0 : SNX_RC_FS_PATH_NOT_FOUND);
+    fs_command(save, 7, "/dir", 0, new_version ? SNX_RC_FS_PATH_NOT_FOUND : 0);
+    file = open_object(save, 8, new_version ? "/new.bin" : "/dir/deep.bin", 1);
+    n = read_data(file, 0, 16, 0);
+    CHECK(new_version ? n == 3 && !memcmp(GP(0x5000), "new", 3) : n == 8 && !memcmp(GP(0x5000), "old-deep", 8));
+    svcobj_unref(file);
+    return new_version ? LAUNCH_NEW : LAUNCH_OLD;
+}
+/* a launch: step, and for the ones that are killed in a commit or an open, at which change of the save's folders */
+static int save_launch(const char* step, int at) {
+    SvcObj *proxy, *save, *file;
+    strcpy(g_datadir, "service-data/");
+    fs_init(NULL, NULL);
+    svc_fs_init();
+    romfs_init();
+    proxy = new_fsp();
+    if (!strcmp(step, "open")) test_die_in = at; /* killed in the open: rolling back, or finishing a commit */
+    save = open_user_save(proxy, g_user_id);
+    test_die_in = 0;
+    if (!strcmp(step, "open")) return LAUNCH_LIVED;
+    if (!strcmp(step, "old")) { /* the old version, committed */
+        launch_write(save, 0);
+        commit(save);
+        return launch_version(save);
+    }
+    if (!strcmp(step, "torn")) { /* killed while it writes the new version over the old, before any commit */
+        fs_command(save, 1, "/dir/deep.bin", 0, 0);
+        fs_command(save, 0, "/new.bin", 0, 0);
+        file = open_object(save, 8, "/slot.bin", 7);
+        launch_fill(file, 'B', 1500);
+        _Exit(TEST_KILLED);
+    }
+    if (!strcmp(step, "commit")) { /* the new version written whole, killed in its commit */
+        launch_write(save, 1);
+        test_die_in = at;
+        commit(save);
+        return LAUNCH_LIVED;
+    }
+    CHECK(!strcmp(step, "version"));
+    at = launch_version(save);
+    /* and laid out as a save no kill touched: its last commit there, no commit under way */
+    CHECK(tree_has("save/user.0123456789abcdeffedcba9876543210/" SNX_SAVE_COMMITTED) &&
+          !tree_has("save/user.0123456789abcdeffedcba9876543210/_"));
+    return at;
+}
+/* a launch as a process of its own: its exit status */
+static int launch(char** argv, const char* step, int at) {
+    char number[16], *said = NULL;
+    const char* command[7];
+    int code;
+    snprintf(number, sizeof number, "%d", at);
+    command[0] = argv[0];
+    command[1] = argv[1];
+    command[2] = argv[2];
+    command[3] = "save-launch";
+    command[4] = step;
+    command[5] = number;
+    command[6] = NULL;
+    code = snx_run(command, NULL, NULL, &said);
+    if (code != TEST_KILLED && code != LAUNCH_OLD && code != LAUNCH_NEW && code != LAUNCH_LIVED)
+        fprintf(stderr, "launch %s %d ended with %d:\n%s\n", step, at, code, said ? said : "");
+    free(said);
+    return code;
+}
+static void test_save_kill(char** argv) {
+    int at, code, commits = 0, opens = 0, finishes = 0, news = 0;
+    /* killed while it writes, before any commit: the last commit, whole */
+    CHECK(launch(argv, "old", 0) == LAUNCH_OLD);
+    CHECK(launch(argv, "torn", 0) == TEST_KILLED);
+    CHECK(launch(argv, "version", 0) == LAUNCH_OLD);
+    /* killed at each change a commit makes to the save's folders, one launch for each: the old version before the
+       commit's first rename, the new one from then on, never part of either */
+    for (at = 1;; at++) {
+        CHECK(launch(argv, "old", 0) == LAUNCH_OLD);
+        code = launch(argv, "commit", at);
+        CHECK(code == TEST_KILLED || code == LAUNCH_LIVED);
+        if (code == TEST_KILLED) commits++;
+        code = launch(argv, "version", 0) == LAUNCH_NEW ? 1 : 0;
+        CHECK(code >= news && (at > 1 || !code)); /* never back to the old one; killed at the first change, the old */
+        news = code;
+        if (commits < at) break;
+        CHECK(at < 64);
+    }
+    CHECK(news && commits >= 5); /* the two renames, the emptying and a copy of each of the new version's entries */
+    /* killed at each change an open makes: one that puts the last commit back over a torn working copy */
+    for (at = 1;; at++) {
+        CHECK(launch(argv, "old", 0) == LAUNCH_OLD);
+        CHECK(launch(argv, "torn", 0) == TEST_KILLED);
+        code = launch(argv, "open", at);
+        CHECK(code == TEST_KILLED || code == LAUNCH_LIVED);
+        if (code == TEST_KILLED) opens++;
+        CHECK(launch(argv, "version", 0) == LAUNCH_OLD);
+        if (opens < at) break;
+        CHECK(at < 64);
+    }
+    CHECK(opens >= 3);
+    /* and one that finishes a commit cut short past its first rename: the new version */
+    for (at = 1;; at++) {
+        CHECK(launch(argv, "old", 0) == LAUNCH_OLD);
+        CHECK(launch(argv, "commit", 4) == TEST_KILLED);
+        code = launch(argv, "open", at);
+        CHECK(code == TEST_KILLED || code == LAUNCH_LIVED);
+        if (code == TEST_KILLED) finishes++;
+        CHECK(launch(argv, "version", 0) == LAUNCH_NEW);
+        if (finishes < at) break;
+        CHECK(at < 64);
+    }
+    CHECK(finishes >= 3);
+    printf("PASS %u checks: a game killed while it writes its save, at each of %d changes of a commit and of %d and "
+           "%d of an open, leaves its last commit or the new one, whole\n",
+           test_checks, commits, opens, finishes);
 }
 /* ReadSaveDataFileSystemExtraDataWithMaskBySaveDataAttribute (71) {u8 space id, attribute at 8}, the extra data out
    in B 0 and the mask in A 0, 0x200 bytes each: the attribute with the game's program when it named none (0x0), the
@@ -2479,7 +2871,7 @@ int main(int argc, char** argv) {
     hle_init();
     test_rhash();
     g_hle.kernel.title_id = 0x0100000000010000ull; /* the title the test was written for */
-    CHECK((argc == 3 || argc == 4) && strstr(argv[1], "scarletnx-fs-tree-") != NULL);
+    CHECK((argc == 3 || argc == 4 || argc == 6) && strstr(argv[1], "scarletnx-fs-tree-") != NULL);
     CHECK(!test_chdir(argv[1]));
     FILE* marker = fopen(".snx-fs-test", "rb");
     char token[64] = {0};
@@ -2488,6 +2880,13 @@ int main(int argc, char** argv) {
     CHECK(!fclose(marker) && !strcmp(token, argv[2]));
     g_mem = calloc(1, 0x10000);
     CHECK(g_mem != NULL);
+    if (argc == 4 && !strcmp(argv[3], "save-kill")) {
+        test_save_kill(argv);
+        free(g_mem);
+        return 0;
+    }
+    /* one of its launches: ended here with nothing closed or freed, as the kill it stands for ends a game */
+    if (argc == 6 && !strcmp(argv[3], "save-launch")) _Exit(save_launch(argv[4], atoi(argv[5])));
     int raw = argc == 4 && !strcmp(argv[3], "raw");
 #if !defined(_WIN32)
     if (argc == 4 && (!strcmp(argv[3], "dump") || !strcmp(argv[3], "dump-source"))) {
@@ -2837,6 +3236,7 @@ int main(int argc, char** argv) {
     test_save_layout(proxy);
     test_save_note(proxy);
     test_multi_commit(proxy);
+    test_save_commit(proxy);
     test_extra_data(proxy);
     test_sd_write(proxy);
     test_state_temp(proxy);
