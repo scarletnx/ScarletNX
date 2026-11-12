@@ -3,13 +3,14 @@
 /* astc_mode's BC7 (vk_astc_bc7): an ASTC texture goes up decoded to RGBA8, which the game samples at once, and the BC7
    encoder makes its BC7 image after the frames' presents, VK_BC7_LATER_BLOCKS blocks a frame at most (texture.c
    vk_tex_later_frame). Whole, the BC7 image takes the RGBA8 one's place, which goes once the frames are done, and its
-   blocks are the CPU encoder's (tests/glsl/bc7_cpu.cpp) over the RGBA8 texels, byte for byte, edges, strips cut at the
+   blocks are those the shader makes of the texture's ASTC blocks, as the CPU runs it (tests/glsl/astc_bc7_cpu.cpp), byte for byte, edges, strips cut at the
    frame's budget, layers and 3D slices across frames included. A texture written before its BC7 image is whole starts over on the
    new texels; one written whole after is RGBA8 again until the encoder is done again, and pieces of it more than a
    frame's blocks load whole as RGBA8 too, where fewer go straight to BC7. A texture written again before the encoder
    could make it BC7 is held Exact, out of the queue, even for its pieces, and is made BC7 again once read unwritten
    for a while. A texture freed leaves the queue */
 #include "bc7_cpu.h"
+#include "astc_bc7_cpu.h"
 
 #define AL_CPU      (HEAP_BASE + 0x1F000000) /* a case's guest memory, AL_SPAN each */
 #define AL_SPAN     0x200000ull
@@ -80,7 +81,9 @@ static u64 al_level_bytes(const AlTex* x, u32 l, int bc7) {
 }
 static u32 al_layers(const AlTex* x) { return x->c->d3 ? 1 : x->c->d; }
 /* every level of every layer of t's image, read back, level after level, layer after layer; malloc'd, its bytes in
-   *size. NULL when it couldn't be */
+   *size. NULL when it couldn't be. After an RGBA8 image's texels come the ASTC blocks t keeps for its BC7 image
+   (astc.c's vk_astc_keep), as it keeps them: level after level, each a layer's or slice's rows of blocks after
+   another's. They are what the BC7 image is made from, so what its blocks are held to (al_expect) */
 static u8* al_image(const AlTex* x, Surf* t, u64* size) {
     const int bc7 = t->f.vk == VK_FORMAT_BC7_UNORM_BLOCK || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK;
     const u32 n = al_layers(x) * x->tex.d.levels;
@@ -99,37 +102,60 @@ static u8* al_image(const AlTex* x, Surf* t, u64* size) {
             at += al_level_bytes(x, l, bc7);
         }
     vk_lock();
-    u8* back = vk_readback_buffer(at, &buffer);
-    u8* out = back ? malloc((size_t)at) : NULL;
+    const u64 kept = bc7 ? 0 : t->bc7.kept_bytes;
+    u8* back = vk_readback_buffer(at + kept, &buffer);
+    u8* out = back ? malloc((size_t)(at + kept)) : NULL;
     if (out) {
         vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
         rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, n, c);
+        if (kept) {
+            /* after the uploads' copies into it and the encoder's reads of it */
+            VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                   .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                   .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                                   .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                   .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT};
+            VkDependencyInfo md = {
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+            rec_CmdPipelineBarrier2(vk_cmd(), &md);
+            const VkBufferCopy r = {0, at, kept};
+            rec_CmdCopyBuffer(vk_cmd(), t->bc7.kept, buffer, 1, &r);
+        }
         vk_finish();
         vk_readback_ready();
-        memcpy(out, back, (size_t)at);
+        memcpy(out, back, (size_t)(at + kept));
     }
     vk_unlock();
     free(c);
     *size = at;
     return out;
 }
-/* the BC7 blocks the CPU encoder makes of an RGBA8 image read back (al_image), each level of each layer on its own as
-   the encoder takes a level: malloc'd, its bytes in *size */
-static u8* al_expect(const AlTex* x, const u8* rgba, u64* size) {
-    u64 bytes = 0, at = 0, to = 0;
-    for (u32 l = 0; l < x->tex.d.levels; l++) bytes += al_level_bytes(x, l, 1);
+/* the BC7 blocks the shader's build of each level makes, run on the CPU (tests/glsl/astc_bc7_cpu.cpp), of the ASTC
+   blocks read back after an RGBA8 image's texels (al_image), footprint bw x bh: each level of each layer on its own,
+   as the encoder takes a level. The fast build takes what the ASTC blocks say of each block, so the texels alone do
+   not give its blocks. malloc'd, its bytes in *size */
+static u8* al_expect(const AlTex* x, const u8* rgba, u32 bw, u32 bh, u64* size) {
+    u64 bytes = 0, texels = 0, to = 0;
+    for (u32 l = 0; l < x->tex.d.levels; l++) {
+        bytes += al_level_bytes(x, l, 1);
+        texels += al_level_bytes(x, l, 0);
+    }
     bytes *= al_layers(x);
+    const u8* kept = rgba + texels * al_layers(x);
     u8* out = malloc((size_t)bytes);
     if (!out) return NULL;
-    for (u32 layer = 0; layer < al_layers(x); layer++)
+    for (u32 layer = 0; layer < al_layers(x); layer++) {
+        u64 level_at = 0; /* where the level's blocks start in what the texture keeps */
         for (u32 l = 0; l < x->tex.d.levels; l++) {
             u32 w, h, d;
             al_level(x, l, &w, &h, &d);
-            bc7_encode_cpu_build(vk_bc7_build(w, h, d), rgba + at, w, h, d, out + to); /* the level's build */
-            at += al_level_bytes(x, l, 0);
+            const u64 slice = (u64)((w + bw - 1) / bw) * ((h + bh - 1) / bh) * 16;
+            astc_bc7_cpu(vk_bc7_build(w, h, d), kept + level_at + layer * slice, w, h, d, bw, bh, 0, out + to);
+            level_at += slice * (x->c->d3 ? d : al_layers(x));
             to += al_level_bytes(x, l, 1);
         }
+    }
     *size = bytes;
     return out;
 }
@@ -137,7 +163,7 @@ static u8* al_expect(const AlTex* x, const u8* rgba, u64* size) {
 static int al_differ(const AlTex* x, const char* when, Surf* t, const u8* rgba) {
     u64 got_size = 0, want_size = 0, first = 0, differ = 0;
     u8* got = al_image(x, t, &got_size);
-    u8* want = al_expect(x, rgba, &want_size);
+    u8* want = al_expect(x, rgba, t->f.bw, t->f.bh, &want_size);
     for (u64 i = 0; got && want && got_size == want_size && i < got_size; i += 16)
         if (memcmp(got + i, want + i, 16) && !differ++) first = i;
     int bad = !got || !want || got_size != want_size || differ;

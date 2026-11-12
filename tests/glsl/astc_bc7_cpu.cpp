@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the ScarletNX contributors
 // astc_bc7.comp's body run on the CPU through tests/glsl/glsl.hpp, dispatched as vk/astc.c dispatches it: ASTC blocks
-// straight into BC7 blocks, in each of the encoder's builds.
+// straight into BC7 blocks, in each of the encoder's builds as src/nx/CMakeLists.txt builds them (the fast build's
+// second pass with the ASTC blocks' hints), in one pass and in the two the full and the fast build take.
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -24,41 +25,75 @@ using namespace glsl;
     leuvec4* bc7_blocks;                                                                                               \
     leuint* work;                                                                                                      \
     uint astc_block[39];
+// the builds in one pass: the fast one takes the hints, as its second pass does (the first never gets to them)
+#undef SNX_BC7_LINES
+#undef SNX_BC7_FAST
+#define SNX_BC7_FAST 0
+#undef SNX_BC7_HINTS
+#define SNX_BC7_HINTS 0
+#undef SNX_BC7_QUICK
+#define SNX_BC7_QUICK 0
+#undef SNX_BC7_PASS
+#define SNX_BC7_PASS 0
 struct Full : Invocation {
     SNX_ASTC_BC7_DECLARATIONS
 #include "nx/gpu/texture/astc_decode.glsl"
 #include "nx/gpu/texture/bc7_encode.glsl"
 #include "nx/gpu/texture/astc_bc7.glsl"
 };
+#undef SNX_BC7_LINES
 #undef SNX_BC7_FAST
 #define SNX_BC7_FAST 1
+#undef SNX_BC7_HINTS
+#define SNX_BC7_HINTS 1
+#undef SNX_BC7_QUICK
+#define SNX_BC7_QUICK 0
+#undef SNX_BC7_PASS
+#define SNX_BC7_PASS 0
 struct Fast : Invocation {
     SNX_ASTC_BC7_DECLARATIONS
 #include "nx/gpu/texture/astc_decode.glsl"
 #include "nx/gpu/texture/bc7_encode.glsl"
 #include "nx/gpu/texture/astc_bc7.glsl"
 };
+#undef SNX_BC7_LINES
 #undef SNX_BC7_FAST
 #define SNX_BC7_FAST 2
+#undef SNX_BC7_HINTS
+#define SNX_BC7_HINTS 0
+#undef SNX_BC7_QUICK
+#define SNX_BC7_QUICK 0
+#undef SNX_BC7_PASS
+#define SNX_BC7_PASS 0
 struct Mode6 : Invocation {
     SNX_ASTC_BC7_DECLARATIONS
 #include "nx/gpu/texture/astc_decode.glsl"
 #include "nx/gpu/texture/bc7_encode.glsl"
 #include "nx/gpu/texture/astc_bc7.glsl"
 };
+#undef SNX_BC7_LINES
 #undef SNX_BC7_FAST
 #define SNX_BC7_FAST 3
-#undef SNX_BC7_LINES
+#undef SNX_BC7_HINTS
+#define SNX_BC7_HINTS 0
+#undef SNX_BC7_QUICK
+#define SNX_BC7_QUICK 0
+#undef SNX_BC7_PASS
+#define SNX_BC7_PASS 0
 struct Quick : Invocation {
     SNX_ASTC_BC7_DECLARATIONS
 #include "nx/gpu/texture/astc_decode.glsl"
 #include "nx/gpu/texture/bc7_encode.glsl"
 #include "nx/gpu/texture/astc_bc7.glsl"
 };
-// the full and the fast build in two passes, as vk/astc.c runs them (astc_bc7.glsl's SNX_BC7_PASS)
+// the two passes of the full and the fast build
 #undef SNX_BC7_LINES
 #undef SNX_BC7_FAST
 #define SNX_BC7_FAST 0
+#undef SNX_BC7_HINTS
+#define SNX_BC7_HINTS 0
+#undef SNX_BC7_QUICK
+#define SNX_BC7_QUICK 0
 #undef SNX_BC7_PASS
 #define SNX_BC7_PASS 1
 struct FullA : Invocation {
@@ -67,8 +102,13 @@ struct FullA : Invocation {
 #include "nx/gpu/texture/bc7_encode.glsl"
 #include "nx/gpu/texture/astc_bc7.glsl"
 };
+#undef SNX_BC7_LINES
 #undef SNX_BC7_FAST
 #define SNX_BC7_FAST 0
+#undef SNX_BC7_HINTS
+#define SNX_BC7_HINTS 0
+#undef SNX_BC7_QUICK
+#define SNX_BC7_QUICK 0
 #undef SNX_BC7_PASS
 #define SNX_BC7_PASS 2
 struct FullB : Invocation {
@@ -77,8 +117,13 @@ struct FullB : Invocation {
 #include "nx/gpu/texture/bc7_encode.glsl"
 #include "nx/gpu/texture/astc_bc7.glsl"
 };
+#undef SNX_BC7_LINES
 #undef SNX_BC7_FAST
 #define SNX_BC7_FAST 1
+#undef SNX_BC7_HINTS
+#define SNX_BC7_HINTS 0
+#undef SNX_BC7_QUICK
+#define SNX_BC7_QUICK 0
 #undef SNX_BC7_PASS
 #define SNX_BC7_PASS 1
 struct FastA : Invocation {
@@ -87,8 +132,13 @@ struct FastA : Invocation {
 #include "nx/gpu/texture/bc7_encode.glsl"
 #include "nx/gpu/texture/astc_bc7.glsl"
 };
+#undef SNX_BC7_LINES
 #undef SNX_BC7_FAST
 #define SNX_BC7_FAST 1
+#undef SNX_BC7_HINTS
+#define SNX_BC7_HINTS 1
+#undef SNX_BC7_QUICK
+#define SNX_BC7_QUICK 0
 #undef SNX_BC7_PASS
 #define SNX_BC7_PASS 2
 struct FastB : Invocation {
@@ -97,78 +147,47 @@ struct FastB : Invocation {
 #include "nx/gpu/texture/bc7_encode.glsl"
 #include "nx/gpu/texture/astc_bc7.glsl"
 };
-#undef SNX_BC7_PASS
-#define SNX_BC7_PASS 0
-// the fast build's cuts of the search, for --measure: the ASTC blocks' hints (astc_bc7.glsl's SNX_BC7_HINTS) and the
-// quick line of mode 6 kept under an error (bc7_encode.glsl's SNX_BC7_QUICK)
+// for --measure: the fast build without the hints, and with mode 6's quick line kept under an error
 #undef SNX_BC7_LINES
 #undef SNX_BC7_FAST
 #define SNX_BC7_FAST 1
 #undef SNX_BC7_HINTS
 #define SNX_BC7_HINTS 0
 #undef SNX_BC7_QUICK
-#define SNX_BC7_QUICK 16
-struct FastH0Q16 : Invocation {
-    SNX_ASTC_BC7_DECLARATIONS
-#include "nx/gpu/texture/astc_decode.glsl"
-#include "nx/gpu/texture/bc7_encode.glsl"
-#include "nx/gpu/texture/astc_bc7.glsl"
-};
-#undef SNX_BC7_HINTS
-#define SNX_BC7_HINTS 0
-#undef SNX_BC7_QUICK
-#define SNX_BC7_QUICK 64
-struct FastH0Q64 : Invocation {
-    SNX_ASTC_BC7_DECLARATIONS
-#include "nx/gpu/texture/astc_decode.glsl"
-#include "nx/gpu/texture/bc7_encode.glsl"
-#include "nx/gpu/texture/astc_bc7.glsl"
-};
-#undef SNX_BC7_HINTS
-#define SNX_BC7_HINTS 0
-#undef SNX_BC7_QUICK
-#define SNX_BC7_QUICK 256
-struct FastH0Q256 : Invocation {
-    SNX_ASTC_BC7_DECLARATIONS
-#include "nx/gpu/texture/astc_decode.glsl"
-#include "nx/gpu/texture/bc7_encode.glsl"
-#include "nx/gpu/texture/astc_bc7.glsl"
-};
-#undef SNX_BC7_HINTS
-#define SNX_BC7_HINTS 1
-#undef SNX_BC7_QUICK
 #define SNX_BC7_QUICK 0
-struct FastH1Q0 : Invocation {
+#undef SNX_BC7_PASS
+#define SNX_BC7_PASS 0
+struct FastPlain : Invocation {
     SNX_ASTC_BC7_DECLARATIONS
 #include "nx/gpu/texture/astc_decode.glsl"
 #include "nx/gpu/texture/bc7_encode.glsl"
 #include "nx/gpu/texture/astc_bc7.glsl"
 };
-#undef SNX_BC7_HINTS
-#define SNX_BC7_HINTS 1
-#undef SNX_BC7_QUICK
-#define SNX_BC7_QUICK 16
-struct FastH1Q16 : Invocation {
-    SNX_ASTC_BC7_DECLARATIONS
-#include "nx/gpu/texture/astc_decode.glsl"
-#include "nx/gpu/texture/bc7_encode.glsl"
-#include "nx/gpu/texture/astc_bc7.glsl"
-};
+#undef SNX_BC7_LINES
+#undef SNX_BC7_FAST
+#define SNX_BC7_FAST 1
 #undef SNX_BC7_HINTS
 #define SNX_BC7_HINTS 1
 #undef SNX_BC7_QUICK
 #define SNX_BC7_QUICK 64
-struct FastH1Q64 : Invocation {
+#undef SNX_BC7_PASS
+#define SNX_BC7_PASS 0
+struct FastQ64 : Invocation {
     SNX_ASTC_BC7_DECLARATIONS
 #include "nx/gpu/texture/astc_decode.glsl"
 #include "nx/gpu/texture/bc7_encode.glsl"
 #include "nx/gpu/texture/astc_bc7.glsl"
 };
+#undef SNX_BC7_LINES
+#undef SNX_BC7_FAST
+#define SNX_BC7_FAST 1
 #undef SNX_BC7_HINTS
-#define SNX_BC7_HINTS 1
+#define SNX_BC7_HINTS 0
 #undef SNX_BC7_QUICK
-#define SNX_BC7_QUICK 256
-struct FastH1Q256 : Invocation {
+#define SNX_BC7_QUICK 64
+#undef SNX_BC7_PASS
+#define SNX_BC7_PASS 0
+struct FastPlainQ64 : Invocation {
     SNX_ASTC_BC7_DECLARATIONS
 #include "nx/gpu/texture/astc_decode.glsl"
 #include "nx/gpu/texture/bc7_encode.glsl"
@@ -176,6 +195,23 @@ struct FastH1Q256 : Invocation {
 };
 #undef TILE
 } // namespace astc_bc7_shader
+
+template <typename T> static void setup(T& d, uint32_t w, uint32_t h, uint32_t nx, uint32_t ny, uint32_t bw, uint32_t bh,
+                                        int srgb) {
+    d.width = w;
+    d.height = h;
+    d.blocks_x = nx;
+    d.blocks_y = ny;
+    d.srgb = uint32_t(srgb);
+    d.block_w = bw;
+    d.block_h = bh;
+    d.block_dims = glsl::uvec2(bw, bh);
+    d.recip_w = (262144u + bw - 1u) / bw;
+    d.recip_h = (262144u + bh - 1u) / bh;
+    d.infill_ds = (1024u + bw / 2u) / (bw - 1u);
+    d.infill_dt = (1024u + bh / 2u) / (bh - 1u);
+    d.in_base = 0u;
+}
 
 template <typename T>
 static void transcode(const uint8_t* src, uint32_t w, uint32_t h, uint32_t depth, uint32_t bw, uint32_t bh, int srgb,
@@ -185,19 +221,7 @@ static void transcode(const uint8_t* src, uint32_t w, uint32_t h, uint32_t depth
     std::memcpy(in.data(), src, in.size() * 16);
     std::vector<glsl::leuvec4> blocks((size_t)cx * cy * depth, glsl::uvec4(0xdeadbeefu));
     glsl::dispatch<T>(glsl::uvec3((cx + 63) / 64, cy, depth), glsl::uvec3(64u, 1u, 1u), [&](T& d) {
-        d.width = w;
-        d.height = h;
-        d.blocks_x = nx;
-        d.blocks_y = ny;
-        d.srgb = uint32_t(srgb);
-        d.block_w = bw;
-        d.block_h = bh;
-        d.block_dims = glsl::uvec2(bw, bh);
-        d.recip_w = (262144u + bw - 1u) / bw;
-        d.recip_h = (262144u + bh - 1u) / bh;
-        d.infill_ds = (1024u + bw / 2u) / (bw - 1u);
-        d.infill_dt = (1024u + bh / 2u) / (bh - 1u);
-        d.in_base = 0u;
+        setup(d, w, h, nx, ny, bw, bh, srgb);
         d.astc_data = in.data();
         d.bc7_blocks = blocks.data();
         d.work = nullptr;
@@ -215,27 +239,15 @@ static void transcode2(const uint8_t* src, uint32_t w, uint32_t h, uint32_t dept
     std::vector<glsl::leuvec4> blocks((size_t)cx * cy * depth, glsl::uvec4(0xdeadbeefu));
     std::vector<glsl::leuint> work(4 + blocks.size(), 0u);
     work[1] = work[2] = 1u;
-    const auto setup = [&](auto& d) {
-        d.width = w;
-        d.height = h;
-        d.blocks_x = nx;
-        d.blocks_y = ny;
-        d.srgb = uint32_t(srgb);
-        d.block_w = bw;
-        d.block_h = bh;
-        d.block_dims = glsl::uvec2(bw, bh);
-        d.recip_w = (262144u + bw - 1u) / bw;
-        d.recip_h = (262144u + bh - 1u) / bh;
-        d.infill_ds = (1024u + bw / 2u) / (bw - 1u);
-        d.infill_dt = (1024u + bh / 2u) / (bh - 1u);
-        d.in_base = 0u;
+    const auto each = [&](auto& d) {
+        setup(d, w, h, nx, ny, bw, bh, srgb);
         d.astc_data = in.data();
         d.bc7_blocks = blocks.data();
         d.work = work.data();
     };
-    glsl::dispatch<A>(glsl::uvec3((cx + 63) / 64, cy, depth), glsl::uvec3(64u, 1u, 1u), setup);
+    glsl::dispatch<A>(glsl::uvec3((cx + 63) / 64, cy, depth), glsl::uvec3(64u, 1u, 1u), each);
     glsl::dispatch<B>(glsl::uvec3(uint32_t(work[0]), uint32_t(work[1]), uint32_t(work[2])), glsl::uvec3(64u, 1u, 1u),
-                      setup);
+                      each);
     if (listed) *listed = uint32_t(work[3]);
     std::memcpy(out, blocks.data(), blocks.size() * 16);
 }
@@ -250,23 +262,15 @@ extern "C" void astc_bc7_cpu_passes(uint32_t build, const uint8_t* blocks, uint3
 
 extern "C" void astc_bc7_cpu(uint32_t build, const uint8_t* blocks, uint32_t w, uint32_t h, uint32_t depth,
                              uint32_t bw, uint32_t bh, int srgb, uint8_t* out) {
-    if (build == (1u | 0u | 16u << 8))
-        transcode<astc_bc7_shader::FastH0Q16>(blocks, w, h, depth, bw, bh, srgb, out);
-    else if (build == (1u | 0u | 64u << 8))
-        transcode<astc_bc7_shader::FastH0Q64>(blocks, w, h, depth, bw, bh, srgb, out);
-    else if (build == (1u | 0u | 256u << 8))
-        transcode<astc_bc7_shader::FastH0Q256>(blocks, w, h, depth, bw, bh, srgb, out);
-    else if (build == (1u | 8u | 0u << 8))
-        transcode<astc_bc7_shader::FastH1Q0>(blocks, w, h, depth, bw, bh, srgb, out);
-    else if (build == (1u | 8u | 16u << 8))
-        transcode<astc_bc7_shader::FastH1Q16>(blocks, w, h, depth, bw, bh, srgb, out);
-    else if (build == (1u | 8u | 64u << 8))
-        transcode<astc_bc7_shader::FastH1Q64>(blocks, w, h, depth, bw, bh, srgb, out);
-    else if (build == (1u | 8u | 256u << 8))
-        transcode<astc_bc7_shader::FastH1Q256>(blocks, w, h, depth, bw, bh, srgb, out);
-    else if ((build & 3) == 3)
+    if (build == (1u | ASTC_BC7_PLAIN))
+        transcode<astc_bc7_shader::FastPlain>(blocks, w, h, depth, bw, bh, srgb, out);
+    else if (build == (1u | ASTC_BC7_QUICK))
+        transcode<astc_bc7_shader::FastQ64>(blocks, w, h, depth, bw, bh, srgb, out);
+    else if (build == (1u | ASTC_BC7_PLAIN | ASTC_BC7_QUICK))
+        transcode<astc_bc7_shader::FastPlainQ64>(blocks, w, h, depth, bw, bh, srgb, out);
+    else if (build == 3)
         transcode<astc_bc7_shader::Quick>(blocks, w, h, depth, bw, bh, srgb, out);
-    else if ((build & 3) == 2)
+    else if (build == 2)
         transcode<astc_bc7_shader::Mode6>(blocks, w, h, depth, bw, bh, srgb, out);
     else if (build == 1)
         transcode<astc_bc7_shader::Fast>(blocks, w, h, depth, bw, bh, srgb, out);

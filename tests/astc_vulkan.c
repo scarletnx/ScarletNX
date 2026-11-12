@@ -25,6 +25,7 @@
 #include "support/etc2.h"
 #include "support/bcn.h"
 #include "bc7_cpu.h"
+#include "astc_bc7_cpu.h"
 #include "bcn_etc2_cpu.h"
 #include "blit_convert_cpu.h"
 #include "nx/runtime/platform/log.h"
@@ -547,12 +548,11 @@ static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layer
             rec_CmdCopyImageToBuffer(vk_cmd(), t.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
             vk_finish();
             vk_readback_ready();
-            u8* texels = malloc((size_t)lw * lh * ld * 4);
+            u8* texels = NULL;
             u8* expected = malloc(size);
-            for (u32 z = 0; z < ld; z++)
-                astc_decode_image(blocks[layer * levels + l] + (size_t)z * nx * ny * 16, lw, lh, bw, bh,
-                                  texels + (size_t)z * lw * lh * 4, srgb);
-            bc7_encode_cpu_build(vk_bc7_build(lw, lh, ld), texels, lw, lh, ld, expected); /* the level's build */
+            (void)nx, (void)ny;
+            /* the level's build of the shader, run on the CPU over the same blocks */
+            astc_bc7_cpu(vk_bc7_build(lw, lh, ld), blocks[layer * levels + l], lw, lh, ld, bw, bh, srgb, expected);
             for (u64 i = 0; i < size; i++)
                 if (actual[i] != expected[i])
                     fatal("ASTC as BC7 %ux%u srgb=%d %ux%ux%u level %u layer %u: byte %llu (block %llu) expected %u "
@@ -622,7 +622,8 @@ static int upload_wait_case(int retire) {
     for (u32 color = 0; color < 2; color++) {
         u8 texels[64], decoded[64];
         memset(texels, color ? 255 : 0, sizeof texels);
-        bc7_encode_cpu_build(vk_bc7_build(4, 4, 1), texels, 4, 4, 1, expected[color]);
+        astc_bc7_cpu(vk_bc7_build(4, 4, 1), blocks + (color ? (size_t)(ny - 1) * nx * 16 : 0), 4, 4, 1, 4, 4, 0,
+                     expected[color]);
         bcn_decode_image(expected[color], 4, 4, BCN_BC7, decoded);
         if (memcmp(texels, decoded, sizeof texels)) fatal("BC7 upload wait: constant-color reference is not exact\n");
     }
@@ -731,7 +732,7 @@ static void run_region(u32 bw, u32 bh, int bc7, u32 w, u32 h, u32 rx, u32 ry, u3
     u8* texels = malloc((size_t)w * h * 4);
     u8* expected = bc7 ? malloc(size) : texels;
     astc_decode_image(b, w, h, bw, bh, texels, 0);
-    if (bc7) bc7_encode_cpu_build(vk_bc7_build(w, h, 1), texels, w, h, 1, expected);
+    if (bc7) astc_bc7_cpu(vk_bc7_build(w, h, 1), b, w, h, 1, bw, bh, 0, expected);
     for (u64 i = 0; i < size; i++)
         if (actual[i] != expected[i])
             fatal("ASTC region %ux%u%s of %ux%u at block (%u, %u), %ux%u blocks: byte %llu expected %u got %u\n", bw,
@@ -1061,13 +1062,9 @@ static void cache_cases(void) {
    pieces of several layers */
 static void bg_expect(const CacheCase* c, const u8* blocks, u8* quick, u8* fast) {
     const u32 slices = c->depth * c->layers, nx = (c->w + c->bw - 1) / c->bw, ny = (c->h + c->bh - 1) / c->bh;
-    u8* texels = malloc((size_t)c->w * c->h * slices * 4);
-    for (u32 z = 0; z < slices; z++)
-        astc_decode_image(blocks + (size_t)z * nx * ny * 16, c->w, c->h, c->bw, c->bh,
-                          texels + (size_t)z * c->w * c->h * 4, (int)c->srgb);
-    bc7_encode_cpu_quick(texels, c->w, c->h, slices, quick);
-    bc7_encode_cpu_fast(texels, c->w, c->h, slices, fast);
-    free(texels);
+    (void)nx, (void)ny;
+    astc_bc7_cpu(3, blocks, c->w, c->h, slices, c->bw, c->bh, (int)c->srgb, quick);
+    astc_bc7_cpu(1, blocks, c->w, c->h, slices, c->bw, c->bh, (int)c->srgb, fast);
 }
 static void bg_same(const CacheCase* c, const char* what, const u8* got, const u8* want, u64 size) {
     for (u64 i = 0; i < size; i++)
