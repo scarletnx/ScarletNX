@@ -1132,6 +1132,14 @@ snx_test_target(snx-test-hook-adapters 99)
 target_include_directories(snx-test-hook-adapters PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-hook-adapters SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/test.hook" A32)
 add_test(NAME hook_adapters COMMAND snx-test-hook-adapters)
+# hook_install on a 32-bit game (src/nx/hle/hook/hook.c) over tests/hook/a32_marked.hook: the hooks declared a32 take
+# their functions' slots of the code table, with the runtime stubbed
+add_executable(snx-test-hook-install-a32 hook_install_a32.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+snx_test_target(snx-test-hook-install-a32 23)
+target_include_directories(snx-test-hook-install-a32 PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_service_swipc(snx-test-hook-install-a32)
+snx_hookgen(snx-test-hook-install-a32 SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/a32_marked.hook" A32_MARKED)
+add_test(NAME hook_install_a32 COMMAND snx-test-hook-install-a32)
 # versioned hooks and struct layouts (tests/hook/versions.hook): the entries by version, the layout variant each
 # adapter passes, the SDK labels a module's bytes hold and the entry hook_select picks for a module's version
 add_executable(snx-test-hook-versions hook_versions.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
@@ -1308,7 +1316,8 @@ foreach(bad IN ITEMS
         address_short 2 "a build ID is an even number of hex digits, 16 to 64"
         address_zero 2 "a build ID of zeros names no build"
         address_twice 4 "0123456789abcdef:40 is hooked on line 2 too"
-        address_keyword 2 "expected 'hook' after the address")
+        address_keyword 2 "expected 'hook' after the address"
+        a32_uses 4 "an a32 hook uses no struct")
     if(NOT DEFINED bad_name)
         set(bad_name "${bad}")
     elseif(NOT DEFINED bad_line)

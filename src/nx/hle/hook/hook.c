@@ -229,6 +229,35 @@ u64 hook_site(const char* symbol) {
     return 0;
 }
 
+/* A 32-bit game: its code is arm.c's blocks, and a hook declared a32 (hookgen: its arguments and what its handler
+   reads are the same under AAPCS32 and in the 32-bit SDK's layouts) takes its function's block in the code table.
+   The module's SDK version isn't read there, so a versioned hook takes none; no hook is verified */
+static void install_a32(void) {
+    const char* name;
+    u64 addr;
+    u32 i, count = 0;
+    unsigned char off[HOOK_FAMILIES + 1] = {0};
+    for (i = 0; i < HOOK_FAMILIES; i++)
+        if ((off[i] = (unsigned char)family_listed(g_settings.hook_families_off, hook_family_name[i])) != 0)
+            LOG("hooks: the %s family is off (hooks_off)\n", hook_family_name[i]);
+    for (i = 0; kernel_symbol(i, &addr, &name); i++) {
+        u32 versions[HOOK_KEYS] = {0};
+        SnxArmBlock* slot;
+        int first, k;
+        if (!name || addr >> 32) continue;
+        k = hook_select(&hook_table, name, versions, &first);
+        if (k < 0 || !hook_a32[k] || off[hook_family[k]]) continue;
+        slot = arm_slot((u32)addr & ~1u, (int)(addr & 1));
+        if (!slot || *slot == hook_a32[k]) continue;
+        __atomic_store_n(slot, hook_a32[k], __ATOMIC_RELEASE);
+        count++;
+        LOG("hook: %s at %llx runs %s (32-bit)\n", name, (unsigned long long)addr, hook_handler[k]);
+    }
+    LOG("hooks: %u of the 32-bit game's functions run the runtime's handlers; a function of the SDK that no hook "
+        "takes for a 32-bit game yet runs its own code\n",
+        (unsigned)count);
+}
+
 void hook_install(void) {
     const HostHook* h = &g_host.hook;
     const char* name;
@@ -242,7 +271,11 @@ void hook_install(void) {
         LOG("hooks: off (hooks=0), every exported function runs its own code\n");
         return;
     }
-    if (g_arm_mod || !g_disp || !g_mod) return; /* a 32-bit game's code is arm.c's blocks, which no hook replaces */
+    if (g_arm_mod) {
+        install_a32();
+        return;
+    }
+    if (!g_disp || !g_mod) return;
     routes_say();
     for (i = 0; i < HOOK_FAMILIES; i++)
         if ((off[i] = (unsigned char)family_listed(g_settings.hook_families_off, hook_family_name[i])) != 0)
