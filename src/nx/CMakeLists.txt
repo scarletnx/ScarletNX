@@ -55,6 +55,12 @@ snx_component(hle hle/services/services.c hle/services/audren.c hle/services/aud
               nn/audio.c nn/audio_renderer.c nn/codec.c)
 # the shared fonts' stand-ins (cmake/shared_fonts.cmake), which nn/pl.c hands out
 target_sources(snx_hle PRIVATE "${PROJECT_BINARY_DIR}/generated/shared_fonts.c")
+if(APPLE)
+    # the media engine's AV1 decoder (hle/services/native_video_vt.c): VideoToolbox decodes and hands back CVPixelBuffers,
+    # which is a macOS or iOS library, and no other build has the file
+    target_sources(snx_hle PRIVATE hle/services/native_video_vt.c)
+    target_link_libraries(snx_hle PUBLIC "-framework VideoToolbox" "-framework CoreMedia" "-framework CoreVideo")
+endif()
 # the hooks' adapters and table, generated from hle/hook/hooks.hook and the game patches' address hooks
 # (patches/*.hook), whose handlers are the .c files beside them
 include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")

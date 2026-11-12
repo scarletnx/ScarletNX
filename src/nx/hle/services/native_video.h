@@ -100,11 +100,12 @@ struct AVFrame;
 struct AVPacket;
 /* a codec's decoder (native_video_decoder.c): how it decodes, and for AV1 with Vulkan Video the packets it took since
    its last picture, which the CPU's decoder starts from when the Vulkan one refuses the stream */
-enum { NVIDEO_DECODER_NONE, NVIDEO_DECODER_CPU, NVIDEO_DECODER_VULKAN, NVIDEO_DECODER_BLACK };
+enum { NVIDEO_DECODER_NONE, NVIDEO_DECODER_CPU, NVIDEO_DECODER_VULKAN, NVIDEO_DECODER_BLACK, NVIDEO_DECODER_VT };
 #define NVIDEO_REPLAY NVIDEO_INPUTS
 typedef struct {
-    struct AVCodecContext* ctx; /* FFmpeg's decoder: NULL for the black stand-in */
+    struct AVCodecContext* ctx; /* FFmpeg's decoder: NULL for the black stand-in and for VideoToolbox's */
     u32 way;                    /* NVIDEO_DECODER_* */
+    void* vt;                   /* VideoToolbox's session and its queue of pictures (native_video_vt.c), NULL otherwise */
     u32 index;                  /* the codec's, for the log */
     u32 width, height;          /* the configured size, the stand-in's pictures' */
     u32 pictures;               /* out since it was opened or flushed */
@@ -174,6 +175,17 @@ int nvideo_decoder_send(NativeVideoDecoder* d, const struct AVPacket* pkt);
 int nvideo_decoder_receive(NativeVideoDecoder* d, struct AVFrame* frame);
 void nvideo_decoder_flush(NativeVideoDecoder* d);
 const char* nvideo_decoder_name(const NativeVideoDecoder* d); /* for the log: FFmpeg's name, or the way */
+#if defined(__APPLE__)
+/* ---- native_video_vt.c: AV1 on the Apple media engine (VideoToolbox, VideoToolbox.framework). The session takes its
+   sequence header from the stream's packets, and every picture comes back as an FFmpeg AVFrame of format
+   AV_PIX_FMT_NV12 whose rows are the decoded CVPixelBuffer's, which the frame holds until it is unref'd */
+int nvideo_vt_available(void);                      /* the media engine decodes AV1 on this machine */
+void* nvideo_vt_open(u32 index, u32 width, u32 height); /* NULL when the media engine's AV1 session won't open */
+void nvideo_vt_close(void* h);
+int nvideo_vt_send(void* h, const struct AVPacket* pkt); /* avcodec_send_packet's answers; NULL: the end of the stream */
+int nvideo_vt_receive(void* h, struct AVFrame* frame);   /* avcodec_receive_frame's answers */
+void nvideo_vt_flush(void* h);                           /* the next stream starts from nothing: a movie that loops */
+#endif
 /* ---- native_video.c, for gsv.c's commands */
 int native_video_service(int encoder, int enable);                            /* 901, 903, 1001, 1003 */
 int native_video_open(int encoder, u32* session);                             /* 902, 905, 1002 */

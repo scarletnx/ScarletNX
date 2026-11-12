@@ -141,6 +141,16 @@ static int nvdec_write(const NvdecPic* p, HwPic* hp) {
         at_rows = at_hy;
         at_crows = at_hc;
         crow_pitch = cw;
+    } else if (p->semi) {
+        /* the picture's rows as they are: the chroma is interleaved already, and the surfaces take NV12 */
+        u64 sz_y = up((u64)w * h, 16);
+        u8* s = vk_stage(sz_y + (u64)uv_pitch * ch, vk_stage_align(), &rows, &at_rows);
+        if (!s) return 0;
+        for (u32 y = 0; y < h; y++) memcpy(s + (u64)y * w, p->plane[0] + (size_t)y * (size_t)p->stride[0], w);
+        for (u32 y = 0; y < ch; y++)
+            memcpy(s + sz_y + (u64)y * uv_pitch, p->plane[1] + (size_t)y * (size_t)p->stride[1], (size_t)2 * pairs);
+        at_crows = at_rows + sz_y;
+        crow_pitch = uv_pitch;
     } else {
         /* the picture's rows, then U's and V's rows padded to words */
         u64 sz_y = up((u64)w * h, 16), sz_uv = (u64)up4 * ch; /* U and V start on words, which the interleave reads */
@@ -162,7 +172,7 @@ static int nvdec_write(const NvdecPic* p, HwPic* hp) {
         /* the surfaces as rows, and a CPU picture's NV12 chroma from U and V */
         ok = p->pitch_linear ||
              (vk_bl_move(cb, &my, 0, ry->buf, 0, scratch, 0) && vk_bl_move(cb, &mc, 0, rc->buf, 0, scratch, at_c));
-        if (ok && !p->hw) {
+        if (ok && !p->hw && !p->semi) {
             ok = vk_tc_nv12_uv(cb, pairs, ch, rows, at_crows, at_crows + (u64)up4 * ch, up4, scratch, at_uv, uv_pitch);
             at_crows = at_uv;
         }
@@ -172,7 +182,7 @@ static int nvdec_write(const NvdecPic* p, HwPic* hp) {
         /* the picture's rows over the surfaces' (pitch linear: straight into the surfaces) */
         int pl = p->pitch_linear;
         vk_copy_rows(cb, rows, at_rows, w, pl ? ry->buf : scratch, 0, ly, w, h);
-        vk_copy_rows(cb, scratch, at_crows, crow_pitch, pl ? rc->buf : scratch, pl ? 0 : at_c, lc, cw, ch);
+        vk_copy_rows(cb, pl ? rows : scratch, at_crows, crow_pitch, pl ? rc->buf : scratch, pl ? 0 : at_c, lc, cw, ch);
         vk_all_barrier(cb);
         if (!pl)
             ok = vk_bl_move(cb, &my, 1, ry->buf, 0, scratch, 0) && vk_bl_move(cb, &mc, 1, rc->buf, 0, scratch, at_c);
