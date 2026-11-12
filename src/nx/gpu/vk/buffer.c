@@ -42,6 +42,10 @@ typedef struct {
        is not asked of the pages again while the entry lives, and is kept as before them: copied to the ring at every
        submission instead, 174000 ranges that had not changed were copied in 600 presents, twice as many as before */
     int paged;
+    /* the submission the page cache last served it in, when buf and off are its place in the region's buffer: bound
+       there again in the same submission and epoch without a look at its pages (a window has thousands). 0: buf is
+       not the page cache's */
+    u64 pg_sub;
     u32 wseen; /* write-tracking clock when it last matched memory */
     u32 host_gen; /* g_vb_map_gen when host_cpu was found: 0 never */
     u64 host_cpu; /* the guest memory the range shows, ~0 for none (entry_host) */
@@ -3552,8 +3556,22 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
        writes counts into (draw_bytes), and not a copy engine's source, which is compared where the tracking does
        not look (strict 2). The entry stays for what it records of the pending results checked above */
     int pages_hot = 0;
-    if (strict != 2 && (!e || e->paged >= 0) && vk_pages_on() && !range_owned(gva, len) && !vk_uma_pending(gva, len) &&
-        !vk_release_pending(gva, len)) {
+    int pages = strict != 2 && vk_pages_on() && !range_owned(gva, len) && !vk_uma_pending(gva, len) &&
+                !vk_release_pending(gva, len);
+    if (pages && (!e || e->paged >= 0)) {
+        u64 sub = vk_submit_number();
+        /* served in this submission and this epoch, and no GPU-side write on it since: its pages are as they were
+           given (the cache does not ask the tracking twice in an epoch, nor change a page a draw of the submission
+           was given), so it binds where it was */
+        if (e && e->pg_sub == sub && e->epoch == epoch && !(e->off % (align ? align : 1)) &&
+            !gpu_mem_dirty_since(e->gw, gva, len)) {
+            vk_pages_read(gva, len);
+            e->used = g_vk_present;
+            *buf = e->buf;
+            *off = e->off;
+            return 1;
+        }
+        u64 gnow = gpu_mem_generation(); /* before the pages are looked at */
         int got = vk_pages_get(gva, len, align, buf, off);
         if (got > 0) {
             if (!e && (i = vb_new(gva, (u32)len))) e = &g_vb[i];
@@ -3564,11 +3582,20 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
                 e->gfx_adds = vk_buf_adds();
                 e->epoch = epoch;
                 e->used = g_vk_present;
+                e->pg_sub = sub;
+                e->buf = *buf;
+                e->off = *off;
+                e->frame = sub;
+                e->gw = gnow;
             }
             return 1;
         }
         pages_hot = got < 0;
         if (pages_hot && e) e->paged = -1;
+    }
+    if (e && e->pg_sub) { /* not the pages' this time: their buffer is not a copy of the range to use as one */
+        e->pg_sub = 0;
+        e->buf = VK_NULL_HANDLE;
     }
     /* valid: the data is where draws can read it this frame */
     /* not while an in-place write is pending over it: a copy from before the write would be read */
