@@ -153,10 +153,10 @@ On all platforms, CPM first looks for a compatible SDL3 development package (3.4
 `SDL3Config.cmake`. If none is found, CPM downloads and builds the SHA-256-pinned SDL3. The fallback is static, so no separate SDL3 runtime
 installation is needed. It still needs your platform's window-system development libraries.
 
-- `SNX_SYSTEM_SDL3=ON` (the default on FreeBSD) takes the system's package from `find_package` whatever its version,
-  needing only 3.4.16, the version every SDL call in the tree is in, and never downloads. FreeBSD's ports `sdl3`
-  (3.4.16) is older than the pin, so without it CPM's version check builds SDL3 from source. `SNX_SYSTEM_SDL3=OFF`
-  keeps the pinned build everywhere.
+- `SNX_SYSTEM_SDL3=ON` (the default on FreeBSD) takes the system's package from `find_package` from 3.4.12, Arch
+  POWER's, which has every SDL name the tree uses, and never downloads. FreeBSD's ports `sdl3` (3.4.16) is older than
+  the pin, so without it CPM's version check builds SDL3 from source. `SNX_SYSTEM_SDL3=OFF` keeps the pinned build
+  everywhere.
 
 - An old checkout showing `Could not find a package configuration file provided by SDL3` needs either
   the SDL3 **development** package or this updated fallback. Pull the latest checkout and configure again.
