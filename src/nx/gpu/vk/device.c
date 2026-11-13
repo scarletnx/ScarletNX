@@ -1356,6 +1356,9 @@ static int create_device(void) {
     /* its f16 vectors are Float16's, so shaderFloat16 too */
     g_shader_mixed_dot = has_mixed_dot && qmixdot.shaderMixedFloatDotProductFloat16AccFloat32 && g_shader_float16;
     g_shader_float_atomic_add = has_atomic_float && qatomic_float.shaderBufferFloat32AtomicAdd;
+    if (shader_hmma_f16_unused())
+        LOG("vulkan: hmma_f16=1 asks for HMMA's sums in half floats; they stay in f32, as hmma_f16=0's: %s\n",
+            shader_hmma_f16_unused());
     /* its f16 matrices are Float16's, its modules the Vulkan memory model's, and its matrices span a subgroup of 32.
        The tile is the 8 or the 16 its vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR offers: Metal's
        simdgroup_matrix is 8x8x8, so an SM86 HMMA is four products there and one where the tile is 16 */

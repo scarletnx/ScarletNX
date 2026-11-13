@@ -4319,6 +4319,23 @@ static void test_hmma_choose(void) {
     g_shader_hmma_pairs = pairs_was, g_shader_hmma_stage = stage_was, g_shader_hmma_coop = coop_was;
 }
 
+/* hmma_f16 asked for where the device keeps HMMA's f32 sum: the reason the log gives, which names what the device has
+   or lacks, and none where the half sums are taken or not asked for */
+static void test_hmma_f16_unused(void) {
+    int half_was = g_shader_hmma_f16, float16_was = g_shader_float16, mixed_was = g_shader_mixed_dot;
+    g_shader_hmma_f16 = 0, g_shader_float16 = 1, g_shader_mixed_dot = 1;
+    CHECK(shader_hmma_f16_unused() == NULL);
+    g_shader_hmma_f16 = 1;
+    const char* why = shader_hmma_f16_unused();
+    CHECK(why && strstr(why, "VK_VALVE_shader_mixed_float_dot_product"));
+    g_shader_mixed_dot = 0;
+    CHECK(shader_hmma_f16_unused() == NULL);
+    g_shader_float16 = 0;
+    why = shader_hmma_f16_unused();
+    CHECK(why && strstr(why, "shaderFloat16"));
+    g_shader_hmma_f16 = half_was, g_shader_float16 = float16_was, g_shader_mixed_dot = mixed_was;
+}
+
 /* the memory model a module declares (OpMemoryModel's: 1 GLSL450, 3 Vulkan), whether it declares a capability, and
    how many OpDecorates of a decoration it has */
 static u32 spv_memory_model(const u32* words, size_t count) {
@@ -4547,6 +4564,7 @@ int main(int argc, char** argv) {
     test_warp_matrix_flush(dir);
     test_hmma_way();
     test_hmma_choose();
+    test_hmma_f16_unused();
     test_warp_matrix_coop(dir);
     test_ftz_modes(dir);
     if (failures) {

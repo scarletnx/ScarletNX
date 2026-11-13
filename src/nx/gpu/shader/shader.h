@@ -472,6 +472,9 @@ extern int g_shader_mixed_dot;
    sum takes two instructions, for a device whose driver offers no matrix unit (every MoltenVK so far). Its results
    are about 1e-3 off the console's f32 sum; 0, the default, is the f32 sum the console's tensor core keeps */
 extern int g_shader_hmma_f16;
+/* Why HMMA sums in f32 where hmma_f16 asks for the half sums, the device's lack or better (the log's words), else NULL:
+   the mixed dot product takes two products an instruction in f32, and the halves need shaderFloat16 */
+const char* shader_hmma_f16_unused(void);
 /* VK_KHR_cooperative_matrix's 16x16x16 product of f16 A and B into an f32 accumulator in subgroup scope, in compute,
    with the Vulkan memory model (vulkanMemoryModel, vulkanMemoryModelDeviceScope) and compute subgroups of 32 that a
    pipeline can require: the device's maxComputeSharedMemorySize, else 0. An SM86 compute program's HMMAs are then each
