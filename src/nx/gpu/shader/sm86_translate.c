@@ -448,16 +448,22 @@ static u32 float_add(Ctx* c, u32 mode, u32 x, u32 y) {
 /* FMUL: x * y * 2^(scale - 4) in mode. The product of two floats is exact in a double */
 static u32 float_mul(Ctx* c, u32 mode, u32 scale, u32 x, u32 y) {
     if (!g_shader_float64) {
-        /* 2^(scale - 4) is a power of two, exact in a float, so the scale keeps its exactness without a double */
-        u32 v = nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, y));
-        if (scale != 4) {
-            /* 2^(scale - 4), scale 1 to 7. scale is unsigned: below 4, scale - 4 is a number near 2^32, not a
-               negative one, so a .D scale divides by 2^(4 - scale) */
-            float factor = scale > 4 ? (float)(1u << (scale - 4)) : 1.0f / (float)(1u << (4 - scale));
-            v = nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, v,
-                                              spv_emit_constant_f32(&c->e, c->t_f32, factor)));
-        }
-        return v;
+        if (scale == 4) return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, y));
+        /* 2^(scale - 4), scale 1 to 7. scale is unsigned: below 4, scale - 4 is a number near 2^32, not a
+           negative one, so a .D scale divides by 2^(4 - scale) */
+        float factor = scale > 4 ? (float)(1u << (scale - 4)) : 1.0f / (float)(1u << (4 - scale));
+        /* the power of two goes on the operand it leaves exact, the larger one for a .D and the smaller for a .M, and
+           the one product then rounds as the double's does. On the product it rounds twice where x * y is past a
+           float's range or subnormal: 2^100 * 2^28 .D4 is 2^126, not infinity */
+        u32 ax = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_ABS, x);
+        u32 ay = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, SPV_GLSL_F_ABS, y);
+        u32 x_scaled =
+            op2(c, scale < 4 ? SPV_OP_F_ORD_GREATER_THAN_EQUAL : SPV_OP_F_ORD_LESS_THAN_EQUAL, c->t_bool, ax, ay);
+        u32 scaled = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, x_scaled, x, y);
+        u32 other = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_f32, x_scaled, y, x);
+        scaled = nocontract(
+            c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, scaled, spv_emit_constant_f32(&c->e, c->t_f32, factor)));
+        return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, scaled, other));
     }
     if (mode == 0 && scale == 4) return nocontract(c, spv_emit_binary(&c->e, SPV_OP_F_MUL, c->t_f32, x, y));
     u32 f64 = f64_type(c);
