@@ -57,8 +57,12 @@ typedef double f64;
       the CPU structure, and generated functions normalize the host FP environment they use (snx_fp_env).
   18: a program's modules lie one after another, with no page left free between two (nx/loader/loader.h). The
       contract is as it was: the number rises so that every game is made again with its modules where the console
-      puts them, and a save state, which holds the guest's memory at the old addresses, is refused by its reason. */
-#define SNX_ABI 18
+      puts them, and a save state, which holds the guest's memory at the old addresses, is refused by its reason.
+  19: the module's route list names the SDK functions the runtime now answers natively (nn::fs, time, pl, ngc,
+      nsd, prepo, codec). The contract is as it was: a module made before calls the SDK's own code there, which
+      opens services the runtime no longer serves (a fatal at pctl), so the number rises and every game is made
+      again. */
+#define SNX_ABI 19
 
 #if defined(_WIN32)
 #define SNX_EXPORT __declspec(dllexport)
