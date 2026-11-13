@@ -1984,16 +1984,16 @@ jobs:
     timeout-minutes: 30
     container: archlinux:latest
     env:
-      EDENPROBE_VERSION: v0.15.0
-      EDENPROBE_SHA256: 00ad41a1ffc9184b93628f1e6398ff9b82222a97d747b84251602eabf7350132
+      EDENPROBE_VERSION: v0.16.1
+      EDENPROBE_SHA256: b975506b1bce5feb9b36cf0e06446a02224c1395e9c3deb179bb98bdc0343234
       # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
       # its suites write their own GPU command buffers, left out while the runtime had no Maxwell front end, and not
       # added back since it returned (docs/dev/edenprobe.md). hooks: the runtime answers nn::fs, time, pl, ngc and nsd
       # in the SDK's own functions and serves none of their services, so the probe asks through the functions it exports
       EDENPROBE_MODE: quick notime cpu fs video display kernel audio hooks
       # the APK (edenprobe's Android build) of a release of its own: its words run every family it has
-      EDENPROBE_APK_VERSION: v0.15.0
-      EDENPROBE_APK_SHA256: 97404f74f28bdb6fb5810526757599fc7c0c276c18a8f2d68d992d2baa2a2e25
+      EDENPROBE_APK_VERSION: v0.16.1
+      EDENPROBE_APK_SHA256: 1270bf1f91fa164331951ec839c3fd8da7d2a0d8c0fd46481987504af7318d16
       EDENPROBE_APK_MODE: quick
     steps:
       # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
