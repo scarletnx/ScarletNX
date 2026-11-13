@@ -5952,6 +5952,7 @@ static int check_video_decode_gate(void) {
 #include "vulkan_shader_windows.inc"
 #include "vulkan_shared_clamp.inc"
 #include "vulkan_index_draws.inc"
+#include "vulkan_polygon_lines.inc"
 #include "vulkan_pass_breaks.inc"
 #include "vulkan_ui.inc"
 #include "vulkan_storage_formats.inc"
@@ -6834,6 +6835,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_compute_compares());
     CHECK(!check_viewport_orientation());
     CHECK(!check_index_draws());
+    CHECK(!check_polygon_lines());
     CHECK(!check_pass_breaks());
     CHECK(!check_mesh_inputs());
     CHECK(!check_lone_lane());

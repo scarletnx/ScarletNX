@@ -3323,6 +3323,11 @@ add_executable(snx-test-quad-indices quad_indices.c)
 snx_test_target(snx-test-quad-indices 99)
 target_include_directories(snx-test-quad-indices PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME quad_indices COMMAND snx-test-quad-indices)
+# a draw's primitives made into lines or points on the CPU: polygons in the polygon mode Line or Point, and line loops
+add_executable(snx-test-polygon-edges polygon_edges.c)
+snx_test_target(snx-test-polygon-edges 99)
+target_include_directories(snx-test-polygon-edges PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME polygon_edges COMMAND snx-test-polygon-edges)
 add_executable(snx-test-unattended-script unattended_script.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c"
     "${PROJECT_SOURCE_DIR}/src/common/platform/file.c"
         "${PROJECT_SOURCE_DIR}/src/common/platform/file_map.c" "${PROJECT_SOURCE_DIR}/src/common/platform/file_share.c"

@@ -38,6 +38,7 @@
 #include "nx/gpu/vk/tess_passthrough.h"
 #include "nx/gpu/vk/varying_geometry.h"
 #include "nx/gpu/vk/quad_indices.h"
+#include "nx/gpu/vk/polygon_edges.h"
 #include "nx/gpu/vk/xfb_stores.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/internal_spv.h"
@@ -3214,6 +3215,18 @@ static void target_formats(Surf* const* rt, const Surf* zt, u32 n, TargetFormats
     }
     tf->samples = samples == ~0u ? VK_SAMPLE_COUNT_1_BIT : samples;
 }
+/* the topology class of a pipeline drawing topo: adjacency and patches are their own, as the geometry program's input
+   primitive is one of them */
+static u32 topology_class(VkPrimitiveTopology topo) {
+    return topo >= VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY ? topo
+           : topo == VK_PRIMITIVE_TOPOLOGY_POINT_LIST             ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+           : topo <= VK_PRIMITIVE_TOPOLOGY_LINE_STRIP             ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST
+                                                                  : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+}
+/* the polygon mode a pipeline takes for rk's: fill where the device has no other (draw_edges draws the others) */
+static u32 polygon_mode(const DsRasterKey* rk) {
+    return g_vk.feat.fillModeNonSolid ? rk->polygon : VK_POLYGON_MODE_FILL;
+}
 /* the pipeline key of the shaders (fs the fragment variant drawn), the state ds and the targets' surfaces rt and zt, all but the feedback loop, and the vertex bindings it
    describes: 0 when the draw is skipped */
 static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Surf* const* rt, const Surf* zt, u32 n,
@@ -3242,12 +3255,7 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
         else
             LOG_LIMIT(1, "vulkan: this GPU has no logic operations: targets are blended instead\n");
     }
-    VkPrimitiveTopology topo = topology_vk(topology);
-    /* adjacency and patches are their own topologies: the geometry program's input primitive is one of them */
-    k->topo_class = topo >= VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY ? topo
-                    : topo == VK_PRIMITIVE_TOPOLOGY_POINT_LIST             ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
-                    : topo <= VK_PRIMITIVE_TOPOLOGY_LINE_STRIP             ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST
-                                                                           : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    k->topo_class = topology_class(topology_vk(topology));
     k->tcs = sh->tcs ? sh->tcs->mod : VK_NULL_HANDLE;
     k->tes = sh->tes ? sh->tes->mod : VK_NULL_HANDLE;
     if (sh->mesh) { /* no input assembly: the mesh program's triangles, and no vertex input (it reads none) */
@@ -3266,7 +3274,7 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
         if (k->patch > g_vk.props.limits.maxTessellationPatchSize)
             k->patch = g_vk.props.limits.maxTessellationPatchSize;
     }
-    k->polygon = !g_vk.feat.fillModeNonSolid ? VK_POLYGON_MODE_FILL : rk->polygon;
+    k->polygon = polygon_mode(rk);
 
     /* vertex streams: each used guest stream is a binding, and so is an attribute at an offset past the device's
        limit or reaching past its stream's stride (it is read from its own offset there); one more holds the 0,0,0,1
@@ -3621,6 +3629,91 @@ static int quad_indices_cpu(const DrawCall* dc, int inline_indices, u64 ia, u32 
     snx_quad_indices(in, esz, nq, out);
     return 1;
 }
+/* Whether a draw goes as a list of lines or points made of its primitives (polygon_edges.h, edge_indices) instead of
+   as Vulkan draws its topology: polygons in the polygon mode Line or Point where the device has no mode but fill
+   (fillModeNonSolid). Lines and points take no face culling and no depth bias, which the log says when the draw asks
+   for either. Only where the vertex program's primitives are the ones drawn (no stage after it, no mesh program),
+   none are captured (transform feedback takes the polygons) and the draw is direct (the CPU makes the list: an indirect
+   draw's count is the GPU's); the others are drawn filled, and logged */
+static int draw_edges(const DsState* ds, const DrawCall* dc, const DrawShaders* sh) {
+    u32 t = sh->topology, mode = ds->rkey.polygon;
+    int after = sh->tcs || sh->tes || sh->gs || sh->mesh;
+    if (mode == DS_POLYGON_FILL || g_vk.feat.fillModeNonSolid || (!after && (t < 4 || t > 9)))
+        return 0; /* filled, or drawn by the device's mode, or points and lines, which take no polygon mode */
+    const char *name = mode == DS_POLYGON_LINE ? "Line" : "Point", *as = mode == DS_POLYGON_LINE ? "lines" : "points";
+    if (after) {
+        LOG_LIMIT(1,
+                  "vulkan: the device has no polygon mode %s (fillModeNonSolid): the polygons of a draw with "
+                  "tessellation, geometry or a mesh program are drawn filled\n",
+                  name);
+        return 0;
+    }
+    if (sh->xfb_on || dc->indirect) {
+        LOG_LIMIT(1,
+                  "vulkan: the device has no polygon mode %s (fillModeNonSolid): polygons drawn as %s %s are drawn "
+                  "filled\n",
+                  name, as, sh->xfb_on ? "and captured by transform feedback" : "by an indirect draw");
+        return 0;
+    }
+    int culled = ds->dyn.cull != DS_CULL_NONE, biased = ds->dyn.bias_on >> (mode == DS_POLYGON_POINT ? 0 : 1) & 1;
+    if (culled || biased)
+        LOG_LIMIT(1,
+                  "vulkan: the device has no polygon mode %s (fillModeNonSolid): polygons drawn as %s go as a list of "
+                  "%s, which takes no %s\n",
+                  name, as, as,
+                  culled && biased ? "face culling and no depth bias"
+                  : culled         ? "face culling"
+                                   : "depth bias");
+    return 1;
+}
+/* The list draw_edges draws a direct draw's count indices from first as (polygon_edges.h), made here into the staging
+   ring and drawn indexed: from the guest's indices (isz bytes each), the draw's inline ones, or its vertex numbers
+   counted from its first (the draw's vertex offset then). 1 with *n indices at *buf and *off; 0 when the CPU hasn't
+   the guest's indices without waiting for the GPU (a result of its own over them), or they're more than EDGE_VERTICES:
+   the draw is drawn as its topology then, logged; -1 when staging fails */
+#define EDGE_VERTICES (1u << 20)
+static int edge_indices(const DsState* ds, const DrawCall* dc, int indexed, u32 isz, u32 first, u32 count, u32 topology,
+                        int points, VkBuffer* buf, u64* off, u32* n) {
+    SnxEdgeIndices in = {0};
+    if (count > EDGE_VERTICES) {
+        LOG_LIMIT(1, "vulkan: a draw of %u vertices is past the %u the CPU makes into %s: drawn %s\n", count,
+                  EDGE_VERTICES, points ? "points" : "lines",
+                  g_vk.feat.fillModeNonSolid ? "as its topology" : "filled");
+        return 0;
+    }
+    if (indexed == 3)
+        in.words = dc->inline_indices + first;
+    else if (indexed) {
+        u64 a = ds->index.addr + (u64)first * isz, len = (u64)count * isz, at;
+        VkBuffer held;
+        /* as draw_last_vertex reads them: landing what the GPU holds there takes a submit and a wait */
+        if (vk_buf_pending(a, len) || vk_uma_pending(a, len) || vk_compute_gpu_src(a, len, &held, &at) ||
+            vk_buf_owned(a, len)) {
+            LOG_LIMIT(1, "vulkan: a draw whose indices the GPU wrote isn't made into %s on the CPU: drawn %s\n",
+                      points ? "points" : "lines", g_vk.feat.fillModeNonSolid ? "as its topology" : "filled");
+            return 0;
+        }
+        vk_compute_mem_need(a, len);
+        in.bytes = gmem_ptr(a, len);
+        in.size = isz;
+        if (!in.bytes) {
+            LOG_LIMIT(1,
+                      "vulkan: a draw's %u indices at %llx aren't in one run of memory, which the CPU makes into %s: "
+                      "drawn %s\n",
+                      count, (unsigned long long)a, points ? "points" : "lines",
+                      g_vk.feat.fillModeNonSolid ? "as its topology" : "filled");
+            return 0;
+        }
+    }
+    u32 ones = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : 0xFFFFFFFFu;
+    int restart = indexed && ds->index.restart;
+    u32 ri = ds->index.restart_index & ones;
+    *n = snx_polygon_edges(topology, &in, count, restart, ri, points, NULL);
+    u8* out = vk_stage((u64)(*n ? *n : 1) * 4, vk_stage_align(), buf, off);
+    if (!out) return -1;
+    snx_polygon_edges(topology, &in, count, restart, ri, points, out);
+    return 1;
+}
 /* n elements of mode (with remap and the restart index restart, as texconv_modes.glsl says) made from count indices of
    isz bytes from index first, the guest's at ia or the draw's inline ones, into out_bytes of the output ring: *buf
    and *off, which the draw binds */
@@ -3880,6 +3973,9 @@ retry:
     tes = sh.tes;
     gs = sh.gs;
     int xfb_on = sh.xfb_on;
+    /* the draw as a list of lines or points made of its primitives (draw_edges), points for the polygon mode Point:
+       until edge_indices finds the CPU can't make it, which draws its topology */
+    int edges = !texture && !capture && draw_edges(ds, dc, &sh), points = ds->rkey.polygon == DS_POLYGON_POINT;
     /* the fragment shader's variant, keyed on its textures each draw: they are resolved for stage_set anyway. fres is
        filled for the fragment program's textures (each resolved, have set), and read only for them: a clear of all
        SH_MAXTEX (10 KiB) and a check of all of them against each target were per draw */
@@ -4482,7 +4578,21 @@ retry:
                               (list_restart && (!dc->indirect || (ds->index.restart_index & vulkan_ri) == vulkan_ri)));
     u32 icount = count;
     i32 voffset = (i32)base_vertex; /* the draw's vertexOffset */
-    if (dc->indirect) {
+    if (edges) {
+        edges = edge_indices(ds, dc, indexed, isz, first, count, topology, points, &ibuf, &ioff, &icount);
+        if (edges < 0) {
+            draw_images_discard(&images);
+            if (late_depth) vk_depth_shadow_cancel();
+            return;
+        }
+        if (!edges) icount = count;
+    }
+    if (edges) {
+        if (!indexed) voffset = (i32)first; /* the vertex numbers count from the draw's first */
+        indexed = 2;                        /* drawn indexed, as a list without restart */
+        itype = VK_INDEX_TYPE_UINT32;
+        topo = points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    } else if (dc->indirect) {
         /* what the CPU makes into other indices needs the count, which only the GPU has */
         if (topology == 7 || (indexed && !indirect_indices(&ds->index, restart, &ibuf, &ioff, &itype))) {
             LOG_LIMIT(1, "vulkan: an indirect draw of %s isn't drawn\n",
@@ -4570,13 +4680,20 @@ retry:
         xsize[i] = (u32)size;
         xbound |= 1u << i;
     }
-    /* the feedback loop goes into the key last: stage_set found it */
+    /* the feedback loop goes into the key last: stage_set found it. So do the topology class and polygon mode, which
+       a draw made into lines or points changes (edge_indices) and the kept key may hold from the last draw */
     u32 feedback = fb && !g_vk.has_feedback_dynamic;
-    if (k == &made_k)
+    u32 topo_class = edges ? (u32)topo : mesh ? 0 : topology_class(topology_vk(topology));
+    u32 polygon = edges ? VK_POLYGON_MODE_FILL : polygon_mode(&ds->rkey);
+    if (k == &made_k) {
         made_k.feedback = feedback;
-    else if (k->feedback != feedback) {
+        made_k.topo_class = topo_class;
+        made_k.polygon = polygon;
+    } else if (k->feedback != feedback || k->topo_class != topo_class || k->polygon != polygon) {
         made_k = *k;
         made_k.feedback = feedback;
+        made_k.topo_class = topo_class;
+        made_k.polygon = polygon;
         k = &made_k;
         kept = 0;
     }
@@ -4848,12 +4965,13 @@ retry:
         lw = g_vk.feat.wideLines && lw > 0 && lw < 64 ? lw : 1.0f;
         DYNV(lw, lw, rec_CmdSetLineWidth(cb, lw));
     }
-    /* depth bias: enabled per polygon mode (the key's, as the device draws it); its values are ds_depth_bias's */
+    /* depth bias: enabled per polygon mode (the key's, as the device draws it), and off for a list of lines or points
+       made of polygons, which Vulkan biases only as polygons (draw_edges logs it); its values are ds_depth_bias's */
     {
-        u32 bias_on = ds->dyn.bias_on >> (k->polygon == VK_POLYGON_MODE_POINT  ? 0
-                                          : k->polygon == VK_POLYGON_MODE_LINE ? 1
-                                                                               : 2) &
-                      1;
+        u32 bias_on = !edges && ds->dyn.bias_on >> (k->polygon == VK_POLYGON_MODE_POINT  ? 0
+                                                    : k->polygon == VK_POLYGON_MODE_LINE ? 1
+                                                                                         : 2) &
+                                    1;
         DYN(bias_on, bias_on, rec_CmdSetDepthBiasEnable(cb, bias_on));
     }
     {
