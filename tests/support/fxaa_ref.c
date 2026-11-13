@@ -12,6 +12,7 @@ typedef struct {
 
 static const uint8_t* g_rgba;
 static unsigned g_width, g_height;
+static float g_bounds[4];
 
 static Colour texel(int x, int y) {
     x = x < 0 ? 0 : x >= (int)g_width ? (int)g_width - 1 : x;
@@ -21,6 +22,8 @@ static Colour texel(int x, int y) {
 }
 /* the picture at a point in pixels, a pixel's centre half a pixel in from its corner */
 static Colour tap(float x, float y) {
+    x = x < g_bounds[0] ? g_bounds[0] : x > g_bounds[2] ? g_bounds[2] : x;
+    y = y < g_bounds[1] ? g_bounds[1] : y > g_bounds[3] ? g_bounds[3] : y;
     float qx = x - 0.5f, qy = y - 0.5f, ix = floorf(qx), iy = floorf(qy), fx = qx - ix, fy = qy - iy;
     Colour a = texel((int)ix, (int)iy), b = texel((int)ix + 1, (int)iy), c = texel((int)ix, (int)iy + 1),
            d = texel((int)ix + 1, (int)iy + 1), r;
@@ -36,7 +39,13 @@ static float greater(float a, float b) { return a > b ? a : b; }
 static float clamp_span(float v) { return v < -8.0f ? -8.0f : v > 8.0f ? 8.0f : v; }
 
 void fxaa_ref(const uint8_t* rgba, unsigned width, unsigned height, float* out, float* other, uint8_t* edge) {
+    const float whole[4] = {0.5f, 0.5f, (float)width - 0.5f, (float)height - 0.5f};
+    fxaa_ref_bounds(rgba, width, height, whole, out, other, edge);
+}
+void fxaa_ref_bounds(const uint8_t* rgba, unsigned width, unsigned height, const float bounds[4], float* out,
+                     float* other, uint8_t* edge) {
     g_rgba = rgba, g_width = width, g_height = height;
+    for (int i = 0; i < 4; ++i) g_bounds[i] = bounds[i];
     for (unsigned y = 0; y < height; ++y)
         for (unsigned x = 0; x < width; ++x) {
             float px = (float)x + 0.5f, py = (float)y + 0.5f;
