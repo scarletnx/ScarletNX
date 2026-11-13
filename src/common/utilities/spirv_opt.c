@@ -702,6 +702,203 @@ static uint32_t fold_known(const uint32_t* w, uint32_t width, uint32_t op, uint3
     return SPV_OPT_FOLD_ID;
 }
 
+/* the operands an integer or logical instruction of opcode op takes (of GLSL.std.450, glsl_op its number), for the
+   ones evaluate knows; 0 for the rest */
+static uint32_t arity(uint32_t op, uint32_t glsl_op) {
+    switch (op) {
+        case SPV_OP_S_NEGATE:
+        case SPV_OP_NOT:
+        case SPV_OP_BITCAST:
+        case SPV_OPT_OP_COPY_OBJECT:
+        case SPV_OP_LOGICAL_NOT: return 1;
+        case SPV_OP_SELECT:
+        case SPV_OP_BIT_FIELD_U_EXTRACT:
+        case SPV_OP_BIT_FIELD_S_EXTRACT: return 3;
+        case SPV_OP_BIT_FIELD_INSERT: return 4;
+        case SPV_OP_EXT_INST:
+            return glsl_op == SPV_GLSL_S_ABS ? 1
+                   : glsl_op == SPV_GLSL_U_MIN || glsl_op == SPV_GLSL_S_MIN || glsl_op == SPV_GLSL_U_MAX ||
+                           glsl_op == SPV_GLSL_S_MAX
+                       ? 2
+                   : glsl_op == SPV_GLSL_U_CLAMP || glsl_op == SPV_GLSL_S_CLAMP ? 3
+                                                                                : 0;
+        default:
+            return op == SPV_OP_I_ADD || op == SPV_OP_I_SUB || op == SPV_OP_I_MUL ||
+                           (op >= SPV_OP_SHIFT_RIGHT_LOGICAL && op <= SPV_OP_BITWISE_AND) ||
+                           (op >= SPV_OP_LOGICAL_EQUAL && op <= SPV_OP_LOGICAL_AND) ||
+                           (op >= SPV_OP_I_EQUAL && op <= SPV_OP_S_LESS_THAN_EQUAL)
+                       ? 2
+                       : 0;
+    }
+}
+
+/* a < b as signed 32-bit integers: the sign bit flipped orders them as unsigned ones */
+static int signed_less(uint32_t a, uint32_t b) { return (a ^ 0x80000000u) < (b ^ 0x80000000u); }
+
+/* What an instruction arity() knows (op, glsl_op) makes of the operand values v, into *out (a boolean is 0 or 1).
+   0 where the module gives it no value: a shift by 32 or more, a field past bit 32, a clamp whose least is past its
+   most, the absolute value of the least integer */
+static int evaluate(uint32_t op, uint32_t glsl_op, const uint32_t* v, uint32_t* out) {
+    uint32_t a = v[0], b = v[1], c = v[2], d = v[3], mask;
+    switch (op) {
+        case SPV_OP_I_ADD: *out = a + b; return 1;
+        case SPV_OP_I_SUB: *out = a - b; return 1;
+        case SPV_OP_I_MUL: *out = a * b; return 1;
+        case SPV_OP_S_NEGATE: *out = 0u - a; return 1;
+        case SPV_OP_NOT: *out = ~a; return 1;
+        case SPV_OP_BITWISE_AND: *out = a & b; return 1;
+        case SPV_OP_BITWISE_OR: *out = a | b; return 1;
+        case SPV_OP_BITWISE_XOR: *out = a ^ b; return 1;
+        case SPV_OP_SHIFT_LEFT_LOGICAL: *out = b < 32 ? a << b : 0; return b < 32;
+        case SPV_OP_SHIFT_RIGHT_LOGICAL: *out = b < 32 ? a >> b : 0; return b < 32;
+        case SPV_OP_SHIFT_RIGHT_ARITHMETIC: *out = b < 32 ? arithmetic_shift(a, b) : 0; return b < 32;
+        case SPV_OP_BIT_FIELD_U_EXTRACT:
+        case SPV_OP_BIT_FIELD_S_EXTRACT:
+            if (c > 32 || b > 32 - c) return 0;
+            mask = c ? 0xffffffffu >> (32 - c) : 0;
+            *out = c ? a >> b & mask : 0;
+            if (op == SPV_OP_BIT_FIELD_S_EXTRACT && c && *out >> (c - 1) & 1) *out |= ~mask;
+            return 1;
+        case SPV_OP_BIT_FIELD_INSERT: /* base a, insert b, offset c, count d */
+            if (d > 32 || c > 32 - d) return 0;
+            mask = d ? 0xffffffffu >> (32 - d) << c : 0;
+            *out = (a & ~mask) | (b << (c & 31) & mask);
+            return 1;
+        case SPV_OP_SELECT: *out = a ? b : c; return 1;
+        case SPV_OP_BITCAST:
+        case SPV_OPT_OP_COPY_OBJECT: *out = a; return 1;
+        case SPV_OP_LOGICAL_EQUAL:
+        case SPV_OP_I_EQUAL: *out = a == b; return 1;
+        case SPV_OP_LOGICAL_NOT_EQUAL:
+        case SPV_OP_I_NOT_EQUAL: *out = a != b; return 1;
+        case SPV_OP_LOGICAL_OR: *out = a | b; return 1;
+        case SPV_OP_LOGICAL_AND: *out = a & b; return 1;
+        case SPV_OP_LOGICAL_NOT: *out = !a; return 1;
+        case SPV_OP_U_GREATER_THAN: *out = a > b; return 1;
+        case SPV_OP_S_GREATER_THAN: *out = (uint32_t)signed_less(b, a); return 1;
+        case SPV_OP_U_GREATER_THAN_EQUAL: *out = a >= b; return 1;
+        case SPV_OP_S_GREATER_THAN_EQUAL: *out = (uint32_t)!signed_less(a, b); return 1;
+        case SPV_OP_U_LESS_THAN: *out = a < b; return 1;
+        case SPV_OP_S_LESS_THAN: *out = (uint32_t)signed_less(a, b); return 1;
+        case SPV_OP_U_LESS_THAN_EQUAL: *out = a <= b; return 1;
+        case SPV_OP_S_LESS_THAN_EQUAL: *out = (uint32_t)!signed_less(b, a); return 1;
+        default: break;
+    }
+    switch (glsl_op) {
+        case SPV_GLSL_S_ABS: *out = a >> 31 ? 0u - a : a; return a != 0x80000000u;
+        case SPV_GLSL_U_MIN: *out = a < b ? a : b; return 1;
+        case SPV_GLSL_S_MIN: *out = signed_less(a, b) ? a : b; return 1;
+        case SPV_GLSL_U_MAX: *out = a < b ? b : a; return 1;
+        case SPV_GLSL_S_MAX: *out = signed_less(a, b) ? b : a; return 1;
+        case SPV_GLSL_U_CLAMP: *out = a < b ? b : a > c ? c : a; return b <= c;
+        case SPV_GLSL_S_CLAMP: *out = signed_less(a, b) ? b : signed_less(c, a) ? c : a; return !signed_less(c, b);
+        default: return 0;
+    }
+}
+
+/* id, of the kind asked (SPV_OPT_INT or SPV_OPT_BOOL), as a value of few possible values: the id its values are a
+   function of (its leaf), with those values in entry, one for each of the leaf's values in turn, and their count in
+   *n. A constant is one value of no leaf (0); a value with a table (leaf, table, count) is its table; a boolean, or an
+   integer with one or two bits not known (zeros, ones), is its own leaf, of its two or four values. Anything else, or
+   of another kind, is no value of few (UINT32_MAX) */
+static uint32_t few_of(uint32_t id, uint32_t kind, uint32_t bound, const uint8_t* is, const uint32_t* type_of,
+                       const uint32_t* value, const uint32_t* zeros, const uint32_t* ones, const uint32_t* leaf,
+                       const uint32_t* table, const uint8_t* count, uint32_t* entry, uint32_t* n) {
+    kind = id < bound ? is[type_of[id]] & kind : 0;
+    if (!kind) return UINT32_MAX;
+    if (is[id] & SPV_OPT_CONSTANT) {
+        entry[0] = entry[1] = entry[2] = entry[3] = value[id];
+        *n = 1;
+        return 0;
+    }
+    if (leaf[id]) {
+        memcpy(entry, table + 4 * (size_t)id, 4 * sizeof *entry);
+        *n = count[id];
+        return leaf[id];
+    }
+    uint32_t unknown = kind & SPV_OPT_BOOL ? 1 : ~(zeros[id] | ones[id]), low = unknown & (0u - unknown);
+    uint32_t high = unknown & ~low, base = kind & SPV_OPT_BOOL ? 0 : ones[id];
+    if (!unknown || (high & (high - 1))) return UINT32_MAX; /* three bits or more */
+    entry[0] = base;
+    entry[1] = base | low;
+    entry[2] = base | high;
+    entry[3] = base | low | high;
+    *n = high ? 4 : 2;
+    return id;
+}
+
+/* What the instruction at w, a 32-bit integer or a boolean, is as a function of one value of few possible values
+   (ucas's map rule): when each operand is a constant, a value with a table or a leaf (few_of), all of one leaf, the
+   instruction is evaluated for each of the leaf's values. SPV_OPT_FOLD_VALUE with *out when every value gives one
+   constant; SPV_OPT_FOLD_ID when the values are an operand's of the instruction's type, or the leaf's itself (it
+   dominates the instruction: an operand was computed from it); else the instruction's table is kept in leaf, table and
+   count for the ones that read it. An instruction evaluate gives no value for one of them is no value of few */
+static uint32_t few_values(const uint32_t* w, uint32_t width, uint32_t op, uint32_t glsl, uint32_t bound,
+                           const uint8_t* is, const uint32_t* type_of, const uint32_t* value, const uint32_t* zeros,
+                           const uint32_t* ones, uint32_t* leaf, uint32_t* table, uint8_t* count, uint32_t* out) {
+    uint32_t first = op == SPV_OP_EXT_INST ? 5 : 3, glsl_op = 0;
+    /* most instructions have an operand of many values: a look at each before anything else */
+    for (uint32_t k = first; k < width; k++) {
+        uint32_t id = w[k], unknown = id < bound ? ~(zeros[id] | ones[id]) : 0;
+        unknown &= unknown - 1; /* past its lowest bit not known, and below past the next */
+        if (id >= bound ||
+            (!(is[id] & SPV_OPT_CONSTANT) && !leaf[id] && !(is[type_of[id]] & SPV_OPT_BOOL) && unknown & (unknown - 1)))
+            return SPV_OPT_FOLD_NONE;
+    }
+    if (op == SPV_OP_EXT_INST) {
+        if (width < 5 || w[3] != glsl) return SPV_OPT_FOLD_NONE;
+        glsl_op = w[4];
+    }
+    uint32_t operands = arity(op, glsl_op);
+    if (!operands || width != first + operands) return SPV_OPT_FOLD_NONE;
+    /* the kinds of the result and of the operands: logical instructions on booleans, comparisons of integers, a
+       select's condition, the rest integers; a select or a copy of either */
+    int logical = op >= SPV_OP_LOGICAL_EQUAL && op <= SPV_OP_LOGICAL_NOT;
+    int compare = op >= SPV_OP_I_EQUAL && op <= SPV_OP_S_LESS_THAN_EQUAL,
+        either = op == SPV_OP_SELECT || op == SPV_OPT_OP_COPY_OBJECT;
+    uint32_t kind = is[w[1]] & (SPV_OPT_INT | SPV_OPT_BOOL);
+    if (kind != (logical || compare ? SPV_OPT_BOOL : either ? kind : SPV_OPT_INT)) return SPV_OPT_FOLD_NONE;
+    uint32_t entries[4][4], of[4], one = 0, n = 1, result[4] = {0}, own[4], m;
+    for (uint32_t k = 0; k < operands; k++) {
+        uint32_t want = logical                         ? SPV_OPT_BOOL
+                        : op == SPV_OP_SELECT && k == 0 ? SPV_OPT_BOOL
+                        : either                        ? kind
+                                                        : SPV_OPT_INT;
+        of[k] = few_of(w[first + k], want, bound, is, type_of, value, zeros, ones, leaf, table, count, entries[k], &m);
+        if (of[k] == UINT32_MAX || (of[k] && one && of[k] != one)) return SPV_OPT_FOLD_NONE;
+        if (of[k]) {
+            one = of[k];
+            n = m;
+        }
+    }
+    for (uint32_t j = 0; j < n; j++) {
+        uint32_t v[4] = {0};
+        for (uint32_t k = 0; k < operands; k++) v[k] = entries[k][j];
+        if (!evaluate(op, glsl_op, v, &result[j])) return SPV_OPT_FOLD_NONE;
+    }
+    uint32_t same = 1;
+    for (uint32_t j = 1; j < n; j++) same &= result[j] == result[0];
+    if (same) {
+        *out = result[0];
+        return SPV_OPT_FOLD_VALUE;
+    }
+    for (uint32_t k = 0; k < operands; k++)
+        if (of[k] == one && type_of[w[first + k]] == w[1] && !memcmp(entries[k], result, n * sizeof *result)) {
+            *out = w[first + k];
+            return SPV_OPT_FOLD_ID;
+        }
+    if (type_of[one] == w[1] &&
+        few_of(one, kind, bound, is, type_of, value, zeros, ones, leaf, table, count, own, &m) == one &&
+        !memcmp(own, result, n * sizeof *result)) {
+        *out = one;
+        return SPV_OPT_FOLD_ID;
+    }
+    leaf[w[2]] = one;
+    memcpy(table + 4 * (size_t)w[2], result, sizeof result);
+    count[w[2]] = (uint8_t)n;
+    return SPV_OPT_FOLD_NONE;
+}
+
 /* where the constant of type and value is in table (ids; 0 an empty slot), or the empty slot where it would go */
 static uint32_t constant_slot(const uint32_t* table, uint32_t mask, const uint32_t* type_of, const uint32_t* value,
                               uint32_t type, uint32_t v) {
@@ -762,19 +959,21 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
        and its predecessors start, the post order, and the stack that walks it. By edge: the block it goes to, and
        the predecessors' lists. By slot of the table, three words side by side: the instruction, its block and its
        scope. By slot of the constants' table: the id. By numbered instruction: the id of the constant it was made.
-       By instruction: its value_class, a byte. */
+       By id again: the leaf its values are a function of and those values, four words (few_values). By instruction:
+       its value_class, a byte; and by id, how many values its table has, a byte. */
     size_t ids = bound;
     assert(ids <= SIZE_MAX / 64 && blocks <= SIZE_MAX / 64 && edges <= SIZE_MAX / 64 && slots <= SIZE_MAX / 64 &&
            known <= SIZE_MAX / 64);
     uint32_t* replace = calloc(
-        1, (8 * ids + 7 * blocks + 2 + 2 * edges + 3 * slots + known + numbered) * sizeof *replace + ids + count);
+        1, (13 * ids + 7 * blocks + 2 + 2 * edges + 3 * slots + known + numbered) * sizeof *replace + 2 * ids + count);
     if (!replace) abort();
     uint32_t *sign = replace + ids, *block_of = sign + ids, *type_of = block_of + ids, *value = type_of + ids;
     uint32_t *def = value + ids, *zeros = def + ids, *ones = zeros + ids, *idom = ones + ids, *order = idom + blocks;
     uint32_t *succ = order + blocks, *pred = succ + blocks + 1, *sequence = pred + blocks + 1;
     uint32_t *stack = sequence + blocks, *to = stack + 2 * blocks, *from = to + edges;
     uint32_t *slot = from + edges, *constant = slot + 3 * slots, *made = constant + known, nmade = 0;
-    uint8_t *is = (uint8_t*)(made + numbered), *class_of = is + ids;
+    uint32_t *leaf = made + numbered, *table = leaf + ids;
+    uint8_t *is = (uint8_t*)(table + 4 * ids), *class_of = is + ids, *count_of = class_of + count;
 
     /* the declarations: which ids are decorated and how, the variables no instruction can write, and the integer
        and boolean types with their constants (a type comes before the constants of it) */
@@ -971,6 +1170,18 @@ size_t spv_opt_values(uint32_t* module, size_t words) {
             known_bits(w, width, op, bound, is, type_of, is[w[1]] & (SPV_OPT_INT | SPV_OPT_BOOL), zeros, ones, &zero,
                        &one);
             how = fold_known(w, width, op, bound, type_of, zeros, ones, zero, one, &folded);
+            if (how == SPV_OPT_FOLD_NONE)
+                how = few_values(w, width, op, glsl, bound, is, type_of, value, zeros, ones, leaf, table, count_of,
+                                 &folded);
+            if (how == SPV_OPT_FOLD_NONE && leaf[w[2]] && is[w[1]] & SPV_OPT_INT) { /* what its values share */
+                uint32_t all = 0xffffffffu, any = 0;
+                for (uint32_t j = 0; j < count_of[w[2]]; j++) {
+                    all &= table[4 * (size_t)w[2] + j];
+                    any |= table[4 * (size_t)w[2] + j];
+                }
+                zero |= ~any;
+                one |= all;
+            }
             zeros[w[2]] = zero;
             ones[w[2]] = one;
         }
