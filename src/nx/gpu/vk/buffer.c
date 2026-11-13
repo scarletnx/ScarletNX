@@ -3605,6 +3605,7 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
     u32 i = 0, epoch = vk_ww_epoch(); /* before anything is checked or read */
     Vb* e = NULL;
     if (!len || len > 0xFFFFFFFFull) return 0; /* no buffer the GPU reads is 4 GB */
+    if (g_gfx_img_any) vk_gfx_image_read_need(gva, len); /* a kept storage image's owner holds older bytes */
     /* over writes of the GPU mirror's programs that haven't landed: read in the mirror, which has them, after them. At
        an offset the use can't bind (a draw's constants or vertices, a few bytes at any address, where a uniform
        buffer binds at 64), the bytes are copied on the GPU from the mirror into device memory that it can: landing

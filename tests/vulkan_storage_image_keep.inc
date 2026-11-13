@@ -4,10 +4,10 @@
    a column of 16 texels, the texel and its value in the program's constant buffer. Where the host traps guest memory,
    the image's span is GPU-owned from the bind on, and nothing of it is copied on the CPU before the draw nor back
    after it. The release leaves the image kept, the next draw joins it, and a read publishes it over the span: the
-   CPU's own read too, which lands its owner (own.c's claim hook). The first draw's bind stages the span once, as
-   memory holds it. A CPU write between the draw and the release lands the span, and the release
-   then merges the image with what the CPU wrote by the byte, as the write-back always did: the CPU's bytes and the
-   store beside them on the same page both stay. The image's next draws take that write-back. Elsewhere every draw
+   CPU's own read too, which lands its owner (own.c's claim hook), and a draw's buffer over it. The first draw's bind
+   stages the span once, as memory holds it. A CPU write between the draw and the release lands the span, and the
+   release then merges the image with what the CPU wrote by the byte, as the write-back always did: the CPU's bytes and
+   the store beside them on the same page both stay. The image's next draws take that write-back. Elsewhere every draw
    takes it, as before. No extracted shaders or game data are used */
 #define IMGKEEP_GVA  0x4c0000000ull
 #define IMGKEEP_CPU  (HEAP_BASE + 0x5400000)
@@ -195,6 +195,38 @@ static int check_storage_image_keep(void) {
         CHECK(word == 0x5eed0011 && d.published == 1);
     }
     CHECK(!imgkeep_expect("after two releases", first, (const u32[][3]){{2, 3, 0x5eed0001}, {7, 9, 0x5eed0011}}, 2));
+
+    /* a draw's buffer read of a kept image's span after its release: the owner it binds where it is holds the span's
+       bytes from before the draw, so the image is published first and the read has the store */
+    const u64 third = address + 0x30000;
+    CHECK(!imgkeep_image(pool, third, 64, 64));
+    was = imgkeep_since((ImgCount){0});
+    CHECK(!imgkeep_draw(channel, cbuf, 11, 13, 0x5eed0021));
+    imgkeep_release();
+    d = imgkeep_since(was);
+    CHECK(!kept || (!d.back && !d.published));
+    if (kept) {
+        VkBuffer buf, rb;
+        u64 at;
+        const u8* got;
+        vk_lock();
+        CHECK(vk_buf_get(third, IMGKEEP_SIZE, &buf, &at) && (got = vk_readback_buffer(IMGKEEP_SIZE, &rb)));
+        VkBufferCopy c = {at, 0, IMGKEEP_SIZE};
+        vk_render_end();
+        rec_CmdCopyBuffer(vk_cmd(), buf, rb, 1, &c);
+        vk_finish();
+        vk_readback_ready();
+        u32 word = snx_ld_le32(got + imgkeep_at(11, 13, 64, 64));
+        vk_unlock();
+        d = imgkeep_since(was);
+        if (word != 0x5eed0021 || d.published != 1)
+            fprintf(stderr,
+                    "storage image kept past its release, read as a buffer: the read has %08x and %llu images were "
+                    "published, 5eed0021 and 1 expected\n",
+                    word, (unsigned long long)d.published);
+        CHECK(word == 0x5eed0021 && d.published == 1);
+    }
+    CHECK(!imgkeep_expect("read as a buffer after its release", third, (const u32[][3]){{11, 13, 0x5eed0021}}, 1));
 
     /* the CPU writes between the draw and the release, in place as a guest thread does, past the runtime's hooks: the
        stored texel (its write comes last, as on the console where the GPU had stored), the texel beside it on its
