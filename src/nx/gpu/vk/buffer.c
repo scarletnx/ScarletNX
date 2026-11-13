@@ -3347,7 +3347,7 @@ static int patch_apply(const Vb* e, Patch* pt) {
     u8* p;
     if (!pt->n) return 1;
     for (u32 k = 0; k < pt->n; k++) bytes += r[k].size; /* a whole one's span is more than its runs */
-    if (!(p = vk_stage_upload(bytes, vk_stage_align(), &sb, &so))) return 0;
+    if (!(p = vk_stream_upload(bytes, vk_stage_align(), &sb, &so))) return 0; /* read by the copy below alone */
     for (u32 k = 0; k < pt->n; k++) {
         memcpy(p + at, pt->src + r[k].dstOffset, r[k].size);
         r[k].srcOffset = so + at;
@@ -3827,7 +3827,7 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
     u8* staged = NULL;
     if (!e || !e->own) {
         if (e) e->buf = VK_NULL_HANDLE; /* a failed allocation must not leave the old snapshot reusable */
-        if (!(staged = vk_stage_upload(len, vk_stage_align(), &sb, &so))) return 0;
+        if (!(staged = vk_stream_upload(len, vk_stage_align(), &sb, &so))) return 0;
         h = vk_hash_copy(staged, src, len);
     } else
         h = vk_hash(src, len);
@@ -3863,7 +3863,7 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
     }
     if (!e->own) {
         if (!staged) { /* its own buffer was dropped above: the bytes changed */
-            if (!(staged = vk_stage_upload(len, vk_stage_align(), &sb, &so))) return 0;
+            if (!(staged = vk_stream_upload(len, vk_stage_align(), &sb, &so))) return 0;
             memcpy(staged, src, len);
         }
         /* a big range takes its own buffer at once when writes are tracked: changes then patch it (patch_own). Not a
