@@ -5,17 +5,15 @@
 # nn::prepo: the play reports, with no prepo:u session. The report is built in the game's buffer by the SDK's own
 # code. Save, Send, AddSessionId, RequestImmediateTransmission and GetTransmissionStatus are what a game has reach the
 # service. The report's layout and Save's limit are those of the SDKs read: no limit in 3.5.0 to 8.2.1, the limit from
-# 10.4.0, the buffer at 0x20 through 13.3.5 and at 0x28 from 16.2.0. SDK 9, 14 and 15 were not read: they have no hook
-# and keep their own code
+# 9.3.1, the buffer at 0x20 through 14.3.0 and at 0x28 from 15.3.2. Read in 3.5, 4.4, 6.5, 7.7, 8.2, 9.3, 10.4, 12.3,
+# 13.3, 14.3, 15.3, 16.2, 18.3, 19.3 and 20.5: Save is the same code from 9.3 on, 14.3's as 12.3's and 15.3's as 16.2's
 family nn_prepo
-struct nn::prepo::PlayReport @version(< 14.0.0) { addr buffer @0x20; u64 capacity @0x28; u64 used @0x30 } size 0x38
-struct nn::prepo::PlayReport @version(>= 16.0.0) { addr buffer @0x28; u64 capacity @0x30; u64 used @0x38 } size 0x40
+struct nn::prepo::PlayReport @version(< 15.0.0) { addr buffer @0x20; u64 capacity @0x28; u64 used @0x30 } size 0x38
+struct nn::prepo::PlayReport @version(>= 15.0.0) { addr buffer @0x28; u64 capacity @0x30; u64 used @0x38 } size 0x40
 @version(< 9.0.0) hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = nnprepo_save_unlimited uses nn::prepo::PlayReport
-@version(>= 10.0.0, < 14.0.0) hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = nnprepo_save uses nn::prepo::PlayReport
-@version(>= 16.0.0) hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = nnprepo_save uses nn::prepo::PlayReport
+@version(>= 9.0.0) hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = nnprepo_save uses nn::prepo::PlayReport
 @version(< 9.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user_unlimited uses nn::prepo::PlayReport
-@version(>= 10.0.0, < 14.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user uses nn::prepo::PlayReport
-@version(>= 16.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user uses nn::prepo::PlayReport
+@version(>= 9.0.0) hook _ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE(addr report, addr uid) -> u32 = nnprepo_save_user uses nn::prepo::PlayReport
 # Send, the report sent at once, which the SDK has from 16: its AsyncContext, which the caller passes in x8, is the
 # SDK's own finished one. Read in SDK 16.2, 18.3, 19.3 and 20.5; no older SDK of the dumps here exports it
 struct nn::prepo::AsyncContext @version(>= 16.0.0) { addr object @0x0; u32 result @0x8 } size 0x10

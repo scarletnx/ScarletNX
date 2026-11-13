@@ -111,18 +111,18 @@ int main(void) {
     CHECK(nnprepo_get_transmission_status(c, 0x200) == 0 && snx_ld_le32(mem + 0x200) == 0 && mem[0x204] == 0xee);
 
     /* prepo.hook's own choice for each SDK version read in a game: Save with or without the limit, on the report as
-       that SDK's SetBuffer lays it out; and no hook for the versions between them that were not read */
+       that SDK's SetBuffer lays it out (9.3, 14.3 and 15.3 among them, the last before 16's layout) */
     static const struct {
         u32 sdk, buffer;
         int limit;
     } read[] = {{0x030500, 0x20, 0}, {0x040400, 0x20, 0}, {0x060500, 0x20, 0}, {0x070700, 0x20, 0},
-                {0x080201, 0x20, 0}, {0x0a0400, 0x20, 1}, {0x0d0300, 0x20, 1}, {0x0d0305, 0x20, 1},
-                {0x100200, 0x28, 1}, {0x120302, 0x28, 1}, {0x130303, 0x28, 1}, {0x14050f, 0x28, 1}};
+                {0x080201, 0x20, 0}, {0x090301, 0x20, 1}, {0x0a0400, 0x20, 1}, {0x0d0300, 0x20, 1},
+                {0x0d0305, 0x20, 1}, {0x0e0300, 0x20, 1}, {0x0f0302, 0x28, 1}, {0x100200, 0x28, 1},
+                {0x120302, 0x28, 1}, {0x130303, 0x28, 1}, {0x14050f, 0x28, 1}};
     static const char* const save[2] = {"_ZN2nn5prepo10PlayReport4SaveEv",
                                         "_ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE"};
     static const char* const handler[2][2] = {{"nnprepo_save_unlimited", "nnprepo_save"},
                                               {"nnprepo_save_user_unlimited", "nnprepo_save_user"}};
-    static const u32 unread[] = {0x090100, 0x0e0100, 0x0f0300};
     int first;
     for (unsigned i = 0; i < sizeof read / sizeof read[0]; i++)
         for (int user = 0; user < 2; user++) {
@@ -142,9 +142,8 @@ int main(void) {
             CHECK(c->x[0] == 0 && c->pc == 0x1234 && mem[BUFFER] == 0xde);
             CHECK(snx_ld_le64(mem + REPORT + read[i].buffer + 16) == 3);
         }
-    for (unsigned i = 0; i < sizeof unread / sizeof unread[0]; i++) {
+    { /* a module whose SDK the label does not give has no Save hook: its layout is not known */
         u32 versions[HOOK_KEYS] = {0};
-        versions[HOOK_SDK] = unread[i];
         CHECK(hook_select(&hook_table, save[0], versions, &first) == -2);
         CHECK(hook_select(&hook_table, save[1], versions, &first) == -2);
     }
@@ -292,7 +291,7 @@ int main(void) {
         }
     }
 
-    /* the limit of SDK 10 on: the saves so far, then up to 900 in the 90 minutes; the 901st succeeds and leaves the report */
+    /* the limit of SDK 9 on: the saves so far, then up to 900 in the 90 minutes; the 901st succeeds and leaves the report */
     g_hle.prepo = (HlePrepo){0};
     for (int i = 0; i < 900; i++) {
         report(&v20, "event_1", 0x100);

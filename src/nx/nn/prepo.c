@@ -18,7 +18,7 @@
 
    A 32-bit game's SDK (0.12.16, the one read) has the same Save over a report of 4-byte fields (PlayReport32).
 
-   From SDK 10 Save has a limit, 900 calls in any 90 minutes as SDK 20's is: a call past the limit returns success and
+   From SDK 9 Save has a limit, 900 calls in any 90 minutes as SDK 20's is: a call past the limit returns success and
    leaves the report as it is. The SDK also signals its own event for that (GetOverSaveFrequencyLimitEvent), which stays with the SDK's
    code and is not signaled here.
 
