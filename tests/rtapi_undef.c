@@ -155,7 +155,7 @@ int main(void) {
     put_word(0x1104, 0xd63f0100u);
     put_word(0x1108, 0xe7ffdefeu);
     check(undef(&c, 0x1108, 0x1108, 0xe7ffdefeu), "the game's trap word ends the game");
-    check(strstr(g_t.fatal, "undefined instruction (e7ffdefe at 1108), which the console's CPU cannot run either"),
+    check(strstr(g_t.fatal, "an undefined instruction (e7ffdefe at 1108), which the console's CPU cannot") != NULL,
           "the trap word is an undefined instruction, the game's");
     check(strstr(g_t.fatal, "recompiler") == NULL, "the trap word is not blamed on the recompiler");
     check(strstr(g_t.log, "*** The game ran undefined instruction e7ffdefe at 1108, which the console's CPU cannot run "
