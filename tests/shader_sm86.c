@@ -2459,16 +2459,19 @@ static void test_shading_rate(const char* dir) {
 }
 /* FMUL's scale (bits 84-86, 2^(field - 4): nvdisasm's .D4 at 2, .M4 at 6) is part of the product whatever the device
    rounds in: 3.0 * 2.0 is 1.5 with .D4 and 24.0 with .M4, with doubles and without them. And it is applied before the
-   one rounding: 2^100 * 2^28 .D4 is 2^126, though the product alone is past a float's range */
+   one rounding: 2^100 * 2^28 .D4 is 2^126, though the product alone is past a float's range, and a .D2 whose product
+   is subnormal rounds once (0x223d8f), not on the product and again on its half (0x223d8e). The evaluator runs on the
+   host's floats, which keep subnormals, as an FMUL without .FTZ does */
 static void test_float64_fallback_scale(const char* dir) {
     static const struct {
         u32 field, x, y;
         float product;
         const char* name;
-    } scales[] = {{2, 0x40400000u, 0x40000000u, 1.5f, "D4"},
-                  {6, 0x40400000u, 0x40000000u, 24.0f, "M4"},
-                  {2, 0x71800000u, 0x4d800000u, 0x1p126f, "D4"},
-                  {2, 0x4d800000u, 0x71800000u, 0x1p126f, "D4"}};
+    } scales[] = {
+        {2, 0x40400000u, 0x40000000u, 1.5f, "D4"},           {6, 0x40400000u, 0x40000000u, 24.0f, "M4"},
+        {2, 0x71800000u, 0x4d800000u, 0x1p126f, "D4"},       {2, 0x4d800000u, 0x71800000u, 0x1p126f, "D4"},
+        {3, 0x1fabdf83u, 0x1fcc002du, 0x223d8fp-149f, "D2"}, {3, 0x1fcc002du, 0x1fabdf83u, 0x223d8fp-149f, "D2"},
+    };
     int had = g_shader_float64;
     for (int f64 = 1; f64 >= 0; f64--)
         for (size_t i = 0; i < sizeof scales / sizeof *scales; i++) {
