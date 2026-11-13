@@ -5888,15 +5888,9 @@ static void prepare_handles(Ctx* c) {
                 int m = reaching_write(c, (u32)k, index);
                 const Sm86Insn* mul = m >= 0 ? &c->in[m] : NULL;
                 u32 stride = 0, base = 0, count = SNX_TEX_ARRAY;
-                if (c->stage == ST_CS && handle_table_index(c, m, &stride, &base)) {
-                    /* a compute program has no texture arrays yet: the table's textures are sampled as none, as a
-                       handle from memory that no dispatch gives is (SH_PROBE_NONE), and the program runs */
-                    slot = tex_slot_memory(c, SH_PROBE_NONE, 0, 0, type, array, shadow, 0);
-                    c->si->memh_none++;
-                    if (!c->si->memh_why[0])
-                        snprintf(c->si->memh_why, sizeof c->si->memh_why,
-                                 "a table of handles in a compute program (for %u)", i);
-                } else if (!g_shader_texture_arrays || c->stage == ST_CS) {
+                if (!g_shader_texture_arrays || c->stage == ST_CS) {
+                    /* a compute program's table doesn't come here: tex_b_cbuf_handle leaves its TEX.B to
+                       memory_handles, which gives it a slot (the dispatch's element, or none) or fails the program */
                     fail(c, "TEX.B of a table of handles, without texture arrays");
                 } else if (!handle_table_index(c, m, &stride, &base)) {
                     fail(c, "TEX.B of a table of handles, indexed by %s",
