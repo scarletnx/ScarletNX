@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* A run's output as a loading screen's steps. */
 #include "gui/steps.h"
+#include "common/utilities/common.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -76,6 +77,26 @@ int main(void) {
     assert(gui_steps_percent(&s) == 50);
     feed(&s, "Compiled 12/12 chunks of blocks\n", 100);
     assert(gui_steps_percent(&s) == 100 && at(&s, 0)->value == 12 && at(&s, 0)->total == 12);
+
+    /* the 3DS's recompile: a line for each chunk of static blocks, then the index's, the Switch's own lines
+       (snx_unit_line), so its bar moves as the Switch's does */
+    gui_steps_reset(&s);
+    feed(&s, "Recompiling Game (offline static AOT)\nARM11 AOT: 2 chunks of static blocks on 2 threads\n", 110);
+    assert(gui_steps_last(&s, "RECOMPILE") && gui_steps_percent(&s) == 0);
+    {
+        static const char* const names[] = {"blocks_001", "blocks_000", "index"};
+        static const char* const labels[] = {"0x00104000-0x00104B24, 89 blocks", "0x00100000-0x00104000, 512 blocks",
+                                             "the module's index, 601 blocks"};
+        static const int percents[] = {33, 66, 100};
+        for (i = 0; i < 3; ++i) {
+            char line[256];
+            snx_unit_line(line, sizeof line - 1, (size_t)i + 1, 3, names[i], labels[i], 0, 0.4, (SnxU64)300 << 20);
+            strcat(line, "\n");
+            feed(&s, line, 120 + (uint64_t)i);
+            assert(at(&s, 0)->value == (unsigned)i + 1 && at(&s, 0)->total == 3 &&
+                   gui_steps_percent(&s) == percents[i]);
+        }
+    }
 
     gui_steps_reset(&s);
     feed(&s, "a line before any step\n", 1);

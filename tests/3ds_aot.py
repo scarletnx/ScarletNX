@@ -5,6 +5,7 @@
 
 import ctypes as C
 import hashlib
+import re
 from pathlib import Path
 import shutil
 import struct
@@ -458,7 +459,23 @@ def main():
         for i in range(600):
             put(chained, i * 32, '<I', 0xEA000006)
         put(chained, 600 * 32, '<II', 0xE3A00031, 0xEF000003)
-        run(application(raw=chained), message='Guest ExitProcess: r0=49 blocks=601')
+        _, text = run(application(raw=chained), message='Guest ExitProcess: r0=49 blocks=601')
+        # a line for each chunk of up to 512 blocks and the index's last, the Switch's form, which the launcher's bar
+        # reads (gui/steps.c: "compiled block %u/%u")
+        found = int(re.search(r'Discovered ARM11 static coverage: (\d+) blocks', text)[1])
+        lines = re.findall(
+            r'^  compiled block (\d+)/(\d+): (\w+), (?:0x[0-9A-F]{8}-0x[0-9A-F]{8}|the module.s index), (\d+) blocks \(',
+            text,
+            re.M,
+        )
+        count = (found + 511) // 512
+        assert count > 1 and [(int(done), int(of)) for done, of, *_ in lines] == [
+            (k, count + 1) for k in range(1, count + 2)
+        ], text
+        chunks = sorted((name, int(blocks)) for _, _, name, blocks in lines[:count])
+        assert chunks == [(f'blocks_{k:03}', min(512, found - k * 512)) for k in range(count)], text
+        assert lines[count][2] == 'index' and int(lines[count][3]) >= found, text
+        assert 'chunks of static blocks emitted' not in text, text
         # A target the static discovery can't prove (a register's) compiles at run time, and goes in the title's
         # hints, which the next recompile starts from: then it is a static block.
         uncovered = bytearray(0x1800)

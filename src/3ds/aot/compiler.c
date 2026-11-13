@@ -215,6 +215,18 @@ static uint32_t* read_hints(const char* directory, size_t* count) {
     free(path);
     return hints;
 }
+/* a chunk's place for its progress line: the addresses its blocks span and how many there are */
+static void chunk_label(const SnxCtrImage* image, const Entry* entries, unsigned count, char* out, size_t size) {
+    uint32_t lo = UINT32_MAX, hi = 0;
+    for (unsigned i = 0; i < count; ++i) {
+        unsigned width = entries[i].mode ? 2 : 4;
+        uint32_t pc = image->segment[0].address + entries[i].index * width;
+        if (pc < lo) lo = pc;
+        if (pc + entries[i].length * width > hi) hi = pc + entries[i].length * width;
+    }
+    if (lo > hi) lo = hi = 0;
+    snprintf(out, size, "0x%08X-0x%08X, %u block%s", (unsigned)lo, (unsigned)hi, count, count == 1 ? "" : "s");
+}
 /* The chunks shared out to a worker per host core, each with an SnxIr of its own: a commercial title's few hundred
    thousand blocks take an hour on one */
 typedef struct {
@@ -247,8 +259,10 @@ static void worker(void* arg) {
         if (n > CHUNK_ENTRIES) n = CHUNK_ENTRIES;
         Entry* rest = NULL;
         unsigned rest_count = 0;
+        double start = snx_seconds();
         ok = chunk(ir, w->image, w->entries + begin, n, &w->objects[i], w->exhaustive, &rest, &rest_count, error,
                    sizeof error);
+        double seconds = snx_seconds() - start;
         snx_work_lock(&w->lock);
         Entry* merged = rest_count ? realloc(w->rest, (w->rest_count + rest_count) * sizeof *merged) : w->rest;
         if (ok && rest_count && !merged) {
@@ -260,8 +274,11 @@ static void worker(void* arg) {
             if (rest_count) memcpy(w->rest + w->rest_count, rest, rest_count * sizeof *rest);
             w->rest_count += rest_count;
             w->output_bytes += w->objects[i].size;
-            if (!(++w->finished % 16) || w->finished == w->chunks)
-                printf("ARM11 AOT: %u/%u chunks of static blocks emitted\n", w->finished, w->chunks);
+            /* a line for each chunk, as the Switch's recompile gives one for each unit, + the index */
+            char id[24], label[64];
+            snprintf(id, sizeof id, "blocks_%03u", i);
+            chunk_label(w->image, w->entries + begin, n, label, sizeof label);
+            snx_report_unit(++w->finished, w->chunks + 1, id, label, 0, seconds);
         }
         snx_work_unlock(&w->lock);
         free(rest);
@@ -375,7 +392,13 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, char* e
         count += work.rest_count;
         qsort(entries, count, sizeof *entries, by_place);
     }
+    double start = snx_seconds();
     if (!index_object(ir, &image, entries, count, &objects[1], error, error_size)) goto done;
+    {
+        char label[48];
+        snprintf(label, sizeof label, "the module's index, %u block%s", count, count == 1 ? "" : "s");
+        snx_report_unit(work.chunks + 1, work.chunks + 1, "index", label, 0, snx_seconds() - start);
+    }
     if (snx_ir_armlib_object('1', &armlib, &armlib_size, error, error_size)) goto done;
     objects[0].data = armlib, objects[0].size = armlib_size;
     uint64_t output_bytes = work.output_bytes + objects[1].size;
