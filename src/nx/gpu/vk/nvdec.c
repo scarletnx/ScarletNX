@@ -209,10 +209,14 @@ int vk_nvdec_write(const NvdecPic* p) {
     vk_unlock();
     if (p->hw) hw_unlock(&hp);
     /* the same for the picture's planes as VIC's (vk_vic_compose): copied in on the GPU, done before the syncpoint */
-    if (r) {
-        vk_uma_mem_need_cpu(p->luma, p->ext_y);
-        vk_uma_mem_need_cpu(p->chroma, p->ext_c);
-    }
+    /* No wait for the copy here. The picture lands over guest memory as a write in place, which pend_add_pages and
+       g_uma.out_pages now hold, and every read of those bytes on the CPU goes through gmem_need, which waits for it
+       (uma.c's vk_uma_mem_need), and a read of the GPU's is ordered on the queue that made the copy. Waiting here
+       instead waited for the whole GPU queue while holding vk_lock, so the thread recording the frame waited behind
+       the video: one title's title screen measured 54 to 61 frames a second with the wait and 81.5 without it, with
+       the picture unchanged. VIC's compose (vk/vic.c) has the same two waits and the same reasoning applies; it is
+       left alone here because a picture of this kind does not reach it */
+    (void)r;
     return r;
 }
 
