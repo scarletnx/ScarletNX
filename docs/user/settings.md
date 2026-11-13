@@ -27,7 +27,7 @@ Settings show a group for each section ([GUI launcher](gui.md)).
 
 `Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
 Restart for `docked` (`Auto` follows the host's power while the game runs, and `hotkey_tv_mode` and the game's menu's
-**TV mode** change the mode for the run), `fullscreen`, `language`, `resolution`,
+**TV mode** change the mode for the run), `fullscreen`, `transition_screen`, `language`, `resolution`,
 `anisotropy`, `hdr_game`, `hdr_paperwhite`, `hdr_peak`, `memory_gb`, `memory_fit_mode`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
 `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `pipeline_libraries`, `prepare_shaders`, `compress_shader_cache`,
 `compress_prepared_shaders`, `jit_threads`, `vertex_input_dynamic_state`, `astc_mode`, every `vk_ext_*`, and
@@ -56,6 +56,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | --- | --- | --- |
 | `docked` | `1` | `1` is TV mode, `0` handheld mode (1280x720), `2` Auto: TV mode while the host is on its charger, handheld mode on its battery. Auto switches while the game runs. `hotkey_tv_mode` (Ctrl+D) and the game's menu's **TV mode** step On, Off and Auto for the run, the `.ini`'s value as it was |
 | `fullscreen` | `0` | `1` starts fullscreen, except in timed test runs (`--seconds`, `--frames`). `-f` or `--fullscreen=0` sets it for one run. F11 or Alt+Enter switches without changing it. A 3DS game takes it too (`--fullscreen=1`, not in `--seconds` or `--max-blocks` runs), with the same keys |
+| `transition_screen` | `1` | `1`: when a collection's program starts another (a game picked in its menu), the new program's window shows the loading screen from a quarter second after it opens until the game draws, with the game's name, `(Program N)` and the game's cover, and the launcher's run screen shows that program's page while no window is open (with the recompile of a program not made). `0`: the window stays black until the game draws, and the run screen shows the log |
 | `language` | `1` | The game's language, English (US). The `.ini` lists the others, `0` to `17`. One the runtime doesn't know is English (US) |
 | `showcase` | `0` | `1` draws player 1's buttons and sticks, as the game gets them, and the frames a second in a corner of the window, for a video. F6 turns it on and off |
 | `showcase_corner` | `br` | The corner `showcase` draws in: `tl` top left, `tr` top right, `bl` bottom left, `br` bottom right |
