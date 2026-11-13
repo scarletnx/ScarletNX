@@ -119,7 +119,7 @@ static u32 cbuf_read_bank(DirectCtx* c, u32 first, u32 bank, u32 address) {
     incoming[2 * count] = c->zero;
     incoming[2 * count + 1] = other;
     spv_emit_label(&c->emit, merge);
-    return spv_emit_op(&c->emit, 245, c->u32_type, incoming, 2 * (count + 1)); /* OpPhi */
+    return spv_emit_op(&c->emit, SPV_OP_PHI, c->u32_type, incoming, 2 * (count + 1));
 }
 
 static u32 smap_word(DirectCtx* c, u32 index) {

@@ -91,9 +91,10 @@ u32 shader_sample_dref(DirectCtx* c, const ShaderInfo* si, int slot, u32 vec4_ty
    target has the size of the one the draw renders to as well (render.c's own_size): its bit in the uvec4 at byte 96 */
 static u32 scaled_slot(DirectCtx* c, u32 push, int slot, int own) {
     u32 one = spv_emit_constant_u32(&c->emit, c->u32_type, 1);
-    u32 bits = spv_emit_push_component_f32(&c->emit, spv_emit_type_pointer(&c->emit, 9, c->u32_type), push,
-                                           own ? spv_emit_constant_u32(&c->emit, c->u32_type, 3) : one,
-                                           slot >= 32 ? one : c->zero, c->u32_type); /* PushConstant */
+    u32 bits =
+        spv_emit_push_component_f32(&c->emit, spv_emit_type_pointer(&c->emit, SPV_STORAGE_PUSH_CONSTANT, c->u32_type),
+                                    push, own ? spv_emit_constant_u32(&c->emit, c->u32_type, 3) : one,
+                                    slot >= 32 ? one : c->zero, c->u32_type); /* PushConstant */
     u32 bit = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
         spv_emit_binary(&c->emit, SPV_OP_SHIFT_RIGHT_LOGICAL, c->u32_type, bits, spv_emit_constant_u32(&c->emit, c->u32_type, slot & 31)),
         one);
@@ -585,7 +586,9 @@ void emit_texture(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             } else if (kind == 1) {
                 /* SURED's operations (bits 24-26) and SUATOM's (29-32) are numbered alike: ADD, MIN, MAX, INC,
                    DEC, AND, OR, XOR, and SUATOM's EXCH. Only S32 (size 1 in both) compares signed */
-                static const u32 opcodes[9] = {234, 237, 239, 0, 0, 240, 241, 242, 229};
+                static const u32 opcodes[9] = {
+                    SPV_OP_ATOMIC_I_ADD, SPV_OP_ATOMIC_U_MIN, SPV_OP_ATOMIC_U_MAX,   0, 0, SPV_OP_ATOMIC_AND,
+                    SPV_OP_ATOMIC_OR,    SPV_OP_ATOMIC_XOR,   SPV_OP_ATOMIC_EXCHANGE};
                 u32 operation = op == O_SURED ? B(w, 24, 3) : B(w, 29, 4);
                 u32 opcode = opcodes[operation];
                 if (B(w, op == O_SURED ? 20 : 51, 3) == 1 && (operation == 1 || operation == 2)) opcode--;

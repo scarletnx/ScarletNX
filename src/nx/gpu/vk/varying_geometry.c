@@ -18,31 +18,32 @@ u32* vk_varying_geometry_spirv(u32 outputs, u32 per_vertex, u32 slot, size_t* wo
     SpvEmitter e;
     spv_emit_init(&e, 4096);
     spv_emit_shader_capability(&e);
-    spv_emit_capability(&e, 2); /* Geometry */
+    spv_emit_capability(&e, SPV_CAPABILITY_GEOMETRY);
     u32 f32 = spv_emit_type_float(&e, 32), u32_type = spv_emit_type_u32(&e);
-    u32 vec4 = spv_emit_type_vector(&e, f32, 4), input_ptr = spv_emit_type_pointer(&e, 1, vec4);
+    u32 vec4 = spv_emit_type_vector(&e, f32, 4), input_ptr = spv_emit_type_pointer(&e, SPV_STORAGE_INPUT, vec4);
     u32 interfaces[4 + 3 * 32], in[33] = {0}, out[33] = {0}, place[32] = {0}, count = 0;
     /* 0 the position, 1 + g generic g */
     for (u32 i = 0; i < 33; i++) {
         if (i && !(outputs >> (i - 1) & 1)) continue;
-        in[i] = spv_emit_interface_variable(&e, 1, vec4, u32_type, 3, i ? SPV_NOT_BUILTIN : 0, i ? i - 1 : 0, 0);
+        in[i] = spv_emit_interface_variable(&e, SPV_STORAGE_INPUT, vec4, u32_type, 3, i ? SPV_NOT_BUILTIN : 0,
+                                            i ? i - 1 : 0, 0);
         out[i] = i ? spv_emit_output_vec4(&e, vec4, i - 1) : spv_emit_position_output(&e, vec4);
         interfaces[count++] = in[i];
         interfaces[count++] = out[i];
     }
     for (u32 g = slot; g < end; g++) interfaces[count++] = place[g] = spv_emit_output_vec4(&e, vec4, g);
     /* a fragment program's primitive number is the geometry program's to give */
-    u32 primitive_in = spv_emit_builtin_input_u32(&e, u32_type, 7);
-    u32 primitive_out = spv_emit_interface_variable(&e, 3, u32_type, u32_type, 0, 7, 0, 0);
+    u32 primitive_in = spv_emit_builtin_input_u32(&e, u32_type, SPV_BUILT_IN_PRIMITIVE_ID);
+    u32 primitive_out = spv_emit_interface_variable(&e, SPV_STORAGE_OUTPUT, u32_type, u32_type, 0, 7, 0, 0);
     interfaces[count++] = primitive_in;
     interfaces[count++] = primitive_out;
     u32 void_type = spv_emit_type_void(&e), fn_type = spv_emit_type_function_void(&e, void_type);
     u32 fn = spv_emit_id(&e);
     spv_emit_entry_str(&e, ST_GS, fn, "main", interfaces, count);
-    spv_emit_execution_mode(&e, fn, 22, 0, 0); /* Triangles */
-    spv_emit_execution_mode(&e, fn, 29, 0, 0); /* OutputTriangleStrip */
-    spv_emit_execution_mode(&e, fn, 26, 1, 3); /* OutputVertices */
-    spv_emit_execution_mode(&e, fn, 0, 1, 1);  /* Invocations */
+    spv_emit_execution_mode(&e, fn, SPV_MODE_TRIANGLES, 0, 0);
+    spv_emit_execution_mode(&e, fn, SPV_MODE_OUTPUT_TRIANGLE_STRIP, 0, 0);
+    spv_emit_execution_mode(&e, fn, SPV_MODE_OUTPUT_VERTICES, 1, 3);
+    spv_emit_execution_mode(&e, fn, SPV_MODE_INVOCATIONS, 1, 1);
     spv_emit_function_void(&e, void_type, fn, fn_type);
     spv_emit_label(&e, spv_emit_id(&e));
     u32 value[33][3], primitive = spv_emit_load(&e, u32_type, primitive_in);

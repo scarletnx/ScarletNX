@@ -250,8 +250,10 @@ static u32* compute_to_spirv(const u8* code, const u64* words, u32 max_bytes, Sh
     c->yes = spv_emit_constant_bool(&c->e, c->b, 1);
     c->no = spv_emit_constant_bool(&c->e, c->b, 0);
     u32 interfaces[37], ninterface = 0;
-    if (needs_group) interfaces[ninterface++] = c->group = spv_emit_builtin_input_vec3(&c->e, v3, 26);
-    if (needs_local) interfaces[ninterface++] = c->local = spv_emit_builtin_input_vec3(&c->e, v3, 27);
+    if (needs_group)
+        interfaces[ninterface++] = c->group = spv_emit_builtin_input_vec3(&c->e, v3, SPV_BUILT_IN_WORKGROUP_ID);
+    if (needs_local)
+        interfaces[ninterface++] = c->local = spv_emit_builtin_input_vec3(&c->e, v3, SPV_BUILT_IN_LOCAL_INVOCATION_ID);
     for (u32 i = 0; i < 18; i++)
         if (cb_used[i]) {
             c->cb[i] = (i < g_shader_uniform_cbufs ? spv_emit_uniform_vec4_array : spv_emit_readonly_vec4_array)(
@@ -299,7 +301,10 @@ static u32* compute_to_spirv(const u8* code, const u64* words, u32 max_bytes, Sh
         else if (id == O_MEMBAR) {
             /* CTA orders workgroup memory, anything else device memory. Image | AtomicCounter | Workgroup |
                Uniform | AcquireRelease, like vektor's barrier. A memory fence only: never execution. */
-            spv_emit_memory_barrier(&c->e, c->u, B(w, 8, 2) == 0 ? 2 : 1, 0xD48);
+            spv_emit_memory_barrier(&c->e, c->u, B(w, 8, 2) == 0 ? 2 : 1,
+                                    SPV_MEMORY_SEMANTICS_ACQUIRE_RELEASE | SPV_MEMORY_SEMANTICS_UNIFORM_MEMORY |
+                                        SPV_MEMORY_SEMANTICS_WORKGROUP_MEMORY |
+                                        SPV_MEMORY_SEMANTICS_ATOMIC_COUNTER_MEMORY | SPV_MEMORY_SEMANTICS_IMAGE_MEMORY);
         } else if (id == O_S2R) {
             u32 vec = spv_emit_load(&c->e, v3, b <= 0x23 ? c->local : c->group);
             cw(c, d, spv_emit_vec4_extract(&c->e, c->u, vec, (b <= 0x23 ? b - 0x21 : b - 0x25)));

@@ -44,7 +44,7 @@ VkSh* vk_draw_texture_vertex(void) {
     u32 vec4 = spv_emit_type_vector(&e, f32, 4), pointer;
     u32 boolean = spv_emit_type_bool(&e);
     u32 push = spv_emit_push_vec4(&e, vec4, f32, 80, vec4, &pointer);
-    u32 vertex = spv_emit_builtin_input_u32(&e, u32_type, 42);
+    u32 vertex = spv_emit_builtin_input_u32(&e, u32_type, SPV_BUILT_IN_VERTEX_INDEX);
     u32 position = spv_emit_position_output(&e, vec4), uv = spv_emit_output_vec4(&e, vec4, 0);
     u32 interfaces[] = {push, vertex, position, uv};
     u32 void_type = spv_emit_type_void(&e), fn_type = spv_emit_type_function_void(&e, void_type);

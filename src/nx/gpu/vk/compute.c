@@ -748,8 +748,12 @@ static int cs_replay_read(u32 idx, u32 off, u32* out);
 static int cs_reads_lanes(const u32* spv, size_t words) {
     for (size_t at = 5; at < words;) {
         u32 width = spv[at] >> 16;
-        if (!width || at + width > words || (spv[at] & 0xffffu) != 17) break; /* past the OpCapability ones */
-        if (width == 2 && ((spv[at + 1] >= 61 && spv[at + 1] <= 68) || spv[at + 1] == SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR)) return 1;
+        if (!width || at + width > words || (spv[at] & 0xffffu) != SPV_OP_CAPABILITY)
+            break; /* past the OpCapability ones */
+        if (width == 2 && ((spv[at + 1] >= SPV_CAPABILITY_GROUP_NON_UNIFORM &&
+                            spv[at + 1] <= SPV_CAPABILITY_GROUP_NON_UNIFORM_QUAD) ||
+                           spv[at + 1] == SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR))
+            return 1;
         at += width;
     }
     return 0;
@@ -760,8 +764,8 @@ static int cs_uses_shared(const u32* spv, size_t words) {
     for (size_t at = 5; at < words;) {
         u32 width = spv[at] >> 16;
         if (!width || at + width > words) break;
-        if ((spv[at] & 0xffffu) == 59 && width >= 4 && spv[at + 3] == 4) return 1;
-        if ((spv[at] & 0xffffu) == 54) break; /* OpFunction: the variables of the module come before */
+        if ((spv[at] & 0xffffu) == SPV_OP_VARIABLE && width >= 4 && spv[at + 3] == SPV_STORAGE_WORKGROUP) return 1;
+        if ((spv[at] & 0xffffu) == SPV_OP_FUNCTION) break; /* OpFunction: the variables of the module come before */
         at += width;
     }
     return 0;
