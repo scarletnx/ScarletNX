@@ -646,6 +646,7 @@ typedef struct {
     u32 shared_words;
     u32 shared_element_pointer;
     u32 shared_array;
+    u32 shared_groups; /* NumWorkgroups where the shared memory is in a buffer (ShaderInfo.shared_spill), else 0 */
     u32 push;
     u32 push_pointer;
     u32 local_words;

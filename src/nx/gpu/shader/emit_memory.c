@@ -259,6 +259,26 @@ void shader_global_dynamic(DirectCtx* c, int stage, u64 w, int op, const u32* gb
     }
 }
 
+/* A word of shared memory, at its index in the program's own (shader_shared_index's): in the workgroup's array, or where
+   it is in a buffer (ShaderInfo.shared_spill), in this block's part of global buffer slot SH_SHARED_SPILL, the block's
+   place in the grid (x, then y, then z) times the program's words */
+static u32 shared_pointer(DirectCtx* c, const Tr* t, u32 index) {
+    if (!t->shared_groups)
+        return spv_emit_function_element_pointer(&c->emit, t->shared_element_pointer, t->shared_array, index);
+    u32 group = spv_emit_load(&c->emit, t->vec3_u32, t->group_input);
+    u32 groups = spv_emit_load(&c->emit, t->vec3_u32, t->shared_groups);
+    u32 place = spv_emit_vec4_extract(&c->emit, c->u32_type, group, 2);
+    for (int k = 1; k >= 0; k--) {
+        u32 across = spv_emit_vec4_extract(&c->emit, c->u32_type, groups, (u32)k);
+        place = spv_emit_iadd_u32(&c->emit, c->u32_type, spv_emit_vec4_extract(&c->emit, c->u32_type, group, (u32)k),
+                                  spv_emit_binary(&c->emit, SPV_OP_I_MUL, c->u32_type, place, across));
+    }
+    u32 word = spv_emit_iadd_u32(
+        &c->emit, c->u32_type,
+        spv_emit_binary(&c->emit, SPV_OP_I_MUL, c->u32_type, place, shader_u32(c, t->shared_words)), index);
+    return spv_emit_storage_access_u32(&c->emit, t->shared_element_pointer, t->shared_array, c->zero, word);
+}
+
 /* the constant buffer, local, shared and global memory instructions */
 void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     int stage = t->stage;
@@ -271,8 +291,6 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     DirectCtx* c = t->c;
     u32 i32_type = t->i32_type;
     u32 shared_words = t->shared_words;
-    u32 shared_element_pointer = t->shared_element_pointer;
-    u32 shared_array = t->shared_array;
     u32 local_words = t->local_words;
     u32 local_element_pointer = t->local_element_pointer;
     u32 local_array = t->local_array;
@@ -318,12 +336,12 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         }
     } else if (op == O_ATOMS) {
         u32 index = shader_shared_atomic_index(c, a, w, shared_words);
-        u32 pointer = spv_emit_function_element_pointer(&c->emit, shared_element_pointer, shared_array, index);
+        u32 pointer = shared_pointer(c, t, index);
         u32 operation = shader_shared_atomic_opcode(w);
         if (operation == 0xfffffffeu) {
             u32 next_index =
                 shader_shared_index(c, spv_emit_iadd_u32(&c->emit, c->u32_type, index, shader_u32(c, 1)), shared_words);
-            u32 high = spv_emit_function_element_pointer(&c->emit, shared_element_pointer, shared_array, next_index);
+            u32 high = shared_pointer(c, t, next_index);
             u32 old_low = spv_emit_load(&c->emit, c->u32_type, pointer);
             u32 old_high = spv_emit_load(&c->emit, c->u32_type, high);
             spv_emit_store(&c->emit, pointer, reg_read(c, b));
@@ -361,7 +379,7 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         for (u32 k = 0; k < words; k++) {
             u32 index = k ? spv_emit_iadd_u32(&c->emit, c->u32_type, first, shader_u32(c, k)) : first;
             index = shader_shared_index(c, index, shared_words);
-            u32 pointer = spv_emit_function_element_pointer(&c->emit, shared_element_pointer, shared_array, index);
+            u32 pointer = shared_pointer(c, t, index);
             if (size < 4) {
                 u32 bit_offset = spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type, address,
                                                  shader_u32(c, size < 2 ? 3 : 2));
@@ -509,7 +527,7 @@ void emit_memory(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
             spv_emit_atomic_compare_exchange_u32(&c->emit, c->u32_type, pointer, reg_read(c, b + 1), reg_read(c, b)));
     } else if (op == O_ATOMS_CAS) {
         u32 index = shader_shared_atomic_index(c, a, w, shared_words);
-        u32 pointer = spv_emit_function_element_pointer(&c->emit, shared_element_pointer, shared_array, index);
+        u32 pointer = shared_pointer(c, t, index);
         reg_write(c, d,
                   spv_emit_atomic_compare_exchange_shared_u32(&c->emit, c->u32_type, pointer, reg_read(c, b + 1),
                                                               reg_read(c, b)));

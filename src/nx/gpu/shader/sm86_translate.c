@@ -804,8 +804,10 @@ static u32 gbuf_slot(Ctx* c, u32 key, int write) {
     for (int i = 0; i < c->si->ngbuf; i++)
         if (c->si->gbuf_cbuf_off[i] == key) slot = i;
     if (slot < 0) {
-        if (c->si->ngbuf >= 16) {
-            fail(c, "more than 16 global buffers");
+        /* the last slot holds the shared memory where it is in a buffer (SH_SHARED_SPILL) */
+        if (c->si->ngbuf >= (c->si->shared_spill ? SH_SHARED_SPILL : 16)) {
+            fail(c, c->si->shared_spill ? "more than 15 global buffers, with the shared memory in a buffer"
+                                        : "more than 16 global buffers");
             return 0;
         }
         slot = c->si->ngbuf++;
@@ -1420,16 +1422,37 @@ static int track_globals(Ctx* c) {
     free(start);
     return ok;
 }
+/* The shared memory: the workgroup's array, or where it is in a buffer (ShaderInfo.shared_spill), global buffer slot
+   SH_SHARED_SPILL, whose barriers and atomics then order that buffer (UniformMemory) */
 static u32 shared_var(Ctx* c) {
     if (!c->shared) {
         u32 bytes = c->si->shared_size > 0 ? (u32)c->si->shared_size : 16384u;
         c->shared_words = (bytes + 3) / 4;
-        u32 array = spv_emit_type_array_u32(&c->e, c->t_u32, c->shared_words);
-        c->shared = spv_emit_workgroup_variable(&c->e, spv_emit_type_workgroup_pointer(&c->e, array));
-        c->shared_ptr = spv_emit_type_workgroup_pointer(&c->e, c->t_u32);
+        if (c->si->shared_spill) {
+            u32 structure = spv_emit_type_struct_one(&c->e, spv_emit_type_runtime_array(&c->e, c->t_u32, 4));
+            c->shared_ptr = spv_emit_type_storage_pointer(&c->e, c->t_u32);
+            c->shared =
+                spv_emit_storage_buffer(&c->e, structure, (u32)shader_vk_set(c->stage), SNX_VKB_SSBO + SH_SHARED_SPILL);
+            spv_emit_decorate(&c->e, c->shared, SPV_DECORATION_COHERENT, NULL, 0);
+            c->e.shared_semantics = SPV_MEMORY_SEMANTICS_UNIFORM_MEMORY;
+        } else {
+            u32 array = spv_emit_type_array_u32(&c->e, c->t_u32, c->shared_words);
+            c->shared = spv_emit_workgroup_variable(&c->e, spv_emit_type_workgroup_pointer(&c->e, array));
+            c->shared_ptr = spv_emit_type_workgroup_pointer(&c->e, c->t_u32);
+        }
         add_interface(c, c->shared);
     }
     return c->shared;
+}
+/* where the shared memory is in a buffer, the first word of this block's part: its place in the grid (x, then y, then
+   z) times the program's words */
+static u32 shared_block_base(Ctx* c) {
+    u32 place = builtin_vec3(c, &c->group_id, SPV_BUILT_IN_WORKGROUP_ID, 2);
+    for (u32 k = 2; k-- > 0;)
+        place = spv_emit_iadd_u32(&c->e, c->t_u32, builtin_vec3(c, &c->group_id, SPV_BUILT_IN_WORKGROUP_ID, k),
+                                  spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, place,
+                                                  builtin_vec3(c, &c->num_groups, SPV_BUILT_IN_NUM_WORKGROUPS, k)));
+    return spv_emit_binary(&c->e, SPV_OP_I_MUL, c->t_u32, place, cu(c, c->shared_words));
 }
 /* the buffer that names local memory to mem_ptr, mem_load and mem_store */
 #define MEM_LOCAL 0xffffffffu
@@ -1478,10 +1501,13 @@ static u32 mem_ptr(Ctx* c, u32 buffer, u32 address, u32 word) {
             spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, index, cu(c, c->local_words - 1)));
     if (buffer)
         return spv_emit_storage_access_u32(&c->e, c->gbuf_ptr, buffer, c->zero, gbuf_word_index(c, buffer, index));
-    u32 last = cu(c, c->shared_words - 1);
+    u32 shared = shared_var(c), last = cu(c, c->shared_words - 1);
     index = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32,
                              spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, last, index), last, index);
-    return SPV(&c->e, SPV_OP_ACCESS_CHAIN, c->shared_ptr, shared_var(c), index);
+    if (c->si->shared_spill)
+        return spv_emit_storage_access_u32(&c->e, c->shared_ptr, shared, c->zero,
+                                           spv_emit_iadd_u32(&c->e, c->t_u32, shared_block_base(c), index));
+    return SPV(&c->e, SPV_OP_ACCESS_CHAIN, c->shared_ptr, shared, index);
 }
 /* an address in shared or local memory: the register at 24 times 1, 4, 8 or 16 (bits 78-79, NAK's OffsetStride), the
    uniform register ur (SM86_URZ for none) and the signed 24-bit offset */

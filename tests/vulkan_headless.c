@@ -7508,6 +7508,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_shader_invalidation());
     CHECK(!check_indirect_dispatch_once());
     CHECK(!check_shared_clamp());
+    CHECK(!check_shared_spill());
     CHECK(!check_vic());
     CHECK(!check_vic_chain(shot));
     CHECK(!check_nvdec_vic());

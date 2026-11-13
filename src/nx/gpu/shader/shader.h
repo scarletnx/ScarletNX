@@ -157,6 +157,10 @@ typedef struct {
     char first_unsupported[96]; /* the longest: an untracked handle with its writer's constant (93 bytes) */
     u32 cs_local[3];
     int shared_size;
+    /* the shared memory lives in global buffer slot SH_SHARED_SPILL, not the workgroup's own: set by vk/compute.c where a
+       block asks for more than the device gives and its accesses may reach past that. Block b's shared_size bytes (in
+       words, rounded up) start at word b times them, b its place in the grid (x first) */
+    int shared_spill;
     u32 gbuf_wmask; /* global buffers the program writes */
     u32 gbuf_rmask; /* global buffers the program reads (a load or atomic: its input must be copied for them) */
     /* The program's write log (SNX_VKB_WPAGES, SH_WLOG_*): every store and atomic of a compute program to global
@@ -398,6 +402,9 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SNX_XFB_GBUF_MAX   11
 #define SNX_VKB_XFB_PARAMS (SNX_VKB_SSBO + SNX_XFB_GBUF_MAX)
 #define SNX_VKB_XFB        (SNX_VKB_XFB_PARAMS + 1)
+/* The global buffer slot a compute program's shared memory moves to (ShaderInfo.shared_spill): the last, so a program
+   that binds all 16 of its own can't */
+#define SH_SHARED_SPILL    15
 /* An indexed texture loads its handle with an LDC whose address has a register in it: one of SNX_TEX_ARRAY handles
    from cbuf_off on, each (1 << shift) bytes after the last, with the shift in bits 4-7 of ShTex.flags. */
 #define SNX_TEX_ARRAY    256
