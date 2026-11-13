@@ -78,6 +78,9 @@ void snx_arm_coproc(SnxArmCPU* cpu, uint32_t word);
 /* the coprocessor registers the architecture gives user mode with no system to ask: TPIDRURW (read and write) and
    TPIDRURO (read) from the cpu's fields; any other is SNX_ARM_UNDEFINED. A backend can end with it */
 void snx_arm_coproc_user(SnxArmCPU* cpu, uint32_t word);
+/* The ARM7TDMI's C after a multiply that sets the flags, word the instruction (a Thumb MULS's halfword when thumb), its
+   operands still in r[]: the carry out of its Booth multiplier, which the other profiles leave as it was */
+void snx_arm_multiply_carry(SnxArmCPU* cpu, uint32_t word, uint32_t thumb);
 
 typedef void (*SnxArmBlock)(SnxArmCPU* cpu);
 
