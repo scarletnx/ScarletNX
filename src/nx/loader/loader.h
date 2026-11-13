@@ -209,5 +209,7 @@ int snx_load_npdm(const char* entry, SnxNpdm* npdm, char* error, size_t error_si
    (match.h), with the instructions its code matched; the last line counts what the matcher named and left unnamed
    (SnxMatchStats), in decimal. 0, or -1 with a message */
 int snx_dump_program(const char* entry, const char* outdir, char* error, size_t error_size);
+/* the same dump of a program loaded already (a dump read in place, recompile.c's) */
+int snx_dump_loaded(const SnxProgram* program, const char* outdir, char* error, size_t error_size);
 
 #endif

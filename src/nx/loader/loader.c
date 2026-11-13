@@ -1660,19 +1660,26 @@ void snx_free_program(SnxProgram* program) {
 
 int snx_dump_program(const char* entry, const char* outdir, char* error, size_t error_size) {
     SnxProgram program;
+    int rc;
+    if (snx_load_program(entry, &program, error, error_size)) return -1;
+    rc = snx_dump_loaded(&program, outdir, error, error_size);
+    snx_free_program(&program);
+    return rc;
+}
+
+int snx_dump_loaded(const SnxProgram* program, const char* outdir, char* error, size_t error_size) {
     char *path = NULL, *index = NULL, *partial = NULL, *file_name;
     FILE* f = NULL;
     SnxMatch* match = NULL;
     SnxMatchStats st;
     size_t i, j, k, nmatch;
     int rc = -1;
-    if (snx_load_program(entry, &program, error, error_size)) return -1;
     if (snx_mkdirs(outdir)) {
         fail(error, error_size, snx_format("cannot create %s", outdir));
         goto done;
     }
-    for (i = 0; i < program.module_count; ++i) {
-        const SnxModuleImage* m = &program.modules[i];
+    for (i = 0; i < program->module_count; ++i) {
+        const SnxModuleImage* m = &program->modules[i];
         file_name = snx_format("%s.bin", m->name);
         path = snx_path_join(outdir, file_name);
         free(file_name);
@@ -1691,10 +1698,10 @@ int snx_dump_program(const char* entry, const char* outdir, char* error, size_t 
         fail(error, error_size, snx_format("cannot write %s", partial));
         goto done;
     }
-    fprintf(f, "program 1 %d\n", program.npdm.is64 ? 1 : 0);
-    nmatch = snx_match_program(&program, &match, &st);
-    for (i = 0, k = 0; i < program.module_count; ++i) {
-        const SnxModuleImage* m = &program.modules[i];
+    fprintf(f, "program 1 %d\n", program->npdm.is64 ? 1 : 0);
+    nmatch = snx_match_program(program, &match, &st);
+    for (i = 0, k = 0; i < program->module_count; ++i) {
+        const SnxModuleImage* m = &program->modules[i];
         fprintf(f, "module %s %llx %llx %llx\n", m->name, (unsigned long long)m->base, (unsigned long long)m->size,
                 (unsigned long long)m->image_size);
         for (j = 0; j < m->symbol_count; ++j)
@@ -1703,7 +1710,7 @@ int snx_dump_program(const char* entry, const char* outdir, char* error, size_t 
                     m->symbols[j].name);
         for (; k < nmatch && match[k].addr < m->base + m->size; ++k)
             fprintf(f, "match %llx %u %s\n", (unsigned long long)(match[k].addr - m->base), (unsigned)match[k].words,
-                    program.modules[st.sdk].symbols[match[k].symbol].name);
+                    program->modules[st.sdk].symbols[match[k].symbol].name);
     }
     fprintf(f, "matched %zu %zu %zu %zu %zu\n", nmatch, st.signatures, st.ambiguous, st.repeated, st.skipped);
     if (fclose(f) || plat_replace_file(partial, index)) {
@@ -1719,6 +1726,5 @@ done:
     free(index);
     free(partial);
     free(match);
-    snx_free_program(&program);
     return rc;
 }

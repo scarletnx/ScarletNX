@@ -815,8 +815,26 @@ static void test_dump(const char* root) {
     free(text);
     free(path);
     CHECK(snx_dump_program(scratch, out, error, sizeof error) == -1 && strstr(error, "exefs/main"));
+    { /* a program loaded already (an XCI's or NSP's, read in place) gives the same dump */
+        SnxProgram program;
+        unsigned char* again;
+        size_t again_size;
+        char *out2 = snx_path_join(scratch, "dump2"), *index = snx_path_join(out, "modules.txt"),
+             *index2 = snx_path_join(out2, "modules.txt");
+        CHECK(!snx_load_program(root, &program, error, sizeof error));
+        CHECK(!snx_dump_loaded(&program, out2, error, sizeof error));
+        snx_free_program(&program);
+        text = snx_read_file(index, &size);
+        again = snx_read_file(index2, &again_size);
+        CHECK(text && again && size == again_size && !memcmp(text, again, size));
+        free(text);
+        free(again);
+        free(index);
+        free(index2);
+        free(out2);
+    }
     free(out);
-    puts("PASS the module dump for tools");
+    puts("PASS the module dump for tools, of a program to load and of one loaded");
 }
 
 static void test_program(void) {
