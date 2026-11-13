@@ -50,12 +50,11 @@ typedef struct {
     uint32_t width, height;
 } SnxFxImage;
 
-/* The device the effects run on, and the frame slot (0 to slots - 1) the caller is recording, which keeps each slot's
-   images apart. cache may be VK_NULL_HANDLE. slot is called once for each render. forget, when not NULL, is called
-   after a rendering pass, for a frontend whose state cache must not keep the module's pipelines. log is called with
-   a short message; may be NULL. */
-SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, uint32_t family, VkPipelineCache cache,
-                     uint32_t slots, uint32_t (*slot)(void), void (*forget)(void), void (*log)(const char*));
+/* The device the effects run on, with slots frame slots (snx_fx_render's), each with images of its own. cache may be
+   VK_NULL_HANDLE. log is called with a short message; may be NULL. The passes bind pipelines and sets of their own:
+   a frontend that keeps the state it bound sets it again after them. */
+SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkPipelineCache cache, uint32_t slots,
+                     void (*log)(const char*));
 void snx_fx_destroy(SnxFx* fx);
 void snx_fx_configure(SnxFx* fx, const SnxFxConfig* cfg);
 /* the device's shaderFloat16, for FSR 1's fp16 passes where it runs */
@@ -85,11 +84,12 @@ int snx_fx_pick_aa(SnxFx* fx, int aa, uint32_t render_w, uint32_t render_h, uint
                    uint32_t max_dim);
 
 /* The shown crop of src (img_w by img_h) through the spatial filter and the anti aliasing, into an image of out_w by
-   out_h: 1 with *out set, 0 when neither runs (the caller keeps its own blit). src is in
+   out_h: 1 with *out set, 0 when neither runs (the caller keeps its own blit). slot is the frame slot cb records
+   (modulo slots), whose last frame the GPU is done with: its images are this frame's. src is in
    SHADER_READ_ONLY_OPTIMAL. transform is vi's flip: bit 0 mirrors x, bit 1 mirrors y. The output is left in
    TRANSFER_SRC_OPTIMAL. */
-int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, VkImageView src, uint32_t img_w, uint32_t img_h, uint32_t x,
-                  uint32_t y, uint32_t w, uint32_t h, uint32_t transform, uint32_t out_w, uint32_t out_h, int filter,
-                  int aa, SnxFxImage* out);
+int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src, uint32_t img_w, uint32_t img_h,
+                  uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t transform, uint32_t out_w, uint32_t out_h,
+                  int filter, int aa, SnxFxImage* out);
 
 #endif

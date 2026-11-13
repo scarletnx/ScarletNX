@@ -44,12 +44,8 @@ typedef struct {
 struct SnxFx {
     VkPhysicalDevice phys;
     VkDevice dev;
-    VkQueue queue;
-    uint32_t family;
     VkPipelineCache cache;
     uint32_t slots;
-    uint32_t (*slot)(void);
-    void (*forget)(void);
     void (*log)(const char*);
     SnxFxConfig cfg;
     int fp16;
@@ -188,10 +184,9 @@ static void img_free(SnxFx* fx, FxImage* im) {
 
 static int img_make(SnxFx* fx, FxImage* im, uint32_t w, uint32_t h, VkFormat fmt, VkImageUsageFlags usage) {
     if (im->image && im->width == w && im->height == h && im->format == fmt) return 1;
-    if (im->image) {
-        vkDeviceWaitIdle(fx->dev);
-        img_free(fx, im);
-    }
+    /* the slot's last frame is done (snx_fx_render's slot), so nothing reads the image: no wait for the device, which
+       would take every queue from the threads that submit on them */
+    img_free(fx, im);
     if (!w || !h) return 0;
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
@@ -319,7 +314,6 @@ static void fx_draw_scissor(SnxFx* fx, VkCommandBuffer cb, VkImageView view, VkP
                                           pc_size, pc);
     vkCmdDraw(cb, 3, 1, 0, 0);
     vkCmdEndRendering(cb);
-    if (fx->forget) fx->forget();
 }
 
 static void fx_draw(SnxFx* fx, VkCommandBuffer cb, VkImageView view, VkPipeline pipe, VkPipelineLayout layout, uint32_t w,
@@ -593,18 +587,14 @@ static int ensure_sgsr(SnxFx* fx) {
 
 /* ---- create and destroy ---- */
 
-SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkQueue queue, uint32_t family, VkPipelineCache cache,
-                     uint32_t slots, uint32_t (*slot)(void), void (*forget)(void), void (*log)(const char*)) {
+SnxFx* snx_fx_create(VkPhysicalDevice phys, VkDevice dev, VkPipelineCache cache, uint32_t slots,
+                     void (*log)(const char*)) {
     SnxFx* fx = calloc(1, sizeof *fx);
     if (!fx) return NULL;
     fx->phys = phys;
     fx->dev = dev;
-    fx->queue = queue;
-    fx->family = family;
     fx->cache = cache;
     fx->slots = slots < 1 ? 1 : slots > SNX_FX_SLOTS_MAX ? SNX_FX_SLOTS_MAX : slots;
-    fx->slot = slot;
-    fx->forget = forget;
     fx->log = log;
     fx->aa_last = -1;
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -1079,14 +1069,13 @@ static int record_sgsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView
 
 /* ---- the public render ---- */
 
-int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, VkImageView src, uint32_t img_w, uint32_t img_h, uint32_t x, uint32_t y,
-                  uint32_t w, uint32_t h, uint32_t transform, uint32_t out_w, uint32_t out_h, int filter, int aa,
-                  SnxFxImage* out) {
-    uint32_t slot;
+int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src, uint32_t img_w, uint32_t img_h,
+                  uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t transform, uint32_t out_w, uint32_t out_h,
+                  int filter, int aa, SnxFxImage* out) {
     uint32_t work_w = out_w, work_h = out_h;
     int ssaa = 0;
     if (!fx || !cb || !src || !img_w || !img_h || !w || !h || !out_w || !out_h || !out) return 0;
-    slot = fx->slot ? fx->slot() % fx->slots : 0;
+    slot %= fx->slots;
     aa = snx_fx_pick_aa(fx, aa, w, h, out_w, out_h, 16384);
     if (aa != fx->aa_last) {
         char said[96];

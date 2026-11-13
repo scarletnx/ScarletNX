@@ -419,7 +419,7 @@ int main(int argc, char** argv) {
     CHECK(snx_fx_aa_parse("smaa") == SNX_FX_AA_SMAA);
     CHECK(snx_fx_aa_parse("ssaa 2x") == SNX_FX_AA_SSAA2);
 
-    fx = snx_fx_create(t.phys, t.dev, t.queue, t.family, VK_NULL_HANDLE, 2, NULL, NULL, log_line);
+    fx = snx_fx_create(t.phys, t.dev, VK_NULL_HANDLE, 2, log_line);
     CHECK(fx);
     snx_fx_configure(fx, &cfg);
 
@@ -430,7 +430,7 @@ int main(int argc, char** argv) {
         uint64_t serial;
         unsigned char* got;
         int step;
-        CHECK(snx_fx_render(fx, cb, src.view, 320, 240, 0, 0, 320, 240, 0, 640, 480, SNX_FX_UPSCALE_FSR1,
+        CHECK(snx_fx_render(fx, cb, 0, src.view, 320, 240, 0, 0, 320, 240, 0, 640, 480, SNX_FX_UPSCALE_FSR1,
                             SNX_FX_AA_OFF, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
@@ -448,7 +448,7 @@ int main(int argc, char** argv) {
             SnxFxImage out = {0};
             VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
             uint64_t serial;
-            CHECK(snx_fx_render(fx, cb, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, filters[i], SNX_FX_AA_OFF,
+            CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, filters[i], SNX_FX_AA_OFF,
                                 &out));
             serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
             CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
@@ -466,7 +466,7 @@ int main(int argc, char** argv) {
         max_step(step_pixels, 320, 240, &plain_step);
         plain_avg = avg_step(step_pixels, 320, 240);
         cb = snx_vk_ring_commands(&t.ring);
-        CHECK(snx_fx_render(fx, cb, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_BILINEAR,
+        CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_BILINEAR,
                             SNX_FX_AA_FXAA, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
@@ -477,7 +477,7 @@ int main(int argc, char** argv) {
         write_ppm(showcase, "fx-fxaa", got, 320, 240);
         free(got);
         cb = snx_vk_ring_commands(&t.ring);
-        CHECK(snx_fx_render(fx, cb, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_BILINEAR,
+        CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_BILINEAR,
                             SNX_FX_AA_SMAA, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
@@ -499,7 +499,7 @@ int main(int argc, char** argv) {
         VkCommandBuffer cb = snx_vk_ring_commands(&t.ring);
         uint64_t serial;
         CHECK(snx_fx_pick_aa(fx, SNX_FX_AA_SSAA2, 320, 240, 320, 240, 16384) == SNX_FX_AA_SSAA2);
-        CHECK(snx_fx_render(fx, cb, src.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_OFF,
+        CHECK(snx_fx_render(fx, cb, 0, src.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_OFF,
                             SNX_FX_AA_SSAA2, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
@@ -526,7 +526,7 @@ int main(int argc, char** argv) {
         CHECK(upload(&t, &flat, flat_pixels));
         CHECK(snx_fx_pick_aa(fx, SNX_FX_AA_SSAA4, 320, 240, 320, 240, 16384) == SNX_FX_AA_SSAA4);
         cb = snx_vk_ring_commands(&t.ring);
-        CHECK(snx_fx_render(fx, cb, flat.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_OFF,
+        CHECK(snx_fx_render(fx, cb, 0, flat.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_OFF,
                             SNX_FX_AA_SSAA4, &out));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
