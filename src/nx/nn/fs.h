@@ -25,6 +25,7 @@ typedef struct {
     u32 rom;       /* a RomFS mount's image in roms */
     u32 fss;       /* a save's root: its slot in g_hle.fs.fss */
     u32 read_only; /* MountSaveDataReadOnly's: no write mode and no change of its tree */
+    u32 save_type; /* a save's SaveDataAttribute type (1 account, 3 device, 4 temporary, 5 cache); 0 for the SD card */
 } NnfsMount;
 typedef struct {
     u32 used;

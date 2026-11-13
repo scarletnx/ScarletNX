@@ -1574,6 +1574,15 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     add_test(NAME nn_fs_cache_path COMMAND snx-test-nn-fs cache-path)
     set_tests_properties(nn_fs_cache_path PROPERTIES PASS_REGULAR_EXPRESSION
         "fatal: nn::fs::DisableIndividualFileDataCache failed with result 0x2ee602 \\(error 2002-6003\\)")
+    add_test(NAME nn_fs_restore_null COMMAND snx-test-nn-fs restore-null)
+    set_tests_properties(nn_fs_restore_null PROPERTIES PASS_REGULAR_EXPRESSION
+        "fatal: nn::fs::GetSaveDataRestoreFlag failed with result 0x2f5e02 \\(error 2002-6063\\)")
+    add_test(NAME nn_fs_restore_account COMMAND snx-test-nn-fs restore-account)
+    set_tests_properties(nn_fs_restore_account PROPERTIES PASS_REGULAR_EXPRESSION
+        "fatal: nn::fs::GetSaveDataRestoreFlag failed with result 0x2ee002 \\(error 2002-6000\\)")
+    add_test(NAME nn_fs_restore_card COMMAND snx-test-nn-fs restore-card)
+    set_tests_properties(nn_fs_restore_card PROPERTIES PASS_REGULAR_EXPRESSION
+        "fatal: nn::fs::GetSaveDataRestoreFlag failed with result 0x2ee002 \\(error 2002-6000\\)")
     # the native nn::pctl (nn/pctl.c): the answers of a console with no parental controls set
     add_executable(snx-test-nn-pctl nn_pctl.c)
     snx_test_target(snx-test-nn-pctl 23)

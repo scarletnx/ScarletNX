@@ -96,6 +96,7 @@
 #define SYM_CLOSE_CACHE_LIST   "_ZN2nn2fs21CloseCacheStorageListENS0_22CacheStorageListHandleE"
 #define SYM_ENABLE_FILE_CACHE  "_ZN2nn2fs29EnableIndividualFileDataCacheEPKcPvm"
 #define SYM_DISABLE_FILE_CACHE "_ZN2nn2fs30DisableIndividualFileDataCacheEPKc"
+#define SYM_RESTORE_FLAG       "_ZN2nn2fs22GetSaveDataRestoreFlagEPbPKc"
 
 /* a Result of the fs module (2): the description above bit 9 */
 #define FSR(d) ((u32)2 | (u32)(d) << 9)
@@ -106,6 +107,7 @@ enum {
     R_NOT_IMPLEMENTED = FSR(3001),  /* what the SDK's file system answers a request it has no code for */
     R_OUT_OF_RANGE = FSR(3005),
     R_CACHE_TOO_SMALL = FSR(6000), /* MountRom's cache buffer is smaller than QueryMountRomCacheSize's */
+    R_PRECONDITION = FSR(6000),    /* PreconditionViolation: a save's attribute asked of a mount without one */
     R_NEGATIVE_COUNT = FSR(6001),
     R_PATH_TOO_LONG = FSR(6003), /* also a ".." above the root */
     R_PATH_FORMAT = FSR(6005),
@@ -781,6 +783,7 @@ static u32 mount_save(CPU* c, const char* function, u64 name, const u8 uid[16], 
         else {
             mount_root_set(m, root, noted, journaled);
             g_hle.nnfs.mounts[m].read_only = (u32)read_only;
+            g_hle.nnfs.mounts[m].save_type = type;
             LOG("nn::fs: %s(\"%s\") native\n", function, s);
         }
     }
@@ -1660,6 +1663,21 @@ u32 nnfs_get_save_data_size(CPU* c, u64 size, u64 journal_size, u64 uid) {
     put_u64(c, size, (u64)n);
     put_u64(c, journal_size, (u64)j);
     return 0;
+}
+/* GetSaveDataRestoreFlag: the Restore flag (bit 4) of the flags in the extra data of the save mounted as name. The
+   SDK finds the mount, then checks out (NullptrArgument), then asks the mount for its save's attribute, which only
+   MountDeviceSaveData's mount carries: any other mount, an account's save and the SD card's included, answers
+   PreconditionViolation (2-6000), which the SDK stops on (read in SDK 10.4 to 20.5). The runtime's saves keep no
+   extra data and nothing sets the flag, so the device's save answers it clear */
+u32 nnfs_get_save_data_restore_flag(CPU* c, u64 out, u64 name) {
+    pm_lock(&g_nnfs.lock);
+    int m = mount_named(name ? gstr(c, name) : NULL);
+    u32 type = m < 0 ? 0 : g_hle.nnfs.mounts[m].save_type;
+    pm_unlock(&g_nnfs.lock);
+    if (m < 0) return (u32)sdk_own(c, SYM_RESTORE_FLAG);
+    u32 r = !out ? R_NULL_ARGUMENT : type != SAVE_DEVICE ? R_PRECONDITION : 0;
+    if (!r) *(u8*)hook_host(c, out) = 0;
+    return done("GetSaveDataRestoreFlag", r);
 }
 u32 nnfs_create_cache_storage(CPU* c, i32 index, i64 size, i64 journal_size) {
     (void)c, (void)size, (void)journal_size;
