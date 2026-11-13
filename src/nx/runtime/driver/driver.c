@@ -47,16 +47,17 @@ static struct {
 
 /* the common options (common/utilities/cli.h) the driver takes: all but --output, as the game's folder is
    <outdir>/<title ID> and --out names the dump's extraction. --seconds, --frames, --shot and --script are settings of
-   the game's run, which the runtime reads as --key=value, as it reads --game */
+   the game's run, which the runtime reads as --key=value, as it reads --game; the recompile's go to -r, and with a
+   dump to the recompile that makes its game */
 static const unsigned nx_cli_joined = SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_SECONDS) |
                                       SNX_CLI_BIT(SNX_CLI_FRAMES) | SNX_CLI_BIT(SNX_CLI_SHOT) |
                                       SNX_CLI_BIT(SNX_CLI_SCRIPT);
-static const unsigned nx_cli =
-    SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_SECONDS) | SNX_CLI_BIT(SNX_CLI_FRAMES) | SNX_CLI_BIT(SNX_CLI_SHOT) |
-    SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_CLI_EXTRACT_CONTAINER) |
-    SNX_CLI_BIT(SNX_CLI_RECOMPILE) | SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_DATA) |
-    SNX_CLI_BIT(SNX_CLI_OUTDIR) | SNX_CLI_BIT(SNX_CLI_KEYS) | SNX_CLI_BIT(SNX_CLI_FULLSCREEN) |
-    SNX_CLI_BIT(SNX_CLI_HEADLESS) | SNX_CLI_BIT(SNX_CLI_HELP);
+static const unsigned nx_cli = SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_SECONDS) | SNX_CLI_BIT(SNX_CLI_FRAMES) |
+                               SNX_CLI_BIT(SNX_CLI_SHOT) | SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_EXTRACT) |
+                               SNX_CLI_BIT(SNX_CLI_EXTRACT_CONTAINER) | SNX_CLI_BIT(SNX_CLI_RECOMPILE) |
+                               SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_DATA) | SNX_CLI_BIT(SNX_CLI_OUTDIR) |
+                               SNX_CLI_BIT(SNX_CLI_KEYS) | SNX_CLI_BIT(SNX_CLI_FULLSCREEN) |
+                               SNX_CLI_BIT(SNX_CLI_HEADLESS) | SNX_CLI_BIT(SNX_CLI_HELP) | SNX_CLI_RECOMPILE_OPTIONS;
 static void usage(void) {
     puts("Usage: scarletnx [OPTIONS] INPUT [-- GAME_ARGUMENTS...]\n"
          "  INPUT                  Extract, recompile if needed, then play XCI/NSP/DXCI/DNSP/NRO\n"
@@ -75,9 +76,7 @@ static void usage(void) {
     puts("  --program N            The program of a collection's application to play (default: 0, its own, the\n"
          "                         collection's menu). One that is not made plays program 0, said\n"
          "  -x -h / -r -h          Extraction / recompilation options");
-    puts("  --tmpfs                Extract to tmpfs, <temp>/scarletnx/work/<title ID> (implies --extract-container)\n"
-         "  -O LEVEL               The recompile's optimization: 0, 1, 2, 3, s or z (default: 2). A game made\n"
-         "                         already keeps its code until -r");
+    puts("  --tmpfs                Extract to tmpfs, <temp>/scarletnx/work/<title ID> (implies --extract-container)");
     puts("  --out DIR              The dump's extraction (default: work/<its name>)\n"
          "  --title-keys FILE      title.keys for this run, found as --keys's prod.keys is (optional)");
     puts("  --setup                Go through the setup in the terminal: the language, the install, the\n"
@@ -100,7 +99,9 @@ static void usage(void) {
          "<outdir>/<title ID>; with --update, INPUT may be a game made already (its program), the updates and DLCs\n"
          "going into its folder. --keys takes prod.keys (default: the data folder, then ~/.switch). Without -f or\n"
          "--fullscreen=0 the game's .ini decides. --headless runs without a window or swapchain. --seconds,\n"
-         "--frames, --shot and --script are settings of the game's run, which reach it as --key=value. The data\n"
+         "--frames, --shot and --script are settings of the game's run, which reach it as --key=value. The\n"
+         "recompile's options (-O, --jobs...) make a dump's game when it is made: a game made already keeps its\n"
+         "code until -r. The data\n"
          "folder holds recompiled/, work/ and the keys. Its default is a .scarletnx folder beside the AppImage or\n"
          "the program, else the user's data folder,"
 #ifdef _WIN32
@@ -1403,9 +1404,9 @@ static int addon_program(const char* input) {
 }
 /* Options whose following token belongs to a tool, not to the launcher. */
 static int takes_value(const char* arg) {
-    static const char* const names[] = {"--update", "--name",    "--out",    "--keys",    "--title-keys",
-                                        "-o",       "--outname", "--outdir", "--runtime", "--target",
-                                        "-O",       "--jobs",    "--chunk",  "--layout",  "--program"};
+    static const char* const names[] = {"--update",  "--name",   "--out",     "--keys",     "--title-keys", "-o",
+                                        "--outname", "--outdir", "--runtime", "--target",   "-O",           "--jobs",
+                                        "--chunk",   "--layout", "--program", "--jit-cache"};
     size_t i;
     for (i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
         if (!strcmp(arg, names[i])) return 1;
@@ -1486,9 +1487,11 @@ int snx_driver(int argc, char** argv) {
     /* --game DIR and the run's settings given apart are joined into the --key=value the runtime reads */
     joined = snx_cli_joined(argc, argv, nx_cli_joined, &argc);
     argv = joined;
-    rest = (char**)snx_alloc((size_t)(3 * argc + 1) * sizeof(*rest));
-    setting = rest + argc + 1;
-    recompile = setting + argc;
+    /* an option given in one argument may take two in rest (--update=a, -O2, --jobs=4): each list has room for twice
+       the arguments */
+    rest = (char**)snx_alloc((size_t)(6 * argc + 1) * sizeof(*rest));
+    setting = rest + 2 * argc + 1;
+    recompile = setting + 2 * argc;
     for (i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--")) {
             separator = i;
@@ -1524,6 +1527,24 @@ int snx_driver(int argc, char** argv) {
             case SNX_CLI_HELP:
                 help = 1;
                 rest[n++] = argv[i]; /* -x's and -r's own help */
+                break;
+            /* the recompile's, as -r and a played dump's recompile take them: -O LEVEL, --jobs N... */
+            case SNX_CLI_OPT:
+            case SNX_CLI_JOBS:
+            case SNX_CLI_CHUNK:
+            case SNX_CLI_JIT_CACHE:
+                rest[n++] = common == SNX_CLI_OPT     ? "-O"
+                            : common == SNX_CLI_JOBS  ? "--jobs"
+                            : common == SNX_CLI_CHUNK ? "--chunk"
+                                                      : "--jit-cache";
+                rest[n++] = (char*)arg.value;
+                break;
+            case SNX_CLI_JIT_ONLY:
+            case SNX_CLI_KEEP_IR:
+            case SNX_CLI_QUIET:
+                rest[n++] = common == SNX_CLI_JIT_ONLY  ? "--jit-only"
+                            : common == SNX_CLI_KEEP_IR ? "--keep-ir"
+                                                        : "--quiet";
                 break;
             case SNX_CLI_FULLSCREEN:
                 flags &= ~(unsigned)(SNX_FULLSCREEN | SNX_WINDOWED); /* the last given wins */
@@ -1681,25 +1702,24 @@ int snx_driver(int argc, char** argv) {
             n -= 1 + own;
             --i;
         }
-    /* -r's AOT build names the profile cache and hooks direct calls; both are the recompiler's, not the game's.
-       Left in rest they count as extra dump inputs */
-    for (i = 0; automatic && (flags & SNX_RECOMP) && i < n; ++i) {
-        if (!strcmp(rest[i], "--jit-cache")) {
-            if (i + 1 == n) {
-                result = snx_error("--jit-cache requires a file");
-                goto done;
-            }
-            recompile[recompiling++] = rest[i];
-            recompile[recompiling++] = rest[i + 1];
-            memmove(rest + i, rest + i + 2, (size_t)(n - i - 2) * sizeof(*rest));
-            n -= 2;
-            --i;
-        } else if (!strcmp(rest[i], "--hook-direct-calls")) {
-            recompile[recompiling++] = rest[i];
-            memmove(rest + i, rest + i + 1, (size_t)(n - i - 1) * sizeof(*rest));
-            --n;
-            --i;
+    /* played or prepared, the recompile's other options are its own, for when the game is made, as -O is: the
+       threads, the units, the profile cache, the functions' order, no code ahead of time, the IR kept, no progress
+       and the direct calls hooked. Left in rest they count as extra dump inputs */
+    for (i = 0; automatic && i < n; ++i) {
+        int value = !strcmp(rest[i], "--jobs") || !strcmp(rest[i], "--chunk") || !strcmp(rest[i], "--jit-cache") ||
+                    !strcmp(rest[i], "--layout");
+        if (!value && strcmp(rest[i], "--jit-only") && strcmp(rest[i], "--keep-ir") && strcmp(rest[i], "--quiet") &&
+            strcmp(rest[i], "--hook-direct-calls"))
+            continue;
+        if (value && i + 1 == n) { /* --layout's: the common ones came with theirs */
+            result = snx_error("%s requires a file", rest[i]);
+            goto done;
         }
+        recompile[recompiling++] = rest[i];
+        if (value) recompile[recompiling++] = rest[i + 1];
+        memmove(rest + i, rest + i + 1 + value, (size_t)(n - i - 1 - value) * sizeof(*rest));
+        n -= 1 + value;
+        --i;
     }
     /* played (a dump, a game, or nothing), an option nothing here took is refused by its name: -x and -r refuse their
        own */
