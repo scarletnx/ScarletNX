@@ -1446,8 +1446,25 @@ int main(int argc, char** argv) {
         set_env("SNX_WORKFLOW_NAMED", "");
         CHECK(!rename(dump, moved));
         run(exe, repo, game, log, 1, "", "is not there");
-        CHECK(!rename(moved, dump));
+        /* made again (-r) with its dump gone and no ExeFS in its _data: the dump and the .ini that names it said,
+           nothing made from the _data; and an .ini that names none says so */
         set_env("SNX_WORKFLOW_FLAGS", "-r");
+        {
+            char* ini = snx_game_ini(own, "Test game");
+            char* said =
+                snx_format("Test game_data, and the dump it was made from, %s, is not there: put it back, or make the "
+                           "game again from its dump (its .ini: %s)",
+                           dump, ini);
+            run(exe, repo, game, log, 1, "", said);
+            CHECK(!snx_write_file(ini, "[Game]\n", 7));
+            free(said);
+            said = snx_format("keeps no ExeFS in Test game_data, and its .ini %s names no dump (source=)", ini);
+            run(exe, repo, game, log, 1, "", said);
+            CHECK(!snx_record_source(own, "Test game", dump));
+            free(said);
+            free(ini);
+        }
+        CHECK(!rename(moved, dump));
         reset(repo, dump);
         run(exe, repo, dump, log, 0, "R", NULL);
         CHECK(!snx_path_exists(extracted) && records_dump(own, "Test game", dump));
