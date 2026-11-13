@@ -1043,16 +1043,23 @@ u64 vk_mem_budget_cap(u64 bytes) {
     return had;
 }
 
-/* Without the extension VMA's numbers are its own guess, not the driver's: its blocks for the use, 80% of the heap's
-   size for the budget. The stats box shows ? for them then, as for any value the device does not tell */
-void vk_mem_driver_use(u64* usage, u64* budget) {
+/* The driver's use of the device-local heap and its budget for it, through VK_EXT_memory_budget. Without the extension
+   VMA's budget is its guess (80% of the heap), so what is known goes instead, *ours set: the memory this process took
+   from the heap (VMA's blocks) and the heap's size */
+void vk_mem_driver_use(u64* usage, u64* budget, int* ours) {
     VmaBudget b[VK_MAX_MEMORY_HEAPS];
     int heap = vk_mem_heap();
-    *usage = *budget = 0;
-    if (!g_vk.has_budget) return;
     vmaGetHeapBudgets(g_vk.vma, b); /* the driver's, asked at frame_recycle's vmaSetCurrentFrameIndex */
-    *usage = b[heap].usage;
-    *budget = b[heap].budget;
+    *ours = !g_vk.has_budget;
+    if (g_vk.has_budget) {
+        *usage = b[heap].usage;
+        *budget = b[heap].budget;
+    } else {
+        const VkPhysicalDeviceMemoryProperties* mp;
+        vmaGetMemoryProperties(g_vk.vma, &mp);
+        *usage = b[heap].statistics.blockBytes;
+        *budget = mp->memoryHeaps[heap].size;
+    }
 }
 
 /* the heap's use as the caches see it, and its budget. The use leaves out the free space inside VMA's blocks, which
