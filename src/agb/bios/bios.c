@@ -156,9 +156,15 @@ static void bios_cpu_set(AgbBoard* board, uint32_t regs[16]) {
             destination += 4;
         }
     } else {
+        /* the BIOS's LDRH: from an odd address the ARM7TDMI rotates the aligned halfword by a byte, so the STRH after
+           it stores that halfword's high byte alone (the suite's memory.c, swi B 16 unaligned, on the console) */
         uint16_t value = agb_read16(board, source);
+        if (source & 1) value >>= 8;
         while (count--) {
-            if (!fill) value = agb_read16(board, source);
+            if (!fill) {
+                value = agb_read16(board, source);
+                if (source & 1) value >>= 8;
+            }
             agb_write16(board, destination, value);
             source += 2;
             destination += 2;
