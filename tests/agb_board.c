@@ -383,6 +383,13 @@ int main(void) {
                 agb_read8(&board, 0x0E000100), agb_read8(&board, 0x0E000101));
         return 1;
     }
+    /* its 8 bit bus reads the byte the whole address names, however wide the read */
+    agb_write8(&board, 0x0E000201, 0x61);
+    if (agb_read16(&board, 0x0E000201) != 0x6161 || agb_read32(&board, 0x0E000201) != 0x61616161) {
+        fprintf(stderr, "agb_board: SRAM at 0x0E000201 reads 0x%04X and 0x%08X, not 0x6161 and 0x61616161\n",
+                agb_read16(&board, 0x0E000201), agb_read32(&board, 0x0E000201));
+        return 1;
+    }
     agb_write8(&board, 0x0E000010, 0x5A);
     CHECK(agb_read8(&board, 0x0E008010) == 0x5A && agb_read8(&board, 0x0F018010) == 0x5A);
     agb_write8(&board, 0x0E008020, 0xA5);
