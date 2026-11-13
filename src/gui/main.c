@@ -17616,9 +17616,9 @@ static void launch(App* app, char* absolute, bool prepared) {
     /* the GBA's window, and the DS's, starts fullscreen as a Switch game's does; a compile opens none */
     if ((app->menu.selected == GUI_GBA || app->menu.selected == GUI_NDS) && !make) n += gui_settings_one(s, "fullscreen", argv + n);
     if (app->menu.selected == GUI_GBA && !make) n += gui_settings_gba(s, argv + n); /* its screen's colors */
-    /* the Vita's presenter takes the Switch's upscaler and anti-aliasing (vita/gpu/vk.c) and the keys that step them
-       (vita/gpu/present.c), each at most once in s */
-    if (app->menu.selected == GUI_VITA && !make) {
+    /* the Vita's presenter and the GBA's window take the Switch's upscaler and anti-aliasing (vita/gpu/vk.c,
+       agb/runtime/vk.c) and the keys that step them, each at most once in s */
+    if ((app->menu.selected == GUI_VITA || app->menu.selected == GUI_GBA) && !make) {
         static const char* const effects[] = {"upscaler", "upscaler_sharpness", "anti_aliasing", "hotkey_upscaler",
                                               "hotkey_anti_aliasing"};
         for (size_t k = 0; k < sizeof effects / sizeof *effects; ++k) n += gui_settings_one(s, effects[k], argv + n);

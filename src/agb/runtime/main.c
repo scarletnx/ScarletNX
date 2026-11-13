@@ -15,7 +15,9 @@
 #include "common/utilities/cli.h"
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
+#include "common/utilities/key_text.h"
 #include "common/utilities/script.h"
+#include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +53,10 @@ static void usage(FILE* out) {
           "  --aot_threads=N        The threads a recompile may take (0 to 1024), as the other drivers': a ROM's code\n"
           "                         is one module, which compiles on 1 thread whatever N, and the recompile says so;\n"
           "                         --aot_threads_most=N the same\n"
+          "  --upscaler=, --upscaler_sharpness=, --anti_aliasing=\n"
+          "                         The Switch's, for the window's screen (both off by default), which\n"
+          "                         --hotkey_upscaler=KEY (Ctrl+U) and --hotkey_anti_aliasing=KEY (Ctrl+Shift+A) step\n"
+          "                         while the game runs, a notice over it saying what runs\n"
           "\n"
           "On the GBA, a ROM's code is one module, compiled on 1 thread as one unit: --jobs and --chunk change\n"
           "nothing, which the recompile says. -O is the module's level (default 2, the setting opt's), --jit-cache\n"
@@ -212,6 +218,23 @@ int snx_agb_main(int argc, char** argv) {
                 return 2;
             }
             lcd = !strcmp(value, "gba");
+        } else if (!strncmp(argv[i], "--upscaler=", 11) || !strncmp(argv[i], "--upscaler_sharpness=", 21) ||
+                   !strncmp(argv[i], "--anti_aliasing=", 16)) {
+            /* the Switch's, the window's effects (runtime/vk.c), which says a word it does not know with the one it
+               runs */
+            char key[32];
+            const char* value = ini_arg(argv[i], key, sizeof key);
+            ini_read(ini_find(g_graphics_ini, key), value);
+        } else if (!strncmp(argv[i], "--hotkey_upscaler=", 18) || !strncmp(argv[i], "--hotkey_anti_aliasing=", 23)) {
+            /* the Switch's shortcuts that step those two (runtime/host.c): a text that is no key is said, the key
+               kept, as a Switch game says it */
+            char key[32], said[320];
+            const char* value = ini_arg(argv[i], key, sizeof key);
+            bool up = !strcmp(key, "hotkey_upscaler");
+            if (snx_key_set(key, value, up ? g_settings.upscaler_shortcut : g_settings.anti_aliasing_shortcut,
+                            up ? sizeof g_settings.upscaler_shortcut : sizeof g_settings.anti_aliasing_shortcut, said,
+                            sizeof said))
+                fprintf(stderr, "scarletnx-agb: %s\n", said);
         } else if (!strcmp(argv[i], "--registers"))
             registers = 1;
         else if (!strcmp(argv[i], "--"))

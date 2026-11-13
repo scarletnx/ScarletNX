@@ -59,6 +59,13 @@ if(BUILD_TESTING)
     target_compile_options(snx-test-agb-host PRIVATE -Wall -Wextra -Werror)
     set_target_properties(snx-test-agb-host PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     add_test(NAME agb_host COMMAND snx-test-agb-host)
+    # the window through Vulkan, its shortcuts and its effects, under SDL's offscreen driver (agb_host_vk.c)
+    add_executable(snx-test-agb-host-vk "${PROJECT_SOURCE_DIR}/tests/agb_host_vk.c")
+    target_link_libraries(snx-test-agb-host-vk PRIVATE snx_agb_program)
+    target_compile_options(snx-test-agb-host-vk PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(snx-test-agb-host-vk PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+    add_test(NAME agb_host_vk COMMAND snx-test-agb-host-vk)
+    set_tests_properties(agb_host_vk PROPERTIES SKIP_RETURN_CODE 77)
     find_package(Python3 COMPONENTS Interpreter)
     # the runner's scripted presses, the BIOS's interrupt wait and its SoftReset, the open bus a write-only register
     # reads and an EEPROM save, each through a ROM the test makes
