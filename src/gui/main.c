@@ -437,6 +437,8 @@ typedef struct App {
     int choices_of;     /* whose choices ui.txt's scene Choices draws or hits now (GuiChoicesOf) */
     bool ask_abort;     /* ESC asks first: on a phone it is Back, an edge swipe easily made by mistake */
     int native;
+    /* the run's transition_screen: a collection's program switch shows its page (steps_draw) */
+    bool transition;
     bool recompile; /* R on Games: the run recompiles its game (-r) and plays nothing */
     /* B on Games: the focused game's JIT cache (aot.c), and the pack build it starts */
     int aot_state;       /* GUI_AOT_* */
@@ -2129,10 +2131,27 @@ typedef struct {
     bool native;      /* a game made already, which its recompile's line names */
     bool finished, aborting, failed;
     Uint64 since; /* a line that came while the menu faded out comes in with the run, from here */
+    /* a collection's program switch under way (steps.h's switching) on a run that shows it (transition_screen): its
+       PROGRAM step's serial, 0 for none; and the program */
+    uint32_t switching;
+    int program;
 } GuiRunView;
 static GuiRunView run_of(const App* app) {
-    GuiRunView v = {&app->steps,   &app->console, app->file ? app->file : "", app->message, app->native != 0,
-                    app->finished, app->aborting, app->abnormal_exit,         app->fade_ms};
+    GuiRunView v = {&app->steps,
+                    &app->console,
+                    app->file ? app->file : "",
+                    app->message,
+                    app->native != 0,
+                    app->finished,
+                    app->aborting,
+                    app->abnormal_exit,
+                    app->fade_ms,
+                    0,
+                    0};
+    if (app->transition && !app->finished) {
+        v.switching = app->steps.switching;
+        v.program = app->steps.program;
+    }
     return v;
 }
 /* ---- R's and B's recompiles, which play nothing: a queue run one at a time behind the screens (queue.h), the
@@ -2157,7 +2176,9 @@ static GuiRunView job_view(const App* app, int i) {
                     job->state >= GUI_JOB_OK,
                     running && app->job_aborting,
                     job->state == GUI_JOB_FAILED,
-                    job->started_ms};
+                    job->started_ms,
+                    0, /* a recompile of the queue plays no program */
+                    0};
     return v;
 }
 /* where job i is, as its row on the Compile tab says it (games: as Games' row, in the queue's words): how far the
@@ -2275,8 +2296,12 @@ static int type_rows(const GuiTheme* theme, int rows, int first, const size_t* t
 }
 static void foot(App* app, const GuiPlace* p, const char* tips, SDL_Color color, const char* keys);
 static int hint_pick(const char* key, int col, bool pad);
+static SDL_Texture* game_icon(App* app, const char* path);
+static SDL_Texture* icon_loading(App* app);
 /* a run as a loading screen: the title, the name and the ring; the steps typed down the page, their status last;
-   the progress bar and its percentage; the footer and the ESC line. As a panel (a recompile of the queue on its tab,
+   the progress bar and its percentage; the footer and the ESC line. While a collection's program switch has no window
+   open (v->switching), the page of the program that starts: "(Program N)" after the name, the game's cover under it,
+   only the steps since with work to count and the bar for them. As a panel (a recompile of the queue on its tab,
    in its letters and the cells of the viewport it is drawn in): a band of a row at its foot in their place, its
    usage while it goes (band, "" for none), the line to go on once it ended */
 static void steps_draw(App* app, const GuiRunView* v, bool panel, const char* band, const char* ended) {
@@ -2298,7 +2323,8 @@ static void steps_draw(App* app, const GuiRunView* v, bool panel, const char* ba
     int width, height, name_col, col, y, i, r, rows = 0, last_step = -1, typing, top = 3, bottom, fit, first, cursor;
     int foot = !panel && theme->footer != GUI_STYLE_NONE ? 2 : 0; /* the footer's rows, over the ESC line */
     const char* title;
-    char name[96], head[128];
+    char name[96], head[160], program[48];
+    const GuiStep* work = NULL; /* a switch's step with a count (switch_page), which its bar shows */
     SDL_Color ink, soft, failure;
     area(app, &width, &height);
     if (theme->texture)
@@ -2316,21 +2342,41 @@ static void steps_draw(App* app, const GuiRunView* v, bool panel, const char* ba
     if (theme->ring == GUI_RING_NEAR_TEXT) /* after the name and the dots' whole width, so it stays put */
         ring(app, cw * (float)(name_col + gui_text_cols(name) + 4) + 7.0f * s, ch * 1.5f, v->finished);
     text(app, col, 1, title, ink);
-    snprintf(head, sizeof head, "%s%s", name, dots(app, v->finished));
+    program[0] = 0;
+    if (v->switching && v->program > 0) { /* as the runtime's screen and the window's title name it */
+        char* q;
+        snprintf(program, sizeof program, " (%s)", snx_tr("Program"));
+        snprintf(program + strlen(program) - 1, sizeof program - strlen(program) + 1, " %d)", v->program);
+        for (q = program; *q; ++q) *q = (char)snx_to_upper((unsigned char)*q);
+    }
+    snprintf(head, sizeof head, "%s%s%s", name, program, dots(app, v->finished));
     text(app, name_col, 1, head, soft);
     if (v->finished) text(app, 1, 2, v->said, v->failed ? failure : soft);
+    if (v->switching) { /* the game's cover under the head, a quarter of the rows high (3 to 8); the steps under it */
+        int span = SDL_max(3, SDL_min(8, app->rows / 4));
+        SDL_Texture* cover = game_icon(app, v->file);
+        if (cover && cover != icon_loading(app)) {
+            SDL_FRect at = {cw, ch * 3, ch * (float)span, ch * (float)span};
+            SDL_RenderTexture(app->renderer, cover, NULL, &at);
+            top = 3 + span + 1;
+        }
+    }
     for (i = 0; i < steps->count; ++i) {
         int n;
         const GuiNote* notes[GUI_NOTES_MAX];
         int k;
         const GuiStep* step = &steps->step[i];
+        /* a switch's page: the steps since its PROGRAM step that have work to count (a program not made, recompiled),
+           without their lines */
+        if (v->switching && (step->serial <= v->switching || !step->total)) continue;
+        if (v->switching) work = step;
         owner[rows] = step;
         is_note[rows] = 0;
         shown[rows] = SDL_max(step->shown_ms, since);
         step_runs(step, theme->progress, now, runs[rows], lengths[rows]);
         clip_row(runs[rows], lengths[rows], 0, app->cols - 6);
         last_step = rows++;
-        if (!theme->detailed || (theme->collapse && step->state == GUI_STEP_DONE)) continue;
+        if (v->switching || !theme->detailed || (theme->collapse && step->state == GUI_STEP_DONE)) continue;
 
         n = gui_step_notes(steps, step, notes, GUI_NOTES_MAX);
         for (k = 0; k < n; ++k, ++rows) {
@@ -2345,6 +2391,7 @@ static void steps_draw(App* app, const GuiRunView* v, bool panel, const char* ba
         }
     }
     bottom = (theme->bar ? app->rows - 5 : app->rows - 2) - foot;
+    if (bottom - top < 1) bottom = top + 1; /* a cover on a short window: one row at the least */
     fit = SDL_max(1, bottom - top);
     first = SDL_max(0, rows - fit);
     /* the newest row of a step still running types readably; a done step's, and one a newer row of its step passed,
@@ -2383,8 +2430,11 @@ static void steps_draw(App* app, const GuiRunView* v, bool panel, const char* ba
         working = typing == r || (typing < 0 && active);
         if (r == cursor && working && blink) text_px(app, x, y, "_", 1, ink, p);
     }
-    if (theme->bar) {
-        int k, percent = gui_steps_percent(steps);
+    if (theme->bar && (!v->switching || work)) { /* a switch's only for a step with work */
+        int k, percent = !work ? gui_steps_percent(steps)
+                         : work->state == GUI_STEP_DONE
+                             ? 100
+                             : (int)((uint64_t)SDL_min(work->value, work->total) * 100 / SDL_max(work->total, 1u));
         int filled = percent < 0 ? 0 : (percent * SEGMENTS + 50) / 100;
         float span = (float)(app->cols - 8) * cw, gap = 2.0f * s;
         float seg = (span - gap * (SEGMENTS - 1)) / SEGMENTS, sy = ch * (float)(app->rows - foot - 3) + ch * 0.3f;
@@ -7794,7 +7844,7 @@ static void queue_said(const App* app, bool pad, const char** parts, int* n) {
 static void draw_screen(App* app) {
     const GuiTheme* t = &app->theme;
     int idle = (!app->menu.running && !app->finished) || entering(app);
-    if (!idle && t->run == GUI_RUN_STEPS) {
+    if (!idle && (t->run == GUI_RUN_STEPS || run_of(app).switching)) { /* a switch's page in a console's theme too */
         SDL_SetRenderDrawColor(app->renderer, t->run_colors.page.r, t->run_colors.page.g, t->run_colors.page.b, 255);
         SDL_RenderClear(app->renderer);
         render_steps(app);
@@ -17005,6 +17055,21 @@ static void addons_open_set(App* app, const GuiAddonDumps* set) {
 static void queue_show(App* app, int i);
 /* argv started on the run's screen, the menu fading out, file (owned) the run's, which Recent lists when recent says
    so; whether it started, the message saying why not */
+/* whether a run of file shows a collection's program switch (transition_screen): the Settings' pick, else the game's
+   own .ini, else the setting's default, on. Only 0 is off, as the runtime reads it */
+static bool transition_on(const App* app, const char* file) {
+    char pick[8];
+    char *ini, *own = NULL;
+    bool on;
+    settings_text(app, "transition_screen", pick, sizeof pick);
+    if (pick[0]) return strcmp(pick, "0") != 0;
+    ini = file ? game_ini_of(file) : NULL;
+    if (ini && snx_is_file(ini)) own = snx_ini_value(ini, "transition_screen");
+    on = !own || strcmp(own, "0") != 0;
+    free(own);
+    free(ini);
+    return on;
+}
 static bool run_start(App* app, const char* const* argv, char* file, bool native, bool prepared, bool recent) {
 #ifndef SDL_PLATFORM_ANDROID /* there the data folder's config/, which every game reads (gamepad.c) */
     pad_mappings_share(app);
@@ -17028,6 +17093,7 @@ static bool run_start(App* app, const char* const* argv, char* file, bool native
     }
     gui_steps_reset(&app->steps);
     app->native = native;
+    app->transition = transition_on(app, file);
     /* the menu fades out, then the run fades in */
     Uint64 now = SDL_max(now_ms(app), 1);
     app->entering_ms = started && app->theme.fade_out_ms ? now : 0;

@@ -48,6 +48,21 @@ int main(void) {
     assert(n == 2 && !strcmp(notes[0]->text, "vulkan: pipeline cache loaded (662 KB)"));
     assert(gui_step_notes(&s, at(&s, 0), notes, 8) == 0 && gui_step_notes(&s, at(&s, 4), notes, 8) == 0);
 
+    /* a collection's program that starts another: a PROGRAM step, the switch under way until the program's window
+       opens (its recompile in between when it is not made), and nothing once it has */
+    gui_steps_reset(&s);
+    feed(&s, "ScarletNX - Game\nvideo: a window of 1280x720 pixels, the display's scale 1.00\n", 1);
+    assert(s.switching == 0);
+    feed(&s, "The game starts its program 2, 0100000000010000_0100000000010002 (ExecuteProgram from program 0)\n", 2);
+    assert(s.count == 2 && !strcmp(at(&s, 1)->label, "PROGRAM") && !strcmp(at(&s, 1)->detail, "2"));
+    assert(s.switching == at(&s, 1)->serial && s.program == 2 && at(&s, 0)->state == GUI_STEP_DONE);
+    feed(&s, "Recompiling Game, program 2 of 3 (4 modules)\n  compiled block 1/4: code_000 (1.0 s)\n", 3);
+    assert(s.switching == at(&s, 1)->serial && gui_steps_percent(&s) == 25);
+    feed(&s, "ScarletNX - Game\nvideo: a window of 1280x720 pixels, the display's scale 1.00\n", 4);
+    assert(s.switching == 0 && s.program == 2 && !strcmp(at(&s, 3)->label, "LAUNCH"));
+    feed(&s, "The game starts its program x, of no number\n", 5); /* not the driver's line: a note */
+    assert(s.switching == 0 && s.count == 4);
+
     /* Vita's compiler reports completed parallel chunks, not NX function blocks. */
     gui_steps_reset(&s);
     feed(&s, "Recompiling PCSG00001 (Vita AArch32)\nDiscovered 1200 blocks (4 addresses were not code)\n", 70);

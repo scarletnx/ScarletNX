@@ -33,6 +33,10 @@ typedef struct {
     char line[256];
     size_t length;
     int gpu;
+    /* a program a collection's program started (the driver's "The game starts its program N, ..."): its PROGRAM step's
+       serial until the program's window opens (the runtime's "video: a window of ..."), 0 for none; and N */
+    uint32_t switching;
+    int program;
 } GuiSteps;
 void gui_steps_reset(GuiSteps* steps);
 void gui_steps_feed(GuiSteps* steps, const char* data, size_t size, uint64_t now_ms);
