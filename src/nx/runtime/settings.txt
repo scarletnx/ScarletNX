@@ -1814,6 +1814,7 @@ setting @VK_EXT_sample_locations
 setting @VK_EXT_shader_atomic_float
 setting @VK_EXT_shader_demote_to_helper_invocation
 setting @VK_EXT_shader_object
+setting @VK_EXT_subgroup_size_control
 setting @VK_EXT_transform_feedback
 setting @VK_EXT_vertex_attribute_divisor
 setting @VK_EXT_vertex_input_dynamic_state
