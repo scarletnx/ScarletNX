@@ -330,6 +330,11 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_tests_properties(vulkan_ui PROPERTIES TIMEOUT 60
         ENVIRONMENT "SNX_TEST_UI_ONLY=1;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the window's upscaler and anti aliasing, recorded between the recording thread's commands
+    add_test(NAME vulkan_present_effects COMMAND snx-test-vulkan -H --vk_validation=1)
+    set_tests_properties(vulkan_present_effects PROPERTIES TIMEOUT 60
+        ENVIRONMENT "SNX_TEST_PRESENT_EFFECTS_ONLY=1;VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the texture arrays of 32 elements a device that binds 128 samplers a stage gets (PanVK on Bifrost;
     # gpu/vk/texture_arrays.h), under the validation layer: their layouts, pools and the draws that index them
     add_test(NAME vulkan_texture_arrays COMMAND snx-test-vulkan -H --vk_validation=1)

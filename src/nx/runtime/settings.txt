@@ -263,6 +263,31 @@ setting Anisotropic filtering
     startup
     words Game's|#x
     help 0 = textures filtered as the game asks, 2 to 16 = sharper surfaces seen at an angle
+setting Upscaler
+    key upscaler
+    text 16
+    default off
+    startup
+    words off=Off|bilinear=Bilinear|fsr1=AMD FSR 1|nis=NVIDIA NIS|sgsr=Qualcomm SGSR
+    help The filter that grows the game's frame to the window: Off as the console's window always drew it (smooth on
+    help the Switch and the Vita, sharp pixels on the 3DS), Bilinear smooth, AMD FSR 1, NVIDIA NIS and Qualcomm SGSR
+    help with sharper edges. NIS grows a frame twice at most: past that FSR 1 runs, and the log says so. The Upscaler
+    help shortcut steps it for the run
+setting Upscaler sharpness
+    key upscaler_sharpness
+    int 0 100
+    default 75
+    startup
+    help How sharp AMD FSR 1, NVIDIA NIS and Qualcomm SGSR draw the frame's edges: 0 the softest, 100 the sharpest
+setting Anti aliasing
+    key anti_aliasing
+    text 8
+    default off
+    startup
+    words off=Off|auto=Auto|fxaa=FXAA|smaa=SMAA|ssaa2=SSAA 2x|ssaa4=SSAA 4x
+    help Smoothing of the shown frame's edges, after the upscaler: Auto = FXAA where the window shows the frame at 1.25
+    help times its size or more each way, else none; FXAA and SMAA filter the frame; SSAA 2x and 4x draw it 2 or 4
+    help times as large and shrink it. The Anti aliasing shortcut steps it for the run
 setting Game HDR
     key hdr_game
     label Game HDR output
