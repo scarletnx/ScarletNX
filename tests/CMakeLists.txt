@@ -2367,6 +2367,12 @@ if(NOT SNX_TOOLS_ONLY)
     target_compile_definitions(snx-test-tex-upload-rows PRIVATE SNX_TEST_DEVMEM_STUBS=1)
     target_link_libraries(snx-test-tex-upload-rows PRIVATE snx_nx_flags)
     add_test(NAME tex_upload_rows COMMAND snx-test-tex-upload-rows)
+    # the page cache's reads (gpu/vk/pagespace.c) over a model of guest memory, the write tracking, the ring and the
+    # region's buffer: every range it serves holds guest memory's bytes
+    add_executable(snx-test-vk-pagespace vk_pagespace.c tracy_stubs.c)
+    snx_test_target(snx-test-vk-pagespace 23)
+    target_link_libraries(snx-test-vk-pagespace PRIVATE snx_nx_flags)
+    add_test(NAME vk_pagespace COMMAND snx-test-vk-pagespace)
     # the file of shaders and pipelines kept across runs (gpu/vk/pipeline_file.c): records back as written, pipelines
     # by their shaders' records (a shipped shader's reference among them), a cut or changed record ending the reading,
     # another key starting over, a full file; its records packed into zstd units and unpacked in their place, a unit

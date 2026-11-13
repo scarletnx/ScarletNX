@@ -542,6 +542,7 @@ static int bring(PgAsk* a) {
                 piece = left < PG_STAGE ? left : PG_STAGE;
                 done = 0;
                 if (!(host = vk_stage_upload(piece << 12, vk_stage_align(), &sb, &so))) {
+                    q->ck_mask &= (u16)~(1u << k); /* not taken: the tracking is asked for it again */
                     if (took && q->full == PG_FULL) gran_oldest(q);
                     return refuse(PG_NO_MEMORY);
                 }
