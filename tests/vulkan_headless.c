@@ -5062,7 +5062,8 @@ static int check_dma_bands(void) {
    RGBA8 texture's levels wrote 1365 MiB to one frame's rings, and a phone's system ended the app. The frame ends
    between two bands now: 896 lines of 512 bytes into block linear, 448 KiB of source and as much of the
    destination's own bytes staged, with the cap lowered to 64 KiB (bands of 16 KiB of rows, a frame's rings 256 KiB),
-   go over several frames, the rings stay within the two slots' share, and the copy is the CPU's */
+   go over several frames or, where the source goes through the stream (cmd.c's vk_stream_upload), over several
+   submissions of one frame, the rings stay within the two slots' share, and the copy is the CPU's */
 static int check_dma_bands_frames(void) {
     const u64 cap = g_vk.alloc_cap;
     GpuDmaOp o = {0};
@@ -5075,16 +5076,22 @@ static int check_dma_bands_frames(void) {
     o.src = pitch_side(0x1000, 512);
     o.dst = bl_side(0x80000, 512, 896, 1, 0, 0);
     u64 frames = vk_frame_id(), rings = vk_ring_bytes(), copies, bands0, bands1, bytes;
+    u64 went0 = vk_submits(VK_SUB_PERIODIC);
     vk_dma_stats(&copies, &bands0, &bytes);
     int failed = dma_case(o);
     vk_dma_stats(&copies, &bands1, &bytes);
     u64 ended = vk_frame_id() - frames, grown = vk_ring_bytes() > rings ? vk_ring_bytes() - rings : 0;
+    u64 went = vk_submits(VK_SUB_PERIODIC) - went0;
     g_vk.alloc_cap = cap;
     vk_frame_next();
-    printf("dma bands across frames: %llu bands, %llu frames ended, the rings grew by %llu KiB\n",
-           (unsigned long long)(bands1 - bands0), (unsigned long long)ended, (unsigned long long)(grown >> 10));
+    printf("dma bands across frames: %llu bands, %llu frames ended and %llu submissions went between bands, the "
+           "rings grew by %llu KiB\n",
+           (unsigned long long)(bands1 - bands0), (unsigned long long)ended, (unsigned long long)went,
+           (unsigned long long)(grown >> 10));
     CHECK(!failed && bands1 - bands0 >= 8);
-    CHECK(ended >= 2);
+    /* one at least: the frame's rings and the stream each take half of the bytes here, and a frame's end sends the
+       stream's too. The rings' growth below is what must hold */
+    CHECK(ended + went >= 1);
     CHECK(grown <= (u64)(VK_FRAMES + 1) * VK_FRAME_RING_CAPS * (64 << 10));
     return 0;
 }
@@ -5412,21 +5419,23 @@ static int check_blit_bands(void) {
         failed = 1;
     }
     /* and a frame ends between two bands once its rings hold VK_FRAME_RING_CAPS allocations (256 KiB here), as
-       between a copy engine's (check_dma_bands_frames): the three blits end 3 frames, and none ended without it */
+       between a copy engine's (check_dma_bands_frames), or a submission goes where the bands' source is the stream's:
+       the three blits end 3 frames or as many submissions, and none without it */
     vk_finish();
     vk_frame_next();
     g_vk.alloc_cap = 64 << 10;
-    u64 frames = vk_frame_id();
+    u64 frames = vk_frame_id(), went0 = vk_submits(VK_SUB_PERIODIC);
     failed |= blit_case(bl_side(0x1000, 128 * 4, 256, 2, 0, 0), bl_side(0x80000, 128 * 4, 256, 1, 0, 0), 4, 9, 30, 100,
                         200, 128, 256, 0);
     failed |= blit_case(pitch_plane(0x101, 300, 75 * 4, 150), pitch_plane(0x60001, 520, 120 * 4, 240), 4, 3, 2, 110,
                         230, 75, 150, 0);
     failed |= blit_case(pitch_plane(0x3000, 64 * 16, 64 * 16, 100), bl_side(0x80000, 64 * 8, 128, 1, 0, 0), 16, 0, 5,
                         64, 120, 64, 100, GPU_BLIT_FLOAT(4, 4, 4, 2, 0));
-    u64 ended = vk_frame_id() - frames;
+    u64 ended = vk_frame_id() - frames, went = vk_submits(VK_SUB_PERIODIC) - went0;
     g_vk.alloc_cap = cap;
-    printf("blit bands: %llu frames ended between bands\n", (unsigned long long)ended);
-    CHECK(!failed && ended >= 2);
+    printf("blit bands: %llu frames ended and %llu submissions went between bands\n", (unsigned long long)ended,
+           (unsigned long long)went);
+    CHECK(!failed && ended + went >= 1);
     return 0;
 }
 
@@ -7292,6 +7301,7 @@ static int run_headless(int argc, char** argv) {
     }
     if (getenv("SNX_TEST_TRIM_ONLY")) { /* the budget's trim alone: a trim that wants everything takes the others' */
         CHECK(!check_trim_working_set());
+        CHECK(!check_trim_unmapped());
         CHECK(!check_trim_ended());
         CHECK(!check_trim_headroom());
         vk_finish();
@@ -7458,6 +7468,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_landing_records_fresh());
     CHECK(!check_mapping_landing());
     CHECK(!check_guest_staging());
+    CHECK(!check_stream_ring());
     CHECK(!check_owned_writable());
     CHECK(!check_own_trim());
     CHECK(!check_wlog_again());

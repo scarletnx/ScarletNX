@@ -1333,10 +1333,27 @@ setting Buffer pages
     default 1
     startup
     words Off|Read|Read and write
-    help 1 = keeps the guest memory that draws read by page, in sparse buffers: ranges that overlap share their bytes,
-    help and a range that did not change is not copied again. 2 = also keeps what a draw writes to guest memory there,
-    help on the GPU, until the game's CPU code touches it. 0 = by the range each draw asks for. It needs a GPU with
-    help sparse buffers and working write tracking, and stays off without them
+    help 1 = keeps the guest memory that draws read by page, in sparse buffers, or in slabs on a GPU with none:
+    help ranges that overlap share their bytes, and a range that did not change is not copied again. 2 = also keeps
+    help what a draw writes to guest memory there, on the GPU, until the game's CPU code touches it (sparse buffers
+    help only). 0 = by the range each draw asks for. It needs working write tracking, and stays off without it
+setting Stream ring
+    key vk_stream_ring
+    int 0 1
+    default 1
+    startup
+    words Frame rings|Stream
+    help 1 = the bytes that a copy or a draw recorded at once reads (texture uploads, the page cache's pages, the
+    help buffer cache's copies) go through chunks that are free again when that work is done. 0 = through the
+    help frame's rings, which come back when the frame's slot does
+setting Buffer page slabs
+    key vk_buffer_slabs
+    int 0 1
+    default 0
+    startup
+    words Auto|Slabs
+    help 1 = Buffer pages keeps its bytes in slabs, buffers with all their memory, on every GPU: the way of a GPU
+    help with no sparse buffers, for testing. 0 = slabs only on such a GPU
 setting NVN storage ordering
     key nvn_storage_order
     int 0 2

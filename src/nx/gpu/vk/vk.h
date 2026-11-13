@@ -472,6 +472,11 @@ u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off);
 u64 vk_stage_chunk(void);
 /* Streamed buffer snapshots in host RAM, with the same frame lifetime as vk_stage. */
 u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off);
+/* As vk_stage_upload, for bytes that only work recorded now reads: a copy, a dispatch or a draw recorded before the
+   submission being recorded goes, or the one after it. The memory is no frame's (cmd.c's stream): it is handed out
+   again once that work is done, so nothing may keep the buffer and offset past it. With vk_stream_ring=0 it is
+   vk_stage_upload */
+u8* vk_stream_upload(u64 size, u64 align, VkBuffer* buf, u64* off);
 /* One-use guest input: host staging for CPU-only bytes, output staging when GPU-owned or in-place writes cover it. */
 u8* vk_stage_guest_input(u64 gva, u64 source_size, u64 bytes, VkBuffer* buf, u64* off);
 /* GPU-written storage, device-local when host-visible memory and its budget allow;
@@ -979,7 +984,8 @@ typedef struct Surf {
     int lru;
     struct Surf *lru_prev, *lru_next;
     /* textures: the game ended the last texture object at its address (gpu/guest_textures.h) and made none there
-       since: in surface.c's list of those, which a trim takes first */
+       since (1), or, in a game with no texture objects, unmapped its first page and mapped nothing there since (2):
+       in surface.c's list of those, which a trim takes first */
     u8 ended;
     u32 ended_at; /* the present the cache learned of it */
     struct Surf* ended_next;
@@ -1212,6 +1218,9 @@ void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx);
    it again there with the same bytes still finds it) */
 void vk_surf_ended_frame(void);
 u64 vk_surf_ended_freed(void); /* statistics: their bytes freed so far */
+/* the game changed the GPU mapping of [gva, gva + size): where its front end has no texture objects, a texture
+   whose memory it unmapped is one it ended (the renderer's bracket of a GMMU change, at its end) */
+void vk_surf_mapping_changed(u64 gva, u64 size);
 /* frees cache entries (surfaces and own buffers), the least recently used first, when the heap's use with `extra`
    bytes more would be past 90% of its budget: idle lossless ones down to 80%, the lossless working set down to 95%,
    then lossy ones (vk_surf_reclaim). Only entries unused for the last two presents go, so the caller may hold any
