@@ -13,11 +13,12 @@ PowerPC64 LE's.
 
 As PowerPC64 LE's, with the `linux-riscv64-cross` or `linux-loongarch64-cross` preset and an Arch root of the
 architecture in `SNX_SYSROOT` (its pkg-config files, its LLVM and its GCC runtime). `scripts/appimage-sysroot.sh ROOT`
-installs what the AppImage links into an unpacked Arch root, as CI does, which keeps the root it makes for a week:
+installs what the AppImage links into an unpacked Arch root, as CI does, which keeps the root it makes for a week. Its
+SDL3 is the root's package, which `SNX_SYSTEM_SDL3` takes:
 
 ```bash
 export SNX_SYSROOT=/path/to/the/root
-cmake --preset linux-riscv64-cross
+cmake --preset linux-riscv64-cross -DSNX_SYSTEM_SDL3=ON
 cmake --build --preset linux-riscv64-cross
 ```
 
