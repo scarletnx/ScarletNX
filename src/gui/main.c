@@ -47,6 +47,7 @@
 #include "gui/theme.h"
 #include "common/utilities/window_icon.h"
 #include "common/utilities/build_info.h"
+#include "common/utilities/program_start.h"
 #include "gui/recent.h"
 #include "gui/title.h"
 #include "gui/pad_menu.h"
@@ -2298,6 +2299,147 @@ static void foot(App* app, const GuiPlace* p, const char* tips, SDL_Color color,
 static int hint_pick(const char* key, int col, bool pad);
 static SDL_Texture* game_icon(App* app, const char* path);
 static SDL_Texture* icon_loading(App* app);
+static SDL_Texture* user_texture(App* app, int side);
+/* the labels of program_start.h's rows, which the page shows translated */
+static const char* const start_labels[] = {
+    SNX_TR_NOOP("PROGRAM"), SNX_TR_NOOP("STARTED BY"),  SNX_TR_NOOP("USER"), SNX_TR_NOOP("VERSION"),
+    SNX_TR_NOOP("DLC"),     SNX_TR_NOOP("HANDED OVER"), SNX_TR_NOOP("GPU"),  SNX_TR_NOOP("TITLE ID"),
+    SNX_TR_NOOP("BUILD"),   SNX_TR_NOOP("RECOMPILE")};
+typedef char start_labels_all[sizeof start_labels / sizeof *start_labels == SNX_START_ROWS ? 1 : -1];
+/* the version the control.nacp in the data folder of program (in folder) shows, into out (16 bytes): "" for none */
+static void nacp_version(const char* folder, const char* program, char out[16]) {
+    char* path = snx_format("%s/%s_data/control.nacp", folder, program);
+    size_t size = 0;
+    unsigned char* nacp = (unsigned char*)snx_read_file(path, &size);
+    out[0] = 0;
+    if (nacp && size >= 0x3070) { /* DisplayVersion, 16 bytes at 0x3060, as am reads it */
+        memcpy(out, nacp + 0x3060, 16);
+        out[15] = 0;
+    }
+    free(nacp);
+    free(path);
+}
+/* what the launcher knows of the program a switch starts (the driver's line: it, the one before and its name; the
+   game's folder: its programs made, its update and DLCs checked; the Settings' user; the GPU the program before drew
+   on; this build, which the driver plays it with), into f: -1 or "" for what it doesn't, "?" on the page. Neither what
+   was handed over (only the program reads it) nor whether the user was kept */
+static void switch_facts(App* app, const GuiRunView* v, SnxProgramStart* f) {
+    const GuiSteps* steps = v->steps;
+    const GuiStep* gpu = gui_steps_last(steps, "GPU");
+    const char* at;
+    SnxU64 id = 0;
+    int i;
+    snx_program_start_unknown(f);
+    f->program = v->program;
+    f->previous = steps->previous;
+    if (app->user_name[0]) {
+        snprintf(f->user, sizeof f->user, "%s", app->user_name);
+        f->user_number = app->user;
+    }
+    if (gpu) snprintf(f->gpu, sizeof f->gpu, "%s", gpu->detail);
+    if ((at = strrchr(steps->next, '_')) != NULL && strlen(at + 1) >= 16) {
+        char digits[17];
+        memcpy(digits, at + 1, 16);
+        digits[16] = 0;
+        if (snx_title_parse(digits, &id)) f->title_id = id;
+    } else if (snx_title_parse(steps->next, &id))
+        f->title_id = id;
+    snprintf(f->build, sizeof f->build, "%s", snx_build_info());
+    f->recompile = 0;
+    for (i = 0; i < steps->count; ++i) /* the driver recompiles it: its own step says so */
+        if (steps->step[i].serial > v->switching && !strcmp(steps->step[i].label, "RECOMPILE")) f->recompile = 1;
+    if (gui_game_program(v->file)) { /* a game of the library, its folder named by its title ID */
+        char *folder = snx_dirname(v->file), *ini, *text, update[32];
+        const char* game = folder + strlen(folder);
+        unsigned char made[SNX_PROGRAMS_MAX];
+        int programs;
+        while (game > folder && game[-1] != '/' && game[-1] != '\\') --game;
+        programs = snx_game_programs(folder, game, made);
+        if (programs > v->program) f->programs = programs;
+        snx_game_update(folder, game, update);
+        f->updated = update[0] != 0;
+        if (update[0]) {
+            char program[96];
+            if ((at = strchr(update, 'v')) != NULL) snprintf(f->update, sizeof f->update, "%s", at);
+            snprintf(program, sizeof program, "%s_%s", game, update);
+            nacp_version(folder, program, f->version);
+        } else
+            nacp_version(folder, game, f->version);
+        ini = snx_game_ini(folder, game);
+        text = ini ? snx_ini_value(ini, "addons") : NULL;
+        f->dlcs = 0;
+        f->dlc[0] = 0;
+        if (text) {
+            SnxAddon list[16];
+            SnxU64 own = 0, base;
+            size_t n = snx_addons_parse(text, game, list, 16), k, len, size = 0;
+            char* path = snx_format("%s/%s_data/control.nacp", folder, game);
+            unsigned char* nacp = (unsigned char*)snx_read_file(path, &size);
+            snx_title_parse(game, &own);
+            base = snx_nacp_aoc_base(nacp, nacp ? size : 0, own); /* DLC N as the game numbers it, as am says it */
+            free(nacp);
+            free(path);
+            for (k = 0; k < n; ++k)
+                if (snx_addon_kind(own, list[k].id) == SNX_ADDON_DLC) {
+                    len = strlen(f->dlc);
+                    if (f->dlcs < 4 && list[k].id > base && list[k].id - base < 0x800)
+                        snprintf(f->dlc + len, sizeof f->dlc - len, "%sDLC %u", len ? ", " : "",
+                                 (unsigned)(list[k].id - base));
+                    else if (f->dlcs < 4)
+                        snprintf(f->dlc + len, sizeof f->dlc - len, "%sDLC %016llX", len ? ", " : "",
+                                 (unsigned long long)list[k].id);
+                    f->dlcs++;
+                }
+            if (f->dlcs > 4) {
+                len = strlen(f->dlc);
+                snprintf(f->dlc + len, sizeof f->dlc - len, " and %d more", f->dlcs - 4);
+            }
+        }
+        free(text);
+        free(ini);
+        free(folder);
+    }
+}
+/* a switch's page, under the head: the game's cover in the top right corner, a quarter of the rows high (3 to 8), then
+   what is known of the program as done steps cut before the cover, the user's picture beside the USER row's value. The
+   row the steps after them start on */
+static int switch_rows(App* app, const GuiRunView* v, int width, SDL_Color ink, SDL_Color soft) {
+    SnxProgramStart facts;
+    SnxStartRow start[SNX_START_ROWS];
+    float cw = (float)cell_w(app), ch = (float)cell_h(app);
+    int span = SDL_max(3, SDL_min(8, app->rows / 4)), n, k, room = app->cols - 2;
+    SDL_Texture* cover = game_icon(app, v->file);
+    if (cover && cover != icon_loading(app)) {
+        SDL_FRect at = {(float)width - cw - ch * (float)span, ch * 3, ch * (float)span, ch * (float)span};
+        SDL_RenderTexture(app->renderer, cover, NULL, &at);
+        room = (int)(at.x / cw) - 2;
+    }
+    switch_facts(app, v, &facts);
+    n = snx_program_start_rows(&facts, start);
+    for (k = 0; k < n; ++k) {
+        char label[48], value[SNX_START_TEXT];
+        float x = cw, y = ch * (float)(3 + k);
+        int j, cols;
+        for (j = 0; j < SNX_START_ROWS && strcmp(start_labels[j], start[k].label); ++j) continue;
+        snprintf(label, sizeof label, "%s:", j < SNX_START_ROWS ? snx_tr(start_labels[j]) : start[k].label);
+        x = text_px(app, x, y, label, (size_t)gui_text_cols(label), soft, 1.0f) + cw;
+        if (!strcmp(start[k].label, "USER") && start[k].value[0] != '?') { /* the user's picture, as the head's */
+            SDL_Texture* picture = user_texture(app, (int)ch);
+            if (picture) {
+                SDL_FRect at = {x, y, ch, ch};
+                SDL_RenderTexture(app->renderer, picture, NULL, &at);
+                x += ch + cw;
+            }
+        }
+        snprintf(value, sizeof value, "%s", start[k].value);
+        for (j = 0; value[j]; ++j) value[j] = (char)snx_to_upper((unsigned char)value[j]);
+        cols = room - (int)(x / cw) - 5;
+        value[gui_cols_fit(value, SDL_max(cols, 0))] = 0;
+        x = text_px(app, x, y, value, (size_t)gui_text_cols(value), soft, 1.0f) + cw;
+        text_px(app, x, y, snx_tr("...OK"), (size_t)gui_text_cols(snx_tr("...OK")), ink, 1.0f);
+    }
+    return 3 + n;
+}
 /* a run as a loading screen: the title, the name and the ring; the steps typed down the page, their status last;
    the progress bar and its percentage; the footer and the ESC line. While a collection's program switch has no window
    open (v->switching), the page of the program that starts: "(Program N)" after the name, the game's cover under it,
@@ -2352,15 +2494,7 @@ static void steps_draw(App* app, const GuiRunView* v, bool panel, const char* ba
     snprintf(head, sizeof head, "%s%s%s", name, program, dots(app, v->finished));
     text(app, name_col, 1, head, soft);
     if (v->finished) text(app, 1, 2, v->said, v->failed ? failure : soft);
-    if (v->switching) { /* the game's cover under the head, a quarter of the rows high (3 to 8); the steps under it */
-        int span = SDL_max(3, SDL_min(8, app->rows / 4));
-        SDL_Texture* cover = game_icon(app, v->file);
-        if (cover && cover != icon_loading(app)) {
-            SDL_FRect at = {cw, ch * 3, ch * (float)span, ch * (float)span};
-            SDL_RenderTexture(app->renderer, cover, NULL, &at);
-            top = 3 + span + 1;
-        }
-    }
+    if (v->switching) top = switch_rows(app, v, width, ink, soft);
     for (i = 0; i < steps->count; ++i) {
         int n;
         const GuiNote* notes[GUI_NOTES_MAX];
@@ -2430,8 +2564,8 @@ static void steps_draw(App* app, const GuiRunView* v, bool panel, const char* ba
         working = typing == r || (typing < 0 && active);
         if (r == cursor && working && blink) text_px(app, x, y, "_", 1, ink, p);
     }
-    if (theme->bar && (!v->switching || work)) { /* a switch's only for a step with work */
-        int k, percent = !work ? gui_steps_percent(steps)
+    if (theme->bar) { /* a switch's full with no step at work, as a run's is once the game launched */
+        int k, percent = !work ? (v->switching ? 100 : gui_steps_percent(steps))
                          : work->state == GUI_STEP_DONE
                              ? 100
                              : (int)((uint64_t)SDL_min(work->value, work->total) * 100 / SDL_max(work->total, 1u));
