@@ -829,6 +829,7 @@ typedef struct {
     f32 jitter[2], motion_scale[2], pre_exposure;
     i32 flags;                    /* the network's builder flags */
     i32 in[2], out[2];            /* the render size and the output size */
+    i32 render_max[2];            /* the network's largest render size (NvnDlssNetwork.render_max) */
     i32 base[5][2];               /* NvnDlssParameters.base */
     NVNcopyRegion sr[2], dr[2];   /* the stand-in copies */
 } NvnPDlss;
