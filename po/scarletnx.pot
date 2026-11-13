@@ -6596,5 +6596,17 @@ msgid "The picture a GBA game made from a ROM shows in Games. None = Wimsy, as a
 msgstr ""
 
 #: src/nx/runtime/settings.txt
+msgid "GBA colors"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "Colors"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "The colors a GBA game shows. Raw = as the game writes them, the same as mGBA without a shader. GBA screen = as the original GBA's unlit screen showed them: the game's colors, painted strong for that screen, come out softer and darker (near's color emulation article, Talarubi's formula)"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""

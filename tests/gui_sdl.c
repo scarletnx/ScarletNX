@@ -6357,7 +6357,8 @@ int main(int argc, char** argv) {
     /* ESC goes back to the groups, on the one it came from */
     key(&app, SDLK_ESCAPE);
     assert(app.editing && app.form == GUI_FORM_SETTINGS && app.editor.row == 1);
-    /* GBA's, after Launch: Covers, None by default, then Box art (libretro-thumbnails), Del back to None */
+    /* GBA's, after Launch: Covers, None by default, then Box art (libretro-thumbnails), Del back to None; Colors,
+       Raw by default, then GBA screen, Del back to Raw */
     {
         char line[64];
         key(&app, SDLK_DOWN);
@@ -6365,7 +6366,7 @@ int main(int argc, char** argv) {
         shows(&app, "- " ICON_GAMEPAD " GBA", yellow);
         shows_half(&app, "Covers", normal); /* the group's help names its setting */
         key(&app, SDLK_RETURN);
-        assert(app.form == GUI_FORM_GROUP && app.group == 2 && app.editor.count == 1);
+        assert(app.form == GUI_FORM_GROUP && app.group == 2 && app.editor.count == 2);
         render(&app);
         shows(&app, "GBA", normal);
         snprintf(line, sizeof line, "- %-8s %s", "Covers", "None [default]"); /* no row of it opens a page: no gutter */
@@ -6378,6 +6379,17 @@ int main(int argc, char** argv) {
         shows(&app, line, yellow);
         key(&app, SDLK_DELETE);
         assert(setting_is(&app, "gba_covers", NULL));
+        key(&app, SDLK_DOWN);
+        render(&app);
+        snprintf(line, sizeof line, "- %-8s %s", "Colors", "Raw [default]");
+        shows(&app, line, yellow);
+        key(&app, SDLK_RIGHT);
+        assert(setting_is(&app, "gba_color", "gba"));
+        render(&app);
+        snprintf(line, sizeof line, "- %-8s %s", "Colors", "GBA screen *");
+        shows(&app, line, yellow);
+        key(&app, SDLK_DELETE);
+        assert(setting_is(&app, "gba_color", NULL));
         key(&app, SDLK_ESCAPE);
         assert(app.form == GUI_FORM_SETTINGS && app.editor.row == 2);
     }
