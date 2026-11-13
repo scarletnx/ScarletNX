@@ -262,9 +262,22 @@ static void intr_wait(AgbBoard* board, AgbCpu* cpu) {
     cpu->arm.r[15] = cpu->arm.r[14] & ~(uint32_t)3;
 }
 
+/* The opcode the CPU fetched last while the instruction at pc runs, which a read with nothing to answer gets (llvm.c's
+   open_bus, mGBA's GBALoadBad): ARM [$+8]; Thumb [$+4] in both halves, but [$+4] above [$+2] from the BIOS and OAM, and
+   from IWRAM [$+4] above [$+2] or below it by $+4's place in its word */
+static uint32_t open_bus_at(AgbBoard* board, uint32_t pc, int thumb) {
+    uint32_t region = (pc + 4) >> 24, h2, h4;
+    if (!thumb) return agb_read32(board, pc + 8);
+    h2 = agb_read16(board, pc + 2), h4 = agb_read16(board, pc + 4);
+    if (region == 0x00 || region == 0x07 || (region == 0x03 && ((pc + 4) & 2))) return h4 << 16 | h2;
+    return h4 | (region == 0x03 ? h2 : h4) << 16;
+}
+
 static void handle_swi(AgbCpu* cpu, AgbSink* sink, uint32_t syndrome, int thumb) {
     AgbBoard* board = sink->board;
     uint32_t number = thumb ? syndrome & 0xFF : (syndrome >> 16) & 0xFF;
+    /* what the BIOS's own reads of nothing give: the code after the call, which mGBA's HLE BIOS runs inside */
+    board->open_bus = open_bus_at(board, cpu->arm.r[15] - (thumb ? 2u : 4u), thumb);
     board->bios_prefetch = AGB_BIOS_PREFETCH_SWI;
     if (number == AGB_SWI_SOFT_RESET) {
         soft_reset(board, cpu);

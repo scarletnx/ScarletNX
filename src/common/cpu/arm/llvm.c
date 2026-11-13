@@ -409,11 +409,15 @@ static void yield_check(ArmIR* a) {
     LLVMBuildRetVoid(a->b);
     LLVMPositionBuilderAtEnd(a->b, go);
 }
+/* addresses past the console's 28 bits, but for the mirror at bit 31 the flat window keeps, go to the hook as well:
+   nothing answers them there, which the board gives as the open bus */
 static LLVMValueRef io_route(ArmIR* a, LLVMValueRef addr, LLVMValueRef fn) {
-    LLVMValueRef top = lsr(a, addr, 24);
+    LLVMValueRef top = lsr(a, addr, 24), high = lsr(a, addr, 28);
     LLVMValueRef route = band(a, LLVMBuildLShr(a->b, c32(a, SNX_ARM_IO_REGIONS), band(a, top, c32(a, 31)), ""),
                               z32(a, cmp(a, LLVMIntULT, top, c32(a, 32))));
-    route = band(a, route, c32(a, 1));
+    LLVMValueRef unused =
+        band(a, z32(a, cmp(a, LLVMIntNE, high, c32(a, 0))), z32(a, cmp(a, LLVMIntNE, high, c32(a, 8))));
+    route = bor(a, band(a, route, c32(a, 1)), unused);
     return band(a, route, z32(a, cmp(a, LLVMIntNE, fn, LLVMConstNull(a->ptr))));
 }
 static LLVMTypeRef io_type(ArmIR* a) {
