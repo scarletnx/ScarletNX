@@ -1821,7 +1821,10 @@ rebind:
             int ms = (st->flags & 2) != 0;
             if (t && ms != (t->msaa != 0)) t = NULL;
             if ((st->flags & 1) && !t) {
-                LOG_LIMIT(4, "vulkan: raw surface load requires a 32-bit color format (skipped)\n");
+                LOG_LIMIT(4,
+                          "vulkan: a raw surface load's header %08x %08x %08x names no texture of 4-, 8- or 16-byte "
+                          "color texels stored as they are: the dispatch is skipped\n",
+                          tic[0], tic[2], tic[4]);
                 g_cs_skips[CS_SKIP_TEXTURE]++;
                 cs_abandon_binding(originals);
                 return;

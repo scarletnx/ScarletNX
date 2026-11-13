@@ -119,6 +119,49 @@ static int check_layered_surface_loads(void)
 					CHECK(!memcmp(result, input, sizeof(result)));
 					count++;
 				}
+	/* a raw load of an R32G32B32 texel (12 bytes, kept as RGBA) has no view: its dispatch is skipped, and the log
+	   names the header */
+	{
+		u32 word0 = 0x02 | 7u << 7 | 7u << 10 | 7u << 13 | 7u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28;
+		u32 tic[8] = {word0, (u32)source, (u32)(source >> 32) | 3u << 21, 2u << 28, 7u | 5u << 23, 3u | 3u << 16,
+			0, 2u << 4};
+		u64 load = 0xeb00000000070008ull | 4ull << 33 | 4ull << 39 | 4ull << 20 | 1ull << 52; /* SULD.D.32 */
+		u64 instructions[] = {storage_mov(0, 1), storage_mov(1, 1), storage_mov(2, 1), 0x4c98078804a70004ull,
+			0x4c98078804b70006ull, load, 0xe30000000007000full};
+		u64 program = address + 0x4000; /* past the loop's programs */
+		u8 code[256] = {0};
+		u32 at = 0;
+		char expected[160], text[4096] = {0};
+		u64 dispatches = g_vk_dispatches;
+		FILE *log = tmpfile();
+
+		CHECK(log);
+		for (u32 i = 0; i < sizeof(instructions) / sizeof(instructions[0]); i++) {
+			if (!(i % 3)) snx_st_le64(code + 8 * at++, 0x001f8000fc0007e0ull);
+			snx_st_le64(code + 8 * at++, instructions[i]);
+		}
+		CHECK(!gmem_write(program, code, sizeof(code)));
+		CHECK(!storage_write_words(descriptors, tic, 8));
+		t_plat.log_redirect = log;
+		vk_lock();
+		{
+			DispatchState d;
+			mx_dispatch_state(qmd, channel->rcomp, program, &d);
+			vk_dispatch(&d);
+		}
+		vk_unlock();
+		t_plat.log_redirect = NULL;
+		rewind(log);
+		text[fread(text, 1, sizeof(text) - 1, log)] = 0;
+		fclose(log);
+		snprintf(expected, sizeof(expected),
+			"vulkan: a raw surface load's header %08x %08x %08x names no texture of 4-, 8- or 16-byte color "
+			"texels stored as they are: the dispatch is skipped", tic[0], tic[2], tic[4]);
+		if (g_vk_dispatches != dispatches || !strstr(text, expected))
+			fprintf(stderr, "an R32G32B32 raw load: %llu dispatches, log:\n%s", (unsigned long long)(g_vk_dispatches - dispatches), text);
+		CHECK(g_vk_dispatches == dispatches);
+		CHECK(strstr(text, expected));
+	}
 	printf("array and volume surface loads: %u formatted/raw round-trips checked\n", count);
 	free(channel);
 	return 0;
