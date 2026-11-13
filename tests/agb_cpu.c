@@ -231,12 +231,12 @@ int main(void) {
     CHECK(map.base[0x08000400] == 0x00 && map.base[0x08000401] == 0x02 && map.base[0x0C000402] == 0x01);
     CHECK(agb_read32(&board, 0x0A000400) == 0x02010200);
     {
-        /* a region and its mirrors are one memory in the flat map: EWRAM's every 256 KiB and past bit 31, VRAM's last
-           32 KiB of each 128 KiB the 32 KiB above the bitmap. volatile: the compiler sees two addresses where the
-           host maps one page, and may read the mirror before the store */
+        /* a region and its mirrors are one memory in the flat map: EWRAM's every 256 KiB, VRAM's last 32 KiB of each
+           128 KiB the 32 KiB above the bitmap; past the 28 bits the console decodes there is no mirror. volatile: the
+           compiler sees two addresses where the host maps one page, and may read the mirror before the store */
         volatile uint8_t* flat = map.base;
         flat[0x0203FFF0] = 0x5A;
-        CHECK(flat[0x0207FFF0] == 0x5A && flat[0x8203FFF0] == 0x5A);
+        CHECK(flat[0x0207FFF0] == 0x5A && flat[0x8203FFF0] == 0);
         flat[0x06010004] = 0xA5;
         CHECK(flat[0x06018004] == 0xA5 && flat[0x06038004] == 0xA5);
     }
