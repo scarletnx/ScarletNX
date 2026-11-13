@@ -32,13 +32,33 @@ int agb_cartridge_load(AgbCartridge* cartridge, const void* image, size_t size, 
         return -1;
     }
     cartridge->entry = snx_ld_le32(bytes);
-    if ((cartridge->entry & 0xFF000000u) != 0xEA000000u)
-        return fail(error, error_size, "ROM header does not start with an ARM branch");
+    if ((cartridge->entry & 0xFF000000u) != 0xEA000000u) {
+        /* what the file is, when its header says: a flash memory's image (an e-Reader card's dump) erased there, or a
+           whole header over no program, the data cartridge another console's game reads */
+        size_t erased = 0xA0;
+        while (erased < 0xC0 && bytes[erased] == 0xFF) ++erased;
+        if (erased == 0xC0)
+            snprintf(error, error_size,
+                     "ROM image of %zu bytes starts with 0x%08X and its header is erased, all 0xFF: a flash memory's "
+                     "image, as an e-Reader card's dump is, not a GBA program",
+                     size, cartridge->entry);
+        else if (bytes[0xB2] == 0x96 && header_checksum(bytes) == bytes[0xBD])
+            snprintf(error, error_size,
+                     "ROM header (title \"%.12s\", code %.4s) is whole, but its first word is 0x%08X, not an ARM "
+                     "branch: a data cartridge a game reads, not a GBA program",
+                     (const char*)bytes + 0xA0, (const char*)bytes + 0xAC, cartridge->entry);
+        else
+            snprintf(error, error_size, "ROM header starts with 0x%08X, not an ARM branch", cartridge->entry);
+        return -1;
+    }
     /* the branch target as a ROM offset: 8 past the branch word, plus the sign extended imm24 shifted left 2 */
     cartridge->entry_to = 8u + (uint32_t)((int32_t)(cartridge->entry << 8) >> 6);
-    if (bytes[0xB2] != 0x96) return fail(error, error_size, "ROM header is missing the fixed 0x96 byte");
-    if (header_checksum(bytes) != bytes[0xBD])
-        return fail(error, error_size, "ROM header checksum does not match its title block");
+    if (bytes[0xB2] != 0x96) {
+        snprintf(error, error_size, "ROM header's byte 0xB2 is 0x%02X, not the fixed 0x96", bytes[0xB2]);
+        return -1;
+    }
+    cartridge->checksum = bytes[0xBD];
+    cartridge->checksum_title = header_checksum(bytes);
     uint8_t* copy = (uint8_t*)malloc(size);
     if (!copy) return fail(error, error_size, "out of memory for the ROM image");
     memcpy(copy, image, size);

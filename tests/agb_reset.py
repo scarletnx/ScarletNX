@@ -44,6 +44,9 @@ r9, and spins. The code, assembled with llvm-mc for armv4t at 0x080000C0:
 The machine starts at the cartridge's first word, as the BIOS jumps there: a second ROM's header branches past a
 word at 0x080000C0 (mov r5, #0xFF) to code at 0x080000C8 that puts 0x5A in r5 and spins.
 
+A header whose complement check is not its title block's runs, as mGBA runs it, and the runner names both values (the
+console's BIOS stops there): a fourth ROM with the check flipped puts 42 in r5 and spins.
+
 A software interrupt whose number the BIOS does not have returns at once, as mGBA's HLE BIOS answers it, and the
 runner says which and where: a third ROM calls swi 0xFF0099 at 0x080000C0, then puts 42 in r5 and spins.
 
@@ -135,6 +138,33 @@ def main():
             sys.exit(
                 'agb_reset: after swi 0xFF0099 r5 is %s, not 0000002A, or the runner did not name the call 0xFF at '
                 '0x080000C0\n%s%s' % (found.group(1) if found else 'missing', run.stdout, run.stderr)
+            )
+        # a header whose checksum is not its title block's runs, as mGBA runs it, and the runner says both
+        image = bytearray(rom([0xE3A0502A, 0xEAFFFFFE]))
+        title = image[0xBD]
+        image[0xBD] ^= 0x40
+        (work / 'checksum.gba').write_bytes(bytes(image))
+        run = subprocess.run(
+            [args.runner, '--frames=2', '--registers', '--outdir', str(work), str(work / 'checksum.gba')],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        found = re.search(r'\br5=([0-9A-F]{8})', run.stdout)
+        said = "The ROM header's checksum is 0x%02X and its title block sums to 0x%02X: it runs" % (title ^ 0x40, title)
+        if run.returncode or not found or int(found.group(1), 16) != 42 or said not in run.stdout:
+            sys.exit(
+                'agb_reset: a header with checksum 0x%02X against 0x%02X ended with %d and r5 %s, not 0 and 0000002A '
+                'with "%s"\n%s%s'
+                % (
+                    title ^ 0x40,
+                    title,
+                    run.returncode,
+                    found.group(1) if found else 'missing',
+                    said,
+                    run.stdout,
+                    run.stderr,
+                )
             )
         # MultiBoot ROMs: the header's branch to 0xC0, mov r5, #42 and a spin there; mov r5, #0x5A and a spin at the
         # start with a zero word at 0xC0; and an image a word past EWRAM
