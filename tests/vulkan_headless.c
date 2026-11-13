@@ -5207,6 +5207,73 @@ static int check_flush_parts(void) {
     return 0;
 }
 
+/* A storage image's publish over a block linear layout with bytes past its texels (gpu/vk/surface.c vk_surf_publish):
+   an RGBA8 target of w x 12 in blocks of one GOB, its rows 8 to 15 a second row of blocks, 12 to 15 past it, and of
+   20 texels (80 bytes, GOBs of 64 bytes across: 48 past each row) or 16 (a GOB whole). Loaded from guest memory holding
+   a pattern, its red cleared to 0.5 alone and published, twice with another pattern: guest memory then has red 128
+   and the pattern in the texels, and the pattern in every byte past them. The publish's buffer comes from a pool, so
+   what the readback writes no byte of, the first publish's pattern stood there in the second (round 1) */
+static u8 padding_pattern(u64 i, u32 round) { return (u8)(flush_pattern(i) ^ (round ? 0xA5 : 0)); }
+static int publish_padding_case(u64 gva, u64 cpu, u32 w) {
+    const u32 h = 12, row = w * 4, size = (row + 63) / 64 * 64 * 16;
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    u8* got = malloc(size);
+    u8* texel = calloc(size, 1);
+    CHECK(ch && got && texel);
+    for (u32 y = 0; y < h; y++)
+        for (u32 x = 0; x < row; x++) texel[bl_offset(x, y, 0, row, h, 0, 0)] = (u8)(1 + x % 4);
+    u32* r = ch->r3d;
+    r[0x487] = 1;
+    r[0x200] = (u32)(gva >> 32);
+    r[0x201] = (u32)gva;
+    r[0x202] = w;
+    r[0x203] = h;
+    r[0x204] = 0xD5; /* A8B8G8R8 */
+    r[0x205] = 0;    /* block linear, 1 GOB a block */
+    r[0x206] = 1;
+    r[0x207] = size >> 2;
+    float red[4] = {0.5f, 0, 0, 0};
+    memcpy(&r[0x360], red, sizeof red);
+    for (u32 round = 0; round < 2; round++) {
+        guest_done(cpu, size); /* the first publish's bytes there first, as the guest's fence has them */
+        for (u32 i = 0; i < size; i++) GP(cpu)[i] = padding_pattern(i, round);
+        if (round) vk_rt_reload(gva);
+        engine_clear(ch, 1 << 2); /* red alone */
+        vk_render_end();
+        vk_lock();
+        Surf* t = vk_rt_find(gva);
+        int published = t && vk_surf_publish(t);
+        vk_unlock();
+        if (!published) {
+            fprintf(stderr, "publish of a %ux%u target, round %u: not published\n", w, h, round);
+            return 1;
+        }
+        CHECK(!gmem_read(gva, got, size));
+        for (u32 i = 0; i < size; i++) {
+            u8 want = texel[i] == 1 ? 128 : padding_pattern(i, round);
+            if (texel[i] == 1 ? abs((int)got[i] - 128) > 1 : got[i] != want) {
+                fprintf(stderr, "publish of a %ux%u target, round %u: byte %u (%s) holds %02x, not %02x\n", w, h, round,
+                        i, texel[i] ? "a texel's" : "past the texels", got[i], want);
+                return 1;
+            }
+        }
+    }
+    free(texel);
+    free(got);
+    free(ch);
+    return 0;
+}
+static int check_publish_padding(void) {
+    const u64 cpu = HEAP_BASE + 0xC00000, gva = 0xB000000ull;
+    CHECK(mem_map(cpu, 0x100000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, 0x100000);
+    CHECK(!publish_padding_case(gva, cpu, 20));
+    CHECK(!publish_padding_case(gva + 0x10000, cpu + 0x10000, 16));
+    CHECK(mem_unmap(cpu, 0x100000) == 0);
+    puts("A published target keeps guest memory's bytes past its texels");
+    return 0;
+}
+
 /* A VIC job bigger than one buffer (g_vk.alloc_cap, lowered to 64 KiB here) composed in bands of the target's rows,
    each staging the rows of every plane its rows read, against the CPU reference (vic_ref.c), on the DMA test's twin
    regions: block linear NV12 in (blocks of 2 GOBs), two slots over a background, the later one through the matrix,
@@ -7518,6 +7585,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_dma_bands_frames());
     CHECK(!check_flush_parts());
     CHECK(!check_vic_bands());
+    CHECK(!check_publish_padding());
     CHECK(!check_dma_texture());
     CHECK(!check_sparse_volume());
     CHECK(!check_sparse_view());
