@@ -664,6 +664,24 @@ int main(void) {
         CHECK(cpu.arm.r[0] == 7 && cpu.arm.r[15] == 0x03000202 && (cpu.arm.cpsr & SNX_ARM_T));
     }
     {
+        /* LDRSH at an odd address through the bus hook reads the byte there sign extended, as the ARM7TDMI does: the
+           palette's 0x80FF read at 0x05000001 gives 0xFFFFFF80 (mGBA's suite's memory.c, S16 unaligned) */
+        uint32_t written = 0;
+        agb_write16(&board, 0x05000000, 0x80FF);
+        agb_write32(&board, 0x03000700, 0xE1D100F0); /* ldrsh r0, [r1] */
+        agb_write32(&board, 0x03000704, 0xEAFFFFFE); /* b . */
+        cpu.arm.r[0] = 0;
+        cpu.arm.r[1] = 0x05000001;
+        cpu.arm.r[15] = 0x03000700;
+        cpu.arm.cpsr = 0x9F;
+        board.cpu_halted = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 2000, audio, AGB_APU_RATE, &written, error, sizeof error));
+        if (cpu.arm.r[0] != 0xFFFFFF80) {
+            fprintf(stderr, "agb_cpu: LDRSH at 0x05000001 read 0x%08X, not 0xFFFFFF80\n", cpu.arm.r[0]);
+            return 1;
+        }
+    }
+    {
         /* a Thumb BX PC two bytes past a word lands in ARM state at an address with bit 1 set, as a compiler's
            interworking stub does: the ARM7TDMI holds R15's bits 1 and 0 at zero there, so the word below runs and
            reads the PC from it. Here r0 = 42 and r2 = the first ARM word's address + 8, stored at 0x02000300 */
