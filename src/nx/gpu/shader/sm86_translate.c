@@ -2710,6 +2710,14 @@ void shader_hmma_way(char* out, size_t n) {
                                 : "",
              how, g_shader_mixed_dot && g_shader_float16 ? "by the mixed dot product into f32" : "unpacked to f32");
 }
+const char* shader_hmma_f16_unused(void) {
+    if (!g_shader_hmma_f16) return NULL;
+    if (!g_shader_float16) return "the device has no shaderFloat16";
+    if (g_shader_mixed_dot)
+        return "the device's mixed dot product (VK_VALVE_shader_mixed_float_dot_product) sums two products an "
+               "instruction in f32";
+    return NULL;
+}
 /* A zero for an HMMA to OR its B registers with before it gathers them, a new one every 8 HMMAs, so that a driver
    doesn't keep a B fragment's 16 gathered words live from its first HMMA to its last. Mesa merges identical subgroup
    operations within a block, and one game's video upscaler multiplies one B fragment by many A ones, far apart: with
@@ -2931,7 +2939,7 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
        2^-8 of its products' magnitudes where the f32 sum is within 2^-20, and 2^-21 more below the normals (more where
        the device flushes f16 subnormals); a product or partial sum past 65504 is an infinity. The driver's matrix
        unit (hmma_coop) is the exact way to that speed and it is off where the driver has no VK_KHR_cooperative_matrix */
-    int packed = !mixed && g_shader_hmma_f16 && g_shader_float16;
+    int packed = g_shader_hmma_f16 && !shader_hmma_f16_unused();
     u32 t_v2h = 0, start2 = 0;
     if (mixed || packed) {
         spv_emit_capability(&c->e, SPV_CAPABILITY_FLOAT16);
