@@ -109,7 +109,10 @@ the `.ini`.
 `--extract-container` (the launcher's **Extract dump**) extracts the dump instead, straight into the game's
 folder, `recompiled/<id>/<id>_data/` (`exefs/`, `romfs/`, `control.nacp`), and the game is made from it there: there is no
 second copy. `<id>.extracting` stays in the game's folder while an extraction is unfinished, and a stopped one is redone
-on the next run, the game's saves kept. A game made from its dump is extracted on the first run with the option, with
+on the next run, the game's saves kept. A made game's RomFS that a stopped extraction (`<id>.extracting`) or copy
+(`romfs.copying` in its data folder) cut, or that is not there, is extracted again from the dump `source=` names at its
+next start, and by `-r --extract-container`; with no `source=`, or one that is not there, both stop before the game
+runs, saying which file they need, and the game itself refuses to start on such a RomFS. A game made from its dump is extracted on the first run with the option, with
 no recompile, and a game run without it again has that extraction taken away, as long as the dump it records is there.
 `--data DIR` and `--build-dir DIR` may precede the dump. Keys use the usual discovery paths below.
 `--outdir DIR` puts the game's folder in DIR in place of the data folder's `recompiled/`, as `-r` takes it. With
@@ -135,9 +138,10 @@ place. `-rx` (`-r -x` on Windows) prepares it extracted, as `-r --extract-contai
 An extracted game's folder, one whose `exefs/` holds the game's `main` (beside its `romfs/` and `control.nacp` when it
 has them, as `-x` or hactool lays one out), plays and prepares as a dump does: `./build/scarletnx "Game/"`, or
 `-r "Game/"`. The game is named by the title ID of its `exefs/main.npdm`, and shown by its `control.nacp`'s name, else
-by that ID. Nothing of it is copied by default: the `.ini` records the folder as `source=`, and each run reads the
-ExeFS and RomFS from it, on whatever disk it is. `--extract-container` copies it into the game's data folder and
-`--tmpfs` into tmpfs instead, as they extract a dump; `-x --out DIR -- "Game/"` copies it alone. Moving or deleting the
+by that ID. Nothing of it is copied: the `.ini` records the folder as `source=`, and each run reads the ExeFS and
+RomFS from it, on whatever disk it is, `--extract-container` or not (its RomFS can take gigabytes a copy doubles; what
+an older version copied into the game's data folder is taken away at the next run). `--tmpfs` copies it into tmpfs, as
+it extracts a dump; `-x --out DIR -- "Game/"` copies it alone. Moving or deleting the
 folder stops the game, the run naming it, until it is back or `source=` names its new place. `--out` names a dump's
 extraction, and is refused for a folder. Removing a game's files never goes through a folder where a disk or another
 folder is mounted (a RomFS bind-mounted into a game's data folder): the run stops naming the mount, to be unmounted

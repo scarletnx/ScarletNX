@@ -309,7 +309,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   nothing of a dump is extracted: the game's `.ini` records the dump, the recompile reads the ExeFS from it, and the
   game reads its ExeFS and RomFS out of the dump on the fly, decrypting them as it reads ([Usage](usage.md)). A CIA
   is read the same way. On, a dump is extracted as before, into the game's folder or with *Extract to tmpfs* into
-  tmpfs, which implies it. Turning it off again takes a game's extraction away on its next run.
+  tmpfs, which implies it; an extracted game's folder is read in place all the same, and copied only into tmpfs. Turning it off again takes a game's extraction away on its next run.
   **Optimization level** (0, 1, 2, 3 or z, 2 by default) is LLVM's level for the game's code, **AOT threads** the
   threads compiling it (0, the default Auto: the machine's cores with a quarter left free, the physical cores
   where it says them, at most 75%, so a recompile does not make the computer stutter), **Unit cache limit** the GB
@@ -611,7 +611,9 @@ cannot be read is named and the others still listed.
   **Recompile** recompiles it where it is, as R does, and Back does neither.
 - A made game whose file to play from is not there is greyed and says `(file not found)` after its name, in the list
   and in Recent Games, and the side box names the file (*Not found:* and its path), as each driver plays it: a Switch
-  game read from its dump in place (`source=` in its `.ini`; its ExeFS not extracted into its `<name>_data`), a GBA
+  game read from its dump in place (`source=` in its `.ini`; its ExeFS not extracted into its `<name>_data`, or its
+  RomFS there cut by a stopped extraction or copy, or not there, which its next start extracts again from that dump:
+  a game whose `.ini` names none says *Not found: the dump or folder its RomFS is extracted from*), a GBA
   game, whose ROM its driver reads at every run, a 3DS game (`source=` in the `.ini` of its folder), unless its folder
   holds its extraction (`exheader.bin`) or the extractions' folder a copy the 3DS driver decrypted
   (`3ds/<name>.decrypted.<extension>`), and a Vita game made from a dumped game's folder, which its `app/` links. A Vita
