@@ -122,6 +122,29 @@ static u32 cf(Ctx* c, float v) { return spv_emit_constant_f32(&c->e, c->t_f32, v
 static u32 to_f(Ctx* c, u32 v) { return spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_f32, v); }
 static u32 to_u(Ctx* c, u32 v) { return spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_u32, v); }
 static u32 op2(Ctx* c, u32 opcode, u32 type, u32 a, u32 b) { return SPV(&c->e, opcode, type, a, b); }
+/* PackHalf2x16 of a vec2 of f32, as the console converts f32 to f16. Where the device may flush f16 subnormals
+   (g_shader_half_flush) a half below 2^-14 is RoundEven(|x| 2^24), the subnormal's own bits, and x's sign: 2^24
+   scales without rounding and the product is below 1024, so it is the f16 for every such f32 */
+static u32 pack_half(Ctx* c, u32 pair) {
+    u32 bits = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, pair);
+    if (!g_shader_half_flush) return bits;
+    for (u32 k = 0; k < 2; k++) {
+        u32 x = spv_emit_vec4_extract(&c->e, c->t_f32, pair, k);
+        u32 a = SPV_EXT(&c->e, c->t_f32, SPV_GLSL_F_ABS, x);
+        u32 small = op2(c, SPV_OP_F_ORD_LESS_THAN, c->t_bool, a, cf(c, 0x1p-14f));
+        u32 m = spv_emit_unary(
+            &c->e, SPV_OP_CONVERT_F_TO_U, c->t_u32,
+            SPV_EXT(&c->e, c->t_f32, SPV_GLSL_ROUND_EVEN, op2(c, SPV_OP_F_MUL, c->t_f32, a, cf(c, 0x1p24f))));
+        u32 sign = op2(c, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32,
+                       op2(c, SPV_OP_BITWISE_AND, c->t_u32, to_u(c, x), cu(c, 0x80000000u)), cu(c, 16));
+        u32 half = op2(c, SPV_OP_BITWISE_OR, c->t_u32, m, sign);
+        u32 kept = op2(c, SPV_OP_BITWISE_AND, c->t_u32, bits, cu(c, k ? 0xffffu : 0xffff0000u));
+        u32 exact = op2(c, SPV_OP_BITWISE_OR, c->t_u32, kept,
+                        k ? op2(c, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, half, cu(c, 16)) : half);
+        bits = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, small, exact, bits);
+    }
+    return bits;
+}
 
 /* ---- registers ---- */
 
@@ -2173,7 +2196,7 @@ static void tex_results(Ctx* c, const Sm86Insn* in, u32 value, u32 scalar) {
             u32 pair =
                 spv_emit_vec2_construct(&c->e, c->t_v2f, half[2 * p], 2 * p + 1 < n ? half[2 * p + 1] : cf(c, 0.0f));
             u32 r = p == 0 || d1 >= SM86_RZ ? (d0 >= SM86_RZ ? d0 : d0 + p) : d1;
-            wr(c, r, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, pair));
+            wr(c, r, pack_half(c, pair));
         }
         return;
     }
@@ -2780,9 +2803,7 @@ static void hmma_coop(Ctx* c, const Sm86Insn* in, int k16, int f32, u32 ra, u32 
         for (k = 0; k < 4; k++) wr(c, d + k, to_u(c, acc[k]));
     else
         for (u32 i = 0; i < 2; i++)
-            wr(c, d + i,
-               SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
-                       spv_emit_vec2_construct(&c->e, c->t_v2f, acc[2 * i], acc[2 * i + 1])));
+            wr(c, d + i, pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, acc[2 * i], acc[2 * i + 1])));
 }
 /* HMMA (0x23c): D = A B + C on the warp's fragments, as PTX's mma.sync.aligned.m16n8k16 (bit 75) or m16n8k8 .row.col
    with f16 A and B, and f16 (bit 76 clear) or f32 C and D (the encodings of CuAssembler's sm_86 records: bits 72-90 8
@@ -2896,9 +2917,7 @@ static void hmma(Ctx* c, const Sm86Insn* in) {
         wr(c, d + 3, to_u(c, acc[1][1]));
     } else
         for (u32 i = 0; i < 2; i++)
-            wr(c, d + i,
-               SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
-                       spv_emit_vec2_construct(&c->e, c->t_v2f, acc[i][0], acc[i][1])));
+            wr(c, d + i, pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, acc[i][0], acc[i][1])));
 }
 /* a 16-bit element of shared memory at the byte address, in the low half */
 static u32 shared_u16(Ctx* c, u32 address) {
@@ -3486,10 +3505,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 case 9: v = spv_emit_glsl_unary(&c->e, c->t_f32, c->glsl, (SpvGlsl450Op)21 /* Tanh */, x); break;
                 default: fail(c, "MUFU function %u", fn); return;
             }
-            dwr(c, in,
-                half ? SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
-                               spv_emit_vec2_construct(&c->e, c->t_v2f, v, cf(c, 0.0f)))
-                     : to_u(c, v));
+            dwr(c, in, half ? pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, v, cf(c, 0.0f))) : to_u(c, v));
             return;
         }
         case SM86_F2F: {
@@ -3500,9 +3516,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 fail(c, "F2F from %u to %u bytes, rounding %u", 1u << ssize, 1u << dsize, rnd);
                 return;
             }
-            dwr(c, in,
-                SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
-                        spv_emit_vec2_construct(&c->e, c->t_v2f, src_f(c, &in->b), cf(c, 0.0f))));
+            dwr(c, in, pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, src_f(c, &in->b), cf(c, 0.0f))));
             return;
         }
         case SM86_F2I: {
@@ -3725,8 +3739,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 u32 keep = src_bits(c, &in->c);
                 if (sm86_field(in, 72, 1))
                     keep = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, keep, cu(c, 16));
-                u32 low = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16,
-                                  spv_emit_vec2_construct(&c->e, c->t_v2f, src_f(c, &in->b), cf(c, 0.0f)));
+                u32 low = pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, src_f(c, &in->b), cf(c, 0.0f)));
                 dwr(c, in,
                     spv_emit_binary(&c->e, SPV_OP_BITWISE_OR, c->t_u32,
                                     spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, keep, cu(c, 16)), low));
@@ -3739,7 +3752,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                     spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, bf16(c, hi), cu(c, 16)),
                                     bf16(c, lo));
             else
-                v = SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, spv_emit_vec2_construct(&c->e, c->t_v2f, lo, hi));
+                v = pack_half(c, spv_emit_vec2_construct(&c->e, c->t_v2f, lo, hi));
             dwr(c, in, v);
             return;
         }
@@ -4153,7 +4166,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             if (in->c.kind == SM86_SRC_REG && in->c.abs) cpair = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_F_ABS, cpair);
             if (in->c.kind == SM86_SRC_REG && in->c.neg) cpair = SPV(&c->e, SPV_OP_F_NEGATE, c->t_v2f, cpair);
             u32 sum = nocontract(c, op2(c, SPV_OP_F_ADD, c->t_v2f, p, cpair));
-            dwr(c, in, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, sum));
+            dwr(c, in, pack_half(c, sum));
             return;
         }
         case SM86_HFMA2: {
@@ -4219,7 +4232,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 }
                 r = spv_emit_vec2_construct(&c->e, c->t_v2f, lane[0], lane[1]);
             }
-            dwr(c, in, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, r));
+            dwr(c, in, pack_half(c, r));
             return;
         }
         case SM86_HMUL2:
@@ -4266,7 +4279,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                                                spv_emit_vec4_extract(&c->e, c->t_f32, hi, k));
                 r = spv_emit_vec2_construct(&c->e, c->t_v2f, lane[0], lane[1]);
             }
-            dwr(c, in, SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, r));
+            dwr(c, in, pack_half(c, r));
             return;
         }
         case SM86_HADD2: {
@@ -4297,9 +4310,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
                 sum = SPV_EXT(&c->e, c->t_v2f, SPV_GLSL_N_CLAMP, sum,
                               spv_emit_vec2_construct(&c->e, c->t_v2f, cf(c, 0.0f), cf(c, 0.0f)),
                               spv_emit_vec2_construct(&c->e, c->t_v2f, cf(c, 1.0f), cf(c, 1.0f)));
-            dwr(c, in,
-                as_f32 ? to_u(c, spv_emit_vec4_extract(&c->e, c->t_f32, sum, 0))
-                       : SPV_EXT(&c->e, c->t_u32, SPV_GLSL_PACK_HALF2X16, sum));
+            dwr(c, in, as_f32 ? to_u(c, spv_emit_vec4_extract(&c->e, c->t_f32, sum, 0)) : pack_half(c, sum));
             return;
         }
         case SM86_ULDC_IDX: {

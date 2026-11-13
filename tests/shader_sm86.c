@@ -3951,9 +3951,9 @@ static void hmma_inputs(HmmaMats* m, u32* in, int set) {
         q[7] = m->c[g + 8][2 * t] | (u32)m->c[g + 8][2 * t + 1] << 16;
     }
 }
-/* the program's 32 lanes on the evaluator (out: HMMA_OUT words a lane), translated as the flags are: 0 when the
-   translation or the evaluator fails */
-static int hmma_run(const u8* code, u32 n, const u32* in, u32* out, const char* dir, const char* keep) {
+/* the program's 32 lanes on the evaluator (out: HMMA_OUT words a lane), translated as the flags are, its
+   PackHalf2x16 flushing f16 subnormals where flush is set: 0 when the translation or the evaluator fails */
+static int hmma_run(const u8* code, u32 n, const u32* in, u32* out, const char* dir, const char* keep, int flush) {
     ShaderInfo si = {0};
     si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
     si.shared_size = (int)(32 * HMMA_OUT * 4);
@@ -3973,6 +3973,7 @@ static int hmma_run(const u8* code, u32 n, const u32* in, u32* out, const char* 
         env[l].ubo_words[SNX_VKB_CB + 1] = 256;
         env[l].builtin[27][0] = env[l].builtin[29][0] = env[l].builtin[41][0] = l; /* LocalInvocationId.x, Index */
         env[l].builtin[24][0] = env[l].builtin[24][1] = env[l].builtin[24][2] = 1; /* NumWorkgroups */
+        env[l].half_flush = flush;
     }
     const char* why = spv_eval_subgroup(spv, count, env, 32);
     free(spv);
@@ -4055,7 +4056,7 @@ static void test_warp_matrix_values(const char* dir) {
                     g_shader_hmma_pairs = pairs;
                     char keep[32];
                     snprintf(keep, sizeof keep, "warp_values%d%d%d", quad, mixed, pairs);
-                    int ran = hmma_run(code, n, in, out[pairs], dir, set == HM_EXACT ? keep : NULL);
+                    int ran = hmma_run(code, n, in, out[pairs], dir, set == HM_EXACT ? keep : NULL, 0);
                     g_shader_quad_compute = quad_was, g_shader_mixed_dot = mixed_was, g_shader_float16 = f16_was;
                     g_shader_hmma_pairs = pairs_was;
                     CHECK(ran);
@@ -4090,6 +4091,52 @@ static void test_warp_matrix_values(const char* dir) {
                     fprintf(stderr, "warp matrix values (quad %d, mixed %d): %u words differ between the forms\n", quad,
                             mixed, differ);
             }
+    }
+}
+
+/* HMMA's f16 D where the device flushes f16 subnormals (the evaluator's half_flush, as Turnip on an Adreno 610 does in
+   PackHalf2x16): with g_shader_half_flush the halves below 2^-14 are packed by hand and every output is what
+   hmma_expect says; packed by PackHalf2x16 alone, some of the rounded set's are lost, which shows the set reaches them */
+static void test_warp_matrix_flush(const char* dir) {
+    u8 code[16 * 48] = {0};
+    u32 n = hmma_program(code);
+    int flush_was = g_shader_half_flush, f16_was = g_shader_float16;
+    static HmmaMats mats;
+    static u32 in[32 * 8], out[32 * HMMA_OUT];
+    hmma_inputs(&mats, in, HM_ROUNDED);
+    for (int exact = 0; exact < 2; exact++) {
+        g_shader_half_flush = exact, g_shader_float16 = 1;
+        int ran = hmma_run(code, n, in, out, dir, exact ? "warp_flush" : NULL, 1);
+        g_shader_half_flush = flush_was, g_shader_float16 = f16_was;
+        CHECK(ran);
+        if (!ran) return;
+        u32 bad = 0, small = 0;
+        for (u32 l = 0; l < 32; l++)
+            for (u32 w = 0; w < HMMA_OUT; w++) {
+                u32 got = out[l * HMMA_OUT + w], at = 0, k = 0;
+                for (; k < 8 && w >= at + (hmma_cases[k][2] & 0x10 ? 4u : 2u); k++)
+                    at += hmma_cases[k][2] & 0x10 ? 4u : 2u;
+                int f32 = hmma_cases[k][2] >> 4 & 1;
+                for (u32 j = 0; j < (f32 ? 1u : 2u); j++) {
+                    double tol;
+                    int kind, zero_sign;
+                    double want = hmma_expect(&mats, l, w, j, &tol, &kind, &zero_sign);
+                    small += !f32 && kind == 0 && want != 0 && fabs(want) < 0x1p-14;
+                    if (hmma_match(got, f32, j, want, tol, kind, zero_sign, 0)) continue;
+                    if (exact && bad < 8)
+                        fprintf(stderr,
+                                "warp matrix, f16 subnormals flushed: lane %u word %u half %u is 0x%08x, "
+                                "expected %.9g within %.3g\n",
+                                l, w, j, got, want, tol);
+                    bad++;
+                }
+            }
+        if (!exact && !bad)
+            fprintf(stderr,
+                    "warp matrix, f16 subnormals flushed: PackHalf2x16 alone lost none of %u halves below "
+                    "2^-14\n",
+                    small);
+        CHECK(exact ? bad == 0 : bad > 0);
     }
 }
 
@@ -4318,6 +4365,7 @@ int main(int argc, char** argv) {
     test_uses_isbe();
     test_warp_matrix(dir);
     test_warp_matrix_values(dir);
+    test_warp_matrix_flush(dir);
     test_warp_matrix_coop(dir);
     test_ftz_modes(dir);
     if (failures) {

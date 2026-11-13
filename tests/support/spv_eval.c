@@ -193,7 +193,7 @@ static const char* ext_inst(Ev* e, uint32_t t, uint32_t fn, const uint32_t* args
             else if (a >= 65520.0f)
                 h = 0x7c00u;
             else if (a < 6.103515625e-05f) /* a subnormal half: in units of 2^-24 */
-                h = (uint32_t)nearbyintf(ldexpf(a, 24));
+                h = (uint32_t)nearbyintf(ldexpf(a, 24)), h = e->env->half_flush && h < 0x400u ? 0 : h;
             else {
                 int ex;
                 float m = frexpf(a, &ex); /* a = m 2^ex, m in [0.5, 1) */

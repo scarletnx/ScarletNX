@@ -31,6 +31,7 @@ typedef struct {
     uint32_t gather[64][4][4];  /* what an OpImageGather of each component of the image at each binding returns */
     int killed;                 /* the invocation ended with OpKill or OpTerminateInvocation */
     int helper;                 /* the invocation is a fragment's helper: OpIsHelperInvocationEXT answers true */
+    int half_flush;             /* PackHalf2x16 flushes f16 subnormals to a signed zero, as a driver may */
     uint32_t shuffle_id;        /* the invocation the last OpGroupNonUniformShuffle read from (its Id operand) */
     uint32_t steps_max;         /* 0: 1000000 */
     uint32_t push[20];          /* the push constant block's words */
