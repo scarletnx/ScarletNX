@@ -25,7 +25,15 @@ enum {
    frame in each direction, the point where an upscale starts to make an edge visible (the ratio dynamic resolution
    scalers use to decide that a lower render size needs help). Supersampling renders the pass at 2x or 4x and
    downsamples, which also removes the edges a post process cannot see. */
-enum { SNX_FX_AA_OFF, SNX_FX_AA_AUTO, SNX_FX_AA_FXAA, SNX_FX_AA_SMAA, SNX_FX_AA_SSAA2, SNX_FX_AA_SSAA4, SNX_FX_AA_COUNT };
+enum {
+    SNX_FX_AA_OFF,
+    SNX_FX_AA_AUTO,
+    SNX_FX_AA_FXAA,
+    SNX_FX_AA_SMAA,
+    SNX_FX_AA_SSAA2,
+    SNX_FX_AA_SSAA4,
+    SNX_FX_AA_COUNT
+};
 
 /* the settings' words (upscaler, anti_aliasing; settings.txt's) and the menus' labels: a word case aside, -1 for one
    that is none of them; a value out of the enum has key and label NULL */

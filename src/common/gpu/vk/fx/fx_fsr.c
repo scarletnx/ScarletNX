@@ -12,8 +12,8 @@
 
 #include "common/gpu/vk/fx/fx_fsr.h"
 
-void snx_fx_fsr_easu_con(uint32_t con[4][4], float input_w, float input_h, float image_w, float image_h,
-                             float output_w, float output_h, float offset_x, float offset_y) {
+void snx_fx_fsr_easu_con(uint32_t con[4][4], float input_w, float input_h, float image_w, float image_h, float output_w,
+                         float output_h, float offset_x, float offset_y) {
     AU1 c0[4], c1[4], c2[4], c3[4];
     int i;
     FsrEasuConOffset(c0, c1, c2, c3, input_w, input_h, image_w, image_h, output_w, output_h, offset_x, offset_y);

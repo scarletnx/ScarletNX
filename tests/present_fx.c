@@ -140,9 +140,8 @@ static void barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, VkImag
                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                .image = image,
                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                          .imageMemoryBarrierCount = 1,
-                          .pImageMemoryBarriers = &b};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b};
     vkCmdPipelineBarrier2(cb, &d);
 }
 
@@ -205,8 +204,8 @@ static int upload(Test* t, Image* im, const unsigned char* pixels) {
     vkGetPhysicalDeviceMemoryProperties(t->phys, &mp);
     {
         VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size};
-        ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        ai.memoryTypeIndex = snx_vk_memory_type(
+            &mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (!succeed(vkAllocateMemory(t->dev, &ai, NULL, &memory)) ||
             !succeed(vkBindBufferMemory(t->dev, buffer, memory, 0)) ||
             !succeed(vkMapMemory(t->dev, memory, 0, VK_WHOLE_SIZE, 0, &mapped)))
@@ -240,8 +239,7 @@ static unsigned char* read_image(Test* t, VkImage image, VkImageLayout layout, u
                              .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
     VkPhysicalDeviceMemoryProperties mp;
     VkMemoryRequirements req;
-    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                              .imageExtent = {w, h, 1}};
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
     VkCommandBuffer cb;
     uint64_t serial;
     if (!out) return NULL;
@@ -250,8 +248,8 @@ static unsigned char* read_image(Test* t, VkImage image, VkImageLayout layout, u
     vkGetPhysicalDeviceMemoryProperties(t->phys, &mp);
     {
         VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size};
-        ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        ai.memoryTypeIndex = snx_vk_memory_type(
+            &mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (!succeed(vkAllocateMemory(t->dev, &ai, NULL, &memory)) ||
             !succeed(vkBindBufferMemory(t->dev, buffer, memory, 0)) ||
             !succeed(vkMapMemory(t->dev, memory, 0, VK_WHOLE_SIZE, 0, &mapped)))
@@ -274,9 +272,12 @@ static unsigned char* read_image(Test* t, VkImage image, VkImageLayout layout, u
 static double half1(unsigned short h) {
     int e = (h >> 10) & 0x1F, m = h & 0x3FF, sign = h >> 15;
     double v;
-    if (!e) v = m / 1024.0 * pow(2.0, -14.0);
-    else if (e == 31) v = m ? NAN : INFINITY;
-    else v = (1.0 + m / 1024.0) * pow(2.0, e - 15.0);
+    if (!e)
+        v = m / 1024.0 * pow(2.0, -14.0);
+    else if (e == 31)
+        v = m ? NAN : INFINITY;
+    else
+        v = (1.0 + m / 1024.0) * pow(2.0, e - 15.0);
     return sign ? -v : v;
 }
 static unsigned char* read_image_f16(Test* t, VkImage image, VkImageLayout layout, uint32_t w, uint32_t h) {
@@ -491,11 +492,11 @@ int main(int argc, char** argv) {
         CHECK(!snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 320, 240, SNX_FX_UPSCALE_FSR1,
                              SNX_FX_AA_OFF, &out));
         CHECK(!strcmp(g_test.said, "upscaler Bilinear and anti aliasing Off, 320x240 to 320x240 (AMD FSR 1 grows a "
-                              "frame, and this one is not shown larger)"));
+                                   "frame, and this one is not shown larger)"));
         CHECK(snx_fx_render(fx, cb, 0, step.view, 320, 240, 0, 0, 320, 240, 0, 960, 720, SNX_FX_UPSCALE_NIS,
                             SNX_FX_AA_AUTO, &out));
         CHECK(!strcmp(g_test.said, "upscaler AMD FSR 1 and anti aliasing FXAA, 320x240 to 960x720 (NVIDIA NIS grows "
-                              "a frame twice at most)"));
+                                   "a frame twice at most)"));
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
     }
@@ -550,8 +551,8 @@ int main(int argc, char** argv) {
         serial = snx_vk_ring_submit(&t.ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
         CHECK(snx_vk_ring_wait(&t.ring, serial, UINT64_MAX));
         for (int i = 0; i < 2; ++i) {
-            unsigned char* got = read_image_f16(&t, out[i].image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out_side[i],
-                                                out_side[i]);
+            unsigned char* got =
+                read_image_f16(&t, out[i].image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out_side[i], out_side[i]);
             uint32_t bad = 0, first = 0;
             CHECK(got);
             for (uint32_t k = 0; k < out_side[i] * out_side[i]; ++k)

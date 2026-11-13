@@ -175,7 +175,6 @@ int snx_fx_aa_auto(uint32_t render_w, uint32_t render_h, uint32_t shown_w, uint3
     return (uint64_t)shown_w * 4 >= (uint64_t)render_w * 5 && (uint64_t)shown_h * 4 >= (uint64_t)render_h * 5;
 }
 
-
 /* ---- images ---- */
 
 static void img_free(SnxFx* fx, FxImage* im) {
@@ -260,9 +259,9 @@ static int format_ok(SnxFx* fx) {
 
 /* ---- barriers and draws ---- */
 
-static void fx_barrier(SnxFx* fx, VkCommandBuffer cb, VkImage image, VkImageAspectFlags aspect, VkImageLayout old_layout,
-                       VkImageLayout new_layout, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
-                       VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+static void fx_barrier(SnxFx* fx, VkCommandBuffer cb, VkImage image, VkImageAspectFlags aspect,
+                       VkImageLayout old_layout, VkImageLayout new_layout, VkPipelineStageFlags2 src_stage,
+                       VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
     VkImageMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                                .srcStageMask = src_stage,
                                .srcAccessMask = src_access,
@@ -274,9 +273,8 @@ static void fx_barrier(SnxFx* fx, VkCommandBuffer cb, VkImage image, VkImageAspe
                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                .image = image,
                                .subresourceRange = {aspect, 0, 1, 0, 1}};
-    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                          .imageMemoryBarrierCount = 1,
-                          .pImageMemoryBarriers = &b};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b};
     (void)fx;
     vkCmdPipelineBarrier2(cb, &d);
 }
@@ -313,8 +311,8 @@ static void fx_draw(VkCommandBuffer cb, VkImageView view, VkPipeline pipe, VkPip
     vkCmdSetViewport(cb, 0, 1, &vp);
     vkCmdSetScissor(cb, 0, 1, &sc);
     if (set) vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, NULL);
-    if (pc && pc_size) vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT, 0,
-                                          pc_size, pc);
+    if (pc && pc_size)
+        vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT, 0, pc_size, pc);
     vkCmdDraw(cb, 3, 1, 0, 0);
     vkCmdEndRendering(cb);
 }
@@ -373,8 +371,7 @@ static VkPipeline make_gfx(SnxFx* fx, const uint32_t* vs, uint64_t vs_bytes, con
     VkPipeline pipe = VK_NULL_HANDLE;
     st[0].module = v;
     st[1].module = f;
-    if (!v || !f || !fx_ok(vkCreateGraphicsPipelines(fx->dev, fx->cache, 1, &ci, NULL, &pipe)))
-        pipe = VK_NULL_HANDLE;
+    if (!v || !f || !fx_ok(vkCreateGraphicsPipelines(fx->dev, fx->cache, 1, &ci, NULL, &pipe))) pipe = VK_NULL_HANDLE;
     if (v) vkDestroyShaderModule(fx->dev, v, NULL);
     if (f) vkDestroyShaderModule(fx->dev, f, NULL);
     return pipe;
@@ -396,12 +393,10 @@ static VkPipeline make_compute(SnxFx* fx, const uint32_t* words, uint64_t bytes,
 
 static int make_layouts(SnxFx* fx) {
     VkPushConstantRange pc = {VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT, 0, SNX_FX_PUSH};
-    VkDescriptorSetLayoutBinding b[3] = {{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
-                                          NULL},
-                                         {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
-                                          NULL},
-                                         {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
-                                          NULL}};
+    VkDescriptorSetLayoutBinding b[3] = {
+        {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+        {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+        {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL}};
     VkDescriptorSetLayoutCreateInfo dl = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                      .setLayoutCount = 1,
@@ -424,9 +419,8 @@ static int make_layouts(SnxFx* fx) {
             {3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
             {4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
             {5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
-        VkDescriptorSetLayoutCreateInfo nd = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                              .bindingCount = 6,
-                                              .pBindings = nis_b};
+        VkDescriptorSetLayoutCreateInfo nd = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 6, .pBindings = nis_b};
         VkPushConstantRange npc = {VK_SHADER_STAGE_COMPUTE_BIT, 0, SNX_FX_PUSH};
         VkPipelineLayoutCreateInfo npl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                           .setLayoutCount = 1,
@@ -435,9 +429,8 @@ static int make_layouts(SnxFx* fx) {
                                           .pPushConstantRanges = &npc};
         VkDescriptorSetLayoutBinding sgsr_b = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                                                VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
-        VkDescriptorSetLayoutCreateInfo sd = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                              .bindingCount = 1,
-                                              .pBindings = &sgsr_b};
+        VkDescriptorSetLayoutCreateInfo sd = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &sgsr_b};
         VkPushConstantRange spc = {VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT, 0, SNX_FX_PUSH};
         VkPipelineLayoutCreateInfo spl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                           .setLayoutCount = 1,
@@ -467,13 +460,12 @@ static int make_pipelines(SnxFx* fx) {
                               fx_fsr_rcas_fp16_spv_size, fx->pl1, fmt);
     }
     fx->fxaa = make_gfx(fx, fx_fsr_vert_spv, fx_fsr_vert_spv_size, fx_fxaa_spv, fx_fxaa_spv_size, fx->pl1, fmt);
-    fx->smaa_edge =
-        make_gfx(fx, fx_fsr_vert_spv, fx_fsr_vert_spv_size, fx_smaa_edge_spv, fx_smaa_edge_spv_size, fx->pl1,
-                 VK_FORMAT_R8G8_UNORM);
-    fx->smaa_weights = make_gfx(fx, fx_fsr_vert_spv, fx_fsr_vert_spv_size, fx_smaa_weights_spv, fx_smaa_weights_spv_size,
-                                fx->pl3, VK_FORMAT_R8G8B8A8_UNORM);
-    fx->smaa_blend = make_gfx(fx, fx_fsr_vert_spv, fx_fsr_vert_spv_size, fx_smaa_blend_spv, fx_smaa_blend_spv_size,
-                              fx->pl2, fmt);
+    fx->smaa_edge = make_gfx(fx, fx_fsr_vert_spv, fx_fsr_vert_spv_size, fx_smaa_edge_spv, fx_smaa_edge_spv_size,
+                             fx->pl1, VK_FORMAT_R8G8_UNORM);
+    fx->smaa_weights = make_gfx(fx, fx_fsr_vert_spv, fx_fsr_vert_spv_size, fx_smaa_weights_spv,
+                                fx_smaa_weights_spv_size, fx->pl3, VK_FORMAT_R8G8B8A8_UNORM);
+    fx->smaa_blend =
+        make_gfx(fx, fx_fsr_vert_spv, fx_fsr_vert_spv_size, fx_smaa_blend_spv, fx_smaa_blend_spv_size, fx->pl2, fmt);
     if (!fx->copy || !fx->easu || !fx->rcas || !fx->fxaa || !fx->smaa_edge || !fx->smaa_weights || !fx->smaa_blend) {
         fx->pipes_failed = 1;
         fx_echo(fx, "the upscaler's and anti aliasing's pipelines could not be made on this device: the frame shows "
@@ -487,9 +479,8 @@ static int make_pipelines(SnxFx* fx) {
 static int make_coef(SnxFx* fx, VkCommandBuffer cb) {
     const uint32_t w = kFilterSize / 4, h = kPhaseCount;
     const VkDeviceSize one = (VkDeviceSize)w * h * 4 * sizeof(uint16_t);
-    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                             .size = one * 2,
-                             .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    VkBufferCreateInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = one * 2, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
     VkMemoryRequirements req;
     VkPhysicalDeviceMemoryProperties mp;
     VkMemoryAllocateInfo ai;
@@ -498,8 +489,8 @@ static int make_coef(SnxFx* fx, VkCommandBuffer cb) {
     vkGetBufferMemoryRequirements(fx->dev, fx->coef_buf, &req);
     vkGetPhysicalDeviceMemoryProperties(fx->phys, &mp);
     ai = (VkMemoryAllocateInfo){.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size};
-    ai.memoryTypeIndex =
-        snx_vk_memory_type(&mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits,
+                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (ai.memoryTypeIndex == UINT32_MAX || !fx_ok(vkAllocateMemory(fx->dev, &ai, NULL, &fx->coef_mem)) ||
         !fx_ok(vkBindBufferMemory(fx->dev, fx->coef_buf, fx->coef_mem, 0)) ||
         !fx_ok(vkMapMemory(fx->dev, fx->coef_mem, 0, VK_WHOLE_SIZE, 0, &mapped)) || !mapped)
@@ -521,8 +512,8 @@ static int make_coef(SnxFx* fx, VkCommandBuffer cb) {
         vkCmdCopyBufferToImage(cb, fx->coef_buf, fx->coef[i].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
         fx_barrier(fx, cb, fx->coef[i].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-                   VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                                                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     }
     fx->coef_ready = 1;
@@ -560,8 +551,8 @@ static int ensure_nis(SnxFx* fx, VkCommandBuffer cb) {
         vkGetBufferMemoryRequirements(fx->dev, fx->nis_ub, &req);
         vkGetPhysicalDeviceMemoryProperties(fx->phys, &mp);
         ai = (VkMemoryAllocateInfo){.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size};
-        ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        ai.memoryTypeIndex = snx_vk_memory_type(
+            &mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (ai.memoryTypeIndex == UINT32_MAX || !fx_ok(vkAllocateMemory(fx->dev, &ai, NULL, &fx->nis_ub_mem)) ||
             !fx_ok(vkBindBufferMemory(fx->dev, fx->nis_ub, fx->nis_ub_mem, 0)) ||
             !fx_ok(vkMapMemory(fx->dev, fx->nis_ub_mem, 0, VK_WHOLE_SIZE, 0, &fx->nis_ub_map))) {
@@ -716,7 +707,6 @@ void snx_fx_set_fp16(SnxFx* fx, int on) {
     if (fx) fx->fp16 = on != 0;
 }
 
-
 /* ---- a copy, for the filters that are not a filter ---- */
 
 static void record_copy(SnxFx* fx, VkCommandBuffer cb, VkDescriptorSet set, VkImageView src, uint32_t image_w,
@@ -736,14 +726,14 @@ static void record_copy(SnxFx* fx, VkCommandBuffer cb, VkDescriptorSet set, VkIm
     fx_draw(cb, out->view, fx->copy, fx->pl1, dw, dh, set, &pc, sizeof pc, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
     fx_barrier(fx, cb, out->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-               VK_ACCESS_2_TRANSFER_READ_BIT);
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
 }
 
 /* ---- FSR 1 ---- */
 
-static void record_fsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src, uint32_t image_w, uint32_t image_h,
-                       uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t transform, uint32_t dw, uint32_t dh) {
+static void record_fsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src, uint32_t image_w,
+                       uint32_t image_h, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t transform,
+                       uint32_t dw, uint32_t dh) {
     FxImage* f = &fx->main[slot];
     struct {
         uint32_t con[4][4];
@@ -787,8 +777,7 @@ static void record_fsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView
             VK_ATTACHMENT_LOAD_OP_DONT_CARE);
     fx_barrier(fx, cb, f->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-               VK_ACCESS_2_TRANSFER_READ_BIT);
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
 }
 
 /* ---- anti aliasing ---- */
@@ -803,8 +792,7 @@ static void record_fxaa(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, FxImage* s
             VK_ATTACHMENT_LOAD_OP_DONT_CARE);
     fx_barrier(fx, cb, dst->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-               VK_ACCESS_2_TRANSFER_READ_BIT);
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
 }
 
 /* the SMAA lookup textures (MIT, Jorge Jimenez and the SMAA contributors): AreaTex is 160x560 RG8 and SearchTex is
@@ -816,15 +804,14 @@ static int smaa_textures(SnxFx* fx, VkCommandBuffer cb) {
                              .size = total,
                              .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VkBufferImageCopy copies[2] = {
-        {.bufferOffset = 0,
-         .bufferRowLength = AREATEX_WIDTH,
-         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-         .imageExtent = {AREATEX_WIDTH, AREATEX_HEIGHT, 1}},
-        {.bufferOffset = AREATEX_SIZE,
-         .bufferRowLength = SEARCHTEX_WIDTH,
-         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-         .imageExtent = {SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, 1}}};
+    VkBufferImageCopy copies[2] = {{.bufferOffset = 0,
+                                    .bufferRowLength = AREATEX_WIDTH,
+                                    .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                    .imageExtent = {AREATEX_WIDTH, AREATEX_HEIGHT, 1}},
+                                   {.bufferOffset = AREATEX_SIZE,
+                                    .bufferRowLength = SEARCHTEX_WIDTH,
+                                    .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                    .imageExtent = {SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, 1}}};
     if (fx->tex_uploaded) return 1;
     if (!img_make(fx, &ai, AREATEX_WIDTH, AREATEX_HEIGHT, VK_FORMAT_R8G8_UNORM,
                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT) ||
@@ -838,10 +825,9 @@ static int smaa_textures(SnxFx* fx, VkCommandBuffer cb) {
         vkGetBufferMemoryRequirements(fx->dev, fx->tex_buf, &req);
         vkGetPhysicalDeviceMemoryProperties(fx->phys, &mp);
         VkMemoryAllocateInfo mai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size};
-        mai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (mai.memoryTypeIndex == UINT32_MAX ||
-            !fx_ok(vkAllocateMemory(fx->dev, &mai, NULL, &fx->tex_mem)) ||
+        mai.memoryTypeIndex = snx_vk_memory_type(
+            &mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (mai.memoryTypeIndex == UINT32_MAX || !fx_ok(vkAllocateMemory(fx->dev, &mai, NULL, &fx->tex_mem)) ||
             !fx_ok(vkBindBufferMemory(fx->dev, fx->tex_buf, fx->tex_mem, 0)))
             goto failed;
     }
@@ -867,13 +853,11 @@ static int smaa_textures(SnxFx* fx, VkCommandBuffer cb) {
     vkCmdCopyBufferToImage(cb, fx->tex_buf, fx->area, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copies[0]);
     vkCmdCopyBufferToImage(cb, fx->tex_buf, fx->search, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copies[1]);
     fx_barrier(fx, cb, fx->area, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-               VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     fx_barrier(fx, cb, fx->search, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-               VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     fx->tex_uploaded = 1;
     return 1;
 failed:
@@ -1016,8 +1000,9 @@ static int record_nis(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView 
     return 1;
 }
 
-static int record_sgsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src, uint32_t image_w, uint32_t image_h,
-                       uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t transform, uint32_t dw, uint32_t dh) {
+static int record_sgsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src, uint32_t image_w,
+                       uint32_t image_h, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t transform,
+                       uint32_t dw, uint32_t dh) {
     float pc[16] = {0};
     pc[0] = 1.0f / (float)image_w;
     pc[1] = 1.0f / (float)image_h;
@@ -1038,8 +1023,7 @@ static int record_sgsr(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView
             VK_ATTACHMENT_LOAD_OP_DONT_CARE);
     fx_barrier(fx, cb, fx->main[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-               VK_ACCESS_2_TRANSFER_READ_BIT);
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
     return 1;
 }
 
@@ -1087,7 +1071,8 @@ int snx_fx_render(SnxFx* fx, VkCommandBuffer cb, uint32_t slot, VkImageView src,
         record_copy(fx, cb, fx->crop_set[slot], src, img_w, img_h, x, y, w, h, 0, w, h, &fx->crop[slot]);
         fx_barrier(fx, cb, fx->crop[slot].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                   VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_2_TRANSFER_READ_BIT,
+                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         src = fx->crop[slot].view;
         img_w = w;
