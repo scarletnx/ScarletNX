@@ -178,10 +178,10 @@ static uint16_t io_written(AgbBoard* board, uint32_t byte, uint32_t offset) {
 
 /* SIOCNT with no link cable plugged, as the console answers it (mGBA's suite's sio-read.c and sio-timing.c): the
    multi-player mode's SI says a child with no parent and SD that the line is ready, the normal modes' SI is pulled up.
-   A transfer on the internal clock keeps the start bit set for its bits' time (agb_sio_step), then ends with the data
-   no partner sent, 0, and the serial interrupt when SIOCNT asks for it. One that waits for a partner's clock, a
-   multi-player child's or the normal modes' external one, keeps its start bit set and never ends, as the console's
-   times out */
+   A transfer on the internal clock keeps the start bit set for its bits' time and 2 cycles more (agb_sio_step), then
+   ends with the data no partner sent, 0, and the serial interrupt when SIOCNT asks for it. One that waits for a
+   partner's clock, a multi-player child's or the normal modes' external one, keeps its start bit set and never ends,
+   as the console's times out */
 static void sio_write(AgbBoard* board, uint16_t value) {
     uint16_t old = board->io[0x128 >> 1], rcnt = board->io[0x134 >> 1];
     unsigned mode = ((rcnt & 0xC000) | (value & 0x3000)) >> 12;
@@ -193,7 +193,10 @@ static void sio_write(AgbBoard* board, uint16_t value) {
     } else if (normal)
         value |= 0x0004; /* SI pulled up */
     if (normal && (value & 0x81) == 0x81 && !(old & 0x80))
-        board->sio_cycles = (mode & 1 ? 32u : 8u) * (value & 2 ? 8u : 64u); /* 8 or 32 bits at 256 KiHz or 2 MiHz */
+        /* 8 or 32 bits at 256 KiHz or, with bit 1, 2 MiHz, and 2 cycles: mGBA's suite's sio-timing.c reads 633, 185,
+           2169 and 377 cycles on the console from its timer's start to its halt's end, each 2 more than the bits' time
+           gives, where the timer's start, the halt and the interrupt's entry pass its other tests */
+        board->sio_cycles = (mode & 1 ? 32u : 8u) * (value & 2 ? 8u : 64u) + 2;
     else if (!(value & 0x80))
         board->sio_cycles = 0; /* the start bit cleared: the transfer stops */
     board->io[0x128 >> 1] = value;
