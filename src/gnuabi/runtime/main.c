@@ -21,8 +21,11 @@
 #endif
 
 /* the common options scarletnx-gnuabi takes (common/utilities/cli.h): the data folder, whose linux/ is the guest's
-   root by default, and the help. A program is run as it is, with no game folder, keys or run of its own */
-static const unsigned gnu_cli = SNX_CLI_BIT(SNX_CLI_DATA) | SNX_CLI_BIT(SNX_CLI_HELP);
+   root by default, and the help. A program is run as it is, with no game folder, keys or run of its own; its code
+   compiles as it runs, so of the recompile's options it takes -O, the JIT's level, --jit-cache, the folder its code is
+   kept in, and --jit-only, what it does anyway; no threads, units, IR or progress of a recompile */
+static const unsigned gnu_cli = SNX_CLI_BIT(SNX_CLI_DATA) | SNX_CLI_BIT(SNX_CLI_HELP) | SNX_CLI_BIT(SNX_CLI_OPT) |
+                                SNX_CLI_BIT(SNX_CLI_JIT_CACHE) | SNX_CLI_BIT(SNX_CLI_JIT_ONLY);
 static const char usage_head[] =
     "Usage: scarletnx-gnuabi [options] [--] ELF [arguments...]\n"
     "Runs Linux AArch64 or AArch32 (A32/Thumb) programs, static or dynamically linked, through the ScarletNX\n"
@@ -33,9 +36,8 @@ static const char usage[] =
     "  -L DIR, --sysroot=DIR  The guest's root: a guest path names DIR's file when DIR has it, the host's\n"
     "                         otherwise, as with QEMU's -L. The default is linux/ in the data folder (--data)\n"
     "  --isolated             No host files: /tmp in memory, the program alone as /program\n"
-    "  --jit-cache=DIR        Where compiled code is kept between runs (default: the user's cache folder)\n"
     "  --no-jit-cache         Keep no compiled code between runs\n"
-    "  --jit-opt=LEVEL        The JIT's LLVM optimization level: 0, 1, 2 (the default), 3, s or z\n"
+    "  --jit-opt=LEVEL        The JIT's LLVM optimization level: 0, 1, 2 (the default), 3, s or z, as -O\n"
     "  --verbose-jit          Say what the JIT compiles\n"
     "  --strace               Write every system call, its arguments and its result to stderr, with the\n"
     "                         process id\n"
@@ -44,7 +46,10 @@ static const char usage[] =
     "  --host-page=N          Work as a host with N-byte pages: a power of two from the host's page to\n"
     "                         1048576 (not on Windows)\n"
     "  -E VAR=VALUE, -U VAR   Set or remove a variable of the guest's environment (the host's otherwise)\n"
-    "  -0 ARGV0               The program's argv[0] (default: ELF)\n";
+    "  -0 ARGV0               The program's argv[0] (default: ELF)\n"
+    "\n"
+    "On GNU ABI the code compiles as it runs: -O is its JIT's level, --jit-cache DIR the folder its compiled code is\n"
+    "kept in between runs (default: the user's cache folder), and --jit-only what it does anyway.\n";
 
 static void usage_print(FILE* out) {
     fputs(usage_head, out);
@@ -246,6 +251,12 @@ int snx_gnuabi_main(int argc, char** argv) {
             first++;
             continue;
         }
+        if (id == SNX_CLI_OPT || id == SNX_CLI_JIT_CACHE || id == SNX_CLI_JIT_ONLY) {
+            if (id == SNX_CLI_OPT) opt = common.value;
+            if (id == SNX_CLI_JIT_CACHE) cache_option = common.value;
+            first++;
+            continue;
+        }
         if (!strcmp(option, "--")) {
             first++;
             break;
@@ -261,9 +272,7 @@ int snx_gnuabi_main(int argc, char** argv) {
             isolated = 1;
         else if (!strcmp(option, "--jit")) {
             /* the only mode */
-        } else if (!strncmp(option, "--jit-cache=", 12))
-            cache_option = option + 12;
-        else if (!strcmp(option, "--no-jit-cache"))
+        } else if (!strcmp(option, "--no-jit-cache"))
             no_cache = 1;
         else if (!strncmp(option, "--jit-opt=", 10))
             opt = option + 10;
