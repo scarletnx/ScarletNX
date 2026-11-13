@@ -90,6 +90,9 @@ typedef struct {
        driver drop a quad's remaining helpers from execution while they still hold the loop open: AMD's Windows
        compiler then repeats the loop with no lane left to end it, until the GPU is reset. */
     u32 discarded;
+    /* A fragment program with loops: the Function variable that counts the back-edges a lane took (0: none).
+       shader_helper_loop_exit reads it */
+    u32 helper_rounds;
     u32 blend_end;     /* one final fragment epilogue, reached after all guest control flow and alpha tests */
     u32 primitive_base; /* capture slices preserve the original fragment PrimitiveId through push constants */
     u32 branch_cond;   /* with structured flow, the condition of the branch that ends the block, 0 for always */
@@ -338,6 +341,9 @@ void shader_geometry_passthrough(DirectCtx* c, const ShaderInfo* si, u32 vertice
 void shader_dynamic_pop(DirectCtx* c, u32 stack_ptr, const u32 stack[32], u32 kind_value, u32 fallback, u32* found,
                         u32* destination, u32* new_sp);
 int shader_structure_step(DirectCtx* c, StructEmit* se);
+/* A helper lane leaves a loop after this many back-edges of its invocation (shader_helper_loop_exit) */
+#define SH_HELPER_LOOP_ROUNDS 65536u
+u32 shader_helper_loop_exit(DirectCtx* c);
 
 /* value, of from_type, as to_type (both 32-bit scalars): a constant's bits as a constant of to_type, a value cast
    in this block as what that cast made or was made from, else its bitcast. A register copied and then read as a
