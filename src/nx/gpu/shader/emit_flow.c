@@ -118,6 +118,22 @@ static void se_pending(DirectCtx* c, StructEmit* se, u32 scope) {
     se->open = 1;
 }
 
+/* Whether this lane leaves the loop at this back-edge: a helper lane that took SH_HELPER_LOOP_ROUNDS back-edges.
+   A helper lane runs outside the primitive, only for the derivatives of its quad, and its attributes are
+   extrapolated. One game's ray march then runs on infinite or NaN distances and never ends. That lane kept the
+   whole warp, and the GPU hung. The console doesn't hang on the same program: NVIDIA's driver sets a bit that
+   disables loads in fragment helper invocations (Linux 1cb9e2ef, nouveau clears it, and says that shaders can
+   then loop forever). A Vulkan driver must give helpers their loads. The lanes that are not helpers run the
+   program as written, with no limit. A helper's writes are dropped, so only the derivatives of its quad after
+   the loop can differ, where the console's helper also ended in a way that the program doesn't define */
+u32 shader_helper_loop_exit(DirectCtx* c) {
+    u32 rounds = spv_emit_binary(&c->emit, SPV_OP_I_SUB, c->u32_type,
+                                 spv_emit_load(&c->emit, c->u32_type, c->helper_rounds), shader_u32(c, 0xffffffffu));
+    spv_emit_store(&c->emit, c->helper_rounds, rounds);
+    u32 over = spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, shader_u32(c, SH_HELPER_LOOP_ROUNDS), rounds);
+    return spv_emit_bool_binary(&c->emit, c->bool_type, 0, over, spv_emit_is_helper(&c->emit, c->bool_type));
+}
+
 /* Writes the tokens up to the next body (SE_BODY, its words in body_start and body_end), the program's end that
    control runs off (SE_END: the caller writes what EXIT writes, without the outputs, and returns), or the last
    (SE_DONE) */
@@ -146,13 +162,21 @@ int shader_structure_step(DirectCtx* c, StructEmit* se) {
                 spv_emit_label(&c->emit, l[1]);
                 se->open = 1;
                 break;
-            case SHS_CLOSE:
+            case SHS_CLOSE: {
                 if (se->open) se_break(c, se, t->a);
                 /* a block scope's continue target is never reached: the loop it would repeat runs once */
                 spv_emit_label(&c->emit, l[2]);
-                spv_emit_branch(&c->emit, l[0]);
+                int helper_exit = c->helper_rounds && st->scope[t->a].loop, was_used = se->used[t->a];
+                if (helper_exit) {
+                    spv_emit_branch_conditional(&c->emit, shader_helper_loop_exit(c), l[3], l[0]);
+                    se->used[t->a] = 1;
+                } else
+                    spv_emit_branch(&c->emit, l[0]);
                 spv_emit_label(&c->emit, l[3]);
-                if (!se->used[t->a]) {
+                if (helper_exit && !was_used) { /* a loop no lane leaves but by EXIT: the helper ends here */
+                    spv_emit_kill(&c->emit);
+                    se->open = 0;
+                } else if (!se->used[t->a]) {
                     spv_emit_void_op(&c->emit, SPV_OP_UNREACHABLE, NULL, 0);
                     se->open = 0;
                 } else {
@@ -160,6 +184,7 @@ int shader_structure_step(DirectCtx* c, StructEmit* se) {
                     if (st->scope[t->a].check) se_pending(c, se, t->a);
                 }
                 break;
+            }
             case SHS_IF:
                 se_ensure_open(c, se);
                 sel += se->selections ? 2 : 0;

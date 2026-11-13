@@ -2568,6 +2568,15 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     /* every OpVariable comes before the first block's other instructions, the clip distances' stores included */
     if (has_flow && !structure) pc = spv_emit_function_variable_init(&c->emit, reg_ptr, shader_u32(c, 11));
     if (structure && structure->uses_flag) se.flag = spv_emit_function_variable_init(&c->emit, reg_ptr, c->zero);
+    /* a fragment program with loops counts the back-edges a lane takes, which ends a helper lane's loop
+       (shader_helper_loop_exit) */
+    int loops = has_flow && !structure;
+    for (u32 k = 0; structure && k < structure->nscopes && !loops; k++) loops = structure->scope[k].loop;
+    if (stage == ST_FS && loops) {
+        c->helper_rounds = spv_emit_function_variable_init(&c->emit, reg_ptr, c->zero);
+        spv_emit_capability(&c->emit, SPV_CAPABILITY_DEMOTE_TO_HELPER_INVOCATION); /* IsHelperInvocationEXT */
+        spv_emit_demote_extension(&c->emit);
+    }
     c->discarded = (has_flow && stage == ST_FS) || advanced_blend || si->late_depth
                        ? spv_emit_function_variable_init(&c->emit, pred_ptr, c->false_value)
                        : 0;
@@ -2899,6 +2908,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         spv_emit_label(&c->emit, dispatch_merge);
         u32 next_pc = spv_emit_load(&c->emit, c->u32_type, pc);
         u32 finished = spv_emit_binary(&c->emit, SPV_OP_I_EQUAL, c->bool_type, next_pc, shader_u32(c, UINT32_MAX));
+        if (c->helper_rounds) finished = cc_or(c, finished, shader_helper_loop_exit(c));
         spv_emit_branch_conditional(&c->emit, finished, loop_merge, loop_continue);
         spv_emit_label(&c->emit, loop_continue);
         spv_emit_branch(&c->emit, loop_header);
