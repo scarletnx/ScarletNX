@@ -877,6 +877,8 @@ typedef struct App {
     RunEnd stopped_end;
     int stopped_cases; /* Run edenprobe's report's cases so far */
     bool stopped_due, stopped_go_on;
+    /* the setup's pages after Last Run, held while its Continue goes on with Run edenprobe (setup_resume) */
+    bool setup_held;
     bool mark_unended;       /* the launcher's last start did not end with an exit (mark_start) */
     const char* system_said; /* the tests': the system's answer to every end asked (exitFields' lines); NULL asks it */
     long long oom_before;    /* the kernel's OOM kills as the run started (gui_oom_kills), -1 where none are kept */
@@ -13404,6 +13406,32 @@ static void setup_start(App* app) {
     if (app->setup_on) setup_enter(app);
     scale_keep(app);
 }
+/* the Last Run's Continue: Run edenprobe going on from its journal at once; what stops it said over the menu, where
+   GPU Drivers' note is not */
+static void stopped_continue(App* app) {
+    app->editor.note[0] = 0;
+    probe_start(app, true);
+    if (!app->probe_launch && !app->confirm.shown) {
+        char said[sizeof app->editor.note + 64];
+        if (app->editor.note[0])
+            snprintf(said, sizeof said, "%s", app->editor.note);
+        else
+            snprintf(said, sizeof said, snx_tr("Continue: %s holds no run of edenprobe left before its summary"),
+                     app->stopped.probe ? app->stopped.probe : "?");
+        say_failure(app, said);
+    }
+}
+static void setup_next(App* app);
+/* the setup's pages held by the Last Run's Continue, back on the page after it once Run edenprobe's run is over: its
+   screen left and the box of its counts, or of why it did not start, closed */
+static void setup_resume(App* app) {
+    if (!app->setup_held || app->probe_launch || app->menu.running || app->finished || app->confirm.shown ||
+        app->editing)
+        return;
+    app->setup_held = false;
+    app->setup_on = true;
+    setup_next(app);
+}
 /* the last page done: setup.ini says so (the old files' pages alone write nothing), the language picked kept in
    app.ini, the menu with the user its head shows */
 static void setup_finish(App* app) {
@@ -13437,20 +13465,9 @@ static void setup_finish(App* app) {
     }
     free(file);
     app->stopped_due = false;
-    if (app->stopped_go_on) { /* the Last Run's Continue, the setup done; what stops it said over the menu, where GPU
-                                 Drivers' note is not */
+    if (app->stopped_go_on) { /* the Last Run's Continue on the setup's last page */
         app->stopped_go_on = false;
-        app->editor.note[0] = 0;
-        probe_start(app, true);
-        if (!app->probe_launch && !app->confirm.shown) {
-            char said[sizeof app->editor.note + 64];
-            if (app->editor.note[0])
-                snprintf(said, sizeof said, "%s", app->editor.note);
-            else
-                snprintf(said, sizeof said, snx_tr("Continue: %s holds no run of edenprobe left before its summary"),
-                         app->stopped.probe ? app->stopped.probe : "?");
-            say_failure(app, said);
-        }
+        stopped_continue(app);
     }
     layout(app);
 }
@@ -13619,13 +13636,21 @@ static void setup_take(App* app) {
             notice_choices(app, back);
             return;
         }
-        case SETUP_STOPPED: /* Continue goes on with Run edenprobe once the setup is done; Not Now leaves it to GPU
-                               Drivers' Continue */
+        case SETUP_STOPPED: /* Continue goes on with Run edenprobe at once, the pages after it held until its run is over
+                               (setup_resume); Not Now leaves it to GPU Drivers' Continue */
             app->stopped_go_on = setup_does(app, choice) == SETUP_DOES_CONTINUE;
             if (app->stopped.probe)
                 gui_log("last run: %s", app->stopped_go_on ? "Continue: edenprobe goes on from its journal"
                                                            : "Not Now: Settings > App > GPU Drivers' Continue goes on "
                                                              "with it later");
+            if (app->stopped_go_on && app->setup_page + 1 < app->setup_count) {
+                app->stopped_go_on = false;
+                app->setup_held = true;
+                app->setup_on = false;
+                stopped_continue(app);
+                layout(app);
+                return;
+            }
             setup_next(app);
             return;
         case SETUP_LEFT: { /* a folder a page; on the last Move All (asked), Delete All (asked, pressed twice) or Not Now,
@@ -16066,6 +16091,7 @@ static void pump(App* app) {
         }
     }
     titles_look(app, now);
+    setup_resume(app); /* the pages Last Run's Continue held, once its run is over */
     /* games put in or taken out of the folders while the menu is open, as the watcher's hash of them says: Games and
        its list follow, the list on the file it had. The first hash after a listing is what the list holds, the same
        as the one before it or not */

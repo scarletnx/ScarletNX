@@ -1560,7 +1560,8 @@ static char* stopped_run(App* app, const char* program, const char* name, const 
 /* the run the menu did not see end, Last Run: a game Android stopped for its memory, a page first that says what ran,
    when it started, Android's reason, its process's PSS and RSS (none recorded where Android measured none, never 0
    MB) and its log, OK alone; Run edenprobe without its
-   summary, Continue (going on with it from its journal once the setup is done) and Not Now; one that reached its
+   summary, Continue (going on with it from its journal at once, a page after it held until its run is over) and Not
+   Now; one that reached its
    summary, its counts in a box; a game that ended with an exit, or still runs, nothing but the log's line; with
    --no-setup none, the record read all the same. setup.ini written by none */
 static void test_last_run(App* app) {
@@ -1660,7 +1661,7 @@ static void test_last_run(App* app) {
         if (!go_on) key(app, SDLK_DOWN);
         app->editor.note[0] = 0;
         key(app, SDLK_RETURN);
-        assert(!app->setup_on && !app->stopped_go_on);
+        assert(!app->setup_on && !app->stopped_go_on && !app->setup_held);
         if (go_on) { /* probe_start's Continue: here the NRO it needs, as GPU Drivers' Continue says, over the menu */
             char* nro = join(probe, "edenprobe.nro");
             at = snx_format("Run edenprobe needs %s", nro);
@@ -1671,6 +1672,34 @@ static void test_last_run(App* app) {
             free(at);
         } else
             assert(!app->editor.note[0] && !app->probe_launch);
+        free(record);
+    }
+    { /* Continue with a page after it (the notices due): the probe goes on at once, the page held until its run is
+         over, here until the box of why it did not start is closed */
+        char* nro = join(probe, "edenprobe.nro");
+        record = stopped_run(app, game, "edenprobe", probe, true);
+        last_run_look(app);
+        put(file, "[setup]\nversion = 1\nnotices = 0\n"); /* every notice due again */
+        setup_start(app);
+        assert(app->setup_on && page(app) == SETUP_STOPPED && app->setup_count > 1);
+        app->editor.note[0] = 0;
+        app->errors_count = 0; /* said once a session: the loop above said it */
+        key(app, SDLK_RETURN); /* Continue */
+        at = snx_format("Run edenprobe needs %s", nro);
+        assert(!app->setup_on && app->setup_held && !app->stopped_go_on && app->confirm.shown &&
+               !strncmp(app->error_line, at, strlen(at)));
+        pump(app);
+        assert(!app->setup_on && app->setup_held); /* the box first */
+        key(app, SDLK_ESCAPE);
+        pump(app);
+        assert(app->setup_on && !app->setup_held && page(app) == SETUP_NOTICE);
+        app->setup_on = false;
+        if (before)
+            put(file, before);
+        else
+            assert(!remove(file));
+        free(at);
+        free(nro);
         free(record);
     }
     /* one that reached its summary: no page, its counts in a box, as its end would have shown them */

@@ -3970,17 +3970,17 @@ msgstr "%s：初始设置将再次询问"
 
 #: src/gui/main.c
 #, c-format
+msgid "Continue: %s holds no run of edenprobe left before its summary"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "The setup was not kept, so it asks again: %s"
 msgstr "初始设置未保存，将再次询问：%s"
 
 #: src/gui/main.c
 msgid "no folder for setup.ini"
 msgstr "没有存放 setup.ini 的文件夹"
-
-#: src/gui/main.c
-#, c-format
-msgid "Continue: %s holds no run of edenprobe left before its summary"
-msgstr ""
 
 #: src/gui/main.c
 #, c-format

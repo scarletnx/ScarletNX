@@ -542,8 +542,8 @@ the reason Android keeps for the game's process, `Android stopped it: low memory
 importance 100 foreground)`, the question then `Android stopped <game>`; elsewhere what it may have been), the memory
 that process held (`PSS 4.9 GB, RSS 1.9 GB`, `?` for what the system does not say, `none recorded by Android` where
 it measured none, as for a process killed by a signal) and the game's log. Run edenprobe
-left before its summary has **Continue**, in focus, which goes on with it from its journal once the setup is done, as
-GPU Drivers' Continue does, and **Not Now**, which leaves it to that row; one that reached its summary shows its counts
+left before its summary has **Continue**, in focus, which goes on with it from its journal at once, as GPU Drivers'
+Continue does, the setup's other pages coming back after its run, and **Not Now**, which leaves it to that row; one that reached its summary shows its counts
 in a box instead. A game has OK alone, and the page comes only for one that did not end with an exit, its own mark left
 beside its log: one that ended with an exit, or that still runs, is said in the launcher log alone. The page writes
 nothing to `setup.ini`, the setup's Skip comes on the page after it, and `--no-setup` leaves it out. When the menu

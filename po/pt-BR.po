@@ -3970,17 +3970,17 @@ msgstr "%s: a configuração pergunta de novo"
 
 #: src/gui/main.c
 #, c-format
+msgid "Continue: %s holds no run of edenprobe left before its summary"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "The setup was not kept, so it asks again: %s"
 msgstr "A configuração não foi guardada, então pergunta de novo: %s"
 
 #: src/gui/main.c
 msgid "no folder for setup.ini"
 msgstr "nenhuma pasta para o setup.ini"
-
-#: src/gui/main.c
-#, c-format
-msgid "Continue: %s holds no run of edenprobe left before its summary"
-msgstr ""
 
 #: src/gui/main.c
 #, c-format
