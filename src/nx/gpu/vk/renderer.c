@@ -257,6 +257,12 @@ static int vkr_samples_report(u32 owner, u64 gva, u32 len, u64 ticks) {
     vk_unlock();
     return r;
 }
+static int vkr_stamp_report(u64 gva, int top, u64 ticks) {
+    vk_lock();
+    int r = vk_query_stamp(gva, top, ticks);
+    vk_unlock();
+    return r;
+}
 static void vkr_method_barrier(int kind)
 {
 	/* a fragment barrier, and the 3D engine's texture data cache invalidation (kind 2), make earlier draws' writes
@@ -1316,6 +1322,7 @@ const Renderer vk_renderer = {
     .samples_reset = vkr_samples_reset,
     .samples_enable = vkr_samples_enable,
     .samples_report = vkr_samples_report,
+    .stamp_report = vkr_stamp_report,
     .stream_end = vk_release_submit,
     .present_buffer = vkr_present_buffer,
     .present_hdr = vkr_present_hdr,

@@ -46,6 +46,10 @@ typedef struct {
     int dpred;
     u64 dfrom;
     u64 cpu; /* the guest address of its payload, translated when it was queued, 0 when it isn't in the word index */
+    /* stamp: a timestamp report of query.c's timestamp tstamp, whose time goes 8 bytes on once its gate is done.
+       Its gate is the submit being recorded, as a samples report's */
+    int stamp;
+    u64 tstamp;
 } Release;
 enum { PRED_NONE = -3, PRED_ZERO = -2, PRED_NONZERO = -1 };
 #define RQ_N   1024 /* queued releases at most: a full queue performs its oldest at once */
@@ -146,6 +150,7 @@ static void perform(Release* r) {
         else
             snx_st_le64(r->data, v);
     }
+    if (r->stamp) snx_st_le64(r->data + 8, vk_query_stamp_ticks(r->tstamp));
     vk_result_begin();
     if (r->gva)
         gmem_write(r->gva, r->data, r->len);
@@ -237,11 +242,11 @@ static void release(Release* r) {
        Submitting at each release made Pokemon Legends Z-A submit about 150 times a frame, with storage results
        pending through most of its releases */
     u64 recording = vk_submit_number();
-    if (!r->samples && !vk_buf_pending_any() && !vk_gfx_image_in_flight(0) && !r->cgate)
+    int gpu = r->samples || r->stamp; /* its value is the GPU's */
+    if (!gpu && !vk_buf_pending_any() && !vk_gfx_image_in_flight(0) && !r->cgate)
         r->gate = 0;
     else
-        r->gate =
-            r->samples || vk_buf_pending_unsubmitted() || vk_gfx_image_in_flight(1) ? recording : vk_last_submit();
+        r->gate = gpu || vk_buf_pending_unsubmitted() || vk_gfx_image_in_flight(1) ? recording : vk_last_submit();
     int freed = 0; /* the stream's hold ended for the queue: the release thread may perform the rest */
     pm_lock(&g_rlock);
     if (g_rhead - g_rtail == RQ_N) { /* full: the oldest goes now, held or not */
@@ -320,6 +325,16 @@ void vk_release_samples(u64 gva, u32 len, u32 counter, u64 first, u64 end, u64 t
     r.qch = counter;
     r.qfirst = first;
     r.qend = end;
+    snx_st_le64(r.data + 8, ticks); /* guest bytes, as release_write's payloads are */
+    release(&r);
+}
+void vk_release_stamp(u64 gva, u32 len, u64 stamp, u64 ticks) {
+    Release r;
+    memset(&r, 0, sizeof r);
+    r.gva = gva;
+    r.len = len == 4 ? 4 : 16;
+    r.stamp = 1;
+    r.tstamp = stamp;
     snx_st_le64(r.data + 8, ticks); /* guest bytes, as release_write's payloads are */
     release(&r);
 }
@@ -515,6 +530,9 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
         if (!release_overlaps(q, &range)) continue;
         /* the same memory through another address: not known here */
         r = gva < q->gva + q->len && q->gva < gva + len && len <= 0x10000 ? 1 : -1;
+        /* a timestamp report's time is known once its submit is done. A read of its zero alone needs no wait: one game
+           compares that word with a count 16 bytes on, as a render enable, before each clear */
+        if (r > 0 && q->stamp && gva < q->gva + q->len && q->gva + 8 < gva + len && q->gate > sgate) sgate = q->gate;
         if (r <= 0 || !q->samples) continue;
         u32 bytes = q->len == 4 ? 4 : 8;
         int gpu = *n < max && q->gva >= gva && q->gva + q->len <= gva + len && !((q->gva - gva) & 3);
@@ -565,6 +583,11 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
                     snx_st_le32(data, (u32)v);
                 else
                     snx_st_le64(data, v);
+                from_data = data;
+            }
+            if (q->stamp && hi > q->gva + 8) { /* the time as perform writes it, when the read takes it */
+                memcpy(data, q->data, sizeof data);
+                snx_st_le64(data + 8, vk_query_stamp_ticks(q->tstamp));
                 from_data = data;
             }
             memcpy((u8*)dst + (lo - gva), from_data + (lo - q->gva), (size_t)(hi - lo));

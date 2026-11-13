@@ -43,6 +43,7 @@
 #include "nx/gpu/vk/query_compare_spv.h"
 #include "nx/gpu/vk/query_count_spv.h"
 #include "nx/gpu/vk/query_predicate_spv.h"
+#include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
 
 #define QN    4096 /* segments the ring holds: queries in the pool, and result slots */
@@ -195,7 +196,9 @@ void vk_query_pass_end(VkCommandBuffer cb) {
     rec_CmdEndQuery(cb, g_qpool, (u32)((g_q.next - 1) % QN));
     g_q.open = 0;
 }
+static void stamp_flush(VkCommandBuffer cb);
 void vk_query_flush(VkCommandBuffer cb) {
+    stamp_flush(cb);
     if (g_q.copied == g_q.next) return;
     while (g_q.copied < g_q.next) { /* in runs that don't wrap around the ring */
         u32 at = (u32)(g_q.copied % QN), n = QN - at;
@@ -307,6 +310,172 @@ u64 vk_query_peek(u32 ci, u64 first, u64 end) {
     double area = (double)g_vk_scale * (double)g_vk_scale;
     u64 v = area == 1.0 ? sum : (u64)((double)sum / area + 0.5);
     return sum && !v ? 1 : v;
+}
+
+/* ------------------------------------------------------------ timestamps */
+/* A timestamp counter report (NVN's, of counter type TIMESTAMP) carries the time when the GPU got to it. One game
+   reports four timestamps a frame, and sets its render size from the time between them. The time when the GPU
+   thread replayed a report measured our replay, not the GPU: the game took its frame as over its budget, and drew its
+   fields at the smallest size it allows.
+
+   So a report is a Vulkan timestamp, written where the report is in the command buffer, and the release that writes
+   the report waits for its submit (release.c), as a samples-passed report does. The results are copied into
+   host-cached memory, and the queries reset, outside a rendering pass at each submit (vk_query_flush).
+
+   The time between two device timestamps still counts the device's idle time between submits. The game's frame
+   took about 20 submits, and between them the device waited for our GPU thread to record the next one: the times
+   between its reports were 6 to 12 ms, its whole frame. On the console the GPU runs behind the CPU and is seldom idle.
+   So the time a report carries is the device's busy time: each command buffer has a timestamp at its start and at
+   its end (vk_query_cb_begin, vk_query_cb_end), and the time between two submits is left out.
+
+   That busy time is put on the guest's clock: the first one read is the guest time when it is read, and each one
+   after it is that time plus the busy time since. A time later than the guest time when it is read (a paused guest
+   clock) is that guest time, and the busy time is put there again. The times increase, are never later than the
+   guest clock, and fall behind it by the device's idle time. */
+#define TN 2048 /* timestamps in the ring: more than the release queue holds (release.c) and the submits in flight */
+#define SN 256  /* the submits whose begin and end timestamps are kept until they are done */
+
+static VkQueryPool g_tpool;
+static VkBuffer g_tbuf;
+static DevMem g_tmem;
+static u64* g_tres;    /* timestamp s's device time at s % TN, once its copy has run */
+static u64 g_tsub[TN]; /* the submit that timestamp s % TN is in */
+static int g_tfailed;  /* no timestamps: the reports keep the replay's time */
+static struct {
+    u64 sub;        /* the submit number (vk_submit_number) */
+    u64 begin, end; /* its timestamps */
+    int ended;
+} g_ts[SN];
+static struct {
+    u64 next, copied; /* timestamps written, and those whose copies are recorded */
+    u64 subs, folded; /* the submits in g_ts, and those added to busy */
+    u64 busy;         /* the device's busy time in the submits folded, in nanoseconds */
+    int anchored;
+    u64 abusy, ans; /* the busy time that is the guest time ans */
+} g_t;
+
+static int stamp_pool_make(void) {
+    if (!g_vk.gfx_timestamp_bits || g_vk.props.limits.timestampPeriod <= 0.0f) return 0;
+    /* the command buffer begun before the pool is there: its begin (vk_query_cb_begin) writes no timestamp before
+       the reset. A query is reset before its first use, outside a rendering pass */
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    VkQueryPoolCreateInfo qi = {
+        .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = TN};
+    if (!VK_OK(vkCreateQueryPool(g_vk.dev, &qi, NULL, &g_tpool))) {
+        g_tpool = VK_NULL_HANDLE;
+        return 0;
+    }
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                             .size = TN * sizeof(u64),
+                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    DevMemWant ai = {.at = DM_CACHED, .mapped = 1};
+    DevMemInfo info;
+    if (!VK_OK(vk_buffer_create(&bi, &ai, &g_tbuf, &g_tmem, &info))) {
+        vkDestroyQueryPool(g_vk.dev, g_tpool, NULL);
+        g_tpool = VK_NULL_HANDLE;
+        return 0;
+    }
+    vk_mem_track(g_tmem, VK_OWN_QUERY);
+    g_tres = info.ptr;
+    rec_CmdResetQueryPool(cb, g_tpool, 0, TN);
+    return 1;
+}
+static void stamp_flush(VkCommandBuffer cb) {
+    if (g_t.copied == g_t.next) return;
+    while (g_t.copied < g_t.next) { /* in runs that don't wrap around the ring */
+        u32 at = (u32)(g_t.copied % TN), n = TN - at;
+        if (n > g_t.next - g_t.copied) n = (u32)(g_t.next - g_t.copied);
+        rec_CmdCopyQueryPoolResults(cb, g_tpool, at, n, g_tbuf, (VkDeviceSize)at * sizeof(u64), sizeof(u64),
+                                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+        rec_CmdResetQueryPool(cb, g_tpool, at, n);
+        g_t.copied += n;
+    }
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                           .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
+                           .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    rec_CmdPipelineBarrier2(cb, &di);
+}
+/* a timestamp written now in cb at stage: its number */
+static u64 stamp_write(VkCommandBuffer cb, VkPipelineStageFlags2 stage) {
+    u64 s = g_t.next++;
+    rec_CmdWriteTimestamp2(cb, stage, g_tpool, (u32)(s % TN));
+    g_tsub[s % TN] = vk_submit_number();
+    return s;
+}
+/* the device's time of timestamp s, whose copy has run */
+static u64 stamp_dev(u64 s) {
+    u32 bits = g_vk.gfx_timestamp_bits;
+    return snx_le64(g_tres[s % TN]) & (bits >= 64 ? ~0ull : (1ull << bits) - 1);
+}
+/* the nanoseconds from device time a to device time b, 0 when b is before a */
+static u64 stamp_ns(u64 a, u64 b) {
+    u32 bits = g_vk.gfx_timestamp_bits;
+    u64 mask = bits >= 64 ? ~0ull : (1ull << bits) - 1, d = (b - a) & mask;
+    if (d > mask / 2) return 0;
+    return (u64)((double)d * (double)g_vk.props.limits.timestampPeriod);
+}
+/* the busy times of the submits before submit sub (they are done) added to g_t.busy */
+static void stamp_fold(u64 sub) {
+    vk_devmem_invalidate(g_tmem, 0, VK_WHOLE_SIZE);
+    for (; g_t.folded < g_t.subs && g_ts[g_t.folded % SN].sub < sub; g_t.folded++)
+        if (g_ts[g_t.folded % SN].ended)
+            g_t.busy += stamp_ns(stamp_dev(g_ts[g_t.folded % SN].begin), stamp_dev(g_ts[g_t.folded % SN].end));
+}
+void vk_query_cb_begin(VkCommandBuffer cb) {
+    if (!g_tpool) return;
+    u64 submitted, done;
+    vk_submit_progress(&submitted, &done);
+    stamp_fold(done + 1);
+    if (g_t.subs - g_t.folded == SN) return; /* no room: its reports count from the submits before it */
+    g_ts[g_t.subs % SN].sub = vk_submit_number();
+    g_ts[g_t.subs % SN].begin = stamp_write(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT);
+    g_ts[g_t.subs % SN].ended = 0;
+    g_t.subs++;
+}
+void vk_query_cb_end(VkCommandBuffer cb) {
+    if (!g_tpool || g_t.subs == g_t.folded || g_ts[(g_t.subs - 1) % SN].sub != vk_submit_number()) return;
+    g_ts[(g_t.subs - 1) % SN].end = stamp_write(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    g_ts[(g_t.subs - 1) % SN].ended = 1;
+}
+int vk_query_stamp(u64 gva, int top, u64 ticks) {
+    if (g_tfailed) return 0;
+    if (!g_tpool && !stamp_pool_make()) {
+        g_tfailed = 1;
+        LOG("vulkan: the graphics queue writes no timestamps: GPU timestamp reports carry the replay's time\n");
+        return 0;
+    }
+    if (g_t.next - g_t.copied >= TN / 2) { /* half the ring waits for its copy: it is recorded now */
+        vk_render_end();
+        vk_query_flush(vk_cmd());
+    }
+    u64 s = stamp_write(vk_cmd(), top ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    vk_release_stamp(gva, 16, s, ticks);
+    return 1;
+}
+u64 vk_query_stamp_ticks(u64 stamp) {
+    u64 sub = g_tsub[stamp % TN], now = guest_ns();
+    stamp_fold(sub);
+    u64 busy = g_t.busy;
+    if (g_t.folded < g_t.subs && g_ts[g_t.folded % SN].sub == sub) /* the time in its own submit */
+        busy += stamp_ns(stamp_dev(g_ts[g_t.folded % SN].begin), stamp_dev(stamp));
+    u64 ns = now + 1; /* not anchored yet: anchored below */
+    if (g_t.anchored) {
+        if (busy >= g_t.abusy)
+            ns = busy - g_t.abusy > now - g_t.ans ? now + 1 : g_t.ans + (busy - g_t.abusy);
+        else /* read out of order (release.c's read of a queued report) */
+            ns = g_t.abusy - busy > g_t.ans ? 0 : g_t.ans - (g_t.abusy - busy);
+    }
+    if (ns > now) {
+        g_t.anchored = 1;
+        g_t.abusy = busy;
+        g_t.ans = ns = now;
+    }
+    return guest_gpu_ticks_at(ns);
 }
 
 /* ------------------------------------------------------------ render enable predicates */

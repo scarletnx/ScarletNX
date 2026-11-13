@@ -258,6 +258,11 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
             u8 v[16];
             u64 ticks = guest_gpu_ticks();
             if (r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && nvn_draw_samples(&q->d, r->address, ticks)) break;
+            /* the time when the GPU got there: a game sets its render size from the time between two of them */
+            if ((r->type == NVN_COUNTER_TYPE_TIMESTAMP || r->type == NVN_COUNTER_TYPE_TIMESTAMP_TOP) &&
+                g_renderer->stamp_report &&
+                g_renderer->stamp_report(r->address, r->type == NVN_COUNTER_TYPE_TIMESTAMP_TOP, ticks))
+                break;
             snx_st_le64(v, r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? 1000 : 0);
             snx_st_le64(v + 8, ticks);
             gpu_release_write(r->address, v, sizeof v);

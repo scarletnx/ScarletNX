@@ -40,6 +40,7 @@ u64 vk_uma_bound(void);
 void vk_rt_before_write(u64, u64);
 u64 vk_query_value(u32, u64, u64);
 u64 vk_query_peek(u32, u64, u64);
+u64 vk_query_stamp_ticks(u64);
 #define VK_PRED_EQUAL 0x80000000u
 #define VK_QUERY_COUNTERS 8
 enum { VK_PRED_PREV_NONE, VK_PRED_PREV_ZERO, VK_PRED_PREV_NONZERO, VK_PRED_PREV_SLOT };
@@ -265,6 +266,11 @@ u64 vk_query_value(u32 counter, u64 first, u64 end) {
 u64 vk_query_peek(u32 counter, u64 first, u64 end) {
     assert(lock_depth && counter == 3);
     return (end - first) * 100 + first;
+}
+/* a made-up time of query.c's timestamp, read under the lock when a timestamp report is performed or read */
+u64 vk_query_stamp_ticks(u64 stamp) {
+    assert(lock_depth);
+    return stamp * 1000 + 7;
 }
 /* render enable predicates (query.c): a report of segments [first, end) gets slot first when its count isn't known,
    else the count's zeroness comes from job_known */

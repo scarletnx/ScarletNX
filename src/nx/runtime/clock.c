@@ -97,10 +97,8 @@ int clock_from_counter(ClockCounter* out) {
 
 /* 19.2 MHz is 192 ticks every 10 us, and 31.25 MHz is 125 ticks every 4 us: whole steps, then the rest, so neither
    part overflows or rounds the way a double would after a few hours */
-u64 guest_gpu_ticks(void) {
-    u64 ns = guest_ns();
-    return ns / 10000u * 192u + ns % 10000u * 192u / 10000u;
-}
+u64 guest_gpu_ticks_at(u64 ns) { return ns / 10000u * 192u + ns % 10000u * 192u / 10000u; }
+u64 guest_gpu_ticks(void) { return guest_gpu_ticks_at(guest_ns()); }
 /* An Ounce SDK's nn::os::GetSystemTickFrequency returns 31,250,000 as a constant (MOVZ and MOVK), and its tick
    conversions use the same constant. It never reads CNTFRQ_EL0. With 19.2 MHz ticks, the game's time ran at 0.61 of
    real time */

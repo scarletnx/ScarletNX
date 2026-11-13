@@ -162,6 +162,10 @@ typedef struct Renderer {
     void (*samples_reset)(u32 owner);
     void (*samples_enable)(u32 owner, int on);
     int (*samples_report)(u32 owner, u64 gva, u32 len, u64 ticks);
+    /* a timestamp counter report: 16 bytes at gva, a zero and then the time when the GPU got there (top: when it
+       started the report, else when the work before it is done), in the guest's GPU ticks (clock.h guest_gpu_ticks),
+       written as a release. 0: no GPU time to give, and the caller writes ticks */
+    int (*stamp_report)(u64 gva, int top, u64 ticks);
     /* a GPFIFO submission ran to its end or waits (gpu_park): what the guest may look at now goes to the GPU */
     void (*stream_end)(void);
     void (*release_retire)(u32 id); /* finish this syncpoint's queued releases before its id is reused */
