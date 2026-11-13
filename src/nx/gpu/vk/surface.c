@@ -2032,6 +2032,21 @@ void vk_rt_watch_hit(u64 cpu, u64 size) {
     if (pending.surfaces != local) free(pending.surfaces);
     vk_unlock();
 }
+void vk_rt_watch_owed(void) {
+    u64 cpu, size;
+    /* watched again, as a release watches them: no copy and no GPU work, and the CPU's next access publishes them.
+       Publishing them here copied each target into a buffer of its own that stayed until the CPU touched it, which it
+       may never do. As many spans as own.c holds now: a span that these watches owe again waits for the next
+       vk_unlock. A watch takes mem.c's lock (mem_own_prepare), so a hold let go under it leaves them to the next */
+    if (mem_lock_held()) return;
+    for (u32 i = 0; i < OWN_OWED_MAX && own_owed_take(&cpu, &size); i++) {
+        Surf* local[16];
+        RtPendingList pending = {local, 0, 16};
+        gmmu_aliases(cpu, size, rt_pending_alias, &pending);
+        for (u32 k = 0; k < pending.count; k++) rt_watch(pending.surfaces[k]);
+        if (pending.surfaces != local) free(pending.surfaces);
+    }
+}
 static u64 g_drawn_max; /* the biggest span a listed target has: how far before an address one over it can start */
 /* Whether every byte of s's span was drawn over after s last changed, by targets drawn later, each over its own span:
    memory holds their pixels now (or would on the console), so s's are no one's to read and it goes without loss. A

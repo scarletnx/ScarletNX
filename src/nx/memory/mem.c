@@ -243,6 +243,7 @@ static void mem_unlock(void) {
     t_mem.held = 0;
     pm_unlock(&g_mem_lk);
 }
+int mem_lock_held(void) { return t_mem.held; }
 
 static void (*g_code_invalidate)(u64, u64); /* the runtime's JIT: what was compiled in the range is stale now */
 void mem_set_code_invalidate(void (*fn)(u64, u64)) { g_code_invalidate = fn; }

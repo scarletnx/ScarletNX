@@ -237,6 +237,9 @@ typedef struct {
     u64 addr, size, pool; /* guest pages [addr, addr + size) are pool pages from pool on */
 } MemPoolRun;
 int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n);
+/* 1 when this thread holds mem.c's lock: the renderer's watch of owed bytes again (vk_rt_watch_owed) waits for a
+   later vk_unlock, as mem_own_prepare would take the lock again */
+int mem_lock_held(void);
 /* the pool offset of guest address a: 0, or -1 when a isn't pool memory */
 int mem_pool_offset(u64 a, u64* off);
 /* whether any page of [a, a + size) is pool memory, which can be written where the reservation's write tracking

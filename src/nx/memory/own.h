@@ -62,8 +62,12 @@ int own_begin(u64 addr, u64 size, void* res, u64 res_off);
    and own_stage skip it, and its CPU bytes stay readable through the mirror (or, in place, a shadow of each page). It
    never cuts a real owner: it goes into the gaps between them, over older watches. A thread that held the producer's
    lock before it touched a watched page drops the watch and goes on with the CPU's bytes: it cannot wait for a publish.
-   0, or -1 as own_begin. The caller holds the producer's lock */
+   The watch's bytes are owed then (own_owed_take). 0, or -1 as own_begin. The caller holds the producer's lock */
 int own_watch(u64 addr, u64 size);
+/* Watched bytes whose watch a thread that held the producer's lock dropped with no publish: the producer watches them
+   again before that thread lets go of its lock, so the next CPU access still asks it for its result. 1, with one
+   owed span in [*addr, *addr + *size) taken from the list, or 0 when none is owed */
+int own_owed_take(u64* addr, u64* size);
 /* 1 when watches cover every byte of [addr, addr + size) */
 int own_watched(u64 addr, u64 size);
 /* the watches over [addr, addr + size) go (clipped to it), and their pages open where no entry is left. Nothing lands.
@@ -167,9 +171,14 @@ typedef struct {
     Scratch snap;        /* the pages own_watch and own_begin copy into shadows */
     Scratch held;        /* own_begin's and own_watch's: the pages an entry was on before theirs (arm_new) */
     int said_unshadowed; /* atomic: a trapped page with no shadow was read as zero, and the log said so once */
+#define OWN_OWED_MAX 8
+    u64 owed[OWN_OWED_MAX][2]; /* the owed spans [lo, hi) (own_owed_take), under lk */
+    u32 nowed;                 /* how many: changed under lk with __atomic_store_n, and read without it */
 } OwnState;
 extern OwnState g_own;
 /* whether anything is owned: the common case's test, without a lock */
 static inline int own_any(void) { return __atomic_load_n(&g_own.nown, __ATOMIC_ACQUIRE) != 0; }
+/* whether a span is owed (own_owed_take): the test of each outermost vk_unlock, without a lock */
+static inline int own_owed_any(void) { return __atomic_load_n(&g_own.nowed, __ATOMIC_ACQUIRE) != 0; }
 
 #endif
