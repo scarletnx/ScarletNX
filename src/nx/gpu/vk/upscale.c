@@ -57,6 +57,11 @@ static void release(void) {
     g_upscale.view = VK_NULL_HANDLE;
 }
 
+void vk_upscale_forget(void) {
+    g_upscale.fresh = 1; /* the next dispatch resets FSR's history */
+    g_upscale.last = 0;
+}
+
 /* a setup for these that failed, kept so it isn't tried again: 0 */
 static int setup_failed(const u32 render[2], const u32 out[2], u32 flags, VkFormat format) {
     memcpy(g_upscale.failed_render, render, sizeof g_upscale.failed_render);
