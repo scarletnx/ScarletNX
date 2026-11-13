@@ -728,6 +728,7 @@ void vk_ui_present(VkCommandBuffer cb, VkImage sc, Surf* src, VkRect2D crop, VkR
                    const int safe[4]) {
     SnxPresentSource from;
     int n = ui_prepare(cb, safe), framed = src && vk_present_quad_source(cb, src, 1, !g_vk.sc_srgb, &from);
+    if (framed) vk_present_quad_effects(cb, &from, &crop, to, transform); /* the upscaler and the anti aliasing */
     VkImageView view = sc_view(sc);
     /* the acquire's wait is at the colour output (renderer.c's submit): the image's first use */
     vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
