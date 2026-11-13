@@ -393,7 +393,7 @@ static uint32_t table_at(Gen* g, const int32_t* values, unsigned count, uint32_t
 /* if (cond) { the block placed here }: if_end places the merge, branching to it unless the block ended itself */
 static uint32_t if_begin(Gen* g, uint32_t cond) {
     uint32_t then = spv_emit_id(&g->s), merge = spv_emit_id(&g->s);
-    SPV_VOID(&g->s, SPV_OP_SELECTION_MERGE, merge, 0);
+    SPV_VOID(&g->s, SPV_OP_SELECTION_MERGE, merge, SPV_SELECTION_CONTROL_NONE);
     SPV_VOID(&g->s, SPV_OP_BRANCH_CONDITIONAL, cond, then, merge);
     spv_emit_label(&g->s, then);
     return merge;
@@ -584,7 +584,7 @@ static uint32_t shadow_texture_cube(Gen* g) {
     /* pixels = SampleShadowCube(face, ...) */
     uint32_t pixels = spv_emit_local(s, g->t_uv4), label[6], merge = spv_emit_id(s);
     for (unsigned k = 0; k < 6; ++k) label[k] = spv_emit_id(s);
-    SPV_VOID(s, SPV_OP_SELECTION_MERGE, merge, 0);
+    SPV_VOID(s, SPV_OP_SELECTION_MERGE, merge, SPV_SELECTION_CONTROL_NONE);
     SPV_VOID(s, SPV_OP_SWITCH, face, label[5], 0, label[0], 1, label[1], 2, label[2], 3, label[3], 4, label[4]);
     for (unsigned k = 0; k < 6; ++k) {
         uint32_t texels[4], sampled;
@@ -1141,7 +1141,7 @@ static uint32_t update_shadow(Gen* g, uint32_t pixel, uint32_t d, uint32_t s) {
     uint32_t outer = if_begin(g, op2(g, SPV_OP_U_LESS_THAN, g->t_bool, d, x));
     uint32_t zero = spv_emit_id(sp), nonzero = spv_emit_id(sp), merge = spv_emit_id(sp);
     uint32_t is_zero = op2(g, SPV_OP_I_EQUAL, g->t_bool, s, uc(g, 0));
-    SPV_VOID(sp, SPV_OP_SELECTION_MERGE, merge, 0);
+    SPV_VOID(sp, SPV_OP_SELECTION_MERGE, merge, SPV_SELECTION_CONTROL_NONE);
     SPV_VOID(sp, SPV_OP_BRANCH_CONDITIONAL, is_zero, zero, nonzero);
     spv_emit_label(sp, zero);
     store(g, ref_x, d);
@@ -1180,7 +1180,7 @@ static void shadow_write(Gen* g, uint32_t depth) {
     uint32_t header = spv_emit_id(s), body = spv_emit_id(s), next = spv_emit_id(s), merge = spv_emit_id(s);
     SPV_VOID(s, SPV_OP_BRANCH, header);
     spv_emit_label(s, header);
-    SPV_VOID(s, SPV_OP_LOOP_MERGE, merge, next, 0);
+    SPV_VOID(s, SPV_OP_LOOP_MERGE, merge, next, SPV_LOOP_CONTROL_NONE);
     SPV_VOID(s, SPV_OP_BRANCH, body);
     spv_emit_label(s, body);
     uint32_t value = load(g, u, old);
@@ -1322,18 +1322,18 @@ static void declare(Gen* g) {
     g->fs_data = spv_emit_resource(s, SPV_STORAGE_UNIFORM, block, 0, 2);
 
     /* the LUTs: samplerBuffers */
-    g->lut_image = spv_emit_type_image(s, f, SPV_DIM_BUFFER, 0, 0, 0, 1, 0);
+    g->lut_image = spv_emit_type_image(s, f, SPV_DIM_BUFFER, 0, 0, 0, 1, SPV_IMAGE_FORMAT_UNKNOWN);
     g->lut_type = spv_emit_type_sampled_image(s, g->lut_image);
     for (unsigned k = 0; k < 3; ++k)
         g->lut[k] = spv_emit_resource(s, SPV_STORAGE_UNIFORM_CONSTANT, g->lut_type, 0, 3 + k);
 
     /* the textures */
     if (type0 == SNX_CTR_FS_TEX_SHADOW_2D || type0 == SNX_CTR_FS_TEX_SHADOW_CUBE)
-        g->tex_image[0] = spv_emit_type_image(s, g->t_u, SPV_DIM_2D, 0, 0, 0, 1, 0);
+        g->tex_image[0] = spv_emit_type_image(s, g->t_u, SPV_DIM_2D, 0, 0, 0, 1, SPV_IMAGE_FORMAT_UNKNOWN);
     else
-        g->tex_image[0] =
-            spv_emit_type_image(s, f, type0 == SNX_CTR_FS_TEX_CUBE ? SPV_DIM_CUBE : SPV_DIM_2D, 0, 0, 0, 1, 0);
-    g->tex_image[1] = g->tex_image[2] = spv_emit_type_image(s, f, SPV_DIM_2D, 0, 0, 0, 1, 0);
+        g->tex_image[0] = spv_emit_type_image(s, f, type0 == SNX_CTR_FS_TEX_CUBE ? SPV_DIM_CUBE : SPV_DIM_2D, 0, 0, 0,
+                                              1, SPV_IMAGE_FORMAT_UNKNOWN);
+    g->tex_image[1] = g->tex_image[2] = spv_emit_type_image(s, f, SPV_DIM_2D, 0, 0, 0, 1, SPV_IMAGE_FORMAT_UNKNOWN);
     for (unsigned k = 0; k < 3; ++k) {
         g->tex_type[k] = spv_emit_type_sampled_image(s, g->tex_image[k]);
         uint32_t type = k == 0 && type0 == SNX_CTR_FS_TEX_SHADOW_CUBE ? spv_emit_type_array(s, g->tex_type[0], 6)

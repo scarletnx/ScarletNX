@@ -321,38 +321,54 @@ const char* vk_corpus_dir(void) {
 const char* vk_spirv_unavailable(const u32* spv, size_t words) {
     for (size_t at = 5; at < words;) { /* the capabilities come first */
         u32 width = spv[at] >> 16;
-        if (!width || at + width > words || (spv[at] & 0xffffu) != 17) break;
-        if (width == 2 && spv[at + 1] == 10 && !g_vk.feat.shaderFloat64) return "shaderFloat64 is unavailable";
-        if (width == 2 && spv[at + 1] == 11 && !g_vk.feat.shaderInt64) return "shaderInt64 is unavailable";
-        if (width == 2 && spv[at + 1] == 9 && !g_shader_float16) return "shaderFloat16 is unavailable";
-        if (width == 2 && spv[at + 1] == 2 && !g_vk.feat.geometryShader) return "geometryShader is unavailable";
-        if (width == 2 && spv[at + 1] == 3 && !g_vk.feat.tessellationShader) return "tessellationShader is unavailable";
-        if (width == 2 && spv[at + 1] == 25 && !g_vk.feat.shaderImageGatherExtended)
+        if (!width || at + width > words || (spv[at] & 0xffffu) != SPV_OP_CAPABILITY) break;
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_FLOAT64 && !g_vk.feat.shaderFloat64)
+            return "shaderFloat64 is unavailable";
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_INT64 && !g_vk.feat.shaderInt64)
+            return "shaderInt64 is unavailable";
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_FLOAT16 && !g_shader_float16)
+            return "shaderFloat16 is unavailable";
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_GEOMETRY && !g_vk.feat.geometryShader)
+            return "geometryShader is unavailable";
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_TESSELLATION && !g_vk.feat.tessellationShader)
+            return "tessellationShader is unavailable";
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_IMAGE_GATHER_EXTENDED && !g_vk.feat.shaderImageGatherExtended)
             return "shaderImageGatherExtended is unavailable";
-        if (width == 2 && spv[at + 1] == 27 && !g_vk.feat.shaderStorageImageMultisample)
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_STORAGE_IMAGE_MULTISAMPLE &&
+            !g_vk.feat.shaderStorageImageMultisample)
             return "shaderStorageImageMultisample is unavailable";
-        if (width == 2 && spv[at + 1] == 42 && !g_vk.feat.shaderResourceMinLod)
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_MIN_LOD && !g_vk.feat.shaderResourceMinLod)
             return "shaderResourceMinLod is unavailable";
-        if (width == 2 && spv[at + 1] == 54 && !g_vk.has_geometry_streams)
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_GEOMETRY_STREAMS && !g_vk.has_geometry_streams)
             return "geometryStreams is unavailable";
-        if (width == 2 && spv[at + 1] == 32 && !g_vk.feat.shaderClipDistance)
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_CLIP_DISTANCE && !g_vk.feat.shaderClipDistance)
             return "shaderClipDistance is unavailable";
-        if (width == 2 && spv[at + 1] == 35 && !g_vk.feat.sampleRateShading) return "sampleRateShading is unavailable";
-        if (width == 2 && spv[at + 1] == 55 && !g_vk.feat.shaderStorageImageReadWithoutFormat)
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_SAMPLE_RATE_SHADING && !g_vk.feat.sampleRateShading)
+            return "sampleRateShading is unavailable";
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_STORAGE_IMAGE_READ_WITHOUT_FORMAT &&
+            !g_vk.feat.shaderStorageImageReadWithoutFormat)
             return "shaderStorageImageReadWithoutFormat is unavailable";
-        if (width == 2 && spv[at + 1] == 56 && !g_vk.feat.shaderStorageImageWriteWithoutFormat)
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_STORAGE_IMAGE_WRITE_WITHOUT_FORMAT &&
+            !g_vk.feat.shaderStorageImageWriteWithoutFormat)
             return "shaderStorageImageWriteWithoutFormat is unavailable";
-        if (width == 2 && spv[at + 1] == 5378 && !g_vk.has_fragment_interlock)
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_FRAGMENT_SHADER_PIXEL_INTERLOCK_EXT &&
+            !g_vk.has_fragment_interlock)
             return "fragmentShaderPixelInterlock is unavailable";
-        if (width == 2 && spv[at + 1] == 4427 && !g_vk.has_shader_draw_parameters)
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_DRAW_PARAMETERS && !g_vk.has_shader_draw_parameters)
             return "shaderDrawParameters is unavailable";
-        if (width == 2 && spv[at + 1] == 5055 && !g_shader_clock_scopes) return "shaderClock is unavailable";
-        if (width == 2 && spv[at + 1] == 5283 && !g_vk.has_mesh) return "meshShader is unavailable";
-        if (width == 2 && spv[at + 1] == 6912 && !g_shader_mixed_dot)
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_SHADER_CLOCK_KHR && !g_shader_clock_scopes)
+            return "shaderClock is unavailable";
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_MESH_SHADING_EXT && !g_vk.has_mesh)
+            return "meshShader is unavailable";
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_DOT_PRODUCT_FLOAT16_ACC_FLOAT32_VALVE && !g_shader_mixed_dot)
             return "shaderMixedFloatDotProductFloat16AccFloat32 is unavailable";
-        if (width == 2 && (spv[at + 1] == SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR || spv[at + 1] == 5345 || spv[at + 1] == 5346) && !g_shader_hmma_coop)
+        if (width == 2 &&
+            (spv[at + 1] == SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR ||
+             spv[at + 1] == SPV_CAPABILITY_VULKAN_MEMORY_MODEL ||
+             spv[at + 1] == SPV_CAPABILITY_VULKAN_MEMORY_MODEL_DEVICE_SCOPE) &&
+            !g_shader_hmma_coop)
             return "cooperativeMatrix or the Vulkan memory model is unavailable";
-        if (width == 2 && spv[at + 1] == 6033 && !g_shader_float_atomic_add)
+        if (width == 2 && spv[at + 1] == SPV_CAPABILITY_ATOMIC_FLOAT32_ADD_EXT && !g_shader_float_atomic_add)
             return "shaderBufferFloat32AtomicAdd is unavailable";
         at += width;
     }
@@ -1208,7 +1224,7 @@ VkShaderModule vk_module_spv_location(const u32* source, size_t nw, u32 location
     for (size_t i = 5; i < nw;) {
         u32 count = spv[i] >> 16, op = spv[i] & 0xffffu;
         if (!count || i + count > nw) break;
-        if (op == 71 && count == 4 && spv[i + 2] == 30) {
+        if (op == SPV_OP_DECORATE && count == 4 && spv[i + 2] == SPV_DECORATION_LOCATION) {
             spv[i + 3] = location;
             found++;
         }

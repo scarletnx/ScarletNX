@@ -456,9 +456,9 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                 spv_emit_store(&c->emit, outputs[output++], color);
             }
             if (t->coverage_output) {
-                u32 bits = spv_emit_load(
-                    &c->emit, c->u32_type,
-                    spv_emit_interface_scalar_pointer(&c->emit, 1, c->u32_type, t->coverage, 0, c->zero));
+                u32 bits = spv_emit_load(&c->emit, c->u32_type,
+                                         spv_emit_interface_scalar_pointer(&c->emit, SPV_STORAGE_INPUT, c->u32_type,
+                                                                           t->coverage, 0, c->zero));
                 u32 values[4] = {bits, c->zero, c->zero, c->zero};
                 u32 color = spv_emit_vec4_construct(&c->emit, vec4_u32, values);
                 if (si->rt_sint_mask & (1u << (si->coverage_to_color - 1)))
@@ -479,10 +479,10 @@ void emit_flow(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                         mask = shader_alpha_coverage_spirv(&c->emit, c->f32_type, c->u32_type, c->bool_type,
                             alpha, samples, mask);
                 }
-                spv_emit_store(
-                    &c->emit,
-                    spv_emit_interface_scalar_pointer(&c->emit, 3, c->u32_type, sample_mask_output, 0, c->zero),
-                    mask);
+                spv_emit_store(&c->emit,
+                               spv_emit_interface_scalar_pointer(&c->emit, SPV_STORAGE_OUTPUT, c->u32_type,
+                                                                 sample_mask_output, 0, c->zero),
+                               mask);
             }
             if (depth_output) spv_emit_store(&c->emit, depth_output, reg_read_as(c, reg + 1, c->f32_type));
             if (push && (target & 15)) shader_alpha_test(c, push, push_pointer, alpha);
