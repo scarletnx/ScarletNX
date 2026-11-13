@@ -4358,13 +4358,13 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
             }
             chi = in->c.kind == SM86_SRC_UREG ? urd(c, creg >= SM86_URZ ? creg : creg + 1)
                                               : rd(c, creg >= SM86_RZ ? creg : creg + 1);
-            u32 sum =
-                op2(c, SPV_OP_I_ADD, t64, op2(c, SPV_OP_I_MUL, t64, a64, b64), pair64(c, src_bits(c, &in->c), chi));
+            u32 product = op2(c, SPV_OP_I_MUL, t64, a64, b64);
+            u32 sum = op2(c, SPV_OP_I_ADD, t64, product, pair64(c, src_bits(c, &in->c), chi));
             u32 d = in->dst;
             /* the carry out of the 64-bit sum, in the predicate at 81-83 as IADD3's first (nvdisasm: IMAD.WIDE.U32
                R14, P0, R10, R19, R14): one game's 64-bit division chains IMAD.WIDE ..., P0 into IMAD.X. With .X
                (bit 74; nvdisasm: IMAD.WIDE.U32.X R6, RZ, R5, R6, P1) the carry predicate at 87-90 joins the sum */
-            u32 carry = op2(c, SPV_OP_U_LESS_THAN, c->t_bool, sum, op2(c, SPV_OP_I_MUL, t64, a64, b64));
+            u32 carry = op2(c, SPV_OP_U_LESS_THAN, c->t_bool, sum, product);
             if (sm86_field(in, 74, 1)) {
                 u32 more = op2(c, SPV_OP_I_ADD, t64, sum, carry_in(c, 87, in, uniform));
                 carry = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_bool, carry, c->true_v,
@@ -5592,6 +5592,7 @@ static int mh_add(Ctx* c, u32 k, u32 reader) {
         case SM86_IMAD_WIDE:
         case SM86_UIMAD_WIDE:
             if (!mh_src(c, k, &in->a) || !mh_src(c, k, &in->b) || !mh_src(c, k, &in->c)) return 0;
+            if (sm86_field(in, 74, 1) && !mh_pred(c, k, u, 87)) return 0; /* .X: the carry predicate joins the sum */
             if (in->c.kind == SM86_SRC_REG) return mh_need(c, k, MH_R, in->c.reg >= SM86_RZ ? SM86_RZ : in->c.reg + 1);
             if (in->c.kind == SM86_SRC_UREG)
                 return mh_need(c, k, MH_UR, in->c.reg >= SM86_URZ ? SM86_URZ : in->c.reg + 1);

@@ -3206,6 +3206,61 @@ static void test_uniform_handle(const char* dir) {
                     values[2], (unsigned long long)g_mh_loads[0]);
     }
 }
+/* A handle whose record's address takes the carry of an IMAD.WIDE.X (bit 74): IADD3 RZ, P0, R2, R2, RZ with R2 =
+   c[4][0x88] = 0xc0000003 carries out into P0, and IMAD.WIDE.U32.X R6, RZ, RZ, R8, P0 adds it to R8:R9 = 0xf7:0, so
+   the LDG at [R6 + UR4] reads the record at 0x2_0000_10f8 only with the carry. The predicate's writer joins
+   ShaderInfo.memh as the IADD3 and IMAD cases' do: without it, sm86_eval ran the IMAD.WIDE.X with P0 unset and loaded
+   0x2_0000_10f7 */
+static void test_memory_handle_carry(const char* dir) {
+    u8 code[16 * 12] = {0};
+    u32 n = 0;
+    put(code, n++, uldc64(0x520));
+    put(code, n++, mov_cbuf(2, 4, 0x88));
+    Word x = alu(0x010, 1, 255, 2); /* IADD3 RZ, P0, R2, R2, RZ */
+    set(&x, 32, 8, 2), set(&x, 64, 8, 255);
+    set(&x, 81, 3, 0), set(&x, 84, 3, 7), set(&x, 87, 4, 7), set(&x, 77, 4, 7);
+    put(code, n++, x);
+    put(code, n++, mov_imm(8, 0xf7));
+    put(code, n++, mov_imm(9, 0));
+    x = alu(0x025, 1, 6, 255); /* IMAD.WIDE.U32.X R6, RZ, RZ, R8, P0 */
+    set(&x, 32, 8, 255), set(&x, 64, 8, 8), set(&x, 74, 1, 1);
+    set(&x, 81, 3, 7), set(&x, 84, 3, 7), set(&x, 87, 4, 0);
+    put(code, n++, x);
+    put(code, n++, ldg_reg_ur64(4, 6, 4, 0));
+    u32 first = n;
+    put(code, n++, r2ur(8, 4));
+    put(code, n++, ushf_r(9, 8, 20));
+    Word t = {{0x3000040602227f60ull, 0x00000000099e4f08ull}}; /* TEX_U, its handle in UR8 */
+    set(&t, 40, 6, 8);
+    put(code, n++, t);
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+    int ok = spv && si.ntex == 1 && (si.tex[0].flags & SNX_TEX_MEMORY) && SH_PROBE_REG(si.tex[0].cbuf_off) == 8 &&
+             si.nmemh == first + 2;
+    CHECK(ok);
+    if (!ok)
+        fprintf(stderr, "memory handle carry: %s, %s, %u instructions kept\n", si.first_unsupported, si.memh_why,
+                si.nmemh);
+    if (spv) CHECK(keep_module(dir, "fs_memory_handle_carry", spv, count));
+    free(spv);
+    if (si.ntex < 1) return;
+    u32 probes[2] = {si.tex[0].cbuf_off, si.tex[0].bl2_off}, values[2] = {0, 0};
+    Sm86EvalIo io = {NULL, mh_cbuf, mh_mem};
+    g_mh_nloads = 0;
+    int ran = sm86_eval((const u64(*)[2])si.memh, si.nmemh, &io, probes, 2, values);
+    ok = ran && values[0] == 0x12300abcu && values[1] == 0x123u && g_mh_nloads == 1 && g_mh_loads[0] == 0x2000010f8ull;
+    CHECK(ok);
+    if (!ok)
+        fprintf(stderr, "memory handle carry: ran %d, %08x %08x, load %llx\n", ran, values[0], values[1],
+                (unsigned long long)g_mh_loads[0]);
+}
 /* An address's base through a ULDC of one word to the register before it: UR4 = c[0][0x530] (64 bits), UR7 = UR4 +
    0x30, then a ULDC UR6 of one word of bank 3, UMOV UR4 = UR7, and the LDG at [UR4 + 0x5c]. UR7 keeps its key: the
    word's ULDC took the key of UR7 as a 64-bit one's high word, and one game's material program was refused for "a
@@ -4763,6 +4818,7 @@ int main(int argc, char** argv) {
     test_global_two_bases(dir);
     test_global_atomic_same_register(dir);
     test_uniform_handle(dir);
+    test_memory_handle_carry(dir);
     test_memory_eval();
     test_uldc_word_key(dir);
     test_mesh(dir);
