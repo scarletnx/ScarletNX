@@ -1285,6 +1285,7 @@ void nvn_CommandBufferEvaluateDlss(CPU* c, u64 cb, u64 n, u64 p) {
     d->pre_exposure = q.pre_exposure;
     d->flags = o->builder_flags;
     d->in[0] = in_w, d->in[1] = in_h, d->out[0] = out_w, d->out[1] = out_h;
+    d->render_max[0] = o->render_max[0], d->render_max[1] = o->render_max[1];
     memcpy(d->base, q.base, sizeof d->base);
     if (move[0] || move[1]) {
         /* the whole output first, as it is: the moved copy leaves a strip at an edge, and a target written in part

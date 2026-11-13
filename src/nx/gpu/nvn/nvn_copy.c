@@ -580,6 +580,8 @@ static int dlss_upscale(const NvnPDlss* r) {
                      surf2d(r->tex[NVN_DLSS_BIAS], &r->view[NVN_DLSS_BIAS], r->has_view[NVN_DLSS_BIAS], 0, &u.reactive,
                             &bpp);
     u.render[0] = (u32)r->in[0], u.render[1] = (u32)r->in[1];
+    u.render_max[0] = r->render_max[0] > 0 ? (u32)r->render_max[0] : 0;
+    u.render_max[1] = r->render_max[1] > 0 ? (u32)r->render_max[1] : 0;
     u.out[0] = (u32)r->out[0], u.out[1] = (u32)r->out[1];
     u.out_base[0] = r->base[4][0], u.out_base[1] = r->base[4][1];
     memcpy(u.jitter, r->jitter, sizeof u.jitter);

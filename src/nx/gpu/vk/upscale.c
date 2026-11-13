@@ -17,7 +17,7 @@
 
 static struct {
     SnxFsr2* fsr;
-    u32 render[2], out[2], flags; /* what fsr was made for */
+    u32 render[2], out[2], flags; /* what fsr was made for: render is the largest render size it takes */
     VkFormat format;              /* and our output image's format */
     VkImage image;
     DevMem memory;
@@ -67,9 +67,11 @@ static int setup_failed(const u32 render[2], const u32 out[2], u32 flags, VkForm
     return 0;
 }
 
-/* the context and our output image for these sizes, flags and format: 1 when there */
+/* the context and our output image for render sizes up to render, and these output size, flags and format: 1 when
+   there. A context made for a larger render size takes this one (FSR's dynamic resolution): a game's dynamic resolution
+   under DLSS changes the render size between frames, and a new context is a device wait and a history reset */
 static int ready(const u32 render[2], const u32 out[2], u32 flags, VkFormat format) {
-    if (g_upscale.fsr && !memcmp(g_upscale.render, render, sizeof g_upscale.render) &&
+    if (g_upscale.fsr && g_upscale.render[0] >= render[0] && g_upscale.render[1] >= render[1] &&
         !memcmp(g_upscale.out, out, sizeof g_upscale.out) && g_upscale.flags == flags && g_upscale.format == format)
         return 1;
     if (g_upscale.failed && !memcmp(g_upscale.failed_render, render, sizeof g_upscale.failed_render) &&
@@ -118,7 +120,7 @@ static int ready(const u32 render[2], const u32 out[2], u32 flags, VkFormat form
     g_upscale.flags = flags;
     g_upscale.format = format;
     g_upscale.fresh = 1;
-    LOG("vulkan: FSR 2.2.1 upscales %ux%u to %ux%u for the game's DLSS evaluations (flags %#x: %s color, motion "
+    LOG("vulkan: FSR 2.2.1 upscales up to %ux%u to %ux%u for the game's DLSS evaluations (flags %#x: %s color, motion "
         "vectors at the %s size%s, %s depth, %s exposure; output format %d; set up in %.1f ms)\n",
         render[0], render[1], out[0], out[1], flags, flags & SNX_FSR2_HDR ? "HDR" : "SDR",
         flags & SNX_FSR2_DISPLAY_MOTION ? "output's" : "render", flags & SNX_FSR2_JITTERED_MOTION ? " with jitter" : "",
@@ -195,17 +197,27 @@ int vk_upscale(const GpuUpscale* u) {
     if (u->out_base[0] < 0 || u->out_base[1] < 0 || (u32)u->out_base[0] + u->out[0] > out->sw ||
         (u32)u->out_base[1] + u->out[1] > out->sh)
         return 0;
+    /* the context's render size: the network's largest, which the render size stays within with a dynamic
+       resolution, or this one when larger (or the largest isn't known) */
+    u32 render_max[2];
+    for (u32 a = 0; a < 2; a++) render_max[a] = u->render_max[a] > u->render[a] ? u->render_max[a] : u->render[a];
+    /* motion vectors at the output's size: a target that large while the render size is smaller. At the output's
+       size the two readings are the same, and the context's own stands, so a dynamic resolution reaching the output's
+       size doesn't make another context */
+    int display_motion = motion->sw >= u->out[0] && motion->sh >= u->out[1] &&
+                         (u->out[0] > u->render[0] || u->out[1] > u->render[1]);
+    if (u->render[0] == u->out[0] && u->render[1] == u->out[1] && g_upscale.fsr)
+        display_motion = (g_upscale.flags & SNX_FSR2_DISPLAY_MOTION) != 0;
     VkFormat cf = color->f.vk;
     int hdr = cf == VK_FORMAT_R16G16B16A16_SFLOAT || cf == VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
               cf == VK_FORMAT_R32G32B32A32_SFLOAT;
     u32 flags = (!hdr != !(conventions & FLIP_HDR) ? SNX_FSR2_HDR : 0) |
-                (motion->sw >= u->out[0] && motion->sh >= u->out[1] && u->out[0] > u->render[0] ? SNX_FSR2_DISPLAY_MOTION
-                                                                                              : 0) |
+                (display_motion ? SNX_FSR2_DISPLAY_MOTION : 0) |
                 (!(u->flags & 4) != !(conventions & FLIP_JITTERED) ? SNX_FSR2_JITTERED_MOTION : 0) |
                 (!(u->flags & 8) != !(conventions & FLIP_INVERTED) ? SNX_FSR2_INVERTED_DEPTH : 0) |
                 (!exposure || (u->flags & 0x40) || (conventions & AUTO_EXPOSURE) ? SNX_FSR2_AUTO_EXPOSURE : 0);
     if (flags & SNX_FSR2_AUTO_EXPOSURE) r.d.exposure = (SnxFsr2Image){0};
-    if (!ready(u->render, u->out, flags, format)) return 0;
+    if (!ready(render_max, u->out, flags, format)) return 0;
 
     VkCommandBuffer cb = vk_cmd(); /* after the inputs' read checks (input) and the context's setup */
     Surf* reads[5] = {color, depth, motion, exposure, reactive};

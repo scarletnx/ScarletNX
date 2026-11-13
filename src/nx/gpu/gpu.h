@@ -190,11 +190,12 @@ typedef struct {
 /* A temporal upscale: the frame's color at the render size with its depth and motion vectors, onto the output at out
    from out_base. jitter: the camera's offset in render pixels (the picture moved by +jitter). motion_scale brings a
    motion vector to render pixels. flags: the DLSS network's builder flags, taken as NGX's feature bits (1 HDR, 2
-   motion vectors at the render size, 4 motion vectors that include the jitter, 8 inverted depth, 0x40 auto exposure) */
+   motion vectors at the render size, 4 motion vectors that include the jitter, 8 inverted depth, 0x40 auto exposure).
+   render_max: the largest render size a dynamic resolution may give (the network's), 0 when not known */
 typedef struct {
     Surf2D color, depth, motion, exposure, reactive, output;
     int has_exposure, has_reactive;
-    u32 render[2], out[2];
+    u32 render[2], out[2], render_max[2];
     i32 out_base[2];
     f32 jitter[2], motion_scale[2], pre_exposure;
     int reset;
