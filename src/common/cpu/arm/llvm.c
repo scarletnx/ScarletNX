@@ -722,8 +722,12 @@ static void multiple(ArmIR* a) {
     if (!load) transfer_commit(a);
     /* Writeback after stores (STM snapshots keep the old base) but before
        nothing else: for LDM with the base in the list the loaded value wins,
-       so writeback is discarded there. */
-    if ((w & (1u << 21)) && !(load && (w & (1u << n)))) setreg(a, n, adjusted);
+       so writeback is discarded there. The ARM946E-S (ARMv5) writes back when
+       the base is the list's only register or not its last, as its runtime's
+       interpreter does (nds/cpu/cpu.c block_transfer) */
+    uint32_t list = w & 0xFFFF;
+    int arm9_writes = arm946e(a) && (!(list & ~(1u << n)) || (list & ~((2u << n) - 1)));
+    if ((w & (1u << 21)) && (!(load && (list & (1u << n))) || arm9_writes)) setreg(a, n, adjusted);
 }
 
 static LLVMValueRef intrinsic(ArmIR* a, const char* name, size_t len, LLVMTypeRef type, LLVMValueRef* args,
