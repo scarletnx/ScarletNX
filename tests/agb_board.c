@@ -124,6 +124,25 @@ int main(void) {
     CHECK(agb_board_insert(&board, rom, ROM_SIZE, error, sizeof error));
     CHECK(strstr(error, "ROM header's byte 0xB2 is 0x00, not the fixed 0x96"));
 
+    /* an immediate DMA with the repeat bit ends as any immediate one, its enable bit clear, so the next start runs: a
+       game that cleared OAM so and loaded its palettes after got none */
+    agb_write32(&board, 0x02000200, 0x11223344);
+    agb_write32(&board, 0x040000D4, 0x02000200);
+    agb_write32(&board, 0x040000D8, 0x02000300);
+    agb_write16(&board, 0x040000DC, 4);
+    agb_write16(&board, 0x040000DE, 0x8700); /* on, now, words, repeat, the source fixed */
+    CHECK(agb_read32(&board, 0x0200030C) == 0x11223344);
+    if (agb_read16(&board, 0x040000DE) != 0x0700) {
+        fprintf(stderr, "agb_board: an immediate repeat DMA left DMA3CNT_H at 0x%04X, not 0x0700\n",
+                agb_read16(&board, 0x040000DE));
+        return 1;
+    }
+    agb_write32(&board, 0x040000D4, 0x02000200);
+    agb_write32(&board, 0x040000D8, 0x05000000);
+    agb_write16(&board, 0x040000DC, 1);
+    agb_write16(&board, 0x040000DE, 0x8400);
+    CHECK(agb_read32(&board, 0x05000000) == 0x11223344);
+
     /* a rejected insert leaves the accepted cartridge in place */
     CHECK(board.has_cartridge && !strcmp(board.cartridge.title, "TEST"));
 
