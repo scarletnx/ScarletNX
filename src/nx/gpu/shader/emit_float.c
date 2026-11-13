@@ -89,6 +89,23 @@ u32 shader_float_saturate(DirectCtx* c, u32 value, int saturate) {
     return spv_emit_saturate(&c->emit, c->f32_type, c->u32_type, c->bool_type, c->glsl, value);
 }
 
+/* A half instruction's NaN that becomes an F16 becomes +0, as Eden converts an F32 to an F16 (its 11b152ab58). One
+   game's half-precision frac(x * 1024 - 0.5) of a large shadow coordinate is HADD2 R.H1 = R.F32, F2F FLOOR, HADD2
+   x - floor: the coordinate rounds to an infinity, Inf - Inf is a NaN, and the console draws no black block there,
+   which bloom spread from that NaN. A result kept as an F32 (merge 1) keeps its NaN */
+static u32 half_nan_zero(DirectCtx* c, u32 vec2, u32 pair) {
+    u32 lanes[2], zero = spv_emit_constant_f32(&c->emit, c->f32_type, 0.0f);
+    for (u32 lane = 0; lane < 2; lane++) {
+        u32 value = spv_emit_vec4_extract(&c->emit, c->f32_type, pair, lane);
+        u32 magnitude =
+            spv_emit_binary(&c->emit, SPV_OP_BITWISE_AND, c->u32_type,
+                            spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type, value), shader_u32(c, 0x7fffffffu));
+        u32 nan = spv_emit_binary(&c->emit, SPV_OP_U_LESS_THAN, c->bool_type, shader_u32(c, 0x7f800000u), magnitude);
+        lanes[lane] = spv_emit_ternary(&c->emit, SPV_OP_SELECT, c->f32_type, nan, zero, value);
+    }
+    return spv_emit_vec2_construct(&c->emit, vec2, lanes[0], lanes[1]);
+}
+
 u32 shader_half_pair_result(DirectCtx* c, u32 vec2, u32 pair, u32 old, u32 merge, int saturate) {
     if (saturate)
         pair = spv_emit_vec2_construct(
@@ -97,7 +114,7 @@ u32 shader_half_pair_result(DirectCtx* c, u32 vec2, u32 pair, u32 old, u32 merge
     if (merge == 1)
         return spv_emit_unary(&c->emit, SPV_OP_BITCAST, c->u32_type,
                               spv_emit_vec4_extract(&c->emit, c->f32_type, pair, 0));
-    u32 packed = shader_pack_half_rte(c, pair);
+    u32 packed = shader_pack_half_rte(c, saturate ? pair : half_nan_zero(c, vec2, pair));
     if (merge == 2 || merge == 3) {
         u32 mask = shader_u32(c, merge == 2 ? 0xffffu : 0xffff0000u);
         return spv_emit_binary(&c->emit, SPV_OP_BITWISE_OR, c->u32_type,
