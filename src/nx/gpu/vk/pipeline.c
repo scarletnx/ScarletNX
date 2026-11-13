@@ -979,6 +979,13 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
         s->failed = 1;
     /* an Ounce program's texture handles that it loads at addresses that differ from invocation to invocation: no
        texture each (SH_PROBE_NONE), which the log says once a program */
+    /* TEX.B instructions that choose among the constant buffer handles that reach them by the handle's value: one
+       equal to none samples zeros, which the log says once a program */
+    if (!s->failed && s->si.chosen_tex)
+        LOG_LIMIT(64,
+                  "vulkan: program %016llx chooses the texture of %u TEX.B%s when it runs, among the constant buffer "
+                  "handles that reach it: a handle equal to none of them samples (0, 0, 0, 0) (%s)\n",
+                  (unsigned long long)h, s->si.chosen_tex, s->si.chosen_tex == 1 ? "" : "s", s->si.chosen_why);
     if (!s->failed && s->si.memh_none)
         LOG_LIMIT(64, "vulkan: program %016llx samples %u texture%s as none, whose handles it loads from memory at "
                       "addresses no draw gives (%s)\n",
