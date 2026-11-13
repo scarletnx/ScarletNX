@@ -346,7 +346,7 @@ int snx_vita_main(int argc, char** argv) {
         if (!strncmp(a, "--", 2) && strchr(a, '=')) {
             /* the Vita debug table's, --press-len= and --shot-every= being vita_press_len and vita_shot_every (a Switch
                game's are g_unattended_ini's), vulkan_video (which the Vita's AVC decoder doesn't take yet), the
-               upscaler and the anti aliasing (the presenter's, gpu/vk.c), a Vulkan extension's (vk_ext_*) and
+               upscaler and the anti-aliasing (the presenter's, gpu/vk.c), a Vulkan extension's (vk_ext_*) and
                gamepad_map */
             char key[64];
             const char* value = settings_arg(a, key, sizeof key);
