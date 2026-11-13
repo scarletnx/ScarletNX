@@ -6354,6 +6354,34 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_tex_partial.inc"
 #include "vulkan_astc_later.inc"
 
+/* The file of earlier runs' pipelines keeps SPIR-V translated with the HMMA forms its key names: each form a run can
+   choose (the device's matrix unit, the B gather by pairs of lanes, the hmma_f16 setting's half sums, A and B through
+   shared memory) changes the part of the key past the guest part, so a run that chose another form translates its
+   programs again */
+static int check_hmma_file_key(void) {
+    int coop_was = g_shader_hmma_coop, pairs_was = g_shader_hmma_pairs, f16_was = g_shader_hmma_f16;
+    int stage_was = g_shader_hmma_stage;
+    char base[1024], other[1024];
+    size_t gbase = 0, gother = 0;
+    g_shader_hmma_coop = g_shader_hmma_pairs = g_shader_hmma_f16 = g_shader_hmma_stage = 0;
+    vk_pipeline_file_key(base, sizeof base, &gbase);
+    CHECK(gbase);
+    for (int form = 0; form < 4; form++) {
+        g_shader_hmma_coop = form == 0 ? 65536 : 0, g_shader_hmma_pairs = form == 1, g_shader_hmma_f16 = form == 2;
+        g_shader_hmma_stage = form == 3 ? 65536 : 0;
+        vk_pipeline_file_key(other, sizeof other, &gother);
+        g_shader_hmma_coop = g_shader_hmma_pairs = g_shader_hmma_f16 = g_shader_hmma_stage = 0;
+        CHECK(gother == gbase && !memcmp(base, other, gbase));
+        if (!strcmp(base + gbase, other + gother))
+            fprintf(stderr, "file key: HMMA form %d (0 coop, 1 pairs, 2 hmma_f16, 3 staged) leaves the key as %s\n",
+                    form, other + gother);
+        CHECK(strcmp(base + gbase, other + gother) != 0);
+    }
+    g_shader_hmma_coop = coop_was, g_shader_hmma_pairs = pairs_was, g_shader_hmma_f16 = f16_was;
+    g_shader_hmma_stage = stage_was;
+    return 0;
+}
+
 #include "vulkan_descriptor_bench.inc"
 #include "vulkan_pipeline_probe.inc"
 #include "vulkan_indexed_map_bench.inc"
@@ -7251,6 +7279,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_vertex_restride());
     CHECK(!check_vertex_input_layouts());
     CHECK(!check_vertex_input_file_key());
+    CHECK(!check_hmma_file_key());
     CHECK(!check_targetless_stores());
     CHECK(!check_deko_vertex_storage());
     CHECK(!check_storage_image_keep());
