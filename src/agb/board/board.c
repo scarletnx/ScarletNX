@@ -218,6 +218,9 @@ void agb_sio_step(AgbBoard* board, uint32_t cycles) {
     if (siocnt & 0x4000) agb_irq_request(board, AGB_IRQ_SERIAL);
 }
 
+/* the interrupt line: IME on and an interrupt both IE and IF hold */
+static int irq_line(const AgbBoard* board) { return (board->irq_ime & 1) && (board->irq_ie & board->irq_if & 0x3FFF); }
+
 void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value, uint16_t mask) {
     uint32_t offset = (address >> 1) & (AGB_IO_COUNT - 1), byte = offset * 2;
     if (io_unused(address)) return;
@@ -229,6 +232,17 @@ void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value, uint16_t 
     }
     if (byte == 0x202) {
         board->irq_if &= (uint16_t)~(value & mask); /* one bits acknowledge the interrupt flags of the lanes written */
+        return;
+    }
+    if (byte == 0x200 || byte == 0x208) {
+        /* the CPU's line rises 3 cycles after a write that lets a held interrupt through */
+        int was = irq_line(board);
+        if (mask != 0xFFFF) value = (uint16_t)((value & mask) | (io_written(board, byte, offset) & ~mask));
+        if (byte == 0x200)
+            board->irq_ie = value;
+        else
+            board->irq_ime = value & 1;
+        if (!was && irq_line(board)) board->irq_at = board->now + 3;
         return;
     }
     if (mask != 0xFFFF) value = (uint16_t)((value & mask) | (io_written(board, byte, offset) & ~mask));
@@ -246,14 +260,6 @@ void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value, uint16_t 
     }
     if (byte >= 0x100 && byte <= 0x10F) {
         agb_timer_write(board, byte, value);
-        return;
-    }
-    if (byte == 0x200) {
-        board->irq_ie = value;
-        return;
-    }
-    if (byte == 0x208) {
-        board->irq_ime = value & 1;
         return;
     }
     if (byte == 0x128) {
@@ -275,7 +281,21 @@ void agb_board_keys(AgbBoard* board, uint16_t held) {
         agb_irq_request(board, AGB_IRQ_KEYPAD);
 }
 
-void agb_irq_request(AgbBoard* board, uint32_t mask) {
+void agb_irq_raise(AgbBoard* board, uint32_t mask, uint64_t at) {
+    int was = irq_line(board);
     board->irq_if |= (uint16_t)mask;
     board->cpu_halted = 0; /* any raised flag wakes a halted CPU */
+    if (!was && irq_line(board)) board->irq_at = at + 3;
+}
+
+void agb_irq_request(AgbBoard* board, uint32_t mask) { agb_irq_raise(board, mask, board->now); }
+
+uint64_t agb_board_next_irq(const AgbBoard* board) {
+    uint64_t at = agb_timer_next_irq(board), display = agb_ppu_next_irq(board);
+    if (display < at) at = display;
+    /* the serial transfer ends with its interrupt when SIOCNT asks for one */
+    if (board->sio_cycles && (board->io[0x128 >> 1] & 0x4000) && (board->irq_ie & AGB_IRQ_SERIAL) &&
+        board->now + board->sio_cycles < at)
+        at = board->now + board->sio_cycles;
+    return at == UINT64_MAX ? at : at + 3;
 }

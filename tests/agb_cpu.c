@@ -915,6 +915,51 @@ int main(void) {
         }
     }
     {
+        /* an interrupt is taken at the instruction the line rises in, not where the block would end: a timer started
+           at 0xFFF0 by a store counts from 2 cycles after it and overflows 16 later, the line rises 3 after that, and
+           the handler, entered after the 21st add of a cycle each, stores the adds it saw at 0x02000340, stops the timer
+           and acknowledges it */
+        static const uint32_t handler[] = {
+            0xE5865000, /* str r5, [r6] */
+            0xE3A01000, /* mov r1, #0 */
+            0xE2802C01, /* add r2, r0, #0x100 */
+            0xE1C210B2, /* strh r1, [r2, #2]: TM0CNT_H, off */
+            0xE3A01008, /* mov r1, #8 */
+            0xE2802C02, /* add r2, r0, #0x200 */
+            0xE1C210B2, /* strh r1, [r2, #2]: IF, timer 0 acknowledged */
+            0xE12FFF1E, /* bx lr */
+        };
+        for (uint32_t i = 0; i < sizeof handler / sizeof handler[0]; ++i)
+            agb_write32(&board, 0x03004200 + i * 4, handler[i]);
+        agb_write32(&board, 0x03004100, 0xE5801000);                                            /* str r1, [r0] */
+        for (uint32_t i = 1; i <= 40; ++i) agb_write32(&board, 0x03004100 + i * 4, 0xE2855001); /* add r5, r5, #1 */
+        agb_write32(&board, 0x03004100 + 41 * 4, 0xEAFFFFFE);                                   /* b . */
+        agb_write32(&board, 0x03007FFC, 0x03004200);
+        agb_write16(&board, 0x04000004, 0);      /* no display interrupt */
+        agb_write16(&board, 0x04000200, 0x0008); /* IE: timer 0 */
+        agb_write16(&board, 0x04000208, 0x0001);
+        board.irq_if = 0;
+        board.cpu_halted = 0;
+        board.held_cycles = 0;
+        agb_write32(&board, 0x02000340, 0xFFFFFFFF);
+        cpu.arm.r[0] = 0x04000100;
+        cpu.arm.r[1] = 0x00C0FFF0; /* reload 0xFFF0, on, its interrupt on */
+        cpu.arm.r[5] = 0;
+        cpu.arm.r[6] = 0x02000340;
+        cpu.arm.r[13] = 0x03007E00;
+        cpu.arm.r[15] = 0x03004100;
+        cpu.arm.cpsr = 0x1F;
+        cpu.over = 0;
+        CHECK(!agb_cpu_run(&board, &cpu, &recomp, 400, audio, AGB_APU_RATE, NULL, error, sizeof error));
+        if (agb_read32(&board, 0x02000340) != 21) {
+            fprintf(stderr, "agb_cpu: the timer's interrupt came after %u adds, not 21\n",
+                    agb_read32(&board, 0x02000340));
+            return 1;
+        }
+        agb_write16(&board, 0x04000208, 0);
+        agb_write16(&board, 0x04000200, 0);
+    }
+    {
         /* a DMA's interrupt is taken like any other: DMA 3's, with nothing else pending, enters the handler, which stores
            the IF it saw at 0x02000330 and acknowledges it */
         static const uint32_t handler[] = {0xE2802C02, 0xE1D210B2, 0xE1C210B2, 0xE59F3004,

@@ -160,16 +160,38 @@ void agb_ppu_write(AgbBoard* board, uint32_t offset, uint16_t value) {
 
 /* ---- timing ---- */
 
+/* the cycle of a line the horizontal blank starts at */
+#define AGB_HBLANK_DOT 960
+
+uint64_t agb_ppu_next_irq(const AgbBoard* board) {
+    const AgbPpu* ppu = &board->ppu;
+    uint64_t at = UINT64_MAX, line_end = board->now + (AGB_SCANLINE_CYCLES - ppu->dot);
+    if ((ppu->dispstat & 0x10) && (board->irq_ie & AGB_IRQ_HBLANK))
+        at = ppu->dot < AGB_HBLANK_DOT ? board->now + (AGB_HBLANK_DOT - ppu->dot) : line_end + AGB_HBLANK_DOT;
+    /* the vertical blank and the line match start a line: the lines from the next to that one */
+    if ((ppu->dispstat & 0x08) && (board->irq_ie & AGB_IRQ_VBLANK)) {
+        uint64_t lines = (AGB_SCREEN_HEIGHT - 1u - ppu->vcount + AGB_FRAME_LINES) % AGB_FRAME_LINES;
+        if (line_end + lines * AGB_SCANLINE_CYCLES < at) at = line_end + lines * AGB_SCANLINE_CYCLES;
+    }
+    if ((ppu->dispstat & 0x20) && (board->irq_ie & AGB_IRQ_VCOUNT) && (ppu->dispstat >> 8) < AGB_FRAME_LINES) {
+        uint64_t lines = ((ppu->dispstat >> 8) - 1u - ppu->vcount + AGB_FRAME_LINES) % AGB_FRAME_LINES;
+        if (line_end + lines * AGB_SCANLINE_CYCLES < at) at = line_end + lines * AGB_SCANLINE_CYCLES;
+    }
+    return at;
+}
+
 void agb_ppu_step(AgbBoard* board, uint32_t cycles) {
     AgbPpu* ppu = &board->ppu;
+    uint64_t at = board->now; /* the board's clock at the start of these cycles: the timers keep it */
     while (cycles) {
-        uint32_t boundary = ppu->dot < 960 ? 960 : AGB_SCANLINE_CYCLES;
+        uint32_t boundary = ppu->dot < AGB_HBLANK_DOT ? AGB_HBLANK_DOT : AGB_SCANLINE_CYCLES;
         uint32_t run = boundary - ppu->dot;
         if (run > cycles) run = cycles;
         ppu->dot += run;
         cycles -= run;
+        at += run;
         if (ppu->dot != boundary) continue;
-        if (boundary == 960) {
+        if (boundary == AGB_HBLANK_DOT) {
             /* the horizontal blank starts when the visible dots are over; its DMA only on the visible lines, as a game's
                table of one entry a line takes (the interrupt on every line) */
             ppu->dispstat |= 2;
@@ -177,7 +199,7 @@ void agb_ppu_step(AgbBoard* board, uint32_t cycles) {
                 render_line(board, ppu->vcount);
                 agb_dma_event(board, AGB_DMA_HBLANK);
             }
-            if (ppu->dispstat & 0x10) agb_irq_request(board, AGB_IRQ_HBLANK);
+            if (ppu->dispstat & 0x10) agb_irq_raise(board, AGB_IRQ_HBLANK, at);
         } else {
             ppu->dot = 0;
             ppu->dispstat &= (uint16_t)~2u;
@@ -195,13 +217,13 @@ void agb_ppu_step(AgbBoard* board, uint32_t cycles) {
                     ppu->bgx_line[i] = ppu->bgx[i];
                     ppu->bgy_line[i] = ppu->bgy[i];
                 }
-                if (ppu->dispstat & 8) agb_irq_request(board, AGB_IRQ_VBLANK);
+                if (ppu->dispstat & 8) agb_irq_raise(board, AGB_IRQ_VBLANK, at);
                 agb_dma_event(board, AGB_DMA_VBLANK);
             }
             if (!ppu->vcount) ppu->dispstat &= (uint16_t)~1u;
             if (ppu->vcount == (ppu->dispstat >> 8)) {
                 ppu->dispstat |= 4;
-                if (ppu->dispstat & 0x20) agb_irq_request(board, AGB_IRQ_VCOUNT);
+                if (ppu->dispstat & 0x20) agb_irq_raise(board, AGB_IRQ_VCOUNT, at);
             } else
                 ppu->dispstat &= (uint16_t)~4u;
         }

@@ -37,6 +37,7 @@ void agb_recomp_free(AgbRecomp* recomp) {
     snx_arm_exec_free(recomp->exec);
     if (recomp->handle) plat_dl_close(recomp->handle);
     free(recomp->blocks);
+    free(recomp->steps);
     free(recomp->base);
     free(recomp->keep_ir);
     *recomp = (AgbRecomp){0};
@@ -562,6 +563,75 @@ const AgbBlock* agb_recomp_lookup(AgbRecomp* recomp, AgbBoard* board, uint32_t p
         return NULL;
     }
     return block;
+}
+
+/* the steps' index, after them in their allocation, as the blocks' is */
+static uint32_t* step_slots(const AgbRecomp* recomp) { return (uint32_t*)(recomp->steps + recomp->step_capacity); }
+
+static size_t step_slot(const AgbRecomp* recomp, uint32_t pc, int thumb) {
+    uint64_t key = pc ^ (uint32_t)thumb;
+    return (size_t)((key * 0x9E3779B97F4A7C15ull) >> 32) & (recomp->step_capacity * 2 - 1);
+}
+
+static void step_index(AgbRecomp* recomp) {
+    uint32_t* slot = step_slots(recomp);
+    memset(slot, 0, recomp->step_capacity * 2 * sizeof(uint32_t));
+    for (size_t i = 1; i <= recomp->step_count; ++i) {
+        size_t at = step_slot(recomp, recomp->steps[i].pc, recomp->steps[i].thumb);
+        while (slot[at]) at = (at + 1) & (recomp->step_capacity * 2 - 1);
+        slot[at] = (uint32_t)i;
+    }
+}
+
+const AgbBlock* agb_recomp_step(AgbRecomp* recomp, AgbBoard* board, uint32_t pc, int thumb, char* error,
+                                size_t error_size) {
+    AgbBlock* step = NULL;
+    if (recomp->step_capacity)
+        for (size_t at = step_slot(recomp, pc, thumb); step_slots(recomp)[at];
+             at = (at + 1) & (recomp->step_capacity * 2 - 1)) {
+            AgbBlock* candidate = &recomp->steps[step_slots(recomp)[at]];
+            if (candidate->pc == pc && candidate->thumb == (uint8_t)thumb) {
+                step = candidate;
+                break;
+            }
+        }
+    if (step && (fixed(pc) || code_hash(board, pc, thumb, 1) == step->code)) return step;
+    if (!step) {
+        if (recomp->step_count + 1 >= recomp->step_capacity) {
+            size_t capacity = recomp->step_capacity ? recomp->step_capacity * 2 : 64;
+            size_t each = sizeof(AgbBlock) + 2 * sizeof(uint32_t);
+            AgbBlock* grown;
+            if (capacity > UINT32_MAX / 2 || capacity > (size_t)-1 / each ||
+                !(grown = (AgbBlock*)realloc(recomp->steps, capacity * each))) {
+                snprintf(error, error_size, "out of memory for %zu one-instruction blocks", capacity);
+                return NULL;
+            }
+            recomp->steps = grown;
+            recomp->step_capacity = capacity;
+        }
+        step = &recomp->steps[++recomp->step_count];
+        *step = (AgbBlock){0};
+        step->pc = pc;
+        step->thumb = (uint8_t)thumb;
+        step_index(recomp);
+    }
+    size_t consumed = 0;
+    if (!recomp->exec && !(recomp->exec = snx_arm_exec_new(error, error_size))) return NULL;
+    if (thumb) {
+        uint16_t word = agb_read16(board, pc);
+        step->fn = snx_arm_exec_compile_ex(recomp->exec, &word, 1, pc, 1, &agb_codegen, &consumed);
+    } else {
+        uint32_t word = agb_read32(board, pc);
+        step->fn = snx_arm_exec_compile_ex(recomp->exec, &word, 1, pc, 0, &agb_codegen, &consumed);
+    }
+    if (!step->fn || consumed != 1) {
+        snprintf(error, error_size, "the ARM recompiler rejected the instruction at 0x%08X on its own", pc);
+        step->fn = NULL;
+        return NULL;
+    }
+    step->instructions = 1;
+    step->code = code_hash(board, pc, thumb, 1);
+    return step;
 }
 
 int agb_recomp_save(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size) {

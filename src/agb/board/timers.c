@@ -56,7 +56,7 @@ static void overflow(AgbBoard* board, int index, uint64_t at) {
     timer->counter = timer->reload;
     timer->since = at;
     if (index < 2) agb_apu_timer_overflow(board, index); /* the sound FIFOs play at timer 0's or 1's rate */
-    if (timer->control & AGB_TIMER_IRQ) agb_irq_request(board, AGB_IRQ_TIMER(index));
+    if (timer->control & AGB_TIMER_IRQ) agb_irq_raise(board, AGB_IRQ_TIMER(index), at);
     if (index < 3 && (board->timer[index + 1].control & AGB_TIMER_ENABLE) &&
         (board->timer[index + 1].control & AGB_TIMER_CASCADE)) {
         AgbTimer* next = &board->timer[index + 1];
@@ -118,6 +118,32 @@ uint16_t agb_timer_read(AgbBoard* board, uint32_t offset) {
     const AgbTimer* timer = &board->timer[index];
     if (part) return timer->control;
     return (uint16_t)(clocked(board, index) ? count_at(timer, board->now) : timer->counter);
+}
+
+/* the next cycle timer index may overflow: a clocked one's own, a counting one's no earlier than the timer before it */
+static uint64_t next_overflow(const AgbBoard* board, int index) {
+    const AgbTimer* timer = &board->timer[index];
+    uint64_t at = timer->control_at ? timer->control_at : UINT64_MAX;
+    if (timer->control & AGB_TIMER_ENABLE) {
+        uint64_t own = clocked(board, index) ? overflow_at(timer)
+                       : index               ? next_overflow(board, index - 1)
+                                             : UINT64_MAX;
+        if (own < at) at = own;
+    }
+    return at;
+}
+
+uint64_t agb_timer_next_irq(const AgbBoard* board) {
+    uint64_t at = UINT64_MAX;
+    for (int index = 0; index < 4; ++index) {
+        const AgbTimer* timer = &board->timer[index];
+        if (!(board->irq_ie & AGB_IRQ_TIMER(index))) continue;
+        if (!(timer->control & AGB_TIMER_IRQ) && !(timer->control_at && (timer->next_control & AGB_TIMER_IRQ)))
+            continue;
+        uint64_t own = next_overflow(board, index);
+        if (own < at) at = own;
+    }
+    return at;
 }
 
 void agb_timer_step(AgbBoard* board, uint32_t cycles) {
