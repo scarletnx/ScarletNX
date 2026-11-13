@@ -574,6 +574,47 @@ static void check_shipped(void) {
         if (w < 0) show_said();
         CHECK(vk_ban_find("textureCompressionASTC_LDR") == 0, "and turns native ASTC off nowhere on PanVK");
     }
+    /* the Adreno drivers' shader deviations no setting goes around, each a warning at the filter with its issue or its
+       suite: Qualcomm's driver on an Adreno 830 all four, Turnip on an Adreno 610 the two of the sampler and the FMA */
+    {
+        static const struct {
+            const char* name;
+            const char* driver;
+            const char* info;
+            uint32_t id, v, gpu;
+        } adreno[2] = {{"Adreno (TM) 830", "Qualcomm Technologies Inc. Adreno Vulkan Driver",
+                        "Driver Build: 512.800.48", VK_DRIVER_ID_QUALCOMM_PROPRIETARY, MESA(512u, 800u, 48u),
+                        0x43050a01},
+                       {"Turnip Adreno (TM) 610", "turnip Mesa driver", "Mesa 26.3.0-devel", VK_DRIVER_ID_MESA_TURNIP,
+                        MESA(26u, 2u, 99u), 0x6010001}};
+        static const struct {
+            const char* said;
+            const char* source;
+            int turnip;
+        } warns[4] = {{"Fma on ", "#1654", 1},
+                      {"OpImageSampleExplicitLod on ", "#1916", 1},
+                      {"VK_STENCIL_FACE_BACK_BIT on ", "stencil suite", 0},
+                      {"ClipDistance on ", "geometry suite", 0}};
+        for (int a = 0; a < 2; a++) {
+            VkExtensionProperties list[1] = {{"VK_KHR_swapchain", 1}};
+            SnxVkExtensions e = {list, 1};
+            VkBanDevice d = {adreno[a].name, adreno[a].driver, adreno[a].info,    adreno[a].id,
+                             adreno[a].v,    adreno[a].gpu,    SNX_VK_BAN_ANDROID};
+            vk_bans_device(&d);
+            g_test.nsaid = 0;
+            CHECK(vk_bans_filter(&e, say) == 0 && e.count == 1, "the Adreno warnings take no extension out");
+            for (int i = 0; i < 4; i++) {
+                char what[200];
+                int w = said_with("vulkan: a known problem the extension bans do not turn off: ", warns[i].said,
+                                  warns[i].source);
+                snprintf(what, sizeof what, "%s: %s%s, a warning naming %s", adreno[a].name, warns[i].said,
+                         a && !warns[i].turnip ? "not said" : "said", warns[i].source);
+                CHECK(a && !warns[i].turnip ? w < 0
+                                            : w >= 0 && g_test.warned[w] && strstr(g_test.said[w], adreno[a].name),
+                      what);
+            }
+        }
+    }
     /* this machine's drivers, RADV and lavapipe: no "off" line holds; RADV's warnings are the lifted bans */
     static const struct {
         uint32_t id, v;
