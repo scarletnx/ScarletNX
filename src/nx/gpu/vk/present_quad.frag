@@ -15,8 +15,11 @@ void main() {
     if ((parameters.flags.x & 1u) != 0u) p.x = 1.0 - p.x;
     if ((parameters.flags.x & 2u) != 0u) p.y = 1.0 - p.y;
     vec2 at = parameters.crop.xy + p * parameters.crop.zw;
-    if ((parameters.flags.y & 1u) != 0u)
-        color = fxaa(source, at * vec2(textureSize(source, 0)), (parameters.flags.y & 2u) != 0u);
-    else
+    if ((parameters.flags.y & 1u) != 0u) {
+        // the crop's first and last pixel centres: the game's frame is that part of the surface
+        vec2 size = vec2(textureSize(source, 0)), first = parameters.crop.xy * size + 0.5,
+             last = (parameters.crop.xy + parameters.crop.zw) * size - 0.5;
+        color = fxaa(source, at * size, vec4(min(first, last), max(first, last)), (parameters.flags.y & 2u) != 0u);
+    } else
         color = texture(source, at);
 }

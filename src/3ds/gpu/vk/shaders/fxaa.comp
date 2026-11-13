@@ -13,5 +13,5 @@ layout(set = 0, binding = 1, rgba8) uniform writeonly image2D smoothed;
 void main() {
     ivec2 p = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(p, imageSize(smoothed)))) return;
-    imageStore(smoothed, p, fxaa(frame, vec2(p) + 0.5, false));
+    imageStore(smoothed, p, fxaa(frame, vec2(p) + 0.5, vec4(vec2(0.5), vec2(textureSize(frame, 0)) - 0.5), false));
 }

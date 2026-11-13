@@ -392,6 +392,9 @@ if(TARGET snx_ctr_board)
     add_executable(snx-test-3ds-vk-fxaa 3ds_vk_fxaa.c support/fxaa_ref.c)
     snx_test_target(snx-test-3ds-vk-fxaa 11)
     target_link_libraries(snx-test-3ds-vk-fxaa PRIVATE snx_ctr_gpu m)
+    # the same filter held inside a crop's bounds, as the Switch's presenter holds it (cmake/glsl.cmake, from src/3ds)
+    snx_glsl_spirv(snx-test-3ds-vk-fxaa SOURCE shaders/fxaa_window.comp NAME snx_test_fxaa_window_spv
+                   HEADER tests/shaders/fxaa_window_spv.h)
     add_test(NAME 3ds_vk_fxaa COMMAND snx-test-3ds-vk-fxaa)
     set_tests_properties(3ds_vk_fxaa PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's draws against the software renderer, the CPU reference they replaced, scene by scene

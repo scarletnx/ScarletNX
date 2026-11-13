@@ -5,11 +5,13 @@
    presenter's too (common/gpu/vk/fxaa.glsl). A picture with aliased edges of a triangle, a circle and thin lines, over
    flat colours and a gradient: a pixel with no edge in its taps keeps its bytes, alpha too; an edge pixel is the
    reference's colour within what the device's bilinear weights (subTexelPrecisionBits) can differ by; and the pass
-   smooths the edges, changing a third of the edge pixels at least. */
+   smooths the edges, changing a third of the edge pixels at least. Then the filter held inside a crop's bounds
+   (shaders/fxaa_window.comp), as the Switch's presenter holds it: a flat crop beside a checkerboard keeps its bytes. */
 #include "3ds/gpu/vk/shaders/fxaa_spv.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/memory/ctr_memory.h"
 #include "support/fxaa_ref.h"
+#include "tests/shaders/fxaa_window_spv.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +20,8 @@
 #define WIDTH 96u
 #define HEIGHT 64u
 #define BYTES (WIDTH * HEIGHT * 4u)
+#define CROP_WIDTH  (WIDTH - 8u) /* the crop the window shows, from the top left */
+#define CROP_HEIGHT (HEIGHT - 8u)
 
 static void fail(const char* what) {
     fprintf(stderr, "3ds fxaa: %s\n", what);
@@ -39,6 +43,16 @@ static void picture(uint8_t* p) {
             if (dx * dx + dy * dy < 15.0f * 15.0f) px[0] = 220, px[1] = 30, px[2] = 30;
             /* a one-pixel line, nearly horizontal */
             if (y == 58 + x / 24) px[0] = px[1] = px[2] = 250;
+        }
+}
+/* a flat grey crop, and past it a checkerboard of black and white pixels that a tap past the crop would blend in */
+static void crop_picture(uint8_t* p) {
+    for (unsigned y = 0; y < HEIGHT; ++y)
+        for (unsigned x = 0; x < WIDTH; ++x) {
+            uint8_t* px = p + (y * WIDTH + x) * 4;
+            unsigned grey = x < CROP_WIDTH && y < CROP_HEIGHT ? 100u : (x + y) % 2 ? 255u : 0u;
+            px[0] = px[1] = px[2] = (uint8_t)grey;
+            px[3] = 255;
         }
 }
 static VkDeviceMemory bind_image(SnxCtrVk* v, VkImage image) {
@@ -100,6 +114,57 @@ static unsigned distance(const uint8_t* got, const float* want) {
     return most;
 }
 
+/* the device's objects a pass runs with */
+typedef struct {
+    SnxCtrVk* v;
+    VkBuffer staging; /* the picture, then what the pass wrote */
+    void* mapped;
+    VkImage from, to;
+    VkImageView from_view, to_view;
+    VkSampler sampler;
+} Gpu;
+/* picture through pass into got, with bounds pushed where the pass takes them (NULL: none) */
+static void smooth(const Gpu* g, const SnxCtrVkCompute* pass, const float* bounds, const uint8_t* picture,
+                   uint8_t* got) {
+    memcpy(g->mapped, picture, BYTES);
+    VkCommandBuffer cb = snx_ctr_vk_commands();
+    barrier(cb, g->from, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .imageExtent = {WIDTH, HEIGHT, 1}};
+    vkCmdCopyBufferToImage(cb, g->staging, g->from, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    barrier(cb, g->from, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL); /* as present.c samples it */
+    barrier(cb, g->to, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+    VkDescriptorSet set = snx_ctr_vk_set(pass->set);
+    VkDescriptorImageInfo in = {g->sampler, g->from_view, VK_IMAGE_LAYOUT_GENERAL},
+                          out = {VK_NULL_HANDLE, g->to_view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet writes[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = 0,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                       .pImageInfo = &in},
+                                      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = 1,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                       .pImageInfo = &out}};
+    vkUpdateDescriptorSets(g->v->device, 2, writes, 0, NULL);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pass->pipeline);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pass->layout, 0, 1, &set, 0, NULL);
+    if (bounds) vkCmdPushConstants(cb, pass->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 4 * sizeof *bounds, bounds);
+    vkCmdDispatch(cb, (WIDTH + 7) / 8, (HEIGHT + 7) / 8, 1);
+    barrier(cb, g->to, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    copy.bufferOffset = BYTES;
+    vkCmdCopyImageToBuffer(cb, g->to, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g->staging, 1, &copy);
+    VkMemoryBarrier host = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                            .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &host, 0, NULL, 0, NULL);
+    if (!snx_ctr_vk_finish()) fail("the GPU's work did not finish");
+    memcpy(got, (const uint8_t*)g->mapped + BYTES, BYTES);
+}
+
 int main(void) {
     SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
     char why[256];
@@ -139,7 +204,6 @@ int main(void) {
         vkBindBufferMemory(v->device, staging, staging_memory, 0) != VK_SUCCESS ||
         vkMapMemory(v->device, staging_memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS)
         fail("no staging memory");
-    memcpy(mapped, source, BYTES);
 
     VkDeviceMemory from_memory, to_memory;
     VkImageView from_view, to_view;
@@ -160,41 +224,8 @@ int main(void) {
     SnxCtrVkCompute pass;
     if (!snx_ctr_vk_compute_types(snx_ctr_fxaa_spv, snx_ctr_fxaa_spv_size / 4, types, 2, 0, &pass)) fail("no pipeline");
 
-    VkCommandBuffer cb = snx_ctr_vk_commands();
-    barrier(cb, from, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                              .imageExtent = {WIDTH, HEIGHT, 1}};
-    vkCmdCopyBufferToImage(cb, staging, from, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-    barrier(cb, from, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL); /* as present.c samples it */
-    barrier(cb, to, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-    VkDescriptorSet set = snx_ctr_vk_set(pass.set);
-    VkDescriptorImageInfo in = {sampler, from_view, VK_IMAGE_LAYOUT_GENERAL}, out = {VK_NULL_HANDLE, to_view,
-                                                                                    VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet writes[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                       .dstSet = set,
-                                       .dstBinding = 0,
-                                       .descriptorCount = 1,
-                                       .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                       .pImageInfo = &in},
-                                      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                       .dstSet = set,
-                                       .dstBinding = 1,
-                                       .descriptorCount = 1,
-                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                       .pImageInfo = &out}};
-    vkUpdateDescriptorSets(v->device, 2, writes, 0, NULL);
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pass.pipeline);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pass.layout, 0, 1, &set, 0, NULL);
-    vkCmdDispatch(cb, (WIDTH + 7) / 8, (HEIGHT + 7) / 8, 1);
-    barrier(cb, to, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    copy.bufferOffset = BYTES;
-    vkCmdCopyImageToBuffer(cb, to, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, 1, &copy);
-    VkMemoryBarrier host = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-                            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-                            .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &host, 0, NULL, 0, NULL);
-    if (!snx_ctr_vk_finish()) fail("the GPU's work did not finish");
-    memcpy(got, (const uint8_t*)mapped + BYTES, BYTES);
+    Gpu gpu = {v, staging, mapped, from, to, from_view, to_view, sampler};
+    smooth(&gpu, &pass, NULL, source, got);
 
     unsigned edges = 0, changed = 0, worst = 0;
     for (unsigned i = 0; i < WIDTH * HEIGHT; ++i) {
@@ -231,6 +262,29 @@ int main(void) {
         fprintf(stderr, "%u edge pixels, %u of them changed: the edges were not smoothed\n", edges, changed);
         return 1;
     }
+
+    /* the crop: every pixel in it keeps its grey, the last row and column too, whose taps reach a pixel past it */
+    SnxCtrVkCompute window;
+    if (!snx_ctr_vk_compute_types(snx_test_fxaa_window_spv, snx_test_fxaa_window_spv_size / 4, types, 2,
+                                  4 * sizeof(float), &window))
+        fail("no pipeline for a crop");
+    const float bounds[4] = {0.5f, 0.5f, (float)CROP_WIDTH - 0.5f, (float)CROP_HEIGHT - 0.5f};
+    crop_picture(source);
+    smooth(&gpu, &window, bounds, source, got);
+    unsigned bled = 0;
+    for (unsigned y = 0; y < CROP_HEIGHT; ++y)
+        for (unsigned x = 0; x < CROP_WIDTH; ++x) {
+            const uint8_t* g = got + (y * WIDTH + x) * 4;
+            if (g[0] == 100 && g[1] == 100 && g[2] == 100 && g[3] == 255) continue;
+            if (bled++ < 4)
+                fprintf(stderr, "crop pixel (%u, %u): %u %u %u %u, the crop's 100 100 100 255\n", x, y, g[0], g[1],
+                        g[2], g[3]);
+        }
+    if (bled) {
+        fprintf(stderr, "%u of the crop's %u pixels took in pixels past it\n", bled, CROP_WIDTH * CROP_HEIGHT);
+        return 1;
+    }
+    snx_ctr_vk_compute_free(&window);
     snx_ctr_vk_compute_free(&pass);
     vkDestroySampler(v->device, sampler, NULL);
     vkDestroyImageView(v->device, from_view, NULL);
@@ -244,7 +298,7 @@ int main(void) {
     snx_ctr_vk_free();
     snx_ctr_memory_free(m);
     printf("3ds fxaa: %u of %u pixels at an edge, %u of them smoothed, each within %u of the CPU reference (%u "
-           "allowed, %u sub-texel bits); the rest kept\n",
-           edges, WIDTH * HEIGHT, changed, worst, tolerance, bits);
+           "allowed, %u sub-texel bits); the rest kept; a %ux%u crop kept whole beside a checkerboard\n",
+           edges, WIDTH * HEIGHT, changed, worst, tolerance, bits, CROP_WIDTH, CROP_HEIGHT);
     return 0;
 }
