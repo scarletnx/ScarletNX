@@ -110,9 +110,12 @@ static int ready(const u32 render[2], const u32 out[2], u32 flags, VkFormat form
     return 1;
 }
 
-/* a render target the renderer holds with pixels, as a sampled image of FSR's */
+/* a render target the renderer holds with pixels, as a sampled image of FSR's. Its read check comes first: a write to
+   its memory since it was drawn reloads it (vk_rt_reload), which can land results and submit the frame's commands, or
+   leave it without pixels. The frame's command buffer is taken after every input's check */
 static int input(const Surf2D* s, int depth, const u32 least[2], Surf** surf, SnxFsr2Image* image) {
     Surf* t = vk_rt_find(s->addr);
+    if (t) vk_rt_note_read(t);
     if (!t || t->layout == VK_IMAGE_LAYOUT_UNDEFINED || t->msaa || !t->f.depth != !depth || t->sw < least[0] ||
         t->sh < least[1]) {
         LOG_LIMIT(6, "vulkan: FSR 2 can't sample the surface at %llx (format %#x): %s\n", (unsigned long long)s->addr,
@@ -187,11 +190,10 @@ int vk_upscale(const GpuUpscale* u) {
     if (flags & SNX_FSR2_AUTO_EXPOSURE) r.d.exposure = (SnxFsr2Image){0};
     if (!ready(u->render, u->out, flags, format)) return 0;
 
-    VkCommandBuffer cb = vk_cmd();
+    VkCommandBuffer cb = vk_cmd(); /* after the inputs' read checks (input) and the context's setup */
     Surf* reads[5] = {color, depth, motion, exposure, reactive};
     for (u32 i = 0; i < 5; i++) {
         if (!reads[i] || (i == 3 && (flags & SNX_FSR2_AUTO_EXPOSURE))) continue;
-        vk_rt_note_read(reads[i]);
         vk_surf_use(cb, reads[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     }
