@@ -41,6 +41,11 @@ hook memset(void* dst out[size], i32 value, u64 size) -> void* = hook_memset pur
 family diag
 hook _ZN2nn4diag6detail10VAbortImplEPKcS3_S3_iPKNS_6ResultEPKNS_2os17UserExceptionInfoES3_RSt9__va_list(const char* condition, const char* function, const char* file, i32 line, const u32* result, addr exception, const char* format, addr args) = diag_abort
 
+# nn::gs's image reads of the Ounce's SDK (gs.c): a video image's rectangle into the caller's buffers, which a movie
+# player calls for every picture. The rectangle's four 16-bit numbers come on the stack: the handler reads them there
+family gs
+hook _ZN2nn2gs3sdk17ReadUserImageNv12EPvmmS2_mmRKNS_3gsv22CpuUserImageDescriptorEPKvtttt(addr dst_y, u64 size_y, u64 pitch_y, addr dst_uv, u64 size_uv, u64 pitch_uv, addr descriptor, addr src) -> u32 = gs_read_user_image_nv12
+
 # nn::codec's hardware Opus decoder of the Ounce's SDK (codec.c), which its SDK runs on the audio DSP through
 # nn::codec::hwacod: decoded here with the service's FFmpeg decoder (audio.c), each packet as it is enqueued
 family codec
