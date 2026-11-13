@@ -2217,6 +2217,18 @@ if(TARGET FFmpeg::avcodec AND Python3_Interpreter_FOUND)
     add_test(NAME ffmpeg_images COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg_images.py"
                                         "${snx_ffmpeg_prefix}/private" ${snx_ffmpeg_images_want})
 endif()
+# FFmpeg's configure finds the build's own dav1d with pkg-config (cmake/ffmpeg.cmake) whatever PKG_CONFIG_SYSROOT_DIR
+# the build runs with: a Linux cross preset's would put its system root in front of dav1d's folder
+if(snx_dav1d_ready)
+    find_program(SNX_TEST_PKG_CONFIG NAMES pkg-config pkgconf)
+    if(SNX_TEST_PKG_CONFIG)
+        add_test(NAME ffmpeg_dav1d_pkgconfig
+                 COMMAND "${CMAKE_COMMAND}" -E env PKG_CONFIG_SYSROOT_DIR=/snx-test-sysroot "${CMAKE_COMMAND}" -E env
+                         ${snx_ffmpeg_env} "${SNX_TEST_PKG_CONFIG}" --cflags --libs --static dav1d)
+        set_tests_properties(ffmpeg_dav1d_pkgconfig PROPERTIES PASS_REGULAR_EXPRESSION "-ldav1d"
+                                                               FAIL_REGULAR_EXPRESSION "snx-test-sysroot")
+    endif()
+endif()
 if(SNX_TEST_VP9_VECTORS)
     # nvdec.c's VP9 jobs on libvpx's test vectors, each image against the MD5 libvpx lists for it, at its own job's
     # fence (nvdec_vp9_vectors.c). FFmpeg's decoder works the jobs out of each vector from its private state
